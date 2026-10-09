@@ -132,14 +132,16 @@ gh secret set IOS_TEAM_ID --body ABCDE12345
 
 ## 소요 시간
 
-아래 값은 참고용입니다. upstream 실측은 2026-10-09 nightly(성공)의 잡별 시간이며, 공개 저장소에서 Rust 캐시만 있고 vcpkg 캐시는 없는 상태입니다. 이 저장소의 값은 비공개 저장소 러너 사양을 반영한 추정치입니다.
+이 저장소의 첫 실행(2026-10-10, 비공개 저장소, 캐시 없음) 실측값과 upstream 참고값입니다. upstream 값은 2026-10-09 nightly(공개 저장소, Rust 캐시만 있음)입니다.
 
-| 잡 | upstream 실측 | 첫 실행 (캐시 없음) | 캐시가 찬 뒤 |
+| 잡 | 이 저장소 첫 실행 (실측) | upstream 참고 | 캐시가 찬 뒤 (추정) |
 |---|---|---|---|
-| Bridge codegen | 7분 | 약 15분 | 약 7–10분 |
-| Windows x64 | 52분 (vcpkg 16, 빌드 22, exe 4, 서명·MSI 5) | 약 1.5–2시간 | 약 45–60분 |
-| Android arm64 | 31분 (vcpkg 9, Rust 11, Flutter 7) | 약 60–75분 | 약 30–40분 |
-| iOS | 22분 (vcpkg 8, Rust 8, Flutter 4) | 약 30–40분 | 약 15–20분 |
+| Bridge codegen | **7분** | 7분 | 약 7분 |
+| Windows x64 | **72분** | 52분 (vcpkg 16, 빌드 22, exe 4, 서명·MSI 5) | 약 45–55분 |
+| Android arm64 | **51분** | 31분 (vcpkg 9, Rust 11, Flutter 7) | 약 30–35분 |
+| iOS | **15분** | 22분 (vcpkg 8, Rust 8, Flutter 4) | 약 12–15분 |
+
+첫 실행 결과물 크기는 Windows exe 24MB, Android APK 26MB, iOS IPA 25MB입니다.
 
 - **러너 사양 차이**: 비공개 저장소의 Linux·Windows 러너는 2코어/8GB로, 공개 저장소(4코어/16GB)의 절반입니다. 그래서 컴파일이 upstream보다 오래 걸립니다. macOS는 공개·비공개 모두 3코어 M1입니다.
 - **전체 시간**: 플랫폼 잡이 병렬로 돌기 때문에 가장 긴 Windows 잡이 결정합니다.
