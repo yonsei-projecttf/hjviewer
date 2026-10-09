@@ -8,6 +8,26 @@
 - 앱 빌드(CI): [docs/ci.md](docs/ci.md)
 - 방화벽 E2E 검증과 결과: [docs/e2e.md](docs/e2e.md)
 
+## 빠른 시작: 실제 기기로 연결하기
+
+1. **서버**: 도메인 하나와 리눅스 VM에서 `deploy/`를 실행합니다(80/443만 공개). → [docs/deploy.md](docs/deploy.md)
+   ```bash
+   cd deploy && cp .env.example .env   # HJV_DOMAIN=rd.example.com
+   docker compose up -d --build && cat data/id_ed25519.pub
+   ```
+2. **앱 빌드**: 서버 값을 저장소 변수로 넣고 CI를 실행합니다. → [docs/ci.md](docs/ci.md)
+   ```bash
+   gh variable set HJV_SERVER --body rd.example.com
+   gh variable set HJV_SERVER_KEY --body '<data/id_ed25519.pub 내용>'
+   gh workflow run client-build.yml -f platforms=all
+   ```
+3. **설치**
+   - **PC(Windows)**: 아티팩트 `hjviewer-…-windows-x86_64`(zip) 안의 exe를 실행합니다. 상시 접속이 필요하면 앱에서 설치(서비스 등록)를 누릅니다. 화면에 ID와 비밀번호가 표시됩니다. 서명이 없어서 SmartScreen 경고가 뜰 수 있습니다.
+   - **Android**: `…-android-aarch64*.apk`를 설치합니다.
+   - **iOS**: 서명 시크릿을 넣고 빌드한 IPA를 TestFlight나 기기에 설치합니다. 서명 없는 IPA는 설치할 수 없습니다.
+4. **연결**: 앱에서 PC의 ID를 입력하고 비밀번호로 접속합니다.
+5. **방화벽 점검**: 고객사 네트워크에서 `tools/hjv-probe`로 서버까지의 경로를 확인합니다.
+
 ## 저장소 구조
 
 upstream 소스는 저장소에 넣지 않습니다. **고정 커밋 + 패치 파일**로 관리해서 upstream 업데이트를 따라가기 쉽게 했습니다.

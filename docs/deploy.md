@@ -52,6 +52,16 @@ all checks passed: apps on this network can reach the server over 443
 - `hbbr -k _`로 실행하므로 서버 키를 가진 클라이언트만 중계 서버를 쓸 수 있습니다.
 - Caddy 앞에 클라우드 로드밸런서를 두면 `{remote_host}` 대신 클라이언트 IP 헤더를 써야 합니다. Caddy의 `trusted_proxies`와 `{client_ip}`를 참고하세요.
 
+## 대안: 공인 IP 없이 Cloudflare Tunnel로 띄우기
+
+사내망 서버나 개발 PC처럼 **인바운드 포트를 열 수 없는 곳**에서도 서버를 운영할 수 있습니다. `cloudflared`가 Cloudflare로 나가는 연결을 열고, 그 연결로 `https://<도메인>`이 들어옵니다. TLS는 Cloudflare가 처리하므로 Caddy는 HTTP로만 받습니다.
+
+1. Caddy 사이트 주소를 `http://<도메인>:8080`처럼 HTTP로 바꾸고, compose에서 80/443 대신 내부 포트만 둡니다.
+2. 도메인이 Cloudflare에 있다면 named tunnel(`cloudflared tunnel create`, ingress `service: http://caddy:8080`)로 고정 주소를 씁니다.
+3. 잠깐 시험만 할 때는 계정 없이 `cloudflared tunnel --url http://localhost:8080`도 됩니다. 이 경우 `https://<임의>.trycloudflare.com` 주소가 나오는데 **재시작할 때마다 바뀝니다**. 앱에는 빌드 시점의 주소가 박히므로, 주소가 바뀌면 다시 빌드해야 합니다.
+
+주의: 이 구성에서 hbbs가 보는 클라이언트 IP는 모두 cloudflared(127.0.0.1)입니다. 연결 구분은 `X-Real-Port`로 되지만, IP별 등록 제한(분당 약 30회)을 모든 기기가 나눠 씁니다. 시험용이나 소규모용으로만 쓰세요. 실제 IP를 쓰려면 Caddy에서 `X-Real-IP`를 `{http.request.header.CF-Connecting-IP}`로 넘기면 됩니다.
+
 ## 업데이트
 
 패치나 upstream 고정 커밋(`scripts/upstream.env`)이 바뀌면 다음을 실행합니다.
