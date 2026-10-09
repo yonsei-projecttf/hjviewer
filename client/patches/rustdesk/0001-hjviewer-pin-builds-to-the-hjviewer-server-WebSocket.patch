@@ -1,0 +1,239 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sat, 10 Oct 2026 05:33:19 +0900
+Subject: [PATCH 1/2] hjviewer: pin builds to the hjviewer server, WebSocket +
+ WebRTC by default
+
+HJV_SERVER and HJV_SERVER_KEY, read at build time, name the server every
+build talks to; a build without them behaves as upstream. Such a build:
+
+- locks the ID/relay server, API server and key to it, so the UI cannot
+  point it elsewhere, and hides those settings;
+- always uses WebSocket: wss://<server>/ws/id and /ws/relay on 443, the
+  one port firewalls reliably let out (an https API server is what makes
+  check_ws pick wss://);
+- turns WebRTC on by default, which upstream only does for its public
+  servers, so peers still connect directly when their networks allow it;
+- turns off update checks and auto update, which follow upstream releases;
+- is named HJViewer (com.hjviewer.app on Android and iOS).
+
+Hooked into load_custom_client, which every process runs before it reads
+its config, and into the Flutter init path that skips it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/android/app/build.gradle              |  2 +-
+ .../android/app/src/main/AndroidManifest.xml  |  4 +-
+ .../app/src/main/res/values/strings.xml       |  6 +--
+ flutter/ios/Runner.xcodeproj/project.pbxproj  |  6 +--
+ flutter/ios/Runner/Info.plist                 |  4 +-
+ flutter/ios/exportOptions.plist               |  2 +-
+ src/common.rs                                 |  1 +
+ src/flutter_ffi.rs                            |  1 +
+ src/hjviewer.rs                               | 46 +++++++++++++++++++
+ src/lib.rs                                    |  1 +
+ 10 files changed, 61 insertions(+), 12 deletions(-)
+ create mode 100644 src/hjviewer.rs
+
+diff --git a/flutter/android/app/build.gradle b/flutter/android/app/build.gradle
+index 07f029c..fe1a77d 100644
+--- a/flutter/android/app/build.gradle
++++ b/flutter/android/app/build.gradle
+@@ -99,7 +99,7 @@ android {
+ 
+     defaultConfig {
+         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+-        applicationId "com.carriez.flutter_hbb"
++        applicationId "com.hjviewer.app"
+         minSdkVersion 22
+         targetSdkVersion 36
+         versionCode flutterVersionCode.toInteger()
+diff --git a/flutter/android/app/src/main/AndroidManifest.xml b/flutter/android/app/src/main/AndroidManifest.xml
+index e078818..16424c4 100644
+--- a/flutter/android/app/src/main/AndroidManifest.xml
++++ b/flutter/android/app/src/main/AndroidManifest.xml
+@@ -29,7 +29,7 @@
+     <application
+         android:name=".MainApplication"
+         android:icon="@mipmap/ic_launcher"
+-        android:label="RustDesk"
++        android:label="HJViewer"
+         android:roundIcon="@mipmap/ic_launcher"
+         android:supportsRtl="true">
+ 
+@@ -49,7 +49,7 @@
+             android:name=".InputService"
+             android:enabled="true"
+             android:exported="false"
+-            android:label="RustDesk Input"
++            android:label="HJViewer Input"
+             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+             <intent-filter>
+                 <action android:name="android.accessibilityservice.AccessibilityService" />
+diff --git a/flutter/android/app/src/main/res/values/strings.xml b/flutter/android/app/src/main/res/values/strings.xml
+index eae55d5..dba2837 100644
+--- a/flutter/android/app/src/main/res/values/strings.xml
++++ b/flutter/android/app/src/main/res/values/strings.xml
+@@ -1,5 +1,5 @@
+ <resources>
+-    <string name="app_name">RustDesk</string>
+-    <string name="accessibility_service_description">Allow other devices to control your phone using virtual touch, when RustDesk screen sharing is established</string>
+-    <string name="foreground_service_special_use_subtype">Keeps the RustDesk remote desktop host available for authorized unattended connections and foreground notifications without starting screen capture before user approval.</string>
++    <string name="app_name">HJViewer</string>
++    <string name="accessibility_service_description">Allow other devices to control your phone using virtual touch, when HJViewer screen sharing is established</string>
++    <string name="foreground_service_special_use_subtype">Keeps the HJViewer remote desktop host available for authorized unattended connections and foreground notifications without starting screen capture before user approval.</string>
+ </resources>
+diff --git a/flutter/ios/Runner.xcodeproj/project.pbxproj b/flutter/ios/Runner.xcodeproj/project.pbxproj
+index 36dc89e..0cf5a5d 100644
+--- a/flutter/ios/Runner.xcodeproj/project.pbxproj
++++ b/flutter/ios/Runner.xcodeproj/project.pbxproj
+@@ -434,7 +434,7 @@
+ 					"-framework",
+ 					"\"wakelock_plus\"",
+ 				);
+-				PRODUCT_BUNDLE_IDENTIFIER = com.carriez.flutterHbb;
++				PRODUCT_BUNDLE_IDENTIFIER = com.hjviewer.app;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				STRIP_STYLE = "non-global";
+ 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
+@@ -630,7 +630,7 @@
+ 					"-framework",
+ 					"\"wakelock_plus\"",
+ 				);
+-				PRODUCT_BUNDLE_IDENTIFIER = com.carriez.flutterHbb;
++				PRODUCT_BUNDLE_IDENTIFIER = com.hjviewer.app;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				STRIP_STYLE = "non-global";
+ 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
+@@ -718,7 +718,7 @@
+ 					"-framework",
+ 					"\"wakelock_plus\"",
+ 				);
+-				PRODUCT_BUNDLE_IDENTIFIER = com.carriez.flutterHbb;
++				PRODUCT_BUNDLE_IDENTIFIER = com.hjviewer.app;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				STRIP_STYLE = "non-global";
+ 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
+diff --git a/flutter/ios/Runner/Info.plist b/flutter/ios/Runner/Info.plist
+index 9351dac..cbd184b 100644
+--- a/flutter/ios/Runner/Info.plist
++++ b/flutter/ios/Runner/Info.plist
+@@ -7,7 +7,7 @@
+ 	<key>CFBundleDevelopmentRegion</key>
+ 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+     <key>CFBundleDisplayName</key>
+-    <string>RustDesk</string>
++    <string>HJViewer</string>
+ 	<key>CFBundleExecutable</key>
+ 	<string>$(EXECUTABLE_NAME)</string>
+ 	<key>CFBundleIdentifier</key>
+@@ -15,7 +15,7 @@
+ 	<key>CFBundleInfoDictionaryVersion</key>
+     <string>6.0</string>
+ 	<key>CFBundleName</key>
+-	<string>RustDesk</string>
++	<string>HJViewer</string>
+ 	<key>CFBundlePackageType</key>
+ 	<string>APPL</string>
+ 	<key>CFBundleShortVersionString</key>
+diff --git a/flutter/ios/exportOptions.plist b/flutter/ios/exportOptions.plist
+index 6ceb2ac..73aa417 100644
+--- a/flutter/ios/exportOptions.plist
++++ b/flutter/ios/exportOptions.plist
+@@ -8,7 +8,7 @@
+  <string>HZF9JMC8YN</string>
+  <key>provisioningProfiles</key>
+  <dict>
+- <key>com.carriez.flutterHbb</key>
++ <key>com.hjviewer.app</key>
+  <string>rustdesk-ios-prod-app-store</string>
+  </dict>
+  </dict>
+diff --git a/src/common.rs b/src/common.rs
+index 3e76132..f3e9fbf 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -2351,6 +2351,7 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
+ }
+ 
+ pub fn load_custom_client() {
++    crate::hjviewer::apply();
+     #[cfg(debug_assertions)]
+     if let Ok(data) = std::fs::read_to_string("./custom.txt") {
+         read_custom_client(data.trim());
+diff --git a/src/flutter_ffi.rs b/src/flutter_ffi.rs
+index f9cc2d6..a7fa864 100644
+--- a/src/flutter_ffi.rs
++++ b/src/flutter_ffi.rs
+@@ -49,6 +49,7 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
+     if custom_client_config.is_empty() {
+         crate::load_custom_client();
+     } else {
++        crate::hjviewer::apply();
+         crate::read_custom_client(custom_client_config);
+     }
+     #[cfg(target_os = "android")]
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+new file mode 100644
+index 0000000..41f4b3f
+--- /dev/null
++++ b/src/hjviewer.rs
+@@ -0,0 +1,46 @@
++use base::config::keys;
++use hbb_common::config;
++
++const APP_NAME: &str = "HJViewer";
++const SERVER: Option<&str> = option_env!("HJV_SERVER");
++const SERVER_KEY: Option<&str> = option_env!("HJV_SERVER_KEY");
++
++/// Pins the build to the hjviewer server named by `HJV_SERVER` / `HJV_SERVER_KEY` at build time;
++/// a build without `HJV_SERVER` behaves as upstream.
++///
++/// Signaling and relay go over WebSocket, `wss://<server>/ws/{id,relay}` on 443, the one port
++/// firewalls reliably let out, while WebRTC still connects peers directly wherever their networks
++/// allow it.
++pub fn apply() {
++    let Some(server) = SERVER.filter(|s| !s.is_empty()) else {
++        return;
++    };
++    *config::APP_NAME.write().unwrap() = APP_NAME.to_owned();
++    {
++        let mut settings = config::OVERWRITE_SETTINGS.write().unwrap();
++        for (k, v) in [
++            (keys::OPTION_CUSTOM_RENDEZVOUS_SERVER, server.to_owned()),
++            (keys::OPTION_RELAY_SERVER, server.to_owned()),
++            // check_ws picks wss:// only for an https API server
++            (keys::OPTION_API_SERVER, format!("https://{server}")),
++            (keys::OPTION_KEY, SERVER_KEY.unwrap_or_default().to_owned()),
++            (keys::OPTION_ALLOW_WEBSOCKET, "Y".to_owned()),
++            (keys::OPTION_ALLOW_AUTO_UPDATE, "N".to_owned()),
++        ] {
++            settings.insert(k.to_owned(), v);
++        }
++    }
++    // upstream defaults WebRTC on only for its public servers
++    config::DEFAULT_LOCAL_SETTINGS
++        .write()
++        .unwrap()
++        .insert(keys::OPTION_ENABLE_WEBRTC.to_owned(), "Y".to_owned());
++    // update checks follow upstream's releases, not this build's
++    config::OVERWRITE_LOCAL_SETTINGS
++        .write()
++        .unwrap()
++        .insert(keys::OPTION_ENABLE_CHECK_UPDATE.to_owned(), "N".to_owned());
++    let mut builtin = config::BUILTIN_SETTINGS.write().unwrap();
++    builtin.insert(keys::OPTION_HIDE_SERVER_SETTINGS.to_owned(), "Y".to_owned());
++    builtin.insert(keys::OPTION_HIDE_WEBSOCKET_SETTINGS.to_owned(), "Y".to_owned());
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index 649f3ef..4e098a6 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -44,6 +44,7 @@ mod clipboard;
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ pub mod core_main;
+ mod custom_server;
++mod hjviewer;
+ mod lang;
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ mod port_forward;

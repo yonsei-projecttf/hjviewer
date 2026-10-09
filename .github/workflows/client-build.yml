@@ -1,0 +1,898 @@
+# Builds the hjviewer client (RustDesk 1.5.0 + client/patches) for Windows x64, Android arm64 and
+# iOS. Every job checks out this repository, runs `scripts/fetch-upstream.sh client` and builds inside
+# upstream/rustdesk with the steps of upstream's own CI at RUSTDESK_COMMIT. "upstream: Lx-y" comments
+# point at upstream/rustdesk/.github/workflows/flutter-build.yml unless another file is named.
+# Variables, signing secrets, run times and billing are documented in docs/ci.md.
+name: client
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Platforms to build
+        type: choice
+        options: [windows, android, ios, all]
+        default: all
+      server:
+        description: "Server domain for this run (default: repository variable HJV_SERVER)"
+        type: string
+        required: false
+      server_key:
+        description: "Server public key, data/id_ed25519.pub (default: repository variable HJV_SERVER_KEY)"
+        type: string
+        required: false
+  push:
+    tags: ["v*"]
+
+run-name: client ${{ github.event_name == 'push' && github.ref_name || inputs.platforms }}
+
+permissions:
+  contents: read
+
+env:
+  # Server identity, baked into the Rust core by client/patches (option_env!) in every cargo build.
+  HJV_SERVER: ${{ inputs.server || vars.HJV_SERVER }}
+  HJV_SERVER_KEY: ${{ inputs.server_key || vars.HJV_SERVER_KEY }}
+  # Tool versions copied from upstream at RUSTDESK_COMMIT; bump them together with scripts/upstream.env.
+  RUST_VERSION: "1.75" # L22; upstream's Windows job reads SCITER_RUST_VERSION (L21), same value; bridge.yml L11
+  CARGO_NDK_VERSION: "3.1.2" # L24
+  LLVM_VERSION: "15.0.6" # L27
+  FLUTTER_VERSION: "3.24.5" # L28, Windows and iOS
+  ANDROID_FLUTTER_VERSION: "3.24.5" # L29
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d" # L39-45, vcpkg 2026.07.29 = vcpkg.json baseline
+  NDK_VERSION: "r28c" # L49
+  BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
+  CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
+  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
+  ARTIFACT_RETENTION_DAYS: 7
+
+# vcpkg binary cache (deviation from upstream): upstream sets VCPKG_BINARY_SOURCES=clear;x-gha,readwrite
+# (L38), but vcpkg removed the x-gha provider in 2025 (microsoft/vcpkg-tool#1662) and the pinned vcpkg
+# only warns about it, so upstream rebuilds every port on every run. Each vcpkg job here uses a files
+# provider instead, restored and saved with actions/cache, keeping only the packages the run installed.
+
+jobs:
+  # upstream: bridge.yml (generate_bridge, matrix entry L21-27), called from L85-86
+  generate-bridge:
+    name: Bridge codegen
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: upstream/rustdesk
+    steps:
+      - name: Check server variables
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -n "$HJV_SERVER" ] && [ -n "$HJV_SERVER_KEY" ]; then
+            echo "Building for server $HJV_SERVER"
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "::error::Set the repository variables HJV_SERVER and HJV_SERVER_KEY before tagging a release; without them the apps behave like stock RustDesk."
+            exit 1
+          else
+            echo "::warning::Repository variables HJV_SERVER and HJV_SERVER_KEY are not both set; these builds behave like stock RustDesk."
+          fi
+
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch upstream and apply hjviewer patches
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/fetch-upstream.sh client
+
+      # bridge.yml L42-59
+      - name: Install prerequisites
+        run: |
+          sudo apt-get install ca-certificates -y
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            curl \
+            gcc \
+            git \
+            g++ \
+            libclang-dev \
+            libgtk-3-dev \
+            llvm-dev \
+            nasm \
+            ninja-build \
+            pkg-config \
+            wget
+
+      # bridge.yml L61-70
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-unknown-linux-gnu
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: bridge-ubuntu-22.04
+          workspaces: upstream/rustdesk -> target
+
+      # bridge.yml L72-77 ("Cache Bridge") is dropped: nothing in the job writes /tmp/flutter_rust_bridge.
+
+      # bridge.yml L79-84
+      - name: Install flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
+          cache: true
+
+      # bridge.yml L86-99, Flutter 3.22.3 branch
+      - name: Install flutter rust bridge deps
+        shell: bash
+        run: |
+          cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
+          # Default Flutter 3.22.3: extended_text 14 needs a newer Dart, so downgrade for resolution.
+          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          pushd flutter && flutter pub get && popd
+
+      # bridge.yml L101-104
+      - name: Run flutter rust bridge
+        run: |
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+      # bridge.yml L106-116
+      - name: Upload Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bridge-artifact
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            upstream/rustdesk/src/bridge_generated.rs
+            upstream/rustdesk/src/bridge_generated.io.rs
+            upstream/rustdesk/flutter/lib/generated_bridge.dart
+            upstream/rustdesk/flutter/lib/generated_bridge.freezed.dart
+            upstream/rustdesk/flutter/macos/Runner/bridge_generated.h
+            upstream/rustdesk/flutter/ios/Runner/bridge_generated.h
+
+  # upstream: L109-461 (build-for-windows-flutter), x64 matrix entry L119-126. Dropped: the arm64
+  # entry and its steps, upstream's private signing service (SIGN_BASE_URL), MSI and MSI template,
+  # the release upload, and "find Runner.res" (no consumer of libs/portable/Runner.res at this commit).
+  windows:
+    name: Windows x64
+    needs: generate-bridge
+    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'windows'
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: upstream/rustdesk
+    env:
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+    steps:
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      # The runner's Git checks text files out with CRLF (core.autocrlf=true). Upstream's sources get
+      # that, as in upstream CI, but bash and `git am --keep-cr` need hjviewer's scripts and .patch
+      # files byte-exact, so this repository alone is checked out again with LF endings.
+      - name: Re-check out hjviewer with LF line endings
+        working-directory: ${{ github.workspace }}
+        run: |
+          git config core.autocrlf false
+          git config core.eol lf
+          git rm -q --cached -r .
+          git reset -q --hard
+
+      - name: Fetch upstream and apply hjviewer patches
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          bash scripts/fetch-upstream.sh client
+          version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' upstream/rustdesk/Cargo.toml | head -n 1)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-${GITHUB_SHA::7}"; fi
+          echo "BUILD_NAME=hjviewer-$name" >> "$GITHUB_ENV"
+
+      # L150-157
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: upstream/rustdesk
+
+      # L159-162
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      # L164-174
+      - name: Install flutter
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225  # v2.12.0; https://github.com/subosito/flutter-action/issues/277
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      # L208-218, https://github.com/flutter/flutter/issues/155685
+      - name: Replace engine with rustdesk custom flutter engine
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          mv -Force windows-x64-release/*  C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
+
+      # L220-230
+      - name: Patch flutter
+        shell: bash
+        run: |
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$(dirname "$(dirname "$(which flutter)")")"
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+          if [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]]; then
+            git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+          fi
+
+      # L240-249
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: windows-2022
+          workspaces: upstream/rustdesk -> target
+
+      # L251-256
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-
+          restore-keys: vcpkg-x64-windows-static-${{ env.VCPKG_COMMIT_ID }}-
+
+      # L258-276
+      - name: Install vcpkg dependencies
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/vcpkg-bincache"
+          if ! "$VCPKG_ROOT/vcpkg" \
+            install \
+            --triplet x64-windows-static \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+          head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-x64-windows-static-rel-out.log" || true
+        shell: bash
+
+      - name: Prune and fingerprint vcpkg binary cache
+        id: vcpkg-fp
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          abis=$(sed -n 's/^Abi: //p' "$VCPKG_ROOT/installed/vcpkg/status" | tr -d '\r' | sort -u)
+          find vcpkg-bincache -name '*.zip' | while read -r zip; do
+            grep -qxF "$(basename "$zip" .zip)" <<< "$abis" || rm -f "$zip"
+          done
+          echo "key=${{ steps.vcpkg-cache.outputs.cache-primary-key }}$(find vcpkg-bincache -name '*.zip' | sort | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+
+      - name: Save vcpkg binary cache
+        if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
+        uses: actions/cache/save@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        with:
+          path: vcpkg-bincache
+          key: ${{ steps.vcpkg-fp.outputs.key }}
+
+      # L285-324, x64 build-args "--vram" (L125)
+      - name: Build rustdesk
+        run: |
+          # Windows: build RustDesk
+          # --hwcodec is shared by all Windows targets; per-target extras (e.g. --vram) come from the matrix
+          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
+
+          # Download usbmmidd_v2.zip and extract it to ./rustdesk
+          Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
+          Expand-Archive usbmmidd_v2.zip -DestinationPath .
+          Remove-Item -Path usbmmidd_v2\Win32 -Recurse
+          Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat"
+          mv -Force .\usbmmidd_v2 ./rustdesk
+
+          # Download printer driver files and extract them to ./rustdesk
+          try {
+            Invoke-WebRequest -Uri https://github.com/rustdesk/hbb_common/releases/download/driver/rustdesk_printer_driver_v4-1.4.zip -OutFile rustdesk_printer_driver_v4-1.4.zip
+            Invoke-WebRequest -Uri https://github.com/rustdesk/hbb_common/releases/download/driver/printer_driver_adapter.zip -OutFile printer_driver_adapter.zip
+            Invoke-WebRequest -Uri https://github.com/rustdesk/hbb_common/releases/download/driver/sha256sums -OutFile sha256sums
+
+            # Check and move the files
+            $checksum_driver = (Select-String -Path .\sha256sums -Pattern '^([a-fA-F0-9]{64}) \*rustdesk_printer_driver_v4-1.4\.zip$').Matches.Groups[1].Value
+            $downloadsum_driver = Get-FileHash -Path rustdesk_printer_driver_v4-1.4.zip -Algorithm SHA256
+            $checksum_adapter = (Select-String -Path .\sha256sums -Pattern '^([a-fA-F0-9]{64}) \*printer_driver_adapter\.zip$').Matches.Groups[1].Value
+            $downloadsum_adapter = Get-FileHash -Path printer_driver_adapter.zip -Algorithm SHA256
+            if ($checksum_driver -eq $downloadsum_driver.Hash -and $checksum_adapter -eq $downloadsum_adapter.Hash) {
+                Write-Output "rustdesk_printer_driver_v4-1.4, checksums match, extract the file."
+                Expand-Archive rustdesk_printer_driver_v4-1.4.zip -DestinationPath .
+                mkdir ./rustdesk/drivers
+                mv -Force .\rustdesk_printer_driver_v4-1.4 ./rustdesk/drivers/RustDeskPrinterDriver
+                Expand-Archive printer_driver_adapter.zip -DestinationPath .
+                mv -Force .\printer_driver_adapter.dll ./rustdesk
+            } elseif ($checksum_driver -ne $downloadsum_driver.Hash) {
+                Write-Output "rustdesk_printer_driver_v4-1.4, checksums do not match, ignore the file."
+            } else {
+                Write-Output "printer_driver_adapter.dll, checksums do not match, ignore the file."
+            }
+          } catch {
+              Write-Host "Ingore the printer driver error."
+          }
+
+      # Privacy-mode helper WindowInjection.dll. Upstream builds it in a separate job
+      # (third-party-RustDeskTempTopMostWindow.yml L41-59, called from L88-107 with windows-2022, x64,
+      # Release, Windows10) and downloads it into ./rustdesk (L342-347); built inline here.
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
+
+      - name: Build RustDeskTempTopMostWindow
+        run: |
+          $src = "$env:RUNNER_TEMP\RustDeskTempTopMostWindow"
+          git clone https://github.com/rustdesk-org/RustDeskTempTopMostWindow $src
+          git -C $src checkout ecd8d6a139eee76845ea66423fb739af450fda90
+          msbuild "$src\WindowInjection\WindowInjection.vcxproj" -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
+          Copy-Item "$src\WindowInjection\x64\Release\WindowInjection.dll" ./rustdesk/
+
+      # L363-373
+      - name: Build self-extracted executable
+        shell: bash
+        run: |
+          sed -i '/dpiAware/d' res/manifest.xml
+          pushd ./libs/portable
+          pip3 install -r requirements.txt
+          python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
+          popd
+          mkdir -p ./SignOutput
+          mv ./target/release/rustdesk-portable-packer.exe "./SignOutput/$BUILD_NAME-windows-x86_64.exe"
+
+      - name: Upload Windows build (unsigned)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.BUILD_NAME }}-windows-x86_64
+          path: upstream/rustdesk/SignOutput/${{ env.BUILD_NAME }}-windows-x86_64.exe
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # upstream: L1036-1327 (build-rustdesk-android), aarch64 matrix entry L1044-1050. Dropped: the
+  # armv7/x86_64 entries, the universal APK job (L1329-1512), the librustdesk.so upload and the release
+  # upload. Without a release keystore the APK keeps upstream's debug signature (L1238-1239).
+  android:
+    name: Android arm64
+    needs: generate-bridge
+    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'android'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: upstream/rustdesk
+    env:
+      ANDROID_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && 'true' || 'false' }}
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+    steps:
+      # L1066-1075
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      # L1084-1116
+      - name: Install dependencies
+        working-directory: ${{ github.workspace }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+               clang \
+               cmake \
+               curl \
+               gcc-multilib \
+               git \
+               g++ \
+               g++-multilib \
+               libayatana-appindicator3-dev \
+               libasound2-dev \
+               libc6-dev \
+               libclang-dev \
+               libunwind-dev \
+               libgstreamer1.0-dev \
+               libgstreamer-plugins-base1.0-dev \
+               libgtk-3-dev \
+               libpulse-dev \
+               libva-dev \
+               libxcb-randr0-dev \
+               libxcb-shape0-dev \
+               libxcb-xfixes0-dev \
+               libxdo-dev \
+               libxfixes-dev \
+               llvm-dev \
+               nasm \
+               ninja-build \
+               openjdk-17-jdk-headless \
+               pkg-config \
+               tree \
+               wget
+
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch upstream and apply hjviewer patches
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash scripts/fetch-upstream.sh client
+          version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' upstream/rustdesk/Cargo.toml | head -n 1)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-${GITHUB_SHA::7}"; fi
+          echo "BUILD_NAME=hjviewer-$name" >> "$GITHUB_ENV"
+
+      # L1123-1134
+      - name: Install flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.ANDROID_FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        run: |
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+          if [[ "3.24.5" == "${{ env.ANDROID_FLUTTER_VERSION }}" ]]; then
+            git apply "${{ github.workspace }}/upstream/rustdesk/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          fi
+
+      # L1136-1147
+      - uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-arm64-android-${{ env.VCPKG_COMMIT_ID }}-
+          restore-keys: vcpkg-arm64-android-${{ env.VCPKG_COMMIT_ID }}-
+
+      # L1149-1175, arm64-v8a only
+      - name: Install vcpkg dependencies
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/vcpkg-bincache"
+          ANDROID_TARGET=arm64-v8a
+          if ! ./flutter/build_android_deps.sh "${ANDROID_TARGET}"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+        shell: bash
+
+      - name: Prune and fingerprint vcpkg binary cache
+        id: vcpkg-fp
+        working-directory: ${{ github.workspace }}
+        run: |
+          abis=$(sed -n 's/^Abi: //p' "$VCPKG_ROOT/installed/vcpkg/status" | tr -d '\r' | sort -u)
+          find vcpkg-bincache -name '*.zip' | while read -r zip; do
+            grep -qxF "$(basename "$zip" .zip)" <<< "$abis" || rm -f "$zip"
+          done
+          echo "key=${{ steps.vcpkg-cache.outputs.cache-primary-key }}$(find vcpkg-bincache -name '*.zip' | sort | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+
+      - name: Save vcpkg binary cache
+        if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
+        uses: actions/cache/save@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        with:
+          path: vcpkg-bincache
+          key: ${{ steps.vcpkg-fp.outputs.key }}
+
+      # L1177-1192
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: upstream/rustdesk
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: rustdesk-lib-cache-android # TODO: drop '-android' part after caches are invalidated
+          key: aarch64-linux-android
+          workspaces: upstream/rustdesk -> target
+
+      # L1194-1206
+      - name: Build rustdesk lib
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          ./flutter/ndk_arm64.sh
+          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+          cp ./target/aarch64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+
+      # L1230-1249 and L1278-1280
+      - name: Build rustdesk
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          # Increase Gradle JVM memory for CI builds
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          # temporary use debug sign config
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+          cp "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" ./flutter/android/app/src/main/jniLibs/arm64-v8a/
+          cp ./target/aarch64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+          # build flutter
+          pushd flutter
+          flutter build apk --release --target-platform android-arm64 --split-per-abi
+          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "../$BUILD_NAME-android-aarch64.apk"
+          popd
+          mkdir -p signed-apk
+          mv "./$BUILD_NAME-android-aarch64.apk" signed-apk/
+
+      # L1282-1302; https://github.com/r0adkll/sign-android-release/issues/84#issuecomment-1889636075
+      - name: Setup sign tool version variable
+        if: env.ANDROID_SIGNING == 'true'
+        shell: bash
+        run: |
+          # shellcheck disable=SC2012 # upstream's line; build-tools dirs are plain version numbers
+          BUILD_TOOL_VERSION=$(ls /usr/local/lib/android/sdk/build-tools/ | tail -n 1)
+          echo "ANDROID_SIGN_TOOL_VERSION=$BUILD_TOOL_VERSION" >> "$GITHUB_ENV"
+          echo "Last build tool version is: $BUILD_TOOL_VERSION"
+
+      - uses: r0adkll/sign-android-release@349ebdef58775b1e0d8099458af0816dc79b6407 # v1
+        name: Sign app APK
+        if: env.ANDROID_SIGNING == 'true'
+        id: sign-apk
+        with:
+          releaseDirectory: upstream/rustdesk/signed-apk
+          signingKeyBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          # PKCS12 keystores (keytool's default) use the store password for the key too
+          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+        env:
+          # env.ANDROID_SIGN_TOOL_VERSION is set by Step "Setup sign tool version variable"
+          BUILD_TOOLS_VERSION: ${{ env.ANDROID_SIGN_TOOL_VERSION }}
+
+      # L1304-1309
+      - name: Upload signed APK
+        if: env.ANDROID_SIGNING == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.BUILD_NAME }}-android-aarch64
+          path: ${{ steps.sign-apk.outputs.signedReleaseFile }}
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Upload debug-signed APK
+        if: env.ANDROID_SIGNING != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.BUILD_NAME }}-android-aarch64-debugsigned
+          path: upstream/rustdesk/signed-apk/${{ env.BUILD_NAME }}-android-aarch64.apk
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # upstream: L624-743 (build-rustdesk-ios), matrix entry L633-638. Dropped: the liblibrustdesk.a
+  # upload (L715-719). Upstream only builds `flutter build ipa --release --no-codesign` (L721-727);
+  # with the signing secrets this job archives with manual signing and exports an IPA instead.
+  ios:
+    name: iOS
+    needs: generate-bridge
+    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'ios'
+    runs-on: macos-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: upstream/rustdesk
+    env:
+      IOS_SIGNING: ${{ secrets.IOS_DIST_CERT_P12_BASE64 != '' && secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' && 'true' || 'false' }}
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+    steps:
+      # L647-653
+      - name: Install dependencies
+        working-directory: ${{ github.workspace }}
+        run: |
+          brew install nasm yasm
+
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch upstream and apply hjviewer patches
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash scripts/fetch-upstream.sh client
+          version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' upstream/rustdesk/Cargo.toml | head -n 1)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-${GITHUB_SHA::7}"; fi
+          echo "BUILD_NAME=hjviewer-$name" >> "$GITHUB_ENV"
+
+      # L655-666
+      - name: Install flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        run: |
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+          if [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]]; then
+            git apply "${{ github.workspace }}/upstream/rustdesk/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          fi
+
+      # L668-672
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-arm64-ios-${{ env.VCPKG_COMMIT_ID }}-
+          restore-keys: vcpkg-arm64-ios-${{ env.VCPKG_COMMIT_ID }}-
+
+      # L674-690
+      - name: Install vcpkg dependencies
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/vcpkg-bincache"
+          if ! "$VCPKG_ROOT/vcpkg" \
+            install \
+            --triplet arm64-ios \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+          head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-arm64-ios-rel-out.log" || true
+        shell: bash
+
+      - name: Prune and fingerprint vcpkg binary cache
+        id: vcpkg-fp
+        working-directory: ${{ github.workspace }}
+        run: |
+          abis=$(sed -n 's/^Abi: //p' "$VCPKG_ROOT/installed/vcpkg/status" | tr -d '\r' | sort -u)
+          find vcpkg-bincache -name '*.zip' | while read -r zip; do
+            grep -qxF "$(basename "$zip" .zip)" <<< "$abis" || rm -f "$zip"
+          done
+          echo "key=${{ steps.vcpkg-cache.outputs.cache-primary-key }}$(find vcpkg-bincache -name '*.zip' | sort | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+
+      - name: Save vcpkg binary cache
+        if: steps.vcpkg-fp.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
+        uses: actions/cache/save@6f8efc29b200d32929f49075959781ed54ec270c # v3.5.0
+        with:
+          path: vcpkg-bincache
+          key: ${{ steps.vcpkg-fp.outputs.key }}
+
+      # L692-713
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-apple-ios
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: rustdesk-lib-cache-ios
+          key: aarch64-apple-ios
+          workspaces: upstream/rustdesk -> target
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: upstream/rustdesk
+
+      - name: Build rustdesk lib
+        run: |
+          rustup target add aarch64-apple-ios
+          cargo build --locked --features flutter,hwcodec --release --target aarch64-apple-ios --lib
+
+      # L721-727. --no-codesign stops at the .xcarchive; an IPA is Payload/<app>.app zipped.
+      - name: Build rustdesk (unsigned)
+        if: env.IOS_SIGNING != 'true'
+        shell: bash
+        run: |
+          pushd flutter
+          flutter build ipa --release --no-codesign
+          popd
+          mkdir -p ios-out/Payload
+          cp -R flutter/build/ios/archive/Runner.xcarchive/Products/Applications/*.app ios-out/Payload/
+          cd ios-out && zip -qry "$BUILD_NAME-ios-unsigned.ipa" Payload && rm -rf Payload
+
+      # Not in upstream. Installs the distribution identity in a temporary keychain, switches the Runner
+      # target to manual signing with the given profile (bundle ID and export method follow the profile)
+      # and writes ExportOptions.plist for `flutter build ipa`.
+      - name: Set up code signing
+        if: env.IOS_SIGNING == 'true'
+        env:
+          P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/hjviewer-signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          printf '%s' "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          printf '%s' "$PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/profile.mobileprovision"
+
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/dist.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain"
+          rm -f "$RUNNER_TEMP/dist.p12"
+          identity=$(security find-identity -v -p codesigning "$keychain" | grep -m1 ') ' || true)
+          if [ -z "$identity" ]; then
+            echo "::error::IOS_DIST_CERT_P12_BASE64 holds no valid signing identity: export the Apple Distribution certificate together with its private key."
+            exit 1
+          fi
+          cert_sha1=$(awk '{print $2}' <<< "$identity")
+          cert_name=$(cut -d'"' -f2 <<< "$identity")
+
+          profile="$RUNNER_TEMP/profile.plist"
+          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$profile"
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$profile" 2> /dev/null; }
+          profile_uuid=$(pb UUID)
+          echo "IOS_PROFILE_UUID=$profile_uuid" >> "$GITHUB_ENV"
+          for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$dir"
+            cp "$RUNNER_TEMP/profile.mobileprovision" "$dir/$profile_uuid.mobileprovision"
+          done
+          profile_team=$(pb TeamIdentifier:0)
+          team_id=${TEAM_ID:-$profile_team}
+          if [ "$team_id" != "$profile_team" ]; then
+            echo "::error::IOS_TEAM_ID ($team_id) is not the provisioning profile's team ($profile_team)."
+            exit 1
+          fi
+          app_id=$(pb Entitlements:application-identifier)
+          bundle_id=${app_id#*.}
+          case $bundle_id in
+            *'*'*) echo "::error::The provisioning profile is for the wildcard App ID $app_id; create one for an explicit bundle ID such as com.hjviewer.app."; exit 1 ;;
+          esac
+          if [ "$(pb ProvisionsAllDevices || true)" = true ]; then method=enterprise
+          elif [ "$(pb Entitlements:get-task-allow || true)" = true ]; then method=development
+          elif pb ProvisionedDevices > /dev/null; then method=ad-hoc
+          else method=app-store
+          fi
+          # Xcode 15.3 renamed the export methods and deprecated the old names
+          if [ "$(xcodebuild -version | awk 'NR == 1 { split($2, v, "."); print v[1] }')" -ge 16 ]; then
+            case $method in
+              app-store) method=app-store-connect ;;
+              ad-hoc) method=release-testing ;;
+              development) method=debugging ;;
+            esac
+          fi
+          echo "Signing $bundle_id (team $team_id) with \"$cert_name\" and profile \"$(pb Name)\" ($profile_uuid); export method $method"
+
+          # Manual signing on the Runner target only: its three build configurations are the ones that
+          # name Runner.entitlements. Settings passed to xcodebuild would also hit the Pods targets.
+          pbx=flutter/ios/Runner.xcodeproj/project.pbxproj
+          if [ "$(grep -c 'CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;' "$pbx")" != 3 ]; then
+            echo "::error::Unexpected Runner target layout in $pbx; update the signing step."
+            exit 1
+          fi
+          TEAM="$team_id" BUNDLE="$bundle_id" IDENTITY="${cert_name%%:*}" PROFILE="$profile_uuid" perl -pi -e '
+            s/DEVELOPMENT_TEAM = [^;]*;/DEVELOPMENT_TEAM = $ENV{TEAM};/;
+            s/PRODUCT_BUNDLE_IDENTIFIER = [^;]*;/PRODUCT_BUNDLE_IDENTIFIER = $ENV{BUNDLE};/;
+            s/^(\s*)CODE_SIGN_ENTITLEMENTS = Runner\/Runner\.entitlements;$/$&\n${1}CODE_SIGN_STYLE = Manual;\n${1}CODE_SIGN_IDENTITY = "$ENV{IDENTITY}";\n${1}"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "$ENV{IDENTITY}";\n${1}PROVISIONING_PROFILE_SPECIFIER = "$ENV{PROFILE}";/;
+          ' "$pbx"
+
+          # Runner.entitlements asks for push and Wi-Fi info, which the app does not use. Keep each only
+          # if the profile grants it (signing fails otherwise) and take aps-environment from the profile.
+          ent=flutter/ios/Runner/Runner.entitlements
+          for key in aps-environment com.apple.developer.networking.wifi-info; do
+            /usr/libexec/PlistBuddy -c "Print :$key" "$ent" > /dev/null 2>&1 || continue
+            if value=$(pb "Entitlements:$key"); then
+              if [ "$key" = aps-environment ]; then
+                /usr/libexec/PlistBuddy -c "Set :$key $value" "$ent"
+              fi
+            else
+              echo "::warning::The provisioning profile does not grant $key, so it is removed from Runner.entitlements. Enable that capability on the App ID to keep it."
+              /usr/libexec/PlistBuddy -c "Delete :$key" "$ent"
+            fi
+          done
+
+          plist="$RUNNER_TEMP/ExportOptions.plist"
+          rm -f "$plist"
+          for entry in "method string $method" "teamID string $team_id" "signingStyle string manual" \
+            "signingCertificate string $cert_sha1" "provisioningProfiles dict" \
+            "provisioningProfiles:$bundle_id string $profile_uuid"; do
+            /usr/libexec/PlistBuddy -c "Add :$entry" "$plist" > /dev/null
+          done
+          plutil -lint "$plist"
+          cat "$plist"
+          echo "IOS_EXPORT_OPTIONS=$plist" >> "$GITHUB_ENV"
+
+      - name: Build rustdesk (signed IPA)
+        if: env.IOS_SIGNING == 'true'
+        shell: bash
+        run: |
+          pushd flutter
+          flutter build ipa --release --export-options-plist="$IOS_EXPORT_OPTIONS"
+          popd
+          mkdir -p ios-out
+          mv flutter/build/ios/ipa/*.ipa "ios-out/$BUILD_NAME-ios.ipa"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.BUILD_NAME }}-ios${{ env.IOS_SIGNING != 'true' && '-unsigned' || '' }}
+          path: upstream/rustdesk/ios-out/*.ipa
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Remove signing keychain and profile
+        if: always() && env.IOS_SIGNING == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/hjviewer-signing.keychain-db" || true
+          if [ -n "${IOS_PROFILE_UUID:-}" ]; then
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision" \
+              "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision"
+          fi

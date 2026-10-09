@@ -1,0 +1,1152 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sat, 10 Oct 2026 05:25:50 +0900
+Subject: [PATCH 2/3] Serve peers that register over TCP/WebSocket, and relay
+ WebRTC signaling
+
+A controlled peer behind a firewall that only lets HTTPS out cannot reach
+the UDP port, so the client registers over TCP/WebSocket instead (start_tcp
+with allow-websocket or a proxy): RegisterPk on a kept connection, then
+heartbeats it echoes back. hbbs answered that with NOT_SUPPORT and only
+pushed punch hole and relay requests over UDP, so such a peer never came
+online. Now:
+
+- RegisterPk over TCP/WebSocket registers the peer like over UDP and makes
+  the connection its signaling channel; PunchHole, RequestRelay and
+  IceCandidate for it go through that connection. It gets an empty frame
+  every 10s, echoing it refreshes its online state, and closing it takes
+  the peer offline at once.
+- Every TCP/WebSocket connection is written by its own task through a
+  queue, so it stays addressable after a reply: a WebRTC controller keeps
+  receiving ICE candidates after the answer.
+- PunchHole carries the controller's webrtc_sdp_offer and force_relay,
+  PunchHoleResponse the peer's webrtc_sdp_answer, and IceCandidate is routed
+  both ways (by peer id to the peer, by socket_addr to the controller).
+- OnlineRequest is answered on the WebSocket endpoint, where clients in
+  WebSocket mode send it.
+- X-Real-Port from the reverse proxy completes X-Real-IP: connections are
+  keyed by address, and clients behind one NAT all collided on ip:0.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/peer.rs              |  10 +-
+ src/rendezvous_server.rs | 477 +++++++++++++++++++++++++++------------
+ tests/tcp_signaling.rs   | 440 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 783 insertions(+), 144 deletions(-)
+ create mode 100644 tests/tcp_signaling.rs
+
+diff --git a/src/peer.rs b/src/peer.rs
+index 0f218df..1b9e595 100644
+--- a/src/peer.rs
++++ b/src/peer.rs
+@@ -4,7 +4,7 @@ use hbb_common::{
+     bytes::Bytes,
+     log,
+     rendezvous_proto::*,
+-    tokio::sync::{Mutex, RwLock},
++    tokio::sync::{mpsc, Mutex, RwLock},
+     ResultType,
+ };
+ use serde_derive::{Deserialize, Serialize};
+@@ -23,6 +23,10 @@ pub const IP_CHANGE_DUR_X2: u64 = IP_CHANGE_DUR * 2;
+ pub const DAY_SECONDS: u64 = 3600 * 24;
+ pub const IP_BLOCK_DUR: u64 = 60;
+ 
++/// Outbound queue of one TCP/WebSocket connection to hbbs. The connection's task owns the sink
++/// and drains this, so the connection can be addressed while it keeps reading.
++pub(crate) type ConnTx = mpsc::UnboundedSender<Bytes>;
++
+ #[derive(Debug, Default, Serialize, Deserialize, Clone)]
+ pub(crate) struct PeerInfo {
+     #[serde(default)]
+@@ -39,6 +43,9 @@ pub(crate) struct Peer {
+     pub(crate) info: PeerInfo,
+     // pub(crate) disabled: bool,
+     pub(crate) reg_pk: (u32, Instant), // how often register_pk
++    // set while the peer is registered over TCP/WebSocket instead of UDP: the connection that
++    // punch hole, relay and ICE messages for it must go through
++    pub(crate) tcp_tx: Option<ConnTx>,
+ }
+ 
+ impl Default for Peer {
+@@ -53,6 +60,7 @@ impl Default for Peer {
+             // user: None,
+             // disabled: false,
+             reg_pk: (0, get_expired_time()),
++            tcp_tx: None,
+         }
+     }
+ }
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 275eaf0..47ade0e 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -8,7 +8,7 @@ use hbb_common::{
+     futures::future::join_all,
+     futures_util::{
+         sink::SinkExt,
+-        stream::{SplitSink, StreamExt},
++        stream::{SplitSink, SplitStream, StreamExt},
+     },
+     log,
+     protobuf::{Message as _, MessageField},
+@@ -54,6 +54,38 @@ enum Sink {
+     TcpStream(TcpStreamSink),
+     Ws(WsSink),
+ }
++enum Incoming {
++    TcpStream(SplitStream<Framed<TcpStream, BytesCodec>>),
++    Ws(SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>),
++}
++impl Incoming {
++    /// The next frame, `None` once the connection is closed or broken. Cancel safe.
++    async fn next_frame(&mut self) -> Option<Bytes> {
++        loop {
++            match self {
++                Incoming::TcpStream(s) => return s.next().await?.ok().map(|b| b.freeze()),
++                Incoming::Ws(s) => match s.next().await?.ok()? {
++                    tungstenite::Message::Binary(bytes) => return Some(Bytes::from(bytes)),
++                    tungstenite::Message::Close(_) => return None,
++                    _ => {}
++                },
++            }
++        }
++    }
++}
++/// A TCP/WebSocket client connection: where replies for it are queued, and the peer it
++/// registered as, if any, which makes it that peer's signaling channel.
++struct TcpConn {
++    tx: ConnTx,
++    peer_id: Option<String>,
++}
++// A peer registered over TCP/WebSocket gets an empty frame this often and echoes it, which
++// refreshes its online state and keeps NATs and proxies from idling the connection out.
++const TCP_HEARTBEAT_MS: u64 = 10_000;
++// Sent as RegisterPkResponse.keep_alive (seconds). The client drops the connection after 1.5x
++// of it without a frame from us, so it must stay well above TCP_HEARTBEAT_MS.
++const TCP_KEEP_ALIVE_SECS: i32 = 30;
++const TCP_IDLE_TIMEOUT_MS: u64 = 30_000;
+ type Sender = mpsc::UnboundedSender<Data>;
+ type Receiver = mpsc::UnboundedReceiver<Data>;
+ static ROTATION_RELAY_SERVER: AtomicUsize = AtomicUsize::new(0);
+@@ -81,7 +113,7 @@ struct Inner {
+ 
+ #[derive(Clone)]
+ pub struct RendezvousServer {
+-    tcp_punch: Arc<Mutex<HashMap<SocketAddr, Sink>>>,
++    tcp_punch: Arc<Mutex<HashMap<SocketAddr, ConnTx>>>,
+     pm: PeerMap,
+     tx: Sender,
+     relay_servers: Arc<RelayServers>,
+@@ -369,89 +401,9 @@ impl RendezvousServer {
+                     }
+                 }
+                 Some(rendezvous_message::Union::RegisterPk(rk)) => {
+-                    if rk.uuid.is_empty() || rk.pk.is_empty() {
+-                        return Ok(());
++                    if let Some(res) = self.handle_register_pk(rk, addr).await {
++                        send_rk_res(socket, addr, res).await?;
+                     }
+-                    let id = rk.id;
+-                    let ip = addr.ip().to_string();
+-                    if id.len() < 6 {
+-                        return send_rk_res(socket, addr, UUID_MISMATCH).await;
+-                    } else if !self.check_ip_blocker(&ip, &id).await {
+-                        return send_rk_res(socket, addr, TOO_FREQUENT).await;
+-                    }
+-                    let peer = self.pm.get_or(&id).await;
+-                    let (changed, ip_changed) = {
+-                        let peer = peer.read().await;
+-                        if peer.uuid.is_empty() {
+-                            (true, false)
+-                        } else {
+-                            if peer.uuid == rk.uuid {
+-                                if peer.info.ip != ip && peer.pk != rk.pk {
+-                                    log::warn!(
+-                                        "Peer {} ip/pk mismatch: {}/{:?} vs {}/{:?}",
+-                                        id,
+-                                        ip,
+-                                        rk.pk,
+-                                        peer.info.ip,
+-                                        peer.pk,
+-                                    );
+-                                    drop(peer);
+-                                    return send_rk_res(socket, addr, UUID_MISMATCH).await;
+-                                }
+-                            } else {
+-                                log::warn!(
+-                                    "Peer {} uuid mismatch: {:?} vs {:?}",
+-                                    id,
+-                                    rk.uuid,
+-                                    peer.uuid
+-                                );
+-                                drop(peer);
+-                                return send_rk_res(socket, addr, UUID_MISMATCH).await;
+-                            }
+-                            let ip_changed = peer.info.ip != ip;
+-                            (
+-                                peer.uuid != rk.uuid || peer.pk != rk.pk || ip_changed,
+-                                ip_changed,
+-                            )
+-                        }
+-                    };
+-                    let mut req_pk = peer.read().await.reg_pk;
+-                    if req_pk.1.elapsed().as_secs() > 6 {
+-                        req_pk.0 = 0;
+-                    } else if req_pk.0 > 2 {
+-                        return send_rk_res(socket, addr, TOO_FREQUENT).await;
+-                    }
+-                    req_pk.0 += 1;
+-                    req_pk.1 = Instant::now();
+-                    peer.write().await.reg_pk = req_pk;
+-                    if ip_changed {
+-                        let mut lock = IP_CHANGES.lock().await;
+-                        if let Some((tm, ips)) = lock.get_mut(&id) {
+-                            if tm.elapsed().as_secs() > IP_CHANGE_DUR {
+-                                *tm = Instant::now();
+-                                ips.clear();
+-                                ips.insert(ip.clone(), 1);
+-                            } else if let Some(v) = ips.get_mut(&ip) {
+-                                *v += 1;
+-                            } else {
+-                                ips.insert(ip.clone(), 1);
+-                            }
+-                        } else {
+-                            lock.insert(
+-                                id.clone(),
+-                                (Instant::now(), HashMap::from([(ip.clone(), 1)])),
+-                            );
+-                        }
+-                    }
+-                    if changed {
+-                        self.pm.update_pk(id, peer, addr, rk.uuid, rk.pk, ip).await;
+-                    }
+-                    let mut msg_out = RendezvousMessage::new();
+-                    msg_out.set_register_pk_response(RegisterPkResponse {
+-                        result: register_pk_response::Result::OK.into(),
+-                        ..Default::default()
+-                    });
+-                    socket.send(&msg_out, addr).await?
+                 }
+                 Some(rendezvous_message::Union::PunchHoleRequest(ph)) => {
+                     // UDP PunchHoleRequest is intentionally unsupported.
+@@ -504,35 +456,105 @@ impl RendezvousServer {
+     async fn handle_tcp(
+         &mut self,
+         bytes: &[u8],
+-        sink: &mut Option<Sink>,
++        conn: &mut TcpConn,
+         addr: SocketAddr,
+         key: &str,
+         ws: bool,
+     ) -> bool {
++        if bytes.is_empty() {
++            // heartbeat echoed by the peer registered on this connection
++            let Some(id) = &conn.peer_id else {
++                return false;
++            };
++            if let Some(peer) = self.pm.get_in_memory(id).await {
++                peer.write().await.last_reg_time = Instant::now();
++            }
++            return true;
++        }
+         if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(bytes) {
+             match msg_in.union {
+                 Some(rendezvous_message::Union::PunchHoleRequest(ph)) => {
+-                    // there maybe several attempt, so sink can be none
+-                    if let Some(sink) = sink.take() {
+-                        self.tcp_punch.lock().await.insert(try_into_v4(addr), sink);
+-                    }
++                    self.tcp_punch
++                        .lock()
++                        .await
++                        .insert(try_into_v4(addr), conn.tx.clone());
+                     allow_err!(self.handle_tcp_punch_hole_request(addr, ph, key, ws).await);
+                     return true;
+                 }
+                 Some(rendezvous_message::Union::RequestRelay(mut rf)) => {
+-                    // there maybe several attempt, so sink can be none
+-                    if let Some(sink) = sink.take() {
+-                        self.tcp_punch.lock().await.insert(try_into_v4(addr), sink);
+-                    }
++                    self.tcp_punch
++                        .lock()
++                        .await
++                        .insert(try_into_v4(addr), conn.tx.clone());
+                     if let Some(peer) = self.pm.get_in_memory(&rf.id).await {
++                        let id = rf.id.clone();
+                         let mut msg_out = RendezvousMessage::new();
+                         rf.socket_addr = AddrMangle::encode(addr).into();
+                         msg_out.set_request_relay(rf);
+                         let peer_addr = peer.read().await.socket_addr;
+-                        self.tx.send(Data::Msg(msg_out.into(), peer_addr)).ok();
++                        self.send_to_peer(&id, peer_addr, msg_out).await;
++                    }
++                    return true;
++                }
++                Some(rendezvous_message::Union::IceCandidate(ice)) => {
++                    // WebRTC trickle ICE. The controller addresses the controlled peer by id, on
++                    // the connection of its punch hole request; the controlled peer answers on a
++                    // connection of its own, addressed by that request's socket_addr.
++                    if !ice.id.is_empty() {
++                        if let Some(peer) = self.pm.get_in_memory(&ice.id).await {
++                            let id = ice.id.clone();
++                            let peer_addr = peer.read().await.socket_addr;
++                            let mut msg_out = RendezvousMessage::new();
++                            msg_out.set_ice_candidate(ice);
++                            self.send_to_peer(&id, peer_addr, msg_out).await;
++                        }
++                    } else if !ice.socket_addr.is_empty() {
++                        let addr_a = AddrMangle::decode(&ice.socket_addr);
++                        let mut msg_out = RendezvousMessage::new();
++                        msg_out.set_ice_candidate(IceCandidate {
++                            session_key: ice.session_key,
++                            candidate: ice.candidate,
++                            ..Default::default()
++                        });
++                        self.send_to_tcp(msg_out, addr_a).await;
+                     }
++                    // one connection carries the whole trickle
++                    return true;
++                }
++                Some(rendezvous_message::Union::RegisterPk(rk)) => {
++                    // a peer that cannot use UDP registers here and keeps this connection
++                    let id = rk.id.clone();
++                    let Some(res) = self.handle_register_pk(rk, addr).await else {
++                        return true;
++                    };
++                    if res == register_pk_response::Result::OK {
++                        if let Some(old_id) = conn.peer_id.take() {
++                            if old_id != id {
++                                self.detach_tcp_peer(&old_id, &conn.tx).await;
++                            }
++                        }
++                        if let Some(peer) = self.pm.get_in_memory(&id).await {
++                            let mut peer = peer.write().await;
++                            peer.socket_addr = addr;
++                            peer.last_reg_time = Instant::now();
++                            peer.tcp_tx = Some(conn.tx.clone());
++                        }
++                        conn.peer_id = Some(id);
++                    }
++                    let mut msg_out = RendezvousMessage::new();
++                    msg_out.set_register_pk_response(RegisterPkResponse {
++                        result: res.into(),
++                        keep_alive: TCP_KEEP_ALIVE_SECS,
++                        ..Default::default()
++                    });
++                    Self::send_to_conn(&conn.tx, msg_out);
+                     return true;
+                 }
++                Some(rendezvous_message::Union::OnlineRequest(or)) => {
++                    // over WebSocket, online queries share the rendezvous endpoint
++                    let msg_out = self.online_response(or.peers).await;
++                    Self::send_to_conn(&conn.tx, msg_out);
++                }
+                 Some(rendezvous_message::Union::RelayResponse(mut rr)) => {
+                     let addr_b = AddrMangle::decode(&rr.socket_addr);
+                     rr.socket_addr = Default::default();
+@@ -572,16 +594,7 @@ impl RendezvousServer {
+                         res.cu = MessageField::from_option(Some(cu));
+                     }
+                     msg_out.set_test_nat_response(res);
+-                    Self::send_to_sink(sink, msg_out).await;
+-                }
+-                Some(rendezvous_message::Union::RegisterPk(_)) => {
+-                    let res = register_pk_response::Result::NOT_SUPPORT;
+-                    let mut msg_out = RendezvousMessage::new();
+-                    msg_out.set_register_pk_response(RegisterPkResponse {
+-                        result: res.into(),
+-                        ..Default::default()
+-                    });
+-                    Self::send_to_sink(sink, msg_out).await;
++                    Self::send_to_conn(&conn.tx, msg_out);
+                 }
+                 _ => {}
+             }
+@@ -653,6 +666,7 @@ impl RendezvousServer {
+             socket_addr: AddrMangle::encode(addr).into(),
+             pk: self.get_pk(&phs.version, phs.id).await,
+             relay_server: phs.relay_server.clone(),
++            webrtc_sdp_answer: phs.webrtc_sdp_answer,
+             ..Default::default()
+         };
+         if let Ok(t) = phs.nat_type.enum_value() {
+@@ -796,6 +810,8 @@ impl RendezvousServer {
+                     socket_addr,
+                     nat_type: ph.nat_type,
+                     relay_server,
++                    force_relay: ph.force_relay,
++                    webrtc_sdp_offer: ph.webrtc_sdp_offer,
+                     ..Default::default()
+                 });
+             }
+@@ -816,6 +832,13 @@ impl RendezvousServer {
+         stream: &mut FramedStream,
+         peers: Vec<String>,
+     ) -> ResultType<()> {
++        let msg_out = self.online_response(peers).await;
++        stream.send(&msg_out).await?;
++
++        Ok(())
++    }
++
++    async fn online_response(&self, peers: Vec<String>) -> RendezvousMessage {
+         let mut states = BytesMut::zeroed((peers.len() + 7) / 8);
+         for (i, peer_id) in peers.iter().enumerate() {
+             if let Some(peer) = self.pm.get_in_memory(peer_id).await {
+@@ -834,31 +857,51 @@ impl RendezvousServer {
+             states: states.into(),
+             ..Default::default()
+         });
+-        stream.send(&msg_out).await?;
+-
+-        Ok(())
++        msg_out
+     }
+ 
+     #[inline]
+     async fn send_to_tcp(&mut self, msg: RendezvousMessage, addr: SocketAddr) {
+-        let mut tcp = self.tcp_punch.lock().await.remove(&try_into_v4(addr));
+-        tokio::spawn(async move {
+-            Self::send_to_sink(&mut tcp, msg).await;
+-        });
++        // The entry stays until its connection closes: a WebRTC controller keeps receiving ICE
++        // candidates on it after the answer.
++        let tx = self.tcp_punch.lock().await.get(&try_into_v4(addr)).cloned();
++        if let Some(tx) = tx {
++            Self::send_to_conn(&tx, msg);
++        }
+     }
+ 
+     #[inline]
+-    async fn send_to_sink(sink: &mut Option<Sink>, msg: RendezvousMessage) {
+-        if let Some(sink) = sink.as_mut() {
+-            if let Ok(bytes) = msg.write_to_bytes() {
+-                match sink {
+-                    Sink::TcpStream(s) => {
+-                        allow_err!(s.send(Bytes::from(bytes)).await);
+-                    }
+-                    Sink::Ws(ws) => {
+-                        allow_err!(ws.send(tungstenite::Message::Binary(bytes)).await);
+-                    }
+-                }
++    fn send_to_conn(tx: &ConnTx, msg: RendezvousMessage) -> bool {
++        match msg.write_to_bytes() {
++            Ok(bytes) => tx.send(Bytes::from(bytes)).is_ok(),
++            Err(_) => false,
++        }
++    }
++
++    #[inline]
++    async fn send_bytes(sink: &mut Sink, bytes: Bytes) -> bool {
++        match sink {
++            Sink::TcpStream(s) => s.send(bytes).await.is_ok(),
++            Sink::Ws(ws) => ws
++                .send(tungstenite::Message::Binary(bytes.to_vec()))
++                .await
++                .is_ok(),
++        }
++    }
++
++    /// Delivers to peer `id` over its TCP/WebSocket connection if it registered on one, else
++    /// over UDP to `addr`.
++    async fn send_to_peer(&self, id: &str, addr: SocketAddr, msg: RendezvousMessage) {
++        let tcp_tx = match self.pm.get_in_memory(id).await {
++            Some(peer) => peer.read().await.tcp_tx.clone(),
++            None => None,
++        };
++        match tcp_tx {
++            Some(tx) => {
++                Self::send_to_conn(&tx, msg);
++            }
++            None => {
++                self.tx.send(Data::Msg(msg.into(), addr)).ok();
+             }
+         }
+     }
+@@ -869,8 +912,7 @@ impl RendezvousServer {
+         msg: RendezvousMessage,
+         addr: SocketAddr,
+     ) -> ResultType<()> {
+-        let mut sink = self.tcp_punch.lock().await.remove(&try_into_v4(addr));
+-        Self::send_to_sink(&mut sink, msg).await;
++        self.send_to_tcp(msg, addr).await;
+         Ok(())
+     }
+ 
+@@ -882,9 +924,10 @@ impl RendezvousServer {
+         key: &str,
+         ws: bool,
+     ) -> ResultType<()> {
++        let id = ph.id.clone();
+         let (msg, to_addr) = self.handle_punch_hole_request(addr, ph, key, ws).await?;
+         if let Some(addr) = to_addr {
+-            self.tx.send(Data::Msg(msg.into(), addr))?;
++            self.send_to_peer(&id, addr, msg).await;
+         } else {
+             self.send_to_tcp_sync(msg, addr).await?;
+         }
+@@ -1177,8 +1220,7 @@ impl RendezvousServer {
+         key: &str,
+         ws: bool,
+     ) -> ResultType<()> {
+-        let mut sink;
+-        if ws {
++        let (mut sink, mut incoming) = if ws {
+             use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+             let callback = |req: &Request, response: Response| {
+                 let headers = req.headers();
+@@ -1195,41 +1237,190 @@ impl RendezvousServer {
+                     .get("X-Real-IP")
+                     .or_else(|| headers.get("X-Forwarded-For"))
+                     .and_then(|header_value| header_value.to_str().ok());
++                // Connections are told apart by address, so without the client's source port
++                // every client behind one NAT would share `ip:0` and receive each other's
++                // answers. Trusted like X-Real-IP above.
++                let real_port = headers
++                    .get("X-Real-Port")
++                    .and_then(|header_value| header_value.to_str().ok())
++                    .and_then(|port| port.parse::<u16>().ok())
++                    .unwrap_or(0);
+                 if let Some(ip) = real_ip {
+                     if ip.contains('.') {
+-                        addr = format!("{ip}:0").parse().unwrap_or(addr);
++                        addr = format!("{ip}:{real_port}").parse().unwrap_or(addr);
+                     } else {
+-                        addr = format!("[{ip}]:0").parse().unwrap_or(addr);
++                        addr = format!("[{ip}]:{real_port}").parse().unwrap_or(addr);
+                     }
+                 }
+                 Ok(response)
+             };
+             let ws_stream = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
+-            let (a, mut b) = ws_stream.split();
+-            sink = Some(Sink::Ws(a));
+-            while let Ok(Some(Ok(msg))) = timeout(30_000, b.next()).await {
+-                if let tungstenite::Message::Binary(bytes) = msg {
+-                    if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
++            let (a, b) = ws_stream.split();
++            (Sink::Ws(a), Incoming::Ws(b))
++        } else {
++            let (a, b) = Framed::new(stream, BytesCodec::new()).split();
++            (Sink::TcpStream(a), Incoming::TcpStream(b))
++        };
++        let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
++        let mut conn = TcpConn { tx, peer_id: None };
++        let mut heartbeat = interval(Duration::from_millis(TCP_HEARTBEAT_MS));
++        let mut last_recv = Instant::now();
++        loop {
++            tokio::select! {
++                frame = incoming.next_frame() => {
++                    let Some(bytes) = frame else {
++                        break;
++                    };
++                    last_recv = Instant::now();
++                    if !self.handle_tcp(&bytes, &mut conn, addr, key, ws).await {
+                         break;
+                     }
+                 }
+-            }
+-        } else {
+-            let (a, mut b) = Framed::new(stream, BytesCodec::new()).split();
+-            sink = Some(Sink::TcpStream(a));
+-            while let Ok(Some(Ok(bytes))) = timeout(30_000, b.next()).await {
+-                if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
+-                    break;
++                Some(bytes) = rx.recv() => {
++                    if !Self::send_bytes(&mut sink, bytes).await {
++                        break;
++                    }
++                }
++                _ = heartbeat.tick() => {
++                    if last_recv.elapsed() > Duration::from_millis(TCP_IDLE_TIMEOUT_MS) {
++                        break;
++                    }
++                    if conn.peer_id.is_some() && !Self::send_bytes(&mut sink, Bytes::new()).await {
++                        break;
++                    }
+                 }
+             }
+         }
+-        if sink.is_none() {
+-            self.tcp_punch.lock().await.remove(&try_into_v4(addr));
++        // a reply queued by the message that ended the connection
++        while let Ok(bytes) = rx.try_recv() {
++            if !Self::send_bytes(&mut sink, bytes).await {
++                break;
++            }
+         }
++        self.close_tcp_conn(&conn, addr).await;
+         log::debug!("Tcp connection from {:?} closed", addr);
+         Ok(())
+     }
+ 
++    /// Forgets what a closed connection was registered as, unless a newer connection took over.
++    async fn close_tcp_conn(&self, conn: &TcpConn, addr: SocketAddr) {
++        {
++            let mut tcp_punch = self.tcp_punch.lock().await;
++            let addr = try_into_v4(addr);
++            if tcp_punch
++                .get(&addr)
++                .map_or(false, |tx| tx.same_channel(&conn.tx))
++            {
++                tcp_punch.remove(&addr);
++            }
++        }
++        if let Some(id) = &conn.peer_id {
++            self.detach_tcp_peer(id, &conn.tx).await;
++        }
++    }
++
++    async fn detach_tcp_peer(&self, id: &str, tx: &ConnTx) {
++        if let Some(peer) = self.pm.get_in_memory(id).await {
++            let mut peer = peer.write().await;
++            if peer
++                .tcp_tx
++                .as_ref()
++                .map_or(false, |peer_tx| peer_tx.same_channel(tx))
++            {
++                peer.tcp_tx = None;
++                // its signaling channel is gone: offline until it registers again
++                peer.last_reg_time = get_expired_time();
++            }
++        }
++    }
++
++    /// Validates and stores a peer's public key. `None` for a request without uuid or pk, which
++    /// gets no reply.
++    async fn handle_register_pk(
++        &mut self,
++        rk: RegisterPk,
++        addr: SocketAddr,
++    ) -> Option<register_pk_response::Result> {
++        if rk.uuid.is_empty() || rk.pk.is_empty() {
++            return None;
++        }
++        let id = rk.id;
++        let ip = addr.ip().to_string();
++        if id.len() < 6 {
++            return Some(UUID_MISMATCH);
++        } else if !self.check_ip_blocker(&ip, &id).await {
++            return Some(TOO_FREQUENT);
++        }
++        let peer = self.pm.get_or(&id).await;
++        let (changed, ip_changed) = {
++            let peer = peer.read().await;
++            if peer.uuid.is_empty() {
++                (true, false)
++            } else {
++                if peer.uuid == rk.uuid {
++                    if peer.info.ip != ip && peer.pk != rk.pk {
++                        log::warn!(
++                            "Peer {} ip/pk mismatch: {}/{:?} vs {}/{:?}",
++                            id,
++                            ip,
++                            rk.pk,
++                            peer.info.ip,
++                            peer.pk,
++                        );
++                        drop(peer);
++                        return Some(UUID_MISMATCH);
++                    }
++                } else {
++                    log::warn!(
++                        "Peer {} uuid mismatch: {:?} vs {:?}",
++                        id,
++                        rk.uuid,
++                        peer.uuid
++                    );
++                    drop(peer);
++                    return Some(UUID_MISMATCH);
++                }
++                let ip_changed = peer.info.ip != ip;
++                (
++                    peer.uuid != rk.uuid || peer.pk != rk.pk || ip_changed,
++                    ip_changed,
++                )
++            }
++        };
++        let mut req_pk = peer.read().await.reg_pk;
++        if req_pk.1.elapsed().as_secs() > 6 {
++            req_pk.0 = 0;
++        } else if req_pk.0 > 2 {
++            return Some(TOO_FREQUENT);
++        }
++        req_pk.0 += 1;
++        req_pk.1 = Instant::now();
++        peer.write().await.reg_pk = req_pk;
++        if ip_changed {
++            let mut lock = IP_CHANGES.lock().await;
++            if let Some((tm, ips)) = lock.get_mut(&id) {
++                if tm.elapsed().as_secs() > IP_CHANGE_DUR {
++                    *tm = Instant::now();
++                    ips.clear();
++                    ips.insert(ip.clone(), 1);
++                } else if let Some(v) = ips.get_mut(&ip) {
++                    *v += 1;
++                } else {
++                    ips.insert(ip.clone(), 1);
++                }
++            } else {
++                lock.insert(
++                    id.clone(),
++                    (Instant::now(), HashMap::from([(ip.clone(), 1)])),
++                );
++            }
++        }
++        if changed {
++            self.pm.update_pk(id, peer, addr, rk.uuid, rk.pk, ip).await;
++        }
++        Some(register_pk_response::Result::OK)
++    }
++
+     #[inline]
+     async fn get_pk(&mut self, version: &str, id: String) -> Bytes {
+         if version.is_empty() || self.inner.sk.is_none() {
+diff --git a/tests/tcp_signaling.rs b/tests/tcp_signaling.rs
+new file mode 100644
+index 0000000..4dc58c4
+--- /dev/null
++++ b/tests/tcp_signaling.rs
+@@ -0,0 +1,440 @@
++//! The rendezvous protocol over WebSocket, as RustDesk clients speak it with `allow-websocket`
++//! behind firewalls that only let HTTPS out: a peer registers on a kept connection and stays
++//! online through heartbeats, punch hole requests are pushed to it over that connection, and
++//! WebRTC offers, answers and ICE candidates pass between the two sides.
++
++use hbb_common::{
++    futures_util::{SinkExt, StreamExt},
++    protobuf::Message as _,
++    rendezvous_proto::*,
++    tokio::{
++        self,
++        net::{TcpStream, UdpSocket},
++        time::{sleep, timeout, Duration},
++    },
++    AddrMangle,
++};
++use sodiumoxide::crypto::sign;
++use std::{
++    net::SocketAddr,
++    path::PathBuf,
++    process::{Child, Command},
++};
++use tokio_tungstenite::{
++    tungstenite::{client::IntoClientRequest, http::HeaderValue, Message as WsMessage},
++    MaybeTlsStream, WebSocketStream,
++};
++
++const PEER_ID: &str = "123456789";
++const PEER_PK: [u8; 32] = [7; 32];
++const HEARTBEAT_WAIT: Duration = Duration::from_secs(12);
++
++struct Hbbs {
++    child: Child,
++    dir: PathBuf,
++    port: u16,
++    key: String,
++}
++
++impl Hbbs {
++    fn start(name: &str) -> Self {
++        let dir = std::env::temp_dir().join(format!("hbbs-{name}-{}", std::process::id()));
++        std::fs::remove_dir_all(&dir).ok();
++        std::fs::create_dir_all(&dir).expect("create the server's working directory");
++        let port = free_base_port();
++        let log = std::fs::File::create(dir.join("hbbs.log")).expect("create the server log");
++        let child = Command::new(env!("CARGO_BIN_EXE_hbbs"))
++            .args(["-p", &port.to_string()])
++            .current_dir(&dir)
++            // hbbs reads its options from the environment first
++            .env_clear()
++            .env("TEST_HBBS", "no")
++            .env("RUST_LOG", "debug")
++            .stdout(log.try_clone().expect("share the server log"))
++            .stderr(log)
++            .spawn()
++            .expect("start hbbs");
++        let mut server = Self {
++            child,
++            dir,
++            port,
++            key: String::new(),
++        };
++        for _ in 0..100 {
++            if std::net::TcpStream::connect(("127.0.0.1", server.ws_port())).is_ok() {
++                server.key = std::fs::read_to_string(server.dir.join("id_ed25519.pub"))
++                    .expect("hbbs writes its public key before it listens");
++                return server;
++            }
++            std::thread::sleep(std::time::Duration::from_millis(100));
++        }
++        panic!("hbbs did not start listening");
++    }
++
++    fn ws_port(&self) -> u16 {
++        self.port + 2
++    }
++
++    fn public_key(&self) -> sign::PublicKey {
++        let bytes = base64::decode(&self.key).expect("base64 public key");
++        sign::PublicKey::from_slice(&bytes).expect("ed25519 public key")
++    }
++}
++
++impl Drop for Hbbs {
++    fn drop(&mut self) {
++        self.child.kill().ok();
++        self.child.wait().ok();
++        if std::thread::panicking() {
++            let log = std::fs::read_to_string(self.dir.join("hbbs.log")).unwrap_or_default();
++            eprintln!("---- hbbs log ----\n{log}");
++        }
++        std::fs::remove_dir_all(&self.dir).ok();
++    }
++}
++
++/// A port p with p-1, p and p+2 free for TCP and p for UDP: hbbs listens on all of them.
++fn free_base_port() -> u16 {
++    for _ in 0..100 {
++        let port = std::net::TcpListener::bind("127.0.0.1:0")
++            .and_then(|l| l.local_addr())
++            .expect("pick a free port")
++            .port();
++        if !(1025..=65000).contains(&port) {
++            continue;
++        }
++        let tcp_free = [port - 1, port, port + 2]
++            .iter()
++            .all(|p| std::net::TcpListener::bind(("0.0.0.0", *p)).is_ok());
++        if tcp_free && std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok() {
++            return port;
++        }
++    }
++    panic!("no free port range for hbbs");
++}
++
++/// A client connection to hbbs's WebSocket port, made the way a TLS-terminating reverse proxy
++/// in front of it does, with the client's real address in X-Real-IP / X-Real-Port.
++struct Client {
++    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
++}
++
++impl Client {
++    async fn connect(server: &Hbbs, real_addr: &str) -> Self {
++        let real_addr: SocketAddr = real_addr.parse().expect("client address");
++        let mut request = format!("ws://127.0.0.1:{}/", server.ws_port())
++            .into_client_request()
++            .expect("websocket request");
++        let headers = request.headers_mut();
++        headers.insert(
++            "X-Real-IP",
++            HeaderValue::from_str(&real_addr.ip().to_string()).expect("ip header"),
++        );
++        headers.insert(
++            "X-Real-Port",
++            HeaderValue::from_str(&real_addr.port().to_string()).expect("port header"),
++        );
++        let (ws, _) = tokio_tungstenite::connect_async(request)
++            .await
++            .expect("connect to hbbs");
++        Self { ws }
++    }
++
++    async fn send(&mut self, msg: RendezvousMessage) {
++        let bytes = msg.write_to_bytes().expect("encode");
++        self.ws
++            .send(WsMessage::Binary(bytes))
++            .await
++            .expect("send to hbbs");
++    }
++
++    /// The next frame within `within`, `None` if there is none. Empty frames are heartbeats.
++    async fn frame(&mut self, within: Duration) -> Option<Vec<u8>> {
++        loop {
++            match timeout(within, self.ws.next()).await {
++                Err(_) => return None,
++                Ok(Some(Ok(WsMessage::Binary(bytes)))) => return Some(bytes),
++                Ok(Some(Ok(WsMessage::Close(_)))) | Ok(None) => {
++                    panic!("hbbs closed the connection")
++                }
++                Ok(Some(Ok(_))) => continue,
++                Ok(Some(Err(err))) => panic!("websocket error: {err}"),
++            }
++        }
++    }
++
++    /// The next message, echoing heartbeats on the way like the client does.
++    async fn recv(&mut self) -> rendezvous_message::Union {
++        loop {
++            let bytes = self
++                .frame(Duration::from_secs(5))
++                .await
++                .expect("a message from hbbs within 5s");
++            if bytes.is_empty() {
++                self.ws
++                    .send(WsMessage::Binary(Vec::new()))
++                    .await
++                    .expect("echo the heartbeat");
++                continue;
++            }
++            return RendezvousMessage::parse_from_bytes(&bytes)
++                .expect("decode")
++                .union
++                .expect("a message with a body");
++        }
++    }
++
++    async fn expect_silence(&mut self) {
++        if let Some(bytes) = self.frame(Duration::from_millis(500)).await {
++            panic!(
++                "unexpected message: {:?}",
++                RendezvousMessage::parse_from_bytes(&bytes)
++            );
++        }
++    }
++}
++
++fn register_pk() -> RendezvousMessage {
++    let mut msg = RendezvousMessage::new();
++    msg.set_register_pk(RegisterPk {
++        id: PEER_ID.to_owned(),
++        uuid: b"peer-uuid".to_vec().into(),
++        pk: PEER_PK.to_vec().into(),
++        ..Default::default()
++    });
++    msg
++}
++
++fn punch_hole_request(server: &Hbbs, offer: &str) -> RendezvousMessage {
++    let mut msg = RendezvousMessage::new();
++    msg.set_punch_hole_request(PunchHoleRequest {
++        id: PEER_ID.to_owned(),
++        licence_key: server.key.clone(),
++        version: "1.5.0".to_owned(),
++        force_relay: true,
++        webrtc_sdp_offer: offer.to_owned(),
++        ..Default::default()
++    });
++    msg
++}
++
++fn ice_candidate(ice: IceCandidate) -> RendezvousMessage {
++    let mut msg = RendezvousMessage::new();
++    msg.set_ice_candidate(ice);
++    msg
++}
++
++async fn online_states(server: &Hbbs, peers: &[&str]) -> Vec<u8> {
++    let mut query = Client::connect(server, "198.51.100.7:40100").await;
++    let mut msg = RendezvousMessage::new();
++    msg.set_online_request(OnlineRequest {
++        id: "query".to_owned(),
++        peers: peers.iter().map(|p| p.to_string()).collect(),
++        ..Default::default()
++    });
++    query.send(msg).await;
++    let rendezvous_message::Union::OnlineResponse(res) = query.recv().await else {
++        panic!("expected an online response");
++    };
++    res.states.to_vec()
++}
++
++async fn udp_recv(udp: &UdpSocket) -> rendezvous_message::Union {
++    let mut buf = vec![0u8; 4096];
++    let (n, _) = timeout(Duration::from_secs(5), udp.recv_from(&mut buf))
++        .await
++        .expect("a datagram from hbbs within 5s")
++        .expect("udp receive");
++    RendezvousMessage::parse_from_bytes(&buf[..n])
++        .expect("decode")
++        .union
++        .expect("a message with a body")
++}
++
++fn runtime() -> tokio::runtime::Runtime {
++    tokio::runtime::Builder::new_current_thread()
++        .enable_all()
++        .build()
++        .expect("tokio runtime")
++}
++
++#[test]
++fn peer_registered_over_websocket_receives_signaling() {
++    let server = Hbbs::start("ws-signaling");
++    runtime().block_on(async {
++        // The controlled peer registers on a connection it keeps.
++        let mut peer = Client::connect(&server, "203.0.113.10:40001").await;
++        peer.send(register_pk()).await;
++        let rendezvous_message::Union::RegisterPkResponse(res) = peer.recv().await else {
++            panic!("expected a register pk response");
++        };
++        assert_eq!(res.result.enum_value(), Ok(register_pk_response::Result::OK));
++        assert!(res.keep_alive > 0, "the client needs keep_alive to time out");
++
++        // Online queries arrive on the same WebSocket endpoint.
++        assert_eq!(online_states(&server, &[PEER_ID, "987654321"]).await, vec![0x80]);
++
++        // Two controllers behind one NAT are told apart by their source port.
++        let mut a1 = Client::connect(&server, "198.51.100.20:50001").await;
++        let mut a2 = Client::connect(&server, "198.51.100.20:50002").await;
++        a1.send(punch_hole_request(&server, "offer-1")).await;
++        let rendezvous_message::Union::PunchHole(ph1) = peer.recv().await else {
++            panic!("expected the first punch hole");
++        };
++        assert_eq!(ph1.webrtc_sdp_offer, "offer-1");
++        assert!(ph1.force_relay);
++        assert_eq!(
++            AddrMangle::decode(&ph1.socket_addr),
++            "198.51.100.20:50001".parse::<SocketAddr>().expect("address")
++        );
++        a2.send(punch_hole_request(&server, "offer-2")).await;
++        let rendezvous_message::Union::PunchHole(ph2) = peer.recv().await else {
++            panic!("expected the second punch hole");
++        };
++        assert_eq!(ph2.webrtc_sdp_offer, "offer-2");
++
++        // The controller trickles ICE on its request's connection, addressed by peer id.
++        a1.send(ice_candidate(IceCandidate {
++            id: PEER_ID.to_owned(),
++            session_key: "s1".to_owned(),
++            candidate: "a1-candidate".to_owned(),
++            ..Default::default()
++        }))
++        .await;
++        let rendezvous_message::Union::IceCandidate(ice) = peer.recv().await else {
++            panic!("expected the controller's ICE candidate");
++        };
++        assert_eq!((ice.session_key.as_str(), ice.candidate.as_str()), ("s1", "a1-candidate"));
++
++        // The peer answers each controller on a connection of its own.
++        let mut answer = Client::connect(&server, "203.0.113.10:40002").await;
++        let mut msg = RendezvousMessage::new();
++        msg.set_punch_hole_sent(PunchHoleSent {
++            socket_addr: ph2.socket_addr.clone(),
++            id: PEER_ID.to_owned(),
++            version: "1.5.0".to_owned(),
++            webrtc_sdp_answer: "answer-2".to_owned(),
++            ..Default::default()
++        });
++        answer.send(msg).await;
++        let rendezvous_message::Union::PunchHoleResponse(res) = a2.recv().await else {
++            panic!("expected the punch hole response");
++        };
++        assert_eq!(res.webrtc_sdp_answer, "answer-2");
++        let signed = sign::verify(&res.pk, &server.public_key()).expect("signed by the server");
++        let id_pk = IdPk::parse_from_bytes(&signed).expect("IdPk");
++        assert_eq!((id_pk.id.as_str(), &id_pk.pk[..]), (PEER_ID, &PEER_PK[..]));
++
++        let mut relay = Client::connect(&server, "203.0.113.10:40003").await;
++        let mut rr = RelayResponse {
++            socket_addr: ph1.socket_addr.clone(),
++            uuid: "relay-uuid".to_owned(),
++            relay_server: "relay.example.com".to_owned(),
++            version: "1.5.0".to_owned(),
++            webrtc_sdp_answer: "answer-1".to_owned(),
++            ..Default::default()
++        };
++        rr.set_id(PEER_ID.to_owned());
++        let mut msg = RendezvousMessage::new();
++        msg.set_relay_response(rr);
++        relay.send(msg).await;
++        let rendezvous_message::Union::RelayResponse(res) = a1.recv().await else {
++            panic!("expected the relay response");
++        };
++        assert_eq!(res.webrtc_sdp_answer, "answer-1");
++
++        // The peer's trickle reaches its controller after the answer, several candidates on
++        // one connection, and nobody else.
++        let mut trickle = Client::connect(&server, "203.0.113.10:40004").await;
++        for candidate in ["b-candidate-1", "b-candidate-2"] {
++            trickle
++                .send(ice_candidate(IceCandidate {
++                    socket_addr: ph1.socket_addr.clone(),
++                    session_key: "s1".to_owned(),
++                    candidate: candidate.to_owned(),
++                    ..Default::default()
++                }))
++                .await;
++        }
++        for candidate in ["b-candidate-1", "b-candidate-2"] {
++            let rendezvous_message::Union::IceCandidate(ice) = a1.recv().await else {
++                panic!("expected the peer's ICE candidate");
++            };
++            assert_eq!((ice.session_key.as_str(), ice.candidate.as_str()), ("s1", candidate));
++        }
++        a2.expect_silence().await;
++
++        // Heartbeats keep the registration connection alive.
++        let heartbeat = peer
++            .frame(HEARTBEAT_WAIT)
++            .await
++            .expect("a heartbeat within the heartbeat interval");
++        assert!(heartbeat.is_empty());
++        peer.ws
++            .send(WsMessage::Binary(Vec::new()))
++            .await
++            .expect("echo the heartbeat");
++        assert_eq!(online_states(&server, &[PEER_ID]).await, vec![0x80]);
++
++        // Closing it takes the peer offline at once.
++        peer.ws.close(None).await.expect("close");
++        sleep(Duration::from_millis(300)).await;
++        assert_eq!(online_states(&server, &[PEER_ID]).await, vec![0x00]);
++        let mut a3 = Client::connect(&server, "198.51.100.30:50003").await;
++        a3.send(punch_hole_request(&server, "offer-3")).await;
++        let rendezvous_message::Union::PunchHoleResponse(res) = a3.recv().await else {
++            panic!("expected a punch hole failure");
++        };
++        assert_eq!(
++            res.failure.enum_value(),
++            Ok(punch_hole_response::Failure::OFFLINE)
++        );
++    });
++}
++
++#[test]
++fn peer_registered_over_udp_still_receives_punch_holes_over_udp() {
++    let server = Hbbs::start("udp-signaling");
++    runtime().block_on(async {
++        let udp = UdpSocket::bind("127.0.0.1:0").await.expect("udp socket");
++        let hbbs: SocketAddr = format!("127.0.0.1:{}", server.port)
++            .parse()
++            .expect("address");
++        let mut msg = RendezvousMessage::new();
++        msg.set_register_peer(RegisterPeer {
++            id: PEER_ID.to_owned(),
++            ..Default::default()
++        });
++        let bytes = msg.write_to_bytes().expect("encode");
++        udp.send_to(&bytes, hbbs).await.expect("register peer");
++        let rendezvous_message::Union::RegisterPeerResponse(res) = udp_recv(&udp).await else {
++            panic!("expected a register peer response");
++        };
++        assert!(res.request_pk);
++        let bytes = register_pk().write_to_bytes().expect("encode");
++        udp.send_to(&bytes, hbbs).await.expect("register pk");
++        let rendezvous_message::Union::RegisterPkResponse(res) = udp_recv(&udp).await else {
++            panic!("expected a register pk response");
++        };
++        assert_eq!(res.result.enum_value(), Ok(register_pk_response::Result::OK));
++        // the UDP registration completes with the next register peer, as the client sends them
++        let mut msg = RendezvousMessage::new();
++        msg.set_register_peer(RegisterPeer {
++            id: PEER_ID.to_owned(),
++            ..Default::default()
++        });
++        let bytes = msg.write_to_bytes().expect("encode");
++        udp.send_to(&bytes, hbbs).await.expect("register peer");
++        let rendezvous_message::Union::RegisterPeerResponse(res) = udp_recv(&udp).await else {
++            panic!("expected a register peer response");
++        };
++        assert!(!res.request_pk);
++
++        let mut a = Client::connect(&server, "198.51.100.20:50001").await;
++        a.send(punch_hole_request(&server, "offer-udp")).await;
++        let rendezvous_message::Union::PunchHole(ph) = udp_recv(&udp).await else {
++            panic!("expected the punch hole over udp");
++        };
++        assert_eq!(ph.webrtc_sdp_offer, "offer-udp");
++    });
++}

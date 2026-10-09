@@ -1,0 +1,191 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sat, 10 Oct 2026 05:48:00 +0900
+Subject: [PATCH] WebSocket: connect through the configured HTTP or SOCKS5
+ proxy
+
+WsFramedStream ignored the proxy setting (`to-do: websocket proxy`), so a
+client in WebSocket mode could not reach its server from networks where
+traffic may only leave through a proxy, the networks WebSocket mode is
+for. With a proxy configured, open an HTTP CONNECT or SOCKS5 tunnel to the
+server first, using the existing Proxy code, and run TLS and the WebSocket
+handshake over it. HTTPS proxies are not supported yet and fail with an
+explicit error; without a proxy the connection is made as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/websocket.rs | 132 ++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 130 insertions(+), 2 deletions(-)
+
+diff --git a/src/websocket.rs b/src/websocket.rs
+index 6c50625..626d4bd 100644
+--- a/src/websocket.rs
++++ b/src/websocket.rs
+@@ -3,6 +3,7 @@ use crate::{
+         keys::OPTION_RELAY_SERVER, use_ws, Config, Socks5Server, RELAY_PORT, RENDEZVOUS_PORT,
+     },
+     protobuf::Message,
++    proxy::{Proxy, ProxyScheme},
+     socket_client::split_host_port,
+     sodiumoxide::crypto::secretbox::Key,
+     tcp::{Encrypt, KxTranscript},
+@@ -21,8 +22,10 @@ use std::{
+ };
+ use tokio::{net::TcpStream, time::timeout};
+ use tokio_native_tls::native_tls::TlsConnector;
++use tokio_socks::{tcp::Socks5Stream, TargetAddr};
+ use tokio_tungstenite::{
+-    connect_async_tls_with_config, tungstenite::protocol::Message as WsMessage, Connector,
++    client_async_tls_with_config, connect_async_tls_with_config,
++    tungstenite::protocol::Message as WsMessage, Connector,
+     MaybeTlsStream, WebSocketStream,
+ };
+ use tungstenite::client::IntoClientRequest;
+@@ -109,7 +112,7 @@ impl WsFramedStream {
+             Self::get_connector(&tls_type, danger_accept_invalid_cert.unwrap_or(false))?;
+         match timeout(
+             Duration::from_millis(ms_timeout),
+-            connect_async_tls_with_config(request, ws_config, disable_nagle, connector),
++            Self::connect_maybe_proxied(request, ws_config, disable_nagle, connector),
+         )
+         .await?
+         {
+@@ -187,6 +190,65 @@ impl WsFramedStream {
+         }
+     }
+ 
++    /// `connect_async_tls_with_config`, but through the configured HTTP or SOCKS5 proxy if there
++    /// is one: where traffic may only leave through a proxy, that is the only way to the server.
++    async fn connect_maybe_proxied(
++        request: tungstenite::handshake::client::Request,
++        ws_config: Option<tungstenite::protocol::WebSocketConfig>,
++        disable_nagle: bool,
++        connector: Option<Connector>,
++    ) -> Result<
++        (
++            WebSocketStream<MaybeTlsStream<TcpStream>>,
++            tungstenite::handshake::client::Response,
++        ),
++        tungstenite::Error,
++    > {
++        let Some(conf) = Config::get_socks() else {
++            return connect_async_tls_with_config(request, ws_config, disable_nagle, connector)
++                .await;
++        };
++        let stream = Self::proxy_tunnel(&conf, request.uri())
++            .await
++            .map_err(|e| tungstenite::Error::Io(Error::new(ErrorKind::Other, e.to_string())))?;
++        stream.set_nodelay(disable_nagle).ok();
++        client_async_tls_with_config(request, stream, ws_config, connector).await
++    }
++
++    async fn proxy_tunnel(
++        conf: &Socks5Server,
++        uri: &tungstenite::http::Uri,
++    ) -> ResultType<TcpStream> {
++        let Some(host) = uri.host() else {
++            bail!("WebSocket URL without a host: {}", uri);
++        };
++        let port = uri
++            .port_u16()
++            .unwrap_or(if uri.scheme_str() == Some("wss") { 443 } else { 80 });
++        let target = TargetAddr::Domain(host.into(), port);
++        let proxy = Proxy::from_conf(conf, None)?;
++        let stream = TcpStream::connect(proxy.proxy_addrs().await?).await?;
++        Ok(match &proxy.intercept {
++            ProxyScheme::Http { .. } => proxy.http_connect(stream, &target).await?.into_inner(),
++            ProxyScheme::Socks5 { .. } => match proxy.intercept.maybe_auth() {
++                Some(auth) => Socks5Stream::connect_with_password_and_socket(
++                    stream,
++                    target,
++                    auth.username(),
++                    auth.password(),
++                )
++                .await?
++                .into_inner(),
++                None => Socks5Stream::connect_with_socket(stream, target)
++                    .await?
++                    .into_inner(),
++            },
++            ProxyScheme::Https { .. } => {
++                bail!("WebSocket through an HTTPS proxy is not supported")
++            }
++        })
++    }
++
+     pub async fn new<T: AsRef<str>>(
+         url: T,
+         _local_addr: Option<SocketAddr>,
+@@ -440,6 +502,72 @@ mod tests {
+     use crate::config::{keys, Config};
+     use tokio::{io::AsyncWriteExt, net::TcpListener};
+ 
++    #[tokio::test(flavor = "current_thread")]
++    async fn websocket_connects_through_the_configured_http_proxy() {
++        use crate::config::OVERWRITE_SETTINGS;
++        use tokio::io::AsyncReadExt;
++
++        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let server_addr = server.local_addr().unwrap();
++        tokio::spawn(async move {
++            let (tcp, _) = server.accept().await.unwrap();
++            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
++            while let Some(Ok(msg)) = ws.next().await {
++                if msg.is_binary() {
++                    ws.send(msg).await.unwrap();
++                }
++            }
++        });
++        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let proxy_addr = proxy.local_addr().unwrap();
++        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
++        tokio::spawn(async move {
++            let (mut client, _) = proxy.accept().await.unwrap();
++            let mut head = Vec::new();
++            while !head.ends_with(b"\r\n\r\n") {
++                head.push(client.read_u8().await.unwrap());
++            }
++            let head = String::from_utf8(head).unwrap();
++            let target = head.split_whitespace().nth(1).unwrap().to_owned();
++            let mut upstream = TcpStream::connect(target).await.unwrap();
++            client
++                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
++                .await
++                .unwrap();
++            request_tx.send(head).ok();
++            tokio::io::copy_bidirectional(&mut client, &mut upstream)
++                .await
++                .ok();
++        });
++
++        OVERWRITE_SETTINGS
++            .write()
++            .unwrap()
++            .insert(keys::OPTION_PROXY_URL.to_owned(), format!("http://{proxy_addr}"));
++        let stream = WsFramedStream::new(format!("ws://{server_addr}"), None, None, 5000).await;
++        OVERWRITE_SETTINGS
++            .write()
++            .unwrap()
++            .remove(keys::OPTION_PROXY_URL);
++        let mut stream = stream.unwrap();
++
++        let head = timeout(Duration::from_secs(5), request_rx)
++            .await
++            .expect("the connection did not go through the proxy")
++            .unwrap();
++        assert!(
++            head.starts_with(&format!("CONNECT {} HTTP/1.1\r\n", server_addr)),
++            "{}",
++            head
++        );
++        stream
++            .send_bytes(Bytes::from_static(b"through the proxy"))
++            .await
++            .unwrap();
++        let echoed = stream.next().await.unwrap().unwrap();
++        assert_eq!(&echoed[..], b"through the proxy");
++    }
++
+     #[tokio::test(flavor = "current_thread")]
+     async fn test_secured_stream_rejects_plaintext_text() {
+         sodiumoxide::init().expect("failed to initialize sodiumoxide");

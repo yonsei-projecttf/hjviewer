@@ -1,0 +1,328 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sat, 10 Oct 2026 06:16:31 +0900
+Subject: [PATCH 2/2] hjviewer: headless end-to-end test commands behind the
+ hjv-e2e feature
+
+With --features hjv-e2e (never in release builds) the app takes:
+  --hjv-e2e-set-password <password>      set the permanent password, print the ID
+  --hjv-e2e-forward <id> <password> <local port> <remote host> <remote port>
+  --hjv-e2e-screenshot <id> <password> <out.ppm>
+The controlling side logs in through the configured server like the UI
+does, through the client's own Interface helpers, and reports whether the
+session went direct (WebRTC) or through the relay. tools/e2e/firewall-e2e.sh
+in hjviewer drives them across network namespaces whose firewalls only let
+HTTPS to the server out.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.toml          |   2 +
+ src/core_main.rs    |   4 +
+ src/hjviewer_e2e.rs | 256 ++++++++++++++++++++++++++++++++++++++++++++
+ src/lib.rs          |   2 +
+ 4 files changed, 264 insertions(+)
+ create mode 100644 src/hjviewer_e2e.rs
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 84ea47c..ee15720 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -46,6 +46,8 @@ unix-file-copy-paste = [
+     "clipboard/unix-file-copy-paste",
+ ]
+ screencapturekit = ["cpal/screencapturekit"]
++# headless end-to-end test commands (src/hjviewer_e2e.rs); never in release builds
++hjv-e2e = []
+ 
+ # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+ 
+diff --git a/src/core_main.rs b/src/core_main.rs
+index b5a451e..609b575 100644
+--- a/src/core_main.rs
++++ b/src/core_main.rs
+@@ -80,6 +80,10 @@ pub fn core_main() -> Option<Vec<String>> {
+         }
+         i += 1;
+     }
++    #[cfg(feature = "hjv-e2e")]
++    if crate::hjviewer_e2e::handle_args(&args) {
++        return None;
++    }
+     #[cfg(any(target_os = "linux", target_os = "windows"))]
+     if args.is_empty() {
+         #[cfg(target_os = "linux")]
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+new file mode 100644
+index 0000000..73faf6e
+--- /dev/null
++++ b/src/hjviewer_e2e.rs
+@@ -0,0 +1,256 @@
++//! Headless end-to-end check, compiled only with the `hjv-e2e` feature. The controlled side gets a
++//! known password; the controlling side logs in to it through the configured server and forwards a
++//! local TCP port to a host:port on the controlled side, so a test can push data through the whole
++//! path a session takes: rendezvous, relay or WebRTC, and the encrypted, authenticated session.
++//!
++//!     <app> --hjv-e2e-set-password <password>     (prints the device ID)
++//!     <app> --hjv-e2e-forward <id> <password> <local port> <remote host> <remote port>
++//!     <app> --hjv-e2e-screenshot <id> <password> <out.ppm>   (first screen of a desktop session)
++
++use crate::client::{
++    handle_hash, handle_login_error, handle_login_from_ui, handle_test_delay, Client, Data,
++    Interface, LoginConfigHandler, VideoHandler,
++};
++use async_trait::async_trait;
++use base::message_proto::{
++    login_response, message, Hash, Message, Misc, PeerInfo, TestDelay, WindowsSession,
++};
++use hbb_common::{
++    config::{Config, LocalConfig},
++    protobuf::Message as _,
++    rendezvous_proto::ConnType,
++    timeout,
++    tokio::{self, sync::mpsc},
++    Stream,
++};
++use scrap::{CodecFormat, ImageFormat, ImageRgb};
++use std::sync::{Arc, RwLock};
++
++/// Handles the `--hjv-e2e-*` commands; false for any other arguments.
++pub fn handle_args(args: &[String]) -> bool {
++    match args {
++        [cmd, password] if cmd == "--hjv-e2e-set-password" => {
++            if !Config::set_permanent_password(password) {
++                eprintln!("hjv-e2e: could not set the password");
++            }
++            println!("{}", Config::get_id());
++            true
++        }
++        [cmd, id, password, local_port, remote_host, remote_port] if cmd == "--hjv-e2e-forward" => {
++            match (local_port.parse(), remote_port.parse()) {
++                (Ok(local_port), Ok(remote_port)) => forward(
++                    id.to_owned(),
++                    password.to_owned(),
++                    local_port,
++                    remote_host.to_owned(),
++                    remote_port,
++                ),
++                _ => eprintln!("hjv-e2e: ports must be numbers"),
++            }
++            true
++        }
++        [cmd, id, password, out] if cmd == "--hjv-e2e-screenshot" => {
++            screenshot(id.to_owned(), password.to_owned(), out.to_owned());
++            true
++        }
++        _ => false,
++    }
++}
++
++fn session(id: &str, conn_type: ConnType) -> (Headless, mpsc::UnboundedReceiver<Data>) {
++    let lc = Arc::new(RwLock::new(LoginConfigHandler::default()));
++    lc.write()
++        .unwrap()
++        .initialize(id.to_owned(), conn_type, None, false, None, None, None);
++    let (sender, receiver) = mpsc::unbounded_channel();
++    (Headless { lc, sender }, receiver)
++}
++
++/// Logs in for a remote desktop session and writes the first decoded screen to `out`.
++#[tokio::main]
++async fn screenshot(id: String, password: String, out: String) {
++    let (interface, _receiver) = session(&id, ConnType::DEFAULT_CONN);
++    let key = crate::get_key(true).await;
++    let token = LocalConfig::get_option("access_token");
++    let ((mut stream, direct, _pk, _kcp, typ), _) =
++        match Client::start(&id, &key, &token, ConnType::DEFAULT_CONN, interface.clone()).await {
++            Ok(res) => res,
++            Err(err) => {
++                eprintln!("hjv-e2e: {err}");
++                return;
++            }
++        };
++    interface.update_direct(Some(direct));
++    println!("hjv-e2e: connected over {typ}");
++    let mut video: Option<VideoHandler> = None;
++    loop {
++        let bytes = match timeout(30_000, stream.next()).await {
++            Ok(Some(Ok(bytes))) => bytes,
++            _ => {
++                eprintln!("hjv-e2e: the session ended before a screen arrived");
++                return;
++            }
++        };
++        let Ok(msg) = Message::parse_from_bytes(&bytes) else {
++            continue;
++        };
++        match msg.union {
++            Some(message::Union::Hash(hash)) => {
++                interface.handle_hash(&password, hash, &mut stream).await;
++            }
++            Some(message::Union::LoginResponse(res)) => match res.union {
++                Some(login_response::Union::Error(err)) => {
++                    interface.handle_login_error(&err);
++                    return;
++                }
++                Some(login_response::Union::PeerInfo(pi)) => {
++                    interface.handle_peer_info(pi);
++                    let mut misc = Misc::new();
++                    misc.set_refresh_video(true);
++                    let mut msg = Message::new();
++                    msg.set_misc(misc);
++                    stream.send(&msg).await.ok();
++                }
++                _ => {}
++            },
++            Some(message::Union::VideoFrame(vf)) => {
++                let handler = video
++                    .get_or_insert_with(|| VideoHandler::new(CodecFormat::from(&vf), vf.display as _));
++                let mut pixelbuffer = true;
++                let mut chroma = None;
++                if let Ok(true) = handler.handle_frame(vf, &mut pixelbuffer, &mut chroma) {
++                    match write_ppm(&handler.rgb, &out) {
++                        Ok(()) => println!(
++                            "hjv-e2e: screen {}x{} written to {out}",
++                            handler.rgb.w, handler.rgb.h
++                        ),
++                        Err(err) => eprintln!("hjv-e2e: {out}: {err}"),
++                    }
++                    return;
++                }
++            }
++            Some(message::Union::TestDelay(t)) => {
++                interface.handle_test_delay(t, &mut stream).await;
++            }
++            _ => {}
++        }
++    }
++}
++
++fn write_ppm(rgb: &ImageRgb, path: &str) -> std::io::Result<()> {
++    let (w, h) = (rgb.w, rgb.h);
++    let stride = if h > 0 { rgb.raw.len() / h } else { 0 };
++    let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
++    for y in 0..h {
++        for x in 0..w {
++            let Some(p) = rgb.raw.get(y * stride + x * 4..y * stride + x * 4 + 4) else {
++                return Err(std::io::Error::other("short frame buffer"));
++            };
++            match rgb.fmt {
++                // byte order R G B A
++                ImageFormat::ABGR => out.extend_from_slice(&p[..3]),
++                // byte order B G R A
++                _ => out.extend_from_slice(&[p[2], p[1], p[0]]),
++            }
++        }
++    }
++    std::fs::write(path, out)
++}
++
++#[tokio::main]
++async fn forward(id: String, password: String, local_port: i32, remote_host: String, remote_port: i32) {
++    let (interface, receiver) = session(&id, ConnType::PORT_FORWARD);
++    let lc = interface.lc.clone();
++    let key = crate::get_key(true).await;
++    let token = LocalConfig::get_option("access_token");
++    println!("hjv-e2e: forwarding 127.0.0.1:{local_port} to {remote_host}:{remote_port} on {id}");
++    if let Err(err) = crate::port_forward::listen(
++        id,
++        password,
++        local_port,
++        interface,
++        receiver,
++        &key,
++        &token,
++        lc,
++        remote_host,
++        remote_port,
++    )
++    .await
++    {
++        eprintln!("hjv-e2e: {err}");
++    }
++}
++
++#[derive(Clone)]
++struct Headless {
++    lc: Arc<RwLock<LoginConfigHandler>>,
++    sender: mpsc::UnboundedSender<Data>,
++}
++
++#[async_trait]
++impl Interface for Headless {
++    fn send(&self, data: Data) {
++        self.sender.send(data).ok();
++    }
++
++    fn msgbox(&self, msgtype: &str, title: &str, text: &str, _link: &str) {
++        println!("hjv-e2e: {msgtype}: {title}: {text}");
++    }
++
++    fn handle_login_error(&self, err: &str) -> bool {
++        println!("hjv-e2e: login error: {err}");
++        handle_login_error(self.lc.clone(), err, self)
++    }
++
++    fn handle_peer_info(&self, pi: PeerInfo) {
++        println!(
++            "hjv-e2e: logged in to {} ({} {})",
++            pi.hostname, pi.platform, pi.version
++        );
++        self.lc.write().unwrap().handle_peer_info(&pi);
++    }
++
++    fn set_multiple_windows_session(&self, _sessions: Vec<WindowsSession>) {}
++
++    async fn handle_hash(&self, pass: &str, hash: Hash, peer: &mut Stream) -> bool {
++        handle_hash(self.lc.clone(), pass, hash, self, peer).await
++    }
++
++    async fn handle_login_from_ui(
++        &self,
++        os_username: String,
++        os_password: String,
++        password: String,
++        remember: bool,
++        peer: &mut Stream,
++    ) {
++        handle_login_from_ui(
++            self.lc.clone(),
++            os_username,
++            os_password,
++            password,
++            remember,
++            peer,
++        )
++        .await;
++    }
++
++    async fn handle_test_delay(&self, t: TestDelay, peer: &mut Stream) {
++        handle_test_delay(t, peer).await;
++    }
++
++    fn get_lch(&self) -> Arc<RwLock<LoginConfigHandler>> {
++        self.lc.clone()
++    }
++
++    fn update_direct(&self, direct: Option<bool>) {
++        if let Some(direct) = direct {
++            println!(
++                "hjv-e2e: transport: {}",
++                if direct { "direct (P2P)" } else { "relay" }
++            );
++        }
++        self.lc.write().unwrap().direct = direct;
++    }
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index 4e098a6..926078c 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -45,6 +45,8 @@ mod clipboard;
+ pub mod core_main;
+ mod custom_server;
+ mod hjviewer;
++#[cfg(feature = "hjv-e2e")]
++mod hjviewer_e2e;
+ mod lang;
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ mod port_forward;

@@ -1,0 +1,14 @@
+[package]
+name = "hjv-probe"
+version = "0.1.0"
+edition = "2021"
+description = "Checks from a client's network that the hjviewer server is reachable the way clients reach it"
+publish = false
+
+[dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+native-tls = "0.2"
+tokio = { version = "1", features = ["macros", "net", "rt", "time"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+
+[workspace]

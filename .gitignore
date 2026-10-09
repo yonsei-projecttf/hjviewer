@@ -1,0 +1,7 @@
+# upstream working copies (recreated by scripts/fetch-upstream.sh)
+/upstream/
+/build/
+target/
+*.log
+.env
+deploy/data/

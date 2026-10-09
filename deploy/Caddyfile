@@ -1,0 +1,27 @@
+# The only public entry point: HTTPS on 443 (80 just for the ACME challenge and redirects).
+# Clients reach hbbs at wss://<domain>/ws/id and hbbr at wss://<domain>/ws/relay; the hbbs/hbbr
+# ports stay inside the compose network.
+{$HJV_DOMAIN} {
+	handle /ws/id {
+		reverse_proxy {$HJV_HBBS_WS:hbbs:21118} {
+			# hbbs trusts these to tell clients apart, so only this proxy may reach its port
+			header_up X-Real-IP {remote_host}
+			header_up X-Real-Port {remote_port}
+		}
+	}
+	handle /ws/relay {
+		reverse_proxy {$HJV_HBBR_WS:hbbr:21119} {
+			header_up X-Real-IP {remote_host}
+			header_up X-Real-Port {remote_port}
+		}
+	}
+	# Clients also call the API server, https://<domain>/api/... The open-source server has
+	# none, so answer at once instead of letting them time out. An hjviewer account/device API
+	# would go here.
+	handle /api/* {
+		respond 404
+	}
+	handle {
+		respond "hjviewer" 200
+	}
+}

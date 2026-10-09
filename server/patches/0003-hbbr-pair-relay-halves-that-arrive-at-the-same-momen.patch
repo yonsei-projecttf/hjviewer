@@ -1,0 +1,180 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sat, 10 Oct 2026 06:12:58 +0900
+Subject: [PATCH 3/3] hbbr: pair relay halves that arrive at the same moment
+
+make_pair_ looked for the other half under one lock and parked the
+incoming one under another. Two halves of a session arriving together, as
+both sides connect right after the rendezvous, could both miss each other:
+the second insert then replaced the first, whose connection was dropped,
+and the session failed after a 30s wait. Found by the firewall end-to-end
+test, where the halves arrived 15us apart. Look and park under one lock.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/relay_server.rs    |   9 ++-
+ tests/relay_pairing.rs | 127 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 134 insertions(+), 2 deletions(-)
+ create mode 100644 tests/relay_pairing.rs
+
+diff --git a/src/relay_server.rs b/src/relay_server.rs
+index de1a7ea..65f04d9 100644
+--- a/src/relay_server.rs
++++ b/src/relay_server.rs
+@@ -468,8 +468,12 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
+                     return;
+                 }
+                 if !rf.uuid.is_empty() {
+-                    let mut peer = PEERS.lock().await.remove(&rf.uuid);
++                    // Look for the other half and park this one under one lock: two halves
++                    // arriving together otherwise both miss each other and the pair never forms.
++                    let mut peers = PEERS.lock().await;
++                    let mut peer = peers.remove(&rf.uuid);
+                     if let Some(peer) = peer.as_mut() {
++                        drop(peers);
+                         log::info!("Relayrequest {} from {} got paired", rf.uuid, addr);
+                         let id = format!("{}:{}", addr.ip(), addr.port());
+                         USAGE.write().await.insert(id.clone(), Default::default());
+@@ -487,7 +491,8 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
+                         USAGE.write().await.remove(&id);
+                     } else {
+                         log::info!("New relay request {} from {}", rf.uuid, addr);
+-                        PEERS.lock().await.insert(rf.uuid.clone(), Box::new(stream));
++                        peers.insert(rf.uuid.clone(), Box::new(stream));
++                        drop(peers);
+                         sleep(30.).await;
+                         PEERS.lock().await.remove(&rf.uuid);
+                     }
+diff --git a/tests/relay_pairing.rs b/tests/relay_pairing.rs
+new file mode 100644
+index 0000000..556f16a
+--- /dev/null
++++ b/tests/relay_pairing.rs
+@@ -0,0 +1,127 @@
++//! hbbr pairs the two halves of a relay by uuid, also when they arrive at the same moment, as
++//! they do when both sides of a session connect to the relay right after the rendezvous.
++
++use hbb_common::{
++    futures_util::{SinkExt, StreamExt},
++    protobuf::Message as _,
++    rendezvous_proto::*,
++    tokio::{
++        self,
++        net::TcpStream,
++        time::{timeout, Duration},
++    },
++};
++use std::{
++    path::PathBuf,
++    process::{Child, Command},
++};
++use tokio_tungstenite::{tungstenite::Message as WsMessage, MaybeTlsStream, WebSocketStream};
++
++type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
++
++struct Hbbr {
++    child: Child,
++    dir: PathBuf,
++    port: u16,
++}
++
++impl Hbbr {
++    fn start() -> Self {
++        let dir = std::env::temp_dir().join(format!("hbbr-pairing-{}", std::process::id()));
++        std::fs::remove_dir_all(&dir).ok();
++        std::fs::create_dir_all(&dir).expect("create the relay's working directory");
++        let port = free_port_pair();
++        let log = std::fs::File::create(dir.join("hbbr.log")).expect("create the relay log");
++        let child = Command::new(env!("CARGO_BIN_EXE_hbbr"))
++            .args(["-p", &port.to_string()])
++            .current_dir(&dir)
++            .env_clear()
++            .stdout(log.try_clone().expect("share the relay log"))
++            .stderr(log)
++            .spawn()
++            .expect("start hbbr");
++        let server = Self { child, dir, port };
++        for _ in 0..100 {
++            if std::net::TcpStream::connect(("127.0.0.1", server.port + 2)).is_ok() {
++                return server;
++            }
++            std::thread::sleep(std::time::Duration::from_millis(100));
++        }
++        panic!("hbbr did not start listening");
++    }
++}
++
++impl Drop for Hbbr {
++    fn drop(&mut self) {
++        self.child.kill().ok();
++        self.child.wait().ok();
++        if std::thread::panicking() {
++            let log = std::fs::read_to_string(self.dir.join("hbbr.log")).unwrap_or_default();
++            eprintln!("---- hbbr log ----\n{log}");
++        }
++        std::fs::remove_dir_all(&self.dir).ok();
++    }
++}
++
++/// A port p with p and p+2 free: hbbr listens on p (TCP) and p+2 (WebSocket).
++fn free_port_pair() -> u16 {
++    for _ in 0..100 {
++        let port = std::net::TcpListener::bind("127.0.0.1:0")
++            .and_then(|l| l.local_addr())
++            .expect("pick a free port")
++            .port();
++        if port > 65000 {
++            continue;
++        }
++        if [port, port + 2]
++            .iter()
++            .all(|p| std::net::TcpListener::bind(("0.0.0.0", *p)).is_ok())
++        {
++            return port;
++        }
++    }
++    panic!("no free port pair for hbbr");
++}
++
++/// One side of a session asking the relay for `uuid`.
++async fn half(port: u16, uuid: String) -> Ws {
++    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/", port + 2))
++        .await
++        .expect("connect to hbbr");
++    let mut msg = RendezvousMessage::new();
++    msg.set_request_relay(RequestRelay {
++        uuid,
++        ..Default::default()
++    });
++    ws.send(WsMessage::Binary(msg.write_to_bytes().expect("encode")))
++        .await
++        .expect("send the relay request");
++    ws
++}
++
++#[test]
++fn halves_arriving_together_are_paired() {
++    let relay = Hbbr::start();
++    tokio::runtime::Builder::new_multi_thread()
++        .enable_all()
++        .build()
++        .expect("tokio runtime")
++        .block_on(async {
++            for i in 0..100 {
++                let uuid = format!("pair-{i}");
++                let (a, b) = tokio::join!(
++                    tokio::spawn(half(relay.port, uuid.clone())),
++                    tokio::spawn(half(relay.port, uuid.clone()))
++                );
++                let (mut a, mut b) = (a.expect("first half"), b.expect("second half"));
++                a.send(WsMessage::Binary(b"ping".to_vec()))
++                    .await
++                    .expect("send through the relay");
++                let got = timeout(Duration::from_secs(3), b.next()).await;
++                assert!(
++                    matches!(&got, Ok(Some(Ok(WsMessage::Binary(p)))) if p == b"ping"),
++                    "pair {i} was not relayed: {got:?}"
++                );
++            }
++        });
++}

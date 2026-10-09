@@ -1,0 +1,47 @@
+# hjviewer server: Caddy terminates TLS on 443 and proxies WebSocket to hbbs (rendezvous) and
+# hbbr (relay). Only 80/443 are published.
+#   cp .env.example .env   # set HJV_DOMAIN
+#   docker compose up -d --build
+#   cat data/id_ed25519.pub # the key clients are built with (HJV_SERVER_KEY)
+
+services:
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      HJV_DOMAIN: ${HJV_DOMAIN:?set HJV_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - hbbs
+      - hbbr
+    restart: unless-stopped
+
+  hbbs:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: hjviewer-server:local
+    # -r: the relay handed to peers; clients reach it as wss://<domain>/ws/relay
+    command: ["hbbs", "-r", "${HJV_DOMAIN:?set HJV_DOMAIN in .env}"]
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  hbbr:
+    image: hjviewer-server:local
+    # -k _: relay only for clients holding the server key (shared with hbbs through ./data)
+    command: ["hbbr", "-k", "_"]
+    volumes:
+      - ./data:/data
+    depends_on:
+      - hbbs
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

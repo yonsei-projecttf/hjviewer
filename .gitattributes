@@ -1,0 +1,4 @@
+# Patches carry upstream's bytes, CRLF included (applied with git am --keep-cr): never convert them.
+*.patch -text
+# Run by bash on every platform, Windows runners included.
+*.sh text eol=lf
