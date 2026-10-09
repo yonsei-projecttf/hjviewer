@@ -43,8 +43,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # Docker Hub rate-limits anonymous pulls from shared runner addresses
       - name: Build the server image
-        run: docker build -f deploy/Dockerfile -t hjviewer-server:ci .
+        run: docker build --build-arg REGISTRY=public.ecr.aws/docker/library -f deploy/Dockerfile -t hjviewer-server:ci .
       - name: Smoke test
         run: |
           docker run --rm hjviewer-server:ci hbbs --help

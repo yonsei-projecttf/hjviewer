@@ -1,6 +1,8 @@
 # hbbs/hbbr built from the pinned upstream rustdesk-server with hjviewer's patches.
 # Build from the repository root: docker build -f deploy/Dockerfile -t hjviewer-server .
-FROM rust:1-bookworm AS build
+# REGISTRY can point at a mirror of the official images, e.g. public.ecr.aws/docker/library.
+ARG REGISTRY=docker.io/library
+FROM ${REGISTRY}/rust:1-bookworm AS build
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -12,7 +14,7 @@ RUN cd upstream/rustdesk-server \
     && cargo build --release --locked --bin hbbs --bin hbbr \
     && cp target/release/hbbs target/release/hbbr /usr/local/bin/
 
-FROM debian:bookworm-slim
+FROM ${REGISTRY}/debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
