@@ -354,7 +354,11 @@ jobs:
 
       - name: Add license, source and third-party notices
         shell: bash
+        env:
+          NOTICES_FEATURES: flutter,hwcodec,vram
+          NOTICES_TARGET: x86_64-pc-windows-msvc
         run: |
+          test -s "SignOutput/$BUILD_NAME-windows-x86_64.exe"
           bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" SignOutput . \
             rustdesk/usbmmidd_v2/License.txt "Amyuni USB Mobile Monitor virtual display driver (usbmmidd_v2)" \
             "$RUNNER_TEMP/RustDeskTempTopMostWindow/LICENSE" "RustDeskTempTopMostWindow (WindowInjection.dll)"
@@ -596,11 +600,18 @@ jobs:
 
       - name: Add license, source and third-party notices
         shell: bash
-        run: bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" signed-apk .
+        env:
+          NOTICES_FEATURES: flutter,hwcodec
+          NOTICES_TARGET: aarch64-linux-android
+        run: |
+          ls signed-apk/*.apk > /dev/null
+          bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" signed-apk . \
+            "$ANDROID_NDK_HOME/NOTICE" "?Android NDK, including libc++_shared.so" \
+            "$ANDROID_NDK_HOME/NOTICE.toolchain" "?Android NDK toolchain"
 
       # L1304-1309
       - name: Upload signed APK
-        if: env.ANDROID_SIGNING == 'true'
+        if: env.ANDROID_SIGNING == 'true' && steps.sign-apk.outputs.signedReleaseFile != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.BUILD_NAME }}-android-aarch64
@@ -634,7 +645,10 @@ jobs:
       run:
         working-directory: upstream/rustdesk
     env:
-      IOS_SIGNING: ${{ secrets.IOS_DIST_CERT_P12_BASE64 != '' && secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' && 'true' || 'false' }}
+      # Signed only in a private repository (e.g. a private mirror): a signed IPA's provisioning profile
+      # names the Apple developer, the team and, for Ad Hoc, the device UDIDs, and the artifacts of a
+      # public repository are public. A public run builds the unsigned IPA.
+      IOS_SIGNING: ${{ github.event.repository.private && secrets.IOS_DIST_CERT_P12_BASE64 != '' && secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
     steps:
       # L647-653
@@ -884,13 +898,14 @@ jobs:
 
       - name: Add license, source and third-party notices
         shell: bash
-        run: bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" ios-out .
+        env:
+          NOTICES_FEATURES: flutter,hwcodec
+          NOTICES_TARGET: aarch64-apple-ios
+        run: |
+          ls ios-out/*.ipa > /dev/null
+          bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" ios-out .
 
-      # A signed IPA's embedded provisioning profile names the Apple developer (the person, for an
-      # individual account), the team and, for Ad Hoc, the registered device UDIDs. Artifacts of a
-      # public repository are downloadable by anyone, so it is only uploaded from a private one.
       - name: Upload IPA
-        if: env.IOS_SIGNING != 'true' || github.event.repository.private
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.BUILD_NAME }}-ios${{ env.IOS_SIGNING != 'true' && '-unsigned' || '' }}

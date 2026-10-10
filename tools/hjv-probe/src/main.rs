@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Checks, from the network a client is on, that the hjviewer server is reachable the way the
 //! apps reach it: TLS on 443, WebSocket upgrades on /ws/id (hbbs) and /ws/relay (hbbr), and a

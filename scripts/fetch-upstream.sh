@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: AGPL-3.0-only
 # Checks out the pinned upstream sources under upstream/ and applies hjviewer's patches on a
 # `hjviewer` branch. Usage: scripts/fetch-upstream.sh [server|client|all]
 set -euo pipefail

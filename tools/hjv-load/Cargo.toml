@@ -3,7 +3,7 @@ name = "hjv-load"
 version = "0.1.0"
 edition = "2021"
 description = "Synthetic load for an hjviewer server: registered peers with heartbeats, and relayed sessions at a given bitrate"
-license = "AGPL-3.0-or-later"
+license = "AGPL-3.0-only"
 publish = false
 
 [dependencies]

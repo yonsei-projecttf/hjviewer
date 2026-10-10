@@ -1,15 +1,23 @@
 # Privacy statement / 개인정보 처리방침
 
 HJViewer is a self-hosted remote desktop app. The people who build it collect nothing: there are no
-analytics, crash reports or accounts, and the app talks only to the server it was built for, which
-the operator of that server runs.
+analytics, crash reports or accounts. The app talks to the server it was built for, which the
+operator of that server runs, and to public STUN servers (below).
 
-HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니다. 앱을 만든 쪽은 아무 정보도 수집하지 않습니다. 분석, 오류 보고, 계정 기능이 없고, 앱은 빌드할 때 정해진 서버하고만 통신합니다. 그 서버는 서버 운영자가 관리합니다.
+HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니다. 앱을 만든 쪽은 아무 정보도 수집하지 않습니다. 분석, 오류 보고, 계정 기능이 없습니다. 앱은 빌드할 때 정해진 서버와 아래의 공개 STUN 서버하고만 통신합니다. 서버는 서버 운영자가 관리합니다.
+
+## STUN servers / STUN 서버
+
+To connect two devices directly (peer to peer), the app asks public STUN servers which public IP
+address and port it is reachable at: stun.cloudflare.com, stun.l.google.com, stun.antisip.com and
+stun.nextcloud.com. Those operators see the device's IP address and the time; they see nothing of
+the session. 두 기기를 직접 연결(P2P)하려고, 앱은 공개 STUN 서버(stun.cloudflare.com, stun.l.google.com, stun.antisip.com, stun.nextcloud.com)에 자신의 공인 IP와 포트를 묻습니다. 이 서버 운영자는 기기의 IP 주소와 시각을 알 수 있지만, 세션 내용은 알 수 없습니다.
 
 ## What the server keeps / 서버가 보관하는 정보
 
 - **Device registry**: each device's ID, a random installation UUID, its public key and the IP address it last connected from, so other devices can find it. 기기 ID, 설치별 임의 UUID, 공개키, 마지막 접속 IP를 보관합니다. 다른 기기가 이 기기를 찾을 수 있게 하기 위해서입니다.
 - **Server logs**: connection times and IP addresses, kept as long as the operator keeps logs. 접속 시각과 IP 주소를 남깁니다. 보관 기간은 운영자가 정합니다.
+- **System information**: a PC that accepts connections also tries to send its host name, OS user name, OS, CPU and memory to the server's `/api` address, as upstream RustDesk does for its account server. This deployment has no such API: the server answers 404 and keeps nothing. 원격 접속을 받는 PC는 upstream RustDesk처럼 서버의 `/api` 주소로 호스트 이름, OS 사용자 이름, OS, CPU, 메모리 정보를 보내려 합니다. 이 배포에는 그 API가 없어서 서버는 404로 응답하고 아무것도 저장하지 않습니다.
 - **Session contents are not readable by the server.** Screen, input, clipboard and files are end-to-end encrypted between the two devices; when the server relays a session it only forwards encrypted bytes. 화면, 입력, 클립보드, 파일은 두 기기 사이에서 종단 간 암호화됩니다. 서버가 중계할 때도 암호화된 바이트만 전달합니다.
 
 ## On the devices / 기기에 저장되는 정보

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: AGPL-3.0-only
 # End-to-end check of the whole connection path behind firewalls, on one Linux host.
 #
 # Two network namespaces stand in for a customer's PC (hjv-pc) and the controlling device
