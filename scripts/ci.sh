@@ -71,7 +71,7 @@ server_stage() {
 # The runbook's checks against one web server: WebSocket upgrades to hbbs and hbbr, the /api/
 # answer, the source notice, hjv-probe, three PCs registering (hbbs must see their ports), a relay
 # session with the server key, and the same key in hbbs, hbbr and data/id_ed25519.pub.
-check_site() { # <port> <CA file> <status of /> <name>
+check_site() { # <port> <CA file> <status of />, or "site" when / belongs to another site <name>
   local port=$1 ca=$2 root_status=$3 name=$4 code p before
   local url="https://localhost:$port" curl_tls=(--cacert "$ca" --resolve "localhost:$port:127.0.0.1")
   step "deploy: checks through $name on 127.0.0.1:$port"
@@ -85,10 +85,12 @@ check_site() { # <port> <CA file> <status of /> <name>
   code=$(curl -s -o /dev/null -w '%{http_code}' "${curl_tls[@]}" -X POST -d '{}' "$url/api/heartbeat" || true)
   echo "/api/heartbeat $code"
   [ "$code" = 404 ] || fail "$name: /api/heartbeat answered $code, not 404"
-  code=$(curl -s -o "$CI/root.txt" -w '%{http_code}' "${curl_tls[@]}" "$url/" || true)
-  echo "/ $code $(head -c 80 "$CI/root.txt")"
-  if [ "$code" != "$root_status" ] || ! grep -q 'github.com/ysfaculty/hjviewer' "$CI/root.txt"; then
-    fail "$name: / answered $code without the source notice"
+  if [ "$root_status" != site ]; then
+    code=$(curl -s -o "$CI/root.txt" -w '%{http_code}' "${curl_tls[@]}" "$url/" || true)
+    echo "/ $code $(head -c 80 "$CI/root.txt")"
+    if [ "$code" != "$root_status" ] || ! grep -q 'github.com/ysfaculty/hjviewer' "$CI/root.txt"; then
+      fail "$name: / answered $code without the source notice"
+    fi
   fi
   "$PROBE" localhost --port "$port" --ca "$ca" || fail "$name: hjv-probe"
   before=$(dc logs --no-log-prefix hbbs 2>/dev/null | grep -c 'update_pk ' || true)
@@ -121,8 +123,8 @@ deploy_stage() {
   sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
   [ -z "$(ss -Hltnu '( sport >= :21115 and sport <= :21119 )')" ] ||
     fail "ports 21115-21119 are in use (a running hjviewer server?); the test stack needs them"
-  [ -z "$(ss -Hltn '( sport >= :18080 and sport <= :18082 ) or ( sport >= :18443 and sport <= :18445 )')" ] ||
-    fail "test ports 18080-18082 / 18443-18445 are in use"
+  [ -z "$(ss -Hltn '( sport >= :18080 and sport <= :18082 ) or ( sport >= :18443 and sport <= :18446 )')" ] ||
+    fail "test ports 18080-18082 / 18443-18446 are in use"
   trap cleanup EXIT
 
   step "deploy: copy of this working tree"
@@ -163,16 +165,34 @@ deploy_stage() {
   dc logs --no-log-prefix hbbr | grep -q 'TOTAL_BANDWIDTH: 100Mb/s' || fail "HJV_TOTAL_BANDWIDTH did not reach hbbr"
   dc logs --no-log-prefix hbbr | grep -q 'SINGLE_BANDWIDTH: 128Mb/s' || fail "an empty HJV_SINGLE_BANDWIDTH changed hbbr's default"
 
-  step "deploy B: nginx with deploy/nginx-hjviewer.conf"
+  step "deploy B: nginx with deploy/nginx-hjviewer.conf, and added to an existing site"
   local ng="$CI/nginx"
   rm -rf "$ng"
-  mkdir -p "$ng/tmp"
+  mkdir -p "$ng/tmp" "$ng/snippets"
+  cp "$SRC/deploy/nginx-hjviewer-locations.conf" "$ng/snippets/hjviewer-locations.conf"
   sed -e 's/DOMAIN/localhost/g' \
       -e "s#/etc/letsencrypt/live/localhost/fullchain.pem#$CERTS/cert.pem#" \
       -e "s#/etc/letsencrypt/live/localhost/privkey.pem#$CERTS/key.pem#" \
       -e 's/listen 443 ssl;/listen 127.0.0.1:18443 ssl;/' -e 's/listen 80;/listen 127.0.0.1:18080;/' \
       "$SRC/deploy/nginx-hjviewer.conf" > "$ng/site.conf"
   grep -q 'listen 127.0.0.1:18443 ssl;' "$ng/site.conf" || fail "nginx-hjviewer.conf: no 'listen 443 ssl;' line"
+  # An existing site that shares the domain, like a login-only WordPress: HTTP/2 on the listener,
+  # every path sent to its login page, and HJViewer added with the runbook's one include line
+  cat > "$ng/shared.conf" << EOF
+server {
+    listen 127.0.0.1:18446 ssl http2;
+    server_name localhost;
+    ssl_certificate     $CERTS/cert.pem;
+    ssl_certificate_key $CERTS/key.pem;
+    include snippets/hjviewer-locations.conf;
+    location / {
+        return 302 https://\$host/login/?redirect_to=\$request_uri;
+    }
+    location ~ \.php\$ {
+        return 302 https://\$host/login/;
+    }
+}
+EOF
   cat > "$ng/nginx.conf" << EOF
 pid $ng/nginx.pid;
 error_log $ng/error.log info;
@@ -184,6 +204,7 @@ http {
   client_body_temp_path $ng/tmp; proxy_temp_path $ng/tmp; fastcgi_temp_path $ng/tmp;
   uwsgi_temp_path $ng/tmp; scgi_temp_path $ng/tmp;
   include $ng/site.conf;
+  include $ng/shared.conf;
 }
 EOF
   "$PKGS/root/usr/sbin/nginx" -e "$ng/error.log" -p "$ng" -c "$ng/nginx.conf" -t || fail "nginx -t"
@@ -193,6 +214,12 @@ EOF
   check_site 18443 "$CERTS/cert.pem" 200 nginx
   [ "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:18080/x)" = "301 https://localhost/x" ] ||
     fail "nginx: port 80 does not redirect to https"
+  check_site 18446 "$CERTS/cert.pem" site "nginx, existing site with HTTP/2"
+  # the existing site still answers everything else, over HTTP/2 for browsers
+  [ "$(curl -s -o /dev/null -w '%{http_version} %{http_code} %{redirect_url}' --http2 --cacert "$CERTS/cert.pem" https://localhost:18446/)" = \
+    "2 302 https://localhost/login/?redirect_to=/" ] || fail "nginx: the existing site's / changed"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CERTS/cert.pem" https://localhost:18446/wp-json/)" = 302 ] ||
+    fail "nginx: the existing site's other paths changed"
   if grep -E '\[(emerg|alert|crit|error)\]' "$ng/error.log"; then fail "nginx logged errors"; fi
   stop_web
 

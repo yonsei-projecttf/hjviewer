@@ -53,6 +53,7 @@ all checks passed: apps on this network can reach the server over 443
 | `deploy/Caddyfile` | `/ws/id`는 hbbs:21118, `/ws/relay`는 hbbr:21119로 전달, `X-Real-IP`/`X-Real-Port` 전달, `/api/*`는 404 |
 | `deploy/docker-compose.behind-proxy.yml` | B 경로: 기존 웹 서버 뒤에서 hbbs, hbbr만 실행. 호스트 네트워크의 127.0.0.1에만 listen |
 | `deploy/nginx-hjviewer.conf`, `deploy/apache-hjviewer.conf` | B 경로의 웹 서버 사이트 설정. 위 Caddyfile과 같은 일을 합니다 |
+| `deploy/nginx-hjviewer-locations.conf` | nginx에 넣을 HJViewer 경로(`/ws/id`, `/ws/relay`, `/api/`). 새 사이트 파일이 include하고, 이미 운영 중인 사이트와 도메인을 함께 쓸 때는 그 사이트의 server 블록에 include 한 줄로 넣습니다 |
 | `deploy/.env.example` | `HJV_DOMAIN`과 선택 설정: `COMPOSE_FILE`(B 경로), 이미지 레지스트리, 빌드 병렬 수, 중계 대역폭 상한 |
 
 두 compose 파일은 프로젝트 이름을 `hjviewer`로 고정해, 같은 서버의 다른 compose 프로젝트와 섞이지 않게 합니다. 기반 이미지(rust, debian, caddy)는 기본으로 Docker 공식 이미지의 ECR 미러(public.ecr.aws)에서 받습니다. Docker Hub는 익명 다운로드를 주소마다 제한해서, 학내 NAT처럼 주소를 함께 쓰는 곳에서 막힐 수 있기 때문입니다. hbbs와 hbbr 컨테이너는 Linux 권한(capability)을 모두 버리고 실행합니다.

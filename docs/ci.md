@@ -15,7 +15,7 @@ scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe�
 | 단계 | 하는 일 |
 |---|---|
 | server | `build/ci/upstream`에 upstream rustdesk-server를 새로 받아 `server/patches`를 적용하고, 신호·중계 통합 테스트(`tcp_signaling`, `relay_pairing`)를 돌립니다. `hjv-probe`, `hjv-load`도 빌드합니다. |
-| deploy | 작업 트리 사본(`build/ci/src`, 커밋하지 않은 변경 포함)으로 런북의 배포를 Docker에서 그대로 합니다. B 경로는 hbbs/hbbr을 127.0.0.1에 띄우고, 그 앞에 `deploy/nginx-hjviewer.conf`와 `deploy/apache-hjviewer.conf`를 차례로 둡니다. 웹 서버는 운영 서버와 같은 Ubuntu 패키지를 내려받아 풀어서 실행할 뿐, 설치하지 않습니다. 그다음 A 경로(Caddy)를 같은 이미지와 키로 띄웁니다. |
+| deploy | 작업 트리 사본(`build/ci/src`, 커밋하지 않은 변경 포함)으로 런북의 배포를 Docker에서 그대로 합니다. B 경로는 hbbs/hbbr을 127.0.0.1에 띄우고, 그 앞에 `deploy/nginx-hjviewer.conf`와 `deploy/apache-hjviewer.conf`를 차례로 둡니다. nginx는 기존 사이트에 `deploy/nginx-hjviewer-locations.conf`를 include 한 줄로 넣은 경우도 함께 시험합니다. 이 기존 사이트는 HTTP/2를 켜고 모든 경로를 로그인 페이지로 보내는 WordPress 같은 사이트입니다. 웹 서버는 운영 서버와 같은 Ubuntu 패키지를 내려받아 풀어서 실행할 뿐, 설치하지 않습니다. 그다음 A 경로(Caddy)를 같은 이미지와 키로 띄웁니다. |
 
 배포 시험이 매번 확인하는 것은 다음과 같습니다.
 
@@ -25,8 +25,9 @@ scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe�
 - hbbs가 PC마다 실제 포트를 받는지(`X-Real-Port` 전달), 세 키 값(`.pub`, hbbs, hbbr)이 같은지
 - 개인키 권한(700/600, root), 컨테이너 권한 제거(`cap_drop: ALL`), `.env`의 `COMPOSE_FILE`과 대역폭 상한이 적용되는지
 - Apache 오류 로그에 fail2ban이 인증 실패로 세는 `AH01630`이 없는지
+- 기존 사이트에 추가한 경우: HTTP/2를 켠 listener에서도 WebSocket이 열리는지, 사이트의 다른 경로(`/`, `/wp-json/`, `.php`)와 HTTP/2가 그대로인지
 
-시험용 스택은 compose 프로젝트 `hjv-ci`로 띄우고, 끝나면 그 프로젝트만 지웁니다. 웹 서버와 Caddy는 127.0.0.1의 18080–18082, 18443–18445 포트를 쓰므로 이 PC의 80/443은 건드리지 않습니다. 다만 B 경로는 운영과 같이 21115–21119를 쓰므로, 이 PC에서 실제 HJViewer 서버가 돌고 있으면 시험이 시작하지 않고 멈춥니다. Docker 명령은 런북처럼 sudo로 실행합니다.
+시험용 스택은 compose 프로젝트 `hjv-ci`로 띄우고, 끝나면 그 프로젝트만 지웁니다. 웹 서버와 Caddy는 127.0.0.1의 18080–18082, 18443–18446 포트를 쓰므로 이 PC의 80/443은 건드리지 않습니다. 다만 B 경로는 운영과 같이 21115–21119를 쓰므로, 이 PC에서 실제 HJViewer 서버가 돌고 있으면 시험이 시작하지 않고 멈춥니다. Docker 명령은 런북처럼 sudo로 실행합니다.
 
 앱(Windows/Android/iOS)은 아직 개발 PC에서 빌드하지 않습니다. iOS는 macOS, Windows 앱은 Windows가 필요합니다. 앱 빌드가 필요해지면 아래 워크플로를 직접 실행하거나 로컬 빌드 환경을 따로 만듭니다.
 

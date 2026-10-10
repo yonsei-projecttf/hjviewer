@@ -14,6 +14,7 @@ Ubuntu 22.04/24.04 서버 한 대에 HJViewer 서버(hbbs·hbbr)를 Docker로 �
 ## 입력값
 
 - `DOMAIN`: 이 서버에 붙일 **HJViewer 전용 호스트 이름**(예: `hjviewer.example.ac.kr`). 앱에 들어가는 값이라 정한 뒤에는 바꾸지 않습니다. 모르면 사용자에게 물어보세요.
+- DOMAIN이 이미 이 서버의 다른 웹사이트 주소라면, 사용자가 **그 사이트와 함께 쓰기로** 정했는지 확인합니다. 정했다면 2단계 4번에서 멈추지 않고, 6-B의 "(나) 기존 사이트에 추가"로 갑니다. 그 사이트의 인증서를 그대로 씁니다.
 - 인증서를 새로 받아야 할 때만 필요한 것: Let's Encrypt 알림을 받을 **이메일**과 약관 동의. 6-B단계에서 필요해지면 사용자에게 묻습니다.
 
 ## 하지 말 것
@@ -74,7 +75,7 @@ echo "== existing install"; ls -ld /opt/hjviewer 2>&1
    - `/etc/hosts`에 DOMAIN이 있으면 서버 안에서 하는 확인이 바깥과 다르게 나올 수 있습니다. 보고에 적습니다.
 4. **B 경로에서 웹 서버 설정**
    - nginx는 `nginx -t`, Apache는 `apache2ctl configtest`가 지금 이미 실패하면 멈춥니다. 원래 있던 문제를 이 작업이 떠안지 않기 위해서입니다.
-   - DOMAIN이 nginx의 `server_name`이나 Apache의 `apache2ctl -S`에 이미 있으면 **기존 사이트와 같은 도메인**입니다. 멈추고 사용자에게 고르게 합니다. 하나는 새 서브도메인(권장, 입력값을 바꿔 1단계부터 다시)이고, 다른 하나는 기존 사이트 설정에 추가(6-B 마지막 절)입니다.
+   - DOMAIN이 nginx의 `server_name`이나 Apache의 `apache2ctl -S`에 이미 있으면 **기존 사이트와 같은 도메인**입니다. 사용자가 그 사이트와 함께 쓰기로 이미 정했다면 진행합니다(6-B의 "(나) 기존 사이트에 추가"). 정하지 않았다면 멈추고 고르게 합니다. 하나는 새 서브도메인(입력값을 바꿔 1단계부터 다시)이고, 다른 하나는 기존 사이트에 추가입니다. 기존 사이트에 추가하면 DNS와 인증서를 새로 만들 필요가 없습니다. 그 대신 그 사이트 설정 파일에 한 줄이 들어갑니다.
 5. **Docker**
    - snap으로 설치한 Docker(`/snap/docker`가 있거나 `command -v docker`가 `/snap/bin/docker`)이거나 podman이면 멈춥니다. snap Docker는 `/opt` 아래 파일을 제대로 쓰지 못합니다.
    - Docker는 있는데 `docker compose version`이 실패하면 멈춥니다. 사용자에게 설치할 패키지를 확인합니다. docker-ce는 `docker-compose-plugin`, Ubuntu의 docker.io는 `docker-compose-v2`입니다. 이때 `docker.io`는 설치하지 마세요. docker-ce가 지워집니다.
@@ -183,7 +184,12 @@ sudo docker compose up -d && sleep 3 && sudo docker compose ps
 sudo ss -ltnup | grep -E ':2111[5-9]\b'   # 127.0.0.1:21115-21119 (UDP 21116 포함)만 보여야 함
 ```
 
-**인증서**: DOMAIN용 인증서를 다음 순서로 찾거나 받습니다.
+그다음은 둘 중 하나입니다.
+
+- **(가) 새 사이트**: DOMAIN이 HJViewer 전용입니다. 인증서를 마련하고, 새 사이트 파일을 추가합니다.
+- **(나) 기존 사이트에 추가**: DOMAIN을 이 서버의 기존 웹사이트와 함께 씁니다. 인증서는 그 사이트 것을 그대로 쓰고, 그 사이트 설정에 include 한 줄을 넣습니다. 아래 "(나) 기존 사이트에 추가"로 바로 갑니다.
+
+**(가) 인증서**: DOMAIN용 인증서를 다음 순서로 찾거나 받습니다.
 
 1. **이미 DOMAIN을 포함하는 인증서가 있으면** 그것을 씁니다(1단계 certbot 출력, 또는 다른 사이트가 쓰는 와일드카드 인증서). 파일이 DOMAIN을 포함하는지는 `sudo openssl x509 -noout -ext subjectAltName -enddate -in <파일>`로 확인합니다.
 2. **certbot이 있고 `/etc/letsencrypt/accounts`가 있으면**(이미 Let's Encrypt를 쓰는 서버) 바로 받습니다.
@@ -202,14 +208,16 @@ sudo ss -ltnup | grep -E ':2111[5-9]\b'   # 127.0.0.1:21115-21119 (UDP 21116 포
 
 Apache는 `python3-certbot-apache`, `--apache`, `--deploy-hook 'systemctl reload apache2'`로 바꿉니다. certbot이 실패하면 다시 시도하지 말고 멈춥니다. `--deploy-hook`은 인증서를 갱신할 때마다 웹 서버를 reload해서 새 인증서를 읽게 합니다.
 
-**사이트 설정 (nginx)**: 저장소의 [deploy/nginx-hjviewer.conf](../deploy/nginx-hjviewer.conf)를 새 사이트로 추가합니다.
+**(가) 사이트 설정 (nginx)**: 저장소의 [deploy/nginx-hjviewer.conf](../deploy/nginx-hjviewer.conf)를 새 사이트로 추가합니다. 이 파일은 HJViewer 경로(`/ws/id`, `/ws/relay`, `/api/`)를 담은 [deploy/nginx-hjviewer-locations.conf](../deploy/nginx-hjviewer-locations.conf)를 include합니다.
 
 ```bash
 DOMAIN=$(sed -n 's/^HJV_DOMAIN=//p' /opt/hjviewer/deploy/.env); [ -n "$DOMAIN" ] || exit 1
 [ -e /etc/nginx/sites-available/hjviewer ] && { echo 'STOP: 이미 있음'; exit 1; }
+[ -e /etc/nginx/snippets/hjviewer-locations.conf ] && { echo 'STOP: 이미 있음'; exit 1; }
 sudo nginx -t 2>/dev/null || { echo 'STOP: 기존 설정이 이미 실패'; exit 1; }
+sudo install -D -m 644 /opt/hjviewer/deploy/nginx-hjviewer-locations.conf /etc/nginx/snippets/hjviewer-locations.conf
 sed "s/DOMAIN/$DOMAIN/g" /opt/hjviewer/deploy/nginx-hjviewer.conf | sudo tee /etc/nginx/sites-available/hjviewer > /dev/null
-grep -nE 'listen|server_name|ssl_certificate' /etc/nginx/sites-available/hjviewer
+grep -nE 'listen|server_name|ssl_certificate|include' /etc/nginx/sites-available/hjviewer
 ```
 
 활성화하기 전에 파일을 다음과 같이 맞춥니다.
@@ -225,7 +233,7 @@ if echo "$out" | grep -qE 'emerg|test failed|conflicting server name'; then sudo
 sudo systemctl reload nginx
 ```
 
-**사이트 설정 (Apache)**: [deploy/apache-hjviewer.conf](../deploy/apache-hjviewer.conf)를 같은 방법으로 추가합니다.
+**(가) 사이트 설정 (Apache)**: [deploy/apache-hjviewer.conf](../deploy/apache-hjviewer.conf)를 같은 방법으로 추가합니다.
 
 ```bash
 DOMAIN=$(sed -n 's/^HJV_DOMAIN=//p' /opt/hjviewer/deploy/.env); [ -n "$DOMAIN" ] || exit 1
@@ -242,13 +250,39 @@ if ! sudo apache2ctl configtest; then sudo a2dissite hjviewer; echo 'STOP: 설�
 sudo systemctl reload apache2
 ```
 
-**기존 사이트와 같은 도메인을 쓰기로 정한 경우(사용자가 고른 경우만)**
+**(나) 기존 사이트에 추가 (nginx)**: 그 사이트의 HTTPS server 블록에 `include` 한 줄만 넣습니다. 사이트의 다른 경로는 그대로이고, `/ws/id`, `/ws/relay`, `/api/`만 HJViewer로 갑니다. 이 구성은 `scripts/ci.sh`에서 시험합니다. 시험 조건은 HTTP/2를 켜고 모든 경로를 로그인 페이지로 보내는 WordPress 같은 사이트입니다.
 
-1. 그 사이트의 설정 파일을 웹 서버가 읽지 않는 곳에 백업합니다. `sudo install -d -m 700 /root/hjv-backup && sudo cp -a <파일> /root/hjv-backup/`
-2. nginx는 그 사이트의 `listen 443 ssl` server 블록 안에 nginx-hjviewer.conf의 `location = /ws/id`와 `location = /ws/relay` 두 블록만 넣습니다. Apache는 그 사이트의 443 VirtualHost 안, 다른 `ProxyPass`(특히 `ProxyPass /`)보다 위에 apache-hjviewer.conf의 `ProxyPass` 두 줄과 `<Location "/ws/">` 블록만 넣습니다. Apache의 `Redirect 404 /`와 `ErrorDocument` 줄은 **넣지 마세요.** 기존 사이트 전체가 404가 됩니다.
-3. 그 사이트에 이미 `/ws/` 경로가 있으면 멈춥니다.
-4. nginx의 `location ^~ /api/` 블록은 그 사이트가 `/api/`를 쓰지 않을 때만 넣습니다. 쓰고 있다면 넣지 말고, 보고에 이렇게 적습니다. "앱이 보내는 `/api/heartbeat`(15초마다, 세션 중에는 3초마다)와 `/api/sysinfo`(2분마다, PC 이름과 OS 사용자 이름 포함)가 그 사이트로 갑니다."
-5. 설정 검사가 실패하면 백업 파일로 되돌리고 멈춥니다.
+1. 그 사이트가 이 경로들을 쓰는지 확인합니다.
+   ```bash
+   DOMAIN=$(sed -n 's/^HJV_DOMAIN=//p' /opt/hjviewer/deploy/.env); [ -n "$DOMAIN" ] || exit 1
+   sudo nginx -T 2>/dev/null | grep -nE '^# configuration file|server_name|location[^{]*/(ws|api)\b'
+   for p in /ws/id /api/heartbeat; do echo "$p $(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN$p")"; done
+   ```
+   - DOMAIN 사이트의 server 블록 안에 `/ws`나 `/api`로 시작하는 location이 있으면 멈춥니다.
+   - 두 경로가 404이거나 그 사이트의 로그인 페이지 등으로 넘어가면(302) 사이트가 쓰지 않는 것이니 진행합니다. 200이면 사이트가 그 경로를 쓰는 것이니 멈춥니다. WordPress는 REST API를 `/wp-json/`에 두므로 보통 `/api/`를 쓰지 않습니다.
+2. `# configuration file` 줄로 DOMAIN의 443 server 블록이 있는 파일을 찾아 백업하고, HJViewer 경로 파일을 설치합니다.
+   ```bash
+   F=/etc/nginx/sites-available/example        # ← 1번에서 찾은 파일
+   sudo install -d -m 700 /root/hjv-backup && sudo cp -a "$F" /root/hjv-backup/
+   [ -e /etc/nginx/snippets/hjviewer-locations.conf ] && { echo 'STOP: 이미 있음'; exit 1; }
+   sudo install -D -m 644 /opt/hjviewer/deploy/nginx-hjviewer-locations.conf /etc/nginx/snippets/hjviewer-locations.conf
+   ```
+3. 그 파일을 편집해, `listen ... 443 ssl`과 `server_name ... DOMAIN`이 있는 server 블록 안의 `server_name` 줄 바로 아래에 다음 한 줄만 넣습니다. 같은 도메인의 443 server 블록이 둘 이상이면 각각 넣습니다. 80 포트 블록에는 넣지 않습니다. nginx-hjviewer.conf의 `location /`나 80 포트 블록은 **넣지 마세요.** 기존 사이트를 덮어씁니다.
+   ```nginx
+       include snippets/hjviewer-locations.conf;
+   ```
+4. 검사하고 reload합니다. 실패하면 백업으로 되돌리고 멈춥니다.
+   ```bash
+   F=/etc/nginx/sites-available/example        # ← 2번과 같은 파일
+   sudo diff -u "/root/hjv-backup/$(basename "$F")" "$F"   # include 한 줄만 보여야 함
+   out=$(sudo nginx -t 2>&1); echo "$out"
+   if echo "$out" | grep -qE 'emerg|test failed'; then sudo cp -a "/root/hjv-backup/$(basename "$F")" "$F"; echo 'STOP: 설정 오류, 되돌림'; exit 1; fi
+   sudo systemctl reload nginx
+   ```
+- 그 사이트의 listen에 HTTP/2(`http2`)가 켜져 있어도 됩니다. 앱은 HTTP/1.1로 협상하므로 WebSocket이 열리고, 브라우저는 그대로 HTTP/2를 씁니다.
+- 그 server 블록이나 http 블록에 `limit_conn`이 있으면 보고에 적습니다. PC마다 상시 연결을 하나씩 유지하므로, 같은 주소 뒤의 PC가 많으면 제한에 걸릴 수 있습니다.
+
+**(나) 기존 사이트에 추가 (Apache)**: 그 사이트의 443 VirtualHost 안, 다른 `ProxyPass`(특히 `ProxyPass /`)보다 위에 apache-hjviewer.conf의 `ProxyPass` 두 줄과 `<Location "/ws/">` 블록만 넣습니다. `/api/`를 그 사이트가 쓰지 않으면(위 1번과 같은 확인) `Redirect 404 /api/`도 넣습니다. apache-hjviewer.conf의 `Redirect 404 /`와 `ErrorDocument` 줄은 **넣지 마세요.** 기존 사이트 전체가 404가 됩니다. 넣기 전에 파일을 백업하고, `apache2ctl configtest`가 실패하면 백업으로 되돌리고 멈춥니다.
 
 ## 7. 확인
 
@@ -266,7 +300,7 @@ sudo chmod 600 data/id_ed25519 && sudo stat -c '%a %U %n' data data/id_ed25519
 ```
 
 - `--resolve`는 요청을 이 서버의 127.0.0.1:443으로 보냅니다. 학내 NAT가 자기 공인 주소로 되돌아오는 연결(헤어핀)을 막아도 확인할 수 있습니다. 웹 서버가 특정 IP에서만 listen해서 000이 나오면, `127.0.0.1`을 그 IP로 바꿔 다시 실행합니다.
-- `/ws/*`가 101이 아니면 멈춥니다. 000은 웹 서버나 TLS 문제, 404는 사이트 설정이 선택되지 않은 것, 502는 hbbs/hbbr이 떠 있지 않은 것입니다.
+- `/ws/*`가 101이 아니면 멈춥니다. 000은 웹 서버나 TLS 문제, 404는 사이트 설정이 선택되지 않은 것, 502는 hbbs/hbbr이 떠 있지 않은 것입니다. (나) 기존 사이트에 추가한 경우, 302(로그인 페이지 등)는 그 사이트가 아직 이 경로를 받는 것입니다. include가 다른 server 블록에 들어갔거나, server 수준의 `return`·`rewrite`가 먼저 실행된 것입니다. 401은 사이트 전체에 걸린 인증(`auth_basic` 등)입니다.
 - 세 키 값이 다르면 `sudo docker compose restart hbbs hbbr`로 둘 다 파일의 키를 다시 읽게 하고 다시 확인합니다. 그래도 다르면 멈춥니다. 처음 기동할 때 hbbs와 hbbr이 동시에 키를 만들면 드물게 이런 일이 생깁니다.
 - 바깥 네트워크에서 하는 확인은 서버 안에서 할 수 없습니다. 보고 뒤에 사용자가 합니다(아래 "보고 뒤 사용자가 할 일").
 
@@ -275,7 +309,7 @@ sudo chmod 600 data/id_ed25519 && sudo stat -c '%a %U %n' data data/id_ed25519
 - **개인키 백업은 사용자가 직접 합니다.** 에이전트는 키를 복사하거나 출력하지 않고, 보고에 "개인키 백업 필요"라고만 적습니다. 방법은 아래 "보고 뒤 사용자가 할 일"에 있습니다.
 - **중계 대역폭 상한(선택)**: `.env`에 `HJV_TOTAL_BANDWIDTH=100`(Mb/s, 전체)과 `HJV_SINGLE_BANDWIDTH=20`(Mb/s, 세션당)을 넣고 `sudo docker compose up -d`를 실행합니다. 적용됐는지는 `sudo docker compose logs hbbr | grep BANDWIDTH`로 확인합니다. compose 파일은 고치지 마세요. 그러면 `git pull`이 실패합니다.
 - **빌드 캐시**: 약 4GB가 남습니다. 지워야 하면 먼저 사용자에게 묻습니다. `docker builder prune`은 다른 프로젝트의 캐시도 지웁니다.
-- **업데이트**(나중에): `sudo git -C /opt/hjviewer pull --ff-only`를 실행하고, 5단계처럼 백그라운드로 빌드한 뒤 `exit=0`을 확인합니다. 그다음 `cd /opt/hjviewer/deploy && sudo docker compose up -d`를 실행합니다. B 경로도 `.env`의 `COMPOSE_FILE` 덕분에 `-f`가 필요 없습니다.
+- **업데이트**(나중에): `sudo git -C /opt/hjviewer pull --ff-only`를 실행하고, 5단계처럼 백그라운드로 빌드한 뒤 `exit=0`을 확인합니다. 그다음 `cd /opt/hjviewer/deploy && sudo docker compose up -d`를 실행합니다. B 경로도 `.env`의 `COMPOSE_FILE` 덕분에 `-f`가 필요 없습니다. nginx라면 HJViewer 경로 파일이 바뀌었는지 `sudo diff /opt/hjviewer/deploy/nginx-hjviewer-locations.conf /etc/nginx/snippets/hjviewer-locations.conf`로 보고, 바뀌었으면 다시 설치(`sudo install -m 644 ...`)한 뒤 `sudo nginx -t && sudo systemctl reload nginx`를 실행합니다.
 
 ## 보고
 
@@ -286,7 +320,7 @@ HJV_SERVER=<DOMAIN>
 HJV_SERVER_KEY=<sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub 의 출력>
 키 일치: .pub = hbbs = hbbr (예/아니오)
 커밋: <sudo git -C /opt/hjviewer log -1 --format=%h>
-경로: A(Caddy) | B(nginx|apache), 추가한 설정 파일: <경로>
+경로: A(Caddy) | B(nginx|apache) (가) 새 사이트 | (나) 기존 사이트에 추가, 추가·수정한 설정 파일: <경로>
 인증서: <발급자>, 만료 <날짜>, 갱신: Caddy 자동 | certbot.timer + deploy-hook | 기타(<설명>)
 확인(서버 안): /ws/id <코드>, /ws/relay <코드>, /api/ <코드>
 서버: <Ubuntu 버전>, <vCPU>, <메모리 전체/가용>, <Docker 디스크 여유>, Docker <서버 버전>
