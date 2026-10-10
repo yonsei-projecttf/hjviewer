@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sat, 10 Oct 2026 09:48:38 +0900
+Subject: [PATCH 5/5] hjviewer: hide the account login, the server has no
+ account API
+
+The hjviewer server answers /api/* with 404, so the Login entry in the
+settings could only fail. Set the hard option disable-account.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer.rs | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+index a49292c..2d0ab46 100644
+--- a/src/hjviewer.rs
++++ b/src/hjviewer.rs
+@@ -43,6 +43,12 @@ pub fn apply() {
+     let mut builtin = config::BUILTIN_SETTINGS.write().unwrap();
+     builtin.insert(keys::OPTION_HIDE_SERVER_SETTINGS.to_owned(), "Y".to_owned());
+     builtin.insert(keys::OPTION_HIDE_WEBSOCKET_SETTINGS.to_owned(), "Y".to_owned());
++    drop(builtin);
++    // the hjviewer server has no account API, so login could only fail
++    config::HARD_SETTINGS
++        .write()
++        .unwrap()
++        .insert("disable-account".to_owned(), "Y".to_owned());
+ }
+ 
+ /// hjviewer builds leave out RustDesk's printer driver adapter (closed source), so remote printing

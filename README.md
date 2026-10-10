@@ -7,6 +7,8 @@
 - 서버 배포: [docs/deploy.md](docs/deploy.md)
 - 앱 빌드(CI): [docs/ci.md](docs/ci.md)
 - 방화벽 E2E 검증과 결과: [docs/e2e.md](docs/e2e.md)
+- 앱 배포(10명 이내, 스토어 없이)와 스토어 자동화에 필요한 것: [docs/distribution.md](docs/distribution.md)
+- 서버에서 작업할 사람·에이전트용 배포 절차: [docs/server-runbook.md](docs/server-runbook.md)
 
 ## 현재 상태 (2026-10-10)
 

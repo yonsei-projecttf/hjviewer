@@ -389,6 +389,13 @@ jobs:
       ANDROID_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
     steps:
+      # Build number = UTC time as YYDDDHHMM: it grows with every build, from any repository (a
+      # private mirror too), stays below Play's 2,100,000,000 versionCode limit with Flutter's
+      # 2000 arm64 offset, and is numeric as iOS requires. Stores refuse a build number twice.
+      - name: Build number
+        shell: bash
+        run: echo "BUILD_NUMBER=$(date -u +%y%j%H%M)" >> "$GITHUB_ENV"
+
       # L1066-1075
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
@@ -567,7 +574,7 @@ jobs:
           cp ./target/aarch64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
           # build flutter
           pushd flutter
-          flutter build apk --release --target-platform android-arm64 --split-per-abi
+          flutter build apk --release --target-platform android-arm64 --split-per-abi --build-number "$BUILD_NUMBER"
           mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "../$BUILD_NAME-android-aarch64.apk"
           popd
           mkdir -p signed-apk
@@ -651,6 +658,13 @@ jobs:
       IOS_SIGNING: ${{ github.event.repository.private && secrets.IOS_DIST_CERT_P12_BASE64 != '' && secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
     steps:
+      # Build number = UTC time as YYDDDHHMM: it grows with every build, from any repository (a
+      # private mirror too), stays below Play's 2,100,000,000 versionCode limit with Flutter's
+      # 2000 arm64 offset, and is numeric as iOS requires. Stores refuse a build number twice.
+      - name: Build number
+        shell: bash
+        run: echo "BUILD_NUMBER=$(date -u +%y%j%H%M)" >> "$GITHUB_ENV"
+
       # L647-653
       - name: Install dependencies
         working-directory: ${{ github.workspace }}
@@ -767,7 +781,7 @@ jobs:
         shell: bash
         run: |
           pushd flutter
-          flutter build ipa --release --no-codesign
+          flutter build ipa --release --no-codesign --build-number "$BUILD_NUMBER"
           popd
           mkdir -p ios-out/Payload
           cp -R flutter/build/ios/archive/Runner.xcarchive/Products/Applications/*.app ios-out/Payload/
@@ -891,7 +905,7 @@ jobs:
         shell: bash
         run: |
           pushd flutter
-          flutter build ipa --release --export-options-plist="$IOS_EXPORT_OPTIONS"
+          flutter build ipa --release --export-options-plist="$IOS_EXPORT_OPTIONS" --build-number "$BUILD_NUMBER"
           popd
           mkdir -p ios-out
           mv flutter/build/ios/ipa/*.ipa "ios-out/$BUILD_NAME-ios.ipa"
