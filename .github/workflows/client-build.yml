@@ -394,6 +394,7 @@ jobs:
       # 2000 arm64 offset, and is numeric as iOS requires. Stores refuse a build number twice.
       - name: Build number
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: echo "BUILD_NUMBER=$(date -u +%y%j%H%M)" >> "$GITHUB_ENV"
 
       # L1066-1075
@@ -663,6 +664,7 @@ jobs:
       # 2000 arm64 offset, and is numeric as iOS requires. Stores refuse a build number twice.
       - name: Build number
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: echo "BUILD_NUMBER=$(date -u +%y%j%H%M)" >> "$GITHUB_ENV"
 
       # L647-653
