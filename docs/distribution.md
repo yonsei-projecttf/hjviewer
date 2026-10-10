@@ -13,11 +13,11 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 | iOS | **Ad Hoc** 서명 IPA를 등록된 iPhone에 설치 | 없음 | Apple Developer Program, 사용자 iPhone UDID 등록 |
 | iOS(대안) | TestFlight **내부** 테스트 | 없음 (App Store Connect 사용자 최대 100명, 빌드는 90일 뒤 만료) | Apple Developer Program, App Store Connect API 키, 앱 레코드, App Store 프로파일 ([ci.md](ci.md)의 "TestFlight 업로드") |
 
-실제 서버 값으로 만든 앱은 공개 아티팩트로 올리지 않습니다. 그래서 서명 빌드는 **비공개 미러 저장소**의 CI에서 합니다([deploy.md](deploy.md)의 "소규모 비공개 운영"). 이 워크플로는 iOS 서명을 비공개 저장소에서만 합니다.
+실제 서버 값으로 만든 앱은 공개 아티팩트로 올리지 않습니다. 그래서 서명 빌드는 **비공개 빌드 저장소** `yonsei-projecttf/hjviewer-private`의 CI에서 합니다([deploy.md](deploy.md)의 "소규모 비공개 운영"). 이 워크플로는 iOS 서명을 비공개 저장소에서만 합니다.
 
 ## 권장 경로에 필요한 정보
 
-비공개 미러 저장소의 **Secrets**에 넣습니다. 채팅이나 이슈로 보내지 마세요.
+비공개 빌드 저장소의 **Secrets**에 넣습니다. 채팅이나 이슈로 보내지 마세요.
 
 **공통**
 - `HJV_SERVER`, `HJV_SERVER_KEY`: 서버 배포 후 받은 도메인과 공개키([server-runbook.md](server-runbook.md)의 "보고")

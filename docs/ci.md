@@ -41,7 +41,11 @@ scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe�
 
 ## 앱 빌드
 
-앱(Windows/Android/iOS)은 개발 PC에서 빌드하지 않습니다. iOS는 macOS, Windows 앱은 Windows가 필요하기 때문입니다. 실제 서버 값으로 빌드하는 앱은 공개 저장소를 따라가는 **비공개 미러 저장소**의 GitHub Actions에서 아래 워크플로로 만듭니다. 2026-10-10에 사용자가 정한 방식이고, GitHub CI는 그 저장소에서만 씁니다. 서버 주소와 공개키, 서명 시크릿은 그 저장소의 Secrets에만 둡니다. 실제 서버 값이 든 앱이 공개 아티팩트로 남지 않게 하기 위해서입니다.
+앱(Windows/Android/iOS)은 개발 PC에서 빌드하지 않습니다. iOS는 macOS, Windows 앱은 Windows가 필요하기 때문입니다. 실제 서버 값으로 빌드하는 앱은 **비공개 빌드 저장소** `yonsei-projecttf/hjviewer-private`의 GitHub Actions에서 만듭니다. 2026-10-10에 사용자가 정한 방식이고, GitHub CI는 그 저장소에서만 씁니다.
+
+- 빌드 저장소에는 코드가 없습니다. 이 저장소의 `client-build.yml`을 불러 쓰는 워크플로 파일 하나와 Secrets만 있습니다. 코드는 매번 이 공개 저장소에서 받으므로, 두 저장소의 내용을 맞출 필요가 없습니다.
+- 서버 주소와 공개키, 서명 시크릿은 그 저장소의 Secrets에만 있습니다. 빌드 로그와 결과물도 그 저장소에만 남습니다. 실제 서버 값이 든 앱과 서명된 앱이 공개 아티팩트로 남지 않게 하기 위해서입니다.
+- 빌드 저장소의 워크플로는 이 저장소의 **확인을 마친 커밋**에 고정해서 부릅니다(아래 "비공개 빌드 저장소"). main이 바뀌어도, 시크릿을 쓰는 빌드는 확인한 빌드 방법으로만 돕니다.
 
 ## 앱 빌드 워크플로 (GitHub Actions, 지금은 직접 실행할 때만)
 
@@ -61,7 +65,8 @@ macOS와 Linux는 빌드하지 않습니다.
 ## 실행
 
 - **수동 실행**: Actions → client → Run workflow에서 `platforms`(windows / android / ios / all)를 고릅니다. CLI로는 `gh workflow run client-build.yml -f platforms=android`입니다. 이 버튼은 워크플로 파일이 기본 브랜치에 있어야 나타납니다.
-- **TestFlight 업로드**: `testflight`를 켜면 서명된 App Store IPA를 App Store Connect에 올립니다. 예: `gh workflow run client-build.yml -f platforms=ios -f testflight=true`. 비공개 저장소, App Store 프로파일, 아래의 App Store Connect 시크릿이 필요합니다.
+- **실제 서버용 빌드**: 비공개 빌드 저장소에서 실행합니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=all`
+- **TestFlight 업로드**: `testflight`를 켜면 서명된 App Store IPA를 App Store Connect에 올립니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=ios -f testflight=true`. 비공개 저장소, App Store 프로파일, 아래의 App Store Connect 시크릿이 필요합니다.
 - **태그**: GitHub CI를 다시 켜면 `v`로 시작하는 태그를 푸시할 때 전체를 빌드합니다(지금은 꺼 둠). 예: `git tag v0.1.0 && git push origin v0.1.0`
 - **결과물**: 실행 페이지 아래의 Artifacts에서 받거나 `gh run download <run-id>`를 씁니다. 보관 기간은 7일(워크플로의 `ARTIFACT_RETENTION_DAYS`)이므로 필요한 파일은 바로 받아 두세요. 이름의 `<이름>`은 태그 빌드면 태그(`v0.1.0`), 수동 실행이면 `1.5.0-<커밋 7자리>`입니다.
 
@@ -89,6 +94,34 @@ Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하�
   - MSI, SBOM, GitHub Release 업로드
 - **Windows 보조 DLL**: `WindowInjection.dll`(RustDeskTempTopMostWindow)은 별도 잡 대신 Windows 잡 안에서 빌드합니다.
 - **시간 제한**: 잡마다 `timeout-minutes`를 걸어, 멈춘 잡이 계속 비용을 쓰지 않게 했습니다.
+
+## 비공개 빌드 저장소
+
+`yonsei-projecttf/hjviewer-private`에는 아래 `.github/workflows/build.yml`과 README만 있습니다. 시크릿은 아래 "서명 시크릿"과 같습니다. 서버 값 `HJV_SERVER`, `HJV_SERVER_KEY`도 시크릿으로 넣습니다.
+
+```yaml
+name: build
+on:
+  workflow_dispatch:
+    inputs:
+      platforms: { type: choice, options: [windows, android, ios, all], default: all }
+      testflight: { type: boolean, default: false }
+permissions:
+  contents: read
+jobs:
+  client:
+    # 확인을 마친 공개 저장소 커밋. 빌드 방법(uses)과 코드(source_ref)를 같은 커밋으로 둡니다.
+    uses: yonsei-projecttf/hjviewer/.github/workflows/client-build.yml@<커밋>
+    with:
+      platforms: ${{ inputs.platforms }}
+      testflight: ${{ inputs.testflight }}
+      source_ref: <커밋>
+    secrets: inherit
+```
+
+- 새 버전을 빌드하려면, 공개 저장소에 올린 커밋을 확인한 뒤 `<커밋>` 두 곳을 그 커밋 SHA로 바꿉니다.
+- 불려 온 워크플로는 빌드 저장소의 실행으로 돕니다. 그래서 시크릿, 로그, 결과물, 캐시, 실행 시간은 모두 빌드 저장소 쪽에 속합니다. iOS 서명도 실행하는 저장소가 비공개일 때만 합니다.
+- 각 잡은 Bridge codegen 잡이 받은 커밋을 체크아웃합니다. 빌드 중에 브랜치가 움직여도 모든 플랫폼이 같은 커밋으로 빌드됩니다.
 
 ## 저장소 변수 (필수)
 
@@ -225,7 +258,7 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
 - 클라이언트 포크(이 저장소)를 공개하면 그 의무를 지키는 방법도 되고, 표준 러너도 무료가 됩니다.
 - 공개 저장소에서는 **실행 로그와 아티팩트를 누구나 볼 수 있습니다.**
   - 시크릿은 로그에서 `***`로 가려집니다. 하지만 저장소 **변수**는 각 단계의 로그에 그대로 찍힙니다. 서버 주소와 키를 로그에 남기지 않으려면 `HJV_SERVER`/`HJV_SERVER_KEY`를 시크릿으로 등록하세요(워크플로는 둘 다 받습니다).
-  - 서버 주소와 키는 **앱 안에 들어갑니다**. 공개 아티팩트로 받은 앱이나 소스로 직접 빌드한 앱은 그 서버에 접속할 수 있습니다. 소수만 쓰는 서버라면 실제 서버 값으로 빌드한 앱은 공개 아티팩트로 내지 말고, 비공개 미러 저장소나 로컬에서 빌드하세요. ([deploy.md](deploy.md)의 "소규모 비공개 운영")
+  - 서버 주소와 키는 **앱 안에 들어갑니다**. 공개 아티팩트로 받은 앱이나 소스로 직접 빌드한 앱은 그 서버에 접속할 수 있습니다. 소수만 쓰는 서버라면 실제 서버 값으로 빌드한 앱은 공개 아티팩트로 내지 말고, 비공개 빌드 저장소에서 빌드하세요. ([deploy.md](deploy.md)의 "소규모 비공개 운영")
   - 서명된 IPA는 공개 저장소에서 아티팩트로 올리지 않습니다. 프로비저닝 프로파일에 Apple 개발자 이름, 팀 ID, Ad Hoc의 경우 기기 UDID가 들어 있기 때문입니다. 서명 단계의 로그에서도 인증서 이름과 팀을 가립니다.
 - 모든 결과물에는 `LICENSE.txt`, `NOTICE.txt`, `SOURCE.txt`(이 빌드의 소스 위치), `THIRD_PARTY_NOTICES.txt`(Rust 크레이트, vcpkg 포트, 동봉 드라이버의 라이선스)가 함께 들어갑니다. AGPL이 요구하는 고지입니다.
 

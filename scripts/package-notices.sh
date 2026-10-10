@@ -13,8 +13,10 @@
 #
 # NOTICES_FEATURES and NOTICES_TARGET name the build's cargo features and target triple, so the
 # crate list is the one that build links. The source location is always the public repository
-# (HJV_SOURCE_REPO): builds made elsewhere, e.g. in a private mirror, must be of a commit that is
-# public there, which is checked in CI (set HJV_SKIP_SOURCE_CHECK=1 for local test builds).
+# (HJV_SOURCE_REPO): builds made elsewhere, e.g. by the private build repository, must be of a
+# commit that is public there, which is checked in CI (set HJV_SKIP_SOURCE_CHECK=1 for local test
+# builds). The commit is the checkout's HEAD: in a run the private repository starts, GITHUB_SHA
+# names that repository's commit, not the source.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,7 +28,7 @@ cp "$ROOT/LICENSE" "$out/LICENSE.txt"
 cp "$ROOT/NOTICE" "$out/NOTICE.txt"
 
 repo=${HJV_SOURCE_REPO:-yonsei-projecttf/hjviewer}
-commit=${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD)}
+commit=$(git -C "$ROOT" rev-parse HEAD)
 if [ -z "${HJV_SKIP_SOURCE_CHECK:-}" ] && [ -n "${GITHUB_ACTIONS:-}" ]; then
   probe=$(mktemp -d)
   if ! git -C "$probe" init -q || ! git -C "$probe" fetch -q --depth 1 "https://github.com/$repo" "$commit"; then

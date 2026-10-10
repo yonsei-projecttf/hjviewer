@@ -1,5 +1,6 @@
 # Builds the hjviewer client (RustDesk 1.5.0 + client/patches) for Windows x64, Android arm64 and
-# iOS. Every job checks out this repository, runs `scripts/fetch-upstream.sh client` and builds inside
+# iOS. Every job checks out this repository (also when the private build repository calls this
+# workflow), runs `scripts/fetch-upstream.sh client` and builds inside
 # upstream/rustdesk with the steps of upstream's own CI at RUSTDESK_COMMIT. "upstream: Lx-y" comments
 # point at upstream/rustdesk/.github/workflows/flutter-build.yml unless another file is named.
 # Variables, signing secrets, run times and billing are documented in docs/ci.md.
@@ -25,6 +26,20 @@ on:
         description: "iOS: upload the signed App Store build to TestFlight (private repository, App Store Connect secrets)"
         type: boolean
         default: false
+  # The private build repository (yonsei-projecttf/hjviewer-private, docs/ci.md) calls this workflow
+  # with its secrets: real server values and signing keys. The code still comes from this repository.
+  workflow_call:
+    inputs:
+      platforms:
+        type: string
+        default: all
+      testflight:
+        type: boolean
+        default: false
+      source_ref:
+        description: Branch, tag or commit of this repository to build
+        type: string
+        default: main
   # GitHub CI is paused (docs/ci.md): no build on tag pushes (`push: tags: ["v*"]`) for now, only
   # runs started by hand
 
@@ -34,6 +49,9 @@ permissions:
   contents: read
 
 env:
+  # The repository the code is checked out from. Only workflow_call has source_ref; when it is called,
+  # github.repository and github.sha name the caller, which holds no code.
+  SOURCE_REPOSITORY: ${{ inputs.source_ref && 'yonsei-projecttf/hjviewer' || github.repository }}
   # Server identity, baked into the Rust core by client/patches (option_env!) in every cargo build.
   # Secrets are masked in the logs, variables are not; either works. The values still end up in the
   # built apps, which are downloadable by anyone while the repository is public.
@@ -69,6 +87,8 @@ jobs:
     defaults:
       run:
         working-directory: upstream/rustdesk
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - name: Check server variables
         working-directory: ${{ github.workspace }}
@@ -85,7 +105,15 @@ jobs:
       - name: Check out hjviewer
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ inputs.source_ref || github.sha }}
           persist-credentials: false
+
+      # every platform job builds this commit, even if the branch moves during the run
+      - name: Record the source commit
+        id: source
+        working-directory: ${{ github.workspace }}
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Fetch upstream and apply hjviewer patches
         working-directory: ${{ github.workspace }}
@@ -183,6 +211,8 @@ jobs:
       - name: Check out hjviewer
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.generate-bridge.outputs.source_sha }}
           persist-credentials: false
 
       # The runner's Git checks text files out with CRLF (core.autocrlf=true). Upstream's sources get
@@ -202,7 +232,7 @@ jobs:
         run: |
           bash scripts/fetch-upstream.sh client
           version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' upstream/rustdesk/Cargo.toml | head -n 1)
-          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-${GITHUB_SHA::7}"; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-$(git rev-parse --short=7 HEAD)"; fi
           echo "BUILD_NAME=hjviewer-$name" >> "$GITHUB_ENV"
 
       # L150-157
@@ -455,6 +485,8 @@ jobs:
       - name: Check out hjviewer
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.generate-bridge.outputs.source_sha }}
           persist-credentials: false
 
       - name: Fetch upstream and apply hjviewer patches
@@ -462,7 +494,7 @@ jobs:
         run: |
           bash scripts/fetch-upstream.sh client
           version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' upstream/rustdesk/Cargo.toml | head -n 1)
-          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-${GITHUB_SHA::7}"; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-$(git rev-parse --short=7 HEAD)"; fi
           echo "BUILD_NAME=hjviewer-$name" >> "$GITHUB_ENV"
 
       # L1123-1134
@@ -695,6 +727,8 @@ jobs:
       - name: Check out hjviewer
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.generate-bridge.outputs.source_sha }}
           persist-credentials: false
 
       - name: Fetch upstream and apply hjviewer patches
@@ -702,7 +736,7 @@ jobs:
         run: |
           bash scripts/fetch-upstream.sh client
           version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' upstream/rustdesk/Cargo.toml | head -n 1)
-          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-${GITHUB_SHA::7}"; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-$(git rev-parse --short=7 HEAD)"; fi
           echo "BUILD_NAME=hjviewer-$name" >> "$GITHUB_ENV"
 
       # L655-666
