@@ -61,6 +61,7 @@ macOS와 Linux는 빌드하지 않습니다.
 ## 실행
 
 - **수동 실행**: Actions → client → Run workflow에서 `platforms`(windows / android / ios / all)를 고릅니다. CLI로는 `gh workflow run client-build.yml -f platforms=android`입니다. 이 버튼은 워크플로 파일이 기본 브랜치에 있어야 나타납니다.
+- **TestFlight 업로드**: `testflight`를 켜면 서명된 App Store IPA를 App Store Connect에 올립니다. 예: `gh workflow run client-build.yml -f platforms=ios -f testflight=true`. 비공개 저장소, App Store 프로파일, 아래의 App Store Connect 시크릿이 필요합니다.
 - **태그**: GitHub CI를 다시 켜면 `v`로 시작하는 태그를 푸시할 때 전체를 빌드합니다(지금은 꺼 둠). 예: `git tag v0.1.0 && git push origin v0.1.0`
 - **결과물**: 실행 페이지 아래의 Artifacts에서 받거나 `gh run download <run-id>`를 씁니다. 보관 기간은 7일(워크플로의 `ARTIFACT_RETENTION_DAYS`)이므로 필요한 파일은 바로 받아 두세요. 이름의 `<이름>`은 태그 빌드면 태그(`v0.1.0`), 수동 실행이면 `1.5.0-<커밋 7자리>`입니다.
 
@@ -71,7 +72,7 @@ macOS와 Linux는 빌드하지 않습니다.
 | Bridge codegen | ubuntu-22.04 | 서버 변수를 확인하고 flutter_rust_bridge 코드를 생성합니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 매번 생성합니다. | 내부용 `bridge-artifact` (1일 보관) |
 | Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `hjviewer-<이름>-windows-x86_64` (exe, 서명 없음) |
 | Android arm64 | ubuntu-24.04 | vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 릴리스 서명 | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned` |
-| iOS | macos-latest | vcpkg(arm64-ios) → Rust 정적 라이브러리 → `flutter build ipa` → 인증서가 있으면 서명된 IPA | `…-ios` 또는 `…-ios-unsigned` |
+| iOS | macos-26 (Xcode 26.6) | vcpkg(arm64-ios) → Rust 정적 라이브러리 → `flutter build ipa` → 인증서가 있으면 서명된 IPA → `testflight`를 켜면 App Store Connect에 업로드 | `…-ios` 또는 `…-ios-unsigned` |
 
 Bridge codegen이 끝나면 나머지 잡이 병렬로 실행됩니다.
 
@@ -81,6 +82,7 @@ Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하�
 
 - **vcpkg 캐시**: upstream은 `VCPKG_BINARY_SOURCES=clear;x-gha,readwrite`를 씁니다. 그런데 vcpkg가 2025년에 x-gha 제공자를 없앴고 지금은 경고만 출력하므로, upstream은 매번 ffmpeg 등 모든 포트를 새로 빌드합니다. 이 워크플로는 vcpkg의 `files` 제공자와 `actions/cache`로 빌드된 포트를 저장하고, 그 실행에서 설치한 패키지만 남깁니다.
 - **서명**: upstream의 비공개 서명 서비스 대신 아래 시크릿으로 선택적으로 서명합니다. Windows는 서명하지 않습니다.
+- **Xcode 고정**: upstream은 `macos-latest`의 기본 Xcode를 씁니다. 이 워크플로는 `macos-26`에서 Xcode 26.6(`XCODE_VERSION`)을 고르고, 26.x가 아니면 실패합니다. App Store Connect는 Xcode 26 이상으로 만든 빌드만 받습니다. 반면 Xcode 27(iOS 27 SDK)로 만들면 UIScene 수명 주기가 없는 Flutter 3.24.5 앱이 실행되지 않습니다.
 - **제외한 것**:
   - macOS·Linux·웹·Sciter 빌드
   - Windows arm64, Android armv7/x86_64/universal APK
@@ -140,6 +142,9 @@ Apple Developer Program(유료) 계정이 필요합니다. `.p12`와 프로파�
 | `IOS_DIST_CERT_PASSWORD` | .p12를 내보낼 때 정한 비밀번호 |
 | `IOS_PROVISIONING_PROFILE_BASE64` | 배포용 프로비저닝 프로파일(.mobileprovision)의 base64 |
 | `IOS_TEAM_ID` | 10자리 팀 ID(developer.apple.com → Membership details). 넣으면 프로파일의 팀과 같은지 확인하고, 비우면 프로파일의 팀을 씁니다. |
+| `ASC_KEY_ID`, `ASC_ISSUER_ID` | TestFlight 업로드용 App Store Connect 팀 API 키의 Key ID와 Issuer ID (Users and Access → Integrations) |
+| `ASC_PRIVATE_KEY` | 그 키의 `.p8` 파일 내용 (`gh secret set ASC_PRIVATE_KEY < AuthKey_XXXX.p8`) |
+| `ASC_APP_ID` | App Store Connect 앱 레코드의 숫자 Apple ID (앱 → 앱 정보 → Apple ID). Xcode 26의 `altool --upload-package`에 필요합니다. |
 
 준비 순서는 다음과 같습니다.
 
@@ -172,7 +177,9 @@ gh secret set IOS_TEAM_ID --body ABCDE12345
 결과물별 설치 방법은 다음과 같습니다.
 
 - **Ad Hoc IPA**: 기기를 Mac에 연결하고 Finder나 Apple Configurator로 IPA를 끌어다 놓습니다.
-- **App Store 프로파일로 만든 IPA**: Transporter 앱으로 App Store Connect에 올린 뒤 TestFlight로 설치합니다.
+- **App Store 프로파일로 만든 IPA**: `testflight`를 켜고 실행하면 워크플로가 App Store Connect에 올립니다(Transporter 앱으로 직접 올려도 됩니다). Apple의 처리가 끝나면 TestFlight에 나타납니다. 내부 테스트 그룹에 넣은 App Store Connect 사용자가 TestFlight 앱으로 설치합니다. TestFlight 빌드는 90일 뒤 만료됩니다.
+  - `altool`은 업로드가 실패해도 0으로 끝날 때가 있어서, 워크플로는 출력에서 성공 메시지를 확인합니다.
+  - Info.plist는 upstream처럼 `ITSAppUsesNonExemptEncryption=false`입니다. 앱의 암호화(libsodium, TLS)는 표준 알고리즘이라, Apple 기준으로 문서가 필요한 경우는 프랑스 App Store 판매뿐입니다. App Store에 낼 때 프랑스를 판매 지역에서 빼지 않으려면 프랑스 암호화 신고를 하고 이 값을 바꿔야 합니다.
 - **서명 없는 IPA(`-ios-unsigned`)**: 그대로는 설치할 수 없습니다. Sideloadly나 AltStore 같은 도구로 재서명해야 합니다. 무료 Apple ID로 서명하면 7일 뒤 만료됩니다.
 
 ## 소요 시간
@@ -239,6 +246,7 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
 2026-10-10 첫 실행에서 세 플랫폼 빌드가 성공했습니다. 아래는 아직 실행하지 않은 경로입니다.
 
 - **의존성 변경**: 모든 빌드가 `--locked`이므로, 패치가 의존성을 바꾸면 `Cargo.lock`도 패치에 포함해야 합니다.
-- **iOS 서명**: 키체인, 수동 서명, IPA 내보내기 경로 전체가 처음 실행됩니다. upstream은 서명 없이만 빌드합니다.
-- **macOS 이미지**: `macos-latest`는 upstream처럼 고정하지 않았습니다. 이미지가 바뀌면 Xcode 버전도 바뀝니다.
+- **iOS 서명과 TestFlight 업로드**: 키체인, 수동 서명, IPA 내보내기, `altool` 업로드 경로 전체가 처음 실행됩니다. upstream은 서명 없이만 빌드합니다.
+- **Xcode 26.6 고정**: 러너 이미지에서 26.6이 빠지면 "Select Xcode" 단계가 실패합니다. 그때 `XCODE_VERSION`을 이미지에 있는 26.x로 바꿉니다. Apple은 2027년 4월부터 iOS 27 SDK를 요구할 예정입니다. 그 전에 Flutter를 3.38 이상으로 올리고 AppDelegate를 UIScene으로 옮겨야 합니다.
+- **Flutter 플러그인**: 패치 0006이 개인정보 매니페스트 때문에 sqflite, file_picker, package_info_plus, device_info_plus를 올렸습니다. Dart 분석과 Android 설정 호환은 확인했지만, 세 플랫폼 빌드로 다시 확인해야 합니다.
 - **외부 파일**: Windows 빌드는 빌드 중에 rustdesk 쪽 GitHub 릴리스에서 파일을 받습니다. 커스텀 Flutter 엔진(`main` 릴리스)과 가상 디스플레이 드라이버입니다. 이 파일이 바뀌거나 사라지면 결과가 달라질 수 있습니다.

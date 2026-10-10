@@ -11,7 +11,7 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 | Windows | 결과물 exe를 직접 전달 | 없음 | (서명 없음: SmartScreen 경고가 뜰 수 있음) |
 | Android | 릴리스 서명 APK를 직접 설치(사이드로드) | 없음 | 업로드 키스토어 하나 |
 | iOS | **Ad Hoc** 서명 IPA를 등록된 iPhone에 설치 | 없음 | Apple Developer Program, 사용자 iPhone UDID 등록 |
-| iOS(대안) | TestFlight **내부** 테스트 | 없음 (내부 테스터 최대 100명) | 위 + App Store Connect API 키, 앱 레코드, 아래의 "업로드 차단 요소" 해결 |
+| iOS(대안) | TestFlight **내부** 테스트 | 없음 (App Store Connect 사용자 최대 100명, 빌드는 90일 뒤 만료) | Apple Developer Program, App Store Connect API 키, 앱 레코드, App Store 프로파일 ([ci.md](ci.md)의 "TestFlight 업로드") |
 
 실제 서버 값으로 만든 앱은 공개 아티팩트로 올리지 않습니다. 그래서 서명 빌드는 **비공개 미러 저장소**의 CI에서 합니다([deploy.md](deploy.md)의 "소규모 비공개 운영"). 이 워크플로는 iOS 서명을 비공개 저장소에서만 합니다.
 
@@ -36,11 +36,13 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 
 ## 스토어로 갈 때 (나중에 필요해지면)
 
-### 지금 빌드에 남아 있는 업로드 차단 요소
+### 업로드 요건과 남은 차단 요소
 
-- **iOS 개인정보 매니페스트**(ITMS-91061, ITMS-91053): App Store Connect가 업로드를 거부합니다. TestFlight도 마찬가지입니다.
-  - Apple 목록에 있는 SDK 7개에 매니페스트가 없습니다: sqflite 2.2.0, file_picker 5.5.0, package_info_plus 4.2.0, device_info_plus 9.1.2, DKImagePickerController 4.3.4, DKPhotoGallery 0.0.17, SwiftyGif 5.4.4. 매니페스트가 들어간 버전으로 올려야 하는데, upstream이 고정한 Flutter 3.24.5와 호환되는지 확인이 필요합니다.
-  - 앱 자체도 `PrivacyInfo.xcprivacy`가 필요합니다. Rust 코어가 파일 시각 API(stat/fstat/lstat)를 쓰기 때문입니다.
+- **iOS 개인정보 매니페스트**(ITMS-91061, ITMS-91053): 클라이언트 패치 0006(2026-10-10)으로 대응했습니다. 실제 업로드 결과로 확인해야 합니다.
+  - 앱 자체 `PrivacyInfo.xcprivacy`를 넣었습니다. Rust 코어가 파일 시각 API(stat/fstat/lstat)를 쓰므로 C617.1(앱 컨테이너 안의 파일)을 신고하고, 서버에 등록하는 기기 ID를 앱 기능용 수집으로 적었습니다.
+  - 매니페스트가 없던 Apple 목록 SDK는 Flutter 3.24.5에서 쓸 수 있는 첫 매니페스트 포함 버전으로 올렸습니다: sqflite 2.3.3+1, file_picker 8.0.7, package_info_plus 8.0.2, device_info_plus 10.1.2.
+  - iOS에서 쓰지 않는 file_picker의 사진·음악 선택기를 빼서 DKImagePickerController, DKPhotoGallery, SDWebImage, SwiftyGif가 앱에서 빠졌습니다.
+- **Xcode와 최소 iOS 버전**: 2026-04-28부터 Xcode 26과 iOS 26 SDK, 2026-09-09부터 최소 iOS 13이 필요합니다. 지금 빌드는 둘 다 만족합니다. 2027년 4월부터는 iOS 27 SDK와 최소 iOS 15가 필요합니다. iOS 27 SDK로 만든 앱은 UIScene 수명 주기가 없으면 실행되지 않으므로, 그 전에 Flutter를 3.38 이상으로 올려야 합니다.
 - **Android 스토어 형식**: Play에는 AAB(`flutter build appbundle --target-platform android-arm64`)를 올려야 하고, Gradle에서 업로드 키로 서명해야 합니다. 지금 CI는 디버그 서명 위에 다시 서명하는 APK만 만듭니다.
 - 빌드 번호는 이제 빌드마다 증가합니다(`YYDDDHHMM`).
 
@@ -55,7 +57,7 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
   - 설명, 키워드, 저작권, 카테고리
   - 지원 URL, 개인정보 처리방침 URL([privacy.md](privacy.md))
   - 연령 등급, 콘텐츠 권리, EU DSA 판매자 정보(웹에서만 입력)
-  - 수출 규정 답변: 앱이 자체 암호화를 쓰므로 판매 지역에 따라 신고가 필요할 수 있음
+  - 수출 규정: 앱의 암호화(libsodium, TLS)는 표준 알고리즘이라 프랑스에서 판매할 때만 프랑스 암호화 신고가 필요합니다. 프랑스를 판매 지역에서 빼면 문서가 필요 없고, Info.plist의 `ITSAppUsesNonExemptEncryption=false`도 그대로 맞습니다.
   - 심사용 **항상 켜진 데모 Windows PC의 ID와 비밀번호**
 - 위험 요소: RustDesk 공식 앱이 이미 App Store에 있어서, 4.1/4.3(모방 앱) 조항으로 거절될 수 있습니다.
 

@@ -21,6 +21,10 @@ on:
         description: "Server public key, data/id_ed25519.pub (default: repository variable HJV_SERVER_KEY)"
         type: string
         required: false
+      testflight:
+        description: "iOS: upload the signed App Store build to TestFlight (private repository, App Store Connect secrets)"
+        type: boolean
+        default: false
   # GitHub CI is paused (docs/ci.md): no build on tag pushes (`push: tags: ["v*"]`) for now, only
   # runs started by hand
 
@@ -41,6 +45,9 @@ env:
   LLVM_VERSION: "15.0.6" # L27
   FLUTTER_VERSION: "3.24.5" # L28, Windows and iOS
   ANDROID_FLUTTER_VERSION: "3.24.5" # L29
+  # Not in upstream (macos-latest, image default). App Store Connect takes builds from Xcode 26 or later;
+  # with Xcode 27 (iOS 27 SDK) a Flutter 3.24.5 app, which has no UIScene life cycle, does not launch.
+  XCODE_VERSION: "26.6"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d" # L39-45, vcpkg 2026.07.29 = vcpkg.json baseline
   NDK_VERSION: "r28c" # L49
   BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
@@ -642,12 +649,13 @@ jobs:
 
   # upstream: L624-743 (build-rustdesk-ios), matrix entry L633-638. Dropped: the liblibrustdesk.a
   # upload (L715-719). Upstream only builds `flutter build ipa --release --no-codesign` (L721-727);
-  # with the signing secrets this job archives with manual signing and exports an IPA instead.
+  # with the signing secrets this job archives with manual signing and exports an IPA instead, and
+  # with the `testflight` input it uploads that IPA to App Store Connect.
   ios:
     name: iOS
     needs: generate-bridge
     if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'ios'
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 90
     defaults:
       run:
@@ -666,6 +674,17 @@ jobs:
         shell: bash
         working-directory: ${{ github.workspace }}
         run: echo "BUILD_NUMBER=$(date -u +%y%j%H%M)" >> "$GITHUB_ENV"
+
+      # Not in upstream: XCODE_VERSION above says why
+      - name: Select Xcode
+        working-directory: ${{ github.workspace }}
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_$XCODE_VERSION.app"
+          xcodebuild -version
+          case $(xcodebuild -version | head -n 1) in
+            "Xcode 26."*) ;;
+            *) echo "::error::Expected Xcode 26.x; see XCODE_VERSION."; exit 1 ;;
+          esac
 
       # L647-653
       - name: Install dependencies
@@ -863,6 +882,7 @@ jobs:
             esac
           fi
           echo "Signing $bundle_id with profile $profile_uuid; export method $method"
+          echo "IOS_EXPORT_METHOD=$method" >> "$GITHUB_ENV"
 
           # Manual signing on the Runner target only: its three build configurations are the ones that
           # name Runner.entitlements. Settings passed to xcodebuild would also hit the Pods targets.
@@ -931,10 +951,59 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
-      - name: Remove signing keychain and profile
+      # Not in upstream. Sends the signed App Store IPA to App Store Connect, where TestFlight lists it
+      # once Apple has processed it. Needs the App Store Connect API key (secrets ASC_KEY_ID,
+      # ASC_ISSUER_ID, ASC_PRIVATE_KEY) and the app's numeric Apple ID (ASC_APP_ID), see docs/ci.md.
+      # altool can exit 0 although the upload failed, so its output decides.
+      - name: Upload to TestFlight
+        if: env.IOS_SIGNING == 'true' && inputs.testflight
+        shell: bash
+        env:
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "$IOS_EXPORT_METHOD" != app-store-connect ]; then
+            echo "::error::TestFlight takes App Store builds, but the provisioning profile exports with method $IOS_EXPORT_METHOD."
+            exit 1
+          fi
+          for v in ASC_APP_ID ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Secret $v is not set (docs/ci.md)."
+              exit 1
+            fi
+          done
+          ipa="ios-out/$BUILD_NAME-ios.ipa"
+          info="$RUNNER_TEMP/Info.plist"
+          unzip -W -p "$ipa" 'Payload/*.app/Info.plist' > "$info"
+          pl() { /usr/libexec/PlistBuddy -c "Print :$1" "$info"; }
+          bundle_id=$(pl CFBundleIdentifier)
+          version=$(pl CFBundleShortVersionString)
+          build=$(pl CFBundleVersion)
+          # altool reads the key from ~/.appstoreconnect/private_keys/AuthKey_<key ID>.p8
+          keydir="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$keydir"
+          (umask 077 && printf '%s\n' "$ASC_PRIVATE_KEY" > "$keydir/AuthKey_$ASC_KEY_ID.p8")
+          out="$RUNNER_TEMP/altool.out"
+          status=0
+          xcrun altool --upload-package "$ipa" --type ios --apple-id "$ASC_APP_ID" --bundle-id "$bundle_id" \
+            --bundle-short-version-string "$version" --bundle-version "$build" \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" --output-format json > "$out" 2>&1 || status=$?
+          cat "$out"
+          if [ "$status" != 0 ] || grep -q '"product-errors"' "$out" \
+            || ! grep -Eq '"success-message"|UPLOAD SUCCEEDED|No errors uploading' "$out"; then
+            echo "::error::The upload to App Store Connect failed (altool exit status $status); see its output above."
+            exit 1
+          fi
+          echo "Uploaded $bundle_id $version ($build) to App Store Connect. TestFlight lists it once Apple has processed it." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove signing keychain, profile and API key
         if: always() && env.IOS_SIGNING == 'true'
         working-directory: ${{ github.workspace }}
         run: |
+          rm -rf "$HOME/.appstoreconnect/private_keys"
           security delete-keychain "$RUNNER_TEMP/hjviewer-signing.keychain-db" || true
           if [ -n "${IOS_PROFILE_UUID:-}" ]; then
             rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision" \
