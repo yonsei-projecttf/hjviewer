@@ -49,8 +49,21 @@ all checks passed: apps on this network can reach the server over 443
 | `deploy/Caddyfile` | `/ws/id`는 hbbs:21118, `/ws/relay`는 hbbr:21119로 전달, `X-Real-IP`/`X-Real-Port` 전달, `/api/*`는 404 |
 
 - **hbbs의 WS 포트(21118)를 외부에 공개하면 안 됩니다.** hbbs는 `X-Real-IP`/`X-Real-Port` 헤더를 그대로 믿기 때문에, 직접 접속할 수 있으면 주소를 위조할 수 있습니다.
-- `hbbr -k _`로 실행하므로 서버 키를 가진 클라이언트만 중계 서버를 쓸 수 있습니다.
+- `hbbr -k _`는 hbbs와 같은 **공개키**를 요구합니다. 공개키는 앱에 들어 있으므로, 이 설정은 다른 서버용으로 빌드된 RustDesk 앱을 막는 정도입니다. 이 서버용 앱을 가진 사람은 누구나 중계를 쓸 수 있습니다. 소수만 쓰는 서버는 아래 "소규모 비공개 운영"을 참고하세요.
 - Caddy 앞에 클라우드 로드밸런서를 두면 `{remote_host}` 대신 클라이언트 IP 헤더를 써야 합니다. Caddy의 `trusted_proxies`와 `{client_ip}`를 참고하세요.
+
+## 소규모 비공개 운영 (사용자 10명 이내)
+
+이 저장소는 공개입니다. 그래서 서버 주소와 공개키를 숨기는 것만으로는 다른 사람을 막을 수 없습니다. 소스로 앱을 빌드하면 누구나 서버를 쓸 수 있으므로, 다음 순서로 노출을 줄이세요.
+
+1. **실제 서버 값으로 빌드한 앱을 공개하지 않습니다.** 공개 저장소의 CI는 예시 값으로만 돌립니다. 실제 앱은 비공개 미러 저장소의 CI나 로컬에서 빌드해서 사용자 10명에게만 직접 나눠 줍니다. 비공개 저장소에서 빌드할 때도 `HJV_SERVER`/`HJV_SERVER_KEY`는 시크릿으로 넣으면 로그에 남지 않습니다.
+2. **접속은 비밀번호로 보호됩니다.** 서버를 쓸 수 있는 것과 남의 PC에 들어가는 것은 다른 문제입니다. 각 PC의 영구 비밀번호를 길게 설정하세요. 서버 운영자도 세션 내용을 볼 수 없습니다(종단 간 암호화).
+3. **낯선 기기를 확인합니다.** 등록된 기기 목록은 `data/db_v2.sqlite3`의 `peer` 테이블에 있습니다.
+   ```bash
+   docker compose exec hbbs sh -c 'apt-get -qq update >/dev/null; apt-get -qq install -y sqlite3 >/dev/null; sqlite3 /data/db_v2.sqlite3 "select id, created_at, info from peer"'
+   ```
+4. **중계 대역폭에 상한을 둡니다.** hbbr은 환경 변수로 중계 속도를 제한합니다. 예: `TOTAL_BANDWIDTH=100`(Mb/s, 전체), `SINGLE_BANDWIDTH=20`(Mb/s, 세션당). docker-compose의 hbbr에 `environment:`로 넣으세요.
+5. **서버 방화벽**에서는 80/443 외 인바운드를 모두 닫습니다. compose는 hbbs/hbbr 포트를 외부에 공개하지 않습니다.
 
 ## 대안: 공인 IP 없이 Cloudflare Tunnel로 띄우기
 

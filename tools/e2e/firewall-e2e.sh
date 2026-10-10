@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # End-to-end check of the whole connection path behind firewalls, on one Linux host.
 #
 # Two network namespaces stand in for a customer's PC (hjv-pc) and the controlling device
@@ -89,17 +90,19 @@ setup_ns() {
   fi
 }
 
-# <ns> <side> <cmd...>: runs cmd as this user inside the namespace, with the side's own HOME and
-# IPC directory (both sides are the same user, and the app's IPC lives in /tmp/HJViewer-<uid>)
+# <ns> <side> <cmd...>: runs cmd as this user inside the namespace, with the side's own HOME, IPC
+# directory (both sides are the same user, and the app's IPC lives in /tmp/HJViewer-<uid>) and host
+# name (hjv-<side>, so the real one never shows up in output)
 in_ns() {
   local ns=$1 side=$2
   shift 2
-  sudo ip netns exec "$ns" bash -c '
+  sudo ip netns exec "$ns" unshare --uts bash -c '
+    hostname "hjv-$7"
     mount --bind "$1" "/tmp/HJViewer-$2" || exit 1
     mkdir -p /tmp/.X11-unix && mount -t tmpfs -o mode=1777 tmpfs /tmp/.X11-unix || exit 1
     exec setpriv --reuid="$2" --regid="$3" --init-groups \
-      env -i HOME="$4" USER="$5" LOGNAME="$5" PATH=/usr/local/bin:/usr/bin:/bin SSL_CERT_FILE="$6" "${@:7}"
-  ' _ "$RUN/$side/ipc" "$USER_ID" "$GROUP_ID" "$RUN/$side/home" "$(id -un)" "$RUN/ca-bundle.pem" "$@"
+      env -i HOME="$4" USER="$5" LOGNAME="$5" PATH=/usr/local/bin:/usr/bin:/bin SSL_CERT_FILE="$6" "${@:8}"
+  ' _ "$RUN/$side/ipc" "$USER_ID" "$GROUP_ID" "$RUN/$side/home" "$(id -un)" "$RUN/ca-bundle.pem" "$side" "$@"
 }
 
 rm -rf "$RUN"
