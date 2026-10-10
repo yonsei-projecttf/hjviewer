@@ -385,14 +385,28 @@ jobs:
         shell: bash
         run: |
           sed -i '/dpiAware/d' res/manifest.xml
+          # Not in upstream. The installer registers <app name>.exe for the service, the Startup tray
+          # link, the Start menu and uninstall, but copies files under their own names, so the runner
+          # must carry the app's name: HJViewer when HJV_SERVER is set (src/hjviewer.rs). A build
+          # without it stays RustDesk, which matches rustdesk.exe on Windows' case-blind file system.
+          exe=rustdesk.exe
+          if [ -n "$HJV_SERVER" ]; then
+            if ! grep -q 'const APP_NAME: &str = "HJViewer";' src/hjviewer.rs; then
+              echo "::error::src/hjviewer.rs no longer names the app HJViewer; change the executable name here too."
+              exit 1
+            fi
+            exe=HJViewer.exe
+            mv ./rustdesk/rustdesk.exe "./rustdesk/$exe"
+          fi
           pushd ./libs/portable
           pip3 install -r requirements.txt
-          python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
+          python3 ./generate.py -f ../../rustdesk/ -o . -e "../../rustdesk/$exe"
           popd
           mkdir -p ./SignOutput
           # The file users download and run. Its name matters to the packer: a name ending in
           # "install.exe" installs at once and one with "-qs-" starts quick support (libs/portable).
           mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/HJViewer.exe
+          cp ./SignOutput/HJViewer.exe ./SignOutput/HJViewer-install.exe
 
       - name: Add license, source and third-party notices
         shell: bash
@@ -401,6 +415,7 @@ jobs:
           NOTICES_TARGET: x86_64-pc-windows-msvc
         run: |
           test -s SignOutput/HJViewer.exe
+          test -s SignOutput/HJViewer-install.exe
           bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" SignOutput . \
             rustdesk/usbmmidd_v2/License.txt "Amyuni USB Mobile Monitor virtual display driver (usbmmidd_v2)" \
             "$RUNNER_TEMP/RustDeskTempTopMostWindow/LICENSE" "RustDeskTempTopMostWindow (WindowInjection.dll)"
@@ -411,9 +426,47 @@ jobs:
           name: ${{ env.BUILD_NAME }}-windows-x86_64
           path: |
             upstream/rustdesk/SignOutput/HJViewer.exe
+            upstream/rustdesk/SignOutput/HJViewer-install.exe
             upstream/rustdesk/SignOutput/*.txt
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      # Not in upstream. Installs the build on the runner the way a user does and checks that it will
+      # start with Windows: HJViewer.exe in Program Files, an automatic, running service and the
+      # Startup tray link. The server's name is pointed at 127.0.0.1 first, so the runner never
+      # registers a device on the real server. Advisory (continue-on-error) until it has passed on a
+      # few builds; the step's own result shows in the run summary.
+      - name: Install smoke test
+        if: env.HJV_SERVER != ''
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
+          Add-Content -Path $hosts -Value "`n127.0.0.1 $env:HJV_SERVER"
+          Clear-DnsClientCache
+          # --silent-install is not awaited: the tray it starts keeps the process tree alive
+          Start-Process -FilePath (Resolve-Path .\SignOutput\HJViewer.exe) -ArgumentList '--silent-install'
+          $deadline = (Get-Date).AddMinutes(5)
+          do {
+            Start-Sleep -Seconds 5
+            $svc = Get-CimInstance Win32_Service -Filter "Name='HJViewer'" -ErrorAction SilentlyContinue
+          } until (($svc -and $svc.State -eq 'Running') -or (Get-Date) -gt $deadline)
+          $exe = Join-Path $env:ProgramFiles 'HJViewer\HJViewer.exe'
+          $lnk = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Startup\HJViewer Tray.lnk'
+          $failed = @()
+          if (-not (Test-Path $exe)) { $failed += "$exe is not installed" }
+          if (-not $svc) {
+            $failed += 'there is no HJViewer service'
+          } else {
+            Write-Host "service: $($svc.StartMode) $($svc.State) $($svc.PathName)"
+            if ($svc.StartMode -ne 'Auto' -or $svc.State -ne 'Running') { $failed += 'the HJViewer service is not automatic and running' }
+          }
+          if (-not (Test-Path $lnk)) { $failed += 'the Startup tray link is missing' }
+          Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = (Get-Date).AddMinutes(-10) } -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'HJViewer' } | Select-Object -First 10 | Format-List TimeCreated, Id, Message
+          foreach ($f in $failed) { Write-Host "::error::$f" }
+          if ($failed) { exit 1 }
+          Write-Host 'HJViewer is installed and will start with Windows.'
 
   # upstream: L1036-1327 (build-rustdesk-android), aarch64 matrix entry L1044-1050. Dropped: the
   # armv7/x86_64 entries, the universal APK job (L1329-1512), the librustdesk.so upload and the release

@@ -75,7 +75,7 @@ macOS와 Linux는 빌드하지 않습니다.
 | 잡 | 러너 | 하는 일 | 결과물 (artifact) |
 |---|---|---|---|
 | Bridge codegen | ubuntu-22.04 | 서버 변수를 확인하고 flutter_rust_bridge 코드를 생성합니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 매번 생성합니다. | 내부용 `bridge-artifact` (1일 보관) |
-| Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`, 서명 없음) |
+| Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`, 서명 없음) |
 | Android arm64 | ubuntu-24.04 | vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 릴리스 서명 | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned` |
 | iOS | macos-26 (Xcode 26.6) | vcpkg(arm64-ios) → Rust 정적 라이브러리 → `flutter build ipa` → 인증서가 있으면 서명된 IPA → `testflight`를 켜면 App Store Connect에 업로드 | `…-ios` 또는 `…-ios-unsigned` |
 
@@ -93,6 +93,8 @@ Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하�
   - Windows arm64, Android armv7/x86_64/universal APK
   - MSI, SBOM, GitHub Release 업로드
 - **Windows 보조 DLL**: `WindowInjection.dll`(RustDeskTempTopMostWindow)은 별도 잡 대신 Windows 잡 안에서 빌드합니다.
+- **Windows 실행 파일 이름**: 서버 값이 있는 빌드는 앱 이름이 HJViewer입니다. 그런데 설치 프로그램은 `<앱 이름>.exe`를 서비스·시작프로그램·시작 메뉴·앱 제거에 등록하면서 파일은 원래 이름대로 복사합니다. 그래서 패키지 안의 실행 파일을 `HJViewer.exe`로 바꿔 묶습니다. 1.5.0까지는 `rustdesk.exe`라서 설치해도 자동 시작이 되지 않았습니다.
+- **Windows 설치 시험**: 서버 값이 있는 빌드는 러너에서 `--silent-install`로 설치해 보고, `HJViewer.exe`, 자동·실행 중인 서비스, 시작프로그램의 트레이 바로가기를 확인합니다. 설치 전에 서버 이름을 127.0.0.1로 돌려 러너가 운영 서버에 기기를 등록하지 않게 합니다. 몇 번 통과할 때까지는 실패해도 빌드를 멈추지 않습니다(continue-on-error). 결과는 그 단계의 표시로 확인합니다.
 - **시간 제한**: 잡마다 `timeout-minutes`를 걸어, 멈춘 잡이 계속 비용을 쓰지 않게 했습니다.
 
 ## 비공개 빌드 저장소
@@ -135,7 +137,7 @@ jobs:
 
 - 새 버전을 나눠 줄 때마다 `HJV_VERSION`을 올립니다. upstream RustDesk 버전보다 낮으면 스크립트가 실패합니다. 상대 기기가 이 버전을 비교해 기능을 켜기 때문입니다.
 - iOS가 허용하는 형식은 숫자 세 개(`1.5.1`)뿐입니다.
-- Windows에서 내려받는 파일 이름은 `HJViewer.exe`입니다. 설치하면 `C:\Program Files\HJViewer\HJViewer.exe`가 됩니다. 압축 해제 실행기는 파일 이름을 읽습니다. 이름이 `install.exe`로 끝나면 바로 설치하고, `-qs-`가 들어가면 일회용 지원 모드로 실행합니다. 그러니 이름을 바꿀 때는 이 둘을 피하세요.
+- Windows에서 내려받는 파일 이름은 `HJViewer.exe`이고, 같은 파일을 `HJViewer-install.exe`로도 냅니다(더블클릭하면 바로 설치 화면). 설치하면 `C:\Program Files\HJViewer\HJViewer.exe`가 됩니다. 압축 해제 실행기는 파일 이름을 읽습니다. 이름이 `install.exe`로 끝나면 바로 설치하고, `-qs-`가 들어가면 일회용 지원 모드로 실행합니다. 그러니 이름을 바꿀 때는 이 둘을 피하세요.
 
 ## 저장소 변수 (필수)
 

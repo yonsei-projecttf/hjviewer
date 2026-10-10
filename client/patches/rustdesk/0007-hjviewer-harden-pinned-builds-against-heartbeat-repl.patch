@@ -1,0 +1,195 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 00:06:09 +0900
+Subject: [PATCH 7/8] hjviewer: harden pinned builds against heartbeat replies,
+ token leaks and renamed executables
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Heartbeat replies lose `strategy` and `disconnect`: either key lets
+  whoever answers /api/heartbeat rewrite options of every PC or end its
+  sessions. The hjviewer server answers it with 404, so such a reply
+  could only come from a TLS interceptor that the TLS fallback let
+  through.
+- The account token stays out of PunchHoleRequest and RequestRelay:
+  hbbs passes RequestRelay on to the peer unchanged, so the token would
+  reach every PC its owner connects to through the relay, and the
+  hjviewer server never reads it.
+- Windows: settings in the executable name ("…host=…,key=…") no longer
+  override the pinned servers and key.
+- The note asked for when a session ends is off: it goes to an audit
+  API the server does not have.
+
+Each is a thin hook into a function in src/hjviewer.rs; builds without
+HJV_SERVER keep upstream's behaviour.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hbbs_http/sync.rs       |  1 +
+ src/hjviewer.rs             | 79 +++++++++++++++++++++++++++++++++++++
+ src/hjviewer_e2e.rs         |  4 +-
+ src/platform/windows.rs     |  1 +
+ src/ui_session_interface.rs |  2 +-
+ 5 files changed, 84 insertions(+), 3 deletions(-)
+
+diff --git a/src/hbbs_http/sync.rs b/src/hbbs_http/sync.rs
+index 728e1e8..9132604 100644
+--- a/src/hbbs_http/sync.rs
++++ b/src/hbbs_http/sync.rs
+@@ -248,6 +248,7 @@ async fn start_hbbs_sync_async() {
+                 }
+                 if let Ok(s) = response {
+                     if let Ok(mut rsp) = serde_json::from_str::<HashMap::<&str, Value>>(&s) {
++                        crate::hjviewer::strip_heartbeat_controls(&mut rsp);
+                         if rsp.remove("sysinfo").is_some() {
+                             info_uploaded.uploaded = false;
+                             config::Status::set("sysinfo_hash", "".to_owned());
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+index 2d0ab46..131e9c5 100644
+--- a/src/hjviewer.rs
++++ b/src/hjviewer.rs
+@@ -40,6 +40,11 @@ pub fn apply() {
+         .write()
+         .unwrap()
+         .insert(keys::OPTION_ENABLE_CHECK_UPDATE.to_owned(), "N".to_owned());
++    // the note asked for when a session ends goes to an audit API the server does not have
++    config::OVERWRITE_LOCAL_SETTINGS
++        .write()
++        .unwrap()
++        .insert(keys::OPTION_ALLOW_ASK_FOR_NOTE.to_owned(), "N".to_owned());
+     let mut builtin = config::BUILTIN_SETTINGS.write().unwrap();
+     builtin.insert(keys::OPTION_HIDE_SERVER_SETTINGS.to_owned(), "Y".to_owned());
+     builtin.insert(keys::OPTION_HIDE_WEBSOCKET_SETTINGS.to_owned(), "Y".to_owned());
+@@ -51,6 +56,56 @@ pub fn apply() {
+         .insert("disable-account".to_owned(), "Y".to_owned());
+ }
+ 
++fn pinned() -> bool {
++    SERVER.is_some_and(|s| !s.is_empty())
++}
++
++/// A heartbeat reply can rewrite options of every PC (`strategy`) and end its sessions
++/// (`disconnect`). The hjviewer server answers /api/heartbeat with 404, so such a reply could only
++/// come from a TLS interceptor that the TLS fallback let through; hjviewer builds drop both keys.
++#[cfg(not(target_os = "ios"))]
++pub fn strip_heartbeat_controls(rsp: &mut std::collections::HashMap<&str, serde_json::Value>) {
++    if pinned() {
++        remove_heartbeat_controls(rsp);
++    }
++}
++
++#[cfg(not(target_os = "ios"))]
++fn remove_heartbeat_controls(rsp: &mut std::collections::HashMap<&str, serde_json::Value>) {
++    let dropped: Vec<&str> = ["strategy", "disconnect"]
++        .into_iter()
++        .filter(|k| rsp.remove(k).is_some())
++        .collect();
++    if !dropped.is_empty() {
++        hbb_common::throttled_log!(
++            crate::common::API_LOG_INTERVAL,
++            warn,
++            "ignored {dropped:?} in a heartbeat reply"
++        );
++    }
++}
++
++/// The account token rides along in PunchHoleRequest and RequestRelay, and hbbs hands RequestRelay
++/// to the peer as it is, so the token would reach every PC its owner connects to through the relay.
++/// The hjviewer server never reads it; hjviewer builds leave it out.
++pub fn rendezvous_token(token: String) -> String {
++    if pinned() {
++        String::new()
++    } else {
++        token
++    }
++}
++
++/// A renamed executable ("…host=…,key=…,api=….exe") would override the pinned ID, relay and API
++/// servers and the key; hjviewer builds take no settings from their file name.
++#[cfg(target_os = "windows")]
++pub fn refuse_exe_name_settings() -> hbb_common::ResultType<()> {
++    if pinned() {
++        hbb_common::bail!("hjviewer builds take no settings from the executable name");
++    }
++    Ok(())
++}
++
+ /// hjviewer builds leave out RustDesk's printer driver adapter (closed source), so remote printing
+ /// is offered only where one was installed by hand next to the executable.
+ #[cfg(target_os = "windows")]
+@@ -59,3 +114,27 @@ pub fn printer_adapter_present() -> bool {
+         .map(|exe| exe.with_file_name("printer_driver_adapter.dll").exists())
+         .unwrap_or(false)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[cfg(not(target_os = "ios"))]
++    #[test]
++    fn heartbeat_reply_loses_strategy_and_disconnect() {
++        let reply = r#"{"sysinfo":1,"disconnect":[3],"modified_at":5,
++            "strategy":{"config_options":{"approve-mode":"click","whitelist":""}}}"#;
++        let mut rsp: std::collections::HashMap<&str, serde_json::Value> =
++            serde_json::from_str(reply).unwrap();
++        remove_heartbeat_controls(&mut rsp);
++        let mut left: Vec<&str> = rsp.keys().copied().collect();
++        left.sort();
++        assert_eq!(left, ["modified_at", "sysinfo"]);
++    }
++
++    #[test]
++    fn rendezvous_token_only_kept_in_unpinned_builds() {
++        let kept = rendezvous_token("token".to_owned());
++        assert_eq!(kept, if pinned() { "" } else { "token" });
++    }
++}
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index 7325c83..11d4bff 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -86,7 +86,7 @@ enum Watch {
+ async fn desktop(id: String, password: String, watch: Watch) {
+     let (interface, _receiver) = session(&id, ConnType::DEFAULT_CONN);
+     let key = crate::get_key(true).await;
+-    let token = LocalConfig::get_option("access_token");
++    let token = crate::hjviewer::rendezvous_token(LocalConfig::get_option("access_token"));
+     let ((mut stream, direct, _pk, _kcp, typ), _) =
+         match Client::start(&id, &key, &token, ConnType::DEFAULT_CONN, interface.clone()).await {
+             Ok(res) => res,
+@@ -199,7 +199,7 @@ async fn forward(id: String, password: String, local_port: i32, remote_host: Str
+     let (interface, receiver) = session(&id, ConnType::PORT_FORWARD);
+     let lc = interface.lc.clone();
+     let key = crate::get_key(true).await;
+-    let token = LocalConfig::get_option("access_token");
++    let token = crate::hjviewer::rendezvous_token(LocalConfig::get_option("access_token"));
+     println!("hjv-e2e: forwarding 127.0.0.1:{local_port} to {remote_host}:{remote_port} on {id}");
+     if let Err(err) = crate::port_forward::listen(
+         id,
+diff --git a/src/platform/windows.rs b/src/platform/windows.rs
+index 438baf7..05bb75a 100644
+--- a/src/platform/windows.rs
++++ b/src/platform/windows.rs
+@@ -2109,6 +2109,7 @@ pub fn prepare_custom_client_update() -> ResultType<bool> {
+ }
+ 
+ pub fn get_license_from_exe_name() -> ResultType<CustomServer> {
++    crate::hjviewer::refuse_exe_name_settings()?;
+     let mut exe = std::env::current_exe()?.to_str().unwrap_or("").to_owned();
+     // if defined portable appname entry, replace original executable name with it.
+     if let Ok(portable_exe) = std::env::var(PORTABLE_APPNAME_RUNTIME_ENV_KEY) {
+diff --git a/src/ui_session_interface.rs b/src/ui_session_interface.rs
+index f28752e..d3d9bca 100644
+--- a/src/ui_session_interface.rs
++++ b/src/ui_session_interface.rs
+@@ -1960,7 +1960,7 @@ pub async fn io_loop<T: InvokeUiSession>(handler: Session<T>, round: u32) {
+     #[cfg(not(any(target_os = "android", target_os = "ios")))]
+     let (sender, mut receiver) = mpsc::unbounded_channel::<Data>();
+     *handler.sender.write().unwrap() = Some(sender.clone());
+-    let token = LocalConfig::get_option("access_token");
++    let token = crate::hjviewer::rendezvous_token(LocalConfig::get_option("access_token"));
+     let key = crate::get_key(false).await;
+     #[cfg(not(any(target_os = "android", target_os = "ios")))]
+     if handler.is_port_forward() {

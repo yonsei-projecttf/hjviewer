@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 00:06:31 +0900
+Subject: [PATCH 8/8] hjviewer: Windows executable named HJViewer.exe, no "Stop
+ service"
+
+The Windows package now ships the runner as HJViewer.exe (client
+workflow): the installer registers <app name>.exe for the service, the
+Startup tray link, the Start menu and uninstall, so with the app named
+HJViewer and the file still rustdesk.exe an installed PC never started
+with Windows. The version info of the runner and of the portable
+packer names the same file.
+
+"Stop service" (tray and settings) is hidden on Windows: it deletes the
+service and the Startup tray link, so one click would end starting with
+Windows; uninstalling remains the way out.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/windows/runner/Runner.rc | 4 ++--
+ libs/portable/Cargo.toml         | 2 +-
+ src/hjviewer.rs                  | 4 ++++
+ 3 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/flutter/windows/runner/Runner.rc b/flutter/windows/runner/Runner.rc
+index d610dbd..256c1b1 100644
+--- a/flutter/windows/runner/Runner.rc
++++ b/flutter/windows/runner/Runner.rc
+@@ -92,9 +92,9 @@ BEGIN
+             VALUE "CompanyName", "HJViewer contributors" "\0"
+             VALUE "FileDescription", "HJViewer Remote Desktop" "\0"
+             VALUE "FileVersion", VERSION_AS_STRING "\0"
+-            VALUE "InternalName", "rustdesk" "\0"
++            VALUE "InternalName", "HJViewer" "\0"
+             VALUE "LegalCopyright", "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 HJViewer contributors. AGPL-3.0." "\0"
+-            VALUE "OriginalFilename", "rustdesk.exe" "\0"
++            VALUE "OriginalFilename", "HJViewer.exe" "\0"
+             VALUE "ProductName", "HJViewer" "\0"
+             VALUE "ProductVersion", VERSION_AS_STRING "\0"
+         END
+diff --git a/libs/portable/Cargo.toml b/libs/portable/Cargo.toml
+index 2804fdf..382120a 100644
+--- a/libs/portable/Cargo.toml
++++ b/libs/portable/Cargo.toml
+@@ -28,7 +28,7 @@ native-windows-gui = {version = "1.0", default-features = false, features = ["an
+ [package.metadata.winres]
+ LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 HJViewer contributors. AGPL-3.0."
+ ProductName = "HJViewer"
+-OriginalFilename = "rustdesk.exe"
++OriginalFilename = "HJViewer.exe"
+ FileDescription = "HJViewer Remote Desktop"
+ #ProductVersion = ""
+ 
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+index 131e9c5..58433ff 100644
+--- a/src/hjviewer.rs
++++ b/src/hjviewer.rs
+@@ -48,6 +48,10 @@ pub fn apply() {
+     let mut builtin = config::BUILTIN_SETTINGS.write().unwrap();
+     builtin.insert(keys::OPTION_HIDE_SERVER_SETTINGS.to_owned(), "Y".to_owned());
+     builtin.insert(keys::OPTION_HIDE_WEBSOCKET_SETTINGS.to_owned(), "Y".to_owned());
++    // "Stop service" deletes the service and the Startup tray link, so an installed PC would stop
++    // starting with Windows; uninstalling remains the way out
++    #[cfg(target_os = "windows")]
++    builtin.insert(keys::OPTION_HIDE_STOP_SERVICE.to_owned(), "Y".to_owned());
+     drop(builtin);
+     // the hjviewer server has no account API, so login could only fail
+     config::HARD_SETTINGS

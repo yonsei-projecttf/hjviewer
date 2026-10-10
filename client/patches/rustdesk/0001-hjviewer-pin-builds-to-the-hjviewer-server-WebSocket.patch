@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 05:33:19 +0900
-Subject: [PATCH 1/6] hjviewer: pin builds to the hjviewer server, WebSocket +
+Subject: [PATCH 1/8] hjviewer: pin builds to the hjviewer server, WebSocket +
  WebRTC by default
 
 HJV_SERVER and HJV_SERVER_KEY, read at build time, name the server every

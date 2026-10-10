@@ -34,7 +34,7 @@
    gh workflow run client-build.yml -f platforms=all
    ```
 3. **설치**
-   - **PC(Windows)**: 아티팩트 `HJViewer-…-windows-x86_64`(zip) 안의 `HJViewer.exe`를 실행합니다. 상시 접속이 필요하면 앱에서 설치(서비스 등록)를 누릅니다. 화면에 ID와 비밀번호가 표시됩니다. 서명이 없어서 SmartScreen 경고가 뜰 수 있습니다.
+   - **PC(Windows)**: 아티팩트 `HJViewer-…-windows-x86_64`(zip) 안의 `HJViewer.exe`를 실행하면 화면에 ID와 비밀번호가 표시됩니다. 상시 접속이 필요한 PC는 `HJViewer-install.exe`로 설치합니다. 설치하면 PC를 켤 때 Windows 로그인 전부터 자동으로 실행됩니다. 사람 없이 접속하려면 영구 비밀번호를 정하세요([docs/distribution.md](docs/distribution.md)의 "Windows 피제어 PC 설치"). 서명이 없어서 SmartScreen 경고가 뜰 수 있습니다.
    - **Android**: `…-android-aarch64*.apk`를 설치합니다.
    - **iOS**: 서명 시크릿을 넣고 빌드한 IPA를 TestFlight나 기기에 설치합니다. 서명 없는 IPA는 설치할 수 없습니다.
 4. **연결**: 앱에서 PC의 ID를 입력하고 비밀번호로 접속합니다.
@@ -76,4 +76,4 @@ scripts/ci.sh                        # 커밋 전에 개발 PC의 CI
 
 HJViewer is a modified version of [RustDesk](https://github.com/rustdesk/rustdesk) and [rustdesk-server](https://github.com/rustdesk/rustdesk-server) (Copyright Purslane Tech Pte. Ltd., open-trade and the RustDesk contributors). It is licensed under the GNU Affero General Public License v3.0 only ([LICENSE](LICENSE)), as RustDesk is, and comes with no warranty. [NOTICE](NOTICE) lists the upstream versions and what HJViewer changes; every build ships its license, source location and third-party notices. HJViewer is not affiliated with or endorsed by RustDesk.
 
-RustDesk가 AGPL-3.0-only이므로 이 저장소도 AGPL-3.0-only입니다. 앱이나 서버를 쓰는 사람에게 수정한 소스를 제공해야 하고, 이 공개 저장소가 그 소스입니다. 사람들에게 나눠 주는 빌드는 반드시 이 저장소에 올라간 커밋으로 만들고, 결과물에 들어 있는 LICENSE·NOTICE·SOURCE·THIRD_PARTY_NOTICES 파일도 함께 전달하세요. 앱 이름과 아이콘은 HJViewer 것이고, 출처 표시로 "Powered by RustDesk"를 남겨 두었습니다. 실행 파일 이름과 `rustdesk://` URL 스킴 같은 내부 이름은 아직 rustdesk입니다. 개인정보 처리방침: [docs/privacy.md](docs/privacy.md)
+RustDesk가 AGPL-3.0-only이므로 이 저장소도 AGPL-3.0-only입니다. 앱이나 서버를 쓰는 사람에게 수정한 소스를 제공해야 하고, 이 공개 저장소가 그 소스입니다. 사람들에게 나눠 주는 빌드는 반드시 이 저장소에 올라간 커밋으로 만들고, 결과물에 들어 있는 LICENSE·NOTICE·SOURCE·THIRD_PARTY_NOTICES 파일도 함께 전달하세요. 앱 이름과 아이콘은 HJViewer 것이고, 출처 표시로 "Powered by RustDesk"를 남겨 두었습니다. Windows 실행 파일은 `HJViewer.exe`입니다. 모바일의 `rustdesk://` URL 스킴 같은 일부 내부 이름은 아직 rustdesk입니다. 개인정보 처리방침: [docs/privacy.md](docs/privacy.md)

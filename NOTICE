@@ -18,8 +18,9 @@ What HJViewer changes, since 2026-10-10:
 - the replacement image files in client/overlay;
 - at build time (.github/workflows/client-build.yml): the Android build switches to debug signing
   and more Gradle memory, the iOS build sets its own signing on the Runner target and drops
-  entitlements the provisioning profile does not grant, and the Windows package leaves out
-  RustDesk's printer driver and its closed-source adapter (remote printing is off).
+  entitlements the provisioning profile does not grant, and the Windows package ships the app
+  as HJViewer.exe and leaves out RustDesk's printer driver and its closed-source adapter (remote
+  printing is off).
 Everything else in this repository (scripts, tools, deploy, docs) is original work; the client
 workflow follows the steps of RustDesk's own CI.
 
@@ -30,5 +31,5 @@ include the Amyuni USB Mobile Monitor virtual display driver (usbmmidd_v2), Copy
 Amyuni Technologies Inc., under its own license.
 
 HJViewer is not affiliated with or endorsed by RustDesk or Purslane Tech Pte. Ltd. The app shows
-"Powered by RustDesk" as attribution, and some internal names still say rustdesk (the executable,
-the rustdesk:// URL scheme, Android package internals).
+"Powered by RustDesk" as attribution, and some internal names still say rustdesk (the rustdesk:// URL
+scheme on mobile, Android package internals).
