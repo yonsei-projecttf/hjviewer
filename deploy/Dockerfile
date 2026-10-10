@@ -19,7 +19,7 @@ RUN cd upstream/rustdesk-server \
     && cp target/release/hbbs target/release/hbbr /usr/local/bin/
 
 FROM ${REGISTRY}/debian:bookworm-slim
-LABEL org.opencontainers.image.source="https://github.com/ysfaculty/hjviewer" \
+LABEL org.opencontainers.image.source="https://github.com/yonsei-projecttf/hjviewer" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.description="HJViewer server: hbbs and hbbr from rustdesk-server with HJViewer's patches"
 RUN apt-get update \

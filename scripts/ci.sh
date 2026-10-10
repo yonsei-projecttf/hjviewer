@@ -151,7 +151,7 @@ check_site() { # <port> <CA file> <status of />, or "site" when / belongs to ano
   if [ "$root_status" != site ]; then
     code=$(curl -s -o "$CI/root.txt" -w '%{http_code}' "${curl_tls[@]}" "$url/" || true)
     echo "/ $code $(head -c 80 "$CI/root.txt")"
-    if [ "$code" != "$root_status" ] || ! grep -q 'github.com/ysfaculty/hjviewer' "$CI/root.txt"; then
+    if [ "$code" != "$root_status" ] || ! grep -q 'github.com/yonsei-projecttf/hjviewer' "$CI/root.txt"; then
       fail "$name: / answered $code without the source notice"
     fi
   fi

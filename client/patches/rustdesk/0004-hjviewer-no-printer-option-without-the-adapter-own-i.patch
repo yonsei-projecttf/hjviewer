@@ -65,7 +65,7 @@ index 473fead..1f2b595 100644
              channel.lightColor = Color.BLUE
              channel.lockscreenVisibility = Notification.VISIBILITY_PRIVATE
 diff --git a/flutter/lib/desktop/pages/install_page.dart b/flutter/lib/desktop/pages/install_page.dart
-index 8e72f8d..e3cfa1f 100644
+index 8e72f8d..2c22f90 100644
 --- a/flutter/lib/desktop/pages/install_page.dart
 +++ b/flutter/lib/desktop/pages/install_page.dart
 @@ -191,7 +191,6 @@ class _InstallPageBodyState extends State<_InstallPageBody>
@@ -87,10 +87,10 @@ index 8e72f8d..e3cfa1f 100644
                              hoverColor: Colors.transparent,
                              onTap: () => launchUrlString(
 -                                'https://rustdesk.com/privacy.html'),
-+                                'https://github.com/ysfaculty/hjviewer/blob/main/LICENSE'),
++                                'https://github.com/yonsei-projecttf/hjviewer/blob/main/LICENSE'),
                              child: Tooltip(
 -                              message: 'https://rustdesk.com/privacy.html',
-+                              message: 'https://github.com/ysfaculty/hjviewer/blob/main/LICENSE',
++                              message: 'https://github.com/yonsei-projecttf/hjviewer/blob/main/LICENSE',
                                child: Row(children: [
                                  Icon(Icons.launch_outlined, size: 16)
                                      .marginOnly(right: 5),

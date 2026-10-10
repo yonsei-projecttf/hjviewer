@@ -27,5 +27,5 @@ your device only. 앱은 설정, 기기 ID와 키 쌍, 접속했던 기기 ID를
 
 ## Contact / 문의
 
-Ask the operator of the server you use, or open an issue at https://github.com/ysfaculty/hjviewer.
+Ask the operator of the server you use, or open an issue at https://github.com/yonsei-projecttf/hjviewer.
 사용 중인 서버의 운영자에게 문의하거나, 위 저장소에 이슈를 남겨 주세요.

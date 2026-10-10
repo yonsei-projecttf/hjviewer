@@ -27,7 +27,7 @@ Ubuntu 22.04/24.04 서버 한 대에 HJViewer 서버(hbbs·hbbr)를 띄우고 HT
 
 - `DOMAIN`: 앱이 접속할 호스트 이름(예: `hjviewer.example.ac.kr`). 앱에 들어가는 값이라 정한 뒤에는 바꾸지 않습니다. 모르면 사용자에게 물어보세요.
 - DOMAIN이 이미 이 서버의 다른 웹사이트 주소라면, 사용자가 **그 사이트와 함께 쓰기로** 정했는지 확인합니다. 정했다면 2단계 4번에서 멈추지 않고 4-3의 "(나) 기존 사이트에 추가"로 갑니다. 그 사이트의 인증서를 그대로 씁니다.
-- B 경로: 설치할 **Release 버전** `VERSION`(예: `2026.10.10`). [Releases](https://github.com/ysfaculty/hjviewer/releases)의 `server-<VERSION>`입니다. 사용자가 알려 줍니다.
+- B 경로: 설치할 **Release 버전** `VERSION`(예: `2026.10.10`). [Releases](https://github.com/yonsei-projecttf/hjviewer/releases)의 `server-<VERSION>`입니다. 사용자가 알려 줍니다.
 - 인증서를 새로 받아야 할 때만 필요한 것: Let's Encrypt 알림을 받을 **이메일**과 약관 동의. 필요해지면 사용자에게 묻습니다.
 
 ## 하지 말 것
@@ -137,7 +137,7 @@ swapon --show
 ```bash
 DOMAIN=hjviewer.example.ac.kr     # ← 입력값
 [ -e /opt/hjviewer ] && { echo 'STOP: /opt/hjviewer가 이미 있음'; exit 1; }
-sudo env GIT_TERMINAL_PROMPT=0 git clone https://github.com/ysfaculty/hjviewer.git /opt/hjviewer || exit 1
+sudo env GIT_TERMINAL_PROMPT=0 git clone https://github.com/yonsei-projecttf/hjviewer.git /opt/hjviewer || exit 1
 cd /opt/hjviewer/deploy || exit 1
 sudo install -d -m 700 data       # 서버 개인키가 생길 곳: root만 읽을 수 있게
 sudo cp .env.example .env
@@ -209,7 +209,7 @@ VERSION=2026.10.10                # ← Release 버전 (입력값)
 DOMAIN=hjviewer.example.ac.kr     # ← 입력값
 for d in /opt/hjviewer /var/lib/hjviewer /etc/hjviewer /etc/systemd/system/hjviewer-hbbs.service; do [ -e "$d" ] && { echo "STOP: $d 이(가) 이미 있음"; exit 1; }; done
 T=$(mktemp -d) && cd "$T" || exit 1
-base="https://github.com/ysfaculty/hjviewer/releases/download/server-$VERSION"
+base="https://github.com/yonsei-projecttf/hjviewer/releases/download/server-$VERSION"
 pkg="hjviewer-server-$VERSION-linux-x86_64"
 if ! curl -fsSLO --max-time 120 "$base/$pkg.tar.gz" || ! curl -fsSLO --max-time 30 "$base/SHA256SUMS"; then echo 'STOP: 내려받기 실패'; exit 1; fi
 sha256sum -c SHA256SUMS || { echo 'STOP: 체크섬이 다름'; exit 1; }

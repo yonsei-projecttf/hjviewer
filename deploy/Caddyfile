@@ -23,6 +23,6 @@
 	}
 	# AGPL: users of the server reach its source from here
 	handle {
-		respond "HJViewer server (GNU AGPL-3.0). Source: https://github.com/ysfaculty/hjviewer" 200
+		respond "HJViewer server (GNU AGPL-3.0). Source: https://github.com/yonsei-projecttf/hjviewer" 200
 	}
 }

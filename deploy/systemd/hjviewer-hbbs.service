@@ -8,7 +8,7 @@
 
 [Unit]
 Description=HJViewer rendezvous server (hbbs)
-Documentation=https://github.com/ysfaculty/hjviewer/blob/main/docs/server-runbook.md
+Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/server-runbook.md
 After=network.target
 
 [Service]

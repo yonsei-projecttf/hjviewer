@@ -25,7 +25,7 @@ mkdir -p "$out"
 cp "$ROOT/LICENSE" "$out/LICENSE.txt"
 cp "$ROOT/NOTICE" "$out/NOTICE.txt"
 
-repo=${HJV_SOURCE_REPO:-ysfaculty/hjviewer}
+repo=${HJV_SOURCE_REPO:-yonsei-projecttf/hjviewer}
 commit=${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD)}
 if [ -z "${HJV_SKIP_SOURCE_CHECK:-}" ] && [ -n "${GITHUB_ACTIONS:-}" ]; then
   probe=$(mktemp -d)

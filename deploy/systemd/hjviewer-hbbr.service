@@ -3,7 +3,7 @@
 
 [Unit]
 Description=HJViewer relay server (hbbr)
-Documentation=https://github.com/ysfaculty/hjviewer/blob/main/docs/server-runbook.md
+Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/server-runbook.md
 After=network.target hjviewer-hbbs.service
 Wants=hjviewer-hbbs.service
 

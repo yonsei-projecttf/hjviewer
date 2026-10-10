@@ -57,7 +57,7 @@ index ab98328..b1a4309 100644
  </resources>
 \ No newline at end of file
 diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
-index 82f038c..5de41db 100644
+index 82f038c..5c056bc 100644
 --- a/flutter/lib/desktop/pages/desktop_setting_page.dart
 +++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
 @@ -2554,7 +2554,7 @@ class _AboutState extends State<_About> {
@@ -65,7 +65,7 @@ index 82f038c..5de41db 100644
                InkWell(
                    onTap: () {
 -                    launchUrlString('https://rustdesk.com/privacy.html');
-+                    launchUrlString('https://github.com/ysfaculty/hjviewer/blob/main/docs/privacy.md');
++                    launchUrlString('https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md');
                    },
                    child: Text(
                      translate('Privacy Statement'),
@@ -74,7 +74,7 @@ index 82f038c..5de41db 100644
                InkWell(
                    onTap: () {
 -                    launchUrlString('https://rustdesk.com');
-+                    launchUrlString('https://github.com/ysfaculty/hjviewer');
++                    launchUrlString('https://github.com/yonsei-projecttf/hjviewer');
                    },
                    child: Text(
                      translate('Website'),
@@ -82,7 +82,7 @@ index 82f038c..5de41db 100644
                    ).marginSymmetric(vertical: 4.0)),
 +              InkWell(
 +                  onTap: () {
-+                    launchUrlString('https://github.com/ysfaculty/hjviewer');
++                    launchUrlString('https://github.com/yonsei-projecttf/hjviewer');
 +                  },
 +                  child: Text(
 +                    'Source code (GNU AGPL-3.0)',
@@ -101,7 +101,7 @@ index 82f038c..5de41db 100644
                            ),
                            Text(
 diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
-index 198613a..b651d90 100644
+index 198613a..e105838 100644
 --- a/flutter/lib/mobile/pages/settings_page.dart
 +++ b/flutter/lib/mobile/pages/settings_page.dart
 @@ -36,7 +36,7 @@ class SettingsPage extends StatefulWidget implements PageShape {
@@ -109,7 +109,7 @@ index 198613a..b651d90 100644
  }
  
 -const url = 'https://rustdesk.com/';
-+const url = 'https://github.com/ysfaculty/hjviewer';
++const url = 'https://github.com/yonsei-projecttf/hjviewer';
  
  enum KeepScreenOn {
    never,
@@ -127,7 +127,7 @@ index 198613a..b651d90 100644
                title: Text(translate("Privacy Statement")),
                onPressed: (context) =>
 -                  launchUrlString('https://rustdesk.com/privacy.html'),
-+                  launchUrlString('https://github.com/ysfaculty/hjviewer/blob/main/docs/privacy.md'),
++                  launchUrlString('https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md'),
                leading: Icon(Icons.privacy_tip),
              )
            ],
@@ -136,7 +136,7 @@ index 198613a..b651d90 100644
          InkWell(
              onTap: () async {
 -              const url = 'https://rustdesk.com/';
-+              const url = 'https://github.com/ysfaculty/hjviewer';
++              const url = 'https://github.com/yonsei-projecttf/hjviewer';
                await launchUrl(Uri.parse(url));
              },
              child: Padding(

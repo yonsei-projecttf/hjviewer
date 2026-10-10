@@ -14,7 +14,7 @@
 80/443이 비어 있는 전용 VM이라면 다음과 같습니다(런북의 A 경로). 이미 nginx나 Apache가 80/443을 쓰는 서버는 [server-runbook.md](server-runbook.md)의 B 경로를 따르세요. B 경로는 Docker 없이 GitHub Release의 hbbs/hbbr을 systemd 서비스로 127.0.0.1에만 띄우고, 기존 웹 서버에 HJViewer 경로를 include합니다. 런북은 에이전트가 그대로 실행할 수 있게 쓴 전체 절차입니다.
 
 ```bash
-git clone https://github.com/ysfaculty/hjviewer.git && cd hjviewer/deploy
+git clone https://github.com/yonsei-projecttf/hjviewer.git && cd hjviewer/deploy
 sudo install -d -m 700 data       # 서버 개인키가 생길 곳: root만 읽을 수 있게
 cp .env.example .env              # HJV_DOMAIN=rd.example.com 으로 수정
 sudo docker compose build         # 첫 빌드는 hbbs/hbbr 컴파일로 10분 안팎
