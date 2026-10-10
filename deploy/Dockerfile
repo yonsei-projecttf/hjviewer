@@ -10,7 +10,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY scripts/ scripts/
+# only what the build reads, so that changes to other scripts keep the build cache
+COPY scripts/fetch-upstream.sh scripts/upstream.env scripts/
 COPY server/patches/ server/patches/
 RUN UPSTREAM_DIR=/src/upstream scripts/fetch-upstream.sh server
 RUN cd upstream/rustdesk-server \

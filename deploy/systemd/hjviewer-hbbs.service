@@ -1,0 +1,63 @@
+# hbbs, the HJViewer rendezvous server, as a systemd service without Docker, for a server whose
+# web server already owns port 443 (docs/server-runbook.md, path B). It listens on 127.0.0.1 only,
+# behind deploy/nginx-hjviewer-locations.conf; the clients' addresses come from the headers that
+# file sets, which is why nothing else may reach these ports.
+#   /opt/hjviewer/bin/hbbs          the binary (GitHub release hjviewer-server-*.tar.gz)
+#   /etc/hjviewer/hjviewer.env      HJV_DOMAIN and the relay caps (hjviewer.env.example)
+#   /var/lib/hjviewer               the server key pair and the device database
+
+[Unit]
+Description=HJViewer rendezvous server (hbbs)
+Documentation=https://github.com/ysfaculty/hjviewer/blob/main/docs/server-runbook.md
+After=network.target
+
+[Service]
+Type=simple
+User=hjviewer
+Group=hjviewer
+EnvironmentFile=/etc/hjviewer/hjviewer.env
+# hbbs stores a little configuration under $HOME as well
+Environment=HOME=/var/lib/hjviewer
+# no self-test socket on all interfaces
+Environment=TEST_HBBS=no
+StateDirectory=hjviewer
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/hjviewer
+# the key file and the database are created readable by this user only
+UMask=0077
+# -r: the relay handed to clients, which reach it as wss://<domain>/ws/relay
+ExecStart=/opt/hjviewer/bin/hbbs -b 127.0.0.1 -r ${HJV_DOMAIN}
+Restart=on-failure
+RestartSec=5
+
+# hbbs needs no privilege: its own directory and unprivileged local ports
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# so that it cannot crowd out the other services on the machine
+CPUQuota=200%
+MemoryMax=1G
+TasksMax=256
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

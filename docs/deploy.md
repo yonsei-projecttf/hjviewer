@@ -11,7 +11,7 @@
 
 ## 실행
 
-80/443이 비어 있는 전용 VM이라면 다음과 같습니다. 다른 서비스가 있는 서버, 특히 이미 nginx나 Apache가 80/443을 쓰는 서버는 [server-runbook.md](server-runbook.md)를 따르세요. 런북은 에이전트가 그대로 실행할 수 있게 쓴 전체 절차입니다.
+80/443이 비어 있는 전용 VM이라면 다음과 같습니다(런북의 A 경로). 이미 nginx나 Apache가 80/443을 쓰는 서버는 [server-runbook.md](server-runbook.md)의 B 경로를 따르세요. B 경로는 Docker 없이 GitHub Release의 hbbs/hbbr을 systemd 서비스로 127.0.0.1에만 띄우고, 기존 웹 서버에 HJViewer 경로를 include합니다. 런북은 에이전트가 그대로 실행할 수 있게 쓴 전체 절차입니다.
 
 ```bash
 git clone https://github.com/ysfaculty/hjviewer.git && cd hjviewer/deploy
@@ -51,15 +51,18 @@ all checks passed: apps on this network can reach the server over 443
 | `deploy/Dockerfile` | 고정된 upstream 커밋 + `server/patches`로 hbbs/hbbr 빌드 |
 | `deploy/docker-compose.yml` | A 경로: caddy(80/443 공개), hbbs, hbbr(내부 전용) |
 | `deploy/Caddyfile` | `/ws/id`는 hbbs:21118, `/ws/relay`는 hbbr:21119로 전달, `X-Real-IP`/`X-Real-Port` 전달, `/api/*`는 404 |
-| `deploy/docker-compose.behind-proxy.yml` | B 경로: 기존 웹 서버 뒤에서 hbbs, hbbr만 실행. 호스트 네트워크의 127.0.0.1에만 listen |
-| `deploy/nginx-hjviewer.conf`, `deploy/apache-hjviewer.conf` | B 경로의 웹 서버 사이트 설정. 위 Caddyfile과 같은 일을 합니다 |
+| `deploy/systemd/` | B 경로: hbbs, hbbr의 systemd 유닛과 설정 예시(`hjviewer.env.example`). 서비스 전용 사용자, 127.0.0.1에만 listen, 권한 없음, CPU·메모리 상한 |
+| `scripts/package-server.sh` | B 경로의 GitHub Release 패키지(바이너리, 유닛, 웹 서버 설정, 라이선스 고지)를 만듭니다 |
+| `deploy/docker-compose.behind-proxy.yml` | 이미 Docker를 쓰는 서버에서 B 경로 대신 쓸 수 있는 compose 파일: 기존 웹 서버 뒤에서 hbbs, hbbr만 실행. 호스트 네트워크의 127.0.0.1에만 listen |
+| `deploy/nginx-hjviewer.conf`, `deploy/apache-hjviewer.conf` | 기존 웹 서버의 사이트 설정. 위 Caddyfile과 같은 일을 합니다 |
 | `deploy/nginx-hjviewer-locations.conf` | nginx에 넣을 HJViewer 경로(`/ws/id`, `/ws/relay`, `/api/`). 새 사이트 파일이 include하고, 이미 운영 중인 사이트와 도메인을 함께 쓸 때는 그 사이트의 server 블록에 include 한 줄로 넣습니다 |
-| `deploy/.env.example` | `HJV_DOMAIN`과 선택 설정: `COMPOSE_FILE`(B 경로), 이미지 레지스트리, 빌드 병렬 수, 중계 대역폭 상한 |
+| `deploy/.env.example` | compose용 `HJV_DOMAIN`과 선택 설정: `COMPOSE_FILE`(behind-proxy), 이미지 레지스트리, 빌드 병렬 수, 중계 대역폭 상한 |
 
 두 compose 파일은 프로젝트 이름을 `hjviewer`로 고정해, 같은 서버의 다른 compose 프로젝트와 섞이지 않게 합니다. 기반 이미지(rust, debian, caddy)는 기본으로 Docker 공식 이미지의 ECR 미러(public.ecr.aws)에서 받습니다. Docker Hub는 익명 다운로드를 주소마다 제한해서, 학내 NAT처럼 주소를 함께 쓰는 곳에서 막힐 수 있기 때문입니다. hbbs와 hbbr 컨테이너는 Linux 권한(capability)을 모두 버리고 실행합니다.
 
 - **hbbs의 WS 포트(21118)를 외부에 공개하면 안 됩니다.** hbbs는 `X-Real-IP`/`X-Real-Port` 헤더를 그대로 믿기 때문에, 직접 접속할 수 있으면 주소를 위조할 수 있습니다.
-- B 경로는 이 때문에 hbbs/hbbr을 127.0.0.1에 묶습니다. 포트를 127.0.0.1에 게시(publish)하는 방식은 Docker 28 미만에서 같은 LAN의 다른 기기가 닿을 수 있어서 쓰지 않았습니다. 다만 그 서버에 로그인한 다른 사용자는 127.0.0.1에 접속할 수 있습니다.
+- B 경로(systemd)와 behind-proxy compose는 이 때문에 hbbs/hbbr을 127.0.0.1에 묶습니다. 포트를 127.0.0.1에 게시(publish)하는 Docker 방식은 Docker 28 미만에서 같은 LAN의 다른 기기가 닿을 수 있어서 쓰지 않았습니다. 다만 그 서버에 로그인한 다른 사용자는 127.0.0.1에 접속할 수 있습니다.
+- 웹 서버는 `X-Real-IP`, `X-Real-Port`, `X-Forwarded-For`를 클라이언트가 보낸 값과 상관없이 항상 덮어써야 합니다. 저장소의 nginx·Apache 설정이 그렇게 하고, `scripts/ci.sh`가 확인합니다.
 - `hbbr -k _`는 hbbs와 같은 **공개키**를 요구합니다. 공개키는 앱에 들어 있으므로, 이 설정은 다른 서버용으로 빌드된 RustDesk 앱을 막는 정도입니다. 이 서버용 앱을 가진 사람은 누구나 중계를 쓸 수 있습니다. 소수만 쓰는 서버는 아래 "소규모 비공개 운영"을 참고하세요.
 - Caddy 앞에 클라우드 로드밸런서를 두면 `{remote_host}` 대신 클라이언트 IP 헤더를 써야 합니다. Caddy의 `trusted_proxies`와 `{client_ip}`를 참고하세요.
 
@@ -125,7 +128,7 @@ all checks passed: apps on this network can reach the server over 443
 
 ## 업데이트
 
-패치나 upstream 고정 커밋(`scripts/upstream.env`)이 바뀌면 다음을 실행합니다. B 경로도 `.env`의 `COMPOSE_FILE` 덕분에 명령이 같습니다.
+패치나 upstream 고정 커밋(`scripts/upstream.env`)이 바뀌면 compose로 띄운 서버는 다음을 실행합니다. behind-proxy도 `.env`의 `COMPOSE_FILE` 덕분에 명령이 같습니다. systemd(B 경로)는 새 Release를 받아 바이너리를 바꿉니다([server-runbook.md](server-runbook.md) 6단계).
 
 ```bash
 git pull --ff-only && sudo docker compose build && sudo docker compose up -d

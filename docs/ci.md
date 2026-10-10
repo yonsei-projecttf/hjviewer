@@ -15,7 +15,7 @@ scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe�
 | 단계 | 하는 일 |
 |---|---|
 | server | `build/ci/upstream`에 upstream rustdesk-server를 새로 받아 `server/patches`를 적용하고, 신호·중계 통합 테스트(`tcp_signaling`, `relay_pairing`)를 돌립니다. `hjv-probe`, `hjv-load`도 빌드합니다. |
-| deploy | 작업 트리 사본(`build/ci/src`, 커밋하지 않은 변경 포함)으로 런북의 배포를 Docker에서 그대로 합니다. B 경로는 hbbs/hbbr을 127.0.0.1에 띄우고, 그 앞에 `deploy/nginx-hjviewer.conf`와 `deploy/apache-hjviewer.conf`를 차례로 둡니다. nginx는 기존 사이트에 `deploy/nginx-hjviewer-locations.conf`를 include 한 줄로 넣은 경우도 함께 시험합니다. 이 기존 사이트는 HTTP/2를 켜고 모든 경로를 로그인 페이지로 보내는 WordPress 같은 사이트입니다. 웹 서버는 운영 서버와 같은 Ubuntu 패키지를 내려받아 풀어서 실행할 뿐, 설치하지 않습니다. 그다음 A 경로(Caddy)를 같은 이미지와 키로 띄웁니다. |
+| deploy | 작업 트리 사본(`build/ci/src`, 커밋하지 않은 변경 포함)으로 런북의 배포를 Docker에서 그대로 합니다. B 경로는 hbbs/hbbr을 127.0.0.1에 띄우고, 그 앞에 `deploy/nginx-hjviewer.conf`와 `deploy/apache-hjviewer.conf`를 차례로 둡니다. nginx는 기존 사이트에 `deploy/nginx-hjviewer-locations.conf`를 include 한 줄로 넣은 경우도 함께 시험합니다. 이 기존 사이트는 HTTP/2를 켜고 모든 경로를 로그인 페이지로 보내는 WordPress 같은 사이트입니다. 마지막으로 런북 B 경로의 Release 패키지를 `scripts/package-server.sh`로 만들고, 그 안의 systemd 유닛을 띄워 같은 nginx 뒤에서 시험합니다. 개발 PC를 건드리지 않도록 런타임 유닛, 임시 사용자, 별도 디렉터리로 바꾼 이름만 다르고, 보안 옵션과 자원 상한은 배포 파일 그대로입니다. 웹 서버는 운영 서버와 같은 Ubuntu 패키지를 내려받아 풀어서 실행할 뿐, 설치하지 않습니다. 그다음 A 경로(Caddy)를 같은 이미지와 키로 띄웁니다. |
 
 배포 시험이 매번 확인하는 것은 다음과 같습니다.
 
@@ -26,10 +26,22 @@ scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe�
 - 개인키 권한(700/600, root), 컨테이너 권한 제거(`cap_drop: ALL`), `.env`의 `COMPOSE_FILE`과 대역폭 상한이 적용되는지
 - Apache 오류 로그에 fail2ban이 인증 실패로 세는 `AH01630`이 없는지
 - 기존 사이트에 추가한 경우: HTTP/2를 켠 listener에서도 WebSocket이 열리는지, 사이트의 다른 경로(`/`, `/wp-json/`, `.php`)와 HTTP/2가 그대로인지
+- 클라이언트가 보낸 `X-Real-IP`, `X-Forwarded-For`, `X-Real-Port`가 nginx와 Apache에서 실제 주소로 덮어써지는지(받은 헤더를 그대로 돌려주는 서버로 확인)
+- systemd 유닛: 127.0.0.1에만 listen하는지, 키 파일이 처음부터 600인지, 권한이 없는지, `hjviewer.env`의 대역폭 상한이 적용되는지, 샌드박스 때문에 생긴 오류가 없는지
 
-시험용 스택은 compose 프로젝트 `hjv-ci`로 띄우고, 끝나면 그 프로젝트만 지웁니다. 웹 서버와 Caddy는 127.0.0.1의 18080–18082, 18443–18446 포트를 쓰므로 이 PC의 80/443은 건드리지 않습니다. 다만 B 경로는 운영과 같이 21115–21119를 쓰므로, 이 PC에서 실제 HJViewer 서버가 돌고 있으면 시험이 시작하지 않고 멈춥니다. Docker 명령은 런북처럼 sudo로 실행합니다.
+시험용 스택은 compose 프로젝트 `hjv-ci`로 띄우고, 끝나면 그 프로젝트만 지웁니다. 웹 서버와 Caddy는 127.0.0.1의 18080–18082, 18443–18448, 18599 포트를 쓰므로 이 PC의 80/443은 건드리지 않습니다. 다만 B 경로는 운영과 같이 21115–21119를 쓰므로, 이 PC에서 실제 HJViewer 서버가 돌고 있으면 시험이 시작하지 않고 멈춥니다. Docker 명령은 런북처럼 sudo로 실행합니다.
 
-앱(Windows/Android/iOS)은 아직 개발 PC에서 빌드하지 않습니다. iOS는 macOS, Windows 앱은 Windows가 필요합니다. 앱 빌드가 필요해지면 아래 워크플로를 직접 실행하거나 로컬 빌드 환경을 따로 만듭니다.
+## 서버 Release 만들기 (런북 B 경로용)
+
+1. 변경을 커밋해 공개 저장소의 main에 올립니다. 패키지에 들어가는 고지가 그 커밋을 가리키므로, 공개된 커밋으로만 만듭니다. 스크립트가 확인합니다.
+2. `scripts/package-server.sh <버전>`을 실행합니다(예: `2026.10.10`). 새로 받은 upstream에 `server/patches`를 적용해 빌드하고, 바이너리, systemd 유닛, 웹 서버 설정, 라이선스 고지를 `build/release/hjviewer-server-<버전>-linux-x86_64.tar.gz`로 묶습니다. `SHA256SUMS`도 함께 만듭니다.
+3. `gh release create server-<버전> build/release/hjviewer-server-<버전>-linux-x86_64.tar.gz build/release/SHA256SUMS`로 올립니다. Release를 만들어도 워크플로는 돌지 않습니다.
+
+개발 PC는 운영 서버와 같은 Ubuntu 24.04라서, 여기서 빌드한 바이너리(glibc 2.39)가 그대로 돕니다.
+
+## 앱 빌드
+
+앱(Windows/Android/iOS)은 개발 PC에서 빌드하지 않습니다. iOS는 macOS, Windows 앱은 Windows가 필요하기 때문입니다. 실제 서버 값으로 빌드하는 앱은 공개 저장소를 따라가는 **비공개 미러 저장소**의 GitHub Actions에서 아래 워크플로로 만듭니다. 2026-10-10에 사용자가 정한 방식이고, GitHub CI는 그 저장소에서만 씁니다. 서버 주소와 공개키, 서명 시크릿은 그 저장소의 Secrets에만 둡니다. 실제 서버 값이 든 앱이 공개 아티팩트로 남지 않게 하기 위해서입니다.
 
 ## 앱 빌드 워크플로 (GitHub Actions, 지금은 직접 실행할 때만)
 

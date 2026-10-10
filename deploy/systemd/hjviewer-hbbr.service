@@ -1,0 +1,55 @@
+# hbbr, the HJViewer relay, as a systemd service without Docker; see hjviewer-hbbs.service. It uses
+# the key pair hbbs creates in /var/lib/hjviewer (-k _: relay only for clients holding that key).
+
+[Unit]
+Description=HJViewer relay server (hbbr)
+Documentation=https://github.com/ysfaculty/hjviewer/blob/main/docs/server-runbook.md
+After=network.target hjviewer-hbbs.service
+Wants=hjviewer-hbbs.service
+
+[Service]
+Type=simple
+User=hjviewer
+Group=hjviewer
+# TOTAL_BANDWIDTH / SINGLE_BANDWIDTH (Mb/s) come from here; empty keeps hbbr's defaults
+EnvironmentFile=/etc/hjviewer/hjviewer.env
+Environment=HOME=/var/lib/hjviewer
+StateDirectory=hjviewer
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/hjviewer
+UMask=0077
+# hbbr would make a key pair of its own if it started first; wait for the one hbbs writes
+ExecStartPre=/usr/bin/timeout 10 /bin/sh -c 'until [ -s id_ed25519.pub ]; do sleep 0.2; done'
+ExecStart=/opt/hjviewer/bin/hbbr -b 127.0.0.1 -k _
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CPUQuota=200%
+MemoryMax=1G
+TasksMax=256
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# Writes the notices that ship next to a client build, into <out dir>:
+# Writes the notices that ship next to a client build (or, with NOTICES_COMPONENT=server, next to
+# the hbbs/hbbr binaries of scripts/package-server.sh), into <out dir>:
 #   LICENSE.txt              the GNU AGPL-3.0
 #   NOTICE.txt               upstream projects, copyright holders and what HJViewer changes
 #   SOURCE.txt               where the Corresponding Source of this exact build is
@@ -39,8 +40,13 @@ fi
   echo "and comes with ABSOLUTELY NO WARRANTY."
   echo
   echo "Corresponding Source of this build: https://github.com/$repo/tree/$commit"
-  echo "(scripts/upstream.env pins the upstream RustDesk commits; client/patches and client/overlay"
-  echo "hold every change; scripts/fetch-upstream.sh client reproduces the tree that was built)"
+  if [ "${NOTICES_COMPONENT:-client}" = server ]; then
+    echo "(scripts/upstream.env pins the upstream rustdesk-server commit; server/patches holds every"
+    echo "change; scripts/fetch-upstream.sh server reproduces the tree that was built)"
+  else
+    echo "(scripts/upstream.env pins the upstream RustDesk commits; client/patches and client/overlay"
+    echo "hold every change; scripts/fetch-upstream.sh client reproduces the tree that was built)"
+  fi
   if [ "${GITHUB_REPOSITORY:-}" = "$repo" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
     echo "Built by: https://github.com/$repo/actions/runs/$GITHUB_RUN_ID"
   fi
