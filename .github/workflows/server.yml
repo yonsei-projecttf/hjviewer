@@ -1,56 +1,17 @@
+# Server CI: the checks of scripts/ci.sh, which normally runs on the development machine
+# (docs/ci.md). GitHub CI is paused, so this workflow runs only when started by hand.
 name: server
 
 on:
-  push:
-    paths:
-      - "server/**"
-      - "scripts/**"
-      - "deploy/**"
-      - "tools/**"
-      - ".github/workflows/server.yml"
-  pull_request:
-    paths:
-      - "server/**"
-      - "scripts/**"
-      - "deploy/**"
-      - "tools/**"
-      - ".github/workflows/server.yml"
   workflow_dispatch:
 
 jobs:
-  test:
+  ci:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install build dependencies
+      - name: Build dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
       - uses: dtolnay/rust-toolchain@stable
-      - name: Fetch upstream and apply patches
-        run: scripts/fetch-upstream.sh server
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            upstream/rustdesk-server
-            tools/hjv-probe
-            tools/hjv-load
-      - name: Signaling and relay tests
-        working-directory: upstream/rustdesk-server
-        run: cargo test --release --locked --test tcp_signaling --test relay_pairing
-      - name: Build hjv-probe
-        working-directory: tools/hjv-probe
-        run: cargo build --release --locked
-      - name: Build hjv-load
-        working-directory: tools/hjv-load
-        run: cargo build --release --locked
-
-  image:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      # Docker Hub rate-limits anonymous pulls from shared runner addresses
-      - name: Build the server image
-        run: docker build --build-arg REGISTRY=public.ecr.aws/docker/library -f deploy/Dockerfile -t hjviewer-server:ci .
-      - name: Smoke test
-        run: |
-          docker run --rm hjviewer-server:ci hbbs --help
-          docker run --rm hjviewer-server:ci hbbr --help
+      - name: Server tests and the deployment test
+        run: scripts/ci.sh all

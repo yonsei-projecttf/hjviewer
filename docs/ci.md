@@ -1,4 +1,36 @@
-# 앱 빌드 (GitHub Actions)
+# CI와 앱 빌드
+
+**지금은 GitHub Actions를 쓰지 않습니다**(2026-10-10부터 일시 중지). 검증은 개발 PC에서 `scripts/ci.sh`로 합니다. 개발 PC는 운영 서버와 같은 환경으로 맞춥니다. Ubuntu 24.04에 [server-runbook.md](server-runbook.md) 3-1단계와 같은 Docker 패키지를 설치합니다(docker.io 29.1.3, docker-compose-v2 2.40.3, docker-buildx 0.30.1).
+
+두 워크플로(`server.yml`, `client-build.yml`)는 저장소에 남아 있습니다. 다만 push나 태그로는 실행되지 않고, Actions 화면에서 직접 실행할 때만 돕니다. 다시 켜려면 `on:`에 `push` 트리거를 되돌립니다.
+
+## 개발 PC의 CI: `scripts/ci.sh`
+
+```bash
+scripts/ci.sh            # 전체 (처음에는 15분 안팎, 이후에는 캐시로 더 빠름)
+scripts/ci.sh server     # 서버 테스트만
+scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe·hjv-load가 있어야 함)
+```
+
+| 단계 | 하는 일 |
+|---|---|
+| server | `build/ci/upstream`에 upstream rustdesk-server를 새로 받아 `server/patches`를 적용하고, 신호·중계 통합 테스트(`tcp_signaling`, `relay_pairing`)를 돌립니다. `hjv-probe`, `hjv-load`도 빌드합니다. |
+| deploy | 작업 트리 사본(`build/ci/src`, 커밋하지 않은 변경 포함)으로 런북의 배포를 Docker에서 그대로 합니다. B 경로는 hbbs/hbbr을 127.0.0.1에 띄우고, 그 앞에 `deploy/nginx-hjviewer.conf`와 `deploy/apache-hjviewer.conf`를 차례로 둡니다. 웹 서버는 운영 서버와 같은 Ubuntu 패키지를 내려받아 풀어서 실행할 뿐, 설치하지 않습니다. 그다음 A 경로(Caddy)를 같은 이미지와 키로 띄웁니다. |
+
+배포 시험이 매번 확인하는 것은 다음과 같습니다.
+
+- hbbs/hbbr이 127.0.0.1에서만 listen하는지
+- 런북 7단계의 WebSocket 확인(`/ws/id`, `/ws/relay`가 101), `/api/`가 404인지, 첫 화면에 소스 안내가 있는지
+- `hjv-probe` 전 단계, 그리고 `hjv-load`로 PC 3대 등록과 중계 1세션
+- hbbs가 PC마다 실제 포트를 받는지(`X-Real-Port` 전달), 세 키 값(`.pub`, hbbs, hbbr)이 같은지
+- 개인키 권한(700/600, root), 컨테이너 권한 제거(`cap_drop: ALL`), `.env`의 `COMPOSE_FILE`과 대역폭 상한이 적용되는지
+- Apache 오류 로그에 fail2ban이 인증 실패로 세는 `AH01630`이 없는지
+
+시험용 스택은 compose 프로젝트 `hjv-ci`로 띄우고, 끝나면 그 프로젝트만 지웁니다. 웹 서버와 Caddy는 127.0.0.1의 18080–18082, 18443–18445 포트를 쓰므로 이 PC의 80/443은 건드리지 않습니다. 다만 B 경로는 운영과 같이 21115–21119를 쓰므로, 이 PC에서 실제 HJViewer 서버가 돌고 있으면 시험이 시작하지 않고 멈춥니다. Docker 명령은 런북처럼 sudo로 실행합니다.
+
+앱(Windows/Android/iOS)은 아직 개발 PC에서 빌드하지 않습니다. iOS는 macOS, Windows 앱은 Windows가 필요합니다. 앱 빌드가 필요해지면 아래 워크플로를 직접 실행하거나 로컬 빌드 환경을 따로 만듭니다.
+
+## 앱 빌드 워크플로 (GitHub Actions, 지금은 직접 실행할 때만)
 
 `.github/workflows/client-build.yml`이 앱을 빌드합니다. 빌드 대상은 다음 세 가지입니다.
 
@@ -16,7 +48,7 @@ macOS와 Linux는 빌드하지 않습니다.
 ## 실행
 
 - **수동 실행**: Actions → client → Run workflow에서 `platforms`(windows / android / ios / all)를 고릅니다. CLI로는 `gh workflow run client-build.yml -f platforms=android`입니다. 이 버튼은 워크플로 파일이 기본 브랜치에 있어야 나타납니다.
-- **태그**: `v`로 시작하는 태그를 푸시하면 전체를 빌드합니다. 예: `git tag v0.1.0 && git push origin v0.1.0`
+- **태그**: GitHub CI를 다시 켜면 `v`로 시작하는 태그를 푸시할 때 전체를 빌드합니다(지금은 꺼 둠). 예: `git tag v0.1.0 && git push origin v0.1.0`
 - **결과물**: 실행 페이지 아래의 Artifacts에서 받거나 `gh run download <run-id>`를 씁니다. 보관 기간은 7일(워크플로의 `ARTIFACT_RETENTION_DAYS`)이므로 필요한 파일은 바로 받아 두세요. 이름의 `<이름>`은 태그 빌드면 태그(`v0.1.0`), 수동 실행이면 `1.5.0-<커밋 7자리>`입니다.
 
 ## 잡 구성

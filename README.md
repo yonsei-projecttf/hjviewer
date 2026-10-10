@@ -5,7 +5,7 @@
 
 - 설계와 동작 원리: [docs/architecture.md](docs/architecture.md)
 - 서버 배포: [docs/deploy.md](docs/deploy.md)
-- 앱 빌드(CI): [docs/ci.md](docs/ci.md)
+- CI(개발 PC)와 앱 빌드: [docs/ci.md](docs/ci.md)
 - 방화벽 E2E 검증과 결과: [docs/e2e.md](docs/e2e.md)
 - 앱 배포(10명 이내, 스토어 없이)와 스토어 자동화에 필요한 것: [docs/distribution.md](docs/distribution.md)
 - 서버에서 작업할 사람·에이전트용 배포 절차: [docs/server-runbook.md](docs/server-runbook.md)
@@ -14,19 +14,19 @@
 
 | 항목 | 상태 |
 |---|---|
-| 서버 CI: 패치 적용, 신호·중계 통합 테스트, Docker 이미지 | 통과 |
-| 앱 CI: Windows x64 / Android arm64 / iOS | 세 플랫폼 빌드 성공 (서버 값은 예시 도메인이므로 실제 서버를 배포한 뒤 다시 빌드) |
+| 개발 PC CI (`scripts/ci.sh`): 서버 패치의 신호·중계 테스트, 런북대로 한 Docker 배포 | 통과. B 경로(127.0.0.1의 hbbs/hbbr 앞에 nginx, Apache), A 경로(Caddy) 모두 WebSocket, 등록, 중계, 키, 권한 확인 |
+| 앱 빌드: Windows x64 / Android arm64 / iOS | GitHub Actions에서 세 플랫폼 빌드 성공. 앱 이름·ID·HJ 아이콘·라이선스 파일 확인. 서버 값은 예시 도메인이라 실제 서버를 배포한 뒤 다시 빌드. GitHub CI는 지금 일시 중지 |
 | 방화벽 E2E: 실제 클라이언트, 서버로 가는 443만 허용 | 등록, 비밀번호 로그인, 데이터, **원격 화면** 모두 통과 (중계). UDP를 허용하면 WebRTC P2P로 통과 |
-| 남은 일 | 서버 배포(도메인), 실기기 테스트, 아이콘 등 브랜딩 |
+| 남은 일 | 서버 배포([런북](docs/server-runbook.md)), 실제 서버 값으로 앱 빌드, 실기기 테스트 |
 
 ## 빠른 시작: 실제 기기로 연결하기
 
 1. **서버**: 도메인 하나와 리눅스 VM에서 `deploy/`를 실행합니다(80/443만 공개). → [docs/deploy.md](docs/deploy.md)
    ```bash
    cd deploy && cp .env.example .env   # HJV_DOMAIN=rd.example.com
-   docker compose up -d --build && cat data/id_ed25519.pub
+   sudo docker compose build && sudo docker compose up -d && sudo cat data/id_ed25519.pub
    ```
-2. **앱 빌드**: 서버 값을 저장소 변수로 넣고 CI를 실행합니다. → [docs/ci.md](docs/ci.md)
+2. **앱 빌드**: 서버 값을 저장소 변수로 넣고 GitHub Actions의 client 워크플로를 실행합니다. GitHub CI는 지금 일시 중지 상태라 직접 실행할 때만 돕니다. → [docs/ci.md](docs/ci.md)
    ```bash
    gh variable set HJV_SERVER --body rd.example.com
    gh variable set HJV_SERVER_KEY --body '<data/id_ed25519.pub 내용>'
@@ -47,10 +47,11 @@ upstream 소스는 저장소에 넣지 않습니다. **고정 커밋 + 패치 �
 scripts/upstream.env         고정한 upstream 커밋 (rustdesk 1.5.0, rustdesk-server 1.1.17)
 scripts/fetch-upstream.sh    upstream/ 에 소스를 받고 패치 적용 (hjviewer 브랜치)
 scripts/export-patches.sh    upstream/ 의 커밋을 다시 패치 파일로 내보내기
+scripts/ci.sh                개발 PC의 CI: 서버 패치 테스트, 런북대로 한 Docker 배포 시험 (docs/ci.md)
 server/patches/              hbbs/hbbr 패치 (TCP/WS 등록, WebRTC 시그널링 중계, 중계 짝 맺기 경쟁 상태 수정)
 client/patches/rustdesk/     앱 패치 (서버 고정, WebSocket+WebRTC 기본, 브랜딩, E2E용 헤드리스 명령)
 client/patches/hbb_common/   공용 라이브러리 패치 (WebSocket 연결의 HTTP/SOCKS5 프록시 지원)
-deploy/                      Docker Compose + Caddy(443, 자동 TLS) 서버 구성
+deploy/                      서버 구성: Docker Compose + Caddy(443, 자동 TLS), 또는 기존 nginx/Apache 뒤에 두는 구성
 tools/hjv-probe/             방화벽 진단 도구: 이 네트워크에서 서버까지 연결되는지 단계별로 확인
 tools/e2e/                   방화벽 E2E: 443만 허용하는 네임스페이스 두 개에서 실제 클라이언트로 접속·화면 수신 검증
 tools/hjv-load/              부하 측정 도구: 상시 등록 PC와 중계 세션을 흉내 내어 서버 용량 확인 (docs/deploy.md 용량 산정)
@@ -64,9 +65,10 @@ scripts/fetch-upstream.sh            # upstream/rustdesk-server, upstream/rustde
 cd upstream/rustdesk-server          # 수정 → hjviewer 브랜치에 커밋
 cargo test --release --test tcp_signaling
 cd ../.. && scripts/export-patches.sh server   # 패치 파일 갱신 후 이 저장소에 커밋
+scripts/ci.sh                        # 커밋 전에 개발 PC의 CI
 ```
 
-서버 빌드에는 Rust와 `pkg-config`, `libssl-dev`가 필요합니다. 앱(Windows/Android/iOS)은 네이티브 의존성이 많아서 GitHub Actions로 빌드합니다.
+서버 빌드에는 Rust와 `pkg-config`, `libssl-dev`가 필요하고, `scripts/ci.sh`의 배포 시험에는 운영 서버와 같은 Docker가 필요합니다([docs/ci.md](docs/ci.md)). 앱(Windows/Android/iOS)은 네이티브 의존성이 많아서 GitHub Actions 워크플로로 빌드합니다. 지금은 GitHub CI를 일시 중지해서 직접 실행할 때만 돕니다.
 
 ## License / 라이선스
 

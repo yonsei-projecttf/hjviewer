@@ -21,8 +21,8 @@ on:
         description: "Server public key, data/id_ed25519.pub (default: repository variable HJV_SERVER_KEY)"
         type: string
         required: false
-  push:
-    tags: ["v*"]
+  # GitHub CI is paused (docs/ci.md): no build on tag pushes (`push: tags: ["v*"]`) for now, only
+  # runs started by hand
 
 run-name: client ${{ github.event_name == 'push' && github.ref_name || inputs.platforms }}
 

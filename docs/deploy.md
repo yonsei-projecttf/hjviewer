@@ -11,12 +11,16 @@
 
 ## 실행
 
+80/443이 비어 있는 전용 VM이라면 다음과 같습니다. 다른 서비스가 있는 서버, 특히 이미 nginx나 Apache가 80/443을 쓰는 서버는 [server-runbook.md](server-runbook.md)를 따르세요. 런북은 에이전트가 그대로 실행할 수 있게 쓴 전체 절차입니다.
+
 ```bash
 git clone https://github.com/ysfaculty/hjviewer.git && cd hjviewer/deploy
-cp .env.example .env          # HJV_DOMAIN=rd.example.com 으로 수정
-docker compose up -d --build  # 첫 빌드는 hbbs/hbbr 컴파일 때문에 몇 분 걸림
-docker compose logs -f        # hbbs/hbbr 로그에 같은 "Key: ..." 가 찍히는지 확인
-cat data/id_ed25519.pub       # 이 값이 클라이언트 빌드의 HJV_SERVER_KEY
+sudo install -d -m 700 data       # 서버 개인키가 생길 곳: root만 읽을 수 있게
+cp .env.example .env              # HJV_DOMAIN=rd.example.com 으로 수정
+sudo docker compose build         # 첫 빌드는 hbbs/hbbr 컴파일로 10분 안팎
+sudo docker compose up -d
+sudo docker compose logs hbbs hbbr | grep 'Key:'   # 두 값이 같아야 함
+sudo cat data/id_ed25519.pub      # 이 값이 클라이언트 빌드의 HJV_SERVER_KEY
 ```
 
 `data/id_ed25519`는 서버의 개인키입니다. 잃어버리면 이미 배포한 모든 앱이 서버를 신뢰하지 못하게 되니 **반드시 백업**하세요. 외부에 노출되면 안 됩니다.
@@ -45,10 +49,16 @@ all checks passed: apps on this network can reach the server over 443
 | 파일 | 내용 |
 |---|---|
 | `deploy/Dockerfile` | 고정된 upstream 커밋 + `server/patches`로 hbbs/hbbr 빌드 |
-| `deploy/docker-compose.yml` | caddy(80/443 공개), hbbs, hbbr(내부 전용) |
+| `deploy/docker-compose.yml` | A 경로: caddy(80/443 공개), hbbs, hbbr(내부 전용) |
 | `deploy/Caddyfile` | `/ws/id`는 hbbs:21118, `/ws/relay`는 hbbr:21119로 전달, `X-Real-IP`/`X-Real-Port` 전달, `/api/*`는 404 |
+| `deploy/docker-compose.behind-proxy.yml` | B 경로: 기존 웹 서버 뒤에서 hbbs, hbbr만 실행. 호스트 네트워크의 127.0.0.1에만 listen |
+| `deploy/nginx-hjviewer.conf`, `deploy/apache-hjviewer.conf` | B 경로의 웹 서버 사이트 설정. 위 Caddyfile과 같은 일을 합니다 |
+| `deploy/.env.example` | `HJV_DOMAIN`과 선택 설정: `COMPOSE_FILE`(B 경로), 이미지 레지스트리, 빌드 병렬 수, 중계 대역폭 상한 |
+
+두 compose 파일은 프로젝트 이름을 `hjviewer`로 고정해, 같은 서버의 다른 compose 프로젝트와 섞이지 않게 합니다. 기반 이미지(rust, debian, caddy)는 기본으로 Docker 공식 이미지의 ECR 미러(public.ecr.aws)에서 받습니다. Docker Hub는 익명 다운로드를 주소마다 제한해서, 학내 NAT처럼 주소를 함께 쓰는 곳에서 막힐 수 있기 때문입니다. hbbs와 hbbr 컨테이너는 Linux 권한(capability)을 모두 버리고 실행합니다.
 
 - **hbbs의 WS 포트(21118)를 외부에 공개하면 안 됩니다.** hbbs는 `X-Real-IP`/`X-Real-Port` 헤더를 그대로 믿기 때문에, 직접 접속할 수 있으면 주소를 위조할 수 있습니다.
+- B 경로는 이 때문에 hbbs/hbbr을 127.0.0.1에 묶습니다. 포트를 127.0.0.1에 게시(publish)하는 방식은 Docker 28 미만에서 같은 LAN의 다른 기기가 닿을 수 있어서 쓰지 않았습니다. 다만 그 서버에 로그인한 다른 사용자는 127.0.0.1에 접속할 수 있습니다.
 - `hbbr -k _`는 hbbs와 같은 **공개키**를 요구합니다. 공개키는 앱에 들어 있으므로, 이 설정은 다른 서버용으로 빌드된 RustDesk 앱을 막는 정도입니다. 이 서버용 앱을 가진 사람은 누구나 중계를 쓸 수 있습니다. 소수만 쓰는 서버는 아래 "소규모 비공개 운영"을 참고하세요.
 - Caddy 앞에 클라우드 로드밸런서를 두면 `{remote_host}` 대신 클라이언트 IP 헤더를 써야 합니다. Caddy의 `trusted_proxies`와 `{client_ip}`를 참고하세요.
 
@@ -84,7 +94,7 @@ all checks passed: apps on this network can reach the server over 443
 
 - 동시 세션 3~5개, 세션당 평균 1~2Mb/s, 모두 중계되는 최악의 경우로 잡습니다. 최대 약 10~20Mb/s(동영상까지 포함하면 50Mb/s), CPU 한 코어의 수 %입니다.
 - 월 트래픽은 10명 × 하루 1시간 × 1Mb/s × 30일 ≈ **월 135GB 송신**(전부 중계일 때)입니다. P2P로 붙는 만큼 줄어듭니다.
-- 권장 사양은 **1 vCPU / 1GB RAM / 디스크 10GB**이면 충분합니다. 다만 서버에서 `docker compose up --build`로 hbbs를 직접 컴파일하려면 2GB 이상의 RAM(또는 스왑)이 필요합니다. 메모리가 작으면 다른 PC에서 이미지를 만들어 옮기세요.
+- 운영에는 **1 vCPU / 1GB RAM**이면 충분합니다. 다만 서버에서 이미지를 직접 빌드(`docker compose build`)하는 동안에는 더 필요합니다. 가용 메모리와 스왑을 합쳐 3GB(병렬 2개 기준, `HJV_BUILD_JOBS=1`이면 2GB 정도)와 Docker 디스크 여유 6GB가 있어야 합니다. 빌드 캐시가 약 4GB 남습니다. 모자라면 스왑을 잠시 늘리거나, 다른 PC에서 이미지를 만들어 옮기세요.
 - 실제 사용량은 hbbr 로그(`docker compose logs hbbr`)와 서버의 네트워크 사용량으로 확인합니다. 서버에서 `hjv-load relay`로 직접 측정해 볼 수도 있습니다.
 
 ## 소규모 비공개 운영 (사용자 10명 이내)
@@ -95,11 +105,11 @@ all checks passed: apps on this network can reach the server over 443
    - AGPL 때문에 **나눠 주는 빌드는 이 공개 저장소에 올라간 커밋으로만** 만듭니다. 미러는 공개 저장소를 그대로 따라가게 두세요. CI의 `scripts/package-notices.sh`는 빌드한 커밋이 공개 저장소에 없으면 실패합니다.
    - 앱과 함께 결과물에 들어 있는 `LICENSE.txt`, `NOTICE.txt`, `SOURCE.txt`, `THIRD_PARTY_NOTICES.txt`도 전달하세요. 로컬에서 빌드했다면 `scripts/package-notices.sh`로 만들 수 있습니다.
 2. **접속은 비밀번호로 보호됩니다.** 서버를 쓸 수 있는 것과 남의 PC에 들어가는 것은 다른 문제입니다. 각 PC의 영구 비밀번호를 길게 설정하세요. 서버 운영자도 세션 내용을 볼 수 없습니다(종단 간 암호화).
-3. **낯선 기기를 확인합니다.** 등록된 기기 목록은 `data/db_v2.sqlite3`의 `peer` 테이블에 있습니다.
+3. **낯선 기기를 확인합니다.** 등록된 기기 목록은 `data/db_v2.sqlite3`의 `peer` 테이블에 있습니다. Ubuntu에 기본으로 있는 python3로 읽습니다.
    ```bash
-   docker compose exec hbbs sh -c 'apt-get -qq update >/dev/null; apt-get -qq install -y sqlite3 >/dev/null; sqlite3 /data/db_v2.sqlite3 "select id, created_at, info from peer"'
+   sudo python3 -c 'import sqlite3; [print(*r) for r in sqlite3.connect("data/db_v2.sqlite3").execute("select id, created_at, info from peer")]'
    ```
-4. **중계 대역폭에 상한을 둡니다.** hbbr은 환경 변수로 중계 속도를 제한합니다. 예: `TOTAL_BANDWIDTH=100`(Mb/s, 전체), `SINGLE_BANDWIDTH=20`(Mb/s, 세션당). docker-compose의 hbbr에 `environment:`로 넣으세요.
+4. **중계 대역폭에 상한을 둡니다.** `.env`에 `HJV_TOTAL_BANDWIDTH=100`(Mb/s, 전체)과 `HJV_SINGLE_BANDWIDTH=20`(Mb/s, 세션당)을 넣고 `sudo docker compose up -d`를 실행합니다. 비워 두면 hbbr 기본값(전체 1024, 세션당 128)입니다. compose 파일을 직접 고치면 나중에 `git pull`이 충돌합니다.
 5. **서버 방화벽**에서는 80/443 외 인바운드를 모두 닫습니다. compose는 hbbs/hbbr 포트를 외부에 공개하지 않습니다.
 
 ## 대안: 공인 IP 없이 Cloudflare Tunnel로 띄우기
@@ -114,8 +124,8 @@ all checks passed: apps on this network can reach the server over 443
 
 ## 업데이트
 
-패치나 upstream 고정 커밋(`scripts/upstream.env`)이 바뀌면 다음을 실행합니다.
+패치나 upstream 고정 커밋(`scripts/upstream.env`)이 바뀌면 다음을 실행합니다. B 경로도 `.env`의 `COMPOSE_FILE` 덕분에 명령이 같습니다.
 
 ```bash
-git pull && docker compose up -d --build
+git pull --ff-only && sudo docker compose build && sudo docker compose up -d
 ```

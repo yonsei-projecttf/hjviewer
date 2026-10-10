@@ -1,7 +1,11 @@
 # For a server whose ports 80/443 already belong to a web server (nginx, Apache, ...): runs only
-# hbbs and hbbr, with their WebSocket ports on 127.0.0.1 for that web server to proxy.
-# docs/server-runbook.md has the nginx and Apache configuration.
-#   docker compose -f docker-compose.behind-proxy.yml up -d --build
+# hbbs and hbbr, listening on 127.0.0.1 for that web server to proxy. The site configuration is in
+# nginx-hjviewer.conf / apache-hjviewer.conf; docs/server-runbook.md is the full procedure.
+#   cp .env.example .env   # set HJV_DOMAIN, and COMPOSE_FILE=docker-compose.behind-proxy.yml
+#   docker compose build && docker compose up -d
+
+# a fixed project name, so that no other project started from a "deploy" directory is mixed in
+name: hjviewer
 
 # container logs are capped here rather than in the global Docker daemon settings
 x-logging: &logging
@@ -15,24 +19,39 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        # see docker-compose.yml
+        REGISTRY: ${HJV_REGISTRY:-public.ecr.aws/docker/library}
+        BUILD_JOBS: ${HJV_BUILD_JOBS:-2}
     image: hjviewer-server:local
-    command: ["hbbs", "-r", "${HJV_DOMAIN:?set HJV_DOMAIN in .env}"]
-    ports:
-      # only the local web server may reach it: hbbs trusts its X-Real-IP / X-Real-Port headers
-      - "127.0.0.1:21118:21118"
+    # The host's network, bound to 127.0.0.1 (21115-21118): nothing outside this machine can reach
+    # hbbs, whatever the firewall or Docker version (before 28, Docker let hosts on the same LAN
+    # reach ports published on 127.0.0.1). That matters because hbbs trusts the X-Real-IP /
+    # X-Real-Port headers of whoever connects; only the local web server should.
+    network_mode: host
+    command: ["hbbs", "-b", "127.0.0.1", "-r", "${HJV_DOMAIN:?set HJV_DOMAIN in .env}"]
     volumes:
       - ./data:/data
+    # hbbs and hbbr need no capabilities: unprivileged ports, files in their own root-owned /data
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     logging: *logging
     restart: unless-stopped
 
   hbbr:
     image: hjviewer-server:local
-    command: ["hbbr", "-k", "_"]
-    ports:
-      - "127.0.0.1:21119:21119"
+    # 127.0.0.1:21117 and 21119, like hbbs above
+    network_mode: host
+    command: ["hbbr", "-b", "127.0.0.1", "-k", "_"]
+    environment:
+      # relay caps in Mb/s, set in .env; empty keeps hbbr's defaults (1024 in all, 128 a session)
+      TOTAL_BANDWIDTH: ${HJV_TOTAL_BANDWIDTH:-}
+      SINGLE_BANDWIDTH: ${HJV_SINGLE_BANDWIDTH:-}
     volumes:
       - ./data:/data
     depends_on:
       - hbbs
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     logging: *logging
     restart: unless-stopped
