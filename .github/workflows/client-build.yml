@@ -231,9 +231,12 @@ jobs:
         shell: bash
         run: |
           bash scripts/fetch-upstream.sh client
-          version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' upstream/rustdesk/Cargo.toml | head -n 1)
-          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-$(git rev-parse --short=7 HEAD)"; fi
-          echo "BUILD_NAME=hjviewer-$name" >> "$GITHUB_ENV"
+          # Windows file versions have four 16-bit fields; the fourth is this workflow's run number,
+          # which grows with every run (the caller's when the private build repository calls it).
+          bash scripts/set-client-version.sh "$GITHUB_RUN_NUMBER"
+          source client/version.env
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse --short=7 HEAD)"; fi
+          echo "BUILD_NAME=HJViewer-$name" >> "$GITHUB_ENV"
 
       # L150-157
       - name: Restore bridge files
@@ -387,7 +390,9 @@ jobs:
           python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
           popd
           mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe "./SignOutput/$BUILD_NAME-windows-x86_64.exe"
+          # The file users download and run. Its name matters to the packer: a name ending in
+          # "install.exe" installs at once and one with "-qs-" starts quick support (libs/portable).
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/HJViewer.exe
 
       - name: Add license, source and third-party notices
         shell: bash
@@ -395,7 +400,7 @@ jobs:
           NOTICES_FEATURES: flutter,hwcodec,vram
           NOTICES_TARGET: x86_64-pc-windows-msvc
         run: |
-          test -s "SignOutput/$BUILD_NAME-windows-x86_64.exe"
+          test -s SignOutput/HJViewer.exe
           bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" SignOutput . \
             rustdesk/usbmmidd_v2/License.txt "Amyuni USB Mobile Monitor virtual display driver (usbmmidd_v2)" \
             "$RUNNER_TEMP/RustDeskTempTopMostWindow/LICENSE" "RustDeskTempTopMostWindow (WindowInjection.dll)"
@@ -405,7 +410,7 @@ jobs:
         with:
           name: ${{ env.BUILD_NAME }}-windows-x86_64
           path: |
-            upstream/rustdesk/SignOutput/${{ env.BUILD_NAME }}-windows-x86_64.exe
+            upstream/rustdesk/SignOutput/HJViewer.exe
             upstream/rustdesk/SignOutput/*.txt
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
@@ -493,9 +498,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           bash scripts/fetch-upstream.sh client
-          version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' upstream/rustdesk/Cargo.toml | head -n 1)
-          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-$(git rev-parse --short=7 HEAD)"; fi
-          echo "BUILD_NAME=hjviewer-$name" >> "$GITHUB_ENV"
+          bash scripts/set-client-version.sh
+          source client/version.env
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse --short=7 HEAD)"; fi
+          echo "BUILD_NAME=HJViewer-$name" >> "$GITHUB_ENV"
 
       # L1123-1134
       - name: Install flutter
@@ -735,9 +741,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           bash scripts/fetch-upstream.sh client
-          version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' upstream/rustdesk/Cargo.toml | head -n 1)
-          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$version-$(git rev-parse --short=7 HEAD)"; fi
-          echo "BUILD_NAME=hjviewer-$name" >> "$GITHUB_ENV"
+          bash scripts/set-client-version.sh
+          source client/version.env
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse --short=7 HEAD)"; fi
+          echo "BUILD_NAME=HJViewer-$name" >> "$GITHUB_ENV"
 
       # L655-666
       - name: Install flutter

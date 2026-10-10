@@ -34,7 +34,7 @@
    gh workflow run client-build.yml -f platforms=all
    ```
 3. **설치**
-   - **PC(Windows)**: 아티팩트 `hjviewer-…-windows-x86_64`(zip) 안의 exe를 실행합니다. 상시 접속이 필요하면 앱에서 설치(서비스 등록)를 누릅니다. 화면에 ID와 비밀번호가 표시됩니다. 서명이 없어서 SmartScreen 경고가 뜰 수 있습니다.
+   - **PC(Windows)**: 아티팩트 `HJViewer-…-windows-x86_64`(zip) 안의 `HJViewer.exe`를 실행합니다. 상시 접속이 필요하면 앱에서 설치(서비스 등록)를 누릅니다. 화면에 ID와 비밀번호가 표시됩니다. 서명이 없어서 SmartScreen 경고가 뜰 수 있습니다.
    - **Android**: `…-android-aarch64*.apk`를 설치합니다.
    - **iOS**: 서명 시크릿을 넣고 빌드한 IPA를 TestFlight나 기기에 설치합니다. 서명 없는 IPA는 설치할 수 없습니다.
 4. **연결**: 앱에서 PC의 ID를 입력하고 비밀번호로 접속합니다.
