@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 05:33:19 +0900
-Subject: [PATCH 1/2] hjviewer: pin builds to the hjviewer server, WebSocket +
+Subject: [PATCH 1/3] hjviewer: pin builds to the hjviewer server, WebSocket +
  WebRTC by default
 
 HJV_SERVER and HJV_SERVER_KEY, read at build time, name the server every
@@ -15,7 +15,7 @@ build talks to; a build without them behaves as upstream. Such a build:
 - turns WebRTC on by default, which upstream only does for its public
   servers, so peers still connect directly when their networks allow it;
 - turns off update checks and auto update, which follow upstream releases;
-- is named HJViewer (com.hjviewer.app on Android and iOS).
+- is named HJViewer (kr.ac.yonsei.hjviewer on Android and iOS).
 
 Hooked into load_custom_client, which every process runs before it reads
 its config, and into the Flutter init path that skips it.
@@ -36,7 +36,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 src/hjviewer.rs
 
 diff --git a/flutter/android/app/build.gradle b/flutter/android/app/build.gradle
-index 07f029c..fe1a77d 100644
+index 07f029c..2817853 100644
 --- a/flutter/android/app/build.gradle
 +++ b/flutter/android/app/build.gradle
 @@ -99,7 +99,7 @@ android {
@@ -44,7 +44,7 @@ index 07f029c..fe1a77d 100644
      defaultConfig {
          // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
 -        applicationId "com.carriez.flutter_hbb"
-+        applicationId "com.hjviewer.app"
++        applicationId "kr.ac.yonsei.hjviewer"
          minSdkVersion 22
          targetSdkVersion 36
          versionCode flutterVersionCode.toInteger()
@@ -84,7 +84,7 @@ index eae55d5..dba2837 100644
 +    <string name="foreground_service_special_use_subtype">Keeps the HJViewer remote desktop host available for authorized unattended connections and foreground notifications without starting screen capture before user approval.</string>
  </resources>
 diff --git a/flutter/ios/Runner.xcodeproj/project.pbxproj b/flutter/ios/Runner.xcodeproj/project.pbxproj
-index 36dc89e..0cf5a5d 100644
+index 36dc89e..7227bd5 100644
 --- a/flutter/ios/Runner.xcodeproj/project.pbxproj
 +++ b/flutter/ios/Runner.xcodeproj/project.pbxproj
 @@ -434,7 +434,7 @@
@@ -92,7 +92,7 @@ index 36dc89e..0cf5a5d 100644
  					"\"wakelock_plus\"",
  				);
 -				PRODUCT_BUNDLE_IDENTIFIER = com.carriez.flutterHbb;
-+				PRODUCT_BUNDLE_IDENTIFIER = com.hjviewer.app;
++				PRODUCT_BUNDLE_IDENTIFIER = kr.ac.yonsei.hjviewer;
  				PRODUCT_NAME = "$(TARGET_NAME)";
  				STRIP_STYLE = "non-global";
  				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -101,7 +101,7 @@ index 36dc89e..0cf5a5d 100644
  					"\"wakelock_plus\"",
  				);
 -				PRODUCT_BUNDLE_IDENTIFIER = com.carriez.flutterHbb;
-+				PRODUCT_BUNDLE_IDENTIFIER = com.hjviewer.app;
++				PRODUCT_BUNDLE_IDENTIFIER = kr.ac.yonsei.hjviewer;
  				PRODUCT_NAME = "$(TARGET_NAME)";
  				STRIP_STYLE = "non-global";
  				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -110,7 +110,7 @@ index 36dc89e..0cf5a5d 100644
  					"\"wakelock_plus\"",
  				);
 -				PRODUCT_BUNDLE_IDENTIFIER = com.carriez.flutterHbb;
-+				PRODUCT_BUNDLE_IDENTIFIER = com.hjviewer.app;
++				PRODUCT_BUNDLE_IDENTIFIER = kr.ac.yonsei.hjviewer;
  				PRODUCT_NAME = "$(TARGET_NAME)";
  				STRIP_STYLE = "non-global";
  				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -137,7 +137,7 @@ index 9351dac..cbd184b 100644
  	<string>APPL</string>
  	<key>CFBundleShortVersionString</key>
 diff --git a/flutter/ios/exportOptions.plist b/flutter/ios/exportOptions.plist
-index 6ceb2ac..73aa417 100644
+index 6ceb2ac..134a592 100644
 --- a/flutter/ios/exportOptions.plist
 +++ b/flutter/ios/exportOptions.plist
 @@ -8,7 +8,7 @@
@@ -145,7 +145,7 @@ index 6ceb2ac..73aa417 100644
   <key>provisioningProfiles</key>
   <dict>
 - <key>com.carriez.flutterHbb</key>
-+ <key>com.hjviewer.app</key>
++ <key>kr.ac.yonsei.hjviewer</key>
   <string>rustdesk-ios-prod-app-store</string>
   </dict>
   </dict>

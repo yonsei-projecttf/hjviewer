@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Checks out the pinned upstream sources under upstream/ and applies hjviewer's patches on a
 # `hjviewer` branch. Usage: scripts/fetch-upstream.sh [server|client|all]
 set -euo pipefail
@@ -53,6 +54,12 @@ fetch_client() {
   (cd "$dir/libs/hbb_common" && git checkout -q -b hjviewer)
   apply_patches "$dir/libs/hbb_common" "$ROOT/client/patches/hbb_common"
   apply_patches "$dir" "$ROOT/client/patches/rustdesk"
+  # Binary assets (icons) are plain files over the tree, not patches: a binary patch would also
+  # carry the upstream file it replaces. They stay uncommitted in the working copy.
+  if [ -d "$ROOT/client/overlay/rustdesk" ]; then
+    cp -R "$ROOT/client/overlay/rustdesk/." "$dir/"
+    echo "copied $(find "$ROOT/client/overlay/rustdesk" -type f | wc -l) overlay file(s) to ${dir#$ROOT/}"
+  fi
 }
 
 case "${1:-all}" in

@@ -78,7 +78,7 @@ TeamViewer처럼 **모바일 앱(iOS/Android)에서 Windows PC 화면을 보고 
 - 빌드할 때 `HJV_SERVER`(도메인)와 `HJV_SERVER_KEY`(hbbs 공개키)를 넣으면 서버 주소·키가 고정되고, 사용자 설정 화면에서 숨겨집니다.
 - **WebSocket을 강제**합니다. 신호와 중계는 항상 443을 쓰고, WebRTC는 기본으로 켭니다(upstream은 공식 서버에서만 켭니다).
 - upstream 업데이트 확인과 자동 업데이트를 끕니다.
-- 앱 이름은 `HJViewer`, Android/iOS 식별자는 `com.hjviewer.app`입니다.
+- 앱 이름은 `HJViewer`, Android/iOS 식별자는 `kr.ac.yonsei.hjviewer`입니다. 아이콘은 HJ 모노그램(`client/overlay`)이고, Windows 실행 파일 정보와 정보(About) 화면의 링크는 이 저장소를 가리킵니다.
 - (hbb_common) **WebSocket 연결이 프록시 설정을 따릅니다.** upstream은 WS 연결에서 프록시를 무시해서(`to-do: websocket proxy`) 프록시로만 나갈 수 있는 회사망에서는 연결되지 않았습니다. HTTP CONNECT와 SOCKS5 터널 위에서 TLS와 WebSocket 핸드셰이크를 하도록 고쳤습니다. 테스트는 패치 전 실패, 패치 후 통과합니다.
 
 검증: 전체 앱 빌드는 CI에서만 할 수 있습니다. 대신 설정 모듈을 실제 hbb_common/base 크레이트와 함께 별도로 실행해서 확인했습니다(`wss://<서버>/ws/id`와 `/ws/relay` 변환, 서버 고정, WebRTC 기본값). hbb_common 단위 테스트 101개도 모두 통과합니다.
@@ -97,13 +97,15 @@ TeamViewer처럼 **모바일 앱(iOS/Android)에서 Windows PC 화면을 보고 
 ## 6. 라이선스·상표
 
 - RustDesk 클라이언트와 서버는 모두 **AGPL-3.0**입니다. 수정한 앱을 배포하거나 수정한 서버를 네트워크로 서비스하면, 해당 사용자에게 **수정본 소스를 제공할 의무**가 있습니다. 저장소가 비공개여도 이 의무는 남습니다.
-- "RustDesk" 이름과 로고는 쓸 수 없습니다. 이름은 바꿨지만 **아이콘이 아직 RustDesk 것**이므로 배포 전에 교체해야 합니다(7절 참고).
+- "RustDesk" 이름과 로고는 쓸 수 없습니다. 앱 이름, 아이콘, Windows 실행 파일 정보, 정보 화면 링크를 HJViewer로 바꿨습니다. 실행 파일 이름(`rustdesk.exe`)과 URL 스킴(`rustdesk://`)은 아직 upstream 그대로입니다.
+- 저장소 루트의 `LICENSE`(AGPL-3.0 전문)와 `NOTICE`(upstream 저작권자와 변경 범위)가 고지이고, 모든 빌드 결과물에도 라이선스·소스 위치·서드파티 고지 파일이 함께 들어갑니다.
+- RustDesk의 프린터 드라이버 어댑터 DLL은 소스가 공개되지 않아 AGPL 배포 조건을 지킬 수 없으므로 Windows 빌드에서 뺐습니다(원격 인쇄 꺼짐).
 
 ## 7. 다음 단계
 
 1. 서버 배포 → `hjv-probe`로 실제 회사망·모바일망에서 검증 ([deploy.md](deploy.md))
 2. CI로 Windows/Android/iOS 빌드 ([ci.md](ci.md)) → 실기기 연결 테스트 (P2P와 중계 각각)
-3. 브랜딩 마무리: 아이콘(Android mipmap, iOS AppIcon, Windows ico), Windows 실행 파일·설치 관리자 이름, URL 스킴(`rustdesk://`)
+3. 브랜딩 마무리: 정식 아이콘 디자인(지금은 임시 HJ 모노그램), Windows 실행 파일·설치 관리자 이름, URL 스킴(`rustdesk://`)
 4. 계정과 기기 관리 API(`/api`): 로그인, 내 기기 목록, 접속 이력. 오픈소스 hbbs에는 없어서 직접 구현해야 합니다.
 5. 운영: 중계 트래픽 모니터링(세션당 대략 수 Mbps), hbbr 증설(`hbbs -r relay1,relay2`), 키 파일 `id_ed25519` 백업, ICE 후보 전달 속도 제한
 6. 선택: TURN 서버(coturn). UDP는 되지만 P2P가 실패하는 대칭형 NAT에서 WS 중계보다 지연이 적습니다.

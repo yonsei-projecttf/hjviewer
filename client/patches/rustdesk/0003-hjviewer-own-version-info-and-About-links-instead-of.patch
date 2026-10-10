@@ -1,0 +1,188 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sat, 10 Oct 2026 08:58:21 +0900
+Subject: [PATCH 3/3] hjviewer: own version info and About links instead of
+ RustDesk's
+
+RustDesk asks forks not to use its name or logo. Builds now carry:
+- Windows version info naming HJViewer, keeping Purslane's copyright next
+  to the HJViewer modifications and the license; the binary keeps
+  upstream's file name, so OriginalFilename does too;
+- About pages linking to the HJViewer repository as the website and as
+  the AGPL Corresponding Source, and to its privacy statement, with the
+  modification notice under upstream's copyright line;
+- the adaptive launcher icon background color of the HJ monogram.
+
+The icons themselves (an HJ monogram for Android, iOS, Windows, the in-app
+logo and res/) are hjviewer's client/overlay files, which
+scripts/fetch-upstream.sh copies over the tree: a binary patch would also
+carry the upstream logo it replaces.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.toml                                         |  6 +++---
+ .../src/main/res/values/ic_launcher_background.xml |  2 +-
+ .../lib/desktop/pages/desktop_setting_page.dart    | 14 +++++++++++---
+ flutter/lib/mobile/pages/settings_page.dart        | 10 +++++-----
+ flutter/windows/runner/Runner.rc                   |  8 ++++----
+ libs/portable/Cargo.toml                           |  6 +++---
+ 6 files changed, 27 insertions(+), 19 deletions(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index ee15720..3ce8a5d 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -258,9 +258,9 @@ webrtc-util = { git = "https://github.com/rustdesk-org/webrtc", rev = "49c89bd8d
+ webrtc-sctp = { git = "https://github.com/rustdesk-org/webrtc", rev = "49c89bd8d30e6e62e4c1a96cee38fdc11f79ef63" }
+ 
+ [package.metadata.winres]
+-LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved."
+-ProductName = "RustDesk"
+-FileDescription = "RustDesk Remote Desktop"
++LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 HJViewer contributors. AGPL-3.0."
++ProductName = "HJViewer"
++FileDescription = "HJViewer Remote Desktop"
+ OriginalFilename = "rustdesk.exe"
+ 
+ [target.'cfg(target_os="windows")'.build-dependencies]
+diff --git a/flutter/android/app/src/main/res/values/ic_launcher_background.xml b/flutter/android/app/src/main/res/values/ic_launcher_background.xml
+index ab98328..b1a4309 100644
+--- a/flutter/android/app/src/main/res/values/ic_launcher_background.xml
++++ b/flutter/android/app/src/main/res/values/ic_launcher_background.xml
+@@ -1,4 +1,4 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <color name="ic_launcher_background">#ffffff</color>
++    <color name="ic_launcher_background">#1E6FD9</color>
+ </resources>
+\ No newline at end of file
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 82f038c..5de41db 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -2554,7 +2554,7 @@ class _AboutState extends State<_About> {
+                       .marginSymmetric(vertical: 4.0)),
+               InkWell(
+                   onTap: () {
+-                    launchUrlString('https://rustdesk.com/privacy.html');
++                    launchUrlString('https://github.com/ysfaculty/hjviewer/blob/main/docs/privacy.md');
+                   },
+                   child: Text(
+                     translate('Privacy Statement'),
+@@ -2562,12 +2562,20 @@ class _AboutState extends State<_About> {
+                   ).marginSymmetric(vertical: 4.0)),
+               InkWell(
+                   onTap: () {
+-                    launchUrlString('https://rustdesk.com');
++                    launchUrlString('https://github.com/ysfaculty/hjviewer');
+                   },
+                   child: Text(
+                     translate('Website'),
+                     style: linkStyle,
+                   ).marginSymmetric(vertical: 4.0)),
++              InkWell(
++                  onTap: () {
++                    launchUrlString('https://github.com/ysfaculty/hjviewer');
++                  },
++                  child: Text(
++                    'Source code (GNU AGPL-3.0)',
++                    style: linkStyle,
++                  ).marginSymmetric(vertical: 4.0)),
+               Container(
+                 decoration: const BoxDecoration(color: Color(0xFF2c8cff)),
+                 padding:
+@@ -2580,7 +2588,7 @@ class _AboutState extends State<_About> {
+                         crossAxisAlignment: CrossAxisAlignment.start,
+                         children: [
+                           Text(
+-                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Tech Pte. Ltd.\n$license',
++                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Tech Pte. Ltd.\nHJViewer modifications © 2026 HJViewer contributors, GNU AGPL-3.0\n$license',
+                             style: const TextStyle(color: Colors.white),
+                           ),
+                           Text(
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index 198613a..b651d90 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -36,7 +36,7 @@ class SettingsPage extends StatefulWidget implements PageShape {
+   State<SettingsPage> createState() => _SettingsState();
+ }
+ 
+-const url = 'https://rustdesk.com/';
++const url = 'https://github.com/ysfaculty/hjviewer';
+ 
+ enum KeepScreenOn {
+   never,
+@@ -1030,7 +1030,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                 title: Text(translate("Version: ") + version),
+                 value: Padding(
+                   padding: EdgeInsets.symmetric(vertical: 8),
+-                  child: Text('rustdesk.com',
++                  child: Text('Source code (GNU AGPL-3.0)',
+                       style: TextStyle(
+                         decoration: TextDecoration.underline,
+                       )),
+@@ -1063,7 +1063,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+             SettingsTile(
+               title: Text(translate("Privacy Statement")),
+               onPressed: (context) =>
+-                  launchUrlString('https://rustdesk.com/privacy.html'),
++                  launchUrlString('https://github.com/ysfaculty/hjviewer/blob/main/docs/privacy.md'),
+               leading: Icon(Icons.privacy_tip),
+             )
+           ],
+@@ -1176,12 +1176,12 @@ void showAbout(OverlayDialogManager dialogManager) {
+         Text('Version: $version'),
+         InkWell(
+             onTap: () async {
+-              const url = 'https://rustdesk.com/';
++              const url = 'https://github.com/ysfaculty/hjviewer';
+               await launchUrl(Uri.parse(url));
+             },
+             child: Padding(
+               padding: EdgeInsets.symmetric(vertical: 8),
+-              child: Text('rustdesk.com',
++              child: Text('Source code (GNU AGPL-3.0)',
+                   style: TextStyle(
+                     decoration: TextDecoration.underline,
+                   )),
+diff --git a/flutter/windows/runner/Runner.rc b/flutter/windows/runner/Runner.rc
+index 88d1854..d610dbd 100644
+--- a/flutter/windows/runner/Runner.rc
++++ b/flutter/windows/runner/Runner.rc
+@@ -89,13 +89,13 @@ BEGIN
+     BEGIN
+         BLOCK "040904e4"
+         BEGIN
+-            VALUE "CompanyName", "Purslane Tech Pte. Ltd." "\0"
+-            VALUE "FileDescription", "RustDesk Remote Desktop" "\0"
++            VALUE "CompanyName", "HJViewer contributors" "\0"
++            VALUE "FileDescription", "HJViewer Remote Desktop" "\0"
+             VALUE "FileVersion", VERSION_AS_STRING "\0"
+             VALUE "InternalName", "rustdesk" "\0"
+-            VALUE "LegalCopyright", "Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved." "\0"
++            VALUE "LegalCopyright", "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 HJViewer contributors. AGPL-3.0." "\0"
+             VALUE "OriginalFilename", "rustdesk.exe" "\0"
+-            VALUE "ProductName", "RustDesk" "\0"
++            VALUE "ProductName", "HJViewer" "\0"
+             VALUE "ProductVersion", VERSION_AS_STRING "\0"
+         END
+     END
+diff --git a/libs/portable/Cargo.toml b/libs/portable/Cargo.toml
+index 165d983..2804fdf 100644
+--- a/libs/portable/Cargo.toml
++++ b/libs/portable/Cargo.toml
+@@ -26,10 +26,10 @@ windows = { version = "0.61", features = [
+ native-windows-gui = {version = "1.0", default-features = false, features = ["animation-timer", "image-decoder"]}
+ 
+ [package.metadata.winres]
+-LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved."
+-ProductName = "RustDesk"
++LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 HJViewer contributors. AGPL-3.0."
++ProductName = "HJViewer"
+ OriginalFilename = "rustdesk.exe"
+-FileDescription = "RustDesk Remote Desktop"
++FileDescription = "HJViewer Remote Desktop"
+ #ProductVersion = ""
+ 
+ [target.'cfg(target_os="windows")'.build-dependencies]

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Regenerates the patch files from the commits on the `hjviewer` branches under upstream/.
 # Commit your changes there first. Usage: scripts/export-patches.sh [server|client|all]
 set -euo pipefail
@@ -24,6 +25,17 @@ export_client() {
   hbb_base=$(git -C "$dir" ls-tree "$RUSTDESK_COMMIT" libs/hbb_common | awk '{print $3}')
   export_series "$dir/libs/hbb_common" "$hbb_base" "$ROOT/client/patches/hbb_common"
   export_series "$dir" "$RUSTDESK_COMMIT" "$ROOT/client/patches/rustdesk"
+  # overlay files must not end up in a patch (see fetch-upstream.sh)
+  local overlay="$ROOT/client/overlay/rustdesk" leaked=0 f
+  if [ -d "$overlay" ]; then
+    while IFS= read -r f; do
+      if grep -lF "diff --git a/${f#$overlay/} " "$ROOT"/client/patches/rustdesk/*.patch; then leaked=1; fi
+    done < <(find "$overlay" -type f)
+  fi
+  if [ "$leaked" = 1 ]; then
+    echo "error: the patches above change overlay files; keep those changes out of the commits" >&2
+    exit 1
+  fi
 }
 
 case "${1:-all}" in
