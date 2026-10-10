@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HJ monogram for the floating window (the same shapes as the app icon) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="320dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <path
+        android:fillColor="#1E6FD9"
+        android:pathData="M0,512 A512,512 0 1,0 1024,512 A512,512 0 1,0 0,512 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M222,278 H322 V746 H222 Z M442,278 H542 V746 H442 Z M322,462 H442 V562 H322 Z M702,278 H802 V586 A160,160 0 0,1 642,746 H590 V646 H642 A60,60 0 0,0 702,586 Z" />
+</vector>

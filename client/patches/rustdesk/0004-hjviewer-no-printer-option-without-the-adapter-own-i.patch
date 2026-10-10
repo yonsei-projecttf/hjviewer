@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sat, 10 Oct 2026 09:41:44 +0900
+Subject: [PATCH 4/4] hjviewer: no printer option without the adapter; own
+ install notice and Android service names
+
+- hjviewer builds leave out RustDesk's closed-source printer driver
+  adapter, so "is-support-printer-driver" also needs the adapter next to
+  the executable and the install page no longer offers the printer.
+- The install page states the AGPL and links to HJViewer's LICENSE
+  instead of an end-user agreement on rustdesk.com.
+- The Android service notification, its channel and the boot toast say
+  HJViewer.
+
+The floating window icon is replaced through hjviewer's client/overlay.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../main/kotlin/com/carriez/flutter_hbb/BootReceiver.kt  | 2 +-
+ .../main/kotlin/com/carriez/flutter_hbb/MainService.kt   | 6 +++---
+ flutter/lib/desktop/pages/install_page.dart              | 9 ++++-----
+ src/flutter_ffi.rs                                       | 3 ++-
+ src/hjviewer.rs                                          | 9 +++++++++
+ 5 files changed, 19 insertions(+), 10 deletions(-)
+
+diff --git a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/BootReceiver.kt b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/BootReceiver.kt
+index 71bbba7..afd085f 100644
+--- a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/BootReceiver.kt
++++ b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/BootReceiver.kt
+@@ -36,7 +36,7 @@ class BootReceiver : BroadcastReceiver() {
+                 action = ACT_INIT_MEDIA_PROJECTION_AND_SERVICE
+                 putExtra(EXT_INIT_FROM_BOOT, true)
+             }
+-            Toast.makeText(context, "RustDesk is Open", Toast.LENGTH_LONG).show()
++            Toast.makeText(context, "HJViewer is Open", Toast.LENGTH_LONG).show()
+             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                 context.startForegroundService(it)
+             } else {
+diff --git a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainService.kt b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainService.kt
+index 473fead..1f2b595 100644
+--- a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainService.kt
++++ b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainService.kt
+@@ -47,7 +47,7 @@ import java.nio.ByteBuffer
+ import kotlin.math.max
+ import kotlin.math.min
+ 
+-const val DEFAULT_NOTIFY_TITLE = "RustDesk"
++const val DEFAULT_NOTIFY_TITLE = "HJViewer"
+ const val DEFAULT_NOTIFY_TEXT = "Service is running"
+ const val DEFAULT_NOTIFY_ID = 1
+ const val NOTIFY_ID_OFFSET = 100
+@@ -817,12 +817,12 @@ class MainService : Service() {
+         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+         notificationChannel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+             val channelId = "RustDesk"
+-            val channelName = "RustDesk Service"
++            val channelName = "HJViewer Service"
+             val channel = NotificationChannel(
+                 channelId,
+                 channelName, NotificationManager.IMPORTANCE_HIGH
+             ).apply {
+-                description = "RustDesk Service Channel"
++                description = "HJViewer Service Channel"
+             }
+             channel.lightColor = Color.BLUE
+             channel.lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+diff --git a/flutter/lib/desktop/pages/install_page.dart b/flutter/lib/desktop/pages/install_page.dart
+index 8e72f8d..e3cfa1f 100644
+--- a/flutter/lib/desktop/pages/install_page.dart
++++ b/flutter/lib/desktop/pages/install_page.dart
+@@ -191,7 +191,6 @@ class _InstallPageBodyState extends State<_InstallPageBody>
+                   .marginOnly(bottom: 7),
+               Option(desktopicon, label: 'Create desktop icon')
+                   .marginOnly(bottom: 7),
+-              Option(printer, label: 'Install {$appName} Printer'),
+               Container(
+                   padding: EdgeInsets.all(12),
+                   decoration: BoxDecoration(
+@@ -208,19 +207,19 @@ class _InstallPageBodyState extends State<_InstallPageBody>
+                       Column(
+                         crossAxisAlignment: CrossAxisAlignment.start,
+                         children: [
+-                          Text(translate('agreement_tip'))
++                          Text('HJViewer is free software under the GNU AGPL-3.0, with no warranty.')
+                               .marginOnly(bottom: em),
+                           InkWell(
+                             hoverColor: Colors.transparent,
+                             onTap: () => launchUrlString(
+-                                'https://rustdesk.com/privacy.html'),
++                                'https://github.com/ysfaculty/hjviewer/blob/main/LICENSE'),
+                             child: Tooltip(
+-                              message: 'https://rustdesk.com/privacy.html',
++                              message: 'https://github.com/ysfaculty/hjviewer/blob/main/LICENSE',
+                               child: Row(children: [
+                                 Icon(Icons.launch_outlined, size: 16)
+                                     .marginOnly(right: 5),
+                                 Text(
+-                                  translate('End-user license agreement'),
++                                  'License',
+                                   style: const TextStyle(
+                                       decoration: TextDecoration.underline),
+                                 )
+diff --git a/src/flutter_ffi.rs b/src/flutter_ffi.rs
+index a7fa864..e662dc0 100644
+--- a/src/flutter_ffi.rs
++++ b/src/flutter_ffi.rs
+@@ -2690,7 +2690,8 @@ pub fn main_get_common(key: String) -> String {
+         return false.to_string();
+     } else if key == "is-support-printer-driver" {
+         #[cfg(target_os = "windows")]
+-        return crate::platform::is_win_10_or_greater().to_string();
++        return (crate::platform::is_win_10_or_greater() && crate::hjviewer::printer_adapter_present())
++            .to_string();
+         #[cfg(not(target_os = "windows"))]
+         return false.to_string();
+     } else if key == "transfer-job-id" {
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+index 41f4b3f..a49292c 100644
+--- a/src/hjviewer.rs
++++ b/src/hjviewer.rs
+@@ -44,3 +44,12 @@ pub fn apply() {
+     builtin.insert(keys::OPTION_HIDE_SERVER_SETTINGS.to_owned(), "Y".to_owned());
+     builtin.insert(keys::OPTION_HIDE_WEBSOCKET_SETTINGS.to_owned(), "Y".to_owned());
+ }
++
++/// hjviewer builds leave out RustDesk's printer driver adapter (closed source), so remote printing
++/// is offered only where one was installed by hand next to the executable.
++#[cfg(target_os = "windows")]
++pub fn printer_adapter_present() -> bool {
++    std::env::current_exe()
++        .map(|exe| exe.with_file_name("printer_driver_adapter.dll").exists())
++        .unwrap_or(false)
++}
