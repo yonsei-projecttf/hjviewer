@@ -15,10 +15,14 @@ RUN cd upstream/rustdesk-server \
     && cp target/release/hbbs target/release/hbbr /usr/local/bin/
 
 FROM ${REGISTRY}/debian:bookworm-slim
+LABEL org.opencontainers.image.source="https://github.com/ysfaculty/hjviewer" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.description="HJViewer server: hbbs and hbbr from rustdesk-server with HJViewer's patches"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/bin/hbbs /usr/local/bin/hbbr /usr/local/bin/
+COPY LICENSE NOTICE /usr/share/doc/hjviewer/
 # id_ed25519(.pub) and db_v2.sqlite3 live here
 WORKDIR /data
 VOLUME /data

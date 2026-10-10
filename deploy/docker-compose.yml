@@ -4,6 +4,13 @@
 #   docker compose up -d --build
 #   cat data/id_ed25519.pub # the key clients are built with (HJV_SERVER_KEY)
 
+# container logs are capped here rather than in the global Docker daemon settings
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   caddy:
     image: caddy:2
@@ -19,6 +26,7 @@ services:
     depends_on:
       - hbbs
       - hbbr
+    logging: *logging
     restart: unless-stopped
 
   hbbs:
@@ -30,6 +38,7 @@ services:
     command: ["hbbs", "-r", "${HJV_DOMAIN:?set HJV_DOMAIN in .env}"]
     volumes:
       - ./data:/data
+    logging: *logging
     restart: unless-stopped
 
   hbbr:
@@ -40,6 +49,7 @@ services:
       - ./data:/data
     depends_on:
       - hbbs
+    logging: *logging
     restart: unless-stopped
 
 volumes:
