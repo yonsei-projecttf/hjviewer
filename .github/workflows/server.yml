@@ -32,11 +32,15 @@ jobs:
           workspaces: |
             upstream/rustdesk-server
             tools/hjv-probe
+            tools/hjv-load
       - name: Signaling and relay tests
         working-directory: upstream/rustdesk-server
         run: cargo test --release --locked --test tcp_signaling --test relay_pairing
       - name: Build hjv-probe
         working-directory: tools/hjv-probe
+        run: cargo build --release --locked
+      - name: Build hjv-load
+        working-directory: tools/hjv-load
         run: cargo build --release --locked
 
   image:
