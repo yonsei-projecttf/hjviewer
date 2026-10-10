@@ -977,7 +977,7 @@ jobs:
           done
           ipa="ios-out/$BUILD_NAME-ios.ipa"
           info="$RUNNER_TEMP/Info.plist"
-          unzip -W -p "$ipa" 'Payload/*.app/Info.plist' > "$info"
+          unzip -p "$ipa" "$(unzip -Z1 "$ipa" | grep -E '^Payload/[^/]+\.app/Info\.plist$')" > "$info"
           pl() { /usr/libexec/PlistBuddy -c "Print :$1" "$info"; }
           bundle_id=$(pl CFBundleIdentifier)
           version=$(pl CFBundleShortVersionString)
