@@ -51,6 +51,7 @@ client/patches/hbb_common/   공용 라이브러리 패치 (WebSocket 연결의 
 deploy/                      Docker Compose + Caddy(443, 자동 TLS) 서버 구성
 tools/hjv-probe/             방화벽 진단 도구: 이 네트워크에서 서버까지 연결되는지 단계별로 확인
 tools/e2e/                   방화벽 E2E: 443만 허용하는 네임스페이스 두 개에서 실제 클라이언트로 접속·화면 수신 검증
+tools/hjv-load/              부하 측정 도구: 상시 등록 PC와 중계 세션을 흉내 내어 서버 용량 확인 (docs/deploy.md 용량 산정)
 upstream/                    (git 제외) 패치가 적용된 작업 사본
 ```
 

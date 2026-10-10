@@ -52,6 +52,8 @@ printf 'libdir=/usr/lib/x86_64-linux-gnu\nincludedir=/usr/include\nName: libyuv\
 # 4) 실행 (sudo로 네트워크 네임스페이스와 iptables를 쓰고, 끝나면 정리합니다)
 CADDY=/path/to/caddy tools/e2e/firewall-e2e.sh strict
 CADDY=/path/to/caddy tools/e2e/firewall-e2e.sh open
+# 세션 영상 비트레이트도 재려면 (정지 화면, 문서 스크롤, 화면 전체 변화)
+HJV_E2E_BITRATE=1 CADDY=/path/to/caddy tools/e2e/firewall-e2e.sh strict
 ```
 
 필요한 패키지(Ubuntu 24.04): `iptables xvfb imagemagick`, 그리고 upstream 클라이언트 빌드 의존성(`libgtk-3-dev libvpx-dev libyuv-dev libopus-dev libaom-dev libxdo-dev libpulse-dev libpam0g-dev clang nasm` 등)입니다. 전체 목록은 RustDesk CI를 참고하세요.
@@ -65,6 +67,8 @@ CADDY=/path/to/caddy tools/e2e/firewall-e2e.sh open
 | 포트 포워딩으로 PC 페이지 가져오기 | 성공, **relay** (wss://…/ws/relay) | 성공, **direct (P2P)** |
 | 원격 데스크톱 첫 화면(1280×720, VP9) | 수신·디코딩, PC 화면과 RMSE 0.070 | **WebRTC**로 수신, RMSE 0.070 |
 | 결과 | **PASS** | **PASS** |
+
+세션 비트레이트(1280×720, VP9, 중계): 정지 화면 약 0, 문서 스크롤 0.33Mb/s(19fps), 화면 전체 변화 30Mb/s(11fps). 서버 용량 산정은 [deploy.md](deploy.md)에 있습니다.
 
 RMSE는 정규화 값입니다. 같은 화면이면 0.07~0.08(VP9 손실 압축), 다른 이미지면 약 0.56입니다.
 

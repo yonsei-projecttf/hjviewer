@@ -12,6 +12,7 @@
 # desktop session and checks that the decoded screen is the PC's (a virtual X display).
 #
 #   tools/e2e/firewall-e2e.sh [strict|open]
+#   HJV_E2E_BITRATE=1 tools/e2e/firewall-e2e.sh strict   # also measures the session's video bitrate
 #
 # Runs as a normal user and uses sudo for namespaces and iptables. Needs:
 #   HJV_E2E_WORK  scratch directory; $HJV_E2E_WORK/srv/id_ed25519(.pub) is the server key
@@ -209,6 +210,30 @@ echo "screen: $RUN/screen.png, RMSE against the PC's desktop: ${rmse:-?}"
 if ! awk -v e="${rmse:-1}" 'BEGIN { exit !(e < 0.2) }'; then
   echo "FAIL: the decoded screen is not the PC's desktop"
   exit 1
+fi
+
+if [ -n "${HJV_E2E_BITRATE:-}" ]; then
+  log "video bitrate of a desktop session (1280x720) for three kinds of screen"
+  mkdir -p "$RUN/anim/scroll" "$RUN/anim/noise"
+  # a document scrolling at 20 fps, and the whole screen changing at 20 fps (the codec's worst case)
+  doc=(convert -size 1280x2400 xc:white -fill black -font DejaVu-Sans -pointsize 24)
+  for i in $(seq 60); do
+    doc+=(-annotate "+30+$((i * 38))" "Line $i of a long document: remote sessions mostly show text, windows and the odd image.")
+  done
+  "${doc[@]}" "$RUN/anim/doc.png"
+  for i in $(seq 0 39); do
+    convert "$RUN/anim/doc.png" -crop "1280x720+0+$((i * 30))" +repage "$RUN/anim/scroll/$(printf %02d "$i").png"
+    convert -size 1280x720 xc: +noise Random -seed "$i" "$RUN/anim/noise/$(printf %02d "$i").png"
+  done
+  for kind in static scroll noise; do
+    if [ "$kind" != static ]; then
+      in_ns hjv-pc pc env DISPLAY=:99 animate -geometry +0+0 -delay 5 -loop 0 "$RUN"/anim/"$kind"/*.png >/dev/null 2>&1 &
+      sleep 3
+    fi
+    printf '%-7s ' "$kind"
+    in_ns hjv-ctl ctl "$CLIENT" --hjv-e2e-stream "$ID" "$PASSWORD" 15 2>/dev/null | grep -o '[0-9]* frames.*' || echo "no video"
+    sudo ip netns pids hjv-pc | xargs -r ps -o pid=,comm= -p | awk '$2 == "animate" {print $1}' | xargs -r sudo kill 2>/dev/null || true
+  done
 fi
 
 log "what hbbs saw"
