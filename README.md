@@ -65,6 +65,8 @@ cd ../.. && scripts/export-patches.sh server   # 패치 파일 갱신 후 이 �
 
 서버 빌드에는 Rust와 `pkg-config`, `libssl-dev`가 필요합니다. 앱(Windows/Android/iOS)은 네이티브 의존성이 많아서 GitHub Actions로 빌드합니다.
 
-## 라이선스
+## License / 라이선스
 
-RustDesk와 rustdesk-server는 AGPL-3.0입니다. 이 저장소의 패치와 배포물도 AGPL-3.0을 따르며, 앱 사용자와 서버 이용자에게 수정 소스를 제공해야 합니다. "RustDesk" 이름과 로고는 사용할 수 없습니다.
+HJViewer is a modified version of [RustDesk](https://github.com/rustdesk/rustdesk) and [rustdesk-server](https://github.com/rustdesk/rustdesk-server) (Copyright Purslane Tech Pte. Ltd., open-trade and the RustDesk contributors). It is licensed under the GNU Affero General Public License v3.0 or later ([LICENSE](LICENSE)) and comes with no warranty. [NOTICE](NOTICE) lists the upstream versions and what HJViewer changes; every build ships its license, source location and third-party notices. HJViewer is not affiliated with or endorsed by RustDesk.
+
+RustDesk와 rustdesk-server는 AGPL-3.0입니다. 이 저장소도 AGPL-3.0 이상을 따르고, 앱이나 서버를 쓰는 사람에게 수정한 소스를 제공해야 합니다. 이 저장소를 공개해 두는 것으로 그 의무를 지킵니다. "RustDesk" 이름과 로고는 쓰지 않습니다. 개인정보 처리방침: [docs/privacy.md](docs/privacy.md)

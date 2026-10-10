@@ -3,6 +3,7 @@ name = "hjv-probe"
 version = "0.1.0"
 edition = "2021"
 description = "Checks from a client's network that the hjviewer server is reachable the way clients reach it"
+license = "AGPL-3.0-or-later"
 publish = false
 
 [dependencies]

@@ -31,8 +31,10 @@ permissions:
 
 env:
   # Server identity, baked into the Rust core by client/patches (option_env!) in every cargo build.
-  HJV_SERVER: ${{ inputs.server || vars.HJV_SERVER }}
-  HJV_SERVER_KEY: ${{ inputs.server_key || vars.HJV_SERVER_KEY }}
+  # Secrets are masked in the logs, variables are not; either works. The values still end up in the
+  # built apps, which are downloadable by anyone while the repository is public.
+  HJV_SERVER: ${{ inputs.server || secrets.HJV_SERVER || vars.HJV_SERVER }}
+  HJV_SERVER_KEY: ${{ inputs.server_key || secrets.HJV_SERVER_KEY || vars.HJV_SERVER_KEY }}
   # Tool versions copied from upstream at RUSTDESK_COMMIT; bump them together with scripts/upstream.env.
   RUST_VERSION: "1.75" # L22; upstream's Windows job reads SCITER_RUST_VERSION (L21), same value; bridge.yml L11
   CARGO_NDK_VERSION: "3.1.2" # L24
@@ -320,32 +322,9 @@ jobs:
           Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat"
           mv -Force .\usbmmidd_v2 ./rustdesk
 
-          # Download printer driver files and extract them to ./rustdesk
-          try {
-            Invoke-WebRequest -Uri https://github.com/rustdesk/hbb_common/releases/download/driver/rustdesk_printer_driver_v4-1.4.zip -OutFile rustdesk_printer_driver_v4-1.4.zip
-            Invoke-WebRequest -Uri https://github.com/rustdesk/hbb_common/releases/download/driver/printer_driver_adapter.zip -OutFile printer_driver_adapter.zip
-            Invoke-WebRequest -Uri https://github.com/rustdesk/hbb_common/releases/download/driver/sha256sums -OutFile sha256sums
-
-            # Check and move the files
-            $checksum_driver = (Select-String -Path .\sha256sums -Pattern '^([a-fA-F0-9]{64}) \*rustdesk_printer_driver_v4-1.4\.zip$').Matches.Groups[1].Value
-            $downloadsum_driver = Get-FileHash -Path rustdesk_printer_driver_v4-1.4.zip -Algorithm SHA256
-            $checksum_adapter = (Select-String -Path .\sha256sums -Pattern '^([a-fA-F0-9]{64}) \*printer_driver_adapter\.zip$').Matches.Groups[1].Value
-            $downloadsum_adapter = Get-FileHash -Path printer_driver_adapter.zip -Algorithm SHA256
-            if ($checksum_driver -eq $downloadsum_driver.Hash -and $checksum_adapter -eq $downloadsum_adapter.Hash) {
-                Write-Output "rustdesk_printer_driver_v4-1.4, checksums match, extract the file."
-                Expand-Archive rustdesk_printer_driver_v4-1.4.zip -DestinationPath .
-                mkdir ./rustdesk/drivers
-                mv -Force .\rustdesk_printer_driver_v4-1.4 ./rustdesk/drivers/RustDeskPrinterDriver
-                Expand-Archive printer_driver_adapter.zip -DestinationPath .
-                mv -Force .\printer_driver_adapter.dll ./rustdesk
-            } elseif ($checksum_driver -ne $downloadsum_driver.Hash) {
-                Write-Output "rustdesk_printer_driver_v4-1.4, checksums do not match, ignore the file."
-            } else {
-                Write-Output "printer_driver_adapter.dll, checksums do not match, ignore the file."
-            }
-          } catch {
-              Write-Host "Ingore the printer driver error."
-          }
+          # Not packaged: RustDesk's printer driver adapter DLL is closed source, so it cannot be part of
+          # the AGPL Corresponding Source, and its driver is RustDesk-branded. Remote printing stays off
+          # (src/server/printer_service.rs skips it when the DLL is missing).
 
       # Privacy-mode helper WindowInjection.dll. Upstream builds it in a separate job
       # (third-party-RustDeskTempTopMostWindow.yml L41-59, called from L88-107 with windows-2022, x64,
@@ -373,11 +352,20 @@ jobs:
           mkdir -p ./SignOutput
           mv ./target/release/rustdesk-portable-packer.exe "./SignOutput/$BUILD_NAME-windows-x86_64.exe"
 
+      - name: Add license, source and third-party notices
+        shell: bash
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" SignOutput . \
+            rustdesk/usbmmidd_v2/License.txt "Amyuni USB Mobile Monitor virtual display driver (usbmmidd_v2)" \
+            "$RUNNER_TEMP/RustDeskTempTopMostWindow/LICENSE" "RustDeskTempTopMostWindow (WindowInjection.dll)"
+
       - name: Upload Windows build (unsigned)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.BUILD_NAME }}-windows-x86_64
-          path: upstream/rustdesk/SignOutput/${{ env.BUILD_NAME }}-windows-x86_64.exe
+          path: |
+            upstream/rustdesk/SignOutput/${{ env.BUILD_NAME }}-windows-x86_64.exe
+            upstream/rustdesk/SignOutput/*.txt
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
@@ -606,13 +594,19 @@ jobs:
           # env.ANDROID_SIGN_TOOL_VERSION is set by Step "Setup sign tool version variable"
           BUILD_TOOLS_VERSION: ${{ env.ANDROID_SIGN_TOOL_VERSION }}
 
+      - name: Add license, source and third-party notices
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" signed-apk .
+
       # L1304-1309
       - name: Upload signed APK
         if: env.ANDROID_SIGNING == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.BUILD_NAME }}-android-aarch64
-          path: ${{ steps.sign-apk.outputs.signedReleaseFile }}
+          path: |
+            ${{ steps.sign-apk.outputs.signedReleaseFile }}
+            upstream/rustdesk/signed-apk/*.txt
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
@@ -621,7 +615,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.BUILD_NAME }}-android-aarch64-debugsigned
-          path: upstream/rustdesk/signed-apk/${{ env.BUILD_NAME }}-android-aarch64.apk
+          path: |
+            upstream/rustdesk/signed-apk/${{ env.BUILD_NAME }}-android-aarch64.apk
+            upstream/rustdesk/signed-apk/*.txt
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
@@ -794,6 +790,10 @@ jobs:
           fi
           cert_sha1=$(awk '{print $2}' <<< "$identity")
           cert_name=$(cut -d'"' -f2 <<< "$identity")
+          # "Apple Distribution: <name> (<team>)" names the developer: mask it in every later log line
+          echo "::add-mask::$cert_name"
+          signer=${cert_name#*: }
+          echo "::add-mask::${signer% (*}"
 
           profile="$RUNNER_TEMP/profile.plist"
           security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$profile"
@@ -805,6 +805,10 @@ jobs:
             cp "$RUNNER_TEMP/profile.mobileprovision" "$dir/$profile_uuid.mobileprovision"
           done
           profile_team=$(pb TeamIdentifier:0)
+          team_name=$(pb TeamName || true)
+          for v in "$profile_team" "$team_name"; do
+            if [ -n "$v" ]; then echo "::add-mask::$v"; fi
+          done
           team_id=${TEAM_ID:-$profile_team}
           if [ "$team_id" != "$profile_team" ]; then
             echo "::error::IOS_TEAM_ID ($team_id) is not the provisioning profile's team ($profile_team)."
@@ -813,7 +817,7 @@ jobs:
           app_id=$(pb Entitlements:application-identifier)
           bundle_id=${app_id#*.}
           case $bundle_id in
-            *'*'*) echo "::error::The provisioning profile is for the wildcard App ID $app_id; create one for an explicit bundle ID such as com.hjviewer.app."; exit 1 ;;
+            *'*'*) echo "::error::The provisioning profile is for the wildcard App ID $app_id; create one for an explicit bundle ID such as kr.ac.yonsei.hjviewer."; exit 1 ;;
           esac
           if [ "$(pb ProvisionsAllDevices || true)" = true ]; then method=enterprise
           elif [ "$(pb Entitlements:get-task-allow || true)" = true ]; then method=development
@@ -828,7 +832,7 @@ jobs:
               development) method=debugging ;;
             esac
           fi
-          echo "Signing $bundle_id (team $team_id) with \"$cert_name\" and profile \"$(pb Name)\" ($profile_uuid); export method $method"
+          echo "Signing $bundle_id with profile $profile_uuid; export method $method"
 
           # Manual signing on the Runner target only: its three build configurations are the ones that
           # name Runner.entitlements. Settings passed to xcodebuild would also hit the Pods targets.
@@ -866,7 +870,6 @@ jobs:
             /usr/libexec/PlistBuddy -c "Add :$entry" "$plist" > /dev/null
           done
           plutil -lint "$plist"
-          cat "$plist"
           echo "IOS_EXPORT_OPTIONS=$plist" >> "$GITHUB_ENV"
 
       - name: Build rustdesk (signed IPA)
@@ -879,11 +882,21 @@ jobs:
           mkdir -p ios-out
           mv flutter/build/ios/ipa/*.ipa "ios-out/$BUILD_NAME-ios.ipa"
 
+      - name: Add license, source and third-party notices
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" ios-out .
+
+      # A signed IPA's embedded provisioning profile names the Apple developer (the person, for an
+      # individual account), the team and, for Ad Hoc, the registered device UDIDs. Artifacts of a
+      # public repository are downloadable by anyone, so it is only uploaded from a private one.
       - name: Upload IPA
+        if: env.IOS_SIGNING != 'true' || github.event.repository.private
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.BUILD_NAME }}-ios${{ env.IOS_SIGNING != 'true' && '-unsigned' || '' }}
-          path: upstream/rustdesk/ios-out/*.ipa
+          path: |
+            upstream/rustdesk/ios-out/*.ipa
+            upstream/rustdesk/ios-out/*.txt
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 

@@ -24,7 +24,7 @@ macOS와 Linux는 빌드하지 않습니다.
 | 잡 | 러너 | 하는 일 | 결과물 (artifact) |
 |---|---|---|---|
 | Bridge codegen | ubuntu-22.04 | 서버 변수를 확인하고 flutter_rust_bridge 코드를 생성합니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 매번 생성합니다. | 내부용 `bridge-artifact` (1일 보관) |
-| Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프린터 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe | `hjviewer-<이름>-windows-x86_64` (exe, 서명 없음) |
+| Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `hjviewer-<이름>-windows-x86_64` (exe, 서명 없음) |
 | Android arm64 | ubuntu-24.04 | vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 릴리스 서명 | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned` |
 | iOS | macos-latest | vcpkg(arm64-ios) → Rust 정적 라이브러리 → `flutter build ipa` → 인증서가 있으면 서명된 IPA | `…-ios` 또는 `…-ios-unsigned` |
 
@@ -98,7 +98,7 @@ Apple Developer Program(유료) 계정이 필요합니다. `.p12`와 프로파�
 
 준비 순서는 다음과 같습니다.
 
-1. **App ID**: Certificates, Identifiers & Profiles → Identifiers에서 explicit App ID를 만듭니다. 패치의 번들 ID는 `com.hjviewer.app`입니다. 다른 ID를 써도 워크플로는 프로파일의 번들 ID를 따릅니다. 와일드카드 App ID는 쓸 수 없습니다.
+1. **App ID**: Certificates, Identifiers & Profiles → Identifiers에서 explicit App ID를 만듭니다. 패치의 번들 ID는 `kr.ac.yonsei.hjviewer`입니다. 다른 ID를 써도 워크플로는 프로파일의 번들 ID를 따릅니다. 와일드카드 App ID는 쓸 수 없습니다.
    - 앱의 entitlements는 Push Notifications와 Access Wi-Fi Information을 요청하므로 두 기능을 켜 두기를 권장합니다.
    - 켜지 않아도 서명은 됩니다. 워크플로가 경고를 남기고 해당 항목을 entitlements에서 뺍니다. 앱 코드는 두 기능을 쓰지 않습니다.
 2. **인증서**: 다음 중 한 가지로 발급합니다.
@@ -170,7 +170,11 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
 
 - RustDesk는 AGPL-3.0이라, 앱을 받는 사용자에게 수정한 소스를 제공할 의무가 이미 있습니다.
 - 클라이언트 포크(이 저장소)를 공개하면 그 의무를 지키는 방법도 되고, 표준 러너도 무료가 됩니다.
-- 공개해도 시크릿과 변수는 노출되지 않습니다. 다만 실행 로그와 아티팩트(서버 주소가 박힌 앱)는 누구나 볼 수 있습니다.
+- 공개 저장소에서는 **실행 로그와 아티팩트를 누구나 볼 수 있습니다.**
+  - 시크릿은 로그에서 `***`로 가려집니다. 하지만 저장소 **변수**는 각 단계의 로그에 그대로 찍힙니다. 서버 주소와 키를 로그에 남기지 않으려면 `HJV_SERVER`/`HJV_SERVER_KEY`를 시크릿으로 등록하세요(워크플로는 둘 다 받습니다).
+  - 서버 주소와 키는 **앱 안에 들어갑니다**. 공개 아티팩트로 받은 앱이나 소스로 직접 빌드한 앱은 그 서버에 접속할 수 있습니다. 소수만 쓰는 서버라면 실제 서버 값으로 빌드한 앱은 공개 아티팩트로 내지 말고, 비공개 미러 저장소나 로컬에서 빌드하세요. ([deploy.md](deploy.md)의 "소규모 비공개 운영")
+  - 서명된 IPA는 공개 저장소에서 아티팩트로 올리지 않습니다. 프로비저닝 프로파일에 Apple 개발자 이름, 팀 ID, Ad Hoc의 경우 기기 UDID가 들어 있기 때문입니다. 서명 단계의 로그에서도 인증서 이름과 팀을 가립니다.
+- 모든 결과물에는 `LICENSE.txt`, `NOTICE.txt`, `SOURCE.txt`(이 빌드의 소스 위치), `THIRD_PARTY_NOTICES.txt`(Rust 크레이트, vcpkg 포트, 동봉 드라이버의 라이선스)가 함께 들어갑니다. AGPL이 요구하는 고지입니다.
 
 ## 캐시
 
@@ -187,9 +191,9 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
 
 ## 아직 확인하지 못한 것
 
-이 워크플로는 아직 실제로 실행하지 않았습니다. 첫 실행에서 다음을 확인하세요.
+2026-10-10 첫 실행에서 세 플랫폼 빌드가 성공했습니다. 아래는 아직 실행하지 않은 경로입니다.
 
-- **패치 빌드**: 패치된 소스가 각 러너에서 빌드되는지 확인합니다. 모든 빌드가 `--locked`이므로, 패치가 의존성을 바꾸면 `Cargo.lock`도 패치에 포함해야 합니다.
+- **의존성 변경**: 모든 빌드가 `--locked`이므로, 패치가 의존성을 바꾸면 `Cargo.lock`도 패치에 포함해야 합니다.
 - **iOS 서명**: 키체인, 수동 서명, IPA 내보내기 경로 전체가 처음 실행됩니다. upstream은 서명 없이만 빌드합니다.
 - **macOS 이미지**: `macos-latest`는 upstream처럼 고정하지 않았습니다. 이미지가 바뀌면 Xcode 버전도 바뀝니다.
-- **외부 파일**: Windows 빌드는 빌드 중에 rustdesk 쪽 GitHub 릴리스에서 파일을 받습니다. 커스텀 Flutter 엔진(`main` 릴리스), 가상 디스플레이 드라이버, 프린터 드라이버입니다. 이 파일이 바뀌거나 사라지면 결과가 달라질 수 있습니다.
+- **외부 파일**: Windows 빌드는 빌드 중에 rustdesk 쪽 GitHub 릴리스에서 파일을 받습니다. 커스텀 Flutter 엔진(`main` 릴리스)과 가상 디스플레이 드라이버입니다. 이 파일이 바뀌거나 사라지면 결과가 달라질 수 있습니다.
