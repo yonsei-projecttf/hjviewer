@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 10:57:20 +0900
+Subject: [PATCH 26/29] mobile: gesture and keyboard tests check what the fixes
+ ship
+
+The two-finger tap tests picked the right click out of the log, so the left
+click that remote_input.dart's _secondFingerDown drops in mouse mode could
+come back unnoticed, and the harness left out the double-tap and long-press
+recognizers that makeGestures adds, so its timings were not the app's. The
+harness now builds makeGestures' recognizers in its order and mirrors the
+mouse mode's rule for a tap a second finger joined (that branch only runs on
+a phone: handleTouch is always true on a desktop test host). The two-finger
+tap tests expect the right click alone. The lone-tap test leaves out the
+double-tap recognizers, which hold every lone tap for kDoubleTapTimeout, to
+show that the two-finger tap recognizer no longer does.
+
+The replay tests of the iOS keyboard diff pass the filler length, as
+remote_page.dart does.
+
+Against 1.5.0's gestures.dart all four older gesture tests fail; with the
+mirrored tap rule taken out, the two-finger tap tests see the left click.
+
+(Release 1.5.1 review, dart-behavior finding 5.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/test/mobile_gestures_test.dart     | 51 +++++++++++++++++-----
+ flutter/test/soft_keyboard_input_test.dart |  8 +++-
+ 2 files changed, 45 insertions(+), 14 deletions(-)
+
+diff --git a/flutter/test/mobile_gestures_test.dart b/flutter/test/mobile_gestures_test.dart
+index 5349688..9ee5108 100644
+--- a/flutter/test/mobile_gestures_test.dart
++++ b/flutter/test/mobile_gestures_test.dart
+@@ -3,31 +3,56 @@ import 'package:flutter/widgets.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:flutter_hbb/common/widgets/gestures.dart';
+ 
+-// The recognizers RawTouchGestureDetectorRegion puts in the arena for a
+-// one-finger pan or a two-finger tap, with the times their callbacks fire.
++// The recognizers RawTouchGestureDetectorRegion.makeGestures puts in the
++// arena, in its order, with the times their callbacks fire. As in mouse mode,
++// a tap that a second finger joined is no click: remote_input.dart's
++// _secondFingerDown, which only runs on a phone, is mirrored here.
+ Future<List<String>> _run(
+     WidgetTester tester, Future<void> Function(Duration Function() now) body,
+-    {required List<String> log, bool holdTapMove = true}) async {
++    {required List<String> log, bool doubleTaps = true}) async {
+   final t0 = tester.binding.clock.now();
+   Duration now() => tester.binding.clock.now().difference(t0);
+   String at(String name) => '$name@${now().inMilliseconds}';
++  var secondFingerDown = false;
+   await tester.pumpWidget(Directionality(
+     textDirection: TextDirection.ltr,
+     child: RawGestureDetector(
+       gestures: {
+         TapGestureRecognizer:
+             GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+-                () => TapGestureRecognizer(),
+-                (i) => i.onTap = () => log.add(at('tap'))),
+-        if (holdTapMove)
++                () => TapGestureRecognizer(), (i) {
++          i.onTap = () {
++            if (!secondFingerDown) log.add(at('tap'));
++          };
++        }),
++        if (doubleTaps)
++          DoubleTapGestureRecognizer:
++              GestureRecognizerFactoryWithHandlers<DoubleTapGestureRecognizer>(
++                  () => DoubleTapGestureRecognizer(),
++                  (i) => i.onDoubleTap = () => log.add(at('doubleTap'))),
++        LongPressGestureRecognizer:
++            GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
++                () => LongPressGestureRecognizer(), (i) {
++          i
++            ..onLongPressDown = (_) {
++              secondFingerDown = false;
++            }
++            ..onLongPress = () => log.add(at('longPress'));
++        }),
++        if (doubleTaps)
+           HoldTapMoveGestureRecognizer: GestureRecognizerFactoryWithHandlers<
+                   HoldTapMoveGestureRecognizer>(
+               () => HoldTapMoveGestureRecognizer(),
+               (i) => i.onHoldDragStart = (_) => log.add(at('holdDrag'))),
+         DoubleFinerTapGestureRecognizer: GestureRecognizerFactoryWithHandlers<
+                 DoubleFinerTapGestureRecognizer>(
+-            () => DoubleFinerTapGestureRecognizer(),
+-            (i) => i.onDoubleFinerTap = (_) => log.add(at('twoFingerTap'))),
++            () => DoubleFinerTapGestureRecognizer(), (i) {
++          i
++            ..onDoubleFinerTapDown = (_) {
++              secondFingerDown = true;
++            }
++            ..onDoubleFinerTap = (_) => log.add(at('twoFingerTap'));
++        }),
+         CustomTouchGestureRecognizer:
+             GestureRecognizerFactoryWithHandlers<CustomTouchGestureRecognizer>(
+                 () => CustomTouchGestureRecognizer(),
+@@ -67,7 +92,8 @@ void main() {
+       await t.pump(const Duration(milliseconds: 20));
+       await b.up();
+     }, log: []);
+-    expect(log.where((e) => e.startsWith('twoFingerTap')), ['twoFingerTap@80']);
++    // The right click alone, no left click first.
++    expect(log, ['twoFingerTap@80']);
+   });
+ 
+   testWidgets('a slower two-finger tap still right-clicks', (t) async {
+@@ -80,16 +106,17 @@ void main() {
+       await t.pump(const Duration(milliseconds: 10));
+       await b.up();
+     }, log: []);
+-    expect(
+-        log.where((e) => e.startsWith('twoFingerTap')), ['twoFingerTap@450']);
++    expect(log, ['twoFingerTap@450']);
+   });
+ 
+   testWidgets('a lone tap is not held for a two-finger tap', (t) async {
++    // The double-tap recognizers hold every lone tap for kDoubleTapTimeout;
++    // without them the tap shows that the two-finger tap does not.
+     final log = await _run(t, (_) async {
+       final g = await t.startGesture(const Offset(100, 100));
+       await t.pump(const Duration(milliseconds: 60));
+       await g.up();
+-    }, log: [], holdTapMove: false);
++    }, log: [], doubleTaps: false);
+     expect(log, ['tap@60']);
+   });
+ 
+diff --git a/flutter/test/soft_keyboard_input_test.dart b/flutter/test/soft_keyboard_input_test.dart
+index ffba9a4..adeb0f6 100644
+--- a/flutter/test/soft_keyboard_input_test.dart
++++ b/flutter/test/soft_keyboard_input_test.dart
+@@ -5,6 +5,10 @@ import 'package:flutter_test/flutter_test.dart';
+ void main() {
+   final filler = '1' * 1024;
+ 
++  // As remote_page.dart calls it, with the length of its filler.
++  SoftKeyboardEdit? shipped(String oldValue, TextEditingValue value) =>
++      iosSoftKeyboardEdit(oldValue, value, initialFillerLength: filler.length);
++
+   TextEditingValue value(String tail, {int? composingFrom}) {
+     final text = '$filler$tail';
+     return TextEditingValue(
+@@ -18,7 +22,7 @@ void main() {
+   group('iOS Korean keyboard', () {
+     test('the rewrite steps arriving one by one send no stray 1', () {
+       // Like the test below, but without the settle delay merging the steps.
+-      final remote = _Remote(filler, iosSoftKeyboardEdit)..type('ㅎ');
++      final remote = _Remote(filler, shipped)..type('ㅎ');
+       remote
+         ..apply(TextEditingValue(text: filler.substring(1)))
+         ..apply(TextEditingValue(text: filler))
+@@ -38,7 +42,7 @@ void main() {
+ 
+     test('the same after Backspaces deleted part of the filler', () {
+       final short = filler.substring(2);
+-      final remote = _Remote(filler, iosSoftKeyboardEdit)
++      final remote = _Remote(filler, shipped)
+         ..apply(TextEditingValue(text: filler.substring(1)))
+         ..apply(TextEditingValue(text: short));
+       expect(remote.deletedBeforeStart, 2);

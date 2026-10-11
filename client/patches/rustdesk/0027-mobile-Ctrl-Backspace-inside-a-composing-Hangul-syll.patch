@@ -1,0 +1,158 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 11:00:03 +0900
+Subject: [PATCH 27/29] mobile: Ctrl+Backspace inside a composing Hangul
+ syllable stays a Backspace
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+With Ctrl, Alt or Win armed on the key bar, a Backspace on a syllable the
+iOS Korean keyboard still composes deletes one jamo (자 -> ㅈ, 한 -> 하), so
+the settled edit is one Backspace and the jamo that is left. The shortcut
+mapping took that jamo for the key typed: Ctrl+Backspace went out as Ctrl+W
+(closing the tab), 요 -> ㅇ as Ctrl+D, and with Win, 일 -> 이 as Win+L,
+locking the PC. 1.5.0 sent Ctrl+Backspace.
+
+An edit that only takes jamo away is now a Backspace. isHangulJamoDeletion
+counts the Dubeolsik keys of the replaced and of the new Hangul (a compound
+jamo such as ㄳ or ㅘ is two keys, so 고 + ㅏ -> 과 is still a key typed);
+when the count shrinks with a key-bar hotkey armed, VK_BACK goes out once
+with the armed modifiers and the field resets, as after a mapped key. Once,
+not the edit's Backspace count: for 가나 -> 간 (the ㄴ moves back) the
+keyboard rewrites two syllables for one key, and a second Backspace would
+delete a character before the word on the PC.
+
+Shortcuts typed (하 + ㅊ -> 핯 is still Ctrl+C), a Backspace on a committed
+syllable or on other text, and typing without a key-bar modifier are
+unchanged. This relies on the stock keyboard deleting jamo by jamo inside a
+composing syllable, as rustdesk PR #15201's fixtures show. The test checks
+that 자 -> ㅈ is a jamo deletion rather than the Ctrl+W its jamo maps to,
+plus the compound and typed cases.
+
+(Release 1.5.1 review, dart-behavior finding 1.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/mobile/pages/remote_page.dart   |  9 +++++
+ flutter/lib/models/soft_keyboard_input.dart | 42 +++++++++++++++++++++
+ flutter/test/soft_keyboard_input_test.dart  | 36 ++++++++++++++++++
+ 3 files changed, 87 insertions(+)
+
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index a0b10ad..48b8770 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -347,6 +347,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+     if (edit == null) {
+       return;
+     }
++    if (inputModel.keyBarHotkey && isHangulJamoDeletion(_value, value.text)) {
++      // Backspace inside a syllable the keyboard still composes (자 -> ㅈ):
++      // the shortcut is Ctrl+Backspace, not Ctrl and the jamo left (Ctrl+W).
++      // One key was pressed, even when the keyboard rewrote two syllables
++      // (가나 -> 간).
++      inputModel.inputKey('VK_BACK');
++      _resetSoftKeyboardText();
++      return;
++    }
+     _value = value.text;
+     if (inputModel.keyBarHotkey) {
+       // A shortcut typed with the 2-set (Dubeolsik) Korean layout: send the
+diff --git a/flutter/lib/models/soft_keyboard_input.dart b/flutter/lib/models/soft_keyboard_input.dart
+index 930a430..6fa48fb 100644
+--- a/flutter/lib/models/soft_keyboard_input.dart
++++ b/flutter/lib/models/soft_keyboard_input.dart
+@@ -168,3 +168,45 @@ String? softKeyboardShortcutKey(String text) {
+   if (code >= 0x21 && code <= 0x7E) return last;
+   return null;
+ }
++
++// Compound jamo, typed with two Dubeolsik keys (ㄱ + ㅅ -> ㄳ, ㅗ + ㅏ -> ㅘ).
++const _compoundJamo = 'ㄳㄵㄶㄺㄻㄼㄽㄾㄿㅀㅄㅘㅙㅚㅝㅞㅟㅢ';
++
++/// The Dubeolsik keys typed for [text], or null when it is anything but
++/// Hangul syllables and compatibility jamo.
++int? _dubeolsikKeyCount(String text) {
++  int keys(String jamo) => _compoundJamo.contains(jamo) ? 2 : 1;
++  var n = 0;
++  for (final rune in text.runes) {
++    final char = String.fromCharCode(rune);
++    if (rune >= 0xAC00 && rune <= 0xD7A3) {
++      final index = rune - 0xAC00;
++      final finalIndex = index % 28;
++      // An initial consonant is one key, also ㄲ ㄸ ㅃ ㅆ ㅉ (with Shift).
++      n += 1 + keys(_medials[(index ~/ 28) % 21]);
++      if (finalIndex != 0) n += keys(_finals[finalIndex]);
++    } else if (dubeolsikKeyForJamo(char) != null) {
++      n += keys(char);
++    } else {
++      return null;
++    }
++  }
++  return n;
++}
++
++/// Whether the soft keyboard changed [oldValue] to [newValue] by taking jamo
++/// away from Hangul it still composes, that is a Backspace inside a syllable
++/// (자 -> ㅈ, 과 -> 고, 가나 -> 간). Typing a key adds one, also when it
++/// makes a compound jamo (고 + ㅏ -> 과).
++bool isHangulJamoDeletion(String oldValue, String newValue) {
++  var common = 0;
++  final maxCommon = math.min(oldValue.length, newValue.length);
++  while (common < maxCommon &&
++      oldValue.codeUnitAt(common) == newValue.codeUnitAt(common)) {
++    ++common;
++  }
++  final text = newValue.substring(common);
++  final before = _dubeolsikKeyCount(oldValue.substring(common));
++  final after = _dubeolsikKeyCount(text);
++  return text.isNotEmpty && before != null && after != null && after < before;
++}
+diff --git a/flutter/test/soft_keyboard_input_test.dart b/flutter/test/soft_keyboard_input_test.dart
+index adeb0f6..e945fa2 100644
+--- a/flutter/test/soft_keyboard_input_test.dart
++++ b/flutter/test/soft_keyboard_input_test.dart
+@@ -241,6 +241,42 @@ void main() {
+       expect(softKeyboardShortcutKey('😀'), isNull);
+     });
+ 
++    test('a Backspace inside a composing syllable is no jamo key', () {
++      // Ctrl on, Backspace on 자: remote_page.dart sends Ctrl+Backspace, not
++      // Ctrl+W for the ㅈ that is left.
++      final old = '$filler자';
++      final now = value('ㅈ', composingFrom: 0);
++      expect(shipped(old, now), (backspaces: 1, text: 'ㅈ'));
++      expect(softKeyboardShortcutKey('ㅈ'), 'w');
++      expect(isHangulJamoDeletion(old, now.text), isTrue);
++      for (final (before, after) in [
++        ('한', '하'),
++        ('과', '고'),
++        ('닭', '달'),
++        ('가나', '간'),
++        ('안녕하세요', '안녕하세ㅇ'),
++      ]) {
++        expect(isHangulJamoDeletion('$filler$before', '$filler$after'), isTrue,
++            reason: '$before -> $after');
++      }
++      // A key typed, also into a compound jamo, and a Backspace that deletes
++      // a whole syllable or other text.
++      for (final (before, after) in [
++        ('하', '핯'),
++        ('고', '과'),
++        ('달', '닭'),
++        ('', 'ㅊ'),
++        ('자', ''),
++        ('한 ', '한'),
++        ('ab', 'a'),
++      ]) {
++        expect(isHangulJamoDeletion('$filler$before', '$filler$after'), isFalse,
++            reason: '$before -> $after');
++      }
++      // One filler character put back too many before a syllable.
++      expect(isHangulJamoDeletion(filler, '${filler}1한'), isFalse);
++    });
++
+     test('Hangul text', () {
+       expect(isHangulText('한글'), isTrue);
+       expect(isHangulText('ㅎㅏ'), isTrue);

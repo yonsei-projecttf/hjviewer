@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 11:00:34 +0900
+Subject: [PATCH 28/29] mobile: leaving a session forgets the button presses it
+ sent
+
+InputModel records the mouse buttons sendMouse pressed, so that only the
+release of one of them uses up a one-shot key-bar modifier. The phone reuses
+one InputModel for every session, and resetModifiers(), which FFI.close()
+calls, cleared the modifiers but not that record. A session that ended with
+a button held (the connection dropped during a touch-mode drag) left the
+press behind: in the next session the spare release a pinch ends with
+matched it and used up an armed Shift or Ctrl, which a pinch to aim must not
+do.
+
+resetModifiers() now clears the record too. On a desktop the key bar has no
+one-shot modifiers, so clearing it there changes nothing.
+
+(Release 1.5.1 review, dart-behavior finding 8.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/models/input_model.dart | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/flutter/lib/models/input_model.dart b/flutter/lib/models/input_model.dart
+index ac01ea4..6f2f26d 100644
+--- a/flutter/lib/models/input_model.dart
++++ b/flutter/lib/models/input_model.dart
+@@ -1187,6 +1187,7 @@ class InputModel {
+   void resetModifiers() {
+     shift = ctrl = alt = command = false;
+     keyBarModifiers.clear();
++    _sentButtonPresses.clear();
+   }
+ 
+   /// Modify the given modifier map [evt] based on current modifier key status.

@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 11:01:24 +0900
+Subject: [PATCH 29/29] quality monitor: the transport test expects it on every
+ platform
+
+"quality monitor: show the transport on every platform" left upstream's
+quality_monitor_transport_test.dart as it was. The test expects no transport
+off the web, so it failed against the patched model.dart ("Expected: null,
+Actual: 'WebRTC'"), which went unnoticed because the CI's Dart test list
+does not run it.
+
+It now checks what the quality monitor shows: nothing before the connection
+type is known, then 'WebRTC', 'WebRTC (TURN)' when not direct,
+'WebSocket (relay)', and 'Relay' for the punch path's relay.
+
+(Release 1.5.1 review, dart-behavior finding 4.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/test/quality_monitor_transport_test.dart | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/flutter/test/quality_monitor_transport_test.dart b/flutter/test/quality_monitor_transport_test.dart
+index dc38adc..6edcaa9 100644
+--- a/flutter/test/quality_monitor_transport_test.dart
++++ b/flutter/test/quality_monitor_transport_test.dart
+@@ -17,12 +17,19 @@ class _FakeFFI implements FFI {
+ }
+ 
+ void main() {
+-  test('the quality monitor names the WebRTC transport only on web', () {
++  test('the quality monitor names the transport, also off the web', () {
+     final ffi = _FakeFFI();
+-    ffi.ffiModel.cachedPeerData.streamType = 'WebRTC';
+     final model = QualityMonitorModel(WeakReference(ffi));
+-    // Off the web the session tab's tooltip already names the transport.
+     expect(isWeb, isFalse);
+     expect(model.webrtcTransport, isNull);
++    ffi.ffiModel.setConnectionType('id', true, true, 'WebRTC');
++    expect(model.webrtcTransport, 'WebRTC');
++    ffi.ffiModel.setConnectionType('id', true, false, 'WebRTC');
++    expect(model.webrtcTransport, 'WebRTC (TURN)');
++    ffi.ffiModel.setConnectionType('id', true, false, 'WebSocket');
++    expect(model.webrtcTransport, 'WebSocket (relay)');
++    // The punch path's relay, which the connection dialog shows as TCP.
++    ffi.ffiModel.setConnectionType('id', true, false, 'Relay');
++    expect(model.webrtcTransport, 'Relay');
+   });
+ }

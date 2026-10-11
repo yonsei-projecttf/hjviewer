@@ -136,9 +136,9 @@ server_stage() {
 }
 
 FLUTTER_VERSION=3.24.5 # client-build.yml FLUTTER_VERSION
-# The pure Dart tests of the client patches; each runs once the patch that adds it is in.
-CLIENT_DART_TESTS="test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart
-  test/mobile_touch_utils_test.dart test/windows_wheel_test.dart"
+# The pure Dart tests of the client patches, which run with the bridge's web stand-in. The gesture
+# and quality monitor tests need the generated bridge and run in client-build.yml.
+CLIENT_DART_TESTS="test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart"
 
 client_stage() {
   local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=()
@@ -162,8 +162,10 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   step "client: hbb_common WebSocket tests"
   (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket)
   step "client: pure Dart tests"
-  for t in $CLIENT_DART_TESTS; do [ -f "$app/$t" ] && tests+=("$t"); done
-  [ ${#tests[@]} -gt 0 ] || fail "client: none of the Dart tests is in the patched tree"
+  for t in $CLIENT_DART_TESTS; do
+    [ -f "$app/$t" ] || fail "client: $t is not in the patched tree"
+    tests+=("$t")
+  done
   # The bridge is generated in client-build.yml; these tests only need its web stand-in to resolve.
   printf "export 'web/bridge.dart';\n" > "$app/lib/generated_bridge.dart"
   (cd "$app" && export PUB_CACHE="$CI/pub-cache" FLUTTER_SUPPRESS_ANALYTICS=true &&

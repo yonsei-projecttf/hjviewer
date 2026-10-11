@@ -241,17 +241,18 @@ jobs:
           name: bridge-artifact
           path: upstream/rustdesk
 
+      # The whole test folder: upstream's own tests guard the code around the input patches. The
+      # tests those patches add or update must be there, so a dropped patch fails the job. The
+      # gesture and quality monitor tests need the generated bridge.
       - name: Run the tests
         run: |
-          tests=()
           for t in test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart \
-            test/mobile_touch_utils_test.dart test/windows_wheel_test.dart \
-            test/mobile_gestures_test.dart test/mobile_long_press_test.dart \
-            test/common/widgets/gestures_test.dart; do
-            if [ -f "$t" ]; then tests+=("$t"); fi
+            test/mobile_gestures_test.dart test/common/widgets/gestures_test.dart \
+            test/quality_monitor_transport_test.dart; do
+            if [ ! -f "$t" ]; then echo "::error::$t is not in the patched tree"; exit 1; fi
           done
           flutter pub get
-          if [ ${#tests[@]} -gt 0 ]; then flutter test "${tests[@]}"; fi
+          flutter test
 
   # upstream: L109-461 (build-for-windows-flutter), x64 matrix entry L119-126. Dropped: the arm64
   # entry and its steps, upstream's private signing service (SIGN_BASE_URL), MSI and MSI template,
@@ -805,7 +806,9 @@ jobs:
   # with the `testflight` input it uploads that IPA to App Store Connect.
   ios:
     name: iOS
-    needs: generate-bridge
+    # also waits for the Dart tests: TestFlight hands the build out, so it never gets one whose
+    # input tests failed (Windows and Android artifacts stay in the run until someone takes them)
+    needs: [generate-bridge, dart-tests]
     if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'ios'
     runs-on: macos-26
     timeout-minutes: 90

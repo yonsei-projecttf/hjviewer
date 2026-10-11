@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 10:55:05 +0900
+Subject: [PATCH 25/29] mobile: in touch mode a finger left from a pinch does
+ not drag
+
+Since "a gesture is over once its fingers lift", the finger left on the glass
+after a pinch becomes a one-finger pan about 200 ms after the other one
+lifted. In mouse mode that moves the cursor, as intended. In touch mode a
+one-finger pan is a left-button drag on the PC: ending a zoom with a trailing
+finger that kept moving could drag a file or a window, or select text; if
+the pinch began less than 500 ms before, the press went to the first touch
+point. In 1.5.0 that finger kept panning the local canvas.
+
+In touch mode such a finger is now ignored until every finger has lifted:
+onTwoFingerScaleEnd notes that a finger is still down, the one-finger pan
+then sends no press and moves no cursor, and onLongPressDown, which runs for
+the first finger of every touch, clears the note. Its lift still sends the
+spare button release a pinch already ends with. Mouse mode is unchanged;
+desktop touch screens, which take the touch path, get the same fix.
+
+No unit test: the handlers need a session's models. The review's gesture
+probe (makeGestures' recognizers with these handlers, mouse and touch mode)
+shows the drag gone and every other scenario unchanged.
+
+(Release 1.5.1 review, dart-behavior "missed" item 1.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/remote_input.dart | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/flutter/lib/common/widgets/remote_input.dart b/flutter/lib/common/widgets/remote_input.dart
+index a3d9e4c..14250a2 100644
+--- a/flutter/lib/common/widgets/remote_input.dart
++++ b/flutter/lib/common/widgets/remote_input.dart
+@@ -113,6 +113,11 @@ class _RawTouchGestureDetectorRegionState
+   // A second finger landed during this touch: a two-finger tap, not a click.
+   bool _secondFingerDown = false;
+ 
++  // A pinch ended with a finger still down. In touch mode that finger is no
++  // left-button drag (it could move a file or select text) until every
++  // finger has lifted.
++  bool _scaleEndedWithFingerDown = false;
++
+   FFI get ffi => widget.ffi;
+   FfiModel get ffiModel => widget.ffiModel;
+   InputModel get inputModel => widget.inputModel;
+@@ -234,6 +239,7 @@ class _RawTouchGestureDetectorRegionState
+ 
+   onLongPressDown(LongPressDownDetails d) async {
+     _secondFingerDown = false;
++    _scaleEndedWithFingerDown = false;
+     lastDeviceKind = d.kind;
+     if (isNotTouchBasedDevice()) {
+       return;
+@@ -365,6 +371,9 @@ class _RawTouchGestureDetectorRegionState
+       return;
+     }
+     if (handleTouch) {
++      if (_scaleEndedWithFingerDown) {
++        return;
++      }
+       if (lastTapDownDetails != null) {
+         await ffi.cursorModel.move(lastTapDownDetails.localPosition.dx,
+             lastTapDownDetails.localPosition.dy);
+@@ -504,6 +513,7 @@ class _RawTouchGestureDetectorRegionState
+     if (isNotTouchBasedDevice()) {
+       return;
+     }
++    _scaleEndedWithFingerDown = d.pointerCount > 0;
+     if ((isDesktop || isWebDesktop)) {
+       if (widget.isCamera) return;
+       bind.sessionSendPointer(

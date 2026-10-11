@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 10:53:43 +0900
+Subject: [PATCH 24/29] mobile: a three-finger scroll goes on when one finger
+ lifts first
+
+Since "a gesture is over once its fingers lift", a finger leaving a
+three-finger scroll ended the scroll. When the other two kept moving, the
+remote scroll stopped, and after the 200 ms reset timer the two fingers
+started a two-finger scale: the canvas zoomed and panned locally instead, and
+its end sent a stray left-button release to the PC. In 1.5.0 the fingers left
+kept scrolling.
+
+A three-finger scroll now ends only when its last finger lifts, and the
+fingers left keep scrolling until then, as in 1.5.0. This relies on the
+previous commit: when the last fingers lift without moving there is no onEnd,
+and only didStopTrackingLastPointer clears the scroll state, which would
+otherwise turn the next one-finger stroke into a scroll. The test checks both:
+the two fingers left scroll on, and a stroke after all fingers lifted pans.
+
+(Release 1.5.1 review, dart-behavior finding 3.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/gestures.dart      |  5 ++
+ .../test/common/widgets/gestures_test.dart    | 64 +++++++++++++++++++
+ 2 files changed, 69 insertions(+)
+
+diff --git a/flutter/lib/common/widgets/gestures.dart b/flutter/lib/common/widgets/gestures.dart
+index c99f2b5..5e7c4ff 100644
+--- a/flutter/lib/common/widgets/gestures.dart
++++ b/flutter/lib/common/widgets/gestures.dart
+@@ -114,6 +114,11 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
+           }
+           break;
+         case GestureState.threeFingerVerticalDrag:
++          if (d.pointerCount > 0) {
++            // The fingers left keep scrolling until the last one lifts
++            // (didStopTrackingLastPointer resets the state then).
++            return;
++          }
+           debugPrint("ThreeFingerState.vertical onEnd");
+           if (onThreeFingerVerticalDragEnd != null) {
+             onThreeFingerVerticalDragEnd!(_getDragEndDetails(d));
+diff --git a/flutter/test/common/widgets/gestures_test.dart b/flutter/test/common/widgets/gestures_test.dart
+index 69774ef..e59b398 100644
+--- a/flutter/test/common/widgets/gestures_test.dart
++++ b/flutter/test/common/widgets/gestures_test.dart
+@@ -74,4 +74,68 @@ void main() {
+     // At its first move, as without the pinch.
+     expect(starts, [303.0]);
+   });
++
++  testWidgets('a three-finger scroll goes on when one finger lifts first',
++      (tester) async {
++    var scrolls = 0;
++    var scaleStarts = 0;
++    var panStarts = 0;
++    await tester.pumpWidget(RawGestureDetector(
++      behavior: HitTestBehavior.opaque,
++      gestures: <Type, GestureRecognizerFactory>{
++        CustomTouchGestureRecognizer:
++            GestureRecognizerFactoryWithHandlers<CustomTouchGestureRecognizer>(
++                CustomTouchGestureRecognizer.new,
++                (recognizer) => recognizer
++                  ..onThreeFingerVerticalDragUpdate = (_) {
++                    scrolls++;
++                  }
++                  ..onTwoFingerScaleStart = (_) {
++                    scaleStarts++;
++                  }
++                  ..onOneFingerPanStart = (_) {
++                    panStarts++;
++                  }),
++      },
++      child: const SizedBox.expand(),
++    ));
++
++    final fingers = [
++      for (var i = 1; i <= 3; i++)
++        await tester.startGesture(Offset(50.0 + 50 * i, 300), pointer: i)
++    ];
++    Future<void> scroll() async {
++      for (var i = 0; i < 40; i++) {
++        for (final finger in fingers) {
++          await finger.moveBy(const Offset(0, -3));
++        }
++        await tester.pump(const Duration(milliseconds: 8));
++      }
++    }
++
++    await scroll();
++    await fingers.removeLast().up();
++    scrolls = 0;
++    await scroll();
++    // The last finger lifts without moving.
++    for (final finger in fingers) {
++      await finger.up();
++    }
++    await tester.pump(const Duration(milliseconds: 300));
++
++    // Every move of the two fingers left scrolls; none zooms the canvas.
++    expect(scrolls, 80);
++    expect(scaleStarts, 0);
++
++    // With all fingers up, a stroke pans again.
++    final stroke =
++        await tester.startGesture(const Offset(300, 300), pointer: 4);
++    for (var i = 0; i < 10; i++) {
++      await stroke.moveBy(const Offset(3, 0));
++      await tester.pump(const Duration(milliseconds: 8));
++    }
++    await stroke.up();
++    expect(panStarts, 1);
++    expect(scrolls, 80);
++  });
+ }

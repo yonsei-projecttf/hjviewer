@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 08:58:21 +0900
-Subject: [PATCH 03/21] hjviewer: own version info and About links instead of
+Subject: [PATCH 03/29] hjviewer: own version info and About links instead of
  RustDesk's
 
 RustDesk asks forks not to use its name or logo. Builds now carry:

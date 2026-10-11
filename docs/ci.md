@@ -15,7 +15,7 @@ scripts/ci.sh client     # 앱 패치 시험: hbb_common WebSocket 테스트와 
 
 | 단계 | 하는 일 |
 |---|---|
-| client | `build/ci/upstream`에 upstream rustdesk를 새로 받아 `client/patches`를 적용하고, `hbb_common`의 WebSocket 테스트(프록시, `TCP_NODELAY`)와 앱의 순수 Dart 테스트(`CLIENT_DART_TESTS`: iPhone 한글 입력과 키보드 기록)를 돌립니다. Flutter는 앱 빌드와 같은 3.24.5를 처음 한 번 받아 Flutter 릴리스 목록의 SHA-256과 맞춰 봅니다. 생성된 bridge가 필요한 제스처 테스트는 GitHub Actions의 Dart tests 잡에서만 돕니다. |
+| client | `build/ci/upstream`에 upstream rustdesk를 새로 받아 `client/patches`를 적용하고, `hbb_common`의 WebSocket 테스트(프록시, `TCP_NODELAY`)와 앱의 순수 Dart 테스트(`CLIENT_DART_TESTS`: iPhone 한글 입력과 키보드 기록)를 돌립니다. Flutter는 앱 빌드와 같은 3.24.5를 처음 한 번 받아 Flutter 릴리스 목록의 SHA-256과 맞춰 봅니다. 생성된 bridge가 필요한 제스처·화질 표시 테스트는 GitHub Actions의 Dart tests 잡에서만 돕니다. |
 | server | `build/ci/upstream`에 upstream rustdesk-server를 새로 받아 `server/patches`를 적용하고, 신호·중계 통합 테스트(`tcp_signaling`, `relay_pairing`)를 돌립니다. `hjv-probe`, `hjv-load`도 빌드합니다. |
 | deploy | 작업 트리 사본(`build/ci/src`, 커밋하지 않은 변경 포함)으로 런북의 배포를 Docker에서 그대로 합니다. B 경로는 hbbs/hbbr을 127.0.0.1에 띄우고, 그 앞에 `deploy/nginx-hjviewer.conf`와 `deploy/apache-hjviewer.conf`를 차례로 둡니다. nginx는 기존 사이트에 `deploy/nginx-hjviewer-locations.conf`를 include 한 줄로 넣은 경우도 함께 시험합니다. 이 기존 사이트는 HTTP/2를 켜고 모든 경로를 로그인 페이지로 보내는 WordPress 같은 사이트입니다. 마지막으로 런북 B 경로의 Release 패키지를 `scripts/package-server.sh`로 만들고, 그 안의 systemd 유닛을 띄워 같은 nginx 뒤에서 시험합니다. 개발 PC를 건드리지 않도록 런타임 유닛, 임시 사용자, 별도 디렉터리로 바꾼 이름만 다르고, 보안 옵션과 자원 상한은 배포 파일 그대로입니다. 웹 서버는 운영 서버와 같은 Ubuntu 패키지를 내려받아 풀어서 실행할 뿐, 설치하지 않습니다. 그다음 A 경로(Caddy)를 같은 이미지와 키로 띄웁니다. |
 
@@ -77,12 +77,12 @@ macOS와 Linux는 빌드하지 않습니다.
 | 잡 | 러너 | 하는 일 | 결과물 (artifact) |
 |---|---|---|---|
 | Bridge codegen | ubuntu-22.04 | 서버 변수를 확인하고 flutter_rust_bridge 코드를 생성합니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 매번 생성합니다. | 내부용 `bridge-artifact` (1일 보관) |
-| Dart tests | ubuntu-24.04 | 생성된 bridge로 앱 패치의 Dart 테스트(제스처, iPhone 한글 입력, 화질 표시)를 돌립니다. 실패하면 실행 결과가 실패로 표시되지만, 플랫폼 잡은 이 잡을 기다리지 않습니다. | 없음 |
+| Dart tests | ubuntu-24.04 | 생성된 bridge로 `flutter/test`의 Dart 테스트를 모두 돌립니다. 앱 패치가 더하거나 고친 테스트(제스처, iPhone 한글 입력, 화질 표시)가 하나라도 없으면 실패합니다. Windows·Android 잡은 이 잡을 기다리지 않습니다. iOS 잡은 이 잡이 통과한 뒤에 시작하므로, 테스트가 실패한 빌드는 TestFlight에 올라가지 않습니다. | 없음 |
 | Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`, 서명 없음) |
 | Android arm64 | ubuntu-24.04 | vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 릴리스 서명 | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned` |
 | iOS | macos-26 (Xcode 26.6) | vcpkg(arm64-ios) → Rust 정적 라이브러리 → `flutter build ipa` → 인증서가 있으면 서명된 IPA → `testflight`를 켜면 App Store Connect에 업로드 | `…-ios` 또는 `…-ios-unsigned` |
 
-Bridge codegen이 끝나면 나머지 잡이 병렬로 실행됩니다.
+Bridge codegen이 끝나면 Dart tests, Windows, Android 잡이 병렬로 실행되고, iOS 잡은 Dart tests가 통과한 뒤에 시작합니다.
 
 Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하면 압축이 풀리고 앱이 뜹니다. 피제어 PC에서는 앱의 설치 버튼으로 서비스로 설치합니다. 서명이 없으므로 SmartScreen 경고나 백신 오탐이 나올 수 있습니다.
 

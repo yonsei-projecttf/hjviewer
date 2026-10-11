@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 10:51:17 +0900
+Subject: [PATCH 22/29] mobile: a tap after a two-finger touch that moved is a
+ tap again
+
+DoubleFinerTapGestureRecognizer remembers that a first finger landed
+(_isStart) and which fingers lifted (_upTap) until its timer runs out, which
+the two-finger tap patch raised to 500 ms. When a two-finger touch turned
+into something else, for example the first finger lifted and the second
+dragged the cursor, the arena rejected the recognizer, but _reject reset that
+state only through _firstTap, which this recognizer never sets. The next
+finger down within the 500 ms counted as the second finger of the old touch
+and its lift as the second lift: a single tap right-clicked in mouse mode and
+was lost in touch mode. 1.5.0 had the same flaw within its 300 ms window.
+
+The recognizer now forgets the touch once it tracks none of its fingers. A
+test replays the reported case: the tap 250 ms after the drag is a tap, not a
+two-finger tap.
+
+(Release 1.5.1 review, dart-behavior finding 2.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/gestures.dart |  7 +++++++
+ flutter/test/mobile_gestures_test.dart   | 20 ++++++++++++++++++++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/flutter/lib/common/widgets/gestures.dart b/flutter/lib/common/widgets/gestures.dart
+index 61348f6..72dd5c0 100644
+--- a/flutter/lib/common/widgets/gestures.dart
++++ b/flutter/lib/common/widgets/gestures.dart
+@@ -607,6 +607,13 @@ class DoubleFinerTapGestureRecognizer extends GestureRecognizer {
+     _trackers.remove(tracker.pointer);
+     tracker.entry.resolve(GestureDisposition.rejected);
+     _freezeTracker(tracker);
++    if (_trackers.isEmpty) {
++      // No finger of this touch is left to tap (it moved, or another gesture
++      // won it): the next finger down is a first finger again.
++      _stopFirstTapUpTimer();
++      _isStart = false;
++      _upTap.clear();
++    }
+     if (_firstTap != null) {
+       if (tracker == _firstTap) {
+         _reset();
+diff --git a/flutter/test/mobile_gestures_test.dart b/flutter/test/mobile_gestures_test.dart
+index dddb45d..5349688 100644
+--- a/flutter/test/mobile_gestures_test.dart
++++ b/flutter/test/mobile_gestures_test.dart
+@@ -92,4 +92,24 @@ void main() {
+     }, log: [], holdTapMove: false);
+     expect(log, ['tap@60']);
+   });
++
++  testWidgets('a tap after a two-finger touch that moved is a tap', (t) async {
++    final log = await _run(t, (now) async {
++      final a = await t.startGesture(const Offset(100, 100), pointer: 1);
++      final b = await t.startGesture(const Offset(150, 100), pointer: 2);
++      await t.pump(const Duration(milliseconds: 40));
++      await a.up();
++      for (var i = 0; i < 20; i++) {
++        await b.moveBy(const Offset(3, 0));
++        await t.pump(const Duration(milliseconds: 8));
++      }
++      await b.up();
++      // Within the two-finger tap's 500 ms window.
++      await t.pump(const Duration(milliseconds: 250));
++      final c = await t.startGesture(const Offset(300, 300), pointer: 3);
++      await t.pump(const Duration(milliseconds: 40));
++      await c.up();
++    }, log: []);
++    expect(log.where((e) => !e.startsWith('panStart')), ['tap@790']);
++  });
+ }

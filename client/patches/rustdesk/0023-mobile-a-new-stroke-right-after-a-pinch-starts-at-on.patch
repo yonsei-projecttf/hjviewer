@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 10:52:13 +0900
+Subject: [PATCH 23/29] mobile: a new stroke right after a pinch starts at once
+
+ScaleGestureRecognizer calls onEnd for a lifted finger only while its gesture
+is started, that is when a finger moved since the last finger came or went.
+When the fingers of a pinch lifted one after the other and the last one did
+not move in between, no onEnd came for it, so the reset that "a gesture is
+over once its fingers lift" does when no finger is left did not run, and the
+200 ms reset timer still decided. A one-finger pan begun in that time started
+only when the timer fired; its first part, 54 px of a quick stroke in the
+test, was lost. (1.5.0 was worse: it made the stroke a two-finger scale.)
+
+CustomTouchGestureRecognizer now resets its state and cancels its timers in
+didStopTrackingLastPointer, which runs once no finger is tracked, with or
+without onEnd. A test starts a stroke 40 ms after such a pinch: the pan starts
+at its first move, as it does without the pinch.
+
+(Release 1.5.1 review, dart-behavior finding 6.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/gestures.dart      | 10 +++++
+ .../test/common/widgets/gestures_test.dart    | 41 +++++++++++++++++++
+ 2 files changed, 51 insertions(+)
+
+diff --git a/flutter/lib/common/widgets/gestures.dart b/flutter/lib/common/widgets/gestures.dart
+index 72dd5c0..c99f2b5 100644
+--- a/flutter/lib/common/widgets/gestures.dart
++++ b/flutter/lib/common/widgets/gestures.dart
+@@ -188,6 +188,16 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
+   DragEndDetails _getDragEndDetails(ScaleEndDetails d) =>
+       DragEndDetails(velocity: d.velocity);
+ 
++  @override
++  void didStopTrackingLastPointer(int pointer) {
++    super.didStopTrackingLastPointer(pointer);
++    // No finger is left. When the last one lifted without moving, onEnd did
++    // not run for it: the next touch would wait for the reset timer.
++    _resetTimer?.cancel();
++    _debounceTimer?.cancel();
++    _currentState = GestureState.none;
++  }
++
+   @override
+   void rejectGesture(int pointer) {
+     super.rejectGesture(pointer);
+diff --git a/flutter/test/common/widgets/gestures_test.dart b/flutter/test/common/widgets/gestures_test.dart
+index f7e2eae..69774ef 100644
+--- a/flutter/test/common/widgets/gestures_test.dart
++++ b/flutter/test/common/widgets/gestures_test.dart
+@@ -33,4 +33,45 @@ void main() {
+ 
+     expect(oneFingerStarts, 1);
+   });
++
++  testWidgets('a stroke right after a pinch starts at once', (tester) async {
++    final starts = <double>[];
++    await tester.pumpWidget(RawGestureDetector(
++      behavior: HitTestBehavior.opaque,
++      gestures: <Type, GestureRecognizerFactory>{
++        CustomTouchGestureRecognizer:
++            GestureRecognizerFactoryWithHandlers<CustomTouchGestureRecognizer>(
++                CustomTouchGestureRecognizer.new,
++                (recognizer) => recognizer
++                  ..onOneFingerPanStart =
++                      (d) => starts.add(d.localPosition.dx)),
++      },
++      child: const SizedBox.expand(),
++    ));
++
++    final first = await tester.startGesture(const Offset(100, 100), pointer: 1);
++    final second =
++        await tester.startGesture(const Offset(150, 100), pointer: 2);
++    for (var i = 0; i < 15; i++) {
++      await first.moveBy(const Offset(-3, 0));
++      await second.moveBy(const Offset(3, 0));
++      await tester.pump(const Duration(milliseconds: 8));
++    }
++    await first.up();
++    await tester.pump(const Duration(milliseconds: 20));
++    // The last finger lifts without moving.
++    await second.up();
++    await tester.pump(const Duration(milliseconds: 40));
++    final stroke =
++        await tester.startGesture(const Offset(300, 300), pointer: 3);
++    for (var i = 0; i < 40; i++) {
++      await stroke.moveBy(const Offset(3, 0));
++      await tester.pump(const Duration(milliseconds: 8));
++    }
++    await stroke.up();
++    await tester.pump(const Duration(milliseconds: 300));
++
++    // At its first move, as without the pinch.
++    expect(starts, [303.0]);
++  });
+ }
