@@ -47,7 +47,8 @@ fi
     echo "change; scripts/fetch-upstream.sh server reproduces the tree that was built)"
   else
     echo "(scripts/upstream.env pins the upstream RustDesk commits; client/patches and client/overlay"
-    echo "hold every change; scripts/fetch-upstream.sh client reproduces the tree that was built)"
+    echo "hold every change; scripts/fetch-upstream.sh client, then scripts/set-client-version.sh"
+    echo "and the steps of .github/workflows/client-build.yml, reproduce the tree that was built)"
   fi
   if [ "${GITHUB_REPOSITORY:-}" = "$repo" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
     echo "Built by: https://github.com/$repo/actions/runs/$GITHUB_RUN_ID"

@@ -39,7 +39,7 @@ on:
       source_ref:
         description: Branch, tag or commit of this repository to build
         type: string
-        default: main
+        required: true
   # GitHub CI is paused (docs/ci.md): no build on tag pushes (`push: tags: ["v*"]`) for now, only
   # runs started by hand
 
@@ -92,9 +92,15 @@ jobs:
     steps:
       - name: Check server variables
         working-directory: ${{ github.workspace }}
+        env:
+          CALLED: ${{ inputs.source_ref }}
         run: |
           if [ -n "$HJV_SERVER" ] && [ -n "$HJV_SERVER_KEY" ]; then
             echo "Building for server $HJV_SERVER"
+          elif [ -n "$CALLED" ]; then
+            # the private build repository passes its secrets (secrets: inherit, same organization only)
+            echo "::error::HJV_SERVER and HJV_SERVER_KEY did not arrive: set both as repository secrets of the build repository, which must call this workflow with secrets: inherit from the same organization. Without them the apps behave like stock RustDesk."
+            exit 1
           elif [ "$GITHUB_REF_TYPE" = tag ]; then
             echo "::error::Set the repository variables HJV_SERVER and HJV_SERVER_KEY before tagging a release; without them the apps behave like stock RustDesk."
             exit 1
@@ -493,6 +499,7 @@ jobs:
       - name: Install smoke test
         if: env.HJV_SERVER != ''
         continue-on-error: true
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
@@ -538,8 +545,8 @@ jobs:
       ANDROID_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
     steps:
-      # Build number = UTC time as YYDDDHHMM: it grows with every build, from any repository (a
-      # private mirror too), stays below Play's 2,100,000,000 versionCode limit with Flutter's
+      # Build number = UTC time as YYDDDHHMM: it grows with every build, from any repository (the
+      # build repository too), stays below Play's 2,100,000,000 versionCode limit with Flutter's
       # 2000 arm64 offset, and is numeric as iOS requires. Stores refuse a build number twice.
       - name: Build number
         shell: bash
@@ -806,19 +813,26 @@ jobs:
       run:
         working-directory: upstream/rustdesk
     env:
-      # Signed only in a private repository (e.g. a private mirror): a signed IPA's provisioning profile
+      # Signed only in a private repository (the build repository): a signed IPA's provisioning profile
       # names the Apple developer, the team and, for Ad Hoc, the device UDIDs, and the artifacts of a
       # public repository are public. A public run builds the unsigned IPA.
       IOS_SIGNING: ${{ github.event.repository.private && secrets.IOS_DIST_CERT_P12_BASE64 != '' && secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
     steps:
-      # Build number = UTC time as YYDDDHHMM: it grows with every build, from any repository (a
-      # private mirror too), stays below Play's 2,100,000,000 versionCode limit with Flutter's
+      # Build number = UTC time as YYDDDHHMM: it grows with every build, from any repository (the
+      # build repository too), stays below Play's 2,100,000,000 versionCode limit with Flutter's
       # 2000 arm64 offset, and is numeric as iOS requires. Stores refuse a build number twice.
       - name: Build number
         shell: bash
         working-directory: ${{ github.workspace }}
         run: echo "BUILD_NUMBER=$(date -u +%y%j%H%M)" >> "$GITHUB_ENV"
+
+      - name: Check TestFlight prerequisites
+        if: inputs.testflight && env.IOS_SIGNING != 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "::error::testflight needs a private repository with IOS_DIST_CERT_P12_BASE64 and IOS_PROVISIONING_PROFILE_BASE64 (the caller passes secrets: inherit)."
+          exit 1
 
       # Not in upstream: XCODE_VERSION above says why
       - name: Select Xcode

@@ -16,11 +16,11 @@ HJViewer is a modified version of these programs:
 What HJViewer changes, since 2026-10-10:
 - the patch series in server/patches and client/patches, each with its date and description;
 - the replacement image files in client/overlay;
-- at build time (.github/workflows/client-build.yml): the Android build switches to debug signing
-  and more Gradle memory, the iOS build sets its own signing on the Runner target and drops
-  entitlements the provisioning profile does not grant, and the Windows package ships the app
-  as HJViewer.exe and leaves out RustDesk's printer driver and its closed-source adapter (remote
-  printing is off).
+- at build time (.github/workflows/client-build.yml): the app version is set from
+  client/version.env, the Android build switches to debug signing and more Gradle memory, the
+  iOS build sets its own signing on the Runner target and drops entitlements the provisioning
+  profile does not grant, and the Windows package ships the app as HJViewer.exe and leaves out
+  RustDesk's printer driver and its closed-source adapter (remote printing is off).
 Everything else in this repository (scripts, tools, deploy, docs) is original work; the client
 workflow follows the steps of RustDesk's own CI.
 
