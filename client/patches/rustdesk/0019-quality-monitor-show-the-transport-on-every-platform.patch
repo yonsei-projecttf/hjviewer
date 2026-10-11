@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:15:13 +0900
+Subject: [PATCH 19/21] quality monitor: show the transport on every platform
+
+The quality monitor named the transport only for WebRTC sessions on the web.
+It now shows it on every platform next to Delay, FPS and Codec: 'WebRTC' for a
+direct session, 'WebSocket (relay)' or 'Relay' for one relayed through hbbr
+(the punch path names its relay 'Relay', which the connection dialog shows as
+TCP), so a laggy session can be told apart from a relayed one while testing.
+
+(Research patch transport-latency 8.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/models/model.dart | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/flutter/lib/models/model.dart b/flutter/lib/models/model.dart
+index f1abb8e..964f213 100644
+--- a/flutter/lib/models/model.dart
++++ b/flutter/lib/models/model.dart
+@@ -3902,15 +3902,19 @@ class QualityMonitorModel with ChangeNotifier {
+   bool get show => _show;
+   QualityMonitorData get data => _data;
+ 
+-  // Only a WebRTC session on the web names its transport here: web has no
+-  // session tab to show it on (the desktop tab's tooltip already does), and
+-  // WebRTC is the one path that can be direct or TURN.
++  // The transport the session runs on, next to its delay and frame rate, so a
++  // laggy session can be told apart from a relayed one. WebRTC is the one path
++  // that can be direct or TURN.
+   String? get webrtcTransport {
+-    if (!isWeb) return null;
+     final ffiModel = parent.target?.ffiModel;
+     if (ffiModel == null) return null;
+     final streamType = ffiModel.cachedPeerData.streamType;
+-    if (!streamType.startsWith('WebRTC')) return null;
++    if (streamType.isEmpty) return null;
++    if (!streamType.startsWith('WebRTC')) {
++      // 'Relay' names itself; the connection dialog shows it as TCP.
++      if (streamType == 'Relay') return streamType;
++      return ffiModel.direct == false ? '$streamType (relay)' : streamType;
++    }
+     return ffiModel.direct == false ? '$streamType (TURN)' : streamType;
+   }
+ 

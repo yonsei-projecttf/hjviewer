@@ -1,0 +1,150 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:14:54 +0900
+Subject: [PATCH 17/21] mobile: shortcuts typed with the Korean keyboard reach
+ the PC as the Latin key
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+With Ctrl, Alt or Win armed on the key bar and the iPhone keyboard in Korean,
+Ctrl+ㅊ did not copy: the edit is dropped (the previous patch), as the host
+cannot map a Hangul jamo to a key. On the 2-set (Dubeolsik) layout the jamo
+typed last, also when the keyboard joined it to the previous syllable
+(하 + ㅊ -> 핯), is now mapped to its key (ㅊ -> c, ㅆ -> T) and sent once,
+without the edit's Backspaces, and the hidden field is reset, so Ctrl+ㅊ
+copies as it does from a physical keyboard.
+
+Dubeolsik (2-set) layout only: on the 10-key (천지인) layout the first tap of a
+multi-tap consonant would fire a different shortcut (Ctrl+ㅈ -> Ctrl+W). Ship
+it only when the user types with the 2-set layout. iOS only: Android's
+soft-keyboard path is unchanged.
+
+(Research patch ios-keyboard B, its Korean-layout part.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/mobile/pages/remote_page.dart   | 12 +++++
+ flutter/lib/models/soft_keyboard_input.dart | 50 +++++++++++++++++++++
+ flutter/test/soft_keyboard_input_test.dart  | 27 ++++++++++-
+ 3 files changed, 88 insertions(+), 1 deletion(-)
+
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index b5c0a2d..d1cf33d 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -344,6 +344,18 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+       return;
+     }
+     _value = value.text;
++    if (inputModel.keyBarHotkey) {
++      // A shortcut typed with the 2-set (Dubeolsik) Korean layout: send the
++      // Latin key of the jamo typed last, once, without the Backspaces of a
++      // syllable the keyboard joined it to, and drop what it composed around
++      // it.
++      final key = softKeyboardShortcutKey(edit.text);
++      if (key != null) {
++        inputModel.inputKey(key);
++        _resetSoftKeyboardText();
++        return;
++      }
++    }
+     if (inputModel.keyBarHotkey && containsHangul(edit.text)) {
+       // Ctrl, Alt or Win from the key bar and the Korean layout: Hangul is no
+       // key for a shortcut, and replacing the syllable the keyboard joined
+diff --git a/flutter/lib/models/soft_keyboard_input.dart b/flutter/lib/models/soft_keyboard_input.dart
+index acaf364..930a430 100644
+--- a/flutter/lib/models/soft_keyboard_input.dart
++++ b/flutter/lib/models/soft_keyboard_input.dart
+@@ -118,3 +118,53 @@ bool _isHangulRune(int rune) =>
+     (rune >= 0xD7B0 && rune <= 0xD7FF) || // Hangul Jamo Extended-B
+     rune == 0x00B7 || // middle dot, a Cheonjiin stroke
+     rune == 0x2025; // two dot leader, a Cheonjiin stroke
++
++// Compatibility jamo U+3131 (ㄱ) .. U+3163 (ㅣ) -> the Dubeolsik key typed
++// last for it. A compound jamo (ㄳ, ㅘ) ends with the key of its second part.
++const _dubeolsikKeys = [
++  'r', 'R', 't', 's', 'w', 'g', 'e', 'E', 'f', 'r', // ㄱ ㄲ ㄳ ㄴ ㄵ ㄶ ㄷ ㄸ ㄹ ㄺ
++  'a', 'q', 't', 'x', 'v', 'g', 'a', 'q', 'Q', 't', // ㄻ ㄼ ㄽ ㄾ ㄿ ㅀ ㅁ ㅂ ㅃ ㅄ
++  't', 'T', 'd', 'w', 'W', 'c', 'z', 'x', 'v', 'g', // ㅅ ㅆ ㅇ ㅈ ㅉ ㅊ ㅋ ㅌ ㅍ ㅎ
++  'k', 'o', 'i', 'O', 'j', 'p', 'u', 'P', 'h', 'k', // ㅏ ㅐ ㅑ ㅒ ㅓ ㅔ ㅕ ㅖ ㅗ ㅘ
++  'o', 'l', 'y', 'n', 'j', 'p', 'l', 'b', 'm', 'l', // ㅙ ㅚ ㅛ ㅜ ㅝ ㅞ ㅟ ㅠ ㅡ ㅢ
++  'l', // ㅣ
++];
++
++// Medial and final jamo of a precomposed syllable, in Unicode order, as
++// compatibility jamo.
++const _medials = 'ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ';
++const _finals = ' ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ';
++
++/// The Latin key a Hangul jamo is typed with on a Dubeolsik (2-set) keyboard,
++/// or null. Shortcuts typed with the Korean layout use it, so that Ctrl+ㅊ
++/// reaches the remote side as Ctrl+C, as it does from a physical keyboard.
++/// Shifted jamo map to upper case (ㅆ -> T), which the remote side types
++/// with Shift.
++String? dubeolsikKeyForJamo(String char) {
++  if (char.length != 1) return null;
++  final index = char.codeUnitAt(0) - 0x3131;
++  if (index < 0 || index >= _dubeolsikKeys.length) return null;
++  return _dubeolsikKeys[index];
++}
++
++/// The key of a shortcut typed on the soft keyboard while Ctrl, Alt or Win is
++/// on, from the text the keyboard inserted: its last character, or for Hangul
++/// the Dubeolsik key typed last. The Korean keyboard often joins that jamo to
++/// the syllable before it (하 + ㅊ -> 핯), so the key is taken from the end of
++/// the syllable.
++String? softKeyboardShortcutKey(String text) {
++  if (text.isEmpty) return null;
++  final last = String.fromCharCode(text.runes.last);
++  final code = last.codeUnitAt(0);
++  if (code >= 0xAC00 && code <= 0xD7A3) {
++    final index = code - 0xAC00;
++    final finalIndex = index % 28;
++    final jamo =
++        finalIndex != 0 ? _finals[finalIndex] : _medials[(index ~/ 28) % 21];
++    return dubeolsikKeyForJamo(jamo);
++  }
++  final jamoKey = dubeolsikKeyForJamo(last);
++  if (jamoKey != null) return jamoKey;
++  if (code >= 0x21 && code <= 0x7E) return last;
++  return null;
++}
+diff --git a/flutter/test/soft_keyboard_input_test.dart b/flutter/test/soft_keyboard_input_test.dart
+index 3728404..ffba9a4 100644
+--- a/flutter/test/soft_keyboard_input_test.dart
++++ b/flutter/test/soft_keyboard_input_test.dart
+@@ -211,7 +211,32 @@ void main() {
+     });
+   });
+ 
+-  group('Hangul text', () {
++  group('shortcut keys from the Korean layout', () {
++    test('every Dubeolsik key', () {
++      const jamo = 'ㅂㅈㄷㄱㅅㅛㅕㅑㅐㅔㅁㄴㅇㄹㅎㅗㅓㅏㅣㅋㅌㅊㅍㅠㅜㅡ';
++      const keys = 'qwertyuiopasdfghjklzxcvbnm';
++      for (var i = 0; i < jamo.length; ++i) {
++        expect(dubeolsikKeyForJamo(jamo[i]), keys[i], reason: jamo[i]);
++      }
++      expect(dubeolsikKeyForJamo('ㅆ'), 'T');
++      expect(dubeolsikKeyForJamo('ㅖ'), 'P');
++      expect(dubeolsikKeyForJamo('a'), isNull);
++    });
++
++    test('the key typed last, also when joined to a syllable', () {
++      expect(softKeyboardShortcutKey('ㅊ'), 'c');
++      expect(softKeyboardShortcutKey('핯'), 'c'); // 하 + ㅊ
++      expect(softKeyboardShortcutKey('항'), 'd'); // 하 + ㅇ
++      expect(softKeyboardShortcutKey('닭'), 'r'); // 달 + ㄱ
++      expect(softKeyboardShortcutKey('하나'), 'k'); // 한 + ㅏ
++      expect(softKeyboardShortcutKey('ㅍ'), 'v');
++      expect(softKeyboardShortcutKey('c'), 'c');
++      expect(softKeyboardShortcutKey('Z'), 'Z');
++      expect(softKeyboardShortcutKey(' '), isNull);
++      expect(softKeyboardShortcutKey('\n'), isNull);
++      expect(softKeyboardShortcutKey('😀'), isNull);
++    });
++
+     test('Hangul text', () {
+       expect(isHangulText('한글'), isTrue);
+       expect(isHangulText('ㅎㅏ'), isTrue);

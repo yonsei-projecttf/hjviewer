@@ -1,0 +1,270 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 03:35:01 +0900
+Subject: [PATCH 20/21] mobile: an opt-in log of the iOS keyboard's edits
+ (diagnostics)
+
+The Korean fix diffs the hidden field once it settles, with timings and
+guards taken from upstream fixtures, not from the edit sequences a given iOS
+version produces. When typing still goes wrong on a device, those sequences
+are what is needed to fix it.
+
+A long press on the keyboard button starts a log of the last 60 field changes
+(time, filler length, the text after it, selection and composing range) and
+the edits sent for them; the next long press shows it with Copy, Stop and
+Close. It is off by default, kept in memory only and cleared by Stop; it
+holds what was typed. iOS only; it is one self-contained patch so a release
+can leave it out.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/mobile/pages/remote_page.dart | 58 ++++++++++++++---
+ flutter/lib/models/soft_keyboard_log.dart | 76 +++++++++++++++++++++++
+ flutter/test/soft_keyboard_log_test.dart  | 37 +++++++++++
+ 3 files changed, 163 insertions(+), 8 deletions(-)
+ create mode 100644 flutter/lib/models/soft_keyboard_log.dart
+ create mode 100644 flutter/test/soft_keyboard_log_test.dart
+
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index d1cf33d..a0b10ad 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -22,6 +22,7 @@ import '../../models/input_model.dart';
+ import '../../models/model.dart';
+ import '../../models/platform_model.dart';
+ import '../../models/soft_keyboard_input.dart';
++import '../../models/soft_keyboard_log.dart';
+ import '../../utils/image.dart';
+ import '../widgets/dialog.dart';
+ import '../widgets/custom_scale_widget.dart';
+@@ -75,6 +76,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   Timer? _iosKeyboardWorkaroundTimer;
+   Timer? _iosSoftKeyboardTimer;
+   DateTime? _iosSoftKeyboardFirstChange;
++  final _softKeyboardLog = SoftKeyboardLog();
+ 
+   final _blockableOverlayState = BlockableOverlayState();
+ 
+@@ -297,6 +299,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   }
+ 
+   void _scheduleIOSSoftKeyboardInput() {
++    _softKeyboardLog.value(_textController.value);
+     _keepIOSSoftKeyboardCaretAtEnd();
+     final now = DateTime.now();
+     final first = _iosSoftKeyboardFirstChange ??= now;
+@@ -340,6 +343,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+     final value = _textController.value;
+     final edit = iosSoftKeyboardEdit(_value, value,
+         initialFillerLength: initText.length);
++    _softKeyboardLog.edit(edit, hotkey: inputModel.keyBarHotkey);
+     if (edit == null) {
+       return;
+     }
+@@ -390,6 +394,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   }
+ 
+   void _resetSoftKeyboardText() {
++    _softKeyboardLog.note('reset');
+     _value = initText;
+     _textController.value = TextEditingValue(
+         text: initText,
+@@ -509,6 +514,35 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+     });
+   }
+ 
++  // Diagnostics for the iOS keyboard: a long press on the keyboard button
++  // starts the keyboard log, the next one shows it to copy.
++  void _onKeyboardButtonLongPress() {
++    if (!_softKeyboardLog.on) {
++      _softKeyboardLog.start();
++      showToast('Keyboard log on. Type, then long-press the keyboard button.');
++      return;
++    }
++    final log = _softKeyboardLog.text;
++    gFFI.dialogManager.show((setState, close, context) => CustomAlertDialog(
++          title: Text('Keyboard log'),
++          content: SingleChildScrollView(
++            child: SelectableText(log,
++                style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
++          ),
++          actions: [
++            dialogButton('Copy', isOutline: true, onPressed: () {
++              Clipboard.setData(ClipboardData(text: log));
++              showToast(translate('Copied'));
++            }),
++            dialogButton('Stop', isOutline: true, onPressed: () {
++              _softKeyboardLog.stop();
++              close();
++            }),
++            dialogButton('Close', onPressed: close),
++          ],
++        ));
++  }
++
+   Widget _bottomWidget() => _showGestureHelp
+       ? getGestureHelp()
+       : (_showBar && gFFI.ffiModel.pi.displays.isNotEmpty
+@@ -657,10 +691,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                       ? []
+                       : gFFI.ffiModel.isPeerAndroid
+                           ? [
+-                              IconButton(
+-                                  color: Colors.white,
+-                                  icon: Icon(Icons.keyboard),
+-                                  onPressed: openKeyboard),
++                              GestureDetector(
++                                onLongPress:
++                                    isIOS ? _onKeyboardButtonLongPress : null,
++                                child: IconButton(
++                                    color: Colors.white,
++                                    icon: Icon(Icons.keyboard),
++                                    onPressed: openKeyboard),
++                              ),
+                               IconButton(
+                                 color: Colors.white,
+                                 icon: const Icon(Icons.build),
+@@ -669,10 +707,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                               )
+                             ]
+                           : [
+-                              IconButton(
+-                                  color: Colors.white,
+-                                  icon: Icon(Icons.keyboard),
+-                                  onPressed: openKeyboard),
++                              GestureDetector(
++                                onLongPress:
++                                    isIOS ? _onKeyboardButtonLongPress : null,
++                                child: IconButton(
++                                    color: Colors.white,
++                                    icon: Icon(Icons.keyboard),
++                                    onPressed: openKeyboard),
++                              ),
+                               IconButton(
+                                 color: Colors.white,
+                                 icon: Icon(gFFI.ffiModel.touchMode
+diff --git a/flutter/lib/models/soft_keyboard_log.dart b/flutter/lib/models/soft_keyboard_log.dart
+new file mode 100644
+index 0000000..1443f14
+--- /dev/null
++++ b/flutter/lib/models/soft_keyboard_log.dart
+@@ -0,0 +1,76 @@
++import 'dart:collection';
++import 'dart:convert';
++
++import 'package:flutter/services.dart';
++
++import 'soft_keyboard_input.dart';
++
++/// The hidden field's value in short: the filler ('1') as F and its length,
++/// the last [maxTail] characters typed after it, the selection and the
++/// composing range.
++String describeSoftKeyboardValue(TextEditingValue value, {int maxTail = 24}) {
++  final text = value.text;
++  var filler = 0;
++  while (filler < text.length && text.codeUnitAt(filler) == 0x31) {
++    ++filler;
++  }
++  final tail = text.substring(filler).runes.toList();
++  final shown = tail.length > maxTail
++      ? '…${String.fromCharCodes(tail.sublist(tail.length - maxTail))}'
++      : String.fromCharCodes(tail);
++  final selection = value.selection;
++  final sel = !selection.isValid
++      ? '-'
++      : selection.isCollapsed
++          ? '${selection.baseOffset}'
++          : '${selection.baseOffset}-${selection.extentOffset}';
++  final composing = value.isComposingRangeValid
++      ? '${value.composing.start}-${value.composing.end}'
++      : '-';
++  return 'F$filler ${jsonEncode(shown)} sel $sel comp $composing';
++}
++
++/// An opt-in record of the hidden iOS field: each change, and the edit sent
++/// for it, to see what a keyboard does on a device. In memory only and only
++/// while on; it holds what was typed.
++class SoftKeyboardLog {
++  SoftKeyboardLog({this.capacity = 60});
++
++  final int capacity;
++  final _lines = Queue<String>();
++  final _clock = Stopwatch();
++
++  bool get on => _clock.isRunning;
++
++  String get text => _lines.join('\n');
++
++  void start() {
++    _lines.clear();
++    _clock
++      ..reset()
++      ..start();
++  }
++
++  void stop() {
++    _clock.stop();
++    _lines.clear();
++  }
++
++  void value(TextEditingValue value) =>
++      _add('v ${describeSoftKeyboardValue(value)}');
++
++  void edit(SoftKeyboardEdit? edit, {bool hotkey = false}) => _add(edit == null
++      ? '> wait'
++      : '> ${edit.backspaces} BS ${jsonEncode(edit.text)}'
++          '${hotkey ? ' (key-bar hotkey)' : ''}');
++
++  void note(String note) => _add('> $note');
++
++  void _add(String line) {
++    if (!on) return;
++    _lines.addLast('${_clock.elapsedMilliseconds.toString().padLeft(6)} $line');
++    while (_lines.length > capacity) {
++      _lines.removeFirst();
++    }
++  }
++}
+diff --git a/flutter/test/soft_keyboard_log_test.dart b/flutter/test/soft_keyboard_log_test.dart
+new file mode 100644
+index 0000000..c135682
+--- /dev/null
++++ b/flutter/test/soft_keyboard_log_test.dart
+@@ -0,0 +1,37 @@
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/models/soft_keyboard_log.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++void main() {
++  final filler = '1' * 1024;
++
++  test('a field value in short', () {
++    expect(
++        describeSoftKeyboardValue(TextEditingValue(
++            text: '$filler하',
++            selection: const TextSelection.collapsed(offset: 1025),
++            composing: const TextRange(start: 1024, end: 1025))),
++        'F1024 "하" sel 1025 comp 1024-1025');
++    expect(
++        describeSoftKeyboardValue(TextEditingValue(text: '${filler}abcdef\n'),
++            maxTail: 3),
++        r'F1024 "…ef\n" sel - comp -');
++  });
++
++  test('records only while on and keeps the last lines', () {
++    final log = SoftKeyboardLog(capacity: 2);
++    log.value(TextEditingValue(text: filler));
++    expect(log.text, isEmpty);
++    log.start();
++    log.value(TextEditingValue(text: '${filler}a'));
++    log.edit((backspaces: 1, text: '한'), hotkey: true);
++    log.edit(null);
++    final lines = log.text.split('\n');
++    expect(lines, hasLength(2));
++    expect(lines[0], endsWith('> 1 BS "한" (key-bar hotkey)'));
++    expect(lines[1], endsWith('> wait'));
++    log.stop();
++    expect(log.on, isFalse);
++    expect(log.text, isEmpty);
++  });
++}

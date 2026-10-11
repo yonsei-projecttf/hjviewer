@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:11:01 +0900
+Subject: [PATCH 2/2] WebSocket: send small writes at once (TCP_NODELAY)
+
+HJViewer reaches its server only through WebSocket, for signalling and for the
+relay. The WebSocket connect left Nagle's algorithm on, so each small write
+(a mouse move, a key) waited until the previous one was acknowledged and
+moves reached the peer in bursts once per round trip. The plain TCP path
+already sets TCP_NODELAY (tcp.rs), and so do nginx and hbbr on their side.
+
+Measured through nginx + hbbr with a 50 ms round trip: input one-way
+p50/p90 59.8/101.5 ms before, 26.5/26.8 ms after.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/websocket.rs | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/src/websocket.rs b/src/websocket.rs
+index 626d4bd..b993215 100644
+--- a/src/websocket.rs
++++ b/src/websocket.rs
+@@ -104,7 +104,8 @@ impl WsFramedStream {
+         original_danger_accept_invalid_certs: Option<bool>,
+     ) -> ResultType<WebSocketStream<MaybeTlsStream<TcpStream>>> {
+         let ws_config = None;
+-        let disable_nagle = false;
++        // Input is a stream of small writes; Nagle would hold each one until the last is acked.
++        let disable_nagle = true;
+         let request = url
+             .into_client_request()
+             .map_err(|e| Error::new(ErrorKind::Other, e))?;
+@@ -568,6 +569,24 @@ mod tests {
+         assert_eq!(&echoed[..], b"through the proxy");
+     }
+ 
++    #[tokio::test(flavor = "current_thread")]
++    async fn websocket_connects_with_nagle_off() {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = listener.local_addr().unwrap();
++        let server = tokio::spawn(async move {
++            let (tcp, _) = listener.accept().await.unwrap();
++            tokio_tungstenite::accept_async(tcp).await.unwrap()
++        });
++        let ws = WsFramedStream::new(format!("ws://{addr}"), None, None, 5000)
++            .await
++            .unwrap();
++        let _server_side = server.await.unwrap();
++        let MaybeTlsStream::Plain(tcp) = ws.stream.get_ref() else {
++            panic!("a ws:// URL connects without TLS");
++        };
++        assert!(tcp.nodelay().unwrap(), "TCP_NODELAY is off on the WebSocket");
++    }
++
+     #[tokio::test(flavor = "current_thread")]
+     async fn test_secured_stream_rejects_plaintext_text() {
+         sodiumoxide::init().expect("failed to initialize sodiumoxide");

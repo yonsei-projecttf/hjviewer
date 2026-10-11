@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:11:52 +0900
+Subject: [PATCH 13/21] mobile: an enlarged cursor is drawn with its hot spot
+ where it clicks
+
+CursorPaint enlarges small cursors at low zoom but scaled the hot spot offset
+with the image, so an I-beam or a hand pointed a few points away from where the
+click landed. The hot spot now stays on the remote position; unchanged when
+the cursor is not enlarged.
+
+(Research patch ios-touch 0007.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/mobile/pages/remote_page.dart | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 7d4bf9c..5c08b82 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -1209,8 +1209,10 @@ class CursorPaint extends StatelessWidget {
+     return CustomPaint(
+       painter: ImagePainter(
+           image: image,
+-          x: (m.x - hotx) * factor + c.x / s2,
+-          y: (m.y - hoty) * factor + (c.y + adjust) / s2,
++          // Drawn larger than the image (s2 > s), the cursor keeps its hot
++          // spot, not its corner, on the remote position.
++          x: m.x * factor - hotx + c.x / s2,
++          y: m.y * factor - hoty + (c.y + adjust) / s2,
+           scale: s2),
+     );
+   }

@@ -1,0 +1,705 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:13:40 +0900
+Subject: [PATCH 15/21] mobile: Korean typed on the iPhone keyboard arrives
+ once, without a stray 1
+
+The iOS Korean keyboard rewrites the hidden field in several steps for one key
+press: it removes the syllable and one filler character, puts the filler back,
+then inserts the new syllable (or deletes and retypes the whole word). The
+handler diffed every step, so it deleted a character the user had typed before
+and typed the restored filler '1' (rustdesk issue #8786), and replayed whole
+words per key.
+
+The field is now diffed once it has settled: a controller listener (it also
+sees commits that change only the composing range) restarts a 30 ms timer on
+every change, flushed at the latest 100 ms after the first one. The new pure
+function iosSoftKeyboardEdit() diffs by common prefix, waits on the
+filler-minus-one step should it arrive alone, ignores one filler character put
+back too many before a syllable on an otherwise empty field (the pattern and
+the condition of rustdesk PR #15201), never splits a surrogate pair, counts
+Backspaces in code points, and keeps sending Hangul while it is composed
+(pinyin and kana are still held until converted). A held Backspace that
+deletes a whole word takes the filler with it: when the word was text typed
+in the field, the remote side deletes only that text; the filler alone
+deletes at most 8 remote characters per step, and no edit sends more than 32.
+Return inside an insertion is sent as a key. The caret is kept at the end of
+the hidden field (two keys pressed at once or the space-bar trackpad moved it,
+and typing there replayed filler), and the field is refilled when the filler
+runs low, so a held Backspace keeps working. Smart quotes and dashes are off,
+so ' " and -- arrive as typed.
+
+The text a settling field holds back is sent before any key or click
+(InputModel.flushSoftKeyboardText), so a key-bar key or a tap right after
+typing does not overtake it.
+
+iOS only: Android keeps its onChanged path.
+
+(Research patch ios-keyboard A, hardened per its verification and the plan
+review.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/mobile/pages/remote_page.dart   | 139 +++++++---
+ flutter/lib/models/input_model.dart         |   7 +
+ flutter/lib/models/soft_keyboard_input.dart | 117 +++++++++
+ flutter/test/soft_keyboard_input_test.dart  | 273 ++++++++++++++++++++
+ 4 files changed, 494 insertions(+), 42 deletions(-)
+ create mode 100644 flutter/lib/models/soft_keyboard_input.dart
+ create mode 100644 flutter/test/soft_keyboard_input_test.dart
+
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 5c08b82..062881b 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -21,12 +21,19 @@ import '../../common/widgets/remote_input.dart';
+ import '../../models/input_model.dart';
+ import '../../models/model.dart';
+ import '../../models/platform_model.dart';
++import '../../models/soft_keyboard_input.dart';
+ import '../../utils/image.dart';
+ import '../widgets/dialog.dart';
+ import '../widgets/custom_scale_widget.dart';
+ 
+ final initText = '1' * 1024;
+ 
++// The iOS Korean keyboard changes the field in several steps for one key
++// press; the field is diffed once it has not changed for this long, and at
++// the latest this long after the first change.
++const _kIOSSoftKeyboardSettleDelay = Duration(milliseconds: 30);
++const _kIOSSoftKeyboardMaxDelay = Duration(milliseconds: 100);
++
+ // Workaround for Android (default input method, Microsoft SwiftKey keyboard) when using physical keyboard.
+ // When connecting a physical keyboard, `KeyEvent.physicalKey.usbHidUsage` are wrong is using Microsoft SwiftKey keyboard.
+ // https://github.com/flutter/flutter/issues/159384
+@@ -66,6 +73,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   Orientation? _currentOrientation;
+   final _uniqueKey = UniqueKey();
+   Timer? _iosKeyboardWorkaroundTimer;
++  Timer? _iosSoftKeyboardTimer;
++  DateTime? _iosSoftKeyboardFirstChange;
+ 
+   final _blockableOverlayState = BlockableOverlayState();
+ 
+@@ -111,6 +120,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+     gFFI.qualityMonitorModel.checkShowQualityMonitor(sessionId);
+     keyboardSubscription =
+         keyboardVisibilityController.onChange.listen(onSoftKeyboardChanged);
++    if (isIOS) {
++      // Also sees commits that change only the composing range, which do not
++      // call onChanged.
++      _textController.addListener(_scheduleIOSSoftKeyboardInput);
++      // A key-bar key or a click first sends what the field still holds back.
++      inputModel.flushSoftKeyboardText = _flushIOSSoftKeyboardInput;
++    }
+     gFFI.chatModel
+         .changeCurrentKey(MessageKey(widget.id, ChatModel.clientModeID));
+     _blockableOverlayState.applyFfi(gFFI);
+@@ -143,6 +159,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   @override
+   Future<void> dispose() async {
+     WidgetsBinding.instance.removeObserver(this);
++    if (inputModel.flushSoftKeyboardText == _flushIOSSoftKeyboardInput) {
++      inputModel.flushSoftKeyboardText = null;
++    }
+     // Close the session up-front. `gFFI.close()` below only calls `sessionClose`
+     // after several awaits (canvas save, image update, the `enable_soft_keyboard`
+     // platform call), so if the app is backgrounded while this page is disposing,
+@@ -166,6 +185,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+     await gFFI.close();
+     _timer?.cancel();
+     _iosKeyboardWorkaroundTimer?.cancel();
++    _iosSoftKeyboardTimer?.cancel();
++    _textController.removeListener(_scheduleIOSSoftKeyboardInput);
+     gFFI.dialogManager.dismissAll();
+     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
+         overlays: SystemUiOverlay.values);
+@@ -275,56 +296,86 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+     setState(() {});
+   }
+ 
+-  void _handleIOSSoftKeyboardInput(String newValue) {
+-    var oldValue = _value;
+-    _value = newValue;
+-    var i = newValue.length - 1;
+-    for (; i >= 0 && newValue[i] != '1'; --i) {}
+-    var j = oldValue.length - 1;
+-    for (; j >= 0 && oldValue[j] != '1'; --j) {}
+-    if (i < j) j = i;
+-    var subNewValue = newValue.substring(j + 1);
+-    var subOldValue = oldValue.substring(j + 1);
+-
+-    // get common prefix of subNewValue and subOldValue
+-    var common = 0;
+-    for (;
+-        common < subOldValue.length &&
+-            common < subNewValue.length &&
+-            subNewValue[common] == subOldValue[common];
+-        ++common) {}
+-
+-    // get newStr from subNewValue
+-    var newStr = "";
+-    if (subNewValue.length > common) {
+-      newStr = subNewValue.substring(common);
+-    }
++  void _scheduleIOSSoftKeyboardInput() {
++    _keepIOSSoftKeyboardCaretAtEnd();
++    final now = DateTime.now();
++    final first = _iosSoftKeyboardFirstChange ??= now;
++    final left = _kIOSSoftKeyboardMaxDelay - now.difference(first);
++    _iosSoftKeyboardTimer?.cancel();
++    _iosSoftKeyboardTimer = Timer(
++        left < _kIOSSoftKeyboardSettleDelay
++            ? (left.isNegative ? Duration.zero : left)
++            : _kIOSSoftKeyboardSettleDelay,
++        _handleIOSSoftKeyboardInput);
++  }
+ 
+-    // Set the value to the old value and early return if is still composing. (1 && 2)
+-    // 1. The composing range is valid
+-    // 2. The new string is shorter than the composing range.
+-    if (_textController.value.isComposingRangeValid) {
+-      final composingLength = _textController.value.composing.end -
+-          _textController.value.composing.start;
+-      if (composingLength > newStr.length) {
+-        _value = oldValue;
+-        return;
+-      }
++  // Two keys pressed at once or the space-bar trackpad move the caret or
++  // select text in the hidden field, and typing there would replay filler
++  // characters. The remote side has no such caret: keep it at the end.
++  void _keepIOSSoftKeyboardCaretAtEnd() {
++    final value = _textController.value;
++    final end = value.text.length;
++    if (value.isComposingRangeValid ||
++        !value.selection.isValid ||
++        (value.selection.isCollapsed && value.selection.baseOffset == end)) {
++      return;
+     }
++    scheduleMicrotask(() {
++      if (!mounted || _textController.text.length != end) return;
++      _textController.selection = TextSelection.collapsed(offset: end);
++    });
++  }
+ 
+-    // Delete the different part in the old value.
+-    for (i = 0; i < subOldValue.length - common; ++i) {
++  void _flushIOSSoftKeyboardInput() {
++    if (_iosSoftKeyboardTimer?.isActive != true) return;
++    _iosSoftKeyboardTimer?.cancel();
++    _handleIOSSoftKeyboardInput();
++  }
++
++  void _handleIOSSoftKeyboardInput() {
++    _iosSoftKeyboardFirstChange = null;
++    if (!mounted || !inputModel.keyboardInputAllowed) {
++      return;
++    }
++    final value = _textController.value;
++    final edit = iosSoftKeyboardEdit(_value, value,
++        initialFillerLength: initText.length);
++    if (edit == null) {
++      return;
++    }
++    _value = value.text;
++    for (var i = 0; i < edit.backspaces; ++i) {
+       inputModel.inputKey('VK_BACK');
+     }
++    _inputSoftKeyboardText(edit.text);
++    if (softKeyboardFillerRunsLow(value)) {
++      // Held Backspace or a word deletion used up the filler: refill it, or
++      // the next Backspace changes nothing and never reaches the remote side.
++      _resetSoftKeyboardText();
++    }
++  }
+ 
+-    // Input the new string.
+-    if (newStr.length > 1) {
+-      bind.sessionInputString(sessionId: sessionId, value: newStr);
+-    } else {
+-      inputChar(newStr);
++  void _inputSoftKeyboardText(String text) {
++    // Send Return as a key, also inside a longer insertion.
++    final lines = text.split('\n');
++    for (var i = 0; i < lines.length; ++i) {
++      if (i > 0) inputChar('\n');
++      final line = lines[i];
++      if (line.length > 1) {
++        bind.sessionInputString(sessionId: sessionId, value: line);
++      } else if (line.isNotEmpty) {
++        inputChar(line);
++      }
+     }
+   }
+ 
++  void _resetSoftKeyboardText() {
++    _value = initText;
++    _textController.value = TextEditingValue(
++        text: initText,
++        selection: TextSelection.collapsed(offset: initText.length));
++  }
++
+   void _handleNonIOSSoftKeyboardInput(String newValue) {
+     var oldValue = _value;
+     _value = newValue;
+@@ -376,7 +427,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+       return;
+     }
+     if (isIOS) {
+-      _handleIOSSoftKeyboardInput(newValue);
++      _scheduleIOSSoftKeyboardInput();
+     } else {
+       _handleNonIOSSoftKeyboardInput(newValue);
+     }
+@@ -419,6 +470,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   void _openKeyboardUnlocked() {
+     inputModel.keyboardInputAllowed = true;
+     gFFI.invokeMethod("enable_soft_keyboard", true);
++    _flushIOSSoftKeyboardInput();
+     // destroy first, so that our _value trick can work
+     _value = initText;
+     _textController.text = _value;
+@@ -681,6 +733,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                   : TextFormField(
+                       textInputAction: TextInputAction.newline,
+                       autocorrect: false,
++                      // iOS: type ' " - as they are, not as ’ ” —.
++                      smartDashesType: SmartDashesType.disabled,
++                      smartQuotesType: SmartQuotesType.disabled,
+                       // Flutter 3.16.9 Android.
+                       // `enableSuggestions` causes secure keyboard to be shown.
+                       // https://github.com/flutter/flutter/issues/139143
+diff --git a/flutter/lib/models/input_model.dart b/flutter/lib/models/input_model.dart
+index 1894a26..0cc41af 100644
+--- a/flutter/lib/models/input_model.dart
++++ b/flutter/lib/models/input_model.dart
+@@ -414,6 +414,11 @@ class InputModel {
+   var alt = false;
+   var command = false;
+ 
++  /// Set by the mobile remote page while it holds soft-keyboard text back
++  /// (iOS diffs the hidden field once it settles). A key or a click sends
++  /// that text first, so that it does not overtake it.
++  VoidCallback? flushSoftKeyboardText;
++
+   final ToReleaseRawKeys toReleaseRawKeys = ToReleaseRawKeys();
+   final ToReleaseKeys toReleaseKeys = ToReleaseKeys();
+ 
+@@ -1029,6 +1034,7 @@ class InputModel {
+   void inputKey(String name, {bool? down, bool? press}) {
+     if (!keyboardPerm) return;
+     if (isViewCamera) return;
++    flushSoftKeyboardText?.call();
+     bind.sessionInputKey(
+         sessionId: sessionId,
+         name: name,
+@@ -1132,6 +1138,7 @@ class InputModel {
+   Future<void> sendMouse(String type, MouseButtons button) async {
+     if (!keyboardPerm) return;
+     if (isViewCamera) return;
++    if (type == 'down') flushSoftKeyboardText?.call();
+     await _sendMouseUnchecked(type, button);
+   }
+ 
+diff --git a/flutter/lib/models/soft_keyboard_input.dart b/flutter/lib/models/soft_keyboard_input.dart
+new file mode 100644
+index 0000000..9aa0d45
+--- /dev/null
++++ b/flutter/lib/models/soft_keyboard_input.dart
+@@ -0,0 +1,117 @@
++import 'dart:math' as math;
++
++import 'package:flutter/services.dart';
++
++/// The text the soft keyboard changed in the hidden field since [oldValue],
++/// as the remote side should replay it: delete [backspaces] characters, then
++/// type [text].
++typedef SoftKeyboardEdit = ({int backspaces, String text});
++
++/// One edit never deletes more than this on the remote side. A held Backspace
++/// on iOS speeds up to deleting whole words, and the field's filler text is a
++/// single long "word" that must not turn into a thousand remote Backspaces.
++const kMaxSoftKeyboardBackspaces = 32;
++
++/// Filler characters deleted in one edit up to this many are remote
++/// Backspaces (quick Backspaces that one settled edit merged). More is a word
++/// deletion of the held iOS Backspace, and the filler is a single long word:
++/// alone it deletes this many remote characters per step; together with text
++/// typed after it (one word to the keyboard) only that text.
++const kMaxSoftKeyboardFillerBackspaces = 8;
++
++/// Diffs the hidden iOS text field.
++///
++/// [value] must be the settled field value: the iOS Korean keyboard rewrites
++/// the field in several steps for one key press (it removes the syllable and
++/// a filler character, puts the filler back, then inserts the new syllable),
++/// and diffing those steps one by one sends stray Backspaces and "1"s.
++///
++/// Returns null while a Chinese or Japanese IME composes text that is longer
++/// than what changed (pinyin, kana), so that only the converted text is sent.
++/// Hangul is sent while it is composed, as the remote side has no way to show
++/// an uncommitted syllable otherwise.
++SoftKeyboardEdit? iosSoftKeyboardEdit(String oldValue, TextEditingValue value,
++    {int? initialFillerLength}) {
++  final newValue = value.text;
++  // Should the step that removes the syllable and one filler character still
++  // arrive alone, wait for the next one, which puts the filler back.
++  final oldFiller = _fillerLength(oldValue);
++  if (oldFiller < oldValue.length &&
++      newValue.length == oldFiller - 1 &&
++      _fillerLength(newValue) == newValue.length) {
++    return null;
++  }
++  // The keyboard can also put back one filler character too many before a
++  // syllable (rustdesk PR #15201, "over-restored sentinel"). Only on a full,
++  // otherwise empty filler, so that a 1 the user typed is never dropped.
++  if (initialFillerLength != null &&
++      !value.isComposingRangeValid &&
++      oldFiller == initialFillerLength &&
++      oldFiller == oldValue.length) {
++    final newFiller = _fillerLength(newValue);
++    final tail = newValue.substring(newFiller);
++    if (newFiller > oldFiller && isHangulText(tail)) {
++      return (backspaces: 0, text: tail);
++    }
++  }
++  var common = 0;
++  final maxCommon = math.min(oldValue.length, newValue.length);
++  while (common < maxCommon &&
++      oldValue.codeUnitAt(common) == newValue.codeUnitAt(common)) {
++    ++common;
++  }
++  // Do not split a surrogate pair: replace the whole emoji.
++  if (common > 0 && _isHighSurrogate(oldValue.codeUnitAt(common - 1))) {
++    --common;
++  }
++  final text = newValue.substring(common);
++  if (value.isComposingRangeValid &&
++      value.composing.end - value.composing.start > text.length &&
++      !isHangulText(value.composing.textInside(newValue))) {
++    return null;
++  }
++  final int fillerDeleted = math.max(0, oldFiller - common);
++  final int tailDeleted =
++      oldValue.substring(math.max(common, oldFiller)).runes.length;
++  // A word deletion that took typed text with the filler deleted that text on
++  // the remote side, not what was there before it.
++  final int fillerBackspaces = fillerDeleted <= kMaxSoftKeyboardFillerBackspaces
++      ? fillerDeleted
++      : (tailDeleted > 0 ? 0 : kMaxSoftKeyboardFillerBackspaces);
++  final int deleted = tailDeleted + fillerBackspaces;
++  return (
++    backspaces: math.min(deleted, kMaxSoftKeyboardBackspaces),
++    text: text,
++  );
++}
++
++bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
++
++/// Whether the hidden field should be refilled: fewer than [minimum] filler
++/// characters are left and nothing is being composed.
++bool softKeyboardFillerRunsLow(TextEditingValue value, {int minimum = 512}) =>
++    !value.isComposingRangeValid && _fillerLength(value.text) < minimum;
++
++/// The number of filler characters ('1', see remote_page.dart `initText`) the
++/// field starts with.
++int _fillerLength(String value) {
++  var n = 0;
++  while (n < value.length && value.codeUnitAt(n) == 0x31) {
++    ++n;
++  }
++  return n;
++}
++
++/// Whether [text] is non-empty and only Hangul: syllables, jamo, or the
++/// strokes of the 10-key (Cheonjiin) layout.
++bool isHangulText(String text) =>
++    text.isNotEmpty && text.runes.every(_isHangulRune);
++
++bool _isHangulRune(int rune) =>
++    (rune >= 0x1100 && rune <= 0x11FF) || // Hangul Jamo
++    (rune >= 0x3130 && rune <= 0x318F) || // Hangul Compatibility Jamo
++    (rune >= 0xA960 && rune <= 0xA97F) || // Hangul Jamo Extended-A
++    (rune >= 0xAC00 && rune <= 0xD7A3) || // Hangul Syllables
++    (rune >= 0xD7B0 && rune <= 0xD7FF) || // Hangul Jamo Extended-B
++    rune == 0x00B7 || // middle dot, a Cheonjiin stroke
++    rune == 0x2025; // two dot leader, a Cheonjiin stroke
+diff --git a/flutter/test/soft_keyboard_input_test.dart b/flutter/test/soft_keyboard_input_test.dart
+new file mode 100644
+index 0000000..eff72fd
+--- /dev/null
++++ b/flutter/test/soft_keyboard_input_test.dart
+@@ -0,0 +1,273 @@
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/models/soft_keyboard_input.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++void main() {
++  final filler = '1' * 1024;
++
++  TextEditingValue value(String tail, {int? composingFrom}) {
++    final text = '$filler$tail';
++    return TextEditingValue(
++      text: text,
++      composing: composingFrom == null
++          ? TextRange.empty
++          : TextRange(start: filler.length + composingFrom, end: text.length),
++    );
++  }
++
++  group('iOS Korean keyboard', () {
++    test('the rewrite steps arriving one by one send no stray 1', () {
++      // Like the test below, but without the settle delay merging the steps.
++      final remote = _Remote(filler, iosSoftKeyboardEdit)..type('ㅎ');
++      remote
++        ..apply(TextEditingValue(text: filler.substring(1)))
++        ..apply(TextEditingValue(text: filler))
++        ..apply(value('하', composingFrom: 0));
++      expect(remote.text, '하');
++      expect(remote.deletedBeforeStart, 0);
++
++      // The diff this replaces, applied to the same steps.
++      final before = _Remote(filler, _diffBeforeFix)..type('ㅎ');
++      before
++        ..apply(TextEditingValue(text: filler.substring(1)))
++        ..apply(TextEditingValue(text: filler))
++        ..apply(value('하', composingFrom: 0));
++      expect(before.text, '1하');
++      expect(before.deletedBeforeStart, 1);
++    });
++
++    test('the same after Backspaces deleted part of the filler', () {
++      final short = filler.substring(2);
++      final remote = _Remote(filler, iosSoftKeyboardEdit)
++        ..apply(TextEditingValue(text: filler.substring(1)))
++        ..apply(TextEditingValue(text: short));
++      expect(remote.deletedBeforeStart, 2);
++      remote
++        ..type('ㅎ')
++        ..apply(TextEditingValue(text: short.substring(1)))
++        ..apply(TextEditingValue(text: short))
++        ..apply(TextEditingValue(text: '$short하'));
++      expect(remote.text, '하');
++      expect(remote.deletedBeforeStart, 2);
++    });
++
++    test('a syllable the keyboard rewrote in steps is replaced once', () {
++      // Typing ㅏ after ㅎ: the keyboard removes ㅎ and one filler character,
++      // puts the filler back, then inserts 하 (rustdesk PR #15201 tests).
++      final steps = [
++        TextEditingValue(text: filler.substring(1)),
++        TextEditingValue(text: filler),
++        value('하', composingFrom: 0),
++      ];
++      // The step that also removed a filler character waits for the next.
++      expect(iosSoftKeyboardEdit('$filler' 'ㅎ', steps[0]), isNull);
++      // Settled, it is one Backspace and the new syllable.
++      expect(iosSoftKeyboardEdit('$filler' 'ㅎ', steps.last),
++          (backspaces: 1, text: '하'));
++    });
++
++    test('a word the keyboard deleted and retyped sends only the change', () {
++      // flutter/flutter#134507: typing ㅏ after 안녕ㅎ deletes the word, then
++      // inserts 안, 안녕, 안녕하.
++      expect(iosSoftKeyboardEdit('$filler안녕ㅎ', value('안녕하', composingFrom: 2)),
++          (backspaces: 1, text: '하'));
++    });
++
++    test('composing Hangul is sent, also when it is longer than the change',
++        () {
++      expect(iosSoftKeyboardEdit('$filler' 'ㅎ', value('ㅎㅏ', composingFrom: 0)),
++          (backspaces: 0, text: 'ㅏ'));
++      expect(iosSoftKeyboardEdit('$filler안녕', value('안녕하', composingFrom: 0)),
++          (backspaces: 0, text: '하'));
++    });
++
++    test('a final consonant moving to the next syllable', () {
++      expect(iosSoftKeyboardEdit('$filler한', value('하나', composingFrom: 1)),
++          (backspaces: 1, text: '하나'));
++    });
++
++    test('one filler character put back too many is not typed', () {
++      // rustdesk PR #15201 "does not send over-restored sentinel before
++      // committed Korean text": filler -> filler + '1한'.
++      final overRestored = TextEditingValue(text: '${filler}1한');
++      expect(
++          iosSoftKeyboardEdit(filler, overRestored,
++              initialFillerLength: filler.length),
++          (backspaces: 0, text: '한'));
++      // A 1 the user typed after Korean text, or while composing, is kept.
++      expect(
++          iosSoftKeyboardEdit('$filler가', TextEditingValue(text: '$filler가1'),
++              initialFillerLength: filler.length),
++          (backspaces: 0, text: '1'));
++      expect(
++          iosSoftKeyboardEdit(filler, value('1한', composingFrom: 1),
++              initialFillerLength: filler.length),
++          (backspaces: 0, text: '1한'));
++      // Not on a filler that Backspaces already shortened.
++      final short = filler.substring(1);
++      expect(
++          iosSoftKeyboardEdit(short, TextEditingValue(text: '${short}11한'),
++              initialFillerLength: filler.length),
++          (backspaces: 0, text: '11한'));
++    });
++
++    test('Backspace on a committed syllable and on an empty field', () {
++      expect(iosSoftKeyboardEdit('$filler한 ', value('한')),
++          (backspaces: 1, text: ''));
++      expect(
++          iosSoftKeyboardEdit(
++              filler, TextEditingValue(text: filler.substring(1))),
++          (backspaces: 1, text: ''));
++    });
++  });
++
++  group('other input methods', () {
++    test('pinyin is held until it is converted, as before', () {
++      // The first letter is still sent and replaced later, as before.
++      expect(iosSoftKeyboardEdit(filler, value('n', composingFrom: 0)),
++          (backspaces: 0, text: 'n'));
++      expect(iosSoftKeyboardEdit('${filler}n', value('ni', composingFrom: 0)),
++          isNull);
++      expect(iosSoftKeyboardEdit('${filler}n', value('nih', composingFrom: 0)),
++          isNull);
++      // Also when the commit only ends the composing range.
++      expect(iosSoftKeyboardEdit('${filler}n', value('你')),
++          (backspaces: 1, text: '你'));
++    });
++
++    test('kana is held until it is converted', () {
++      expect(iosSoftKeyboardEdit('$filler' 'に', value('にほん', composingFrom: 0)),
++          isNull);
++      expect(iosSoftKeyboardEdit('$filler' 'に', value('日本', composingFrom: 0)),
++          (backspaces: 1, text: '日本'));
++    });
++
++    test('English letters and Return', () {
++      expect(
++          iosSoftKeyboardEdit(filler, value('a')), (backspaces: 0, text: 'a'));
++      expect(iosSoftKeyboardEdit('${filler}a', value('a\n')),
++          (backspaces: 0, text: '\n'));
++    });
++
++    test('an emoji is one Backspace and is never split', () {
++      expect(iosSoftKeyboardEdit('$filler😀', value('')),
++          (backspaces: 1, text: ''));
++      expect(iosSoftKeyboardEdit('$filler😀', value('😁')),
++          (backspaces: 1, text: '😁'));
++    });
++
++    test('the field is refilled once the filler runs low', () {
++      expect(
++          softKeyboardFillerRunsLow(TextEditingValue(text: filler)), isFalse);
++      expect(
++          softKeyboardFillerRunsLow(
++              TextEditingValue(text: filler.substring(600))),
++          isTrue);
++      expect(
++          softKeyboardFillerRunsLow(const TextEditingValue(text: '')), isTrue);
++      // Not while something is being composed.
++      expect(
++          softKeyboardFillerRunsLow(TextEditingValue(
++              text: '${filler.substring(600)}ㅎ',
++              composing: const TextRange(start: 424, end: 425))),
++          isFalse);
++    });
++
++    test('a held Backspace that deletes the filler is capped', () {
++      // A word deletion takes the typed word and the filler at once (one word
++      // to the keyboard): the remote side loses the typed word, nothing more.
++      expect(iosSoftKeyboardEdit('${filler}hello', TextEditingValue(text: '1')),
++          (backspaces: 5, text: ''));
++      expect(iosSoftKeyboardEdit('${filler}hel', const TextEditingValue()),
++          (backspaces: 3, text: ''));
++      // Held on past the typed text, each word deletion of the filler alone
++      // deletes a few remote characters.
++      expect(iosSoftKeyboardEdit(filler, const TextEditingValue(text: '')),
++          (backspaces: kMaxSoftKeyboardFillerBackspaces, text: ''));
++      expect(
++          iosSoftKeyboardEdit(
++              filler.substring(500), const TextEditingValue(text: '')),
++          (backspaces: kMaxSoftKeyboardFillerBackspaces, text: ''));
++      // Quick Backspaces that one settled edit merged all count, also where
++      // they run from the typed text into the filler.
++      expect(
++          iosSoftKeyboardEdit(
++              '${filler}X', TextEditingValue(text: filler.substring(2))),
++          (backspaces: 3, text: ''));
++      expect(
++          iosSoftKeyboardEdit(
++              '${filler}ab', TextEditingValue(text: filler.substring(3))),
++          (backspaces: 5, text: ''));
++      // One Backspace on the filler is one remote Backspace.
++      expect(
++          iosSoftKeyboardEdit(
++              filler, TextEditingValue(text: filler.substring(1))),
++          (backspaces: 1, text: ''));
++      // A long word of its own is still capped.
++      final long = 'a' * 40;
++      expect(
++          iosSoftKeyboardEdit('$filler$long', TextEditingValue(text: filler)),
++          (backspaces: kMaxSoftKeyboardBackspaces, text: ''));
++    });
++  });
++
++  group('Hangul text', () {
++    test('Hangul text', () {
++      expect(isHangulText('한글'), isTrue);
++      expect(isHangulText('ㅎㅏ'), isTrue);
++      expect(isHangulText('한a'), isFalse);
++      expect(isHangulText(''), isFalse);
++    });
++  });
++}
++
++/// The remote side's text as it replays the edits of the hidden field.
++class _Remote {
++  _Remote(this.baseline, this.diff);
++
++  String baseline;
++  final SoftKeyboardEdit? Function(String, TextEditingValue) diff;
++  String text = '';
++  int deletedBeforeStart = 0;
++
++  void type(String tail) => apply(TextEditingValue(text: '$baseline$tail'));
++
++  void apply(TextEditingValue value) {
++    final edit = diff(baseline, value);
++    if (edit == null) return;
++    baseline = value.text;
++    for (var i = 0; i < edit.backspaces; ++i) {
++      if (text.isEmpty) {
++        ++deletedBeforeStart;
++      } else {
++        text = text.substring(0, text.length - 1);
++      }
++    }
++    text += edit.text;
++  }
++}
++
++/// remote_page.dart `_handleIOSSoftKeyboardInput` before this change.
++SoftKeyboardEdit? _diffBeforeFix(String oldValue, TextEditingValue value) {
++  final newValue = value.text;
++  var i = newValue.length - 1;
++  for (; i >= 0 && newValue[i] != '1'; --i) {}
++  var j = oldValue.length - 1;
++  for (; j >= 0 && oldValue[j] != '1'; --j) {}
++  if (i < j) j = i;
++  final subNewValue = newValue.substring(j + 1);
++  final subOldValue = oldValue.substring(j + 1);
++  var common = 0;
++  for (;
++      common < subOldValue.length &&
++          common < subNewValue.length &&
++          subNewValue[common] == subOldValue[common];
++      ++common) {}
++  final newStr =
++      subNewValue.length > common ? subNewValue.substring(common) : '';
++  if (value.isComposingRangeValid &&
++      value.composing.end - value.composing.start > newStr.length) {
++    return null;
++  }
++  return (backspaces: subOldValue.length - common, text: newStr);
++}

@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:11:52 +0900
+Subject: [PATCH 11/21] mobile: a two-finger tap right-clicks at once, without
+ a left click first
+
+In mouse mode a two-finger tap sent a left click when the first finger lifted
+(HoldTapMove released the arena and Tap won) and the right click only when
+DoubleFinerTap's timer ran out, 300 ms after the first touch; a selection in
+Explorer collapsed to one item. DoubleFinerTap now resolves when the second
+finger lifts and leaves at once when a lone finger lifts, and the mouse-mode
+tap skips its click while a second finger is down.
+
+The tap window now runs up to the long press (500 ms) instead of
+kDoubleTapTimeout: with the tap resolving on the second lift that adds no
+delay, and a two-finger tap ending between 300 and 500 ms no longer does
+nothing.
+
+(Research patch ios-touch 0002, window per its verification.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/gestures.dart     | 15 ++++++++-
+ flutter/lib/common/widgets/remote_input.dart |  7 +++-
+ flutter/test/mobile_gestures_test.dart       | 35 ++++++++++++++++++++
+ 3 files changed, 55 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/lib/common/widgets/gestures.dart b/flutter/lib/common/widgets/gestures.dart
+index 80cd89f..cc09e73 100644
+--- a/flutter/lib/common/widgets/gestures.dart
++++ b/flutter/lib/common/widgets/gestures.dart
+@@ -550,6 +550,17 @@ class DoubleFinerTapGestureRecognizer extends GestureRecognizer {
+     if (event is PointerUpEvent) {
+       debugPrint("PointerUpEvent");
+       _upTap.add(tracker.pointer);
++      if (_upTap.length == 1 && _trackers.length == 1) {
++        // A lone finger lifted: no two-finger tap. Leave now, or this
++        // recognizer holds the tap for the rest of kDoubleTapTimeout.
++        _stopFirstTapUpTimer();
++        _isStart = false;
++        _upTap.clear();
++        _reject(tracker);
++      } else if (_upTap.length == 2) {
++        _stopFirstTapUpTimer();
++        _timeoutCheck();
++      }
+     } else if (event is PointerMoveEvent) {
+       if (!tracker.isWithinGlobalTolerance(event, kDoubleTapTouchSlop)) {
+         _reject(tracker);
+@@ -619,7 +630,9 @@ class DoubleFinerTapGestureRecognizer extends GestureRecognizer {
+   }
+ 
+   void _startFirstTapDownTimer() {
+-    _firstTapTimer ??= Timer(kDoubleTapTimeout, _timeoutCheck);
++    // Up to the long press: the tap resolves when the second finger lifts,
++    // so a slower two-finger tap still right-clicks instead of doing nothing.
++    _firstTapTimer ??= Timer(kLongPressTimeout, _timeoutCheck);
+   }
+ 
+   void _stopFirstTapUpTimer() {
+diff --git a/flutter/lib/common/widgets/remote_input.dart b/flutter/lib/common/widgets/remote_input.dart
+index 98bf0aa..f311d39 100644
+--- a/flutter/lib/common/widgets/remote_input.dart
++++ b/flutter/lib/common/widgets/remote_input.dart
+@@ -110,6 +110,9 @@ class _RawTouchGestureDetectorRegionState
+   // Cache global position for onTap (which lacks position info).
+   Offset? _lastTapDownGlobalPosition;
+ 
++  // A second finger landed during this touch: a two-finger tap, not a click.
++  bool _secondFingerDown = false;
++
+   FFI get ffi => widget.ffi;
+   FfiModel get ffiModel => widget.ffiModel;
+   InputModel get inputModel => widget.inputModel;
+@@ -187,7 +190,7 @@ class _RawTouchGestureDetectorRegionState
+     if (!handleTouch) {
+       // Cannot use `_lastTapDownDetails` because Flutter calls `onTapUp` before `onTap`, clearing the cached details.
+       // Using `_lastTapDownPositionForMouseMode` instead.
+-      if (shouldBlockMouseModeEvent()) {
++      if (shouldBlockMouseModeEvent() || _secondFingerDown) {
+         return;
+       }
+       // Mobile, "Mouse mode"
+@@ -230,6 +233,7 @@ class _RawTouchGestureDetectorRegionState
+   }
+ 
+   onLongPressDown(LongPressDownDetails d) async {
++    _secondFingerDown = false;
+     lastDeviceKind = d.kind;
+     if (isNotTouchBasedDevice()) {
+       return;
+@@ -303,6 +307,7 @@ class _RawTouchGestureDetectorRegionState
+       return;
+     }
+     _doubleFinerTapPosition = d.localPosition;
++    _secondFingerDown = true;
+     // ignore for desktop and mobile
+   }
+ 
+diff --git a/flutter/test/mobile_gestures_test.dart b/flutter/test/mobile_gestures_test.dart
+index 9387687..dddb45d 100644
+--- a/flutter/test/mobile_gestures_test.dart
++++ b/flutter/test/mobile_gestures_test.dart
+@@ -57,4 +57,39 @@ void main() {
+     // 18 px is the tap slop; it used to wait for the 36 px pan slop.
+     expect(log, contains('panStart@x=120.0'));
+   });
++
++  testWidgets('a two-finger tap fires when the second finger lifts', (t) async {
++    final log = await _run(t, (now) async {
++      final a = await t.startGesture(const Offset(100, 100), pointer: 1);
++      final b = await t.startGesture(const Offset(150, 100), pointer: 2);
++      await t.pump(const Duration(milliseconds: 60));
++      await a.up();
++      await t.pump(const Duration(milliseconds: 20));
++      await b.up();
++    }, log: []);
++    expect(log.where((e) => e.startsWith('twoFingerTap')), ['twoFingerTap@80']);
++  });
++
++  testWidgets('a slower two-finger tap still right-clicks', (t) async {
++    // Ends 450 ms after the first touch, past kDoubleTapTimeout (300 ms).
++    final log = await _run(t, (now) async {
++      final a = await t.startGesture(const Offset(100, 100), pointer: 1);
++      final b = await t.startGesture(const Offset(150, 100), pointer: 2);
++      await t.pump(const Duration(milliseconds: 440));
++      await a.up();
++      await t.pump(const Duration(milliseconds: 10));
++      await b.up();
++    }, log: []);
++    expect(
++        log.where((e) => e.startsWith('twoFingerTap')), ['twoFingerTap@450']);
++  });
++
++  testWidgets('a lone tap is not held for a two-finger tap', (t) async {
++    final log = await _run(t, (_) async {
++      final g = await t.startGesture(const Offset(100, 100));
++      await t.pump(const Duration(milliseconds: 60));
++      await g.up();
++    }, log: [], holdTapMove: false);
++    expect(log, ['tap@60']);
++  });
+ }

@@ -193,6 +193,60 @@ jobs:
             upstream/rustdesk/flutter/macos/Runner/bridge_generated.h
             upstream/rustdesk/flutter/ios/Runner/bridge_generated.h
 
+  # Not upstream: the Dart tests of the client patches that need the generated bridge (the gesture
+  # tests reach remote_input.dart through gestures.dart), and the pure ones. A job of its own, so a
+  # failing test shows in the run without holding back the platform builds.
+  dart-tests:
+    name: Dart tests
+    needs: generate-bridge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: upstream/rustdesk/flutter
+    steps:
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Fetch upstream and apply hjviewer patches
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/fetch-upstream.sh client
+
+      - name: Install flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        run: |
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+          if [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]]; then
+            git apply "${{ github.workspace }}/upstream/rustdesk/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          fi
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: upstream/rustdesk
+
+      - name: Run the tests
+        run: |
+          tests=()
+          for t in test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart \
+            test/mobile_touch_utils_test.dart test/windows_wheel_test.dart \
+            test/mobile_gestures_test.dart test/mobile_long_press_test.dart \
+            test/common/widgets/gestures_test.dart; do
+            if [ -f "$t" ]; then tests+=("$t"); fi
+          done
+          flutter pub get
+          if [ ${#tests[@]} -gt 0 ]; then flutter test "${tests[@]}"; fi
+
   # upstream: L109-461 (build-for-windows-flutter), x64 matrix entry L119-126. Dropped: the arm64
   # entry and its steps, upstream's private signing service (SIGN_BASE_URL), MSI and MSI template,
   # the release upload, and "find Runner.res" (no consumer of libs/portable/Runner.res at this commit).

@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:11:52 +0900
+Subject: [PATCH 12/21] mobile: pinch zoom stays under the fingers
+
+onTwoFingerScaleUpdate anchored the zoom on the global focal point, but the
+canvas lives inside SafeArea, so the content slid away from the fingers by the
+inset (up to 59 pt on Dynamic Island iPhones, also in landscape). The local
+focal point is the canvas' own coordinate.
+
+(Research patch ios-touch 0003.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/remote_input.dart | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/flutter/lib/common/widgets/remote_input.dart b/flutter/lib/common/widgets/remote_input.dart
+index f311d39..a3d9e4c 100644
+--- a/flutter/lib/common/widgets/remote_input.dart
++++ b/flutter/lib/common/widgets/remote_input.dart
+@@ -493,7 +493,7 @@ class _RawTouchGestureDetectorRegionState
+       }
+     } else {
+       // mobile
+-      ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
++      ffi.canvasModel.updateScale(d.scale / _scale, d.localFocalPoint);
+       _scale = d.scale;
+       ffi.canvasModel.panX(d.focalPointDelta.dx);
+       ffi.canvasModel.panY(d.focalPointDelta.dy);

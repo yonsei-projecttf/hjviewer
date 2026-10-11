@@ -1,0 +1,370 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:14:42 +0900
+Subject: [PATCH 16/21] =?UTF-8?q?mobile:=20key=20bar=20modifiers=20apply?=
+ =?UTF-8?q?=20to=20the=20next=20key=20once;=20=ED=95=9C/=EC=98=81,=20?=
+ =?UTF-8?q?=ED=95=9C=EC=9E=90=20and=20a=20shortcut=20row?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The key bar's Ctrl, Alt, Shift and Win only flipped flags that applied to every
+later key, Backspace and click until tapped off, so a forgotten Ctrl turned
+typing (and the Backspaces of Korean syllable replacement) into shortcuts.
+The first tap now arms a modifier for the next key or click only (filled), a
+second tap keeps it on (outlined), a third turns it off. Shift+click and
+Ctrl+click work and then release. Only the release of a press this session
+sent uses a one-shot modifier up, so pinching or panning with two fingers to
+aim (they end with a stray left release) keeps it armed. A modifier a key
+event turned on keeps the old toggle-off. Leaving the session clears the key
+bar state. A modifier tap or a shortcut first sends the text the keyboard
+typed just before it, with the modifiers it was typed with.
+
+With Ctrl, Alt or Win armed from the key bar, Hangul from the soft keyboard
+is not sent: it is no key a shortcut can take, and when the keyboard joined
+the jamo to the syllable before it (하 + ㄱ -> 학) the edit's first Backspace
+went out as Ctrl+Backspace or Alt+Backspace. The edit is dropped, the field
+starts over and the modifier stays armed for the next key, on every Korean
+layout.
+
+For Windows peers the bar gets 한/영 (VK_HANGUL) and 한자 (VK_HANJA), and a
+⌘ toggle opens a row with Win, Win+D, Win+Tab, Alt+Tab, Alt+F4, Ctrl+Z/Y/A/X/F
+and, when the peer allows it, Ctrl+Alt+Del. All keys use existing KEY_MAP
+names; no protocol or host change.
+
+(Research patch ios-keyboard B without its Korean-layout shortcut mapping,
+plus the live-state and reset fixes from its verification and the plan
+review's one-shot and Hangul fixes.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/mobile/pages/remote_page.dart   | 129 ++++++++++++++++----
+ flutter/lib/models/input_model.dart         |  73 +++++++++++
+ flutter/lib/models/soft_keyboard_input.dart |   3 +
+ flutter/test/soft_keyboard_input_test.dart  |   6 +
+ 4 files changed, 186 insertions(+), 25 deletions(-)
+
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 062881b..b5c0a2d 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -344,6 +344,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+       return;
+     }
+     _value = value.text;
++    if (inputModel.keyBarHotkey && containsHangul(edit.text)) {
++      // Ctrl, Alt or Win from the key bar and the Korean layout: Hangul is no
++      // key for a shortcut, and replacing the syllable the keyboard joined
++      // the jamo to would send Ctrl+Backspace. Send nothing, keep the
++      // modifier for the next key, and let the keyboard start over.
++      _resetSoftKeyboardText();
++      return;
++    }
+     for (var i = 0; i < edit.backspaces; ++i) {
+       inputModel.inputKey('VK_BACK');
+     }
+@@ -992,13 +1000,53 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+   var _more = true;
+   var _fn = false;
+   var _pin = false;
++  var _shortcuts = false;
+   final _keyboardVisibilityController = KeyboardVisibilityController();
+   final _key = GlobalKey();
++  Worker? _oneShotWorker;
+ 
+   InputModel get inputModel => gFFI.inputModel;
+ 
++  @override
++  void initState() {
++    super.initState();
++    // A one-shot modifier turns off after a key typed on the soft keyboard
++    // or a click, outside this widget.
++    _oneShotWorker = ever(inputModel.keyBarModifiers, (_) {
++      if (mounted) setState(() {});
++    });
++  }
++
++  @override
++  void dispose() {
++    _oneShotWorker?.dispose();
++    super.dispose();
++  }
++
++  /// A modifier button: the first tap turns it on for the next key or click,
++  /// the second keeps it on (outlined), the third turns it off.
++  Widget modifier(String text, String name, bool on) {
++    final oneShot = inputModel.keyBarModifiers[name] == true;
++    return wrap(text, () {
++      // Text typed just before goes out with the modifiers it was typed with.
++      inputModel.flushSoftKeyboardText?.call();
++      setState(() {
++        // The live state: a key event may have changed it since this build.
++        if (!inputModel.modifierOn(name)) {
++          inputModel.setModifier(name, true);
++          inputModel.keyBarModifiers[name] = true;
++        } else if (inputModel.keyBarModifiers[name] == true) {
++          inputModel.keyBarModifiers[name] = false;
++        } else {
++          inputModel.setModifier(name, false);
++          inputModel.keyBarModifiers.remove(name);
++        }
++      });
++    }, active: on, locked: on && !oneShot);
++  }
++
+   Widget wrap(String text, void Function() onPressed,
+-      {bool? active, IconData? icon}) {
++      {bool? active, bool? locked, IconData? icon}) {
+     return TextButton(
+         style: TextButton.styleFrom(
+           minimumSize: Size(0, 0),
+@@ -1010,6 +1058,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+             borderRadius: BorderRadius.circular(5.0),
+           ),
+           backgroundColor: active == true ? MyTheme.accent80 : null,
++          side: locked == true ? BorderSide(color: Colors.white) : null,
+         ),
+         child: icon != null
+             ? Icon(icon, size: 14, color: Colors.white)
+@@ -1051,18 +1100,14 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+     final isWin = pi.platform == kPeerPlatformWindows;
+     final isLinux = pi.platform == kPeerPlatformLinux;
+     final modifiers = <Widget>[
+-      wrap('Ctrl ', () {
+-        setState(() => inputModel.ctrl = !inputModel.ctrl);
+-      }, active: inputModel.ctrl),
+-      wrap(' Alt ', () {
+-        setState(() => inputModel.alt = !inputModel.alt);
+-      }, active: inputModel.alt),
+-      wrap('Shift', () {
+-        setState(() => inputModel.shift = !inputModel.shift);
+-      }, active: inputModel.shift),
+-      wrap(isMac ? ' Cmd ' : ' Win ', () {
+-        setState(() => inputModel.command = !inputModel.command);
+-      }, active: inputModel.command),
++      modifier('Ctrl ', 'ctrl', inputModel.ctrl),
++      modifier(' Alt ', 'alt', inputModel.alt),
++      modifier('Shift', 'shift', inputModel.shift),
++      modifier(isMac ? ' Cmd ' : ' Win ', 'command', inputModel.command),
++      // The Korean IME switches on these keys; Hangul typed on this keyboard
++      // does not need them, a hardware keyboard or Hanja conversion does.
++      if (isWin) wrap('한/영', () => inputModel.inputKey('VK_HANGUL')),
++      if (isWin) wrap('한자', () => inputModel.inputKey('VK_HANJA')),
+     ];
+     final keys = <Widget>[
+       wrap(
+@@ -1094,6 +1139,24 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+                 },
+               ),
+           active: _more),
++      if (!gFFI.ffiModel.isPeerAndroid)
++        wrap('', () => setState(() => _shortcuts = !_shortcuts),
++            active: _shortcuts, icon: Icons.keyboard_command_key),
++    ];
++    final mod = isMac ? 'Cmd' : 'Ctrl';
++    final shortcuts = <Widget>[
++      SizedBox(width: 9999),
++      if (isWin) wrap('Win', () => sendShortcut('Meta')),
++      if (isWin) wrap('Win+D', () => sendShortcut('VK_D', command: true)),
++      if (isWin) wrap('Win+Tab', () => sendShortcut('VK_TAB', command: true)),
++      if (!isMac) wrap('Alt+Tab', () => sendShortcut('VK_TAB', alt: true)),
++      if (!isMac) wrap('Alt+F4', () => sendShortcut('VK_F4', alt: true)),
++      for (final k in ['Z', 'Y', 'A', 'X', 'F'])
++        wrap('$mod+$k',
++            () => sendShortcut('VK_$k', ctrl: !isMac, command: isMac)),
++      if (pi.sasEnabled)
++        wrap('Ctrl+Alt+Del',
++            () => bind.sessionCtrlAltDel(sessionId: gFFI.sessionId)),
+     ];
+     final fn = <Widget>[
+       SizedBox(width: 9999),
+@@ -1191,6 +1254,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+           children: <Widget>[SizedBox(width: 9999)] +
+               modifiers +
+               keys +
++              (_shortcuts ? shortcuts : []) +
+               (_fn ? fn : []) +
+               (_more ? more : []),
+         ));
+@@ -1565,18 +1629,33 @@ TTextMenu? getResolutionMenu(FFI ffi, String id) {
+ }
+ 
+ void sendPrompt(bool isMac, String key) {
+-  final old = isMac ? gFFI.inputModel.command : gFFI.inputModel.ctrl;
+-  if (isMac) {
+-    gFFI.inputModel.command = true;
+-  } else {
+-    gFFI.inputModel.ctrl = true;
+-  }
+-  gFFI.inputModel.inputKey(key);
+-  if (isMac) {
+-    gFFI.inputModel.command = old;
+-  } else {
+-    gFFI.inputModel.ctrl = old;
+-  }
++  sendShortcut(key, ctrl: !isMac, command: isMac);
++}
++
++/// Sends [key] with the given modifiers and the ones the key bar has on.
++/// One-shot modifiers are used up; modifiers kept on stay on.
++void sendShortcut(String key,
++    {bool ctrl = false,
++    bool alt = false,
++    bool shift = false,
++    bool command = false}) {
++  final input = gFFI.inputModel;
++  input.flushSoftKeyboardText?.call();
++  bool kept(bool on, String name) => on && input.keyBarModifiers[name] != true;
++  final keptCtrl = kept(input.ctrl, 'ctrl');
++  final keptAlt = kept(input.alt, 'alt');
++  final keptShift = kept(input.shift, 'shift');
++  final keptCommand = kept(input.command, 'command');
++  input.ctrl |= ctrl;
++  input.alt |= alt;
++  input.shift |= shift;
++  input.command |= command;
++  input.inputKey(key);
++  input.releaseOneShotModifiers();
++  input.ctrl = keptCtrl;
++  input.alt = keptAlt;
++  input.shift = keptShift;
++  input.command = keptCommand;
+ }
+ 
+ class FABLocation extends FloatingActionButtonLocation {
+diff --git a/flutter/lib/models/input_model.dart b/flutter/lib/models/input_model.dart
+index 0cc41af..3a7b1ca 100644
+--- a/flutter/lib/models/input_model.dart
++++ b/flutter/lib/models/input_model.dart
+@@ -419,6 +419,24 @@ class InputModel {
+   /// that text first, so that it does not overtake it.
+   VoidCallback? flushSoftKeyboardText;
+ 
++  /// Modifiers turned on from the mobile key bar ('ctrl', 'alt', 'shift',
++  /// 'command'): true while one applies to the next key or click only, false
++  /// while it is kept on.
++  final keyBarModifiers = <String, bool>{}.obs;
++
++  /// Whether the key bar has Ctrl, Alt or Win/Cmd on, so that what the soft
++  /// keyboard types next is a shortcut. A modifier only a key event turned on
++  /// does not count.
++  bool get keyBarHotkey =>
++      (ctrl && keyBarModifiers.containsKey('ctrl')) ||
++      (alt && keyBarModifiers.containsKey('alt')) ||
++      (command && keyBarModifiers.containsKey('command'));
++
++  // Buttons pressed through [sendMouse] and not released yet: only the
++  // release of one uses up a one-shot key-bar modifier, not the stray
++  // release a two-finger gesture ends with.
++  final _sentButtonPresses = <MouseButtons>{};
++
+   final ToReleaseRawKeys toReleaseRawKeys = ToReleaseRawKeys();
+   final ToReleaseKeys toReleaseKeys = ToReleaseKeys();
+ 
+@@ -1044,6 +1062,55 @@ class InputModel {
+         ctrl: ctrl,
+         shift: shift,
+         command: command);
++    if (name.isNotEmpty && !_kModifierKeyNames.contains(name)) {
++      releaseOneShotModifiers();
++    }
++  }
++
++  static const _kModifierKeyNames = {
++    'VK_SHIFT',
++    'RShift',
++    'VK_CONTROL',
++    'RControl',
++    'VK_MENU',
++    'RAlt',
++    'Meta',
++    'RWin',
++  };
++
++  /// Turns off the key bar's one-shot modifiers, after the key or click they
++  /// were meant for has been sent.
++  void releaseOneShotModifiers() {
++    final names = [
++      for (final e in keyBarModifiers.entries)
++        if (e.value) e.key
++    ];
++    if (names.isEmpty) return;
++    for (final name in names) {
++      setModifier(name, false);
++      keyBarModifiers.remove(name);
++    }
++  }
++
++  bool modifierOn(String name) => switch (name) {
++        'ctrl' => ctrl,
++        'alt' => alt,
++        'shift' => shift,
++        'command' => command,
++        _ => false,
++      };
++
++  void setModifier(String name, bool on) {
++    switch (name) {
++      case 'ctrl':
++        ctrl = on;
++      case 'alt':
++        alt = on;
++      case 'shift':
++        shift = on;
++      case 'command':
++        command = on;
++    }
+   }
+ 
+   static Map<String, dynamic> getMouseEventMove() => {
+@@ -1114,6 +1181,7 @@ class InputModel {
+   /// Reset key modifiers to false, including [shift], [ctrl], [alt] and [command].
+   void resetModifiers() {
+     shift = ctrl = alt = command = false;
++    keyBarModifiers.clear();
+   }
+ 
+   /// Modify the given modifier map [evt] based on current modifier key status.
+@@ -1140,6 +1208,11 @@ class InputModel {
+     if (isViewCamera) return;
+     if (type == 'down') flushSoftKeyboardText?.call();
+     await _sendMouseUnchecked(type, button);
++    if (type == 'down') {
++      _sentButtonPresses.add(button);
++    } else if (type == 'up' && _sentButtonPresses.remove(button)) {
++      releaseOneShotModifiers();
++    }
+   }
+ 
+   void enterOrLeave(bool enter) {
+diff --git a/flutter/lib/models/soft_keyboard_input.dart b/flutter/lib/models/soft_keyboard_input.dart
+index 9aa0d45..acaf364 100644
+--- a/flutter/lib/models/soft_keyboard_input.dart
++++ b/flutter/lib/models/soft_keyboard_input.dart
+@@ -107,6 +107,9 @@ int _fillerLength(String value) {
+ bool isHangulText(String text) =>
+     text.isNotEmpty && text.runes.every(_isHangulRune);
+ 
++/// Whether [text] has any Hangul in it, see [isHangulText].
++bool containsHangul(String text) => text.runes.any(_isHangulRune);
++
+ bool _isHangulRune(int rune) =>
+     (rune >= 0x1100 && rune <= 0x11FF) || // Hangul Jamo
+     (rune >= 0x3130 && rune <= 0x318F) || // Hangul Compatibility Jamo
+diff --git a/flutter/test/soft_keyboard_input_test.dart b/flutter/test/soft_keyboard_input_test.dart
+index eff72fd..3728404 100644
+--- a/flutter/test/soft_keyboard_input_test.dart
++++ b/flutter/test/soft_keyboard_input_test.dart
+@@ -217,6 +217,12 @@ void main() {
+       expect(isHangulText('ㅎㅏ'), isTrue);
+       expect(isHangulText('한a'), isFalse);
+       expect(isHangulText(''), isFalse);
++      expect(containsHangul('핯'), isTrue);
++      expect(containsHangul('a한'), isTrue);
++      expect(containsHangul('ㄱ'), isTrue);
++      expect(containsHangul('·'), isTrue); // a Cheonjiin stroke
++      expect(containsHangul('c'), isFalse);
++      expect(containsHangul(''), isFalse);
+     });
+   });
+ }

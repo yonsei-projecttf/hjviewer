@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:15:57 +0900
+Subject: [PATCH 21/21] desktop: a mouse release passes cursor protection
+ (rustdesk c8532719)
+
+The desktop mouse path dropped a button-up while peer control protection was
+active (the controlled side's user moved the mouse within the last second),
+so a drag could stay pressed on the peer. Pressed buttons are tracked and their
+release always goes out. Desktop and web only.
+
+Cherry-picked from upstream commit c8532719 (#16516, 2026-10-10), which is on
+master after HJViewer's pin.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/models/input_model.dart | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/lib/models/input_model.dart b/flutter/lib/models/input_model.dart
+index 3a7b1ca..ac01ea4 100644
+--- a/flutter/lib/models/input_model.dart
++++ b/flutter/lib/models/input_model.dart
+@@ -471,6 +471,7 @@ class InputModel {
+   // mouse
+   final isPhysicalMouse = false.obs;
+   int _lastButtons = 0;
++  int _pressedMouseButtons = 0;
+   Offset lastMousePos = Offset.zero;
+   int _lastWheelTsUs = 0;
+ 
+@@ -1149,6 +1150,10 @@ class InputModel {
+       }
+     }
+     _lastButtons = hasStaleButtonsOnMouseUp ? 0 : evt.buttons;
++    if (isDesktop && _relativeMouse.enabled.value && type == _kMouseEventUp) {
++      // A relative up can finish a press sent before the mode switch.
++      _pressedMouseButtons &= ~buttons;
++    }
+ 
+     out['buttons'] = buttons;
+     out['type'] = type;
+@@ -1901,9 +1906,16 @@ class InputModel {
+     bool edgeScroll = false,
+   }) {
+     if (isViewCamera) return null;
++    final buttons = evt['buttons'];
++    final isMatchingMouseUp = (isDesktop || isWebDesktop) &&
++        evt['type'] == _kMouseEventUp &&
++        buttons is int &&
++        mouseButtonsToPeer(buttons).isNotEmpty &&
++        _pressedMouseButtons & buttons != 0;
+     double x = offset.dx;
+     double y = max(0.0, offset.dy);
+-    if (_checkPeerControlProtected(x, y)) {
++    // Cursor ownership may change between a forwarded down and its up.
++    if (_checkPeerControlProtected(x, y) && !isMatchingMouseUp) {
+       return null;
+     }
+ 
+@@ -1945,6 +1957,9 @@ class InputModel {
+     if (pos == null) {
+       return null;
+     }
++    if (isMatchingMouseUp) {
++      _pressedMouseButtons &= ~buttons;
++    }
+     if (type != '') {
+       evt['x'] = '0';
+       evt['y'] = '0';
+@@ -1953,9 +1968,13 @@ class InputModel {
+       evt['y'] = '${pos.y.toInt()}';
+     }
+ 
+-    final buttons = evt['buttons'];
+     if (buttons is int) {
+       evt['buttons'] = mouseButtonsToPeer(buttons);
++      if ((isDesktop || isWebDesktop) &&
++          type == kMouseEventTypeDown &&
++          evt['buttons'] != '') {
++        _pressedMouseButtons |= buttons;
++      }
+     } else {
+       // Log warning if buttons exists but is not an int (unexpected caller).
+       // Keep empty string fallback for missing buttons to preserve move/hover behavior.

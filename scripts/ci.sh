@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# Server-side CI, run on the development machine (GitHub CI is paused; docs/ci.md).
-#   scripts/ci.sh [all]    both stages
+# CI run on the development machine (GitHub CI is paused; docs/ci.md).
+#   scripts/ci.sh [all]    the server and deploy stages
 #   scripts/ci.sh server   a fresh upstream checkout with server/patches, the signaling and relay
 #                          tests, hjv-probe and hjv-load
+#   scripts/ci.sh client   a fresh upstream checkout with client/patches, hbb_common's WebSocket
+#                          tests and the client's pure Dart tests, with the Flutter SDK the app
+#                          builds use (downloaded once, checked against Flutter's release index).
+#                          Tests that need the generated bridge run in client-build.yml.
 #   scripts/ci.sh deploy   docs/server-runbook.md's deployment with Docker, as on the server, from a
 #                          copy of this working tree: path B (hbbs/hbbr on 127.0.0.1) behind
 #                          deploy/nginx-hjviewer.conf and deploy/apache-hjviewer.conf, then path A
@@ -129,6 +133,42 @@ server_stage() {
     CARGO_TARGET_DIR="$CI/target" cargo test --release --locked --test tcp_signaling --test relay_pairing)
   step "server: hjv-probe and hjv-load"
   for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
+}
+
+FLUTTER_VERSION=3.24.5 # client-build.yml FLUTTER_VERSION
+# The pure Dart tests of the client patches; each runs once the patch that adds it is in.
+CLIENT_DART_TESTS="test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart
+  test/mobile_touch_utils_test.dart test/windows_wheel_test.dart"
+
+client_stage() {
+  local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=()
+  local index=https://storage.googleapis.com/flutter_infra_release/releases
+  if [ ! -x "$fl/bin/flutter" ]; then
+    step "client: Flutter $FLUTTER_VERSION, checked against releases_linux.json"
+    curl -fsSL "$index/releases_linux.json" -o "$CI/releases_linux.json"
+    sum=$(python3 -I -c 'import json, sys
+for r in json.load(open(sys.argv[1]))["releases"]:
+    if r["version"] == sys.argv[2] and r["channel"] == "stable":
+        print(r["sha256"]); break' "$CI/releases_linux.json" "$FLUTTER_VERSION")
+    [ -n "$sum" ] || fail "Flutter $FLUTTER_VERSION is not in releases_linux.json"
+    curl -fsSL "$index/stable/linux/flutter_linux_$FLUTTER_VERSION-stable.tar.xz" -o "$CI/flutter.tar.xz"
+    echo "$sum  $CI/flutter.tar.xz" | sha256sum -c --quiet - || fail "the Flutter archive does not match releases_linux.json"
+    rm -rf "$fl.tmp" && mkdir -p "$fl.tmp" && tar -xJf "$CI/flutter.tar.xz" -C "$fl.tmp"
+    mv "$fl.tmp/flutter" "$fl" && rm -rf "$fl.tmp" "$CI/flutter.tar.xz"
+  fi
+  step "client: upstream checkout with client/patches"
+  rm -rf "$CI/upstream/rustdesk"
+  UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" client
+  step "client: hbb_common WebSocket tests"
+  (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket)
+  step "client: pure Dart tests"
+  for t in $CLIENT_DART_TESTS; do [ -f "$app/$t" ] && tests+=("$t"); done
+  [ ${#tests[@]} -gt 0 ] || fail "client: none of the Dart tests is in the patched tree"
+  # The bridge is generated in client-build.yml; these tests only need its web stand-in to resolve.
+  printf "export 'web/bridge.dart';\n" > "$app/lib/generated_bridge.dart"
+  (cd "$app" && export PUB_CACHE="$CI/pub-cache" FLUTTER_SUPPRESS_ANALYTICS=true &&
+    { "$fl/bin/flutter" pub get > "$CI/pub-get.log" 2>&1 || { tail -n 20 "$CI/pub-get.log"; fail "client: flutter pub get"; }; } &&
+    "$fl/bin/flutter" test --no-pub "${tests[@]}") || fail "client: Dart tests"
 }
 
 # The runbook's checks against one web server: WebSocket upgrades to hbbs and hbbr, the /api/
@@ -439,8 +479,9 @@ EOF
 
 case "${1:-all}" in
   server) server_stage ;;
+  client) client_stage ;;
   deploy) deploy_stage ;;
   all) server_stage; deploy_stage ;;
-  *) echo "usage: $0 [all|server|deploy]" >&2; exit 2 ;;
+  *) echo "usage: $0 [all|server|client|deploy]" >&2; exit 2 ;;
 esac
 step "CI passed: ${1:-all}"

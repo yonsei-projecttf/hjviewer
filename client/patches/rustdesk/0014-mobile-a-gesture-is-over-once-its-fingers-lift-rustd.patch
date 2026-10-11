@@ -1,0 +1,153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:12:00 +0900
+Subject: [PATCH 14/21] mobile: a gesture is over once its fingers lift
+ (rustdesk PR #16243)
+
+CustomTouchGestureRecognizer used one timer both to debounce state changes and
+to reset the state 200 ms after the gesture ended, and every update cancelled
+it. After a pinch, the finger left on the screen kept feeding the two-finger
+handler (it panned the canvas instead of moving the cursor) and the gesture
+could end twice. The reset has its own timer, an ended gesture gets no more
+updates, and the state resets at once when no finger is left, so a new stroke
+right after a pinch starts normally.
+
+Cherry-picked from https://github.com/rustdesk/rustdesk/pull/16243 (open,
+2026-09-16), with its widget test; the test drops an import that dart analyze
+flags as unnecessary.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/gestures.dart      | 27 +++++++++++---
+ .../test/common/widgets/gestures_test.dart    | 36 +++++++++++++++++++
+ 2 files changed, 58 insertions(+), 5 deletions(-)
+ create mode 100644 flutter/test/common/widgets/gestures_test.dart
+
+diff --git a/flutter/lib/common/widgets/gestures.dart b/flutter/lib/common/widgets/gestures.dart
+index cc09e73..61348f6 100644
+--- a/flutter/lib/common/widgets/gestures.dart
++++ b/flutter/lib/common/widgets/gestures.dart
+@@ -38,28 +38,33 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
+   GestureDragEndCallback? onThreeFingerVerticalDragEnd;
+ 
+   var _currentState = GestureState.none;
++  bool _ended = false;
+   Timer? _debounceTimer;
++  Timer? _resetTimer;
+ 
+   void _init() {
+     debugPrint("CustomTouchGestureRecognizer init");
+     // onStart = (d) {};
+     onUpdate = (d) {
+       _debounceTimer?.cancel();
+-      if (d.pointerCount == 1 && _currentState != GestureState.oneFingerPan) {
++      if (d.pointerCount == 1 &&
++          (_currentState != GestureState.oneFingerPan || _ended)) {
+         onOneFingerStartDebounce(d);
+       } else if (d.pointerCount == 2 &&
+-          _currentState != GestureState.twoFingerScale) {
++          (_currentState != GestureState.twoFingerScale || _ended)) {
+         onTwoFingerStartDebounce(d);
+       } else if (d.pointerCount == 3 &&
+-          _currentState != GestureState.threeFingerVerticalDrag) {
++          (_currentState != GestureState.threeFingerVerticalDrag || _ended)) {
++        _resetTimer?.cancel();
+         _currentState = GestureState.threeFingerVerticalDrag;
++        _ended = false;
+         if (onThreeFingerVerticalDragStart != null) {
+           onThreeFingerVerticalDragStart!(
+               DragStartDetails(globalPosition: d.localFocalPoint));
+         }
+         debugPrint("start threeFingerScale");
+       }
+-      if (_currentState != GestureState.none) {
++      if (_currentState != GestureState.none && !_ended) {
+         switch (_currentState) {
+           case GestureState.oneFingerPan:
+             if (onOneFingerPanUpdate != null) {
+@@ -85,6 +90,9 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
+     onEnd = (d) {
+       debugPrint("ScaleGestureRecognizer onEnd");
+       _debounceTimer?.cancel();
++      if (_ended) {
++        return;
++      }
+       // end
+       switch (_currentState) {
+         case GestureState.oneFingerPan:
+@@ -114,7 +122,12 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
+         default:
+           break;
+       }
+-      _debounceTimer = Timer(Duration(milliseconds: 200), () {
++      _ended = true;
++      if (d.pointerCount == 0) {
++        _currentState = GestureState.none;
++        return;
++      }
++      _resetTimer = Timer(Duration(milliseconds: 200), () {
+         _currentState = GestureState.none;
+       });
+     };
+@@ -124,7 +137,9 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
+   // If we move our finger very fast, we won't be able to detect the "oneFingerPan" event sometimes.
+   void onOneFingerStartDebounce(ScaleUpdateDetails d) {
+     start(ScaleUpdateDetails d) {
++      _resetTimer?.cancel();
+       _currentState = GestureState.oneFingerPan;
++      _ended = false;
+       if (onOneFingerPanStart != null) {
+         onOneFingerPanStart!(DragStartDetails(
+             localPosition: d.localFocalPoint, globalPosition: d.focalPoint));
+@@ -144,7 +159,9 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
+ 
+   void onTwoFingerStartDebounce(ScaleUpdateDetails d) {
+     start(ScaleUpdateDetails d) {
++      _resetTimer?.cancel();
+       _currentState = GestureState.twoFingerScale;
++      _ended = false;
+       if (onTwoFingerScaleStart != null) {
+         onTwoFingerScaleStart!(ScaleStartDetails(
+             localFocalPoint: d.localFocalPoint, focalPoint: d.focalPoint));
+diff --git a/flutter/test/common/widgets/gestures_test.dart b/flutter/test/common/widgets/gestures_test.dart
+new file mode 100644
+index 0000000..f7e2eae
+--- /dev/null
++++ b/flutter/test/common/widgets/gestures_test.dart
+@@ -0,0 +1,36 @@
++import 'package:flutter/widgets.dart';
++import 'package:flutter_hbb/common/widgets/gestures.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++void main() {
++  testWidgets('lifting one finger of a pinch pans with the other once',
++      (tester) async {
++    var oneFingerStarts = 0;
++    await tester.pumpWidget(RawGestureDetector(
++      behavior: HitTestBehavior.opaque,
++      gestures: <Type, GestureRecognizerFactory>{
++        CustomTouchGestureRecognizer:
++            GestureRecognizerFactoryWithHandlers<CustomTouchGestureRecognizer>(
++                CustomTouchGestureRecognizer.new,
++                (recognizer) =>
++                    recognizer..onOneFingerPanStart = (_) => oneFingerStarts++),
++      },
++      child: const SizedBox.expand(),
++    ));
++
++    final first = await tester.startGesture(const Offset(100, 100), pointer: 1);
++    final second =
++        await tester.startGesture(const Offset(200, 100), pointer: 2);
++    await second.moveBy(const Offset(35, 0));
++    await tester.pump();
++    await second.up();
++    for (var i = 0; i < 8; i++) {
++      await first.moveBy(const Offset(10, 0));
++      await tester.pump(const Duration(milliseconds: 50));
++    }
++    await first.up();
++    await tester.pump(const Duration(milliseconds: 300));
++
++    expect(oneFingerStarts, 1);
++  });
++}

@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sun, 11 Oct 2026 02:14:54 +0900
+Subject: [PATCH 18/21] =?UTF-8?q?desktop:=20=ED=95=9C/=EC=98=81=20and=20?=
+ =?UTF-8?q?=ED=95=9C=EC=9E=90=20reach=20a=20Windows=20peer=20as=20the=20IM?=
+ =?UTF-8?q?E=20keys?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In map mode (the default) a Windows controller sends the scancode of every key,
+and the peer turns it back into a key with its own layout. The dedicated 한/영
+and 한자 keys of 103/106 keyboards and USB LANG1/LANG2 then did not switch the
+peer's IME (rustdesk issue #14498), and a Right Alt 한/영 only worked when both
+keyboards were of the same kind. A Windows controller now sends VK_HANGUL
+(0x15) and VK_HANJA (0x19) to a Windows peer as the Hangul and Hanja control
+keys, down and up kept, like the Pause special case next to it; the peer
+injects them with their virtual key. Windows controller and peer only.
+
+(Research patch win-win A.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/keyboard.rs | 87 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 87 insertions(+)
+
+diff --git a/src/keyboard.rs b/src/keyboard.rs
+index e7bdce9..0b10173 100644
+--- a/src/keyboard.rs
++++ b/src/keyboard.rs
+@@ -1248,12 +1248,45 @@ pub fn map_keyboard_mode(_peer: &str, event: &Event, key_event: KeyEvent) -> Vec
+     if let Some(evt) = windows_peer_special_key(_peer, event) {
+         return vec![evt];
+     }
++    #[cfg(target_os = "windows")]
++    if let Some(evt) = windows_peer_ime_key(_peer, event) {
++        return vec![evt];
++    }
+ 
+     _map_keyboard_mode(_peer, event, key_event)
+         .map(|e| vec![e])
+         .unwrap_or_default()
+ }
+ 
++/// Sends the Korean 한/영 (VK_HANGUL) and 한자 (VK_HANJA) keys to a Windows peer as virtual keys.
++/// Their scan codes depend on the keyboard (Right Alt and Right Ctrl on a 101-key "type 1" layout,
++/// keys of their own on 103/106-key and USB LANG1/LANG2 keyboards), and the peer translates an
++/// injected scan code with its own layout, so its IME toggled only when both machines had the same
++/// keyboard type. https://github.com/rustdesk/rustdesk/issues/14498
++#[cfg(target_os = "windows")]
++fn windows_peer_ime_key(peer: &str, event: &Event) -> Option<KeyEvent> {
++    if peer != OS_LOWER_WINDOWS {
++        return None;
++    }
++    let down = match event.event_type {
++        EventType::KeyPress(_) => true,
++        EventType::KeyRelease(_) => false,
++        _ => return None,
++    };
++    let control_key = match event.platform_code {
++        0x15 => ControlKey::Hangul,
++        0x19 => ControlKey::Hanja,
++        _ => return None,
++    };
++    let mut key_event = KeyEvent::new();
++    key_event.mode = KeyboardMode::Legacy.into();
++    key_event.down = down;
++    key_event.set_control_key(control_key);
++    let (alt, ctrl, shift, command) = client::get_modifiers_state(false, false, false, false);
++    client::legacy_modifiers(&mut key_event, alt, ctrl, shift, command);
++    Some(key_event)
++}
++
+ fn windows_peer_special_key(peer: &str, event: &Event) -> Option<KeyEvent> {
+     if peer != OS_LOWER_WINDOWS {
+         return None;
+@@ -1639,3 +1672,57 @@ pub mod input_source {
+         ]
+     }
+ }
++
++#[cfg(all(test, target_os = "windows"))]
++mod tests {
++    use super::*;
++
++    fn hook_event(event_type: EventType, vk: u32, scan: u32) -> Event {
++        Event {
++            time: std::time::SystemTime::now(),
++            unicode: None,
++            event_type,
++            platform_code: vk,
++            position_code: scan,
++            usb_hid: 0,
++            extra_data: 0,
++        }
++    }
++
++    #[test]
++    fn hangul_and_hanja_reach_a_windows_peer_as_virtual_keys() {
++        // dedicated 103/106-key 한/영 and a 101-key type-1 Right Alt both report VK_HANGUL
++        for (vk, scan, control_key) in [
++            (0x15, 0xF2, ControlKey::Hangul),
++            (0x15, 0xE038, ControlKey::Hangul),
++            (0x19, 0xF1, ControlKey::Hanja),
++            (0x19, 0xE01D, ControlKey::Hanja),
++        ] {
++            for (event_type, down) in [
++                (EventType::KeyPress(Key::Kana), true),
++                (EventType::KeyRelease(Key::Kana), false),
++            ] {
++                let events = map_keyboard_mode(
++                    OS_LOWER_WINDOWS,
++                    &hook_event(event_type, vk, scan),
++                    KeyEvent::new(),
++                );
++                assert_eq!(events.len(), 1);
++                assert_eq!(events[0].mode.enum_value(), Ok(KeyboardMode::Legacy));
++                assert_eq!(events[0].control_key(), control_key);
++                assert_eq!(events[0].down, down);
++            }
++        }
++    }
++
++    #[test]
++    fn right_alt_still_maps_to_its_scan_code() {
++        let events = map_keyboard_mode(
++            OS_LOWER_WINDOWS,
++            &hook_event(EventType::KeyPress(Key::AltGr), 0xA5, 0xE038),
++            KeyEvent::new(),
++        );
++        assert_eq!(events.len(), 1);
++        assert_eq!(events[0].chr(), 0xE038);
++    }
++}
