@@ -23,10 +23,12 @@
 //! `binding` is the binding the PC holds (or asks for, after a login on it; empty after it let
 //! one go), `off` whether the PC's users switched password-less connections off there, `used`
 //! (U6) per account key and UTC day the latest time the PC let it in and that day's running count,
-//! `refused` the counts of refused proofs by reason since the last report the server took. `wol`
-//! and `wol_hash` are for Wake-on-LAN (WP-W2, not stored yet). Only `v` and `binding` are
-//! required; a field of the wrong JSON type refuses the request, a value out of range (a day
-//! outside the last 30, a time not of its day, a key of no account of the PC) is left out.
+//! `refused` the counts of refused proofs by reason since the last report the server took, under
+//! the design's seven reasons (other names are left out, so that a PC adds at most seven rows a
+//! day). `wol` and `wol_hash` are for Wake-on-LAN (WP-W2, not stored yet). Only `v` and `binding`
+//! are required; a field of the wrong JSON type refuses the request, a value out of range (a day
+//! outside the last 30, a time not of its day, a key of no account of the PC) is left out, and a
+//! use's time after the server's time of the report is taken as that time.
 //!
 //! **Checks**, in this order, the first failure answering (design v3 §5-2):
 //!
@@ -109,9 +111,19 @@ pub const RESIGN_WINDOW: Duration = Duration::from_secs(10);
 pub const KEY_CHECK_EVERY: Duration = Duration::from_secs(60);
 /// The largest count of one key's uses on one day taken from a report.
 pub const MAX_DAY_USES: i64 = 1_000_000;
-/// The largest refusal count taken from one report, and the reasons counted from one report.
+/// The reasons of the report's `refused` (design v3 §3-6), the only ones counted: a report
+/// cannot add more than these rows a day to a PC's refusals, whatever names it carries.
+pub const REFUSAL_REASONS: [&str; 7] = [
+    "unknown_key",
+    "kind",
+    "temporary_only",
+    "not_secured",
+    "bad_sig",
+    "expired",
+    "off",
+];
+/// The largest refusal count taken from one report.
 const MAX_REFUSALS: i64 = 1_000_000_000;
-const MAX_REASONS: usize = 32;
 /// Entries kept in each of the in-memory maps below; past it they are cleared.
 const MAX_ENTRIES: usize = 10_000;
 
@@ -126,9 +138,10 @@ pub struct Report {
     pub ver: String,
     pub off: bool,
     /// the lines of `used` that count: an account key, a day of the last USE_DAYS (or tomorrow,
-    /// for a PC clock ahead), a time on that day, a count of 1 to MAX_DAY_USES
+    /// for a PC clock ahead), a time on that day, a count of 1 to MAX_DAY_USES; a time after the
+    /// server's time of the report is taken as that time
     pub used: Vec<UseLine>,
-    /// the counts of `refused` above zero, under names of 1-32 of `a-z 0-9 _`
+    /// the counts of `refused` above zero, under the REFUSAL_REASONS only
     pub refused: Vec<(String, i64)>,
 }
 
@@ -146,14 +159,6 @@ pub fn parse_binding(text: &str) -> Option<[u8; 16]> {
         *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).ok()?;
     }
     Some(out)
-}
-
-/// A name as the error codes and states of the envelope protocols: 1-32 of `a-z 0-9 _`.
-fn code_name(text: &str) -> bool {
-    (1..=32).contains(&text.len())
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// A version as the apps write it ("1.6.0"), else ''.
@@ -234,22 +239,28 @@ fn used_lines(items: &[Value], at: i64) -> Option<Vec<UseLine>> {
         if !in_window || last <= 0 || date(last) != day || !(1..=MAX_DAY_USES).contains(&n) {
             continue;
         }
+        // no later than the report: merged by the larger value, a time to come would hide the
+        // real later uses until it passed (design v3 §5-2)
         lines.push(UseLine {
             pk,
             day: day.to_owned(),
-            last,
+            last: last.min(at),
             n,
         });
     }
     Some(lines)
 }
 
-/// The counts of `refused` above zero; `None` when a count is not a whole number of zero or more.
+/// The counts of `refused` above zero under the REFUSAL_REASONS; other names are left out, whatever
+/// their values. `None` when the count of a reason is not a whole number of zero or more.
 fn refusals(counts: &Map<String, Value>) -> Option<Vec<(String, i64)>> {
     let mut out = Vec::new();
     for (name, count) in counts {
+        if !REFUSAL_REASONS.contains(&name.as_str()) {
+            continue;
+        }
         let count = count.as_u64()?;
-        if count == 0 || !code_name(name) || out.len() == MAX_REASONS {
+        if count == 0 {
             continue;
         }
         out.push((
@@ -432,11 +443,7 @@ fn bound_list(
     settings: &ListSettings,
 ) -> rusqlite::Result<TrustList> {
     let account = db::account(c, d.account_id)?;
-    let listed = match &account {
-        Some(a) => db::allowed(c, &a.login_key)?,
-        None => false,
-    };
-    let on = listed && db::passwordless_on(c, d.account_id)?;
+    let on = db::list_on(c, d.account_id)?;
     let mut list = TrustList::new(
         settings.kid,
         if on {
@@ -815,7 +822,9 @@ mod tests {
                 {"pk": "AAAA", "day": "2025-10-09", "last": 1_759_999_000, "n": 1},
                 {"pk": pk, "day": "2025-10-9", "last": 1_759_999_000, "n": 1},
             ],
-            "refused": {"unknown_key": 2, "kind": 0, "off": 1, "Bad Name": 4, "not_active": 3},
+            // the design's seven reasons only: other names are left out, whatever their values
+            "refused": {"unknown_key": 2, "kind": 0, "off": 1, "Bad Name": 4, "not_active": 3,
+                        "made_up": "x", "expired_": 5},
             "wol_hash": "", "wol": {"v": 1},
         });
         let r = parse_report(&p.to_string(), AT).unwrap();
@@ -836,16 +845,23 @@ mod tests {
         );
         assert_eq!(
             r.refused,
-            vec![
-                ("not_active".to_owned(), 3),
-                ("off".to_owned(), 1),
-                ("unknown_key".to_owned(), 2)
-            ]
+            vec![("off".to_owned(), 1), ("unknown_key".to_owned(), 2)]
         );
-        // tomorrow, for a PC clock ahead
+        // tomorrow, for a PC clock ahead; a time after the server's counts as the server's, so
+        // that the larger-value merge cannot hold a time to come over the real later ones
         let ahead = json!({"v": 1, "binding": "", "used": [
-            {"pk": pk, "day": "2025-10-10", "last": 1_760_054_400, "n": 1}]});
-        assert_eq!(parse_report(&ahead.to_string(), AT).unwrap().used.len(), 1);
+            {"pk": pk, "day": "2025-10-10", "last": 1_760_054_400, "n": 1},
+            {"pk": pk, "day": "2025-10-10", "last": 1_760_140_799, "n": 2},
+            {"pk": pk, "day": "2025-10-09", "last": AT - 1, "n": 3}]});
+        assert_eq!(
+            parse_report(&ahead.to_string(), AT)
+                .unwrap()
+                .used
+                .iter()
+                .map(|l| (l.last, l.n))
+                .collect::<Vec<_>>(),
+            vec![(AT, 1), (AT, 2), (AT - 1, 3)]
+        );
         // the least payload; a version that is not one is not kept
         let least = parse_report(r#"{"v":1,"binding":"","ver":"1.6.0 <b>"}"#, AT).unwrap();
         assert_eq!((least.binding, least.ver.as_str()), (None, ""));

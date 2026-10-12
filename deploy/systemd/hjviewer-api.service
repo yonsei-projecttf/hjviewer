@@ -1,6 +1,7 @@
 # hjv-api, the HJViewer account API (server/api/README.md): Yonsei portal login, the
 # per-account device list and the bound PCs' trust lists. Started by hjviewer-api.socket, whose
-# Unix socket it serves; it opens no port of its own. It runs as its own system user, apart from hbbs's user (the server key pair).
+# Unix socket it serves; it opens no port of its own. It runs as its own system user, apart from
+# hbbs's user (the server key pair).
 #   /opt/hjviewer/bin/hjv-api              the binary (GitHub release hjviewer-server-*.tar.gz)
 #   /etc/hjviewer/hjviewer-api.env         settings, not secret (server/api/hjviewer-api.env.example)
 #   /etc/credstore.encrypted/<name>        the secrets below (systemd-creds encrypt; README.md)

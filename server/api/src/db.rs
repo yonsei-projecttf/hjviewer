@@ -180,8 +180,8 @@ CREATE INDEX binding_tombstones_device ON binding_tombstones(device_id, revoked_
 
 -- the PCs' reports of password-less connections they let in (U6): per account key, PC and UTC
 -- day the latest time and that day's count, each merged by taking the larger value. Kept 30 days
--- and deleted with the key (its account), but not with the PC: taking a PC out of the list does
--- not wipe the trace of who opened it. No row per connection.
+-- and deleted with the key (cascade) or the PC (release_binding), design v3 §10-1. No row per
+-- connection.
 CREATE TABLE key_use (
     ckid INTEGER NOT NULL REFERENCES ctl_keys(ckid) ON DELETE CASCADE,
     device_id TEXT NOT NULL,
@@ -470,6 +470,20 @@ pub fn passwordless_on(c: &Connection, account_id: i64) -> rusqlite::Result<bool
         Some(on) => Ok(on),
         None => passwordless_global(c),
     }
+}
+
+/// Whether the trust lists of an account's PCs are `active` (design v3 §5-2): the account is on
+/// the allowlist and password-less connections are on for it. Off the allowlist, its PCs stay
+/// bound with `disabled` lists without keys (§5-6). The PC sync and `admin binding list` both
+/// judge by it.
+pub fn list_on(c: &Connection, account_id: i64) -> rusqlite::Result<bool> {
+    let listed: bool = c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM accounts a JOIN allowlist l ON l.login_key = a.login_key
+                        WHERE a.id = ?1)",
+        [account_id],
+        |r| r.get(0),
+    )?;
+    Ok(listed && passwordless_on(c, account_id)?)
 }
 
 /// 'Connection by connection' checks of the PCs, for incidents (design v3 §3-5 step 7, §5-6).
@@ -1289,10 +1303,10 @@ pub const TOMBSTONE_RETENTION: i64 = 180 * DAY;
 
 /// The one way a PC leaves its account (design v3 §4-3): the row goes, its binding ID goes to
 /// the tombstones with the PC's key and `reason`, and the change serial goes up, so that the PC's
-/// next sync with that binding gets a signed `revoked` and drops its mark. The refusals the PC
-/// reported go with the row (cascade); the key use it reported stays with the keys for its 30
-/// days. The reasons: `logout`, `undo`, `remove`, `admin`, `account-delete`, `unseen-purge`.
-/// Inside the caller's transaction; false if no account has the PC.
+/// next sync with that binding gets a signed `revoked` and drops its mark. What the PC reported
+/// goes with it (design v3 §10-1): its refusals (cascade) and its key use. The reasons: `logout`,
+/// `undo`, `remove`, `admin`, `account-delete`, `unseen-purge`. Inside the caller's transaction;
+/// false if no account has the PC.
 pub fn release_binding(
     c: &Connection,
     device_id: &str,
@@ -1316,6 +1330,7 @@ pub fn release_binding(
             params![binding_id, device_id, public_key, at, reason],
         )?;
     }
+    c.execute("DELETE FROM key_use WHERE device_id = ?1", [device_id])?;
     c.execute("DELETE FROM devices WHERE device_id = ?1", [device_id])?;
     bump_serial(c)?;
     Ok(true)
@@ -1517,8 +1532,8 @@ pub fn store_sync(
 }
 
 /// One line of a sync's `used` (design v3 §3-6, U6): the proofs of the account key `pk` that the
-/// PC let in on the UTC day `day`, the latest at `last` by the PC's clock, `n` that day's running
-/// count (not the increase since the last report).
+/// PC let in on the UTC day `day`, the latest at `last` by the PC's clock (at most the server's
+/// time of the report), `n` that day's running count (not the increase since the last report).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseLine {
     pub pk: [u8; 32],
@@ -1598,7 +1613,7 @@ pub fn add_refusals(
 pub struct KeyUse {
     pub ckid: i64,
     pub device_id: String,
-    /// the PC's host name, '' once the PC has left the key's account
+    /// the PC's host name ('' should the PC not be in the key's account)
     pub pc: String,
     pub last: i64,
     pub n: i64,
@@ -2301,25 +2316,26 @@ mod tests {
             rows.collect::<rusqlite::Result<_>>().unwrap()
         };
         assert_eq!(rows, vec![("unknown_key".to_owned(), 4)]);
-        // the refusals go with the PC; the trace of the key's use stays with the key, without
-        // the PC's name once the PC has left the account
+        // the refusals and the key use go with the PC (design v3 §10-1); another PC's stay
+        bind(&c, a, "pc2", &[8; 32], "windows", "PC-2", 5).unwrap();
+        merge_use(&c, a, "pc2", &[line(1, "2026-10-12", 700, 1)]).unwrap();
         release_binding(&c, "pc", "remove", 10).unwrap();
         let left = |table: &str| -> i64 {
             c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
                 .unwrap()
         };
-        assert_eq!((left("pc_refusals"), left("key_use")), (0, 2));
+        assert_eq!((left("pc_refusals"), left("key_use")), (0, 1));
         assert_eq!(
             key_use_of(&c, a, since).unwrap(),
             vec![KeyUse {
                 ckid,
-                device_id: "pc".into(),
-                pc: String::new(),
-                last: 900,
-                n: 6
+                device_id: "pc2".into(),
+                pc: "PC-2".into(),
+                last: 700,
+                n: 1
             }]
         );
-        // and goes with the account
+        // and with the account
         delete_account(&c, a, 20).unwrap();
         assert_eq!(left("key_use"), 0);
     }
@@ -2561,6 +2577,25 @@ mod tests {
         assert_eq!(change_serial(&c).unwrap(), 5);
         assert!(set_strict(&c, true).unwrap() && strict(&c).unwrap());
         assert_eq!(change_serial(&c).unwrap(), 6);
+    }
+
+    #[test]
+    fn lists_are_on_for_accounts_on_the_allowlist() {
+        let mut c = conn();
+        let a = upsert_account(&c, "a", "A", "", 1).unwrap();
+        set_account_passwordless(&c, a, Some(true)).unwrap();
+        // its switch on, but the account is not on the allowlist
+        assert!(passwordless_on(&c, a).unwrap() && !list_on(&c, a).unwrap());
+        allow_add(&mut c, &["a".to_owned()], 1).unwrap();
+        assert!(list_on(&c, a).unwrap());
+        // off the allowlist, or its switch off
+        allow_remove(&mut c, &["a".to_owned()], 2).unwrap();
+        assert!(!list_on(&c, a).unwrap());
+        allow_add(&mut c, &["a".to_owned()], 3).unwrap();
+        set_account_passwordless(&c, a, Some(false)).unwrap();
+        assert!(!list_on(&c, a).unwrap());
+        // no such account
+        assert!(!list_on(&c, a + 1).unwrap());
     }
 
     #[test]

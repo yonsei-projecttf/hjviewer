@@ -147,6 +147,46 @@ async fn the_checks_in_their_order() {
     ] {
         refused(&h.sync(&pc, &bad).await, 400, "bad_request");
     }
+    // two steps failing at once: the earlier one answers
+    // 1 before 2: a body over 16 KiB that is not JSON, whatever its type
+    for kind in ["application/json", "text/plain"] {
+        let a = h
+            .request(
+                Method::POST,
+                pcsync::PATH,
+                &[("content-type", kind)],
+                Some(vec![b'x'; pcsync::MAX_BODY + 1]),
+            )
+            .await;
+        refused(&raw(a), 413, "too_large");
+    }
+    // 3 before 4: an ID no account has or had, with a signature of no key
+    let p_none = payload("").to_string();
+    let mut nobody: Value =
+        serde_json::from_str(&sync_body(&stranger, now(), &random_bytes::<16>(), &p_none)).unwrap();
+    nobody["s"] = json!(b64(&[0; 64]));
+    refused(
+        &raw(h.sync_raw(nobody.to_string().into_bytes()).await),
+        404,
+        "unbound",
+    );
+    // 4 before 5: another key's signature and a time out of the window
+    refused(
+        &h.sync_at(&impostor, &payload(&binding), now() - 400).await,
+        401,
+        "bad_signature",
+    );
+    // 5 before 6, 6 before 7: the nonce of a request taken, signed again with a time out of the
+    // window, then with a payload that is not one
+    let nonce = random_bytes::<16>();
+    let again = |t: i64, p: &str| sync_body(&pc, t, &nonce, p).into_bytes();
+    assert_eq!(h.sync_raw(again(now(), &p)).await.status, 200);
+    refused(&raw(h.sync_raw(again(now() - 400, &p)).await), 400, "clock");
+    refused(
+        &raw(h.sync_raw(again(now(), r#"{"v":2}"#)).await),
+        409,
+        "replay",
+    );
     // the method, a browser's request
     let a = h.request(Method::GET, pcsync::PATH, &[], None).await;
     assert_eq!(a.status, 405);
@@ -504,25 +544,88 @@ async fn key_use_is_merged_by_the_larger_values_and_shown() {
         report.contains("password-less connections of the last 30 days: 8"),
         "{report}"
     );
-    // the refusals add up, per server day
+    // the refusals add up, per server day, under the design's seven reasons only: other names
+    // are left out without refusing the report, so that a PC adds at most seven rows a day
     let mut p = payload(&binding);
     p["refused"]["off"] = json!(2);
+    p["refused"]["bad_sig"] = json!(1);
     p["refused"]["not_active"] = json!(1);
-    h.sync(&pc, &p).await;
-    h.sync(&pc, &p).await;
+    for i in 0..32 {
+        p["refused"][format!("made_up_{i}")] = json!(1_000_000_000u64);
+    }
+    for _ in 0..2 {
+        assert_eq!(h.sync(&pc, &p).await.answer.status, 200);
+    }
     let report = h.admin(&["report"], false, None).await.unwrap();
     assert!(
-        report.contains("refused proofs of the last 30 days: not_active 2, off 4"),
+        report.contains("refused proofs of the last 30 days: bad_sig 2, off 4\n"),
         "{report}"
     );
-    // the PC leaves the account: the key's trace stays, without the PC's name
+    let rows: i64 = h
+        .state
+        .db
+        .call(|c| c.query_row("SELECT COUNT(*) FROM pc_refusals", [], |r| r.get(0)))
+        .await
+        .unwrap();
+    assert_eq!(rows, 2);
+    // the PC leaves the account: its key use goes with it (design v3 §10-1)
     assert_eq!(
         h.delete("/api/hjv/devices/530000001", &phone).await.status,
         200
     );
+    let mine = uses(phone.clone()).await;
     assert_eq!(
-        uses(phone.clone()).await["use"],
-        json!([{"pc_id": "530000001", "pc": "", "last": at, "n30": 8}])
+        (&mine["use"], &mine["last_used"], &mine["last_used_pc"]),
+        (&json!([]), &Value::Null, &Value::Null)
+    );
+}
+
+#[tokio::test]
+async fn a_use_reported_ahead_of_the_server_clock_counts_as_reported_now() {
+    let h = Harness::start().await;
+    let pc = TestDevice::windows("530000002");
+    let (binding, _) = bound(&h, &pc).await;
+    let phone = h
+        .login_ok(HONG, Some(&TestDevice::phone("987650012")))
+        .await;
+    let pk = key_b64(&h, &phone);
+    let current = || {
+        let h = &h;
+        let phone = phone.clone();
+        async move {
+            let keys = h.get("/api/hjv/keys", &phone).await.json;
+            keys["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|k| k["current"] == true)
+                .unwrap()
+                .clone()
+        }
+    };
+    // tomorrow's last second, from a PC clock far ahead or a local user with the PC's key: the
+    // time stored is at most the server's time of the report
+    let before = now();
+    let tomorrow = (before.div_euclid(DAY) + 1) * DAY;
+    let mut p = payload(&binding);
+    p["used"] = json!([{"pk": pk, "day": date(tomorrow), "last": tomorrow + DAY - 1, "n": 2}]);
+    assert_eq!(h.sync(&pc, &p).await.answer.status, 200);
+    let after = now();
+    let mine = current().await;
+    let last = mine["use"][0]["last"].as_i64().unwrap();
+    assert!((before..=after).contains(&last), "{last}: {mine}");
+    assert_eq!(
+        (&mine["use"][0]["n30"], &mine["last_used"]),
+        (&json!(2), &json!(last))
+    );
+    // so a use reported later shows as the latest
+    let used_at = now();
+    p["used"] = json!([{"pk": pk, "day": date(used_at), "last": used_at, "n": 1}]);
+    assert_eq!(h.sync(&pc, &p).await.answer.status, 200);
+    let mine = current().await;
+    assert_eq!(
+        (&mine["last_used"], &mine["use"][0]["n30"]),
+        (&json!(used_at), &json!(3))
     );
 }
 
@@ -595,7 +698,19 @@ async fn the_device_list_follows_the_pcs() {
     let s = h.sync(&pc, &payload(&binding)).await;
     assert_eq!(s.keys(), vec![key_b64(&h, &phone)]);
     assert_eq!(h.get("/api/users", &two).await.status, 401);
-    // the account off the allowlist: no keys, the PC stays bound
+    // the account off the allowlist: no keys, the PC stays bound, and the administrator's binding
+    // list says what the PC's list says
+    let tag = h.state.tags.device(&pc.id);
+    let listed_as = || {
+        let (h, tag) = (&h, tag.clone());
+        async move {
+            let out = h.admin(&["binding", "list"], false, None).await.unwrap();
+            let line = out.lines().find(|l| l.contains(&tag)).unwrap().to_owned();
+            // tag, device ID, account, pwless, …
+            line.split_whitespace().nth(3).unwrap().to_owned()
+        }
+    };
+    assert_eq!(listed_as().await, "active");
     h.admin(&["allow", "remove"], false, Some("2026000001\n"))
         .await
         .unwrap();
@@ -605,6 +720,7 @@ async fn the_device_list_follows_the_pcs() {
         (json!("disabled"), json!([]))
     );
     assert!(device(&h, &pc.id).await.is_some());
+    assert_eq!(listed_as().await, "disabled");
 }
 
 /// After one of the ways out: the PC is in no account, its binding is a tombstone with the way's

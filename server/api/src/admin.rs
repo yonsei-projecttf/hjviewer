@@ -627,8 +627,8 @@ async fn bound_pc(state: &Arc<AppState>, arg: &str) -> Result<Option<String>, St
     })
 }
 
-/// `binding list`: the PCs in accounts with their password-less state and last sync, and the
-/// released bindings kept.
+/// `binding list`: the PCs in accounts with their password-less state (as their lists say it: an
+/// account off the allowlist makes them `disabled`) and last sync, and the released bindings kept.
 async fn binding_list(state: &Arc<AppState>, reveal: bool) -> Result<String, String> {
     let at = now();
     let (accounts, pcs, tombstones) = state
@@ -636,7 +636,7 @@ async fn binding_list(state: &Arc<AppState>, reveal: bool) -> Result<String, Str
         .call(|c| {
             let mut pcs = Vec::new();
             for d in db::all_devices(c)? {
-                let on = db::passwordless_on(c, d.account_id)?;
+                let on = db::list_on(c, d.account_id)?;
                 pcs.push((d, on));
             }
             Ok((db::accounts(c)?, pcs, db::tombstones_by_reason(c)?))

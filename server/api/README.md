@@ -311,9 +311,9 @@ POST   /api/hjv/keys/revoke-others     {"revoked":n}      (every key of the acco
 The active keys of the account, newest first, in pages as `/api/peers`. `name` is the server's
 device name, `app_name` the device's own; `net` is `on-campus`, `off-campus` or `""`; `use` is what
 the PCs reported of the key through their sync (U6): per PC `{"pc_id","pc","last","n30"}`, the
-latest time the key opened it without its password (the PC's clock) and the count of the last 30
-days, `pc` the host name or `""` once the PC left the account; `last_used` and `last_used_pc` are
-its latest line, or null; `new` marks a
+latest time the key opened it without its password (the PC's clock, never after the server got
+the report) and the count of the last 30 days, `pc` the host name; a PC's lines go when it leaves
+the account; `last_used` and `last_used_pc` are its latest line, or null; `new` marks a
 key made after the asking one that neither the asking key nor an older key of the account
 confirmed, for 7 days. A key confirms only keys made after it, and its confirmation counts for its
 own device and the ones that logged in after it: whoever logs in with a leaked portal password
@@ -362,10 +362,11 @@ with the PC's device key (the key hbbs held when it was bound):
   payload as text: the signature covers its bytes as sent. `binding` is the binding the PC holds,
   the one a login on it asks for, or empty after it let one go; `used` (U6) per account key and
   UTC day the latest time the PC let it in and that day's running count, today and yesterday;
-  `refused` the counts of refused proofs since the last report taken. `wol` is Wake-on-LAN's, not
-  stored yet. A field of the wrong JSON type refuses the request; a line out of range (a day
-  outside the last 30, a time not of its day, a count of 0, a key of no account of the PC) is
-  left out.
+  `refused` the counts of refused proofs since the last report taken, under the seven reasons
+  above (other names are left out, so that a PC adds at most seven rows a day). `wol` is
+  Wake-on-LAN's, not stored yet. A field of the wrong JSON type refuses the request; a line out of
+  range (a day outside the last 30, a time not of its day, a count of 0, a key of no account of
+  the PC) is left out, and a time after the server's time of the report is taken as that time.
 - The checks, the first failure answering: size (413 `too_large`), shape (400 `bad_request`), the
   row of `id` (the PC's binding, else the ID's latest tombstone; neither: 404 `unbound`), the
   signature with that row's key (401 `bad_signature`; for a bound PC hjv-api then asks hbbs, at
@@ -498,9 +499,8 @@ address, result, time).
 Kept: tokens 90 days unused / a year at most (a new login replaces the token of the same device,
 and an account keeps at most 20); account keys while their token lasts (an hourly upkeep revokes
 the keys no valid token is left for), then 30 days revoked; devices until removed or 180 days
-unseen (a sync counts as seen); released bindings 180 days; key use and refusals 30 days (key use
-also after the PC left the account, so that taking a PC out does not wipe the trace of who opened
-it; it goes with its key or account); accounts until a year
+unseen (a sync counts as seen); released bindings 180 days; key use and refusals 30 days, and
+they go with the PC when it leaves its account (key use also with its key); accounts until a year
 unused, unless still on the allowlist with a PC in use (seen within the device time), so that a lab
 PC logged in once stays listed while it is on; records six months; limit counters for their longest
 window, a day at least. Of failed logins, at most 20 a minute are recorded (the rest are counted in

@@ -40,9 +40,10 @@
 //! owner's devices, neither by confirming its own key nor through a second login of its own that
 //! confirms the first (design v3 §0, §1-1). `name` is the server's device name, `app_name` the
 //! device's own. `use` is what the PCs reported through their sync (U6, design v3 §5-2): per PC
-//! the latest time the key opened it without its password (by the PC's clock) and the count of
-//! the last 30 days (UTC); `pc` is the PC's host name, empty once the PC has left the account.
-//! `last_used` and `last_used_pc` are its latest line, or null.
+//! the latest time the key opened it without its password (by the PC's clock, never after the
+//! server got the report) and the count of the last 30 days (UTC); `pc` is the PC's host name. A
+//! PC's lines go when it leaves the account (design v3 §10-1). `last_used` and `last_used_pc` are
+//! its latest line, or null.
 
 use crate::{
     api::{paged, session, ApiRequest, Reply},
