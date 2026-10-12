@@ -91,6 +91,9 @@ env:
   # requires them in the build repository's runs of version 1.6.0 and later.
   HJV_LOGIN_SEAL_PUBKEY: ${{ secrets.HJV_LOGIN_SEAL_PUBKEY || vars.HJV_LOGIN_SEAL_PUBKEY }}
   HJV_TRUST_PUBKEYS: ${{ secrets.HJV_TRUST_PUBKEYS || vars.HJV_TRUST_PUBKEYS }}
+  # Optional until the minimum-version work. If that work pins the update keys in a committed file
+  # instead (its design does), this line goes in the same change: a value set here and one a step
+  # exports from that file must not both set HJV_UPDATE_PUBKEY, and the check then requires it.
   HJV_UPDATE_PUBKEY: ${{ secrets.HJV_UPDATE_PUBKEY || vars.HJV_UPDATE_PUBKEY }}
   # check_only: a check build's artifacts carry -check in their names and are kept one day
   BUILD_SUFFIX: ${{ inputs.check_only && '-check' || '' }}

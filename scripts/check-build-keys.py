@@ -19,16 +19,18 @@ sees them:
 A called run of client/version.env 1.6.0 or later fails when HJV_LOGIN_SEAL_PUBKEY or
 HJV_TRUST_PUBKEYS is missing (not with CHECK_ONLY), when a key given is malformed or weak, and when
 a key is a public test key, whose private key anyone has: keys made from a seed of one repeated byte
-or of 32 consecutive byte values, the RFC 8032 and RFC 7748 examples, and the keys in
-scripts/public-test-keys.txt. In other runs these are warnings: without the account keys an app is
-built like 1.5.1, with no login. The SHA-256 fingerprints of the pinned keys go to the run summary
+or of 32 consecutive byte values, the RFC 8032 and RFC 7748 examples, the keys in
+scripts/public-test-keys.txt, and the Ed25519 and X25519 keys of every 32-byte value that the files
+git tracks here write in base64 or hex (test vectors: their private keys are in this public
+repository). In other runs these are warnings: without the account keys an app is built like
+1.5.1, with no login. The SHA-256 fingerprints of the pinned keys go to the run summary
 ($GITHUB_STEP_SUMMARY, else stdout), for comparing with `hjv-api selfcheck` before the release tag
 (design v3 11 step 8).
 
     python3 -I scripts/check-build-keys.py --relay
 
 does the same for HJV_COMMAND_PUBKEY (<key id>:<base64>[,<key id>:<base64>]) in the hjv-relay
-job, which scripts/package-relay.sh then checks again; and
+job; scripts/package-relay.sh runs it again, strictly, before and after its build; and
 
     python3 -I scripts/check-build-keys.py pubkey ed25519|x25519 <64 hex digits>
 
@@ -42,6 +44,7 @@ import binascii
 import hashlib
 import os
 import re
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -179,25 +182,36 @@ RFC_SECRETS = (
     "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
     "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
 )
-_test_keys = None
+# {tree: {public key: where its private key is published}}
+_test_keys = {}
+
+# A 32-byte value written out on its own: base64, standard or URL-safe, with or without its '='
+# (43 characters), or hex (64 digits)
+_B64_32 = re.compile(rb"(?<![A-Za-z0-9+/=_-])([A-Za-z0-9+/_-]{43})=?(?![A-Za-z0-9+/=_-])")
+_HEX_32 = re.compile(rb"(?<![0-9A-Za-z])([0-9a-fA-F]{64})(?![0-9A-Za-z])")
 
 
 def test_seeds():
-    """The secrets tests write down: one repeated byte, 32 consecutive byte values, RFC examples."""
-    seeds = [bytes([b]) * 32 for b in range(256)]
-    seeds += [bytes((b + i) % 256 for i in range(32)) for b in range(256)]
-    seeds += [bytes.fromhex(h) for h in RFC_SECRETS]
+    """The secrets tests write down: one repeated byte, 32 consecutive byte values, RFC examples,
+    as [(seed, what it is)]."""
+    seeds = [(bytes([b]) * 32, f"seed [{b:#04x}; 32]") for b in range(256)]
+    seeds += [(bytes((b + i) % 256 for i in range(32)), f"seed {b:02x} {(b + 1) % 256:02x} ..")
+              for b in range(256)]
+    seeds += [(bytes.fromhex(h), "an RFC 8032 / RFC 7748 example") for h in RFC_SECRETS]
     return seeds
 
 
 def read_key_file(path):
-    """The base64 keys of a list file: one per line, '#' starts a comment."""
-    keys = set()
+    """{key: "path:line"} of a list file: one base64 key per line, '#' starts a comment. The list
+    must be there: without it the check would pass the keys it names."""
+    keys = {}
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             lines = f.readlines()
     except FileNotFoundError:
-        return keys
+        raise SystemExit(f"{path} is missing: the check needs its list of public test keys")
+    except UnicodeDecodeError:
+        raise SystemExit(f"{path} is not UTF-8 text")
     for n, line in enumerate(lines, 1):
         text = line.split("#", 1)[0].strip()
         if not text:
@@ -205,19 +219,60 @@ def read_key_file(path):
         raw = b64_32(text)
         if raw is None:
             raise SystemExit(f"{path}:{n}: not the base64 of a 32-byte key")
-        keys.add(raw)
+        keys.setdefault(raw, f"{os.path.relpath(path, ROOT)}:{n}")
     return keys
 
 
-def public_test_keys():
-    global _test_keys
-    if _test_keys is None:
-        keys = read_key_file(TEST_KEYS_FILE)
-        for seed in test_seeds():
-            keys.add(ed25519_public(seed))
-            keys.add(x25519_public(seed))
-        _test_keys = keys
-    return _test_keys
+def tracked_files(tree):
+    """The files git tracks in <tree>; outside a git work tree, the files there."""
+    try:
+        done = subprocess.run(["git", "-C", tree, "ls-files", "-z"], capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        found = []
+        for top, dirs, names in os.walk(tree):
+            dirs[:] = [d for d in dirs if d not in (".git", "build", "target", "upstream")]
+            found += [os.path.join(top, n) for n in names]
+        return sorted(found)
+    return [os.path.join(tree, p.decode(errors="surrogateescape")) for p in done.stdout.split(b"\0") if p]
+
+
+def tree_values(tree):
+    """{32 bytes: "path:line"}: the 32-byte values the files of <tree> write in base64 or hex."""
+    values = {}
+    for path in tracked_files(tree):
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        rel = os.path.relpath(path, tree)
+        found = []
+        for m in _B64_32.finditer(data):
+            try:
+                raw = base64.b64decode(m.group(1).replace(b"-", b"+").replace(b"_", b"/") + b"=", validate=True)
+            except binascii.Error:
+                continue
+            found.append((m.start(), raw))
+        found += [(m.start(), bytes.fromhex(m.group(1).decode())) for m in _HEX_32.finditer(data)]
+        for start, raw in found:
+            if len(raw) == 32 and raw not in values:
+                line = data.count(b"\n", 0, start) + 1
+                values[raw] = f"{rel}:{line}"
+    return values
+
+
+def public_test_keys(tree=ROOT):
+    """{public key: where its private key is published}: the keys of test_seeds(), the list file,
+    and, as Ed25519 seed and as X25519 secret key, every 32-byte value of <tree>'s files."""
+    if tree not in _test_keys:
+        keys = {raw: f"listed in {where}" for raw, where in read_key_file(TEST_KEYS_FILE).items()}
+        for seed, what in test_seeds():
+            keys.setdefault(ed25519_public(seed), what)
+            keys.setdefault(x25519_public(seed), what)
+        for raw, where in tree_values(tree).items():
+            keys.setdefault(ed25519_public(raw), f"its Ed25519 seed is at {where}")
+            keys.setdefault(x25519_public(raw), f"its X25519 secret key is at {where}")
+        _test_keys[tree] = keys
+    return _test_keys[tree]
 
 
 # --- parsing the variables ---
@@ -337,12 +392,12 @@ class Report:
                 "|---|---|---|",
             ]
             lines += [f"| `{n}` | {k} | `{f}` |" for n, k, f in self.rows]
-            lines += [
-                "",
-                "Compare with the fingerprints of `hjv-api selfcheck` on the server before tagging the "
-                "release (design v3 11 step 8). The seal key's ID is the first 16 digits of its "
-                "fingerprint, as `hjv-api keygen seal` prints it.",
-            ]
+            note = ("Compare with the fingerprints of `hjv-api selfcheck` on the server before tagging "
+                    "the release (design v3 11 step 8).")
+            if any(n == "HJV_LOGIN_SEAL_PUBKEY" for n, _, _ in self.rows):
+                note += (" The seal key's ID is the first 16 digits of its fingerprint, as "
+                         "`hjv-api keygen seal` prints it.")
+            lines += ["", note]
         else:
             lines.append("No pinned public key in this build.")
         lines += [""] + self.notes
@@ -375,8 +430,9 @@ def judge(report, name, keys, problems, strict):
             what = f"{name} key {kid}" if kid is not None else name
             report.say(
                 level,
-                f"{what} is a public test key of this repository or an RFC example: its private "
-                "key is public, so anyone could forge what this build trusts",
+                f"{what} is a public test key of this repository or an RFC example "
+                f"({test_keys[raw]}): its private key is public, so anyone could forge what this "
+                "build trusts",
             )
 
 

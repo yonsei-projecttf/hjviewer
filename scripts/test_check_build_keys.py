@@ -26,6 +26,9 @@ _spec.loader.exec_module(cbk)
 
 KEY_VARS = ("HJV_SERVER_KEY", "HJV_LOGIN_SEAL_PUBKEY", "HJV_TRUST_PUBKEYS", "HJV_UPDATE_PUBKEY",
             "HJV_COMMAND_PUBKEY", "CALLED", "CHECK_ONLY", "GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY")
+# server/api/src/seal.rs: the sealed-login test vector's key pair (VECTOR_PK, VECTOR_SK)
+SEAL_VECTOR_PK = "SjgH0GTQdxgcwHCYnnaJHSDcpVWVSNwsd8GlAnOIKzg="
+SEAL_VECTOR_SK = "d3iPGgzqABomMdrl0F29BiAI1bMPULnim+sqeCIokAQ="
 
 
 def b64(raw):
@@ -177,23 +180,48 @@ class CalledReleaseTest(unittest.TestCase):
             r = Run(CALLED="main", **keys)
             self.assertEqual(r.code, 1, what)
             self.assertTrue(any("public test key" in e for e in r.errors()), what)
-        for what, key in {"X25519 [1; 32]": x(bytes([1]) * 32), "X25519 [0xe2; 32]": x(bytes([0xE2]) * 32),
-                          "RFC 7748 Alice": x(bytes.fromhex(cbk.RFC_SECRETS[3]))}.items():
+        seal_cases = {
+            "X25519 [1; 32]": x(bytes([1]) * 32),
+            "X25519 [0xe2; 32]": x(bytes([0xE2]) * 32),
+            "RFC 7748 Alice": x(bytes.fromhex(cbk.RFC_SECRETS[3])),
+            # server/api/src/seal.rs VECTOR_PK, whose secret key VECTOR_SK is published next to it;
+            # made with crypto_box_seed_keypair, so no seed pattern covers it
+            "the sealed-login test vector": SEAL_VECTOR_PK,
+        }
+        for what, key in seal_cases.items():
             keys = account_keys()
             keys["HJV_LOGIN_SEAL_PUBKEY"] = key
-            self.assertEqual(Run(CALLED="main", **keys).code, 1, what)
+            r = Run(CALLED="main", **keys)
+            self.assertEqual(r.code, 1, what)
+            self.assertTrue(any("public test key" in e for e in r.errors()), what)
 
     def test_the_test_key_file_counts(self):
         key = ed(fresh())
         tmp = tempfile.mkdtemp()
         try:
             path = os.path.join(tmp, "keys.txt")
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8-sig") as f:  # a BOM, as Windows editors write
                 f.write(f"# a fixture's key\n{key}  # trailing comment\n\n")
-            with mock.patch.object(cbk, "TEST_KEYS_FILE", path), mock.patch.object(cbk, "_test_keys", None):
+            with mock.patch.object(cbk, "TEST_KEYS_FILE", path), mock.patch.object(cbk, "_test_keys", {}):
                 keys = account_keys()
                 keys["HJV_TRUST_PUBKEYS"] = f"1:{key},2:{ed(fresh())}"
-                self.assertEqual(Run(CALLED="main", **keys).code, 1)
+                r = Run(CALLED="main", **keys)
+                self.assertEqual(r.code, 1)
+                self.assertTrue(any("listed in" in e and "keys.txt:2" in e for e in r.errors()), r.out)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_the_test_key_file_is_needed(self):
+        """Without its list the check would pass the listed keys: it stops instead."""
+        tmp = tempfile.mkdtemp()
+        try:
+            with mock.patch.object(cbk, "TEST_KEYS_FILE", os.path.join(tmp, "missing.txt")), \
+                    mock.patch.object(cbk, "_test_keys", {}):
+                with self.assertRaises(SystemExit) as stop:
+                    Run(CALLED="main", **account_keys())
+                self.assertIn("missing", str(stop.exception))
+                with self.assertRaises(SystemExit):
+                    Run(CALLED="", **account_keys())
         finally:
             shutil.rmtree(tmp)
 
@@ -245,6 +273,62 @@ class CalledReleaseTest(unittest.TestCase):
         r = Run(CALLED="main", GITHUB_ACTIONS="true")
         self.assertEqual(r.code, 1)
         self.assertIn("::error::", r.out)
+
+
+class PublishedPrivateKeysTest(unittest.TestCase):
+    """Keys whose private key a tracked file writes out are test keys, listed or not."""
+
+    def git_tree(self, files, untracked=None):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp, "GIT_CONFIG_NOSYSTEM": "1"}
+        for rel, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(tmp, rel)), exist_ok=True)
+            with open(os.path.join(tmp, rel), "w") as f:
+                f.write(text)
+        subprocess.run(["git", "init", "-q", tmp], env=env, check=True)
+        subprocess.run(["git", "-C", tmp, "add", "-A"], env=env, check=True)
+        for rel, text in (untracked or {}).items():
+            with open(os.path.join(tmp, rel), "w") as f:
+                f.write(text)
+        return tmp
+
+    def test_values_in_tracked_files(self):
+        seeds = [fresh() for _ in range(4)]
+        url_safe = base64.urlsafe_b64encode(seeds[2]).decode().rstrip("=")
+        tree = self.git_tree({
+            "src/vectors.rs": f'const SK: &str = "{b64(seeds[0])}";\n',
+            "tests/data/v.json": f'{{\n  "seed_hex": "{seeds[1].hex()}",\n  "k": "{url_safe}"\n}}\n',
+        }, untracked={"notes.txt": b64(seeds[3]) + "\n"})
+        keys = cbk.public_test_keys(tree)
+        self.assertIn(cbk.ed25519_public(seeds[0]), keys)
+        self.assertIn(cbk.x25519_public(seeds[0]), keys)
+        self.assertEqual(keys[cbk.x25519_public(seeds[0])], "its X25519 secret key is at src/vectors.rs:1")
+        self.assertEqual(keys[cbk.ed25519_public(seeds[1])], "its Ed25519 seed is at tests/data/v.json:2")
+        self.assertIn(cbk.ed25519_public(seeds[2]), keys)
+        # what git does not track is not published
+        self.assertNotIn(cbk.ed25519_public(seeds[3]), keys)
+        # longer base64 and hex hold no 32-byte value
+        longer = self.git_tree({"a.txt": b64(fresh() + b"x") + "\n" + (fresh() + b"x").hex() + "\n"})
+        self.assertEqual(cbk.tree_values(longer), {})
+
+    def test_every_published_key_pair_of_this_tree_is_refused(self):
+        """Any key pair of the tracked files (a public key next to its private key, as a test
+        vector has them), whether or not scripts/public-test-keys.txt names it."""
+        self.assertEqual(b64(cbk.x25519_public(base64.b64decode(SEAL_VECTOR_SK))), SEAL_VECTOR_PK)
+        values = cbk.tree_values(ROOT)
+        keys = cbk.public_test_keys()
+        pairs, missing = [], []
+        for raw, where in values.items():
+            for kind, derive in (("Ed25519", cbk.ed25519_public), ("X25519", cbk.x25519_public)):
+                pub = derive(raw)
+                if pub in values:
+                    pairs.append(b64(pub))
+                    if pub not in keys:
+                        missing.append(f"{kind} {b64(pub)} at {values[pub]}, private key at {where}")
+        self.assertEqual(missing, [])
+        if os.path.exists(os.path.join(ROOT, "server", "api", "src", "seal.rs")):
+            self.assertIn(SEAL_VECTOR_PK, pairs)
 
 
 class OtherRunsTest(unittest.TestCase):
