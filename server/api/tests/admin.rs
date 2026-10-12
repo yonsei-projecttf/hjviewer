@@ -71,7 +71,10 @@ async fn removing_ids_saved_with_a_byte_order_mark() {
         .admin(&["allow", "remove"], false, Some(file))
         .await
         .unwrap();
-    assert_eq!(out, "allowlist: 2 removed, 1 not on it, 2 tokens revoked");
+    assert_eq!(
+        out,
+        "allowlist: 2 removed, 1 not on it, 2 tokens and 2 account keys revoked"
+    );
     for token in [&hong, &kim] {
         assert_eq!(h.get("/api/users", token).await.status, 401);
     }
@@ -148,9 +151,9 @@ async fn commands_by_id_or_tag() {
         .unwrap();
     assert!(out.contains("cleared 3"), "{out}");
     assert_eq!(h.counted(SCOPE_ID, tag).await, 0);
-    // revoke every token of an account
+    // revoke every token and account key of an account
     let out = h.admin(&["revoke", HONG.0], false, None).await.unwrap();
-    assert_eq!(out, "revoked 1 tokens");
+    assert_eq!(out, "revoked 1 account keys and 1 tokens");
     assert_eq!(h.get("/api/users", &token).await.status, 401);
     // take the PC out by its tag
     let device_tag = h.state.tags.device(&pc.id);
@@ -175,7 +178,7 @@ async fn commands_by_id_or_tag() {
         .await
         .unwrap();
     assert!(
-        out.starts_with("deleted the account with 1 devices and 1 tokens"),
+        out.starts_with("deleted the account with 1 devices, 1 account keys and 1 tokens"),
         "{out}"
     );
     assert!(h

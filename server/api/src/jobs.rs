@@ -3,10 +3,12 @@
 //! Upkeep (design v2 §6, §9-3, §13-1). Every hour: delete what is past its keeping time (tokens
 //! idle 90 days or a year old, devices not seen for 180 days, accounts unused for a year unless
 //! still allowlisted with a PC in use, records older than six months, spent nonces, and limit
-//! counters past the longest window) and truncate the WAL. Every day: ask hbbs when each device
-//! in an account last registered (a device counts as seen when hbbs has it with the stored key;
-//! logins and list requests from it count as well), and write a summary of the day's logins to
-//! the journal, with counts only.
+//! counters past the longest window), revoke the account keys no valid token is left for (their
+//! logins expired, or were logged out without the key's signature: design v3 §4-7, §14 question
+//! 6), delete account keys 30 days after they were revoked, and truncate the WAL. Every day: ask
+//! hbbs when each device in an account last registered (a device counts as seen when hbbs has it
+//! with the stored key; logins and list requests from it count as well), and write a summary of
+//! the day's logins to the journal, with counts only.
 
 use crate::{
     db,
@@ -48,6 +50,7 @@ pub async fn purge_now(state: &Arc<AppState>) -> Option<db::Purged> {
     state.retries.purge();
     state.pending.purge();
     state.purge_notices();
+    state.key_calls.purge();
     let retention = state.retention();
     let at = now();
     match state.db.call(move |c| db::purge(c, at, &retention)).await {
@@ -57,6 +60,12 @@ pub async fn purge_now(state: &Arc<AppState>) -> Option<db::Purged> {
                     "upkeep: removed {} devices not seen for long and {} unused accounts",
                     p.devices,
                     p.accounts
+                );
+            }
+            if p.keys_revoked > 0 {
+                log_notice!(
+                    "upkeep: revoked {} account keys whose logins ended",
+                    p.keys_revoked
                 );
             }
             Some(p)

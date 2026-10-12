@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The rules every request follows (design v2 §9-1): JSON answers with the security headers, no
-//! Origin, JSON bodies only, no CORS, 404 for every path hjv-api does not serve.
+//! Origin, JSON bodies only, no CORS, 404 for every path hjv-api does not serve; and the account
+//! key's signature on every request with a token (design v3 §4-2, proof.rs).
 
 mod common;
 
 use common::*;
+use hjv_api::{
+    proof,
+    util::{now, random_bytes},
+};
 use hyper::Method;
 use serde_json::json;
 
@@ -36,6 +41,7 @@ async fn every_answer_is_json_with_the_security_headers() {
     let h = Harness::start().await;
     let token = h.login_ok(HONG, None).await;
     let auth = format!("Bearer {token}");
+    let proof = h.proof_for("GET", "/api/users", b"", &token).unwrap();
     let cases: Vec<Case> = vec![
         (Method::GET, "/api/login-options", vec![], None, 200),
         (
@@ -49,9 +55,17 @@ async fn every_answer_is_json_with_the_security_headers() {
         (
             Method::GET,
             "/api/users",
-            vec![("authorization", &auth)],
+            vec![("authorization", &auth), ("x-hjv-proof", &proof)],
             None,
             200,
+        ),
+        // the token without its key's signature
+        (
+            Method::GET,
+            "/api/users",
+            vec![("authorization", &auth)],
+            None,
+            401,
         ),
         (Method::GET, "/api/peers", vec![], None, 401),
         (
@@ -81,10 +95,29 @@ async fn every_answer_is_json_with_the_security_headers() {
         (
             Method::GET,
             "/api/users",
-            vec![("authorization", &auth), ("origin", "https://evil.example")],
+            vec![
+                ("authorization", &auth),
+                ("x-hjv-proof", &proof),
+                ("origin", "https://evil.example"),
+            ],
             None,
             403,
         ),
+        (
+            Method::DELETE,
+            "/api/hjv/keys/revoke-others",
+            vec![("authorization", &auth)],
+            None,
+            405,
+        ),
+        (
+            Method::GET,
+            "/api/hjv/keys/x",
+            vec![("authorization", &auth)],
+            None,
+            405,
+        ),
+        (Method::GET, "/api/hjv/keysx", vec![], None, 404),
         (
             Method::POST,
             "/api/users",
@@ -156,19 +189,29 @@ async fn bodies_must_be_json() {
         )
         .await;
     assert_eq!(a.status, 415);
-    // GET requests carry only the Authorization header, as the app's list requests do
+    // GET requests carry the Authorization and X-HJV-Proof headers only, as the app's list
+    // requests do
+    let proof = h.proof_for("GET", "/api/users", b"", &token).unwrap();
     assert_eq!(
-        h.request(Method::GET, "/api/users", &[("authorization", &auth)], None)
-            .await
-            .status,
+        h.request(
+            Method::GET,
+            "/api/users",
+            &[("authorization", &auth), ("x-hjv-proof", &proof)],
+            None
+        )
+        .await
+        .status,
         200
     );
     // an empty body needs no type
+    let proof = h
+        .proof_for("POST", "/api/hjv/this-device/undo", b"", &token)
+        .unwrap();
     assert_eq!(
         h.request(
             Method::POST,
             "/api/hjv/this-device/undo",
-            &[("authorization", &auth)],
+            &[("authorization", &auth), ("x-hjv-proof", &proof)],
             None
         )
         .await
@@ -188,6 +231,9 @@ async fn bodies_must_be_json() {
         )
         .await;
     assert_eq!(a.status, 413);
+    let proof = h
+        .proof_for("POST", "/api/currentUser", b"{\"id\":\"\"}", &token)
+        .unwrap();
     let a = h
         .request(
             Method::POST,
@@ -195,6 +241,7 @@ async fn bodies_must_be_json() {
             &[
                 ("authorization", &auth),
                 ("content-type", "application/json; charset=utf-8"),
+                ("x-hjv-proof", &proof),
             ],
             Some(b"{\"id\":\"\"}".to_vec()),
         )
@@ -262,4 +309,241 @@ async fn a_body_cut_off_is_not_a_logout() {
             .status,
         200
     );
+}
+
+/// The paths that take a token, with a body for the ones that change something.
+const TOKEN_PATHS: &[(&str, &str, Option<&str>)] = &[
+    (
+        "POST",
+        "/api/currentUser",
+        Some(r#"{"id":"","uuid":"dXVpZA=="}"#),
+    ),
+    (
+        "GET",
+        "/api/users?current=1&pageSize=100&accessible=&status=1",
+        None,
+    ),
+    (
+        "GET",
+        "/api/peers?current=1&pageSize=100&accessible=&status=1",
+        None,
+    ),
+    ("GET", "/api/hjv/this-device", None),
+    ("POST", "/api/hjv/this-device/undo", None),
+    ("DELETE", "/api/hjv/devices/123456789", None),
+    ("GET", "/api/hjv/keys", None),
+    ("POST", "/api/hjv/keys/1/ack", None),
+    ("DELETE", "/api/hjv/keys/1", None),
+    ("POST", "/api/hjv/keys/revoke-others", None),
+];
+
+/// A request with the token and an `X-HJV-Proof` value of the test's choice.
+async fn with_proof(
+    h: &Harness,
+    method: &str,
+    target: &str,
+    token: &str,
+    proof: Option<&str>,
+    body: Option<&str>,
+) -> Answer {
+    let auth = format!("Bearer {token}");
+    let mut headers = vec![("authorization", auth.as_str())];
+    if body.is_some() {
+        headers.push(("content-type", "application/json"));
+    }
+    if let Some(p) = proof {
+        headers.push(("x-hjv-proof", p));
+    }
+    h.request(
+        Method::from_bytes(method.as_bytes()).unwrap(),
+        target,
+        &headers,
+        body.map(|b| b.as_bytes().to_vec()),
+    )
+    .await
+}
+
+fn assert_unauthorized(a: &Answer, what: &str) {
+    assert_eq!(a.status, 401, "{what}: {}", a.text);
+    assert_eq!(
+        a.json,
+        json!({"error": "로그인이 필요합니다. 다시 로그인해 주세요."}),
+        "{what}"
+    );
+}
+
+#[tokio::test]
+async fn a_token_alone_opens_nothing() {
+    let h = Harness::start().await;
+    let pc = TestDevice::windows("123456789");
+    h.hbbs.register(&pc, Some(1));
+    let token = h.login_ok(HONG, Some(&pc)).await;
+    let phone = h.login_ok(HONG, None).await;
+    let ckid: i64 = h.get("/api/hjv/keys", &phone).await.json["data"][0]["ckid"]
+        .as_i64()
+        .unwrap();
+    for (method, target, body) in TOKEN_PATHS {
+        let target = target.replace("/keys/1", &format!("/keys/{ckid}"));
+        for t in [&token, &phone] {
+            let a = with_proof(&h, method, &target, t, None, *body).await;
+            assert_unauthorized(&a, &format!("{method} {target}"));
+        }
+    }
+    // nothing changed: the PC is in the list, both keys are active, the tokens work
+    assert_eq!(h.get("/api/peers", &phone).await.json["total"], 1);
+    assert_eq!(h.get("/api/hjv/keys", &phone).await.json["total"], 2);
+    assert_eq!(h.get("/api/users", &token).await.status, 200);
+    // and every path answers the app as before once the request is signed
+    for (method, target, body) in TOKEN_PATHS {
+        if target.contains("/keys/") || *method == "DELETE" {
+            continue;
+        }
+        let proof = h
+            .proof_for(method, target, body.unwrap_or("").as_bytes(), &phone)
+            .unwrap();
+        let a = with_proof(&h, method, target, &phone, Some(&proof), *body).await;
+        assert_eq!(a.status, 200, "{method} {target}: {}", a.text);
+    }
+}
+
+#[tokio::test]
+async fn the_request_proof() {
+    let h = Harness::start().await;
+    let token = h.login_ok(HONG, None).await;
+    let other = h.login_ok(HONG, None).await;
+    let seed = h.key_of(&token).unwrap();
+    let body = r#"{"id":"","uuid":"dXVpZA=="}"#;
+    let sign = |method: &str, target: &str, time: i64, body: &str, token: &str| {
+        proof::header_value(
+            &seed,
+            method,
+            target,
+            time,
+            &random_bytes::<16>(),
+            body.as_bytes(),
+            token,
+        )
+    };
+    // right
+    let good = sign("POST", "/api/currentUser", now(), body, &token);
+    let a = with_proof(
+        &h,
+        "POST",
+        "/api/currentUser",
+        &token,
+        Some(&good),
+        Some(body),
+    )
+    .await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    // the same nonce again on a request that changes something: refused like a wrong token
+    let a = with_proof(
+        &h,
+        "POST",
+        "/api/currentUser",
+        &token,
+        Some(&good),
+        Some(body),
+    )
+    .await;
+    assert_unauthorized(&a, "nonce again");
+    // a signature over this token's hash sent with another token, and another token's key
+    // signing this token's request
+    let paired = sign("POST", "/api/currentUser", now(), body, &token);
+    let a = with_proof(
+        &h,
+        "POST",
+        "/api/currentUser",
+        &other,
+        Some(&paired),
+        Some(body),
+    )
+    .await;
+    assert_unauthorized(&a, "with another token");
+    let foreign = proof::header_value(
+        &h.key_of(&other).unwrap(),
+        "POST",
+        "/api/currentUser",
+        now(),
+        &random_bytes::<16>(),
+        body.as_bytes(),
+        &token,
+    );
+    let a = with_proof(
+        &h,
+        "POST",
+        "/api/currentUser",
+        &token,
+        Some(&foreign),
+        Some(body),
+    )
+    .await;
+    assert_unauthorized(&a, "another key");
+    // a body, a path or a query other than the signed one
+    let signed = sign("POST", "/api/currentUser", now(), body, &token);
+    let a = with_proof(
+        &h,
+        "POST",
+        "/api/currentUser",
+        &token,
+        Some(&signed),
+        Some(r#"{"id":"1","uuid":"dXVpZA=="}"#),
+    )
+    .await;
+    assert_unauthorized(&a, "body changed");
+    let signed = sign("GET", "/api/users", now(), "", &token);
+    let a = with_proof(&h, "GET", "/api/peers", &token, Some(&signed), None).await;
+    assert_unauthorized(&a, "another path");
+    let signed = sign("GET", "/api/users?current=1", now(), "", &token);
+    let a = with_proof(
+        &h,
+        "GET",
+        "/api/users?current=2",
+        &token,
+        Some(&signed),
+        None,
+    )
+    .await;
+    assert_unauthorized(&a, "another query");
+    let a = with_proof(&h, "GET", "/api/users", &token, Some(&signed), None).await;
+    assert_unauthorized(&a, "query left out");
+    // not the format
+    for bad in ["", "v1", "v1.x.y.z", &good.replacen("v1.", "v2.", 1)] {
+        let a = with_proof(&h, "GET", "/api/users", &token, Some(bad), None).await;
+        assert_unauthorized(&a, bad);
+    }
+    // the right signature from a clock ten minutes off: 409 clock with the server's time, which
+    // the app does not take for a logout; the token still works
+    for skew in [-700, 700] {
+        let late = sign("GET", "/api/users", now() + skew, "", &token);
+        let a = with_proof(&h, "GET", "/api/users", &token, Some(&late), None).await;
+        assert_eq!(a.status, 409, "{}", a.text);
+        assert_eq!(a.json["hjv"], "clock");
+        assert_eq!(
+            a.json["error"],
+            "기기의 날짜와 시간이 서버와 10분 넘게 다릅니다. 날짜와 시간을 자동으로 맞추게 해 주세요."
+        );
+        assert!(a.json["server_time"].as_i64().unwrap().abs_diff(now()) <= 5);
+    }
+    // a wrong signature with a wrong time is a wrong signature
+    let late = sign("GET", "/api/peers", now() - 700, "", &token);
+    let a = with_proof(&h, "GET", "/api/users", &token, Some(&late), None).await;
+    assert_unauthorized(&a, "wrong signature and time");
+    // a GET may come again with the same proof (the app retries list requests)
+    let list = sign("GET", "/api/users", now(), "", &token);
+    for _ in 0..3 {
+        let a = with_proof(&h, "GET", "/api/users", &token, Some(&list), None).await;
+        assert_eq!(a.status, 200, "{}", a.text);
+    }
+    assert_eq!(h.get("/api/users", &token).await.status, 200);
+    // the journal hears of refused proofs by the account's tag, without the path or the token
+    let logs = hjv_api::log::captured().join("\n");
+    assert!(
+        logs.contains(&format!(
+            "request proof invalid (acct={}",
+            h.account_tag(HONG.0)
+        )),
+        "{logs}"
+    );
+    assert!(!logs.contains(&token), "{logs}");
 }

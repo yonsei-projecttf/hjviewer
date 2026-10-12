@@ -7,7 +7,7 @@
 mod common;
 
 use common::*;
-use hjv_api::{fake_sso, seal, util};
+use hjv_api::{fake_sso, keys, seal, util};
 use serde_json::{json, Value};
 use std::{
     os::unix::fs::PermissionsExt,
@@ -173,16 +173,19 @@ async fn runs_as_systemd_starts_it() {
         "allowlist: 1 added, 0 already there\n"
     );
 
-    // a login through the socket
+    // a login through the socket, with its account key
+    let nonce = util::b64(&[3u8; 16]);
+    let (ck, cp) = keys::proof(&[5u8; 32], &nonce, "");
     let body = json!({
         "username": "2026000001",
-        "password": seal::seal_password(&seal_pk, "hjv-test-pass-1", util::now(), &util::b64(&[3u8; 16]), ""),
+        "password": seal::seal_login(&seal_pk, "hjv-test-pass-1", util::now(), &nonce, "", &ck, &cp),
         "id": "", "uuid": "", "autoLogin": true, "type": "account",
-        "deviceInfo": {"os": "ios", "type": "client", "name": "iPhone"},
+        "deviceInfo": {"os": "ios", "type": "client", "name": "iPhone15,2"},
     });
     let (status, answer) = unix_request(&socket, "POST", "/api/login", Some(&body)).await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(answer["user"]["display_name"], "홍길동");
+    assert_eq!(answer["hjv"]["ks"], 1, "{answer}");
 
     let out = Command::new(BIN)
         .args(["admin", "--socket"])
@@ -195,6 +198,7 @@ async fn runs_as_systemd_starts_it() {
         report.contains("allowlist 1, accounts 1, devices 0, tokens 1"),
         "{report}"
     );
+    assert!(report.contains("account keys: 1 active"), "{report}");
     let out = Command::new(BIN)
         .args(["admin", "--socket"])
         .arg(&admin_socket)

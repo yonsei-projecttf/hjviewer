@@ -5,6 +5,7 @@
 use crate::{
     config::{Config, Secrets},
     db::{self, Db, Record},
+    keys::CallLimiter,
     limits::{Admit, Breaker, GlobalLimiter, Latency, RecordBudget, FAILURE_RECORDS_PER_MINUTE},
     log::Tagger,
     login::RetryCache,
@@ -46,6 +47,8 @@ pub struct AppState {
     pub login_slots: Arc<Semaphore>,
     /// SSO messages already written to the journal
     pub sso_messages: Mutex<HashSet<String>>,
+    /// calls of the account-key paths per account (keys.rs)
+    pub key_calls: CallLimiter,
     /// limits already reported, so that hammering a full limit writes no more records or lines
     notices: Mutex<HashMap<String, Instant>>,
 }
@@ -86,6 +89,7 @@ impl AppState {
             pending: PendingStore::default(),
             login_slots: Arc::new(Semaphore::new(config.max_logins_in_flight)),
             sso_messages: Mutex::new(HashSet::new()),
+            key_calls: CallLimiter::default(),
             notices: Mutex::new(HashMap::new()),
             config,
         }))

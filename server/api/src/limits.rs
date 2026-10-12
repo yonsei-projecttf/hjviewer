@@ -150,7 +150,7 @@ impl GlobalLimiter {
     }
 }
 
-/// After the SSO refused this server's address, calls pause this long.
+/// After the SSO refused this server's address or its client credentials, calls pause this long.
 pub const ADDRESS_PAUSE: Duration = Duration::from_secs(300);
 /// After this many upstream errors in a row …
 pub const UPSTREAM_ERRORS: u32 = 5;
@@ -158,9 +158,9 @@ pub const UPSTREAM_ERRORS: u32 = 5;
 pub const UPSTREAM_PAUSE: Duration = Duration::from_secs(120);
 
 /// Pauses SSO calls while the SSO refuses this server or keeps failing (sso.rs sorts the
-/// outcomes): logins fail at once then, like any failure and without a call, and the operator
-/// hears of it once rather than with every login. The first call after a pause tries the SSO
-/// again.
+/// outcomes): logins get the same 503 at once then, before the allowlist and without a call
+/// (login.rs, design v3 §4-1), and the operator hears of it once rather than with every login.
+/// The first call after a pause tries the SSO again.
 #[derive(Default)]
 pub struct Breaker {
     state: Mutex<BreakerState>,
@@ -170,13 +170,23 @@ pub struct Breaker {
 struct BreakerState {
     upstream_in_a_row: u32,
     paused_until: Option<Instant>,
+    /// what started the pause, for the report
+    reason: &'static str,
 }
 
 impl Breaker {
     /// Whether calls are paused now.
     pub fn paused(&self) -> bool {
+        self.pause_reason().is_some()
+    }
+
+    /// Why calls are paused now ("address", "client" or "upstream"), if they are.
+    pub fn pause_reason(&self) -> Option<&'static str> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.paused_until.is_some_and(|t| Instant::now() < t)
+        state
+            .paused_until
+            .is_some_and(|t| Instant::now() < t)
+            .then_some(state.reason)
     }
 
     /// Notes how a call ended (`None`: the SSO answered, with a user or refused credentials);
@@ -185,21 +195,23 @@ impl Breaker {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let was_paused = state.paused_until.is_some_and(|t| now < t);
-        let pause = match failure {
+        let (pause, reason) = match failure {
             None | Some(Failure::Credentials) => {
                 *state = BreakerState::default();
                 return None;
             }
-            Some(Failure::AddressRefused) => ADDRESS_PAUSE,
+            Some(Failure::AddressRefused) => (ADDRESS_PAUSE, "address"),
+            Some(Failure::ClientRefused) => (ADDRESS_PAUSE, "client"),
             Some(Failure::Upstream) => {
                 state.upstream_in_a_row += 1;
                 if state.upstream_in_a_row < UPSTREAM_ERRORS {
                     return None;
                 }
-                UPSTREAM_PAUSE
+                (UPSTREAM_PAUSE, "upstream")
             }
         };
         state.paused_until = Some(now + pause);
+        state.reason = reason;
         (!was_paused).then_some(pause)
     }
 
@@ -381,13 +393,19 @@ mod tests {
         assert!(!b.paused());
         assert_eq!(b.note(Some(Failure::Upstream)), Some(UPSTREAM_PAUSE));
         assert!(b.paused());
+        assert_eq!(b.pause_reason(), Some("upstream"));
         // a refused address pauses at once, reported once
         b.reset();
         assert_eq!(b.note(Some(Failure::AddressRefused)), Some(ADDRESS_PAUSE));
         assert_eq!(b.note(Some(Failure::AddressRefused)), None);
         assert!(b.paused());
+        assert_eq!(b.pause_reason(), Some("address"));
         assert_eq!(b.note(None), None);
         assert!(!b.paused());
+        assert_eq!(b.pause_reason(), None);
+        // so do refused client credentials (invalid_client)
+        assert_eq!(b.note(Some(Failure::ClientRefused)), Some(ADDRESS_PAUSE));
+        assert_eq!(b.pause_reason(), Some("client"));
     }
 
     #[test]

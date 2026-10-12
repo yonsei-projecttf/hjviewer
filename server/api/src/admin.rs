@@ -14,6 +14,11 @@
 //!
 //! The protocol is one JSON line each way: `{"argv":[…],"reveal":false,"sudo_user":"…","input":"…"}`
 //! and `{"ok":true,"output":"…"}` or `{"ok":false,"error":"…"}`.
+//!
+//! Design v3 §5-6 adds the account keys (`key list`, `key revoke`, `user revoke-all`), the
+//! password-less switch (`passwordless`, off when installed; `--owner-of <PC ID>` names an account
+//! by one of its PCs, so that no portal ID has to pass through an agent) and `strict`. Device
+//! names, the names apps give themselves and portal IDs show only with `--reveal`.
 
 use crate::{
     db, limits,
@@ -43,16 +48,28 @@ const IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub const USAGE: &str = "\
 hjv-api admin [--socket <path>] [--reveal] <command>
   allow import <file>       add the portal IDs in <file> (one per line, # comments) to the allowlist
-  allow remove <file>       remove the IDs in <file>; their tokens stop working at once
+  allow remove <file>       remove the IDs in <file>; their tokens and account keys stop working
+                            at once (their PCs stay in the accounts)
   allow list                the allowlist
-  users                     accounts: tag, ID, devices, tokens, last login
+  users                     accounts: tag, ID, devices, account keys, tokens, last login
   devices                   devices in accounts: tag, ID, account tag, OS, last seen
+  key list [<id|tag:T>]     account keys: number, account, platform, device, version, network, times
+  key revoke <ckid>         revoke an account key with its token (that device must log in again)
   unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
                             of the tag from a journal warning, or of a client address
-  revoke <id|tag:T>         revoke every token of an account (it must log in again)
+  user revoke-all <id|tag:T> | --all
+                            revoke every token and account key of an account, or of every account
+                            (each device must log in again; PCs stay in the accounts)
+  revoke <id|tag:T>         the same as user revoke-all <id|tag:T>
   device remove <id|tag:T>  take a device out of the account that has it
-  user delete <id|tag:T>    delete an account with its tokens and devices
-  report                    counts: accounts, devices, tokens, logins of the last day and week
+  user delete <id|tag:T>    delete an account with its tokens, account keys and devices
+  passwordless status | on | off [--account <id|tag:T> | --owner-of <PC ID>]
+                            connections without the PC's password between an account's devices:
+                            for everyone (off when installed; off also ends the accounts turned on
+                            one by one), or for one account
+  strict on | off           PCs ask the server at each password-less connection (incidents)
+  report                    counts: accounts, devices, tokens, keys, switches, logins of the last
+                            day and week
   selfcheck                 the service checks that it can reach the SSO and hbbs
   keygen seal|log-key [--encrypt-to <file>]
                             make a secret for a credential (runs here, not in the service)";
@@ -192,7 +209,10 @@ async fn run(state: &Arc<AppState>, oplog: &OpLog, uid: u32, req: AdminRequest) 
     let command = match words.as_slice() {
         ["allow", sub @ ("import" | "remove" | "list"), ..]
         | ["device", sub @ "remove", ..]
-        | ["user", sub @ "delete", ..] => format!("{} {sub}", words[0]),
+        | ["user", sub @ ("delete" | "revoke-all"), ..]
+        | ["key", sub @ ("list" | "revoke"), ..]
+        | ["passwordless", sub @ ("status" | "on" | "off"), ..]
+        | ["strict", sub @ ("on" | "off"), ..] => format!("{} {sub}", words[0]),
         [one @ ("users" | "devices" | "unlock" | "revoke" | "report" | "selfcheck"), ..] => {
             (*one).to_owned()
         }
@@ -208,16 +228,21 @@ async fn run(state: &Arc<AppState>, oplog: &OpLog, uid: u32, req: AdminRequest) 
             Ok(ip) => vec![state.tags.ip(&ip)],
             Err(_) => vec![],
         },
-        ["unlock" | "revoke", arg] | ["user", "delete", arg] => match target(arg) {
+        ["user", "revoke-all", "--all"] => vec!["all".to_owned()],
+        ["unlock" | "revoke", arg]
+        | ["user", "delete" | "revoke-all", arg]
+        | ["key", "list", arg]
+        | ["passwordless", _, "--account", arg] => match target(arg) {
             Ok(Target::Tag(t)) => vec![t],
             Ok(Target::Value(v)) => vec![state.tags.account(&login_key(&v))],
             Err(_) => vec![],
         },
-        ["device", "remove", arg] => match target(arg) {
+        ["device", "remove", arg] | ["passwordless", _, "--owner-of", arg] => match target(arg) {
             Ok(Target::Tag(t)) => vec![t],
             Ok(Target::Value(v)) => vec![state.tags.device(&v)],
             Err(_) => vec![],
         },
+        ["key", "revoke", n] if key_number(n).is_some() => vec![format!("ckid:{}", n.trim())],
         _ => vec![],
     };
     let entry = OpEntry {
@@ -278,7 +303,22 @@ const CHANGES: &[&str] = &[
     "revoke",
     "device remove",
     "user delete",
+    "user revoke-all",
+    "key revoke",
+    "passwordless on",
+    "passwordless off",
+    "strict on",
+    "strict off",
 ];
+
+/// An account key's number.
+fn key_number(text: &str) -> Option<i64> {
+    let text = text.trim();
+    (!text.is_empty() && text.len() <= 18 && text.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| text.parse().ok())
+        .flatten()
+        .filter(|n| *n > 0)
+}
 
 /// Characters editors put into text files unseen: a byte-order mark, zero-width spaces and joiners.
 fn invisible(c: char) -> bool {
@@ -375,6 +415,158 @@ async fn find_account(state: &Arc<AppState>, t: Target) -> Result<Option<db::Acc
     })
 }
 
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+/// The account that has the PC with this ID (`--owner-of`), by ID or `tag:`.
+async fn owner_of(state: &Arc<AppState>, arg: &str) -> Result<db::Account, String> {
+    let device_id = match target(arg)? {
+        Target::Value(v) if valid_device_id(&v) => v,
+        Target::Value(_) => return Err("not a device ID".into()),
+        Target::Tag(tag) => state
+            .db
+            .call(|c| db::all_devices(c))
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|d| state.tags.device(&d.device_id) == tag)
+            .map(|d| d.device_id)
+            .ok_or("no account has that PC")?,
+    };
+    let account = state
+        .db
+        .call(move |c| {
+            let Some(device) = db::device(c, &device_id)? else {
+                return Ok(None);
+            };
+            db::accounts(c).map(|all| all.into_iter().find(|a| a.id == device.account_id))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    account.ok_or_else(|| "no account has that PC".to_owned())
+}
+
+/// `passwordless status`: the global switch, the accounts switched one by one, and strict.
+async fn passwordless_status(state: &Arc<AppState>, reveal: bool) -> Result<String, String> {
+    let (global, strict, accounts) = state
+        .db
+        .call(|c| {
+            let mut stmt = c.prepare(
+                "SELECT login_key, portal_id, passwordless FROM accounts
+                 WHERE passwordless IS NOT NULL ORDER BY login_key",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((db::passwordless_global(c)?, db::strict(c)?, rows))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut out = format!(
+        "password-less connections: {} for every account; strict {}\n",
+        on_off(global),
+        on_off(strict)
+    );
+    let _ = writeln!(out, "accounts switched one by one: {}", accounts.len());
+    for (key, portal_id, switch) in accounts {
+        let _ = writeln!(
+            out,
+            "  {:<16}  {:<16}  {switch}",
+            state.tags.account(&key),
+            show(&portal_id, reveal)
+        );
+    }
+    Ok(out)
+}
+
+/// `key list`: the account keys, of one account or all, the revoked ones still kept too.
+async fn key_list(
+    state: &Arc<AppState>,
+    account: Option<db::Account>,
+    reveal: bool,
+) -> Result<String, String> {
+    let (keys, accounts) = state
+        .db
+        .call(|c| Ok((db::all_keys(c)?, db::accounts(c)?)))
+        .await
+        .map_err(|e| e.to_string())?;
+    let keys: Vec<db::Key> = keys
+        .into_iter()
+        .filter(|k| account.as_ref().is_none_or(|a| a.id == k.account_id))
+        .collect();
+    let active = keys.iter().filter(|k| k.revoked_at.is_none()).count();
+    let mut out = format!(
+        "account keys: {active} active, {} revoked\n",
+        keys.len() - active
+    );
+    let _ = writeln!(
+        out,
+        "  {:>5}  {:<16}  {:<8}  {:<16}  {:<8}  {:<10}  {:<10}  {:<10}  state{}",
+        "ckid",
+        "account",
+        "platform",
+        "device",
+        "version",
+        "network",
+        "created",
+        "device ID",
+        if reveal { "  app's name" } else { "" }
+    );
+    for k in keys {
+        let account_tag = accounts
+            .iter()
+            .find(|a| a.id == k.account_id)
+            .map(|a| state.tags.account(&a.login_key))
+            .unwrap_or_default();
+        let state_text = match (k.revoked_at, k.ack_at) {
+            (Some(at), _) => format!(
+                "revoked {} ({})",
+                date(at),
+                k.revoke_reason.as_deref().unwrap_or("-")
+            ),
+            (None, Some(_)) => "active, confirmed".to_owned(),
+            (None, None) => "active".to_owned(),
+        };
+        let _ = writeln!(
+            out,
+            "  {:>5}  {:<16}  {:<8}  {:<16}  {:<8}  {:<10}  {:<10}  {:<10}  {state_text}{}",
+            k.ckid,
+            account_tag,
+            k.platform,
+            k.model,
+            if k.app_ver.is_empty() {
+                "-"
+            } else {
+                &k.app_ver
+            },
+            if k.login_net.is_empty() {
+                "-"
+            } else {
+                &k.login_net
+            },
+            date(k.created_at),
+            show(&k.ctl_id, reveal),
+            if reveal {
+                format!("  {}", k.app_name)
+            } else {
+                String::new()
+            }
+        );
+    }
+    Ok(out)
+}
+
 async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, String> {
     let words: Vec<&str> = req.argv.iter().map(String::as_str).collect();
     let reveal = req.reveal;
@@ -393,17 +585,17 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
         ["allow", "remove", ..] => {
             let ids = read_ids(req.input.as_deref())?;
             let listed = ids.len();
-            let (removed, revoked) = state
+            let (removed, tokens, keys) = state
                 .db
                 .call(move |c| {
-                    let r = db::allow_remove(c, &ids)?;
+                    let r = db::allow_remove(c, &ids, at)?;
                     db::checkpoint(c)?;
                     Ok(r)
                 })
                 .await
                 .map_err(dberr)?;
             Ok(format!(
-                "allowlist: {removed} removed, {} not on it, {revoked} tokens revoked",
+                "allowlist: {removed} removed, {} not on it, {tokens} tokens and {keys} account keys revoked",
                 listed - removed
             ))
         }
@@ -416,43 +608,50 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
             Ok(out)
         }
         ["users"] => {
-            let (accounts, devices, tokens) = state
+            let (accounts, devices, tokens, keys) = state
                 .db
                 .call(|c| {
                     let accounts = db::accounts(c)?;
                     let devices = db::all_devices(c)?;
-                    let mut stmt =
-                        c.prepare("SELECT account_id, COUNT(*) FROM tokens GROUP BY account_id")?;
-                    let tokens = stmt
-                        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
-                        .collect::<rusqlite::Result<Vec<_>>>()?;
-                    Ok((accounts, devices, tokens))
+                    let per_account = |sql: &str| -> rusqlite::Result<Vec<(i64, i64)>> {
+                        let mut stmt = c.prepare(sql)?;
+                        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                        rows.collect()
+                    };
+                    let tokens =
+                        per_account("SELECT account_id, COUNT(*) FROM tokens GROUP BY account_id")?;
+                    let keys = per_account(
+                        "SELECT account_id, COUNT(*) FROM ctl_keys WHERE revoked_at IS NULL
+                         GROUP BY account_id",
+                    )?;
+                    Ok((accounts, devices, tokens, keys))
                 })
                 .await
                 .map_err(dberr)?;
+            let count = |rows: &[(i64, i64)], id: i64| {
+                rows.iter().find(|(a, _)| *a == id).map_or(0, |(_, n)| *n)
+            };
             let mut out = format!("accounts: {}\n", accounts.len());
             let _ = writeln!(
                 out,
-                "  {:<16}  {:<16}  {:>7}  {:>6}  last login{}",
+                "  {:<16}  {:<16}  {:>7}  {:>4}  {:>6}  last login{}",
                 "tag",
                 "portal ID",
                 "devices",
+                "keys",
                 "tokens",
                 if reveal { "  name" } else { "" }
             );
             for a in accounts {
                 let d = devices.iter().filter(|d| d.account_id == a.id).count();
-                let t = tokens
-                    .iter()
-                    .find(|(id, _)| *id == a.id)
-                    .map_or(0, |(_, n)| *n);
                 let _ = writeln!(
                     out,
-                    "  {:<16}  {:<16}  {:>7}  {:>6}  {}{}",
+                    "  {:<16}  {:<16}  {:>7}  {:>4}  {:>6}  {}{}",
                     state.tags.account(&a.login_key),
                     show(&a.portal_id, reveal),
                     d,
-                    t,
+                    count(&keys, a.id),
+                    count(&tokens, a.id),
                     date(a.last_login_at),
                     if reveal {
                         format!("  {}", a.display_name)
@@ -462,6 +661,27 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 );
             }
             Ok(out)
+        }
+        ["key", "list"] => key_list(state, None, reveal).await,
+        ["key", "list", arg] => {
+            let account = find_account(state, target(arg)?)
+                .await?
+                .ok_or("no such account")?;
+            key_list(state, Some(account), reveal).await
+        }
+        ["key", "revoke", n] => {
+            let ckid =
+                key_number(n).ok_or("key revoke takes an account key's number (key list)")?;
+            let revoked = state
+                .db
+                .call(move |c| db::in_tx(c, |tx| db::revoke_any_key(tx, ckid, "admin", at)))
+                .await
+                .map_err(dberr)?;
+            Ok(if revoked {
+                format!("revoked account key {ckid} and its token")
+            } else {
+                "no such active account key".into()
+            })
         }
         ["devices"] => {
             let (accounts, devices) = state
@@ -513,16 +733,39 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 .map_err(dberr)?;
             Ok(format!("cleared {cleared} counted login attempts"))
         }
-        ["revoke", arg] => {
+        ["user", "revoke-all", "--all"] => {
+            let (keys, tokens) = state
+                .db
+                .call(move |c| {
+                    db::in_tx(c, |tx| {
+                        let tokens = tx.execute("DELETE FROM tokens", [])?;
+                        Ok((db::revoke_all_keys(tx, "admin", at)?, tokens))
+                    })
+                })
+                .await
+                .map_err(dberr)?;
+            Ok(format!(
+                "revoked {keys} account keys and {tokens} tokens of every account"
+            ))
+        }
+        ["revoke", arg] | ["user", "revoke-all", arg] => {
             let account = find_account(state, target(arg)?)
                 .await?
                 .ok_or("no such account")?;
-            let n = state
+            let (keys, tokens) = state
                 .db
-                .call(move |c| db::revoke_tokens(c, account.id))
+                .call(move |c| {
+                    db::in_tx(c, |tx| {
+                        let tokens = db::revoke_tokens(tx, account.id)?;
+                        Ok((
+                            db::revoke_account_keys(tx, account.id, "admin", at)?,
+                            tokens,
+                        ))
+                    })
+                })
                 .await
                 .map_err(dberr)?;
-            Ok(format!("revoked {n} tokens"))
+            Ok(format!("revoked {keys} account keys and {tokens} tokens"))
         }
         ["device", "remove", arg] => {
             let id = match target(arg)? {
@@ -560,19 +803,73 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 .await?
                 .ok_or("no such account")?;
             let id = account.id;
-            let (devices, tokens) = state
+            let (devices, keys, tokens) = state
                 .db
                 .call(move |c| {
-                    let devices = db::devices_of(c, id)?.len();
-                    let tokens = db::revoke_tokens(c, id)?;
-                    db::delete_account(c, id)?;
+                    let counts = db::in_tx(c, |tx| {
+                        let devices = db::devices_of(tx, id)?.len();
+                        let keys = db::keys_of(tx, id)?.len();
+                        let tokens = db::revoke_tokens(tx, id)?;
+                        // the keys, their nonces and the devices go with the account (cascade)
+                        db::delete_account(tx, id)?;
+                        Ok((devices, keys, tokens))
+                    })?;
                     db::checkpoint(c)?;
-                    Ok((devices, tokens))
+                    Ok(counts)
                 })
                 .await
                 .map_err(dberr)?;
             Ok(format!(
-                "deleted the account with {devices} devices and {tokens} tokens (the allowlist entry stays)"
+                "deleted the account with {devices} devices, {keys} account keys and {tokens} tokens (the allowlist entry stays)"
+            ))
+        }
+        ["passwordless", "status"] => passwordless_status(state, reveal).await,
+        ["passwordless", turn @ ("on" | "off")] => {
+            let on = *turn == "on";
+            let changed = state
+                .db
+                .call(move |c| db::in_tx(c, |tx| db::set_passwordless_global(tx, on)))
+                .await
+                .map_err(dberr)?;
+            Ok(format!(
+                "password-less connections: {turn} for every account{}",
+                if changed { "" } else { " (no change)" }
+            ))
+        }
+        ["passwordless", turn @ ("on" | "off"), how @ ("--account" | "--owner-of"), arg] => {
+            let on = *turn == "on";
+            let account = if *how == "--account" {
+                find_account(state, target(arg)?)
+                    .await?
+                    .ok_or("no such account")?
+            } else {
+                owner_of(state, arg).await?
+            };
+            let changed = state
+                .db
+                .call(move |c| {
+                    db::in_tx(c, |tx| {
+                        db::set_account_passwordless(tx, account.id, Some(on))
+                    })
+                })
+                .await
+                .map_err(dberr)?;
+            Ok(format!(
+                "password-less connections: {turn} for the account {}{}",
+                state.tags.account(&account.login_key),
+                if changed { "" } else { " (no change)" }
+            ))
+        }
+        ["strict", turn @ ("on" | "off")] => {
+            let on = *turn == "on";
+            let changed = state
+                .db
+                .call(move |c| db::in_tx(c, |tx| db::set_strict(tx, on)))
+                .await
+                .map_err(dberr)?;
+            Ok(format!(
+                "strict: {turn}{}",
+                if changed { "" } else { " (no change)" }
             ))
         }
         ["report"] => {
@@ -585,6 +882,30 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 "allowlist {}, accounts {}, devices {}, tokens {}\n",
                 counts.allowlist, counts.accounts, counts.devices, counts.tokens
             );
+            let revoked: Vec<String> = counts
+                .keys_revoked
+                .iter()
+                .map(|(reason, n)| format!("{reason} {n}"))
+                .collect();
+            let _ = writeln!(
+                out,
+                "account keys: {} active; revoked, kept 30 days: {}",
+                counts.keys_active,
+                if revoked.is_empty() {
+                    "none".to_owned()
+                } else {
+                    revoked.join(", ")
+                }
+            );
+            let _ = writeln!(
+                out,
+                "password-less: {} for every account, accounts on {}, accounts off {}; strict {}; change serial {}",
+                on_off(counts.passwordless),
+                counts.accounts_on,
+                counts.accounts_off,
+                on_off(counts.strict),
+                counts.change_serial
+            );
             out.push_str("records (last day / last week):\n");
             for (result, day, week) in counts.results {
                 let _ = writeln!(out, "  {result:<28} {day:>5} / {week}");
@@ -593,8 +914,11 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
             for (scope, n) in counted {
                 let _ = writeln!(out, "  {scope:<28} {n:>5}");
             }
-            if state.sso_breaker.paused() {
-                out.push_str("SSO calls: paused (the SSO refused this server or kept failing)\n");
+            if let Some(reason) = state.sso_breaker.pause_reason() {
+                let _ = writeln!(
+                    out,
+                    "SSO calls: paused ({reason}: the SSO refused this server or kept failing); logins get 503"
+                );
             }
             let _ = writeln!(out, "seal key IDs: {}", state.seal.key_ids().join(", "));
             Ok(out)

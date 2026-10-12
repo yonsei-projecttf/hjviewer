@@ -2,11 +2,14 @@
 
 //! The device signature that ties a login to the device it comes from (design v2 §5).
 //!
-//! With the sealed password (seal.rs), client patch 0008 adds to the login body
+//! With the sealed password (seal.rs), client patch 0030 adds to the login body
 //!
 //! ```text
-//! "hjv": {"v": 1, "sig": "<standard base64 of a 64-byte Ed25519 signature>", "installed": true}
+//! "hjv": {"v": 1, "sig": "<standard base64 of a 64-byte Ed25519 signature>", "installed": true, "ver": "1.6.0"}
 //! ```
+//!
+//! (`ver`, the app's version, is not signed; hjv-api keeps it with the login's account key as
+//! the version the login said, design v3 §4-1.)
 //!
 //! signed with the device's key pair (`Config::get_existing_key_pair`, the key the device
 //! registered with hbbs) over the bytes

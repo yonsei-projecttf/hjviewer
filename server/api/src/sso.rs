@@ -21,12 +21,18 @@
 //!   as a word of its own ("Not Allowed IP", "IP-address", "IP입니다"), so that "multiple" or
 //!   "description" do not turn a refused password into an address error that the ID's limit does
 //!   not count;
+//! - client refused (not counted against the ID, the operator is alerted): the token call's
+//!   400 or 401 `{"error":"invalid_client"}`, which every login gets until the credential
+//!   hjviewer-sso-client-secret is fixed;
 //! - upstream error (not counted against the ID): everything else, such as 5xx, timeouts, a body
 //!   that is not a JSON object, `{}`, no `success`, `success:true` without a token,
 //!   `success:false` without a message, a failed user call, no perslNo.
 //!
-//! All three count against the client's address, as any failed login does (login.rs), and a
-//! refused address or five upstream errors in a row pause SSO calls for a while (limits.rs).
+//! All four count against the client's address, as any failed login does (login.rs). A refused
+//! address, a refused client or five upstream errors in a row pause SSO calls for a while
+//! (limits.rs); while they are paused every login gets the same 503 before the allowlist is
+//! looked at (design v3 §4-1), so that SSO trouble neither reads as a wrong password nor tells
+//! who is on the list.
 //!
 //! Each login gets 3 s to connect and 8 s in all (HJV_API_SSO_*_MS). Redirects are not followed,
 //! answers over 64 KiB are cut off, and no proxy is used.
@@ -60,6 +66,8 @@ pub struct SsoUser {
 pub enum Failure {
     Credentials,
     AddressRefused,
+    /// the SSO refuses this server's client credentials (`invalid_client`)
+    ClientRefused,
     Upstream,
 }
 
@@ -124,6 +132,13 @@ pub fn classify_token(status: u16, body: &[u8]) -> Result<Zeroizing<String>, Sso
         )));
     };
     let oauth_error = obj.get("error").and_then(Value::as_str);
+    if matches!(status, 400 | 401) && oauth_error == Some("invalid_client") {
+        return Err(SsoError::new(
+            Failure::ClientRefused,
+            format!("token call: HTTP {status}, invalid_client"),
+            msg,
+        ));
+    }
     if status == 400 && oauth_error == Some("invalid_grant") {
         return Err(SsoError::new(
             Failure::Credentials,
@@ -431,10 +446,17 @@ mod tests {
         ] {
             assert!(is_address_error(msg), "{msg}");
         }
+        // the SSO refuses this server's client credentials
+        for status in [400, 401] {
+            assert_eq!(
+                token(status, r#"{"error":"invalid_client"}"#),
+                Err(ClientRefused)
+            );
+        }
+        assert_eq!(token(500, r#"{"error":"invalid_client"}"#), Err(Upstream));
         // everything else is the SSO's problem, not the user's
         for (status, body) in [
-            (400, r#"{"error":"invalid_client"}"#),
-            (401, r#"{"error":"invalid_client"}"#),
+            (403, r#"{"error":"invalid_client"}"#),
             (400, r#"{"error":"invalid_request"}"#),
             (500, r#"{"success":false,"msg":"x"}"#),
             (502, "<html>bad gateway</html>"),

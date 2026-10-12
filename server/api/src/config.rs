@@ -7,7 +7,7 @@
 //! hjviewer-api.env.example lists every name with its default. Secrets come only from systemd
 //! credentials ($CREDENTIALS_DIRECTORY, or `--credentials <dir>`), never from the environment.
 
-use crate::util::{b64_decode, DAY};
+use crate::util::{b64_decode, IpNet, DAY};
 use hyper::Uri;
 use std::{
     collections::HashMap,
@@ -70,7 +70,18 @@ pub struct Config {
     /// D11: "off" (the only value this version accepts; the hook is tfa.rs)
     pub second_factor: String,
     pub max_logins_in_flight: usize,
+    /// the university's address networks: a login from one of them is "on-campus", from
+    /// elsewhere "off-campus" (shown to the account's other devices, design v3 §4-1); empty: not
+    /// told apart. The address itself is never stored.
+    pub campus_nets: Vec<IpNet>,
+    /// the connection kinds a same-account device may open without the PC's password (U3; the
+    /// trust list's and the device list's `kinds`)
+    pub passwordless_kinds: Vec<String>,
 }
+
+/// The connection kinds of a same-account proof (design v3 §3-3): port forwarding and RDP never
+/// go without a password in 1.6.0 (§3-4).
+pub const KINDS: &[&str] = &["remote", "file", "camera", "terminal"];
 
 pub const ENV_PREFIX: &str = "HJV_API_";
 
@@ -105,6 +116,8 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_BIND_OS", Some("windows")),
     ("HJV_API_SECOND_FACTOR", Some("off")),
     ("HJV_API_MAX_LOGINS", Some("64")),
+    ("HJV_API_CAMPUS_NETS", Some("")),
+    ("HJV_API_PASSWORDLESS_KINDS", Some("remote,file,camera")),
 ];
 
 impl Config {
@@ -193,6 +206,31 @@ impl Config {
             .map(|s| s.trim().to_ascii_lowercase())
             .filter(|s| !s.is_empty())
             .collect();
+        let mut campus_nets = Vec::new();
+        for part in get("HJV_API_CAMPUS_NETS")?
+            .split(',')
+            .filter(|p| !p.trim().is_empty())
+        {
+            campus_nets.push(IpNet::parse(part).ok_or_else(|| {
+                format!(
+                    "HJV_API_CAMPUS_NETS: {} is not a network such as 192.0.2.0/24 or 2001:db8::/32",
+                    part.trim()
+                )
+            })?);
+        }
+        let mut passwordless_kinds: Vec<String> = Vec::new();
+        for kind in get("HJV_API_PASSWORDLESS_KINDS")?.split(',') {
+            let kind = kind.trim().to_ascii_lowercase();
+            if !KINDS.contains(&kind.as_str()) {
+                return Err(format!(
+                    "HJV_API_PASSWORDLESS_KINDS takes {} (comma-separated)",
+                    KINDS.join(", ")
+                ));
+            }
+            if !passwordless_kinds.contains(&kind) {
+                passwordless_kinds.push(kind);
+            }
+        }
         let config = Config {
             sso: SsoSettings {
                 token_url,
@@ -222,6 +260,8 @@ impl Config {
             bind_os,
             second_factor: get("HJV_API_SECOND_FACTOR")?,
             max_logins_in_flight: num("HJV_API_MAX_LOGINS")? as usize,
+            campus_nets,
+            passwordless_kinds,
         };
         if config.token_idle_secs > config.token_max_secs {
             return Err("HJV_API_TOKEN_IDLE_DAYS cannot exceed HJV_API_TOKEN_MAX_DAYS".into());
@@ -245,6 +285,19 @@ impl Config {
         .flat_map(|windows| windows.iter().map(|w| w.secs))
         .max()
         .unwrap_or(0)
+    }
+
+    /// Where a login came from, as the account's other devices see it: "on-campus",
+    /// "off-campus", or "" when HJV_API_CAMPUS_NETS is not set or the address is not one.
+    pub fn login_net(&self, ip: &str) -> &'static str {
+        if self.campus_nets.is_empty() {
+            return "";
+        }
+        match ip.trim().parse::<IpAddr>() {
+            Ok(ip) if self.campus_nets.iter().any(|n| n.contains(&ip)) => "on-campus",
+            Ok(_) => "off-campus",
+            Err(_) => "",
+        }
     }
 }
 
@@ -471,6 +524,39 @@ mod tests {
             }]
         );
         assert_eq!(c.longest_window(), 86400);
+        assert!(c.campus_nets.is_empty());
+        assert_eq!(c.login_net("192.0.2.1"), "");
+        assert_eq!(c.passwordless_kinds, vec!["remote", "file", "camera"]);
+    }
+
+    #[test]
+    fn campus_networks_and_kinds() {
+        let mut vars = base();
+        vars.insert(
+            "HJV_API_CAMPUS_NETS".into(),
+            "192.0.2.0/24, 2001:db8::/32".into(),
+        );
+        vars.insert(
+            "HJV_API_PASSWORDLESS_KINDS".into(),
+            "Remote,file,terminal,file".into(),
+        );
+        let c = Config::from_vars(&vars).unwrap();
+        assert_eq!(c.campus_nets.len(), 2);
+        assert_eq!(c.login_net("192.0.2.9"), "on-campus");
+        assert_eq!(c.login_net("2001:db8:1::5"), "on-campus");
+        assert_eq!(c.login_net("198.51.100.1"), "off-campus");
+        assert_eq!(c.login_net("unknown"), "");
+        assert_eq!(c.passwordless_kinds, vec!["remote", "file", "terminal"]);
+        for (k, v) in [
+            ("HJV_API_CAMPUS_NETS", "192.0.2.0/33"),
+            ("HJV_API_CAMPUS_NETS", "campus"),
+            ("HJV_API_PASSWORDLESS_KINDS", "remote,port-forward"),
+            ("HJV_API_PASSWORDLESS_KINDS", "remote,,file"),
+        ] {
+            let mut vars = base();
+            vars.insert(k.into(), v.into());
+            assert!(Config::from_vars(&vars).is_err(), "{k}={v}");
+        }
     }
 
     #[test]

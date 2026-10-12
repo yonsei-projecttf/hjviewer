@@ -152,6 +152,10 @@ async fn handle(
         method: parts.method,
         path: parts.uri.path().to_owned(),
         query: parts.uri.query().unwrap_or("").to_owned(),
+        target: parts
+            .uri
+            .path_and_query()
+            .map_or_else(|| parts.uri.path().to_owned(), |pq| pq.as_str().to_owned()),
         headers: parts.headers,
         body,
     };

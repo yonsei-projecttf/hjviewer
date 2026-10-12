@@ -7,51 +7,63 @@
 //!    its /64): 429 past the limit, except for a request signed by a PC already in the account it
 //!    logs in to, which counts under that account's limit of step 5 instead: others behind the
 //!    same address cannot lock the owner out of their PC;
-//! 3. the sealed password (seal.rs): 400 unless sealed to a key of this server, fresh, from the
-//!    device the request names and with a nonce not seen before; the very same body again within
-//!    the retry window gets the first answer, without a second SSO call;
+//! 3. the sealed password (seal.rs): 400 unless sealed to a key of this server, from the device
+//!    the request names and with a nonce not seen before; 409 `clock` (with the server's time)
+//!    when its time is more than ten minutes off (design v3 §4-1), so that the app can tell a
+//!    wrong clock from a wrong password; the very same body again within the retry window gets
+//!    the first answer, without a second SSO call;
 //! 4. the portal ID, trimmed and case-folded;
 //! 5. failures per ID, the same for every ID typed; a request signed by a PC already in that
 //!    account (devsig.rs) counts under a limit of its own, one for all the account's PCs, so that
 //!    someone who knows only the ID cannot lock the owner out of their PC;
-//! 6. the allowlist (D3): an ID off the list never reaches the SSO and fails like a wrong
+//! 6. while SSO calls are paused (the SSO refuses this server, its address or its client
+//!    credentials, or keeps failing: limits.rs), every ID gets the same 503 [`TEXT_SSO_DOWN`]
+//!    here, before the allowlist shows (design v3 §4-1), and nothing counts;
+//! 7. the allowlist (D3): an ID off the list never reaches the SSO and fails like a wrong
 //!    password, counted;
-//! 7. successes per account and per address, the SSO calls of all accounts together and one
-//!    account's share of them, and the pause of SSO calls while the SSO refuses this server or
-//!    keeps failing (limits.rs);
-//! 8. the second factor when it is on (tfa.rs; off by D11), before the SSO call;
-//! 9. the SSO (sso.rs), sorted into refused credentials (counted), a refused server address and
-//!    upstream errors (counted against the address only).
+//! 8. successes per account and per address, the SSO calls of all accounts together and one
+//!    account's share of them (limits.rs);
+//! 9. the second factor when it is on (tfa.rs; off by D11 and U1), before the SSO call;
+//! 10. the SSO (sso.rs), sorted into refused credentials (counted), a refused server address or
+//!     client and upstream errors (counted against the address only);
+//! 11. the account key of the sealed payload (keys.rs, design v3 §4-1): 400 without `ck` and
+//!     `cp`, with a `cp` that is not its signature or with a key another row has; 403
+//!     [`keys::TEXT_TOO_MANY`] past the account's active keys.
 //!
-//! Every failure has the same body and leaves no sooner than HJV_API_FAILURE_DELAY_MS (2 s) ±
-//! HJV_API_FAILURE_JITTER_MS (0.5 s) after the request came, and while the SSO is slow no sooner
-//! than its slowest recent call plus the jitter, so that failures with and without an SSO call
-//! take as long (step 10). Every failure that depends on the ID is a 401, whatever stopped it: a
-//! wrong password, an ID off the list, a limit of the ID or the account, the SSO-call limit, the
-//! SSO's own trouble. The answer does not tell whether an ID is on the list (D3); the record and
-//! the journal keep the real reason. The other statuses do not depend on the ID: 429 for the
-//! address limit, 400 for sealing errors, 503 when too many logins run at once, 500 for the
-//! server's own errors. (v2 §9-1 had 503 for the SSO-call limit and 502 for SSO errors; the app
-//! shows the body's text whatever the status, research notes §9.)
+//! Every failure leaves no sooner than HJV_API_FAILURE_DELAY_MS (2 s) ± HJV_API_FAILURE_JITTER_MS
+//! (0.5 s) after the request came, and while the SSO is slow no sooner than its slowest recent
+//! call plus the jitter, so that failures with and without an SSO call take as long. Every failure
+//! that depends on the ID is a 401 with the same body, whatever stopped it: a wrong password, an
+//! ID off the list, a limit of the ID or the account, the SSO-call limit, a single SSO error. The
+//! answer does not tell whether an ID is on the list (D3); the record and the journal keep the
+//! real reason. The other statuses do not depend on the ID: 429 for the address limit, 400 for
+//! sealing errors, 409 for a seal's time, 503 while SSO calls are paused or too many logins run at
+//! once, 500 for the server's own errors. The app shows the body's text whatever the status
+//! (research notes §9).
 //!
-//! After a successful SSO check the account is created or updated, the device is added to it when
-//! it is an installed Windows PC whose signature matches the key hbbs holds (D9, D10, v2 §5), and
-//! a token is issued: 256 random bits, of which only the SHA-256 is stored. A new token replaces
-//! the account's token from the same device, and an account keeps at most [`MAX_TOKENS`].
+//! After the SSO accepted the password, in one transaction: the account is created or updated,
+//! the account key registered (keys.rs), the device added to the account when it is an installed
+//! Windows PC whose signature matches the key hbbs holds (D9, D10, v2 §5), and a token issued:
+//! 256 random bits, of which only the SHA-256 is stored, bound to the account key. A new token
+//! replaces the account's token from the same device, and an account keeps at most
+//! [`MAX_TOKENS`]. The answer adds `"hjv":{"ks":<the key's serial>}`, and for a PC added by the
+//! login or already in the account also `"binding":"<32 hex>","login_at":<server time>` (design
+//! v3 §4-1), from which the PC's service takes up the binding (§4-4).
 
 use crate::{
     api::{is_json, user_json, ApiRequest, BodyError, Reply},
     config::Window,
-    db::{self, NewToken, Record},
-    devsig, hbbs,
+    db::{self, Bound, KeyAdmission, NewKey, NewToken, Record},
+    devmodel, devsig, hbbs,
+    keys::{self, KeyClaim, KeyError, MAX_ACTIVE_KEYS},
     limits::{self, Take, SCOPE_BOUND, SCOPE_ID, SCOPE_IP, SCOPE_OK_ID, SCOPE_OK_IP},
     seal::{Opened, SealError},
     sso::{Failure, SsoError, SsoUser},
     state::AppState,
     tfa::{Busy, Pending},
     util::{
-        b64url, clean_text, login_key, now, random_below, random_bytes, sha256, valid_device_id,
-        valid_portal_id,
+        b64url, clean_text, hex, login_key, now, random_below, random_bytes, sha256,
+        valid_device_id, valid_portal_id,
     },
 };
 use hyper::{header::ORIGIN, Method, StatusCode};
@@ -67,17 +79,24 @@ use tokio::sync::watch;
 /// The one answer to every failed login (design v2 §1-1).
 pub const FAILURE_TEXT: &str =
     "로그인할 수 없습니다. ID·비밀번호를 확인하고, 계속 안 되면 잠시 뒤 다시 하거나 관리자에게 문의하세요.";
+/// The answer to a seal whose time is more than ten minutes off (design v3 §4-1).
+pub const TEXT_SEAL_CLOCK: &str =
+    "기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요.";
+/// The answer of every login while SSO calls are paused (design v3 §1-1, §4-1).
+pub const TEXT_SSO_DOWN: &str = "연세 인증 서버에 지금 연결할 수 없습니다. 잠시 뒤 다시 해 주세요.";
 
 /// The tokens an account keeps: a login past it revokes the least recently used.
 pub const MAX_TOKENS: usize = 20;
 
 /// The login request as the app sends it (flutter/lib/common/hbbs/hbbs.dart `LoginRequest`), with
-/// the `hjv` part that client patch 0008 adds. Other fields (uuid, autoLogin) are ignored.
+/// the `hjv` part that client patch 0030 adds. Other fields (autoLogin) are ignored.
 #[derive(Deserialize)]
 struct LoginBody {
     username: Option<String>,
     password: Option<String>,
     id: Option<String>,
+    /// the app's uuid (`bind.mainGetUuid()`): the account key's device tag is made from it
+    uuid: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
     #[serde(rename = "verificationCode")]
@@ -102,6 +121,8 @@ struct DeviceInfo {
 struct HjvPart {
     sig: Option<String>,
     installed: Option<bool>,
+    /// the app's version, such as "1.6.0" (design v3 §4-1 step 7)
+    ver: Option<String>,
 }
 
 /// What a login says about the device it comes from.
@@ -115,6 +136,29 @@ pub struct DeviceClaim {
     pub signature: Option<String>,
     /// the bytes the signature should cover
     pub message: Vec<u8>,
+    /// the device's name as it sent it (deviceInfo.name; an iPhone's model code), '' if none
+    pub name: String,
+    /// the app's uuid as it sent it, '' if none; only its tag is stored
+    pub uuid: String,
+    /// the app's version as `hjv.ver` says it, '' if none or not a version
+    pub version: String,
+    /// the account key of the sealed payload (keys.rs), checked after the SSO
+    pub key: KeyClaim,
+}
+
+/// "1.6.0": one to four numbers joined by dots.
+fn app_version(text: &str) -> String {
+    let text = text.trim();
+    let ok = text.len() <= 32
+        && text.split('.').count() <= 4
+        && text
+            .split('.')
+            .all(|n| !n.is_empty() && n.len() <= 6 && n.bytes().all(|b| b.is_ascii_digit()));
+    if ok {
+        text.to_owned()
+    } else {
+        String::new()
+    }
 }
 
 impl DeviceClaim {
@@ -124,7 +168,7 @@ impl DeviceClaim {
             .and_then(|i| i.os.as_deref())
             .map(|os| clean_text(os, 32).to_ascii_lowercase())
             .unwrap_or_default();
-        let hostname = info
+        let name = info
             .and_then(|i| i.name.as_deref())
             .map(|n| clean_text(n, 64))
             .unwrap_or_default();
@@ -144,14 +188,32 @@ impl DeviceClaim {
                 info.and_then(|i| i.os.as_deref()).unwrap_or(""),
             ),
             signature: body.hjv.as_ref().and_then(|h| h.sig.clone()),
-            hostname: if hostname.is_empty() {
+            hostname: if name.is_empty() {
                 id.clone()
             } else {
-                hostname
+                name.clone()
             },
             id,
             os,
             installed,
+            name,
+            uuid: body
+                .uuid
+                .as_deref()
+                .map(|u| clean_text(u, 128))
+                .unwrap_or_default(),
+            version: body
+                .hjv
+                .as_ref()
+                .and_then(|h| h.ver.as_deref())
+                .map(app_version)
+                .unwrap_or_default(),
+            key: KeyClaim::new(
+                opened.ck.clone(),
+                opened.cp.clone(),
+                &opened.nonce,
+                &opened.device_id,
+            ),
         }
     }
 
@@ -236,11 +298,26 @@ pub struct LoginAnswer {
 
 impl LoginAnswer {
     fn failed(status: StatusCode) -> LoginAnswer {
+        LoginAnswer::failed_with(status, json!({ "error": FAILURE_TEXT }))
+    }
+
+    /// A failure with a body of its own (it waits as every failure does).
+    fn failed_with(status: StatusCode, body: serde_json::Value) -> LoginAnswer {
         LoginAnswer {
             status,
-            body: Arc::new(json!({ "error": FAILURE_TEXT }).to_string()),
+            body: Arc::new(body.to_string()),
             failure: true,
         }
+    }
+
+    /// 409 `clock`: the seal's time is more than HJV_API_SEAL_MAX_SKEW off (design v3 §4-1).
+    /// The server's time is public, and the seal is checked before the ID is looked at, so this
+    /// tells nothing about the ID or the allowlist.
+    fn clock() -> LoginAnswer {
+        LoginAnswer::failed_with(
+            StatusCode::CONFLICT,
+            json!({ "error": TEXT_SEAL_CLOCK, "hjv": "clock", "server_time": now() }),
+        )
     }
 
     fn ok(body: serde_json::Value) -> LoginAnswer {
@@ -503,8 +580,30 @@ impl<'a> Run<'a> {
         outcome: Outcome,
         result: &'static str,
     ) -> LoginAnswer {
+        self.fail_with(LoginAnswer::failed(status), outcome, result)
+            .await
+    }
+
+    async fn fail_with(
+        &mut self,
+        answer: LoginAnswer,
+        outcome: Outcome,
+        result: &'static str,
+    ) -> LoginAnswer {
         self.end(outcome, Some(result)).await;
-        LoginAnswer::failed(status)
+        answer
+    }
+
+    /// The same 503 for every ID while SSO calls are paused (design v3 §4-1). Nothing counts:
+    /// no SSO call is made, so no password is tried, and an outage must not use up the limits
+    /// of everyone behind a campus address.
+    async fn sso_down(&mut self) -> LoginAnswer {
+        let answer = LoginAnswer::failed_with(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "error": TEXT_SSO_DOWN }),
+        );
+        self.fail_with(answer, Outcome::Released, "sso-paused")
+            .await
     }
 }
 
@@ -557,6 +656,11 @@ async fn attempt(state: &Arc<AppState>, req: ApiRequest) -> LoginAnswer {
     let opened = match open_seal(state, &parsed) {
         Ok(opened) => opened,
         Err(_) if address_full => return address_limited(&mut run).await,
+        Err(result @ "seal-time") => {
+            return run
+                .fail_with(LoginAnswer::clock(), Outcome::Failed, result)
+                .await
+        }
         Err(result) => {
             return run
                 .fail(StatusCode::BAD_REQUEST, Outcome::Failed, result)
@@ -728,7 +832,12 @@ async fn sealed_login(
         }
     }
 
-    // 6. the allowlist
+    // 6. the SSO's trouble shows before the allowlist does: the same 503 for every ID
+    if state.sso_breaker.paused() {
+        return run.sso_down().await;
+    }
+
+    // 7. the allowlist
     let allowed = {
         let key = key.clone();
         match state.db.call(move |c| db::allowed(c, &key)).await {
@@ -749,7 +858,7 @@ async fn sealed_login(
     let Claim {
         username, device, ..
     } = claim;
-    // 8. the second factor comes before the allowlist shows: every ID gets the code dialog
+    // 9. the second factor comes before the allowlist shows: every ID gets the code dialog
     if state.second_factor.required() {
         let challenge = b64url(&random_bytes::<32>());
         let pending = Pending::new(
@@ -891,7 +1000,11 @@ async fn code_login(run: &mut Run<'_>, parsed: LoginBody, challenge: &str) -> Lo
                 .await
         }
     }
-    // 6. and 8.: off the list or a wrong code, the same failure
+    // 6.: while SSO calls are paused, the same 503 for every ID, before the allowlist shows
+    if state.sso_breaker.paused() {
+        return run.sso_down().await;
+    }
+    // 7. and 9.: off the list or a wrong code, the same failure
     if !pending.allowed {
         return run
             .fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "not-allowed")
@@ -925,7 +1038,7 @@ async fn sso_login(
 ) -> LoginAnswer {
     let state = run.state;
     let account_tag = run.account_tag.clone().unwrap_or_default();
-    // 7. successes per account and per address
+    // 8. successes per account and per address
     for (scope, limit_key, windows, of) in [
         (
             SCOPE_OK_ID,
@@ -963,11 +1076,9 @@ async fn sso_login(
             }
         }
     }
-    // the SSO calls are paused (limits::Breaker)
+    // the SSO calls were paused meanwhile (limits::Breaker)
     if state.sso_breaker.paused() {
-        return run
-            .fail(StatusCode::UNAUTHORIZED, Outcome::Refused, "sso-paused")
-            .await;
+        return run.sso_down().await;
     }
     // the SSO calls of all accounts, and this account's share of them
     match state.sso_calls.try_take(&account_tag) {
@@ -991,7 +1102,7 @@ async fn sso_login(
                 .await;
         }
     }
-    // 9. the SSO
+    // 10. the SSO
     let started = Instant::now();
     let result = state.sso.authenticate(username, password).await;
     state.sso_latency.note(started.elapsed());
@@ -1019,6 +1130,14 @@ async fn sso_login(
                         e.detail
                     );
                     run.fail(StatusCode::UNAUTHORIZED, Outcome::Refused, "sso-address")
+                        .await
+                }
+                Failure::ClientRefused => {
+                    log_crit!(
+                        "login: the SSO refuses this server's client credentials ({}); no one can log in until the credential hjviewer-sso-client-secret is right",
+                        e.detail
+                    );
+                    run.fail(StatusCode::UNAUTHORIZED, Outcome::Refused, "sso-client")
                         .await
                 }
                 Failure::Upstream => {
@@ -1062,82 +1181,213 @@ fn mask_id(message: &str, id: &str) -> String {
     out
 }
 
+/// What the hbbs check found about the login's device (D9, D10, v2 §5), before anything is
+/// written.
+#[derive(Debug, Clone, Copy)]
+enum DeviceCheck {
+    /// nothing to put into the account: no device, not one the list takes, or not verified
+    Skip(BindStatus),
+    /// the key hbbs holds for the device, which signed this login
+    Verified([u8; 32]),
+}
+
+/// What the login's transaction wrote.
+enum Written {
+    Done {
+        status: BindStatus,
+        binding: Option<db::Binding>,
+        key_serial: i64,
+    },
+    KeyInUse,
+    TooManyKeys,
+}
+
 async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClaim) -> LoginAnswer {
     let state = run.state;
     let account_tag = run.account_tag.clone().unwrap_or_default();
     if login_key(&user.persl_no) != key {
         log_notice!("login: the portal ID typed and the SSO's perslNo differ (acct={account_tag})");
     }
-    let at = now();
-    let account_id = {
-        let (key, user) = (key.to_owned(), user.clone());
-        match state
-            .db
-            .call(move |c| db::upsert_account(c, &key, &user.persl_no, &user.name, at))
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                log_err!("login: {e}");
-                return run
-                    .fail(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Outcome::Released,
-                        "error",
-                    )
-                    .await;
-            }
+    // 11. the account key the seal carried (design v3 §4-1 steps 1-2)
+    let public_key = match device.key.verify() {
+        Ok(public_key) => public_key,
+        Err(e) => {
+            let result = match e {
+                KeyError::Missing => "key-missing",
+                KeyError::Bad => "key-bad",
+            };
+            return run
+                .fail(StatusCode::BAD_REQUEST, Outcome::Refused, result)
+                .await;
         }
     };
-    let (bind_status, verified) = bind_device(state, account_id, &device, &account_tag).await;
+    let check = check_device(state, &device, &account_tag).await;
     let token = format!("hjv_{}", b64url(&random_bytes::<32>()));
     let hash = sha256(token.as_bytes());
-    let device_id = device.id.clone();
-    let stored = state
+    let at = now();
+    // the server's own view of the login (step 7): no address is kept, only on or off campus
+    let platform = devmodel::platform(&device.os);
+    let model = devmodel::model_name(platform, &device.name);
+    let login_net = state.config.login_net(&run.ip);
+    let dev_tag = if device.uuid.is_empty() {
+        String::new()
+    } else {
+        state.tags.tag("uuid", &device.uuid)
+    };
+    let (key, user_db) = (key.to_owned(), user.clone());
+    let (id, name, version, os, hostname) = (
+        device.id.clone(),
+        device.name.clone(),
+        device.version.clone(),
+        device.os.clone(),
+        device.hostname.clone(),
+    );
+    let written = state
         .db
         .call(move |c| {
-            let token = NewToken {
+            let tx = c.transaction()?;
+            let account_id = db::upsert_account(&tx, &key, &user_db.persl_no, &user_db.name, at)?;
+            let new_key = NewKey {
+                account_id,
+                public_key: &public_key,
+                dev_tag: &dev_tag,
+                ctl_id: &id,
+                platform,
+                model,
+                app_name: &name,
+                app_ver: &version,
+                login_net,
+            };
+            // steps 3-5: a key no row has, the active keys of the account, the same device's
+            // older keys, the change serial (a refusal leaves everything as it was)
+            let (ckid, key_serial) = match db::add_key(&tx, &new_key, at, MAX_ACTIVE_KEYS)? {
+                KeyAdmission::Added {
+                    ckid, key_serial, ..
+                } => (ckid, key_serial),
+                KeyAdmission::InUse => return Ok(Written::KeyInUse),
+                KeyAdmission::TooMany => return Ok(Written::TooManyKeys),
+            };
+            let (status, verified, binding) = match check {
+                DeviceCheck::Skip(status) => (status, false, None),
+                DeviceCheck::Verified(device_key) => {
+                    let binding = db::bind(&tx, account_id, &id, &device_key, &os, &hostname, at)?;
+                    let status = match binding.bound {
+                        Bound::Added => BindStatus::Added,
+                        Bound::Already => BindStatus::Already,
+                        Bound::OtherAccount => BindStatus::OtherAccount,
+                    };
+                    (status, true, Some(binding))
+                }
+            };
+            // step 6: the token belongs to the key
+            let new_token = NewToken {
                 hash: &hash,
                 account_id,
-                device_id: &device_id,
+                device_id: &id,
                 device_verified: verified,
-                bind_status: bind_status.as_str(),
+                bind_status: status.as_str(),
+                ckid: Some(ckid),
             };
-            db::insert_token(c, &token, at, MAX_TOKENS)
+            db::insert_token_tx(&tx, &new_token, at, MAX_TOKENS)?;
+            tx.commit()?;
+            Ok(Written::Done {
+                status,
+                binding,
+                key_serial,
+            })
         })
         .await;
-    if let Err(e) = stored {
-        log_err!("login: {e}");
-        return run
-            .fail(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Outcome::Released,
-                "error",
-            )
-            .await;
+    let (status, binding, key_serial) = match written {
+        Ok(Written::Done {
+            status,
+            binding,
+            key_serial,
+        }) => (status, binding, key_serial),
+        Ok(Written::KeyInUse) => {
+            return run
+                .fail(StatusCode::BAD_REQUEST, Outcome::Refused, "key-in-use")
+                .await
+        }
+        Ok(Written::TooManyKeys) => {
+            if state.first_notice(
+                &format!("keys-full:{account_tag}"),
+                Duration::from_secs(600),
+            ) {
+                log_notice!(
+                    "login: the account has {MAX_ACTIVE_KEYS} active keys, a login was refused (acct={account_tag}); hjv-api admin key list tag:{account_tag}"
+                );
+            }
+            let answer = LoginAnswer::failed_with(
+                StatusCode::FORBIDDEN,
+                json!({ "error": keys::TEXT_TOO_MANY, "hjv": "too-many-keys" }),
+            );
+            return run.fail_with(answer, Outcome::Refused, "key-limit").await;
+        }
+        Err(e) => {
+            log_err!("login: {e}");
+            return run
+                .fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Outcome::Released,
+                    "error",
+                )
+                .await;
+        }
+    };
+    let device_record = |result: &'static str| {
+        state.record(
+            "device",
+            Some(account_tag.clone()),
+            Some(state.tags.device(&device.id)),
+            None,
+            result,
+        )
+    };
+    match status {
+        BindStatus::Added => device_record("added").await,
+        BindStatus::OtherAccount => {
+            log_warn!(
+                "device check: the device is in another account (dev={}, acct={account_tag}); admin: hjv-api admin device remove tag:{}",
+                state.tags.device(&device.id),
+                state.tags.device(&device.id)
+            );
+            device_record("conflict").await;
+        }
+        _ => {}
     }
     run.end(Outcome::Success, Some("ok")).await;
+    let mut hjv = json!({ "ks": key_serial });
+    if let Some(db::Binding {
+        bound: Bound::Added | Bound::Already,
+        binding_id: Some(binding_id),
+        login_at: Some(login_at),
+    }) = binding
+    {
+        hjv["binding"] = json!(hex(&binding_id));
+        hjv["login_at"] = json!(login_at);
+    }
     LoginAnswer::ok(json!({
         "type": "access_token",
         "access_token": token,
         "user": user_json(&user.persl_no, &user.name),
+        "hjv": hjv,
     }))
 }
 
-/// Puts the login's device into the account when it qualifies (D9, D10, v2 §5). Returns what
-/// happened and whether the device proved it holds the key hbbs has for its ID.
-async fn bind_device(
+/// Checks the login's device for the list when it qualifies (D9, D10, v2 §5): an installed
+/// device of HJV_API_BIND_OS whose login signature matches the key hbbs holds for its ID.
+/// Writes nothing but the records of what went wrong.
+async fn check_device(
     state: &Arc<AppState>,
-    account_id: i64,
     device: &DeviceClaim,
     account_tag: &str,
-) -> (BindStatus, bool) {
+) -> DeviceCheck {
     if device.id.is_empty() {
-        return (BindStatus::None, false);
+        return DeviceCheck::Skip(BindStatus::None);
     }
     if device.signature.is_none() || !device.installed || !state.config.bind_os.contains(&device.os)
     {
-        return (BindStatus::NotEligible, false);
+        return DeviceCheck::Skip(BindStatus::NotEligible);
     }
     let device_tag = state.tags.device(&device.id);
     let record = |result: &'static str| {
@@ -1151,59 +1401,32 @@ async fn bind_device(
     };
     let Some(server_key) = state.config.hbbs_pubkey else {
         record("no-hbbs-key").await;
-        return (BindStatus::CheckFailed, false);
+        return DeviceCheck::Skip(BindStatus::CheckFailed);
     };
     let lookup = hbbs::lookup(state.config.hbbs_console, Some(&server_key), &device.id).await;
     let public_key = match lookup {
         Ok(hbbs::Lookup::Known { public_key, .. }) => public_key,
         Ok(hbbs::Lookup::Unknown) => {
             record("unknown-to-hbbs").await;
-            return (BindStatus::CheckFailed, false);
+            return DeviceCheck::Skip(BindStatus::CheckFailed);
         }
         Err(e @ hbbs::HbbsError::BadSignature) => {
             log_err!("device check: {e} (dev={device_tag})");
             record("hbbs-bad-signature").await;
-            return (BindStatus::CheckFailed, false);
+            return DeviceCheck::Skip(BindStatus::CheckFailed);
         }
         Err(e) => {
             log_warn!("device check: {e}");
             record("hbbs-error").await;
-            return (BindStatus::CheckFailed, false);
+            return DeviceCheck::Skip(BindStatus::CheckFailed);
         }
     };
     if !device.signed_by(&public_key) {
         log_warn!("device check: the signature does not match hbbs's key (dev={device_tag})");
         record("bad-signature").await;
-        return (BindStatus::CheckFailed, false);
+        return DeviceCheck::Skip(BindStatus::CheckFailed);
     }
-    let (id, os, hostname) = (
-        device.id.clone(),
-        device.os.clone(),
-        device.hostname.clone(),
-    );
-    let at = now();
-    let bound = state
-        .db
-        .call(move |c| db::bind(c, account_id, &id, &public_key, &os, &hostname, at))
-        .await;
-    match bound {
-        Ok(db::Bound::Added) => {
-            record("added").await;
-            (BindStatus::Added, true)
-        }
-        Ok(db::Bound::Already) => (BindStatus::Already, true),
-        Ok(db::Bound::OtherAccount) => {
-            log_warn!(
-                "device check: the device is in another account (dev={device_tag}, acct={account_tag}); admin: hjv-api admin device remove tag:{device_tag}"
-            );
-            record("conflict").await;
-            (BindStatus::OtherAccount, true)
-        }
-        Err(e) => {
-            log_err!("device check: {e}");
-            (BindStatus::CheckFailed, false)
-        }
-    }
+    DeviceCheck::Verified(public_key)
 }
 
 #[cfg(test)]

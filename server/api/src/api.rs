@@ -7,14 +7,21 @@
 //! |---|---|
 //! | `POST /api/login` | login.rs (every failure that depends on the ID is a 401) |
 //! | `POST /api/currentUser` | the user object itself; 401 only for a token that is not valid, never 400 (the app logs out on both) |
-//! | `POST /api/logout` | revokes the token and takes the device it came from out of the list |
+//! | `POST /api/logout` | revokes the token; signed by its key, also the key, and takes the PC the login came from out of the list |
 //! | `GET /api/users` | `{"total":1,"data":[<user>]}` |
-//! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1}]}`: the account's PCs but the asking device |
+//! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol"}}]}`: the account's PCs but the asking device |
 //! | `GET /api/hjv/this-device` | what the token's login did with its device, and whether it can be undone |
 //! | `POST /api/hjv/this-device/undo` | takes that device out of the list again |
 //! | `DELETE /api/hjv/devices/{id}` | takes a device out of the list ("내 목록에서 빼기") |
+//! | `GET /api/hjv/keys`, `…/keys/{ckid}/ack`, `DELETE …/keys/{ckid}`, `POST …/keys/revoke-others` | the account keys (keys.rs) |
 //! | `GET /api/hjv/source` | licence, source and running version (AGPL section 13) |
 //! | `GET /api/login-options`, `GET /api/device-group/accessible` | the static answers nginx gives as well |
+//!
+//! Every path that takes a token takes it only with the `X-HJV-Proof` of the token's account key
+//! (proof.rs, design v3 §4-2), checked in [`session`]: a token alone gets the 401 of a wrong
+//! token, and a right signature whose time is more than ten minutes off gets 409
+//! `{"error":…,"hjv":"clock","server_time":…}`. The one thing a token without its signature still
+//! does is end itself: `POST /api/logout` revokes that token, and nothing else (§4-7).
 //!
 //! Every answer is JSON in UTF-8 with `X-Content-Type-Options: nosniff`,
 //! `Content-Security-Policy: default-src 'none'` and `Cache-Control: no-store`. A request with an
@@ -22,16 +29,17 @@
 //! a request with a body must be `application/json` (parameters such as charset allowed); there is
 //! no CORS. Error texts never contain the word "disabled", which makes the app empty its list.
 //!
-//! Later phases add their paths in [`route`]: the password-less connection proof of design v3
-//! (for example `POST /api/hjv/connect-ticket`) and the Wake-on-LAN paths of v2 §7
-//! (`/api/hjv/device/poll`, `/api/hjv/device/wol-info`, `/api/hjv/devices/{id}/wake`, …), each in
-//! a module of its own that uses [`session`] for the user's token.
+//! Later phases add their paths in [`route`]: the PC sync of design v3 (`POST /api/hjv/pc/sync`)
+//! and the Wake-on-LAN paths (`/api/hjv/relay/…`, `/api/hjv/devices/{id}/wake`, …), each in a
+//! module of its own that uses [`session`] for the user's token.
 
 use crate::{
     db::{self, Device, Session},
+    keys,
     login::{self, BindStatus},
+    proof,
     state::AppState,
-    util::{now, sha256, valid_device_id},
+    util::{b64, now, sha256, valid_device_id},
 };
 use http_body_util::Full;
 use hyper::{
@@ -54,6 +62,9 @@ const TEXT_METHOD: &str = "허용되지 않는 요청입니다";
 const TEXT_INCOMPLETE: &str = "요청을 다 받지 못했습니다. 잠시 뒤 다시 시도해 주세요";
 const TEXT_SERVER: &str = "서버 오류입니다. 잠시 뒤 다시 시도해 주세요";
 const TEXT_NOT_FOUND: &str = "not found";
+/// The answer to an account request signed in time by a device whose clock is off (design v3 §4-2).
+pub const TEXT_CLOCK: &str =
+    "기기의 날짜와 시간이 서버와 10분 넘게 다릅니다. 날짜와 시간을 자동으로 맞추게 해 주세요.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyError {
@@ -66,6 +77,9 @@ pub struct ApiRequest {
     pub method: Method,
     pub path: String,
     pub query: String,
+    /// the request target exactly as sent: the path, and `?` and the query when there is one
+    /// (what `X-HJV-Proof` signs)
+    pub target: String,
     pub headers: HeaderMap,
     pub body: Result<Bytes, BodyError>,
     /// the client's address: X-Real-IP (set by nginx), else the TCP peer, else "unknown"
@@ -153,6 +167,7 @@ fn allowed_methods(path: &str) -> Option<&'static str> {
         "/api/users" | "/api/peers" | "/api/hjv/this-device" => "GET",
         "/api/login-options" | "/api/device-group/accessible" | "/api/hjv/source" => "GET, HEAD",
         p if p.starts_with("/api/hjv/devices/") => "DELETE",
+        p if p.starts_with("/api/hjv/keys") => return keys::allowed_methods(p),
         // later phases: their paths here and in `route` (module docs)
         _ => return None,
     })
@@ -195,6 +210,9 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
             let id = &path["/api/hjv/devices/".len()..];
             remove_device(state, &req, id).await
         }
+        (path, method) if path.starts_with("/api/hjv/keys") && allow == method.as_str() => {
+            keys::route(state, &req).await
+        }
         // later phases dispatch here to modules of their own, which take the user's token
         // with `session` and a device's signature with `devsig::verify` (README.md)
         ("/api/hjv/source", _) if get => Reply::ok(&json!({
@@ -217,6 +235,14 @@ fn unauthorized() -> Reply {
     Reply::error(StatusCode::UNAUTHORIZED, TEXT_UNAUTHORIZED)
 }
 
+/// 409 `clock`: the request is signed by the token's key, but the device's clock is off.
+pub fn clock_reply(text: &str) -> Reply {
+    Reply::json(
+        StatusCode::CONFLICT,
+        &json!({ "error": text, "hjv": "clock", "server_time": now() }),
+    )
+}
+
 /// The SHA-256 of a bearer token, when the header holds one of hjv-api's tokens.
 fn bearer_hash(headers: &HeaderMap) -> Option<[u8; 32]> {
     let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
@@ -229,9 +255,48 @@ fn bearer_hash(headers: &HeaderMap) -> Option<[u8; 32]> {
     .then(|| sha256(token.as_bytes()))
 }
 
-/// The session of the request's token; the reply to send when there is none.
-pub async fn session(state: &Arc<AppState>, req: &ApiRequest) -> Result<Session, Reply> {
+/// What the `X-HJV-Proof` of a request with a valid token came to (proof.rs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proof {
+    /// signed by the token's key, in time, with a nonce not used before
+    Valid,
+    /// signed by the token's key, the time out of the window
+    Clock,
+    /// no proof
+    Missing,
+    /// not a proof of this request by the token's key (or the token has no key)
+    Invalid,
+    /// a nonce the key used within the last 20 minutes, on a request that changes something
+    Replayed,
+}
+
+impl Proof {
+    fn as_str(self) -> &'static str {
+        match self {
+            Proof::Valid => "valid",
+            Proof::Clock => "clock",
+            Proof::Missing => "missing",
+            Proof::Invalid => "invalid",
+            Proof::Replayed => "replayed",
+        }
+    }
+}
+
+/// The session of the request's token and what its proof came to; the reply to send when the
+/// token is not valid. The token's idle time moves only for a valid proof.
+pub async fn authenticate(
+    state: &Arc<AppState>,
+    req: &ApiRequest,
+) -> Result<(Session, Proof), Reply> {
     let hash = bearer_hash(&req.headers).ok_or_else(unauthorized)?;
+    // a header that is not text counts as there, and wrong
+    let header = req
+        .headers
+        .get(proof::HEADER)
+        .map(|v| v.to_str().unwrap_or("").to_owned());
+    let (method, target) = (req.method.as_str().to_owned(), req.target.clone());
+    let body_hash = sha256(req.body.as_ref().map_or(&[][..], |b| b.as_ref()));
+    let changes = req.method != Method::GET && req.method != Method::HEAD;
     let (idle, max, at) = (
         state.config.token_idle_secs,
         state.config.token_max_secs,
@@ -240,20 +305,76 @@ pub async fn session(state: &Arc<AppState>, req: &ApiRequest) -> Result<Session,
     let found = state
         .db
         .call(move |c| {
-            let s = db::session(c, &hash, at, idle, max)?;
-            if let Some(s) = &s {
-                db::touch_session(c, s, at)?;
+            let Some(s) = db::session(c, &hash, at, idle, max)? else {
+                return Ok(None);
+            };
+            let check = match &s.key {
+                Some(key) => proof::check(
+                    &key.public_key,
+                    header.as_deref(),
+                    &method,
+                    &target,
+                    &body_hash,
+                    &hash,
+                    at,
+                ),
+                None if header.is_none() => proof::Check::Missing,
+                None => proof::Check::Invalid,
+            };
+            let proof = match (check, &s.key) {
+                (proof::Check::Valid { nonce }, Some(key)) => {
+                    if !changes
+                        || db::use_req_nonce(c, key.ckid, &nonce, at, at + proof::NONCE_TTL)?
+                    {
+                        Proof::Valid
+                    } else {
+                        Proof::Replayed
+                    }
+                }
+                (proof::Check::Clock, _) => Proof::Clock,
+                (proof::Check::Missing, _) => Proof::Missing,
+                _ => Proof::Invalid,
+            };
+            if proof == Proof::Valid {
+                db::touch_session(c, &s, at)?;
             }
-            Ok(s)
+            Ok(Some((s, proof)))
         })
         .await;
     match found {
-        Ok(Some(s)) => Ok(s),
+        Ok(Some((s, proof))) => {
+            if proof != Proof::Valid {
+                let tag = state.tags.account(&s.account.login_key);
+                if state.first_notice(
+                    &format!("proof:{}:{tag}", proof.as_str()),
+                    std::time::Duration::from_secs(600),
+                ) {
+                    // the path may hold a device ID: the method only
+                    log_info!(
+                        "request proof {} (acct={tag}, {}); the next ten minutes are not logged",
+                        proof.as_str(),
+                        req.method
+                    );
+                }
+            }
+            Ok((s, proof))
+        }
         Ok(None) => Err(unauthorized()),
         Err(e) => {
             log_err!("session: {e}");
             Err(Reply::server_error())
         }
+    }
+}
+
+/// The session of the request's token, signed by the token's account key (design v3 §4-2); the
+/// reply to send otherwise: 401 as for a wrong token, or 409 `clock` for a right signature whose
+/// time is out of the window.
+pub async fn session(state: &Arc<AppState>, req: &ApiRequest) -> Result<Session, Reply> {
+    match authenticate(state, req).await? {
+        (s, Proof::Valid) => Ok(s),
+        (_, Proof::Clock) => Err(clock_reply(TEXT_CLOCK)),
+        _ => Err(unauthorized()),
     }
 }
 
@@ -264,37 +385,64 @@ async fn current_user(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     }
 }
 
+/// Logout (design v3 §4-7): the token always goes. Signed by its key, the key goes too, and the
+/// PC the login came from leaves the list. A signature whose time is out of the window still
+/// counts here: it is this request's, and the token it is bound to ends with it, so it cannot be
+/// used again. Without the key's signature only the token goes: a stolen token cannot take
+/// anyone's PC out of the list (the key, left without a login, goes with the next upkeep).
 async fn logout(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
-    let s = match session(state, req).await {
-        Ok(s) => s,
+    let (s, proof) = match authenticate(state, req).await {
+        Ok(found) => found,
         Err(reply) => return reply,
     };
-    let (hash, device_id, verified, account_id) = (
+    let signed = matches!(proof, Proof::Valid | Proof::Clock);
+    let (hash, device_id, verified, account_id, key) = (
         s.token_hash.clone(),
         s.device_id.clone(),
         s.device_verified,
         s.account.id,
+        s.key.filter(|_| signed),
     );
+    let at = now();
     let result = state
         .db
         .call(move |c| {
-            db::delete_token(c, &hash)?;
-            // the device leaves the list when it logs out (v2 §5), if it proved its key at login
-            let removed =
-                verified && !device_id.is_empty() && db::unbind(c, &device_id, account_id)?;
-            if removed {
+            let done = db::in_tx(c, |tx| {
+                db::delete_token(tx, &hash)?;
+                let Some(key) = key else {
+                    return Ok((false, false));
+                };
+                let revoked = db::revoke_key(tx, account_id, key.ckid, "logout", at)?;
+                // the device leaves the list when it logs out (v2 §5), if it proved its key at login
+                let removed =
+                    verified && !device_id.is_empty() && db::unbind(tx, &device_id, account_id)?;
+                Ok((revoked, removed))
+            })?;
+            if done.0 || done.1 {
                 db::checkpoint(c)?;
             }
-            Ok(removed)
+            Ok(done)
         })
         .await;
     match result {
-        Ok(removed) => {
+        Ok((revoked, removed)) => {
+            let account_tag = state.tags.account(&s.account.login_key);
+            if revoked {
+                state
+                    .record(
+                        "key",
+                        Some(account_tag.clone()),
+                        None,
+                        None,
+                        "revoked-logout",
+                    )
+                    .await;
+            }
             if removed {
                 state
                     .record(
                         "device",
-                        Some(state.tags.account(&s.account.login_key)),
+                        Some(account_tag),
                         Some(state.tags.device(&s.device_id)),
                         None,
                         "removed-logout",
@@ -324,7 +472,7 @@ fn page(query: &str) -> (usize, usize) {
     (current, size)
 }
 
-fn paged(items: Vec<Value>, query: &str) -> Value {
+pub(crate) fn paged(items: Vec<Value>, query: &str) -> Value {
     let (current, size) = page(query);
     let total = items.len();
     let data: Vec<Value> = items
@@ -345,12 +493,37 @@ async fn users(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     }
 }
 
-fn peer_json(device: &Device, portal_id: &str) -> Value {
+/// The second line of a PC's card (design v3 §5-2): `note` of a password-less state.
+pub fn pwless_note(state: &str) -> &'static str {
+    match state {
+        "active" => "비밀번호 없이 연결",
+        "listed" => "이 PC에서 로그인 필요",
+        "off" => "PC에서 꺼 둠",
+        "disabled" => "비밀번호 없는 연결 일시 중지(관리자)",
+        "needs-relogin" => "이 PC에서 다시 로그인 필요",
+        _ => "",
+    }
+}
+
+/// A PC of the account as the app's PeerPayload reads it, with its password-less state (design
+/// v3 §5-2): `hjv.pk` is the key hbbs held when it was bound, which the app compares with the
+/// key of the PC it reaches (key continuity, §3-4). Until the PCs report through the sync, a PC
+/// is `listed`, or `disabled` while the account's switch is off; `wol` is `unknown` until the PCs
+/// report how they wake.
+fn peer_json(device: &Device, portal_id: &str, pwless_on: bool, kinds: &[String]) -> Value {
+    let pwless = if pwless_on { "listed" } else { "disabled" };
     json!({
         "id": device.device_id,
         "user_name": portal_id,
         "info": { "device_name": device.hostname, "os": device.os },
         "status": 1,
+        "note": pwless_note(pwless),
+        "hjv": {
+            "pk": b64(&device.public_key),
+            "pwless": pwless,
+            "kinds": kinds,
+            "wol": "unknown",
+        },
     })
 }
 
@@ -360,12 +533,22 @@ async fn peers(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         Err(reply) => return reply,
     };
     let account_id = s.account.id;
-    match state.db.call(move |c| db::devices_of(c, account_id)).await {
-        Ok(devices) => {
+    let found = state
+        .db
+        .call(move |c| {
+            Ok((
+                db::devices_of(c, account_id)?,
+                db::passwordless_on(c, account_id)?,
+            ))
+        })
+        .await;
+    match found {
+        Ok((devices, on)) => {
+            let kinds = &state.config.passwordless_kinds;
             let items = devices
                 .iter()
                 .filter(|d| d.device_id != s.device_id)
-                .map(|d| peer_json(d, &s.account.portal_id))
+                .map(|d| peer_json(d, &s.account.portal_id, on, kinds))
                 .collect();
             Reply::ok(&paged(items, &req.query))
         }
@@ -594,7 +777,16 @@ mod tests {
             TEXT_INCOMPLETE,
             TEXT_SERVER,
             TEXT_NOT_FOUND,
+            TEXT_CLOCK,
             login::FAILURE_TEXT,
+            login::TEXT_SEAL_CLOCK,
+            login::TEXT_SSO_DOWN,
+            keys::TEXT_TOO_MANY,
+            pwless_note("active"),
+            pwless_note("listed"),
+            pwless_note("off"),
+            pwless_note("disabled"),
+            pwless_note("needs-relogin"),
             status_text(BindStatus::Added),
             status_text(BindStatus::Already),
             status_text(BindStatus::OtherAccount),

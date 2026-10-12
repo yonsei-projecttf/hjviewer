@@ -2,7 +2,9 @@
 
 //! The test harness: hjv-api in-process on 127.0.0.1, with the fake SSO (fake_sso.rs), a fake
 //! hbbs console that answers `hjv-pk` like patch 0004, an admin socket and a client that seals
-//! and signs logins as client patch 0008 will.
+//! and signs logins as client patch 0030 will: every login makes a new account key and seals it
+//! with its proof (keys.rs), and `get`, `post` and `delete` sign with the key of the token's login
+//! (proof.rs), as the app's request hook does.
 
 #![allow(dead_code)]
 
@@ -11,9 +13,9 @@ use hjv_api::{
     config::{Config, Secrets},
     db, devsig,
     fake_sso::{self, FakeSso},
-    hbbs,
+    hbbs, keys,
     oplog::OpLog,
-    seal,
+    proof, seal,
     server::{self, Listener},
     state::AppState,
     tfa::SecondFactor,
@@ -62,7 +64,8 @@ pub const HONG: (&str, &str) = ("2026000001", "hjv-test-pass-1");
 pub const KIM: (&str, &str) = ("2026000002", "hjv-test-pass-2");
 pub const LEE: (&str, &str) = ("Y9001", "hjv-test-pass-3");
 
-/// A device as the app runs it: an ID and the Ed25519 key pair it registered with hbbs.
+/// A device as the app runs it: an ID, the Ed25519 key pair it registered with hbbs, and its
+/// uuid (the same for every login from it).
 #[derive(Clone)]
 pub struct TestDevice {
     pub id: String,
@@ -70,6 +73,7 @@ pub struct TestDevice {
     pub os: String,
     pub installed: bool,
     pub hostname: String,
+    pub uuid: String,
 }
 
 impl TestDevice {
@@ -83,6 +87,7 @@ impl TestDevice {
             os: "windows".into(),
             installed: true,
             hostname: format!("PC-{id}"),
+            uuid: b64(format!("uuid-{id}").as_bytes()),
         }
     }
 
@@ -90,7 +95,7 @@ impl TestDevice {
         TestDevice {
             os: "ios".into(),
             installed: false,
-            hostname: "iPhone".into(),
+            hostname: "iPhone15,2".into(),
             ..TestDevice::windows(id)
         }
     }
@@ -198,6 +203,19 @@ impl FakeHbbs {
     }
 }
 
+/// How a test login carries its account key (keys.rs).
+#[derive(Clone, Copy, Debug)]
+pub enum KeyChoice {
+    /// a new key, as the app makes for every login
+    Fresh,
+    /// the key of this seed
+    Seed([u8; 32]),
+    /// no `ck` and `cp`
+    Omit,
+    /// `ck` of a new key, `cp` signed by another
+    WrongProof,
+}
+
 #[derive(Default)]
 pub struct Options {
     /// settings over the harness's defaults
@@ -219,6 +237,8 @@ pub struct Harness {
     pub seal_pk: [u8; 32],
     client: Client<HttpConnector, Full<Bytes>>,
     stop: watch::Sender<bool>,
+    /// the account key of each login body (by its sealed password field) and of each token
+    keys: Mutex<HashMap<String, [u8; 32]>>,
 }
 
 /// An answer, read.
@@ -356,6 +376,7 @@ impl Harness {
             seal_pk,
             client: Client::builder(TokioExecutor::new()).build_http(),
             stop,
+            keys: Mutex::new(HashMap::new()),
         }
     }
 
@@ -378,19 +399,47 @@ impl Harness {
         time: i64,
         nonce: &str,
     ) -> Value {
+        self.login_body_with(username, password, device, time, nonce, KeyChoice::Fresh)
+    }
+
+    /// A login body as the app sends it, the account key as `key` says. A device logs in with its
+    /// own uuid; a login without one gets a uuid of its own, as another phone would.
+    pub fn login_body_with(
+        &self,
+        username: &str,
+        password: &str,
+        device: Option<&TestDevice>,
+        time: i64,
+        nonce: &str,
+        key: KeyChoice,
+    ) -> Value {
         let id = device.map_or("", |d| d.id.as_str());
-        let sealed = seal::seal_password(&self.seal_pk, password, time, nonce, id);
+        let seed = match key {
+            KeyChoice::Seed(seed) => seed,
+            _ => random_bytes::<32>(),
+        };
+        let (ck, cp) = keys::proof(&seed, nonce, id);
+        let sealed = match key {
+            KeyChoice::Omit => seal::seal_password(&self.seal_pk, password, time, nonce, id),
+            KeyChoice::WrongProof => {
+                let (_, other) = keys::proof(&random_bytes::<32>(), nonce, id);
+                seal::seal_login(&self.seal_pk, password, time, nonce, id, &ck, &other)
+            }
+            _ => seal::seal_login(&self.seal_pk, password, time, nonce, id, &ck, &cp),
+        };
+        self.keys.lock().unwrap().insert(sealed.clone(), seed);
+        let uuid = device.map_or_else(|| b64(&random_bytes::<12>()), |d| d.uuid.clone());
         let mut body = json!({
             "username": username,
             "password": sealed,
             "id": id,
-            "uuid": "dXVpZA==",
+            "uuid": uuid,
             "autoLogin": true,
             "type": "account",
             "deviceInfo": {
                 "os": device.map_or("ios", |d| d.os.as_str()),
                 "type": "client",
-                "name": device.map_or("iPhone", |d| d.hostname.as_str()),
+                "name": device.map_or("iPhone15,2", |d| d.hostname.as_str()),
             },
         });
         if let Some(d) = device {
@@ -402,9 +451,35 @@ impl Harness {
                 "v": 1,
                 "sig": devsig::sign(&d.seed, &message),
                 "installed": d.installed,
+                "ver": "1.6.0",
             });
         }
         body
+    }
+
+    /// The account key's seed of a token's login, when this harness made the login.
+    pub fn key_of(&self, token: &str) -> Option<[u8; 32]> {
+        self.keys.lock().unwrap().get(token).copied()
+    }
+
+    /// The `X-HJV-Proof` the app would send with a request (with the token's key, now).
+    pub fn proof_for(
+        &self,
+        method: &str,
+        target: &str,
+        body: &[u8],
+        token: &str,
+    ) -> Option<String> {
+        let seed = self.key_of(token)?;
+        Some(proof::header_value(
+            &seed,
+            method,
+            target,
+            now(),
+            &random_bytes::<16>(),
+            body,
+            token,
+        ))
     }
 
     pub async fn request(
@@ -441,59 +516,90 @@ impl Harness {
         }
     }
 
-    /// POST /api/login from `ip`.
+    /// POST /api/login from `ip`; a token in the answer is filed with the body's account key.
     pub async fn login(&self, body: &Value, ip: &str) -> Answer {
-        self.request(
-            Method::POST,
-            "/api/login",
-            &[("content-type", "application/json"), ("x-real-ip", ip)],
-            Some(body.to_string().into_bytes()),
-        )
-        .await
+        let answer = self
+            .request(
+                Method::POST,
+                "/api/login",
+                &[("content-type", "application/json"), ("x-real-ip", ip)],
+                Some(body.to_string().into_bytes()),
+            )
+            .await;
+        if let (Some(token), Some(field)) = (
+            answer.json["access_token"].as_str(),
+            body["password"].as_str(),
+        ) {
+            let mut keys = self.keys.lock().unwrap();
+            if let Some(seed) = keys.get(field).copied() {
+                keys.insert(token.to_owned(), seed);
+            }
+        }
+        answer
     }
 
     /// Logs in a test account from `device`; returns the token.
     pub async fn login_ok(&self, account: (&str, &str), device: Option<&TestDevice>) -> String {
+        self.login_ok_from(account, device, "10.9.9.9").await
+    }
+
+    /// [`Harness::login_ok`] from the client address `ip`.
+    pub async fn login_ok_from(
+        &self,
+        account: (&str, &str),
+        device: Option<&TestDevice>,
+        ip: &str,
+    ) -> String {
         let answer = self
-            .login(&self.login_body(account.0, account.1, device), "10.9.9.9")
+            .login(&self.login_body(account.0, account.1, device), ip)
             .await;
         assert_eq!(answer.status, 200, "{}", answer.text);
         answer.token()
     }
 
-    pub async fn get(&self, path: &str, token: &str) -> Answer {
+    /// A token request as the app sends it: the token and, when the harness knows the token's
+    /// key, its `X-HJV-Proof`.
+    pub async fn signed(
+        &self,
+        method: Method,
+        path: &str,
+        token: &str,
+        body: Option<Vec<u8>>,
+    ) -> Answer {
         let auth = format!("Bearer {token}");
-        self.request(Method::GET, path, &[("authorization", &auth)], None)
-            .await
+        let proof = self.proof_for(
+            method.as_str(),
+            path,
+            body.as_deref().unwrap_or_default(),
+            token,
+        );
+        let mut headers = vec![("authorization", auth.as_str())];
+        if body.is_some() {
+            headers.push(("content-type", "application/json"));
+        }
+        if let Some(p) = &proof {
+            headers.push((proof::HEADER, p.as_str()));
+        }
+        self.request(method, path, &headers, body).await
+    }
+
+    pub async fn get(&self, path: &str, token: &str) -> Answer {
+        self.signed(Method::GET, path, token, None).await
     }
 
     /// POST with a JSON body, as the app's currentUser and logout.
     pub async fn post(&self, path: &str, token: &str, body: Option<Value>) -> Answer {
-        let auth = format!("Bearer {token}");
-        match body {
-            Some(b) => {
-                self.request(
-                    Method::POST,
-                    path,
-                    &[
-                        ("authorization", &auth),
-                        ("content-type", "application/json"),
-                    ],
-                    Some(b.to_string().into_bytes()),
-                )
-                .await
-            }
-            None => {
-                self.request(Method::POST, path, &[("authorization", &auth)], None)
-                    .await
-            }
-        }
+        self.signed(
+            Method::POST,
+            path,
+            token,
+            body.map(|b| b.to_string().into_bytes()),
+        )
+        .await
     }
 
     pub async fn delete(&self, path: &str, token: &str) -> Answer {
-        let auth = format!("Bearer {token}");
-        self.request(Method::DELETE, path, &[("authorization", &auth)], None)
-            .await
+        self.signed(Method::DELETE, path, token, None).await
     }
 
     pub async fn admin(
