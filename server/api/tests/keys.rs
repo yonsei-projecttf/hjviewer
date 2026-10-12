@@ -887,6 +887,13 @@ async fn deleting_an_account_leaves_no_row_of_it() {
         200
     );
     h.login_ok(KIM, None).await;
+    // the PC reported the phone key's use and a refusal through its sync (design v3 §5-4)
+    let binding = h.binding_of(&pc.id).await;
+    let mut p = payload(&binding);
+    p["used"] = json!([{"pk": b64(&hjv_api::devsig::public_key(&h.key_of(&phone).unwrap())),
+                        "day": hjv_api::util::date(now()), "last": now(), "n": 1}]);
+    p["refused"]["off"] = json!(1);
+    assert_eq!(h.sync(&pc, &p).await.answer.status, 200);
     let account = h
         .state
         .db
@@ -902,6 +909,14 @@ async fn deleting_an_account_leaves_no_row_of_it() {
                              (SELECT ckid FROM ctl_keys WHERE account_id = ?1)
                              OR n.ckid NOT IN (SELECT ckid FROM ctl_keys)"
             }
+            "key_use" => {
+                "SELECT COUNT(*) FROM key_use u WHERE u.ckid IN
+                             (SELECT ckid FROM ctl_keys WHERE account_id = ?1)
+                             OR u.ckid NOT IN (SELECT ckid FROM ctl_keys)"
+            }
+            "pc_refusals" => {
+                "SELECT COUNT(*) FROM pc_refusals r WHERE ?1 = ?1 AND r.device_id = '123456789'"
+            }
             "accounts" => "SELECT COUNT(*) FROM accounts WHERE id = ?1",
             "tokens" => "SELECT COUNT(*) FROM tokens WHERE account_id = ?1",
             "devices" => "SELECT COUNT(*) FROM devices WHERE account_id = ?1",
@@ -911,7 +926,15 @@ async fn deleting_an_account_leaves_no_row_of_it() {
             .db
             .call(move |c| c.query_row(sql, [account], |r| r.get::<_, i64>(0)))
     };
-    let tables = ["accounts", "tokens", "devices", "ctl_keys", "req_nonces"];
+    let tables = [
+        "accounts",
+        "tokens",
+        "devices",
+        "ctl_keys",
+        "req_nonces",
+        "key_use",
+        "pc_refusals",
+    ];
     for table in tables {
         assert!(rows(table).await.unwrap() > 0, "{table} before");
     }
@@ -927,7 +950,11 @@ async fn deleting_an_account_leaves_no_row_of_it() {
     for table in tables {
         assert_eq!(rows(table).await.unwrap(), 0, "{table} after");
     }
-    assert_eq!(serial(&h).await, before + 1);
+    // the PC was released first (its tombstone stays, so that it gets a signed revoked), then
+    // the account went
+    assert_eq!(serial(&h).await, before + 2);
+    let revoked = h.sync(&pc, &payload(&binding)).await;
+    assert_eq!(revoked.list()["state"], "revoked");
     // Kim's rows are all there
     let left = h
         .state

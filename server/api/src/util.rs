@@ -199,6 +199,38 @@ pub fn datetime(ts: i64) -> String {
     )
 }
 
+/// The day number (days since 1970-01-01) of a UTC date written "2026-10-12", exactly in that
+/// form; `None` for anything else, such as "2026-02-30" or "2026-1-9".
+pub fn day_number(text: &str) -> Option<i64> {
+    let b = text.as_bytes();
+    let digits = |r: std::ops::Range<usize>| -> Option<i64> {
+        b.get(r.clone())?
+            .iter()
+            .all(u8::is_ascii_digit)
+            .then(|| text[r].parse().ok())
+            .flatten()
+    };
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let (y, m, d) = (digits(0..4)?, digits(5..7)?, digits(8..10)?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let days = days_from_civil(y, m, d);
+    (date(days * DAY) == text).then_some(days)
+}
+
+/// Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 /// Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
@@ -223,6 +255,26 @@ mod tests {
         assert_eq!(datetime(951_782_400), "2000-02-29T00:00:00Z");
         assert_eq!(datetime(1_760_259_045), "2025-10-12T08:50:45Z");
         assert_eq!(date(-1), "1969-12-31");
+        // and back
+        for ts in [0, 951_782_400, 1_760_259_045, -DAY, 4_102_444_800] {
+            assert_eq!(day_number(&date(ts)), Some(ts.div_euclid(DAY)), "{ts}");
+        }
+        assert_eq!(day_number("2025-10-09"), Some(20_370));
+        for bad in [
+            "2026-02-30",
+            "2025-02-29",
+            "2026-13-01",
+            "2026-00-10",
+            "2026-1-09",
+            "2026-01-9",
+            "20261009",
+            "2026/10/09",
+            "+026-10-09",
+            "2026-10-09 ",
+            "",
+        ] {
+            assert_eq!(day_number(bad), None, "{bad}");
+        }
     }
 
     #[test]

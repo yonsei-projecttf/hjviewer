@@ -7,9 +7,11 @@
 //!
 //! Later phases add routes, not rewrites: the password-less connection proof (design v3) and
 //! Wake-on-LAN (v2 §7) each become a module of their own, dispatched from [`api::route`], with
-//! their tables added by a schema migration in [`db`]. README.md lists the places. Design v3's
-//! first part is here: the account key of each login ([`keys`]), its signature on every account
-//! request ([`proof`]) and the server's names for devices ([`devmodel`]).
+//! their tables added by a schema migration in [`db`]. README.md lists the places. Design v3 is
+//! here: the account key of each login ([`keys`]), its signature on every account request
+//! ([`proof`]), the server's names for devices ([`devmodel`]), and the sync of the bound PCs
+//! ([`pcsync`]) that hands each one its signed trust list ([`trust`]) in the signed envelope it
+//! shares with hjv-relay ([`envelope`]).
 
 #[macro_use]
 pub mod log;
@@ -20,6 +22,7 @@ pub mod config;
 pub mod db;
 pub mod devmodel;
 pub mod devsig;
+pub mod envelope;
 pub mod fake_sso;
 pub mod hbbs;
 pub mod jobs;
@@ -28,6 +31,7 @@ pub mod keys;
 pub mod limits;
 pub mod login;
 pub mod oplog;
+pub mod pcsync;
 pub mod proof;
 pub mod seal;
 pub mod selfcheck;
@@ -35,4 +39,5 @@ pub mod server;
 pub mod sso;
 pub mod state;
 pub mod tfa;
+pub mod trust;
 pub mod util;

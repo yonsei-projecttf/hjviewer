@@ -3,10 +3,10 @@
 The HJViewer account API: login with a Yonsei portal ID through the university's SSO, and the
 per-account list of Windows PCs that the apps show as "accessible devices" (design v2 §9). Since
 design v3 every login also registers an account key of its device, which signs every account
-request after it and, on the PCs' trust lists, the connections between devices of the same
-account that need no PC password. It runs next to hbbs/hbbr on the server, behind nginx, as a
-systemd service that listens only on a Unix socket systemd holds. GNU AGPL-3.0-only, like the
-rest of the repository.
+request after it, and each bound PC's service syncs with hjv-api for its trust list: the account
+keys that may open it without its password, signed with hjv-api's list key. It runs next to
+hbbs/hbbr on the server, behind nginx, as a systemd service that listens only on a Unix socket
+systemd holds. GNU AGPL-3.0-only, like the rest of the repository.
 
 ## Build
 
@@ -66,6 +66,15 @@ open without the PC's password (U3: `remote,file,camera`; `terminal` can be adde
 and RDP always ask for the password). The password-less switch is not a setting but state in the
 database, off when installed (`hjv-api admin passwordless`).
 
+The trust lists (design v3 §3-6, §5-3): `HJV_API_TRUST_PUBKEYS` is the list keys the apps pin, the
+value of their build variable `HJV_TRUST_PUBKEYS` (`1:<base64>,2:<base64>`, the key in use and the
+next one); `HJV_API_LIST_KID` is the number of the key in the credential `hjviewer-api-list-key`
+(1; 2 after a change of keys). hjv-api says in the journal at start, and `selfcheck` fails, when
+the key in use is not the pinned key of its number: the PCs would refuse every list it signs.
+`HJV_API_TRUST_REFRESH` is how often a bound PC asks (120 seconds; 5 to 300, the bounds the PCs
+hold it to; production 60 to 300) and `HJV_API_TRUST_TTL` how long a list lives on a PC that
+cannot reach hjv-api (U4: 86400, a day; at most 259200, the apps' bound of 72 hours).
+
 ## Credentials
 
 Secrets come only from systemd credentials (`$CREDENTIALS_DIRECTORY`; `--credentials <dir>` for
@@ -77,6 +86,7 @@ tests), never from the environment or the repository:
 | `hjviewer-sso-api-uuid` | the `apiUuid` of the SSO user call |
 | `hjviewer-api-login-key` | X25519 secret key(s) that open sealed passwords, base64, one per line, current first |
 | `hjviewer-api-log-key` | base64 of 32+ random bytes: the HMAC key of the tags in logs and records |
+| `hjviewer-api-list-key` | base64 of the 32-byte Ed25519 seed of the list key in use, number `HJV_API_LIST_KID`, which signs the trust lists |
 
 The user makes them on the server, without an agent (v2 §10-3), for example:
 
@@ -84,12 +94,22 @@ The user makes them on the server, without an agent (v2 §10-3), for example:
 systemd-ask-password -n "SSO client secret:" | sudo systemd-creds encrypt --name=hjviewer-sso-client-secret - /etc/credstore.encrypted/hjviewer-sso-client-secret
 hjv-api keygen seal | tee /media/usb/hjviewer-seal.key | sudo systemd-creds encrypt --name=hjviewer-api-login-key - /etc/credstore.encrypted/hjviewer-api-login-key
 sudo hjv-api keygen log-key --encrypt-to /etc/credstore.encrypted/hjviewer-api-log-key
+sudo hjv-api keygen list --kid 1 --encrypt-to /etc/credstore.encrypted/hjviewer-api-list-key
+hjv-api keygen list --kid 2 --out /media/usb/hjviewer-list-2.key     # offline, away from agents
 ```
 
 `keygen` never prints a secret to a terminal; `keygen seal` shows the public key for the app
 build variable `HJV_LOGIN_SEAL_PUBKEY` and its key ID on stderr. Keep the offline copy of the seal
 key: a host-bound credential is lost with the host. To change keys, put the new key line first and
 keep the old one until every app build uses the new public key.
+
+`keygen list --kid N` shows the list key's public key as the entry `N:<base64>` of
+`HJV_TRUST_PUBKEYS` (the apps) and `HJV_API_TRUST_PUBKEYS` (here), and its fingerprint
+`N:<hex SHA-256>`, which the app build's summary and `selfcheck` show too. `--out <file>` writes a
+new file (0600, never over an existing one) for a key kept offline: key 1 lives on the server
+only, key 2 waits offline until it replaces key 1 (design v3 §5-3: put it in with `systemd-creds
+encrypt` from standard input, set `HJV_API_LIST_KID=2`, restart; a PC that got a list of key 2
+never takes one of key 1 again).
 
 ## Admin
 
@@ -107,7 +127,8 @@ allow list                the allowlist
 users | devices           accounts and the devices in them
 key list [<id|tag:T>]     account keys: number, account, platform, the server's device name,
                           version, on or off campus, created, state (the device's own name and ID
-                          with --reveal)
+                          with --reveal), and a line per PC that reported the key's password-less
+                          use: the last time and the count of 30 days (U6; host name with --reveal)
 key revoke <ckid>         revoke an account key with its token
 unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
                           of a tag from a journal warning (an account's or an address's), or of a
@@ -116,8 +137,14 @@ user revoke-all <id|tag:T> | --all
                           revoke every token and account key of an account, or of every account
                           (devices log in again; PCs stay in their accounts)
 revoke <id|tag:T>         the same as user revoke-all <id|tag:T>
-device remove <id|tag:T>  take a device out of its account
-user delete <id|tag:T>    delete an account with its tokens, account keys and devices
+binding list              the PCs in accounts: password-less state, the PC's mark of its binding,
+                          last sync, version; the released bindings kept, by how they went
+binding revoke <PC ID|tag:T>
+                          release a PC from its account: its next sync gets a signed revoked
+device remove <PC ID|tag:T>
+                          the same as binding revoke
+user delete <id|tag:T>    delete an account with its tokens and account keys, its PCs released
+                          first (each gets a signed revoked)
 passwordless status | on | off [--account <id|tag:T> | --owner-of <PC ID>]
                           connections without the PC's password between an account's devices:
                           for every account (off when installed; off also ends the accounts turned
@@ -125,22 +152,31 @@ passwordless status | on | off [--account <id|tag:T> | --owner-of <PC ID>]
                           by its portal ID or by one of its PCs
 strict on | off           PCs ask the server at each password-less connection (incidents)
 report                    counts, the login results of the last day and week, the limit counters,
-                          the account keys, the switches and the change serial
-selfcheck                 DNS, TCP and TLS to the SSO and hbbs's console, from inside the sandbox
-keygen seal|log-key       as hjv-api keygen (runs locally, not in the service)
+                          the account keys, the switches and the change serial; the PCs holding
+                          their binding and those synced in the last 10 minutes, those not synced
+                          since the last switch change, needs-relogin, PCs by app version,
+                          refusals, released bindings by how they went, password-less
+                          connections of 30 days
+selfcheck                 DNS, TCP and TLS to the SSO and hbbs's console, from inside the sandbox;
+                          the fingerprints of the pinned list keys and whether the key in use is
+                          the pinned one
+keygen seal|log-key|list  as hjv-api keygen (runs locally, not in the service)
 ```
 
 The rollout (design v3 §11): install with the switch off, `passwordless on --owner-of <the
 operator's PC ID>`, a week of use, then `passwordless on`. To stop password-less connections, run
-`passwordless off` and keep hjv-api running for 24 hours or until `report` shows that the PCs have
-synced since: a PC that cannot reach hjv-api keeps its trust list for up to a day.
+`passwordless off` and keep hjv-api running for 24 hours or until `report` shows 0 PCs "holding
+their binding that have not synced since the last switch change": a PC that cannot reach hjv-api
+keeps its trust list for up to a day.
 
 An allowlist file has one portal ID per line; `#` starts a comment, and a byte-order mark,
 zero-width characters and Windows line ends do no harm. A line that is anything else refuses the
 whole file (nothing changes) and the answer names only its line number.
 
 `sudo hjv-api selfcheck --env-file /etc/hjviewer/hjviewer-api.env` runs the same check outside the
-service, by hand; the unit's commented `ExecStartPost=` runs it with `--log-only` after each start.
+service, by hand (it compares the list key in use only where it can read the credentials:
+`--credentials <dir>`, or in the unit); the unit's commented `ExecStartPost=` runs it with
+`--log-only` after each start. `hjv-api admin selfcheck` checks the key the running service holds.
 
 ### The operator record
 
@@ -171,12 +207,20 @@ it once.
 
 Every path that takes a token takes it only with the signature of the token's account key
 (`X-HJV-Proof`, below): a token alone opens nothing. The one exception is `POST /api/logout`
-without the signature, which ends that token and its key, and nothing else.
+without the signature, which ends that token and its key, and nothing else. `POST
+/api/hjv/pc/sync` takes no token: a bound PC signs it with its device key (below).
+
+A PC leaves its account in one place only, `db::release_binding`: its row goes, its binding ID
+stays 180 days as a tombstone, and the change serial goes up, in one transaction, so that the
+PC's next sync gets a signed `revoked` (design v3 §4-3). The signed logout from the PC, undo,
+`DELETE /api/hjv/devices/{id}`, `binding revoke` (`device remove`), `user delete` and the upkeep's
+deletion of unused accounts (their PCs first), and the upkeep's release of PCs unseen for 180 days
+all go through it; `tests/pcsync.rs` checks that no other SQL deletes a binding.
 
 ## Formats
 
-The formats the app (client patch 0030), hbbs (server patch 0004) and hjv-api must agree on, as
-design v3 §4-1, §4-2 and §5-2 define them. Each is defined in one place in the code; the test
+The formats the app (client patches 0030-0031), hbbs (server patch 0004) and hjv-api must agree
+on, as design v3 §3-6, §4-1, §4-2 and §5-2 define them. Each is defined in one place in the code; the test
 vectors at the end are checked against the code by `tests/keys.rs`, which also checks that this
 section shows them. Encodings: base64 is RFC 4648 §4 with padding, base64url is §5 without
 padding, NUL is the byte 0x00, times are Unix seconds.
@@ -265,14 +309,17 @@ POST   /api/hjv/keys/revoke-others     {"revoked":n}      (every key of the acco
 ```
 
 The active keys of the account, newest first, in pages as `/api/peers`. `name` is the server's
-device name, `app_name` the device's own; `net` is `on-campus`, `off-campus` or `""`; `new` marks a
+device name, `app_name` the device's own; `net` is `on-campus`, `off-campus` or `""`; `use` is what
+the PCs reported of the key through their sync (U6): per PC `{"pc_id","pc","last","n30"}`, the
+latest time the key opened it without its password (the PC's clock) and the count of the last 30
+days, `pc` the host name or `""` once the PC left the account; `last_used` and `last_used_pc` are
+its latest line, or null; `new` marks a
 key made after the asking one that neither the asking key nor an older key of the account
 confirmed, for 7 days. A key confirms only keys made after it, and its confirmation counts for its
 own device and the ones that logged in after it: whoever logs in with a leaked portal password
 can neither confirm their own key nor have a second login of theirs confirm it for the owner's
 devices. A key of another account or none, and `ack` of the asking key or an older one: 404
-`{"error":"not found"}`. At most 30 calls a minute per account (429). `last_used`, `last_used_pc`
-and `use` (the PCs' reports, U6) come with the PC sync.
+`{"error":"not found"}`. At most 30 calls a minute per account (429).
 
 ### Device list: `GET /api/peers`
 
@@ -284,17 +331,79 @@ and `use` (the PCs' reports, U6) come with the PC sync.
 `pk` is the key hbbs held when the PC was bound (the app checks the PC it reaches against it),
 `kinds` is `HJV_API_PASSWORDLESS_KINDS`. `pwless` and `note`:
 
-| `pwless` | `note` |
-|---|---|
-| `active` | 비밀번호 없이 연결 |
-| `listed` | 이 PC에서 로그인 필요 |
-| `off` | PC에서 꺼 둠 |
-| `disabled` | 비밀번호 없는 연결 일시 중지(관리자) |
-| `expired` | 마지막 확인 <n>일 전 |
-| `needs-relogin` | 이 PC에서 다시 로그인 필요 |
+| `pwless` | when (the first that holds) | `note` |
+|---|---|---|
+| `needs-relogin` | hbbs holds another key for the PC than the one stored (design v3 §4-6) | 이 PC에서 다시 로그인 필요 |
+| `disabled` | the account's switch is off | 비밀번호 없는 연결 일시 중지(관리자) |
+| `listed` | no sync yet, or the last one carried no binding or another one | 이 PC에서 로그인 필요 |
+| `expired` | the last sync is older than a list lives (`HJV_API_TRUST_TTL`) | 마지막 확인 <n>분/시간/일 전 |
+| `off` | the PC's users switched it off there | PC에서 꺼 둠 |
+| `active` | the last sync carried its binding | 비밀번호 없이 연결 |
 
-Until the PCs report through the sync (design v3 §3-6), a PC is `listed`, or `disabled` while its
-account's switch is off.
+`GET /api/hjv/this-device` of a login that proved it is a PC of the account also has
+`"binding":"<32 hex>"`, `"pwless":"<state>"` and `"activation":"present|absent|stale"` (what the
+PC's last sync carried: its binding, none, another one).
+
+### PC sync: `POST /api/hjv/pc/sync` (`src/pcsync.rs`, `src/envelope.rs`, `src/trust.rs`)
+
+The request is the envelope hjv-relay uses too (relay/PROTOCOL.md §4), at most 16 KiB, signed
+with the PC's device key (the key hbbs held when it was bound):
+
+```text
+{"id":"<PC ID>","t":<time>,"n":"<base64url of 16 random bytes>","p":"<payload text>","s":"<base64 signature>"}
+"hjv-pc-v1" NUL "sync" NUL id NUL t NUL n NUL base64(SHA-256(p))
+{"v":1,"binding":"<32 hex, or empty>","ver":"1.6.0","off":false,
+ "used":[{"pk":"<account key>","day":"2026-10-20","last":<time>,"n":3}],
+ "refused":{"unknown_key":0,"kind":0,"temporary_only":0,"not_secured":0,"bad_sig":0,"expired":0,"off":1},
+ "wol_hash":"","wol":{…}}
+```
+
+- `t` is the PC's idea of the server's time (it learns `server_time` from the answers), `p` the
+  payload as text: the signature covers its bytes as sent. `binding` is the binding the PC holds,
+  the one a login on it asks for, or empty after it let one go; `used` (U6) per account key and
+  UTC day the latest time the PC let it in and that day's running count, today and yesterday;
+  `refused` the counts of refused proofs since the last report taken. `wol` is Wake-on-LAN's, not
+  stored yet. A field of the wrong JSON type refuses the request; a line out of range (a day
+  outside the last 30, a time not of its day, a count of 0, a key of no account of the PC) is
+  left out.
+- The checks, the first failure answering: size (413 `too_large`), shape (400 `bad_request`), the
+  row of `id` (the PC's binding, else the ID's latest tombstone; neither: 404 `unbound`), the
+  signature with that row's key (401 `bad_signature`; for a bound PC hjv-api then asks hbbs, at
+  most once a minute per PC, and when hbbs signs another key the PC is `needs-relogin`), the time
+  within 300 s (400 `clock` with `server_time`), the pair (`id`, `n`) not seen in 600 s (409
+  `replay`), the payload (400 `bad_request`). Errors are `{"error":"<code>","server_time":<time>}`.
+  There is no 429: a repeat within 10 s while the change serial stayed gets the last list's
+  contents again, for its own `n`.
+- An accepted sync of a bound PC stores its report (it also counts as the PC seen) and ends a
+  `needs-relogin`; key use is merged by the larger values, so that a report cannot lower what is
+  stored. Then:
+
+| row | `binding` | answer |
+|---|---|---|
+| bound | the PC's binding | 200, a signed list: `active` with the account's keys that are not revoked, or `disabled` without keys (the account's switch is off, or it is off the allowlist) |
+| bound | empty, or one no tombstone of the ID has | 200 `{"server_time":…,"state":"listed","refresh":120}`, no list |
+| bound | a released binding of the ID | 200, a signed `revoked` |
+| tombstone only | a released binding of the ID | 200, a signed `revoked` |
+| tombstone only | empty, or another one | 404 `{"error":"unbound","state":"unbound","server_time":…}` |
+
+```text
+{"server_time":<time>,"state":"active","refresh":120,"send_wol":false,
+ "list":{"kid":1,"l":"<base64 of the list bytes>","s":"<base64 signature>"}}
+```
+
+- The list, its fields in this order (the bytes are what is signed and checked):
+  `{"v":1,"typ":"hjv-trust","kid":1,"binding":"<hex>","pc_id":"<ID>","pc_pk":"<base64>","req":"<n>",
+  "serial":<change serial>,"iat":<time>,"exp":<iat + HJV_API_TRUST_TTL>,"refresh":<HJV_API_TRUST_REFRESH>,
+  "strict":false,"state":"active","owner":"<masked name>","login_at":<time>,
+  "keys":[{"pk","id","name","platform","kinds","ks"}]}`. `req` is the request's `n`, `pc_pk` the
+  key that checked its signature, `binding` the one it sent; `owner` the account's name masked
+  ("홍*동"), `login_at` the last login on this PC whose device signature hjv-api checked. A key's
+  `id` is the device ID of its login (the proof's `my_id` must be it), `name` the server's device
+  name, `kinds` `HJV_API_PASSWORDLESS_KINDS`, `ks` the change serial its registration made.
+- `s` is the list key's Ed25519 signature over `"hjv-trust-v1" NUL` and the list bytes. The PC
+  takes a list only with a key number it pins, at or above the highest it has taken, its own ID
+  and key, the binding and `n` of its request, and `0 < exp − iat ≤ 72 hours`; it counts the
+  lifetime from receipt, and drops its binding only for a signed `revoked`.
 
 ### hbbs and the SSO
 
@@ -304,9 +413,10 @@ account's switch is off.
 ### Test vectors
 
 The vectors shared with the client are `tests/data/v3-vectors.json`: the client renders the file
-from its `src/hjviewer_account/vectors.rs` and pins its SHA-256, and `tests/keys.rs` checks this
-code against it (the request proofs, the sealed login's `ck` and `cp`; the PC sync adds the trust
-list and the sync envelope). The ones below come from the same account key and nonce bytes.
+from its `src/hjviewer_account/vectors.rs` and pins its SHA-256, and `tests/keys.rs` and
+`tests/pcsync.rs` check this code against it (the request proofs, the sealed login's `ck` and `cp`,
+the trust list and the sync envelope). The ones below come from the same account key and nonce
+bytes.
 
 Made with libsodium 1.0.18 (`crypto_sign_seed_keypair`, `crypto_sign_detached`), as the app signs.
 The account key is the Ed25519 key of the seed `[3; 32]` (32 bytes 0x03); "signed" is the signed
@@ -334,6 +444,22 @@ signed (151)     686a762d7265712d763100504f5354002f6170692f6c6f676f7574003137363
 X-HJV-Proof      v1.1760000000.AAECAwQFBgcICQoLDA0ODw.HgexD8dQd4Gq9iVRcGKrG_nqtOsGX5FbjSlBwJRkA4bdnFtbaQ48xnizvYV301E2G4vHaI_vvmoMsq_X2R_DDg
 ```
 
+The trust list of the shared vectors (`tests/pcsync.rs`): the list key 1 is the key of the seed
+`[1; 32]` (key 2: `[9; 32]`), the PC's device key that of `[2; 32]`; hjv-api's list of the same
+values is these bytes, and its signature this `s`.
+
+```text
+HJV_TRUST_PUBKEYS 1:iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=,2:/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=
+list (UTF-8)     {"v":1,"typ":"hjv-trust","kid":1,"binding":"b0f1e2d3c4b5a69788796a5b4c3d2e1f","pc_id":"123456789","pc_pk":"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=","req":"EBESExQVFhcYGRobHB0eHw","serial":4182,"iat":1760000001,"exp":1760086401,"refresh":120,"strict":false,"state":"active","owner":"홍*동","login_at":1759999950,"keys":[{"pk":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","id":"987654321","name":"iPhone 14 Pro","platform":"ios","kinds":["remote","file","camera"],"ks":4180}]}
+s                Nw16DIR5leqpTGfWFU/sy14XyKbCgG8dBqeCfKiKTO3tANo/PZ24ows1wYuGH3k4x0sqYy6TMcWTj+8NkuwJCw==
+
+the PC's sync of that request, t = 1760000000, n = EBESExQVFhcYGRobHB0eHw (bytes 10 11 … 1f)
+p                {"v":1,"binding":"b0f1e2d3c4b5a69788796a5b4c3d2e1f","ver":"1.6.0","off":false,"used":[{"pk":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","day":"2025-10-08","last":1759962000,"n":1},{"pk":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","day":"2025-10-09","last":1759999000,"n":2}],"refused":{"unknown_key":0,"kind":0,"temporary_only":0,"not_secured":0,"bad_sig":0,"expired":0,"off":0},"wol_hash":""}
+SHA-256(p)       iMyEf1q+Mr4xwo9aviy8vXD+GTlPt/W8CyuJ7y8URlk=
+signed (103)     686a762d70632d76310073796e630031323334353637383900313736303030303030300045424553457851564668635947526f6248423065487700694d79456631712b4d723478776f3961766979387658442b47546c50742f57384379754a37793855526c6b3d
+s                VVlqZ2wbpNnG3trz+58Y7RftEQMb1GwlsUWg7Yf4XXd94z3RiDzLQqJJPT6mKSLBA9eHEKxK/arHQ39alppkCQ==
+```
+
 These keys are public test values: never use them for anything else.
 
 ## Tests
@@ -343,7 +469,10 @@ integration tests that start hjv-api in-process with the fake SSO (`src/fake_sso
 console and the admin socket, and the binary under `systemd-socket-activate` when it is installed.
 The test client logs in as the app does, with a new account key each time, and signs its account
 requests (`tests/common/mod.rs`); `tests/keys.rs` has the account keys, the switches and the test
-vectors above and in `tests/data/v3-vectors.json`, `tests/http.rs` the request proof.
+vectors above and in `tests/data/v3-vectors.json`, `tests/http.rs` the request proof, and
+`tests/pcsync.rs` the PC sync: its checks in order, the lists as the PC checks them, the
+ten-second repeat, key use, the device list's states, every way a PC leaves its account, the key
+change confirmed with hbbs, the report and selfcheck.
 Their files and sockets go to the system's temporary directory (`/tmp` when `$TMPDIR` is long), so
 that socket paths stay short whatever the target directory. Nothing calls the real SSO.
 `hjv-fake-sso --listen 127.0.0.1:18600` serves the fake SSO for the E2E with fixed test accounts
@@ -357,14 +486,21 @@ as the SSO sends it, name, times, the account's password-less switch); token has
 account key of its login; account keys (public key, the tag of the app's uuid, the device ID, the
 platform, the server's device name, the device's own name, the app version, on or off campus, the
 times of creation, login, confirmation and revocation, the key that confirmed it); the nonces of
-signed requests for 20 minutes; devices (ID, OS, host name, public key, binding ID, times); the
-change serial and the switches; login-limit counters under tags; login, device and key records
-(tags, client address, result, time).
+signed requests for 20 minutes; devices (ID, OS, host name, public key, binding ID, times, and
+from the PC's last sync: its time, the app version, whether it is switched off there, its mark of
+the binding, and since when hbbs holds another key for it); released bindings (binding ID, PC ID,
+the PC's public key, time, how it went); per account key, PC and UTC day the PCs' reports of
+password-less use (latest time, count) and per PC, reason and day the counts of refused proofs;
+the nonces of accepted syncs for 10 minutes; the change serial, the switches and the time of the
+last switch change; login-limit counters under tags; login, device and key records (tags, client
+address, result, time).
 
 Kept: tokens 90 days unused / a year at most (a new login replaces the token of the same device,
 and an account keeps at most 20); account keys while their token lasts (an hourly upkeep revokes
 the keys no valid token is left for), then 30 days revoked; devices until removed or 180 days
-unseen; accounts until a year
+unseen (a sync counts as seen); released bindings 180 days; key use and refusals 30 days (key use
+also after the PC left the account, so that taking a PC out does not wipe the trace of who opened
+it; it goes with its key or account); accounts until a year
 unused, unless still on the allowlist with a PC in use (seen within the device time), so that a lab
 PC logged in once stays listed while it is on; records six months; limit counters for their longest
 window, a day at least. Of failed logins, at most 20 a minute are recorded (the rest are counted in
@@ -374,8 +510,8 @@ gets tags and counts only.
 
 ## Later phases
 
-The PC sync and trust lists of design v3 and Wake-on-LAN plug in as modules of their own: routes
-in `api::route` (which also lists the planned paths), sessions from `api::session`, device
-signatures from `devsig`, hbbs keys from `hbbs`, tables through `db::MIGRATIONS` (the PC sync adds
-part B of schema 2, Wake-on-LAN schema 3), records through `AppState::record`, and every change to
-what a trust list says through `db::bump_serial`.
+Wake-on-LAN plugs in as modules of its own: routes in `api::route`, the relay's signed envelope
+from `envelope` (the PC sync's checks, with the relay's `Spec`), sessions from `api::session`,
+hbbs keys from `hbbs`, tables through `db::MIGRATIONS` (schema 3), records through
+`AppState::record`, and every change to what a trust list says through `db::bump_serial`. The
+sync's `wol` and `wol_hash` are read there (`pcsync`), and its answer's `send_wol`.

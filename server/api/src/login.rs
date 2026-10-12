@@ -1347,7 +1347,7 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
         BindStatus::Added => device_record("added").await,
         BindStatus::OtherAccount => {
             log_warn!(
-                "device check: the device is in another account (dev={}, acct={account_tag}); admin: hjv-api admin device remove tag:{}",
+                "device check: the device is in another account (dev={}, acct={account_tag}); admin: hjv-api admin binding revoke tag:{}",
                 state.tags.device(&device.id),
                 state.tags.device(&device.id)
             );

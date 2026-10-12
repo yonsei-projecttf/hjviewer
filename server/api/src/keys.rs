@@ -27,7 +27,7 @@
 //!
 //! | path | answer |
 //! |---|---|
-//! | `GET /api/hjv/keys` | `{"total":n,"data":[{"ckid","name","app_name","platform","app_ver","net","created","last_login","last_used","last_used_pc","use":[],"current","new"}]}`: the account's active keys, newest first |
+//! | `GET /api/hjv/keys` | `{"total":n,"data":[{"ckid","name","app_name","platform","app_ver","net","created","last_login","last_used","last_used_pc","use":[{"pc_id","pc","last","n30"}],"current","new"}]}`: the account's active keys, newest first |
 //! | `POST /api/hjv/keys/{ckid}/ack` | `{"ack":true}`: a device of the account confirmed a key made after its own ("내 기기 맞음") |
 //! | `DELETE /api/hjv/keys/{ckid}` | `{"revoked":true}`: the key and its token are revoked ("로그아웃시키기") |
 //! | `POST /api/hjv/keys/revoke-others` | `{"revoked":n}`: every other key of the account and its token |
@@ -39,12 +39,14 @@
 //! in after it: whoever logs in with a leaked portal password cannot take the notice off the
 //! owner's devices, neither by confirming its own key nor through a second login of its own that
 //! confirms the first (design v3 §0, §1-1). `name` is the server's device name, `app_name` the
-//! device's own. `last_used`, `last_used_pc` and `use` (the PCs' reports of password-less
-//! connections, U6) come with the PC sync (design v3 §5-2).
+//! device's own. `use` is what the PCs reported through their sync (U6, design v3 §5-2): per PC
+//! the latest time the key opened it without its password (by the PC's clock) and the count of
+//! the last 30 days (UTC); `pc` is the PC's host name, empty once the PC has left the account.
+//! `last_used` and `last_used_pc` are its latest line, or null.
 
 use crate::{
     api::{paged, session, ApiRequest, Reply},
-    db::{self, Key},
+    db::{self, Key, KeyUse},
     state::AppState,
     util::{b64, b64_decode, now, DAY},
 };
@@ -188,12 +190,15 @@ fn ckid(text: &str) -> Option<i64> {
     .flatten()
 }
 
-fn key_json(k: &Key, current: Option<&Key>, at: i64) -> Value {
+/// A key as the app's list of logged-in devices reads it; `uses` are its lines of `key use`,
+/// latest first.
+fn key_json(k: &Key, current: Option<&Key>, at: i64, uses: &[&KeyUse]) -> Value {
     let current_ckid = current.map_or(0, |c| c.ckid);
     // a later key's confirmation does not count here: it may be the newcomer's own
     let new = k.ckid > current_ckid
         && k.ack_by.is_none_or(|by| by > current_ckid)
         && at - k.created_at < NEW_FOR;
+    let latest = uses.first();
     json!({
         "ckid": k.ckid,
         "name": k.model,
@@ -203,9 +208,12 @@ fn key_json(k: &Key, current: Option<&Key>, at: i64) -> Value {
         "net": k.login_net,
         "created": k.created_at,
         "last_login": k.last_login_at,
-        "last_used": Value::Null,
-        "last_used_pc": Value::Null,
-        "use": [],
+        "last_used": latest.map(|u| u.last),
+        "last_used_pc": latest.map(|u| u.pc.clone()),
+        "use": uses
+            .iter()
+            .map(|u| json!({ "pc_id": u.device_id, "pc": u.pc, "last": u.last, "n30": u.n }))
+            .collect::<Vec<Value>>(),
         "current": k.ckid == current_ckid,
         "new": new,
     })
@@ -246,10 +254,25 @@ pub async fn route(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         )
     };
     match (rest, &req.method) {
-        ("", &Method::GET) => match state.db.call(move |c| db::keys_of(c, account_id)).await {
-            Ok(keys) => {
+        ("", &Method::GET) => match state
+            .db
+            .call(move |c| {
+                Ok((
+                    db::keys_of(c, account_id)?,
+                    db::key_use_of(c, account_id, &db::use_since(at))?,
+                ))
+            })
+            .await
+        {
+            Ok((keys, uses)) => {
                 let current = keys.iter().find(|k| k.ckid == own.ckid);
-                let items = keys.iter().map(|k| key_json(k, current, at)).collect();
+                let items = keys
+                    .iter()
+                    .map(|k| {
+                        let mine: Vec<&KeyUse> = uses.iter().filter(|u| u.ckid == k.ckid).collect();
+                        key_json(k, current, at, &mine)
+                    })
+                    .collect();
                 Reply::ok(&paged(items, &req.query))
             }
             Err(e) => {

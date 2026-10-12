@@ -15,16 +15,23 @@
 //! The protocol is one JSON line each way: `{"argv":[…],"reveal":false,"sudo_user":"…","input":"…"}`
 //! and `{"ok":true,"output":"…"}` or `{"ok":false,"error":"…"}`.
 //!
-//! Design v3 §5-6 adds the account keys (`key list`, `key revoke`, `user revoke-all`), the
-//! password-less switch (`passwordless`, off when installed; `--owner-of <PC ID>` names an account
-//! by one of its PCs, so that no portal ID has to pass through an agent) and `strict`. Device
-//! names, the names apps give themselves and portal IDs show only with `--reveal`.
+//! Design v3 §5-6 adds the account keys (`key list` with what the PCs reported of each key's use,
+//! `key revoke`, `user revoke-all`), the password-less switch (`passwordless`, off when installed;
+//! `--owner-of <PC ID>` names an account by one of its PCs, so that no portal ID has to pass
+//! through an agent), `strict`, the bindings (`binding list`, `binding revoke`, with `device
+//! remove` as its other name: both release the PC through `db::release_binding`, so that its next
+//! sync gets a signed `revoked`) and the PC sync's counts in `report`. Device names, host names,
+//! the names apps give themselves and portal IDs show only with `--reveal`.
 
 use crate::{
     db, limits,
     oplog::{OpEntry, OpLog},
+    pcsync,
+    selfcheck::ListKeyCheck,
     state::AppState,
-    util::{date, hex, login_key, mask, now, sha256, valid_device_id, valid_portal_id, DAY},
+    util::{
+        date, datetime, hex, login_key, mask, now, sha256, valid_device_id, valid_portal_id, DAY,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -53,7 +60,8 @@ hjv-api admin [--socket <path>] [--reveal] <command>
   allow list                the allowlist
   users                     accounts: tag, ID, devices, account keys, tokens, last login
   devices                   devices in accounts: tag, ID, account tag, OS, last seen
-  key list [<id|tag:T>]     account keys: number, account, platform, device, version, network, times
+  key list [<id|tag:T>]     account keys: number, account, platform, device, version, network,
+                            times, and per PC the last password-less use and the uses of 30 days
   key revoke <ckid>         revoke an account key with its token (that device must log in again)
   unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
                             of the tag from a journal warning, or of a client address
@@ -61,17 +69,25 @@ hjv-api admin [--socket <path>] [--reveal] <command>
                             revoke every token and account key of an account, or of every account
                             (each device must log in again; PCs stay in the accounts)
   revoke <id|tag:T>         the same as user revoke-all <id|tag:T>
-  device remove <id|tag:T>  take a device out of the account that has it
-  user delete <id|tag:T>    delete an account with its tokens, account keys and devices
+  binding list              the PCs bound to accounts: password-less state, last sync, version,
+                            and the released bindings kept, by how they were released
+  binding revoke <PC ID|tag:T>
+                            release a PC from its account; its next sync gets a signed revoked
+  device remove <PC ID|tag:T>
+                            the same as binding revoke
+  user delete <id|tag:T>    delete an account with its tokens and account keys, after releasing
+                            its PCs
   passwordless status | on | off [--account <id|tag:T> | --owner-of <PC ID>]
                             connections without the PC's password between an account's devices:
                             for everyone (off when installed; off also ends the accounts turned on
                             one by one), or for one account
   strict on | off           PCs ask the server at each password-less connection (incidents)
   report                    counts: accounts, devices, tokens, keys, switches, logins of the last
-                            day and week
-  selfcheck                 the service checks that it can reach the SSO and hbbs
-  keygen seal|log-key [--encrypt-to <file>]
+                            day and week, the PCs' syncs, needs-relogin, refusals, released
+                            bindings, password-less connections of 30 days
+  selfcheck                 the service checks that it can reach the SSO and hbbs, and that its
+                            list key is the one the apps pin (with the fingerprints)
+  keygen seal|log-key|list --kid N [--encrypt-to <file> | --out <file>]
                             make a secret for a credential (runs here, not in the service)";
 
 #[derive(Serialize, Deserialize)]
@@ -209,6 +225,7 @@ async fn run(state: &Arc<AppState>, oplog: &OpLog, uid: u32, req: AdminRequest) 
     let command = match words.as_slice() {
         ["allow", sub @ ("import" | "remove" | "list"), ..]
         | ["device", sub @ "remove", ..]
+        | ["binding", sub @ ("list" | "revoke"), ..]
         | ["user", sub @ ("delete" | "revoke-all"), ..]
         | ["key", sub @ ("list" | "revoke"), ..]
         | ["passwordless", sub @ ("status" | "on" | "off"), ..]
@@ -237,7 +254,9 @@ async fn run(state: &Arc<AppState>, oplog: &OpLog, uid: u32, req: AdminRequest) 
             Ok(Target::Value(v)) => vec![state.tags.account(&login_key(&v))],
             Err(_) => vec![],
         },
-        ["device", "remove", arg] | ["passwordless", _, "--owner-of", arg] => match target(arg) {
+        ["device", "remove", arg]
+        | ["binding", "revoke", arg]
+        | ["passwordless", _, "--owner-of", arg] => match target(arg) {
             Ok(Target::Tag(t)) => vec![t],
             Ok(Target::Value(v)) => vec![state.tags.device(&v)],
             Err(_) => vec![],
@@ -302,6 +321,7 @@ const CHANGES: &[&str] = &[
     "unlock",
     "revoke",
     "device remove",
+    "binding revoke",
     "user delete",
     "user revoke-all",
     "key revoke",
@@ -490,15 +510,24 @@ async fn passwordless_status(state: &Arc<AppState>, reveal: bool) -> Result<Stri
     Ok(out)
 }
 
-/// `key list`: the account keys, of one account or all, the revoked ones still kept too.
+/// `key list`: the account keys, of one account or all, the revoked ones still kept too, each
+/// with a line per PC that reported its password-less use in the last 30 days (U6): the PC's tag
+/// and masked ID, the last use by the PC's clock, the count (its host name with `--reveal`).
 async fn key_list(
     state: &Arc<AppState>,
     account: Option<db::Account>,
     reveal: bool,
 ) -> Result<String, String> {
-    let (keys, accounts) = state
+    let since = db::use_since(now());
+    let (keys, accounts, uses) = state
         .db
-        .call(|c| Ok((db::all_keys(c)?, db::accounts(c)?)))
+        .call(move |c| {
+            Ok((
+                db::all_keys(c)?,
+                db::accounts(c)?,
+                db::all_key_use(c, &since)?,
+            ))
+        })
         .await
         .map_err(|e| e.to_string())?;
     let keys: Vec<db::Key> = keys
@@ -563,8 +592,115 @@ async fn key_list(
                 String::new()
             }
         );
+        for u in uses.iter().filter(|u| u.ckid == k.ckid) {
+            let _ = writeln!(
+                out,
+                "         used on PC {:<16}  {:<12}  last {}  30 days {}{}",
+                state.tags.device(&u.device_id),
+                show(&u.device_id, reveal),
+                datetime(u.last),
+                u.n,
+                if reveal && !u.pc.is_empty() {
+                    format!("  {}", u.pc)
+                } else {
+                    String::new()
+                }
+            );
+        }
     }
     Ok(out)
+}
+
+/// The PC an admin command names, by its ID or `tag:`; `None` when no account has it.
+async fn bound_pc(state: &Arc<AppState>, arg: &str) -> Result<Option<String>, String> {
+    Ok(match target(arg)? {
+        Target::Value(v) if valid_device_id(&v) => Some(v),
+        Target::Value(_) => return Err("not a device ID".into()),
+        Target::Tag(tag) => state
+            .db
+            .call(|c| db::all_devices(c))
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|d| state.tags.device(&d.device_id) == tag)
+            .map(|d| d.device_id),
+    })
+}
+
+/// `binding list`: the PCs in accounts with their password-less state and last sync, and the
+/// released bindings kept.
+async fn binding_list(state: &Arc<AppState>, reveal: bool) -> Result<String, String> {
+    let at = now();
+    let (accounts, pcs, tombstones) = state
+        .db
+        .call(|c| {
+            let mut pcs = Vec::new();
+            for d in db::all_devices(c)? {
+                let on = db::passwordless_on(c, d.account_id)?;
+                pcs.push((d, on));
+            }
+            Ok((db::accounts(c)?, pcs, db::tombstones_by_reason(c)?))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut out = format!("bindings: {}\n", pcs.len());
+    let _ = writeln!(
+        out,
+        "  {:<16}  {:<12}  {:<16}  {:<13}  {:<10}  {:<10}  {:<8}  bound{}",
+        "tag",
+        "device ID",
+        "account",
+        "pwless",
+        "mark",
+        "last sync",
+        "version",
+        if reveal { "       host name" } else { "" }
+    );
+    for (d, on) in &pcs {
+        let account = accounts
+            .iter()
+            .find(|a| a.id == d.account_id)
+            .map(|a| state.tags.account(&a.login_key))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  {:<16}  {:<12}  {:<16}  {:<13}  {:<10}  {:<10}  {:<8}  {}{}",
+            state.tags.device(&d.device_id),
+            show(&d.device_id, reveal),
+            account,
+            pcsync::pwless_state(d, *on, at, state.config.trust_ttl_secs),
+            pcsync::activation(d),
+            d.last_sync_at.map_or_else(|| "-".to_owned(), date),
+            d.app_ver
+                .as_deref()
+                .filter(|v| !v.is_empty())
+                .unwrap_or("-"),
+            date(d.bound_at),
+            if reveal {
+                format!("  {}", d.hostname)
+            } else {
+                String::new()
+            }
+        );
+    }
+    let _ = writeln!(
+        out,
+        "released bindings kept 180 days: {}",
+        pairs_text(&tombstones)
+    );
+    Ok(out)
+}
+
+/// "a 1, b 2", or "none".
+fn pairs_text(pairs: &[(String, i64)]) -> String {
+    if pairs.is_empty() {
+        return "none".to_owned();
+    }
+    pairs
+        .iter()
+        .map(|(name, n)| format!("{name} {n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, String> {
@@ -767,35 +903,28 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 .map_err(dberr)?;
             Ok(format!("revoked {keys} account keys and {tokens} tokens"))
         }
-        ["device", "remove", arg] => {
-            let id = match target(arg)? {
-                Target::Value(v) if valid_device_id(&v) => Some(v),
-                Target::Value(_) => return Err("not a device ID".into()),
-                Target::Tag(tag) => state
-                    .db
-                    .call(|c| db::all_devices(c))
-                    .await
-                    .map_err(dberr)?
-                    .into_iter()
-                    .find(|d| state.tags.device(&d.device_id) == tag)
-                    .map(|d| d.device_id),
+        ["binding", "list"] => binding_list(state, reveal).await,
+        // design v3 §5-6: device remove is binding revoke's other name, so that either name
+        // leaves the tombstone that gets the PC a signed revoked
+        ["binding", "revoke", arg] | ["device", "remove", arg] => {
+            let Some(id) = bound_pc(state, arg).await? else {
+                return Ok("no such PC in any account".into());
             };
-            let Some(id) = id else {
-                return Ok("no such device in any account".into());
-            };
-            let removed = state
+            let released = state
                 .db
                 .call(move |c| {
-                    let removed = db::unbind_any(c, &id)?;
-                    db::checkpoint(c)?;
-                    Ok(removed)
+                    let released = db::in_tx(c, |tx| db::release_binding(tx, &id, "admin", at))?;
+                    if released {
+                        db::checkpoint(c)?;
+                    }
+                    Ok(released)
                 })
                 .await
                 .map_err(dberr)?;
-            Ok(if removed {
-                "removed the device from its account".into()
+            Ok(if released {
+                "released the PC from its account; its next sync gets a signed revoked".into()
             } else {
-                "no such device in any account".into()
+                "no such PC in any account".into()
             })
         }
         ["user", "delete", arg] => {
@@ -810,8 +939,9 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                         let devices = db::devices_of(tx, id)?.len();
                         let keys = db::keys_of(tx, id)?.len();
                         let tokens = db::revoke_tokens(tx, id)?;
-                        // the keys, their nonces and the devices go with the account (cascade)
-                        db::delete_account(tx, id)?;
+                        // its PCs are released first (tombstones); the keys, their nonces and
+                        // their reported use go with the account (cascade)
+                        db::delete_account(tx, id, at)?;
                         Ok((devices, keys, tokens))
                     })?;
                     db::checkpoint(c)?;
@@ -873,9 +1003,10 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
             ))
         }
         ["report"] => {
+            let ttl = state.config.trust_ttl_secs;
             let (counts, counted) = state
                 .db
-                .call(move |c| Ok((db::counts(c, at)?, limits::counted_since(c, at - DAY)?)))
+                .call(move |c| Ok((db::counts(c, at, ttl)?, limits::counted_since(c, at - DAY)?)))
                 .await
                 .map_err(dberr)?;
             let mut out = format!(
@@ -906,6 +1037,41 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 on_off(counts.strict),
                 counts.change_serial
             );
+            // design v3 §5-6, §5-9: what the monitoring and the incident switch go by
+            let _ = writeln!(
+                out,
+                "PCs holding their binding: {}, of them synced in the last 10 minutes: {}",
+                counts.pcs_holding, counts.pcs_synced_recently
+            );
+            let _ = writeln!(
+                out,
+                "PCs holding their binding that have not synced since the last switch change{}: {}",
+                counts
+                    .switched_at
+                    .map_or_else(String::new, |t| format!(" ({})", datetime(t))),
+                counts.pcs_behind_switch
+            );
+            let _ = writeln!(
+                out,
+                "PCs that need a login on them (needs-relogin): {}",
+                counts.needs_relogin
+            );
+            let _ = writeln!(out, "PCs by app version: {}", pairs_text(&counts.versions));
+            let _ = writeln!(
+                out,
+                "refused proofs of the last 30 days: {}",
+                pairs_text(&counts.refusals)
+            );
+            let _ = writeln!(
+                out,
+                "released bindings kept 180 days: {}",
+                pairs_text(&counts.tombstones)
+            );
+            let _ = writeln!(
+                out,
+                "password-less connections of the last 30 days: {}",
+                counts.uses
+            );
             out.push_str("records (last day / last week):\n");
             for (result, day, week) in counts.results {
                 let _ = writeln!(out, "  {result:<28} {day:>5} / {week}");
@@ -924,7 +1090,11 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
             Ok(out)
         }
         ["selfcheck"] => {
-            let (report, ok) = crate::selfcheck::run(&state.config).await;
+            let held = ListKeyCheck::Held {
+                kid: state.list_key.kid(),
+                public_key: state.list_key.public_key(),
+            };
+            let (report, ok) = crate::selfcheck::run(&state.config, &held).await;
             if ok {
                 Ok(report)
             } else {

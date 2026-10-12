@@ -7,7 +7,10 @@
 //! hjviewer-api.env.example lists every name with its default. Secrets come only from systemd
 //! credentials ($CREDENTIALS_DIRECTORY, or `--credentials <dir>`), never from the environment.
 
-use crate::util::{b64_decode, IpNet, DAY};
+use crate::{
+    trust,
+    util::{b64_decode, IpNet, DAY},
+};
 use hyper::Uri;
 use std::{
     collections::HashMap,
@@ -77,6 +80,13 @@ pub struct Config {
     /// the connection kinds a same-account device may open without the PC's password (U3; the
     /// trust list's and the device list's `kinds`)
     pub passwordless_kinds: Vec<String>,
+    /// the number of the list key in use (the credential hjviewer-api-list-key), design v3 §5-3
+    pub list_kid: u32,
+    /// the list keys the apps pin (their HJV_TRUST_PUBKEYS): selfcheck compares the key in use
+    pub trust_pubkeys: Vec<(u32, [u8; 32])>,
+    /// how often a bound PC asks for its trust list, and how long a list lives (U4)
+    pub trust_refresh_secs: i64,
+    pub trust_ttl_secs: i64,
 }
 
 /// The connection kinds of a same-account proof (design v3 §3-3): port forwarding and RDP never
@@ -118,6 +128,10 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_MAX_LOGINS", Some("64")),
     ("HJV_API_CAMPUS_NETS", Some("")),
     ("HJV_API_PASSWORDLESS_KINDS", Some("remote,file,camera")),
+    ("HJV_API_LIST_KID", Some("1")),
+    ("HJV_API_TRUST_PUBKEYS", Some("")),
+    ("HJV_API_TRUST_REFRESH", Some("120")),
+    ("HJV_API_TRUST_TTL", Some("86400")),
 ];
 
 impl Config {
@@ -231,6 +245,28 @@ impl Config {
                 passwordless_kinds.push(kind);
             }
         }
+        let list_kid = u32::try_from(num("HJV_API_LIST_KID")?)
+            .ok()
+            .filter(|k| *k <= trust::MAX_KID)
+            .ok_or("HJV_API_LIST_KID is a key number, 1 to 65535")?;
+        let trust_pubkeys = trust::parse_pubkeys(&get("HJV_API_TRUST_PUBKEYS")?).map_err(|e| {
+            format!("HJV_API_TRUST_PUBKEYS (the apps' HJV_TRUST_PUBKEYS, <kid>:<base64>,…): {e}")
+        })?;
+        let trust_refresh_secs = num("HJV_API_TRUST_REFRESH")?;
+        if !(trust::MIN_REFRESH..=trust::MAX_REFRESH).contains(&trust_refresh_secs) {
+            return Err(format!(
+                "HJV_API_TRUST_REFRESH must be {} to {} seconds: the PCs hold it to that",
+                trust::MIN_REFRESH,
+                trust::MAX_REFRESH
+            ));
+        }
+        let trust_ttl_secs = num("HJV_API_TRUST_TTL")?;
+        if trust_ttl_secs > trust::MAX_TTL || trust_ttl_secs < trust_refresh_secs {
+            return Err(format!(
+                "HJV_API_TRUST_TTL must be at least HJV_API_TRUST_REFRESH and at most {} seconds (72 hours: the apps refuse longer lists)",
+                trust::MAX_TTL
+            ));
+        }
         let config = Config {
             sso: SsoSettings {
                 token_url,
@@ -262,6 +298,10 @@ impl Config {
             max_logins_in_flight: num("HJV_API_MAX_LOGINS")? as usize,
             campus_nets,
             passwordless_kinds,
+            list_kid,
+            trust_pubkeys,
+            trust_refresh_secs,
+            trust_ttl_secs,
         };
         if config.token_idle_secs > config.token_max_secs {
             return Err("HJV_API_TOKEN_IDLE_DAYS cannot exceed HJV_API_TOKEN_MAX_DAYS".into());
@@ -285,6 +325,14 @@ impl Config {
         .flat_map(|windows| windows.iter().map(|w| w.secs))
         .max()
         .unwrap_or(0)
+    }
+
+    /// The public key the apps pin under `kid`, if they pin one.
+    pub fn pinned(&self, kid: u32) -> Option<[u8; 32]> {
+        self.trust_pubkeys
+            .iter()
+            .find(|(k, _)| *k == kid)
+            .map(|(_, key)| *key)
     }
 
     /// Where a login came from, as the account's other devices see it: "on-campus",
@@ -378,6 +426,7 @@ pub const CRED_SSO_SECRET: &str = "hjviewer-sso-client-secret";
 pub const CRED_SSO_API_UUID: &str = "hjviewer-sso-api-uuid";
 pub const CRED_SEAL_KEY: &str = "hjviewer-api-login-key";
 pub const CRED_LOG_KEY: &str = "hjviewer-api-log-key";
+pub const CRED_LIST_KEY: &str = "hjviewer-api-list-key";
 
 /// The secrets, read from credential files.
 pub struct Secrets {
@@ -389,23 +438,28 @@ pub struct Secrets {
     pub seal_keys: Vec<Zeroizing<[u8; 32]>>,
     /// the HMAC key of the tags in logs and records (log.rs)
     pub log_key: Zeroizing<Vec<u8>>,
+    /// the 32-byte Ed25519 seed of the list key that signs the trust lists (design v3 §5-3); its
+    /// number is HJV_API_LIST_KID
+    pub list_key: Zeroizing<[u8; 32]>,
+}
+
+/// Reads the credential `name` of `dir`: text, trimmed, not empty.
+fn read_credential(dir: &Path, name: &str) -> Result<Zeroizing<String>, String> {
+    let bytes = Zeroizing::new(
+        std::fs::read(dir.join(name))
+            .map_err(|e| format!("credential {name}: {} ({})", e.kind(), dir.display()))?,
+    );
+    let text = std::str::from_utf8(&bytes).map_err(|_| format!("credential {name} is not text"))?;
+    let text = Zeroizing::new(text.trim().to_owned());
+    if text.is_empty() {
+        return Err(format!("credential {name} is empty"));
+    }
+    Ok(text)
 }
 
 impl Secrets {
     pub fn load(dir: &Path) -> Result<Secrets, String> {
-        let read = |name: &str| -> Result<Zeroizing<String>, String> {
-            let bytes = Zeroizing::new(
-                std::fs::read(dir.join(name))
-                    .map_err(|e| format!("credential {name}: {} ({})", e.kind(), dir.display()))?,
-            );
-            let text = std::str::from_utf8(&bytes)
-                .map_err(|_| format!("credential {name} is not text"))?;
-            let text = Zeroizing::new(text.trim().to_owned());
-            if text.is_empty() {
-                return Err(format!("credential {name} is empty"));
-            }
-            Ok(text)
-        };
+        let read = |name: &str| read_credential(dir, name);
         let seal_keys = parse_seal_keys(&read(CRED_SEAL_KEY)?)
             .map_err(|e| format!("credential {CRED_SEAL_KEY}: {e}"))?;
         let log_key = Zeroizing::new(
@@ -420,8 +474,34 @@ impl Secrets {
             sso_api_uuid: read(CRED_SSO_API_UUID)?,
             seal_keys,
             log_key,
+            list_key: load_list_key(dir)?,
         })
     }
+}
+
+/// The list key's seed from the credential hjviewer-api-list-key of `dir` (selfcheck reads it
+/// alone, from $CREDENTIALS_DIRECTORY when it runs in the unit).
+pub fn load_list_key(dir: &Path) -> Result<Zeroizing<[u8; 32]>, String> {
+    parse_list_key(&read_credential(dir, CRED_LIST_KEY)?)
+        .map_err(|e| format!("credential {CRED_LIST_KEY}: {e}"))
+}
+
+/// One standard-base64 32-byte seed, as `hjv-api keygen list` writes it ('#' comments allowed).
+pub fn parse_list_key(text: &str) -> Result<Zeroizing<[u8; 32]>, String> {
+    let mut lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'));
+    let line = lines.next().ok_or("no key")?;
+    if lines.next().is_some() {
+        return Err("more than one key: the list key in use only".into());
+    }
+    let bytes = Zeroizing::new(b64_decode(line).ok_or("not base64")?);
+    let seed: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "a list key is a 32-byte seed")?;
+    Ok(Zeroizing::new(seed))
 }
 
 /// One standard-base64 X25519 secret key per line ('#' comments allowed), as `hjv-api keygen
@@ -527,6 +607,47 @@ mod tests {
         assert!(c.campus_nets.is_empty());
         assert_eq!(c.login_net("192.0.2.1"), "");
         assert_eq!(c.passwordless_kinds, vec!["remote", "file", "camera"]);
+        // trust lists (design v3 §5-3, U4): asked every two minutes, a day's life
+        assert_eq!(c.list_kid, 1);
+        assert!(c.trust_pubkeys.is_empty());
+        assert_eq!((c.trust_refresh_secs, c.trust_ttl_secs), (120, 86_400));
+    }
+
+    #[test]
+    fn trust_list_settings() {
+        let k1 = crate::devsig::public_key(&[1; 32]);
+        let k2 = crate::devsig::public_key(&[9; 32]);
+        let with = |pairs: &[(&str, String)]| {
+            let mut vars = base();
+            for (k, v) in pairs {
+                vars.insert((*k).to_owned(), v.clone());
+            }
+            Config::from_vars(&vars)
+        };
+        let pins = format!("{},{}", trust::entry(1, &k1), trust::entry(2, &k2));
+        let c = with(&[
+            ("HJV_API_TRUST_PUBKEYS", pins.clone()),
+            ("HJV_API_LIST_KID", "2".into()),
+            ("HJV_API_TRUST_REFRESH", "5".into()),
+            ("HJV_API_TRUST_TTL", "30".into()),
+        ])
+        .unwrap();
+        assert_eq!(c.trust_pubkeys, vec![(1, k1), (2, k2)]);
+        assert_eq!((c.list_kid, c.pinned(2), c.pinned(3)), (2, Some(k2), None));
+        assert_eq!((c.trust_refresh_secs, c.trust_ttl_secs), (5, 30));
+        for bad in [
+            ("HJV_API_TRUST_PUBKEYS", format!("{pins},")),
+            ("HJV_API_TRUST_PUBKEYS", trust::entry(0, &k1)),
+            ("HJV_API_LIST_KID", "0".into()),
+            ("HJV_API_LIST_KID", "65536".into()),
+            ("HJV_API_TRUST_REFRESH", "4".into()),
+            ("HJV_API_TRUST_REFRESH", "301".into()),
+            ("HJV_API_TRUST_TTL", "259201".into()),
+            ("HJV_API_TRUST_TTL", "119".into()),
+        ] {
+            assert!(with(std::slice::from_ref(&bad)).is_err(), "{bad:?}");
+        }
+        assert!(with(&[("HJV_API_TRUST_TTL", "259200".into())]).is_ok());
     }
 
     #[test]
@@ -658,5 +779,22 @@ mod tests {
         assert_eq!(*keys[0], [7u8; 32]);
         assert!(parse_seal_keys("").is_err());
         assert!(parse_seal_keys("AAAA").is_err());
+    }
+
+    #[test]
+    fn list_key_lines() {
+        let key = crate::util::b64(&[8u8; 32]);
+        assert_eq!(
+            *parse_list_key(&format!("# list key 1\n{key}\n")).unwrap(),
+            [8u8; 32]
+        );
+        for bad in [
+            String::new(),
+            "AAAA".into(),
+            format!("{key}\n{key}"),
+            crate::util::b64(&[8u8; 64]),
+        ] {
+            assert!(parse_list_key(&bad).is_err(), "{bad}");
+        }
     }
 }

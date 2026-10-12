@@ -74,12 +74,13 @@ fn write_setup(
     std::fs::write(
         &env,
         format!(
-            "# test settings\nHJV_API_SSO_TOKEN_URL={}\nHJV_API_SSO_USERINFO_URL={}\nHJV_API_SSO_CLIENT_ID={}\nHJV_API_HBBS_CONSOLE={}\nHJV_API_HBBS_PUBKEY={}\nHJV_API_FAILURE_DELAY_MS=50\nHJV_API_FAILURE_JITTER_MS=10\n",
+            "# test settings\nHJV_API_SSO_TOKEN_URL={}\nHJV_API_SSO_USERINFO_URL={}\nHJV_API_SSO_CLIENT_ID={}\nHJV_API_HBBS_CONSOLE={}\nHJV_API_HBBS_PUBKEY={}\nHJV_API_FAILURE_DELAY_MS=50\nHJV_API_FAILURE_JITTER_MS=10\nHJV_API_TRUST_PUBKEYS={}\n",
             sso.token_url(),
             sso.user_url(),
             fake_sso::CLIENT_ID,
             hbbs.addr,
             hbbs_pubkey(),
+            trust_pubkeys(),
         ),
     )
     .unwrap();
@@ -94,6 +95,10 @@ fn write_setup(
             format!("# current\n{}\n", util::b64(&seal_secret)),
         ),
         ("hjviewer-api-log-key", util::b64(&[5u8; 32])),
+        (
+            "hjviewer-api-list-key",
+            format!("# list key 1\n{}\n", util::b64(&LIST_SEED)),
+        ),
     ] {
         std::fs::write(creds.join(name), value).unwrap();
     }
@@ -292,6 +297,14 @@ async fn refuses_to_start_without_its_socket_or_secrets() {
         !ok && err.contains("credential hjviewer-api-login-key"),
         "{err}"
     );
+    // the list key that signs the trust lists is one of the secrets (design v3 §5-3)
+    let (_, creds_again, _) = write_setup(&dir, &sso, &hbbs);
+    std::fs::remove_file(creds_again.join("hjviewer-api-list-key")).unwrap();
+    let (ok, err) = serve(&["--credentials", creds_again.to_str().unwrap()]);
+    assert!(
+        !ok && err.contains("credential hjviewer-api-list-key"),
+        "{err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -316,6 +329,47 @@ async fn keygen_and_selfcheck() {
             .len(),
         32
     );
+    // a list key (design v3 §5-3): the seed to the credential, the public key as the entry of
+    // HJV_TRUST_PUBKEYS and its fingerprint to the screen
+    let out = Command::new(BIN)
+        .args(["keygen", "list", "--kid", "2"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let seed =
+        hjv_api::config::parse_list_key(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    let public = hjv_api::devsig::public_key(&seed);
+    let note = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        note.contains(&format!(
+            "public key (an entry of HJV_TRUST_PUBKEYS and HJV_API_TRUST_PUBKEYS): {}",
+            hjv_api::trust::entry(2, &public)
+        )),
+        "{note}"
+    );
+    assert!(
+        note.contains(&format!(
+            "fingerprint: {}",
+            hjv_api::trust::fingerprint(2, &public)
+        )),
+        "{note}"
+    );
+    assert!(!note.contains(&util::b64(&*seed)));
+    for bad in [
+        &["keygen", "list"][..],
+        &["keygen", "list", "--kid", "0"],
+        &["keygen", "list", "--kid", "x"],
+    ] {
+        assert!(
+            !Command::new(BIN)
+                .args(bad)
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "{bad:?}"
+        );
+    }
 
     let dir = temp_dir("selfcheck");
     let sso = fake_sso::start(
@@ -341,6 +395,62 @@ async fn keygen_and_selfcheck() {
     assert!(out.status.success(), "{report}");
     assert!(report.contains("[ OK ] hbbs console"), "{report}");
     assert_eq!(sso.token_calls(), 0, "selfcheck sends no request");
+    // the fingerprints of the pinned list keys, to compare with the app build's summary; without
+    // the credentials the key in use is not compared (design v3 §5-3)
+    let one = hjv_api::trust::fingerprint(1, &hjv_api::devsig::public_key(&LIST_SEED));
+    let two = hjv_api::trust::fingerprint(2, &hjv_api::devsig::public_key(&NEXT_LIST_SEED));
+    assert!(
+        report.contains(&format!(
+            "[ OK ] list keys the apps pin (HJV_API_TRUST_PUBKEYS), SHA-256: {one}, {two}"
+        )),
+        "{report}"
+    );
+    assert!(
+        report.contains("[ -- ] list key in use: not read here"),
+        "{report}"
+    );
+    // with them, the key in use is the pinned key 1; a credential that is not catches the eye
+    let (_, creds, _) = write_setup(&dir, &sso, &hbbs);
+    let selfcheck = |creds: PathBuf, env: PathBuf| {
+        tokio::task::spawn_blocking(move || {
+            Command::new(BIN)
+                .arg("selfcheck")
+                .arg("--env-file")
+                .arg(&env)
+                .arg("--credentials")
+                .arg(&creds)
+                .output()
+                .unwrap()
+        })
+    };
+    let out = selfcheck(creds.clone(), env.clone()).await.unwrap();
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{report}");
+    assert!(
+        report.contains(&format!(
+            "[ OK ] list key in use (HJV_API_LIST_KID 1): the pinned key 1, {one}"
+        )),
+        "{report}"
+    );
+    std::fs::write(
+        creds.join("hjviewer-api-list-key"),
+        util::b64(&NEXT_LIST_SEED),
+    )
+    .unwrap();
+    let out = selfcheck(creds.clone(), env.clone()).await.unwrap();
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "{report}");
+    assert!(
+        report.contains(&format!(
+            "[FAIL] list key in use (HJV_API_LIST_KID 1, {}) is not the pinned key 1",
+            hjv_api::trust::fingerprint(1, &hjv_api::devsig::public_key(&NEXT_LIST_SEED))
+        )),
+        "{report}"
+    );
+    assert!(
+        !report.contains(&util::b64(&NEXT_LIST_SEED)),
+        "no secret in the report"
+    );
     drop(hbbs);
     // --log-only never fails the unit
     let (_held, refusing) = refusing_addr();

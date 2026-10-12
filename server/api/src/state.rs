@@ -9,9 +9,11 @@ use crate::{
     limits::{Admit, Breaker, GlobalLimiter, Latency, RecordBudget, FAILURE_RECORDS_PER_MINUTE},
     log::Tagger,
     login::RetryCache,
+    pcsync::{KeyChecks, ListCache},
     seal::SealKeys,
     sso::SsoClient,
     tfa::{PendingStore, SecondFactor},
+    trust::ListKey,
     util::DAY,
 };
 use rusqlite::Connection;
@@ -49,6 +51,13 @@ pub struct AppState {
     pub sso_messages: Mutex<HashSet<String>>,
     /// calls of the account-key paths per account (keys.rs)
     pub key_calls: CallLimiter,
+    /// the list key that signs the PCs' trust lists (credential hjviewer-api-list-key, number
+    /// HJV_API_LIST_KID)
+    pub list_key: ListKey,
+    /// the last trust list of each PC, which a repeat within ten seconds gets again (pcsync.rs)
+    pub lists: ListCache,
+    /// when hbbs was last asked about a PC's key after a sync its stored key did not sign
+    pub key_checks: KeyChecks,
     /// limits already reported, so that hammering a full limit writes no more records or lines
     notices: Mutex<HashMap<String, Instant>>,
 }
@@ -74,8 +83,12 @@ impl AppState {
             sso_api_uuid,
             seal_keys,
             log_key,
+            list_key,
         } = secrets;
         Ok(Arc::new(AppState {
+            list_key: ListKey::new(config.list_kid, &list_key),
+            lists: ListCache::default(),
+            key_checks: KeyChecks::default(),
             sso: SsoClient::new(&config.sso, sso_basic, sso_api_uuid)?,
             seal: SealKeys::new(&seal_keys),
             tags: Tagger::new(&log_key),

@@ -4,22 +4,26 @@
 //! hbbs console that answers `hjv-pk` like patch 0004, an admin socket and a client that seals
 //! and signs logins as client patch 0030 will: every login makes a new account key and seals it
 //! with its proof (keys.rs), and `get`, `post` and `delete` sign with the key of the token's login
-//! (proof.rs), as the app's request hook does.
+//! (proof.rs), as the app's request hook does. `sync` is a PC's sync (pcsync.rs), signed with its
+//! device key, and checks the trust list of the answer as the PC does (design v3 §3-6). The list
+//! keys are the shared test vectors' (tests/data/v3-vectors.json): key 1 of seed [1; 32] signs,
+//! key 2 of seed [9; 32] is the other one the apps pin.
 
 #![allow(dead_code)]
 
 use hjv_api::{
     admin::{self, AdminRequest},
     config::{Config, Secrets},
-    db, devsig,
+    db, devsig, envelope,
     fake_sso::{self, FakeSso},
     hbbs, keys,
     oplog::OpLog,
-    proof, seal,
+    pcsync, proof, seal,
     server::{self, Listener},
     state::AppState,
     tfa::SecondFactor,
-    util::{b64, now, random_bytes},
+    trust,
+    util::{b64, b64_decode, b64url, now, random_bytes},
 };
 use http_body_util::{BodyExt, Full};
 use hyper::{
@@ -57,6 +61,20 @@ pub const HBBS_SEED: [u8; 32] = [33; 32];
 /// HJV_API_HBBS_PUBKEY for the fake console.
 pub fn hbbs_pubkey() -> String {
     b64(&devsig::public_key(&HBBS_SEED))
+}
+
+/// The list key hjv-api signs with (number 1), and the next one the apps pin (number 2): the
+/// shared vectors' keys.
+pub const LIST_SEED: [u8; 32] = [1; 32];
+pub const NEXT_LIST_SEED: [u8; 32] = [9; 32];
+
+/// HJV_API_TRUST_PUBKEYS, as the test apps pin them (HJV_TRUST_PUBKEYS).
+pub fn trust_pubkeys() -> String {
+    format!(
+        "{},{}",
+        trust::entry(1, &devsig::public_key(&LIST_SEED)),
+        trust::entry(2, &devsig::public_key(&NEXT_LIST_SEED))
+    )
 }
 
 /// The test accounts of the fake SSO.
@@ -311,6 +329,7 @@ impl Harness {
             ("HJV_API_SSO_TIMEOUT_MS", "1500".to_owned()),
             // tests log one account in several times a minute: more than a quarter of 20 calls
             ("HJV_API_LIMIT_SSO", "100/60".to_owned()),
+            ("HJV_API_TRUST_PUBKEYS", trust_pubkeys()),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
@@ -324,6 +343,7 @@ impl Harness {
             sso_api_uuid: Zeroizing::new(fake_sso::API_UUID.to_owned()),
             seal_keys: vec![Zeroizing::new(SEAL_SECRET)],
             log_key: Zeroizing::new(LOG_KEY.to_vec()),
+            list_key: Zeroizing::new(LIST_SEED),
         };
         let dir = temp_dir("harness");
         let mut conn = db::open(&dir.join("hjv-api.sqlite3")).unwrap();
@@ -666,6 +686,157 @@ impl Harness {
     pub fn account_tag(&self, id: &str) -> String {
         self.state.tags.account(&hjv_api::util::login_key(id))
     }
+
+    /// The binding ID hjv-api holds for a PC, in hex ("" when no account has it).
+    pub async fn binding_of(&self, id: &str) -> String {
+        let id = id.to_owned();
+        self.state
+            .db
+            .call(move |c| db::device(c, &id))
+            .await
+            .unwrap()
+            .and_then(|d| d.binding_id)
+            .map_or_else(String::new, |b| hjv_api::util::hex(&b))
+    }
+
+    /// The change serial now.
+    pub async fn change_serial(&self) -> i64 {
+        self.state.db.call(|c| db::change_serial(c)).await.unwrap()
+    }
+
+    /// POST /api/hjv/pc/sync with this body, as the PC's service sends it.
+    pub async fn sync_raw(&self, body: Vec<u8>) -> Answer {
+        self.request(
+            Method::POST,
+            pcsync::PATH,
+            &[
+                ("content-type", "application/json"),
+                ("x-real-ip", "192.0.2.40"),
+            ],
+            Some(body),
+        )
+        .await
+    }
+
+    /// A PC's sync now, with a new nonce, and its answer read as the PC reads it.
+    pub async fn sync(&self, pc: &TestDevice, p: &Value) -> Synced {
+        self.sync_at(pc, p, now()).await
+    }
+
+    /// A PC's sync signed with the time `t`.
+    pub async fn sync_at(&self, pc: &TestDevice, p: &Value, t: i64) -> Synced {
+        let nonce = random_bytes::<16>();
+        let body = sync_body(pc, t, &nonce, &p.to_string());
+        let answer = self.sync_raw(body.into_bytes()).await;
+        let binding = p["binding"].as_str().unwrap_or("").to_owned();
+        let n = b64url(&nonce);
+        let list = check_list(&answer.json, pc, &binding, &n);
+        Synced { answer, n, list }
+    }
+}
+
+/// A sync's payload as the PC's service writes it (design v3 §3-6), with nothing to report.
+pub fn payload(binding: &str) -> Value {
+    json!({
+        "v": 1, "binding": binding, "ver": "1.6.0", "off": false, "used": [],
+        "refused": {"unknown_key": 0, "kind": 0, "temporary_only": 0, "not_secured": 0,
+                    "bad_sig": 0, "expired": 0, "off": 0},
+        "wol_hash": "",
+    })
+}
+
+/// The body of a PC's sync: the envelope signed with its device key.
+pub fn sync_body(pc: &TestDevice, t: i64, nonce: &[u8; 16], p: &str) -> String {
+    envelope::sign_body(&pcsync::SPEC, &pc.seed, &pc.id, t, nonce, p)
+}
+
+/// What a PC got for its sync.
+#[derive(Debug)]
+pub struct Synced {
+    pub answer: Answer,
+    /// the request's `n`
+    pub n: String,
+    /// the answer's list, as the PC checks it: `Ok(list)` when it passes, `Err(why)` when it does
+    /// not, `None` when there is none
+    pub list: Option<Result<Value, String>>,
+}
+
+impl Synced {
+    /// The list, which must have come and passed the PC's checks.
+    pub fn list(&self) -> Value {
+        match &self.list {
+            Some(Ok(list)) => list.clone(),
+            other => panic!(
+                "no good list ({other:?}): {} {}",
+                self.answer.status, self.answer.text
+            ),
+        }
+    }
+
+    /// The account keys of the list, base64.
+    pub fn keys(&self) -> Vec<String> {
+        self.list()["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["pk"].as_str().unwrap().to_owned())
+            .collect()
+    }
+}
+
+/// The PC's checks of a sync answer's list (design v3 §3-6 steps 1-8, as the client's
+/// verify_list; the reference with libsodium is in the client): a pinned key number, the
+/// signature over the bytes as received, then the bytes: this PC, its key, the binding it sent,
+/// this request, a lifetime of at most 72 hours, a known state.
+pub fn check_list(
+    answer: &Value,
+    pc: &TestDevice,
+    binding: &str,
+    n: &str,
+) -> Option<Result<Value, String>> {
+    let signed = answer.get("list")?;
+    Some((|| {
+        let kid = signed["kid"].as_u64().ok_or("kid")?;
+        let seed = match kid {
+            1 => LIST_SEED,
+            2 => NEXT_LIST_SEED,
+            _ => return Err(format!("kid {kid} is not pinned")),
+        };
+        let bytes = b64_decode(signed["l"].as_str().ok_or("l")?).ok_or("l is not base64")?;
+        let s = signed["s"].as_str().ok_or("s")?;
+        let message = [&b"hjv-trust-v1\0"[..], &bytes].concat();
+        if !devsig::verify(&devsig::public_key(&seed), &message, s) {
+            return Err("the signature".into());
+        }
+        let list: Value = serde_json::from_slice(&bytes).map_err(|_| "not JSON")?;
+        let checks = [
+            ("v", list["v"] == 1),
+            ("typ", list["typ"] == "hjv-trust"),
+            ("kid", list["kid"] == kid),
+            ("pc_id", list["pc_id"] == pc.id.as_str()),
+            ("pc_pk", list["pc_pk"] == b64(&pc.public_key()).as_str()),
+            ("binding", list["binding"] == binding),
+            ("req", list["req"] == n),
+            (
+                "state",
+                matches!(
+                    list["state"].as_str(),
+                    Some("active" | "disabled" | "revoked")
+                ),
+            ),
+        ];
+        if let Some((what, _)) = checks.iter().find(|(_, ok)| !ok) {
+            return Err(format!("{what}: {list}"));
+        }
+        let (iat, exp) = (
+            list["iat"].as_i64().ok_or("iat")?,
+            list["exp"].as_i64().ok_or("exp")?,
+        );
+        if exp <= iat || exp - iat > 72 * 3600 {
+            return Err(format!("lifetime {}", exp - iat));
+        }
+        Ok(list)
+    })())
 }
 
 impl Drop for Harness {

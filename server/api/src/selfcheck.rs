@@ -5,14 +5,21 @@
 //! TLS handshake with certificate checks; it sends no request, body or credential. It also asks
 //! hbbs's console whether patch 0004 answers, and checks that HJV_API_HBBS_PUBKEY is set.
 //!
+//! Since design v3 (§5-3) it also prints the SHA-256 fingerprints of the list keys the apps pin
+//! (HJV_API_TRUST_PUBKEYS, the apps' HJV_TRUST_PUBKEYS), to compare with the fingerprints in the
+//! summary of the app build, and checks that the list key in use (the credential
+//! hjviewer-api-list-key, number HJV_API_LIST_KID) is the pinned key of that number: a wrong pin
+//! would have every PC refuse every trust list, and the release build is to catch it first.
+//!
 //! The unit can run it after each start (`ExecStartPost=-… selfcheck --log-only`, commented out
 //! in hjviewer-api.service until the operator agrees), and `hjv-api admin selfcheck` runs it
-//! inside the running service.
+//! inside the running service, with the list key the service holds.
 
 use crate::{
     config::Config,
     hbbs::{self, HbbsError},
     sso::tls_config,
+    trust,
 };
 use hyper::Uri;
 use rustls::pki_types::ServerName;
@@ -25,8 +32,85 @@ use tokio::{net::TcpStream, time::timeout};
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The list key the check compares with the pinned ones.
+pub enum ListKeyCheck {
+    /// the key in use, with its number
+    Held { kid: u32, public_key: [u8; 32] },
+    /// it could not be read here: why
+    NotRead(String),
+    /// no credentials here (a shell outside the unit): not compared
+    Unavailable,
+}
+
+/// The list key lines of the report; false when one failed.
+fn list_keys(config: &Config, held: &ListKeyCheck, report: &mut String) -> bool {
+    let mut ok = true;
+    if config.trust_pubkeys.is_empty() {
+        let _ = writeln!(
+            report,
+            "[FAIL] HJV_API_TRUST_PUBKEYS is not set: the list key cannot be compared with the keys the apps pin (their HJV_TRUST_PUBKEYS)"
+        );
+        ok = false;
+    } else {
+        let fingerprints: Vec<String> = config
+            .trust_pubkeys
+            .iter()
+            .map(|(kid, key)| trust::fingerprint(*kid, key))
+            .collect();
+        let _ = writeln!(
+            report,
+            "[ OK ] list keys the apps pin (HJV_API_TRUST_PUBKEYS), SHA-256: {}",
+            fingerprints.join(", ")
+        );
+    }
+    match held {
+        ListKeyCheck::Held { kid, public_key } => {
+            let mine = trust::fingerprint(*kid, public_key);
+            match config.pinned(*kid) {
+                Some(pinned) if pinned == *public_key => {
+                    let _ = writeln!(
+                        report,
+                        "[ OK ] list key in use (HJV_API_LIST_KID {kid}): the pinned key {kid}, {mine}"
+                    );
+                }
+                Some(_) => {
+                    ok = false;
+                    let _ = writeln!(
+                        report,
+                        "[FAIL] list key in use (HJV_API_LIST_KID {kid}, {mine}) is not the pinned key {kid}: the apps refuse every list it signs"
+                    );
+                }
+                None if config.trust_pubkeys.is_empty() => {
+                    let _ = writeln!(
+                        report,
+                        "[ -- ] list key in use (HJV_API_LIST_KID {kid}): {mine}"
+                    );
+                }
+                None => {
+                    ok = false;
+                    let _ = writeln!(
+                        report,
+                        "[FAIL] list key in use (HJV_API_LIST_KID {kid}, {mine}): no pinned key has the number {kid}"
+                    );
+                }
+            }
+        }
+        ListKeyCheck::NotRead(e) => {
+            ok = false;
+            let _ = writeln!(report, "[FAIL] list key in use: {e}");
+        }
+        ListKeyCheck::Unavailable => {
+            let _ = writeln!(
+                report,
+                "[ -- ] list key in use: not read here (no credentials directory: give --credentials <dir>, or run hjv-api admin selfcheck, which checks the key the service holds)"
+            );
+        }
+    }
+    ok
+}
+
 /// Runs the checks; returns the report and whether all passed.
-pub async fn run(config: &Config) -> (String, bool) {
+pub async fn run(config: &Config, list_key: &ListKeyCheck) -> (String, bool) {
     let mut report = String::new();
     let mut ok = true;
     let mut seen = Vec::new();
@@ -77,6 +161,7 @@ pub async fn run(config: &Config) -> (String, bool) {
             let _ = writeln!(report, "[FAIL] hbbs console: {e}");
         }
     }
+    ok &= list_keys(config, list_key, &mut report);
     (report, ok)
 }
 

@@ -155,7 +155,7 @@ async fn commands_by_id_or_tag() {
     let out = h.admin(&["revoke", HONG.0], false, None).await.unwrap();
     assert_eq!(out, "revoked 1 account keys and 1 tokens");
     assert_eq!(h.get("/api/users", &token).await.status, 401);
-    // take the PC out by its tag
+    // take the PC out by its tag (device remove is binding revoke's other name: design v3 §5-6)
     let device_tag = h.state.tags.device(&pc.id);
     let out = h
         .admin(
@@ -165,12 +165,21 @@ async fn commands_by_id_or_tag() {
         )
         .await
         .unwrap();
-    assert_eq!(out, "removed the device from its account");
-    let out = h
-        .admin(&["device", "remove", &pc.id], false, None)
+    assert_eq!(
+        out,
+        "released the PC from its account; its next sync gets a signed revoked"
+    );
+    for words in [["device", "remove"], ["binding", "revoke"]] {
+        let out = h
+            .admin(&[words[0], words[1], &pc.id], false, None)
+            .await
+            .unwrap();
+        assert_eq!(out, "no such PC in any account");
+    }
+    assert!(h
+        .admin(&["binding", "revoke", "12 34"], false, None)
         .await
-        .unwrap();
-    assert_eq!(out, "no such device in any account");
+        .is_err());
     // delete the account; the allowlist entry stays
     h.login_ok(HONG, Some(&pc)).await;
     let out = h

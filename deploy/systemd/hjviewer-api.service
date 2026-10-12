@@ -1,6 +1,6 @@
-# hjv-api, the HJViewer account API (server/api/README.md): Yonsei portal login and the
-# per-account device list. Started by hjviewer-api.socket, whose Unix socket it serves; it opens no
-# port of its own. It runs as its own system user, apart from hbbs's user (the server key pair).
+# hjv-api, the HJViewer account API (server/api/README.md): Yonsei portal login, the
+# per-account device list and the bound PCs' trust lists. Started by hjviewer-api.socket, whose
+# Unix socket it serves; it opens no port of its own. It runs as its own system user, apart from hbbs's user (the server key pair).
 #   /opt/hjviewer/bin/hjv-api              the binary (GitHub release hjviewer-server-*.tar.gz)
 #   /etc/hjviewer/hjviewer-api.env         settings, not secret (server/api/hjviewer-api.env.example)
 #   /etc/credstore.encrypted/<name>        the secrets below (systemd-creds encrypt; README.md)
@@ -39,14 +39,17 @@ LogsDirectoryMode=0700
 # the database, its WAL and the record are created readable by this user only
 UMask=0077
 # secrets, never in the environment: the SSO client secret and api uuid (the values the WordPress
-# plugin's SSO login uses, D2), the key that opens sealed passwords, the key of the log tags
+# plugin's SSO login uses, D2), the key that opens sealed passwords, the key of the log tags, the
+# list key that signs the PCs' trust lists (design v3 §5-3; hjv-api keygen list --kid 1)
 LoadCredentialEncrypted=hjviewer-sso-client-secret
 LoadCredentialEncrypted=hjviewer-sso-api-uuid
 LoadCredentialEncrypted=hjviewer-api-login-key
 LoadCredentialEncrypted=hjviewer-api-log-key
+LoadCredentialEncrypted=hjviewer-api-list-key
 ExecStart=/opt/hjviewer/bin/hjv-api serve --db /var/lib/hjviewer-api/hjv-api.sqlite3
 # checks DNS, TCP and TLS to the SSO and hbbs's console from inside this sandbox after each start,
-# results in the journal; turn on once the operator agrees (README.md)
+# and that the list key is the one the apps pin (HJV_API_TRUST_PUBKEYS), results in the journal;
+# turn on once the operator agrees (README.md)
 #ExecStartPost=-/opt/hjviewer/bin/hjv-api selfcheck --log-only
 Restart=on-failure
 RestartSec=5

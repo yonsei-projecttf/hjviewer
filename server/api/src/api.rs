@@ -9,13 +9,18 @@
 //! | `POST /api/currentUser` | the user object itself; 401 only for a token that is not valid, never 400 (the app logs out on both) |
 //! | `POST /api/logout` | revokes the token and its key; signed by the key, also takes the PC the login came from out of the list |
 //! | `GET /api/users` | `{"total":1,"data":[<user>]}` |
-//! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol"}}]}`: the account's PCs but the asking device |
-//! | `GET /api/hjv/this-device` | what the token's login did with its device, and whether it can be undone |
+//! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol"}}]}`: the account's PCs but the asking device, each with its password-less state (pcsync.rs) |
+//! | `GET /api/hjv/this-device` | what the token's login did with its device, whether it can be undone, and for a PC in the account its `binding`, `pwless` and `activation` |
 //! | `POST /api/hjv/this-device/undo` | takes that device out of the list again |
 //! | `DELETE /api/hjv/devices/{id}` | takes a device out of the list ("내 목록에서 빼기") |
 //! | `GET /api/hjv/keys`, `…/keys/{ckid}/ack`, `DELETE …/keys/{ckid}`, `POST …/keys/revoke-others` | the account keys (keys.rs) |
+//! | `POST /api/hjv/pc/sync` | a bound PC's sync, signed with its device key, no token (pcsync.rs) |
 //! | `GET /api/hjv/source` | licence, source and running version (AGPL section 13) |
 //! | `GET /api/login-options`, `GET /api/device-group/accessible` | the static answers nginx gives as well |
+//!
+//! A PC leaves its account through `db::release_binding` only, which leaves a tombstone so that
+//! its next sync gets a signed `revoked` (design v3 §4-3): the signed logout from the PC, undo,
+//! `DELETE /api/hjv/devices/{id}`, and the admin and upkeep paths.
 //!
 //! Every path that takes a token takes it only with the `X-HJV-Proof` of the token's account key
 //! (proof.rs, design v3 §4-2), checked in [`session`]: a token alone gets the 401 of a wrong
@@ -29,17 +34,18 @@
 //! a request with a body must be `application/json` (parameters such as charset allowed); there is
 //! no CORS. Error texts never contain the word "disabled", which makes the app empty its list.
 //!
-//! Later phases add their paths in [`route`]: the PC sync of design v3 (`POST /api/hjv/pc/sync`)
-//! and the Wake-on-LAN paths (`/api/hjv/relay/…`, `/api/hjv/devices/{id}/wake`, …), each in a
-//! module of its own that uses [`session`] for the user's token.
+//! The PC sync answers in the envelope protocols' form (`{"error":"<code>","server_time":…}`,
+//! envelope.rs) rather than with these texts. Later phases add their paths in [`route`]: the
+//! Wake-on-LAN paths (`/api/hjv/relay/…`, `/api/hjv/devices/{id}/wake`, …), each in a module of
+//! its own that uses [`session`] for the user's token or envelope.rs for a relay's signature.
 
 use crate::{
     db::{self, Device, Session},
-    keys,
+    envelope, keys,
     login::{self, BindStatus},
-    proof,
+    pcsync, proof,
     state::AppState,
-    util::{b64, now, sha256, valid_device_id},
+    util::{b64, hex, now, sha256, valid_device_id},
 };
 use http_body_util::Full;
 use hyper::{
@@ -177,6 +183,16 @@ fn allowed_methods(path: &str) -> Option<&'static str> {
 pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
     if req.path == "/api/login" {
         return login::handle(state, req).await;
+    }
+    // a PC's sync: no token, the envelope protocols' answers
+    if req.path == pcsync::PATH {
+        if req.method == Method::POST {
+            return pcsync::handle(state, req).await;
+        }
+        return Reply {
+            allow: Some("POST"),
+            ..envelope::error_reply(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed")
+        };
     }
     let Some(allow) = allowed_methods(&req.path) else {
         return Reply::not_found();
@@ -387,11 +403,11 @@ async fn current_user(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
 
 /// Logout (design v3 §4-7, §5-2): the token and its account key always go, so that a logged-out
 /// device's key is on no trust list (§1-8). Signed by the key, the PC the login came from also
-/// leaves the list. A signature whose time is out of the window still counts here: it is this
-/// request's, and the token it is bound to ends with it, so it cannot be used again. Without the
-/// key's signature the PC stays: a stolen token cannot take anyone's PC out of the list, and
-/// ending the token's key gains its holder nothing (a key without a login goes with the next
-/// upkeep anyway).
+/// leaves the list ([`db::release_binding`]: its next sync gets a signed `revoked`). A signature
+/// whose time is out of the window still counts here: it is this request's, and the token it is
+/// bound to ends with it, so it cannot be used again. Without the key's signature the PC stays: a
+/// stolen token cannot take anyone's PC out of the list, and ending the token's key gains its
+/// holder nothing (a key without a login goes with the next upkeep anyway).
 async fn logout(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     let (s, proof) = match authenticate(state, req).await {
         Ok(found) => found,
@@ -425,7 +441,7 @@ async fn logout(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
                 let removed = signed
                     && verified
                     && !device_id.is_empty()
-                    && db::unbind(tx, &device_id, account_id)?;
+                    && db::release_binding_in(tx, &device_id, account_id, "logout", at)?;
                 Ok((revoked, removed))
             })?;
             if done.0 || done.1 {
@@ -497,7 +513,8 @@ async fn users(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     }
 }
 
-/// The second line of a PC's card (design v3 §5-2): `note` of a password-less state.
+/// The second line of a PC's card (design v3 §5-2): `note` of a password-less state; `expired`
+/// has [`expired_note`].
 pub fn pwless_note(state: &str) -> &'static str {
     match state {
         "active" => "비밀번호 없이 연결",
@@ -509,19 +526,30 @@ pub fn pwless_note(state: &str) -> &'static str {
     }
 }
 
+/// The note of `expired`: when the PC last synced, "마지막 확인 3일 전".
+pub fn expired_note(secs_ago: i64) -> String {
+    format!("마지막 확인 {}", pcsync::ago(secs_ago))
+}
+
+/// The note of a PC's state at `at`.
+fn note_of(pwless: &str, device: &Device, at: i64) -> String {
+    match (pwless, device.last_sync_at) {
+        ("expired", Some(last)) => expired_note(at - last),
+        _ => pwless_note(pwless).to_owned(),
+    }
+}
+
 /// A PC of the account as the app's PeerPayload reads it, with its password-less state (design
-/// v3 §5-2): `hjv.pk` is the key hbbs held when it was bound, which the app compares with the
-/// key of the PC it reaches (key continuity, §3-4). Until the PCs report through the sync, a PC
-/// is `listed`, or `disabled` while the account's switch is off; `wol` is `unknown` until the PCs
-/// report how they wake.
-fn peer_json(device: &Device, portal_id: &str, pwless_on: bool, kinds: &[String]) -> Value {
-    let pwless = if pwless_on { "listed" } else { "disabled" };
+/// v3 §5-2, pcsync.rs): `hjv.pk` is the key hbbs held when it was bound, which the app compares
+/// with the key of the PC it reaches (key continuity, §3-4); `wol` is `unknown` until the PCs
+/// report how they wake (Wake-on-LAN).
+fn peer_json(device: &Device, portal_id: &str, pwless: &str, at: i64, kinds: &[String]) -> Value {
     json!({
         "id": device.device_id,
         "user_name": portal_id,
         "info": { "device_name": device.hostname, "os": device.os },
         "status": 1,
-        "note": pwless_note(pwless),
+        "note": note_of(pwless, device, at),
         "hjv": {
             "pk": b64(&device.public_key),
             "pwless": pwless,
@@ -548,11 +576,14 @@ async fn peers(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         .await;
     match found {
         Ok((devices, on)) => {
-            let kinds = &state.config.passwordless_kinds;
+            let (kinds, at) = (&state.config.passwordless_kinds, now());
             let items = devices
                 .iter()
                 .filter(|d| d.device_id != s.device_id)
-                .map(|d| peer_json(d, &s.account.portal_id, on, kinds))
+                .map(|d| {
+                    let pwless = pcsync::pwless_state(d, on, at, state.config.trust_ttl_secs);
+                    peer_json(d, &s.account.portal_id, pwless, at, kinds)
+                })
                 .collect();
             Reply::ok(&paged(items, &req.query))
         }
@@ -577,42 +608,69 @@ fn status_text(status: BindStatus) -> &'static str {
     }
 }
 
-/// The state of the token's device now: the login's outcome, unless the device left the list
-/// since.
-async fn device_state(state: &Arc<AppState>, s: &Session) -> Result<(BindStatus, bool), Reply> {
+/// The token's device now: the login's outcome, unless the device left the list since, whether
+/// [취소] can undo it, and the PC with its password-less state when the token's login proved that
+/// it is this PC of the account.
+struct DeviceState {
+    status: BindStatus,
+    undo: bool,
+    pc: Option<(Device, &'static str)>,
+}
+
+async fn device_state(state: &Arc<AppState>, s: &Session) -> Result<DeviceState, Reply> {
     let recorded = BindStatus::parse(&s.bind_status);
     if s.device_id.is_empty() {
-        return Ok((recorded, false));
+        return Ok(DeviceState {
+            status: recorded,
+            undo: false,
+            pc: None,
+        });
     }
-    let id = s.device_id.clone();
-    let device = state
+    let (id, account_id) = (s.device_id.clone(), s.account.id);
+    let (device, on) = state
         .db
-        .call(move |c| db::device(c, &id))
+        .call(move |c| Ok((db::device(c, &id)?, db::passwordless_on(c, account_id)?)))
         .await
         .map_err(|e| {
             log_err!("this-device: {e}");
             Reply::server_error()
         })?;
-    let in_account = device.is_some_and(|d| d.account_id == s.account.id);
+    let device = device.filter(|d| d.account_id == s.account.id);
+    let in_account = device.is_some();
     let status = match recorded {
         BindStatus::Added | BindStatus::Already if !in_account => BindStatus::Removed,
         other => other,
     };
+    let pc = device.filter(|_| s.device_verified).map(|d| {
+        let pwless = pcsync::pwless_state(&d, on, now(), state.config.trust_ttl_secs);
+        (d, pwless)
+    });
     // [취소] undoes what this login did; a PC that was in the list before leaves it through
     // DELETE /api/hjv/devices/{id}
-    Ok((
+    Ok(DeviceState {
         status,
-        in_account && s.device_verified && recorded == BindStatus::Added,
-    ))
+        undo: in_account && s.device_verified && recorded == BindStatus::Added,
+        pc,
+    })
 }
 
-fn device_reply(s: &Session, status: BindStatus, undo: bool) -> Reply {
-    Reply::ok(&json!({
+/// `this-device` (design v3 §4-3): for a PC of the account whose login proved its device key,
+/// also its binding ID, its password-less state and what its last sync said of the binding.
+fn device_reply(s: &Session, found: &DeviceState) -> Reply {
+    let mut answer = json!({
         "id": s.device_id,
-        "status": status.as_str(),
-        "undo": undo,
-        "message": status_text(status),
-    }))
+        "status": found.status.as_str(),
+        "undo": found.undo,
+        "message": status_text(found.status),
+    });
+    if let Some((d, pwless)) = &found.pc {
+        if let Some(binding) = d.binding_id {
+            answer["binding"] = json!(hex(&binding));
+        }
+        answer["pwless"] = json!(pwless);
+        answer["activation"] = json!(pcsync::activation(d));
+    }
+    Reply::ok(&answer)
 }
 
 async fn this_device(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
@@ -621,7 +679,7 @@ async fn this_device(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         Err(reply) => return reply,
     };
     match device_state(state, &s).await {
-        Ok((status, undo)) => device_reply(&s, status, undo),
+        Ok(found) => device_reply(&s, &found),
         Err(reply) => reply,
     }
 }
@@ -631,19 +689,27 @@ async fn undo(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         Ok(s) => s,
         Err(reply) => return reply,
     };
-    let (status, can_undo) = match device_state(state, &s).await {
+    let found = match device_state(state, &s).await {
         Ok(found) => found,
         Err(reply) => return reply,
     };
-    if !can_undo {
-        return device_reply(&s, status, false);
+    if !found.undo {
+        return device_reply(&s, &found);
     }
-    let (hash, id, account_id) = (s.token_hash.clone(), s.device_id.clone(), s.account.id);
+    let (hash, id, account_id, at) = (
+        s.token_hash.clone(),
+        s.device_id.clone(),
+        s.account.id,
+        now(),
+    );
     let removed = state
         .db
         .call(move |c| {
-            let removed = db::unbind(c, &id, account_id)?;
-            db::set_bind_status(c, &hash, BindStatus::Removed.as_str())?;
+            let removed = db::in_tx(c, |tx| {
+                let removed = db::release_binding_in(tx, &id, account_id, "undo", at)?;
+                db::set_bind_status(tx, &hash, BindStatus::Removed.as_str())?;
+                Ok(removed)
+            })?;
             db::checkpoint(c)?;
             Ok(removed)
         })
@@ -659,7 +725,14 @@ async fn undo(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
                     "removed-undo",
                 )
                 .await;
-            device_reply(&s, BindStatus::Removed, false)
+            device_reply(
+                &s,
+                &DeviceState {
+                    status: BindStatus::Removed,
+                    undo: false,
+                    pc: None,
+                },
+            )
         }
         Err(e) => {
             log_err!("undo: {e}");
@@ -676,11 +749,13 @@ async fn remove_device(state: &Arc<AppState>, req: &ApiRequest, id: &str) -> Rep
     if !valid_device_id(id) {
         return Reply::not_found();
     }
-    let (device_id, account_id) = (id.to_owned(), s.account.id);
+    let (device_id, account_id, at) = (id.to_owned(), s.account.id, now());
     let removed = state
         .db
         .call(move |c| {
-            let removed = db::unbind(c, &device_id, account_id)?;
+            let removed = db::in_tx(c, |tx| {
+                db::release_binding_in(tx, &device_id, account_id, "remove", at)
+            })?;
             if removed {
                 db::checkpoint(c)?;
             }
@@ -791,6 +866,8 @@ mod tests {
             pwless_note("off"),
             pwless_note("disabled"),
             pwless_note("needs-relogin"),
+            &expired_note(3 * crate::util::DAY),
+            &expired_note(90),
             status_text(BindStatus::Added),
             status_text(BindStatus::Already),
             status_text(BindStatus::OtherAccount),
@@ -800,5 +877,6 @@ mod tests {
         ] {
             assert!(!text.to_lowercase().contains("disabled"));
         }
+        assert_eq!(expired_note(3 * crate::util::DAY + 5), "마지막 확인 3일 전");
     }
 }

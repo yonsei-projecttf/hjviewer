@@ -13,9 +13,15 @@
 //! entry there.
 //!
 //! Every change that alters what a PC's trust list would say (a key registered or revoked, a
-//! switch turned, an account deleted, leaving or coming back on the allowlist) raises the change
-//! serial ([`bump_serial`]) in the same transaction; a new key carries the serial its
-//! registration made (design v3 §3-5, §5-2).
+//! switch turned, an account deleted, leaving or coming back on the allowlist, a binding released,
+//! a PC's key found changed or back) raises the change serial ([`bump_serial`]) in the same
+//! transaction; a new key carries the serial its registration made (design v3 §3-5, §5-2).
+//!
+//! A PC leaves an account in one place only, [`release_binding`]: its row goes, its binding ID
+//! goes to the tombstones, so that the PC's next sync gets a signed `revoked` (design v3 §4-3),
+//! and the change serial goes up, in one transaction. Nothing else deletes a `devices` row, and an
+//! account is deleted only by [`delete_account`], which releases its PCs first (the `ON DELETE
+//! CASCADE` of `devices` would leave no tombstone).
 
 use crate::util::DAY;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -151,6 +157,57 @@ CREATE UNIQUE INDEX devices_binding ON devices(binding_id);
 -- connection' checks of the PCs (strict, for incidents)
 INSERT OR IGNORE INTO meta (key, value)
     VALUES ('change_serial', '0'), ('passwordless', 'off'), ('strict', 'off');
+
+-- Part B, the PC sync (WP-S2, design v3 §3-6, §4-5, §5-2): what each bound PC said in its last
+-- sync signed with its device key. The binding ID and login time above are part A.
+ALTER TABLE devices ADD COLUMN activated_at INTEGER;   -- its first sync that carried the binding
+ALTER TABLE devices ADD COLUMN last_sync_at INTEGER;   -- overwritten by every sync
+ALTER TABLE devices ADD COLUMN app_ver TEXT;           -- the app version the sync said
+ALTER TABLE devices ADD COLUMN off INTEGER;            -- 1: switched off on the PC
+ALTER TABLE devices ADD COLUMN sync_state TEXT;        -- the PC's mark: 'present', 'absent', 'stale'
+ALTER TABLE devices ADD COLUMN key_changed_at INTEGER; -- needs-relogin: hbbs holds another key
+
+-- released bindings, so that the PC gets a signed 'revoked' (design v3 §4-3): kept 180 days,
+-- written by release_binding only; `reason` is the way it was released, for the report
+CREATE TABLE binding_tombstones (
+    binding_id BLOB NOT NULL PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    public_key BLOB NOT NULL,            -- the PC's key when it was released
+    revoked_at INTEGER NOT NULL,
+    reason TEXT NOT NULL
+) STRICT;
+CREATE INDEX binding_tombstones_device ON binding_tombstones(device_id, revoked_at);
+
+-- the PCs' reports of password-less connections they let in (U6): per account key, PC and UTC
+-- day the latest time and that day's count, each merged by taking the larger value. Kept 30 days
+-- and deleted with the key (its account), but not with the PC: taking a PC out of the list does
+-- not wipe the trace of who opened it. No row per connection.
+CREATE TABLE key_use (
+    ckid INTEGER NOT NULL REFERENCES ctl_keys(ckid) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    day TEXT NOT NULL,                   -- 'YYYY-MM-DD', UTC
+    last_used_at INTEGER NOT NULL,
+    n INTEGER NOT NULL,
+    PRIMARY KEY (ckid, device_id, day)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX key_use_day ON key_use(day);
+
+-- the PCs' counts of refused proofs by reason, per server day; counts only, 30 days
+CREATE TABLE pc_refusals (
+    device_id TEXT NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    day TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    PRIMARY KEY (device_id, reason, day)
+) STRICT, WITHOUT ROWID;
+
+-- the (id, n) of accepted sync requests, for 600 seconds (envelope.rs)
+CREATE TABLE pc_nonces (
+    id TEXT NOT NULL,
+    nonce BLOB NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (id, nonce)
+) STRICT, WITHOUT ROWID;
 "#,
 ];
 
@@ -264,6 +321,17 @@ pub fn checkpoint(c: &Connection) -> rusqlite::Result<()> {
     c.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
 }
 
+/// The first column of a query's rows.
+fn column<T: rusqlite::types::FromSql>(
+    c: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> rusqlite::Result<Vec<T>> {
+    let mut stmt = c.prepare(sql)?;
+    let rows = stmt.query_map(params, |r| r.get(0))?;
+    rows.collect()
+}
+
 /// Runs `f` in one transaction: all of its changes or none.
 pub fn in_tx<R>(
     c: &mut Connection,
@@ -315,8 +383,31 @@ fn set_flag(c: &Connection, key: &str, on: bool) -> rusqlite::Result<bool> {
     )? > 0;
     if changed {
         bump_serial(c)?;
+        switched(c)?;
     }
     Ok(changed)
+}
+
+/// Notes the time of a switch change (a password-less switch, strict, an account leaving or
+/// coming back on the allowlist): the report counts the PCs that have not synced since, which
+/// hjv-api must stay up for after an incident switch (design v3 §5-6).
+fn switched(c: &Connection) -> rusqlite::Result<()> {
+    c.execute(
+        "INSERT INTO meta (key, value) VALUES ('switched_at', CAST(strftime('%s', 'now') AS TEXT))
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        [],
+    )?;
+    Ok(())
+}
+
+/// When a switch last changed, if ever.
+pub fn switched_at(c: &Connection) -> rusqlite::Result<Option<i64>> {
+    c.query_row(
+        "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'switched_at'",
+        [],
+        |r| r.get(0),
+    )
+    .optional()
 }
 
 /// The global password-less switch (off when installed).
@@ -336,6 +427,7 @@ pub fn set_passwordless_global(c: &Connection, on: bool) -> rusqlite::Result<boo
         )?;
         if cleared > 0 && !changed {
             bump_serial(c)?;
+            switched(c)?;
         }
         changed |= cleared > 0;
     }
@@ -367,6 +459,7 @@ pub fn set_account_passwordless(
     )? > 0;
     if changed {
         bump_serial(c)?;
+        switched(c)?;
     }
     Ok(changed)
 }
@@ -411,6 +504,7 @@ pub fn allow_add(c: &mut Connection, keys: &[String], at: i64) -> rusqlite::Resu
         }
         if relisted {
             bump_serial(tx)?;
+            switched(tx)?;
         }
         Ok((added, keys.len() - added))
     })
@@ -443,6 +537,9 @@ pub fn allow_remove(
         // revoking keys raised it already
         if delisted && revoked == 0 {
             bump_serial(tx)?;
+        }
+        if delisted {
+            switched(tx)?;
         }
         Ok((removed, tokens, revoked))
     })
@@ -518,6 +615,15 @@ pub fn accounts(c: &Connection) -> rusqlite::Result<Vec<Account>> {
     rows.collect()
 }
 
+pub fn account(c: &Connection, account_id: i64) -> rusqlite::Result<Option<Account>> {
+    c.query_row(
+        &format!("SELECT {ACCOUNT_COLUMNS} FROM accounts a WHERE a.id = ?1"),
+        [account_id],
+        |r| account_row(r, 0),
+    )
+    .optional()
+}
+
 pub fn account_by_key(c: &Connection, login_key: &str) -> rusqlite::Result<Option<Account>> {
     c.query_row(
         &format!("SELECT {ACCOUNT_COLUMNS} FROM accounts a WHERE a.login_key = ?1"),
@@ -527,8 +633,19 @@ pub fn account_by_key(c: &Connection, login_key: &str) -> rusqlite::Result<Optio
     .optional()
 }
 
-/// Deletes an account with its tokens, account keys and devices.
-pub fn delete_account(c: &Connection, account_id: i64) -> rusqlite::Result<bool> {
+/// Deletes an account (design v3 §5-4): each of its PCs leaves through [`release_binding`]
+/// first (reason `account-delete`), so that it gets a signed `revoked`; then the account row
+/// goes and with it (cascade) its tokens, account keys, their nonces and the key use reported for
+/// them. Inside the caller's transaction. What stays is the tombstones and the operator record.
+pub fn delete_account(c: &Connection, account_id: i64, at: i64) -> rusqlite::Result<bool> {
+    let pcs: Vec<String> = column(
+        c,
+        "SELECT device_id FROM devices WHERE account_id = ?1",
+        [account_id],
+    )?;
+    for device_id in pcs {
+        release_binding(c, &device_id, "account-delete", at)?;
+    }
     let deleted = c.execute("DELETE FROM accounts WHERE id = ?1", [account_id])? > 0;
     if deleted {
         bump_serial(c)?;
@@ -1020,10 +1137,25 @@ pub struct Device {
     pub hostname: String,
     pub bound_at: i64,
     pub last_seen_at: i64,
+    /// the binding's 128-bit ID (design v3 §4-3)
+    pub binding_id: Option<[u8; 16]>,
+    /// the last login on the PC whose device signature hjv-api checked (server time)
+    pub login_at: Option<i64>,
+    /// from the PC's syncs: the first one that carried the binding, the last one, the app
+    /// version and the switch-off it said, and the PC's mark of the binding
+    pub activated_at: Option<i64>,
+    pub last_sync_at: Option<i64>,
+    pub app_ver: Option<String>,
+    pub off: bool,
+    pub sync_state: Option<String>,
+    /// since when hbbs holds another key for the PC than the one stored (needs-relogin)
+    pub key_changed_at: Option<i64>,
 }
 
 const DEVICE_COLUMNS: &str =
-    "d.device_id, d.account_id, d.public_key, d.os, d.hostname, d.bound_at, d.last_seen_at";
+    "d.device_id, d.account_id, d.public_key, d.os, d.hostname, d.bound_at, d.last_seen_at,
+     d.binding_id, d.login_at, d.activated_at, d.last_sync_at, d.app_ver, d.off, d.sync_state,
+     d.key_changed_at";
 
 fn device_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
     Ok(Device {
@@ -1034,6 +1166,16 @@ fn device_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
         hostname: r.get(4)?,
         bound_at: r.get(5)?,
         last_seen_at: r.get(6)?,
+        binding_id: r
+            .get::<_, Option<Vec<u8>>>(7)?
+            .and_then(|b| <[u8; 16]>::try_from(b).ok()),
+        login_at: r.get(8)?,
+        activated_at: r.get(9)?,
+        last_sync_at: r.get(10)?,
+        app_ver: r.get(11)?,
+        off: r.get::<_, Option<bool>>(12)?.unwrap_or(false),
+        sync_state: r.get(13)?,
+        key_changed_at: r.get(14)?,
     })
 }
 
@@ -1080,8 +1222,9 @@ pub struct Binding {
 
 /// Puts a verified device into an account, unless another account has it (design v2 §5: a
 /// conflict is refused, not settled silently). A new binding gets a random 128-bit ID; the same
-/// account logging in again keeps it and only moves the device's `login_at` to `at`. Inside the
-/// caller's transaction.
+/// account logging in again keeps it and only moves the device's `login_at` to `at`, storing the
+/// key hbbs holds now, which ends a needs-relogin (design v3 §4-6). Inside the caller's
+/// transaction, which raises the change serial with the login's account key.
 pub fn bind(
     c: &Connection,
     account_id: i64,
@@ -1109,7 +1252,7 @@ pub fn bind(
         }
         Some(_) => c.query_row(
             "UPDATE devices SET public_key = ?2, os = ?3, hostname = ?4, last_seen_at = ?5,
-                 login_at = ?5, binding_id = COALESCE(binding_id, ?6)
+                 login_at = ?5, binding_id = COALESCE(binding_id, ?6), key_changed_at = NULL
              WHERE device_id = ?1 RETURNING binding_id",
             params![device_id, public_key, os, hostname, at, fresh.as_slice()],
             |r| r.get(0),
@@ -1141,16 +1284,63 @@ pub fn bind(
     })
 }
 
-/// Takes a device out of an account; false if it is not in that account.
-pub fn unbind(c: &Connection, device_id: &str, account_id: i64) -> rusqlite::Result<bool> {
-    Ok(c.execute(
-        "DELETE FROM devices WHERE device_id = ?1 AND account_id = ?2",
-        params![device_id, account_id],
-    )? > 0)
+/// How long a released binding's tombstone is kept (design v3 §4-3, §5-4).
+pub const TOMBSTONE_RETENTION: i64 = 180 * DAY;
+
+/// The one way a PC leaves its account (design v3 §4-3): the row goes, its binding ID goes to
+/// the tombstones with the PC's key and `reason`, and the change serial goes up, so that the PC's
+/// next sync with that binding gets a signed `revoked` and drops its mark. The refusals the PC
+/// reported go with the row (cascade); the key use it reported stays with the keys for its 30
+/// days. The reasons: `logout`, `undo`, `remove`, `admin`, `account-delete`, `unseen-purge`.
+/// Inside the caller's transaction; false if no account has the PC.
+pub fn release_binding(
+    c: &Connection,
+    device_id: &str,
+    reason: &str,
+    at: i64,
+) -> rusqlite::Result<bool> {
+    let row: Option<(Option<Vec<u8>>, Vec<u8>)> = c
+        .query_row(
+            "SELECT binding_id, public_key FROM devices WHERE device_id = ?1",
+            [device_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((binding_id, public_key)) = row else {
+        return Ok(false);
+    };
+    if let Some(binding_id) = binding_id {
+        c.execute(
+            "INSERT INTO binding_tombstones (binding_id, device_id, public_key, revoked_at, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (binding_id) DO NOTHING",
+            params![binding_id, device_id, public_key, at, reason],
+        )?;
+    }
+    c.execute("DELETE FROM devices WHERE device_id = ?1", [device_id])?;
+    bump_serial(c)?;
+    Ok(true)
 }
 
-pub fn unbind_any(c: &Connection, device_id: &str) -> rusqlite::Result<bool> {
-    Ok(c.execute("DELETE FROM devices WHERE device_id = ?1", [device_id])? > 0)
+/// [`release_binding`] of a PC of the account `account_id` only (the paths of its users); false
+/// when the account does not have the PC.
+pub fn release_binding_in(
+    c: &Connection,
+    device_id: &str,
+    account_id: i64,
+    reason: &str,
+    at: i64,
+) -> rusqlite::Result<bool> {
+    let owner: Option<i64> = c
+        .query_row(
+            "SELECT account_id FROM devices WHERE device_id = ?1",
+            [device_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if owner != Some(account_id) {
+        return Ok(false);
+    }
+    release_binding(c, device_id, reason, at)
 }
 
 pub fn devices_of(c: &Connection, account_id: i64) -> rusqlite::Result<Vec<Device>> {
@@ -1183,6 +1373,278 @@ pub fn seen_by_hbbs(
          WHERE device_id = ?1 AND public_key = ?2",
         params![device_id, public_key, seen_at],
     )? > 0)
+}
+
+/// hbbs holds another key for the PC than the stored `stored` one (design v3 §4-6): the PC is
+/// needs-relogin from `at`, and the change serial goes up. Only while `stored` is still the
+/// stored key (a login may have stored hbbs's new one meanwhile); false if nothing changed.
+pub fn mark_key_changed(
+    c: &Connection,
+    device_id: &str,
+    stored: &[u8],
+    at: i64,
+) -> rusqlite::Result<bool> {
+    let changed = c.execute(
+        "UPDATE devices SET key_changed_at = ?3
+         WHERE device_id = ?1 AND public_key = ?2 AND key_changed_at IS NULL",
+        params![device_id, stored, at],
+    )? > 0;
+    if changed {
+        bump_serial(c)?;
+    }
+    Ok(changed)
+}
+
+/// The PC proved its stored key again (or hbbs holds it again): no longer needs-relogin; false
+/// if it was not.
+pub fn clear_key_changed(c: &Connection, device_id: &str) -> rusqlite::Result<bool> {
+    let changed = c.execute(
+        "UPDATE devices SET key_changed_at = NULL
+         WHERE device_id = ?1 AND key_changed_at IS NOT NULL",
+        [device_id],
+    )? > 0;
+    if changed {
+        bump_serial(c)?;
+    }
+    Ok(changed)
+}
+
+// ---- the PC sync (design v3 §3-6, §5-2; pcsync.rs) ----
+
+/// A released binding (design v3 §4-3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tombstone {
+    pub binding_id: Vec<u8>,
+    pub device_id: String,
+    pub public_key: Vec<u8>,
+    pub revoked_at: i64,
+    pub reason: String,
+}
+
+fn tombstone_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Tombstone> {
+    Ok(Tombstone {
+        binding_id: r.get(0)?,
+        device_id: r.get(1)?,
+        public_key: r.get(2)?,
+        revoked_at: r.get(3)?,
+        reason: r.get(4)?,
+    })
+}
+
+/// What a sync from a PC ID is checked against (design v3 §5-2 step 3): the PC's binding, or else
+/// the latest tombstone of the ID.
+#[derive(Debug, Clone)]
+pub enum SyncRow {
+    Bound(Device),
+    Released(Tombstone),
+}
+
+pub fn sync_row(c: &Connection, device_id: &str) -> rusqlite::Result<Option<SyncRow>> {
+    if let Some(d) = device(c, device_id)? {
+        return Ok(Some(SyncRow::Bound(d)));
+    }
+    Ok(c.query_row(
+        "SELECT binding_id, device_id, public_key, revoked_at, reason FROM binding_tombstones
+         WHERE device_id = ?1 ORDER BY revoked_at DESC, rowid DESC LIMIT 1",
+        [device_id],
+        tombstone_row,
+    )
+    .optional()?
+    .map(SyncRow::Released))
+}
+
+/// The tombstone of `binding_id` when it was a binding of `device_id`.
+pub fn tombstone(
+    c: &Connection,
+    device_id: &str,
+    binding_id: &[u8; 16],
+) -> rusqlite::Result<Option<Tombstone>> {
+    c.query_row(
+        "SELECT binding_id, device_id, public_key, revoked_at, reason FROM binding_tombstones
+         WHERE binding_id = ?1 AND device_id = ?2",
+        params![binding_id.as_slice(), device_id],
+        tombstone_row,
+    )
+    .optional()
+}
+
+/// Records the (`id`, `n`) of an accepted sync until `expires_at`; false if it was accepted
+/// before and has not expired at `at` (envelope.rs step 6). One statement, so one write.
+pub fn use_pc_nonce(
+    c: &Connection,
+    id: &str,
+    nonce: &[u8],
+    at: i64,
+    expires_at: i64,
+) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "INSERT INTO pc_nonces (id, nonce, expires_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT (id, nonce) DO UPDATE SET expires_at = excluded.expires_at
+         WHERE pc_nonces.expires_at < ?4",
+        params![id, nonce, expires_at, at],
+    )? == 1)
+}
+
+/// What a PC's sync said about itself.
+#[derive(Debug, Clone, Copy)]
+pub struct SyncNote<'a> {
+    /// the PC's mark of the binding: 'present' (the binding it sent is its binding), 'absent'
+    /// (it sent none) or 'stale' (it sent another one)
+    pub mark: &'a str,
+    /// the app version, '' when it said none that is one
+    pub app_ver: &'a str,
+    pub off: bool,
+}
+
+/// Stores what a bound PC's sync said; the PC counts as seen, so that the upkeep does not take a
+/// PC in use out of its account (design v3 §4-3 path 6). The first sync carrying the binding sets
+/// `activated_at`.
+pub fn store_sync(
+    c: &Connection,
+    device_id: &str,
+    note: &SyncNote<'_>,
+    at: i64,
+) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE devices SET last_sync_at = ?2, last_seen_at = MAX(last_seen_at, ?2),
+             app_ver = ?3, off = ?4, sync_state = ?5,
+             activated_at = CASE WHEN ?5 = 'present' THEN COALESCE(activated_at, ?2)
+                                 ELSE activated_at END
+         WHERE device_id = ?1",
+        params![device_id, at, note.app_ver, note.off, note.mark],
+    )?;
+    Ok(())
+}
+
+/// One line of a sync's `used` (design v3 §3-6, U6): the proofs of the account key `pk` that the
+/// PC let in on the UTC day `day`, the latest at `last` by the PC's clock, `n` that day's running
+/// count (not the increase since the last report).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UseLine {
+    pub pk: [u8; 32],
+    pub day: String,
+    pub last: i64,
+    pub n: i64,
+}
+
+/// Days of key use and refusals kept: today and the 29 days before (UTC).
+pub const USE_DAYS: i64 = 30;
+
+/// The first day of the USE_DAYS that end with the day of `at`.
+pub fn use_since(at: i64) -> String {
+    crate::util::date(at - (USE_DAYS - 1) * DAY)
+}
+
+/// Merges a PC's `used` lines (U6, design v3 §5-2): a line of a key of the PC's account counts
+/// under (key, PC, day), its time and its count each the larger of the stored and the reported
+/// value. A report repeated changes nothing, and an earlier time or a smaller count does not
+/// lower what is stored, so a local user with the PC's key cannot wipe the trace of a use. Lines
+/// of other keys are left out. Returns how many lines counted.
+pub fn merge_use(
+    c: &Connection,
+    account_id: i64,
+    device_id: &str,
+    lines: &[UseLine],
+) -> rusqlite::Result<usize> {
+    let mut counted = 0;
+    for line in lines {
+        let ckid: Option<i64> = c
+            .query_row(
+                "SELECT ckid FROM ctl_keys WHERE pk = ?1 AND account_id = ?2",
+                params![line.pk.as_slice(), account_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(ckid) = ckid else {
+            continue;
+        };
+        c.execute(
+            "INSERT INTO key_use (ckid, device_id, day, last_used_at, n) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (ckid, device_id, day) DO UPDATE SET
+                 last_used_at = MAX(last_used_at, excluded.last_used_at),
+                 n = MAX(n, excluded.n)",
+            params![ckid, device_id, line.day, line.last, line.n],
+        )?;
+        counted += 1;
+    }
+    Ok(counted)
+}
+
+/// The largest refusal count kept for one PC, reason and day.
+const MAX_REFUSALS: i64 = 1_000_000_000;
+
+/// Adds a PC's counts of refused proofs since its last report, by reason, under the server's day
+/// `day` (counts only, no names: design v3 §4-5).
+pub fn add_refusals(
+    c: &Connection,
+    device_id: &str,
+    refusals: &[(String, i64)],
+    day: &str,
+) -> rusqlite::Result<()> {
+    for (reason, count) in refusals.iter().filter(|(_, n)| *n > 0) {
+        c.execute(
+            "INSERT INTO pc_refusals (device_id, reason, day, count) VALUES (?1, ?2, ?3, MIN(?4, ?5))
+             ON CONFLICT (device_id, reason, day) DO UPDATE SET
+                 count = MIN(count + excluded.count, ?5)",
+            params![device_id, reason, day, count, MAX_REFUSALS],
+        )?;
+    }
+    Ok(())
+}
+
+/// What the PCs reported about one key's use from a day on (U6): per key and PC, the latest
+/// time and the count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyUse {
+    pub ckid: i64,
+    pub device_id: String,
+    /// the PC's host name, '' once the PC has left the key's account
+    pub pc: String,
+    pub last: i64,
+    pub n: i64,
+}
+
+fn key_use_rows(
+    c: &Connection,
+    account_id: Option<i64>,
+    since: &str,
+) -> rusqlite::Result<Vec<KeyUse>> {
+    let mut stmt = c.prepare(
+        "SELECT u.ckid, u.device_id, COALESCE(MAX(d.hostname), ''), MAX(u.last_used_at), SUM(u.n)
+         FROM key_use u JOIN ctl_keys k ON k.ckid = u.ckid
+         LEFT JOIN devices d ON d.device_id = u.device_id AND d.account_id = k.account_id
+         WHERE (?1 IS NULL OR k.account_id = ?1) AND u.day >= ?2
+         GROUP BY u.ckid, u.device_id ORDER BY MAX(u.last_used_at) DESC, u.device_id",
+    )?;
+    let rows = stmt.query_map(params![account_id, since], |r| {
+        Ok(KeyUse {
+            ckid: r.get(0)?,
+            device_id: r.get(1)?,
+            pc: r.get(2)?,
+            last: r.get(3)?,
+            n: r.get(4)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// The use of an account's keys on its PCs from the day `since` on, latest first.
+pub fn key_use_of(c: &Connection, account_id: i64, since: &str) -> rusqlite::Result<Vec<KeyUse>> {
+    key_use_rows(c, Some(account_id), since)
+}
+
+/// The same for every account (admin).
+pub fn all_key_use(c: &Connection, since: &str) -> rusqlite::Result<Vec<KeyUse>> {
+    key_use_rows(c, None, since)
+}
+
+/// The tombstones kept, by the way their bindings were released.
+pub fn tombstones_by_reason(c: &Connection) -> rusqlite::Result<Vec<(String, i64)>> {
+    let mut stmt = c.prepare(
+        "SELECT reason, COUNT(*) FROM binding_tombstones GROUP BY reason ORDER BY reason",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
 }
 
 // ---- records ----
@@ -1238,6 +1700,7 @@ pub struct Retention {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Purged {
     pub tokens: usize,
+    /// PCs not seen for the device time, released (`unseen-purge`)
     pub devices: usize,
     pub accounts: usize,
     pub events: usize,
@@ -1246,6 +1709,9 @@ pub struct Purged {
     pub keys_revoked: usize,
     /// revoked account keys deleted after KEY_RETENTION
     pub keys_deleted: usize,
+    /// tombstones past TOMBSTONE_RETENTION, key use and refusals past USE_DAYS
+    pub tombstones: usize,
+    pub sync_reports: usize,
 }
 
 impl Purged {
@@ -1257,6 +1723,8 @@ impl Purged {
             + self.other
             + self.keys_revoked
             + self.keys_deleted
+            + self.tombstones
+            + self.sync_reports
             > 0
     }
 }
@@ -1266,12 +1734,14 @@ pub const KEY_RETENTION: i64 = 30 * DAY;
 
 /// Deletes what is past its keeping time, then truncates the WAL if anything went.
 ///
-/// An account unused for the account time goes with its devices, tokens and account keys, unless
-/// it is still on the allowlist and one of its PCs was seen within the device time: a lab PC
-/// logged in once stays listed while it is in use, whether or not its owner opens the app (v2 §5
-/// lists the ways a PC leaves the list; the account's own expiry is not one of them). The account
-/// keys of expired tokens are revoked with them (design v3 §14 question 6), and revoked keys are
-/// deleted after KEY_RETENTION.
+/// A PC not seen for the device time (by hbbs, a login or list request from it, or its sync)
+/// leaves its account through [`release_binding`]. An account unused for the account time goes
+/// with its devices, tokens and account keys ([`delete_account`]), unless it is still on the
+/// allowlist and one of its PCs was seen within the device time: a lab PC logged in once stays
+/// listed while it is in use, whether or not its owner opens the app (v2 §5 lists the ways a PC
+/// leaves the list; the account's own expiry is not one of them). The account keys of expired
+/// tokens are revoked with them (design v3 §14 question 6), and revoked keys are deleted after
+/// KEY_RETENTION; tombstones after TOMBSTONE_RETENTION, key use and refusals after USE_DAYS.
 pub fn purge(c: &mut Connection, at: i64, r: &Retention) -> rusqlite::Result<Purged> {
     let p = in_tx(c, |c| {
         let tokens = c.execute(
@@ -1279,20 +1749,28 @@ pub fn purge(c: &mut Connection, at: i64, r: &Retention) -> rusqlite::Result<Pur
             params![at - r.token_idle, at - r.token_max],
         )?;
         let keys_revoked = revoke_idle_keys(c, at, r.token_idle, r.token_max)?;
-        let devices = c.execute(
-            "DELETE FROM devices WHERE last_seen_at <= ?1",
+        let mut devices = 0;
+        let unseen: Vec<String> = column(
+            c,
+            "SELECT device_id FROM devices WHERE last_seen_at <= ?1",
             [at - r.device_unseen],
         )?;
-        let accounts = c.execute(
-            "DELETE FROM accounts WHERE last_active_at <= ?1 AND NOT (
+        for id in unseen {
+            devices += usize::from(release_binding(c, &id, "unseen-purge", at)?);
+        }
+        let mut accounts = 0;
+        let unused: Vec<i64> = column(
+            c,
+            "SELECT id FROM accounts WHERE last_active_at <= ?1 AND NOT (
                  EXISTS (SELECT 1 FROM allowlist l WHERE l.login_key = accounts.login_key)
                  AND EXISTS (SELECT 1 FROM devices d
                              WHERE d.account_id = accounts.id AND d.last_seen_at > ?2))",
-            params![at - r.account, at - r.device_unseen],
+            [at - r.account, at - r.device_unseen],
         )?;
-        if accounts > 0 {
-            bump_serial(c)?;
+        for id in unused {
+            accounts += usize::from(delete_account(c, id, at)?);
         }
+        let since = use_since(at);
         Ok(Purged {
             tokens,
             devices,
@@ -1300,12 +1778,19 @@ pub fn purge(c: &mut Connection, at: i64, r: &Retention) -> rusqlite::Result<Pur
             events: c.execute("DELETE FROM events WHERE at <= ?1", [at - r.events])?,
             other: c.execute("DELETE FROM seal_nonces WHERE expires_at < ?1", [at])?
                 + c.execute("DELETE FROM req_nonces WHERE expires_at < ?1", [at])?
+                + c.execute("DELETE FROM pc_nonces WHERE expires_at < ?1", [at])?
                 + c.execute("DELETE FROM attempts WHERE at <= ?1", [at - r.attempts])?,
             keys_revoked,
             keys_deleted: c.execute(
                 "DELETE FROM ctl_keys WHERE revoked_at IS NOT NULL AND revoked_at <= ?1",
                 [at - KEY_RETENTION],
             )?,
+            tombstones: c.execute(
+                "DELETE FROM binding_tombstones WHERE revoked_at <= ?1",
+                [at - TOMBSTONE_RETENTION],
+            )?,
+            sync_reports: c.execute("DELETE FROM key_use WHERE day < ?1", [&since])?
+                + c.execute("DELETE FROM pc_refusals WHERE day < ?1", [&since])?,
         })
     })?;
     if p.any() {
@@ -1333,9 +1818,29 @@ pub struct Counts {
     pub accounts_on: i64,
     pub accounts_off: i64,
     pub strict: bool,
+    /// the PCs where password-less connections are on (their last sync, within a list's lifetime,
+    /// carried their binding), of them the ones that synced in the last ten minutes, and the ones
+    /// that have not synced since the last switch change, so that the list they hold may still say
+    /// what the switch said before (design v3 §5-6: keep hjv-api running until it is 0, or for a
+    /// list's lifetime)
+    pub pcs_holding: i64,
+    pub pcs_synced_recently: i64,
+    pub pcs_behind_switch: i64,
+    pub switched_at: Option<i64>,
+    /// PCs whose key hbbs holds is not the one stored (needs-relogin)
+    pub needs_relogin: i64,
+    /// PCs by the app version of their last sync ('-': none yet)
+    pub versions: Vec<(String, i64)>,
+    /// refused proofs the PCs reported in the last USE_DAYS, by reason
+    pub refusals: Vec<(String, i64)>,
+    /// tombstones kept, by the way the binding was released
+    pub tombstones: Vec<(String, i64)>,
+    /// password-less connections the PCs let in during the last USE_DAYS
+    pub uses: i64,
 }
 
-pub fn counts(c: &Connection, at: i64) -> rusqlite::Result<Counts> {
+/// The counts of `admin report` at `at`; `list_ttl` is the lifetime of a trust list.
+pub fn counts(c: &Connection, at: i64, list_ttl: i64) -> rusqlite::Result<Counts> {
     let one = |sql: &str| -> rusqlite::Result<i64> { c.query_row(sql, [], |r| r.get(0)) };
     let mut stmt = c.prepare(
         "SELECT kind || ' ' || result, SUM(at > ?1), COUNT(*) FROM events WHERE at > ?2
@@ -1353,7 +1858,48 @@ pub fn counts(c: &Connection, at: i64) -> rusqlite::Result<Counts> {
     let keys_revoked = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let pairs = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> rusqlite::Result<Vec<(String, i64)>> {
+        let mut stmt = c.prepare(sql)?;
+        let rows = stmt.query_map(p, |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    };
+    let switched_at = switched_at(c)?;
+    let since = use_since(at);
+    let holding = |extra: &str, p: &[&dyn rusqlite::ToSql]| -> rusqlite::Result<i64> {
+        c.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM devices WHERE sync_state = 'present' AND last_sync_at > ?1 {extra}"
+            ),
+            p,
+            |r| r.get(0),
+        )
+    };
+    let valid_from = at - list_ttl;
     Ok(Counts {
+        pcs_holding: holding("", &[&valid_from])?,
+        pcs_synced_recently: holding("AND last_sync_at > ?2", &[&valid_from, &(at - 600)])?,
+        // a sync in the second of the switch counts as before it: better wait once more
+        pcs_behind_switch: match switched_at {
+            Some(switched) => holding("AND last_sync_at <= ?2", &[&valid_from, &switched])?,
+            None => 0,
+        },
+        switched_at,
+        needs_relogin: one("SELECT COUNT(*) FROM devices WHERE key_changed_at IS NOT NULL")?,
+        versions: pairs(
+            "SELECT COALESCE(NULLIF(app_ver, ''), '-'), COUNT(*) FROM devices GROUP BY 1 ORDER BY 1",
+            &[],
+        )?,
+        refusals: pairs(
+            "SELECT reason, SUM(count) FROM pc_refusals WHERE day >= ?1
+             GROUP BY reason ORDER BY reason",
+            &[&since],
+        )?,
+        tombstones: tombstones_by_reason(c)?,
+        uses: c.query_row(
+            "SELECT COALESCE(SUM(n), 0) FROM key_use WHERE day >= ?1",
+            [&since],
+            |r| r.get(0),
+        )?,
         allowlist: one("SELECT COUNT(*) FROM allowlist")?,
         accounts: one("SELECT COUNT(*) FROM accounts")?,
         devices: one("SELECT COUNT(*) FROM devices")?,
@@ -1471,6 +2017,18 @@ mod tests {
         assert!(!passwordless_global(&c).unwrap() && !strict(&c).unwrap());
         assert_eq!(change_serial(&c).unwrap(), 0);
         assert_eq!(account_passwordless(&c, 1).unwrap(), None);
+        // part B: no PC has synced yet, no binding was released
+        let d = device(&c, "1").unwrap().unwrap();
+        assert_eq!(
+            (d.last_sync_at, d.sync_state, d.off, d.key_changed_at),
+            (None, None, false, None)
+        );
+        for table in ["binding_tombstones", "key_use", "pc_refusals", "pc_nonces"] {
+            let n: i64 = c
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
         // a login on a PC of schema 1: the binding ID stays, the login time comes
         let id = ids[0].clone();
         let device: String = c
@@ -1580,24 +2138,190 @@ mod tests {
         );
         assert_eq!(bound_key(&c, "1", "a").unwrap(), Some(vec![2; 32]));
         assert_eq!(bound_key(&c, "1", "b").unwrap(), None);
-        assert!(!unbind(&c, "1", b).unwrap());
+        assert!(!release_binding_in(&c, "1", b, "remove", 7).unwrap());
         assert!(seen_by_hbbs(&c, "1", &[2; 32], 50).unwrap());
         assert!(!seen_by_hbbs(&c, "1", &[3; 32], 60).unwrap());
         assert_eq!(device(&c, "1").unwrap().unwrap().last_seen_at, 50);
-        assert!(unbind(&c, "1", a).unwrap());
+        let serial = change_serial(&c).unwrap();
+        assert!(release_binding_in(&c, "1", a, "remove", 70).unwrap());
         assert!(device(&c, "1").unwrap().is_none());
+        assert_eq!(change_serial(&c).unwrap(), serial + 1);
+        // the binding ID stays as a tombstone, with the key the PC had
+        let old = added.binding_id.unwrap();
+        assert_eq!(
+            tombstone(&c, "1", &old).unwrap(),
+            Some(Tombstone {
+                binding_id: old.to_vec(),
+                device_id: "1".into(),
+                public_key: vec![2; 32],
+                revoked_at: 70,
+                reason: "remove".into()
+            })
+        );
+        assert_eq!(tombstone(&c, "2", &old).unwrap(), None);
+        assert!(!release_binding(&c, "1", "admin", 71).unwrap());
         // bound again after it left: a new binding ID
         let rebound = bind(&c, a, "1", &[2; 32], "windows", "PC2", 8).unwrap();
         assert_eq!(rebound.bound, Bound::Added);
         assert_ne!(rebound.binding_id, added.binding_id);
-        // deleting an account takes its devices and tokens
+        // deleting an account releases its devices first, then takes its tokens
         bind(&c, a, "2", &[1; 32], "windows", "PC", 5).unwrap();
         insert_token(&mut c, &token(b"t", a, "2"), 5, 20).unwrap();
+        let two = device(&c, "2").unwrap().unwrap().binding_id.unwrap();
         let serial = change_serial(&c).unwrap();
-        assert!(delete_account(&c, a).unwrap());
-        assert_eq!(change_serial(&c).unwrap(), serial + 1);
+        assert!(delete_account(&c, a, 80).unwrap());
+        // two releases and the account
+        assert_eq!(change_serial(&c).unwrap(), serial + 3);
         assert!(device(&c, "2").unwrap().is_none());
+        assert_eq!(
+            tombstone(&c, "2", &two).unwrap().map(|t| t.reason),
+            Some("account-delete".into())
+        );
         assert!(!delete_token(&c, b"t").unwrap());
+    }
+
+    #[test]
+    fn sync_rows_and_tombstones() {
+        let c = conn();
+        let a = upsert_account(&c, "a", "A", "", 1).unwrap();
+        assert!(sync_row(&c, "1").unwrap().is_none());
+        let first = bind(&c, a, "1", &[1; 32], "windows", "PC", 5).unwrap();
+        assert!(
+            matches!(sync_row(&c, "1").unwrap(), Some(SyncRow::Bound(d)) if d.binding_id == first.binding_id)
+        );
+        release_binding(&c, "1", "logout", 10).unwrap();
+        let second = bind(&c, a, "1", &[2; 32], "windows", "PC", 11).unwrap();
+        release_binding(&c, "1", "admin", 20).unwrap();
+        // without a binding, the latest tombstone of the ID
+        let Some(SyncRow::Released(t)) = sync_row(&c, "1").unwrap() else {
+            panic!("released")
+        };
+        assert_eq!(
+            (t.binding_id, t.public_key, t.reason.as_str()),
+            (second.binding_id.unwrap().to_vec(), vec![2; 32], "admin")
+        );
+        // nonces of accepted syncs, per ID, until they expire
+        assert!(use_pc_nonce(&c, "1", b"n", 100, 700).unwrap());
+        assert!(!use_pc_nonce(&c, "1", b"n", 700, 1300).unwrap());
+        assert!(use_pc_nonce(&c, "2", b"n", 700, 1300).unwrap());
+        assert!(use_pc_nonce(&c, "1", b"n", 701, 1301).unwrap());
+    }
+
+    #[test]
+    fn key_changes() {
+        let c = conn();
+        let a = upsert_account(&c, "a", "A", "", 1).unwrap();
+        bind(&c, a, "1", &[1; 32], "windows", "PC", 5).unwrap();
+        let serial = change_serial(&c).unwrap();
+        // only while the stored key is the one the check found wanting
+        assert!(!mark_key_changed(&c, "1", &[9; 32], 10).unwrap());
+        assert!(mark_key_changed(&c, "1", &[1; 32], 10).unwrap());
+        assert!(!mark_key_changed(&c, "1", &[1; 32], 11).unwrap());
+        assert_eq!(device(&c, "1").unwrap().unwrap().key_changed_at, Some(10));
+        assert_eq!(change_serial(&c).unwrap(), serial + 1);
+        assert!(clear_key_changed(&c, "1").unwrap());
+        assert!(!clear_key_changed(&c, "1").unwrap());
+        assert_eq!(change_serial(&c).unwrap(), serial + 2);
+        // a login of the same account stores hbbs's new key and ends needs-relogin
+        mark_key_changed(&c, "1", &[1; 32], 12).unwrap();
+        let again = bind(&c, a, "1", &[2; 32], "windows", "PC", 13).unwrap();
+        let d = device(&c, "1").unwrap().unwrap();
+        assert_eq!((d.public_key, d.key_changed_at), (vec![2; 32], None));
+        assert_eq!(again.binding_id, d.binding_id);
+    }
+
+    #[test]
+    fn key_use_is_merged_by_the_larger_values() {
+        let mut c = conn();
+        let a = upsert_account(&c, "a", "A", "", 1).unwrap();
+        let b = upsert_account(&c, "b", "B", "", 1).unwrap();
+        let KeyAdmission::Added { ckid, .. } = login_with_key(&mut c, a, 1, "") else {
+            panic!("added")
+        };
+        login_with_key(&mut c, b, 2, "");
+        bind(&c, a, "pc", &[7; 32], "windows", "PC-1", 5).unwrap();
+        let line = |pk: u8, day: &str, last: i64, n: i64| UseLine {
+            pk: [pk; 32],
+            day: day.into(),
+            last,
+            n,
+        };
+        let stored = |c: &Connection| -> Vec<(String, i64, i64)> {
+            let mut s = c
+                .prepare("SELECT day, last_used_at, n FROM key_use ORDER BY day")
+                .unwrap();
+            let rows = s
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap();
+            rows.collect::<rusqlite::Result<_>>().unwrap()
+        };
+        let report = [line(1, "2026-10-11", 300, 2), line(1, "2026-10-12", 500, 1)];
+        assert_eq!(merge_use(&c, a, "pc", &report).unwrap(), 2);
+        // the same report again, an earlier time and a smaller count: nothing goes down
+        assert_eq!(merge_use(&c, a, "pc", &report).unwrap(), 2);
+        merge_use(&c, a, "pc", &[line(1, "2026-10-11", 100, 1)]).unwrap();
+        assert_eq!(
+            stored(&c),
+            vec![("2026-10-11".into(), 300, 2), ("2026-10-12".into(), 500, 1)]
+        );
+        // more uses later the same day go up
+        merge_use(&c, a, "pc", &[line(1, "2026-10-12", 900, 4)]).unwrap();
+        assert_eq!(stored(&c)[1], ("2026-10-12".into(), 900, 4));
+        // another account's key, or no key at all: left out
+        assert_eq!(
+            merge_use(
+                &c,
+                a,
+                "pc",
+                &[line(2, "2026-10-12", 1, 1), line(5, "2026-10-12", 1, 1)]
+            )
+            .unwrap(),
+            0
+        );
+        let since = "2026-09-13";
+        assert_eq!(
+            key_use_of(&c, a, since).unwrap(),
+            vec![KeyUse {
+                ckid,
+                device_id: "pc".into(),
+                pc: "PC-1".into(),
+                last: 900,
+                n: 6
+            }]
+        );
+        assert!(key_use_of(&c, b, since).unwrap().is_empty());
+        assert_eq!(key_use_of(&c, a, "2026-10-12").unwrap()[0].n, 4);
+        // refusals add up under the server's day, zeros left out
+        let refused = [("unknown_key".to_owned(), 2), ("off".to_owned(), 0)];
+        add_refusals(&c, "pc", &refused, "2026-10-12").unwrap();
+        add_refusals(&c, "pc", &refused, "2026-10-12").unwrap();
+        let rows: Vec<(String, i64)> = {
+            let mut s = c.prepare("SELECT reason, count FROM pc_refusals").unwrap();
+            let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            rows.collect::<rusqlite::Result<_>>().unwrap()
+        };
+        assert_eq!(rows, vec![("unknown_key".to_owned(), 4)]);
+        // the refusals go with the PC; the trace of the key's use stays with the key, without
+        // the PC's name once the PC has left the account
+        release_binding(&c, "pc", "remove", 10).unwrap();
+        let left = |table: &str| -> i64 {
+            c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!((left("pc_refusals"), left("key_use")), (0, 2));
+        assert_eq!(
+            key_use_of(&c, a, since).unwrap(),
+            vec![KeyUse {
+                ckid,
+                device_id: "pc".into(),
+                pc: String::new(),
+                last: 900,
+                n: 6
+            }]
+        );
+        // and goes with the account
+        delete_account(&c, a, 20).unwrap();
+        assert_eq!(left("key_use"), 0);
     }
 
     fn new_key<'a>(account_id: i64, pk: &'a [u8; 32], dev_tag: &'a str) -> NewKey<'a> {
@@ -1885,7 +2609,7 @@ mod tests {
             (1, 2, 2)
         );
         assert!(keys_of(&c, a).unwrap().is_empty());
-        let counts = counts(&c, 600).unwrap();
+        let counts = counts(&c, 600, DAY).unwrap();
         assert_eq!(counts.keys_active, 0);
         assert_eq!(counts.keys_revoked, vec![("allow-remove".to_owned(), 2)]);
     }
@@ -1963,7 +2687,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM attempts", [], |r| r.get(0))
             .unwrap();
         assert_eq!(left, 1, "counters older than the longest window go");
-        let counts = counts(&c, t).unwrap();
+        let counts = counts(&c, t, DAY).unwrap();
         assert_eq!((counts.accounts, counts.devices, counts.tokens), (1, 1, 1));
         assert_eq!(counts.results, vec![("login ok".to_owned(), 1, 1)]);
     }
