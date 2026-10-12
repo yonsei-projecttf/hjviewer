@@ -1,0 +1,24 @@
+# The socket of hjv-api, the HJViewer account API (server/api/README.md). systemd (PID 1) holds it
+# for as long as the unit is active, also while hjv-api restarts or is stopped, so no other process
+# can take its place; the socket file lives in /run, which only root can change. nginx reaches it
+# through deploy/nginx-hjviewer-api.conf.
+#
+# The group is the one nginx's worker processes run as: www-data on Ubuntu and Debian. Where they
+# run as another group, set it in a drop-in rather than here (systemctl edit hjviewer-api.socket):
+#   [Socket]
+#   SocketGroup=nginx
+
+[Unit]
+Description=HJViewer account API socket (hjv-api)
+Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/server/api/README.md
+
+[Socket]
+ListenStream=/run/hjviewer-api.sock
+SocketUser=root
+SocketGroup=www-data
+SocketMode=0660
+# a single service instance takes the listening socket (no per-connection Accept=)
+Accept=no
+
+[Install]
+WantedBy=sockets.target

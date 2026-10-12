@@ -1,0 +1,96 @@
+# hjv-api, the HJViewer account API (server/api/README.md): Yonsei portal login and the
+# per-account device list. Started by hjviewer-api.socket, whose Unix socket it serves; it opens no
+# port of its own. It runs as its own system user, apart from hbbs's user (the server key pair).
+#   /opt/hjviewer/bin/hjv-api              the binary (GitHub release hjviewer-server-*.tar.gz)
+#   /etc/hjviewer/hjviewer-api.env         settings, not secret (server/api/hjviewer-api.env.example)
+#   /etc/credstore.encrypted/<name>        the secrets below (systemd-creds encrypt; README.md)
+#   /var/lib/hjviewer-api                  the database
+#   /var/log/hjviewer-api/operator.log     the operator access record (chattr +a after the first
+#                                          start; never chown the directory: README.md, Admin)
+#   /run/hjviewer-api-admin/admin.sock     the admin socket (hjv-api admin: root and this user)
+# Enable both units (systemctl enable --now hjviewer-api.socket hjviewer-api.service), so that the
+# service and its upkeep run from boot, not from the first request.
+#
+# The outgoing filter depends on the server (the SSO's address, the DNS server), so it lives in a
+# drop-in on the server, /etc/systemd/system/hjviewer-api.service.d/egress.conf:
+#   [Service]
+#   IPAddressDeny=any
+#   IPAddressAllow=localhost <SSO server address> <DNS server, if not 127.0.0.53>
+
+[Unit]
+Description=HJViewer account API (hjv-api)
+Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/server/api/README.md
+Requires=hjviewer-api.socket
+After=hjviewer-api.socket hjviewer-hbbs.service network.target
+
+[Service]
+Type=simple
+User=hjviewer-api
+Group=hjviewer-api
+EnvironmentFile=/etc/hjviewer/hjviewer-api.env
+StateDirectory=hjviewer-api
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/hjviewer-api
+# the admin socket (root and this user) and the operator access record
+RuntimeDirectory=hjviewer-api-admin
+RuntimeDirectoryMode=0700
+LogsDirectory=hjviewer-api
+LogsDirectoryMode=0700
+# the database, its WAL and the record are created readable by this user only
+UMask=0077
+# secrets, never in the environment: the SSO client secret and api uuid (the values the WordPress
+# plugin's SSO login uses, D2), the key that opens sealed passwords, the key of the log tags
+LoadCredentialEncrypted=hjviewer-sso-client-secret
+LoadCredentialEncrypted=hjviewer-sso-api-uuid
+LoadCredentialEncrypted=hjviewer-api-login-key
+LoadCredentialEncrypted=hjviewer-api-log-key
+ExecStart=/opt/hjviewer/bin/hjv-api serve --db /var/lib/hjviewer-api/hjv-api.sqlite3
+# checks DNS, TCP and TLS to the SSO and hbbs's console from inside this sandbox after each start,
+# results in the journal; turn on once the operator agrees (README.md)
+#ExecStartPost=-/opt/hjviewer/bin/hjv-api selfcheck --log-only
+Restart=on-failure
+RestartSec=5
+# passwords and keys are in memory for a moment: no core dumps
+LimitCORE=0
+# a journal namespace of its own, kept as long as journald@hjviewer.conf says (MaxRetentionSec=);
+# read with journalctl --namespace=hjviewer
+LogNamespace=hjviewer
+
+# as hbbs: no privilege, its own directories only
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# Unix sockets (its own and the admin socket), and TCP to the SSO and to hbbs's console on
+# 127.0.0.1; no netlink, no raw sockets
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# hbbs's directory with the server key pair stays out of reach
+InaccessiblePaths=-/var/lib/hjviewer
+# so that it cannot crowd out the other services on the machine
+CPUQuota=100%
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

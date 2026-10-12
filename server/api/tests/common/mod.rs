@@ -1,0 +1,570 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! The test harness: hjv-api in-process on 127.0.0.1, with the fake SSO (fake_sso.rs), a fake
+//! hbbs console that answers `hjv-pk` like patch 0004, an admin socket and a client that seals
+//! and signs logins as client patch 0008 will.
+
+#![allow(dead_code)]
+
+use hjv_api::{
+    admin::{self, AdminRequest},
+    config::{Config, Secrets},
+    db, devsig,
+    fake_sso::{self, FakeSso},
+    hbbs,
+    oplog::OpLog,
+    seal,
+    server::{self, Listener},
+    state::AppState,
+    tfa::SecondFactor,
+    util::{b64, now, random_bytes},
+};
+use http_body_util::{BodyExt, Full};
+use hyper::{
+    body::Bytes,
+    header::{HeaderMap, HeaderName, HeaderValue},
+    Method, Request,
+};
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::TokioExecutor,
+};
+use serde_json::{json, Value};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    sync::watch,
+};
+use zeroize::Zeroizing;
+
+pub const SEAL_SECRET: [u8; 32] = [42; 32];
+pub const LOG_KEY: [u8; 32] = [7; 32];
+/// hbbs's key pair (the seed of its id_ed25519), which signs the fake console's answers
+pub const HBBS_SEED: [u8; 32] = [33; 32];
+
+/// HJV_API_HBBS_PUBKEY for the fake console.
+pub fn hbbs_pubkey() -> String {
+    b64(&devsig::public_key(&HBBS_SEED))
+}
+
+/// The test accounts of the fake SSO.
+pub const HONG: (&str, &str) = ("2026000001", "hjv-test-pass-1");
+pub const KIM: (&str, &str) = ("2026000002", "hjv-test-pass-2");
+pub const LEE: (&str, &str) = ("Y9001", "hjv-test-pass-3");
+
+/// A device as the app runs it: an ID and the Ed25519 key pair it registered with hbbs.
+#[derive(Clone)]
+pub struct TestDevice {
+    pub id: String,
+    pub seed: [u8; 32],
+    pub os: String,
+    pub installed: bool,
+    pub hostname: String,
+}
+
+impl TestDevice {
+    pub fn windows(id: &str) -> TestDevice {
+        let mut seed = [0u8; 32];
+        seed[..id.len().min(32)].copy_from_slice(&id.as_bytes()[..id.len().min(32)]);
+        seed[31] = 0x5a;
+        TestDevice {
+            id: id.to_owned(),
+            seed,
+            os: "windows".into(),
+            installed: true,
+            hostname: format!("PC-{id}"),
+        }
+    }
+
+    pub fn phone(id: &str) -> TestDevice {
+        TestDevice {
+            os: "ios".into(),
+            installed: false,
+            hostname: "iPhone".into(),
+            ..TestDevice::windows(id)
+        }
+    }
+
+    pub fn public_key(&self) -> [u8; 32] {
+        devsig::public_key(&self.seed)
+    }
+}
+
+/// What the fake hbbs knows of a device.
+#[derive(Clone)]
+struct Entry {
+    public_key: [u8; 32],
+    /// seconds since it registered
+    age: Option<u64>,
+    /// the key pair that signs the answer: hbbs's, or another program's that took the port
+    signer: [u8; 32],
+}
+
+type Registry = Arc<Mutex<HashMap<String, Entry>>>;
+
+/// The hbbs loopback console, answering `hjv-pk <id>` as patch 0004 does.
+pub struct FakeHbbs {
+    pub addr: SocketAddr,
+    keys: Registry,
+    pub unpatched: Arc<AtomicBool>,
+    pub queries: Arc<AtomicUsize>,
+}
+
+impl FakeHbbs {
+    pub async fn start() -> FakeHbbs {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let keys: Registry = Default::default();
+        let unpatched = Arc::new(AtomicBool::new(false));
+        let queries = Arc::new(AtomicUsize::new(0));
+        let (k, u, q) = (keys.clone(), unpatched.clone(), queries.clone());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    continue;
+                };
+                let (k, u, q) = (k.clone(), u.clone(), q.clone());
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let Ok(n) = stream.read(&mut buf).await else {
+                        return;
+                    };
+                    q.fetch_add(1, Ordering::SeqCst);
+                    let cmd = String::from_utf8_lossy(&buf[..n]).trim().to_owned();
+                    let mut parts = cmd.split(' ');
+                    let reply = match (parts.next(), parts.next()) {
+                        (Some("hjv-pk"), Some(id)) if !u.load(Ordering::SeqCst) => {
+                            let entry = k.lock().unwrap().get(id).cloned();
+                            let signed = entry
+                                .as_ref()
+                                .map(|e| hbbs::sign_id_pk(&e.signer, id, &e.public_key));
+                            hbbs::format_reply(id, signed.as_deref(), entry.and_then(|e| e.age))
+                        }
+                        _ => String::new(),
+                    };
+                    let _ = stream.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        FakeHbbs {
+            addr,
+            keys,
+            unpatched,
+            queries,
+        }
+    }
+
+    fn insert(&self, id: &str, public_key: [u8; 32], age: Option<u64>, signer: [u8; 32]) {
+        self.keys.lock().unwrap().insert(
+            id.to_owned(),
+            Entry {
+                public_key,
+                age,
+                signer,
+            },
+        );
+    }
+
+    /// The device registered with hbbs, seen `age` seconds ago.
+    pub fn register(&self, device: &TestDevice, age: Option<u64>) {
+        self.insert(&device.id, device.public_key(), age, HBBS_SEED);
+    }
+
+    pub fn register_key(&self, id: &str, key: [u8; 32]) {
+        self.insert(id, key, Some(1), HBBS_SEED);
+    }
+
+    /// Another program on the console's port answers for the device with a key of its choice,
+    /// signed with a key pair of its own.
+    pub fn forge(&self, id: &str, key: [u8; 32]) {
+        self.insert(id, key, Some(1), [99; 32]);
+    }
+
+    /// hbbs knows the key but not when the device last registered (as after a restart).
+    pub fn forget_seen(&self, id: &str) {
+        if let Some(entry) = self.keys.lock().unwrap().get_mut(id) {
+            entry.age = None;
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Options {
+    /// settings over the harness's defaults
+    pub vars: Vec<(&'static str, String)>,
+    pub second_factor: Option<Arc<dyn SecondFactor>>,
+    /// portal IDs on the allowlist (the three test accounts when empty)
+    pub allow: Vec<&'static str>,
+    pub sso_slow: Option<Duration>,
+}
+
+pub struct Harness {
+    pub api: SocketAddr,
+    pub state: Arc<AppState>,
+    pub sso: FakeSso,
+    pub hbbs: FakeHbbs,
+    pub dir: PathBuf,
+    pub admin_socket: PathBuf,
+    pub oplog: PathBuf,
+    pub seal_pk: [u8; 32],
+    client: Client<HttpConnector, Full<Bytes>>,
+    stop: watch::Sender<bool>,
+}
+
+/// An answer, read.
+#[derive(Debug)]
+pub struct Answer {
+    pub status: u16,
+    pub headers: HeaderMap,
+    pub text: String,
+    pub json: Value,
+    pub elapsed: Duration,
+}
+
+impl Answer {
+    pub fn token(&self) -> String {
+        self.json["access_token"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no token in {} {}", self.status, self.text))
+            .to_owned()
+    }
+}
+
+/// A local address that refuses connections at once, for as long as the returned socket lives:
+/// bound and never listening, so that no other test is handed its port meanwhile.
+pub fn refusing_addr() -> (tokio::net::TcpSocket, SocketAddr) {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = socket.local_addr().unwrap();
+    (socket, addr)
+}
+
+/// A new directory for one test's files and Unix sockets. It lives under a short base, not the
+/// target directory: a socket path has to fit in 108 bytes (SUN_LEN), however deep the checkout.
+pub fn temp_dir(name: &str) -> PathBuf {
+    let base = std::env::temp_dir();
+    let base = if base.as_os_str().len() <= 40 {
+        base
+    } else {
+        PathBuf::from("/tmp")
+    };
+    let dir = base.join(format!(
+        "hjv-{name}-{}-{}",
+        std::process::id(),
+        hjv_api::util::hex(&random_bytes::<4>())
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+impl Harness {
+    pub async fn start() -> Harness {
+        Harness::with(Options::default()).await
+    }
+
+    pub async fn with(opts: Options) -> Harness {
+        hjv_api::log::capture();
+        let sso_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let sso = fake_sso::start(
+            sso_listener,
+            opts.sso_slow.unwrap_or(Duration::from_secs(3)),
+        );
+        let hbbs = FakeHbbs::start().await;
+        let mut vars: HashMap<String, String> = [
+            ("HJV_API_SSO_TOKEN_URL", sso.token_url()),
+            ("HJV_API_SSO_USERINFO_URL", sso.user_url()),
+            ("HJV_API_SSO_CLIENT_ID", fake_sso::CLIENT_ID.to_owned()),
+            ("HJV_API_HBBS_CONSOLE", hbbs.addr.to_string()),
+            ("HJV_API_HBBS_PUBKEY", hbbs_pubkey()),
+            ("HJV_API_FAILURE_DELAY_MS", "60".to_owned()),
+            ("HJV_API_FAILURE_JITTER_MS", "20".to_owned()),
+            ("HJV_API_SSO_TIMEOUT_MS", "1500".to_owned()),
+            // tests log one account in several times a minute: more than a quarter of 20 calls
+            ("HJV_API_LIMIT_SSO", "100/60".to_owned()),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
+        for (k, v) in opts.vars {
+            vars.insert(k.to_owned(), v);
+        }
+        let config = Config::from_vars(&vars).unwrap();
+        let secrets = Secrets {
+            sso_basic: Zeroizing::new(fake_sso::BASIC.to_owned()),
+            sso_api_uuid: Zeroizing::new(fake_sso::API_UUID.to_owned()),
+            seal_keys: vec![Zeroizing::new(SEAL_SECRET)],
+            log_key: Zeroizing::new(LOG_KEY.to_vec()),
+        };
+        let dir = temp_dir("harness");
+        let mut conn = db::open(&dir.join("hjv-api.sqlite3")).unwrap();
+        let allow: Vec<String> = if opts.allow.is_empty() {
+            vec![HONG.0, KIM.0, LEE.0]
+        } else {
+            opts.allow
+        }
+        .iter()
+        .map(|id| hjv_api::util::login_key(id))
+        .collect();
+        db::allow_add(&mut conn, &allow, now()).unwrap();
+        let state = AppState::new(config, secrets, conn, opts.second_factor).unwrap();
+
+        let (stop, stop_rx) = watch::channel(false);
+        let stopped = move || {
+            let mut rx = stop_rx.clone();
+            async move {
+                let _ = rx.wait_for(|s| *s).await;
+            }
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api = listener.local_addr().unwrap();
+        tokio::spawn(server::serve(
+            state.clone(),
+            Listener::Tcp(listener),
+            stopped(),
+        ));
+        let admin_socket = dir.join("admin.sock");
+        let oplog = dir.join("operator.log");
+        let admin_listener = admin::bind(&admin_socket).unwrap();
+        tokio::spawn(admin::serve(
+            state.clone(),
+            admin_listener,
+            admin_socket.clone(),
+            Arc::new(OpLog::open(&oplog).unwrap()),
+            stopped(),
+        ));
+        let seal_pk = *crypto_box::SecretKey::from_bytes(SEAL_SECRET)
+            .public_key()
+            .as_bytes();
+        Harness {
+            api,
+            state,
+            sso,
+            hbbs,
+            dir,
+            admin_socket,
+            oplog,
+            seal_pk,
+            client: Client::builder(TokioExecutor::new()).build_http(),
+            stop,
+        }
+    }
+
+    /// A login body as the app with patch 0008 sends it; `device` signs when given.
+    pub fn login_body(&self, username: &str, password: &str, device: Option<&TestDevice>) -> Value {
+        self.login_body_at(
+            username,
+            password,
+            device,
+            now(),
+            &b64(&random_bytes::<16>()),
+        )
+    }
+
+    pub fn login_body_at(
+        &self,
+        username: &str,
+        password: &str,
+        device: Option<&TestDevice>,
+        time: i64,
+        nonce: &str,
+    ) -> Value {
+        let id = device.map_or("", |d| d.id.as_str());
+        let sealed = seal::seal_password(&self.seal_pk, password, time, nonce, id);
+        let mut body = json!({
+            "username": username,
+            "password": sealed,
+            "id": id,
+            "uuid": "dXVpZA==",
+            "autoLogin": true,
+            "type": "account",
+            "deviceInfo": {
+                "os": device.map_or("ios", |d| d.os.as_str()),
+                "type": "client",
+                "name": device.map_or("iPhone", |d| d.hostname.as_str()),
+            },
+        });
+        if let Some(d) = device {
+            let field = body["password"].as_str().unwrap().to_owned();
+            let opened = self.state.seal.open(&field).unwrap();
+            let message =
+                devsig::login_message(&d.id, time, nonce, &opened.sealed_hash, d.installed, &d.os);
+            body["hjv"] = json!({
+                "v": 1,
+                "sig": devsig::sign(&d.seed, &message),
+                "installed": d.installed,
+            });
+        }
+        body
+    }
+
+    pub async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<Vec<u8>>,
+    ) -> Answer {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(format!("http://{}{path}", self.api));
+        for (k, v) in headers {
+            builder = builder.header(
+                HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        let request = builder
+            .body(Full::new(Bytes::from(body.unwrap_or_default())))
+            .unwrap();
+        let started = Instant::now();
+        let response = self.client.request(request).await.unwrap();
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        Answer {
+            status,
+            headers,
+            json: serde_json::from_str(&text).unwrap_or(Value::Null),
+            text,
+            elapsed: started.elapsed(),
+        }
+    }
+
+    /// POST /api/login from `ip`.
+    pub async fn login(&self, body: &Value, ip: &str) -> Answer {
+        self.request(
+            Method::POST,
+            "/api/login",
+            &[("content-type", "application/json"), ("x-real-ip", ip)],
+            Some(body.to_string().into_bytes()),
+        )
+        .await
+    }
+
+    /// Logs in a test account from `device`; returns the token.
+    pub async fn login_ok(&self, account: (&str, &str), device: Option<&TestDevice>) -> String {
+        let answer = self
+            .login(&self.login_body(account.0, account.1, device), "10.9.9.9")
+            .await;
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer.token()
+    }
+
+    pub async fn get(&self, path: &str, token: &str) -> Answer {
+        let auth = format!("Bearer {token}");
+        self.request(Method::GET, path, &[("authorization", &auth)], None)
+            .await
+    }
+
+    /// POST with a JSON body, as the app's currentUser and logout.
+    pub async fn post(&self, path: &str, token: &str, body: Option<Value>) -> Answer {
+        let auth = format!("Bearer {token}");
+        match body {
+            Some(b) => {
+                self.request(
+                    Method::POST,
+                    path,
+                    &[
+                        ("authorization", &auth),
+                        ("content-type", "application/json"),
+                    ],
+                    Some(b.to_string().into_bytes()),
+                )
+                .await
+            }
+            None => {
+                self.request(Method::POST, path, &[("authorization", &auth)], None)
+                    .await
+            }
+        }
+    }
+
+    pub async fn delete(&self, path: &str, token: &str) -> Answer {
+        let auth = format!("Bearer {token}");
+        self.request(Method::DELETE, path, &[("authorization", &auth)], None)
+            .await
+    }
+
+    pub async fn admin(
+        &self,
+        argv: &[&str],
+        reveal: bool,
+        input: Option<&str>,
+    ) -> Result<String, String> {
+        admin::send(
+            &self.admin_socket,
+            &AdminRequest {
+                argv: argv.iter().map(|s| s.to_string()).collect(),
+                reveal,
+                sudo_user: "tester".into(),
+                input: input.map(str::to_owned),
+            },
+        )
+        .await
+    }
+
+    /// Attempts counted under a scope and key now (failures, or successes in the ok-* scopes).
+    pub async fn counted(&self, scope: &'static str, key: String) -> i64 {
+        self.state
+            .db
+            .call(move |c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM attempts WHERE scope = ?1 AND key = ?2 AND counts = 1",
+                    [scope, key.as_str()],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+    }
+
+    /// Attempts under a scope and key, counted or still running.
+    pub async fn attempts(&self, scope: &'static str, key: String) -> i64 {
+        self.state
+            .db
+            .call(move |c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM attempts WHERE scope = ?1 AND key = ?2",
+                    [scope, key.as_str()],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+    }
+
+    /// The login records' results, oldest first.
+    pub async fn results(&self) -> Vec<String> {
+        self.state
+            .db
+            .call(|c| {
+                let mut stmt = c.prepare("SELECT kind || ':' || result FROM events ORDER BY id")?;
+                let rows = stmt.query_map([], |r| r.get(0))?;
+                rows.collect()
+            })
+            .await
+            .unwrap()
+    }
+
+    pub fn account_tag(&self, id: &str) -> String {
+        self.state.tags.account(&hjv_api::util::login_key(id))
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}

@@ -1,0 +1,233 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Small helpers the modules share: the clock, random bytes, hashes, base64, and the masking of
+//! admin output.
+
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine,
+};
+use crypto_box::aead::{rand_core::RngCore, OsRng};
+use sha2::{Digest, Sha256};
+use std::{
+    net::{IpAddr, Ipv6Addr},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+pub const MINUTE: i64 = 60;
+pub const HOUR: i64 = 60 * MINUTE;
+pub const DAY: i64 = 24 * HOUR;
+
+/// Seconds since the Unix epoch.
+pub fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Bytes from the operating system's random source.
+pub fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut bytes = [0u8; N];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
+}
+
+/// A random number below `bound` (for delays; the slight modulo bias does not matter there).
+pub fn random_below(bound: u64) -> u64 {
+    if bound == 0 {
+        return 0;
+    }
+    u64::from_le_bytes(random_bytes::<8>()) % bound
+}
+
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    Sha256::digest(data).into()
+}
+
+/// Standard base64 with padding, as the app's `encode64`.
+pub fn b64(data: &[u8]) -> String {
+    STANDARD.encode(data)
+}
+
+pub fn b64_decode(text: &str) -> Option<Vec<u8>> {
+    STANDARD.decode(text).ok()
+}
+
+/// URL-safe base64 without padding (tokens, sealed passwords).
+pub fn b64url(data: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(data)
+}
+
+pub fn b64url_decode(text: &str) -> Option<Vec<u8>> {
+    URL_SAFE_NO_PAD.decode(text).ok()
+}
+
+pub fn hex(data: &[u8]) -> String {
+    data.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// What admin listings show of a portal or device ID: the first four characters, and no more than
+/// half of a short one ("2026123456" → "2026******").
+pub fn mask(value: &str) -> String {
+    let count = value.chars().count();
+    let keep = (count / 2).min(4);
+    value
+        .chars()
+        .take(keep)
+        .chain(std::iter::repeat_n('*', count - keep))
+        .collect()
+}
+
+/// Text from a client or the SSO made safe to store and show: trimmed, without control
+/// characters, at most `max` characters.
+pub fn clean_text(text: &str, max: usize) -> String {
+    let kept: String = text
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(max)
+        .collect();
+    kept.trim().to_owned()
+}
+
+/// A portal ID as typed, or an entry of the allowlist: printable ASCII without spaces, 1 to 64
+/// characters (after trimming).
+pub fn valid_portal_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// The form of a portal ID that the allowlist and accounts compare: trimmed and case-folded
+/// (design v2 §9-2 step 4).
+pub fn login_key(id: &str) -> String {
+    id.trim().to_lowercase()
+}
+
+/// The address a login limit counts under: an IPv4 address itself, an IPv6 address by its /64
+/// network, which one subscriber usually holds whole and can pick addresses from at will
+/// ("2001:db8:1:2::/64"). What is not an address ("invalid", "unknown") stays as it is.
+pub fn address_group(ip: &str) -> String {
+    match ip.trim().parse::<IpAddr>() {
+        Ok(IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => format!(
+                "{}/64",
+                Ipv6Addr::from(u128::from(v6) & !u128::from(u64::MAX))
+            ),
+        },
+        Ok(IpAddr::V4(v4)) => v4.to_string(),
+        Err(_) => ip.to_owned(),
+    }
+}
+
+/// A RustDesk device ID: 1 to 64 letters, digits, '-' or '_' (numeric IDs and custom ones).
+pub fn valid_device_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// "2026-10-12" for a Unix time (UTC).
+pub fn date(ts: i64) -> String {
+    let (y, m, d) = civil_from_days(ts.div_euclid(DAY));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// "2026-10-12T09:30:00Z" for a Unix time.
+pub fn datetime(ts: i64) -> String {
+    let secs = ts.rem_euclid(DAY);
+    format!(
+        "{}T{:02}:{:02}:{:02}Z",
+        date(ts),
+        secs / HOUR,
+        secs % HOUR / MINUTE,
+        secs % MINUTE
+    )
+}
+
+/// Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dates() {
+        assert_eq!(datetime(0), "1970-01-01T00:00:00Z");
+        assert_eq!(datetime(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(datetime(1_760_259_045), "2025-10-12T08:50:45Z");
+        assert_eq!(date(-1), "1969-12-31");
+    }
+
+    #[test]
+    fn masking() {
+        assert_eq!(mask("2026123456"), "2026******");
+        assert_eq!(mask("abcd"), "ab**");
+        assert_eq!(mask("a"), "*");
+        assert_eq!(mask(""), "");
+        assert_eq!(mask("12345678"), "1234****");
+    }
+
+    #[test]
+    fn ids() {
+        assert!(valid_portal_id("2026123456"));
+        assert!(valid_portal_id("Y1234"));
+        assert!(!valid_portal_id(""));
+        assert!(!valid_portal_id("a b"));
+        assert!(!valid_portal_id("홍길동"));
+        assert!(!valid_portal_id(&"1".repeat(65)));
+        assert_eq!(login_key("  Y1234 "), "y1234");
+        assert!(valid_device_id("123456789"));
+        assert!(valid_device_id("my-pc_2"));
+        assert!(!valid_device_id("12 3"));
+        assert!(!valid_device_id("1\n2"));
+        assert!(!valid_device_id(""));
+    }
+
+    #[test]
+    fn address_groups() {
+        assert_eq!(address_group("10.1.2.3"), "10.1.2.3");
+        assert_eq!(address_group("2001:db8:1:2:aaaa::1"), "2001:db8:1:2::/64");
+        assert_eq!(
+            address_group("2001:db8:1:2:ffff:ffff:ffff:ffff"),
+            "2001:db8:1:2::/64"
+        );
+        assert_eq!(address_group("2001:db8:1:3::1"), "2001:db8:1:3::/64");
+        assert_eq!(address_group("::ffff:10.1.2.3"), "10.1.2.3");
+        assert_eq!(address_group("::1"), "::/64");
+        assert_eq!(address_group("invalid"), "invalid");
+        assert_eq!(address_group("unknown"), "unknown");
+    }
+
+    #[test]
+    fn cleaning() {
+        assert_eq!(clean_text("  홍길동\u{0007}  ", 64), "홍길동");
+        assert_eq!(clean_text("abcdef", 3), "abc");
+        assert_eq!(clean_text("a\nb", 10), "ab");
+    }
+
+    #[test]
+    fn encodings() {
+        assert_eq!(b64(b"hi"), "aGk=");
+        assert_eq!(b64_decode("aGk=").unwrap(), b"hi");
+        assert_eq!(b64url(&[0xfb, 0xff]), "-_8");
+        assert_eq!(b64url_decode("-_8").unwrap(), vec![0xfb, 0xff]);
+        assert_eq!(hex(&[0, 255]), "00ff");
+        assert_ne!(random_bytes::<16>(), random_bytes::<16>());
+        assert!(random_below(10) < 10);
+    }
+}
