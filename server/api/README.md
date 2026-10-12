@@ -171,7 +171,7 @@ it once.
 
 Every path that takes a token takes it only with the signature of the token's account key
 (`X-HJV-Proof`, below): a token alone opens nothing. The one exception is `POST /api/logout`
-without the signature, which ends that token and nothing else.
+without the signature, which ends that token and its key, and nothing else.
 
 ## Formats
 
@@ -250,10 +250,10 @@ X-HJV-Proof: v1.<t>.<n>.<sig>
   `{"error":"기기의 날짜와 시간이 서버와 10분 넘게 다릅니다. 날짜와 시간을 자동으로 맞추게 해 주세요.","hjv":"clock","server_time":<time>}`.
 - On every token path: currentUser, logout, users, peers, `/api/hjv/this-device` and its undo,
   `/api/hjv/devices/{id}`, `/api/hjv/keys…`.
-- `POST /api/logout`: signed by the token's key (the time may be off: the token ends with this
-  request), the token and its key are revoked and, when the token's login added or found the PC in
-  the account, the PC leaves the list. Without the signature only the token ends; the key, left
-  without a login, is revoked by the next hourly upkeep.
+- `POST /api/logout`: the token and its key are revoked. Signed by the token's key (the time may
+  be off: the token ends with this request) and when the token's login added or found the PC in
+  the account, the PC also leaves the list. Without the signature the PC stays: a stolen token
+  cannot take anyone's PC out of the list.
 
 ### Account keys: `/api/hjv/keys` (`src/keys.rs`)
 
@@ -266,9 +266,13 @@ POST   /api/hjv/keys/revoke-others     {"revoked":n}      (every key of the acco
 
 The active keys of the account, newest first, in pages as `/api/peers`. `name` is the server's
 device name, `app_name` the device's own; `net` is `on-campus`, `off-campus` or `""`; `new` marks a
-key made after the asking one that no device confirmed, for 7 days. A key of another account or
-none: 404 `{"error":"not found"}`. At most 30 calls a minute per account (429). `last_used`,
-`last_used_pc` and `use` (the PCs' reports, U6) come with the PC sync.
+key made after the asking one that neither the asking key nor an older key of the account
+confirmed, for 7 days. A key confirms only keys made after it, and its confirmation counts for its
+own device and the ones that logged in after it: whoever logs in with a leaked portal password
+can neither confirm their own key nor have a second login of theirs confirm it for the owner's
+devices. A key of another account or none, and `ack` of the asking key or an older one: 404
+`{"error":"not found"}`. At most 30 calls a minute per account (429). `last_used`, `last_used_pc`
+and `use` (the PCs' reports, U6) come with the PC sync.
 
 ### Device list: `GET /api/peers`
 
@@ -298,6 +302,11 @@ account's switch is off.
 - The SSO calls and how their outcomes are sorted: `src/sso.rs`.
 
 ### Test vectors
+
+The vectors shared with the client are `tests/data/v3-vectors.json`: the client renders the file
+from its `src/hjviewer_account/vectors.rs` and pins its SHA-256, and `tests/keys.rs` checks this
+code against it (the request proofs, the sealed login's `ck` and `cp`; the PC sync adds the trust
+list and the sync envelope). The ones below come from the same account key and nonce bytes.
 
 Made with libsodium 1.0.18 (`crypto_sign_seed_keypair`, `crypto_sign_detached`), as the app signs.
 The account key is the Ed25519 key of the seed `[3; 32]` (32 bytes 0x03); "signed" is the signed
@@ -334,7 +343,7 @@ integration tests that start hjv-api in-process with the fake SSO (`src/fake_sso
 console and the admin socket, and the binary under `systemd-socket-activate` when it is installed.
 The test client logs in as the app does, with a new account key each time, and signs its account
 requests (`tests/common/mod.rs`); `tests/keys.rs` has the account keys, the switches and the test
-vectors above, `tests/http.rs` the request proof.
+vectors above and in `tests/data/v3-vectors.json`, `tests/http.rs` the request proof.
 Their files and sockets go to the system's temporary directory (`/tmp` when `$TMPDIR` is long), so
 that socket paths stay short whatever the target directory. Nothing calls the real SSO.
 `hjv-fake-sso --listen 127.0.0.1:18600` serves the fake SSO for the E2E with fixed test accounts
@@ -347,10 +356,10 @@ SQLite with `secure_delete`, the WAL truncated after deletions: the allowlist; a
 as the SSO sends it, name, times, the account's password-less switch); token hashes, each with the
 account key of its login; account keys (public key, the tag of the app's uuid, the device ID, the
 platform, the server's device name, the device's own name, the app version, on or off campus, the
-times of creation, login, confirmation and revocation); the nonces of signed requests for 20
-minutes; devices (ID, OS, host name, public key, binding ID, times); the change serial and the
-switches; login-limit counters under tags; login, device and key records (tags, client address,
-result, time).
+times of creation, login, confirmation and revocation, the key that confirmed it); the nonces of
+signed requests for 20 minutes; devices (ID, OS, host name, public key, binding ID, times); the
+change serial and the switches; login-limit counters under tags; login, device and key records
+(tags, client address, result, time).
 
 Kept: tokens 90 days unused / a year at most (a new login replaces the token of the same device,
 and an account keeps at most 20); account keys while their token lasts (an hourly upkeep revokes

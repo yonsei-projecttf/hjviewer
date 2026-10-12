@@ -529,13 +529,13 @@ async fn key_list(
             .find(|a| a.id == k.account_id)
             .map(|a| state.tags.account(&a.login_key))
             .unwrap_or_default();
-        let state_text = match (k.revoked_at, k.ack_at) {
+        let state_text = match (k.revoked_at, k.ack_by) {
             (Some(at), _) => format!(
                 "revoked {} ({})",
                 date(at),
                 k.revoke_reason.as_deref().unwrap_or("-")
             ),
-            (None, Some(_)) => "active, confirmed".to_owned(),
+            (None, Some(by)) => format!("active, confirmed by {by}"),
             (None, None) => "active".to_owned(),
         };
         let _ = writeln!(

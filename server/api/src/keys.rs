@@ -28,14 +28,19 @@
 //! | path | answer |
 //! |---|---|
 //! | `GET /api/hjv/keys` | `{"total":n,"data":[{"ckid","name","app_name","platform","app_ver","net","created","last_login","last_used","last_used_pc","use":[],"current","new"}]}`: the account's active keys, newest first |
-//! | `POST /api/hjv/keys/{ckid}/ack` | `{"ack":true}`: a device of the account confirmed the new key ("내 기기 맞음") |
+//! | `POST /api/hjv/keys/{ckid}/ack` | `{"ack":true}`: a device of the account confirmed a key made after its own ("내 기기 맞음") |
 //! | `DELETE /api/hjv/keys/{ckid}` | `{"revoked":true}`: the key and its token are revoked ("로그아웃시키기") |
 //! | `POST /api/hjv/keys/revoke-others` | `{"revoked":n}`: every other key of the account and its token |
 //!
 //! A key of another account, an unknown or revoked one: the same 404. `new` marks a key made
-//! after the asking one that no device has confirmed yet, for seven days. `name` is the server's
-//! device name, `app_name` the device's own. `last_used`, `last_used_pc` and `use` (the PCs'
-//! reports of password-less connections, U6) come with the PC sync (design v3 §5-2).
+//! after the asking one that neither the asking key nor an older key of the account has
+//! confirmed, for seven days. A key confirms only keys made after it (its own or an older one:
+//! the same 404), and a confirmation counts for the device that gave it and the ones that logged
+//! in after it: whoever logs in with a leaked portal password cannot take the notice off the
+//! owner's devices, neither by confirming its own key nor through a second login of its own that
+//! confirms the first (design v3 §0, §1-1). `name` is the server's device name, `app_name` the
+//! device's own. `last_used`, `last_used_pc` and `use` (the PCs' reports of password-less
+//! connections, U6) come with the PC sync (design v3 §5-2).
 
 use crate::{
     api::{paged, session, ApiRequest, Reply},
@@ -185,7 +190,10 @@ fn ckid(text: &str) -> Option<i64> {
 
 fn key_json(k: &Key, current: Option<&Key>, at: i64) -> Value {
     let current_ckid = current.map_or(0, |c| c.ckid);
-    let new = k.ckid > current_ckid && k.ack_at.is_none() && at - k.created_at < NEW_FOR;
+    // a later key's confirmation does not count here: it may be the newcomer's own
+    let new = k.ckid > current_ckid
+        && k.ack_by.is_none_or(|by| by > current_ckid)
+        && at - k.created_at < NEW_FOR;
     json!({
         "ckid": k.ckid,
         "name": k.model,
@@ -281,7 +289,7 @@ pub async fn route(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
             };
             match state
                 .db
-                .call(move |c| db::ack_key(c, account_id, ckid, at))
+                .call(move |c| db::ack_key(c, account_id, ckid, own.ckid, at))
                 .await
             {
                 Ok(true) => Reply::ok(&json!({ "ack": true })),

@@ -4,8 +4,8 @@
 //! idle 90 days or a year old, devices not seen for 180 days, accounts unused for a year unless
 //! still allowlisted with a PC in use, records older than six months, spent nonces, and limit
 //! counters past the longest window), revoke the account keys no valid token is left for (their
-//! logins expired, or were logged out without the key's signature: design v3 §4-7, §14 question
-//! 6), delete account keys 30 days after they were revoked, and truncate the WAL. Every day: ask
+//! logins expired, or their tokens went without them: design v3 §1-8, §14 question 6), delete
+//! account keys 30 days after they were revoked, and truncate the WAL. Every day: ask
 //! hbbs when each device in an account last registered (a device counts as seen when hbbs has it
 //! with the stored key; logins and list requests from it count as well), and write a summary of
 //! the day's logins to the journal, with counts only.

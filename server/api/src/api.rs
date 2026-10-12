@@ -7,7 +7,7 @@
 //! |---|---|
 //! | `POST /api/login` | login.rs (every failure that depends on the ID is a 401) |
 //! | `POST /api/currentUser` | the user object itself; 401 only for a token that is not valid, never 400 (the app logs out on both) |
-//! | `POST /api/logout` | revokes the token; signed by its key, also the key, and takes the PC the login came from out of the list |
+//! | `POST /api/logout` | revokes the token and its key; signed by the key, also takes the PC the login came from out of the list |
 //! | `GET /api/users` | `{"total":1,"data":[<user>]}` |
 //! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol"}}]}`: the account's PCs but the asking device |
 //! | `GET /api/hjv/this-device` | what the token's login did with its device, and whether it can be undone |
@@ -21,7 +21,7 @@
 //! (proof.rs, design v3 §4-2), checked in [`session`]: a token alone gets the 401 of a wrong
 //! token, and a right signature whose time is more than ten minutes off gets 409
 //! `{"error":…,"hjv":"clock","server_time":…}`. The one thing a token without its signature still
-//! does is end itself: `POST /api/logout` revokes that token, and nothing else (§4-7).
+//! does is end itself: `POST /api/logout` revokes that token and its key, and nothing else (§4-7).
 //!
 //! Every answer is JSON in UTF-8 with `X-Content-Type-Options: nosniff`,
 //! `Content-Security-Policy: default-src 'none'` and `Cache-Control: no-store`. A request with an
@@ -385,11 +385,13 @@ async fn current_user(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     }
 }
 
-/// Logout (design v3 §4-7): the token always goes. Signed by its key, the key goes too, and the
-/// PC the login came from leaves the list. A signature whose time is out of the window still
-/// counts here: it is this request's, and the token it is bound to ends with it, so it cannot be
-/// used again. Without the key's signature only the token goes: a stolen token cannot take
-/// anyone's PC out of the list (the key, left without a login, goes with the next upkeep).
+/// Logout (design v3 §4-7, §5-2): the token and its account key always go, so that a logged-out
+/// device's key is on no trust list (§1-8). Signed by the key, the PC the login came from also
+/// leaves the list. A signature whose time is out of the window still counts here: it is this
+/// request's, and the token it is bound to ends with it, so it cannot be used again. Without the
+/// key's signature the PC stays: a stolen token cannot take anyone's PC out of the list, and
+/// ending the token's key gains its holder nothing (a key without a login goes with the next
+/// upkeep anyway).
 async fn logout(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     let (s, proof) = match authenticate(state, req).await {
         Ok(found) => found,
@@ -401,8 +403,13 @@ async fn logout(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         s.device_id.clone(),
         s.device_verified,
         s.account.id,
-        s.key.filter(|_| signed),
+        s.key,
     );
+    let (reason, result_text) = if signed {
+        ("logout", "revoked-logout")
+    } else {
+        ("logout-unsigned", "revoked-logout-unsigned")
+    };
     let at = now();
     let result = state
         .db
@@ -412,10 +419,13 @@ async fn logout(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
                 let Some(key) = key else {
                     return Ok((false, false));
                 };
-                let revoked = db::revoke_key(tx, account_id, key.ckid, "logout", at)?;
-                // the device leaves the list when it logs out (v2 §5), if it proved its key at login
-                let removed =
-                    verified && !device_id.is_empty() && db::unbind(tx, &device_id, account_id)?;
+                let revoked = db::revoke_key(tx, account_id, key.ckid, reason, at)?;
+                // the device leaves the list when it logs out (v2 §5), if it proved its key at
+                // login and this request is signed by the token's key
+                let removed = signed
+                    && verified
+                    && !device_id.is_empty()
+                    && db::unbind(tx, &device_id, account_id)?;
                 Ok((revoked, removed))
             })?;
             if done.0 || done.1 {
@@ -429,13 +439,7 @@ async fn logout(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
             let account_tag = state.tags.account(&s.account.login_key);
             if revoked {
                 state
-                    .record(
-                        "key",
-                        Some(account_tag.clone()),
-                        None,
-                        None,
-                        "revoked-logout",
-                    )
+                    .record("key", Some(account_tag.clone()), None, None, result_text)
                     .await;
             }
             if removed {

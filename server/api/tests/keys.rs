@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The account keys of design v3 (§4-1, §4-7, §5-2, §5-6): registration at login, the login's
-//! answer, logout with and without the key's signature, the keys paths, the device list's
-//! password-less fields, the switches and the admin commands, and the test vectors shared with
-//! the client (made with libsodium, the library behind the client's sodiumoxide).
+//! answer, logout with and without the key's signature, the keys paths and the new-device notice,
+//! the device list's password-less fields, the switches and the admin commands; the test vectors
+//! of README.md (made with libsodium, the library behind the client's sodiumoxide) and the ones
+//! shared with the client (tests/data/v3-vectors.json, WP-C0).
 
 mod common;
 
@@ -307,7 +308,8 @@ async fn logout_with_and_without_the_keys_signature() {
     let pc = TestDevice::windows("123456789");
     h.hbbs.register(&pc, Some(1));
     let phone = h.login_ok(HONG, None).await;
-    // a stolen token without its key: only that token ends; the PC stays in the list
+    // a stolen token without its key: the token and its key end at once (design v3 §1-8: the
+    // keys of logged-in devices only), but the PC stays in the list
     let pc_token = h.login_ok(HONG, Some(&pc)).await;
     let serial_before = serial(&h).await;
     let a = token_only(&h, Method::POST, "/api/logout", &pc_token).await;
@@ -315,14 +317,14 @@ async fn logout_with_and_without_the_keys_signature() {
     assert_eq!(h.get("/api/users", &pc_token).await.status, 401);
     assert_eq!(h.get("/api/peers", &phone).await.json["total"], 1);
     let active = |keys: &[db::Key]| keys.iter().filter(|k| k.revoked_at.is_none()).count();
-    assert_eq!(active(&stored_keys(&h).await), 2);
-    assert_eq!(serial(&h).await, serial_before);
-    // a key without a login leaves at the next upkeep (design v3 §1-8: logged-in devices only)
-    let purged = jobs::purge_now(&h.state).await.unwrap();
-    assert_eq!(purged.keys_revoked, 1);
     let keys = stored_keys(&h).await;
     assert_eq!(active(&keys), 1);
-    assert_eq!(keys[1].revoke_reason.as_deref(), Some("idle"));
+    assert_eq!(keys[1].revoke_reason.as_deref(), Some("logout-unsigned"));
+    assert_eq!(serial(&h).await, serial_before + 1);
+    assert_eq!(h.get("/api/hjv/keys", &phone).await.json["total"], 1);
+    // nothing is left for the upkeep
+    let purged = jobs::purge_now(&h.state).await.unwrap();
+    assert_eq!(purged.keys_revoked, 0);
     // signed by its key: the token, the key, and the PC out of the list
     let pc_token = h.login_ok(HONG, Some(&pc)).await;
     let a = h
@@ -375,13 +377,19 @@ async fn logout_with_and_without_the_keys_signature() {
         Some("logout")
     );
     let results = h.results().await;
-    assert!(
-        results.contains(&"key:revoked-logout".to_owned()),
-        "{results:?}"
-    );
-    assert!(
-        results.contains(&"device:removed-logout".to_owned()),
-        "{results:?}"
+    for r in [
+        "key:revoked-logout-unsigned",
+        "key:revoked-logout",
+        "device:removed-logout",
+    ] {
+        assert!(results.contains(&r.to_owned()), "{r}: {results:?}");
+    }
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| *r == "device:removed-logout")
+            .count(),
+        2
     );
 }
 
@@ -495,6 +503,84 @@ async fn the_keys_paths() {
     for r in ["key:revoked-user", "key:revoked-others"] {
         assert!(results.contains(&r.to_owned()), "{r}: {results:?}");
     }
+}
+
+/// The account's active keys as a device sees them: (ckid, new), newest first.
+async fn notice(h: &Harness, token: &str) -> Vec<(i64, bool)> {
+    let list = h.get("/api/hjv/keys", token).await;
+    assert_eq!(list.status, 200, "{}", list.text);
+    list.json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| (k["ckid"].as_i64().unwrap(), k["new"].as_bool().unwrap()))
+        .collect()
+}
+
+async fn ack(h: &Harness, ckid: i64, token: &str) -> Answer {
+    h.post(&format!("/api/hjv/keys/{ckid}/ack"), token, None)
+        .await
+}
+
+/// The new-device notice is how the owner learns that someone else has the portal password
+/// (design v3 §0, §1-1): the newcomer must not be able to silence it.
+#[tokio::test]
+async fn a_newcomer_cannot_silence_the_new_device_notice() {
+    let h = Harness::start().await;
+    let owner = h
+        .login_ok(HONG, Some(&TestDevice::phone("900000001")))
+        .await;
+    // someone with the portal password, on a device of their own
+    let (x, y) = (
+        TestDevice::phone("900000011"),
+        TestDevice::phone("900000012"),
+    );
+    let first = h.login_ok(HONG, Some(&x)).await;
+    let [(k2, true), (k1, false)] = notice(&h, &owner).await[..] else {
+        panic!("{:?}", notice(&h, &owner).await)
+    };
+    // it confirms neither itself nor an older key: the 404 of a key the account does not have
+    for ckid in [k2, k1] {
+        let a = ack(&h, ckid, &first).await;
+        assert_eq!(
+            (a.status, a.json.clone()),
+            (404, json!({"error": "not found"}))
+        );
+    }
+    assert_eq!(notice(&h, &owner).await, [(k2, true), (k1, false)]);
+    // nor through a chain of its own logins: the first confirms the second, a new login of the
+    // first device replaces its key, and the second confirms that one
+    let second = h.login_ok(HONG, Some(&y)).await;
+    let k3 = notice(&h, &owner).await[0].0;
+    assert_eq!(ack(&h, k3, &first).await.json, json!({"ack": true}));
+    let third = h.login_ok(HONG, Some(&x)).await;
+    let k4 = notice(&h, &owner).await[0].0;
+    assert_eq!(ack(&h, k4, &second).await.json, json!({"ack": true}));
+    assert_eq!(h.get("/api/users", &first).await.status, 401);
+    // the owner still sees both as new; the newcomer's devices, which confirmed them, do not
+    assert_eq!(
+        notice(&h, &owner).await,
+        [(k4, true), (k3, true), (k1, false)]
+    );
+    assert_eq!(
+        notice(&h, &second).await,
+        [(k4, false), (k3, false), (k1, false)]
+    );
+    // a confirmation counts for the device that gave it and the ones that logged in after it
+    assert_eq!(ack(&h, k3, &owner).await.json, json!({"ack": true}));
+    assert_eq!(
+        notice(&h, &owner).await,
+        [(k4, true), (k3, false), (k1, false)]
+    );
+    // "아님: 로그아웃시키기"
+    for ckid in [k4, k3] {
+        let d = h.delete(&format!("/api/hjv/keys/{ckid}"), &owner).await;
+        assert_eq!(d.json, json!({"revoked": true}));
+    }
+    for token in [&second, &third] {
+        assert_eq!(h.get("/api/users", token).await.status, 401);
+    }
+    assert_eq!(notice(&h, &owner).await, [(k1, false)]);
 }
 
 #[tokio::test]
@@ -852,7 +938,7 @@ async fn deleting_an_account_leaves_no_row_of_it() {
     assert_eq!(left, 1);
 }
 
-// ---- the test vectors shared with the client (design v3 §7-1; WP-C0 makes the client's) ----
+// ---- the test vectors of README.md (design v3 §7-1) ----
 //
 // The account key is the Ed25519 key of seed [3; 32] (the controller's key of
 // build/design-v3/synthesis/trust-v3), and the inputs follow the vectors of seal.rs and
@@ -957,6 +1043,142 @@ fn ed25519_dalek_signs_as_libsodium() {
     use ed25519_dalek::Signer;
     let sig = ed25519_dalek::SigningKey::from_bytes(&[1; 32]).sign(b"hjv-trust-v1\0golden");
     assert_eq!(b64(&sig.to_bytes()), GOLDEN);
+}
+
+// ---- the vectors shared with the client: tests/data/v3-vectors.json ----
+//
+// The client renders the file from its src/hjviewer_account/vectors.rs (WP-C0) and checks the
+// same values there on libsodium; its JSON_SHA256 pins the file byte for byte. Here hjv-api's own
+// code must give the same bytes: the request proofs (proof.rs) and the sealed login's account
+// key (keys.rs, seal.rs). The PC sync and the trust list (WP-S2) check theirs from the same file.
+
+const SHARED: &str = include_str!("data/v3-vectors.json");
+/// The client's vectors.rs JSON_SHA256. When the client's vectors change, the file is rendered
+/// again (its write_json_copy) and this value follows.
+const SHARED_SHA256: &str = "2379784b5fd3e8590b1e7783341ea9c057eb40340d929d074e0b7dc4fc3ef112";
+/// The secret of the seal test key the shared vectors name (src/seal.rs, made with libsodium).
+const SEAL_TEST_SECRET: &str = "d3iPGgzqABomMdrl0F29BiAI1bMPULnim+sqeCIokAQ=";
+
+fn shared() -> Value {
+    serde_json::from_str(SHARED).unwrap()
+}
+
+fn text<'a>(v: &'a Value, key: &str) -> &'a str {
+    v[key]
+        .as_str()
+        .unwrap_or_else(|| panic!("{key} is not a string"))
+}
+
+fn unhex<const N: usize>(text: &str) -> [u8; N] {
+    let bytes: Vec<u8> = (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+        .collect();
+    bytes.try_into().unwrap()
+}
+
+#[test]
+fn the_shared_vectors_are_the_clients() {
+    use hjv_api::util::sha256;
+    assert_eq!(hex(&sha256(SHARED.as_bytes())), SHARED_SHA256);
+    // the account key is the one of the vectors above and of README.md
+    let account = &shared()["keys"]["account"];
+    assert_eq!(unhex::<32>(text(account, "seed_hex")), CTL_SEED);
+    assert_eq!(text(account, "pk"), CK);
+}
+
+#[test]
+fn the_shared_request_proofs() {
+    use hjv_api::util::{b64url, sha256};
+    let v = shared();
+    let seed = unhex::<32>(text(&v["keys"]["account"], "seed_hex"));
+    let pk = hjv_api::devsig::public_key(&seed);
+    let requests = v["request_proofs"].as_array().unwrap();
+    assert_eq!(requests.len(), 2);
+    for r in requests {
+        let (method, target, body, token) = (
+            text(r, "method"),
+            text(r, "path_and_query"),
+            text(r, "body"),
+            text(r, "token"),
+        );
+        let t = r["t"].as_i64().unwrap();
+        let nonce = unhex::<16>(text(r, "n_hex"));
+        assert_eq!(b64url(&nonce), text(r, "n"), "{method}");
+        let (body_hash, token_hash) = (sha256(body.as_bytes()), sha256(token.as_bytes()));
+        let message = proof::message(
+            method,
+            target,
+            &t.to_string(),
+            text(r, "n"),
+            &body_hash,
+            &token_hash,
+        );
+        assert_eq!(hex(&message), text(r, "signed_hex"), "{method}");
+        let header = proof::header_value(&seed, method, target, t, &nonce, body.as_bytes(), token);
+        assert_eq!(header, text(r, "header"), "{method}");
+        assert_eq!(
+            proof::check(
+                &pk,
+                Some(text(r, "header")),
+                method,
+                target,
+                &body_hash,
+                &token_hash,
+                t
+            ),
+            proof::Check::Valid { nonce },
+            "{method}"
+        );
+    }
+}
+
+#[test]
+fn the_shared_sealed_login_key() {
+    use hjv_api::{
+        seal::{self, SealKeys},
+        util::{b64_decode, b64url},
+    };
+    let v = shared();
+    let s = &v["seal_ckey"];
+    let seed = unhex::<32>(text(&v["keys"]["account"], "seed_hex"));
+    let (n, id, ck, cp) = (text(s, "n"), text(s, "id"), text(s, "ck"), text(s, "cp"));
+    assert_eq!(hex(&keys::message(n, id, ck)), text(s, "signed_hex"));
+    assert_eq!(keys::proof(&seed, n, id), (ck.to_owned(), cp.to_owned()));
+    // the payload, sealed to the seal key the vectors name, opens and registers that key
+    let secret: [u8; 32] = b64_decode(SEAL_TEST_SECRET).unwrap().try_into().unwrap();
+    let public = *crypto_box::SecretKey::from_bytes(secret)
+        .public_key()
+        .as_bytes();
+    let seal_key = &v["keys"]["seal"];
+    assert_eq!(b64(&public), text(seal_key, "pk"));
+    assert_eq!(seal::key_id(&public), text(seal_key, "kid"));
+    let sealed = crypto_box::PublicKey::from(public)
+        .seal(&mut crypto_box::aead::OsRng, text(s, "payload").as_bytes())
+        .unwrap();
+    let field = format!(
+        "{}{}.{}",
+        seal::FIELD_PREFIX,
+        text(seal_key, "kid"),
+        b64url(&sealed)
+    );
+    let opened = SealKeys::new(&[zeroize::Zeroizing::new(secret)])
+        .open(&field)
+        .unwrap();
+    assert_eq!(
+        (
+            opened.nonce.as_str(),
+            opened.device_id.as_str(),
+            opened.time
+        ),
+        (n, id, 1_760_000_000)
+    );
+    assert_eq!(
+        (opened.ck.as_deref(), opened.cp.as_deref()),
+        (Some(ck), Some(cp))
+    );
+    let claim = KeyClaim::new(opened.ck, opened.cp, &opened.nonce, &opened.device_id);
+    assert_eq!(claim.verify(), Ok(hjv_api::devsig::public_key(&seed)));
 }
 
 #[test]
