@@ -48,7 +48,11 @@ fn version_and_usage() {
     );
     let out = relay(&["help"]);
     assert_eq!(out.status.code(), Some(0));
-    assert!(text(&out).contains("test-wake MAC"));
+    let help = text(&out);
+    assert!(help.contains("test-wake MAC"));
+    for option in ["--log FILE", "--watch FILE", "--stop FILE"] {
+        assert!(help.contains(option), "{help}");
+    }
     for args in [&[][..], &["bogus"], &["init"], &["status"]] {
         let out = relay(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", text(&out));
@@ -62,6 +66,8 @@ fn version_and_usage() {
         &["run", "--state", "/nonexistent", "--frobnicate"],
         &["run", "--stat", "/nonexistent"],
         &["run", "--state", "/a", "--state", "/b"],
+        &["run", "--state", "/a", "--log"],
+        &["run", "--state", "/a", "--watch", "/x", "--watch", "/y"],
     ] {
         let out = relay(args);
         assert_eq!(out.status.code(), Some(78), "{args:?}: {}", text(&out));
@@ -80,12 +86,21 @@ fn version_shows_the_command_keys_as_given() {
         .find_map(|l| l.strip_prefix("command keys: "))
         .unwrap();
     match std::env::var("HJV_COMMAND_PUBKEY") {
-        // a configured build prints the keys it was given, in the same form
+        // a configured build prints the keys it was given, in the same form, and their
+        // fingerprints (hex SHA-256 of the key bytes, as hjv-api selfcheck shows them)
         Ok(given) if !given.trim().is_empty() => {
             let given: Vec<String> = given.split(',').map(|k| k.replace(' ', "")).collect();
             assert_eq!(keys, given.join(","));
+            let prints = version
+                .lines()
+                .find_map(|l| l.strip_prefix("command key fingerprints: "))
+                .unwrap();
+            assert_eq!(prints.split(',').count(), given.len());
         }
-        _ => assert!(keys.starts_with("none"), "{version}"),
+        _ => {
+            assert!(keys.starts_with("none"), "{version}");
+            assert!(!version.contains("fingerprints"), "{version}");
+        }
     }
 }
 
@@ -242,6 +257,53 @@ fn test_wake_refuses_bad_arguments_and_sends_nothing() {
         said.contains("**:**:**:**:53:01") && said.contains("보낼 랜카드가 없습니다"),
         "{said}"
     );
+}
+
+#[test]
+fn run_writes_to_the_log_file_it_is_given() {
+    let dir = temp_dir("log-file");
+    let log = dir.join("hjv-relay.log");
+    fs::write(&log, "2026-10-12 17:00:00 +0900 an earlier line\n").unwrap();
+    // opened by the relay itself (as root on the NAS), before anything else is said
+    let out = relay(&[
+        "run",
+        "--log",
+        log.to_str().unwrap(),
+        "--state",
+        "/nonexistent",
+        "--user",
+        "0:0",
+    ]);
+    assert_eq!(out.status.code(), Some(78), "{}", text(&out));
+    assert!(text(&out).is_empty(), "{}", text(&out));
+    let written = fs::read_to_string(&log).unwrap();
+    assert!(written.starts_with("2026-10-12 17:00:00 +0900 an earlier line\n"));
+    assert!(written.contains("설정 오류: run: "), "{written}");
+    assert_eq!(written.lines().count(), 2, "{written}");
+
+    // never through a symbolic link (the relay rewrites its log): it says so on stderr instead
+    let target = dir.join("elsewhere");
+    fs::write(&target, "untouched\n").unwrap();
+    let link = dir.join("link.log");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let out = relay(&[
+        "run",
+        "--log",
+        link.to_str().unwrap(),
+        "--state",
+        "/nonexistent",
+        "--user",
+        "0:0",
+    ]);
+    assert_eq!(out.status.code(), Some(78));
+    let said = text(&out);
+    assert!(
+        said.contains("쓸 수 없어 표준 오류에 씁니다: a symbolic link"),
+        "{said}"
+    );
+    assert!(said.contains("설정 오류: run: "), "{said}");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "untouched\n");
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

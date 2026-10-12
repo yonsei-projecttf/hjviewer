@@ -27,7 +27,7 @@ use crate::{
         CommandResult, ErrorBody, HelloPayload, HelloResponse, IfaceReport, PollPayload,
         PollResponse, PAYLOAD_VERSION,
     },
-    system::{ExeWatch, StatusFile},
+    system::{ExeWatch, StatusFile, StopMarker},
     wake::{self, SendOutcome, SendPlan},
 };
 use serde::Serialize;
@@ -54,8 +54,16 @@ pub trait Env {
     fn interfaces(&mut self) -> io::Result<Vec<Iface>>;
     fn gateways(&mut self) -> Vec<Gateway>;
     fn send(&mut self, plan: &SendPlan) -> SendOutcome;
-    /// Why the relay's executable changed, if it did.
+    /// Why the relay's executable (or the file it watches instead, `run --watch`) changed, if it
+    /// did.
     fn exe_changed(&mut self) -> Option<String>;
+    /// Whether the stop marker is there (`run --stop`): the relay ends, and the boot-up task's
+    /// loop ends on the marker too.
+    fn stop_requested(&mut self) -> bool {
+        false
+    }
+    /// Housekeeping between requests: the kept log loses its old lines once a day.
+    fn tidy(&mut self) {}
     fn sleep(&mut self, d: Duration);
     /// The status JSON; `important` when something changed (always written), otherwise a
     /// heartbeat (written only where that is cheap).
@@ -65,6 +73,7 @@ pub trait Env {
 /// The real system.
 pub struct SystemEnv {
     pub exe: Option<ExeWatch>,
+    pub stop: Option<StopMarker>,
     pub status: Option<StatusFile>,
 }
 
@@ -83,6 +92,14 @@ impl Env for SystemEnv {
 
     fn exe_changed(&mut self) -> Option<String> {
         self.exe.as_ref().and_then(ExeWatch::changed)
+    }
+
+    fn stop_requested(&mut self) -> bool {
+        self.stop.as_ref().is_some_and(StopMarker::present)
+    }
+
+    fn tidy(&mut self) {
+        log::tidy_if_due();
     }
 
     fn sleep(&mut self, d: Duration) {
@@ -113,7 +130,8 @@ pub struct Timing {
     pub backoff_max: Duration,
     /// Connection errors are logged at most once per this period.
     pub error_log_every: Duration,
-    /// Long waits are cut into slices this long to notice a replaced executable.
+    /// Long waits are cut into slices this long to notice a replaced executable or the stop
+    /// marker.
     pub sleep_slice: Duration,
 }
 
@@ -177,6 +195,8 @@ impl State {
 pub enum Exit {
     /// The executable was replaced: exit 0 and let the boot-up task's loop start the new one.
     ExeChanged(String),
+    /// The stop marker appeared: exit 0; the boot-up task's loop sees the marker and ends too.
+    Stopped,
 }
 
 #[derive(Debug)]
@@ -424,27 +444,35 @@ impl<E: Env> Relay<E> {
         self.results.len()
     }
 
-    /// Runs until the executable changes.
+    /// Runs until the executable changes or the stop marker appears.
     pub fn run(&mut self) -> Exit {
         loop {
-            if let Some(why) = self.env.exe_changed() {
-                return self.finish(why);
+            if let Some(exit) = self.exit_reason() {
+                return self.finish(exit);
             }
+            self.env.tidy();
             let started = Instant::now();
             let mut delay = self.step();
             if !self.sent_packets {
                 delay = delay.max(self.cfg.timing.min_gap.saturating_sub(started.elapsed()));
             }
-            if let Some(why) = self.pause(delay) {
-                return self.finish(why);
+            if let Some(exit) = self.pause(delay) {
+                return self.finish(exit);
             }
         }
     }
 
-    /// Ends the loop for a new executable. Results do not survive a restart, so results still
-    /// waiting (a command sent while the executable was replaced) go to the server first, in
-    /// at most [`FINAL_POLLS`] polls with `wait: 0`; a failed poll ends the attempt.
-    fn finish(&mut self, why: String) -> Exit {
+    fn exit_reason(&mut self) -> Option<Exit> {
+        if let Some(why) = self.env.exe_changed() {
+            return Some(Exit::ExeChanged(why));
+        }
+        self.env.stop_requested().then_some(Exit::Stopped)
+    }
+
+    /// Ends the loop. Results do not survive a restart, so results still waiting (a command sent
+    /// while the executable was replaced) go to the server first, in at most [`FINAL_POLLS`]
+    /// polls with `wait: 0`; a failed poll ends the attempt.
+    fn finish(&mut self, exit: Exit) -> Exit {
         self.finishing = true;
         for _ in 0..FINAL_POLLS {
             if self.results.is_empty() || self.state == State::Unknown {
@@ -457,10 +485,10 @@ impl<E: Env> Relay<E> {
             }
         }
         self.finishing = false;
-        Exit::ExeChanged(why)
+        exit
     }
 
-    fn pause(&mut self, total: Duration) -> Option<String> {
+    fn pause(&mut self, total: Duration) -> Option<Exit> {
         let end = Instant::now() + total;
         loop {
             let left = end.saturating_duration_since(Instant::now());
@@ -468,8 +496,8 @@ impl<E: Env> Relay<E> {
                 return None;
             }
             self.env.sleep(left.min(self.cfg.timing.sleep_slice));
-            if let Some(why) = self.env.exe_changed() {
-                return Some(why);
+            if let Some(exit) = self.exit_reason() {
+                return Some(exit);
             }
         }
     }

@@ -3,16 +3,18 @@
 //! hjv-relay: the HJViewer Wake-on-LAN relay for an always-on Linux machine in the PCs' LAN
 //! (docs/relay-dsm.md installs it on a Synology NAS; relay/PROTOCOL.md is the server contract).
 //!
-//!     hjv-relay run --state DIR [--user UID:GID] [--server HOST[:PORT]] [--ca FILE] [--status-file FILE]
+//!     hjv-relay run --state DIR [--log FILE] [--watch FILE] [--stop FILE] [--user UID:GID]
+//!                   [--server HOST[:PORT]] [--ca FILE] [--status-file FILE]
 //!     hjv-relay init --state DIR
 //!     hjv-relay status --state DIR [--status-file FILE]
 //!     hjv-relay test-wake MAC [--net CIDR | --iface NAME] [--count N] [--user UID:GID]
 //!     hjv-relay version
 //!
-//! Exit codes: 0 done (for `run`: the executable was replaced, start it again), 1 a failure worth
-//! retrying, 2 usage, 75 another relay already runs with this state folder, 78 configuration
-//! (the boot-up task's loop stops on 2, 75 and 78). `run` reports its usage errors in its log as
-//! configuration errors (78): its command line is the boot-up task's.
+//! Exit codes: 0 done (for `run`: the executable was replaced, start it again, or the stop marker
+//! appeared), 1 a failure worth retrying, 2 usage, 75 another relay already runs with this state
+//! folder, 78 configuration (the boot-up task's loop stops on 2 and 78, and on 75 after a few
+//! tries). `run` reports its usage errors in its log as configuration errors (78): its command line
+//! is the boot-up task's.
 
 use hjv_relay::{
     config, https, identity,
@@ -38,11 +40,16 @@ const EX_CONFIG: u8 = 78;
 const USAGE: &str = "\
 usage: hjv-relay <command>
 
-  run --state DIR [--user UID:GID] [--server HOST[:PORT]] [--ca FILE] [--status-file FILE]
+  run --state DIR [--log FILE] [--watch FILE] [--stop FILE] [--user UID:GID]
+      [--server HOST[:PORT]] [--ca FILE] [--status-file FILE]
         register with the HJViewer server and send magic packets on its signed commands;
         started as root it keeps DIR (mode 0700) and its key, then runs as UID:GID
-        (default 65534:65534; not the owner of this program or its folder); --server and
-        --ca (the only trusted CA) are for tests
+        (default 65534:65534; not the owner of this program or its folder);
+        --log: write the log to FILE and keep it to the last 180 days and 2 MB;
+        --watch: end (exit 0) when FILE changes, instead of when this program does (the
+        boot-up task runs a checked copy and watches the uploaded file);
+        --stop: end (exit 0) when FILE appears (the stop marker);
+        --server and --ca (the only trusted CA) are for tests
   init --state DIR
         make the relay key if there is none and print the relay ID and enrollment code
   status --state DIR [--status-file FILE]
@@ -169,12 +176,27 @@ fn run(args: &[String]) -> u8 {
     system::detach_terminal();
     let opts = match parse_opts(
         args,
-        &["--state", "--user", "--server", "--ca", "--status-file"],
+        &[
+            "--state",
+            "--user",
+            "--server",
+            "--ca",
+            "--status-file",
+            "--log",
+            "--watch",
+            "--stop",
+        ],
         0,
     ) {
         Ok(o) => o,
         Err(e) => return run_usage_error(e),
     };
+    // the log file first, opened as root, so that everything below goes there
+    if let Some(path) = opts.get("--log") {
+        if let Err(e) = hjv_relay::log::open_file(Path::new(path)) {
+            logln!("로그 파일 {path}을(를) 쓸 수 없어 표준 오류에 씁니다: {e}");
+        }
+    }
     let Some(state) = opts.get("--state").map(PathBuf::from) else {
         return run_usage_error("run needs --state DIR");
     };
@@ -190,7 +212,7 @@ fn run(args: &[String]) -> u8 {
         Some(Err(e)) => return config_error(format!("서버 주소: {e}")),
         None => {
             return config_error(
-                "이 빌드에는 서버 주소(HJV_SERVER)가 없어 run을 할 수 없습니다. test-wake, init, status, version은 됩니다.",
+                "이 빌드에는 서버 주소(HJV_SERVER)가 없어 run을 할 수 없습니다(현장 시험용 묶음이면 정상입니다). test-wake, init, status, version은 됩니다.",
             )
         }
     };
@@ -241,6 +263,8 @@ fn run(args: &[String]) -> u8 {
             return EX_FAIL;
         }
     };
+    // only now, with the lock: a second relay never rewrites the log this one writes
+    hjv_relay::log::manage();
     // only now: a second start that ends at the lock leaves its one line above, not a restart
     logln!(
         "hjv-relay {} 시작 (서버 {server}, 상태 폴더 {})",
@@ -262,7 +286,30 @@ fn run(args: &[String]) -> u8 {
     };
     let os = system::os_description();
     let kernel = system::kernel_release();
-    let exe = system::ExeWatch::new();
+    let exe = match opts.get("--watch") {
+        Some(path) => match system::ExeWatch::file(PathBuf::from(path)) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                logln!("--watch {path}을(를) 열 수 없어 이 실행 파일을 지켜봅니다: {e}");
+                system::ExeWatch::new()
+            }
+        },
+        None => system::ExeWatch::new(),
+    };
+    let stop = match opts.get("--stop") {
+        Some(path) => match system::StopMarker::open(Path::new(path)) {
+            Ok(m) => Some((m, path)),
+            Err(e) => {
+                logln!("멈춤 표지 {path}의 폴더를 열 수 없어 멈춤 표지를 보지 않습니다: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+    let stop_name = stop
+        .as_ref()
+        .map(|(_, path)| (*path).to_owned())
+        .unwrap_or_default();
     let status_path = PathBuf::from(
         opts.get("--status-file")
             .unwrap_or(system::DEFAULT_STATUS_FILE),
@@ -295,16 +342,16 @@ fn run(args: &[String]) -> u8 {
     };
     let env = SystemEnv {
         exe,
+        stop: stop.map(|(m, _)| m),
         status: status_file,
     };
     let mut relay = Relay::new(cfg, env);
     match relay.run() {
-        Exit::ExeChanged(why) => {
-            logln!("실행 파일이 바뀌었습니다({why}). 끝내고 새 실행 파일로 다시 시작합니다.");
-            drop(lock);
-            0
-        }
+        Exit::ExeChanged(why) => logln!("실행 파일이 바뀌었습니다({why}). 끝냅니다."),
+        Exit::Stopped => logln!("멈춤 표지 {stop_name}이(가) 있어 끝냅니다."),
     }
+    drop(lock);
+    0
 }
 
 fn init(args: &[String]) -> u8 {
@@ -358,8 +405,14 @@ fn version() -> u8 {
     match config::command_keys() {
         // public keys, in the form HJV_COMMAND_PUBKEY takes, so a build can be reproduced
         Some(Ok(keys)) => {
-            let keys: Vec<String> = keys.iter().map(config::CommandKey::to_string).collect();
-            println!("command keys: {}", keys.join(","));
+            let given: Vec<String> = keys.iter().map(config::CommandKey::to_string).collect();
+            println!("command keys: {}", given.join(","));
+            // what hjv-api selfcheck shows for its command keys (PROTOCOL.md, "Command keys")
+            let prints: Vec<String> = keys
+                .iter()
+                .map(|k| format!("{}:{}", k.id, k.fingerprint()))
+                .collect();
+            println!("command key fingerprints: {}", prints.join(","));
         }
         Some(Err(e)) => println!("command keys: invalid ({e})"),
         None => println!("command keys: none (this build cannot 'run')"),

@@ -32,6 +32,8 @@ const C: &str = r#"{"v":1,"job":"0123456789abcdef0123456789abcdef","relay":"r-kz
 const C_S: &str =
     "91MXS5rMOB9k3ZP7XxPue9M++nXy9w4VIpjcqGJspnFI46U37TGC+st2hv6D8DxcUJOaN/2PcY7XeQ6wgfmLBw==";
 const C_HASH: &str = "eefb709bfc6dae46233f75d43c02d0dfb173218d3ed9010c40dc316b4c3d7abe";
+const COMMAND_FINGERPRINT: &str =
+    "1:24f6ed6acbfe1009c030d7ca567c33ca4830911498236b5561a6c82abec5de28";
 
 fn relay_seed() -> [u8; 32] {
     std::array::from_fn(|i| i as u8)
@@ -101,6 +103,7 @@ fn the_document_shows_these_vectors() {
         C_S,
         C_HASH,
         &entry,
+        COMMAND_FINGERPRINT,
     ] {
         assert!(doc.contains(v), "PROTOCOL.md does not show {v}");
     }
@@ -112,6 +115,17 @@ fn wake_command() {
     let key = SigningKey::from_bytes(&command_seed());
     let keys = parse_command_keys(COMMAND_PUBKEY).unwrap();
     assert_eq!(keys[0].key, key.verifying_key());
+    // the one text form of a public key, and its fingerprint: hex SHA-256 of the key bytes
+    assert_eq!(keys[0].to_string(), COMMAND_PUBKEY);
+    assert_eq!(
+        format!("{}:{}", keys[0].id, keys[0].fingerprint()),
+        COMMAND_FINGERPRINT
+    );
+    let plain: String = Sha256::digest(key.verifying_key().to_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(COMMAND_FINGERPRINT, format!("1:{plain}"));
     let mut msg = b"hjv-wake-v1\0".to_vec();
     msg.extend_from_slice(C.as_bytes());
     assert_eq!(STANDARD.encode(key.sign(&msg).to_bytes()), C_S);

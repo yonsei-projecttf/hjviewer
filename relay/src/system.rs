@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The operating system side: the state folder and its lock, giving up root, noticing that the
-//! executable was replaced, the DSM version, the runtime status file and local time for the log.
+//! executable was replaced or that the stop marker appeared, the DSM version, the runtime status
+//! file and local time for the log.
 //!
 //! On the NAS the DSM boot-up task starts the relay as root. The relay makes itself non-dumpable
 //! first (no core dump, no /proc access to its memory, while it holds the key), lets go of a
-//! terminal it was started from, opens what needs root (the state folder `/volume1/@hjv-relay`,
-//! mode 0700, with its lock and `relay.key`; its own executable; the status file in /run), then
-//! switches to uid/gid 65534 with no supplementary groups, sets PR_SET_NO_NEW_PRIVS and stays
-//! non-dumpable, before it touches the network.
+//! terminal it was started from, opens what needs root (its log file; the state folder
+//! `/volume1/@hjv-relay`, mode 0700, with its lock and `relay.key`; the executable it watches and
+//! the folder of the stop marker; the status file in /run), then switches to uid/gid 65534 with
+//! no supplementary groups, sets PR_SET_NO_NEW_PRIVS and stays non-dumpable, before it touches
+//! the network.
 
 use std::{
-    ffi::{CString, OsString},
+    ffi::{CStr, CString, OsString},
     fs::{self, File, OpenOptions},
     io,
     os::{
@@ -352,9 +354,13 @@ pub fn drop_privileges(uid: u32, gid: u32) -> io::Result<bool> {
 /// Notices that the relay's own executable was replaced or changed, so that it can exit and let
 /// the boot-up task's loop start the new one. It keeps the file open and remembers
 /// /proc/self/exe, which keep working after the relay gave up root (the folder the executable
-/// is in may not be readable then).
+/// is in may not be readable then). [`ExeWatch::file`] watches another file the same way: the
+/// file the boot-up task's loop checked and copied (`run --watch`).
 pub struct ExeWatch {
     path: PathBuf,
+    /// Where the kernel shows the watched file's current name: /proc/self/exe, or the open
+    /// descriptor's /proc/self/fd/N.
+    proc_link: PathBuf,
     link: Option<OsString>,
     file: Option<File>,
     ident: Option<Ident>,
@@ -390,9 +396,8 @@ impl ExeWatch {
 
     /// Watches `path` (tests).
     pub fn of(path: PathBuf) -> ExeWatch {
-        let link = fs::read_link("/proc/self/exe")
-            .ok()
-            .map(PathBuf::into_os_string);
+        let proc_link = PathBuf::from("/proc/self/exe");
+        let link = fs::read_link(&proc_link).ok().map(PathBuf::into_os_string);
         let file = File::open(&path).ok();
         let ident = file
             .as_ref()
@@ -400,10 +405,32 @@ impl ExeWatch {
             .map(|m| Ident::of(&m));
         ExeWatch {
             path,
+            proc_link,
             link,
             file,
             ident,
         }
+    }
+
+    /// Watches the file at `path` instead of the running executable, through its own open
+    /// descriptor: renamed, removed, replaced or changed in place. The boot-up task's loop runs a
+    /// checked copy of the uploaded executable and passes the uploaded file here, so that an
+    /// upload still ends the relay. Opened without blocking, so a FIFO put there cannot hang it.
+    pub fn file(path: PathBuf) -> io::Result<ExeWatch> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(&path)?;
+        let ident = Some(Ident::of(&file.metadata()?));
+        let proc_link = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        let link = fs::read_link(&proc_link).ok().map(PathBuf::into_os_string);
+        Ok(ExeWatch {
+            path,
+            proc_link,
+            link,
+            file: Some(file),
+            ident,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -412,7 +439,7 @@ impl ExeWatch {
 
     /// Why the executable is not the one that was started, if it changed.
     pub fn changed(&self) -> Option<String> {
-        if let (Some(link), Ok(now)) = (&self.link, fs::read_link("/proc/self/exe")) {
+        if let (Some(link), Ok(now)) = (&self.link, fs::read_link(&self.proc_link)) {
             if now.as_os_str() != link {
                 return Some(format!("now {}", now.display()));
             }
@@ -433,6 +460,74 @@ impl ExeWatch {
             }
         }
         None
+    }
+}
+
+/// Notices the stop marker (`run --stop FILE`): a file or folder of that name that someone puts
+/// next to the executable to end the relay and the boot-up task's loop without a reboot. The
+/// marker's folder is opened while the relay may still read it (as root) and later listed
+/// through that descriptor, which needs no permission on the folder: on the NAS it is a shared
+/// folder only administrators can open. The unprivileged relay learns nothing more from it than
+/// the names in that folder.
+pub struct StopMarker {
+    dir: File,
+    name: CString,
+}
+
+impl StopMarker {
+    pub fn open(path: &Path) -> io::Result<StopMarker> {
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("no file name"))?;
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        let dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+            .open(parent)?;
+        Ok(StopMarker {
+            dir,
+            name: CString::new(name.as_bytes()).map_err(io::Error::other)?,
+        })
+    }
+
+    /// Whether the marker is there now. A folder that cannot be listed counts as no marker.
+    pub fn present(&self) -> bool {
+        // SAFETY: dup of an open descriptor; the copy is handed to fdopendir and closed by
+        // closedir (or here when fdopendir fails).
+        let fd = unsafe { libc::dup(self.dir.as_raw_fd()) };
+        if fd < 0 {
+            return false;
+        }
+        // SAFETY: `fd` is an open directory descriptor this function owns.
+        let dir = unsafe { libc::fdopendir(fd) };
+        if dir.is_null() {
+            // SAFETY: fdopendir failed, so `fd` is still ours to close.
+            unsafe { libc::close(fd) };
+            return false;
+        }
+        let mut found = false;
+        // SAFETY: `dir` is a valid stream until closedir; the copy shares the descriptor's
+        // position, so it starts from the beginning of the folder.
+        unsafe { libc::rewinddir(dir) };
+        loop {
+            // SAFETY: as above; an entry stays valid until the next readdir on this stream.
+            let entry = unsafe { libc::readdir(dir) };
+            if entry.is_null() {
+                break;
+            }
+            // SAFETY: d_name is a NUL-terminated name inside the entry.
+            let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+            if name == self.name.as_c_str() {
+                found = true;
+                break;
+            }
+        }
+        // SAFETY: closes the stream and its descriptor, once.
+        unsafe { libc::closedir(dir) };
+        found
     }
 }
 
@@ -691,6 +786,86 @@ mod tests {
         fs::remove_file(&exe).unwrap();
         assert_eq!(watch.changed().as_deref(), Some("removed"));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Whether this process ignores file permissions (root): then a closed folder proves nothing.
+    fn bypasses_permissions() -> bool {
+        euid() == 0
+    }
+
+    #[test]
+    fn a_watched_file_is_followed_through_its_descriptor() {
+        let dir = temp_dir("watch");
+        fs::create_dir(&dir).unwrap();
+        let file = dir.join("hjv-relay");
+        fs::write(&file, "v1").unwrap();
+        // renamed (File Station's rename, or a pause by renaming): seen by the descriptor's name
+        let watch = ExeWatch::file(file.clone()).unwrap();
+        assert_eq!(watch.changed(), None);
+        fs::rename(&file, dir.join("hjv-relay.off")).unwrap();
+        let why = watch.changed().unwrap();
+        assert!(why.ends_with("hjv-relay.off"), "{why}");
+        fs::rename(dir.join("hjv-relay.off"), &file).unwrap();
+        // replaced by an upload that renames a new file over it
+        let watch = ExeWatch::file(file.clone()).unwrap();
+        fs::write(dir.join("upload"), "v2").unwrap();
+        fs::rename(dir.join("upload"), &file).unwrap();
+        assert!(watch.changed().is_some());
+        // written in place
+        let watch = ExeWatch::file(file.clone()).unwrap();
+        fs::write(&file, "v3 longer").unwrap();
+        assert_eq!(watch.changed().as_deref(), Some("modified"));
+        // removed
+        let watch = ExeWatch::file(file.clone()).unwrap();
+        fs::remove_file(&file).unwrap();
+        assert!(watch.changed().is_some());
+        assert!(ExeWatch::file(file.clone()).is_err());
+
+        // in a folder the (unprivileged) relay cannot open: no false alarm, and a rename is
+        // still seen
+        fs::write(&file, "v4").unwrap();
+        let watch = ExeWatch::file(file.clone()).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(watch.changed(), None);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::rename(&file, dir.join("hjv-relay.old")).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(watch.changed().is_some());
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_stop_marker_is_seen_through_a_closed_folder() {
+        let dir = temp_dir("stop");
+        fs::create_dir(&dir).unwrap();
+        let marker_path = dir.join("hjv-relay.stop");
+        fs::write(dir.join("hjv-relay"), "").unwrap();
+        fs::write(dir.join("hjv-relay.stop.txt"), "").unwrap();
+        let marker = StopMarker::open(&marker_path).unwrap();
+        assert!(!marker.present());
+        // the relay gave up root and cannot open the folder any more
+        let close = |mode| fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+        close(0o000);
+        if !bypasses_permissions() {
+            assert!(fs::metadata(&marker_path).is_err());
+        }
+        assert!(!marker.present());
+        close(0o700);
+        fs::write(&marker_path, "").unwrap();
+        close(0o000);
+        assert!(marker.present());
+        // asked again and again, from the start of the folder each time
+        assert!(marker.present());
+        close(0o700);
+        fs::remove_file(&marker_path).unwrap();
+        assert!(!marker.present());
+        // a folder of that name (File Station makes folders, not empty files) counts too
+        fs::create_dir(&marker_path).unwrap();
+        assert!(marker.present());
+        fs::remove_dir_all(&dir).unwrap();
+        // a marker whose folder is not there cannot be watched
+        assert!(StopMarker::open(&dir.join("hjv-relay.stop")).is_err());
     }
 
     #[test]

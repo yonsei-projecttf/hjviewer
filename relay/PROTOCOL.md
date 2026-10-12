@@ -48,9 +48,10 @@ Contents: 1 Transport · 2 Encodings · 3 Keys and identity · 4 Request envelop
   it does not know. `1xx` responses before the final one are skipped.
 - The relay gives up on a request **35 seconds** after it started connecting (DNS, connect, TLS,
   write and the whole long-poll wait included).
-- nginx in front of hjv-api passes `/api/hjv/` through (the long-poll of at most 20 s is inside
-  nginx's default 60 s `proxy_read_timeout`), sets `X-Real-IP`, which hjv-api records as the
-  relay's egress address, and limits hello per source (section 4.3).
+- nginx in front of hjv-api passes `/api/hjv/` through (deploy/nginx-hjviewer-api.conf:
+  `proxy_read_timeout 30s`, which a long-poll answered within `min(wait, 20) + 5` seconds stays
+  inside, and `client_max_body_size 64k`, the request limit above), sets `X-Real-IP`, which
+  hjv-api records as the relay's egress address, and limits hello per source (section 4.3).
 
 ## 2. Encodings
 
@@ -89,16 +90,30 @@ JSON integers in all objects of this protocol MUST be written as integers (`60`,
 ### 3.2 Command keys
 
 - hjv-api signs wake commands with an Ed25519 **command key**. Each command key has a **key id**,
-  an integer 1–65535. Its private key stays on the server (for example as a systemd encrypted
-  credential); its public key is compiled into hjv-relay.
-- The relay build variable is `HJV_COMMAND_PUBKEY` =
-  `<key id>:<base64 public key>[,<key id>:<base64 public key>]`: one or two keys with distinct
-  ids, such as `1:<base64 public key>`. A relay built without this variable, or with a value
-  that does not parse (a weak, small-order key, more than two keys, duplicate ids), refuses to
-  `run`; `hjv-relay version` prints the keys in this form, or the problem.
-  scripts/package-relay.sh refuses to package such a build, and also the public test keys of
-  this repository (section 13 and the tests) unless it is told that the build is a test build.
-  The key generator of hjv-api SHOULD print exactly this form.
+  an integer 1–65535: 1 for the first key, which the server keeps (the systemd encrypted
+  credential `hjviewer-api-command-key`), 2 for the next one, made offline and kept off the
+  server until it replaces the first, and higher ids for later rotations. Only the public keys
+  leave the server's side; they are compiled into hjv-relay.
+- **One text form for a command public key**, wherever one is written: `<key id>:<base64 public
+  key>`, the key id in decimal digits without a sign or leading zeros, the 32 public key bytes in
+  base64 (section 2: with padding, 44 characters), such as
+  `1:Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`.
+  - `hjv-api keygen command --kid <key id>` MUST print the key it makes as exactly this line (and
+    never the private key).
+  - hjv-api's setting `HJV_API_COMMAND_PUBKEYS` and the relay build variable `HJV_COMMAND_PUBKEY`
+    are such entries joined by `,` (`1:<base64>,2:<base64>`); `HJV_API_COMMAND_KID` names the key
+    the server signs with.
+  - A relay takes one or two keys with distinct ids. A relay built without `HJV_COMMAND_PUBKEY`,
+    or with a value that does not parse (a weak, small-order key, more than two keys, duplicate
+    ids), refuses to `run`; `hjv-relay version` prints the keys in this form, or the problem.
+- The **fingerprint** of a command key is the lowercase hex SHA-256 of its 32 public key bytes
+  (64 digits). `hjv-api selfcheck`, the summary of the build that makes a relay release, and
+  `hjv-relay version` (and so `hjv-relay status`) show `<key id>:<fingerprint>`, so that a person
+  can check that the key the server signs with is one a relay build trusts (section 13 has a
+  vector).
+- scripts/package-relay.sh refuses to package a relay without command keys, and one with the
+  public test keys of this repository (section 13 and the tests) unless it is told that the build
+  is a test build.
 - Rotation: release relays built with both the current key and the next one (ids 1 and 2), then
   switch the server to sign with the next key, then drop the old key from later relay builds.
 - The command key MUST NOT sign anything other than wake commands (section 7.2 also separates
@@ -389,7 +404,8 @@ the relay is pending or revoked are not checked or sent; their results say `not_
   unexpired command of the relay in each poll response to it (oldest first, at most 16 per
   response) until it has received a result for the command (section 8.2) or the command has
   expired; then it removes it.
-- A command that expires without a result is a failed job (for example `no_result`).
+- A command that expires without a result is a failed job with the error `no_result` (design
+  notes v3, section 8-4).
 - Delivering a command again is safe: the relay runs a job at most once (check 5).
 
 ## 8. Results
@@ -418,7 +434,7 @@ the relay is pending or revoked are not checked or sent; their results say `not_
   `replayed` → no new information (ignore); any other `error` → **failed** with that code.
   Results whose `cmd` matches no command of this relay are logged and ignored.
 - Whether the PC woke up is not part of this protocol: hjv-api confirms it from the PC's
-  registration with hbbs (the design notes, section 6-5).
+  registration with hbbs and its next sync (design notes v3, section 8-4).
 
 ## 9. Interfaces
 
@@ -446,8 +462,10 @@ DSM's `eth0`, `eth1`, `bond0` and the Open vSwitch bridge `ovs_eth0` are usable.
 `ifaces_hash` is the hex SHA-256 of the JSON text of `ifaces` exactly as the relay serialized it.
 The server only compares it for equality with the hash that came with the last full `ifaces`.
 
-The server picks a relay for a PC from these reports (design notes, section 6-3): same network
-and gateway first, then overlapping networks with the same gateway IP or gateway MAC.
+The server picks a relay for a PC from these reports (design notes v3, section 8-4): same network
+and gateway first, then overlapping networks with the same gateway IP or gateway MAC, then a
+network where the relay woke this PC before; on private and shared (CGNAT) addresses the egress
+addresses must match too.
 
 ### 9.2 Which interface a command uses
 
@@ -506,7 +524,7 @@ logs a hint to check the NAS's time, and the install guide says how.
 | relay rate limit | 10 commands and 120 packets in any 60 s |
 | hello per source (nginx) | for example 10 per minute, burst 5, per IPv4 address or IPv6 /64 |
 | pending entries (server) | 5 new per source address (IPv6 /64) per hour, 20 in all, 24 h lifetime; not for pre-approved codes |
-| pre-approval (server) | for example 7 days |
+| pre-approval (server) | 7 days |
 | results | at most 50 per poll, 100 kept |
 | commands handled per response | 16 |
 
@@ -529,20 +547,23 @@ logs a hint to check the NAS's time, and the install guide says how.
 - **Approving** trusts whoever reported the code and the PC ID, and PC IDs are not secret.
   Before approving, the administrator MUST confirm the request with the owner of that PC
   through a channel the administrator already trusts (in person, by phone, or from the owner's
-  known e-mail address), and MUST compare the pending entry's egress address and the networks
-  of its interfaces with that PC's wake report (`wol-info`, design notes section 4): a relay
-  that cannot reach the PC's network is the wrong entry. The approval tool MUST show the
-  pending entry's egress address, its interfaces' networks (MACs masked) and its age, next to
-  the PC's reported networks and egress address.
+  known e-mail address), and MUST compare the pending entry with that PC's wake report (design
+  notes v3, section 8-2): a relay that cannot reach the PC's network is the wrong entry.
+- The approval tool (`hjv-api admin relay approve <code> --owner-of <PC ID>`) MUST show, by
+  default, the **verdicts** of that comparison next to the pending entry: whether one of the
+  relay's interfaces is on the PC's network (the same network, or overlapping ones with the same
+  gateway), whether the relay's egress address is the PC's, and how long the entry has been
+  pending. It MUST show the addresses and networks themselves only with `--reveal`, so that its
+  default output, which may end up in a chat or a ticket, holds none; MACs are always masked.
 - **Pre-approval**: `admin relay approve <code> --owner-of <PC ID>` for a code with no pending
   entry (the relay has not said hello yet, or the pending limits turned it away) stores the
   code and the account, after the same confirmation with the PC's owner. When a hello arrives
   whose `pk` gives that code, the relay becomes active at once, whatever the pending limits, and
-  the pre-approval is used up. Pre-approvals expire (for example after 7 days). The code is 80
-  bits of SHA-256 of a key, so nobody can make another key that matches a pre-approved code.
-  The networks cannot be compared before the hello: the administrator SHOULD compare them once
-  the relay is active (the approval tool SHOULD list relays with the same details) and revoke
-  it on a mismatch.
+  the pre-approval is used up. Pre-approvals expire after 7 days. The code is 80 bits of SHA-256
+  of a key, so nobody can make another key that matches a pre-approved code. The networks
+  cannot be compared before the hello: the administrator SHOULD compare them once the relay is
+  active (`admin relay list` SHOULD show the same verdicts, and the values with `--reveal`) and
+  revoke it on a mismatch.
 - **active**: gets commands for PCs of its owner account (or, when the server allows sharing,
   other accounts).
 - **revoked**: never gets commands. The server SHOULD keep a minimal record (relay ID, `pk`,
@@ -590,7 +611,9 @@ A hello at `t` = `1760000000` with `n` = base64url of the bytes `00 01 ... 0f` =
 ```
 
 Command key: the seed is the 32 bytes `20 21 22 ... 3f`, key id 1, so
-`HJV_COMMAND_PUBKEY=1:Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`. The command text `c`:
+`HJV_COMMAND_PUBKEY=1:Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=` (what
+`hjv-api keygen command --kid 1` prints for this key), and its fingerprint (section 3.2) is
+`1:24f6ed6acbfe1009c030d7ca567c33ca4830911498236b5561a6c82abec5de28`. The command text `c`:
 
 ```
 {"v":1,"job":"0123456789abcdef0123456789abcdef","relay":"r-kzdvvj2umnduyauf","iat":1760000000,"exp":1760000060,"net":"10.1.4.0/22","macs":["00:00:5e:00:53:01"],"ports":[9,7],"repeat":3,"gap_ms":200}
@@ -627,7 +650,8 @@ These private keys are public test values: never use them for anything else.
 - A relay acts only on its own network: commands name MACs, never addresses; packets go only to
   broadcast addresses of its own interfaces, only to ports 9 and 7, with fixed content, within
   rate limits. A stolen command key therefore allows no more than unwanted wake-ups on the
-  relay's LAN; a stolen relay key allows false results and learning which PCs are woken.
+  relay's LAN; a stolen relay key allows false results and learning which PCs are woken. A relay
+  is in no PC's trust list: neither key lets anyone connect to a PC.
 - The relay starts as root on DSM only to read its key and open its files, then runs as
   uid/gid 65534 with no supplementary groups and `PR_SET_NO_NEW_PRIVS`, and it is non-dumpable
   from the start. Started from a terminal, it gives the terminal up first, so the
@@ -637,8 +661,11 @@ These private keys are public test values: never use them for anything else.
   section 11 requires the administrator to confirm each request with the PC's owner and to
   compare the relay's networks with the PC's. An approved wrong relay would receive the MACs and
   networks of the owner's PCs and could report false results.
-- A residual risk outside this protocol: whoever can write to the folder of the hjv-relay
-  executable on the NAS runs code as root within about a minute, because the relay restarts
-  itself when its executable changes and the boot-up task's root loop then starts the new
-  file. The install guide keeps it in a folder only administrators can write, with no sync
-  tasks, sharing links or file requests on it (docs/relay-dsm.md, section 2).
+- Outside this protocol, on the NAS: the boot-up task starts the relay as root
+  (docs/relay-dsm.md). The task's first line holds the SHA-256 of the release, and its loop runs
+  only a copy it made in the root-only state folder, after checking both the uploaded file and
+  the copy against that value. So whoever can write to the shared folder of the executable can
+  stop the relay or delete its log, but cannot have their code run as root; changing the task
+  takes a DSM administrator. The guide still keeps that folder for administrators only, with no
+  sync tasks, sharing links or file requests on it (docs/relay-dsm.md, section 2). The relay
+  keeps its log to the last 180 days and at most 2 MB.

@@ -653,6 +653,46 @@ fn results_are_delivered_before_a_restart() {
 }
 
 #[test]
+fn the_stop_marker_ends_the_loop_after_the_results_went_out() {
+    let _log = capture_log();
+    let server =
+        TestServer::start(|_, now| Reply::ok(json!({"server_time": now, "state": "active"})));
+    let script = scripted(&server, "active");
+    let env = FakeEnv::new();
+    let stop = env.stop.clone();
+    let tidied = env.tidied.clone();
+    let sent = env.sent.clone();
+    let mut relay = Relay::new(relay_config(&server), env);
+    let job = format!("{:032x}", 8);
+    let cmd = signed(
+        &wake_command(&job, &relay_id(), unix_now(), "10.1.4.0/22"),
+        &command_signing_key(),
+        1,
+    );
+    queue(&script, move |_, now| {
+        // the marker appears while this poll is out, and the poll brings a command
+        stop.store(true, Ordering::SeqCst);
+        Reply::ok(json!({"server_time": now, "state": "active", "commands": [cmd]}))
+    });
+    assert_eq!(relay.run(), Exit::Stopped);
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    assert_eq!(relay.pending_results(), 0);
+    let last = server.seen().pop().unwrap();
+    assert_eq!(last.payload["wait"], 0);
+    assert_eq!(results_of(&last)[0]["job"], job);
+    // the log was looked after between requests
+    assert!(tidied.load(Ordering::SeqCst) >= 1);
+
+    // a marker that is already there ends it before any request
+    let server = TestServer::start(|_, now| Reply::ok(json!({"server_time": now})));
+    let env = FakeEnv::new();
+    env.stop.store(true, Ordering::SeqCst);
+    let mut relay = Relay::new(relay_config(&server), env);
+    assert_eq!(relay.run(), Exit::Stopped);
+    assert!(server.seen().is_empty());
+}
+
+#[test]
 fn a_rewound_server_time_does_not_bring_back_old_commands() {
     // server_time is not signed: whoever answers in the server's name could set it back to
     // replay a command recorded a day ago that this relay never saw
