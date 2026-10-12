@@ -20,8 +20,10 @@
 #                          Then the release package (scripts/package-server.sh): its systemd units
 #                          on this machine (hjv-api's too), the whole package installed in a clean
 #                          Ubuntu container (systemd-analyze verify, nginx -t, requests through
-#                          nginx to hjv-api), hjv-api's production settings, and the account API's
-#                          nginx limits (an IPv6 /64 too, in an unprivileged network namespace).
+#                          nginx to hjv-api), hjv-api's production settings
+#                          (scripts/check-api-settings.py and its offline tests), and the account
+#                          API's nginx limits (an IPv6 /64 and a dual-stack listener too, in an
+#                          unprivileged network namespace).
 #   scripts/ci.sh e2e      tools/e2e/firewall-e2e.sh strict and open (sudo: namespaces, iptables)
 #                          with a client built for its test server, Caddy pinned by SHA-256, and the
 #                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; the
@@ -53,6 +55,10 @@ mkdir -p "$CI"
 
 SRC="$CI/src" PKGS="$CI/pkgs" CERTS="$CI/certs"
 NGINX_PID="" APACHE_PID="" ECHO_PID=""
+# set by the deploy stage, whose failures show its containers' and web servers' logs
+DEPLOY_LOGS=""
+# set by build_e2e_client when the E2E has its account part
+E2E_ACCOUNT=""
 # the stack under test: the compose files (docker) or the release package's systemd units
 STACK=docker SYSTEMD_SINCE=""
 
@@ -71,7 +77,7 @@ key_file() {
 
 fail() {
   echo "FAIL: $*" >&2
-  if [ -d "$SRC/deploy" ]; then
+  if [ -n "$DEPLOY_LOGS" ] && [ -d "$SRC/deploy" ]; then
     dc logs --tail 40 >&2 2>/dev/null || true
     for f in "$CI"/nginx/error.log "$CI"/apache/error.log; do
       [ -f "$f" ] && { echo "--- $f" >&2; tail -n 20 "$f" >&2; }
@@ -101,7 +107,8 @@ cleanup_systemd() {
   fi
   sudo rm -rf /var/lib/private/hjv-ci /var/lib/private/hjv-ci-api /var/log/private/hjv-ci-api /run/hjv-ci \
     /usr/local/lib/hjv-ci
-  sudo rm -f /var/lib/hjv-ci /var/lib/hjv-ci-api /var/log/hjv-ci-api
+  # stopping a socket unit leaves its socket file without RemoveOnStop=
+  sudo rm -f /var/lib/hjv-ci /var/lib/hjv-ci-api /var/log/hjv-ci-api /run/hjv-ci-api.sock
 }
 
 cleanup() {
@@ -353,50 +360,23 @@ api_test_credentials() { # <hjv-api> <unit> <dir> <write...>
   done
 }
 
-# The settings design v3 5-6 fixes for production: those of <env file> and, for one it leaves out,
-# the default that the packaged example documents (its "#NAME=value" line)
-api_setting() { # <env file> <example> <name>
-  local v
-  v=$(sed -n "s/^$3=//p" "$1" | tail -n 1)
-  [ -n "$v" ] || v=$(sed -n "s/^#$3=//p" "$2" | tail -n 1)
-  printf '%s' "$v"
-}
-
-check_api_env() { # <env file> <packaged example>
-  local env=$1 example=$2 v
-  step "deploy: hjv-api's production settings in $env"
-  v=$(api_setting "$env" "$example" HJV_API_BIND_OS)
-  echo "HJV_API_BIND_OS=$v"
-  [ "$v" = windows ] || fail "hjv-api: HJV_API_BIND_OS is '$v': only installed Windows PCs join an account (design v3 5-6)"
-  v=$(api_setting "$env" "$example" HJV_API_SECOND_FACTOR)
-  echo "HJV_API_SECOND_FACTOR=$v"
-  [ "$v" = off ] || fail "hjv-api: HJV_API_SECOND_FACTOR is '$v', not off (decision U1)"
-  # the trust lists' settings come with the PC sync (WP-S2)
-  if grep -Eq '^#?HJV_API_TRUST_REFRESH=' "$example"; then
-    v=$(api_setting "$env" "$example" HJV_API_TRUST_REFRESH)
-    echo "HJV_API_TRUST_REFRESH=$v"
-    [[ $v =~ ^[0-9]+$ ]] && [ "$v" -ge 60 ] && [ "$v" -le 300 ] ||
-      fail "hjv-api: HJV_API_TRUST_REFRESH is '$v', not 60-300 seconds (design v3 3-6)"
-  else
-    echo "skipped: HJV_API_TRUST_REFRESH (hjv-api has no trust lists yet)"
-  fi
-  if grep -Eq '^#?HJV_API_TRUST_TTL=' "$example"; then
-    v=$(api_setting "$env" "$example" HJV_API_TRUST_TTL)
-    echo "HJV_API_TRUST_TTL=$v"
-    [[ $v =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] && [ "$v" -le 259200 ] ||
-      fail "hjv-api: HJV_API_TRUST_TTL is '$v', not at most 72 hours, the apps' bound (decision U4: 86400)"
-  else
-    echo "skipped: HJV_API_TRUST_TTL (hjv-api has no trust lists yet)"
-  fi
+# The settings design v3 5-6 fixes for production (BIND_OS windows, SECOND_FACTOR off, the trust
+# lists' refresh and lifetime) in <env file>, read as systemd reads it, with the defaults <packaged
+# example> documents; skipped only for the names that <hjv-api> does not know yet
+# (scripts/check-api-settings.py)
+check_api_env() { # <env file> <packaged example> <hjv-api>
+  step "deploy: hjv-api's production settings in $1"
+  python3 -I -B "$ROOT/scripts/check-api-settings.py" --binary "$3" --example "$2" "$1" ||
+    fail "hjv-api's production settings in $1 (above)"
 }
 
 # Whether hjv-api's passwordless switch is off, as it must be after an install (design v3 5-6, 11
-# step 4): the first line of "admin passwordless status" says off and not on. Skipped while
-# hjv-api has no such command.
+# step 4): the first line of "admin passwordless status" says off and not on. Skipped only while
+# the binary has no word of it; once it has, the command must answer.
 check_switch_off() { # <hjv-api> <admin socket> <run...>
   local api=$1 socket=$2 status first
   shift 2
-  if ! "$api" admin help 2>&1 | grep '^  passwordless ' > /dev/null; then
+  if ! grep -aq passwordless "$api"; then
     echo "skipped: the passwordless switch (hjv-api has no such admin command yet)"
     return 0
   fi
@@ -462,7 +442,8 @@ check_systemd_api() {
 
 # The account API's nginx limits from the package (zones file and locations), with Ubuntu's nginx
 # in an unprivileged user and network namespace that has an IPv6 /64 of its own: hjv-relay's
-# registrations are counted per IPv4 address and per IPv6 /64 (relay/PROTOCOL.md 4.3), logins per
+# registrations are counted per IPv4 address and per IPv6 /64 (relay/PROTOCOL.md 4.3), also on a
+# dual-stack listener (ipv6only=off), where IPv4 clients arrive as ::ffff:a.b.c.d; logins per
 # address. No hjv-api runs, so what passes the limits gets the "server unavailable" answer.
 check_api_limits() { # <unpacked package>
   local pkg=$1 ng="$CI/nginx-api"
@@ -491,6 +472,11 @@ http {
   server {
     listen 127.0.0.1:18450;
     listen [::]:18450;
+    include $pkg/web/nginx-hjviewer-api.conf;
+  }
+  # one dual-stack socket for IPv4 and IPv6, as some sites listen
+  server {
+    listen [::]:18451 ipv6only=off;
     include $pkg/web/nginx-hjviewer-api.conf;
   }
 }
@@ -525,6 +511,13 @@ echo "relay hello from another /64: $code"
 [ "$code" != 429 ] || { echo "FAIL: another /64 shares the limit"; exit 1; }
 v4=(127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1)
 check "relay hello, one IPv4 address" http://127.0.0.1:18450/api/hjv/relay/hello "$relay" "${v4[@]}"
+v4=(127.0.0.3 127.0.0.3 127.0.0.3 127.0.0.3 127.0.0.3 127.0.0.3 127.0.0.3)
+check "relay hello, one IPv4 address on a dual-stack listener" http://127.0.0.1:18451/api/hjv/relay/hello "$relay" \
+  "${v4[@]}"
+code=$(post 127.0.0.4 http://127.0.0.1:18451/api/hjv/relay/hello)
+echo "relay hello from another IPv4 address on the dual-stack listener: $code"
+[ "$code" != 429 ] || { echo "FAIL: the IPv4 clients of a dual-stack listener share one limit"; exit 1; }
+v4=(127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1)
 check "login, one IPv4 address" http://127.0.0.1:18450/api/login '{"error":"잠시 뒤 다시 시도해 주세요"}' "${v4[@]}"
 EOF
 }
@@ -635,7 +628,7 @@ expect "/ (the source notice)" 200 'github.com/yonsei-projecttf/hjviewer' https:
 for i in 1 2 3 4 5 6; do c -X POST -d '{}' https://rd.example.com/api/hjv/relay/hello > /dev/null; done
 expect "the 7th relay hello at once" 429 '^\{"error":"rate_limited","retry_after":60\}$' -X POST -d '{}' https://rd.example.com/api/hjv/relay/hello
 step "hjv-api's passwordless switch after the install"
-if "$api" admin help 2>&1 | grep '^  passwordless ' > /dev/null; then
+if grep -aq passwordless "$api"; then
   status=$("$api" admin --socket /run/hjviewer-api-admin/admin.sock passwordless status)
   echo "$status"
   first=$(printf '%s\n' "$status" | head -n 1 | tr '[:upper:]' '[:lower:]')
@@ -657,11 +650,15 @@ deploy_stage() {
   if [ ! -x "$PROBE" ] || [ ! -x "$LOAD" ]; then fail "hjv-probe/hjv-load are not built: scripts/ci.sh server"; fi
   if [ -d "$ROOT/server/api" ] && [ ! -x "$API" ]; then fail "hjv-api is not built: scripts/ci.sh server"; fi
   sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
+  step "deploy: the production settings check (scripts/check-api-settings.py), offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_api_settings.py' ||
+    fail "deploy: tests of the settings check"
   [ -z "$(ss -Hltnu '( sport >= :21115 and sport <= :21119 )')" ] ||
     fail "ports 21115-21119 are in use (a running hjviewer server?); the test stack needs them"
   [ -z "$(ss -Hltn '( sport >= :18080 and sport <= :18082 ) or ( sport >= :18443 and sport <= :18448 ) or sport = :18599')" ] ||
     fail "test ports 18080-18082 / 18443-18448 / 18599 are in use"
   trap cleanup EXIT
+  DEPLOY_LOGS=1
 
   step "deploy: copy of this working tree"
   if [ -d "$SRC/deploy" ]; then dc down -v --remove-orphans > /dev/null 2>&1 || true; fi
@@ -913,10 +910,10 @@ EOF
   cleanup_systemd
 
   if [ ${#api_files[@]} -gt 0 ]; then
-    check_api_env "$pkg/systemd/hjviewer-api.env.example" "$pkg/systemd/hjviewer-api.env.example"
+    check_api_env "$pkg/systemd/hjviewer-api.env.example" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
     # a server's own settings, e.g. a copy of /etc/hjviewer/hjviewer-api.env (nothing in it is secret)
     if [ -n "${HJV_API_ENV_FILE:-}" ]; then
-      check_api_env "$HJV_API_ENV_FILE" "$pkg/systemd/hjviewer-api.env.example"
+      check_api_env "$HJV_API_ENV_FILE" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
     fi
     check_api_limits "$pkg"
     check_package_container "$rel" hjviewer-server-ci-linux-x86_64
@@ -981,7 +978,10 @@ e2e_server_key() { # <work dir>
 # E2E's public keys and runs the account code's unit tests; before, it is built like 1.5.1.
 build_e2e_client() { # <work dir>
   local work=$1 src="$CI/upstream-e2e/rustdesk" keys=()
-  [ -n "${E2E_CLIENT:-}" ] && return 0
+  if [ -n "${E2E_CLIENT:-}" ]; then
+    echo "skipped: the client build and the account E2E (E2E_CLIENT=$E2E_CLIENT is used as it is)"
+    return 0
+  fi
   step "e2e: upstream checkout with client/patches"
   rm -rf "$CI/upstream-e2e"
   UPSTREAM_DIR="$CI/upstream-e2e" "$ROOT/scripts/fetch-upstream.sh" client
