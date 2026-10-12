@@ -7,17 +7,27 @@
 ## 개발 PC의 CI: `scripts/ci.sh`
 
 ```bash
-scripts/ci.sh            # server + deploy (처음에는 15분 안팎, 이후에는 캐시로 더 빠름). client는 따로 실행
-scripts/ci.sh server     # 서버 테스트만
-scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe·hjv-load가 있어야 함)
-scripts/ci.sh client     # 앱 시험: Play 업로드 스크립트, hbb_common WebSocket, 순수 Dart (client/patches나 scripts/play-upload.py를 바꿨을 때)
+scripts/ci.sh            # server + deploy (처음에는 15분 안팎, 이후에는 캐시로 더 빠름). 나머지 단계는 따로 실행
+scripts/ci.sh server     # 서버 테스트만 (hbbs·hbbr, hjv-api, hjv-relay)
+scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe·hjv-load·hjv-api가 있어야 함)
+scripts/ci.sh client     # 앱 시험: Play 업로드 스크립트, 공개키 확인, actionlint, hbb_common WebSocket, Rust 1.75 check, 순수 Dart
+scripts/ci.sh e2e        # 방화벽 E2E (docs/e2e.md): sudo, 클라이언트 빌드 포함. server를 먼저 돌려야 함
+scripts/ci.sh wol        # 원격 켜기 E2E (무권한): tools/e2e/wol-e2e.sh가 생긴 뒤부터
+scripts/ci.sh leak       # push 전 검사: 로컬 목록 build/leak-patterns.txt의 값이 올라갈 내용에 없는지
 ```
+
+아직 들어오지 않은 작업 묶음이 필요한 부분은 단계가 "skipped: …" 한 줄을 찍고 건너뜁니다. 예를 들어 hbbs 패치 0004가 없으면 `hjv_pk` 시험을, 계정 화면 패치가 없으면 `hjviewer_account_test.dart`를 건너뜁니다.
 
 | 단계 | 하는 일 |
 |---|---|
-| client | 먼저 Google Play 업로드 스크립트의 오프라인 시험(`scripts/test_play_upload.py`)을 돌립니다. 가짜 Play API와 버리는 키로 하므로 네트워크와 Google 자격 증명이 필요 없습니다. 그다음 `build/ci/upstream`에 upstream rustdesk를 새로 받아 `client/patches`를 적용하고, `hbb_common`의 WebSocket 테스트(프록시, `TCP_NODELAY`)와 앱의 순수 Dart 테스트(`CLIENT_DART_TESTS`: iPhone 한글 입력과 키보드 기록)를 돌립니다. Flutter는 앱 빌드와 같은 3.24.5를 처음 한 번 받아 Flutter 릴리스 목록의 SHA-256과 맞춰 봅니다. 생성된 bridge가 필요한 제스처·화질 표시 테스트는 GitHub Actions의 Dart tests 잡에서만 돕니다. |
-| server | `build/ci/upstream`에 upstream rustdesk-server를 새로 받아 `server/patches`를 적용하고, 신호·중계 통합 테스트(`tcp_signaling`, `relay_pairing`)를 돌립니다. `hjv-probe`, `hjv-load`도 빌드합니다. |
-| deploy | 작업 트리 사본(`build/ci/src`, 커밋하지 않은 변경 포함)으로 런북의 배포를 Docker에서 그대로 합니다. B 경로는 hbbs/hbbr을 127.0.0.1에 띄우고, 그 앞에 `deploy/nginx-hjviewer.conf`와 `deploy/apache-hjviewer.conf`를 차례로 둡니다. nginx는 기존 사이트에 `deploy/nginx-hjviewer-locations.conf`를 include 한 줄로 넣은 경우도 함께 시험합니다. 이 기존 사이트는 HTTP/2를 켜고 모든 경로를 로그인 페이지로 보내는 WordPress 같은 사이트입니다. 마지막으로 런북 B 경로의 Release 패키지를 `scripts/package-server.sh`로 만들고, 그 안의 systemd 유닛을 띄워 같은 nginx 뒤에서 시험합니다. 개발 PC를 건드리지 않도록 런타임 유닛, 임시 사용자, 별도 디렉터리로 바꾼 이름만 다르고, 보안 옵션과 자원 상한은 배포 파일 그대로입니다. 웹 서버는 운영 서버와 같은 Ubuntu 패키지를 내려받아 풀어서 실행할 뿐, 설치하지 않습니다. 그다음 A 경로(Caddy)를 같은 이미지와 키로 띄웁니다. |
+| client | 먼저 오프라인 시험 두 가지를 돌립니다. Google Play 업로드 스크립트(`scripts/test_play_upload.py`, 가짜 Play API와 버리는 키)와 앱 빌드의 공개키 확인(`scripts/test_check_build_keys.py`, 아래 "계정 기능의 공개키")입니다. 네트워크와 자격 증명이 필요 없습니다. actionlint가 있으면 워크플로도 검사합니다. 그다음 `build/ci/upstream`에 upstream rustdesk를 새로 받아 `client/patches`를 적용하고, `hbb_common`의 WebSocket 테스트(프록시, `TCP_NODELAY`), 앱 빌드와 같은 Rust 1.75로 `cargo +1.75.0 check --features linux-pkg-config,hjv-e2e`, 앱의 순수 Dart 테스트(`CLIENT_DART_TESTS`: iPhone 한글 입력과 키보드 기록, 패치가 들어오면 계정 화면의 `hjviewer_account_test.dart`)를 돌립니다. 1.75 툴체인이 없으면 실패합니다(`rustup toolchain install 1.75.0 --profile minimal`). Flutter는 앱 빌드와 같은 3.24.5를 처음 한 번 받아 Flutter 릴리스 목록의 SHA-256과 맞춰 봅니다. 생성된 bridge가 필요한 제스처·화질 표시 테스트는 GitHub Actions의 Dart tests 잡에서만 돕니다. |
+| server | `build/ci/upstream`에 upstream rustdesk-server를 새로 받아 `server/patches`를 적용하고, 신호·중계 통합 테스트(`tcp_signaling`, `relay_pairing`, 패치 0004가 들어오면 `hjv_pk`)를 돌립니다. `hjv-probe`, `hjv-load`도 빌드합니다. 이어서 hjv-api(`server/api`)의 시험과 릴리스 빌드, hjv-relay(`relay/`)의 시험을 돌립니다. hjv-relay의 네트워크 네임스페이스 시험은 무권한 네임스페이스가 없으면 건너뛰지 않고 실패합니다. 무권한 네임스페이스를 막아 둔 GitHub 러너(`server.yml`)에서는 건너뛸 수 있고, 다른 곳에서도 `HJV_RELAY_NETNS=`로 비우면 건너뜁니다. |
+| deploy | 작업 트리 사본(`build/ci/src`, 커밋하지 않은 변경 포함)으로 런북의 배포를 Docker에서 그대로 합니다. B 경로는 hbbs/hbbr을 127.0.0.1에 띄우고, 그 앞에 `deploy/nginx-hjviewer.conf`와 `deploy/apache-hjviewer.conf`를 차례로 둡니다. nginx는 기존 사이트에 `deploy/nginx-hjviewer-locations.conf`를 include 한 줄로 넣은 경우도 함께 시험합니다. 이 기존 사이트는 HTTP/2를 켜고 모든 경로를 로그인 페이지로 보내는 WordPress 같은 사이트입니다. 마지막으로 런북 B 경로의 Release 패키지를 `scripts/package-server.sh`로 만들고, 그 안의 systemd 유닛(hbbs, hbbr, hjv-api의 소켓과 서비스)을 띄워 같은 nginx 뒤에서 시험합니다. 개발 PC를 건드리지 않도록 런타임 유닛, 임시 사용자, 별도 디렉터리로 바꾼 이름만 다르고, 보안 옵션과 자원 상한은 배포 파일 그대로입니다. hjv-api의 자격 증명은 버리는 시험 값을 평문 파일(`LoadCredential=`)로 주고, 저널 네임스페이스 줄은 빼고 띄웁니다. 웹 서버는 운영 서버와 같은 Ubuntu 패키지를 내려받아 풀어서 실행할 뿐, 설치하지 않습니다. 그다음 A 경로(Caddy)를 같은 이미지와 키로 띄웁니다. 끝으로 hjv-api의 운영 설정값, 계정 API의 nginx 한도, 깨끗한 Ubuntu 24.04 컨테이너에 서버 묶음을 설치하는 시험을 합니다(아래). |
+| e2e | `tools/e2e/firewall-e2e.sh`를 strict와 open으로 돌립니다([e2e.md](e2e.md)). Caddy는 버전과 SHA-256을 `scripts/ci.sh`에 고정해 처음 한 번 받습니다. upstream rustdesk를 새로 받아 시험 서버 `hjv.test`용 클라이언트(`hjv-e2e` 기능)를 빌드하고, PC 쪽 실행 파일을 `/usr/local/lib/hjviewer-e2e/rustdesk`에 설치합니다(리눅스는 `/usr` 아래 실행 파일만 설치형으로 봅니다). 계정 코드가 패치에 들어오고 `firewall-e2e.sh`에 계정 단계(`HJV_E2E_ACCOUNT`)가 생기면, 클라이언트에 E2E 시험 공개키를 넣어 빌드하고 계정 코드의 단위 시험과 계정 시나리오도 돌립니다. 그 전에는 1.5.1처럼 빌드합니다. sudo가 비밀번호 없이 되어야 합니다(네트워크 네임스페이스, iptables). |
+| wol | `tools/e2e/wol-e2e.sh`(원격 켜기 E2E)를 sudo 없이 돌립니다. 그 스크립트가 없으면 건너뜁니다. e2e와 같은 클라이언트·Caddy·hjv-api에, E2E의 명령 키로 빌드한 hjv-relay를 줍니다. |
+| leak | push 전 검사입니다(아래 "push 전 검사"). |
+
+e2e·wol 단계가 시험 스크립트에 넘기는 값은 `HJV_E2E_WORK`, `CADDY`, `HBBS`, `HBBR`, `PROBE`, `CLIENT`, `PC_CLIENT`(설치 경로의 PC 실행 파일), `HJV_E2E_KEYS`이고, 계정 E2E에는 `HJV_E2E_ACCOUNT=1`, `HJV_API`, `HJV_FAKE_SSO`, wol에는 `HJV_API`, `HJV_FAKE_SSO`, `HJV_RELAY`가 더해집니다. `HJV_E2E_KEYS` 폴더에는 E2E의 시험 키가 있습니다. 같은 바이트를 32번 되풀이한 seed로 만든 키라서(봉인 `e2`, 목록 키 1·2 `e3`·`e4`, 명령 키 `e5`, 기록 키 `e6`) 출시 빌드의 공개키 확인이 거부합니다. `*.secret`은 비밀 쪽(base64), `seal.pub`, `trust.pub`, `command.pub`, `build.env`는 공개 값입니다.
 
 배포 시험이 매번 확인하는 것은 다음과 같습니다.
 
@@ -30,14 +40,25 @@ scripts/ci.sh client     # 앱 시험: Play 업로드 스크립트, hbb_common W
 - 기존 사이트에 추가한 경우: HTTP/2를 켠 listener에서도 WebSocket이 열리는지, 사이트의 다른 경로(`/`, `/wp-json/`, `.php`)와 HTTP/2가 그대로인지
 - 클라이언트가 보낸 `X-Real-IP`, `X-Forwarded-For`, `X-Real-Port`가 nginx와 Apache에서 실제 주소로 덮어써지는지(받은 헤더를 그대로 돌려주는 서버로 확인)
 - systemd 유닛: 127.0.0.1에만 listen하는지, 키 파일이 처음부터 600인지, 권한이 없는지, `hjviewer.env`의 대역폭 상한이 적용되는지, 샌드박스 때문에 생긴 오류가 없는지
+- hjv-api의 systemd 유닛: 소켓이 `660 root:www-data`인지, 소켓으로 `/api/hjv/source`에 답하는지, 권한이 없는지, 상태 디렉터리 700과 DB 600, 관리 소켓(`admin report`), 샌드박스 오류가 없는지, 비밀번호 없는 연결 스위치가 설치 직후 꺼져 있는지(hjv-api에 그 명령이 생긴 뒤부터)
+- Release 패키지: hbbs·hbbr·hjv-api, 유닛, env 예시, nginx·Apache 파일, zones 파일, 고지(hjv-api의 크레이트 포함)가 들어 있는지, `SHA256SUMS`가 그 패키지 한 줄인지
+- hjv-api의 운영 설정값(설계 3판 5-6): 패키지의 `hjviewer-api.env.example`에서 `HJV_API_BIND_OS=windows`, `HJV_API_SECOND_FACTOR=off`, 그리고 신뢰 목록 설정이 생긴 뒤에는 `HJV_API_TRUST_REFRESH`가 60–300초, `HJV_API_TRUST_TTL`이 72시간 이하인지. 줄이 없으면 예시가 적어 둔 기본값으로 봅니다. 서버의 실제 설정 파일(비밀 값 없음)을 받아 `HJV_API_ENV_FILE=<파일> scripts/ci.sh deploy`로 같은 검사를 할 수 있습니다.
+- 계정 API의 nginx 한도: 무권한 네트워크 네임스페이스에서 `nginx-hjviewer-api-zones.conf`와 `nginx-hjviewer-api.conf`로, 중계기 등록(`/api/hjv/relay/hello`)이 IPv4 주소마다, IPv6는 /64마다 1분에 10번(버스트 5)이고 넘으면 중계기가 읽는 JSON 429인지, 다른 /64는 따로 세는지, 로그인 한도도 같은지
+- 깨끗한 컨테이너 설치: Ubuntu 24.04 컨테이너(`public.ecr.aws/docker/library/ubuntu:24.04`, `HJV_REGISTRY`로 바꿈)에 런북대로 패키지를 설치하고, 라이브러리(`ldd`), `systemd-analyze verify`, zones 파일과 계정 API 위치로 바꾼 nginx의 `nginx -t`, 그 nginx 뒤의 hjv-api(`/api/hjv/source`, `/api/login-options`, `/api/heartbeat`, 중계기 등록 한도)를 확인합니다. hjv-api는 `systemd-socket-activate`로 `/run/hjviewer-api.sock`에서 서비스 사용자로 띄웁니다.
 
 시험용 스택은 compose 프로젝트 `hjv-ci`로 띄우고, 끝나면 그 프로젝트만 지웁니다. 웹 서버와 Caddy는 127.0.0.1의 18080–18082, 18443–18448, 18599 포트를 쓰므로 이 PC의 80/443은 건드리지 않습니다. 다만 B 경로는 운영과 같이 21115–21119를 쓰므로, 이 PC에서 실제 HJViewer 서버가 돌고 있으면 시험이 시작하지 않고 멈춥니다. Docker 명령은 런북처럼 sudo로 실행합니다.
 
 ## 서버 Release 만들기 (런북 B 경로용)
 
 1. 변경을 커밋해 공개 저장소의 main에 올립니다. 패키지에 들어가는 고지가 그 커밋을 가리키므로, 공개된 커밋으로만 만듭니다. 스크립트가 확인합니다.
-2. `scripts/package-server.sh <버전>`을 실행합니다(예: `2026.10.10`). 새로 받은 upstream에 `server/patches`를 적용해 빌드하고, 바이너리, systemd 유닛, 웹 서버 설정, 라이선스 고지를 `build/release/hjviewer-server-<버전>-linux-x86_64.tar.gz`로 묶습니다. `SHA256SUMS`도 함께 만듭니다.
+2. `scripts/package-server.sh <버전>`을 실행합니다(예: `2026.10.10`). 새로 받은 upstream에 `server/patches`를 적용해 빌드하고, 바이너리, systemd 유닛, 웹 서버 설정, 라이선스 고지를 `build/release/hjviewer-server-<버전>-linux-x86_64.tar.gz`로 묶습니다. 그 파일 한 줄만 든 `SHA256SUMS`도 함께 만듭니다.
+   - `bin/`: hbbs, hbbr, hjv-api(계정 API, `server/api`)
+   - `systemd/`: hbbs·hbbr 유닛, hjv-api의 소켓과 서비스, 감시·백업 유닛(`deploy/systemd/hjviewer-api-*`가 생기면), `hjviewer.env.example`, `hjviewer-api.env.example`, `journald@hjviewer.conf`(hjv-api 저널의 보관, 생기면)
+   - `web/`: nginx·Apache 파일. 계정 API의 위치 `nginx-hjviewer-api.conf`와 그 http 단계 zones 파일 `nginx-hjviewer-api-zones.conf`(로그인과 중계기 등록의 한도) 포함
+   - 고지: `THIRD_PARTY_NOTICES.txt`에 hjv-api의 크레이트도 들어갑니다. `server/api`가 없는 저장소에서는 hjv-api 부분을 빼고 묶습니다(설계 3판 10-2).
 3. `gh release create server-<버전> build/release/hjviewer-server-<버전>-linux-x86_64.tar.gz build/release/SHA256SUMS`로 올립니다. Release를 만들어도 워크플로는 돌지 않습니다.
+
+hjv-relay의 묶음은 `scripts/package-relay.sh`가 따로 `build/release-relay/`에 만들고, `SHA256SUMS`도 그 묶음 한 줄만 씁니다. 나눠 주는 hjv-relay는 비공개 빌드 저장소에서 만듭니다(아래 "hjv-relay 빌드"). 개발 PC의 `package-relay.sh`는 시험과 해시 대조에만 씁니다.
 
 개발 PC는 운영 서버와 같은 Ubuntu 24.04라서, 여기서 빌드한 바이너리(glibc 2.39)가 그대로 돕니다.
 
@@ -56,8 +77,9 @@ scripts/ci.sh client     # 앱 시험: Play 업로드 스크립트, hbb_common W
 - Windows x64: 피제어 PC와 제어 측 겸용
 - Android arm64 APK. 비공개 저장소의 서명 빌드는 Google Play용 AAB도 만듭니다.
 - iOS: 제어 측
+- hjv-relay: NAS에서 도는 원격 켜기 중계기(`relay/`, [relay-dsm.md](relay-dsm.md)). x86_64 musl 정적 실행 파일입니다. 앱이 아니지만 같은 워크플로에서 같은 커밋으로 만듭니다(`platforms`의 `relay`, `all`에 포함).
 
-macOS와 Linux는 빌드하지 않습니다.
+macOS와 Linux 앱은 빌드하지 않습니다.
 
 모든 잡은 같은 흐름으로 동작합니다.
 
@@ -66,13 +88,14 @@ macOS와 Linux는 빌드하지 않습니다.
 
 ## 실행
 
-- **수동 실행**: Actions → client → Run workflow에서 `platforms`(windows / android / ios / all)를 고릅니다. CLI로는 `gh workflow run client-build.yml -f platforms=android`입니다. 이 버튼은 워크플로 파일이 기본 브랜치에 있어야 나타납니다.
+- **수동 실행**: Actions → client → Run workflow에서 `platforms`(windows / android / ios / relay / all)를 고릅니다. CLI로는 `gh workflow run client-build.yml -f platforms=android`입니다. 이 버튼은 워크플로 파일이 기본 브랜치에 있어야 나타납니다.
 - **실제 서버용 빌드**: 비공개 빌드 저장소에서 실행합니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=all`
 - **TestFlight 업로드**: `testflight`를 켜면 서명된 App Store IPA를 App Store Connect에 올립니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=ios -f testflight=true`. 비공개 저장소, App Store 프로파일, 아래의 App Store Connect 시크릿이 필요합니다.
 - **Google Play 업로드**: `play`를 켜면 서명된 AAB를 Google Play **내부 테스트** 트랙에 올립니다. TestFlight 업로드의 Android판입니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=android -f play=true`. 비공개 저장소, Android 키스토어, 아래 "Google Play 업로드"의 시크릿 2개가 필요하고, `platforms`는 `android`나 `all`이어야 합니다. `play_release`로 올리는 방식을 고릅니다.
   - `completed`(기본값): 바로 출시합니다. 테스터의 Play 스토어가 몇 분 안에 업데이트합니다.
   - `draft`: 초안으로만 올립니다. Play Console에서 직접 출시합니다.
   - `validate`: 번들을 올리고 트랙까지 설정한 뒤 Play의 검증만 받고 버립니다. 아무것도 출시하지 않습니다. 설정을 마친 뒤 첫 실행에 씁니다.
+- **확인 빌드(`check_only`)**: 출시 전에 코드가 세 플랫폼에서 빌드되는지만 봅니다(설계 3판 6-4, 결정 O2 (a)). 1.6.0의 공개키 필수 검사를 건너뛰므로 키를 만들기 전에도 돌릴 수 있습니다. 산출물 이름에 `-check`가 붙고 하루만 남으며, `testflight`나 `play`를 함께 켜면 실행이 바로 실패합니다. hjv-relay는 서버 값 없는 시험 빌드가 되고 Release를 만들지 않습니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=all -f check_only=true`. 확인 빌드의 산출물은 나눠 주지 않습니다.
 - **태그**: GitHub CI를 다시 켜면 `v`로 시작하는 태그를 푸시할 때 전체를 빌드합니다(지금은 꺼 둠). 예: `git tag v0.1.0 && git push origin v0.1.0`
 - **결과물**: 실행 페이지 아래의 Artifacts에서 받거나 `gh run download <run-id>`를 씁니다. 보관 기간은 7일(워크플로의 `ARTIFACT_RETENTION_DAYS`)이므로 필요한 파일은 바로 받아 두세요. 이름의 `<이름>`은 태그 빌드면 태그(`v0.1.0`), 수동 실행이면 `<앱 버전>-<커밋 7자리>`(예: `1.5.1-d2fa660`)입니다.
 
@@ -80,14 +103,16 @@ macOS와 Linux는 빌드하지 않습니다.
 
 | 잡 | 러너 | 하는 일 | 결과물 (artifact) |
 |---|---|---|---|
-| Bridge codegen | ubuntu-22.04 | 서버 변수를 확인하고 flutter_rust_bridge 코드를 생성합니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 매번 생성합니다. | 내부용 `bridge-artifact` (1일 보관) |
+| Bridge codegen | ubuntu-22.04 | 서버 변수와 고정 공개키를 확인하고(아래 "계정 기능의 공개키") flutter_rust_bridge 코드를 생성합니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 매번 생성합니다. | 내부용 `bridge-artifact` (1일 보관) |
 | Dart tests | ubuntu-24.04 | 생성된 bridge로 `flutter/test`의 Dart 테스트를 모두 돌립니다. 앱 패치가 더하거나 고친 테스트(제스처, iPhone 한글 입력, 화질 표시)가 하나라도 없으면 실패합니다. Windows·Android 잡은 이 잡을 기다리지 않습니다. iOS 잡과 Google Play internal 잡은 이 잡이 통과한 뒤에 시작하므로, 테스트가 실패한 빌드는 TestFlight나 Google Play에 올라가지 않습니다. | 없음 |
 | Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`, 서명 없음) |
 | Android arm64 | ubuntu-24.04 | vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 릴리스 서명. 비공개 저장소의 서명 빌드는 이어서 `flutter build appbundle`로 AAB를 만들어 업로드 키로 서명하고 검사합니다(아래 "Google Play 업로드"). | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned`. 비공개 서명 빌드는 `…-android-aarch64-play`(AAB)도 |
 | Google Play internal | ubuntu-24.04 | `play`를 켰을 때만 돕니다. Android 잡의 AAB를 받아 `scripts/play-upload.py`로 Google Play 내부 테스트 트랙에 올립니다. Play 시크릿은 이 잡에만 들어갑니다. | 없음 |
 | iOS | macos-26 (Xcode 26.6) | vcpkg(arm64-ios) → Rust 정적 라이브러리 → `flutter build ipa` → 인증서가 있으면 서명된 IPA → `testflight`를 켜면 App Store Connect에 업로드 | `…-ios` 또는 `…-ios-unsigned` |
+| hjv-relay | ubuntu-24.04 | 명령 공개키 확인 → musl-tools와 Rust(`RELAY_RUST_VERSION`, 개발 PC와 같은 판) → `scripts/package-relay.sh`로 정적 빌드와 묶음. 비공개 저장소의 출시 빌드만 서버 값(`HJV_SERVER`, `HJV_COMMAND_PUBKEY`)을 넣고, 나머지는 서버 값 없는 시험 빌드(`-test`, `run`을 거부)입니다. 실행 요약에 묶음의 SHA-256과 명령 키 지문이 나옵니다. | `hjviewer-relay-<판>-linux-x86_64[-test]` (`tar.gz`와 `SHA256SUMS`) |
+| hjv-relay draft release | ubuntu-24.04 | 비공개 저장소의 출시 빌드(`check_only` 아님)에서만 돕니다. hjv-relay 묶음을 그 저장소의 **초안** Release `relay-<판>`에 올립니다. 같은 이름의 Release가 이미 있으면 건드리지 않고 알림만 남깁니다. 저장소에 쓰는 유일한 잡이고, 서드파티 빌드 코드를 돌리지 않습니다. | 없음 (초안 Release) |
 
-Bridge codegen이 끝나면 Dart tests, Windows, Android 잡이 병렬로 실행되고, iOS 잡은 Dart tests가 통과한 뒤에 시작합니다. Google Play internal 잡은 Android 잡과 Dart tests가 모두 성공한 뒤에 시작합니다.
+Bridge codegen이 끝나면 Dart tests, Windows, Android, hjv-relay 잡이 병렬로 실행되고, iOS 잡은 Dart tests가 통과한 뒤에 시작합니다. Google Play internal 잡은 Android 잡과 Dart tests가 모두 성공한 뒤에, hjv-relay draft release 잡은 hjv-relay 잡이 성공한 뒤에 시작합니다.
 
 Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하면 압축이 풀리고 앱이 뜹니다. 피제어 PC에서는 앱의 설치 버튼으로 서비스로 설치합니다. 서명이 없으므로 SmartScreen 경고나 백신 오탐이 나올 수 있습니다.
 
@@ -120,14 +145,18 @@ name: build
 on:
   workflow_dispatch:
     inputs:
-      platforms: { type: choice, options: [windows, android, ios, all], default: all }
+      platforms: { type: choice, options: [windows, android, ios, relay, all], default: all }
       testflight: { type: boolean, default: false }
       play: { type: boolean, default: false }
       play_release: { type: choice, options: [completed, draft, validate], default: completed }
+      check_only: { type: boolean, default: false }
 permissions:
   contents: read
 jobs:
   client:
+    # 불려 오는 워크플로에서 hjv-relay draft release 잡만 contents: write를 씁니다.
+    permissions:
+      contents: write
     # 확인을 마친 공개 저장소 커밋의 40자리 전체 SHA(git rev-parse HEAD).
     # 빌드 방법(uses)과 코드(source_ref)를 같은 커밋으로 둡니다.
     uses: yonsei-projecttf/hjviewer/.github/workflows/client-build.yml@<커밋>
@@ -136,12 +165,14 @@ jobs:
       testflight: ${{ inputs.testflight }}
       play: ${{ inputs.play }}
       play_release: ${{ inputs.play_release }}
+      check_only: ${{ inputs.check_only }}
       source_ref: <커밋>
     secrets: inherit
 ```
 
 - 새 버전을 빌드하려면, 공개 저장소에 올린 커밋을 확인한 뒤 `<커밋>` 두 곳을 그 커밋의 40자리 전체 SHA(`git rev-parse HEAD`)로 바꿉니다. 짧은 SHA(`e6b1cfd`)는 체크아웃이 브랜치·태그 이름으로 찾다가 실패합니다.
 - `play`, `play_release`는 Google Play 업로드가 들어간 커밋부터 워크플로에 있는 입력입니다. 불려 오는 워크플로에 없는 입력을 넘기면 실행이 거절되므로, `build.yml`에 두 입력을 더하는 일과 `<커밋>`을 그 이후 커밋으로 바꾸는 일은 같은 커밋에서 합니다. 반대로 두 입력이 없는 옛 `build.yml`은 새 워크플로를 가리켜도 그대로 돕니다. 두 입력에 기본값이 있기 때문입니다.
+- `check_only`와 `platforms`의 `relay`, 그리고 `client` 잡의 `permissions: contents: write`는 1.6.0 커밋(hjv-relay 잡이 들어간 커밋)부터입니다. 그 워크플로의 hjv-relay draft release 잡이 `contents: write`를 요청하므로, 위처럼 허락하지 않은 `build.yml`이 그 커밋을 가리키면 GitHub가 실행을 시작하지 않고 거절합니다. 그래서 이 셋과 `<커밋>`도 같은 커밋에서 바꿉니다. 쓰기 권한은 그 잡 하나만 받고, 나머지 잡은 워크플로 맨 위의 `contents: read`를 그대로 씁니다.
 - 불려 온 워크플로는 빌드 저장소의 실행으로 돕니다. 그래서 시크릿, 로그, 결과물, 캐시, 실행 시간은 모두 빌드 저장소 쪽에 속합니다. iOS 서명도 실행하는 저장소가 비공개일 때만 합니다.
 - 각 잡은 Bridge codegen 잡이 받은 커밋을 체크아웃합니다. 빌드 중에 브랜치가 움직여도 모든 플랫폼이 같은 커밋으로 빌드됩니다.
 - 나눠 줄 빌드가 끝나면 그 커밋에 공개 저장소에서 `client-<앱 버전>` 태그를 붙입니다(예: `client-1.5.1`). 앱을 받은 사람이 자기 빌드의 소스 커밋을 찾을 수 있게 하기 위해서입니다. `v`로 시작하지 않으므로, 다시 켤 태그 빌드 트리거와도 겹치지 않습니다.
@@ -187,6 +218,47 @@ gh variable set HJV_SERVER_KEY --body "$(ssh <서버> cat hjviewer/deploy/data/i
 두 값은 빌드할 때 Rust 코드에 박힙니다. 그래서 값을 바꾸면 앱을 다시 빌드해 배포해야 합니다. 값이 비어 있으면 앱이 순정 RustDesk처럼 공개 서버를 씁니다. 이를 막기 위해 빌드 저장소가 부른 실행과 태그 빌드는 실패하고, 이 저장소에서 직접 실행하면 경고만 남깁니다.
 
 수동 실행에서는 `server`, `server_key` 입력으로 이번 실행에만 쓸 값을 줄 수 있습니다. 저장소 변수보다 우선합니다. 예: 테스트 서버용 빌드 `gh workflow run client-build.yml -f platforms=android -f server=rd-test.example.com -f server_key=...`
+
+## 계정 기능의 공개키 (1.6.0부터)
+
+연세포탈 로그인과 비밀번호 없는 연결(설계 3판)은 서버 키의 공개 쪽을 앱과 중계기에 고정합니다. 서버 값처럼 빌드할 때 박히고, 값을 바꾸면 다시 빌드해야 합니다. 모두 공개값이라 비밀은 아니지만, 비공개 빌드 저장소에는 서버 값과 같은 방식으로 **저장소 시크릿**으로 넣습니다(워크플로는 `secrets.X || vars.X`로 받음). 개인키는 저장소, 개발 PC, 에이전트 세션 어디에도 두지 않습니다. 키는 사용자가 만들고 공개키와 번호만 알려 줍니다(설계 3판 5-3, 11장 5단계).
+
+| 이름 | 값 | 받는 곳 |
+|---|---|---|
+| `HJV_LOGIN_SEAL_PUBKEY` | 로그인 비밀번호를 봉인하는 X25519 공개키: `hjv-api keygen seal`이 출력하는 표준 base64 한 개(32바이트) | 세 앱 |
+| `HJV_TRUST_PUBKEYS` | 신뢰 목록 키(Ed25519) 둘, 현재와 다음: `1:<base64>,2:<base64>` | 세 앱 |
+| `HJV_UPDATE_PUBKEY` | 업데이트 서명 키: `1:<base64>[,2:<base64>]`. 최소 버전 작업이 더하며, 지금은 비워도 됩니다 | 세 앱 |
+| `HJV_COMMAND_PUBKEY` | 켜기 명령 키(Ed25519): `1:<base64>[,2:<base64>]` ([relay/PROTOCOL.md](../relay/PROTOCOL.md) 3.2) | hjv-relay만 (앱은 받지 않음) |
+
+```bash
+# 사용자가 키를 만든 곳에서 받은 공개값을 넣습니다. 출력에 개인키가 없는지 먼저 봅니다.
+gh secret set HJV_LOGIN_SEAL_PUBKEY -R yonsei-projecttf/hjviewer-private --body '<base64>'
+gh secret set HJV_TRUST_PUBKEYS -R yonsei-projecttf/hjviewer-private --body '1:<base64>,2:<base64>'
+gh secret set HJV_COMMAND_PUBKEY -R yonsei-projecttf/hjviewer-private --body '1:<base64>'
+gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보입니다
+```
+
+- **확인 단계**: Bridge codegen 잡의 "Check the pinned public keys"(`scripts/check-build-keys.py`)가 봅니다. 빌드 저장소가 부른 실행이고 `client/version.env`가 1.6.0 이상이면 `HJV_LOGIN_SEAL_PUBKEY`와 `HJV_TRUST_PUBKEYS`가 꼭 있어야 하고(`check_only`면 건너뜀), 넣은 키는 모두 형식(공백과 줄바꿈 없는 한 줄, 키 번호 1–65535, 표준 base64 32바이트, 목록 키는 정확히 두 개, 번호와 키가 겹치지 않음)과 약한 키(작은 위수의 점) 여부를 봅니다. 빌드는 값을 바이트 그대로 받으므로, 파일에서 넣다가 끝에 붙은 줄바꿈도 실패로 잡습니다. 이 저장소에 개인키가 공개된 **시험 키**면 실패합니다. 같은 바이트를 32번 되풀이하거나 32개의 연속한 바이트로 된 seed로 만든 모든 키, RFC 8032·7748의 예시 키, `scripts/public-test-keys.txt`의 키입니다. 이 저장소에서 직접 돌리는 실행에서는 같은 문제가 경고로만 나옵니다. hjv-relay 잡은 `HJV_COMMAND_PUBKEY`를 같은 방식으로 보고, `package-relay.sh`가 서버 이름과 함께 한 번 더 봅니다.
+- 계정 공개키가 없는 빌드는 로그인도 비밀번호 없는 연결도 없이 1.5.1처럼 동작합니다(설계 3판 6-5). 확인 단계가 막는 것은 빌드 저장소의 1.6.0 출시 빌드에서 그런 앱이 나가는 일입니다.
+- **지문 대조**: 확인 단계는 고정한 공개키마다 SHA-256 지문(원래 32바이트의 SHA-256, 16진수)을 실행 요약에 표로 적습니다. `HJV_SERVER_KEY`도 함께 적습니다. 출시 태그를 붙이기 전에 이 표를 서버의 `hjv-api selfcheck`가 출력한 지문과 사람이 대조합니다(설계 3판 11장 8단계). 봉인 키의 키 ID 칸은 지문의 앞 16자리이고, `hjv-api keygen seal`이 출력하는 키 ID와 같습니다.
+
+## hjv-relay 빌드
+
+NAS의 hjv-relay는 비공개 빌드 저장소의 hjv-relay 잡에서 만듭니다(설계 3판 8-6). NAS가 부팅 때 root로 시작하는 파일이 에이전트가 도는 개발 PC를 거치지 않게 하려는 것입니다.
+
+1. `HJV_COMMAND_PUBKEY` 시크릿을 넣습니다(위 표). `HJV_SERVER`는 앱과 같은 값을 씁니다.
+2. 공개 저장소 main의 커밋으로 `platforms=relay`(또는 `all`)를 실행합니다. 출시 빌드는 그 커밋이 공개 저장소 main에 있어야 합니다(`package-relay.sh`가 확인).
+3. 잡이 끝나면 빌드 저장소에 **초안** Release `relay-<판>`이 생깁니다. 묶음(`hjviewer-relay-<판>-linux-x86_64.tar.gz`)과 그 한 줄짜리 `SHA256SUMS`가 들어 있습니다. 같은 이름의 Release가 이미 있으면 새로 만들지 않으므로, 다시 만들려면 옛 Release(초안 포함)를 지웁니다.
+4. 실행 요약의 명령 키 지문을 `hjv-api selfcheck`의 지문과 대조한 뒤 Release를 게시하고, 공개 저장소의 그 커밋에 `relay-<판>` 태그를 붙입니다. NAS 설치는 [relay-dsm.md](relay-dsm.md)를 따릅니다. 작업 화면에 적는 SHA-256은 실행 요약이나 Release의 `SHA256SUMS`에서 옮깁니다.
+
+## push 전 검사 (`scripts/ci.sh leak`)
+
+공개 저장소로 push하기 전에 반드시 돌립니다(설계 3판 11장 1·2단계의 관문). 운영 서버의 도메인, 학교의 공인 주소 대역, NAS·PC의 주소와 MAC, 부서 공유 폴더 이름, 실제 포탈 ID가 올라갈 내용에 들어가지 않았는지 봅니다.
+
+- **목록**: `build/leak-patterns.txt`. `build/`는 git이 무시하므로 저장소에 올라가지 않습니다. 사용자가 직접 만들고, 에이전트는 값을 대화나 다른 파일에 옮기지 않습니다. 한 줄에 고정 문자열 하나이고, `#`로 시작하는 줄과 빈 줄은 건너뜁니다. 영어 대소문자는 구분하지 않습니다. MAC 주소는 한 형태만 적어도 콜론·하이픈·구분자 없음·점 세 칸(`0000.5e00.5377`) 형태를 모두 찾습니다. 주소 대역은 앞부분(첫 두 옥텟과 점)으로 적습니다. 너무 짧은 값(흔한 단어, 두세 글자)은 엉뚱한 곳에서 걸립니다. worktree(`build/wt/…`)에서 돌리면 그 안에 목록이 없을 때 본 작업 트리의 목록을 씁니다. 다른 파일은 `HJV_LEAK_PATTERNS=<파일>`로 줍니다. 목록이 없거나 값이 하나도 없거나 git이 추적하는 파일이면 실패합니다.
+- **찾는 곳**: git이 추적하는 모든 파일의 작업 트리 내용(`client/patches`, `server/patches` 포함, 바이너리 파일도), 스테이징된 내용, 그리고 push하면 올라갈 커밋(`origin/main..HEAD`, `origin/main`이 없으면 HEAD의 모든 커밋)의 메시지, 작성자·커미터, 더한 줄입니다. 나중 커밋에서 지운 값도 그 앞 커밋에 남아 있으면 찾습니다.
+- **출력**: 걸린 곳(`파일:줄`, `staged 파일:줄`, `commit <해시>: message line 3`, `commit <해시> 파일:줄`, `commit <해시>: author`)과 목록의 줄 번호만 출력합니다. 값과 그 줄의 내용은 출력하지 않습니다.
+- 걸리면 그 내용을 자리표시자(`rd.example.com`, RFC 5737의 `192.0.2.x`, 문서용 MAC `00:00:5e:00:53:xx`, "부서 공유 폴더", 시험 ID)로 바꾸고, 커밋에 들어갔으면 push 전에 그 커밋을 고칩니다.
 
 ## 서명 시크릿 (선택)
 
