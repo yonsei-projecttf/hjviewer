@@ -6,8 +6,10 @@
 #                          tests, hjv-probe and hjv-load
 #   scripts/ci.sh client   the Google Play upload script's offline tests (scripts/test_play_upload.py),
 #                          then a fresh upstream checkout with client/patches, hbb_common's WebSocket
-#                          tests and the client's pure Dart tests, with the Flutter SDK the app
-#                          builds use (downloaded once, checked against Flutter's release index).
+#                          tests, a cargo check of the client with Rust 1.75 (client-build.yml's
+#                          toolchain: rustup toolchain install 1.75.0) and the client's pure Dart
+#                          tests, with the Flutter SDK the app builds use (downloaded once, checked
+#                          against Flutter's release index).
 #                          Tests that need the generated bridge run in client-build.yml.
 #   scripts/ci.sh deploy   docs/server-runbook.md's deployment with Docker, as on the server, from a
 #                          copy of this working tree: path B (hbbs/hbbr on 127.0.0.1) behind
@@ -166,6 +168,13 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" client
   step "client: hbb_common WebSocket tests"
   (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket)
+  step "client: cargo check with Rust 1.75, the toolchain client-build.yml builds with"
+  # Ubuntu's libyuv-dev ships no libyuv.pc, which the linux-pkg-config feature looks up
+  mkdir -p "$CI/pkgconfig"
+  printf 'libdir=/usr/lib/x86_64-linux-gnu\nincludedir=/usr/include\nName: libyuv\nDescription: libyuv\nVersion: 0\nLibs: -L${libdir} -lyuv\nCflags: -I${includedir}\n' > "$CI/pkgconfig/libyuv.pc"
+  (cd "$CI/upstream/rustdesk" && PKG_CONFIG_PATH="$CI/pkgconfig" CARGO_TARGET_DIR="$CI/target-client-1.75" \
+    cargo +1.75.0 check --locked --features linux-pkg-config,hjv-e2e) ||
+    fail "client: cargo +1.75.0 check (the toolchain: rustup toolchain install 1.75.0)"
   step "client: pure Dart tests"
   for t in $CLIENT_DART_TESTS; do
     [ -f "$app/$t" ] || fail "client: $t is not in the patched tree"
