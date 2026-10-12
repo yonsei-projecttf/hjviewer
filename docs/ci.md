@@ -10,12 +10,12 @@
 scripts/ci.sh            # server + deploy (처음에는 15분 안팎, 이후에는 캐시로 더 빠름). client는 따로 실행
 scripts/ci.sh server     # 서버 테스트만
 scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe·hjv-load가 있어야 함)
-scripts/ci.sh client     # 앱 패치 시험: hbb_common WebSocket 테스트와 순수 Dart 테스트 (client/patches를 바꿨을 때)
+scripts/ci.sh client     # 앱 시험: Play 업로드 스크립트, hbb_common WebSocket, 순수 Dart (client/patches나 scripts/play-upload.py를 바꿨을 때)
 ```
 
 | 단계 | 하는 일 |
 |---|---|
-| client | `build/ci/upstream`에 upstream rustdesk를 새로 받아 `client/patches`를 적용하고, `hbb_common`의 WebSocket 테스트(프록시, `TCP_NODELAY`)와 앱의 순수 Dart 테스트(`CLIENT_DART_TESTS`: iPhone 한글 입력과 키보드 기록)를 돌립니다. Flutter는 앱 빌드와 같은 3.24.5를 처음 한 번 받아 Flutter 릴리스 목록의 SHA-256과 맞춰 봅니다. 생성된 bridge가 필요한 제스처·화질 표시 테스트는 GitHub Actions의 Dart tests 잡에서만 돕니다. |
+| client | 먼저 Google Play 업로드 스크립트의 오프라인 시험(`scripts/test_play_upload.py`)을 돌립니다. 가짜 Play API와 버리는 키로 하므로 네트워크와 Google 자격 증명이 필요 없습니다. 그다음 `build/ci/upstream`에 upstream rustdesk를 새로 받아 `client/patches`를 적용하고, `hbb_common`의 WebSocket 테스트(프록시, `TCP_NODELAY`)와 앱의 순수 Dart 테스트(`CLIENT_DART_TESTS`: iPhone 한글 입력과 키보드 기록)를 돌립니다. Flutter는 앱 빌드와 같은 3.24.5를 처음 한 번 받아 Flutter 릴리스 목록의 SHA-256과 맞춰 봅니다. 생성된 bridge가 필요한 제스처·화질 표시 테스트는 GitHub Actions의 Dart tests 잡에서만 돕니다. |
 | server | `build/ci/upstream`에 upstream rustdesk-server를 새로 받아 `server/patches`를 적용하고, 신호·중계 통합 테스트(`tcp_signaling`, `relay_pairing`)를 돌립니다. `hjv-probe`, `hjv-load`도 빌드합니다. |
 | deploy | 작업 트리 사본(`build/ci/src`, 커밋하지 않은 변경 포함)으로 런북의 배포를 Docker에서 그대로 합니다. B 경로는 hbbs/hbbr을 127.0.0.1에 띄우고, 그 앞에 `deploy/nginx-hjviewer.conf`와 `deploy/apache-hjviewer.conf`를 차례로 둡니다. nginx는 기존 사이트에 `deploy/nginx-hjviewer-locations.conf`를 include 한 줄로 넣은 경우도 함께 시험합니다. 이 기존 사이트는 HTTP/2를 켜고 모든 경로를 로그인 페이지로 보내는 WordPress 같은 사이트입니다. 마지막으로 런북 B 경로의 Release 패키지를 `scripts/package-server.sh`로 만들고, 그 안의 systemd 유닛을 띄워 같은 nginx 뒤에서 시험합니다. 개발 PC를 건드리지 않도록 런타임 유닛, 임시 사용자, 별도 디렉터리로 바꾼 이름만 다르고, 보안 옵션과 자원 상한은 배포 파일 그대로입니다. 웹 서버는 운영 서버와 같은 Ubuntu 패키지를 내려받아 풀어서 실행할 뿐, 설치하지 않습니다. 그다음 A 경로(Caddy)를 같은 이미지와 키로 띄웁니다. |
 
@@ -54,7 +54,7 @@ scripts/ci.sh client     # 앱 패치 시험: hbb_common WebSocket 테스트와 
 `.github/workflows/client-build.yml`이 앱을 빌드합니다. 빌드 대상은 다음 세 가지입니다.
 
 - Windows x64: 피제어 PC와 제어 측 겸용
-- Android arm64 APK
+- Android arm64 APK. 비공개 저장소의 서명 빌드는 Google Play용 AAB도 만듭니다.
 - iOS: 제어 측
 
 macOS와 Linux는 빌드하지 않습니다.
@@ -69,6 +69,10 @@ macOS와 Linux는 빌드하지 않습니다.
 - **수동 실행**: Actions → client → Run workflow에서 `platforms`(windows / android / ios / all)를 고릅니다. CLI로는 `gh workflow run client-build.yml -f platforms=android`입니다. 이 버튼은 워크플로 파일이 기본 브랜치에 있어야 나타납니다.
 - **실제 서버용 빌드**: 비공개 빌드 저장소에서 실행합니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=all`
 - **TestFlight 업로드**: `testflight`를 켜면 서명된 App Store IPA를 App Store Connect에 올립니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=ios -f testflight=true`. 비공개 저장소, App Store 프로파일, 아래의 App Store Connect 시크릿이 필요합니다.
+- **Google Play 업로드**: `play`를 켜면 서명된 AAB를 Google Play **내부 테스트** 트랙에 올립니다. TestFlight 업로드의 Android판입니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=android -f play=true`. 비공개 저장소, Android 키스토어, 아래 "Google Play 업로드"의 시크릿 2개가 필요하고, `platforms`는 `android`나 `all`이어야 합니다. `play_release`로 올리는 방식을 고릅니다.
+  - `completed`(기본값): 바로 출시합니다. 테스터의 Play 스토어가 몇 분 안에 업데이트합니다.
+  - `draft`: 초안으로만 올립니다. Play Console에서 직접 출시합니다.
+  - `validate`: 번들을 올리고 트랙까지 설정한 뒤 Play의 검증만 받고 버립니다. 아무것도 출시하지 않습니다. 설정을 마친 뒤 첫 실행에 씁니다.
 - **태그**: GitHub CI를 다시 켜면 `v`로 시작하는 태그를 푸시할 때 전체를 빌드합니다(지금은 꺼 둠). 예: `git tag v0.1.0 && git push origin v0.1.0`
 - **결과물**: 실행 페이지 아래의 Artifacts에서 받거나 `gh run download <run-id>`를 씁니다. 보관 기간은 7일(워크플로의 `ARTIFACT_RETENTION_DAYS`)이므로 필요한 파일은 바로 받아 두세요. 이름의 `<이름>`은 태그 빌드면 태그(`v0.1.0`), 수동 실행이면 `<앱 버전>-<커밋 7자리>`(예: `1.5.1-d2fa660`)입니다.
 
@@ -77,12 +81,13 @@ macOS와 Linux는 빌드하지 않습니다.
 | 잡 | 러너 | 하는 일 | 결과물 (artifact) |
 |---|---|---|---|
 | Bridge codegen | ubuntu-22.04 | 서버 변수를 확인하고 flutter_rust_bridge 코드를 생성합니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 매번 생성합니다. | 내부용 `bridge-artifact` (1일 보관) |
-| Dart tests | ubuntu-24.04 | 생성된 bridge로 `flutter/test`의 Dart 테스트를 모두 돌립니다. 앱 패치가 더하거나 고친 테스트(제스처, iPhone 한글 입력, 화질 표시)가 하나라도 없으면 실패합니다. Windows·Android 잡은 이 잡을 기다리지 않습니다. iOS 잡은 이 잡이 통과한 뒤에 시작하므로, 테스트가 실패한 빌드는 TestFlight에 올라가지 않습니다. | 없음 |
+| Dart tests | ubuntu-24.04 | 생성된 bridge로 `flutter/test`의 Dart 테스트를 모두 돌립니다. 앱 패치가 더하거나 고친 테스트(제스처, iPhone 한글 입력, 화질 표시)가 하나라도 없으면 실패합니다. Windows·Android 잡은 이 잡을 기다리지 않습니다. iOS 잡과 Google Play internal 잡은 이 잡이 통과한 뒤에 시작하므로, 테스트가 실패한 빌드는 TestFlight나 Google Play에 올라가지 않습니다. | 없음 |
 | Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`, 서명 없음) |
-| Android arm64 | ubuntu-24.04 | vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 릴리스 서명 | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned` |
+| Android arm64 | ubuntu-24.04 | vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 릴리스 서명. 비공개 저장소의 서명 빌드는 이어서 `flutter build appbundle`로 AAB를 만들어 업로드 키로 서명하고 검사합니다(아래 "Google Play 업로드"). | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned`. 비공개 서명 빌드는 `…-android-aarch64-play`(AAB)도 |
+| Google Play internal | ubuntu-24.04 | `play`를 켰을 때만 돕니다. Android 잡의 AAB를 받아 `scripts/play-upload.py`로 Google Play 내부 테스트 트랙에 올립니다. Play 시크릿은 이 잡에만 들어갑니다. | 없음 |
 | iOS | macos-26 (Xcode 26.6) | vcpkg(arm64-ios) → Rust 정적 라이브러리 → `flutter build ipa` → 인증서가 있으면 서명된 IPA → `testflight`를 켜면 App Store Connect에 업로드 | `…-ios` 또는 `…-ios-unsigned` |
 
-Bridge codegen이 끝나면 Dart tests, Windows, Android 잡이 병렬로 실행되고, iOS 잡은 Dart tests가 통과한 뒤에 시작합니다.
+Bridge codegen이 끝나면 Dart tests, Windows, Android 잡이 병렬로 실행되고, iOS 잡은 Dart tests가 통과한 뒤에 시작합니다. Google Play internal 잡은 Android 잡과 Dart tests가 모두 성공한 뒤에 시작합니다.
 
 Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하면 압축이 풀리고 앱이 뜹니다. 피제어 PC에서는 앱의 설치 버튼으로 서비스로 설치합니다. 서명이 없으므로 SmartScreen 경고나 백신 오탐이 나올 수 있습니다.
 
@@ -100,6 +105,7 @@ Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하�
 - **앱 버전**: 각 플랫폼 잡이 빌드 전에 `scripts/set-client-version.sh`로 `client/version.env`의 버전을 적습니다(아래 "앱 버전").
 - **Windows 실행 파일 이름**: 서버 값이 있는 빌드는 앱 이름이 HJViewer입니다. 그런데 설치 프로그램은 `<앱 이름>.exe`를 서비스·시작프로그램·시작 메뉴·앱 제거에 등록하면서 파일은 원래 이름대로 복사합니다. 그래서 패키지 안의 실행 파일을 `HJViewer.exe`로 바꿔 묶습니다. 1.5.0까지는 `rustdesk.exe`라서 설치해도 자동 시작이 되지 않았습니다.
 - **Windows 설치 시험**: 서버 값이 있는 빌드는 러너에서 `--silent-install`로 설치해 보고, `HJViewer.exe`, 자동·실행 중인 서비스, 시작프로그램의 트레이 바로가기를 확인합니다. 설치 전에 서버 이름을 127.0.0.1로 돌려 러너가 운영 서버에 기기를 등록하지 않게 합니다. 몇 번 통과할 때까지는 실패해도 빌드를 멈추지 않습니다(continue-on-error). 결과는 그 단계의 표시로 확인합니다.
+- **Google Play용 AAB와 업로드 잡**: upstream은 APK만 만듭니다. 이 워크플로는 비공개 저장소의 서명 빌드에서 APK 다음에 arm64 AAB를 만들고, jarsigner로 한 번 서명한 뒤 검사합니다. apksigner로는 번들을 서명할 수 없습니다. `play`를 켜면 별도 잡이 그 AAB를 Google Play 내부 테스트 트랙에 올립니다(아래 "Google Play 업로드").
 - **시간 제한**: 잡마다 `timeout-minutes`를 걸어, 멈춘 잡이 계속 비용을 쓰지 않게 했습니다.
 
 ## 비공개 빌드 저장소
@@ -116,6 +122,8 @@ on:
     inputs:
       platforms: { type: choice, options: [windows, android, ios, all], default: all }
       testflight: { type: boolean, default: false }
+      play: { type: boolean, default: false }
+      play_release: { type: choice, options: [completed, draft, validate], default: completed }
 permissions:
   contents: read
 jobs:
@@ -126,11 +134,14 @@ jobs:
     with:
       platforms: ${{ inputs.platforms }}
       testflight: ${{ inputs.testflight }}
+      play: ${{ inputs.play }}
+      play_release: ${{ inputs.play_release }}
       source_ref: <커밋>
     secrets: inherit
 ```
 
 - 새 버전을 빌드하려면, 공개 저장소에 올린 커밋을 확인한 뒤 `<커밋>` 두 곳을 그 커밋의 40자리 전체 SHA(`git rev-parse HEAD`)로 바꿉니다. 짧은 SHA(`e6b1cfd`)는 체크아웃이 브랜치·태그 이름으로 찾다가 실패합니다.
+- `play`, `play_release`는 Google Play 업로드가 들어간 커밋부터 워크플로에 있는 입력입니다. 불려 오는 워크플로에 없는 입력을 넘기면 실행이 거절되므로, `build.yml`에 두 입력을 더하는 일과 `<커밋>`을 그 이후 커밋으로 바꾸는 일은 같은 커밋에서 합니다. 반대로 두 입력이 없는 옛 `build.yml`은 새 워크플로를 가리켜도 그대로 돕니다. 두 입력에 기본값이 있기 때문입니다.
 - 불려 온 워크플로는 빌드 저장소의 실행으로 돕니다. 그래서 시크릿, 로그, 결과물, 캐시, 실행 시간은 모두 빌드 저장소 쪽에 속합니다. iOS 서명도 실행하는 저장소가 비공개일 때만 합니다.
 - 각 잡은 Bridge codegen 잡이 받은 커밋을 체크아웃합니다. 빌드 중에 브랜치가 움직여도 모든 플랫폼이 같은 커밋으로 빌드됩니다.
 - 나눠 줄 빌드가 끝나면 그 커밋에 공개 저장소에서 `client-<앱 버전>` 태그를 붙입니다(예: `client-1.5.1`). 앱을 받은 사람이 자기 빌드의 소스 커밋을 찾을 수 있게 하기 위해서입니다. `v`로 시작하지 않으므로, 다시 켤 태그 빌드 트리거와도 겹치지 않습니다.
@@ -155,6 +166,7 @@ jobs:
 | Windows 빌드 번호 | Windows 파일 버전의 네 번째 숫자(예: `1.5.1.12`) | 워크플로 실행 번호. Windows 버전 숫자는 65535까지라 시각을 쓸 수 없습니다. 실행할 때마다 자동으로 커집니다. |
 
 - 새 버전을 나눠 줄 때마다 `HJV_VERSION`을 올립니다. upstream RustDesk 버전보다 낮으면 스크립트가 실패합니다. 상대 기기가 이 버전을 비교해 기능을 켜기 때문입니다.
+- Android versionCode는 빌드 번호에 2000을 더한 값입니다(1.5.1: 262840251 → 262842251). `--split-per-abi`가 arm64 APK에 2000을 더하기 때문입니다. Play용 AAB는 이 오프셋이 붙지 않으므로 같은 값을 직접 받습니다. 그래서 같은 실행의 APK와 AAB는 versionCode가 같고, 워크플로가 이를 확인합니다. 같은 분(UTC)에 시작한 두 실행은 versionCode가 같으므로 Play는 두 번째를 받지 않습니다. 그때는 다시 빌드합니다.
 - iOS가 허용하는 형식은 숫자 세 개(`1.5.1`)뿐입니다.
 - Windows에서 내려받는 파일 이름은 `HJViewer.exe`이고, 같은 파일을 `HJViewer-install.exe`로도 냅니다(더블클릭하면 바로 설치 화면). 설치하면 `C:\Program Files\HJViewer\HJViewer.exe`가 됩니다. 압축 해제 실행기는 파일 이름을 읽습니다. 이름이 `install.exe`로 끝나면 바로 설치하고, `-qs-`가 들어가면 일회용 지원 모드로 실행합니다. 그러니 이름을 바꿀 때는 이 둘을 피하세요.
 
@@ -198,6 +210,7 @@ gh secret set ANDROID_KEY_ALIAS --body hjviewer
 ```
 
 - **키스토어 백업**: 키스토어를 잃어버리면 이미 설치된 앱을 업데이트할 수 없습니다. 비밀번호와 함께 안전한 곳에 백업하세요.
+- **Google Play 업로드 키**: Play에 올리는 AAB도 이 키스토어로 서명합니다. 그래서 첫 AAB를 올리면 이 키가 Play의 업로드 키가 됩니다. 업로드 키는 잃어도 Play Console에서 재설정할 수 있지만, 사이드로드한 APK를 업데이트하려면 이 키가 꼭 있어야 합니다.
 - **디버그 서명 APK**: 러너가 매번 새 디버그 키로 서명합니다. 그래서 이전 빌드 위에 덮어 설치할 수 없고, 앱을 지운 뒤 다시 설치해야 합니다.
 
 ### iOS
@@ -251,6 +264,108 @@ gh secret set IOS_TEAM_ID --body ABCDE12345
   - Info.plist는 upstream처럼 `ITSAppUsesNonExemptEncryption=false`입니다. 앱의 암호화(libsodium, TLS)는 표준 알고리즘이라, Apple 기준으로 문서가 필요한 경우는 프랑스 App Store 판매뿐입니다. App Store에 낼 때 프랑스를 판매 지역에서 빼지 않으려면 프랑스 암호화 신고를 하고 이 값을 바꿔야 합니다.
 - **서명 없는 IPA(`-ios-unsigned`)**: 그대로는 설치할 수 없습니다. Sideloadly나 AltStore 같은 도구로 재서명해야 합니다. 무료 Apple ID로 서명하면 7일 뒤 만료됩니다.
 
+## Google Play 업로드
+
+`play`를 켜면 Android 앱이 Google Play의 **내부 테스트** 트랙에 올라갑니다. iOS의 TestFlight 내부 테스트에 해당합니다. 테스터는 참여 링크로 한 번 참여한 뒤 Play 스토어에서 설치하고, 그 뒤 업데이트는 Play가 합니다. 내부 테스트의 업데이트는 심사를 받지 않습니다(게시 뒤 소급 심사는 있을 수 있음). Play 정책과 정할 것은 [distribution.md](distribution.md)의 "Android: Google Play 내부 테스트"에 있습니다.
+
+워크플로가 하는 일은 다음과 같습니다.
+
+1. **AAB 빌드**: 비공개 저장소의 서명 빌드는 `play`와 상관없이, APK 아티팩트를 올린 다음 arm64 AAB를 만듭니다. 번들이 실패해도 APK는 남습니다. 첫 업로드는 Play Console에서 직접 해야 하므로, 그때 쓸 AAB가 늘 있습니다. 아티팩트 이름은 `HJViewer-<이름>-android-aarch64-play`입니다.
+2. **서명과 검사**: 릴리스 키스토어로 jarsigner 서명을 한 번 합니다. 비밀번호는 환경 변수로만 넘깁니다. 이어서 다음을 확인하고, 하나라도 틀리면 Android 잡이 실패합니다.
+   - 서명자가 하나이고, 그 인증서가 키스토어의 것인지
+   - `bundletool validate`, 패키지 이름 `kr.ac.yonsei.hjviewer`, versionCode(같은 실행의 APK와 같은지), versionName(`HJV_VERSION`), targetSdk 36 이상, 디버그 빌드가 아닌지
+   - 네이티브 라이브러리가 arm64-v8a뿐이고 16KB 페이지에 맞게 정렬되었는지
+   - Play 선언 대상 목록(`PLAY_MANIFEST`, 아래)이 그대로인지
+
+   실행 요약에 versionCode, 크기, 업로드 인증서 SHA-256이 나옵니다.
+3. **업로드**: Google Play internal 잡이 AAB를 받아 `scripts/play-upload.py`로 Play Developer API에 올립니다. 편집(edit) 하나를 열어 번들을 올리고, 내부 테스트 트랙의 출시를 설정한 뒤 커밋합니다.
+   - 어디서 실패하든 편집을 지우므로, 반쯤 올라간 상태가 남지 않습니다.
+   - 진행 중인 심사는 취소하지 않습니다. 심사 중이면 실패하고 아무것도 커밋하지 않습니다.
+   - 이미 출시된 같은 번들(같은 sha256)을 다시 올리면 아무것도 바꾸지 않고 성공합니다.
+   - 출시 노트(ko-KR)는 `HJViewer <버전> (<versionCode>)`와 이 빌드의 소스 커밋 링크입니다.
+   - 서비스 계정 키는 이 잡의 업로드 단계에만 들어갑니다. 서드파티 빌드 코드(Gradle, cargo, pub)가 도는 Android 잡에는 들어가지 않습니다. 스크립트는 키도 토큰도 출력하지 않습니다.
+
+### 시크릿
+
+빌드 저장소의 **저장소 시크릿**으로 넣습니다(위 "비공개 빌드 저장소"). 서비스 계정 JSON 키에서 두 값을 꺼내 넣습니다.
+
+| 이름 | 내용 |
+|---|---|
+| `PLAY_SA_EMAIL` | JSON 키의 `client_email` (`…@<프로젝트>.iam.gserviceaccount.com`) |
+| `PLAY_SA_PRIVATE_KEY` | JSON 키의 `private_key` (여러 줄 PEM) |
+
+- JSON 파일 전체를 시크릿 하나로 넣지 않습니다. GitHub는 로그에서 시크릿과 정확히 같은 문자열을 찾아 가리므로, 구조화된 값은 값마다 시크릿을 만들라고 안내합니다. 여러 줄 시크릿은 줄마다 가려집니다.
+- 업로드 키는 Android 키스토어(`ANDROID_KEYSTORE_*`)이므로, 이 둘 말고 새 시크릿은 없습니다.
+
+### 처음 한 번 할 일
+
+Play 개발자 계정은 이미 있습니다. 계정에 남은 확인 요청(신원, 연락처, Android 기기 인증)이 있으면 먼저 끝냅니다.
+
+1–3, 6–8단계는 지금 해도 됩니다. 4–5단계는 이 워크플로가 공개 저장소에 올라가고, 비공개 `build.yml`이 그 커밋을 가리킨 뒤에 합니다. 서비스 계정 권한은 적용에 시간이 걸릴 수 있으니 6–8단계를 일찍 하는 편이 좋습니다.
+
+| # | 어디서 | 할 일 |
+|---|---|---|
+| 1 | Play Console → 앱 만들기 | 이름 `HJViewer`, 기본 언어 **한국어(ko-KR)**, 앱, 무료, 선언 동의. 출시 노트가 ko-KR이므로 기본 언어를 한국어로 둡니다. 패키지 이름은 첫 업로드로 `kr.ac.yonsei.hjviewer`로 정해지고, 바꿀 수 없습니다. |
+| 2 | 앱 콘텐츠 | 개인정보처리방침 URL `https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md`, 광고 없음, 광고 ID 사용 안 함. [privacy.md](privacy.md)에 카메라·마이크 사용 문장이 먼저 있어야 합니다. 스토어 등록정보, 콘텐츠 등급, 타깃층, 데이터 보안은 **하지 않습니다.** 내부 테스트는 앱 설정을 마치기 전에 시작할 수 있고, 설정을 다 마친 앱은 첫 내부 출시도 심사를 받기 때문입니다. 전체 앱을 올리면 접근성 API 선언과 포그라운드 서비스 선언(유형마다 설명과 시연 영상)도 여기서 합니다. 제어 전용 Play 빌드라면 이 두 선언은 필요 없습니다([distribution.md](distribution.md)의 "정할 것"). |
+| 3 | 테스트 및 출시 → 내부 테스트 → 테스터 | 이메일 목록을 만들어 테스터의 Google 계정을 넣습니다(최대 100명). 휴대폰 Play 스토어에 로그인한 계정이어야 합니다. 피드백 이메일을 적고 저장한 뒤, "웹에서 참여" 링크를 복사해 둡니다. |
+| 4 | 터미널 | 첫 AAB를 만들어 받습니다. `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=android`가 끝나면 `gh run download <실행 ID> -R yonsei-projecttf/hjviewer-private -n HJViewer-<버전>-<커밋 7자리>-android-aarch64-play`. 실행 요약에서 versionCode와 업로드 인증서 SHA-256을 봅니다. 제어 전용 Play 빌드로 정했다면 그 패치가 들어간 커밋으로 빌드합니다. |
+| 5 | 내부 테스트 → 새 버전 만들기 | ① 처음 한 번 나오는 앱 서명 키 선택은 **Google 생성 키(기본값)** 를 그대로 둡니다. ② 4의 AAB를 올립니다. ③ 출시 노트를 적습니다. ④ 다음을 눌러 오류 요약을 봅니다. 오류는 해결해야 하고(선언 등), 경고는 출시를 막지 않습니다. ⑤ 내부 테스트로 출시를 시작합니다. ⑥ 설정 → 앱 무결성의 업로드 인증서 SHA-256이 실행 요약의 값과 같은지 봅니다. API로는 첫 업로드를 할 수 없어서 이 단계는 직접 합니다. |
+| 6 | Google Cloud 콘솔 | 새 프로젝트를 만듭니다. 조직이 없는 개인 Google 계정의 프로젝트를 권장합니다. API 및 서비스 → 라이브러리에서 **Google Play Android Developer API**를 사용 설정합니다. IAM 및 관리자 → 서비스 계정 → 만들기(예: `play-upload`, Cloud 역할 없음) → 키 → 키 추가 → 새 키 만들기 → **JSON**으로 `key.json`을 내려받습니다. Play 계정과 Cloud 프로젝트를 연결할 필요는 없습니다. |
+| 7 | Play Console → 사용자 및 권한 | 새 사용자 초대 → 서비스 계정 이메일. 계정 권한은 모두 끕니다. 앱 권한 → HJViewer → **"테스트 트랙에 앱 출시"(Release apps to testing tracks)만** 켜고 초대합니다. 프로덕션에는 출시할 수 없는 권한입니다. |
+| 8 | 키 파일이 있는 PC의 터미널 | 아래 명령으로 시크릿 2개를 넣고 `key.json`을 지웁니다. |
+| 9 | 터미널 | 첫 CI 업로드는 검증만 합니다. `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=android -f play=true -f play_release=validate`. 요약이 "validated … nothing was released"이면 `play_release` 없이(기본값 `completed`) 다시 실행합니다. 새 실행이라 다시 빌드합니다. |
+| 10 | 테스터에게 | 3의 참여 링크를 보냅니다. 테스터는 링크에서 참여한 뒤 Play 스토어에서 설치합니다. 사이드로드한 HJViewer가 있으면 먼저 지웁니다. 서명이 달라서 Play 앱이 그 위에 설치되지 않기 때문입니다. 이때 그 휴대폰의 로컬 설정, 기기 ID, 최근 접속 목록이 지워집니다. |
+
+8단계 명령(키를 채팅이나 저장소, `build/`에 두지 않습니다):
+
+```bash
+# key.json이 있는 폴더에서. jq와 gh가 필요합니다(gh auth status로 로그인을 확인).
+jq -r .client_email key.json | gh secret set PLAY_SA_EMAIL -R yonsei-projecttf/hjviewer-private
+jq -r .private_key  key.json | gh secret set PLAY_SA_PRIVATE_KEY -R yonsei-projecttf/hjviewer-private
+rm key.json
+gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보입니다
+```
+
+- 값은 파이프로 `gh`에 들어가므로 셸 기록이나 명령줄에 남지 않습니다.
+- 2024-05-03 이후 만든 Google Cloud 조직은 서비스 계정 키 생성을 기본으로 막습니다. 6단계에서 키를 만들 수 없으면 Workload Identity Federation(키 없는 인증)으로 바꿔야 하고, 그때는 워크플로도 고칩니다.
+- 권한 적용에 24–48시간 걸렸다는 보고가 있습니다. 설정 직후 403이 나면 기다렸다가 다시 실행합니다. 트랙이나 번들 목록을 읽다가 403이 계속 나면 같은 앱 권한에 "앱 정보 보기(읽기 전용)"를 더합니다.
+
+### Play 선언 대상 (`PLAY_MANIFEST`)
+
+Play Console의 권한·포그라운드 서비스·접근성 선언 안내는 손으로 올릴 때만 나오고, CI 업로드에서는 나오지 않는다는 보고가 있습니다. 선언이 빠진 번들은 커밋이 막힐 수 있습니다(포그라운드 서비스 선언이 없어 내부 테스트 트랙 커밋이 403으로 실패한 보고가 있음). 그래서 "Sign and check Play bundle" 단계는 번들의 다음 항목을 고정 목록 `PLAY_MANIFEST`와 비교합니다.
+
+- 요청하는 권한 전체(`uses-permission`, `uses-permission-sdk-23`)
+- 포그라운드 서비스 유형(지금 `0x400000a0` = specialUse, mediaProjection, microphone)
+- 접근성 서비스(지금 `com.carriez.flutter_hbb.InputService`)
+
+다르면 diff(`>` = 새로 생김, `<` = 없어짐)를 보여 주고 Android 잡이 실패합니다. 패치나 플러그인 업데이트로 항목이 바뀌면, Play Console → 앱 콘텐츠에서 해당 선언을 먼저 확인하거나 고친 뒤 같은 커밋에서 목록을 고칩니다.
+
+지금 목록은 1.5.1에서 잰 값입니다. 권한 14개 가운데 `CAMERA`는 QR 스캐너 플러그인이 더합니다. `MANAGE_EXTERNAL_STORAGE`와 저장소 읽기·쓰기 권한은 upstream이 빼므로 없습니다. Play용 빌드를 제어 전용으로 만들면 접근성 서비스, 포그라운드 서비스 유형과 관련 권한이 빠지므로, 이 목록도 그 패치와 같은 커밋에서 줄입니다.
+
+### 오류와 대처
+
+스크립트는 Google의 메시지 다음 줄에 대처를 알려 줍니다. 업로드 중에 실패하면 편집을 지우므로 커밋된 것은 없습니다.
+
+| 메시지 | 대처 |
+|---|---|
+| `Set the secrets PLAY_SA_EMAIL and PLAY_SA_PRIVATE_KEY` | 시크릿을 넣은 뒤 실행 화면에서 "Re-run failed jobs"를 누릅니다. 같은 AAB로 Google Play internal 잡만 다시 돕니다. |
+| 404 `Package not found` | Play Console에서 앱을 만들고 첫 번들을 직접 올린 뒤 다시 실행합니다(위 1, 5단계). |
+| 403 `does not have permission` | 서비스 계정을 "테스트 트랙에 앱 출시" 권한으로 초대했는지 봅니다. 적용에 시간이 걸릴 수 있습니다. |
+| `has not been used in project` | 키를 만든 Cloud 프로젝트에서 Google Play Android Developer API를 사용 설정합니다. |
+| `invalid_grant` | 키가 지워졌거나 다른 키입니다. 새 JSON 키를 만들고 시크릿 2개를 다시 넣습니다. |
+| `already been used` (versionCode) | 같은 versionCode의 다른 번들이 먼저 올라갔습니다. 다시 빌드합니다. |
+| `draft app` | 첫 출시를 Play Console에서 끝내거나, `play_release=draft`로 올린 뒤 Play Console에서 출시합니다. |
+| 심사 중 (`in review`) | Play Console의 게시 개요에서 정리한 뒤 다시 실행합니다. |
+| 다른 키로 서명 | 업로드 키로 서명했는지 봅니다. 업로드 키를 바꿨다면 앱 무결성에서 업로드 키를 재설정합니다. |
+| 편집이 지워짐 (`edit` … `deleted`) | 다른 실행이나 Play Console 변경과 겹쳤습니다. 다시 실행합니다. |
+| 출시 노트 언어 | 앱의 스토어 등록정보 언어여야 합니다(1단계의 기본 언어 한국어). |
+| `The android job passed no bundle name or version` | GitHub는 시크릿 값이 든 잡 출력을 버립니다. 키 별칭 같은 시크릿 값이 번들 이름(`HJViewer-<버전>-<커밋>`)이나 버전에 들어 있지 않은지 봅니다. |
+
+### 키 교체와 유출
+
+- 서비스 계정 키는 기본으로 만료되지 않습니다. 바꿀 때는 Google Cloud 콘솔에서 새 JSON 키를 만들어 위 명령으로 두 시크릿을 다시 넣고, 옛 키를 지웁니다.
+- 키가 샜다고 의심되면 Cloud 콘솔에서 그 키를 바로 지웁니다. 이 권한으로는 프로덕션에 출시할 수 없지만, 공개 테스트(누구나 볼 수 있음)에는 출시할 수 있습니다. 새 번들을 올리려면 업로드 키(키스토어)도 있어야 합니다.
+
 ## 소요 시간
 
 이 저장소의 실측값과 upstream 참고값입니다. 첫 실행은 2026-10-10 비공개 저장소에서 캐시 없이, 1.5.1은 2026-10-11 빌드 전용 저장소에서 캐시가 있는 상태로 돌았습니다(실행 38106290530). upstream 값은 2026-10-09 nightly(공개 저장소, Rust 캐시만 있음)입니다.
@@ -267,6 +382,7 @@ gh secret set IOS_TEAM_ID --body ABCDE12345
 
 - **러너 사양 차이**: 비공개 저장소의 Linux·Windows 러너는 2코어/8GB로, 공개 저장소(4코어/16GB)의 절반입니다. 그래서 컴파일이 upstream보다 오래 걸립니다. macOS는 공개·비공개 모두 3코어 M1입니다.
 - **전체 시간**: 플랫폼 잡이 병렬로 돌기 때문에 가장 긴 Windows 잡이 결정합니다. 1.5.1 실행은 모두 28분 걸렸습니다.
+- **Google Play 경로(추정)**: 비공개 서명 빌드의 Android 잡은 AAB 빌드(약 3분)와 서명·검사(약 1분)로 약 4분 늘어납니다. `play`를 켜면 Google Play internal 잡이 1–2분 더 돕니다. 첫 실제 실행 뒤 실측값으로 바꿉니다.
 
 ## 비용 (비공개 저장소)
 
@@ -288,6 +404,8 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
 
 합계는 약 $0.8입니다. macOS가 분당 가장 비싸므로 iOS가 필요할 때만 `ios`나 `all`을 고르세요.
 
+Google Play 경로는 Android 실행마다 Linux 약 6분(AAB 4, Google Play internal 2), 약 $0.04를 더합니다(추정). AAB 아티팩트(약 30MB)도 7일 동안 저장 공간을 씁니다.
+
 **저장소 공개도 고려하세요.**
 
 - RustDesk는 AGPL-3.0이라, 앱을 받는 사용자에게 수정한 소스를 제공할 의무가 이미 있습니다.
@@ -296,7 +414,7 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
   - 시크릿은 로그에서 `***`로 가려집니다. 하지만 저장소 **변수**는 각 단계의 로그에 그대로 찍힙니다. 서버 주소와 키를 로그에 남기지 않으려면 `HJV_SERVER`/`HJV_SERVER_KEY`를 시크릿으로 등록하세요(워크플로는 둘 다 받습니다).
   - 서버 주소와 키는 **앱 안에 들어갑니다**. 공개 아티팩트로 받은 앱이나 소스로 직접 빌드한 앱은 그 서버에 접속할 수 있습니다. 소수만 쓰는 서버라면 실제 서버 값으로 빌드한 앱은 공개 아티팩트로 내지 말고, 비공개 빌드 저장소에서 빌드하세요. ([deploy.md](deploy.md)의 "소규모 비공개 운영")
   - 서명된 IPA는 공개 저장소에서 아티팩트로 올리지 않습니다. 프로비저닝 프로파일에 Apple 개발자 이름, 팀 ID, Ad Hoc의 경우 기기 UDID가 들어 있기 때문입니다. 서명 단계의 로그에서도 인증서 이름과 팀을 가립니다.
-- 내려받는 모든 결과물(artifact)에는 `LICENSE.txt`, `NOTICE.txt`, `SOURCE.txt`(이 빌드의 소스 위치), `THIRD_PARTY_NOTICES.txt`(Rust 크레이트, vcpkg 포트, 동봉 드라이버의 라이선스)가 함께 들어갑니다. AGPL이 요구하는 고지입니다. TestFlight로 올리는 IPA에는 이 파일이 없고, 앱 정보 화면의 소스 링크만 있습니다. 내부 테스터가 아닌 사람에게 TestFlight로 나눠 주기 전에, 고지를 앱 안에 넣거나 TestFlight의 "테스트할 내용"에 이 빌드의 소스 커밋(`client-<앱 버전>` 태그)과 고지 링크를 적어야 합니다.
+- 내려받는 모든 결과물(artifact)에는 `LICENSE.txt`, `NOTICE.txt`, `SOURCE.txt`(이 빌드의 소스 위치), `THIRD_PARTY_NOTICES.txt`(Rust 크레이트, vcpkg 포트, 동봉 드라이버의 라이선스)가 함께 들어갑니다. AGPL이 요구하는 고지입니다. TestFlight로 올리는 IPA와 Google Play에서 설치하는 앱에는 이 파일이 없고, 앱 정보 화면의 소스 링크만 있습니다. Google Play 출시 노트에는 워크플로가 이 빌드의 소스 커밋 링크를 넣습니다. 내부 테스터가 아닌 사람에게 TestFlight로 나눠 주기 전에, 고지를 앱 안에 넣거나 TestFlight의 "테스트할 내용"에 이 빌드의 소스 커밋(`client-<앱 버전>` 태그)과 고지 링크를 적어야 합니다.
 
 ## 캐시
 
@@ -323,6 +441,7 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
 - TestFlight 업로드(빌드 262840253, Apple 처리 후 VALID)
 
 아래는 아직 실행하지 않은 경로입니다.
+- **Google Play 경로**: 실제 러너에서의 AAB 빌드·서명·검사(실제 번들의 BundleConfig, R8 매핑, 걸린 시간), Play 업로드(`validate`, `completed`), 내부 테스트 트랙의 API 이름(`internal`이나 `qa`, 스크립트는 둘 다 처리), Play의 처리 시간, 실패한 Google Play internal 잡만 다시 실행하기. 개발 PC에서는 1.5.1 APK로 만든 번들로 서명·검사 단계를, 가짜 Play API로 업로드 스크립트를 시험했습니다.
 - **의존성 변경**: 모든 빌드가 `--locked`이므로, 패치가 의존성을 바꾸면 `Cargo.lock`도 패치에 포함해야 합니다.
 - **Xcode 26.6 고정**: 러너 이미지에서 26.6이 빠지면 "Select Xcode" 단계가 실패합니다. 그때 `XCODE_VERSION`을 이미지에 있는 26.x로 바꿉니다. Apple은 2027년 4월부터 iOS 27 SDK를 요구할 예정입니다. 그 전에 Flutter를 3.38 이상으로 올리고 AppDelegate를 UIScene으로 옮겨야 합니다.
 - **Flutter 플러그인**: 패치 0006이 개인정보 매니페스트 때문에 sqflite, file_picker, package_info_plus, device_info_plus를 올렸습니다. 2026-10-10에 세 플랫폼 모두 빌드되는 것까지 확인했습니다(실행 38042826319의 Windows·Android, 38044728062의 iOS). 실제 기기에서의 동작은 아직 확인하지 않았습니다.
