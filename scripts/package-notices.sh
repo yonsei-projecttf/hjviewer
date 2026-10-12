@@ -12,7 +12,9 @@
 #   scripts/package-notices.sh <out dir> <rust workspace dir> [<license file> <title>]...
 #
 # NOTICES_FEATURES and NOTICES_TARGET name the build's cargo features and target triple, so the
-# crate list is the one that build links. The source location is always the public repository
+# crate list is the one that build links. NOTICES_EXTRA_WORKSPACES names more Rust workspaces
+# whose binaries ship in the same package (space-separated directories, default features, the
+# same target): the server package's hjv-api (server/api). The source location is always the public repository
 # (HJV_SOURCE_REPO): builds made elsewhere, e.g. by the private build repository, must be of a
 # commit that is public there, which is checked in CI (set HJV_SKIP_SOURCE_CHECK=1 for local test
 # builds). The commit is the checkout's HEAD: in a run the private repository starts, GITHUB_SHA
@@ -62,17 +64,25 @@ missing=0
   echo
   echo "HJViewer includes the components below, each under its own license, reproduced here."
   echo "Build: features '${NOTICES_FEATURES:-default}', target '${NOTICES_TARGET:-host}'."
+  if [ -n "${NOTICES_EXTRA_WORKSPACES:-}" ]; then
+    echo "Also the crates of: $(for w in $NOTICES_EXTRA_WORKSPACES; do printf '%s ' "${w#"$ROOT"/}"; done)"
+  fi
   echo
   echo "== Rust crates =="
   # every crate of the build except the AGPL workspace ones, with the license files in its source
-  cargo metadata --format-version 1 --locked --manifest-path "$ws/Cargo.toml" \
-    ${NOTICES_FEATURES:+--features "$NOTICES_FEATURES"} \
-    ${NOTICES_TARGET:+--filter-platform "$NOTICES_TARGET"} |
-    jq -r '(.workspace_members) as $own | (.resolve.nodes | map(.id)) as $used | .packages[]
+  crates='(.workspace_members) as $own | (.resolve.nodes | map(.id)) as $used | .packages[]
       | select(.id as $id | $used | index($id))
       | select((.id as $id | $own | index($id) | not) or ((.license // "AGPL") | test("AGPL") | not))
-      | "\(.name) \(.version)\t\(.license // "see its license files")\t\(.manifest_path)"' |
-    tr -d '\r' | sort -u >"$out/.crates"
+      | "\(.name) \(.version)\t\(.license // "see its license files")\t\(.manifest_path)"'
+  {
+    cargo metadata --format-version 1 --locked --manifest-path "$ws/Cargo.toml" \
+      ${NOTICES_FEATURES:+--features "$NOTICES_FEATURES"} \
+      ${NOTICES_TARGET:+--filter-platform "$NOTICES_TARGET"} | jq -r "$crates"
+    for extra in ${NOTICES_EXTRA_WORKSPACES:-}; do
+      cargo metadata --format-version 1 --locked --manifest-path "$extra/Cargo.toml" \
+        ${NOTICES_TARGET:+--filter-platform "$NOTICES_TARGET"} | jq -r "$crates"
+    done
+  } | tr -d '\r' | sort -u >"$out/.crates"
   awk -F'\t' '{ print $1 " | " $2 }' "$out/.crates"
   while IFS=$'\t' read -r crate license manifest; do
     dir=$(dirname "${manifest//\\//}")

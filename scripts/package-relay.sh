@@ -3,9 +3,10 @@
 # Packages hjv-relay, the Wake-on-LAN relay for a Synology NAS (docs/relay-dsm.md), as a release
 # asset:
 #   HJV_SERVER=<server> HJV_COMMAND_PUBKEY=<key id>:<base64 key>[,...] scripts/package-relay.sh [<out dir>]
-# writes <out dir>/hjviewer-relay-<version>-linux-x86_64.tar.gz (default out dir build/release) and
-# its line in <out dir>/SHA256SUMS, keeping the lines of other files still there (the server
-# package writes the same file). <version> is relay/Cargo.toml's. The archive holds hjv-relay,
+# writes <out dir>/hjviewer-relay-<version>-linux-x86_64.tar.gz (default out dir build/release-relay,
+# apart from the server package's build/release) and <out dir>/SHA256SUMS with this archive's line
+# only, so that each package's checksum file names its own files alone (design v3 8-6).
+# <version> is relay/Cargo.toml's. The archive holds hjv-relay,
 # built for x86_64-unknown-linux-musl and statically linked so that it runs on any x86_64 DSM 7
 # NAS; README-DSM.md (docs/relay-dsm.md); and LICENSE, NOTICE, SOURCE and THIRD_PARTY_NOTICES
 # (scripts/package-notices.sh). Tag: relay-<version>.
@@ -28,7 +29,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-out=${1:-$ROOT/build/release}
+out=${1:-$ROOT/build/release-relay}
 target=x86_64-unknown-linux-musl
 work="$ROOT/build/package-relay"
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -218,19 +219,5 @@ mkdir -p "$out"
 mtime=$(git -C "$ROOT" log -1 --format=%ct)
 tar -C "$work" --owner=0 --group=0 --numeric-owner --sort=name --mtime="@$mtime" -cf - "$name" |
   gzip -9 -n > "$out/$name.tar.gz"
-(
-  cd "$out"
-  {
-    if [ -f SHA256SUMS ]; then
-      while read -r sum file; do
-        if [ "${file#\*}" != "$name.tar.gz" ] && [ -f "${file#\*}" ]; then
-          echo "$sum  $file"
-        fi
-      done < SHA256SUMS
-    fi
-    sha256sum "$name.tar.gz"
-  } | sort -k 2 > SHA256SUMS.new
-  mv SHA256SUMS.new SHA256SUMS
-  cat SHA256SUMS
-)
+(cd "$out" && sha256sum "$name.tar.gz" > SHA256SUMS && cat SHA256SUMS)
 tar -tzvf "$out/$name.tar.gz" | awk '{print $1, $3, $6}'
