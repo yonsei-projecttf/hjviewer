@@ -4,7 +4,8 @@
 #   scripts/ci.sh [all]    the server and deploy stages
 #   scripts/ci.sh server   a fresh upstream checkout with server/patches, the signaling and relay
 #                          tests, hjv-probe and hjv-load
-#   scripts/ci.sh client   a fresh upstream checkout with client/patches, hbb_common's WebSocket
+#   scripts/ci.sh client   the Google Play upload script's offline tests (scripts/test_play_upload.py),
+#                          then a fresh upstream checkout with client/patches, hbb_common's WebSocket
 #                          tests and the client's pure Dart tests, with the Flutter SDK the app
 #                          builds use (downloaded once, checked against Flutter's release index).
 #                          Tests that need the generated bridge run in client-build.yml.
@@ -143,6 +144,10 @@ CLIENT_DART_TESTS="test/soft_keyboard_input_test.dart test/soft_keyboard_log_tes
 client_stage() {
   local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=()
   local index=https://storage.googleapis.com/flutter_infra_release/releases
+  # no network, no Google credentials (-B: no __pycache__ in scripts/)
+  step "client: Google Play upload script, offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_play_upload.py' ||
+    fail "client: Google Play upload script tests"
   if [ ! -x "$fl/bin/flutter" ]; then
     step "client: Flutter $FLUTTER_VERSION, checked against releases_linux.json"
     curl -fsSL "$index/releases_linux.json" -o "$CI/releases_linux.json"

@@ -3,6 +3,7 @@
 # workflow), runs `scripts/fetch-upstream.sh client` and builds inside
 # upstream/rustdesk with the steps of upstream's own CI at RUSTDESK_COMMIT. "upstream: Lx-y" comments
 # point at upstream/rustdesk/.github/workflows/flutter-build.yml unless another file is named.
+# With `play`, the play job sends the signed Android bundle to Google Play's internal testing track.
 # Variables, signing secrets, run times and billing are documented in docs/ci.md.
 name: client
 
@@ -26,6 +27,15 @@ on:
         description: "iOS: upload the signed App Store build to TestFlight (private repository, App Store Connect secrets)"
         type: boolean
         default: false
+      play:
+        description: "Android: upload the signed bundle to Google Play's internal testing track (private repository, Play secrets)"
+        type: boolean
+        default: false
+      play_release:
+        description: "Google Play: completed (testers get it), draft (roll out in Play Console) or validate (check only, release nothing)"
+        type: choice
+        options: [completed, draft, validate]
+        default: completed
   # The private build repository (yonsei-projecttf/hjviewer-private, docs/ci.md) calls this workflow
   # with its secrets: real server values and signing keys. The code still comes from this repository.
   workflow_call:
@@ -36,6 +46,12 @@ on:
       testflight:
         type: boolean
         default: false
+      play:
+        type: boolean
+        default: false
+      play_release:
+        type: string
+        default: completed
       source_ref:
         description: Branch, tag or commit of this repository to build
         type: string
@@ -107,6 +123,14 @@ jobs:
           else
             echo "::warning::Repository variables HJV_SERVER and HJV_SERVER_KEY are not both set; these builds behave like stock RustDesk."
           fi
+
+      # play uploads what the android job builds; without it the play job would just be skipped
+      - name: Check the Google Play input
+        if: inputs.play && inputs.platforms != 'android' && inputs.platforms != 'all'
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "::error::play uploads the Android build: run with platforms android or all."
+          exit 1
 
       - name: Check out hjviewer
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -545,7 +569,33 @@ jobs:
     env:
       ANDROID_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+    outputs:
+      # read by the play job; set by "Sign and check Play bundle"
+      play_artifact: ${{ steps.play-bundle.outputs.artifact }}
+      play_version_name: ${{ steps.play-bundle.outputs.version_name }}
+      play_version_code: ${{ steps.play-bundle.outputs.version_code }}
     steps:
+      # Like "Check TestFlight prerequisites": fail before an 18-minute build, not after it. The
+      # Play secrets are checked in the play job: this job runs the build's third-party code
+      # (Gradle, cargo, vcpkg, pub) as a sudo-capable user, so it must not reference them at all.
+      - name: Check Google Play prerequisites
+        if: inputs.play
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          PRIVATE_REPOSITORY: ${{ github.event.repository.private }}
+          PLAY_RELEASE: ${{ inputs.play_release }}
+        run: |
+          problems=()
+          [ "$PRIVATE_REPOSITORY" = true ] || problems+=("play uploads only from the private build repository (docs/ci.md).")
+          [ "$ANDROID_SIGNING" = true ] || problems+=("play needs the upload keystore: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS.")
+          case $PLAY_RELEASE in
+            completed|draft|validate) ;;
+            *) problems+=("play_release must be completed, draft or validate.") ;;
+          esac
+          for p in "${problems[@]}"; do echo "::error::$p"; done
+          [ ${#problems[@]} = 0 ]
+
       # Build number = UTC time as YYDDDHHMM: it grows with every build, from any repository (the
       # build repository too), stays below Play's 2,100,000,000 versionCode limit with Flutter's
       # 2000 arm64 offset, and is numeric as iOS requires. Stores refuse a build number twice.
@@ -799,6 +849,277 @@ jobs:
             upstream/rustdesk/signed-apk/*.txt
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      # Not in upstream. Google Play takes an Android App Bundle signed with an upload key, which is
+      # this job's release keystore. These steps run after the APK has been uploaded, so a bundle
+      # failure never costs the APK. The APK build switched release signing to the debug key; the
+      # bundle is built with no signing config and signed once below (jarsigner: apksigner cannot
+      # sign bundles). Its versionCode is this run's arm64 APK's: `--split-per-abi` adds 2000 for
+      # arm64 to the build number, a bundle gets the build number as given.
+      - name: Build Play bundle
+        if: env.ANDROID_SIGNING == 'true' && github.event.repository.private
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          gradle=flutter/android/app/build.gradle
+          if [ "$(grep -c '^ *signingConfig signingConfigs\.debug$' "$gradle")" != 1 ]; then
+            echo "::error::$gradle does not have the one debug signing line the APK build writes; update this step."
+            exit 1
+          fi
+          sed -i '/^ *signingConfig signingConfigs\.debug$/d' "$gradle"
+          version_code=$((10#$BUILD_NUMBER + 2000))
+          echo "PLAY_VERSION_CODE=$version_code" >> "$GITHUB_ENV"
+          pushd flutter
+          flutter build appbundle --release --target-platform android-arm64 --build-number "$version_code"
+          popd
+
+      - name: Sign and check Play bundle
+        if: env.ANDROID_SIGNING == 'true' && github.event.repository.private
+        id: play-bundle
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          SIGNED_APK: ${{ steps.sign-apk.outputs.signedReleaseFile }}
+          BUNDLETOOL_VERSION: "1.18.3" # 2025-12-15, the latest release on 2026-10-12
+          BUNDLETOOL_SHA256: a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29
+          # What Play's declarations look at (docs/ci.md, "Google Play 업로드"): permissions, foreground
+          # service types (0x400000a0 = specialUse|mediaProjection|microphone) and accessibility
+          # services. A change needs Play Console > App content checked before Play takes the bundle;
+          # then update this list. CI uploads never show Play Console's declaration prompts.
+          PLAY_MANIFEST: |
+            accessibility-service com.carriez.flutter_hbb.InputService
+            foreground-service-type 0x400000a0
+            permission android.permission.ACCESS_NETWORK_STATE
+            permission android.permission.CAMERA
+            permission android.permission.FOREGROUND_SERVICE
+            permission android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION
+            permission android.permission.FOREGROUND_SERVICE_MICROPHONE
+            permission android.permission.FOREGROUND_SERVICE_SPECIAL_USE
+            permission android.permission.INTERNET
+            permission android.permission.POST_NOTIFICATIONS
+            permission android.permission.RECEIVE_BOOT_COMPLETED
+            permission android.permission.RECORD_AUDIO
+            permission android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+            permission android.permission.SYSTEM_ALERT_WINDOW
+            permission android.permission.WAKE_LOCK
+            permission kr.ac.yonsei.hjviewer.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+        run: |
+          set -euo pipefail
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          status=0
+          fail() { echo "::error::$*"; status=1; }
+
+          unsigned=flutter/build/app/outputs/bundle/release/app-release.aab
+          mkdir -p play-bundle
+          aab="play-bundle/$BUILD_NAME-android-aarch64.aab"
+          work="$RUNNER_TEMP/play-check"
+          rm -rf "$work" && mkdir -p "$work/lib"
+
+          # Decoded outside the workspace; removed below and by the cleanup step
+          ks="$RUNNER_TEMP/play-upload.keystore"
+          (umask 077 && printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$ks")
+          # PKCS12 keystores (keytool's default) use the store password for the key too
+          export HJV_KEY_PASS="${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}"
+
+          # One signer only (grep without -q: with pipefail an early exit fails unzip with SIGPIPE)
+          if unzip -Z1 "$unsigned" | grep -E '^META-INF/[^/]+\.(SF|RSA|DSA|EC)$' > /dev/null; then
+            echo "::error::$unsigned is already signed; it must be built without a signing config."
+            exit 1
+          fi
+          # Passwords from the environment (:env), never on the command line. jarsigner prints its
+          # errors (a wrong password or alias) on stdout and never a password, so show them.
+          if ! jarsigner -keystore "$ks" -storepass:env ANDROID_KEYSTORE_PASSWORD -keypass:env HJV_KEY_PASS \
+            -sigalg SHA256withRSA -digestalg SHA-256 -signedjar "$aab" "$unsigned" "$ANDROID_KEY_ALIAS" > "$work/sign.txt" 2>&1; then
+            cat "$work/sign.txt"
+            echo "::error::jarsigner could not sign the bundle with the upload keystore; see its output above."
+            exit 1
+          fi
+
+          bt_jar="$RUNNER_TEMP/bundletool-all-$BUNDLETOOL_VERSION.jar"
+          curl -fsSL --retry 3 -o "$bt_jar" \
+            "https://github.com/google/bundletool/releases/download/$BUNDLETOOL_VERSION/bundletool-all-$BUNDLETOOL_VERSION.jar"
+          echo "$BUNDLETOOL_SHA256  $bt_jar" | sha256sum -c --quiet -
+          bt() { java -jar "$bt_jar" "$@"; }
+
+          # 1. The JAR signature verifies (not -strict, which fails on any self-signed certificate),
+          #    covers every entry, has one signer, and that signer is the upload key
+          jarsigner -verify "$aab" > "$work/verify.txt" 2>&1 || { cat "$work/verify.txt"; fail "jarsigner cannot verify the bundle"; }
+          grep -q '^jar verified\.' "$work/verify.txt" || fail "jarsigner did not report 'jar verified.'"
+          if grep -q 'unsigned entries' "$work/verify.txt"; then fail "the bundle has unsigned entries"; fi
+          keytool -printcert -jarfile "$aab" > "$work/certs.txt"
+          signers=$(grep -c '^Signer #' "$work/certs.txt" || true)
+          [ "$signers" = 1 ] || fail "the bundle has $signers signers; Play expects one, the upload key"
+          got=$(awk '$1 == "SHA256:" { print $2; exit }' "$work/certs.txt" | tr -d ':' | tr 'A-F' 'a-f')
+          want=$(keytool -exportcert -keystore "$ks" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$ANDROID_KEY_ALIAS" |
+            sha256sum | cut -d' ' -f1)
+          if [ -z "$got" ] || [ "$got" != "$want" ]; then fail "the bundle is not signed with the upload key"; fi
+          rm -f "$ks"
+          echo "upload certificate SHA-256: $got"
+
+          # 2. Manifest: package, versionCode (this run's arm64 APK's), versionName, target SDK, and
+          #    what Play's declarations look at (PLAY_MANIFEST above)
+          bt validate --bundle="$aab" > "$work/validate.txt" || { cat "$work/validate.txt"; fail "bundletool validate failed"; }
+          x() { bt dump manifest --bundle="$aab" --xpath="$1" 2> /dev/null | tr -d '\r\n'; }
+          pkg=$(x /manifest/@package)
+          vc=$(x /manifest/@android:versionCode)
+          vn=$(x /manifest/@android:versionName)
+          tsdk=$(x /manifest/uses-sdk/@android:targetSdkVersion)
+          dbg=$(x /manifest/application/@android:debuggable)
+          # shellcheck source=/dev/null
+          source "$GITHUB_WORKSPACE/client/version.env"
+          apk_vc=$("$ANDROID_HOME/build-tools/$ANDROID_SIGN_TOOL_VERSION/aapt2" dump badging "$GITHUB_WORKSPACE/$SIGNED_APK" |
+            sed -n "s/^package: .* versionCode='\([0-9]*\)'.*/\1/p")
+          echo "bundle: $pkg $vn ($vc), targetSdk $tsdk; arm64 APK of this run: $apk_vc"
+          [ "$pkg" = kr.ac.yonsei.hjviewer ] || fail "package is $pkg"
+          [ "$vc" = "$PLAY_VERSION_CODE" ] || fail "versionCode is $vc, expected $PLAY_VERSION_CODE"
+          [ "$vc" = "$apk_vc" ] || fail "versionCode $vc differs from this run's APK ($apk_vc)"
+          [ "$vc" -le 2100000000 ] 2> /dev/null || fail "versionCode $vc is above Play's limit 2100000000"
+          [ "$vn" = "$HJV_VERSION" ] || fail "versionName is $vn, expected $HJV_VERSION"
+          [ "${tsdk:-0}" -ge 36 ] 2> /dev/null || fail "targetSdk $tsdk is below 36, which Play requires from 2026-08-31"
+          [ "$dbg" != true ] || fail "the bundle is debuggable"
+          # one line per match, "<kind> <value>"; bundletool prints an empty line when nothing matches
+          dump() { bt dump manifest --bundle="$aab" --xpath="$2" | sed '/^[[:space:]]*$/d' | sed "s/^/$1 /"; }
+          {
+            dump permission /manifest/uses-permission/@android:name
+            dump permission /manifest/uses-permission-sdk-23/@android:name
+            dump foreground-service-type /manifest/application/service/@android:foregroundServiceType
+            dump accessibility-service \
+              "/manifest/application/service[@android:permission='android.permission.BIND_ACCESSIBILITY_SERVICE']/@android:name"
+          } | tr -d '\r' | sort > "$work/manifest.txt"
+          sed '/^$/d' <<< "$PLAY_MANIFEST" | sort > "$work/manifest.expected"
+          if ! diff "$work/manifest.expected" "$work/manifest.txt" > "$work/manifest.diff"; then
+            cat "$work/manifest.diff"
+            fail "the bundle's permissions, foreground service types or accessibility services changed (diff above, > = new): check Play Console > App content, then update PLAY_MANIFEST in this step"
+          fi
+
+          # 3. 16 KB pages: uncompressed native libraries need 16 KB zip alignment (AGP 8.5.1+ asks
+          #    bundletool for it) and every LOAD segment 16 KB alignment or more. arm64-v8a only.
+          bt dump config --bundle="$aab" > "$work/config.json"
+          read -r uncompressed align < <(python3 -I -c '
+          import json, sys
+          u = json.load(open(sys.argv[1])).get("optimizations", {}).get("uncompressNativeLibraries", {})
+          print(str(u.get("enabled", False)).lower(), u.get("alignment", "unset"))' "$work/config.json")
+          echo "uncompressed native libraries: $uncompressed, zip page alignment: $align"
+          if [ "$uncompressed" = true ] && [ "$align" != PAGE_ALIGNMENT_16K ]; then
+            fail "native libraries are stored uncompressed without 16 KB zip alignment ($align)"
+          fi
+          abis=$(unzip -Z1 "$aab" | sed -n 's|^base/lib/\([^/]*\)/.*|\1|p' | sort -u | tr '\n' ' ')
+          [ "$abis" = "arm64-v8a " ] || fail "native code for ABIs other than arm64-v8a: $abis"
+          unzip -q -o "$aab" 'base/lib/arm64-v8a/*.so' -d "$work/lib"
+          for so in "$work"/lib/base/lib/arm64-v8a/*.so; do
+            small=""
+            while read -r a; do
+              if (( a < 16384 )); then small="$small $a"; fi
+            done < <(readelf -lW "$so" | awk '$1 == "LOAD" { print $NF }')
+            if [ -n "$small" ]; then fail "$(basename "$so") has LOAD segments aligned below 16 KB:$small"; fi
+          done
+
+          # 4. The R8 mapping, which Play takes from the bundle to deobfuscate crashes (a warning only)
+          unzip -Z1 "$aab" | grep -x 'BUNDLE-METADATA/com.android.tools.build.obfuscation/proguard.map' > /dev/null ||
+            echo "::warning::The bundle has no R8 mapping; Play will show obfuscated stack traces."
+
+          cp signed-apk/*.txt play-bundle/
+          echo "Play bundle $(basename "$aab"): versionCode $vc, $(stat -c %s "$aab") bytes, upload certificate SHA-256 $got" >> "$GITHUB_STEP_SUMMARY"
+          # for the play job: the artifact below and the version it carries
+          { echo "artifact=$BUILD_NAME-android-aarch64-play"; echo "version_name=$vn"; echo "version_code=$vc"; } >> "$GITHUB_OUTPUT"
+          exit $status
+
+      - name: Upload Play bundle
+        if: env.ANDROID_SIGNING == 'true' && github.event.repository.private
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.BUILD_NAME }}-android-aarch64-play
+          path: |
+            upstream/rustdesk/play-bundle/*.aab
+            upstream/rustdesk/play-bundle/*.txt
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Remove the upload keystore
+        if: always() && env.ANDROID_SIGNING == 'true'
+        working-directory: ${{ github.workspace }}
+        run: rm -f "$RUNNER_TEMP/play-upload.keystore" upstream/rustdesk/signed-apk/signingKey.jks
+
+  # Not in upstream. Sends the signed bundle to Google Play's internal testing track, the Android
+  # counterpart of "Upload to TestFlight". A job of its own: the Play key never shares a runner with
+  # the build's third-party code (Gradle, cargo, vcpkg), the upload waits for the Dart tests as
+  # TestFlight does, and "Re-run failed jobs" retries only the upload, with the same bundle.
+  # scripts/play-upload.py does the API calls; docs/ci.md lists the one-time Play Console setup.
+  play:
+    name: Google Play internal
+    needs: [generate-bridge, dart-tests, android]
+    if: inputs.play && github.event.repository.private
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # one Play edit at a time: committing an edit invalidates every other open edit of the app
+    concurrency:
+      group: google-play-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      PLAY_PACKAGE: kr.ac.yonsei.hjviewer
+    steps:
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          persist-credentials: false
+
+      # Checked here, not before the build (see the android job): a missing secret costs no
+      # rebuild, because "Re-run failed jobs" runs only this job again with the same bundle.
+      # GitHub drops a job output that contains a secret's value; an empty artifact name would
+      # make the download below fetch every artifact of the run.
+      - name: Check the Google Play secrets and the bundle
+        env:
+          PLAY_KEY_SET: ${{ secrets.PLAY_SA_EMAIL != '' && secrets.PLAY_SA_PRIVATE_KEY != '' }}
+          ARTIFACT: ${{ needs.android.outputs.play_artifact }}
+          VERSION_NAME: ${{ needs.android.outputs.play_version_name }}
+          VERSION_CODE: ${{ needs.android.outputs.play_version_code }}
+        run: |
+          if [ "$PLAY_KEY_SET" != true ]; then
+            echo "::error::Set the secrets PLAY_SA_EMAIL and PLAY_SA_PRIVATE_KEY (docs/ci.md), then use Re-run failed jobs: the bundle is kept."
+            exit 1
+          fi
+          if [ -z "$ARTIFACT" ] || [ -z "$VERSION_NAME" ] || [ -z "$VERSION_CODE" ]; then
+            echo "::error::The android job passed no bundle name or version (GitHub drops a job output that contains a secret's value)."
+            exit 1
+          fi
+
+      - name: Download the signed bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.android.outputs.play_artifact }}
+          path: play-bundle
+
+      # The service account key reaches the script only through the environment; the script signs
+      # its token request with openssl through a pipe and prints neither the key nor the token.
+      - name: Upload to Google Play
+        env:
+          PLAY_SA_EMAIL: ${{ secrets.PLAY_SA_EMAIL }}
+          PLAY_SA_PRIVATE_KEY: ${{ secrets.PLAY_SA_PRIVATE_KEY }}
+          PLAY_RELEASE: ${{ inputs.play_release }}
+          VERSION_NAME: ${{ needs.android.outputs.play_version_name }}
+          VERSION_CODE: ${{ needs.android.outputs.play_version_code }}
+          SOURCE_SHA: ${{ needs.generate-bridge.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          aab=$(find play-bundle -name '*.aab' -print -quit)
+          if [ -z "$aab" ]; then echo "::error::The android job left no bundle."; exit 1; fi
+          # AGPL: testers see where this build's source is (Play builds carry no notice files)
+          notes="$RUNNER_TEMP/play-notes.txt"
+          printf 'HJViewer %s (%s)\n소스 코드(AGPL-3.0): https://github.com/%s/tree/%s\n' \
+            "$VERSION_NAME" "$VERSION_CODE" "$SOURCE_REPOSITORY" "$SOURCE_SHA" > "$notes"
+          mode=commit status=$PLAY_RELEASE
+          if [ "$PLAY_RELEASE" = validate ]; then mode=validate status=completed; fi
+          python3 -I scripts/play-upload.py --package "$PLAY_PACKAGE" --aab "$aab" --track internal \
+            --status "$status" --mode "$mode" --name "$VERSION_NAME ($VERSION_CODE)" \
+            --version-code "$VERSION_CODE" --notes-file "$notes" --notes-language ko-KR
 
   # upstream: L624-743 (build-rustdesk-ios), matrix entry L633-638. Dropped: the liblibrustdesk.a
   # upload (L715-719). Upstream only builds `flutter build ipa --release --no-codesign` (L721-727);
