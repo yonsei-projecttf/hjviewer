@@ -1,0 +1,12 @@
+# Public keys whose private keys are published in this repository (test vectors, test fixtures):
+# a build that pins one of them trusts what anyone can sign. scripts/check-build-keys.py refuses
+# them in the builds it checks (client-build.yml), together with the keys it derives itself: every
+# Ed25519 and X25519 key from a seed of one repeated byte ([n; 32]) or of 32 consecutive byte
+# values (00 01 .. 1f and its shifts), and the RFC 8032 / RFC 7748 examples.
+#
+# One standard base64 key per line; '#' starts a comment. Add a test key here when its seed does
+# not follow those patterns. scripts/package-relay.sh has its own list for hjv-relay.
+
+# relay/PROTOCOL.md section 13: relay key (seed 00 01 .. 1f), command key (seed 20 21 .. 3f)
+A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
+Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=

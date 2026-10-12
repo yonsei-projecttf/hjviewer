@@ -4,6 +4,10 @@
 # upstream/rustdesk with the steps of upstream's own CI at RUSTDESK_COMMIT. "upstream: Lx-y" comments
 # point at upstream/rustdesk/.github/workflows/flutter-build.yml unless another file is named.
 # With `play`, the play job sends the signed Android bundle to Google Play's internal testing track.
+# The relay job builds hjv-relay, the Wake-on-LAN relay for the NAS (relay/), with
+# scripts/package-relay.sh; in the private build repository a draft release gets the package.
+# `check_only` makes a check build: no public key needed, artifacts named -check and kept a day,
+# nothing uploaded to TestFlight or Google Play, no release (design v3 6-4).
 # Variables, signing secrets, run times and billing are documented in docs/ci.md.
 name: client
 
@@ -11,9 +15,9 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: Platforms to build
+        description: Platforms to build (relay is hjv-relay for the NAS; all includes it)
         type: choice
-        options: [windows, android, ios, all]
+        options: [windows, android, ios, relay, all]
         default: all
       server:
         description: "Server domain for this run (default: repository variable HJV_SERVER)"
@@ -36,6 +40,10 @@ on:
         type: choice
         options: [completed, draft, validate]
         default: completed
+      check_only:
+        description: "Check build: the 1.6.0 public keys are not required, artifacts end in -check and are kept one day, no TestFlight, Google Play or release"
+        type: boolean
+        default: false
   # The private build repository (yonsei-projecttf/hjviewer-private, docs/ci.md) calls this workflow
   # with its secrets: real server values and signing keys. The code still comes from this repository.
   workflow_call:
@@ -52,6 +60,9 @@ on:
       play_release:
         type: string
         default: completed
+      check_only:
+        type: boolean
+        default: false
       source_ref:
         description: Branch, tag or commit of this repository to build
         type: string
@@ -59,7 +70,7 @@ on:
   # GitHub CI is paused (docs/ci.md): no build on tag pushes (`push: tags: ["v*"]`) for now, only
   # runs started by hand
 
-run-name: client ${{ github.event_name == 'push' && github.ref_name || inputs.platforms }}
+run-name: client ${{ github.event_name == 'push' && github.ref_name || inputs.platforms }}${{ inputs.check_only && ' (check)' || '' }}
 
 permissions:
   contents: read
@@ -73,6 +84,16 @@ env:
   # built apps, which are downloadable by anyone while the repository is public.
   HJV_SERVER: ${{ inputs.server || secrets.HJV_SERVER || vars.HJV_SERVER }}
   HJV_SERVER_KEY: ${{ inputs.server_key || secrets.HJV_SERVER_KEY || vars.HJV_SERVER_KEY }}
+  # The account features' public keys, pinned the same way (design v3 6-4): the key that seals
+  # login passwords, the two trust-list keys and, from the minimum-version work, the update keys.
+  # Not secret; the build repository keeps them as secrets like the server values. A build that
+  # lacks one of the first two has no account features, like 1.5.1; "Check the pinned public keys"
+  # requires them in the build repository's runs of version 1.6.0 and later.
+  HJV_LOGIN_SEAL_PUBKEY: ${{ secrets.HJV_LOGIN_SEAL_PUBKEY || vars.HJV_LOGIN_SEAL_PUBKEY }}
+  HJV_TRUST_PUBKEYS: ${{ secrets.HJV_TRUST_PUBKEYS || vars.HJV_TRUST_PUBKEYS }}
+  HJV_UPDATE_PUBKEY: ${{ secrets.HJV_UPDATE_PUBKEY || vars.HJV_UPDATE_PUBKEY }}
+  # check_only: a check build's artifacts carry -check in their names and are kept one day
+  BUILD_SUFFIX: ${{ inputs.check_only && '-check' || '' }}
   # Tool versions copied from upstream at RUSTDESK_COMMIT; bump them together with scripts/upstream.env.
   RUST_VERSION: "1.75" # L22; upstream's Windows job reads SCITER_RUST_VERSION (L21), same value; bridge.yml L11
   CARGO_NDK_VERSION: "3.1.2" # L24
@@ -87,7 +108,10 @@ env:
   BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
   CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
   FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
-  ARTIFACT_RETENTION_DAYS: 7
+  # Not upstream: hjv-relay's toolchain, the one scripts/package-relay.sh builds with on the
+  # development machine, so that the two builds can be compared
+  RELAY_RUST_VERSION: "1.99.0"
+  ARTIFACT_RETENTION_DAYS: ${{ inputs.check_only && 1 || 7 }}
 
 # vcpkg binary cache (deviation from upstream): upstream sets VCPKG_BINARY_SOURCES=clear;x-gha,readwrite
 # (L38), but vcpkg removed the x-gha provider in 2025 (microsoft/vcpkg-tool#1662) and the pinned vcpkg
@@ -132,6 +156,14 @@ jobs:
           echo "::error::play uploads the Android build: run with platforms android or all."
           exit 1
 
+      # a check build is never handed out (design v3 6-4)
+      - name: Check the check_only input
+        if: inputs.check_only && (inputs.testflight || inputs.play)
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "::error::check_only builds go nowhere: run without testflight and play."
+          exit 1
+
       - name: Check out hjviewer
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -144,6 +176,17 @@ jobs:
         id: source
         working-directory: ${{ github.workspace }}
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Not upstream. A run of the build repository for version 1.6.0 or later fails without the
+      # seal and trust-list keys (unless check_only), and any run with a malformed key or a public
+      # test key of this repository; elsewhere these are warnings. The keys' SHA-256 fingerprints
+      # go to the run summary, to compare with hjv-api selfcheck before tagging (docs/ci.md).
+      - name: Check the pinned public keys
+        working-directory: ${{ github.workspace }}
+        env:
+          CALLED: ${{ inputs.source_ref }}
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: python3 -I scripts/check-build-keys.py --version-file client/version.env
 
       - name: Fetch upstream and apply hjviewer patches
         working-directory: ${{ github.workspace }}
@@ -267,12 +310,13 @@ jobs:
 
       # The whole test folder: upstream's own tests guard the code around the input patches. The
       # tests those patches add or update must be there, so a dropped patch fails the job. The
-      # gesture and quality monitor tests need the generated bridge.
+      # gesture and quality monitor tests need the generated bridge. hjviewer_account_test.dart
+      # holds the account screens' pure tests (design v3 7-5).
       - name: Run the tests
         run: |
           for t in test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart \
             test/mobile_gestures_test.dart test/common/widgets/gestures_test.dart \
-            test/quality_monitor_transport_test.dart; do
+            test/quality_monitor_transport_test.dart test/hjviewer_account_test.dart; do
             if [ ! -f "$t" ]; then echo "::error::$t is not in the patched tree"; exit 1; fi
           done
           flutter pub get
@@ -321,7 +365,7 @@ jobs:
           bash scripts/set-client-version.sh "$GITHUB_RUN_NUMBER"
           source client/version.env
           if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse --short=7 HEAD)"; fi
-          echo "BUILD_NAME=HJViewer-$name" >> "$GITHUB_ENV"
+          echo "BUILD_NAME=HJViewer-$name$BUILD_SUFFIX" >> "$GITHUB_ENV"
 
       # L150-157
       - name: Restore bridge files
@@ -666,7 +710,7 @@ jobs:
           bash scripts/set-client-version.sh
           source client/version.env
           if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse --short=7 HEAD)"; fi
-          echo "BUILD_NAME=HJViewer-$name" >> "$GITHUB_ENV"
+          echo "BUILD_NAME=HJViewer-$name$BUILD_SUFFIX" >> "$GITHUB_ENV"
 
       # L1123-1134
       - name: Install flutter
@@ -1054,7 +1098,7 @@ jobs:
   play:
     name: Google Play internal
     needs: [generate-bridge, dart-tests, android]
-    if: inputs.play && github.event.repository.private
+    if: inputs.play && github.event.repository.private && !inputs.check_only
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # one Play edit at a time: committing an edit invalidates every other open edit of the app
@@ -1189,7 +1233,7 @@ jobs:
           bash scripts/set-client-version.sh
           source client/version.env
           if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse --short=7 HEAD)"; fi
-          echo "BUILD_NAME=HJViewer-$name" >> "$GITHUB_ENV"
+          echo "BUILD_NAME=HJViewer-$name$BUILD_SUFFIX" >> "$GITHUB_ENV"
 
       # L655-666
       - name: Install flutter
@@ -1442,7 +1486,7 @@ jobs:
       # ASC_ISSUER_ID, ASC_PRIVATE_KEY) and the app's numeric Apple ID (ASC_APP_ID), see docs/ci.md.
       # altool can exit 0 although the upload failed, so its output decides.
       - name: Upload to TestFlight
-        if: env.IOS_SIGNING == 'true' && inputs.testflight
+        if: env.IOS_SIGNING == 'true' && inputs.testflight && !inputs.check_only
         shell: bash
         env:
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
@@ -1495,3 +1539,129 @@ jobs:
             rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision" \
               "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision"
           fi
+
+  # Not in upstream. hjv-relay (relay/), the Wake-on-LAN relay for a Synology NAS
+  # (docs/relay-dsm.md): a static x86_64 musl binary that scripts/package-relay.sh pins to this
+  # server (HJV_SERVER, and HJV_COMMAND_PUBKEY: relay/PROTOCOL.md 3.2) and packages with its
+  # notices. Release builds come from here, the private build repository, so that the file the NAS
+  # starts as root never comes from a development machine (design v3 8-6). Anywhere else, and with
+  # check_only, it is a test build without the server values, which refuses to run.
+  relay:
+    name: hjv-relay
+    needs: generate-bridge
+    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'relay'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # this job alone has the command key: the apps never trust it
+      HJV_COMMAND_PUBKEY: ${{ secrets.HJV_COMMAND_PUBKEY || vars.HJV_COMMAND_PUBKEY }}
+    outputs:
+      artifact: ${{ steps.package.outputs.artifact }}
+      version: ${{ steps.package.outputs.version }}
+    steps:
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          persist-credentials: false
+
+      # like "Check the pinned public keys"; package-relay.sh checks the key and the server again
+      - name: Check the command keys
+        env:
+          CALLED: ${{ inputs.source_ref }}
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: python3 -I scripts/check-build-keys.py --relay
+
+      # ring's C code needs a musl C compiler for the static build
+      - name: Install musl-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RELAY_RUST_VERSION }}
+          targets: x86_64-unknown-linux-musl
+
+      - name: Build and package hjv-relay
+        id: package
+        env:
+          RELEASE: ${{ github.event.repository.private && !inputs.check_only }}
+        run: |
+          out="$RUNNER_TEMP/relay"
+          if [ "$RELEASE" != true ]; then
+            # without the server values the relay refuses 'run'; the archive's name ends in -test.
+            # HJV_RELAY_FIELDTEST asks package-relay.sh for that build, HJV_RELAY_UNCONFIGURED
+            # is its earlier name.
+            export HJV_RELAY_FIELDTEST=1 HJV_RELAY_UNCONFIGURED=1 HJV_SKIP_SOURCE_CHECK=1
+          fi
+          bash scripts/package-relay.sh "$out"
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' relay/Cargo.toml | head -n 1)
+          archive=$(cd "$out" && ls hjviewer-relay-*.tar.gz)
+          {
+            echo "### hjv-relay $version"
+            echo
+            echo '```'
+            cat "$out/SHA256SUMS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          { echo "version=$version"; echo "artifact=${archive%.tar.gz}$BUILD_SUFFIX"; } >> "$GITHUB_OUTPUT"
+
+      - name: Upload hjv-relay
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.artifact }}
+          path: |
+            ${{ runner.temp }}/relay/*.tar.gz
+            ${{ runner.temp }}/relay/SHA256SUMS
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # Not in upstream. Puts the release build of hjv-relay into a draft release of the build
+  # repository, where docs/relay-dsm.md downloads it; a person publishes the draft after comparing
+  # the fingerprints (design v3 11 step 8). A job of its own: the only one that writes to the
+  # repository (the caller must allow contents: write, docs/ci.md), and it runs no third-party
+  # build code. A release of the same version is left alone: rebuilds stay in the artifacts.
+  relay-release:
+    name: hjv-relay draft release
+    needs: [generate-bridge, relay]
+    if: github.event.repository.private && !inputs.check_only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download hjv-relay
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.relay.outputs.artifact }}
+          path: relay
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.relay.outputs.version }}
+          SOURCE_SHA: ${{ needs.generate-bridge.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          tag="relay-$VERSION"
+          tags=$(gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName')
+          if grep -xF "$tag" <<< "$tags" > /dev/null; then
+            echo "::notice::$GITHUB_REPOSITORY has a release $tag (maybe a draft) already; this build is in the run's artifacts only. Delete that release to make a new one."
+            exit 0
+          fi
+          notes="$RUNNER_TEMP/relay-notes.md"
+          {
+            echo "hjv-relay $VERSION for the NAS (docs/relay-dsm.md), built from https://github.com/$SOURCE_REPOSITORY/tree/$SOURCE_SHA"
+            echo
+            echo "Publish after comparing the command key fingerprints of the run summary with hjv-api selfcheck."
+            echo
+            echo '```'
+            cat relay/SHA256SUMS
+            echo '```'
+          } > "$notes"
+          gh release create "$tag" -R "$GITHUB_REPOSITORY" --draft --title "hjv-relay $VERSION" \
+            --notes-file "$notes" relay/*.tar.gz relay/SHA256SUMS
+          echo "Draft release $tag: publish it after the checks (docs/ci.md)." >> "$GITHUB_STEP_SUMMARY"
