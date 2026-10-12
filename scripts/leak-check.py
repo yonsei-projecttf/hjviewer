@@ -6,27 +6,36 @@ in what a push would publish, without ever printing them.
     python3 -I scripts/leak-check.py [--patterns FILE] [--repo DIR] [--base REF]
 
 The list (default build/leak-patterns.txt, which git ignores; a linked worktree without one uses
-its main worktree's; HJV_LEAK_PATTERNS names another file) has one fixed string per line: the
-production domain, the university's public address prefix, the NAS and PC addresses, the PC's MAC
-address, the department's shared folder name, real portal IDs. Blank lines and lines starting with
-'#' are skipped. A MAC address also matches with the other separator, without separators, and in
-dotted form. Matching ignores ASCII case.
+its main worktree's; HJV_LEAK_PATTERNS names another file) is UTF-8 text, with or without a BOM,
+with one fixed string per line: the production domain, the university's public address prefix,
+the NAS and PC addresses, the PC's MAC address, the department's shared folder name, real portal
+IDs. '#' starts a comment, also after a value; blank lines are skipped, and so are the spaces
+around a value. A MAC address (12 hex digits, with ':', '-' or '.' between them or none) also
+matches in the other three forms. Matching ignores ASCII case, and Korean text matches in both of
+its Unicode forms (NFC and NFD). A list that is not UTF-8 (UTF-16, as Windows PowerShell 5.1
+writes with '>' or Out-File), or whose values hold control or invisible characters, stops the
+check: such a value would match nothing.
 
 Searched: every file git tracks, as it is in the working tree (client/patches and server/patches
-included), the staged version of staged files, and of the commits a push would publish (REF..HEAD,
-default origin/main..HEAD; every commit when REF does not exist) their messages, authors,
-committers and added lines. A hit prints where it is and the list's line number, never the value
-or the line, and the check fails. It also fails when the list is missing, has no value, or is
-itself tracked by git.
+included), and its path; the staged version of staged files; and of the commits a push would
+publish (REF..HEAD, default origin/main..HEAD; every commit when REF does not exist) their
+messages, authors, committers, the paths of the files they add or change, and their added lines.
+A hit prints where it is and the list's line number, never the value or the line (a path that
+holds a value is printed with "<listed value>" in its place), and the check fails. It also fails
+when the list is missing, has no value, or is itself tracked by git.
 """
 import argparse
 import os
 import re
 import subprocess
 import sys
+import unicodedata
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MAC = re.compile(r"[0-9a-f]{2}([:-])[0-9a-f]{2}(?:\1[0-9a-f]{2}){4}")
+# a MAC address: six pairs of hex digits with one separator, three dotted quads, or 12 digits
+MAC = re.compile(r"[0-9a-f]{2}([:.-])[0-9a-f]{2}(?:\1[0-9a-f]{2}){4}|[0-9a-f]{4}([:.-])[0-9a-f]{4}\2[0-9a-f]{4}"
+                 r"|[0-9a-f]{12}")
+LIST_HELP = "docs/ci.md, 'push 전 검사'"
 
 
 def git(repo, *args, check=True):
@@ -53,26 +62,43 @@ def default_patterns(repo):
     return own
 
 
+def mac_forms(value):
+    """The four ways of writing the MAC address <value> (lowercase), or []."""
+    if not MAC.fullmatch(value):
+        return []
+    digits = re.sub(r"[:.-]", "", value)
+    pairs = [digits[i:i + 2] for i in range(0, 12, 2)]
+    return [":".join(pairs), "-".join(pairs), digits, ".".join(digits[i:i + 4] for i in (0, 4, 8))]
+
+
 def read_patterns(path):
     """[(list line number, [lowercased byte strings to find])]"""
     try:
         with open(path, "rb") as f:
-            lines = f.read().split(b"\n")
+            data = f.read()
     except FileNotFoundError:
-        raise SystemExit(f"leak: no list at {path}: create it (docs/ci.md, 'push 전 검사')")
+        raise SystemExit(f"leak: no list at {path}: create it ({LIST_HELP})")
+    # UTF-16 (PowerShell 5.1's '>' and Out-File) puts a NUL next to every ASCII character: as
+    # UTF-8 its values would match nothing
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\0" in data:
+        raise SystemExit(f"leak: {path} is UTF-16 or holds NUL bytes: save it as UTF-8 ({LIST_HELP})")
+    try:
+        text = data.decode("utf-8-sig")  # a BOM (Notepad's "UTF-8 with BOM") is no part of a value
+    except UnicodeDecodeError as e:
+        raise SystemExit(f"leak: {path} is not UTF-8 (byte {e.start}): save it as UTF-8 ({LIST_HELP})")
     patterns = []
-    for n, line in enumerate(lines, 1):
-        text = line.strip()
-        if not text or text.startswith(b"#"):
+    for n, line in enumerate(text.splitlines(), 1):
+        value = line.split("#", 1)[0].strip()
+        if not value:
             continue
-        value = text.lower()
-        forms = [value]
-        m = MAC.fullmatch(value.decode("ascii", errors="replace"))
-        if m:
-            octets = re.split(r"[:-]", value.decode())
-            forms += [":".join(octets).encode(), "-".join(octets).encode(), "".join(octets).encode(),
-                      ".".join("".join(octets[i:i + 2]) for i in (0, 2, 4)).encode()]
-        patterns.append((n, sorted(set(forms))))
+        odd = [c for c in value if c != " " and (c.isspace() or unicodedata.category(c)[0] in "CZ")]
+        if odd:
+            raise SystemExit(f"leak: {path} line {n}: the value holds U+{ord(odd[0]):04X}, a control, "
+                             f"invisible or unusual space character, and would match nothing: retype it")
+        forms = {value, unicodedata.normalize("NFC", value), unicodedata.normalize("NFD", value)}
+        forms.update(mac_forms(value.lower()))
+        # ASCII case only, as in the files searched (bytes.lower)
+        patterns.append((n, sorted({f.encode("utf-8").lower() for f in forms})))
     if not patterns:
         raise SystemExit(f"leak: {path} lists no value")
     return patterns
@@ -105,6 +131,28 @@ class Scan:
         self.hits += 1
         print(f"{where}: list line {list_line}", flush=True)
 
+    def shown(self, raw):
+        """A path (bytes) for printing: every listed value in it replaced by "<listed value>"."""
+        low = raw.lower()
+        covered = bytearray(len(raw))
+        for _, forms in self.patterns:
+            for form in forms:
+                at = low.find(form)
+                while at >= 0:
+                    covered[at:at + len(form)] = b"\1" * len(form)
+                    at = low.find(form, at + 1)
+        out, start = [], 0
+        for i in range(1, len(raw) + 1):
+            if i == len(raw) or covered[i] != covered[start]:
+                out.append("<listed value>" if covered[start] else raw[start:i].decode(errors="replace"))
+                start = i
+        return "".join(out)
+
+    def path(self, label, raw):
+        """A path that a push publishes: the values in its name."""
+        for n in sorted({n for _, n in hits_in(raw, self.patterns)}):
+            self.report(f"{label}{self.shown(raw)} (in the path)", n)
+
     def blob(self, label, data):
         found = hits_in(data, self.patterns)
         if found and is_binary(data):
@@ -117,6 +165,7 @@ class Scan:
     def tracked(self):
         files = [p for p in git(self.repo, "ls-files", "-z").stdout.split(b"\0") if p]
         for raw in files:
+            self.path("", raw)
             rel = raw.decode(errors="surrogateescape")
             path = os.path.join(self.repo, rel)
             if os.path.islink(path):
@@ -126,14 +175,14 @@ class Scan:
                     data = f.read()
             else:
                 continue  # deleted in the working tree, or a submodule
-            self.blob(rel, data)
+            self.blob(self.shown(raw), data)
         return len(files)
 
     def staged(self):
         names = git(self.repo, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRT").stdout
         for raw in [p for p in names.split(b"\0") if p]:
             rel = raw.decode(errors="surrogateescape")
-            self.blob(f"staged {rel}", git(self.repo, "show", f":{rel}").stdout)
+            self.blob(f"staged {self.shown(raw)}", git(self.repo, "show", f":{rel}").stdout)
 
     def commits(self, base):
         if git(self.repo, "rev-parse", "--verify", "--quiet", "HEAD", check=False).returncode != 0:
@@ -143,7 +192,7 @@ class Scan:
         else:
             print(f"leak: {base} does not exist: checking every commit of HEAD", flush=True)
             span = ["HEAD"]
-        log =git(self.repo, "log", "--format=%H%x00%an <%ae>%x00%cn <%ce>%x00%B%x00%x01", *span).stdout
+        log = git(self.repo, "log", "--format=%H%x00%an <%ae>%x00%cn <%ce>%x00%B%x00%x01", *span).stdout
         count = 0
         for entry in log.split(b"\x01"):
             entry = entry.lstrip(b"\n")
@@ -157,6 +206,11 @@ class Scan:
             for who, value in (("author", author), ("committer", committer)):
                 for _, n in hits_in(value, self.patterns):
                     self.report(f"commit {short}: {who}", n)
+            # the paths it adds or changes, also those of files a later commit removes or renames
+            names = git(self.repo, "show", "--format=", "--name-only", "-z", "--no-renames",
+                        "--diff-merges=first-parent", "--diff-filter=d", sha.decode()).stdout
+            for raw in [p for p in names.split(b"\0") if p]:
+                self.path(f"commit {short}: ", raw)
             self.added_lines(sha.decode(), short)
         return count
 
@@ -170,7 +224,7 @@ class Scan:
                 path, header = None, True
             elif header and raw.startswith(b"+++ "):
                 target = raw[4:]
-                path = None if target == b"/dev/null" else target[2:].decode(errors="surrogateescape")
+                path = None if target == b"/dev/null" else self.shown(target[2:])
             elif raw.startswith(b"@@"):
                 header = False
                 m = re.match(rb"@@ -\d+(?:,\d+)? \+(\d+)", raw)
@@ -202,7 +256,8 @@ def main(argv):
     if scan.hits:
         print(f"leak: FAIL, {scan.hits} hits above (where, and the list line; values are not shown)", flush=True)
         return 1
-    print(f"leak: none in {files} tracked files, the staged changes and {commits} unpushed commits", flush=True)
+    print(f"leak: none in {files} tracked files (contents and paths), the staged changes and {commits} "
+          "unpushed commits", flush=True)
     return 0
 
 

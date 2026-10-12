@@ -159,6 +159,93 @@ class LeakCheckTest(unittest.TestCase):
             self.assertIn(f"m{i}.txt:1: list line {MAC}", out)
         self.assertNoValue(out)
 
+    def test_mac_addresses_listed_in_any_form(self):
+        for listed in ("00005E005377", "0000.5e00.5377", "00-00-5E-00-53-77"):
+            self.repo.write("build/leak-patterns.txt", f"{listed}\n")
+            for i, form in enumerate(("00-00-5e-00-53-77", "00005E005377", "0000.5e00.5377", "00:00:5e:00:53:77")):
+                self.repo.write(f"m{i}.txt", f"wol {form}\n")
+            self.repo.git("add", "-A")
+            code, out = self.repo.check()
+            self.assertEqual(code, 1, listed)
+            for i in range(4):
+                self.assertIn(f"m{i}.txt:1: list line 1", out, listed)
+            self.assertNoValue(out)
+
+    def test_lists_saved_by_windows_editors(self):
+        """Notepad's "UTF-8 with BOM" and PowerShell 5.1's Set-Content -Encoding UTF8 start the file
+        with a BOM; CRLF line ends; a note after the value."""
+        self.repo.write("docs/setup.md", "server: leak-canary.example.net\nid: Test-Portal-0001\n")
+        self.repo.commit("docs")
+        lists = {
+            "BOM": "﻿leak-canary.example.net\r\nTest-Portal-0001\r\n",
+            "a note after the value": "leak-canary.example.net   # 운영 도메인\nTest-Portal-0001\t# 시험 ID\n",
+            "a note without a space": "leak-canary.example.net# 운영\nTest-Portal-0001\n",
+            "old Mac line ends": "leak-canary.example.net\rTest-Portal-0001\r",
+        }
+        for what, text in lists.items():
+            self.repo.write("build/leak-patterns.txt", text.encode("utf-8"), mode="wb")
+            code, out = self.repo.check()
+            self.assertEqual(code, 1, f"{what}: {out}")
+            self.assertIn("docs/setup.md:1: list line 1", out, what)
+            self.assertIn("docs/setup.md:2: list line 2", out, what)
+            self.assertNoValue(out)
+
+    def test_lists_that_would_match_nothing_stop_the_check(self):
+        """UTF-16 (PowerShell 5.1's '>' and Out-File), other encodings, invisible characters: such a
+        value finds nothing, so the check stops instead of passing."""
+        self.repo.write("docs/setup.md", "server: leak-canary.example.net\n")
+        self.repo.commit("docs")
+        lists = {
+            "UTF-16 with BOM": "leak-canary.example.net\r\n".encode("utf-16"),
+            "UTF-16 without BOM": "leak-canary.example.net\r\n".encode("utf-16-le"),
+            "EUC-KR": "부서-시험-공유폴더\n".encode("euc-kr"),
+            "a zero-width space": "leak-canary​.example.net\n".encode("utf-8"),
+            "a no-break space": "부서 시험\n".encode("utf-8"),
+        }
+        for what, data in lists.items():
+            self.repo.write("build/leak-patterns.txt", data, mode="wb")
+            code, out = self.repo.check()
+            self.assertNotEqual(code, 0, what)
+            self.assertNotIn("leak: none", out, what)
+            self.assertIn("leak-patterns.txt", out, what)
+            self.assertNoValue(out)
+
+    def test_korean_text_in_either_unicode_form(self):
+        import unicodedata
+        self.repo.write("a.md", "폴더: " + unicodedata.normalize("NFD", "부서-시험-공유폴더") + "\n")
+        self.repo.commit("nfd")
+        code, out = self.repo.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"a.md:1: list line {FOLDER}", out)
+
+    def test_paths_count_and_are_printed_without_the_value(self):
+        self.repo.write("docs/leak-canary.example.net.md", "nothing here\n")
+        self.repo.write("cfg/Test-Portal-0001/a.txt", "198.51.100.9\n")
+        self.repo.commit("paths")
+        code, out = self.repo.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"docs/<listed value>.md (in the path): list line {DOMAIN}", out)
+        self.assertIn(f"cfg/<listed value>/a.txt (in the path): list line {PORTAL}", out)
+        # a hit in the contents of such a file names it the same way
+        self.assertIn(f"cfg/<listed value>/a.txt:1: list line {PREFIX}", out)
+        self.assertNoValue(out)
+
+    def test_a_path_renamed_again_is_still_in_the_unpushed_history(self):
+        self.repo.write("notes/Test-Portal-0001.txt", "x\n")
+        self.repo.commit("add notes")
+        sha = self.repo.git("rev-parse", "HEAD").strip()[:10]
+        self.repo.git("mv", "notes/Test-Portal-0001.txt", "notes/x.txt")
+        self.repo.write("empty-leak-canary.example.net", "")
+        self.repo.commit("rename")
+        self.repo.git("rm", "-q", "empty-leak-canary.example.net")
+        self.repo.commit("remove")
+        code, out = self.repo.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"commit {sha}: notes/<listed value>.txt (in the path): list line {PORTAL}", out)
+        self.assertIn(f"empty-<listed value> (in the path): list line {DOMAIN}", out)
+        self.assertNotIn("notes/x.txt", out)
+        self.assertNoValue(out)
+
     def test_binary_files(self):
         self.repo.write("icon.bin", b"\x89PNG\0\0leak-canary.example.net\0".decode("latin-1"), mode="w")
         self.repo.commit("icon")
