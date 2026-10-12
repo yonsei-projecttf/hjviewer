@@ -44,7 +44,7 @@ const MAX_RESULTS_KEPT: usize = 100;
 const MAX_COMMANDS_PER_RESPONSE: usize = 16;
 /// The longest `poll_after` or `retry_after` the relay honours.
 const MAX_SERVER_DELAY: u64 = 3600;
-/// Polls that deliver results before the relay exits for a new executable.
+/// Polls that deliver results before the relay exits (a new executable or the stop marker).
 const FINAL_POLLS: usize = 2;
 /// The longest error text kept in the status file.
 const MAX_STATUS_ERROR: usize = 200;

@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 const RELAY_PK: &str = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=";
 const RELAY_ID: &str = "r-kzdvvj2umnduyauf";
 const RELAY_CODE: &str = "KZDV-VJ2U-MNDU-YAUF";
+const RELAY_KEY_DIGEST: &str = "56475aa75463474c0285";
 const NONCE: &str = "AAECAwQFBgcICQoLDA0ODw";
 const T: i64 = 1760000000;
 const HELLO_P: &str = r#"{"v":1,"version":"1.6.0","arch":"x86_64","os":"DSM 7.2.1-69057 Update 5","kernel":"5.10.55+","ifaces_hash":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","ifaces":[]}"#;
@@ -35,6 +36,10 @@ const C_HASH: &str = "eefb709bfc6dae46233f75d43c02d0dfb173218d3ed9010c40dc316b4c
 const COMMAND_FINGERPRINT: &str =
     "1:24f6ed6acbfe1009c030d7ca567c33ca4830911498236b5561a6c82abec5de28";
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn relay_seed() -> [u8; 32] {
     std::array::from_fn(|i| i as u8)
 }
@@ -49,8 +54,14 @@ fn relay_identity() {
     assert_eq!(id.pk_base64(), RELAY_PK);
     assert_eq!(id.id, RELAY_ID);
     assert_eq!(id.code, RELAY_CODE);
-    let fingerprint = &Sha256::digest(STANDARD.decode(RELAY_PK).unwrap())[..10];
-    assert_eq!(hjv_relay::identity::base32(fingerprint), "KZDVVJ2UMNDUYAUF");
+    // the key digest (section 3.1): the first 10 bytes of SHA-256(pk)
+    let digest = &Sha256::digest(STANDARD.decode(RELAY_PK).unwrap())[..10];
+    assert_eq!(hex(digest), RELAY_KEY_DIGEST);
+    assert_eq!(
+        hjv_relay::identity::key_digest(&STANDARD.decode(RELAY_PK).unwrap().try_into().unwrap()),
+        digest
+    );
+    assert_eq!(hjv_relay::identity::base32(digest), "KZDVVJ2UMNDUYAUF");
 }
 
 #[test]
@@ -92,6 +103,7 @@ fn the_document_shows_these_vectors() {
         RELAY_PK,
         RELAY_ID,
         RELAY_CODE,
+        RELAY_KEY_DIGEST,
         NONCE,
         HELLO_P,
         HELLO_P_SHA256,
@@ -108,6 +120,14 @@ fn the_document_shows_these_vectors() {
         assert!(doc.contains(v), "PROTOCOL.md does not show {v}");
     }
     assert!(doc.contains(&format!("signed bytes ({} bytes", HELLO_SIGNED.len())));
+    // one name for each: the relay key's digest (section 3.1) and a command key's fingerprint
+    // (section 3.2), which a person compares with hjv-api selfcheck
+    assert!(doc.contains(&format!("| key digest (hex) | `{RELAY_KEY_DIGEST}` |")));
+    assert!(doc.contains("**command key fingerprint**"));
+    assert!(
+        !doc.contains("**fingerprint** ="),
+        "section 3.1 names the key digest"
+    );
 }
 
 #[test]

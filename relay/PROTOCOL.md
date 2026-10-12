@@ -77,8 +77,9 @@ JSON integers in all objects of this protocol MUST be written as integers (`60`,
 - On its first run the relay makes an Ed25519 key pair and keeps the private key on the NAS
   (`/volume1/@hjv-relay/relay.key`, root only). The private key never leaves the NAS. `pk` is the
   32-byte public key.
-- **fingerprint** = the first 10 bytes (80 bits) of SHA-256(`pk`).
-- **relay ID** = `r-` followed by base32 of the fingerprint in **lowercase**: 16 characters, so
+- **key digest** = the first 10 bytes (80 bits) of SHA-256(`pk`). It is not a fingerprint in
+  the sense of section 3.2 and is never shown as one.
+- **relay ID** = `r-` followed by base32 of the key digest in **lowercase**: 16 characters, so
   the ID matches `^r-[a-z2-7]{16}$`.
 - **enrollment code** = the same 16 base32 characters in **uppercase**, in four groups of four
   joined by `-`: `^[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}$`. The relay writes it to its
@@ -98,19 +99,23 @@ JSON integers in all objects of this protocol MUST be written as integers (`60`,
   key>`, the key id in decimal digits without a sign or leading zeros, the 32 public key bytes in
   base64 (section 2: with padding, 44 characters), such as
   `1:Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`.
-  - `hjv-api keygen command --kid <key id>` MUST print the key it makes as exactly this line (and
-    never the private key).
+  - `hjv-api keygen command --kid <key id>` MUST show the public key it makes as exactly this
+    line on stderr (the screen). The private key, its 32-byte seed, goes only where it is kept:
+    to stdout when stdout is not a terminal (piped into `systemd-creds encrypt`), into
+    `systemd-creds encrypt` itself with `--encrypt-to FILE`, or into `--out FILE` (removable
+    media, for a key kept offline). It MUST NOT write the private key to a terminal, the same
+    as `hjv-api keygen seal`.
   - hjv-api's setting `HJV_API_COMMAND_PUBKEYS` and the relay build variable `HJV_COMMAND_PUBKEY`
     are such entries joined by `,` (`1:<base64>,2:<base64>`); `HJV_API_COMMAND_KID` names the key
     the server signs with.
   - A relay takes one or two keys with distinct ids. A relay built without `HJV_COMMAND_PUBKEY`,
     or with a value that does not parse (a weak, small-order key, more than two keys, duplicate
     ids), refuses to `run`; `hjv-relay version` prints the keys in this form, or the problem.
-- The **fingerprint** of a command key is the lowercase hex SHA-256 of its 32 public key bytes
-  (64 digits). `hjv-api selfcheck`, the summary of the build that makes a relay release, and
-  `hjv-relay version` (and so `hjv-relay status`) show `<key id>:<fingerprint>`, so that a person
-  can check that the key the server signs with is one a relay build trusts (section 13 has a
-  vector).
+- The **command key fingerprint** is the lowercase hex SHA-256 of the key's 32 public key bytes
+  (64 digits; not the relay's key digest of section 3.1). `hjv-api selfcheck`, the summary of
+  the build that makes a relay release, and `hjv-relay version` (and so `hjv-relay status`) show
+  `<key id>:<command key fingerprint>`, so that a person can check that the key the server
+  signs with is one a relay build trusts (section 13 has a vector).
 - scripts/package-relay.sh refuses to package a relay without command keys, and one with the
   public test keys of this repository (section 13 and the tests) unless it is told that the build
   is a test build.
@@ -254,7 +259,7 @@ After a 200 the relay polls: at once when active (subject to the 2-second minimu
 |---|---|---|
 | `v` | integer | `1` |
 | `version`, `arch`, `os`, `kernel` | string | as in hello |
-| `wait` | integer | 0–20: the longest the server may hold this request, in seconds (the relay sends 20, and 0 in the at most two polls that deliver its last results before it exits to restart with a new executable) |
+| `wait` | integer | 0–20: the longest the server may hold this request, in seconds (the relay sends 20, and 0 in the at most two polls that deliver its last results before it exits, for a new executable or the stop marker) |
 | `ifaces_hash` | string | hex SHA-256 of the relay's current `ifaces` JSON text |
 | `ifaces` | array | **optional**: present when the interfaces changed since the server last got them, or when the last response asked for them (`send_ifaces`) |
 | `results` | array | results of commands not yet acknowledged (section 8), possibly empty; at most 50 |
@@ -427,8 +432,9 @@ the relay is pending or revoked are not checked or sent; their results say `not_
   otherwise at the next regular poll (section 5.2). It sends them again in every poll until one
   gets a `200`, so the server can receive a result more than once. It keeps at most 100
   undelivered results (the oldest are dropped) and sends at most 50 per poll. Results do not
-  survive a restart of the relay; before it exits for a new executable, the relay delivers the
-  results still waiting in at most two polls with `wait: 0`, and gives up after a failed one.
+  survive a restart of the relay; before it exits for a new executable or the stop marker
+  (`run --watch`, `run --stop`), the relay delivers the results still waiting in at most two
+  polls with `wait: 0`, and gives up after a failed one.
 - The server matches a result to its command by `cmd`, and MUST treat results idempotently.
   Suggested job states: `error` null or `partial` with `packets > 0` → **sent** at `sent_at`;
   `replayed` → no new information (ignore); any other `error` → **failed** with that code.
@@ -510,7 +516,7 @@ logs a hint to check the NAS's time, and the install guide says how.
 
 | What | Value |
 |---|---|
-| poll hold by the server | at most `min(wait, 20)` s; the relay sends `wait: 20` (`wait: 0` in its last polls before a restart) |
+| poll hold by the server | at most `min(wait, 20)` s; the relay sends `wait: 20` (`wait: 0` in its last polls before it exits) |
 | relay request timeout | 35 s from connect to the last byte |
 | least time between poll starts | 2 s, except the poll right after packets were sent |
 | poll interval when pending / revoked | `poll_after`, else 30 s / 3600 s (`poll_after` at most 3600) |
@@ -589,7 +595,7 @@ Relay key: the Ed25519 private key (seed) is the 32 bytes `00 01 02 ... 1f`.
 | | |
 |---|---|
 | `pk` (base64) | `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=` |
-| fingerprint (hex) | `56475aa75463474c0285` |
+| key digest (hex) | `56475aa75463474c0285` |
 | relay ID | `r-kzdvvj2umnduyauf` |
 | enrollment code | `KZDV-VJ2U-MNDU-YAUF` |
 
@@ -612,7 +618,8 @@ A hello at `t` = `1760000000` with `n` = base64url of the bytes `00 01 ... 0f` =
 
 Command key: the seed is the 32 bytes `20 21 22 ... 3f`, key id 1, so
 `HJV_COMMAND_PUBKEY=1:Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=` (what
-`hjv-api keygen command --kid 1` prints for this key), and its fingerprint (section 3.2) is
+`hjv-api keygen command --kid 1` shows on stderr for this key), and its command key
+fingerprint (section 3.2) is
 `1:24f6ed6acbfe1009c030d7ca567c33ca4830911498236b5561a6c82abec5de28`. The command text `c`:
 
 ```
@@ -663,9 +670,21 @@ These private keys are public test values: never use them for anything else.
   networks of the owner's PCs and could report false results.
 - Outside this protocol, on the NAS: the boot-up task starts the relay as root
   (docs/relay-dsm.md). The task's first line holds the SHA-256 of the release, and its loop runs
-  only a copy it made in the root-only state folder, after checking both the uploaded file and
-  the copy against that value. So whoever can write to the shared folder of the executable can
-  stop the relay or delete its log, but cannot have their code run as root; changing the task
-  takes a DSM administrator. The guide still keeps that folder for administrators only, with no
-  sync tasks, sharing links or file requests on it (docs/relay-dsm.md, section 2). The relay
-  keeps its log to the last 180 days and at most 2 MB.
+  only a copy it made in the root-only state folder, after checking both the uploaded file and the
+  copy against that value. Root also does not follow symbolic links in that shared folder: the
+  guide's tasks give the relay /dev/null for stdout and stderr, and the relay opens the files
+  there itself (`run --log`, `status --out`, `test-wake --out`, and the upload it watches with
+  `run --watch`) without following a symbolic link, and uses only regular files (with one name,
+  for the files it writes). The loop's shell reads (to hash and copy) only an upload that is not a
+  symbolic link, and writes its own few log lines (a time, a fixed text, at most 8 hex digits of a
+  hash) only when the log is a regular file or missing. So whoever can write to the shared folder
+  of the executable can stop the relay or delete its log, but cannot have their code run as root
+  or choose a file root writes to, with one gap between a check of the shell and its use of the
+  path: someone who swaps in a symbolic link at that moment can make root read the link's target
+  to hash it, or append one of those fixed lines to it. Changing the task takes a DSM
+  administrator. The guide still keeps that folder for administrators only, with no sync tasks,
+  sharing links or file requests on it (docs/relay-dsm.md, section 2).
+- While it runs, the relay keeps its log to the last 180 days and at most 2 MB. Nothing prunes
+  the log of a relay that is stopped or ended (the stop marker, a field test build, a hash that
+  does not match): the guide says to delete the log when the relay stays stopped
+  (docs/relay-dsm.md, section 10).

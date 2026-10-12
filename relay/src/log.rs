@@ -12,23 +12,25 @@
 //! beyond short codes (see `relay.rs`). Whatever happens (a server that misbehaves, a flood of
 //! refused commands), at most [`MAX_LINES_PER_HOUR`] lines are written per hour.
 //!
-//! The DSM boot-up task starts `run --log FILE` (docs/relay-dsm.md): the relay opens the file
-//! itself while it is still root, for reading and appending, and puts it on stderr
-//! ([`open_file`]). Once it holds the state folder's lock it keeps that file ([`manage`]): lines
-//! older than [`KEEP_DAYS`] days go when it starts and then once a day, and a file that reaches
-//! [`MAX_LOG_BYTES`] is cut to its newest [`TRIM_TO_BYTES`]. A log it cannot rewrite (stderr
-//! from a shell's `>>`, or that of a second relay that did not get the lock) is not written to
-//! once it has [`MAX_LOG_BYTES`].
+//! The DSM boot-up task starts `run --log FILE` with stdout and stderr on /dev/null
+//! (docs/relay-dsm.md), so that the root shell never opens a file in the shared folder: the relay
+//! opens the file itself while it is still root, for reading and appending, never through a
+//! symbolic link and only a regular file, and puts it on stderr ([`open_file`]). Once it holds the
+//! state folder's lock it keeps that file ([`manage`]): lines older than [`KEEP_DAYS`] days go
+//! when it starts and then once a day, and a file that reaches [`MAX_LOG_BYTES`] is cut to its
+//! newest [`TRIM_TO_BYTES`]. Only a running relay does that: a log left behind while the relay is
+//! stopped keeps its lines. A log it cannot rewrite (stderr from a shell's `>>`, or that of a
+//! second relay that did not get the lock) is not written to once it has [`MAX_LOG_BYTES`].
 
 use crate::clock::system_now;
 use std::{
     cell::RefCell,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{self, Write},
     mem::ManuallyDrop,
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::fs::{FileExt, MetadataExt, OpenOptionsExt},
+        unix::fs::FileExt,
     },
     path::Path,
     sync::{
@@ -180,28 +182,12 @@ pub fn line(args: std::fmt::Arguments<'_>) {
 
 /// Opens `path` for the log and puts it on stderr: created when missing (mode 0644), appended
 /// to, and readable, so that [`manage`] can keep it later. Called as root, before the relay gives
-/// up root, since the folder may be closed to the unprivileged relay. Since the relay rewrites
-/// this file, it refuses a symbolic link, a file with other names (hard links) and anything that
-/// is not a regular file.
+/// up root, since the folder may be closed to the unprivileged relay. The file is in a folder
+/// others may write to, and the relay rewrites it: it refuses a symbolic link, a file with other
+/// names (hard links) and anything that is not a regular file
+/// ([`open_plain`](crate::system::open_plain)).
 pub fn open_file(path: &Path) -> io::Result<()> {
-    let file = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .mode(0o644)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|e| match e.raw_os_error() {
-            Some(libc::ELOOP) => io::Error::other("a symbolic link"),
-            _ => e,
-        })?;
-    let meta = file.metadata()?;
-    if !meta.file_type().is_file() {
-        return Err(io::Error::other("not a regular file"));
-    }
-    if meta.nlink() != 1 {
-        return Err(io::Error::other("the file has other names (hard links)"));
-    }
+    let file = crate::system::open_plain(path, true, true)?;
     // SAFETY: both descriptors are open; dup2 puts the file on stderr, which the relay keeps open
     // for its whole life.
     if unsafe { libc::dup2(file.as_raw_fd(), 2) } < 0 {
@@ -497,7 +483,11 @@ macro_rules! logln {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs::{self, OpenOptions},
+        os::unix::fs::MetadataExt,
+        path::PathBuf,
+    };
 
     #[test]
     fn at_most_max_lines_per_period() {

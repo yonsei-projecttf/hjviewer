@@ -35,8 +35,10 @@
 # contain. HJV_SKIP_SOURCE_CHECK=1 skips that for local tests. A build with HJV_SKIP_SOURCE_CHECK
 # or HJV_RELAY_TEST_BUILD is a test build: its archive name ends in -test.tar.gz and its
 # SOURCE.txt says so in its first line.
-# Needs the x86_64-unknown-linux-musl Rust target (rustup target add x86_64-unknown-linux-musl),
-# musl-gcc for ring's C code (Ubuntu: musl-tools), file, jq, sha256sum and gzip.
+# Needs Rust 1.85 or newer (relay/Cargo.toml's rust-version; cargo test needs 1.88), the
+# x86_64-unknown-linux-musl Rust target (rustup target add x86_64-unknown-linux-musl), musl-gcc
+# for ring's C code (Ubuntu: musl-tools), file, jq, sha256sum and gzip. To compare hashes with
+# the relay job, use the exact rustc that SOURCE.txt's Compilers line of its package names.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

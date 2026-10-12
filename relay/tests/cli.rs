@@ -50,7 +50,7 @@ fn version_and_usage() {
     assert_eq!(out.status.code(), Some(0));
     let help = text(&out);
     assert!(help.contains("test-wake MAC"));
-    for option in ["--log FILE", "--watch FILE", "--stop FILE"] {
+    for option in ["--log FILE", "--watch FILE", "--stop FILE", "--out FILE"] {
         assert!(help.contains(option), "{help}");
     }
     for args in [&[][..], &["bogus"], &["init"], &["status"]] {
@@ -281,28 +281,227 @@ fn run_writes_to_the_log_file_it_is_given() {
     assert!(written.contains("설정 오류: run: "), "{written}");
     assert_eq!(written.lines().count(), 2, "{written}");
 
-    // never through a symbolic link (the relay rewrites its log): it says so on stderr instead
+    // a mistake anywhere in the command line goes to the log too (the boot-up task gives the
+    // relay nothing else to write to)
+    for args in [
+        &["--frobnicate"][..],
+        &["--state", "/a", "--state", "/b"],
+        &["--log", "/elsewhere.log"],
+    ] {
+        fs::write(&log, "").unwrap();
+        let log_arg = format!("--log={}", log.display());
+        let out = relay(&[&["run", log_arg.as_str()][..], args].concat());
+        assert_eq!(out.status.code(), Some(78), "{args:?}");
+        assert!(text(&out).is_empty(), "{args:?}: {}", text(&out));
+        let written = fs::read_to_string(&log).unwrap();
+        assert!(written.contains("설정 오류: run: "), "{args:?}: {written}");
+    }
+    assert!(!PathBuf::from("/elsewhere.log").exists());
+
+    // never through a symbolic link, also one that points nowhere, nor into a hard-linked file
+    // or a folder (the relay rewrites its log, as root on the NAS): without its log the relay
+    // does not run, and says so on stderr only
     let target = dir.join("elsewhere");
     fs::write(&target, "untouched\n").unwrap();
     let link = dir.join("link.log");
     std::os::unix::fs::symlink(&target, &link).unwrap();
-    let out = relay(&[
-        "run",
-        "--log",
-        link.to_str().unwrap(),
-        "--state",
-        "/nonexistent",
-        "--user",
-        "0:0",
-    ]);
-    assert_eq!(out.status.code(), Some(78));
-    let said = text(&out);
-    assert!(
-        said.contains("쓸 수 없어 표준 오류에 씁니다: a symbolic link"),
-        "{said}"
-    );
-    assert!(said.contains("설정 오류: run: "), "{said}");
+    let dangling = dir.join("dangling.log");
+    std::os::unix::fs::symlink(dir.join("new"), &dangling).unwrap();
+    let hard = dir.join("hard.log");
+    fs::hard_link(&target, &hard).unwrap();
+    let folder = dir.join("folder.log");
+    fs::create_dir(&folder).unwrap();
+    for (path, why) in [
+        (&link, "a symbolic link"),
+        (&dangling, "a symbolic link"),
+        (&hard, "hard links"),
+        (&folder, "a folder"),
+    ] {
+        let out = relay(&[
+            "run",
+            "--log",
+            path.to_str().unwrap(),
+            "--state",
+            "/nonexistent",
+        ]);
+        assert_eq!(out.status.code(), Some(78));
+        let said = text(&out);
+        assert!(
+            said.contains("설정 오류: 로그 파일 ")
+                && said.contains("쓸 수 없어 끝냅니다: ")
+                && said.contains(why),
+            "{said}"
+        );
+        assert_eq!(said.lines().count(), 1, "{said}");
+    }
     assert_eq!(fs::read_to_string(&target).unwrap(), "untouched\n");
+    assert!(!dir.join("new").exists());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn status_and_test_wake_write_only_to_a_plain_out_file() {
+    let dir = temp_dir("out-file");
+    let state = dir.join("state");
+    let state_arg = state.to_str().unwrap();
+    let out_file = dir.join("status.txt");
+    let out_arg = out_file.to_str().unwrap();
+    let status_file = dir.join("no-status");
+    let status = |extra: &[&str]| {
+        relay(
+            &[
+                &[
+                    "status",
+                    "--state",
+                    state_arg,
+                    "--status-file",
+                    status_file.to_str().unwrap(),
+                    "--out",
+                    out_arg,
+                ][..],
+                extra,
+            ]
+            .concat(),
+        )
+    };
+    // the report goes to the file, emptied first, and nothing to stdout or stderr
+    fs::write(&out_file, "x".repeat(50_000)).unwrap();
+    let out = status(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(text(&out).is_empty(), "{}", text(&out));
+    let report = fs::read_to_string(&out_file).unwrap();
+    assert!(report.starts_with("hjv-relay "), "{report}");
+    assert!(
+        report.contains("중계기 키: 없음") && !report.contains("xxxx"),
+        "{report}"
+    );
+    assert_eq!(
+        fs::metadata(&out_file).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    // a mistake in the command line is written there too
+    let out = status(&["--bogus"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(text(&out).is_empty(), "{}", text(&out));
+    assert!(fs::read_to_string(&out_file)
+        .unwrap()
+        .contains("unknown option --bogus"));
+
+    // --log: what is at the log's place, without following a link
+    let log = dir.join("hjv-relay.log");
+    let log_line = |extra: &[&str]| -> String {
+        let out = status(&[&["--log", log.to_str().unwrap()][..], extra].concat());
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+        let report = fs::read_to_string(&out_file).unwrap();
+        report
+            .lines()
+            .find(|l| l.starts_with("로그 파일: "))
+            .unwrap_or_else(|| panic!("{report}"))
+            .to_owned()
+    };
+    assert!(log_line(&[]).contains("(없음. "), "{}", log_line(&[]));
+    fs::write(&log, "12345").unwrap();
+    assert!(
+        log_line(&[]).ends_with("(일반 파일, 5바이트)"),
+        "{}",
+        log_line(&[])
+    );
+    fs::remove_file(&log).unwrap();
+    std::os::unix::fs::symlink(&out_file, &log).unwrap();
+    assert!(log_line(&[]).contains("(바로 가기(심볼릭 링크)라 "));
+    fs::remove_file(&log).unwrap();
+    fs::create_dir(&log).unwrap();
+    assert!(log_line(&[]).contains("(폴더라 "));
+    fs::remove_dir(&log).unwrap();
+    fs::write(&log, "").unwrap();
+    fs::hard_link(&log, dir.join("other-name")).unwrap();
+    assert!(log_line(&[]).contains("(다른 이름(하드 링크)이 있어 "));
+
+    // never through a symbolic link (also one that points nowhere), into a hard-linked file, a
+    // folder or a FIFO: a configuration error on stderr, and the target stays as it was
+    let target = dir.join("elsewhere");
+    fs::write(&target, "untouched\n").unwrap();
+    let place = dir.join("place");
+    let fifo = std::ffi::CString::new(dir.join("fifo").to_str().unwrap()).unwrap();
+    // SAFETY: a NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+    let wake = |out: &std::path::Path| {
+        relay(&[
+            "test-wake",
+            "00:00:5e:00:53:01",
+            "--iface",
+            "hjv-none0",
+            "--out",
+            out.to_str().unwrap(),
+        ])
+    };
+    for (make, why) in [
+        (0, "a symbolic link"),
+        (1, "a symbolic link"),
+        (2, "hard links"),
+        (3, "a folder"),
+        (4, "not a regular file"),
+    ] {
+        let _ = fs::remove_file(&place);
+        let _ = fs::remove_dir(&place);
+        let path = match make {
+            0 => {
+                std::os::unix::fs::symlink(&target, &place).unwrap();
+                place.clone()
+            }
+            1 => {
+                std::os::unix::fs::symlink(dir.join("new"), &place).unwrap();
+                place.clone()
+            }
+            2 => {
+                fs::hard_link(&target, &place).unwrap();
+                place.clone()
+            }
+            3 => {
+                fs::create_dir(&place).unwrap();
+                place.clone()
+            }
+            _ => dir.join("fifo"),
+        };
+        for out in [
+            relay(&[
+                "status",
+                "--state",
+                state_arg,
+                "--out",
+                path.to_str().unwrap(),
+            ]),
+            wake(&path),
+        ] {
+            assert_eq!(out.status.code(), Some(78), "{why}: {}", text(&out));
+            let said = text(&out);
+            assert!(said.contains(why) && said.contains("--out"), "{said}");
+            assert_eq!(said.lines().count(), 1, "{said}");
+        }
+    }
+    assert_eq!(fs::read_to_string(&target).unwrap(), "untouched\n");
+    assert!(!dir.join("new").exists());
+
+    // test-wake appends to its record, mistakes included
+    let record = dir.join("test.log");
+    for _ in 0..2 {
+        let out = wake(&record);
+        assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+        assert!(text(&out).is_empty(), "{}", text(&out));
+    }
+    let out = relay(&["test-wake", "zz", "--out", record.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(text(&out).is_empty(), "{}", text(&out));
+    let written = fs::read_to_string(&record).unwrap();
+    assert_eq!(
+        written.matches("보낼 랜카드가 없습니다").count(),
+        2,
+        "{written}"
+    );
+    assert!(
+        written.contains("\"zz\" is not a PC's MAC address"),
+        "{written}"
+    );
     fs::remove_dir_all(&dir).unwrap();
 }
 

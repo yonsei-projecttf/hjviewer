@@ -11,7 +11,10 @@
 //! Against the real relay (built for a test server): the relay drops the log lines older than
 //! 180 days, runs from the checked copy, ends with the loop on the stop marker, and ends on an
 //! upload whose SHA-256 the task does not have yet, until the task gets the new value. The
-//! guide's other tasks run only the checked copy too.
+//! guide's other tasks run only the checked copy too. Symbolic links that someone who can write
+//! to the shared folder puts in place of the log, the status and test outputs, the upload or the
+//! stop marker never make root write to, create or run another file: the shell sends nothing
+//! into the folder, and the relay opens what it writes there itself.
 
 mod common;
 
@@ -179,9 +182,10 @@ fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
     }
 }
 
-/// A stand-in for hjv-relay that records how it was started ($0 and the arguments), says so on
-/// stdout (the log), runs `body` and then exits with the next code of `codes`. Returns its
-/// SHA-256.
+/// A stand-in for hjv-relay that records how it was started ($0 and the arguments), says so in
+/// the file of its `--log` (the loop gives it /dev/null for stdout and stderr, as it does the
+/// real relay, which opens its log itself), runs `body` and then exits with the next code of
+/// `codes`. Returns its SHA-256.
 fn fake_relay(nas: &Nas, codes: &[u8], body: &str) -> String {
     fs::create_dir_all(nas.share()).unwrap();
     fs::write(
@@ -190,7 +194,9 @@ fn fake_relay(nas: &Nas, codes: &[u8], body: &str) -> String {
     )
     .unwrap();
     let script = format!(
-        "#!/bin/sh\necho \"$0 $*\" >> '{d}/calls'\necho \"stand-in started: $*\"\n{body}\n\
+        "#!/bin/sh\necho \"$0 $*\" >> '{d}/calls'\n\
+         log= prev=\nfor a in \"$@\"; do [ \"$prev\" = --log ] && log=$a; prev=$a; done\n\
+         echo \"stand-in started: $*\" >> \"${{log:-/dev/null}}\"\n{body}\n\
          code=$(head -n 1 '{d}/codes'); sed -i 1d '{d}/codes'\nexit \"${{code:-0}}\"\n",
         d = nas.dir.display()
     );
@@ -447,22 +453,46 @@ fn a_volume_that_appears_after_the_boot_up_task() {
     assert!(nas.log().contains("stand-in started: run --state"));
 }
 
+/// The lines of the guide's code blocks, trimmed.
+fn code_lines(text: &str) -> Vec<String> {
+    let mut in_code = false;
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("```") {
+            in_code = !in_code;
+        } else if in_code {
+            lines.push(line.to_owned());
+        }
+    }
+    lines
+}
+
+/// The targets of a shell line's output redirections (`>`, `>>`, `2>`, `2>&1`).
+fn redirections(line: &str) -> Vec<String> {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let mut targets = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        let rest = token.trim_start_matches(|c: char| c.is_ascii_digit());
+        if let Some(op) = rest.strip_prefix(">>").or_else(|| rest.strip_prefix('>')) {
+            let target = if op.is_empty() {
+                tokens.get(i + 1).copied().unwrap_or_default()
+            } else {
+                op
+            };
+            targets.push(target.trim_end_matches([';', ')']).to_owned());
+        }
+    }
+    targets
+}
+
 #[test]
 fn the_tasks_of_the_guide_run_only_the_checked_copy() {
     // the field test and the status task are root tasks too: they must not run the file anyone
     // with write access to the shared folder can replace
     let text = guide();
-    let mut in_code = false;
     let mut commands = 0;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with("```") {
-            in_code = !in_code;
-            continue;
-        }
-        if !in_code {
-            continue;
-        }
+    for line in code_lines(&text) {
         assert!(
             !line.starts_with("/volume1/hjv-relay/hjv-relay"),
             "a task runs the uploaded file: {line}"
@@ -483,6 +513,205 @@ fn the_tasks_of_the_guide_run_only_the_checked_copy() {
     let script = boot_script();
     assert!(script.contains("X=$S/hjv-relay "));
     assert_eq!(script.matches("\"$X\" run ").count(), 1);
+
+    // none of the root tasks sends output into the shared folder through the shell, which would
+    // follow a symbolic link put there: the relay opens those files itself (--log, --out)
+    let tasks: Vec<String> = code_lines(&text)
+        .into_iter()
+        .filter(|l| l.starts_with("/volume1/"))
+        .collect();
+    assert_eq!(tasks.len(), 2, "{tasks:?}");
+    for line in tasks.iter().map(String::as_str).chain(script.lines()) {
+        for target in redirections(line) {
+            assert!(
+                ["/dev/null", "&1", "\"$L\""].contains(&target.as_str()),
+                "{target}: {line}"
+            );
+        }
+    }
+    for task in &tasks {
+        assert!(task.contains(" --out /volume1/hjv-relay/"), "{task}");
+    }
+    // the loop's own lines go to the log only after it checked that the log is no link
+    let writes: Vec<&str> = script.lines().filter(|l| l.contains("\"$L\";")).collect();
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert!(
+        writes[0].contains("if [ ! -L \"$L\" ] && { [ -f \"$L\" ] || [ ! -e \"$L\" ]; }; then"),
+        "{}",
+        writes[0]
+    );
+}
+
+/// The guide's task line that runs `hjv-relay <command> `, with the NAS's paths moved to `nas`.
+fn task_line(nas: &Nas, command: &str) -> String {
+    code_lines(&guide())
+        .into_iter()
+        .find(|l| l.starts_with("/volume1/") && l.contains(&format!("hjv-relay {command} ")))
+        .unwrap_or_else(|| panic!("no {command} task in the guide"))
+        .replace("/volume1/@hjv-relay", &nas.state().display().to_string())
+        .replace("/volume1/hjv-relay", &nas.share().display().to_string())
+}
+
+/// Runs a task line as the scheduler does; returns its exit code.
+fn run_task(line: &str) -> i32 {
+    let out = Command::new("sh").arg("-c").arg(line).output().unwrap();
+    assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
+    out.status.code().unwrap()
+}
+
+#[test]
+fn links_in_the_shared_folder_are_never_followed() {
+    // someone who can write to the shared folder, but is no DSM administrator, puts symbolic
+    // links where root writes: their targets, outside the folder, stay as they are, and nothing
+    // is created through a link that points nowhere
+    let nas = Nas::new("links");
+    let outside = nas.dir.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    let victim = outside.join("victim");
+    let nowhere = outside.join("new");
+    fs::write(&victim, "keep\n").unwrap();
+    let put = |name: &str, what: Option<&Path>| {
+        let path = nas.share().join(name);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&path);
+        if let Some(target) = what {
+            std::os::unix::fs::symlink(target, &path).unwrap();
+        }
+    };
+    let untouched = || {
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep\n");
+        assert!(!nowhere.exists());
+    };
+    // the real relay with an unknown option: it opens its log (only a plain file), says so there
+    // and ends with a configuration error, whatever this build is configured with
+    let relay = PathBuf::from(env!("CARGO_BIN_EXE_hjv-relay"));
+    fs::create_dir_all(nas.share()).unwrap();
+    fs::copy(&relay, nas.bin()).unwrap();
+    let hash = sha256_hex(&nas.bin());
+    let bogus = nas.script(&hash, |s| {
+        s.replace("run --state \"$S\"", "run --state \"$S\" --bogus")
+    });
+    nas.start_script(&bogus, None);
+    nas.wait_for_the_loop_to_end();
+    assert!(
+        nas.log().contains("설정 오류: run: unknown option --bogus"),
+        "{}",
+        nas.log()
+    );
+    assert_eq!(sha256_hex(&nas.state().join("hjv-relay")), hash);
+
+    // the log a link: the relay does not write through it (nor anywhere else: the loop gives it
+    // /dev/null) and does not run, and neither does the loop's own line on the stop marker or on
+    // a file that does not match
+    for target in [&victim, &nowhere] {
+        put("hjv-relay.log", Some(target));
+        nas.start_script(&bogus, None);
+        nas.wait_for_the_loop_to_end();
+        untouched();
+        nas.start(&hash);
+        nas.wait_for_the_loop_to_end();
+        untouched();
+        nas.start(&"1".repeat(64));
+        nas.wait_for_the_loop_to_end();
+        untouched();
+        fs::create_dir(nas.marker()).unwrap();
+        nas.start(&hash);
+        nas.wait_for_the_loop_to_end();
+        untouched();
+        fs::remove_dir(nas.marker()).unwrap();
+    }
+    // a folder where the log goes (made in File Station by mistake): nothing runs, and the loop
+    // ends instead of waiting on it
+    put("hjv-relay.log", None);
+    fs::create_dir(nas.share().join("hjv-relay.log")).unwrap();
+    nas.start(&hash);
+    nas.wait_for_the_loop_to_end();
+
+    // the status task: never through a link or into a hard-linked file, and it says what is at
+    // the log's place
+    let status = task_line(&nas, "status");
+    assert!(status.ends_with("> /dev/null 2>&1"), "{status}");
+    for target in [&victim, &nowhere] {
+        put("status.txt", Some(target));
+        assert_eq!(run_task(&status), 78);
+        untouched();
+    }
+    put("status.txt", None);
+    fs::hard_link(&victim, nas.share().join("status.txt")).unwrap();
+    assert_eq!(run_task(&status), 78);
+    untouched();
+    put("status.txt", None);
+    let report = || fs::read_to_string(nas.share().join("status.txt")).unwrap();
+    // a longer earlier report is replaced, not written over
+    fs::write(nas.share().join("status.txt"), "x".repeat(100_000)).unwrap();
+    assert_eq!(run_task(&status), 0);
+    assert!(report().starts_with("hjv-relay "), "{}", report());
+    assert!(!report().contains(&"x".repeat(100)));
+    let log_line = |r: &str| {
+        r.lines()
+            .find(|l| l.starts_with("로그 파일: "))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert!(log_line(&report()).contains("(폴더라 "), "{}", report());
+    put("hjv-relay.log", Some(&victim));
+    assert_eq!(run_task(&status), 0);
+    assert!(
+        log_line(&report()).contains("(바로 가기(심볼릭 링크)라 "),
+        "{}",
+        report()
+    );
+    put("hjv-relay.log", None);
+    fs::write(nas.share().join("hjv-relay.log"), "").unwrap();
+    assert_eq!(run_task(&status), 0);
+    assert!(
+        log_line(&report()).contains("(일반 파일, 0바이트)"),
+        "{}",
+        report()
+    );
+
+    // the field test task, kept from sending anything here by an interface that does not exist
+    let wake = task_line(&nas, "test-wake").replace("--count 3", "--count 3 --iface hjv-none0");
+    for target in [&victim, &nowhere] {
+        put("test.log", Some(target));
+        assert_eq!(run_task(&wake), 78);
+        untouched();
+    }
+    put("test.log", None);
+    assert_eq!(run_task(&wake), 1);
+    assert_eq!(run_task(&wake), 1);
+    let record = fs::read_to_string(nas.share().join("test.log")).unwrap();
+    assert_eq!(
+        record.matches("보낼 랜카드가 없습니다").count(),
+        2,
+        "appended: {record}"
+    );
+    untouched();
+}
+
+#[test]
+fn an_uploaded_link_is_not_run() {
+    // the upload a link to a file that matches: not hashed, copied or run; the loop waits as for
+    // a file that is not there yet. A stop marker that is a link counts, as it does for the relay
+    let nas = Nas::new("upload-link");
+    let hash = fake_relay(&nas, &[78], "");
+    let real = nas.dir.join("elsewhere");
+    fs::rename(nas.bin(), &real).unwrap();
+    std::os::unix::fs::symlink(&real, nas.bin()).unwrap();
+    nas.start(&hash);
+    thread::sleep(Duration::from_millis(500));
+    assert!(nas.calls().is_empty());
+    assert!(!nas.state().join("hjv-relay").exists());
+    assert_eq!(nas.processes().len(), 1, "the loop waits");
+    std::os::unix::fs::symlink(nas.dir.join("nowhere"), nas.marker()).unwrap();
+    nas.wait_for_the_loop_to_end();
+    assert!(nas.calls().is_empty());
+    assert!(
+        nas.log()
+            .contains("hjv-relay.stop이 있어 감시 루프를 끝냅니다."),
+        "{}",
+        nas.log()
+    );
 }
 
 /// The first log line with `text` and its position.
