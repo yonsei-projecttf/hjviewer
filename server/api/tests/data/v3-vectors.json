@@ -1,0 +1,117 @@
+{
+  "about": "Shared test vectors of HJViewer's same-account logins (design v3 3-3, 3-6, 4-1, 4-2), rendered by the client's src/hjviewer_account/vectors.rs. The private keys are public test values: never use them for anything else.",
+  "conn_proof": {
+    "ctl_id": "987654321",
+    "ctl_pk": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+    "key_serial": 4180,
+    "kind": 0,
+    "nonce_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "pc_id": "123456789",
+    "pc_pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+    "proto_hex": "08011220ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d11a40dcebef385a322b0805bf24aa32730730af60de2c14e6e3fb4bc89c9f1c301d23b29622350cf5b4d2c5f5e5e00011a99e98d21cdfd2e341b0cec5c3e044ecc40520d420",
+    "signature": "3OvvOFoyKwgFvySqMnMHMK9g3iwU5uP7S8icnxwwHSOyliI1DPW00sX15eAAEamemNIc39LjQbDOxcPgROzEBQ==",
+    "transcript_hex": "686a762d636f6e6e2d763100093132333435363738398139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f0939383736353433323100ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"
+  },
+  "encodings": "base64: standard with padding; base64url: URL-safe without padding; hex: lowercase; *_hex of signed bytes: the exact bytes a signature covers; times: Unix seconds",
+  "keys": {
+    "HJV_LOGIN_SEAL_PUBKEY": "SjgH0GTQdxgcwHCYnnaJHSDcpVWVSNwsd8GlAnOIKzg=",
+    "HJV_TRUST_PUBKEYS": "1:iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=,2:/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=",
+    "account": {
+      "pk": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "seed_hex": "0303030303030303030303030303030303030303030303030303030303030303"
+    },
+    "list_1": {
+      "kid": 1,
+      "pk": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "seed_hex": "0101010101010101010101010101010101010101010101010101010101010101"
+    },
+    "list_2": {
+      "kid": 2,
+      "pk": "/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=",
+      "seed_hex": "0909090909090909090909090909090909090909090909090909090909090909"
+    },
+    "pc_device": {
+      "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "seed_hex": "0202020202020202020202020202020202020202020202020202020202020202"
+    },
+    "seal": {
+      "kid": "d9d90fbd70563cc4",
+      "pk": "SjgH0GTQdxgcwHCYnnaJHSDcpVWVSNwsd8GlAnOIKzg="
+    }
+  },
+  "pc_sync": {
+    "accepted": [
+      1759800000,
+      1759962000,
+      1759990000,
+      1759999000
+    ],
+    "body": "{\"id\":\"123456789\",\"t\":1760000000,\"n\":\"EBESExQVFhcYGRobHB0eHw\",\"p\":\"{\\\"v\\\":1,\\\"binding\\\":\\\"b0f1e2d3c4b5a69788796a5b4c3d2e1f\\\",\\\"ver\\\":\\\"1.6.0\\\",\\\"off\\\":false,\\\"used\\\":[{\\\"pk\\\":\\\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\\\",\\\"day\\\":\\\"2025-10-08\\\",\\\"last\\\":1759962000,\\\"n\\\":1},{\\\"pk\\\":\\\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\\\",\\\"day\\\":\\\"2025-10-09\\\",\\\"last\\\":1759999000,\\\"n\\\":2}],\\\"refused\\\":{\\\"unknown_key\\\":0,\\\"kind\\\":0,\\\"temporary_only\\\":0,\\\"not_secured\\\":0,\\\"bad_sig\\\":0,\\\"expired\\\":0,\\\"off\\\":0},\\\"wol_hash\\\":\\\"\\\"}\",\"s\":\"VVlqZ2wbpNnG3trz+58Y7RftEQMb1GwlsUWg7Yf4XXd94z3RiDzLQqJJPT6mKSLBA9eHEKxK/arHQ39alppkCQ==\"}",
+    "id": "123456789",
+    "n": "EBESExQVFhcYGRobHB0eHw",
+    "n_hex": "101112131415161718191a1b1c1d1e1f",
+    "p": "{\"v\":1,\"binding\":\"b0f1e2d3c4b5a69788796a5b4c3d2e1f\",\"ver\":\"1.6.0\",\"off\":false,\"used\":[{\"pk\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"day\":\"2025-10-08\",\"last\":1759962000,\"n\":1},{\"pk\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"day\":\"2025-10-09\",\"last\":1759999000,\"n\":2}],\"refused\":{\"unknown_key\":0,\"kind\":0,\"temporary_only\":0,\"not_secured\":0,\"bad_sig\":0,\"expired\":0,\"off\":0},\"wol_hash\":\"\"}",
+    "p_sha256": "iMyEf1q+Mr4xwo9aviy8vXD+GTlPt/W8CyuJ7y8URlk=",
+    "s": "VVlqZ2wbpNnG3trz+58Y7RftEQMb1GwlsUWg7Yf4XXd94z3RiDzLQqJJPT6mKSLBA9eHEKxK/arHQ39alppkCQ==",
+    "signed_hex": "686a762d70632d76310073796e630031323334353637383900313736303030303030300045424553457851564668635947526f6248423065487700694d79456631712b4d723478776f3961766979387658442b47546c50742f57384379754a37793855526c6b3d",
+    "t": 1760000000,
+    "used": [
+      {
+        "day": "2025-10-08",
+        "last": 1759962000,
+        "n": 1,
+        "pk": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E="
+      },
+      {
+        "day": "2025-10-09",
+        "last": 1759999000,
+        "n": 2,
+        "pk": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E="
+      }
+    ]
+  },
+  "request_proofs": [
+    {
+      "body": "{\"id\":\"987654321\",\"uuid\":\"dGVzdC11dWlk\"}",
+      "header": "v1.1760000000.AAECAwQFBgcICQoLDA0ODw.e5siloc5cKDl4lfP5V8KS0c67yh-qjw6JK3lfktliA10_Who0O1-0DCZ-3CgLZh1uuqAengWS3Gdvua1ZG5MCQ",
+      "method": "POST",
+      "n": "AAECAwQFBgcICQoLDA0ODw",
+      "n_hex": "000102030405060708090a0b0c0d0e0f",
+      "path_and_query": "/api/currentUser",
+      "signed_hex": "686a762d7265712d763100504f5354002f6170692f63757272656e745573657200313736303030303030300041414543417751464267634943516f4c4441304f44770056697838734e7330594374316f5248356156693859674146305654704476784e6c3144496c644758686f673d004e49615a485143754c454a59774e52726644474f307134676e49716c6f4673362b34354658325a2f7a66513d",
+      "t": 1760000000,
+      "token": "hjv-test-token"
+    },
+    {
+      "body": "",
+      "header": "v1.1760000000.ICEiIyQlJicoKSorLC0uLw.U6Bdqiio2bjJTkpDRJIAvwIaEIGqsGGn1alf6knmcWJq5e6hKCHKUbZ_hotFblOjSGTq00pGMcXLlHa4MHvdBg",
+      "method": "GET",
+      "n": "ICEiIyQlJicoKSorLC0uLw",
+      "n_hex": "202122232425262728292a2b2c2d2e2f",
+      "path_and_query": "/api/peers?current=1&pageSize=100",
+      "signed_hex": "686a762d7265712d763100474554002f6170692f70656572733f63757272656e743d31267061676553697a653d313030003137363030303030303000494345694979516c4a69636f4b536f724c4330754c77003437444551706a38484253612b2f54496d572b354a4365755165526b6d354e4d704a575a473368537546553d004e49615a485143754c454a59774e52726644474f307134676e49716c6f4673362b34354658325a2f7a66513d",
+      "t": 1760000000,
+      "token": "hjv-test-token"
+    }
+  ],
+  "seal_ckey": {
+    "ck": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+    "cp": "tw4dTyxkVccRMV1aqo4jlinOOftOSRfHy4dAv9ItCeS/3P1eyIEUyYOuyjjyVfzhFUE2TplccLESFxCLtB3ICQ==",
+    "id": "987654321",
+    "n": "AAECAwQFBgcICQoLDA0ODw==",
+    "payload": "{\"v\":1,\"pw\":\"test-password\",\"t\":1760000000,\"n\":\"AAECAwQFBgcICQoLDA0ODw==\",\"id\":\"987654321\",\"kid\":\"d9d90fbd70563cc4\",\"ck\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"cp\":\"tw4dTyxkVccRMV1aqo4jlinOOftOSRfHy4dAv9ItCeS/3P1eyIEUyYOuyjjyVfzhFUE2TplccLESFxCLtB3ICQ==\"}",
+    "signed_hex": "686a762d636b65792d76310041414543417751464267634943516f4c4441304f44773d3d003938373635343332310037556b6f78696a527773627136514d346b466d5659536c5a4a7a7063592f6b324e734647464b79484e39453d"
+  },
+  "trust_list": {
+    "binding": "b0f1e2d3c4b5a69788796a5b4c3d2e1f",
+    "kid": 1,
+    "l": "eyJ2IjoxLCJ0eXAiOiJoanYtdHJ1c3QiLCJraWQiOjEsImJpbmRpbmciOiJiMGYxZTJkM2M0YjVhNjk3ODg3OTZhNWI0YzNkMmUxZiIsInBjX2lkIjoiMTIzNDU2Nzg5IiwicGNfcGsiOiJnVGwzRHFoOUYxOVdvMVJtdzB4K3pNdU5pcEcwN2plaVhmWVBXNC9KczVRPSIsInJlcSI6IkVCRVNFeFFWRmhjWUdSb2JIQjBlSHciLCJzZXJpYWwiOjQxODIsImlhdCI6MTc2MDAwMDAwMSwiZXhwIjoxNzYwMDg2NDAxLCJyZWZyZXNoIjoxMjAsInN0cmljdCI6ZmFsc2UsInN0YXRlIjoiYWN0aXZlIiwib3duZXIiOiLtmY0q64+ZIiwibG9naW5fYXQiOjE3NTk5OTk5NTAsImtleXMiOlt7InBrIjoiN1Vrb3hpalJ3c2JxNlFNNGtGbVZZU2xaSnpwY1kvazJOc0ZHRkt5SE45RT0iLCJpZCI6Ijk4NzY1NDMyMSIsIm5hbWUiOiJpUGhvbmUgMTQgUHJvIiwicGxhdGZvcm0iOiJpb3MiLCJraW5kcyI6WyJyZW1vdGUiLCJmaWxlIiwiY2FtZXJhIl0sImtzIjo0MTgwfV19",
+    "list": "{\"v\":1,\"typ\":\"hjv-trust\",\"kid\":1,\"binding\":\"b0f1e2d3c4b5a69788796a5b4c3d2e1f\",\"pc_id\":\"123456789\",\"pc_pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"req\":\"EBESExQVFhcYGRobHB0eHw\",\"serial\":4182,\"iat\":1760000001,\"exp\":1760086401,\"refresh\":120,\"strict\":false,\"state\":\"active\",\"owner\":\"홍*동\",\"login_at\":1759999950,\"keys\":[{\"pk\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"id\":\"987654321\",\"name\":\"iPhone 14 Pro\",\"platform\":\"ios\",\"kinds\":[\"remote\",\"file\",\"camera\"],\"ks\":4180}]}",
+    "max_list_ttl": 259200,
+    "pc_id": "123456789",
+    "pc_pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+    "req": "EBESExQVFhcYGRobHB0eHw",
+    "s": "Nw16DIR5leqpTGfWFU/sy14XyKbCgG8dBqeCfKiKTO3tANo/PZ24ows1wYuGH3k4x0sqYy6TMcWTj+8NkuwJCw==",
+    "signed_hex": "686a762d74727573742d7631007b2276223a312c22747970223a22686a762d7472757374222c226b6964223a312c2262696e64696e67223a226230663165326433633462356136393738383739366135623463336432653166222c2270635f6964223a22313233343536373839222c2270635f706b223a2267546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d222c22726571223a2245424553457851564668635947526f62484230654877222c2273657269616c223a343138322c22696174223a313736303030303030312c22657870223a313736303038363430312c2272656672657368223a3132302c22737472696374223a66616c73652c227374617465223a22616374697665222c226f776e6572223a22ed998d2aeb8f99222c226c6f67696e5f6174223a313735393939393935302c226b657973223a5b7b22706b223a2237556b6f78696a527773627136514d346b466d5659536c5a4a7a7063592f6b324e734647464b79484e39453d222c226964223a22393837363534333231222c226e616d65223a226950686f6e652031342050726f222c22706c6174666f726d223a22696f73222c226b696e6473223a5b2272656d6f7465222c2266696c65222c2263616d657261225d2c226b73223a343138307d5d7d"
+  }
+}
