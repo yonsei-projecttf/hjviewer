@@ -113,7 +113,8 @@ hjv-api admin [--socket <path>] [--reveal] <command>
                             approve a relay's enrollment code for the account that has the PC, once
                             the verdict says the relay is on the PC's network (--force: after the
                             owner confirmed the code); a code no relay has said hello with is
-                            approved ahead for 7 days
+                            approved ahead for 7 days; --name for a relay already active for that
+                            account renames it
   relay revoke <relay ID|code>
                             the relay takes no commands any more (its key is kept and never
                             approved again); withdraws a code approved ahead

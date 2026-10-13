@@ -430,6 +430,37 @@ async fn registration_approval_and_revocation() {
         "{record}"
     );
     assert!(!record.contains(&pc.id), "{record}");
+    // a name given for a relay of that account renames it (the same name again: no change); the
+    // record keeps the outcome, not the name
+    let approve_named = |name: &'static str| {
+        let (h, code, id) = (&h, r.code.clone(), pc.id.clone());
+        async move {
+            h.admin(
+                &["relay", "approve", &code, "--owner-of", &id, "--name", name],
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let renamed = approve_named("연구실 NAS").await;
+    assert!(
+        renamed.starts_with(
+            "already active for that account: renamed\nthe apps call it \"연구실 NAS\"\n"
+        ),
+        "{renamed}"
+    );
+    assert_eq!(relay_row(&h, &r.id).await.unwrap().name, "연구실 NAS");
+    assert!(approve_named("연구실 NAS")
+        .await
+        .starts_with("already active for that account (no change)"));
+    let record = std::fs::read_to_string(&h.oplog).unwrap();
+    assert!(
+        record.contains("done=\"ok: already active for that account: renamed\"")
+            && !record.contains("연구실"),
+        "{record}"
+    );
     // another account cannot take it
     let kim_pc = reported_pc(&h, KIM, "523000002").await;
     let err = h

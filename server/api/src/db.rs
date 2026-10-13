@@ -2559,6 +2559,21 @@ pub fn set_relay_scope(c: &Connection, relay_id: &str, shared: bool) -> rusqlite
     )? > 0)
 }
 
+/// A new name for a relay that is active for `account_id` (what the apps call it); false when it
+/// is not.
+pub fn rename_relay(
+    c: &Connection,
+    relay_id: &str,
+    account_id: i64,
+    name: &str,
+) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "UPDATE relays SET name = ?3
+         WHERE relay_id = ?1 AND state = 'active' AND owner_account = ?2",
+        params![relay_id, account_id, name],
+    )? > 0)
+}
+
 /// Deletes the pending entries made at or before `before` (a pending entry lives 24 hours); the
 /// relay is unknown again.
 pub fn drop_expired_pending(c: &Connection, before: i64) -> rusqlite::Result<usize> {
@@ -3527,6 +3542,10 @@ mod tests {
         );
         assert_eq!(active_relays_of(&c, a).unwrap().len(), 1);
         assert!(set_relay_scope(&c, "r-1", true).unwrap());
+        // a new name, for the account it is active for only
+        assert!(!rename_relay(&c, "r-1", a + 1, "Lab NAS").unwrap());
+        assert!(rename_relay(&c, "r-1", a, "Lab NAS").unwrap());
+        assert_eq!(relay(&c, "r-1").unwrap().unwrap().name, "Lab NAS");
         // its jobs: queued, sent by its result, confirmed; a refusal; no_result and a late result
         queue(&c, &new_job("j1", "1", "r-1", 2000));
         assert_eq!(queued_commands(&c, "r-1", 2059, 16).unwrap().len(), 1);

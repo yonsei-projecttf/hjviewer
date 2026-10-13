@@ -204,7 +204,9 @@ relay approve <code> --owner-of <PC ID> [--name <name>] [--force]
                           shows the verdicts of the relay against that PC's wake report and
                           approves only when the relay is on the PC's network, or with --force
                           once the PC's owner confirmed the code; a code no relay has said hello
-                          with is approved ahead for 7 days
+                          with is approved ahead for 7 days. --name is what the apps call the
+                          relay (else "NAS" and the code's first group); given for a relay that
+                          is active for that account already, it renames it
 relay revoke <relay ID|code>
                           the relay takes no commands any more; it keeps only its ID, key and
                           times, and its key is never approved again; withdraws an approval ahead

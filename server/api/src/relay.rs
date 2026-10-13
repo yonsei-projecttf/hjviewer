@@ -1235,7 +1235,8 @@ pub async fn admin_list(state: &Arc<AppState>, reveal: bool) -> Result<String, S
 /// `relay approve <code> --owner-of <PC ID> [--name <name>] [--force]` (PROTOCOL.md §11, design
 /// v3 §8-3): a pending relay becomes active for the account that has the PC, once its verdict says
 /// that it is on the PC's network (or `--force`, after the owner confirmed the code); a code
-/// without a pending entry is approved ahead for PREAPPROVAL_LIFETIME.
+/// without a pending entry is approved ahead for PREAPPROVAL_LIFETIME. For a relay that is active
+/// for that account already, `--name` gives it a new name.
 pub async fn admin_approve(
     state: &Arc<AppState>,
     code: &str,
@@ -1248,11 +1249,12 @@ pub async fn admin_approve(
         "an enrollment code is 16 letters A-Z and digits 2-7, such as KZDV-VJ2U-MNDU-YAUF",
     )?;
     let device = named_pc(state, pc).await?;
-    let name = match name.map(|n| clean_text(n, 32)) {
-        Some(n) if !n.is_empty() => n,
+    let given = match name.map(|n| clean_text(n, 32)) {
+        Some(n) if !n.is_empty() => Some(n),
         Some(_) => return Err("--name takes a name of 1 to 32 characters".into()),
-        None => default_name(&relay_id),
+        None => None,
     };
+    let name = given.clone().unwrap_or_else(|| default_name(&relay_id));
     let (account_id, device_id, at) = (device.account_id, device.device_id.clone(), now());
     let (relay, info, account) = {
         let (id, dev) = (relay_id.clone(), device_id.clone());
@@ -1323,8 +1325,26 @@ pub async fn admin_approve(
     let verdict = verdict_lines(&mut out, &relay, info.as_ref(), at, reveal, "  ");
     // the outcome first: the operator record keeps the first line
     if relay.state == RelayState::Active {
+        // a name given for a relay of that account is its new name (a revoked key is never
+        // approved again, so this is the way to rename one)
+        let Some(new) = given.filter(|n| *n != relay.name) else {
+            return Ok(format!(
+                "already active for that account (no change)\n{out}"
+            ));
+        };
+        let (id, n) = (relay_id.clone(), new.clone());
+        let renamed = state
+            .db
+            .call(move |c| db::in_tx(c, |tx| db::rename_relay(tx, &id, account_id, &n)))
+            .await
+            .map_err(|e| e.to_string())?;
+        if !renamed {
+            return Err(format!(
+                "{out}nothing changed: the relay is no longer active for that account"
+            ));
+        }
         return Ok(format!(
-            "already active for that account (no change)\n{out}"
+            "already active for that account: renamed\nthe apps call it \"{new}\"\n{out}"
         ));
     }
     if !verdict.same_network() && !force {
