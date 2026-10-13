@@ -132,8 +132,17 @@ and your name masked (such as 홍\*동), taken from the signed list.
 - **Relays**: for a relay on a NAS in a PC's network, the server keeps its public key, the account
   it serves, the NAS's network adapters (IP and MAC addresses, networks), its DSM and kernel
   versions and the public address it uses. When a relay is revoked, only its ID, key and times stay.
-- **Wake requests**: the account's tag, the PC, the relay, how well their networks matched, the
-  times and the result, for 6 months.
+- **Wake requests**: each request to switch a PC on leaves one record: a random number for the
+  request, the account and its tag, the PC's ID, the relay's ID, how well the relay's network
+  matched the PC's, the network the signal went to (written like 192.0.2.0/24, which names the
+  network, not the PC's own address or a MAC address), a hash of the signed command, the times
+  (asked, sent, the PC seen on, finished), the number of packets sent and the result. The app's
+  progress display reads this record, and the limits count it (a PC once a minute, an account 20
+  times an hour, a relay 10 times a minute). The network is kept so that a relay that already woke
+  the PC on that network is chosen for it again. The record is kept for 6 months, also after the
+  PC leaves the account or the relay is revoked, and it is deleted with the account. The signed
+  command itself names the MAC addresses of the PC's adapters on that network; it is kept only
+  until the relay answers, about two minutes at most.
 - **The relay's log on the NAS**: for each wake request, its number, the time and the MAC address
   with only its last two bytes shown. While it runs, the relay deletes the lines older than 180
   days. It does not tidy the log while it is stopped, so when it is stopped for long, the NAS's
@@ -168,9 +177,11 @@ Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shar
   your list; log out on a PC before you give it away. Uninstalling HJViewer from a PC deletes what
   it kept in the registry.
 - **Through the operator**: you can ask to see what is kept about you, to have it corrected or
-  deleted, or to stop its processing. Deleting your account takes you off the list and deletes
-  everything kept about it except the removed PCs' binding IDs, PC IDs and public keys (180 days),
-  the records under tags (6 months) and the operator record; the backups age out after 14 days.
+  deleted, or to stop its processing. Deleting your account takes you off the list, revokes its
+  relays and deletes everything kept about it, the wake requests too. What stays: the removed PCs'
+  binding IDs, PC IDs and public keys (180 days), the revoked relays' IDs, keys and times, the
+  records of logins, devices and keys under tags (6 months) and the operator record; the backups
+  age out after 14 days.
 - Once you are taken off the list, your devices are logged out at once.
 
 ### 9. Who handles the data
@@ -248,7 +259,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 - **계정에 들어간 PC**는 켤 수 있는지 서버가 판단하는 데 필요한 것을 알립니다. 유선 랜카드의 MAC 주소, IPv4 주소와 서브넷, 게이트웨이의 IP와 MAC 주소, 랜카드의 이름·드라이버·링크 속도와 USB 랜카드인지, Wake-on-LAN 설정과 Windows가 그 랜카드로 PC를 깨우도록 허용했는지, PC가 쓸 수 있는 절전 방식, 빠른 시작을 켰는지, 전원에 연결되어 있는지, Windows가 켜진 뒤 지난 시간, PC가 쓰는 공인 주소입니다. 계정에 들어간 PC만 알리고, PC가 계정에서 빠지면 바로 지웁니다. 앱에는 MAC 주소를 보내지 않습니다.
 - **중계기**: PC와 같은 네트워크의 NAS에서 도는 중계기에 대해 서버는 공개키, 맡은 계정, NAS의 랜카드(IP와 MAC 주소, 네트워크), DSM과 커널 버전, NAS가 쓰는 공인 주소를 보관합니다. 중계기를 폐기하면 ID, 키, 시각만 남깁니다.
-- **켜기 요청**: 계정의 꼬리표, PC, 중계기, 네트워크가 얼마나 맞았는지, 시각, 결과를 6개월 동안 보관합니다.
+- **켜기 요청**: 켜기 요청마다 기록을 하나 남깁니다. 요청의 무작위 번호, 계정과 그 꼬리표, PC ID, 중계기 ID, 중계기와 PC의 네트워크가 얼마나 맞았는지, 신호를 보낸 네트워크(192.0.2.0/24처럼 네트워크를 가리키는 값. PC의 주소나 MAC 주소는 아님), 서명된 명령의 해시, 시각(요청, 전송, PC가 켜진 것을 확인한 때, 끝난 때), 보낸 패킷 수, 결과입니다. 앱의 진행 표시가 이 기록을 읽고, 요청 한도(PC는 1분에 한 번, 계정은 1시간에 20번, 중계기는 1분에 10번)를 이 기록으로 셉니다. 네트워크는 그 네트워크에서 이 PC를 켠 적이 있는 중계기를 다음에도 고르려고 둡니다. 6개월 동안 보관하고, PC가 계정에서 빠지거나 중계기가 폐기된 뒤에도 그때까지 남으며, 계정을 지우면 함께 지웁니다. 서명된 명령 자체에는 그 네트워크에 있는 PC 랜카드의 MAC 주소가 들어 있고, 중계기가 답할 때까지만(길어야 2분쯤) 둡니다.
 - **NAS의 중계기 로그**: 켜기 요청마다 번호, 시각, 끝 2바이트만 보이는 MAC 주소를 남깁니다. 중계기는 실행 중일 때 180일이 지난 줄을 지웁니다. 멈춰 둔 동안에는 정리하지 않으므로, 오래 멈춰 둘 때는 NAS 관리자가 로그를 지웁니다. 그 NAS의 관리자는 모두 읽을 수 있습니다.
 
 ### 6. 카메라와 마이크
@@ -264,7 +275,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 ### 8. 삭제와 권리 행사
 
 - **앱에서 직접**: 기기에서 로그아웃하면 그 기기의 키와 토큰이 바로 끝납니다. 잃어버린 기기는 다른 내 기기의 '로그인한 기기'에서 로그아웃시키거나 다른 기기를 모두 로그아웃시킵니다. 내 목록에서 PC를 뺄 수 있고, PC를 남에게 넘기기 전에는 그 PC에서 로그아웃합니다. PC에서 HJViewer를 제거하면 레지스트리에 둔 것이 지워집니다.
-- **운영자에게 요청**: 나에 대해 보관하는 것을 보여 달라고, 고치거나 지워 달라고, 처리를 멈춰 달라고 요청할 수 있습니다. 계정을 지우면 명단에서도 빠지고, 그 계정에 대해 보관하던 것이 모두 지워집니다. 남는 것은 뺀 PC의 묶음 ID·PC ID·공개키(180일), 꼬리표로 남은 기록(6개월), 운영자 기록이고, 백업은 14일 뒤에 사라집니다.
+- **운영자에게 요청**: 나에 대해 보관하는 것을 보여 달라고, 고치거나 지워 달라고, 처리를 멈춰 달라고 요청할 수 있습니다. 계정을 지우면 명단에서도 빠지고, 그 계정의 중계기는 폐기되며, 켜기 요청 기록을 포함해 그 계정에 대해 보관하던 것이 모두 지워집니다. 남는 것은 뺀 PC의 묶음 ID·PC ID·공개키(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록이고, 백업은 14일 뒤에 사라집니다.
 - 명단에서 빠지면 내 기기들은 바로 로그아웃됩니다.
 
 ### 9. 정보를 다루는 곳
