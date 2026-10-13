@@ -411,11 +411,17 @@ async fn jobs_fail_with_the_relays_error_or_no_result() {
     )
     .await;
     assert_eq!(job_row(&h, &job).await.state, "queued");
+    // (issued 20 seconds ago, sent 5 seconds ago: what confirms it at the end comes later)
+    sql(
+        &h,
+        format!("UPDATE wake_jobs SET created_at = created_at - 20 WHERE job = '{job}'"),
+    )
+    .await;
     h.poll(
         &r,
         RELAY_IP,
         0,
-        &json!([result(&text, &job, Some(now()), 6, Some("partial"))]),
+        &json!([result(&text, &job, Some(now() - 5), 6, Some("partial"))]),
         None,
         &lan(),
     )
