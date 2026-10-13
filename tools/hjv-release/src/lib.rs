@@ -13,6 +13,7 @@
 //!   check.rs (the weekly look).
 
 pub mod age;
+pub mod archive;
 pub mod args;
 pub mod check;
 pub mod commands;

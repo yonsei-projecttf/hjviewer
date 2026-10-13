@@ -11,11 +11,15 @@
 //! writes them again.
 
 use hjv_release::{
-    envelope::{Envelope, POLICY_DOMAIN},
+    envelope::{Envelope, Part, POLICY_DOMAIN, ROOT_DOMAIN},
     keyfile::SecretKey,
-    keys::{test_key, test_key_set, Role},
-    trust::{check_envelope, hex, sha256},
+    keys::{test_key, test_key_set, Floor, KeySet, Role},
+    policy::{Requirement, RootDecl},
+    time::parse_utc,
+    trust::{self, check_envelope, hex, sha256, Outcome, State},
+    version::Version,
 };
+use serde_json::{json, Value};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -55,7 +59,192 @@ fn the_model_agrees_with_every_vector() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(out.status.success(), "generate.py --check failed:\n{text}");
-    assert!(text.contains("the model agrees with manifest.json on all"), "{text}");
+    assert!(
+        text.contains("the model agrees with manifest.json on all"),
+        "{text}"
+    );
+}
+
+fn manifest() -> Value {
+    serde_json::from_str(&fs::read_to_string(dir().join("manifest.json")).unwrap()).unwrap()
+}
+
+fn bytes(path: &str) -> Vec<u8> {
+    fs::read(dir().join(path)).unwrap()
+}
+
+/// A state in the manifest's words (tests/vectors/README.md, "A case").
+fn state_json(state: &State, keys: &KeySet) -> Value {
+    json!({
+        "epoch": state.epoch(keys),
+        "seq": state.held.as_ref().map(|h| h.policy.seq),
+        "revoked": state.revoked(),
+        "root_sha256": state.decl.as_ref().map(|d| hex(&sha256(d.part.p.as_bytes()))),
+        "root_k": state.decl.as_ref().map(|d| d.part.k),
+        "p_sha256": state.held.as_ref().map(|h| hex(&h.hash)),
+        "enforces": state.enforces(),
+        "may_install": state.may_install(keys),
+    })
+}
+
+fn keys_of(case: &Value) -> KeySet {
+    let mut keys = test_key_set();
+    if let Some(floor) = case["floor"].as_str() {
+        keys.floor = Floor::parse(floor).unwrap();
+    }
+    keys
+}
+
+/// For every canonical case the tool's simulated app gives the manifest's outcome, reason and
+/// state, and the same next envelope; every other case its strict layer refuses (spec 4-1,
+/// INV-13). Every `binding: tool` case the tool refuses as well, and every envelope an app takes
+/// with `binding: app` the tool takes by itself.
+#[test]
+fn the_tool_reads_every_vector_as_the_manifest_says() {
+    let manifest = manifest();
+    let cases = manifest["cases"].as_array().unwrap();
+    assert!(cases.len() >= 130, "{} cases", cases.len());
+    let mut canonical_cases = 0;
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let keys = keys_of(case);
+        let mut state = State::default();
+        for before in case["after"].as_array().unwrap() {
+            let (next, outcome) =
+                trust::accept(&keys, SERVER, &state, &bytes(before.as_str().unwrap())).unwrap();
+            assert!(
+                outcome.is_taken(),
+                "{name}: {before} before it: {outcome:?}"
+            );
+            state = next;
+        }
+        let file = bytes(case["file"].as_str().unwrap());
+        let canonical = case["canonical"].as_bool().unwrap();
+        assert_eq!(
+            trust::canonical(&file).is_ok(),
+            canonical,
+            "{name}: canonical by the tool's form"
+        );
+        let text = String::from_utf8_lossy(&file).into_owned();
+        if case["binding"] == "tool" {
+            assert!(
+                check_envelope(&text, &keys, SERVER).is_err(),
+                "{name}: the tool takes a binding tool case"
+            );
+            assert_eq!(case["app_expect"], case["expect"], "{name}");
+        }
+        if !canonical {
+            assert!(
+                trust::accept(&keys, SERVER, &state, &file).is_err(),
+                "{name}: the strict layer lets a text through that is not canonical"
+            );
+            continue;
+        }
+        canonical_cases += 1;
+        let (after, outcome) = trust::accept(&keys, SERVER, &state, &file).unwrap();
+        match outcome {
+            Outcome::Refused(reason) => {
+                assert_eq!(case["expect"], "reject", "{name}: refused {reason:?}");
+                assert_eq!(case["reason"], reason.code().as_str(), "{name}");
+                match case.get("state_after_refusal") {
+                    Some(want) => {
+                        let got = state_json(&after, &keys);
+                        for (key, value) in want.as_object().unwrap() {
+                            assert_eq!(&got[key], value, "{name}: state_after_refusal.{key}");
+                        }
+                    }
+                    None => assert_eq!(after, state, "{name}: the state changed"),
+                }
+            }
+            taken => {
+                assert_eq!(case["expect"], "accept", "{name}: {taken:?}");
+                let word = if taken == Outcome::Taken {
+                    "taken"
+                } else {
+                    "unchanged"
+                };
+                assert_eq!(case["outcome"], word, "{name}");
+                assert_eq!(case["state_after"], state_json(&after, &keys), "{name}");
+                if case["binding"] == "app" {
+                    check_envelope(&text, &keys, SERVER)
+                        .unwrap_or_else(|e| panic!("{name}: the tool refuses it by itself: {e}"));
+                }
+            }
+        }
+        if let Some(next) = case["then_accept"].as_str() {
+            let (_, then) = trust::accept(&keys, SERVER, &after, &bytes(next)).unwrap();
+            let word = match then {
+                Outcome::Taken => "taken",
+                Outcome::Unchanged => "unchanged",
+                Outcome::Refused(_) => "refused",
+            };
+            assert_eq!(case["then_outcome"], word, "{name}: then {next}");
+        }
+    }
+    assert!(canonical_cases >= 110, "{canonical_cases} canonical cases");
+}
+
+/// covers.json: COVERS of spec 2-3 for every pair of 16 entries.
+#[test]
+fn covers_as_the_vectors_say() {
+    let rows: Vec<Value> =
+        serde_json::from_str(&fs::read_to_string(dir().join("covers.json")).unwrap()).unwrap();
+    assert_eq!(rows.len(), 256);
+    let entry = |v: &Value| Requirement {
+        min: Version::parse(v["min"].as_str().unwrap()).unwrap(),
+        latest: Version::parse(v["latest"].as_str().unwrap()).unwrap(),
+        grace_until: v["grace_until"].as_str().map(|t| parse_utc(t).unwrap()),
+        grace_min: v["grace_min"].as_str().map(|g| Version::parse(g).unwrap()),
+    };
+    let mut both = (0, 0);
+    for row in &rows {
+        let covers = trust::covers(&entry(&row["new"]), &entry(&row["old"]));
+        assert_eq!(row["covers"].as_bool().unwrap(), covers, "{row}");
+        if covers {
+            both.0 += 1;
+        } else {
+            both.1 += 1;
+        }
+    }
+    assert!(both.0 > 50 && both.1 > 50, "{both:?}");
+}
+
+#[test]
+fn the_key_file_of_the_vectors() {
+    let text = fs::read_to_string(dir().join("update-keys.env")).unwrap();
+    let keys = KeySet::parse(&text).unwrap();
+    assert!(keys.has_test_key());
+    assert_eq!(
+        keys.signing.iter().map(|k| k.id).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert_eq!(
+        keys.roots.iter().map(|k| k.id).collect::<Vec<_>>(),
+        [101, 102]
+    );
+    assert_eq!(keys.to_text(), test_key_set().to_text());
+    let manifest = manifest();
+    assert_eq!(
+        hex(&keys.fingerprint(SERVER)),
+        manifest["key_file"]["fingerprint_sha256"].as_str().unwrap()
+    );
+    // every test key of the manifest is the tool's, with the same seed and number
+    for key in manifest["test_keys"].as_array().unwrap() {
+        let ours = test_key(key["name"].as_str().unwrap()).unwrap();
+        assert_eq!(hex(&ours.seed()), key["seed_hex"].as_str().unwrap());
+        assert_eq!(ours.public().to_string(), key["public"].as_str().unwrap());
+        assert_eq!(
+            keys.pins(ours.role, &ours.public()),
+            key["in_the_key_file"].as_bool().unwrap()
+        );
+    }
+    // the declaration of epoch 2 by itself
+    let root = fs::read_to_string(dir().join("root-declaration-e2.json")).unwrap();
+    let part = Part::parse(root.trim_end(), "t").unwrap();
+    assert!(part.verifies(&keys.root(101).unwrap().key, ROOT_DOMAIN));
+    let decl = RootDecl::parse(&part.p).unwrap();
+    assert_eq!((decl.epoch, decl.revoked.clone()), (2, vec![1]));
+    assert_eq!(decl.base.len(), 4);
 }
 
 #[test]

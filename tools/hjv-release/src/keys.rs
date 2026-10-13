@@ -4,14 +4,16 @@
 //! `client/update-keys.env`.
 //!
 //! ```text
-//! HJV_UPDATE_PUBKEY=1:<base64>[,2:<base64>]     signing keys: the current one and the next
-//! HJV_UPDATE_ROOT_PUBKEY=101:<base64>           the root key
-//! HJV_POLICY_FLOOR=<epoch>:<seq>                the policy position when the build was made
+//! HJV_UPDATE_PUBKEY=1:<base64>[,2:<base64>]           signing keys: the current one and the next
+//! HJV_UPDATE_ROOT_PUBKEY=101:<base64>[,102:<base64>]  root keys: two, kept offline apart
+//! HJV_POLICY_FLOOR=<epoch>:<seq>                      the live policy's position at the build
 //! ```
 //!
-//! Key lists follow hjv-relay's `HJV_COMMAND_PUBKEY` (relay/PROTOCOL.md 3.2): ids 1-65535,
-//! standard base64 of the 32-byte Ed25519 public key, no weak key, no id twice. Also here: the
-//! same key may not serve under two ids or two roles, and a key is a point of the prime-order
+//! Key lists follow hjv-relay's `HJV_COMMAND_PUBKEY` (relay/PROTOCOL.md 3.2): standard base64 of
+//! the 32-byte Ed25519 public key, no weak key, no id twice. Signing keys are numbered 1-100 and
+//! root keys 101-199 (trust rules 1-4), so a root key's number is never one a declaration may
+//! revoke. Also here: the same key may not serve under two ids or two roles, and a key is a point
+//! of the prime-order
 //! subgroup, as every honest key is. The apps refuse any other point (libsodium's conversion
 //! check in the client core), and a build drops its whole key set over one refused key: a key
 //! file this tool passes must be one the apps take.
@@ -29,10 +31,16 @@ pub const ROOT_VAR: &str = "HJV_UPDATE_ROOT_PUBKEY";
 pub const FLOOR_VAR: &str = "HJV_POLICY_FLOOR";
 /// At most this many signing keys: the current one and the next, for a planned rotation.
 pub const MAX_SIGNING_KEYS: usize = 2;
+/// At most this many root keys: 1.6.0 pins two, each kept offline on its own media.
+pub const MAX_ROOT_KEYS: usize = 2;
+/// The numbers of signing keys and of root keys (trust rules 1-4).
+pub const SIGNING_IDS: std::ops::RangeInclusive<u32> = 1..=100;
+pub const ROOT_IDS: std::ops::RangeInclusive<u32> = 101..=199;
 const FINGERPRINT_CONTEXT: &[u8] = b"hjv-update-keys-v1";
 
-/// What a key may sign. A signing key signs policies that do not relax anything; only the root
-/// key signs root declarations (key revocation, a new epoch) and policies that relax.
+/// What a key may sign. A signing key signs the policies; a root key signs the declarations (a
+/// relaxation, a revocation, a new epoch), and a policy only while no signing key serves every
+/// recorded build (trust rules 4-2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Signing,
@@ -61,6 +69,35 @@ impl Role {
             Role::Signing => "서명 키",
             Role::Root => "루트 키",
         }
+    }
+
+    /// The key numbers of this role.
+    pub fn ids(self) -> std::ops::RangeInclusive<u32> {
+        match self {
+            Role::Signing => SIGNING_IDS,
+            Role::Root => ROOT_IDS,
+        }
+    }
+
+    /// The role a key number belongs to, if any.
+    pub fn of_id(id: u32) -> Option<Role> {
+        [Role::Signing, Role::Root]
+            .into_iter()
+            .find(|role| role.ids().contains(&id))
+    }
+}
+
+/// A key number of a role: signing keys 1-100, root keys 101-199.
+pub fn check_id(role: Role, id: u32) -> Result<(), String> {
+    if role.ids().contains(&id) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}의 번호는 {}-{}입니다(서명 키 1-100, 루트 키 101-199): {id}",
+            role.korean(),
+            role.ids().start(),
+            role.ids().end()
+        ))
     }
 }
 
@@ -161,9 +198,10 @@ impl fmt::Display for Floor {
 #[derive(Clone, Debug)]
 pub struct KeySet {
     pub signing: Vec<PublicKey>,
-    pub root: PublicKey,
+    /// One or two root keys.
+    pub roots: Vec<PublicKey>,
     pub floor: Floor,
-    /// The values as the file has them (trimmed): a build's stored policy state is tied to them.
+    /// The values as the file has them (trimmed).
     pub signing_line: String,
     pub root_line: String,
 }
@@ -207,20 +245,27 @@ impl KeySet {
             ));
         }
         let signing_keys = parse_key_list(signing, MAX_SIGNING_KEYS, SIGNING_VAR)?;
-        let mut root_keys = parse_key_list(root, 1, ROOT_VAR)?;
-        let root_key = root_keys.remove(0);
-        if signing_keys.iter().any(|k| k.id == root_key.id) {
-            return Err(format!(
-                "루트 키 번호({})가 서명 키 번호와 같습니다. 서로 달라야 합니다",
-                root_key.id
-            ));
+        let root_keys = parse_key_list(root, MAX_ROOT_KEYS, ROOT_VAR)?;
+        for root_key in &root_keys {
+            if signing_keys.iter().any(|k| k.id == root_key.id) {
+                return Err(format!(
+                    "루트 키 번호({})가 서명 키 번호와 같습니다. 서로 달라야 합니다",
+                    root_key.id
+                ));
+            }
+            if signing_keys.iter().any(|k| k.key == root_key.key) {
+                return Err("루트 키와 서명 키가 같은 키입니다".to_owned());
+            }
         }
-        if signing_keys.iter().any(|k| k.key == root_key.key) {
-            return Err("루트 키와 서명 키가 같은 키입니다".to_owned());
+        for key in &signing_keys {
+            check_id(Role::Signing, key.id).map_err(|e| format!("{SIGNING_VAR}: {e}"))?;
+        }
+        for key in &root_keys {
+            check_id(Role::Root, key.id).map_err(|e| format!("{ROOT_VAR}: {e}"))?;
         }
         Ok(KeySet {
             signing: signing_keys,
-            root: root_key,
+            roots: root_keys,
             floor: Floor::parse(floor)?,
             signing_line: signing.to_owned(),
             root_line: root.to_owned(),
@@ -229,20 +274,29 @@ impl KeySet {
 
     /// The key an envelope's `k` names, and its role.
     pub fn find(&self, id: u32) -> Option<(Role, &PublicKey)> {
-        if self.root.id == id {
-            return Some((Role::Root, &self.root));
-        }
-        self.signing
-            .iter()
-            .find(|k| k.id == id)
-            .map(|k| (Role::Signing, k))
+        self.all().find(|(_, k)| k.id == id)
+    }
+
+    /// The pinned root key of that number.
+    pub fn root(&self, id: u32) -> Option<&PublicKey> {
+        self.roots.iter().find(|k| k.id == id)
+    }
+
+    pub fn is_root(&self, id: u32) -> bool {
+        self.root(id).is_some()
     }
 
     pub fn all(&self) -> impl Iterator<Item = (Role, &PublicKey)> {
         self.signing
             .iter()
             .map(|k| (Role::Signing, k))
-            .chain(std::iter::once((Role::Root, &self.root)))
+            .chain(self.roots.iter().map(|k| (Role::Root, k)))
+    }
+
+    /// Whether this key set pins `key` under its number and role.
+    pub fn pins(&self, role: Role, key: &PublicKey) -> bool {
+        self.find(key.id)
+            .is_some_and(|(r, k)| r == role && k.key == key.key)
     }
 
     /// Whether any key is a test key of this repository (anyone can sign with those).
@@ -250,17 +304,22 @@ impl KeySet {
         self.all().any(|(_, k)| is_test_key(&k.key))
     }
 
-    /// What a build ties its stored policy state to (design 1-4):
-    /// SHA-256("hjv-update-keys-v1" NUL server NUL signing keys NUL root key), the keys written
-    /// as `<id>:<base64>`, the signing keys in the order of their numbers with a comma between.
-    /// So the same keys give the same fingerprint however the file spells or orders them.
+    /// The name of a key set (trust rules 1-4): SHA-256("hjv-update-keys-v1" NUL server NUL
+    /// signing keys NUL root keys), the keys written as `<id>:<base64>` in the order of their
+    /// numbers with a comma between. So the same keys give the same fingerprint however the file
+    /// spells or orders them.
     pub fn fingerprint(&self, server: &str) -> [u8; 32] {
-        let mut signing: Vec<&PublicKey> = self.signing.iter().collect();
-        signing.sort_by_key(|k| k.id);
-        let signing: Vec<String> = signing.iter().map(|k| k.to_string()).collect();
+        let line = |keys: &[PublicKey]| {
+            let mut keys: Vec<&PublicKey> = keys.iter().collect();
+            keys.sort_by_key(|k| k.id);
+            keys.iter()
+                .map(|k| k.to_string())
+                .collect::<Vec<String>>()
+                .join(",")
+        };
         let mut h = Sha256::new();
         h.update(FINGERPRINT_CONTEXT);
-        for part in [server, &signing.join(","), &self.root.to_string()] {
+        for part in [server, &line(&self.signing), &line(&self.roots)] {
             h.update([0u8]);
             h.update(part.as_bytes());
         }
@@ -301,7 +360,7 @@ impl TestKey {
 
 /// The update keys the tests, the vectors and the E2E use. Seeds follow the relay's vectors
 /// (relay/PROTOCOL.md 13 uses 00.. and 20..) and the research vector (40.. and 60..).
-pub const TEST_KEYS: [TestKey; 5] = [
+pub const TEST_KEYS: [TestKey; 6] = [
     TestKey {
         name: "signing-1",
         role: Role::Signing,
@@ -335,7 +394,14 @@ pub const TEST_KEYS: [TestKey; 5] = [
         role: Role::Root,
         id: 102,
         first: 0xe0,
-        about: "a root key no vector build trusts (seed e0 e1 .. ff)",
+        about: "root key 102 of the vectors (seed e0 e1 .. ff)",
+    },
+    TestKey {
+        name: "root-103",
+        role: Role::Root,
+        id: 103,
+        first: 0x10,
+        about: "a root key no vector build trusts (seed 10 11 .. 2f)",
     },
 ];
 
@@ -343,7 +409,8 @@ pub fn test_key(name: &str) -> Option<&'static TestKey> {
     TEST_KEYS.iter().find(|k| k.name == name)
 }
 
-/// The key set of the vectors and of E2E builds: signing keys 1 and 2, root key 101, floor 1:0.
+/// The key set of the vectors and of E2E builds: signing keys 1 and 2, root keys 101 and 102,
+/// floor 1:0.
 pub fn test_key_set() -> KeySet {
     let line = |name: &str| {
         test_key(name)
@@ -352,7 +419,7 @@ pub fn test_key_set() -> KeySet {
     };
     KeySet::from_values(
         &format!("{},{}", line("signing-1"), line("signing-2")),
-        &line("root-101"),
+        &format!("{},{}", line("root-101"), line("root-102")),
         "1:0",
     )
     .expect("the test keys are valid")
@@ -541,7 +608,8 @@ mod tests {
         );
         let set = KeySet::parse(&text).unwrap();
         assert_eq!(set.signing.len(), 2);
-        assert_eq!(set.root.id, 101);
+        assert_eq!(set.roots.len(), 1);
+        assert_eq!(set.roots[0].id, 101);
         assert_eq!(set.find(2).unwrap().0, Role::Signing);
         assert_eq!(set.find(101).unwrap().0, Role::Root);
         assert!(set.find(3).is_none());
@@ -550,8 +618,32 @@ mod tests {
             format!("{SIGNING_VAR}=1:{a},2:{b}\n{ROOT_VAR}=101:{r}\n{FLOOR_VAR}=1:0\n")
         );
         assert!(set.has_test_key());
-        // one signing key is enough
+        // one signing key is enough; two root keys are pinned by 1.6.0, in any order
         assert!(KeySet::from_values(&format!("1:{a}"), &format!("101:{r}"), "1:0").is_ok());
+        let two =
+            KeySet::from_values(&format!("1:{a}"), &format!("102:{b},101:{r}"), "1:0").unwrap();
+        assert_eq!(two.find(102).unwrap().0, Role::Root);
+        assert!(two.is_root(101) && two.is_root(102) && !two.is_root(1));
+        // the number ranges: signing keys 1-100, root keys 101-199
+        let c = b64_key([4; 32]);
+        assert!(KeySet::from_values(&format!("100:{a}"), &format!("199:{r}"), "1:0").is_ok());
+        for (signing, root) in [
+            (format!("101:{a}"), format!("102:{r}")),
+            (format!("1:{a}"), format!("100:{r}")),
+            (format!("1:{a}"), format!("200:{r}")),
+            (format!("1:{a}"), format!("101:{r},7:{b}")),
+            (format!("1:{a}"), format!("101:{r},102:{b},103:{c}")),
+        ] {
+            assert!(
+                KeySet::from_values(&signing, &root, "1:0").is_err(),
+                "{signing} {root} parsed"
+            );
+        }
+        assert!(check_id(Role::Signing, 100).is_ok() && check_id(Role::Signing, 101).is_err());
+        assert!(check_id(Role::Root, 101).is_ok() && check_id(Role::Root, 200).is_err());
+        assert_eq!(Role::of_id(55), Some(Role::Signing));
+        assert_eq!(Role::of_id(150), Some(Role::Root));
+        assert_eq!(Role::of_id(200), None);
 
         let empty = KeySet::parse(&format!("{SIGNING_VAR}=\n{ROOT_VAR}=\n{FLOOR_VAR}=\n"));
         assert!(empty.unwrap_err().contains("비어"));
@@ -562,7 +654,7 @@ mod tests {
             format!("{SIGNING_VAR}=1:{a}\n{ROOT_VAR}=101:{r}\n"),
             format!("{SIGNING_VAR}=1:{a}\n{ROOT_VAR}=1:{r}\n{FLOOR_VAR}=1:0\n"),
             format!("{SIGNING_VAR}=1:{a}\n{ROOT_VAR}=101:{a}\n{FLOOR_VAR}=1:0\n"),
-            format!("{SIGNING_VAR}=1:{a}\n{ROOT_VAR}=101:{r},102:{b}\n{FLOOR_VAR}=1:0\n"),
+            format!("{SIGNING_VAR}=1:{a},2:{b}\n{ROOT_VAR}=101:{r},102:{b}\n{FLOOR_VAR}=1:0\n"),
             format!(
                 "{SIGNING_VAR}=1:{a}\n{SIGNING_VAR}=2:{b}\n{ROOT_VAR}=101:{r}\n{FLOOR_VAR}=1:0\n"
             ),
@@ -586,7 +678,10 @@ mod tests {
         );
         let set = test_key_set();
         assert_eq!(set.signing.len(), 2);
-        assert_eq!(set.root.id, 101);
+        assert_eq!(
+            set.roots.iter().map(|k| k.id).collect::<Vec<_>>(),
+            [101, 102]
+        );
         assert_eq!(set.floor, Floor { epoch: 1, seq: 0 });
         assert!(set.has_test_key());
         for key in &TEST_KEYS {
@@ -644,7 +739,7 @@ mod tests {
         // the client core's value for the same build (src/hjviewer_update/vectors.rs there)
         assert_eq!(
             crate::trust::hex(&a),
-            "6fb0ed8ff5085b36853973067ea623089cbc2422b783f8139326a35d659917cc"
+            "3d5fdc2ae12abd2dac598179aff56bdf121f60ea4089ba01dbef11f22399fb8b"
         );
         // the order and the spacing of the file do not matter, the keys do
         let (k1, k2) = (set.signing[0].to_string(), set.signing[1].to_string());
@@ -654,7 +749,7 @@ mod tests {
         let one = KeySet::from_values(&k1, &set.root_line, "1:0").unwrap();
         assert_eq!(
             crate::trust::hex(&one.fingerprint("rd.example.com")),
-            "f392c77f0104c6923bdd576f915c4729a9b1e7eebccb8c62f6564e2117dc0321"
+            "32192c380b4c670cd40007656d76066ce5c7c7239295388e535c93085e72f4e8"
         );
         let mut h = Sha256::new();
         h.update(b"hjv-update-keys-v1\0rd.example.com\0");

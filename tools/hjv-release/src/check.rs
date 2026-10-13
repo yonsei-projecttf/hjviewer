@@ -6,11 +6,18 @@
 //!   is; the check warns from day 75;
 //! - door 2's `UNTIL`;
 //! - the policy's age and position, and whether the server hands out the policy this PC has
-//!   (an older one: frozen or rolled back; a newer one nobody here made: a stolen signing key).
+//!   (an older one: frozen or rolled back; a newer one nobody here made: a stolen signing key);
+//! - with the archive (trust rules 4-7): a live file the archive does not hold (signed elsewhere:
+//!   a stolen key, or a ceremony's files not copied back), a live envelope of epoch 2 or later
+//!   without its declaration, a live declaration the archive does not hold or holds otherwise, a
+//!   signed file above the live position (signed, not published: runbook 5-13), the key file's
+//!   floor above the live position, and the recorded key sets with the keys that serve them.
 
 use crate::{
+    archive::{position_of, Archive},
+    envelope::Envelope,
     hbbs::Door2,
-    keys::KeySet,
+    keys::{KeySet, Role},
     make::{testflight_age, TESTFLIGHT_WARN_DAYS},
     policy::Platform,
     time::{self, DAY},
@@ -47,6 +54,7 @@ pub fn check(
     door2: Option<&Door2>,
     live: Option<&str>,
     keys: &KeySet,
+    archive: Option<&Archive>,
     now: i64,
 ) -> Report {
     let mut report = Report::default();
@@ -158,11 +166,105 @@ pub fn check(
             }
         }
     }
+    if let Some(archive) = archive {
+        if let Err(e) = archive_look(&mut report, archive, live, keys) {
+            report.warn(format!("보관소를 읽지 못했습니다: {e}"));
+        }
+    }
     report.info(
         "남은 1.5.x PC는 이 도구가 볼 수 없습니다. 서버의 hjv-api admin report와 운영자 PC 목록으로 확인하세요"
             .to_owned(),
     );
     report
+}
+
+/// The live file against the archive, and the recorded key sets (4-7).
+fn archive_look(
+    report: &mut Report,
+    archive: &Archive,
+    live: Option<&str>,
+    keys: &KeySet,
+) -> Result<(), String> {
+    if let Some(live) = live {
+        let at = position_of(live);
+        let envelope = Envelope::read_form(live).map(|(_, e)| e);
+        match (&at, &envelope) {
+            (Ok((epoch, seq)), Ok(envelope)) => {
+                if archive.find(live)?.is_none() {
+                    report.warn(format!(
+                        "서버의 정책({epoch}:{seq}, 키 {})이 보관소에 없습니다: 다른 곳에서 서명된 것입니다. 서명 키를                          도둑맞았거나(런북 5-8), 깨끗한 컴퓨터에서 한 서명의 파일을 보관소로 옮기지 않았습니다(5-0)",
+                        envelope.policy.k
+                    ));
+                }
+                match &envelope.root {
+                    None if *epoch >= 2 => report.warn(format!(
+                        "서버의 정책은 세대 {epoch}인데 루트 선언이 붙어 있지 않습니다. 앱은 이 봉투를 받지 않습니다(Epoch)"
+                    )),
+                    None => {}
+                    Some(part) => match archive.declaration(*epoch)? {
+                        None => report.warn(format!(
+                            "서버의 루트 선언(세대 {epoch})이 보관소에 없습니다"
+                        )),
+                        Some(ours) if ours.p != part.p => report.warn(format!(
+                            "서버의 루트 선언(세대 {epoch})이 보관소의 것과 다릅니다"
+                        )),
+                        Some(_) => {}
+                    },
+                }
+                if archive.max_epoch()? > *epoch {
+                    report.warn(format!(
+                        "보관소에 서버의 세대({epoch})보다 높은 세대의 파일이 있습니다: 서명하고 내지 않은 루트 선언이면 그 위의                          선언을 곧 내세요(런북 5-13)"
+                    ));
+                }
+                if let Some(h) = archive
+                    .highest()?
+                    .filter(|h| (h.epoch, h.seq) > (*epoch, *seq))
+                {
+                    report.warn(format!(
+                        "보관소에 서버의 정책({epoch}:{seq})보다 높은 정책({}:{})이 있습니다: 서명하고 아직 내지 않았습니다.                          내거나, 컴퓨터 밖으로 나가지 않았다면 void로 무효로 하세요(런북 5-13)",
+                        h.epoch, h.seq
+                    ));
+                }
+                if (keys.floor.epoch, keys.floor.seq) > (*epoch, *seq) {
+                    report.warn(format!(
+                        "키 파일의 하한({})이 서버의 정책({epoch}:{seq})보다 높습니다. 이 키 파일로 만든 빌드는 서버의 정책을                          받지 않습니다(floor --live로 하한을 정하세요)",
+                        keys.floor
+                    ));
+                }
+            }
+            _ => report
+                .warn("서버의 정책 파일을 읽을 수 없어 보관소와 비교하지 못했습니다".to_owned()),
+        }
+    }
+    let records = archive.keysets()?;
+    for record in &records {
+        report.info(format!("기록된 키 집합: {}", record.name()));
+    }
+    let mut serving = Vec::new();
+    for (role, key) in keys.all() {
+        if archive.not_pinning(role, key)?.is_empty() {
+            serving.push(format!("{} {}", role.korean(), key.id));
+        }
+    }
+    report.info(format!(
+        "기록된 모든 빌드가 박은 키(서명할 수 있는 키): {}",
+        if serving.is_empty() {
+            "없음".to_owned()
+        } else {
+            serving.join(", ")
+        }
+    ));
+    let mut signing_serves = false;
+    for key in &keys.signing {
+        signing_serves |= archive.not_pinning(Role::Signing, key)?.is_empty();
+    }
+    if !signing_serves {
+        report.warn(
+            "기록된 모든 빌드가 박은 서명 키가 없습니다. 그 빌드가 쓰이는 동안은 루트 키가 정책에 서명합니다(런북 5-8 6번)"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -196,7 +298,7 @@ mod tests {
         let keys = test_key_set();
         let local = file(policy, "signing-1");
         let checked = check_envelope(&local, &keys, "rd.example.com").unwrap();
-        check(&checked, &local, door2, live, &keys, t(now))
+        check(&checked, &local, door2, live, &keys, None, t(now))
     }
 
     fn warnings(report: &Report) -> Vec<&String> {
@@ -312,6 +414,7 @@ mod tests {
                 None,
                 None,
                 &keys,
+                None,
                 t("2026-11-20T00:00:00Z"),
             )
             .warnings

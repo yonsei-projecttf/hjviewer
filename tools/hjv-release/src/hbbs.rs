@@ -16,12 +16,20 @@
 //!   have just reached the new `MIN` (or the policy's `issued` time when none of them has a grace
 //!   period). When one platform alone raises its `min`, `MIN` stays, and so does `FROM`: a
 //!   refusal that has begun does not stop again.
-//! - `FROM` never goes back. A higher `MIN` whose `FROM` would be earlier than the current
-//!   file's is refused while that time is still ahead: nobody is refused earlier than announced.
-//!   Once it has passed, and for a lower `MIN` (a relaxation by the root key), the new `MIN`
-//!   takes the file's place and the file's `FROM` stays.
+//! - `FROM` never goes back: the new file's `FROM` is the later of the derived one and the present
+//!   file's. Nobody is refused earlier than announced.
+//! - hbbs has one threshold (it refuses below `MIN` from `FROM` on and nobody before), so during a
+//!   raise the present file stays until the new one refuses, at every time from now on, at least
+//!   what the present one refuses: a file with a higher `MIN` is written only when its `FROM` is
+//!   not after max(now, the present `FROM`); otherwise the tool says when to run again (trust
+//!   rules 3-5, 4-7, INV-16). With no present file (or one with an empty `MIN`) the new file is
+//!   written at once (runbook 5-2).
 //! - A `MIN` below the file's is always pointed out: hbbs would let in again what it refuses
-//!   now. It comes from a relaxation by the root key, or from a new entry with a lower `min`.
+//!   now. It comes from a root declaration that relaxes, or from a new entry with a lower `min`.
+//!
+//! The present file is read in the form this tool writes: `MIN` as `x.y.z` and `FROM` as
+//! `2026-11-22T15:00:00Z`. A file edited by hand into another form (an offset, leading zeros) is
+//! refused rather than guessed at; hbbs should refuse the same forms (the stricter of the two).
 //!
 //! The door 2 code is half a secret: it is written into the two files and never shown.
 
@@ -53,11 +61,14 @@ pub fn parse_conf(text: &str) -> Result<Current, String> {
                 return Err("MIN 줄이 둘입니다".to_owned());
             }
             let value = value.trim();
-            min = Some(if value.is_empty() {
-                None
-            } else {
-                Some(Version::parse(value)?)
-            });
+            min =
+                Some(if value.is_empty() {
+                    None
+                } else {
+                    Some(Version::parse(value).map_err(|e| {
+                        format!("MIN: {e}. hjv-release가 쓰는 꼴(1.6.0)로 되돌리세요")
+                    })?)
+                });
         } else if let Some(value) = line.strip_prefix("FROM=") {
             if from.is_some() {
                 return Err("FROM 줄이 둘입니다".to_owned());
@@ -66,7 +77,12 @@ pub fn parse_conf(text: &str) -> Result<Current, String> {
             from = Some(if value.is_empty() {
                 None
             } else {
-                Some(time::parse_utc(value)?)
+                Some(time::parse_utc(value).map_err(|e| {
+                    format!(
+                        "FROM: {e}. hjv-release가 쓰는 꼴(2026-11-22T15:00:00Z, UTC)만 읽습니다. 손으로 고친 파일이면 \
+                         그 꼴로 되돌리세요"
+                    )
+                })?)
             });
         } else if !(line.is_empty() || line.starts_with('#') || line.starts_with("TEXT=")) {
             return Err("MIN, FROM, TEXT 줄과 # 주석만 있어야 합니다".to_owned());
@@ -93,6 +109,13 @@ pub enum Decision {
         /// The entries whose deadline set `FROM`.
         basis: Vec<Platform>,
         /// What the operator should know before installing the file.
+        notes: Vec<String>,
+    },
+    /// A higher `MIN` that would refuse less than the present file at some later time: keep the
+    /// present file and run `hbbs-conf` again at or after `from` (INV-16).
+    Later {
+        min: Version,
+        from: i64,
         notes: Vec<String>,
     },
 }
@@ -155,54 +178,48 @@ pub fn decide(
             .copied()
             .collect();
     }
-    let mut from = basis
+    let derived = basis
         .iter()
         .filter_map(|p| policy.platforms.get(p).and_then(|e| e.grace_until))
         .max()
         .unwrap_or(policy.issued);
     let mut notes = Vec::new();
-    // said first, whatever happens to FROM: hbbs has one threshold, and it goes down
-    if let Some(current_min) = current.min.filter(|current_min| min < *current_min) {
-        notes.push(format!(
-            "경고: MIN을 {current_min}에서 {min}(으)로 내립니다. hbbs가 지금 거절하는 {min} 이상 \
-             {current_min} 미만의 컨트롤러를 다시 받게 됩니다. 루트 키의 완화나 더 낮은 min으로 들어온 새 \
-             항목 때문인지 확인하세요"
-        ));
-    }
-    if let (Some(current_min), Some(current_from)) = (current.min, current.from) {
-        if from < current_from {
-            if min > current_min && current_from > now {
-                return Err(format!(
-                    "FROM이 뒤로 갑니다: 지금 파일은 {}부터인데 새 값은 {}입니다. 이미 알린 시각보다 \
-                     일찍 거절하게 되므로 만들지 않습니다(지금 파일을 {} 뒤까지 두고, 그 뒤에 다시 실행하세요)",
-                    time::format_kst(current_from),
-                    time::format_kst(from),
-                    time::format_kst(current_from)
-                ));
-            }
-            // A lower MIN refuses fewer versions than the file does, and a time that has passed
-            // refuses nobody early: the new MIN takes the file's place, and FROM stays.
-            from = current_from;
-            if current_from > now {
-                notes.push(format!(
-                    "FROM은 지금 파일의 값({})을 그대로 둡니다. 이미 알린 시각보다 일찍 거절하지 않기 \
-                     위해서입니다. 그 전부터 {min} 미만을 거절하고 있었다면 FROM을 손으로 앞당기세요",
-                    time::format_kst(current_from)
-                ));
-            }
+    // FROM never goes back; with no present MIN the new file is written at once with its own
+    let from = match (current.min, current.from) {
+        (Some(_), Some(present)) => derived.max(present),
+        _ => derived,
+    };
+    if let Some(current_min) = current.min {
+        // said first, whatever happens to FROM: hbbs has one threshold, and it goes down
+        if min < current_min {
+            notes.push(format!(
+                "경고: MIN을 {current_min}에서 {min}(으)로 내립니다. hbbs가 지금 거절하는 {min} 이상 \
+                 {current_min} 미만의 컨트롤러를 다시 받게 됩니다. 완화하는 루트 선언이나 더 낮은 min으로 들어온 새 \
+                 항목 때문인지 확인하세요"
+            ));
+        }
+        // a raise waits until the new file refuses at every later time at least what the present
+        // one refuses (an empty FROM counts as long past)
+        let present_from = current.from.unwrap_or(i64::MIN);
+        if min > current_min && from > now.max(present_from) {
+            notes.push(format!(
+                "지금 파일(MIN={current_min})을 그대로 두세요. 새 파일(MIN={min})은 {}부터 거절하므로, 지금 넣으면 그 전까지 \
+                 {current_min} 미만도 받게 됩니다. {} 뒤에 hbbs-conf를 다시 실행하세요",
+                time::format_kst(from),
+                time::format_kst(from)
+            ));
+            return Ok(Decision::Later { min, from, notes });
+        }
+        if from > derived && from > now {
+            notes.push(format!(
+                "FROM은 지금 파일의 값({})을 그대로 둡니다. 이미 알린 시각보다 일찍 거절하지 않기 위해서입니다",
+                time::format_kst(from)
+            ));
         }
     }
     if from <= now {
         notes.push(format!(
             "FROM({})이 이미 지났습니다. 이 파일을 넣는 즉시 {min} 미만을 거절합니다",
-            time::format_kst(from)
-        ));
-    }
-    let refusing_now = current.min.is_some() && current.from.is_none_or(|f| f <= now);
-    if let Some(current_min) = current.min.filter(|_| refusing_now && from > now) {
-        notes.push(format!(
-            "지금 hbbs는 {current_min} 미만을 거절하고 있습니다. 기준이 하나뿐이라, 새 파일로 바꾸면 {}까지는 \
-             아무 버전도 거절하지 않습니다. 끊김 없이 강제하려면 새 파일을 그 시각 뒤에 넣으세요",
             time::format_kst(from)
         ));
     }
@@ -239,8 +256,9 @@ pub fn check_text(text: &str) -> Result<(), String> {
     if text.starts_with("Failed") {
         return Err("TEXT는 Failed로 시작할 수 없습니다(앱이 꼬리말을 붙입니다)".to_owned());
     }
+    // the first word as hbbs and the apps split it: at the ASCII space (1.5.1's msgboxContent)
     if text
-        .split_whitespace()
+        .split(' ')
         .next()
         .is_some_and(|word| word.ends_with("_tip"))
     {
@@ -376,6 +394,7 @@ mod tests {
             e.min = v(min);
             e.latest = v("1.7.0");
             e.grace_until = grace.map(t);
+            e.grace_min = grace.map(|_| v("1.0.0"));
         }
         p
     }
@@ -479,21 +498,32 @@ mod tests {
             ("1.6.1", Some(G2)),
         ]);
         let now = t("2026-11-25T00:00:00Z");
+        // hbbs refuses below 1.6.0 now: the new file would refuse nobody until G2, so the
+        // present one stays and the tool names the time to run again (INV-16)
         match decide(&after, Some(&before), Some(&cur("1.6.0", G1)), now).unwrap() {
+            Decision::Later { min, from, notes } => {
+                assert_eq!((min, from), (v("1.6.1"), t(G2)));
+                assert!(
+                    notes[0].contains("지금 파일(MIN=1.6.0)을 그대로 두세요"),
+                    "{notes:?}"
+                );
+                assert!(
+                    notes[0].contains("2026-12-07 00:00 한국 시각 뒤에"),
+                    "{notes:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // run again at that time: the file is written
+        match decide(&after, Some(&before), Some(&cur("1.6.0", G1)), t(G2)).unwrap() {
             Decision::Change {
-                min,
-                from,
-                basis,
-                notes,
+                min, from, basis, ..
             } => {
                 assert_eq!((min, from), (v("1.6.1"), t(G2)));
                 assert_eq!(
                     basis,
                     [Platform::Android, Platform::AndroidPlay, Platform::Ios]
                 );
-                // hbbs was refusing below 1.6.0 and would pause until the new FROM
-                assert_eq!(notes.len(), 1);
-                assert!(notes[0].contains("1.6.0 미만을 거절하고"), "{notes:?}");
             }
             other => panic!("{other:?}"),
         }
@@ -504,11 +534,11 @@ mod tests {
             ("1.6.1", Some("2026-11-30T15:00:00Z")),
             ("1.6.1", None),
         ]);
-        match decide(&mixed, Some(&before), Some(&cur("1.6.0", G1)), now).unwrap() {
+        match decide(&mixed, Some(&before), Some(&cur("1.6.0", G1)), t(G2)).unwrap() {
             Decision::Change { from, .. } => assert_eq!(from, t(G2)),
             other => panic!("{other:?}"),
         }
-        // no deadline at all: from the policy's issue time, an explicit time
+        // no deadline at all: from the policy's issue time, at once
         let mut at_once = policy([
             ("1.6.1", Some(G1)),
             ("1.6.1", None),
@@ -520,6 +550,11 @@ mod tests {
             Decision::Change { from, .. } => assert_eq!(from, at_once.issued),
             other => panic!("{other:?}"),
         }
+        // with no present file the new one is written at once (runbook 5-2)
+        assert!(matches!(
+            decide(&after, Some(&before), None, now).unwrap(),
+            Decision::Change { .. }
+        ));
     }
 
     #[test]
@@ -527,14 +562,21 @@ mod tests {
         // the refusal of 1.5.x is announced for G2; a new policy must not pull it forward
         let before = policy([("1.6.0", Some(G2)); 4]);
         let after = policy([("1.6.1", Some(G1)); 4]);
-        let err = decide(&after, Some(&before), Some(&cur("1.6.0", G2)), t(NOW)).unwrap_err();
-        assert!(err.contains("FROM이 뒤로 갑니다"), "{err}");
-        assert!(
-            err.contains("2026-12-07 00:00 한국 시각 뒤까지 두고"),
-            "{err}"
-        );
-        // once the announced time has passed the new MIN may come, as the refusal says: the
-        // file's FROM stays, and nobody is refused earlier than they were told
+        match decide(&after, Some(&before), Some(&cur("1.6.0", G2)), t(NOW)).unwrap() {
+            Decision::Change {
+                min, from, notes, ..
+            } => {
+                assert_eq!((min, from), (v("1.6.1"), t(G2)));
+                assert!(
+                    notes[0].starts_with(
+                        "FROM은 지금 파일의 값(2026-12-07 00:00 한국 시각)을 그대로 둡니다"
+                    ),
+                    "{notes:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // after that time the same: the file's FROM stays, and it refuses at once
         let after_it = t("2026-12-07T00:00:00Z");
         match decide(&after, Some(&before), Some(&cur("1.6.0", G2)), after_it).unwrap() {
             Decision::Change {
@@ -546,18 +588,87 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        // a second before that time it is still refused
-        assert!(decide(&after, Some(&before), Some(&cur("1.6.0", G2)), t(G2) - 1).is_err());
-        // the same deadline or a later one is fine
+        // the same deadline is fine; with no file, or an empty MIN, there is nothing to go back
+        // from: the new file has its own FROM
         let same = policy([("1.6.1", Some(G2)); 4]);
-        assert!(decide(&same, Some(&before), Some(&cur("1.6.0", G2)), t(NOW)).is_ok());
-        // with no file yet there is nothing to go back from
-        assert!(decide(&after, Some(&before), None, t(NOW)).is_ok());
+        assert!(matches!(
+            decide(&same, Some(&before), Some(&cur("1.6.0", G2)), t(NOW)).unwrap(),
+            Decision::Change { .. }
+        ));
+        match decide(&after, Some(&before), None, t(NOW)).unwrap() {
+            Decision::Change { from, .. } => assert_eq!(from, t(G1)),
+            other => panic!("{other:?}"),
+        }
         let off = Current {
             min: None,
             from: Some(t(G2)),
         };
-        assert!(decide(&after, Some(&before), Some(&off), t(NOW)).is_ok());
+        match decide(&after, Some(&before), Some(&off), t(NOW)).unwrap() {
+            Decision::Change { from, .. } => assert_eq!(from, t(G1)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// INV-16: a written file with a higher MIN refuses, at every time from now on, every
+    /// version the present file refuses (hbbs refuses below MIN from FROM on, nobody before).
+    #[test]
+    fn a_written_raise_refuses_no_less_than_the_present_file() {
+        let times = [
+            "2026-11-01T00:00:00Z",
+            G1,
+            "2026-11-30T00:00:00Z",
+            G2,
+            "2026-12-20T00:00:00Z",
+        ];
+        let refuses = |min: Option<Version>, from: Option<i64>, at: i64, version: Version| {
+            min.is_some_and(|m| version < m) && from.is_none_or(|f| at >= f)
+        };
+        let versions = ["1.5.0", "1.6.0", "1.6.1", "1.6.2"];
+        let mut written = 0;
+        for present_min in [None, Some("1.6.0"), Some("1.6.1")] {
+            for present_from in [None].into_iter().chain(times.map(Some)) {
+                for new_min in ["1.6.0", "1.6.1", "1.6.2"] {
+                    for deadline in [None].into_iter().chain(times.map(Some)) {
+                        for now in times {
+                            let mut p = policy([(new_min, deadline); 4]);
+                            p.issued = t(now);
+                            let current = present_min.map(|m| Current {
+                                min: Some(v(m)),
+                                from: present_from.map(t),
+                            });
+                            let Decision::Change { min, from, .. } =
+                                decide(&p, None, current.as_ref(), t(now)).unwrap()
+                            else {
+                                continue;
+                            };
+                            let Some(present) = current.filter(|c| c.min.is_some_and(|m| min > m))
+                            else {
+                                continue;
+                            };
+                            written += 1;
+                            if let Some(f) = present.from {
+                                assert!(from >= f, "FROM went back");
+                            }
+                            for at in times
+                                .map(t)
+                                .into_iter()
+                                .chain([t(now)])
+                                .filter(|a| *a >= t(now))
+                            {
+                                for version in versions.map(v) {
+                                    assert!(
+                                        !refuses(present.min, present.from, at, version)
+                                            || refuses(Some(min), Some(from), at, version),
+                                        "present {present:?}, wrote ({min}, {from}) at {now}: {version} at {at}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(written > 50, "{written} files written");
     }
 
     #[test]
@@ -669,7 +780,9 @@ mod tests {
         let higher = policy([("1.6.1", Some(G2)); 4]);
         for current in [Some(cur("1.6.0", G1)), None] {
             match decide(&higher, Some(&before), current.as_ref(), t(NOW)).unwrap() {
-                Decision::Change { notes, .. } => assert!(no_warning(&notes), "{notes:?}"),
+                Decision::Change { notes, .. } | Decision::Later { notes, .. } => {
+                    assert!(no_warning(&notes), "{notes:?}")
+                }
                 other => panic!("{other:?}"),
             }
         }
@@ -698,14 +811,13 @@ mod tests {
             ("1.6.1", Some(G1)),
             ("1.6.1", Some(G1)),
         ]);
-        match decide(
-            &after,
-            Some(&before),
-            Some(&cur("1.6.0", "2026-10-01T00:00:00Z")),
-            t(NOW),
-        )
-        .unwrap()
-        {
+        // hbbs refuses below 1.6.0 now: the new file waits for its FROM (INV-16)
+        let present = cur("1.6.0", "2026-10-01T00:00:00Z");
+        assert!(matches!(
+            decide(&after, Some(&before), Some(&present), t(NOW)).unwrap(),
+            Decision::Later { .. }
+        ));
+        match decide(&after, Some(&before), Some(&present), t(G1)).unwrap() {
             Decision::Change { from, notes, .. } => {
                 assert_eq!(from, t(G1));
                 assert!(
@@ -803,6 +915,34 @@ mod tests {
     }
 
     #[test]
+    fn the_present_file_is_read_in_the_tool_s_form() {
+        // the forms hbbs's RFC 3339 reader also takes are refused, with the form the tool writes
+        for (line, hint) in [
+            ("FROM=2026-11-23T00:00:00+09:00", "2026-11-22T15:00:00Z"),
+            ("FROM=2026-11-22T15:00:00.000Z", "2026-11-22T15:00:00Z"),
+            ("FROM=2026-11-22t15:00:00z", "2026-11-22T15:00:00Z"),
+            ("FROM=2026-11-22 15:00:00Z", "2026-11-22T15:00:00Z"),
+            ("MIN=01.6.0", "1.6.0"),
+            ("MIN=1.06.0", "1.6.0"),
+        ] {
+            let text = if line.starts_with("MIN") {
+                format!("{line}\nFROM=2026-11-22T15:00:00Z\n")
+            } else {
+                format!("MIN=1.6.0\n{line}\n")
+            };
+            let err = parse_conf(&text).unwrap_err();
+            assert!(err.contains(hint), "{line}: {err}");
+        }
+        assert_eq!(
+            parse_conf("MIN=1.6.0\nFROM=2026-11-22T15:00:00Z\nTEXT=x\n").unwrap(),
+            Current {
+                min: Some(v("1.6.0")),
+                from: Some(t("2026-11-22T15:00:00Z"))
+            }
+        );
+    }
+
+    #[test]
     fn text_rules() {
         check_text(S2).unwrap();
         check_text(&s1("rd.example.com", &"a".repeat(32))).unwrap();
@@ -813,6 +953,8 @@ mod tests {
             "업데이트하세요. (version no longer allowed)",
             "Failed: 업데이트하세요. (version not allowed)",
             "update_tip 업데이트하세요. (version not allowed)",
+            // the first word as hbbs and the apps split it: at the ASCII space only
+            "x\u{3000}y_tip now (version not allowed)",
             "{0} 이상으로 업데이트하세요. (version not allowed)",
             "RustDesk를 업데이트하세요. (version not allowed)",
             "https://rd.example.com/x에서 받으세요. (version not allowed)",
@@ -827,6 +969,7 @@ mod tests {
             "https://rd.example.com/x. 받으세요. (version not allowed)",
             "https://rd.example.com/a%20b 에서 받으세요. (version not allowed)",
             "%MIN% 이상(100% 필요) (version not allowed)",
+            "y_tip\u{3000}now (version not allowed)",
         ] {
             assert!(check_text(good).is_ok(), "{good:?} refused");
         }

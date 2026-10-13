@@ -65,14 +65,17 @@ impl Part {
             .is_ok()
     }
 
-    fn read(value: &Json, what: &str, with_version: bool) -> Result<(Part, Option<Part>), String> {
+    fn read(
+        value: &Json,
+        what: &str,
+        with_version: bool,
+    ) -> Result<(Option<u64>, Part, Option<Part>), String> {
         let mut f = value.fields(what)?;
-        if with_version {
-            let v = f.int("v")?;
-            if v != ENVELOPE_VERSION {
-                return Err(format!("{what}: 모르는 봉투 버전 {v}"));
-            }
-        }
+        let v = if with_version {
+            Some(f.int("v")?)
+        } else {
+            None
+        };
         let k = f.int("k")?;
         let k = u32::try_from(k)
             .ok()
@@ -85,11 +88,11 @@ impl Part {
             .and_then(|s| <[u8; 64]>::try_from(s).ok())
             .ok_or_else(|| format!("{what}: 서명 s는 64바이트의 표준 base64여야 합니다"))?;
         let root = match with_version.then(|| f.take("root")).flatten() {
-            Some(root) => Some(Part::read(root, "루트 선언", false)?.0),
+            Some(root) => Some(Part::read(root, "루트 선언", false)?.1),
             None => None,
         };
         f.done()?;
-        Ok((Part { k, p, s }, root))
+        Ok((v, Part { k, p, s }, root))
     }
 
     fn write(&self, w: &mut Writer) {
@@ -108,7 +111,7 @@ impl Part {
     /// Reads `{"k":..,"p":..,"s":..}`.
     pub fn parse(text: &str, what: &str) -> Result<Part, String> {
         let value = Json::parse(text).map_err(|e| format!("{what}: JSON이 아닙니다({e})"))?;
-        Ok(Part::read(&value, what, false)?.0)
+        Ok(Part::read(&value, what, false)?.1)
     }
 }
 
@@ -121,15 +124,31 @@ impl Envelope {
                 text.len()
             ));
         }
+        let (v, envelope) = Envelope::read_form(text)?;
+        if v != ENVELOPE_VERSION {
+            return Err(format!("봉투: 모르는 봉투 버전 {v}"));
+        }
+        Ok(envelope)
+    }
+
+    /// The form of an envelope (trust rules 2-2, A2): its members and their types, a key number
+    /// 1-65535 and a signature of 64 bytes in standard base64 (the base64 crate's engine takes
+    /// the canonical form only). The version is returned, not judged.
+    pub fn read_form(text: &str) -> Result<(u64, Envelope), String> {
         let value = Json::parse(text).map_err(|e| format!("봉투가 JSON이 아닙니다({e})"))?;
-        let (policy, root) = Part::read(&value, "봉투", true)?;
-        Ok(Envelope { policy, root })
+        let (v, policy, root) = Part::read(&value, "봉투", true)?;
+        Ok((v.unwrap_or_default(), Envelope { policy, root }))
     }
 
     /// The envelope's text: one line without spaces, fields in the order v, k, p, s, root.
     pub fn to_text(&self) -> String {
+        self.to_text_v(ENVELOPE_VERSION)
+    }
+
+    /// The same with another version number (the form of an envelope the tool does not write).
+    pub fn to_text_v(&self, v: u64) -> String {
         let mut w = Writer::new();
-        w.int("v", ENVELOPE_VERSION);
+        w.int("v", v);
         self.policy.write(&mut w);
         if let Some(root) = &self.root {
             w.raw("root", &root.to_text());

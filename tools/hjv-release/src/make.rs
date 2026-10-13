@@ -1,43 +1,42 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! `hjv-release policy`: makes the next policy from the previous one, the builds of a release and
-//! what the operator asks for, and refuses what could not be undone later (design 1-4):
+//! what the operator asks for (trust rules 4-2 to 4-5), and refuses what could not be undone:
 //!
-//! - the position is the previous one plus one, and the last root declaration stays attached;
+//! - the position: one above every position of the epoch the archive holds (normally the
+//!   previous `seq` + 1); a new declaration opens the epoch above every epoch the archive holds;
+//! - the requirements of an entry: a raise keeps the level in force until its deadline
+//!   (`grace_min` = the minimum in force, derivations a-f); only a declaration asks less (X1);
 //! - a new Windows or Android `latest` needs its package and the provenance of its build; the
-//!   same version never comes with another hash; `min` never exceeds `latest`;
+//!   same version never comes with another hash, and a withdrawn package never comes back under
+//!   the same version (the package rule, `--withdraw-package`);
 //! - an iOS `latest` or a higher iOS `min` needs a TestFlight build the operator confirmed and
 //!   that is younger than 80 days; a Google Play `latest` or a higher `min` needs the versionCode
 //!   the operator saw released on the internal track;
-//! - a higher `min` (or a new entry) comes with a grace period: the one asked for, or 7 days.
-//!   `--grace-days 0` enforces at once. A grace period can be extended only with the root key;
-//! - after a policy the root key signed, a policy for a signing key is checked against the
-//!   policies from before it as well (`--held`): an app that was off while the root key's policy
-//!   was served still holds an older one and compares the new policy with that. If the new policy
-//!   relaxes what such an app holds (a `min` it knows with a later deadline, say), the app drops
-//!   it and every later policy of a signing key;
 //! - a policy that raises `os_min` keeps `min` at or below the last version the old OS runs;
-//! - anything that relaxes, a new entry below what is enforced now, a revocation and a new epoch
-//!   need `--relax`, `--revoke-key` or `--new-epoch`, and so the root key and the signer's typed
-//!   consent.
+//! - `--relax`, `--drop`, `--revoke-key` and `--new-epoch` make a new declaration (a root key)
+//!   whose base is the new policy's requirement part, and only from the live file, which must be
+//!   `--prev` and a file of the archive (X10);
+//! - the signer: a signing key that every recorded key set pins (X12), or a root key when none
+//!   does (`--root-signs-policy`, X9).
 //!
-//! The result is a draft (draft.rs); nothing is signed here and no key file is read.
+//! The result is a draft (draft.rs); nothing is signed here and no key file is read. Every
+//! envelope it describes is checked by the apps' rules (trust.rs) for a device holding `--prev`
+//! and for a fresh install (X4) before the draft is written.
 
 use crate::{
+    archive::Archive,
     draft::Draft,
     envelope::{Envelope, Part, MAX_ENVELOPE_BYTES},
-    keys::{Floor, KeySet, Role},
+    keys::{KeySet, Role},
     policy::{
-        check_os_min, check_server, os_min_higher, Entry, Package, Platform, Policy, RootDecl,
-        MAX_VERSION_CODE,
+        check_os_min, check_server, os_min_higher, Entry, Package, Platform, Policy, Requirement,
+        RootDecl, MAX_VERSION_CODE,
     },
     provenance::{self, Runs, Settings, Tools},
     release::{server_file_name, Artifact, Built},
     time::{self, DAY},
-    trust::{
-        self, check_envelope, new_entries_below, old_mins_that_wait, peek_server, relaxations,
-        Checked, NewEntryBelow, Relaxation, State,
-    },
+    trust::{self, check_envelope, loosenings, new_entries_below, peek_server, Checked, State},
     version::Version,
 };
 use std::collections::BTreeMap;
@@ -54,6 +53,8 @@ pub const DEFAULT_AUTO_INSTALL_DAYS: i64 = 2;
 pub const DEFAULT_GRACE_DAYS: i64 = 7;
 /// A jump in `seq` larger than this needs the signer's typed consent.
 pub const SEQ_JUMP_TO_CONFIRM: u64 = 10;
+/// `--seq` may be at most this far above the previous policy (the apps' C5).
+pub const MAX_SEQ_AHEAD: u64 = trust::MAX_SEQ_STEP;
 
 /// What an option applies to: one entry, or every entry it can apply to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,11 +79,24 @@ pub enum AutoAfter {
     Off,
 }
 
+/// What the operator asked about an entry's grace period (after `all=` is applied).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraceAsk {
+    /// No option: the derivation's default.
+    Default,
+    /// `--grace-days 0`: no pair, the minimum at once.
+    None,
+    /// A deadline.
+    At(i64),
+}
+
 /// What `hjv-release policy` was asked for.
 #[derive(Clone, Debug, Default)]
 pub struct Request {
     /// The previous envelope file, or none for the first policy.
     pub prev: Option<String>,
+    /// The live envelope as fetched from the server (`--live`), required for a new declaration.
+    pub live: Option<String>,
     pub server: Option<String>,
     pub artifacts: Vec<Artifact>,
     pub min: Vec<(Target, Version)>,
@@ -92,6 +106,10 @@ pub struct Request {
     /// Entries to remove (a relaxation).
     pub drop: Vec<Platform>,
     pub grace: Vec<(Target, Grace)>,
+    /// `--grace-min P=V`: the grace_min of an entry that has or gets a pair.
+    pub grace_min: Vec<(Platform, Version)>,
+    /// `--withdraw-package P`: the entry's package goes, until a higher latest.
+    pub withdraw: Vec<Platform>,
     pub auto_after: Option<AutoAfter>,
     pub os_min: Vec<(Platform, String)>,
     /// An empty text removes the field.
@@ -103,12 +121,17 @@ pub struct Request {
     pub relax: bool,
     pub revoke: Vec<u32>,
     pub new_epoch: bool,
+    /// A root key signs the policy: only when no signing key serves the records (X9).
+    pub root_signs_policy: bool,
     pub seq: Option<u64>,
-    /// Envelope files from before the previous policy that apps may still hold (`--held`).
-    pub held: Vec<String>,
-    /// The operator says there is none (`--held none`).
-    pub no_held: bool,
     pub now: i64,
+}
+
+impl Request {
+    /// Whether this policy comes with a new declaration (4-2 Declaration).
+    pub fn new_declaration(&self) -> bool {
+        self.relax || !self.drop.is_empty() || !self.revoke.is_empty() || self.new_epoch
+    }
 }
 
 /// The draft, and what to tell the operator.
@@ -121,6 +144,8 @@ pub struct Made {
 
 struct Maker<'a> {
     req: &'a Request,
+    /// The entries of `--prev`, or none for the first policy.
+    prev: Option<&'a BTreeMap<Platform, Entry>>,
     report: Vec<String>,
     notes: Vec<String>,
     grace_for_all_used: bool,
@@ -134,6 +159,135 @@ fn pick<T: Copy>(list: &[(Target, T)], platform: Platform) -> Option<(bool, T)> 
     let all = list.iter().find(|(t, _)| *t == Target::All);
     one.map(|(_, v)| (true, *v))
         .or(all.map(|(_, v)| (false, *v)))
+}
+
+/// The pair of an entry: `grace_until` and `grace_min`, both or neither.
+type Pair = Option<(i64, Version)>;
+
+fn pair_of(r: &Requirement) -> Pair {
+    r.grace_until.zip(r.grace_min)
+}
+
+/// Derivations a-d of 4-2 for an entry `o` of `--prev` and the asked minimum `b`. The
+/// derivations never relax `o`, except where `relax` lets them (a with a later or new deadline,
+/// d). `grace_min` is `--grace-min` for this entry.
+pub fn derive_existing(
+    platform: Platform,
+    o: &Requirement,
+    b: Version,
+    now: i64,
+    grace: GraceAsk,
+    relax: bool,
+    grace_min: Option<Version>,
+) -> Result<Pair, String> {
+    let old = pair_of(o);
+    if b == o.min {
+        // a: the minimum stays
+        let deadline = match grace {
+            GraceAsk::None => return Ok(None),
+            GraceAsk::Default => return Ok(old),
+            GraceAsk::At(t) => t,
+        };
+        if let Some((until, gm)) = old {
+            if deadline == until {
+                return Ok(old);
+            }
+            if now < deadline && deadline < until {
+                return Ok(Some((deadline, gm)));
+            }
+        }
+        if !relax {
+            return Err(format!(
+                "{platform}: 같은 최소 버전({})의 유예 끝을 늦추거나 새로 두는 것은 완화입니다(X1). \
+                 루트 키의 선언이 있어야 합니다: --relax --live <서버의 정책 파일>",
+                o.min
+            ));
+        }
+        let gm = grace_min.or(old.map(|(_, gm)| gm)).ok_or_else(|| {
+            format!(
+                "{platform}: 유예가 없던 항목에 유예를 주는 완화에는 --grace-min {platform}=<기다려 줄 가장 낮은 버전>이 \
+                 필요합니다(유예 기간 동안 그 버전 미만은 계속 막습니다)"
+            )
+        })?;
+        return Ok(Some((deadline, gm)));
+    }
+    if b > o.min {
+        let pending = old.filter(|(until, _)| *until > now);
+        return Ok(match (pending, grace) {
+            (_, GraceAsk::None) => None,
+            // b: no raise pending: until the deadline the minimum in force stays
+            (None, GraceAsk::Default) => {
+                Some((time::kst_midnight_after(now, DEFAULT_GRACE_DAYS), o.min))
+            }
+            (None, GraceAsk::At(t)) => Some((t, o.min)),
+            // c: a raise is pending: the same deadline by default; a later one enforces the
+            // pending minimum at once
+            (Some((until, gm)), GraceAsk::Default) => Some((until, gm)),
+            (Some((until, gm)), GraceAsk::At(t)) if t <= until => Some((t, gm)),
+            (Some(_), GraceAsk::At(t)) => Some((t, o.min)),
+        });
+    }
+    // d: a lowered minimum
+    if !relax {
+        return Err(format!(
+            "{platform}: 최소 버전을 내리는 것({} → {b})은 완화입니다(X1). 루트 키의 선언이 있어야 합니다: \
+             --relax --live <서버의 정책 파일>",
+            o.min
+        ));
+    }
+    if grace != GraceAsk::Default || grace_min.is_some() {
+        return Err(format!(
+            "{platform}: 최소 버전을 내리는 항목에는 유예 옵션을 줄 수 없습니다"
+        ));
+    }
+    Ok(None)
+}
+
+/// Derivations e and f of 4-2 for an entry `--prev` does not have. `prev` is `--prev`'s
+/// requirements, or none for the first policy.
+pub fn derive_new(
+    platform: Platform,
+    b: Version,
+    now: i64,
+    grace: GraceAsk,
+    prev: Option<&BTreeMap<Platform, Requirement>>,
+    relax: bool,
+    grace_min: Option<Version>,
+) -> Result<Pair, String> {
+    // f: the sibling of the Android pair is in --prev
+    let sibling = platform
+        .sibling()
+        .and_then(|s| prev.and_then(|p| p.get(&s)).map(|x| (s, x)));
+    if let Some((s, x)) = sibling {
+        if b == x.min {
+            // at the sibling's level: its pair as it is
+            return Ok(pair_of(x));
+        }
+        if b > x.min {
+            return derive_existing(platform, x, b, now, grace, relax, grace_min);
+        }
+        if !relax {
+            return Err(format!(
+                "{platform}: 새 항목의 최소 버전({b})이 {s}의 최소 버전({})보다 낮습니다. PC가 Android \
+                 컨트롤러에 쓰는 기준이 내려가는 완화입니다(X1): --relax --live <서버의 정책 파일>",
+                x.min
+            ));
+        }
+        return Ok(None);
+    }
+    // e: a new entry: the asked grace or 7 days, grace_min 0.0.0; none in a first policy unless
+    // asked for
+    let zero = Version::new(0, 0, 0);
+    let first = prev.is_none();
+    if b == zero {
+        return Ok(None);
+    }
+    Ok(match grace {
+        GraceAsk::None => None,
+        GraceAsk::Default if first => None,
+        GraceAsk::Default => Some((time::kst_midnight_after(now, DEFAULT_GRACE_DAYS), zero)),
+        GraceAsk::At(t) => Some((t, zero)),
+    })
 }
 
 impl<'a> Maker<'a> {
@@ -161,17 +315,27 @@ impl<'a> Maker<'a> {
             || self.req.notes.iter().any(|(t, _)| *t == one)
             || self.req.latest.iter().any(|(p, _)| *p == platform)
             || self.req.os_min.iter().any(|(p, _)| *p == platform)
+            || self.req.grace_min.iter().any(|(p, _)| *p == platform)
+            || self.req.withdraw.contains(&platform)
     }
 
-    fn grace_time(&self, platform: Platform, grace: Grace) -> Result<Option<i64>, String> {
+    fn grace_ask(&mut self, platform: Platform, changed: bool) -> Result<GraceAsk, String> {
         let now = self.req.now;
+        let grace = match pick(&self.req.grace, platform) {
+            Some((true, grace)) => grace,
+            Some((false, grace)) if changed => {
+                self.grace_for_all_used = true;
+                grace
+            }
+            _ => return Ok(GraceAsk::Default),
+        };
         match grace {
-            Grace::Days(0) => Ok(None),
+            Grace::Days(0) => Ok(GraceAsk::None),
             Grace::Days(days) if (1..=365).contains(&days) => {
-                Ok(Some(time::kst_midnight_after(now, days)))
+                Ok(GraceAsk::At(time::kst_midnight_after(now, days)))
             }
             Grace::Days(days) => Err(format!("유예 일수는 0-365입니다: {days}")),
-            Grace::Until(t) if t > now => Ok(Some(t)),
+            Grace::Until(t) if t > now => Ok(GraceAsk::At(t)),
             Grace::Until(t) => Err(format!(
                 "{platform}: 유예 끝({})이 이미 지났습니다(바로 강제하려면 --grace-days 0)",
                 time::format_utc(t)
@@ -179,7 +343,7 @@ impl<'a> Maker<'a> {
         }
     }
 
-    /// The fields every entry has: `min`, the grace period, `os_min` and the notes.
+    /// The members every entry has: `min` with its pair, `os_min` and the notes.
     fn finish(
         &mut self,
         platform: Platform,
@@ -202,38 +366,93 @@ impl<'a> Maker<'a> {
                 entry.latest
             ));
         }
-        entry.min = min;
-
-        // a new entry counts as a raised min: it may block apps that nothing blocked before
-        let raised = before.is_none_or(|b| min > b.min);
         let changed = before.is_none_or(|b| min != b.min);
-        let kept = before.and_then(|b| b.grace_until);
-        entry.grace_until = match pick(&self.req.grace, platform) {
-            Some((true, grace)) => self.grace_time(platform, grace)?,
-            Some((false, grace)) if changed => {
-                self.grace_for_all_used = true;
-                self.grace_time(platform, grace)?
+        let grace = self.grace_ask(platform, changed)?;
+        let at_sibling = before.is_none()
+            && platform
+                .sibling()
+                .and_then(|s| self.prev.and_then(|p| p.get(&s)))
+                .is_some_and(|x| x.min == min);
+        if at_sibling
+            && self
+                .req
+                .grace
+                .iter()
+                .any(|(t, _)| *t == Target::One(platform))
+        {
+            return Err(format!(
+                "{platform}: 다른 Android 항목과 같은 최소 버전의 새 항목은 그 항목의 유예를 그대로 씁니다. \
+                 유예 옵션을 주지 마세요(다른 기한은 완화이거나 새 올림입니다)"
+            ));
+        }
+        let asked_gm = self
+            .req
+            .grace_min
+            .iter()
+            .find(|(p, _)| *p == platform)
+            .map(|(_, v)| *v);
+        let pair = match before {
+            Some(b) => derive_existing(
+                platform,
+                &b.requirement(),
+                min,
+                self.req.now,
+                grace,
+                self.req.relax,
+                asked_gm,
+            )?,
+            None => {
+                let prev: Option<BTreeMap<Platform, Requirement>> = self
+                    .prev
+                    .map(|p| p.iter().map(|(k, e)| (*k, e.requirement())).collect());
+                derive_new(
+                    platform,
+                    min,
+                    self.req.now,
+                    grace,
+                    prev.as_ref(),
+                    self.req.relax,
+                    asked_gm,
+                )?
             }
-            Some((false, _)) => kept,
-            // the standing default (design 1-5); said aloud, since a grace period can be cut
-            // short later with a signing key but extended only with the root key
-            None if raised => {
-                let until = time::kst_midnight_after(self.req.now, DEFAULT_GRACE_DAYS);
-                self.report.push(format!(
-                    "{platform}: 유예 옵션이 없어 기본 {DEFAULT_GRACE_DAYS}일을 둡니다({}까지). \
-                     바로 강제하려면 --grace-days 0, 다른 기간은 --grace-days N",
-                    time::format_kst(until)
-                ));
-                Some(until)
-            }
-            // lowered: the old deadline belonged to the old min
-            None if changed => None,
-            None => kept,
         };
-        // asked for or not, the operator reads it here and the signer is asked about it
-        if raised && entry.grace_until.is_none() {
+        // --grace-min sets grace_min of an entry that has or gets a pair (a value that makes the
+        // entry ask less than before is a relaxation, X1)
+        let pair = match (pair, asked_gm) {
+            (Some((until, _)), Some(gm)) => Some((until, gm)),
+            (None, Some(_)) => {
+                return Err(format!(
+                    "{platform}: --grace-min은 유예가 있는 항목에만 줍니다(이 항목에는 유예가 없습니다)"
+                ))
+            }
+            (pair, None) => pair,
+        };
+        let week = time::kst_midnight_after(self.req.now, DEFAULT_GRACE_DAYS);
+        if grace == GraceAsk::Default && changed && pair.is_some_and(|(until, _)| until == week) {
+            // the standing default (design 1-5), said aloud
+            self.report.push(format!(
+                "{platform}: 유예 옵션이 없어 기본 {DEFAULT_GRACE_DAYS}일을 둡니다({}까지). 바로 강제하려면 \
+                 --grace-days 0, 다른 기간은 --grace-days N",
+                time::format_kst(week)
+            ));
+        }
+        entry.min = min;
+        entry.grace_until = pair.map(|(until, _)| until);
+        entry.grace_min = pair.map(|(_, gm)| gm);
+        if let Some(member) = entry.requirement().broken() {
+            return Err(format!(
+                "{platform}: {member} 규칙에 맞지 않습니다(grace_min은 min보다 낮아야 합니다: --grace-min)"
+            ));
+        }
+        if before.is_none_or(|b| min > b.min) && pair.is_none() && self.prev.is_some() {
             self.report.push(format!(
                 "{platform}: 유예가 없습니다. 서버에 넣는 즉시 {min} 미만을 막습니다"
+            ));
+        }
+        if let Some((until, gm)) = pair.filter(|_| before.is_none_or(|b| b.min != min)) {
+            self.report.push(format!(
+                "{platform}: {}까지는 {gm} 미만을, 그 뒤로는 {min} 미만을 막습니다",
+                time::format_kst(until)
             ));
         }
 
@@ -313,6 +532,26 @@ impl<'a> Maker<'a> {
                 ))
             }
         };
+        // a withdrawn package does not come back under the same version (one build per version):
+        // the fix ships as a higher version (trust rules 4-2, the package rule)
+        if let (Some(b), Some(a)) = (before, artifact) {
+            if b.package.is_none() && a.info.version == b.latest {
+                return Err(format!(
+                    "{platform}: {}의 패키지는 거둬들였습니다. 같은 버전에 패키지를 다시 붙이지 않습니다\
+                     (고친 빌드는 더 높은 버전으로 내세요)",
+                    b.latest
+                ));
+            }
+        }
+        let withdraw = self.req.withdraw.contains(&platform);
+        if withdraw
+            && from_artifact.is_some_and(|a| before.is_none_or(|b| a.info.version != b.latest))
+        {
+            return Err(format!(
+                "{platform}: --withdraw-package와 새 latest를 함께 줄 수 없습니다. 새 latest는 패키지와 함께 \
+                 나갑니다"
+            ));
+        }
         // every build has a new version: the same version with another hash is a mistake
         if let (Some(b), Some(a)) = (before, artifact) {
             let other = b
@@ -358,6 +597,24 @@ impl<'a> Maker<'a> {
             }
             (None, None) => return Ok(None),
         };
+        if withdraw {
+            let Some(package) = entry.package.take() else {
+                return Err(format!(
+                    "{platform}: 거둬들일 패키지가 없습니다(이미 패키지 없는 항목입니다)"
+                ));
+            };
+            self.report.push(format!(
+                "{platform}: 패키지 {}(sha256 {})를 거둬들입니다. 앱 안 내려받기, 무인 설치, 강제 설치가 \
+                 멈춥니다. 더 높은 latest가 나올 때까지 패키지 없이 둡니다",
+                package.file, package.sha256
+            ));
+            if entry.auto_install_after.take().is_some() || self.req.auto_after.is_some() {
+                self.report.push(format!(
+                    "{platform}: 패키지가 없으니 무인 설치 시각도 없앱니다"
+                ));
+            }
+            return Ok(Some((entry, latest_changed)));
+        }
         if platform == Platform::Windows {
             let now = self.req.now;
             entry.auto_install_after = match self.req.auto_after {
@@ -384,6 +641,15 @@ impl<'a> Maker<'a> {
                 }
                 None => before.and_then(|b| b.auto_install_after),
             };
+            if entry.package.is_none() {
+                if self.req.auto_after.is_some_and(|a| a != AutoAfter::Off) {
+                    return Err(
+                        "windows: 패키지가 없는 항목에는 무인 설치 시각을 둘 수 없습니다"
+                            .to_owned(),
+                    );
+                }
+                entry.auto_install_after = None;
+            }
         }
         if platform == Platform::Android {
             if let Some(move_to_play) = self.req.move_to_play {
@@ -639,10 +905,13 @@ pub fn describe_changes(old: Option<&Policy>, new: &Policy) -> Vec<String> {
         match (old.platforms.get(&platform), new.platforms.get(&platform)) {
             (None, None) => {}
             (None, Some(e)) => lines.push(format!(
-                "{platform}: 새 항목(최소 {}, 최신 {}, 유예 끝 {})",
+                "{platform}: 새 항목(최소 {}, 최신 {}, 유예 끝 {}{})",
                 e.min,
                 e.latest,
-                when(e.grace_until)
+                when(e.grace_until),
+                e.grace_min
+                    .map(|v| format!(", 그때까지 {v} 미만만 막음"))
+                    .unwrap_or_default()
             )),
             (Some(_), None) => lines.push(format!("{platform}: 항목을 뺌")),
             (Some(a), Some(b)) => {
@@ -660,6 +929,14 @@ pub fn describe_changes(old: Option<&Policy>, new: &Policy) -> Vec<String> {
                         when(b.grace_until)
                     ));
                 }
+                if a.grace_min != b.grace_min {
+                    let v = |v: Option<Version>| v.map_or("없음".to_owned(), |v| v.to_string());
+                    changes.push(format!(
+                        "유예 중 막는 버전(grace_min) {} → {}",
+                        v(a.grace_min),
+                        v(b.grace_min)
+                    ));
+                }
                 if a.auto_install_after != b.auto_install_after {
                     changes.push(format!(
                         "무인 설치 시작 {} → {}",
@@ -675,8 +952,9 @@ pub fn describe_changes(old: Option<&Policy>, new: &Policy) -> Vec<String> {
                     ));
                 }
                 if a.package != b.package {
-                    if let Some(p) = &b.package {
-                        changes.push(format!("패키지 {} (sha256 {})", p.file, p.sha256));
+                    match &b.package {
+                        Some(p) => changes.push(format!("패키지 {} (sha256 {})", p.file, p.sha256)),
+                        None => changes.push("패키지를 거둬들임".to_owned()),
                     }
                 }
                 if a.version_code != b.version_code {
@@ -710,23 +988,157 @@ pub fn describe_changes(old: Option<&Policy>, new: &Policy) -> Vec<String> {
 
 /// The size the signed envelope will have.
 pub fn envelope_size(p: &str, root_p: Option<&str>) -> usize {
-    let part = |p: &str, k: u32| Part {
+    unsigned_envelope(p, 65535, root_p.map(|p| (65535, p))).len()
+}
+
+/// An envelope as it will be signed, with signatures not made yet: what `policy` and `sign`
+/// check by the apps' rules with the signatures taken as good ([`trust::accept_draft`]).
+pub fn unsigned_envelope(p: &str, k: u32, root: Option<(u32, &str)>) -> String {
+    let part = |k: u32, p: &str| Part {
         k,
         p: p.to_owned(),
         s: [0; 64],
     };
     Envelope {
-        policy: part(p, 65535),
-        root: root_p.map(|p| part(p, 65535)),
+        policy: part(k, p),
+        root: root.map(|(k, p)| part(k, p)),
     }
     .to_file()
-    .len()
+}
+
+/// X4 (4-3) for an envelope that will be (or was) signed: taken by a device that holds `prev`
+/// and by a fresh install at the key file's floor; a policy of epoch 2 or later asks no less
+/// than its declaration's base. `signed` says whether the signatures are made (in `sign`) or
+/// taken as good (in `policy`).
+pub fn x4(
+    file: &str,
+    prev: Option<&str>,
+    keys: &KeySet,
+    server: &str,
+    signed: bool,
+) -> Result<(), String> {
+    let run = |state: &State| {
+        if signed {
+            trust::accept(keys, server, state, file.as_bytes())
+        } else {
+            trust::accept_draft(keys, server, state, file.as_bytes())
+        }
+    };
+    if let Some(prev) = prev {
+        let holding = trust::holding(keys, server, prev);
+        if holding.held.is_none() {
+            return Err("X4: 이전 정책을 이 키 파일로 읽지 못합니다(--prev)".to_owned());
+        }
+        let (_, outcome) = run(&holding)?;
+        if outcome != trust::Outcome::Taken {
+            let why = outcome
+                .reason()
+                .map_or("같은 정책입니다".to_owned(), |r| r.code());
+            return Err(format!(
+                "X4: 이전 정책을 가진 앱이 이 정책을 받지 않습니다({why}: {})",
+                outcome.reason().map(|r| r.korean()).unwrap_or_default()
+            ));
+        }
+    }
+    let (_, outcome) = run(&State::default())?;
+    if outcome != trust::Outcome::Taken {
+        let reason = outcome.reason();
+        return Err(format!(
+            "X4: 키 파일의 하한({})으로 새로 설치한 앱이 이 정책을 받지 않습니다({}: {})",
+            keys.floor,
+            reason.map(|r| r.code()).unwrap_or_default(),
+            reason.map(|r| r.korean()).unwrap_or_default()
+        ));
+    }
+    let checked = trust::canonical(file.as_bytes())?;
+    if let (Some(form), true) = (&checked.root, checked.policy.epoch >= 2) {
+        let decl = form
+            .judge(Some(server))
+            .map_err(|r| format!("X4: 루트 선언: {}", r.korean()))?;
+        let policy = checked
+            .policy
+            .judge(Some(server))
+            .map_err(|r| format!("X4: 정책: {}", r.korean()))?;
+        if trust::relaxes(&decl.base, &policy.requirements()) {
+            return Err("X4: 정책이 자기 루트 선언의 base보다 덜 막습니다".to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// What X1 says about entries that ask less: one line per entry and kind.
+pub fn loosened_lines(old: &Policy, new: &Policy) -> Vec<String> {
+    loosenings(&old.requirements(), &new.requirements())
+        .into_iter()
+        .map(|(p, kind)| format!("{p}: {}", kind.korean()))
+        .collect()
+}
+
+/// The signer of a policy (4-2 Signer): a signing key of the key file that the (new or carried)
+/// declaration does not revoke and every recorded key set pins; or, with `--root-signs-policy`
+/// and only while no such key exists, a root key every recorded key set pins.
+pub fn policy_signer(
+    keys: &KeySet,
+    archive: &Archive,
+    revoked: &[u32],
+    root_signs: bool,
+) -> Result<(Role, u32), String> {
+    let mut serving = Vec::new();
+    for key in keys.signing.iter().filter(|k| !revoked.contains(&k.id)) {
+        if archive.not_pinning(Role::Signing, key)?.is_empty() {
+            serving.push(key.id);
+        }
+    }
+    if root_signs {
+        if let Some(k) = serving.first() {
+            return Err(format!(
+                "X9: 서명 키 {k}가 기록된 모든 빌드에 박혀 있습니다. 정책은 그 키로 서명합니다(--root-signs-policy를 빼세요)"
+            ));
+        }
+        let root = serving_roots(keys, archive)?
+            .first()
+            .copied()
+            .ok_or("X12: 기록된 모든 빌드가 박은 루트 키가 키 파일에 없습니다")?;
+        return Ok((Role::Root, root));
+    }
+    match serving.first() {
+        Some(k) => Ok((Role::Signing, *k)),
+        None => {
+            let mut unserved = Vec::new();
+            for key in keys.signing.iter().filter(|k| !revoked.contains(&k.id)) {
+                for record in archive.not_pinning(Role::Signing, key)? {
+                    unserved.push(format!("서명 키 {}: {}", key.id, record.name()));
+                }
+            }
+            Err(format!(
+                "X12: 폐기되지 않은 서명 키 가운데 기록된 모든 빌드가 박은 키가 없습니다({}). 그 빌드가 쓰이는 동안은 \
+                 루트 키가 정책에 서명합니다(--root-signs-policy, 런북 5-8 6번)",
+                if unserved.is_empty() {
+                    "키 파일에 쓸 서명 키가 없음".to_owned()
+                } else {
+                    unserved.join("; ")
+                }
+            ))
+        }
+    }
+}
+
+/// The root keys of the key file that every recorded key set pins (X12).
+pub fn serving_roots(keys: &KeySet, archive: &Archive) -> Result<Vec<u32>, String> {
+    let mut out = Vec::new();
+    for key in &keys.roots {
+        if archive.not_pinning(Role::Root, key)?.is_empty() {
+            out.push(key.id);
+        }
+    }
+    Ok(out)
 }
 
 /// Makes the next policy.
 pub fn make(
     req: &Request,
     keys: &KeySet,
+    archive: &Archive,
     settings: &Settings,
     tools: &dyn Tools,
 ) -> Result<Made, String> {
@@ -741,6 +1153,14 @@ pub fn make(
     no_duplicates(req.os_min.iter().map(|(p, _)| *p), "--os-min")?;
     no_duplicates(req.hold.iter().chain(&req.drop).copied(), "--hold/--drop")?;
     no_duplicates(req.revoke.iter().copied(), "--revoke-key")?;
+    no_duplicates(req.grace_min.iter().map(|(p, _)| *p), "--grace-min")?;
+    no_duplicates(req.withdraw.iter().copied(), "--withdraw-package")?;
+    if let Some(p) = req.withdraw.iter().find(|p| !p.has_package()) {
+        return Err(format!(
+            "--withdraw-package {p}: 패키지는 windows와 android에만 있습니다"
+        ));
+    }
+    let new_decl = req.new_declaration();
 
     let (server, prev): (String, Option<Checked>) = match &req.prev {
         Some(file) => {
@@ -771,8 +1191,75 @@ pub fn make(
         ));
     }
 
+    // the archive: a declaration only from the live file, which is --prev and a file of the
+    // archive (X10); a policy only after the archive's highest file that is not voided (X11)
+    let highest = archive.highest()?;
+    if new_decl {
+        let Some(prev_file) = req.prev.as_deref() else {
+            return Err(
+                "새 루트 선언은 서버에 있는 정책에서만 만듭니다: --prev와 --live에 서버의 정책 파일을 주세요(X10)"
+                    .to_owned(),
+            );
+        };
+        let live = req.live.as_deref().ok_or(
+            "새 루트 선언(--relax, --drop, --revoke-key, --new-epoch)에는 --live <https://<서버>/api/hjv/version에서 \
+             받은 파일>이 필요합니다(X10)",
+        )?;
+        if live != prev_file {
+            return Err(
+                "X10: --live의 파일이 --prev와 바이트 단위로 같지 않습니다. 서버의 정책 파일을 다시 받아 둘 다에 주세요"
+                    .to_owned(),
+            );
+        }
+        if archive.find(prev_file)?.is_none() {
+            return Err(format!(
+                "X10: 서버의 정책이 보관소({})에 없습니다. 다른 곳에서 서명된 것입니다: 서명 키를 도둑맞았거나(런북 5-8), \
+                 깨끗한 컴퓨터에서 한 서명의 파일을 보관소로 옮기지 않았습니다(5-0). 서버의 파일을 보관소의 마지막 파일로 \
+                 되돌리거나 파일을 옮긴 뒤 다시 하세요. archive adopt는 직접 서명한 파일에만 씁니다",
+                archive.dir.display()
+            ));
+        }
+    } else {
+        match (&highest, &req.prev) {
+            (None, None) => {}
+            (None, Some(_)) => {
+                return Err(format!(
+                    "X11: 보관소({})에 서명한 정책이 없습니다. --prev가 직접 서명한 파일이면 먼저 archive adopt로 넣으세요",
+                    archive.dir.display()
+                ))
+            }
+            (Some(h), None) => {
+                return Err(format!(
+                    "X11: 보관소에 서명한 정책이 있습니다. --prev에 보관소의 마지막 파일을 주세요: {}",
+                    h.path.display()
+                ))
+            }
+            (Some(h), Some(p)) if h.file != *p => {
+                return Err(format!(
+                    "X11: --prev가 보관소의 마지막 파일(무효로 하지 않은 가장 높은 위치 {}:{})이 아닙니다: {}. 서명한 파일은 \
+                     낸 것으로 칩니다. 잘못 서명했고 컴퓨터 밖으로 나가지 않았다면 void로 무효로 하세요(5-13)",
+                    h.epoch,
+                    h.seq,
+                    h.path.display()
+                ))
+            }
+            _ => {}
+        }
+    }
+    if old.is_none() && keys.floor.epoch != 1 {
+        return Err("첫 정책은 세대 1입니다. 키 파일의 하한 세대가 1이 아닙니다".to_owned());
+    }
+    let mut warnings = Vec::new();
+    if old.is_none() && keys.floor.seq > 0 {
+        warnings.push(format!(
+            "경고: 키 파일의 하한이 {}입니다. 이전 정책이 있었다면 --prev로 줘야 합니다",
+            keys.floor
+        ));
+    }
+
     let mut maker = Maker {
         req,
+        prev: old.map(|p| &p.platforms),
         report: Vec::new(),
         notes: Vec::new(),
         grace_for_all_used: false,
@@ -839,59 +1326,48 @@ pub fn make(
         );
     }
 
-    // the position: the previous one plus one, or the first of a new epoch
-    let old_root = prev.as_ref().and_then(|c| c.root.as_ref());
-    let old_epoch = old.map_or(keys.floor.epoch, |p| p.epoch);
-    let epoch = old_epoch + u64::from(req.new_epoch);
-    let seq = match (req.seq, old) {
-        (Some(seq), _) => seq,
-        (None, _) if req.new_epoch => 1,
-        (None, Some(old)) => old.seq + 1,
-        (None, None) => keys.floor.seq + 1,
-    };
-    if !req.new_epoch && old.is_some_and(|old| seq <= old.seq) {
-        return Err(format!(
-            "--seq의 값({seq})이 이전 정책의 seq({})보다 높지 않습니다",
-            old.map_or(0, |o| o.seq)
-        ));
-    }
-    if old.is_none() && keys.floor.seq > 0 {
-        maker.report.push(format!(
-            "경고: 키 파일의 하한이 {}입니다. 이전 정책이 있었다면 --prev로 줘야 합니다",
-            keys.floor
-        ));
+    // the package rule (4-2, X7): a windows or android entry carries a package, unless it is
+    // withdrawn in this policy or was without one at the same latest
+    for (platform, entry) in platforms.iter().filter(|(p, _)| p.has_package()) {
+        let before = old.and_then(|p| p.platforms.get(platform));
+        let kept_without = before.is_some_and(|b| b.package.is_none() && b.latest == entry.latest);
+        if entry.package.is_none() && !req.withdraw.contains(platform) && !kept_without {
+            return Err(format!(
+                "{platform}: 패키지가 없습니다(--release-dir). 거둬들이려면 --withdraw-package {platform}"
+            ));
+        }
     }
 
-    // the root declaration: the last one stays, or a new one for a revocation or a new epoch
-    let mut root_p = None;
-    let mut root_decl = old_root.cloned();
-    if !req.revoke.is_empty() || req.new_epoch {
-        let mut revoked: Vec<u32> = old_root.map(|r| r.revoked.clone()).unwrap_or_default();
-        for id in &req.revoke {
-            if *id == keys.root.id {
-                return Err(format!(
-                    "--revoke-key {id}: 루트 키 번호는 폐기할 수 없습니다"
-                ));
-            }
-            if !(1..=65535).contains(id) {
-                return Err(format!("--revoke-key {id}: 키 번호는 1-65535입니다"));
-            }
-            if revoked.contains(id) {
-                return Err(format!("--revoke-key {id}: 이미 폐기한 키입니다"));
-            }
-            revoked.push(*id);
+    // the position: one above every position of the epoch the archive holds; a new
+    // declaration opens the epoch above every epoch the archive holds (4-2 Position)
+    let (epoch, seq) = if new_decl {
+        if req.seq.is_some() {
+            return Err(
+                "새 루트 선언과 함께 --seq를 줄 수 없습니다(새 세대는 seq 1부터)".to_owned(),
+            );
         }
-        revoked.sort_unstable();
-        let decl = RootDecl {
-            server: server.clone(),
-            epoch,
-            revoked,
-            issued: now,
+        let above = old.map_or(0, |p| p.epoch).max(archive.max_epoch()?);
+        (above + 1, 1)
+    } else {
+        let epoch = old.map_or(keys.floor.epoch, |p| p.epoch);
+        let last = old.map_or(keys.floor.seq, |p| p.seq);
+        let above = archive.max_seq(epoch)?.unwrap_or(0).max(last);
+        let seq = match req.seq {
+            None => above + 1,
+            Some(seq) if seq <= above => {
+                return Err(format!(
+                    "--seq의 값({seq})이 이 세대에서 보관소가 가진 가장 높은 seq({above})보다 높지 않습니다"
+                ))
+            }
+            Some(seq) if seq > last + MAX_SEQ_AHEAD => {
+                return Err(format!(
+                    "--seq의 값({seq})이 이전 정책({last})에서 {MAX_SEQ_AHEAD} 넘게 뜹니다. 앱이 받지 않습니다"
+                ))
+            }
+            Some(seq) => seq,
         };
-        decl.check()?;
-        root_p = Some(decl.to_text());
-        root_decl = Some(decl);
-    }
+        (epoch, seq)
+    };
 
     let contact_ko = match &req.contact {
         Some(text) if text.is_empty() => None,
@@ -908,159 +1384,128 @@ pub fn make(
     };
     policy.check()?;
 
-    // who must sign: what an app would not take from a signing key, and what it would take
-    // although it enforces less than now (a new entry below the present minimums)
-    let relaxed = old.map(|old| relaxations(old, &policy)).unwrap_or_default();
-    let lowered = old
+    // X1 and X8: asking less needs a declaration
+    let loosened = old
+        .map(|old| loosened_lines(old, &policy))
+        .unwrap_or_default();
+    let below: Vec<String> = old
         .map(|old| new_entries_below(old, &policy))
-        .unwrap_or_default();
-    let eased: Vec<String> = relaxed
-        .iter()
-        .map(Relaxation::describe)
-        .chain(lowered.iter().map(NewEntryBelow::describe))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(p, min, lowest)| {
+            format!("{p}: 새 항목의 최소 버전({min})이 지금 가장 낮은 최소 버전({lowest})보다 낮아 hbbs의 MIN이 내려감")
+        })
         .collect();
-    if !eased.is_empty() && !req.relax {
+    if !new_decl && !(loosened.is_empty() && below.is_empty()) {
         return Err(format!(
-            "완화가 들어 있습니다: {}. 완화는 루트 키만 서명할 수 있습니다. 정말 필요하면 --relax를 주세요",
-            eased.join("; ")
+            "X1: 이전 정책보다 덜 막습니다({}). 루트 키의 선언이 있어야 합니다: --relax --live <서버의 정책 파일>(새 세대)",
+            loosened.iter().chain(&below).cloned().collect::<Vec<_>>().join("; ")
         ));
     }
-    let signer = if req.relax { Role::Root } else { Role::Signing };
-    let revoked: Vec<u32> = root_decl
-        .as_ref()
-        .map(|r| r.revoked.clone())
-        .unwrap_or_default();
-    let k = match signer {
-        Role::Root => keys.root.id,
-        Role::Signing => keys
-            .signing
-            .iter()
-            .map(|k| k.id)
-            .find(|id| !revoked.contains(id))
-            .ok_or(
-                "폐기되지 않은 서명 키가 키 파일에 없습니다. 새 서명 키를 박은 빌드가 나오기 전에는 \
-                 루트 키로 서명합니다(--relax)",
-            )?,
-    };
 
-    // an app that holds the previous policy must take this one
-    let text = policy.to_text();
-    let unsigned = Checked {
-        envelope: Envelope {
-            policy: Part {
-                k,
-                p: text.clone(),
-                s: [0; 64],
-            },
-            root: None,
-        },
-        p_hash: trust::sha256(text.as_bytes()),
-        policy: policy.clone(),
-        root: root_decl.clone(),
-        role: signer,
-    };
-    let state = prev
-        .as_ref()
-        .map_or_else(|| State::initial(keys), State::holding);
-    state.accept(keys, &unsigned)?;
-
-    // ... and so must an app that was off while the previous policy was served, when that was
-    // a policy of the root key. Such an app holds an older policy and compares this one with
-    // it: what the root key relaxed in between and this policy leaves relaxed is, to that app,
-    // a relaxation by a signing key, and it drops this policy and every later one. Once one
-    // signing-key policy passes for those apps, the later ones do (the rules of a signing key
-    // only tighten).
-    if req.no_held && !req.held.is_empty() {
-        return Err("--held none과 --held <파일>을 함께 줄 수 없습니다".to_owned());
-    }
-    let prev_by_root = prev.as_ref().is_some_and(|c| c.role == Role::Root);
-    if prev_by_root && signer == Role::Signing && req.held.is_empty() && !req.no_held {
-        return Err(
-            "직전 정책은 루트 키가 서명했습니다. 그 정책이 서버에 있는 동안 꺼져 있던 앱은 그 앞의 정책을 가진 \
-             채로 새 정책을 비교합니다. 그 앱도 받는 정책인지 확인하도록 --held <루트 키의 정책 바로 앞의 \
-             정책 파일>을 주세요(루트 키의 정책이 이어졌으면 그 사이의 것도 --held로, 그런 정책이 없으면 \
-             --held none). 아직 완화를 되돌릴 수 없으면 이 정책도 루트 키로 서명합니다(--relax)"
-                .to_owned(),
-        );
-    }
-    for file in &req.held {
-        let held = check_envelope(file, keys, &server).map_err(|e| format!("--held: {e}"))?;
-        let at = Floor {
-            epoch: held.policy.epoch,
-            seq: held.policy.seq,
-        };
-        let before_prev = old.is_some_and(|old| {
-            at < Floor {
-                epoch: old.epoch,
-                seq: old.seq,
-            }
-        });
-        if !before_prev {
-            return Err(format!(
-                "--held: {at} 정책은 직전 정책보다 앞의 것이 아닙니다(앱이 아직 가지고 있을 수 있는 옛 정책을 줍니다)"
-            ));
-        }
-        State::holding(&held)
-            .accept(keys, &unsigned)
-            .map_err(|e| {
-                format!(
-                    "{at} 정책을 가진 채 꺼져 있던 앱은 이 정책을 받지 않습니다: {e}. 그 정책보다 느슨한 데가 \
-                     없게 하세요(같은 min이면 유예 끝을 그때의 기한보다 늦지 않게: --grace-until <그 시각> \
-                     또는 --grace-days 0). 아직 그럴 수 없으면 이 정책도 루트 키로 서명합니다(--relax)"
-                )
-            })?;
-        maker.notes.push(format!(
-            "{at} 정책을 가진 채 꺼져 있던 앱도 이 정책을 받음을 확인함(--held)"
-        ));
-    }
-    let position = Floor { epoch, seq };
-    if position < keys.floor {
-        return Err(format!(
-            "정책 위치({position})가 키 파일의 하한({})보다 낮습니다. 이 키로 만든 빌드가 받지 않습니다",
-            keys.floor
-        ));
-    }
+    // the declaration: carried with the same bytes, or a new one whose base is this policy's
+    // requirement part (4-2 Declaration, X2)
     let carried = prev
         .as_ref()
         .and_then(|c| c.envelope.root.clone())
-        .filter(|_| root_p.is_none());
-    let root_text = root_p.as_deref().or(carried.as_ref().map(|r| r.p.as_str()));
-    let size = envelope_size(&text, root_text);
+        .filter(|_| !new_decl);
+    let old_decl = prev.as_ref().and_then(|c| c.root.as_ref());
+    let new_root = if new_decl {
+        let mut revoked: Vec<u32> = old_decl.map(|d| d.revoked.clone()).unwrap_or_default();
+        for id in &req.revoke {
+            crate::keys::check_id(Role::Signing, *id).map_err(|e| {
+                format!("X2: --revoke-key {id}: {e}. 루트 키는 폐기하지 않습니다(런북 5-10)")
+            })?;
+            if revoked.contains(id) {
+                return Err(format!("--revoke-key {id}: 이미 폐기한 키입니다"));
+            }
+            revoked.push(*id);
+        }
+        revoked.sort_unstable();
+        let decl = RootDecl {
+            server: server.clone(),
+            epoch,
+            revoked,
+            issued: now,
+            base: policy.requirements(),
+        };
+        decl.check().map_err(|e| format!("X2: {e}"))?;
+        Some(decl)
+    } else {
+        None
+    };
+    let revoked_now: Vec<u32> = new_root
+        .as_ref()
+        .or(old_decl)
+        .map(|d| d.revoked.clone())
+        .unwrap_or_default();
+
+    // the signer (X9, X12)
+    let (signer, k) = policy_signer(keys, archive, &revoked_now, req.root_signs_policy)?;
+    let root_key = if new_decl {
+        Some(*serving_roots(keys, archive)?.first().ok_or(
+            "X12: 기록된 모든 빌드가 박은 루트 키가 키 파일에 없습니다. 새 루트 선언에 서명할 키가 없습니다",
+        )?)
+    } else {
+        None
+    };
+
+    // X4: a device holding --prev and a fresh install take it
+    let text = policy.to_text();
+    let root_p = new_root.as_ref().map(RootDecl::to_text);
+    let root_for_check: Option<(u32, String)> = match (&root_p, &carried) {
+        (Some(p), _) => root_key.map(|k| (k, p.clone())),
+        (None, Some(part)) => Some((part.k, part.p.clone())),
+        (None, None) => None,
+    };
+    let unsigned = unsigned_envelope(
+        &text,
+        k,
+        root_for_check.as_ref().map(|(k, p)| (*k, p.as_str())),
+    );
+    let size = envelope_size(&text, root_for_check.as_ref().map(|(_, p)| p.as_str()));
     if size > MAX_ENVELOPE_BYTES {
         return Err(format!(
-            "봉투가 {size}바이트가 됩니다. 앱은 {MAX_ENVELOPE_BYTES}바이트까지만 읽습니다(알림 글을 줄이세요)"
+            "X5: 봉투가 {size}바이트가 됩니다. 앱은 {MAX_ENVELOPE_BYTES}바이트까지만 읽습니다(알림 글을 줄이세요)"
         ));
     }
+    x4(&unsigned, req.prev.as_deref(), keys, &server, false)?;
 
     let mut report = describe_changes(old, &policy);
     report.append(&mut maker.report);
-    for line in &eased {
-        report.push(format!("완화: {line}"));
+    report.append(&mut warnings);
+    if req.auto_after == Some(AutoAfter::Off) {
+        if let Some(line) = auto_off_warning(old, &policy, now) {
+            report.push(line);
+        }
     }
-    for waits in old
-        .map(|old| old_mins_that_wait(old, &policy))
-        .unwrap_or_default()
-    {
-        report.push(waits.describe());
-    }
-    if let Some(decl) = root_decl.as_ref().filter(|_| root_p.is_some()) {
+    if let Some(decl) = &new_root {
         report.push(format!(
-            "새 루트 선언: 세대 {}, 폐기한 서명 키 {:?}(루트 키로 서명)",
-            decl.epoch, decl.revoked
+            "새 루트 선언: 세대 {} · 폐기한 서명 키 {:?} · 루트 키 {}로 서명",
+            decl.epoch,
+            decl.revoked,
+            root_key.unwrap_or_default()
         ));
-    }
-    if old.is_some_and(|old| old.epoch == epoch && seq > old.seq + SEQ_JUMP_TO_CONFIRM) {
-        report.push(format!(
-            "seq가 {SEQ_JUMP_TO_CONFIRM} 넘게 뜁니다: 서명할 때 확인을 묻습니다"
-        ));
+        for line in trust::describe_declaration(decl).into_iter().skip(1) {
+            report.push(line);
+        }
+        for line in &loosened {
+            report.push(format!("완화: {line}"));
+        }
+        for line in &below {
+            report.push(format!("완화(도구 규칙): {line}"));
+        }
+        let relaxed = old
+            .map(|old| trust::relaxed(&old.requirements(), &policy.requirements()))
+            .unwrap_or_default();
+        report.push(relaxes_line(&relaxed));
     }
     report.push(format!(
-        "서명할 키: {}{}",
+        "서명할 키: 정책은 {} {k}{}",
         signer.korean(),
-        if root_p.is_some() && signer == Role::Signing {
-            " + 루트 키(루트 선언)"
-        } else {
-            ""
+        match root_key {
+            Some(r) => format!(", 루트 선언은 루트 키 {r}(깨끗한 컴퓨터에서, 런북 5-0)"),
+            None => String::new(),
         }
     ));
     report.push(format!(
@@ -1081,6 +1526,42 @@ pub fn make(
         draft,
         policy,
         report,
+    })
+}
+
+/// The server check's word for a new declaration (4-8 item 5): the entries the operator names.
+pub fn relaxes_line(relaxed: &std::collections::BTreeSet<Platform>) -> String {
+    if relaxed.is_empty() {
+        "서버 확인: --relaxes 없이 설치합니다(완화하는 항목 없음)".to_owned()
+    } else {
+        let names: Vec<&str> = relaxed.iter().map(|p| p.name()).collect();
+        format!(
+            "서버 확인: --relaxes {} 로 설치합니다(완화하는 항목을 운영자가 이름으로 말합니다)",
+            names.join(",")
+        )
+    }
+}
+
+/// `--auto-after windows=none` stops the rollout only: PCs below the Windows minimum still
+/// install the latest by force (3-4). Said when the minimum was raised now or a raise is pending.
+pub fn auto_off_warning(old: Option<&Policy>, new: &Policy, now: i64) -> Option<String> {
+    let entry = new.platforms.get(&Platform::Windows)?;
+    entry.package.as_ref()?;
+    let before = old.and_then(|p| p.platforms.get(&Platform::Windows));
+    let raised = before.is_some_and(|b| entry.min > b.min);
+    let pending = entry.grace_until.is_some_and(|until| until > now);
+    (raised || pending).then(|| {
+        format!(
+            "경고: --auto-after windows=none은 무인 설치(고리별)만 멈춥니다. 최소 버전({}) 미만인 PC는 {}을(를) \
+             강제로 설치합니다{}. 그것도 멈추려면 --withdraw-package windows를 함께 주세요(런북 5-6)",
+            entry.min,
+            entry.latest,
+            entry
+                .grace_until
+                .filter(|_| pending)
+                .map(|t| format!("(유예 끝 {} 뒤)", time::format_kst(t)))
+                .unwrap_or_default()
+        )
     })
 }
 

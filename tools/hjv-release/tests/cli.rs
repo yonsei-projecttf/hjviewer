@@ -82,7 +82,7 @@ impl World {
     fn new(name: &str) -> World {
         let dir = temp_dir(name);
         fs::copy(vectors().join("update-keys.env"), dir.join("keys.env")).unwrap();
-        for name in ["signing-1", "signing-2", "root-101"] {
+        for name in ["signing-1", "signing-2", "root-101", "root-102"] {
             let key = test_key(name).unwrap();
             let file = SecretKey::from_seed(key.role, key.id, &key.seed())
                 .encrypt(PASS, 6)
@@ -172,18 +172,37 @@ impl World {
         ]
     }
 
+    /// The command line with this world's archive for the commands that use one (a test key
+    /// file never uses the default archive).
+    fn with_archive<'a>(&'a self, args: &[&'a str], archive: &'a str) -> Vec<&'a str> {
+        let mut args = args.to_vec();
+        let uses = ["policy", "sign", "floor", "check", "void", "verify"];
+        let given = args.contains(&"--archive");
+        if !given && args.first().is_some_and(|c| uses.contains(c)) {
+            args.insert(1, archive);
+            args.insert(1, "--archive");
+        }
+        if !given && args.first() == Some(&"archive") && args.get(1) == Some(&"adopt") {
+            args.insert(2, archive);
+            args.insert(2, "--archive");
+        }
+        args
+    }
+
     /// Runs the tool as a script or an agent would: no terminal anywhere.
     fn tool(&self, args: &[&str]) -> Output {
         let env = self.env();
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        run_with(args, &self.dir, &env, "")
+        let archive = self.file("archive");
+        run_with(&self.with_archive(args, &archive), &self.dir, &env, "")
     }
 
     /// Runs the tool as the person at the terminal does.
     fn person(&self, args: &[&str], script: &[(&str, &str)]) -> Output {
         let env = self.env();
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        run_tty(args, &self.dir, &env, script)
+        let archive = self.file("archive");
+        run_tty(&self.with_archive(args, &archive), &self.dir, &env, script)
     }
 
     /// The artifacts of a build as downloaded from its run, with release.json as CI writes it.
@@ -712,8 +731,9 @@ fn a_release_from_the_build_to_the_server() {
         .contains("서명은 사용자가 터미널에서 직접 합니다"));
     // the command line for the person: the same key file, and the same word about test keys
     assert!(draft.stdout.contains(&format!(
-        "hjv-release sign --key <서명 키 파일> --keys {} --allow-test-keys --out version-policy.json draft1.json",
-        world.file("keys.env")
+        "hjv-release sign --key <서명 키 파일> --keys {} --archive {} --allow-test-keys --out version-policy.json draft1.json",
+        world.file("keys.env"),
+        world.file("archive")
     )));
     let calls = world.read("gh/calls.txt");
     assert_eq!(
@@ -779,9 +799,28 @@ fn a_release_from_the_build_to_the_server() {
         .stdout
         .contains(&format!("sha256 {}", hex(&sha256(file.as_bytes())))));
     assert!(signed.stdout.contains(&format!(
-        "확인: hjv-release verify --keys {} --allow-test-keys --server {SERVER} policy1.json",
-        world.file("keys.env")
+        "확인: hjv-release verify --keys {} --archive {} --allow-test-keys --server {SERVER} --prev <이전 정책> policy1.json",
+        world.file("keys.env"),
+        world.file("archive")
     )));
+    // the archive got the envelope and the key set of the build (the first sign records it)
+    assert!(signed.stdout.contains("보관소에 넣었습니다"));
+    assert_eq!(
+        world.read("archive/policy-e1-s1.json"),
+        world.read("policy1.json")
+    );
+    assert_eq!(
+        fs::read_dir(world.dir.join("archive"))
+            .unwrap()
+            .filter(|e| e
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("keyset-"))
+            .count(),
+        1
+    );
     assert!(file.ends_with("\n") && !file.trim_end().contains('\n'));
     assert_eq!(mode(&world.dir.join("policy1.json")), 0o644);
     let policy = world.checked("policy1.json");
@@ -915,15 +954,15 @@ fn a_release_from_the_build_to_the_server() {
     assert_eq!(ok.code, 0, "{}", ok.all());
     assert!(ok
         .stdout
-        .contains("이전 정책을 가진 앱이 이 정책을 받습니다"));
+        .contains("이전 정책을 가진 앱과 새로 설치한 앱이 이 정책을 받습니다"));
     // the other way round it is a rollback
     let rollback = verify(&["--server", SERVER, "--prev", "policy2.json", "policy1.json"]);
     assert_eq!(rollback.code, 1);
 
-    // the floor line for the next build
+    // the floor line for the next build: from the live file, a file of the archive
     let floor = world.tool(&[
         "floor",
-        "--policy",
+        "--live",
         "policy2.json",
         "--keys",
         &keys,
@@ -931,245 +970,156 @@ fn a_release_from_the_build_to_the_server() {
     ]);
     assert_eq!(
         (floor.code, floor.stdout.as_str()),
-        (0, "HJV_POLICY_FLOOR=1:2\n")
+        (0, "HJV_POLICY_FLOOR=1:2\n"),
+        "{}",
+        floor.all()
     );
     assert!(floor.stderr.contains("하한은 1:0"));
+    // a file the archive does not hold never becomes a floor (S's file on the server)
+    let not_ours = world.tool(&[
+        "floor",
+        "--live",
+        "changed.json",
+        "--keys",
+        &keys,
+        "--allow-test-keys",
+    ]);
+    assert_eq!(not_ours.code, 1);
+    assert!(not_ours.stderr.contains("보관소"), "{}", not_ours.stderr);
 }
 
 #[test]
-fn relaxing_asks_for_yes_and_the_root_key() {
+fn relaxing_is_a_declaration_signed_at_the_clean_machine() {
     let world = World::new("relax");
-    assert_eq!(world.first_draft("draft1.json").code, 0);
-    assert_eq!(
-        world
-            .sign("signing-1.key", "draft1.json", "policy1.json")
-            .code,
-        0
-    );
-    assert_eq!(
-        world
-            .policy(&[
-                "--prev",
-                "policy1.json",
-                "--min",
-                "all=1.6.0",
-                "--grace-days",
-                "14",
-                "--ios-valid",
-                &world.ios_build,
-                "--out",
-                "draft2.json"
-            ])
-            .code,
-        0
-    );
-    assert_eq!(
-        world
-            .sign("signing-1.key", "draft2.json", "policy2.json")
-            .code,
-        0
-    );
-
-    // lowering a min: the tool refuses without --relax, and with it the draft is the root key's
-    let refused = world.policy(&[
+    world.two_policies("14");
+    // lowering a min: refused without a declaration, and a declaration only from the live file
+    let base = [
         "--prev",
         "policy2.json",
         "--min",
         "ios=1.5.0",
         "--out",
         "draft3.json",
-    ]);
+    ];
+    let refused = world.policy(&base);
     assert_eq!(refused.code, 1);
     assert!(
-        refused.stderr.contains("완화가 들어 있습니다")
-            && refused.stderr.contains("ios: min을 내림")
+        refused.stderr.contains("X1") && refused.stderr.contains("ios"),
+        "{}",
+        refused.stderr
     );
     assert!(!world.dir.join("draft3.json").exists());
-    let relaxed = world.policy(&[
-        "--prev",
-        "policy2.json",
-        "--min",
-        "ios=1.5.0",
-        "--relax",
-        "--out",
-        "draft3.json",
-    ]);
+    let no_live = world.policy(&[&base[..], &["--relax"]].concat());
+    assert_eq!(no_live.code, 1);
+    assert!(no_live.stderr.contains("--live"), "{}", no_live.stderr);
+    let relaxed = world.policy(&[&base[..], &["--relax", "--live", "policy2.json"]].concat());
     assert_eq!(relaxed.code, 0, "{}", relaxed.all());
-    assert!(relaxed.stdout.contains("서명할 키: 루트 키"));
+    assert!(relaxed.stdout.contains("새 루트 선언: 세대 2"));
+    assert!(relaxed.stdout.contains("완화: ios: 최소 버전을 내림"));
+    assert!(relaxed.stdout.contains("--relaxes ios"));
     assert!(relaxed
         .stdout
-        .contains("hjv-release sign --key <루트 키 파일>"));
+        .contains("서명할 키: 정책은 서명 키 1, 루트 선언은 루트 키 101"));
+    assert!(relaxed.stdout.contains("깨끗한 컴퓨터"));
+    assert!(relaxed
+        .stdout
+        .contains("hjv-release sign --key <루트 키 파일> --key <서명 키 파일>"));
+    assert!(relaxed.stdout.contains("--live <방금 받은 서버의 정책>"));
 
     let (keys, root, signing) = (
         world.file("keys.env"),
         world.file("root-101.key"),
         world.file("signing-1.key"),
     );
-    let sign = |key: &str, script: &[(&str, &str)]| {
-        world.person(
-            &[
-                "sign",
-                "--key",
-                key,
-                "--keys",
-                &keys,
-                "--allow-test-keys",
-                "--out",
-                "policy3.json",
-                "draft3.json",
-            ],
-            script,
-        )
-    };
-    // anything but yes ends it, before any passphrase is asked for
-    for answer in ["no", "y", "YES", ""] {
-        let output = sign(&root, &[("yes를 입력하세요: ", answer)]);
-        assert_eq!(output.code, 1, "{answer:?}");
-        assert!(
-            output.tty.contains("완화: ios: min을 내림"),
-            "{}",
-            output.tty
-        );
-        assert!(output.stderr.contains("yes가 아니어서 서명하지 않았습니다"));
-        assert!(!output.tty.contains("의 비밀번호"));
-    }
-    // a signing key cannot sign it, even with yes
-    let output = sign(
-        &signing,
-        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
-    );
-    assert_eq!(output.code, 1);
-    assert!(
-        output.stderr.contains("이 정책은 루트 키로 서명합니다"),
-        "{}",
-        output.stderr
-    );
-    assert!(!world.dir.join("policy3.json").exists());
-    // yes and the root key
-    let output = sign(
-        &root,
-        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
-    );
-    assert_eq!(output.code, 0, "{}", output.all());
-    assert!(output.tty.contains("yes\n"), "the answer is shown as typed");
-    assert!(
-        output.tty.contains("필요한 키: 루트 키\n"),
-        "{}",
-        output.tty
-    );
-    assert!(output.tty.contains("루트 키(번호 101)를 열었습니다"));
-    assert_no_secret(&output, &["root-101", "signing-1"]);
-    let policy3 = world.checked("policy3.json");
-    assert_eq!(policy3.platforms[&Platform::Ios].min.to_string(), "1.5.0");
-    assert_eq!(
-        Envelope::parse(&world.read("policy3.json"))
-            .unwrap()
-            .policy
-            .k,
-        101
-    );
-
-    // A revocation with a new epoch: the root key signs the declaration, signing key 2 the
-    // policy. The previous policy is the root key's, so the tool asks for the one before it: an
-    // app that was off while policy 3 was served still holds policy 2.
-    let without = world.policy(&[
-        "--prev",
-        "policy3.json",
-        "--revoke-key",
-        "1",
-        "--new-epoch",
-        "--out",
-        "draft4.json",
-    ]);
-    assert_eq!(without.code, 1);
-    assert!(
-        without
-            .stderr
-            .contains("직전 정책은 루트 키가 서명했습니다")
-            && without.stderr.contains("--held"),
-        "{}",
-        without.stderr
-    );
-    // As it is, that app would drop the policy for the lowered iOS min, and with the policy
-    // the revocation it carries.
-    let stale = world.policy(&[
-        "--prev",
-        "policy3.json",
-        "--held",
-        "policy2.json",
-        "--revoke-key",
-        "1",
-        "--new-epoch",
-        "--out",
-        "draft4.json",
-    ]);
-    assert_eq!(stale.code, 1);
-    assert!(
-        stale
-            .stderr
-            .contains("1:2 정책을 가진 채 꺼져 있던 앱은 이 정책을 받지 않습니다")
-            && stale.stderr.contains("ios: min을 내림"),
-        "{}",
-        stale.stderr
-    );
-    assert!(!world.dir.join("draft4.json").exists());
-    // back at the min from before the relaxation, with the deadline it had then
-    let deadline = world.checked("policy2.json").platforms[&Platform::Ios]
-        .grace_until
-        .unwrap();
-    let old_deadline = format!("ios={}", time::format_utc(deadline));
-    let revoke = world.policy(&[
-        "--prev",
-        "policy3.json",
-        "--held",
-        "policy2.json",
-        "--min",
-        "ios=1.6.0",
-        "--grace-until",
-        &old_deadline,
-        "--ios-valid",
-        &world.ios_build,
-        "--revoke-key",
-        "1",
-        "--new-epoch",
-        "--out",
-        "draft4.json",
-    ]);
-    assert_eq!(revoke.code, 0, "{}", revoke.all());
-    assert!(revoke
-        .stdout
-        .contains("확인함: 1:2 정책을 가진 채 꺼져 있던 앱도 이 정책을 받음을 확인함(--held)"));
-    assert!(revoke
-        .stdout
-        .contains("hjv-release sign --key <루트 키 파일> --key <서명 키 파일>"));
-    let signing2 = world.file("signing-2.key");
-    // one key file is not enough, and that is said before any passphrase is asked for
-    let output = world.person(
-        &[
-            "sign",
-            "--key",
-            &root,
+    let sign = |files: &[&str], live: bool, script: &[(&str, &str)]| {
+        let mut args = vec!["sign"];
+        for file in files {
+            args.extend_from_slice(&["--key", file]);
+        }
+        args.extend_from_slice(&[
             "--keys",
             &keys,
             "--allow-test-keys",
             "--out",
-            "policy4.json",
-            "draft4.json",
-        ],
-        &[("yes를 입력하세요: ", "yes")],
-    );
+            "policy3.json",
+        ]);
+        if live {
+            args.extend_from_slice(&["--live", "policy2.json"]);
+        }
+        args.push("draft3.json");
+        world.person(&args, script)
+    };
+    // without the live file: refused before anything is asked (X10)
+    let output = sign(&[&root, &signing], false, &[]);
+    assert_eq!(output.code, 1);
+    assert!(output.stderr.contains("--live"), "{}", output.stderr);
+    // anything but yes ends it, before any passphrase is asked for
+    for answer in ["no", "y", "YES", ""] {
+        let output = sign(&[&root, &signing], true, &[("yes를 입력하세요: ", answer)]);
+        assert_eq!(output.code, 1, "{answer:?}");
+        assert!(
+            output.tty.contains("완화: ios: 최소 버전을 내림"),
+            "{}",
+            output.tty
+        );
+        assert!(output
+            .tty
+            .contains("루트 키를 엽니다: 이 컴퓨터는 런북 5-0의 깨끗한 컴퓨터입니다"));
+        assert!(output.tty.contains("서버 확인: --relaxes ios"));
+        assert!(output.stderr.contains("yes가 아니어서 서명하지 않았습니다"));
+        assert!(!output.tty.contains("의 비밀번호"));
+    }
+    // both keys are needed, and that is said before any passphrase is asked for
+    let output = sign(&[&root], true, &[("yes를 입력하세요: ", "yes")]);
     assert_eq!(output.code, 1, "{}", output.all());
     assert!(
         output.tty.contains("필요한 키: 루트 키, 서명 키"),
         "{}",
         output.tty
     );
-    assert!(
-        output.stderr.contains("키 파일이 2개 필요합니다"),
-        "{}",
-        output.stderr
-    );
+    assert!(output.stderr.contains("키 파일이 2개 필요합니다"));
     assert!(!output.tty.contains("의 비밀번호"));
+    // yes, the root key and the signing key
+    let output = sign(
+        &[&root, &signing],
+        true,
+        &[
+            ("yes를 입력하세요: ", "yes"),
+            ("root-101.key의 비밀번호: ", PASS),
+            ("signing-1.key의 비밀번호: ", PASS),
+        ],
+    );
+    assert_eq!(output.code, 0, "{}", output.all());
+    assert!(output.tty.contains("yes\n"), "the answer is shown as typed");
+    assert!(output.tty.contains("루트 키(번호 101)를 열었습니다"));
+    assert!(output.stdout.contains("서버 확인: --relaxes ios"));
+    assert!(output.stdout.contains("archive/declaration-e2.json"));
+    assert_no_secret(&output, &["root-101", "signing-1"]);
+    let policy3 = world.checked("policy3.json");
+    assert_eq!((policy3.epoch, policy3.seq), (2, 1));
+    assert_eq!(policy3.platforms[&Platform::Ios].min.to_string(), "1.5.0");
+    let envelope3 = Envelope::parse(&world.read("policy3.json")).unwrap();
+    assert_eq!(
+        (envelope3.policy.k, envelope3.root.as_ref().unwrap().k),
+        (1, 101)
+    );
+    // a device that missed nothing and one that holds policy 2 both take it
+    assert_eq!(world.verify_after("policy2.json", "policy3.json").code, 0);
+
+    // A revocation: the declaration of epoch 3 by root key 101, the policy by signing key 2
+    let revoke = world.policy(&[
+        "--prev",
+        "policy3.json",
+        "--live",
+        "policy3.json",
+        "--revoke-key",
+        "1",
+        "--out",
+        "draft4.json",
+    ]);
+    assert_eq!(revoke.code, 0, "{}", revoke.all());
+    assert!(revoke.stdout.contains("정책은 서명 키 2"));
+    let signing2 = world.file("signing-2.key");
     let output = world.person(
         &[
             "sign",
@@ -1180,6 +1130,8 @@ fn relaxing_asks_for_yes_and_the_root_key() {
             "--keys",
             &keys,
             "--allow-test-keys",
+            "--live",
+            "policy3.json",
             "--out",
             "policy4.json",
             "draft4.json",
@@ -1192,26 +1144,17 @@ fn relaxing_asks_for_yes_and_the_root_key() {
     );
     assert_eq!(output.code, 0, "{}", output.all());
     assert!(output.tty.contains("서명 키(번호 1)를 폐기합니다"));
-    assert!(output.tty.contains("세대(epoch)를 올립니다(1 → 2)"));
+    assert!(output.tty.contains("세대(epoch)를 올립니다(2 → 3)"));
+    assert!(output.tty.contains("폐기와 함께 나가는 패키지"));
     let envelope = Envelope::parse(&world.read("policy4.json")).unwrap();
     assert_eq!(
         (envelope.policy.k, envelope.root.as_ref().unwrap().k),
         (2, 101)
     );
     let policy4 = world.checked("policy4.json");
-    assert_eq!((policy4.epoch, policy4.seq), (2, 1));
-    // the app that missed the relaxation takes it too, and learns the revocation with it
-    let after_2 = world.tool(&[
-        "verify",
-        "--keys",
-        &keys,
-        "--allow-test-keys",
-        "--server",
-        SERVER,
-        "--prev",
-        "policy2.json",
-        "policy4.json",
-    ]);
+    assert_eq!((policy4.epoch, policy4.seq), (3, 1));
+    // an app that missed both declarations takes it too, and learns the revocation with it
+    let after_2 = world.verify_after("policy2.json", "policy4.json");
     assert_eq!(after_2.code, 0, "{}", after_2.all());
     assert!(after_2.stdout.contains("폐기한 서명 키 [1]"));
     // the revoked key signs nothing any more
@@ -1230,7 +1173,7 @@ fn relaxing_asks_for_yes_and_the_root_key() {
     );
     let output = world.sign("signing-1.key", "draft5.json", "policy5.json");
     assert_eq!(output.code, 1);
-    assert!(output.stderr.contains("폐기된 키"), "{}", output.stderr);
+    assert!(output.stderr.contains("폐기한 키"), "{}", output.stderr);
     assert!(!world.dir.join("policy5.json").exists());
     assert_eq!(
         world
@@ -1256,6 +1199,7 @@ fn a_draft_that_waited_too_long_asks_first() {
     policy.issued = now - 10 * time::DAY;
     let windows = policy.platforms.get_mut(&Platform::Windows).unwrap();
     windows.grace_until = Some(now - 3 * time::DAY);
+    windows.grace_min = Some(hjv_release::version::Version::new(0, 0, 0));
     windows.auto_install_after = Some(now - 8 * time::DAY);
     let stale = Draft {
         p: policy.to_text(),
@@ -1294,8 +1238,25 @@ fn a_draft_that_waited_too_long_asks_first() {
     assert!(!refused.tty.contains("의 비밀번호"));
     assert!(!world.dir.join("late.json").exists());
     // the fresh draft of the same policy is signed without a question, and says how long is left
-    // (two days, or a moment less if the clock moved on between the two commands)
-    let fresh = world.sign("signing-1.key", "fresh.json", "fresh-policy.json");
+    // (two days, or a moment less if the clock moved on between the two commands); into
+    // another archive, since the archive takes one policy at a position
+    let (other, key1) = (world.file("archive-fresh"), world.file("signing-1.key"));
+    let fresh = world.person(
+        &[
+            "sign",
+            "--archive",
+            &other,
+            "--key",
+            &key1,
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+            "--out",
+            "fresh-policy.json",
+            "fresh.json",
+        ],
+        &[("의 비밀번호: ", PASS)],
+    );
     assert_eq!(fresh.code, 0, "{}", fresh.all());
     assert!(!fresh.tty.contains("yes를 입력하세요"));
     let left = fresh
@@ -1357,10 +1318,6 @@ fn a_wrong_passphrase_opens_nothing() {
         !output.all().contains(wrong),
         "a typed passphrase is never shown"
     );
-    // the second try may succeed
-    let output = world.person(&args, &[("의 비밀번호: ", wrong), ("의 비밀번호: ", PASS)]);
-    assert_eq!(output.code, 0, "{}", output.all());
-
     // a damaged key file, a file that is no key file, a key the builds do not hold
     let mut damaged = fs::read(world.dir.join("signing-1.key")).unwrap();
     let last = damaged.len() - 1;
@@ -1424,6 +1381,10 @@ fn a_wrong_passphrase_opens_nothing() {
         !output.tty.contains("의 비밀번호"),
         "refused before any passphrase"
     );
+    // the second try may succeed
+    let output = world.person(&args, &[("의 비밀번호: ", wrong), ("의 비밀번호: ", PASS)]);
+    assert_eq!(output.code, 0, "{}", output.all());
+
     fs::write(
         world.dir.join("envelope-as-draft.json"),
         world.read("policy.json"),
@@ -1602,7 +1563,7 @@ fn test_signed(
     key: &str,
 ) -> String {
     let grace = grace
-        .map(|g| format!(",\n  \"grace_until\": \"{g}\""))
+        .map(|g| format!(",\n  \"grace_until\": \"{g}\", \"grace_min\": \"1.0.0\""))
         .unwrap_or_default();
     let entry =
         |extra: &str| format!("{{\"min\": \"{min}\", \"latest\": \"1.6.1\"{grace}{extra}}}");
@@ -1651,20 +1612,18 @@ fn test_sign_makes_envelopes_for_other_tests() {
         Policy::parse(&envelope.policy.p).unwrap().server,
         "hjv.test"
     );
-    // a relaxation by a signing key is made without complaint (--raw is not needed: the envelope
-    // is fine by itself) and refused by an app that holds the stricter policy; the root key's passes
+    // a relaxation is made without complaint (--raw is not needed: the envelope is fine by
+    // itself) and refused by an app that holds the stricter policy, whoever signed it: a root
+    // key's policy has no special rights
     let strict = test_signed(&world, "p2", 2, "1.6.1", None, "signing-1");
     let eased = test_signed(&world, "p3", 3, "1.5.0", None, "signing-2");
     let eased_by_root = test_signed(&world, "p3r", 3, "1.5.0", None, "root-101");
     assert_eq!(verify(&["--prev", &first, &strict]).code, 0);
-    let refused = verify(&["--prev", &strict, &eased]);
-    assert_eq!(refused.code, 1);
-    assert!(
-        refused.stderr.contains("루트 키가 필요"),
-        "{}",
-        refused.stderr
-    );
-    assert_eq!(verify(&["--prev", &strict, &eased_by_root]).code, 0);
+    for eased in [&eased, &eased_by_root] {
+        let refused = verify(&["--prev", &strict, eased]);
+        assert_eq!(refused.code, 1);
+        assert!(refused.stderr.contains("Relaxation"), "{}", refused.stderr);
+    }
     // without --out the envelope goes to standard output
     let body = world.file("p1.body.json");
     let output = world.tool(&["test-sign", "--policy", &body]);
@@ -1705,10 +1664,23 @@ fn test_sign_makes_envelopes_for_other_tests() {
     let unknown = world.tool(&["test-sign", "--policy", &body, "--key", "release"]);
     assert_eq!(unknown.code, 1);
     assert!(unknown.stderr.contains("signing-1, signing-2, root-101"));
-    // a root declaration goes along
-    fs::write(world.dir.join("decl.json"), "{\"v\":1, \"server\":\"hjv.test\", \"epoch\":1, \"revoked\":[2], \"issued\":\"2026-10-04T03:00:00Z\"}\n").unwrap();
+    // a root declaration goes along with a policy of its epoch
+    let entries = r#""windows": {"min": "1.5.0", "latest": "1.6.1"}, "ios": {"min": "1.5.0", "latest": "1.6.1"}"#;
+    fs::write(
+        world.dir.join("decl.json"),
+        format!("{{\"v\":1, \"server\":\"hjv.test\", \"epoch\":2, \"revoked\":[2], \"issued\":\"2026-10-04T03:00:00Z\", \"base\": {{{entries}}}}}\n"),
+    )
+    .unwrap();
     let decl = world.file("decl.json");
-    let body4 = world.file("p3.body.json");
+    fs::write(
+        world.dir.join("p4.body.json"),
+        world
+            .read("p3.body.json")
+            .replace("\"epoch\": 1, \"seq\": 3", "\"epoch\": 2, \"seq\": 1")
+            .replace("2026-10-03T03", "2026-10-04T03"),
+    )
+    .unwrap();
+    let body4 = world.file("p4.body.json");
     let output = world.tool(&[
         "test-sign",
         "--policy",
@@ -1840,8 +1812,10 @@ fn hbbs_conf_and_door_2() {
     );
     assert!(!same.stdout.contains(&format!("FROM={grace_2}")));
 
-    // every min above MIN: a new FROM. An earlier one than announced is refused
+    // every min above MIN with a later FROM: the present file stays until the new one would
+    // refuse at every later time at least what it refuses (INV-16), and no file is written
     let later = test_signed(&world, "p4", 4, "1.6.1", Some(&grace_2), "signing-1");
+    let before = world.read("door/min-controller.conf");
     let raised = conf(&[
         "--policy",
         &later,
@@ -1849,15 +1823,18 @@ fn hbbs_conf_and_door_2() {
         "p3.json",
         "--current",
         &current,
+        "--door2-out",
+        "door",
     ]);
     assert_eq!(raised.code, 0, "{}", raised.all());
     assert!(
-        raised
-            .stdout
-            .contains(&format!("MIN=1.6.1\nFROM={grace_2}\n")),
+        raised.stdout.contains("hbbs 파일을 아직 바꾸지 않음")
+            && raised.stdout.contains("MIN=1.6.1"),
         "{}",
         raised.stdout
     );
+    assert!(!raised.stdout.contains(&format!("FROM={grace_2}\n")));
+    assert_eq!(world.read("door/min-controller.conf"), before);
     let earlier = test_signed(
         &world,
         "p5",
@@ -1866,6 +1843,7 @@ fn hbbs_conf_and_door_2() {
         Some(&ahead("YYYY-01-10T15:00:00Z")),
         "signing-1",
     );
+    // an earlier FROM than announced: FROM never goes back, the file keeps the present one
     let back = conf(&[
         "--policy",
         &earlier,
@@ -1874,11 +1852,13 @@ fn hbbs_conf_and_door_2() {
         "--current",
         &current,
     ]);
-    assert_eq!(back.code, 1);
+    assert_eq!(back.code, 0, "{}", back.all());
     assert!(
-        back.stderr.contains("FROM이 뒤로 갑니다"),
+        back.stdout
+            .contains(&format!("MIN=1.6.1\nFROM={grace_1}\n"))
+            && back.stdout.contains("FROM은 지금 파일의 값"),
         "{}",
-        back.stderr
+        back.stdout
     );
 
     // door 2 closed: the text without a link, to a file of its own; a rotated code
@@ -2123,7 +2103,13 @@ fn the_weekly_check() {
     assert_eq!(output.code, 3);
     assert!(output.stdout.contains("경고: 문 2가"));
     assert!(output.stdout.contains("같은 위치"));
-    assert!(output.stdout.contains("경고 3건"));
+    // and the archive does not hold the server's file: signed elsewhere (runbook 5-8)
+    assert!(
+        output.stdout.contains("보관소에 없습니다"),
+        "{}",
+        output.stdout
+    );
+    assert!(output.stdout.contains("경고 4건"), "{}", output.stdout);
     assert!(!output.all().contains("0123456789abcdef"));
     let same = check(&["--live", &policy]);
     assert!(same
@@ -2532,10 +2518,11 @@ fn a_stop_at_the_passphrase_prompt_shows_nothing_afterwards() {
     );
     assert!(shell.wait_for("READY> ", patience), "no shell prompt");
     let command = format!(
-        "'{}' sign --key '{}' --keys '{}' --allow-test-keys --out policy.json draft.json\n",
+        "'{}' sign --key '{}' --keys '{}' --archive '{}' --allow-test-keys --out policy.json draft.json\n",
         common::BIN,
         world.file("signing-1.key"),
-        world.file("keys.env")
+        world.file("keys.env"),
+        world.file("archive")
     );
     shell.type_keys(&command);
     assert!(shell.wait_for("의 비밀번호: ", patience), "no prompt");
@@ -2836,11 +2823,11 @@ fn what_is_enforced_on_arrival_asks_the_signer() {
 }
 
 #[test]
-fn a_new_entry_below_the_minimums_is_the_root_keys() {
+fn a_new_android_entry_below_its_sibling_needs_a_declaration() {
     let world = World::new("low-entry");
     world.two_policies("14");
-    // Every min is 1.6.0. A Google Play entry with min 1.0.0: an app would take it from a
-    // signing key (a new entry is no relaxation by its rules), and hbbs's MIN would follow.
+    // Every min is 1.6.0. A Google Play entry below android's level would let the PC's rule for
+    // Android controllers go down (problem (나)), and hbbs's MIN would follow (X8).
     let release = world.release("1.6.0");
     let code = (world.ios_build.parse::<u64>().unwrap() + 2000).to_string();
     let add = |min: &str, more: &[&str], out: &str| {
@@ -2854,8 +2841,6 @@ fn a_new_entry_below_the_minimums_is_the_root_keys() {
             &code,
             "--min",
             &min,
-            "--grace-days",
-            "7",
             "--out",
             out,
         ];
@@ -2865,57 +2850,75 @@ fn a_new_entry_below_the_minimums_is_the_root_keys() {
     let refused = add("1.0.0", &[], "draft3.json");
     assert_eq!(refused.code, 1, "{}", refused.all());
     assert!(
-        refused
-            .stderr
-            .contains("android_play: 새 항목의 min(1.0.0)이 지금 강제하는 값보다 낮음")
-            && refused.stderr.contains("--relax"),
+        refused.stderr.contains("X1") && refused.stderr.contains("--relax"),
         "{}",
         refused.stderr
     );
     assert!(!world.dir.join("draft3.json").exists());
-    // at the present minimum it is a signing key's policy; below it, with --relax, the root key's
+    // at android's level it is a signing key's policy, with android's deadline pair
     let plain = add("1.6.0", &[], "draft3.json");
     assert_eq!(plain.code, 0, "{}", plain.all());
-    assert!(plain.stdout.contains("서명할 키: 서명 키"));
-    let relaxed = add("1.0.0", &["--relax"], "draft3-low.json");
+    assert!(plain.stdout.contains("서명할 키: 정책은 서명 키 1"));
+    // below it, a declaration
+    let relaxed = add(
+        "1.0.0",
+        &["--relax", "--live", "policy2.json"],
+        "draft3-low.json",
+    );
     assert_eq!(relaxed.code, 0, "{}", relaxed.all());
-    assert!(relaxed.stdout.contains("서명할 키: 루트 키"));
     assert!(relaxed
         .stdout
-        .contains("완화: android_play: 새 항목의 min(1.0.0)"));
-    // a draft for a signing key that carries such an entry is not signed
+        .contains("완화: android_play: 다른 Android 항목보다 덜 막는 새 항목"));
+    assert!(relaxed.stdout.contains("hbbs의 MIN이 내려감"));
+    assert!(relaxed.stdout.contains("--relaxes android_play"));
+    // a draft without its declaration is not signed
     let draft = Draft::parse(&world.read("draft3-low.json")).unwrap();
-    let as_signing = Draft {
-        signer: Role::Signing,
+    let without = Draft {
+        root_p: None,
+        root: None,
         ..draft
     };
-    fs::write(world.dir.join("as-signing.json"), as_signing.to_text()).unwrap();
-    let output = world.sign("signing-1.key", "as-signing.json", "policy3.json");
+    fs::write(world.dir.join("without.json"), without.to_text()).unwrap();
+    let output = world.sign("signing-1.key", "without.json", "policy3.json");
     assert_eq!(output.code, 1, "{}", output.all());
-    assert!(
-        output
-            .stderr
-            .contains("초안이 완화를 담고 있는데 서명 키로 서명하게 되어 있습니다"),
-        "{}",
-        output.stderr
+    assert!(output.stderr.contains("새 루트 선언"), "{}", output.stderr);
+    // signed at the clean machine, after the signer's yes
+    let (keys, root, signing) = (
+        world.file("keys.env"),
+        world.file("root-101.key"),
+        world.file("signing-1.key"),
     );
-    // the root key signs it after the signer's yes
-    let output = world.sign_as(
-        "root-101.key",
-        "draft3-low.json",
-        "policy3.json",
-        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
+    let output = world.person(
+        &[
+            "sign",
+            "--key",
+            &root,
+            "--key",
+            &signing,
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+            "--live",
+            "policy2.json",
+            "--out",
+            "policy3.json",
+            "draft3-low.json",
+        ],
+        &[
+            ("yes를 입력하세요: ", "yes"),
+            ("root-101.key의 비밀번호: ", PASS),
+            ("signing-1.key의 비밀번호: ", PASS),
+        ],
     );
     assert_eq!(output.code, 0, "{}", output.all());
     assert!(
         output
             .tty
-            .contains("  - 완화: android_play: 새 항목의 min(1.0.0)이 지금 강제하는 값보다 낮음"),
+            .contains("  - 완화: android_play: 다른 Android 항목보다 덜 막는 새 항목"),
         "{}",
         output.tty
     );
     // hbbs has one threshold: the tool says that it goes down, whatever the file's FROM is
-    let keys = world.file("keys.env");
     for from in ["2026-01-01T00:00:00Z", &ahead("YYYY-01-01T00:00:00Z")] {
         fs::write(
             world.dir.join("current.conf"),
@@ -2946,13 +2949,15 @@ fn a_new_entry_below_the_minimums_is_the_root_keys() {
 }
 
 #[test]
-fn back_to_a_signing_key_after_the_root_keys_relaxation() {
+fn after_a_relaxing_declaration_the_signing_key_goes_on() {
     let world = World::new("restore");
     // every min at 1.6.0, enforced at once
     world.two_policies("0");
-    // the update path is down: the root key lowers every min for a while (README, 비상 절차)
+    // the update path is down: a declaration lowers every min for a while (runbook 5-12)
     let relaxed = world.policy(&[
         "--prev",
+        "policy2.json",
+        "--live",
         "policy2.json",
         "--min",
         "all=1.5.0",
@@ -2961,74 +2966,62 @@ fn back_to_a_signing_key_after_the_root_keys_relaxation() {
         "draft3.json",
     ]);
     assert_eq!(relaxed.code, 0, "{}", relaxed.all());
-    let signed = world.sign_as(
-        "root-101.key",
-        "draft3.json",
-        "policy3.json",
-        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
+    let (keys, root, signing) = (
+        world.file("keys.env"),
+        world.file("root-101.key"),
+        world.file("signing-1.key"),
     );
-    assert_eq!(signed.code, 0, "{}", signed.all());
-    // Afterwards a signing key raises them again. An app that was off during the relaxation
-    // still holds policy 2: the tool asks for that policy and checks the new one against it.
-    let restore = |more: &[&str], out: &str| {
-        let mut args = vec![
-            "--prev",
-            "policy3.json",
-            "--min",
-            "all=1.6.0",
-            "--ios-valid",
-            &world.ios_build,
+    let signed = world.person(
+        &[
+            "sign",
+            "--key",
+            &root,
+            "--key",
+            &signing,
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+            "--live",
+            "policy2.json",
             "--out",
-            out,
-        ];
-        args.extend_from_slice(more);
-        world.policy(&args)
-    };
-    let without = restore(&[], "draft4.json");
-    assert_eq!(without.code, 1);
-    assert!(without.stderr.contains("--held"), "{}", without.stderr);
-    // With the default grace of 7 days the min that app knows (enforced since policy 2) would
-    // get a deadline it never had: a relaxation to it. It would drop this policy and every
-    // later one of a signing key.
-    let trap = restore(&["--held", "policy2.json"], "draft4.json");
-    assert_eq!(trap.code, 1, "{}", trap.all());
-    assert!(
-        trap.stderr
-            .contains("1:2 정책을 가진 채 꺼져 있던 앱은 이 정책을 받지 않습니다")
-            && trap.stderr.contains("같은 min의 유예를 늦추거나 새로 둠")
-            && trap.stderr.contains("--grace-days 0"),
-        "{}",
-        trap.stderr
-    );
-    assert!(!world.dir.join("draft4.json").exists());
-    // as it was before the relaxation: enforced at once
-    let made = restore(
-        &["--held", "policy2.json", "--grace-days", "0"],
-        "draft4.json",
-    );
-    assert_eq!(made.code, 0, "{}", made.all());
-    let signed = world.sign_as(
-        "signing-1.key",
-        "draft4.json",
-        "policy4.json",
-        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
+            "policy3.json",
+            "draft3.json",
+        ],
+        &[
+            ("yes를 입력하세요: ", "yes"),
+            ("root-101.key의 비밀번호: ", PASS),
+            ("signing-1.key의 비밀번호: ", PASS),
+        ],
     );
     assert_eq!(signed.code, 0, "{}", signed.all());
-    assert!(
-        signed
-            .tty
-            .contains("직전 정책은 루트 키가 서명했습니다. 그 정책을 받지 못한(꺼져 있던) 앱은"),
-        "{}",
-        signed.tty
+    // Afterwards a signing key raises them again, with the default grace of 7 days: the
+    // minimum in force (1.5.0) stays blocked and 1.5.x gets the grace period. An app that was
+    // off during the relaxation still holds policy 2: it takes the declaration first and
+    // compares with its base (problem (다)).
+    let made = world.policy(&[
+        "--prev",
+        "policy3.json",
+        "--min",
+        "all=1.6.0",
+        "--ios-valid",
+        &world.ios_build,
+        "--out",
+        "draft4.json",
+    ]);
+    assert_eq!(made.code, 0, "{}", made.all());
+    let signed = world.sign("signing-1.key", "draft4.json", "policy4.json");
+    assert_eq!(signed.code, 0, "{}", signed.all());
+    let policy4 = world.checked("policy4.json");
+    let windows = &policy4.platforms[&Platform::Windows];
+    assert_eq!(
+        windows.grace_min.map(|v| v.to_string()).as_deref(),
+        Some("1.5.0")
     );
-    assert!(signed
-        .tty
-        .contains("1:2 정책을 가진 채 꺼져 있던 앱도 이 정책을 받음을 확인함(--held)"));
     // both kinds of app take it: the one that saw the relaxation and the one that did not
     assert_eq!(world.verify_after("policy3.json", "policy4.json").code, 0);
     let stale = world.verify_after("policy2.json", "policy4.json");
     assert_eq!(stale.code, 0, "{}", stale.all());
-    // from here on the ordinary flow again, without --held
+    // from here on the ordinary flow
     let next = world.policy(&[
         "--prev",
         "policy4.json",

@@ -7,6 +7,7 @@
 
 use crate::{
     age,
+    archive::{position_of, Archive},
     args::{self, Args},
     check,
     draft::Draft,
@@ -18,7 +19,7 @@ use crate::{
     policy::{Policy, RootDecl},
     provenance::{Settings, SystemTools},
     publish, release, signing, time,
-    trust::{self, check_envelope, hex, peek_server, sha256, State},
+    trust::{self, check_envelope, hex, peek_server, sha256},
     tty::{self, Tty},
     version::Version,
 };
@@ -34,43 +35,50 @@ pub const USAGE: &str = "\
 hjv-release: HJViewer의 서명된 버전 정책(최소 버전과 강제 업데이트)을 만들고 확인합니다.
 
   키(사용자가 터미널에서 직접)
-    keygen --role signing|root --id N --out FILE     새 키를 비밀번호로 암호화해 씀, 공개 줄 N:<base64> 출력
+    keygen --role signing|root --id N --out FILE     새 키(서명 키 1-100, 루트 키 101-199)를 비밀번호로 암호화해 씀
     pubkey --key FILE                                키 파일의 공개 줄을 다시 출력
 
   정책
-    policy --prev FILE|none --out DRAFT [--keys FILE] [--server NAME] [--release-dir DIR]...
+    policy --prev FILE|none --out DRAFT [--keys FILE] [--archive DIR] [--server NAME] [--release-dir DIR]...
            [--min P=x.y.z]... [--latest P=x.y.z]... [--hold P]... [--drop P]...
-           [--grace-days [P=]N]... [--grace-until [P=]T]... [--auto-after windows=+2d|T|none]
+           [--grace-days [P=]N]... [--grace-until [P=]T]... [--grace-min P=x.y.z]...
+           [--auto-after windows=+2d|T|none] [--withdraw-package P]...
            [--os-min P=V]... [--contact TEXT] [--notes [P=]FILE]...
            [--ios-valid BUILD] [--play-live VERSIONCODE] [--move-to-play|--no-move-to-play]
-           [--relax] [--revoke-key N]... [--new-epoch] [--seq N] [--held FILE|none]...
+           [--relax] [--revoke-key N]... [--new-epoch] [--live FILE] [--root-signs-policy] [--seq N]
            [--repo DIR] [--build-repo O/N] [--public-repo O/N] [--allow-input NAME]... [--attest]
                                                      다음 정책의 초안을 만듦(출처 확인 포함, 서명하지 않음)
-    sign --key FILE [--key FILE] [--keys FILE] --out FILE DRAFT
+    sign --key FILE [--key FILE] [--keys FILE] [--archive DIR] [--live FILE] --out FILE DRAFT
                                                      초안을 서명(터미널에서 비밀번호, 터미널 없으면 거부)
-    verify [--keys FILE] --server NAME [--prev FILE] FILE
-                                                     서명된 정책을 앱처럼 확인
+    verify [--keys FILE] --server NAME [--prev FILE] [--live FILE] [--archive DIR] FILE
+                                                     서명된 정책을 앱처럼 확인(X4, --live면 X10과 서버 확인 4-5)
     publish-dir --policy FILE --release-dir DIR... --out DIR [--keys FILE]
                                                      서버로 보낼 pkg/, 알림 파일, SHA256SUMS를 모음
+    void --live FILE [--keys FILE] [--archive DIR] FILE
+                                                     서명했지만 내지 않은 정책을 무효로 함(런북 5-13)
+    archive adopt [--keys FILE] [--archive DIR] FILE  직접 서명한 정책 파일을 보관소에 넣음(보관소를 잃었을 때)
+    archive adopt --keys FILE --version V [--archive DIR] [--server NAME]
+                                                     릴리스 태그의 키 파일을 기록된 키 집합으로 넣음
 
   서버 설정과 점검
     hbbs-conf --policy FILE --current FILE|none [--prev-policy FILE] [--keys FILE]
               [--text s1|s2|--text-file FILE] [--out FILE]
               [--door2-out DIR [--door2-until T] [--door2-rotate] [--door2-only]]
                                                      hbbs의 MIN·FROM, min-controller.conf와 door2.conf
-    floor --policy FILE [--keys FILE]                HJV_POLICY_FLOOR=<세대>:<seq> 줄
-    check --policy FILE [--keys FILE] [--door2 FILE] [--live FILE]
-                                                     주 1회 점검(TestFlight 75일, 문 2, 서버의 정책)
-    keys [--keys FILE] [--server NAME] [--production]
-                                                     키 파일을 읽어 보임(--production: 시험 키면 실패)
+    floor --live FILE [--keys FILE] [--archive DIR]  HJV_POLICY_FLOOR=<세대>:<seq> 줄(서버의 정책, 보관소의 파일만)
+    check [--policy FILE] [--keys FILE] [--archive DIR] [--door2 FILE] [--live FILE]
+                                                     주 1회 점검(TestFlight 75일, 문 2, 서버의 정책과 보관소)
+    keys [--keys FILE] [--server NAME] [--production [--policy FILE]]
+                                                     키 파일을 읽어 보임(--production: 시험 키나 폐기된 키면 실패)
 
   시험(이 저장소의 공개된 시험 키만 씀)
     test-keys [--env]                                시험 키 목록(--env: 시험 빌드용 update-keys.env)
     test-sign --policy FILE [--root-decl FILE] [--key NAME] [--root-key NAME] [--raw] [--out FILE]
 
-P는 windows, android, android_play, ios(--min은 all도). --keys의 기본값은 client/update-keys.env.
-키 파일에 시험 키가 있으면 policy, sign, verify, publish-dir, hbbs-conf, floor는 --allow-test-keys가
-있어야 하고, check는 경고로 셉니다. 자세한 설명은 README.md.";
+P는 windows, android, android_play, ios(--min은 all도). --keys의 기본값은 client/update-keys.env, --archive의
+기본값은 ~/hjviewer-policy-archive(저장소 밖). 키 파일에 시험 키가 있으면 policy, sign, verify, publish-dir,
+hbbs-conf, floor, void, archive는 --allow-test-keys가 있어야 하고(보관소도 --archive로 직접), check는 경고로
+셉니다. 자세한 설명은 README.md.";
 
 const DEFAULT_KEYS: &str = "client/update-keys.env";
 const MAX_INPUT: u64 = 1024 * 1024;
@@ -147,12 +155,64 @@ fn load_keys(args: &Args, gate: bool) -> Result<KeySet, String> {
     Ok(keys)
 }
 
+/// The archive of `--archive`, or the default one. A key file with test keys never uses the
+/// default archive (a test must not leave files among the operator's), and no archive lies in
+/// the repository's `build/`, where agents make and delete worktrees.
+fn open_archive(args: &Args, keys: &KeySet, create: bool) -> Result<Archive, String> {
+    let dir = match args.one("--archive")? {
+        Some(dir) => PathBuf::from(dir),
+        None if keys.has_test_key() => {
+            return Err(
+                "시험 키의 키 파일로는 기본 보관소(~/hjviewer-policy-archive)를 쓰지 않습니다. --archive <시험용 디렉터리>를 \
+                 주세요"
+                    .to_owned(),
+            )
+        }
+        None => Archive::default_dir()?,
+    };
+    let absolute = |p: &Path| {
+        fs::canonicalize(p).unwrap_or_else(|_| {
+            std::env::current_dir()
+                .map(|d| d.join(p))
+                .unwrap_or_else(|_| p.to_path_buf())
+        })
+    };
+    if let Ok(cwd) = std::env::current_dir() {
+        if absolute(&dir).starts_with(absolute(&cwd.join("build"))) {
+            return Err(format!(
+                "보관소를 저장소의 build/ 안에 둘 수 없습니다(에이전트가 worktree를 만들고 지우는 곳): {}",
+                dir.display()
+            ));
+        }
+    }
+    Archive::open(&dir, create)
+}
+
+/// The app version next to the key file (`client/version.env`'s `HJV_VERSION`), for the key set
+/// records.
+fn version_next_to(keys_path: &str) -> Option<String> {
+    let path = Path::new(keys_path).with_file_name("version.env");
+    let text = fs::read_to_string(path).ok()?;
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix("HJV_VERSION="))
+        .map(|v| v.trim().to_owned())
+        .filter(|v| Version::parse(v).is_ok())
+}
+
+/// The key file path of this command line.
+fn keys_path(args: &Args) -> Result<String, String> {
+    Ok(args.one("--keys")?.unwrap_or(DEFAULT_KEYS).to_owned())
+}
+
 /// The key options of this command line, for the command line it tells the person to run next:
 /// the same key file when it is not the default one, and the same word about test keys.
 fn same_keys(args: &Args) -> Result<String, String> {
     let mut options = String::new();
     if let Some(path) = args.one("--keys")? {
         options.push_str(&format!(" --keys {path}"));
+    }
+    if let Some(dir) = args.one("--archive")? {
+        options.push_str(&format!(" --archive {dir}"));
     }
     if args.flag("--allow-test-keys") {
         options.push_str(" --allow-test-keys");
@@ -207,6 +267,7 @@ fn keygen(argv: &[String]) -> Result<i32, String> {
     args.no_positional()?;
     let role = Role::parse(args.need("--role")?).ok_or("--role은 signing 또는 root입니다")?;
     let id = parse_key_id(args.need("--id")?)?;
+    keys::check_id(role, id)?;
     let out = Path::new(args.need("--out")?);
     if out.exists() {
         return Err(format!(
@@ -295,7 +356,10 @@ fn policy(argv: &[String]) -> Result<i32, String> {
             "--play-live",
             "--revoke-key",
             "--seq",
-            "--held",
+            "--live",
+            "--archive",
+            "--grace-min",
+            "--withdraw-package",
             "--repo",
             "--build-repo",
             "--public-repo",
@@ -306,12 +370,14 @@ fn policy(argv: &[String]) -> Result<i32, String> {
             "--no-move-to-play",
             "--relax",
             "--new-epoch",
+            "--root-signs-policy",
             "--attest",
             "--allow-test-keys",
         ],
     )?;
     args.no_positional()?;
     let keys = load_keys(&args, true)?;
+    let archive = open_archive(&args, &keys, false)?;
     let out = args.need("--out")?;
     if Path::new(out).exists() {
         return Err(format!("이미 있습니다. 덮어쓰지 않습니다: {out}"));
@@ -391,13 +457,17 @@ fn policy(argv: &[String]) -> Result<i32, String> {
         .one("--seq")?
         .map(|seq| args::number("--seq", seq))
         .transpose()?;
-    for value in args.all("--held") {
-        match value {
-            "none" => request.no_held = true,
-            path => request
-                .held
-                .push(read_text(path, "앱이 가지고 있을 수 있는 옛 정책")?),
-        }
+    request.root_signs_policy = args.flag("--root-signs-policy");
+    request.live = args
+        .one("--live")?
+        .map(|path| read_text(path, "서버의 정책(--live)"))
+        .transpose()?;
+    for value in args.all("--grace-min") {
+        let (platform, version) = args::platform_value("--grace-min", value)?;
+        request.grace_min.push((platform, Version::parse(version)?));
+    }
+    for value in args.all("--withdraw-package") {
+        request.withdraw.push(args::platform(value)?);
     }
 
     let mut settings = Settings::new(PathBuf::from(args.one("--repo")?.unwrap_or(".")));
@@ -414,7 +484,7 @@ fn policy(argv: &[String]) -> Result<i32, String> {
         .collect();
     settings.attest = args.flag("--attest");
 
-    let made = make::make(&request, &keys, &settings, &SystemTools)?;
+    let made = make::make(&request, &keys, &archive, &settings, &SystemTools)?;
     write_new(Path::new(out), made.draft.to_text().as_bytes(), 0o644)?;
     for line in trust::describe(&made.policy) {
         println!("{line}");
@@ -427,21 +497,34 @@ fn policy(argv: &[String]) -> Result<i32, String> {
         println!("  확인함: {note}");
     }
     println!("초안을 썼습니다: {out}");
-    let key_files = match (made.draft.signer, made.draft.root_p.is_some()) {
-        (Role::Root, _) => "--key <루트 키 파일>",
-        (Role::Signing, true) => "--key <루트 키 파일> --key <서명 키 파일>",
-        (Role::Signing, false) => "--key <서명 키 파일>",
+    let (key_files, live) = match (made.draft.signer, made.draft.root_p.is_some()) {
+        (Role::Root, true) => ("--key <루트 키 파일>", " --live <방금 받은 서버의 정책>"),
+        (Role::Root, false) => ("--key <루트 키 파일>", ""),
+        (Role::Signing, true) => (
+            "--key <루트 키 파일> --key <서명 키 파일>",
+            " --live <방금 받은 서버의 정책>",
+        ),
+        (Role::Signing, false) => ("--key <서명 키 파일>", ""),
     };
+    if made.draft.signer == Role::Root || made.draft.root_p.is_some() {
+        println!(
+            "루트 키는 깨끗한 컴퓨터에서만 엽니다(런북 5-0): 그 컴퓨터에서 서버의 정책을 받아 서명합니다"
+        );
+    }
     println!("서명은 사용자가 터미널에서 직접 합니다(에이전트는 서명하지 않습니다):");
     println!(
-        "  hjv-release sign {key_files}{} --out version-policy.json {out}",
+        "  hjv-release sign {key_files}{}{live} --out version-policy.json {out}",
         same_keys(&args)?
     );
     Ok(0)
 }
 
 fn sign(argv: &[String]) -> Result<i32, String> {
-    let args = Args::parse(argv, &["--key", "--keys", "--out"], &["--allow-test-keys"])?;
+    let args = Args::parse(
+        argv,
+        &["--key", "--keys", "--out", "--archive", "--live"],
+        &["--allow-test-keys"],
+    )?;
     let draft_path = args.file("초안 파일")?;
     let key_paths = args.all("--key");
     if key_paths.is_empty() {
@@ -452,11 +535,16 @@ fn sign(argv: &[String]) -> Result<i32, String> {
     let mut tty = Tty::open().map_err(no_tty("서명하지 않습니다"))?;
     tty::harden_process();
     let keys = load_keys(&args, true)?;
+    let archive = open_archive(&args, &keys, true)?;
     let draft = Draft::parse(&read_text(draft_path, "초안")?)?;
     if Path::new(out).exists() {
         return Err(format!("이미 있습니다. 덮어쓰지 않습니다: {out}"));
     }
-    let plan = signing::plan(&draft, &keys, time::now())?;
+    let live = args
+        .one("--live")?
+        .map(|path| read_text(path, "서버의 정책(--live)"))
+        .transpose()?;
+    let plan = signing::plan(&draft, &keys, &archive, live.as_deref(), time::now())?;
 
     // every line is one line, whatever the draft's texts hold (tty::printable)
     tty.say("서명할 정책:\n");
@@ -475,11 +563,7 @@ fn sign(argv: &[String]) -> Result<i32, String> {
         }
     }
     // which keys the draft needs is known before any key file is opened
-    let needed: &[&str] = match (draft.signer, plan.new_root.is_some()) {
-        (Role::Signing, false) => &["서명 키"],
-        (Role::Signing, true) => &["루트 키", "서명 키"],
-        (Role::Root, _) => &["루트 키"],
-    };
+    let needed: Vec<&str> = plan.needed(&draft).iter().map(|r| r.korean()).collect();
     tty.say(&format!("\n필요한 키: {}\n", needed.join(", ")));
     if key_paths.len() != needed.len() {
         return Err(format!(
@@ -499,13 +583,23 @@ fn sign(argv: &[String]) -> Result<i32, String> {
         ));
         secrets.push(key);
     }
-    let file = signing::sign(&draft, &plan, &secrets, &keys)?;
+    let version = version_next_to(&keys_path(&args)?);
+    let signed = signing::sign(&draft, &plan, &secrets, &keys, &archive, version.as_deref())?;
     drop(secrets);
-    write_new(Path::new(out), file.as_bytes(), 0o644)?;
+    write_new(Path::new(out), signed.file.as_bytes(), 0o644)?;
     println!("서명했습니다: {out}");
-    println!("sha256 {}", hex(&sha256(file.as_bytes())));
+    println!("sha256 {}", hex(&sha256(signed.file.as_bytes())));
+    if !signed.archived.is_empty() {
+        println!("보관소에 넣었습니다(서명 키의 오프라인 매체에도 복사하세요):");
+        for path in &signed.archived {
+            println!("  {}", path.display());
+        }
+    }
+    if plan.new_root.is_some() {
+        println!("  {}", make::relaxes_line(&plan.relaxed));
+    }
     println!(
-        "확인: hjv-release verify{} --server {} {out}",
+        "확인: hjv-release verify{} --server {} --prev <이전 정책> {out}",
         same_keys(&args)?,
         plan.policy.server
     );
@@ -515,7 +609,7 @@ fn sign(argv: &[String]) -> Result<i32, String> {
 fn verify(argv: &[String]) -> Result<i32, String> {
     let args = Args::parse(
         argv,
-        &["--keys", "--server", "--prev"],
+        &["--keys", "--server", "--prev", "--live", "--archive"],
         &["--allow-test-keys"],
     )?;
     let path = args.file("정책 파일")?;
@@ -526,10 +620,7 @@ fn verify(argv: &[String]) -> Result<i32, String> {
         .one("--prev")?
         .map(|p| read_text(p, "이전 정책"))
         .transpose()?;
-    let checked = match &previous {
-        Some(previous) => trust::check_after(&file, Some(previous), &keys, server)?.0,
-        None => check_envelope(&file, &keys, server)?,
-    };
+    let checked = check_envelope(&file, &keys, server)?;
     for line in trust::describe(&checked.policy) {
         println!("{line}");
     }
@@ -539,26 +630,81 @@ fn verify(argv: &[String]) -> Result<i32, String> {
         checked.envelope.policy.k
     );
     if let Some(root) = &checked.root {
-        println!(
-            "루트 선언: 세대 {}, 폐기한 서명 키 {:?}, 발행 {}",
-            root.epoch,
-            root.revoked,
-            time::format_utc(root.issued)
-        );
-    }
-    println!("sha256 {}", hex(&sha256(file.as_bytes())));
-    match &previous {
-        Some(_) => println!("검증됨: 이전 정책을 가진 앱이 이 정책을 받습니다"),
-        None => {
-            println!("검증됨: 서명과 형식이 맞습니다(빌드 하한 {})", keys.floor);
-            if let Err(e) = State::initial(&keys).accept(&keys, &checked) {
-                println!(
-                    "참고: 이 키 파일로 만든 빌드를 새로 설치한 앱은 이 정책을 받지 않습니다({e})"
-                );
-            }
+        for line in trust::describe_declaration(root) {
+            println!("{line}");
         }
     }
+    println!("sha256 {}", hex(&sha256(file.as_bytes())));
+    // X4: a device holding --prev and a fresh install take it
+    make::x4(&file, previous.as_deref(), &keys, server, true)?;
+    match &previous {
+        Some(_) => {
+            println!("검증됨: 이전 정책을 가진 앱과 새로 설치한 앱이 이 정책을 받습니다(X4)")
+        }
+        None => println!(
+            "검증됨: 이 키 파일(하한 {})로 새로 설치한 앱이 이 정책을 받습니다(X4)",
+            keys.floor
+        ),
+    }
+    if let Some(live_path) = args.one("--live")? {
+        let live = read_text(live_path, "서버의 정책(--live)")?;
+        // the server check's items 4 and 5 against the live file
+        let state = trust::holding(&keys, server, &live);
+        if state.held.is_none() {
+            return Err(
+                "서버의 정책을 이 키 파일로 읽지 못합니다(서버 확인의 LiveUnreadable)".to_owned(),
+            );
+        }
+        let (_, outcome) = trust::accept(&keys, server, &state, file.as_bytes())?;
+        if !outcome.is_taken() {
+            let reason = outcome.reason();
+            return Err(format!(
+                "서버의 정책을 가진 앱이 이 정책을 받지 않습니다({}: {})",
+                reason.map(|r| r.code()).unwrap_or_default(),
+                reason.map(|r| r.korean()).unwrap_or_default()
+            ));
+        }
+        let live_root = Envelope::read_form(&live)?.1.root;
+        let differs =
+            checked.envelope.root.as_ref().map(|r| &r.p) != live_root.as_ref().map(|r| &r.p);
+        if differs && checked.root.is_some() {
+            // X10: a declaration only from the live file, which is --prev and a file of the archive
+            let archive = open_archive(&args, &keys, false)?;
+            if previous.as_deref() != Some(live.as_str()) {
+                return Err(
+                    "X10: 새 루트 선언은 서버의 정책(--live)을 --prev로 해서 만듭니다".to_owned(),
+                );
+            }
+            if archive.find(&live)?.is_none() {
+                return Err(
+                    "X10: 서버의 정책이 보관소에 없습니다(다른 곳에서 서명됨: 런북 5-8)".to_owned(),
+                );
+            }
+            let live_policy = check_envelope(&live, &keys, server)?.policy;
+            if checked.policy.issued < live_policy.issued {
+                return Err(
+                    "서버 확인 5: 새 정책이 서버의 정책보다 일찍 발행되었습니다(LiveIssued)"
+                        .to_owned(),
+                );
+            }
+            let relaxed =
+                trust::relaxed(&live_policy.requirements(), &checked.policy.requirements());
+            println!("새 루트 선언: {}", make::relaxes_line(&relaxed));
+        }
+        println!(
+            "서버의 정책을 가진 앱도 받습니다: {}",
+            outcome_word(&outcome)
+        );
+    }
     Ok(0)
+}
+
+fn outcome_word(outcome: &trust::Outcome) -> &'static str {
+    match outcome {
+        trust::Outcome::Taken => "받음",
+        trust::Outcome::Unchanged => "같은 정책(바뀌는 것 없음)",
+        trust::Outcome::Refused(_) => "거부",
+    }
 }
 
 fn publish_dir(argv: &[String]) -> Result<i32, String> {
@@ -728,6 +874,16 @@ fn hbbs_conf(argv: &[String]) -> Result<i32, String> {
     // at most (a new door 2 code, or the text without the link)
     let same_values = "MIN과 FROM은 지금 파일과 같습니다. 문구(문 2 코드, S1·S2)가 바뀔 때만 서버 파일을 바꿉니다";
     let unchanged = matches!(decision, Decision::Unchanged { .. });
+    if let Decision::Later { min, from, notes } = &decision {
+        println!(
+            "hbbs 파일을 아직 바꾸지 않음: 지금 파일을 그대로 두세요. {} 뒤에 hbbs-conf를 다시 실행하세요(MIN={min})",
+            time::format_kst(*from)
+        );
+        for note in notes {
+            println!("  {note}");
+        }
+        return Ok(0);
+    }
     let (min, from): (Version, Option<i64>) = match &decision {
         Decision::Unchanged { min, from, notes } => {
             println!("hbbs 파일은 바꾸지 않음(MIN={min} 그대로, FROM도 그대로)");
@@ -756,6 +912,7 @@ fn hbbs_conf(argv: &[String]) -> Result<i32, String> {
             }
             (*min, Some(*from))
         }
+        Decision::Later { .. } => return Ok(0),
     };
 
     let custom = args
@@ -824,18 +981,58 @@ fn hbbs_conf(argv: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
+/// X6: a key file that still pins a signing key the live declaration revokes.
+fn x6(keys: &KeySet, live: &str) -> Result<(), String> {
+    let root = Envelope::read_form(live)?.1.root;
+    let Some(part) = root else { return Ok(()) };
+    let decl = RootDecl::read(&part.p)?;
+    if let Some(key) = keys.signing.iter().find(|k| decl.revoked.contains(&k.id)) {
+        return Err(format!(
+            "X6: 키 파일이 서버의 루트 선언(세대 {})이 폐기한 서명 키 {}를 아직 박고 있습니다. 그 키를 뺀 키 파일로 \
+             빌드하세요",
+            decl.epoch, key.id
+        ));
+    }
+    Ok(())
+}
+
 fn floor(argv: &[String]) -> Result<i32, String> {
-    let args = Args::parse(argv, &["--policy", "--keys"], &["--allow-test-keys"])?;
+    let args = Args::parse(
+        argv,
+        &["--live", "--keys", "--archive"],
+        &["--allow-test-keys"],
+    )?;
     args.no_positional()?;
     let keys = load_keys(&args, true)?;
-    let (checked, _) = load_envelope(args.need("--policy")?, "정책", &keys)?;
-    let line = format!(
-        "{}={}:{}",
-        keys::FLOOR_VAR,
-        checked.policy.epoch,
-        checked.policy.seq
-    );
-    println!("{line}");
+    let path = args.need("--live")?;
+    let live = read_text(path, "서버의 정책(--live)")?;
+    let archive = open_archive(&args, &keys, false)?;
+    // the live file, and one the operator signed: S's file on the server never becomes a floor
+    if archive.find(&live)?.is_none() {
+        return Err(format!(
+            "{path}이(가) 보관소({})의 파일이 아닙니다. 하한은 직접 서명해서 낸 서버의 정책에서만 정합니다. 다른 곳에서 \
+             서명된 정책이면 서명 키를 도둑맞았을 수 있습니다(런북 5-8)",
+            archive.dir.display()
+        ));
+    }
+    let server = peek_server(&live)?;
+    // verified with the key file: LOAD keeps its policy part (its declaration's root key too)
+    if trust::holding(&keys, &server, &live).held.is_none() {
+        return Err(
+            "서버의 정책을 이 키 파일로 확인하지 못합니다(정책의 서명 키나 루트 선언의 루트 키를 이 키 파일이 박지 않음). \
+             루트 키를 잃었고 서버의 선언이 그 키의 것이면, 남은 루트 키로 세대를 먼저 올리세요(런북 5-10)"
+                .to_owned(),
+        );
+    }
+    x6(&keys, &live)?;
+    let (epoch, seq) = position_of(&live)?;
+    // the build being made: its key set is recorded (X12)
+    let archive = open_archive(&args, &keys, true)?;
+    let version = version_next_to(&keys_path(&args)?);
+    if let Some(written) = archive.record_keyset(&keys, &server, version.as_deref())? {
+        eprintln!("기록한 키 집합: {}", written.display());
+    }
+    println!("{}={epoch}:{seq}", keys::FLOOR_VAR);
     eprintln!(
         "지금 키 파일의 하한은 {}입니다. 다음 빌드를 내기 전에 client/update-keys.env의 줄을 위 값으로 바꿉니다",
         keys.floor
@@ -844,10 +1041,31 @@ fn floor(argv: &[String]) -> Result<i32, String> {
 }
 
 fn check(argv: &[String]) -> Result<i32, String> {
-    let args = Args::parse(argv, &["--policy", "--keys", "--door2", "--live"], &[])?;
+    let args = Args::parse(
+        argv,
+        &["--policy", "--keys", "--door2", "--live", "--archive"],
+        &[],
+    )?;
     args.no_positional()?;
     let keys = load_keys(&args, false)?;
-    let (checked, file) = load_envelope(args.need("--policy")?, "정책", &keys)?;
+    let archive = match open_archive(&args, &keys, false) {
+        Ok(archive) => Some(archive),
+        Err(e) if args.one("--archive")?.is_some() => return Err(e),
+        Err(_) => None,
+    };
+    let (checked, file) = match args.one("--policy")? {
+        Some(path) => load_envelope(path, "정책", &keys)?,
+        None => {
+            let last = archive
+                .as_ref()
+                .map(|a| a.highest())
+                .transpose()?
+                .flatten()
+                .ok_or("--policy <정책 파일>이 필요합니다(보관소에 서명한 정책이 없습니다)")?;
+            let server = peek_server(&last.file)?;
+            (check_envelope(&last.file, &keys, &server)?, last.file)
+        }
+    };
     let door = args
         .one("--door2")?
         .map(|path| {
@@ -864,6 +1082,7 @@ fn check(argv: &[String]) -> Result<i32, String> {
         door.as_ref(),
         live.as_deref(),
         &keys,
+        archive.as_ref(),
         time::now(),
     );
     for line in &report.lines {
@@ -878,12 +1097,13 @@ fn check(argv: &[String]) -> Result<i32, String> {
 }
 
 fn keys_command(argv: &[String]) -> Result<i32, String> {
-    let args = Args::parse(argv, &["--keys", "--server"], &["--production"])?;
+    let args = Args::parse(argv, &["--keys", "--server", "--policy"], &["--production"])?;
     args.no_positional()?;
     let path = match args.one("--keys")? {
         Some(path) => path,
         None => DEFAULT_KEYS,
     };
+    // the number ranges (signing keys 1-100, root keys 101-199) are part of reading the file
     let keys =
         KeySet::parse(&read_text(path, "키 파일")?).map_err(|e| format!("키 파일 {path}: {e}"))?;
     for (role, key) in keys.all() {
@@ -905,6 +1125,154 @@ fn keys_command(argv: &[String]) -> Result<i32, String> {
             ));
         }
         eprintln!("경고: {TEST_KEY_WARNING}({path})");
+    }
+    if let Some(policy) = args.one("--policy")? {
+        if !args.flag("--production") {
+            return Err("--policy는 --production과 함께 씁니다".to_owned());
+        }
+        x6(&keys, &read_text(policy, "서버의 정책")?)?;
+        println!("서버의 정책이 폐기한 키를 박지 않았습니다(X6)");
+    }
+    Ok(0)
+}
+
+fn void(argv: &[String]) -> Result<i32, String> {
+    let args = Args::parse(
+        argv,
+        &["--live", "--keys", "--archive"],
+        &["--allow-test-keys"],
+    )?;
+    let path = args.file("무효로 할 정책 파일")?;
+    let keys = load_keys(&args, true)?;
+    let archive = open_archive(&args, &keys, false)?;
+    let file = read_text(path, "정책")?;
+    let live = read_text(args.need("--live")?, "서버의 정책(--live)")?;
+    let highest = archive
+        .highest()?
+        .ok_or("보관소에 무효로 할 정책이 없습니다")?;
+    if highest.file != file {
+        return Err(format!(
+            "무효로 할 수 있는 것은 보관소에서 무효로 하지 않은 가장 높은 정책({}:{})뿐입니다",
+            highest.epoch, highest.seq
+        ));
+    }
+    let live_at = archive.find(&live)?.ok_or(
+        "서버의 정책(--live)이 보관소의 파일이 아닙니다. 다른 곳에서 서명된 것입니다(런북 5-8)",
+    )?;
+    if (live_at.epoch, live_at.seq) >= (highest.epoch, highest.seq) {
+        return Err(
+            "무효로 할 정책이 이미 서버에 있습니다(서버의 정책보다 높은 것만 무효로 합니다)"
+                .to_owned(),
+        );
+    }
+    // a policy that opens no epoch: it carries the declaration of the file before it unchanged
+    let before = archive
+        .policies()?
+        .into_iter()
+        .rfind(|a| (a.epoch, a.seq) < (highest.epoch, highest.seq))
+        .ok_or("무효로 할 정책 앞에 보관소의 파일이 없습니다")?;
+    let root_of = |f: &str| -> Result<Option<String>, String> {
+        Ok(Envelope::read_form(f)?.1.root.map(|r| r.p))
+    };
+    if highest.epoch != before.epoch || root_of(&highest.file)? != root_of(&before.file)? {
+        return Err(
+            "새 세대를 연 정책(새 루트 선언)은 무효로 하지 않습니다. 그 위의 선언을 곧 내세요(런북 5-13)".to_owned(),
+        );
+    }
+    let mut tty = Tty::open().map_err(no_tty("무효로 하지 않습니다"))?;
+    tty.say(&format!(
+        "{}:{} 정책을 무효로 합니다. 이 파일은 컴퓨터 밖으로 나가지 않았습니까(서버에 보내지 않았고, 다른 곳에 복사하지 \
+         않았습니까)? 이 정책을 받은 기기는 다음 루트 선언까지 이 세대의 다음 정책들을 받지 않습니다.\n",
+        highest.epoch, highest.seq
+    ));
+    if tty.ask("맞으면 yes를 입력하세요: ")? != "yes" {
+        return Err("yes가 아니어서 무효로 하지 않았습니다".to_owned());
+    }
+    let archive = open_archive(&args, &keys, true)?;
+    let written = archive.add_void(highest.epoch, highest.seq, time::now())?;
+    println!("무효로 했습니다: {}", written.display());
+    println!(
+        "다음 정책은 보관소의 마지막 파일(무효가 아닌 것)에서 seq {}보다 높게 만듭니다",
+        highest.seq
+    );
+    Ok(0)
+}
+
+fn archive_command(argv: &[String]) -> Result<i32, String> {
+    let Some(("adopt", rest)) = argv.split_first().map(|(c, r)| (c.as_str(), r)) else {
+        return Err("archive adopt FILE 또는 archive adopt --keys FILE --version V".to_owned());
+    };
+    let args = Args::parse(
+        rest,
+        &["--keys", "--archive", "--version", "--server"],
+        &["--allow-test-keys"],
+    )?;
+    let keys = load_keys(&args, true)?;
+    if let Some(version) = args.one("--version")? {
+        // the key set of a release tag's update-keys.env
+        args.no_positional()?;
+        Version::parse(version)?;
+        let server = args.need("--server")?;
+        let archive = open_archive(&args, &keys, true)?;
+        match archive.record_keyset(&keys, server, Some(version))? {
+            Some(path) => println!("기록한 키 집합: {}", path.display()),
+            None => println!("이미 기록된 키 집합입니다"),
+        }
+        return Ok(0);
+    }
+    let path = args.file("보관소에 넣을 정책 파일")?;
+    let file = read_text(path, "정책")?;
+    let server = peek_server(&file)?;
+    let checked = check_envelope(&file, &keys, &server)?;
+    if trust::holding(&keys, &server, &file).held.is_none() {
+        return Err("이 키 파일로 확인하지 못하는 정책입니다".to_owned());
+    }
+    let archive = open_archive(&args, &keys, false)?;
+    let (epoch, seq) = (checked.policy.epoch, checked.policy.seq);
+    if let Some(other) = archive.at(epoch, seq)?.filter(|a| a.file != file) {
+        return Err(format!(
+            "보관소에 같은 위치({epoch}:{seq})의 다른 정책이 있습니다: {}",
+            other.path.display()
+        ));
+    }
+    if let (Some(part), Some(ours)) = (&checked.envelope.root, archive.declaration(epoch)?) {
+        if ours.p != part.p {
+            return Err(format!("보관소에 세대 {epoch}의 다른 루트 선언이 있습니다"));
+        }
+    }
+    let mut tty = Tty::open().map_err(no_tty("보관소에 넣지 않습니다"))?;
+    tty.say(&format!(
+        "서명: {} {} · 위치 {epoch}:{seq}\n",
+        checked.role.korean(),
+        checked.envelope.policy.k
+    ));
+    if let Some(root) = &checked.root {
+        for line in trust::describe_declaration(root) {
+            tty.say(&format!("{}\n", tty::printable(&line)));
+        }
+    }
+    for (platform, entry) in &checked.policy.platforms {
+        if let Some(p) = &entry.package {
+            tty.say(&format!(
+                "패키지 {platform} {}: {} · {}바이트 · sha256 {}\n",
+                entry.latest, p.file, p.size, p.sha256
+            ));
+        }
+    }
+    tty.say(
+        "이 파일을 직접 서명한 파일로 보관소에 넣습니까? 서명하지 않은 서버의 파일은 도둑맞은 키의 흔적입니다(런북 5-8).\n",
+    );
+    if tty.ask("맞으면 yes를 입력하세요: ")? != "yes" {
+        return Err("yes가 아니어서 넣지 않았습니다".to_owned());
+    }
+    let archive = open_archive(&args, &keys, true)?;
+    if let Some(written) = archive.add_policy(epoch, seq, &file)? {
+        println!("넣었습니다: {}", written.display());
+    }
+    if let Some(part) = &checked.envelope.root {
+        if let Some(written) = archive.add_declaration(epoch, part)? {
+            println!("넣었습니다: {}", written.display());
+        }
     }
     Ok(0)
 }
@@ -1011,6 +1379,8 @@ pub fn run(argv: &[String]) -> i32 {
         "hbbs-conf" => hbbs_conf(rest),
         "floor" => floor(rest),
         "check" => check(rest),
+        "void" => void(rest),
+        "archive" => archive_command(rest),
         "keys" => keys_command(rest),
         "test-keys" => test_keys(rest),
         "test-sign" => test_sign(rest),
