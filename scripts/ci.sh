@@ -125,13 +125,17 @@ wait_for() { # <seconds> <command...>
   return 1
 }
 
-# A server on 127.0.0.1:18599 that answers with the address headers it got, for check_headers
+# A server on 127.0.0.1:18599 that answers with the address headers it got, for check_headers, and
+# for an /api/ path also with the path and the cookie, for check_account_proxy
 start_echo() {
   python3 -I -c '
 import http.server
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = "".join("%s: %s\n" % (k, self.headers.get(k, "")) for k in ("x-real-ip", "x-real-port", "x-forwarded-for")).encode()
+        body = "".join("%s: %s\n" % (k, self.headers.get(k, "")) for k in ("x-real-ip", "x-real-port", "x-forwarded-for"))
+        if self.path.startswith("/api/"):
+            body += "path: %s\ncookie: %s\n" % (self.path, self.headers.get("cookie", ""))
+        body = body.encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -159,6 +163,37 @@ check_headers() { # <port> <name>
     esac
     case "$got" in *"x-real-port: 1 "*) fail "$name passes the client's X-Real-Port on $path" ;; esac
   done
+}
+
+# The account API's paths (design v3 5-8) through a web server whose hjv-api is start_echo's
+# server: hjv-api counts logins per address from X-Real-IP, so the path and query must arrive as
+# sent and the client's own address headers and the site's cookie must not; the rest of /api/
+# keeps its 404.
+check_account_proxy() { # <port> <name>
+  local port=$1 name=$2 p got code
+  step "deploy: through $name, the account paths reach hjv-api with the address $name saw"
+  for p in '/api/peers?current=2&pageSize=100&accessible=&status=1' /api/login-options /api/hjv/keys/12; do
+    got=$(curl -s --cacert "$CERTS/cert.pem" -H 'X-Real-IP: 203.0.113.66' -H 'X-Forwarded-For: 203.0.113.66' \
+      -H 'Cookie: site=1' "https://localhost:$port$p" | tr '\n' ' ')
+    echo "$p -> $got"
+    [ "$got" = "x-real-ip: 127.0.0.1 x-real-port:  x-forwarded-for: 127.0.0.1 path: $p cookie:  " ] ||
+      fail "$name does not pass $p on to hjv-api as it should"
+  done
+  for p in /api/heartbeat /api/loginx /api/hjv /api/peers/x; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CERTS/cert.pem" "https://localhost:$port$p" || true)
+    [ "$code" = 404 ] || fail "$name: $p answered $code, not 404"
+  done
+}
+
+# With hjv-api stopped, an account path answers 503 with the text the app shows (JSON).
+check_account_down() { # <port> <CA file> <name>
+  local got
+  got=$(curl -s -w ' %{http_code} %{content_type}' --cacert "$2" "https://localhost:$1/api/peers" || true)
+  echo "/api/peers without hjv-api -> $got"
+  case "$got" in
+    '{"error":"HJViewer 서버를 지금 쓸 수 없습니다.'*'"} 503 application/json; charset=utf-8') ;;
+    *) fail "$3: an account path without hjv-api does not answer the app's 503" ;;
+  esac
 }
 
 server_stage() {
@@ -784,7 +819,9 @@ EOF
   grep -q '<VirtualHost \*:18444>' "$ap/site.conf" || fail "apache-hjviewer.conf: no '<VirtualHost *:443>'"
   # the 443 VirtualHost again, in front of the header echo server (see the nginx check)
   awk '/<VirtualHost \*:18444>/{on=1} on{print} on&&/<\/VirtualHost>/{exit}' "$ap/site.conf" |
-    sed -e 's/<VirtualHost \*:18444>/<VirtualHost *:18448>/' -e 's#ws://127\.0\.0\.1:2111[89]#ws://127.0.0.1:18599#' > "$ap/echo.conf"
+    sed -e 's/<VirtualHost \*:18444>/<VirtualHost *:18448>/' -e 's#ws://127\.0\.0\.1:2111[89]#ws://127.0.0.1:18599#' \
+      -e 's#unix:/run/hjviewer-api\.sock|http://localhost#http://127.0.0.1:18599#' > "$ap/echo.conf"
+  grep -q 'http://127.0.0.1:18599/api/' "$ap/echo.conf" || fail "apache-hjviewer.conf: no account paths to hjv-api's socket"
   {
     echo "ServerRoot \"$ap\""
     echo "DefaultRuntimeDir \"$ap\""
@@ -812,10 +849,13 @@ EOF
   check_site 18444 "$CERTS/cert.pem" 404 Apache
   start_echo
   check_headers 18448 Apache
+  check_account_proxy 18448 Apache
   [ "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:18081/x)" = "301 https://localhost/x" ] ||
     fail "Apache: port 80 does not redirect to https"
   # "client denied by server configuration" would feed fail2ban's apache-auth filter
   if grep -E 'AH01630|:(error|crit|alert|emerg)\]' "$ap/error.log"; then fail "Apache logged errors"; fi
+  # last, since Apache logs the upstream it cannot reach: the site as shipped, without hjv-api
+  check_account_down 18444 "$CERTS/cert.pem" Apache
   stop_web
 
   step "deploy A: Caddy (docker-compose.yml) with the same image and key, on 127.0.0.1:18082/18445"
@@ -837,6 +877,15 @@ EOF
   wait_for 30 curl -s -o /dev/null --cacert "$CI/caddy-root.crt" https://localhost:18445/ || fail "Caddy does not serve https"
   check_stack
   check_site 18445 "$CI/caddy-root.crt" 200 Caddy
+  # the account paths of deploy/Caddyfile in a stack without hjv-api: what Caddy answers itself
+  # (the E2E has them in front of hjv-api)
+  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/login-options)" = '[]' ] ||
+    fail "Caddy: /api/login-options is not []"
+  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/device-group/accessible)" = '{"total":0,"data":[]}' ] ||
+    fail "Caddy: /api/device-group/accessible is not the empty list"
+  [ "$(curl -s -w ' %{http_code}' --cacert "$CI/caddy-root.crt" -X POST -d '{}' https://localhost:18445/api/heartbeat)" = '{"error":"not found"} 404' ] ||
+    fail "Caddy: the rest of /api/ does not answer 404 in JSON"
+  check_account_down 18445 "$CI/caddy-root.crt" Caddy
 
   step "deploy B, systemd: the release package (scripts/package-server.sh) without Docker"
   dc down

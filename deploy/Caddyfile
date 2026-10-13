@@ -15,14 +15,47 @@
 			header_up X-Real-Port {remote_port}
 		}
 	}
-	# Clients also call the API server, https://<domain>/api/... The open-source server has
-	# none, so answer at once instead of letting them time out. An hjviewer account/device API
-	# would go here.
+	# Clients also call the API server, https://<domain>/api/... The account paths go to hjv-api
+	# (server/api, design v3 5-8), the same list as deploy/nginx-hjviewer-api.conf: HJV_API is its
+	# address, the Unix socket systemd holds for it unless set (the E2E sets a loopback port). It
+	# counts failed logins per client address from X-Real-IP, set here; nginx also limits logins per
+	# address before hjv-api, which Caddy leaves to hjv-api's own limits.
+	@hjv_api path /api/login /api/currentUser /api/logout /api/users /api/peers /api/hjv/*
+	handle @hjv_api {
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy {$HJV_API:unix//run/hjviewer-api.sock} {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			# the site's login cookies stay with the site
+			header_up -Cookie
+		}
+	}
+	# answered here, also while hjv-api is stopped
+	handle /api/login-options {
+		header Content-Type "application/json; charset=utf-8"
+		respond `[]` 200
+	}
+	handle /api/device-group/accessible {
+		header Content-Type "application/json; charset=utf-8"
+		respond `{"total":0,"data":[]}` 200
+	}
+	# The rest of /api/ (heartbeats, device information, connection records): answered at once
 	handle /api/* {
-		respond 404
+		header Content-Type "application/json; charset=utf-8"
+		respond `{"error":"not found"}` 404
 	}
 	# AGPL: users of the server reach its source from here
 	handle {
 		respond "HJViewer server (GNU AGPL-3.0). Source: https://github.com/yonsei-projecttf/hjviewer" 200
+	}
+	# hjv-api stopped or unreachable: the app's banner says what this means for its users
+	handle_errors 502 503 504 {
+		@hjv_down path /api/*
+		handle @hjv_down {
+			header Content-Type "application/json; charset=utf-8"
+			respond `{"error":"HJViewer 서버를 지금 쓸 수 없습니다. 비밀번호 없는 연결은 PC가 받아 둔 목록으로 하루 동안 계속됩니다. 잠시 뒤 다시 시도해 주세요."}` 503
+		}
 	}
 }
