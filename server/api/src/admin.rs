@@ -167,6 +167,7 @@ pub async fn serve(
 ) {
     // the socket file belongs to the service's user; that user and root may connect
     let own_uid = std::fs::metadata(&path).map(|m| m.uid()).unwrap_or(0);
+    let _ = state.operator_record.set((oplog.clone(), own_uid));
     tokio::pin!(shutdown);
     loop {
         let stream = tokio::select! {

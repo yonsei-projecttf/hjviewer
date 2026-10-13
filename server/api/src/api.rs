@@ -17,6 +17,7 @@
 //! | `POST /api/hjv/pc/sync` | a bound PC's sync, signed with its device key, no token (pcsync.rs) |
 //! | `POST /api/hjv/relay/hello`, `POST /api/hjv/relay/poll` | hjv-relay's requests, signed with its own key, no token (relay.rs, relay/PROTOCOL.md) |
 //! | `POST /api/hjv/devices/{id}/wake`, `GET /api/hjv/wake/{job}`, `GET /api/hjv/devices/{id}/wol` | waking a PC of the account through a NAS relay, and how ready it is (wake.rs) |
+//! | `GET, HEAD /api/hjv/update/{platform}/{version}`, `POST /api/hjv/update/{platform}/link`, `GET, HEAD /api/hjv/u/{code}`, `GET, HEAD /api/hjv/get/{code}/[file]` | the packages of new app versions: to a login or a bound PC, by a short link, and through door 2 (update.rs) |
 //! | `GET /api/hjv/source` | licence, source and running version (AGPL section 13) |
 //! | `GET /api/login-options`, `GET /api/device-group/accessible` | the static answers nginx gives as well |
 //!
@@ -38,6 +39,10 @@
 //! `Origin` header is refused (the app sends none, so a web page cannot use a visitor's browser);
 //! a request with a body must be `application/json` (parameters such as charset allowed); there is
 //! no CORS. Error texts never contain the word "disabled", which makes the app empty its list.
+//! The two exceptions are update.rs's: a package, a notice file or door 2's page is sent in place
+//! of the JSON (a [`Reply`]'s `sent`, with headers of its own), and the paths a browser opens,
+//! `/api/hjv/u/` and `/api/hjv/get/`, take a request with an `Origin` too: the code in the path
+//! is their key, which no other web page has.
 //!
 //! The PC sync and the relays' requests answer in the envelope protocols' form
 //! (`{"error":"<code>","server_time":…}`, envelope.rs) rather than with these texts. Wake-on-LAN's
@@ -45,15 +50,16 @@
 //! envelope.rs for a relay's signature.
 
 use crate::{
+    body::Body,
     db::{self, Device, Session},
     envelope, keys,
     login::{self, BindStatus, Retry},
     pcsync, proof, relay,
     state::AppState,
+    update,
     util::{b64, hex, now, sha256, valid_device_id},
     wake,
 };
-use http_body_util::Full;
 use hyper::{
     body::Bytes,
     header::{
@@ -108,6 +114,8 @@ pub struct Reply {
     pub status: StatusCode,
     pub body: String,
     pub allow: Option<&'static str>,
+    /// what update.rs sends with the JSON or in its place: headers of its own, a package, a page
+    pub sent: Option<update::Sent>,
 }
 
 impl Reply {
@@ -116,6 +124,7 @@ impl Reply {
             status,
             body: value.to_string(),
             allow: None,
+            sent: None,
         }
     }
 
@@ -135,13 +144,13 @@ impl Reply {
         Reply::error(StatusCode::INTERNAL_SERVER_ERROR, TEXT_SERVER)
     }
 
-    pub fn into_response(self, head: bool) -> Response<Full<Bytes>> {
+    pub fn into_response(self, head: bool) -> Response<Body> {
         let body = if head {
             Bytes::new()
         } else {
             Bytes::from(self.body)
         };
-        let mut response = Response::new(Full::new(body));
+        let mut response = Response::new(Body::from(body));
         *response.status_mut() = self.status;
         let headers = response.headers_mut();
         headers.insert(
@@ -156,6 +165,9 @@ impl Reply {
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
         if let Some(allow) = self.allow {
             headers.insert(ALLOW, HeaderValue::from_static(allow));
+        }
+        if let Some(sent) = self.sent {
+            sent.into_response(&mut response, head);
         }
         response
     }
@@ -183,6 +195,7 @@ fn allowed_methods(path: &str) -> Option<&'static str> {
         "/api/users" | "/api/peers" | "/api/hjv/this-device" => "GET",
         "/api/login-options" | "/api/device-group/accessible" | "/api/hjv/source" => "GET, HEAD",
         p if wake::allowed_methods(p).is_some() => return wake::allowed_methods(p),
+        p if update::allowed_methods(p).is_some() => return update::allowed_methods(p),
         p if p.starts_with("/api/hjv/devices/") => "DELETE",
         p if p.starts_with("/api/hjv/keys") => return keys::allowed_methods(p),
         _ => return None,
@@ -210,7 +223,7 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
     let Some(allow) = allowed_methods(&req.path) else {
         return Reply::not_found();
     };
-    if req.headers.contains_key(ORIGIN) {
+    if req.headers.contains_key(ORIGIN) && !update::browser_path(&req.path) {
         return Reply::error(StatusCode::FORBIDDEN, TEXT_FORBIDDEN);
     }
     let body = match &req.body {
@@ -238,6 +251,7 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         (path, method) if wake::allowed_methods(path) == Some(method.as_str()) => {
             wake::route(state, &req).await
         }
+        (path, method) if update::takes(path, method) => update::route(state, &req).await,
         (path, &Method::DELETE)
             if path.starts_with("/api/hjv/devices/") && wake::allowed_methods(path).is_none() =>
         {

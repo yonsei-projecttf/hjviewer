@@ -2,17 +2,22 @@
 
 //! HTTP/1.1 on the listening socket: the Unix socket systemd holds and passes in (socket
 //! activation; deploy/systemd/hjviewer-api.socket), or for tests a TCP port on 127.0.0.1.
+//!
+//! A request has [`REQUEST_TIMEOUT`] until the head of its answer is ready. The body of an answer
+//! is sent after that, a package for as long as body.rs lets a download take, and every write of
+//! a connection goes through body.rs's `StallGuard`.
 
 use crate::{
     api::{self, ApiRequest, BodyError, Reply, MAX_BODY},
+    body::{Body, StallGuard},
     state::AppState,
 };
-use http_body_util::{BodyExt, Full};
+use http_body_util::BodyExt;
 use hyper::{
     body::{Bytes, Incoming},
     header::{HeaderMap, CONTENT_LENGTH},
     server::conn::http1,
-    service::service_fn,
+    service::{service_fn, HttpService},
     Method, Request, Response, StatusCode,
 };
 use hyper_util::{
@@ -125,22 +130,45 @@ where
         let state = state.clone();
         async move { Ok::<_, Infallible>(handle(state, req, peer).await) }
     });
-    let conn = http1::Builder::new()
-        .timer(TokioTimer::new())
-        .header_read_timeout(HEADER_TIMEOUT)
-        .max_buf_size(MAX_BODY)
-        .serve_connection(TokioIo::new(stream), service);
-    let conn = graceful.watch(conn);
+    let conn = graceful.watch(connection(stream, service));
     tokio::spawn(async move {
         let _ = conn.await;
     });
+}
+
+/// A connection on `stream`, as every connection is served: hyper's settings, and each write
+/// through the guard that gives up a reader who takes nothing (body.rs).
+fn connection<S, V>(stream: S, service: V) -> http1::Connection<TokioIo<StallGuard<S>>, V>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    V: HttpService<Incoming, ResBody = Body>,
+    V::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_TIMEOUT)
+        .max_buf_size(MAX_BODY)
+        .serve_connection(TokioIo::new(StallGuard::new(stream)), service)
+}
+
+/// Serves the one connection `stream` until it ends, as [`serve`] serves each connection of its
+/// socket: the way in for tests that go without a socket.
+pub async fn serve_stream<S>(state: Arc<AppState>, stream: S)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let service = service_fn(move |req| {
+        let state = state.clone();
+        async move { Ok::<_, Infallible>(handle(state, req, None).await) }
+    });
+    let _ = connection(stream, service).await;
 }
 
 async fn handle(
     state: Arc<AppState>,
     req: Request<Incoming>,
     peer: Option<IpAddr>,
-) -> Response<Full<Bytes>> {
+) -> Response<Body> {
     let (parts, body) = req.into_parts();
     let head = parts.method == Method::HEAD;
     let declared = parts

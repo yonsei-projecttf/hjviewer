@@ -17,6 +17,12 @@
 //! Requests refused by a full limit are not counted themselves, so hammering does not extend a
 //! lock.
 //!
+//! The packages of new app versions (update.rs) count in the same table, each at once
+//! ([`count`]) when it happens, under scopes of their own: the requests that fail for who asks,
+//! per client address (HJV_API_LIMIT_UPDATE_FAIL_IP); the downloads that begin, per account for
+//! its logins and per PC for its device key (HJV_API_LIMIT_UPDATE); the short links an account
+//! makes. A request with the right token, signature or code is never refused for its address.
+//!
 //! In memory: the SSO calls of all accounts together, of which one account may hold a quarter
 //! (step 7); the pause of SSO calls while the SSO refuses this server or keeps failing; how long
 //! the SSO took lately (the failure delay follows it, step 10); and how many failed logins a
@@ -35,6 +41,12 @@ pub const SCOPE_ID: &str = "id";
 pub const SCOPE_BOUND: &str = "bound";
 pub const SCOPE_OK_ID: &str = "ok-id";
 pub const SCOPE_OK_IP: &str = "ok-ip";
+/// update.rs: failed requests for a package per address, downloads per account and per PC, short
+/// links made per account
+pub const SCOPE_UPDATE_FAIL_IP: &str = "update-fail-ip";
+pub const SCOPE_UPDATE_OK_ACCOUNT: &str = "update-ok-account";
+pub const SCOPE_UPDATE_OK_DEVICE: &str = "update-ok-device";
+pub const SCOPE_UPDATE_LINK: &str = "update-link";
 
 /// Reserves an attempt under `scope`/`key` unless a window is full; returns its row id.
 pub fn reserve(
@@ -70,6 +82,34 @@ pub fn settle(c: &Connection, keep: &[i64], back: &[i64]) -> rusqlite::Result<()
         c.execute("DELETE FROM attempts WHERE id = ?1", [id])?;
     }
     Ok(())
+}
+
+/// Counts one more under `scope`/`key` at once, unless a window is full: then nothing is counted,
+/// and the error is the seconds until the fullest window has room again. For what is known to
+/// count when it is asked for, with no work between that could still fail.
+pub fn count(
+    c: &Connection,
+    scope: &str,
+    key: &str,
+    windows: &[Window],
+    at: i64,
+) -> rusqlite::Result<Result<(), i64>> {
+    if let Some(id) = reserve(c, scope, key, windows, at)? {
+        settle(c, &[id], &[])?;
+        return Ok(Ok(()));
+    }
+    let mut wait = 1;
+    for w in windows {
+        let (used, first): (u32, Option<i64>) = c.query_row(
+            "SELECT COUNT(*), MIN(at) FROM attempts WHERE scope = ?1 AND key = ?2 AND at > ?3",
+            params![scope, key, at - w.secs],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if used >= w.count {
+            wait = wait.max(first.map_or(w.secs, |first| first + w.secs - at));
+        }
+    }
+    Ok(Err(wait.max(1)))
 }
 
 /// Clears the counters under `keys`, in every scope (admin unlock): tags of different kinds never
@@ -367,6 +407,71 @@ mod tests {
         assert_eq!(clear(&c, &["k".to_owned()]).unwrap(), 6);
         assert!(reserve(&c, SCOPE_ID, "k", &w, 2300).unwrap().is_some());
         assert_eq!(drop_unfinished(&c).unwrap(), 2);
+    }
+
+    #[test]
+    fn counting_at_once() {
+        let c = open_in_memory().unwrap();
+        let w = [
+            Window { count: 2, secs: 60 },
+            Window {
+                count: 3,
+                secs: 3600,
+            },
+        ];
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_OK_DEVICE, "pc", &w, 1000).unwrap(),
+            Ok(())
+        );
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_OK_DEVICE, "pc", &w, 1010).unwrap(),
+            Ok(())
+        );
+        // the minute is full until its first one is a minute old; nothing more is counted
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_OK_DEVICE, "pc", &w, 1020).unwrap(),
+            Err(40)
+        );
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_OK_DEVICE, "pc", &w, 1059).unwrap(),
+            Err(1)
+        );
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_OK_DEVICE, "pc", &w, 1060).unwrap(),
+            Ok(())
+        );
+        // now the hour is full, which takes longer than the minute
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_OK_DEVICE, "pc", &w, 1061).unwrap(),
+            Err(3539)
+        );
+        assert_eq!(
+            counted_since(&c, 0).unwrap(),
+            vec![(SCOPE_UPDATE_OK_DEVICE.to_owned(), 3)]
+        );
+        // other keys and scopes are apart, and each counts as soon as it is there
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_OK_DEVICE, "other", &w, 1061).unwrap(),
+            Ok(())
+        );
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_OK_ACCOUNT, "pc", &w, 1061).unwrap(),
+            Ok(())
+        );
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_FAIL_IP, "pc", &w, 1061).unwrap(),
+            Ok(())
+        );
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_LINK, "pc", &w, 1061).unwrap(),
+            Ok(())
+        );
+        assert_eq!(drop_unfinished(&c).unwrap(), 0);
+        assert_eq!(clear(&c, &["pc".to_owned()]).unwrap(), 6);
+        assert_eq!(
+            count(&c, SCOPE_UPDATE_OK_DEVICE, "pc", &w, 1061).unwrap(),
+            Ok(())
+        );
     }
 
     #[test]

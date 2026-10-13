@@ -48,5 +48,8 @@ zeroize = "1"
 # uses them, and let cargo prune Cargo.lock once (`cargo build --offline`, without --locked).
 hjv-relay = { path = "../../relay" }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+# the tests of body.rs and tests/update_stream.rs run on tokio's paused clock: a download that
+# takes an hour, a reader that stops for a minute
+tokio = { version = "1", features = ["test-util"] }
 
 [workspace]

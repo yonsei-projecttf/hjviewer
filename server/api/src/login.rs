@@ -333,6 +333,7 @@ impl LoginAnswer {
             allow: (self.status == StatusCode::METHOD_NOT_ALLOWED).then_some("POST"),
             status: self.status,
             body: self.body.as_ref().clone(),
+            sent: None,
         }
     }
 }

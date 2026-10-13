@@ -15,7 +15,7 @@ use hyper::Uri;
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use zeroize::Zeroizing;
@@ -95,6 +95,19 @@ pub struct Config {
     /// the command keys the relays pin (their HJV_COMMAND_PUBKEY): selfcheck compares the key in
     /// use
     pub command_pubkeys: Vec<(u32, [u8; 32])>,
+    /// the signed version policy the operator installs, which nginx hands to the apps: update.rs
+    /// reads from it which package is each platform's latest
+    pub version_policy: PathBuf,
+    /// where the packages of the policy lie (and their notice files, in `notices-<version>/`)
+    pub package_dir: PathBuf,
+    /// door 2's code and the time it closes; no file, no door 2
+    pub door2_file: PathBuf,
+    /// downloads per account by its logins, and per bound PC by its device key (update.rs)
+    pub limit_update: Vec<Window>,
+    /// requests for a package that fail for who asks, per client address (update.rs)
+    pub limit_update_fail_ip: Vec<Window>,
+    /// packages sent at the same time; one more gets 503
+    pub downloads_max: usize,
 }
 
 /// The connection kinds of a same-account proof (design v3 §3-3): port forwarding and RDP never
@@ -142,7 +155,20 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_TRUST_TTL", Some("86400")),
     ("HJV_API_COMMAND_KID", Some("1")),
     ("HJV_API_COMMAND_PUBKEYS", Some("")),
+    (
+        "HJV_API_VERSION_POLICY",
+        Some("/etc/hjviewer/version-policy.json"),
+    ),
+    ("HJV_API_PACKAGE_DIR", Some("/srv/hjviewer-updates/pkg")),
+    ("HJV_API_DOOR2_FILE", Some("/etc/hjviewer/door2.conf")),
+    ("HJV_API_LIMIT_UPDATE", Some("10/86400")),
+    ("HJV_API_LIMIT_UPDATE_FAIL_IP", Some("30/86400")),
+    ("HJV_API_DOWNLOADS_MAX", Some("4")),
 ];
+
+/// The most packages hjv-api sends at once, whatever HJV_API_DOWNLOADS_MAX says: each takes a
+/// thread while it reads a piece of its file, and the unit allows 64 tasks.
+pub const MAX_DOWNLOADS: usize = 16;
 
 impl Config {
     /// Reads the settings from the process environment.
@@ -184,6 +210,14 @@ impl Config {
         };
         let windows = |name: &str| -> Result<Vec<Window>, String> {
             parse_windows(&get(name)?).map_err(|e| format!("{name}: {e}"))
+        };
+        let path = |name: &str| -> Result<PathBuf, String> {
+            let value = get(name)?;
+            if value.starts_with('/') && !value.contains('\0') {
+                Ok(PathBuf::from(value))
+            } else {
+                Err(format!("{name} must be an absolute path"))
+            }
         };
 
         let token_url = sso_url("HJV_API_SSO_TOKEN_URL", &get("HJV_API_SSO_TOKEN_URL")?)?;
@@ -324,6 +358,17 @@ impl Config {
             trust_ttl_secs,
             command_kid,
             command_pubkeys,
+            version_policy: path("HJV_API_VERSION_POLICY")?,
+            package_dir: path("HJV_API_PACKAGE_DIR")?,
+            door2_file: path("HJV_API_DOOR2_FILE")?,
+            limit_update: windows("HJV_API_LIMIT_UPDATE")?,
+            limit_update_fail_ip: windows("HJV_API_LIMIT_UPDATE_FAIL_IP")?,
+            downloads_max: usize::try_from(num("HJV_API_DOWNLOADS_MAX")?)
+                .ok()
+                .filter(|n| *n <= MAX_DOWNLOADS)
+                .ok_or(format!(
+                    "HJV_API_DOWNLOADS_MAX is 1 to {MAX_DOWNLOADS} downloads at the same time"
+                ))?,
         };
         if config.token_idle_secs > config.token_max_secs {
             return Err("HJV_API_TOKEN_IDLE_DAYS cannot exceed HJV_API_TOKEN_MAX_DAYS".into());
@@ -334,7 +379,8 @@ impl Config {
         Ok(config)
     }
 
-    /// The longest window of the login limits kept in the database: older attempts count nowhere.
+    /// The longest window of the limits kept in the database (the logins' and the package
+    /// downloads'): older attempts count nowhere.
     pub fn longest_window(&self) -> i64 {
         [
             &self.limit_ip,
@@ -342,6 +388,8 @@ impl Config {
             &self.limit_bound,
             &self.limit_ok_id,
             &self.limit_ok_ip,
+            &self.limit_update,
+            &self.limit_update_fail_ip,
         ]
         .iter()
         .flat_map(|windows| windows.iter().map(|w| w.secs))
@@ -753,6 +801,60 @@ mod tests {
             "{err}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_settings() {
+        // the design of the minimum version, §4-6: where the policy, the packages and door 2's
+        // file are, ten downloads a day, thirty failures a day per address, four at once
+        let c = Config::from_vars(&base()).unwrap();
+        assert_eq!(
+            c.version_policy,
+            Path::new("/etc/hjviewer/version-policy.json")
+        );
+        assert_eq!(c.package_dir, Path::new("/srv/hjviewer-updates/pkg"));
+        assert_eq!(c.door2_file, Path::new("/etc/hjviewer/door2.conf"));
+        let day = |count| vec![Window { count, secs: DAY }];
+        assert_eq!(
+            (&c.limit_update, &c.limit_update_fail_ip),
+            (&day(10), &day(30))
+        );
+        assert_eq!(c.downloads_max, 4);
+        let with = |k: &str, v: &str| {
+            let mut vars = base();
+            vars.insert(k.to_owned(), v.to_owned());
+            Config::from_vars(&vars)
+        };
+        let c = with("HJV_API_LIMIT_UPDATE", "2/3600,5/604800").unwrap();
+        assert_eq!(c.limit_update.len(), 2);
+        // the counters are kept as long as the longest of them counts
+        assert_eq!(c.longest_window(), 7 * DAY);
+        assert_eq!(
+            with("HJV_API_DOWNLOADS_MAX", "16").unwrap().downloads_max,
+            16
+        );
+        assert_eq!(
+            with("HJV_API_PACKAGE_DIR", "/var/tmp/pkg")
+                .unwrap()
+                .package_dir,
+            Path::new("/var/tmp/pkg")
+        );
+        for (k, v) in [
+            ("HJV_API_VERSION_POLICY", "version-policy.json"),
+            ("HJV_API_VERSION_POLICY", "~/version-policy.json"),
+            ("HJV_API_PACKAGE_DIR", "pkg"),
+            ("HJV_API_DOOR2_FILE", "./door2.conf"),
+            ("HJV_API_LIMIT_UPDATE", "10"),
+            ("HJV_API_LIMIT_UPDATE", "0/86400"),
+            ("HJV_API_LIMIT_UPDATE_FAIL_IP", "30/0"),
+            ("HJV_API_LIMIT_UPDATE_FAIL_IP", "30/86400,"),
+            ("HJV_API_DOWNLOADS_MAX", "0"),
+            ("HJV_API_DOWNLOADS_MAX", "17"),
+            ("HJV_API_DOWNLOADS_MAX", "four"),
+            ("HJV_API_UPDATE_DIR", "/srv/hjviewer-updates"),
+        ] {
+            assert!(with(k, v).is_err(), "{k}={v}");
+        }
     }
 
     #[test]
