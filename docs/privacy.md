@@ -18,6 +18,9 @@ how to have it deleted. Logging in is a choice: an app that is not logged in, an
 the account feature, sends nothing to the account service and connects with the PC's ID and
 password as before.
 
+From version 1.6.0 the operator can also set a minimum app version. Apps check the server's signed
+version policy, and new versions come from the server (section 2, "Updates").
+
 ### 2. Connecting devices (everyone)
 
 - **Device registry**: the server keeps each device's ID, its public key, an identifier of the
@@ -30,8 +33,11 @@ password as before.
   connection times and IP addresses. A request to the account service while that service is
   stopped or past a limit can leave, in the web server's error log, the client's IP address and
   the request's path, which can name a PC's ID. Put together, these logs can show which device
-  connected to which PC through the relay, and when. They are kept as long as the server's system logs are (the
-  operator's settings).
+  connected to which PC through the relay, and when. Once the operator enforces a minimum app
+  version, the server also logs the connections it refuses from older apps (one by one up to 30
+  every 10 seconds, beyond that only their number): that app's IP address and port, the ID of the
+  device it tried to reach, and the version it reported. They are kept as long as the server's
+  system logs are (the operator's settings).
 - **Session contents are not readable by the server.** Screen, input, clipboard, files, camera
   pictures and sound are end-to-end encrypted between the two devices; when the server relays a
   session it only forwards encrypted bytes. The account service keeps no record of each connection
@@ -46,6 +52,22 @@ password as before.
   servers which public IP address and port it is reachable at: stun.cloudflare.com,
   stun.l.google.com, stun.antisip.com and stun.nextcloud.com. Those operators see the device's IP
   address and the time; they see nothing of the session.
+- **Updates: the version policy** (from version 1.6.0): apps check the server's version policy
+  (`/api/hjv/version`) at start, before a connection when the last check is over 30 minutes old,
+  when they come back to the front after an hour, after a login or a refused connection, and every
+  6 hours. The policy is a public file, the same for everyone, signed by the operator. The request
+  carries no ID, account or device information, and the web server keeps no access log of it.
+- **Updates: downloads** (from version 1.6.0): the account service hands out the installers of new
+  versions: to logged-in apps, to the HJViewer service of a PC in an account, and through two kinds
+  of links that need no login: the migration link that the operator gives to people still on
+  1.5.x, and short links that a logged-in app makes for another PC (they work for 10 minutes and
+  three downloads, and live in the service's memory only). For each download and each short link
+  made, the service records which way and for which platform, the time, and tags: of the account
+  and of the PC when there are any, and of the client's IP address (never the address itself).
+  These records are kept 6 months; downloads through the migration link are recorded at most 20 a
+  minute. The codes of the links are never stored; the service's log shows a code only as the
+  first 8 hex digits of its tag. The web server keeps no access log of these requests (its error
+  log: "Server logs" above).
 
 ### 3. Accounts (from version 1.6.0)
 
@@ -83,19 +105,22 @@ let in today and yesterday and their number, and how many attempts it refused fo
 | PCs in your account | PC ID, OS, host name, the PC's public key, a random binding ID, times added, last seen and last synced, app version, whether switched off on the PC; per reason, counts of refused attempts (30 days) | until removed from the account or 180 days unseen. After that the binding ID, the PC ID and its public key stay 180 days, so that the PC learns that it was removed |
 | Connections without the PC's password | per account key, PC and day: the time of the last one and their number, as the PC reported them. There is no record per connection | 30 days; deleted with the key or the PC |
 | Records of logins, devices and keys | tags of the account and the device (not your ID), the client's IP address, the result, the time | 6 months |
-| Operator record | which administration command ran when, its targets as tags | at least a year |
+| Downloads of new app versions (section 2) | which way (a login, a PC's key, a short link made or used, the migration link), the platform, the time; tags of the account and the PC when there are any, and a tag of the client's IP address (not the address) | 6 months |
+| Operator record | which administration command ran when, its targets as tags; also, as tags of the PC and of the address, when a PC's key downloads a new version from an address that PC never used before | at least a year |
 | Database backups | a copy of all of the above, on the server, readable by root only: one a day, and one before an upgrade or a restore | 14 days |
 | The service's log | counts and tags, never IDs, addresses or secrets | 30 days |
 
-Short-lived: the one-time values of requests (up to 20 minutes) and the login limit counters,
-under tags (as long as their longest window, at least a day). In memory only, never on disk: the
+Short-lived: the one-time values of requests (up to 20 minutes), the login and download limit
+counters, under tags (as long as their longest window, at least a day), and the short links, in
+memory only (10 minutes; a restart of the service ends them). In memory only, never on disk: the
 service's answer to a login or to an account request that changes something, so that the same
 request sent again within 30 seconds gets the same answer; it is cleared at the next such request,
 within the hour at the latest.
 
 **Not kept** by the account service: passwords, Yonsei SSO tokens, e-mail addresses, affiliation,
 the machine identifier itself, OS user names, CPU and memory details, heartbeats, device
-information, a record of each connection or file transfer, and session contents.
+information, a record of each connection or file transfer, session contents, and the codes of
+short links and of the migration link.
 
 **What your other devices show.** When a device logs in to your account, your other devices show
 it with the time and whether it was on the university's network, which the server saw, and the app
@@ -136,6 +161,15 @@ the device itself gave.
   Other people who use that PC can read the masked name and, with some effort, the list.
   Uninstalling HJViewer deletes the registry key; each Windows user's settings and
   `%LOCALAPPDATA%\HJViewer-account\`, and the service's settings, list file and logs stay.
+- **Updates** (from version 1.6.0): every app keeps the last version policy it verified, when it
+  last checked and the difference between its clock and the server's. A PC that refuses an older
+  app logs that app's platform and version, at most a line a minute. An installed Windows PC's
+  HJViewer service keeps a record of its update attempts (the version, the file's hash, the time)
+  and, until it is installed, the downloaded installer in a folder only Windows' system account and
+  administrators can open; an app that is not installed saves the new version in the user's
+  Downloads folder. An Android app reads which store installed it; a side-loaded one keeps a
+  downloaded update in its own cache until it next starts, and checks the update's package name
+  and signing certificate. Both happen on the phone only: none of this is sent to the server.
 
 ### 5. Switching a PC on (Wake-on-LAN)
 
@@ -222,6 +256,10 @@ Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shar
   see only shortened, masked output and counts, and what it sees goes to the external AI service
   that runs it. Showing full values and making keys are done by people only.
 - **STUN servers** (section 2). Nobody else: no advertising or analytics companies.
+- Not about you: as in upstream rustdesk-server, the server's hbbs asks RustDesk's update service
+  (api.rustdesk.com) at start and once a day whether a newer server version exists. It sends the
+  server's operating system, its version and processor type, and a fingerprint of the server
+  machine; nothing about users or their devices.
 
 ### 10. Contact and changes
 
@@ -238,13 +276,17 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 1.6.0부터 서버에 계정 기능이 생깁니다. 운영자가 명단에 넣은 사람은 연세포탈 ID로 로그인하고, 앱에서 자기 Windows PC를 보고, 자기 기기끼리 PC 비밀번호 없이 연결하고, PC와 같은 네트워크의 중계기로 꺼진 PC를 켤 수 있습니다. 이 문서는 서버, 사용자의 기기, 그 중계기가 무엇을 얼마 동안 보관하는지와 지우는 방법을 적습니다. 로그인은 선택입니다. 로그인하지 않은 앱과 계정 기능이 없는 빌드는 계정 서비스에 아무것도 보내지 않고, 지금처럼 PC의 ID와 비밀번호로 연결합니다.
 
+1.6.0부터 운영자는 앱의 최소 버전도 정할 수 있습니다. 앱은 서버의 서명된 버전 정책을 확인하고, 새 버전을 서버에서 받습니다(2절의 "업데이트").
+
 ### 2. 기기 연결 (모든 사용자)
 
 - **기기 등록부**: 서버는 기기마다 ID, 공개키, 기기 식별값(PC는 운영체제가 정한 값으로 Windows에서는 MachineGuid, 휴대폰은 기기 공개키), 마지막 접속 IP를 보관합니다. 다른 기기가 이 기기를 찾을 수 있게 하기 위해서입니다.
-- **서버 로그**: 서버는 기기가 처음 등록할 때와 주소나 키가 바뀔 때 기기 ID, IP 주소와 포트, 기기 식별값, 공개키를 기록합니다. 중계 서버는 중계한 세션마다 두 끝의 IP 주소와 시각을, 웹 서버는 접속 시각과 IP 주소를 기록합니다. 계정 서비스가 멈춰 있거나 한도에 걸린 동안의 계정 요청은 웹 서버의 오류 로그에 접속한 IP 주소와 요청 경로(PC ID가 들어갈 수 있음)를 남길 수 있습니다. 이 로그를 맞춰 보면 어느 기기가 언제 어느 PC에 중계로 연결했는지 알 수 있습니다. 이 로그는 서버의 시스템 로그가 보관되는 동안 남습니다(운영자 설정).
+- **서버 로그**: 서버는 기기가 처음 등록할 때와 주소나 키가 바뀔 때 기기 ID, IP 주소와 포트, 기기 식별값, 공개키를 기록합니다. 중계 서버는 중계한 세션마다 두 끝의 IP 주소와 시각을, 웹 서버는 접속 시각과 IP 주소를 기록합니다. 계정 서비스가 멈춰 있거나 한도에 걸린 동안의 계정 요청은 웹 서버의 오류 로그에 접속한 IP 주소와 요청 경로(PC ID가 들어갈 수 있음)를 남길 수 있습니다. 이 로그를 맞춰 보면 어느 기기가 언제 어느 PC에 중계로 연결했는지 알 수 있습니다. 운영자가 최소 버전을 강제하면, 서버는 오래된 앱의 연결을 거절할 때 그 앱의 IP 주소와 포트, 그 앱이 연결하려던 기기의 ID, 그 앱이 알린 버전도 기록합니다(10초에 30건까지 한 건씩, 그보다 많으면 개수만). 이 로그는 서버의 시스템 로그가 보관되는 동안 남습니다(운영자 설정).
 - **서버는 세션 내용을 볼 수 없습니다.** 화면, 입력, 클립보드, 파일, 카메라 영상, 소리는 두 기기 사이에서 종단 간 암호화됩니다. 서버가 중계할 때도 암호화된 바이트만 전달합니다. 계정 서비스는 연결마다의 기록을 두지 않습니다(3절).
 - **시스템 정보와 접속 기록**: 원격 접속을 받는 PC는 upstream RustDesk처럼 서버의 `/api` 주소로 하트비트, 호스트 이름, OS 사용자 이름, OS, CPU, 메모리 정보, 그리고 연결과 파일 전송마다의 기록(상대 기기의 주소·ID·이름, 파일 이름과 크기)을 보내려 합니다. 로그인한 앱도 세션에 남길 수 있는 메모를 그 주소로 보내려 합니다. 이 배포는 그 주소에 요청을 읽지 않고 404로 답하며 아무것도 저장하지 않습니다. 계정 서비스에는 3절의 계정 요청만 갑니다.
 - **STUN 서버**: 두 기기를 직접 연결(P2P)하려고, 앱은 공개 STUN 서버(stun.cloudflare.com, stun.l.google.com, stun.antisip.com, stun.nextcloud.com)에 자신의 공인 IP와 포트를 묻습니다. 이 서버 운영자는 기기의 IP 주소와 시각을 알 수 있지만, 세션 내용은 알 수 없습니다.
+- **업데이트: 버전 정책**(1.6.0부터): 앱은 서버의 버전 정책(`/api/hjv/version`)을 확인합니다. 시작할 때, 마지막 확인이 30분 넘은 뒤 연결하기 직전, 1시간 넘게 뒤에 있다가 앞으로 돌아올 때, 로그인이나 거절된 연결 직후, 그리고 6시간마다입니다. 정책은 운영자가 서명한 공개 파일이고 모두에게 같습니다. 이 요청에는 ID, 계정, 기기 정보가 없고, 웹 서버는 이 요청의 접속 기록을 남기지 않습니다.
+- **업데이트: 내려받기**(1.6.0부터): 계정 서비스가 새 버전의 설치 파일을 내줍니다. 로그인한 앱, 계정에 들어간 PC의 HJViewer 서비스, 그리고 로그인이 필요 없는 링크 두 가지로 받습니다. 하나는 운영자가 아직 1.5.x를 쓰는 사람에게 주는 이행용 링크이고, 하나는 로그인한 앱이 다른 PC를 위해 만드는 짧은 링크입니다(10분 동안 세 번까지 쓰고, 서비스의 메모리에만 있음). 서비스는 내려받기와 짧은 링크 만들기마다 어느 길로 어느 플랫폼의 파일을 받았는지, 시각, 그리고 꼬리표를 기록합니다. 꼬리표는 계정과 PC가 있으면 그 꼬리표, 그리고 접속한 IP 주소의 꼬리표입니다(주소 자체는 없음). 이 기록은 6개월 동안 둡니다. 이행용 링크의 내려받기는 1분에 20개까지만 기록합니다. 링크의 코드는 저장하지 않고, 서비스의 로그에는 코드의 꼬리표 앞 16진수 8자리만 남습니다. 웹 서버는 이 요청의 접속 기록도 남기지 않습니다(오류 로그는 위 '서버 로그').
 
 ### 3. 계정 (1.6.0부터)
 
@@ -265,13 +307,14 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 | 내 계정의 PC | PC ID, OS, 호스트 이름, PC 공개키, 무작위 묶음 ID, 추가한 시각·마지막으로 보인 시각·마지막 동기화 시각, 앱 버전, 그 PC에서 꺼 두었는지, 거절한 시도의 이유별 개수(30일) | 계정에서 빼거나 180일 동안 보이지 않을 때까지. 그 뒤 묶음 ID, PC ID, PC 공개키만 180일 남깁니다. PC가 빠졌다는 것을 그 PC에 알리기 위해서입니다 |
 | 비밀번호 없는 연결 | 계정 키·PC·날짜마다 마지막 연결 시각과 횟수(PC가 알린 값). 연결마다의 기록은 없음 | 30일. 그 키나 PC와 함께 삭제 |
 | 로그인·기기·키 기록 | 계정과 기기의 꼬리표(ID가 아님), 접속한 IP 주소, 결과, 시각 | 6개월 |
-| 운영자 기록 | 어떤 관리 명령을 언제 실행했는지, 대상은 꼬리표로 | 1년 이상 |
+| 새 버전 내려받기(2절) | 어느 길(로그인, PC의 키, 짧은 링크를 만들거나 씀, 이행용 링크), 플랫폼, 시각. 계정과 PC가 있으면 그 꼬리표, 그리고 접속한 IP 주소의 꼬리표(주소는 없음) | 6개월 |
+| 운영자 기록 | 어떤 관리 명령을 언제 실행했는지, 대상은 꼬리표로. 그리고 PC의 키가 그 PC가 쓴 적 없는 주소에서 새 버전을 받았을 때 그 PC와 주소의 꼬리표 | 1년 이상 |
 | DB 백업 | 위 전부의 사본(서버 안, root만 읽음). 매일 하나, 그리고 업그레이드나 복원 전에 하나 | 14일 |
 | 계정 서비스의 로그 | 개수와 꼬리표만(ID, 주소, 비밀값은 없음) | 30일 |
 
-잠깐만 두는 것: 요청의 일회용 값(최대 20분), 꼬리표로 센 로그인 한도 기록(가장 긴 한도 기간, 최소 하루). 메모리에만 두고 디스크에는 쓰지 않는 것: 로그인과 무언가를 바꾸는 계정 요청에 한 답. 30초 안에 같은 요청이 다시 오면 같은 답을 주려는 것이고, 다음 그런 요청 때나 늦어도 1시간 안에 지웁니다.
+잠깐만 두는 것: 요청의 일회용 값(최대 20분), 꼬리표로 센 로그인과 내려받기 한도 기록(가장 긴 한도 기간, 최소 하루), 메모리에만 두는 짧은 링크(10분, 서비스를 다시 시작하면 사라짐). 메모리에만 두고 디스크에는 쓰지 않는 것: 로그인과 무언가를 바꾸는 계정 요청에 한 답. 30초 안에 같은 요청이 다시 오면 같은 답을 주려는 것이고, 다음 그런 요청 때나 늦어도 1시간 안에 지웁니다.
 
-**계정 서비스가 보관하지 않는 것**: 비밀번호, 연세 SSO 토큰, 이메일 주소, 소속, 기기 식별값 자체, OS 사용자 이름, CPU·메모리 정보, 하트비트, 기기 정보, 연결이나 파일 전송마다의 기록, 세션 내용.
+**계정 서비스가 보관하지 않는 것**: 비밀번호, 연세 SSO 토큰, 이메일 주소, 소속, 기기 식별값 자체, OS 사용자 이름, CPU·메모리 정보, 하트비트, 기기 정보, 연결이나 파일 전송마다의 기록, 세션 내용, 짧은 링크와 이행용 링크의 코드.
 
 **다른 내 기기에 보이는 것.** 어떤 기기가 내 계정에 로그인하면 다른 내 기기에 알림이 뜹니다. 서버가 본 시각과 학내 네트워크인지, 그리고 그 기기가 스스로 알린(아무도 확인하지 않는) 앱 버전과 기기 모델이 나오므로, 내가 하지 않은 로그인을 알아챌 수 있습니다. 알림은 내 기기 하나에서 [내 기기 맞음]이나 [아님]으로 답할 때까지 기한 없이 남습니다. 지금 쓰는 기기보다 먼저 로그인한 기기에도, 아무도 답하기 전에 로그인이 끝난 기기에도 알림이 뜨고, 끝난 기기는 어떻게 끝났는지도 나옵니다. '로그인한 기기' 목록에는 내 PC마다 그 기기가 마지막으로 비밀번호 없이 연결한 시각과 30일 동안의 횟수가 나오고, 로그인이 끝난 기기도 30일 동안 따로 나옵니다. 플랫폼과 이름, 로그인 시각, 마지막 사용, 어떻게 끝났는지(스스로 로그아웃, 다른 내 기기 중 어느 것에서 로그아웃시킴, 기간 만료, 같은 기기의 새 로그인으로 바뀜, 관리자가 로그아웃시킴)가 나옵니다.
 
@@ -282,6 +325,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 - **모든 앱**: 설정, 기기 ID와 키 쌍, 접속했던 기기 ID.
 - **로그인한 앱**은 계정 키의 개인키도 보관합니다. 아이폰은 Keychain에 이 기기 전용, 잠금이 풀렸을 때만 쓰도록 두므로 백업에 들어가지 않습니다. 안드로이드는 앱 데이터에 두며, 클라우드 백업과 기기 간 이전에서 뺍니다. Windows는 `%LOCALAPPDATA%\HJViewer-account\`에 Windows DPAPI로 그 Windows 사용자만 풀 수 있게 암호화해 두고, 로밍하지 않습니다. 그 밖에 로그인 토큰, 서버가 보낸 성명과 포탈 ID, 내 PC 목록(PC ID, 공개키, 상태), 서버와의 시계 차이를 보관합니다. 계정 키가 없는 토큰으로는 아무것도 할 수 없습니다.
 - **계정에 들어간 PC**는 Windows 레지스트리(`HKLM\SOFTWARE\HJViewer\Account`)에 묶음 ID, 가린 내 이름, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 풀린 묶음의 기록, 계정 키마다 오늘과 어제의 비밀번호 없는 연결의 마지막 시각과 횟수를 둡니다. 서비스 폴더에는 서명된 목록(내 기기들의 이름·ID·공개키와 가린 내 이름)을, HJViewer 로그에는 비밀번호 없이 받아들인 연결마다 한 줄(그 기기의 ID와 이름, 시각)을 둡니다. HJViewer 로그는 약 90일치를 둡니다. 그 PC를 쓰는 다른 사람은 가린 이름을 볼 수 있고, 마음먹으면 그 목록도 볼 수 있습니다. HJViewer를 제거하면 레지스트리 키가 지워지고, Windows 사용자마다의 설정과 `%LOCALAPPDATA%\HJViewer-account\`, 서비스의 설정·목록 파일·로그는 남습니다.
+- **업데이트**(1.6.0부터): 모든 앱은 마지막으로 확인한 버전 정책, 마지막 확인 시각, 서버와의 시계 차이를 둡니다. 오래된 앱을 거절한 PC는 그 앱의 플랫폼과 버전을 로그에 남깁니다(1분에 한 줄까지). 설치된 Windows PC의 HJViewer 서비스는 업데이트 시도 기록(버전, 파일의 해시, 시각)을 두고, 설치하기 전까지는 내려받은 설치 파일을 Windows의 시스템 계정과 관리자만 열 수 있는 폴더에 둡니다. 설치하지 않고 쓰는 앱은 새 버전을 사용자의 '다운로드' 폴더에 둡니다. Android 앱은 어느 스토어에서 설치됐는지 읽습니다. 파일로 설치한 앱은 내려받은 업데이트를 다음에 시작할 때까지 자기 캐시에 두고, 그 패키지 이름과 서명 인증서를 확인합니다. 둘 다 휴대폰 안에서만 하고, 서버에 보내지 않습니다.
 
 ### 5. 꺼진 PC 켜기 (Wake-on-LAN)
 
@@ -312,6 +356,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 - **연세 SSO**: 로그인할 때 포탈 ID와 비밀번호를 확인합니다.
 - **AI 도우미**: 운영자는 서버 작업에 AI 도우미를 씁니다. AI 도우미는 줄이고 가린 출력과 개수만 보도록 규칙으로 정해져 있고, 본 내용은 AI 도우미를 실행하는 외부 AI 서비스로 갑니다. 원래 값 보기와 키 만들기는 사람만 합니다.
 - **STUN 서버**(2절). 그 밖에는 없습니다. 광고나 분석 회사에 넘기지 않습니다.
+- 사용자에 관한 것이 아닌 것: upstream rustdesk-server와 같이, 서버의 hbbs는 시작할 때와 하루에 한 번 RustDesk의 업데이트 서비스(api.rustdesk.com)에 더 새 서버 버전이 있는지 묻습니다. 서버의 운영체제와 그 버전, 프로세서 종류, 서버 기계의 지문을 보냅니다. 사용자나 기기에 관한 것은 보내지 않습니다.
 
 ### 10. 문의와 변경
 
