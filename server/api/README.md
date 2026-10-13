@@ -224,7 +224,10 @@ address), since PC IDs are not secret. The verdicts say whether one of the relay
 the PC's network (the same network and gateway, or overlapping networks with the same gateway IP or
 MAC; on a private network also behind the same egress address), whether the egress addresses are
 the same, and how long the entry has waited; the default output holds no address, so that it may
-go into a chat or a ticket. A relay that cannot reach the PC's network is the wrong entry.
+go into a chat or a ticket. A relay that cannot reach the PC's network is the wrong entry. The
+relay's name is what the apps show for it as it is, in the progress of a wake ("… 에 켜기 요청을
+전달하는 중…"), so one that reads on its own does best, such as "연구실 NAS"; without `--name` it is
+`NAS` and the first group of the code.
 
 The rollout (design v3 §11): install with the switch off, `passwordless on --owner-of <the
 operator's PC ID>`, a week of use, then `passwordless on`. To stop password-less connections, run
@@ -822,5 +825,6 @@ hints, the relays' interfaces, the grades), `src/relay.rs` (relay/PROTOCOL.md's 
 `relay` admin commands), `src/wake.rs` (the app's paths, the command key and commands, the choice
 of relay, the jobs' ticker that `jobs.rs` runs every five seconds), routes in `api::route`, the
 relays' envelope from `envelope` with the relay's `Spec`, tables through `db::MIGRATIONS` (schema
-3), the PC's report through `pcsync` with the answer's `send_wol`. nginx's relay/hello limit is in
-deploy/nginx-hjviewer-api.conf and its zones file.
+3), the PC's report through `pcsync` with the answer's `send_wol`. In front of hjv-api's own
+limits nginx limits relay/hello per source (design v3 §5-8): that location of
+deploy/nginx-hjviewer-api.conf and its zones file come with the packaging work (WP-B).
