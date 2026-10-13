@@ -217,8 +217,8 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
   the last four minutes, so that a PC that has just woken has time for its first sync) and whether
   any of them synced in the last ten minutes; whether hbbs's console answers; SSO calls paused
   now or in the last ten minutes, with `invalid_client` (the credential
-  `hjviewer-sso-client-secret` must be renewed, as when the WordPress plugin's changes) and a
-  refused address told apart; and, with phase 2, active NAS relays silent for an hour. PCs that
+  `hjviewer-sso-client-secret` must be renewed, as when the WordPress plugin's credential
+  changes) and a refused address told apart; and, with phase 2, active NAS relays silent for an hour. PCs that
   are off say nothing, so a night with every PC asleep is no alarm. All well: one line in the
   journal. A finding: an error line each, the findings in `/run/hjviewer-api-check/findings`, and
   the unit fails.
