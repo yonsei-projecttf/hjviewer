@@ -440,13 +440,16 @@ sudo stat -c '%a %U %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519
   3. 재시작하면 PC는 몇 초 안에 다시 등록되지만, 진행 중인 원격 세션은 끊깁니다.
   4. 1.6.0부터 묶음에는 hjv-api도 들어 있습니다. hjv-api가 설치된 서버에서는 위 명령에 더해, 7-14의 "업그레이드"대로 스냅숏, 설정 파일, 옛 실행 파일을 남긴 뒤 같은 디렉터리에서 다음을 실행합니다. 유닛 파일을 바꾼 뒤 `daemon-reload`를 하지 않으면 systemd는 옛 유닛으로 다시 시작합니다.
      ```bash
+     [ -x bin/hjv-api ] || { echo 'STOP: 묶음에 hjv-api가 없음'; exit 1; }
      diff -q systemd/hjviewer-api.socket /etc/systemd/system/hjviewer-api.socket
      sudo install -m 755 bin/hjv-api /opt/hjviewer/bin/
      for u in systemd/hjviewer-api*.socket systemd/hjviewer-api*.service systemd/hjviewer-api*.timer; do [ -e "$u" ] && sudo install -m 644 "$u" /etc/systemd/system/; done
      sudo systemctl daemon-reload
      sudo systemctl restart hjviewer-api
      ```
-     첫 줄이 `differ`를 보였으면(소켓 유닛이 바뀜) 마지막 줄 대신 `sudo systemctl stop hjviewer-api.service hjviewer-api.socket && sudo systemctl start hjviewer-api.socket hjviewer-api.service`를 합니다. 서비스만 다시 시작하면 systemd가 쥐고 있던 옛 소켓을 그대로 넘겨받습니다.
+     `diff` 줄이 `differ`를 보였으면(소켓 유닛이 바뀜) 마지막 줄 대신 `sudo systemctl stop hjviewer-api.service hjviewer-api.socket && sudo systemctl start hjviewer-api.socket hjviewer-api.service`를 합니다. 서비스만 다시 시작하면 systemd가 쥐고 있던 옛 소켓을 그대로 넘겨받습니다.
+
+     질문 10의 답이 '안 됨'이어서 hjv-api를 비공개 묶음으로 설치한 서버(7-1의 3번, 7-3 끝)에서는 공개 묶음에 `bin/hjv-api`가 없어 이 블록이 `STOP`으로 멈춥니다. 그때는 사용자가 올린 새 비공개 hjv-api 묶음의 디렉터리에서 이 블록을 실행하고, 그 묶음의 `web/*`도 `/opt/hjviewer/share/web/`에 설치한 뒤(`sudo install -m 644 web/* /opt/hjviewer/share/web/`) 아래의 nginx 비교를 합니다. 그 묶음의 고지는 7-3 끝처럼 `/opt/hjviewer/share/hjv-api/`에 둡니다.
 - **nginx 경로 파일**: 업데이트 뒤에는 묶음의 nginx 파일이 설치된 것과 다른지 봅니다. A 경로는 `/opt/hjviewer/deploy/nginx-hjviewer-locations.conf`와 `/etc/nginx/snippets/hjviewer-locations.conf`를 비교합니다. B 경로는 다음을 실행합니다. 7절의 nginx 전환(7-8)을 한 서버의 경로 파일에는 `location ^~ /api/` 블록 대신 `include snippets/hjviewer-api.conf;`가 있으므로, 묶음 파일에 7-8과 같은 변환을 한 결과와 비교하고 계정 API의 두 파일도 비교합니다. 묶음 파일을 그대로 다시 설치하면 7-8의 전환이 되돌아가 로그인과 PC 동기화가 모두 404가 됩니다.
   ```bash
   W=/opt/hjviewer/share/web; L=/etc/nginx/snippets/hjviewer-locations.conf; N=$(mktemp)
@@ -892,6 +895,7 @@ nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone
    ```
    - 승인 도구의 기본 출력은 대기 중인 중계기와 그 PC가 보고한 네트워크를 비교한 **판정**만 보입니다: 같은 망인지(`on the PC's network: yes (…)`), 나가는 주소가 같은지(`the same egress address as the PC: yes`), 중계기의 첫 요청과 PC의 보고가 얼마나 됐는지. 주소와 망의 원래 값은 사람이 `--reveal`로만 봅니다.
    - 판정이 같은 망(`on the PC's network: yes`)이 아니면 승인 도구가 아무것도 바꾸지 않고 스스로 멈춥니다(`nothing changed: …`). 그 PC의 네트워크에 닿지 못하는 엉뚱한 중계기일 수 있으므로 그대로 보고하고 멈춥니다. PC 주인이 코드를 확인했는데도 판정이 나오지 않을 때만(PC가 아직 켜기 정보를 보내지 않아 `unknown`일 때 등) 사용자 승인 뒤 같은 명령에 `--force`를 붙입니다.
+   - 같은 망 판정은 중계기가 스스로 알린 랜카드 정보를 PC의 서명된 보고와 비교한 것이고, hjv-api가 직접 본 것은 나가는 주소뿐입니다(출력의 괄호 줄 `on the PC's network: by the relay's own report …`). 틀린 코드나 다른 NAS는 걸러 내지만, 일부러 그 PC의 네트워크를 알리는 중계기는 막지 못합니다. 승인의 근거는 3번의 주인 확인이므로, 판정이 `yes`여도 `--force`를 쓸 때도 3번을 건너뛰지 않습니다.
    - `--name`은 앱이 켜기 진행 창에 그대로 보이는 중계기 이름입니다(1~32자). "연구실 NAS"처럼 혼자서 읽히는 이름이 좋고, 정하지 않으면 `NAS`와 코드 첫 묶음(`NAS KZDV`)입니다. 이미 승인한 중계기에 같은 명령을 `--name`과 함께 다시 하면 이름만 바뀝니다.
    - 중계기가 아직 등록을 요청하지 못했으면 같은 명령으로 코드를 미리 승인할 수 있습니다(`approved ahead: …`). 7일 안에 그 키로 요청이 오면 바로 승인됩니다. 이때는 판정 없이 승인되므로, 중계기가 붙은 뒤 `relay list`의 판정이 같은 망이 아니면 폐기합니다.
 5. 1분 안에 NAS 로그에 `등록이 승인되어 켜기 명령을 기다립니다.`가 찍힙니다. 사용자가 앱에서 꺼진 PC의 "켜기"로 확인합니다. 켜지지 않으면 PC 쪽 준비([wol-pc-setup.md](wol-pc-setup.md))부터 봅니다.
@@ -900,7 +904,7 @@ nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone
 ### 7-12. 되돌리기
 
 1. **비밀번호 없는 연결만 멈출 때**: `sudo /opt/hjviewer/bin/hjv-api admin passwordless off`. 그 뒤 **hjv-api를 24시간 동안, 또는 `report`의 `PCs holding their binding that have not synced since the last switch change`가 0이 될 때까지** 켜 둡니다. 그러면 모든 PC가 PC 비밀번호로만 연결을 받습니다. 그 전에 hjv-api를 멈추거나 nginx를 되돌리면, 그동안 잠들어 있던 PC는 꺼짐을 받지 못하고 받아 둔 목록을 받은 때부터 24시간까지 씁니다.
-2. **계정 기능 전체**: 먼저 1번을 하고 그 조건까지 기다립니다. 그다음 7-8의 백업(`/root/hjv-backup/hjviewer-locations.conf.before-api`)으로 옛 `location ^~ /api/` 블록을 되돌리고 `sudo nginx -t && sudo systemctl reload nginx`. zones 파일과 `snippets/hjviewer-api.conf`는 남겨도 해가 없습니다. 로그인한 앱은 회수할 수 없으므로 로그인 창과 "액세스 가능한 장치" 탭에 오류가 남습니다. hjv-api를 멈추면 PC들의 목록은 24시간 안에 만료되어 저절로 비밀번호로 돌아갑니다.
+2. **계정 기능 전체**: 먼저 1번을 하고 그 조건까지 기다립니다. 그다음 7-8의 백업(`/root/hjv-backup/hjviewer-locations.conf.before-api`)으로 옛 `location ^~ /api/` 블록을 되돌리고 `sudo nginx -t && sudo systemctl reload nginx`. zones 파일과 `snippets/hjviewer-api.conf`는 남겨도 해가 없습니다. 로그인한 앱은 회수할 수 없으므로 로그인 창과 "액세스 가능한 장치" 탭에 오류가 남습니다. hjv-api를 멈추면 PC들의 목록은 24시간 안에 만료되어 저절로 비밀번호로 돌아갑니다. hjv-api를 일부러 멈춰 둘 때는 점검 타이머와 백업 타이머를 먼저 멈춥니다(`sudo systemctl disable --now hjviewer-api-check.timer hjviewer-api-backup.timer`). 그대로 두면 점검과 백업이 실패할 때마다 경보가 납니다. 다시 켤 때 타이머도 켭니다(7-5의 마지막 블록).
 3. **hbbs**: 보관한 옛 실행 파일(`/root/hjv-backup/hbbs-before-<VERSION>`)을 넣고 조용한 시간에 hbbs만 다시 시작합니다. 로그인은 되지만 새 PC 묶기와 켜짐 확인은 안 되고, 0005가 있었다면 최소 버전 거절도 멈춥니다.
 4. **중계기**: `hjv-api admin relay revoke <중계기 ID>`. NAS에서는 사용자가 공유 폴더에 `hjv-relay.stop`을 두고 작업을 끕니다(재부팅 없이, [relay-dsm.md](relay-dsm.md) 10장). 폐기한 중계기의 키는 다시 승인되지 않습니다(`relay approve`가 거절). 잘못 폐기했으면 사용자가 NAS에서 중계기의 상태 폴더를 지워(같은 장의 "제거") 새 키와 새 등록 코드를 만든 뒤 7-11처럼 다시 승인받습니다.
 5. **hjv-api 새 판**: 설치 전에 남긴 스냅숏과 설정 파일을 옛 실행 파일과 함께 되돌립니다(7-14의 업그레이드).
@@ -933,7 +937,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
   - 묶음을 가진 PC 가운데 켜진 PC가 있는데 그중 어느 것도 10분 안에 동기화하지 않음. 켜진 PC는 hbbs가 저장된 키로 90초 안에 등록한 것으로 본 PC이고, 지난 4분 동안의 점검마다 그렇게 보인 것만 셉니다(막 깨어난 PC가 첫 동기화를 할 시간)
   - hbbs 콘솔이 답하지 않음
   - SSO 호출 중지(지금 또는 지난 10분 안). `invalid_client`(7-15의 "SSO 자격 증명이 바뀔 때")와 주소 거절을 구분해 알립니다
-  - 1시간 넘게 묻지 않은 활성 NAS 중계기
+  - 1시간 넘게 묻지 않은 활성 NAS 중계기. NAS를 밤에 끄거나 재우는 곳에서는 그때마다 이 경보가 나므로, 그런 일정이 있으면 사용자에게 알려 기준을 정합니다(질문 15)
 
   꺼진 PC는 아무것도 말하지 않으므로 모든 PC가 잠든 밤은 경보가 아닙니다. 새 키로 다시 설치되어 그 PC에서 다시 로그인하기를 기다리는 PC(`report`의 needs-relogin)도 빼고 봅니다. 결과가 있으면 줄마다 저널에 오류를 쓰고 `/run/hjviewer-api-check/findings`에 남긴 뒤 유닛이 실패합니다. 이상이 없으면 저널에 한 줄입니다.
 - **경보 경로(질문 12)**: 경보 유닛은 언제나 저널(이름 공간 `hjviewer`)에 오류 한 줄을 씁니다. 텔레그램을 쓰지 않으면 이 줄이 경보이고, 운영 에이전트의 매일 보고가 그 수를 셉니다(개수만): `sudo journalctl --namespace=hjviewer -p warning --since yesterday -o cat | wc -l`과 `sudo /opt/hjviewer/bin/hjv-api admin report`. 텔레그램으로 받기로 하면 사용자가 봇을 서버에 직접 넣습니다(에이전트 없이). 경보 유닛은 이 자격 증명이 있을 때만 가져옵니다(`ImportCredential=`).
@@ -942,7 +946,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
     sudo systemd-creds encrypt --name=hjviewer-api-telegram - /etc/credstore.encrypted/hjviewer-api-telegram
   sudo systemctl start hjviewer-api-alert@test.service   # 시험 메시지
   ```
-  같은 유닛이 같은 방식으로 끝나고(systemd가 넘기는 `MONITOR_SERVICE_RESULT`, `MONITOR_EXIT_CODE`, `MONITOR_EXIT_STATUS`) 결과도 같으면 6시간에 한 번만 보내고, 그 밖에는 바로 보냅니다. 비정상 종료와 그 뒤의 시작 실패는 서로 다른 경보입니다. 메시지에는 유닛, 끝난 방식, 호스트 이름, 시각, 결과(개수와 상태)만 있고 사람, 기기, 주소, 비밀은 없습니다. 보내지 않으려면 그 자격 증명 파일을 지웁니다.
+  같은 유닛이 같은 방식으로 끝나고(systemd가 넘기는 `MONITOR_SERVICE_RESULT`, `MONITOR_EXIT_CODE`, `MONITOR_EXIT_STATUS`) 결과도 같으면 6시간에 한 번만 보내고, 그 밖에는 바로 보냅니다. 비정상 종료와 그 뒤의 시작 실패는 서로 다른 경보입니다. 메시지에는 유닛, 끝난 방식, 호스트 이름, 시각, 결과(개수와 상태)만 있고 사람, 기기, 주소, 비밀은 없습니다. 보내지 않으려면 그 자격 증명 파일을 지웁니다. 텔레그램을 쓰기로 정하면 [privacy.md](privacy.md) 9절에 경보 문구(위의 내용)가 텔레그램을 거친다는 한 줄을 두 언어로 더합니다.
 - **hjv-api가 멈춰 있는 동안**: 원격 세션과 ID·비밀번호 연결은 그대로이고, 비밀번호 없는 연결도 PC가 받아 둔 목록으로 하루 동안 계속됩니다. 달라지는 것은 웹 서버가 hjv-api로 넘기는 계정 경로(`/api/login`, `/api/currentUser`, `/api/logout`, `/api/users`, `/api/peers`, `/api/hjv/…`)의 답입니다. 세 웹 서버 모두 그 경로에 503과 JSON `{"error":"HJViewer 서버를 지금 쓸 수 없습니다. 비밀번호 없는 연결은 PC가 받아 둔 목록으로 하루 동안 계속됩니다. 잠시 뒤 다시 시도해 주세요."}`로 답하고, 로그인한 앱은 "HJViewer 서버를 지금 쓸 수 없습니다" 안내를 보입니다. 그 밖의 `/api/`(`/api/heartbeat` 등)는 전처럼 404입니다.
   - **nginx**(7-8의 전환을 한 서버): `/api/login-options`와 `/api/device-group/accessible`은 nginx가 직접 답하므로 그대로입니다. 비정상 종료는 systemd가 5초 뒤 스스로 다시 시작하고 경보가 갑니다. 그래도 503이 이어지면 다음을 보고 사용자에게 알립니다.
     ```bash
@@ -1014,7 +1018,7 @@ selfcheck: [ OK ] <n>줄, [FAIL] <n>줄(<어느 항목>), 고정 목록 키 지�
 명단: <개수>
 nginx: /api/hjv/source <코드>, /api/login-options <코드와 본문>, /api/heartbeat <코드>, /api/x.php <코드>, 다른 사이트 응답 코드 변화 없음(예/아니오), /ws/id·/ws/relay 101(예/아니오)
 report: 계정 <n>, 활성 키 <n>, 묶음을 가진 PC <n>, 그중 10분 안에 동기화 <n>, 스위치 뒤 아직 동기화하지 않은 PC <n>, needs-relogin <n>
-감시·백업: 타이머 활성(예/아니오), 마지막 백업 <시각>, 경보 경로 <텔레그램 | 저널>
+감시·백업: 타이머 활성(예/아니오), 마지막 백업 <sudo ls -t /var/lib/hjviewer-api/backup | head -1 의 파일 이름에 있는 UTC 시각>, 경보 경로 <텔레그램 | 저널>
 중계기: <사용 중 n, 대기 n, 폐기 n, 미리 승인한 코드 n>(relay list 첫 줄)
 바꾼 것: <설치한 파일, 만든 사용자, 고친 설정 파일, 드롭인>
 문제: <있으면>
