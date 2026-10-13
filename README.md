@@ -13,6 +13,7 @@
 - 개인정보 처리방침: [docs/privacy.md](docs/privacy.md)
 - 계정 API(hjv-api)의 설정, 관리 명령, 형식: [server/api/README.md](server/api/README.md)
 - 원격 켜기 중계기(hjv-relay)의 NAS 설치와 규약: [docs/relay-dsm.md](docs/relay-dsm.md), [relay/PROTOCOL.md](relay/PROTOCOL.md)
+- 원격 켜기로 켤 PC의 준비(랜카드, BIOS, 절전과 종료, 빠른 시작): [docs/wol-pc-setup.md](docs/wol-pc-setup.md)
 
 ## 현재 상태 (2026-10-13)
 

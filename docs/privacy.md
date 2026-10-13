@@ -124,9 +124,11 @@ and your name masked (such as 홍\*동), taken from the signed list.
 
 - **PCs in an account** report what the server needs to judge whether they can be woken: the MAC
   addresses, IPv4 addresses and subnets of their wired network adapters, the gateway's IP and MAC
-  addresses, the adapter's name and driver, its Wake-on-LAN settings, the PC's power capabilities
-  and the public address it uses. Only PCs in an account report this, and it is deleted as soon as
-  the PC leaves the account. The apps never receive MAC addresses.
+  addresses, each adapter's name, driver, link speed and whether it is a USB adapter, its
+  Wake-on-LAN settings and whether Windows lets it wake the PC, the sleep states the PC supports,
+  whether fast startup is on, whether the PC runs on mains power, how long Windows has been
+  running, and the public address the PC uses. Only PCs in an account report this, and it is
+  deleted as soon as the PC leaves the account. The apps never receive MAC addresses.
 - **Relays**: for a relay on a NAS in a PC's network, the server keeps its public key, the account
   it serves, the NAS's network adapters (IP and MAC addresses, networks), its DSM and kernel
   versions and the public address it uses. When a relay is revoked, only its ID, key and times stay.
@@ -244,7 +246,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 5. 꺼진 PC 켜기 (Wake-on-LAN)
 
-- **계정에 들어간 PC**는 켤 수 있는지 서버가 판단하는 데 필요한 것을 알립니다. 유선 랜카드의 MAC 주소, IPv4 주소와 서브넷, 게이트웨이의 IP와 MAC 주소, 랜카드 이름과 드라이버, Wake-on-LAN 설정, PC의 전원 기능, PC가 쓰는 공인 주소입니다. 계정에 들어간 PC만 알리고, PC가 계정에서 빠지면 바로 지웁니다. 앱에는 MAC 주소를 보내지 않습니다.
+- **계정에 들어간 PC**는 켤 수 있는지 서버가 판단하는 데 필요한 것을 알립니다. 유선 랜카드의 MAC 주소, IPv4 주소와 서브넷, 게이트웨이의 IP와 MAC 주소, 랜카드의 이름·드라이버·링크 속도와 USB 랜카드인지, Wake-on-LAN 설정과 Windows가 그 랜카드로 PC를 깨우도록 허용했는지, PC가 쓸 수 있는 절전 방식, 빠른 시작을 켰는지, 전원에 연결되어 있는지, Windows가 켜진 뒤 지난 시간, PC가 쓰는 공인 주소입니다. 계정에 들어간 PC만 알리고, PC가 계정에서 빠지면 바로 지웁니다. 앱에는 MAC 주소를 보내지 않습니다.
 - **중계기**: PC와 같은 네트워크의 NAS에서 도는 중계기에 대해 서버는 공개키, 맡은 계정, NAS의 랜카드(IP와 MAC 주소, 네트워크), DSM과 커널 버전, NAS가 쓰는 공인 주소를 보관합니다. 중계기를 폐기하면 ID, 키, 시각만 남깁니다.
 - **켜기 요청**: 계정의 꼬리표, PC, 중계기, 네트워크가 얼마나 맞았는지, 시각, 결과를 6개월 동안 보관합니다.
 - **NAS의 중계기 로그**: 켜기 요청마다 번호, 시각, 끝 2바이트만 보이는 MAC 주소를 남깁니다. 중계기는 실행 중일 때 180일이 지난 줄을 지웁니다. 멈춰 둔 동안에는 정리하지 않으므로, 오래 멈춰 둘 때는 NAS 관리자가 로그를 지웁니다. 그 NAS의 관리자는 모두 읽을 수 있습니다.
