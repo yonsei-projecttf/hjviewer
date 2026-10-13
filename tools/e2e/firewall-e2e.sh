@@ -1139,7 +1139,7 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   keep_secrets ctl2
   keep_secrets pc
   keep_secrets pc2
-  local found=0 f secret
+  local found=0 f secret key keys=0
   for secret in "$ALICE_PW" "$BOB_PW" "$CAROL_PW" "$WRONG_PW" "${SECRETS[@]}"; do
     while IFS= read -r f; do
       case "$f" in */home/.config/hjviewer/HJViewer_local.toml) ;; *)
@@ -1149,8 +1149,21 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
       esac
     done < <(grep -rlF -- "$secret" "$RUN" 2>/dev/null || true)
   done
+  # hjv-api's own keys (they open the sealed passwords, sign the lists and tag its log) stay in its
+  # credentials
+  for key in "$RUN"/api/creds/hjviewer-api-*-key; do
+    [ -s "$key" ] || fail "S20: hjv-api's keys are not in $RUN/api/creds"
+    keys=$((keys + 1))
+    while IFS= read -r f; do
+      case "$f" in "$RUN"/api/creds/*) ;; *)
+        echo "FAIL: S20: one of hjv-api's keys in $f"
+        found=1
+        ;;
+      esac
+    done < <(grep -rlF -- "$(<"$key")" "$RUN" 2>/dev/null || true)
+  done
   [ "$found" = 0 ] || exit 1
-  pass "S20: ${#SECRETS[@]} tokens and keys and 4 portal passwords: none outside the clients' own LocalConfig"
+  pass "S20: ${#SECRETS[@]} tokens and keys and 4 portal passwords: none outside the clients' own LocalConfig; hjv-api's $keys keys: none outside its credentials"
 }
 
 # the device list of hjv-ctl (hjv-ctl2) has the PC in state <state>
