@@ -96,7 +96,7 @@ scripts/ci.sh                        # 커밋 전에 개발 PC의 CI
 scripts/ci.sh client                 # 앱 패치(client/patches)를 바꿨다면 이것도
 ```
 
-서버 빌드에는 Rust와 `pkg-config`, `libssl-dev`가 필요하고, `scripts/ci.sh`의 배포 시험에는 운영 서버와 같은 Docker가 필요합니다([docs/ci.md](docs/ci.md)). 앱(Windows/Android/iOS)은 네이티브 의존성이 많아서 GitHub Actions 워크플로로 빌드합니다. 지금은 GitHub CI를 일시 중지해서 직접 실행할 때만 돕니다.
+서버 빌드에는 Rust와 `pkg-config`, `libssl-dev`가 필요하고, `scripts/ci.sh`의 배포 시험에는 운영 서버와 같은 Docker와, hjv-relay 묶음을 만들 Rust의 `x86_64-unknown-linux-musl` 타깃과 `musl-gcc`(`musl-tools`)가 필요합니다([docs/ci.md](docs/ci.md)). 앱(Windows/Android/iOS)은 네이티브 의존성이 많아서 GitHub Actions 워크플로로 빌드합니다. 지금은 GitHub CI를 일시 중지해서 직접 실행할 때만 돕니다.
 
 ## License / 라이선스
 

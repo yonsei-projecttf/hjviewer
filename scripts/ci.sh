@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # CI run on the development machine (GitHub CI is paused; docs/ci.md).
 #   scripts/ci.sh [all]    the server and deploy stages
-#   scripts/ci.sh server   a fresh upstream checkout with server/patches, the signaling, relay and
-#                          hbbs hjv-pk tests, hjv-probe and hjv-load; hjv-api's tests and release
-#                          build (server/api); hjv-relay's tests (relay/)
+#   scripts/ci.sh server   a fresh upstream checkout with server/patches and all of its tests in
+#                          release (the library's and binaries' unit tests, the signaling, relay,
+#                          protobuf and hbbs hjv-pk tests), hjv-probe and hjv-load; hjv-api's tests
+#                          and release build (server/api); hjv-relay's tests (relay/)
 #   scripts/ci.sh client   the offline tests of the Google Play upload script and of the build-key
 #                          check (scripts/test_*.py), actionlint on the workflows when it is
 #                          installed, then a fresh upstream checkout with client/patches,
@@ -22,7 +23,10 @@
 #                          nginx to hjv-api), hjv-api's production settings
 #                          (scripts/check-api-settings.py and its offline tests), and the account
 #                          API's nginx limits (an IPv6 /64 and a dual-stack listener too, in an
-#                          unprivileged network namespace).
+#                          unprivileged network namespace). Before the Docker part, hjv-relay's
+#                          packages (scripts/package-relay.sh, relay/tests/package.rs --ignored: a
+#                          static build for x86_64-unknown-linux-musl, which needs that Rust target
+#                          and musl-gcc).
 #   scripts/ci.sh e2e      tools/e2e/firewall-e2e.sh strict and open (sudo: namespaces, iptables)
 #                          with a client built for its test server, Caddy pinned by SHA-256, and the
 #                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; with the
@@ -211,7 +215,9 @@ check_account_down() { # <port> <CA file> <name>
 }
 
 server_stage() {
-  local tests=(--test tcp_signaling --test relay_pairing --test hjv_pk) netns
+  # all of the patched server's tests, its upstream unit tests too: patches 0001-0004 change the
+  # code they test
+  local tests=(--lib --bins --tests) netns
   step "server: upstream checkout with server/patches"
   rm -rf "$CI/upstream/rustdesk-server"
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" server
@@ -219,7 +225,7 @@ server_stage() {
   # a dropped patch fails
   [ -f "$CI/upstream/rustdesk-server/tests/hjv_pk.rs" ] ||
     fail "server: tests/hjv_pk.rs is not in the patched tree (server/patches/0004)"
-  step "server: signaling, relay and hjv-pk tests"
+  step "server: hbbs and hbbr's tests (unit, signaling, relay, protobuf, hjv-pk)"
   (cd "$CI/upstream/rustdesk-server" &&
     CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
   step "server: hjv-probe and hjv-load"
@@ -700,6 +706,16 @@ deploy_stage() {
   step "deploy: the production settings check (scripts/check-api-settings.py), offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_api_settings.py' ||
     fail "deploy: tests of the settings check"
+  if [ -d "$ROOT/relay" ]; then
+    # relay/tests/package.rs's packages run only with --ignored, which no other stage gives
+    step "deploy: hjv-relay's packages (scripts/package-relay.sh): the static build, its SHA256SUMS, the field test package"
+    [ -n "$(rustup target list --installed 2>/dev/null | grep -x x86_64-unknown-linux-musl)" ] && command -v musl-gcc > /dev/null ||
+      fail "deploy: hjv-relay's packages need the x86_64-unknown-linux-musl target and musl-gcc (rustup target add x86_64-unknown-linux-musl; Ubuntu: apt-get install musl-tools)"
+    (cd "$ROOT/relay" && CARGO_TARGET_DIR="$CI/target-relay" cargo test --locked --test package -- --ignored) ||
+      fail "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
+  else
+    echo "skipped: hjv-relay's packages (no relay/)"
+  fi
   [ -z "$(ss -Hltnu '( sport >= :21115 and sport <= :21119 )')" ] ||
     fail "ports 21115-21119 are in use (a running hjviewer server?); the test stack needs them"
   [ -z "$(ss -Hltn '( sport >= :18080 and sport <= :18082 ) or ( sport >= :18443 and sport <= :18448 ) or sport = :18599')" ] ||
