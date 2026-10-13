@@ -18,8 +18,9 @@
 	# Clients also call the API server, https://<domain>/api/... The account paths go to hjv-api
 	# (server/api, design v3 5-8), the same list as deploy/nginx-hjviewer-api.conf: HJV_API is its
 	# address, the Unix socket systemd holds for it unless set (the E2E sets a loopback port). It
-	# counts failed logins per client address from X-Real-IP, set here; nginx also limits logins per
-	# address before hjv-api, which Caddy leaves to hjv-api's own limits.
+	# counts failed logins per client address from X-Real-IP, set here; nginx also limits logins and
+	# the NAS relays' registrations per address before hjv-api, which Caddy leaves to hjv-api's own
+	# limits.
 	@hjv_api path /api/login /api/currentUser /api/logout /api/users /api/peers /api/hjv/*
 	handle @hjv_api {
 		request_body {
