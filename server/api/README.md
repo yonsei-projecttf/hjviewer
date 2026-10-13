@@ -808,7 +808,8 @@ integration tests that start hjv-api in-process with the fake SSO (`src/fake_sso
 console and the admin socket, and the binary under `systemd-socket-activate` when it is installed.
 The test client logs in as the app does, with a new account key each time, and signs its account
 requests (`tests/common/mod.rs`); `tests/keys.rs` has the account keys, the switches and the test
-vectors above and in `tests/data/v3-vectors.json`, `tests/http.rs` the request proof, and
+vectors above and in `tests/data/v3-vectors.json`, `tests/http.rs` the request proof and its
+retries (after the first answer, while the first attempt runs, after it was dropped unanswered), and
 `tests/pcsync.rs` the PC sync: its checks in order, the lists as the PC checks them, the
 ten-second repeat, key use, the device list's states, every way a PC leaves its account, the key
 change confirmed with hbbs, the report and selfcheck. `tests/relay.rs` has hjv-relay's requests:

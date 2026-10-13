@@ -711,3 +711,162 @@ async fn the_very_same_request_again_gets_the_first_answer() {
     );
     assert!(!logs.contains(&phone), "{logs}");
 }
+
+/// How long the retry tests hold the database, and when they send the retry or drop the first
+/// attempt: the first attempt reaches the database well before.
+const HOLD_MS: u64 = 1000;
+const FIRST_SENT_MS: u64 = 300;
+
+/// Holds the database from when this returns for `ms` milliseconds, as a slow disk would: the
+/// requests that need it wait.
+async fn hold_db(h: &Harness, ms: u64) -> tokio::task::JoinHandle<()> {
+    let (held, holding) = tokio::sync::oneshot::channel();
+    let state = h.state.clone();
+    let busy = tokio::spawn(async move {
+        state
+            .db
+            .call(move |_| {
+                let _ = held.send(());
+                std::thread::sleep(Duration::from_millis(ms));
+                Ok(())
+            })
+            .await
+            .unwrap();
+    });
+    holding.await.unwrap();
+    busy
+}
+
+/// A signed request as the bytes of a connection of its own.
+fn raw_request(method: &str, target: &str, token: &str, proof: &str, body: &str) -> String {
+    let content = if body.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            body.len()
+        )
+    };
+    format!(
+        "{method} {target} HTTP/1.1\r\nHost: rd.example.com\r\nAuthorization: Bearer {token}\r\nX-HJV-Proof: {proof}\r\n{content}Connection: close\r\n\r\n{body}"
+    )
+}
+
+/// The request nonces used so far.
+async fn used_nonces(h: &Harness) -> i64 {
+    h.state
+        .db
+        .call(|c| c.query_row("SELECT COUNT(*) FROM req_nonces", [], |r| r.get(0)))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_retry_of_a_request_dropped_unanswered_is_no_logout() {
+    use tokio::io::AsyncWriteExt;
+    // The app gives up on an attempt that takes too long and sends the very same request again.
+    // When the first attempt's connection went before hjv-api answered it, hyper dropped its
+    // handler: the retry gets 500, not the 401 that logs the app out, at once, not after the
+    // request time limit, and the request did not run.
+    let h = Harness::start().await;
+    let pc = TestDevice::windows("123456789");
+    h.hbbs.register(&pc, Some(1));
+    h.login_ok(HONG, Some(&pc)).await;
+    let phone = h.login_ok(HONG, None).await;
+    let serial = h.change_serial().await;
+    let pc_path = format!("/api/hjv/devices/{}", pc.id);
+    let user = r#"{"id":"","uuid":"dXVpZA=="}"#;
+    for (method, target, body) in [
+        ("POST", "/api/currentUser", user),
+        ("DELETE", pc_path.as_str(), ""),
+    ] {
+        let proof = h
+            .proof_for(method, target, body.as_bytes(), &phone)
+            .unwrap();
+        let used = used_nonces(&h).await;
+        let busy = hold_db(&h, HOLD_MS).await;
+        let mut first = tokio::net::TcpStream::connect(h.api).await.unwrap();
+        first
+            .write_all(raw_request(method, target, &phone, &proof, body).as_bytes())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(FIRST_SENT_MS)).await;
+        drop(first);
+        busy.await.unwrap();
+        // the first attempt's check of its proof had begun, so it still ran and took the nonce;
+        // the retry comes after it, so the retry is the one that finds the nonce taken
+        for _ in 0..100 {
+            if used_nonces(&h).await > used {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            used_nonces(&h).await,
+            used + 1,
+            "{method} {target}: the first attempt did not reach the check of its proof"
+        );
+        let body = (!body.is_empty()).then_some(body);
+        let a = with_proof(&h, method, target, &phone, Some(&proof), body).await;
+        assert_eq!(a.status, 500, "{method} {target}: {}", a.text);
+        assert!(a.json["error"].is_string(), "{method} {target}: {}", a.text);
+        assert!(
+            a.elapsed < Duration::from_secs(5),
+            "{method} {target}: {:?}",
+            a.elapsed
+        );
+    }
+    // nothing ran: the PC is in the list; and the token and its key work on
+    assert_eq!(h.change_serial().await, serial);
+    assert_eq!(h.get("/api/peers", &phone).await.json["total"], 1);
+    let a = h.delete(&pc_path, &phone).await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    assert_eq!(a.json, json!({"id": pc.id, "removed": true}));
+    assert_eq!(h.change_serial().await, serial + 1);
+}
+
+#[tokio::test]
+async fn a_retry_while_the_first_attempt_runs_gets_its_answer() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // The retry may come while the first attempt still runs (its path was slow, not gone): both
+    // get the first answer, and the request runs once.
+    let h = Harness::start().await;
+    let pc = TestDevice::windows("123456789");
+    h.hbbs.register(&pc, Some(1));
+    h.login_ok(HONG, Some(&pc)).await;
+    let phone = h.login_ok(HONG, None).await;
+    let serial = h.change_serial().await;
+    let pc_path = format!("/api/hjv/devices/{}", pc.id);
+    let proof = h.proof_for("DELETE", &pc_path, b"", &phone).unwrap();
+    let busy = hold_db(&h, HOLD_MS).await;
+    let mut first = tokio::net::TcpStream::connect(h.api).await.unwrap();
+    first
+        .write_all(raw_request("DELETE", &pc_path, &phone, &proof, "").as_bytes())
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(FIRST_SENT_MS)).await;
+    // the first attempt waits for the database, and the retry comes
+    let retry = with_proof(&h, "DELETE", &pc_path, &phone, Some(&proof), None);
+    let (retry, busy) = tokio::join!(retry, busy);
+    busy.unwrap();
+    let mut answer = Vec::new();
+    first.read_to_end(&mut answer).await.unwrap();
+    let answer = String::from_utf8_lossy(&answer);
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert_eq!(retry.status, 200, "{}", retry.text);
+    assert_eq!(retry.json, json!({"id": pc.id, "removed": true}));
+    assert!(
+        answer.ends_with(&format!("\r\n\r\n{}", retry.text)),
+        "{answer}"
+    );
+    assert_eq!(h.change_serial().await, serial + 1);
+    let removed = h.results().await;
+    assert_eq!(
+        removed
+            .iter()
+            .filter(|r| *r == "device:removed-by-user")
+            .count(),
+        1,
+        "{removed:?}"
+    );
+}
