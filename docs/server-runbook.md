@@ -561,6 +561,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 1. 원격 켜기의 현장 시험(NAS의 DSM 작업으로 PC를 깨워 봄, [relay-dsm.md](relay-dsm.md)의 현장 시험 장과 [부록](relay-dsm.md#부록-현장-시험-보충))과 남은 결정·질문의 답.
 2. 개발 PC: 모든 작업 묶음을 합친 커밋에서 `scripts/ci.sh server`, `client`(Rust 1.75 check 포함), `deploy`, `e2e`, `wol`, `leak`이 통과하고, privacy.md, architecture.md, 이 런북이 그 커밋에 들어 있음([ci.md](ci.md)).
    - 출시 전에 Windows·iOS 전용 코드를 따로 빌드해 보지 않습니다(결정 O2). 그 코드는 8단계에서 처음 컴파일되고, 실패하면 고친 뒤 한 번 더 push합니다.
+   - 1번의 현장 시험 결과가 [wol-pc-setup.md](wol-pc-setup.md) 2장의 "현장 시험 결과"에 들어 있음: 표, 시험한 HJViewer 판, 상태 줄. 결과가 그 문서나 [relay-dsm.md](relay-dsm.md) 부록의 일반 안내와 다르면 그 안내도 고치고(대조할 곳은 그 절의 주석에 있음), 고친 뒤 `leak`을 다시 돌립니다. 표에 '시험 전'이 남아 있으면 push하지 않습니다.
 3. **push 전 관문 둘**
    - `scripts/ci.sh leak` 통과: 운영 도메인, 학교 공인 주소 대역, NAS·PC의 주소와 MAC, 부서 공유 폴더 이름, 실제 포탈 ID가 추적 파일, 패치, push할 커밋에 없음. 값 목록 `build/leak-patterns.txt`는 사용자가 만듭니다([ci.md](ci.md)의 "push 전 검사").
    - **연세 SSO 연동 코드를 공개해도 되는지에 대한 답**(질문 10). `server/api`(연세 SSO password grant를 하는 `sso.rs` 포함)는 이 push로 처음 공개됩니다. 비밀값은 저장소에 없습니다.
