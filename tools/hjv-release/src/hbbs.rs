@@ -30,6 +30,9 @@
 //! The present file is read in the form this tool writes: `MIN` as `x.y.z` and `FROM` as
 //! `2026-11-22T15:00:00Z`. A file edited by hand into another form (an offset, leading zeros) is
 //! refused rather than guessed at; hbbs should refuse the same forms (the stricter of the two).
+//! A file hbbs does not use is refused too (no line break at its end, no `MIN` line, a `MIN`
+//! without its `FROM` or `TEXT` line, a `TEXT` the apps would mishandle): hbbs then keeps its last
+//! good rule, which no file shows, so such a file is no basis for the next one.
 //!
 //! The door 2 code is half a secret: it is written into the two files and never shown.
 
@@ -43,18 +46,31 @@ use crate::{
 pub const S1: &str = "HJViewer를 %MIN% 이상으로 업데이트해야 연결할 수 있습니다. Play 스토어에서 설치했다면 Play 스토어에서, iPhone은 TestFlight 앱에서 업데이트하세요. 그 밖의 Windows·Android는 %LINK% 에서 새 버전을 받으세요. (version not allowed)";
 pub const S2: &str = "HJViewer를 %MIN% 이상으로 업데이트해야 연결할 수 있습니다. 앱의 업데이트 화면을 쓰거나 관리자에게 새 버전을 받으세요. Play 스토어나 TestFlight로 설치했다면 그곳에서 업데이트하세요. (version not allowed)";
 
-/// The `MIN` and `FROM` of a min-controller.conf; `None` where the line is empty or missing
-/// (no `MIN`: hbbs refuses nobody; no `FROM`: at once).
+/// The `MIN` and `FROM` of a min-controller.conf; `None` where the line is empty (`MIN=`: hbbs
+/// refuses nobody; `FROM=`: at once).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Current {
     pub min: Option<Version>,
     pub from: Option<i64>,
 }
 
-/// Reads `MIN` and `FROM` of an existing file. `TEXT` is not looked at: it holds the door 2 link.
+/// Reads `MIN` and `FROM` of an existing file, which must be one hbbs uses (module comment).
+/// `TEXT` is checked and never shown: it holds the door 2 link.
 pub fn parse_conf(text: &str) -> Result<Current, String> {
-    let (mut min, mut from) = (None, None);
-    for line in text.strip_prefix('\u{feff}').unwrap_or(text).lines() {
+    let unused = |why: &str| {
+        format!(
+            "hbbs는 이 파일을 쓰지 않습니다({why}). hbbs는 이전 규칙을 그대로 지키므로 지금 규칙을 알 수 \
+             없습니다. 서버 로그의 'min-controller' 줄로 지금 규칙을 확인하고 서버 파일을 고친 뒤, 그 \
+             파일을 그대로 복사해 다시 실행하세요"
+        )
+    };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    // as hbbs: a file caught half written is not taken for a shorter one
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Err(unused("마지막 줄에 줄바꿈이 없음"));
+    }
+    let (mut min, mut from, mut message) = (None, None, None);
+    for line in text.lines() {
         let line = line.trim();
         if let Some(value) = line.strip_prefix("MIN=") {
             if min.is_some() {
@@ -84,12 +100,35 @@ pub fn parse_conf(text: &str) -> Result<Current, String> {
                     )
                 })?)
             });
-        } else if !(line.is_empty() || line.starts_with('#') || line.starts_with("TEXT=")) {
+        } else if let Some(value) = line.strip_prefix("TEXT=") {
+            if message.is_some() {
+                return Err("TEXT 줄이 둘입니다".to_owned());
+            }
+            message = Some(value.trim());
+        } else if !(line.is_empty() || line.starts_with('#')) {
             return Err("MIN, FROM, TEXT 줄과 # 주석만 있어야 합니다".to_owned());
         }
     }
+    // `MIN=` alone turns the minimum off; a minimum needs its three lines, as in hbbs
+    let Some(min) = min else {
+        return Err(unused("MIN 줄이 없음. MIN=만 있으면 끔"));
+    };
+    if min.is_some() {
+        if from.is_none() {
+            return Err(unused("FROM 줄이 없음. FROM=만 있으면 바로"));
+        }
+        let Some(message) = message else {
+            return Err(unused("TEXT 줄이 없음"));
+        };
+        check_text(message).map_err(|e| {
+            format!(
+                "지금 파일의 {e}. hbbs가 이 파일을 거부했다면 이전 규칙을 그대로 지키고 있습니다(서버 로그의 \
+                 'min-controller' 줄). 서버 파일을 고친 뒤 다시 실행하세요"
+            )
+        })?;
+    }
     Ok(Current {
-        min: min.flatten(),
+        min,
         from: from.flatten(),
     })
 }
@@ -886,20 +925,17 @@ mod tests {
             parse_conf(&format!("\u{feff}{text}")).unwrap(),
             cur("1.6.0", G1)
         );
-        assert_eq!(
-            parse_conf("").unwrap(),
-            Current {
-                min: None,
-                from: None
-            }
-        );
-        assert_eq!(
-            parse_conf("MIN=\nFROM=\nTEXT=x\n").unwrap(),
-            Current {
-                min: None,
-                from: None
-            }
-        );
+        // `MIN=` alone is no minimum, whatever the other lines say (hbbs looks no further)
+        for off in ["MIN=\nFROM=\nTEXT=x\n", "MIN=\n", "# off\nMIN=\n"] {
+            assert_eq!(
+                parse_conf(off).unwrap(),
+                Current {
+                    min: None,
+                    from: None
+                },
+                "{off:?}"
+            );
+        }
         for bad in [
             "MIN=1.6\n",
             "MIN=1.6.0\nMIN=1.6.1\n",
@@ -934,11 +970,69 @@ mod tests {
             assert!(err.contains(hint), "{line}: {err}");
         }
         assert_eq!(
-            parse_conf("MIN=1.6.0\nFROM=2026-11-22T15:00:00Z\nTEXT=x\n").unwrap(),
+            parse_conf("MIN=1.6.0\nFROM=2026-11-22T15:00:00Z\nTEXT=x (version not allowed)\n")
+                .unwrap(),
             Current {
                 min: Some(v("1.6.0")),
                 from: Some(t("2026-11-22T15:00:00Z"))
             }
+        );
+    }
+
+    #[test]
+    fn a_present_file_hbbs_does_not_use_is_no_basis() {
+        // hbbs keeps its last good rule instead of such a file: the rule in force is not in it
+        let good = "MIN=1.6.0\nFROM=2026-11-22T15:00:00Z\nTEXT=x (version not allowed)\n";
+        assert_eq!(parse_conf(good).unwrap(), cur("1.6.0", G1));
+        assert_eq!(
+            parse_conf("MIN=1.6.0\r\nFROM=\r\nTEXT=x (version not allowed)\r\n").unwrap(),
+            Current {
+                min: Some(v("1.6.0")),
+                from: None
+            }
+        );
+        for (bad, why) in [
+            ("", "MIN 줄이 없음"),
+            ("# only a comment\n", "MIN 줄이 없음"),
+            ("FROM=\nTEXT=x (version not allowed)\n", "MIN 줄이 없음"),
+            (good.trim_end(), "줄바꿈이 없음"),
+            ("MIN=\nFROM=", "줄바꿈이 없음"),
+            (
+                "MIN=1.6.0\nTEXT=x (version not allowed)\n",
+                "FROM 줄이 없음",
+            ),
+            ("MIN=1.6.0\nFROM=\n", "TEXT 줄이 없음"),
+        ] {
+            let err = parse_conf(bad).unwrap_err();
+            assert!(
+                err.contains("hbbs는 이 파일을 쓰지 않습니다") && err.contains(why),
+                "{bad:?}: {err}"
+            );
+        }
+        for (bad, why) in [
+            (
+                "MIN=1.6.0\nFROM=\nTEXT=x (version no longer allowed)\n",
+                "version not allowed",
+            ),
+            (
+                "MIN=1.6.0\nFROM=\nTEXT=update_tip now (version not allowed)\n",
+                "_tip",
+            ),
+            ("MIN=1.6.0\nFROM=\nTEXT=\n", "1-600"),
+            (
+                "MIN=1.6.0\nFROM=\nTEXT=x (version not allowed)\nTEXT=y (version not allowed)\n",
+                "TEXT 줄이 둘",
+            ),
+        ] {
+            let err = parse_conf(bad).unwrap_err();
+            assert!(err.contains(why), "{bad:?}: {err}");
+        }
+        // the text holds the door 2 link: an error about it never repeats it
+        let link = "MIN=1.6.0\nFROM=\nTEXT=https://rd.example.com/api/hjv/get/0123456789abcdef0123456789abcdef/에서 (version not allowed)\n";
+        let err = parse_conf(link).unwrap_err();
+        assert!(
+            err.contains("URL") && !err.contains("0123456789abcdef"),
+            "{err}"
         );
     }
 
