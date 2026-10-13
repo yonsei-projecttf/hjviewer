@@ -2,7 +2,8 @@
 
 //! Runs the hjv-release binary for the tests: without any terminal (as a script, a CI job or an
 //! agent's shell would), or with a pseudo terminal as its controlling terminal and a person's
-//! answers typed into it.
+//! answers typed into it; and a whole session at a pseudo terminal (a shell with job control,
+//! in which the person stops a command and brings it back).
 
 #![allow(dead_code)]
 
@@ -227,6 +228,165 @@ pub fn run_tty(args: &[&str], dir: &Path, env: &[(&str, &str)], script: &[(&str,
         stderr: String::from_utf8_lossy(&stderr.join().unwrap()).into_owned(),
         tty: String::from_utf8_lossy(&shown).replace("\r\n", "\n"),
         echo,
+    }
+}
+
+/// A program at a pseudo terminal that is its controlling terminal and its standard input,
+/// output and error: what a person has in front of them. The test types, reads what is shown,
+/// looks at the terminal's settings and sends signals, step by step.
+pub struct Session {
+    master: OwnedFd,
+    child: std::process::Child,
+    receive: mpsc::Receiver<Vec<u8>>,
+    shown: Vec<u8>,
+    seen_to: usize,
+}
+
+impl Session {
+    pub fn start(program: &str, args: &[&str], dir: &Path, env: &[(&str, &str)]) -> Session {
+        let (master, slave) = open_pty();
+        let mut command = Command::new(program);
+        command.args(args).current_dir(dir);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        // SAFETY: setsid, open, ioctl, dup2 and close are async-signal-safe; the slave's path
+        // was made before the fork.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let fd = libc::open(slave.as_ptr(), libc::O_RDWR);
+                if fd < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::ioctl(fd, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                for stdio in 0..=2 {
+                    if libc::dup2(fd, stdio) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                if fd > 2 {
+                    libc::close(fd);
+                }
+                Ok(())
+            });
+        }
+        let child = command.spawn().unwrap();
+        let (send, receive) = mpsc::channel::<Vec<u8>>();
+        let mut reader = File::from(master.try_clone().unwrap());
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 4096];
+            // the read fails with EIO once the program and its terminal are gone
+            while let Ok(n) = reader.read(&mut buffer) {
+                if n == 0 || send.send(buffer[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        Session {
+            master,
+            child,
+            receive,
+            shown: Vec::new(),
+            seen_to: 0,
+        }
+    }
+
+    /// Waits until `text` has appeared on the terminal after what was waited for before.
+    /// False if it has not within `patience`.
+    pub fn wait_for(&mut self, text: &str, patience: Duration) -> bool {
+        let deadline = Instant::now() + patience;
+        loop {
+            let after = String::from_utf8_lossy(&self.shown[self.seen_to..]).into_owned();
+            if let Some(at) = after.find(text) {
+                self.seen_to += after[..at + text.len()].len();
+                return true;
+            }
+            match self
+                .receive
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(bytes) => self.shown.extend_from_slice(&bytes),
+                Err(_) => return false,
+            }
+        }
+    }
+
+    /// Types `keys` as they are (no Enter is added).
+    pub fn type_keys(&mut self, keys: &str) {
+        let mut writer = File::from(self.master.try_clone().unwrap());
+        let _ = writer.write_all(keys.as_bytes());
+    }
+
+    /// Whether the terminal shows what is typed right now.
+    pub fn echo(&self) -> bool {
+        // SAFETY: an all-zero termios is a valid value for tcgetattr to overwrite; the
+        // descriptor is the open master side.
+        unsafe {
+            let mut settings: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(self.master.as_raw_fd(), &mut settings) == 0
+                && settings.c_lflag & libc::ECHO != 0
+        }
+    }
+
+    /// Waits until the echo is `on`. False if it is not within `patience`.
+    pub fn wait_for_echo(&self, on: bool, patience: Duration) -> bool {
+        let deadline = Instant::now() + patience;
+        while self.echo() != on {
+            if Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        true
+    }
+
+    /// The program's process id (it leads its own session).
+    pub fn pid(&self) -> i32 {
+        self.child.id() as i32
+    }
+
+    /// The process group in the terminal's foreground: whom Ctrl-C and Ctrl-Z would reach.
+    pub fn foreground(&self) -> i32 {
+        // SAFETY: tcgetpgrp only inspects the open descriptor.
+        unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) }
+    }
+
+    /// Ends the session: waits for the program (and ends it if it does not end by itself), and
+    /// returns its exit code and everything the terminal showed.
+    pub fn finish(mut self, patience: Duration) -> (i32, String) {
+        let deadline = Instant::now() + patience;
+        let code = loop {
+            match self.child.try_wait().unwrap() {
+                Some(status) => break status.code().unwrap_or(-1),
+                None if Instant::now() > deadline => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    break ASKED_FOR_MORE;
+                }
+                None => std::thread::sleep(Duration::from_millis(20)),
+            }
+        };
+        while let Ok(bytes) = self.receive.recv_timeout(Duration::from_millis(500)) {
+            self.shown.extend_from_slice(&bytes);
+        }
+        (
+            code,
+            String::from_utf8_lossy(&self.shown).replace("\r\n", "\n"),
+        )
+    }
+}
+
+impl Drop for Session {
+    /// A test that fails half way leaves no shell behind: with the session's leader gone, the
+    /// terminal hangs up for whatever it had started.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

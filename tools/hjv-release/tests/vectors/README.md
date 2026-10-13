@@ -81,4 +81,38 @@ Rules the cases pin down that the design leaves to the reader:
 - Revocations are remembered without the declaration (`revoked-key-later`) and within an epoch
   (`revoke-in-the-same-epoch`, `revoked-in-the-same-epoch`).
 - A policy signed by the root key may carry a higher epoch without a declaration
-  (`root-policy-raises-epoch`); a signing key's may not (`signing-key-raises-epoch`).
+  (`root-policy-raises-epoch`); a signing key's may not (`signing-key-raises-epoch`). The root
+  key does not go back an epoch either: a policy it signed in an earlier epoch is refused
+  however high its `seq` (`root-policy-of-an-old-epoch`).
+- The size limit is 16384 bytes of the file, its line feed counted (`size-at-the-limit`,
+  `size-one-over`).
+- Signatures are checked strictly: one whose R is the identity point satisfies the equation of
+  Ed25519 and is refused (`signature-with-identity-r`). libsodium (the apps) and
+  ed25519-dalek's `verify_strict` (this tool) refuse a small-order R; a checker that only
+  evaluates the equation (OpenSSL's Ed25519) takes this envelope, and has to look at the first
+  32 bytes of the signature itself to agree with the apps. Only the holder of the key can make
+  such a signature, so the case is about agreeing, not about forgery.
+
+## After a policy of the root key
+
+An app compares a new policy with the policy *it holds*, and the server hands out only the
+newest one. An app that was off while the root key's relaxation `e2-s3-root-relax` was served
+still holds `e2-s2`:
+
+- To that app the history's `e2-s4` is a relaxation by a signing key (it puts off the deadline
+  of a `min` the app knows), so it refuses `e2-s4` and every later policy of a signing key that
+  builds on it (`e2-s4-missed-the-relaxation`).
+- The other way back keeps every `min` and deadline as they were before the relaxation: both
+  kinds of app take it (`restore-with-the-old-deadline`,
+  `restore-with-the-old-deadline-missed-the-relaxation`). The release tool checks this when a
+  signing key's policy follows a root key's (`policy --held`).
+
+Two things the rules allow a signing key although they enforce less than before, pinned here so
+that every implementation agrees on them:
+
+- a new entry with a `min` below every other (`new-entry-below-the-minimums`): no relaxation,
+  since there is no old entry to compare with. hbbs's one threshold (the lowest `min`) and the
+  PC's threshold for Android controllers (the lower of the two Android entries) follow it down.
+  The release tool asks the root key for such a policy;
+- a raised `min` with a later deadline (`min-raised-with-new-grace`): until that deadline apps
+  below the *old* `min` are not blocked either. The release tool says so.

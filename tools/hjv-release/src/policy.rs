@@ -1014,6 +1014,24 @@ pub(crate) mod tests {
         }
         // the research vector's first draft of the format has no epoch
         assert!(Policy::read(r#"{"v":1,"seq":7,"issued":"2026-11-02T00:00:00Z","server":"rd.example.com","platforms":{}}"#).is_err());
+        // `read` takes the fields in any order and with spaces (test-sign reads hand-written
+        // texts with it), and is as strict about what the fields are: another version of the
+        // format, an entry the format does not have
+        let spaced = good.replacen(r#"{"v":1,"#, r#"{ "v":1,"#, 1);
+        assert_eq!(Policy::read(&spaced).unwrap(), sample());
+        let err = Policy::read(&spaced.replacen(r#""v":1,"epoch""#, r#""v":2,"epoch""#, 1));
+        assert!(err.unwrap_err().contains("모르는 정책 버전 2"));
+        let err = Policy::read(&spaced.replacen(
+            r#""ios":{"#,
+            r#""linux":{"min":"1.6.0","latest":"1.6.1"},"ios":{"#,
+            1,
+        ));
+        assert!(err.unwrap_err().contains("모르는 필드 \"linux\""));
+        let decl = r#"{ "v":2,"server":"rd.example.com","epoch":2,"revoked":[],"issued":"2026-11-08T03:00:00Z"}"#;
+        assert!(RootDecl::read(decl)
+            .unwrap_err()
+            .contains("모르는 루트 선언 버전 2"));
+        assert!(RootDecl::read(&decl.replacen("\"v\":2", "\"v\":1", 1)).is_ok());
     }
 
     #[test]

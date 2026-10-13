@@ -2,7 +2,8 @@
 
 //! The commands (README.md). Results go to standard output, problems to standard error;
 //! passphrases and the word `yes` come from the terminal only (tty.rs). No command prints a
-//! private key, a passphrase or the door 2 code.
+//! private key, a passphrase or the door 2 code, and what `sign` shows of a draft, like every
+//! error message, goes out without anything that could steer a terminal.
 
 use crate::{
     age,
@@ -42,7 +43,7 @@ hjv-release: HJViewer의 서명된 버전 정책(최소 버전과 강제 업데�
            [--grace-days [P=]N]... [--grace-until [P=]T]... [--auto-after windows=+2d|T|none]
            [--os-min P=V]... [--contact TEXT] [--notes [P=]FILE]...
            [--ios-valid BUILD] [--play-live VERSIONCODE] [--move-to-play|--no-move-to-play]
-           [--relax] [--revoke-key N]... [--new-epoch] [--seq N]
+           [--relax] [--revoke-key N]... [--new-epoch] [--seq N] [--held FILE|none]...
            [--repo DIR] [--build-repo O/N] [--public-repo O/N] [--allow-input NAME]... [--attest]
                                                      다음 정책의 초안을 만듦(출처 확인 포함, 서명하지 않음)
     sign --key FILE [--key FILE] [--keys FILE] --out FILE DRAFT
@@ -181,20 +182,24 @@ fn no_tty(what: &str) -> impl Fn(String) -> String + '_ {
     }
 }
 
+/// How often the passphrase of a key file is asked for.
+const PASSPHRASE_TRIES: usize = 3;
+
 /// Asks for the passphrase of a key file, up to three times.
 fn open_key(tty: &mut Tty, path: &str) -> Result<SecretKey, String> {
     let bytes = read_bytes(path, "키 파일")?;
-    for attempt in 1..=3 {
+    let mut tries_left = PASSPHRASE_TRIES;
+    loop {
         let passphrase = tty.ask_secret(&format!("{path}의 비밀번호: "))?;
+        tries_left = tries_left.saturating_sub(1);
         match SecretKey::decrypt(&bytes, &passphrase) {
             Ok(key) => return Ok(key),
-            Err(keyfile::Error::WrongPassphrase) if attempt < 3 => {
+            Err(keyfile::Error::WrongPassphrase) if tries_left > 0 => {
                 tty.say("비밀번호가 맞지 않습니다. 다시 입력하세요.\n");
             }
             Err(e) => return Err(format!("키 파일 {path}: {e}")),
         }
     }
-    Err(format!("키 파일 {path}: 비밀번호가 맞지 않습니다"))
 }
 
 fn keygen(argv: &[String]) -> Result<i32, String> {
@@ -290,6 +295,7 @@ fn policy(argv: &[String]) -> Result<i32, String> {
             "--play-live",
             "--revoke-key",
             "--seq",
+            "--held",
             "--repo",
             "--build-repo",
             "--public-repo",
@@ -385,6 +391,14 @@ fn policy(argv: &[String]) -> Result<i32, String> {
         .one("--seq")?
         .map(|seq| args::number("--seq", seq))
         .transpose()?;
+    for value in args.all("--held") {
+        match value {
+            "none" => request.no_held = true,
+            path => request
+                .held
+                .push(read_text(path, "앱이 가지고 있을 수 있는 옛 정책")?),
+        }
+    }
 
     let mut settings = Settings::new(PathBuf::from(args.one("--repo")?.unwrap_or(".")));
     if let Some(repo) = args.one("--build-repo")? {
@@ -444,14 +458,17 @@ fn sign(argv: &[String]) -> Result<i32, String> {
     }
     let plan = signing::plan(&draft, &keys, time::now())?;
 
+    // every line is one line, whatever the draft's texts hold (tty::printable)
     tty.say("서명할 정책:\n");
     for line in &plan.summary {
-        tty.say(&format!("  {line}\n"));
+        tty.say(&format!("  {}\n", tty::printable(line)));
     }
     if !plan.dangers.is_empty() {
-        tty.say("\n아래는 되돌릴 수 없거나 루트 키가 있어야 하는 변경입니다:\n");
+        tty.say(
+            "\n아래는 되돌릴 수 없거나, 서버에 넣는 즉시 일어나거나, 루트 키가 있어야 하는 변경입니다:\n",
+        );
         for danger in &plan.dangers {
-            tty.say(&format!("  - {danger}\n"));
+            tty.say(&format!("  - {}\n", tty::printable(danger)));
         }
         if tty.ask("그래도 서명하려면 yes를 입력하세요: ")? != "yes" {
             return Err("yes가 아니어서 서명하지 않았습니다".to_owned());
@@ -565,6 +582,8 @@ fn publish_dir(argv: &[String]) -> Result<i32, String> {
     // a draft (before signing) or the signed envelope
     let (policy, envelope) = match Draft::parse(&text) {
         Ok(draft) => (Policy::parse(&draft.p)?, None),
+        // a draft that breaks a rule of drafts is not an envelope either: say what is wrong
+        Err(e) if text.contains("\"hjv_release_draft\"") => return Err(e),
         Err(_) => {
             let keys = load_keys(&args, true)?;
             let server = peek_server(&text)?;
@@ -1011,7 +1030,9 @@ pub fn run(argv: &[String]) -> i32 {
     match result {
         Ok(code) => code,
         Err(message) => {
-            eprintln!("hjv-release {command}: {message}");
+            // a message may repeat part of a file or of another program's answer: on one line,
+            // with nothing that could steer the terminal it is read on
+            eprintln!("hjv-release {command}: {}", tty::printable(&message));
             1
         }
     }

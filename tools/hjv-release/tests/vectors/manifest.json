@@ -590,6 +590,15 @@
       "after": [],
       "binding": "app",
       "expect": "reject",
+      "file": "refused/signature-with-identity-r.json",
+      "name": "signature-with-identity-r",
+      "rule": "signature",
+      "why": "a signature whose R is the identity point: the equation of Ed25519 holds for it, and a strict check (libsodium, verify_strict) refuses a small-order R"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
       "file": "refused/envelope-v2.json",
       "name": "envelope-v2",
       "rule": "version",
@@ -648,6 +657,30 @@
       "name": "too-large",
       "rule": "size",
       "why": "a correctly signed envelope over 16 KiB: the app does not read that much"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/size-at-the-limit.json",
+      "name": "size-at-the-limit",
+      "rule": "size",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "052d61810c83891b0147078ed91ed1ecf71bd143f2c85612c3ffb0ec3e5f293b",
+        "revoked": [],
+        "seq": 1
+      },
+      "why": "an envelope file of exactly 16384 bytes, its line feed counted"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/size-one-over.json",
+      "name": "size-one-over",
+      "rule": "size",
+      "why": "one byte more: 16385 bytes"
     },
     {
       "after": [],
@@ -807,6 +840,100 @@
       "name": "revoked-in-the-same-epoch",
       "rule": "revoked",
       "why": "signing key 2 after a declaration of the same epoch revoked it"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "accepted/root-seq-jump.json",
+      "name": "root-policy-of-an-old-epoch",
+      "rule": "epoch",
+      "why": "a policy the root key signed in epoch 1, sent again after the app has moved to epoch 2: the root key does not go back an epoch either, however high the seq"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "accepted/e2-s4.json",
+      "name": "e2-s4-missed-the-relaxation",
+      "rule": "relaxation",
+      "why": "an app that was off while the root key's relaxation e2-s3 was served still holds e2-s2: to it e2-s4 puts off the deadline of a min it knows (ios), so it refuses e2-s4 and every later policy of a signing key that builds on it"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json",
+        "accepted/e2-s3-root-relax.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/restore-with-the-old-deadline.json",
+      "name": "restore-with-the-old-deadline",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 2,
+        "p_sha256": "369a2db3e50f5459b67a9c7128d50b28138e127a484308fcf215ad709c397080",
+        "revoked": [
+          1
+        ],
+        "seq": 4
+      },
+      "why": "the other way back from the relaxation: every min as before it, with the deadlines of then"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/restore-with-the-old-deadline.json",
+      "name": "restore-with-the-old-deadline-missed-the-relaxation",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 2,
+        "p_sha256": "369a2db3e50f5459b67a9c7128d50b28138e127a484308fcf215ad709c397080",
+        "revoked": [
+          1
+        ],
+        "seq": 4
+      },
+      "why": "the same envelope for an app that still holds e2-s2: nothing is relaxed, so it follows"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/new-entry-below-the-minimums.json",
+      "name": "new-entry-below-the-minimums",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "b4e694b1f1ea9de6c859745cb6d6a83b7a16f072400b4f23560769b7d7e4fa6c",
+        "revoked": [],
+        "seq": 3
+      },
+      "why": "an entry the app did not have, with a min below every other: the app compares entry by entry, so this is no relaxation to it (the release tool asks the root key for such a policy all the same)"
     },
     {
       "after": [

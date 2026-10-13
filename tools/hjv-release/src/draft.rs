@@ -12,6 +12,11 @@
 //!
 //! An agent may write a draft; only a person signs it. `sign` therefore checks the draft again
 //! from its texts and shows what changes, and believes nothing else in it.
+//!
+//! The notes are the one free text of a draft, and `sign` shows them on the signer's terminal.
+//! So a note is only what `policy` itself writes: one line of printable ASCII and Korean letters
+//! with single spaces, [`MAX_NOTE_CHARS`] characters at most, [`MAX_NOTES`] of them. A note
+//! cannot move the cursor, start a line, hide text or pad itself into a line of its own.
 
 use crate::{
     envelope::Part,
@@ -21,6 +26,44 @@ use crate::{
 
 pub const DRAFT_VERSION: u64 = 1;
 const MAX_DRAFT_BYTES: usize = 256 * 1024;
+/// How many notes a draft may carry, and how long each may be.
+pub const MAX_NOTES: usize = 20;
+pub const MAX_NOTE_CHARS: usize = 300;
+
+/// The rule of the notes (see the top of this file). The errors name the note by its number
+/// and never repeat it: they are shown where the note itself must not be.
+pub fn check_notes(notes: &[String]) -> Result<(), String> {
+    if notes.len() > MAX_NOTES {
+        return Err(format!(
+            "초안: notes는 {MAX_NOTES}줄까지입니다({}줄)",
+            notes.len()
+        ));
+    }
+    for (n, note) in notes.iter().enumerate() {
+        let at = |why: &str| format!("초안: notes의 {}번째 줄{why}", n + 1);
+        let chars = note.chars().count();
+        if chars == 0 || chars > MAX_NOTE_CHARS {
+            return Err(at(&format!(
+                "은 1자 이상 {MAX_NOTE_CHARS}자 이하여야 합니다({chars}자)"
+            )));
+        }
+        // printable ASCII and Hangul syllables: no control character (a line feed is one), no
+        // character that shows nothing or turns the text around, no other kind of space
+        if !note
+            .chars()
+            .all(|c| matches!(c, ' '..='~' | '\u{ac00}'..='\u{d7a3}'))
+        {
+            return Err(at(
+                "에 쓸 수 없는 문자가 있습니다(제어 문자, 줄바꿈, 보이지 않는 문자 등). \
+                 policy가 쓰는 줄은 한 줄이고 한글과 ASCII 글자뿐입니다",
+            ));
+        }
+        if note.starts_with(' ') || note.ends_with(' ') || note.contains("  ") {
+            return Err(at("에 앞뒤 공백이나 잇단 공백이 있습니다"));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Draft {
@@ -39,6 +82,16 @@ pub struct Draft {
 }
 
 impl Draft {
+    /// What a draft must keep whoever wrote it, beyond the rules of its texts (those are
+    /// signing.rs's): the notes are fit to be shown, and there is one root declaration at most.
+    pub fn check(&self) -> Result<(), String> {
+        check_notes(&self.notes)?;
+        if self.root.is_some() && self.root_p.is_some() {
+            return Err("초안: 서명된 루트 선언과 새 루트 선언이 함께 있습니다".to_owned());
+        }
+        Ok(())
+    }
+
     pub fn to_text(&self) -> String {
         let notes: Vec<String> = self.notes.iter().map(|n| quote(n)).collect();
         let mut w = Writer::new();
@@ -95,17 +148,16 @@ impl Draft {
             _ => return Err("초안: notes 목록이 없습니다".to_owned()),
         };
         f.done()?;
-        if root.is_some() && root_p.is_some() {
-            return Err("초안: 서명된 루트 선언과 새 루트 선언이 함께 있습니다".to_owned());
-        }
-        Ok(Draft {
+        let draft = Draft {
             p,
             signer,
             root,
             root_p,
             prev,
             notes,
-        })
+        };
+        draft.check()?;
+        Ok(draft)
     }
 }
 
@@ -156,7 +208,12 @@ mod tests {
             signer: Role::Root,
             root: Some(Part::sign(&root_key, 101, ROOT_DOMAIN, "{\"v\":1}")),
             prev: Some("{\"v\":1,\"k\":1}\n".to_owned()),
-            notes: vec!["출처 확인: 실행 4242".to_owned(), "줄\n바꿈".to_owned()],
+            notes: vec![
+                "windows 1.6.1: 실행 4242 성공(.github/workflows/build.yml @ 222222222222)"
+                    .to_owned(),
+                "ios 1.6.1: 운영자가 TestFlight 빌드(263120249)를 확인함(--ios-valid, 올린 지 0일)"
+                    .to_owned(),
+            ],
             ..plain.clone()
         };
         assert_eq!(Draft::parse(&full.to_text()).unwrap(), full);
@@ -212,5 +269,102 @@ mod tests {
             notes: Vec::new(),
         };
         assert!(Draft::parse(&both.to_text()).unwrap_err().contains("함께"));
+        // a file far larger than any draft is not read
+        let huge = Draft {
+            p: "x".repeat(MAX_DRAFT_BYTES),
+            signer: Role::Signing,
+            root: None,
+            root_p: None,
+            prev: None,
+            notes: Vec::new(),
+        };
+        assert!(Draft::parse(&huge.to_text())
+            .unwrap_err()
+            .contains("너무 큽니다"));
+    }
+
+    fn with_notes(notes: &[&str]) -> Result<Draft, String> {
+        let draft = Draft {
+            p: "{}".to_owned(),
+            signer: Role::Signing,
+            root: None,
+            root_p: None,
+            prev: None,
+            notes: notes.iter().map(|n| (*n).to_owned()).collect(),
+        };
+        // the rule holds for a draft in memory and for the same draft read from its file
+        let checked = draft.check();
+        let parsed = Draft::parse(&draft.to_text());
+        assert_eq!(checked.clone().err(), parsed.clone().err());
+        parsed
+    }
+
+    #[test]
+    fn notes_are_lines_fit_to_show() {
+        // what `policy` writes
+        with_notes(&[
+            "windows 1.6.1: 실행 4242 성공(.github/workflows/build.yml @ 222222222222), 소스 1111111111111111111111111111111111111111 = 태그 client-1.6.1",
+            "windows 1.6.1: 패키지와 release.json이 실행 4242의 산출물과 같음(패키지 sha256 e6a39ba1c067edf949f7e2906b801d919d1f36f4fd52987d149303e5f11a8607)",
+            "ios 1.6.1: 운영자가 TestFlight 빌드(263120249)를 확인함(--ios-valid, 올린 지 0일)",
+            "android_play 1.6.1: 운영자가 Play 내부 트랙의 versionCode(263122249)를 확인함(--play-live)",
+        ])
+        .unwrap();
+        with_notes(&[]).unwrap();
+        with_notes(&["~ !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}"]).unwrap();
+        // what could repaint or hide the summary the signer reads, or look like a line of it
+        for bad in [
+            // clear the screen and go home; conceal what follows; the 8-bit sequence introducer
+            "\u{1b}[2J\u{1b}[H서명할 정책:",
+            "확인함\u{1b}[8m",
+            "확인함\u{9b}2J",
+            // a line of its own, a return to the start of the line, a backspace over the text
+            "확인함\n서명할 정책:",
+            "확인함\r서명할 정책:",
+            "확인함\u{8}\u{8}\u{8}",
+            "탭\t문자",
+            "\u{7f}",
+            "\u{0}",
+            // text that shows nothing or is turned around
+            "보이지 않는\u{200b} 문자",
+            "방향을 \u{202e}바꾸는 문자",
+            "방향을 \u{2066}가두는 문자",
+            "\u{feff}BOM",
+            "줄 구분\u{2028}문자",
+            "한글 채움\u{3164}문자",
+            "꼬리표\u{e0041}문자",
+            // other spaces, other scripts and signs: not what the tool writes
+            "넓은\u{3000}공백",
+            "끊지 않는\u{a0}공백",
+            "漢字",
+            "화살표 → 문자",
+            "ｆｕｌｌｗｉｄｔｈ",
+            // padding that would push text into a line of its own on the terminal
+            "확인함  서명할 정책:",
+            " 빈칸으로 시작",
+            "빈칸으로 끝 ",
+            "",
+        ] {
+            let err = with_notes(&["실행 4242 성공", bad]).unwrap_err();
+            assert!(err.contains("notes의 2번째 줄"), "{bad:?}: {err}");
+            // the error is shown on the same terminal: it never repeats the note
+            assert!(!err.chars().any(char::is_control), "{bad:?}");
+            assert!(bad.is_empty() || !err.contains(bad), "{bad:?}");
+        }
+        // length and number
+        with_notes(&[&"가".repeat(MAX_NOTE_CHARS)]).unwrap();
+        assert!(with_notes(&[&"가".repeat(MAX_NOTE_CHARS + 1)])
+            .unwrap_err()
+            .contains("300자 이하"));
+        let many = vec!["확인함"; MAX_NOTES + 1];
+        with_notes(&many[..MAX_NOTES]).unwrap();
+        assert!(with_notes(&many).unwrap_err().contains("20줄까지"));
+        // escaped in the file, a control character is one all the same
+        let escaped = with_notes(&["확인함"])
+            .unwrap()
+            .to_text()
+            .replace("확인함", "확인함\\u001b[2J");
+        assert!(Draft::parse(&escaped)
+            .unwrap_err()
+            .contains("쓸 수 없는 문자"));
     }
 }

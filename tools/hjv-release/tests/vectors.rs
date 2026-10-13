@@ -226,6 +226,74 @@ fn p7() -> Policy {
     p
 }
 
+/// The other way back from the relaxation: every min as it was before it (e2-s2), with the
+/// deadlines of then. An app that was off while the relaxation was served takes this one too.
+fn p7_as_before() -> Policy {
+    Policy {
+        seq: 4,
+        issued: t("2026-10-09T03:00:00Z"),
+        ..p5()
+    }
+}
+
+/// A signature of the test key `by` over `text` whose R is the identity point: with
+/// s = k * a (k the hash of R, the public key and the message, a the secret scalar) the plain
+/// equation [s]B = R + [k]A holds, and a strict check refuses the small-order R all the same.
+fn signed_with_identity_r(text: &str, by: &str, domain: &[u8]) -> Part {
+    use curve25519_dalek::{edwards::EdwardsPoint, scalar::Scalar, traits::Identity};
+    use sha2::{Digest, Sha512};
+    let key = test_key(by).unwrap();
+    let public = key.public().key;
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&Sha512::digest(key.seed())[..32]);
+    a[0] &= 248;
+    a[31] &= 127;
+    a[31] |= 64;
+    let a = Scalar::from_bytes_mod_order(a);
+    let r = EdwardsPoint::identity().compress().to_bytes();
+    let message = hjv_release::envelope::message(domain, text);
+    let k = Scalar::from_hash(
+        Sha512::new()
+            .chain_update(r)
+            .chain_update(public.to_bytes())
+            .chain_update(&message),
+    );
+    let mut s = [0u8; 64];
+    s[..32].copy_from_slice(&r);
+    s[32..].copy_from_slice((k * a).as_bytes());
+    // the equation does hold: a check that is not strict takes this signature
+    {
+        use ed25519_dalek::Verifier;
+        assert!(public
+            .verify(&message, &ed25519_dalek::Signature::from_bytes(&s))
+            .is_ok());
+    }
+    Part {
+        k: key.id,
+        p: text.to_owned(),
+        s,
+    }
+}
+
+/// The first policy with notes that make its envelope file exactly `bytes` long.
+fn first_policy_of_size(bytes: usize) -> String {
+    let filled = |korean: usize, ascii: usize| {
+        let mut p = p1();
+        for platform in [Platform::Windows, Platform::Android] {
+            p.platforms.get_mut(&platform).unwrap().notes_ko = Some("가".repeat(2000));
+        }
+        p.platforms.get_mut(&Platform::Ios).unwrap().notes_ko =
+            Some(format!("{}{}", "가".repeat(korean), "a".repeat(ascii)));
+        envelope(&p, "signing-1", None)
+    };
+    // "가" is three bytes in the file and "a" is one
+    let need = bytes - (filled(1, 0).len() - 3);
+    let korean = need / 3 - 1;
+    let file = filled(korean, need - 3 * korean);
+    assert_eq!(file.len(), bytes);
+    file
+}
+
 struct Case {
     name: &'static str,
     /// Where the envelope is, relative to the vectors directory.
@@ -628,6 +696,16 @@ fn cases() -> Vec<Case> {
         "signature",
         "signed by another root key under the number 101",
     ));
+    cases.push(refused(
+        "signature-with-identity-r",
+        file(
+            signed_with_identity_r(&p1_text, "signing-1", POLICY_DOMAIN),
+            None,
+        ),
+        &[],
+        "signature",
+        "a signature whose R is the identity point: the equation of Ed25519 holds for it, and a strict check (libsodium, verify_strict) refuses a small-order R",
+    ));
 
     // ---- envelope, version, server
     cases.push(refused(
@@ -699,6 +777,20 @@ fn cases() -> Vec<Case> {
         &[],
         "size",
         "a correctly signed envelope over 16 KiB: the app does not read that much",
+    ));
+    cases.push(accepted(
+        "size-at-the-limit",
+        first_policy_of_size(MAX_ENVELOPE_BYTES),
+        &[],
+        "size",
+        "an envelope file of exactly 16384 bytes, its line feed counted",
+    ));
+    cases.push(refused(
+        "size-one-over",
+        first_policy_of_size(MAX_ENVELOPE_BYTES + 1),
+        &[],
+        "size",
+        "one byte more: 16385 bytes",
     ));
 
     // ---- root declarations
@@ -846,6 +938,65 @@ fn cases() -> Vec<Case> {
         &after_revoke2,
         "revoked",
         "signing key 2 after a declaration of the same epoch revoked it",
+    ));
+
+    // ---- after a policy of the root key
+    cases.push(Case {
+        path: "accepted/root-seq-jump.json".to_owned(),
+        ..refused(
+            "root-policy-of-an-old-epoch",
+            String::new(),
+            &MAIN[..4],
+            "epoch",
+            "a policy the root key signed in epoch 1, sent again after the app has moved to epoch 2: the root key does not go back an epoch either, however high the seq",
+        )
+    });
+    cases.push(Case {
+        path: "accepted/e2-s4.json".to_owned(),
+        ..refused(
+            "e2-s4-missed-the-relaxation",
+            String::new(),
+            &MAIN[..5],
+            "relaxation",
+            "an app that was off while the root key's relaxation e2-s3 was served still holds e2-s2: to it e2-s4 puts off the deadline of a min it knows (ios), so it refuses e2-s4 and every later policy of a signing key that builds on it",
+        )
+    });
+    cases.push(accepted(
+        "restore-with-the-old-deadline",
+        envelope(&p7_as_before(), "signing-2", Some(&r2())),
+        &MAIN[..6],
+        "relaxation",
+        "the other way back from the relaxation: every min as before it, with the deadlines of then",
+    ));
+    cases.push(Case {
+        path: "accepted/restore-with-the-old-deadline.json".to_owned(),
+        ..accepted(
+            "restore-with-the-old-deadline-missed-the-relaxation",
+            String::new(),
+            &MAIN[..5],
+            "relaxation",
+            "the same envelope for an app that still holds e2-s2: nothing is relaxed, so it follows",
+        )
+    });
+    let mut low_entry = Policy {
+        seq: 3,
+        issued: t("2026-10-03T03:00:00Z"),
+        ..p2()
+    };
+    low_entry.platforms.insert(
+        Platform::AndroidPlay,
+        Entry {
+            source: Some("client-1.6.0".to_owned()),
+            version_code: Some(262_742_100),
+            ..Entry::new(v("1.0.0"), v("1.6.0"))
+        },
+    );
+    cases.push(accepted(
+        "new-entry-below-the-minimums",
+        policy_by(&low_entry, "signing-1"),
+        &MAIN[..2],
+        "relaxation",
+        "an entry the app did not have, with a min below every other: the app compares entry by entry, so this is no relaxation to it (the release tool asks the root key for such a policy all the same)",
     ));
 
     // ---- seq and floor
@@ -1331,6 +1482,63 @@ fn every_case_has_its_outcome() {
         let on_disk = fs::read_to_string(dir().join(&case.path)).unwrap();
         assert_eq!(on_disk, case.content, "{}", case.path);
     }
+    // the size limit is pinned from both sides, to the byte
+    let size = |name: &str| cases.iter().find(|c| c.name == name).unwrap().content.len();
+    assert_eq!(
+        (size("size-at-the-limit"), size("size-one-over")),
+        (16384, 16385)
+    );
+}
+
+#[test]
+fn after_a_policy_of_the_root_key() {
+    // The history has a relaxation by the root key (e2-s3) and two ways back from it. What an
+    // app that was off during the relaxation makes of each is what the cases say, and why:
+    let (_, cases) = generated();
+    let case = |name: &str| cases.iter().find(|c| c.name == name).unwrap();
+    let missed = run(case("e2-s4-missed-the-relaxation"), cases).unwrap_err();
+    assert!(
+        missed.contains("서명 키로는 완화할 수 없습니다")
+            && missed.contains("ios: 같은 min의 유예를 늦추거나 새로 둠"),
+        "{missed}"
+    );
+    // (the app that saw the relaxation takes the same envelope: the history's e2-s4)
+    assert!(run(case("e2-s4"), cases).is_ok());
+    for name in [
+        "restore-with-the-old-deadline",
+        "restore-with-the-old-deadline-missed-the-relaxation",
+    ] {
+        let state = run(case(name), cases).unwrap();
+        let policy = &state.last.as_ref().unwrap().policy;
+        assert_eq!((policy.epoch, policy.seq), (2, 4), "{name}");
+        assert_eq!(policy.platforms[&Platform::Ios].min, v("1.6.0"));
+        assert_eq!(
+            policy.platforms[&Platform::Ios].grace_until,
+            Some(t(GRACE)),
+            "{name}"
+        );
+    }
+    // a root-signed policy of the epoch before: refused for its epoch, not for its seq
+    let old = run(case("root-policy-of-an-old-epoch"), cases).unwrap_err();
+    assert!(
+        old.contains("정책의 세대(1)가 지금 세대(2)보다 낮습니다"),
+        "{old}"
+    );
+    assert!(run(case("root-seq-jump"), cases).is_ok());
+    // the signature with a small-order R is refused as a signature, nothing else
+    let small = run(case("signature-with-identity-r"), cases).unwrap_err();
+    assert_eq!(small, "정책의 서명이 맞지 않습니다");
+    // the tool's own, stricter rule about a new entry below the minimums is not the apps'
+    let low = case("new-entry-below-the-minimums");
+    assert!(run(low, cases).is_ok());
+    let before = Policy::parse(&Envelope::parse(&case("e1-s2").content).unwrap().policy.p).unwrap();
+    let after = Policy::parse(&Envelope::parse(&low.content).unwrap().policy.p).unwrap();
+    let below = hjv_release::trust::new_entries_below(&before, &after);
+    assert_eq!(below.len(), 1);
+    assert_eq!(
+        (below[0].platform, below[0].min, below[0].below_lowest),
+        (Platform::AndroidPlay, v("1.0.0"), Some(v("1.6.0")))
+    );
 }
 
 #[test]

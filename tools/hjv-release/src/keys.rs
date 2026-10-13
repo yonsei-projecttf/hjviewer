@@ -11,7 +11,10 @@
 //!
 //! Key lists follow hjv-relay's `HJV_COMMAND_PUBKEY` (relay/PROTOCOL.md 3.2): ids 1-65535,
 //! standard base64 of the 32-byte Ed25519 public key, no weak key, no id twice. Also here: the
-//! same key may not serve under two ids or two roles.
+//! same key may not serve under two ids or two roles, and a key is a point of the prime-order
+//! subgroup, as every honest key is. The apps refuse any other point (libsodium's conversion
+//! check in the client core), and a build drops its whole key set over one refused key: a key
+//! file this tool passes must be one the apps take.
 //!
 //! The file also knows the test keys of this repository, whose private halves are published:
 //! a build for the real server must never trust one of them.
@@ -102,6 +105,13 @@ pub fn parse_key_list(s: &str, max: usize, what: &str) -> Result<Vec<PublicKey>,
             .map_err(|_| format!("{what}: 키 번호 {id}의 키가 Ed25519 공개키가 아닙니다"))?;
         if key.is_weak() {
             return Err(format!("{what}: 키 번호 {id}의 키가 약한 키입니다"));
+        }
+        // on the curve and not of small order, but with a small-order part: no key pair has
+        // such a public key, and the apps refuse it
+        if !key.to_edwards().is_torsion_free() {
+            return Err(format!(
+                "{what}: 키 번호 {id}의 키가 주 부분군 밖의 점입니다(앱이 받지 않는 키)"
+            ));
         }
         if keys.iter().any(|k| k.id == id) {
             return Err(format!("{what}: 같은 키 번호가 두 번 나옵니다({id})"));
@@ -456,6 +466,58 @@ mod tests {
         ] {
             assert!(parse_key_list(&bad, 2, "t").is_err(), "{bad:?} parsed");
         }
+    }
+
+    #[test]
+    fn keys_outside_the_prime_order_subgroup() {
+        use curve25519_dalek::constants::EIGHT_TORSION;
+        // An honest public key plus a point of order 2, 4 or 8: on the curve and not of small
+        // order, so ed25519-dalek reads it and does not call it weak. The apps refuse it.
+        let honest = SigningKey::from_bytes(&[1; 32]).verifying_key();
+        assert!(parse_key_list(&format!("1:{}", b64_key([1; 32])), 1, "t").is_ok());
+        for torsion in EIGHT_TORSION.iter().skip(1) {
+            let mixed = (honest.to_edwards() + torsion).compress().to_bytes();
+            let read = VerifyingKey::from_bytes(&mixed).unwrap();
+            assert!(!read.is_weak() && !read.to_edwards().is_small_order());
+            let err = parse_key_list(&format!("1:{}", STANDARD.encode(mixed)), 1, "t").unwrap_err();
+            assert!(err.contains("주 부분군 밖"), "{err}");
+        }
+        // the small-order points themselves are weak keys, as before
+        for torsion in EIGHT_TORSION {
+            let line = format!("1:{}", STANDARD.encode(torsion.compress().to_bytes()));
+            assert!(parse_key_list(&line, 1, "t")
+                .unwrap_err()
+                .contains("약한 키"));
+        }
+        // The same kind of point made another way (Python, from the curve's formulas): a key
+        // plus a point of order 8, 4 and 2. And the honest key they were made from.
+        for mixed in [
+            "vsDdLZJCpofT3uginHmeFb7BOUIPi1yhbQz5QYrKBnc=",
+            "C7jhjpJ98e17p5CPfRkxI5dM954qGv88gAzsUIpJMl8=",
+            "+pkv4QnhqNXVi0y+/uF32tQb3eseQBW+FjGDYRMBlds=",
+        ] {
+            let err = parse_key_list(&format!("1:{mixed}"), 1, "t").unwrap_err();
+            assert!(err.contains("주 부분군 밖"), "{mixed}: {err}");
+        }
+        let honest = "82XQHvYeVyoqdLNBAR6IJSvkIhThv+pB6c58nuz+aiQ=";
+        assert!(parse_key_list(&format!("1:{honest}"), 1, "t").is_ok());
+        // one such key anywhere makes the key file unusable, as it does for a build
+        let good = test_key_set();
+        let mixed = (honest_point() + EIGHT_TORSION[1]).compress().to_bytes();
+        let line = format!("{},2:{}", good.signing[0], STANDARD.encode(mixed));
+        assert!(KeySet::from_values(&line, &good.root_line, "1:0")
+            .unwrap_err()
+            .contains("주 부분군 밖"));
+        let root = format!("101:{}", STANDARD.encode(mixed));
+        assert!(KeySet::from_values(&good.signing_line, &root, "1:0")
+            .unwrap_err()
+            .contains("주 부분군 밖"));
+    }
+
+    fn honest_point() -> curve25519_dalek::edwards::EdwardsPoint {
+        SigningKey::from_bytes(&[5; 32])
+            .verifying_key()
+            .to_edwards()
     }
 
     #[test]

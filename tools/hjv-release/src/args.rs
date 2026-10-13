@@ -171,10 +171,10 @@ pub fn auto_after(s: &str) -> Result<AutoAfter, String> {
         return Ok(AutoAfter::Off);
     }
     if let Some(span) = value.strip_prefix('+') {
-        let (amount, unit) = span.split_at(span.len().saturating_sub(1));
-        let seconds = match unit {
-            "d" => DAY,
-            "h" => HOUR,
+        // the unit is taken off as a character: the last byte of "+2일" is not one
+        let (amount, seconds) = match (span.strip_suffix('d'), span.strip_suffix('h')) {
+            (Some(days), _) => (days, DAY),
+            (_, Some(hours)) => (hours, HOUR),
             _ => {
                 return Err(format!(
                     "--auto-after의 기간은 +2d나 +36h처럼 씁니다: {value:?}"
@@ -294,9 +294,23 @@ mod tests {
             "windows=+d",
             "windows=+-2d",
             "windows=",
+            "windows=+",
             "windows=+9999d",
+            "windows=+2dd",
+            "windows=+2 d",
+            "windows=+2D",
         ] {
             assert!(auto_after(bad).is_err(), "{bad:?} parsed");
+        }
+        // a unit of more than one byte is a mistake like any other, said in a sentence
+        for bad in [
+            "windows=+2일",
+            "windows=+36시간",
+            "windows=+일",
+            "windows=+２d",
+        ] {
+            let err = auto_after(bad).unwrap_err();
+            assert!(err.contains("--auto-after"), "{bad:?}: {err}");
         }
         assert_eq!(number("--seq", "12").unwrap(), 12);
         for bad in ["", "012", "+1", "1.0", "1e3", "１"] {

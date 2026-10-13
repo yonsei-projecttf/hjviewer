@@ -20,6 +20,8 @@
 //!   file's is refused while that time is still ahead: nobody is refused earlier than announced.
 //!   Once it has passed, and for a lower `MIN` (a relaxation by the root key), the new `MIN`
 //!   takes the file's place and the file's `FROM` stays.
+//! - A `MIN` below the file's is always pointed out: hbbs would let in again what it refuses
+//!   now. It comes from a relaxation by the root key, or from a new entry with a lower `min`.
 //!
 //! The door 2 code is half a secret: it is written into the two files and never shown.
 
@@ -159,6 +161,14 @@ pub fn decide(
         .max()
         .unwrap_or(policy.issued);
     let mut notes = Vec::new();
+    // said first, whatever happens to FROM: hbbs has one threshold, and it goes down
+    if let Some(current_min) = current.min.filter(|current_min| min < *current_min) {
+        notes.push(format!(
+            "경고: MIN을 {current_min}에서 {min}(으)로 내립니다. hbbs가 지금 거절하는 {min} 이상 \
+             {current_min} 미만의 컨트롤러를 다시 받게 됩니다. 루트 키의 완화나 더 낮은 min으로 들어온 새 \
+             항목 때문인지 확인하세요"
+        ));
+    }
     if let (Some(current_min), Some(current_from)) = (current.min, current.from) {
         if from < current_from {
             if min > current_min && current_from > now {
@@ -175,9 +185,8 @@ pub fn decide(
             from = current_from;
             if current_from > now {
                 notes.push(format!(
-                    "MIN을 {current_min}에서 내립니다. FROM은 지금 파일의 값({})을 그대로 둡니다. 이미 알린 \
-                     시각보다 일찍 거절하지 않기 위해서입니다. 그 전부터 {min} 미만을 거절하고 있었다면 \
-                     FROM을 손으로 앞당기세요",
+                    "FROM은 지금 파일의 값({})을 그대로 둡니다. 이미 알린 시각보다 일찍 거절하지 않기 \
+                     위해서입니다. 그 전부터 {min} 미만을 거절하고 있었다면 FROM을 손으로 앞당기세요",
                     time::format_kst(current_from)
                 ));
             }
@@ -558,13 +567,16 @@ mod tests {
         let mut eased = policy([("1.6.0", None); 4]);
         eased.issued = t("2026-12-01T03:00:00Z");
         let now = t("2026-12-01T04:00:00Z");
+        let lowering = "경고: MIN을 1.6.1에서 1.6.0(으)로 내립니다. hbbs가 지금 거절하는 1.6.0 이상 1.6.1 미만의 \
+                        컨트롤러를 다시 받게 됩니다";
         match decide(&eased, Some(&before), Some(&cur("1.6.1", G1)), now).unwrap() {
             Decision::Change {
                 min, from, notes, ..
             } => {
                 assert_eq!((min, from), (v("1.6.0"), eased.issued));
-                assert_eq!(notes.len(), 1, "{notes:?}");
-                assert!(notes[0].contains("넣는 즉시 1.6.0 미만을 거절합니다"));
+                assert_eq!(notes.len(), 2, "{notes:?}");
+                assert!(notes[0].starts_with(lowering), "{notes:?}");
+                assert!(notes[1].contains("넣는 즉시 1.6.0 미만을 거절합니다"));
             }
             other => panic!("{other:?}"),
         }
@@ -577,10 +589,11 @@ mod tests {
                 min, from, notes, ..
             } => {
                 assert_eq!((min, from), (v("1.6.0"), t(G1)));
-                assert_eq!(notes.len(), 1, "{notes:?}");
+                assert_eq!(notes.len(), 2, "{notes:?}");
+                assert!(notes[0].starts_with(lowering), "{notes:?}");
                 assert!(
-                    notes[0].contains(
-                        "MIN을 1.6.1에서 내립니다. FROM은 지금 파일의 값(2026-11-23 00:00 한국 시각)을 그대로"
+                    notes[1].starts_with(
+                        "FROM은 지금 파일의 값(2026-11-23 00:00 한국 시각)을 그대로 둡니다"
                     ),
                     "{notes:?}"
                 );
@@ -592,8 +605,9 @@ mod tests {
         match decide(&eased, Some(&before), Some(&cur("1.6.1", G1)), late).unwrap() {
             Decision::Change { from, notes, .. } => {
                 assert_eq!(from, t(G1));
-                assert_eq!(notes.len(), 1, "{notes:?}");
-                assert!(notes[0].starts_with("FROM(2026-11-23 00:00 한국 시각)이 이미 지났습니다"));
+                assert_eq!(notes.len(), 2, "{notes:?}");
+                assert!(notes[0].starts_with(lowering), "{notes:?}");
+                assert!(notes[1].starts_with("FROM(2026-11-23 00:00 한국 시각)이 이미 지났습니다"));
             }
             other => panic!("{other:?}"),
         }
@@ -603,7 +617,68 @@ mod tests {
             from: None,
         };
         match decide(&eased, Some(&before), Some(&at_once), early).unwrap() {
-            Decision::Change { from, .. } => assert_eq!(from, eased.issued),
+            Decision::Change { from, notes, .. } => {
+                assert_eq!(from, eased.issued);
+                assert!(notes[0].starts_with(lowering), "{notes:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_lower_min_is_always_pointed_out() {
+        // Every entry at 1.6.0 and hbbs refusing below it. A signing key adds the Google Play
+        // entry with min 1.0.0, which the apps' rules do not call a relaxation (the tool asks
+        // the root key for it, trust.rs): the lowest min of all, and so MIN, is 1.0.0 now.
+        let before = policy([("1.6.0", None); 4]);
+        let mut with_low_entry = policy([
+            ("1.6.0", None),
+            ("1.6.0", None),
+            ("1.0.0", None),
+            ("1.6.0", None),
+        ]);
+        with_low_entry.issued = t(NOW);
+        let warned = |d: Decision| match d {
+            Decision::Change { min, notes, .. } => {
+                assert_eq!(min, v("1.0.0"));
+                let warning = "경고: MIN을 1.6.0에서 1.0.0(으)로 내립니다";
+                assert!(notes[0].starts_with(warning), "{notes:?}");
+                assert!(notes[0].contains("새 항목"), "{notes:?}");
+            }
+            other => panic!("{other:?}"),
+        };
+        // whether the file's FROM has passed, is still ahead, or is empty
+        for from in ["2026-01-01T00:00:00Z", G2] {
+            warned(
+                decide(
+                    &with_low_entry,
+                    Some(&before),
+                    Some(&cur("1.6.0", from)),
+                    t(NOW),
+                )
+                .unwrap(),
+            );
+        }
+        let at_once = Current {
+            min: Some(v("1.6.0")),
+            from: None,
+        };
+        warned(decide(&with_low_entry, Some(&before), Some(&at_once), t(NOW)).unwrap());
+        // a higher MIN, the same MIN and a server without a file lower nothing
+        let no_warning = |notes: &[String]| !notes.iter().any(|n| n.contains("내립니다"));
+        let higher = policy([("1.6.1", Some(G2)); 4]);
+        for current in [Some(cur("1.6.0", G1)), None] {
+            match decide(&higher, Some(&before), current.as_ref(), t(NOW)).unwrap() {
+                Decision::Change { notes, .. } => assert!(no_warning(&notes), "{notes:?}"),
+                other => panic!("{other:?}"),
+            }
+        }
+        match decide(&before, None, Some(&cur("1.6.0", G1)), t(NOW)).unwrap() {
+            Decision::Unchanged { notes, .. } => assert!(no_warning(&notes), "{notes:?}"),
+            other => panic!("{other:?}"),
+        }
+        match decide(&with_low_entry, Some(&before), None, t(NOW)).unwrap() {
+            Decision::Change { notes, .. } => assert!(no_warning(&notes), "{notes:?}"),
             other => panic!("{other:?}"),
         }
     }

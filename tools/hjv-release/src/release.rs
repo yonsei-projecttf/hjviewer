@@ -86,6 +86,9 @@ pub struct ReleaseInfo {
 pub struct Artifact {
     pub dir: PathBuf,
     pub info: ReleaseInfo,
+    /// The SHA-256 of the `release.json` file itself, as it was read: provenance.rs looks for
+    /// these very bytes among the files of the run it names.
+    pub release_json_sha256: String,
 }
 
 impl Artifact {
@@ -207,6 +210,7 @@ fn load(dir: &Path) -> Result<Artifact, String> {
     let artifact = Artifact {
         dir: dir.to_owned(),
         info,
+        release_json_sha256: hex(&Sha256::digest(text.as_bytes())),
     };
     let path = artifact.path();
     let (size, sha256) = hash_file(&path)?;
@@ -413,6 +417,15 @@ pub(crate) mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].info.platform, Built::Android);
         assert!(found[1].path().ends_with("HJViewer.exe"));
+        // release.json is known by its own bytes as well
+        assert_eq!(
+            (
+                fs::metadata(win.join(RELEASE_JSON)).unwrap().len(),
+                found[1].release_json_sha256.clone()
+            ),
+            hash_file(&win.join(RELEASE_JSON)).unwrap()
+        );
+        assert_ne!(found[0].release_json_sha256, found[1].release_json_sha256);
         // one artifact directory by itself
         assert_eq!(scan(std::slice::from_ref(&win)).unwrap().len(), 1);
         // the same platform twice

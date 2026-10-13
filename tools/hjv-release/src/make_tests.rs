@@ -86,12 +86,14 @@ fn req(prev: Option<&str>, artifacts: Vec<Artifact>, now: &str) -> Request {
     }
 }
 
+/// Makes the policy of `request`. The build run of the recorded answers built exactly the
+/// packages the request names.
 fn made(request: &Request) -> Result<Made, String> {
     make(
         request,
         &test_key_set(),
         &Settings::new(PathBuf::from(".")),
-        &Recorded::good(),
+        &Recorded::good().building(&request.artifacts),
     )
 }
 
@@ -233,10 +235,19 @@ fn the_first_policy() {
         (draft.signer, &draft.root, &draft.root_p, &draft.prev),
         (Role::Signing, &None, &None, &None)
     );
-    assert_eq!(draft.notes.len(), 3);
+    assert_eq!(draft.notes.len(), 5);
     assert!(draft.notes[0].contains("windows 1.6.0: 실행 4242 성공"));
-    assert!(draft.notes[1].contains("android 1.6.0: 실행 4242 성공"));
-    assert!(draft.notes[2].contains("TestFlight 빌드(263100200)를 확인함"));
+    assert!(
+        draft.notes[1].contains("windows 1.6.0: 패키지와 release.json이 실행 4242의 산출물과 같음")
+    );
+    assert!(draft.notes[2].contains("android 1.6.0: 실행 4242 성공"));
+    assert!(
+        draft.notes[3].contains("android 1.6.0: 패키지와 release.json이 실행 4242의 산출물과 같음")
+    );
+    assert!(draft.notes[4].contains("TestFlight 빌드(263100200)를 확인함"));
+    // the notes are lines `sign` may show, and the draft reads back from its file
+    crate::draft::check_notes(&draft.notes).unwrap();
+    assert_eq!(Draft::parse(&draft.to_text()).unwrap(), *draft);
     assert!(made.report.iter().any(|l| l.contains("첫 정책")));
     assert!(made.report.iter().any(|l| l
         .contains("windows: 무인 설치는 기본값대로 게시 2일 뒤(2026-11-10 13:00 한국 시각)부터")));
@@ -398,13 +409,24 @@ fn enforcing_a_minimum() {
         with_default.report
     );
     assert_eq!(with_default.draft.signer, Role::Signing);
-    // 0 days is said, never assumed
+    // 0 days is said, never assumed; and the report says what that means
     let mut request = enforce(&file1);
     request.grace = vec![(Target::All, Grace::Days(0))];
-    assert!(made_policy(&request)
+    let at_once = made(&request).unwrap();
+    assert!(at_once
+        .policy
         .platforms
         .values()
         .all(|e| e.grace_until.is_none()));
+    for platform in ["windows", "android", "ios"] {
+        let said = format!("{platform}: 유예가 없습니다. 서버에 넣는 즉시 1.6.0 미만을 막습니다");
+        assert!(
+            at_once.report.contains(&said),
+            "{platform}: {:?}",
+            at_once.report
+        );
+    }
+    assert!(!made2.report.iter().any(|l| l.contains("유예가 없습니다")));
     // a higher iOS min needs the confirmed TestFlight build
     assert!(change(&|r| r.ios_valid = None).contains("ios: min을 올리려면 --ios-valid"));
     assert!(
@@ -478,7 +500,7 @@ fn a_new_release() {
     );
     assert!(made3.report.iter().any(|l| l
         .contains("ios: 1.6.1 산출물이 있지만 --ios-valid가 없어 latest(1.6.0)를 그대로 둡니다")));
-    assert_eq!(made3.draft.notes.len(), 2);
+    assert_eq!(made3.draft.notes.len(), 4);
     let file3 = signed(&made3);
 
     // with the build confirmed, iOS follows
@@ -538,6 +560,23 @@ fn a_new_release() {
     // held entries take no option
     request.hold = vec![Platform::Windows];
     assert!(error(&request).contains("바꿀 windows 항목이 없습니다"));
+    for change in [
+        (|r: &mut Request| r.min = vec![(Target::One(Platform::Windows), v("1.6.1"))])
+            as fn(&mut Request),
+        |r| r.grace = vec![(Target::One(Platform::Windows), Grace::Days(3))],
+        |r| r.notes = vec![(Target::One(Platform::Windows), "새 소식".to_owned())],
+        |r| r.os_min = vec![(Platform::Windows, "11".to_owned())],
+        |r| r.latest = vec![(Platform::Windows, v("1.6.1"))],
+    ] {
+        let mut request = req_after(&file3, "2026-11-10T04:00:00Z");
+        request.hold = vec![Platform::Windows];
+        change(&mut request);
+        let err = error(&request);
+        assert!(
+            err.contains("windows: --hold나 --drop을 준 항목에 다른 옵션을 함께 줄 수 없습니다"),
+            "{err}"
+        );
+    }
 }
 
 fn req_after(file: &str, now: &str) -> Request {
@@ -608,8 +647,8 @@ fn provenance_is_required_for_a_new_package() {
     })
     .contains("태그가 없습니다: client-1.6.1"));
     // both new packages are checked, each against its own tag
-    let tools = Recorded::good();
-    make(&request, &keys, &settings, &tools).unwrap();
+    let tools = Recorded::good().building(&request.artifacts);
+    let made = make(&request, &keys, &settings, &tools).unwrap();
     let asked = tools.asked.borrow();
     assert_eq!(
         asked
@@ -626,6 +665,58 @@ fn provenance_is_required_for_a_new_package() {
         2
     );
     assert!(asked.iter().all(|a| !a.contains("client-1.6.0")));
+    // and each is a file of the run's artifacts, which are downloaded once for both
+    assert_eq!(
+        asked
+            .iter()
+            .filter(|a| a.starts_with("gh run download 4242 "))
+            .count(),
+        1
+    );
+    let sha = |platform: Platform| {
+        let entry = &made.policy.platforms[&platform];
+        entry.package.as_ref().unwrap().sha256.clone()
+    };
+    assert_eq!(made.draft.notes.len(), 4, "{:?}", made.draft.notes);
+    assert_eq!(
+        made.draft.notes[1],
+        format!(
+            "windows 1.6.1: 패키지와 release.json이 실행 4242의 산출물과 같음(패키지 sha256 {})",
+            sha(Platform::Windows)
+        )
+    );
+    assert_eq!(
+        made.draft.notes[3],
+        format!(
+            "android 1.6.1: 패키지와 release.json이 실행 4242의 산출물과 같음(패키지 sha256 {})",
+            sha(Platform::Android)
+        )
+    );
+    // A release directory whose packages are not that run's: other bytes, with a release.json
+    // that agrees with them and names the good run. No draft.
+    let err = refused(Recorded::good());
+    assert!(
+        err.starts_with("출처 확인 실패(windows 1.6.1)") && err.contains("산출물에 없습니다"),
+        "{err}"
+    );
+    let windows: Vec<Artifact> = request
+        .artifacts
+        .iter()
+        .filter(|a| a.info.platform == Built::Windows)
+        .cloned()
+        .collect();
+    assert_eq!(windows.len(), 1);
+    let err = refused(Recorded::good().building(&windows));
+    assert!(
+        err.starts_with("출처 확인 실패(android 1.6.1)") && err.contains("산출물에 없습니다"),
+        "{err}"
+    );
+    // the artifacts of the run are gone (kept for 7 days)
+    let err = refused(Recorded {
+        download: Err("no valid artifacts found to download".to_owned()),
+        ..Recorded::good()
+    });
+    assert!(err.contains("산출물을 받지 못했습니다"), "{err}");
 }
 
 #[test]
@@ -776,6 +867,14 @@ fn revocation_and_epochs() {
     let decl = RootDecl::parse(made5.draft.root_p.as_ref().unwrap()).unwrap();
     assert_eq!((decl.epoch, decl.revoked.as_slice()), (2, &[1, 7][..]));
     assert_eq!(made5.policy.seq, 3);
+    // the new declaration takes the old one's place in the draft: the file `policy` writes
+    // holds one of them, reads back as it was made, and signs
+    assert_eq!(made5.draft.root, None);
+    assert_eq!(Draft::parse(&made5.draft.to_text()).unwrap(), made5.draft);
+    let file5 = signed(&made5);
+    let carried = Envelope::parse(&file5).unwrap().root.unwrap();
+    assert_eq!(RootDecl::parse(&carried.p).unwrap(), decl);
+    assert!(trust::check_after(&file5, Some(&file4), &test_key_set(), SERVER).is_ok());
     request.revoke = vec![101];
     assert!(error(&request).contains("루트 키 번호는 폐기할 수 없습니다"));
     request.revoke = vec![1];
@@ -878,7 +977,7 @@ fn the_previous_policy_is_checked() {
         &request,
         &keys,
         &Settings::new(PathBuf::from(".")),
-        &Recorded::good(),
+        &Recorded::good().building(&request.artifacts),
     )
     .unwrap();
     assert_eq!(made.policy.seq, 4);
@@ -1113,6 +1212,30 @@ fn google_play() {
     let mut request = req_after(&file4, "2026-11-13T04:00:00Z");
     request.min = vec![(Target::One(Platform::AndroidPlay), v("1.6.1"))];
     assert!(made(&request).is_ok());
+    // A higher min for Play installs without the operator's look at the track: the entry's
+    // latest is 1.6.1 already (file4), so nothing but this rule stands in the way.
+    let mut request = req_after(&file3, later);
+    request.latest = vec![(Platform::AndroidPlay, v("1.6.0"))];
+    request.min = vec![(Target::One(Platform::AndroidPlay), v("1.6.0"))];
+    assert!(made(&request).is_ok(), "the min it has");
+    let play_at_161 = {
+        let mut request = req(Some(&file3), f.release("1.6.1", IOS_161, APK_161), later);
+        request.play_live = Some(code_161);
+        signed(&made(&request).unwrap())
+    };
+    let mut request = req_after(&play_at_161, "2026-11-13T04:00:00Z");
+    request.min = vec![(Target::One(Platform::AndroidPlay), v("1.6.1"))];
+    request.grace = vec![(Target::All, Grace::Days(7))];
+    let err = error(&request);
+    assert!(
+        err.contains("android_play: min을 올리려면 --play-live"),
+        "{err}"
+    );
+    request.play_live = Some(code_161);
+    assert_eq!(
+        made_policy(&request).platforms[&Platform::AndroidPlay].min,
+        v("1.6.1")
+    );
     // a version nobody built for Play, a versionCode below the recorded one, one out of range
     let mut request = req_after(&file4, "2026-11-13T04:00:00Z");
     request.play_live = Some(code_161);
@@ -1174,4 +1297,224 @@ fn the_envelope_must_fit() {
         envelope_size("{}", None),
         "{\"v\":1,\"k\":65535,\"p\":\"{}\",\"s\":\"\"}\n".len() + 88
     );
+}
+
+#[test]
+fn a_new_entry_below_the_present_minimums() {
+    let f = Fixture::new("make-low-entry");
+    // every entry at min 1.6.0; no Google Play entry yet
+    let (_, file2) = history(&f);
+    let code: u64 = APK_160.parse().unwrap();
+    let add = |min: &str, relax: bool| {
+        let artifacts = f.release("1.6.0", IOS_160, APK_160);
+        let mut request = req(Some(&file2), artifacts, "2026-11-10T04:00:00Z");
+        request.play_live = Some(code);
+        request.min = vec![(Target::One(Platform::AndroidPlay), v(min))];
+        request.grace = vec![(Target::One(Platform::AndroidPlay), Grace::Days(7))];
+        request.relax = relax;
+        made(&request)
+    };
+    // at the present minimum it is an ordinary policy
+    assert_eq!(add("1.6.0", false).unwrap().draft.signer, Role::Signing);
+    // Below it, an app would take the policy from a signing key all the same (a new entry is
+    // no relaxation by its rules), and hbbs's MIN and the PC's threshold for Android controllers
+    // would follow it down. The tool wants the root key for that.
+    let err = add("1.5.0", false).unwrap_err();
+    assert!(
+        err.contains(
+            "완화가 들어 있습니다: android_play: 새 항목의 min(1.5.0)이 지금 강제하는 값보다 낮음"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("hbbs의 MIN이 내려감") && err.contains("--relax"),
+        "{err}"
+    );
+    let made = add("1.5.0", true).unwrap();
+    assert_eq!(made.draft.signer, Role::Root);
+    assert!(
+        made.report
+            .iter()
+            .any(|l| l.starts_with("완화: android_play: 새 항목의 min(1.5.0)")),
+        "{:?}",
+        made.report
+    );
+    assert!(made.report.iter().any(|l| l == "서명할 키: 루트 키"));
+    let plan = signing::plan(&made.draft, &test_key_set(), made.policy.issued).unwrap();
+    assert!(
+        plan.dangers
+            .iter()
+            .any(|d| d.starts_with("완화: android_play: 새 항목의 min(1.5.0)")),
+        "{:?}",
+        plan.dangers
+    );
+    let file = signed(&made);
+    assert_eq!(
+        check_envelope(&file, &test_key_set(), SERVER).unwrap().role,
+        Role::Root
+    );
+}
+
+#[test]
+fn a_raised_min_that_puts_off_the_old_one_is_said() {
+    let f = Fixture::new("make-waits");
+    // every min at 1.6.0 until November 22 (Korean time)
+    let (_, file2) = history(&f);
+    let file3 = signed(&made(&release_161(&f, &file2)).unwrap());
+    let raise = |grace: Grace| {
+        let mut request = req_after(&file3, "2026-11-10T04:00:00Z");
+        request.min = vec![(Target::One(Platform::Windows), v("1.6.1"))];
+        request.grace = vec![(Target::One(Platform::Windows), grace)];
+        made(&request).unwrap()
+    };
+    // 14 days from November 10: until then an app below 1.6.0 is not blocked either, two days
+    // longer than it was told
+    let later = raise(Grace::Days(14));
+    let said =
+        "windows: 유예 끝(2026-11-24 00:00 한국 시각)까지는 옛 최소 1.6.0 미만도 막지 않습니다";
+    assert!(
+        later.report.iter().any(|l| l.starts_with(said)),
+        "{:?}",
+        later.report
+    );
+    assert_eq!(later.draft.signer, Role::Signing);
+    // with the old deadline, or an earlier one, the old min is enforced when it was to be
+    for grace in [Grace::Until(t("2026-11-21T15:00:00Z")), Grace::Days(7)] {
+        let made = raise(grace);
+        assert!(
+            !made.report.iter().any(|l| l.contains("옛 최소")),
+            "{:?}",
+            made.report
+        );
+    }
+}
+
+#[test]
+fn after_a_policy_of_the_root_key() {
+    let f = Fixture::new("make-held");
+    // seq 2: every min at 1.6.0 until November 22 (Korean time)
+    let (file1, file2) = history(&f);
+    let deadline = t("2026-11-21T15:00:00Z");
+    // seq 3: the update path is down, and the root key lowers every min for a while
+    let mut request = req_after(&file2, "2026-11-10T04:00:00Z");
+    request.relax = true;
+    request.min = vec![(Target::All, v("1.5.0"))];
+    let file3 = signed(&made(&request).unwrap());
+    assert_eq!(
+        check_envelope(&file3, &test_key_set(), SERVER)
+            .unwrap()
+            .role,
+        Role::Root
+    );
+
+    // seq 4: afterwards a signing key raises them again. An app that was off while seq 3 was on
+    // the server still holds seq 2, and compares seq 4 with that.
+    let restore = |now: &str, change: &dyn Fn(&mut Request)| {
+        let mut request = req_after(&file3, now);
+        request.min = vec![(Target::All, v("1.6.0"))];
+        request.ios_valid = Some(IOS_160.to_owned());
+        change(&mut request);
+        made(&request)
+    };
+    let soon = "2026-11-12T04:00:00Z";
+    let late = "2026-11-20T04:00:00Z";
+    // the tool asks for the policy from before the root key's
+    let err = restore(soon, &|_| {}).unwrap_err();
+    assert!(
+        err.contains("직전 정책은 루트 키가 서명했습니다") && err.contains("--held"),
+        "{err}"
+    );
+    // Two days later the default grace of 7 days ends before the old deadline: tighter than
+    // what the app holds, so it takes the policy
+    let made4 = restore(soon, &|r| r.held = vec![file2.clone()]).unwrap();
+    assert_eq!(made4.draft.signer, Role::Signing);
+    assert_eq!(
+        made4.policy.platforms[&Platform::Ios].grace_until,
+        Some(t("2026-11-18T15:00:00Z"))
+    );
+    assert!(
+        made4
+            .draft
+            .notes
+            .iter()
+            .any(|n| n == "1:2 정책을 가진 채 꺼져 있던 앱도 이 정책을 받음을 확인함(--held)"),
+        "{:?}",
+        made4.draft.notes
+    );
+    crate::draft::check_notes(&made4.draft.notes).unwrap();
+    let file4 = signed(&made4);
+    assert!(trust::check_after(&file4, Some(&file2), &test_key_set(), SERVER).is_ok());
+    assert!(trust::check_after(&file4, Some(&file3), &test_key_set(), SERVER).is_ok());
+    // Ten days later the same default ends after the old deadline: to the app that holds seq 2
+    // that is the deadline of a min it knows, put off. It would drop seq 4 and all that follow.
+    let err = restore(late, &|r| r.held = vec![file2.clone()]).unwrap_err();
+    assert!(
+        err.contains("1:2 정책을 가진 채 꺼져 있던 앱은 이 정책을 받지 않습니다")
+            && err.contains("같은 min의 유예를 늦추거나 새로 둠")
+            && err.contains("--grace-until"),
+        "{err}"
+    );
+    // with the old deadline, or with none, it passes
+    for grace in [Grace::Until(deadline), Grace::Days(0)] {
+        let made = restore(late, &|r| {
+            r.held = vec![file2.clone()];
+            r.grace = vec![(Target::All, grace)];
+        })
+        .unwrap();
+        let file = signed(&made);
+        assert!(trust::check_after(&file, Some(&file2), &test_key_set(), SERVER).is_ok());
+    }
+    // what stays relaxed is refused as well: iOS left at the lower min
+    let err = restore(soon, &|r| {
+        r.held = vec![file2.clone()];
+        r.min = vec![
+            (Target::One(Platform::Windows), v("1.6.0")),
+            (Target::One(Platform::Android), v("1.6.0")),
+        ];
+        r.ios_valid = None;
+    })
+    .unwrap_err();
+    assert!(err.contains("ios: min을 내림"), "{err}");
+    // ... until the root key signs once more: its policies are taken whatever an app holds
+    let by_root = restore(soon, &|r| {
+        r.relax = true;
+        r.min = vec![
+            (Target::One(Platform::Windows), v("1.6.0")),
+            (Target::One(Platform::Android), v("1.6.0")),
+        ];
+        r.ios_valid = None;
+    })
+    .unwrap();
+    assert_eq!(by_root.draft.signer, Role::Root);
+    // every older policy given is checked, and the operator may say there is none
+    assert!(restore(soon, &|r| r.held = vec![file1.clone(), file2.clone()]).is_ok());
+    let unchecked = restore(late, &|r| r.no_held = true).unwrap();
+    assert!(!unchecked.draft.notes.iter().any(|n| n.contains("--held")));
+    let err = restore(soon, &|r| {
+        r.no_held = true;
+        r.held = vec![file2.clone()];
+    })
+    .unwrap_err();
+    assert!(err.contains("--held none과"), "{err}");
+    // what is given must be a policy of these keys from before the previous one
+    let err = restore(soon, &|r| r.held = vec![file3.clone()]).unwrap_err();
+    assert!(
+        err.contains("--held: 1:3 정책은 직전 정책보다 앞의 것이 아닙니다"),
+        "{err}"
+    );
+    let tampered = file2.replacen("\\\"seq\\\":2", "\\\"seq\\\":1", 1);
+    assert_ne!(tampered, file2);
+    let err = restore(soon, &|r| r.held = vec![tampered.clone()]).unwrap_err();
+    assert!(err.contains("--held: 정책의 서명이 맞지 않습니다"), "{err}");
+
+    // seq 5 follows a signing key's policy again: nothing more to give, and by the rules of a
+    // signing key the app that still holds seq 2 takes it too
+    let mut request = req_after(&file4, "2026-11-13T04:00:00Z");
+    request.contact = Some("내선 1234".to_owned());
+    let file5 = signed(&made(&request).unwrap());
+    assert!(trust::check_after(&file5, Some(&file2), &test_key_set(), SERVER).is_ok());
+    // --held is no option of the first policy, which has no previous one
+    let mut request = first(&f);
+    request.held = vec![file2.clone()];
+    assert!(error(&request).contains("--held"));
 }

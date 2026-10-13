@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{mode, run, run_tty, run_with, shows_bytes, temp_dir, Output, CTRL_C};
+use common::{mode, run, run_tty, run_with, shows_bytes, temp_dir, Output, Session, CTRL_C};
 use hjv_release::{
     draft::Draft,
     envelope::Envelope,
@@ -117,6 +117,13 @@ impl World {
              \x20   exec cat \"$HJV_TEST_GH/run.json\" ;;\n\
              \x20 \"api -H Accept: application/vnd.github.raw+json repos/yonsei-projecttf/hjviewer-private/contents/.github/workflows/build.yml?ref=2222222222222222222222222222222222222222\")\n\
              \x20   exec cat \"$HJV_TEST_GH/build.yml\" ;;\n\
+             \x20 \"run download 4242 -R yonsei-projecttf/hjviewer-private -D \"*)\n\
+             \x20   # what the run built: every artifact in a directory of its name, as gh unpacks them\n\
+             \x20   if [ ! -d \"$HJV_TEST_GH/artifacts\" ]; then\n\
+             \x20     echo \"no valid artifacts found to download\" >&2\n\
+             \x20     exit 1\n\
+             \x20   fi\n\
+             \x20   exec cp -R \"$HJV_TEST_GH/artifacts/.\" \"$7\" ;;\n\
              esac\n\
              echo \"gh: Not Found (HTTP 404)\" >&2\n\
              exit 1\n",
@@ -180,6 +187,8 @@ impl World {
     }
 
     /// The artifacts of a build as downloaded from its run, with release.json as CI writes it.
+    /// The run of the recorded answers built them: the same files are what `gh run download`
+    /// gives from then on, whatever happens to the release directory afterwards.
     fn release(&self, version: &str) -> String {
         let dir = self.dir.join(format!("release-{version}"));
         let android_code: u64 = self.ios_build.parse::<u64>().unwrap() + 2000;
@@ -224,6 +233,15 @@ impl World {
                 format!("notices of the {platform} build\n"),
             )
             .unwrap();
+            let built = self
+                .dir
+                .join("gh/artifacts")
+                .join(artifact.file_name().unwrap());
+            fs::create_dir_all(&built).unwrap();
+            for entry in fs::read_dir(&artifact).unwrap() {
+                let entry = entry.unwrap();
+                fs::copy(entry.path(), built.join(entry.file_name())).unwrap();
+            }
         }
         dir.to_str().unwrap().to_owned()
     }
@@ -289,6 +307,69 @@ impl World {
             ],
             &[("의 비밀번호: ", PASS)],
         )
+    }
+
+    /// `hjv-release sign` with one key file, the person answering as `script` says.
+    fn sign_as(&self, key: &str, draft: &str, out: &str, script: &[(&str, &str)]) -> Output {
+        let (keys, key) = (self.file("keys.env"), self.file(key));
+        self.person(
+            &[
+                "sign",
+                "--key",
+                &key,
+                "--keys",
+                &keys,
+                "--allow-test-keys",
+                "--out",
+                out,
+                draft,
+            ],
+            script,
+        )
+    }
+
+    /// `hjv-release verify`: whether an app that holds `prev` takes `file`.
+    fn verify_after(&self, prev: &str, file: &str) -> Output {
+        let keys = self.file("keys.env");
+        self.tool(&[
+            "verify",
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+            "--server",
+            SERVER,
+            "--prev",
+            prev,
+            file,
+        ])
+    }
+
+    /// The first two policies, signed: 1.6.0 out with nothing enforced, then every min at 1.6.0
+    /// with the grace period given (`--grace-days`).
+    fn two_policies(&self, grace_days: &str) {
+        assert_eq!(self.first_draft("draft1.json").code, 0);
+        let signed = self.sign("signing-1.key", "draft1.json", "policy1.json");
+        assert_eq!(signed.code, 0, "{}", signed.all());
+        let made = self.policy(&[
+            "--prev",
+            "policy1.json",
+            "--min",
+            "all=1.6.0",
+            "--grace-days",
+            grace_days,
+            "--ios-valid",
+            &self.ios_build,
+            "--out",
+            "draft2.json",
+        ]);
+        assert_eq!(made.code, 0, "{}", made.all());
+        // without a grace period the signer is asked first
+        let script: &[(&str, &str)] = match grace_days {
+            "0" => &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
+            _ => &[("의 비밀번호: ", PASS)],
+        };
+        let signed = self.sign_as("signing-1.key", "draft2.json", "policy2.json", script);
+        assert_eq!(signed.code, 0, "{}", signed.all());
     }
 
     fn checked(&self, name: &str) -> Policy {
@@ -619,6 +700,13 @@ fn a_release_from_the_build_to_the_server() {
     assert!(draft
         .stdout
         .contains("확인함: android 1.6.0: 실행 4242 성공"));
+    for platform in ["windows", "android"] {
+        let package = format!("{platform} package 1.6.0");
+        assert!(draft.stdout.contains(&format!(
+            "확인함: {platform} 1.6.0: 패키지와 release.json이 실행 4242의 산출물과 같음(패키지 sha256 {})",
+            hex(&sha256(package.as_bytes()))
+        )));
+    }
     assert!(draft
         .stdout
         .contains("서명은 사용자가 터미널에서 직접 합니다"));
@@ -642,6 +730,15 @@ fn a_release_from_the_build_to_the_server() {
             .count(),
         2
     );
+    // the run's artifacts were downloaded once for both packages, into a directory that is gone
+    let downloads: Vec<&str> = calls
+        .lines()
+        .filter_map(|l| {
+            l.strip_prefix("run download 4242 -R yonsei-projecttf/hjviewer-private -D ")
+        })
+        .collect();
+    assert_eq!(downloads.len(), 1, "{calls}");
+    assert!(!Path::new(downloads[0]).exists());
     let parsed = Draft::parse(&world.read("draft1.json")).unwrap();
     assert_eq!(
         (parsed.signer, &parsed.root, &parsed.prev),
@@ -664,6 +761,18 @@ fn a_release_from_the_build_to_the_server() {
         !signed.tty.contains("yes를 입력"),
         "nothing dangerous: no question"
     );
+    // what the first policy does on arrival is said; the new packages are the signer's to
+    // compare with the build run; what the draft says about itself is marked as that
+    assert!(signed.tty.contains(
+        "알아 둘 것:\n    windows: 유예가 없습니다. 서버에 넣는 즉시 1.5.0 미만을 막습니다"
+    ));
+    assert!(signed.tty.contains(&format!(
+        "sha256을 빌드 실행 요약의 값과 대조하세요):\n    windows 1.6.0: HJViewer-1.6.0-windows-x86_64.exe · 21바이트 · sha256 {}",
+        hex(&sha256(b"windows package 1.6.0"))
+    )));
+    assert!(signed
+        .tty
+        .contains("초안에 적힌 확인 기록(policy가 썼다고 되어 있을 뿐, sign은 다시 확인하지 않습니다):\n    windows 1.6.0: 실행 4242 성공"));
     assert_no_secret(&signed, &["signing-1"]);
     let file = world.read("policy1.json");
     assert!(signed
@@ -960,8 +1069,10 @@ fn relaxing_asks_for_yes_and_the_root_key() {
         101
     );
 
-    // a revocation with a new epoch: the root key signs the declaration, signing key 2 the policy
-    let revoke = world.policy(&[
+    // A revocation with a new epoch: the root key signs the declaration, signing key 2 the
+    // policy. The previous policy is the root key's, so the tool asks for the one before it: an
+    // app that was off while policy 3 was served still holds policy 2.
+    let without = world.policy(&[
         "--prev",
         "policy3.json",
         "--revoke-key",
@@ -970,7 +1081,64 @@ fn relaxing_asks_for_yes_and_the_root_key() {
         "--out",
         "draft4.json",
     ]);
+    assert_eq!(without.code, 1);
+    assert!(
+        without
+            .stderr
+            .contains("직전 정책은 루트 키가 서명했습니다")
+            && without.stderr.contains("--held"),
+        "{}",
+        without.stderr
+    );
+    // As it is, that app would drop the policy for the lowered iOS min, and with the policy
+    // the revocation it carries.
+    let stale = world.policy(&[
+        "--prev",
+        "policy3.json",
+        "--held",
+        "policy2.json",
+        "--revoke-key",
+        "1",
+        "--new-epoch",
+        "--out",
+        "draft4.json",
+    ]);
+    assert_eq!(stale.code, 1);
+    assert!(
+        stale
+            .stderr
+            .contains("1:2 정책을 가진 채 꺼져 있던 앱은 이 정책을 받지 않습니다")
+            && stale.stderr.contains("ios: min을 내림"),
+        "{}",
+        stale.stderr
+    );
+    assert!(!world.dir.join("draft4.json").exists());
+    // back at the min from before the relaxation, with the deadline it had then
+    let deadline = world.checked("policy2.json").platforms[&Platform::Ios]
+        .grace_until
+        .unwrap();
+    let old_deadline = format!("ios={}", time::format_utc(deadline));
+    let revoke = world.policy(&[
+        "--prev",
+        "policy3.json",
+        "--held",
+        "policy2.json",
+        "--min",
+        "ios=1.6.0",
+        "--grace-until",
+        &old_deadline,
+        "--ios-valid",
+        &world.ios_build,
+        "--revoke-key",
+        "1",
+        "--new-epoch",
+        "--out",
+        "draft4.json",
+    ]);
     assert_eq!(revoke.code, 0, "{}", revoke.all());
+    assert!(revoke
+        .stdout
+        .contains("확인함: 1:2 정책을 가진 채 꺼져 있던 앱도 이 정책을 받음을 확인함(--held)"));
     assert!(revoke
         .stdout
         .contains("hjv-release sign --key <루트 키 파일> --key <서명 키 파일>"));
@@ -1032,6 +1200,20 @@ fn relaxing_asks_for_yes_and_the_root_key() {
     );
     let policy4 = world.checked("policy4.json");
     assert_eq!((policy4.epoch, policy4.seq), (2, 1));
+    // the app that missed the relaxation takes it too, and learns the revocation with it
+    let after_2 = world.tool(&[
+        "verify",
+        "--keys",
+        &keys,
+        "--allow-test-keys",
+        "--server",
+        SERVER,
+        "--prev",
+        "policy2.json",
+        "policy4.json",
+    ]);
+    assert_eq!(after_2.code, 0, "{}", after_2.all());
+    assert!(after_2.stdout.contains("폐기한 서명 키 [1]"));
     // the revoked key signs nothing any more
     assert_eq!(
         world
@@ -1815,6 +1997,63 @@ fn hbbs_conf_and_door_2() {
         damaged.stderr
     );
     assert!(world.read("damaged/door2.conf").contains("not a code"));
+    // nor is one that is there and cannot be read taken for none: a new code would be made,
+    // and the links people have would stop working when it reached the server
+    fs::create_dir(world.dir.join("unreadable")).unwrap();
+    fs::set_permissions(
+        world.dir.join("unreadable"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    fs::create_dir(world.dir.join("unreadable/door2.conf")).unwrap();
+    let unreadable = conf(&[
+        "--door2-out",
+        "unreadable",
+        "--door2-only",
+        "--door2-until",
+        &until,
+    ]);
+    assert_eq!(unreadable.code, 1, "{}", unreadable.all());
+    assert!(
+        unreadable.stderr.contains("door2.conf: 읽을 수 없습니다"),
+        "{}",
+        unreadable.stderr
+    );
+    assert!(world.dir.join("unreadable/door2.conf").is_dir());
+    assert_eq!(
+        fs::read_dir(world.dir.join("unreadable")).unwrap().count(),
+        1,
+        "nothing was written"
+    );
+    // the same for a file this user may not read (root reads anything, so not as root)
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        fs::remove_dir(world.dir.join("unreadable/door2.conf")).unwrap();
+        let kept = ahead("CODE=0123456789abcdef0123456789abcdef\nUNTIL=YYYY-02-14T15:00:00Z\n");
+        let path = world.dir.join("unreadable/door2.conf");
+        fs::write(&path, &kept).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let locked = conf(&[
+            "--door2-out",
+            "unreadable",
+            "--door2-only",
+            "--door2-until",
+            &until,
+        ]);
+        assert_eq!(locked.code, 1, "{}", locked.all());
+        assert!(
+            locked.stderr.contains("door2.conf: 읽을 수 없습니다"),
+            "{}",
+            locked.stderr
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            kept,
+            "the code is the old one"
+        );
+        assert!(!locked.all().contains("0123456789abcdef"));
+    }
     // a directory others can read is no place for the code
     fs::create_dir(world.dir.join("open")).unwrap();
     fs::set_permissions(world.dir.join("open"), fs::Permissions::from_mode(0o755)).unwrap();
@@ -1993,6 +2232,44 @@ fn test_keys_and_key_files() {
     )
     .unwrap();
     assert_eq!(world.tool(&["keys", "--keys", "broken.env"]).code, 1);
+    // A key that is a point outside the prime-order subgroup (an honest key plus a point of
+    // order 8, made by hand): the apps refuse such a key and with it the whole key set, so a
+    // build with this file would never check a policy. The check for release builds says no.
+    let real_keys = world.read("real.env");
+    let signing_2 = real_keys
+        .lines()
+        .next()
+        .unwrap()
+        .split(",2:")
+        .nth(1)
+        .unwrap();
+    fs::write(
+        world.dir.join("mixed.env"),
+        real_keys.replace(signing_2, "vsDdLZJCpofT3uginHmeFb7BOUIPi1yhbQz5QYrKBnc="),
+    )
+    .unwrap();
+    for args in [
+        vec!["keys", "--keys", "mixed.env", "--production"],
+        vec!["keys", "--keys", "mixed.env"],
+        vec![
+            "verify",
+            "--keys",
+            "mixed.env",
+            "--server",
+            "hjv.test",
+            "any.json",
+        ],
+    ] {
+        let output = world.tool(&args);
+        assert_eq!(output.code, 1, "{args:?}: {}", output.all());
+        assert!(
+            output
+                .stderr
+                .contains("키 번호 2의 키가 주 부분군 밖의 점입니다"),
+            "{args:?}: {}",
+            output.stderr
+        );
+    }
     // a policy made with real keys is not verified by test keys, and the other way round
     let policy = test_signed(&world, "p1", 1, "1.5.0", None, "signing-1");
     let output = world.tool(&["verify", "--keys", &real, "--server", "hjv.test", &policy]);
@@ -2019,4 +2296,753 @@ fn pubkey_shows_the_public_line() {
     let no_tty = world.tool(&["pubkey", "--key", &key]);
     assert_eq!(no_tty.code, 1);
     assert!(no_tty.stderr.contains("터미널(TTY)이 없어"));
+}
+
+/// A character that could steer a terminal: an escape sequence's start, in either form.
+fn steers(text: &str) -> bool {
+    text.contains('\u{1b}') || text.contains('\u{9b}')
+}
+
+#[test]
+fn a_draft_cannot_repaint_the_signers_terminal() {
+    let world = World::new("escapes");
+    assert_eq!(world.first_draft("draft.json").code, 0);
+    let good = Draft::parse(&world.read("draft.json")).unwrap();
+    // An agent writes the draft, a person reads its summary and signs. Notes that clear the
+    // screen, go home, paint another summary and hide what follows:
+    let mut evil = good.clone();
+    evil.notes.push(
+        "\u{1b}[2J\u{1b}[H서명할 정책:\n  서버 rd.example.com · 세대 1 · seq 1 (가짜 요약)\u{1b}[8m"
+            .to_owned(),
+    );
+    fs::write(world.dir.join("evil.json"), evil.to_text()).unwrap();
+    let output = world.sign("signing-1.key", "evil.json", "policy.json");
+    assert_eq!(output.code, 1, "{}", output.all());
+    assert!(
+        output
+            .stderr
+            .contains("초안: notes의 6번째 줄에 쓸 수 없는 문자가 있습니다"),
+        "{}",
+        output.stderr
+    );
+    assert!(!steers(&output.all()), "{:?}", output.all());
+    assert!(!output.all().contains("가짜 요약"));
+    assert!(
+        !output.tty.contains("의 비밀번호"),
+        "refused before any passphrase"
+    );
+    assert!(!world.dir.join("policy.json").exists());
+    // one line that is long enough to look like several, or more lines than a draft has
+    for notes in [
+        vec!["가".repeat(301)],
+        vec!["확인함".to_owned(); 21],
+        vec!["확인함  서명할 정책:".to_owned()],
+        vec!["방향을 \u{202e}바꾸는 문자".to_owned()],
+    ] {
+        let draft = Draft {
+            notes,
+            ..good.clone()
+        };
+        fs::write(world.dir.join("long.json"), draft.to_text()).unwrap();
+        let output = world.sign("signing-1.key", "long.json", "policy.json");
+        assert_eq!(output.code, 1, "{}", output.all());
+        assert!(output.stderr.contains("초안: notes"), "{}", output.stderr);
+        assert!(!output.tty.contains("의 비밀번호"));
+    }
+    // the same file is no policy for publish-dir either, and the reason is the draft's
+    let release = world.release("1.6.0");
+    let output = world.tool(&[
+        "publish-dir",
+        "--policy",
+        "evil.json",
+        "--release-dir",
+        &release,
+        "--out",
+        "publish",
+    ]);
+    assert_eq!(output.code, 1);
+    assert!(output.stderr.contains("초안: notes"), "{}", output.stderr);
+    assert!(!steers(&output.all()));
+
+    // An error message may repeat a name from a file. A policy with an entry the format does
+    // not know, named with an escape sequence (escaped in the JSON, as a careful forger would):
+    let text = good.to_text().replacen(
+        "\\\"platforms\\\":{",
+        "\\\"platforms\\\":{\\\"\\\\u001b[2Jlinux\\\":{},",
+        1,
+    );
+    assert_ne!(text, good.to_text());
+    fs::write(world.dir.join("named.json"), text).unwrap();
+    let output = world.sign("signing-1.key", "named.json", "policy.json");
+    assert_eq!(output.code, 1, "{}", output.all());
+    assert!(
+        output.stderr.contains("모르는 필드") && output.stderr.contains("[2Jlinux"),
+        "{}",
+        output.stderr
+    );
+    assert!(!steers(&output.all()), "{:?}", output.all());
+    // ... and the first line of another program's complaint: a `gh` that answers with an escape
+    // sequence. Whatever a message carries, it goes out on one line with the escapes as text.
+    fs::write(
+        world.dir.join("bin/gh"),
+        "#!/bin/sh\nprintf '\\033[2J\\033[Hgh: all is well\\r\\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+    let output = world.first_draft("draft-gh.json");
+    assert_eq!(output.code, 1, "{}", output.all());
+    assert!(
+        output.stderr.contains("\\u{1b}[2J\\u{1b}[Hgh: all is well"),
+        "{:?}",
+        output.stderr
+    );
+    assert!(!steers(&output.all()) && !output.stderr.contains('\r'));
+    // the good draft is signed, and what it shows holds no escape either
+    let output = world.sign("signing-1.key", "draft.json", "policy.json");
+    assert_eq!(output.code, 0, "{}", output.all());
+    assert!(!steers(&output.all()));
+}
+
+#[test]
+fn a_unit_of_more_than_one_byte_is_a_mistake_not_a_crash() {
+    let world = World::new("auto-after");
+    for value in ["windows=+2일", "windows=+36시간", "windows=+２d"] {
+        let output = world.policy(&[
+            "--prev",
+            "none",
+            "--server",
+            SERVER,
+            "--auto-after",
+            value,
+            "--out",
+            "draft.json",
+        ]);
+        assert_eq!(output.code, 1, "{value}: {}", output.all());
+        assert!(
+            output.stderr.contains("hjv-release policy: --auto-after"),
+            "{value}: {}",
+            output.stderr
+        );
+        assert!(!output.stderr.contains("panicked"), "{}", output.stderr);
+    }
+}
+
+#[test]
+fn a_package_that_is_not_the_runs_is_refused() {
+    let world = World::new("other-bytes");
+    let release = world.release("1.6.0");
+    // "another build": the package's bytes change, and release.json's size and hash with them,
+    // while its run number stays that of the good run. Anyone who can start a run in the build
+    // repository can make such a directory, with whatever source they like.
+    let dir = Path::new(&release).join("HJViewer-1.6.0-1111111-windows");
+    let other = b"not what run 4242 built".to_vec();
+    fs::write(dir.join("HJViewer.exe"), &other).unwrap();
+    let json = fs::read_to_string(dir.join("release.json")).unwrap();
+    let old = hex(&sha256(b"windows package 1.6.0"));
+    let changed = json
+        .replace(&old, &hex(&sha256(&other)))
+        .replace("\"size\":21,", &format!("\"size\":{},", other.len()));
+    assert!(changed.contains(&hex(&sha256(&other))) && changed.contains("\"size\":23,"));
+    fs::write(dir.join("release.json"), changed).unwrap();
+    let draft = |out: &str| {
+        world.policy(&[
+            "--prev",
+            "none",
+            "--server",
+            SERVER,
+            "--release-dir",
+            &release,
+            "--min",
+            "all=1.5.0",
+            "--grace-days",
+            "0",
+            "--ios-valid",
+            &world.ios_build,
+            "--out",
+            out,
+        ])
+    };
+    let output = draft("draft.json");
+    assert_eq!(output.code, 1, "{}", output.all());
+    assert!(
+        output.stderr.contains("출처 확인 실패(windows 1.6.0)")
+            && output.stderr.contains(&format!(
+                "패키지 HJViewer.exe(sha256 {})가 실행 4242의 산출물에 없습니다",
+                hex(&sha256(&other))
+            )),
+        "{}",
+        output.stderr
+    );
+    assert!(!world.dir.join("draft.json").exists());
+    // The run's own package under a release.json the run did not write (here it gives the
+    // package another build number): the bytes are the build's, the word about them is not.
+    world.release("1.6.0");
+    let honest = fs::read_to_string(dir.join("release.json")).unwrap();
+    let relabelled = honest.replace("\"build\":\"1.6.0.7\"", "\"build\":\"1.6.0.99\"");
+    assert_ne!(relabelled, honest);
+    fs::write(dir.join("release.json"), &relabelled).unwrap();
+    let output = draft("draft.json");
+    assert_eq!(output.code, 1, "{}", output.all());
+    assert!(
+        output.stderr.contains(&format!(
+            "release.json(sha256 {})이 실행 4242의 산출물에 없습니다",
+            hex(&sha256(relabelled.as_bytes()))
+        )),
+        "{}",
+        output.stderr
+    );
+    assert!(!world.dir.join("draft.json").exists());
+    // the run's own files back in place: the draft is made
+    world.release("1.6.0");
+    let output = draft("draft.json");
+    assert_eq!(output.code, 0, "{}", output.all());
+    // the artifacts of the run are gone (they are kept for some days only): no draft either
+    fs::remove_dir_all(world.dir.join("gh/artifacts")).unwrap();
+    let output = draft("late.json");
+    assert_eq!(output.code, 1);
+    assert!(
+        output
+            .stderr
+            .contains("실행 4242의 산출물을 받지 못했습니다")
+            && output
+                .stderr
+                .contains("no valid artifacts found to download")
+            && output.stderr.contains("보관 기간(7일)"),
+        "{}",
+        output.stderr
+    );
+    assert!(!world.dir.join("late.json").exists());
+}
+
+#[test]
+fn a_stop_at_the_passphrase_prompt_shows_nothing_afterwards() {
+    use std::time::Duration;
+    let patience = Duration::from_secs(60);
+    let world = World::new("ctrl-z");
+    assert_eq!(world.first_draft("draft.json").code, 0);
+    // an interactive shell with job control at a terminal, as the person has it
+    let mut shell = Session::start(
+        "bash",
+        &["--norc", "--noprofile", "--noediting", "-i"],
+        &world.dir,
+        &[
+            ("PS1", "READY> "),
+            ("TERM", "dumb"),
+            ("HISTFILE", "/dev/null"),
+        ],
+    );
+    assert!(shell.wait_for("READY> ", patience), "no shell prompt");
+    let command = format!(
+        "'{}' sign --key '{}' --keys '{}' --allow-test-keys --out policy.json draft.json\n",
+        common::BIN,
+        world.file("signing-1.key"),
+        world.file("keys.env")
+    );
+    shell.type_keys(&command);
+    assert!(shell.wait_for("의 비밀번호: ", patience), "no prompt");
+    assert!(!shell.echo(), "the echo is off at the prompt");
+
+    // Ctrl-Z: the suspend key is off while a passphrase is typed. The program is not stopped,
+    // the shell does not come back, the echo stays off.
+    shell.type_keys("\u{1a}");
+    assert!(
+        !shell.wait_for("READY> ", Duration::from_millis(1500)),
+        "Ctrl-Z stopped the program at the passphrase prompt"
+    );
+    assert!(!shell.echo());
+    // (the key went into the line as a character, so this try is a wrong passphrase)
+    shell.type_keys(&format!("{PASS}\n"));
+    assert!(
+        shell.wait_for("의 비밀번호: ", patience),
+        "no second prompt"
+    );
+
+    // A stop that comes another way: the shell is back, with its own settings (the echo on).
+    let job = shell.foreground();
+    assert!(job > 0 && job != shell.pid(), "the command's own group");
+    // SAFETY: sends a signal to the process group of the command started above.
+    assert_eq!(unsafe { libc::kill(-job, libc::SIGTSTP) }, 0);
+    assert!(
+        shell.wait_for("READY> ", patience),
+        "the command did not stop"
+    );
+    assert!(
+        shell.wait_for_echo(true, patience),
+        "the shell's own settings"
+    );
+    // `fg`: bash does not put the job's settings back. The program turns the echo off again
+    // itself before it reads on.
+    shell.type_keys("fg\n");
+    assert!(
+        shell.wait_for_echo(false, Duration::from_secs(10)),
+        "after fg the passphrase prompt shows what is typed"
+    );
+    shell.type_keys(&format!("{PASS}\n"));
+    assert!(shell.wait_for("서명했습니다", patience), "not signed");
+    assert!(shell.wait_for("READY> ", patience));
+    assert!(shell.echo(), "the terminal echoes again afterwards");
+    shell.type_keys("exit\n");
+    let (code, shown) = shell.finish(patience);
+    assert_eq!(code, 0, "{shown}");
+    assert!(
+        !shown.contains(PASS),
+        "the passphrase was shown on the terminal:\n{shown}"
+    );
+    assert!(world.dir.join("policy.json").exists());
+}
+
+#[test]
+fn publish_dir_takes_a_verified_policy_and_writes_through_no_link() {
+    let world = World::new("publish");
+    assert_eq!(world.first_draft("draft.json").code, 0);
+    assert_eq!(
+        world
+            .sign("signing-1.key", "draft.json", "policy.json")
+            .code,
+        0
+    );
+    let (keys, release) = (world.file("keys.env"), world.release("1.6.0"));
+    let publish = |policy: &str, out: &str| {
+        world.tool(&[
+            "publish-dir",
+            "--policy",
+            policy,
+            "--release-dir",
+            &release,
+            "--out",
+            out,
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+        ])
+    };
+    // an envelope whose signature does not hold is no policy to publish
+    let file = world.read("policy.json");
+    let envelope = Envelope::parse(&file).unwrap();
+    let mut forged = envelope.clone();
+    forged.policy.s[0] ^= 1;
+    fs::write(world.dir.join("forged.json"), forged.to_file()).unwrap();
+    let output = publish("forged.json", "out-forged");
+    assert_eq!(output.code, 1, "{}", output.all());
+    assert!(
+        output.stderr.contains("정책의 서명이 맞지 않습니다"),
+        "{}",
+        output.stderr
+    );
+    assert!(!world.dir.join("out-forged/version-policy.json").exists());
+    // nor is one whose text was changed after signing
+    fs::write(
+        world.dir.join("changed.json"),
+        file.replacen("1.5.0", "1.4.0", 1),
+    )
+    .unwrap();
+    assert_eq!(publish("changed.json", "out-changed").code, 1);
+    assert!(!world.dir.join("out-changed/version-policy.json").exists());
+
+    // a link left in the output directory, pointing nowhere: nothing is made where it points
+    for name in [
+        "pkg/HJViewer-1.6.0-windows-x86_64.exe",
+        "pkg/notices-1.6.0/NOTICE.txt",
+        "version-policy.json",
+        "SHA256SUMS",
+    ] {
+        let out = world.dir.join("out-link");
+        let _ = fs::remove_dir_all(&out);
+        fs::create_dir_all(out.join("pkg/notices-1.6.0")).unwrap();
+        std::os::unix::fs::symlink(world.dir.join("elsewhere"), out.join(name)).unwrap();
+        let output = publish("policy.json", "out-link");
+        assert_eq!(output.code, 1, "{name}: {}", output.all());
+        assert!(
+            output.stderr.contains("보통 파일이 아닙니다"),
+            "{name}: {}",
+            output.stderr
+        );
+        assert!(
+            !world.dir.join("elsewhere").exists(),
+            "{name}: a file was made through the link"
+        );
+    }
+    // and the plain case still works
+    let output = publish("policy.json", "out");
+    assert_eq!(output.code, 0, "{}", output.all());
+    assert_eq!(world.read("out/version-policy.json"), file);
+}
+
+#[test]
+fn sign_takes_test_keys_only_when_told() {
+    let world = World::new("test-key-gate");
+    assert_eq!(world.first_draft("draft.json").code, 0);
+    // the key file of a build holds test keys, and the command line does not say it is a test:
+    // refused at the terminal, before anything is asked
+    let (keys, key) = (world.file("keys.env"), world.file("signing-1.key"));
+    let output = world.person(
+        &[
+            "sign",
+            "--key",
+            &key,
+            "--keys",
+            &keys,
+            "--out",
+            "policy.json",
+            "draft.json",
+        ],
+        &[("의 비밀번호: ", PASS)],
+    );
+    assert_eq!(output.code, 1, "{}", output.all());
+    assert!(
+        output.stderr.contains("시험 키") && output.stderr.contains("--allow-test-keys"),
+        "{}",
+        output.stderr
+    );
+    assert!(!output.tty.contains("의 비밀번호") && !output.tty.contains("서명할 정책"));
+    assert!(!world.dir.join("policy.json").exists());
+}
+
+#[test]
+fn what_is_enforced_on_arrival_asks_the_signer() {
+    let world = World::new("on-arrival");
+    assert_eq!(world.first_draft("draft1.json").code, 0);
+    assert_eq!(
+        world
+            .sign("signing-1.key", "draft1.json", "policy1.json")
+            .code,
+        0
+    );
+    // every min raised with no grace period at all: blocked the moment the policy is installed
+    let made = world.policy(&[
+        "--prev",
+        "policy1.json",
+        "--min",
+        "all=1.6.0",
+        "--grace-days",
+        "0",
+        "--ios-valid",
+        &world.ios_build,
+        "--out",
+        "draft2.json",
+    ]);
+    assert_eq!(made.code, 0, "{}", made.all());
+    let refused = world.sign_as(
+        "signing-1.key",
+        "draft2.json",
+        "policy2.json",
+        &[("yes를 입력하세요: ", "no")],
+    );
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    for platform in ["windows", "android", "ios"] {
+        assert!(
+            refused.tty.contains(&format!(
+                "  - {platform}: 최소 버전을 올리는데(1.5.0 → 1.6.0) 유예가 없습니다. 서버에 넣는 즉시 1.6.0 미만을 막습니다"
+            )),
+            "{}",
+            refused.tty
+        );
+    }
+    assert!(!refused.tty.contains("의 비밀번호"));
+    assert!(!world.dir.join("policy2.json").exists());
+
+    // unattended installs from the moment of issue (`+0d`): asked as well
+    let release = world.release("1.6.1");
+    let made = world.policy(&[
+        "--prev",
+        "policy1.json",
+        "--release-dir",
+        &release,
+        "--hold",
+        "ios",
+        "--auto-after",
+        "windows=+0d",
+        "--out",
+        "draft-now.json",
+    ]);
+    assert_eq!(made.code, 0, "{}", made.all());
+    let refused = world.sign_as(
+        "signing-1.key",
+        "draft-now.json",
+        "policy-now.json",
+        &[("yes를 입력하세요: ", "no")],
+    );
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    assert!(
+        refused.tty.contains("  - windows: 무인 설치 시작(")
+            && refused
+                .tty
+                .contains("서버에 넣는 즉시 설치된 PC가 고리 0부터 설치합니다"),
+        "{}",
+        refused.tty
+    );
+    // What `policy` never makes is not signed at all, whatever is answered. A start of the
+    // unattended installs long before the policy itself (all rings at once):
+    let draft = Draft::parse(&world.read("draft-now.json")).unwrap();
+    let mut policy = Policy::parse(&draft.p).unwrap();
+    let windows = policy.platforms.get_mut(&Platform::Windows).unwrap();
+    windows.auto_install_after = Some(policy.issued - 30 * time::DAY);
+    let early = Draft {
+        p: policy.to_text(),
+        ..draft.clone()
+    };
+    fs::write(world.dir.join("early.json"), early.to_text()).unwrap();
+    let output = world.sign_as(
+        "signing-1.key",
+        "early.json",
+        "policy-early.json",
+        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
+    );
+    assert_eq!(output.code, 1, "{}", output.all());
+    assert!(
+        output.stderr.contains("정책의 발행 시각보다 이릅니다"),
+        "{}",
+        output.stderr
+    );
+    assert!(!output.tty.contains("yes를 입력") && !output.tty.contains("의 비밀번호"));
+    // ... and the version the apps know with another package
+    let made = world.policy(&[
+        "--prev",
+        "policy1.json",
+        "--contact",
+        "내선 1234",
+        "--out",
+        "draft-contact.json",
+    ]);
+    assert_eq!(made.code, 0, "{}", made.all());
+    let draft = Draft::parse(&world.read("draft-contact.json")).unwrap();
+    let mut policy = Policy::parse(&draft.p).unwrap();
+    let windows = policy.platforms.get_mut(&Platform::Windows).unwrap();
+    let package = windows.package.as_mut().unwrap();
+    package.sha256 = hex(&sha256(b"another build of the same version"));
+    package.size += 1;
+    let other = Draft {
+        p: policy.to_text(),
+        ..draft
+    };
+    fs::write(world.dir.join("other.json"), other.to_text()).unwrap();
+    let output = world.sign_as(
+        "signing-1.key",
+        "other.json",
+        "policy-other.json",
+        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
+    );
+    assert_eq!(output.code, 1, "{}", output.all());
+    assert!(
+        output
+            .stderr
+            .contains("windows: 버전 1.6.0의 패키지가 이전 정책의 것과 다릅니다"),
+        "{}",
+        output.stderr
+    );
+    assert!(!output.tty.contains("의 비밀번호"));
+    for name in ["policy-now.json", "policy-early.json", "policy-other.json"] {
+        assert!(!world.dir.join(name).exists(), "{name}");
+    }
+}
+
+#[test]
+fn a_new_entry_below_the_minimums_is_the_root_keys() {
+    let world = World::new("low-entry");
+    world.two_policies("14");
+    // Every min is 1.6.0. A Google Play entry with min 1.0.0: an app would take it from a
+    // signing key (a new entry is no relaxation by its rules), and hbbs's MIN would follow.
+    let release = world.release("1.6.0");
+    let code = (world.ios_build.parse::<u64>().unwrap() + 2000).to_string();
+    let add = |min: &str, more: &[&str], out: &str| {
+        let min = format!("android_play={min}");
+        let mut args = vec![
+            "--prev",
+            "policy2.json",
+            "--release-dir",
+            &release,
+            "--play-live",
+            &code,
+            "--min",
+            &min,
+            "--grace-days",
+            "7",
+            "--out",
+            out,
+        ];
+        args.extend_from_slice(more);
+        world.policy(&args)
+    };
+    let refused = add("1.0.0", &[], "draft3.json");
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    assert!(
+        refused
+            .stderr
+            .contains("android_play: 새 항목의 min(1.0.0)이 지금 강제하는 값보다 낮음")
+            && refused.stderr.contains("--relax"),
+        "{}",
+        refused.stderr
+    );
+    assert!(!world.dir.join("draft3.json").exists());
+    // at the present minimum it is a signing key's policy; below it, with --relax, the root key's
+    let plain = add("1.6.0", &[], "draft3.json");
+    assert_eq!(plain.code, 0, "{}", plain.all());
+    assert!(plain.stdout.contains("서명할 키: 서명 키"));
+    let relaxed = add("1.0.0", &["--relax"], "draft3-low.json");
+    assert_eq!(relaxed.code, 0, "{}", relaxed.all());
+    assert!(relaxed.stdout.contains("서명할 키: 루트 키"));
+    assert!(relaxed
+        .stdout
+        .contains("완화: android_play: 새 항목의 min(1.0.0)"));
+    // a draft for a signing key that carries such an entry is not signed
+    let draft = Draft::parse(&world.read("draft3-low.json")).unwrap();
+    let as_signing = Draft {
+        signer: Role::Signing,
+        ..draft
+    };
+    fs::write(world.dir.join("as-signing.json"), as_signing.to_text()).unwrap();
+    let output = world.sign("signing-1.key", "as-signing.json", "policy3.json");
+    assert_eq!(output.code, 1, "{}", output.all());
+    assert!(
+        output
+            .stderr
+            .contains("초안이 완화를 담고 있는데 서명 키로 서명하게 되어 있습니다"),
+        "{}",
+        output.stderr
+    );
+    // the root key signs it after the signer's yes
+    let output = world.sign_as(
+        "root-101.key",
+        "draft3-low.json",
+        "policy3.json",
+        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
+    );
+    assert_eq!(output.code, 0, "{}", output.all());
+    assert!(
+        output
+            .tty
+            .contains("  - 완화: android_play: 새 항목의 min(1.0.0)이 지금 강제하는 값보다 낮음"),
+        "{}",
+        output.tty
+    );
+    // hbbs has one threshold: the tool says that it goes down, whatever the file's FROM is
+    let keys = world.file("keys.env");
+    for from in ["2026-01-01T00:00:00Z", &ahead("YYYY-01-01T00:00:00Z")] {
+        fs::write(
+            world.dir.join("current.conf"),
+            format!("MIN=1.6.0\nFROM={from}\nTEXT=x (version not allowed)\n"),
+        )
+        .unwrap();
+        let conf = world.tool(&[
+            "hbbs-conf",
+            "--policy",
+            "policy3.json",
+            "--prev-policy",
+            "policy2.json",
+            "--current",
+            "current.conf",
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+        ]);
+        assert_eq!(conf.code, 0, "{}", conf.all());
+        assert!(conf.stdout.contains("MIN=1.0.0"), "{}", conf.stdout);
+        assert!(
+            conf.stdout
+                .contains("경고: MIN을 1.6.0에서 1.0.0(으)로 내립니다"),
+            "{from}: {}",
+            conf.stdout
+        );
+    }
+}
+
+#[test]
+fn back_to_a_signing_key_after_the_root_keys_relaxation() {
+    let world = World::new("restore");
+    // every min at 1.6.0, enforced at once
+    world.two_policies("0");
+    // the update path is down: the root key lowers every min for a while (README, 비상 절차)
+    let relaxed = world.policy(&[
+        "--prev",
+        "policy2.json",
+        "--min",
+        "all=1.5.0",
+        "--relax",
+        "--out",
+        "draft3.json",
+    ]);
+    assert_eq!(relaxed.code, 0, "{}", relaxed.all());
+    let signed = world.sign_as(
+        "root-101.key",
+        "draft3.json",
+        "policy3.json",
+        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
+    );
+    assert_eq!(signed.code, 0, "{}", signed.all());
+    // Afterwards a signing key raises them again. An app that was off during the relaxation
+    // still holds policy 2: the tool asks for that policy and checks the new one against it.
+    let restore = |more: &[&str], out: &str| {
+        let mut args = vec![
+            "--prev",
+            "policy3.json",
+            "--min",
+            "all=1.6.0",
+            "--ios-valid",
+            &world.ios_build,
+            "--out",
+            out,
+        ];
+        args.extend_from_slice(more);
+        world.policy(&args)
+    };
+    let without = restore(&[], "draft4.json");
+    assert_eq!(without.code, 1);
+    assert!(without.stderr.contains("--held"), "{}", without.stderr);
+    // With the default grace of 7 days the min that app knows (enforced since policy 2) would
+    // get a deadline it never had: a relaxation to it. It would drop this policy and every
+    // later one of a signing key.
+    let trap = restore(&["--held", "policy2.json"], "draft4.json");
+    assert_eq!(trap.code, 1, "{}", trap.all());
+    assert!(
+        trap.stderr
+            .contains("1:2 정책을 가진 채 꺼져 있던 앱은 이 정책을 받지 않습니다")
+            && trap.stderr.contains("같은 min의 유예를 늦추거나 새로 둠")
+            && trap.stderr.contains("--grace-days 0"),
+        "{}",
+        trap.stderr
+    );
+    assert!(!world.dir.join("draft4.json").exists());
+    // as it was before the relaxation: enforced at once
+    let made = restore(
+        &["--held", "policy2.json", "--grace-days", "0"],
+        "draft4.json",
+    );
+    assert_eq!(made.code, 0, "{}", made.all());
+    let signed = world.sign_as(
+        "signing-1.key",
+        "draft4.json",
+        "policy4.json",
+        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
+    );
+    assert_eq!(signed.code, 0, "{}", signed.all());
+    assert!(
+        signed
+            .tty
+            .contains("직전 정책은 루트 키가 서명했습니다. 그 정책을 받지 못한(꺼져 있던) 앱은"),
+        "{}",
+        signed.tty
+    );
+    assert!(signed
+        .tty
+        .contains("1:2 정책을 가진 채 꺼져 있던 앱도 이 정책을 받음을 확인함(--held)"));
+    // both kinds of app take it: the one that saw the relaxation and the one that did not
+    assert_eq!(world.verify_after("policy3.json", "policy4.json").code, 0);
+    let stale = world.verify_after("policy2.json", "policy4.json");
+    assert_eq!(stale.code, 0, "{}", stale.all());
+    // from here on the ordinary flow again, without --held
+    let next = world.policy(&[
+        "--prev",
+        "policy4.json",
+        "--contact",
+        "내선 1234",
+        "--out",
+        "draft5.json",
+    ]);
+    assert_eq!(next.code, 0, "{}", next.all());
+    assert_eq!(
+        world
+            .sign("signing-1.key", "draft5.json", "policy5.json")
+            .code,
+        0
+    );
+    assert_eq!(world.verify_after("policy2.json", "policy5.json").code, 0);
 }

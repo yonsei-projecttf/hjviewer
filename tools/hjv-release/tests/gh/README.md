@@ -13,6 +13,12 @@ fields that matter, with ids and hashes replaced by test values:
   file (docs/ci.md); `build-other-commit.yml`: one that pins another commit; `build-extra-job.yml`:
   one with a second job.
 
+`hjv-release policy` also downloads the run's artifacts (`gh run download 4242 -R <build repo>
+-D <directory>`) and looks for the package and its `release.json` among them. There is nothing
+to record for that: the script of tests/cli.rs copies the artifacts its test "built" into the
+directory, and says `no valid artifacts found to download` when there are none, as gh does for a
+run whose artifacts have expired.
+
 `1111111111111111111111111111111111111111` stands for the source commit: tests/cli.rs puts the
 commit of its temporary repository there, and a small script named `gh` on the PATH replays the
 files. `2222222222222222222222222222222222222222` is the commit of the build repository the run

@@ -15,12 +15,20 @@
 //!   epoch `seq` is above the stored one. It may relax.
 //! - The same (epoch, seq) is the same bytes. A policy below the build's floor is dropped.
 //! - If anything fails, nothing of the envelope is taken, the root declaration included.
+//!
+//! An app compares a new policy with the one it holds, entry by entry. Two things follow that
+//! the list of relaxations does not name, and the tool looks at them itself: a new entry may come
+//! in below what is enforced now ([`new_entries_below`]: the tool asks the root key for it), and
+//! a raised `min` with a later deadline puts off the old `min` as well ([`old_mins_that_wait`]:
+//! the tool says so). And an app that was off while a policy of the root key was served compares
+//! the next policy with the one before that (make.rs and README.md, the emergency procedure).
 
 use crate::{
     envelope::{Envelope, Part, POLICY_DOMAIN, ROOT_DOMAIN},
     keys::{Floor, KeySet, Role},
     policy::{Platform, Policy, RootDecl},
     time,
+    version::Version,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -182,6 +190,112 @@ pub fn relaxations(old: &Policy, new: &Policy) -> Vec<Relaxation> {
         }
         if after.latest < before.latest {
             found.push(Relaxation::LatestLowered(*platform));
+        }
+    }
+    found
+}
+
+/// A new entry that enforces less than the previous policy did, although the apps' rules have
+/// nothing to say about it: they compare a policy entry by entry, and a new entry has no old one.
+/// This tool is stricter than the apps here and asks the root key for it, like a relaxation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewEntryBelow {
+    pub platform: Platform,
+    pub min: Version,
+    /// The lowest `min` of the previous policy, which is hbbs's one threshold (design 1-5), if
+    /// the new entry is below it.
+    pub below_lowest: Option<Version>,
+    /// The other Android entry's `min`, if the new entry is below it: a PC holds an Android
+    /// controller to the lower `min` of the two, since it cannot tell them apart.
+    pub below_other_android: Option<Version>,
+}
+
+impl NewEntryBelow {
+    pub fn describe(&self) -> String {
+        let mut effects = Vec::new();
+        if let Some(lowest) = self.below_lowest {
+            effects.push(format!(
+                "지금 가장 낮은 min({lowest})보다 낮아 hbbs의 MIN이 내려감"
+            ));
+        }
+        if let Some(other) = self.below_other_android {
+            effects.push(format!(
+                "다른 Android 항목의 min({other})보다 낮아 PC가 Android 컨트롤러에 쓰는 기준이 내려감"
+            ));
+        }
+        format!(
+            "{}: 새 항목의 min({})이 지금 강제하는 값보다 낮음({})",
+            self.platform,
+            self.min,
+            effects.join(", ")
+        )
+    }
+}
+
+/// The entries `new` adds with a `min` below what `old` enforces.
+pub fn new_entries_below(old: &Policy, new: &Policy) -> Vec<NewEntryBelow> {
+    let lowest = old.lowest_min();
+    let mut found = Vec::new();
+    for (platform, entry) in &new.platforms {
+        if old.platforms.contains_key(platform) {
+            continue;
+        }
+        let other_android = match platform {
+            Platform::Android => old.platforms.get(&Platform::AndroidPlay),
+            Platform::AndroidPlay => old.platforms.get(&Platform::Android),
+            _ => None,
+        };
+        let below = NewEntryBelow {
+            platform: *platform,
+            min: entry.min,
+            below_lowest: lowest.filter(|lowest| entry.min < *lowest),
+            below_other_android: other_android.map(|e| e.min).filter(|min| entry.min < *min),
+        };
+        if below.below_lowest.is_some() || below.below_other_android.is_some() {
+            found.push(below);
+        }
+    }
+    found
+}
+
+/// A raised `min` whose new deadline is later than the old `min`'s was (or comes where the old
+/// one had none): until then an app below the *old* `min` is not blocked either, since an app
+/// looks at the entry's one `min` and its one deadline. The apps take this from a signing key
+/// (design 1-4: a higher `min` may come with a new grace period), so the tool only says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OldMinWaits {
+    pub platform: Platform,
+    pub old_min: Version,
+    pub until: i64,
+}
+
+impl OldMinWaits {
+    pub fn describe(&self) -> String {
+        format!(
+            "{}: 유예 끝({})까지는 옛 최소 {} 미만도 막지 않습니다(앱은 새 최소의 유예만 봅니다)",
+            self.platform,
+            time::format_kst(self.until),
+            self.old_min
+        )
+    }
+}
+
+/// The entries of `new` whose raised `min` puts off the enforcement of the old one.
+pub fn old_mins_that_wait(old: &Policy, new: &Policy) -> Vec<OldMinWaits> {
+    let mut found = Vec::new();
+    for (platform, after) in &new.platforms {
+        let Some(before) = old.platforms.get(platform) else {
+            continue;
+        };
+        let later = after
+            .grace_until
+            .filter(|until| before.grace_until.is_none_or(|was| *until > was));
+        if let Some(until) = later.filter(|_| after.min > before.min) {
+            found.push(OldMinWaits {
+                platform: *platform,
+                old_min: before.min,
+                until,
+            });
         }
     }
     found
@@ -806,6 +920,175 @@ mod tests {
             .unwrap_err()
             .contains("이전 정책"));
         assert!(check_after(&s6, None, &keys, SERVER).is_ok());
+        // an app that holds an envelope has revoked what its declaration lists: the next
+        // envelope carries no declaration, and the revoked key still signs nothing
+        let e2 = envelope(
+            &policy(2, 1),
+            "signing-2",
+            Some((&decl(2, &[1]), "root-101")),
+        );
+        let by_revoked = envelope(&policy(2, 2), "signing-1", None);
+        let err = check_after(&by_revoked, Some(&e2), &keys, SERVER).unwrap_err();
+        assert!(err.contains("폐기된 키입니다(키 번호 1)"), "{err}");
+        let by_the_other = envelope(&policy(2, 2), "signing-2", None);
+        let (_, state) = check_after(&by_the_other, Some(&e2), &keys, SERVER).unwrap();
+        assert_eq!(state.revoked.iter().copied().collect::<Vec<_>>(), [1]);
+        let holding = State::holding(&check_envelope(&e2, &keys, SERVER).unwrap());
+        assert_eq!((holding.epoch, holding.revoked.contains(&1)), (2, true));
+    }
+
+    #[test]
+    fn the_root_key_does_not_go_back_an_epoch() {
+        let keys = test_key_set();
+        let s1 = envelope(&policy(1, 5), "signing-1", None);
+        let e2 = envelope(
+            &policy(2, 1),
+            "signing-2",
+            Some((&decl(2, &[1]), "root-101")),
+        );
+        // a policy the root key signed in epoch 1 (a relaxation, say), sent again after the app
+        // has moved to epoch 2: however high its seq, it is of a time that is over
+        let old = envelope(&policy(1, 5000), "root-101", None);
+        assert!(after(&[&s1], &old).is_ok());
+        let err = after(&[&s1, &e2], &old).unwrap_err();
+        assert!(
+            err.contains("정책의 세대(1)가 지금 세대(2)보다 낮습니다"),
+            "{err}"
+        );
+        // also for an app that learned the epoch from the policy alone
+        let by_root = envelope(&policy(2, 1), "root-101", None);
+        assert!(after(&[&s1, &by_root], &old).is_err());
+        // the same epoch and a later one are the root key's to sign
+        assert!(after(&[&s1, &e2], &envelope(&policy(2, 5000), "root-101", None)).is_ok());
+        assert!(after(&[&s1, &e2], &envelope(&policy(3, 1), "root-101", None)).is_ok());
+
+        // by itself, too: an envelope whose policy is of an epoch before its own declaration's
+        let behind = envelope(&policy(1, 6), "root-101", Some((&decl(2, &[]), "root-101")));
+        let err = check_envelope(&behind, &keys, SERVER).unwrap_err();
+        assert!(
+            err.contains("정책의 세대(1)와 루트 선언의 세대(2)가 맞지 않습니다"),
+            "{err}"
+        );
+        let ahead = envelope(&policy(3, 1), "root-101", Some((&decl(2, &[]), "root-101")));
+        assert!(check_envelope(&ahead, &keys, SERVER).is_ok());
+    }
+
+    #[test]
+    fn new_entries_below_what_is_enforced() {
+        // every entry at 1.6.0, no Google Play entry yet
+        let mut before = policy(1, 5);
+        before.platforms.remove(&Platform::AndroidPlay);
+        let with_play = |min: &str| {
+            let mut after = policy(1, 6);
+            after.platforms.get_mut(&Platform::AndroidPlay).unwrap().min = v(min);
+            after
+        };
+        // at the same min, or above it, nothing is lowered
+        assert_eq!(new_entries_below(&before, &with_play("1.6.0")), []);
+        assert_eq!(new_entries_below(&before, &with_play("1.6.1")), []);
+        // below: hbbs's one threshold and the PC's threshold for Android controllers go down,
+        // and the apps' rules call it no relaxation
+        let low = with_play("1.0.0");
+        assert_eq!(relaxations(&before, &low), []);
+        let found = new_entries_below(&before, &low);
+        assert_eq!(
+            found,
+            [NewEntryBelow {
+                platform: Platform::AndroidPlay,
+                min: v("1.0.0"),
+                below_lowest: Some(v("1.6.0")),
+                below_other_android: Some(v("1.6.0")),
+            }]
+        );
+        let said = found[0].describe();
+        assert!(
+            said.starts_with("android_play: 새 항목의 min(1.0.0)이 지금 강제하는 값보다 낮음("),
+            "{said}"
+        );
+        assert!(said.contains("hbbs의 MIN이 내려감") && said.contains("Android 컨트롤러"));
+        // above the lowest min of all, but below the other Android entry's
+        let mut before = policy(1, 5);
+        before.platforms.remove(&Platform::AndroidPlay);
+        before.platforms.get_mut(&Platform::Ios).unwrap().min = v("1.5.0");
+        let found = new_entries_below(&before, &with_play("1.5.5"));
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            (found[0].below_lowest, found[0].below_other_android),
+            (None, Some(v("1.6.0")))
+        );
+        assert!(!found[0].describe().contains("hbbs"));
+        // the sideloaded entry added next to the Google Play one, and an entry of another kind
+        let mut before = policy(1, 5);
+        before.platforms.remove(&Platform::Android);
+        let mut after = policy(1, 6);
+        after.platforms.get_mut(&Platform::Android).unwrap().min = v("1.5.9");
+        assert_eq!(
+            new_entries_below(&before, &after)[0].below_other_android,
+            Some(v("1.6.0"))
+        );
+        let mut before = policy(1, 5);
+        before.platforms.remove(&Platform::Ios);
+        let mut after = policy(1, 6);
+        after.platforms.get_mut(&Platform::Ios).unwrap().min = v("1.5.9");
+        let found = new_entries_below(&before, &after);
+        assert_eq!(
+            (found[0].below_lowest, found[0].below_other_android),
+            (Some(v("1.6.0")), None)
+        );
+        // an entry that was there is the relaxation rule's business, not this one's
+        let mut lowered = policy(1, 6);
+        lowered.platforms.get_mut(&Platform::Ios).unwrap().min = v("1.5.0");
+        assert_eq!(new_entries_below(&policy(1, 5), &lowered), []);
+    }
+
+    #[test]
+    fn a_raised_min_that_puts_off_the_old_one() {
+        fn windows(p: &mut Policy) -> &mut crate::policy::Entry {
+            p.platforms.get_mut(&Platform::Windows).unwrap()
+        }
+        // the sample's Windows entry: min 1.6.0 until 2026-11-22T15:00:00Z; iOS: min 1.6.0 at once
+        let before = policy(1, 5);
+        let raised = |platform: Platform, grace: Option<&str>| {
+            let mut after = policy(1, 6);
+            let e = after.platforms.get_mut(&platform).unwrap();
+            e.min = v("1.6.1");
+            e.grace_until = grace.map(t);
+            old_mins_that_wait(&before, &after)
+        };
+        // a later deadline than the old min had: below 1.6.0 is let through until then as well
+        let found = raised(Platform::Windows, Some("2026-12-01T15:00:00Z"));
+        assert_eq!(
+            found,
+            [OldMinWaits {
+                platform: Platform::Windows,
+                old_min: v("1.6.0"),
+                until: t("2026-12-01T15:00:00Z"),
+            }]
+        );
+        assert_eq!(
+            found[0].describe(),
+            "windows: 유예 끝(2026-12-02 00:00 한국 시각)까지는 옛 최소 1.6.0 미만도 막지 않습니다\
+             (앱은 새 최소의 유예만 봅니다)"
+        );
+        // a deadline where the old min had none (it was enforced already)
+        assert_eq!(raised(Platform::Ios, Some("2026-11-15T15:00:00Z")).len(), 1);
+        // the old deadline, an earlier one, or none: the old min is enforced no later than before
+        assert_eq!(raised(Platform::Windows, Some("2026-11-22T15:00:00Z")), []);
+        assert_eq!(raised(Platform::Windows, Some("2026-11-20T15:00:00Z")), []);
+        assert_eq!(raised(Platform::Windows, None), []);
+        assert_eq!(raised(Platform::Ios, None), []);
+        // the same min with a later deadline is a relaxation, which is another rule's business
+        let mut after = policy(1, 6);
+        windows(&mut after).grace_until = Some(t("2026-12-01T15:00:00Z"));
+        assert_eq!(old_mins_that_wait(&before, &after), []);
+        assert_eq!(
+            relaxations(&before, &after),
+            [Relaxation::GraceLater(Platform::Windows)]
+        );
+        // a new entry has no old min
+        let mut without = policy(1, 5);
+        without.platforms.remove(&Platform::Windows);
+        assert_eq!(old_mins_that_wait(&without, &policy(1, 6)), []);
     }
 
     #[test]

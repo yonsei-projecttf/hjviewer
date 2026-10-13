@@ -14,6 +14,11 @@
 //! Each package is copied from the release directory and then hashed again where it lies: the
 //! copy must have the size and the SHA-256 the policy names. The third-party notices differ by
 //! platform, so the one file holds a section for each package of that version.
+//!
+//! Nothing is written through a link. What lies in `<out>` already is looked at before the
+//! first file is written (directories and plain files only), and every file is created anew or
+//! opened without following a link: a link left in the directory, dangling or not, cannot send a
+//! package or the policy somewhere else.
 
 use crate::{
     policy::{Platform, Policy},
@@ -22,6 +27,8 @@ use crate::{
 use std::{
     collections::BTreeMap,
     fs,
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -33,15 +40,75 @@ fn io(path: &Path, what: &str) -> impl Fn(std::io::Error) -> String {
     move |e| format!("{at}: {what}({e})")
 }
 
-/// Writes `content` to `path`, or checks that the file there already holds exactly that.
-fn place(path: &Path, content: &[u8]) -> Result<(), String> {
-    match fs::read(path) {
-        Ok(existing) if existing == content => Ok(()),
+/// Whether a plain file is at `path`; an error for anything else that is there (a link, even
+/// one that points nowhere; a directory).
+fn plain_file_at(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(true),
         Ok(_) => Err(format!(
-            "{}: 다른 내용의 파일이 이미 있습니다(새 디렉터리를 쓰세요)",
+            "{}: 보통 파일이 아닙니다(링크나 디렉터리). 새 디렉터리를 쓰세요",
             path.display()
         )),
-        Err(_) => fs::write(path, content).map_err(io(path, "쓸 수 없습니다")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(io(path, "읽을 수 없습니다")(e)),
+    }
+}
+
+/// A file made here and now: never an existing one, and never the target of a link.
+fn create(path: &Path) -> Result<fs::File, String> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(io(path, "쓸 수 없습니다"))
+}
+
+/// Writes `content` to `path`, or checks that the file there already holds exactly that.
+fn place(path: &Path, content: &[u8]) -> Result<(), String> {
+    if plain_file_at(path)? {
+        let existing = fs::read(path).map_err(io(path, "읽을 수 없습니다"))?;
+        return if existing == content {
+            Ok(())
+        } else {
+            Err(format!(
+                "{}: 다른 내용의 파일이 이미 있습니다(새 디렉터리를 쓰세요)",
+                path.display()
+            ))
+        };
+    }
+    let mut file = create(path)?;
+    file.write_all(content).map_err(io(path, "쓸 수 없습니다"))
+}
+
+/// Writes the one file that is made again on every run (SHA256SUMS): a plain file is replaced,
+/// and a link in its place is not followed, whether it points at a file or nowhere.
+fn write_again(path: &Path, content: &[u8]) -> Result<(), String> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(io(path, "쓸 수 없습니다"))?;
+    file.write_all(content).map_err(io(path, "쓸 수 없습니다"))
+}
+
+/// A directory under the output directory: the one that is there, or a new one. A link in its
+/// place is refused, wherever it points.
+fn directory(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(format!(
+            "{}: 디렉터리가 아닙니다(링크나 파일). 새 디렉터리를 쓰세요",
+            path.display()
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path).map_err(io(path, "만들 수 없습니다"))
+        }
+        Err(e) => Err(io(path, "읽을 수 없습니다")(e)),
     }
 }
 
@@ -82,8 +149,12 @@ pub fn publish(
     artifacts: &[Artifact],
     out: &Path,
 ) -> Result<Vec<String>, String> {
+    // The output directory itself is the operator's to name (it may be reached through a link).
+    // What is in it is looked at before anything is written: plain files and directories only.
+    fs::create_dir_all(out).map_err(io(out, "만들 수 없습니다"))?;
+    files_under(out)?;
     let pkg = out.join("pkg");
-    fs::create_dir_all(&pkg).map_err(io(&pkg, "만들 수 없습니다"))?;
+    directory(&pkg)?;
     let mut report = Vec::new();
     let mut expected: Vec<String> = Vec::new();
     // version -> (package file name, the artifact's third-party notices), by package
@@ -114,8 +185,11 @@ pub fn publish(
             ));
         }
         let target = pkg.join(&package.file);
-        if !target.exists() {
-            fs::copy(artifact.path(), &target).map_err(io(&target, "복사할 수 없습니다"))?;
+        if !plain_file_at(&target)? {
+            let source = artifact.path();
+            let mut from = fs::File::open(&source).map_err(io(&source, "열 수 없습니다"))?;
+            let mut to = create(&target)?;
+            std::io::copy(&mut from, &mut to).map_err(io(&target, "복사할 수 없습니다"))?;
         }
         // what lies in the directory is what the policy names, whatever the copy did
         let (size, sha256) = hash_file(&target)?;
@@ -133,7 +207,7 @@ pub fn publish(
 
         let version = entry.latest.to_string();
         let notices = pkg.join(format!("notices-{version}"));
-        fs::create_dir_all(&notices).map_err(io(&notices, "만들 수 없습니다"))?;
+        directory(&notices)?;
         for name in NOTICE_FILES {
             let source = artifact.dir.join(name);
             let content = fs::read(&source).map_err(io(&source, "알림 파일을 읽을 수 없습니다"))?;
@@ -200,7 +274,7 @@ pub fn publish(
         sums.push_str(&format!("{sha256}  {file}\n"));
     }
     let sums_path: PathBuf = out.join(SHA256SUMS);
-    fs::write(&sums_path, &sums).map_err(io(&sums_path, "쓸 수 없습니다"))?;
+    write_again(&sums_path, sums.as_bytes())?;
     report.push(format!(
         "{SHA256SUMS}: 파일 {}개(서버에서 sha256sum -c {SHA256SUMS})",
         sums.lines().count()
@@ -359,6 +433,117 @@ mod tests {
             .unwrap_err()
             .contains("다른 플랫폼"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nothing_is_written_through_a_link() {
+        use std::os::unix::fs::symlink;
+        let (policy, artifacts, root) = fixture("publish-links");
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let nothing_elsewhere = || fs::read_dir(&elsewhere).unwrap().count() == 0;
+        // A link that points nowhere, where a file of the publish directory will be: writing
+        // through it would make the file at the link's target.
+        for (n, name) in [
+            "pkg/HJViewer-1.6.1-windows-x86_64.exe",
+            "pkg/HJViewer-1.6.1-android-arm64.apk",
+            "pkg/notices-1.6.1/LICENSE.txt",
+            "pkg/notices-1.6.1/THIRD_PARTY_NOTICES.txt",
+            "version-policy.json",
+            "SHA256SUMS",
+            "stray-link",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let out = root.join(format!("out-{n}"));
+            fs::create_dir_all(out.join("pkg/notices-1.6.1")).unwrap();
+            symlink(elsewhere.join("made-through-the-link"), out.join(name)).unwrap();
+            let err = publish(&policy, Some("{\"v\":1}\n"), &artifacts, &out).unwrap_err();
+            assert!(err.contains("보통 파일이 아닙니다"), "{name}: {err}");
+            assert!(
+                nothing_elsewhere(),
+                "{name}: a file was made through the link"
+            );
+            // and nothing was written before the link was noticed
+            assert_eq!(files_in(&out), Vec::<String>::new(), "{name}");
+        }
+        // a link to a file that exists, and a directory that is a link to a directory elsewhere
+        let out = root.join("out-file");
+        fs::create_dir_all(&out).unwrap();
+        fs::write(elsewhere.join("policy"), b"another policy").unwrap();
+        symlink(elsewhere.join("policy"), out.join("version-policy.json")).unwrap();
+        assert!(publish(&policy, Some("{\"v\":1}\n"), &artifacts, &out).is_err());
+        assert_eq!(
+            fs::read(elsewhere.join("policy")).unwrap(),
+            b"another policy"
+        );
+        fs::remove_file(elsewhere.join("policy")).unwrap();
+        for name in ["pkg", "pkg/notices-1.6.1"] {
+            let out = root.join(format!("out-dir-{}", name.len()));
+            fs::create_dir_all(out.join("pkg")).unwrap();
+            if name == "pkg" {
+                fs::remove_dir(out.join("pkg")).unwrap();
+            }
+            symlink(&elsewhere, out.join(name)).unwrap();
+            let err = publish(&policy, None, &artifacts, &out).unwrap_err();
+            assert!(err.contains("보통 파일이 아닙니다"), "{name}: {err}");
+            assert!(nothing_elsewhere(), "{name}");
+        }
+        // The single steps as well, for a link that appears after the first look: a new file is
+        // made only where nothing is, a directory is taken only if it is one.
+        let dir = root.join("steps");
+        fs::create_dir_all(&dir).unwrap();
+        symlink(elsewhere.join("x"), dir.join("dangling")).unwrap();
+        symlink(&elsewhere, dir.join("dir-link")).unwrap();
+        assert!(place(&dir.join("dangling"), b"x").is_err());
+        assert!(create(&dir.join("dangling")).is_err());
+        assert!(plain_file_at(&dir.join("dangling")).is_err());
+        assert!(directory(&dir.join("dir-link")).is_err());
+        assert!(directory(&dir.join("dangling")).is_err());
+        assert!(nothing_elsewhere());
+        assert!(!plain_file_at(&dir.join("missing")).unwrap());
+        place(&dir.join("file"), b"x").unwrap();
+        assert!(plain_file_at(&dir.join("file")).unwrap());
+        assert!(create(&dir.join("file")).is_err(), "never an existing file");
+        directory(&dir.join("new")).unwrap();
+        directory(&dir.join("new")).unwrap();
+        // the file that is written again on every run replaces a plain file and follows no link
+        write_again(&dir.join("sums"), b"first").unwrap();
+        write_again(&dir.join("sums"), b"2nd").unwrap();
+        assert_eq!(fs::read(dir.join("sums")).unwrap(), b"2nd");
+        assert!(write_again(&dir.join("dangling"), b"x").is_err());
+        fs::write(elsewhere.join("kept"), b"kept").unwrap();
+        symlink(elsewhere.join("kept"), dir.join("to-a-file")).unwrap();
+        assert!(write_again(&dir.join("to-a-file"), b"x").is_err());
+        assert_eq!(fs::read(elsewhere.join("kept")).unwrap(), b"kept");
+        fs::remove_file(elsewhere.join("kept")).unwrap();
+        assert!(nothing_elsewhere());
+        // the output directory itself may be named through a link: that is the operator's word
+        let real = root.join("real-out");
+        fs::create_dir_all(&real).unwrap();
+        symlink(&real, root.join("out-link")).unwrap();
+        publish(&policy, None, &artifacts, &root.join("out-link")).unwrap();
+        assert!(real.join("pkg/HJViewer-1.6.1-windows-x86_64.exe").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The plain files under `dir`, links not counted.
+    fn files_in(dir: &Path) -> Vec<String> {
+        fn walk(dir: &Path, out: &mut Vec<String>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                let meta = fs::symlink_metadata(&path).unwrap();
+                if meta.is_dir() {
+                    walk(&path, out);
+                } else if meta.is_file() {
+                    out.push(path.display().to_string());
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, &mut out);
+        out
     }
 
     #[test]

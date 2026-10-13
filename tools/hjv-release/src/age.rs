@@ -278,6 +278,110 @@ mod tests {
         assert_ne!(a[a.len() - 20..], b[b.len() - 20..]);
     }
 
+    /// The salt, the file key (unwrapped with the passphrase) and the payload nonce of a file.
+    fn secrets_of(file: &[u8], passphrase: &[u8]) -> ([u8; 16], [u8; 16], [u8; 16]) {
+        let (_, rest) = line(file).unwrap();
+        let (stanza, rest) = line(rest).unwrap();
+        let mut args = stanza.split(' ').skip(2);
+        let salt: [u8; 16] = unpadded(args.next().unwrap()).unwrap();
+        let work_factor: u8 = args.next().unwrap().parse().unwrap();
+        let (body, rest) = line(rest).unwrap();
+        let wrapped: [u8; 32] = unpadded(body).unwrap();
+        let (_, payload) = line(rest).unwrap();
+        let wrap_key = scrypt_key(passphrase, &salt, work_factor).unwrap();
+        let file_key = ChaCha20Poly1305::new(Key::from_slice(wrap_key.as_ref()))
+            .decrypt(&Nonce::default(), wrapped.as_ref())
+            .unwrap();
+        (
+            salt,
+            file_key.try_into().unwrap(),
+            payload[..16].try_into().unwrap(),
+        )
+    }
+
+    #[test]
+    fn every_file_has_its_own_salt_key_and_nonce() {
+        // The file key is what the payload is encrypted under; the passphrase only wraps it. A
+        // file key that could be guessed would open the payload without the passphrase, and the
+        // header would look no different: so the test unwraps the keys and looks at them.
+        let files: Vec<Vec<u8>> = (0..4)
+            .map(|_| encrypt(b"the same secret", b"the same passphrase", FAST).unwrap())
+            .collect();
+        let secrets: Vec<_> = files
+            .iter()
+            .map(|file| secrets_of(file, b"the same passphrase"))
+            .collect();
+        for (i, a) in secrets.iter().enumerate() {
+            for b in &secrets[i + 1..] {
+                assert_ne!(a.0, b.0, "the same salt twice");
+                assert_ne!(a.1, b.1, "the same file key twice");
+                assert_ne!(a.2, b.2, "the same payload nonce twice");
+            }
+            // and none of them is a filler: sixteen equal bytes, or a run of consecutive ones
+            for value in [a.0, a.1, a.2] {
+                assert!(value.windows(2).any(|w| w[0] != w[1]), "{value:?}");
+                assert!(
+                    value.windows(2).any(|w| w[1] != w[0].wrapping_add(1)),
+                    "{value:?}"
+                );
+            }
+            // the three are drawn separately
+            assert!(a.0 != a.1 && a.1 != a.2 && a.0 != a.2);
+        }
+        // what is in the header is the salt and the wrapped key, each on its own line, and
+        // they differ from file to file as well
+        let header = |file: &[u8]| {
+            let text = String::from_utf8_lossy(file).into_owned();
+            let mut lines = text.lines().skip(1);
+            (
+                lines.next().unwrap().to_owned(),
+                lines.next().unwrap().to_owned(),
+            )
+        };
+        let (first, second) = (header(&files[0]), header(&files[1]));
+        assert!(first.0.starts_with("-> scrypt ") && first.0.ends_with(" 6"));
+        assert_ne!(first.0, second.0, "the salt line");
+        assert_ne!(first.1, second.1, "the wrapped file key");
+        // the fixed test values come out of the same reading
+        let fixed =
+            encrypt_with(b"hello", b"password", FAST, &[1; 16], &[2; 16], &[3; 16]).unwrap();
+        assert_eq!(secrets_of(&fixed, b"password"), ([2; 16], [1; 16], [3; 16]));
+    }
+
+    #[test]
+    fn an_empty_last_chunk_is_damage() {
+        // A payload of exactly one full chunk, and then an empty one marked as the last: the age
+        // format allows an empty last chunk only for a payload that is empty altogether, so that
+        // a file cannot be given two forms. Made by hand with the file's own keys.
+        let (file_key, salt, nonce) = ([1u8; 16], [2u8; 16], [3u8; 16]);
+        let whole = encrypt_with(&[7u8; CHUNK], b"p", FAST, &file_key, &salt, &nonce).unwrap();
+        assert_eq!(decrypt(&whole, b"p").unwrap().len(), CHUNK);
+        let payload_at = whole.len() - (CHUNK + TAG);
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(
+            hkdf(&file_key, Some(&nonce), b"payload").as_ref(),
+        ));
+        let mut forged = whole[..payload_at].to_vec();
+        forged.extend(
+            cipher
+                .encrypt(&chunk_nonce(0, false), &[7u8; CHUNK][..])
+                .unwrap(),
+        );
+        forged.extend(cipher.encrypt(&chunk_nonce(1, true), &[][..]).unwrap());
+        assert_eq!(decrypt(&forged, b"p"), Err(Error::Damaged));
+        // the same two chunks with a last one that holds something are a file
+        let mut longer = whole[..payload_at].to_vec();
+        longer.extend(
+            cipher
+                .encrypt(&chunk_nonce(0, false), &[7u8; CHUNK][..])
+                .unwrap(),
+        );
+        longer.extend(cipher.encrypt(&chunk_nonce(1, true), &[8u8][..]).unwrap());
+        assert_eq!(decrypt(&longer, b"p").unwrap().len(), CHUNK + 1);
+        // and an empty payload is one empty chunk
+        let empty = encrypt_with(b"", b"p", FAST, &file_key, &salt, &nonce).unwrap();
+        assert_eq!(decrypt(&empty, b"p").unwrap().len(), 0);
+    }
+
     #[test]
     fn the_plaintext_is_not_in_the_file() {
         let secret = b"hjv-update-key-v1 seed=QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=";

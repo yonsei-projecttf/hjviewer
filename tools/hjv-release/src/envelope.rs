@@ -251,4 +251,74 @@ mod tests {
         );
         assert!(Envelope::parse(&long).unwrap_err().contains("바이트"));
     }
+
+    #[test]
+    fn the_size_limit_is_the_apps() {
+        // an app reads 16384 bytes of the file and no more: a file of that size is read, one
+        // byte more is not (the file's line feed counts)
+        let with_p = |len: usize| Envelope {
+            policy: Part {
+                k: 1,
+                p: "x".repeat(len),
+                s: [0; 64],
+            },
+            root: None,
+        };
+        let empty = with_p(0).to_file().len();
+        let at_the_limit = with_p(MAX_ENVELOPE_BYTES - empty).to_file();
+        assert_eq!(at_the_limit.len(), 16 * 1024);
+        assert!(Envelope::parse(&at_the_limit).is_ok());
+        let one_over = with_p(MAX_ENVELOPE_BYTES - empty + 1).to_file();
+        assert_eq!(one_over.len(), 16 * 1024 + 1);
+        assert!(Envelope::parse(&one_over).unwrap_err().contains("바이트"));
+    }
+
+    /// A signature of `key` over `message` whose R is the identity point: with s = k * a (k the
+    /// hash of R, A and the message, a the key's secret scalar) the plain equation
+    /// [s]B = R + [k]A holds. No honest signer makes one; libsodium (the apps) refuses it.
+    pub(crate) fn signature_with_identity_r(seed: &[u8; 32], message: &[u8]) -> [u8; 64] {
+        use curve25519_dalek::{edwards::EdwardsPoint, scalar::Scalar, traits::Identity};
+        use sha2::{Digest, Sha512};
+        let public = SigningKey::from_bytes(seed).verifying_key();
+        // the secret scalar (RFC 8032 5.1.5)
+        let mut a = [0u8; 32];
+        a.copy_from_slice(&Sha512::digest(seed)[..32]);
+        a[0] &= 248;
+        a[31] &= 127;
+        a[31] |= 64;
+        let a = Scalar::from_bytes_mod_order(a);
+        let r = EdwardsPoint::identity().compress().to_bytes();
+        let k = Scalar::from_hash(
+            Sha512::new()
+                .chain_update(r)
+                .chain_update(public.to_bytes())
+                .chain_update(message),
+        );
+        let mut signature = [0u8; 64];
+        signature[..32].copy_from_slice(&r);
+        signature[32..].copy_from_slice((k * a).as_bytes());
+        signature
+    }
+
+    #[test]
+    fn verification_is_strict() {
+        use ed25519_dalek::Verifier;
+        let seed = test_key("signing-1").unwrap().seed();
+        let public = key("signing-1").verifying_key();
+        let p = "{\"v\":1}";
+        let s = signature_with_identity_r(&seed, &message(POLICY_DOMAIN, p));
+        // the equation holds: a check that looks at nothing else takes the signature
+        assert!(public
+            .verify(&message(POLICY_DOMAIN, p), &Signature::from_bytes(&s))
+            .is_ok());
+        // this tool refuses it, as the apps do: what the tool verifies, an app must take
+        let part = Part {
+            k: 1,
+            p: p.to_owned(),
+            s,
+        };
+        assert!(!part.verifies(&public, POLICY_DOMAIN));
+        // an honest signature of the same text passes, of course
+        assert!(Part::sign(&key("signing-1"), 1, POLICY_DOMAIN, p).verifies(&public, POLICY_DOMAIN));
+    }
 }

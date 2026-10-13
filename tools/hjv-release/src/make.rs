@@ -11,9 +11,15 @@
 //!   the operator saw released on the internal track;
 //! - a higher `min` (or a new entry) comes with a grace period: the one asked for, or 7 days.
 //!   `--grace-days 0` enforces at once. A grace period can be extended only with the root key;
+//! - after a policy the root key signed, a policy for a signing key is checked against the
+//!   policies from before it as well (`--held`): an app that was off while the root key's policy
+//!   was served still holds an older one and compares the new policy with that. If the new policy
+//!   relaxes what such an app holds (a `min` it knows with a later deadline, say), the app drops
+//!   it and every later policy of a signing key;
 //! - a policy that raises `os_min` keeps `min` at or below the last version the old OS runs;
-//! - anything that relaxes, a revocation and a new epoch need `--relax`, `--revoke-key` or
-//!   `--new-epoch`, and so the root key and the signer's typed consent.
+//! - anything that relaxes, a new entry below what is enforced now, a revocation and a new epoch
+//!   need `--relax`, `--revoke-key` or `--new-epoch`, and so the root key and the signer's typed
+//!   consent.
 //!
 //! The result is a draft (draft.rs); nothing is signed here and no key file is read.
 
@@ -25,10 +31,13 @@ use crate::{
         check_os_min, check_server, os_min_higher, Entry, Package, Platform, Policy, RootDecl,
         MAX_VERSION_CODE,
     },
-    provenance::{self, Settings, Tools},
+    provenance::{self, Runs, Settings, Tools},
     release::{server_file_name, Artifact, Built},
     time::{self, DAY},
-    trust::{self, check_envelope, peek_server, relaxations, Checked, Relaxation, State},
+    trust::{
+        self, check_envelope, new_entries_below, old_mins_that_wait, peek_server, relaxations,
+        Checked, NewEntryBelow, Relaxation, State,
+    },
     version::Version,
 };
 use std::collections::BTreeMap;
@@ -95,6 +104,10 @@ pub struct Request {
     pub revoke: Vec<u32>,
     pub new_epoch: bool,
     pub seq: Option<u64>,
+    /// Envelope files from before the previous policy that apps may still hold (`--held`).
+    pub held: Vec<String>,
+    /// The operator says there is none (`--held none`).
+    pub no_held: bool,
     pub now: i64,
 }
 
@@ -112,6 +125,8 @@ struct Maker<'a> {
     notes: Vec<String>,
     grace_for_all_used: bool,
     notes_for_all_used: bool,
+    /// The runs whose artifacts were downloaded for the provenance checks.
+    runs: Runs,
 }
 
 fn pick<T: Copy>(list: &[(Target, T)], platform: Platform) -> Option<(bool, T)> {
@@ -215,6 +230,12 @@ impl<'a> Maker<'a> {
             None if changed => None,
             None => kept,
         };
+        // asked for or not, the operator reads it here and the signer is asked about it
+        if raised && entry.grace_until.is_none() {
+            self.report.push(format!(
+                "{platform}: 유예가 없습니다. 서버에 넣는 즉시 {min} 미만을 막습니다"
+            ));
+        }
 
         let req = self.req;
         let asked_os = req
@@ -308,7 +329,7 @@ impl<'a> Maker<'a> {
         }
         let (mut entry, latest_changed) = match (from_artifact, before) {
             (Some(a), _) => {
-                let proof = provenance::check(a, settings, tools)?;
+                let proof = provenance::check(a, settings, tools, &mut self.runs)?;
                 self.notes.extend(proof.lines);
                 let version = a.info.version;
                 let file = server_file_name(built, version)
@@ -756,6 +777,7 @@ pub fn make(
         notes: Vec::new(),
         grace_for_all_used: false,
         notes_for_all_used: false,
+        runs: Runs::default(),
     };
     let mut platforms = BTreeMap::new();
     for platform in Platform::ALL {
@@ -886,13 +908,21 @@ pub fn make(
     };
     policy.check()?;
 
-    // who must sign
+    // who must sign: what an app would not take from a signing key, and what it would take
+    // although it enforces less than now (a new entry below the present minimums)
     let relaxed = old.map(|old| relaxations(old, &policy)).unwrap_or_default();
-    if !relaxed.is_empty() && !req.relax {
-        let list: Vec<String> = relaxed.iter().map(Relaxation::describe).collect();
+    let lowered = old
+        .map(|old| new_entries_below(old, &policy))
+        .unwrap_or_default();
+    let eased: Vec<String> = relaxed
+        .iter()
+        .map(Relaxation::describe)
+        .chain(lowered.iter().map(NewEntryBelow::describe))
+        .collect();
+    if !eased.is_empty() && !req.relax {
         return Err(format!(
             "완화가 들어 있습니다: {}. 완화는 루트 키만 서명할 수 있습니다. 정말 필요하면 --relax를 주세요",
-            list.join("; ")
+            eased.join("; ")
         ));
     }
     let signer = if req.relax { Role::Root } else { Role::Signing };
@@ -933,6 +963,56 @@ pub fn make(
         .as_ref()
         .map_or_else(|| State::initial(keys), State::holding);
     state.accept(keys, &unsigned)?;
+
+    // ... and so must an app that was off while the previous policy was served, when that was
+    // a policy of the root key. Such an app holds an older policy and compares this one with
+    // it: what the root key relaxed in between and this policy leaves relaxed is, to that app,
+    // a relaxation by a signing key, and it drops this policy and every later one. Once one
+    // signing-key policy passes for those apps, the later ones do (the rules of a signing key
+    // only tighten).
+    if req.no_held && !req.held.is_empty() {
+        return Err("--held none과 --held <파일>을 함께 줄 수 없습니다".to_owned());
+    }
+    let prev_by_root = prev.as_ref().is_some_and(|c| c.role == Role::Root);
+    if prev_by_root && signer == Role::Signing && req.held.is_empty() && !req.no_held {
+        return Err(
+            "직전 정책은 루트 키가 서명했습니다. 그 정책이 서버에 있는 동안 꺼져 있던 앱은 그 앞의 정책을 가진 \
+             채로 새 정책을 비교합니다. 그 앱도 받는 정책인지 확인하도록 --held <루트 키의 정책 바로 앞의 \
+             정책 파일>을 주세요(루트 키의 정책이 이어졌으면 그 사이의 것도 --held로, 그런 정책이 없으면 \
+             --held none). 아직 완화를 되돌릴 수 없으면 이 정책도 루트 키로 서명합니다(--relax)"
+                .to_owned(),
+        );
+    }
+    for file in &req.held {
+        let held = check_envelope(file, keys, &server).map_err(|e| format!("--held: {e}"))?;
+        let at = Floor {
+            epoch: held.policy.epoch,
+            seq: held.policy.seq,
+        };
+        let before_prev = old.is_some_and(|old| {
+            at < Floor {
+                epoch: old.epoch,
+                seq: old.seq,
+            }
+        });
+        if !before_prev {
+            return Err(format!(
+                "--held: {at} 정책은 직전 정책보다 앞의 것이 아닙니다(앱이 아직 가지고 있을 수 있는 옛 정책을 줍니다)"
+            ));
+        }
+        State::holding(&held)
+            .accept(keys, &unsigned)
+            .map_err(|e| {
+                format!(
+                    "{at} 정책을 가진 채 꺼져 있던 앱은 이 정책을 받지 않습니다: {e}. 그 정책보다 느슨한 데가 \
+                     없게 하세요(같은 min이면 유예 끝을 그때의 기한보다 늦지 않게: --grace-until <그 시각> \
+                     또는 --grace-days 0). 아직 그럴 수 없으면 이 정책도 루트 키로 서명합니다(--relax)"
+                )
+            })?;
+        maker.notes.push(format!(
+            "{at} 정책을 가진 채 꺼져 있던 앱도 이 정책을 받음을 확인함(--held)"
+        ));
+    }
     let position = Floor { epoch, seq };
     if position < keys.floor {
         return Err(format!(
@@ -954,8 +1034,14 @@ pub fn make(
 
     let mut report = describe_changes(old, &policy);
     report.append(&mut maker.report);
-    for relaxation in &relaxed {
-        report.push(format!("완화: {}", relaxation.describe()));
+    for line in &eased {
+        report.push(format!("완화: {line}"));
+    }
+    for waits in old
+        .map(|old| old_mins_that_wait(old, &policy))
+        .unwrap_or_default()
+    {
+        report.push(waits.describe());
     }
     if let Some(decl) = root_decl.as_ref().filter(|_| root_p.is_some()) {
         report.push(format!(
@@ -981,15 +1067,18 @@ pub fn make(
         "봉투 크기: 약 {size}바이트(한도 {MAX_ENVELOPE_BYTES})"
     ));
 
+    let draft = Draft {
+        p: text,
+        signer,
+        root: carried,
+        root_p,
+        prev: req.prev.clone(),
+        notes: std::mem::take(&mut maker.notes),
+    };
+    // what `sign` will hold the draft to: better refused here than at the signer's terminal
+    draft.check()?;
     Ok(Made {
-        draft: Draft {
-            p: text,
-            signer,
-            root: carried,
-            root_p,
-            prev: req.prev.clone(),
-            notes: std::mem::take(&mut maker.notes),
-        },
+        draft,
         policy,
         report,
     })
