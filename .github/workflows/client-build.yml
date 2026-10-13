@@ -314,12 +314,14 @@ jobs:
       # The whole test folder: upstream's own tests guard the code around the input patches. The
       # tests those patches add or update must be there, so a dropped patch fails the job. The
       # gesture and quality monitor tests need the generated bridge. hjviewer_account_test.dart
-      # holds the account screens' pure tests (design v3 7-5).
+      # holds the account screens' pure tests (design v3 7-5), hjviewer_account_widgets_test.dart
+      # their tests that need the generated bridge, with the wake menu's (client patches 0033, 0036).
       - name: Run the tests
         run: |
           for t in test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart \
             test/mobile_gestures_test.dart test/common/widgets/gestures_test.dart \
-            test/quality_monitor_transport_test.dart test/hjviewer_account_test.dart; do
+            test/quality_monitor_transport_test.dart test/hjviewer_account_test.dart \
+            test/hjviewer_account_widgets_test.dart; do
             if [ ! -f "$t" ]; then echo "::error::$t is not in the patched tree"; exit 1; fi
           done
           flutter pub get
