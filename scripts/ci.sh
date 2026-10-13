@@ -3,16 +3,36 @@
 # CI run on the development machine (GitHub CI is paused; docs/ci.md).
 #   scripts/ci.sh [all]    the server and deploy stages
 #   scripts/ci.sh server   a fresh upstream checkout with server/patches, the signaling and relay
-#                          tests, hjv-probe and hjv-load
-#   scripts/ci.sh client   the Google Play upload script's offline tests (scripts/test_play_upload.py),
-#                          then a fresh upstream checkout with client/patches, hbb_common's WebSocket
-#                          tests and the client's pure Dart tests, with the Flutter SDK the app
+#                          tests (and hbbs's hjv-pk test once server/patches has it), hjv-probe and
+#                          hjv-load; hjv-api's tests and release build (server/api); hjv-relay's
+#                          tests (relay/)
+#   scripts/ci.sh client   the offline tests of the Google Play upload script and of the build-key
+#                          check (scripts/test_*.py), actionlint on the workflows when it is
+#                          installed, then a fresh upstream checkout with client/patches,
+#                          hbb_common's WebSocket tests, cargo +1.75.0 check (the app builds'
+#                          toolchain) and the client's pure Dart tests, with the Flutter SDK the app
 #                          builds use (downloaded once, checked against Flutter's release index).
 #                          Tests that need the generated bridge run in client-build.yml.
 #   scripts/ci.sh deploy   docs/server-runbook.md's deployment with Docker, as on the server, from a
 #                          copy of this working tree: path B (hbbs/hbbr on 127.0.0.1) behind
 #                          deploy/nginx-hjviewer.conf and deploy/apache-hjviewer.conf, then path A
 #                          (Caddy). Everything listens on 127.0.0.1; ports 80/443 stay untouched.
+#                          Then the release package (scripts/package-server.sh): its systemd units
+#                          on this machine (hjv-api's too), the whole package installed in a clean
+#                          Ubuntu container (systemd-analyze verify, nginx -t, requests through
+#                          nginx to hjv-api), hjv-api's production settings
+#                          (scripts/check-api-settings.py and its offline tests), and the account
+#                          API's nginx limits (an IPv6 /64 and a dual-stack listener too, in an
+#                          unprivileged network namespace).
+#   scripts/ci.sh e2e      tools/e2e/firewall-e2e.sh strict and open (sudo: namespaces, iptables)
+#                          with a client built for its test server, Caddy pinned by SHA-256, and the
+#                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; the
+#                          client's account tests and scenarios once the patches have them
+#   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, unprivileged, once it exists
+#   scripts/ci.sh leak     the push gate (design v3 11 steps 1-2): no value of the local list
+#                          build/leak-patterns.txt in tracked files, unpushed commits or staged
+#                          changes (scripts/leak-check.py)
+# A stage skips, with a line saying so, what needs a work package that is not in the tree yet.
 # Needs cargo, curl, openssl, Docker with compose v2 (used through sudo, as the runbook does), and
 # apt-get for Ubuntu's nginx and Apache packages, which are unpacked under build/ci, not installed.
 set -euo pipefail
@@ -22,11 +42,23 @@ CI="${HJV_CI_DIR:-$ROOT/build/ci}"
 PROJECT=hjv-ci                     # compose project of the test stack, apart from a real deployment
 PROBE="$ROOT/tools/hjv-probe/target/release/hjv-probe"
 LOAD="$ROOT/tools/hjv-load/target/release/hjv-load"
+API="$CI/target-api/release/hjv-api"  # the server stage's release build of hjv-api
+# Caddy for the E2E: the release archive, pinned by its SHA-256 (taken when the release's SHA-512
+# list was checked, 2026-10-12)
+CADDY_VERSION=2.11.7
+CADDY_SHA256=727b91701a392de6ebc5027509f548bf39979e5216340d0faed8fa5e69c84f8b
+# where the E2E installs the PC's client: Linux counts only programs under /usr as installed, and
+# hjv-api adds only installed PCs to an account (design v3 7-4)
+E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
 export PATH="$HOME/.cargo/bin:$PATH"
 mkdir -p "$CI"
 
 SRC="$CI/src" PKGS="$CI/pkgs" CERTS="$CI/certs"
 NGINX_PID="" APACHE_PID="" ECHO_PID=""
+# set by the deploy stage, whose failures show its containers' and web servers' logs
+DEPLOY_LOGS=""
+# set by build_e2e_client when the E2E has its account part
+E2E_ACCOUNT=""
 # the stack under test: the compose files (docker) or the release package's systemd units
 STACK=docker SYSTEMD_SINCE=""
 
@@ -45,7 +77,7 @@ key_file() {
 
 fail() {
   echo "FAIL: $*" >&2
-  if [ -d "$SRC/deploy" ]; then
+  if [ -n "$DEPLOY_LOGS" ] && [ -d "$SRC/deploy" ]; then
     dc logs --tail 40 >&2 2>/dev/null || true
     for f in "$CI"/nginx/error.log "$CI"/apache/error.log; do
       [ -f "$f" ] && { echo "--- $f" >&2; tail -n 20 "$f" >&2; }
@@ -65,14 +97,18 @@ stop_web() {
 }
 
 cleanup_systemd() {
-  if [ -e /run/systemd/system/hjv-ci-hbbs.service ] || [ -e /run/systemd/system/hjv-ci-hbbr.service ]; then
-    sudo systemctl stop hjv-ci-hbbr hjv-ci-hbbs 2> /dev/null || true
-    sudo rm -f /run/systemd/system/hjv-ci-hbbs.service /run/systemd/system/hjv-ci-hbbr.service
+  if [ -e /run/systemd/system/hjv-ci-hbbs.service ] || [ -e /run/systemd/system/hjv-ci-hbbr.service ] ||
+    [ -e /run/systemd/system/hjv-ci-api.service ] || [ -e /run/systemd/system/hjv-ci-api.socket ]; then
+    sudo systemctl stop hjv-ci-api.service hjv-ci-api.socket hjv-ci-hbbr hjv-ci-hbbs 2> /dev/null || true
+    sudo rm -f /run/systemd/system/hjv-ci-hbbs.service /run/systemd/system/hjv-ci-hbbr.service \
+      /run/systemd/system/hjv-ci-api.service /run/systemd/system/hjv-ci-api.socket
     sudo systemctl daemon-reload
-    sudo systemctl reset-failed hjv-ci-hbbs hjv-ci-hbbr 2> /dev/null || true
+    sudo systemctl reset-failed hjv-ci-hbbs hjv-ci-hbbr hjv-ci-api.service hjv-ci-api.socket 2> /dev/null || true
   fi
-  sudo rm -rf /var/lib/private/hjv-ci /run/hjv-ci /usr/local/lib/hjv-ci
-  sudo rm -f /var/lib/hjv-ci
+  sudo rm -rf /var/lib/private/hjv-ci /var/lib/private/hjv-ci-api /var/log/private/hjv-ci-api /run/hjv-ci \
+    /usr/local/lib/hjv-ci
+  # stopping a socket unit leaves its socket file without RemoveOnStop=
+  sudo rm -f /var/lib/hjv-ci /var/lib/hjv-ci-api /var/log/hjv-ci-api /run/hjv-ci-api.sock
 }
 
 cleanup() {
@@ -126,28 +162,75 @@ check_headers() { # <port> <name>
 }
 
 server_stage() {
+  local tests=(--test tcp_signaling --test relay_pairing) netns
   step "server: upstream checkout with server/patches"
   rm -rf "$CI/upstream/rustdesk-server"
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" server
+  # hbbs's signed hjv-pk answer for hjv-api (server/patches/0004, design v3 5-7)
+  if [ -f "$CI/upstream/rustdesk-server/tests/hjv_pk.rs" ]; then
+    tests+=(--test hjv_pk)
+  else
+    echo "skipped: hbbs's hjv_pk test (server/patches has no 0004 yet)"
+  fi
   step "server: signaling and relay tests"
   (cd "$CI/upstream/rustdesk-server" &&
-    CARGO_TARGET_DIR="$CI/target" cargo test --release --locked --test tcp_signaling --test relay_pairing)
+    CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
   step "server: hjv-probe and hjv-load"
   for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
+  if [ -d "$ROOT/server/api" ]; then
+    step "server: hjv-api tests and release build (server/api)"
+    (cd "$ROOT/server/api" && CARGO_TARGET_DIR="$CI/target-api" cargo test --locked)
+    (cd "$ROOT/server/api" && HJV_API_COMMIT=$(git -C "$ROOT" rev-parse HEAD) \
+      CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api)
+  else
+    echo "skipped: hjv-api (no server/api)"
+  fi
+  if [ -d "$ROOT/relay" ]; then
+    step "server: hjv-relay tests (relay/)"
+    # Here the netns test fails instead of skipping when user and network namespaces are missing;
+    # GitHub's runners (server.yml) restrict them, so it may skip there. HJV_RELAY_NETNS= lets it
+    # skip anywhere.
+    netns=require
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then netns=; fi
+    (cd "$ROOT/relay" && HJV_RELAY_NETNS=${HJV_RELAY_NETNS-$netns} CARGO_TARGET_DIR="$CI/target-relay" \
+      cargo test --locked)
+  else
+    echo "skipped: hjv-relay (no relay/)"
+  fi
 }
 
 FLUTTER_VERSION=3.24.5 # client-build.yml FLUTTER_VERSION
 # The pure Dart tests of the client patches, which run with the bridge's web stand-in. The gesture
 # and quality monitor tests need the generated bridge and run in client-build.yml.
 CLIENT_DART_TESTS="test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart"
+# Pure Dart tests that a work package not in client/patches yet adds (the account screens, design
+# v3 7-5): run when the patched tree has them, else skipped with a note. Once the patch is in, move
+# them to CLIENT_DART_TESTS, so that a dropped patch fails.
+CLIENT_DART_TESTS_LATER="test/hjviewer_account_test.dart"
+
+# Ubuntu has no libyuv.pc, which the client's linux-pkg-config build looks up (docs/e2e.md)
+pkgconfig() {
+  mkdir -p "$CI/pkgconfig"
+  printf '%s\n' 'libdir=/usr/lib/x86_64-linux-gnu' 'includedir=/usr/include' 'Name: libyuv' \
+    'Description: libyuv' 'Version: 0' 'Libs: -L${libdir} -lyuv' 'Cflags: -I${includedir}' > "$CI/pkgconfig/libyuv.pc"
+}
 
 client_stage() {
-  local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=()
+  local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=() lint
   local index=https://storage.googleapis.com/flutter_infra_release/releases
   # no network, no Google credentials (-B: no __pycache__ in scripts/)
   step "client: Google Play upload script, offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_play_upload.py' ||
     fail "client: Google Play upload script tests"
+  step "client: the pinned public keys' check (scripts/check-build-keys.py, client-build.yml), offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_build_keys.py' ||
+    fail "client: build-key check tests"
+  step "client: actionlint on .github/workflows"
+  if lint=$(command -v actionlint || ls "$HOME/.local/bin/actionlint" 2> /dev/null); then
+    "$lint" "$ROOT"/.github/workflows/*.yml || fail "client: actionlint"
+  else
+    echo "skipped: actionlint is not installed (github.com/rhysd/actionlint)"
+  fi
   if [ ! -x "$fl/bin/flutter" ]; then
     step "client: Flutter $FLUTTER_VERSION, checked against releases_linux.json"
     curl -fsSL "$index/releases_linux.json" -o "$CI/releases_linux.json"
@@ -166,10 +249,21 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" client
   step "client: hbb_common WebSocket tests"
   (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket)
+  # The apps build with Rust 1.75 (client-build.yml RUST_VERSION); the development machine's
+  # stable toolchain would let newer language features through (design v3 6-6)
+  step "client: cargo +1.75.0 check --features linux-pkg-config,hjv-e2e"
+  rustup toolchain list | grep '^1\.75\.0' > /dev/null ||
+    fail "client: no Rust 1.75.0 toolchain: rustup toolchain install 1.75.0 --profile minimal"
+  pkgconfig
+  (cd "$CI/upstream/rustdesk" && PKG_CONFIG_PATH="$CI/pkgconfig" CARGO_TARGET_DIR="$CI/target-175" \
+    cargo +1.75.0 check --locked --features linux-pkg-config,hjv-e2e) || fail "client: cargo +1.75.0 check"
   step "client: pure Dart tests"
   for t in $CLIENT_DART_TESTS; do
     [ -f "$app/$t" ] || fail "client: $t is not in the patched tree"
     tests+=("$t")
+  done
+  for t in $CLIENT_DART_TESTS_LATER; do
+    if [ -f "$app/$t" ]; then tests+=("$t"); else echo "skipped: $t (not in client/patches yet)"; fi
   done
   # The bridge is generated in client-build.yml; these tests only need its web stand-in to resolve.
   printf "export 'web/bridge.dart';\n" > "$app/lib/generated_bridge.dart"
@@ -247,14 +341,324 @@ check_systemd() { # keys, file permissions, sandbox, settings of the systemd uni
     fail "systemd: TOTAL_BANDWIDTH from the env file did not reach hbbr"
 }
 
+# Throwaway credentials for a test run of hjv-api: one file in <dir> for each
+# LoadCredentialEncrypted= line of <unit>, made as docs/server-runbook.md makes the real ones
+# (hjv-api keygen), written with <write> (e.g. "sudo tee").
+api_test_credentials() { # <hjv-api> <unit> <dir> <write...>
+  local api=$1 unit=$2 dir=$3 name value
+  shift 3
+  for name in $(sed -n 's/^LoadCredentialEncrypted=//p' "$unit"); do
+    case $name in
+      hjviewer-sso-client-secret | hjviewer-sso-api-uuid) value="hjv-ci-$name" ;;
+      hjviewer-api-login-key) value=$("$api" keygen seal 2> /dev/null) || fail "hjv-api keygen seal" ;;
+      hjviewer-api-log-key) value=$("$api" keygen log-key 2> /dev/null) || fail "hjv-api keygen log-key" ;;
+      hjviewer-api-list-key) value=$("$api" keygen list --kid 1 2> /dev/null) || fail "hjv-api keygen list --kid 1" ;;
+      hjviewer-api-command-key) value=$("$api" keygen command --kid 1 2> /dev/null) || fail "hjv-api keygen command --kid 1" ;;
+      *) fail "scripts/ci.sh makes no test value for the credential $name of $(basename "$unit")" ;;
+    esac
+    printf '%s\n' "$value" | "$@" "$dir/$name" > /dev/null
+  done
+}
+
+# The settings design v3 5-6 fixes for production (BIND_OS windows, SECOND_FACTOR off, the trust
+# lists' refresh and lifetime) in <env file>, read as systemd reads it, with the defaults <packaged
+# example> documents; skipped only for the names that <hjv-api> does not know yet
+# (scripts/check-api-settings.py)
+check_api_env() { # <env file> <packaged example> <hjv-api>
+  step "deploy: hjv-api's production settings in $1"
+  python3 -I -B "$ROOT/scripts/check-api-settings.py" --binary "$3" --example "$2" "$1" ||
+    fail "hjv-api's production settings in $1 (above)"
+}
+
+# Whether hjv-api's passwordless switch is off, as it must be after an install (design v3 5-6, 11
+# step 4): the first line of "admin passwordless status" says off and not on. Skipped only while
+# the binary has no word of it; once it has, the command must answer.
+check_switch_off() { # <hjv-api> <admin socket> <run...>
+  local api=$1 socket=$2 status first
+  shift 2
+  if ! grep -aq passwordless "$api"; then
+    echo "skipped: the passwordless switch (hjv-api has no such admin command yet)"
+    return 0
+  fi
+  status=$("$@" "$api" admin --socket "$socket" passwordless status) || fail "hjv-api admin passwordless status"
+  echo "$status"
+  first=$(printf '%s\n' "$status" | head -n 1 | tr '[:upper:]' '[:lower:]')
+  if ! [[ $first =~ (^|[^a-z])off([^a-z]|$) ]] || [[ $first =~ (^|[^a-z])on([^a-z]|$) ]]; then
+    fail "hjv-api: the passwordless switch is not off after the install"
+  fi
+}
+
+# hjv-api's socket and service from the package, run here like hbbs and hbbr: the shipped
+# sandbox, limits and command, with this test's names, a dynamic user, throwaway credentials from
+# plain files (systemd-creds would need this machine's credential key) and the main journal (no
+# journal namespace left behind)
+start_systemd_api() { # <unpacked package>
+  local pkg=$1
+  step "deploy B, systemd: hjv-api's socket and service from the package"
+  sudo install -m 755 "$pkg/bin/hjv-api" /usr/local/lib/hjv-ci/bin/
+  sudo install -d -m 700 /run/hjv-ci/creds
+  api_test_credentials "$pkg/bin/hjv-api" "$pkg/systemd/hjviewer-api.service" /run/hjv-ci/creds sudo tee
+  sed -e 's/^HJV_API_SSO_CLIENT_ID=.*/HJV_API_SSO_CLIENT_ID=hjv-ci/' \
+    -e "s#^HJV_API_HBBS_PUBKEY=.*#HJV_API_HBBS_PUBKEY=$(sudo cat /var/lib/hjv-ci/id_ed25519.pub)#" \
+    "$pkg/systemd/hjviewer-api.env.example" | sudo tee /run/hjv-ci/hjviewer-api.env > /dev/null
+  sed -e 's/^User=hjviewer-api$/DynamicUser=yes\nUser=hjv-ci-api/' -e '/^Group=hjviewer-api$/d' \
+    -e 's#/etc/hjviewer/hjviewer-api.env#/run/hjv-ci/hjviewer-api.env#' \
+    -e 's#/var/lib/hjviewer-api#/var/lib/hjv-ci-api#g' -e 's/^StateDirectory=hjviewer-api$/StateDirectory=hjv-ci-api/' \
+    -e 's/^RuntimeDirectory=hjviewer-api-admin$/RuntimeDirectory=hjv-ci-api-admin/' \
+    -e 's/^LogsDirectory=hjviewer-api$/LogsDirectory=hjv-ci-api/' \
+    -e 's#^InaccessiblePaths=-/var/lib/hjviewer$#InaccessiblePaths=-/var/lib/hjv-ci#' \
+    -e 's#/opt/hjviewer/bin/#/usr/local/lib/hjv-ci/bin/#g' \
+    -e 's#^LoadCredentialEncrypted=\(.*\)$#LoadCredential=\1:/run/hjv-ci/creds/\1#' -e '/^LogNamespace=/d' \
+    -e 's/hjviewer-api\.socket/hjv-ci-api.socket/g' -e 's/hjviewer-hbbs\.service/hjv-ci-hbbs.service/g' \
+    "$pkg/systemd/hjviewer-api.service" | sudo tee /run/systemd/system/hjv-ci-api.service > /dev/null
+  sed 's#^ListenStream=/run/hjviewer-api.sock$#ListenStream=/run/hjv-ci-api.sock#' "$pkg/systemd/hjviewer-api.socket" |
+    sudo tee /run/systemd/system/hjv-ci-api.socket > /dev/null
+  grep -q '^ListenStream=/run/hjv-ci-api.sock$' /run/systemd/system/hjv-ci-api.socket || fail "hjviewer-api.socket: no ListenStream=/run/hjviewer-api.sock"
+  sudo systemctl daemon-reload
+  sudo systemctl start hjv-ci-api.socket hjv-ci-api.service || fail "systemd: hjv-api's units did not start"
+}
+
+check_systemd_api() {
+  local bin=/usr/local/lib/hjv-ci/bin/hjv-api got
+  wait_for 15 sh -c 'sudo journalctl -q -u hjv-ci-api.service --since "$1" -o cat | grep -q " ready: "' _ "$SYSTEMD_SINCE" ||
+    fail "systemd: hjv-api is not ready ($(sudo journalctl -q -u hjv-ci-api.service --since "$SYSTEMD_SINCE" -o cat | tail -n 5))"
+  sudo journalctl -q -u hjv-ci-api.service --since "$SYSTEMD_SINCE" -o cat | grep ' ready: '
+  [ "$(sudo stat -c '%a %U %G' /run/hjv-ci-api.sock)" = "660 root www-data" ] ||
+    fail "systemd: hjv-api's socket is not 660 root:www-data"
+  got=$(sudo curl -s --max-time 5 --unix-socket /run/hjv-ci-api.sock http://localhost/api/hjv/source || true)
+  echo "/api/hjv/source $got"
+  [[ $got == *'"license":"AGPL-3.0-only"'* ]] || fail "systemd: hjv-api does not answer on its socket"
+  [ "$(systemctl show -p NoNewPrivileges --value hjv-ci-api.service)" = yes ] || fail "systemd: hjv-api may gain privileges"
+  [ -z "$(systemctl show -p CapabilityBoundingSet --value hjv-ci-api.service)" ] || fail "systemd: hjv-api keeps capabilities"
+  [ "$(sudo stat -c '%a' /var/lib/private/hjv-ci-api)" = 700 ] || fail "systemd: hjv-api's state directory is not 700"
+  [ "$(sudo stat -c '%a' /var/lib/private/hjv-ci-api/hjv-api.sqlite3)" = 600 ] || fail "systemd: hjv-api's database is not 600"
+  sudo "$bin" admin --socket /run/hjv-ci-api-admin/admin.sock report > /dev/null || fail "systemd: hjv-api admin report"
+  check_switch_off "$bin" /run/hjv-ci-api-admin/admin.sock sudo
+  if sudo journalctl -q -u hjv-ci-api.service --since "$SYSTEMD_SINCE" -o cat |
+    grep -E '^error: |panicked|Permission denied|Operation not permitted|Read-only file system'; then
+    fail "systemd: hjv-api's sandbox gets in the way (journal above)"
+  fi
+}
+
+# The account API's nginx limits from the package (zones file and locations), with Ubuntu's nginx
+# in an unprivileged user and network namespace that has an IPv6 /64 of its own: hjv-relay's
+# registrations are counted per IPv4 address and per IPv6 /64 (relay/PROTOCOL.md 4.3), also on a
+# dual-stack listener (ipv6only=off), where IPv4 clients arrive as ::ffff:a.b.c.d; logins per
+# address. No hjv-api runs, so what passes the limits gets the "server unavailable" answer.
+check_api_limits() { # <unpacked package>
+  local pkg=$1 ng="$CI/nginx-api"
+  step "deploy: the account API's nginx limits, per IPv4 address and IPv6 /64"
+  if ! unshare -rn true 2> /dev/null; then
+    echo "skipped: no unprivileged user and network namespaces here"
+    return 0
+  fi
+  rm -rf "$ng"
+  mkdir -p "$ng/tmp"
+  # in the namespace this user is root, and its "nobody" does not exist: no worker processes and
+  # no switch of user
+  cat > "$ng/nginx.conf" << EOF
+user root root;
+master_process off;
+daemon off;
+pid $ng/nginx.pid;
+error_log $ng/error.log info;
+events {}
+http {
+  default_type application/octet-stream;
+  access_log off;
+  client_body_temp_path $ng/tmp; proxy_temp_path $ng/tmp; fastcgi_temp_path $ng/tmp;
+  uwsgi_temp_path $ng/tmp; scgi_temp_path $ng/tmp;
+  include $pkg/web/nginx-hjviewer-api-zones.conf;
+  server {
+    listen 127.0.0.1:18450;
+    listen [::]:18450;
+    include $pkg/web/nginx-hjviewer-api.conf;
+  }
+  # one dual-stack socket for IPv4 and IPv6, as some sites listen
+  server {
+    listen [::]:18451 ipv6only=off;
+    include $pkg/web/nginx-hjviewer-api.conf;
+  }
+}
+EOF
+  unshare -rn bash -s -- "$PKGS/root/usr/sbin/nginx" "$ng" << 'EOF' || fail "the account API's nginx limits (above)"
+set -euo pipefail
+nginx=$1 dir=$2
+ip link set lo up
+for a in 2001:db8:1:2::1 2001:db8:1:2::2 2001:db8:1:2::3 2001:db8:1:3::1; do ip -6 addr add "$a/64" dev lo nodad; done
+"$nginx" -p "$dir" -c "$dir/nginx.conf" -t 2> /dev/null
+"$nginx" -p "$dir" -c "$dir/nginx.conf" &
+trap 'kill $! 2> /dev/null; wait 2> /dev/null' EXIT
+for _ in $(seq 50); do curl -s -o /dev/null http://127.0.0.1:18450/ && break; sleep 0.1; done
+post() { # <source address> <URL>
+  curl -s -o "$dir/body" -w '%{http_code}' --interface "$1" -X POST -d '{}' "$2"
+}
+check() { # <name> <URL> <429 body> <source addresses of seven requests at once...>
+  local name=$1 url=$2 body=$3 codes="" src last
+  shift 3
+  for src in "${@:1:6}"; do codes+="$(post "$src" "$url") "; done
+  last=$(post "$7" "$url")
+  echo "$name: $codes-> $last $(cat "$dir/body")"
+  case $codes in *429*) echo "FAIL: $name refused within the burst"; exit 1 ;; esac
+  [ "$last" = 429 ] && [ "$(cat "$dir/body")" = "$body" ] || { echo "FAIL: $name: no 429 with $body"; exit 1; }
+}
+relay='{"error":"rate_limited","retry_after":60}'
+a=2001:db8:1:2::2 b=2001:db8:1:2::3
+check "relay hello, two addresses of one IPv6 /64" "http://[2001:db8:1:2::1]:18450/api/hjv/relay/hello" "$relay" \
+  $a $b $a $b $a $b $a
+code=$(post 2001:db8:1:3::1 "http://[2001:db8:1:2::1]:18450/api/hjv/relay/hello")
+echo "relay hello from another /64: $code"
+[ "$code" != 429 ] || { echo "FAIL: another /64 shares the limit"; exit 1; }
+v4=(127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1)
+check "relay hello, one IPv4 address" http://127.0.0.1:18450/api/hjv/relay/hello "$relay" "${v4[@]}"
+v4=(127.0.0.3 127.0.0.3 127.0.0.3 127.0.0.3 127.0.0.3 127.0.0.3 127.0.0.3)
+check "relay hello, one IPv4 address on a dual-stack listener" http://127.0.0.1:18451/api/hjv/relay/hello "$relay" \
+  "${v4[@]}"
+code=$(post 127.0.0.4 http://127.0.0.1:18451/api/hjv/relay/hello)
+echo "relay hello from another IPv4 address on the dual-stack listener: $code"
+[ "$code" != 429 ] || { echo "FAIL: the IPv4 clients of a dual-stack listener share one limit"; exit 1; }
+v4=(127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1)
+check "login, one IPv4 address" http://127.0.0.1:18450/api/login '{"error":"잠시 뒤 다시 시도해 주세요"}' "${v4[@]}"
+EOF
+}
+
+# The release package installed the runbook's way in a clean Ubuntu 24.04 (the server's release)
+# with Ubuntu's nginx: binaries and their libraries, the units (systemd-analyze verify), the
+# account API's nginx files in place of the old /api/ block (nginx -t), and hjv-api behind that
+# nginx, started on its socket by systemd-socket-activate as hjviewer-api.socket would.
+check_package_container() { # <release dir> <package name>
+  local image="${HJV_REGISTRY:-public.ecr.aws/docker/library}/ubuntu:24.04"
+  step "deploy: the release package installed in a clean container ($image)"
+  cat > "$CI/container-test.sh" << 'EOF'
+set -euo pipefail
+name=$1
+step() { printf '\n== container: %s\n' "$*"; }
+step "Ubuntu's nginx, systemd (systemd-analyze, systemd-socket-activate) and curl"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq > /dev/null
+apt-get install -y -qq --no-install-recommends nginx systemd curl openssl ca-certificates > /dev/null 2>&1
+grep PRETTY_NAME /etc/os-release
+nginx -v
+step "unpack; the binaries' libraries"
+cd "$(mktemp -d)"
+tar -xzf "/pkg/$name.tar.gz"
+cd "$name"
+if ldd bin/* | grep 'not found'; then echo "FAIL: libraries missing"; exit 1; fi
+bin/hjv-api version
+step "install as docs/server-runbook.md does"
+useradd --system --user-group --home-dir /var/lib/hjviewer --no-create-home --shell /usr/sbin/nologin hjviewer
+useradd --system --user-group --home-dir /var/lib/hjviewer-api --no-create-home --shell /usr/sbin/nologin hjviewer-api
+install -d -m 755 /opt/hjviewer/bin /opt/hjviewer/share/web /etc/hjviewer
+install -m 755 bin/* /opt/hjviewer/bin/
+install -m 644 LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt /opt/hjviewer/share/
+install -m 644 web/* /opt/hjviewer/share/web/
+sed 's/^HJV_DOMAIN=.*/HJV_DOMAIN=rd.example.com/' systemd/hjviewer.env.example > /etc/hjviewer/hjviewer.env
+install -m 644 systemd/hjviewer-api.env.example /etc/hjviewer/hjviewer-api.env
+units=()
+for u in systemd/*.service systemd/*.socket systemd/*.timer; do
+  [ -e "$u" ] || continue
+  install -m 644 "$u" /etc/systemd/system/
+  units+=("$(basename "$u")")
+done
+if [ -f systemd/journald@hjviewer.conf ]; then install -m 644 systemd/journald@hjviewer.conf /etc/systemd/; fi
+step "systemd-analyze verify ${units[*]}"
+verify=()
+for u in "${units[@]}"; do
+  case $u in
+    *@.*) verify+=("${u/@./@ci.}") ;;  # a template, through an instance
+    *) verify+=("/etc/systemd/system/$u") ;;
+  esac
+done
+systemd-analyze verify "${verify[@]}"
+step "nginx: the zones at the http level, the account API's locations in place of the /api/ block, nginx -t"
+install -m 644 web/nginx-hjviewer-api-zones.conf /etc/nginx/conf.d/hjviewer-api-zones.conf
+install -m 644 web/nginx-hjviewer-api.conf /etc/nginx/snippets/hjviewer-api.conf
+awk '/^location \^~ \/api\/ \{/ { print "include snippets/hjviewer-api.conf;"; skip = 1; next }
+  skip { if ($0 ~ /^\}/) skip = 0; next } { print }' web/nginx-hjviewer-locations.conf > /etc/nginx/snippets/hjviewer-locations.conf
+grep -qx 'include snippets/hjviewer-api.conf;' /etc/nginx/snippets/hjviewer-locations.conf
+if grep -q 'return 404;' /etc/nginx/snippets/hjviewer-locations.conf; then echo "FAIL: the old /api/ block is left"; exit 1; fi
+d=/etc/letsencrypt/live/rd.example.com
+mkdir -p "$d"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=rd.example.com \
+  -addext subjectAltName=DNS:rd.example.com -keyout "$d/privkey.pem" -out "$d/fullchain.pem" 2> /dev/null
+sed 's/DOMAIN/rd.example.com/g' web/nginx-hjviewer.conf > /etc/nginx/sites-available/hjviewer
+ln -s /etc/nginx/sites-available/hjviewer /etc/nginx/sites-enabled/hjviewer
+nginx -t
+step "hjv-api behind nginx, on /run/hjviewer-api.sock"
+api=/opt/hjviewer/bin/hjv-api
+creds=$(mktemp -d)
+printf 'hjv-ci-secret\n' > "$creds/hjviewer-sso-client-secret"
+printf 'hjv-ci-uuid\n' > "$creds/hjviewer-sso-api-uuid"
+for c in $(sed -n 's/^LoadCredentialEncrypted=hjviewer-api-//p' /etc/systemd/system/hjviewer-api.service); do
+  case $c in
+    login-key) kind=(seal) ;;
+    log-key) kind=(log-key) ;;
+    list-key) kind=(list --kid 1) ;;
+    command-key) kind=(command --kid 1) ;;
+    *) echo "FAIL: no test value for the credential hjviewer-api-$c"; exit 1 ;;
+  esac
+  "$api" keygen "${kind[@]}" > "$creds/hjviewer-api-$c" 2> /dev/null || { echo "FAIL: hjv-api keygen ${kind[*]}"; exit 1; }
+done
+chown -R hjviewer-api: "$creds"
+chmod 700 "$creds"
+sed 's/^HJV_API_SSO_CLIENT_ID=.*/HJV_API_SSO_CLIENT_ID=hjv-ci/' /etc/hjviewer/hjviewer-api.env > /tmp/api.env
+install -d -m 700 -o hjviewer-api -g hjviewer-api /var/lib/hjviewer-api /var/log/hjviewer-api /run/hjviewer-api-admin
+systemd-socket-activate -l /run/hjviewer-api.sock setpriv --reuid=hjviewer-api --regid=hjviewer-api \
+  --init-groups -- sh -c 'umask 077; exec "$0" serve --env-file /tmp/api.env --credentials "$1" \
+  --db /var/lib/hjviewer-api/hjv-api.sqlite3 --admin-socket /run/hjviewer-api-admin/admin.sock \
+  --operator-log /var/log/hjviewer-api/operator.log' "$api" "$creds" > /tmp/api.log 2>&1 &
+# the owner and mode hjviewer-api.socket gives the socket (nginx's workers are in its group)
+for _ in $(seq 50); do [ -S /run/hjviewer-api.sock ] && break; sleep 0.1; done
+chown "$(sed -n 's/^SocketUser=//p' /etc/systemd/system/hjviewer-api.socket):$(sed -n 's/^SocketGroup=//p' /etc/systemd/system/hjviewer-api.socket)" /run/hjviewer-api.sock
+chmod "$(sed -n 's/^SocketMode=//p' /etc/systemd/system/hjviewer-api.socket)" /run/hjviewer-api.sock
+ls -l /run/hjviewer-api.sock
+nginx
+c() { curl -sk --max-time 10 --resolve rd.example.com:443:127.0.0.1 -o /tmp/body -w '%{http_code}' "$@" || true; }
+expect() { # <what> <status> <body pattern> <curl options...>
+  local what=$1 status=$2 pattern=$3 code
+  shift 3
+  code=$(c "$@")
+  echo "$what: $code $(head -c 120 /tmp/body)"
+  [ "$code" = "$status" ] && grep -Eq -- "$pattern" /tmp/body || { echo "FAIL: $what"; cat /tmp/api.log; exit 1; }
+}
+expect "/api/hjv/source through nginx to hjv-api" 200 '"license":"AGPL-3.0-only"' https://rd.example.com/api/hjv/source
+expect "/api/login-options (nginx)" 200 '^\[\]$' https://rd.example.com/api/login-options
+expect "/api/heartbeat (nginx)" 404 'not found' -X POST https://rd.example.com/api/heartbeat
+expect "/ (the source notice)" 200 'github.com/yonsei-projecttf/hjviewer' https://rd.example.com/
+for i in 1 2 3 4 5 6; do c -X POST -d '{}' https://rd.example.com/api/hjv/relay/hello > /dev/null; done
+expect "the 7th relay hello at once" 429 '^\{"error":"rate_limited","retry_after":60\}$' -X POST -d '{}' https://rd.example.com/api/hjv/relay/hello
+step "hjv-api's passwordless switch after the install"
+if grep -aq passwordless "$api"; then
+  status=$("$api" admin --socket /run/hjviewer-api-admin/admin.sock passwordless status)
+  echo "$status"
+  first=$(printf '%s\n' "$status" | head -n 1 | tr '[:upper:]' '[:lower:]')
+  if ! [[ $first =~ (^|[^a-z])off([^a-z]|$) ]] || [[ $first =~ (^|[^a-z])on([^a-z]|$) ]]; then
+    echo "FAIL: the passwordless switch is not off after the install"; exit 1
+  fi
+else
+  echo "skipped: hjv-api has no passwordless switch yet"
+fi
+nginx -s quit
+echo CONTAINER_OK
+EOF
+  sudo docker run --rm -v "$1:/pkg:ro" -v "$CI/container-test.sh:/test.sh:ro" "$image" bash /test.sh "$2" 2>&1 |
+    tee "$CI/container.log" || fail "the release package in a clean container (build/ci/container.log)"
+  [ "$(tail -n 1 "$CI/container.log")" = CONTAINER_OK ] || fail "the release package in a clean container (build/ci/container.log)"
+}
+
 deploy_stage() {
   if [ ! -x "$PROBE" ] || [ ! -x "$LOAD" ]; then fail "hjv-probe/hjv-load are not built: scripts/ci.sh server"; fi
+  if [ -d "$ROOT/server/api" ] && [ ! -x "$API" ]; then fail "hjv-api is not built: scripts/ci.sh server"; fi
   sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
+  step "deploy: the production settings check (scripts/check-api-settings.py), offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_api_settings.py' ||
+    fail "deploy: tests of the settings check"
   [ -z "$(ss -Hltnu '( sport >= :21115 and sport <= :21119 )')" ] ||
     fail "ports 21115-21119 are in use (a running hjviewer server?); the test stack needs them"
   [ -z "$(ss -Hltn '( sport >= :18080 and sport <= :18082 ) or ( sport >= :18443 and sport <= :18448 ) or sport = :18599')" ] ||
     fail "test ports 18080-18082 / 18443-18448 / 18599 are in use"
   trap cleanup EXIT
+  DEPLOY_LOGS=1
 
   step "deploy: copy of this working tree"
   if [ -d "$SRC/deploy" ]; then dc down -v --remove-orphans > /dev/null 2>&1 || true; fi
@@ -436,18 +840,38 @@ EOF
 
   step "deploy B, systemd: the release package (scripts/package-server.sh) without Docker"
   dc down
-  local rel="$CI/release" pkg unit f
+  local rel="$CI/release" pkg unit f api_files=()
   rm -rf "$rel"
-  HJV_SKIP_SOURCE_CHECK=1 HJV_SERVER_BIN_DIR="$CI/target/release" "$ROOT/scripts/package-server.sh" ci "$rel" > "$CI/package.log" 2>&1 ||
+  HJV_SKIP_SOURCE_CHECK=1 HJV_SERVER_BIN_DIR="$CI/target/release" HJV_API_BIN="$API" \
+    "$ROOT/scripts/package-server.sh" ci "$rel" > "$CI/package.log" 2>&1 ||
     { tail -n 30 "$CI/package.log"; fail "scripts/package-server.sh"; }
+  [ "$(cat "$rel/SHA256SUMS")" = "$(cd "$rel" && sha256sum hjviewer-server-ci-linux-x86_64.tar.gz)" ] ||
+    fail "release package: SHA256SUMS does not name the package alone"
   tar -xzf "$rel/hjviewer-server-ci-linux-x86_64.tar.gz" -C "$rel"
   pkg="$rel/hjviewer-server-ci-linux-x86_64"
+  if [ -d "$ROOT/server/api" ]; then
+    # hjv-api, its units, settings and nginx files; the watch and backup units and the journal
+    # namespace's retention once deploy/ has them
+    api_files=(bin/hjv-api systemd/hjviewer-api.service systemd/hjviewer-api.socket systemd/hjviewer-api.env.example
+      web/nginx-hjviewer-api.conf web/nginx-hjviewer-api-zones.conf)
+    for f in "$ROOT"/deploy/systemd/hjviewer-api-*.service "$ROOT"/deploy/systemd/hjviewer-api-*.timer \
+      "$ROOT/deploy/journald@hjviewer.conf"; do
+      if [ -e "$f" ]; then api_files+=("systemd/$(basename "$f")"); fi
+    done
+  else
+    echo "skipped: hjv-api in the release package (no server/api)"
+  fi
   for f in bin/hbbs bin/hbbr systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service systemd/hjviewer.env.example \
     web/nginx-hjviewer-locations.conf web/nginx-hjviewer.conf web/apache-hjviewer.conf \
-    LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt; do
+    LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt "${api_files[@]}"; do
     [ -s "$pkg/$f" ] || fail "release package: no $f"
   done
   grep -q 'server/patches' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe the server build"
+  if [ ${#api_files[@]} -gt 0 ]; then
+    grep -q 'server/api' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe hjv-api's build"
+    # a crate of hjv-api's that hbbs and hbbr do not use
+    grep -q '^crypto_box ' "$pkg/THIRD_PARTY_NOTICES.txt" || fail "release package: hjv-api's crates are not in THIRD_PARTY_NOTICES"
+  fi
   # Installed as the runbook does, apart from the names that keep it away from a real installation:
   # runtime units hjv-ci-* (in /run, gone at reboot), a dynamic user and directories of its own. The
   # sandbox, limits and commands are those of the shipped units.
@@ -473,22 +897,205 @@ EOF
   [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "systemd: expected TCP 21115-21119 and UDP 21116"
   if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "systemd: hbbs/hbbr listen beyond 127.0.0.1"; fi
   check_systemd
+  if [ ${#api_files[@]} -gt 0 ]; then
+    start_systemd_api "$pkg"
+    check_systemd_api
+  fi
   "$PKGS/root/usr/sbin/nginx" -e "$ng/error.log" -p "$ng" -c "$ng/nginx.conf" -g 'daemon off;' > "$ng/out.log" 2>&1 &
   NGINX_PID=$!
   wait_for 10 curl -s -o /dev/null --cacert "$CERTS/cert.pem" https://localhost:18446/ || fail "nginx did not start"
   check_site 18446 "$CERTS/cert.pem" site "nginx, existing site with HTTP/2, to the systemd units"
   stop_web
   STACK=docker
+  cleanup_systemd
+
+  if [ ${#api_files[@]} -gt 0 ]; then
+    check_api_env "$pkg/systemd/hjviewer-api.env.example" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
+    # a server's own settings, e.g. a copy of /etc/hjviewer/hjviewer-api.env (nothing in it is secret)
+    if [ -n "${HJV_API_ENV_FILE:-}" ]; then
+      check_api_env "$HJV_API_ENV_FILE" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
+    fi
+    check_api_limits "$pkg"
+    check_package_container "$rel" hjviewer-server-ci-linux-x86_64
+  fi
 
   cleanup
   trap - EXIT
+}
+
+# Caddy for the E2E, once: the release archive, checked against CADDY_SHA256
+fetch_caddy() {
+  local dir="$CI/caddy-$CADDY_VERSION" tgz="$CI/caddy.tar.gz"
+  CADDY_BIN="$dir/caddy"
+  [ -x "$CADDY_BIN" ] && return 0
+  step "Caddy $CADDY_VERSION, checked against its pinned SHA-256"
+  curl -fsSL --max-time 300 -o "$tgz" \
+    "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/caddy_${CADDY_VERSION}_linux_amd64.tar.gz" ||
+    fail "Caddy download"
+  echo "$CADDY_SHA256  $tgz" | sha256sum -c --quiet - || fail "the Caddy archive is not the one CADDY_SHA256 pins"
+  rm -rf "$dir.tmp" && mkdir -p "$dir.tmp" && tar -xzf "$tgz" -C "$dir.tmp" caddy
+  mv "$dir.tmp" "$dir" && rm -f "$tgz"
+  "$CADDY_BIN" version
+}
+
+# The E2E's keys, from seeds of one repeated byte, the kind scripts/check-build-keys.py refuses in
+# a release build: seal key e2, trust-list keys 1 and 2 e3 and e4, command key 1 e5, log key e6.
+# In <dir>: <name>.secret the secret halves (base64, as the credentials take them), seal.pub,
+# trust.pub, command.pub and build.env the public values.
+e2e_keys() { # <dir>
+  local dir=$1 name kind byte hex
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  for spec in "seal x25519 e2" "list-1 ed25519 e3" "list-2 ed25519 e4" "command-1 ed25519 e5" "log - e6"; do
+    read -r name kind byte <<< "$spec"
+    hex=""
+    for _ in $(seq 32); do hex+=$byte; done
+    python3 -I -c 'import base64, sys; print(base64.b64encode(bytes.fromhex(sys.argv[1])).decode())' "$hex" > "$dir/$name.secret"
+    if [ "$kind" != - ]; then python3 -I "$ROOT/scripts/check-build-keys.py" pubkey "$kind" "$hex" > "$dir/$name.pub"; fi
+  done
+  echo "1:$(cat "$dir/list-1.pub"),2:$(cat "$dir/list-2.pub")" > "$dir/trust.pub"
+  echo "1:$(cat "$dir/command-1.pub")" > "$dir/command.pub"
+  {
+    echo "HJV_LOGIN_SEAL_PUBKEY=$(cat "$dir/seal.pub")"
+    echo "HJV_TRUST_PUBKEYS=$(cat "$dir/trust.pub")"
+    echo "HJV_COMMAND_PUBKEY=$(cat "$dir/command.pub")"
+  } > "$dir/build.env"
+  chmod 600 "$dir"/*
+}
+
+# The test server's key pair, which hbbs makes on its first start (docs/e2e.md)
+e2e_server_key() { # <work dir>
+  mkdir -p "$1/srv"
+  if [ ! -s "$1/srv/id_ed25519.pub" ]; then
+    (cd "$1/srv" && { timeout 2 "$CI/target/release/hbbs" -p 41116 > /dev/null 2>&1 || true; })
+  fi
+  [ -s "$1/srv/id_ed25519.pub" ] || fail "e2e: hbbs made no key in $1/srv"
+}
+
+# The client of the E2E (docs/e2e.md): a fresh upstream checkout with client/patches, built for
+# the test server hjv.test with the test feature hjv-e2e. Once the patches have the account code
+# (src/hjviewer_account) and firewall-e2e.sh its account part (HJV_E2E_ACCOUNT), it also pins the
+# E2E's public keys and runs the account code's unit tests; before, it is built like 1.5.1.
+build_e2e_client() { # <work dir>
+  local work=$1 src="$CI/upstream-e2e/rustdesk" keys=()
+  if [ -n "${E2E_CLIENT:-}" ]; then
+    echo "skipped: the client build and the account E2E (E2E_CLIENT=$E2E_CLIENT is used as it is)"
+    return 0
+  fi
+  step "e2e: upstream checkout with client/patches"
+  rm -rf "$CI/upstream-e2e"
+  UPSTREAM_DIR="$CI/upstream-e2e" "$ROOT/scripts/fetch-upstream.sh" client
+  E2E_ACCOUNT=
+  if [ -d "$src/src/hjviewer_account" ] && grep -q HJV_E2E_ACCOUNT "$ROOT/tools/e2e/firewall-e2e.sh"; then
+    E2E_ACCOUNT=1
+    keys=(HJV_LOGIN_SEAL_PUBKEY="$(cat "$work/api/seal.pub")" HJV_TRUST_PUBKEYS="$(cat "$work/api/trust.pub")")
+  else
+    echo "skipped: the account E2E (no src/hjviewer_account in the patched tree, or no HJV_E2E_ACCOUNT part in"
+    echo "tools/e2e/firewall-e2e.sh): the client is built without the account keys, like 1.5.1"
+  fi
+  step "e2e: the client for the test server hjv.test (--features linux-pkg-config,hjv-e2e)"
+  pkgconfig
+  (cd "$src" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" \
+    "${keys[@]}" CARGO_TARGET_DIR="$CI/target-e2e" cargo build --release --locked --features linux-pkg-config,hjv-e2e) ||
+    fail "e2e: the client build"
+  E2E_CLIENT="$CI/target-e2e/release/rustdesk"
+  if [ -d "$src/src/hjviewer_account" ]; then
+    step "e2e: the client's account unit tests (src/hjviewer_account, design v3 7-3)"
+    (cd "$src" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" \
+      "${keys[@]}" CARGO_TARGET_DIR="$CI/target-e2e" cargo test --release --locked --features linux-pkg-config,hjv-e2e \
+      --lib hjviewer_account) || fail "e2e: the account unit tests"
+  else
+    echo "skipped: the account unit tests (no src/hjviewer_account in the patched tree)"
+  fi
+}
+
+# hjv-api and the fake SSO for the E2Es (server/api, feature fake-sso), apart from the build the
+# server package takes
+build_e2e_api() {
+  step "e2e: hjv-api and hjv-fake-sso (server/api)"
+  (cd "$ROOT/server/api" && CARGO_TARGET_DIR="$CI/target-api-e2e" cargo build --release --locked --features fake-sso) ||
+    fail "e2e: hjv-api build"
+  E2E_API="$CI/target-api-e2e/release/hjv-api" E2E_FAKE_SSO="$CI/target-api-e2e/release/hjv-fake-sso"
+}
+
+cleanup_e2e() {
+  sudo rm -rf "$E2E_PC_DIR"
+}
+
+e2e_stage() {
+  local work="$CI/e2e" mode extra=()
+  sudo -n true 2> /dev/null || fail "e2e: needs sudo without a password prompt (network namespaces, iptables)"
+  if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
+    fail "e2e: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
+  fi
+  fetch_caddy
+  e2e_server_key "$work"
+  e2e_keys "$work/api"
+  build_e2e_client "$work"
+  # the PC's client where Linux counts it as installed, as its account binding needs; the
+  # controllers keep running the build output
+  step "e2e: the PC's client as $E2E_PC_DIR/rustdesk"
+  trap cleanup_e2e EXIT
+  sudo install -D -m 755 "$E2E_CLIENT" "$E2E_PC_DIR/rustdesk"
+  if [ -n "$E2E_ACCOUNT" ]; then
+    build_e2e_api
+    extra=(HJV_E2E_ACCOUNT=1 HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" HJV_E2E_KEYS="$work/api")
+  fi
+  for mode in strict open; do
+    step "e2e: tools/e2e/firewall-e2e.sh $mode"
+    env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" HBBR="$CI/target/release/hbbr" \
+      PROBE="$PROBE" CLIENT="$E2E_CLIENT" PC_CLIENT="$E2E_PC_DIR/rustdesk" "${extra[@]}" \
+      "$ROOT/tools/e2e/firewall-e2e.sh" "$mode" || fail "e2e: firewall-e2e.sh $mode"
+  done
+  cleanup_e2e
+  trap - EXIT
+}
+
+# Without privileges: tools/e2e/wol-e2e.sh runs its PC, NAS and networks in user namespaces
+# (design v3 8-10). It gets the same programs as the E2E, and hjv-relay built for hjv.test with
+# the E2E's command key.
+wol_stage() {
+  local work="$CI/e2e"
+  if [ ! -f "$ROOT/tools/e2e/wol-e2e.sh" ]; then
+    echo "skipped: the WOL E2E (no tools/e2e/wol-e2e.sh yet)"
+    return 0
+  fi
+  if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
+    fail "wol: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
+  fi
+  fetch_caddy
+  e2e_server_key "$work"
+  e2e_keys "$work/api"
+  build_e2e_client "$work"
+  build_e2e_api
+  step "wol: hjv-relay for hjv.test with the E2E's command key"
+  (cd "$ROOT/relay" && HJV_SERVER=hjv.test HJV_COMMAND_PUBKEY="$(cat "$work/api/command.pub")" \
+    CARGO_TARGET_DIR="$CI/target-relay" cargo build --release --locked) || fail "wol: hjv-relay build"
+  step "wol: tools/e2e/wol-e2e.sh"
+  env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" HBBR="$CI/target/release/hbbr" \
+    PROBE="$PROBE" CLIENT="$E2E_CLIENT" HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" \
+    HJV_RELAY="$CI/target-relay/release/hjv-relay" HJV_E2E_KEYS="$work/api" \
+    "$ROOT/tools/e2e/wol-e2e.sh" || fail "wol: wol-e2e.sh"
+}
+
+# The push gate of design v3 11 steps 1-2: none of the values of build/leak-patterns.txt (a local
+# list git ignores; docs/ci.md says what goes in) in tracked files, staged changes and the commits
+# a push would publish. Prints places and list line numbers, never the values.
+leak_stage() {
+  step "leak: tests of scripts/leak-check.py (made-up values, throwaway repositories)"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_leak_check.py' || fail "leak: tests of the leak check"
+  step "leak: the listed values in what a push would publish"
+  python3 -I -B "$ROOT/scripts/leak-check.py" --repo "$ROOT" || fail "leak: see above; push nothing until this passes"
 }
 
 case "${1:-all}" in
   server) server_stage ;;
   client) client_stage ;;
   deploy) deploy_stage ;;
+  e2e) e2e_stage ;;
+  wol) wol_stage ;;
+  leak) leak_stage ;;
   all) server_stage; deploy_stage ;;
-  *) echo "usage: $0 [all|server|client|deploy]" >&2; exit 2 ;;
+  *) echo "usage: $0 [all|server|client|deploy|e2e|wol|leak]" >&2; exit 2 ;;
 esac
 step "CI passed: ${1:-all}"

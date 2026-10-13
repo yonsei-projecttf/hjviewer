@@ -3,9 +3,10 @@
 # Packages hjv-relay, the Wake-on-LAN relay for a Synology NAS (docs/relay-dsm.md), as a release
 # asset:
 #   HJV_SERVER=<server> HJV_COMMAND_PUBKEY=<key id>:<base64 key>[,...] scripts/package-relay.sh [<out dir>]
-# writes <out dir>/hjviewer-relay-<version>-linux-x86_64.tar.gz (default out dir build/release) and
-# its line in <out dir>/SHA256SUMS, keeping the lines of other files still there (the server
-# package writes the same file). <version> is relay/Cargo.toml's. The archive holds hjv-relay,
+# writes <out dir>/hjviewer-relay-<version>-linux-x86_64.tar.gz (default out dir build/release-relay,
+# apart from the server package's build/release) and <out dir>/SHA256SUMS with this archive's line
+# only, so that each package's checksum file names its own files alone (design v3 8-6).
+# <version> is relay/Cargo.toml's. The archive holds hjv-relay,
 # built for x86_64-unknown-linux-musl and statically linked so that it runs on any x86_64 DSM 7
 # NAS; README-DSM.md (docs/relay-dsm.md); and LICENSE, NOTICE, SOURCE and THIRD_PARTY_NOTICES
 # (scripts/package-notices.sh). Tag: relay-<version>.
@@ -24,31 +25,14 @@
 # or HJV_RELAY_TEST_BUILD is a test build: its archive is named ...-linux-x86_64-test.tar.gz and
 # its SOURCE.txt says so in its first line.
 # Needs the x86_64-unknown-linux-musl Rust target (rustup target add x86_64-unknown-linux-musl),
-# musl-gcc for ring's C code (Ubuntu: musl-tools), file, jq, sha256sum and gzip.
+# musl-gcc for ring's C code (Ubuntu: musl-tools), file, jq, python3, sha256sum and gzip.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-out=${1:-$ROOT/build/release}
+out=${1:-$ROOT/build/release-relay}
 target=x86_64-unknown-linux-musl
 work="$ROOT/build/package-relay"
 export PATH="$HOME/.cargo/bin:$PATH"
-
-# The public keys of the Ed25519 keys whose private keys are in this repository: relay/PROTOCOL.md
-# section 13 and the tests (seeds of repeated bytes). A relay that trusts one of them accepts wake
-# commands anyone can sign.
-test_keys=(
-  Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc= # PROTOCOL.md section 13, command key
-  A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg= # PROTOCOL.md section 13, relay key
-  GX9rI+FshTLGq8g4+s1ep4m+DHaykgM0A5v6iz02jWE= # tests/common COMMAND_KEY_SEED, [42; 32]
-  RQigeqlBcH8+stuUyIl6gLLBGXR2tt4hOsJz332GxP8= # [43; 32]
-  iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w= # [1; 32]
-  gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q= # [2; 32]
-  7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E= # [3; 32]
-  bnoc3Smwt4/ROvTFWY/v9O8qlxZuPKby5Pv8zYBQW/E= # [5; 32]
-  6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw= # [7; 32]
-  E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o= # [8; 32]
-  /RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg= # [9; 32]
-)
 
 # Whether <server> (host or host:port) is a placeholder, a reserved test name or an IP address.
 placeholder_server() {
@@ -65,20 +49,14 @@ placeholder_server() {
   [[ $host =~ ^[0-9.]+$ ]]
 }
 
-# Whether <keys> (<key id>:<base64 key>[,...]) has one of the public test keys.
+# Whether <keys> (<key id>:<base64 key>[,...]) is no list a relay to hand out may trust, as
+# scripts/check-build-keys.py --relay judges it in the release builds: malformed, a weak key, or a
+# public test key, whose private key anyone has (seeds of one repeated byte or of 32 consecutive
+# bytes such as the tests' and the E2E's, the RFC examples, scripts/public-test-keys.txt, and every
+# key whose private key a tracked file of this repository writes out). It says what it refuses.
 has_test_key() {
-  local entry key known
-  local -a entries
-  IFS=',' read -ra entries <<< "$1"
-  for entry in "${entries[@]}"; do
-    key=$(printf '%s' "${entry#*:}" | tr -d '[:space:]')
-    for known in "${test_keys[@]}"; do
-      if [ "$key" = "$known" ]; then
-        return 0
-      fi
-    done
-  done
-  return 1
+  ! HJV_COMMAND_PUBKEY=$1 CALLED=package-relay.sh CHECK_ONLY='' GITHUB_STEP_SUMMARY='' \
+    python3 -I "$ROOT/scripts/check-build-keys.py" --relay >&2
 }
 
 version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$ROOT/relay/Cargo.toml" | head -n 1)
@@ -122,7 +100,7 @@ elif [ -z "${HJV_RELAY_TEST_BUILD:-}" ]; then
     exit 1
   fi
   if has_test_key "$HJV_COMMAND_PUBKEY"; then
-    echo "HJV_COMMAND_PUBKEY has a public test key of this repository, whose private key anyone has (HJV_RELAY_TEST_BUILD=1 for a test build)" >&2
+    echo "HJV_COMMAND_PUBKEY is malformed or has a public test key, whose private key anyone has (see above; HJV_RELAY_TEST_BUILD=1 for a test build)" >&2
     exit 1
   fi
 fi
@@ -218,19 +196,5 @@ mkdir -p "$out"
 mtime=$(git -C "$ROOT" log -1 --format=%ct)
 tar -C "$work" --owner=0 --group=0 --numeric-owner --sort=name --mtime="@$mtime" -cf - "$name" |
   gzip -9 -n > "$out/$name.tar.gz"
-(
-  cd "$out"
-  {
-    if [ -f SHA256SUMS ]; then
-      while read -r sum file; do
-        if [ "${file#\*}" != "$name.tar.gz" ] && [ -f "${file#\*}" ]; then
-          echo "$sum  $file"
-        fi
-      done < SHA256SUMS
-    fi
-    sha256sum "$name.tar.gz"
-  } | sort -k 2 > SHA256SUMS.new
-  mv SHA256SUMS.new SHA256SUMS
-  cat SHA256SUMS
-)
+(cd "$out" && sha256sum "$name.tar.gz" > SHA256SUMS && cat SHA256SUMS)
 tar -tzvf "$out/$name.tar.gz" | awk '{print $1, $3, $6}'
