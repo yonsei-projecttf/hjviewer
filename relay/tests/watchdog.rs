@@ -324,9 +324,9 @@ fn the_boot_script_of_the_guide() {
     let nas = Nas::new("main");
 
     // exits 0 (a new executable) and 1 (an error) are restarted; 75 (another relay runs) is tried
-    // four times in a row (another exit in between starts the count again); each run is the
-    // checked copy with the guide's arguments
-    let hash = fake_relay(&nas, &[0, 1, 75, 75, 75, 0, 75, 75, 75, 75], "");
+    // four times in a row (another exit in between, an error here, starts the count again); each
+    // run is the checked copy with the guide's arguments
+    let hash = fake_relay(&nas, &[0, 1, 75, 75, 75, 1, 75, 75, 75, 75], "");
     nas.start(&hash);
     wait_for("ten runs", || nas.calls().len() >= 10);
     nas.wait_for_the_loop_to_end();
@@ -564,6 +564,24 @@ fn the_hash_comes_from_sha256sum_or_openssl() {
     assert!(nas.calls().is_empty());
     assert!(
         nas.log().contains("hjv-relay의 SHA-256(?…)이"),
+        "{}",
+        nas.log()
+    );
+
+    // an empty value in the first line, with neither tool: the copy an earlier run left in the
+    // state folder is not run either, and the log says so (the empty sum matched the empty value)
+    let hash = fake_relay(&nas, &[78], "");
+    nas.start(&hash);
+    nas.wait_for_the_loop_to_end();
+    assert_eq!(nas.calls(), [expected_call(&nas)]);
+    assert!(nas.state().join("hjv-relay").exists());
+    fs::remove_file(nas.dir.join("calls")).unwrap();
+    let before = nas.log().len();
+    nas.start_script(&nas.script("", |s| s), Some(&path));
+    nas.wait_for_the_loop_to_end();
+    assert!(nas.calls().is_empty(), "{:?}", nas.calls());
+    assert!(
+        nas.log()[before..].contains("hjv-relay의 SHA-256(?…)이"),
         "{}",
         nas.log()
     );

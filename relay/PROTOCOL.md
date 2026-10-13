@@ -694,10 +694,13 @@ These private keys are public test values: never use them for anything else.
   symbolic link, and writes its own few log lines (a time, a fixed text, at most 8 hex digits of a
   hash) only when the log is a regular file or missing. So whoever can write to the shared folder
   of the executable can stop the relay or delete its log, but cannot have their code run as root
-  or choose a file root writes to, with one gap between a check of the shell and its use of the
-  path: someone who swaps in a symbolic link at that moment can make root read the link's target
-  to hash it, or append one of those fixed lines to it. Changing the task takes a DSM
-  administrator. The guide still keeps that folder for administrators only, with no sync tasks,
+  or choose a file root writes to, with two gaps. One is between a check of the shell and its use
+  of the path: someone who swaps in a symbolic link at that moment can make root read the link's
+  target to hash it, or append one of those fixed lines to it. The other is a hard link: the
+  shell takes a log that is a hard link to a file outside the folder for a regular file and
+  appends those lines to that file (the relay itself refuses such a log), which takes a local
+  account on the NAS that may make the link (not SMB or File Station). Changing the task takes a
+  DSM administrator. The guide still keeps that folder for administrators only, with no sync tasks,
   sharing links or file requests on it (docs/relay-dsm.md, section 2).
 - While it runs, the relay keeps its log to the last 180 days and at most 2 MB. Nothing prunes
   the log of a relay that is stopped or ended (the stop marker, a field test build, a hash that
