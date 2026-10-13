@@ -28,7 +28,7 @@
 
 ## 실행
 
-개발 PC에서는 `scripts/ci.sh e2e`가 아래를 모두 합니다. 서버와 클라이언트를 빌드하고, Caddy를 고정한 SHA-256으로 받고, strict와 open을 차례로 돌립니다(sudo가 비밀번호 없이 되어야 함, [ci.md](ci.md)). 손으로 돌릴 때는 다음과 같습니다.
+개발 PC에서는 먼저 `scripts/ci.sh server`로 서버(hbbs, hbbr)와 `hjv-probe`를 빌드합니다. 그다음 `scripts/ci.sh e2e`가 나머지를 합니다. 패치를 적용한 클라이언트를 시험용으로 빌드하고(계정 단계면 hjv-api와 가짜 SSO도), Caddy를 고정한 SHA-256으로 받고, strict와 open을 차례로 돌립니다(sudo가 비밀번호 없이 되어야 함, [ci.md](ci.md)). 서버가 빌드되어 있지 않으면 `scripts/ci.sh server`를 먼저 하라고 하며 멈춥니다. 손으로 돌릴 때는 다음과 같습니다.
 
 ```bash
 # 1) 서버와 진단 도구 빌드
@@ -138,7 +138,7 @@ PASS (strict): transport: relay
 
 ## 원격 켜기 단계 (1.6.0)
 
-NAS 중계기(hjv-relay)가 서버가 서명한 켜기 명령을 받아 잠든 PC에 매직 패킷을 보내는지 확인합니다(설계 3판 8-10). `tools/e2e/wol-e2e.sh`이고, `scripts/ci.sh wol`이 sudo 없이 돌립니다. 이 스크립트는 아직 없습니다. 원격 켜기 E2E 작업이 쓰고 결과를 이 절에 적습니다.
+NAS 중계기(hjv-relay)가 서버가 서명한 켜기 명령을 받아 잠든 PC에 매직 패킷을 보내는지 확인합니다(설계 3판 8-10). `tools/e2e/wol-e2e.sh`이고, `scripts/ci.sh wol`이 sudo 없이 돌립니다(서버와 `hjv-probe`는 `scripts/ci.sh server`로 먼저 빌드). 이 스크립트는 아직 없습니다. 원격 켜기 E2E 작업이 쓰고 결과를 이 절에 적습니다.
 
 - **구성**: 사용자 네임스페이스 안에 스위치와 라우터, 랜카드 둘인 NAS, 잠든 PC(IP 없는 랜카드에서 프레임을 포착), 다른 LAN을 둡니다. 바깥에 hjv-api, hbbs, Caddy(시험 CA)를 둡니다. hjv-api 시험 설정은 `HJV_API_BIND_OS=windows,linux`입니다. PC 쪽 클라이언트는 무권한 사용자·마운트 네임스페이스(`unshare -Urm`) 안에서 `/usr/local/lib` 위에 tmpfs를 올리고 `hjviewer-e2e/rustdesk`로 복사해 실행합니다(설치형으로 보이게 하려는 것이고, 바깥의 `/usr`는 바뀌지 않음).
 - **흐름**: alice로 로그인해 PC 묶기 → PC가 `--hjv-e2e-wol-report <MAC> <IPv4/접두사> <게이트웨이>`로 켜기 정보를 동기화에 실음 → hjv-relay가 등록 요청 → `admin relay approve <코드> --owner-of <PC ID>` → PC를 "잠재움"(클라이언트 종료, IP 삭제) → 앱처럼 토큰으로 켜기 요청 → 5초 안에 PC 랜카드에서 255.255.255.255와 NAS 랜카드의 브로드캐스트, 포트 9·7, 3번 = 12프레임이 잡히고 다른 LAN에는 0 → `sent` → PC를 "깨움" → 30초 안에 `confirmed`.

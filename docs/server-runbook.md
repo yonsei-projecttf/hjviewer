@@ -437,8 +437,32 @@ sudo stat -c '%a %U %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519
      sudo systemctl restart hjviewer-hbbs hjviewer-hbbr
      ```
   3. 재시작하면 PC는 몇 초 안에 다시 등록되지만, 진행 중인 원격 세션은 끊깁니다.
-  4. 1.6.0부터 묶음에는 hjv-api도 들어 있습니다. hjv-api가 설치된 서버에서는 위 명령에 더해 7-14의 "업그레이드"대로 스냅숏을 남긴 뒤 `bin/hjv-api`와 `systemd/hjviewer-api*` 유닛을 바꾸고 `sudo systemctl restart hjviewer-api`를 합니다.
-- **nginx 경로 파일**: 업데이트 뒤에는 `sudo diff /opt/hjviewer/share/web/nginx-hjviewer-locations.conf /etc/nginx/snippets/hjviewer-locations.conf`로 바뀌었는지 봅니다. A 경로는 `/opt/hjviewer/deploy/nginx-hjviewer-locations.conf`와 비교합니다. 바뀌었으면 다시 설치(`sudo install -m 644 ...`)하고 `sudo nginx -t && sudo systemctl reload nginx`를 실행합니다.
+  4. 1.6.0부터 묶음에는 hjv-api도 들어 있습니다. hjv-api가 설치된 서버에서는 위 명령에 더해, 7-14의 "업그레이드"대로 스냅숏, 설정 파일, 옛 실행 파일을 남긴 뒤 같은 디렉터리에서 다음을 실행합니다. 유닛 파일을 바꾼 뒤 `daemon-reload`를 하지 않으면 systemd는 옛 유닛으로 다시 시작합니다.
+     ```bash
+     diff -q systemd/hjviewer-api.socket /etc/systemd/system/hjviewer-api.socket
+     sudo install -m 755 bin/hjv-api /opt/hjviewer/bin/
+     for u in systemd/hjviewer-api*.socket systemd/hjviewer-api*.service systemd/hjviewer-api*.timer; do [ -e "$u" ] && sudo install -m 644 "$u" /etc/systemd/system/; done
+     sudo systemctl daemon-reload
+     sudo systemctl restart hjviewer-api
+     ```
+     첫 줄이 `differ`를 보였으면(소켓 유닛이 바뀜) 마지막 줄 대신 `sudo systemctl stop hjviewer-api.service hjviewer-api.socket && sudo systemctl start hjviewer-api.socket hjviewer-api.service`를 합니다. 서비스만 다시 시작하면 systemd가 쥐고 있던 옛 소켓을 그대로 넘겨받습니다.
+- **nginx 경로 파일**: 업데이트 뒤에는 묶음의 nginx 파일이 설치된 것과 다른지 봅니다. A 경로는 `/opt/hjviewer/deploy/nginx-hjviewer-locations.conf`와 `/etc/nginx/snippets/hjviewer-locations.conf`를 비교합니다. B 경로는 다음을 실행합니다. 7절의 nginx 전환(7-8)을 한 서버의 경로 파일에는 `location ^~ /api/` 블록 대신 `include snippets/hjviewer-api.conf;`가 있으므로, 묶음 파일에 7-8과 같은 변환을 한 결과와 비교하고 계정 API의 두 파일도 비교합니다. 묶음 파일을 그대로 다시 설치하면 7-8의 전환이 되돌아가 로그인과 PC 동기화가 모두 404가 됩니다.
+  ```bash
+  W=/opt/hjviewer/share/web; L=/etc/nginx/snippets/hjviewer-locations.conf; N=$(mktemp)
+  if grep -qx 'include snippets/hjviewer-api.conf;' "$L"; then   # 7-8의 전환을 한 서버
+    awk '/^location \^~ \/api\/ \{/ { print "include snippets/hjviewer-api.conf;"; skip = 1; next }
+      skip { if ($0 ~ /^\}/) skip = 0; next } { print }' "$W/nginx-hjviewer-locations.conf" > "$N"
+    diff -q "$W/nginx-hjviewer-api.conf" /etc/nginx/snippets/hjviewer-api.conf
+    diff -q "$W/nginx-hjviewer-api-zones.conf" /etc/nginx/conf.d/hjviewer-api-zones.conf
+  else
+    cp "$W/nginx-hjviewer-locations.conf" "$N"
+  fi
+  diff -q "$N" "$L"
+  ```
+  아무것도 나오지 않으면 바꿀 것이 없습니다. `differ`(또는 `No such file`)가 나온 파일만 아래처럼 바꾸고, 끝나면 `rm -f "$N"`을 합니다. 조용한 시간에 하고 cron의 nginx 재적재 시각은 피합니다.
+  1. 바꿀 파일마다 지금 파일을 `/root/hjv-backup/`(`sudo install -d -m 700`)에 `sudo cp -p`로 남깁니다.
+  2. 설치합니다. 경로 파일은 `sudo install -m 644 "$N" "$L"`, 계정 API의 두 파일은 `sudo install -m 644 "$W/nginx-hjviewer-api.conf" /etc/nginx/snippets/hjviewer-api.conf`와 `sudo install -m 644 "$W/nginx-hjviewer-api-zones.conf" /etc/nginx/conf.d/hjviewer-api-zones.conf`입니다.
+  3. `sudo nginx -t`가 통과하면 `sudo systemctl reload nginx`를 하고, 5절의 첫 블록(7-8을 한 서버는 7-8의 3번도)으로 확인합니다. 실패하면 1번에서 남긴 파일을 되돌리고 멈춥니다.
 - **B 경로 되돌리기**(사용자가 요청할 때만): 아래 순서를 지킵니다. include 줄을 남긴 채 경로 파일부터 지우면 `nginx -t`가 실패합니다.
   1. nginx의 include 줄을 지우거나 백업을 되돌리고, `sudo nginx -t && sudo systemctl reload nginx`를 실행합니다. (가) 새 사이트라면 sites-enabled의 링크를 지우고 reload합니다.
   2. 그다음 `sudo rm /etc/nginx/snippets/hjviewer-locations.conf`를 실행합니다.
@@ -542,6 +566,8 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
    - **연세 SSO 연동 코드를 공개해도 되는지에 대한 답**(질문 10). `server/api`(연세 SSO password grant를 하는 `sso.rs` 포함)는 이 push로 처음 공개됩니다. 비밀값은 저장소에 없습니다.
      - '됨'이면 그대로 push합니다.
      - '안 됨'이면 push 전에 아직 push하지 않은 커밋을 다시 짜서 `server/api`와 그 배치 파일(`deploy/systemd/hjviewer-api*`, `deploy/nginx-hjviewer-api*.conf`)을 공개 역사에서 빼고, 사용자가 따로 만드는 비공개 저장소에 둡니다. 코드를 두지 않는 빌드 전용 저장소(`hjviewer-private`)는 쓰지 않습니다. 서버 묶음의 hjv-api는 그 비공개 저장소에서 만들고, 공개 저장소의 `scripts/package-server.sh`는 `server/api`가 없으면 hjv-api를 빼고 묶습니다. 앱의 봉인·요청 서명 코드(클라이언트 패치)와 hbbs 0004는 배포하거나 네트워크로 제공하는 AGPL 코드의 수정이라 그대로 공개합니다. `GET /api/hjv/source`는 공개된 부분만 가리킵니다.
+       - 이때 hjv-api 묶음은 그 비공개 저장소의 Release에 둡니다. 배치는 공개 묶음과 같게 합니다(`bin/hjv-api`, `systemd/hjviewer-api*`, `web/nginx-hjviewer-api*.conf`, env 예시, 저널 보관 설정, 고지, 그 묶음만의 `SHA256SUMS`). 서버는 토큰 없이 비공개 Release를 받을 수 없으므로, 사용자가 받아 서버에 올리고 7-3을 그 묶음으로 합니다(7-3 끝, 고지는 따로 둠). hbbs, hbbr과 그 고지(7-6)는 공개 묶음에서 받습니다.
+       - push 전에 README, NOTICE, architecture.md 7절에서 hjv-api를 이 저장소의 AGPL 프로그램이라고 적은 문장과 `server/api/README.md`를 가리키는 링크(README, architecture.md, 이 런북)도 고칩니다.
 4. 마지막 push(출시 태그는 아직 붙이지 않음). 그 공개 커밋으로 서버 묶음 `server-<VERSION>`을 만들어 Release에 올립니다([ci.md](ci.md)의 "서버 Release 만들기"). 묶음에는 hbbs(패치 0004, 최소 버전 작업이 있으면 0005도), hbbr, hjv-api, 유닛(소켓, 서비스, 감시·백업 타이머), nginx 파일과 zones 파일, env 예시, 저널 보관 설정, 고지가 들어 있고, `SHA256SUMS`에는 그 묶음 한 줄만 있습니다.
 
 ### 7-2. 읽기 점검 (3단계)
@@ -582,7 +608,7 @@ $S systemd-run --wait --pipe --quiet -p IPAddressDeny=127.0.0.1 curl -sk -o /dev
 
 ### 7-3. hjv-api 설치 (4단계)
 
-hjv-api의 실행 파일, 유닛, 설정 파일만 설치합니다. 서비스는 키가 생기는 5단계 뒤에 시작하고, nginx는 9단계까지 그대로이며, hbbs는 7단계에서 바꿉니다. 이 묶음의 `bin/hbbs`, `bin/hbbr`은 여기서 설치하지 않습니다.
+hjv-api의 실행 파일, 유닛, 설정 파일과 묶음의 고지·웹 서버 설정 사본(`/opt/hjviewer/share/`)만 설치합니다. 서비스는 키가 생기는 5단계 뒤에 시작하고, nginx는 9단계까지 그대로이며, hbbs는 7단계에서 바꿉니다. 이 묶음의 `bin/hbbs`, `bin/hbbr`은 여기서 설치하지 않습니다.
 
 ```bash
 VERSION=2026.10.20                # ← hjv-api가 든 서버 묶음의 Release 버전 (입력값)
@@ -599,7 +625,7 @@ bin/hjv-api version; head -3 SOURCE.txt
 getent passwd hjviewer-api || sudo useradd --system --user-group --home-dir /var/lib/hjviewer-api --no-create-home --shell /usr/sbin/nologin hjviewer-api
 sudo install -m 755 bin/hjv-api /opt/hjviewer/bin/
 sudo install -m 644 LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt /opt/hjviewer/share/
-sudo install -m 644 web/nginx-hjviewer-api.conf web/nginx-hjviewer-api-zones.conf /opt/hjviewer/share/web/
+sudo install -m 644 web/* /opt/hjviewer/share/web/    # 계정 API의 nginx 파일 둘, 그리고 새 저장소 주소의 사본
 sudo install -m 644 systemd/hjviewer-api.env.example /etc/hjviewer/hjviewer-api.env
 units=()
 for u in systemd/hjviewer-api*.socket systemd/hjviewer-api*.service systemd/hjviewer-api*.timer; do
@@ -614,6 +640,8 @@ cd / && rm -rf "$T"
 ```
 
 `UNITS_OK`가 나오지 않으면 멈춥니다. 감시·백업 유닛(`hjviewer-api-*`)은 설치만 하고 6단계에서 켭니다.
+
+질문 10의 답이 '안 됨'이었으면(7-1의 3번) 공개 묶음에는 hjv-api가 없어 `STOP: 묶음에 hjv-api가 없음`에서 멈춥니다. 그때는 사용자가 비공개 저장소의 Release에서 받은 hjv-api 묶음(`.tar.gz`와 `SHA256SUMS`)을 서버의 빈 폴더에 올립니다. 위 블록을 `T=$(mktemp -d)` 대신 `T=<그 폴더>`로, `pkg=`를 그 묶음의 이름(`.tar.gz` 앞부분)으로 두고, `base=`와 `curl` 줄을 건너뛰어 그대로 실행합니다. 다만 고지 파일 줄은 `/opt/hjviewer/share/` 대신 `/opt/hjviewer/share/hjv-api/`(먼저 `sudo install -d -m 755`)에 설치합니다. `/opt/hjviewer/share/`의 고지는 7-6에서 공개 묶음의 hbbs·hbbr 것으로 바뀝니다.
 
 설정 파일(비밀 아님)을 채웁니다. hbbs 공개키는 이 서버의 것을 넣고, SSO 주소와 client-id, 학교 주소 대역은 사용자에게 받습니다. SSO 값은 같은 서버의 WordPress SSO 로그인 플러그인(projecttf-auth)이 쓰는 것과 같은 등록입니다(결정 D2).
 
@@ -632,7 +660,7 @@ sudo grep -cE '^HJV_API_(SSO_TOKEN_URL|SSO_USERINFO_URL|SSO_CLIENT_ID|HBBS_PUBKE
 sudo grep -E '^#?HJV_API_(BIND_OS|SECOND_FACTOR|TRUST_REFRESH|TRUST_TTL|PASSWORDLESS_KINDS)=' "$E"
 ```
 
-- 마지막 줄의 기본값을 바꾸지 않습니다: `HJV_API_BIND_OS=windows`, `HJV_API_SECOND_FACTOR=off`(결정 U1), `HJV_API_TRUST_REFRESH=120`(60~300), `HJV_API_TRUST_TTL=86400`(U4, 72시간 이하), `HJV_API_PASSWORDLESS_KINDS=remote,file,camera`(U3). 개발 PC의 `scripts/ci.sh deploy`가 같은 값을 검사합니다([ci.md](ci.md)).
+- 마지막 줄의 기본값을 바꾸지 않습니다: `HJV_API_BIND_OS=windows`, `HJV_API_SECOND_FACTOR=off`(결정 U1), `HJV_API_TRUST_REFRESH=120`(60~300), `HJV_API_TRUST_TTL=86400`(U4, 72시간 이하), `HJV_API_PASSWORDLESS_KINDS=remote,file,camera`(U3). 개발 PC의 `scripts/ci.sh deploy`는 이 가운데 `BIND_OS`, `SECOND_FACTOR`, `TRUST_REFRESH`, `TRUST_TTL` 넷을 묶음의 예시에서 검사하고, 이 서버의 설정 파일 사본(비밀 없음)으로도 검사할 수 있습니다(`HJV_API_ENV_FILE`, [ci.md](ci.md)). `PASSWORDLESS_KINDS`는 검사하지 않으므로 이 출력으로 확인합니다.
 - nginx 작업 프로세스의 그룹이 `www-data`가 아니면(7-2) 소켓 그룹을 드롭인으로 바꿉니다: `sudo systemctl edit hjviewer-api.socket`에 `[Socket]`과 `SocketGroup=<그 그룹>`.
 - (선택, 사용자 승인 뒤) 나가는 연결 제한: 7-2의 IP 필터 시험에서 둘째 줄만 000이었으면 `/etc/systemd/system/hjviewer-api.service.d/egress.conf`에 `[Service]`, `IPAddressDeny=any`, `IPAddressAllow=localhost <SSO 서버 주소> <DNS 서버 주소, 127.0.0.53이 아닐 때>`를 둡니다. SSO 서버의 주소가 바뀌면 로그인이 멈추므로, 넣었다는 것을 보고에 적습니다.
 
@@ -650,16 +678,18 @@ sudo grep -E '^#?HJV_API_(BIND_OS|SECOND_FACTOR|TRUST_REFRESH|TRUST_TTL|PASSWORD
    ./hjv-api keygen command --kid 2 --out "$M/hjviewer-command-2.key" # 원격 켜기용. 화면: 2:<base64>와 지문
    ```
 2. 매체를 하나 더 만들어(파일 복사) 서로 다른 곳에 둡니다. 프로젝트 폴더, NAS의 부서 공유 폴더, 그 폴더로 가는 백업 대상에는 두지 않습니다.
-3. 서버에는 지금 봉인 키만 넣습니다. 목록 키 2번과 명령 키 2번은 교체할 때 넣습니다(7-15). 서버 디스크에 평문이 남지 않게 표준 입력으로 넣습니다. 그 계정의 sudo가 비밀번호를 묻지 않으면 한 줄로 됩니다.
+3. 서버에는 지금 봉인 키만 넣습니다. 목록 키 2번과 명령 키 2번은 교체할 때 넣습니다(7-15). 서버 디스크에 평문이 남지 않게 표준 입력으로 넣습니다. 그 계정의 sudo가 비밀번호를 묻지 않으면 리눅스·macOS 셸에서 한 줄로 됩니다(PowerShell에는 입력 `<`가 없음).
    ```bash
    ssh <서버> 'sudo install -d -m 700 /etc/credstore.encrypted && sudo systemd-creds encrypt --name=hjviewer-api-login-key - /etc/credstore.encrypted/hjviewer-api-login-key' < /media/<매체>/hjviewer-seal.key
    ```
-   sudo가 비밀번호를 묻는 계정이면 위 줄은 터미널이 없어 실패합니다. 그때는 서버의 메모리(`/dev/shm`, 디스크가 아님)를 거칩니다. Windows의 PowerShell이나 명령 프롬프트에서도 같습니다(`scp`의 원본만 `E:\hjviewer-seal.key`처럼 바꿈).
+   sudo가 비밀번호를 묻는 계정이면 위 줄은 터미널이 없어 실패합니다. 그때는 서버의 메모리 파일 시스템 `/dev/shm`을 잠깐 거칩니다. 디스크의 파일로는 남지 않지만 메모리가 모자라면 스왑에 쓰일 수 있으므로, 넣자마자 지웁니다. 아래 세 줄은 **Windows PowerShell이나 리눅스·macOS 셸에서만** 합니다(Windows에서는 `scp`의 원본만 `E:\hjviewer-seal.key`처럼 바꿈). 명령 프롬프트(cmd)는 작은따옴표를 따옴표로 보지 않고 `&&`와 `>`를 자기가 처리하므로, 첫 줄과 셋째 줄은 서버에서 실패하고 `scp`만 성공해 평문 키가 `/dev/shm`에 남습니다.
    ```bash
-   ssh <서버> 'umask 077 && : > /dev/shm/hjv-key'
+   ssh <서버> 'rm -f /dev/shm/hjv-key; umask 077; : > /dev/shm/hjv-key; stat -c %a:%U /dev/shm/hjv-key'
    scp /media/<매체>/hjviewer-seal.key <서버>:/dev/shm/hjv-key
    ssh -t <서버> 'sudo install -d -m 700 /etc/credstore.encrypted && sudo systemd-creds encrypt --name=hjviewer-api-login-key /dev/shm/hjv-key /etc/credstore.encrypted/hjviewer-api-login-key; rm -f /dev/shm/hjv-key'
    ```
+   - 첫 줄은 남아 있던 파일을 지우고 이 계정만 읽는 빈 파일을 새로 만듭니다. 출력이 `600:<그 계정 이름>`이 아니면 둘째 줄로 가지 않습니다. `scp`는 이미 있는 파일의 권한을 바꾸지 않고 내용만 씁니다.
+   - 어느 줄이든 실패하거나 중간에 끊겼으면 `ssh <서버> 'rm -f /dev/shm/hjv-key'`로 지웁니다.
 
 **(나) 서버에서 바로 만드는 것**: SSO 자격 증명, 기록 키, 목록 키 1번, 명령 키 1번. 사용자가 서버에 SSH로 들어가 합니다.
 
@@ -739,10 +769,15 @@ if ! curl -fsSLO --max-time 120 "$base/$pkg.tar.gz" || ! curl -fsSLO --max-time 
 grep " $pkg.tar.gz\$" SHA256SUMS | sha256sum -c - || { echo 'STOP: 체크섬이 다름'; exit 1; }
 tar -xzf "$pkg.tar.gz" && cd "$pkg" || exit 1
 if ldd bin/hbbs | grep 'not found'; then echo 'STOP: 이 서버에서 실행할 수 없음'; exit 1; fi
-diff -q systemd/hjviewer-hbbs.service /etc/systemd/system/hjviewer-hbbs.service || { echo 'STOP: hbbs 유닛도 바뀜'; exit 1; }
+for s in hbbs hbbr; do   # 저장소 주소(Documentation= 줄)만 다른 것은 바뀐 것으로 보지 않음
+  diff <(grep -v '^Documentation=' "systemd/hjviewer-$s.service") <(grep -v '^Documentation=' "/etc/systemd/system/hjviewer-$s.service") || { echo "STOP: $s 유닛도 바뀜"; exit 1; }
+done
 sudo install -d -m 700 /root/hjv-backup
 sudo cp -p /opt/hjviewer/bin/hbbs "/root/hjv-backup/hbbs-before-$VERSION"
 sudo install -m 755 bin/hbbs /opt/hjviewer/bin/hbbs
+sudo install -m 644 LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt /opt/hjviewer/share/   # 이 hbbs의 고지(7-3과 같은 묶음이면 같은 파일)
+sudo install -m 644 systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl restart hjviewer-hbbs
 sleep 3; systemctl is-active hjviewer-hbbs hjviewer-hbbr
 sudo journalctl -q -u hjviewer-hbbs --since -2min -o cat | grep -E 'ERROR|panicked' | tail -5
@@ -750,7 +785,8 @@ sudo /opt/hjviewer/bin/hjv-api admin selfcheck | grep 'hbbs console'
 cd / && rm -rf "$T"
 ```
 
-- `STOP: hbbs 유닛도 바뀜`이면 아무것도 바꾸지 않은 채 멈추고, 두 유닛의 차이를 보고합니다.
+- 지금 운영 중인 서버의 유닛은 `server-2026.10.10` 묶음의 것이고, 1.6.0 묶음의 유닛과는 `Documentation=` 줄(저장소를 옮기기 전의 주소라 지금은 404)만 다릅니다. 그래서 비교에서 그 줄을 빼고, 같으면 두 유닛을 새것으로 바꿔 링크도 고칩니다. hbbr은 다시 시작하지 않습니다. 바뀐 것이 설명 줄뿐이라 `daemon-reload`로 충분합니다.
+- `STOP: hbbs 유닛도 바뀜`(또는 `hbbr`)이면 아무것도 바꾸지 않은 채 멈추고, `diff`가 보인 차이를 보고합니다. 그 차이는 "B 경로 업데이트"처럼 사용자 승인을 받아 따로 반영합니다.
 - `hbbs console: answers hjv-pk (patch 0004)`가 나와야 합니다. 5절의 첫 블록을 다시 실행해 `/ws/id`, `/ws/relay`가 101인지도 봅니다. 사용자는 바깥에서 `hjv-probe`로 확인합니다.
 - 되돌리기: 보관한 `/root/hjv-backup/hbbs-before-<VERSION>`을 같은 방법으로 넣고 hbbs만 다시 시작합니다(7-12).
 
@@ -766,8 +802,7 @@ cd / && rm -rf "$T"
 ### 7-8. nginx 전환 (9단계)
 
 **관문**: 다음이 모두 끝났는지 사용자에게 확인합니다. 하나라도 아니면 멈춥니다.
-- 갱신한 [privacy.md](privacy.md)가 공개 저장소에 있음(2단계의 push).
-- 개인정보 처리자와 연락처, 정보보호팀의 회신(공공기관 개인정보파일 등록, AI 운영 에이전트가 처리위탁·국외 이전에 해당하는지)을 받아 privacy.md에 반영함(질문 7).
+- 질문 7의 답(개인정보 처리자와 연락처, 정보보호팀의 회신: 공공기관 개인정보파일 등록, AI 운영 에이전트가 처리위탁·국외 이전에 해당하는지)을 반영한 [privacy.md](privacy.md)가 공개 저장소에 있음. 2단계의 push에 이미 들어갔으면 됩니다. 답이 그 뒤에 왔으면 privacy.md의 처리 근거, 처리자, 연락처(7, 9, 10절, 두 언어)를 고쳐 문서만 한 번 더 push합니다(`scripts/ci.sh leak` 통과 뒤. 앱과 서버 묶음은 그대로).
 - 사용자 약 10명에게 무엇이 저장되는지 미리 알림.
 - 날짜: 같은 서버의 다른 서비스 일정과 겹치지 않는 조용한 저녁(질문 9). cron의 nginx 재적재 시각은 피함.
 
@@ -903,7 +938,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
   $A passwordless status; $A report | head -3
   ```
   명단과 계정별 스위치를 확인하고 사용자 승인을 받아 `passwordless on`. 모두 휴대폰과 PC에서 한 번 다시 로그인합니다. PC의 묶음은 남으므로, 그 PC로 들어오는 연결을 위해 PC에서 다시 로그인할 필요는 없습니다. 백업 뒤에 풀렸던 묶음이 서버에 되살아나도, 허용 표시가 이미 지워진 PC는 증명을 받지 않습니다(`listed`).
-- **업그레이드**: hjv-api의 저장 이전은 한 방향입니다(옛 실행 파일은 새 스키마를 거부). 새 판을 설치하기 전에 `sudo /opt/hjviewer/bin/hjv-api admin backup /var/lib/hjviewer-api/backup/before-<VERSION>.sqlite3`로 스냅숏을 남기고 설정 파일도 `/root/hjv-backup/`에 복사합니다. 되돌릴 때는 옛 실행 파일, 스냅숏, 설정 파일을 함께 되돌립니다.
+- **업그레이드**: hjv-api의 저장 이전은 한 방향입니다(옛 실행 파일은 새 스키마를 거부). 새 판을 설치하기 전에 `sudo /opt/hjviewer/bin/hjv-api admin backup /var/lib/hjviewer-api/backup/before-<VERSION>.sqlite3`로 스냅숏을 남기고, 옛 실행 파일과 설정 파일도 `/root/hjv-backup/`에 복사합니다(`sudo cp -p /opt/hjviewer/bin/hjv-api /root/hjv-backup/hjv-api-before-<VERSION>`, 설정 파일은 `hjviewer-api.env-before-<VERSION>`). 되돌릴 때는 옛 실행 파일, 스냅숏, 설정 파일을 함께 되돌립니다.
 - **호스트 재구축**: 봉인 키는 오프라인 사본에서 되살립니다(7-4의 (가) 3번). 목록 키 1번과 명령 키 1번은 서버에만 있었으므로 오프라인의 2번으로 바꿉니다(7-15, 앱과 중계기는 2번을 이미 믿음). 기록 키는 새로 만듭니다. 출시 전에 한 번 시험 서버에서 복원을 연습합니다.
 
 ### 7-15. 일상 운영
@@ -915,7 +950,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
 - **PC를 넘기거나 버릴 때**(사용자 안내): 그 PC에서 **온라인일 때** 로그아웃한 뒤 넘기거나 제거합니다. 제거만 해도 그 PC의 허용 표시는 지워지지만 서버의 묶음은 남아, 이전 주인의 카드에 "마지막 확인 n일 전"이 보이고 새 사용자의 로그인은 "다른 계정에 등록된 PC"가 됩니다. 그때는 이전 주인이 다른 기기에서 "내 목록에서 빼기"를 하거나 관리자가 `binding revoke <PC ID>`를 합니다.
 - **PC의 기기 키가 바뀌었을 때**: 설정을 잃은 PC(설정까지 지우고 다시 설치 등)는 같은 ID로 새 키를 등록합니다. 서버는 그 PC의 첫 동기화에서 hbbs에 키를 묻고, 진짜 hbbs가 새 키를 가졌으면 그 PC를 `needs-relogin`으로 둡니다(`report`의 `PCs that need a login on them`). 목록을 새로 고친 컨트롤러는 그 PC에 비밀번호 창을 띄웁니다. **그 PC에서 같은 계정으로 다시 로그인**하면 새 키가 저장되고 묶음 ID는 그대로라 비밀번호 없는 연결이 돌아옵니다. PC가 새 ID를 받았으면 새 ID는 그 PC에서 다시 로그인해야 목록에 오르고, 옛 ID의 카드는 주인이 빼거나 180일 정리가 지웁니다.
 - **계정 키**: `key list [<포탈 ID|tag:T>]`(키마다 PC별 마지막 비밀번호 없는 연결과 30일 횟수), `key revoke <ckid>`(잃어버린 기기를 사용자가 직접 로그아웃시킬 수 없을 때), `user revoke-all <포탈 ID|tag:T>`.
-- **계정 삭제 요청**: `user delete <포탈 ID|tag:T>`. 그 계정의 PC를 먼저 풀고(무덤), 계정과 그 키·토큰·사용 기록을 지웁니다. 남는 것은 묶음 무덤(180일), 꼬리표로 남은 기록(6개월), 운영자 기록이고, 백업은 14일 뒤 사라진다고 요청한 사람에게 알립니다.
+- **계정 삭제 요청**: 명단에서 빼고(`allow remove <파일>`, 사용자가 쓴 파일) `user delete <포탈 ID|tag:T>`. 명단은 `user delete`로 지워지지 않습니다. `user delete`는 그 계정의 PC를 먼저 풀고(무덤), 계정과 그 키·토큰·사용 기록을 지웁니다. 남는 것은 묶음 무덤(180일), 꼬리표로 남은 기록(6개월), 운영자 기록이고, 백업은 14일 뒤 사라진다고 요청한 사람에게 알립니다.
 - **SSO 자격 증명이 바뀔 때**: hjv-api는 같은 서버의 WordPress SSO 로그인 플러그인(projecttf-auth)과 같은 SSO 등록을 씁니다. 그 플러그인의 client secret이나 api uuid가 바뀌면 같은 날 사용자가 7-4의 (나)처럼 `hjviewer-sso-client-secret`(또는 `hjviewer-sso-api-uuid`)를 다시 만들고 `sudo systemctl restart hjviewer-api`를 합니다. 그대로 두면 SSO가 `invalid_client`로 거절해 모든 로그인이 "연세 인증 서버에 지금 연결할 수 없습니다"가 되고, 감시가 경보를 냅니다.
 - **목록 키 바꾸기**(목록 키 1번이 샜거나 잃었을 때):
   1. 사용자가 오프라인 매체의 목록 키 2번(`hjviewer-list-2.key`)을 7-4의 (가) 3번처럼 표준 입력으로 넣습니다. 자격 증명 이름은 그대로 `hjviewer-api-list-key`이고(명령의 `--name=`과 파일 이름을 그것으로 바꿈), 그 안의 키가 2번으로 바뀝니다.
