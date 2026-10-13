@@ -45,8 +45,11 @@ ring and the system's CA certificates; SQLite is built in (rusqlite `bundled`).
 - `deploy/nginx-hjviewer-api.conf` replaces the `/api/` block of
   `deploy/nginx-hjviewer-locations.conf`: the account paths go to the socket, `/api/login-options`
   and `/api/device-group/accessible` get static answers, all other `/api/` paths stay 404, and
-  `/api/login` is limited per client address (10 a minute after a burst of 5, 4 at a time). Its
-  two zones go to `/etc/nginx/conf.d/hjviewer-api-zones.conf` (the header of the file has the
+  `/api/login` is limited per client address (10 a minute after a burst of 5, 4 at a time). That
+  limit is nginx's and comes before hjv-api's: whoever shares the owner's address (a campus NAT,
+  public Wi-Fi) can fill it, and then the login of a PC already in the account, which hjv-api
+  lets through its own address limit, is refused by nginx as well; the runbook's daily report
+  counts those refusals (nginx's error log). Its two zones go to `/etc/nginx/conf.d/hjviewer-api-zones.conf` (the header of the file has the
   lines). Before installing, check that the server and http blocks have no `real_ip_header` or
   `set_real_ip_from` that would let a client choose `$remote_addr`: hjv-api's address limits trust
   the `X-Real-IP` nginx sets from it.
@@ -147,7 +150,9 @@ take both keys), and later relay builds drop key 1.
 `/run/hjviewer-api-admin/admin.sock`, which root and the service's own user may use. Output is
 masked unless `--reveal` is given (human operators only): IDs show their first four characters,
 names do not show, accounts and devices carry tags, the same tags as in the journal. Commands take
-an ID or `tag:<tag>`.
+an ID or `tag:<tag>`. Point with `tag:<tag>` (from `users --reveal`) rather than a portal ID or an
+address: sudo logs the whole command line, and the shell keeps it in its history, while the
+operator record keeps tags only.
 
 ```text
 allow import <file>       add the portal IDs in <file> to the allowlist (counts only)
@@ -358,7 +363,12 @@ operator record hold counts only.
   and the next command, signed lists with the backup's switch and the keys revoked since. The
   second `passwordless off` confirms it (`(no change)`). Everybody logs in again on their phones
   and PCs; the PCs stay bound, so a PC whose mark was not cleared gets its list at once, and a PC
-  that cleared it meanwhile is `listed` until someone logs in on it. `tests/ops.rs`
+  that cleared it meanwhile is `listed` until someone logs in on it. The restored database also
+  has back the accounts deleted, the IDs taken off the allowlist and the bindings released since
+  the backup: before `passwordless on`, find those commands after the backup's time in the
+  operator record and run them again (docs/server-runbook.md 7-14); a binding released in the app
+  is in the database only, so the users are asked to remove again a PC that shows up in their
+  list. `tests/ops.rs`
   (`the_restore_procedure`) runs these steps on the database; `docs/hjv-api-drill.md` records the
   rehearsal with systemd.
 - **Host rebuilt** (the disk lost): the seal key comes from its offline copy, list key 1 and
@@ -580,7 +590,12 @@ with the PC's device key (the key hbbs held when it was bound):
   UTC day the latest time the PC let it in and that day's running count, today and yesterday;
   `refused` the counts of refused proofs since the last report taken, under the seven reasons
   above (other names are left out, so that a PC adds at most seven rows a day). `wol` is the PC's
-  wake report and `wol_hash` its summary (Waking a PC, below). A field of the wrong JSON type
+  wake report and `wol_hash` its summary (Waking a PC, below): the lowercase hex SHA-256 of the
+  report as the PC serialized it without its uptime, compared for equality only. It is empty while
+  the PC has no report (its first minute, a platform without one, the network adapters' registry
+  keys not read since the service started); once read, the last summary goes on even when they
+  cannot be read again, and a report too large for a sync stays on the PC with only its summary
+  sent. A field of the wrong JSON type
   refuses the request; a line out of range (a day outside the last 30, a time not of its day, a
   count of 0, a key of no account of the PC) is left out, and a time after the server's time of
   the report is taken as that time. A `wol` object that is not a report is left out, and not asked
@@ -591,6 +606,9 @@ with the PC's device key (the key hbbs held when it was bound):
   most once a minute per PC, and when hbbs signs another key the PC is `needs-relogin`), the time
   within 300 s (400 `clock` with `server_time`), the pair (`id`, `n`) not seen in 600 s (409
   `replay`), the payload (400 `bad_request`). Errors are `{"error":"<code>","server_time":<time>}`.
+  As the row comes before the signature, anyone can tell by 404 or 401 whether a PC ID is bound to
+  an account or was within 180 days (not which account); hbbs tells anyone whether that ID is
+  registered and on anyway (design v3 §9-1).
   There is no 429: a repeat within 10 s while the change serial stayed gets the last list's
   contents again, for its own `n`.
 - An accepted sync of a bound PC stores its report (it also counts as the PC seen) and ends a

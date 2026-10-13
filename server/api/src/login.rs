@@ -6,7 +6,8 @@
 //! 2. failures per client address (X-Real-IP, which nginx overwrites; an IPv6 address counts by
 //!    its /64): 429 past the limit, except for a request signed by a PC already in the account it
 //!    logs in to, which counts under that account's limit of step 5 instead: others behind the
-//!    same address cannot lock the owner out of their PC;
+//!    same address cannot lock the owner out of their PC here (nginx's own limit per address
+//!    comes first and has no such exception: README.md, Run);
 //! 3. the sealed password (seal.rs): 400 unless sealed to a key of this server, from the device
 //!    the request names and with a nonce not seen before; 409 `clock` (with the server's time)
 //!    when its time is more than ten minutes off (design v3 §4-1), so that the app can tell a
