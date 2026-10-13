@@ -57,7 +57,7 @@ hjv-release: HJViewer의 서명된 버전 정책(최소 버전과 강제 업데�
     void --live FILE [--keys FILE] [--archive DIR] FILE
                                                      서명했지만 내지 않은 정책을 무효로 함(런북 5-13)
     archive adopt [--keys FILE] [--archive DIR] FILE  직접 서명한 정책 파일을 보관소에 넣음(보관소를 잃었을 때)
-    archive adopt --keys FILE --version V [--archive DIR] [--server NAME]
+    archive adopt --keys FILE --version V --server NAME [--archive DIR]
                                                      릴리스 태그의 키 파일을 기록된 키 집합으로 넣음
 
   서버 설정과 점검
@@ -1202,7 +1202,10 @@ fn void(argv: &[String]) -> Result<i32, String> {
 
 fn archive_command(argv: &[String]) -> Result<i32, String> {
     let Some(("adopt", rest)) = argv.split_first().map(|(c, r)| (c.as_str(), r)) else {
-        return Err("archive adopt FILE 또는 archive adopt --keys FILE --version V".to_owned());
+        return Err(
+            "archive adopt FILE 또는 archive adopt --keys FILE --version V --server NAME"
+                .to_owned(),
+        );
     };
     let args = Args::parse(
         rest,
