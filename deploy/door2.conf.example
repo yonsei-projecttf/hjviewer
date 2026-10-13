@@ -1,0 +1,16 @@
+# /etc/hjviewer/door2.conf: door 2, the download link for the users of 1.5.1 while they move to
+# 1.6.0 (minimum version design 4-4; docs/server-runbook.md 8-4). hjv-api answers
+# https://<domain>/api/hjv/get/<CODE>/ while this file is there and UNTIL has not come, and reads
+# the file again when it changes: no restart. Delete it to close door 2, replace it to change the
+# code (the old one is a 404 at once).
+#
+# The operator's tool writes it (hjv-release hbbs-conf --door2-out), with the hbbs file whose TEXT
+# carries the link. The code is half a secret: it is never typed, printed, or put in a chat, a
+# document or a commit. The file is root:hjviewer-api 0640, so that neither nginx's workers nor
+# the web site's PHP can read it. Its two lines:
+#
+#   CODE=<32 lowercase hex digits, 128 random bits>
+#   UNTIL=<the UTC time door 2 closes, YYYY-MM-DDTHH:MM:SSZ>
+#
+# As it is, this file has neither line: door 2 stays closed (hjv-api logs "CODE or UNTIL is
+# missing").
