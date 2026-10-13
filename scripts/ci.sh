@@ -31,7 +31,11 @@
 #                          scenarios (docs/e2e.md) against hjv-api and the fake SSO, with a 1.5.1
 #                          client built once from the tag client-1.5.1 and Ubuntu's libfaketime,
 #                          unpacked under build/ci
-#   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, unprivileged, once it exists
+#   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, the Wake-on-LAN E2E (docs/e2e.md), without sudo: in
+#                          this user's own namespaces a PC that sleeps is woken through hjv-api
+#                          and hjv-relay, with the E2E's client, Caddy, hjv-api and fake SSO, and
+#                          hjv-relay built for the test server with the E2E's command key; before
+#                          it, the unit tests of the client's wake report (src/hjviewer_wol)
 #   scripts/ci.sh leak     the push gate (design v3 11 steps 1-2): no value of the local list
 #                          build/leak-patterns.txt in tracked files, unpushed commits or staged
 #                          changes (scripts/leak-check.py)
@@ -1034,11 +1038,13 @@ e2e_server_key() { # <work dir>
 # The client of the E2E (docs/e2e.md): a fresh upstream checkout with client/patches, built for
 # the test server hjv.test with the test feature hjv-e2e. Once the patches have the account code
 # (src/hjviewer_account) and firewall-e2e.sh its account part (HJV_E2E_ACCOUNT), it also pins the
-# E2E's public keys and runs the account code's unit tests; before, it is built like 1.5.1.
-build_e2e_client() { # <work dir>
-  local work=$1 src="$CI/upstream-e2e/rustdesk" keys=()
+# E2E's public keys and runs the unit tests of one module in that build: the account code's
+# (design v3 7-3), or for the wol stage the wake report's (hjviewer_wol, design v3 8-10); before,
+# it is built like 1.5.1.
+build_e2e_client() { # <work dir> [<module of src/ whose unit tests run>]
+  local work=$1 unit=${2:-hjviewer_account} src="$CI/upstream-e2e/rustdesk" keys=()
   if [ -n "${E2E_CLIENT:-}" ]; then
-    echo "skipped: the client build and the account E2E (E2E_CLIENT=$E2E_CLIENT is used as it is)"
+    echo "skipped: the client build, its unit tests and the account E2E (E2E_CLIENT=$E2E_CLIENT is used as it is)"
     return 0
   fi
   step "e2e: upstream checkout with client/patches"
@@ -1058,14 +1064,14 @@ build_e2e_client() { # <work dir>
     "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
     cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the client build"
   E2E_CLIENT="$CI/target-e2e/release/rustdesk"
-  if [ -d "$src/src/hjviewer_account" ]; then
-    step "e2e: the client's account unit tests (src/hjviewer_account, design v3 7-3)"
+  if [ -e "$src/src/$unit" ] || [ -e "$src/src/$unit.rs" ]; then
+    step "e2e: the client's unit tests of src/$unit"
     (cd "$src" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" \
       "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
-      cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib hjviewer_account) ||
-      fail "e2e: the account unit tests"
+      cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib "$unit") ||
+      fail "e2e: the client's unit tests of src/$unit"
   else
-    echo "skipped: the account unit tests (no src/hjviewer_account in the patched tree)"
+    echo "skipped: the client's unit tests of src/$unit (not in the patched tree)"
   fi
 }
 
@@ -1167,22 +1173,23 @@ e2e_stage() {
   trap - EXIT
 }
 
-# Without privileges: tools/e2e/wol-e2e.sh runs its PC, NAS and networks in user namespaces
-# (design v3 8-10). It gets the same programs as the E2E, and hjv-relay built for hjv.test with
-# the E2E's command key.
+# Without privileges: tools/e2e/wol-e2e.sh runs its server, PC, NAS and networks in namespaces of
+# this user (design v3 8-10, docs/e2e.md). It gets the same programs as the E2E, and hjv-relay
+# built for hjv.test with the E2E's command key. The client's unit tests are those of its wake
+# report here; the E2E runs once the client has the report's command (client patch 0035).
 wol_stage() {
   local work="$CI/e2e"
-  if [ ! -f "$ROOT/tools/e2e/wol-e2e.sh" ]; then
-    echo "skipped: the WOL E2E (no tools/e2e/wol-e2e.sh yet)"
-    return 0
-  fi
   if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
     fail "wol: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
   fi
   fetch_caddy
   e2e_server_key "$work"
   e2e_keys "$work/api"
-  build_e2e_client "$work"
+  build_e2e_client "$work" hjviewer_wol
+  if ! grep -q -a -- '--hjv-e2e-wol-report' "$E2E_CLIENT"; then
+    echo "skipped: the WOL E2E (the client has no --hjv-e2e-wol-report: client/patches has no wake report yet)"
+    return 0
+  fi
   build_e2e_api
   step "wol: hjv-relay for hjv.test with the E2E's command key"
   (cd "$ROOT/relay" && HJV_SERVER=hjv.test HJV_COMMAND_PUBKEY="$(cat "$work/api/command.pub")" \
