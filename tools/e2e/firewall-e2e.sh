@@ -226,8 +226,11 @@ log "server: hbbs + hbbr behind Caddy (deploy/Caddyfile) on :443"
 SERVER_PIDS+=($!)
 (cd "$RUN/srv" && exec env -i RUST_LOG=info "$HBBR" -p "$HBBR_PORT" -k _ >"$RUN/hbbr.log" 2>&1) &
 SERVER_PIDS+=($!)
+# (debug, for the account part: Caddy's log then has every request it passes to hjv-api with the
+# status that came back; it leaves the Authorization header's value out)
 cat >"$RUN/Caddyfile" <<EOF
 {
+	${ACCOUNT:+debug}
 	local_certs
 	skip_install_trust
 	admin off
@@ -488,7 +491,7 @@ first_sync_done() {
   local text
   text=$(pc_log | awk '/hjv: same-account logins: sync task started/ { n = NR } { l[NR] = $0 }
     END { for (i = n + 1; i <= NR; i++) if (n && l[i] ~ /hjv: trust list/) { print "done"; exit } }')
-  [ "$text" = done ]
+  [ "$text" = "done" ]
 }
 # ms from the last start of the PC's sync task to the list of its first sync, from the log's times
 first_sync_ms() {
@@ -513,6 +516,27 @@ pc_state() { # hjv-pwless-state, what the account settings show about this PC
 state_is() {
   pc_state
   [[ $STATE == "$1"* ]]
+}
+# <time, date +%s.%N>: the statuses hjv-api gave the PC's sync requests since then, in order (from
+# Caddy's debug log of what it passed on)
+pc_syncs_since() {
+  python3 -I -c 'import json, sys
+statuses = []
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    if "upstream roundtrip" not in line:
+        continue
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        continue
+    request = entry.get("request", {})
+    if (entry.get("ts", 0) >= float(sys.argv[2]) and request.get("uri") == "/api/hjv/pc/sync"
+            and request.get("remote_ip") == "10.77.1.2"):
+        statuses.append(str(entry.get("status")))
+print(" ".join(statuses))' "$RUN/caddy.log" "$1"
+}
+pc_syncs_match() { # <time> <regex>
+  [[ $(pc_syncs_since "$1") =~ $2 ]]
 }
 binding() { # <name>: a value the service keeps in HJViewer_binding (HKLM on Windows)
   python3 -I -c 'import json, sys
@@ -624,7 +648,7 @@ account_open() {
 
 account_strict() {
   local t0 n0 n1 cm0 calls e_bob e_carol tok b0 old off os_user code first_sync_ms recv ckid
-  local bind_s19b t_key spid lpid b3 ft=()
+  local bind_s19b t_key spid lpid b3 ts ft=()
   log "S24: the switch is off after the install; alice logs in on the PC and the controller"
   admin passwordless status | tee "$RUN/switch.txt" | sed 's/^/    /'
   grep -qi 'off' "$RUN/switch.txt" || fail "S24: the switch is not off after the install"
@@ -777,6 +801,7 @@ account_strict() {
   kill "$API_PID"
   wait "$API_PID" 2>/dev/null || true
   code=$(in_ns hjv-ctl ctl curl -s -o /dev/null -w '%{http_code}' "https://$DOMAIN/api/hjv/source" || true)
+  [ "$code" = 503 ] || fail "S13: with hjv-api gone the account paths answer $code, not Caddy's 503"
   pwless_ok ctl s13 "S13: hjv-api gone"
   pass "S13: hjv-api gone (the account paths answer $code): password-less still"
   recv=$(binding Recv)
@@ -915,10 +940,17 @@ account_strict() {
   pass "S25: off within 1 s, kept off when Config2 is written again (Off), on again only by a login on the PC"
 
   log "S26: the administrator releases the PC (binding revoke, then device remove)"
+  ts=$(date +%s.%N)
   admin binding revoke "$PC_ID" | sed 's/^/    /'
   until_ok 15 "S26: the PC took the signed revoked" state_is revoked
   pwless_refused ctl2 s26a "S26: after binding revoke"
   pass "S26: binding revoke: a signed revoked, the binding gone ($STATE), refused"
+  # then the PC reports that it holds no binding: hjv-api, which has only the released one, answers
+  # 404 'unbound' without a list, and the PC goes on showing why its binding went
+  until_ok 15 "S26: the PC's report of its empty binding answered 404" pc_syncs_match "$ts" '^(200 )+404( 404)*$'
+  sleep 1
+  state_is revoked || fail "S26: the unsigned answer changed what the PC shows ($STATE)"
+  pass "S26: the PC's report of its empty binding got the unsigned 'unbound' (its syncs since the revoke: $(pc_syncs_since "$ts")); it still shows $STATE"
   pc_bound
   pwless_ok ctl2 s26b "S26: bound again"
   admin device remove "$PC_ID" | sed 's/^/    /'
@@ -1045,6 +1077,7 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
     [ -n "$tok" ] && [ "$(local_option ctl access_token)" = "$tok" ] || fail "S27: the 409 logged the controller out"
     [ -n "$(local_option ctl hjv-my-devices)" ] || fail "S27: the 409 dropped hjv-my-devices"
     off=$(local_option ctl hjv-clock-offset)
+    [ "${off:-0}" -le -895 ] && [ "$off" -ge -905 ] || fail "S27: hjv-clock-offset is '$off', not about -900"
     pass "S27: 409 clock ($(sed -n 's/^hjv-e2e: devices failed: HTTP 409 clock: //p' <<<"$OUT")), no logout, hjv-clock-offset $off"
     run ctl "${ft[@]}" --hjv-e2e-devices
     want 0 "S27: the device list in the next process"

@@ -53,9 +53,10 @@ CADDY_SHA256=727b91701a392de6ebc5027509f548bf39979e5216340d0faed8fa5e69c84f8b
 # where the E2E installs the PC's client: Linux counts only programs under /usr as installed, and
 # hjv-api adds only installed PCs to an account (design v3 7-4)
 E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
-# The E2E's clients are test builds (feature hjv-e2e) of a fresh checkout, which cargo compiles
-# anew each time. Without link-time optimization and in 16 units that takes under a minute, and
-# the unit tests two, instead of three and a half minutes each with the release profile as it is.
+# The E2E's clients are test builds (feature hjv-e2e) of a fresh checkout, whose crates cargo
+# compiles anew each time. Without link-time optimization and in 16 units the client and its unit
+# tests take under a minute each once their dependencies are built, instead of three and a half
+# minutes each with the release profile as it is.
 E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
 # the 1.5.1 client the account E2E compares with (X2, X3)
 E2E_OLD_TAG=client-1.5.1
