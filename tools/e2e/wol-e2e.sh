@@ -70,7 +70,7 @@ if [ "${1:-}" != --inside ]; then
   [ $# -eq 0 ] || { echo "usage: $0 (no arguments; its header says what it needs)" >&2; exit 2; }
   # the clients and the relay run as the user who starts this, and behave otherwise as root
   [ "$(id -u)" != 0 ] || { echo "FAIL: run it as a normal user, not as root (it needs no privileges)" >&2; exit 1; }
-  for tool in unshare ip python3 curl timeout; do
+  for tool in unshare setpriv ip python3 curl timeout; do
     command -v "$tool" >/dev/null || { echo "FAIL: $tool is not installed" >&2; exit 1; }
   done
   for program in "$CADDY" "$HBBS" "$HBBR" "$CLIENT" "$PROBE" "$HJV_API" "$HJV_FAKE_SSO" "$HJV_RELAY"; do
@@ -93,11 +93,23 @@ if [ "${1:-}" != --inside ]; then
   rm -rf "$RUN"
   mkdir -p "$RUN"
   # in there this user is root of its own namespaces, and the script is their first process: when
-  # it ends, or is ended, every process it started goes with it. A run that hangs is ended after
-  # ten minutes (it takes two), with SIGKILL: unshare waits for its child with the others blocked.
-  exec timeout --foreground --signal=KILL 600 "${NAMESPACES[@]}" "$0" --inside "$(id -u)" "$(id -g)" "$(id -un)"
+  # it ends, or is ended, every process it started goes with it (--kill-child). A run that hangs
+  # is ended after ten minutes (it takes two), with SIGKILL. unshare waits for its child with the
+  # other signals blocked, so this half passes them on as SIGKILL; and should this half or timeout
+  # be killed, the next one down gets SIGKILL too (setpriv --pdeathsig), so that no run goes on
+  # orphaned, without its ten minutes, in a run folder that the next run deletes.
+  setpriv --pdeathsig KILL timeout --foreground --signal=KILL 600 setpriv --pdeathsig KILL \
+    "${NAMESPACES[@]}" "$0" --inside "$(id -u)" "$(id -g)" "$(id -un)" &
+  inside=$!
+  trap 'pkill -KILL -P "$inside" 2>/dev/null; kill -KILL "$inside" 2>/dev/null' TERM INT HUP
+  wait "$inside"
+  exit $?
 fi
+# the second half runs only as the first process of the namespaces of the first half
+[ "$$" = 1 ] || { echo "FAIL: --inside is this script's own second half; run it without arguments" >&2; exit 2; }
 USER_ID=$2 GROUP_ID=$3 USER_NAME=$4
+# fail's lines go to the run's output also from a helper whose output a check throws away
+exec 3>&1
 
 DOMAIN=hjv.test
 SERVER_IP=203.0.113.10
@@ -116,13 +128,15 @@ log() { printf '\n== [%3d s] %s\n' "$(($(date +%s) - STARTED))" "$*"; }
 pass() { echo "PASS: $*"; }
 fail() { # with what the servers, the relay and the PC last said
   local f
-  echo "FAIL: $*"
-  for f in hjv-api.log nas/relay.log nas/forged.log pc-server.log; do
-    if [ -s "$RUN/$f" ]; then
-      echo "--- $RUN/$f"
-      tail -n 8 "$RUN/$f"
-    fi
-  done
+  {
+    echo "FAIL: $*"
+    for f in hjv-api.log nas/relay.log nas/forged.log pc-server.log; do
+      if [ -s "$RUN/$f" ]; then
+        echo "--- $RUN/$f"
+        tail -n 8 "$RUN/$f"
+      fi
+    done
+  } >&3
   exit 1
 }
 until_ok() { # <seconds> <what> <command...>: retries the command until it succeeds
@@ -437,13 +451,14 @@ pc_wakes() {
     start_pc_service
   fi
 }
-# <tag>: packet sockets on the sleeping PC's card and on the other LAN's host, from now on
+# <tag> [<MAC, or any>]: packet sockets on the sleeping PC's card and on the other LAN's host, from
+# now on, for the magic packets of the PC's MAC (of any MAC with `any`)
 CAPTURES=()
 capture_start() {
   local where
   CAPTURES=()
   for where in pc other; do
-    ip netns exec "$where" python3 -I "$CAPTURE" eth0 "$PC_MAC" >"$RUN/capture-$1-$where.txt" 2>&1 &
+    ip netns exec "$where" python3 -I "$CAPTURE" eth0 "${2:-$PC_MAC}" >"$RUN/capture-$1-$where.txt" 2>&1 &
     CAPTURES+=($!)
     until_ok 5 "the packet socket in $where" grep -q '^listening' "$RUN/capture-$1-$where.txt"
   done
@@ -552,7 +567,8 @@ result_is() {
 pass "F0: active (a relay believes the state the server's name tells it; commands are another matter)"
 
 log "F1: commands without the command key's signature, old ones, another relay's, and ones outside a command's bounds"
-capture_start forged
+# any MAC's magic packet: the forged commands name other MACs too (five-macs, broadcast-mac)
+capture_start forged any
 python3 -I "$HELPER" forge "$RUN/impostor" no-signature bad-signature other-key unknown-key tampered \
   expired other-relay five-macs broadcast-mac unknown-net port-80
 until_ok 15 "F1: the relay's results" results_are 11
@@ -677,7 +693,7 @@ until_ok 30 "W10: the job confirmed" job_is "$JOB" confirmed
 app ctl GET "/api/hjv/wake/$JOB"
 [ "$(field confirmed_at)" -ge "$(field sent_at)" ] || fail "W10: confirmed before the packets"
 CONFIRMED=$(($(date +%s) - WOKE))
-pc_synced_since "$WOKE" || fail "W10: no sync of the PC since it woke"
+until_ok 10 "W10: a sync of the PC since it woke" pc_synced_since "$WOKE"
 until_ok 30 "W10: the PC online at hbbs again" online
 pass "W10: confirmed $CONFIRMED s after the PC woke ($(($(date +%s) - REQUESTED)) s after the request); hbbs has it online again"
 

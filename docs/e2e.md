@@ -201,7 +201,7 @@ PASS (strict): transport: relay
 
 꺼진 PC를 앱에서 켜는 길 전체를 실제 프로그램으로 확인합니다(설계 3판 8-10). 앱의 켜기 요청 → hjv-api가 서명한 명령 → NAS의 hjv-relay → PC 랜카드에 닿는 매직 패킷 → 깨어난 PC의 확인까지입니다. `tools/e2e/wol-e2e.sh`이고 `scripts/ci.sh wol`이 돌립니다(서버와 `hjv-probe`는 `scripts/ci.sh server`로 먼저 빌드).
 
-**sudo를 쓰지 않습니다**(`sudo`를 실패하는 가짜로 바꿔 놓고 돌려, 한 번도 부르지 않는 것을 확인함). 스크립트는 이 사용자의 사용자·네트워크·마운트·PID 네임스페이스 안에서 자기 자신을 다시 실행합니다. 그 안에서 띄운 프로세스, 네트워크, 마운트는 스크립트가 끝나거나 죽으면 함께 사라지고, 호스트의 `/usr`, `/etc`, iptables는 바뀌지 않습니다. 2분쯤 걸리는 실행이 10분이 되도록 끝나지 않으면 스스로 끝냅니다. 화면도 쓰지 않습니다(Xvfb, ImageMagick 불필요).
+**sudo를 쓰지 않습니다**(`sudo`를 실패하는 가짜로 바꿔 놓고 돌려, 한 번도 부르지 않는 것을 확인함). 스크립트는 이 사용자의 사용자·네트워크·마운트·PID 네임스페이스 안에서 자기 자신을 다시 실행합니다. 그 안에서 띄운 프로세스, 네트워크, 마운트는 스크립트가 끝나면 함께 사라지고, 스크립트의 PID나 그 프로세스 그룹에 SIGTERM·SIGINT·SIGKILL을 보내도 1초 안에 모두 사라집니다(`setpriv --pdeathsig`과 `unshare --kill-child`). 호스트의 `/usr`, `/etc`, iptables는 바뀌지 않습니다. 2분쯤 걸리는 실행이 10분이 되도록 끝나지 않으면 스스로 끝냅니다. `--inside`는 스크립트의 둘째 절반이라 네임스페이스의 첫 프로세스로만 돕니다. 화면도 쓰지 않습니다(Xvfb, ImageMagick 불필요).
 
 ```
                     인터넷 203.0.113.0/24
@@ -239,7 +239,7 @@ PASS (strict): transport: relay
 | W5 | bob이 alice의 PC에 켜기 요청, 판정 조회 | 둘 다 404 |
 | | PC 종료(서비스 끝, 랜카드 주소 삭제). hjv-api는 그 뒤 30초 동안 켜져 있다고 봅니다. 그 사이에 F0~F2 | |
 | F0 | 둘째 중계기를 서버 행세를 하는 시험 서버 앞에 띄움 | 그 서버가 active라고 하면 active(상태는 서버 이름을 믿음. 명령은 아님) |
-| F1 | 위조 명령 11개: 서명 없음, 엉터리 서명, 다른 키의 서명, 모르는 키 번호, 서명한 뒤 MAC을 고침, 만료, 다른 중계기 앞, MAC 5개, 브로드캐스트 MAC, 모르는 망, 포트 80 | 차례로 `bad_command`, `bad_signature`, `bad_signature`, `unknown_key`, `bad_signature`, `expired`, `wrong_relay`, `bad_macs`, `bad_macs`, `no_iface`, `bad_params`. 이유가 결과와 중계기 로그에 남고, 두 LAN 모두 프레임 0 |
+| F1 | 위조 명령 11개: 서명 없음, 엉터리 서명, 다른 키의 서명, 모르는 키 번호, 서명한 뒤 MAC을 고침, 만료, 다른 중계기 앞, MAC 5개, 브로드캐스트 MAC, 모르는 망, 포트 80 | 차례로 `bad_command`, `bad_signature`, `bad_signature`, `unknown_key`, `bad_signature`, `expired`, `wrong_relay`, `bad_macs`, `bad_macs`, `no_iface`, `bad_params`. 이유가 결과와 중계기 로그에 남고, 두 LAN 모두 어느 MAC의 매직 패킷도 없음(포착이 `any`) |
 | F2 | 올바른 명령 11개를 한 번에, 그리고 첫 명령을 한 번 더 | 10개는 4프레임씩 나감(PC 랜카드 40, 다른 LAN 0). 11번째는 `rate_limited`, 다시 온 명령은 `replayed`, 둘 다 프레임 0 |
 | W6 | PC가 꺼진 지 30초 뒤, 승인된 중계기가 없는 계정의 켜기 요청 | 409 `no_relay`(`no_relays`) |
 | W7 | `admin relay approve <코드> --owner-of <PC ID>` | 승인, 판정 `on the PC's network: yes (the same network and gateway)`. 기본 출력에 주소와 MAC 없음. `--reveal`에는 중계기 랜카드, PC 랜카드(MAC은 끝 두 바이트만), 양쪽의 나가는 주소. 요청이 서버에 붙잡혀 있던 중계기는 1초 안에 승인을 앎(쉬는 사이에 승인되면 스크립트가 중계기의 다음 요청을 기다림). 앱의 판정에 중계기 `NAS XXXX`, `exact`, 연결됨. 목록의 둘째 줄 끝에 " · 켜기 가능" |

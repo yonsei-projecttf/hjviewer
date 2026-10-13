@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Prints the Wake-on-LAN magic packets that reach a network interface.
 
-    python3 -I capture.py <interface> <MAC aa:bb:cc:dd:ee:ff> [<seconds>]
+    python3 -I capture.py <interface> <MAC aa:bb:cc:dd:ee:ff, or any> [<seconds>]
 
 A magic packet is six bytes ff and then the card's MAC sixteen times, anywhere in an Ethernet
 frame: that is all a sleeping card looks for, so this looks for the same, on a packet socket,
 which also sees the frames of an interface without an IP address (a PC that sleeps). It prints
 "listening <interface>" once it sees every frame from then on, one line for each frame with the
-magic packet of <MAC>, and the count at the end, after <seconds> or when it gets SIGTERM or
-SIGINT:
+magic packet of <MAC> (with `any`, of any MAC: six bytes ff and then one six bytes sixteen
+times), and the count at the end, after <seconds> or when it gets SIGTERM or SIGINT:
 
     listening eth0
     1760000000.123 magic eth_dst=ff:ff:ff:ff:ff:ff src=192.0.2.20:40001 dst=255.255.255.255:9 udp_len=102
@@ -60,20 +60,33 @@ def describe(frame):
     return " ".join(out)
 
 
+def has_magic(frame, mac):
+    """Whether the frame holds the magic packet of `mac`, or of any MAC when it is None."""
+    if mac is not None:
+        return b"\xff" * 6 + mac * 16 in frame
+    start = 0
+    while True:
+        i = frame.find(b"\xff" * 6, start)
+        if i < 0 or len(frame) < i + 102:
+            return False
+        if frame[i + 6:i + 102] == frame[i + 6:i + 12] * 16:
+            return True
+        start = i + 1
+
+
 def main(argv):
     if len(argv) not in (3, 4):
         sys.stderr.write(__doc__)
         return 2
     ifname = argv[1]
     try:
-        mac = bytes.fromhex(argv[2].replace(":", "").replace("-", ""))
+        mac = None if argv[2] == "any" else bytes.fromhex(argv[2].replace(":", "").replace("-", ""))
         seconds = float(argv[3]) if len(argv) == 4 else None
     except ValueError:
         mac, seconds = b"", None
-    if len(mac) != 6:
-        sys.stderr.write("capture.py: the MAC is six bytes, as aa:bb:cc:dd:ee:ff, and the time a number\n")
+    if mac is not None and len(mac) != 6:
+        sys.stderr.write("capture.py: the MAC is six bytes, as aa:bb:cc:dd:ee:ff (or any), and the time a number\n")
         return 2
-    magic = b"\xff" * 6 + mac * 16
     done = []
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: done.append(True))
@@ -96,7 +109,7 @@ def main(argv):
             # the interface is down for now (ENETDOWN): it may come up again
             time.sleep(0.1)
             continue
-        if address[2] == socket.PACKET_OUTGOING or magic not in frame or len(frame) < 14:
+        if address[2] == socket.PACKET_OUTGOING or len(frame) < 14 or not has_magic(frame, mac):
             continue
         seen += 1
         print("%.3f magic %s" % (time.time(), describe(frame)), flush=True)
