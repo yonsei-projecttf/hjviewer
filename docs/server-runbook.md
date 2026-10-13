@@ -212,7 +212,7 @@ T=$(mktemp -d) && cd "$T" || exit 1
 base="https://github.com/yonsei-projecttf/hjviewer/releases/download/server-$VERSION"
 pkg="hjviewer-server-$VERSION-linux-x86_64"
 if ! curl -fsSLO --max-time 120 "$base/$pkg.tar.gz" || ! curl -fsSLO --max-time 30 "$base/SHA256SUMS"; then echo 'STOP: 내려받기 실패'; exit 1; fi
-sha256sum -c SHA256SUMS || { echo 'STOP: 체크섬이 다름'; exit 1; }
+grep " $pkg.tar.gz\$" SHA256SUMS | sha256sum -c - || { echo 'STOP: 체크섬이 다름'; exit 1; }
 tar -xzf "$pkg.tar.gz" && cd "$pkg" || exit 1
 if ldd bin/hbbs | grep 'not found'; then echo 'STOP: 이 서버에서 실행할 수 없음 (glibc 2.39 이상 필요)'; exit 1; fi
 cat SOURCE.txt

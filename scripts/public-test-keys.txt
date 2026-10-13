@@ -1,0 +1,19 @@
+# Public keys whose private keys are published in this repository (test vectors, test fixtures):
+# a build that pins one of them trusts what anyone can sign. scripts/check-build-keys.py refuses
+# them in the builds it checks (client-build.yml, scripts/package-relay.sh), together with the keys
+# it derives itself: every Ed25519 and X25519 key from a seed of one repeated byte ([n; 32]) or of
+# 32 consecutive byte values (00 01 .. 1f and its shifts), the RFC 8032 / RFC 7748 examples, and
+# the keys of every 32-byte value that a tracked file writes in base64 or hex (a test vector's
+# secret key next to its public key, as in server/api/src/seal.rs).
+#
+# One standard base64 key per line; '#' starts a comment. Add a test key here when its private key
+# is in none of those forms (e.g. a byte array in a test), and the public key of every new test
+# vector, so that the list names them where people look. The check fails without this file.
+
+# relay/PROTOCOL.md section 13: relay key (seed 00 01 .. 1f), command key (seed 20 21 .. 3f)
+A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
+Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=
+
+# server/api/src/seal.rs VECTOR_PK, the sealed-login test vector's X25519 key (its secret key is
+# VECTOR_SK there); also "HJV_LOGIN_SEAL_PUBKEY" of server/api/tests/data/v3-vectors.json
+SjgH0GTQdxgcwHCYnnaJHSDcpVWVSNwsd8GlAnOIKzg=
