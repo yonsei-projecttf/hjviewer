@@ -10,11 +10,26 @@
 //! command key and checked by the relay, twelve packets on the PC's /22 wire through the NAS's own
 //! broadcast, the result, the confirmation, revocation, a relay deleted and enrolling again, and a
 //! relay that does not trust the key in use.
+//!
+//! And the relay's reference of the server checks, relay/tests/common's `check_request`
+//! (PROTOCOL.md's conformance material, which the relay's own tests hold the relay to), against
+//! hjv-api: the same requests in the same order, well-formed and broken in every part, get the
+//! same verdict from both.
 
 mod common;
+/// relay/tests/common: `check_request`, the server checks of PROTOCOL.md §4.3 as the relay's
+/// tests apply them.
+#[allow(unused_imports)]
+#[path = "../../../relay/tests/common/mod.rs"]
+mod reference;
 
 use common::*;
-use hjv_api::{db, util::now, wake};
+use hjv_api::{
+    db, envelope,
+    relay::{HELLO, HELLO_PATH, POLL, POLL_PATH},
+    util::{b64, b64_decode, now, random_bytes},
+    wake,
+};
 use hjv_relay::{
     config::{CommandKey, Server},
     https,
@@ -23,8 +38,9 @@ use hjv_relay::{
     relay::{Env, Relay, RelayConfig, State, Timing},
     wake::{SendOutcome, SendPlan},
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{
+    collections::{HashMap, HashSet},
     net::{Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -438,4 +454,195 @@ async fn a_relay_that_does_not_trust_the_key_refuses_and_hjv_api_says_so() {
         .iter()
         .any(|l| l.contains("(unknown_key): it does not trust the command key in use")));
     drop(relay);
+}
+
+/// A small generator with a seed, so that a failing case can be run again.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// `text` with one character changed.
+fn flip(text: &str, rng: &mut Rng) -> String {
+    let mut chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return "x".into();
+    }
+    let i = rng.below(chars.len());
+    chars[i] = match rng.below(4) {
+        0 => 'A',
+        1 => '-',
+        2 => '=',
+        _ if chars[i] == 'b' => 'c',
+        _ => 'b',
+    };
+    chars.into_iter().collect()
+}
+
+/// One run of requests from two relays, right and wrong in what is signed (the time, a nonce
+/// again, the payload, another key, another ID) and in the envelope as sent (a field gone, of
+/// another type, a character changed, the body cut, too large), each given to the relay's
+/// reference and to hjv-api: (requests, accepted ones, verdicts by code).
+async fn compare(seed: u64, cases: usize) -> (usize, usize, HashMap<String, usize>) {
+    let h = Harness::start().await;
+    let relays = [
+        TestRelay::new([5; 32]),
+        TestRelay::new([6; 32]),
+        TestRelay::new([7; 32]),
+    ];
+    let ifaces = json!([common::iface(
+        "eth0",
+        "192.0.2.10/24",
+        Some("192.0.2.1"),
+        None
+    )]);
+    let mut known: HashMap<String, [u8; 32]> = HashMap::new();
+    let mut nonces: HashSet<String> = HashSet::new();
+    let mut used: Vec<(String, [u8; 16])> = Vec::new();
+    let mut rng = Rng(seed);
+    let (mut accepted, mut by_code) = (0, HashMap::<String, usize>::new());
+    for case in 0..cases {
+        let r = &relays[rng.below(2)];
+        let hello = rng.below(3) == 0 || !known.contains_key(&r.id);
+        let (spec, path, op) = if hello {
+            (&HELLO, HELLO_PATH, "hello")
+        } else {
+            (&POLL, POLL_PATH, "poll")
+        };
+        let mut p = if hello {
+            hello_payload(&ifaces)
+        } else {
+            poll_payload(0, &json!([]), None, &ifaces)
+        };
+        let (mut t, mut nonce, mut key, mut id) =
+            (now(), random_bytes::<16>(), r.seed, r.id.clone());
+        match rng.below(9) {
+            0 => t += [301, -301, 300, -300, 100_000, -100_000][rng.below(6)],
+            1 => {
+                if let Some((_, n)) = used.iter().find(|(i, _)| *i == id) {
+                    nonce = *n;
+                }
+            }
+            2 => p = p.replacen("\"v\":1", "\"v\":2", 1),
+            3 => p = "not json".into(),
+            4 => key = relays[2].seed,
+            5 => id = relays[2].id.clone(),
+            _ => {}
+        }
+        let body = envelope::sign_body(spec, &key, &id, t, &nonce, &p);
+        let mut value: Value = serde_json::from_str(&body).unwrap();
+        if key != r.seed && hello {
+            // the relay's own key in the envelope: only the signature is another key's
+            value["pk"] = json!(b64(&r.public_key()));
+        }
+        let fields = ["id", "t", "n", "p", "s", "pk"];
+        match rng.below(6) {
+            0 => {
+                value.as_object_mut().unwrap().remove(fields[rng.below(6)]);
+            }
+            1 => {
+                let other = [
+                    json!(5),
+                    json!(null),
+                    json!([]),
+                    json!("x"),
+                    json!(1.5),
+                    json!(-3),
+                ];
+                value[fields[rng.below(6)]] = other[rng.below(6)].clone();
+            }
+            2 => {
+                let field = ["id", "n", "s", "pk", "p"][rng.below(5)];
+                if let Some(text) = value[field].as_str().map(str::to_owned) {
+                    value[field] = json!(flip(&text, &mut rng));
+                }
+            }
+            3 => value["extra"] = json!({"a": 1}),
+            _ => {}
+        }
+        let mut bytes = value.to_string().into_bytes();
+        match rng.below(40) {
+            0 => bytes = vec![b' '; 65_537],
+            1 => bytes.truncate(bytes.len() / 2),
+            2 => bytes = b"[]".to_vec(),
+            _ => {}
+        }
+        let at = now();
+        let expected = match reference::check_request(op, &bytes, &known, &mut nonces, at) {
+            Ok((id, _, envelope, _)) => {
+                if op == "hello" {
+                    let pk = b64_decode(envelope["pk"].as_str().unwrap()).unwrap();
+                    known.insert(id, pk.try_into().unwrap());
+                }
+                (200, "ok".to_owned())
+            }
+            Err((status, code)) => (status, code.to_owned()),
+        };
+        let a = h.relay_raw(path, bytes, SITE_IP).await;
+        let got = (
+            a.status,
+            a.json["error"].as_str().unwrap_or("ok").to_owned(),
+        );
+        // a request signed 300 seconds off may fall on either side of a second passing between
+        // the reference's clock and hjv-api's
+        let edge =
+            [300, 301].contains(&(t - at).abs()) && (got.1 == "clock" || expected.1 == "clock");
+        assert!(
+            got == expected || edge,
+            "seed {seed} case {case} ({op}): hjv-api {got:?}, the relay's reference {expected:?}: {}",
+            a.text
+        );
+        if got.0 == 200 {
+            accepted += 1;
+            used.push((id, nonce));
+        }
+        *by_code.entry(got.1).or_default() += 1;
+    }
+    (cases, accepted, by_code)
+}
+
+#[tokio::test]
+async fn the_relays_reference_checks_and_hjv_api_agree() {
+    let mut codes: HashMap<String, usize> = HashMap::new();
+    let (mut requests, mut accepted) = (0, 0);
+    // within hjv-api's own limits, which the reference has none of: 60 hellos an hour and 120
+    // polls a minute per known relay (a run takes about a fifth of its requests)
+    for seed in [
+        0x9e37_79b9_7f4a_7c15u64,
+        0xc2b2_ae3d_27d4_eb4f,
+        0x1656_67b1_9e37_79f9,
+    ] {
+        let (n, ok, by_code) = compare(seed, 300).await;
+        requests += n;
+        accepted += ok;
+        for (code, n) in by_code {
+            *codes.entry(code).or_default() += n;
+        }
+    }
+    // every verdict of PROTOCOL.md §4.3 came up, and a good share passed
+    for code in [
+        "ok",
+        "too_large",
+        "bad_request",
+        "unknown_relay",
+        "bad_signature",
+        "clock",
+        "replay",
+    ] {
+        assert!(
+            codes.get(code).copied().unwrap_or(0) >= 5,
+            "{code}: {codes:?}"
+        );
+    }
+    assert!(accepted * 10 >= requests, "{accepted} of {requests}");
 }

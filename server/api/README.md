@@ -753,7 +753,10 @@ what goes with an account or past its time, and the command key's checks; `tests
 runs hjv-relay itself (relay/'s library, its loop step by step) against hjv-api behind a TLS
 terminator that stands in for nginx: enrollment, approval, a long-poll a wake ends at once, twelve
 packets recorded on the PC's wire, the result, the confirmation, revocation, enrolling again, and a
-relay that does not trust the key in use. `tests/ops.rs` has the backups (the rows of
+relay that does not trust the key in use; and it gives the same 900 requests, well-formed and
+broken in every part, to relay/tests/common's `check_request` (the relay's reference of
+PROTOCOL.md §4.3) and to hjv-api, which must come to the same verdict each time. That file needs
+relay/ next to server/ (a dev dependency by path). `tests/ops.rs` has the backups (the rows of
 a backup's file, the places refused, the old backups deleted, a backup while requests go on), the
 restore procedure on a restored database, the check (a fake report with a stopped socket and no
 syncs, then the service's own counts), the alert with a stand-in for Telegram, and the units under
