@@ -3,16 +3,25 @@
 //! hjv-relay: the HJViewer Wake-on-LAN relay for an always-on Linux machine in the PCs' LAN
 //! (docs/relay-dsm.md installs it on a Synology NAS; relay/PROTOCOL.md is the server contract).
 //!
-//!     hjv-relay run --state DIR [--user UID:GID] [--server HOST[:PORT]] [--ca FILE] [--status-file FILE]
+//!     hjv-relay run --state DIR [--log FILE] [--watch FILE] [--stop FILE] [--user UID:GID]
+//!                   [--server HOST[:PORT]] [--ca FILE] [--status-file FILE]
 //!     hjv-relay init --state DIR
-//!     hjv-relay status --state DIR [--status-file FILE]
+//!     hjv-relay status --state DIR [--log FILE] [--status-file FILE] [--out FILE]
 //!     hjv-relay test-wake MAC [--net CIDR | --iface NAME] [--count N] [--user UID:GID]
+//!                         [--out FILE]
 //!     hjv-relay version
 //!
-//! Exit codes: 0 done (for `run`: the executable was replaced, start it again), 1 a failure worth
-//! retrying, 2 usage, 75 another relay already runs with this state folder, 78 configuration
-//! (the boot-up task's loop stops on 2, 75 and 78). `run` reports its usage errors in its log as
-//! configuration errors (78): its command line is the boot-up task's.
+//! Exit codes: 0 done (for `run`: the executable was replaced, start it again, or the stop marker
+//! appeared), 1 a failure worth retrying, 2 usage, 75 another relay already runs with this state
+//! folder, 78 configuration (the boot-up task's loop stops on 2 and 78, and on 75 after a few
+//! tries). `run` reports its usage errors in its log as configuration errors (78): its command line
+//! is the boot-up task's.
+//!
+//! The guide's tasks run as root and give the relay /dev/null for stdout and stderr: the files in
+//! the NAS's shared folder (`run --log`, `status --out`, `test-wake --out`) are opened by the relay
+//! itself, never through a symbolic link and only as regular files, so that whoever can write to
+//! that folder cannot choose which file root writes to. These options are found before the rest of
+//! the command line is read, so that a mistake in it is written there too.
 
 use hjv_relay::{
     config, https, identity,
@@ -38,19 +47,28 @@ const EX_CONFIG: u8 = 78;
 const USAGE: &str = "\
 usage: hjv-relay <command>
 
-  run --state DIR [--user UID:GID] [--server HOST[:PORT]] [--ca FILE] [--status-file FILE]
+  run --state DIR [--log FILE] [--watch FILE] [--stop FILE] [--user UID:GID]
+      [--server HOST[:PORT]] [--ca FILE] [--status-file FILE]
         register with the HJViewer server and send magic packets on its signed commands;
         started as root it keeps DIR (mode 0700) and its key, then runs as UID:GID
-        (default 65534:65534; not the owner of this program or its folder); --server and
-        --ca (the only trusted CA) are for tests
+        (default 65534:65534; not the owner of this program or its folder);
+        --log: write the log to FILE (a regular file, never through a symbolic link; the
+        relay ends when it cannot) and keep it to the last 180 days and 2 MB while it runs;
+        --watch: end (exit 0) when FILE changes, instead of when this program does (the
+        boot-up task runs a checked copy and watches the uploaded file);
+        --stop: end (exit 0) when FILE appears (the stop marker);
+        --server and --ca (the only trusted CA) are for tests
   init --state DIR
         make the relay key if there is none and print the relay ID and enrollment code
-  status --state DIR [--status-file FILE]
-        registration, last contact with the server, and the network interfaces
-  test-wake MAC [--net CIDR | --iface NAME] [--count N] [--user UID:GID]
+  status --state DIR [--log FILE] [--status-file FILE] [--out FILE]
+        registration, last contact with the server, the network interfaces, and with --log
+        whether FILE is a regular file the relay can write its log to
+  test-wake MAC [--net CIDR | --iface NAME] [--count N] [--user UID:GID] [--out FILE]
         send magic packets now, without the server (field test): to 255.255.255.255 and the
         interface's own broadcast, ports 9 and 7, N rounds (1-5, default 3) 200 ms apart, on
         the interface matching CIDR, on NAME, or on every LAN interface
+  --out FILE (status, test-wake): write to FILE instead of stdout and stderr, only to a regular
+        file and never through a symbolic link; status empties it first, test-wake appends
   version
         version and what the build is configured with
 ";
@@ -117,6 +135,43 @@ fn parse_opts(args: &[String], known: &[&'static str], positional: usize) -> Res
     Ok(opts)
 }
 
+/// The value of option `name` (`--name VALUE` or `--name=VALUE`, the first one), looked up before
+/// the command line is read in full: the file that takes the output is opened first, so that a
+/// mistake in the other options is written there too.
+fn early_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == name {
+            return it.next().map(String::as_str);
+        }
+        if let Some(value) = arg.strip_prefix(name).and_then(|v| v.strip_prefix('=')) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// `--out FILE` of status and test-wake (the guide's one-off tasks, run as root): stdout and
+/// stderr go to FILE, a regular file in the shared folder, opened without following a symbolic
+/// link ([`system::open_plain`]). With `append` it keeps what is in it (test-wake's record);
+/// otherwise it is emptied once it passed the checks. A file that cannot be used is a
+/// configuration error, said on stderr.
+fn output_to(args: &[String], append: bool) -> Result<(), u8> {
+    let Some(path) = early_value(args, "--out") else {
+        return Ok(());
+    };
+    let opened = system::open_plain(Path::new(path), false, append).and_then(|file| {
+        if !append {
+            file.set_len(0)?;
+        }
+        system::redirect_output(&file)
+    });
+    opened.map_err(|e| {
+        eprintln!("hjv-relay: --out {path}: {e}");
+        EX_CONFIG
+    })
+}
+
 fn usage_error(e: impl std::fmt::Display) -> u8 {
     eprintln!("hjv-relay: {e}");
     eprint!("{USAGE}");
@@ -167,9 +222,28 @@ fn run(args: &[String]) -> u8 {
     let _ = system::set_non_dumpable();
     system::tidy_descriptors();
     system::detach_terminal();
+    // the log file first, opened as root, so that everything below goes there, a mistake in the
+    // command line included. The boot-up task gives the relay nothing else to write to (stderr is
+    // /dev/null), so without its log it does not run: a person has to look (`status --log`).
+    if let Some(path) = early_value(args, "--log") {
+        if let Err(e) = hjv_relay::log::open_file(Path::new(path)) {
+            return config_error(format_args!(
+                "로그 파일 {path}을(를) 쓸 수 없어 끝냅니다: {e}"
+            ));
+        }
+    }
     let opts = match parse_opts(
         args,
-        &["--state", "--user", "--server", "--ca", "--status-file"],
+        &[
+            "--state",
+            "--user",
+            "--server",
+            "--ca",
+            "--status-file",
+            "--log",
+            "--watch",
+            "--stop",
+        ],
         0,
     ) {
         Ok(o) => o,
@@ -190,7 +264,7 @@ fn run(args: &[String]) -> u8 {
         Some(Err(e)) => return config_error(format!("서버 주소: {e}")),
         None => {
             return config_error(
-                "이 빌드에는 서버 주소(HJV_SERVER)가 없어 run을 할 수 없습니다. test-wake, init, status, version은 됩니다.",
+                "이 빌드에는 서버 주소(HJV_SERVER)가 없어 run을 할 수 없습니다(현장 시험용 묶음이면 정상입니다). test-wake, init, status, version은 됩니다.",
             )
         }
     };
@@ -241,6 +315,8 @@ fn run(args: &[String]) -> u8 {
             return EX_FAIL;
         }
     };
+    // only now, with the lock: a second relay never rewrites the log this one writes
+    hjv_relay::log::manage();
     // only now: a second start that ends at the lock leaves its one line above, not a restart
     logln!(
         "hjv-relay {} 시작 (서버 {server}, 상태 폴더 {})",
@@ -262,7 +338,30 @@ fn run(args: &[String]) -> u8 {
     };
     let os = system::os_description();
     let kernel = system::kernel_release();
-    let exe = system::ExeWatch::new();
+    let exe = match opts.get("--watch") {
+        Some(path) => match system::ExeWatch::file(PathBuf::from(path)) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                logln!("--watch {path}을(를) 열 수 없어 이 실행 파일을 지켜봅니다: {e}");
+                system::ExeWatch::new()
+            }
+        },
+        None => system::ExeWatch::new(),
+    };
+    let stop = match opts.get("--stop") {
+        Some(path) => match system::StopMarker::open(Path::new(path)) {
+            Ok(m) => Some((m, path)),
+            Err(e) => {
+                logln!("멈춤 표지 {path}의 폴더를 열 수 없어 멈춤 표지를 보지 않습니다: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+    let stop_name = stop
+        .as_ref()
+        .map(|(_, path)| (*path).to_owned())
+        .unwrap_or_default();
     let status_path = PathBuf::from(
         opts.get("--status-file")
             .unwrap_or(system::DEFAULT_STATUS_FILE),
@@ -295,16 +394,16 @@ fn run(args: &[String]) -> u8 {
     };
     let env = SystemEnv {
         exe,
+        stop: stop.map(|(m, _)| m),
         status: status_file,
     };
     let mut relay = Relay::new(cfg, env);
     match relay.run() {
-        Exit::ExeChanged(why) => {
-            logln!("실행 파일이 바뀌었습니다({why}). 끝내고 새 실행 파일로 다시 시작합니다.");
-            drop(lock);
-            0
-        }
+        Exit::ExeChanged(why) => logln!("실행 파일이 바뀌었습니다({why}). 끝냅니다."),
+        Exit::Stopped => logln!("멈춤 표지 {stop_name}이(가) 있어 끝냅니다."),
     }
+    drop(lock);
+    0
 }
 
 fn init(args: &[String]) -> u8 {
@@ -358,8 +457,14 @@ fn version() -> u8 {
     match config::command_keys() {
         // public keys, in the form HJV_COMMAND_PUBKEY takes, so a build can be reproduced
         Some(Ok(keys)) => {
-            let keys: Vec<String> = keys.iter().map(config::CommandKey::to_string).collect();
-            println!("command keys: {}", keys.join(","));
+            let given: Vec<String> = keys.iter().map(config::CommandKey::to_string).collect();
+            println!("command keys: {}", given.join(","));
+            // what hjv-api selfcheck shows for its command keys (PROTOCOL.md, "Command keys")
+            let prints: Vec<String> = keys
+                .iter()
+                .map(|k| format!("{}:{}", k.id, k.fingerprint()))
+                .collect();
+            println!("command key fingerprints: {}", prints.join(","));
         }
         Some(Err(e)) => println!("command keys: invalid ({e})"),
         None => println!("command keys: none (this build cannot 'run')"),
@@ -368,7 +473,11 @@ fn version() -> u8 {
 }
 
 fn status(args: &[String]) -> u8 {
-    let opts = match parse_opts(args, &["--state", "--status-file"], 0) {
+    system::tidy_descriptors();
+    if let Err(code) = output_to(args, false) {
+        return code;
+    }
+    let opts = match parse_opts(args, &["--state", "--status-file", "--log", "--out"], 0) {
         Ok(o) => o,
         Err(e) => return usage_error(e),
     };
@@ -377,6 +486,13 @@ fn status(args: &[String]) -> u8 {
     };
     version();
     println!("상태 폴더: {}", state.display());
+    if let Some(log) = opts.get("--log") {
+        println!(
+            "로그 파일: {} ({})",
+            clean(log, 200),
+            log_file_kind(Path::new(log))
+        );
+    }
     match identity::load(&state) {
         Ok(Some(id)) => {
             println!("중계기 ID: {}", id.id);
@@ -429,6 +545,25 @@ fn status(args: &[String]) -> u8 {
         );
     }
     0
+}
+
+/// What is at the path of the log (`status --log`), without following a symbolic link: whether
+/// `run --log` can use it ([`system::open_plain`] takes only a regular file with one name).
+fn log_file_kind(path: &Path) -> String {
+    use std::os::unix::fs::MetadataExt;
+    const FIX: &str =
+        "hjv-relay가 쓰지 않습니다. File Station에서 지운 뒤 HJViewer relay 작업을 실행합니다";
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            "없음. hjv-relay가 시작할 때 만듭니다".to_owned()
+        }
+        Err(e) => format!("확인할 수 없음: {e}"),
+        Ok(m) if m.file_type().is_symlink() => format!("바로 가기(심볼릭 링크)라 {FIX}"),
+        Ok(m) if m.is_dir() => format!("폴더라 {FIX}"),
+        Ok(m) if !m.is_file() => format!("일반 파일이 아니라 {FIX}"),
+        Ok(m) if m.nlink() != 1 => format!("다른 이름(하드 링크)이 있어 {FIX}"),
+        Ok(m) => format!("일반 파일, {}바이트", m.len()),
+    }
 }
 
 /// Prints the runtime status file. Whatever is in it (the unprivileged relay writes it) is
@@ -508,7 +643,10 @@ fn print_runtime_status(path: &Path) {
 fn test_wake(args: &[String]) -> u8 {
     system::tidy_descriptors();
     system::detach_terminal();
-    let opts = match parse_opts(args, &["--net", "--iface", "--count", "--user"], 1) {
+    if let Err(code) = output_to(args, true) {
+        return code;
+    }
+    let opts = match parse_opts(args, &["--net", "--iface", "--count", "--user", "--out"], 1) {
         Ok(o) => o,
         Err(e) => return usage_error(e),
     };

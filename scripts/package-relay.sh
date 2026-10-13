@@ -3,12 +3,22 @@
 # Packages hjv-relay, the Wake-on-LAN relay for a Synology NAS (docs/relay-dsm.md), as a release
 # asset:
 #   HJV_SERVER=<server> HJV_COMMAND_PUBKEY=<key id>:<base64 key>[,...] scripts/package-relay.sh [<out dir>]
-# writes <out dir>/hjviewer-relay-<version>-linux-x86_64.tar.gz (default out dir build/release) and
-# its line in <out dir>/SHA256SUMS, keeping the lines of other files still there (the server
-# package writes the same file). <version> is relay/Cargo.toml's. The archive holds hjv-relay,
-# built for x86_64-unknown-linux-musl and statically linked so that it runs on any x86_64 DSM 7
-# NAS; README-DSM.md (docs/relay-dsm.md); and LICENSE, NOTICE, SOURCE and THIRD_PARTY_NOTICES
-# (scripts/package-notices.sh). Tag: relay-<version>.
+# writes into <out dir> (default build/release-relay, apart from the server package's
+# build/release):
+#   hjviewer-relay-<version>-linux-x86_64.tar.gz  the archive
+#   hjviewer-relay-<version>-linux-x86_64/         what the archive holds, as the NAS's admin unpacks it
+#   SHA256SUMS                                     the archive and its hjv-relay, and nothing else
+# <version> is relay/Cargo.toml's. The archive holds hjv-relay, built for x86_64-unknown-linux-musl
+# and statically linked so that it runs on any x86_64 DSM 7 NAS; README-DSM.md
+# (docs/relay-dsm.md); and LICENSE, NOTICE, SOURCE and THIRD_PARTY_NOTICES
+# (scripts/package-notices.sh). Tag: relay-<version>. The SHA-256 of hjv-relay, its line in
+# SHA256SUMS, is the value that goes into the first line of the NAS's boot-up task (the guide,
+# section 4), which runs nothing else.
+#
+# The binary that goes to the NAS is built by the private build repository's relay job, not on a
+# development machine where agents run. Here the script is for tests and for comparing hashes
+# with that job: the same commit, rustc and C compiler give the same hjv-relay (SOURCE.txt names
+# the compilers; RUSTUP_TOOLCHAIN=<version> picks rustc).
 #
 # The relay is built for one server: HJV_SERVER and HJV_COMMAND_PUBKEY (relay/PROTOCOL.md,
 # section 3.2) are compiled in, like the apps' HJV_SERVER, so the archive names the server and
@@ -16,19 +26,23 @@
 # refuses a placeholder or test server name (localhost, *.example.com, *.test, an IP address, ...)
 # and the public test keys of this repository, whose private keys are published, unless
 # HJV_RELAY_TEST_BUILD=1 says that the build is a test build.
-# HJV_RELAY_UNCONFIGURED=1 packages a build without them, which refuses 'run' (for tests).
+# HJV_RELAY_FIELDTEST=1 packages a build without them instead, for the field test before the
+# server has its keys (the guide, section 6): it refuses 'run' and does test-wake, status and
+# version. Its archive is named ...-linux-x86_64-fieldtest.tar.gz.
 #
 # Binaries to hand out must be of a commit that is in the public repository, since their notices
 # point there: the script stops on uncommitted changes or a commit that origin/main does not
 # contain. HJV_SKIP_SOURCE_CHECK=1 skips that for local tests. A build with HJV_SKIP_SOURCE_CHECK
-# or HJV_RELAY_TEST_BUILD is a test build: its archive is named ...-linux-x86_64-test.tar.gz and
-# its SOURCE.txt says so in its first line.
-# Needs the x86_64-unknown-linux-musl Rust target (rustup target add x86_64-unknown-linux-musl),
-# musl-gcc for ring's C code (Ubuntu: musl-tools), file, jq, sha256sum and gzip.
+# or HJV_RELAY_TEST_BUILD is a test build: its archive name ends in -test.tar.gz and its
+# SOURCE.txt says so in its first line.
+# Needs Rust 1.85 or newer (relay/Cargo.toml's rust-version; cargo test needs 1.88), the
+# x86_64-unknown-linux-musl Rust target (rustup target add x86_64-unknown-linux-musl), musl-gcc
+# for ring's C code (Ubuntu: musl-tools), file, jq, sha256sum and gzip. To compare hashes with
+# the relay job, use the exact rustc that SOURCE.txt's Compilers line of its package names.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-out=${1:-$ROOT/build/release}
+out=${1:-$ROOT/build/release-relay}
 target=x86_64-unknown-linux-musl
 work="$ROOT/build/package-relay"
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -91,7 +105,8 @@ if [ -n "${HJV_SKIP_SOURCE_CHECK:-}" ] || [ -n "${HJV_RELAY_TEST_BUILD:-}" ]; th
   test_build=1
   echo "warning: a test build (HJV_SKIP_SOURCE_CHECK or HJV_RELAY_TEST_BUILD): not to be handed out" >&2
 fi
-name="hjviewer-relay-$version-linux-x86_64${test_build:+-test}"
+fieldtest=${HJV_RELAY_FIELDTEST:+1}
+name="hjviewer-relay-$version-linux-x86_64${fieldtest:+-fieldtest}${test_build:+-test}"
 
 if [ -z "${HJV_SKIP_SOURCE_CHECK:-}" ]; then
   if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
@@ -110,11 +125,11 @@ if [ -z "${HJV_SKIP_SOURCE_CHECK:-}" ]; then
   fi
 fi
 
-if [ -n "${HJV_RELAY_UNCONFIGURED:-}" ]; then
+if [ -n "$fieldtest" ]; then
   unset HJV_SERVER HJV_COMMAND_PUBKEY
 elif [ -z "${HJV_SERVER:-}" ] || [ -z "${HJV_COMMAND_PUBKEY:-}" ]; then
   echo "set HJV_SERVER and HJV_COMMAND_PUBKEY (relay/PROTOCOL.md, section 3.2): a relay without them cannot run" >&2
-  echo "(HJV_RELAY_UNCONFIGURED=1 packages such a build anyway, for tests)" >&2
+  echo "(HJV_RELAY_FIELDTEST=1 packages such a build anyway, for the field test)" >&2
   exit 1
 elif [ -z "${HJV_RELAY_TEST_BUILD:-}" ]; then
   if placeholder_server "$HJV_SERVER"; then
@@ -138,6 +153,8 @@ if [ -z "${CC_x86_64_unknown_linux_musl:-}" ]; then
   fi
   export CC_x86_64_unknown_linux_musl=musl-gcc
 fi
+# what a hash comparison with another build needs to match
+compilers="$(cd "$ROOT/relay" && rustc -V); $("$CC_x86_64_unknown_linux_musl" --version | head -n 1)"
 
 commit=$(git -C "$ROOT" rev-parse HEAD)
 mkdir -p "$work"
@@ -157,8 +174,8 @@ case "$kind" in
     exit 1
     ;;
 esac
-env -i "$bin" version > "$work/version.txt"
-cat "$work/version.txt"
+env -i "$bin" version > "$work/$name.version.txt"
+cat "$work/$name.version.txt"
 if unshare --user --map-root-user --mount true 2> /dev/null; then
   empty=$(mktemp -d "$work/empty.XXXXXX")
   cp "$bin" "$empty/hjv-relay"
@@ -168,15 +185,19 @@ if unshare --user --map-root-user --mount true 2> /dev/null; then
 else
   echo "warning: no unprivileged namespaces here; skipped the empty-root check" >&2
 fi
-grep -qx "commit: $commit" "$work/version.txt"
-if [ -z "${HJV_RELAY_UNCONFIGURED:-}" ] && grep -Eq '^(server|command keys): (none|invalid)' "$work/version.txt"; then
+grep -qx "commit: $commit" "$work/$name.version.txt"
+if [ -z "$fieldtest" ] && grep -Eq '^(server|command keys): (none|invalid)' "$work/$name.version.txt"; then
   echo "the build did not take HJV_SERVER or HJV_COMMAND_PUBKEY (see above)" >&2
   exit 1
 fi
+if [ -n "$fieldtest" ] && ! grep -qx 'server: none (this build cannot .run.)' "$work/$name.version.txt"; then
+  echo "the field test build has a server (see above)" >&2
+  exit 1
+fi
 # what the binary has, checked again (it prints the keys the way HJV_COMMAND_PUBKEY gives them)
-if [ -z "${HJV_RELAY_UNCONFIGURED:-}" ] && [ -z "${HJV_RELAY_TEST_BUILD:-}" ]; then
-  built_server=$(sed -n 's/^server: //p' "$work/version.txt")
-  built_keys=$(sed -n 's/^command keys: //p' "$work/version.txt")
+if [ -z "$fieldtest" ] && [ -z "${HJV_RELAY_TEST_BUILD:-}" ]; then
+  built_server=$(sed -n 's/^server: //p' "$work/$name.version.txt")
+  built_keys=$(sed -n 's/^command keys: //p' "$work/$name.version.txt")
   if placeholder_server "$built_server" || has_test_key "$built_keys"; then
     echo "the build has a placeholder server or a public test key (see above)" >&2
     exit 1
@@ -202,7 +223,10 @@ fi
   if [ -n "${HJV_RELAY_TEST_BUILD:-}" ]; then
     echo "TEST BUILD: it may trust a test server or a public test key. Not for use."
   fi
-  if [ -n "$test_build" ]; then
+  if [ -n "$fieldtest" ]; then
+    echo "FIELD TEST BUILD: no server and no command keys; it runs test-wake, status and version."
+  fi
+  if [ -n "$test_build$fieldtest" ]; then
     echo
   fi
   sed -n 1,4p "$source_txt"
@@ -210,6 +234,7 @@ fi
   echo "with cargo build --release --locked --target $target and HJV_SERVER, HJV_COMMAND_PUBKEY"
   echo "and HJV_BUILD_COMMIT set to what 'hjv-relay version' prints as server, command keys and"
   echo "commit)"
+  echo "Compilers: $compilers"
   grep '^Built by: ' "$source_txt" || true
 } > "$source_txt.new"
 mv "$source_txt.new" "$source_txt"
@@ -218,19 +243,16 @@ mkdir -p "$out"
 mtime=$(git -C "$ROOT" log -1 --format=%ct)
 tar -C "$work" --owner=0 --group=0 --numeric-owner --sort=name --mtime="@$mtime" -cf - "$name" |
   gzip -9 -n > "$out/$name.tar.gz"
+# the archive unpacked next to it, as the NAS's administrator gets it, and the sums of this
+# package alone: the server package's SHA256SUMS lives elsewhere and lists other files
+rm -rf -- "${out:?}/$name"
+tar -xzf "$out/$name.tar.gz" -C "$out" --no-same-owner
 (
   cd "$out"
-  {
-    if [ -f SHA256SUMS ]; then
-      while read -r sum file; do
-        if [ "${file#\*}" != "$name.tar.gz" ] && [ -f "${file#\*}" ]; then
-          echo "$sum  $file"
-        fi
-      done < SHA256SUMS
-    fi
-    sha256sum "$name.tar.gz"
-  } | sort -k 2 > SHA256SUMS.new
+  sha256sum "$name.tar.gz" "$name/hjv-relay" > SHA256SUMS.new
   mv SHA256SUMS.new SHA256SUMS
+  sha256sum -c --quiet SHA256SUMS
   cat SHA256SUMS
 )
 tar -tzvf "$out/$name.tar.gz" | awk '{print $1, $3, $6}'
+echo "the SHA-256 of hjv-relay, for the first line of the NAS's boot-up task: $(sha256sum < "$out/$name/hjv-relay" | cut -c1-64)"

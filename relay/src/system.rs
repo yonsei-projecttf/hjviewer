@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The operating system side: the state folder and its lock, giving up root, noticing that the
-//! executable was replaced, the DSM version, the runtime status file and local time for the log.
+//! executable was replaced or that the stop marker appeared, the DSM version, the runtime status
+//! file and local time for the log.
 //!
 //! On the NAS the DSM boot-up task starts the relay as root. The relay makes itself non-dumpable
 //! first (no core dump, no /proc access to its memory, while it holds the key), lets go of a
-//! terminal it was started from, opens what needs root (the state folder `/volume1/@hjv-relay`,
-//! mode 0700, with its lock and `relay.key`; its own executable; the status file in /run), then
-//! switches to uid/gid 65534 with no supplementary groups, sets PR_SET_NO_NEW_PRIVS and stays
-//! non-dumpable, before it touches the network.
+//! terminal it was started from, opens what needs root (its log file; the state folder
+//! `/volume1/@hjv-relay`, mode 0700, with its lock and `relay.key`; the executable it watches and
+//! the folder of the stop marker; the status file in /run), then switches to uid/gid 65534 with
+//! no supplementary groups, sets PR_SET_NO_NEW_PRIVS and stays non-dumpable, before it touches
+//! the network.
+//!
+//! Files in the NAS's shared folder (the log, the watched upload, the outputs of the guide's
+//! one-off tasks) are opened as root, in a folder that others may be able to write to: never
+//! through a symbolic link, and only when they are regular files ([`open_plain`]).
 
 use std::{
-    ffi::{CString, OsString},
+    cell::Cell,
+    ffi::{CStr, CString, OsString},
     fs::{self, File, OpenOptions},
     io,
     os::{
@@ -119,6 +126,61 @@ pub fn detach_terminal() {
             libc::close(ctty);
         }
     }
+}
+
+/// The message for an open that failed because of what is at the path, not because of the
+/// system: a symbolic link (`O_NOFOLLOW`), a folder, a FIFO or socket without a reader.
+fn not_plain(e: io::Error) -> io::Error {
+    match e.raw_os_error() {
+        Some(libc::ELOOP) => io::Error::other("a symbolic link"),
+        Some(libc::EISDIR) => io::Error::other("a folder"),
+        Some(libc::ENXIO) => io::Error::other("not a regular file"),
+        _ => e,
+    }
+}
+
+/// Refuses an open file that is not a regular file with no other names (hard links).
+fn check_plain(file: &File) -> io::Result<()> {
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    if meta.nlink() != 1 {
+        return Err(io::Error::other("the file has other names (hard links)"));
+    }
+    Ok(())
+}
+
+/// Opens `path` for writing as root in a folder that others may write to (the NAS's shared
+/// folder): never through a symbolic link in its last part, only a regular file with no other
+/// names (hard links), and without blocking on a FIFO put there; created when missing (mode
+/// 0644). With `read` also for reading; with `append` every write goes to the end, otherwise
+/// writes start at the beginning and nothing is removed (the caller empties the file once it
+/// passed these checks, if it wants).
+pub fn open_plain(path: &Path, read: bool, append: bool) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(read)
+        .write(true)
+        .append(append)
+        .create(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(not_plain)?;
+    check_plain(&file)?;
+    Ok(file)
+}
+
+/// Puts `file` on stdout and stderr (`status --out`, `test-wake --out`). Call
+/// [`tidy_descriptors`] first, so that `file` is not itself one of them.
+pub fn redirect_output(file: &File) -> io::Result<()> {
+    for fd in [1, 2] {
+        // SAFETY: both descriptors are open; dup2 replaces `fd` with a copy of the file's.
+        if unsafe { libc::dup2(file.as_raw_fd(), fd) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// What a `--user` uid owns that root runs or reads later: the executable or its folder (it
@@ -352,9 +414,13 @@ pub fn drop_privileges(uid: u32, gid: u32) -> io::Result<bool> {
 /// Notices that the relay's own executable was replaced or changed, so that it can exit and let
 /// the boot-up task's loop start the new one. It keeps the file open and remembers
 /// /proc/self/exe, which keep working after the relay gave up root (the folder the executable
-/// is in may not be readable then).
+/// is in may not be readable then). [`ExeWatch::file`] watches another file the same way: the
+/// file the boot-up task's loop checked and copied (`run --watch`).
 pub struct ExeWatch {
     path: PathBuf,
+    /// Where the kernel shows the watched file's current name: /proc/self/exe, or the open
+    /// descriptor's /proc/self/fd/N.
+    proc_link: PathBuf,
     link: Option<OsString>,
     file: Option<File>,
     ident: Option<Ident>,
@@ -390,9 +456,8 @@ impl ExeWatch {
 
     /// Watches `path` (tests).
     pub fn of(path: PathBuf) -> ExeWatch {
-        let link = fs::read_link("/proc/self/exe")
-            .ok()
-            .map(PathBuf::into_os_string);
+        let proc_link = PathBuf::from("/proc/self/exe");
+        let link = fs::read_link(&proc_link).ok().map(PathBuf::into_os_string);
         let file = File::open(&path).ok();
         let ident = file
             .as_ref()
@@ -400,10 +465,39 @@ impl ExeWatch {
             .map(|m| Ident::of(&m));
         ExeWatch {
             path,
+            proc_link,
             link,
             file,
             ident,
         }
+    }
+
+    /// Watches the file at `path` instead of the running executable, through its own open
+    /// descriptor: renamed, removed, replaced or changed in place. The boot-up task's loop runs a
+    /// checked copy of the uploaded executable and passes the uploaded file here, so that an
+    /// upload still ends the relay. The file is in the shared folder and opened as root: never
+    /// through a symbolic link, only a regular file, and without blocking, so that a link put
+    /// there (to a device, say) is never followed and a FIFO cannot hang the relay.
+    pub fn file(path: PathBuf) -> io::Result<ExeWatch> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(&path)
+            .map_err(not_plain)?;
+        let meta = file.metadata()?;
+        if !meta.file_type().is_file() {
+            return Err(io::Error::other("not a regular file"));
+        }
+        let ident = Some(Ident::of(&meta));
+        let proc_link = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        let link = fs::read_link(&proc_link).ok().map(PathBuf::into_os_string);
+        Ok(ExeWatch {
+            path,
+            proc_link,
+            link,
+            file: Some(file),
+            ident,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -412,7 +506,7 @@ impl ExeWatch {
 
     /// Why the executable is not the one that was started, if it changed.
     pub fn changed(&self) -> Option<String> {
-        if let (Some(link), Ok(now)) = (&self.link, fs::read_link("/proc/self/exe")) {
+        if let (Some(link), Ok(now)) = (&self.link, fs::read_link(&self.proc_link)) {
             if now.as_os_str() != link {
                 return Some(format!("now {}", now.display()));
             }
@@ -433,6 +527,107 @@ impl ExeWatch {
             }
         }
         None
+    }
+}
+
+/// Notices the stop marker (`run --stop FILE`): a file or folder of that name that someone puts
+/// next to the executable to end the relay and the boot-up task's loop without a reboot. The
+/// marker's folder is opened while the relay may still read it (as root) and later listed
+/// through that descriptor, which needs no permission on the folder with Linux's own
+/// permissions: on the NAS it is a shared folder only administrators can open. The unprivileged
+/// relay learns nothing more from it than the names in that folder. Whether DSM's ACLs on shared
+/// folders allow that listing too is not known yet: a listing that fails is logged once
+/// ([`StopMarker::present`]), and the guide has another way to stop the relay.
+pub struct StopMarker {
+    dir: File,
+    name: CString,
+    path: PathBuf,
+    warned: Cell<bool>,
+}
+
+impl StopMarker {
+    pub fn open(path: &Path) -> io::Result<StopMarker> {
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("no file name"))?;
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        let dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+            .open(parent)?;
+        Ok(StopMarker {
+            dir,
+            name: CString::new(name.as_bytes()).map_err(io::Error::other)?,
+            path: path.to_path_buf(),
+            warned: Cell::new(false),
+        })
+    }
+
+    /// Whether the marker is there now, or why the folder could not be listed.
+    pub fn check(&self) -> io::Result<bool> {
+        // SAFETY: dup of an open descriptor; the copy is handed to fdopendir and closed by
+        // closedir (or here when fdopendir fails).
+        let fd = unsafe { libc::dup(self.dir.as_raw_fd()) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `fd` is an open directory descriptor this function owns.
+        let dir = unsafe { libc::fdopendir(fd) };
+        if dir.is_null() {
+            let e = io::Error::last_os_error();
+            // SAFETY: fdopendir failed, so `fd` is still ours to close.
+            unsafe { libc::close(fd) };
+            return Err(e);
+        }
+        // SAFETY: `dir` is a valid stream until closedir; the copy shares the descriptor's
+        // position, so it starts from the beginning of the folder.
+        unsafe { libc::rewinddir(dir) };
+        let found = loop {
+            // readdir answers NULL both at the end of the folder and on an error: only errno,
+            // cleared before the call, tells them apart
+            // SAFETY: errno is this thread's; the stream is valid as above, and an entry stays
+            // valid until the next readdir on it.
+            let entry = unsafe {
+                *libc::__errno_location() = 0;
+                libc::readdir(dir)
+            };
+            if entry.is_null() {
+                let e = io::Error::last_os_error();
+                break match e.raw_os_error() {
+                    None | Some(0) => Ok(false),
+                    Some(_) => Err(e),
+                };
+            }
+            // SAFETY: d_name is a NUL-terminated name inside the entry.
+            let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+            if name == self.name.as_c_str() {
+                break Ok(true);
+            }
+        };
+        // SAFETY: closes the stream and its descriptor, once.
+        unsafe { libc::closedir(dir) };
+        found
+    }
+
+    /// Whether the marker is there now. A folder that cannot be listed counts as no marker; the
+    /// first time, the relay says so in its log, with the guide's other way to stop it (renaming
+    /// or removing the watched file, `run --watch`).
+    pub fn present(&self) -> bool {
+        match self.check() {
+            Ok(found) => found,
+            Err(e) => {
+                if !self.warned.replace(true) {
+                    crate::logln!(
+                        "멈춤 표지 {}을(를) 볼 수 없습니다(폴더 목록을 읽지 못함: {e}). 멈추려면 공유 폴더의 hjv-relay 파일 이름을 바꾸거나 지웁니다.",
+                        self.path.display()
+                    );
+                }
+                false
+            }
+        }
     }
 }
 
@@ -562,6 +757,7 @@ pub fn local_timestamp(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("hjv-relay-sys-{name}-{}", std::process::id()));
@@ -690,6 +886,211 @@ mod tests {
         let watch = ExeWatch::of(exe.clone());
         fs::remove_file(&exe).unwrap();
         assert_eq!(watch.changed().as_deref(), Some("removed"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Whether this process ignores file permissions (root): then a closed folder proves nothing.
+    fn bypasses_permissions() -> bool {
+        euid() == 0
+    }
+
+    #[test]
+    fn a_watched_file_is_followed_through_its_descriptor() {
+        let dir = temp_dir("watch");
+        fs::create_dir(&dir).unwrap();
+        let file = dir.join("hjv-relay");
+        fs::write(&file, "v1").unwrap();
+        // renamed (File Station's rename, or a pause by renaming): seen by the descriptor's name
+        let watch = ExeWatch::file(file.clone()).unwrap();
+        assert_eq!(watch.changed(), None);
+        fs::rename(&file, dir.join("hjv-relay.off")).unwrap();
+        let why = watch.changed().unwrap();
+        assert!(why.ends_with("hjv-relay.off"), "{why}");
+        fs::rename(dir.join("hjv-relay.off"), &file).unwrap();
+        // replaced by an upload that renames a new file over it
+        let watch = ExeWatch::file(file.clone()).unwrap();
+        fs::write(dir.join("upload"), "v2").unwrap();
+        fs::rename(dir.join("upload"), &file).unwrap();
+        assert!(watch.changed().is_some());
+        // written in place
+        let watch = ExeWatch::file(file.clone()).unwrap();
+        fs::write(&file, "v3 longer").unwrap();
+        assert_eq!(watch.changed().as_deref(), Some("modified"));
+        // removed
+        let watch = ExeWatch::file(file.clone()).unwrap();
+        fs::remove_file(&file).unwrap();
+        assert!(watch.changed().is_some());
+        assert!(ExeWatch::file(file.clone()).is_err());
+
+        // in a folder the (unprivileged) relay cannot open: no false alarm, and a rename is
+        // still seen
+        fs::write(&file, "v4").unwrap();
+        let watch = ExeWatch::file(file.clone()).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(watch.changed(), None);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::rename(&file, dir.join("hjv-relay.old")).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(watch.changed().is_some());
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A FIFO at `path` (mkfifo(3)).
+    fn fifo(path: &Path) {
+        let c = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
+    }
+
+    #[test]
+    fn a_watched_file_is_never_opened_through_a_link() {
+        let dir = temp_dir("watch-link");
+        fs::create_dir(&dir).unwrap();
+        // what someone who can write to the shared folder could put in place of the upload
+        let target = dir.join("elsewhere");
+        fs::write(&target, "v1").unwrap();
+        let link = dir.join("hjv-relay");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let e = ExeWatch::file(link.clone()).err().unwrap();
+        assert_eq!(e.to_string(), "a symbolic link");
+        fs::remove_file(&link).unwrap();
+        fifo(&link);
+        assert_eq!(
+            ExeWatch::file(link.clone()).err().unwrap().to_string(),
+            "not a regular file"
+        );
+        fs::remove_file(&link).unwrap();
+        fs::create_dir(&link).unwrap();
+        assert!(ExeWatch::file(link.clone()).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn plain_files_only_in_a_shared_folder() {
+        let dir = temp_dir("plain");
+        fs::create_dir(&dir).unwrap();
+        let target = dir.join("elsewhere");
+        fs::write(&target, "keep\n").unwrap();
+        let refused = |path: &Path| {
+            for (read, append) in [(false, false), (true, true), (false, true)] {
+                if let Ok(file) = open_plain(path, read, append) {
+                    panic!("{} opened: {file:?}", path.display());
+                }
+            }
+        };
+        // a symbolic link, also one whose target does not exist (it is not created)
+        let link = dir.join("status.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        refused(&link);
+        let dangling = dir.join("test.log");
+        std::os::unix::fs::symlink(dir.join("new"), &dangling).unwrap();
+        refused(&dangling);
+        assert!(!dir.join("new").exists());
+        // a hard link, a folder, a FIFO without a reader
+        let hard = dir.join("hard.txt");
+        fs::hard_link(&target, &hard).unwrap();
+        refused(&hard);
+        let sub = dir.join("sub");
+        fs::create_dir(&sub).unwrap();
+        refused(&sub);
+        let pipe = dir.join("pipe");
+        fifo(&pipe);
+        refused(&pipe);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep\n");
+        assert_eq!(
+            open_plain(&link, false, false).unwrap_err().to_string(),
+            "a symbolic link"
+        );
+        assert_eq!(
+            open_plain(&sub, false, true).unwrap_err().to_string(),
+            "a folder"
+        );
+        // a plain file: created 0644, appended to or written from the start
+        let out = dir.join("out.txt");
+        let file = open_plain(&out, false, true).unwrap();
+        (&file).write_all(b"one\n").unwrap();
+        let file = open_plain(&out, false, true).unwrap();
+        (&file).write_all(b"two\n").unwrap();
+        assert_eq!(fs::read_to_string(&out).unwrap(), "one\ntwo\n");
+        assert_eq!(fs::metadata(&out).unwrap().mode() & 0o777, 0o644);
+        let file = open_plain(&out, false, false).unwrap();
+        (&file).write_all(b"ONE").unwrap();
+        assert_eq!(fs::read_to_string(&out).unwrap(), "ONE\ntwo\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_stop_marker_is_seen_through_a_closed_folder() {
+        let dir = temp_dir("stop");
+        fs::create_dir(&dir).unwrap();
+        let marker_path = dir.join("hjv-relay.stop");
+        fs::write(dir.join("hjv-relay"), "").unwrap();
+        fs::write(dir.join("hjv-relay.stop.txt"), "").unwrap();
+        let marker = StopMarker::open(&marker_path).unwrap();
+        assert!(!marker.present());
+        // the relay gave up root and cannot open the folder any more
+        let close = |mode| fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+        close(0o000);
+        if !bypasses_permissions() {
+            assert!(fs::metadata(&marker_path).is_err());
+        }
+        assert!(!marker.present());
+        close(0o700);
+        fs::write(&marker_path, "").unwrap();
+        close(0o000);
+        assert!(marker.present());
+        // asked again and again, from the start of the folder each time
+        assert!(marker.present());
+        close(0o700);
+        fs::remove_file(&marker_path).unwrap();
+        assert!(!marker.present());
+        // a folder of that name (File Station makes folders, not empty files) counts too
+        fs::create_dir(&marker_path).unwrap();
+        assert!(marker.present());
+        fs::remove_dir_all(&dir).unwrap();
+        // a marker whose folder is not there cannot be watched
+        assert!(StopMarker::open(&dir.join("hjv-relay.stop")).is_err());
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_listed_is_said_once() {
+        let dir = temp_dir("stop-unlisted");
+        fs::create_dir(&dir).unwrap();
+        fs::create_dir(dir.join("hjv-relay.stop")).unwrap();
+        // a descriptor the folder cannot be listed through (O_PATH), standing in for a file
+        // system that refuses the listing after the relay gave up root: an error, not "no marker"
+        let marker = StopMarker {
+            dir: OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC)
+                .open(&dir)
+                .unwrap(),
+            name: CString::new("hjv-relay.stop").unwrap(),
+            path: dir.join("hjv-relay.stop"),
+            warned: Cell::new(false),
+        };
+        assert!(marker.check().is_err());
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = lines.clone();
+        crate::log::capture(Some(Box::new(move |l: &str| {
+            sink.lock().unwrap().push(l.to_owned())
+        })));
+        assert!(!marker.present());
+        assert!(!marker.present());
+        crate::log::capture(None);
+        let lines = lines.lock().unwrap();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("hjv-relay.stop을(를) 볼 수 없습니다")
+                && lines[0].contains("hjv-relay 파일 이름을 바꾸거나 지웁니다"),
+            "{lines:?}"
+        );
+        // listed normally, the same marker is seen
+        assert!(StopMarker::open(&dir.join("hjv-relay.stop"))
+            .unwrap()
+            .check()
+            .unwrap());
         fs::remove_dir_all(&dir).unwrap();
     }
 

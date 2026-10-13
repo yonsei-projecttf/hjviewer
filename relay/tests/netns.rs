@@ -22,7 +22,6 @@
 
 mod common;
 
-use base64::{engine::general_purpose::STANDARD, Engine};
 use common::{command_signing_key, relay_config, signed, unix_now, Reply, TestServer};
 use hjv_relay::{
     identity::Identity,
@@ -39,7 +38,7 @@ use std::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::fs::PermissionsExt,
     },
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Output, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -91,7 +90,7 @@ fn outer() {
     if !probe.is_ok_and(|s| s.success()) {
         return skip("user and network namespaces are not available to this user");
     }
-    let configured = build_configured();
+    let configured = common::configured_relay();
     let status = Command::new("unshare")
         .args(user)
         .args(["--net", "--mount", "--fork"])
@@ -107,27 +106,6 @@ fn outer() {
         .status()
         .unwrap();
     assert!(status.success(), "the namespace test failed");
-}
-
-/// hjv-relay built the way a release is, but for the test server and the test command key.
-fn build_configured() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let target = manifest.join("target").join("netns-configured");
-    let key = STANDARD.encode(command_signing_key().verifying_key().to_bytes());
-    let status = Command::new(env!("CARGO"))
-        .current_dir(manifest)
-        .args(["build", "--offline", "--locked", "--bin", "hjv-relay"])
-        .env("CARGO_TARGET_DIR", &target)
-        .env("HJV_SERVER", "localhost")
-        .env("HJV_COMMAND_PUBKEY", format!("1:{key}"))
-        .env_remove("HJV_BUILD_COMMIT")
-        .status()
-        .unwrap();
-    assert!(
-        status.success(),
-        "building the test-configured hjv-relay failed"
-    );
-    target.join("debug").join("hjv-relay")
 }
 
 fn run(program: &str, args: &[&str]) -> Output {
@@ -588,6 +566,7 @@ fn relay_loop_in_the_nas_namespace() {
         });
         let env = SystemEnv {
             exe: None,
+            stop: None,
             status: None,
         };
         let mut relay = Relay::new(relay_config(&server), env);

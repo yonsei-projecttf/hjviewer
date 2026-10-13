@@ -85,22 +85,22 @@ pub fn base32(data: &[u8]) -> String {
     out
 }
 
-/// The first 80 bits of SHA-256 over the public key.
-pub fn fingerprint(pk: &[u8; 32]) -> [u8; 10] {
+/// The key digest (PROTOCOL.md 3.1): the first 80 bits of SHA-256 over the public key.
+pub fn key_digest(pk: &[u8; 32]) -> [u8; 10] {
     let digest = Sha256::digest(pk);
     let mut out = [0u8; 10];
     out.copy_from_slice(&digest[..10]);
     out
 }
 
-/// `r-` and the fingerprint in lowercase base32 (18 characters).
+/// `r-` and the key digest in lowercase base32 (18 characters).
 pub fn relay_id(pk: &[u8; 32]) -> String {
-    format!("r-{}", base32(&fingerprint(pk)).to_ascii_lowercase())
+    format!("r-{}", base32(&key_digest(pk)).to_ascii_lowercase())
 }
 
-/// The fingerprint in uppercase base32 as `XXXX-XXXX-XXXX-XXXX`.
+/// The key digest in uppercase base32 as `XXXX-XXXX-XXXX-XXXX`.
 pub fn enrollment_code(pk: &[u8; 32]) -> String {
-    let chars: Vec<char> = base32(&fingerprint(pk)).chars().collect();
+    let chars: Vec<char> = base32(&key_digest(pk)).chars().collect();
     chars
         .chunks(4)
         .map(|group| group.iter().collect::<String>())
@@ -262,9 +262,9 @@ mod tests {
     }
 
     #[test]
-    fn id_and_code_come_from_the_key_fingerprint() {
+    fn id_and_code_come_from_the_key_digest() {
         let identity = Identity::from_seed(&[7; 32]);
-        let fp = base32(&fingerprint(&identity.pk));
+        let fp = base32(&key_digest(&identity.pk));
         assert_eq!(fp.len(), 16);
         assert_eq!(identity.id, format!("r-{}", fp.to_ascii_lowercase()));
         assert_eq!(

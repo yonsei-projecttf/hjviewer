@@ -8,6 +8,7 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ed25519_dalek::VerifyingKey;
+use sha2::{Digest, Sha256};
 use std::fmt;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -81,8 +82,20 @@ pub struct CommandKey {
     pub key: VerifyingKey,
 }
 
+impl CommandKey {
+    /// The key's fingerprint (PROTOCOL.md, "Command keys"): the lowercase hex SHA-256 of the 32
+    /// public key bytes, which `hjv-api selfcheck` and the build summary also show.
+    pub fn fingerprint(&self) -> String {
+        Sha256::digest(self.key.to_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+}
+
 impl fmt::Display for CommandKey {
-    /// `<key id>:<base64 key>`, one entry of `HJV_COMMAND_PUBKEY`.
+    /// `<key id>:<base64 key>`, one entry of `HJV_COMMAND_PUBKEY`, the line
+    /// `hjv-api keygen command --kid <key id>` prints.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.id, STANDARD.encode(self.key.to_bytes()))
     }
@@ -199,6 +212,15 @@ mod tests {
         // shown the way it is given
         assert_eq!(two[0].to_string(), format!("1:{a}"));
         assert_eq!(two[1].to_string(), format!("2:{b}"));
+        // fingerprints: hex SHA-256 of the key bytes
+        let bytes = STANDARD.decode(&a).unwrap();
+        let hex: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(two[0].fingerprint(), hex);
+        assert_eq!(hex.len(), 64);
+        assert_ne!(two[0].fingerprint(), two[1].fingerprint());
         for bad in [
             String::new(),
             a.clone(),
