@@ -9,7 +9,7 @@ use common::*;
 use hjv_api::{
     fake_sso,
     limits::{SCOPE_BOUND, SCOPE_ID, SCOPE_IP, SCOPE_OK_ID},
-    login::FAILURE_TEXT,
+    login::{FAILURE_TEXT, TEXT_SEAL_CLOCK, TEXT_SSO_DOWN},
     seal,
     tfa::SecondFactor,
     util::{b64, login_key, now, random_bytes},
@@ -21,6 +21,22 @@ use std::{sync::Arc, time::Duration};
 fn assert_failure(a: &Answer, status: u16) {
     assert_eq!(a.status, status, "{}", a.text);
     assert_eq!(a.json, json!({ "error": FAILURE_TEXT }), "{}", a.text);
+}
+
+/// The answer to a seal whose time is out of the window (design v3 §4-1): 409 `clock` with the
+/// server's time.
+fn assert_clock(a: &Answer) {
+    assert_eq!(a.status, 409, "{}", a.text);
+    assert_eq!(a.json["error"], TEXT_SEAL_CLOCK, "{}", a.text);
+    assert_eq!(a.json["hjv"], "clock", "{}", a.text);
+    let server_time = a.json["server_time"].as_i64().unwrap();
+    assert!(server_time.abs_diff(now()) <= 5, "{}", a.text);
+}
+
+/// The answer of every login while SSO calls are paused (design v3 §4-1).
+fn assert_sso_down(a: &Answer) {
+    assert_eq!(a.status, 503, "{}", a.text);
+    assert_eq!(a.json, json!({ "error": TEXT_SSO_DOWN }), "{}", a.text);
 }
 
 #[tokio::test]
@@ -270,10 +286,10 @@ async fn sealing_is_required() {
     ));
     assert_failure(&h.login(&body, ip).await, 400);
     // too old, too far ahead (clear of the second the server reads its clock in; the exact
-    // boundary is login.rs's unit test)
+    // boundary is login.rs's unit test): the clock answer, not the failure of a wrong password
     for t in [now() - 610, now() + 610] {
         let body = h.login_body_at(HONG.0, HONG.1, None, t, &b64(&random_bytes::<16>()));
-        assert_failure(&h.login(&body, ip).await, 400);
+        assert_clock(&h.login(&body, ip).await);
     }
     // within the ten minutes it works
     let body = h.login_body_at(
@@ -360,7 +376,7 @@ async fn sso_outcomes_are_sorted_and_counted_as_the_design_says() {
         ("sso-no-success", "upstream", false),
         ("sso-no-token", "upstream", false),
         ("sso-html", "upstream", false),
-        ("sso-invalid-client", "upstream", false),
+        ("sso-invalid-client", "sso-client", false),
         ("sso-false-nomsg", "upstream", false),
         ("sso-user-500", "upstream", false),
         ("sso-no-perslno", "upstream", false),
@@ -426,14 +442,16 @@ async fn sso_trouble_pauses_the_calls() {
         .await;
     assert_failure(&a, 401);
     assert_eq!(h.sso.token_calls(), 1);
+    // meanwhile every ID gets the same 503 (design v3 §4-1), before the allowlist shows
     let a = h
         .login(&h.login_body(HONG.0, HONG.1, None), "10.0.15.2")
         .await;
-    assert_failure(&a, 401);
+    assert_sso_down(&a);
     assert_eq!(h.sso.token_calls(), 1);
     assert_eq!(h.results().await.last().unwrap(), "login:sso-paused");
-    // not counted against the ID, as SSO trouble never is
+    // counted neither against the ID nor the address: no password was tried
     assert_eq!(h.counted(SCOPE_ID, h.account_tag(HONG.0)).await, 0);
+    assert_eq!(h.attempts(SCOPE_IP, h.state.tags.ip("10.0.15.2")).await, 0);
     h.state.sso_breaker.reset();
     assert_eq!(
         h.login(&h.login_body(HONG.0, HONG.1, None), "10.0.15.2")
@@ -457,10 +475,9 @@ async fn sso_trouble_pauses_the_calls() {
         .await;
     assert!(h.state.sso_breaker.paused());
     let calls = h.sso.token_calls();
-    assert_failure(
+    assert_sso_down(
         &h.login(&h.login_body(KIM.0, KIM.1, None), "10.0.15.4")
             .await,
-        401,
     );
     assert_eq!(h.sso.token_calls(), calls);
     let logs = hjv_api::log::captured().join("\n");
@@ -793,6 +810,7 @@ async fn nothing_secret_reaches_the_logs() {
         KIM.0,
         "홍길동",
         pc.id.as_str(),
+        pc.uuid.as_str(),
         "10.0.13.1",
         fake_sso::BASIC,
         fake_sso::API_UUID,
@@ -971,7 +989,7 @@ async fn seal_times_that_overflow_are_refused() {
     let h = Harness::start().await;
     for t in [i64::MIN, i64::MAX, now().wrapping_add(i64::MIN), -now()] {
         let body = h.login_body_at(HONG.0, HONG.1, None, t, &b64(&random_bytes::<16>()));
-        assert_failure(&h.login(&body, "10.0.20.1").await, 400);
+        assert_clock(&h.login(&body, "10.0.20.1").await);
     }
     assert_eq!(h.sso.token_calls(), 0);
     assert!(h.results().await.iter().all(|r| r == "login:seal-time"));
@@ -1094,4 +1112,129 @@ async fn code_dialogs_count_and_are_capped() {
     let a = h.login(&code, "10.0.23.30").await;
     assert_eq!(a.status, 200, "{}", a.text);
     assert_eq!(h.attempts(SCOPE_IP, h.state.tags.ip("10.0.23.30")).await, 0);
+}
+
+#[tokio::test]
+async fn a_seal_out_of_time_gets_the_clock_answer() {
+    let h = Harness::with(Options {
+        vars: vec![("HJV_API_LIMIT_IP", "3/600".into())],
+        ..Default::default()
+    })
+    .await;
+    // the seal is checked before the ID: listed or not, the same answer but the server's time
+    let ip = "10.0.31.1";
+    let mut answers = Vec::new();
+    for user in [HONG.0, "2026999999"] {
+        let body = h.login_body_at(user, "x", None, now() - 700, &b64(&random_bytes::<16>()));
+        let a = h.login(&body, ip).await;
+        assert_clock(&a);
+        answers.push(a);
+    }
+    assert_eq!(answers[0].json["error"], answers[1].json["error"]);
+    assert_ne!(answers[0].json["error"], FAILURE_TEXT);
+    assert_eq!(h.sso.token_calls(), 0);
+    // it counts against the address like any seal failure, not against an ID
+    assert_eq!(h.counted(SCOPE_IP, h.state.tags.ip(ip)).await, 2);
+    assert_eq!(h.attempts(SCOPE_ID, h.account_tag(HONG.0)).await, 0);
+    // other seal failures keep the failure text
+    let mut body = h.login_body(HONG.0, HONG.1, None);
+    body["password"] = json!("plain");
+    assert_failure(&h.login(&body, ip).await, 400);
+    // past the address limit it is the limit's answer
+    let body = h.login_body_at(
+        HONG.0,
+        HONG.1,
+        None,
+        now() + 700,
+        &b64(&random_bytes::<16>()),
+    );
+    assert_failure(&h.login(&body, ip).await, 429);
+    // a clock right again logs in (from elsewhere)
+    assert_eq!(
+        h.login(&h.login_body(HONG.0, HONG.1, None), "10.0.31.2")
+            .await
+            .status,
+        200
+    );
+}
+
+#[tokio::test]
+async fn while_sso_calls_pause_every_id_gets_the_same_503() {
+    let h = Harness::with(Options {
+        allow: vec![HONG.0, KIM.0, "sso-500", "sso-invalid-client"],
+        vars: vec![
+            ("HJV_API_LIMIT_ID", "100/600".into()),
+            ("HJV_API_LIMIT_IP", "100/600".into()),
+            ("HJV_API_FAILURE_DELAY_MS", "200".into()),
+            ("HJV_API_FAILURE_JITTER_MS", "20".into()),
+        ],
+        ..Default::default()
+    })
+    .await;
+    // five SSO errors in a row pause the calls
+    for _ in 0..5 {
+        assert_failure(
+            &h.login(&h.login_body("sso-500", "pw", None), "10.0.32.1")
+                .await,
+            401,
+        );
+    }
+    assert!(h.state.sso_breaker.paused());
+    let calls = h.sso.token_calls();
+    // an ID on the list with its right password and one off the list: the same 503, before the
+    // allowlist is looked at, and no SSO call
+    let listed = h
+        .login(&h.login_body(HONG.0, HONG.1, None), "10.0.32.2")
+        .await;
+    let unlisted = h
+        .login(&h.login_body("2026999999", "x", None), "10.0.32.3")
+        .await;
+    assert_sso_down(&listed);
+    assert_sso_down(&unlisted);
+    assert_eq!(listed.text, unlisted.text);
+    for a in [&listed, &unlisted] {
+        assert!(
+            a.elapsed >= std::time::Duration::from_millis(150),
+            "{:?}",
+            a.elapsed
+        );
+    }
+    assert_eq!(h.sso.token_calls(), calls);
+    // no password was tried: nothing counts, for the IDs or the addresses
+    for (id, ip) in [(HONG.0, "10.0.32.2"), ("2026999999", "10.0.32.3")] {
+        assert_eq!(h.attempts(SCOPE_ID, h.account_tag(id)).await, 0, "{id}");
+        assert_eq!(h.attempts(SCOPE_IP, h.state.tags.ip(ip)).await, 0, "{ip}");
+    }
+    let results = h.results().await;
+    assert_eq!(
+        &results[results.len() - 2..],
+        ["login:sso-paused", "login:sso-paused"]
+    );
+    // refused client credentials (invalid_client) pause the calls at once, as a refused address
+    h.state.sso_breaker.reset();
+    assert_failure(
+        &h.login(&h.login_body("sso-invalid-client", "pw", None), "10.0.32.4")
+            .await,
+        401,
+    );
+    assert_eq!(h.results().await.last().unwrap(), "login:sso-client");
+    assert_sso_down(
+        &h.login(&h.login_body(KIM.0, KIM.1, None), "10.0.32.5")
+            .await,
+    );
+    let report = h.admin(&["report"], false, None).await.unwrap();
+    assert!(report.contains("SSO calls: paused (client:"), "{report}");
+    let logs = hjv_api::log::captured().join("\n");
+    assert!(
+        logs.contains("refuses this server's client credentials"),
+        "{logs}"
+    );
+    // when the pause is over, logins work again
+    h.state.sso_breaker.reset();
+    assert_eq!(
+        h.login(&h.login_body(KIM.0, KIM.1, None), "10.0.32.5")
+            .await
+            .status,
+        200
+    );
 }

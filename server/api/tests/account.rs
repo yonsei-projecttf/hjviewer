@@ -90,6 +90,12 @@ async fn an_installed_windows_pc_is_added_and_listed_on_other_devices() {
         json!({"total": 1, "data": [{
             "id": "123456789", "user_name": "2026000001",
             "info": {"device_name": "PC-123456789", "os": "windows"}, "status": 1,
+            "note": "비밀번호 없는 연결 일시 중지(관리자)",
+            // no NAS relay in the account: nothing could wake it (wake.rs peer_wol)
+            "hjv": {
+                "pk": hjv_api::util::b64(&pc.public_key()), "pwless": "disabled",
+                "kinds": ["remote", "file", "camera"], "wol": "no",
+            },
         }]})
     );
     // logging in again from the PC finds it there already
@@ -375,7 +381,10 @@ async fn removing_an_id_from_the_allowlist_revokes_its_tokens() {
         .admin(&["allow", "remove"], false, Some("2026000001\n"))
         .await
         .unwrap();
-    assert_eq!(out, "allowlist: 1 removed, 0 not on it, 1 tokens revoked");
+    assert_eq!(
+        out,
+        "allowlist: 1 removed, 0 not on it, 1 tokens and 1 account keys revoked"
+    );
     assert_eq!(h.get("/api/users", &token).await.status, 401);
     assert_eq!(h.get("/api/users", &kim).await.status, 200);
     // and the next login is refused like any unlisted ID

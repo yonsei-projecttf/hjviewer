@@ -362,7 +362,9 @@ pub fn check_request(
     };
     let digest = STANDARD.encode(Sha256::digest(p.as_bytes()));
     let msg = format!("hjv-relay-v1\0{op}\0{id}\0{t}\0{n}\0{digest}");
-    let key = VerifyingKey::from_bytes(&pk).map_err(|_| bad)?;
+    // 32 bytes that are no point of the curve passed the shape (step 2 asks for 32 bytes and the
+    // ID they give); no signature verifies under them: step 4's refusal
+    let key = VerifyingKey::from_bytes(&pk).map_err(|_| (401, "bad_signature"))?;
     key.verify_strict(msg.as_bytes(), &Signature::from_bytes(&signature))
         .map_err(|_| (401, "bad_signature"))?;
     if (t - now).abs() > 300 {

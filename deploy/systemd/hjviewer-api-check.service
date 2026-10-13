@@ -1,0 +1,57 @@
+# The five-minute check of hjv-api (design v3 §5-9; server/api/README.md, Monitoring), started by
+# hjviewer-api-check.timer: GET /api/hjv/source on the socket nginx uses, and the service's
+# `health` on its admin socket (the PCs that are on, by hbbs, and whether they synced in the last
+# ten minutes; SSO calls paused, invalid_client; NAS relays that stopped polling). A finding fails
+# this unit, which starts hjviewer-api-alert@hjviewer-api-check.service.service; the findings go
+# to the journal and to /run/hjviewer-api-check/findings for the alert. Counts only.
+#
+# During planned work that stops hjv-api (a restore), stop the timer first and start it after:
+#   sudo systemctl stop hjviewer-api-check.timer ... sudo systemctl start hjviewer-api-check.timer
+
+[Unit]
+Description=HJViewer account API check (hjv-api)
+Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/server/api/README.md
+After=hjviewer-api.socket hjviewer-api.service
+OnFailure=hjviewer-api-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/hjviewer/bin/hjv-api check
+TimeoutStartSec=2min
+# the findings for the alert, kept between runs (until a reboot)
+RuntimeDirectory=hjviewer-api-check
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+LogNamespace=hjviewer
+
+# root with one capability: the admin socket belongs to the service's user (0600 in a 0700
+# directory). Unix sockets only, no network; no database, backups or keys within reach.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+InaccessiblePaths=-/var/lib/hjviewer -/var/lib/hjviewer-api -/etc/credstore -/etc/credstore.encrypted -/var/lib/systemd/credential.secret
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryMax=64M
+TasksMax=16

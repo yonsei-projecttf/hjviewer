@@ -92,6 +92,8 @@ pub async fn serve(state: Arc<AppState>, listener: Listener, shutdown: impl Futu
         }
     }
     drop(listener);
+    // the relays' held polls are answered now rather than after their 20 seconds
+    state.relays.stop();
     if tokio::time::timeout(SHUTDOWN_GRACE, graceful.shutdown())
         .await
         .is_err()
@@ -152,8 +154,13 @@ async fn handle(
         method: parts.method,
         path: parts.uri.path().to_owned(),
         query: parts.uri.query().unwrap_or("").to_owned(),
+        target: parts
+            .uri
+            .path_and_query()
+            .map_or_else(|| parts.uri.path().to_owned(), |pq| pq.as_str().to_owned()),
         headers: parts.headers,
         body,
+        retry: Default::default(),
     };
     let reply = match tokio::time::timeout(REQUEST_TIMEOUT, api::route(&state, request)).await {
         Ok(reply) => reply,

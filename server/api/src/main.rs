@@ -5,16 +5,23 @@
 //!     hjv-api serve [--db <file>] [--env-file <file>] [--credentials <dir>]
 //!                   [--listen 127.0.0.1:<port>] [--admin-socket <path>] [--operator-log <file>]
 //!     hjv-api admin [--socket <path>] [--reveal] <command>…
-//!     hjv-api keygen seal|log-key [--encrypt-to <credential file>]
-//!     hjv-api selfcheck [--env-file <file>] [--log-only]
+//!     hjv-api keygen seal|log-key|list --kid N|command --kid N [--encrypt-to <credential file> | --out <file>]
+//!     hjv-api selfcheck [--env-file <file>] [--credentials <dir>] [--log-only]
+//!     hjv-api check [--api-socket <path>] [--admin-socket <path>] [--findings <file>]
+//!     hjv-api alert <unit>|test [--findings <file>] [--state-dir <dir>]
 //!     hjv-api oplog-verify [<file>]
 
 use hjv_api::{
     admin::{self, AdminRequest},
-    config::{read_env_file, Config, Secrets, ENV_PREFIX},
-    db, jobs, keygen, log_err, log_notice, log_warn, oplog, selfcheck,
+    alert, backup, check,
+    config::{load_command_key, load_list_key, read_env_file, Config, Secrets, ENV_PREFIX},
+    db, jobs,
+    keygen::{self, Target},
+    log_crit, log_err, log_notice, log_warn, oplog,
+    selfcheck::{self, CommandKeyCheck, ListKeyCheck},
     server::{self, Listener},
     state::AppState,
+    trust,
 };
 use std::{
     collections::HashMap,
@@ -35,8 +42,10 @@ const USAGE: &str = "\
 hjv-api serve [--db <file>] [--env-file <file>] [--credentials <dir>]
               [--listen 127.0.0.1:<port>] [--admin-socket <path>] [--operator-log <file>]
 hjv-api admin [--socket <path>] [--reveal] <command> (hjv-api admin help)
-hjv-api keygen seal|log-key [--encrypt-to <credential file>]
-hjv-api selfcheck [--env-file <file>] [--log-only]
+hjv-api keygen seal|log-key|list --kid N|command --kid N [--encrypt-to <credential file> | --out <file>]
+hjv-api selfcheck [--env-file <file>] [--credentials <dir>] [--log-only]
+hjv-api check [--api-socket <path>] [--admin-socket <path>] [--findings <file>]
+hjv-api alert <unit>|test [--findings <file>] [--state-dir <dir>]
 hjv-api oplog-verify [<file>]
 hjv-api version";
 
@@ -53,6 +62,9 @@ fn main() -> ExitCode {
         Some("admin") => runtime(false).and_then(|rt| rt.block_on(admin_cli(&args[1..]))),
         Some("keygen") => keygen_cli(&args[1..]),
         Some("selfcheck") => runtime(false).and_then(|rt| rt.block_on(selfcheck_cli(&args[1..]))),
+        // the five-minute check and the alert of its units (design v3 §5-9)
+        Some("check") => runtime(false).and_then(|rt| rt.block_on(check::cli(&args[1..]))),
+        Some("alert") => runtime(false).and_then(|rt| rt.block_on(alert::cli(&args[1..]))),
         Some("oplog-verify") => {
             let path = args.get(1).map_or(DEFAULT_OPLOG, String::as_str);
             oplog::verify(Path::new(path)).map(|n| println!("{n} lines, chain intact"))
@@ -254,11 +266,18 @@ async fn serve(
     if state.config.hbbs_pubkey.is_none() {
         log_warn!("HJV_API_HBBS_PUBKEY is not set: logins work, but no PC is added to an account");
     }
+    check_list_key(&state);
+    check_command_key(&state);
     tokio::spawn(jobs::run(state.clone(), stopped()));
     log_notice!(
-        "hjv-api {} ready: seal keys {}, second factor {second_factor}",
+        "hjv-api {} ready: seal keys {}, list key {}, command key {}, second factor {second_factor}",
         env!("CARGO_PKG_VERSION"),
-        state.seal.key_ids().join(" ")
+        state.seal.key_ids().join(" "),
+        &trust::fingerprint(state.list_key.kid(), &state.list_key.public_key())[..18],
+        state.command_key.as_ref().map_or_else(
+            || "none".to_owned(),
+            |k| trust::fingerprint(k.kid(), &k.public_key())[..18].to_owned()
+        )
     );
     server::serve(state, listener, stopped()).await;
     log_notice!("hjv-api stopped");
@@ -274,6 +293,13 @@ async fn admin_cli(args: &[String]) -> Result<(), String> {
     let socket = opts
         .get("--socket")
         .map_or_else(|| PathBuf::from(admin::DEFAULT_SOCKET), PathBuf::from);
+    let sudo_user = std::env::var("SUDO_USER").unwrap_or_default();
+    // the copy of the database comes back through the socket and is written here, as root
+    if argv[0] == "backup" {
+        let output = backup::cli(&socket, &argv[1..], sudo_user).await?;
+        print!("{output}");
+        return Ok(());
+    }
     let mut argv = argv;
     // the allowlist file is read here, as root, and sent; only counts come back
     let input = match argv.as_slice() {
@@ -290,7 +316,7 @@ async fn admin_cli(args: &[String]) -> Result<(), String> {
     let request = AdminRequest {
         argv,
         reveal: opts.contains_key("--reveal"),
-        sudo_user: std::env::var("SUDO_USER").unwrap_or_default(),
+        sudo_user,
         input,
     };
     let output = admin::send(&socket, &request).await?;
@@ -301,28 +327,115 @@ async fn admin_cli(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn keygen_cli(args: &[String]) -> Result<(), String> {
-    let (opts, rest) = options(args, &["--encrypt-to"], &[])?;
-    let [kind] = rest.as_slice() else {
-        return Err("hjv-api keygen seal|log-key [--encrypt-to <credential file>]".into());
+/// The list key in use against the keys the apps pin (design v3 §5-3): a key they do not pin
+/// gets every trust list refused, which `selfcheck` also reports.
+fn check_list_key(state: &AppState) {
+    let (kid, mine) = (state.list_key.kid(), state.list_key.public_key());
+    match state.config.pinned(kid) {
+        Some(pinned) if pinned == mine => {}
+        Some(_) => log_crit!(
+            "the list key (credential hjviewer-api-list-key) is not key {kid} of HJV_API_TRUST_PUBKEYS: the PCs refuse every trust list it signs (hjv-api selfcheck)"
+        ),
+        None if state.config.trust_pubkeys.is_empty() => log_warn!(
+            "HJV_API_TRUST_PUBKEYS is not set: the list key is not compared with the keys the apps pin (hjv-api selfcheck)"
+        ),
+        None => log_crit!(
+            "HJV_API_LIST_KID {kid} is not among HJV_API_TRUST_PUBKEYS: the PCs refuse every trust list (hjv-api selfcheck)"
+        ),
+    }
+}
+
+/// The command key in use against the keys the relays pin (relay/PROTOCOL.md §3.2): a key they
+/// do not pin gets every wake command refused, which `selfcheck` also reports.
+fn check_command_key(state: &AppState) {
+    let config = &state.config;
+    let Some(key) = &state.command_key else {
+        if !config.command_pubkeys.is_empty() {
+            log_crit!(
+                "no command key (credential hjviewer-api-command-key) while HJV_API_COMMAND_PUBKEYS is set: no PC can be woken (hjv-api selfcheck)"
+            );
+        }
+        return;
     };
-    keygen::run(kind, opts.get("--encrypt-to").map(Path::new))
+    let (kid, mine) = (key.kid(), key.public_key());
+    match config.pinned_command_key(kid) {
+        Some(pinned) if pinned == mine => {}
+        Some(_) => log_crit!(
+            "the command key (credential hjviewer-api-command-key) is not key {kid} of HJV_API_COMMAND_PUBKEYS: the relays refuse every wake command it signs (hjv-api selfcheck)"
+        ),
+        None if config.command_pubkeys.is_empty() => log_warn!(
+            "HJV_API_COMMAND_PUBKEYS is not set: the command key is not compared with the keys the relays pin (hjv-api selfcheck)"
+        ),
+        None => log_crit!(
+            "HJV_API_COMMAND_KID {kid} is not among HJV_API_COMMAND_PUBKEYS: the relays refuse every wake command (hjv-api selfcheck)"
+        ),
+    }
+}
+
+fn keygen_cli(args: &[String]) -> Result<(), String> {
+    let (opts, rest) = options(args, &["--encrypt-to", "--out", "--kid"], &[])?;
+    let [kind] = rest.as_slice() else {
+        return Err(format!("hjv-api {}", keygen::USAGE));
+    };
+    let kid = match opts.get("--kid") {
+        Some(n) => Some(
+            n.parse::<u32>()
+                .map_err(|_| "--kid takes a key number, 1 to 65535".to_owned())?,
+        ),
+        None => None,
+    };
+    let target = match (opts.get("--encrypt-to"), opts.get("--out")) {
+        (Some(_), Some(_)) => return Err("--encrypt-to or --out, not both".into()),
+        (Some(path), None) => Target::EncryptTo(Path::new(path)),
+        (None, Some(path)) => Target::Out(Path::new(path)),
+        (None, None) => Target::Stdout,
+    };
+    keygen::run(kind, kid, target)
 }
 
 async fn selfcheck_cli(args: &[String]) -> Result<(), String> {
-    let (opts, rest) = options(args, &["--env-file"], &["--log-only"])?;
+    let (opts, rest) = options(args, &["--env-file", "--credentials"], &["--log-only"])?;
     if !rest.is_empty() {
-        return Err("hjv-api selfcheck [--env-file <file>] [--log-only]".into());
+        return Err(
+            "hjv-api selfcheck [--env-file <file>] [--credentials <dir>] [--log-only]".into(),
+        );
     }
     let config = load_config(opts.get("--env-file"))?;
-    let (report, ok) = selfcheck::run(&config).await;
+    // the list key and the command key in use, where the credentials are: in the unit
+    // (ExecStartPost=) or a test's directory
+    let dir = opts
+        .get("--credentials")
+        .map(PathBuf::from)
+        .or_else(|| systemd_dir("CREDENTIALS_DIRECTORY"));
+    let list_key = match &dir {
+        Some(dir) => match load_list_key(dir) {
+            Ok(seed) => ListKeyCheck::Held {
+                kid: config.list_kid,
+                public_key: trust::ListKey::new(config.list_kid, &seed).public_key(),
+            },
+            Err(e) => ListKeyCheck::NotRead(e),
+        },
+        None => ListKeyCheck::Unavailable,
+    };
+    let command_key = match &dir {
+        Some(dir) => match load_command_key(dir) {
+            Ok(Some(seed)) => CommandKeyCheck::Held {
+                kid: config.command_kid,
+                public_key: hjv_api::wake::CommandKey::new(config.command_kid, &seed).public_key(),
+            },
+            Ok(None) => CommandKeyCheck::Absent,
+            Err(e) => CommandKeyCheck::NotRead(e),
+        },
+        None => CommandKeyCheck::Unavailable,
+    };
+    let (report, ok) = selfcheck::run(&config, &list_key, &command_key).await;
     if opts.contains_key("--log-only") {
         // after each start (ExecStartPost=-): report through the journal, never fail the unit
         for line in report.lines() {
-            if line.starts_with("[ OK ]") {
-                log_notice!("selfcheck {line}");
-            } else {
+            if line.starts_with("[FAIL]") {
                 log_err!("selfcheck {line}");
+            } else {
+                log_notice!("selfcheck {line}");
             }
         }
         return Ok(());

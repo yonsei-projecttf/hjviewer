@@ -2,7 +2,7 @@
 
 //! The sealed login password (design v2 §8-2, §9-2 step 3).
 //!
-//! The app does not send the portal password in the clear. Client patch 0008 replaces the
+//! The app does not send the portal password in the clear. Client patch 0030 replaces the
 //! `password` field of `POST /api/login` with
 //!
 //! ```text
@@ -14,15 +14,20 @@
 //!   `crypto_box::SecretKey::unseal`, which the interop test below checks against libsodium).
 //! - `<kid>`: [`key_id`] of the server key it was sealed to (16 lowercase hex digits).
 //! - payload: the UTF-8 JSON object
-//!   `{"v":1,"pw":"<password>","t":<unix seconds>,"n":"<nonce>","id":"<device id>","kid":"<kid>"}`
-//!   where `n` is standard base64 of 16 to 64 random bytes, new for every login, and `id` is the
-//!   device ID that the request also carries in its own `id` field.
+//!   `{"v":1,"pw":"<password>","t":<unix seconds>,"n":"<nonce>","id":"<device id>","kid":"<kid>",
+//!   "ck":"<account key>","cp":"<account key proof>"}` where `n` is standard base64 of 16 to 64
+//!   random bytes, new for every login, `id` is the device ID that the request also carries in
+//!   its own `id` field, and `ck` and `cp` register the login's account key (design v3 §4-1;
+//!   keys.rs has their format). Inside the seal, a party that intercepts TLS cannot put a key of
+//!   its own there.
 //!
 //! hjv-api answers 400 to a password that is not sealed, an unknown kid, a payload it cannot open
-//! or read, a kid or device ID that differs from the outer one, a time more than
-//! HJV_API_SEAL_MAX_SKEW (10 minutes) off its clock, and a nonce it has seen before, except that
-//! the very same request body within HJV_API_RETRY_WINDOW (30 s) gets the first answer again
-//! (login.rs). The 2FA follow-up request carries no password and is not sealed.
+//! or read, a kid or device ID that differs from the outer one, and a nonce it has seen before,
+//! except that the very same request body within HJV_API_RETRY_WINDOW (30 s) gets the first answer
+//! again (login.rs). A time more than HJV_API_SEAL_MAX_SKEW (10 minutes) off its clock gets 409
+//! `{"error":…,"hjv":"clock","server_time":…}` instead, so that the app can tell a wrong clock
+//! from a wrong password and correct its time. The 2FA follow-up request carries no password and
+//! is not sealed.
 //!
 //! The app builds get the public key as HJV_LOGIN_SEAL_PUBKEY: standard base64 of the 32-byte
 //! X25519 key that `hjv-api keygen seal` prints; the app derives `<kid>` from it the same way.
@@ -56,6 +61,9 @@ pub struct Opened {
     pub device_id: String,
     /// SHA-256 of the sealed bytes (the device signature covers it)
     pub sealed_hash: [u8; 32],
+    /// the account key and its proof (keys.rs), as sealed; checked after the SSO
+    pub ck: Option<String>,
+    pub cp: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +94,10 @@ struct Payload {
     n: String,
     id: String,
     kid: String,
+    #[serde(default)]
+    ck: Option<String>,
+    #[serde(default)]
+    cp: Option<String>,
 }
 
 impl SealKeys {
@@ -140,12 +152,14 @@ impl SealKeys {
             nonce: payload.n,
             device_id: payload.id,
             sealed_hash: sha256(&sealed),
+            ck: payload.ck,
+            cp: payload.cp,
         })
     }
 }
 
-/// What the app does, for tests and tools: seals `password` for a login from `device_id` at
-/// `time` with `nonce` (standard base64).
+/// What the app before design v3 did, for tests and tools: seals `password` for a login from
+/// `device_id` at `time` with `nonce` (standard base64), without an account key.
 pub fn seal_password(
     public_key: &[u8; 32],
     password: &str,
@@ -156,6 +170,25 @@ pub fn seal_password(
     let kid = key_id(public_key);
     let payload = serde_json::json!({
         "v": 1, "pw": password, "t": time, "n": nonce, "id": device_id, "kid": kid,
+    });
+    seal_payload(public_key, &kid, &payload.to_string())
+}
+
+/// What the app does, for tests and tools: [`seal_password`] with the account key `ck` and its
+/// proof `cp` (keys.rs).
+pub fn seal_login(
+    public_key: &[u8; 32],
+    password: &str,
+    time: i64,
+    nonce: &str,
+    device_id: &str,
+    ck: &str,
+    cp: &str,
+) -> String {
+    let kid = key_id(public_key);
+    let payload = serde_json::json!({
+        "v": 1, "pw": password, "t": time, "n": nonce, "id": device_id, "kid": kid,
+        "ck": ck, "cp": cp,
     });
     seal_payload(public_key, &kid, &payload.to_string())
 }
@@ -199,6 +232,21 @@ mod tests {
         assert_eq!(opened.nonce, "AAECAwQFBgcICQoLDA0ODw==");
         assert_eq!(opened.device_id, "123456789");
         assert_eq!(b64(&opened.sealed_hash), VECTOR_SEALED_HASH);
+        // made before the account key: none in it
+        assert_eq!((opened.ck, opened.cp), (None, None));
+    }
+
+    #[test]
+    fn carries_the_account_key() {
+        let sk = [9u8; 32];
+        let keys = SealKeys::new(&[Zeroizing::new(sk)]);
+        let pk = *SecretKey::from_bytes(sk).public_key().as_bytes();
+        let field = seal_login(&pk, "pw", 5, &b64(&[1u8; 16]), "42", "CK", "CP");
+        let opened = keys.open(&field).unwrap();
+        assert_eq!(
+            (opened.ck.as_deref(), opened.cp.as_deref()),
+            (Some("CK"), Some("CP"))
+        );
     }
 
     #[test]

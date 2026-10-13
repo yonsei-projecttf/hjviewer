@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Upkeep (design v2 §6, §9-3, §13-1). Every hour: delete what is past its keeping time (tokens
-//! idle 90 days or a year old, devices not seen for 180 days, accounts unused for a year unless
-//! still allowlisted with a PC in use, records older than six months, spent nonces, and limit
-//! counters past the longest window) and truncate the WAL. Every day: ask hbbs when each device
-//! in an account last registered (a device counts as seen when hbbs has it with the stored key;
-//! logins and list requests from it count as well), and write a summary of the day's logins to
-//! the journal, with counts only.
+//! idle 90 days or a year old, accounts unused for a year unless still allowlisted with a PC in
+//! use, records older than six months, spent nonces, and limit counters past the longest window),
+//! release the PCs not seen for 180 days (`db::release_binding`, which leaves the tombstone that
+//! gets them a signed `revoked`: design v3 §4-3), revoke the account keys no valid token is left
+//! for (their logins expired, or their tokens went without them: design v3 §1-8, §14 question 6),
+//! delete account keys 30 days after they were revoked, tombstones after 180 days and the PCs'
+//! reports of key use and refusals after 30, and truncate the WAL. Every day: ask hbbs about each
+//! device in an account (a device counts as seen when hbbs has it with the stored key; logins,
+//! list requests and syncs from it count as well), mark the ones hbbs holds another key for as
+//! needs-relogin (for the PCs that do not sync; a sync does it at once: design v3 §4-6), and write
+//! a summary of the day's logins to the journal, with counts only. Every hour too: delete the
+//! copies of the database that a backup left when the service stopped in the middle of sending
+//! one (backup.rs). Every five seconds: move the wake jobs along (wake.rs `tick`); every hour also
+//! delete the relays' pending entries past 24 hours, pre-approvals past 7 days, spent relay
+//! nonces, expired commands and wake jobs past six months.
 
 use crate::{
     db,
@@ -17,6 +26,9 @@ use crate::{
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
+/// How often the wake jobs move along (wake.rs `tick`: design v3 §8-4 asks hbbs every five
+/// seconds after the packets).
+const WAKE_EVERY: Duration = Duration::from_secs(5);
 const FIRST_PURGE: Duration = Duration::from_secs(60);
 const PURGE_EVERY: Duration = Duration::from_secs(3600);
 const FIRST_DAILY: Duration = Duration::from_secs(300);
@@ -26,12 +38,17 @@ const DAILY_EVERY: Duration = Duration::from_secs(24 * 3600);
 pub async fn run(state: Arc<AppState>, shutdown: impl Future<Output = ()>) {
     let mut purge = interval_at(Instant::now() + FIRST_PURGE, PURGE_EVERY);
     let mut daily = interval_at(Instant::now() + FIRST_DAILY, DAILY_EVERY);
+    let mut wake = interval_at(Instant::now() + WAKE_EVERY, WAKE_EVERY);
     purge.set_missed_tick_behavior(MissedTickBehavior::Delay);
     daily.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    wake.set_missed_tick_behavior(MissedTickBehavior::Delay);
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             () = &mut shutdown => break,
+            _ = wake.tick() => {
+                crate::wake::tick(&state).await;
+            }
             _ = purge.tick() => {
                 purge_now(&state).await;
             }
@@ -46,17 +63,35 @@ pub async fn run(state: Arc<AppState>, shutdown: impl Future<Output = ()>) {
 /// Deletes what is past its keeping time.
 pub async fn purge_now(state: &Arc<AppState>) -> Option<db::Purged> {
     state.retries.purge();
+    state.request_retries.purge();
     state.pending.purge();
     state.purge_notices();
+    state.key_calls.purge();
+    state.lists.purge();
+    state.key_checks.purge();
+    state.relays.purge();
+    match crate::backup::remove_stale_copies(state).await {
+        Ok(0) => {}
+        Ok(n) => {
+            log_notice!("upkeep: removed {n} copies of the database left by broken-off backups")
+        }
+        Err(e) => log_warn!("upkeep: {e}"),
+    }
     let retention = state.retention();
     let at = now();
     match state.db.call(move |c| db::purge(c, at, &retention)).await {
         Ok(p) => {
             if p.devices + p.accounts > 0 {
                 log_notice!(
-                    "upkeep: removed {} devices not seen for long and {} unused accounts",
+                    "upkeep: released {} PCs not seen for long and deleted {} unused accounts",
                     p.devices,
                     p.accounts
+                );
+            }
+            if p.keys_revoked > 0 {
+                log_notice!(
+                    "upkeep: revoked {} account keys whose logins ended",
+                    p.keys_revoked
                 );
             }
             Some(p)
@@ -73,7 +108,11 @@ pub async fn purge_now(state: &Arc<AppState>) -> Option<db::Purged> {
 pub struct SeenRound {
     pub asked: usize,
     pub seen: usize,
+    /// devices hbbs holds another key for, and of them the ones marked needs-relogin now
     pub key_changed: usize,
+    pub marked: usize,
+    /// needs-relogin devices hbbs holds the stored key for again
+    pub cleared: usize,
 }
 
 /// Asks hbbs about every device in an account and records the ones it has seen.
@@ -105,7 +144,34 @@ pub async fn refresh_seen(state: &Arc<AppState>) -> SeenRound {
             }) => {
                 if public_key.as_slice() != device.public_key {
                     round.key_changed += 1;
-                } else if let Some(age) = seen_secs_ago {
+                    let (id, stored, at) =
+                        (device.device_id.clone(), device.public_key.clone(), now());
+                    let marked = state
+                        .db
+                        .call(move |c| {
+                            db::in_tx(c, |tx| db::mark_key_changed(tx, &id, &stored, at))
+                        })
+                        .await;
+                    match marked {
+                        Ok(true) => round.marked += 1,
+                        Ok(false) => {}
+                        Err(e) => log_err!("upkeep: {e}"),
+                    }
+                    continue;
+                }
+                if device.key_changed_at.is_some() {
+                    let id = device.device_id.clone();
+                    match state
+                        .db
+                        .call(move |c| db::in_tx(c, |tx| db::clear_key_changed(tx, &id)))
+                        .await
+                    {
+                        Ok(true) => round.cleared += 1,
+                        Ok(false) => {}
+                        Err(e) => log_err!("upkeep: {e}"),
+                    }
+                }
+                if let Some(age) = seen_secs_ago {
                     // hbbs.rs bounds the age to ten years; saturating all the same
                     let age = i64::try_from(age).unwrap_or(i64::MAX);
                     let (id, seen_at) = (device.device_id.clone(), now().saturating_sub(age));
@@ -132,8 +198,15 @@ pub async fn refresh_seen(state: &Arc<AppState>) -> SeenRound {
     }
     if round.key_changed > 0 {
         log_notice!(
-            "upkeep: {} devices registered with hbbs under a new key; they count as seen after their next login",
-            round.key_changed
+            "upkeep: {} devices registered with hbbs under a new key ({} newly needs-relogin); they count as seen after a login on them",
+            round.key_changed,
+            round.marked
+        );
+    }
+    if round.cleared > 0 {
+        log_notice!(
+            "upkeep: hbbs holds the stored key again for {} needs-relogin devices",
+            round.cleared
         );
     }
     round

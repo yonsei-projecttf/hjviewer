@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Small helpers the modules share: the clock, random bytes, hashes, base64, and the masking of
-//! admin output.
+//! Small helpers the modules share: the clock, random bytes, hashes, base64, address networks,
+//! and the masking of admin output.
 
 use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -120,6 +120,58 @@ pub fn address_group(ip: &str) -> String {
     }
 }
 
+/// An address network, such as `192.0.2.0/24` or `2001:db8::/32` (HJV_API_CAMPUS_NETS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpNet {
+    addr: IpAddr,
+    prefix: u8,
+}
+
+impl IpNet {
+    /// `<address>/<prefix>`, or an address alone (one host). Bits past the prefix are ignored.
+    pub fn parse(text: &str) -> Option<IpNet> {
+        let text = text.trim();
+        let (addr, prefix) = match text.split_once('/') {
+            Some((a, p)) => (a.trim(), Some(p.trim())),
+            None => (text, None),
+        };
+        let addr: IpAddr = addr.parse().ok()?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            Some(p) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => p.parse().ok()?,
+            Some(_) => return None,
+            None => max,
+        };
+        (prefix <= max).then_some(IpNet { addr, prefix })
+    }
+
+    /// Whether `ip` is in the network (an IPv4 network holds no IPv6 address and the other way
+    /// round; the server already reads an IPv4-mapped IPv6 client as IPv4).
+    pub fn contains(&self, ip: &IpAddr) -> bool {
+        match (self.addr, ip) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u32::from(net) & mask == u32::from(*ip) & mask
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u128::from(net) & mask == u128::from(*ip) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for IpNet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.addr, self.prefix)
+    }
+}
+
 /// A RustDesk device ID: 1 to 64 letters, digits, '-' or '_' (numeric IDs and custom ones).
 pub fn valid_device_id(id: &str) -> bool {
     !id.is_empty()
@@ -147,6 +199,38 @@ pub fn datetime(ts: i64) -> String {
     )
 }
 
+/// The day number (days since 1970-01-01) of a UTC date written "2026-10-12", exactly in that
+/// form; `None` for anything else, such as "2026-02-30" or "2026-1-9".
+pub fn day_number(text: &str) -> Option<i64> {
+    let b = text.as_bytes();
+    let digits = |r: std::ops::Range<usize>| -> Option<i64> {
+        b.get(r.clone())?
+            .iter()
+            .all(u8::is_ascii_digit)
+            .then(|| text[r].parse().ok())
+            .flatten()
+    };
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let (y, m, d) = (digits(0..4)?, digits(5..7)?, digits(8..10)?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let days = days_from_civil(y, m, d);
+    (date(days * DAY) == text).then_some(days)
+}
+
+/// Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 /// Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
@@ -171,6 +255,26 @@ mod tests {
         assert_eq!(datetime(951_782_400), "2000-02-29T00:00:00Z");
         assert_eq!(datetime(1_760_259_045), "2025-10-12T08:50:45Z");
         assert_eq!(date(-1), "1969-12-31");
+        // and back
+        for ts in [0, 951_782_400, 1_760_259_045, -DAY, 4_102_444_800] {
+            assert_eq!(day_number(&date(ts)), Some(ts.div_euclid(DAY)), "{ts}");
+        }
+        assert_eq!(day_number("2025-10-09"), Some(20_370));
+        for bad in [
+            "2026-02-30",
+            "2025-02-29",
+            "2026-13-01",
+            "2026-00-10",
+            "2026-1-09",
+            "2026-01-9",
+            "20261009",
+            "2026/10/09",
+            "+026-10-09",
+            "2026-10-09 ",
+            "",
+        ] {
+            assert_eq!(day_number(bad), None, "{bad}");
+        }
     }
 
     #[test]
@@ -211,6 +315,38 @@ mod tests {
         assert_eq!(address_group("::1"), "::/64");
         assert_eq!(address_group("invalid"), "invalid");
         assert_eq!(address_group("unknown"), "unknown");
+    }
+
+    #[test]
+    fn networks() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let net = IpNet::parse("192.0.2.0/24").unwrap();
+        assert!(net.contains(&ip("192.0.2.1")) && net.contains(&ip("192.0.2.255")));
+        assert!(!net.contains(&ip("192.0.3.1")) && !net.contains(&ip("2001:db8::1")));
+        // bits past the prefix do not matter; a lone address is one host; /0 holds everything
+        assert!(IpNet::parse(" 192.0.2.77/24 ")
+            .unwrap()
+            .contains(&ip("192.0.2.5")));
+        let host = IpNet::parse("198.51.100.7").unwrap();
+        assert!(host.contains(&ip("198.51.100.7")) && !host.contains(&ip("198.51.100.8")));
+        assert!(IpNet::parse("0.0.0.0/0")
+            .unwrap()
+            .contains(&ip("203.0.113.9")));
+        let v6 = IpNet::parse("2001:db8::/32").unwrap();
+        assert!(v6.contains(&ip("2001:db8:ffff::1")) && !v6.contains(&ip("2001:db9::1")));
+        assert!(!v6.contains(&ip("192.0.2.1")));
+        assert_eq!(v6.to_string(), "2001:db8::/32");
+        for bad in [
+            "192.0.2.0/33",
+            "2001:db8::/129",
+            "192.0.2.0/",
+            "192.0.2.0/x",
+            "192.0.2.0/+8",
+            "example",
+            "",
+        ] {
+            assert!(IpNet::parse(bad).is_none(), "{bad}");
+        }
     }
 
     #[test]

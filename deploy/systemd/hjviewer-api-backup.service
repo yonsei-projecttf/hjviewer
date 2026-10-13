@@ -1,0 +1,56 @@
+# The daily backup of hjv-api's database (design v3 §5-9; server/api/README.md, Backup and
+# restore), started by hjviewer-api-backup.timer: `hjv-api admin backup` has the running service
+# take a consistent copy and writes it, checked, as a 0600 file into /var/lib/hjviewer-api/backup
+# (root's, 0700; this unit creates it), then deletes the backups there older than 14 days. The
+# credentials, /var/lib/systemd/credential.secret and the operator record are not in it. A failure
+# starts hjviewer-api-alert@hjviewer-api-backup.service.service.
+#
+# Before installing a new hjv-api, take a snapshot by hand (one-way schema upgrades):
+#   sudo /opt/hjviewer/bin/hjv-api admin backup /var/lib/hjviewer-api/backup/before-<VERSION>.sqlite3
+
+[Unit]
+Description=HJViewer account API backup (hjv-api)
+Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/server/api/README.md
+After=hjviewer-api.socket hjviewer-api.service
+OnFailure=hjviewer-api-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/hjviewer/bin/hjv-api admin backup --keep-days 14 /var/lib/hjviewer-api/backup
+TimeoutStartSec=15min
+# root's, inside the service's state directory, which the service's user cannot read into
+StateDirectory=hjviewer-api/backup
+StateDirectoryMode=0700
+UMask=0077
+LogNamespace=hjviewer
+
+# root with one capability: the admin socket belongs to the service's user, and so does
+# /var/lib/hjviewer-api, which the backups' directory is in. Unix sockets only, no network.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+InaccessiblePaths=-/var/lib/hjviewer -/etc/credstore -/etc/credstore.encrypted -/var/lib/systemd/credential.secret
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryMax=128M
+TasksMax=16

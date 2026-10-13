@@ -20,8 +20,8 @@
 //! - `<signed>`: standard base64 of the device's key as hbbs signs it for clients: the bytes
 //!   `RendezvousServer::get_pk` puts into PunchHoleResponse.pk and RelayResponse.pk, that is
 //!   `sign::sign(IdPk { id, pk }.write_to_bytes(), <hbbs's secret key>)`: the 64-byte Ed25519
-//!   signature followed by the protobuf message `IdPk` (hbb_common message.proto: `string id = 1;
-//!   bytes pk = 2;`) with the ID and the 32-byte public key the device registered with (from
+//!   signature followed by the protobuf message `IdPk` (hbb_common rendezvous.proto: `string id =
+//!   1; bytes pk = 2;`) with the ID and the 32-byte public key the device registered with (from
 //!   memory or hbbs's database); or `-` when hbbs knows no key for the ID;
 //! - `<age>`: whole seconds since the device last registered, when it registered since hbbs
 //!   started (a device that is on registers every few seconds), or `-` when hbbs does not know

@@ -3,15 +3,22 @@
 //! What the request handlers share.
 
 use crate::{
+    api::Reply,
+    check::OnlineSince,
     config::{Config, Secrets},
     db::{self, Db, Record},
+    keys::CallLimiter,
     limits::{Admit, Breaker, GlobalLimiter, Latency, RecordBudget, FAILURE_RECORDS_PER_MINUTE},
     log::Tagger,
-    login::RetryCache,
+    login::{LoginAnswer, RetryCache},
+    pcsync::{KeyChecks, ListCache},
+    relay::RelayHub,
     seal::SealKeys,
     sso::SsoClient,
     tfa::{PendingStore, SecondFactor},
+    trust::ListKey,
     util::DAY,
+    wake::CommandKey,
 };
 use rusqlite::Connection;
 use std::{
@@ -39,13 +46,33 @@ pub struct AppState {
     /// failure records written per minute
     pub failure_records: RecordBudget,
     /// answers kept for a retry of the same login body (step 3)
-    pub retries: RetryCache,
+    pub retries: RetryCache<LoginAnswer>,
+    /// answers kept for a retry of the very same signed account request that changes something
+    /// (api.rs `authenticate`)
+    pub request_retries: RetryCache<Reply>,
     /// logins waiting for a second-factor code (step 8)
     pub pending: PendingStore,
     /// logins handled at once
     pub login_slots: Arc<Semaphore>,
     /// SSO messages already written to the journal
     pub sso_messages: Mutex<HashSet<String>>,
+    /// calls of the account-key paths per account (keys.rs)
+    pub key_calls: CallLimiter,
+    /// the list key that signs the PCs' trust lists (credential hjviewer-api-list-key, number
+    /// HJV_API_LIST_KID)
+    pub list_key: ListKey,
+    /// the last trust list of each PC, which a repeat within ten seconds gets again (pcsync.rs)
+    pub lists: ListCache,
+    /// when hbbs was last asked about a PC's key after a sync its stored key did not sign
+    pub key_checks: KeyChecks,
+    /// since when hbbs has seen each PC holding its binding on, for the five-minute check
+    /// (check.rs)
+    pub online: OnlineSince,
+    /// the command key that signs wake commands (credential hjviewer-api-command-key, number
+    /// HJV_API_COMMAND_KID), when there is one (wake.rs)
+    pub command_key: Option<CommandKey>,
+    /// the relays' held polls and per-relay limits (relay.rs)
+    pub relays: RelayHub,
     /// limits already reported, so that hammering a full limit writes no more records or lines
     notices: Mutex<HashMap<String, Instant>>,
 }
@@ -71,8 +98,16 @@ impl AppState {
             sso_api_uuid,
             seal_keys,
             log_key,
+            list_key,
+            command_key,
         } = secrets;
         Ok(Arc::new(AppState {
+            list_key: ListKey::new(config.list_kid, &list_key),
+            command_key: command_key.map(|seed| CommandKey::new(config.command_kid, &seed)),
+            relays: RelayHub::default(),
+            lists: ListCache::default(),
+            key_checks: KeyChecks::default(),
+            online: OnlineSince::default(),
             sso: SsoClient::new(&config.sso, sso_basic, sso_api_uuid)?,
             seal: SealKeys::new(&seal_keys),
             tags: Tagger::new(&log_key),
@@ -83,9 +118,11 @@ impl AppState {
             sso_latency: Latency::default(),
             failure_records: RecordBudget::default(),
             retries: RetryCache::new(config.retry_window_secs),
+            request_retries: RetryCache::new(config.retry_window_secs),
             pending: PendingStore::default(),
             login_slots: Arc::new(Semaphore::new(config.max_logins_in_flight)),
             sso_messages: Mutex::new(HashSet::new()),
+            key_calls: CallLimiter::default(),
             notices: Mutex::new(HashMap::new()),
             config,
         }))
