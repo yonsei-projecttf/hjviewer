@@ -30,6 +30,11 @@
 //! proof or a used nonce gets the same 401 as a wrong token; a right signature with a time out of
 //! the window gets 409 `{"error":…,"hjv":"clock","server_time":…}`, which only the key's holder
 //! can bring about and the app does not take for a logout (it logs out on 401 and 400 only).
+//!
+//! The one request that may use a nonce again is the very same request ([`request_hash`]) within
+//! HJV_API_RETRY_WINDOW (30 s): it gets the first answer again and does not run a second time
+//! (api.rs `authenticate`). The app sends a request again byte for byte when its first TLS
+//! attempt failed, possibly after hjv-api got it and answered; a 401 there would log the app out.
 
 use crate::util::{b64, b64url, b64url_decode, sha256};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
@@ -152,6 +157,27 @@ pub fn check(
         return Check::Clock;
     }
     Check::Valid { nonce: h.nonce }
+}
+
+/// What tells a signed request from every other one: the SHA-256 of its header value (`t`, `n`
+/// and the signature, which [`parse`] takes in one spelling each) and of what else the signature
+/// covers. A retry that sends the request again byte for byte has the same; a request that differs
+/// in the method, the target, the body, the token, the time or the signature has another.
+pub fn request_hash(
+    value: &str,
+    method: &str,
+    path_and_query: &str,
+    body_hash: &[u8; 32],
+    token_hash: &[u8; 32],
+) -> [u8; 32] {
+    let fields: [&[u8]; 5] = [
+        value.trim().as_bytes(),
+        method.as_bytes(),
+        path_and_query.as_bytes(),
+        body_hash,
+        token_hash,
+    ];
+    sha256(&fields.join(&0u8))
 }
 
 /// What the app does, for tests and tools: the header value for a request signed with the
@@ -287,5 +313,51 @@ mod tests {
         // a nonce or signature in standard base64 is not the format
         let padded = h.replacen(&parsed.n, &format!("{}==", parsed.n), 1);
         assert!(parse(&padded).is_none());
+    }
+
+    #[test]
+    fn the_very_same_request_and_every_other() {
+        let (seed, _) = key();
+        let (body, token) = (sha256(b"{}"), sha256(b"hjv_token"));
+        let sign = |seed: &[u8; 32], t: i64| {
+            header_value(seed, "POST", "/api/logout", t, &[1; 16], b"{}", "hjv_token")
+        };
+        let h = sign(&seed, NOW);
+        let first = request_hash(&h, "POST", "/api/logout", &body, &token);
+        // byte for byte again, also with the blanks HTTP allows around a header value
+        assert_eq!(
+            request_hash(&format!(" {h}\t"), "POST", "/api/logout", &body, &token),
+            first
+        );
+        // the same nonce with another time, another signature (here another key's), method,
+        // target, body or token
+        for (what, other) in [
+            (
+                "time",
+                request_hash(&sign(&seed, NOW + 1), "POST", "/api/logout", &body, &token),
+            ),
+            (
+                "signature",
+                request_hash(&sign(&[4; 32], NOW), "POST", "/api/logout", &body, &token),
+            ),
+            (
+                "method",
+                request_hash(&h, "DELETE", "/api/logout", &body, &token),
+            ),
+            (
+                "target",
+                request_hash(&h, "POST", "/api/logout?", &body, &token),
+            ),
+            (
+                "body",
+                request_hash(&h, "POST", "/api/logout", &sha256(b"{ }"), &token),
+            ),
+            (
+                "token",
+                request_hash(&h, "POST", "/api/logout", &body, &sha256(b"hjv_x")),
+            ),
+        ] {
+            assert_ne!(other, first, "{what}");
+        }
     }
 }

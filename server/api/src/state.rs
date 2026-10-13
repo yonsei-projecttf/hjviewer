@@ -3,12 +3,13 @@
 //! What the request handlers share.
 
 use crate::{
+    api::Reply,
     config::{Config, Secrets},
     db::{self, Db, Record},
     keys::CallLimiter,
     limits::{Admit, Breaker, GlobalLimiter, Latency, RecordBudget, FAILURE_RECORDS_PER_MINUTE},
     log::Tagger,
-    login::RetryCache,
+    login::{LoginAnswer, RetryCache},
     pcsync::{KeyChecks, ListCache},
     seal::SealKeys,
     sso::SsoClient,
@@ -42,7 +43,10 @@ pub struct AppState {
     /// failure records written per minute
     pub failure_records: RecordBudget,
     /// answers kept for a retry of the same login body (step 3)
-    pub retries: RetryCache,
+    pub retries: RetryCache<LoginAnswer>,
+    /// answers kept for a retry of the very same signed account request that changes something
+    /// (api.rs `authenticate`)
+    pub request_retries: RetryCache<Reply>,
     /// logins waiting for a second-factor code (step 8)
     pub pending: PendingStore,
     /// logins handled at once
@@ -99,6 +103,7 @@ impl AppState {
             sso_latency: Latency::default(),
             failure_records: RecordBudget::default(),
             retries: RetryCache::new(config.retry_window_secs),
+            request_retries: RetryCache::new(config.retry_window_secs),
             pending: PendingStore::default(),
             login_slots: Arc::new(Semaphore::new(config.max_logins_in_flight)),
             sso_messages: Mutex::new(HashSet::new()),

@@ -337,48 +337,51 @@ impl LoginAnswer {
     }
 }
 
-/// Answers kept for the app's retry of the same login (v2 §9-2 step 3): the app sends the very
-/// same body again when its first TLS attempt failed, possibly after hjv-api got the request.
-pub struct RetryCache {
+/// Answers kept for the app's retry of the very same request (v2 §9-2 step 3): the app sends a
+/// request again, byte for byte, when its first TLS attempt failed, possibly after hjv-api got
+/// it. A login is told by its body, under the seal's nonce; a signed account request that changes
+/// something by its proof, under the key's nonce (api.rs `authenticate`, design v3 §4-2).
+pub struct RetryCache<A> {
     window: Duration,
-    entries: Mutex<HashMap<String, RetryEntry>>,
+    entries: Mutex<HashMap<String, RetryEntry<A>>>,
 }
 
-struct RetryEntry {
-    body_hash: [u8; 32],
+struct RetryEntry<A> {
+    /// the SHA-256 of what was sent (a login's body, an account request's `proof::request_hash`)
+    sent: [u8; 32],
     created: Instant,
-    answer: watch::Receiver<Option<LoginAnswer>>,
+    answer: watch::Receiver<Option<A>>,
 }
 
-pub enum Retry {
+pub enum Retry<A> {
     /// the first request with this nonce: send its answer here
-    First(watch::Sender<Option<LoginAnswer>>),
-    /// the same body again: its answer comes here
-    Again(watch::Receiver<Option<LoginAnswer>>),
-    /// the nonce with another body
+    First(watch::Sender<Option<A>>),
+    /// the very same request again: its answer comes here
+    Again(watch::Receiver<Option<A>>),
+    /// the nonce with another request
     Reused,
 }
 
-impl RetryCache {
-    pub fn new(window_secs: i64) -> RetryCache {
+impl<A> RetryCache<A> {
+    pub fn new(window_secs: i64) -> RetryCache<A> {
         RetryCache {
             window: Duration::from_secs(window_secs as u64),
             entries: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn begin(&self, key: &str, body_hash: [u8; 32]) -> Retry {
+    pub fn begin(&self, key: &str, sent: [u8; 32]) -> Retry<A> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         entries.retain(|_, e| e.created.elapsed() < self.window);
         match entries.get(key) {
-            Some(e) if e.body_hash == body_hash => Retry::Again(e.answer.clone()),
+            Some(e) if e.sent == sent => Retry::Again(e.answer.clone()),
             Some(_) => Retry::Reused,
             None => {
                 let (tx, rx) = watch::channel(None);
                 entries.insert(
                     key.to_owned(),
                     RetryEntry {
-                        body_hash,
+                        sent,
                         created: Instant::now(),
                         answer: rx,
                     },
@@ -682,7 +685,7 @@ async fn attempt(state: &Arc<AppState>, req: ApiRequest) -> LoginAnswer {
     {
         Retry::Again(answer) => {
             run.release().await;
-            wait_for(answer).await
+            wait_for(answer, unanswered).await
         }
         Retry::Reused => {
             run.fail(StatusCode::BAD_REQUEST, Outcome::Failed, "seal-nonce")
@@ -757,11 +760,21 @@ async fn address_limited(run: &mut Run<'_>) -> LoginAnswer {
     LoginAnswer::failed(StatusCode::TOO_MANY_REQUESTS)
 }
 
-async fn wait_for(mut answer: watch::Receiver<Option<LoginAnswer>>) -> LoginAnswer {
+/// The first request's answer, once it is there ([`Retry::Again`]); `failed()` when that request
+/// ended without one.
+pub async fn wait_for<A: Clone>(
+    mut answer: watch::Receiver<Option<A>>,
+    failed: impl FnOnce() -> A,
+) -> A {
     match answer.wait_for(Option::is_some).await {
-        Ok(a) => a.clone().expect("waited for an answer"),
-        Err(_) => LoginAnswer::failed(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(a) => a.clone().unwrap_or_else(failed),
+        Err(_) => failed(),
     }
+}
+
+/// What a retry gets when the login it repeats ended without an answer.
+fn unanswered() -> LoginAnswer {
+    LoginAnswer::failed(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// The limit of a request signed by a PC already in the account it logs in to, if it is one
@@ -943,7 +956,7 @@ async fn second_step(run: &mut Run<'_>, parsed: LoginBody, body_hash: [u8; 32]) 
     let tx = match state.retries.begin(&format!("tfa:{challenge}"), body_hash) {
         Retry::Again(answer) => {
             run.release().await;
-            return wait_for(answer).await;
+            return wait_for(answer, unanswered).await;
         }
         Retry::Reused => {
             return run
@@ -1470,6 +1483,42 @@ mod tests {
             .unwrap();
         assert!(rx.borrow_and_update().is_some());
         assert!(matches!(cache.begin("m", [1; 32]), Retry::First(_)));
+    }
+
+    #[tokio::test]
+    async fn a_retry_waits_for_the_first_answer() {
+        let cache = RetryCache::<u8>::new(30);
+        let Retry::First(tx) = cache.begin("n", [1; 32]) else {
+            panic!("first")
+        };
+        let Retry::Again(rx) = cache.begin("n", [1; 32]) else {
+            panic!("again")
+        };
+        // the first request still runs: the retry waits for its answer
+        let waiting = tokio::spawn(wait_for(rx, || 0));
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        tx.send(Some(7)).unwrap();
+        assert_eq!(waiting.await.unwrap(), 7);
+        // and later ones get it at once, also when the first request is gone
+        drop(tx);
+        let Retry::Again(rx) = cache.begin("n", [1; 32]) else {
+            panic!("again")
+        };
+        assert_eq!(wait_for(rx, || 0).await, 7);
+        // a first request that ended without an answer
+        let Retry::First(tx) = cache.begin("m", [1; 32]) else {
+            panic!("first")
+        };
+        drop(tx);
+        let Retry::Again(rx) = cache.begin("m", [1; 32]) else {
+            panic!("again")
+        };
+        assert_eq!(wait_for(rx, || 0).await, 0);
+        // past the window the cache no longer knows the nonce (the database still refuses it)
+        let none = RetryCache::<u8>::new(0);
+        assert!(matches!(none.begin("n", [1; 32]), Retry::First(_)));
+        assert!(matches!(none.begin("n", [1; 32]), Retry::First(_)));
     }
 
     #[test]

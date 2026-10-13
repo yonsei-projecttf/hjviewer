@@ -65,6 +65,8 @@ pub struct Config {
     pub device_unseen_secs: i64,
     pub event_retention_secs: i64,
     pub seal_max_skew_secs: i64,
+    /// how long the very same login, or signed account request that changes something, sent
+    /// again gets the first answer (login.rs `RetryCache`)
     pub retry_window_secs: i64,
     pub failure_delay: Duration,
     pub failure_jitter: Duration,

@@ -292,6 +292,13 @@ X-HJV-Proof: v1.<t>.<n>.<sig>
   in the last 20 minutes. No header, a wrong signature (also with a wrong time) or a nonce again:
   401, the answer to a wrong token. A right signature whose time is out of the window: 409
   `{"error":"기기의 날짜와 시간이 서버와 10분 넘게 다릅니다. 날짜와 시간을 자동으로 맞추게 해 주세요.","hjv":"clock","server_time":<time>}`.
+- The very same request again (the same header, method, target, body and token) within
+  HJV_API_RETRY_WINDOW (30 s) gets the first answer again, once the first has it, and does not run
+  a second time: the app's TLS fallback sends a request again byte for byte when its first attempt
+  failed, possibly after hjv-api answered it, and a 401 would log the app out. A nonce again with
+  anything else, or after the window, is a nonce again. The retry of a request that ended its own
+  token or key (a logout) gets the 401 of an ended token; the retry of a request that ended
+  without an answer, 500.
 - On every token path: currentUser, logout, users, peers, `/api/hjv/this-device` and its undo,
   `/api/hjv/devices/{id}`, `/api/hjv/keys…`.
 - `POST /api/logout`: the token and its key are revoked. Signed by the token's key (the time may

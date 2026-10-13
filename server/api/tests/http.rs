@@ -13,6 +13,7 @@ use hjv_api::{
 };
 use hyper::Method;
 use serde_json::json;
+use std::time::Duration;
 
 /// method, path, headers, body, expected status
 type Case<'a> = (
@@ -436,14 +437,25 @@ async fn the_request_proof() {
     )
     .await;
     assert_eq!(a.status, 200, "{}", a.text);
-    // the same nonce again on a request that changes something: refused like a wrong token
+    // the same nonce again on another request that changes something: refused like a wrong
+    // token (the very same request again gets the first answer: see below)
+    let used = proof::parse(&good).unwrap();
+    let reused = proof::header_value(
+        &seed,
+        "POST",
+        "/api/currentUser",
+        used.time,
+        &used.nonce,
+        b"{}",
+        &token,
+    );
     let a = with_proof(
         &h,
         "POST",
         "/api/currentUser",
         &token,
-        Some(&good),
-        Some(body),
+        Some(&reused),
+        Some("{}"),
     )
     .await;
     assert_unauthorized(&a, "nonce again");
@@ -546,4 +558,156 @@ async fn the_request_proof() {
         "{logs}"
     );
     assert!(!logs.contains(&token), "{logs}");
+}
+
+#[tokio::test]
+async fn the_very_same_request_again_gets_the_first_answer() {
+    let h = Harness::with(Options {
+        vars: vec![("HJV_API_RETRY_WINDOW", "2".into())],
+        ..Default::default()
+    })
+    .await;
+    let pc = TestDevice::windows("123456789");
+    h.hbbs.register(&pc, Some(1));
+    h.login_ok(HONG, Some(&pc)).await;
+    let phone = h.login_ok(HONG, None).await;
+    let seed = h.key_of(&phone).unwrap();
+    let (t, nonce) = (now(), random_bytes::<16>());
+    let sign = |method: &str, target: &str, t: i64, body: &str| {
+        proof::header_value(&seed, method, target, t, &nonce, body.as_bytes(), &phone)
+    };
+    let body = r#"{"id":"","uuid":"dXVpZA=="}"#;
+    let user = sign("POST", "/api/currentUser", t, body);
+    let first = with_proof(
+        &h,
+        "POST",
+        "/api/currentUser",
+        &phone,
+        Some(&user),
+        Some(body),
+    )
+    .await;
+    assert_eq!(first.status, 200, "{}", first.text);
+    // the app's TLS fallback sends a request again byte for byte when its first attempt failed,
+    // possibly after hjv-api answered it: the first answer again, not the 401 that logs it out
+    for _ in 0..2 {
+        let a = with_proof(
+            &h,
+            "POST",
+            "/api/currentUser",
+            &phone,
+            Some(&user),
+            Some(body),
+        )
+        .await;
+        assert_eq!((a.status, &a.text), (200, &first.text));
+    }
+    // the nonce with anything else is a replay, refused like a wrong token: another body, path,
+    // query or time, each signed by the key, or a signature that is not the first's (another
+    // key's over the same bytes)
+    let other = r#"{"id":"","uuid":"b3RoZXI="}"#;
+    let undo = "/api/hjv/this-device/undo";
+    let query = "/api/currentUser?current=1";
+    let foreign = proof::header_value(
+        &random_bytes::<32>(),
+        "POST",
+        "/api/currentUser",
+        t,
+        &nonce,
+        body.as_bytes(),
+        &phone,
+    );
+    for (what, target, proof, body) in [
+        (
+            "body",
+            "/api/currentUser",
+            sign("POST", "/api/currentUser", t, other),
+            other,
+        ),
+        ("path", undo, sign("POST", undo, t, body), body),
+        ("query", query, sign("POST", query, t, body), body),
+        (
+            "time",
+            "/api/currentUser",
+            sign("POST", "/api/currentUser", t + 1, body),
+            body,
+        ),
+        ("signature", "/api/currentUser", foreign, body),
+    ] {
+        let a = with_proof(&h, "POST", target, &phone, Some(&proof), Some(body)).await;
+        assert_unauthorized(&a, what);
+    }
+    // which leaves the first answer to the very same request
+    let a = with_proof(
+        &h,
+        "POST",
+        "/api/currentUser",
+        &phone,
+        Some(&user),
+        Some(body),
+    )
+    .await;
+    assert_eq!((a.status, &a.text), (200, &first.text));
+    // a request that changes something runs once: two at once and one after all get the first
+    // answer, where a second run would find no PC (404); the PC left the list once
+    let serial = h.change_serial().await;
+    let pc_path = format!("/api/hjv/devices/{}", pc.id);
+    let remove = proof::header_value(
+        &seed,
+        "DELETE",
+        &pc_path,
+        now(),
+        &random_bytes::<16>(),
+        b"",
+        &phone,
+    );
+    let (a, b) = tokio::join!(
+        with_proof(&h, "DELETE", &pc_path, &phone, Some(&remove), None),
+        with_proof(&h, "DELETE", &pc_path, &phone, Some(&remove), None)
+    );
+    let c = with_proof(&h, "DELETE", &pc_path, &phone, Some(&remove), None).await;
+    for x in [&a, &b, &c] {
+        assert_eq!(x.status, 200, "{}", x.text);
+        assert_eq!(x.json, json!({"id": pc.id, "removed": true}));
+    }
+    assert_eq!(h.change_serial().await, serial + 1);
+    let removed = h.results().await;
+    assert_eq!(
+        removed
+            .iter()
+            .filter(|r| *r == "device:removed-by-user")
+            .count(),
+        1,
+        "{removed:?}"
+    );
+    // past the window the very same request is a replay too, and the token works on
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    let a = with_proof(
+        &h,
+        "POST",
+        "/api/currentUser",
+        &phone,
+        Some(&user),
+        Some(body),
+    )
+    .await;
+    assert_unauthorized(&a, "the same request past the window");
+    let a = with_proof(&h, "DELETE", &pc_path, &phone, Some(&remove), None).await;
+    assert_unauthorized(&a, "the same removal past the window");
+    let again = h.post(
+        "/api/currentUser",
+        &phone,
+        Some(json!({"id": "", "uuid": "dXVpZA=="})),
+    );
+    assert_eq!(again.await.status, 200);
+    // the journal hears of it by the account's tag
+    let logs = hjv_api::log::captured().join("\n");
+    assert!(
+        logs.contains(&format!(
+            "request proof again (acct={}, POST)",
+            h.account_tag(HONG.0)
+        )),
+        "{logs}"
+    );
+    assert!(!logs.contains(&phone), "{logs}");
 }

@@ -51,6 +51,7 @@ pub async fn run(state: Arc<AppState>, shutdown: impl Future<Output = ()>) {
 /// Deletes what is past its keeping time.
 pub async fn purge_now(state: &Arc<AppState>) -> Option<db::Purged> {
     state.retries.purge();
+    state.request_retries.purge();
     state.pending.purge();
     state.purge_notices();
     state.key_calls.purge();

@@ -27,6 +27,9 @@
 //! token, and a right signature whose time is more than ten minutes off gets 409
 //! `{"error":…,"hjv":"clock","server_time":…}`. The one thing a token without its signature still
 //! does is end itself: `POST /api/logout` revokes that token and its key, and nothing else (§4-7).
+//! A signed request that changes something runs once: the very same request again within
+//! HJV_API_RETRY_WINDOW, as the app's TLS fallback sends it, gets the first answer
+//! ([`authenticate`]).
 //!
 //! Every answer is JSON in UTF-8 with `X-Content-Type-Options: nosniff`,
 //! `Content-Security-Policy: default-src 'none'` and `Cache-Control: no-store`. A request with an
@@ -42,7 +45,7 @@
 use crate::{
     db::{self, Device, Session},
     envelope, keys,
-    login::{self, BindStatus},
+    login::{self, BindStatus, Retry},
     pcsync, proof,
     state::AppState,
     util::{b64, hex, now, sha256, valid_device_id},
@@ -57,7 +60,8 @@ use hyper::{
     Method, Response, StatusCode,
 };
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::watch;
 
 pub const MAX_BODY: usize = 64 * 1024;
 const TEXT_UNAUTHORIZED: &str = "로그인이 필요합니다. 다시 로그인해 주세요.";
@@ -90,6 +94,9 @@ pub struct ApiRequest {
     pub body: Result<Bytes, BodyError>,
     /// the client's address: X-Real-IP (set by nginx), else the TCP peer, else "unknown"
     pub ip: String,
+    /// where [`route`] leaves the answer for the app's retry of the very same request, when
+    /// [`authenticate`] found this one the first with its nonce
+    pub retry: OnceLock<watch::Sender<Option<Reply>>>,
 }
 
 /// An answer: a JSON body with the security headers.
@@ -215,7 +222,7 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         return Reply::error(StatusCode::UNSUPPORTED_MEDIA_TYPE, TEXT_MEDIA_TYPE);
     }
     let get = req.method == Method::GET || req.method == Method::HEAD;
-    match (req.path.as_str(), &req.method) {
+    let reply = match (req.path.as_str(), &req.method) {
         ("/api/currentUser", &Method::POST) => current_user(state, &req).await,
         ("/api/logout", &Method::POST) => logout(state, &req).await,
         ("/api/users", &Method::GET) => users(state, &req).await,
@@ -244,7 +251,12 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
             allow: Some(allow),
             ..Reply::error(StatusCode::METHOD_NOT_ALLOWED, TEXT_METHOD)
         },
+    };
+    // the first answer of a signed request that changes something, for its retry
+    if let Some(first) = req.retry.get() {
+        let _ = first.send(Some(reply.clone()));
     }
+    reply
 }
 
 fn unauthorized() -> Reply {
@@ -282,7 +294,8 @@ pub enum Proof {
     Missing,
     /// not a proof of this request by the token's key (or the token has no key)
     Invalid,
-    /// a nonce the key used within the last 20 minutes, on a request that changes something
+    /// a nonce the key used within the last 20 minutes, on a request that changes something: by
+    /// another request, or by this very one before the retry window
     Replayed,
 }
 
@@ -300,6 +313,11 @@ impl Proof {
 
 /// The session of the request's token and what its proof came to; the reply to send when the
 /// token is not valid. The token's idle time moves only for a valid proof.
+///
+/// A signed request that changes something uses its nonce once. The very same request again
+/// within HJV_API_RETRY_WINDOW ([`proof::request_hash`]) does not run again: the reply to send is
+/// the first one's answer, once [`route`] has it (a 500 if that request ended without one). The
+/// retry of a request that ended its own token or key (a logout) gets the 401 of an ended token.
 pub async fn authenticate(
     state: &Arc<AppState>,
     req: &ApiRequest,
@@ -318,6 +336,7 @@ pub async fn authenticate(
         state.config.token_max_secs,
         now(),
     );
+    let app = state.clone();
     let found = state
         .db
         .call(move |c| {
@@ -337,15 +356,34 @@ pub async fn authenticate(
                 None if header.is_none() => proof::Check::Missing,
                 None => proof::Check::Invalid,
             };
+            let mut retry = None;
             let proof = match (check, &s.key) {
+                (proof::Check::Valid { .. }, Some(_)) if !changes => Proof::Valid,
                 (proof::Check::Valid { nonce }, Some(key)) => {
-                    if !changes
-                        || db::use_req_nonce(c, key.ckid, &nonce, at, at + proof::NONCE_TTL)?
-                    {
-                        Proof::Valid
-                    } else {
-                        Proof::Replayed
-                    }
+                    let sent = proof::request_hash(
+                        header.as_deref().unwrap_or(""),
+                        &method,
+                        &target,
+                        &body_hash,
+                        &hash,
+                    );
+                    let begun = app
+                        .request_retries
+                        .begin(&format!("{}.{}", key.ckid, hex(&nonce)), sent);
+                    let proof = match &begun {
+                        Retry::First(_) => {
+                            let ttl = at + proof::NONCE_TTL;
+                            if db::use_req_nonce(c, key.ckid, &nonce, at, ttl)? {
+                                Proof::Valid
+                            } else {
+                                Proof::Replayed
+                            }
+                        }
+                        Retry::Again(_) => Proof::Valid,
+                        Retry::Reused => Proof::Replayed,
+                    };
+                    retry = Some(begun);
+                    proof
                 }
                 (proof::Check::Clock, _) => Proof::Clock,
                 (proof::Check::Missing, _) => Proof::Missing,
@@ -354,11 +392,30 @@ pub async fn authenticate(
             if proof == Proof::Valid {
                 db::touch_session(c, &s, at)?;
             }
-            Ok(Some((s, proof)))
+            Ok(Some((s, proof, retry)))
         })
         .await;
     match found {
-        Ok(Some((s, proof))) => {
+        Ok(Some((s, proof, retry))) => {
+            match retry {
+                Some(Retry::Again(first)) => {
+                    let tag = state.tags.account(&s.account.login_key);
+                    if state.first_notice(
+                        &format!("proof:again:{tag}"),
+                        std::time::Duration::from_secs(600),
+                    ) {
+                        log_info!(
+                            "request proof again (acct={tag}, {}): the first answer; the next ten minutes are not logged",
+                            req.method
+                        );
+                    }
+                    return Err(login::wait_for(first, Reply::server_error).await);
+                }
+                Some(Retry::First(answer)) => {
+                    let _ = req.retry.set(answer);
+                }
+                _ => {}
+            }
             if proof != Proof::Valid {
                 let tag = state.tags.account(&s.account.login_key);
                 if state.first_notice(

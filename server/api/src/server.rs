@@ -158,6 +158,7 @@ async fn handle(
             .map_or_else(|| parts.uri.path().to_owned(), |pq| pq.as_str().to_owned()),
         headers: parts.headers,
         body,
+        retry: Default::default(),
     };
     let reply = match tokio::time::timeout(REQUEST_TIMEOUT, api::route(&state, request)).await {
         Ok(reply) => reply,
