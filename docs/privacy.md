@@ -131,11 +131,16 @@ and your name masked (such as 홍\*동), taken from the signed list.
   addresses, each adapter's name, driver, link speed and whether it is a USB adapter, its
   Wake-on-LAN settings and whether Windows lets it wake the PC, the sleep states the PC supports,
   whether fast startup is on, whether the PC runs on mains power, how long Windows has been
-  running, and the public address the PC uses. Only PCs in an account report this, and it is
-  deleted as soon as the PC leaves the account. The apps never receive MAC addresses.
-- **Relays**: for a relay on a NAS in a PC's network, the server keeps its public key, the account
-  it serves, the NAS's network adapters (IP and MAC addresses, networks), its DSM and kernel
-  versions and the public address it uses. When a relay is revoked, only its ID, key and times stay.
+  running (which the server does not keep), and the public address the PC uses. Only PCs in an
+  account report this, and it is deleted as soon as the PC leaves the account. The apps never
+  receive MAC addresses.
+- **Relays**: for a relay on a NAS in a PC's network, the server keeps its ID and public key, the
+  account it serves, the name the administrator gave it, the NAS's network adapters (their names,
+  IP and MAC addresses and networks, the gateway's IP and MAC addresses), the versions of the relay
+  program, DSM and the kernel, the public address it uses, and the times it first asked, was
+  approved and last asked. A relay that asked and was not approved is forgotten after 24 hours; an
+  enrollment code approved ahead of its relay is kept 7 days. When a relay is revoked, only its
+  ID, key and times stay.
 - **Wake requests**: each request to switch a PC on leaves one record: a random number for the
   request, the account and its tag, the PC's ID, the relay's ID, how well the relay's network
   matched the PC's, the network the signal went to (written like 192.0.2.0/24, which names the
@@ -262,8 +267,8 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 5. 꺼진 PC 켜기 (Wake-on-LAN)
 
-- **계정에 들어간 PC**는 켤 수 있는지 서버가 판단하는 데 필요한 것을 알립니다. 유선 랜카드의 MAC 주소, IPv4 주소와 서브넷, 게이트웨이의 IP와 MAC 주소, 랜카드의 이름·드라이버·링크 속도와 USB 랜카드인지, Wake-on-LAN 설정과 Windows가 그 랜카드로 PC를 깨우도록 허용했는지, PC가 쓸 수 있는 절전 방식, 빠른 시작을 켰는지, 전원에 연결되어 있는지, Windows가 켜진 뒤 지난 시간, PC가 쓰는 공인 주소입니다. 계정에 들어간 PC만 알리고, PC가 계정에서 빠지면 바로 지웁니다. 앱에는 MAC 주소를 보내지 않습니다.
-- **중계기**: PC와 같은 네트워크의 NAS에서 도는 중계기에 대해 서버는 공개키, 맡은 계정, NAS의 랜카드(IP와 MAC 주소, 네트워크), DSM과 커널 버전, NAS가 쓰는 공인 주소를 보관합니다. 중계기를 폐기하면 ID, 키, 시각만 남깁니다.
+- **계정에 들어간 PC**는 켤 수 있는지 서버가 판단하는 데 필요한 것을 알립니다. 유선 랜카드의 MAC 주소, IPv4 주소와 서브넷, 게이트웨이의 IP와 MAC 주소, 랜카드의 이름·드라이버·링크 속도와 USB 랜카드인지, Wake-on-LAN 설정과 Windows가 그 랜카드로 PC를 깨우도록 허용했는지, PC가 쓸 수 있는 절전 방식, 빠른 시작을 켰는지, 전원에 연결되어 있는지, Windows가 켜진 뒤 지난 시간(서버는 이 값을 보관하지 않음), PC가 쓰는 공인 주소입니다. 계정에 들어간 PC만 알리고, PC가 계정에서 빠지면 바로 지웁니다. 앱에는 MAC 주소를 보내지 않습니다.
+- **중계기**: PC와 같은 네트워크의 NAS에서 도는 중계기에 대해 서버는 ID와 공개키, 맡은 계정, 관리자가 붙인 이름, NAS의 랜카드(이름, IP와 MAC 주소, 네트워크, 게이트웨이의 IP와 MAC 주소), 중계기 프로그램·DSM·커널 버전, NAS가 쓰는 공인 주소, 처음 요청한 시각·승인한 시각·마지막으로 물은 시각을 보관합니다. 요청만 하고 승인받지 못한 중계기는 24시간 뒤 지우고, 중계기보다 먼저 승인해 둔 등록 코드는 7일 동안 둡니다. 중계기를 폐기하면 ID, 키, 시각만 남깁니다.
 - **켜기 요청**: 켜기 요청마다 기록을 하나 남깁니다. 요청의 무작위 번호, 계정과 그 꼬리표, PC ID, 중계기 ID, 중계기와 PC의 네트워크가 얼마나 맞았는지, 신호를 보낸 네트워크(192.0.2.0/24처럼 네트워크를 가리키는 값. PC의 주소나 MAC 주소는 아님), 서명된 명령의 해시, 시각(요청, 전송, PC가 켜진 것을 확인한 때, 끝난 때), 보낸 패킷 수, 결과입니다. 앱의 진행 표시가 이 기록을 읽고, 요청 한도(PC는 1분에 한 번, 계정은 1시간에 20번, 중계기는 1분에 10번)를 이 기록으로 셉니다. 네트워크는 그 네트워크에서 이 PC를 켠 적이 있는 중계기를 다음에도 고르려고 둡니다. 6개월 동안 보관하고, PC가 계정에서 빠지거나 중계기가 폐기된 뒤에도 그때까지 남으며, 계정을 지우면 함께 지웁니다. 서명된 명령 자체에는 그 네트워크에 있는 PC 랜카드의 MAC 주소가 들어 있고, 중계기가 답할 때까지만(길어야 2분쯤) 둡니다.
 - **NAS의 중계기 로그**: 켜기 요청마다 번호, 시각, 끝 2바이트만 보이는 MAC 주소를 남깁니다. 중계기는 실행 중일 때 180일이 지난 줄을 지웁니다. 멈춰 둔 동안에는 정리하지 않으므로, 오래 멈춰 둘 때는 NAS 관리자가 로그를 지웁니다. 그 NAS의 관리자는 모두 읽을 수 있습니다.
 
