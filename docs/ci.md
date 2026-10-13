@@ -345,7 +345,7 @@ gh secret set IOS_TEAM_ID --body ABCDE12345
 1. **AAB 빌드**: 비공개 저장소의 서명 빌드는 `play`와 상관없이, APK 아티팩트를 올린 다음 arm64 AAB를 만듭니다. 첫 업로드는 Play Console에서 직접 해야 하므로, 그때 쓸 AAB가 늘 있습니다. 아티팩트 이름은 `HJViewer-<이름>-android-aarch64-play`입니다.
    - 번들을 빌드하기 직전에 Play 전용 매니페스트(`client/play/AndroidManifest.xml`)를 넣습니다. APK는 이미 빌드된 뒤라 이 파일은 번들에만 적용됩니다(아래 "Play 번들에서 빼는 것").
    - APK 서명 액션이 작업 폴더에 남긴 키스토어 사본은 번들 빌드(Gradle, 플러그인의 빌드 스크립트)가 시작되기 전에 지웁니다.
-   - **번들 단계가 실패하면**: APK 아티팩트는 번들 단계보다 먼저 올라가므로 어느 경우든 그대로 쓸 수 있습니다. `play`를 켠 실행과 확인 빌드(`check_only`)에서는 Android 잡이 실패합니다. 그 밖의 실행에서는 Android 잡이 성공으로 끝나고, 실행 화면에 경고 "This run has no Play bundle"과 요약 한 줄이 남으며, `…-android-aarch64-play` 아티팩트가 없습니다. Play에 아무것도 올리지 않는 실행이 번들 때문에 실패로 보이지 않게 하려는 것입니다.
+   - **번들 단계가 실패하면**: APK 아티팩트는 번들 단계보다 먼저 올라가므로 어느 경우든 그대로 쓸 수 있습니다. `play`를 켠 실행과 확인 빌드(`check_only`)에서는 Android 잡이 실패합니다. 그 밖의 실행에서는 Android 잡이 성공으로 끝나고, 실행 화면에 경고 "This run has no Play bundle"과 요약 한 줄이 남으며, `…-android-aarch64-play` 아티팩트가 없습니다. Play에 아무것도 올리지 않는 실행이 번들 때문에 실패로 보이지 않게 하려는 것입니다. 이 동작은 번들 단계들의 `if`·`continue-on-error` 줄과 단계 순서로 정해집니다. 그 효과는 GitHub에서 실패한 실행으로만 볼 수 있으므로, 오프라인 시험(`scripts/test_play_upload.py`의 `PlayBundleListsTest`)이 그 줄들과 순서를 지킵니다. 바꿀 때는 시험의 `BUNDLE_STEPS`와 이 문단을 같은 커밋에서 고칩니다.
 2. **서명과 검사**: 릴리스 키스토어로 jarsigner 서명을 한 번 합니다. 비밀번호는 환경 변수로만 넘깁니다. 서명을 확인한 뒤에는 키스토어 파일을 지우고 비밀번호를 환경에서 없앤 다음에 bundletool을 내려받아 돌립니다. 이어서 다음을 확인하고, 하나라도 틀리면 이 단계가 실패합니다(잡이 실패하는지는 1번과 같음). 검사에 실패한 번들은 아티팩트로 올리지 않습니다.
    - 서명자가 하나이고, 그 인증서가 키스토어의 것인지
    - `bundletool validate`, 패키지 이름 `kr.ac.yonsei.hjviewer`, versionCode(같은 실행의 APK와 같은지), versionName(`HJV_VERSION`), targetSdk 36 이상, 디버그 빌드가 아닌지

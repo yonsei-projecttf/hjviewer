@@ -3,7 +3,8 @@
 # below answers the calls; the key tests sign with throwaway RSA keys that openssl makes in a temporary
 # directory or in memory (they belong to no Google account and are gone at the end).
 # PlayBundleListsTest, at the end, reads no script: it holds the Play bundle check of client-build.yml
-# and the Play manifest overlay (client/play/AndroidManifest.xml) to each other.
+# and the Play manifest overlay (client/play/AndroidManifest.xml) to each other, and the bundle steps'
+# conditions and order to what docs/ci.md says a failed bundle does.
 # Run: python3 -I -B -m unittest discover -s scripts -p 'test_play_upload.py'  (scripts/ci.sh client)
 import argparse
 import contextlib
@@ -587,8 +588,8 @@ def update_entries(manifest: str) -> list:
 
 class PlayBundleListsTest(unittest.TestCase):
     """What a run can only show after a 20-minute build: the lists of "Sign and check Play bundle"
-    and the Play-only manifest overlay must say the same thing, and the overlay must never reach
-    the side-loaded APK."""
+    and the Play-only manifest overlay must say the same thing, the overlay must never reach the
+    side-loaded APK, and a bundle that failed a step must go nowhere."""
 
     WORKFLOW = HERE.parent / ".github" / "workflows" / "client-build.yml"
     OVERLAY = HERE.parent / "client" / "play" / "AndroidManifest.xml"
@@ -597,6 +598,28 @@ class PlayBundleListsTest(unittest.TestCase):
     # the in-app update of the side-loaded APK installs an APK: an app from Google Play must not
     SIDE_LOAD_ONLY = {"permission android.permission.REQUEST_INSTALL_PACKAGES",
                       "provider com.carriez.flutter_hbb.HjvUpdateFileProvider"}
+    # The lines that decide what a failed bundle step does (docs/ci.md, the Google Play section, step
+    # 1), which only a failing run on GitHub shows at work. Without `play` and outside a check build a
+    # failed bundle step leaves the job green and "Report a failed Play bundle" says that the run has
+    # no bundle; with either it fails the job, so the play job does not start. Only a bundle that
+    # passed every check becomes the -play artifact, which the play job uploads and which the first
+    # upload in Play Console takes by hand.
+    BUNDLE_STEPS = {
+        "Build Play bundle": {
+            "if": "env.ANDROID_SIGNING == 'true' && github.event.repository.private",
+            "id": "play-build",
+            "continue-on-error": "${{ !inputs.play && !inputs.check_only }}"},
+        "Sign and check Play bundle": {
+            "if": "steps.play-build.outcome == 'success'",
+            "id": "play-bundle",
+            "continue-on-error": "${{ !inputs.play && !inputs.check_only }}"},
+        "Upload Play bundle": {"if": "steps.play-bundle.outcome == 'success'"},
+        # no status function: GitHub adds success(), which is false once a failed step failed the job
+        "Report a failed Play bundle": {
+            "if": "steps.play-build.outcome == 'failure' || steps.play-bundle.outcome == 'failure'"},
+        # the keystore that "Sign and check Play bundle" decodes, also when a step before failed
+        "Remove the upload keystore": {"if": "always() && env.ANDROID_SIGNING == 'true'"},
+    }
 
     def setUp(self):
         self.workflow = self.WORKFLOW.read_text(encoding="utf-8")
@@ -614,6 +637,32 @@ class PlayBundleListsTest(unittest.TestCase):
             if line.strip():
                 value.append(line.strip())
         return value
+
+    def job_steps(self, job):
+        """The steps of the job in their order, each as {key: the text after the colon on the key's
+        line} for the step's own keys (a block value such as `run: |` gives "|"), read as text like
+        block()."""
+        lines = self.workflow.splitlines()
+        (start,) = [i for i, line in enumerate(lines) if line == f"  {job}:"]
+        steps, in_steps = [], False
+        for line in lines[start + 1:]:
+            text, indent = line.strip(), len(line) - len(line.lstrip())
+            if not text or text.startswith("#"):
+                continue
+            if indent <= 2:  # the next job
+                break
+            if indent == 4:
+                in_steps = text == "steps:"
+            elif in_steps and indent in (6, 8):
+                if indent == 6:
+                    self.assertTrue(text.startswith("- "), line)
+                    steps.append({})
+                    text = text[2:]
+                key, colon, value = text.partition(":")
+                self.assertTrue(colon and re.fullmatch(r"[a-z-]+", key), line)
+                self.assertNotIn(key, steps[-1], f"a step of the {job} job has {key} twice")
+                steps[-1][key] = value.strip()
+        return steps
 
     def removed_by_the_overlay(self):
         kinds = {"uses-permission": "permission", "uses-permission-sdk-23": "permission", "provider": "provider"}
@@ -734,6 +783,32 @@ class PlayBundleListsTest(unittest.TestCase):
         # client/overlay is copied over the tree when it is fetched, before every build
         self.assertFalse((HERE.parent / "client" / "overlay" / "rustdesk" / "flutter" / "android" / "app" / "src"
                           / "release").exists())
+
+    def test_bundle_steps_keep_their_conditions_and_order(self):
+        # The shell of these steps can be dry-run on the development machine, their conditions work
+        # only on GitHub, and actionlint (when installed) checks no more than the step ids they read
+        steps = self.job_steps("android")
+        names = [step.get("name") for step in steps]
+        for name, conditions in self.BUNDLE_STEPS.items():
+            self.assertEqual(names.count(name), 1, name)
+            step = steps[names.index(name)]
+            # a change that is meant goes into BUNDLE_STEPS and docs/ci.md as well
+            self.assertEqual({key: step[key] for key in ("if", "id", "continue-on-error") if key in step},
+                             conditions, name)
+        at = {name: names.index(name) for name in self.BUNDLE_STEPS}
+        # the APK is uploaded before the first bundle step: a failed bundle never costs it, also where
+        # the failure fails the job
+        self.assertLess(max(names.index("Upload signed APK"), names.index("Upload debug-signed APK")),
+                        at["Build Play bundle"], "an APK upload comes after the first bundle step")
+        # a condition reads only steps that ran before it: a step yet to run has no outcome
+        ids = {step["id"]: i for i, step in enumerate(steps) if "id" in step}
+        for i, step in enumerate(steps):
+            for read in re.findall(r"\bsteps\.([A-Za-z0-9_-]+)\.", step.get("if", "")):
+                self.assertIn(read, ids, step.get("name"))
+                self.assertLess(ids[read], i, f"{step.get('name')} reads steps.{read}")
+        # the keystore is removed after the step that decodes it
+        self.assertLess(at["Sign and check Play bundle"], at["Remove the upload keystore"],
+                        "the upload keystore is removed before the step that decodes it")
 
 
 if __name__ == "__main__":
