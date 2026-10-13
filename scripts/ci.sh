@@ -214,6 +214,13 @@ check_account_down() { # <port> <CA file> <name>
   esac
 }
 
+# The vector that tests/hjv_pk.rs (server/patches/0004) checks the patched hbbs against is a
+# copy of hjv-api's (server/api/src/hbbs.rs, reads_what_libsodium_signed): its four values, named.
+hjv_pk_vector() { # <file>
+  sed -n -E 's/^ *const (SERVER_SEED|SERVER_PK|DEVICE_PK|PEER_PK|SIGNED): &str = "([^"]*)";$/\1 \2/p' "$1" |
+    sed 's/^DEVICE_PK /PEER_PK /'
+}
+
 server_stage() {
   # all of the patched server's tests, its upstream unit tests too: patches 0001-0004 change the
   # code they test
@@ -225,6 +232,14 @@ server_stage() {
   # a dropped patch fails
   [ -f "$CI/upstream/rustdesk-server/tests/hjv_pk.rs" ] ||
     fail "server: tests/hjv_pk.rs is not in the patched tree (server/patches/0004)"
+  # hjv-api reads what that test has hbbs answer only while both tests use one vector
+  if [ -f "$ROOT/server/api/src/hbbs.rs" ]; then
+    local vector
+    vector=$(hjv_pk_vector "$ROOT/server/api/src/hbbs.rs")
+    [ "$(printf '%s\n' "$vector" | grep -c .)" = 4 ] &&
+      [ "$vector" = "$(hjv_pk_vector "$CI/upstream/rustdesk-server/tests/hjv_pk.rs")" ] ||
+      fail "server: the vector of tests/hjv_pk.rs (server/patches/0004) is not hjv-api's (server/api/src/hbbs.rs)"
+  fi
   step "server: hbbs and hbbr's tests (unit, signaling, relay, protobuf, hjv-pk)"
   (cd "$CI/upstream/rustdesk-server" &&
     CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
