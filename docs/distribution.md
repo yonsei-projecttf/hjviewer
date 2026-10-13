@@ -1,6 +1,6 @@
 # 앱 배포: 10명 이내 비상업 사용 기준
 
-2026-10-10에 Apple과 Google의 공식 문서, 그리고 이 앱의 실제 빌드 결과물을 확인해서 정리했습니다. Google Play 부분은 2026-10-12에 다시 확인했습니다.
+2026-10-10에 Apple과 Google의 공식 문서, 그리고 이 앱의 실제 빌드 결과물을 확인해서 정리했습니다. Google Play 부분은 2026-10-12에 다시 확인했습니다. 1.6.0의 계정 기능과 아이폰 사용자 추가 절차는 2026-10-13에 더했습니다.
 
 ## 결론: 스토어 심사 없이 배포하는 것을 권장
 
@@ -22,6 +22,7 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 
 **공통**
 - `HJV_SERVER`, `HJV_SERVER_KEY`: 서버 배포 후 받은 도메인과 공개키([server-runbook.md](server-runbook.md)의 "보고")
+- 1.6.0부터: 계정 API의 공개키 `HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`(앱)와 `HJV_COMMAND_PUBKEY`(NAS 중계기). 사용자가 키를 만든 뒤 공개값만 넣습니다([server-runbook.md](server-runbook.md) 7-4, [ci.md](ci.md)의 "계정 기능의 공개키"). 없으면 앱은 1.5.1처럼 계정 기능 없이 동작합니다.
 
 **Android (사이드로드)**
 - `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`: 만드는 방법은 [ci.md](ci.md)에 있습니다. 같은 키로 서명해야 앱 위에 업데이트를 설치할 수 있으므로, **키스토어를 잃어버리면 안 됩니다.**
@@ -41,6 +42,23 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 - 사용자를 추가할 때마다 기기를 등록하고, 프로파일을 다시 받아 다시 빌드해야 합니다.
 - 설치 방법: Finder나 Apple Configurator로 USB 설치하거나, HTTPS 서버에 `manifest.plist`를 올려 `itms-services://` 링크로 무선 설치합니다.
 
+## 아이폰 사용자 추가 (TestFlight 내부 테스트)
+
+1.6.0은 TestFlight **내부** 테스트로만 나눠 줍니다. 내부 테스터는 개발자 팀의 App Store Connect 사용자여야 하므로, 다른 사람의 아이폰에 주려면 먼저 그 사람을 팀의 사용자로 초대합니다. 외부 테스트와 App Store는 심사용 데모 계정, 앱 안의 계정 삭제 요청, App Privacy 답변(이름, 사용자 ID, 기기 ID)이 필요해서 1.6.0에서는 하지 않습니다.
+
+계정 소유자가 App Store Connect 웹에서 합니다.
+
+1. **사용자 및 액세스**(Users and Access) → **사람**(People) → **+**를 누릅니다.
+2. 이름과 이메일을 넣습니다. 그 이메일이 Apple 계정일 필요는 없습니다. 초대받은 사람은 메일의 링크로 활성화하면서 기존 Apple 계정으로 로그인하거나 새로 만듭니다.
+3. 역할은 **Developer**나 **Marketing** 하나만 줍니다. 내부 테스터가 될 수 있는 역할은 Account Holder, Admin, App Manager, Developer, Marketing뿐입니다. Admin과 Finance는 팀의 모든 앱을 보므로 주지 않고, 보고서나 Certificates, Identifiers & Profiles 같은 추가 권한도 켜지 않습니다. 추가 권한을 켜면 볼 수 있는 앱을 제한할 수 없습니다.
+4. **다음**을 누르고, 볼 수 있는 앱으로 **HJViewer만** 고릅니다. 그러면 팀의 다른 앱이 보이지 않습니다. 역할이 앱 정보의 일부를 바꿀 수 있으므로 믿을 수 있는 사람만 초대합니다. 팀 이름(개인 개발자 계정의 법적 이름)은 초대받은 사람에게 보입니다.
+5. **초대**를 누릅니다. 초대는 3일 뒤 만료되고, 만료되면 다시 보낼 수 있습니다.
+6. 초대받은 사람이 활성화하면 **앱** → HJViewer → **TestFlight** → 내부 테스트 그룹(`내부 테스트`) → 테스터 **+**에서 그 사람을 골라 **추가**합니다. 이 그룹은 모든 빌드를 받습니다.
+7. 그 사람이 아이폰에 TestFlight 앱을 설치하고 초대를 받아들인 뒤 HJViewer를 설치합니다. 빌드는 90일 뒤 만료되므로 그 전에 새 빌드를 올립니다. 내부 테스터는 100명까지입니다.
+8. 그만 쓸 때는 그룹에서 빼고, 사용자 및 액세스에서도 지웁니다.
+
+로그인은 운영자 명단에 있는 사람만 됩니다. 아이폰을 넣기 전에 그 사람의 포탈 ID를 명단에 넣어 달라고 서버 운영자에게 요청합니다([server-runbook.md](server-runbook.md) 7-15).
+
 ## Windows 피제어 PC 설치
 
 제어받을 Windows PC는 설치해 두어야 사람이 없어도 접속할 수 있습니다. 제어만 하는 PC는 설치하지 않아도 됩니다.
@@ -54,10 +72,25 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 3. **영구 비밀번호**: 화면의 일회용 비밀번호는 접속에 성공하거나 앱이 다시 시작될 때마다 바뀝니다. 그래서 사람 없이 접속하려면 영구 비밀번호가 필요합니다.
    - 설치한 PC에서 설정 → 보안 → **보안 설정 잠금 해제** → **영구 비밀번호 설정** 순서로 정합니다.
    - 길고, 다른 곳에 쓰지 않는 비밀번호를 쓰세요.
-4. **절전**: 전원에 연결됐을 때 절전을 "안 함"으로 둡니다. 절전·최대 절전·꺼진 PC에는 접속할 수 없습니다. 꺼진 PC를 깨우는 기능(Wake-on-LAN)은 다음 버전에서 다룹니다.
-5. **열기와 업데이트**: 설치한 PC에서는 시작 메뉴나 트레이의 **열기**로 앱을 엽니다. 새 버전은 새 `HJViewer-install.exe`로 다시 설치합니다.
+4. **절전**: 전원에 연결됐을 때 절전을 "안 함"으로 둡니다. 절전·최대 절전·꺼진 PC에는 접속할 수 없습니다. 1.6.0부터는 같은 네트워크에 NAS 중계기가 있으면 꺼진 내 PC를 앱의 **켜기**로 깨울 수 있습니다(Wake-on-LAN, NAS 설치는 [relay-dsm.md](relay-dsm.md)). 그러려면 PC의 BIOS와 랜카드에서 Wake-on-LAN이 켜져 있어야 합니다.
+5. **열기와 업데이트**: 설치한 PC에서는 시작 메뉴나 트레이의 **열기**로 앱을 엽니다. 새 버전은 새 `HJViewer-install.exe`로 다시 설치합니다. 다시 설치하거나 업데이트해도 로그인과 비밀번호 없는 연결은 그대로 남습니다.
+6. **연세포탈 로그인(1.6.0)**: 설치한 PC에서 설정 → 계정 → 로그인으로 연세포탈 ID와 비밀번호를 넣으면, 그 PC가 내 기기 목록에 오르고 같은 계정으로 로그인한 내 휴대폰과 PC가 이 PC에 비밀번호 없이 연결할 수 있게 됩니다. 영구 비밀번호는 그래도 정해 둡니다. 서버 점검, 끄기, 로그아웃 때 쓰는 길입니다.
+7. **PC를 남에게 넘기거나 버릴 때**: 그 PC가 인터넷에 연결된 상태에서 설정 → 계정 → 로그아웃을 한 뒤 넘기거나 앱을 제거합니다. 로그아웃하지 않고 넘기면 새 사용자의 로그인이 "다른 계정에 등록된 PC"가 되므로, 다른 내 기기에서 그 PC를 "내 목록에서 빼기" 하거나 서버 운영자에게 풀어 달라고 합니다.
 
 로그인해야 네트워크가 열리는 망(사용자별 802.1X 인증, 웹 로그인)에서는 Windows 로그인 전에는 접속되지 않을 수 있습니다.
+
+## 1.6.0 계정 기능 쓰기
+
+운영자 명단에 있는 사람이 쓰는 기능입니다. 자세한 동작은 [architecture.md](architecture.md) 5절, 저장하는 정보는 [privacy.md](privacy.md)에 있습니다.
+
+- **기기마다 한 번 로그인**: 설정 → 계정 → 로그인에서 연세포탈 ID와 비밀번호를 넣습니다. 두 번째 인증은 없습니다. 로그인한 휴대폰의 "액세스 가능한 장치" 탭에 내 Windows PC가 나오고, 누르면 ID와 비밀번호 없이 원격 화면이 열립니다. 파일 전송과 카메라도 같고, 터미널과 포트 포워딩은 PC 비밀번호를 묻습니다.
+- **PC는 그 PC에서 로그인해야 목록에 오릅니다**(위 6번). 설치하지 않고 실행한 HJViewer는 목록에 오르지 않습니다.
+- **새 기기 로그인 알림**: 다른 기기가 내 계정에 로그인하면 내 기기에 한 번 알림이 뜹니다. 내가 한 로그인이 아니면 [아님]을 눌러 그 기기를 로그아웃시키고, 포탈 비밀번호를 바꿉니다.
+- **잃어버린 휴대폰**: 다른 내 기기에서 설정 → 계정 → 로그인한 기기 → [로그아웃시키기](또는 [다른 기기 모두 로그아웃]). PC가 서버에 닿으면 보통 2분, 늦어도 5분 안에 그 휴대폰으로는 비밀번호 없이 들어오지 못합니다.
+- **PC 앞에서 끄기**: 그 PC의 설정 → 계정 → [끄기]. 그 PC의 Windows 사용자 누구나 누를 수 있고 바로 꺼집니다. 다시 켜려면 그 PC를 묶은 계정으로 그 PC에서 다시 로그인합니다.
+- **안 될 때**: 비밀번호 없는 연결이 안 되면 PC 비밀번호 창이 대신 뜹니다(이유가 한 줄 붙음). 서버가 멈춰도 PC가 받아 둔 목록으로 하루 동안은 비밀번호 없이 연결되고, 앱 위에 "HJViewer 서버를 지금 쓸 수 없습니다" 안내가 뜹니다. "보안 경고: 이 PC의 키가 바뀌었습니다"가 뜨면 연결이 끊깁니다. 그 PC를 다시 설치하거나 초기화한 일이 없다면 서버 운영자에게 알립니다.
+- **백업에서 복원한 아이폰**: 보안 키는 백업에 들어가지 않으므로 그 기기에서 다시 로그인합니다.
+- **AI 에이전트가 도는 PC**: 이 PC에서 다른 PC로 비밀번호 없이 연결할 일이 없으면, 다른 내 기기의 '로그인한 기기'에서 이 PC만 로그아웃시켜 둡니다. 이 PC로 들어오는 비밀번호 없는 연결은 그대로입니다.
 
 ## 스토어로 갈 때 (나중에 필요해지면)
 
@@ -96,7 +129,7 @@ CI와 처음 한 번 할 일은 [ci.md](ci.md)의 "Google Play 업로드"에 있
 - **심사**: 내부 테스트 업데이트는 심사하지 않습니다. 다만 게시 뒤 소급 심사는 있을 수 있습니다. 앱 설정을 모두 마친 앱은 첫 내부 출시가 심사를 받고(몇 시간에서 7일), 설정을 다 마치지 않은 앱은 예외입니다. 거절된 뒤에는 다음 제출이 심사를 통과해야 내부 테스터에게도 나갑니다.
 - **첫 업로드는 Play Console에서 직접** 합니다. API로는 앱을 만들 수 없고, 빌드가 하나 이상 올라간 앱만 다룰 수 있습니다. 패키지 이름은 첫 업로드로 정해지고 바꿀 수 없습니다.
 - **앱 서명 키**: 2026년부터 새 앱은 기본으로 Google이 만든 하이브리드 키(RSA 4096 + ML-DSA-65)로 서명됩니다. 이 기본값은 공개 테스트나 프로덕션에 처음 출시하기 전까지 바꿀 수 있지만, 키를 바꾸면 내부 테스터는 더 이상 업데이트를 받지 못합니다. 업로드 키는 RSA 2048비트 이상이어야 하고, 지금 키스토어(RSA 4096, 2054년까지 유효)가 맞습니다.
-  - **권장: 기본값(Google 생성 키)을 그대로 두고 지금 키스토어를 업로드 키로 씁니다.** 새 시크릿이 없습니다. Play 설치본과 사이드로드 APK는 서명이 달라 서로 업데이트하지 못하므로, 휴대폰마다 한쪽만 쓰고 바꿀 때는 지우고 설치합니다. 아래 제어 전용 Play 빌드와 함께 쓰면 두 변형이 서로를 덮어쓰지 않습니다.
+  - **결정(2026-10-12): 기본값(Google 생성 키)을 그대로 두고 지금 키스토어를 업로드 키로 씁니다.** 새 시크릿이 없습니다. Play 설치본과 사이드로드 APK는 서명이 달라 서로 업데이트하지 못하므로, 휴대폰마다 한쪽만 쓰고 바꿀 때는 지우고 설치합니다.
   - 대안: 지금 키를 Play에 제공하고 업로드 키를 새로 만듭니다. Android 16 이하에서는 두 채널이 서로 업데이트할 수 있지만, Android 17 이상의 하이브리드 서명과 어떻게 맞물리는지는 문서에 없습니다.
 - **서비스 계정은 최소 권한**: Play Console에서 HJViewer에만 "테스트 트랙에 앱 출시" 권한을 줍니다. 프로덕션에는 출시할 수 없는 권한입니다. Play 계정과 Cloud 프로젝트를 연결할 필요는 없습니다. 2024-05-03 이후 만든 Google Cloud 조직은 서비스 계정 키 생성을 기본으로 막으므로, 조직이 없는 개인 Google 계정의 프로젝트를 씁니다.
 - **권한과 선언**(1.5.1 번들에서 잰 값)
@@ -106,16 +139,16 @@ CI와 처음 한 번 할 일은 [ci.md](ci.md)의 "Google Play 업로드"에 있
   - `SYSTEM_ALERT_WINDOW`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `RECEIVE_BOOT_COMPLETED`: 신고 양식은 없지만, 정책 심사에서는 위험 요소입니다.
   - `RECORD_AUDIO`(음성 통화), `CAMERA`(설정의 QR 읽기, 플러그인이 더함): 개인정보처리방침 URL이 필요합니다. 카메라·마이크 권한이 있는 번들은 방침 URL이 없으면 내부 트랙에서도 거절된다는 보고가 있습니다. [privacy.md](privacy.md)에 카메라·마이크 문장을 먼저 넣어야 합니다.
   - 선언이 필요한 항목이 모르게 늘지 않도록, CI가 빌드마다 이 목록을 확인합니다([ci.md](ci.md)의 "Play 선언 대상").
-- **정할 것: Play에 올릴 앱.** CI는 어느 쪽이든 그대로 씁니다.
+- **Play에 올릴 앱: 모든 Android 빌드를 제어 전용으로(B', 2026-10-12 결정).** 1.6.0부터 사이드로드 APK와 Play 빌드 모두 피제어 구성요소를 빼므로, Android 기기는 다른 기기를 제어하기만 하고 원격으로 볼 수 없습니다. Play 서류는 개인정보처리방침 URL뿐이고 Android 변형은 하나입니다. 1.6.0의 클라이언트 패치로 넣고, 같은 커밋에서 CI의 `PLAY_MANIFEST` 목록도 줄입니다. 검토한 선택지는 다음과 같습니다.
 
-  | | A. 전체 앱 그대로 | **B. Play용만 제어 전용 (권장)** | B'. Android 전체를 제어 전용 |
+  | | A. 전체 앱 그대로 | B. Play용만 제어 전용 | **B'. Android 전체를 제어 전용 (결정)** |
   |---|---|---|---|
   | 앱 변경 | 없음(고지·동의 화면 보강이 필요할 수 있음) | Play용 AAB에서만 피제어 구성요소를 빼고 outgoing-only 화면으로 | 모든 Android 빌드에서 뺌 |
   | Play 서류 | 방침 URL, 접근성 선언과 영상, 포그라운드 서비스 3종 선언과 영상 | 방침 URL뿐 | 방침 URL뿐 |
   | 정책 위험 | 높음 | 낮음 | 낮음 |
   | Android 피제어 | Play 설치본도 가능 | 사이드로드 APK로만 | 불가 |
 
-  B는 Play용 AAB를 빌드하기 직전에 접근성 서비스, 화면·소리 서비스, 오버레이, 부팅 수신기와 그 권한을 빼는 매니페스트를 넣고, upstream의 outgoing-only 설정을 켜는 방식입니다(별도 작업에서 설계와 기기 시험). 같은 커밋에서 CI의 `PLAY_MANIFEST` 목록도 줄입니다. 휴대폰이 PC를 제어한다는 주 용도와 맞고, 제어받아야 하는 Android 기기는 지금처럼 APK를 씁니다.
+  B'는 B의 방식(접근성 서비스, 화면·소리 서비스, 오버레이, 부팅 수신기와 그 권한을 빼는 매니페스트, upstream의 outgoing-only 설정)을 Play 빌드만이 아니라 모든 Android 빌드에 씁니다. 휴대폰이 PC를 제어한다는 주 용도와 맞습니다.
 - **Play 앱은 Play로만 업데이트**: Play에서 받은 앱은 Play의 업데이트 말고 다른 방법으로 자신을 업데이트하면 안 됩니다. 앱 안에 업데이트 안내를 넣는다면, Play 설치본에서는 Play 스토어를 열어야 합니다.
 - **AGPL**: Play로 받은 앱에는 고지 파일이 없습니다. 출시 노트에 이 빌드의 소스 커밋 링크가 들어가고, 앱 정보 화면에 소스 링크가 있습니다.
 - **배경**: upstream RustDesk는 원격 지원 사기 문제로 2023년에 Google Play에서 스스로 내려갔습니다. 원격 입력과 무인 접속을 함께 가진 앱은 심사 위험이 큽니다.
@@ -126,7 +159,7 @@ CI와 처음 한 번 할 일은 [ci.md](ci.md)의 "Google Play 업로드"에 있
 
 ## 출처
 
-- Apple: [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/), [기기 등록(Ad Hoc 100대)](https://developer.apple.com/help/account/devices/devices-overview), [TestFlight 개요](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview), [내부 테스터](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers), [API 키 만들기](https://developer.apple.com/documentation/appstoreconnectapi/creating-api-keys-for-app-store-connect-api), [서드파티 SDK 요건](https://developer.apple.com/support/third-party-SDK-requirements/), [Required reason API](https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api), [스크린샷 규격](https://developer.apple.com/help/app-store-connect/reference/screenshot-specifications), [수출 규정](https://developer.apple.com/help/app-store-connect/reference/app-information/export-compliance-documentation-for-encryption)
+- Apple: [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/), [기기 등록(Ad Hoc 100대)](https://developer.apple.com/help/account/devices/devices-overview), [TestFlight 개요](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview), [내부 테스터](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers), [TestFlight(내부 테스터가 될 수 있는 역할)](https://developer.apple.com/testflight/), [사용자 추가와 앱 접근 제한](https://developer.apple.com/help/app-store-connect/manage-your-team/add-and-edit-users), [API 키 만들기](https://developer.apple.com/documentation/appstoreconnectapi/creating-api-keys-for-app-store-connect-api), [서드파티 SDK 요건](https://developer.apple.com/support/third-party-SDK-requirements/), [Required reason API](https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api), [스크린샷 규격](https://developer.apple.com/help/app-store-connect/reference/screenshot-specifications), [수출 규정](https://developer.apple.com/help/app-store-connect/reference/app-information/export-compliance-documentation-for-encryption)
 - Google: [Publishing API 시작](https://developers.google.com/android-publisher/getting_started), [Edits(첫 업로드 수동)](https://developers.google.com/android-publisher/edits), [신규 개인 계정 테스트 요건](https://support.google.com/googleplay/android-developer/answer/14151465), [테스트 트랙](https://support.google.com/googleplay/android-developer/answer/9845334), [앱 서명](https://developer.android.com/studio/publish/app-signing), [App Bundle](https://developer.android.com/guide/app-bundle), [접근성 API 정책](https://support.google.com/googleplay/android-developer/answer/10964491), [포그라운드 서비스 신고](https://support.google.com/googleplay/android-developer/answer/13392821), [데이터 보안](https://support.google.com/googleplay/android-developer/answer/10787469)
 - Google, 2026-10-12 추가: [변경 심사와 게시](https://support.google.com/googleplay/android-developer/answer/9859654), [권한 선언](https://support.google.com/googleplay/android-developer/answer/9214102), [Play 앱 서명(하이브리드 키 기본값)](https://support.google.com/googleplay/android-developer/answer/9842756), [출시 준비(출시 노트 500자, 키 변경과 테스터)](https://support.google.com/googleplay/android-developer/answer/9859348), [사용자와 권한](https://support.google.com/googleplay/android-developer/answer/9844686), [개발자 정보 표시](https://support.google.com/googleplay/android-developer/answer/13628312), [기기 인증](https://support.google.com/googleplay/android-developer/answer/14316361), [사용자 데이터 정책](https://support.google.com/googleplay/android-developer/answer/10144311), [기기 및 네트워크 악용(자기 업데이트 금지)](https://support.google.com/googleplay/android-developer/answer/9888379), [목표 API 수준](https://developer.android.com/google/play/requirements/target-sdk), [16KB 페이지](https://developer.android.com/guide/practices/page-sizes), [버전(versionCode 상한)](https://developer.android.com/studio/publish/versioning), [명령줄 빌드(번들은 jarsigner로 서명)](https://developer.android.com/build/building-cmdline), [APKs and Tracks](https://developers.google.com/android-publisher/tracks), [edits.commit](https://developers.google.com/android-publisher/api-ref/rest/v3/edits/commit), [서버 간 OAuth 2.0](https://developers.google.com/identity/protocols/oauth2/service-account), [보안 기본값 조직(키 생성 차단)](https://docs.cloud.google.com/resource-manager/docs/secure-by-default-organizations)
 - GitHub: [Secure use(구조화된 값은 값마다 시크릿)](https://docs.github.com/en/actions/reference/security/secure-use)
