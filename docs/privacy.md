@@ -80,11 +80,14 @@ let in today and yesterday and their number, and how many attempts it refused fo
 | Connections without the PC's password | per account key, PC and day: the time of the last one and their number, as the PC reported them. There is no record per connection | 30 days; deleted with the key or the PC |
 | Records of logins, devices and keys | tags of the account and the device (not your ID), the client's IP address, the result, the time | 6 months |
 | Operator record | which administration command ran when, its targets as tags | at least a year |
-| Database backups | a copy of all of the above, on the server, readable by root only | 14 days |
+| Database backups | a copy of all of the above, on the server, readable by root only: one a day, and one before an upgrade or a restore | 14 days |
 | The service's log | counts and tags, never IDs, addresses or secrets | 30 days |
 
 Short-lived: the one-time values of requests (up to 20 minutes) and the login limit counters,
-under tags (as long as their longest window, at least a day).
+under tags (as long as their longest window, at least a day). In memory only, never on disk: the
+service's answer to a login or to an account request that changes something, so that the same
+request sent again within 30 seconds gets the same answer; it is cleared at the next such request,
+within the hour at the latest.
 
 **Not kept** by the account service: passwords, Yonsei SSO tokens, e-mail addresses, affiliation,
 the machine identifier itself, OS user names, CPU and memory details, heartbeats, device
@@ -113,10 +116,11 @@ and your name masked (such as 홍\*동), taken from the signed list.
   token without its account key opens nothing.
 - **A PC in an account** keeps, in the Windows registry (`HKLM\SOFTWARE\HJViewer\Account`), its
   binding ID, your name masked, whether connections without the password are switched off on it,
-  a record of a binding it let go, and for each account key the number of such connections today
-  and yesterday; in its service's folder, the signed list (the names, IDs and public keys of your
-  devices and your masked name); and in HJViewer's log, a line for each connection it let in
-  without the password (the device's ID and name, the time). HJViewer keeps about 90 days of logs.
+  a record of a binding it let go, and for each account key the time of the last such connection
+  today and yesterday and their number; in its service's folder, the signed list (the names, IDs
+  and public keys of your devices and your masked name); and in HJViewer's log, a line for each
+  connection it let in without the password (the device's ID and name, the time). HJViewer keeps
+  about 90 days of logs.
   Other people who use that PC can read the masked name and, with some effort, the list.
   Uninstalling HJViewer deletes the registry key.
 
@@ -238,10 +242,10 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 | 비밀번호 없는 연결 | 계정 키·PC·날짜마다 마지막 연결 시각과 횟수(PC가 알린 값). 연결마다의 기록은 없음 | 30일. 그 키나 PC와 함께 삭제 |
 | 로그인·기기·키 기록 | 계정과 기기의 꼬리표(ID가 아님), 접속한 IP 주소, 결과, 시각 | 6개월 |
 | 운영자 기록 | 어떤 관리 명령을 언제 실행했는지, 대상은 꼬리표로 | 1년 이상 |
-| DB 백업 | 위 전부의 사본(서버 안, root만 읽음) | 14일 |
+| DB 백업 | 위 전부의 사본(서버 안, root만 읽음). 매일 하나, 그리고 업그레이드나 복원 전에 하나 | 14일 |
 | 계정 서비스의 로그 | 개수와 꼬리표만(ID, 주소, 비밀값은 없음) | 30일 |
 
-잠깐만 두는 것: 요청의 일회용 값(최대 20분), 꼬리표로 센 로그인 한도 기록(가장 긴 한도 기간, 최소 하루).
+잠깐만 두는 것: 요청의 일회용 값(최대 20분), 꼬리표로 센 로그인 한도 기록(가장 긴 한도 기간, 최소 하루). 메모리에만 두고 디스크에는 쓰지 않는 것: 로그인과 무언가를 바꾸는 계정 요청에 한 답. 30초 안에 같은 요청이 다시 오면 같은 답을 주려는 것이고, 다음 그런 요청 때나 늦어도 1시간 안에 지웁니다.
 
 **계정 서비스가 보관하지 않는 것**: 비밀번호, 연세 SSO 토큰, 이메일 주소, 소속, 기기 식별값 자체, OS 사용자 이름, CPU·메모리 정보, 하트비트, 기기 정보, 연결이나 파일 전송마다의 기록, 세션 내용.
 
@@ -253,7 +257,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 - **모든 앱**: 설정, 기기 ID와 키 쌍, 접속했던 기기 ID.
 - **로그인한 앱**은 계정 키의 개인키도 보관합니다. 아이폰은 Keychain에 이 기기 전용, 잠금이 풀렸을 때만 쓰도록 두므로 백업에 들어가지 않습니다. 안드로이드는 앱 데이터에 두며, 클라우드 백업과 기기 간 이전에서 뺍니다. Windows는 `%LOCALAPPDATA%\HJViewer-account\`에 Windows DPAPI로 그 Windows 사용자만 풀 수 있게 암호화해 두고, 로밍하지 않습니다. 그 밖에 로그인 토큰, 서버가 보낸 성명과 포탈 ID, 내 PC 목록(PC ID, 공개키, 상태), 서버와의 시계 차이를 보관합니다. 계정 키가 없는 토큰으로는 아무것도 할 수 없습니다.
-- **계정에 들어간 PC**는 Windows 레지스트리(`HKLM\SOFTWARE\HJViewer\Account`)에 묶음 ID, 가린 내 이름, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 풀린 묶음의 기록, 계정 키마다 오늘과 어제의 비밀번호 없는 연결 횟수를 둡니다. 서비스 폴더에는 서명된 목록(내 기기들의 이름·ID·공개키와 가린 내 이름)을, HJViewer 로그에는 비밀번호 없이 받아들인 연결마다 한 줄(그 기기의 ID와 이름, 시각)을 둡니다. HJViewer 로그는 약 90일치를 둡니다. 그 PC를 쓰는 다른 사람은 가린 이름을 볼 수 있고, 마음먹으면 그 목록도 볼 수 있습니다. HJViewer를 제거하면 레지스트리 키가 지워집니다.
+- **계정에 들어간 PC**는 Windows 레지스트리(`HKLM\SOFTWARE\HJViewer\Account`)에 묶음 ID, 가린 내 이름, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 풀린 묶음의 기록, 계정 키마다 오늘과 어제의 비밀번호 없는 연결의 마지막 시각과 횟수를 둡니다. 서비스 폴더에는 서명된 목록(내 기기들의 이름·ID·공개키와 가린 내 이름)을, HJViewer 로그에는 비밀번호 없이 받아들인 연결마다 한 줄(그 기기의 ID와 이름, 시각)을 둡니다. HJViewer 로그는 약 90일치를 둡니다. 그 PC를 쓰는 다른 사람은 가린 이름을 볼 수 있고, 마음먹으면 그 목록도 볼 수 있습니다. HJViewer를 제거하면 레지스트리 키가 지워집니다.
 
 ### 5. 꺼진 PC 켜기 (Wake-on-LAN)
 
