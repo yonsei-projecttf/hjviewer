@@ -1401,10 +1401,10 @@ index f4201a1..6537355 100644
 +    }
  }
 diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
-index e63ca49..5837a5c 100644
+index 7ff1b39..40a353b 100644
 --- a/src/hjviewer_account/mod.rs
 +++ b/src/hjviewer_account/mod.rs
-@@ -749,7 +749,6 @@ pub(crate) fn used_report(entries: &[UseEntry], now: u64) -> Vec<UseEntry> {
+@@ -751,7 +751,6 @@ pub(crate) fn used_report(entries: &[UseEntry], now: u64) -> Vec<UseEntry> {
  
  /// Whether the texts this module shows go in Korean: the app's language, its own setting or else
  /// the system's, as lang.rs picks it, and English where the UI cannot show Korean.

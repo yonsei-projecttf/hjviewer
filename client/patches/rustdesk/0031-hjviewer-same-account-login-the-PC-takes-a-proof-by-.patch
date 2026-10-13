@@ -24,7 +24,11 @@ rest in HJViewer's:
   branches; a refusal is not a failed attempt.
 - rendezvous_mediator.rs: the service starts its sync task next to
   hbbs_http's.
-- windows.rs: uninstall_me forgets HKLM\SOFTWARE\HJViewer\Account first.
+- windows.rs: uninstall_me forgets HKLM\SOFTWARE\HJViewer\Account first,
+  and adds `reg delete` of that key to the uninstaller's batch, which runs
+  elevated once the service stopped: the Start menu's "Uninstall" runs
+  --uninstall unelevated, where the first attempt gets access denied, and a
+  PC installed again would take the earlier owner's proofs.
 - hjviewer_account/pc.rs: the sync task. Every second it takes the UI's
   Config2 requests from memory: an unbind first, counting as undoing the bind
   request in hand (seen in the same second, or taken out of the options by
@@ -86,46 +90,54 @@ but one of their own after a periodic sync; a proof goes through the task (a
 phone that logged in just now gets in, the next report counts uses and
 refusals, a strict list needs hjv-api); bind requests every second do not
 hold off the periodic sync; a stale bind request of this PC's binding leaves
-its settings line; a signed revoked unbinds and one report follows.
+its settings line; a signed revoked unbinds and one report follows; the
+uninstaller's elevated batch deletes the binding key.
 
-Known limit: a login undone before its bind came through is not recorded
+Known limits: a login undone before its bind came through is not recorded
 while the PC's record of another binding still guards it (a login of that
 one within the last 15 minutes), nor when the service found the login and its
 logout in the same second; that login's bind request, put back while hjv-api
 still has the login (a logout that never reached it), can then still bind
-the PC.
+the PC. A connection the PC let in by a proof stays open when its account key
+is revoked, the PC leaves the list, the switch is turned off or the list
+expires: the PC checks the list only when it lets a connection in. Whoever
+revokes ends such a connection in the PC's connection window, or connects to
+the PC from their own device with the PC's password and uses "Restart remote
+device", or restarts the PC (design v3 1-7, decided for 1.6.0: U1-d).
 
 (Design v3, work package C2: patch 0031.)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/hjviewer_account/mod.rs          |   48 +-
- src/hjviewer_account/pc.rs           | 1656 +++++++++++++++++++++++++-
- src/hjviewer_account/pc/tests.rs     | 1536 ++++++++++++++++++++++++
- src/platform/windows.rs              |    1 +
+ src/hjviewer_account/mod.rs          |   50 +-
+ src/hjviewer_account/pc.rs           | 1676 +++++++++++++++++++++++++-
+ src/hjviewer_account/pc/tests.rs     | 1547 ++++++++++++++++++++++++
+ src/platform/windows.rs              |    4 +-
  src/rendezvous_mediator.rs           |    1 +
  src/server/connection.rs             |    9 +
  src/server/connection/hjv_account.rs |   64 +
- 7 files changed, 3276 insertions(+), 39 deletions(-)
+ 7 files changed, 3311 insertions(+), 40 deletions(-)
  create mode 100644 src/hjviewer_account/pc/tests.rs
  create mode 100644 src/server/connection/hjv_account.rs
 
 diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
-index e554aff..e63ca49 100644
+index e554aff..7ff1b39 100644
 --- a/src/hjviewer_account/mod.rs
 +++ b/src/hjviewer_account/mod.rs
-@@ -38,7 +38,9 @@ pub(crate) use api::{
+@@ -38,7 +38,11 @@ pub(crate) use api::{
      proof_header, set_common,
  };
  pub(crate) use ctl::{key_proof, note_peer_key, take_proof_sent, LoginContext, ProofDecision};
 -pub(crate) use pc::{forget_pc_binding, key_login, pc_capable, refresh_now, start_pc_sync};
 +#[cfg(windows)]
 +pub(crate) use pc::forget_pc_binding;
++#[cfg(windows)]
++pub(crate) use pc::uninstall_command;
 +pub(crate) use pc::{key_login, pc_capable, start_pc_sync};
  
  const SEAL_PUBKEY: Option<&str> = option_env!("HJV_LOGIN_SEAL_PUBKEY");
  const TRUST_PUBKEYS: Option<&str> = option_env!("HJV_TRUST_PUBKEYS");
-@@ -435,27 +437,27 @@ pub(crate) enum Refusal {
+@@ -435,27 +439,27 @@ pub(crate) enum Refusal {
  }
  
  impl Refusal {
@@ -164,7 +176,7 @@ index e554aff..e63ca49 100644
          }
      }
  
-@@ -552,7 +554,6 @@ pub(crate) struct KeyLogin<'a> {
+@@ -552,7 +556,6 @@ pub(crate) struct KeyLogin<'a> {
  /// A proof the PC accepted: what its connection manager shows.
  pub(crate) struct Accepted {
      pub name: String,
@@ -172,7 +184,7 @@ index e554aff..e63ca49 100644
  }
  
  /// Checks a sync answer's list: a pinned key number not below the floor, the signature over the
-@@ -746,6 +747,20 @@ pub(crate) fn used_report(entries: &[UseEntry], now: u64) -> Vec<UseEntry> {
+@@ -746,6 +749,20 @@ pub(crate) fn used_report(entries: &[UseEntry], now: u64) -> Vec<UseEntry> {
          .collect()
  }
  
@@ -193,7 +205,7 @@ index e554aff..e63ca49 100644
  /// Phones never take same-account logins: the PC side's names, doing nothing.
  #[cfg(any(target_os = "android", target_os = "ios"))]
  mod pc {
-@@ -759,6 +774,7 @@ mod pc {
+@@ -759,6 +776,7 @@ mod pc {
      pub(crate) fn start_pc_sync() {}
  
      pub(crate) async fn key_login(
@@ -201,7 +213,7 @@ index e554aff..e63ca49 100644
          _secured: bool,
          _nonce: &[u8],
          _proof: &HjvKeyProof,
-@@ -767,12 +783,6 @@ mod pc {
+@@ -767,12 +785,6 @@ mod pc {
      ) -> Result<Accepted, Refusal> {
          Err(Refusal::NotBound)
      }
@@ -215,7 +227,7 @@ index e554aff..e63ca49 100644
  
  #[cfg(test)]
 diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
-index ed81885..88a49bd 100644
+index ed81885..6e95ff4 100644
 --- a/src/hjviewer_account/pc.rs
 +++ b/src/hjviewer_account/pc.rs
 @@ -1,11 +1,105 @@
@@ -329,7 +341,7 @@ index ed81885..88a49bd 100644
  
  /// Whether this process sends a nonce and takes proofs: an account build's service process
  /// (`--server`) of an installed HJViewer.
-@@ -15,27 +109,1549 @@ pub(crate) fn pc_capable() -> bool {
+@@ -15,27 +109,1569 @@ pub(crate) fn pc_capable() -> bool {
  
  /// Starts the sync task once, in the service process next to hbbs_http::sync::start(); nothing
  /// unless `pc_capable()`.
@@ -521,6 +533,26 @@ index ed81885..88a49bd 100644
 +    }
 +}
 +
++/// HKLM\SOFTWARE\HJViewer\Account, where a Windows PC keeps its binding.
++#[cfg(any(windows, test))]
++const ACCOUNT_KEY: &str = "SOFTWARE\\HJViewer\\Account";
++
++/// What `--uninstall` adds to the uninstaller's batch, which runs elevated once the service has
++/// stopped: the Start menu's "Uninstall" runs `--uninstall` unelevated, so forget_pc_binding()
++/// gets access denied there, and a PC installed again would take the earlier owner's proofs.
++#[cfg(windows)]
++pub(crate) fn uninstall_command() -> String {
++    uninstall_line(enabled())
++}
++
++#[cfg(any(windows, test))]
++fn uninstall_line(enabled: bool) -> String {
++    if !enabled {
++        return String::new();
++    }
++    format!("\nreg delete \"HKLM\\{ACCOUNT_KEY}\" /f\n")
++}
++
 +/// A bind or unbind request: `<binding ID>.<login_at>`, the binding (32 lowercase hex) and the
 +/// server's time of the login that made it, as the login's answer gave them.
 +#[derive(Debug, Clone, PartialEq, Eq)]
@@ -560,7 +592,7 @@ index ed81885..88a49bd 100644
 +mod registry {
 +    use winreg::{enums::*, RegKey};
 +
-+    const KEY: &str = "SOFTWARE\\HJViewer\\Account";
++    const KEY: &str = super::ACCOUNT_KEY;
 +
 +    /// HKLM\SOFTWARE\HJViewer\Account, with the default rights of HKLM\SOFTWARE: SYSTEM and
 +    /// administrators write it, users read it.
@@ -1896,10 +1928,10 @@ index ed81885..88a49bd 100644
 +mod tests;
 diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
 new file mode 100644
-index 0000000..6608787
+index 0000000..1b68ce7
 --- /dev/null
 +++ b/src/hjviewer_account/pc/tests.rs
-@@ -0,0 +1,1536 @@
+@@ -0,0 +1,1547 @@
 +//! The PC's binding rules (design v3 4-4 to 4-7), its answers to a sync, its use counts and the
 +//! sync request, on an in-memory key and the Linux file; and the sync task itself against an
 +//! in-memory hjv-api.
@@ -3436,18 +3468,32 @@ index 0000000..6608787
 +    assert_eq!(pc.option(STATE), "revoked");
 +    cleanup(&["loop-revoked"]);
 +}
++
++/// The Start menu's "Uninstall" runs `--uninstall` unelevated: the binding key goes in the
++/// uninstaller's elevated batch (the release review's privacy-uninstall-hklm-unelevated).
++#[test]
++fn the_uninstallers_elevated_batch_deletes_the_binding_key() {
++    assert_eq!(
++        uninstall_line(true),
++        "\nreg delete \"HKLM\\SOFTWARE\\HJViewer\\Account\" /f\n"
++    );
++    assert_eq!(uninstall_line(false), "");
++}
 diff --git a/src/platform/windows.rs b/src/platform/windows.rs
-index 05bb75a..3c234f0 100644
+index 05bb75a..55e88c7 100644
 --- a/src/platform/windows.rs
 +++ b/src/platform/windows.rs
-@@ -1867,6 +1867,7 @@ fn get_uninstall(kill_self: bool, uninstall_printer: bool) -> ResultType<String>
+@@ -1867,7 +1867,9 @@ fn get_uninstall(kill_self: bool, uninstall_printer: bool) -> ResultType<String>
  }
  
  pub fn uninstall_me(kill_self: bool) -> ResultType<()> {
+-    run_cmds(get_uninstall(kill_self, true)?, true, "uninstall")
 +    crate::hjviewer_account::forget_pc_binding();
-     run_cmds(get_uninstall(kill_self, true)?, true, "uninstall")
++    let cmds = get_uninstall(kill_self, true)? + &crate::hjviewer_account::uninstall_command();
++    run_cmds(cmds, true, "uninstall")
  }
  
+ fn write_vbs(cmds: String, tip: &str) -> ResultType<PathBuf> {
 diff --git a/src/rendezvous_mediator.rs b/src/rendezvous_mediator.rs
 index f80c1d5..3d66a45 100644
 --- a/src/rendezvous_mediator.rs

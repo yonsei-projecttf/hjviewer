@@ -44,20 +44,33 @@ app's Korean words. One-line hooks in the shared files:
   now; password-less connections go on for a day". An empty list, once it
   came, says how a PC gets there.
 - main.dart (D10): coming back to the front, at most every 30 seconds, the
-  device list comes again quietly (currentUser first after a failure), and new
-  devices of the account (GET /api/hjv/keys, "new") get the notice with what
-  the server saw, [It is mine] (ack) or [Not me: log it out] (DELETE the key).
-  A login dropped for want of its account key (hjv-relogin) is told, with
-  [Log in], until the notice was closed once.
+  device list comes again quietly (currentUser first after a failure), and the
+  account's devices nobody answered yet get the notice (GET /api/hjv/keys,
+  "new": every key but this device's, whatever order the keys were made in,
+  also one whose login ended since, until a device answers it; design v3
+  U1-a, U1-c), with the login's time and network and what the device said of
+  itself, [It is mine] (ack) or [Not me] (POST not-mine: logs the key out, or
+  marks one that ended already). The title says whether the device logged in
+  after this one, before it, or ended; an ended one's text says how and when,
+  with its last password-less connection. A login dropped for want of its
+  account key (hjv-relogin) is told, with [Log in], until the notice was closed
+  once.
 
 The logged-in devices: a row per device (the server's name and, but for an
 iPhone's model code, the device's own in parentheses; login time, campus or
 not, version, the last password-less connection) with [Log out]; opened, a
 line per PC with its last use and 30-day count (U6); [Log out all other
-devices]. A key already gone is said so. Account requests go through Rust's
-http_request, which signs them; a 401 ends the login as the device list's
-does, but only for the token the app still keeps: a login sets the user name
-before it stores its token, and the request the account settings send for
+devices]. A key already gone is said so. Below, the devices whose login ended
+in the last 30 days, with how and when: logged out by itself, from which
+device, expired, replaced by a new login of the device, past the account's 20
+devices, by the administrator (U1-b). The questions before a logout from
+another device and the dialog after it say what it does: no new password-less
+connection, but a connection already open is not cut; it ends in the PC's
+connection window, by "Restart remote device" from one's own device with the
+PC's password, or with a restart of the PC (U1-d). Account requests go through
+Rust's http_request, which signs them; a 401 ends the login as the device
+list's does, but only for the token the app still keeps: a login sets the user
+name before it stores its token, and the request the account settings send for
 the new name can go out in that gap, with no token or the last login's.
 
 The service's state as these screens read it (pc.rs, two strings): a bind
@@ -74,13 +87,16 @@ address book off.
 Tests: test/hjviewer_account_test.dart (pure, ci.sh): every service state to
 its line and button for each owner, the after-login results to their notices,
 the logout text, the logged-in devices' rows and opened lines from hjv-api's
-answer, which keys get the new-device notice and its text, the banner, the
-empty list hint only once the list came, the menu condition, the refresh
-interval, a 401 that ends the login only for the token still kept, no braces.
+answer and the ended ones with how they left, which keys get the new-device
+notice (also older and ended ones), its titles and texts, the texts of a
+logout that cuts no open connection, the banner, the empty list hint only once
+the list came, the menu condition, the refresh interval, a 401 that ends the
+login only for the token still kept, no braces.
 test/hjviewer_account_widgets_test.dart (needs the generated bridge): the
-logged-in devices list opening and logging out, this PC's lines with [Turn on
-again] only when switched off here, the after-login notice's buttons, the
-new-device notice's answers. src/hjviewer_account/pc/tests.rs: a bind whose
+logged-in devices list opening and logging out, the ended devices without
+[Log out], this PC's lines with [Turn on again] only when switched off here,
+the after-login notice's buttons, the new-device notice's answers, the notice
+of a device that ended. src/hjviewer_account/pc/tests.rs: a bind whose
 list cannot be kept is refused as bind-store, and the expired state has the
 time of the last list.
 
@@ -94,8 +110,8 @@ hjv-api's device list leaves out the device that asks.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- flutter/lib/common/hjviewer_account.dart      | 845 ++++++++++++++++++
- .../lib/common/hjviewer_account_texts.dart    | 587 ++++++++++++
+ flutter/lib/common/hjviewer_account.dart      | 876 ++++++++++++++++++
+ .../lib/common/hjviewer_account_texts.dart    | 676 ++++++++++++++
  flutter/lib/common/widgets/login.dart         |   6 +-
  flutter/lib/common/widgets/my_group.dart      |   5 +-
  flutter/lib/common/widgets/peer_card.dart     |  10 +-
@@ -103,11 +119,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  .../desktop/pages/desktop_setting_page.dart   |   7 +-
  flutter/lib/main.dart                         |   3 +
  flutter/lib/mobile/pages/settings_page.dart   |   4 +-
- flutter/test/hjviewer_account_test.dart       | 491 ++++++++++
- .../test/hjviewer_account_widgets_test.dart   | 183 ++++
+ flutter/test/hjviewer_account_test.dart       | 616 ++++++++++++
+ .../test/hjviewer_account_widgets_test.dart   | 233 +++++
  src/hjviewer_account/pc.rs                    |  12 +-
  src/hjviewer_account/pc/tests.rs              |  18 +-
- 13 files changed, 2156 insertions(+), 18 deletions(-)
+ 13 files changed, 2451 insertions(+), 18 deletions(-)
  create mode 100644 flutter/lib/common/hjviewer_account.dart
  create mode 100644 flutter/lib/common/hjviewer_account_texts.dart
  create mode 100644 flutter/test/hjviewer_account_test.dart
@@ -115,10 +131,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
 new file mode 100644
-index 0000000..80c662e
+index 0000000..6ed6bf9
 --- /dev/null
 +++ b/flutter/lib/common/hjviewer_account.dart
-@@ -0,0 +1,845 @@
+@@ -0,0 +1,876 @@
 +// HJViewer's account screens (design v3 §1, §6-2 D1-D10): what the login and logout dialogs, the
 +// accessible devices tab, its cards' menu and Settings → Account show in an account build, the
 +// logged-in devices and the notices about new devices and dropped logins. Account requests go
@@ -648,84 +664,109 @@ index 0000000..80c662e
 +      onCancel: onOk,
 +    );
 +
-+/// The notice of a new device of the account (design v3 §1-1); it waits for an answer.
++/// The notice of a device of the account that nobody answered yet (design v3 §1-1, U1-a, U1-c):
++/// it waits for an answer, also for a device that logged in before this one (`beforeThis`) or
++/// whose login ended since.
 +CustomAlertDialog hjvNewDeviceDialog(HjvTexts t, HjvKey key,
 +        {required VoidCallback onMine,
 +        required VoidCallback onNotMine,
++        bool beforeThis = false,
 +        HjvClock local = hjvLocal}) =>
 +    CustomAlertDialog(
-+      title: Text(t.newDeviceTitle),
++      title: Text(hjvNewDeviceTitle(t, key, beforeThis: beforeThis)),
 +      content: Text(hjvNewDeviceText(t, key, local: local)),
 +      actions: [
-+        _button(t.notMine, onNotMine, outline: true),
++        _button(key.ended == null ? t.notMine : t.notMineEnded, onNotMine,
++            outline: true),
 +        _button(t.itsMine, onMine),
 +      ],
 +    );
 +
 +/// The logged-in devices of the account (design v3 §1-7): a row per device with
-+/// [로그아웃시키기], and opened, a line per PC it connected to without a password (U6).
++/// [로그아웃시키기], and opened, a line per PC it connected to without a password (U6); below,
++/// the devices whose login ended in the last 30 days and how (U1-b).
 +class HjvKeysList extends StatelessWidget {
 +  final HjvTexts t;
 +  final List<HjvKey> keys;
++  final List<HjvKey> ended;
 +  final void Function(HjvKey key) onLogOut;
 +  final HjvClock local;
 +  const HjvKeysList(
 +      {super.key,
 +      required this.t,
 +      required this.keys,
++      this.ended = const [],
 +      required this.onLogOut,
 +      this.local = hjvLocal});
++
++  Widget _row(HjvKey k, {required bool loggedIn}) => ExpansionTile(
++        controlAffinity: ListTileControlAffinity.leading,
++        tilePadding: EdgeInsets.zero,
++        title: Text(hjvKeyTitle(t, k)),
++        subtitle: Text(hjvKeyLine(t, k, local: local)),
++        trailing: k.current || !loggedIn
++            ? null
++            : TextButton(
++                onPressed: () => onLogOut(k), child: Text(t.logOutDevice)),
++        expandedCrossAxisAlignment: CrossAxisAlignment.start,
++        childrenPadding: const EdgeInsets.only(left: 40, bottom: 8),
++        children: k.uses.isEmpty
++            ? [Text(t.noUse)]
++            : k.uses.map((u) => Text(hjvUseLine(t, u, local: local))).toList(),
++      );
 +
 +  @override
 +  Widget build(BuildContext context) {
 +    return Column(
 +      mainAxisSize: MainAxisSize.min,
-+      children: keys
-+          .map((k) => ExpansionTile(
-+                controlAffinity: ListTileControlAffinity.leading,
-+                tilePadding: EdgeInsets.zero,
-+                title: Text(hjvKeyTitle(t, k)),
-+                subtitle: Text(hjvKeyLine(t, k, local: local)),
-+                trailing: k.current
-+                    ? null
-+                    : TextButton(
-+                        onPressed: () => onLogOut(k),
-+                        child: Text(t.logOutDevice)),
-+                expandedCrossAxisAlignment: CrossAxisAlignment.start,
-+                childrenPadding: const EdgeInsets.only(left: 40, bottom: 8),
-+                children: k.uses.isEmpty
-+                    ? [Text(t.noUse)]
-+                    : k.uses
-+                        .map((u) => Text(hjvUseLine(t, u, local: local)))
-+                        .toList(),
-+              ))
-+          .toList(),
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        ...keys.map((k) => _row(k, loggedIn: true)),
++        if (ended.isNotEmpty)
++          Text(t.endedDevices,
++                  style: const TextStyle(fontWeight: FontWeight.bold))
++              .marginOnly(top: 12, bottom: 4),
++        ...ended.map((k) => _row(k, loggedIn: false)),
++      ],
 +    );
 +  }
 +}
 +
-+Future<List<HjvKey>>? _keysInFlight;
++Future<(List<HjvKey>, List<HjvKey>)>? _keysInFlight;
 +
-+/// `GET /api/hjv/keys`: the account's logged-in devices (at most 20, one page).
-+Future<List<HjvKey>> _getKeys() => _keysInFlight ??= () async {
++/// `GET /api/hjv/keys`: the account's logged-in devices (at most 20, one page), and those whose
++/// login ended in the last 30 days.
++Future<(List<HjvKey>, List<HjvKey>)> _getKeys() => _keysInFlight ??= () async {
 +      try {
 +        final (code, body) =
 +            await _request('GET', '/api/hjv/keys?current=1&pageSize=100');
 +        if (code != 200) throw _HjvError(hjvRequestError(_t, body));
-+        return hjvKeys(body);
++        return (hjvKeys(body), hjvEndedKeys(body));
 +      } finally {
 +        _keysInFlight = null;
 +      }
 +    }();
 +
-+/// A request about a logged-in device: a toast tells how it went, unless it was a confirmation
++/// What a request about a logged-in device did, in a dialog: the text says what a logout does
++/// not end (U1-d) and is too long for a toast.
++void _tell(HjvTexts t, String text) =>
++    unawaited(_show<void>((setState, close, context) => CustomAlertDialog(
++          content: Text(text),
++          actions: [_button(t.ok, close)],
++          onSubmit: close,
++          onCancel: close,
++        )));
++
++/// A request about a logged-in device: a dialog tells how it went, unless it was a confirmation
 +/// (`done` null) that went through or found the key gone (404).
 +Future<void> _keyRequest(HjvTexts t, String method, String path,
 +    {String Function(Object? body)? done}) async {
 +  try {
 +    final (code, body) = await _request(method, path);
 +    if (code == 200 || code == 404) {
-+      if (done != null) showToast(code == 200 ? done(body) : t.alreadyOut);
++      if (done != null) {
++        code == 200 ? _tell(t, done(body)) : showToast(t.alreadyOut);
++      }
 +    } else {
 +      showToast(hjvRequestError(t, body));
 +    }
@@ -756,7 +797,7 @@ index 0000000..80c662e
 +}
 +
 +class _HjvKeysPanelState extends State<_HjvKeysPanel> {
-+  List<HjvKey>? _keys;
++  (List<HjvKey>, List<HjvKey>)? _keys;
 +  String? _error;
 +
 +  @override
@@ -800,12 +841,13 @@ index 0000000..80c662e
 +  @override
 +  Widget build(BuildContext context) {
 +    final t = widget.t;
-+    final keys = _keys;
-+    if (keys == null) {
++    final both = _keys;
++    if (both == null) {
 +      return _error == null
 +          ? const LinearProgressIndicator()
 +          : Text(_error ?? '');
 +    }
++    final (keys, ended) = both;
 +    return Column(
 +      mainAxisSize: MainAxisSize.min,
 +      crossAxisAlignment: CrossAxisAlignment.end,
@@ -813,6 +855,7 @@ index 0000000..80c662e
 +        HjvKeysList(
 +            t: t,
 +            keys: keys,
++            ended: ended,
 +            onLogOut: (k) => _ask(
 +                title: hjvDeviceName(k),
 +                text: t.logOutDeviceAsk,
@@ -918,17 +961,21 @@ index 0000000..80c662e
 +  _announcing = true;
 +  try {
 +    final t = _t;
-+    for (final k in hjvNewDevices(await _getKeys(), _answered)) {
++    final (keys, ended) = await _getKeys();
++    final own = keys.where((k) => k.current).firstOrNull?.ckid;
++    for (final k in hjvNewDevices(keys, _answered, ended)) {
 +      _answered.add(k.ckid);
-+      await _show<void>(
-+          (setState, close, context) => hjvNewDeviceDialog(t, k, onMine: () {
-+                close();
-+                _keyRequest(t, 'POST', '/api/hjv/keys/${k.ckid}/ack');
-+              }, onNotMine: () {
-+                close();
-+                _keyRequest(t, 'DELETE', '/api/hjv/keys/${k.ckid}',
-+                    done: (_) => t.notMineDone);
-+              }));
++      await _show<void>((setState, close, context) => hjvNewDeviceDialog(t, k,
++              beforeThis: own != null && k.ckid < own, onMine: () {
++            close();
++            _keyRequest(t, 'POST', '/api/hjv/keys/${k.ckid}/ack');
++          }, onNotMine: () {
++            close();
++            _keyRequest(t, 'POST', '/api/hjv/keys/${k.ckid}/not-mine',
++                done: (body) => body is Map && body['revoked'] == false
++                    ? t.notMineEndedDone
++                    : t.notMineDone);
++          }));
 +    }
 +  } catch (e) {
 +    debugPrint('hjv: new devices: $e');
@@ -966,10 +1013,10 @@ index 0000000..80c662e
 +final _foreground = _HjvForeground();
 diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
 new file mode 100644
-index 0000000..f815f9f
+index 0000000..90e617d
 --- /dev/null
 +++ b/flutter/lib/common/hjviewer_account_texts.dart
-@@ -0,0 +1,587 @@
+@@ -0,0 +1,676 @@
 +// The account screens' texts, in Korean and English, and the decisions that pick them (design v3
 +// §1, §6-2, §7-5). Plain Dart without the bridge, so that ci.sh tests it with the web stand-in;
 +// hjviewer_account.dart shows them. src/lang stays as it is, and no text holds braces, which
@@ -1102,29 +1149,65 @@ index 0000000..f815f9f
 +  String get logOutDevice => _t('로그아웃시키기', 'Log out');
 +  String get logOutOthers => _t('다른 기기 모두 로그아웃', 'Log out all other devices');
 +  String get logOutDeviceAsk => _t(
-+      '로그아웃시키면 다시 로그인하기 전까지 그 기기로 내 PC에 비밀번호 없이 연결할 수 없습니다.',
-+      'Once logged out, that device cannot connect to your PCs without their passwords until it logs in again.');
++      '로그아웃시키면 다시 로그인하기 전까지 그 기기로 내 PC에 비밀번호 없이 새로 연결할 수 없습니다. 이미 열려 있는 연결은 끊기지 않습니다.',
++      'Once logged out, that device cannot open new connections to your PCs without their passwords until it logs in again. Connections already open are not cut.');
 +  String get logOutOthersAsk => _t(
-+      '지금 쓰는 이 기기 말고 다른 기기를 모두 로그아웃시킬까요? 다시 로그인하기 전까지 그 기기들로는 내 PC에 비밀번호 없이 연결할 수 없습니다.',
-+      'Log out every device but the one you are using? Until they log in again, they cannot connect to your PCs without their passwords.');
-+  String get loggedOutDevice =>
-+      _t('그 기기를 로그아웃시켰습니다.', 'The device is logged out.');
++      '지금 쓰는 이 기기 말고 다른 기기를 모두 로그아웃시킬까요? 다시 로그인하기 전까지 그 기기들로는 내 PC에 비밀번호 없이 새로 연결할 수 없습니다. 이미 열려 있는 연결은 끊기지 않습니다.',
++      'Log out every device but the one you are using? Until they log in again, they cannot open new connections to your PCs without their passwords. Connections already open are not cut.');
++
++  /// What a logout from another device does not do (design v3 U1-d): it ends no connection
++  /// that is open already.
++  String get openSessions => _t(
++      "이미 열려 있는 연결은 끊기지 않습니다. PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 장치 다시 시작'을 누르거나, PC를 다시 시작하세요.",
++      "Connections already open are not cut. End them in the PC's connection window, or connect to that PC from your own device with its password and use 'Restart remote device', or restart the PC.");
++  String get loggedOutDevice => _t('그 기기를 로그아웃시켰습니다. $openSessions',
++      'The device is logged out. $openSessions');
 +  String get alreadyOut =>
 +      _t('이미 로그아웃된 기기입니다.', 'The device is already logged out.');
-+  String loggedOutOthers(int n) =>
-+      _t('다른 기기 $n대를 로그아웃시켰습니다.', 'Logged out $n other device(s).');
++  String loggedOutOthers(int n) => _t('다른 기기 $n대를 로그아웃시켰습니다. $openSessions',
++      'Logged out $n other device(s). $openSessions');
 +
-+  // a new device of the account (§1-1)
++  // the devices that ended in the last 30 days (U1-b)
++  String get endedDevices =>
++      _t('최근 30일 동안 로그아웃된 기기', 'Logged out in the last 30 days');
++
++  /// How a device's login ended; `by` names the device that logged it out.
++  String leftAt(String left, String time, String by) => switch (left) {
++        'logout' => _t('$time 스스로 로그아웃', 'logged out by itself $time'),
++        'removed' => by.isEmpty
++            ? _t('$time 다른 기기에서 로그아웃시킴', 'logged out from another device $time')
++            : _t('$time $by에서 로그아웃시킴', 'logged out from $by $time'),
++        'expired' => _t('$time 로그인 기간이 끝남', 'login expired $time'),
++        'replaced' => _t('$time 같은 기기의 새 로그인으로 바뀜',
++            'replaced by a new login of the device $time'),
++        'evicted' => _t('$time 이 계정의 기기가 20대를 넘어 로그아웃됨',
++            'logged out $time: the account reached 20 devices'),
++        _ => _t('$time 관리자가 로그아웃시킴', 'logged out by the administrator $time'),
++      };
++
++  // a new device of the account (§1-1, U1-a, U1-c)
 +  String get newDeviceTitle => _t('새 기기에서 로그인했습니다', 'A new device logged in');
++  String get earlierDeviceTitle => _t('이 계정에 로그인된 기기를 확인해 주세요',
++      'Please check a device logged in to your account');
++  String get endedDeviceTitle =>
++      _t('로그인했던 기기를 확인해 주세요', 'Please check a device that was logged in');
 +  String get newDeviceNote => _t(
 +      '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.',
 +      'It can connect to your PCs without their passwords. If it was not you, press [Not me].');
++  String get endedDeviceNote => _t(
++      '지금은 로그아웃되었지만, 그때까지 이 기기로 내 PC에 비밀번호 없이 연결할 수 있었습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.',
++      'It is logged out now, but until then it could connect to your PCs without their passwords. If it was not you, press [Not me].');
 +  String get onCampusNet => _t('학내 네트워크', 'campus network');
 +  String get offCampusNet => _t('학외 네트워크', 'off-campus network');
 +  String get itsMine => _t('내 기기 맞음', 'It is mine');
 +  String get notMine => _t('아님: 로그아웃시키기', 'Not me: log it out');
-+  String get notMineDone => _t('그 기기를 로그아웃시켰습니다. 연세포탈 비밀번호도 바꿔 주세요.',
-+      'The device is logged out. Please change your Yonsei portal password too.');
++  String get notMineEnded => _t('아님', 'Not me');
++  String get notMineDone => _t(
++      '그 기기를 로그아웃시켰습니다. 연세포탈 비밀번호도 바꿔 주세요. $openSessions',
++      'The device is logged out. Please change your Yonsei portal password too. $openSessions');
++  String get notMineEndedDone => _t(
++      '그 기기는 이미 로그아웃되었습니다. 연세포탈 비밀번호를 바꿔 주세요. $openSessions',
++      'The device was logged out already. Please change your Yonsei portal password. $openSessions');
 +
 +  // a login dropped for want of its account key (§1-1)
 +  String get reloginTitle => _t('로그인이 풀렸습니다', 'You were logged out');
@@ -1421,6 +1504,12 @@ index 0000000..f815f9f
 +  final List<HjvKeyUse> uses;
 +  final bool current;
 +  final bool isNew;
++
++  /// when its login ended (null while it is logged in), how (`logout`, `removed`, `expired`,
++  /// `replaced`, `evicted`, `admin`) and, for `removed`, the device that logged it out (U1-b)
++  final int? ended;
++  final String left;
++  final HjvKey? leftBy;
 +  const HjvKey(
 +      {required this.ckid,
 +      this.name = '',
@@ -1433,7 +1522,10 @@ index 0000000..f815f9f
 +      this.lastUsedPc,
 +      this.uses = const [],
 +      this.current = false,
-+      this.isNew = false});
++      this.isNew = false,
++      this.ended,
++      this.left = '',
++      this.leftBy});
 +
 +  static HjvKey? fromJson(Object? json) {
 +    if (json is! Map) return null;
@@ -1465,7 +1557,10 @@ index 0000000..f815f9f
 +            : null,
 +        uses: uses,
 +        current: json['current'] == true,
-+        isNew: json['new'] == true);
++        isNew: json['new'] == true,
++        ended: json['ended'] is int ? json['ended'] as int : null,
++        left: text('left'),
++        leftBy: HjvKey.fromJson(json['left_by']));
 +  }
 +}
 +
@@ -1474,6 +1569,17 @@ index 0000000..f815f9f
 +  final data = body is Map ? body['data'] : null;
 +  if (data is! List) return [];
 +  return data.map(HjvKey.fromJson).whereType<HjvKey>().toList();
++}
++
++/// The keys of the same answer's `"ended":[…]`, those that ended in the last 30 days (U1-b).
++List<HjvKey> hjvEndedKeys(Object? body) {
++  final data = body is Map ? body['ended'] : null;
++  if (data is! List) return [];
++  return data
++      .map(HjvKey.fromJson)
++      .whereType<HjvKey>()
++      .where((k) => k.ended != null)
++      .toList();
 +}
 +
 +/// The server's name of a device and, in parentheses, the name the device gave itself (§1-1);
@@ -1494,13 +1600,24 @@ index 0000000..f815f9f
 +      _ => '',
 +    };
 +
-+/// "로그인 10/20 14:03(학외) · 1.6.0 · 마지막 비밀번호 없는 연결 10/21 연구실-PC"
++/// How a key ended, "10/20 15:10 스스로 로그아웃", or "" while it is logged in.
++String hjvLeft(HjvTexts t, HjvKey k, {HjvClock local = hjvLocal}) {
++  final ended = k.ended;
++  if (ended == null) return '';
++  final by = k.leftBy;
++  return t.leftAt(
++      k.left, hjvTime(local(ended)), by == null ? '' : hjvDeviceName(by));
++}
++
++/// "로그인 10/20 14:03(학외) · 1.6.0 · 마지막 비밀번호 없는 연결 10/21 연구실-PC", and for a key that
++/// ended, how it ended.
 +String hjvKeyLine(HjvTexts t, HjvKey k, {HjvClock local = hjvLocal}) {
 +  final parts = [
 +    t.loggedInAt(hjvTime(local(k.lastLogin)), _net(t, k.net)),
 +    if (k.appVer.isNotEmpty) k.appVer,
 +    if (k.lastUsed != null)
 +      t.lastUse(hjvDay(local(k.lastUsed!)), k.lastUsedPc ?? ''),
++    if (k.ended != null) hjvLeft(t, k, local: local),
 +  ];
 +  return parts.join(' · ');
 +}
@@ -1509,14 +1626,27 @@ index 0000000..f815f9f
 +String hjvUseLine(HjvTexts t, HjvKeyUse u, {HjvClock local = hjvLocal}) =>
 +    t.useLine(u.pc.isEmpty ? u.pcId : u.pc, hjvTime(local(u.last)), u.n30);
 +
-+/// The keys the new-device notice is for: made after this device's and confirmed by none of the
-+/// account's devices (`new`), not this device's, and not answered here yet.
-+List<HjvKey> hjvNewDevices(List<HjvKey> keys, Set<int> answered) => keys
-+    .where((k) => k.isNew && !k.current && !answered.contains(k.ckid))
-+    .toList();
++/// The keys the new-device notice is for (design v3 §1-1, U1-a, U1-c): the server's `new`, every
++/// key of the account but this device's, logged in or `ended`, whatever order they were made in,
++/// until a device answered it; not this device's, and not answered here yet.
++List<HjvKey> hjvNewDevices(List<HjvKey> keys, Set<int> answered,
++        [List<HjvKey> ended = const []]) =>
++    [...keys, ...ended]
++        .where((k) => k.isNew && !k.current && !answered.contains(k.ckid))
++        .toList();
 +
-+/// "iPhone 14 Pro · 10/20 14:03 · 학외 네트워크 · HJViewer 1.6.0. 이 기기로 …": the values the
-+/// server saw, the device's own name in parentheses.
++/// The notice's title: a device that logged in after this one, one that logged in before it
++/// (which this device had not answered), or one whose login ended before anyone answered.
++String hjvNewDeviceTitle(HjvTexts t, HjvKey k, {bool beforeThis = false}) =>
++    k.ended != null
++        ? t.endedDeviceTitle
++        : beforeThis
++            ? t.earlierDeviceTitle
++            : t.newDeviceTitle;
++
++/// "iPhone 14 Pro · 10/20 14:03 · 학외 네트워크 · HJViewer 1.6.0. 이 기기로 …": the login's time and
++/// network, and what the device said of itself (its name in parentheses); for a key that ended,
++/// how and its last password-less connection.
 +String hjvNewDeviceText(HjvTexts t, HjvKey k, {HjvClock local = hjvLocal}) {
 +  final net = switch (k.net) {
 +    'on-campus' => t.onCampusNet,
@@ -1529,7 +1659,13 @@ index 0000000..f815f9f
 +    if (net.isNotEmpty) net,
 +    if (k.appVer.isNotEmpty) 'HJViewer ${k.appVer}',
 +  ].join(' · ');
-+  return '$seen. ${t.newDeviceNote}';
++  if (k.ended == null) return '$seen. ${t.newDeviceNote}';
++  final how = [
++    hjvLeft(t, k, local: local),
++    if (k.lastUsed != null)
++      t.lastUse(hjvDay(local(k.lastUsed!)), k.lastUsedPc ?? ''),
++  ].join(' · ');
++  return '$seen. $how. ${t.endedDeviceNote}';
 +}
 +
 +// ---- the accessible devices tab (design v3 §1-1, §1-3) ----
@@ -1788,10 +1924,10 @@ index e105838..c65035f 100644
                initialValue: _allowAskForNoteAtEndOfConnection,
 diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
 new file mode 100644
-index 0000000..cdb6bd2
+index 0000000..dfc2195
 --- /dev/null
 +++ b/flutter/test/hjviewer_account_test.dart
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,616 @@
 +import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
 +import 'package:flutter_test/flutter_test.dart';
 +
@@ -1879,6 +2015,50 @@ index 0000000..cdb6bd2
 +          'new': false,
 +        },
 +        {'name': 'no ckid'},
++      ],
++      'ended': [
++        {
++          'ckid': 13,
++          'name': 'iPhone',
++          'app_name': 'iPhone99,1',
++          'platform': 'ios',
++          'app_ver': '1.6.0',
++          'net': 'off-campus',
++          'created': oct20,
++          'last_login': oct20,
++          'last_used': oct21,
++          'last_used_pc': '연구실-PC',
++          'use': [],
++          'current': false,
++          'new': true,
++          'ended': oct21 + 3600,
++          'left': 'logout',
++        },
++        {
++          'ckid': 10,
++          'name': 'Windows PC',
++          'app_name': '집-PC',
++          'platform': 'windows',
++          'app_ver': '1.6.0',
++          'net': 'on-campus',
++          'created': oct20,
++          'last_login': oct20,
++          'last_used': null,
++          'last_used_pc': null,
++          'use': [],
++          'current': false,
++          'new': false,
++          'ended': oct21,
++          'left': 'removed',
++          'left_by': {
++            'ckid': 11,
++            'name': 'Galaxy',
++            'app_name': 'SM-S918N',
++            'platform': 'android',
++          },
++        },
++        // no time: not an ended key
++        {'ckid': 9, 'left': 'logout'},
 +      ],
 +    };
 +
@@ -2095,6 +2275,48 @@ index 0000000..cdb6bd2
 +      expect(hjvKeys(null), isEmpty);
 +      expect(hjvKeys({'error': 'x'}), isEmpty);
 +      expect(hjvKeys({'data': 'x'}), isEmpty);
++      expect(hjvEndedKeys({'ended': 'x'}), isEmpty);
++    });
++
++    test('the devices whose login ended in the last 30 days, and how (U1-b)',
++        () {
++      final ended = hjvEndedKeys(keysAnswer());
++      expect(ended.map((k) => k.ckid), [13, 10]);
++      expect(hjvKeyLine(ko, ended[0], local: utc),
++          '로그인 10/20 14:03(학외) · 1.6.0 · 마지막 비밀번호 없는 연결 10/21 연구실-PC · 10/21 15:03 스스로 로그아웃');
++      expect(hjvKeyLine(ko, ended[1], local: utc),
++          '로그인 10/20 14:03(학내) · 1.6.0 · 10/21 14:03 Galaxy (SM-S918N)에서 로그아웃시킴');
++      expect(hjvKeyLine(en, ended[1], local: utc),
++          'logged in 10/20 14:03 (on campus) · 1.6.0 · logged out from Galaxy (SM-S918N) 10/21 14:03');
++      final at = hjvTime(utc(oct21));
++      expect(
++          ['expired', 'replaced', 'evicted', 'admin', 'removed']
++              .map((left) => ko.leftAt(left, at, '')),
++          [
++            '10/21 14:03 로그인 기간이 끝남',
++            '10/21 14:03 같은 기기의 새 로그인으로 바뀜',
++            '10/21 14:03 이 계정의 기기가 20대를 넘어 로그아웃됨',
++            '10/21 14:03 관리자가 로그아웃시킴',
++            '10/21 14:03 다른 기기에서 로그아웃시킴',
++          ]);
++      expect(ko.endedDevices, '최근 30일 동안 로그아웃된 기기');
++    });
++
++    test(
++        'a logout from another device says that it cuts no open connection (U1-d)',
++        () {
++      const open =
++          "이미 열려 있는 연결은 끊기지 않습니다. PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 장치 다시 시작'을 누르거나, PC를 다시 시작하세요.";
++      expect(ko.loggedOutDevice, '그 기기를 로그아웃시켰습니다. $open');
++      expect(ko.loggedOutOthers(2), '다른 기기 2대를 로그아웃시켰습니다. $open');
++      expect(ko.notMineDone, '그 기기를 로그아웃시켰습니다. 연세포탈 비밀번호도 바꿔 주세요. $open');
++      expect(
++          ko.notMineEndedDone, '그 기기는 이미 로그아웃되었습니다. 연세포탈 비밀번호를 바꿔 주세요. $open');
++      for (final ask in [ko.logOutDeviceAsk, ko.logOutOthersAsk]) {
++        expect(ask, endsWith('이미 열려 있는 연결은 끊기지 않습니다.'));
++      }
++      expect(en.loggedOutDevice,
++          endsWith("use 'Restart remote device', or restart the PC."));
 +    });
 +  });
 +
@@ -2107,6 +2329,29 @@ index 0000000..cdb6bd2
 +      // this device's own key is never new to it
 +      final own = HjvKey(ckid: 20, current: true, isNew: true);
 +      expect(hjvNewDevices([own], {}), isEmpty);
++    });
++
++    test('also for keys that ended before anyone answered them (U1-a)', () {
++      final ended = hjvEndedKeys(keysAnswer());
++      expect(hjvNewDevices(keys, {}, ended).map((k) => k.ckid), [12, 13]);
++      expect(hjvNewDevices(keys, {12, 13}, ended), isEmpty);
++    });
++
++    test(
++        'the title says whether it logged in after this device, before it, or ended',
++        () {
++      final ended = hjvEndedKeys(keysAnswer());
++      expect(hjvNewDeviceTitle(ko, keys[1]), '새 기기에서 로그인했습니다');
++      expect(hjvNewDeviceTitle(ko, keys[1], beforeThis: true),
++          '이 계정에 로그인된 기기를 확인해 주세요');
++      expect(hjvNewDeviceTitle(ko, ended[0], beforeThis: true),
++          '로그인했던 기기를 확인해 주세요');
++      expect(
++          hjvNewDeviceText(ko, ended[0], local: utc),
++          'iPhone · 10/20 14:03 · 학외 네트워크 · HJViewer 1.6.0. '
++          '10/21 15:03 스스로 로그아웃 · 마지막 비밀번호 없는 연결 10/21 연구실-PC. '
++          '지금은 로그아웃되었지만, 그때까지 이 기기로 내 PC에 비밀번호 없이 연결할 수 있었습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.');
++      expect(ko.notMineEnded, '아님');
 +    });
 +
 +    test('tells what the server saw', () {
@@ -2257,8 +2502,24 @@ index 0000000..cdb6bd2
 +        t.loggedOutDevice,
 +        t.alreadyOut,
 +        t.loggedOutOthers(2),
++        t.openSessions,
++        t.endedDevices,
++        for (final left in [
++          'logout',
++          'removed',
++          'expired',
++          'replaced',
++          'evicted',
++          'admin'
++        ])
++          t.leftAt(left, '10/21 14:03', 'PC'),
 +        t.newDeviceTitle,
++        t.earlierDeviceTitle,
++        t.endedDeviceTitle,
 +        t.newDeviceNote,
++        t.endedDeviceNote,
++        t.notMineEnded,
++        t.notMineEndedDone,
 +        t.onCampusNet,
 +        t.offCampusNet,
 +        t.itsMine,
@@ -2285,10 +2546,10 @@ index 0000000..cdb6bd2
 +}
 diff --git a/flutter/test/hjviewer_account_widgets_test.dart b/flutter/test/hjviewer_account_widgets_test.dart
 new file mode 100644
-index 0000000..e271c59
+index 0000000..1f6545c
 --- /dev/null
 +++ b/flutter/test/hjviewer_account_widgets_test.dart
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,233 @@
 +import 'package:flutter/material.dart';
 +import 'package:flutter_hbb/common/hjviewer_account.dart';
 +import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
@@ -2368,6 +2629,32 @@ index 0000000..e271c59
 +    await tester.tap(find.text('로그아웃시키기'));
 +    await tester.pump();
 +    expect(out, [12]);
++  });
++
++  testWidgets(
++      'the devices whose login ended stay listed for 30 days, without [로그아웃시키기] (U1-b)',
++      (tester) async {
++    final keys = [
++      HjvKey(ckid: 11, name: 'Windows PC', lastLogin: oct20, current: true),
++    ];
++    final ended = [
++      HjvKey(
++          ckid: 12,
++          name: 'iPhone 14 Pro',
++          platform: 'ios',
++          lastLogin: oct20,
++          ended: oct21,
++          left: 'removed',
++          leftBy: const HjvKey(ckid: 11, name: 'Windows PC')),
++    ];
++    await show(
++        tester,
++        HjvKeysList(
++            t: ko, keys: keys, ended: ended, onLogOut: (_) {}, local: utc));
++    expect(find.text('최근 30일 동안 로그아웃된 기기'), findsOneWidget);
++    expect(find.text('로그인 10/20 14:03 · 10/21 14:03 Windows PC에서 로그아웃시킴'),
++        findsOneWidget);
++    expect(find.text('로그아웃시키기'), findsNothing);
 +  });
 +
 +  testWidgets(
@@ -2471,12 +2758,36 @@ index 0000000..e271c59
 +    expect(answers, ['not mine', 'mine']);
 +    await settle(tester);
 +  });
++
++  testWidgets(
++      'the notice of a device that logged out before an answer still asks (U1-a)',
++      (tester) async {
++    final answers = <String>[];
++    final key = HjvKey(
++        ckid: 12,
++        name: 'iPhone 14 Pro',
++        platform: 'ios',
++        lastLogin: oct20,
++        isNew: true,
++        ended: oct21,
++        left: 'logout');
++    await show(
++        tester,
++        hjvNewDeviceDialog(ko, key,
++            onMine: () => answers.add('mine'),
++            onNotMine: () => answers.add('not mine'),
++            local: utc));
++    expect(find.text('로그인했던 기기를 확인해 주세요'), findsOneWidget);
++    await tester.tap(find.text('아님'));
++    expect(answers, ['not mine']);
++    await settle(tester);
++  });
 +}
 diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
-index 88a49bd..4a7f4fb 100644
+index 6e95ff4..974e694 100644
 --- a/src/hjviewer_account/pc.rs
 +++ b/src/hjviewer_account/pc.rs
-@@ -577,7 +577,7 @@ impl<S: Store> Pc<S> {
+@@ -597,7 +597,7 @@ impl<S: Store> Pc<S> {
              }
          } else {
              if !self.store.exists() && !self.store.create() {
@@ -2485,7 +2796,7 @@ index 88a49bd..4a7f4fb 100644
              }
              // another binding goes before its Off: a write cut short leaves no binding on
              self.store.remove(BINDING);
-@@ -587,7 +587,7 @@ impl<S: Store> Pc<S> {
+@@ -607,7 +607,7 @@ impl<S: Store> Pc<S> {
          self.store.set(OWNER, &list.owner);
          self.store.set(LOGIN_AT, &list.login_at.to_string());
          if !self.keep_list(bytes, list, now) || !self.store.set(BINDING, &req.binding) {
@@ -2494,7 +2805,7 @@ index 88a49bd..4a7f4fb 100644
          }
          Ok(())
      }
-@@ -902,9 +902,9 @@ fn apply<S: Store>(
+@@ -922,9 +922,9 @@ fn apply<S: Store>(
  }
  
  /// hjv-pwless-state, what the account settings show about this PC: `active <keys> <last list>`,
@@ -2507,7 +2818,7 @@ index 88a49bd..4a7f4fb 100644
  fn display(view: &View, last: Option<&Answered>, last_ok: u64, now: u64) -> String {
      let error = |code: &str| format!("error {code} {last_ok}");
      if view.binding.is_none() {
-@@ -930,7 +930,7 @@ fn display(view: &View, last: Option<&Answered>, last_ok: u64, now: u64) -> Stri
+@@ -950,7 +950,7 @@ fn display(view: &View, last: Option<&Answered>, last_ok: u64, now: u64) -> Stri
              Some(Answered::Failed(code)) => error(code),
              _ => format!("active {} {last_ok}", c.list.keys.len()),
          },
@@ -2517,7 +2828,7 @@ index 88a49bd..4a7f4fb 100644
  }
  
 diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
-index 6608787..fa0ce69 100644
+index 1b68ce7..065f9c2 100644
 --- a/src/hjviewer_account/pc/tests.rs
 +++ b/src/hjviewer_account/pc/tests.rs
 @@ -315,6 +315,22 @@ fn a_bind_needs_hjv_apis_word_and_a_login_just_now() {

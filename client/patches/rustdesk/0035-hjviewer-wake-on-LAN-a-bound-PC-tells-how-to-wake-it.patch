@@ -112,7 +112,7 @@ index d941375..43695c8 100644
      "Win32_System_SystemInformation",
      "Win32_System_Threading",
 diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
-index 5837a5c..62e6200 100644
+index 40a353b..6af322e 100644
 --- a/src/hjviewer_account/mod.rs
 +++ b/src/hjviewer_account/mod.rs
 @@ -40,6 +40,11 @@ pub(crate) use api::{
@@ -124,15 +124,15 @@ index 5837a5c..62e6200 100644
 +    not(any(target_os = "android", target_os = "ios"))
 +))]
 +pub(crate) use pc::send_wol_report;
+ #[cfg(windows)]
+ pub(crate) use pc::uninstall_command;
  pub(crate) use pc::{key_login, pc_capable, start_pc_sync};
- 
- const SEAL_PUBKEY: Option<&str> = option_env!("HJV_LOGIN_SEAL_PUBKEY");
 diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
-index 4a7f4fb..0a2f955 100644
+index 974e694..585c05b 100644
 --- a/src/hjviewer_account/pc.rs
 +++ b/src/hjviewer_account/pc.rs
-@@ -282,6 +282,40 @@ pub(crate) fn forget_pc_binding() {
-     }
+@@ -302,6 +302,40 @@ fn uninstall_line(enabled: bool) -> String {
+     format!("\nreg delete \"HKLM\\{ACCOUNT_KEY}\" /f\n")
  }
  
 +/// `--hjv-e2e-wol-report`: one sync of this PC's binding that carries `report` whole, signed and
@@ -172,7 +172,7 @@ index 4a7f4fb..0a2f955 100644
  /// A bind or unbind request: `<binding ID>.<login_at>`, the binding (32 lowercase hex) and the
  /// server's time of the login that made it, as the login's answer gave them.
  #[derive(Debug, Clone, PartialEq, Eq)]
-@@ -748,10 +782,20 @@ struct Payload<'a> {
+@@ -768,10 +802,20 @@ struct Payload<'a> {
      used: &'a [UseEntry],
      refused: Refused,
      wol_hash: &'a str,
@@ -195,7 +195,7 @@ index 4a7f4fb..0a2f955 100644
      // strings, numbers and booleans always serialize
      serde_json::to_string(&Payload {
          v: 1,
-@@ -760,11 +804,18 @@ fn payload(binding: &str, ver: &str, off: bool, used: &[UseEntry], refused: Refu
+@@ -780,11 +824,18 @@ fn payload(binding: &str, ver: &str, off: bool, used: &[UseEntry], refused: Refu
          off,
          used,
          refused,
@@ -215,7 +215,7 @@ index 4a7f4fb..0a2f955 100644
  /// What the PC reads of a sync answer; hjv-api's unsigned `state` and `refresh` change nothing.
  #[derive(Deserialize, Default)]
  #[serde(default)]
-@@ -772,6 +823,8 @@ struct Answer {
+@@ -792,6 +843,8 @@ struct Answer {
      server_time: u64,
      error: String,
      list: Option<SignedList>,
@@ -224,7 +224,7 @@ index 4a7f4fb..0a2f955 100644
  }
  
  /// What a sync carries as `binding`, and so what its answer may do.
-@@ -999,6 +1052,8 @@ trait Service: Clone + Send + Sync + 'static {
+@@ -1019,6 +1072,8 @@ trait Service: Clone + Send + Sync + 'static {
      /// Sends a sync request's body to /api/hjv/pc/sync: the answer's status and body, or why
      /// there is none.
      fn post(&self, body: String) -> Posted;
@@ -233,7 +233,7 @@ index 4a7f4fb..0a2f955 100644
  }
  
  /// This service process: Config2, HKLM (the 0600 file elsewhere), and hjv-api through one strict
-@@ -1065,6 +1120,10 @@ impl Service for ThisPc {
+@@ -1085,6 +1140,10 @@ impl Service for ThisPc {
              reply
          })
      }
@@ -244,7 +244,7 @@ index 4a7f4fb..0a2f955 100644
  }
  
  async fn post(
-@@ -1168,6 +1227,8 @@ struct Flight {
+@@ -1188,6 +1247,8 @@ struct Flight {
      pc_id: String,
      pk: Vec<u8>,
      refused: Refused,
@@ -253,7 +253,7 @@ index 4a7f4fb..0a2f955 100644
  }
  
  /// The sync task: one per service process. Its loop takes the UI's requests every second and the
-@@ -1202,6 +1263,8 @@ struct Syncer<S: Service> {
+@@ -1222,6 +1283,8 @@ struct Syncer<S: Service> {
      last_ok: u64,
      shown: String,
      logged: Option<(String, usize)>,
@@ -262,7 +262,7 @@ index 4a7f4fb..0a2f955 100644
  }
  
  impl<S: Service> Syncer<S> {
-@@ -1230,12 +1293,17 @@ impl<S: Service> Syncer<S> {
+@@ -1250,12 +1313,17 @@ impl<S: Service> Syncer<S> {
              last_ok: 0,
              shown: String::new(),
              logged: None,
@@ -280,7 +280,7 @@ index 4a7f4fb..0a2f955 100644
          self.knock = self.service.option(KNOCK);
          self.wall = unix_now();
          let s = self.service.clone();
-@@ -1284,6 +1352,7 @@ impl<S: Service> Syncer<S> {
+@@ -1304,6 +1372,7 @@ impl<S: Service> Syncer<S> {
          let now = unix_now();
          if jumped(self.wall, now) {
              self.soon(false);
@@ -288,7 +288,7 @@ index 4a7f4fb..0a2f955 100644
          }
          self.wall = now;
          // the unbind goes first, and counts as undoing the bind request in hand: one seen now
-@@ -1412,7 +1481,41 @@ impl<S: Service> Syncer<S> {
+@@ -1432,7 +1501,41 @@ impl<S: Service> Syncer<S> {
          .await
          .unwrap_or_default();
          let refused = *self.service.refused().lock().unwrap();
@@ -331,7 +331,7 @@ index 4a7f4fb..0a2f955 100644
          let request = exchange(
              self.service.clone(),
              sign::SecretKey::from_slice(&sk),
-@@ -1430,6 +1533,7 @@ impl<S: Service> Syncer<S> {
+@@ -1450,6 +1553,7 @@ impl<S: Service> Syncer<S> {
              pc_id,
              pk,
              refused,
@@ -339,7 +339,7 @@ index 4a7f4fb..0a2f955 100644
          });
          Some(tokio::spawn(request))
      }
-@@ -1451,6 +1555,12 @@ impl<S: Service> Syncer<S> {
+@@ -1471,6 +1575,12 @@ impl<S: Service> Syncer<S> {
                          if status == 200 {
                              self.service.refused().lock().unwrap().take(&flight.refused);
                          }
@@ -352,7 +352,7 @@ index 4a7f4fb..0a2f955 100644
                          // a bind request withdrawn while it was out (a logout, a newer login)
                          // binds nothing, whatever records the unbind could leave
                          let withdrawn = matches!(&flight.mode, Mode::Bind(req)
-@@ -1622,6 +1732,17 @@ impl<S: Service> Syncer<S> {
+@@ -1642,6 +1752,17 @@ impl<S: Service> Syncer<S> {
          self.show().await;
      }
  
@@ -371,7 +371,7 @@ index 4a7f4fb..0a2f955 100644
      fn clear(&self, name: &str, handled: &str) {
          if self.service.option(name) == handled {
 diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
-index fa0ce69..4b31b83 100644
+index 065f9c2..166f192 100644
 --- a/src/hjviewer_account/pc/tests.rs
 +++ b/src/hjviewer_account/pc/tests.rs
 @@ -174,6 +174,7 @@ impl Signed {
@@ -456,11 +456,10 @@ index fa0ce69..4b31b83 100644
  }
  
  /// Waits (on the test runtime's paused clock) until `done`, ten minutes at most, and says how
-@@ -1550,3 +1565,135 @@ async fn a_signed_revoked_unbinds_and_one_report_follows() {
-     assert_eq!(pc.option(STATE), "revoked");
+@@ -1551,6 +1566,138 @@ async fn a_signed_revoked_unbinds_and_one_report_follows() {
      cleanup(&["loop-revoked"]);
  }
-+
+ 
 +#[tokio::test(start_paused = true)]
 +async fn only_a_bound_pc_tells_how_to_wake_it_whole_once_and_when_asked() {
 +    let _ = hbb_common::sodiumoxide::init();
@@ -592,6 +591,10 @@ index fa0ce69..4b31b83 100644
 +    assert!(pc.api().got.iter().all(|(p, _)| p.get("wol").is_none()));
 +    cleanup(&["loop-wol-large"]);
 +}
++
+ /// The Start menu's "Uninstall" runs `--uninstall` unelevated: the binding key goes in the
+ /// uninstaller's elevated batch (the release review's privacy-uninstall-hklm-unelevated).
+ #[test]
 diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
 index 7e6e496..bc43dfe 100644
 --- a/src/hjviewer_e2e.rs
