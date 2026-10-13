@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # CI run on the development machine (GitHub CI is paused; docs/ci.md).
-#   scripts/ci.sh [all]    the server and deploy stages
+#   scripts/ci.sh [all]    the server and deploy stages only (prepush runs every stage)
+#   scripts/ci.sh prepush [<stage>...]
+#                          the gate before a push (design v3 11 step 1): on a clean tree, with
+#                          HJV_CI_STRICT=1, the stages server, client, deploy, e2e, wol and leak one
+#                          after another, each with its own log (build/ci/prepush/<time>-<commit>/;
+#                          first the commits, the toolchain and the start, last the exit status),
+#                          stopping at the first that fails. With stages named, only those, in this
+#                          order: after a fix, the stages that read what it changed (docs/ci.md).
 #   scripts/ci.sh server   a fresh upstream checkout with server/patches and all of its tests in
 #                          release (the library's and binaries' unit tests, the signaling, relay,
 #                          protobuf and hbbs hjv-pk tests), hjv-probe and hjv-load; hjv-api's tests
@@ -43,13 +50,29 @@
 #   scripts/ci.sh leak     the push gate (design v3 11 steps 1-2): no value of the local list
 #                          build/leak-patterns.txt in tracked files, unpushed commits or staged
 #                          changes (scripts/leak-check.py)
-# A stage skips, with a line saying so, what needs a work package that is not in the tree yet.
+# A stage skips, with a line "skipped: ..." saying so, what needs a work package that is not in the
+# tree yet or a tool this machine lacks. Every skip is counted, those that the E2E scripts and the
+# other checks print too, and the last line says how many: "CI passed: <stage> (<n> skipped)". With
+# HJV_CI_STRICT=1 (prepush) a run with a skip fails at its end with the list: a pass with skipped
+# lines is no pass before a push.
+# One run at a time on a CI directory (HJV_CI_DIR, default build/ci): a run holds the lock
+# <CI directory>/ci.lock, and a run started meanwhile stops at once.
 # Needs cargo, curl, openssl, Docker with compose v2 (used through sudo, as the runbook does), and
 # apt-get for Ubuntu's nginx and Apache packages, which are unpacked under build/ci, not installed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SELF="$ROOT/scripts/$(basename "$0")"
 CI="${HJV_CI_DIR:-$ROOT/build/ci}"
+mkdir -p "$CI"
+# The runs on a CI directory share its checkouts, builds and E2E folders. flock holds the lock for
+# as long as the run lasts and keeps it from the programs the run starts (-o), so that nothing the
+# run leaves behind holds it; prepush's stages run under prepush's lock (HJV_CI_LOCK).
+if [ "${HJV_CI_LOCK:-}" != "$CI" ]; then
+  flock -n "$CI/ci.lock" true || { echo "FAIL: another scripts/ci.sh run holds $CI/ci.lock" >&2; exit 1; }
+  exec env HJV_CI_LOCK="$CI" flock -n -o "$CI/ci.lock" "$SELF" "$@"
+fi
+TARGET=${1:-all}
 PROJECT=hjv-ci                     # compose project of the test stack, apart from a real deployment
 PROBE="$ROOT/tools/hjv-probe/target/release/hjv-probe"
 LOAD="$ROOT/tools/hjv-load/target/release/hjv-load"
@@ -68,8 +91,9 @@ E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
 E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
 # the 1.5.1 client the account E2E compares with (X2, X3)
 E2E_OLD_TAG=client-1.5.1
+# the stages of prepush, in their order
+PREPUSH_STAGES="server client deploy e2e wol leak"
 export PATH="$HOME/.cargo/bin:$PATH"
-mkdir -p "$CI"
 
 SRC="$CI/src" PKGS="$CI/pkgs" CERTS="$CI/certs"
 NGINX_PID="" APACHE_PID="" ECHO_PID=""
@@ -77,10 +101,37 @@ NGINX_PID="" APACHE_PID="" ECHO_PID=""
 DEPLOY_LOGS=""
 # set by build_e2e_client when the E2E has its account part
 E2E_ACCOUNT=""
+# a client given by hand (E2E_CLIENT=<binary>, the wol stage only), and the E2E's client in use
+E2E_CLIENT_GIVEN=${E2E_CLIENT:-} E2E_CLIENT=""
 # the stack under test: the compose files (docker) or the release package's systemd units
 STACK=docker SYSTEMD_SINCE=""
+# what this run skipped (skip, count_skips)
+SKIPPED=()
 
 step() { printf '\n== %s\n' "$*"; }
+# Every skip goes through skip, or through count_skips for the skipped lines another program prints
+skip() { # <what is skipped (why)>
+  echo "skipped: $*"
+  SKIPPED+=("$*")
+}
+count_skips() { # <file>: its lines that start with "skipped: "
+  local line
+  while IFS= read -r line; do SKIPPED+=("${line#skipped: }"); done < <(grep -a '^skipped: ' "$1" || true)
+}
+# Runs <command...> with its output in <file>, shown as it comes, and counts its skipped lines. It
+# writes to a file, not to a pipe that a process it leaves behind could keep open; started as a job,
+# it gets back SIGINT and SIGQUIT, which the background jobs of a script ignore.
+with_skips() { # <file> <command...>
+  local log=$1 pid status=0
+  shift
+  : > "$log"
+  env --default-signal=INT,QUIT "$@" < /dev/null > "$log" 2>&1 &
+  pid=$!
+  tail -n +1 -f --pid="$pid" "$log" || true
+  wait "$pid" || status=$?
+  count_skips "$log"
+  return "$status"
+}
 dc() { (cd "$SRC/deploy" && sudo docker compose -p "$PROJECT" "$@"); }
 hbbs_logs() {
   if [ "$STACK" = systemd ]; then
@@ -228,6 +279,7 @@ server_stage() {
   step "server: upstream checkout with server/patches"
   rm -rf "$CI/upstream/rustdesk-server"
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" server
+  echo "the patched tree: $(git -C "$CI/upstream/rustdesk-server" rev-parse 'HEAD^{tree}')"
   # hbbs's signed hjv-pk answer for hjv-api (server/patches/0004, design v3 5-7): required, so that
   # a dropped patch fails
   [ -f "$CI/upstream/rustdesk-server/tests/hjv_pk.rs" ] ||
@@ -251,19 +303,20 @@ server_stage() {
     (cd "$ROOT/server/api" && HJV_API_COMMIT=$(git -C "$ROOT" rev-parse HEAD) \
       CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api)
   else
-    echo "skipped: hjv-api (no server/api)"
+    skip "hjv-api (no server/api)"
   fi
   if [ -d "$ROOT/relay" ]; then
     step "server: hjv-relay tests (relay/)"
     # Here the netns test fails instead of skipping when user and network namespaces are missing;
     # GitHub's runners (server.yml) restrict them, so it may skip there. HJV_RELAY_NETNS= lets it
-    # skip anywhere.
+    # skip anywhere. cargo test shows no output of a test that passes, so that is counted here.
     netns=require
     if [ -n "${GITHUB_ACTIONS:-}" ]; then netns=; fi
-    (cd "$ROOT/relay" && HJV_RELAY_NETNS=${HJV_RELAY_NETNS-$netns} CARGO_TARGET_DIR="$CI/target-relay" \
-      cargo test --locked)
+    netns=${HJV_RELAY_NETNS-$netns}
+    [ "$netns" = require ] || skip "hjv-relay's network namespace test, where it cannot run (HJV_RELAY_NETNS=$netns)"
+    (cd "$ROOT/relay" && HJV_RELAY_NETNS=$netns CARGO_TARGET_DIR="$CI/target-relay" cargo test --locked)
   else
-    echo "skipped: hjv-relay (no relay/)"
+    skip "hjv-relay (no relay/)"
   fi
 }
 
@@ -297,7 +350,7 @@ client_stage() {
   if lint=$(command -v actionlint || ls "$HOME/.local/bin/actionlint" 2> /dev/null); then
     "$lint" "$ROOT"/.github/workflows/*.yml || fail "client: actionlint"
   else
-    echo "skipped: actionlint is not installed (github.com/rhysd/actionlint)"
+    skip "actionlint is not installed (github.com/rhysd/actionlint)"
   fi
   if [ ! -x "$fl/bin/flutter" ]; then
     step "client: Flutter $FLUTTER_VERSION, checked against releases_linux.json"
@@ -315,6 +368,7 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   step "client: upstream checkout with client/patches"
   rm -rf "$CI/upstream/rustdesk"
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" client
+  echo "the patched tree: $(git -C "$CI/upstream/rustdesk" rev-parse 'HEAD^{tree}') (and the overlay files)"
   step "client: hbb_common WebSocket tests"
   (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket)
   # The apps build with Rust 1.75 (client-build.yml RUST_VERSION); the development machine's
@@ -331,7 +385,7 @@ for r in json.load(open(sys.argv[1]))["releases"]:
     tests+=("$t")
   done
   for t in $CLIENT_DART_TESTS_LATER; do
-    if [ -f "$app/$t" ]; then tests+=("$t"); else echo "skipped: $t (not in client/patches yet)"; fi
+    if [ -f "$app/$t" ]; then tests+=("$t"); else skip "$t (not in client/patches yet)"; fi
   done
   # The bridge is generated in client-build.yml; these tests only need its web stand-in to resolve.
   printf "export 'web/bridge.dart';\n" > "$app/lib/generated_bridge.dart"
@@ -434,7 +488,7 @@ api_test_credentials() { # <hjv-api> <unit> <dir> <write...>
 # (scripts/check-api-settings.py)
 check_api_env() { # <env file> <packaged example> <hjv-api>
   step "deploy: hjv-api's production settings in $1"
-  python3 -I -B "$ROOT/scripts/check-api-settings.py" --binary "$3" --example "$2" "$1" ||
+  with_skips "$CI/api-settings.log" python3 -I -B "$ROOT/scripts/check-api-settings.py" --binary "$3" --example "$2" "$1" ||
     fail "hjv-api's production settings in $1 (above)"
 }
 
@@ -445,7 +499,7 @@ check_switch_off() { # <hjv-api> <admin socket> <run...>
   local api=$1 socket=$2 status first
   shift 2
   if ! grep -aq passwordless "$api"; then
-    echo "skipped: the passwordless switch (hjv-api has no such admin command yet)"
+    skip "the passwordless switch (hjv-api has no such admin command yet)"
     return 0
   fi
   status=$("$@" "$api" admin --socket "$socket" passwordless status) || fail "hjv-api admin passwordless status"
@@ -517,7 +571,7 @@ check_api_limits() { # <unpacked package>
   local pkg=$1 ng="$CI/nginx-api"
   step "deploy: the account API's nginx limits, per IPv4 address and IPv6 /64"
   if ! unshare -rn true 2> /dev/null; then
-    echo "skipped: no unprivileged user and network namespaces here"
+    skip "the account API's nginx limits (no unprivileged user and network namespaces here)"
     return 0
   fi
   rm -rf "$ng"
@@ -704,6 +758,7 @@ if grep -aq passwordless "$api"; then
     echo "FAIL: the passwordless switch is not off after the install"; exit 1
   fi
 else
+  # counted as a skip of the run from container.log (check_package_container)
   echo "skipped: hjv-api has no passwordless switch yet"
 fi
 nginx -s quit
@@ -712,6 +767,7 @@ EOF
   sudo docker run --rm -v "$1:/pkg:ro" -v "$CI/container-test.sh:/test.sh:ro" "$image" bash /test.sh "$2" 2>&1 |
     tee "$CI/container.log" || fail "the release package in a clean container (build/ci/container.log)"
   [ "$(tail -n 1 "$CI/container.log")" = CONTAINER_OK ] || fail "the release package in a clean container (build/ci/container.log)"
+  count_skips "$CI/container.log"
 }
 
 deploy_stage() {
@@ -729,7 +785,7 @@ deploy_stage() {
     (cd "$ROOT/relay" && CARGO_TARGET_DIR="$CI/target-relay" cargo test --locked --test package -- --ignored) ||
       fail "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
   else
-    echo "skipped: hjv-relay's packages (no relay/)"
+    skip "hjv-relay's packages (no relay/)"
   fi
   [ -z "$(ss -Hltnu '( sport >= :21115 and sport <= :21119 )')" ] ||
     fail "ports 21115-21119 are in use (a running hjviewer server?); the test stack needs them"
@@ -951,7 +1007,7 @@ EOF
       if [ -e "$f" ]; then api_files+=("systemd/$(basename "$f")"); fi
     done
   else
-    echo "skipped: hjv-api in the release package (no server/api)"
+    skip "hjv-api in the release package (no server/api)"
   fi
   for f in bin/hbbs bin/hbbr systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service systemd/hjviewer.env.example \
     web/nginx-hjviewer-locations.conf web/nginx-hjviewer.conf web/apache-hjviewer.conf \
@@ -1071,24 +1127,28 @@ e2e_server_key() { # <work dir>
 # that <filter> picks (cargo test --lib <filter>, by default the module's). The e2e stage runs all
 # of the client's HJViewer tests (hjv: the account code's, design v3 7-3, its hooks' in the
 # controller, hjviewer.rs's and the wake report's), the wol stage the wake report's (hjviewer_wol,
-# design v3 8-10). Before the account code, it is built like 1.5.1.
+# design v3 8-10). Before the account code, it is built like 1.5.1. A client given by hand
+# (E2E_CLIENT, which only the wol stage takes) is used as it is, and that is a skip.
 build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
   local work=$1 unit=${2:-hjviewer_account} src="$CI/upstream-e2e/rustdesk" keys=()
   local filter=${3:-$unit}
-  if [ -n "${E2E_CLIENT:-}" ]; then
-    echo "skipped: the client build, its unit tests and the account E2E (E2E_CLIENT=$E2E_CLIENT is used as it is)"
+  if [ -n "$E2E_CLIENT_GIVEN" ]; then
+    E2E_CLIENT=$E2E_CLIENT_GIVEN
+    skip "the client build and its unit tests (E2E_CLIENT=$E2E_CLIENT is used as it is)"
     return 0
   fi
+  # what a build of the e2e stage leaves for the wol stage of its prepush run: gone until it passes
+  rm -f "$CI/target-e2e/e2e-client.stamp"
   step "e2e: upstream checkout with client/patches"
   rm -rf "$CI/upstream-e2e"
   UPSTREAM_DIR="$CI/upstream-e2e" "$ROOT/scripts/fetch-upstream.sh" client
+  echo "the patched tree: $(git -C "$src" rev-parse 'HEAD^{tree}') (and the overlay files)"
   E2E_ACCOUNT=
   if [ -d "$src/src/hjviewer_account" ] && grep -q HJV_E2E_ACCOUNT "$ROOT/tools/e2e/firewall-e2e.sh"; then
     E2E_ACCOUNT=1
     keys=(HJV_LOGIN_SEAL_PUBKEY="$(cat "$work/api/seal.pub")" HJV_TRUST_PUBKEYS="$(cat "$work/api/trust.pub")")
   else
-    echo "skipped: the account E2E (no src/hjviewer_account in the patched tree, or no HJV_E2E_ACCOUNT part in"
-    echo "tools/e2e/firewall-e2e.sh): the client is built without the account keys, like 1.5.1"
+    skip "the account E2E (no src/hjviewer_account in the patched tree, or no HJV_E2E_ACCOUNT part in tools/e2e/firewall-e2e.sh): the client is built without the account keys, like 1.5.1"
   fi
   step "e2e: the client for the test server hjv.test (--features linux-pkg-config,hjv-e2e)"
   pkgconfig
@@ -1103,8 +1163,22 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
       cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib "$filter") ||
       fail "e2e: the client's unit tests (--lib $filter)"
   else
-    echo "skipped: the client's unit tests of src/$unit (not in the patched tree)"
+    skip "the client's unit tests of src/$unit (not in the patched tree)"
   fi
+}
+
+# What the E2E's client is built from and with: client/ (the patches, the overlay), the upstream
+# pins, the test server's key, the E2E's public keys, the profile and the toolchain. With the
+# prepush run and the binary itself, the e2e stage leaves it for the wol stage of that run, which
+# then takes the e2e stage's build and the unit tests it ran (hjviewer_wol's among hjv's).
+e2e_client_stamp() { # <work dir> <binary>
+  local inputs
+  inputs=$({
+    (cd "$ROOT" && find client scripts/upstream.env scripts/fetch-upstream.sh -type f -print0 | sort -z | xargs -0 sha256sum)
+    cat "$1/srv/id_ed25519.pub" "$1/api/seal.pub" "$1/api/trust.pub"
+    echo "${E2E_PROFILE[*]} $(cargo --version)"
+  } | sha256sum | cut -d' ' -f1)
+  echo "run ${HJV_CI_RUN:-none} inputs $inputs binary $(sha256sum < "$2" | cut -d' ' -f1)"
 }
 
 # The 1.5.1 client of the account E2E's X2 and X3 (design v3 7-4): the patches and the upstream
@@ -1115,7 +1189,7 @@ build_e2e_client_old() { # <work dir>
   local work=$1 dir="$CI/e2e-old" stamp
   E2E_CLIENT_OLD=""
   if ! git -C "$ROOT" rev-parse -q --verify "refs/tags/$E2E_OLD_TAG^{commit}" > /dev/null; then
-    echo "skipped: the 1.5.1 client of X2 and X3 (this repository has no tag $E2E_OLD_TAG)"
+    skip "the 1.5.1 client of X2 and X3 (this repository has no tag $E2E_OLD_TAG)"
     return 0
   fi
   stamp="$(git -C "$ROOT" rev-parse "refs/tags/$E2E_OLD_TAG^{commit}") $(cat "$work/srv/id_ed25519.pub")"
@@ -1155,7 +1229,7 @@ fetch_faketime() {
       [ -f "$dir/root/$lib" ]; then
       E2E_FAKETIME="$dir/root/$lib"
     else
-      echo "skipped: libfaketime (apt-get download libfaketime failed): the E2E skips S27"
+      skip "libfaketime (apt-get download libfaketime failed): the E2E skips S27"
     fi
   fi
 }
@@ -1175,6 +1249,10 @@ cleanup_e2e() {
 
 e2e_stage() {
   local work="$CI/e2e" mode extra=()
+  # a client given by hand would go without the build's unit tests and, built without the E2E's
+  # keys, without the account E2E
+  [ -z "$E2E_CLIENT_GIVEN" ] ||
+    fail "e2e: E2E_CLIENT is not taken here: the stage builds the client from client/patches, runs its unit tests and the account E2E with it"
   sudo -n true 2> /dev/null || fail "e2e: needs sudo without a password prompt (network namespaces, iptables)"
   if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
     fail "e2e: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
@@ -1183,6 +1261,9 @@ e2e_stage() {
   e2e_server_key "$work"
   e2e_keys "$work/api"
   build_e2e_client "$work" hjviewer_account hjv
+  if [ -n "${HJV_CI_RUN:-}" ] && [ -n "$E2E_ACCOUNT" ]; then
+    e2e_client_stamp "$work" "$E2E_CLIENT" > "$CI/target-e2e/e2e-client.stamp"
+  fi
   # the PC's client where Linux counts it as installed, as its account binding needs; the
   # controllers keep running the build output
   step "e2e: the PC's client as $E2E_PC_DIR/rustdesk"
@@ -1196,11 +1277,12 @@ e2e_stage() {
       CLIENT_OLD="$E2E_CLIENT_OLD" FAKETIME_LIB="$E2E_FAKETIME")
   fi
   for mode in strict open; do
-    step "e2e: tools/e2e/firewall-e2e.sh $mode"
-    env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" HBBR="$CI/target/release/hbbr" \
-      PROBE="$PROBE" CLIENT="$E2E_CLIENT" PC_CLIENT="$E2E_PC_DIR/rustdesk" "${extra[@]}" \
+    step "e2e: tools/e2e/firewall-e2e.sh $mode (output also in build/ci/e2e-$mode.log)"
+    with_skips "$CI/e2e-$mode.log" env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" \
+      HBBR="$CI/target/release/hbbr" PROBE="$PROBE" CLIENT="$E2E_CLIENT" PC_CLIENT="$E2E_PC_DIR/rustdesk" "${extra[@]}" \
       "$ROOT/tools/e2e/firewall-e2e.sh" "$mode" || fail "e2e: firewall-e2e.sh $mode"
   done
+  echo "e2e: PASS lines: strict $(grep -c '^PASS' "$CI/e2e-strict.log"), open $(grep -c '^PASS' "$CI/e2e-open.log")"
   cleanup_e2e
   trap - EXIT
 }
@@ -1209,34 +1291,43 @@ e2e_stage() {
 # this user (design v3 8-10, docs/e2e.md). It gets the same programs as the E2E, and hjv-relay
 # built for hjv.test with the E2E's command key. The client's unit tests are those of its wake
 # report here; the E2E runs once the client has the report's command (client patch 0035), and
-# fails without it once client/patches has that patch.
+# fails without it once client/patches has that patch. In a prepush run it takes the e2e stage's
+# client when that was built from the same inputs (e2e_client_stamp).
 wol_stage() {
-  local work="$CI/e2e"
+  local work="$CI/e2e" built="$CI/target-e2e/release/rustdesk"
   if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
     fail "wol: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
   fi
   fetch_caddy
   e2e_server_key "$work"
   e2e_keys "$work/api"
-  build_e2e_client "$work" hjviewer_wol
+  if [ -z "$E2E_CLIENT_GIVEN" ] && [ -n "${HJV_CI_RUN:-}" ] && [ -x "$built" ] &&
+    [ "$(cat "$CI/target-e2e/e2e-client.stamp" 2> /dev/null)" = "$(e2e_client_stamp "$work" "$built")" ]; then
+    E2E_CLIENT=$built
+    echo "wol: the client of this prepush run's e2e stage, built from the same client/patches and keys" \
+      "(its unit tests there, --lib hjv, had the wake report's)"
+  else
+    build_e2e_client "$work" hjviewer_wol
+  fi
   if ! grep -q -a -- '--hjv-e2e-wol-report' "$E2E_CLIENT"; then
     # once client/patches has the wake report (0035), its command is required: a dropped patch, a
     # build without hjv-e2e or another E2E_CLIENT would otherwise pass without the E2E
     if grep -q -- '--hjv-e2e-wol-report' "$ROOT"/client/patches/rustdesk/*.patch; then
       fail "wol: the client has no --hjv-e2e-wol-report, though client/patches has the wake report"
     fi
-    echo "skipped: the WOL E2E (the client has no --hjv-e2e-wol-report: client/patches has no wake report yet)"
+    skip "the WOL E2E (the client has no --hjv-e2e-wol-report: client/patches has no wake report yet)"
     return 0
   fi
   build_e2e_api
   step "wol: hjv-relay for hjv.test with the E2E's command key"
   (cd "$ROOT/relay" && HJV_SERVER=hjv.test HJV_COMMAND_PUBKEY="$(cat "$work/api/command.pub")" \
     CARGO_TARGET_DIR="$CI/target-relay" cargo build --release --locked) || fail "wol: hjv-relay build"
-  step "wol: tools/e2e/wol-e2e.sh"
-  env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" HBBR="$CI/target/release/hbbr" \
-    PROBE="$PROBE" CLIENT="$E2E_CLIENT" HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" \
+  step "wol: tools/e2e/wol-e2e.sh (output also in build/ci/wol-e2e.log)"
+  with_skips "$CI/wol-e2e.log" env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" \
+    HBBR="$CI/target/release/hbbr" PROBE="$PROBE" CLIENT="$E2E_CLIENT" HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" \
     HJV_RELAY="$CI/target-relay/release/hjv-relay" HJV_E2E_KEYS="$work/api" \
     "$ROOT/tools/e2e/wol-e2e.sh" || fail "wol: wol-e2e.sh"
+  echo "wol: PASS lines: $(grep -c '^PASS' "$CI/wol-e2e.log")"
 }
 
 # The push gate of design v3 11 steps 1-2: none of the values of build/leak-patterns.txt (a local
@@ -1249,7 +1340,89 @@ leak_stage() {
   python3 -I -B "$ROOT/scripts/leak-check.py" --repo "$ROOT" || fail "leak: see above; push nothing until this passes"
 }
 
-case "${1:-all}" in
+# The head of a stage's log: the commits it ran on (this repository; the client series and hbbs
+# checkouts under upstream/, which client/patches and server/patches are exported from), the
+# toolchain and the start
+log_head() { # <stage>
+  local name dir
+  echo "LOG scripts/ci.sh $1 (prepush, HJV_CI_STRICT=1, CI directory $CI)"
+  for name in hjviewer client-series hbbs; do
+    case $name in
+      hjviewer) dir=$ROOT ;;
+      client-series) dir=$ROOT/upstream/rustdesk ;;
+      hbbs) dir=$ROOT/upstream/rustdesk-server ;;
+    esac
+    if git -C "$dir" rev-parse -q --verify HEAD > /dev/null 2>&1; then
+      echo "$name $(git -C "$dir" rev-parse HEAD) tree $(git -C "$dir" rev-parse 'HEAD^{tree}')" \
+        "status-lines $(git -C "$dir" --no-optional-locks status --porcelain | wc -l) ($dir)"
+    else
+      echo "$name - (no checkout in $dir)"
+    fi
+  done
+  echo "TOOLCHAIN $(rustc --version) / $(cargo --version) / $(rustc +1.75.0 --version 2> /dev/null || echo 'no rustc 1.75.0')" \
+    "/ $(python3 --version 2>&1) / bash $BASH_VERSION"
+  echo "START $(date '+%Y-%m-%d %H:%M:%S %z')"
+}
+
+# The gate before a push (design v3 11 step 1): the stages one after another on a clean tree, under
+# this run's lock, with HJV_CI_STRICT=1, each with its own log, stopping at the first that fails.
+# Named stages run alone, in this order: after a fix, those that read what it changed (docs/ci.md).
+prepush() { # [<stage>...]
+  local stages=() s log logs head start status passed list
+  for s in "$@"; do
+    [[ " $PREPUSH_STAGES " == *" $s "* ]] || fail "prepush: no stage $s ($PREPUSH_STAGES)"
+  done
+  for s in $PREPUSH_STAGES; do
+    if [ $# -eq 0 ] || [[ " $* " == *" $s "* ]]; then stages+=("$s"); fi
+  done
+  [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
+    fail "prepush: the working tree is not clean (git status): a push publishes commits, and they are what is checked"
+  [ -z "$E2E_CLIENT_GIVEN" ] || fail "prepush: E2E_CLIENT is set: prepush builds the E2E's client from client/patches"
+  if [[ " ${stages[*]} " == *" leak "* ]]; then
+    # the leak stage comes last; without its list it would fail only then
+    list=${HJV_LEAK_PATTERNS:-$ROOT/build/leak-patterns.txt}
+    if [ -z "${HJV_LEAK_PATTERNS:-}" ] && [ ! -f "$list" ]; then
+      list="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")/build/leak-patterns.txt"
+    fi
+    [ -f "$list" ] || fail "prepush: no list of values for the leak stage ($list; HJV_LEAK_PATTERNS, docs/ci.md)"
+  fi
+  head=$(git -C "$ROOT" rev-parse HEAD)
+  logs=${HJV_CI_LOGS:-$CI/prepush/$(date '+%Y%m%d-%H%M%S')-$(git -C "$ROOT" rev-parse --short HEAD)}
+  mkdir -p "$logs"
+  HJV_CI_RUN="$(date +%s)-$$"
+  export HJV_CI_RUN
+  step "prepush: ${stages[*]} on $head, logs in $logs"
+  for s in "${stages[@]}"; do
+    log="$logs/$s.log" start=$(date +%s) status=0
+    (
+      trap 'echo "EXIT $? $(date "+%Y-%m-%d %H:%M:%S %z")"' EXIT
+      log_head "$s"
+      HJV_CI_STRICT=1 "$SELF" "$s"
+    ) > "$log" 2>&1 < /dev/null || status=$?
+    passed=$(grep -x "== CI passed: $s (0 skipped)" "$log" || true)
+    echo "prepush: $s: exit $status, $(($(date +%s) - start)) s, $(grep -c '^skipped:' "$log" || true) skipped line(s), log $log"
+    [ "$status" = 0 ] && [ -n "$passed" ] || fail "prepush: $s did not pass ($log)"
+    if grep '^skipped:' "$log"; then fail "prepush: $s printed the skipped lines above ($log)"; fi
+    [ "$(git -C "$ROOT" rev-parse HEAD)" = "$head" ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
+      fail "prepush: the tree changed during $s; its log is not of $head"
+  done
+}
+
+# The last lines of a run: what it skipped, and with HJV_CI_STRICT=1 a failure if anything
+finish() { # <target>
+  local s
+  if [ ${#SKIPPED[@]} -gt 0 ]; then
+    printf '\n%s skipped in this run:\n' "${#SKIPPED[@]}"
+    for s in "${SKIPPED[@]}"; do echo "  - $s"; done
+    if [ "${HJV_CI_STRICT:-}" = 1 ]; then
+      echo "FAIL: HJV_CI_STRICT=1 and $1 skipped ${#SKIPPED[@]} part(s), listed above: a pass with skipped lines is no pass before a push" >&2
+      exit 1
+    fi
+  fi
+  step "CI passed: $1 (${#SKIPPED[@]} skipped)"
+}
+
+case "$TARGET" in
   server) server_stage ;;
   client) client_stage ;;
   deploy) deploy_stage ;;
@@ -1257,6 +1430,11 @@ case "${1:-all}" in
   wol) wol_stage ;;
   leak) leak_stage ;;
   all) server_stage; deploy_stage ;;
-  *) echo "usage: $0 [all|server|client|deploy|e2e|wol|leak]" >&2; exit 2 ;;
+  prepush) shift; prepush "$@" ;;
+  *)
+    echo "usage: $0 [all|prepush [<stage>...]|server|client|deploy|e2e|wol|leak]" >&2
+    echo "  all is the server and deploy stages only; prepush runs every stage ($PREPUSH_STAGES) with HJV_CI_STRICT=1" >&2
+    exit 2
+    ;;
 esac
-step "CI passed: ${1:-all}"
+finish "$TARGET"
