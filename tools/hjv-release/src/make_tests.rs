@@ -1307,6 +1307,12 @@ fn revocation_and_epochs() {
     request.revoke = vec![7];
     assert!(error(&request).contains("X9"));
 
+    // X10: the live file is --prev byte for byte, and a file of the archive
+    let mut request = req_after(&file4, "2026-11-12T04:00:00Z");
+    request.new_epoch = true;
+    request.live = Some(file3.clone());
+    let err = error(&request);
+    assert!(err.contains("X10") && err.contains("--prev"), "{err}");
     // a new epoch without a revocation
     let mut request = req_after(&file4, "2026-11-12T04:00:00Z");
     request.live = Some(file4.clone());

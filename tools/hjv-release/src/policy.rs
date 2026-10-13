@@ -1845,6 +1845,19 @@ pub(crate) mod tests {
                 1,
             );
         assert_eq!(judge(&both), Err(Reason::Field("issued")));
+        // ... and the server is judged after every entry
+        let entry_and_server = good
+            .replacen(
+                r#""min":"1.6.0","latest":"1.6.1","grace"#,
+                r#""min":"1.6","latest":"1.6.1","grace"#,
+                1,
+            )
+            .replacen(
+                r#""server":"rd.example.com""#,
+                r#""server":"x.example.com""#,
+                1,
+            );
+        assert_eq!(judge(&entry_and_server), Err(Reason::Field("min")));
         // what only the tool refuses passes the app's rules
         let url = Policy {
             contact_ko: Some("https://rd.example.com 에서 받으세요".to_owned()),

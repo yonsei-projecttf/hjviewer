@@ -494,11 +494,32 @@ pub fn plan(
     }
 
     if draft.signer == Role::Root {
-        dangers.push(
-            "정책을 루트 키로 서명합니다: 기록된 빌드 가운데 쓸 수 있는 서명 키를 박지 않은 빌드가 있어, 그 기기는 루트 키가 \
-             서명한 것만 받습니다"
-                .to_owned(),
-        );
+        // the recorded builds that pin none of the key file's usable signing keys
+        let revoked: Vec<u32> = new_root
+            .as_ref()
+            .or(old_decl)
+            .map(|d| d.revoked.clone())
+            .unwrap_or_default();
+        let unserved: Vec<String> = archive
+            .keysets()?
+            .into_iter()
+            .filter(|record| {
+                !keys
+                    .signing
+                    .iter()
+                    .filter(|k| !revoked.contains(&k.id))
+                    .any(|k| record.pins(Role::Signing, k))
+            })
+            .map(|record| record.name())
+            .collect();
+        dangers.push(format!(
+            "정책을 루트 키로 서명합니다: 쓸 수 있는 서명 키를 박지 않은 빌드({})의 기기는 루트 키가 서명한 것만 받습니다",
+            if unserved.is_empty() {
+                "기록된 모든 빌드에 쓸 서명 키가 없음".to_owned()
+            } else {
+                unserved.join(", ")
+            }
+        ));
         for (platform, entry) in &policy.platforms {
             dangers.push(format!(
                 "  그 기기가 설치하게 될 빌드: {platform} {}",
