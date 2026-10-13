@@ -312,6 +312,22 @@ class PublishedPrivateKeysTest(unittest.TestCase):
         longer = self.git_tree({"a.txt": b64(fresh() + b"x") + "\n" + (fresh() + b"x").hex() + "\n"})
         self.assertEqual(cbk.tree_values(longer), {})
 
+    def test_values_a_patch_adds_and_0x_hex(self):
+        """A client patch adds a line "+<value>" (a key list or fixture in the client tree), and a
+        test vector may write hex with 0x: both are published (WP-B verification)."""
+        seeds = [fresh() for _ in range(3)]
+        tree = self.git_tree({
+            "client/patches/rustdesk/0040-x.patch": (
+                "--- a/src/keys.txt\n+++ b/src/keys.txt\n@@ -0,0 +1,2 @@\n"
+                f"+{b64(seeds[0])}\n+{seeds[1].hex()}\n"),
+            "src/v.rs": f"const SEED: [u8; 32] = hex!(\"0x{seeds[2].hex()}\");\n",
+        })
+        keys = cbk.public_test_keys(tree)
+        self.assertEqual(keys[cbk.ed25519_public(seeds[0])],
+                         "its Ed25519 seed is at client/patches/rustdesk/0040-x.patch:4")
+        self.assertIn(cbk.x25519_public(seeds[1]), keys)
+        self.assertEqual(keys[cbk.ed25519_public(seeds[2])], "its Ed25519 seed is at src/v.rs:1")
+
     def test_every_published_key_pair_of_this_tree_is_refused(self):
         """Any key pair of the tracked files (a public key next to its private key, as a test
         vector has them), whether or not scripts/public-test-keys.txt names it."""

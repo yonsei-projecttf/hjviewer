@@ -188,7 +188,7 @@ _test_keys = {}
 # A 32-byte value written out on its own: base64, standard or URL-safe, with or without its '='
 # (43 characters), or hex (64 digits)
 _B64_32 = re.compile(rb"(?<![A-Za-z0-9+/=_-])([A-Za-z0-9+/_-]{43})=?(?![A-Za-z0-9+/=_-])")
-_HEX_32 = re.compile(rb"(?<![0-9A-Za-z])([0-9a-fA-F]{64})(?![0-9A-Za-z])")
+_HEX_32 = re.compile(rb"(?<![0-9A-Za-z])(?:0[xX])?([0-9a-fA-F]{64})(?![0-9A-Za-z])")
 
 
 def test_seeds():
@@ -244,6 +244,9 @@ def tree_values(tree):
             continue
         with open(path, "rb") as f:
             data = f.read()
+        if path.endswith(".patch"):
+            # the lines a patch adds (client/patches): "+<value>" as the patched file has it
+            data = data.replace(b"\n+", b"\n ")
         rel = os.path.relpath(path, tree)
         found = []
         for m in _B64_32.finditer(data):
