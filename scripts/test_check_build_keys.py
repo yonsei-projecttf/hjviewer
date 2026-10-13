@@ -38,6 +38,8 @@ TEST_KEYS = ("HJV_UPDATE_PUBKEY=1:JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=,"
 # server/api/src/seal.rs: the sealed-login test vector's key pair (VECTOR_PK, VECTOR_SK)
 SEAL_VECTOR_PK = "SjgH0GTQdxgcwHCYnnaJHSDcpVWVSNwsd8GlAnOIKzg="
 SEAL_VECTOR_SK = "d3iPGgzqABomMdrl0F29BiAI1bMPULnim+sqeCIokAQ="
+# what str.splitlines() ends a line at besides LF and CR
+LINE_BREAKS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
 
 
 def b64(raw):
@@ -469,6 +471,12 @@ class UpdateKeysTest(unittest.TestCase):
             "a NUL": good + "\0\n",
             "larger than 64 KiB": good + "#" * 70000 + "\n",
         }
+        # LF alone ends a line, as tools/hjv-release reads the file; a character that str.splitlines(),
+        # an editor or a browser ends a line at is refused wherever it is
+        for sep in LINE_BREAKS:
+            cases[f"{sep!r} between two lines"] = good.replace("\nHJV_UPDATE_ROOT_PUBKEY=", f"{sep}HJV_UPDATE_ROOT_PUBKEY=")
+            cases[f"{sep!r} at the end of a line"] = good.replace("HJV_POLICY_FLOOR=1:0\n", f"HJV_POLICY_FLOOR=1:0{sep}\n")
+            cases[f"{sep!r} in a comment"] = good.replace("# a comment\n", f"# a comment{sep}HJV_POLICY_FLOOR=1:1\n")
         for what, text in cases.items():
             runs = self.run_kinds(text) + [Run(version="1.5.1", update=text, CALLED="main")]
             self.assertEqual([r.code for r in runs], [1, 1, 1, 1], what)
@@ -479,7 +487,10 @@ class UpdateKeysTest(unittest.TestCase):
         for what, said in (("a byte order mark", "byte order mark"), ("CR LF line endings", "CR line endings"),
                            ("no file", "is not a file"), ("not UTF-8", "not UTF-8"), ("a name twice", "a second time"),
                            ("no floor line", "has no HJV_POLICY_FLOOR= line"), ("export", ":5: neither a comment"),
-                           ("larger than 64 KiB", "larger than 64 KiB")):
+                           ("larger than 64 KiB", "larger than 64 KiB"),
+                           (r"'\x85' between two lines", ":3: holds U+0085, which other programs take for a line break"),
+                           (r"'\x85' between two lines", "has no HJV_UPDATE_ROOT_PUBKEY= line"),
+                           (r"'\u2028' in a comment", ":1: holds U+2028")):
             r = Run(update=cases[what], CALLED="")
             self.assertTrue(any(said in e for e in r.errors()), f"{what}: {r.out}")
         # a link is not the file either
@@ -491,6 +502,17 @@ class UpdateKeysTest(unittest.TestCase):
         self.assertEqual(cbk.read_update_keys(os.path.join(tmp, "real.env"))[1], [])
         self.assertEqual(cbk.read_update_keys(os.path.join(tmp, "link.env"))[0], None)
         self.assertEqual(cbk.read_update_keys(tmp)[0], None)
+
+    def test_the_refused_line_breaks_are_those_of_str_splitlines(self):
+        """Every character besides LF and CR that str.splitlines() ends a line at, and no other."""
+        breaks, refused = [], []
+        for c in map(chr, range(0x110000)):
+            if c not in "\n\r" and len(f"a{c}b".splitlines()) > 1:
+                breaks.append(c)
+            if cbk._OTHER_LINE_BREAK.search(c):
+                refused.append(c)
+        self.assertEqual(breaks, list(LINE_BREAKS))
+        self.assertEqual(refused, list(LINE_BREAKS))
 
     def test_keys_and_floors_the_apps_would_refuse_fail_every_run(self):
         a, b, c = (ed(fresh()) for _ in range(3))
@@ -621,11 +643,14 @@ class UpdateKeysTest(unittest.TestCase):
             "unknown name": key_file() + "HJV_OTHER=1\n",
             "a name twice": key_file() + "HJV_POLICY_FLOOR=1:0\n",
         }
+        # the tool too reads two lines joined by another line break as one line
+        for sep in LINE_BREAKS:
+            cases[f"{sep!r} between two lines"] = key_file().replace("\nHJV_UPDATE_ROOT_PUBKEY=", f"{sep}HJV_UPDATE_ROOT_PUBKEY=")
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp)
         for what, text in cases.items():
             path = os.path.join(tmp, "keys.env")
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
             theirs = subprocess.run([tool, "keys", "--production", "--keys", path], capture_output=True).returncode
             ours = Run(update=text, **self.RELEASE, **account_keys()).code

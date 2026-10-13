@@ -409,14 +409,18 @@ def read_version(path):
 _UPDATE_LINE = re.compile(r"(HJV_UPDATE_PUBKEY|HJV_UPDATE_ROOT_PUBKEY|HJV_POLICY_FLOOR)=([0-9A-Za-z+/=:,]*)")
 # <epoch>:<seq> as the apps read it: plain numbers of 15 digits at most, an epoch from 1
 _FLOOR = re.compile(r"[1-9][0-9]{0,14}:(0|[1-9][0-9]{0,14})")
+# What str.splitlines(), editors and browsers end a line at besides LF and CR. Refused in comments
+# too, so that every reader and every reviewer sees the lines this script reads.
+_OTHER_LINE_BREAK = re.compile("[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
 
 
 def read_update_keys(path):
     """(values, problems): the three values of client/update-keys.env by name, or None with the
     reasons why the file is not in its one form: NAME=value from the first column, each of the
     three names once, besides them only empty lines and lines that start with '#', LF line
-    endings. A problem names a line by its number: what the line holds is never repeated, in
-    case something else than a public key was pasted there."""
+    endings and no other character that a reader may end a line at. A problem names a line by
+    its number: what the line holds is never repeated, in case something else than a public key
+    was pasted there."""
     try:
         if os.path.islink(path) or not os.path.isfile(path):
             return None, [f"{path} is not a file: the builds take the update keys from it "
@@ -440,6 +444,11 @@ def read_update_keys(path):
         text = text.replace("\r\n", "\n").replace("\r", "\n")
     values = {}
     for n, line in enumerate(text.split("\n"), 1):
+        other = _OTHER_LINE_BREAK.search(line)
+        if other:
+            problems.append(f"{path}:{n}: holds U+{ord(other.group()):04X}, which other programs take for "
+                            "a line break; only LF may end a line")
+            continue
         if not line or line.startswith("#"):
             continue
         m = _UPDATE_LINE.fullmatch(line)
