@@ -683,25 +683,25 @@ These private keys are public test values: never use them for anything else.
   section 11 requires the administrator to confirm each request with the PC's owner and to
   compare the relay's networks with the PC's. An approved wrong relay would receive the MACs and
   networks of the owner's PCs and could report false results.
-- Outside this protocol, on the NAS: the boot-up task starts the relay as root
-  (docs/relay-dsm.md). The task's first line holds the SHA-256 of the release, and its loop runs
-  only a copy it made in the root-only state folder, after checking both the uploaded file and the
-  copy against that value. Root also does not follow symbolic links in that shared folder: the
-  guide's tasks give the relay /dev/null for stdout and stderr, and the relay opens the files
-  there itself (`run --log`, `status --out`, `test-wake --out`, and the upload it watches with
-  `run --watch`) without following a symbolic link, and uses only regular files (with one name,
-  for the files it writes). The loop's shell reads (to hash and copy) only an upload that is not a
-  symbolic link, and writes its own few log lines (a time, a fixed text, at most 8 hex digits of a
-  hash) only when the log is a regular file or missing. So whoever can write to the shared folder
-  of the executable can stop the relay or delete its log, but cannot have their code run as root
-  or choose a file root writes to, with two gaps. One is between a check of the shell and its use
-  of the path: someone who swaps in a symbolic link at that moment can make root read the link's
-  target to hash it, or append one of those fixed lines to it. The other is a hard link: the
-  shell takes a log that is a hard link to a file outside the folder for a regular file and
-  appends those lines to that file (the relay itself refuses such a log), which takes a local
-  account on the NAS that may make the link (not SMB or File Station). Changing the task takes a
-  DSM administrator. The guide still keeps that folder for administrators only, with no sync tasks,
-  sharing links or file requests on it (docs/relay-dsm.md, section 2).
+- Outside this protocol, on the NAS: the boot-up task starts the relay as root (docs/relay-dsm.md).
+  The task's first line holds the SHA-256 of the release, and its loop runs only a copy it made in
+  the root-only state folder, after checking both the uploaded file and the copy against that value.
+  Root also does not follow symbolic links in that shared folder: the guide's tasks give the relay
+  /dev/null for stdout and stderr, and the relay opens the files there itself (`run --log`, `status
+  --out`, `test-wake --out`, and the upload it watches with `run --watch`) without following a
+  symbolic link, and uses only regular files (with one name, for the files it writes). The loop's
+  shell reads (to hash and copy) only an upload that is not a symbolic link, and writes its own few
+  log lines (a time, a fixed text, at most 8 hex digits of a hash or the shell's exit code) only
+  when the log is a regular file or missing. So whoever can write to the shared folder of the
+  executable can stop the relay or delete its log, but cannot have their code run as root or choose
+  a file root writes to, with two gaps. One is between a check of the shell and its use of the path:
+  someone who swaps in a symbolic link at that moment can make root read the link's target to hash
+  it, or append one of those fixed lines to it. The other is a hard link: the shell takes a log that
+  is a hard link to a file outside the folder for a regular file and appends those lines to that
+  file (the relay itself refuses such a log), which takes a local account on the NAS that may make
+  the link (not SMB or File Station). Changing the task takes a DSM administrator. The guide still
+  keeps that folder for administrators only, with no sync tasks, sharing links or file requests on
+  it (docs/relay-dsm.md, section 2).
 - While it runs, the relay keeps its log to the last 180 days and at most 2 MB. Nothing prunes
   the log of a relay that is stopped or ended (the stop marker, a field test build, a hash that
   does not match): the guide says to delete the log when the relay stays stopped

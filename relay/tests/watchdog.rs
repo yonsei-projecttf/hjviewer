@@ -10,7 +10,8 @@
 //! the copy and does not run; it computes the hash with sha256sum or, without it, with openssl,
 //! and with neither runs nothing; it ends on the stop marker, before a run and right after one;
 //! it waits for a volume that is not there yet; it restarts the relay after 0 and 1, ends on 2
-//! and 78 and, after four tries in a row, on 75.
+//! and 78 and, after four tries in a row, on 75; when the shell cannot run the copy (126, 127: an
+//! x86_64 package on a NAS with an ARM CPU) it says so and ends.
 //! Against the real relay (built for a test server): the relay drops the log lines older than
 //! 180 days, runs from the checked copy, ends with the loop on the stop marker, and ends on an
 //! upload whose SHA-256 the task does not have yet, until the task gets the new value. The
@@ -362,6 +363,45 @@ fn the_boot_script_of_the_guide() {
     nas.wait_for_the_loop_to_end();
     assert!(nas.log().starts_with(&big));
     assert!(!nas.share().join("hjv-relay.log.1").exists());
+}
+
+#[test]
+fn a_copy_this_nas_cannot_run_ends_the_loop_with_a_line() {
+    // An x86_64 package on a NAS with an ARM CPU: the hash matches and the copy is made, but the
+    // shell cannot run it (126). A file whose interpreter is missing: 127. The loop says so in
+    // the log and ends, where it would try again every 30 seconds without a word.
+    let nas = Nas::new("cannot-run");
+    fs::create_dir_all(nas.share()).unwrap();
+    // the ELF header of an executable for another machine: aarch64, or x86_64 on an aarch64 one
+    let machine: u16 = if cfg!(target_arch = "aarch64") {
+        62
+    } else {
+        183
+    };
+    let mut elf = vec![0u8; 64];
+    elf[..8].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0]);
+    elf[16] = 2;
+    elf[18..20].copy_from_slice(&machine.to_le_bytes());
+    elf[20] = 1;
+    let missing = b"#!/nonexistent/interpreter\n".to_vec();
+    for (code, bytes) in [(126, elf), (127, missing)] {
+        fs::write(nas.bin(), &bytes).unwrap();
+        let _ = fs::remove_file(nas.share().join("hjv-relay.log"));
+        nas.start(&sha256_hex(&nas.bin()));
+        nas.wait_for_the_loop_to_end();
+        let log = nas.log();
+        let said = format!(
+            "hjv-relay를 실행하지 못해(종료 코드 {code}) 감시 루프를 끝냅니다. NAS의 CPU가 x86_64인지 확인합니다(1장)."
+        );
+        assert_eq!(log.lines().count(), 1, "{log}");
+        assert!(log.trim_end().ends_with(&said), "{log}");
+        // the checked copy is the one it tried
+        assert_eq!(fs::read(nas.state().join("hjv-relay")).unwrap(), bytes);
+    }
+    // the guide's table says what to do
+    assert!(
+        guide().contains("| `hjv-relay를 실행하지 못해(종료 코드 126) 감시 루프를 끝냅니다. …` |")
+    );
 }
 
 #[test]
