@@ -1121,13 +1121,31 @@ fn verdict_lines(
     verdict
 }
 
-fn relay_line(relay: &RelayRow) -> String {
-    format!(
-        "hjv-relay {} ({}, {})",
-        relay.version.as_deref().unwrap_or("-"),
-        relay.os.as_deref().unwrap_or("-"),
-        relay.arch.as_deref().unwrap_or("-")
-    )
+/// What a relay says of itself, for the admin output: anyone can make a pending relay with any
+/// text in these fields (an unsigned key's hello), and the output goes to the operator, an agent
+/// among them. So by default only a version of digits and dots and an architecture of lowercase
+/// letters, digits and `_` show (`-` otherwise), and the free `os` text only with `--reveal`.
+fn relay_line(relay: &RelayRow, reveal: bool) -> String {
+    let shown = |text: Option<&str>, ok: fn(u8) -> bool| -> String {
+        match text {
+            Some(t) if (1..=16).contains(&t.len()) && t.bytes().all(ok) => t.to_owned(),
+            _ => "-".to_owned(),
+        }
+    };
+    let version = shown(relay.version.as_deref(), |b| {
+        b.is_ascii_digit() || b == b'.'
+    });
+    let arch = shown(relay.arch.as_deref(), |b| {
+        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'
+    });
+    if reveal {
+        format!(
+            "hjv-relay {version} ({}, {arch})",
+            relay.os.as_deref().unwrap_or("-")
+        )
+    } else {
+        format!("hjv-relay {version} ({arch})")
+    }
 }
 
 /// `relay list`: the relays with their state, account and last poll; for an active relay the
@@ -1184,7 +1202,7 @@ pub async fn admin_list(state: &Arc<AppState>, reveal: bool) -> Result<String, S
                     relay
                         .last_poll_at
                         .map_or_else(|| "never".to_owned(), |t| format!("{} ago", ago(at - t))),
-                    relay_line(relay)
+                    relay_line(relay, reveal)
                 );
                 if relay.scope == "shared" {
                     let _ = writeln!(
@@ -1221,7 +1239,7 @@ pub async fn admin_list(state: &Arc<AppState>, reveal: bool) -> Result<String, S
                         .source
                         .as_deref()
                         .map_or_else(|| "-".to_owned(), |s| format!("tag {}", state.tags.ip(s))),
-                    relay_line(relay)
+                    relay_line(relay, reveal)
                 );
                 if reveal {
                     for iface in &relay.ifaces {
@@ -1347,7 +1365,7 @@ pub async fn admin_approve(
         "the relay {relay_id} (code {}): first hello {} ago, {}",
         code_of(&relay_id),
         ago(at - relay.created_at),
-        relay_line(&relay)
+        relay_line(&relay, reveal)
     );
     let _ = writeln!(
         out,

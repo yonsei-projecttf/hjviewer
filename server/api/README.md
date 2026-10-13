@@ -196,10 +196,12 @@ backup [--keep-days N] <file>.sqlite3 | <directory>
                           a checked copy of the database into a directory only you may enter
                           (Backup and restore)
 health                    the counts the five-minute check reads, as JSON (not recorded)
-relay list                the NAS relays: state, account, name, last poll, version; for an active
-                          relay whether it is on the network of each PC of its account (the
-                          verdicts; the addresses and networks with --reveal, MACs always masked);
-                          pending relays with their codes; the codes approved ahead
+relay list                the NAS relays: state, account, name, last poll, version and
+                          architecture (only in their plain forms: anyone can make a pending
+                          relay say anything; its OS text with --reveal); for an active relay
+                          whether it is on the network of each PC of its account (the verdicts;
+                          the addresses and networks with --reveal, MACs always masked); pending
+                          relays with their codes; the codes approved ahead
 relay approve <code> --owner-of <PC ID> [--name <name>] [--force]
                           approve a relay for the account that has the PC (no portal ID typed),
                           after the PC's owner confirmed the code: shows the verdicts of the

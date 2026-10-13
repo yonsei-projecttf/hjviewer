@@ -179,10 +179,12 @@ pub fn parse_binding(text: &str) -> Option<[u8; 16]> {
 
 /// A version as the apps write it ("1.6.0"), else ''.
 fn version(text: &str) -> String {
+    // digits and dots only, as a login's version (login.rs): the admin output shows it
     let plain = (1..=32).contains(&text.len())
+        && text.split('.').count() <= 4
         && text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b".+-_".contains(&b));
+            .split('.')
+            .all(|n| !n.is_empty() && n.len() <= 6 && n.bytes().all(|b| b.is_ascii_digit()));
     if plain {
         text.to_owned()
     } else {
@@ -928,6 +930,11 @@ mod tests {
         // the least payload; a version that is not one is not kept
         let least = parse_report(r#"{"v":1,"binding":"","ver":"1.6.0 <b>"}"#, AT).unwrap();
         assert_eq!((least.binding, least.ver.as_str()), (None, ""));
+        // digits and dots only: the admin output shows it
+        for odd in ["1.6.0-run_it", "v1.6", "1..6", "1.2.3.4.5"] {
+            let r = parse_report(&format!(r#"{{"v":1,"binding":"","ver":"{odd}"}}"#), AT).unwrap();
+            assert_eq!(r.ver, "", "{odd}");
+        }
         assert!(least.used.is_empty() && least.refused.is_empty() && !least.off);
         // the shape
         for bad in [
