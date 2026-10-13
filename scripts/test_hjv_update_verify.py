@@ -925,9 +925,18 @@ class Command(unittest.TestCase):
         # signed by a key the key file does not pin
         self.set_live(envelope(part(3, P11)))
         self.refused("LiveUnreadable", HISTORY["e1-s2"])
-        # not canonical
+        # not canonical: the apps refuse it too. It stays where it is, and the new file is checked
+        # against the last file installed (runbook 8-5 (바)); no old file is put back
         self.set_live(HISTORY["e1-s1"].replace(b'"v":1,', b'"v": 1,', 1))
-        self.refused("LiveUnreadable", HISTORY["e1-s2"])
+        out = self.refused("LiveUnreadable", HISTORY["e1-s2"])
+        self.assertIn("with --live", out)
+        self.assertNotIn("put back", out)
+        last = self.file("last-installed.json", HISTORY["e1-s1"])
+        status, out, err = run_script("--keys", self.keys, "--live", last, "--server", SERVER, "--now",
+                                      "2026-10-09T12:00:00Z", "--packages", self.pkg,
+                                      self.file("new.json", HISTORY["e1-s2"]))
+        self.assertEqual(status, 0, out + err)
+        self.assertIn("a device that holds the live policy takes it", out)
         # an epoch-2 policy without its declaration
         self.set_live(envelope(part(2, P22)))
         self.refused("LiveUnreadable", HISTORY["e2-s2"])

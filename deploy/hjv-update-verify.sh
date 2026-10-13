@@ -1031,8 +1031,9 @@ def install_check(build, new_data, live_data, relaxes, package_dirs, now, verifi
         try:
             live = read_envelope(live_data)
         except (NotCanonical, Refused) as e:
-            raise Refused("LiveUnreadable", "the live file is not one this check reads (%s): put back your "
-                          "last own file from the archive as it is (runbook 8-5)" % (
+            raise Refused("LiveUnreadable", "the live file is not one this check reads (%s): the apps "
+                          "refuse it too and keep the policy they had. Leave it where it is and check the "
+                          "new file against the last one installed, with --live (runbook 8-5)" % (
                               e if isinstance(e, NotCanonical) else e.text()))
         say("live:  %s" % describe_env(live))
         holder = holding(build, live, verifier)
