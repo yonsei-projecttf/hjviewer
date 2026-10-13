@@ -713,12 +713,14 @@ GET  /api/hjv/devices/{id}/wol
 ```
 
 - The wake request, in this order: a PC of the token's account (else 404, as for any other ID);
-  on already (it synced, or hbbs saw it register, within 30 seconds): 409 `online`; no wake report:
-  409 `no_wol_info`; one job a minute per PC, of the account's own: within the minute the job
-  under way (queued or sent) is the answer, 202, and one that is over 429; 20 jobs an hour per
-  account: 429; the relay; 10 jobs a minute per relay: 429; the command, signed and queued, and
-  the relay's held poll gets it at once. A minute after a job that still waits for its PC the
-  packets may be sent again, as a new job; each job is confirmed on its own.
+  on already (it synced, or hbbs saw it register, within 30 seconds; hbbs is asked 10 times a
+  minute per account at most, since a refused request counts against no limit below, and past
+  that a PC that has not synced counts as off): 409 `online`; no wake report: 409 `no_wol_info`;
+  one job a minute per PC, of the account's own: within the minute the job under way (queued or
+  sent) is the answer, 202, and one that is over 429; 20 jobs an hour per account: 429; the
+  relay; 10 jobs a minute per relay: 429; the command, signed and queued, and the relay's held
+  poll gets it at once. A minute after a job that still waits for its PC the packets may be sent
+  again, as a new job; each job is confirmed on its own.
 - The relay: of the account's active relays (a relay wakes its account's PCs only), the online ones
   with the best grade (`exact`: an interface on the PC's network with its prefix and the same
   gateway IP; `overlap`: overlapping networks and the same gateway IP or MAC; `history`: it woke

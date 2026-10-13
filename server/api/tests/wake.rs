@@ -819,6 +819,54 @@ async fn refused_wakes_do_not_fill_the_journal() {
     assert_eq!(lines, 1);
 }
 
+/// Nor do they make a console request each: hbbs hears of an account's PCs LOOKUPS_PER_MINUTE
+/// times a minute at most. Past that a PC that has not synced counts as off, and the answer is
+/// the one for a PC that is off; another account's request still asks.
+#[tokio::test]
+async fn refused_wakes_ask_hbbs_a_few_times_a_minute() {
+    let h = Harness::start().await;
+    let (pc, _) = reported(&h, HONG, "524000018", "192.0.2.67/24", "192.0.2.1", PC_IP).await;
+    asleep(&h, &pc).await;
+    let phone = h.login_ok(HONG, None).await;
+    let queries = || h.hbbs.queries.load(std::sync::atomic::Ordering::SeqCst);
+    let asked = queries();
+    for _ in 0..wake::LOOKUPS_PER_MINUTE + 5 {
+        let a = wake_pc(&h, &pc.id, &phone, None).await;
+        assert_eq!((a.status, a.json["hjv"].as_str()), (409, Some("no_relay")));
+    }
+    assert_eq!(queries(), asked + wake::LOOKUPS_PER_MINUTE);
+    // hbbs has the PC on now, but the account's lookups are spent: off, without a question
+    h.hbbs.register(&pc, Some(10));
+    let a = wake_pc(&h, &pc.id, &phone, None).await;
+    assert_eq!((a.status, a.json["hjv"].as_str()), (409, Some("no_relay")));
+    assert_eq!(queries(), asked + wake::LOOKUPS_PER_MINUTE);
+    // a PC that synced just now is on without one
+    sql(
+        &h,
+        format!(
+            "UPDATE devices SET last_sync_at = {} WHERE device_id = '{}'",
+            now(),
+            pc.id
+        ),
+    )
+    .await;
+    assert_eq!(
+        wake_pc(&h, &pc.id, &phone, None).await.json["hjv"],
+        "online"
+    );
+    // another account's lookups are its own
+    let (theirs, _) = reported(&h, KIM, "524000019", "192.0.2.68/24", "192.0.2.1", PC_IP).await;
+    asleep(&h, &theirs).await;
+    h.hbbs.register(&theirs, Some(10));
+    let kim = h.login_ok(KIM, None).await;
+    let asked = queries();
+    assert_eq!(
+        wake_pc(&h, &theirs.id, &kim, None).await.json["hjv"],
+        "online"
+    );
+    assert_eq!(queries(), asked + 1);
+}
+
 /// The PC's limit, and the job under way that answers a second request, are an account's own: a
 /// job that another account made for the same PC ID (a PC that changed hands within the minute) is
 /// neither this account's answer nor its wait.

@@ -12,13 +12,15 @@
 //! Each takes the token with its key's `X-HJV-Proof` (api.rs `session`); a PC of another account,
 //! or a job, is the same 404 as one that does not exist. The wake request, in this order: the PC
 //! of the account; already on (hbbs saw it within [`ONLINE_AGE`] seconds, or it synced as long
-//! ago): 409 `online`; no wake report: 409 `no_wol_info`; the PC's limit, one job a minute: within
-//! it the job under way (queued or sent) is the answer, 202, and one that is over 429; the
-//! account's limit (20 an hour): 429; the relay (below): 409 `no_relay` or 503 `relay_offline`;
-//! the relay's limit (10 a minute): 429; then the command, signed, queued for the relay, whose
-//! held poll gets it at once (relay.rs). A minute after a job that still waits for its PC, the
-//! user may send the packets again: that is a new job, and each is confirmed on its own. Errors
-//! carry the text the account API's rules ask for and the code in `hjv`:
+//! ago; hbbs is asked [`LOOKUPS_PER_MINUTE`] times a minute per account at most, and past that a
+//! PC that has not synced counts as off): 409 `online`; no wake report: 409 `no_wol_info`; the
+//! PC's limit, one job a minute: within it the job under way (queued or sent) is the answer, 202,
+//! and one that is over 429; the account's limit (20 an hour): 429; the relay (below): 409
+//! `no_relay` or 503 `relay_offline`; the relay's limit (10 a minute): 429; then the command,
+//! signed, queued for the relay, whose held poll gets it at once (relay.rs). A minute after a job
+//! that still waits for its PC, the user may send the packets again: that is a new job, and each
+//! is confirmed on its own. Errors carry the text the account API's rules ask for and the code in
+//! `hjv`:
 //!
 //! ```text
 //! 409 {"error":"이미 켜져 있습니다.","hjv":"online"}
@@ -86,6 +88,11 @@ pub const ONLINE_AGE: u64 = 30;
 pub const PC_EVERY: i64 = 60;
 pub const ACCOUNT_PER_HOUR: i64 = 20;
 pub const RELAY_PER_MINUTE: i64 = 10;
+/// How many times a minute a wake request asks hbbs whether a PC of one account is on. A refused
+/// request makes no job, so no limit above counts it, and each would make a console request.
+/// Past it the PC counts as off when it has not synced within ONLINE_AGE: the request is answered
+/// as for a PC that is off, which at worst sends a PC that came on meanwhile its packets.
+pub const LOOKUPS_PER_MINUTE: usize = 10;
 /// The relay's errors the apps have texts for (design v3 §8-5) and `partial` without packets;
 /// other refusals mean that the relay and hjv-api disagree, which the journal hears of.
 pub const EXPECTED_ERRORS: &[&str] = &[
@@ -398,8 +405,9 @@ fn job_json(job: &Job, relay: Option<&RelayRow>, info: Option<&WolInfo>) -> Valu
 }
 
 /// Whether the PC is on now: it synced within ONLINE_AGE seconds, or hbbs saw it register as
-/// recently (any key: the PC is on, whatever it holds).
-async fn pc_online(state: &AppState, device: &db::Device, at: i64) -> bool {
+/// recently (any key: the PC is on, whatever it holds). hbbs is asked within the account's
+/// LOOKUPS_PER_MINUTE only.
+async fn pc_online(state: &AppState, device: &db::Device, at: i64, account_tag: &str) -> bool {
     if device
         .last_sync_at
         .is_some_and(|t| t >= at - ONLINE_AGE as i64)
@@ -409,6 +417,14 @@ async fn pc_online(state: &AppState, device: &db::Device, at: i64) -> bool {
     let Some(server_key) = state.config.hbbs_pubkey else {
         return false;
     };
+    // the account's lookups of the last minute, one slot each: a slot is free again a minute
+    // after its lookup
+    let minute = std::time::Duration::from_secs(60);
+    if !(0..LOOKUPS_PER_MINUTE)
+        .any(|slot| state.first_notice(&format!("wake-lookup:{account_tag}:{slot}"), minute))
+    {
+        return false;
+    }
     matches!(
         hbbs::lookup(state.config.hbbs_console, Some(&server_key), &device.device_id).await,
         Ok(Lookup::Known { seen_secs_ago: Some(age), .. }) if age <= ONLINE_AGE
@@ -481,7 +497,7 @@ async fn wake(state: &Arc<AppState>, req: &ApiRequest, device_id: &str) -> Reply
     let account_tag = state.tags.account(&s.account.login_key);
     let device_tag = state.tags.device(&found.device.device_id);
     // on already
-    if pc_online(state, &found.device, at).await {
+    if pc_online(state, &found.device, at, &account_tag).await {
         return error(StatusCode::CONFLICT, TEXT_ONLINE, "online", json!({}));
     }
     // no report of how to wake it
