@@ -22,8 +22,10 @@
 //!   [`SSO_RECENT`] seconds, because the SSO refused this server's client credentials
 //!   (`invalid_client`: hjviewer-sso-client-secret must be renewed), refused its address, or kept
 //!   failing (limits::Breaker);
-//! - **relay**: once phase 2 has NAS relays, an active one that has not polled for
-//!   [`RELAY_SILENT`] seconds.
+//! - **relay**: an active NAS relay (Wake-on-LAN, relay.rs) that has not polled for
+//!   [`RELAY_SILENT`] seconds: an active relay keeps a long-poll open, so one silent for an hour
+//!   is down, or its NAS is off (design v3 question 15: a NAS that is switched off at night would
+//!   need this an hour longer than its night).
 //!
 //! It prints one line when all is well, and a line per finding otherwise (errors in the journal),
 //! writes the findings to a file the alert reads (`$RUNTIME_DIRECTORY/findings` under systemd:

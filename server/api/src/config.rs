@@ -89,6 +89,12 @@ pub struct Config {
     /// how often a bound PC asks for its trust list, and how long a list lives (U4)
     pub trust_refresh_secs: i64,
     pub trust_ttl_secs: i64,
+    /// the number of the command key in use (the credential hjviewer-api-command-key), which signs
+    /// the wake commands for the NAS relays (design v3 §5-3, relay/PROTOCOL.md §3.2)
+    pub command_kid: u32,
+    /// the command keys the relays pin (their HJV_COMMAND_PUBKEY): selfcheck compares the key in
+    /// use
+    pub command_pubkeys: Vec<(u32, [u8; 32])>,
 }
 
 /// The connection kinds of a same-account proof (design v3 §3-3): port forwarding and RDP never
@@ -134,6 +140,8 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_TRUST_PUBKEYS", Some("")),
     ("HJV_API_TRUST_REFRESH", Some("120")),
     ("HJV_API_TRUST_TTL", Some("86400")),
+    ("HJV_API_COMMAND_KID", Some("1")),
+    ("HJV_API_COMMAND_PUBKEYS", Some("")),
 ];
 
 impl Config {
@@ -269,6 +277,16 @@ impl Config {
                 trust::MAX_TTL
             ));
         }
+        let command_kid = u32::try_from(num("HJV_API_COMMAND_KID")?)
+            .ok()
+            .filter(|k| *k <= trust::MAX_KID)
+            .ok_or("HJV_API_COMMAND_KID is a key number, 1 to 65535")?;
+        let command_pubkeys =
+            trust::parse_pubkeys(&get("HJV_API_COMMAND_PUBKEYS")?).map_err(|e| {
+                format!(
+                "HJV_API_COMMAND_PUBKEYS (the relays' HJV_COMMAND_PUBKEY, <kid>:<base64>,…): {e}"
+            )
+            })?;
         let config = Config {
             sso: SsoSettings {
                 token_url,
@@ -304,6 +322,8 @@ impl Config {
             trust_pubkeys,
             trust_refresh_secs,
             trust_ttl_secs,
+            command_kid,
+            command_pubkeys,
         };
         if config.token_idle_secs > config.token_max_secs {
             return Err("HJV_API_TOKEN_IDLE_DAYS cannot exceed HJV_API_TOKEN_MAX_DAYS".into());
@@ -332,6 +352,14 @@ impl Config {
     /// The public key the apps pin under `kid`, if they pin one.
     pub fn pinned(&self, kid: u32) -> Option<[u8; 32]> {
         self.trust_pubkeys
+            .iter()
+            .find(|(k, _)| *k == kid)
+            .map(|(_, key)| *key)
+    }
+
+    /// The command key the relays pin under `kid`, if they pin one.
+    pub fn pinned_command_key(&self, kid: u32) -> Option<[u8; 32]> {
+        self.command_pubkeys
             .iter()
             .find(|(k, _)| *k == kid)
             .map(|(_, key)| *key)
@@ -429,6 +457,7 @@ pub const CRED_SSO_API_UUID: &str = "hjviewer-sso-api-uuid";
 pub const CRED_SEAL_KEY: &str = "hjviewer-api-login-key";
 pub const CRED_LOG_KEY: &str = "hjviewer-api-log-key";
 pub const CRED_LIST_KEY: &str = "hjviewer-api-list-key";
+pub const CRED_COMMAND_KEY: &str = "hjviewer-api-command-key";
 
 /// The secrets, read from credential files.
 pub struct Secrets {
@@ -443,6 +472,9 @@ pub struct Secrets {
     /// the 32-byte Ed25519 seed of the list key that signs the trust lists (design v3 §5-3); its
     /// number is HJV_API_LIST_KID
     pub list_key: Zeroizing<[u8; 32]>,
+    /// the 32-byte Ed25519 seed of the command key that signs wake commands (design v3 §5-3,
+    /// phase 2), number HJV_API_COMMAND_KID; without it hjv-api queues no wake command
+    pub command_key: Option<Zeroizing<[u8; 32]>>,
 }
 
 /// Reads the credential `name` of `dir`: text, trimmed, not empty.
@@ -477,8 +509,25 @@ impl Secrets {
             seal_keys,
             log_key,
             list_key: load_list_key(dir)?,
+            command_key: load_command_key(dir)?,
         })
     }
+}
+
+/// The command key's seed from the credential hjviewer-api-command-key of `dir`, when there is
+/// one (the unit loads it; a test or E2E directory may go without, and then no wake command is
+/// signed). A credential that is there but not one seed stops the start.
+pub fn load_command_key(dir: &Path) -> Result<Option<Zeroizing<[u8; 32]>>, String> {
+    let missing = matches!(
+        std::fs::metadata(dir.join(CRED_COMMAND_KEY)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    );
+    if missing {
+        return Ok(None);
+    }
+    parse_list_key(&read_credential(dir, CRED_COMMAND_KEY)?)
+        .map(Some)
+        .map_err(|e| format!("credential {CRED_COMMAND_KEY}: {e}"))
 }
 
 /// The list key's seed from the credential hjviewer-api-list-key of `dir` (selfcheck reads it
@@ -488,7 +537,8 @@ pub fn load_list_key(dir: &Path) -> Result<Zeroizing<[u8; 32]>, String> {
         .map_err(|e| format!("credential {CRED_LIST_KEY}: {e}"))
 }
 
-/// One standard-base64 32-byte seed, as `hjv-api keygen list` writes it ('#' comments allowed).
+/// One standard-base64 32-byte seed, as `hjv-api keygen list` and `keygen command` write it ('#'
+/// comments allowed).
 pub fn parse_list_key(text: &str) -> Result<Zeroizing<[u8; 32]>, String> {
     let mut lines = text
         .lines()
@@ -496,13 +546,13 @@ pub fn parse_list_key(text: &str) -> Result<Zeroizing<[u8; 32]>, String> {
         .filter(|l| !l.is_empty() && !l.starts_with('#'));
     let line = lines.next().ok_or("no key")?;
     if lines.next().is_some() {
-        return Err("more than one key: the list key in use only".into());
+        return Err("more than one key: the key in use only".into());
     }
     let bytes = Zeroizing::new(b64_decode(line).ok_or("not base64")?);
     let seed: [u8; 32] = bytes
         .as_slice()
         .try_into()
-        .map_err(|_| "a list key is a 32-byte seed")?;
+        .map_err(|_| "the key is a 32-byte seed")?;
     Ok(Zeroizing::new(seed))
 }
 
@@ -650,6 +700,59 @@ mod tests {
             assert!(with(std::slice::from_ref(&bad)).is_err(), "{bad:?}");
         }
         assert!(with(&[("HJV_API_TRUST_TTL", "259200".into())]).is_ok());
+    }
+
+    #[test]
+    fn command_key_settings() {
+        // design v3 §5-3 and relay/PROTOCOL.md §3.2: the relays' HJV_COMMAND_PUBKEY, the number in use
+        let c = Config::from_vars(&base()).unwrap();
+        assert_eq!((c.command_kid, c.command_pubkeys.len()), (1, 0));
+        let k1 = crate::devsig::public_key(&[0x21; 32]);
+        let k2 = crate::devsig::public_key(&[0x22; 32]);
+        let mut vars = base();
+        vars.insert(
+            "HJV_API_COMMAND_PUBKEYS".into(),
+            format!("{},{}", trust::entry(1, &k1), trust::entry(2, &k2)),
+        );
+        vars.insert("HJV_API_COMMAND_KID".into(), "2".into());
+        let c = Config::from_vars(&vars).unwrap();
+        assert_eq!(c.command_pubkeys, vec![(1, k1), (2, k2)]);
+        assert_eq!(c.command_kid, 2);
+        assert_eq!(
+            (c.pinned_command_key(2), c.pinned_command_key(3)),
+            (Some(k2), None)
+        );
+        for (k, v) in [
+            ("HJV_API_COMMAND_KID", "0"),
+            ("HJV_API_COMMAND_KID", "65536"),
+            ("HJV_API_COMMAND_PUBKEYS", "1:AAAA"),
+            ("HJV_API_COMMAND_PUBKEYS", "x"),
+        ] {
+            let mut vars = base();
+            vars.insert(k.into(), v.into());
+            assert!(Config::from_vars(&vars).is_err(), "{k}={v}");
+        }
+    }
+
+    #[test]
+    fn command_key_credential() {
+        let dir = std::env::temp_dir().join(format!("hjv-api-ck-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(load_command_key(&dir).unwrap().is_none());
+        let seed = crate::util::b64(&[0x20u8; 32]);
+        std::fs::write(
+            dir.join(CRED_COMMAND_KEY),
+            format!("# command key 1\n{seed}\n"),
+        )
+        .unwrap();
+        assert_eq!(*load_command_key(&dir).unwrap().unwrap(), [0x20u8; 32]);
+        std::fs::write(dir.join(CRED_COMMAND_KEY), "AAAA").unwrap();
+        let err = load_command_key(&dir).unwrap_err();
+        assert!(
+            err.contains(CRED_COMMAND_KEY) && !err.contains(&seed),
+            "{err}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

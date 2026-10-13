@@ -9,12 +9,14 @@
 //! | `POST /api/currentUser` | the user object itself; 401 only for a token that is not valid, never 400 (the app logs out on both) |
 //! | `POST /api/logout` | revokes the token and its key; signed by the key, also takes the PC the login came from out of the list |
 //! | `GET /api/users` | `{"total":1,"data":[<user>]}` |
-//! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol"}}]}`: the account's PCs but the asking device, each with its password-less state (pcsync.rs) |
+//! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol"}}]}`: the account's PCs but the asking device, each with its password-less state (pcsync.rs) and whether it can be woken (wake.rs `peer_wol`) |
 //! | `GET /api/hjv/this-device` | what the token's login did with its device, whether it can be undone, and for a PC in the account its `binding`, `pwless` and `activation` |
 //! | `POST /api/hjv/this-device/undo` | takes that device out of the list again |
 //! | `DELETE /api/hjv/devices/{id}` | takes a device out of the list ("내 목록에서 빼기") |
 //! | `GET /api/hjv/keys`, `…/keys/{ckid}/ack`, `DELETE …/keys/{ckid}`, `POST …/keys/revoke-others` | the account keys (keys.rs) |
 //! | `POST /api/hjv/pc/sync` | a bound PC's sync, signed with its device key, no token (pcsync.rs) |
+//! | `POST /api/hjv/relay/hello`, `POST /api/hjv/relay/poll` | hjv-relay's requests, signed with its own key, no token (relay.rs, relay/PROTOCOL.md) |
+//! | `POST /api/hjv/devices/{id}/wake`, `GET /api/hjv/wake/{job}`, `GET /api/hjv/devices/{id}/wol` | waking a PC of the account through a NAS relay, and how ready it is (wake.rs) |
 //! | `GET /api/hjv/source` | licence, source and running version (AGPL section 13) |
 //! | `GET /api/login-options`, `GET /api/device-group/accessible` | the static answers nginx gives as well |
 //!
@@ -37,18 +39,19 @@
 //! a request with a body must be `application/json` (parameters such as charset allowed); there is
 //! no CORS. Error texts never contain the word "disabled", which makes the app empty its list.
 //!
-//! The PC sync answers in the envelope protocols' form (`{"error":"<code>","server_time":…}`,
-//! envelope.rs) rather than with these texts. Later phases add their paths in [`route`]: the
-//! Wake-on-LAN paths (`/api/hjv/relay/…`, `/api/hjv/devices/{id}/wake`, …), each in a module of
-//! its own that uses [`session`] for the user's token or envelope.rs for a relay's signature.
+//! The PC sync and the relays' requests answer in the envelope protocols' form
+//! (`{"error":"<code>","server_time":…}`, envelope.rs) rather than with these texts. Wake-on-LAN's
+//! paths are in modules of their own: wake.rs uses [`session`] for the user's token, relay.rs
+//! envelope.rs for a relay's signature.
 
 use crate::{
     db::{self, Device, Session},
     envelope, keys,
     login::{self, BindStatus, Retry},
-    pcsync, proof,
+    pcsync, proof, relay,
     state::AppState,
     util::{b64, hex, now, sha256, valid_device_id},
+    wake,
 };
 use http_body_util::Full;
 use hyper::{
@@ -179,9 +182,9 @@ fn allowed_methods(path: &str) -> Option<&'static str> {
         "/api/login" | "/api/currentUser" | "/api/logout" | "/api/hjv/this-device/undo" => "POST",
         "/api/users" | "/api/peers" | "/api/hjv/this-device" => "GET",
         "/api/login-options" | "/api/device-group/accessible" | "/api/hjv/source" => "GET, HEAD",
+        p if wake::allowed_methods(p).is_some() => return wake::allowed_methods(p),
         p if p.starts_with("/api/hjv/devices/") => "DELETE",
         p if p.starts_with("/api/hjv/keys") => return keys::allowed_methods(p),
-        // later phases: their paths here and in `route` (module docs)
         _ => return None,
     })
 }
@@ -191,15 +194,18 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
     if req.path == "/api/login" {
         return login::handle(state, req).await;
     }
-    // a PC's sync: no token, the envelope protocols' answers
-    if req.path == pcsync::PATH {
-        if req.method == Method::POST {
+    // a PC's sync and hjv-relay's requests: no token, the envelope protocols' answers
+    if req.path == pcsync::PATH || req.path == relay::HELLO_PATH || req.path == relay::POLL_PATH {
+        if req.method != Method::POST {
+            return Reply {
+                allow: Some("POST"),
+                ..envelope::error_reply(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed")
+            };
+        }
+        if req.path == pcsync::PATH {
             return pcsync::handle(state, req).await;
         }
-        return Reply {
-            allow: Some("POST"),
-            ..envelope::error_reply(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed")
-        };
+        return relay::handle(state, req).await;
     }
     let Some(allow) = allowed_methods(&req.path) else {
         return Reply::not_found();
@@ -229,15 +235,18 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         ("/api/peers", &Method::GET) => peers(state, &req).await,
         ("/api/hjv/this-device", &Method::GET) => this_device(state, &req).await,
         ("/api/hjv/this-device/undo", &Method::POST) => undo(state, &req).await,
-        (path, &Method::DELETE) if path.starts_with("/api/hjv/devices/") => {
+        (path, method) if wake::allowed_methods(path) == Some(method.as_str()) => {
+            wake::route(state, &req).await
+        }
+        (path, &Method::DELETE)
+            if path.starts_with("/api/hjv/devices/") && wake::allowed_methods(path).is_none() =>
+        {
             let id = &path["/api/hjv/devices/".len()..];
             remove_device(state, &req, id).await
         }
         (path, method) if path.starts_with("/api/hjv/keys") && allow == method.as_str() => {
             keys::route(state, &req).await
         }
-        // later phases dispatch here to modules of their own, which take the user's token
-        // with `session` and a device's signature with `devsig::verify` (README.md)
         ("/api/hjv/source", _) if get => Reply::ok(&json!({
             "license": "AGPL-3.0-only",
             "source": state.config.source_url,
@@ -598,20 +607,28 @@ fn note_of(pwless: &str, device: &Device, at: i64) -> String {
 
 /// A PC of the account as the app's PeerPayload reads it, with its password-less state (design
 /// v3 §5-2, pcsync.rs): `hjv.pk` is the key hbbs held when it was bound, which the app compares
-/// with the key of the PC it reaches (key continuity, §3-4); `wol` is `unknown` until the PCs
-/// report how they wake (Wake-on-LAN).
-fn peer_json(device: &Device, portal_id: &str, pwless: &str, at: i64, kinds: &[String]) -> Value {
+/// with the key of the PC it reaches (key continuity, §3-4); `wol` is whether it can be woken
+/// (`ok`, `warn`, `no`, `unknown`; wake.rs `peer_wol`), which also ends the note once the account
+/// has a relay (" · 켜기 가능", " · 켜기 준비 안 됨").
+fn peer_json(
+    device: &Device,
+    portal_id: &str,
+    pwless: &str,
+    at: i64,
+    kinds: &[String],
+    wol: (&str, &str),
+) -> Value {
     json!({
         "id": device.device_id,
         "user_name": portal_id,
         "info": { "device_name": device.hostname, "os": device.os },
         "status": 1,
-        "note": note_of(pwless, device, at),
+        "note": format!("{}{}", note_of(pwless, device, at), wol.1),
         "hjv": {
             "pk": b64(&device.public_key),
             "pwless": pwless,
             "kinds": kinds,
-            "wol": "unknown",
+            "wol": wol.0,
         },
     })
 }
@@ -628,18 +645,22 @@ async fn peers(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
             Ok((
                 db::devices_of(c, account_id)?,
                 db::passwordless_on(c, account_id)?,
+                db::wol_infos_of(c, account_id)?,
+                !db::active_relays_of(c, account_id)?.is_empty(),
             ))
         })
         .await;
     match found {
-        Ok((devices, on)) => {
+        Ok((devices, on, infos, has_relay)) => {
             let (kinds, at) = (&state.config.passwordless_kinds, now());
             let items = devices
                 .iter()
                 .filter(|d| d.device_id != s.device_id)
                 .map(|d| {
                     let pwless = pcsync::pwless_state(d, on, at, state.config.trust_ttl_secs);
-                    peer_json(d, &s.account.portal_id, pwless, at, kinds)
+                    let info = infos.iter().find(|i| i.device_id == d.device_id);
+                    let wol = wake::peer_wol(info, has_relay);
+                    peer_json(d, &s.account.portal_id, pwless, at, kinds, wol)
                 })
                 .collect();
             Reply::ok(&paged(items, &req.query))

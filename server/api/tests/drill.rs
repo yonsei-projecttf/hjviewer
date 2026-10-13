@@ -23,15 +23,22 @@
 //! - `drill_after_restore`: after the restore: every token from before refused, the PCs still
 //!   bound (switched off), the released PC listed.
 //! - `drill_after_on`: the phone logs in again, and the PC's list holds the new key only.
-//! - `drill_rebuilt`: on a rebuilt host (seal key from its offline copy, list key 2): the phone
-//!   logs in with the same app, the PC's list is signed with key 2 and passes the PC's checks.
+//! - `drill_relay`: Wake-on-LAN (design v3 §8, WP-W2): HONG's PC reports how to wake it, a NAS
+//!   relay says hello and is approved by its code for the account of that PC, and the phone wakes
+//!   the PC through it: the command, checked with the command keys the relays pin
+//!   (HJV_API_COMMAND_PUBKEYS of the server's settings), its result, the confirmation.
+//! - `drill_rebuilt`: on a rebuilt host (seal key from its offline copy, list key 2, command key
+//!   2): the phone logs in with the same app, the PC's list is signed with key 2 and passes the
+//!   PC's checks, and a wake through the relay of the backup is signed with command key 2.
 
 mod common;
 
 use common::*;
 use hjv_api::{
     admin::{self, AdminRequest},
-    devsig, hbbs, keys, proof, seal,
+    devsig, hbbs, keys, proof,
+    relay::{HELLO, HELLO_PATH, POLL, POLL_PATH},
+    seal,
     util::{b64, b64url_decode, hex, now, random_bytes, sha256},
 };
 use serde_json::{json, Value};
@@ -442,4 +449,176 @@ async fn drill_rebuilt() {
     assert_eq!(list["kid"], 2, "{list}");
     assert_eq!(list["state"], "active", "{list}");
     println!("rebuilt host: the phone logged in; PC {PC_HONG}'s list is signed with list key 2 and passes its checks");
+    // the relay of the backup polls this host; a wake is signed with command key 2, which the
+    // relays pin already
+    let (status, answer) = relay_poll(&json!([])).await;
+    assert_eq!(
+        (status, answer["state"].as_str()),
+        (200, Some("active")),
+        "{answer}"
+    );
+    let k = wake_through_relay(&state, "phone_hong_rebuilt", binding).await;
+    assert_eq!(k, 2);
+    println!("rebuilt host: the relay of the backup took a wake command signed with command key 2");
+}
+
+/// The drill's NAS relay: hjv-relay's key of the seed [5; 32], its card on the PCs' network.
+fn relay() -> TestRelay {
+    TestRelay::new([5; 32])
+}
+
+fn relay_lan() -> Value {
+    json!([iface(
+        "eth0",
+        "192.0.2.10/24",
+        Some("192.0.2.1"),
+        Some("00:00:5e:00:53:01")
+    )])
+}
+
+async fn relay_poll(results: &Value) -> (u16, Value) {
+    let p = poll_payload(0, results, None, &relay_lan());
+    let body = relay().body(&POLL, now(), &p);
+    request("POST", POLL_PATH, &[], body.as_bytes()).await
+}
+
+/// The command keys a relay of this server is built with: HJV_API_COMMAND_PUBKEYS of its
+/// settings (the relay build's HJV_COMMAND_PUBKEY).
+fn pinned_command_keys() -> Vec<(u32, [u8; 32])> {
+    let env = hjv_api::config::read_env_file(Path::new("/etc/hjviewer/hjviewer-api.env")).unwrap();
+    hjv_api::trust::parse_pubkeys(
+        env.get("HJV_API_COMMAND_PUBKEYS")
+            .map_or("", String::as_str),
+    )
+    .unwrap()
+}
+
+/// The PC is off for hbbs's console (drill_fake_hbbs) while `off` is true.
+fn hbbs_off(off: bool) {
+    let path = format!("{DIR}/off");
+    if off {
+        std::fs::write(path, format!("{PC_HONG}\n")).unwrap();
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// HONG's PC asleep (off for hbbs, its last sync half a minute ago) woken by the phone `name`
+/// through the relay: the command as the relay checks it, twelve packets, the PC's sync after
+/// them, the confirmation. Returns the number of the command key that signed it.
+async fn wake_through_relay(state: &Value, name: &str, binding: &str) -> i64 {
+    hbbs_off(true);
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    let (status, answer) = signed(
+        state,
+        name,
+        "POST",
+        &format!("/api/hjv/devices/{PC_HONG}/wake"),
+        b"",
+    )
+    .await;
+    assert_eq!(status, 202, "{answer}");
+    let job = answer["job"].as_str().unwrap().to_owned();
+    println!(
+        "wake: 202 {}, relay \"{}\" ({})",
+        answer["state"].as_str().unwrap_or("?"),
+        answer["relay"]["name"].as_str().unwrap_or("?"),
+        answer["relay"]["match"].as_str().unwrap_or("?")
+    );
+    let (_, answer) = relay_poll(&json!([])).await;
+    let entry = &answer["commands"][0];
+    let (c, s, k) = (
+        entry["c"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no command: {answer}")),
+        entry["s"].as_str().unwrap(),
+        entry["k"].as_i64().unwrap(),
+    );
+    let key = pinned_command_keys()
+        .into_iter()
+        .find(|(kid, _)| i64::from(*kid) == k)
+        .map(|(_, key)| key)
+        .expect("a key the relays pin");
+    let message = [&b"hjv-wake-v1\0"[..], c.as_bytes()].concat();
+    assert!(devsig::verify(&key, &message, s), "the command's signature");
+    let command: Value = serde_json::from_str(c).unwrap();
+    assert_eq!(
+        (
+            command["job"].as_str(),
+            command["relay"].as_str(),
+            command["net"].as_str()
+        ),
+        (
+            Some(job.as_str()),
+            Some(relay().id.as_str()),
+            Some("192.0.2.0/24")
+        )
+    );
+    let result = json!([{"cmd": hex(&sha256(c.as_bytes())), "job": job, "sent_at": now(),
+                         "iface": "eth0", "packets": 12, "error": null}]);
+    let (status, _) = relay_poll(&result).await;
+    assert_eq!(status, 200);
+    // the PC wakes and syncs; hjv-api's ticker confirms within seconds
+    hbbs_off(false);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let (status, _, _) = sync(&pc(PC_HONG), binding).await;
+    assert_eq!(status, 200);
+    let mut last = Value::Null;
+    for _ in 0..30 {
+        let (_, answer) = signed(state, name, "GET", &format!("/api/hjv/wake/{job}"), b"").await;
+        if answer["state"] == "confirmed" {
+            println!("wake: confirmed, {} packets", answer["packets"]);
+            return k;
+        }
+        last = answer;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    panic!("not confirmed: {last}");
+}
+
+#[tokio::test]
+#[ignore = "the drill's test server only"]
+async fn drill_relay() {
+    let state = load();
+    let binding = state["bindings"][PC_HONG].as_str().unwrap().to_owned();
+    // the PC reports how to wake it, in a sync of its binding
+    let wol = wol_report(
+        "00:00:5e:00:53:10",
+        "192.0.2.67/24",
+        "192.0.2.1",
+        Some("00:00:5e:00:53:01"),
+    );
+    let p = payload_with_wol(&binding, &wol, "drill");
+    let body = sync_body(&pc(PC_HONG), now(), &random_bytes::<16>(), &p.to_string());
+    let (status, answer) = request("POST", hjv_api::pcsync::PATH, &[], body.as_bytes()).await;
+    assert_eq!(status, 200, "{answer}");
+    // the NAS's relay says hello, and is approved by its code for the account of the PC
+    let r = relay();
+    let body = r.body(&HELLO, now(), &hello_payload(&relay_lan()));
+    let (status, answer) = request("POST", HELLO_PATH, &[], body.as_bytes()).await;
+    assert_eq!(
+        (status, answer["state"].as_str()),
+        (200, Some("pending")),
+        "{answer}"
+    );
+    println!(
+        "relay hello: pending, code {}",
+        answer["code"].as_str().unwrap_or("?")
+    );
+    let out = admin(&["relay", "approve", &r.code, "--owner-of", PC_HONG]).await;
+    print!("{out}");
+    assert!(out.contains("on the PC's network: yes"), "{out}");
+    assert!(
+        !out.contains("192.0.2."),
+        "no address in the approval tool's output"
+    );
+    let (status, answer) = relay_poll(&json!([])).await;
+    assert_eq!(
+        (status, answer["state"].as_str()),
+        (200, Some("active")),
+        "{answer}"
+    );
+    let k = wake_through_relay(&state, "phone_hong", &binding).await;
+    assert_eq!(k, 1);
+    print!("{}", admin(&["relay", "list"]).await);
 }

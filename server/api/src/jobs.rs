@@ -13,7 +13,9 @@
 //! needs-relogin (for the PCs that do not sync; a sync does it at once: design v3 §4-6), and write
 //! a summary of the day's logins to the journal, with counts only. Every hour too: delete the
 //! copies of the database that a backup left when the service stopped in the middle of sending
-//! one (backup.rs).
+//! one (backup.rs). Every five seconds: move the wake jobs along (wake.rs `tick`); every hour also
+//! delete the relays' pending entries past 24 hours, pre-approvals past 7 days, spent relay
+//! nonces, expired commands and wake jobs past six months.
 
 use crate::{
     db,
@@ -24,6 +26,9 @@ use crate::{
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
+/// How often the wake jobs move along (wake.rs `tick`: design v3 §8-4 asks hbbs every five
+/// seconds after the packets).
+const WAKE_EVERY: Duration = Duration::from_secs(5);
 const FIRST_PURGE: Duration = Duration::from_secs(60);
 const PURGE_EVERY: Duration = Duration::from_secs(3600);
 const FIRST_DAILY: Duration = Duration::from_secs(300);
@@ -33,12 +38,17 @@ const DAILY_EVERY: Duration = Duration::from_secs(24 * 3600);
 pub async fn run(state: Arc<AppState>, shutdown: impl Future<Output = ()>) {
     let mut purge = interval_at(Instant::now() + FIRST_PURGE, PURGE_EVERY);
     let mut daily = interval_at(Instant::now() + FIRST_DAILY, DAILY_EVERY);
+    let mut wake = interval_at(Instant::now() + WAKE_EVERY, WAKE_EVERY);
     purge.set_missed_tick_behavior(MissedTickBehavior::Delay);
     daily.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    wake.set_missed_tick_behavior(MissedTickBehavior::Delay);
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             () = &mut shutdown => break,
+            _ = wake.tick() => {
+                crate::wake::tick(&state).await;
+            }
             _ = purge.tick() => {
                 purge_now(&state).await;
             }
@@ -59,6 +69,7 @@ pub async fn purge_now(state: &Arc<AppState>) -> Option<db::Purged> {
     state.key_calls.purge();
     state.lists.purge();
     state.key_checks.purge();
+    state.relays.purge();
     match crate::backup::remove_stale_copies(state).await {
         Ok(0) => {}
         Ok(n) => {

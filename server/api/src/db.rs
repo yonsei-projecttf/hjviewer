@@ -9,8 +9,9 @@
 //! truncated after deletions ([`checkpoint`]) and temporary tables stay in memory. The file is
 //! created readable by its owner only.
 //!
-//! Schema changes are migrations in [`MIGRATIONS`]; later phases (WOL) add their tables with a new
-//! entry there.
+//! Schema changes are migrations in [`MIGRATIONS`]. Schema 3 (design v3 §5-4, §8) is Wake-on-LAN:
+//! the PCs' wake reports, the NAS relays with their pre-approvals and nonces, and the wake jobs
+//! with their signed commands (wolinfo.rs, relay.rs, wake.rs).
 //!
 //! A restored backup (backup.rs, known by its application ID) is opened with password-less
 //! connections off for every account, before the service answers anything: its switches are
@@ -27,7 +28,10 @@
 //! account is deleted only by [`delete_account`], which releases its PCs first (the `ON DELETE
 //! CASCADE` of `devices` would leave no tombstone).
 
-use crate::util::DAY;
+use crate::{
+    util::DAY,
+    wolinfo::{RelayIface, Report},
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     path::Path,
@@ -212,6 +216,103 @@ CREATE TABLE pc_nonces (
     expires_at INTEGER NOT NULL,
     PRIMARY KEY (id, nonce)
 ) STRICT, WITHOUT ROWID;
+"#,
+    // Schema 3 (design v3 §5-4, "이전 3번"; §8): Wake-on-LAN through NAS relays (WP-W2).
+    r#"
+-- the wake report of each bound PC (design v3 §8-2; wolinfo.rs), from its last sync that carried
+-- one, signed with its device key; it goes with the binding (release_binding)
+CREATE TABLE wol_info (
+    device_id TEXT NOT NULL PRIMARY KEY,
+    reported_at INTEGER NOT NULL,        -- the server's time of the sync that carried it
+    info_json TEXT NOT NULL,             -- the report as hjv-api read it (no MAC ever leaves)
+    info_hash TEXT NOT NULL,             -- the PC's wol_hash that came with it (compared only)
+    nets TEXT NOT NULL,                  -- the networks of its wired cards, canonical, comma-separated
+    egress_ip TEXT NOT NULL              -- where its syncs come from (X-Real-IP), the latest
+) STRICT;
+
+-- NAS relays (relay/PROTOCOL.md §11; relay.rs): pending until an admin approves them for the
+-- account of a PC, active, or revoked, which keeps the ID, the key and the times only
+CREATE TABLE relays (
+    relay_id TEXT NOT NULL PRIMARY KEY,  -- 'r-' and base32 of the first 10 bytes of SHA-256(pk)
+    pk BLOB NOT NULL UNIQUE,
+    state TEXT NOT NULL,                 -- 'pending', 'active', 'revoked'
+    owner_account INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    scope TEXT NOT NULL,                 -- 'own'; 'shared' (admin relay share) is kept, not used (W2)
+    name TEXT NOT NULL,                  -- what the apps call it
+    created_at INTEGER NOT NULL,
+    source TEXT,                         -- the address group of its first hello (pending limits)
+    approved_at INTEGER,
+    revoked_at INTEGER,
+    last_hello_at INTEGER,
+    last_poll_at INTEGER,                -- its last accepted poll: online when within 60 seconds
+    version TEXT,
+    arch TEXT,
+    os TEXT,
+    kernel TEXT,
+    ifaces_json TEXT,                    -- its interfaces as hjv-api read them (wolinfo.rs)
+    ifaces_hash TEXT,                    -- the ifaces_hash that came with them (compared only)
+    egress_ip TEXT
+) STRICT;
+CREATE INDEX relays_owner ON relays(owner_account, state);
+CREATE INDEX relays_state ON relays(state, created_at);
+
+-- codes approved before their relay said hello (PROTOCOL.md §11), for 7 days
+CREATE TABLE relay_preapprovals (
+    relay_id TEXT NOT NULL PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+) STRICT;
+
+-- the (id, n) of accepted relay requests, for 600 seconds (envelope.rs); 100 000 at most
+CREATE TABLE relay_nonces (
+    relay_id TEXT NOT NULL,
+    nonce BLOB NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (relay_id, nonce)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX relay_nonces_expiry ON relay_nonces(expires_at);
+
+-- wake jobs (design v3 §8-4; wake.rs): one PC, one relay, one signed command; the wake record,
+-- kept six months (the account as its tag; the rows go with the account)
+CREATE TABLE wake_jobs (
+    job TEXT NOT NULL PRIMARY KEY,       -- 32 hex digits, 128 random bits
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    account_tag TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    relay_id TEXT NOT NULL,
+    grade TEXT NOT NULL,                 -- how the relay matched: 'exact', 'overlap', 'history', 'any'
+    net TEXT NOT NULL,                   -- the PC's network the command names
+    cmd TEXT NOT NULL,                   -- hex SHA-256 of the command text (the results name it)
+    created_at INTEGER NOT NULL,
+    exp INTEGER NOT NULL,                -- the command's exp
+    state TEXT NOT NULL,                 -- 'queued', 'sent', 'confirmed', 'not_confirmed', 'failed'
+    sent_at INTEGER,
+    packets INTEGER,
+    confirmed_at INTEGER,
+    error TEXT,
+    finished_at INTEGER
+) STRICT;
+CREATE INDEX wake_jobs_device ON wake_jobs(device_id, created_at);
+CREATE INDEX wake_jobs_account ON wake_jobs(account_id, created_at);
+CREATE INDEX wake_jobs_relay ON wake_jobs(relay_id, created_at);
+CREATE INDEX wake_jobs_state ON wake_jobs(state);
+CREATE INDEX wake_jobs_cmd ON wake_jobs(cmd);
+
+-- the commands waiting for their relay (PROTOCOL.md §7.4): the exact text, signature and key
+-- number, sent again byte for byte until a result names them or they expire
+CREATE TABLE wake_commands (
+    cmd_sha256 TEXT NOT NULL PRIMARY KEY,
+    relay_id TEXT NOT NULL,
+    job TEXT NOT NULL REFERENCES wake_jobs(job) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    sig TEXT NOT NULL,
+    kid INTEGER NOT NULL,
+    iat INTEGER NOT NULL,
+    exp INTEGER NOT NULL
+) STRICT;
+CREATE INDEX wake_commands_relay ON wake_commands(relay_id, iat);
 "#,
 ];
 
@@ -677,9 +778,11 @@ pub fn account_by_key(c: &Connection, login_key: &str) -> rusqlite::Result<Optio
 }
 
 /// Deletes an account (design v3 §5-4): each of its PCs leaves through [`release_binding`]
-/// first (reason `account-delete`), so that it gets a signed `revoked`; then the account row
-/// goes and with it (cascade) its tokens, account keys, their nonces and the key use reported for
-/// them. Inside the caller's transaction. What stays is the tombstones and the operator record.
+/// first (reason `account-delete`), so that it gets a signed `revoked`, and each of its relays is
+/// revoked; then the account row goes and with it (cascade) its tokens, account keys, their
+/// nonces, the key use reported for them, its relay pre-approvals and its wake jobs with their
+/// commands. Inside the caller's transaction. What stays is the tombstones, the revoked relays'
+/// keys and the operator record.
 pub fn delete_account(c: &Connection, account_id: i64, at: i64) -> rusqlite::Result<bool> {
     let pcs: Vec<String> = column(
         c,
@@ -688,6 +791,16 @@ pub fn delete_account(c: &Connection, account_id: i64, at: i64) -> rusqlite::Res
     )?;
     for device_id in pcs {
         release_binding(c, &device_id, "account-delete", at)?;
+    }
+    // its relays are revoked, keeping their keys (design v3 §5-4); its pre-approvals and wake
+    // jobs go with the account row (cascade)
+    let relays: Vec<String> = column(
+        c,
+        "SELECT relay_id FROM relays WHERE owner_account = ?1",
+        [account_id],
+    )?;
+    for relay_id in relays {
+        revoke_relay(c, &relay_id, at)?;
     }
     let deleted = c.execute("DELETE FROM accounts WHERE id = ?1", [account_id])? > 0;
     if deleted {
@@ -1333,7 +1446,7 @@ pub const TOMBSTONE_RETENTION: i64 = 180 * DAY;
 /// The one way a PC leaves its account (design v3 §4-3): the row goes, its binding ID goes to
 /// the tombstones with the PC's key and `reason`, and the change serial goes up, so that the PC's
 /// next sync with that binding gets a signed `revoked` and drops its mark. What the PC reported
-/// goes with it (design v3 §10-1): its refusals (cascade) and its key use. The reasons: `logout`,
+/// goes with it (design v3 §10-1): its refusals (cascade), its key use and its wake report. The reasons: `logout`,
 /// `undo`, `remove`, `admin`, `account-delete`, `unseen-purge`. Inside the caller's transaction;
 /// false if no account has the PC.
 pub fn release_binding(
@@ -1360,6 +1473,8 @@ pub fn release_binding(
         )?;
     }
     c.execute("DELETE FROM key_use WHERE device_id = ?1", [device_id])?;
+    // its wake report goes at once (design v3 §10-1); its wake jobs stay as the record
+    c.execute("DELETE FROM wol_info WHERE device_id = ?1", [device_id])?;
     c.execute("DELETE FROM devices WHERE device_id = ?1", [device_id])?;
     bump_serial(c)?;
     Ok(true)
@@ -1756,6 +1871,9 @@ pub struct Purged {
     /// tombstones past TOMBSTONE_RETENTION, key use and refusals past USE_DAYS
     pub tombstones: usize,
     pub sync_reports: usize,
+    /// Wake-on-LAN (design v3 §8): pending relays past their 24 hours, pre-approvals past their
+    /// 7 days, relay nonces, commands past their lifetime, wake jobs past the record's six months
+    pub wake: usize,
 }
 
 impl Purged {
@@ -1769,6 +1887,7 @@ impl Purged {
             + self.keys_deleted
             + self.tombstones
             + self.sync_reports
+            + self.wake
             > 0
     }
 }
@@ -1835,6 +1954,20 @@ pub fn purge(c: &mut Connection, at: i64, r: &Retention) -> rusqlite::Result<Pur
             )?,
             sync_reports: c.execute("DELETE FROM key_use WHERE day < ?1", [&since])?
                 + c.execute("DELETE FROM pc_refusals WHERE day < ?1", [&since])?,
+            wake: drop_expired_pending(c, at - crate::relay::PENDING_LIFETIME)?
+                + c.execute(
+                    "DELETE FROM relay_preapprovals WHERE expires_at <= ?1",
+                    [at],
+                )?
+                + c.execute("DELETE FROM relay_nonces WHERE expires_at < ?1", [at])?
+                + c.execute(
+                    "DELETE FROM wake_commands WHERE exp < ?1",
+                    [at - crate::wake::RESULT_GRACE],
+                )?
+                + c.execute(
+                    "DELETE FROM wake_jobs WHERE created_at <= ?1",
+                    [at - r.events],
+                )?,
         })
     })?;
     if p.any() {
@@ -1881,6 +2014,16 @@ pub struct Counts {
     pub tombstones: Vec<(String, i64)>,
     /// password-less connections the PCs let in during the last USE_DAYS
     pub uses: i64,
+    /// NAS relays by state, the pre-approvals waiting, and each active relay's last poll
+    /// (design v3 §5-6)
+    pub relays: Vec<(String, i64)>,
+    pub preapprovals: i64,
+    pub relay_polls: Vec<(String, Option<i64>)>,
+    /// the PCs that reported how to wake them
+    pub wol_reports: i64,
+    /// wake jobs over the last day and the last week: (result, day, week), a failure with its
+    /// error ("failed no_iface")
+    pub wakes: Vec<(String, i64, i64)>,
 }
 
 /// The counts of `admin report` at `at`; `list_ttl` is the lifetime of a trust list.
@@ -1956,6 +2099,33 @@ pub fn counts(c: &Connection, at: i64, list_ttl: i64) -> rusqlite::Result<Counts
         accounts_on: one("SELECT COUNT(*) FROM accounts WHERE passwordless = 'on'")?,
         accounts_off: one("SELECT COUNT(*) FROM accounts WHERE passwordless = 'off'")?,
         strict: strict(c)?,
+        relays: pairs(
+            "SELECT state, COUNT(*) FROM relays GROUP BY state ORDER BY state",
+            &[],
+        )?,
+        preapprovals: c.query_row(
+            "SELECT COUNT(*) FROM relay_preapprovals WHERE expires_at > ?1",
+            [at],
+            |r| r.get(0),
+        )?,
+        relay_polls: {
+            let mut stmt = c.prepare(
+                "SELECT relay_id, last_poll_at FROM relays WHERE state = 'active' ORDER BY relay_id",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        },
+        wol_reports: one("SELECT COUNT(*) FROM wol_info")?,
+        wakes: {
+            let mut stmt = c.prepare(
+                "SELECT state || COALESCE(' ' || error, ''), SUM(created_at > ?1), COUNT(*)
+                 FROM wake_jobs WHERE created_at > ?2 GROUP BY 1 ORDER BY 1",
+            )?;
+            let rows = stmt.query_map(params![at - DAY, at - 7 * DAY], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        },
     })
 }
 
@@ -1998,6 +2168,769 @@ pub fn relay_health(
         [at - silent_after],
         |r| Ok(Some((r.get(0)?, r.get(1)?))),
     )
+}
+
+// ---- Wake-on-LAN (schema 3, design v3 §8: wolinfo.rs, relay.rs, wake.rs) ----
+
+/// A bound PC's wake report as kept (design v3 §8-2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WolInfo {
+    pub device_id: String,
+    /// the server's time of the sync that carried the report
+    pub reported_at: i64,
+    pub report: Report,
+    /// the PC's `wol_hash` with it
+    pub info_hash: String,
+    pub nets: String,
+    /// where the PC's syncs come from, the latest
+    pub egress_ip: String,
+}
+
+const WOL_COLUMNS: &str =
+    "w.device_id, w.reported_at, w.info_json, w.info_hash, w.nets, w.egress_ip";
+
+/// A row; `None` when its report does not read (it was written by hjv-api: none should).
+fn wol_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<WolInfo>> {
+    let json: String = r.get(2)?;
+    let Ok(report) = serde_json::from_str::<Report>(&json) else {
+        return Ok(None);
+    };
+    Ok(Some(WolInfo {
+        device_id: r.get(0)?,
+        reported_at: r.get(1)?,
+        report,
+        info_hash: r.get(3)?,
+        nets: r.get(4)?,
+        egress_ip: r.get(5)?,
+    }))
+}
+
+pub fn wol_info(c: &Connection, device_id: &str) -> rusqlite::Result<Option<WolInfo>> {
+    Ok(c.query_row(
+        &format!("SELECT {WOL_COLUMNS} FROM wol_info w WHERE w.device_id = ?1"),
+        [device_id],
+        wol_row,
+    )
+    .optional()?
+    .flatten())
+}
+
+/// The wake reports of an account's PCs.
+pub fn wol_infos_of(c: &Connection, account_id: i64) -> rusqlite::Result<Vec<WolInfo>> {
+    let mut stmt = c.prepare(&format!(
+        "SELECT {WOL_COLUMNS} FROM wol_info w JOIN devices d ON d.device_id = w.device_id
+         WHERE d.account_id = ?1 ORDER BY w.device_id"
+    ))?;
+    let rows = stmt.query_map([account_id], wol_row)?;
+    Ok(rows
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+/// Keeps the wake report a bound PC's sync carried, with the summary that came with it and the
+/// address the sync came from.
+pub fn store_wol_info(
+    c: &Connection,
+    device_id: &str,
+    report: &Report,
+    hash: &str,
+    egress_ip: &str,
+    at: i64,
+) -> rusqlite::Result<()> {
+    let json = serde_json::to_string(report)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    c.execute(
+        "INSERT INTO wol_info (device_id, reported_at, info_json, info_hash, nets, egress_ip)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (device_id) DO UPDATE SET reported_at = excluded.reported_at,
+             info_json = excluded.info_json, info_hash = excluded.info_hash,
+             nets = excluded.nets, egress_ip = excluded.egress_ip",
+        params![
+            device_id,
+            at,
+            json,
+            hash,
+            report.nets().join(","),
+            egress_ip
+        ],
+    )?;
+    Ok(())
+}
+
+/// A sync without a report: the address it came from becomes the PC's egress address; returns
+/// the summary of the report kept, if one is.
+pub fn wol_egress(
+    c: &Connection,
+    device_id: &str,
+    egress_ip: &str,
+) -> rusqlite::Result<Option<String>> {
+    c.query_row(
+        "UPDATE wol_info SET egress_ip = ?2 WHERE device_id = ?1 RETURNING info_hash",
+        params![device_id, egress_ip],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// A relay's registration state (relay/PROTOCOL.md §11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayState {
+    Pending,
+    Active,
+    Revoked,
+}
+
+impl RelayState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RelayState::Pending => "pending",
+            RelayState::Active => "active",
+            RelayState::Revoked => "revoked",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<RelayState> {
+        Some(match text {
+            "pending" => RelayState::Pending,
+            "active" => RelayState::Active,
+            "revoked" => RelayState::Revoked,
+            _ => return None,
+        })
+    }
+}
+
+/// A relay as kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayRow {
+    pub relay_id: String,
+    pub pk: [u8; 32],
+    pub state: RelayState,
+    /// the account it wakes PCs of, once approved
+    pub owner_account: Option<i64>,
+    pub scope: String,
+    pub name: String,
+    pub created_at: i64,
+    /// the address group of its first hello
+    pub source: Option<String>,
+    pub approved_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+    pub last_hello_at: Option<i64>,
+    pub last_poll_at: Option<i64>,
+    pub version: Option<String>,
+    pub arch: Option<String>,
+    pub os: Option<String>,
+    pub kernel: Option<String>,
+    pub ifaces: Vec<RelayIface>,
+    pub ifaces_hash: Option<String>,
+    pub egress_ip: Option<String>,
+}
+
+const RELAY_COLUMNS: &str = "relay_id, pk, state, owner_account, scope, name, created_at, source,
+     approved_at, revoked_at, last_hello_at, last_poll_at, version, arch, os, kernel, ifaces_json,
+     ifaces_hash, egress_ip";
+
+fn relay_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RelayRow> {
+    let bad = |column: usize, what: &str| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            what.to_owned().into(),
+        )
+    };
+    let pk: Vec<u8> = r.get(1)?;
+    let state: String = r.get(2)?;
+    let ifaces: Option<String> = r.get(16)?;
+    Ok(RelayRow {
+        relay_id: r.get(0)?,
+        pk: <[u8; 32]>::try_from(pk).map_err(|_| bad(1, "a relay key is 32 bytes"))?,
+        state: RelayState::parse(&state).ok_or_else(|| bad(2, "not a relay state"))?,
+        owner_account: r.get(3)?,
+        scope: r.get(4)?,
+        name: r.get(5)?,
+        created_at: r.get(6)?,
+        source: r.get(7)?,
+        approved_at: r.get(8)?,
+        revoked_at: r.get(9)?,
+        last_hello_at: r.get(10)?,
+        last_poll_at: r.get(11)?,
+        version: r.get(12)?,
+        arch: r.get(13)?,
+        os: r.get(14)?,
+        kernel: r.get(15)?,
+        ifaces: ifaces
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default(),
+        ifaces_hash: r.get(17)?,
+        egress_ip: r.get(18)?,
+    })
+}
+
+pub fn relay(c: &Connection, relay_id: &str) -> rusqlite::Result<Option<RelayRow>> {
+    c.query_row(
+        &format!("SELECT {RELAY_COLUMNS} FROM relays WHERE relay_id = ?1"),
+        [relay_id],
+        relay_row,
+    )
+    .optional()
+}
+
+/// Every relay kept, the active ones first, then pending, then revoked.
+pub fn all_relays(c: &Connection) -> rusqlite::Result<Vec<RelayRow>> {
+    let mut stmt = c.prepare(&format!(
+        "SELECT {RELAY_COLUMNS} FROM relays
+         ORDER BY CASE state WHEN 'active' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, created_at, relay_id"
+    ))?;
+    let rows = stmt.query_map([], relay_row)?;
+    rows.collect()
+}
+
+/// The active relays of an account.
+pub fn active_relays_of(c: &Connection, account_id: i64) -> rusqlite::Result<Vec<RelayRow>> {
+    let mut stmt = c.prepare(&format!(
+        "SELECT {RELAY_COLUMNS} FROM relays WHERE owner_account = ?1 AND state = 'active'
+         ORDER BY relay_id"
+    ))?;
+    let rows = stmt.query_map([account_id], relay_row)?;
+    rows.collect()
+}
+
+/// A relay seen for the first time: pending, or active for the account of its pre-approval.
+pub struct NewRelay<'a> {
+    pub relay_id: &'a str,
+    pub pk: &'a [u8; 32],
+    pub state: RelayState,
+    pub owner_account: Option<i64>,
+    pub name: &'a str,
+    /// the address group a pending entry came from, which its source's limit counts; none for a
+    /// relay approved ahead, which no limit holds back
+    pub source: Option<&'a str>,
+    pub at: i64,
+}
+
+pub fn insert_relay(c: &Connection, r: &NewRelay<'_>) -> rusqlite::Result<()> {
+    let approved_at = (r.state == RelayState::Active).then_some(r.at);
+    c.execute(
+        "INSERT INTO relays (relay_id, pk, state, owner_account, scope, name, created_at, source,
+             approved_at)
+         VALUES (?1, ?2, ?3, ?4, 'own', ?5, ?6, ?7, ?8)",
+        params![
+            r.relay_id,
+            r.pk.as_slice(),
+            r.state.as_str(),
+            r.owner_account,
+            r.name,
+            r.at,
+            r.source,
+            approved_at
+        ],
+    )?;
+    Ok(())
+}
+
+/// What a relay's accepted request says of it (PROTOCOL.md §5).
+pub struct RelaySeen<'a> {
+    pub version: &'a str,
+    pub arch: &'a str,
+    pub os: &'a str,
+    pub kernel: &'a str,
+    pub egress_ip: &'a str,
+    /// its interfaces as kept (JSON) with the summary that came with them, when it sent them
+    pub ifaces: Option<(&'a str, &'a str)>,
+    /// a poll (its time is the relay's liveness), or a hello
+    pub poll: bool,
+}
+
+/// Stores what a pending or active relay's request said; a revoked relay keeps nothing new
+/// (PROTOCOL.md §11).
+pub fn relay_seen(
+    c: &Connection,
+    relay_id: &str,
+    seen: &RelaySeen<'_>,
+    at: i64,
+) -> rusqlite::Result<()> {
+    let (json, hash) = match seen.ifaces {
+        Some((json, hash)) => (Some(json), Some(hash)),
+        None => (None, None),
+    };
+    c.execute(
+        "UPDATE relays SET version = ?2, arch = ?3, os = ?4, kernel = ?5, egress_ip = ?6,
+             last_hello_at = CASE WHEN ?7 THEN last_hello_at ELSE ?8 END,
+             last_poll_at = CASE WHEN ?7 THEN ?8 ELSE last_poll_at END,
+             ifaces_json = COALESCE(?9, ifaces_json),
+             ifaces_hash = CASE WHEN ?9 IS NULL THEN ifaces_hash ELSE ?10 END
+         WHERE relay_id = ?1 AND state <> 'revoked'",
+        params![
+            relay_id,
+            seen.version,
+            seen.arch,
+            seen.os,
+            seen.kernel,
+            seen.egress_ip,
+            seen.poll,
+            at,
+            json,
+            hash
+        ],
+    )?;
+    Ok(())
+}
+
+/// A pending relay becomes active for an account; false when it is not pending.
+pub fn approve_relay(
+    c: &Connection,
+    relay_id: &str,
+    account_id: i64,
+    name: &str,
+    at: i64,
+) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "UPDATE relays SET state = 'active', owner_account = ?2, name = ?3, approved_at = ?4
+         WHERE relay_id = ?1 AND state = 'pending'",
+        params![relay_id, account_id, name, at],
+    )? > 0)
+}
+
+/// What [`revoke_relay`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Revoked {
+    NoSuchRelay,
+    Already,
+    /// revoked now; the number of its wake jobs that were waiting and failed with it
+    Now(usize),
+}
+
+/// Revokes a relay (PROTOCOL.md §11): it keeps its ID, key and times, and loses its owner,
+/// interfaces and addresses; its queued commands go and their jobs fail (`not_active`).
+pub fn revoke_relay(c: &Connection, relay_id: &str, at: i64) -> rusqlite::Result<Revoked> {
+    let Some(state) = c
+        .query_row(
+            "SELECT state FROM relays WHERE relay_id = ?1",
+            [relay_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(Revoked::NoSuchRelay);
+    };
+    if state == RelayState::Revoked.as_str() {
+        return Ok(Revoked::Already);
+    }
+    c.execute(
+        "UPDATE relays SET state = 'revoked', revoked_at = ?2, owner_account = NULL, scope = 'own',
+             name = '', source = NULL, approved_at = NULL, last_hello_at = NULL,
+             last_poll_at = NULL, version = NULL, arch = NULL, os = NULL, kernel = NULL,
+             ifaces_json = NULL, ifaces_hash = NULL, egress_ip = NULL
+         WHERE relay_id = ?1",
+        params![relay_id, at],
+    )?;
+    c.execute("DELETE FROM wake_commands WHERE relay_id = ?1", [relay_id])?;
+    let failed = c.execute(
+        "UPDATE wake_jobs SET state = 'failed', error = 'not_active', finished_at = ?2
+         WHERE relay_id = ?1 AND state = 'queued'",
+        params![relay_id, at],
+    )?;
+    Ok(Revoked::Now(failed))
+}
+
+/// `relay share on|off` (kept for later; W2 wakes the owner's PCs only); false when the relay
+/// is not active.
+pub fn set_relay_scope(c: &Connection, relay_id: &str, shared: bool) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "UPDATE relays SET scope = ?2 WHERE relay_id = ?1 AND state = 'active'",
+        params![relay_id, if shared { "shared" } else { "own" }],
+    )? > 0)
+}
+
+/// Deletes the pending entries made at or before `before` (a pending entry lives 24 hours); the
+/// relay is unknown again.
+pub fn drop_expired_pending(c: &Connection, before: i64) -> rusqlite::Result<usize> {
+    c.execute(
+        "DELETE FROM relays WHERE state = 'pending' AND created_at <= ?1",
+        [before],
+    )
+}
+
+/// The pending entries now, and the relays first seen from `source` after `since`, with the
+/// time of the first of those.
+pub fn pending_counts(
+    c: &Connection,
+    source: &str,
+    since: i64,
+) -> rusqlite::Result<(i64, i64, Option<i64>)> {
+    let total = c.query_row(
+        "SELECT COUNT(*) FROM relays WHERE state = 'pending'",
+        [],
+        |r| r.get(0),
+    )?;
+    let (from_source, first) = c.query_row(
+        "SELECT COUNT(*), MIN(created_at) FROM relays WHERE source = ?1 AND created_at > ?2",
+        params![source, since],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok((total, from_source, first))
+}
+
+/// The oldest pending entry's time.
+pub fn oldest_pending(c: &Connection) -> rusqlite::Result<Option<i64>> {
+    c.query_row(
+        "SELECT MIN(created_at) FROM relays WHERE state = 'pending'",
+        [],
+        |r| r.get(0),
+    )
+}
+
+/// A code approved before its relay's first hello (PROTOCOL.md §11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preapproval {
+    pub relay_id: String,
+    pub account_id: i64,
+    pub name: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+fn preapproval_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Preapproval> {
+    Ok(Preapproval {
+        relay_id: r.get(0)?,
+        account_id: r.get(1)?,
+        name: r.get(2)?,
+        created_at: r.get(3)?,
+        expires_at: r.get(4)?,
+    })
+}
+
+/// The pre-approval of a relay ID that has not expired at `at`.
+pub fn preapproval(
+    c: &Connection,
+    relay_id: &str,
+    at: i64,
+) -> rusqlite::Result<Option<Preapproval>> {
+    c.query_row(
+        "SELECT relay_id, account_id, name, created_at, expires_at FROM relay_preapprovals
+         WHERE relay_id = ?1 AND expires_at > ?2",
+        params![relay_id, at],
+        preapproval_row,
+    )
+    .optional()
+}
+
+pub fn preapprovals(c: &Connection, at: i64) -> rusqlite::Result<Vec<Preapproval>> {
+    let mut stmt = c.prepare(
+        "SELECT relay_id, account_id, name, created_at, expires_at FROM relay_preapprovals
+         WHERE expires_at > ?1 ORDER BY created_at, relay_id",
+    )?;
+    let rows = stmt.query_map([at], preapproval_row)?;
+    rows.collect()
+}
+
+/// Approves a code ahead of its relay (again: the later approval counts).
+pub fn preapprove(c: &Connection, p: &Preapproval) -> rusqlite::Result<()> {
+    c.execute(
+        "INSERT INTO relay_preapprovals (relay_id, account_id, name, created_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (relay_id) DO UPDATE SET account_id = excluded.account_id,
+             name = excluded.name, created_at = excluded.created_at,
+             expires_at = excluded.expires_at",
+        params![p.relay_id, p.account_id, p.name, p.created_at, p.expires_at],
+    )?;
+    Ok(())
+}
+
+pub fn delete_preapproval(c: &Connection, relay_id: &str) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "DELETE FROM relay_preapprovals WHERE relay_id = ?1",
+        [relay_id],
+    )? > 0)
+}
+
+/// What became of a relay request's (`id`, `n`) (PROTOCOL.md §4.3 step 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonceUse {
+    /// new: recorded until it expires
+    Fresh,
+    /// accepted before, not expired
+    Replayed,
+    /// the store holds `max` live entries: nothing recorded (503, rather than forget one early)
+    Full,
+}
+
+pub fn use_relay_nonce(
+    c: &Connection,
+    relay_id: &str,
+    nonce: &[u8],
+    at: i64,
+    expires_at: i64,
+    max: i64,
+) -> rusqlite::Result<NonceUse> {
+    let seen: Option<i64> = c
+        .query_row(
+            "SELECT expires_at FROM relay_nonces WHERE relay_id = ?1 AND nonce = ?2",
+            params![relay_id, nonce],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if seen.is_some_and(|e| e >= at) {
+        return Ok(NonceUse::Replayed);
+    }
+    let live: i64 = c.query_row(
+        "SELECT COUNT(*) FROM relay_nonces WHERE expires_at >= ?1",
+        [at],
+        |r| r.get(0),
+    )?;
+    if live >= max {
+        return Ok(NonceUse::Full);
+    }
+    c.execute(
+        "INSERT INTO relay_nonces (relay_id, nonce, expires_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT (relay_id, nonce) DO UPDATE SET expires_at = excluded.expires_at",
+        params![relay_id, nonce, expires_at],
+    )?;
+    Ok(NonceUse::Fresh)
+}
+
+/// A wake job (design v3 §8-4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub job: String,
+    pub account_id: i64,
+    pub account_tag: String,
+    pub device_id: String,
+    pub relay_id: String,
+    pub grade: String,
+    pub net: String,
+    pub cmd: String,
+    pub created_at: i64,
+    pub exp: i64,
+    /// queued, sent, confirmed, not_confirmed, failed
+    pub state: String,
+    pub sent_at: Option<i64>,
+    pub packets: Option<i64>,
+    pub confirmed_at: Option<i64>,
+    pub error: Option<String>,
+    pub finished_at: Option<i64>,
+}
+
+const JOB_COLUMNS: &str = "job, account_id, account_tag, device_id, relay_id, grade, net, cmd,
+     created_at, exp, state, sent_at, packets, confirmed_at, error, finished_at";
+
+fn job_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
+    Ok(Job {
+        job: r.get(0)?,
+        account_id: r.get(1)?,
+        account_tag: r.get(2)?,
+        device_id: r.get(3)?,
+        relay_id: r.get(4)?,
+        grade: r.get(5)?,
+        net: r.get(6)?,
+        cmd: r.get(7)?,
+        created_at: r.get(8)?,
+        exp: r.get(9)?,
+        state: r.get(10)?,
+        sent_at: r.get(11)?,
+        packets: r.get(12)?,
+        confirmed_at: r.get(13)?,
+        error: r.get(14)?,
+        finished_at: r.get(15)?,
+    })
+}
+
+/// A signed command for a relay's queue (PROTOCOL.md §7.2).
+pub struct NewCommand<'a> {
+    pub cmd: &'a str,
+    pub text: &'a str,
+    pub sig: &'a str,
+    pub kid: u32,
+    pub iat: i64,
+}
+
+/// A new job with its command, queued for the job's relay.
+pub fn insert_job(c: &Connection, job: &Job, command: &NewCommand<'_>) -> rusqlite::Result<()> {
+    c.execute(
+        &format!(
+            "INSERT INTO wake_jobs ({JOB_COLUMNS})
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
+        ),
+        params![
+            job.job,
+            job.account_id,
+            job.account_tag,
+            job.device_id,
+            job.relay_id,
+            job.grade,
+            job.net,
+            job.cmd,
+            job.created_at,
+            job.exp,
+            job.state,
+            job.sent_at,
+            job.packets,
+            job.confirmed_at,
+            job.error,
+            job.finished_at
+        ],
+    )?;
+    c.execute(
+        "INSERT INTO wake_commands (cmd_sha256, relay_id, job, text, sig, kid, iat, exp)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            command.cmd,
+            job.relay_id,
+            job.job,
+            command.text,
+            command.sig,
+            command.kid,
+            command.iat,
+            job.exp
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn job(c: &Connection, job: &str) -> rusqlite::Result<Option<Job>> {
+    c.query_row(
+        &format!("SELECT {JOB_COLUMNS} FROM wake_jobs WHERE job = ?1"),
+        [job],
+        job_row,
+    )
+    .optional()
+}
+
+/// The latest job of a PC.
+pub fn latest_job_of(c: &Connection, device_id: &str) -> rusqlite::Result<Option<Job>> {
+    c.query_row(
+        &format!(
+            "SELECT {JOB_COLUMNS} FROM wake_jobs WHERE device_id = ?1
+             ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ),
+        [device_id],
+        job_row,
+    )
+    .optional()
+}
+
+/// The jobs not finished yet (queued or sent), oldest first.
+pub fn open_jobs(c: &Connection) -> rusqlite::Result<Vec<Job>> {
+    let mut stmt = c.prepare(&format!(
+        "SELECT {JOB_COLUMNS} FROM wake_jobs WHERE state IN ('queued', 'sent')
+         ORDER BY created_at, rowid"
+    ))?;
+    let rows = stmt.query_map([], job_row)?;
+    rows.collect()
+}
+
+/// The jobs an account made since `since`, and those of a relay.
+pub fn jobs_of_account_since(c: &Connection, account_id: i64, since: i64) -> rusqlite::Result<i64> {
+    c.query_row(
+        "SELECT COUNT(*) FROM wake_jobs WHERE account_id = ?1 AND created_at > ?2",
+        params![account_id, since],
+        |r| r.get(0),
+    )
+}
+
+pub fn jobs_of_relay_since(c: &Connection, relay_id: &str, since: i64) -> rusqlite::Result<i64> {
+    c.query_row(
+        "SELECT COUNT(*) FROM wake_jobs WHERE relay_id = ?1 AND created_at > ?2",
+        params![relay_id, since],
+        |r| r.get(0),
+    )
+}
+
+/// The networks on which a relay woke a PC before (its confirmed jobs), for the grade `history`.
+pub fn woken_on(c: &Connection, relay_id: &str, device_id: &str) -> rusqlite::Result<Vec<String>> {
+    column(
+        c,
+        "SELECT DISTINCT net FROM wake_jobs WHERE relay_id = ?1 AND device_id = ?2
+         AND state = 'confirmed' ORDER BY net",
+        [relay_id, device_id],
+    )
+}
+
+/// The queued commands of a relay that have not expired at `at`, oldest first, at most `limit`:
+/// (text, signature, key number), the very bytes queued (PROTOCOL.md §7.4).
+pub fn queued_commands(
+    c: &Connection,
+    relay_id: &str,
+    at: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<(String, String, i64)>> {
+    let mut stmt = c.prepare(
+        "SELECT text, sig, kid FROM wake_commands WHERE relay_id = ?1 AND exp > ?2
+         ORDER BY iat, rowid LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![relay_id, at, limit as i64], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    })?;
+    rows.collect()
+}
+
+/// The job of a relay's command, by the command's hash.
+pub fn job_by_cmd(c: &Connection, relay_id: &str, cmd: &str) -> rusqlite::Result<Option<Job>> {
+    c.query_row(
+        &format!("SELECT {JOB_COLUMNS} FROM wake_jobs WHERE cmd = ?1 AND relay_id = ?2"),
+        [cmd, relay_id],
+        job_row,
+    )
+    .optional()
+}
+
+/// The command is answered: it leaves the queue.
+pub fn delete_command(c: &Connection, cmd: &str) -> rusqlite::Result<()> {
+    c.execute("DELETE FROM wake_commands WHERE cmd_sha256 = ?1", [cmd])?;
+    Ok(())
+}
+
+/// The job is over: its command leaves the queue.
+pub fn delete_commands_of_job(c: &Connection, job: &str) -> rusqlite::Result<()> {
+    c.execute("DELETE FROM wake_commands WHERE job = ?1", [job])?;
+    Ok(())
+}
+
+/// The relay sent the job's packets: `sent`, from `queued` or from a `no_result` that the result
+/// came after; false when the job had moved on.
+pub fn job_sent(c: &Connection, job: &str, sent_at: i64, packets: i64) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "UPDATE wake_jobs SET state = 'sent', sent_at = ?2, packets = ?3, error = NULL,
+             finished_at = NULL
+         WHERE job = ?1 AND (state = 'queued' OR (state = 'failed' AND error = 'no_result'))",
+        params![job, sent_at, packets],
+    )? > 0)
+}
+
+/// The job failed with `error`: a relay's refusal (from `queued`, or a `no_result` it came after),
+/// or the server's `no_result` (from `queued` only).
+pub fn job_failed(c: &Connection, job: &str, error: &str, at: i64) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "UPDATE wake_jobs SET state = 'failed', error = ?2, packets = COALESCE(packets, 0),
+             finished_at = ?3
+         WHERE job = ?1 AND (state = 'queued'
+             OR (?2 <> 'no_result' AND state = 'failed' AND error = 'no_result'))",
+        params![job, error, at],
+    )? > 0)
+}
+
+/// The PC is on after the packets went: `confirmed` at `confirmed_at`.
+pub fn job_confirmed(
+    c: &Connection,
+    job: &str,
+    confirmed_at: i64,
+    at: i64,
+) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "UPDATE wake_jobs SET state = 'confirmed', confirmed_at = ?2, finished_at = ?3
+         WHERE job = ?1 AND state = 'sent'",
+        params![job, confirmed_at, at],
+    )? > 0)
+}
+
+/// Five minutes passed after the packets without a sign of the PC.
+pub fn job_not_confirmed(c: &Connection, job: &str, at: i64) -> rusqlite::Result<bool> {
+    Ok(c.execute(
+        "UPDATE wake_jobs SET state = 'not_confirmed', finished_at = ?2
+         WHERE job = ?1 AND state = 'sent'",
+        params![job, at],
+    )? > 0)
 }
 
 #[cfg(test)]
@@ -2085,7 +3018,8 @@ mod tests {
         let v: i64 = c
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        // on to the latest schema (3: Wake-on-LAN)
+        assert_eq!(v, MIGRATIONS.len() as i64);
         // the tokens without a key went; the devices kept, each with a binding ID of its own
         let tokens: i64 = c
             .query_row("SELECT COUNT(*) FROM tokens", [], |r| r.get(0))
@@ -2380,16 +3314,321 @@ mod tests {
             ]
         );
         assert_eq!(counts(&c, 1100, 1000).unwrap().pcs_holding, 2);
-        // the relays come with phase 2's schema; before it there is nothing to say
-        assert_eq!(relay_health(&c, 5000, 3600).unwrap(), None);
-        c.execute_batch(
-            "CREATE TABLE relays (relay_id TEXT PRIMARY KEY, state TEXT NOT NULL, last_poll_at INTEGER);
-             INSERT INTO relays VALUES ('r1', 'active', 4900), ('r2', 'active', 1000),
-                 ('r3', 'active', NULL), ('r4', 'pending', NULL), ('r5', 'revoked', 10);",
-        )
-        .unwrap();
+        // the relays (phase 2's schema 3): the active ones, and of them those silent for long;
+        // a database without the table has nothing to say
+        let bare = Connection::open_in_memory().unwrap();
+        assert_eq!(relay_health(&bare, 5000, 3600).unwrap(), None);
+        assert_eq!(relay_health(&c, 5000, 3600).unwrap(), Some((0, 0)));
+        for (i, (id, state, last)) in [
+            ("r-1", "active", Some(4900)),
+            ("r-2", "active", Some(1000)),
+            ("r-3", "active", None),
+            ("r-4", "pending", None),
+            ("r-5", "revoked", Some(10)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            c.execute(
+                "INSERT INTO relays (relay_id, pk, state, scope, name, created_at, last_poll_at)
+                 VALUES (?1, ?2, ?3, 'own', '', 0, ?4)",
+                params![id, vec![i as u8; 32], state, last],
+            )
+            .unwrap();
+        }
         assert_eq!(relay_health(&c, 5000, 3600).unwrap(), Some((3, 2)));
         assert_eq!(relay_health(&c, 5000, 4500).unwrap(), Some((3, 1)));
+    }
+
+    /// The upgrade to Wake-on-LAN's schema keeps what schema 2 holds and adds its tables empty.
+    #[test]
+    fn schema_two_moves_to_three() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(MIGRATIONS[0]).unwrap();
+        c.execute_batch(MIGRATIONS[1]).unwrap();
+        c.pragma_update(None, "user_version", 2).unwrap();
+        let a = upsert_account(&c, "a", "A", "", 1).unwrap();
+        bind(&c, a, "1", &[1; 32], "windows", "PC", 5).unwrap();
+        set_passwordless_global(&c, true).unwrap();
+        let serial = change_serial(&c).unwrap();
+        let c = prepare(c).unwrap();
+        let v: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 3);
+        assert_eq!(device(&c, "1").unwrap().unwrap().account_id, a);
+        assert!(passwordless_global(&c).unwrap());
+        assert_eq!(change_serial(&c).unwrap(), serial);
+        for table in [
+            "wol_info",
+            "relays",
+            "relay_preapprovals",
+            "relay_nonces",
+            "wake_jobs",
+            "wake_commands",
+        ] {
+            let n: i64 = c
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
+        assert_eq!(relay_health(&c, 5000, 3600).unwrap(), Some((0, 0)));
+    }
+
+    fn new_job(id: &str, device: &str, relay: &str, at: i64) -> Job {
+        Job {
+            job: id.to_owned(),
+            account_id: 1,
+            account_tag: "tag".into(),
+            device_id: device.to_owned(),
+            relay_id: relay.to_owned(),
+            grade: "exact".into(),
+            net: "192.0.2.0/24".into(),
+            cmd: format!("cmd-{id}"),
+            created_at: at,
+            exp: at + 60,
+            state: "queued".into(),
+            sent_at: None,
+            packets: None,
+            confirmed_at: None,
+            error: None,
+            finished_at: None,
+        }
+    }
+
+    fn queue(c: &Connection, j: &Job) {
+        let command = NewCommand {
+            cmd: &j.cmd,
+            text: "{}",
+            sig: "sig",
+            kid: 1,
+            iat: j.created_at,
+        };
+        insert_job(c, j, &command).unwrap();
+    }
+
+    /// Schema 3 (design v3 §5-4, §8): the relays' states, their nonces, the jobs' states.
+    #[test]
+    fn wake_on_lan_rows() {
+        let c = conn();
+        let a = upsert_account(&c, "a", "A", "", 1).unwrap();
+        bind(&c, a, "1", &[1; 32], "windows", "PC", 5).unwrap();
+        // the nonces of the relays' requests: once, again after their time, and no more than max
+        let n = |nonce: u8, at: i64, max: i64| {
+            use_relay_nonce(&c, "r-1", &[nonce; 16], at, at + 600, max).unwrap()
+        };
+        assert_eq!(n(1, 100, 2), NonceUse::Fresh);
+        assert_eq!(n(1, 700, 2), NonceUse::Replayed);
+        assert_eq!(n(2, 100, 2), NonceUse::Fresh);
+        assert_eq!(n(3, 100, 2), NonceUse::Full);
+        assert_eq!(
+            n(1, 100, 2),
+            NonceUse::Replayed,
+            "a replay is a replay, also when full"
+        );
+        assert_eq!(n(1, 701, 5), NonceUse::Fresh, "expired: free again");
+        assert_eq!(
+            n(3, 701, 2),
+            NonceUse::Fresh,
+            "the expired ones do not count"
+        );
+        // a relay: pending, seen, approved, revoked to its ID, key and times
+        let new = |id: &str, pk: u8, state: RelayState| {
+            insert_relay(
+                &c,
+                &NewRelay {
+                    relay_id: id,
+                    pk: &[pk; 32],
+                    state,
+                    owner_account: None,
+                    name: "",
+                    source: Some("192.0.2.9"),
+                    at: 1000,
+                },
+            )
+            .unwrap();
+        };
+        new("r-1", 1, RelayState::Pending);
+        let seen = |poll: bool, ifaces: Option<(&str, &str)>, at: i64| {
+            relay_seen(
+                &c,
+                "r-1",
+                &RelaySeen {
+                    version: "1.6.0",
+                    arch: "x86_64",
+                    os: "DSM",
+                    kernel: "5",
+                    egress_ip: "192.0.2.9",
+                    ifaces,
+                    poll,
+                },
+                at,
+            )
+            .unwrap();
+        };
+        seen(
+            false,
+            Some((
+                r#"[{"name":"eth0","mac":null,"ipv4":["192.0.2.10/24"],"up":true,"running":true,"gateway":null,"gateway_mac":null}]"#,
+                "h1",
+            )),
+            1001,
+        );
+        seen(true, None, 1002);
+        let r = relay(&c, "r-1").unwrap().unwrap();
+        assert_eq!((r.last_hello_at, r.last_poll_at), (Some(1001), Some(1002)));
+        assert_eq!((r.ifaces.len(), r.ifaces_hash.as_deref()), (1, Some("h1")));
+        assert_eq!(
+            pending_counts(&c, "192.0.2.9", 0).unwrap(),
+            (1, 1, Some(1000))
+        );
+        assert!(!approve_relay(&c, "r-0", a, "NAS", 1003).unwrap());
+        assert!(approve_relay(&c, "r-1", a, "NAS", 1003).unwrap());
+        assert!(
+            !approve_relay(&c, "r-1", a, "NAS", 1004).unwrap(),
+            "pending only"
+        );
+        assert_eq!(active_relays_of(&c, a).unwrap().len(), 1);
+        assert!(set_relay_scope(&c, "r-1", true).unwrap());
+        // its jobs: queued, sent by its result, confirmed; a refusal; no_result and a late result
+        queue(&c, &new_job("j1", "1", "r-1", 2000));
+        assert_eq!(queued_commands(&c, "r-1", 2059, 16).unwrap().len(), 1);
+        assert_eq!(
+            queued_commands(&c, "r-1", 2060, 16).unwrap().len(),
+            0,
+            "expired"
+        );
+        assert!(
+            !job_confirmed(&c, "j1", 2010, 2011).unwrap(),
+            "not before it was sent"
+        );
+        assert!(job_sent(&c, "j1", 2005, 12).unwrap());
+        assert!(
+            !job_sent(&c, "j1", 2006, 6).unwrap(),
+            "the first result counts"
+        );
+        assert!(!job_failed(&c, "j1", "no_iface", 2007).unwrap());
+        assert!(job_confirmed(&c, "j1", 2010, 2011).unwrap());
+        assert!(!job_not_confirmed(&c, "j1", 2400).unwrap());
+        assert_eq!(woken_on(&c, "r-1", "1").unwrap(), vec!["192.0.2.0/24"]);
+        queue(&c, &new_job("j2", "1", "r-1", 3000));
+        assert!(job_failed(&c, "j2", "no_result", 3200).unwrap());
+        assert!(!job_failed(&c, "j2", "no_result", 3201).unwrap());
+        assert!(
+            job_sent(&c, "j2", 3050, 12).unwrap(),
+            "a result after no_result counts"
+        );
+        assert!(job_not_confirmed(&c, "j2", 3400).unwrap());
+        queue(&c, &new_job("j3", "1", "r-1", 4000));
+        assert!(job_failed(&c, "j3", "no_result", 4200).unwrap());
+        assert!(
+            job_failed(&c, "j3", "no_iface", 4201).unwrap(),
+            "the relay's word after it"
+        );
+        assert_eq!(
+            job_by_cmd(&c, "r-1", "cmd-j3")
+                .unwrap()
+                .unwrap()
+                .error
+                .as_deref(),
+            Some("no_iface")
+        );
+        assert_eq!(
+            job_by_cmd(&c, "r-2", "cmd-j3").unwrap(),
+            None,
+            "another relay's command"
+        );
+        queue(&c, &new_job("j4", "1", "r-1", 5000));
+        assert_eq!(open_jobs(&c).unwrap().len(), 1);
+        assert_eq!(latest_job_of(&c, "1").unwrap().unwrap().job, "j4");
+        assert_eq!(jobs_of_account_since(&c, a, 3999).unwrap(), 2);
+        assert_eq!(jobs_of_relay_since(&c, "r-1", 0).unwrap(), 4);
+        // revoked: its waiting job fails, its commands go, the row keeps what PROTOCOL.md §11 allows
+        assert_eq!(revoke_relay(&c, "r-1", 6000).unwrap(), Revoked::Now(1));
+        assert_eq!(revoke_relay(&c, "r-1", 6001).unwrap(), Revoked::Already);
+        assert_eq!(revoke_relay(&c, "r-9", 6001).unwrap(), Revoked::NoSuchRelay);
+        let r = relay(&c, "r-1").unwrap().unwrap();
+        assert_eq!(
+            (r.state, r.pk, r.revoked_at),
+            (RelayState::Revoked, [1; 32], Some(6000))
+        );
+        assert_eq!(
+            (
+                r.owner_account,
+                r.source,
+                r.egress_ip,
+                r.version,
+                r.ifaces.len(),
+                r.last_poll_at,
+                r.scope.as_str()
+            ),
+            (None, None, None, None, 0, None, "own")
+        );
+        assert_eq!(
+            job(&c, "j4").unwrap().unwrap().error.as_deref(),
+            Some("not_active")
+        );
+        seen(true, Some(("[]", "h2")), 6002);
+        assert_eq!(
+            relay(&c, "r-1").unwrap().unwrap().last_poll_at,
+            None,
+            "a revoked relay keeps nothing new"
+        );
+        // approvals ahead, until they expire
+        preapprove(
+            &c,
+            &Preapproval {
+                relay_id: "r-2".into(),
+                account_id: a,
+                name: "NAS".into(),
+                created_at: 7000,
+                expires_at: 7600,
+            },
+        )
+        .unwrap();
+        assert_eq!(preapproval(&c, "r-2", 7599).unwrap().unwrap().account_id, a);
+        assert_eq!(preapproval(&c, "r-2", 7600).unwrap(), None);
+        assert_eq!(preapprovals(&c, 7000).unwrap().len(), 1);
+        // the PC's wake report goes with its binding; the account's relays, approvals and jobs
+        // with the account
+        let report = Report::default();
+        store_wol_info(&c, "1", &report, "h", "192.0.2.40", 8000).unwrap();
+        assert_eq!(
+            wol_egress(&c, "1", "192.0.2.41").unwrap().as_deref(),
+            Some("h")
+        );
+        assert_eq!(wol_infos_of(&c, a).unwrap()[0].egress_ip, "192.0.2.41");
+        assert_eq!(wol_egress(&c, "2", "192.0.2.41").unwrap(), None);
+        new("r-3", 3, RelayState::Pending);
+        approve_relay(&c, "r-3", a, "NAS", 8001).unwrap();
+        release_binding(&c, "1", "admin", 8002).unwrap();
+        assert_eq!(wol_info(&c, "1").unwrap(), None);
+        assert_eq!(
+            job(&c, "j1").unwrap().unwrap().state,
+            "confirmed",
+            "the record stays"
+        );
+        delete_account(&c, a, 8003).unwrap();
+        assert_eq!(
+            relay(&c, "r-3").unwrap().unwrap().state,
+            RelayState::Revoked
+        );
+        for table in [
+            "wake_jobs",
+            "wake_commands",
+            "relay_preapprovals",
+            "wol_info",
+        ] {
+            let n: i64 = c
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
+        // pending entries past their day
+        new("r-4", 4, RelayState::Pending);
+        assert_eq!(drop_expired_pending(&c, 999).unwrap(), 0);
+        assert_eq!(drop_expired_pending(&c, 1000).unwrap(), 1);
+        assert_eq!(oldest_pending(&c).unwrap(), None);
     }
 
     #[test]

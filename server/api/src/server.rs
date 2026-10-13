@@ -92,6 +92,8 @@ pub async fn serve(state: Arc<AppState>, listener: Listener, shutdown: impl Futu
         }
     }
     drop(listener);
+    // the relays' held polls are answered now rather than after their 20 seconds
+    state.relays.stop();
     if tokio::time::timeout(SHUTDOWN_GRACE, graceful.shutdown())
         .await
         .is_err()

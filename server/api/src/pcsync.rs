@@ -25,10 +25,19 @@
 //! (U6) per account key and UTC day the latest time the PC let it in and that day's running count,
 //! `refused` the counts of refused proofs by reason since the last report the server took, under
 //! the design's seven reasons (other names are left out, so that a PC adds at most seven rows a
-//! day). `wol` and `wol_hash` are for Wake-on-LAN (WP-W2, not stored yet). Only `v` and `binding`
-//! are required; a field of the wrong JSON type refuses the request, a value out of range (a day
-//! outside the last 30, a time not of its day, a key of no account of the PC) is left out, and a
-//! use's time after the server's time of the report is taken as that time.
+//! day). `wol` is the PC's wake report (design v3 §8-2, wolinfo.rs) and `wol_hash` the PC's
+//! summary of it, compared for equality only. Only `v` and `binding` are required; a field of the
+//! wrong JSON type refuses the request, a value out of range (a day outside the last 30, a time
+//! not of its day, a key of no account of the PC) is left out, and a use's time after the server's
+//! time of the report is taken as that time. A `wol` object that is not a report is left out
+//! rather than refusing the sync, whose trust list matters more.
+//!
+//! **Wake-on-LAN** (design v3 §8-2): a sync that carries the PC's binding keeps its `wol` with its
+//! `wol_hash` and the address it came from (X-Real-IP), the PC's egress address for choosing a
+//! relay; a sync without `wol` moves only the egress address, and when its `wol_hash` is not empty
+//! and not the summary kept, the answer asks for the whole report (`send_wol: true`). An empty
+//! `wol_hash` (the PC's first minute, no report on its platform) leaves the report kept as it is.
+//! The report goes when the PC leaves its account (db.rs `release_binding`).
 //!
 //! **Checks**, in this order, the first failure answering (design v3 §5-2):
 //!
@@ -83,6 +92,7 @@ use crate::{
     state::AppState,
     trust::{mask_name, ListEntry, State as ListState, TrustList},
     util::{b64, b64_decode, date, day_number, hex, now, valid_device_id, DAY, HOUR, MINUTE},
+    wolinfo,
 };
 use hyper::{header::ORIGIN, StatusCode};
 use rusqlite::Connection;
@@ -143,6 +153,12 @@ pub struct Report {
     pub used: Vec<UseLine>,
     /// the counts of `refused` above zero, under the REFUSAL_REASONS only
     pub refused: Vec<(String, i64)>,
+    /// the PC's summary of its wake report, '' for none
+    pub wol_hash: String,
+    /// the wake report, when the sync carried one that reads (wolinfo.rs)
+    pub wol: Option<wolinfo::Report>,
+    /// the sync carried a `wol` object that is not a report: not kept, and not asked for again
+    pub wol_unread: bool,
 }
 
 /// A binding ID as the login answer and the PC write it: 32 lowercase hex digits.
@@ -201,18 +217,29 @@ pub fn parse_report(p: &str, at: i64) -> Option<Report> {
         None => Vec::new(),
         Some(v) => refusals(v.as_object()?)?,
     };
-    // Wake-on-LAN's, for WP-W2: their types only
-    if object.get("wol_hash").is_some_and(|v| !v.is_string())
-        || object.get("wol").is_some_and(|v| !v.is_object())
-    {
-        return None;
-    }
+    // Wake-on-LAN's: a summary of at most 128 characters, compared for equality only
+    let wol_hash = match object.get("wol_hash") {
+        None => String::new(),
+        Some(v) => v.as_str()?.chars().take(128).collect(),
+    };
+    let (wol, wol_unread) = match object.get("wol") {
+        None => (None, false),
+        Some(v) if v.is_object() => {
+            let wol = wolinfo::parse_report(v);
+            let unread = wol.is_none();
+            (wol, unread)
+        }
+        Some(_) => return None,
+    };
     Some(Report {
         binding,
         ver,
         off,
         used,
         refused,
+        wol_hash,
+        wol,
+        wol_unread,
     })
 }
 
@@ -422,10 +449,12 @@ enum Decided {
     BadPayload,
     /// bound, without a list
     Listed,
-    /// a list to sign: active, disabled or revoked; `cache` when it was built for a bound PC
+    /// a list to sign: active, disabled or revoked; `cache` when it was built for a bound PC;
+    /// `send_wol` when hjv-api wants the PC's whole wake report next time
     List {
         list: TrustList,
         cache: Option<CachedList>,
+        send_wol: bool,
     },
 }
 
@@ -504,11 +533,33 @@ fn revoked_list(
     ))
 }
 
+/// A bound PC's wake report from a sync that carried its binding (design v3 §8-2): kept with its
+/// summary and the sync's address; without one, the address moves and the answer asks for the
+/// report when the PC's summary is not the one kept. Returns `send_wol`.
+fn store_wol(
+    c: &Connection,
+    device_id: &str,
+    report: &Report,
+    egress_ip: &str,
+    at: i64,
+) -> rusqlite::Result<bool> {
+    if let Some(wol) = &report.wol {
+        db::store_wol_info(c, device_id, wol, &report.wol_hash, egress_ip, at)?;
+        return Ok(false);
+    }
+    let kept = db::wol_egress(c, device_id, egress_ip)?;
+    // a report that did not read would come back as it is: not asked for again
+    Ok(!report.wol_unread
+        && !report.wol_hash.is_empty()
+        && kept.as_deref() != Some(report.wol_hash.as_str()))
+}
+
 /// Steps 3 to 7 and the work, in one transaction.
 fn decide(
     c: &mut Connection,
     env: &Envelope,
     at: i64,
+    egress_ip: &str,
     cached: Option<CachedList>,
     settings: &ListSettings,
 ) -> rusqlite::Result<Decided> {
@@ -546,6 +597,7 @@ fn decide(
             Some(b) if db::tombstone(&tx, &env.id, &b)?.is_some() => Decided::List {
                 list: revoked_list(&tx, &env.id, &b, &pc_pk, at, settings)?,
                 cache: None,
+                send_wol: false,
             },
             _ => Decided::Unbound,
         },
@@ -569,10 +621,14 @@ fn decide(
             db::add_refusals(&tx, &d.device_id, &report.refused, &date(at))?;
             // signed with the stored key: the PC that was bound is there (design v3 §4-6)
             db::clear_key_changed(&tx, &d.device_id)?;
+            // the wake report of the PC that holds the binding (design v3 §8-2)
+            let send_wol =
+                mark == "present" && store_wol(&tx, &d.device_id, &report, egress_ip, at)?;
             match (report.binding, released) {
                 (Some(b), true) => Decided::List {
                     list: revoked_list(&tx, &d.device_id, &b, &pc_pk, at, settings)?,
                     cache: None,
+                    send_wol: false,
                 },
                 (Some(b), false) if mark == "present" => {
                     let serial = db::change_serial(&tx)?;
@@ -581,6 +637,7 @@ fn decide(
                         Some(again) => Decided::List {
                             list: again.list,
                             cache: None,
+                            send_wol,
                         },
                         None => {
                             let list = bound_list(&tx, &d, &b, &pc_pk, serial, at, settings)?;
@@ -593,6 +650,7 @@ fn decide(
                                     list: list.clone(),
                                 }),
                                 list,
+                                send_wol,
                             }
                         }
                     }
@@ -646,9 +704,10 @@ pub async fn handle(state: &Arc<AppState>, req: ApiRequest) -> Reply {
     let cached = state.lists.get(&env.id);
     let id = env.id.clone();
     let n = env.n.clone();
+    let ip = req.ip.clone();
     let decided = state
         .db
-        .call(move |c| decide(c, &env, at, cached, &settings))
+        .call(move |c| decide(c, &env, at, &ip, cached, &settings))
         .await;
     match decided {
         Ok(Decided::Unbound) => unbound_reply(),
@@ -666,7 +725,11 @@ pub async fn handle(state: &Arc<AppState>, req: ApiRequest) -> Reply {
             "state": "listed",
             "refresh": state.config.trust_refresh_secs,
         })),
-        Ok(Decided::List { mut list, cache }) => {
+        Ok(Decided::List {
+            mut list,
+            cache,
+            send_wol,
+        }) => {
             if let Some(cache) = cache {
                 state.lists.put(&id, cache);
             }
@@ -683,7 +746,7 @@ pub async fn handle(state: &Arc<AppState>, req: ApiRequest) -> Reply {
                 "server_time": now(),
                 "state": list.state,
                 "refresh": list.refresh,
-                "send_wol": false,
+                "send_wol": send_wol,
                 "list": { "kid": list.kid, "l": b64(&bytes), "s": b64(&signature) },
             }))
         }

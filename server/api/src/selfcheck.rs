@@ -11,9 +11,17 @@
 //! hjviewer-api-list-key, number HJV_API_LIST_KID) is the pinned key of that number: a wrong pin
 //! would have every PC refuse every trust list, and the release build is to catch it first.
 //!
+//! The same for the command key that signs the wake commands (phase 2, relay/PROTOCOL.md §3.2):
+//! the fingerprints `<kid>:<hex SHA-256>` of the command keys the relays pin
+//! (HJV_API_COMMAND_PUBKEYS, the relays' HJV_COMMAND_PUBKEY), to compare with the summary of the
+//! relay build and with `hjv-relay version`, and whether the key in use (the credential
+//! hjviewer-api-command-key, number HJV_API_COMMAND_KID) is the pinned key of its number: a wrong
+//! pin would have every relay refuse every command. Without the credential and the setting, Wake-
+//! on-LAN is simply off.
+//!
 //! The unit can run it after each start (`ExecStartPost=-… selfcheck --log-only`, commented out
 //! in hjviewer-api.service until the operator agrees), and `hjv-api admin selfcheck` runs it
-//! inside the running service, with the list key the service holds.
+//! inside the running service, with the list key and the command key the service holds.
 
 use crate::{
     config::Config,
@@ -40,6 +48,80 @@ pub enum ListKeyCheck {
     NotRead(String),
     /// no credentials here (a shell outside the unit): not compared
     Unavailable,
+}
+
+/// The command key the check compares with the pinned ones.
+pub enum CommandKeyCheck {
+    /// the key in use, with its number
+    Held { kid: u32, public_key: [u8; 32] },
+    /// the credentials hold none
+    Absent,
+    /// it could not be read here: why
+    NotRead(String),
+    /// no credentials here (a shell outside the unit): not compared
+    Unavailable,
+}
+
+/// The command key lines of the report; false when one failed.
+fn command_keys(config: &Config, held: &CommandKeyCheck, report: &mut String) -> bool {
+    let pinned = &config.command_pubkeys;
+    if !pinned.is_empty() {
+        let fingerprints: Vec<String> = pinned
+            .iter()
+            .map(|(kid, key)| trust::fingerprint(*kid, key))
+            .collect();
+        let _ = writeln!(
+            report,
+            "[ OK ] command keys the relays pin (HJV_API_COMMAND_PUBKEYS), SHA-256: {}",
+            fingerprints.join(", ")
+        );
+    }
+    let fail = |report: &mut String, line: String| {
+        let _ = writeln!(report, "[FAIL] {line}");
+        false
+    };
+    match held {
+        CommandKeyCheck::Held { kid, public_key } => {
+            let mine = trust::fingerprint(*kid, public_key);
+            match config.pinned_command_key(*kid) {
+                Some(p) if p == *public_key => {
+                    let _ = writeln!(
+                        report,
+                        "[ OK ] command key in use (HJV_API_COMMAND_KID {kid}): the pinned key {kid}, {mine}"
+                    );
+                    true
+                }
+                Some(_) => fail(report, format!(
+                    "command key in use (HJV_API_COMMAND_KID {kid}, {mine}) is not the pinned key {kid}: the relays refuse every command it signs"
+                )),
+                None if pinned.is_empty() => fail(report, format!(
+                    "HJV_API_COMMAND_PUBKEYS is not set: the command key in use ({mine}) cannot be compared with the keys the relays pin (their HJV_COMMAND_PUBKEY)"
+                )),
+                None => fail(report, format!(
+                    "command key in use (HJV_API_COMMAND_KID {kid}, {mine}): no pinned key has the number {kid}"
+                )),
+            }
+        }
+        CommandKeyCheck::Absent if pinned.is_empty() => {
+            let _ = writeln!(
+                report,
+                "[ -- ] command key: none (no credential hjviewer-api-command-key): no PC is woken"
+            );
+            true
+        }
+        CommandKeyCheck::Absent => fail(
+            report,
+            "command key: no credential hjviewer-api-command-key, while HJV_API_COMMAND_PUBKEYS names the relays' keys: no PC can be woken".to_owned(),
+        ),
+        CommandKeyCheck::NotRead(e) => fail(report, format!("command key in use: {e}")),
+        CommandKeyCheck::Unavailable => {
+            let _ = writeln!(
+                report,
+                "[ -- ] command key in use: not read here (no credentials directory: give --credentials <dir>, or run hjv-api admin selfcheck)"
+            );
+            true
+        }
+    }
 }
 
 /// The list key lines of the report; false when one failed.
@@ -110,7 +192,11 @@ fn list_keys(config: &Config, held: &ListKeyCheck, report: &mut String) -> bool 
 }
 
 /// Runs the checks; returns the report and whether all passed.
-pub async fn run(config: &Config, list_key: &ListKeyCheck) -> (String, bool) {
+pub async fn run(
+    config: &Config,
+    list_key: &ListKeyCheck,
+    command_key: &CommandKeyCheck,
+) -> (String, bool) {
     let mut report = String::new();
     let mut ok = true;
     let mut seen = Vec::new();
@@ -162,6 +248,7 @@ pub async fn run(config: &Config, list_key: &ListKeyCheck) -> (String, bool) {
         }
     }
     ok &= list_keys(config, list_key, &mut report);
+    ok &= command_keys(config, command_key, &mut report);
     (report, ok)
 }
 
