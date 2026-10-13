@@ -429,12 +429,14 @@ padding, NUL is the byte 0x00, times are Unix seconds.
   NUL os` (`h` base64 of SHA-256 of the sealed bytes, `installed` "1" or "0", `os` as
   `deviceInfo.os`). `hjv.ver` is the app's version, not signed.
 - After the SSO accepted the password: 400 with the failure text without `ck` and `cp`, for a `cp`
-  that is not the strict signature, or a key another row has; 403
-  `{"error":"로그인한 기기가 너무 많습니다. 다른 기기에서 정리해 주세요.","hjv":"too-many-keys"}`
-  past 20 active keys of the account (the keys a login replaces do not count). The key is stored
-  with what the server saw: time, `hjv.ver`, platform, the device name of `src/devmodel.rs` (an
-  iPhone's model code becomes its name), on or off campus; the device's own name apart. The
-  account's older keys of the same device (the tag of `uuid`) are revoked with their tokens.
+  that is not the strict signature, or a key another row has. The key is stored with the time and
+  on or off campus, which the server saw, and with what the device said of itself, which nothing
+  checks: `hjv.ver`, platform, the device name of `src/devmodel.rs` (an iPhone's model code becomes
+  its name) and the device's own name. The account's older keys of the same device (the tag of
+  `uuid`) are revoked with their tokens, and so is the key of the token a login from the same
+  device ID replaces (`replaced`). Past 20 active keys of the account (the keys a login replaces
+  do not count) the least recently used one is revoked (`evicted`): whoever knows the portal
+  password now can always log in and log the other devices out.
 - 200:
 
 ```text
@@ -492,24 +494,40 @@ X-HJV-Proof: v1.<t>.<n>.<sig>
 ### Account keys: `/api/hjv/keys` (`src/keys.rs`)
 
 ```text
-GET    /api/hjv/keys                   {"total":n,"data":[{"ckid":12,"name":"iPhone 14 Pro","app_name":"iPhone15,2","platform":"ios","app_ver":"1.6.0","net":"off-campus","created":<time>,"last_login":<time>,"last_used":null,"last_used_pc":null,"use":[],"current":true,"new":false}]}
+GET    /api/hjv/keys                   {"total":n,"data":[{"ckid":12,"name":"iPhone 14 Pro","app_name":"iPhone15,2","platform":"ios","app_ver":"1.6.0","net":"off-campus","created":<time>,"last_login":<time>,"last_used":null,"last_used_pc":null,"use":[],"current":true,"new":false}],"ended":[…]}
 POST   /api/hjv/keys/{ckid}/ack        {"ack":true}       ("내 기기 맞음" on the new-device notice)
+POST   /api/hjv/keys/{ckid}/not-mine   {"revoked":b}      ("아님" on the notice: marked, and logged out if it was active)
 DELETE /api/hjv/keys/{ckid}            {"revoked":true}   (the key and its token; "로그아웃시키기")
 POST   /api/hjv/keys/revoke-others     {"revoked":n}      (every key of the account but the asking one)
 ```
 
-The active keys of the account, newest first, in pages as `/api/peers`. `name` is the server's
-device name, `app_name` the device's own; `net` is `on-campus`, `off-campus` or `""`; `use` is what
-the PCs reported of the key through their sync (U6): per PC `{"pc_id","pc","last","n30"}`, the
-latest time the key opened it without its password (the PC's clock, never after the server got
-the report) and the count of the last 30 days, `pc` the host name; a PC's lines go when it leaves
-the account; `last_used` and `last_used_pc` are its latest line, or null; `new` marks a
-key made after the asking one that neither the asking key nor an older key of the account
-confirmed, for 7 days. A key confirms only keys made after it, and its confirmation counts for its
-own device and the ones that logged in after it: whoever logs in with a leaked portal password
-can neither confirm their own key nor have a second login of theirs confirm it for the owner's
-devices. A key of another account or none, and `ack` of the asking key or an older one: 404
-`{"error":"not found"}`. At most 30 calls a minute per account (429).
+The active keys of the account, newest first, in pages as `/api/peers`, and in `ended` the keys
+that ended in the last 30 days (at most 50, the latest first), each with `"ended":<time>`, `"left"`
+and, for `removed`, `"left_by":{"ckid","name","app_name","platform"}`, the device that logged it
+out. `left` is `logout` (the device logged out, also by `DELETE` of its own key), `removed`
+(another device of the account), `expired` (its login expired), `replaced` (a new login of the
+same device), `evicted` (the account's 20 keys) or `admin` (the operator, or the account left the
+allowlist). `name` is the device name the server made of what the device said, `app_name` the
+device's own; neither is checked (only the time and `net` are the server's own view); `net` is
+`on-campus`, `off-campus` or `""`; `use` is what the PCs reported of the key through their sync
+(U6): per PC `{"pc_id","pc","last","n30"}`, the latest time the key opened it without its password
+(the PC's clock, never after the server got the report) and the count of the last 30 days, `pc`
+the host name; a PC's lines go when it leaves the account; `last_used` and `last_used_pc` are its
+latest line, or null.
+
+`new` is the new-device notice (design v3 §1-1, U1-a to U1-c): every key of the account but the
+asking one, active or ended, whatever order the keys were made in, until it is answered, with no
+time limit. "아님" from any device answers it for every device, and the answers of the key that
+got it count no more. "내 기기 맞음" from a device that logged in before the key answers it for
+that device and the ones that logged in after it (the oldest such answer is kept); from a device
+that logged in after the key, for that device only. Whoever logs in with a leaked portal password
+can thus neither answer for their own key nor have a second login of theirs answer for it on the
+owner's devices, and logging the owner's devices out first does not hide it from the owner's next
+login. A key a device logged out is answered for that device; a key replaced by a new login of its
+device for every device (the new key gets the notice). A key of another account or none, a
+revoked one (but for `ack` and `not-mine`), and `ack` or `not-mine` of the asking key: 404
+`{"error":"not found"}`. At most 30 calls a minute per key (429), so that no device can use up
+another's.
 
 ### Device list: `GET /api/peers`
 

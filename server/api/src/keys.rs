@@ -14,62 +14,76 @@
 //!
 //! After the SSO accepted the password (login.rs), hjv-api answers 400 with the failure text of
 //! every failed login when `ck` or `cp` is missing or not that signature (checked strictly), and
-//! when another row (of any account, revoked or not) has the same key. An account has at most
-//! [`MAX_ACTIVE_KEYS`] active keys, counting the ones the login replaces as gone; past that the
-//! login gets 403 [`TEXT_TOO_MANY`]. The key is stored with the server's own view of the login
-//! (time, app version, platform, the device name of devmodel.rs, on or off campus; no address)
-//! and the device's own name apart; the account's older keys of the same device (the same
-//! `dev_tag`, the tag of the app's uuid) are revoked with their tokens; the change serial goes up
-//! and the key keeps that value as its `ks`, which the login's answer carries.
+//! when another row (of any account, revoked or not) has the same key. The key is stored with the
+//! server's own view of the login (time, on or off campus; no address) and what the device said
+//! of itself apart (app version, platform and the device name devmodel.rs makes of it, the
+//! device's own name: none of them is checked); the account's older keys of the same device (the
+//! same `dev_tag`, the tag of the app's uuid) are revoked with their tokens, and so are the keys
+//! of the tokens a login from the same device ID replaces (db.rs `insert_token_tx`). An account
+//! has at most [`MAX_ACTIVE_KEYS`] active keys: past that its least recently used key is revoked
+//! ('evicted'), so that whoever knows the portal password now can always log in and log the other
+//! devices out. The change serial goes up and the key keeps that value as its `ks`, which the
+//! login's answer carries.
 //!
 //! **Paths** (all with the token and its key's `X-HJV-Proof`, at most [`CALLS_PER_MINUTE`] a
-//! minute per account):
+//! minute per key, so that one device cannot use up another's):
 //!
 //! | path | answer |
 //! |---|---|
-//! | `GET /api/hjv/keys` | `{"total":n,"data":[{"ckid","name","app_name","platform","app_ver","net","created","last_login","last_used","last_used_pc","use":[{"pc_id","pc","last","n30"}],"current","new"}]}`: the account's active keys, newest first |
-//! | `POST /api/hjv/keys/{ckid}/ack` | `{"ack":true}`: a device of the account confirmed a key made after its own ("내 기기 맞음") |
+//! | `GET /api/hjv/keys` | `{"total":n,"data":[{"ckid","name","app_name","platform","app_ver","net","created","last_login","last_used","last_used_pc","use":[{"pc_id","pc","last","n30"}],"current","new"}],"ended":[…]}`: the account's active keys, newest first; `ended` the keys that ended in the last 30 days (at most [`MAX_ENDED`], the latest first), each with `"ended"` (its time), `"left"` and, when a device ended it, `"left_by":{"ckid","name","app_name","platform"}` |
+//! | `POST /api/hjv/keys/{ckid}/ack` | `{"ack":true}`: a device of the account answered "내 기기 맞음" |
+//! | `POST /api/hjv/keys/{ckid}/not-mine` | `{"revoked":b}`: a device of the account answered "아님": the key is marked, and logged out with its token if it was active (`b`) |
 //! | `DELETE /api/hjv/keys/{ckid}` | `{"revoked":true}`: the key and its token are revoked ("로그아웃시키기") |
 //! | `POST /api/hjv/keys/revoke-others` | `{"revoked":n}`: every other key of the account and its token |
 //!
-//! A key of another account, an unknown or revoked one: the same 404. `new` marks a key made
-//! after the asking one that neither the asking key nor an older key of the account has
-//! confirmed, for seven days. A key confirms only keys made after it (its own or an older one:
-//! the same 404), and a confirmation counts for the device that gave it and the ones that logged
-//! in after it: whoever logs in with a leaked portal password cannot take the notice off the
-//! owner's devices, neither by confirming its own key nor through a second login of its own that
-//! confirms the first (design v3 §0, §1-1). `name` is the server's device name, `app_name` the
-//! device's own. `use` is what the PCs reported through their sync (U6, design v3 §5-2): per PC
-//! the latest time the key opened it without its password (by the PC's clock, never after the
-//! server got the report) and the count of the last 30 days (UTC); `pc` is the PC's host name. A
-//! PC's lines go when it leaves the account (design v3 §10-1). `last_used` and `last_used_pc` are
-//! its latest line, or null.
+//! A key of another account, an unknown one, or (but for `ack` and `not-mine`, which also take a
+//! key that ended in the last 30 days) a revoked one: the same 404. `left` says how a key ended:
+//! `logout` (the device logged out, also by DELETE of its own key), `removed` (another device of
+//! the account logged it out: `left_by`), `expired` (its login expired), `replaced` (a new login
+//! of the same device), `evicted` (the account's [`MAX_ACTIVE_KEYS`]), `admin` (the operator, or
+//! the account left the allowlist).
+//!
+//! `new` is the new-device notice (design v3 §1-1, U1-a, U1-c): every key of the account but the
+//! asking one's, active or ended, whatever order the keys were made in, until it is answered,
+//! with no time limit. A key is answered for every device by "아님" from any device; by "내 기기
+//! 맞음" from a device that logged in before it, for that device and the ones that logged in after
+//! it (the oldest such answer is kept); and by "내 기기 맞음" from a device that logged in after it,
+//! for that device only. So whoever logs in with a leaked portal password cannot take the notice
+//! off the owner's devices, neither for its own key nor through a second login of its own that
+//! answers the first, and logging the owner's devices out first does not hide it from the
+//! owner's next login. An answer by a key that got "아님" counts no more. A key a device logged out
+//! is answered for that device, a key replaced by a new login of its device for every device (the
+//! new key carries the notice). `name` is the device name devmodel.rs made of what the device
+//! said, `app_name` the device's own. `use` is what the PCs reported through their sync (U6,
+//! design v3 §5-2): per PC the latest time the key opened it without its password (by the PC's
+//! clock, never after the server got the report) and the count of the last 30 days (UTC); `pc`
+//! is the PC's host name. A PC's lines go when it leaves the account (design v3 §10-1).
+//! `last_used` and `last_used_pc` are its latest line, or null.
 
 use crate::{
     api::{paged, session, ApiRequest, Reply},
     db::{self, Key, KeyUse},
     state::AppState,
-    util::{b64, b64_decode, now, DAY},
+    util::{b64, b64_decode, now},
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use hyper::{Method, StatusCode};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 pub const CONTEXT: &[u8] = b"hjv-ckey-v1";
-/// Active account keys per account (design v3 §4-1 step 4).
+/// Active account keys per account (design v3 §4-1 step 4); a login past it evicts the least
+/// recently used one.
 pub const MAX_ACTIVE_KEYS: usize = 20;
-/// The answer past MAX_ACTIVE_KEYS (shown in the login dialog).
-pub const TEXT_TOO_MANY: &str = "로그인한 기기가 너무 많습니다. 다른 기기에서 정리해 주세요.";
-/// Calls of the keys paths per account and minute (design v3 §5-5).
+/// Calls of the keys paths per key and minute (design v3 §5-5).
 pub const CALLS_PER_MINUTE: usize = 30;
 const TEXT_TOO_OFTEN: &str = "요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.";
-/// How long a key no device has confirmed counts as new.
-pub const NEW_FOR: i64 = 7 * DAY;
+/// The ended keys an answer carries at most.
+pub const MAX_ENDED: usize = 50;
 
 /// The bytes `cp` signs.
 pub fn message(nonce: &str, device_id: &str, ck: &str) -> Vec<u8> {
@@ -133,18 +147,18 @@ pub fn proof(seed: &[u8; 32], nonce: &str, device_id: &str) -> (String, String) 
     (ck, cp)
 }
 
-/// Calls of the keys paths per account in the last minute, in memory.
+/// Calls of the keys paths per account key in the last minute, in memory.
 #[derive(Default)]
 pub struct CallLimiter {
     calls: Mutex<HashMap<i64, VecDeque<Instant>>>,
 }
 
 impl CallLimiter {
-    /// Takes a call for the account if it has one left this minute.
-    pub fn try_take(&self, account_id: i64) -> bool {
+    /// Takes a call for the key if it has one left this minute.
+    pub fn try_take(&self, ckid: i64) -> bool {
         let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        let mine = calls.entry(account_id).or_default();
+        let mine = calls.entry(ckid).or_default();
         while mine
             .front()
             .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
@@ -158,7 +172,7 @@ impl CallLimiter {
         true
     }
 
-    /// Forgets the accounts without a call in the last minute.
+    /// Forgets the keys without a call in the last minute.
     pub fn purge(&self) {
         let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
@@ -175,7 +189,7 @@ pub fn allowed_methods(path: &str) -> Option<&'static str> {
     Some(match rest {
         "" => "GET",
         "/revoke-others" => "POST",
-        r if r.ends_with("/ack") => "POST",
+        r if r.ends_with("/ack") || r.ends_with("/not-mine") => "POST",
         r if r.starts_with('/') => "DELETE",
         _ => return None,
     })
@@ -191,16 +205,37 @@ fn ckid(text: &str) -> Option<i64> {
     .flatten()
 }
 
+/// Whether device `viewer` gets the new-device notice for key `k` (the module's `new`):
+/// `answered_here` is whether `viewer` answered [내 기기 맞음] for it while made after it.
+fn notice(k: &Key, viewer: i64, answered_here: bool) -> bool {
+    k.ckid != viewer
+        && !answered_here
+        && k.not_mine_at.is_none()
+        && k.revoked_by != Some(viewer)
+        && !matches!(k.revoke_reason.as_deref(), Some("same-device" | "replaced"))
+        // a confirmation counts for the device that gave it and the ones that logged in after it
+        && k.ack_by.is_none_or(|by| by > viewer)
+}
+
+/// How a revoked key ended, as the app says it (the module's `left`).
+fn left(k: &Key) -> Option<&'static str> {
+    let reason = k.revoke_reason.as_deref()?;
+    Some(match reason {
+        "logout" | "logout-unsigned" => "logout",
+        "user" | "others" if k.revoked_by == Some(k.ckid) => "logout",
+        "user" | "others" => "removed",
+        "idle" => "expired",
+        "same-device" | "replaced" => "replaced",
+        "evicted" => "evicted",
+        _ => "admin",
+    })
+}
+
 /// A key as the app's list of logged-in devices reads it; `uses` are its lines of `key use`,
-/// latest first.
-fn key_json(k: &Key, current: Option<&Key>, at: i64, uses: &[&KeyUse]) -> Value {
-    let current_ckid = current.map_or(0, |c| c.ckid);
-    // a later key's confirmation does not count here: it may be the newcomer's own
-    let new = k.ckid > current_ckid
-        && k.ack_by.is_none_or(|by| by > current_ckid)
-        && at - k.created_at < NEW_FOR;
+/// latest first, `by` the key that ended it when a device did.
+fn key_json(k: &Key, viewer: i64, new: bool, uses: &[&KeyUse], by: Option<&Key>) -> Value {
     let latest = uses.first();
-    json!({
+    let mut item = json!({
         "ckid": k.ckid,
         "name": k.model,
         "app_name": k.app_name,
@@ -215,9 +250,19 @@ fn key_json(k: &Key, current: Option<&Key>, at: i64, uses: &[&KeyUse]) -> Value 
             .iter()
             .map(|u| json!({ "pc_id": u.device_id, "pc": u.pc, "last": u.last, "n30": u.n }))
             .collect::<Vec<Value>>(),
-        "current": k.ckid == current_ckid,
+        "current": k.ckid == viewer,
         "new": new,
-    })
+    });
+    if let (Some(ended), Some(how)) = (k.revoked_at, left(k)) {
+        item["ended"] = json!(ended);
+        item["left"] = json!(how);
+        if how == "removed" {
+            item["left_by"] = by.map_or(Value::Null, |b| {
+                json!({ "ckid": b.ckid, "name": b.model, "app_name": b.app_name, "platform": b.platform })
+            });
+        }
+    }
+    item
 }
 
 /// Handles the keys paths (the methods are checked by the caller).
@@ -230,14 +275,12 @@ pub async fn route(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         // session() lets no request without its key's proof through
         return Reply::server_error();
     };
-    if !state.key_calls.try_take(s.account.id) {
-        if state.first_notice(
-            &format!("keys-calls:{}", s.account.id),
-            Duration::from_secs(60),
-        ) {
-            log_notice!(
-                "keys: more than {CALLS_PER_MINUTE} calls a minute (acct={})",
-                state.tags.account(&s.account.login_key)
+    if !state.key_calls.try_take(own.ckid) {
+        if state.first_notice(&format!("keys-calls:{}", own.ckid), Duration::from_secs(60)) {
+            log_warn!(
+                "keys: more than {CALLS_PER_MINUTE} calls a minute from one key (acct={}, ckid={})",
+                state.tags.account(&s.account.login_key),
+                own.ckid
             );
         }
         return Reply::error(StatusCode::TOO_MANY_REQUESTS, TEXT_TOO_OFTEN);
@@ -260,21 +303,29 @@ pub async fn route(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
             .call(move |c| {
                 Ok((
                     db::keys_of(c, account_id)?,
+                    db::ended_keys_of(c, account_id, MAX_ENDED)?,
                     db::key_use_of(c, account_id, &db::use_since(at))?,
+                    db::answered_by(c, own.ckid)?,
                 ))
             })
             .await
         {
-            Ok((keys, uses)) => {
-                let current = keys.iter().find(|k| k.ckid == own.ckid);
-                let items = keys
+            Ok((keys, ended, uses, answered)) => {
+                let answered: HashSet<i64> = answered.into_iter().collect();
+                let all: HashMap<i64, &Key> = keys
                     .iter()
-                    .map(|k| {
-                        let mine: Vec<&KeyUse> = uses.iter().filter(|u| u.ckid == k.ckid).collect();
-                        key_json(k, current, at, &mine)
-                    })
+                    .chain(ended.iter())
+                    .map(|k| (k.ckid, k))
                     .collect();
-                Reply::ok(&paged(items, &req.query))
+                let item = |k: &Key| {
+                    let mine: Vec<&KeyUse> = uses.iter().filter(|u| u.ckid == k.ckid).collect();
+                    let by = k.revoked_by.and_then(|b| all.get(&b).copied());
+                    let new = notice(k, own.ckid, answered.contains(&k.ckid));
+                    key_json(k, own.ckid, new, &mine, by)
+                };
+                let mut answer = paged(keys.iter().map(item).collect(), &req.query);
+                answer["ended"] = Value::Array(ended.iter().map(item).collect());
+                Reply::ok(&answer)
             }
             Err(e) => {
                 log_err!("keys: {e}");
@@ -324,13 +375,45 @@ pub async fn route(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
                 }
             }
         }
+        (path, &Method::POST) if path.ends_with("/not-mine") => {
+            let Some(ckid) = path
+                .strip_prefix('/')
+                .and_then(|p| p.strip_suffix("/not-mine"))
+                .and_then(ckid)
+            else {
+                return Reply::not_found();
+            };
+            let done = state
+                .db
+                .call(move |c| {
+                    db::in_tx(c, |tx| {
+                        db::mark_not_mine(tx, account_id, ckid, own.ckid, at)
+                    })
+                })
+                .await;
+            match done {
+                Ok(Some(revoked)) => {
+                    record("not-mine").await;
+                    Reply::ok(&json!({ "revoked": revoked }))
+                }
+                Ok(None) => Reply::not_found(),
+                Err(e) => {
+                    log_err!("keys: {e}");
+                    Reply::server_error()
+                }
+            }
+        }
         (path, &Method::DELETE) => {
             let Some(ckid) = path.strip_prefix('/').and_then(ckid) else {
                 return Reply::not_found();
             };
             let done = state
                 .db
-                .call(move |c| db::in_tx(c, |tx| db::revoke_key(tx, account_id, ckid, "user", at)))
+                .call(move |c| {
+                    db::in_tx(c, |tx| {
+                        db::revoke_key(tx, account_id, ckid, "user", Some(own.ckid), at)
+                    })
+                })
                 .await;
             match done {
                 Ok(true) => {

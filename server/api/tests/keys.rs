@@ -12,7 +12,7 @@ use common::*;
 use hjv_api::{
     api::pwless_note,
     db, jobs,
-    keys::{self, KeyClaim, TEXT_TOO_MANY},
+    keys::{self, KeyClaim},
     login::FAILURE_TEXT,
     proof,
     util::{b64, hex, now, random_bytes},
@@ -144,7 +144,7 @@ async fn the_same_device_replaces_its_key() {
 }
 
 #[tokio::test]
-async fn an_account_has_twenty_active_keys_at_most() {
+async fn a_full_account_logs_out_its_least_recently_used_device() {
     let h = Harness::with(Options {
         vars: vec![
             ("HJV_API_LIMIT_OK_ID", "100/3600".into()),
@@ -156,27 +156,49 @@ async fn an_account_has_twenty_active_keys_at_most() {
     .await;
     let phone = TestDevice::phone("987654321");
     let phone_token = h.login_ok(HONG, Some(&phone)).await;
+    let mut others = vec![];
     for _ in 0..19 {
-        h.login_ok(HONG, None).await;
+        others.push(h.login_ok(HONG, None).await);
     }
-    // a 21st device: refused with its own text, after the SSO
-    let a = login_with(&h, HONG, None, KeyChoice::Fresh, "10.3.1.1").await;
-    assert_eq!(a.status, 403, "{}", a.text);
-    assert_eq!(
-        a.json,
-        json!({ "error": TEXT_TOO_MANY, "hjv": "too-many-keys" })
-    );
-    assert_eq!(h.results().await.last().unwrap(), "login:key-limit");
-    // a device that has a key replaces it
-    let again = h.login_ok(HONG, Some(&phone)).await;
-    assert_eq!(h.get("/api/users", &phone_token).await.status, 401);
-    // once one is revoked, another device gets in
-    let list = h.get("/api/hjv/keys?current=1&pageSize=100", &again).await;
+    // the phone was used since; the first of the others was not
+    h.state
+        .db
+        .call(|c| {
+            c.execute(
+                "UPDATE tokens SET last_used_at = last_used_at + 3600 WHERE ckid = 1",
+                [],
+            )
+        })
+        .await
+        .unwrap();
+    // a 21st device gets in, whoever filled the account: the least recently used device goes
+    let serial_before = serial(&h).await;
+    let newcomer = h.login_ok(HONG, None).await;
+    assert_eq!(h.get("/api/users", &others[0]).await.status, 401);
+    assert_eq!(h.get("/api/users", &phone_token).await.status, 200);
+    assert_eq!(h.get("/api/users", &others[1]).await.status, 200);
+    assert_eq!(serial(&h).await, serial_before + 1);
+    let list = h
+        .get("/api/hjv/keys?current=1&pageSize=100", &newcomer)
+        .await;
     assert_eq!(list.json["total"], 20);
-    let oldest = *ckids(&list).last().unwrap();
-    let a = h.delete(&format!("/api/hjv/keys/{oldest}"), &again).await;
-    assert_eq!(a.json, json!({"revoked": true}));
-    h.login_ok(HONG, None).await;
+    assert_eq!(list.json["ended"][0]["left"], "evicted");
+    assert_eq!(list.json["ended"][0]["new"], true);
+    // so whoever knows the password now logs the others out
+    let r = h.post("/api/hjv/keys/revoke-others", &newcomer, None).await;
+    assert_eq!(r.json, json!({"revoked": 19}));
+    assert_eq!(
+        h.results()
+            .await
+            .iter()
+            .filter(|r| *r == "login:ok")
+            .count(),
+        21
+    );
+    // a device that has a key replaces it and evicts none
+    let again = h.login_ok(HONG, Some(&phone)).await;
+    assert_eq!(h.get("/api/users", &newcomer).await.status, 200);
+    assert_eq!(h.get("/api/users", &again).await.status, 200);
     // other accounts are not affected
     h.login_ok(KIM, None).await;
 }
@@ -416,7 +438,8 @@ async fn the_keys_paths() {
             .unwrap()
             .clone()
     };
-    // B logged in after A and nobody confirmed it: new on A, not on B itself
+    // B logged in after A and nobody confirmed it: new on A, not on B itself; and A on B, as
+    // nobody answered it either (whatever the order of the keys)
     let on_a = entry(&list, kb);
     assert_eq!(
         (on_a["new"].clone(), on_a["current"].clone()),
@@ -427,7 +450,7 @@ async fn the_keys_paths() {
     assert_eq!(on_a["use"], json!([]));
     assert!(on_a["last_used"].is_null());
     let list_b = h.get("/api/hjv/keys", &b).await;
-    assert_eq!(entry(&list_b, ka)["new"], false);
+    assert_eq!(entry(&list_b, ka)["new"], true);
     assert_eq!(entry(&list_b, kb)["new"], false);
     // "내 기기 맞음"
     let ack = h.post(&format!("/api/hjv/keys/{kb}/ack"), &a, None).await;
@@ -476,7 +499,7 @@ async fn the_keys_paths() {
         h.post("/api/hjv/keys/revoke-others", &c, None).await.json,
         json!({"revoked": 0})
     );
-    // a new key is new for seven days
+    // a new key stays new until it is answered, however old it gets
     let e = h.login_ok(HONG, None).await;
     let ke = ckids(&h.get("/api/hjv/keys", &c).await)[0];
     assert_eq!(entry(&h.get("/api/hjv/keys", &c).await, ke)["new"], true);
@@ -484,13 +507,13 @@ async fn the_keys_paths() {
         .db
         .call(move |c| {
             c.execute(
-                "UPDATE ctl_keys SET created_at = created_at - 8 * 86400 WHERE ckid = ?1",
+                "UPDATE ctl_keys SET created_at = created_at - 400 * 86400 WHERE ckid = ?1",
                 [ke],
             )
         })
         .await
         .unwrap();
-    assert_eq!(entry(&h.get("/api/hjv/keys", &c).await, ke)["new"], false);
+    assert_eq!(entry(&h.get("/api/hjv/keys", &c).await, ke)["new"], true);
     // a device may revoke its own key, as a logout
     let mine = ckids(&h.get("/api/hjv/keys", &e).await)[0];
     assert_eq!(mine, ke);
@@ -499,6 +522,37 @@ async fn the_keys_paths() {
         json!({"revoked": true})
     );
     assert_eq!(h.get("/api/users", &e).await.status, 401);
+    // the ended keys of the last 30 days, the latest first, with how they left
+    let list = h.get("/api/hjv/keys", &c).await;
+    let ended: Vec<(i64, String)> = list.json["ended"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| {
+            (
+                k["ckid"].as_i64().unwrap(),
+                k["left"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let kc = ckids(&list)[0];
+    assert_eq!(ckids(&list), [kc]);
+    assert_eq!(ended[0], (ke, "logout".to_owned()));
+    assert!(ended.contains(&(kb, "removed".to_owned())), "{ended:?}");
+    assert!(ended.contains(&(ka, "removed".to_owned())), "{ended:?}");
+    let removed_a = list.json["ended"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["ckid"] == ka)
+        .unwrap()
+        .clone();
+    assert_eq!(removed_a["left_by"]["ckid"], kc);
+    assert!(removed_a["ended"].is_i64());
+    // logging a device out is no answer for the other devices: the ones nobody answered keep
+    // their notice, but not on the device that logged them out
+    assert_eq!(removed_a["new"], false);
+    assert_eq!(list.json["ended"][0]["new"], true);
     let results = h.results().await;
     for r in ["key:revoked-user", "key:revoked-others"] {
         assert!(results.contains(&r.to_owned()), "{r}: {results:?}");
@@ -539,14 +593,16 @@ async fn a_newcomer_cannot_silence_the_new_device_notice() {
     let [(k2, true), (k1, false)] = notice(&h, &owner).await[..] else {
         panic!("{:?}", notice(&h, &owner).await)
     };
-    // it confirms neither itself nor an older key: the 404 of a key the account does not have
-    for ckid in [k2, k1] {
-        let a = ack(&h, ckid, &first).await;
-        assert_eq!(
-            (a.status, a.json.clone()),
-            (404, json!({"error": "not found"}))
-        );
-    }
+    // it cannot answer for itself (the 404 of a key the account does not have), and its answer
+    // for an older key counts on its own device only
+    let a = ack(&h, k2, &first).await;
+    assert_eq!(
+        (a.status, a.json.clone()),
+        (404, json!({"error": "not found"}))
+    );
+    assert_eq!(notice(&h, &first).await, [(k2, false), (k1, true)]);
+    assert_eq!(ack(&h, k1, &first).await.json, json!({"ack": true}));
+    assert_eq!(notice(&h, &first).await, [(k2, false), (k1, false)]);
     assert_eq!(notice(&h, &owner).await, [(k2, true), (k1, false)]);
     // nor through a chain of its own logins: the first confirms the second, a new login of the
     // first device replaces its key, and the second confirms that one
@@ -564,7 +620,7 @@ async fn a_newcomer_cannot_silence_the_new_device_notice() {
     );
     assert_eq!(
         notice(&h, &second).await,
-        [(k4, false), (k3, false), (k1, false)]
+        [(k4, false), (k3, false), (k1, true)]
     );
     // a confirmation counts for the device that gave it and the ones that logged in after it
     assert_eq!(ack(&h, k3, &owner).await.json, json!({"ack": true}));
@@ -574,13 +630,131 @@ async fn a_newcomer_cannot_silence_the_new_device_notice() {
     );
     // "아님: 로그아웃시키기"
     for ckid in [k4, k3] {
-        let d = h.delete(&format!("/api/hjv/keys/{ckid}"), &owner).await;
+        let d = h
+            .post(&format!("/api/hjv/keys/{ckid}/not-mine"), &owner, None)
+            .await;
         assert_eq!(d.json, json!({"revoked": true}));
     }
     for token in [&second, &third] {
         assert_eq!(h.get("/api/users", token).await.status, 401);
     }
     assert_eq!(notice(&h, &owner).await, [(k1, false)]);
+}
+
+/// The notice waits for an answer whatever the order the keys were made in and whether the key
+/// is still logged in (design v3 U1-a to U1-c, the review's protocol-notice-older-key).
+#[tokio::test]
+async fn the_notice_waits_for_an_answer() {
+    let h = Harness::start().await;
+    // (가) someone with the portal password logs in and logs the owner's devices out first
+    let owner = h
+        .login_ok(HONG, Some(&TestDevice::phone("900000001")))
+        .await;
+    let k1 = notice(&h, &owner).await[0].0;
+    let x = TestDevice::phone("900000011");
+    let first = h.login_ok(HONG, Some(&x)).await;
+    let k2 = notice(&h, &first).await[0].0;
+    let r = h.post("/api/hjv/keys/revoke-others", &first, None).await;
+    assert_eq!(r.json, json!({"revoked": 1}));
+    assert_eq!(h.get("/api/users", &owner).await.status, 401);
+    // the owner logs in again: the older key gets the notice all the same, and so does the
+    // owner's own key that nobody answered, which says who logged it out
+    let owner = h
+        .login_ok(HONG, Some(&TestDevice::phone("900000001")))
+        .await;
+    let list = h.get("/api/hjv/keys", &owner).await;
+    let k3 = ckids(&list)[0];
+    assert_eq!(notice(&h, &owner).await, [(k3, false), (k2, true)]);
+    let gone = &list.json["ended"][0];
+    assert_eq!(
+        (
+            gone["ckid"].as_i64(),
+            gone["left"].as_str(),
+            gone["new"].as_bool()
+        ),
+        (Some(k1), Some("removed"), Some(true))
+    );
+    assert_eq!(gone["left_by"]["ckid"], k2);
+    assert_eq!(gone["left_by"]["name"], "iPhone 14 Pro");
+    // it logs out after its use: the notice stays and says so; [아님] marks it
+    assert_eq!(h.post("/api/logout", &first, None).await.status, 200);
+    let list = h.get("/api/hjv/keys", &owner).await;
+    let out = list.json["ended"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["ckid"] == k2)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (out["left"].as_str(), out["new"].as_bool()),
+        (Some("logout"), Some(true))
+    );
+    let d = h
+        .post(&format!("/api/hjv/keys/{k2}/not-mine"), &owner, None)
+        .await;
+    assert_eq!(d.json, json!({"revoked": false}));
+    let list = h.get("/api/hjv/keys", &owner).await;
+    assert!(list.json["ended"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|k| k["ckid"] != k2 || k["new"] == false));
+    // [내 기기 맞음] for an ended key ends its notice as well
+    assert_eq!(ack(&h, k1, &owner).await.json, json!({"ack": true}));
+    let list = h.get("/api/hjv/keys", &owner).await;
+    assert!(list.json["ended"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|k| k["new"] == false));
+    // a login from a device ID that has a key, whatever its uuid, replaces that key: the new key
+    // gets the notice, the old one is in the list as replaced
+    let pc = h.login_ok(HONG, None).await;
+    let k4 = ckids(&h.get("/api/hjv/keys", &pc).await)[0];
+    let posing = TestDevice {
+        uuid: "another uuid".into(),
+        ..TestDevice::phone("900000001")
+    };
+    let serial_before = serial(&h).await;
+    let again = h.login_ok(HONG, Some(&posing)).await;
+    assert_eq!(h.get("/api/users", &owner).await.status, 401);
+    assert!(serial(&h).await >= serial_before + 2);
+    let list = h.get("/api/hjv/keys", &pc).await;
+    let k5 = ckids(&list)[0];
+    assert_eq!(notice(&h, &pc).await, [(k5, true), (k4, false)]);
+    let replaced = list.json["ended"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["ckid"] == k3)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (replaced["left"].as_str(), replaced["new"].as_bool()),
+        (Some("replaced"), Some(false))
+    );
+    // (나) a key made before the owner's first login gets the notice too
+    let early = h.login_ok(KIM, None).await;
+    let k6 = ckids(&h.get("/api/hjv/keys", &early).await)[0];
+    let kim_owner = h.login_ok(KIM, Some(&TestDevice::phone("900000021"))).await;
+    let k7 = ckids(&h.get("/api/hjv/keys", &kim_owner).await)[0];
+    assert_eq!(notice(&h, &kim_owner).await, [(k7, false), (k6, true)]);
+    // an answer given by a key that got [아님] counts no more: a second login confirmed by the
+    // first gets the notice again
+    let second = h.login_ok(KIM, None).await;
+    let k8 = ckids(&h.get("/api/hjv/keys", &second).await)[0];
+    assert_eq!(ack(&h, k8, &early).await.json, json!({"ack": true}));
+    assert_eq!(
+        notice(&h, &kim_owner).await,
+        [(k8, false), (k7, false), (k6, true)]
+    );
+    let d = h
+        .post(&format!("/api/hjv/keys/{k6}/not-mine"), &kim_owner, None)
+        .await;
+    assert_eq!(d.json, json!({"revoked": true}));
+    assert_eq!(notice(&h, &kim_owner).await, [(k8, true), (k7, false)]);
+    let _ = again;
 }
 
 #[tokio::test]
@@ -594,9 +768,19 @@ async fn the_keys_paths_take_thirty_calls_a_minute() {
     let a = h.get("/api/hjv/keys", &token).await;
     assert_eq!(a.status, 429, "{}", a.text);
     assert!(a.json["error"].is_string());
-    // per account; the other paths do not count
+    // per key: another device of the same account still gets through, so that no device of
+    // the account can use up the notice and the logout of another; the other paths do not count
+    let other = h.login_ok(HONG, None).await;
+    assert_eq!(h.get("/api/hjv/keys", &other).await.status, 200);
+    let busy = *ckids(&h.get("/api/hjv/keys", &other).await).last().unwrap();
+    assert_eq!(
+        h.delete(&format!("/api/hjv/keys/{busy}"), &other)
+            .await
+            .json,
+        json!({"revoked": true})
+    );
     assert_eq!(h.get("/api/hjv/keys", &kim).await.status, 200);
-    assert_eq!(h.get("/api/users", &token).await.status, 200);
+    assert_eq!(h.get("/api/users", &other).await.status, 200);
 }
 
 #[tokio::test]

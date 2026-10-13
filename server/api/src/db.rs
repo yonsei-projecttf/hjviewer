@@ -11,7 +11,8 @@
 //!
 //! Schema changes are migrations in [`MIGRATIONS`]. Schema 3 (design v3 §5-4, §8) is Wake-on-LAN:
 //! the PCs' wake reports, the NAS relays with their pre-approvals and nonces, and the wake jobs
-//! with their signed commands (wolinfo.rs, relay.rs, wake.rs).
+//! with their signed commands (wolinfo.rs, relay.rs, wake.rs). Schema 4 (design v3 §5-2) keeps
+//! who ended an account key and what the account's devices answered about it (keys.rs).
 //!
 //! A restored backup (backup.rs, known by its application ID) is opened with password-less
 //! connections off for every account, before the service answers anything: its switches are
@@ -315,6 +316,26 @@ CREATE TABLE wake_commands (
     exp INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX wake_commands_relay ON wake_commands(relay_id, iat);
+"#,
+    // Schema 4 (design v3 §5-2, the decisions U1-a to U1-c of 2026-10-13): the new-device notice
+    // waits for an answer, also for keys made before the device that sees it and for keys that
+    // ended before anyone answered; the logged-in devices keep the ended ones for 30 days.
+    r#"
+-- the key whose request ended this one ('user': 로그아웃시키기, 'others': 다른 기기 모두
+-- 로그아웃, also the key itself), and the [아님] of a device of the account with that device's key
+ALTER TABLE ctl_keys ADD COLUMN revoked_by INTEGER;
+ALTER TABLE ctl_keys ADD COLUMN not_mine_at INTEGER;
+ALTER TABLE ctl_keys ADD COLUMN not_mine_by INTEGER;
+
+-- [내 기기 맞음] for a key made before the device that answered: it counts for that device only,
+-- so that a second login of whoever has the portal password cannot answer for its first
+CREATE TABLE key_answers (
+    ckid INTEGER NOT NULL REFERENCES ctl_keys(ckid) ON DELETE CASCADE,
+    by_ckid INTEGER NOT NULL REFERENCES ctl_keys(ckid) ON DELETE CASCADE,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (ckid, by_ckid)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX key_answers_by ON key_answers(by_ckid);
 "#,
 ];
 
@@ -860,8 +881,10 @@ pub struct NewToken<'a> {
     pub ckid: Option<i64>,
 }
 
-/// Stores a token. The account's older tokens from the same device go (the app keeps one), and of
-/// the rest only the `keep` most recently used stay; returns how many went.
+/// Stores a token. The account's older tokens from the same device go (the app keeps one), and so
+/// do their account keys: a login from a device ID that already has one replaces its key
+/// ('replaced', design v3 U1-c; the new key gets the new-device notice like any other). Of the
+/// rest only the `keep` most recently used tokens stay; returns how many tokens went.
 pub fn insert_token(
     c: &mut Connection,
     t: &NewToken<'_>,
@@ -880,6 +903,15 @@ pub fn insert_token_tx(
 ) -> rusqlite::Result<usize> {
     let mut revoked = 0;
     if !t.device_id.is_empty() {
+        let keys = c.execute(
+            "UPDATE ctl_keys SET revoked_at = ?3, revoke_reason = 'replaced'
+             WHERE revoked_at IS NULL AND ckid IN (
+                 SELECT ckid FROM tokens WHERE account_id = ?1 AND device_id = ?2)",
+            params![t.account_id, t.device_id, at],
+        )?;
+        if keys > 0 {
+            bump_serial(c)?;
+        }
         revoked += c.execute(
             "DELETE FROM tokens WHERE account_id = ?1 AND device_id = ?2",
             params![t.account_id, t.device_id],
@@ -1038,15 +1070,20 @@ pub struct Key {
     pub created_at: i64,
     pub last_login_at: i64,
     pub ack_at: Option<i64>,
-    /// the oldest of the account's keys that confirmed this one
+    /// the oldest of the account's keys made before this one that confirmed it
     pub ack_by: Option<i64>,
     pub revoked_at: Option<i64>,
     pub revoke_reason: Option<String>,
+    /// the key whose request revoked this one ('user', 'others'; the key itself for its own logout)
+    pub revoked_by: Option<i64>,
+    /// a device of the account answered [아님] for this key: when, and that device's key
+    pub not_mine_at: Option<i64>,
+    pub not_mine_by: Option<i64>,
 }
 
 const KEY_COLUMNS: &str = "k.ckid, k.account_id, k.pk, k.dev_tag, k.ctl_id, k.platform, k.model,
     k.app_name, k.app_ver, k.login_net, k.key_serial, k.created_at, k.last_login_at, k.ack_at,
-    k.ack_by, k.revoked_at, k.revoke_reason";
+    k.ack_by, k.revoked_at, k.revoke_reason, k.revoked_by, k.not_mine_at, k.not_mine_by";
 
 fn key_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Key> {
     Ok(Key {
@@ -1067,6 +1104,9 @@ fn key_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Key> {
         ack_by: r.get(14)?,
         revoked_at: r.get(15)?,
         revoke_reason: r.get(16)?,
+        revoked_by: r.get(17)?,
+        not_mine_at: r.get(18)?,
+        not_mine_by: r.get(19)?,
     })
 }
 
@@ -1086,22 +1126,24 @@ pub struct NewKey<'a> {
 /// What [`add_key`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyAdmission {
-    /// registered with the serial its registration made; `replaced` keys of the same device went
+    /// registered with the serial its registration made; `replaced` keys of the same device went,
+    /// and `evicted` least recently used ones, which made room
     Added {
         ckid: i64,
         key_serial: i64,
         replaced: usize,
+        evicted: usize,
     },
     /// another row has this public key, in any account, revoked or not
     InUse,
-    /// the account would have more than the active keys allowed
-    TooMany,
 }
 
 /// Registers a login's account key, inside the caller's transaction (design v3 §4-1 steps 3-5):
-/// a key no row has yet, at most `max_active` active keys per account counting the ones this
-/// login replaces as gone, then the account's older keys of the same device (`dev_tag`) are
-/// revoked with their tokens and the change serial goes up once.
+/// a key no row has yet; the account's older keys of the same device (`dev_tag`) are revoked
+/// with their tokens; at most `max_active` active keys per account, counting the ones this login
+/// replaces as gone: past that, the account's least recently used key is revoked ('evicted') so
+/// that whoever knows the portal password now can always log in and log the others out (a full
+/// account refused logins, and whoever filled it kept its keys); the change serial goes up once.
 pub fn add_key(
     c: &Connection,
     k: &NewKey<'_>,
@@ -1116,15 +1158,6 @@ pub fn add_key(
     if in_use {
         return Ok(KeyAdmission::InUse);
     }
-    let (active, same_device): (i64, i64) = c.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(?2 <> '' AND dev_tag = ?2), 0) FROM ctl_keys
-         WHERE account_id = ?1 AND revoked_at IS NULL",
-        params![k.account_id, k.dev_tag],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    if active - same_device >= max_active as i64 {
-        return Ok(KeyAdmission::TooMany);
-    }
     let replaced = if k.dev_tag.is_empty() {
         0
     } else {
@@ -1134,7 +1167,33 @@ pub fn add_key(
             params![k.account_id, k.dev_tag, at],
         )?
     };
-    if replaced > 0 {
+    let mut evicted = 0;
+    loop {
+        let active: i64 = c.query_row(
+            "SELECT COUNT(*) FROM ctl_keys WHERE account_id = ?1 AND revoked_at IS NULL",
+            [k.account_id],
+            |r| r.get(0),
+        )?;
+        if active < max_active as i64 {
+            break;
+        }
+        // the least recently used: its token's last use, or its last login without one
+        let n = c.execute(
+            "UPDATE ctl_keys SET revoked_at = ?2, revoke_reason = 'evicted'
+             WHERE ckid = (
+                 SELECT k.ckid FROM ctl_keys k
+                 WHERE k.account_id = ?1 AND k.revoked_at IS NULL
+                 ORDER BY COALESCE((SELECT MAX(t.last_used_at) FROM tokens t WHERE t.ckid = k.ckid),
+                                   k.last_login_at), k.ckid
+                 LIMIT 1)",
+            params![k.account_id, at],
+        )?;
+        if n == 0 {
+            break;
+        }
+        evicted += n;
+    }
+    if replaced + evicted > 0 {
         drop_revoked_tokens(c)?;
     }
     let key_serial = bump_serial(c)?;
@@ -1160,6 +1219,7 @@ pub fn add_key(
         ckid: c.last_insert_rowid(),
         key_serial,
         replaced,
+        evicted,
     })
 }
 
@@ -1181,19 +1241,54 @@ fn revoked(c: &Connection, count: usize) -> rusqlite::Result<usize> {
 }
 
 /// Revokes one active key of an account with its token; false if the account has no such key.
+/// `by` is the key whose request revoked it, when a device asked for it (keys.rs).
 pub fn revoke_key(
     c: &Connection,
     account_id: i64,
     ckid: i64,
     reason: &str,
+    by: Option<i64>,
     at: i64,
 ) -> rusqlite::Result<bool> {
     let n = c.execute(
-        "UPDATE ctl_keys SET revoked_at = ?3, revoke_reason = ?4
+        "UPDATE ctl_keys SET revoked_at = ?3, revoke_reason = ?4, revoked_by = ?5
          WHERE ckid = ?1 AND account_id = ?2 AND revoked_at IS NULL",
-        params![ckid, account_id, at, reason],
+        params![ckid, account_id, at, reason, by],
     )?;
     Ok(revoked(c, n)? > 0)
+}
+
+/// A device of the account answered [아님] for key `ckid` (design v3 §1-1, U1-a): the key is
+/// marked, revoked with its token if it is still active, and the confirmations it gave count no
+/// more, so that a key confirmed only by it gets the notice again. `by` is the asking key, which
+/// cannot answer for itself. None if the account has no such key (or it is `by`); else whether
+/// the key was active.
+pub fn mark_not_mine(
+    c: &Connection,
+    account_id: i64,
+    ckid: i64,
+    by: i64,
+    at: i64,
+) -> rusqlite::Result<Option<bool>> {
+    let marked = c.execute(
+        "UPDATE ctl_keys SET not_mine_at = COALESCE(not_mine_at, ?3),
+                             not_mine_by = COALESCE(not_mine_by, ?4)
+         WHERE ckid = ?1 AND account_id = ?2 AND ckid <> ?4",
+        params![ckid, account_id, at, by],
+    )?;
+    if marked == 0 {
+        return Ok(None);
+    }
+    c.execute(
+        "UPDATE ctl_keys SET ack_by = NULL, ack_at = NULL WHERE account_id = ?1 AND ack_by = ?2",
+        params![account_id, ckid],
+    )?;
+    let n = c.execute(
+        "UPDATE ctl_keys SET revoked_at = ?2, revoke_reason = 'user', revoked_by = ?3
+         WHERE ckid = ?1 AND revoked_at IS NULL",
+        params![ckid, at, by],
+    )?;
+    Ok(Some(revoked(c, n)? > 0))
 }
 
 /// Revokes an active key whatever its account (admin); false if there is none.
@@ -1206,7 +1301,8 @@ pub fn revoke_any_key(c: &Connection, ckid: i64, reason: &str, at: i64) -> rusql
     Ok(revoked(c, n)? > 0)
 }
 
-/// Revokes the account's active keys but `keep`, with their tokens; returns how many.
+/// Revokes the account's active keys but `keep`, whose request it is, with their tokens; returns
+/// how many.
 pub fn revoke_other_keys(
     c: &Connection,
     account_id: i64,
@@ -1215,7 +1311,7 @@ pub fn revoke_other_keys(
     at: i64,
 ) -> rusqlite::Result<usize> {
     let n = c.execute(
-        "UPDATE ctl_keys SET revoked_at = ?3, revoke_reason = ?4
+        "UPDATE ctl_keys SET revoked_at = ?3, revoke_reason = ?4, revoked_by = ?2
          WHERE account_id = ?1 AND ckid <> ?2 AND revoked_at IS NULL",
         params![account_id, keep, at, reason],
     )?;
@@ -1261,9 +1357,12 @@ pub fn revoke_idle_keys(c: &Connection, at: i64, idle: i64, max: i64) -> rusqlit
     revoked(c, n)
 }
 
-/// Marks key `ckid` as confirmed by the account's active key `by` ("내 기기 맞음"), keeping the
-/// oldest key that confirmed it. A key confirms only keys made after it: false, as for a key the
-/// account does not have, for itself, an older key or one that is not active (keys.rs `new`).
+/// Key `ckid` of the account, active or ended (until it is deleted), was answered [내 기기 맞음]
+/// by the account's active key `by` (design v3 §1-1, U1-a, U1-c). For a key made after `by` the
+/// oldest key that confirmed it is kept, and the answer counts for `by` and the devices that
+/// logged in after it (keys.rs `new`); for one made before `by`, it counts for `by` only
+/// (the `key_answers` table): a later key may be a second login of whoever has the portal
+/// password. False for a key the account does not have and for the key itself.
 pub fn ack_key(
     c: &Connection,
     account_id: i64,
@@ -1271,13 +1370,40 @@ pub fn ack_key(
     by: i64,
     at: i64,
 ) -> rusqlite::Result<bool> {
-    Ok(c.execute(
-        "UPDATE ctl_keys SET ack_at = COALESCE(ack_at, ?4), ack_by = MIN(COALESCE(ack_by, ?3), ?3)
-         WHERE ckid = ?1 AND account_id = ?2 AND revoked_at IS NULL AND ckid > ?3
-         AND EXISTS (SELECT 1 FROM ctl_keys b
-                     WHERE b.ckid = ?3 AND b.account_id = ?2 AND b.revoked_at IS NULL)",
-        params![ckid, account_id, by, at],
-    )? > 0)
+    let asker_active: bool = c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM ctl_keys
+                        WHERE ckid = ?1 AND account_id = ?2 AND revoked_at IS NULL)",
+        params![by, account_id],
+        |r| r.get(0),
+    )?;
+    if !asker_active || ckid == by {
+        return Ok(false);
+    }
+    if ckid > by {
+        return Ok(c.execute(
+            "UPDATE ctl_keys SET ack_at = COALESCE(ack_at, ?4),
+                                 ack_by = MIN(COALESCE(ack_by, ?3), ?3)
+             WHERE ckid = ?1 AND account_id = ?2",
+            params![ckid, account_id, by, at],
+        )? > 0);
+    }
+    let known: bool = c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM ctl_keys WHERE ckid = ?1 AND account_id = ?2)",
+        params![ckid, account_id],
+        |r| r.get(0),
+    )?;
+    if known {
+        c.execute(
+            "INSERT OR IGNORE INTO key_answers (ckid, by_ckid, at) VALUES (?1, ?2, ?3)",
+            params![ckid, by, at],
+        )?;
+    }
+    Ok(known)
+}
+
+/// The keys made before key `by` that it answered [내 기기 맞음] ([`ack_key`]).
+pub fn answered_by(c: &Connection, by: i64) -> rusqlite::Result<Vec<i64>> {
+    column(c, "SELECT ckid FROM key_answers WHERE by_ckid = ?1", [by])
 }
 
 /// The account's active keys, newest first.
@@ -1287,6 +1413,17 @@ pub fn keys_of(c: &Connection, account_id: i64) -> rusqlite::Result<Vec<Key>> {
          ORDER BY k.ckid DESC"
     ))?;
     let rows = stmt.query_map([account_id], key_row)?;
+    rows.collect()
+}
+
+/// The account's revoked keys that are kept (KEY_RETENTION), the latest to end first; `limit`
+/// at most.
+pub fn ended_keys_of(c: &Connection, account_id: i64, limit: usize) -> rusqlite::Result<Vec<Key>> {
+    let mut stmt = c.prepare(&format!(
+        "SELECT {KEY_COLUMNS} FROM ctl_keys k WHERE k.account_id = ?1 AND k.revoked_at IS NOT NULL
+         ORDER BY k.revoked_at DESC, k.ckid DESC LIMIT ?2"
+    ))?;
+    let rows = stmt.query_map(params![account_id, limit as i64], key_row)?;
     rows.collect()
 }
 
@@ -3398,7 +3535,8 @@ mod tests {
         assert_eq!(relay_health(&c, 5000, 4500).unwrap(), Some((3, 1)));
     }
 
-    /// The upgrade to Wake-on-LAN's schema keeps what schema 2 holds and adds its tables empty.
+    /// The upgrades to Wake-on-LAN's schema and to the answers of schema 4 keep what schema 2
+    /// holds and add their tables empty.
     #[test]
     fn schema_two_moves_to_three() {
         let c = Connection::open_in_memory().unwrap();
@@ -3413,7 +3551,7 @@ mod tests {
         let v: i64 = c
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, MIGRATIONS.len() as i64);
         assert_eq!(device(&c, "1").unwrap().unwrap().account_id, a);
         assert!(passwordless_global(&c).unwrap());
         assert_eq!(change_serial(&c).unwrap(), serial);
@@ -3424,6 +3562,7 @@ mod tests {
             "relay_nonces",
             "wake_jobs",
             "wake_commands",
+            "key_answers",
         ] {
             let n: i64 = c
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
@@ -3878,6 +4017,7 @@ mod tests {
             ckid: k1,
             key_serial,
             replaced: 0,
+            evicted: 0,
         } = login_with_key(&mut c, a, 1, "dev-1")
         else {
             panic!("added")
@@ -3904,22 +4044,36 @@ mod tests {
                 public_key: [2; 32]
             })
         );
-        // at most three active keys here; a device that has one replaces it rather than adding
+        // at most three active keys here: a device that has one replaces it rather than adding,
+        // and past three the least recently used key goes (its token's last use, else its login)
         assert!(matches!(
             login_with_key(&mut c, a, 3, "dev-3"),
-            KeyAdmission::Added { .. }
+            KeyAdmission::Added { evicted: 0, .. }
         ));
         assert!(matches!(
             login_with_key(&mut c, a, 4, ""),
-            KeyAdmission::Added { .. }
+            KeyAdmission::Added { evicted: 0, .. }
         ));
-        assert_eq!(login_with_key(&mut c, a, 5, "dev-5"), KeyAdmission::TooMany);
-        assert_eq!(login_with_key(&mut c, a, 6, ""), KeyAdmission::TooMany);
+        c.execute(
+            "UPDATE tokens SET last_used_at = 900 WHERE hash = ?1",
+            [[2u8; 32].as_slice()],
+        )
+        .unwrap();
         assert!(matches!(
-            login_with_key(&mut c, a, 7, "dev-3"),
-            KeyAdmission::Added { replaced: 1, .. }
+            login_with_key(&mut c, a, 5, "dev-5"),
+            KeyAdmission::Added { evicted: 1, .. }
+        ));
+        assert_eq!(active(&c, a), vec![vec![5; 32], vec![4; 32], vec![2; 32]]);
+        assert!(matches!(
+            login_with_key(&mut c, a, 7, "dev-5"),
+            KeyAdmission::Added {
+                replaced: 1,
+                evicted: 0,
+                ..
+            }
         ));
         assert_eq!(active(&c, a).len(), 3);
+        assert!(session(&c, &[3; 32], 200, 1000, 5000).unwrap().is_none());
         // another account counts apart
         assert!(matches!(
             login_with_key(&mut c, b, 8, "dev-3"),
@@ -3927,37 +4081,38 @@ mod tests {
         ));
         // revoking: one key, the others, all; each takes the tokens along and raises the serial
         let serial = change_serial(&c).unwrap();
-        assert!(!revoke_key(&c, b, k2, "user", 300).unwrap());
+        assert!(!revoke_key(&c, b, k2, "user", None, 300).unwrap());
         assert_eq!(change_serial(&c).unwrap(), serial);
-        assert!(revoke_key(&c, a, k2, "user", 300).unwrap());
-        assert!(!revoke_key(&c, a, k2, "user", 300).unwrap());
+        assert!(revoke_key(&c, a, k2, "user", Some(k2), 300).unwrap());
+        assert!(!revoke_key(&c, a, k2, "user", None, 300).unwrap());
         assert_eq!(change_serial(&c).unwrap(), serial + 1);
         assert!(session(&c, &[2; 32], 400, 1000, 5000).unwrap().is_none());
         let keep = keys_of(&c, a).unwrap()[0].ckid;
         assert_eq!(revoke_other_keys(&c, a, keep, "others", 300).unwrap(), 1);
         assert_eq!(keys_of(&c, a).unwrap().len(), 1);
-        assert!(!revoke_key(&c, a, k1, "user", 300).unwrap());
+        assert!(!revoke_key(&c, a, k1, "user", None, 300).unwrap());
         assert_eq!(revoke_all_keys(&c, "admin", 330).unwrap(), 2);
         let tokens: i64 = c
             .query_row("SELECT COUNT(*) FROM tokens", [], |r| r.get(0))
             .unwrap();
         assert_eq!(tokens, 0);
-        let reasons: Vec<Option<String>> = all_keys(&c)
+        let reasons: Vec<(Option<String>, Option<i64>)> = all_keys(&c)
             .unwrap()
             .into_iter()
-            .map(|k| k.revoke_reason)
+            .map(|k| (k.revoke_reason, k.revoked_by))
             .collect();
         assert_eq!(
             reasons,
             [
-                "same-device",
-                "user",
-                "same-device",
-                "others",
-                "admin",
-                "admin"
+                ("same-device", None),
+                ("user", Some(k2)),
+                ("evicted", None),
+                ("others", Some(keep)),
+                ("same-device", None),
+                ("admin", None),
+                ("admin", None),
             ]
-            .map(|r| Some(r.to_owned()))
+            .map(|(r, by)| (Some(r.to_owned()), by))
             .to_vec()
         );
     }
@@ -3979,9 +4134,8 @@ mod tests {
             let k = keys_of(c, a).unwrap().into_iter().find(|k| k.ckid == ckid);
             k.map(|k| (k.ack_at, k.ack_by))
         };
-        // a key confirms only later keys of its own account
+        // a key answers for the other keys of its own account
         assert!(!ack_key(&c, a, k3, k3, 10).unwrap(), "itself");
-        assert!(!ack_key(&c, a, k1, k2, 10).unwrap(), "an older key");
         assert!(
             !ack_key(&c, b, k3, kb, 10).unwrap(),
             "another account's key"
@@ -3992,21 +4146,51 @@ mod tests {
         );
         assert!(!ack_key(&c, a, 99, k1, 10).unwrap(), "no such key");
         assert_eq!(confirmed(&c, k3), Some((None, None)));
-        // the first time stays, and so does the oldest key that confirmed it
+        // for an older key the answer is the answering key's own
+        assert!(ack_key(&c, a, k1, k2, 10).unwrap(), "an older key");
+        assert_eq!(confirmed(&c, k1), Some((None, None)));
+        assert_eq!(answered_by(&c, k2).unwrap(), [k1]);
+        assert!(answered_by(&c, k3).unwrap().is_empty());
+        // for a later key the first time stays, and so does the oldest key that confirmed it
         assert!(ack_key(&c, a, k3, k2, 10).unwrap());
         assert!(ack_key(&c, a, k3, k1, 20).unwrap());
         assert!(ack_key(&c, a, k3, k2, 30).unwrap());
         assert_eq!(confirmed(&c, k3), Some((Some(10), Some(k1))));
-        // a revoked key neither confirms nor is confirmed
-        assert!(revoke_key(&c, a, k1, "user", 40).unwrap());
+        // a revoked key answers no more, but it may still be answered (the notice waits)
+        assert!(revoke_key(&c, a, k1, "user", Some(k2), 40).unwrap());
         assert!(!ack_key(&c, a, k2, k1, 50).unwrap());
-        assert!(revoke_key(&c, a, k3, "user", 40).unwrap());
-        assert!(!ack_key(&c, a, k3, k2, 50).unwrap());
+        assert!(revoke_key(&c, a, k3, "user", Some(k2), 40).unwrap());
+        assert!(ack_key(&c, a, k3, k2, 50).unwrap());
         // confirming changes no trust list: the serial stays
         let k4 = ckid(login_with_key(&mut c, a, 4, "phone"));
         let serial = change_serial(&c).unwrap();
         assert!(ack_key(&c, a, k4, k2, 60).unwrap());
         assert_eq!(change_serial(&c).unwrap(), serial);
+        // [아님]: the key is marked and logged out, and its own confirmations count no more
+        let k5 = ckid(login_with_key(&mut c, a, 5, "pad"));
+        assert!(ack_key(&c, a, k5, k4, 70).unwrap());
+        assert_eq!(confirmed(&c, k5), Some((Some(70), Some(k4))));
+        assert_eq!(mark_not_mine(&c, a, k4, k4, 80).unwrap(), None, "itself");
+        assert_eq!(
+            mark_not_mine(&c, b, k4, kb, 80).unwrap(),
+            None,
+            "another account"
+        );
+        assert_eq!(mark_not_mine(&c, a, k4, k2, 80).unwrap(), Some(true));
+        assert_eq!(confirmed(&c, k5), Some((None, None)));
+        assert_eq!(change_serial(&c).unwrap(), serial + 2);
+        let marked = all_keys(&c)
+            .unwrap()
+            .into_iter()
+            .find(|k| k.ckid == k4)
+            .unwrap();
+        assert_eq!(
+            (marked.not_mine_at, marked.not_mine_by, marked.revoked_by),
+            (Some(80), Some(k2), Some(k2))
+        );
+        // a key that ended before the answer is only marked
+        assert_eq!(mark_not_mine(&c, a, k3, k2, 90).unwrap(), Some(false));
+        assert_eq!(change_serial(&c).unwrap(), serial + 2);
     }
 
     #[test]

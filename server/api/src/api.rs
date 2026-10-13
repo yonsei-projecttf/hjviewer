@@ -501,7 +501,7 @@ async fn logout(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
                 let Some(key) = key else {
                     return Ok((false, false));
                 };
-                let revoked = db::revoke_key(tx, account_id, key.ckid, reason, at)?;
+                let revoked = db::revoke_key(tx, account_id, key.ckid, reason, None, at)?;
                 // the device leaves the list when it logs out (v2 §5), if it proved its key at
                 // login and this request is signed by the token's key
                 let removed = signed
@@ -938,7 +938,6 @@ mod tests {
             login::FAILURE_TEXT,
             login::TEXT_SEAL_CLOCK,
             login::TEXT_SSO_DOWN,
-            keys::TEXT_TOO_MANY,
             pwless_note("active"),
             pwless_note("listed"),
             pwless_note("off"),

@@ -27,8 +27,9 @@
 //! 10. the SSO (sso.rs), sorted into refused credentials (counted), a refused server address or
 //!     client and upstream errors (counted against the address only);
 //! 11. the account key of the sealed payload (keys.rs, design v3 §4-1): 400 without `ck` and
-//!     `cp`, with a `cp` that is not its signature or with a key another row has; 403
-//!     [`keys::TEXT_TOO_MANY`] past the account's active keys.
+//!     `cp`, with a `cp` that is not its signature or with a key another row has. Past the
+//!     account's active keys the least recently used one is logged out (keys.rs): a login is not
+//!     refused for it.
 //!
 //! Every failure leaves no sooner than HJV_API_FAILURE_DELAY_MS (2 s) ± HJV_API_FAILURE_JITTER_MS
 //! (0.5 s) after the request came, and while the SSO is slow no sooner than its slowest recent
@@ -45,8 +46,8 @@
 //! the account key registered (keys.rs), the device added to the account when it is an installed
 //! Windows PC whose signature matches the key hbbs holds (D9, D10, v2 §5), and a token issued:
 //! 256 random bits, of which only the SHA-256 is stored, bound to the account key. A new token
-//! replaces the account's token from the same device, and an account keeps at most
-//! [`MAX_TOKENS`]. The answer adds `"hjv":{"ks":<the key's serial>}`, and for a PC added by the
+//! replaces the account's token from the same device, and that token's key with it, and an
+//! account keeps at most [`MAX_TOKENS`]. The answer adds `"hjv":{"ks":<the key's serial>}`, and for a PC added by the
 //! login or already in the account also `"binding":"<32 hex>","login_at":<server time>` (design
 //! v3 §4-1), from which the PC's service takes up the binding (§4-4).
 
@@ -55,7 +56,7 @@ use crate::{
     config::Window,
     db::{self, Bound, KeyAdmission, NewKey, NewToken, Record},
     devmodel, devsig, hbbs,
-    keys::{self, KeyClaim, KeyError, MAX_ACTIVE_KEYS},
+    keys::{KeyClaim, KeyError, MAX_ACTIVE_KEYS},
     limits::{self, Take, SCOPE_BOUND, SCOPE_ID, SCOPE_IP, SCOPE_OK_ID, SCOPE_OK_IP},
     seal::{Opened, SealError},
     sso::{Failure, SsoError, SsoUser},
@@ -1210,9 +1211,10 @@ enum Written {
         status: BindStatus,
         binding: Option<db::Binding>,
         key_serial: i64,
+        /// keys logged out to keep the account's MAX_ACTIVE_KEYS
+        evicted: usize,
     },
     KeyInUse,
-    TooManyKeys,
 }
 
 async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClaim) -> LoginAnswer {
@@ -1273,12 +1275,15 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
             };
             // steps 3-5: a key no row has, the active keys of the account, the same device's
             // older keys, the change serial (a refusal leaves everything as it was)
-            let (ckid, key_serial) = match db::add_key(&tx, &new_key, at, MAX_ACTIVE_KEYS)? {
+            let (ckid, key_serial, evicted) = match db::add_key(&tx, &new_key, at, MAX_ACTIVE_KEYS)?
+            {
                 KeyAdmission::Added {
-                    ckid, key_serial, ..
-                } => (ckid, key_serial),
+                    ckid,
+                    key_serial,
+                    evicted,
+                    ..
+                } => (ckid, key_serial, evicted),
                 KeyAdmission::InUse => return Ok(Written::KeyInUse),
-                KeyAdmission::TooMany => return Ok(Written::TooManyKeys),
             };
             let (status, verified, binding) = match check {
                 DeviceCheck::Skip(status) => (status, false, None),
@@ -1307,6 +1312,7 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
                 status,
                 binding,
                 key_serial,
+                evicted,
             })
         })
         .await;
@@ -1315,26 +1321,24 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
             status,
             binding,
             key_serial,
-        }) => (status, binding, key_serial),
+            evicted,
+        }) => {
+            if evicted > 0
+                && state.first_notice(
+                    &format!("keys-full:{account_tag}"),
+                    Duration::from_secs(600),
+                )
+            {
+                log_notice!(
+                    "login: the account had {MAX_ACTIVE_KEYS} active keys; the least recently used one was logged out (acct={account_tag}); hjv-api admin key list tag:{account_tag}"
+                );
+            }
+            (status, binding, key_serial)
+        }
         Ok(Written::KeyInUse) => {
             return run
                 .fail(StatusCode::BAD_REQUEST, Outcome::Refused, "key-in-use")
                 .await
-        }
-        Ok(Written::TooManyKeys) => {
-            if state.first_notice(
-                &format!("keys-full:{account_tag}"),
-                Duration::from_secs(600),
-            ) {
-                log_notice!(
-                    "login: the account has {MAX_ACTIVE_KEYS} active keys, a login was refused (acct={account_tag}); hjv-api admin key list tag:{account_tag}"
-                );
-            }
-            let answer = LoginAnswer::failed_with(
-                StatusCode::FORBIDDEN,
-                json!({ "error": keys::TEXT_TOO_MANY, "hjv": "too-many-keys" }),
-            );
-            return run.fail_with(answer, Outcome::Refused, "key-limit").await;
         }
         Err(e) => {
             log_err!("login: {e}");
