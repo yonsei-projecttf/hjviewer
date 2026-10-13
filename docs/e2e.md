@@ -1,6 +1,6 @@
 # 방화벽 E2E 검증
 
-실제 HJViewer 클라이언트 두 대와 서버를 리눅스 한 대에서 띄웁니다. **회사 방화벽처럼 서버로 가는 HTTPS(TCP 443)만 허용한 네트워크**에서 접속, 데이터 전달, 화면 공유가 되는지 확인합니다. 1.6.0부터는 같은 구성에 계정 API를 더해 연세포탈 로그인과 같은 계정 기기끼리의 비밀번호 없는 연결을 확인하는 [계정 단계](#계정-단계-160)와, 무권한 네트워크 네임스페이스에서 NAS 중계기의 켜기를 확인하는 [원격 켜기 단계](#원격-켜기-단계-160)가 있습니다.
+실제 HJViewer 클라이언트 두 대와 서버를 리눅스 한 대에서 띄웁니다. **회사 방화벽처럼 서버로 가는 HTTPS(TCP 443)만 허용한 네트워크**에서 접속, 데이터 전달, 화면 공유가 되는지 확인합니다. 1.6.0부터는 같은 구성에 계정 API를 더해 연세포탈 로그인과 같은 계정 기기끼리의 비밀번호 없는 연결을 확인하는 [계정 단계](#계정-단계-160), hbbs와 PC가 낮은 버전의 컨트롤러를 거절하는지 확인하는 [최소 버전 단계](#최소-버전-단계-160), 무권한 네트워크 네임스페이스에서 NAS 중계기의 켜기를 확인하는 [원격 켜기 단계](#원격-켜기-단계-160)가 있습니다.
 
 ```
  netns hjv-pc (피제어 PC)            호스트 (서버)                      netns hjv-ctl (컨트롤러)
@@ -34,6 +34,7 @@
 
 - 패치를 적용한 클라이언트를 새로 받아 시험용으로 빌드하고, Caddy를 고정한 SHA-256으로 받고, PC 쪽 클라이언트를 `/usr/local/lib/hjviewer-e2e/rustdesk`에 설치한 뒤 strict와 open을 차례로 돌립니다. 끝나면 설치한 파일을 지웁니다.
 - 패치에 계정 코드가 있으면 [계정 단계](#계정-단계-160)도 돕니다. 클라이언트의 HJViewer 코드 단위 시험(`--lib hjv`), hjv-api와 가짜 SSO 빌드, 태그 `client-1.5.1`로 만드는 1.5.1 비교용 클라이언트(태그와 서버 키가 같으면 한 번만 빌드해 `build/ci/e2e-old/rustdesk`에 둠), Ubuntu의 `libfaketime` 패키지 풀기(`build/ci/faketime`, 설치하지 않음)가 더해집니다.
+- hbbs에 서버 패치 0005가 있으면(`--hjv-min-controller-file`) [최소 버전 단계](#최소-버전-단계-160)의 V1-V4를 돌립니다. `server/patches`에 0005가 있는데 hbbs에 그 옵션이 없으면(전에 빌드한 hbbs) 실패합니다. 패치에 업데이트 코드(`src/hjviewer_update`)가 있으면 클라이언트를 업데이트 시험 키로 빌드하고 단위 시험(`--lib hjv`)도 그 빌드로 돌립니다. 이 저장소에 `tools/hjv-release`가 있으면 그것을 빌드해(`build/ci/target-hjv-release`) 시험 정책에 서명하고 V5-V8을 돌립니다. 셋 중 없는 것은 건너뛴 것으로 셉니다.
 - 시험용 클라이언트는 LTO 없이, 코드 생성 단위 16개로 빌드합니다. 트리를 새로 받으므로 클라이언트 크레이트는 실행마다 다시 컴파일됩니다(의존성은 `build/ci/target-e2e`에 남음). 릴리스 프로필 그대로면 실행 파일과 단위 시험이 각각 3분 반쯤 걸리고, 이렇게 하면 각각 45초쯤입니다. 제품 빌드의 프로필은 그대로입니다.
 
 손으로 돌릴 때는 다음과 같습니다.
@@ -80,6 +81,16 @@ HJV_E2E_ACCOUNT=1 HJV_E2E_KEYS=$KEYS PC_CLIENT=/usr/local/lib/hjviewer-e2e/rustd
   CADDY=/path/to/caddy tools/e2e/firewall-e2e.sh strict     # open은 S21만 돕니다
 sudo rm -rf /usr/local/lib/hjviewer-e2e
 #    선택: CLIENT_OLD=<1.5.1 클라이언트>(X2, X3), FAKETIME_LIB=<libfaketime.so.1>(S27). 없으면 그 줄만 건너뜁니다
+
+# 6) 최소 버전 단계 (1.6.0). hbbs는 서버 패치 0005가 든 것, 클라이언트는 패치 0037·0038이 든 것을
+#    업데이트 시험 키로 빌드한 것이어야 합니다(키는 `hjv-release test-keys --env`가 출력함)
+(cd tools/hjv-release && cargo build --release)
+(cd upstream/rustdesk && env PKG_CONFIG_PATH=$HJV_E2E_WORK/pkgconfig HJV_SERVER=hjv.test \
+   HJV_SERVER_KEY=$(cat $HJV_E2E_WORK/srv/id_ed25519.pub) \
+   $(../../tools/hjv-release/target/release/hjv-release test-keys --env) \
+   cargo build --release --features linux-pkg-config,hjv-e2e)
+HJV_E2E_MIN_CONTROLLER=1 HJV_E2E_UPDATE_KEYS=1 HJV_RELEASE=$PWD/tools/hjv-release/target/release/hjv-release \
+  CADDY=/path/to/caddy tools/e2e/firewall-e2e.sh strict    # 계정 단계의 값과 함께 줘도 됨(그 뒤에 돔)
 ```
 
 필요한 패키지(Ubuntu 24.04): `iptables xvfb imagemagick`(계정 단계는 `curl python3`도), 그리고 upstream 클라이언트 빌드 의존성(`libgtk-3-dev libvpx-dev libyuv-dev libopus-dev libaom-dev libxdo-dev libpulse-dev libpam0g-dev clang nasm` 등)입니다. 전체 목록은 RustDesk CI를 참고하세요.
@@ -196,6 +207,47 @@ PASS (strict): transport: relay
 - Flutter 화면(로그인 창, 알림, 설정 줄, 배너): 헤드리스 명령은 같은 요청을 보낼 뿐 화면을 띄우지 않습니다. 문구와 조건은 Dart 시험이 봅니다.
 - 실제 연세 SSO, 운영 한도 값, nginx(운영의 웹 서버, `scripts/ci.sh deploy`가 봄).
 - PC의 2FA와 신뢰 기기, 파일 전송·카메라·터미널 종류의 증명(단위 시험이 봄), 원격 켜기(아래 단계).
+
+## 최소 버전 단계 (1.6.0)
+
+최소 버전 설계(설계 2-2, 2-4, 2-5)의 두 강제를 실제 프로그램으로 확인합니다. 하나는 hbbs가 낮은 버전의 컨트롤러를 punch hole 단계에서 거절하는 것(서버 패치 0005)입니다. 다른 하나는 PC가 서명된 버전 정책을 스스로 받아, 낮은 버전 컨트롤러의 로그인을 거절하는 것(클라이언트 패치 0037·0038)입니다. strict 모드에서 계정 단계 다음에 돕니다. `scripts/ci.sh e2e`는 hbbs와 패치에 그 기능이 있으면 알아서 켭니다([실행](#실행)).
+
+**구성**
+- 버전: E2E 클라이언트는 버전을 찍지 않은 빌드라서 upstream 체크아웃의 버전(1.5.0)을 보냅니다. 스크립트가 `--version`으로 읽습니다. hbbs의 `MIN`은 그다음 패치 버전(1.5.1), 정책의 최소 버전은 그다음 부 버전(1.6.0)입니다.
+- hbbs: `HJV_MIN_CONTROLLER_FILE=$RUN/min-controller.conf`로 띄웁니다. 처음에는 파일이 없습니다(최소 버전 없음). V1과 V4가 운영자처럼 옆에 쓴 뒤 `mv`로 바꿉니다. hbbs는 10초마다 다시 읽습니다. 문구는 설계 2-5의 S1에 시험 서버와 지어낸 문 2 코드를 넣은 것입니다.
+- 업데이트 키: 클라이언트와 PC 실행 파일을 이 저장소의 시험 키로 빌드합니다(`hjv-release test-keys --env`: 서명 키 1·2, 루트 키 101, 하한 `1:0`). `scripts/ci.sh`는 같은 seed(40, 80, a0에서 시작하는 연속 32바이트)에서 공개키를 계산합니다. `hjv-e2e` 기능이 있는 빌드는 서버가 `hjv.test`이고 시험 키일 때만 정책을 따릅니다(설계 1-7). 이 빌드는 리눅스에서 `windows` 항목을 따르고, PC는 리눅스 컨트롤러를 Windows 컨트롤러로 봅니다.
+- 정책: `tools/hjv-release test-sign`이 시험 키 1로 서명합니다(세대 1). Caddy가 `https://hjv.test/api/hjv/version`으로 내줍니다. 운영에서는 nginx가 내주고 공개 `deploy/Caddyfile`에는 정책이 없습니다. 그래서 실행 때 만드는 Caddy 설정에 그 경로만의 사이트 블록을 `deploy/Caddyfile`의 사이트 앞에 둡니다. 정책 파일은 서버처럼 한 번에 바꿉니다(`mv`). 패키지 값은 지어낸 것입니다. 리눅스에서는 아무것도 받지 않습니다.
+- 첫 정책(seq 1)은 처음부터 내줍니다: `windows`의 최소 1.6.0, 기한은 내일입니다. PC 서비스는 시작 30초 뒤 스스로 받습니다. 그래서 앞 단계 전체가 이 정책 아래서 돕니다. 기한 전이라 아무도 막히지 않습니다.
+- 컨트롤러는 컨트롤러 네트워크(`hjv-ctl`)에서 로그인한 적 없는 별도의 쪽으로 돕니다. `ver`는 이 빌드, `old`는 1.5.1 클라이언트(`CLIENT_OLD`, 없으면 V3와 V8만 건너뜀)입니다. 클라이언트 호출마다 30초 제한이 있고, 넘으면 실패입니다. 거절은 종료 코드와 출력 문구를 글자 그대로 맞춰 봅니다.
+- 정책을 받아들이는 신뢰 규칙(설계 1-4)이 다시 구현되는 중이라 평범한 입력만 씁니다: 첫 정책(최소를 올리고 기한은 내일), 그 올림이 이미 강제되는 정책(기한이 지남), 비운 `MIN`. 루트 키의 완화, 새 세대의 선언, 키 폐기는 쓰지 않습니다.
+
+**시나리오와 결과**(2026-10-14, WSL2 Ubuntu 24.04, `scripts/ci.sh e2e`, 실행 순서대로)
+
+| # | 단계 | 결과 |
+|---|---|---|
+| V1 | hbbs 파일을 `MIN=1.5.1`, `FROM=2026-01-01T00:00:00Z`, `TEXT=<S1>`로 바꿈 | 재시작 없이 다음 읽기에 `min-controller 1.5.1 from 2026-01-01T00:00:00Z`(10초마다 읽으므로 0~10초 뒤. 로그가 늦게 써지는 것까지 13초를 허용) |
+| V2 | 이 빌드(1.5.0, 업데이트 키 있음)로 연결 | 종료 1, 0.2초. 표준 오류에는 R1 한 줄뿐이고 hbbs 문구와 그 링크는 없음. hbbs 로그에 그 시도의 거절이 한 줄(`version "1.5.0"`) |
+| V3 | 1.5.1 클라이언트로 연결 | hbbs 문구가 그대로 옴(`%MIN%` 자리에 1.5.1, 문 2 링크 포함) |
+| V4 | `MIN=`(비움) | 다음 읽기에 `min-controller off: MIN is empty in …`. 같은 컨트롤러가 PC 화면을 받음 |
+| V5 | PC 서비스가 첫 정책을 스스로 받았는지 | PC 로그에 `version policy: now at 1:1`(서비스 시작 30초 뒤). 정책을 버린 줄(`refused (…)`)이나 `off in this build`가 없음 |
+| V6 | 기한 전(내일)에 1.5.0 컨트롤러 | PC 화면을 받음 |
+| V7 | 기한이 지난 정책(seq 2, 같은 최소 1.6.0, 기한 1시간 전)을 내주고 PC 서비스를 다시 시작 | 33~34초 뒤 PC 로그에 `now at 1:2`. 컨트롤러는 종료 4: PC가 보낸 L1(`이 PC는 HJViewer 1.6.0 이상에서만 연결을 받습니다. … (지금 버전 1.5.0). (version not allowed)`), 그다음 R1이 'Login Error' 창으로. PC 로그에 `version policy: refused the login of a controller ("Linux", version "1.5.0")`. 계정 단계가 띄운 연결 창(CM)에는 로그인이 닿지 않음 |
+| V8 | 1.5.1 클라이언트로 같은 PC에 | PC의 L1이 그대로 'Login Error' 창으로 옴 |
+
+- 다시 연결하지 않는지: 헤드리스 클라이언트에는 화면 창이 없어서 앱의 자동 재연결이 없습니다. 그래서 두 가지를 봅니다. 거절이 재시도 없이 바로 끝나는지(V2는 0.2초, hbbs 로그의 거절이 시도당 한 줄)와, 앱의 자동 재연결(`check_if_retry`)을 막는 조건을 지키는지입니다. 자동 재연결은 제목이 'Connection Error'인 창에서 문구에 `not allowed` 같은 말이 없을 때만 합니다. hbbs의 거절 문구와 R1은 `(version not allowed)`로 끝나고, PC의 거절은 제목이 'Login Error'입니다.
+- 거절된 로그인은 PC의 정책 확인을 하나 깨웁니다(60초에 한 번 제한 안에서). 그래서 정책 요청 수는 세지 않습니다.
+- PC는 정책을 시작 30초 뒤와 그 뒤 6시간마다 받습니다. 그래서 V7은 서비스를 다시 시작해 새 정책을 받게 합니다.
+- 걸린 시간: 이 단계는 약 1분입니다. 대부분 V1·V4에서 hbbs가 파일을 다시 읽기를 기다리는 것(각 10초 안)과, V7에서 다시 시작한 서비스가 정책을 받기까지(33~34초)입니다. 클라이언트 단위 시험은 업데이트 코드의 시험까지 `--lib hjv` 224개가 됩니다(무시 2개: 도구 벡터의 선택 시험과 `write_json_copy`). `scripts/ci.sh e2e` 전체는 9분 19초였습니다(새로 받은 트리의 클라이언트와 단위 시험 빌드 포함).
+
+**검사가 실패하는지**: 두 가지를 일부러 틀리게 해서 같은 스크립트를 돌렸고, 각각 그 자리에서 실패했습니다(커밋하지 않은 확인). seq 2의 기한을 1시간 뒤로 두면 V7에서 컨트롤러가 PC 화면을 받아 실패합니다(종료 0). 빌드가 믿지 않는 서명 키 3으로 서명하면(`test-sign --raw`) PC가 `version policy: refused (UnknownKey)`를 남기고 V5에서 실패합니다.
+
+### 최소 버전 단계가 다루지 않는 것
+
+- 앱의 화면(업데이트 화면, 배너, 링크 없는 거절 창): Dart 시험과 기기 시험.
+- 서명 키 정책의 완화 거부, 루트 키의 선언, 새 세대, 키 폐기: 단위 시험과 `tools/hjv-release`의 벡터가 봅니다. 신뢰 규칙을 다시 구현한 뒤 통합(WP-I1)에서 이 단계에 선언 하나(완화, 그다음 그 완화를 놓친 PC가 받는 서명 키 정책의 올림)를 더합니다.
+- 문 1(로그인한 앱의 패키지 받기), 짧은 링크, 문 2: hjv-api의 업데이트 경로가 아직 이 트리에 없습니다(WP-A1, 통합 WP-I1). 헤드리스 명령에도 문 1 명령이 없습니다.
+- 컨트롤러의 정책 받기: 거절을 받으면 바로 확인을 시작하지만, 헤드리스 명령은 그 전에 끝납니다.
+- Windows의 무인 설치와 화면 바꾸기 경로의 거절, 실제 1.5.1 앱의 창: 기기 시험.
 
 ## 원격 켜기 단계 (1.6.0)
 
