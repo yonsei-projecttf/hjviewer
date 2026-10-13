@@ -459,7 +459,7 @@ pub const HINT_MAGIC_UNKNOWN: Hint = Hint {
 pub const HINT_NOT_ARMED: Hint = Hint {
     code: "not_armed",
     level: Ready::Warn,
-    text: "장치 관리자에서 랜카드 속성의 '전원 관리' 탭에 있는 '이 장치를 사용하여 컴퓨터의 대기 모드를 해제할 수 있음'을 켜 주세요.",
+    text: "장치 관리자에서 랜카드 속성의 '전원 관리' 탭에 있는 '이 장치를 사용하여 컴퓨터의 대기 모드를 종료할 수 있음'을 켜 주세요.",
 };
 pub const HINT_FAST_STARTUP: Hint = Hint {
     code: "fast_startup",
