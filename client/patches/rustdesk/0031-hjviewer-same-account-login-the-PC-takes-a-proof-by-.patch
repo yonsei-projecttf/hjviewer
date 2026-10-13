@@ -1,0 +1,3566 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 13 Oct 2026 09:57:02 +0900
+Subject: [PATCH 31/36] hjviewer: same-account login: the PC takes a proof by
+ its account's trust list
+
+A Windows PC bound to an account lets the account's devices in without its
+password (design v3 3-5, 3-6, 4-4 to 4-7). Thin hooks in the shared files, the
+rest in HJViewer's:
+
+- connection.rs: the Hash carries hjv_nonce, 32 random bytes in an account
+  build's installed service and empty elsewhere, as 1.5.1 sends it. After the
+  click approval branch a LoginRequest with a proof goes to
+  connection/hjv_account.rs, which reads the latched self.lr: only where the
+  permanent password is taken, past check_failure, on a secured channel, for
+  a binding of this PC that is not switched off, the proof's signature checked
+  against this PC's own ID, key and nonce before the cached list (active,
+  within its life from its receipt, the key, its kinds, the controller's ID).
+  Accepted, it goes on as the right permanent password does (2FA, the
+  terminal's Windows login and the temporary password's rotation all in
+  send_logon_response_and_keep_alive), the connection manager naming the
+  device from the signed list and the masked owner. Refused, it answers
+  "Empty Password" when no password came and leaves the login to the old
+  branches; a refusal is not a failed attempt.
+- rendezvous_mediator.rs: the service starts its sync task next to
+  hbbs_http's.
+- windows.rs: uninstall_me forgets HKLM\SOFTWARE\HJViewer\Account first.
+- hjviewer_account/pc.rs: the sync task. Every second it takes the UI's
+  Config2 requests from memory: an unbind first, counting as undoing the bind
+  request in hand (seen in the same second, or taken out of the options by
+  the logout while hjv-api had it), then the bind request, the off switch and
+  the knock. A sync's request runs in a task of its own, one at a time, so an
+  unbind or the off switch takes effect within the second however slowly
+  hjv-api answers. Requests are the relay envelope signed with the device
+  key, signed again with hjv-api's clock after a clock answer, through one
+  strict client; a bound PC asks every clamp(refresh, 5 s, 300 s) +-20%,
+  backs off from 30 s to 10 min, asks at once after a resume, and a proof the
+  list cannot decide waits up to 1.5 s for a sync (one at a time, none within
+  10 s of the last one proofs waited for, so a phone that logged in just
+  after a periodic sync gets in at once). The sync that is due goes before a
+  bind request, which leaves it where it was: bind requests written every
+  second hold off neither a revocation nor the list.
+  Only a signed list changes anything. A bind request writes Binding, At,
+  Owner and LoginAt only when the list confirms that binding, the account's
+  last login on this PC is at most ten minutes older than the list and later
+  than this binding's last release here, and the state is active or disabled;
+  the answer to a bind request withdrawn while it was out (a logout took it
+  out of the options, or a new login's request replaced it) binds nothing. A
+  signed revoked drops the binding. The off switch moves to HKLM Off, the
+  binding's latest login the PC knows of (LoginAt, or the bind request in
+  hand for it, at most 5 min past hjv-api's clock), which only a later login
+  clears. An unbind that drops this PC's binding, or undoes the bind request
+  in hand, records UnboundBinding and UnboundLoginAt, its login_at held to
+  what the PC knows of that binding's logins; it leaves another binding's
+  record while that one guards the ten minutes after its login, and any
+  other unbind changes nothing. Only a bind request (or an unbind undoing
+  the bind request in hand) makes the key; everything else writes into an
+  existing key or skips, so a key the uninstaller removed stays removed. The
+  list bytes are kept in HJViewer_trust.json, vouched for by ListHash; Recv,
+  KidFloor and LastState are in the key, and Use keeps today's and
+  yesterday's use counts per key (UTC) for the report. Elsewhere than Windows
+  the key is the 0600 file HJViewer_binding in the service's config folder.
+- hjviewer_account/mod.rs: report_name gives only the design's seven refusal
+  names, the ones the sync reports; forget_pc_binding is Windows-only and
+  refresh_now the PC's own; korean(), the app's language as lang.rs picks
+  it, names the device in the connection manager in Korean or English.
+
+A build without HJV_SERVER, HJV_LOGIN_SEAL_PUBKEY or HJV_TRUST_PUBKEYS sends no
+nonce and starts no task, as 1.5.1.
+
+Tests: the bind, unbind and off rules on an in-memory key (a stale login,
+another binding, a replayed request, a login undone before its bind came
+through, again on a bound PC, a made-up login_at, a second made-up unbind, a
+made-up bind request undone at once, the off switch with a login's bind
+request in hand, the key removed under a running service), the Linux file's
+mode, the list cache and its hash, the use counts across a restart and UTC
+midnight, the sync request against the shared vectors, when a proof asks for
+a sync, the settings line, no nonce and no task without the build variables,
+and the sync task against an in-memory hjv-api on a paused clock: a login
+binds, and one while the administrator's switch is off binds paused; the off
+switch and an unbind act within the second while a request hangs; a login and
+its logout found together, or a logout while the bind's request is out (also
+while another binding's record guards), leave the PC unbound; a clock answer
+is signed again; proofs share one sync and get none within ten seconds of it,
+but one of their own after a periodic sync; a proof goes through the task (a
+phone that logged in just now gets in, the next report counts uses and
+refusals, a strict list needs hjv-api); bind requests every second do not
+hold off the periodic sync; a stale bind request of this PC's binding leaves
+its settings line; a signed revoked unbinds and one report follows.
+
+Known limit: a login undone before its bind came through is not recorded
+while the PC's record of another binding still guards it (a login of that
+one within the last 15 minutes), nor when the service found the login and its
+logout in the same second; that login's bind request, put back while hjv-api
+still has the login (a logout that never reached it), can then still bind
+the PC.
+
+(Design v3, work package C2: patch 0031.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_account/mod.rs          |   48 +-
+ src/hjviewer_account/pc.rs           | 1656 +++++++++++++++++++++++++-
+ src/hjviewer_account/pc/tests.rs     | 1536 ++++++++++++++++++++++++
+ src/platform/windows.rs              |    1 +
+ src/rendezvous_mediator.rs           |    1 +
+ src/server/connection.rs             |    9 +
+ src/server/connection/hjv_account.rs |   64 +
+ 7 files changed, 3276 insertions(+), 39 deletions(-)
+ create mode 100644 src/hjviewer_account/pc/tests.rs
+ create mode 100644 src/server/connection/hjv_account.rs
+
+diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
+index e554aff..e63ca49 100644
+--- a/src/hjviewer_account/mod.rs
++++ b/src/hjviewer_account/mod.rs
+@@ -38,7 +38,9 @@ pub(crate) use api::{
+     proof_header, set_common,
+ };
+ pub(crate) use ctl::{key_proof, note_peer_key, take_proof_sent, LoginContext, ProofDecision};
+-pub(crate) use pc::{forget_pc_binding, key_login, pc_capable, refresh_now, start_pc_sync};
++#[cfg(windows)]
++pub(crate) use pc::forget_pc_binding;
++pub(crate) use pc::{key_login, pc_capable, start_pc_sync};
+ 
+ const SEAL_PUBKEY: Option<&str> = option_env!("HJV_LOGIN_SEAL_PUBKEY");
+ const TRUST_PUBKEYS: Option<&str> = option_env!("HJV_TRUST_PUBKEYS");
+@@ -435,27 +437,27 @@ pub(crate) enum Refusal {
+ }
+ 
+ impl Refusal {
+-    /// Its counter in the sync report's `refused`.
++    /// Its counter in the sync report's `refused`, one of the design's seven, which hjv-api
++    /// takes: a proof from a valid key that claims another device's ID counts as a bad
++    /// signature; a PC not taking proofs at all (not bound, switched off here, paused by the
++    /// administrator) as off; a list it cannot use as expired.
+     pub(crate) fn report_name(self) -> &'static str {
+         match self {
+             Refusal::UnknownKey => "unknown_key",
+             Refusal::KindNotByProof | Refusal::KindNotAllowed => "kind",
+             Refusal::TemporaryOnly => "temporary_only",
+-            Refusal::NotSecured => "not_secured",
+-            Refusal::BadProofSignature | Refusal::BadEncoding => "bad_sig",
+-            Refusal::NoList | Refusal::Expired => "expired",
+-            Refusal::Off => "off",
+-            Refusal::NotActive => "not_active",
+-            Refusal::IdMismatch => "id_mismatch",
+-            Refusal::NoNonce => "no_nonce",
+-            Refusal::NotBound => "unbound",
+-            Refusal::UnknownKid
++            Refusal::NotSecured | Refusal::NoNonce => "not_secured",
++            Refusal::BadProofSignature | Refusal::BadEncoding | Refusal::IdMismatch => "bad_sig",
++            Refusal::Off | Refusal::NotActive | Refusal::NotBound => "off",
++            Refusal::NoList
++            | Refusal::Expired
++            | Refusal::UnknownKid
+             | Refusal::RetiredKid
+             | Refusal::BadListSignature
+             | Refusal::WrongPc
+             | Refusal::WrongBinding
+             | Refusal::NotThisRequest
+-            | Refusal::BadLifetime => "list",
++            | Refusal::BadLifetime => "expired",
+         }
+     }
+ 
+@@ -552,7 +554,6 @@ pub(crate) struct KeyLogin<'a> {
+ /// A proof the PC accepted: what its connection manager shows.
+ pub(crate) struct Accepted {
+     pub name: String,
+-    pub owner: String,
+ }
+ 
+ /// Checks a sync answer's list: a pinned key number not below the floor, the signature over the
+@@ -746,6 +747,20 @@ pub(crate) fn used_report(entries: &[UseEntry], now: u64) -> Vec<UseEntry> {
+         .collect()
+ }
+ 
++/// Whether the texts this module shows go in Korean: the app's language, its own setting or else
++/// the system's, as lang.rs picks it, and English where the UI cannot show Korean.
++#[cfg(not(any(target_os = "android", target_os = "ios")))]
++fn korean() -> bool {
++    if crate::lang::cjk_ui_unavailable() {
++        return false;
++    }
++    let mut lang = hbb_common::config::LocalConfig::get_option("lang");
++    if lang.is_empty() {
++        lang = sys_locale::get_locale().unwrap_or_default();
++    }
++    lang.to_lowercase().starts_with("ko")
++}
++
+ /// Phones never take same-account logins: the PC side's names, doing nothing.
+ #[cfg(any(target_os = "android", target_os = "ios"))]
+ mod pc {
+@@ -759,6 +774,7 @@ mod pc {
+     pub(crate) fn start_pc_sync() {}
+ 
+     pub(crate) async fn key_login(
++        _permanent_ok: bool,
+         _secured: bool,
+         _nonce: &[u8],
+         _proof: &HjvKeyProof,
+@@ -767,12 +783,6 @@ mod pc {
+     ) -> Result<Accepted, Refusal> {
+         Err(Refusal::NotBound)
+     }
+-
+-    pub(crate) async fn refresh_now() -> bool {
+-        false
+-    }
+-
+-    pub(crate) fn forget_pc_binding() {}
+ }
+ 
+ #[cfg(test)]
+diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
+index ed81885..88a49bd 100644
+--- a/src/hjviewer_account/pc.rs
++++ b/src/hjviewer_account/pc.rs
+@@ -1,11 +1,105 @@
+-//! The controlled PC: the service's sync with hjv-api, the binding it keeps (HKLM on Windows, a
+-//! 0600 file in the service's config folder elsewhere), and its check of a proof against the
+-//! cached trust list. Desktop only; phones get the same names from mod.rs, doing nothing.
++//! The controlled PC (design v3 2-3, 3-5, 3-6, 4-4 to 4-7): the service's sync with hjv-api, the
++//! binding it keeps, and its check of a proof against the cached trust list. Desktop only; phones
++//! get the same names from mod.rs, doing nothing.
+ //!
+-//! The names and types the hooks call; the sync and the binding come with the PC's patch.
++//! The service (`--server`) keeps the binding, the list's metadata, Off, the last released binding
++//! and the use counts in HKLM\SOFTWARE\HJViewer\Account on Windows, which only SYSTEM and
++//! administrators write, and in the 0600 file HJViewer_binding in its config folder elsewhere. The
++//! list bytes are in HJViewer_trust.json next to it, vouched for by their hash in the key. Only a
++//! bind request makes the key; everything else writes into an existing key and skips otherwise,
++//! so that a key the uninstaller removed does not come back, and every decision reads it again.
++//!
++//! The UI asks through Config2 options it writes over the existing IPC: hjv-bind-req and
++//! hjv-unbind-req (`<binding ID>.<login_at>`), hjv-pwless-off=Y and the knock hjv-pc-sync. The
++//! service looks at them in memory every second, takes an unbind before a bind, clears what it
++//! handled, and shows its state in hjv-pwless-state. A sync's request runs beside that loop, so an
++//! unbind or the off switch takes effect within the second however slowly hjv-api answers.
+ 
+-use super::{enabled, Accepted, Refusal};
++use super::{
++    check_key_login, count_use, enabled, kind_name, korean, pc_sync_envelope, should_refresh_for,
++    sync_interval, trust_pubkeys, used_report, valid_at, verify_list, Accepted, Cached, KeyEntry,
++    KeyLogin, Local, Refusal, SignedList, TrustList, UseEntry, BIND_REQ, KNOCK, UNBIND_REQ,
++};
+ use base::message_proto::HjvKeyProof;
++use hbb_common::{
++    base64::{
++        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
++        Engine as _,
++    },
++    config::Config,
++    log,
++    sodiumoxide::{crypto::sign, randombytes},
++    tokio::{
++        self,
++        sync::{mpsc, oneshot},
++        task::{JoinError, JoinHandle},
++        time::{interval, timeout, Instant, MissedTickBehavior},
++    },
++};
++use serde_derive::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
++#[cfg(not(windows))]
++use std::collections::BTreeMap;
++use std::{
++    future::Future,
++    path::{Path, PathBuf},
++    pin::Pin,
++    sync::{Arc, Mutex, Once},
++    time::{Duration, SystemTime, UNIX_EPOCH},
++};
++
++const OFF_REQ: &str = "hjv-pwless-off";
++const STATE: &str = "hjv-pwless-state";
++
++const TRUST_FILE: &str = "HJViewer_trust.json";
++#[cfg(not(windows))]
++const BINDING_FILE: &str = "HJViewer_binding";
++
++// The values of HKLM\SOFTWARE\HJViewer\Account (of HJViewer_binding elsewhere), all strings.
++const BINDING: &str = "Binding";
++const AT: &str = "At";
++const OWNER: &str = "Owner";
++const LOGIN_AT: &str = "LoginAt";
++const LIST_HASH: &str = "ListHash";
++const RECV: &str = "Recv";
++const KID_FLOOR: &str = "KidFloor";
++const LAST_STATE: &str = "LastState";
++const OFF: &str = "Off";
++const UNBOUND_BINDING: &str = "UnboundBinding";
++const UNBOUND_LOGIN_AT: &str = "UnboundLoginAt";
++const USE: &str = "Use";
++
++/// A bind takes a list only when the account's last login on this PC (`login_at`) is at most
++/// this much older than the list (`iat`): someone logged in here just now.
++const FRESH_LOGIN: u64 = 600;
++/// How far ahead of the PC's clock an unbind's `login_at` may be without a list of its binding.
++const UNLISTED_AHEAD: u64 = 86_400;
++/// How far ahead of hjv-api's clock, as this PC knows it, the bind request an unbind undoes may
++/// say its login was.
++const PENDING_AHEAD: u64 = 300;
++const TICK: Duration = Duration::from_secs(1);
++/// A wall clock that moved this much more than a tick: the PC slept, or its clock was set.
++const RESUME_JUMP: u64 = 30;
++/// No proof gets a sync of its own within GAP of the last one proofs waited for, and no knock
++/// within GAP of the last sync; a proof waits WAIT at most.
++const GAP: Duration = Duration::from_secs(10);
++const WAIT: Duration = Duration::from_millis(1500);
++const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
++const MAX_ANSWER: usize = 256 * 1024;
++/// A failed sync is tried again after 30 s, doubling up to 10 min.
++const RETRY_MIN: u64 = 30;
++const RETRY_MAX: u64 = 600;
++/// server_time outside 2020..3000 is no clock (relay/PROTOCOL.md 10.1).
++const SANE_TIME: std::ops::RangeInclusive<u64> = 1_577_836_800..=32_503_680_000;
++
++/// The sync task's inbox for proofs that want a sync now (refresh_now).
++type Asks = mpsc::UnboundedSender<oneshot::Sender<bool>>;
++static ASKS: Mutex<Option<Asks>> = Mutex::new(None);
++static REFUSED: Mutex<Refused> = Mutex::new(Refused([0; 7]));
++static USE_LOCK: Mutex<()> = Mutex::new(());
++/// The sync task and the connections' use counts both rewrite HJViewer_binding as a whole.
++#[cfg(not(windows))]
++static FILE_LOCK: Mutex<()> = Mutex::new(());
+ 
+ /// Whether this process sends a nonce and takes proofs: an account build's service process
+ /// (`--server`) of an installed HJViewer.
+@@ -15,27 +109,1549 @@ pub(crate) fn pc_capable() -> bool {
+ 
+ /// Starts the sync task once, in the service process next to hbbs_http::sync::start(); nothing
+ /// unless `pc_capable()`.
+-pub(crate) fn start_pc_sync() {}
++pub(crate) fn start_pc_sync() {
++    static START: Once = Once::new();
++    if !pc_capable() {
++        return;
++    }
++    START.call_once(|| {
++        *ASKS.lock().unwrap() = Some(Syncer::spawn(ThisPc::new()));
++        log::info!("hjv: same-account logins: sync task started");
++    });
++}
+ 
+-/// A proof this PC received (`secured`: the session's channel; `nonce`: the PC's own Hash nonce):
+-/// the binding and `Off`, then `check_key_login` against the cached list with at most one
+-/// immediate sync.
++/// A proof this PC received, in the order of design 3-5 after the failure check: the permanent
++/// password must be one this PC takes (`permanent_ok`), the channel secured, the binding present
++/// and not off, then `check_key_login` against the list of that binding, with one sync now when
++/// the list cannot decide (`should_refresh_for`). A strict list needs that sync to succeed.
+ pub(crate) async fn key_login(
+-    _secured: bool,
+-    _nonce: &[u8],
+-    _proof: &HjvKeyProof,
+-    _my_id: &str,
+-    _kind: u8,
++    permanent_ok: bool,
++    secured: bool,
++    nonce: &[u8],
++    proof: &HjvKeyProof,
++    my_id: &str,
++    kind: u8,
++) -> Result<Accepted, Refusal> {
++    let pc_id = Config::get_id();
++    let pc_pk = Config::get_key_pair().1;
++    let login = KeyLogin {
++        pc_id: &pc_id,
++        pc_pk: &pc_pk,
++        secured,
++        nonce,
++        proof,
++        my_id,
++        kind,
++    };
++    let asks = ASKS.lock().unwrap().clone();
++    key_login_with(
++        &Pc::platform(),
++        asks.as_ref(),
++        &REFUSED,
++        permanent_ok,
++        &login,
++    )
++    .await
++}
++
++/// key_login against the binding `pc` keeps and the sync task's inbox `asks`; a refusal counts in
++/// `refused` for the next report.
++async fn key_login_with<S: Store + Clone + Send + 'static>(
++    pc: &Pc<S>,
++    asks: Option<&Asks>,
++    refused: &Mutex<Refused>,
++    permanent_ok: bool,
++    login: &KeyLogin<'_>,
+ ) -> Result<Accepted, Refusal> {
+-    Err(Refusal::NotBound)
++    match check_proof(pc, asks, permanent_ok, login).await {
++        Ok((entry, owner)) => {
++            log::info!(
++                "hjv: same-account login ({}) by {} from {}",
++                kind_name(login.kind),
++                entry.name,
++                login.my_id
++            );
++            Ok(Accepted {
++                name: cm_name(&entry.name, &owner),
++            })
++        }
++        Err(refusal) => {
++            refused.lock().unwrap().add(refusal);
++            hbb_common::throttled_log!(
++                Duration::from_secs(60),
++                info,
++                "hjv: same-account login refused: {refusal:?}"
++            );
++            Err(refusal)
++        }
++    }
+ }
+ 
+-/// One sync now, for a proof the cached list cannot decide: one at a time (later callers wait for
+-/// its result), none within 10 s of the last one. Whether a list came.
+-pub(crate) async fn refresh_now() -> bool {
+-    false
++/// The accepted key's list entry and the list's masked owner.
++async fn check_proof<S: Store + Clone + Send + 'static>(
++    pc: &Pc<S>,
++    asks: Option<&Asks>,
++    permanent_ok: bool,
++    login: &KeyLogin<'_>,
++) -> Result<(KeyEntry, String), Refusal> {
++    if !permanent_ok {
++        return Err(Refusal::TemporaryOnly);
++    }
++    if !login.secured {
++        return Err(Refusal::NotSecured);
++    }
++    let mut view = read_view(pc).await;
++    let now = unix_now();
++    let mut outcome = decide(&view, login, now);
++    if wants_sync(&view, &outcome, now, login.proof.key_serial) {
++        let strict = view.cached.as_ref().is_some_and(|c| c.list.strict);
++        let fresh = refresh_now(asks).await;
++        view = read_view(pc).await;
++        outcome = decide(&view, login, unix_now());
++        if strict && !fresh && outcome.is_ok() {
++            outcome = Err(Refusal::Expired);
++        }
++    }
++    let entry = outcome?;
++    let owner = view.cached.map(|c| c.list.owner).unwrap_or_default();
++    let (pc, pk) = (pc.clone(), entry.pk.clone());
++    tokio::task::spawn_blocking(move || pc.note_use(&pk, unix_now()));
++    Ok((entry, owner))
++}
++
++/// After the permanent password and the channel: the binding and Off, then the proof against the
++/// list of that binding.
++fn decide(view: &View, login: &KeyLogin, now: u64) -> Result<KeyEntry, Refusal> {
++    if view.binding.is_none() {
++        return Err(Refusal::NotBound);
++    }
++    if view.off {
++        return Err(Refusal::Off);
++    }
++    check_key_login(login, view.cached.as_ref(), now)
++}
++
++/// Whether one sync now could change `decide`'s answer: for a binding that is on, when the list
++/// cannot decide (should_refresh_for). Neither a sync nor anything else but a login on this PC
++/// turns a binding on.
++fn wants_sync(view: &View, outcome: &Result<KeyEntry, Refusal>, now: u64, key_serial: u64) -> bool {
++    view.binding.is_some()
++        && !view.off
++        && should_refresh_for(outcome, view.cached.as_ref(), now, key_serial)
++}
++
++/// The connection manager's name for an accepted proof, from the signed list: "iPhone 14 Pro ·
++/// 같은 계정(홍*동)".
++fn cm_name(device: &str, owner: &str) -> String {
++    let same = if korean() {
++        "같은 계정"
++    } else {
++        "same account"
++    };
++    if owner.is_empty() {
++        format!("{device} · {same}")
++    } else {
++        format!("{device} · {same}({owner})")
++    }
++}
++
++/// One sync now, for a proof the cached list cannot decide: the sync task runs one at a time
++/// (later callers get its result), none within GAP of the last one proofs waited for (they get
++/// that one's result), and a caller waits WAIT at most. Whether the sync brought a list.
++async fn refresh_now(asks: Option<&Asks>) -> bool {
++    let Some(asks) = asks else {
++        return false;
++    };
++    let (ask, answer) = oneshot::channel();
++    if asks.send(ask).is_err() {
++        return false;
++    }
++    matches!(timeout(WAIT, answer).await, Ok(Ok(true)))
+ }
+ 
+ /// `--uninstall`: forgets this PC's binding, so that a reinstalled PC takes no proof until someone
+ /// logs in on it again.
+-pub(crate) fn forget_pc_binding() {}
++#[cfg(windows)]
++pub(crate) fn forget_pc_binding() {
++    if !enabled() {
++        return;
++    }
++    match registry::forget() {
++        Ok(()) => log::info!("hjv: this PC's binding is forgotten"),
++        Err(err) => log::error!("hjv: could not forget this PC's binding: {err}"),
++    }
++}
++
++/// A bind or unbind request: `<binding ID>.<login_at>`, the binding (32 lowercase hex) and the
++/// server's time of the login that made it, as the login's answer gave them.
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct Request {
++    binding: String,
++    login_at: u64,
++}
++
++impl Request {
++    fn parse(value: &str) -> Option<Request> {
++        let (binding, login_at) = value.trim().split_once('.')?;
++        if binding.len() != 32
++            || !binding
++                .bytes()
++                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
++        {
++            return None;
++        }
++        Some(Request {
++            binding: binding.to_owned(),
++            login_at: login_at.parse().ok()?,
++        })
++    }
++}
++
++/// Where the service keeps its binding. `create` alone makes the key (the file); `set` writes
++/// into an existing one and reports false otherwise.
++trait Store {
++    fn exists(&self) -> bool;
++    fn create(&self) -> bool;
++    fn get(&self, name: &str) -> Option<String>;
++    fn set(&self, name: &str, value: &str) -> bool;
++    fn remove(&self, name: &str);
++}
++
++#[cfg(windows)]
++mod registry {
++    use winreg::{enums::*, RegKey};
++
++    const KEY: &str = "SOFTWARE\\HJViewer\\Account";
++
++    /// HKLM\SOFTWARE\HJViewer\Account, with the default rights of HKLM\SOFTWARE: SYSTEM and
++    /// administrators write it, users read it.
++    #[derive(Clone)]
++    pub(super) struct Registry;
++
++    fn open(rights: u32) -> std::io::Result<RegKey> {
++        RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(KEY, rights)
++    }
++
++    impl super::Store for Registry {
++        fn exists(&self) -> bool {
++            open(KEY_READ).is_ok()
++        }
++
++        fn create(&self) -> bool {
++            RegKey::predef(HKEY_LOCAL_MACHINE)
++                .create_subkey_with_flags(KEY, KEY_READ | KEY_WRITE)
++                .is_ok()
++        }
++
++        fn get(&self, name: &str) -> Option<String> {
++            open(KEY_READ).ok()?.get_value(name).ok()
++        }
++
++        fn set(&self, name: &str, value: &str) -> bool {
++            open(KEY_WRITE)
++                .and_then(|key| key.set_value(name, &value))
++                .is_ok()
++        }
++
++        fn remove(&self, name: &str) {
++            if let Ok(key) = open(KEY_WRITE) {
++                // a value that is not there is fine
++                key.delete_value(name).ok();
++            }
++        }
++    }
++
++    pub(super) fn forget() -> std::io::Result<()> {
++        match RegKey::predef(HKEY_LOCAL_MACHINE).delete_subkey_all(KEY) {
++            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
++            result => result,
++        }
++    }
++}
++
++#[cfg(windows)]
++type Platform = registry::Registry;
++#[cfg(not(windows))]
++type Platform = BindingFile;
++
++/// The service's 0600 file HJViewer_binding, with the same values as JSON.
++#[cfg(not(windows))]
++#[derive(Clone)]
++struct BindingFile(PathBuf);
++
++#[cfg(not(windows))]
++impl BindingFile {
++    fn values(&self) -> Option<BTreeMap<String, String>> {
++        let bytes = std::fs::read(&self.0).ok()?;
++        Some(serde_json::from_slice(&bytes).unwrap_or_default())
++    }
++
++    fn write(&self, values: &BTreeMap<String, String>) -> bool {
++        serde_json::to_vec(values).is_ok_and(|bytes| write_private(&self.0, &bytes).is_ok())
++    }
++}
++
++#[cfg(not(windows))]
++impl Store for BindingFile {
++    fn exists(&self) -> bool {
++        self.0.exists()
++    }
++
++    fn create(&self) -> bool {
++        let _one = FILE_LOCK.lock().unwrap();
++        self.exists() || self.write(&BTreeMap::new())
++    }
++
++    fn get(&self, name: &str) -> Option<String> {
++        self.values()?.remove(name)
++    }
++
++    fn set(&self, name: &str, value: &str) -> bool {
++        let _one = FILE_LOCK.lock().unwrap();
++        let Some(mut values) = self.values() else {
++            return false;
++        };
++        values.insert(name.to_owned(), value.to_owned());
++        self.write(&values)
++    }
++
++    fn remove(&self, name: &str) {
++        let _one = FILE_LOCK.lock().unwrap();
++        if let Some(mut values) = self.values() {
++            if values.remove(name).is_some() {
++                self.write(&values);
++            }
++        }
++    }
++}
++
++/// Replaces `path` at once, by a new file renamed over it; on Unix only its owner reads it (the
++/// service's config folder keeps other users out on Windows).
++fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
++    use std::io::Write;
++    if let Some(dir) = path.parent() {
++        std::fs::create_dir_all(dir)?;
++    }
++    let mut tmp = path.as_os_str().to_owned();
++    tmp.push(".tmp");
++    let tmp = PathBuf::from(tmp);
++    // a leftover from a write that did not finish
++    std::fs::remove_file(&tmp).ok();
++    let mut options = std::fs::OpenOptions::new();
++    options.write(true).create_new(true);
++    #[cfg(unix)]
++    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
++    let mut file = options.open(&tmp)?;
++    file.write_all(data)?;
++    file.sync_all()?;
++    drop(file);
++    std::fs::rename(&tmp, path)
++}
++
++/// What a decision reads: the binding, Off, and the cached list if it is of that binding.
++#[derive(Default)]
++struct View {
++    binding: Option<String>,
++    off: bool,
++    cached: Option<Cached>,
++}
++
++async fn read_view<S: Store + Clone + Send + 'static>(pc: &Pc<S>) -> View {
++    let pc = pc.clone();
++    blocking(move || pc.view()).await.unwrap_or_default()
++}
++
++/// The binding as the service keeps it, and the cached list.
++#[derive(Clone)]
++struct Pc<S> {
++    store: S,
++    trust: PathBuf,
++}
++
++impl Pc<Platform> {
++    fn platform() -> Self {
++        Pc {
++            #[cfg(windows)]
++            store: registry::Registry,
++            #[cfg(not(windows))]
++            store: BindingFile(Config::path(BINDING_FILE)),
++            trust: Config::path(TRUST_FILE),
++        }
++    }
++}
++
++impl<S: Store> Pc<S> {
++    fn binding(&self) -> Option<String> {
++        self.store.get(BINDING).filter(|b| !b.is_empty())
++    }
++
++    fn number(&self, name: &str) -> Option<u64> {
++        self.store.get(name)?.trim().parse().ok()
++    }
++
++    fn off(&self) -> bool {
++        self.store.get(OFF).is_some()
++    }
++
++    fn view(&self) -> View {
++        let binding = self.binding();
++        let cached = self
++            .cached()
++            .filter(|c| Some(&c.list.binding) == binding.as_ref());
++        View {
++            off: self.off(),
++            binding,
++            cached,
++        }
++    }
++
++    /// The cached list, if its bytes still have the hash the key keeps.
++    fn cached(&self) -> Option<Cached> {
++        let hash = self.store.get(LIST_HASH)?;
++        let received = self.number(RECV)?;
++        let bytes = std::fs::read(&self.trust).ok()?;
++        if hex::encode(Sha256::digest(&bytes)) != hash {
++            return None;
++        }
++        let list = serde_json::from_slice(&bytes).ok()?;
++        Some(Cached { list, received })
++    }
++
++    /// Keeps a list just accepted: its bytes in the file, then their hash, the receipt time by
++    /// the PC's clock and the key number floor in the existing key. False when the key is gone.
++    fn keep_list(&self, bytes: &[u8], list: &TrustList, now: u64) -> bool {
++        if let Err(err) = write_private(&self.trust, bytes) {
++            hbb_common::throttled_log!(
++                Duration::from_secs(600),
++                warn,
++                "hjv: could not keep the trust list: {err}"
++            );
++            return false;
++        }
++        self.store
++            .set(LIST_HASH, &hex::encode(Sha256::digest(bytes)))
++            && self.store.set(RECV, &now.to_string())
++            && self.raise_floor(list.kid)
++    }
++
++    /// Lists under a lower key number than one the PC took are refused from then on.
++    fn raise_floor(&self, kid: u32) -> bool {
++        let floor = self.number(KID_FLOOR).unwrap_or(0).max(u64::from(kid));
++        self.store.set(KID_FLOOR, &floor.to_string())
++    }
++
++    /// Drops the binding with its Off and its list.
++    fn drop_binding(&self) {
++        for name in [BINDING, AT, OWNER, LOGIN_AT, OFF, LIST_HASH, RECV] {
++            self.store.remove(name);
++        }
++        std::fs::remove_file(&self.trust).ok();
++    }
++
++    /// A signed list answering a bind request for `req.binding` (verify_list matched the two):
++    /// writes the binding, with the list's login as LoginAt, only for an account that is active
++    /// or paused, a login on this PC at most FRESH_LOGIN before the list, and one later than the
++    /// last release of this binding here. The same binding gets the newer LoginAt, and a login
++    /// later than Off clears Off. The one place that makes the key.
++    fn bind(
++        &self,
++        req: &Request,
++        list: &TrustList,
++        bytes: &[u8],
++        now: u64,
++    ) -> Result<(), &'static str> {
++        if !matches!(list.state.as_str(), "active" | "disabled") {
++            return Err("bind-mismatch");
++        }
++        if list.iat.saturating_sub(list.login_at) > FRESH_LOGIN {
++            return Err("bind-stale");
++        }
++        if self.store.get(UNBOUND_BINDING).as_deref() == Some(req.binding.as_str())
++            && list.login_at <= self.number(UNBOUND_LOGIN_AT).unwrap_or(0)
++        {
++            return Err("bind-released");
++        }
++        if self.binding().as_deref() == Some(req.binding.as_str()) {
++            if self.off() && list.login_at > self.number(OFF).unwrap_or(0) {
++                self.store.remove(OFF);
++            }
++        } else {
++            if !self.store.exists() && !self.store.create() {
++                return Err("store");
++            }
++            // another binding goes before its Off: a write cut short leaves no binding on
++            self.store.remove(BINDING);
++            self.store.remove(OFF);
++            self.store.set(AT, &now.to_string());
++        }
++        self.store.set(OWNER, &list.owner);
++        self.store.set(LOGIN_AT, &list.login_at.to_string());
++        if !self.keep_list(bytes, list, now) || !self.store.set(BINDING, &req.binding) {
++            return Err("store");
++        }
++        Ok(())
++    }
++
++    /// An unbind request (any local user may put one, as with Off): drops the binding it names if
++    /// this PC has it, or undoes the bind request in hand for it (`pending`: a login undone before
++    /// its bind came through, the one case that makes the key), and remembers the release as
++    /// UnboundBinding and UnboundLoginAt, the latest login it ends, so that this binding comes
++    /// back only with a later login (bind). A request doing neither changes nothing.
++    ///
++    /// The request's `login_at` counts up to what this PC knows of that binding's logins: the
++    /// `iat` of its last list of it and, for the bind request in hand, that request's login up to
++    /// PENDING_AHEAD past hjv-api's clock (`now`), or UNLISTED_AHEAD past it without either; so a
++    /// made-up time cannot hold off the owner's next login. Another binding's record gives way to
++    /// an undone bind request only once it no longer guards the ten minutes after its login, so
++    /// that a made-up bind request undone at once cannot wipe it. Whether this PC's binding went.
++    fn unbind(&self, req: &Request, pending: Option<&Request>, now: u64) -> bool {
++        let here = self.binding().as_deref() == Some(req.binding.as_str());
++        let waiting = pending.filter(|p| p.binding == req.binding);
++        if !here && waiting.is_none() {
++            return false;
++        }
++        let listed = self
++            .cached()
++            .filter(|c| c.list.binding == req.binding)
++            .map(|c| c.list.iat);
++        let known = match (listed, waiting) {
++            (listed, Some(p)) => Some(
++                listed
++                    .unwrap_or(0)
++                    .max(p.login_at.min(now.saturating_add(PENDING_AHEAD))),
++            ),
++            (listed, None) => listed,
++        };
++        let mut at = req
++            .login_at
++            .min(known.unwrap_or(now.saturating_add(UNLISTED_AHEAD)));
++        if here {
++            at = at.max(self.number(LOGIN_AT).unwrap_or(0));
++            self.drop_binding();
++        }
++        let recorded = self.number(UNBOUND_LOGIN_AT).unwrap_or(0);
++        match self.store.get(UNBOUND_BINDING) {
++            Some(b) if b == req.binding => at = at.max(recorded),
++            Some(_) if !here && recorded.saturating_add(FRESH_LOGIN + PENDING_AHEAD) >= now => {
++                return false
++            }
++            _ => {}
++        }
++        if waiting.is_some() && !self.store.exists() {
++            self.store.create();
++        }
++        // the time first: a record never names a binding with another binding's time
++        self.store.set(UNBOUND_LOGIN_AT, &at.to_string());
++        self.store.set(UNBOUND_BINDING, &req.binding);
++        here
++    }
++
++    /// The off switch (any local user): Off = the binding's latest login this PC knows of, its
++    /// LoginAt or the bind request in hand for it (`pending`, up to PENDING_AHEAD past hjv-api's
++    /// clock `now`), which only a later login on this PC clears (bind). Whether there was a
++    /// binding to switch off.
++    fn switch_off(&self, pending: Option<&Request>, now: u64) -> bool {
++        let Some(binding) = self.binding() else {
++            return false;
++        };
++        let in_hand = pending
++            .filter(|p| p.binding == binding)
++            .map_or(0, |p| p.login_at.min(now.saturating_add(PENDING_AHEAD)));
++        let off = self.number(LOGIN_AT).unwrap_or(0).max(in_hand);
++        self.store.set(OFF, &off.to_string())
++    }
++
++    /// A signed `revoked` for this PC's binding: drops the binding with its list.
++    fn revoke(&self, list: &TrustList) -> bool {
++        if self.binding().as_deref() != Some(list.binding.as_str()) {
++            return false;
++        }
++        self.drop_binding();
++        self.raise_floor(list.kid);
++        true
++    }
++
++    fn uses(&self) -> Vec<UseEntry> {
++        self.store
++            .get(USE)
++            .and_then(|v| serde_json::from_str(&v).ok())
++            .unwrap_or_default()
++    }
++
++    /// Counts a proof of `pk` accepted at `now` in Use, which keeps today's and yesterday's lines
++    /// (UTC) so that a day's count goes on after a restart.
++    fn note_use(&self, pk: &str, now: u64) {
++        let _one = USE_LOCK.lock().unwrap();
++        let mut entries = self.uses();
++        count_use(&mut entries, pk, now);
++        if let Ok(value) = serde_json::to_string(&used_report(&entries, now)) {
++            self.store.set(USE, &value);
++        }
++    }
++
++    /// The sync's `used`: today's and yesterday's counts.
++    fn used(&self, now: u64) -> Vec<UseEntry> {
++        used_report(&self.uses(), now)
++    }
++}
++
++/// The names of the sync report's `refused` (design 3-6), each Refusal's `report_name`.
++const REFUSED_NAMES: [&str; 7] = [
++    "unknown_key",
++    "kind",
++    "temporary_only",
++    "not_secured",
++    "bad_sig",
++    "expired",
++    "off",
++];
++
++/// Refused proofs by reason since the last report hjv-api took (the sync's `refused`).
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++struct Refused([u64; 7]);
++
++impl Refused {
++    fn add(&mut self, refusal: Refusal) {
++        if let Some(i) = REFUSED_NAMES
++            .iter()
++            .position(|n| *n == refusal.report_name())
++        {
++            self.0[i] = self.0[i].saturating_add(1);
++        }
++    }
++
++    /// Takes off what a report delivered; what came during the request stays for the next.
++    fn take(&mut self, sent: &Refused) {
++        for (n, s) in self.0.iter_mut().zip(sent.0) {
++            *n = n.saturating_sub(s);
++        }
++    }
++}
++
++impl serde::Serialize for Refused {
++    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
++        use serde::ser::SerializeMap;
++        let mut map = serializer.serialize_map(Some(REFUSED_NAMES.len()))?;
++        for (name, n) in REFUSED_NAMES.iter().zip(self.0) {
++            map.serialize_entry(name, &n)?;
++        }
++        map.end()
++    }
++}
++
++#[derive(Serialize)]
++struct Payload<'a> {
++    v: u32,
++    binding: &'a str,
++    ver: &'a str,
++    off: bool,
++    used: &'a [UseEntry],
++    refused: Refused,
++    wol_hash: &'a str,
++}
++
++/// The sync's `p` (design 3-6).
++fn payload(binding: &str, ver: &str, off: bool, used: &[UseEntry], refused: Refused) -> String {
++    // strings, numbers and booleans always serialize
++    serde_json::to_string(&Payload {
++        v: 1,
++        binding,
++        ver,
++        off,
++        used,
++        refused,
++        wol_hash: "",
++    })
++    .unwrap_or_default()
++}
++
++/// What the PC reads of a sync answer; hjv-api's unsigned `state` and `refresh` change nothing.
++#[derive(Deserialize, Default)]
++#[serde(default)]
++struct Answer {
++    server_time: u64,
++    error: String,
++    list: Option<SignedList>,
++}
++
++/// What a sync carries as `binding`, and so what its answer may do.
++#[derive(Debug, Clone, PartialEq, Eq)]
++enum Mode {
++    /// this PC's binding: keep a new list, drop the binding on a signed revoked
++    Bound(String),
++    /// a bind request: write the binding when the list confirms it (Pc::bind)
++    Bind(Request),
++    /// the one report after the binding went, which nothing in the answer changes
++    Unbound,
++}
++
++impl Mode {
++    fn binding(&self) -> &str {
++        match self {
++            Mode::Bound(binding) => binding,
++            Mode::Bind(req) => &req.binding,
++            Mode::Unbound => "",
++        }
++    }
++}
++
++/// What a sync answer did.
++#[derive(Debug, Clone, PartialEq, Eq)]
++enum Answered {
++    /// a signed active or disabled list of the binding, kept
++    Kept {
++        state: String,
++        keys: usize,
++        refresh: u64,
++    },
++    /// a signed revoked for this PC's binding, which is gone
++    Revoked,
++    /// an answer without a list for this binding (listed, unbound): nothing changes here
++    Unsigned,
++    /// 401: hjv-api does not take this PC's device key (reinstalled, its settings reset)
++    NeedsRelogin,
++    /// a bind request the list did not confirm
++    BindRefused(&'static str),
++    /// the binding this request carried went while it was out (an unbind, the uninstaller)
++    Superseded,
++    /// nothing to go by: the network, the server, a list that fails the checks
++    Failed(&'static str),
++}
++
++/// What a sync answer (`status`, `answer`) to the request `n` in `mode` does here. Only a signed
++/// list changes anything, and a revoked one only for this PC's binding.
++#[allow(clippy::too_many_arguments)]
++fn apply<S: Store>(
++    pc: &Pc<S>,
++    pinned: &[(u32, [u8; 32])],
++    me: (&str, &[u8]),
++    mode: &Mode,
++    n: &str,
++    status: u16,
++    answer: &Answer,
++    now: u64,
++) -> Answered {
++    let unconfirmed = |code| match mode {
++        Mode::Bind(_) => Answered::BindRefused(code),
++        _ => Answered::Unsigned,
++    };
++    match status {
++        200 => {}
++        401 => return Answered::NeedsRelogin,
++        404 => return unconfirmed("bind-mismatch"),
++        400 if answer.error == "clock" => return Answered::Failed("clock"),
++        _ => return Answered::Failed("http"),
++    }
++    let Some(signed) = &answer.list else {
++        return unconfirmed("bind-mismatch");
++    };
++    let local = Local {
++        pc_id: me.0,
++        pc_pk: me.1,
++        binding: mode.binding(),
++        request_nonce: n,
++        kid_floor: pc
++            .number(KID_FLOOR)
++            .map_or(0, |k| u32::try_from(k).unwrap_or(u32::MAX)),
++    };
++    let list = match verify_list(pinned, signed.kid, &signed.l, &signed.s, &local) {
++        Ok(list) => list,
++        Err(refusal) => {
++            hbb_common::throttled_log!(
++                Duration::from_secs(600),
++                warn,
++                "hjv: trust list refused: {refusal:?}"
++            );
++            return Answered::Failed("list");
++        }
++    };
++    let Ok(bytes) = STANDARD.decode(&signed.l) else {
++        return Answered::Failed("list");
++    };
++    if let Mode::Bound(binding) = mode {
++        if pc.binding().as_deref() != Some(binding.as_str()) {
++            return Answered::Superseded;
++        }
++    }
++    if list.state == "revoked" {
++        return if pc.revoke(&list) {
++            Answered::Revoked
++        } else {
++            unconfirmed("bind-revoked")
++        };
++    }
++    let kept = Answered::Kept {
++        state: list.state.clone(),
++        keys: list.keys.len(),
++        refresh: list.refresh,
++    };
++    match mode {
++        Mode::Unbound => Answered::Unsigned,
++        Mode::Bind(req) => match pc.bind(req, &list, &bytes, now) {
++            Ok(()) => kept,
++            Err(code) => Answered::BindRefused(code),
++        },
++        Mode::Bound(_) => {
++            if pc.keep_list(&bytes, &list, now) {
++                kept
++            } else {
++                Answered::Failed("store")
++            }
++        }
++    }
++}
++
++/// hjv-pwless-state, what the account settings show about this PC: `active <keys> <last list>`,
++/// `off`, `disabled`, `expired`, `revoked`, `listed`, `needs-relogin` or `error <code> <last
++/// list>` (`<last list>`: the PC's clock at the last sync that brought a list, 0 for none), and
++/// empty while there is no binding.
++fn display(view: &View, last: Option<&Answered>, last_ok: u64, now: u64) -> String {
++    let error = |code: &str| format!("error {code} {last_ok}");
++    if view.binding.is_none() {
++        return match last {
++            Some(Answered::Revoked) => "revoked".to_owned(),
++            Some(Answered::NeedsRelogin) => "needs-relogin".to_owned(),
++            Some(Answered::BindRefused(code)) => error(code),
++            _ => String::new(),
++        };
++    }
++    if view.off {
++        return "off".to_owned();
++    }
++    match last {
++        Some(Answered::NeedsRelogin) => return "needs-relogin".to_owned(),
++        Some(Answered::Unsigned) => return "listed".to_owned(),
++        Some(Answered::BindRefused(code)) => return error(code),
++        _ => {}
++    }
++    match view.cached.as_ref().filter(|c| valid_at(c, now)) {
++        Some(c) if c.list.state == "disabled" => "disabled".to_owned(),
++        Some(c) if c.list.state == "active" => match last {
++            Some(Answered::Failed(code)) => error(code),
++            _ => format!("active {} {last_ok}", c.list.keys.len()),
++        },
++        _ => "expired".to_owned(),
++    }
++}
++
++/// What the last answer said, from the state the service showed before it started again
++/// (LastState): what hjv-api said lasts until it says something else.
++fn restored(state: &str) -> Option<Answered> {
++    match state {
++        "revoked" => Some(Answered::Revoked),
++        "needs-relogin" => Some(Answered::NeedsRelogin),
++        "listed" => Some(Answered::Unsigned),
++        _ => None,
++    }
++}
++
++/// The wait after `failures` failed syncs in a row: RETRY_MIN doubling up to RETRY_MAX, spread by
++/// up to ±20% as sync_interval does, and held to those bounds.
++fn backoff(failures: u32, jitter: u32) -> Duration {
++    let doubled = RETRY_MIN.saturating_mul(1 << failures.saturating_sub(1).min(6));
++    let base = doubled.min(RETRY_MAX) * 1000;
++    let permille = 800 + u64::from(jitter) * 400 / u64::from(u32::MAX);
++    Duration::from_millis((base * permille / 1000).clamp(RETRY_MIN * 1000, RETRY_MAX * 1000))
++}
++
++/// Whether the wall clock moved by more than RESUME_JUMP between two ticks: the PC slept (or
++/// someone set its clock).
++fn jumped(before: u64, now: u64) -> bool {
++    before != 0
++        && (now > before.saturating_add(RESUME_JUMP) || now.saturating_add(RESUME_JUMP) < before)
++}
++
++fn unix_now() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map_or(0, |d| d.as_secs())
++}
++
++/// hjv-api's clock as this PC knows it: its own and the offset the last answer showed.
++fn server_time(offset: i64) -> u64 {
++    (unix_now() as i64).saturating_add(offset).max(0) as u64
++}
++
++fn random_u32() -> u32 {
++    randombytes::randombytes(4)
++        .try_into()
++        .map_or(0, u32::from_le_bytes)
++}
++
++async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
++    tokio::task::spawn_blocking(f).await.ok()
++}
++
++type Posted = Pin<Box<dyn Future<Output = Result<(u16, Answer), &'static str>> + Send>>;
++
++/// What the sync task reaches outside itself: the service's options (Config2), where it keeps
++/// the binding, this PC's ID and device key, the pinned list keys, and hjv-api.
++trait Service: Clone + Send + Sync + 'static {
++    type Store: Store;
++    fn option(&self, name: &str) -> String;
++    fn set_option(&self, name: &str, value: &str);
++    fn pc(&self) -> Pc<Self::Store>;
++    /// this PC's ID and device key pair (secret, public)
++    fn device(&self) -> (String, Vec<u8>, Vec<u8>);
++    fn pinned(&self) -> Vec<(u32, [u8; 32])>;
++    /// the proofs refused since the last report hjv-api took (the sync's `refused`)
++    fn refused(&self) -> &Mutex<Refused>;
++    /// Sends a sync request's body to /api/hjv/pc/sync: the answer's status and body, or why
++    /// there is none.
++    fn post(&self, body: String) -> Posted;
++}
++
++/// This service process: Config2, HKLM (the 0600 file elsewhere), and hjv-api through one strict
++/// client, made at the first request and kept, so that a sync for a proof needs no new TLS probe.
++#[derive(Clone)]
++struct ThisPc {
++    url: Option<String>,
++    client: Arc<Mutex<Option<reqwest::Client>>>,
++}
++
++impl ThisPc {
++    fn new() -> ThisPc {
++        let api = crate::common::get_api_server(
++            Config::get_option("api-server"),
++            Config::get_option("custom-rendezvous-server"),
++        );
++        ThisPc {
++            url: api
++                .starts_with("https://")
++                .then(|| format!("{api}/api/hjv/pc/sync")),
++            client: Arc::default(),
++        }
++    }
++}
++
++impl Service for ThisPc {
++    type Store = Platform;
++
++    fn option(&self, name: &str) -> String {
++        Config::get_option(name)
++    }
++
++    fn set_option(&self, name: &str, value: &str) {
++        Config::set_option(name.to_owned(), value.to_owned());
++    }
++
++    fn pc(&self) -> Pc<Platform> {
++        Pc::platform()
++    }
++
++    fn device(&self) -> (String, Vec<u8>, Vec<u8>) {
++        let (sk, pk) = Config::get_key_pair();
++        (Config::get_id(), sk, pk)
++    }
++
++    fn pinned(&self) -> Vec<(u32, [u8; 32])> {
++        trust_pubkeys()
++    }
++
++    fn refused(&self) -> &Mutex<Refused> {
++        &REFUSED
++    }
++
++    fn post(&self, body: String) -> Posted {
++        let (url, client) = (self.url.clone(), self.client.clone());
++        Box::pin(async move {
++            let url = url.ok_or("config")?;
++            let mut held = client.lock().unwrap().take();
++            let reply = post(&mut held, &url, body).await;
++            // a client that did not get through probes the server again next time
++            if !matches!(reply, Err("network")) {
++                *client.lock().unwrap() = held;
++            }
++            reply
++        })
++    }
++}
++
++async fn post(
++    client: &mut Option<reqwest::Client>,
++    url: &str,
++    body: String,
++) -> Result<(u16, Answer), &'static str> {
++    if client.is_none() {
++        // its first request probes the server, which a network that drops packets would hold
++        *client = match timeout(
++            HTTP_TIMEOUT,
++            crate::hbbs_http::create_http_client_async_with_url_strict(url),
++        )
++        .await
++        {
++            Ok(Ok(made)) => Some(made),
++            Ok(Err(_)) => return Err("config"),
++            Err(_) => return Err("network"),
++        };
++    }
++    let Some(made) = client.as_ref() else {
++        return Err("config");
++    };
++    let mut response = made
++        .post(url)
++        .header(reqwest::header::CONTENT_TYPE, "application/json")
++        .body(body)
++        .timeout(HTTP_TIMEOUT)
++        .send()
++        .await
++        .map_err(|_| "network")?;
++    let status = response.status().as_u16();
++    let mut bytes = Vec::new();
++    while let Some(chunk) = response.chunk().await.map_err(|_| "network")? {
++        if bytes.len() + chunk.len() > MAX_ANSWER {
++            return Err("http");
++        }
++        bytes.extend_from_slice(&chunk);
++    }
++    match serde_json::from_slice(&bytes) {
++        Ok(answer) => Ok((status, answer)),
++        // a 200 is hjv-api's own answer; other statuses may come from a proxy in front of it
++        Err(_) if status == 200 => Err("http"),
++        Err(_) => Ok((status, Answer::default())),
++    }
++}
++
++/// What a sync's request brought back: hjv-api's clock if it showed it, and its answer with the
++/// request's `n`, or why there is none.
++struct Exchanged {
++    offset: Option<i64>,
++    reply: Result<(u16, Answer, String), &'static str>,
++}
++
++/// One sync request: the payload, signed with the device key in the envelope, sent once more
++/// right away with hjv-api's clock after a `clock` answer.
++async fn exchange<S: Service>(
++    service: S,
++    key: Option<sign::SecretKey>,
++    pc_id: String,
++    p: String,
++    mut offset: i64,
++) -> Exchanged {
++    let Some(key) = key else {
++        return Exchanged {
++            offset: None,
++            reply: Err("key"),
++        };
++    };
++    let mut learned = None;
++    let mut reply = Err("clock");
++    for _ in 0..2 {
++        let n: [u8; 16] = randombytes::randombytes(16).try_into().unwrap_or([0; 16]);
++        let body = pc_sync_envelope(&key, &pc_id, server_time(offset), &n, &p);
++        let (status, answer) = match service.post(body).await {
++            Ok(answered) => answered,
++            Err(code) => {
++                reply = Err(code);
++                break;
++            }
++        };
++        if SANE_TIME.contains(&answer.server_time) {
++            offset = answer.server_time as i64 - unix_now() as i64;
++            learned = Some(offset);
++        }
++        let clock = status == 400 && answer.error == "clock";
++        reply = Ok((status, answer, URL_SAFE_NO_PAD.encode(n)));
++        if !clock {
++            break;
++        }
++    }
++    Exchanged {
++        offset: learned,
++        reply,
++    }
++}
++
++/// The sync whose request is out, with what its answer is checked against.
++struct Flight {
++    mode: Mode,
++    pc_id: String,
++    pk: Vec<u8>,
++    refused: Refused,
++}
++
++/// The sync task: one per service process. Its loop takes the UI's requests every second and the
++/// proofs' asks as they come; a sync's request runs in a task of its own, one at a time.
++struct Syncer<S: Service> {
++    service: S,
++    /// server_time minus the PC's clock, from the last answer with one
++    offset: i64,
++    refresh: u64,
++    failures: u32,
++    /// when the next sync is due; None while there is nothing to send
++    next: Option<Instant>,
++    /// when the last sync ended, and whether it brought a list
++    done: Option<Instant>,
++    listed: bool,
++    flight: Option<Flight>,
++    /// a sync wanted while one was out, from its end: at once (false) or GAP after it (true)
++    again: Option<bool>,
++    /// proofs waiting for a sync's result, and whether they want one of their own
++    waiting: Vec<oneshot::Sender<bool>>,
++    asked: bool,
++    /// when the last sync proofs waited for ended
++    asked_done: Option<Instant>,
++    /// the bind request in hand, as the option has it, and when to try it again
++    pending: Option<(Request, String)>,
++    retry: Option<Instant>,
++    /// the one report after the binding went
++    report_unbound: bool,
++    knock: String,
++    wall: u64,
++    last: Option<Answered>,
++    last_ok: u64,
++    shown: String,
++    logged: Option<(String, usize)>,
++}
++
++impl<S: Service> Syncer<S> {
++    /// Starts the task; its inbox takes the proofs' asks.
++    fn spawn(service: S) -> Asks {
++        let (asks, inbox) = mpsc::unbounded_channel();
++        let syncer = Syncer {
++            service,
++            offset: 0,
++            refresh: 120,
++            failures: 0,
++            next: None,
++            done: None,
++            listed: false,
++            flight: None,
++            again: None,
++            waiting: Vec::new(),
++            asked: false,
++            asked_done: None,
++            pending: None,
++            retry: None,
++            report_unbound: false,
++            knock: String::new(),
++            wall: 0,
++            last: None,
++            last_ok: 0,
++            shown: String::new(),
++            logged: None,
++        };
++        tokio::spawn(syncer.run(inbox));
++        asks
++    }
++
++    async fn run(mut self, mut asks: mpsc::UnboundedReceiver<oneshot::Sender<bool>>) {
++        self.knock = self.service.option(KNOCK);
++        self.wall = unix_now();
++        let s = self.service.clone();
++        let start = blocking(move || {
++            let pc = s.pc();
++            let view = pc.view();
++            (
++                view.binding.is_some(),
++                view.cached.map(|c| c.received),
++                pc.store.get(LAST_STATE),
++            )
++        })
++        .await;
++        if let Some((bound, received, state)) = start {
++            if bound {
++                self.next = Some(Instant::now());
++            }
++            self.last_ok = received.unwrap_or(0);
++            self.last = state.as_deref().and_then(restored);
++        }
++        self.show().await;
++        let mut tick = interval(TICK);
++        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
++        let mut request: Option<JoinHandle<Exchanged>> = None;
++        loop {
++            tokio::select! {
++                _ = tick.tick() => self.tick().await,
++                Some(ask) = asks.recv() => self.ask(ask),
++                exchanged = async {
++                    match request.as_mut() {
++                        Some(request) => request.await,
++                        None => std::future::pending().await,
++                    }
++                } => {
++                    request = None;
++                    self.land(exchanged).await;
++                }
++            }
++            if request.is_none() {
++                request = self.launch().await;
++            }
++        }
++    }
++
++    async fn tick(&mut self) {
++        let now = unix_now();
++        if jumped(self.wall, now) {
++            self.soon(false);
++        }
++        self.wall = now;
++        // the unbind goes first, and counts as undoing the bind request in hand: one seen now
++        // (a login and its logout found together), or one the logout took out of the options
++        // while hjv-api had it
++        let bind = self.service.option(BIND_REQ);
++        let seen = Request::parse(&bind);
++        if let Some(req) = &seen {
++            if self.pending.as_ref().map(|(r, _)| r) != Some(req) {
++                self.pending = Some((req.clone(), bind.clone()));
++                self.retry = None;
++            }
++        }
++        let unbind = self.service.option(UNBIND_REQ);
++        if !unbind.is_empty() {
++            self.clear(UNBIND_REQ, &unbind);
++            if let Some(req) = Request::parse(&unbind) {
++                self.unbind(req).await;
++            }
++        }
++        if seen.is_none() {
++            self.pending = None;
++            if !bind.is_empty() {
++                self.clear(BIND_REQ, &bind);
++            }
++        }
++        let off = self.service.option(OFF_REQ);
++        if !off.is_empty() {
++            self.clear(OFF_REQ, &off);
++            if off == "Y" {
++                self.switch_off().await;
++            }
++        }
++        let knock = self.service.option(KNOCK);
++        if knock != self.knock {
++            self.knock = knock;
++            self.soon(true);
++        }
++        // the UI writes Config2's options as a whole and may have dropped it
++        if self.service.option(STATE) != self.shown {
++            self.service.set_option(STATE, &self.shown);
++        }
++    }
++
++    /// A proof wants a sync now: the result of the one in flight, or of the one proofs waited for
++    /// if it ended within GAP, or one of its own. A sync no proof waited for, such as the periodic
++    /// one, may predate the key of a device that logged in just now.
++    fn ask(&mut self, ask: oneshot::Sender<bool>) {
++        if self.flight.is_none() && self.asked_done.is_some_and(|t| t.elapsed() < GAP) {
++            ask.send(self.listed).ok();
++            return;
++        }
++        self.waiting.push(ask);
++        self.asked |= self.flight.is_none();
++    }
++
++    /// A sync as soon as may be: now, or GAP after the last one when `gap`.
++    fn soon(&mut self, gap: bool) {
++        if self.flight.is_some() {
++            self.again = Some(self.again.map_or(gap, |again| again && gap));
++            return;
++        }
++        let mut at = Instant::now();
++        if gap {
++            if let Some(done) = self.done {
++                at = at.max(done + GAP);
++            }
++        }
++        self.next = Some(self.next.map_or(at, |next| next.min(at)));
++    }
++
++    /// What to sync now, if anything: for proofs, the sync that is due, or a bind request. Bind
++    /// requests, which any local user may write, never hold off the sync that is due.
++    async fn due(&mut self) -> Option<Mode> {
++        let now = Instant::now();
++        if self.asked {
++            self.asked = false;
++            let s = self.service.clone();
++            match blocking(move || s.pc().binding()).await.flatten() {
++                Some(binding) => return Some(Mode::Bound(binding)),
++                None => {
++                    for waiting in self.waiting.drain(..) {
++                        waiting.send(false).ok();
++                    }
++                }
++            }
++        }
++        if self.next.is_some_and(|t| now >= t) {
++            let s = self.service.clone();
++            match blocking(move || s.pc().binding()).await.flatten() {
++                Some(binding) => return Some(Mode::Bound(binding)),
++                None if self.report_unbound => return Some(Mode::Unbound),
++                None => self.next = None,
++            }
++        }
++        if let Some((req, raw)) = self.pending.clone() {
++            if !self.retry.is_some_and(|t| now < t) {
++                let (s, r) = (self.service.clone(), req.clone());
++                let done = blocking(move || {
++                    let pc = s.pc();
++                    pc.binding().as_deref() == Some(r.binding.as_str())
++                        && pc.number(LOGIN_AT).is_some_and(|l| l >= r.login_at)
++                })
++                .await;
++                if done != Some(true) {
++                    hbb_common::throttled_log!(Duration::from_secs(60), info, "hjv: bind request");
++                    return Some(Mode::Bind(req));
++                }
++                self.clear(BIND_REQ, &raw);
++                self.pending = None;
++            }
++        }
++        None
++    }
++
++    /// Sends the sync that is due, if one is.
++    async fn launch(&mut self) -> Option<JoinHandle<Exchanged>> {
++        let mode = self.due().await?;
++        let (pc_id, sk, pk) = self.service.device();
++        let (s, binding) = (self.service.clone(), mode.binding().to_owned());
++        let (off, used) = blocking(move || {
++            let pc = s.pc();
++            let off = pc.off() && pc.binding().as_deref() == Some(binding.as_str());
++            (off, pc.used(unix_now()))
++        })
++        .await
++        .unwrap_or_default();
++        let refused = *self.service.refused().lock().unwrap();
++        let p = payload(mode.binding(), crate::VERSION, off, &used, refused);
++        let request = exchange(
++            self.service.clone(),
++            sign::SecretKey::from_slice(&sk),
++            pc_id.clone(),
++            p,
++            self.offset,
++        );
++        // what was due goes with this request, what comes up while it is out (soon) is due after;
++        // a bind request leaves the periodic sync where it was
++        if !matches!(mode, Mode::Bind(_)) {
++            self.next = None;
++        }
++        self.flight = Some(Flight {
++            mode,
++            pc_id,
++            pk,
++            refused,
++        });
++        Some(tokio::spawn(request))
++    }
++
++    /// The answer to the request in flight.
++    async fn land(&mut self, exchanged: Result<Exchanged, JoinError>) {
++        let Some(flight) = self.flight.take() else {
++            return;
++        };
++        let answered = match exchanged {
++            Err(_) => Answered::Failed("task"),
++            Ok(Exchanged { offset, reply }) => {
++                if let Some(offset) = offset {
++                    self.offset = offset;
++                }
++                match reply {
++                    Err(code) => Answered::Failed(code),
++                    Ok((status, answer, n)) => {
++                        if status == 200 {
++                            self.service.refused().lock().unwrap().take(&flight.refused);
++                        }
++                        // a bind request withdrawn while it was out (a logout, a newer login)
++                        // binds nothing, whatever records the unbind could leave
++                        let withdrawn = matches!(&flight.mode, Mode::Bind(req)
++                            if self.pending.as_ref().map(|(r, _)| r) != Some(req));
++                        if withdrawn {
++                            self.after(&flight.mode, Answered::Superseded).await;
++                            return;
++                        }
++                        let s = self.service.clone();
++                        let (mode, pc_id, pk) =
++                            (flight.mode.clone(), flight.pc_id.clone(), flight.pk.clone());
++                        blocking(move || {
++                            apply(
++                                &s.pc(),
++                                &s.pinned(),
++                                (&pc_id, &pk),
++                                &mode,
++                                &n,
++                                status,
++                                &answer,
++                                unix_now(),
++                            )
++                        })
++                        .await
++                        .unwrap_or(Answered::Failed("store"))
++                    }
++                }
++            }
++        };
++        self.after(&flight.mode, answered).await;
++    }
++
++    async fn after(&mut self, mode: &Mode, answered: Answered) {
++        let now = unix_now();
++        self.done = Some(Instant::now());
++        self.listed = matches!(answered, Answered::Kept { .. });
++        match &answered {
++            Answered::Kept {
++                state,
++                keys,
++                refresh,
++            } => {
++                self.refresh = *refresh;
++                self.failures = 0;
++                self.last_ok = now;
++                if self.logged.as_ref() != Some(&(state.clone(), *keys)) {
++                    log::info!("hjv: trust list {state}, {keys} key(s)");
++                    self.logged = Some((state.clone(), *keys));
++                }
++            }
++            Answered::Failed(code) => {
++                self.failures = self.failures.saturating_add(1);
++                hbb_common::throttled_log!(
++                    Duration::from_secs(600),
++                    warn,
++                    "hjv: sync failed: {code}"
++                );
++            }
++            Answered::Revoked => {
++                self.failures = 0;
++                self.logged = None;
++                self.report_unbound = true;
++                log::info!("hjv: trust list revoked: this PC's binding is gone");
++            }
++            Answered::NeedsRelogin => {
++                self.failures = 0;
++                hbb_common::throttled_log!(
++                    Duration::from_secs(600),
++                    warn,
++                    "hjv: hjv-api does not take this PC's device key; log in on it again"
++                );
++            }
++            Answered::BindRefused(code) => {
++                self.failures = 0;
++                hbb_common::throttled_log!(
++                    Duration::from_secs(60),
++                    info,
++                    "hjv: bind request refused: {code}"
++                );
++            }
++            Answered::Unsigned | Answered::Superseded => self.failures = 0,
++        }
++        let wait = match answered {
++            Answered::Failed(_) => backoff(self.failures, random_u32()),
++            _ => sync_interval(self.refresh, random_u32()),
++        };
++        let planned = Instant::now() + wait;
++        self.next = match mode {
++            Mode::Bind(_) => Some(self.next.map_or(planned, |next| next.min(planned))),
++            _ => Some(planned),
++        };
++        if let Some(gap) = self.again.take() {
++            self.soon(gap);
++        }
++        match mode {
++            Mode::Unbound => {
++                if !matches!(answered, Answered::Failed(_)) {
++                    self.report_unbound = false;
++                }
++            }
++            // a bind request withdrawn while it was out (a logout) shows nothing
++            Mode::Bind(req) => {
++                if self.pending.as_ref().is_some_and(|(r, _)| r == req) {
++                    if let Answered::Failed(_) = answered {
++                        // kept for another try, with the syncs' back-off
++                        self.retry = Some(planned);
++                    } else if let Some((_, raw)) = self.pending.take() {
++                        self.clear(BIND_REQ, &raw);
++                    }
++                    // nor does a refused one for the binding this PC goes on with
++                    // (a stale request of it put back)
++                    let s = self.service.clone();
++                    let goes_on = matches!(answered, Answered::BindRefused(_))
++                        && blocking(move || s.pc().binding()).await.flatten().as_ref()
++                            == Some(&req.binding);
++                    if !goes_on {
++                        self.last = Some(answered.clone());
++                    }
++                }
++            }
++            Mode::Bound(_) => {
++                if answered != Answered::Superseded {
++                    self.last = Some(answered.clone());
++                }
++            }
++        }
++        if answered == Answered::Revoked {
++            self.soon(true);
++        }
++        if !self.waiting.is_empty() {
++            self.asked_done = Some(Instant::now());
++        }
++        for waiting in self.waiting.drain(..) {
++            waiting.send(self.listed).ok();
++        }
++        self.show().await;
++    }
++
++    async fn unbind(&mut self, req: Request) {
++        let s = self.service.clone();
++        let pending = self.pending.as_ref().map(|(r, _)| r.clone());
++        let now = server_time(self.offset);
++        let dropped =
++            blocking(move || s.pc().unbind(&req, pending.as_ref(), now)).await == Some(true);
++        if dropped {
++            log::info!("hjv: unbind request: this PC's binding is gone");
++            self.last = None;
++            self.logged = None;
++            self.report_unbound = true;
++            self.soon(true);
++        } else {
++            hbb_common::throttled_log!(Duration::from_secs(60), info, "hjv: unbind request");
++        }
++        self.show().await;
++    }
++
++    async fn switch_off(&mut self) {
++        let s = self.service.clone();
++        let pending = self.pending.as_ref().map(|(r, _)| r.clone());
++        let now = server_time(self.offset);
++        if blocking(move || s.pc().switch_off(pending.as_ref(), now)).await == Some(true) {
++            hbb_common::throttled_log!(
++                Duration::from_secs(60),
++                info,
++                "hjv: password-less logins switched off on this PC"
++            );
++            self.soon(true);
++        }
++        self.show().await;
++    }
++
++    /// Clears a request the service handled, unless the UI wrote a new one meanwhile.
++    fn clear(&self, name: &str, handled: &str) {
++        if self.service.option(name) == handled {
++            self.service.set_option(name, "");
++        }
++    }
++
++    /// Writes hjv-pwless-state (and LastState in the key) from the binding as it is now.
++    async fn show(&mut self) {
++        let s = self.service.clone();
++        let last = self.last.clone();
++        let last_ok = self.last_ok;
++        let state = blocking(move || {
++            let pc = s.pc();
++            let state = display(&pc.view(), last.as_ref(), last_ok, unix_now());
++            if pc.store.get(LAST_STATE).as_deref() != Some(state.as_str()) {
++                pc.store.set(LAST_STATE, &state);
++            }
++            state
++        })
++        .await;
++        let Some(state) = state else {
++            return;
++        };
++        if self.service.option(STATE) != state {
++            self.service.set_option(STATE, &state);
++        }
++        self.shown = state;
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
+new file mode 100644
+index 0000000..6608787
+--- /dev/null
++++ b/src/hjviewer_account/pc/tests.rs
+@@ -0,0 +1,1536 @@
++//! The PC's binding rules (design v3 4-4 to 4-7), its answers to a sync, its use counts and the
++//! sync request, on an in-memory key and the Linux file; and the sync task itself against an
++//! in-memory hjv-api.
++
++use super::*;
++use crate::hjviewer_account::{
++    conn_proof, parse_trust_pubkeys, pc_sync_message, trust_message,
++    vectors::{
++        self, device_key, pk_bytes, ACCOUNT_PK, ACCOUNT_SEED, CTL_ID, HJV_TRUST_PUBKEYS,
++        LIST_1_SEED, PC_ID, PC_PK, PC_SEED, SYNC_ACCEPTED, SYNC_BODY, SYNC_N_BYTES, SYNC_P, T,
++    },
++    AccountKey, KIND_FILE, KIND_PORT_FORWARD, KIND_REMOTE, KIND_TERMINAL,
++};
++use std::collections::BTreeMap;
++
++/// HKLM\SOFTWARE\HJViewer\Account in memory: None while the key does not exist.
++#[derive(Default, Clone)]
++struct MemStore(Arc<Mutex<Option<BTreeMap<String, String>>>>);
++
++impl MemStore {
++    /// What the uninstaller does to the key.
++    fn delete(&self) {
++        *self.0.lock().unwrap() = None;
++    }
++}
++
++impl Store for MemStore {
++    fn exists(&self) -> bool {
++        self.0.lock().unwrap().is_some()
++    }
++
++    fn create(&self) -> bool {
++        self.0.lock().unwrap().get_or_insert_with(BTreeMap::new);
++        true
++    }
++
++    fn get(&self, name: &str) -> Option<String> {
++        self.0.lock().unwrap().as_ref()?.get(name).cloned()
++    }
++
++    fn set(&self, name: &str, value: &str) -> bool {
++        match self.0.lock().unwrap().as_mut() {
++            Some(values) => {
++                values.insert(name.to_owned(), value.to_owned());
++                true
++            }
++            None => false,
++        }
++    }
++
++    fn remove(&self, name: &str) {
++        if let Some(values) = self.0.lock().unwrap().as_mut() {
++            values.remove(name);
++        }
++    }
++}
++
++const NOW: u64 = 1_760_000_000;
++/// The binding ID of the vectors.
++const ID: &str = vectors::BINDING;
++const OTHER: &str = "0123456789abcdef0123456789abcdef";
++/// A phone of the account that logged in after the vectors' controller (key serial 11).
++const NEWCOMER_SEED: [u8; 32] = [7; 32];
++const NEWCOMER_ID: &str = "555555555";
++
++fn path_of(name: &str) -> PathBuf {
++    std::env::temp_dir().join(format!("hjv-pc-{name}-{}", std::process::id()))
++}
++
++fn dir(name: &str) -> PathBuf {
++    let dir = path_of(name);
++    std::fs::remove_dir_all(&dir).ok();
++    std::fs::create_dir_all(&dir).unwrap();
++    dir
++}
++
++fn cleanup(names: &[&str]) {
++    for name in names {
++        std::fs::remove_dir_all(path_of(name)).ok();
++    }
++}
++
++/// A PC that never had the key.
++fn fresh_pc(name: &str) -> Pc<MemStore> {
++    Pc {
++        store: MemStore::default(),
++        trust: dir(name).join(TRUST_FILE),
++    }
++}
++
++fn pc_pk() -> Vec<u8> {
++    pk_bytes(PC_PK)
++}
++
++fn owner() -> AccountKey {
++    AccountKey::from_seed(&ACCOUNT_SEED).unwrap()
++}
++
++/// A list as hjv-api signs it with list key 1, for the vector PC.
++struct Signed {
++    binding: String,
++    req: String,
++    state: &'static str,
++    iat: u64,
++    login_at: u64,
++    refresh: u64,
++    strict: bool,
++    /// the newcomer's key too, which makes the list's serial 11
++    newcomer: bool,
++    /// hjv-api's revoked lists: no keys, no owner, no login
++    bare: bool,
++}
++
++impl Signed {
++    fn new(binding: &str, req: &str, iat: u64, login_at: u64) -> Signed {
++        Signed {
++            binding: binding.to_owned(),
++            req: req.to_owned(),
++            state: "active",
++            iat,
++            login_at,
++            refresh: 120,
++            strict: false,
++            newcomer: false,
++            bare: false,
++        }
++    }
++
++    fn state(mut self, state: &'static str) -> Signed {
++        self.state = state;
++        self
++    }
++
++    fn bare(mut self) -> Signed {
++        self.bare = true;
++        self
++    }
++
++    fn answer(&self) -> Answer {
++        let (owner, login_at, keys) = if self.bare {
++            ("", 0, serde_json::json!([]))
++        } else {
++            let mut keys = vec![
++                serde_json::json!({"pk": ACCOUNT_PK, "id": CTL_ID, "name": "iPhone 14 Pro",
++                                   "platform": "ios", "kinds": ["remote", "file", "camera"],
++                                   "ks": 10}),
++            ];
++            if self.newcomer {
++                let pk = AccountKey::from_seed(&NEWCOMER_SEED).unwrap().public_key();
++                keys.push(
++                    serde_json::json!({"pk": STANDARD.encode(pk), "id": NEWCOMER_ID,
++                                       "name": "Galaxy S24", "platform": "android",
++                                       "kinds": ["remote", "file", "camera"], "ks": 11}),
++                );
++            }
++            ("홍*동", self.login_at, serde_json::json!(keys))
++        };
++        // the field order of hjv-api's lists
++        let l = serde_json::json!({
++            "v": 1, "typ": "hjv-trust", "kid": 1, "binding": self.binding,
++            "pc_id": PC_ID, "pc_pk": PC_PK, "req": self.req,
++            "serial": if self.newcomer { 11 } else { 10 },
++            "iat": self.iat, "exp": self.iat + 86_400, "refresh": self.refresh,
++            "strict": self.strict, "state": self.state, "owner": owner, "login_at": login_at,
++            "keys": keys
++        });
++        let bytes = serde_json::to_vec(&l).unwrap();
++        let s = sign::sign_detached(&trust_message(&bytes), &device_key(&LIST_1_SEED));
++        Answer {
++            server_time: self.iat,
++            error: String::new(),
++            list: Some(SignedList {
++                kid: 1,
++                l: STANDARD.encode(&bytes),
++                s: STANDARD.encode(s.to_bytes()),
++            }),
++        }
++    }
++}
++
++fn reply(
++    pc: &Pc<MemStore>,
++    mode: Mode,
++    n: &str,
++    status: u16,
++    answer: &Answer,
++    now: u64,
++) -> Answered {
++    let pinned = parse_trust_pubkeys(HJV_TRUST_PUBKEYS).unwrap();
++    apply(
++        pc,
++        &pinned,
++        (PC_ID, &pc_pk()),
++        &mode,
++        n,
++        status,
++        answer,
++        now,
++    )
++}
++
++fn request(binding: &str, login_at: u64) -> Request {
++    Request {
++        binding: binding.to_owned(),
++        login_at,
++    }
++}
++
++/// Binds `pc` to ID by a login at `login_at`, with the list of that sync.
++fn bind_to(pc: &Pc<MemStore>, login_at: u64) {
++    let answer = Signed::new(ID, "n0", login_at + 5, login_at).answer();
++    let bind = Mode::Bind(request(ID, login_at));
++    assert!(matches!(
++        reply(pc, bind, "n0", 200, &answer, login_at + 6),
++        Answered::Kept { .. }
++    ));
++}
++
++/// A PC bound to ID by a login at `login_at`, with the list of that sync.
++fn bound(name: &str, login_at: u64) -> Pc<MemStore> {
++    let pc = fresh_pc(name);
++    bind_to(&pc, login_at);
++    pc
++}
++
++fn proof_from(
++    pc: &Pc<MemStore>,
++    kind: u8,
++    nonce: &[u8; 32],
++    now: u64,
++) -> Result<KeyEntry, Refusal> {
++    let pk = pc_pk();
++    let proof = conn_proof(&owner(), PC_ID, &pk, nonce, CTL_ID, kind, 10).unwrap();
++    let login = KeyLogin {
++        pc_id: PC_ID,
++        pc_pk: &pk,
++        secured: true,
++        nonce,
++        proof: &proof,
++        my_id: CTL_ID,
++        kind,
++    };
++    decide(&pc.view(), &login, now)
++}
++
++#[test]
++fn a_bind_needs_hjv_apis_word_and_a_login_just_now() {
++    let _ = hbb_common::sodiumoxide::init();
++    // a login 5 s before the list: the binding, its owner, its login and the list
++    let pc = bound("bind", NOW);
++    assert_eq!(pc.binding().as_deref(), Some(ID));
++    assert_eq!(pc.store.get(OWNER).as_deref(), Some("홍*동"));
++    assert_eq!(pc.number(LOGIN_AT), Some(NOW));
++    assert_eq!(pc.number(AT), Some(NOW + 6));
++    assert_eq!(pc.view().cached.unwrap().received, NOW + 6);
++    assert_eq!(
++        proof_from(&pc, KIND_REMOTE, &[5; 32], NOW + 60).unwrap().id,
++        CTL_ID
++    );
++
++    // the login more than ten minutes before the list, or a list hjv-api did not sign for this
++    // binding, or another request's list: no key is made
++    let old = fresh_pc("bind-old");
++    let stale = Signed::new(ID, "n1", NOW + 601, NOW).answer();
++    let bind = || Mode::Bind(request(ID, NOW));
++    assert_eq!(
++        reply(&old, bind(), "n1", 200, &stale, NOW + 601),
++        Answered::BindRefused("bind-stale")
++    );
++    let unsigned = Answer {
++        list: None,
++        ..stale
++    };
++    assert_eq!(
++        reply(&old, bind(), "n1", 200, &unsigned, NOW + 601),
++        Answered::BindRefused("bind-mismatch")
++    );
++    assert_eq!(
++        reply(&old, bind(), "n1", 404, &Answer::default(), NOW + 601),
++        Answered::BindRefused("bind-mismatch")
++    );
++    let replayed = Signed::new(ID, "n0", NOW + 5, NOW).answer();
++    assert_eq!(
++        reply(&old, bind(), "n1", 200, &replayed, NOW + 6),
++        Answered::Failed("list")
++    );
++    let other = Signed::new(OTHER, "n1", NOW + 5, NOW).answer();
++    assert_eq!(
++        reply(&old, bind(), "n1", 200, &other, NOW + 6),
++        Answered::Failed("list")
++    );
++    assert!(!old.store.exists());
++
++    // a paused account's PC is bound and shows it; a revoked binding is not
++    let paused = fresh_pc("bind-paused");
++    let disabled = Signed::new(ID, "n1", NOW + 5, NOW)
++        .state("disabled")
++        .answer();
++    assert!(matches!(
++        reply(&paused, bind(), "n1", 200, &disabled, NOW + 6),
++        Answered::Kept { .. }
++    ));
++    assert_eq!(display(&paused.view(), None, NOW + 6, NOW + 7), "disabled");
++    assert_eq!(
++        proof_from(&paused, KIND_REMOTE, &[5; 32], NOW + 60).unwrap_err(),
++        Refusal::NotActive
++    );
++    let gone = fresh_pc("bind-revoked");
++    let revoked = Signed::new(ID, "n1", NOW + 5, NOW)
++        .state("revoked")
++        .bare()
++        .answer();
++    assert_eq!(
++        reply(&gone, bind(), "n1", 200, &revoked, NOW + 6),
++        Answered::BindRefused("bind-revoked")
++    );
++    assert!(!gone.store.exists());
++    cleanup(&["bind", "bind-old", "bind-paused", "bind-revoked"]);
++}
++
++#[test]
++fn an_answer_changes_only_what_a_signed_list_says() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = bound("answers", NOW);
++    let mode = || Mode::Bound(ID.to_owned());
++    let fresh = Signed::new(ID, "n2", NOW + 120, NOW).answer();
++    assert_eq!(
++        reply(&pc, mode(), "n2", 200, &fresh, NOW + 121),
++        Answered::Kept {
++            state: "active".to_owned(),
++            keys: 1,
++            refresh: 120
++        }
++    );
++    assert_eq!(pc.view().cached.unwrap().received, NOW + 121);
++    // unsigned answers, errors and lists for another request change nothing
++    for (status, answer, expected) in [
++        (200, Answer::default(), Answered::Unsigned),
++        (404, Answer::default(), Answered::Unsigned),
++        (401, Answer::default(), Answered::NeedsRelogin),
++        (500, Answer::default(), Answered::Failed("http")),
++        (
++            400,
++            Answer {
++                error: "clock".to_owned(),
++                ..Answer::default()
++            },
++            Answered::Failed("clock"),
++        ),
++        (200, fresh, Answered::Failed("list")),
++    ] {
++        assert_eq!(
++            reply(&pc, mode(), "n3", status, &answer, NOW + 200),
++            expected
++        );
++        assert_eq!(pc.binding().as_deref(), Some(ID));
++        assert_eq!(pc.view().cached.unwrap().received, NOW + 121);
++    }
++    // hjv-api's revoked list for this binding (no keys, no owner, no login) takes it and the
++    // list away; the one report after it changes nothing
++    let revoked = Signed::new(ID, "n4", NOW + 300, NOW)
++        .state("revoked")
++        .bare()
++        .answer();
++    assert_eq!(
++        reply(&pc, mode(), "n4", 200, &revoked, NOW + 301),
++        Answered::Revoked
++    );
++    assert_eq!(pc.binding(), None);
++    assert!(pc.cached().is_none() && !pc.trust.exists());
++    assert_eq!(pc.number(KID_FLOOR), Some(1));
++    assert_eq!(
++        display(&pc.view(), Some(&Answered::Revoked), 0, NOW),
++        "revoked"
++    );
++    assert_eq!(
++        reply(&pc, Mode::Unbound, "n5", 404, &Answer::default(), NOW + 302),
++        Answered::Unsigned
++    );
++    cleanup(&["answers"]);
++}
++
++#[test]
++fn the_list_and_its_metadata_go_together() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = bound("cache", NOW);
++    let cached = pc.cached().unwrap();
++    assert_eq!(
++        (cached.list.binding.as_str(), cached.received),
++        (ID, NOW + 6)
++    );
++    // bytes that are not the ones the key's hash names do not count, nor bytes without a hash
++    let mut bytes = std::fs::read(&pc.trust).unwrap();
++    bytes[10] ^= 1;
++    std::fs::write(&pc.trust, &bytes).unwrap();
++    assert!(pc.cached().is_none());
++    assert_eq!(
++        proof_from(&pc, KIND_REMOTE, &[5; 32], NOW + 60).unwrap_err(),
++        Refusal::NoList
++    );
++    let pc = bound("cache2", NOW);
++    pc.store.remove(LIST_HASH);
++    assert!(pc.cached().is_none());
++    // a list of another binding is no list for this one
++    let pc = bound("cache3", NOW);
++    pc.store.set(BINDING, OTHER);
++    assert!(pc.view().cached.is_none());
++    assert_eq!(
++        proof_from(&pc, KIND_REMOTE, &[5; 32], NOW + 60).unwrap_err(),
++        Refusal::NoList
++    );
++    cleanup(&["cache", "cache2", "cache3"]);
++}
++
++#[cfg(not(windows))]
++#[test]
++fn the_linux_file_is_the_key() {
++    use std::os::unix::fs::PermissionsExt;
++    let file = BindingFile(dir("file").join(BINDING_FILE));
++    // only create makes the file
++    assert!(!file.set(BINDING, ID) && !file.exists());
++    assert!(file.create() && file.exists());
++    assert!(file.set(BINDING, ID) && file.set(OFF, "5"));
++    assert_eq!(file.get(BINDING).as_deref(), Some(ID));
++    file.remove(OFF);
++    assert_eq!(file.get(OFF), None);
++    let mode = std::fs::metadata(&file.0).unwrap().permissions().mode();
++    assert_eq!(mode & 0o777, 0o600);
++    // the same rules on the file as on the key
++    let pc = Pc {
++        store: file,
++        trust: dir("file2").join(TRUST_FILE),
++    };
++    assert!(pc.switch_off(None, NOW));
++    std::fs::remove_file(&pc.store.0).unwrap();
++    assert!(!pc.switch_off(None, NOW) && !pc.store.exists());
++    cleanup(&["file", "file2"]);
++}
++
++#[test]
++fn a_removed_key_stays_removed() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = bound("removed", NOW);
++    pc.note_use(ACCOUNT_PK, NOW + 10);
++    // the uninstaller removes the key while the service still runs
++    pc.store.delete();
++    let fresh = Signed::new(ID, "n2", NOW + 120, NOW).answer();
++    assert_eq!(
++        reply(
++            &pc,
++            Mode::Bound(ID.to_owned()),
++            "n2",
++            200,
++            &fresh,
++            NOW + 121
++        ),
++        Answered::Superseded
++    );
++    assert!(!pc.switch_off(None, NOW + 125));
++    pc.note_use(ACCOUNT_PK, NOW + 130);
++    let revoked = Signed::new(ID, "n3", NOW + 140, NOW)
++        .state("revoked")
++        .answer();
++    assert_eq!(
++        reply(
++            &pc,
++            Mode::Bound(ID.to_owned()),
++            "n3",
++            200,
++            &revoked,
++            NOW + 141
++        ),
++        Answered::Superseded
++    );
++    assert!(!pc.unbind(&request(ID, NOW), None, NOW + 150));
++    pc.raise_floor(2);
++    assert!(!pc.store.exists());
++    assert_eq!(
++        proof_from(&pc, KIND_REMOTE, &[5; 32], NOW + 160).unwrap_err(),
++        Refusal::NotBound
++    );
++    // only a bind request makes it again
++    let login = NOW + 1_000;
++    let answer = Signed::new(ID, "n4", login + 5, login).answer();
++    assert!(matches!(
++        reply(
++            &pc,
++            Mode::Bind(request(ID, login)),
++            "n4",
++            200,
++            &answer,
++            login + 6
++        ),
++        Answered::Kept { .. }
++    ));
++    assert_eq!(pc.binding().as_deref(), Some(ID));
++    cleanup(&["removed"]);
++}
++
++#[test]
++fn off_holds_until_a_later_login() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = bound("off", NOW);
++    assert!(pc.switch_off(None, NOW + 30));
++    assert_eq!(pc.number(OFF), Some(NOW));
++    assert_eq!(
++        proof_from(&pc, KIND_REMOTE, &[5; 32], NOW + 60).unwrap_err(),
++        Refusal::Off
++    );
++    assert_eq!(display(&pc.view(), None, NOW, NOW + 60), "off");
++    // Config2 is not where Off lives; the same login's bind request again leaves it off
++    let again = Signed::new(ID, "n1", NOW + 100, NOW).answer();
++    assert!(matches!(
++        reply(
++            &pc,
++            Mode::Bind(request(ID, NOW)),
++            "n1",
++            200,
++            &again,
++            NOW + 101
++        ),
++        Answered::Kept { .. }
++    ));
++    assert!(pc.off());
++    // a later login on this PC turns it on again
++    let later = Signed::new(ID, "n2", NOW + 200, NOW + 190).answer();
++    assert!(matches!(
++        reply(
++            &pc,
++            Mode::Bind(request(ID, NOW + 190)),
++            "n2",
++            200,
++            &later,
++            NOW + 201
++        ),
++        Answered::Kept { .. }
++    ));
++    assert!(!pc.off());
++    assert_eq!(pc.number(LOGIN_AT), Some(NOW + 190));
++    assert!(proof_from(&pc, KIND_REMOTE, &[5; 32], NOW + 260).is_ok());
++
++    // switched off while a login's bind request is in hand (hjv-api slow or away): hjv-api's
++    // confirmation of that earlier login leaves it off; a made-up request in hand holds it off up
++    // to PENDING_AHEAD past hjv-api's clock, and no later
++    let relogin = request(ID, NOW + 300);
++    assert!(pc.switch_off(Some(&relogin), NOW + 310));
++    assert_eq!(pc.number(OFF), Some(NOW + 300));
++    let late = Signed::new(ID, "n3", NOW + 320, NOW + 300).answer();
++    let rebind = |login_at| Mode::Bind(request(ID, login_at));
++    assert!(matches!(
++        reply(&pc, rebind(NOW + 300), "n3", 200, &late, NOW + 321),
++        Answered::Kept { .. }
++    ));
++    assert!(pc.off());
++    let made_up = request(ID, u64::MAX);
++    assert!(pc.switch_off(Some(&made_up), NOW + 330));
++    assert_eq!(pc.number(OFF), Some(NOW + 330 + PENDING_AHEAD));
++    let owner = Signed::new(ID, "n4", NOW + 990, NOW + 980).answer();
++    assert!(matches!(
++        reply(&pc, rebind(NOW + 980), "n4", 200, &owner, NOW + 991),
++        Answered::Kept { .. }
++    ));
++    assert!(!pc.off());
++    cleanup(&["off"]);
++}
++
++#[test]
++fn an_undone_login_stays_undone() {
++    let _ = hbb_common::sodiumoxide::init();
++    // logged out after the bind: the binding goes at once, offline too, and the same login's
++    // bind request (still within ten minutes of it) does not bring it back
++    let pc = bound("undone", NOW);
++    assert!(pc.unbind(&request(ID, NOW), None, NOW + 30));
++    assert_eq!(pc.binding(), None);
++    assert!(!pc.off() && pc.cached().is_none());
++    assert_eq!(
++        (
++            pc.store.get(UNBOUND_BINDING).as_deref(),
++            pc.number(UNBOUND_LOGIN_AT)
++        ),
++        (Some(ID), Some(NOW))
++    );
++    let replay = Signed::new(ID, "n1", NOW + 60, NOW).answer();
++    let rebind = |login_at| Mode::Bind(request(ID, login_at));
++    assert_eq!(
++        reply(&pc, rebind(NOW), "n1", 200, &replay, NOW + 61),
++        Answered::BindRefused("bind-released")
++    );
++    // a forged unbind of another binding does not wipe that record, nor one undoing a made-up
++    // bind request (written with it) while the record guards the ten minutes after its login
++    assert!(!pc.unbind(&request(OTHER, 1), None, NOW + 62));
++    assert_eq!(pc.store.get(UNBOUND_BINDING).as_deref(), Some(ID));
++    let made_up = request(OTHER, 0);
++    assert!(!pc.unbind(&made_up, Some(&made_up), NOW + 62));
++    assert_eq!(pc.store.get(UNBOUND_BINDING).as_deref(), Some(ID));
++    assert_eq!(
++        reply(&pc, rebind(NOW), "n1", 200, &replay, NOW + 63),
++        Answered::BindRefused("bind-released")
++    );
++    // a later login binds again
++    let later = Signed::new(ID, "n2", NOW + 400, NOW + 390).answer();
++    assert!(matches!(
++        reply(&pc, rebind(NOW + 390), "n2", 200, &later, NOW + 401),
++        Answered::Kept { .. }
++    ));
++
++    // logged out before the service took the bind request, on a PC never bound: the unbind
++    // comes first and makes the key for its record alone
++    let fresh = fresh_pc("undone-before");
++    let login = request(ID, NOW);
++    assert!(!fresh.unbind(&login, Some(&login), NOW + 2));
++    assert!(fresh.store.exists() && fresh.binding().is_none());
++    assert_eq!(fresh.number(UNBOUND_LOGIN_AT), Some(NOW));
++    let late = Signed::new(ID, "n3", NOW + 300, NOW).answer();
++    assert_eq!(
++        reply(&fresh, Mode::Bind(login), "n3", 200, &late, NOW + 301),
++        Answered::BindRefused("bind-released")
++    );
++    assert!(fresh.binding().is_none());
++    // without that bind request in hand nothing makes the key
++    let other = fresh_pc("undone-other");
++    assert!(!other.unbind(&request(ID, NOW), None, NOW + 2));
++    assert!(!other.store.exists());
++    cleanup(&["undone", "undone-before", "undone-other"]);
++}
++
++#[test]
++fn an_undone_login_again_on_a_bound_pc_stays_undone() {
++    let _ = hbb_common::sodiumoxide::init();
++    // bound by a login at NOW, its last list from NOW + 100; the owner logs in again at NOW + 200
++    // and out before the service took that bind request (hjv-api unreachable, say)
++    let pc = bound("again", NOW);
++    let list = Signed::new(ID, "n1", NOW + 100, NOW).answer();
++    assert!(matches!(
++        reply(&pc, Mode::Bound(ID.to_owned()), "n1", 200, &list, NOW + 100),
++        Answered::Kept { .. }
++    ));
++    let again = request(ID, NOW + 200);
++    assert!(pc.unbind(&again, Some(&again), NOW + 210));
++    assert_eq!(pc.number(UNBOUND_LOGIN_AT), Some(NOW + 200));
++    // so that login's request, put back within its ten minutes, does not bind
++    let replay = Signed::new(ID, "n2", NOW + 300, NOW + 200).answer();
++    assert_eq!(
++        reply(&pc, Mode::Bind(again), "n2", 200, &replay, NOW + 301),
++        Answered::BindRefused("bind-released")
++    );
++    // a bind request and an unbind made up together hold the record to hjv-api's clock
++    let forged = request(ID, u64::MAX);
++    let other = bound("again-forged", NOW);
++    assert!(other.unbind(&forged, Some(&forged), NOW + 10));
++    assert_eq!(
++        other.number(UNBOUND_LOGIN_AT),
++        Some(NOW + 10 + PENDING_AHEAD)
++    );
++    cleanup(&["again", "again-forged"]);
++}
++
++#[test]
++fn a_made_up_unbind_time_does_not_hold_off_the_owner() {
++    let _ = hbb_common::sodiumoxide::init();
++    // the PC's last list of the binding has iat NOW + 5: a far later login_at counts as that
++    let pc = bound("forged", NOW);
++    assert!(pc.unbind(&request(ID, u64::MAX), None, NOW + 50));
++    assert_eq!(pc.number(UNBOUND_LOGIN_AT), Some(NOW + 5));
++    // a second one, with the binding and its list gone, changes nothing
++    assert!(!pc.unbind(&request(ID, u64::MAX), None, NOW + 55));
++    assert_eq!(pc.number(UNBOUND_LOGIN_AT), Some(NOW + 5));
++    let owner = Signed::new(ID, "n1", NOW + 70, NOW + 60).answer();
++    assert!(matches!(
++        reply(
++            &pc,
++            Mode::Bind(request(ID, NOW + 60)),
++            "n1",
++            200,
++            &owner,
++            NOW + 71
++        ),
++        Answered::Kept { .. }
++    ));
++    // without a list of that binding, a day past the PC's clock
++    pc.store.remove(LIST_HASH);
++    assert!(pc.unbind(&request(ID, u64::MAX), None, NOW + 80));
++    assert_eq!(pc.number(UNBOUND_LOGIN_AT), Some(NOW + 80 + UNLISTED_AHEAD));
++    cleanup(&["forged"]);
++}
++
++#[test]
++fn use_counts_go_on_by_utc_day() {
++    let _ = hbb_common::sodiumoxide::init();
++    // NOW is 2025-10-09 08:53:20 UTC
++    let pc = bound("use", NOW);
++    pc.note_use(ACCOUNT_PK, NOW + 10);
++    pc.note_use(ACCOUNT_PK, NOW + 20);
++    let today = |pc: &Pc<MemStore>, at| -> Vec<(String, u64, u64)> {
++        pc.used(at)
++            .into_iter()
++            .map(|u| (u.day, u.last, u.n))
++            .collect()
++    };
++    assert_eq!(
++        today(&pc, NOW + 30),
++        [("2025-10-09".to_owned(), NOW + 20, 2)]
++    );
++    // the service starts again: the day's count goes on from the key
++    let pc = Pc {
++        store: pc.store,
++        trust: pc.trust,
++    };
++    pc.note_use(ACCOUNT_PK, NOW + 40);
++    assert_eq!(
++        today(&pc, NOW + 50),
++        [("2025-10-09".to_owned(), NOW + 40, 3)]
++    );
++    // past midnight UTC a new line; reports carry today and yesterday only
++    let tomorrow = NOW + 86_400;
++    pc.note_use(ACCOUNT_PK, tomorrow);
++    assert_eq!(
++        today(&pc, tomorrow),
++        [
++            ("2025-10-09".to_owned(), NOW + 40, 3),
++            ("2025-10-10".to_owned(), tomorrow, 1)
++        ]
++    );
++    assert_eq!(
++        today(&pc, tomorrow + 86_400),
++        [("2025-10-10".to_owned(), tomorrow, 1)]
++    );
++    cleanup(&["use"]);
++}
++
++#[test]
++fn a_proof_needs_the_binding_on_and_its_kind_listed() {
++    let _ = hbb_common::sodiumoxide::init();
++    let none = fresh_pc("proof-none");
++    assert_eq!(
++        proof_from(&none, KIND_REMOTE, &[5; 32], NOW).unwrap_err(),
++        Refusal::NotBound
++    );
++    let pc = bound("proof", NOW);
++    assert!(proof_from(&pc, KIND_FILE, &[5; 32], NOW + 60).is_ok());
++    assert_eq!(
++        proof_from(&pc, KIND_PORT_FORWARD, &[5; 32], NOW + 60).unwrap_err(),
++        Refusal::KindNotByProof
++    );
++    // the list's lifetime runs from its receipt
++    assert_eq!(
++        proof_from(&pc, KIND_REMOTE, &[5; 32], NOW + 6 + 86_400).unwrap_err(),
++        Refusal::Expired
++    );
++    cleanup(&["proof-none", "proof"]);
++}
++
++#[test]
++fn a_proof_asks_for_a_sync_only_when_one_could_let_it_in() {
++    let _ = hbb_common::sodiumoxide::init();
++    let (pk, nonce) = (pc_pk(), [5; 32]);
++    let proof = |key: &AccountKey, key_serial| {
++        conn_proof(key, PC_ID, &pk, &nonce, CTL_ID, KIND_REMOTE, key_serial).unwrap()
++    };
++    let wants = |pc: &Pc<MemStore>, proof: &HjvKeyProof, now| {
++        let login = KeyLogin {
++            pc_id: PC_ID,
++            pc_pk: &pk,
++            secured: true,
++            nonce: &nonce,
++            proof,
++            my_id: CTL_ID,
++            kind: KIND_REMOTE,
++        };
++        let view = pc.view();
++        wants_sync(&view, &decide(&view, &login, now), now, proof.key_serial)
++    };
++    let newcomer = AccountKey::from_seed(&[7; 32]).unwrap();
++    // the list (serial 10) decides a key it has, and a key no newer than itself
++    let pc = bound("wants", NOW);
++    assert!(!wants(&pc, &proof(&owner(), 10), NOW + 60));
++    assert!(!wants(&pc, &proof(&newcomer, 10), NOW + 60));
++    // a device that logged in after it, or a list that expired, asks once
++    assert!(wants(&pc, &proof(&newcomer, 11), NOW + 60));
++    assert!(wants(&pc, &proof(&owner(), 10), NOW + 6 + 86_400));
++    // a proof that is broken or signed for another connection asks nothing
++    let mut broken = proof(&newcomer, 11);
++    let mut signature = broken.signature.to_vec();
++    signature[0] ^= 1;
++    broken.signature = signature.into();
++    assert!(!wants(&pc, &broken, NOW + 6 + 86_400));
++    // nor can a sync turn on a PC switched off here, an unbound one, or a paused account's
++    assert!(pc.switch_off(None, NOW + 60));
++    assert!(!wants(&pc, &proof(&newcomer, 11), NOW + 6 + 86_400));
++    assert!(!wants(
++        &fresh_pc("wants-none"),
++        &proof(&newcomer, 11),
++        NOW + 60
++    ));
++    let paused = fresh_pc("wants-paused");
++    let disabled = Signed::new(ID, "n1", NOW + 5, NOW).state("disabled");
++    assert!(matches!(
++        reply(
++            &paused,
++            Mode::Bind(request(ID, NOW)),
++            "n1",
++            200,
++            &disabled.answer(),
++            NOW + 6
++        ),
++        Answered::Kept { .. }
++    ));
++    assert!(!wants(&paused, &proof(&owner(), 10), NOW + 60));
++    cleanup(&["wants", "wants-none", "wants-paused"]);
++}
++
++#[tokio::test]
++async fn without_the_build_variables_no_nonce_and_no_task() {
++    // a test build has none of HJV_SERVER, HJV_LOGIN_SEAL_PUBKEY and HJV_TRUST_PUBKEYS
++    if enabled() {
++        return;
++    }
++    assert!(!pc_capable());
++    assert!(crate::hjviewer_account::hash_nonce().is_empty());
++    start_pc_sync();
++    let asks = ASKS.lock().unwrap().clone();
++    assert!(asks.is_none());
++    assert!(!refresh_now(asks.as_ref()).await);
++}
++
++#[test]
++fn the_sync_request_is_the_vectors() {
++    let _ = hbb_common::sodiumoxide::init();
++    let mut uses = Vec::new();
++    for at in SYNC_ACCEPTED {
++        count_use(&mut uses, ACCOUNT_PK, at);
++    }
++    let p = payload(
++        ID,
++        "1.6.0",
++        false,
++        &used_report(&uses, T),
++        Refused::default(),
++    );
++    assert_eq!(p, SYNC_P);
++    assert_eq!(
++        pc_sync_envelope(&device_key(&PC_SEED), PC_ID, T, &SYNC_N_BYTES, &p),
++        SYNC_BODY
++    );
++    // every refusal counts under one of the design's seven names
++    let mut refused = Refused::default();
++    for refusal in [
++        Refusal::TemporaryOnly,
++        Refusal::NotActive,
++        Refusal::NotBound,
++        Refusal::IdMismatch,
++        Refusal::NoList,
++    ] {
++        refused.add(refusal);
++    }
++    let p = payload("", "1.6.0", false, &[], refused);
++    assert!(p.contains(
++        r#""refused":{"unknown_key":0,"kind":0,"temporary_only":1,"not_secured":0,"bad_sig":1,"expired":1,"off":2}"#
++    ));
++    // a report hjv-api took leaves what came meanwhile
++    let mut now = refused;
++    now.add(Refusal::Off);
++    now.take(&refused);
++    let mut off = Refused::default();
++    off.add(Refusal::Off);
++    assert_eq!(now, off);
++}
++
++#[test]
++fn requests_and_timing() {
++    assert_eq!(
++        Request::parse(&format!("{ID}.1760000000")),
++        Some(request(ID, 1_760_000_000))
++    );
++    for bad in [
++        String::new(),
++        ID.to_owned(),
++        format!("{ID}."),
++        format!("{}.1", ID.to_uppercase()),
++        format!("{}.1", &ID[1..]),
++        format!("{ID}.-1"),
++    ] {
++        assert_eq!(Request::parse(&bad), None, "{bad}");
++    }
++    // failures back off from 30 s to 10 min, never past either
++    for failures in [0, 1, 2, 5, 6, 7, 40, u32::MAX] {
++        for jitter in [0, u32::MAX / 2, u32::MAX] {
++            let wait = backoff(failures, jitter);
++            assert!(
++                wait >= Duration::from_secs(RETRY_MIN) && wait <= Duration::from_secs(RETRY_MAX),
++                "{failures} {jitter} {wait:?}"
++            );
++        }
++    }
++    assert_eq!(backoff(1, 0), Duration::from_secs(30));
++    assert_eq!(backoff(3, 0), Duration::from_secs(96));
++    assert_eq!(backoff(3, u32::MAX), Duration::from_secs(144));
++    assert_eq!(backoff(9, 0), Duration::from_secs(480));
++    assert_eq!(backoff(9, u32::MAX), Duration::from_secs(600));
++    // a tick of the 1 s loop that saw the clock move by more than 30 s: the PC slept
++    assert!(!jumped(0, NOW));
++    assert!(!jumped(NOW, NOW + 1));
++    assert!(!jumped(NOW, NOW + 30));
++    assert!(jumped(NOW, NOW + 31));
++    assert!(jumped(NOW, NOW - 31));
++}
++
++#[test]
++fn the_settings_line() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = bound("line", NOW);
++    let view = pc.view();
++    let line = |last: Option<Answered>, now| display(&view, last.as_ref(), NOW + 6, now);
++    assert_eq!(line(None, NOW + 10), format!("active 1 {}", NOW + 6));
++    assert_eq!(
++        line(Some(Answered::Failed("network")), NOW + 10),
++        format!("error network {}", NOW + 6)
++    );
++    assert_eq!(line(Some(Answered::Unsigned), NOW + 10), "listed");
++    assert_eq!(
++        line(Some(Answered::NeedsRelogin), NOW + 10),
++        "needs-relogin"
++    );
++    assert_eq!(line(None, NOW + 6 + 86_400), "expired");
++    assert_eq!(display(&View::default(), None, 0, NOW), "");
++    assert_eq!(
++        display(
++            &View::default(),
++            Some(&Answered::BindRefused("bind-stale")),
++            0,
++            NOW
++        ),
++        "error bind-stale 0"
++    );
++    // what hjv-api said last outlives a restart of the service
++    let unbound = |state| display(&View::default(), restored(state).as_ref(), 0, NOW);
++    assert_eq!(unbound("revoked"), "revoked");
++    assert_eq!(unbound("needs-relogin"), "needs-relogin");
++    assert_eq!(unbound("listed"), "");
++    assert_eq!(line(restored("listed"), NOW + 10), "listed");
++    assert_eq!(restored(&format!("active 1 {NOW}")), None);
++    cleanup(&["line"]);
++}
++
++/// hjv-api answering /api/hjv/pc/sync for the vector PC as design 5-2 says.
++#[derive(Default)]
++struct FakeApi {
++    /// this PC's binding on the server and the last login on the PC
++    bound: Option<(String, u64)>,
++    /// released bindings: a signed revoked
++    released: Vec<String>,
++    /// the administrator's switch off: a disabled list, with its owner and login as hjv-api has
++    /// them, which binds the PC as an active one does
++    disabled: bool,
++    strict: bool,
++    newcomer: bool,
++    refresh: u64,
++    /// hjv-api's clock minus the PC's
++    skew: i64,
++    /// how long an answer takes
++    delay: Duration,
++    /// each request's payload and `t`
++    got: Vec<(serde_json::Value, u64)>,
++    out: usize,
++}
++
++impl FakeApi {
++    fn answer(&mut self, body: &str) -> (u16, Answer) {
++        let envelope: serde_json::Value = serde_json::from_str(body).unwrap();
++        let text = |name: &str| envelope[name].as_str().unwrap().to_owned();
++        let (id, n, p, s) = (text("id"), text("n"), text("p"), text("s"));
++        let t = envelope["t"].as_u64().unwrap();
++        // signed by the PC's device key
++        let sig = sign::Signature::from_bytes(&STANDARD.decode(s).unwrap()).unwrap();
++        let pk = sign::PublicKey::from_slice(&pc_pk()).unwrap();
++        assert!(sign::verify_detached(
++            &sig,
++            &pc_sync_message(&id, t, &n, &p),
++            &pk
++        ));
++        let now = (unix_now() as i64 + self.skew) as u64;
++        let p: serde_json::Value = serde_json::from_str(&p).unwrap();
++        self.got.push((p.clone(), t));
++        let plain = |status, error: &str| {
++            (
++                status,
++                Answer {
++                    server_time: now,
++                    error: error.to_owned(),
++                    list: None,
++                },
++            )
++        };
++        if t.abs_diff(now) > 300 {
++            return plain(400, "clock");
++        }
++        let binding = p["binding"].as_str().unwrap().to_owned();
++        if !binding.is_empty() && self.released.contains(&binding) {
++            let list = Signed::new(&binding, &n, now, 0).state("revoked").bare();
++            return (200, list.answer());
++        }
++        match &self.bound {
++            Some((b, login_at)) if *b == binding => {
++                let mut list = Signed::new(&binding, &n, now, *login_at);
++                list.refresh = self.refresh;
++                list.strict = self.strict;
++                list.newcomer = self.newcomer;
++                if self.disabled {
++                    list = list.state("disabled");
++                }
++                (200, list.answer())
++            }
++            Some(_) => plain(200, ""),
++            None => plain(404, "unbound"),
++        }
++    }
++}
++
++/// The service with its options, key, refusal counts and hjv-api in memory.
++#[derive(Clone)]
++struct Fake {
++    options: Arc<Mutex<BTreeMap<String, String>>>,
++    store: MemStore,
++    trust: PathBuf,
++    refused: Arc<Mutex<Refused>>,
++    api: Arc<Mutex<FakeApi>>,
++}
++
++impl Fake {
++    fn new(name: &str) -> Fake {
++        Fake {
++            options: Arc::default(),
++            store: MemStore::default(),
++            trust: dir(name).join(TRUST_FILE),
++            refused: Arc::default(),
++            api: Arc::new(Mutex::new(FakeApi {
++                refresh: 120,
++                ..FakeApi::default()
++            })),
++        }
++    }
++
++    fn api(&self) -> std::sync::MutexGuard<'_, FakeApi> {
++        self.api.lock().unwrap()
++    }
++
++    fn requests(&self) -> usize {
++        self.api().got.len()
++    }
++
++    fn binding(&self) -> Option<String> {
++        self.pc().binding()
++    }
++}
++
++impl Service for Fake {
++    type Store = MemStore;
++
++    fn option(&self, name: &str) -> String {
++        self.options
++            .lock()
++            .unwrap()
++            .get(name)
++            .cloned()
++            .unwrap_or_default()
++    }
++
++    fn set_option(&self, name: &str, value: &str) {
++        let mut options = self.options.lock().unwrap();
++        if value.is_empty() {
++            options.remove(name);
++        } else {
++            options.insert(name.to_owned(), value.to_owned());
++        }
++    }
++
++    fn pc(&self) -> Pc<MemStore> {
++        Pc {
++            store: self.store.clone(),
++            trust: self.trust.clone(),
++        }
++    }
++
++    fn device(&self) -> (String, Vec<u8>, Vec<u8>) {
++        (PC_ID.to_owned(), device_key(&PC_SEED).0.to_vec(), pc_pk())
++    }
++
++    fn pinned(&self) -> Vec<(u32, [u8; 32])> {
++        parse_trust_pubkeys(HJV_TRUST_PUBKEYS).unwrap()
++    }
++
++    fn refused(&self) -> &Mutex<Refused> {
++        &self.refused
++    }
++
++    fn post(&self, body: String) -> Posted {
++        let api = self.api.clone();
++        Box::pin(async move {
++            let delay = {
++                let mut api = api.lock().unwrap();
++                api.out += 1;
++                api.delay
++            };
++            tokio::time::sleep(delay).await;
++            let answer = {
++                let mut api = api.lock().unwrap();
++                api.out -= 1;
++                api.answer(&body)
++            };
++            Ok(answer)
++        })
++    }
++}
++
++/// Waits (on the test runtime's paused clock) until `done`, ten minutes at most, and says how
++/// long it took.
++async fn until(what: &str, done: impl Fn() -> bool) -> Duration {
++    let start = Instant::now();
++    for _ in 0..6000 {
++        if done() {
++            return start.elapsed();
++        }
++        tokio::time::sleep(Duration::from_millis(100)).await;
++    }
++    panic!("not within ten minutes: {what}");
++}
++
++async fn sleep(secs: u64) {
++    tokio::time::sleep(Duration::from_secs(secs)).await;
++}
++
++/// A proof's ask (refresh_now) and its answer, unbounded.
++async fn ask(asks: &Asks) -> bool {
++    let (ask, answer) = oneshot::channel();
++    asks.send(ask).unwrap();
++    answer.await.unwrap()
++}
++
++/// A proof of `key` (key serial `ks`) from the controller `ctl` for `kind`, as this PC takes it
++/// with the sync task's inbox `asks`.
++async fn take(
++    pc: &Fake,
++    asks: &Asks,
++    key: &AccountKey,
++    ks: u64,
++    ctl: &str,
++    kind: u8,
++) -> Result<Accepted, Refusal> {
++    let (pk, nonce) = (pc_pk(), [5; 32]);
++    let proof = conn_proof(key, PC_ID, &pk, &nonce, ctl, kind, ks).unwrap();
++    let login = KeyLogin {
++        pc_id: PC_ID,
++        pc_pk: &pk,
++        secured: true,
++        nonce: &nonce,
++        proof: &proof,
++        my_id: ctl,
++        kind,
++    };
++    key_login_with(&pc.pc(), Some(asks), pc.refused(), true, &login).await
++}
++
++#[tokio::test(start_paused = true)]
++async fn a_login_binds_and_a_logout_unbinds_within_the_second_however_slow_hjv_api_is() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-bind");
++    let login = unix_now() - 5;
++    pc.api().bound = Some((ID.to_owned(), login));
++    let _asks = Syncer::spawn(pc.clone());
++    // an unbound PC sends nothing
++    sleep(30).await;
++    assert_eq!(pc.requests(), 0);
++    // the login's bind request and knock, as the UI writes them
++    let req = format!("{ID}.{login}");
++    pc.set_option(BIND_REQ, &req);
++    pc.set_option(KNOCK, "1");
++    until("bound", || pc.binding().as_deref() == Some(ID)).await;
++    until("shown", || pc.option(STATE).starts_with("active 1 ")).await;
++    assert_eq!(pc.option(BIND_REQ), "");
++    assert_eq!(pc.api().got[0].0["binding"], ID);
++    assert_eq!(pc.pc().number(LOGIN_AT), Some(login));
++
++    // hjv-api stops answering; the off switch and the logout's unbind still act within the
++    // second
++    pc.api().delay = Duration::from_secs(60);
++    pc.set_option(KNOCK, "2");
++    until("a request out", || pc.api().out == 1).await;
++    pc.set_option(OFF_REQ, "Y");
++    let second = Duration::from_millis(1100);
++    assert!(until("off", || pc.option(STATE) == "off").await <= second);
++    assert!(pc.pc().off());
++    assert_eq!(pc.option(OFF_REQ), "");
++    // Off lives in the key: the request written over or taken away changes nothing
++    pc.set_option(OFF_REQ, "N");
++    sleep(2).await;
++    assert!(pc.pc().off());
++    assert_eq!(
++        (pc.option(OFF_REQ), pc.option(STATE)),
++        (String::new(), "off".to_owned())
++    );
++    pc.set_option(UNBIND_REQ, &req);
++    assert!(until("unbound", || pc.binding().is_none()).await <= second);
++    assert_eq!(pc.api().out, 1);
++    assert!(!pc.pc().off());
++    assert_eq!(
++        (pc.option(UNBIND_REQ), pc.option(STATE)),
++        (String::new(), String::new())
++    );
++    assert_eq!(pc.store.get(UNBOUND_BINDING).as_deref(), Some(ID));
++    assert_eq!(pc.pc().number(UNBOUND_LOGIN_AT), Some(login));
++
++    // when hjv-api answers again: the late answer changes nothing, one report says the binding
++    // went, and that login's bind request put back does not bind
++    pc.api().delay = Duration::ZERO;
++    until("the report", || {
++        pc.api().got.last().is_some_and(|(p, _)| p["binding"] == "")
++    })
++    .await;
++    assert_eq!(pc.binding(), None);
++    pc.set_option(BIND_REQ, &req);
++    until("refused", || {
++        pc.option(STATE).starts_with("error bind-released ")
++    })
++    .await;
++    assert_eq!((pc.binding(), pc.option(BIND_REQ)), (None, String::new()));
++    // a later login binds again
++    pc.api().bound = Some((ID.to_owned(), login + 1));
++    pc.set_option(BIND_REQ, &format!("{ID}.{}", login + 1));
++    until("bound again", || pc.binding().as_deref() == Some(ID)).await;
++    cleanup(&["loop-bind"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn a_login_and_its_logout_found_together_leave_the_pc_unbound() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-both");
++    let login = unix_now() - 5;
++    pc.api().bound = Some((ID.to_owned(), login));
++    // the service was not running between a login on this PC and its logout
++    let req = format!("{ID}.{login}");
++    pc.set_option(BIND_REQ, &req);
++    pc.set_option(UNBIND_REQ, &req);
++    let _asks = Syncer::spawn(pc.clone());
++    until("refused", || {
++        pc.option(STATE).starts_with("error bind-released ")
++    })
++    .await;
++    assert_eq!(pc.binding(), None);
++    assert_eq!(
++        (pc.option(BIND_REQ), pc.option(UNBIND_REQ)),
++        (String::new(), String::new())
++    );
++    assert_eq!(pc.store.get(UNBOUND_BINDING).as_deref(), Some(ID));
++    assert_eq!(pc.pc().number(UNBOUND_LOGIN_AT), Some(login));
++    cleanup(&["loop-both"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn a_logout_while_the_bind_is_out_leaves_the_pc_unbound() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-late");
++    let login = unix_now() - 5;
++    {
++        let mut api = pc.api();
++        api.bound = Some((ID.to_owned(), login));
++        api.delay = Duration::from_secs(30);
++    }
++    let _asks = Syncer::spawn(pc.clone());
++    let req = format!("{ID}.{login}");
++    pc.set_option(BIND_REQ, &req);
++    pc.set_option(KNOCK, "1");
++    until("the bind out", || pc.api().out == 1).await;
++    // the logout's one write: the bind request out, the unbind request and a knock in
++    pc.set_option(BIND_REQ, "");
++    pc.set_option(UNBIND_REQ, &req);
++    pc.set_option(KNOCK, "2");
++    until("recorded", || pc.store.get(UNBOUND_BINDING).is_some()).await;
++    assert_eq!(pc.pc().number(UNBOUND_LOGIN_AT), Some(login));
++    // hjv-api's late confirmation of that login does not bind
++    until("answered", || pc.api().out == 0).await;
++    sleep(2).await;
++    assert_eq!(pc.binding(), None);
++    assert_eq!(pc.option(STATE), "");
++    cleanup(&["loop-late"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn a_logout_while_the_bind_is_out_binds_nothing_beside_another_bindings_record() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-late-other");
++    let login = unix_now() - 5;
++    // another account logged in here a minute ago and out again: its record still guards
++    pc.store.create();
++    pc.store.set(UNBOUND_LOGIN_AT, &(login - 60).to_string());
++    pc.store.set(UNBOUND_BINDING, OTHER);
++    {
++        let mut api = pc.api();
++        api.bound = Some((ID.to_owned(), login));
++        api.delay = Duration::from_secs(30);
++    }
++    let _asks = Syncer::spawn(pc.clone());
++    let req = format!("{ID}.{login}");
++    pc.set_option(BIND_REQ, &req);
++    pc.set_option(KNOCK, "1");
++    until("the bind out", || pc.api().out == 1).await;
++    pc.set_option(BIND_REQ, "");
++    pc.set_option(UNBIND_REQ, &req);
++    pc.set_option(KNOCK, "2");
++    until("the unbind taken", || pc.option(UNBIND_REQ).is_empty()).await;
++    // hjv-api's late confirmation of that login does not bind
++    until("answered", || pc.api().out == 0).await;
++    sleep(2).await;
++    assert_eq!(pc.binding(), None);
++    assert_eq!(pc.option(STATE), "");
++    cleanup(&["loop-late-other"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn proofs_get_one_sync_at_a_time_and_none_within_ten_seconds() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-ask");
++    let login = unix_now() - 5;
++    {
++        let mut api = pc.api();
++        api.bound = Some((ID.to_owned(), login));
++        api.refresh = 300;
++    }
++    bind_to(&pc.pc(), login);
++    let asks = Syncer::spawn(pc.clone());
++    // a bound PC syncs as it starts; a proof right after still gets a sync of its own, as that
++    // one may predate the key of a device that logged in just now
++    until("the first sync", || pc.requests() == 1).await;
++    until("landed", || pc.option(STATE).starts_with("active")).await;
++    assert!(ask(&asks).await);
++    assert_eq!(pc.requests(), 2);
++    // within ten seconds of that one, a proof takes its result
++    sleep(5).await;
++    assert!(ask(&asks).await);
++    assert_eq!(pc.requests(), 2);
++    // ten seconds on, a proof gets a sync of its own, and proofs meanwhile wait for it
++    sleep(6).await;
++    pc.api().delay = Duration::from_secs(1);
++    let (first, second) = tokio::join!(ask(&asks), ask(&asks));
++    assert!(first && second);
++    assert_eq!(pc.requests(), 3);
++    // a sync that brings no list answers false
++    pc.api().bound = None;
++    sleep(11).await;
++    assert!(!ask(&asks).await);
++    assert_eq!(pc.requests(), 4);
++    cleanup(&["loop-ask"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn a_proof_through_the_sync_task() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-proof");
++    let login = unix_now() - 5;
++    {
++        let mut api = pc.api();
++        api.bound = Some((ID.to_owned(), login));
++        api.refresh = 5;
++    }
++    bind_to(&pc.pc(), login);
++    let asks = Syncer::spawn(pc.clone());
++    // a phone of the account logs in just after a periodic sync (every 5 s, as in the E2E): its
++    // first proof, with a key serial past the list's, gets a sync of its own and is let in
++    until("a periodic sync", || pc.requests() == 2).await;
++    sleep(1).await;
++    pc.api().newcomer = true;
++    let newcomer = AccountKey::from_seed(&NEWCOMER_SEED).unwrap();
++    let accepted = take(&pc, &asks, &newcomer, 11, NEWCOMER_ID, KIND_REMOTE).await;
++    assert!(accepted.is_ok_and(|a| a.name.starts_with("Galaxy S24 · ")));
++    assert_eq!(pc.requests(), 3);
++    // a kind its list does not allow is refused without a sync; the next report counts both
++    let terminal = take(&pc, &asks, &newcomer, 11, NEWCOMER_ID, KIND_TERMINAL).await;
++    assert_eq!(terminal.err(), Some(Refusal::KindNotAllowed));
++    assert_eq!(pc.requests(), 3);
++    let pk = STANDARD.encode(newcomer.public_key());
++    until("reported", || {
++        pc.api().got.last().is_some_and(|(p, _)| {
++            p["refused"]["kind"] == 1
++                && p["used"]
++                    .as_array()
++                    .is_some_and(|used| used.iter().any(|u| u["pk"] == pk && u["n"] == 1))
++        })
++    })
++    .await;
++    // a strict list (an incident): a proof goes in only after a sync, even with a listed key, so
++    // not while hjv-api does not answer
++    pc.api().strict = true;
++    until("strict", || pc.pc().cached().is_some_and(|c| c.list.strict)).await;
++    sleep(11).await;
++    assert!(take(&pc, &asks, &owner(), 10, CTL_ID, KIND_REMOTE)
++        .await
++        .is_ok());
++    pc.api().delay = Duration::from_secs(60);
++    sleep(11).await;
++    assert_eq!(
++        take(&pc, &asks, &owner(), 10, CTL_ID, KIND_REMOTE)
++            .await
++            .err(),
++        Some(Refusal::Expired)
++    );
++    cleanup(&["loop-proof"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn bind_requests_every_second_do_not_hold_off_the_periodic_sync() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-spam");
++    let login = unix_now() - 5;
++    {
++        let mut api = pc.api();
++        api.bound = Some((ID.to_owned(), login));
++        api.refresh = 5;
++    }
++    bind_to(&pc.pc(), login);
++    let _asks = Syncer::spawn(pc.clone());
++    until("the first sync", || pc.requests() == 1).await;
++    // the binding is released on hjv-api, which takes two seconds an answer, while a local user
++    // writes a bind request every second
++    {
++        let mut api = pc.api();
++        api.bound = None;
++        api.released.push(ID.to_owned());
++        api.delay = Duration::from_secs(2);
++    }
++    let spam = pc.clone();
++    let spammer = tokio::spawn(async move {
++        for i in 1..=600u128 {
++            spam.set_option(BIND_REQ, &format!("{i:032x}.{i}"));
++            sleep(1).await;
++        }
++    });
++    // the periodic sync still goes out and takes the binding away
++    assert!(until("revoked", || pc.binding().is_none()).await <= Duration::from_secs(20));
++    spammer.abort();
++    cleanup(&["loop-spam"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn a_login_while_the_switch_is_off_binds_and_shows_it_paused() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-paused");
++    let login = unix_now() - 5;
++    {
++        let mut api = pc.api();
++        api.bound = Some((ID.to_owned(), login));
++        api.disabled = true;
++        api.refresh = 5;
++    }
++    let _asks = Syncer::spawn(pc.clone());
++    // a login on this PC while the administrator's switch is off (E2E S24)
++    pc.set_option(BIND_REQ, &format!("{ID}.{login}"));
++    until("bound", || pc.binding().as_deref() == Some(ID)).await;
++    until("paused", || pc.option(STATE) == "disabled").await;
++    // the switch on: active from the next sync
++    pc.api().disabled = false;
++    until("active", || pc.option(STATE).starts_with("active 1 ")).await;
++    cleanup(&["loop-paused"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn a_stale_bind_request_of_this_pcs_binding_leaves_its_line() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-stale");
++    // bound by a login more than ten minutes ago
++    let login = unix_now() - 700;
++    pc.api().bound = Some((ID.to_owned(), login));
++    bind_to(&pc.pc(), login);
++    let _asks = Syncer::spawn(pc.clone());
++    until("active", || pc.option(STATE).starts_with("active 1 ")).await;
++    // a local user puts a bind request of this binding back: refused as stale, and the PC, which
++    // goes on with that binding, still shows it active
++    pc.set_option(BIND_REQ, &format!("{ID}.{}", login + 1));
++    until("refused", || {
++        pc.requests() == 2 && pc.option(BIND_REQ).is_empty()
++    })
++    .await;
++    sleep(2).await;
++    assert!(pc.option(STATE).starts_with("active 1 "));
++    assert_eq!(pc.binding().as_deref(), Some(ID));
++    cleanup(&["loop-stale"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn a_clock_answer_is_signed_again_with_hjv_apis_clock() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-clock");
++    // hjv-api's clock is an hour ahead of this PC's
++    let login = unix_now() + 3600 - 5;
++    {
++        let mut api = pc.api();
++        api.bound = Some((ID.to_owned(), login));
++        api.skew = 3600;
++    }
++    let _asks = Syncer::spawn(pc.clone());
++    pc.set_option(BIND_REQ, &format!("{ID}.{login}"));
++    until("bound", || pc.binding().as_deref() == Some(ID)).await;
++    let got: Vec<u64> = pc.api().got.iter().map(|(_, t)| *t).collect();
++    assert_eq!(got.len(), 2);
++    assert!(got[1].abs_diff(unix_now() + 3600) <= 5, "{got:?}");
++    // the next sync goes out with hjv-api's clock at once
++    pc.set_option(KNOCK, "1");
++    until("synced", || pc.requests() == 3).await;
++    assert!(pc.api().got[2].1.abs_diff(unix_now() + 3600) <= 5);
++    cleanup(&["loop-clock"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn a_signed_revoked_unbinds_and_one_report_follows() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-revoked");
++    let login = unix_now() - 5;
++    pc.api().bound = Some((ID.to_owned(), login));
++    bind_to(&pc.pc(), login);
++    let _asks = Syncer::spawn(pc.clone());
++    until("the first sync", || pc.requests() == 1).await;
++    // removed from the list on another device: hjv-api keeps a grave of the binding
++    {
++        let mut api = pc.api();
++        api.bound = None;
++        api.released.push(ID.to_owned());
++    }
++    // the next periodic sync (the lists say every 120 s)
++    until("revoked", || pc.option(STATE) == "revoked").await;
++    assert_eq!(pc.binding(), None);
++    until("the report", || pc.requests() == 3).await;
++    assert_eq!(pc.api().got[2].0["binding"], "");
++    // and nothing after it
++    sleep(600).await;
++    assert_eq!(pc.requests(), 3);
++    assert_eq!(pc.option(STATE), "revoked");
++    cleanup(&["loop-revoked"]);
++}
+diff --git a/src/platform/windows.rs b/src/platform/windows.rs
+index 05bb75a..3c234f0 100644
+--- a/src/platform/windows.rs
++++ b/src/platform/windows.rs
+@@ -1867,6 +1867,7 @@ fn get_uninstall(kill_self: bool, uninstall_printer: bool) -> ResultType<String>
+ }
+ 
+ pub fn uninstall_me(kill_self: bool) -> ResultType<()> {
++    crate::hjviewer_account::forget_pc_binding();
+     run_cmds(get_uninstall(kill_self, true)?, true, "uninstall")
+ }
+ 
+diff --git a/src/rendezvous_mediator.rs b/src/rendezvous_mediator.rs
+index f80c1d5..3d66a45 100644
+--- a/src/rendezvous_mediator.rs
++++ b/src/rendezvous_mediator.rs
+@@ -279,6 +279,7 @@ impl RendezvousMediator {
+             }
+         }
+         crate::hbbs_http::sync::start();
++        crate::hjviewer_account::start_pc_sync();
+         #[cfg(target_os = "windows")]
+         if crate::platform::is_installed() && crate::is_server() {
+             crate::updater::start_auto_update();
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index 56666ee..7d596b0 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -543,6 +543,7 @@ impl Connection {
+         let hash = Hash {
+             salt,
+             challenge: Config::get_auto_password(6),
++            hjv_nonce: hjv_account::nonce(),
+             ..Default::default()
+         };
+         let (tx_from_cm_holder, mut rx_from_cm) = mpsc::unbounded_channel::<ipc::Data>();
+@@ -3013,6 +3014,12 @@ impl Connection {
+                         .await;
+                 }
+                 return true;
++            } else if let Some(keep_alive) =
++                self.hjv_account_login(allow_logon_screen_password).await
++            {
++                if !keep_alive {
++                    return false;
++                }
+             } else if self.is_recent_session(false) {
+                 if !self.send_logon_response_and_keep_alive().await {
+                     return false;
+@@ -6795,6 +6802,8 @@ pub struct AuthedConn {
+     pub printer: bool,
+ }
+ 
++mod hjv_account;
++
+ mod raii {
+     // ALIVE_CONNS: all connections, including unauthorized connections
+     // AUTHED_CONNS: all authorized connections
+diff --git a/src/server/connection/hjv_account.rs b/src/server/connection/hjv_account.rs
+new file mode 100644
+index 0000000..cdf57ac
+--- /dev/null
++++ b/src/server/connection/hjv_account.rs
+@@ -0,0 +1,64 @@
++//! Same-account logins at this PC (design v3 3-5): a proof in the LoginRequest opens the session
++//! as the right permanent password would. A child module of connection.rs, so it calls the
++//! connection's private steps as they are. It reads the latched `self.lr`, because the login
++//! branch moves parts of `lr` (`match lr.union`).
++
++use super::*;
++use crate::hjviewer_account;
++
++/// The Hash's `hjv_nonce`: 32 new bytes where this process takes same-account logins, else empty,
++/// which keeps the Hash as 1.5.1 sends it.
++pub(super) fn nonce() -> hbb_common::bytes::Bytes {
++    hjviewer_account::hash_nonce()
++}
++
++impl Connection {
++    /// After the click-approval branch. None for a login without a proof, or with one this PC
++    /// refused: the branches after this one then run as before, a refused proof without a password
++    /// first answered with "Empty Password", which every controller takes for its password prompt.
++    /// A refusal does not count as a failed attempt. Some(keep_alive) once this branch decided:
++    /// the proof was accepted, or the address is blocked for its failed attempts.
++    pub(super) async fn hjv_account_login(
++        &mut self,
++        allow_logon_screen_password: bool,
++    ) -> Option<bool> {
++        if self.hash.hjv_nonce.is_empty() {
++            return None;
++        }
++        let proof = self.lr.hjv_key_proof.as_ref()?.clone();
++        // where only the temporary password opens this PC, what was seen there is the only way in
++        let permanent_ok = password::permanent_enabled() || allow_logon_screen_password;
++        let mut failure = None;
++        if permanent_ok {
++            let (f, res) = self.check_failure(0).await;
++            if !res {
++                return Some(true);
++            }
++            failure = Some(f);
++        }
++        let accepted = hjviewer_account::key_login(
++            permanent_ok,
++            self.stream.is_secured(),
++            &self.hash.hjv_nonce,
++            &proof,
++            &self.lr.my_id,
++            hjviewer_account::kind_of_union(&self.lr.union),
++        )
++        .await;
++        let Ok(accepted) = accepted else {
++            if self.lr.password.is_empty() {
++                self.send_login_error(crate::client::LOGIN_MSG_PASSWORD_EMPTY)
++                    .await;
++            }
++            return None;
++        };
++        if let Some(failure) = failure {
++            self.update_failure_with_scope(failure, true, 0, FailureScope::Default);
++        }
++        if !self.send_logon_response_and_keep_alive().await {
++            return Some(false);
++        }
++        self.try_start_cm(self.lr.my_id.clone(), accepted.name, self.authorized);
++        Some(true)
++    }
++}

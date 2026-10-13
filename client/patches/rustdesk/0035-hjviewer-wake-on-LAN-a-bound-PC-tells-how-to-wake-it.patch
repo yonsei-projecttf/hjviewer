@@ -1,0 +1,1658 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 13 Oct 2026 11:46:18 +0900
+Subject: [PATCH 35/36] hjviewer: wake-on-LAN: a bound PC tells how to wake it
+ and stays up after a resume
+
+The service of a bound PC tells hjv-api, in its sync, what a relay on the PC's
+network needs to wake it (design v3 8-2), and a PC woken with nobody at it
+stays up long enough for its owner to connect. The code is in hjviewer_wol.rs
+and hjviewer_account/pc.rs; beside them:
+
+- lib.rs: mod hjviewer_wol, desktop only.
+- Cargo.toml: the windows crate's Win32_System_Power (GetPwrCapabilities,
+  GetSystemPowerStatus, DevicePowerEnumDevices, SetThreadExecutionState).
+- hjviewer_e2e.rs: --hjv-e2e-wol-report <mac> <ipv4/prefix> <gateway>, one
+  sync of the PC's binding carrying the report of one wired card with these
+  values, signed and sent as the sync task's are, for the WOL E2E (design v3
+  8-10); it exits 1 unless hjv-api answered 200.
+
+The report has the PC's wired physical cards: those default-net sees with a
+MAC and an IPv4 address whose network class key, the one with the adapter's
+GUID as NetCfgInstanceId (a card no longer there leaves a key with the same
+description), is NCF_PHYSICAL and 802.3 (*PhysicalMediaType 14). That leaves
+out the kernel debug, Hyper-V, Bluetooth PAN, VPN and WAN miniport adapters
+and Wi-Fi; a USB card stays, marked bus "usb". A card gives its MAC, IPv4
+addresses, gateway and the gateway's MAC, description, bus, link speed,
+driver provider, version and date, the wake keywords as the registry has
+them, and whether Windows lists it among the devices armed to wake the PC
+(the list powercfg /devicequery wake_armed shows); the PC adds S3, S4, S5,
+the hibernation file and modern standby (GetPwrCapabilities), fast startup
+(HiberbootEnabled, or a policy that requires it), mains power and its uptime.
+Facts only; hjv-api judges them, and no app gets the MAC. A report is held
+to four cards, four addresses a card and 64 characters a value, far below
+the sync's 16 KiB for the values registries have.
+
+The sync (hjviewer_account/pc.rs): beside the sync task a collector looks
+every minute and, while the PC is bound, collects in spawn_blocking once the
+last report is ten minutes old, so first a minute after the service starts
+or the PC is bound; an unbound PC collects and sends nothing. Every sync of
+the binding carries wol_hash, the SHA-256 of the report's JSON without the
+uptime (empty while there is no report), and the whole report (wol) until a
+sync of that binding carrying it got a 200, and once more after an answer
+with send_wol: true. A bind request and the report after the binding went
+carry neither. hjv-api refuses a sync above 16 KiB as a whole, the trust list
+with it, so a report that would not fit (registry values of control
+characters or quotes, which are escaped twice on the way) stays on the PC and
+its sync goes with the summary alone.
+
+After a resume (the sync task's clock jump) a bound PC asks Windows to stay
+up, SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED), for ten
+minutes, from a thread of its own as Windows ties the request to the thread;
+another resume meanwhile extends it. Sleep someone asks for (the power
+button, the lid, the Start menu) still goes ahead.
+
+A build without HJV_SERVER, HJV_LOGIN_SEAL_PUBKEY or HJV_TRUST_PUBKEYS starts
+no sync task, so it neither collects nor holds, as 1.5.1. Without a report a
+sync's payload is what it was, the shared vectors' (wol_hash empty, no wol).
+Desktop platforms other than Windows have no report and no hold.
+
+For hjv-api: wol_hash is to be compared for equality only, and an empty one
+(the PC's first minute, a platform without a report, the class keys
+unreadable) leaves the stored report as it is. A summary that keeps coming
+without its report, whatever send_wol asks, is of a report held back for its
+size.
+
+Tests: on a synthesized registry and adapter list shaped like a real PC's (the
+wired card after the key of a card no longer there with its description, the
+kernel debug adapter, a WAN miniport, USB Wi-Fi, Bluetooth PAN, a VPN tunnel,
+Hyper-V and the loopback; MACs of 00:00:5e:00:53:00/24, RFC 5737 addresses and
+made-up GUIDs) the report is design v3 8-2's example; a USB card stays marked
+and what Windows did not say is null; the summary leaves the uptime out and
+follows a wake setting; the report goes whole once per binding and summary
+and again when asked; a resume during the hold extends it; the E2E command's
+report and its arguments; and the sync task against an in-memory hjv-api on a
+paused clock: an unbound PC sends nothing and its bind request no report, a
+sync within 70 seconds of the binding the whole report and the next its
+summary, the report again after send_wol, nothing of it in the report after
+the binding went, and a report too large for a sync stays on the PC while the
+syncs go on with its summary.
+
+Known limits: the hold is not yet tried on a PC that woke by a magic packet
+(the field test with the Windows build, design v3 7-6 and 8-7), nor on a
+modern standby PC. A network that changes under a running PC shows in the
+report within ten minutes.
+
+(Design v3, work package W3: patch 0035.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.toml                       |   1 +
+ src/hjviewer_account/mod.rs      |   5 +
+ src/hjviewer_account/pc.rs       | 129 +++++-
+ src/hjviewer_account/pc/tests.rs | 151 ++++++-
+ src/hjviewer_e2e.rs              |   7 +
+ src/hjviewer_wol.rs              | 657 +++++++++++++++++++++++++++++++
+ src/hjviewer_wol/tests.rs        | 357 +++++++++++++++++
+ src/lib.rs                       |   2 +
+ 8 files changed, 1303 insertions(+), 6 deletions(-)
+ create mode 100644 src/hjviewer_wol.rs
+ create mode 100644 src/hjviewer_wol/tests.rs
+
+diff --git a/Cargo.toml b/Cargo.toml
+index d941375..43695c8 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -147,6 +147,7 @@ windows = { version = "0.61", features = [
+     "Win32_System_IO",
+     "Win32_System_Memory",
+     "Win32_System_Pipes",
++    "Win32_System_Power",
+     "Win32_System_Registry",
+     "Win32_System_SystemInformation",
+     "Win32_System_Threading",
+diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
+index 5837a5c..62e6200 100644
+--- a/src/hjviewer_account/mod.rs
++++ b/src/hjviewer_account/mod.rs
+@@ -40,6 +40,11 @@ pub(crate) use api::{
+ pub(crate) use ctl::{key_proof, note_peer_key, take_proof_sent, LoginContext, ProofDecision};
+ #[cfg(windows)]
+ pub(crate) use pc::forget_pc_binding;
++#[cfg(all(
++    feature = "hjv-e2e",
++    not(any(target_os = "android", target_os = "ios"))
++))]
++pub(crate) use pc::send_wol_report;
+ pub(crate) use pc::{key_login, pc_capable, start_pc_sync};
+ 
+ const SEAL_PUBKEY: Option<&str> = option_env!("HJV_LOGIN_SEAL_PUBKEY");
+diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
+index 4a7f4fb..0a2f955 100644
+--- a/src/hjviewer_account/pc.rs
++++ b/src/hjviewer_account/pc.rs
+@@ -282,6 +282,40 @@ pub(crate) fn forget_pc_binding() {
+     }
+ }
+ 
++/// `--hjv-e2e-wol-report`: one sync of this PC's binding that carries `report` whole, signed and
++/// sent as the sync task's are. The answer's status, or why there is none.
++#[cfg(feature = "hjv-e2e")]
++pub(crate) async fn send_wol_report(
++    report: &crate::hjviewer_wol::Report,
++) -> Result<u16, &'static str> {
++    if !enabled() {
++        return Err("not an account build");
++    }
++    let service = ThisPc::new();
++    let s = service.clone();
++    let (binding, off) = blocking(move || {
++        let pc = s.pc();
++        (pc.binding(), pc.off())
++    })
++    .await
++    .ok_or("task")?;
++    let binding = binding.ok_or("not bound")?;
++    let hash = crate::hjviewer_wol::report_hash(report);
++    let p = payload(
++        &binding,
++        crate::VERSION,
++        off,
++        &[],
++        Refused::default(),
++        &hash,
++        Some(report),
++    );
++    let (pc_id, sk, _) = service.device();
++    let key = sign::SecretKey::from_slice(&sk);
++    let exchanged = exchange(service, key, pc_id, p, 0).await;
++    exchanged.reply.map(|(status, _, _)| status)
++}
++
+ /// A bind or unbind request: `<binding ID>.<login_at>`, the binding (32 lowercase hex) and the
+ /// server's time of the login that made it, as the login's answer gave them.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -748,10 +782,20 @@ struct Payload<'a> {
+     used: &'a [UseEntry],
+     refused: Refused,
+     wol_hash: &'a str,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    wol: Option<&'a crate::hjviewer_wol::Report>,
+ }
+ 
+-/// The sync's `p` (design 3-6).
+-fn payload(binding: &str, ver: &str, off: bool, used: &[UseEntry], refused: Refused) -> String {
++/// The sync's `p` (design 3-6), with the Wake-on-LAN report's summary and the report if it goes.
++fn payload(
++    binding: &str,
++    ver: &str,
++    off: bool,
++    used: &[UseEntry],
++    refused: Refused,
++    wol_hash: &str,
++    wol: Option<&crate::hjviewer_wol::Report>,
++) -> String {
+     // strings, numbers and booleans always serialize
+     serde_json::to_string(&Payload {
+         v: 1,
+@@ -760,11 +804,18 @@ fn payload(binding: &str, ver: &str, off: bool, used: &[UseEntry], refused: Refu
+         off,
+         used,
+         refused,
+-        wol_hash: "",
++        wol_hash,
++        wol,
+     })
+     .unwrap_or_default()
+ }
+ 
++/// Whether a sync with this `p` stays within the 16 KiB hjv-api takes: `p` goes into the envelope
++/// as a JSON string, escaped once more, beside under 512 bytes of ID, time, nonce and signature.
++fn fits_a_sync(p: &str) -> bool {
++    serde_json::to_string(p).is_ok_and(|escaped| escaped.len() <= 16 * 1024 - 512)
++}
++
+ /// What the PC reads of a sync answer; hjv-api's unsigned `state` and `refresh` change nothing.
+ #[derive(Deserialize, Default)]
+ #[serde(default)]
+@@ -772,6 +823,8 @@ struct Answer {
+     server_time: u64,
+     error: String,
+     list: Option<SignedList>,
++    /// hjv-api wants the whole Wake-on-LAN report in the next sync
++    send_wol: bool,
+ }
+ 
+ /// What a sync carries as `binding`, and so what its answer may do.
+@@ -999,6 +1052,8 @@ trait Service: Clone + Send + Sync + 'static {
+     /// Sends a sync request's body to /api/hjv/pc/sync: the answer's status and body, or why
+     /// there is none.
+     fn post(&self, body: String) -> Posted;
++    /// This PC's Wake-on-LAN report, collected now (blocking), if there is one.
++    fn wol(&self) -> Option<crate::hjviewer_wol::Report>;
+ }
+ 
+ /// This service process: Config2, HKLM (the 0600 file elsewhere), and hjv-api through one strict
+@@ -1065,6 +1120,10 @@ impl Service for ThisPc {
+             reply
+         })
+     }
++
++    fn wol(&self) -> Option<crate::hjviewer_wol::Report> {
++        crate::hjviewer_wol::report()
++    }
+ }
+ 
+ async fn post(
+@@ -1168,6 +1227,8 @@ struct Flight {
+     pc_id: String,
+     pk: Vec<u8>,
+     refused: Refused,
++    /// the summary of the Wake-on-LAN report it carried whole
++    wol: Option<String>,
+ }
+ 
+ /// The sync task: one per service process. Its loop takes the UI's requests every second and the
+@@ -1202,6 +1263,8 @@ struct Syncer<S: Service> {
+     last_ok: u64,
+     shown: String,
+     logged: Option<(String, usize)>,
++    /// the Wake-on-LAN report a sync of the binding carries
++    wol: crate::hjviewer_wol::Carry,
+ }
+ 
+ impl<S: Service> Syncer<S> {
+@@ -1230,12 +1293,17 @@ impl<S: Service> Syncer<S> {
+             last_ok: 0,
+             shown: String::new(),
+             logged: None,
++            wol: Default::default(),
+         };
+         tokio::spawn(syncer.run(inbox));
+         asks
+     }
+ 
+     async fn run(mut self, mut asks: mpsc::UnboundedReceiver<oneshot::Sender<bool>>) {
++        let s = self.service.clone();
++        tokio::spawn(crate::hjviewer_wol::collect(self.wol.latest(), move || {
++            s.pc().binding().map(|_| s.wol())
++        }));
+         self.knock = self.service.option(KNOCK);
+         self.wall = unix_now();
+         let s = self.service.clone();
+@@ -1284,6 +1352,7 @@ impl<S: Service> Syncer<S> {
+         let now = unix_now();
+         if jumped(self.wall, now) {
+             self.soon(false);
++            self.stay_awake();
+         }
+         self.wall = now;
+         // the unbind goes first, and counts as undoing the bind request in hand: one seen now
+@@ -1412,7 +1481,41 @@ impl<S: Service> Syncer<S> {
+         .await
+         .unwrap_or_default();
+         let refused = *self.service.refused().lock().unwrap();
+-        let p = payload(mode.binding(), crate::VERSION, off, &used, refused);
++        // only a bound PC tells hjv-api how to wake it
++        let (wol_hash, wol) = match &mode {
++            Mode::Bound(binding) => self.wol.part(binding),
++            _ => (String::new(), None),
++        };
++        let p = payload(
++            mode.binding(),
++            crate::VERSION,
++            off,
++            &used,
++            refused,
++            &wol_hash,
++            wol.as_ref(),
++        );
++        // hjv-api refuses a sync above 16 KiB as a whole, list and all: a report that does not fit,
++        // by what the registry holds, stays here and the sync goes with its summary
++        let (p, wol) = if wol.is_some() && !fits_a_sync(&p) {
++            hbb_common::throttled_log!(
++                Duration::from_secs(3600),
++                warn,
++                "hjv: the wake-on-LAN report is too large for a sync"
++            );
++            let p = payload(
++                mode.binding(),
++                crate::VERSION,
++                off,
++                &used,
++                refused,
++                &wol_hash,
++                None,
++            );
++            (p, None)
++        } else {
++            (p, wol)
++        };
+         let request = exchange(
+             self.service.clone(),
+             sign::SecretKey::from_slice(&sk),
+@@ -1430,6 +1533,7 @@ impl<S: Service> Syncer<S> {
+             pc_id,
+             pk,
+             refused,
++            wol: wol.map(|_| wol_hash),
+         });
+         Some(tokio::spawn(request))
+     }
+@@ -1451,6 +1555,12 @@ impl<S: Service> Syncer<S> {
+                         if status == 200 {
+                             self.service.refused().lock().unwrap().take(&flight.refused);
+                         }
++                        self.wol.answered(
++                            flight.mode.binding(),
++                            flight.wol.as_deref(),
++                            status,
++                            answer.send_wol,
++                        );
+                         // a bind request withdrawn while it was out (a logout, a newer login)
+                         // binds nothing, whatever records the unbind could leave
+                         let withdrawn = matches!(&flight.mode, Mode::Bind(req)
+@@ -1622,6 +1732,17 @@ impl<S: Service> Syncer<S> {
+         self.show().await;
+     }
+ 
++    /// After a resume: a bound PC stays awake a while (hjviewer_wol::hold_awake), so that one
++    /// woken over the network does not fall asleep before anyone has connected.
++    fn stay_awake(&self) {
++        let s = self.service.clone();
++        tokio::task::spawn_blocking(move || {
++            if s.pc().binding().is_some() {
++                crate::hjviewer_wol::hold_awake();
++            }
++        });
++    }
++
+     /// Clears a request the service handled, unless the UI wrote a new one meanwhile.
+     fn clear(&self, name: &str, handled: &str) {
+         if self.service.option(name) == handled {
+diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
+index fa0ce69..4b31b83 100644
+--- a/src/hjviewer_account/pc/tests.rs
++++ b/src/hjviewer_account/pc/tests.rs
+@@ -174,6 +174,7 @@ impl Signed {
+                 l: STANDARD.encode(&bytes),
+                 s: STANDARD.encode(s.to_bytes()),
+             }),
++            send_wol: false,
+         }
+     }
+ }
+@@ -852,6 +853,8 @@ fn the_sync_request_is_the_vectors() {
+         false,
+         &used_report(&uses, T),
+         Refused::default(),
++        "",
++        None,
+     );
+     assert_eq!(p, SYNC_P);
+     assert_eq!(
+@@ -869,7 +872,7 @@ fn the_sync_request_is_the_vectors() {
+     ] {
+         refused.add(refusal);
+     }
+-    let p = payload("", "1.6.0", false, &[], refused);
++    let p = payload("", "1.6.0", false, &[], refused, "", None);
+     assert!(p.contains(
+         r#""refused":{"unknown_key":0,"kind":0,"temporary_only":1,"not_secured":0,"bad_sig":1,"expired":1,"off":2}"#
+     ));
+@@ -973,6 +976,8 @@ struct FakeApi {
+     refresh: u64,
+     /// hjv-api's clock minus the PC's
+     skew: i64,
++    /// hjv-api asks for the PC's whole Wake-on-LAN report
++    send_wol: bool,
+     /// how long an answer takes
+     delay: Duration,
+     /// each request's payload and `t`
+@@ -1004,6 +1009,7 @@ impl FakeApi {
+                     server_time: now,
+                     error: error.to_owned(),
+                     list: None,
++                    send_wol: false,
+                 },
+             )
+         };
+@@ -1024,7 +1030,9 @@ impl FakeApi {
+                 if self.disabled {
+                     list = list.state("disabled");
+                 }
+-                (200, list.answer())
++                let mut answer = list.answer();
++                answer.send_wol = self.send_wol;
++                (200, answer)
+             }
+             Some(_) => plain(200, ""),
+             None => plain(404, "unbound"),
+@@ -1040,6 +1048,8 @@ struct Fake {
+     trust: PathBuf,
+     refused: Arc<Mutex<Refused>>,
+     api: Arc<Mutex<FakeApi>>,
++    /// what collecting the Wake-on-LAN report gives
++    wol: Arc<Mutex<Option<crate::hjviewer_wol::Report>>>,
+ }
+ 
+ impl Fake {
+@@ -1053,6 +1063,7 @@ impl Fake {
+                 refresh: 120,
+                 ..FakeApi::default()
+             })),
++            wol: Arc::default(),
+         }
+     }
+ 
+@@ -1126,6 +1137,10 @@ impl Service for Fake {
+             Ok(answer)
+         })
+     }
++
++    fn wol(&self) -> Option<crate::hjviewer_wol::Report> {
++        self.wol.lock().unwrap().clone()
++    }
+ }
+ 
+ /// Waits (on the test runtime's paused clock) until `done`, ten minutes at most, and says how
+@@ -1550,3 +1565,135 @@ async fn a_signed_revoked_unbinds_and_one_report_follows() {
+     assert_eq!(pc.option(STATE), "revoked");
+     cleanup(&["loop-revoked"]);
+ }
++
++#[tokio::test(start_paused = true)]
++async fn only_a_bound_pc_tells_how_to_wake_it_whole_once_and_when_asked() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-wol");
++    let login = unix_now() - 5;
++    {
++        let mut api = pc.api();
++        api.bound = Some((ID.to_owned(), login));
++        api.refresh = 5;
++    }
++    let report =
++        crate::hjviewer_wol::wakeable("00:00:5e:00:53:10", "192.0.2.67/24", "192.0.2.1").unwrap();
++    let hash = crate::hjviewer_wol::report_hash(&report);
++    *pc.wol.lock().unwrap() = Some(report.clone());
++    let _asks = Syncer::spawn(pc.clone());
++    // an unbound PC sends nothing, past the first collection, and its bind request no report
++    sleep(70).await;
++    assert_eq!(pc.requests(), 0);
++    pc.set_option(BIND_REQ, &format!("{ID}.{login}"));
++    until("bound", || pc.binding().as_deref() == Some(ID)).await;
++    let bind = pc.api().got[0].0.clone();
++    assert_eq!(bind["binding"], ID);
++    assert_eq!(bind["wol_hash"], "");
++    assert!(bind.get("wol").is_none());
++    // collected within a minute of the binding: a sync carries it whole, the next its summary
++    let took = until("the report", || {
++        pc.api()
++            .got
++            .last()
++            .is_some_and(|(p, _)| p.get("wol").is_some())
++    })
++    .await;
++    assert!(took < Duration::from_secs(70), "{took:?}");
++    let carried = pc.requests();
++    until("the next sync", || pc.requests() > carried).await;
++    let got = pc.api().got.clone();
++    assert_eq!(got[carried - 1].0["wol_hash"], hash.as_str());
++    assert_eq!(
++        got[carried - 1].0["wol"],
++        serde_json::to_value(&report).unwrap()
++    );
++    assert_eq!(got[carried].0["wol_hash"], hash.as_str());
++    assert!(got[carried].0.get("wol").is_none());
++    // hjv-api asks for it: the sync after that answer carries it again, and only that one
++    pc.api().send_wol = true;
++    let asked = pc.requests();
++    until("asked", || pc.requests() > asked).await;
++    pc.api().send_wol = false;
++    until("two more", || pc.requests() > asked + 2).await;
++    let got = pc.api().got.clone();
++    assert!(got[asked].0.get("wol").is_none());
++    assert!(got[asked + 1].0.get("wol").is_some());
++    assert!(got[asked + 2].0.get("wol").is_none());
++    // the one report after the binding went says nothing of it
++    pc.set_option(UNBIND_REQ, &format!("{ID}.{login}"));
++    until("unbound", || {
++        pc.api().got.last().is_some_and(|(p, _)| p["binding"] == "")
++    })
++    .await;
++    let (last, _) = pc.api().got.last().cloned().unwrap();
++    assert_eq!(last["wol_hash"], "");
++    assert!(last.get("wol").is_none());
++    cleanup(&["loop-wol"]);
++}
++
++#[tokio::test(start_paused = true)]
++async fn a_report_too_large_for_a_sync_stays_on_the_pc() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pc = Fake::new("loop-wol-large");
++    let login = unix_now() - 5;
++    {
++        let mut api = pc.api();
++        api.bound = Some((ID.to_owned(), login));
++        api.refresh = 5;
++    }
++    bind_to(&pc.pc(), login);
++    // four cards whose registry values are all 64 control characters, seven bytes each in a sync
++    let text = "\u{1}".repeat(64);
++    let (nics, class): (Vec<_>, Vec<_>) = (1..=4u8)
++        .map(|i| {
++            let guid = format!("{{{i}}}");
++            let mut key = crate::hjviewer_wol::ClassKey::new();
++            for (name, value) in [
++                ("NetCfgInstanceId", guid.as_str()),
++                ("Characteristics", "4"),
++                ("*PhysicalMediaType", "14"),
++            ] {
++                key.insert(name.to_owned(), value.to_owned());
++            }
++            for name in [
++                "DriverDesc",
++                "ProviderName",
++                "DriverVersion",
++                "DriverDate",
++                "*WakeOnMagicPacket",
++                "*WakeOnPattern",
++                "*ModernStandbyWoLMagicPacket",
++                "S5WakeOnLan",
++                "WolShutdownLinkSpeed",
++                "*EEE",
++                "EnableGreenEthernet",
++            ] {
++                key.insert(name.to_owned(), text.clone());
++            }
++            let nic = crate::hjviewer_wol::Nic {
++                guid,
++                mac: [0, 0, 0x5e, 0, 0x53, i],
++                ipv4: vec![(std::net::Ipv4Addr::new(192, 0, 2, i), 24)],
++                ..Default::default()
++            };
++            (nic, key)
++        })
++        .unzip();
++    let report = crate::hjviewer_wol::build(&nics, &class, None, Default::default(), None);
++    let hash = crate::hjviewer_wol::report_hash(&report);
++    let whole = payload(ID, "", false, &[], Refused::default(), &hash, Some(&report));
++    assert!(!fits_a_sync(&whole));
++    *pc.wol.lock().unwrap() = Some(report);
++    let _asks = Syncer::spawn(pc.clone());
++    // collected a minute after the start: the syncs go on, with its summary alone
++    until("the summary", || {
++        pc.api()
++            .got
++            .last()
++            .is_some_and(|(p, _)| p["wol_hash"] == hash.as_str())
++    })
++    .await;
++    sleep(30).await;
++    assert!(pc.api().got.iter().all(|(p, _)| p.get("wol").is_none()));
++    cleanup(&["loop-wol-large"]);
++}
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index 7e6e496..bc43dfe 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -7,6 +7,7 @@
+ //!     <app> --hjv-e2e-forward <id> <password> <local port> <remote host> <remote port>
+ //!     <app> --hjv-e2e-screenshot <id> <password> <out.ppm>   (first screen of a desktop session)
+ //!     <app> --hjv-e2e-stream <id> <password> <seconds>         (video bitrate of a desktop session)
++//!     <app> --hjv-e2e-wol-report <mac> <ipv4/prefix> <gateway>  (one sync with that wake report)
+ 
+ use crate::client::{
+     handle_hash, handle_login_error, handle_login_from_ui, handle_test_delay, Client, Data,
+@@ -81,6 +82,12 @@ pub fn handle_args(args: &[String]) -> bool {
+             }
+             true
+         }
++        [cmd, mac, ipv4, gateway] if cmd == "--hjv-e2e-wol-report" => {
++            if !crate::hjviewer_wol::e2e_report(mac, ipv4, gateway) {
++                std::process::exit(1);
++            }
++            true
++        }
+         _ => false,
+     }
+ }
+diff --git a/src/hjviewer_wol.rs b/src/hjviewer_wol.rs
+new file mode 100644
+index 0000000..1740480
+--- /dev/null
++++ b/src/hjviewer_wol.rs
+@@ -0,0 +1,657 @@
++//! Wake-on-LAN, the PC's part (design v3 8-2): what a bound, installed Windows PC tells hjv-api
++//! about waking it, inside its sync (hjviewer_account/pc.rs), and the ten minutes it stays awake
++//! after a resume. The PC reports facts; hjv-api judges them, and no app ever gets the MAC.
++//!
++//! A card goes in the report when default-net sees it with a MAC and an IPv4 address and its
++//! network class key says physical (NCF_PHYSICAL) 802.3 (*PhysicalMediaType 14). Its key is the
++//! one whose NetCfgInstanceId is the adapter's GUID, as a card no longer there leaves a key with
++//! the same description. That leaves out the kernel debug, Hyper-V, Bluetooth, VPN and WAN
++//! miniport adapters and Wi-Fi; a USB card stays, as `bus` "usb", which seldom wakes a PC.
++//!
++//! The matching, the report and its summary are pure, for the tests on every platform;
++//! collecting is Windows only and blocking (the registry, SendARP inside default-net, powrprof).
++// elsewhere only the tests and the E2E command build a report
++#![cfg_attr(not(windows), allow(dead_code))]
++
++use hbb_common::{log, tokio};
++use serde_derive::Serialize;
++use sha2::{Digest, Sha256};
++use std::{
++    collections::BTreeMap,
++    net::Ipv4Addr,
++    sync::{Arc, Mutex},
++    time::Duration,
++};
++
++/// The collector looks every LOOK, the first time LOOK after the service starts, and while the
++/// PC is bound collects once the last report is EVERY old.
++const LOOK: Duration = Duration::from_secs(60);
++const EVERY: Duration = Duration::from_secs(600);
++/// How long the PC stays awake after a resume: Windows sends a PC that woke with nobody at it
++/// back to sleep within minutes, before whoever woke it over the network has connected.
++#[cfg(any(windows, test))]
++const AWAKE: Duration = Duration::from_secs(600);
++const NCF_PHYSICAL: u32 = 0x4;
++/// NdisPhysicalMedium802_3
++const MEDIUM_802_3: u32 = 14;
++/// With these a report stays far below the sync's 16 KiB for the values registries have; one
++/// that would not fit, its values escaped twice on the way, the sync task holds back (pc.rs).
++const MAX_ADAPTERS: usize = 4;
++const MAX_ADDRESSES: usize = 4;
++const MAX_TEXT: usize = 64;
++
++/// An adapter as default-net sees it.
++#[derive(Debug, Clone, Default)]
++pub(crate) struct Nic {
++    /// AdapterName: the GUID its class key has as NetCfgInstanceId
++    pub guid: String,
++    /// the adapter's description, which names it in Windows' list of wake-armed devices
++    pub desc: String,
++    pub mac: [u8; 6],
++    pub ipv4: Vec<(Ipv4Addr, u8)>,
++    pub gateway: Option<Ipv4Addr>,
++    pub gateway_mac: Option<[u8; 6]>,
++    /// bits per second
++    pub link: Option<u64>,
++}
++
++/// The values the report reads of one numbered network class key, as text (a DWORD in decimal).
++pub(crate) type ClassKey = BTreeMap<String, String>;
++
++/// What this PC reports, the sync's `wol` (design v3 8-2).
++#[derive(Serialize, Debug, Clone, PartialEq)]
++pub(crate) struct Report {
++    v: u32,
++    adapters: Vec<Adapter>,
++    power: Power,
++    /// left out of the summary, which would change at every collection otherwise
++    #[serde(skip_serializing_if = "Option::is_none")]
++    uptime_s: Option<u64>,
++}
++
++#[derive(Serialize, Debug, Clone, PartialEq)]
++struct Adapter {
++    mac: String,
++    ipv4: Vec<String>,
++    gateway: Option<String>,
++    gateway_mac: Option<String>,
++    desc: String,
++    bus: Option<String>,
++    link_mbps: Option<u64>,
++    driver: Driver,
++    wake: Wake,
++    /// the device may wake the PC (Device Manager's "Allow this device to wake the computer"),
++    /// None when Windows did not say
++    armed: Option<bool>,
++}
++
++#[derive(Serialize, Debug, Clone, PartialEq)]
++struct Driver {
++    provider: Option<String>,
++    version: Option<String>,
++    date: Option<String>,
++}
++
++/// The driver's wake keywords as the registry has them.
++#[derive(Serialize, Debug, Clone, PartialEq)]
++struct Wake {
++    magic: Option<String>,
++    pattern: Option<String>,
++    ms_magic: Option<String>,
++    s5: Option<String>,
++    shutdown_speed: Option<String>,
++    eee: Option<String>,
++    green: Option<String>,
++}
++
++/// The sleep states, the hibernation file, modern standby, fast startup and mains power, None
++/// where Windows did not say.
++#[derive(Serialize, Debug, Clone, Default, PartialEq)]
++pub(crate) struct Power {
++    pub s3: Option<bool>,
++    pub s4: Option<bool>,
++    pub s5: Option<bool>,
++    pub hiberfile: Option<bool>,
++    pub aoac: Option<bool>,
++    pub fast_startup: Option<bool>,
++    pub on_ac: Option<bool>,
++}
++
++/// The report of the adapters default-net sees (`nics`) by the network class keys, with the
++/// names of the devices armed to wake the PC (None: unknown), the power facts and the uptime.
++pub(crate) fn build(
++    nics: &[Nic],
++    class: &[ClassKey],
++    armed: Option<&[String]>,
++    power: Power,
++    uptime_s: Option<u64>,
++) -> Report {
++    Report {
++        v: 1,
++        adapters: nics
++            .iter()
++            .filter_map(|nic| wired(nic, class, armed))
++            .take(MAX_ADAPTERS)
++            .collect(),
++        power,
++        uptime_s,
++    }
++}
++
++/// `nic` as the report has it, if it is a physical wired card with an address.
++fn wired(nic: &Nic, class: &[ClassKey], armed: Option<&[String]>) -> Option<Adapter> {
++    if nic.mac == [0; 6] || nic.ipv4.is_empty() {
++        return None;
++    }
++    let key = class.iter().find(|key| {
++        key.get("NetCfgInstanceId")
++            .is_some_and(|guid| guid.eq_ignore_ascii_case(&nic.guid))
++    })?;
++    let number = |name: &str| key.get(name)?.trim().parse::<u32>().ok();
++    if number("Characteristics")? & NCF_PHYSICAL == 0
++        || number("*PhysicalMediaType")? != MEDIUM_802_3
++    {
++        return None;
++    }
++    let text = |name: &str| key.get(name).map(|v| clip(v));
++    Some(Adapter {
++        mac: mac_text(&nic.mac),
++        ipv4: nic
++            .ipv4
++            .iter()
++            .take(MAX_ADDRESSES)
++            .map(|(ip, prefix)| format!("{ip}/{prefix}"))
++            .collect(),
++        gateway: nic.gateway.map(|ip| ip.to_string()),
++        gateway_mac: nic
++            .gateway_mac
++            .filter(|mac| *mac != [0; 6])
++            .map(|mac| mac_text(&mac)),
++        desc: text("DriverDesc").unwrap_or_else(|| clip(&nic.desc)),
++        bus: key.get("MatchingDeviceId").and_then(|id| bus(id)),
++        link_mbps: nic
++            .link
++            .filter(|bps| *bps > 0 && *bps != u64::MAX)
++            .map(|bps| bps / 1_000_000),
++        driver: Driver {
++            provider: text("ProviderName"),
++            version: text("DriverVersion"),
++            date: text("DriverDate"),
++        },
++        wake: Wake {
++            magic: text("*WakeOnMagicPacket"),
++            pattern: text("*WakeOnPattern"),
++            ms_magic: text("*ModernStandbyWoLMagicPacket"),
++            s5: text("S5WakeOnLan"),
++            shutdown_speed: text("WolShutdownLinkSpeed"),
++            eee: text("*EEE"),
++            green: text("EnableGreenEthernet"),
++        },
++        armed: armed.map(|names| {
++            names
++                .iter()
++                .any(|name| name.eq_ignore_ascii_case(&nic.desc))
++        }),
++    })
++}
++
++/// The bus of a MatchingDeviceId's enumerator: `PCI\VEN_…` is "pci", `USB\VID_…` "usb".
++fn bus(id: &str) -> Option<String> {
++    let (enumerator, _) = id.split_once('\\')?;
++    (!enumerator.is_empty()
++        && enumerator.len() <= 16
++        && enumerator.bytes().all(|b| b.is_ascii_alphanumeric()))
++    .then(|| enumerator.to_ascii_lowercase())
++}
++
++fn mac_text(mac: &[u8; 6]) -> String {
++    mac.iter()
++        .map(|b| format!("{b:02x}"))
++        .collect::<Vec<_>>()
++        .join(":")
++}
++
++fn clip(text: &str) -> String {
++    text.chars().take(MAX_TEXT).collect()
++}
++
++/// The report's summary, the sync's `wol_hash`: SHA-256 in hex of its JSON without `uptime_s`.
++pub(crate) fn report_hash(report: &Report) -> String {
++    let lasting = Report {
++        uptime_s: None,
++        ..report.clone()
++    };
++    // strings, numbers and booleans always serialize
++    hex::encode(Sha256::digest(
++        serde_json::to_vec(&lasting).unwrap_or_default(),
++    ))
++}
++
++/// This PC's report, collected now: Windows only, and blocking. None elsewhere and when the
++/// network class keys cannot be read.
++pub(crate) fn report() -> Option<Report> {
++    #[cfg(windows)]
++    {
++        os::report()
++    }
++    #[cfg(not(windows))]
++    {
++        None
++    }
++}
++
++/// The latest report and its summary, as the collector keeps them.
++pub(crate) type Latest = Arc<Mutex<Option<(Report, String)>>>;
++
++/// What the sync task carries of this PC's report: the summary in every sync of its binding, and
++/// the whole report until a sync of that binding that carried it got a 200, and again when
++/// hjv-api asks for it (`send_wol`).
++#[derive(Default)]
++pub(crate) struct Carry {
++    latest: Latest,
++    /// the binding and the summary of the report hjv-api took
++    taken: Option<(String, String)>,
++    /// the last 200's send_wol
++    asked: bool,
++}
++
++impl Carry {
++    pub(crate) fn latest(&self) -> Latest {
++        self.latest.clone()
++    }
++
++    /// A sync of `binding`: its `wol_hash`, empty without a report, and the report if it goes.
++    pub(crate) fn part(&self, binding: &str) -> (String, Option<Report>) {
++        let latest = self.latest.lock().unwrap();
++        let Some((report, hash)) = latest.as_ref() else {
++            return (String::new(), None);
++        };
++        let taken = self
++            .taken
++            .as_ref()
++            .is_some_and(|(b, h)| b == binding && h == hash);
++        (hash.clone(), (self.asked || !taken).then(|| report.clone()))
++    }
++
++    /// The answer `status`, with hjv-api's `send_wol`, to a sync of `binding` that carried the
++    /// report with the summary `carried`.
++    pub(crate) fn answered(
++        &mut self,
++        binding: &str,
++        carried: Option<&str>,
++        status: u16,
++        send_wol: bool,
++    ) {
++        if status != 200 {
++            return;
++        }
++        if let Some(hash) = carried {
++            self.taken = Some((binding.to_owned(), hash.to_owned()));
++        }
++        self.asked = send_wol;
++    }
++}
++
++/// The sync task's collector. `bound_report` runs in spawn_blocking: None while the PC is not
++/// bound, which sends nothing, else its report if there is one.
++pub(crate) async fn collect<F>(latest: Latest, bound_report: F)
++where
++    F: Fn() -> Option<Option<Report>> + Clone + Send + 'static,
++{
++    let mut last: Option<tokio::time::Instant> = None;
++    loop {
++        tokio::time::sleep(LOOK).await;
++        if last.is_some_and(|t| t.elapsed() < EVERY) {
++            continue;
++        }
++        let collected = match tokio::task::spawn_blocking(bound_report.clone()).await {
++            Ok(None) => continue,
++            Ok(Some(collected)) => collected,
++            // collecting panicked: again when the next one is due
++            Err(_) => None,
++        };
++        last = Some(tokio::time::Instant::now());
++        let Some(report) = collected else {
++            continue;
++        };
++        let hash = report_hash(&report);
++        let mut latest = latest.lock().unwrap();
++        if latest.as_ref().map(|(_, h)| h) != Some(&hash) {
++            log::info!(
++                "hjv: wake-on-LAN report: {} wired card(s)",
++                report.adapters.len()
++            );
++        }
++        *latest = Some((report, hash));
++    }
++}
++
++/// When the hold of the PC's power ends.
++#[cfg(windows)]
++static HOLD: Mutex<Option<std::time::Instant>> = Mutex::new(None);
++
++/// After a resume: the PC does not go to sleep by itself for AWAKE, and a resume meanwhile
++/// extends that. Sleep that someone asks for (the power button, the lid, the Start menu) still
++/// goes ahead. Windows only.
++pub(crate) fn hold_awake() {
++    #[cfg(windows)]
++    if extend(&mut HOLD.lock().unwrap(), std::time::Instant::now()) {
++        // Windows ties the request to the thread that made it, so one thread holds it throughout
++        if let Err(err) = std::thread::Builder::new()
++            .name("hjv-awake".to_owned())
++            .spawn(os::hold)
++        {
++            HOLD.lock().unwrap().take();
++            log::warn!("hjv: could not stay awake after the resume: {err}");
++        }
++    }
++}
++
++/// A resume at `now` holds the power until AWAKE from then, or later if the hold runs longer
++/// already. Whether a holder has to start.
++#[cfg(any(windows, test))]
++fn extend(until: &mut Option<std::time::Instant>, now: std::time::Instant) -> bool {
++    let start = until.is_none();
++    let end = now + AWAKE;
++    *until = Some(until.map_or(end, |u| u.max(end)));
++    start
++}
++
++/// How long the hold still lasts at `now`; at its end it is over, and the next resume starts a
++/// new holder.
++#[cfg(any(windows, test))]
++fn remaining(until: &mut Option<std::time::Instant>, now: std::time::Instant) -> Option<Duration> {
++    match *until {
++        Some(end) if end > now => Some(end - now),
++        _ => {
++            *until = None;
++            None
++        }
++    }
++}
++
++/// An adapter as the report reads it.
++#[cfg(any(windows, test))]
++fn nic(iface: &default_net::Interface) -> Nic {
++    Nic {
++        guid: iface.name.clone(),
++        desc: iface.description.clone().unwrap_or_default(),
++        mac: iface.mac_addr.as_ref().map_or([0; 6], |mac| mac.octets()),
++        ipv4: iface
++            .ipv4
++            .iter()
++            .map(|net| (net.addr, net.prefix_len))
++            .collect(),
++        gateway: iface.gateway.as_ref().and_then(|g| match g.ip_addr {
++            std::net::IpAddr::V4(ip) => Some(ip),
++            std::net::IpAddr::V6(_) => None,
++        }),
++        gateway_mac: iface.gateway.as_ref().map(|g| g.mac_addr.octets()),
++        link: iface.transmit_speed,
++    }
++}
++
++#[cfg(windows)]
++mod os {
++    use super::{build, nic, remaining, ClassKey, Power, Report, HOLD};
++    use hbb_common::log;
++    use std::time::{Duration, Instant};
++    use windows::Win32::System::{
++        Power::{
++            DevicePowerClose, DevicePowerEnumDevices, DevicePowerOpen, GetPwrCapabilities,
++            GetSystemPowerStatus, SetThreadExecutionState, DEVICEPOWER_FILTER_DEVICES_PRESENT,
++            DEVICEPOWER_FILTER_HARDWARE, DEVICEPOWER_FILTER_WAKEENABLED, ES_CONTINUOUS,
++            ES_SYSTEM_REQUIRED, PDCAP_WAKE_FROM_S0_SUPPORTED, PDCAP_WAKE_FROM_S1_SUPPORTED,
++            PDCAP_WAKE_FROM_S2_SUPPORTED, PDCAP_WAKE_FROM_S3_SUPPORTED, SYSTEM_POWER_CAPABILITIES,
++            SYSTEM_POWER_STATUS,
++        },
++        SystemInformation::GetTickCount64,
++    };
++    use winreg::{enums::*, types::FromRegValue, RegKey, RegValue};
++
++    /// The network adapters' class key.
++    const NET_CLASS: &str =
++        r"SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
++    /// What the report reads of a class key.
++    const VALUES: [&str; 15] = [
++        "NetCfgInstanceId",
++        "Characteristics",
++        "*PhysicalMediaType",
++        "MatchingDeviceId",
++        "DriverDesc",
++        "ProviderName",
++        "DriverVersion",
++        "DriverDate",
++        "*WakeOnMagicPacket",
++        "*WakeOnPattern",
++        "*ModernStandbyWoLMagicPacket",
++        "S5WakeOnLan",
++        "WolShutdownLinkSpeed",
++        "*EEE",
++        "EnableGreenEthernet",
++    ];
++
++    pub(super) fn report() -> Option<Report> {
++        let class = match class_keys() {
++            Ok(class) => class,
++            Err(err) => {
++                hbb_common::throttled_log!(
++                    Duration::from_secs(3600),
++                    warn,
++                    "hjv: wake-on-LAN report: the network class keys: {err}"
++                );
++                return None;
++            }
++        };
++        let nics: Vec<_> = default_net::get_interfaces().iter().map(nic).collect();
++        let uptime = unsafe { GetTickCount64() } / 1000;
++        Some(build(
++            &nics,
++            &class,
++            armed().as_deref(),
++            power(),
++            Some(uptime),
++        ))
++    }
++
++    fn class_keys() -> std::io::Result<Vec<ClassKey>> {
++        let class =
++            RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(NET_CLASS, KEY_READ)?;
++        let mut keys = Vec::new();
++        for name in class.enum_keys().flatten() {
++            // the adapters' keys are numbered; the others ("Properties") are not adapters
++            if name.len() != 4 || !name.bytes().all(|b| b.is_ascii_digit()) {
++                continue;
++            }
++            let Ok(key) = class.open_subkey_with_flags(&name, KEY_READ) else {
++                continue;
++            };
++            keys.push(
++                VALUES
++                    .iter()
++                    .filter_map(|v| Some((v.to_string(), text(&key.get_raw_value(v).ok()?)?)))
++                    .collect(),
++            );
++        }
++        Ok(keys)
++    }
++
++    fn text(value: &RegValue) -> Option<String> {
++        match value.vtype {
++            REG_SZ | REG_EXPAND_SZ => String::from_reg_value(value).ok(),
++            REG_DWORD => u32::from_reg_value(value).ok().map(|v| v.to_string()),
++            _ => None,
++        }
++    }
++
++    /// The present devices armed to wake the PC, by the names `powercfg /devicequery
++    /// wake_armed` lists: a network card's is its adapter description.
++    fn armed() -> Option<Vec<String>> {
++        let filter = DEVICEPOWER_FILTER_DEVICES_PRESENT
++            | DEVICEPOWER_FILTER_HARDWARE
++            | DEVICEPOWER_FILTER_WAKEENABLED;
++        let wakes = PDCAP_WAKE_FROM_S0_SUPPORTED
++            | PDCAP_WAKE_FROM_S1_SUPPORTED
++            | PDCAP_WAKE_FROM_S2_SUPPORTED
++            | PDCAP_WAKE_FROM_S3_SUPPORTED;
++        if !unsafe { DevicePowerOpen(None) } {
++            return None;
++        }
++        let mut names = Vec::new();
++        for index in 0..1024 {
++            let mut name = [0u16; 512];
++            let mut size = (name.len() * 2) as u32;
++            let found = unsafe {
++                DevicePowerEnumDevices(
++                    index,
++                    filter,
++                    wakes.0,
++                    Some(name.as_mut_ptr().cast()),
++                    &mut size,
++                )
++            };
++            if !found {
++                break;
++            }
++            let len = name.iter().position(|c| *c == 0).unwrap_or(name.len());
++            names.push(String::from_utf16_lossy(&name[..len]));
++        }
++        unsafe { DevicePowerClose() };
++        Some(names)
++    }
++
++    fn power() -> Power {
++        let mut caps = SYSTEM_POWER_CAPABILITIES::default();
++        let caps = unsafe { GetPwrCapabilities(&mut caps) }.then_some(caps);
++        let mut status = SYSTEM_POWER_STATUS::default();
++        let known = unsafe { GetSystemPowerStatus(&mut status) }.is_ok();
++        let on_ac = match status.ACLineStatus {
++            0 if known => Some(false),
++            1 if known => Some(true),
++            _ => None,
++        };
++        Power {
++            s3: caps.map(|c| c.SystemS3),
++            s4: caps.map(|c| c.SystemS4),
++            s5: caps.map(|c| c.SystemS5),
++            hiberfile: caps.map(|c| c.HiberFilePresent),
++            aoac: caps.map(|c| c.AoAc),
++            fast_startup: fast_startup(),
++            on_ac,
++        }
++    }
++
++    /// Fast startup, which turns a shutdown into a hibernation the network card does not wake
++    /// from: on where a policy requires it, else as the PC is set.
++    fn fast_startup() -> Option<bool> {
++        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
++        let value = |path: &str| {
++            hklm.open_subkey_with_flags(path, KEY_READ)
++                .ok()?
++                .get_value::<u32, _>("HiberbootEnabled")
++                .ok()
++        };
++        if value(r"SOFTWARE\Policies\Microsoft\Windows\System") == Some(1) {
++            return Some(true);
++        }
++        value(r"SYSTEM\CurrentControlSet\Control\Session Manager\Power").map(|v| v == 1)
++    }
++
++    /// The holder: asks Windows to keep the system up (ES_SYSTEM_REQUIRED) while the hold lasts.
++    pub(super) fn hold() {
++        if unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) }.0 == 0 {
++            HOLD.lock().unwrap().take();
++            log::warn!("hjv: could not ask Windows to stay awake after the resume");
++            return;
++        }
++        log::info!("hjv: resumed: staying awake for ten minutes");
++        loop {
++            let left = remaining(&mut HOLD.lock().unwrap(), Instant::now());
++            match left {
++                Some(left) => std::thread::sleep(left.min(Duration::from_secs(60))),
++                None => break,
++            }
++        }
++        unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
++    }
++}
++
++/// `--hjv-e2e-wol-report <mac> <ipv4/prefix> <gateway>` (design v3 8-10): one sync of this PC's
++/// binding that carries the report of one wired card with these values, signed and sent as the
++/// sync task's are. Whether hjv-api took it.
++#[cfg(feature = "hjv-e2e")]
++pub(crate) fn e2e_report(mac: &str, ipv4: &str, gateway: &str) -> bool {
++    let Some(report) = wakeable(mac, ipv4, gateway) else {
++        eprintln!(
++            "hjv-e2e: usage: --hjv-e2e-wol-report <aa:bb:cc:dd:ee:ff> <a.b.c.d/prefix> <gateway>"
++        );
++        return false;
++    };
++    match e2e_send(report) {
++        Ok(200) => {
++            println!("hjv-e2e: wol report taken");
++            true
++        }
++        Ok(status) => {
++            eprintln!("hjv-e2e: wol report: status {status}");
++            false
++        }
++        Err(why) => {
++            eprintln!("hjv-e2e: wol report: {why}");
++            false
++        }
++    }
++}
++
++#[cfg(feature = "hjv-e2e")]
++#[tokio::main(flavor = "current_thread")]
++async fn e2e_send(report: Report) -> Result<u16, &'static str> {
++    crate::hjviewer_account::send_wol_report(&report).await
++}
++
++/// The report of a PC that can be woken, with one wired card of these values.
++#[cfg(any(feature = "hjv-e2e", test))]
++pub(crate) fn wakeable(mac: &str, ipv4: &str, gateway: &str) -> Option<Report> {
++    const GUID: &str = "{00000000-0000-0000-0000-00000000e2e0}";
++    const DESC: &str = "hjv-e2e wired card";
++    let octets: Vec<u8> = mac
++        .split(':')
++        .map(|b| u8::from_str_radix(b, 16).ok().filter(|_| b.len() == 2))
++        .collect::<Option<_>>()?;
++    let (ip, prefix) = ipv4.split_once('/')?;
++    let nic = Nic {
++        guid: GUID.to_owned(),
++        desc: DESC.to_owned(),
++        mac: octets.try_into().ok()?,
++        ipv4: vec![(ip.parse().ok()?, prefix.parse().ok().filter(|p| *p <= 32)?)],
++        gateway: Some(gateway.parse().ok()?),
++        gateway_mac: None,
++        link: Some(1_000_000_000),
++    };
++    let key: ClassKey = [
++        ("NetCfgInstanceId", GUID),
++        ("Characteristics", "4"),
++        ("*PhysicalMediaType", "14"),
++        ("MatchingDeviceId", r"PCI\HJV_E2E"),
++        ("DriverDesc", DESC),
++        ("*WakeOnMagicPacket", "1"),
++        ("*WakeOnPattern", "1"),
++        ("S5WakeOnLan", "1"),
++    ]
++    .into_iter()
++    .map(|(k, v)| (k.to_owned(), v.to_owned()))
++    .collect();
++    let power = Power {
++        s3: Some(true),
++        s4: Some(true),
++        s5: Some(true),
++        hiberfile: Some(true),
++        aoac: Some(false),
++        fast_startup: Some(false),
++        on_ac: Some(true),
++    };
++    Some(build(&[nic], &[key], Some(&[DESC.to_owned()]), power, None))
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/src/hjviewer_wol/tests.rs b/src/hjviewer_wol/tests.rs
+new file mode 100644
+index 0000000..5fddd2e
+--- /dev/null
++++ b/src/hjviewer_wol/tests.rs
+@@ -0,0 +1,357 @@
++//! The report from a synthesized registry and adapter list shaped like a real PC's: its wired card
++//! beside the key of a card no longer there with the same description, the kernel debug adapter,
++//! WAN miniports, Bluetooth PAN, Hyper-V, a VPN tunnel and USB Wi-Fi. Every MAC, GUID and address
++//! is made up: MACs of 00:00:5e:00:53:00/24 and addresses of RFC 5737, as design v3 8-2 asks.
++
++use super::*;
++use sha2::{Digest, Sha256};
++use std::net::IpAddr;
++
++const WIRED: &str = "{0E0E0E0E-0000-4000-8000-000000000001}";
++const GHOST: &str = "{0E0E0E0E-0000-4000-8000-000000000002}";
++const KDNIC: &str = "{0E0E0E0E-0000-4000-8000-000000000003}";
++const WAN: &str = "{0E0E0E0E-0000-4000-8000-000000000004}";
++const WIFI: &str = "{0E0E0E0E-0000-4000-8000-000000000005}";
++const PAN: &str = "{0E0E0E0E-0000-4000-8000-000000000006}";
++const TUNNEL: &str = "{0E0E0E0E-0000-4000-8000-000000000007}";
++const HYPERV: &str = "{0E0E0E0E-0000-4000-8000-000000000008}";
++const LOOPBACK: &str = "{0E0E0E0E-0000-4000-8000-000000000009}";
++const USB_LAN: &str = "{0E0E0E0E-0000-4000-8000-00000000000A}";
++const CARD: &str = "Example PCIe GbE Controller";
++
++/// Design v3 8-2's example, which this PC's report is.
++const REPORT: &str = r#"{"v":1,"adapters":[{"mac":"00:00:5e:00:53:10","ipv4":["192.0.2.67/24"],"gateway":"192.0.2.1","gateway_mac":"00:00:5e:00:53:01","desc":"Example PCIe GbE Controller","bus":"pci","link_mbps":1000,"driver":{"provider":"Example","version":"1.0.0.0","date":"1-1-2024"},"wake":{"magic":"1","pattern":"1","ms_magic":null,"s5":"1","shutdown_speed":"0","eee":"0","green":"0"},"armed":true}],"power":{"s3":true,"s4":true,"s5":true,"hiberfile":true,"aoac":false,"fast_startup":false,"on_ac":true},"uptime_s":3600}"#;
++
++fn key(values: &[(&str, &str)]) -> ClassKey {
++    values
++        .iter()
++        .map(|(k, v)| (k.to_string(), v.to_string()))
++        .collect()
++}
++
++/// The network class keys.
++fn class() -> Vec<ClassKey> {
++    vec![
++        // virtual and hidden, yet 802.3
++        key(&[
++            ("NetCfgInstanceId", KDNIC),
++            ("Characteristics", "9"),
++            ("*PhysicalMediaType", "14"),
++            ("MatchingDeviceId", r"root\kdnic"),
++            ("DriverDesc", "Microsoft Kernel Debug Network Adapter"),
++        ]),
++        // a card no longer there, with the wired card's description and other settings
++        key(&[
++            ("NetCfgInstanceId", GHOST),
++            ("Characteristics", "4"),
++            ("*PhysicalMediaType", "14"),
++            (
++                "MatchingDeviceId",
++                r"PCI\VEN_0000&DEV_0000&SUBSYS_00000001&REV_01",
++            ),
++            ("DriverDesc", CARD),
++            ("*WakeOnMagicPacket", "1"),
++            ("*EEE", "1"),
++            ("EnableGreenEthernet", "1"),
++        ]),
++        key(&[
++            ("NetCfgInstanceId", WIRED),
++            ("Characteristics", "4"),
++            ("*PhysicalMediaType", "14"),
++            (
++                "MatchingDeviceId",
++                r"PCI\VEN_0000&DEV_0000&SUBSYS_00000000&REV_01",
++            ),
++            ("DriverDesc", CARD),
++            ("ProviderName", "Example"),
++            ("DriverVersion", "1.0.0.0"),
++            ("DriverDate", "1-1-2024"),
++            ("*WakeOnMagicPacket", "1"),
++            ("*WakeOnPattern", "1"),
++            ("S5WakeOnLan", "1"),
++            ("WolShutdownLinkSpeed", "0"),
++            ("*EEE", "0"),
++            ("EnableGreenEthernet", "0"),
++        ]),
++        key(&[
++            ("NetCfgInstanceId", WAN),
++            ("Characteristics", "9"),
++            ("*PhysicalMediaType", "0"),
++            ("MatchingDeviceId", "ms_ndiswanip"),
++            ("DriverDesc", "WAN Miniport (IP)"),
++        ]),
++        // physical, but 802.11
++        key(&[
++            ("NetCfgInstanceId", WIFI),
++            ("Characteristics", "132"),
++            ("*PhysicalMediaType", "9"),
++            ("MatchingDeviceId", r"USB\VID_0000&PID_0000"),
++            ("DriverDesc", "802.11n USB Wireless LAN Card"),
++        ]),
++        key(&[
++            ("NetCfgInstanceId", PAN),
++            ("Characteristics", "129"),
++            ("*PhysicalMediaType", "10"),
++            ("MatchingDeviceId", r"BTH\MS_BTHPAN"),
++            ("DriverDesc", "Bluetooth Device (Personal Area Network)"),
++        ]),
++        key(&[
++            ("NetCfgInstanceId", TUNNEL),
++            ("Characteristics", "1"),
++            ("*PhysicalMediaType", "0"),
++            ("MatchingDeviceId", "wintun"),
++            ("DriverDesc", "Wintun Userspace Tunnel"),
++        ]),
++        key(&[
++            ("NetCfgInstanceId", HYPERV),
++            ("Characteristics", "1"),
++            ("*PhysicalMediaType", "14"),
++            ("MatchingDeviceId", r"VMS_MP\HJV"),
++            ("DriverDesc", "Hyper-V Virtual Ethernet Adapter"),
++        ]),
++    ]
++}
++
++fn mac(last: u8) -> [u8; 6] {
++    [0x00, 0x00, 0x5e, 0x00, 0x53, last]
++}
++
++fn ip(a: u8, b: u8, c: u8, d: u8) -> Ipv4Addr {
++    Ipv4Addr::new(a, b, c, d)
++}
++
++fn nic(guid: &str, desc: &str, mac: [u8; 6], ipv4: (Ipv4Addr, u8)) -> Nic {
++    Nic {
++        guid: guid.to_owned(),
++        desc: desc.to_owned(),
++        mac,
++        ipv4: vec![ipv4],
++        ..Nic::default()
++    }
++}
++
++/// The adapters default-net sees.
++fn nics() -> Vec<Nic> {
++    vec![
++        nic(
++            TUNNEL,
++            "Tailscale Tunnel",
++            [0; 6],
++            (ip(198, 51, 100, 60), 32),
++        ),
++        Nic {
++            // GetAdaptersAddresses and the registry need not agree on case
++            guid: WIRED.to_ascii_lowercase(),
++            gateway: Some(ip(192, 0, 2, 1)),
++            gateway_mac: Some(mac(0x01)),
++            link: Some(1_000_000_000),
++            ..nic(WIRED, CARD, mac(0x10), (ip(192, 0, 2, 67), 24))
++        },
++        nic(
++            PAN,
++            "Bluetooth Device (Personal Area Network) #3",
++            mac(0x20),
++            (ip(198, 51, 100, 20), 16),
++        ),
++        Nic {
++            gateway: Some(ip(198, 51, 100, 1)),
++            ..nic(
++                WIFI,
++                "802.11n USB Wireless LAN Card",
++                mac(0x30),
++                (ip(198, 51, 100, 30), 24),
++            )
++        },
++        nic(
++            HYPERV,
++            "Hyper-V Virtual Ethernet Adapter",
++            mac(0x40),
++            (ip(203, 0, 113, 40), 20),
++        ),
++        nic(
++            KDNIC,
++            "Microsoft Kernel Debug Network Adapter",
++            mac(0x50),
++            (ip(203, 0, 113, 50), 24),
++        ),
++        nic(
++            LOOPBACK,
++            "Software Loopback Interface 1",
++            [0; 6],
++            (ip(127, 0, 0, 1), 8),
++        ),
++    ]
++}
++
++fn power() -> Power {
++    Power {
++        s3: Some(true),
++        s4: Some(true),
++        s5: Some(true),
++        hiberfile: Some(true),
++        aoac: Some(false),
++        fast_startup: Some(false),
++        on_ac: Some(true),
++    }
++}
++
++/// The devices armed to wake the PC as powercfg lists them: HID devices and the wired card.
++fn armed() -> Vec<String> {
++    [
++        "HID-compliant mouse (001)",
++        CARD,
++        "HID Keyboard Device (002)",
++    ]
++    .map(str::to_owned)
++    .to_vec()
++}
++
++fn this_pc(uptime_s: u64) -> Report {
++    build(&nics(), &class(), Some(&armed()), power(), Some(uptime_s))
++}
++
++#[test]
++fn only_the_wired_card_goes_in_the_report_as_the_design_shows_it() {
++    assert_eq!(serde_json::to_string(&this_pc(3600)).unwrap(), REPORT);
++}
++
++#[test]
++fn the_summary_leaves_the_uptime_out() {
++    let report = this_pc(3600);
++    let without_uptime = REPORT.replace(r#","uptime_s":3600"#, "");
++    assert_eq!(
++        report_hash(&report),
++        hex::encode(Sha256::digest(without_uptime.as_bytes()))
++    );
++    assert_eq!(report_hash(&this_pc(86_400)), report_hash(&report));
++    // a wake setting changed (in the registry the report reads) changes it
++    let mut class = class();
++    let wired = class
++        .iter_mut()
++        .find(|key| key["NetCfgInstanceId"] == WIRED);
++    wired
++        .unwrap()
++        .insert("*WakeOnMagicPacket".to_owned(), "0".to_owned());
++    let changed = build(&nics(), &class, Some(&armed()), power(), Some(3600));
++    assert_ne!(report_hash(&changed), report_hash(&report));
++}
++
++#[test]
++fn a_usb_card_stays_marked_and_what_windows_did_not_say_is_null() {
++    let iface = default_net::Interface {
++        index: 7,
++        name: USB_LAN.to_owned(),
++        friendly_name: Some("Ethernet 2".to_owned()),
++        description: Some("Example USB GbE Adapter".to_owned()),
++        if_type: default_net::interface::InterfaceType::Ethernet,
++        mac_addr: Some(default_net::interface::MacAddr::new(mac(0x60))),
++        ipv4: vec![default_net::ip::Ipv4Net::new(ip(192, 0, 2, 68), 24)],
++        ipv6: vec![],
++        flags: 0,
++        transmit_speed: Some(100_000_000),
++        receive_speed: Some(100_000_000),
++        // SendARP found no answer
++        gateway: Some(default_net::Gateway {
++            mac_addr: default_net::interface::MacAddr::zero(),
++            ip_addr: IpAddr::V4(ip(192, 0, 2, 1)),
++        }),
++    };
++    let usb = key(&[
++        ("NetCfgInstanceId", USB_LAN),
++        ("Characteristics", "132"),
++        ("*PhysicalMediaType", "14"),
++        ("MatchingDeviceId", r"USB\VID_0000&PID_0001"),
++        ("DriverDesc", "Example USB GbE Adapter"),
++    ]);
++    let report = build(&[super::nic(&iface)], &[usb], None, Power::default(), None);
++    assert_eq!(
++        serde_json::to_value(&report).unwrap(),
++        serde_json::json!({"v": 1, "adapters": [{
++            "mac": "00:00:5e:00:53:60", "ipv4": ["192.0.2.68/24"], "gateway": "192.0.2.1",
++            "gateway_mac": null, "desc": "Example USB GbE Adapter", "bus": "usb", "link_mbps": 100,
++            "driver": {"provider": null, "version": null, "date": null},
++            "wake": {"magic": null, "pattern": null, "ms_magic": null, "s5": null,
++                     "shutdown_speed": null, "eee": null, "green": null},
++            "armed": null}],
++            "power": {"s3": null, "s4": null, "s5": null, "hiberfile": null, "aoac": null,
++                      "fast_startup": null, "on_ac": null}})
++    );
++}
++
++#[test]
++fn the_report_goes_whole_once_per_binding_and_when_hjv_api_asks() {
++    const BINDING: &str = "b0f1e2d3c4b5a69788796a5b4c3d2e1f";
++    const OTHER: &str = "0123456789abcdef0123456789abcdef";
++    let mut carry = Carry::default();
++    assert_eq!(carry.part(BINDING), (String::new(), None));
++    let report = this_pc(3600);
++    let hash = report_hash(&report);
++    *carry.latest().lock().unwrap() = Some((report.clone(), hash.clone()));
++    assert_eq!(carry.part(BINDING), (hash.clone(), Some(report.clone())));
++    // until a 200 took it
++    carry.answered(BINDING, Some(&hash), 500, false);
++    assert_eq!(carry.part(BINDING).1, Some(report.clone()));
++    carry.answered(BINDING, Some(&hash), 200, false);
++    assert_eq!(carry.part(BINDING), (hash.clone(), None));
++    // hjv-api asks in the answer to a sync without it: the next carries it, then not again
++    carry.answered(BINDING, None, 200, true);
++    assert_eq!(carry.part(BINDING).1, Some(report.clone()));
++    carry.answered(BINDING, Some(&hash), 200, false);
++    assert_eq!(carry.part(BINDING).1, None);
++    // another binding, or a report that changed
++    assert_eq!(carry.part(OTHER).1, Some(report));
++    let changed = wakeable("00:00:5e:00:53:11", "192.0.2.69/24", "192.0.2.1").unwrap();
++    *carry.latest().lock().unwrap() = Some((changed.clone(), report_hash(&changed)));
++    assert_eq!(carry.part(BINDING), (report_hash(&changed), Some(changed)));
++}
++
++#[test]
++fn a_resume_during_the_hold_extends_it() {
++    let start = std::time::Instant::now();
++    let mut until = None;
++    assert!(extend(&mut until, start));
++    assert_eq!(remaining(&mut until, start), Some(AWAKE));
++    // the holder that runs takes the later end
++    let resumed = start + Duration::from_secs(300);
++    assert!(!extend(&mut until, resumed));
++    assert_eq!(
++        remaining(&mut until, start + AWAKE),
++        Some(Duration::from_secs(300))
++    );
++    // over: the next resume starts a holder again
++    assert_eq!(remaining(&mut until, resumed + AWAKE), None);
++    assert!(extend(&mut until, resumed + AWAKE));
++}
++
++#[test]
++fn the_e2e_command_reports_a_pc_that_can_be_woken() {
++    let report =
++        serde_json::to_value(wakeable("00:00:5e:00:53:10", "192.0.2.67/24", "192.0.2.1").unwrap())
++            .unwrap();
++    let card = &report["adapters"][0];
++    assert_eq!(report["adapters"].as_array().unwrap().len(), 1);
++    assert_eq!(
++        (&card["mac"], &card["ipv4"], &card["gateway"], &card["bus"]),
++        (
++            &"00:00:5e:00:53:10".into(),
++            &serde_json::json!(["192.0.2.67/24"]),
++            &"192.0.2.1".into(),
++            &"pci".into()
++        )
++    );
++    assert_eq!(
++        (&card["wake"]["magic"], &card["armed"]),
++        (&"1".into(), &true.into())
++    );
++    assert_eq!(report["power"], serde_json::to_value(power()).unwrap());
++    for (mac, ipv4, gateway) in [
++        ("00:00:5e:00:53", "192.0.2.67/24", "192.0.2.1"),
++        ("00-00-5e-00-53-10", "192.0.2.67/24", "192.0.2.1"),
++        ("00:00:5e:00:53:1", "192.0.2.67/24", "192.0.2.1"),
++        ("00:00:5e:00:53:10", "192.0.2.67", "192.0.2.1"),
++        ("00:00:5e:00:53:10", "192.0.2.67/33", "192.0.2.1"),
++        ("00:00:5e:00:53:10", "192.0.2.67/24", "gateway"),
++    ] {
++        assert_eq!(wakeable(mac, ipv4, gateway), None, "{mac} {ipv4} {gateway}");
++    }
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index 508d8bc..df2a0b7 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -46,6 +46,8 @@ pub mod core_main;
+ mod custom_server;
+ mod hjviewer;
+ mod hjviewer_account;
++#[cfg(not(any(target_os = "android", target_os = "ios")))]
++mod hjviewer_wol;
+ #[cfg(feature = "hjv-e2e")]
+ mod hjviewer_e2e;
+ mod lang;

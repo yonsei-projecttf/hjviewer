@@ -1,0 +1,4409 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 13 Oct 2026 09:56:33 +0900
+Subject: [PATCH 30/36] hjviewer: same-account login: the account module,
+ account requests and key stores
+
+The base of 1.6.0's same-account logins, on which the PC's side and the
+controller's side build (design v3 3-2, 3-3, 3-6, 4-1, 4-2, 4-4, 4-7, 6-3,
+6-5): the protocol's fields, the account module with what every platform
+shares, and the account requests with the account key's stores.
+
+The common part:
+
+- message.proto: LoginRequest.hjv_key_proof (HjvKeyProof: version, pk,
+  signature, key_serial) and Hash.hjv_nonce, numbered 1001 to stay clear of
+  upstream's fields. Empty, they encode to nothing: a Hash without a nonce is
+  byte for byte 1.5.1's, and a 1.5.1 peer skips both as unknown fields.
+- src/hjviewer_account/mod.rs: the build variables HJV_LOGIN_SEAL_PUBKEY and
+  HJV_TRUST_PUBKEYS and enabled(), true only with HJV_SERVER and both keys
+  (an account build); the context strings hjv-ckey-v1, hjv-req-v1,
+  hjv-conn-v1, hjv-pc-v1 and hjv-trust-v1 and the bytes each signature
+  covers; the connection kinds; MAX_LIST_TTL (72 h) and
+  MIN_REFRESH/MAX_REFRESH (5-300 s); the PC's checks of a trust list and of a
+  proof (verify_list, valid_at, check_key_login, should_refresh_for). The
+  proof's signature is checked before the list is looked at, so a forged
+  proof never makes the PC call hjv-api. The names of the service's options
+  by which the UI asks the PC's sync task (hjv-bind-req, hjv-unbind-req,
+  hjv-pc-sync) are here once, for the account requests that write them and
+  the service that reads them.
+- pc.rs and ctl.rs: the names and types the PC's and the controller's hooks
+  call, doing nothing yet. pc.rs is compiled on desktops only; phones get the
+  same names from mod.rs, doing nothing.
+- vectors.rs: fixed-seed vectors shared with hjv-api (a trust list, a
+  connection proof, two request proofs, a sync envelope with its use report,
+  the sealed login's ck and cp), computed with ed25519-dalek and reproduced
+  here on libsodium. json() renders the copy hjv-api's tests read.
+
+The account requests: in an account build the app's account requests, which
+go through Rust's http_request there, are handled in api.rs:
+
+- The first step of a password login is sealed to hjv-api's key (seal.rs's
+  format) with a new account key's public half and proof (ck, cp) inside the
+  seal, and the device key signs it (devsig.rs's format, with hjv.installed
+  and the app's version). The key is kept only when the answer brings a
+  token; the code step of a two-factor login goes as it is.
+- Every request with a token carries X-HJV-Proof, made in one place,
+  proof_header(), which the minimum version work's update check calls too. A
+  token goes only to the account paths, signed; with no account key (a
+  restored iPhone) it is dropped with a log-in-again notice, and while the
+  key store is locked nothing is sent: http_request answers with an error
+  instead, which the app does not take as a logout.
+- The answers: the server's clock (a 409 clock answer's server_time, else the
+  Date header) shifts the t of the next signature and seal, kept in
+  LocalConfig hjv-clock-offset when it moved by more than 30 s; a login's
+  hjv.ks, and its hjv.binding and hjv.login_at, which become this user's
+  hjv-pc-binding and the service's bind request (Config2 hjv-bind-req) with
+  a knock (hjv-pc-sync); /api/peers fills hjv-my-devices (per user, the PCs'
+  keys, states and kinds), replaced only by a complete 200 list put together
+  page by page, and only while the account key is there, so a page that
+  comes after an explicit logout does not bring the list back. Failures,
+  401, 400, 409 and the app's own logout keep it; only an explicit logout and
+  another account's login drop it.
+- An explicit logout (POST /api/logout) is signed, then, before the request
+  goes out, drops the key and the list and, where this user's login bound
+  the PC, puts the unbind request in for the bind request and a knock in one
+  write of the service's options, so the PC stops taking proofs whether or
+  not the logout arrives. Taking this PC out of the list again (POST
+  /api/hjv/this-device/undo answered removed) unbinds the same way.
+- main_get_common/main_set_common answer the account screens (hjv-account,
+  hjv-relogin, hjv-pc-bound), and other PCs keep seeing the OS user name, not
+  the login's name.
+
+The account key lives in the iPhone's Keychain (when unlocked, this device
+only), on Windows in a DPAPI-wrapped file in %LOCALAPPDATA%\HJViewer-account,
+outside the folder the portable packer clears for every new version, and
+elsewhere in LocalConfig hjv-ctl-key. Android keeps the app's data out of
+cloud backups and device transfers; the iOS privacy manifest lists the
+portal ID and name hjv-api keeps.
+
+Hooks: lib.rs (the module), ui_interface.rs http_request (H13, H14),
+common.rs (H15: account requests never retry with an invalid certificate),
+flutter_ffi.rs (H16), hjviewer.rs (H17: an account build disables the
+address book instead of the account and fixes enable-flutter-http-on-rust;
+pinned() is pub(crate) for enabled()), client.rs (H21). Cargo.toml:
+security-framework on iOS, the Win32_Security_Cryptography feature.
+
+A build without the three variables keeps 1.5.1's paths: no nonce, no proof,
+every hook returns at once.
+
+Tests (cargo test --lib hjviewer_account): the list and proof rules including
+the security review's two poison lists, the sync interval for a refresh of 0,
+1, 3600 and u64::MAX, a bad signature never asking for a sync, the vectors,
+the Hash of builds missing one of the three variables against a 1.5.1
+parser and the bytes 1.5.1 sends, and a 1.5.1 parser reading a LoginRequest
+with a proof; the seal and its payload against the shared vectors, the code
+step left alone, X-HJV-Proof against the shared vectors and hjv-api's README
+vectors of the app's device list and logout requests, no token unsigned or
+with a locked store, the bind request, the logout's one write before the
+request (also offline, locked or without a token) and a 401 or 400 changing
+nothing, hjv-my-devices across pages, failures, a new process and a page
+answered after the logout, the clock offset, strict TLS for account paths,
+the account screens' queries, the name other PCs see, the Windows key folder
+apart from the packer's, and the hooks doing nothing in a build without the
+feature.
+The hooks in the shared files themselves (H13's error, H15, H21) are the
+account E2E's to exercise.
+
+Known limits: a login answer without a binding (another account's login on
+this PC after the app's own logout) leaves this user's hjv-pc-binding, so a
+later explicit logout releases that PC's earlier binding, which, like the
+off switch, opens nothing. The logout's write of the service's options is
+not confirmed: when the service cannot be reached at that moment and the
+logout does not reach hjv-api either, the PC keeps its binding. A device list
+asked for before a logout and answered only after another account's login is
+kept as that account's until its own list comes; a proof it sends to such a
+PC meanwhile is refused there.
+
+(Design v3, work packages C0 and C1: patch 0030.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.lock                                    |    1 +
+ Cargo.toml                                    |    4 +
+ .../android/app/src/main/AndroidManifest.xml  |    3 +
+ .../src/main/res/xml/hjv_data_extraction.xml  |   28 +
+ flutter/ios/Runner/PrivacyInfo.xcprivacy      |   24 +
+ libs/base/protos/message.proto                |   12 +
+ src/client.rs                                 |    1 +
+ src/common.rs                                 |    6 +-
+ src/flutter_ffi.rs                            |    6 +
+ src/hjviewer.rs                               |   16 +-
+ src/hjviewer_account/api.rs                   | 1661 +++++++++++++++++
+ src/hjviewer_account/ctl.rs                   |   46 +
+ src/hjviewer_account/keystore.rs              |  285 +++
+ src/hjviewer_account/mod.rs                   |  779 ++++++++
+ src/hjviewer_account/pc.rs                    |   41 +
+ src/hjviewer_account/tests.rs                 |  697 +++++++
+ src/hjviewer_account/vectors.rs               |  427 +++++
+ src/lib.rs                                    |    1 +
+ src/ui_interface.rs                           |   10 +
+ 19 files changed, 4045 insertions(+), 3 deletions(-)
+ create mode 100644 flutter/android/app/src/main/res/xml/hjv_data_extraction.xml
+ create mode 100644 src/hjviewer_account/api.rs
+ create mode 100644 src/hjviewer_account/ctl.rs
+ create mode 100644 src/hjviewer_account/keystore.rs
+ create mode 100644 src/hjviewer_account/mod.rs
+ create mode 100644 src/hjviewer_account/pc.rs
+ create mode 100644 src/hjviewer_account/tests.rs
+ create mode 100644 src/hjviewer_account/vectors.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index ad574f1..71588e0 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -7151,6 +7151,7 @@ dependencies = [
+  "samplerate",
+  "sciter-rs",
+  "scrap",
++ "security-framework 3.5.1",
+  "serde 1.0.228",
+  "serde_derive",
+  "serde_json 1.0.118",
+diff --git a/Cargo.toml b/Cargo.toml
+index 3ce8a5d..49cf8a8 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -133,6 +133,7 @@ windows = { version = "0.61", features = [
+     "Win32_Foundation",
+     "Win32_Security",
+     "Win32_Security_Authorization",
++    "Win32_Security_Cryptography",
+     "Win32_Storage_FileSystem",
+     "Win32_System",
+     "Win32_System_Com",
+@@ -215,6 +216,9 @@ android_logger = "0.13"
+ jni = "0.21"
+ android-wakelock = { git = "https://github.com/rustdesk-org/android-wakelock" }
+ 
++[target.'cfg(target_os = "ios")'.dependencies]
++security-framework = "3.5"
++
+ [workspace]
+ members = ["libs/scrap", "libs/hbb_common", "libs/base", "libs/enigo", "libs/clipboard", "libs/virtual_display", "libs/virtual_display/dylib", "libs/portable", "libs/remote_printer"]
+ exclude = ["vdi/host"]
+diff --git a/flutter/android/app/src/main/AndroidManifest.xml b/flutter/android/app/src/main/AndroidManifest.xml
+index 16424c4..6ab1384 100644
+--- a/flutter/android/app/src/main/AndroidManifest.xml
++++ b/flutter/android/app/src/main/AndroidManifest.xml
+@@ -28,6 +28,9 @@
+ 
+     <application
+         android:name=".MainApplication"
++        android:allowBackup="false"
++        android:dataExtractionRules="@xml/hjv_data_extraction"
++        android:fullBackupContent="false"
+         android:icon="@mipmap/ic_launcher"
+         android:label="HJViewer"
+         android:roundIcon="@mipmap/ic_launcher"
+diff --git a/flutter/android/app/src/main/res/xml/hjv_data_extraction.xml b/flutter/android/app/src/main/res/xml/hjv_data_extraction.xml
+new file mode 100644
+index 0000000..42b55b1
+--- /dev/null
++++ b/flutter/android/app/src/main/res/xml/hjv_data_extraction.xml
+@@ -0,0 +1,28 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Android 12 and later: nothing of the app goes to a cloud backup or to a new phone. Its files
++     hold the account key (hjv-ctl-key), which must stay on this device; a new phone logs in again.
++     Older versions keep everything out through allowBackup="false". -->
++<data-extraction-rules>
++    <cloud-backup>
++        <exclude domain="root" path="." />
++        <exclude domain="file" path="." />
++        <exclude domain="database" path="." />
++        <exclude domain="sharedpref" path="." />
++        <exclude domain="external" path="." />
++        <exclude domain="device_root" path="." />
++        <exclude domain="device_file" path="." />
++        <exclude domain="device_database" path="." />
++        <exclude domain="device_sharedpref" path="." />
++    </cloud-backup>
++    <device-transfer>
++        <exclude domain="root" path="." />
++        <exclude domain="file" path="." />
++        <exclude domain="database" path="." />
++        <exclude domain="sharedpref" path="." />
++        <exclude domain="external" path="." />
++        <exclude domain="device_root" path="." />
++        <exclude domain="device_file" path="." />
++        <exclude domain="device_database" path="." />
++        <exclude domain="device_sharedpref" path="." />
++    </device-transfer>
++</data-extraction-rules>
+diff --git a/flutter/ios/Runner/PrivacyInfo.xcprivacy b/flutter/ios/Runner/PrivacyInfo.xcprivacy
+index 6a4a628..46dd3cf 100644
+--- a/flutter/ios/Runner/PrivacyInfo.xcprivacy
++++ b/flutter/ios/Runner/PrivacyInfo.xcprivacy
+@@ -20,6 +20,30 @@
+ 				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+ 			</array>
+ 		</dict>
++		<dict>
++			<key>NSPrivacyCollectedDataType</key>
++			<string>NSPrivacyCollectedDataTypeUserID</string>
++			<key>NSPrivacyCollectedDataTypeLinked</key>
++			<true/>
++			<key>NSPrivacyCollectedDataTypeTracking</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypePurposes</key>
++			<array>
++				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
++			</array>
++		</dict>
++		<dict>
++			<key>NSPrivacyCollectedDataType</key>
++			<string>NSPrivacyCollectedDataTypeName</string>
++			<key>NSPrivacyCollectedDataTypeLinked</key>
++			<true/>
++			<key>NSPrivacyCollectedDataTypeTracking</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypePurposes</key>
++			<array>
++				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
++			</array>
++		</dict>
+ 	</array>
+ 	<key>NSPrivacyAccessedAPITypes</key>
+ 	<array>
+diff --git a/libs/base/protos/message.proto b/libs/base/protos/message.proto
+index 991e8a3..330224a 100644
+--- a/libs/base/protos/message.proto
++++ b/libs/base/protos/message.proto
+@@ -84,6 +84,16 @@ message LoginRequest {
+   string my_platform = 13;
+   bytes hwid = 14;
+   string avatar = 17;
++  // HJViewer: field numbers 1000-1099 are HJViewer's; peers built from upstream skip them.
++  HjvKeyProof hjv_key_proof = 1001;
++}
++
++// HJViewer: a same-account device's proof of its account key (design v3 §3).
++message HjvKeyProof {
++  uint32 version = 1;     // 1
++  bytes pk = 2;           // the account key's public key, 32 bytes
++  bytes signature = 3;    // Ed25519 signature of the hjv-conn-v1 transcript, 64 bytes
++  uint64 key_serial = 4;  // the server's change serial when the key was registered; a hint, not signed
+ }
+ 
+ message Terminal {
+@@ -328,6 +338,8 @@ message CursorPosition {
+ message Hash {
+   string salt = 1;
+   string challenge = 2;
++  // HJViewer: 32 random bytes from a PC that takes same-account logins, else empty.
++  bytes hjv_nonce = 1001;
+ }
+ 
+ enum ClipboardFormat {
+diff --git a/src/client.rs b/src/client.rs
+index d3e66e7..34cf626 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -3831,6 +3831,7 @@ impl LoginConfigHandler {
+                     })
+                     .unwrap_or_default();
+         }
++        crate::hjviewer_account::hide_account_name(&mut display_name);
+         if display_name.is_empty() {
+             display_name = crate::username();
+         }
+diff --git a/src/common.rs b/src/common.rs
+index f3e9fbf..cc45627 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -1449,7 +1449,8 @@ async fn post_request_http(url: &str, body: &str, header: &str) -> ResultType<(u
+     let proxy_conf = Config::get_socks();
+     let tls_url = get_url_for_tls(url, &proxy_conf);
+     let tls_type = get_cached_tls_type(tls_url);
+-    let danger_accept_invalid_cert = get_cached_tls_accept_invalid_cert(tls_url);
++    let danger_accept_invalid_cert =
++        crate::hjviewer_account::account_tls(url, get_cached_tls_accept_invalid_cert(tls_url));
+     let response = post_request_(
+         url,
+         tls_url,
+@@ -1808,7 +1809,8 @@ async fn http_request_http(
+     let proxy_conf = Config::get_socks();
+     let tls_url = get_url_for_tls(url, &proxy_conf);
+     let tls_type = get_cached_tls_type(tls_url);
+-    let danger_accept_invalid_cert = get_cached_tls_accept_invalid_cert(tls_url);
++    let danger_accept_invalid_cert =
++        crate::hjviewer_account::account_tls(url, get_cached_tls_accept_invalid_cert(tls_url));
+     let response = get_http_response_async(
+         url,
+         tls_url,
+diff --git a/src/flutter_ffi.rs b/src/flutter_ffi.rs
+index 9afa3eb..aa3cb32 100644
+--- a/src/flutter_ffi.rs
++++ b/src/flutter_ffi.rs
+@@ -2691,6 +2691,9 @@ pub fn main_get_printer_names() -> SyncReturn<String> {
+ }
+ 
+ pub fn main_get_common(key: String) -> String {
++    if let Some(v) = crate::hjviewer_account::get_common(&key) {
++        return v;
++    }
+     if key == "is-printer-installed" {
+         #[cfg(target_os = "windows")]
+         {
+@@ -2789,6 +2792,9 @@ pub fn main_get_common_sync(key: String) -> SyncReturn<String> {
+ }
+ 
+ pub fn main_set_common(_key: String, _value: String) {
++    if crate::hjviewer_account::set_common(&_key, &_value) {
++        return;
++    }
+     #[cfg(target_os = "windows")]
+     if _key == "install-printer" && crate::platform::is_win_10_or_greater() {
+         std::thread::spawn(move || {
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+index 58433ff..8f23ce0 100644
+--- a/src/hjviewer.rs
++++ b/src/hjviewer.rs
+@@ -53,6 +53,20 @@ pub fn apply() {
+     #[cfg(target_os = "windows")]
+     builtin.insert(keys::OPTION_HIDE_STOP_SERVICE.to_owned(), "Y".to_owned());
+     drop(builtin);
++    if crate::hjviewer_account::enabled() {
++        // an account build logs in to hjv-api, which keeps no address book; its account requests
++        // go through Rust's http_request, where they are sealed, signed and sent with the
++        // certificate checked
++        config::HARD_SETTINGS
++            .write()
++            .unwrap()
++            .insert("disable-ab".to_owned(), "Y".to_owned());
++        config::OVERWRITE_LOCAL_SETTINGS.write().unwrap().insert(
++            keys::OPTION_ENABLE_FLUTTER_HTTP_ON_RUST.to_owned(),
++            "Y".to_owned(),
++        );
++        return;
++    }
+     // the hjviewer server has no account API, so login could only fail
+     config::HARD_SETTINGS
+         .write()
+@@ -60,7 +74,7 @@ pub fn apply() {
+         .insert("disable-account".to_owned(), "Y".to_owned());
+ }
+ 
+-fn pinned() -> bool {
++pub(crate) fn pinned() -> bool {
+     SERVER.is_some_and(|s| !s.is_empty())
+ }
+ 
+diff --git a/src/hjviewer_account/api.rs b/src/hjviewer_account/api.rs
+new file mode 100644
+index 0000000..be34d2c
+--- /dev/null
++++ b/src/hjviewer_account/api.rs
+@@ -0,0 +1,1661 @@
++//! The account requests the app sends to hjv-api through `http_request` (design v3 §4-1, §4-2,
++//! §4-4, §4-7, §6-3), in an account build only:
++//!
++//! - the first step of a password login goes with the password sealed to hjv-api's key, a new
++//!   account key's public half and proof inside the seal, and the device key's signature;
++//! - every request with a token carries the account key's signature (X-HJV-Proof); without a key
++//!   the token does not go out at all;
++//! - the answers teach the server's clock, the login's account key, serial and PC binding, and
++//!   the account's device list (`hjv-my-devices`), which the controller sends proofs by;
++//! - an explicit logout drops the key and the list and, on a PC its user's login bound, asks the
++//!   service to unbind before the request goes out.
++//!
++//! Account requests never accept an invalid certificate (`account_tls`).
++
++use super::{
++    ckey_proof, enabled, joined,
++    keystore::{self, Unavailable},
++    request_proof, seal_kid, seal_pubkey, AccountKey, BIND_REQ, KNOCK, UNBIND_REQ,
++};
++use base::config::keys;
++use hbb_common::{
++    base64::{
++        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
++        Engine as _,
++    },
++    config::{Config, LocalConfig},
++    log,
++    sodiumoxide::{
++        crypto::{box_, sealedbox, sign},
++        randombytes,
++        utils::memzero,
++    },
++    ResultType,
++};
++use serde_derive::{Deserialize, Serialize};
++use serde_json::{json, Map, Value};
++use sha2::{Digest, Sha256};
++use std::{
++    collections::{BTreeMap, HashMap},
++    sync::{Mutex, MutexGuard},
++};
++
++/// LocalConfig, this device user's: the account's PCs as the last full device list had them.
++const MY_DEVICES: &str = "hjv-my-devices";
++/// LocalConfig: the server's clock minus this device's, in seconds, for a new process.
++const CLOCK_OFFSET: &str = "hjv-clock-offset";
++/// LocalConfig: the account key's serial (the login answer's `hjv.ks`), a connection proof's hint.
++const KEY_SERIAL: &str = "hjv-key-serial";
++/// LocalConfig: `<binding>.<login_at>` while this user's login keeps this PC bound.
++const PC_BINDING: &str = "hjv-pc-binding";
++/// LocalConfig: "Y" after a token was dropped for want of its account key: log in again.
++const RELOGIN: &str = "hjv-relogin";
++
++const PROOF_HEADER: &str = "X-HJV-Proof";
++const SEALED_PREFIX: &str = "hjv-sealed-v1.";
++/// The device key's signature of a login (server/api/src/devsig.rs).
++const LOGIN_CONTEXT: &[u8] = b"hjv-login-v1";
++/// A learned clock offset reaches LocalConfig only when it moved by more than this.
++const CLOCK_KEEP_STEP: u64 = 30;
++
++/// The account API's paths the app calls. What goes there carries the portal password or the
++/// token, so it goes only with the server's certificate checked, and the token only signed.
++fn is_account_path(path: &str) -> bool {
++    matches!(
++        path,
++        "/api/login"
++            | "/api/logout"
++            | "/api/currentUser"
++            | "/api/users"
++            | "/api/peers"
++            | "/api/login-options"
++            | "/api/device-group/accessible"
++    ) || path.starts_with("/api/hjv/")
++}
++
++/// The request target (the path and the query, as sent) of a request to the API server; None for
++/// any other URL.
++fn api_target(url: &str, api_server: &str) -> Option<String> {
++    let (url, api) = (
++        url::Url::parse(url).ok()?,
++        url::Url::parse(api_server).ok()?,
++    );
++    let same_server = api.host_str().is_some()
++        && url.scheme() == api.scheme()
++        && url.host_str() == api.host_str()
++        && url.port_or_known_default() == api.port_or_known_default();
++    same_server.then(|| url[url::Position::BeforePath..url::Position::AfterQuery].to_owned())
++}
++
++/// The request target of a request to one of the account API's paths.
++fn account_target(url: &str, api_server: &str) -> Option<String> {
++    api_target(url, api_server).filter(|target| is_account_path(target_path(target)))
++}
++
++fn target_path(target: &str) -> &str {
++    target.split('?').next().unwrap_or_default()
++}
++
++/// H15 (common.rs): whether a request may accept an invalid certificate. An account request
++/// never does, whatever the host's cached TLS settings say, so neither the password nor the token
++/// reaches a TLS interceptor (design v2 §8-2).
++pub(crate) fn account_tls(url: &str, cached: Option<bool>) -> Option<bool> {
++    if !enabled() {
++        return cached;
++    }
++    strict_tls(&Config::get_option(keys::OPTION_API_SERVER), url, cached)
++}
++
++fn strict_tls(api_server: &str, url: &str, cached: Option<bool>) -> Option<bool> {
++    if account_target(url, api_server).is_some() {
++        Some(false)
++    } else {
++        cached
++    }
++}
++
++/// What the account requests keep from one request to the next, in this process.
++struct State {
++    /// the account key of a password login under way, until an answer brings its token
++    pending: Option<AccountKey>,
++    /// the server's clock minus this device's
++    clock: Option<i64>,
++    /// a device list arriving page by page
++    pages: Option<Pages>,
++}
++
++impl State {
++    const fn new() -> State {
++        State {
++            pending: None,
++            clock: None,
++            pages: None,
++        }
++    }
++}
++
++struct Pages {
++    total: u64,
++    next: u64,
++    seen: u64,
++    pcs: BTreeMap<String, MyPc>,
++}
++
++static STATE: Mutex<State> = Mutex::new(State::new());
++
++/// `hjv-my-devices`: the account's PCs as the last full device list (`/api/peers`) had them.
++#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
++pub(crate) struct MyDevices {
++    /// the account's portal ID
++    pub acct: String,
++    /// when it came, by this device's clock
++    pub at: u64,
++    pub pcs: BTreeMap<String, MyPc>,
++}
++
++/// A PC of the device list: `hjv` of its `/api/peers` entry.
++#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
++pub(crate) struct MyPc {
++    /// the PC's key as hbbs held it when it was bound (standard base64), for key continuity
++    #[serde(default)]
++    pub pk: String,
++    /// active, listed, off, expired, disabled or needs-relogin
++    #[serde(default)]
++    pub pwless: String,
++    #[serde(default)]
++    pub kinds: Vec<String>,
++}
++
++/// What the account requests read and change outside this module.
++trait Env {
++    /// where the account API is: `https://<server>`
++    fn api_server(&self) -> String;
++    fn seal_pubkey(&self) -> Option<[u8; 32]>;
++    /// this device's clock, Unix seconds
++    fn now(&self) -> u64;
++    fn random16(&self) -> [u8; 16];
++    fn new_key(&self) -> AccountKey;
++    /// this device user's LocalConfig
++    fn local(&self, key: &str) -> String;
++    fn set_local(&self, key: &str, value: &str);
++    fn load_key(&self) -> Result<Option<AccountKey>, Unavailable>;
++    fn store_key(&self, key: &AccountKey) -> ResultType<()>;
++    fn forget_key(&self);
++    /// the device key the login signs with (the one registered with hbbs), if there is one
++    fn device_key(&self) -> Option<sign::SecretKey>;
++    fn installed(&self) -> bool;
++    /// one write of the service's options, `change` applied to what they are now
++    fn write_service_options(&self, change: &dyn Fn(&mut HashMap<String, String>));
++    fn state(&self) -> &Mutex<State>;
++}
++
++/// The app itself.
++struct App;
++
++impl Env for App {
++    fn api_server(&self) -> String {
++        Config::get_option(keys::OPTION_API_SERVER)
++    }
++
++    fn seal_pubkey(&self) -> Option<[u8; 32]> {
++        seal_pubkey()
++    }
++
++    fn now(&self) -> u64 {
++        std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .map_or(0, |d| d.as_secs())
++    }
++
++    fn random16(&self) -> [u8; 16] {
++        let _ = hbb_common::sodiumoxide::init();
++        let mut n = [0u8; 16];
++        randombytes::randombytes_into(&mut n);
++        n
++    }
++
++    fn new_key(&self) -> AccountKey {
++        let _ = hbb_common::sodiumoxide::init();
++        AccountKey::generate()
++    }
++
++    fn local(&self, key: &str) -> String {
++        LocalConfig::get_option(key)
++    }
++
++    fn set_local(&self, key: &str, value: &str) {
++        LocalConfig::set_option(key.to_owned(), value.to_owned());
++    }
++
++    fn load_key(&self) -> Result<Option<AccountKey>, Unavailable> {
++        keystore::load()
++    }
++
++    fn store_key(&self, key: &AccountKey) -> ResultType<()> {
++        keystore::store(key)
++    }
++
++    fn forget_key(&self) {
++        keystore::forget()
++    }
++
++    fn device_key(&self) -> Option<sign::SecretKey> {
++        Config::get_existing_key_pair().and_then(|(sk, _)| sign::SecretKey::from_slice(&sk))
++    }
++
++    fn installed(&self) -> bool {
++        #[cfg(not(any(target_os = "android", target_os = "ios")))]
++        return crate::platform::is_installed();
++        #[cfg(any(target_os = "android", target_os = "ios"))]
++        return false;
++    }
++
++    fn write_service_options(&self, change: &dyn Fn(&mut HashMap<String, String>)) {
++        #[cfg(not(any(target_os = "android", target_os = "ios")))]
++        {
++            // the IPC calls start a runtime of their own, so they run off the caller's thread,
++            // which may be on one; the options come from the service, not this process's copy
++            let Ok(mut options) = std::thread::spawn(crate::ipc::get_options).join() else {
++                log::error!("account: the service's options could not be read");
++                return;
++            };
++            change(&mut options);
++            if std::thread::spawn(move || crate::ui_interface::set_options(options))
++                .join()
++                .is_err()
++            {
++                log::error!("account: the service's options could not be written");
++            }
++        }
++        #[cfg(any(target_os = "android", target_os = "ios"))]
++        {
++            let mut options = Config::get_options();
++            change(&mut options);
++            Config::set_options(options);
++        }
++    }
++
++    fn state(&self) -> &Mutex<State> {
++        &STATE
++    }
++}
++
++fn lock(env: &impl Env) -> MutexGuard<'_, State> {
++    env.state().lock().unwrap_or_else(|e| e.into_inner())
++}
++
++/// H13 (ui_interface.rs http_request): an account request's body and header as they go out; None
++/// to send nothing, when the account key cannot be used right now (a locked iPhone), so that the
++/// request fails without logging the app out.
++pub(crate) fn prepare_account_request(
++    url: &str,
++    method: &str,
++    body: Option<String>,
++    header: String,
++) -> Option<(Option<String>, String)> {
++    if !enabled() {
++        return Some((body, header));
++    }
++    prepare(&App, url, method, body, header)
++}
++
++fn prepare(
++    env: &impl Env,
++    url: &str,
++    method: &str,
++    mut body: Option<String>,
++    header: String,
++) -> Option<(Option<String>, String)> {
++    let Some(target) = api_target(url, &env.api_server()) else {
++        return Some((body, header));
++    };
++    let path = target_path(&target);
++    let post = method.eq_ignore_ascii_case("post");
++    if path == "/api/login" && post {
++        if let Some(login) = body.take() {
++            body = Some(match seal_login(env, &login) {
++                Seal::NotPasswordLogin => login,
++                Seal::Sealed(sealed) => {
++                    memzero(&mut login.into_bytes());
++                    sealed
++                }
++                // the password never goes out unsealed
++                Seal::Failed => return None,
++            });
++        }
++    }
++    let logout = path == "/api/logout" && post;
++    // signed with the key before a logout drops it
++    let header = with_token(env, method, &target, body.as_deref(), header, logout);
++    if logout {
++        log_out(env);
++    }
++    Some((body, header?))
++}
++
++/// The header of a request to the API server: a token goes signed by the account key to an
++/// account path and nowhere else; None when the key cannot be used right now.
++fn with_token(
++    env: &impl Env,
++    method: &str,
++    target: &str,
++    body: Option<&str>,
++    header: String,
++    logout: bool,
++) -> Option<String> {
++    // http_request_sync refuses a header it cannot read
++    let Ok(mut headers) = serde_json::from_str::<Map<String, Value>>(&header) else {
++        return Some(header);
++    };
++    let Some((authorization, token)) = bearer(&headers) else {
++        return Some(header);
++    };
++    if is_account_path(target_path(target)) {
++        match env.load_key() {
++            Ok(Some(key)) => {
++                let body = body.unwrap_or_default().as_bytes();
++                let proof = sign_request(env, &key, method, target, body, &token);
++                headers.insert(PROOF_HEADER.to_owned(), Value::String(proof));
++                return Some(Value::Object(headers).to_string());
++            }
++            Err(Unavailable) => return None,
++            // no account key (a restored iPhone): the token is no use any more
++            Ok(None) if !logout => drop_login(env),
++            Ok(None) => {}
++        }
++    }
++    headers.remove(&authorization);
++    Some(Value::Object(headers).to_string())
++}
++
++/// The Authorization header's name as sent and its bearer token.
++fn bearer(headers: &Map<String, Value>) -> Option<(String, String)> {
++    headers.iter().find_map(|(name, value)| {
++        let token = value.as_str()?.strip_prefix("Bearer ")?.trim();
++        (name.eq_ignore_ascii_case("authorization") && !token.is_empty())
++            .then(|| (name.clone(), token.to_owned()))
++    })
++}
++
++/// The X-HJV-Proof value of an account request (§4-2): the account key's signature of the
++/// method, the path with its query, the body and the token; None when the key cannot be used
++/// (none, or a locked iPhone). Every request with a token gets one in http_request; the minimum
++/// version work's update check asks for one here.
++pub(crate) fn proof_header(
++    method: &str,
++    path_and_query: &str,
++    body: &[u8],
++    token: &str,
++) -> Option<String> {
++    if !enabled() {
++        return None;
++    }
++    proof_header_with(&App, method, path_and_query, body, token)
++}
++
++fn proof_header_with(
++    env: &impl Env,
++    method: &str,
++    path_and_query: &str,
++    body: &[u8],
++    token: &str,
++) -> Option<String> {
++    let key = env.load_key().ok()??;
++    Some(sign_request(env, &key, method, path_and_query, body, token))
++}
++
++fn sign_request(
++    env: &impl Env,
++    key: &AccountKey,
++    method: &str,
++    target: &str,
++    body: &[u8],
++    token: &str,
++) -> String {
++    let t = server_now(env);
++    request_proof(key, method, target, body, token, t, &env.random16())
++}
++
++/// This device's clock set by what the server taught it (§4-2): the `t` of a signature or seal.
++fn server_now(env: &impl Env) -> u64 {
++    let offset = {
++        let mut state = lock(env);
++        *state
++            .clock
++            .get_or_insert_with(|| env.local(CLOCK_OFFSET).parse().unwrap_or(0))
++    };
++    let now = i64::try_from(env.now()).unwrap_or(i64::MAX);
++    u64::try_from(now.saturating_add(offset)).unwrap_or(0)
++}
++
++enum Seal {
++    NotPasswordLogin,
++    Sealed(String),
++    Failed,
++}
++
++/// The sealed payload (server/api/src/seal.rs), with the new account key's public half `ck` and
++/// its proof `cp` (§4-1).
++#[derive(Serialize)]
++struct Payload<'a> {
++    v: u32,
++    pw: &'a str,
++    t: u64,
++    n: &'a str,
++    id: &'a str,
++    kid: &'a str,
++    ck: &'a str,
++    cp: &'a str,
++}
++
++fn login_payload(pw: &str, t: u64, n: &str, id: &str, kid: &str, key: &AccountKey) -> Vec<u8> {
++    let (ck, cp) = ckey_proof(key, n, id);
++    let payload = Payload {
++        v: 1,
++        pw,
++        t,
++        n,
++        id,
++        kid,
++        ck: &ck,
++        cp: &cp,
++    };
++    // strings and numbers always serialize
++    serde_json::to_vec(&payload).unwrap_or_default()
++}
++
++/// What the device key signs for a login (server/api/src/devsig.rs): `"hjv-login-v1", id, t, n,
++/// base64(SHA-256(sealed)), "1" or "0" for installed, os`, joined by NUL bytes.
++fn login_message(id: &str, t: u64, n: &str, sealed: &[u8], installed: bool, os: &str) -> Vec<u8> {
++    let (t, hash) = (t.to_string(), STANDARD.encode(Sha256::digest(sealed)));
++    joined(&[
++        LOGIN_CONTEXT,
++        id.as_bytes(),
++        t.as_bytes(),
++        n.as_bytes(),
++        hash.as_bytes(),
++        if installed { b"1" } else { b"0" },
++        os.as_bytes(),
++    ])
++}
++
++/// The first step of a password login (§4-1, design v2 §8-2): the password goes sealed to
++/// hjv-api's key together with a new account key, which is kept until the answer brings the
++/// token, and the device key signs the login. The second step of a two-factor login carries a
++/// code and no password, and goes as it is.
++fn seal_login(env: &impl Env, body: &str) -> Seal {
++    let Ok(mut login) = serde_json::from_str::<Map<String, Value>>(body) else {
++        return Seal::NotPasswordLogin;
++    };
++    let Some(Value::String(password)) = login.remove("password") else {
++        return Seal::NotPasswordLogin;
++    };
++    let Some(seal_pk) = env.seal_pubkey() else {
++        return Seal::Failed;
++    };
++    let id = login
++        .get("id")
++        .and_then(Value::as_str)
++        .unwrap_or_default()
++        .to_owned();
++    let os = login
++        .get("deviceInfo")
++        .and_then(|info| info.get("os"))
++        .and_then(Value::as_str)
++        .unwrap_or_default()
++        .to_owned();
++    let (key, n, t, kid) = (
++        env.new_key(),
++        STANDARD.encode(env.random16()),
++        server_now(env),
++        seal_kid(&seal_pk),
++    );
++    let mut payload = login_payload(&password, t, &n, &id, &kid, &key);
++    memzero(&mut password.into_bytes());
++    let sealed = sealedbox::seal(&payload, &box_::PublicKey(seal_pk));
++    memzero(&mut payload);
++    let installed = env.installed();
++    let mut hjv = json!({ "v": 1, "installed": installed, "ver": crate::VERSION });
++    if let Some(device) = env.device_key() {
++        let message = login_message(&id, t, &n, &sealed, installed, &os);
++        hjv["sig"] = STANDARD
++            .encode(sign::sign_detached(&message, &device).to_bytes())
++            .into();
++    }
++    login.insert(
++        "password".to_owned(),
++        format!("{SEALED_PREFIX}{kid}.{}", URL_SAFE_NO_PAD.encode(&sealed)).into(),
++    );
++    login.insert("hjv".to_owned(), hjv);
++    lock(env).pending = Some(key);
++    Seal::Sealed(Value::Object(login).to_string())
++}
++
++/// An explicit logout (§4-7), before its request goes out, so whether or not it arrives: the
++/// account key and the device list go, and a PC this user's login bound stops taking proofs.
++/// The app's own logout after a 401 or 400 (UserModel.reset) sends no /api/logout and keeps all.
++fn log_out(env: &impl Env) {
++    env.forget_key();
++    {
++        let mut state = lock(env);
++        state.pending = None;
++        state.pages = None;
++    }
++    for key in [MY_DEVICES, KEY_SERIAL, RELOGIN] {
++        env.set_local(key, "");
++    }
++    unbind_this_pc(env);
++}
++
++/// The PC this user's login bound stops taking proofs at once, whether or not the server hears of
++/// it: one write of the service's options drops the bind request and puts in the unbind request
++/// and a knock; the service handles the unbinding first (§4-7).
++fn unbind_this_pc(env: &impl Env) {
++    let binding = env.local(PC_BINDING);
++    if binding.is_empty() {
++        return;
++    }
++    let knock = knock(env);
++    env.write_service_options(&|options| {
++        options.remove(BIND_REQ);
++        options.insert(UNBIND_REQ.to_owned(), binding.clone());
++        options.insert(KNOCK.to_owned(), knock.clone());
++    });
++    env.set_local(PC_BINDING, "");
++}
++
++/// A token without its account key (a restored iPhone, whose Keychain kept no key) can do
++/// nothing: the login is forgotten and the user asked to log in again (§1-1, §4-2).
++fn drop_login(env: &impl Env) {
++    for (key, value) in [("access_token", ""), ("user_info", ""), (RELOGIN, "Y")] {
++        env.set_local(key, value);
++    }
++    log::warn!("account: no account key for the login, logged out");
++}
++
++fn knock(env: &impl Env) -> String {
++    hex::encode(env.random16())
++}
++
++/// What http_request answers: the status, the headers (lower-case names) and the body.
++#[derive(Deserialize)]
++struct Answer {
++    status_code: u16,
++    #[serde(default)]
++    headers: HashMap<String, String>,
++    #[serde(default)]
++    body: String,
++}
++
++/// H14 (ui_interface.rs http_request): what an account answer says, before the app reads it,
++/// which it leaves as it is.
++pub(crate) fn observe_account_response(url: &str, response: &str) {
++    if enabled() {
++        observe(&App, url, response);
++    }
++}
++
++fn observe(env: &impl Env, url: &str, response: &str) {
++    let Some(target) = account_target(url, &env.api_server()) else {
++        return;
++    };
++    // no answer: the request never reached the server
++    let Ok(answer) = serde_json::from_str::<Answer>(response) else {
++        return;
++    };
++    let body = serde_json::from_str::<Value>(&answer.body).unwrap_or_default();
++    learn_clock(env, &answer, &body);
++    let ok = answer.status_code == 200;
++    match target_path(&target) {
++        "/api/login" => login_answered(env, ok, &body),
++        "/api/peers" if ok => device_list_page(env, &target, &body),
++        "/api/peers" => lock(env).pages = None,
++        // [이 PC 빼기] took this PC out of the list again: it stops taking proofs at once
++        "/api/hjv/this-device/undo"
++            if ok && body.get("status").and_then(Value::as_str) == Some("removed") =>
++        {
++            unbind_this_pc(env)
++        }
++        _ => {}
++    }
++}
++
++/// §4-2: the server's clock, from the `server_time` of a 409 `clock` answer or else from the
++/// `Date` header, minus this device's. Kept for the next signature and seal, and in LocalConfig
++/// when it moved by more than CLOCK_KEEP_STEP, for the next process.
++fn learn_clock(env: &impl Env, answer: &Answer, body: &Value) {
++    let clock = body.get("hjv").and_then(Value::as_str) == Some("clock");
++    let server_time = body
++        .get("server_time")
++        .and_then(Value::as_i64)
++        .filter(|_| clock)
++        .or_else(|| {
++            let (_, date) = answer
++                .headers
++                .iter()
++                .find(|(name, _)| name.eq_ignore_ascii_case("date"))?;
++            Some(chrono::DateTime::parse_from_rfc2822(date).ok()?.timestamp())
++        });
++    let Some(server_time) = server_time else {
++        return;
++    };
++    let offset = server_time.saturating_sub(i64::try_from(env.now()).unwrap_or(i64::MAX));
++    lock(env).clock = Some(offset);
++    let kept = env.local(CLOCK_OFFSET).parse::<i64>().unwrap_or(0);
++    if offset.abs_diff(kept) > CLOCK_KEEP_STEP {
++        env.set_local(CLOCK_OFFSET, &offset.to_string());
++    }
++}
++
++/// The answer to `/api/login`. With the token (the first step's, or with two factors the
++/// second's) the login's account key is kept; the device list goes when the login is another
++/// account's; and a PC the login bound (`hjv.binding`, `hjv.login_at`) gets its service's bind
++/// request (§4-4).
++fn login_answered(env: &impl Env, ok: bool, body: &Value) {
++    let token = body.get("type").and_then(Value::as_str) == Some("access_token")
++        && body
++            .get("access_token")
++            .and_then(Value::as_str)
++            .is_some_and(|t| !t.is_empty());
++    if !ok || !token {
++        // a second factor's code dialog waits with the key; a failed login drops it
++        if !ok {
++            lock(env).pending = None;
++        }
++        return;
++    }
++    let pending = lock(env).pending.take();
++    match pending.map(|key| env.store_key(&key)) {
++        Some(Ok(())) => log::info!("account: logged in with a new account key"),
++        Some(Err(e)) => log::error!("account: the account key was not stored: {e}"),
++        None => log::error!("account: a login answer without an account key of this process"),
++    }
++    let hjv = body.get("hjv");
++    let serial = hjv.and_then(|h| h.get("ks")).and_then(Value::as_u64);
++    env.set_local(
++        KEY_SERIAL,
++        &serial.map(|s| s.to_string()).unwrap_or_default(),
++    );
++    env.set_local(RELOGIN, "");
++    let account = body
++        .get("user")
++        .and_then(|u| u.get("name"))
++        .and_then(Value::as_str)
++        .unwrap_or_default();
++    let listed = env.local(MY_DEVICES);
++    if !listed.is_empty()
++        && serde_json::from_str::<MyDevices>(&listed).map_or(true, |l| l.acct != account)
++    {
++        env.set_local(MY_DEVICES, "");
++    }
++    let Some(binding) = hjv.and_then(bind_request) else {
++        return;
++    };
++    env.set_local(PC_BINDING, &binding);
++    let knock = knock(env);
++    env.write_service_options(&|options| {
++        options.insert(BIND_REQ.to_owned(), binding.clone());
++        options.insert(KNOCK.to_owned(), knock.clone());
++    });
++}
++
++/// `<binding>.<login_at>` of a login answer that bound this PC.
++fn bind_request(hjv: &Value) -> Option<String> {
++    let binding = hjv.get("binding")?.as_str()?;
++    let login_at = hjv.get("login_at")?.as_u64().filter(|t| *t > 0)?;
++    let hex32 = binding.len() == 32
++        && binding
++            .bytes()
++            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
++    hex32.then(|| format!("{binding}.{login_at}"))
++}
++
++/// A 200 page of `/api/peers`. The app asks page after page from `current=1` until it has
++/// `total` PCs; the list replaces `hjv-my-devices` only once all of it came, so a failed or
++/// partial fetch keeps the last full list (§6-3).
++fn device_list_page(env: &impl Env, target: &str, body: &Value) {
++    let query = target.split_once('?').map_or("", |(_, q)| q);
++    let current = url::form_urlencoded::parse(query.as_bytes())
++        .find(|(name, _)| name == "current")
++        .and_then(|(_, value)| value.parse::<u64>().ok())
++        .unwrap_or(1);
++    let total = body.get("total").and_then(Value::as_u64);
++    let data = body.get("data").and_then(Value::as_array);
++    let complete = {
++        let mut state = lock(env);
++        let (Some(total), Some(data)) = (total, data) else {
++            state.pages = None;
++            return;
++        };
++        if current == 1 {
++            state.pages = Some(Pages {
++                total,
++                next: 1,
++                seen: 0,
++                pcs: BTreeMap::new(),
++            });
++        }
++        let Some(pages) = state.pages.as_mut().filter(|p| p.next == current) else {
++            state.pages = None;
++            return;
++        };
++        for pc in data {
++            pages.seen += 1;
++            let id = pc.get("id").and_then(Value::as_str);
++            let hjv = pc.get("hjv").cloned().map(serde_json::from_value::<MyPc>);
++            if let (Some(id), Some(Ok(hjv))) = (id, hjv) {
++                pages.pcs.insert(id.to_owned(), hjv);
++            }
++        }
++        pages.next += 1;
++        if pages.seen < pages.total {
++            return;
++        }
++        state.pages.take()
++    };
++    let Some(pages) = complete else {
++        return;
++    };
++    // a page answered after an explicit logout, which dropped the key first, keeps no list
++    if !matches!(env.load_key(), Ok(Some(_))) {
++        return;
++    }
++    let list = MyDevices {
++        acct: account_name(&env.local("user_info")),
++        at: env.now(),
++        pcs: pages.pcs,
++    };
++    if let Ok(list) = serde_json::to_string(&list) {
++        env.set_local(MY_DEVICES, &list);
++    }
++}
++
++/// The portal ID of the login, from `user_info` as the app keeps it.
++fn account_name(user_info: &str) -> String {
++    serde_json::from_str::<Value>(user_info)
++        .ok()
++        .and_then(|info| Some(info.get("name")?.as_str()?.to_owned()))
++        .unwrap_or_default()
++}
++
++/// H16 (flutter_ffi.rs main_get_common): the account screens' queries; None for any other key.
++/// - `hjv-account`: "Y" in an account build;
++/// - `hjv-relogin`: "Y" when the login was dropped for want of its account key;
++/// - `hjv-pc-bound`: "Y" when this user's login keeps this PC bound (logging out unbinds it).
++pub(crate) fn get_common(key: &str) -> Option<String> {
++    if !enabled() {
++        return None;
++    }
++    common_value(&App, key)
++}
++
++fn common_value(env: &impl Env, key: &str) -> Option<String> {
++    let yes = |set: bool| if set { "Y" } else { "" }.to_owned();
++    Some(match key {
++        "hjv-account" => yes(true),
++        RELOGIN => yes(env.local(RELOGIN) == "Y"),
++        "hjv-pc-bound" => yes(!env.local(PC_BINDING).is_empty()),
++        _ => return None,
++    })
++}
++
++/// main_set_common: true when the key was the account screens'. `hjv-relogin` set to "" once the
++/// notice was shown.
++pub(crate) fn set_common(key: &str, value: &str) -> bool {
++    if !enabled() {
++        return false;
++    }
++    set_common_value(&App, key, value)
++}
++
++fn set_common_value(env: &impl Env, key: &str, value: &str) -> bool {
++    if key != RELOGIN {
++        return false;
++    }
++    env.set_local(RELOGIN, value);
++    true
++}
++
++/// H21 (client.rs create_login_msg): in an account build the name other PCs see stays what 1.5.1
++/// sent, the built-in display name or else (on the next line there) the OS user name, never the
++/// login's name or portal ID (§1-5, §10-1).
++pub(crate) fn hide_account_name(name: &mut String) {
++    hide_name(enabled(), name, || {
++        crate::get_builtin_option(keys::OPTION_DISPLAY_NAME)
++    });
++}
++
++fn hide_name(account_build: bool, name: &mut String, builtin: impl FnOnce() -> String) {
++    if account_build {
++        *name = builtin();
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{super::vectors::*, *};
++    use std::cell::{Cell, RefCell};
++
++    const API: &str = "https://rd.example.com";
++    const ACCOUNT_ID: &str = "2026000001";
++    /// The secret half of the vectors' seal key: server/api/src/seal.rs's public test key.
++    const SEAL_SK: &str = "d3iPGgzqABomMdrl0F29BiAI1bMPULnim+sqeCIokAQ=";
++    /// server/api/src/seal.rs and devsig.rs: a payload libsodium sealed to that key, and a device's
++    /// signature of its login, which hjv-api's tests open and check.
++    const API_SEALED: &str = "fFFoEMjN6816rB0xp_9pEbKGTeY4-Nq_JAwDKVJZI2IIgU3i5bQZI8dHWCkgn6RbIfj3YFxaU0v_gFur5xg54TiQI0OkHOrs0HgSw1LYqXKGSquBeuGTFGH7uqD-r57iEyFhU5IWLlt3TiAoB3FzyhetnRAic83BmEX9JWkLtPnGFg3H4ZXVHWEnGVQHvZ0hoSMs0ZJkp1dI5dSDky5B_9f2i8CS3KNVCA7X_qHR1iUOPwA";
++    const API_DEVICE_PK: &str = "C7w0aldmfDgBIL2cf9flHSxf3+o3zS9b9AWyxr9vLXg=";
++    const API_LOGIN_SIG: &str =
++        "7r+N5cRWOL/V0AeRCN6d8fb0tTkBYW9YD+QzrxXazHwtLgmwFRz4EEtbx76AULkh/exqsd5bQ8bb3yOx6pStBg==";
++    const API_LOGIN_MESSAGE_HEX: &str = "686a762d6c6f67696e2d76310031323334353637383900313736303030303030300041414543417751464267634943516f4c4441304f44773d3d0071494453773438476b62354b53736c6666712f5145575261436c78356968564c5445352b6a714f485136513d00310077696e646f7773";
++    /// server/api/README.md "Test vectors": the X-HJV-Proof headers hjv-api expects, with the
++    /// vectors' account key at T and n = bytes 0x00..=0x0f, of the app's own device list and logout
++    /// requests and an hjv-api token.
++    const API_TOKEN: &str = "hjv_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
++    const API_PEERS: &str = "/api/peers?current=1&pageSize=100&accessible=&status=1";
++    const API_PEERS_PROOF: &str = "v1.1760000000.AAECAwQFBgcICQoLDA0ODw.9tsrnUGYVeHhGWQC2oHD1-9Ahw62G854ZjhmxV4CclBAKgpKGR2ouiNwO4v88CKY0W1jqDqrm_jyzdGq_a2YCA";
++    const API_LOGOUT_BODY: &str = r#"{"id":"987654321","uuid":"dXVpZA=="}"#;
++    const API_LOGOUT_PROOF: &str = "v1.1760000000.AAECAwQFBgcICQoLDA0ODw.HgexD8dQd4Gq9iVRcGKrG_nqtOsGX5FbjSlBwJRkA4bdnFtbaQ48xnizvYV301E2G4vHaI_vvmoMsq_X2R_DDg";
++
++    /// A device in memory: its LocalConfig, its key store, the service's options.
++    struct Fake {
++        now: Cell<u64>,
++        randoms: RefCell<Vec<[u8; 16]>>,
++        local: RefCell<HashMap<String, String>>,
++        /// the stored account key's seed; Err while the store is locked
++        stored: RefCell<Result<Option<[u8; 32]>, ()>>,
++        service: RefCell<HashMap<String, String>>,
++        writes: Cell<usize>,
++        state: Mutex<State>,
++    }
++
++    impl Fake {
++        fn new() -> Fake {
++            let _ = hbb_common::sodiumoxide::init();
++            Fake {
++                now: Cell::new(T),
++                randoms: RefCell::new(Vec::new()),
++                local: RefCell::new(HashMap::new()),
++                stored: RefCell::new(Ok(None)),
++                service: RefCell::new(HashMap::new()),
++                writes: Cell::new(0),
++                state: Mutex::new(State::new()),
++            }
++        }
++
++        fn logged_in() -> Fake {
++            let fake = Fake::new();
++            *fake.stored.borrow_mut() = Ok(Some(ACCOUNT_SEED));
++            fake.set_local("access_token", REQ_TOKEN);
++            fake
++        }
++
++        /// The same device user after the app restarted: what was stored, nothing held in memory.
++        fn restarted(&self) -> Fake {
++            let fake = Fake::new();
++            *fake.local.borrow_mut() = self.local.borrow().clone();
++            *fake.stored.borrow_mut() = *self.stored.borrow();
++            *fake.service.borrow_mut() = self.service.borrow().clone();
++            fake
++        }
++
++        fn stored_key(&self) -> Option<String> {
++            let seed = (*self.stored.borrow()).ok()??;
++            Some(STANDARD.encode(AccountKey::from_seed(&seed)?.public_key()))
++        }
++    }
++
++    impl Env for Fake {
++        fn api_server(&self) -> String {
++            API.to_owned()
++        }
++        fn seal_pubkey(&self) -> Option<[u8; 32]> {
++            super::super::parse_seal_pubkey(SEAL_PK)
++        }
++        fn now(&self) -> u64 {
++            self.now.get()
++        }
++        fn random16(&self) -> [u8; 16] {
++            let mut randoms = self.randoms.borrow_mut();
++            if randoms.is_empty() {
++                [0x77; 16]
++            } else {
++                randoms.remove(0)
++            }
++        }
++        fn new_key(&self) -> AccountKey {
++            AccountKey::from_seed(&ACCOUNT_SEED).unwrap()
++        }
++        fn local(&self, key: &str) -> String {
++            self.local.borrow().get(key).cloned().unwrap_or_default()
++        }
++        fn set_local(&self, key: &str, value: &str) {
++            if value.is_empty() {
++                self.local.borrow_mut().remove(key);
++            } else {
++                self.local
++                    .borrow_mut()
++                    .insert(key.to_owned(), value.to_owned());
++            }
++        }
++        fn load_key(&self) -> Result<Option<AccountKey>, Unavailable> {
++            match *self.stored.borrow() {
++                Ok(Some(seed)) => Ok(AccountKey::from_seed(&seed)),
++                Ok(None) => Ok(None),
++                Err(()) => Err(Unavailable),
++            }
++        }
++        fn store_key(&self, key: &AccountKey) -> ResultType<()> {
++            *self.stored.borrow_mut() = Ok(Some(key.seed().try_into()?));
++            Ok(())
++        }
++        fn forget_key(&self) {
++            *self.stored.borrow_mut() = Ok(None);
++        }
++        fn device_key(&self) -> Option<sign::SecretKey> {
++            Some(device_key(&PC_SEED))
++        }
++        fn installed(&self) -> bool {
++            true
++        }
++        fn write_service_options(&self, change: &dyn Fn(&mut HashMap<String, String>)) {
++            change(&mut self.service.borrow_mut());
++            self.writes.set(self.writes.get() + 1);
++        }
++        fn state(&self) -> &Mutex<State> {
++            &self.state
++        }
++    }
++
++    fn url(target: &str) -> String {
++        format!("{API}{target}")
++    }
++
++    fn json_header() -> String {
++        r#"{"Content-Type":"application/json"}"#.to_owned()
++    }
++
++    fn token_header(token: &str) -> String {
++        json!({ "Content-Type": "application/json", "Authorization": format!("Bearer {token}") })
++            .to_string()
++    }
++
++    fn headers(header: &str) -> Map<String, Value> {
++        serde_json::from_str(header).unwrap()
++    }
++
++    /// http_request's result for an answer.
++    fn answer(status: u16, body: &Value) -> String {
++        json!({ "status_code": status, "headers": {}, "body": body.to_string() }).to_string()
++    }
++
++    fn answer_dated(status: u16, body: &Value, date: u64) -> String {
++        let date = chrono::DateTime::<chrono::Utc>::from_timestamp(date as i64, 0)
++            .unwrap()
++            .format("%a, %d %b %Y %H:%M:%S GMT")
++            .to_string();
++        json!({ "status_code": status, "headers": { "date": date }, "body": body.to_string() })
++            .to_string()
++    }
++
++    fn login_body(kind: &str) -> String {
++        json!({
++            "username": ACCOUNT_ID, "password": "test-password", "id": CKEY_ID, "uuid": "dGVzdA==",
++            "autoLogin": true, "type": kind,
++            "deviceInfo": { "os": "windows", "type": "client", "name": "lab-pc" },
++        })
++        .to_string()
++    }
++
++    fn open(sealed: &[u8]) -> Vec<u8> {
++        let sk = box_::SecretKey::from_slice(&STANDARD.decode(SEAL_SK).unwrap()).unwrap();
++        sealedbox::open(sealed, &sk.public_key(), &sk).unwrap()
++    }
++
++    /// The sealed bytes of a login body's password field.
++    fn sealed_of(body: &str) -> Vec<u8> {
++        let sent: Value = serde_json::from_str(body).unwrap();
++        let field = sent["password"].as_str().unwrap();
++        let sealed = field
++            .strip_prefix(&format!("{SEALED_PREFIX}{SEAL_KID}."))
++            .unwrap();
++        URL_SAFE_NO_PAD.decode(sealed).unwrap()
++    }
++
++    /// A login through both hooks: the request, then the token answer with `hjv`.
++    fn log_in(fake: &Fake, account: &str, hjv: Value) {
++        let login = Some(login_body("account"));
++        prepare(fake, &url("/api/login"), "post", login, json_header()).unwrap();
++        let token = json!({
++            "type": "access_token", "access_token": REQ_TOKEN,
++            "user": { "name": account, "display_name": "홍길동", "status": 1 }, "hjv": hjv,
++        });
++        observe(fake, &url("/api/login"), &answer(200, &token));
++    }
++
++    fn proof_time(header: &str) -> u64 {
++        let proof = headers(header)[PROOF_HEADER].as_str().unwrap().to_owned();
++        proof.split('.').nth(1).unwrap().parse().unwrap()
++    }
++
++    fn my_list(fake: &Fake) -> MyDevices {
++        serde_json::from_str(&fake.local(MY_DEVICES)).unwrap()
++    }
++
++    #[test]
++    fn the_first_login_step_is_sealed_and_signed() {
++        let fake = Fake::new();
++        // the seal's nonce: the vectors' (bytes 0x00..=0x0f)
++        fake.randoms.borrow_mut().push(REQ_POST.n);
++        let login = login_body("account");
++        let (body, header) = prepare(
++            &fake,
++            &url("/api/login"),
++            "post",
++            Some(login.clone()),
++            json_header(),
++        )
++        .unwrap();
++        assert_eq!(header, json_header());
++        let body = body.unwrap();
++        let (sent, asked): (Value, Value) = (
++            serde_json::from_str(&body).unwrap(),
++            serde_json::from_str(&login).unwrap(),
++        );
++        for field in ["username", "id", "uuid", "autoLogin", "type", "deviceInfo"] {
++            assert_eq!(sent[field], asked[field]);
++        }
++        // the payload is the vectors': the password, the time, the nonce, the device ID, the key
++        // ID, and the account key with its proof
++        let sealed = sealed_of(&body);
++        assert_eq!(open(&sealed), SEAL_PAYLOAD.as_bytes());
++        assert!(!body.contains("test-password"));
++        // the device key signs it as hjv-api checks it
++        let hjv = &sent["hjv"];
++        assert_eq!(
++            (
++                hjv["v"].as_u64(),
++                hjv["installed"].as_bool(),
++                hjv["ver"].as_str()
++            ),
++            (Some(1), Some(true), Some(crate::VERSION))
++        );
++        let sig = STANDARD.decode(hjv["sig"].as_str().unwrap()).unwrap();
++        let message = login_message(CKEY_ID, T, CKEY_N, &sealed, true, "windows");
++        assert!(sign::verify_detached(
++            &sign::Signature::from_bytes(&sig).unwrap(),
++            &message,
++            &device_key(&PC_SEED).public_key()
++        ));
++        // the new key waits for the token
++        let pending = lock(&fake).pending.as_ref().map(AccountKey::public_key);
++        assert_eq!(
++            pending.map(|pk| STANDARD.encode(pk)).as_deref(),
++            Some(ACCOUNT_PK)
++        );
++        assert_eq!(fake.stored_key(), None);
++
++        // with two factors, the code dialog keeps the key; the second step, with no password,
++        // goes as it is and its token stores the key
++        let challenge = json!({ "type": "email_check", "tfa_type": "tfa_check", "secret": "s" });
++        observe(&fake, &url("/api/login"), &answer(200, &challenge));
++        assert!(lock(&fake).pending.is_some());
++        let second = json!({
++            "verificationCode": "123456", "tfaCode": "123456", "secret": "s", "username": ACCOUNT_ID,
++            "id": CKEY_ID, "uuid": "dGVzdA==", "autoLogin": true, "type": "email_code",
++            "deviceInfo": { "os": "windows" },
++        })
++        .to_string();
++        let sent = prepare(
++            &fake,
++            &url("/api/login"),
++            "post",
++            Some(second.clone()),
++            json_header(),
++        );
++        assert_eq!(sent, Some((Some(second), json_header())));
++        let token = json!({ "type": "access_token", "access_token": REQ_TOKEN, "user": { "name": ACCOUNT_ID } });
++        observe(&fake, &url("/api/login"), &answer(200, &token));
++        assert_eq!(fake.stored_key().as_deref(), Some(ACCOUNT_PK));
++
++        // a failed login keeps no key, and the key of the login before stays
++        let failed = Fake::logged_in();
++        *failed.stored.borrow_mut() = Ok(Some([5; 32]));
++        let before = failed.stored_key();
++        prepare(
++            &failed,
++            &url("/api/login"),
++            "post",
++            Some(login_body("account")),
++            json_header(),
++        );
++        observe(
++            &failed,
++            &url("/api/login"),
++            &answer(401, &json!({ "error": "no" })),
++        );
++        assert!(lock(&failed).pending.is_none());
++        assert_eq!(failed.stored_key(), before);
++    }
++
++    #[test]
++    fn seal_and_device_signature_are_hjv_apis() {
++        let sk = box_::SecretKey::from_slice(&STANDARD.decode(SEAL_SK).unwrap()).unwrap();
++        assert_eq!(STANDARD.encode(sk.public_key().0), SEAL_PK);
++        let sealed = URL_SAFE_NO_PAD.decode(API_SEALED).unwrap();
++        let payload: Value = serde_json::from_slice(&open(&sealed)).unwrap();
++        assert_eq!(
++            (
++                payload["t"].as_u64(),
++                payload["n"].as_str(),
++                payload["id"].as_str()
++            ),
++            (
++                Some(1_760_000_000),
++                Some("AAECAwQFBgcICQoLDA0ODw=="),
++                Some("123456789")
++            )
++        );
++        let message = login_message(
++            "123456789",
++            1_760_000_000,
++            "AAECAwQFBgcICQoLDA0ODw==",
++            &sealed,
++            true,
++            "windows",
++        );
++        assert_eq!(hex::encode(&message), API_LOGIN_MESSAGE_HEX);
++        let pk = sign::PublicKey::from_slice(&STANDARD.decode(API_DEVICE_PK).unwrap()).unwrap();
++        let sig = sign::Signature::from_bytes(&STANDARD.decode(API_LOGIN_SIG).unwrap()).unwrap();
++        assert!(sign::verify_detached(&sig, &message, &pk));
++    }
++
++    #[test]
++    fn a_token_never_goes_unsigned() {
++        let fake = Fake::logged_in();
++        // the vectors' requests at the vectors' time and nonces
++        for r in [REQ_POST, REQ_GET] {
++            fake.randoms.borrow_mut().push(r.n);
++            let body = (!r.body.is_empty()).then(|| r.body.to_owned());
++            let method = r.method.to_ascii_lowercase();
++            let target = url(r.path_and_query);
++            let (sent, header) = prepare(
++                &fake,
++                &target,
++                &method,
++                body.clone(),
++                token_header(REQ_TOKEN),
++            )
++            .unwrap();
++            assert_eq!(sent, body);
++            let header = headers(&header);
++            assert_eq!(header[PROOF_HEADER], r.header);
++            assert_eq!(header["Authorization"], format!("Bearer {REQ_TOKEN}"));
++        }
++        // the app's device list request as group_model.dart builds it, with hjv-api's token
++        fake.randoms.borrow_mut().push(REQ_POST.n);
++        let auth = json!({ "Authorization": format!("Bearer {API_TOKEN}") }).to_string();
++        let (_, header) = prepare(&fake, &url(API_PEERS), "get", None, auth.clone()).unwrap();
++        assert_eq!(headers(&header)[PROOF_HEADER], API_PEERS_PROOF);
++
++        // a locked iPhone: nothing goes out (http_request answers with an error), nobody logs out
++        *fake.stored.borrow_mut() = Err(());
++        assert_eq!(
++            prepare(&fake, &url(API_PEERS), "get", None, auth.clone()),
++            None
++        );
++        assert_eq!(fake.local("access_token"), REQ_TOKEN);
++        // no key (a restored iPhone): the token stays home, and the user is asked to log in again
++        *fake.stored.borrow_mut() = Ok(None);
++        fake.set_local("user_info", r#"{"name":"2026000001"}"#);
++        let (_, header) = prepare(&fake, &url(API_PEERS), "get", None, auth).unwrap();
++        assert_eq!(headers(&header), Map::new());
++        assert_eq!(
++            [
++                fake.local("access_token"),
++                fake.local("user_info"),
++                fake.local(RELOGIN)
++            ],
++            ["", "", "Y"]
++        );
++        // other paths of the API server never get the token; other servers are not touched
++        *fake.stored.borrow_mut() = Ok(Some(ACCOUNT_SEED));
++        let (_, header) = prepare(
++            &fake,
++            &url("/api/ab/personal"),
++            "post",
++            None,
++            token_header(REQ_TOKEN),
++        )
++        .unwrap();
++        assert_eq!(headers(&header), headers(&json_header()));
++        for other in [
++            "https://rd.example.org/api/peers",
++            "http://rd.example.com/api/peers",
++        ] {
++            let sent = prepare(&fake, other, "get", None, token_header(REQ_TOKEN));
++            assert_eq!(sent, Some((None, token_header(REQ_TOKEN))));
++        }
++        // no token, nothing to sign
++        let sent = prepare(
++            &fake,
++            &url("/api/login-options"),
++            "get",
++            None,
++            json_header(),
++        );
++        assert_eq!(sent, Some((None, json_header())));
++    }
++
++    #[test]
++    fn proof_header_is_the_vectors() {
++        let fake = Fake::logged_in();
++        for r in [REQ_POST, REQ_GET] {
++            fake.randoms.borrow_mut().push(r.n);
++            let proof = proof_header_with(
++                &fake,
++                r.method,
++                r.path_and_query,
++                r.body.as_bytes(),
++                REQ_TOKEN,
++            );
++            assert_eq!(proof.as_deref(), Some(r.header));
++        }
++        *fake.stored.borrow_mut() = Err(());
++        assert_eq!(
++            proof_header_with(&fake, "GET", "/api/users", b"", REQ_TOKEN),
++            None
++        );
++        *fake.stored.borrow_mut() = Ok(None);
++        assert_eq!(
++            proof_header_with(&fake, "GET", "/api/users", b"", REQ_TOKEN),
++            None
++        );
++    }
++
++    #[test]
++    fn a_login_that_bound_this_pc_asks_the_service_to_bind() {
++        let fake = Fake::new();
++        fake.set_local(RELOGIN, "Y");
++        let hjv = json!({ "ks": 4182, "binding": BINDING, "login_at": 1_759_999_950 });
++        log_in(&fake, ACCOUNT_ID, hjv);
++        let request = format!("{BINDING}.1759999950");
++        assert_eq!(fake.stored_key().as_deref(), Some(ACCOUNT_PK));
++        assert_eq!([fake.local(KEY_SERIAL), fake.local(RELOGIN)], ["4182", ""]);
++        assert_eq!(fake.local(PC_BINDING), request);
++        assert_eq!(fake.writes.get(), 1);
++        let service = fake.service.borrow().clone();
++        assert_eq!(service.get(BIND_REQ), Some(&request));
++        assert!(service.get(KNOCK).is_some_and(|k| !k.is_empty()));
++
++        // a phone, or another account's PC: no binding in the answer, nothing for the service
++        for hjv in [
++            json!({ "ks": 4183 }),
++            json!({ "ks": 4183, "binding": "B0F1E2D3C4B5A69788796A5B4C3D2E1F", "login_at": 1 }),
++            json!({ "ks": 4183, "binding": BINDING, "login_at": 0 }),
++        ] {
++            let phone = Fake::new();
++            log_in(&phone, ACCOUNT_ID, hjv);
++            assert_eq!(
++                (phone.writes.get(), phone.local(PC_BINDING)),
++                (0, String::new())
++            );
++            assert_eq!(phone.stored_key().as_deref(), Some(ACCOUNT_PK));
++        }
++
++        // [이 PC 빼기]: an undo that did nothing leaves the binding, one that took the PC out
++        // unbinds it at once
++        let undo = url("/api/hjv/this-device/undo");
++        let kept = json!({ "id": PC_ID, "status": "added", "undo": false, "message": "" });
++        observe(&fake, &undo, &answer(200, &kept));
++        let removed = json!({ "id": PC_ID, "status": "removed", "undo": false, "message": "" });
++        observe(&fake, &undo, &answer(500, &removed));
++        assert_eq!(
++            (fake.writes.get(), fake.local(PC_BINDING)),
++            (1, request.clone())
++        );
++        observe(&fake, &undo, &answer(200, &removed));
++        assert_eq!(fake.writes.get(), 2);
++        assert_eq!(fake.service.borrow().get(UNBIND_REQ), Some(&request));
++        assert_eq!(fake.local(PC_BINDING), "");
++    }
++
++    #[test]
++    fn logout_unbinds_this_pc_first_in_one_write() {
++        let fake = Fake::logged_in();
++        let request = format!("{BINDING}.1759999950");
++        fake.set_local(PC_BINDING, &request);
++        fake.set_local(MY_DEVICES, r#"{"acct":"2026000001","at":1,"pcs":{}}"#);
++        fake.set_local(KEY_SERIAL, "4182");
++        fake.service.borrow_mut().extend([
++            (BIND_REQ.to_owned(), request.clone()),
++            ("approve-mode".to_owned(), "password".to_owned()),
++        ]);
++        // the app's logout (user_model.dart logOut) with hjv-api's token: signed as hjv-api's
++        // vector before the key went
++        fake.randoms.borrow_mut().push(REQ_POST.n);
++        let body = Some(API_LOGOUT_BODY.to_owned());
++        let logout = url("/api/logout");
++        let (_, header) = prepare(
++            &fake,
++            &logout,
++            "post",
++            body.clone(),
++            token_header(API_TOKEN),
++        )
++        .unwrap();
++        assert_eq!(headers(&header)[PROOF_HEADER], API_LOGOUT_PROOF);
++        assert_eq!(fake.stored_key(), None);
++        for key in [PC_BINDING, MY_DEVICES, KEY_SERIAL] {
++            assert_eq!(fake.local(key), "", "{key}");
++        }
++        // one write: the bind request gone, the unbind request and a knock in, the rest kept
++        assert_eq!(fake.writes.get(), 1);
++        let service = fake.service.borrow().clone();
++        assert_eq!(service.get(BIND_REQ), None);
++        assert_eq!(service.get(UNBIND_REQ), Some(&request));
++        assert!(service.get(KNOCK).is_some_and(|k| !k.is_empty()));
++        assert_eq!(
++            service.get("approve-mode").map(String::as_str),
++            Some("password")
++        );
++
++        // offline, with a locked key store or with no token left, the PC unbinds all the same;
++        // nothing unsigned goes
++        for (stored, header) in [
++            (Err(()), token_header(API_TOKEN)),
++            (Ok(Some(ACCOUNT_SEED)), token_header("")),
++            (Ok(Some(ACCOUNT_SEED)), json_header()),
++        ] {
++            let pc = Fake::logged_in();
++            pc.set_local(PC_BINDING, &request);
++            *pc.stored.borrow_mut() = stored;
++            let sent = prepare(&pc, &logout, "post", body.clone(), header);
++            assert!(sent.map_or(true, |(_, h)| !h.contains(PROOF_HEADER)
++                && !h.contains("hjv_")));
++            assert_eq!(pc.service.borrow().get(UNBIND_REQ), Some(&request));
++            assert_eq!(pc.local(PC_BINDING), "");
++        }
++
++        // another Windows user of this PC, who bound nothing: the owner's binding is left alone
++        let other = Fake::logged_in();
++        prepare(&other, &logout, "post", body, token_header(API_TOKEN));
++        assert_eq!(other.writes.get(), 0);
++    }
++
++    #[test]
++    fn a_refused_token_unbinds_and_forgets_nothing() {
++        // the app's own logout on 401 and 400 (UserModel.reset) sends no /api/logout
++        let fake = Fake::logged_in();
++        let request = format!("{BINDING}.1759999950");
++        let list = r#"{"acct":"2026000001","at":1,"pcs":{}}"#;
++        fake.set_local(PC_BINDING, &request);
++        fake.set_local(MY_DEVICES, list);
++        for status in [401, 400] {
++            for target in [
++                "/api/currentUser",
++                "/api/users?current=1&pageSize=100",
++                API_PEERS,
++            ] {
++                let refused = answer(status, &json!({ "error": "invalid token" }));
++                observe(&fake, &url(target), &refused);
++            }
++        }
++        assert_eq!(fake.writes.get(), 0);
++        assert_eq!(fake.stored_key().as_deref(), Some(ACCOUNT_PK));
++        assert_eq!(
++            [fake.local(PC_BINDING), fake.local(MY_DEVICES)],
++            [request.as_str(), list]
++        );
++    }
++
++    #[test]
++    fn the_device_list_changes_only_with_a_full_list() {
++        let fake = Fake::logged_in();
++        let user = json!({ "name": ACCOUNT_ID, "display_name": "홍길동", "status": 1 });
++        fake.set_local("user_info", &user.to_string());
++        let page = |current: u64| {
++            url(&format!(
++                "/api/peers?current={current}&pageSize=2&accessible=&status=1"
++            ))
++        };
++        let pc = |id: &str| {
++            json!({
++                "id": id, "user_name": ACCOUNT_ID, "info": { "device_name": "lab", "os": "windows" },
++                "status": 1, "note": "비밀번호 없이 연결",
++                "hjv": { "pk": PC_PK, "pwless": "active", "kinds": ["remote", "file", "camera"], "wol": "unknown" },
++            })
++        };
++        let first = json!({ "total": 3, "data": [pc("111111111"), pc("222222222")] });
++        observe(&fake, &page(1), &answer(200, &first));
++        assert_eq!(fake.local(MY_DEVICES), "");
++        // an entry without `hjv` counts towards the total but is no PC of the list
++        let last = json!({ "total": 3, "data": [{ "id": "333333333", "status": 1 }] });
++        observe(&fake, &page(2), &answer(200, &last));
++        let full = format!(
++            r#"{{"acct":"{ACCOUNT_ID}","at":{T},"pcs":{{"111111111":{{"pk":"{PC_PK}","pwless":"active","kinds":["remote","file","camera"]}},"222222222":{{"pk":"{PC_PK}","pwless":"active","kinds":["remote","file","camera"]}}}}}}"#
++        );
++        assert_eq!(fake.local(MY_DEVICES), full);
++        assert_eq!(
++            my_list(&fake).pcs["111111111"],
++            MyPc {
++                pk: PC_PK.to_owned(),
++                pwless: "active".to_owned(),
++                kinds: vec!["remote".to_owned(), "file".to_owned(), "camera".to_owned()],
++            }
++        );
++
++        // failures, a clock answer, no answer at all, and a fetch that broke off keep it
++        fake.now.set(T + 60);
++        for status in [500, 502, 401, 400, 409] {
++            let failed = json!({ "error": "x", "hjv": "clock", "server_time": T });
++            observe(&fake, &page(1), &answer(status, &failed));
++        }
++        observe(&fake, &page(1), "reqwest::Error { kind: Request }");
++        let other = json!({ "total": 3, "data": [pc("444444444"), pc("555555555")] });
++        observe(&fake, &page(1), &answer(200, &other));
++        observe(&fake, &page(2), &answer(500, &json!({ "error": "x" })));
++        let rest = json!({ "total": 3, "data": [pc("666666666")] });
++        observe(&fake, &page(2), &answer(200, &rest));
++        assert_eq!(fake.local(MY_DEVICES), full);
++
++        // a new process has it, and a page that does not start a list leaves it
++        let restarted = fake.restarted();
++        assert_eq!(restarted.local(MY_DEVICES), full);
++        observe(&restarted, &page(2), &answer(200, &rest));
++        assert_eq!(restarted.local(MY_DEVICES), full);
++
++        // the same account's login keeps it; another account's drops it
++        log_in(&fake, ACCOUNT_ID, json!({ "ks": 1 }));
++        assert_eq!(fake.local(MY_DEVICES), full);
++        log_in(&fake, "2026000002", json!({ "ks": 2 }));
++        assert_eq!(fake.local(MY_DEVICES), "");
++
++        // a full list replaces it, an empty one too
++        let one = json!({ "total": 1, "data": [pc("777777777")] });
++        observe(&fake, &url(API_PEERS), &answer(200, &one));
++        assert_eq!(my_list(&fake).pcs.keys().collect::<Vec<_>>(), ["777777777"]);
++        observe(
++            &fake,
++            &url(API_PEERS),
++            &answer(200, &json!({ "total": 0, "data": [] })),
++        );
++        assert!(my_list(&fake).pcs.is_empty());
++    }
++
++    #[test]
++    fn a_device_list_answered_after_the_logout_is_not_kept() {
++        let fake = Fake::logged_in();
++        let user = json!({ "name": ACCOUNT_ID, "display_name": "홍길동", "status": 1 });
++        fake.set_local("user_info", &user.to_string());
++        // the list was asked for, then the user logged out before its answer came
++        let (logout, body) = (url("/api/logout"), Some(API_LOGOUT_BODY.to_owned()));
++        assert!(prepare(&fake, &logout, "post", body, token_header(REQ_TOKEN)).is_some());
++        let pc = json!({ "id": "111111111", "hjv": { "pk": PC_PK, "pwless": "active", "kinds": ["remote"] } });
++        let list = json!({ "total": 1, "data": [pc] });
++        observe(&fake, &url(API_PEERS), &answer(200, &list));
++        assert_eq!(fake.local(MY_DEVICES), "");
++    }
++
++    #[test]
++    fn the_servers_clock_moves_signatures_and_seals() {
++        let fake = Fake::logged_in();
++        let user = url("/api/currentUser");
++        // the login dialog's first request: a Date header 10 s ahead, used but not worth keeping
++        observe(
++            &fake,
++            &url("/api/login-options"),
++            &answer_dated(200, &json!([]), T + 10),
++        );
++        assert_eq!(lock(&fake).clock, Some(10));
++        assert_eq!(fake.local(CLOCK_OFFSET), "");
++        // a 409 clock answer: this device is 15 minutes behind; nobody is logged out
++        let list = r#"{"acct":"2026000001","at":1,"pcs":{}}"#;
++        fake.set_local(MY_DEVICES, list);
++        let clock = json!({ "error": "기기의 날짜와 시간이 맞지 않습니다.", "hjv": "clock", "server_time": T + 900 });
++        observe(&fake, &user, &answer(409, &clock));
++        assert_eq!(fake.local(CLOCK_OFFSET), "900");
++        assert_eq!(
++            [fake.local("access_token"), fake.local(MY_DEVICES)],
++            [REQ_TOKEN, list]
++        );
++        assert_eq!(fake.stored_key().as_deref(), Some(ACCOUNT_PK));
++        // the next request is signed at the server's time, not sent again by the hook
++        let body = Some("{}".to_owned());
++        let (_, header) = prepare(&fake, &user, "post", body, token_header(REQ_TOKEN)).unwrap();
++        assert_eq!(proof_time(&header), T + 900);
++        // a few seconds' drift is used, not written
++        observe(
++            &fake,
++            &user,
++            &answer_dated(200, &json!({ "name": ACCOUNT_ID }), T + 905),
++        );
++        assert_eq!(
++            (lock(&fake).clock, fake.local(CLOCK_OFFSET)),
++            (Some(905), "900".to_owned())
++        );
++        // a new process starts from the kept offset, for its seals too
++        let restarted = fake.restarted();
++        let login = Some(login_body("account"));
++        let (body, _) =
++            prepare(&restarted, &url("/api/login"), "post", login, json_header()).unwrap();
++        let payload: Value = serde_json::from_slice(&open(&sealed_of(&body.unwrap()))).unwrap();
++        assert_eq!(payload["t"].as_u64(), Some(T + 900));
++        // the clock set right: the next answer's Date brings the offset back and keeps it
++        observe(
++            &restarted,
++            &user,
++            &answer_dated(200, &json!({ "name": ACCOUNT_ID }), T),
++        );
++        assert_eq!(restarted.local(CLOCK_OFFSET), "0");
++    }
++
++    #[test]
++    fn account_requests_never_accept_a_bad_certificate() {
++        for cached in [None, Some(true), Some(false)] {
++            for target in [
++                "/api/login",
++                "/api/logout",
++                "/api/currentUser",
++                "/api/users?current=1",
++                "/api/peers?current=1&pageSize=100",
++                "/api/login-options",
++                "/api/device-group/accessible?current=1",
++                "/api/hjv/this-device",
++                "/api/hjv/keys/12/ack",
++            ] {
++                assert_eq!(
++                    strict_tls(API, &url(target), cached),
++                    Some(false),
++                    "{target}"
++                );
++            }
++            // the heartbeat and other servers: as they were
++            for other in [
++                url("/api/heartbeat"),
++                url("/api/sysinfo"),
++                "https://rd.example.org/api/login".to_owned(),
++                "https://rd.example.com:8443/api/login".to_owned(),
++            ] {
++                assert_eq!(strict_tls(API, &other, cached), cached, "{other}");
++            }
++        }
++    }
++
++    #[test]
++    fn without_the_feature_nothing_changes() {
++        // a build without HJV_SERVER, HJV_LOGIN_SEAL_PUBKEY or HJV_TRUST_PUBKEYS; one with them
++        // runs the account path (the other tests)
++        if enabled() {
++            return;
++        }
++        let login = login_body("account");
++        assert_eq!(
++            prepare_account_request(
++                &url("/api/login"),
++                "post",
++                Some(login.clone()),
++                json_header()
++            ),
++            Some((Some(login), json_header()))
++        );
++        let peers = url("/api/peers?current=1&pageSize=100");
++        assert_eq!(
++            prepare_account_request(&peers, "get", None, token_header(REQ_TOKEN)),
++            Some((None, token_header(REQ_TOKEN)))
++        );
++        for cached in [None, Some(true), Some(false)] {
++            assert_eq!(account_tls(&url("/api/login"), cached), cached);
++        }
++        assert_eq!(proof_header("GET", "/api/users", b"", REQ_TOKEN), None);
++        assert_eq!(get_common("hjv-account"), None);
++        assert!(!set_common(RELOGIN, ""));
++        let mut name = "홍길동".to_owned();
++        hide_account_name(&mut name);
++        assert_eq!(name, "홍길동");
++    }
++
++    #[test]
++    fn other_pcs_see_the_os_user_name_not_the_accounts() {
++        // create_login_msg around the hook: the built-in name, else user_info's, else the OS's
++        let shown = |account_build: bool, builtin: &str| {
++            let mut name = if builtin.is_empty() {
++                "홍길동"
++            } else {
++                builtin
++            }
++            .to_owned();
++            hide_name(account_build, &mut name, || builtin.to_owned());
++            if name.is_empty() {
++                name = "os-user".to_owned();
++            }
++            name
++        };
++        assert_eq!(shown(true, ""), "os-user");
++        assert_eq!(shown(true, "Lab"), "Lab");
++        assert_eq!(shown(false, ""), "홍길동");
++    }
++
++    #[test]
++    fn the_account_screens_ask_rust() {
++        let fake = Fake::new();
++        let get = |key: &str| common_value(&fake, key);
++        assert_eq!(
++            (get("hjv-account"), get(RELOGIN), get("hjv-pc-bound")),
++            (
++                Some("Y".to_owned()),
++                Some(String::new()),
++                Some(String::new())
++            )
++        );
++        assert_eq!(get("is-printer-installed"), None);
++        fake.set_local(RELOGIN, "Y");
++        fake.set_local(PC_BINDING, &format!("{BINDING}.1"));
++        assert_eq!(
++            (get(RELOGIN), get("hjv-pc-bound")),
++            (Some("Y".to_owned()), Some("Y".to_owned()))
++        );
++        assert!(set_common_value(&fake, RELOGIN, ""));
++        assert_eq!(get(RELOGIN).as_deref(), Some(""));
++        assert!(!set_common_value(&fake, "install-printer", ""));
++    }
++}
+diff --git a/src/hjviewer_account/ctl.rs b/src/hjviewer_account/ctl.rs
+new file mode 100644
+index 0000000..f4201a1
+--- /dev/null
++++ b/src/hjviewer_account/ctl.rs
+@@ -0,0 +1,46 @@
++//! The controller: the PC key each session was checked against, whether a login carries a proof,
++//! and the proof itself.
++//!
++//! The names and types the hooks call; the conditions and the signing come with the controller's
++//! patch.
++
++use base::message_proto::HjvKeyProof;
++
++/// What the controller knows when the PC's Hash arrives.
++pub(crate) struct LoginContext<'a> {
++    pub session_id: u64,
++    /// LoginRequest.username: the PC's ID
++    pub pc_id: &'a str,
++    /// LoginRequest.my_id: this device's ID
++    pub ctl_id: &'a str,
++    /// kind_of_conn_type of the session
++    pub kind: u8,
++    /// an `id@server` connection
++    pub other_server: bool,
++    /// Hash.hjv_nonce
++    pub nonce: &'a [u8],
++    pub secured: bool,
++}
++
++pub(crate) enum ProofDecision {
++    /// the login goes out as it would without the feature
++    No,
++    /// the PC's key differs from the one the account's list bound to it: warn, send nothing, close
++    KeyChanged,
++    /// send this proof, with the remembered password if there is one
++    Send(HjvKeyProof),
++}
++
++/// Client::start: the PC key this session's channel was checked against, kept only for a secured
++/// channel.
++pub(crate) fn note_peer_key(_session_id: u64, _secured: bool, _pk: Option<&[u8]>) {}
++
++/// handle_hash: whether this login carries a proof, and the proof.
++pub(crate) fn key_proof(_login: &LoginContext) -> ProofDecision {
++    ProofDecision::No
++}
++
++/// handle_login_error: whether this session's last login carried a proof (forgetting it).
++pub(crate) fn take_proof_sent(_session_id: u64) -> bool {
++    false
++}
+diff --git a/src/hjviewer_account/keystore.rs b/src/hjviewer_account/keystore.rs
+new file mode 100644
+index 0000000..bf4e7a4
+--- /dev/null
++++ b/src/hjviewer_account/keystore.rs
+@@ -0,0 +1,285 @@
++//! Where the account key lives, one per device user: on the iPhone the Keychain (this device
++//! only, while unlocked; a backup restored on a phone brings no key back), on Windows a file
++//! wrapped with DPAPI for this Windows user in %LOCALAPPDATA%\HJViewer-account (not roaming, and
++//! outside %LOCALAPPDATA%\hjviewer, which the portable packer clears for every new version),
++//! elsewhere the user's LocalConfig, `hjv-ctl-key` (Android keeps the app's files out of cloud
++//! backups and device transfers).
++
++use super::AccountKey;
++use hbb_common::ResultType;
++
++/// The store cannot be read right now (the iPhone's Keychain while the phone is locked): send no
++/// account request, and do not log out.
++pub(crate) struct Unavailable;
++
++/// Windows: the key's folder in %LOCALAPPDATA% and its file. NTFS ignores case, and the packer
++/// unpacks into the lower-cased stem of the executable it carries and removes that folder whenever
++/// another version runs, so the folder must never be named like it.
++#[cfg(any(target_os = "windows", test))]
++const KEY_DIR: &str = "HJViewer-account";
++#[cfg(any(target_os = "windows", test))]
++const KEY_FILE: &str = "account-key.bin";
++
++/// This device user's account key; Ok(None) when there is none (logged out, or a restored iPhone,
++/// whose Keychain keeps no key from the backup).
++pub(crate) fn load() -> Result<Option<AccountKey>, Unavailable> {
++    store_impl::load()
++}
++
++pub(crate) fn store(key: &AccountKey) -> ResultType<()> {
++    store_impl::store(key)
++}
++
++pub(crate) fn forget() {
++    store_impl::forget()
++}
++
++#[cfg(target_os = "ios")]
++mod store_impl {
++    use super::{AccountKey, Unavailable};
++    use hbb_common::{log, sodiumoxide::utils::memzero, ResultType};
++    use security_framework::{
++        access_control::{ProtectionMode, SecAccessControl},
++        passwords::{
++            delete_generic_password_options, generic_password, set_generic_password_options,
++            PasswordOptions,
++        },
++    };
++
++    const SERVICE: &str = "HJViewer";
++    const ACCOUNT: &str = "hjv-ctl-key";
++    /// errSecItemNotFound
++    const NOT_FOUND: i32 = -25300;
++
++    fn item() -> PasswordOptions {
++        PasswordOptions::new_generic_password(SERVICE, ACCOUNT)
++    }
++
++    pub(super) fn load() -> Result<Option<AccountKey>, Unavailable> {
++        match generic_password(item()) {
++            Ok(mut seed) => {
++                let key = AccountKey::from_seed(&seed);
++                memzero(&mut seed);
++                Ok(key)
++            }
++            Err(e) if e.code() == NOT_FOUND => Ok(None),
++            // errSecInteractionNotAllowed (-25308) while the phone is locked
++            Err(e) => {
++                hbb_common::throttled_log!(
++                    std::time::Duration::from_secs(600),
++                    warn,
++                    "account key: the Keychain answered {}",
++                    e.code()
++                );
++                Err(Unavailable)
++            }
++        }
++    }
++
++    pub(super) fn store(key: &AccountKey) -> ResultType<()> {
++        // a new item rather than an update, which would keep an old item's protection
++        forget();
++        let mut item = item();
++        item.set_access_control(SecAccessControl::create_with_protection(
++            Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
++            0,
++        )?);
++        set_generic_password_options(key.seed(), item)?;
++        Ok(())
++    }
++
++    pub(super) fn forget() {
++        match delete_generic_password_options(item()) {
++            Err(e) if e.code() != NOT_FOUND => {
++                log::warn!("account key: the Keychain did not delete it ({})", e.code())
++            }
++            _ => {}
++        }
++    }
++}
++
++#[cfg(target_os = "windows")]
++mod store_impl {
++    use super::{AccountKey, Unavailable, KEY_DIR, KEY_FILE};
++    use hbb_common::{
++        anyhow::anyhow, bail, directories_next::BaseDirs, log, sodiumoxide::utils::memzero,
++        ResultType,
++    };
++    use std::{io::ErrorKind, path::PathBuf};
++    use windows::{
++        core::PCWSTR,
++        Win32::{
++            Foundation::{LocalFree, HLOCAL},
++            Security::Cryptography::{
++                CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
++            },
++        },
++    };
++
++    /// %LOCALAPPDATA% as the Known Folder, which the packer unpacks into as well (libs/portable,
++    /// `dirs::data_local_dir`), so the two folders are siblings whatever the environment says.
++    fn path() -> Option<PathBuf> {
++        Some(
++            BaseDirs::new()?
++                .data_local_dir()
++                .join(KEY_DIR)
++                .join(KEY_FILE),
++        )
++    }
++
++    pub(super) fn load() -> Result<Option<AccountKey>, Unavailable> {
++        let Some(path) = path() else {
++            return Ok(None);
++        };
++        match std::fs::read(path) {
++            // another Windows user's file, or a damaged one, holds no key of this user
++            Ok(wrapped) => Ok(unwrap_key(&wrapped)),
++            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
++            Err(e) => {
++                hbb_common::throttled_log!(
++                    std::time::Duration::from_secs(600),
++                    warn,
++                    "account key: {e}"
++                );
++                Err(Unavailable)
++            }
++        }
++    }
++
++    pub(super) fn store(key: &AccountKey) -> ResultType<()> {
++        let path = path().ok_or_else(|| anyhow!("no local application data folder"))?;
++        let wrapped = wrap_key(key.seed())?;
++        if let Some(dir) = path.parent() {
++            std::fs::create_dir_all(dir)?;
++        }
++        let new = path.with_extension("new");
++        std::fs::write(&new, wrapped)?;
++        std::fs::rename(&new, &path)?;
++        Ok(())
++    }
++
++    pub(super) fn forget() {
++        let Some(path) = path() else {
++            return;
++        };
++        if let Err(e) = std::fs::remove_file(path) {
++            if e.kind() != ErrorKind::NotFound {
++                log::warn!("account key: not deleted ({e})");
++            }
++        }
++    }
++
++    /// DPAPI for the Windows user this process runs as.
++    fn wrap_key(seed: &[u8]) -> ResultType<Vec<u8>> {
++        let input = CRYPT_INTEGER_BLOB {
++            cbData: u32::try_from(seed.len())?,
++            pbData: seed.as_ptr() as *mut u8,
++        };
++        let mut out = CRYPT_INTEGER_BLOB::default();
++        unsafe {
++            CryptProtectData(
++                &input,
++                PCWSTR::null(),
++                None,
++                None,
++                None,
++                CRYPTPROTECT_UI_FORBIDDEN,
++                &mut out,
++            )?;
++        }
++        if out.pbData.is_null() {
++            bail!("DPAPI returned no data");
++        }
++        let wrapped =
++            unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize) }.to_vec();
++        unsafe { LocalFree(Some(HLOCAL(out.pbData as _))) };
++        Ok(wrapped)
++    }
++
++    fn unwrap_key(wrapped: &[u8]) -> Option<AccountKey> {
++        let input = CRYPT_INTEGER_BLOB {
++            cbData: u32::try_from(wrapped.len()).ok()?,
++            pbData: wrapped.as_ptr() as *mut u8,
++        };
++        let mut out = CRYPT_INTEGER_BLOB::default();
++        unsafe {
++            CryptUnprotectData(
++                &input,
++                None,
++                None,
++                None,
++                None,
++                CRYPTPROTECT_UI_FORBIDDEN,
++                &mut out,
++            )
++        }
++        .ok()?;
++        if out.pbData.is_null() {
++            return None;
++        }
++        let seed = unsafe { std::slice::from_raw_parts_mut(out.pbData, out.cbData as usize) };
++        let key = AccountKey::from_seed(seed);
++        memzero(seed);
++        unsafe { LocalFree(Some(HLOCAL(out.pbData as _))) };
++        key
++    }
++}
++
++#[cfg(not(any(target_os = "ios", target_os = "windows")))]
++mod store_impl {
++    use super::{AccountKey, Unavailable};
++    use hbb_common::{
++        base64::{engine::general_purpose::STANDARD, Engine as _},
++        config::LocalConfig,
++        sodiumoxide::utils::memzero,
++        ResultType,
++    };
++
++    const OPTION: &str = "hjv-ctl-key";
++
++    pub(super) fn load() -> Result<Option<AccountKey>, Unavailable> {
++        let value = LocalConfig::get_option(OPTION);
++        if value.is_empty() {
++            return Ok(None);
++        }
++        Ok(STANDARD.decode(value).ok().and_then(|mut seed| {
++            let key = AccountKey::from_seed(&seed);
++            memzero(&mut seed);
++            key
++        }))
++    }
++
++    pub(super) fn store(key: &AccountKey) -> ResultType<()> {
++        LocalConfig::set_option(OPTION.to_owned(), STANDARD.encode(key.seed()));
++        Ok(())
++    }
++
++    pub(super) fn forget() {
++        LocalConfig::set_option(OPTION.to_owned(), String::new());
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// The packer's folder (libs/portable `app_dir_name`): the packed executable's lower-cased
++    /// stem, HJViewer.exe in HJViewer's builds and rustdesk when none is packed.
++    const PACKER_DIRS: [&str; 2] = ["hjviewer", "rustdesk"];
++
++    #[test]
++    fn the_key_folder_is_not_the_packers() {
++        for packer in PACKER_DIRS {
++            assert!(
++                !KEY_DIR.eq_ignore_ascii_case(packer),
++                "{KEY_DIR} is {packer}"
++            );
++        }
++        assert_eq!(
++            (KEY_DIR.to_ascii_lowercase().as_str(), KEY_FILE),
++            ("hjviewer-account", "account-key.bin")
++        );
++        // a sibling of the packer's folder, not inside it
++        assert!(!KEY_DIR.contains(['/', '\\']));
++    }
++}
+diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
+new file mode 100644
+index 0000000..e554aff
+--- /dev/null
++++ b/src/hjviewer_account/mod.rs
+@@ -0,0 +1,779 @@
++//! Same-account logins: devices logged in to the same Yonsei portal account connect to the
++//! account's Windows PCs without the PC's password. The controller signs a proof with its account
++//! key (an Ed25519 key it makes at every password login); the PC checks it against a trust list
++//! that hjv-api signed for that PC and that the PC fetched itself.
++//!
++//! This file holds what every platform shares, all of it pure so that tests can pass keys and
++//! build variables in: the build variables, the bytes each signature covers, the connection kinds,
++//! and the PC's checks of a trust list and of a proof. `pc` is the controlled PC (desktop only),
++//! `ctl` the controller, `api` the account requests and `keystore` where the account key lives.
++//!
++//! A build without HJV_SERVER, HJV_LOGIN_SEAL_PUBKEY or HJV_TRUST_PUBKEYS is not an account build:
++//! the PC sends no nonce, the controller no proof, and nothing reaches hjv-api, as in 1.5.1.
++
++use base::message_proto::{login_request, HjvKeyProof};
++use hbb_common::{
++    base64::{
++        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
++        Engine as _,
++    },
++    bytes::Bytes,
++    rendezvous_proto::ConnType,
++    sodiumoxide::{crypto::sign, randombytes},
++};
++use serde_derive::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
++use std::time::Duration;
++
++mod api;
++mod ctl;
++mod keystore;
++#[cfg(not(any(target_os = "android", target_os = "ios")))]
++mod pc;
++#[cfg(test)]
++pub(crate) mod vectors;
++
++pub(crate) use api::{
++    account_tls, get_common, hide_account_name, observe_account_response, prepare_account_request,
++    proof_header, set_common,
++};
++pub(crate) use ctl::{key_proof, note_peer_key, take_proof_sent, LoginContext, ProofDecision};
++pub(crate) use pc::{forget_pc_binding, key_login, pc_capable, refresh_now, start_pc_sync};
++
++const SEAL_PUBKEY: Option<&str> = option_env!("HJV_LOGIN_SEAL_PUBKEY");
++const TRUST_PUBKEYS: Option<&str> = option_env!("HJV_TRUST_PUBKEYS");
++
++/// The account key's proof of possession inside the sealed login.
++pub(crate) const CKEY_CONTEXT: &[u8] = b"hjv-ckey-v1";
++/// The account key's signature of an account request (X-HJV-Proof).
++pub(crate) const REQ_CONTEXT: &[u8] = b"hjv-req-v1";
++/// The account key's proof in LoginRequest.hjv_key_proof.
++pub(crate) const CONN_CONTEXT: &[u8] = b"hjv-conn-v1";
++/// The PC's device key over its sync request.
++pub(crate) const PC_CONTEXT: &[u8] = b"hjv-pc-v1";
++/// hjv-api's list key over a trust list.
++pub(crate) const TRUST_CONTEXT: &[u8] = b"hjv-trust-v1";
++
++/// The longest a trust list may live (`exp - iat`), whatever the server signs.
++pub(crate) const MAX_LIST_TTL: u64 = 72 * 3600;
++/// The PC asks hjv-api at most this often and at least this often, whatever `refresh` says, so a
++/// PC that reaches the server learns of a revocation within MAX_REFRESH.
++pub(crate) const MIN_REFRESH: u64 = 5;
++pub(crate) const MAX_REFRESH: u64 = 300;
++/// How far the PC's clock may run behind a list's receipt before the list counts as expired.
++pub(crate) const BACKWARD_SKEW: u64 = 300;
++
++/// The service's options (Config2) by which the UI asks the PC's sync task: a bind and an unbind
++/// request, each `<binding>.<login_at>`, and a knock that makes it sync at once. The account
++/// requests (`api`) write them and the service (`pc`) reads them every second, both by these
++/// names, so that a logout's unbind cannot miss the service.
++const BIND_REQ: &str = "hjv-bind-req";
++const UNBIND_REQ: &str = "hjv-unbind-req";
++const KNOCK: &str = "hjv-pc-sync";
++
++/// An account build: pinned to the hjviewer server, with the seal key and the trust list keys.
++pub(crate) fn enabled() -> bool {
++    account_build(crate::hjviewer::pinned(), SEAL_PUBKEY, TRUST_PUBKEYS)
++}
++
++/// A build with only some of the three behaves as 1.5.1: login without password-less
++/// connections is not a build anyone gets.
++fn account_build(pinned: bool, seal_pubkey: Option<&str>, trust_pubkeys: Option<&str>) -> bool {
++    pinned
++        && seal_pubkey.and_then(parse_seal_pubkey).is_some()
++        && trust_pubkeys.and_then(parse_trust_pubkeys).is_some()
++}
++
++/// The seal key of an account build (HJV_LOGIN_SEAL_PUBKEY).
++pub(crate) fn seal_pubkey() -> Option<[u8; 32]> {
++    if !enabled() {
++        return None;
++    }
++    SEAL_PUBKEY.and_then(parse_seal_pubkey)
++}
++
++/// The trust list keys of an account build (HJV_TRUST_PUBKEYS), by key number.
++pub(crate) fn trust_pubkeys() -> Vec<(u32, [u8; 32])> {
++    if !enabled() {
++        return Vec::new();
++    }
++    TRUST_PUBKEYS
++        .and_then(parse_trust_pubkeys)
++        .unwrap_or_default()
++}
++
++/// Standard base64 of the 32-byte X25519 key that `hjv-api keygen seal` prints.
++pub(crate) fn parse_seal_pubkey(value: &str) -> Option<[u8; 32]> {
++    STANDARD.decode(value.trim()).ok()?.try_into().ok()
++}
++
++/// The key ID hjv-api gives a seal key (`hjv-sealed-v1.<kid>.`): its SHA-256's first 8 bytes in hex.
++pub(crate) fn seal_kid(pk: &[u8; 32]) -> String {
++    Sha256::digest(pk)[..8]
++        .iter()
++        .map(|b| format!("{b:02x}"))
++        .collect()
++}
++
++/// `<key number>:<standard base64 of an Ed25519 key>`, comma-separated (`1:…,2:…`). A malformed
++/// pair or a repeated key number makes the whole value unusable rather than half used.
++pub(crate) fn parse_trust_pubkeys(value: &str) -> Option<Vec<(u32, [u8; 32])>> {
++    let mut keys: Vec<(u32, [u8; 32])> = Vec::new();
++    for pair in value.split(',') {
++        let (kid, key) = pair.trim().split_once(':')?;
++        let kid = kid.trim().parse::<u32>().ok().filter(|kid| *kid > 0)?;
++        let key: [u8; 32] = STANDARD.decode(key.trim()).ok()?.try_into().ok()?;
++        if keys.iter().any(|(k, _)| *k == kid) {
++            return None;
++        }
++        keys.push((kid, key));
++    }
++    Some(keys)
++}
++
++/// The kinds of connection a proof names (the transcript's `kind` byte).
++pub(crate) const KIND_REMOTE: u8 = 0;
++pub(crate) const KIND_FILE: u8 = 1;
++pub(crate) const KIND_CAMERA: u8 = 2;
++pub(crate) const KIND_TERMINAL: u8 = 3;
++/// Port forwarding and RDP never go by proof: the mappings of one window share a session ID, so
++/// the PC key each of them was checked against cannot be told apart.
++pub(crate) const KIND_PORT_FORWARD: u8 = 4;
++
++/// What a trust list's `kinds` calls a kind.
++pub(crate) fn kind_name(kind: u8) -> &'static str {
++    match kind {
++        KIND_REMOTE => "remote",
++        KIND_FILE => "file",
++        KIND_CAMERA => "camera",
++        KIND_TERMINAL => "terminal",
++        _ => "port-forward",
++    }
++}
++
++/// PC: the kind of connection a LoginRequest asks for.
++pub(crate) fn kind_of_union(union: &Option<login_request::Union>) -> u8 {
++    match union {
++        None => KIND_REMOTE,
++        Some(login_request::Union::FileTransfer(_)) => KIND_FILE,
++        Some(login_request::Union::ViewCamera(_)) => KIND_CAMERA,
++        Some(login_request::Union::Terminal(_)) => KIND_TERMINAL,
++        // port forwarding, RDP, and whatever upstream adds
++        Some(_) => KIND_PORT_FORWARD,
++    }
++}
++
++/// Controller: the kind of connection a session opens.
++pub(crate) fn kind_of_conn_type(conn_type: ConnType) -> u8 {
++    match conn_type {
++        ConnType::DEFAULT_CONN => KIND_REMOTE,
++        ConnType::FILE_TRANSFER => KIND_FILE,
++        ConnType::VIEW_CAMERA => KIND_CAMERA,
++        ConnType::TERMINAL => KIND_TERMINAL,
++        _ => KIND_PORT_FORWARD,
++    }
++}
++
++fn joined(parts: &[&[u8]]) -> Vec<u8> {
++    parts.join(&0u8)
++}
++
++fn sha256_b64(data: &[u8]) -> String {
++    STANDARD.encode(Sha256::digest(data))
++}
++
++/// What a controller signs with its account key and the PC rebuilds to check it:
++///
++/// ```text
++/// "hjv-conn-v1" 0x00, u8 len(pc_id) | pc_id, pc_pk[32], nonce[32], u8 len(ctl_id) | ctl_id,
++/// u8 kind, ctl_pk[32]
++/// ```
++///
++/// `pc_pk` is the PC key this very channel was checked against (the PC: its own key), `nonce` the
++/// PC's Hash.hjv_nonce, `ctl_id` LoginRequest.my_id. None when a field does not fit.
++pub(crate) fn conn_transcript(
++    pc_id: &str,
++    pc_pk: &[u8],
++    nonce: &[u8],
++    ctl_id: &str,
++    kind: u8,
++    ctl_pk: &[u8],
++) -> Option<Vec<u8>> {
++    if pc_id.len() > 255
++        || ctl_id.len() > 255
++        || pc_pk.len() != 32
++        || nonce.len() != 32
++        || ctl_pk.len() != 32
++    {
++        return None;
++    }
++    let mut m = CONN_CONTEXT.to_vec();
++    m.push(0);
++    m.push(pc_id.len() as u8);
++    m.extend_from_slice(pc_id.as_bytes());
++    m.extend_from_slice(pc_pk);
++    m.extend_from_slice(nonce);
++    m.push(ctl_id.len() as u8);
++    m.extend_from_slice(ctl_id.as_bytes());
++    m.push(kind);
++    m.extend_from_slice(ctl_pk);
++    Some(m)
++}
++
++/// What the list key signs: `"hjv-trust-v1" NUL` and the list bytes exactly as hjv-api sent them.
++pub(crate) fn trust_message(list: &[u8]) -> Vec<u8> {
++    let mut m = TRUST_CONTEXT.to_vec();
++    m.push(0);
++    m.extend_from_slice(list);
++    m
++}
++
++/// What X-HJV-Proof signs, the parts joined by NUL bytes:
++/// `"hjv-req-v1", METHOD, path?query, t, n, base64(SHA-256(body)), base64(SHA-256(token))`.
++/// The method goes in capitals, as on the wire; `t` in decimal.
++pub(crate) fn req_message(
++    method: &str,
++    path_and_query: &str,
++    t: u64,
++    n: &str,
++    body: &[u8],
++    token: &str,
++) -> Vec<u8> {
++    let method = method.to_ascii_uppercase();
++    let t = t.to_string();
++    let (body, token) = (sha256_b64(body), sha256_b64(token.as_bytes()));
++    joined(&[
++        REQ_CONTEXT,
++        method.as_bytes(),
++        path_and_query.as_bytes(),
++        t.as_bytes(),
++        n.as_bytes(),
++        body.as_bytes(),
++        token.as_bytes(),
++    ])
++}
++
++/// What the PC's device key signs for a sync request: the relay envelope's bytes
++/// (relay/PROTOCOL.md 4.1) under the PC's own context, `"hjv-pc-v1", "sync", id, t, n,
++/// base64(SHA-256(p))` joined by NUL bytes.
++pub(crate) fn pc_sync_message(id: &str, t: u64, n: &str, p: &str) -> Vec<u8> {
++    let t = t.to_string();
++    let p = sha256_b64(p.as_bytes());
++    joined(&[
++        PC_CONTEXT,
++        b"sync",
++        id.as_bytes(),
++        t.as_bytes(),
++        n.as_bytes(),
++        p.as_bytes(),
++    ])
++}
++
++/// What a new account key signs inside the sealed login: `"hjv-ckey-v1", n, id, ck` joined by NUL
++/// bytes, with the sealed payload's own `n` and `id` and `ck` as the payload has it.
++pub(crate) fn ckey_message(n: &str, id: &str, ck: &str) -> Vec<u8> {
++    joined(&[CKEY_CONTEXT, n.as_bytes(), id.as_bytes(), ck.as_bytes()])
++}
++
++/// An account key: the Ed25519 key pair a device makes at every password login. The key stores
++/// keep its 32-byte seed. (sodiumoxide zeroes the secret key when it is dropped.)
++pub(crate) struct AccountKey(sign::SecretKey);
++
++impl AccountKey {
++    pub(crate) fn generate() -> AccountKey {
++        AccountKey(sign::gen_keypair().1)
++    }
++
++    pub(crate) fn from_seed(seed: &[u8]) -> Option<AccountKey> {
++        sign::Seed::from_slice(seed).map(|seed| AccountKey(sign::keypair_from_seed(&seed).1))
++    }
++
++    /// libsodium keeps the seed as the secret key's first half.
++    pub(crate) fn seed(&self) -> &[u8] {
++        &self.0 .0[..32]
++    }
++
++    pub(crate) fn public_key(&self) -> [u8; 32] {
++        self.0.public_key().0
++    }
++
++    pub(crate) fn sign(&self, message: &[u8]) -> [u8; 64] {
++        sign::sign_detached(message, &self.0).to_bytes()
++    }
++}
++
++/// The X-HJV-Proof value of an account request: `v1.<t>.<n>.<sig>`, `n` (16 random bytes) and
++/// `sig` in base64url without padding.
++pub(crate) fn request_proof(
++    key: &AccountKey,
++    method: &str,
++    path_and_query: &str,
++    body: &[u8],
++    token: &str,
++    t: u64,
++    n: &[u8; 16],
++) -> String {
++    let n = URL_SAFE_NO_PAD.encode(n);
++    let sig = key.sign(&req_message(method, path_and_query, t, &n, body, token));
++    format!("v1.{t}.{n}.{}", URL_SAFE_NO_PAD.encode(sig))
++}
++
++/// `ck` and `cp` of the sealed login payload, both standard base64.
++pub(crate) fn ckey_proof(key: &AccountKey, n: &str, id: &str) -> (String, String) {
++    let ck = STANDARD.encode(key.public_key());
++    let cp = STANDARD.encode(key.sign(&ckey_message(n, id, &ck)));
++    (ck, cp)
++}
++
++/// LoginRequest.hjv_key_proof. None when the transcript's fields do not fit.
++pub(crate) fn conn_proof(
++    key: &AccountKey,
++    pc_id: &str,
++    pc_pk: &[u8],
++    nonce: &[u8],
++    ctl_id: &str,
++    kind: u8,
++    key_serial: u64,
++) -> Option<HjvKeyProof> {
++    let pk = key.public_key();
++    let transcript = conn_transcript(pc_id, pc_pk, nonce, ctl_id, kind, &pk)?;
++    Some(HjvKeyProof {
++        version: 1,
++        pk: Bytes::copy_from_slice(&pk),
++        signature: Bytes::copy_from_slice(&key.sign(&transcript)),
++        key_serial,
++        ..Default::default()
++    })
++}
++
++#[derive(Serialize)]
++struct Envelope<'a> {
++    id: &'a str,
++    t: u64,
++    n: &'a str,
++    p: &'a str,
++    s: &'a str,
++}
++
++/// The body of a PC's sync request: the relay envelope `{"id","t","n","p","s"}`, `n` (16 random
++/// bytes) in base64url and `s` by the device key in standard base64.
++pub(crate) fn pc_sync_envelope(
++    device_key: &sign::SecretKey,
++    id: &str,
++    t: u64,
++    n: &[u8; 16],
++    p: &str,
++) -> String {
++    let n = URL_SAFE_NO_PAD.encode(n);
++    let s = STANDARD.encode(sign::sign_detached(
++        &pc_sync_message(id, t, &n, p),
++        device_key,
++    ));
++    // strings and a number always serialize
++    serde_json::to_string(&Envelope {
++        id,
++        t,
++        n: &n,
++        p,
++        s: &s,
++    })
++    .unwrap_or_default()
++}
++
++/// The `hjv_nonce` of this PC's Hash: 32 random bytes where this process takes same-account
++/// logins, else empty, which leaves the Hash byte-identical to 1.5.1's.
++pub(crate) fn hash_nonce() -> Bytes {
++    nonce_if(pc_capable())
++}
++
++fn nonce_if(capable: bool) -> Bytes {
++    if capable {
++        Bytes::from(randombytes::randombytes(32))
++    } else {
++        Bytes::new()
++    }
++}
++
++/// How long the PC waits before its next sync: the server's `refresh` held to
++/// MIN_REFRESH..=MAX_REFRESH, spread by up to ±20% so that PCs do not ask in step (`jitter` from
++/// 0, -20%, to u32::MAX, +20%), and held to the bounds again.
++pub(crate) fn sync_interval(refresh: u64, jitter: u32) -> Duration {
++    let base = refresh.clamp(MIN_REFRESH, MAX_REFRESH) * 1000;
++    let permille = 800 + u64::from(jitter) * 400 / u64::from(u32::MAX);
++    Duration::from_millis((base * permille / 1000).clamp(MIN_REFRESH * 1000, MAX_REFRESH * 1000))
++}
++
++/// Why the PC refused a trust list or a proof.
++#[derive(Debug, PartialEq, Eq, Clone, Copy)]
++pub(crate) enum Refusal {
++    // a sync answer's list
++    BadEncoding,
++    UnknownKid,
++    RetiredKid,
++    BadListSignature,
++    WrongPc,
++    WrongBinding,
++    NotThisRequest,
++    BadLifetime,
++    // a proof, before the list is looked at
++    NotSecured,
++    NoNonce,
++    /// port forwarding, RDP, or a kind this build does not know
++    KindNotByProof,
++    BadProofSignature,
++    // a proof, against the list
++    NoList,
++    Expired,
++    NotActive,
++    UnknownKey,
++    KindNotAllowed,
++    IdMismatch,
++    // the PC's own state, decided before the proof
++    TemporaryOnly,
++    NotBound,
++    Off,
++}
++
++impl Refusal {
++    /// Its counter in the sync report's `refused`.
++    pub(crate) fn report_name(self) -> &'static str {
++        match self {
++            Refusal::UnknownKey => "unknown_key",
++            Refusal::KindNotByProof | Refusal::KindNotAllowed => "kind",
++            Refusal::TemporaryOnly => "temporary_only",
++            Refusal::NotSecured => "not_secured",
++            Refusal::BadProofSignature | Refusal::BadEncoding => "bad_sig",
++            Refusal::NoList | Refusal::Expired => "expired",
++            Refusal::Off => "off",
++            Refusal::NotActive => "not_active",
++            Refusal::IdMismatch => "id_mismatch",
++            Refusal::NoNonce => "no_nonce",
++            Refusal::NotBound => "unbound",
++            Refusal::UnknownKid
++            | Refusal::RetiredKid
++            | Refusal::BadListSignature
++            | Refusal::WrongPc
++            | Refusal::WrongBinding
++            | Refusal::NotThisRequest
++            | Refusal::BadLifetime => "list",
++        }
++    }
++
++    /// Decided before the list was looked at: a new list cannot change it.
++    fn before_list(self) -> bool {
++        matches!(
++            self,
++            Refusal::NotSecured
++                | Refusal::NoNonce
++                | Refusal::KindNotByProof
++                | Refusal::BadEncoding
++                | Refusal::BadProofSignature
++        )
++    }
++}
++
++/// One account key in a trust list.
++#[derive(Deserialize, Debug, Clone)]
++pub(crate) struct KeyEntry {
++    pub pk: String,
++    pub id: String,
++    pub name: String,
++    pub platform: String,
++    pub kinds: Vec<String>,
++    #[serde(default)]
++    pub ks: u64,
++}
++
++/// A trust list, as signed: the account keys hjv-api lets open this PC, for one sync request.
++#[derive(Deserialize, Debug, Clone)]
++pub(crate) struct TrustList {
++    pub v: u32,
++    pub typ: String,
++    pub kid: u32,
++    pub binding: String,
++    pub pc_id: String,
++    pub pc_pk: String,
++    pub req: String,
++    pub serial: u64,
++    pub iat: u64,
++    pub exp: u64,
++    pub refresh: u64,
++    #[serde(default)]
++    pub strict: bool,
++    pub state: String,
++    #[serde(default)]
++    pub owner: String,
++    #[serde(default)]
++    pub login_at: u64,
++    pub keys: Vec<KeyEntry>,
++}
++
++/// `list` of a sync answer: the list bytes and their signature, both standard base64.
++#[derive(Deserialize, Debug, Clone)]
++pub(crate) struct SignedList {
++    pub kid: u32,
++    pub l: String,
++    pub s: String,
++}
++
++/// What the PC checks a sync answer's list against.
++pub(crate) struct Local<'a> {
++    pub pc_id: &'a str,
++    pub pc_pk: &'a [u8],
++    /// the binding ID this request carried
++    pub binding: &'a str,
++    /// this request's `n`
++    pub request_nonce: &'a str,
++    pub kid_floor: u32,
++}
++
++/// A list the PC accepted, with the time it arrived by the PC's own clock.
++#[derive(Debug, Clone)]
++pub(crate) struct Cached {
++    pub list: TrustList,
++    pub received: u64,
++}
++
++/// A proof as the PC received it, with what the PC checks it against.
++pub(crate) struct KeyLogin<'a> {
++    /// this PC's ID and public key (Config::get_key_pair().1)
++    pub pc_id: &'a str,
++    pub pc_pk: &'a [u8],
++    pub secured: bool,
++    /// the nonce this PC put in its Hash
++    pub nonce: &'a [u8],
++    pub proof: &'a HjvKeyProof,
++    /// LoginRequest.my_id
++    pub my_id: &'a str,
++    /// kind_of_union of the LoginRequest
++    pub kind: u8,
++}
++
++/// A proof the PC accepted: what its connection manager shows.
++pub(crate) struct Accepted {
++    pub name: String,
++    pub owner: String,
++}
++
++/// Checks a sync answer's list: a pinned key number not below the floor, the signature over the
++/// bytes as received (and only then their contents), this PC, the binding this request carried,
++/// this very request (`req`), a lifetime of at most MAX_LIST_TTL, and a known state. The caller
++/// stores the list with its receipt time and raises the floor to `max(floor, kid)`.
++pub(crate) fn verify_list(
++    pinned: &[(u32, [u8; 32])],
++    kid: u32,
++    list_b64: &str,
++    sig_b64: &str,
++    local: &Local,
++) -> Result<TrustList, Refusal> {
++    let bytes = STANDARD
++        .decode(list_b64)
++        .map_err(|_| Refusal::BadEncoding)?;
++    let sig = STANDARD.decode(sig_b64).map_err(|_| Refusal::BadEncoding)?;
++    let pk = pinned
++        .iter()
++        .find(|(k, _)| *k == kid)
++        .map(|(_, pk)| sign::PublicKey(*pk))
++        .ok_or(Refusal::UnknownKid)?;
++    if kid < local.kid_floor {
++        return Err(Refusal::RetiredKid);
++    }
++    let sig = sign::Signature::from_bytes(&sig).map_err(|_| Refusal::BadEncoding)?;
++    if !sign::verify_detached(&sig, &trust_message(&bytes), &pk) {
++        return Err(Refusal::BadListSignature);
++    }
++    let list: TrustList = serde_json::from_slice(&bytes).map_err(|_| Refusal::BadEncoding)?;
++    if list.v != 1 || list.typ != "hjv-trust" || list.kid != kid {
++        return Err(Refusal::BadEncoding);
++    }
++    let pc_pk = STANDARD
++        .decode(&list.pc_pk)
++        .map_err(|_| Refusal::BadEncoding)?;
++    if list.pc_id != local.pc_id || pc_pk != local.pc_pk {
++        return Err(Refusal::WrongPc);
++    }
++    if list.binding != local.binding {
++        return Err(Refusal::WrongBinding);
++    }
++    if list.req != local.request_nonce {
++        return Err(Refusal::NotThisRequest);
++    }
++    if list.exp <= list.iat || list.exp - list.iat > MAX_LIST_TTL {
++        return Err(Refusal::BadLifetime);
++    }
++    if !matches!(list.state.as_str(), "active" | "revoked" | "disabled") {
++        return Err(Refusal::BadEncoding);
++    }
++    Ok(list)
++}
++
++/// A cached list lives for its lifetime from its receipt by the PC's clock, not from its own
++/// dates, so the server's clock does not matter; a PC clock set back by more than BACKWARD_SKEW
++/// counts it as expired.
++pub(crate) fn valid_at(cached: &Cached, now: u64) -> bool {
++    let life = cached.list.exp.saturating_sub(cached.list.iat);
++    now.saturating_add(BACKWARD_SKEW) >= cached.received
++        && now < cached.received.saturating_add(life)
++}
++
++/// The PC's check of a proof: the channel and the nonce, then the signature over the transcript
++/// this PC rebuilds from its own ID, key and nonce, and only then the cached list (valid, active,
++/// the key, its kinds, the controller's ID). The binding, `Off` and the temporary-password-only
++/// setting are the caller's, before this.
++pub(crate) fn check_key_login(
++    login: &KeyLogin,
++    cached: Option<&Cached>,
++    now: u64,
++) -> Result<KeyEntry, Refusal> {
++    if !login.secured {
++        return Err(Refusal::NotSecured);
++    }
++    if login.nonce.len() != 32 {
++        return Err(Refusal::NoNonce);
++    }
++    if login.kind > KIND_TERMINAL {
++        return Err(Refusal::KindNotByProof);
++    }
++    let proof = login.proof;
++    if proof.version != 1 {
++        return Err(Refusal::BadEncoding);
++    }
++    let pk = sign::PublicKey::from_slice(&proof.pk).ok_or(Refusal::BadEncoding)?;
++    let sig = sign::Signature::from_bytes(&proof.signature).map_err(|_| Refusal::BadEncoding)?;
++    let transcript = conn_transcript(
++        login.pc_id,
++        login.pc_pk,
++        login.nonce,
++        login.my_id,
++        login.kind,
++        &proof.pk,
++    )
++    .ok_or(Refusal::BadEncoding)?;
++    if !sign::verify_detached(&sig, &transcript, &pk) {
++        return Err(Refusal::BadProofSignature);
++    }
++    let cached = cached.ok_or(Refusal::NoList)?;
++    if !valid_at(cached, now) {
++        return Err(Refusal::Expired);
++    }
++    if cached.list.state != "active" {
++        return Err(Refusal::NotActive);
++    }
++    let entry = cached
++        .list
++        .keys
++        .iter()
++        .find(|k| STANDARD.decode(&k.pk).ok().as_deref() == Some(&proof.pk[..]))
++        .ok_or(Refusal::UnknownKey)?;
++    if !entry.kinds.iter().any(|k| k == kind_name(login.kind)) {
++        return Err(Refusal::KindNotAllowed);
++    }
++    if entry.id != login.my_id {
++        return Err(Refusal::IdMismatch);
++    }
++    Ok(entry.clone())
++}
++
++/// Whether one immediate sync could change what `check_key_login` said: no list or an expired
++/// one, a key newer than the list (`key_serial`, the proof's hint), or a list that wants a sync
++/// for every proof (`strict`). A proof refused before the list was looked at never asks, so a
++/// replayed or broken proof, or one signed for another PC, cannot make the PC call hjv-api. A
++/// sender's own new key can; the caller runs one sync at a time and none within 10 s of the last.
++pub(crate) fn should_refresh_for(
++    outcome: &Result<KeyEntry, Refusal>,
++    cached: Option<&Cached>,
++    now: u64,
++    key_serial: u64,
++) -> bool {
++    if matches!(outcome, Err(r) if r.before_list()) {
++        return false;
++    }
++    match cached {
++        None => true,
++        Some(c) => {
++            !valid_at(c, now)
++                || c.list.strict
++                || (matches!(outcome, Err(Refusal::UnknownKey)) && key_serial > c.list.serial)
++        }
++    }
++}
++
++/// One line of the sync report's `used`: the proofs this PC accepted from one account key on one
++/// UTC day, `last` the latest of them by the PC's clock and `n` that day's running count (not the
++/// increase since the last report), so the server can merge reports by taking the larger values.
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
++pub(crate) struct UseEntry {
++    pub pk: String,
++    pub day: String,
++    pub last: u64,
++    pub n: u64,
++}
++
++/// The UTC day of a Unix time, `YYYY-MM-DD`.
++pub(crate) fn utc_day(t: u64) -> String {
++    i64::try_from(t)
++        .ok()
++        .and_then(|t| chrono::DateTime::<chrono::Utc>::from_timestamp(t, 0))
++        .map(|d| d.format("%Y-%m-%d").to_string())
++        .unwrap_or_default()
++}
++
++/// Counts a proof of `pk` (standard base64) accepted at `at`.
++pub(crate) fn count_use(entries: &mut Vec<UseEntry>, pk: &str, at: u64) {
++    let day = utc_day(at);
++    match entries.iter_mut().find(|e| e.pk == pk && e.day == day) {
++        Some(e) => {
++            e.last = e.last.max(at);
++            e.n += 1;
++        }
++        None => entries.push(UseEntry {
++            pk: pk.to_owned(),
++            day,
++            last: at,
++            n: 1,
++        }),
++    }
++}
++
++/// What a sync reports and the PC keeps: today's and yesterday's lines (UTC), so that a day's
++/// count reaches the server in full after midnight.
++pub(crate) fn used_report(entries: &[UseEntry], now: u64) -> Vec<UseEntry> {
++    let days = [utc_day(now), utc_day(now.saturating_sub(86_400))];
++    entries
++        .iter()
++        .filter(|e| days.contains(&e.day))
++        .cloned()
++        .collect()
++}
++
++/// Phones never take same-account logins: the PC side's names, doing nothing.
++#[cfg(any(target_os = "android", target_os = "ios"))]
++mod pc {
++    use super::{Accepted, Refusal};
++    use base::message_proto::HjvKeyProof;
++
++    pub(crate) fn pc_capable() -> bool {
++        false
++    }
++
++    pub(crate) fn start_pc_sync() {}
++
++    pub(crate) async fn key_login(
++        _secured: bool,
++        _nonce: &[u8],
++        _proof: &HjvKeyProof,
++        _my_id: &str,
++        _kind: u8,
++    ) -> Result<Accepted, Refusal> {
++        Err(Refusal::NotBound)
++    }
++
++    pub(crate) async fn refresh_now() -> bool {
++        false
++    }
++
++    pub(crate) fn forget_pc_binding() {}
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
+new file mode 100644
+index 0000000..ed81885
+--- /dev/null
++++ b/src/hjviewer_account/pc.rs
+@@ -0,0 +1,41 @@
++//! The controlled PC: the service's sync with hjv-api, the binding it keeps (HKLM on Windows, a
++//! 0600 file in the service's config folder elsewhere), and its check of a proof against the
++//! cached trust list. Desktop only; phones get the same names from mod.rs, doing nothing.
++//!
++//! The names and types the hooks call; the sync and the binding come with the PC's patch.
++
++use super::{enabled, Accepted, Refusal};
++use base::message_proto::HjvKeyProof;
++
++/// Whether this process sends a nonce and takes proofs: an account build's service process
++/// (`--server`) of an installed HJViewer.
++pub(crate) fn pc_capable() -> bool {
++    enabled() && crate::is_server() && crate::platform::is_installed()
++}
++
++/// Starts the sync task once, in the service process next to hbbs_http::sync::start(); nothing
++/// unless `pc_capable()`.
++pub(crate) fn start_pc_sync() {}
++
++/// A proof this PC received (`secured`: the session's channel; `nonce`: the PC's own Hash nonce):
++/// the binding and `Off`, then `check_key_login` against the cached list with at most one
++/// immediate sync.
++pub(crate) async fn key_login(
++    _secured: bool,
++    _nonce: &[u8],
++    _proof: &HjvKeyProof,
++    _my_id: &str,
++    _kind: u8,
++) -> Result<Accepted, Refusal> {
++    Err(Refusal::NotBound)
++}
++
++/// One sync now, for a proof the cached list cannot decide: one at a time (later callers wait for
++/// its result), none within 10 s of the last one. Whether a list came.
++pub(crate) async fn refresh_now() -> bool {
++    false
++}
++
++/// `--uninstall`: forgets this PC's binding, so that a reinstalled PC takes no proof until someone
++/// logs in on it again.
++pub(crate) fn forget_pc_binding() {}
+diff --git a/src/hjviewer_account/tests.rs b/src/hjviewer_account/tests.rs
+new file mode 100644
+index 0000000..4d4d931
+--- /dev/null
++++ b/src/hjviewer_account/tests.rs
+@@ -0,0 +1,697 @@
++//! The PC's list and proof rules (the five cases of the design's trust-v3 check, now with the
++//! signature checked first), the sync interval, the builds without the feature, and the wire
++//! format against a 1.5.1 parser.
++
++use super::{vectors::*, *};
++use base::message_proto::{
++    FileTransfer, Hash, LoginRequest, Message, PortForward, Terminal, ViewCamera,
++};
++use hbb_common::protobuf::{
++    reflect::{FileDescriptor, ReflectValueBox},
++    Message as _, MessageField,
++};
++
++const NOW: u64 = 1_760_000_000;
++
++fn list_key(seed: u8) -> sign::SecretKey {
++    device_key(&[seed; 32])
++}
++
++fn pinned() -> Vec<(u32, [u8; 32])> {
++    vec![
++        (1, list_key(1).public_key().0),
++        (2, list_key(9).public_key().0),
++    ]
++}
++
++fn pc() -> (sign::PublicKey, sign::SecretKey) {
++    sign::keypair_from_seed(&sign::Seed([2; 32]))
++}
++
++fn owner() -> AccountKey {
++    AccountKey::from_seed(&[3; 32]).unwrap()
++}
++
++/// A list as hjv-api signs it, for the vector PC and binding.
++#[allow(clippy::too_many_arguments)]
++fn list(
++    key: &sign::SecretKey,
++    kid: u32,
++    req: &str,
++    serial: u64,
++    iat: u64,
++    exp: u64,
++    state: &str,
++    ctl_pk: &[u8],
++) -> (u32, String, String) {
++    let l = serde_json::json!({
++        "v": 1, "typ": "hjv-trust", "kid": kid, "binding": BINDING,
++        "pc_id": PC_ID, "pc_pk": STANDARD.encode(pc().0 .0), "req": req, "serial": serial,
++        "iat": iat, "exp": exp, "refresh": 120, "strict": false, "state": state,
++        "owner": "홍*동", "login_at": iat - 50,
++        "keys": [{"pk": STANDARD.encode(ctl_pk), "id": CTL_ID, "name": "iPhone", "platform": "ios",
++                  "kinds": ["remote", "file", "camera"], "ks": 10}]
++    });
++    let bytes = serde_json::to_vec(&l).unwrap();
++    let sig = sign::sign_detached(&trust_message(&bytes), key);
++    (
++        kid,
++        STANDARD.encode(&bytes),
++        STANDARD.encode(sig.to_bytes()),
++    )
++}
++
++fn local_for<'a>(pc_pk: &'a [u8], req: &'a str, kid_floor: u32) -> Local<'a> {
++    Local {
++        pc_id: PC_ID,
++        pc_pk,
++        binding: BINDING,
++        request_nonce: req,
++        kid_floor,
++    }
++}
++
++#[test]
++fn poison_list_without_end_is_refused() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pk = pc().0;
++    let attacker = sign::keypair_from_seed(&sign::Seed([66; 32])).0;
++    // the security review's first poison: serial u64::MAX - 1, exp u64::MAX
++    let (kid, l, s) = list(
++        &list_key(1),
++        1,
++        "n1",
++        u64::MAX - 1,
++        NOW,
++        u64::MAX,
++        "active",
++        &attacker.0,
++    );
++    let r = verify_list(&pinned(), kid, &l, &s, &local_for(&pk.0, "n1", 1));
++    assert_eq!(r.unwrap_err(), Refusal::BadLifetime);
++}
++
++#[test]
++fn poison_future_list_is_bounded_and_does_not_block_recovery() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pk = pc().0;
++    let attacker = sign::keypair_from_seed(&sign::Seed([66; 32])).0;
++    // the second poison, as a list: ten years ahead, a huge serial, the longest lifetime allowed
++    let future = NOW + 10 * 365 * 86_400;
++    let (kid, l, s) = list(
++        &list_key(1),
++        1,
++        "n1",
++        u64::MAX - 1,
++        future,
++        future + MAX_LIST_TTL,
++        "active",
++        &attacker.0,
++    );
++    let poisoned =
++        verify_list(&pinned(), kid, &l, &s, &local_for(&pk.0, "n1", 1)).expect("accepted once");
++    let cached = Cached {
++        list: poisoned,
++        received: NOW,
++    };
++    // it lives from its receipt on the PC's clock, not from its own dates
++    assert!(valid_at(&cached, NOW + MAX_LIST_TTL - 1));
++    assert!(!valid_at(&cached, NOW + MAX_LIST_TTL));
++    // recovery: the clean server signs with key 2 and a normal serial; nothing refuses it
++    let (kid2, l2, s2) = list(
++        &list_key(9),
++        2,
++        "n2",
++        5_000,
++        NOW + 3_600,
++        NOW + 3_600 + 86_400,
++        "active",
++        &owner().public_key(),
++    );
++    assert_eq!(
++        verify_list(&pinned(), kid2, &l2, &s2, &local_for(&pk.0, "n2", 1))
++            .unwrap()
++            .serial,
++        5_000
++    );
++    // and once key 2 arrived, key 1 is retired
++    let (kid1, l1, s1) = list(
++        &list_key(1),
++        1,
++        "n3",
++        6_000,
++        NOW + 7_200,
++        NOW + 7_200 + 86_400,
++        "active",
++        &attacker.0,
++    );
++    assert_eq!(
++        verify_list(&pinned(), kid1, &l1, &s1, &local_for(&pk.0, "n3", 2)).unwrap_err(),
++        Refusal::RetiredKid
++    );
++}
++
++#[test]
++fn a_list_answers_one_request_only() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pk = pc().0;
++    let (kid, l, s) = list(
++        &list_key(1),
++        1,
++        "old-nonce",
++        10,
++        NOW,
++        NOW + 86_400,
++        "active",
++        &owner().public_key(),
++    );
++    // an old, validly signed list replayed into a later sync
++    assert_eq!(
++        verify_list(&pinned(), kid, &l, &s, &local_for(&pk.0, "new-nonce", 1)).unwrap_err(),
++        Refusal::NotThisRequest
++    );
++    // a list for another PC, another binding, a tampered list, an unknown key number
++    let other_pc = sign::keypair_from_seed(&sign::Seed([7; 32])).0;
++    assert_eq!(
++        verify_list(
++            &pinned(),
++            kid,
++            &l,
++            &s,
++            &local_for(&other_pc.0, "old-nonce", 1)
++        )
++        .unwrap_err(),
++        Refusal::WrongPc
++    );
++    let wrong_binding = Local {
++        binding: "00",
++        ..local_for(&pk.0, "old-nonce", 1)
++    };
++    assert_eq!(
++        verify_list(&pinned(), kid, &l, &s, &wrong_binding).unwrap_err(),
++        Refusal::WrongBinding
++    );
++    let mut tampered = STANDARD.decode(&l).unwrap();
++    let last = tampered.len() - 2;
++    tampered[last] ^= 1;
++    assert_eq!(
++        verify_list(
++            &pinned(),
++            kid,
++            &STANDARD.encode(tampered),
++            &s,
++            &local_for(&pk.0, "old-nonce", 1)
++        )
++        .unwrap_err(),
++        Refusal::BadListSignature
++    );
++    assert_eq!(
++        verify_list(&pinned(), 3, &l, &s, &local_for(&pk.0, "old-nonce", 1)).unwrap_err(),
++        Refusal::UnknownKid
++    );
++}
++
++#[test]
++fn receipt_time_and_clock_jumps() {
++    let _ = hbb_common::sodiumoxide::init();
++    let pk = pc().0;
++    // the server's dates are a day off from the PC's clock: irrelevant
++    let (kid, l, s) = list(
++        &list_key(1),
++        1,
++        "n",
++        10,
++        NOW + 86_400,
++        NOW + 2 * 86_400,
++        "active",
++        &owner().public_key(),
++    );
++    let cached = Cached {
++        list: verify_list(&pinned(), kid, &l, &s, &local_for(&pk.0, "n", 1)).unwrap(),
++        received: NOW,
++    };
++    assert!(valid_at(&cached, NOW + 1));
++    assert!(valid_at(&cached, NOW + 86_399));
++    assert!(!valid_at(&cached, NOW + 86_400));
++    // the PC clock jumped back by more than the skew (a CMOS reset): expired
++    assert!(valid_at(&cached, NOW - BACKWARD_SKEW));
++    assert!(!valid_at(&cached, NOW - BACKWARD_SKEW - 1));
++}
++
++struct Proofs {
++    pc_pk: Vec<u8>,
++    nonce: [u8; 32],
++    cached: Cached,
++}
++
++impl Proofs {
++    fn new() -> Proofs {
++        let pc_pk = pc().0 .0.to_vec();
++        let (kid, l, s) = list(
++            &list_key(1),
++            1,
++            "n",
++            10,
++            NOW,
++            NOW + 86_400,
++            "active",
++            &owner().public_key(),
++        );
++        let cached = Cached {
++            list: verify_list(&pinned(), kid, &l, &s, &local_for(&pc_pk, "n", 1)).unwrap(),
++            received: NOW,
++        };
++        Proofs {
++            pc_pk,
++            nonce: [5; 32],
++            cached,
++        }
++    }
++
++    fn proof(&self, key: &AccountKey, signed_pc_pk: &[u8], kind: u8, id: &str) -> HjvKeyProof {
++        conn_proof(key, PC_ID, signed_pc_pk, &self.nonce, id, kind, 10).unwrap()
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    fn check(
++        &self,
++        proof: &HjvKeyProof,
++        secured: bool,
++        nonce: &[u8],
++        my_id: &str,
++        kind: u8,
++        cached: Option<&Cached>,
++        now: u64,
++    ) -> Result<KeyEntry, Refusal> {
++        let login = KeyLogin {
++            pc_id: PC_ID,
++            pc_pk: &self.pc_pk,
++            secured,
++            nonce,
++            proof,
++            my_id,
++            kind,
++        };
++        check_key_login(&login, cached, now)
++    }
++}
++
++#[test]
++fn proofs() {
++    let _ = hbb_common::sodiumoxide::init();
++    let p = Proofs::new();
++    let at = NOW + 60;
++    let c = Some(&p.cached);
++    let ok = p.proof(&owner(), &p.pc_pk, KIND_REMOTE, CTL_ID);
++    assert_eq!(
++        p.check(&ok, true, &p.nonce, CTL_ID, KIND_REMOTE, c, at)
++            .unwrap()
++            .id,
++        CTL_ID
++    );
++    // not secured, no nonce (a 1.5.x PC), another nonce (a replay)
++    assert_eq!(
++        p.check(&ok, false, &p.nonce, CTL_ID, KIND_REMOTE, c, at)
++            .unwrap_err(),
++        Refusal::NotSecured
++    );
++    assert_eq!(
++        p.check(&ok, true, &[], CTL_ID, KIND_REMOTE, c, at)
++            .unwrap_err(),
++        Refusal::NoNonce
++    );
++    assert_eq!(
++        p.check(&ok, true, &[6; 32], CTL_ID, KIND_REMOTE, c, at)
++            .unwrap_err(),
++        Refusal::BadProofSignature
++    );
++    // signed for an impostor's key (hbbs's key stolen, the session relayed to the real PC)
++    let impostor = sign::keypair_from_seed(&sign::Seed([8; 32])).0;
++    let relayed = p.proof(&owner(), &impostor.0, KIND_REMOTE, CTL_ID);
++    assert_eq!(
++        p.check(&relayed, true, &p.nonce, CTL_ID, KIND_REMOTE, c, at)
++            .unwrap_err(),
++        Refusal::BadProofSignature
++    );
++    // a file transfer's proof used for the remote screen
++    let as_file = p.proof(&owner(), &p.pc_pk, KIND_FILE, CTL_ID);
++    assert_eq!(
++        p.check(&as_file, true, &p.nonce, CTL_ID, KIND_REMOTE, c, at)
++            .unwrap_err(),
++        Refusal::BadProofSignature
++    );
++    // a listed key under another device's ID, signed for that ID
++    let borrowed = p.proof(&owner(), &p.pc_pk, KIND_REMOTE, "111111111");
++    assert_eq!(
++        p.check(&borrowed, true, &p.nonce, "111111111", KIND_REMOTE, c, at)
++            .unwrap_err(),
++        Refusal::IdMismatch
++    );
++    // port forwarding never by proof; the terminal only where the list's kinds have it
++    let forward = p.proof(&owner(), &p.pc_pk, KIND_PORT_FORWARD, CTL_ID);
++    assert_eq!(
++        p.check(&forward, true, &p.nonce, CTL_ID, KIND_PORT_FORWARD, c, at)
++            .unwrap_err(),
++        Refusal::KindNotByProof
++    );
++    let terminal = p.proof(&owner(), &p.pc_pk, KIND_TERMINAL, CTL_ID);
++    assert_eq!(
++        p.check(&terminal, true, &p.nonce, CTL_ID, KIND_TERMINAL, c, at)
++            .unwrap_err(),
++        Refusal::KindNotAllowed
++    );
++    // a key the list does not have
++    let stranger = AccountKey::from_seed(&[4; 32]).unwrap();
++    let unknown = p.proof(&stranger, &p.pc_pk, KIND_REMOTE, CTL_ID);
++    assert_eq!(
++        p.check(&unknown, true, &p.nonce, CTL_ID, KIND_REMOTE, c, at)
++            .unwrap_err(),
++        Refusal::UnknownKey
++    );
++    // a proof under C's prototype string (hjv-login-v1, which api/ uses for logins) does not count
++    let mut old = b"hjv-login-v1\0".to_vec();
++    let transcript = conn_transcript(
++        PC_ID,
++        &p.pc_pk,
++        &p.nonce,
++        CTL_ID,
++        KIND_REMOTE,
++        &owner().public_key(),
++    )
++    .unwrap();
++    old.extend_from_slice(&transcript[CONN_CONTEXT.len() + 1..]);
++    let old_proof = HjvKeyProof {
++        signature: owner().sign(&old).to_vec().into(),
++        ..ok.clone()
++    };
++    assert_eq!(
++        p.check(&old_proof, true, &p.nonce, CTL_ID, KIND_REMOTE, c, at)
++            .unwrap_err(),
++        Refusal::BadProofSignature
++    );
++    // an expired list or none refuses even a good proof, which then asks for a sync
++    let expired = p.check(&ok, true, &p.nonce, CTL_ID, KIND_REMOTE, c, NOW + 86_400);
++    assert_eq!(expired.clone().unwrap_err(), Refusal::Expired);
++    assert!(should_refresh_for(&expired, c, NOW + 86_400, 10));
++    let none = p.check(&ok, true, &p.nonce, CTL_ID, KIND_REMOTE, None, at);
++    assert_eq!(none.clone().unwrap_err(), Refusal::NoList);
++    assert!(should_refresh_for(&none, None, at, 0));
++    // an unknown key asks for a sync only when it is newer than the list
++    let unknown = p.check(&unknown, true, &p.nonce, CTL_ID, KIND_REMOTE, c, at);
++    assert!(should_refresh_for(&unknown, c, at, 11));
++    assert!(!should_refresh_for(&unknown, c, at, 10));
++    // an accepted proof does not, unless the list is strict
++    let accepted = p.check(&ok, true, &p.nonce, CTL_ID, KIND_REMOTE, c, at);
++    assert!(!should_refresh_for(&accepted, c, at, 11));
++    let mut strict = p.cached.clone();
++    strict.list.strict = true;
++    assert!(should_refresh_for(&accepted, Some(&strict), at, 0));
++}
++
++#[test]
++fn a_bad_signature_never_asks_for_a_sync() {
++    let _ = hbb_common::sodiumoxide::init();
++    let p = Proofs::new();
++    // a key nobody listed, signing for another PC: no list, an expired list, a strict list, a
++    // serial far ahead would each ask for a sync for a good signature
++    let forger = AccountKey::from_seed(&[66; 32]).unwrap();
++    let other_pc = sign::keypair_from_seed(&sign::Seed([7; 32])).0;
++    let forged = p.proof(&forger, &other_pc.0, KIND_REMOTE, CTL_ID);
++    let mut strict = p.cached.clone();
++    strict.list.strict = true;
++    for (cached, now) in [
++        (None, NOW),
++        (Some(&p.cached), NOW + 86_400),
++        (Some(&strict), NOW + 60),
++    ] {
++        let outcome = p.check(&forged, true, &p.nonce, CTL_ID, KIND_REMOTE, cached, now);
++        assert_eq!(outcome.clone().unwrap_err(), Refusal::BadProofSignature);
++        assert!(!should_refresh_for(&outcome, cached, now, u64::MAX));
++    }
++    // nor a proof on an unsecured channel, without a nonce, or with garbage for a key
++    let ok = p.proof(&owner(), &p.pc_pk, KIND_REMOTE, CTL_ID);
++    let garbage = HjvKeyProof {
++        pk: vec![1; 31].into(),
++        ..ok.clone()
++    };
++    for outcome in [
++        p.check(&ok, false, &p.nonce, CTL_ID, KIND_REMOTE, None, NOW),
++        p.check(&ok, true, &[], CTL_ID, KIND_REMOTE, None, NOW),
++        p.check(&garbage, true, &p.nonce, CTL_ID, KIND_REMOTE, None, NOW),
++    ] {
++        assert!(!should_refresh_for(&outcome, None, NOW, u64::MAX));
++    }
++}
++
++#[test]
++fn sync_interval_stays_within_bounds() {
++    for refresh in [0, 1, 3600, u64::MAX] {
++        for jitter in [0, u32::MAX / 2, u32::MAX] {
++            let wait = sync_interval(refresh, jitter);
++            assert!(
++                wait >= Duration::from_secs(MIN_REFRESH)
++                    && wait <= Duration::from_secs(MAX_REFRESH),
++                "{refresh} {jitter} {wait:?}"
++            );
++        }
++    }
++    // the usual 120 s spreads over 96..=144 s
++    assert_eq!(sync_interval(120, 0), Duration::from_secs(96));
++    assert_eq!(sync_interval(120, u32::MAX), Duration::from_secs(144));
++}
++
++#[test]
++fn build_variables() {
++    let pinned = parse_trust_pubkeys(&format!(" 1: {LIST_1_PK} ,2:{LIST_2_PK}")).unwrap();
++    assert_eq!(pinned.iter().map(|(k, _)| *k).collect::<Vec<_>>(), [1, 2]);
++    for bad in [
++        String::new(),
++        "1:".to_owned(),
++        format!("x:{LIST_1_PK}"),
++        format!("0:{LIST_1_PK}"),
++        format!("1:{LIST_1_PK},1:{LIST_2_PK}"),
++        format!("1:{LIST_1_PK},"),
++        format!("1:{}", &LIST_1_PK[4..]),
++    ] {
++        assert!(parse_trust_pubkeys(&bad).is_none(), "{bad}");
++    }
++    assert!(parse_seal_pubkey(SEAL_PK).is_some());
++    assert!(parse_seal_pubkey(LIST_1_PK).is_some());
++    assert!(parse_seal_pubkey("AAAA").is_none());
++}
++
++/// message.proto as 1.5.1 had it: without HjvKeyProof and the fields from 1000 up.
++fn proto_1_5_1() -> FileDescriptor {
++    let mut file = base::message_proto::file_descriptor().proto().clone();
++    file.message_type.retain(|m| m.name() != "HjvKeyProof");
++    for m in file.message_type.iter_mut() {
++        m.field.retain(|f| f.number() < 1000);
++    }
++    FileDescriptor::new_dynamic(file, &[]).unwrap()
++}
++
++fn hash_1_5_1(salt: &str, challenge: &str) -> Vec<u8> {
++    let hash = proto_1_5_1()
++        .message_by_package_relative_name("Hash")
++        .unwrap();
++    let mut m = hash.new_instance();
++    for (field, value) in [("salt", salt), ("challenge", challenge)] {
++        hash.field_by_name(field)
++            .unwrap()
++            .set_singular_field(&mut *m, ReflectValueBox::String(value.to_owned()));
++    }
++    m.write_to_bytes_dyn().unwrap()
++}
++
++#[test]
++fn without_one_build_variable_the_hash_is_1_5_1s() {
++    let _ = hbb_common::sodiumoxide::init();
++    let (seal, trust) = (Some(SEAL_PK), Some(HJV_TRUST_PUBKEYS));
++    for (pinned, seal, trust) in [
++        (false, seal, trust),
++        (true, None, trust),
++        (true, seal, None),
++        (true, Some(""), trust),
++        (true, seal, Some("")),
++    ] {
++        let capable = account_build(pinned, seal, trust);
++        assert!(!capable);
++        let hash = Hash {
++            salt: "saltsalt".into(),
++            challenge: "abc234".into(),
++            hjv_nonce: nonce_if(capable),
++            ..Default::default()
++        };
++        assert!(hash.hjv_nonce.is_empty());
++        assert_eq!(
++            hash.write_to_bytes().unwrap(),
++            hash_1_5_1("saltsalt", "abc234")
++        );
++    }
++    // and that is what 1.5.1 itself sends, not only this build's Hash without its new field
++    assert_eq!(
++        hex::encode(hash_1_5_1("saltsalt", "abc234")),
++        "0a0873616c7473616c741206616263323334"
++    );
++    // with all three, a capable PC's nonce is 32 new bytes
++    assert!(account_build(true, seal, trust));
++    let (a, b) = (nonce_if(true), nonce_if(true));
++    assert_eq!((a.len(), b.len()), (32, 32));
++    assert_ne!(a, b);
++}
++
++#[test]
++fn a_1_5_1_parser_reads_the_new_messages() {
++    let _ = hbb_common::sodiumoxide::init();
++    let old = proto_1_5_1();
++    let old_message = old.message_by_package_relative_name("Message").unwrap();
++    let old_lr = old
++        .message_by_package_relative_name("LoginRequest")
++        .unwrap();
++    let old_hash = old.message_by_package_relative_name("Hash").unwrap();
++
++    // a 1.6.0 controller's login with a proof and a remembered password, at a 1.5.1 PC
++    let pc_pk = pk_bytes(PC_PK);
++    let proof = conn_proof(
++        &owner(),
++        PC_ID,
++        &pc_pk,
++        &CONN_NONCE,
++        CTL_ID,
++        KIND_FILE,
++        CONN_KEY_SERIAL,
++    )
++    .unwrap();
++    let mut lr = LoginRequest {
++        username: PC_ID.into(),
++        password: vec![7; 32].into(),
++        my_id: CTL_ID.into(),
++        my_name: "Hong".into(),
++        session_id: 42,
++        version: "1.6.0".into(),
++        hjv_key_proof: MessageField::some(proof),
++        ..Default::default()
++    };
++    lr.set_file_transfer(FileTransfer {
++        dir: "C:\\".into(),
++        ..Default::default()
++    });
++    let mut msg = Message::new();
++    msg.set_login_request(lr);
++    let parsed = old_message
++        .parse_from_bytes(&msg.write_to_bytes().unwrap())
++        .unwrap();
++    let parsed = old_message
++        .field_by_name("login_request")
++        .unwrap()
++        .get_singular_field_or_default(&*parsed)
++        .to_message()
++        .unwrap();
++    let field = |name: &str| old_lr.field_by_name(name).unwrap();
++    assert_eq!(
++        field("username")
++            .get_singular_field_or_default(&*parsed)
++            .to_str(),
++        Some(PC_ID)
++    );
++    assert_eq!(
++        field("my_id")
++            .get_singular_field_or_default(&*parsed)
++            .to_str(),
++        Some(CTL_ID)
++    );
++    assert_eq!(
++        field("password")
++            .get_singular_field_or_default(&*parsed)
++            .to_bytes(),
++        Some(&[7u8; 32][..])
++    );
++    assert_eq!(
++        field("session_id")
++            .get_singular_field_or_default(&*parsed)
++            .to_u64(),
++        Some(42)
++    );
++    assert!(field("file_transfer").has_field(&*parsed));
++    // the proof stays an unknown field it does not act on
++    assert!(parsed
++        .special_fields_dyn()
++        .unknown_fields()
++        .get(1001)
++        .is_some());
++
++    // a 1.6.0 PC's Hash with its nonce, at a 1.5.1 controller
++    let hash = Hash {
++        salt: "saltsalt".into(),
++        challenge: "abc234".into(),
++        hjv_nonce: vec![9; 32].into(),
++        ..Default::default()
++    };
++    let parsed = old_hash
++        .parse_from_bytes(&hash.write_to_bytes().unwrap())
++        .unwrap();
++    let field = |name: &str| old_hash.field_by_name(name).unwrap();
++    assert_eq!(
++        field("salt")
++            .get_singular_field_or_default(&*parsed)
++            .to_str(),
++        Some("saltsalt")
++    );
++    assert_eq!(
++        field("challenge")
++            .get_singular_field_or_default(&*parsed)
++            .to_str(),
++        Some("abc234")
++    );
++
++    // and a 1.5.1 controller's login at a 1.6.0 PC carries no proof
++    let mut old_login = old_lr.new_instance();
++    old_lr
++        .field_by_name("username")
++        .unwrap()
++        .set_singular_field(&mut *old_login, ReflectValueBox::String(PC_ID.into()));
++    old_lr
++        .field_by_name("password")
++        .unwrap()
++        .set_singular_field(&mut *old_login, ReflectValueBox::Bytes(vec![7; 32]));
++    let lr = LoginRequest::parse_from_bytes(&old_login.write_to_bytes_dyn().unwrap()).unwrap();
++    assert!(lr.hjv_key_proof.is_none());
++    assert_eq!(lr.password.len(), 32);
++}
++
++#[test]
++fn both_sides_name_a_connection_alike() {
++    // the union create_login_msg sets for each ConnType, and the list's name of the kind
++    let cases: [(ConnType, Option<login_request::Union>, &str); 6] = [
++        (ConnType::DEFAULT_CONN, None, "remote"),
++        (
++            ConnType::FILE_TRANSFER,
++            Some(login_request::Union::FileTransfer(FileTransfer::new())),
++            "file",
++        ),
++        (
++            ConnType::VIEW_CAMERA,
++            Some(login_request::Union::ViewCamera(ViewCamera::new())),
++            "camera",
++        ),
++        (
++            ConnType::TERMINAL,
++            Some(login_request::Union::Terminal(Terminal::new())),
++            "terminal",
++        ),
++        (
++            ConnType::PORT_FORWARD,
++            Some(login_request::Union::PortForward(PortForward::new())),
++            "port-forward",
++        ),
++        (
++            ConnType::RDP,
++            Some(login_request::Union::PortForward(PortForward::new())),
++            "port-forward",
++        ),
++    ];
++    for (conn_type, union, name) in cases {
++        assert_eq!(kind_of_conn_type(conn_type), kind_of_union(&union));
++        assert_eq!(kind_name(kind_of_union(&union)), name);
++    }
++}
+diff --git a/src/hjviewer_account/vectors.rs b/src/hjviewer_account/vectors.rs
+new file mode 100644
+index 0000000..7e663c6
+--- /dev/null
++++ b/src/hjviewer_account/vectors.rs
+@@ -0,0 +1,427 @@
++//! Test vectors shared with hjv-api: fixed seeds and inputs, and the exact bytes and signatures
++//! they give. The expected values were computed with ed25519-dalek from the byte layouts alone;
++//! the tests below reproduce them with this module's code on libsodium. hjv-api's tests check the
++//! same values with ed25519-dalek from the JSON copy that `json()` renders (hjviewer repository:
++//! server/api/tests/data/v3-vectors.json), whose SHA-256 is JSON_SHA256.
++//!
++//! The private keys here are public test values: never use them for anything else.
++
++use super::*;
++use hbb_common::protobuf::Message as _;
++
++/// hjv-api's list keys 1 and 2.
++pub(crate) const LIST_1_SEED: [u8; 32] = [1; 32];
++pub(crate) const LIST_1_PK: &str = "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=";
++pub(crate) const LIST_2_SEED: [u8; 32] = [9; 32];
++pub(crate) const LIST_2_PK: &str = "/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=";
++/// HJV_TRUST_PUBKEYS of a build pinned to both.
++pub(crate) const HJV_TRUST_PUBKEYS: &str =
++    "1:iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=,2:/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=";
++/// The PC's device key (Config::get_key_pair).
++pub(crate) const PC_SEED: [u8; 32] = [2; 32];
++pub(crate) const PC_PK: &str = "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=";
++/// The controller's account key.
++pub(crate) const ACCOUNT_SEED: [u8; 32] = [3; 32];
++pub(crate) const ACCOUNT_PK: &str = "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=";
++/// HJV_LOGIN_SEAL_PUBKEY: the seal test key of server/api/src/seal.rs, and the key ID hjv-api
++/// gives it.
++pub(crate) const SEAL_PK: &str = "SjgH0GTQdxgcwHCYnnaJHSDcpVWVSNwsd8GlAnOIKzg=";
++pub(crate) const SEAL_KID: &str = "d9d90fbd70563cc4";
++
++pub(crate) const PC_ID: &str = "123456789";
++pub(crate) const CTL_ID: &str = "987654321";
++pub(crate) const BINDING: &str = "b0f1e2d3c4b5a69788796a5b4c3d2e1f";
++pub(crate) const T: u64 = 1_760_000_000;
++
++/// The sync request's `n` (bytes 0x10..=0x1f), which the list answers in `req`.
++pub(crate) const SYNC_N_BYTES: [u8; 16] = [
++    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
++];
++pub(crate) const SYNC_N: &str = "EBESExQVFhcYGRobHB0eHw";
++
++/// A trust list signed with list key 1: valid for a day from 2025-10-09 08:53:21 UTC.
++pub(crate) const LIST: &str = r#"{"v":1,"typ":"hjv-trust","kid":1,"binding":"b0f1e2d3c4b5a69788796a5b4c3d2e1f","pc_id":"123456789","pc_pk":"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=","req":"EBESExQVFhcYGRobHB0eHw","serial":4182,"iat":1760000001,"exp":1760086401,"refresh":120,"strict":false,"state":"active","owner":"홍*동","login_at":1759999950,"keys":[{"pk":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","id":"987654321","name":"iPhone 14 Pro","platform":"ios","kinds":["remote","file","camera"],"ks":4180}]}"#;
++pub(crate) const LIST_SIG: &str =
++    "Nw16DIR5leqpTGfWFU/sy14XyKbCgG8dBqeCfKiKTO3tANo/PZ24ows1wYuGH3k4x0sqYy6TMcWTj+8NkuwJCw==";
++
++/// The PC's Hash.hjv_nonce (bytes 0x40..=0x5f) for a remote screen session.
++pub(crate) const CONN_NONCE: [u8; 32] = [
++    0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f,
++    0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f,
++];
++pub(crate) const CONN_KIND: u8 = KIND_REMOTE;
++pub(crate) const CONN_KEY_SERIAL: u64 = 4180;
++pub(crate) const CONN_TRANSCRIPT_HEX: &str = "686a762d636f6e6e2d763100093132333435363738398139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f0939383736353433323100ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1";
++pub(crate) const CONN_SIG: &str =
++    "3OvvOFoyKwgFvySqMnMHMK9g3iwU5uP7S8icnxwwHSOyliI1DPW00sX15eAAEamemNIc39LjQbDOxcPgROzEBQ==";
++/// HjvKeyProof{version 1, pk, signature, key_serial} on the wire.
++pub(crate) const CONN_PROOF_PROTO_HEX: &str = "08011220ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d11a40dcebef385a322b0805bf24aa32730730af60de2c14e6e3fb4bc89c9f1c301d23b29622350cf5b4d2c5f5e5e00011a99e98d21cdfd2e341b0cec5c3e044ecc40520d420";
++
++/// An account request signed with the account key.
++pub(crate) struct Request {
++    pub method: &'static str,
++    pub path_and_query: &'static str,
++    pub body: &'static str,
++    pub n: [u8; 16],
++    pub signed_hex: &'static str,
++    pub header: &'static str,
++}
++
++pub(crate) const REQ_TOKEN: &str = "hjv-test-token";
++/// A POST with a body, `n` the bytes 0x00..=0x0f.
++pub(crate) const REQ_POST: Request = Request {
++    method: "POST",
++    path_and_query: "/api/currentUser",
++    body: r#"{"id":"987654321","uuid":"dGVzdC11dWlk"}"#,
++    n: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
++    signed_hex: "686a762d7265712d763100504f5354002f6170692f63757272656e745573657200313736303030303030300041414543417751464267634943516f4c4441304f44770056697838734e7330594374316f5248356156693859674146305654704476784e6c3144496c644758686f673d004e49615a485143754c454a59774e52726644474f307134676e49716c6f4673362b34354658325a2f7a66513d",
++    header: "v1.1760000000.AAECAwQFBgcICQoLDA0ODw.e5siloc5cKDl4lfP5V8KS0c67yh-qjw6JK3lfktliA10_Who0O1-0DCZ-3CgLZh1uuqAengWS3Gdvua1ZG5MCQ",
++};
++/// A GET with a query and no body, `n` the bytes 0x20..=0x2f.
++pub(crate) const REQ_GET: Request = Request {
++    method: "GET",
++    path_and_query: "/api/peers?current=1&pageSize=100",
++    body: "",
++    n: [
++        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e,
++        0x2f,
++    ],
++    signed_hex: "686a762d7265712d763100474554002f6170692f70656572733f63757272656e743d31267061676553697a653d313030003137363030303030303000494345694979516c4a69636f4b536f724c4330754c77003437444551706a38484253612b2f54496d572b354a4365755165526b6d354e4d704a575a473368537546553d004e49615a485143754c454a59774e52726644474f307134676e49716c6f4673362b34354658325a2f7a66513d",
++    header: "v1.1760000000.ICEiIyQlJicoKSorLC0uLw.U6Bdqiio2bjJTkpDRJIAvwIaEIGqsGGn1alf6knmcWJq5e6hKCHKUbZ_hotFblOjSGTq00pGMcXLlHa4MHvdBg",
++};
++
++/// When the PC accepted proofs of the account key; the first is two UTC days before T, so a sync
++/// at T leaves it out.
++pub(crate) const SYNC_ACCEPTED: [u64; 4] =
++    [1_759_800_000, 1_759_962_000, 1_759_990_000, 1_759_999_000];
++/// The report's `used` at T: one line per key and UTC day, with that day's running count.
++pub(crate) const SYNC_USED: &str = r#"[{"pk":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","day":"2025-10-08","last":1759962000,"n":1},{"pk":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","day":"2025-10-09","last":1759999000,"n":2}]"#;
++/// A bound PC's sync request at T, signed with its device key.
++pub(crate) const SYNC_P: &str = r#"{"v":1,"binding":"b0f1e2d3c4b5a69788796a5b4c3d2e1f","ver":"1.6.0","off":false,"used":[{"pk":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","day":"2025-10-08","last":1759962000,"n":1},{"pk":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","day":"2025-10-09","last":1759999000,"n":2}],"refused":{"unknown_key":0,"kind":0,"temporary_only":0,"not_secured":0,"bad_sig":0,"expired":0,"off":0},"wol_hash":""}"#;
++pub(crate) const SYNC_P_SHA256: &str = "iMyEf1q+Mr4xwo9aviy8vXD+GTlPt/W8CyuJ7y8URlk=";
++pub(crate) const SYNC_SIGNED_HEX: &str = "686a762d70632d76310073796e630031323334353637383900313736303030303030300045424553457851564668635947526f6248423065487700694d79456631712b4d723478776f3961766979387658442b47546c50742f57384379754a37793855526c6b3d";
++pub(crate) const SYNC_S: &str =
++    "VVlqZ2wbpNnG3trz+58Y7RftEQMb1GwlsUWg7Yf4XXd94z3RiDzLQqJJPT6mKSLBA9eHEKxK/arHQ39alppkCQ==";
++pub(crate) const SYNC_BODY: &str = r#"{"id":"123456789","t":1760000000,"n":"EBESExQVFhcYGRobHB0eHw","p":"{\"v\":1,\"binding\":\"b0f1e2d3c4b5a69788796a5b4c3d2e1f\",\"ver\":\"1.6.0\",\"off\":false,\"used\":[{\"pk\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"day\":\"2025-10-08\",\"last\":1759962000,\"n\":1},{\"pk\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"day\":\"2025-10-09\",\"last\":1759999000,\"n\":2}],\"refused\":{\"unknown_key\":0,\"kind\":0,\"temporary_only\":0,\"not_secured\":0,\"bad_sig\":0,\"expired\":0,\"off\":0},\"wol_hash\":\"\"}","s":"VVlqZ2wbpNnG3trz+58Y7RftEQMb1GwlsUWg7Yf4XXd94z3RiDzLQqJJPT6mKSLBA9eHEKxK/arHQ39alppkCQ=="}"#;
++
++/// The sealed login's nonce (standard base64 of the bytes 0x00..=0x0f) and device ID, as the
++/// payload has them, and the payload with `ck` and `cp`.
++pub(crate) const CKEY_N: &str = "AAECAwQFBgcICQoLDA0ODw==";
++pub(crate) const CKEY_ID: &str = CTL_ID;
++pub(crate) const CKEY_SIGNED_HEX: &str = "686a762d636b65792d76310041414543417751464267634943516f4c4441304f44773d3d003938373635343332310037556b6f78696a527773627136514d346b466d5659536c5a4a7a7063592f6b324e734647464b79484e39453d";
++pub(crate) const CKEY_CP: &str =
++    "tw4dTyxkVccRMV1aqo4jlinOOftOSRfHy4dAv9ItCeS/3P1eyIEUyYOuyjjyVfzhFUE2TplccLESFxCLtB3ICQ==";
++pub(crate) const SEAL_PAYLOAD: &str = r#"{"v":1,"pw":"test-password","t":1760000000,"n":"AAECAwQFBgcICQoLDA0ODw==","id":"987654321","kid":"d9d90fbd70563cc4","ck":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","cp":"tw4dTyxkVccRMV1aqo4jlinOOftOSRfHy4dAv9ItCeS/3P1eyIEUyYOuyjjyVfzhFUE2TplccLESFxCLtB3ICQ=="}"#;
++
++/// SHA-256 (hex) of `json()`, and so of the JSON copy hjv-api's tests read.
++pub(crate) const JSON_SHA256: &str =
++    "2379784b5fd3e8590b1e7783341ea9c057eb40340d929d074e0b7dc4fc3ef112";
++
++pub(crate) fn device_key(seed: &[u8; 32]) -> sign::SecretKey {
++    sign::keypair_from_seed(&sign::Seed(*seed)).1
++}
++
++pub(crate) fn pk_bytes(b64: &str) -> Vec<u8> {
++    STANDARD.decode(b64).unwrap()
++}
++
++/// The PC's view of the vector list: what the sync request carried.
++pub(crate) fn local(pc_pk: &[u8]) -> Local<'_> {
++    Local {
++        pc_id: PC_ID,
++        pc_pk,
++        binding: BINDING,
++        request_nonce: SYNC_N,
++        kid_floor: 1,
++    }
++}
++
++/// The JSON copy for hjv-api's tests (serde_json's pretty form: keys sorted, two-space indent).
++pub(crate) fn json() -> String {
++    let request = |r: &Request| {
++        serde_json::json!({
++            "method": r.method,
++            "path_and_query": r.path_and_query,
++            "body": r.body,
++            "token": REQ_TOKEN,
++            "t": T,
++            "n_hex": hex::encode(r.n),
++            "n": URL_SAFE_NO_PAD.encode(r.n),
++            "signed_hex": r.signed_hex,
++            "header": r.header,
++        })
++    };
++    let used: serde_json::Value = serde_json::from_str(SYNC_USED).unwrap();
++    let v = serde_json::json!({
++        "about": "Shared test vectors of HJViewer's same-account logins (design v3 3-3, 3-6, 4-1, 4-2), rendered by the client's src/hjviewer_account/vectors.rs. The private keys are public test values: never use them for anything else.",
++        "encodings": "base64: standard with padding; base64url: URL-safe without padding; hex: lowercase; *_hex of signed bytes: the exact bytes a signature covers; times: Unix seconds",
++        "keys": {
++            "list_1": {"kid": 1, "seed_hex": hex::encode(LIST_1_SEED), "pk": LIST_1_PK},
++            "list_2": {"kid": 2, "seed_hex": hex::encode(LIST_2_SEED), "pk": LIST_2_PK},
++            "pc_device": {"seed_hex": hex::encode(PC_SEED), "pk": PC_PK},
++            "account": {"seed_hex": hex::encode(ACCOUNT_SEED), "pk": ACCOUNT_PK},
++            "seal": {"pk": SEAL_PK, "kid": SEAL_KID},
++            "HJV_TRUST_PUBKEYS": HJV_TRUST_PUBKEYS,
++            "HJV_LOGIN_SEAL_PUBKEY": SEAL_PK,
++        },
++        "trust_list": {
++            "kid": 1,
++            "list": LIST,
++            "l": STANDARD.encode(LIST),
++            "signed_hex": hex::encode(trust_message(LIST.as_bytes())),
++            "s": LIST_SIG,
++            "pc_id": PC_ID,
++            "pc_pk": PC_PK,
++            "binding": BINDING,
++            "req": SYNC_N,
++            "max_list_ttl": MAX_LIST_TTL,
++        },
++        "conn_proof": {
++            "pc_id": PC_ID,
++            "pc_pk": PC_PK,
++            "nonce_hex": hex::encode(CONN_NONCE),
++            "ctl_id": CTL_ID,
++            "kind": CONN_KIND,
++            "ctl_pk": ACCOUNT_PK,
++            "transcript_hex": CONN_TRANSCRIPT_HEX,
++            "signature": CONN_SIG,
++            "key_serial": CONN_KEY_SERIAL,
++            "proto_hex": CONN_PROOF_PROTO_HEX,
++        },
++        "request_proofs": [request(&REQ_POST), request(&REQ_GET)],
++        "pc_sync": {
++            "id": PC_ID,
++            "t": T,
++            "n_hex": hex::encode(SYNC_N_BYTES),
++            "n": SYNC_N,
++            "accepted": SYNC_ACCEPTED,
++            "used": used,
++            "p": SYNC_P,
++            "p_sha256": SYNC_P_SHA256,
++            "signed_hex": SYNC_SIGNED_HEX,
++            "s": SYNC_S,
++            "body": SYNC_BODY,
++        },
++        "seal_ckey": {
++            "n": CKEY_N,
++            "id": CKEY_ID,
++            "ck": ACCOUNT_PK,
++            "signed_hex": CKEY_SIGNED_HEX,
++            "cp": CKEY_CP,
++            "payload": SEAL_PAYLOAD,
++        },
++    });
++    serde_json::to_string_pretty(&v).unwrap() + "\n"
++}
++
++#[test]
++fn keys_and_build_variables() {
++    let _ = hbb_common::sodiumoxide::init();
++    for (seed, pk) in [
++        (LIST_1_SEED, LIST_1_PK),
++        (LIST_2_SEED, LIST_2_PK),
++        (PC_SEED, PC_PK),
++        (ACCOUNT_SEED, ACCOUNT_PK),
++    ] {
++        assert_eq!(STANDARD.encode(device_key(&seed).public_key().0), pk);
++    }
++    let account = AccountKey::from_seed(&ACCOUNT_SEED).unwrap();
++    assert_eq!(STANDARD.encode(account.public_key()), ACCOUNT_PK);
++    assert_eq!(account.seed(), &ACCOUNT_SEED[..]);
++    let pinned = parse_trust_pubkeys(HJV_TRUST_PUBKEYS).unwrap();
++    assert_eq!(pinned.len(), 2);
++    assert_eq!(
++        (pinned[0].0, &pinned[0].1[..]),
++        (1, &pk_bytes(LIST_1_PK)[..])
++    );
++    assert_eq!(
++        (pinned[1].0, &pinned[1].1[..]),
++        (2, &pk_bytes(LIST_2_PK)[..])
++    );
++    assert_eq!(seal_kid(&parse_seal_pubkey(SEAL_PK).unwrap()), SEAL_KID);
++}
++
++#[test]
++fn trust_list() {
++    let _ = hbb_common::sodiumoxide::init();
++    let signed = trust_message(LIST.as_bytes());
++    let sig = sign::sign_detached(&signed, &device_key(&LIST_1_SEED));
++    assert_eq!(STANDARD.encode(sig.to_bytes()), LIST_SIG);
++    let pinned = parse_trust_pubkeys(HJV_TRUST_PUBKEYS).unwrap();
++    let pc_pk = pk_bytes(PC_PK);
++    let list = verify_list(&pinned, 1, &STANDARD.encode(LIST), LIST_SIG, &local(&pc_pk)).unwrap();
++    assert_eq!(
++        (list.serial, list.iat, list.exp, list.refresh),
++        (4182, 1_760_000_001, 1_760_086_401, 120)
++    );
++    assert_eq!(
++        (list.state.as_str(), list.owner.as_str(), list.login_at),
++        ("active", "홍*동", 1_759_999_950)
++    );
++    let key = &list.keys[0];
++    assert_eq!(
++        (key.pk.as_str(), key.id.as_str(), key.ks),
++        (ACCOUNT_PK, CTL_ID, CONN_KEY_SERIAL)
++    );
++    assert_eq!(key.kinds, ["remote", "file", "camera"]);
++    // the same bytes under list key 2 are not list key 1's signature
++    assert_eq!(
++        verify_list(&pinned, 2, &STANDARD.encode(LIST), LIST_SIG, &local(&pc_pk)).unwrap_err(),
++        Refusal::BadListSignature
++    );
++}
++
++#[test]
++fn conn_proof_bytes() {
++    let _ = hbb_common::sodiumoxide::init();
++    let (pc_pk, account_pk) = (pk_bytes(PC_PK), pk_bytes(ACCOUNT_PK));
++    let transcript =
++        conn_transcript(PC_ID, &pc_pk, &CONN_NONCE, CTL_ID, CONN_KIND, &account_pk).unwrap();
++    assert_eq!(hex::encode(&transcript), CONN_TRANSCRIPT_HEX);
++    let account = AccountKey::from_seed(&ACCOUNT_SEED).unwrap();
++    let proof = conn_proof(
++        &account,
++        PC_ID,
++        &pc_pk,
++        &CONN_NONCE,
++        CTL_ID,
++        CONN_KIND,
++        CONN_KEY_SERIAL,
++    )
++    .unwrap();
++    assert_eq!(STANDARD.encode(&proof.signature), CONN_SIG);
++    assert_eq!(
++        hex::encode(proof.write_to_bytes().unwrap()),
++        CONN_PROOF_PROTO_HEX
++    );
++    // the PC that received it accepts it against the vector list
++    let pinned = parse_trust_pubkeys(HJV_TRUST_PUBKEYS).unwrap();
++    let list = verify_list(&pinned, 1, &STANDARD.encode(LIST), LIST_SIG, &local(&pc_pk)).unwrap();
++    let cached = Cached { list, received: T };
++    let login = KeyLogin {
++        pc_id: PC_ID,
++        pc_pk: &pc_pk,
++        secured: true,
++        nonce: &CONN_NONCE,
++        proof: &proof,
++        my_id: CTL_ID,
++        kind: CONN_KIND,
++    };
++    assert_eq!(
++        check_key_login(&login, Some(&cached), T + 60).unwrap().name,
++        "iPhone 14 Pro"
++    );
++}
++
++#[test]
++fn request_proofs() {
++    let _ = hbb_common::sodiumoxide::init();
++    let account = AccountKey::from_seed(&ACCOUNT_SEED).unwrap();
++    for r in [REQ_POST, REQ_GET] {
++        let n = URL_SAFE_NO_PAD.encode(r.n);
++        let signed = req_message(
++            r.method,
++            r.path_and_query,
++            T,
++            &n,
++            r.body.as_bytes(),
++            REQ_TOKEN,
++        );
++        assert_eq!(hex::encode(signed), r.signed_hex);
++        let header = request_proof(
++            &account,
++            r.method,
++            r.path_and_query,
++            r.body.as_bytes(),
++            REQ_TOKEN,
++            T,
++            &r.n,
++        );
++        assert_eq!(header, r.header);
++        // the app's method strings are lower case; the wire's are not
++        let lower = r.method.to_ascii_lowercase();
++        assert_eq!(
++            request_proof(
++                &account,
++                &lower,
++                r.path_and_query,
++                r.body.as_bytes(),
++                REQ_TOKEN,
++                T,
++                &r.n
++            ),
++            r.header
++        );
++    }
++}
++
++#[test]
++fn pc_sync_envelope_and_used_report() {
++    let _ = hbb_common::sodiumoxide::init();
++    let mut uses = Vec::new();
++    for at in SYNC_ACCEPTED {
++        count_use(&mut uses, ACCOUNT_PK, at);
++    }
++    let used = used_report(&uses, T);
++    assert_eq!(serde_json::to_string(&used).unwrap(), SYNC_USED);
++    // each line: the UTC day of its last use and that day's running count
++    for u in &used {
++        assert_eq!(u.day, utc_day(u.last));
++        let n = SYNC_ACCEPTED
++            .iter()
++            .filter(|at| utc_day(**at) == u.day)
++            .count();
++        assert_eq!(u.n, n as u64);
++    }
++    assert!(SYNC_P.contains(&format!(r#""used":{SYNC_USED}"#)));
++    assert_eq!(STANDARD.encode(Sha256::digest(SYNC_P)), SYNC_P_SHA256);
++    assert_eq!(
++        hex::encode(pc_sync_message(PC_ID, T, SYNC_N, SYNC_P)),
++        SYNC_SIGNED_HEX
++    );
++    let body = pc_sync_envelope(&device_key(&PC_SEED), PC_ID, T, &SYNC_N_BYTES, SYNC_P);
++    assert_eq!(body, SYNC_BODY);
++    let envelope: serde_json::Value = serde_json::from_str(&body).unwrap();
++    assert_eq!(
++        (envelope["p"].as_str(), envelope["s"].as_str()),
++        (Some(SYNC_P), Some(SYNC_S))
++    );
++}
++
++#[test]
++fn sealed_login_key() {
++    let _ = hbb_common::sodiumoxide::init();
++    assert_eq!(
++        hex::encode(ckey_message(CKEY_N, CKEY_ID, ACCOUNT_PK)),
++        CKEY_SIGNED_HEX
++    );
++    let account = AccountKey::from_seed(&ACCOUNT_SEED).unwrap();
++    let (ck, cp) = ckey_proof(&account, CKEY_N, CKEY_ID);
++    assert_eq!((ck.as_str(), cp.as_str()), (ACCOUNT_PK, CKEY_CP));
++    let payload: serde_json::Value = serde_json::from_str(SEAL_PAYLOAD).unwrap();
++    assert_eq!(payload["n"], CKEY_N);
++    assert_eq!(payload["id"], CKEY_ID);
++    assert_eq!(payload["kid"], SEAL_KID);
++    assert_eq!(
++        (payload["ck"].as_str(), payload["cp"].as_str()),
++        (Some(ACCOUNT_PK), Some(CKEY_CP))
++    );
++}
++
++#[test]
++fn json_copy_is_these_vectors() {
++    let json = json();
++    assert_eq!(
++        hex::encode(Sha256::digest(json.as_bytes())),
++        JSON_SHA256,
++        "vectors changed: update JSON_SHA256 and rewrite the JSON copy (write_json_copy)"
++    );
++}
++
++/// HJV_VECTORS_JSON=<path> cargo test --lib hjviewer_account::vectors::write_json_copy -- --ignored
++#[test]
++#[ignore]
++fn write_json_copy() {
++    let path = std::env::var("HJV_VECTORS_JSON").expect("HJV_VECTORS_JSON");
++    std::fs::write(path, json()).unwrap();
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index 926078c..508d8bc 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -45,6 +45,7 @@ mod clipboard;
+ pub mod core_main;
+ mod custom_server;
+ mod hjviewer;
++mod hjviewer_account;
+ #[cfg(feature = "hjv-e2e")]
+ mod hjviewer_e2e;
+ mod lang;
+diff --git a/src/ui_interface.rs b/src/ui_interface.rs
+index b1eeefd..76ca592 100644
+--- a/src/ui_interface.rs
++++ b/src/ui_interface.rs
+@@ -856,6 +856,15 @@ pub fn change_id(id: String) {
+ 
+ #[inline]
+ pub fn http_request(url: String, method: String, body: Option<String>, header: String) {
++    let Some((body, header)) =
++        crate::hjviewer_account::prepare_account_request(&url, &method, body, header)
++    else {
++        ASYNC_HTTP_STATUS
++            .lock()
++            .unwrap()
++            .insert(url, "hjv: account key unavailable".to_owned());
++        return;
++    };
+     // Respond to concurrent requests for resources
+     let current_request = ASYNC_HTTP_STATUS.clone();
+     current_request
+@@ -870,6 +879,7 @@ pub fn http_request(url: String, method: String, body: Option<String>, header: S
+             }
+             Ok(text) => text,
+         };
++        crate::hjviewer_account::observe_account_response(&url, &res);
+         current_request.lock().unwrap().insert(url, res);
+     });
+ }

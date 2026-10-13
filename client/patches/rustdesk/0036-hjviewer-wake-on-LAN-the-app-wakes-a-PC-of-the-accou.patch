@@ -1,0 +1,2087 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 13 Oct 2026 18:08:07 +0900
+Subject: [PATCH 36/36] hjviewer: wake-on-LAN: the app wakes a PC of the
+ account that is off
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In an account build a PC of the accessible devices tab that is off can be
+woken from the app, through hjv-api and the relay on the PC's network (design
+v3 1-9, 8-5). An iPhone does it as any other device: the requests are
+hjv-api's, over HTTPS and signed as its other account requests, not the LAN
+packet of the Discovered tab's "WOL". The screens are in hjviewer_account.dart;
+their texts and decisions and the steps of a wake (HjvWaking, which gets the
+app around it handed in, so that the tests run it) are in
+hjviewer_account_texts.dart; beside them:
+
+- peer_card.dart (D11): connectInPeerTab first asks hjvOfferWake. A PC of
+  that tab whose dot is off gets "이 PC는 꺼져 있습니다. 켤까요?" with [켜기]
+  and [닫기], and the connection the user asked for (the remote screen, file
+  transfer, the camera, ...) goes on only once the wake brought the PC up. It
+  then goes on with the app's own context, which the hook's last argument
+  takes: the card may have been rebuilt by then. Any other card, tab or build
+  goes on at once. "Terminal (Run as administrator)" leaves a mark for the
+  session that follows it at once (IS_TERMINAL_ADMIN); the offer puts it aside
+  until the connection goes on, so that no other terminal takes it.
+- the cards' menu (D5, hjvDeviceMenuItems): "켜기", above "내 목록에서 빼기".
+- src/hjviewer_account/api.rs: the device list the app keeps (hjv-my-devices)
+  also keeps hjv-api's verdict of each PC (hjv.wol of /api/peers: ok, warn, no
+  or unknown), and main_get_common answers "hjv-wol:<PC ID>" with it. The Dart
+  Peer drops hjv, and asking hjv-api whenever a menu opens would make every
+  menu wait for the network. A verdict that is no string counts as none: the
+  PC stays in the list, and with it the proofs to it.
+
+"켜기" and the offer are for a PC that is off, unless the verdict is no (no
+wired card, or an account without a relay) or there is none (an hjv-api
+without the wake API).
+
+A wake is POST /api/hjv/devices/{id}/wake and then the progress dialog, which
+every two seconds asks GET /api/hjv/wake/{job} and looks at the dot of the
+PC's card, for five minutes at most. It says what design v3 8-5's table says:
+
+- queued: "NAS(<the relay's name>)에 켜기 요청을 전달하는 중…", the name alone
+  when it says NAS itself, as the names hjv-api makes up do ("NAS KZDV");
+- sent: "NAS가 켜기 신호를 보냈습니다. PC가 켜지기를 기다립니다…", and only
+  then: before hjv-api answered the dialog says "요청하는 중…";
+- confirmed, or the dot turned green: "켜졌습니다. 연결합니다…";
+- not confirmed, or five minutes over: "5분 안에 켜진 것을 확인하지
+  못했습니다.", hjv-api's hints and [다시 켜기];
+- failed: the text of no_result and not_active, no_iface, send_failed (and
+  partial without a packet), rate_limited, expired (with [다시 켜기], which
+  the limit of a wake a minute lets through by then); any other code, about
+  which the relay and hjv-api disagree, is shown as it is;
+- no job: no_relay, with [모든 중계기로 시도] and "같은 네트워크인지 확인되지
+  않아 켜질지 알 수 없습니다." only when hjv-api says that trying all relays
+  may help (any_relay), which then asks again with {"any_relay":true};
+  relay_offline with "마지막 연결: 10/20 14:03" when the relay ever asked;
+  no_wol_info; 429; a PC that left the list (404); and hjv-api's own text for
+  what the app has none for (a clock off, no command key);
+- online: "이미 켜져 있습니다.", and the app connects as after a wake.
+
+hjv-api's hints (what may keep the PC from waking, in its words) wait behind
+[준비 안내 보기] while the wake is under way or failed, and show at once when
+it was not confirmed.
+
+Once the PC is on, the device list comes again and the app connects by itself
+while the dialog has been open since the request. It first waits for hbbs to
+have the PC, asking it every two seconds for 30 seconds at most: the PC
+registers there on a schedule of its own, and a connection before that finds
+it offline. Settings → Account has "PC를 켠 뒤 바로 연결" (on; shown when the
+account has a PC that can be woken): off, the dialog says "켜졌습니다." with
+[연결]. Closing the dialog does not end the wake: when the PC comes up, the
+dialog comes again with [연결] (a phone that is in a session by then gets a
+toast), and a wake that failed is told in a toast. While [연결] waits, a PC
+whose dot was green and is off again reads "PC가 다시 절전에 들어갔습니다."
+with [다시 켜기]. A new wake of a PC ends the one before.
+
+Outside an account build hjvOfferWake returns at once and the menu and the
+settings get nothing, as before.
+
+Tests: test/hjviewer_account_test.dart (pure, ci.sh): which PCs get "켜기";
+every row of 8-5's table from hjv-api's answers as it sends them (the 202 of
+a new job and of one under way, each job state and error, each refusal with
+its fields, nginx's 429, an answer that is no JSON), with the buttons of each
+state, and that nothing before sent says that the signal went out; the relay's
+name; a job's ID that is not 32 hex digits is no job; a poll without an answer
+leaves the job as it was, and a job that is gone or a login that ended ends
+the wake; the job is followed every two seconds to its end, by the card's dot
+when that is first, for five minutes at most though no poll gets an answer,
+and no longer once another request took over; the wait for hbbs; the PC that
+went back to sleep; no braces; and whole wakes against a scripted app (hjv-api's
+answers, the card's dot by a clock the waits move, the user at the dialog):
+the texts the dialog draws up to the connection the app starts by itself, the
+dialog closed and coming again with [연결], or a toast on a phone in a session
+and for a wake that failed, the setting off, the PC asleep again and [다시
+켜기], [모든 중계기로 시도], a PC on already, a request started again, and a
+new wake ending the one before. test/hjviewer_account_widgets_test.dart (needs
+the generated bridge): the offer's two buttons, and the progress dialog's
+buttons, hints and progress bar for each state. src/hjviewer_account/api.rs:
+the kept list has the verdict, and "hjv-wol:<PC ID>" answers it, "" for a PC
+without one; a verdict that is no string keeps the PC (ctl.rs: its tests' list
+has the new field).
+
+Known limits: a card's dot is behind for a moment after the app started or
+came back, so a tap in that moment offers to wake a PC that is on; [켜기]
+then finds it on and connects. A PC that hbbs does not have 30 seconds after
+hjv-api saw it, or that went to sleep less than 30 seconds ago (hjv-api still
+calls it on), is connected to all the same and found offline. "PC가 다시
+절전에 들어갔습니다." needs the dot to have been green, so it comes only
+while [연결] waits. A PC whose verdict is no has no "켜기", and the app tells
+why only by the card's note from hjv-api. A result the relay sends after
+hjv-api gave up on it (no_result) is not followed. Not tried on an iPhone or a
+Windows PC yet.
+
+(Design v3, work package W4: patch 0036.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart      | 292 ++++++-
+ .../lib/common/hjviewer_account_texts.dart    | 511 +++++++++++-
+ flutter/lib/common/widgets/peer_card.dart     |   1 +
+ flutter/test/hjviewer_account_test.dart       | 776 ++++++++++++++++++
+ .../test/hjviewer_account_widgets_test.dart   |  97 +++
+ src/hjviewer_account/api.rs                   |  49 +-
+ src/hjviewer_account/ctl.rs                   |   1 +
+ 7 files changed, 1700 insertions(+), 27 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 80c662e..14ea5ab 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -1,9 +1,9 @@
+-// HJViewer's account screens (design v3 §1, §6-2 D1-D10): what the login and logout dialogs, the
++// HJViewer's account screens (design v3 §1, §6-2 D1-D11): what the login and logout dialogs, the
+ // accessible devices tab, its cards' menu and Settings → Account show in an account build, the
+-// logged-in devices and the notices about new devices and dropped logins. Account requests go
+-// through Rust's http_request, which signs them with the account key (H13); the texts and the
+-// choices between them are in hjviewer_account_texts.dart. Outside an account build every hook
+-// leaves its screen as it was.
++// logged-in devices, the notices about new devices and dropped logins, and waking a PC of the
++// account that is off (§8-5). Account requests go through Rust's http_request, which signs them
++// with the account key (H13); the texts and the choices between them are in
++// hjviewer_account_texts.dart. Outside an account build every hook leaves its screen as it was.
+ 
+ import 'dart:async';
+ import 'dart:convert';
+@@ -21,6 +21,7 @@ import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
+ import 'package:flutter_hbb/models/peer_model.dart';
+ import 'package:flutter_hbb/models/peer_tab_model.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
++import 'package:flutter_hbb/models/state_model.dart';
+ import 'package:flutter_hbb/utils/http_service.dart' as http;
+ import 'package:get/get.dart';
+ import 'package:settings_ui/settings_ui.dart';
+@@ -34,6 +35,9 @@ const _kPcOff = 'hjv-pwless-off';
+ /// Set once the first login took the app to the accessible devices tab.
+ const _kDevicesTabShown = 'hjv-devices-tab-shown';
+ 
++/// "N" once Settings → Account said that a wake does not go on to connect (design v3 §8-5).
++const _kWakeConnects = 'hjv-wake-connects';
++
+ String _commonSync(String key) {
+   try {
+     return bind.mainGetCommonSync(key: key);
+@@ -60,12 +64,17 @@ class _HjvError implements Exception {
+ 
+ /// A request to hjv-api, with the login's token: the status and the decoded body. A 401 ends the
+ /// login as the device list's does (the key was logged out from another device), unless a login
+-/// replaced the token meanwhile (hjvEndsLogin).
+-Future<(int, Object?)> _request(String method, String path) async {
++/// replaced the token meanwhile (hjvEndsLogin). `json` is the request's body, which hjv-api takes
++/// as JSON only.
++Future<(int, Object?)> _request(String method, String path,
++    {String? json}) async {
+   final url = Uri.parse('${await bind.mainGetApiServer()}$path');
+-  final headers = getHttpHeaders();
++  final headers = {
++    ...getHttpHeaders(),
++    if (json != null) 'Content-Type': 'application/json',
++  };
+   final resp = switch (method) {
+-    'POST' => await http.post(url, headers: headers),
++    'POST' => await http.post(url, headers: headers, body: json),
+     'DELETE' => await http.delete(url, headers: headers),
+     _ => await http.get(url, headers: headers),
+   };
+@@ -125,15 +134,26 @@ String hjvLogoutTip(String tip) => _accountBuild
+     ? hjvLogoutText(_t, tip, boundHere: _commonSync('hjv-pc-bound') == 'Y')
+     : tip;
+ 
+-/// D5 (peer_card.dart, the accessible devices' menu): "내 목록에서 빼기".
++/// D5 (peer_card.dart, the accessible devices' menu): "켜기" for a PC that is off and can be
++/// woken, and "내 목록에서 빼기".
+ Future<List<MenuEntryBase<String>>> hjvDeviceMenuItems(
+     BuildContext context, Peer peer, EdgeInsets? padding) async {
+-  if (!hjvShowsDeviceMenu(
+-      accountBuild: _accountBuild, loggedIn: gFFI.userModel.isLogin)) {
++  final loggedIn = gFFI.userModel.isLogin;
++  if (!hjvShowsDeviceMenu(accountBuild: _accountBuild, loggedIn: loggedIn)) {
+     return [];
+   }
+   final t = _t;
+   return [
++    if (hjvOffersWake(
++        loggedIn: loggedIn, online: peer.online, verdict: _wolVerdict(peer.id)))
++      MenuEntryButton<String>(
++        childBuilder: (TextStyle? style) => Text(t.wake, style: style),
++        proc: () async {
++          if (await _wake(t, peer)) _connectTo(peer.id);
++        },
++        padding: padding,
++        dismissOnClicked: true,
++      ),
+     MenuEntryDivider(),
+     MenuEntryButton<String>(
+       childBuilder: (TextStyle? style) =>
+@@ -152,7 +172,8 @@ bool hjvHidesNotes() => _accountBuild;
+ List<Widget> hjvAccountRows() =>
+     _accountBuild ? [const _HjvAccountPanel()] : [];
+ 
+-/// D8 (mobile settings, the account section): the logged-in devices.
++/// D8 (mobile settings, the account section): the logged-in devices and, with a PC that can be
++/// woken, whether a wake goes on to connect.
+ List<AbstractSettingsTile> hjvAccountTiles() => _accountBuild
+     ? [
+         CustomSettingsTile(
+@@ -162,6 +183,7 @@ List<AbstractSettingsTile> hjvAccountTiles() => _accountBuild
+                   enabled: gFFI.userModel.isLogin,
+                   onPressed: (_) => _showLoggedInDevices(),
+                 ))),
++        if (_wakesAny()) const CustomSettingsTile(child: _HjvWakeConnects()),
+       ]
+     : [];
+ 
+@@ -207,6 +229,40 @@ void hjvInitAccount() {
+   WidgetsBinding.instance.addPostFrameCallback((_) => _foreground.start());
+ }
+ 
++/// D11 (peer_card.dart, connectInPeerTab): a PC of the account's list that is off is offered to be
++/// woken before the app connects to it (design v3 §1-3, §8-5). True when the connection does not
++/// go on. Once the wake brought the PC up it does, with the app's own context, which `live` gets:
++/// the card's may be gone by then.
++Future<bool> hjvOfferWake(BuildContext context, Peer peer, PeerTabIndex tab,
++    void Function(BuildContext context) live) async {
++  if (!_accountBuild || tab != PeerTabIndex.group || peer.online) return false;
++  if (!hjvOffersWake(
++      loggedIn: gFFI.userModel.isLogin,
++      online: peer.online,
++      verdict: _wolVerdict(peer.id))) {
++    return false;
++  }
++  // "Terminal (Run as administrator)" left its mark for the session that follows at once
++  // (setEnvTerminalAdmin). It waits here with the connection, or the next terminal would take it.
++  final asAdmin = bind.mainGetEnv(key: 'IS_TERMINAL_ADMIN') == 'Y';
++  if (asAdmin) bind.mainSetEnv(key: 'IS_TERMINAL_ADMIN');
++  final t = _t;
++  final wake = await _show<bool>((setState, close, context) => hjvConfirmDialog(
++      t,
++      title: _nameOf(peer),
++      text: t.wakeAsk,
++      yes: t.wake,
++      no: t.close,
++      onYes: () => close(true),
++      onNo: close));
++  if (wake != true || !await _wake(t, peer)) return true;
++  final app = globalKey.currentContext;
++  if (app == null) return true;
++  if (asAdmin) setEnvTerminalAdmin();
++  live(app);
++  return false;
++}
++
+ // ---- after a login ----
+ 
+ void _showDevicesTabOnce() {
+@@ -435,6 +491,7 @@ class _HjvAccountPanelState extends State<_HjvAccountPanel> {
+                 canSetPassword: !isChangePermanentPasswordDisabled(),
+                 onAction: (action) => _pcAction(t, action),
+                 onSetPassword: () => _setPcPassword(done: _loadPassword)),
++          if (loggedIn && _wakesAny()) const _HjvWakeConnects(),
+           if (loggedIn)
+             _button(t.loggedInDevices, _showLoggedInDevices, outline: true),
+         ],
+@@ -491,12 +548,16 @@ CustomAlertDialog hjvConfirmDialog(HjvTexts t,
+         {String? title,
+         required String text,
+         required String yes,
++        String? no,
+         required VoidCallback onYes,
+         required VoidCallback onNo}) =>
+     CustomAlertDialog(
+       title: title == null ? null : Text(title),
+       content: Text(text),
+-      actions: [_button(t.cancel, onNo, outline: true), _button(yes, onYes)],
++      actions: [
++        _button(no ?? t.cancel, onNo, outline: true),
++        _button(yes, onYes)
++      ],
+       onSubmit: onYes,
+       onCancel: onNo,
+     );
+@@ -718,14 +779,18 @@ class _HjvKeysPanelState extends State<_HjvKeysPanel> {
+   }
+ }
+ 
++/// A card's PC as its dialogs name it.
++String _nameOf(Peer peer) => peer.alias.isNotEmpty
++    ? peer.alias
++    : peer.hostname.isNotEmpty
++        ? peer.hostname
++        : formatID(peer.id);
++
+ void _removeFromList(HjvTexts t, Peer peer) {
+-  final name = peer.alias.isNotEmpty
+-      ? peer.alias
+-      : peer.hostname.isNotEmpty
+-          ? peer.hostname
+-          : formatID(peer.id);
+   _show<void>((setState, close, context) => hjvConfirmDialog(t,
+-          title: name, text: t.removeAsk, yes: t.remove, onYes: () async {
++          title: _nameOf(peer),
++          text: t.removeAsk,
++          yes: t.remove, onYes: () async {
+         close();
+         try {
+           final (code, body) =
+@@ -760,6 +825,193 @@ Widget _banner(BuildContext context, String text, {VoidCallback? retry}) {
+   ).marginOnly(bottom: 12);
+ }
+ 
++// ---- waking a PC (design v3 §8-5) ----
++
++bool _wakeConnects() => bind.getLocalFlutterOption(k: _kWakeConnects) != 'N';
++
++/// hjv-api's verdict of whether the PC can be woken, from the last device list (Rust keeps it).
++String _wolVerdict(String id) => _commonSync('hjv-wol:$id');
++
++/// Whether the account has a PC to wake, so that Settings → Account has something to say of it.
++bool _wakesAny() =>
++    gFFI.groupModel.peers.any((p) => hjvCanWake(_wolVerdict(p.id)));
++
++void _connectTo(String id) {
++  final context = globalKey.currentContext;
++  if (context != null) connect(context, id);
++}
++
++/// The wakes under way, by PC: a new wake of a PC ends the one before.
++final _wakes = <String, HjvWaking>{};
++
++/// Wakes the PC and shows how it goes (HjvWaking); true when the PC came up and the app goes on
++/// to connect to it.
++Future<bool> _wake(HjvTexts t, Peer peer) {
++  final wake = HjvWaking(t, _nameOf(peer), _HjvWakeApp(t, peer.id));
++  _wakes[peer.id]?.end();
++  _wakes[peer.id] = wake;
++  return wake.run();
++}
++
++/// The app around a wake of the PC `id`.
++class _HjvWakeApp extends HjvWakeApp {
++  final HjvTexts t;
++  final String id;
++  _HjvWakeApp(this.t, this.id);
++
++  @override
++  Future<HjvWake> ask(bool anyRelay) async {
++    try {
++      final (code, body) = await _request('POST', '/api/hjv/devices/$id/wake',
++          json: anyRelay ? jsonEncode({'any_relay': true}) : null);
++      return hjvWakeAsked(code, body);
++    } catch (e) {
++      return HjvWake(HjvWakeKind.refused, text: hjvFailure(t, e));
++    }
++  }
++
++  @override
++  Future<HjvWake> poll(HjvWake last) async {
++    try {
++      final (code, body) = await _request('GET', '/api/hjv/wake/${last.job}');
++      return hjvWakePolled(code, body, last);
++    } catch (e) {
++      // no answer this time: the next poll asks again
++      return last;
++    }
++  }
++
++  @override
++  bool get online => gFFI.groupModel.peers.any((p) => p.id == id && p.online);
++
++  @override
++  void askHbbs() => bind.queryOnlines(ids: [id]);
++
++  @override
++  void refresh() => gFFI.groupModel.pull(force: true, quiet: true);
++
++  @override
++  bool get connects => _wakeConnects();
++
++  @override
++  bool get free => !isMobile || stateGlobal.isInMainPage;
++
++  @override
++  Future<bool> show(HjvWaking wake) async {
++    final connect = await _show<bool>((setState, close, context) {
++      wake.redraw = () => setState(() {});
++      wake.close = close;
++      return hjvWakeDialog(t, wake.name, wake.view(),
++          onClose: close,
++          onConnect: () => close(true),
++          onAgain: wake.start,
++          onAnyRelay: () => wake.start(anyRelay: true));
++    });
++    return connect == true;
++  }
++
++  @override
++  void toast(String text) => showToast(text);
++
++  @override
++  void connect() => _connectTo(id);
++}
++
++/// A wake's progress (design v3 §8-5): where it stands, hjv-api's hints, and the buttons its state
++/// has next to [닫기].
++CustomAlertDialog hjvWakeDialog(HjvTexts t, String pc, HjvWakeView view,
++        {required VoidCallback onClose,
++        required VoidCallback onConnect,
++        required VoidCallback onAgain,
++        required VoidCallback onAnyRelay}) =>
++    CustomAlertDialog(
++      title: Text(t.wakeTitle(pc)),
++      content: Column(
++        mainAxisSize: MainAxisSize.min,
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(view.text),
++          if (view.note.isNotEmpty) Text(view.note).marginOnly(top: 8),
++          if (view.busy) const LinearProgressIndicator().marginOnly(top: 12),
++          if (view.hints.isNotEmpty)
++            _HjvWakeHints(t: t, hints: view.hints, open: view.hintsOpen),
++        ],
++      ),
++      actions: [
++        _button(t.close, onClose, outline: true),
++        if (view.anyRelay) _button(t.wakeAnyRelay, onAnyRelay),
++        if (view.again) _button(t.wakeAgain, onAgain),
++        if (view.connect) _button(t.connect, onConnect),
++      ],
++      onSubmit: view.connect ? onConnect : null,
++      onCancel: onClose,
++    );
++
++/// hjv-api's hints of what may keep the PC from waking: behind [준비 안내 보기], or at once.
++class _HjvWakeHints extends StatefulWidget {
++  final HjvTexts t;
++  final List<String> hints;
++  final bool open;
++  const _HjvWakeHints(
++      {required this.t, required this.hints, required this.open});
++
++  @override
++  State<_HjvWakeHints> createState() => _HjvWakeHintsState();
++}
++
++class _HjvWakeHintsState extends State<_HjvWakeHints> {
++  var _opened = false;
++
++  @override
++  Widget build(BuildContext context) {
++    if (!widget.open && !_opened) {
++      return TextButton(
++          onPressed: () => setState(() => _opened = true),
++          child: Text(widget.t.wakeHints));
++    }
++    return Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children:
++          widget.hints.map((h) => Text('· $h').marginOnly(top: 8)).toList(),
++    );
++  }
++}
++
++/// Settings → Account: whether a wake goes on to connect once the PC is on.
++class _HjvWakeConnects extends StatefulWidget {
++  const _HjvWakeConnects();
++
++  @override
++  State<_HjvWakeConnects> createState() => _HjvWakeConnectsState();
++}
++
++class _HjvWakeConnectsState extends State<_HjvWakeConnects> {
++  var _on = _wakeConnects();
++
++  void _toggle([bool? on]) {
++    setState(() => _on = on ?? !_on);
++    bind.setLocalFlutterOption(k: _kWakeConnects, v: _on ? '' : 'N');
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    if (isMobile) {
++      return SettingsTile.switchTile(
++          title: Text(_t.wakeConnects),
++          leading: const Icon(Icons.power_settings_new),
++          initialValue: _on,
++          onToggle: _toggle);
++    }
++    return GestureDetector(
++      onTap: _toggle,
++      child: Row(children: [
++        Checkbox(value: _on, onChanged: _toggle),
++        Expanded(child: Text(_t.wakeConnects)),
++      ]),
++    );
++  }
++}
++
+ // ---- notices when the app starts or comes back ----
+ 
+ var _reloginShown = false;
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index f815f9f..834e3e0 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -1,7 +1,9 @@
+-// The account screens' texts, in Korean and English, and the decisions that pick them (design v3
+-// §1, §6-2, §7-5). Plain Dart without the bridge, so that ci.sh tests it with the web stand-in;
+-// hjviewer_account.dart shows them. src/lang stays as it is, and no text holds braces, which
+-// translate() would take for placeholders.
++// The account screens' texts, in Korean and English, the decisions that pick them and the steps of
++// a wake (design v3 §1, §6-2, §7-5, §8-5). Plain Dart without the bridge, so that ci.sh tests it
++// with the web stand-in; hjviewer_account.dart shows them. src/lang stays as it is, and no text
++// holds braces, which translate() would take for placeholders.
++
++import 'dart:async';
+ 
+ /// Turns a Unix time into the time shown.
+ typedef HjvClock = DateTime Function(int unix);
+@@ -179,6 +181,56 @@ class HjvTexts {
+   String get emptyList => _t(
+       'PC에 HJViewer 1.6.0 이상을 설치하고, 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.',
+       'Install HJViewer 1.6.0 or later on a PC and log in there with the same Yonsei portal account: the PC then shows up here.');
++
++  // waking a PC (§8-5)
++  String get wake => _t('켜기', 'Wake up');
++  String get wakeAsk =>
++      _t('이 PC는 꺼져 있습니다. 켤까요?', 'This PC is off. Wake it up?');
++  String wakeTitle(String pc) => _t('$pc 켜기', 'Wake up $pc');
++  String get wakeAsking => _t('요청하는 중…', 'Requesting…');
++  String wakeQueued(String relay) =>
++      _t('$relay에 켜기 요청을 전달하는 중…', 'Passing the wake request to $relay…');
++  String get wakeSent => _t('NAS가 켜기 신호를 보냈습니다. PC가 켜지기를 기다립니다…',
++      'The NAS sent the wake signal. Waiting for the PC to come up…');
++  String get wakeOn => _t('켜졌습니다.', 'It is on.');
++  String get wakeAlreadyOn => _t('이미 켜져 있습니다.', 'It is already on.');
++  String get wakeConnecting => _t('연결합니다…', 'Connecting…');
++  String get wakeNotConfirmed =>
++      _t('5분 안에 켜진 것을 확인하지 못했습니다.', 'The PC was not seen on within 5 minutes.');
++  String get wakeRelaySilent => _t(
++      'NAS 중계기가 요청을 받지 못했습니다. NAS가 켜져 있고 연결되어 있는지 확인해 주세요.',
++      'The NAS relay did not get the request. Please check that the NAS is on and connected.');
++  String get wakeNoIface => _t('NAS에 이 PC의 네트워크로 나가는 랜카드가 없습니다.',
++      "The NAS has no network card on this PC's network.");
++  String get wakeSendFailed => _t('NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 해 주세요.',
++      'The NAS could not send the wake signal. Please try again in a while.');
++  String get wakeLater =>
++      _t('잠시 뒤 다시 시도해 주세요.', 'Please try again in a while.');
++  String get wakeExpired => _t('요청이 너무 늦게 전달되어 취소됐습니다. 다시 해 주세요.',
++      'The request reached the NAS too late and was cancelled. Please try again.');
++  String get wakeFailed => _t('NAS 중계기가 켜기 요청을 처리하지 못했습니다.',
++      'The NAS relay could not handle the wake request.');
++  String wakeFailedFor(String code) => _t('NAS 중계기가 켜기 요청을 처리하지 못했습니다($code).',
++      'The NAS relay could not handle the wake request ($code).');
++  String get wakeNoRelay => _t('이 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.',
++      "No relay is on in this PC's network.");
++  String get wakeAnyRelayNote => _t('같은 네트워크인지 확인되지 않아 켜질지 알 수 없습니다.',
++      'A relay is not confirmed to share its network, so the PC may not wake.');
++  String get wakeAnyRelay => _t('모든 중계기로 시도', 'Try all relays');
++  String get wakeRelayOffline =>
++      _t('중계기(NAS)가 연결되어 있지 않습니다.', 'The relay (NAS) is not connected.');
++  String wakeLastSeen(String time) =>
++      _t('마지막 연결: $time', 'Last connected: $time');
++  String get wakeNoInfo => _t(
++      '이 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.',
++      'This PC has not told how to wake it yet. Turn the PC on once and check that HJViewer is installed on it.');
++  String get wakeAsleep =>
++      _t('PC가 다시 절전에 들어갔습니다.', 'The PC went back to sleep.');
++  String get wakeAgain => _t('다시 켜기', 'Wake up again');
++  String get wakeHints => _t('준비 안내 보기', 'Show the setup hints');
++  String get connect => _t('연결', 'Connect');
++  String get wakeConnects =>
++      _t('PC를 켠 뒤 바로 연결', 'Connect right after waking a PC');
+ }
+ 
+ /// The request that `http_request` refuses while the account key cannot be used (H13): its
+@@ -585,3 +637,454 @@ bool hjvShowsEmptyHint(
+ /// build, while logged in.
+ bool hjvShowsDeviceMenu({required bool accountBuild, required bool loggedIn}) =>
+     accountBuild && loggedIn;
++
++// ---- waking a PC (hjv-api's wake API, design v3 §8-4, §8-5) ----
++
++/// How often the progress asks for the job and looks at the card's dot, and for how long.
++const kHjvWakePoll = Duration(seconds: 2);
++const kHjvWakeFor = Duration(minutes: 5);
++
++/// How long the app waits for hbbs to have a PC that hjv-api saw come up, before it connects: the
++/// PC registers at hbbs on a schedule of its own, apart from its sync with hjv-api.
++const kHjvReachWait = Duration(seconds: 30);
++
++/// Whether hjv-api's verdict of a PC lets the app offer to wake it (`hjv.wol` of the device list:
++/// ok, warn, no, unknown): any but `no`, which also is what an account without a relay gets. No
++/// verdict at all, from an hjv-api without the wake API, offers nothing.
++bool hjvCanWake(String verdict) => verdict.isNotEmpty && verdict != 'no';
++
++/// Whether the card of a PC of the account's device list has "켜기" in its menu, and a tap on it
++/// offers the wake before it connects: while logged in, a PC that is off and can be woken.
++bool hjvOffersWake(
++        {required bool loggedIn,
++        required bool online,
++        required String verdict}) =>
++    loggedIn && !online && hjvCanWake(verdict);
++
++enum HjvWakeKind {
++  /// the request is on its way to hjv-api
++  asking,
++  queued,
++  sent,
++
++  /// hjv-api saw the PC come up (`confirmed`), or it was on already, or its card's dot says so
++  on,
++  notConfirmed,
++  failed,
++
++  /// hjv-api took no job
++  refused,
++
++  /// it came up and is off again before the app connected
++  asleep,
++}
++
++/// Where a wake stands: hjv-api's answer to the request, then its job as the polls find it.
++class HjvWake {
++  final HjvWakeKind kind;
++  final String job;
++
++  /// the relay's name, as the administrator gave it or hjv-api made it up ("NAS KZDV")
++  final String relay;
++
++  /// failed: the job's error; refused: the answer's `hjv`
++  final String code;
++
++  /// what may keep the PC from waking, in hjv-api's words
++  final List<String> hints;
++
++  /// refused `no_relay`: a relay whose network could not be confirmed may still do
++  final bool anyRelay;
++
++  /// refused `relay_offline`: when the relay last asked hjv-api, if it ever did
++  final int? lastSeen;
++
++  /// refused: hjv-api's own text, for an answer the app has none for
++  final String text;
++
++  /// on: hjv-api found the PC on already (409 `online`)
++  final bool already;
++  const HjvWake(this.kind,
++      {this.job = '',
++      this.relay = '',
++      this.code = '',
++      this.hints = const [],
++      this.anyRelay = false,
++      this.lastSeen,
++      this.text = '',
++      this.already = false});
++
++  /// The same job at another point.
++  HjvWake to(HjvWakeKind kind) =>
++      HjvWake(kind, job: job, relay: relay, hints: hints, already: already);
++}
++
++String _text(Object? value) => value is String ? value : '';
++
++/// A job as `GET /api/hjv/wake/{job}` and the 202 of a wake request give it (server/api
++/// src/wake.rs job_json); null for anything else. The job's ID, 32 hex digits, goes into the path
++/// the polls ask.
++HjvWake? hjvWakeJob(Object? body) {
++  if (body is! Map) return null;
++  final kind = switch (body['state']) {
++    'queued' => HjvWakeKind.queued,
++    'sent' => HjvWakeKind.sent,
++    'confirmed' => HjvWakeKind.on,
++    'not_confirmed' => HjvWakeKind.notConfirmed,
++    'failed' => HjvWakeKind.failed,
++    _ => null,
++  };
++  final job = _text(body['job']);
++  if (kind == null || !RegExp(r'^[0-9a-f]{32}$').hasMatch(job)) return null;
++  final relay = body['relay'];
++  final hints = body['hints'];
++  return HjvWake(kind,
++      job: job,
++      relay: relay is Map ? _text(relay['name']) : '',
++      code: kind == HjvWakeKind.failed ? _text(body['error']) : '',
++      hints: hints is List ? hints.whereType<String>().toList() : const []);
++}
++
++/// hjv-api's answer to `POST /api/hjv/devices/{id}/wake`: the job, new or under way (202), the
++/// PC on already (409 `online`), or why there is no job (`hjv`, with the server's text).
++HjvWake hjvWakeAsked(int status, Object? body) {
++  final job = status ~/ 100 == 2 ? hjvWakeJob(body) : null;
++  if (job != null) return job;
++  final map = body is Map ? body : const {};
++  var code = _text(map['hjv']);
++  if (code.isEmpty) {
++    code =
++        switch (status) { 404 => 'not_found', 429 => 'rate_limited', _ => '' };
++  }
++  if (code == 'online') return const HjvWake(HjvWakeKind.on, already: true);
++  final lastSeen = map['last_seen'];
++  return HjvWake(HjvWakeKind.refused,
++      code: code,
++      anyRelay: map['any_relay'] == true,
++      lastSeen: lastSeen is int ? lastSeen : null,
++      text: _text(map['error']));
++}
++
++/// A poll of the job. Without an answer to read, the job stands as it did (`last`) and the next
++/// poll asks again; a job that is gone, or a login that ended, ends the wake.
++HjvWake hjvWakePolled(int status, Object? body, HjvWake last) {
++  if (status == 200) return hjvWakeJob(body) ?? last;
++  if (status != 401 && status != 404) return last;
++  return HjvWake(HjvWakeKind.refused,
++      text: status == 401 && body is Map ? _text(body['error']) : '');
++}
++
++/// Whether the job is still under way, so that the progress goes on asking.
++bool hjvWakeGoesOn(HjvWake wake) =>
++    wake.kind == HjvWakeKind.queued || wake.kind == HjvWakeKind.sent;
++
++/// The progress stops waiting kHjvWakeFor after the request.
++bool hjvWakeTimedOut(DateTime began, DateTime now) =>
++    now.difference(began) >= kHjvWakeFor;
++
++/// Follows a wake's job from hjv-api's answer to the request (design v3 §8-5): every
++/// kHjvWakePoll `poll` asks for the job, unless the dot of the PC's card (`online`) says by then
++/// that the PC is up, and kHjvWakeFor after the request (`began`) the wait is over, whatever
++/// hjv-api says. `show` gets every state on the way, the last one is the result. Once `current`
++/// is false, another request took over: nothing more is shown, and the result is null.
++Future<HjvWake?> hjvFollowWake(HjvWake wake,
++    {required Future<HjvWake> Function(HjvWake last) poll,
++    required bool Function() online,
++    required bool Function() current,
++    required void Function(HjvWake wake) show,
++    required DateTime began,
++    DateTime Function() now = DateTime.now,
++    Future<void> Function(Duration time)? wait}) async {
++  while (current() && hjvWakeGoesOn(wake)) {
++    show(wake);
++    await (wait ?? Future<void>.delayed)(kHjvWakePoll);
++    if (!current()) return null;
++    wake = online() ? wake.to(HjvWakeKind.on) : await poll(wake);
++    if (hjvWakeGoesOn(wake) && hjvWakeTimedOut(began, now())) {
++      wake = wake.to(HjvWakeKind.notConfirmed);
++    }
++  }
++  if (!current()) return null;
++  show(wake);
++  return wake;
++}
++
++/// Waits for hbbs to have a PC that hjv-api saw come up, which may take it a little longer and
++/// without which a connection finds the PC offline: every kHjvWakePoll `ask` asks hbbs, until the
++/// dot of the PC's card is green (`online`), and for kHjvReachWait at most, after which the app
++/// connects whatever the dot says. False once `current` is: the connection does not go on.
++Future<bool> hjvAwaitReach(
++    {required bool Function() online,
++    required void Function() ask,
++    required bool Function() current,
++    DateTime Function() now = DateTime.now,
++    Future<void> Function(Duration time)? wait}) async {
++  final until = now().add(kHjvReachWait);
++  while (!online() && now().isBefore(until)) {
++    ask();
++    await (wait ?? Future<void>.delayed)(kHjvWakePoll);
++    if (!current()) return false;
++  }
++  return true;
++}
++
++/// A PC that was seen on at hbbs after the wake and is off there again went back to sleep. A dot
++/// that never turned green says nothing: hbbs may see the PC later than hjv-api, or not answer.
++bool hjvAsleepAgain({required bool seenOnline, required bool online}) =>
++    seenOnline && !online;
++
++/// What a wake needs of the app around it: hjv-api, the dot of the PC's card, the progress dialog,
++/// the connection. hjviewer_account.dart has the app's; the tests have their own.
++abstract class HjvWakeApp {
++  /// `POST /api/hjv/devices/{id}/wake` and `GET /api/hjv/wake/{job}`, as hjvWakeAsked and
++  /// hjvWakePolled read their answers.
++  Future<HjvWake> ask(bool anyRelay);
++  Future<HjvWake> poll(HjvWake last);
++
++  /// The dot of the PC's card: whether hbbs has the PC online. `askHbbs` asks hbbs for it now.
++  bool get online;
++  void askHbbs();
++
++  /// Fetches the device list again.
++  void refresh();
++
++  /// Whether a wake goes on to connect once the PC is on (Settings → Account).
++  bool get connects;
++
++  /// Whether the dialog may come again by itself: not on a phone that is in a session.
++  bool get free;
++
++  /// Shows the progress dialog of `wake`, which gives it `redraw` and `close`, until it closes;
++  /// true when it closed to connect.
++  Future<bool> show(HjvWaking wake);
++  void toast(String text);
++
++  /// Connects to the PC, for the [연결] of a dialog that came again by itself.
++  void connect();
++
++  DateTime now() => DateTime.now();
++  Future<void> wait(Duration time) => Future<void>.delayed(time);
++}
++
++/// A wake of one PC, from the request to the connection (design v3 §8-5). Closing the dialog does
++/// not end it: a PC that comes up after that gets the dialog again, with [연결], and a wake that
++/// failed is told in a toast.
++class HjvWaking {
++  final HjvTexts t;
++
++  /// the PC as the dialog and the toasts name it
++  final String name;
++  final HjvWakeApp app;
++  HjvWaking(this.t, this.name, this.app);
++
++  var _wake = const HjvWake(HjvWakeKind.asking);
++  var _open = false;
++
++  /// the dialog has been open since the request went out: the app connects by itself
++  var _watched = false;
++
++  /// the request this wake is at: what an earlier one still awaits is left alone
++  var _round = 0;
++  var _seenOnline = false;
++
++  /// The open dialog's: draws it again, and closes it (true: to connect).
++  void Function()? redraw;
++  void Function(bool connect)? close;
++
++  bool get _connects => _watched && app.connects;
++
++  /// What the dialog shows now.
++  HjvWakeView view({HjvClock local = hjvLocal}) =>
++      hjvWakeView(t, _wake, connects: _connects, local: local);
++
++  /// Shows the dialog and sends the request; true when the PC came up and the caller goes on to
++  /// connect to it.
++  Future<bool> run() {
++    final shown = _show();
++    unawaited(start());
++    return shown;
++  }
++
++  /// A new wake of the PC took over.
++  void end() {
++    _round++;
++    close?.call(false);
++  }
++
++  Future<bool> _show() async {
++    _open = true;
++    final connect = await app.show(this);
++    _open = _watched = false;
++    redraw = close = null;
++    return connect;
++  }
++
++  void _set(HjvWake wake) {
++    _wake = wake;
++    if (_open) redraw?.call();
++  }
++
++  /// Asks hjv-api to wake the PC, follows the job to its end, and once the PC is on fetches the
++  /// device list again and connects: by itself while the dialog has been open, else with [연결]
++  /// of the dialog, which comes again if it was closed. [다시 켜기] and [모든 중계기로 시도]
++  /// start again.
++  Future<void> start({bool anyRelay = false}) async {
++    final round = ++_round;
++    bool current() => round == _round;
++    _watched = _open;
++    _seenOnline = false;
++    _set(const HjvWake(HjvWakeKind.asking));
++    final began = app.now();
++    final wake = await hjvFollowWake(await app.ask(anyRelay),
++        poll: app.poll,
++        online: () => app.online,
++        current: current,
++        show: _set,
++        began: began,
++        now: app.now,
++        wait: app.wait);
++    if (wake == null) return;
++    if (wake.kind != HjvWakeKind.on) {
++      if (!_open) app.toast('$name: ${view().text}');
++      return;
++    }
++    app.refresh();
++    if (_connects) {
++      final reached = await hjvAwaitReach(
++          online: () => app.online,
++          ask: app.askHbbs,
++          current: () => current() && _open,
++          now: app.now,
++          wait: app.wait);
++      if (reached) close?.call(true);
++      return;
++    }
++    if (!_open) {
++      if (!app.free) {
++        app.toast('$name: ${t.wakeOn}');
++        return;
++      }
++      unawaited(_show().then((connect) {
++        if (connect) app.connect();
++      }));
++    }
++    // [연결] is the user's now: until then the dot tells whether the PC stays on
++    while (current() && _open) {
++      final online = app.online;
++      _seenOnline = _seenOnline || online;
++      final kind = hjvAsleepAgain(seenOnline: _seenOnline, online: online)
++          ? HjvWakeKind.asleep
++          : HjvWakeKind.on;
++      if (kind != _wake.kind) _set(_wake.to(kind));
++      await app.wait(kHjvWakePoll);
++    }
++  }
++}
++
++/// The relay as the progress names it: "NAS(<its name>)", or the name alone when it says NAS
++/// itself, as the names hjv-api makes up do.
++String hjvRelayLabel(String name) {
++  final relay = name.trim();
++  if (relay.isEmpty) return 'NAS';
++  return relay.toUpperCase().contains('NAS') ? relay : 'NAS($relay)';
++}
++
++/// Why a job failed: the relay's error or hjv-api's `no_result` (design v3 §8-5); any other
++/// code, which the relay and hjv-api disagree about, is shown as it is.
++String hjvWakeFailure(HjvTexts t, String code) {
++  switch (code) {
++    case 'no_result':
++    case 'not_active':
++      return t.wakeRelaySilent;
++    case 'no_iface':
++      return t.wakeNoIface;
++    case 'send_failed':
++    case 'partial':
++      return t.wakeSendFailed;
++    case 'rate_limited':
++      return t.wakeLater;
++    case 'expired':
++      return t.wakeExpired;
++    default:
++      return RegExp(r'^[a-z0-9_]{1,32}$').hasMatch(code)
++          ? t.wakeFailedFor(code)
++          : t.wakeFailed;
++  }
++}
++
++/// What the progress dialog shows of a wake.
++class HjvWakeView {
++  final String text;
++
++  /// under the text: why trying all relays may not help
++  final String note;
++
++  /// hjv-api's hints, behind [준비 안내 보기] unless `hintsOpen`
++  final List<String> hints;
++  final bool hintsOpen;
++
++  /// still under way: a progress bar
++  final bool busy;
++
++  /// the buttons next to [닫기]: [다시 켜기], [모든 중계기로 시도], [연결]
++  final bool again;
++  final bool anyRelay;
++  final bool connect;
++  const HjvWakeView(this.text,
++      {this.note = '',
++      this.hints = const [],
++      this.hintsOpen = false,
++      this.busy = false,
++      this.again = false,
++      this.anyRelay = false,
++      this.connect = false});
++}
++
++/// The progress of a wake (design v3 §8-5's table). `connects`: the app connects by itself once
++/// the PC is on, else [연결] does. Only `sent` says that the signal went out.
++HjvWakeView hjvWakeView(HjvTexts t, HjvWake wake,
++    {required bool connects, HjvClock local = hjvLocal}) {
++  switch (wake.kind) {
++    case HjvWakeKind.asking:
++      return HjvWakeView(t.wakeAsking, busy: true);
++    case HjvWakeKind.queued:
++      return HjvWakeView(t.wakeQueued(hjvRelayLabel(wake.relay)),
++          hints: wake.hints, busy: true);
++    case HjvWakeKind.sent:
++      return HjvWakeView(t.wakeSent, hints: wake.hints, busy: true);
++    case HjvWakeKind.on:
++      final on = wake.already ? t.wakeAlreadyOn : t.wakeOn;
++      return connects
++          ? HjvWakeView('$on ${t.wakeConnecting}', busy: true)
++          : HjvWakeView(on, connect: true);
++    case HjvWakeKind.notConfirmed:
++      return HjvWakeView(t.wakeNotConfirmed,
++          hints: wake.hints, hintsOpen: true, again: true);
++    case HjvWakeKind.failed:
++      return HjvWakeView(hjvWakeFailure(t, wake.code),
++          hints: wake.hints, again: wake.code == 'expired');
++    case HjvWakeKind.asleep:
++      return HjvWakeView(t.wakeAsleep, again: true);
++    case HjvWakeKind.refused:
++      switch (wake.code) {
++        case 'no_relay':
++          return HjvWakeView(t.wakeNoRelay,
++              note: wake.anyRelay ? t.wakeAnyRelayNote : '',
++              anyRelay: wake.anyRelay);
++        case 'relay_offline':
++          final seen = wake.lastSeen;
++          return HjvWakeView(seen == null
++              ? t.wakeRelayOffline
++              : '${t.wakeRelayOffline} ${t.wakeLastSeen(hjvTime(local(seen)))}');
++        case 'no_wol_info':
++          return HjvWakeView(t.wakeNoInfo);
++        case 'rate_limited':
++          return HjvWakeView(t.wakeLater);
++        case 'not_found':
++          return HjvWakeView(t.notInList);
++        default:
++          return HjvWakeView(
++              wake.text.isNotEmpty ? wake.text : t.requestFailed);
++      }
++  }
++}
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index c5cb1fc..7f63f09 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -1546,6 +1546,7 @@ void connectInPeerTab(BuildContext context, Peer peer, PeerTabIndex tab,
+     bool isTcpTunneling = false,
+     bool isRDP = false,
+     bool isTerminal = false}) async {
++  if (await hjvOfferWake(context, peer, tab, (c) => context = c)) return;
+   var password = '';
+   bool isSharedPassword = false;
+   if (tab == PeerTabIndex.ab) {
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index cdb6bd2..d906807 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -1,3 +1,5 @@
++import 'dart:async';
++
+ import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+@@ -88,6 +90,143 @@ Map<String, Object?> keysAnswer() => {
+       ],
+     };
+ 
++const jobId = '00112233445566778899aabbccddeeff';
++
++/// The 202 of `POST /api/hjv/devices/{id}/wake` for a new job (server/api/src/wake.rs).
++Map<String, Object?> wakeAnswer({String relay = 'NAS KZDV'}) => {
++      'job': jobId,
++      'state': 'queued',
++      'relay': {'name': relay, 'match': 'exact'},
++      'hints': [],
++    };
++
++/// `GET /api/hjv/wake/{job}` as hjv-api answers it (job_json).
++Map<String, Object?> job(String state,
++        {String? error,
++        int? sentAt = 1760968980,
++        int? confirmedAt,
++        int? packets = 12,
++        List<String> hints = const []}) =>
++    {
++      'job': jobId,
++      'state': state,
++      'sent_at': sentAt,
++      'confirmed_at': confirmedAt,
++      'packets': packets,
++      'error': error,
++      'relay': {'name': 'NAS KZDV', 'match': 'exact'},
++      'hints': hints,
++    };
++
++/// The app around a wake as a test scripts it: hjv-api's answers, the dot of the PC's card by the
++/// clock, which the waits move, and the user at the dialog.
++class FakeWakeApp extends HjvWakeApp {
++  final began = DateTime(2026, 10, 20, 14, 3);
++  late DateTime clock = began;
++  Duration get elapsed => clock.difference(began);
++
++  /// hjv-api's answer to the request, and the job's states poll after poll (the last one stays)
++  HjvWake asked = hjvWakeAsked(202, wakeAnswer());
++  List<String> states = ['sent'];
++  var polls = 0;
++
++  /// while hbbs has the PC online, from the request on
++  Duration? onlineFrom;
++  Duration? onlineUntil;
++  var hbbsAsked = 0;
++
++  var setting = true;
++  var inSession = false;
++
++  /// what the app saw of the wake, in order, and the texts the dialog drew
++  final seen = <String>[];
++  final texts = <String>[];
++  HjvWaking? dialog;
++  final _script = <Duration, void Function()>{};
++
++  /// What the user does once the clock is there.
++  void at(Duration time, void Function() what) => _script[time] = what;
++
++  /// The steps of the script that the clock did not get to.
++  Iterable<Duration> get notDone => _script.keys;
++
++  /// [닫기] (false) or [연결] of the open dialog.
++  void press({required bool connect}) => dialog!.close!(connect);
++
++  @override
++  Future<HjvWake> ask(bool anyRelay) async {
++    seen.add(anyRelay ? 'asks, any relay' : 'asks');
++    return asked;
++  }
++
++  @override
++  Future<HjvWake> poll(HjvWake last) async {
++    final state = states[polls < states.length ? polls : states.length - 1];
++    polls++;
++    return hjvWakeJob(job(state)) ?? last;
++  }
++
++  @override
++  bool get online =>
++      onlineFrom != null &&
++      elapsed >= onlineFrom! &&
++      (onlineUntil == null || elapsed < onlineUntil!);
++
++  @override
++  void askHbbs() => hbbsAsked++;
++
++  @override
++  void refresh() => seen.add('list again');
++
++  @override
++  bool get connects => setting;
++
++  @override
++  bool get free => !inSession;
++
++  @override
++  Future<bool> show(HjvWaking wake) {
++    seen.add('dialog');
++    final closed = Completer<bool>();
++    dialog = wake;
++    wake.redraw = () {
++      final text = wake.view(local: utc).text;
++      if (texts.isEmpty || texts.last != text) texts.add(text);
++    };
++    wake.close = (connect) {
++      if (closed.isCompleted) return;
++      seen.add(connect ? 'dialog closes to connect' : 'dialog closes');
++      dialog = null;
++      closed.complete(connect);
++    };
++    return closed.future;
++  }
++
++  @override
++  void toast(String text) => seen.add('toast: $text');
++
++  @override
++  void connect() => seen.add('connects');
++
++  @override
++  DateTime now() => clock;
++
++  @override
++  Future<void> wait(Duration time) async {
++    clock = clock.add(time);
++    if (elapsed > const Duration(hours: 1)) {
++      throw StateError('the wake goes on without an end: $seen');
++    }
++    final due = _script.keys.where((t) => t <= elapsed).toList()..sort();
++    for (final t in due) {
++      _script.remove(t)!();
++    }
++  }
++}
++
++/// Lets a wake that waits for nothing but its own steps go on to where it stops.
++Future<void> settled() => Future<void>.delayed(Duration.zero);
++
+ void main() {
+   test('times read as on the screens', () {
+     expect(hjvTime(DateTime(2026, 10, 5, 9, 7)), '10/5 09:07');
+@@ -390,6 +529,615 @@ void main() {
+     });
+   });
+ 
++  group('waking a PC (design v3 §8-4, §8-5)', () {
++    HjvWakeView view(HjvWake wake, {bool connects = true, HjvTexts t = ko}) =>
++        hjvWakeView(t, wake, connects: connects, local: utc);
++    String text(HjvWake wake, {bool connects = true}) =>
++        view(wake, connects: connects).text;
++    List<bool> buttons(HjvWakeView v) => [v.again, v.anyRelay, v.connect];
++    HjvWake failed(String? error) =>
++        hjvWakeJob(job('failed', error: error, sentAt: null, packets: null))!;
++    HjvWake refused(int status, Map<String, Object?> body) =>
++        hjvWakeAsked(status, body);
++
++    test('"켜기" is for a PC of mine that is off, unless it cannot be woken', () {
++      bool offers(
++              {bool loggedIn = true,
++              bool online = false,
++              String verdict = 'ok'}) =>
++          hjvOffersWake(loggedIn: loggedIn, online: online, verdict: verdict);
++      for (final verdict in ['ok', 'warn', 'unknown']) {
++        expect(offers(verdict: verdict), isTrue, reason: verdict);
++      }
++      // no wired card, or an account without a relay; and an hjv-api that does not say
++      expect(offers(verdict: 'no'), isFalse);
++      expect(offers(verdict: ''), isFalse);
++      expect(offers(online: true), isFalse);
++      expect(offers(loggedIn: false), isFalse);
++      expect(ko.wake, '켜기');
++      expect(ko.wakeAsk, '이 PC는 꺼져 있습니다. 켤까요?');
++      expect(ko.wakeTitle('연구실-PC'), '연구실-PC 켜기');
++      expect(ko.close, '닫기');
++    });
++
++    test('the request is passed on: nothing was sent yet', () {
++      final queued = hjvWakeAsked(202, wakeAnswer());
++      expect(queued.kind, HjvWakeKind.queued);
++      expect(queued.job, jobId);
++      expect(text(queued), 'NAS KZDV에 켜기 요청을 전달하는 중…');
++      expect(view(queued).busy, isTrue);
++      expect(buttons(view(queued)), [false, false, false]);
++      // a relay the administrator named
++      expect(text(hjvWakeAsked(202, wakeAnswer(relay: '연구실'))),
++          'NAS(연구실)에 켜기 요청을 전달하는 중…');
++      expect(text(hjvWakeAsked(202, wakeAnswer(relay: '연구실 NAS'))),
++          '연구실 NAS에 켜기 요청을 전달하는 중…');
++      expect(hjvRelayLabel(''), 'NAS');
++      expect(hjvRelayLabel('nas-2'), 'nas-2');
++      // before hjv-api answered
++      final asking = view(const HjvWake(HjvWakeKind.asking));
++      expect(asking.text, '요청하는 중…');
++      expect(asking.busy, isTrue);
++      // only a job whose packets went out says that the signal was sent
++      for (final wake in [const HjvWake(HjvWakeKind.asking), queued]) {
++        expect(text(wake), isNot(contains('보냈습니다')));
++      }
++    });
++
++    test('the signal was sent, and the PC came up', () {
++      final sent = hjvWakeJob(job('sent'))!;
++      expect(sent.kind, HjvWakeKind.sent);
++      expect(text(sent), 'NAS가 켜기 신호를 보냈습니다. PC가 켜지기를 기다립니다…');
++      expect(view(sent).busy, isTrue);
++      expect(hjvWakeGoesOn(sent), isTrue);
++
++      final on = hjvWakeJob(job('confirmed', confirmedAt: oct20 + 40))!;
++      expect(on.kind, HjvWakeKind.on);
++      expect(hjvWakeGoesOn(on), isFalse);
++      expect(text(on), '켜졌습니다. 연결합니다…');
++      expect(buttons(view(on)), [false, false, false]);
++      // the dialog was closed meanwhile, or Settings → Account says not to connect: [연결]
++      final manual = view(on, connects: false);
++      expect(manual.text, '켜졌습니다.');
++      expect(manual.busy, isFalse);
++      expect(buttons(manual), [false, false, true]);
++      // the card's dot turned green before hjv-api saw the PC
++      expect(text(sent.to(HjvWakeKind.on)), '켜졌습니다. 연결합니다…');
++      expect(ko.connect, '연결');
++    });
++
++    test('not seen on in five minutes: the hints and [다시 켜기]', () {
++      const hint = "빠른 시작이 켜져 있어 '종료' 상태에서는 켜지지 않습니다(절전은 됩니다).";
++      final v = view(hjvWakeJob(job('not_confirmed', hints: [hint]))!);
++      expect(v.text, '5분 안에 켜진 것을 확인하지 못했습니다.');
++      expect(v.hints, [hint]);
++      expect(v.hintsOpen, isTrue);
++      expect(buttons(v), [true, false, false]);
++      expect(ko.wakeAgain, '다시 켜기');
++      expect(ko.wakeHints, '준비 안내 보기');
++      // while it waits the hints are behind [준비 안내 보기]
++      final waiting = view(hjvWakeJob(job('sent', hints: [hint]))!);
++      expect(waiting.hints, [hint]);
++      expect(waiting.hintsOpen, isFalse);
++
++      // the app gives up five minutes after the request, whatever hjv-api says by then
++      final began = DateTime(2026, 10, 20, 14, 3);
++      expect(kHjvWakePoll, const Duration(seconds: 2));
++      expect(
++          hjvWakeTimedOut(
++              began, began.add(const Duration(minutes: 4, seconds: 59))),
++          isFalse);
++      expect(hjvWakeTimedOut(began, began.add(const Duration(minutes: 5))),
++          isTrue);
++      final gaveUp = view(
++          hjvWakeJob(job('sent', hints: [hint]))!.to(HjvWakeKind.notConfirmed));
++      expect(gaveUp.text, '5분 안에 켜진 것을 확인하지 못했습니다.');
++      expect(gaveUp.hints, [hint]);
++      expect(gaveUp.again, isTrue);
++    });
++
++    test('a job that failed says why', () {
++      const silent = 'NAS 중계기가 요청을 받지 못했습니다. NAS가 켜져 있고 연결되어 있는지 확인해 주세요.';
++      expect(text(failed('no_result')), silent);
++      expect(text(failed('not_active')), silent);
++      expect(text(failed('no_iface')), 'NAS에 이 PC의 네트워크로 나가는 랜카드가 없습니다.');
++      expect(
++          text(failed('send_failed')), 'NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 해 주세요.');
++      // packets that did not go out at all
++      expect(text(failed('partial')), 'NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 해 주세요.');
++      expect(text(failed('rate_limited')), '잠시 뒤 다시 시도해 주세요.');
++      expect(text(failed('expired')), '요청이 너무 늦게 전달되어 취소됐습니다. 다시 해 주세요.');
++      // the relay and hjv-api disagree: the code as it is
++      expect(text(failed('bad_signature')),
++          'NAS 중계기가 켜기 요청을 처리하지 못했습니다(bad_signature).');
++      for (final odd in [null, '', 'Bad Code', '<b>', 'x' * 33]) {
++        expect(text(failed(odd)), 'NAS 중계기가 켜기 요청을 처리하지 못했습니다.',
++            reason: '$odd');
++      }
++      for (final error in ['no_result', 'no_iface', 'send_failed', 'expired']) {
++        final v = view(failed(error));
++        expect(v.busy, isFalse, reason: error);
++        // a request that came too late can go again at once
++        expect(buttons(v), [error == 'expired', false, false], reason: error);
++        expect(v.text, isNot(contains('보냈습니다')), reason: error);
++        expect(hjvWakeGoesOn(failed(error)), isFalse, reason: error);
++      }
++    });
++
++    test('hjv-api takes no job', () {
++      const noRelayText = '이 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.';
++      Map<String, Object?> noRelay(String reason, bool anyRelay) => {
++            'error': noRelayText,
++            'hjv': 'no_relay',
++            'reason': reason,
++            'any_relay': anyRelay,
++          };
++      // a relay shares a network that hjv-api could not confirm
++      final unconfirmed = view(refused(409, noRelay('unconfirmed', true)));
++      expect(unconfirmed.text, noRelayText);
++      expect(unconfirmed.note, '같은 네트워크인지 확인되지 않아 켜질지 알 수 없습니다.');
++      expect(buttons(unconfirmed), [false, true, false]);
++      expect(ko.wakeAnyRelay, '모든 중계기로 시도');
++      // another site for sure, another network, no relay at all: no button
++      for (final reason in ['different_egress', 'other_network', 'no_relays']) {
++        final v = view(refused(409, noRelay(reason, false)));
++        expect((v.text, v.note), (noRelayText, ''), reason: reason);
++        expect(buttons(v), [false, false, false], reason: reason);
++      }
++
++      const offline = '중계기(NAS)가 연결되어 있지 않습니다.';
++      Map<String, Object?> relayOffline(int? lastSeen) =>
++          {'error': offline, 'hjv': 'relay_offline', 'last_seen': lastSeen};
++      expect(text(refused(503, relayOffline(oct20))),
++          '중계기(NAS)가 연결되어 있지 않습니다. 마지막 연결: 10/20 14:03');
++      expect(text(refused(503, relayOffline(null))), offline);
++
++      expect(text(refused(409, {'error': 'x', 'hjv': 'no_wol_info'})),
++          '이 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.');
++      const later = '잠시 뒤 다시 시도해 주세요.';
++      expect(
++          text(refused(
++              429, {'error': later, 'hjv': 'rate_limited', 'retry_after': 42})),
++          later);
++      // nginx's own 429 has no body the app reads
++      expect(text(hjvWakeAsked(429, null)), later);
++
++      // answers the app has no text for show hjv-api's
++      const unavailable = '지금은 켜기 요청을 보낼 수 없습니다. 잠시 뒤 다시 시도해 주세요.';
++      expect(text(refused(503, {'error': unavailable, 'hjv': 'unavailable'})),
++          unavailable);
++      const clock = '기기의 날짜와 시간이 서버와 10분 넘게 다릅니다. 날짜와 시간을 자동으로 맞추게 해 주세요.';
++      expect(
++          text(refused(
++              409, {'error': clock, 'hjv': 'clock', 'server_time': oct20})),
++          clock);
++      // a PC that left the list since it came, and no answer to read
++      expect(text(refused(404, {'error': 'not found'})), '이미 내 목록에 없는 PC입니다.');
++      expect(text(hjvWakeAsked(502, null)), '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.');
++      expect(text(hjvWakeAsked(202, {'state': 'queued'})),
++          '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.');
++      for (final wake in [
++        refused(409, noRelay('unconfirmed', true)),
++        refused(503, relayOffline(oct20)),
++        hjvWakeAsked(502, null),
++      ]) {
++        expect(wake.kind, HjvWakeKind.refused);
++        expect(hjvWakeGoesOn(wake), isFalse);
++        expect(view(wake).busy, isFalse);
++        expect(text(wake), isNot(contains('보냈습니다')));
++      }
++    });
++
++    test('a PC that is on already', () {
++      final on = refused(409, {'error': '이미 켜져 있습니다.', 'hjv': 'online'});
++      expect((on.kind, on.already), (HjvWakeKind.on, true));
++      expect(text(on, connects: false), '이미 켜져 있습니다.');
++      expect(buttons(view(on, connects: false)), [false, false, true]);
++      expect(text(on), '이미 켜져 있습니다. 연결합니다…');
++    });
++
++    test('a PC that went back to sleep before the app connected', () {
++      final asleep = hjvWakeJob(job('confirmed'))!.to(HjvWakeKind.asleep);
++      final v = view(asleep, connects: false);
++      expect(v.text, 'PC가 다시 절전에 들어갔습니다.');
++      expect(buttons(v), [true, false, false]);
++      expect(hjvAsleepAgain(seenOnline: true, online: false), isTrue);
++      expect(hjvAsleepAgain(seenOnline: true, online: true), isFalse);
++      // hbbs has not seen the PC yet, or does not answer: nothing says that it sleeps
++      expect(hjvAsleepAgain(seenOnline: false, online: false), isFalse);
++    });
++
++    test('the job as the polls find it', () {
++      final queued = hjvWakeAsked(202, wakeAnswer());
++      // a second request within the minute gets the job under way, as a poll would
++      final again = hjvWakeAsked(202, job('sent'));
++      expect((again.kind, again.job, again.relay),
++          (HjvWakeKind.sent, jobId, 'NAS KZDV'));
++      final sent = hjvWakePolled(200, job('sent'), queued);
++      expect(sent.kind, HjvWakeKind.sent);
++      expect(hjvWakePolled(200, job('confirmed'), sent).kind, HjvWakeKind.on);
++      // the server cannot be asked right now, or says what this app does not know: ask again
++      for (final (status, body) in <(int, Object?)>[
++        (502, null),
++        (503, {'error': 'x'}),
++        (429, null),
++        (409, {'error': 'x', 'hjv': 'clock'}),
++        (200, null),
++        (200, {'job': jobId, 'state': 'paused'}),
++        (200, {'state': 'sent'}),
++      ]) {
++        expect(hjvWakePolled(status, body, sent), same(sent),
++            reason: '$status $body');
++      }
++      // the job is gone, or the login ended
++      final gone = hjvWakePolled(404, {'error': 'not found'}, sent);
++      expect(gone.kind, HjvWakeKind.refused);
++      expect(text(gone), '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.');
++      const login = '로그인이 필요합니다. 다시 로그인해 주세요.';
++      expect(text(hjvWakePolled(401, {'error': login}, sent)), login);
++      // an error only a failed job has
++      expect(hjvWakeJob(job('sent', error: 'no_iface'))!.code, '');
++      // the job's ID goes into the polls' path: 32 hex digits, or it is no job
++      for (final id in [
++        '',
++        'x',
++        '../peers',
++        '${jobId}0',
++        jobId.toUpperCase()
++      ]) {
++        expect(hjvWakeJob({...job('sent'), 'job': id}), isNull, reason: id);
++      }
++      expect(hjvWakeJob({...job('sent'), 'job': 7}), isNull);
++    });
++
++    group('the job is followed every two seconds, for five minutes', () {
++      // a clock that the waits move
++      final began = DateTime(2026, 10, 20, 14, 3);
++      late DateTime now;
++      late List<HjvWakeKind> shown;
++      late int polls;
++      Future<HjvWake?> follow(HjvWake first,
++          {required HjvWake Function(HjvWake last) poll,
++          bool Function()? online,
++          bool Function()? current}) {
++        now = began;
++        shown = [];
++        polls = 0;
++        return hjvFollowWake(first,
++            poll: (last) async {
++              polls++;
++              return poll(last);
++            },
++            online: online ?? () => false,
++            current: current ?? () => true,
++            show: (wake) => shown.add(wake.kind),
++            began: began,
++            now: () => now,
++            wait: (time) async => now = now.add(time));
++      }
++
++      final queued = hjvWakeAsked(202, wakeAnswer());
++
++      test('to the PC coming up', () async {
++        final states = ['queued', 'sent', 'sent', 'confirmed'];
++        final last = await follow(queued,
++            poll: (_) => hjvWakeJob(job(states[polls - 1]))!);
++        expect(last?.kind, HjvWakeKind.on);
++        expect(polls, 4);
++        expect(now.difference(began), const Duration(seconds: 8));
++        expect(shown, [
++          HjvWakeKind.queued,
++          HjvWakeKind.queued,
++          HjvWakeKind.sent,
++          HjvWakeKind.sent,
++          HjvWakeKind.on,
++        ]);
++      });
++
++      test('to its failure', () async {
++        final last = await follow(queued,
++            poll: (_) => hjvWakeJob(job('failed', error: 'no_iface'))!);
++        expect((last?.kind, last?.code), (HjvWakeKind.failed, 'no_iface'));
++        expect(shown, [HjvWakeKind.queued, HjvWakeKind.failed]);
++      });
++
++      test('an answer that needs no job is shown as it is', () async {
++        final refused = hjvWakeAsked(409, {'error': 'x', 'hjv': 'no_wol_info'});
++        expect(await follow(refused, poll: (last) => last), same(refused));
++        expect(polls, 0);
++        expect(shown, [HjvWakeKind.refused]);
++        expect(now, began);
++      });
++
++      test('the dot of the card says that the PC is up before hjv-api does',
++          () async {
++        final last = await follow(queued,
++            poll: (_) => hjvWakeJob(job('sent'))!,
++            online: () => now.difference(began) >= const Duration(seconds: 6));
++        expect(last?.kind, HjvWakeKind.on);
++        expect(polls, 2);
++        expect(now.difference(began), const Duration(seconds: 6));
++      });
++
++      test('no longer than five minutes, though the server cannot be asked',
++          () async {
++        final sent = hjvWakeJob(job('sent', hints: ['hint']))!;
++        // every poll fails: the job stands as it did
++        final last = await follow(sent, poll: (last) => last);
++        expect(last?.kind, HjvWakeKind.notConfirmed);
++        expect(last?.hints, ['hint']);
++        expect(polls, 150);
++        expect(now.difference(began), const Duration(minutes: 5));
++        expect(shown.last, HjvWakeKind.notConfirmed);
++        // an answer in the last poll still counts
++        final justInTime = await follow(sent,
++            poll: (last) => polls < 150 ? last : hjvWakeJob(job('confirmed'))!);
++        expect(justInTime?.kind, HjvWakeKind.on);
++      });
++
++      test('until another request takes over', () async {
++        final last = await follow(queued,
++            poll: (_) => hjvWakeJob(job('sent'))!,
++            current: () => now.difference(began) < const Duration(seconds: 4));
++        expect(last, isNull);
++        expect(polls, 1);
++        // what the request before found is not shown any more
++        expect(shown, [HjvWakeKind.queued, HjvWakeKind.sent]);
++      });
++    });
++
++    test('a PC that came up is connected to once hbbs has it, or in 30 seconds',
++        () async {
++      final began = DateTime(2026, 10, 20, 14, 3);
++      var now = began;
++      var asked = 0;
++      Future<bool> reach(
++              {required Duration onlineAfter, Duration? closedAfter}) =>
++          hjvAwaitReach(
++              online: () => now.difference(began) >= onlineAfter,
++              ask: () => asked++,
++              current: () =>
++                  closedAfter == null || now.difference(began) < closedAfter,
++              now: () => now,
++              wait: (time) async => now = now.add(time));
++      Future<(bool, int, Duration)> after(Duration online,
++          {Duration? closed}) async {
++        now = began;
++        asked = 0;
++        final goesOn = await reach(onlineAfter: online, closedAfter: closed);
++        return (goesOn, asked, now.difference(began));
++      }
++
++      // hbbs had it already: at once
++      expect(await after(Duration.zero), (true, 0, Duration.zero));
++      // hbbs gets it a little later than hjv-api: asked every two seconds until then
++      expect(await after(const Duration(seconds: 5)),
++          (true, 3, const Duration(seconds: 6)));
++      // hbbs never says so: the app connects all the same
++      expect(await after(const Duration(hours: 1)),
++          (true, 15, const Duration(seconds: 30)));
++      // the dialog was closed meanwhile: no connection
++      expect(
++          await after(const Duration(hours: 1),
++              closed: const Duration(seconds: 4)),
++          (false, 2, const Duration(seconds: 4)));
++    });
++
++    group('a wake, from the request to the connection', () {
++      late FakeWakeApp app;
++      late HjvWaking waking;
++      setUp(() {
++        app = FakeWakeApp();
++        waking = HjvWaking(ko, '연구실-PC', app);
++      });
++      tearDown(() => expect(app.notDone, isEmpty));
++      String shown() => waking.view(local: utc).text;
++
++      test(
++          'the PC comes up while the dialog is open: the app connects by itself',
++          () async {
++        app.states = ['queued', 'sent', 'confirmed'];
++        // hbbs has the PC four seconds after hjv-api
++        app.onlineFrom = const Duration(seconds: 10);
++        expect(await waking.run(), isTrue);
++        expect(app.texts, [
++          '요청하는 중…',
++          'NAS KZDV에 켜기 요청을 전달하는 중…',
++          'NAS가 켜기 신호를 보냈습니다. PC가 켜지기를 기다립니다…',
++          '켜졌습니다. 연결합니다…',
++        ]);
++        expect(app.seen,
++            ['dialog', 'asks', 'list again', 'dialog closes to connect']);
++        // the job every two seconds, then hbbs every two seconds until it has the PC
++        expect((app.polls, app.hbbsAsked), (3, 2));
++        expect(app.elapsed, const Duration(seconds: 10));
++      });
++
++      test(
++          'the dialog was closed: when the PC comes up it comes again, with [연결]',
++          () async {
++        app.states = ['sent', 'sent', 'confirmed'];
++        app.at(const Duration(seconds: 2), () => app.press(connect: false));
++        app.at(const Duration(seconds: 20), () {
++          expect(shown(), '켜졌습니다.');
++          expect(waking.view().connect, isTrue);
++          app.press(connect: true);
++        });
++        // the caller of the wake does not connect
++        expect(await waking.run(), isFalse);
++        await settled();
++        expect(app.seen, [
++          'dialog',
++          'asks',
++          'dialog closes',
++          'list again',
++          'dialog',
++          'dialog closes to connect',
++          'connects',
++        ]);
++        expect(app.hbbsAsked, 0);
++      });
++
++      test('the dialog was closed and the wake failed: a toast', () async {
++        app.states = ['failed'];
++        app.at(const Duration(seconds: 2), () => app.press(connect: false));
++        expect(await waking.run(), isFalse);
++        await settled();
++        expect(app.seen, [
++          'dialog',
++          'asks',
++          'dialog closes',
++          'toast: 연구실-PC: NAS 중계기가 켜기 요청을 처리하지 못했습니다.',
++        ]);
++      });
++
++      test('the dialog stays open with what went wrong', () async {
++        app.asked = hjvWakeAsked(409, {'error': 'x', 'hjv': 'no_wol_info'});
++        final run = waking.run();
++        await settled();
++        expect(shown(), ko.wakeNoInfo);
++        expect(app.seen, ['dialog', 'asks']);
++        app.press(connect: false);
++        expect(await run, isFalse);
++        await settled();
++        expect(app.seen, ['dialog', 'asks', 'dialog closes']);
++      });
++
++      test('a phone in a session gets a toast, not the dialog', () async {
++        app.states = ['confirmed'];
++        app.inSession = true;
++        app.at(const Duration(seconds: 2), () => app.press(connect: false));
++        expect(await waking.run(), isFalse);
++        await settled();
++        expect(app.seen.sublist(2),
++            ['dialog closes', 'list again', 'toast: 연구실-PC: 켜졌습니다.']);
++      });
++
++      test('"PC를 켠 뒤 바로 연결" off: [연결], and a PC that went back to sleep',
++          () async {
++        app.setting = false;
++        app.states = ['confirmed'];
++        app.onlineFrom = const Duration(seconds: 2);
++        app.onlineUntil = const Duration(seconds: 60);
++        app.at(const Duration(seconds: 30), () {
++          expect(shown(), '켜졌습니다.');
++          expect(waking.view().connect, isTrue);
++        });
++        app.at(const Duration(seconds: 62), () {
++          expect(shown(), 'PC가 다시 절전에 들어갔습니다.');
++          expect(waking.view().again, isTrue);
++          expect(waking.view().connect, isFalse);
++          // [다시 켜기]
++          app.states = ['sent', 'sent', 'confirmed'];
++          app.polls = 0;
++          waking.start();
++        });
++        app.at(const Duration(seconds: 80), () => app.press(connect: true));
++        expect(await waking.run(), isTrue);
++        // the second request's progress, and nothing more of the first one's
++        expect(app.texts, [
++          '요청하는 중…',
++          'NAS KZDV에 켜기 요청을 전달하는 중…',
++          '켜졌습니다.',
++          'PC가 다시 절전에 들어갔습니다.',
++          '요청하는 중…',
++          'NAS KZDV에 켜기 요청을 전달하는 중…',
++          'NAS가 켜기 신호를 보냈습니다. PC가 켜지기를 기다립니다…',
++          '켜졌습니다.',
++        ]);
++        expect(app.seen, [
++          'dialog',
++          'asks',
++          'list again',
++          'asks',
++          'list again',
++          'dialog closes to connect',
++        ]);
++        // the app does not ask hbbs for a connection that is the user's to start
++        expect(app.hbbsAsked, 0);
++      });
++
++      test('a request that started again is not connected to by the one before',
++          () async {
++        // hjv-api called the PC on, hbbs does not have it: the app waits for hbbs
++        app.asked = hjvWakeAsked(409, {'error': 'x', 'hjv': 'online'});
++        app.at(const Duration(seconds: 4), () {
++          app.asked = hjvWakeAsked(409, {'error': 'x', 'hjv': 'no_wol_info'});
++          waking.start();
++        });
++        final run = waking.run();
++        await settled();
++        expect(shown(), ko.wakeNoInfo);
++        expect(app.seen, ['dialog', 'asks', 'list again', 'asks']);
++        app.press(connect: false);
++        expect(await run, isFalse);
++      });
++
++      test('[다시 켜기] after five minutes, and [모든 중계기로 시도]', () async {
++        final run = waking.run();
++        await settled();
++        expect(shown(), '5분 안에 켜진 것을 확인하지 못했습니다.');
++        expect(app.elapsed, const Duration(minutes: 5));
++        expect(waking.view().again, isTrue);
++        // hjv-api finds no relay now, but one that may do
++        app.asked = hjvWakeAsked(
++            409, {'error': 'x', 'hjv': 'no_relay', 'any_relay': true});
++        await waking.start();
++        expect(waking.view().anyRelay, isTrue);
++        app.asked = hjvWakeAsked(202, wakeAnswer());
++        app.states = ['confirmed'];
++        app.polls = 0;
++        app.onlineFrom = Duration.zero;
++        await waking.start(anyRelay: true);
++        expect(await run, isTrue);
++        expect(app.seen, [
++          'dialog',
++          'asks',
++          'asks',
++          'asks, any relay',
++          'list again',
++          'dialog closes to connect',
++        ]);
++      });
++
++      test('a PC that is on already is connected to as one that came up',
++          () async {
++        app.asked = hjvWakeAsked(409, {'error': 'x', 'hjv': 'online'});
++        app.onlineFrom = const Duration(seconds: 2);
++        expect(await waking.run(), isTrue);
++        expect(app.texts, ['요청하는 중…', '이미 켜져 있습니다. 연결합니다…']);
++        expect((app.polls, app.hbbsAsked), (0, 1));
++      });
++
++      test('a new wake of the PC ends it', () async {
++        app.at(const Duration(seconds: 6), waking.end);
++        expect(await waking.run(), isFalse);
++        await settled();
++        expect(app.seen, ['dialog', 'asks', 'dialog closes']);
++        expect(app.polls, 2);
++      });
++    });
++
++    test('in English', () {
++      final queued = hjvWakeAsked(202, wakeAnswer(relay: 'Lab'));
++      expect(view(queued, t: en).text, 'Passing the wake request to NAS(Lab)…');
++      expect(view(hjvWakeJob(job('confirmed'))!, t: en).text,
++          'It is on. Connecting…');
++      expect(
++          view(
++                  refused(503, {
++                    'error': 'x',
++                    'hjv': 'relay_offline',
++                    'last_seen': oct20
++                  }),
++                  t: en)
++              .text,
++          'The relay (NAS) is not connected. Last connected: 10/20 14:03');
++      expect(en.wake, 'Wake up');
++      expect(en.wakeAgain, 'Wake up again');
++    });
++  });
++
+   test('a 401 ends the login only for the token the app still keeps', () {
+     const kept = 'Bearer hjv_new';
+     expect(hjvEndsLogin(401, sent: kept, kept: kept), isTrue);
+@@ -480,6 +1228,34 @@ void main() {
+         t.serverDown,
+         t.keyLocked,
+         t.emptyList,
++        t.wake,
++        t.wakeAsk,
++        t.wakeTitle('PC'),
++        t.wakeAsking,
++        t.wakeQueued('NAS(Lab)'),
++        t.wakeSent,
++        t.wakeOn,
++        t.wakeAlreadyOn,
++        t.wakeConnecting,
++        t.wakeNotConfirmed,
++        t.wakeRelaySilent,
++        t.wakeNoIface,
++        t.wakeSendFailed,
++        t.wakeLater,
++        t.wakeExpired,
++        t.wakeFailed,
++        t.wakeFailedFor('bad_signature'),
++        t.wakeNoRelay,
++        t.wakeAnyRelayNote,
++        t.wakeAnyRelay,
++        t.wakeRelayOffline,
++        t.wakeLastSeen('10/20 14:03'),
++        t.wakeNoInfo,
++        t.wakeAsleep,
++        t.wakeAgain,
++        t.wakeHints,
++        t.connect,
++        t.wakeConnects,
+       ];
+       for (final text in texts) {
+         expect(text, isNot(contains('{')));
+diff --git a/flutter/test/hjviewer_account_widgets_test.dart b/flutter/test/hjviewer_account_widgets_test.dart
+index e271c59..b731733 100644
+--- a/flutter/test/hjviewer_account_widgets_test.dart
++++ b/flutter/test/hjviewer_account_widgets_test.dart
+@@ -180,4 +180,101 @@ void main() {
+     expect(answers, ['not mine', 'mine']);
+     await settle(tester);
+   });
++
++  testWidgets('a PC that is off is offered to be woken: [켜기] or [닫기]',
++      (tester) async {
++    final answers = <String>[];
++    await show(
++        tester,
++        hjvConfirmDialog(ko,
++            title: '연구실-PC',
++            text: ko.wakeAsk,
++            yes: ko.wake,
++            no: ko.close,
++            onYes: () => answers.add('wake'),
++            onNo: () => answers.add('close')));
++    expect(find.text('연구실-PC'), findsOneWidget);
++    expect(find.text('이 PC는 꺼져 있습니다. 켤까요?'), findsOneWidget);
++    expect(find.text('취소'), findsNothing);
++    await tester.tap(find.text('닫기'));
++    await tester.tap(find.text('켜기'));
++    expect(answers, ['close', 'wake']);
++    await settle(tester);
++  });
++
++  testWidgets('the wake progress has the buttons of its state', (tester) async {
++    final pressed = <String>[];
++    const hint = "빠른 시작이 켜져 있어 '종료' 상태에서는 켜지지 않습니다(절전은 됩니다).";
++    Map<String, Object?> job(String state) => {
++          'job': '00112233445566778899aabbccddeeff',
++          'state': state,
++          'relay': {'name': 'NAS KZDV', 'match': 'exact'},
++          'hints': [hint],
++        };
++    Future<void> progress(HjvWake wake, {bool connects = true}) => show(
++        tester,
++        hjvWakeDialog(ko, '연구실-PC', hjvWakeView(ko, wake, connects: connects),
++            onClose: () => pressed.add('close'),
++            onConnect: () => pressed.add('connect'),
++            onAgain: () => pressed.add('again'),
++            onAnyRelay: () => pressed.add('any relay')));
++    final bar = find.byType(LinearProgressIndicator);
++
++    // on its way: the hints wait behind [준비 안내 보기]
++    await progress(hjvWakeJob(job('queued'))!);
++    expect(find.text('연구실-PC 켜기'), findsOneWidget);
++    expect(find.text('NAS KZDV에 켜기 요청을 전달하는 중…'), findsOneWidget);
++    expect(bar, findsOneWidget);
++    expect(find.text('· $hint'), findsNothing);
++    await tester.tap(find.text('준비 안내 보기'));
++    await tester.pump();
++    expect(find.text('· $hint'), findsOneWidget);
++    expect(find.text('준비 안내 보기'), findsNothing);
++    for (final button in ['다시 켜기', '모든 중계기로 시도', '연결']) {
++      expect(find.text(button), findsNothing, reason: button);
++    }
++    await tester.tap(find.text('닫기'));
++    expect(pressed, ['close']);
++
++    // the PC is on: the app connects by itself, or [연결] does
++    await progress(hjvWakeJob(job('confirmed'))!);
++    expect(find.text('켜졌습니다. 연결합니다…'), findsOneWidget);
++    expect(bar, findsOneWidget);
++    expect(find.text('연결'), findsNothing);
++    await progress(hjvWakeJob(job('confirmed'))!, connects: false);
++    expect(find.text('켜졌습니다.'), findsOneWidget);
++    expect(bar, findsNothing);
++    await tester.tap(find.text('연결'));
++    expect(pressed.last, 'connect');
++
++    // not seen on: the hints at once, and [다시 켜기]
++    await progress(hjvWakeJob(job('not_confirmed'))!);
++    expect(find.text('5분 안에 켜진 것을 확인하지 못했습니다.'), findsOneWidget);
++    expect(find.text('· $hint'), findsOneWidget);
++    expect(find.text('준비 안내 보기'), findsNothing);
++    expect(bar, findsNothing);
++    await tester.tap(find.text('다시 켜기'));
++    expect(pressed.last, 'again');
++
++    // a relay whose network is not confirmed: [모든 중계기로 시도] with what it may come to
++    await progress(hjvWakeAsked(
++        409, {'error': 'x', 'hjv': 'no_relay', 'any_relay': true}));
++    expect(find.text('이 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.'), findsOneWidget);
++    expect(find.text('같은 네트워크인지 확인되지 않아 켜질지 알 수 없습니다.'), findsOneWidget);
++    await tester.tap(find.text('모든 중계기로 시도'));
++    expect(pressed.last, 'any relay');
++    await progress(hjvWakeAsked(
++        409, {'error': 'x', 'hjv': 'no_relay', 'any_relay': false}));
++    expect(find.text('모든 중계기로 시도'), findsNothing);
++    expect(find.text('같은 네트워크인지 확인되지 않아 켜질지 알 수 없습니다.'), findsNothing);
++
++    // asleep again before the app connected
++    await progress(hjvWakeJob(job('confirmed'))!.to(HjvWakeKind.asleep),
++        connects: false);
++    expect(find.text('PC가 다시 절전에 들어갔습니다.'), findsOneWidget);
++    expect(find.text('연결'), findsNothing);
++    await tester.tap(find.text('다시 켜기'));
++    expect(pressed, ['close', 'connect', 'again', 'any relay', 'again']);
++    await settle(tester);
++  });
+ }
+diff --git a/src/hjviewer_account/api.rs b/src/hjviewer_account/api.rs
+index e5b8b75..f9bf73c 100644
+--- a/src/hjviewer_account/api.rs
++++ b/src/hjviewer_account/api.rs
+@@ -164,6 +164,15 @@ pub(crate) struct MyPc {
+     pub pwless: String,
+     #[serde(default)]
+     pub kinds: Vec<String>,
++    /// whether the PC can be woken (§8-4): ok, warn, no or unknown; "" when hjv-api does not say
++    #[serde(default, deserialize_with = "text_or_none")]
++    pub wol: String,
++}
++
++/// `wol` is for the screens only: whatever it is besides a string, the PC stays in the list.
++fn text_or_none<'de, D: serde::Deserializer<'de>>(value: D) -> Result<String, D::Error> {
++    let value = <Value as serde::Deserialize>::deserialize(value)?;
++    Ok(value.as_str().unwrap_or_default().to_owned())
+ }
+ 
+ /// What the account requests read and change outside this module.
+@@ -796,7 +805,9 @@ pub(super) fn key_serial() -> u64 {
+ /// H16 (flutter_ffi.rs main_get_common): the account screens' queries; None for any other key.
+ /// - `hjv-account`: "Y" in an account build;
+ /// - `hjv-relogin`: "Y" when the login was dropped for want of its account key;
+-/// - `hjv-pc-bound`: "Y" when this user's login keeps this PC bound (logging out unbinds it).
++/// - `hjv-pc-bound`: "Y" when this user's login keeps this PC bound (logging out unbinds it);
++/// - `hjv-wol:<PC ID>`: whether that PC of the account can be woken, as the last device list said
++///   (`hjv.wol`), "" for a PC that is not in it.
+ pub(crate) fn get_common(key: &str) -> Option<String> {
+     if !enabled() {
+         return None;
+@@ -810,7 +821,12 @@ fn common_value(env: &impl Env, key: &str) -> Option<String> {
+         "hjv-account" => yes(true),
+         RELOGIN => yes(env.local(RELOGIN) == "Y"),
+         "hjv-pc-bound" => yes(!env.local(PC_BINDING).is_empty()),
+-        _ => return None,
++        _ => {
++            let pc = key.strip_prefix("hjv-wol:")?;
++            let mut list: MyDevices =
++                serde_json::from_str(&env.local(MY_DEVICES)).unwrap_or_default();
++            list.pcs.remove(pc).map(|pc| pc.wol).unwrap_or_default()
++        }
+     })
+ }
+ 
+@@ -1447,7 +1463,7 @@ mod tests {
+         let last = json!({ "total": 3, "data": [{ "id": "333333333", "status": 1 }] });
+         observe(&fake, &page(2), &answer(200, &last));
+         let full = format!(
+-            r#"{{"acct":"{ACCOUNT_ID}","at":{T},"pcs":{{"111111111":{{"pk":"{PC_PK}","pwless":"active","kinds":["remote","file","camera"]}},"222222222":{{"pk":"{PC_PK}","pwless":"active","kinds":["remote","file","camera"]}}}}}}"#
++            r#"{{"acct":"{ACCOUNT_ID}","at":{T},"pcs":{{"111111111":{{"pk":"{PC_PK}","pwless":"active","kinds":["remote","file","camera"],"wol":"unknown"}},"222222222":{{"pk":"{PC_PK}","pwless":"active","kinds":["remote","file","camera"],"wol":"unknown"}}}}}}"#
+         );
+         assert_eq!(fake.local(MY_DEVICES), full);
+         assert_eq!(
+@@ -1456,6 +1472,7 @@ mod tests {
+                 pk: PC_PK.to_owned(),
+                 pwless: "active".to_owned(),
+                 kinds: vec!["remote".to_owned(), "file".to_owned(), "camera".to_owned()],
++                wol: "unknown".to_owned(),
+             }
+         );
+ 
+@@ -1495,6 +1512,18 @@ mod tests {
+             &answer(200, &json!({ "total": 0, "data": [] })),
+         );
+         assert!(my_list(&fake).pcs.is_empty());
++
++        // a wake verdict that is no string is none; the PC stays, and with it the proofs to it
++        let (mut empty, mut object) = (pc("888888888"), pc("999999999"));
++        empty["hjv"]["wol"] = Value::Null;
++        object["hjv"]["wol"] = json!({ "verdict": "ok" });
++        let odd = json!({ "total": 2, "data": [empty, object] });
++        observe(&fake, &url(API_PEERS), &answer(200, &odd));
++        let kept = my_list(&fake).pcs;
++        assert_eq!(kept.keys().collect::<Vec<_>>(), ["888888888", "999999999"]);
++        assert!(kept
++            .values()
++            .all(|pc| pc.pwless == "active" && pc.wol.is_empty()));
+     }
+ 
+     #[test]
+@@ -1672,5 +1701,19 @@ mod tests {
+         assert!(set_common_value(&fake, RELOGIN, ""));
+         assert_eq!(get(RELOGIN).as_deref(), Some(""));
+         assert!(!set_common_value(&fake, "install-printer", ""));
++
++        // "켜기": the device list's verdict of a PC, none for a PC that is not in it
++        assert_eq!(get("hjv-wol:111111111").as_deref(), Some(""));
++        let pcs = r#"{"111111111":{"pk":"","pwless":"expired","kinds":[],"wol":"ok"},"222222222":{"pk":"","pwless":"active","kinds":[]}}"#;
++        fake.set_local(
++            MY_DEVICES,
++            &format!(r#"{{"acct":"{ACCOUNT_ID}","at":1,"pcs":{pcs}}}"#),
++        );
++        assert_eq!(get("hjv-wol:111111111").as_deref(), Some("ok"));
++        // a list from an hjv-api without the wake API, another PC, no PC
++        for pc in ["222222222", "333333333", ""] {
++            assert_eq!(get(&format!("hjv-wol:{pc}")).as_deref(), Some(""), "{pc}");
++        }
++        assert_eq!(get("hjv-wol"), None);
+     }
+ }
+diff --git a/src/hjviewer_account/ctl.rs b/src/hjviewer_account/ctl.rs
+index 6537355..54a7969 100644
+--- a/src/hjviewer_account/ctl.rs
++++ b/src/hjviewer_account/ctl.rs
+@@ -335,6 +335,7 @@ mod tests {
+             pk: pk.to_owned(),
+             pwless: pwless.to_owned(),
+             kinds: kinds.iter().map(|k| k.to_string()).collect(),
++            ..Default::default()
+         };
+         MyDevices {
+             pcs: [(PC_ID.to_owned(), pc)].into(),

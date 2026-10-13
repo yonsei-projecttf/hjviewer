@@ -1,0 +1,2554 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 13 Oct 2026 11:31:47 +0900
+Subject: [PATCH 33/36] hjviewer: same-account login: the account screens
+
+What the app shows of the account in an account build (design v3 1-1 to 1-3,
+1-7, 6-2 D1-D10), in two new files: hjviewer_account.dart with the hooks, the
+dialogs and the requests, and hjviewer_account_texts.dart with every text in
+Korean and English and the choices between them, plain Dart so that ci.sh tests
+them with the bridge's web stand-in. src/lang stays as it is and no text holds
+braces. The texts follow the app's language: Korean when translate() gives the
+app's Korean words. One-line hooks in the shared files:
+
+- login.dart: the first field is the Yonsei portal ID (D1). Once the login
+  dialog closed with a login (D2), the first login takes the app to the
+  accessible devices tab, and on Windows the PC tells what the login did with
+  it: GET /api/hjv/this-device, then up to ten seconds for the service's
+  hjv-pwless-state to turn active or disabled. "This PC is now in your device
+  list" with [Remove this PC] (this-device/undo) when this login added it, the
+  administrator's pause, "turns on shortly", another account's PC, a run
+  without installing, or the server not confirming the PC; and, without a
+  permanent password, the hint with [Set it now], which opens the security
+  settings' password dialog behind the same administrator check (or unlock
+  PIN) as those settings. The logout dialog of a PC this user's login bound
+  says that logging out takes it out of the list (D3).
+- peer_card.dart: "Add to address book" needs the address book (D4); the
+  accessible devices' cards get "Remove from my list" and its confirmation,
+  DELETE /api/hjv/devices/{id} (D5).
+- toolbar.dart, the two settings pages: no session notes, which hjv-api does
+  not keep (D6).
+- desktop settings, Account (D7): this PC's line from the service's state, the
+  PC password's line (permanent-password-set) with [Set], and the logged-in
+  devices. The line names the owner (this-device: mine, another account's) and
+  every state: on with the account's device count and [Turn off] (asked first,
+  then hjv-pwless-off; anyone at the PC may), switched off here with [Turn on
+  again] (the login dialog: only a login of the PC's account turns it on),
+  paused, not in step with the server since the last list, a changed key,
+  removed elsewhere with [Add again] (log out, then the login dialog), and a
+  bind the server did not confirm.
+- mobile settings, Account (D8): the logged-in devices.
+- my_group.dart (D9): while hjv-api fails the kept cards stay, under a banner
+  with [Retry]: the server's own text when it gave one (a clock ten minutes
+  off), a locked iPhone's key, or "the HJViewer server cannot be used right
+  now; password-less connections go on for a day". An empty list, once it
+  came, says how a PC gets there.
+- main.dart (D10): coming back to the front, at most every 30 seconds, the
+  device list comes again quietly (currentUser first after a failure), and new
+  devices of the account (GET /api/hjv/keys, "new") get the notice with what
+  the server saw, [It is mine] (ack) or [Not me: log it out] (DELETE the key).
+  A login dropped for want of its account key (hjv-relogin) is told, with
+  [Log in], until the notice was closed once.
+
+The logged-in devices: a row per device (the server's name and, but for an
+iPhone's model code, the device's own in parentheses; login time, campus or
+not, version, the last password-less connection) with [Log out]; opened, a
+line per PC with its last use and 30-day count (U6); [Log out all other
+devices]. A key already gone is said so. Account requests go through Rust's
+http_request, which signs them; a 401 ends the login as the device list's
+does, but only for the token the app still keeps: a login sets the user name
+before it stores its token, and the request the account settings send for
+the new name can go out in that gap, with no token or the last login's.
+
+The service's state as these screens read it (pc.rs, two strings): a bind
+request whose binding the PC could not keep is refused as bind-store, like
+the other bind refusals ("not confirmed by the server", [Add again]), not
+as a bound PC's failed sync ([Turn off]) or "turns on shortly"; and an expired
+list carries the time the last list came (expired <time>), so that the line
+reads "not in step with the server (last checked 10/20 14:03)" (design 1-2).
+
+Outside an account build every hook returns at once or leaves its condition
+as it was; D4's address book condition holds for any build that turns the
+address book off.
+
+Tests: test/hjviewer_account_test.dart (pure, ci.sh): every service state to
+its line and button for each owner, the after-login results to their notices,
+the logout text, the logged-in devices' rows and opened lines from hjv-api's
+answer, which keys get the new-device notice and its text, the banner, the
+empty list hint only once the list came, the menu condition, the refresh
+interval, a 401 that ends the login only for the token still kept, no braces.
+test/hjviewer_account_widgets_test.dart (needs the generated bridge): the
+logged-in devices list opening and logging out, this PC's lines with [Turn on
+again] only when switched off here, the after-login notice's buttons, the
+new-device notice's answers. src/hjviewer_account/pc/tests.rs: a bind whose
+list cannot be kept is refused as bind-store, and the expired state has the
+time of the last list.
+
+Known limits: the desktop login's two-factor step, off with hjv-api (U1),
+closes the login dialog as cancelled, so it gets no after-login screens. The
+"removed elsewhere" line has no date: the service's state carries none. On
+the account's only PC the accessible devices tab keeps the empty list hint:
+hjv-api's device list leaves out the device that asks.
+
+(Design v3, work package F: patch 0033.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart      | 845 ++++++++++++++++++
+ .../lib/common/hjviewer_account_texts.dart    | 587 ++++++++++++
+ flutter/lib/common/widgets/login.dart         |   6 +-
+ flutter/lib/common/widgets/my_group.dart      |   5 +-
+ flutter/lib/common/widgets/peer_card.dart     |  10 +-
+ flutter/lib/common/widgets/toolbar.dart       |   3 +-
+ .../desktop/pages/desktop_setting_page.dart   |   7 +-
+ flutter/lib/main.dart                         |   3 +
+ flutter/lib/mobile/pages/settings_page.dart   |   4 +-
+ flutter/test/hjviewer_account_test.dart       | 491 ++++++++++
+ .../test/hjviewer_account_widgets_test.dart   | 183 ++++
+ src/hjviewer_account/pc.rs                    |  12 +-
+ src/hjviewer_account/pc/tests.rs              |  18 +-
+ 13 files changed, 2156 insertions(+), 18 deletions(-)
+ create mode 100644 flutter/lib/common/hjviewer_account.dart
+ create mode 100644 flutter/lib/common/hjviewer_account_texts.dart
+ create mode 100644 flutter/test/hjviewer_account_test.dart
+ create mode 100644 flutter/test/hjviewer_account_widgets_test.dart
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+new file mode 100644
+index 0000000..80c662e
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -0,0 +1,845 @@
++// HJViewer's account screens (design v3 §1, §6-2 D1-D10): what the login and logout dialogs, the
++// accessible devices tab, its cards' menu and Settings → Account show in an account build, the
++// logged-in devices and the notices about new devices and dropped logins. Account requests go
++// through Rust's http_request, which signs them with the account key (H13); the texts and the
++// choices between them are in hjviewer_account_texts.dart. Outside an account build every hook
++// leaves its screen as it was.
++
++import 'dart:async';
++import 'dart:convert';
++
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/formatter/id_formatter.dart';
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
++import 'package:flutter_hbb/common/widgets/dialog.dart';
++import 'package:flutter_hbb/common/widgets/login.dart';
++import 'package:flutter_hbb/consts.dart';
++import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
++import 'package:flutter_hbb/desktop/widgets/popup_menu.dart';
++import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
++import 'package:flutter_hbb/models/peer_model.dart';
++import 'package:flutter_hbb/models/peer_tab_model.dart';
++import 'package:flutter_hbb/models/platform_model.dart';
++import 'package:flutter_hbb/utils/http_service.dart' as http;
++import 'package:get/get.dart';
++import 'package:settings_ui/settings_ui.dart';
++
++/// The service's state of this PC (Config2, design v3 §4-5), which the UI gets every second.
++const _kPcState = 'hjv-pwless-state';
++
++/// The service's request to switch password-less connections off on this PC (design v3 §2-3).
++const _kPcOff = 'hjv-pwless-off';
++
++/// Set once the first login took the app to the accessible devices tab.
++const _kDevicesTabShown = 'hjv-devices-tab-shown';
++
++String _commonSync(String key) {
++  try {
++    return bind.mainGetCommonSync(key: key);
++  } catch (e) {
++    return '';
++  }
++}
++
++/// An account build (design v3 §6-5): HJV_SERVER, HJV_LOGIN_SEAL_PUBKEY and HJV_TRUST_PUBKEYS.
++final bool _accountBuild = !isWeb && _commonSync('hjv-account') == 'Y';
++
++/// The texts in the language of the app's own: Korean when translate() gives its Korean words,
++/// which follows the app's language setting, else the system's, and English where the UI cannot
++/// show Korean (src/lang.rs).
++HjvTexts get _t => HjvTexts(translate('Cancel') == '취소');
++
++class _HjvError implements Exception {
++  final String text;
++  _HjvError(this.text);
++
++  @override
++  String toString() => text;
++}
++
++/// A request to hjv-api, with the login's token: the status and the decoded body. A 401 ends the
++/// login as the device list's does (the key was logged out from another device), unless a login
++/// replaced the token meanwhile (hjvEndsLogin).
++Future<(int, Object?)> _request(String method, String path) async {
++  final url = Uri.parse('${await bind.mainGetApiServer()}$path');
++  final headers = getHttpHeaders();
++  final resp = switch (method) {
++    'POST' => await http.post(url, headers: headers),
++    'DELETE' => await http.delete(url, headers: headers),
++    _ => await http.get(url, headers: headers),
++  };
++  Object? body;
++  try {
++    body = jsonDecode(decode_http_response(resp));
++  } catch (e) {
++    body = null;
++  }
++  if (hjvEndsLogin(resp.statusCode,
++      sent: headers['Authorization'],
++      kept: getHttpHeaders()['Authorization'])) {
++    await gFFI.userModel.reset(resetOther: true);
++  }
++  return (resp.statusCode, body);
++}
++
++/// Shows a dialog; a dialog that cannot be shown yet (no overlay) is left out.
++Future<T?> _show<T>(DialogBuilder builder) =>
++    gFFI.dialogManager.show<T>(builder).catchError((Object e) {
++      debugPrint('hjv: $e');
++      return null;
++    });
++
++/// A button as dialogButton() draws it, for a text of these screens, which translate() must not
++/// see.
++Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) {
++  if (isDesktop || isWebDesktop) {
++    return outline
++        ? OutlinedButton(onPressed: onPressed, child: Text(label))
++        : ElevatedButton(
++            style: ElevatedButton.styleFrom(elevation: 0),
++            onPressed: onPressed,
++            child: Text(label));
++  }
++  return TextButton(onPressed: onPressed, child: Text(label));
++}
++
++// ---- the hooks ----
++
++/// D1 (login.dart): the login dialog's first field takes the Yonsei portal ID.
++String hjvUsernameTitle() => _accountBuild
++    ? _t.usernameTitle
++    : translate(DialogTextField.kUsernameTitle);
++
++/// D2 (login.dart, after the login dialog closed): after a login, the first one takes the app to
++/// the accessible devices tab, and a Windows PC tells what the login did with it (design v3 §1-1,
++/// §1-2). Returns at once; the notice comes when the service has taken the login.
++void hjvAfterLogin(bool? res) {
++  if (!_accountBuild || res != true || !gFFI.userModel.isLogin) return;
++  _showDevicesTabOnce();
++  if (isWindows) unawaited(_announceThisPc());
++}
++
++/// D3 (login.dart): the logout dialog's text.
++String hjvLogoutTip(String tip) => _accountBuild
++    ? hjvLogoutText(_t, tip, boundHere: _commonSync('hjv-pc-bound') == 'Y')
++    : tip;
++
++/// D5 (peer_card.dart, the accessible devices' menu): "내 목록에서 빼기".
++Future<List<MenuEntryBase<String>>> hjvDeviceMenuItems(
++    BuildContext context, Peer peer, EdgeInsets? padding) async {
++  if (!hjvShowsDeviceMenu(
++      accountBuild: _accountBuild, loggedIn: gFFI.userModel.isLogin)) {
++    return [];
++  }
++  final t = _t;
++  return [
++    MenuEntryDivider(),
++    MenuEntryButton<String>(
++      childBuilder: (TextStyle? style) =>
++          Text(t.removeFromList, style: style?.copyWith(color: Colors.red)),
++      proc: () => _removeFromList(t, peer),
++      padding: padding,
++      dismissOnClicked: true,
++    ),
++  ];
++}
++
++/// D6 (toolbar.dart, the settings): hjv-api keeps no notes of sessions.
++bool hjvHidesNotes() => _accountBuild;
++
++/// D7 (desktop settings, the account card): this PC, its PC password, the logged-in devices.
++List<Widget> hjvAccountRows() =>
++    _accountBuild ? [const _HjvAccountPanel()] : [];
++
++/// D8 (mobile settings, the account section): the logged-in devices.
++List<AbstractSettingsTile> hjvAccountTiles() => _accountBuild
++    ? [
++        CustomSettingsTile(
++            child: Obx(() => SettingsTile(
++                  title: Text(_t.loggedInDevices),
++                  leading: const Icon(Icons.devices),
++                  enabled: gFFI.userModel.isLogin,
++                  onPressed: (_) => _showLoggedInDevices(),
++                ))),
++      ]
++    : [];
++
++/// D9 (my_group.dart): while hjv-api fails, the cards the app kept stay on screen (design v3 §1-3).
++bool hjvKeepCachedCards() => _accountBuild;
++
++/// D9: above the cards, why the server cannot be used, with [재시도], or, when the account has no
++/// PC yet, how one gets there.
++List<Widget> hjvNetworkBanner(BuildContext context) {
++  if (!_accountBuild) return [];
++  final user = gFFI.userModel;
++  final group = gFFI.groupModel;
++  final error = user.networkError.value;
++  if (error.isNotEmpty) {
++    return [
++      _banner(
++          context,
++          hjvServerBanner(_t,
++              error: error, fromServer: user.networkErrorFromServer.value),
++          retry: user.refreshCurrentUser)
++    ];
++  }
++  if (hjvShowsEmptyHint(
++      pulled: group.initialized,
++      loading: group.groupLoading.value,
++      empty: group.peers.isEmpty,
++      networkError: error,
++      loadError: group.groupLoadError.value)) {
++    return [_banner(context, _t.emptyList)];
++  }
++  return [];
++}
++
++/// D10 (main.dart, the main window and the phone app): coming back to the front, at most every 30
++/// seconds, fetches the device list again quietly and looks for new devices of the account; a
++/// login dropped for want of its account key is told (design v3 §1-1, §1-3).
++void hjvInitAccount() {
++  if (!_accountBuild) return;
++  WidgetsBinding.instance.addObserver(_foreground);
++  gFFI.userModel.userName.listen((name) {
++    if (name.isEmpty) _announceRelogin();
++  });
++  WidgetsBinding.instance.addPostFrameCallback((_) => _foreground.start());
++}
++
++// ---- after a login ----
++
++void _showDevicesTabOnce() {
++  if (bind.getLocalFlutterOption(k: _kDevicesTabShown) == 'Y') return;
++  bind.setLocalFlutterOption(k: _kDevicesTabShown, v: 'Y');
++  final group = PeerTabIndex.group.index;
++  final tabs = gFFI.peerTabModel;
++  if (isOptionFixed(kOptionPeerTabIndex) ||
++      !tabs.visibleEnabledOrderedIndexs.contains(group)) {
++    return;
++  }
++  tabs.setCurrentTab(group);
++  bind.setLocalFlutterOption(k: kOptionPeerTabIndex, v: group.toString());
++  if (isMobile) {
++    final bar = navigationBarKey.currentWidget;
++    if (bar is BottomNavigationBar && !bind.isIncomingOnly()) {
++      bar.onTap?.call(0);
++    }
++  } else if (isDesktop) {
++    try {
++      Get.find<DesktopTabController>().jumpToByKey(kTabLabelHomePage);
++    } catch (e) {
++      debugPrint('hjv: no main tabs: $e');
++    }
++  }
++}
++
++HjvPcState _pcState() =>
++    HjvPcState.parse(bind.mainGetOptionSync(key: _kPcState));
++
++Future<bool> _permanentPasswordSet() async {
++  try {
++    return await bind.mainGetCommon(key: 'permanent-password-set') == 'true';
++  } catch (e) {
++    return false;
++  }
++}
++
++Future<(String?, bool)>? _thisDeviceInFlight;
++
++/// `GET /api/hjv/this-device`: what the login did with this device, and whether [이 PC 빼기] can
++/// undo it; the status is null when the request failed.
++Future<(String?, bool)> _thisDevice() => _thisDeviceInFlight ??= () async {
++      try {
++        final (code, body) = await _request('GET', '/api/hjv/this-device');
++        if (code != 200 || body is! Map) return (null, false);
++        final status = body['status'];
++        return (status is String ? status : null, body['undo'] == true);
++      } catch (e) {
++        debugPrint('hjv: this-device: $e');
++        return (null, false);
++      } finally {
++        _thisDeviceInFlight = null;
++      }
++    }();
++
++/// The notice on a Windows PC after a login (design v3 §1-2, §4-4): once the login is in the list,
++/// it waits up to ten seconds for the service to turn the PC on.
++Future<void> _announceThisPc() async {
++  final t = _t;
++  final installed = bind.mainIsInstalled();
++  final (status, undo) = installed ? await _thisDevice() : (null, false);
++  final bound = _commonSync('hjv-pc-bound') == 'Y';
++  var state = _pcState();
++  if (installed &&
++      (status == 'added' || status == 'already' || (status == null && bound))) {
++    final until = DateTime.now().add(kHjvTurnOnWait);
++    while (!hjvTurnedOn(state) && DateTime.now().isBefore(until)) {
++      await Future.delayed(const Duration(milliseconds: 500));
++      state = _pcState();
++    }
++  }
++  final canSet = installed && !isChangePermanentPasswordDisabled();
++  final notice = hjvLoginNotice(t,
++      installed: installed,
++      status: status,
++      undo: undo,
++      boundByLogin: bound,
++      state: state,
++      passwordSet: !canSet || await _permanentPasswordSet());
++  if (notice == null) return;
++  _show<void>((setState, close, context) => hjvLoginNoticeDialog(t, notice,
++      onOk: close,
++      onUndo: notice.undo
++          ? () {
++              close();
++              _undoThisPc(t);
++            }
++          : null,
++      onSetPassword: notice.askPassword
++          ? () {
++              close();
++              _setPcPassword();
++            }
++          : null));
++}
++
++/// [이 PC 빼기]: this login's adding is undone; the Rust hook stops the PC taking proofs at once.
++Future<void> _undoThisPc(HjvTexts t) async {
++  try {
++    final (code, body) = await _request('POST', '/api/hjv/this-device/undo');
++    final map = body is Map ? body : const {};
++    if (code == 200 && map['status'] == 'removed') {
++      showToast(t.removedThisPc);
++    } else {
++      final message = map['message'];
++      showToast(code == 200 && message is String && message.isNotEmpty
++          ? message
++          : hjvRequestError(t, body));
++    }
++  } catch (e) {
++    showToast(hjvFailure(t, e));
++  }
++}
++
++/// The security settings' permanent password dialog, behind the same Windows administrator check
++/// (or unlock PIN) as the locked settings of an installed PC.
++void _setPcPassword({VoidCallback? done}) {
++  void open() => setPasswordDialog(notEmptyCallback: done);
++  if (!bind.mainIsInstalled()) {
++    open();
++    return;
++  }
++  final pin = bind.mainGetUnlockPin();
++  if (pin.isEmpty || isUnlockPinDisabled()) {
++    callMainCheckSuperUserPermission().then((ok) {
++      if (ok) open();
++    });
++  } else {
++    checkUnlockPinDialog(pin, open);
++  }
++}
++
++// ---- this PC in the settings ----
++
++Future<void> _pcAction(HjvTexts t, HjvPcAction action) async {
++  switch (action) {
++    case HjvPcAction.turnOff:
++      _show<void>((setState, close, context) =>
++          hjvConfirmDialog(t, text: t.turnOffAsk, yes: t.turnOff, onYes: () {
++            close();
++            bind.mainSetOption(key: _kPcOff, value: 'Y');
++            showToast(t.turnedOff);
++          }, onNo: close));
++    case HjvPcAction.turnOn:
++    case HjvPcAction.logInAgain:
++      loginDialog();
++    case HjvPcAction.addAgain:
++      if (gFFI.userModel.isLogin) await gFFI.userModel.logOut();
++      loginDialog();
++    case HjvPcAction.none:
++      break;
++  }
++}
++
++class _HjvAccountPanel extends StatefulWidget {
++  const _HjvAccountPanel();
++
++  @override
++  State<_HjvAccountPanel> createState() => _HjvAccountPanelState();
++}
++
++class _HjvAccountPanelState extends State<_HjvAccountPanel> {
++  /// a desktop where HJViewer is installed: its service may hold this PC's binding
++  final bool _pc = isDesktop && bind.mainIsInstalled();
++  String _state = '';
++  String? _status;
++  bool? _passwordSet;
++  Timer? _timer;
++  StreamSubscription<String>? _user;
++
++  @override
++  void initState() {
++    super.initState();
++    if (!_pc) return;
++    _state = bind.mainGetOptionSync(key: _kPcState);
++    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
++      final state = bind.mainGetOptionSync(key: _kPcState);
++      if (state != _state) setState(() => _state = state);
++    });
++    _loadStatus();
++    _loadPassword();
++    _user = gFFI.userModel.userName.listen((_) => _loadStatus());
++  }
++
++  @override
++  void dispose() {
++    _timer?.cancel();
++    _user?.cancel();
++    super.dispose();
++  }
++
++  Future<void> _loadStatus() async {
++    final (status, _) =
++        gFFI.userModel.isLogin ? await _thisDevice() : (null, false);
++    if (mounted) setState(() => _status = status);
++  }
++
++  Future<void> _loadPassword() async {
++    final set = await _permanentPasswordSet();
++    if (mounted) setState(() => _passwordSet = set);
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Obx(() {
++      final t = _t;
++      final loggedIn = gFFI.userModel.isLogin;
++      final line = _pc
++          ? hjvPcLine(
++              t,
++              HjvPcState.parse(_state),
++              hjvOwner(
++                  loggedIn: loggedIn,
++                  status: _status,
++                  boundByMe: _commonSync('hjv-pc-bound') == 'Y'))
++          : null;
++      return Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          if (line != null)
++            HjvPcLines(
++                t: t,
++                line: line,
++                passwordSet: _passwordSet,
++                canSetPassword: !isChangePermanentPasswordDisabled(),
++                onAction: (action) => _pcAction(t, action),
++                onSetPassword: () => _setPcPassword(done: _loadPassword)),
++          if (loggedIn)
++            _button(t.loggedInDevices, _showLoggedInDevices, outline: true),
++        ],
++      ).marginOnly(left: 18, top: 8);
++    });
++  }
++}
++
++/// This PC's line and its PC password's in Settings → Account (design v3 §1-2).
++class HjvPcLines extends StatelessWidget {
++  final HjvTexts t;
++  final HjvPcLine line;
++
++  /// whether the PC has a permanent password; null while it is being asked
++  final bool? passwordSet;
++  final bool canSetPassword;
++  final void Function(HjvPcAction action) onAction;
++  final VoidCallback onSetPassword;
++  const HjvPcLines(
++      {super.key,
++      required this.t,
++      required this.line,
++      required this.passwordSet,
++      required this.canSetPassword,
++      required this.onAction,
++      required this.onSetPassword});
++
++  @override
++  Widget build(BuildContext context) {
++    final password = passwordSet;
++    return Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        Row(children: [
++          Expanded(child: Text(line.text)),
++          if (line.action != HjvPcAction.none)
++            _button(hjvActionLabel(t, line.action), () => onAction(line.action),
++                outline: true),
++        ]),
++        if (password != null)
++          Row(children: [
++            Expanded(child: Text(hjvPasswordLine(t, password))),
++            if (!password && canSetPassword)
++              _button(t.setPassword, onSetPassword, outline: true),
++          ]).marginOnly(top: 4),
++      ],
++    ).marginOnly(bottom: 8);
++  }
++}
++
++// ---- dialogs ----
++
++CustomAlertDialog hjvConfirmDialog(HjvTexts t,
++        {String? title,
++        required String text,
++        required String yes,
++        required VoidCallback onYes,
++        required VoidCallback onNo}) =>
++    CustomAlertDialog(
++      title: title == null ? null : Text(title),
++      content: Text(text),
++      actions: [_button(t.cancel, onNo, outline: true), _button(yes, onYes)],
++      onSubmit: onYes,
++      onCancel: onNo,
++    );
++
++/// The notice after a login on a Windows PC (design v3 §1-2).
++CustomAlertDialog hjvLoginNoticeDialog(HjvTexts t, HjvLoginNotice notice,
++        {required VoidCallback onOk,
++        VoidCallback? onUndo,
++        VoidCallback? onSetPassword}) =>
++    CustomAlertDialog(
++      title: Text(notice.title),
++      content: Column(
++        mainAxisSize: MainAxisSize.min,
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(notice.lines.join(' ')),
++          if (onSetPassword != null) ...[
++            Text(t.setPasswordHint).marginOnly(top: 12),
++            TextButton(onPressed: onSetPassword, child: Text(t.setPasswordNow)),
++          ],
++        ],
++      ),
++      actions: [
++        if (onUndo != null) _button(t.removeThisPc, onUndo, outline: true),
++        _button(t.ok, onOk),
++      ],
++      onSubmit: onOk,
++      onCancel: onOk,
++    );
++
++/// The notice of a new device of the account (design v3 §1-1); it waits for an answer.
++CustomAlertDialog hjvNewDeviceDialog(HjvTexts t, HjvKey key,
++        {required VoidCallback onMine,
++        required VoidCallback onNotMine,
++        HjvClock local = hjvLocal}) =>
++    CustomAlertDialog(
++      title: Text(t.newDeviceTitle),
++      content: Text(hjvNewDeviceText(t, key, local: local)),
++      actions: [
++        _button(t.notMine, onNotMine, outline: true),
++        _button(t.itsMine, onMine),
++      ],
++    );
++
++/// The logged-in devices of the account (design v3 §1-7): a row per device with
++/// [로그아웃시키기], and opened, a line per PC it connected to without a password (U6).
++class HjvKeysList extends StatelessWidget {
++  final HjvTexts t;
++  final List<HjvKey> keys;
++  final void Function(HjvKey key) onLogOut;
++  final HjvClock local;
++  const HjvKeysList(
++      {super.key,
++      required this.t,
++      required this.keys,
++      required this.onLogOut,
++      this.local = hjvLocal});
++
++  @override
++  Widget build(BuildContext context) {
++    return Column(
++      mainAxisSize: MainAxisSize.min,
++      children: keys
++          .map((k) => ExpansionTile(
++                controlAffinity: ListTileControlAffinity.leading,
++                tilePadding: EdgeInsets.zero,
++                title: Text(hjvKeyTitle(t, k)),
++                subtitle: Text(hjvKeyLine(t, k, local: local)),
++                trailing: k.current
++                    ? null
++                    : TextButton(
++                        onPressed: () => onLogOut(k),
++                        child: Text(t.logOutDevice)),
++                expandedCrossAxisAlignment: CrossAxisAlignment.start,
++                childrenPadding: const EdgeInsets.only(left: 40, bottom: 8),
++                children: k.uses.isEmpty
++                    ? [Text(t.noUse)]
++                    : k.uses
++                        .map((u) => Text(hjvUseLine(t, u, local: local)))
++                        .toList(),
++              ))
++          .toList(),
++    );
++  }
++}
++
++Future<List<HjvKey>>? _keysInFlight;
++
++/// `GET /api/hjv/keys`: the account's logged-in devices (at most 20, one page).
++Future<List<HjvKey>> _getKeys() => _keysInFlight ??= () async {
++      try {
++        final (code, body) =
++            await _request('GET', '/api/hjv/keys?current=1&pageSize=100');
++        if (code != 200) throw _HjvError(hjvRequestError(_t, body));
++        return hjvKeys(body);
++      } finally {
++        _keysInFlight = null;
++      }
++    }();
++
++/// A request about a logged-in device: a toast tells how it went, unless it was a confirmation
++/// (`done` null) that went through or found the key gone (404).
++Future<void> _keyRequest(HjvTexts t, String method, String path,
++    {String Function(Object? body)? done}) async {
++  try {
++    final (code, body) = await _request(method, path);
++    if (code == 200 || code == 404) {
++      if (done != null) showToast(code == 200 ? done(body) : t.alreadyOut);
++    } else {
++      showToast(hjvRequestError(t, body));
++    }
++  } catch (e) {
++    showToast(hjvFailure(t, e));
++  }
++}
++
++void _showLoggedInDevices() {
++  final t = _t;
++  _show<void>((setState, close, context) => CustomAlertDialog(
++        title: Text(t.loggedInDevices),
++        contentBoxConstraints:
++            const BoxConstraints(minWidth: 360, maxWidth: 560),
++        content: _HjvKeysPanel(t: t),
++        actions: [_button(t.close, close)],
++        onCancel: close,
++      ));
++}
++
++/// The logged-in devices dialog's content: the list, fetched again after each logout.
++class _HjvKeysPanel extends StatefulWidget {
++  final HjvTexts t;
++  const _HjvKeysPanel({required this.t});
++
++  @override
++  State<_HjvKeysPanel> createState() => _HjvKeysPanelState();
++}
++
++class _HjvKeysPanelState extends State<_HjvKeysPanel> {
++  List<HjvKey>? _keys;
++  String? _error;
++
++  @override
++  void initState() {
++    super.initState();
++    _load();
++  }
++
++  Future<void> _load() async {
++    try {
++      final keys = await _getKeys();
++      if (mounted) setState(() => _keys = keys);
++    } catch (e) {
++      final text = e is _HjvError ? e.text : hjvFailure(widget.t, e);
++      if (mounted) setState(() => _error = text);
++    }
++  }
++
++  void _reload() {
++    if (!mounted) return;
++    setState(() {
++      _keys = null;
++      _error = null;
++    });
++    _load();
++  }
++
++  void _ask(
++      {String? title,
++      required String text,
++      required String yes,
++      required Future<void> Function() action}) {
++    _show<void>((setState, close, context) => hjvConfirmDialog(widget.t,
++            title: title, text: text, yes: yes, onYes: () async {
++          close();
++          await action();
++          _reload();
++        }, onNo: close));
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final t = widget.t;
++    final keys = _keys;
++    if (keys == null) {
++      return _error == null
++          ? const LinearProgressIndicator()
++          : Text(_error ?? '');
++    }
++    return Column(
++      mainAxisSize: MainAxisSize.min,
++      crossAxisAlignment: CrossAxisAlignment.end,
++      children: [
++        HjvKeysList(
++            t: t,
++            keys: keys,
++            onLogOut: (k) => _ask(
++                title: hjvDeviceName(k),
++                text: t.logOutDeviceAsk,
++                yes: t.logOutDevice,
++                action: () => _keyRequest(
++                    t, 'DELETE', '/api/hjv/keys/${k.ckid}',
++                    done: (_) => t.loggedOutDevice))),
++        if (keys.any((k) => !k.current))
++          _button(
++                  t.logOutOthers,
++                  () => _ask(
++                      text: t.logOutOthersAsk,
++                      yes: t.logOutOthers,
++                      action: () =>
++                          _keyRequest(t, 'POST', '/api/hjv/keys/revoke-others',
++                              done: (body) {
++                            final n = body is Map ? body['revoked'] : null;
++                            return t.loggedOutOthers(n is int ? n : 0);
++                          })),
++                  outline: true)
++              .marginOnly(top: 8),
++      ],
++    );
++  }
++}
++
++void _removeFromList(HjvTexts t, Peer peer) {
++  final name = peer.alias.isNotEmpty
++      ? peer.alias
++      : peer.hostname.isNotEmpty
++          ? peer.hostname
++          : formatID(peer.id);
++  _show<void>((setState, close, context) => hjvConfirmDialog(t,
++          title: name, text: t.removeAsk, yes: t.remove, onYes: () async {
++        close();
++        try {
++          final (code, body) =
++              await _request('DELETE', '/api/hjv/devices/${peer.id}');
++          showToast(code == 200
++              ? t.removed
++              : code == 404
++                  ? t.notInList
++                  : hjvRequestError(t, body));
++        } catch (e) {
++          showToast(hjvFailure(t, e));
++        }
++        gFFI.groupModel.pull();
++      }, onNo: close));
++}
++
++Widget _banner(BuildContext context, String text, {VoidCallback? retry}) {
++  final error = retry != null;
++  return Container(
++    color: error ? MyTheme.color(context).errorBannerBg : null,
++    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
++    child: Row(
++      children: [
++        Icon(error ? Icons.info : Icons.info_outline,
++                color: error ? const Color.fromARGB(255, 249, 81, 81) : null,
++                size: 20)
++            .marginOnly(right: 6),
++        Expanded(child: SelectableText(text)),
++        if (retry != null) TextButton(onPressed: retry, child: Text(_t.retry)),
++      ],
++    ),
++  ).marginOnly(bottom: 12);
++}
++
++// ---- notices when the app starts or comes back ----
++
++var _reloginShown = false;
++
++/// The login was dropped because this device has no account key for it (a restored iPhone,
++/// design v3 §1-1): told once, the flag cleared when the notice was closed.
++void _announceRelogin() {
++  if (_reloginShown || _commonSync('hjv-relogin') != 'Y') return;
++  _reloginShown = true;
++  final t = _t;
++  gFFI.dialogManager
++      .show<void>((setState, close, context) => CustomAlertDialog(
++            title: Text(t.reloginTitle),
++            content: Text(t.reloginBody),
++            actions: [
++              _button(t.close, close, outline: true),
++              _button(t.logIn, () {
++                close();
++                loginDialog();
++              }),
++            ],
++            onCancel: close,
++          ))
++      .then((_) => bind.mainSetCommon(key: 'hjv-relogin', value: ''))
++      .catchError((Object e) => debugPrint('hjv: $e'))
++      .whenComplete(() => _reloginShown = false);
++}
++
++/// The keys this app answered or is showing the new-device notice of.
++final _answered = <int>{};
++var _announcing = false;
++
++Future<void> _announceNewDevices() async {
++  if (_announcing || !gFFI.userModel.isLogin) return;
++  _announcing = true;
++  try {
++    final t = _t;
++    for (final k in hjvNewDevices(await _getKeys(), _answered)) {
++      _answered.add(k.ckid);
++      await _show<void>(
++          (setState, close, context) => hjvNewDeviceDialog(t, k, onMine: () {
++                close();
++                _keyRequest(t, 'POST', '/api/hjv/keys/${k.ckid}/ack');
++              }, onNotMine: () {
++                close();
++                _keyRequest(t, 'DELETE', '/api/hjv/keys/${k.ckid}',
++                    done: (_) => t.notMineDone);
++              }));
++    }
++  } catch (e) {
++    debugPrint('hjv: new devices: $e');
++  } finally {
++    _announcing = false;
++  }
++}
++
++class _HjvForeground with WidgetsBindingObserver {
++  DateTime? _last;
++
++  void start() {
++    _last = DateTime.now();
++    _announceRelogin();
++    unawaited(_announceNewDevices());
++  }
++
++  @override
++  void didChangeAppLifecycleState(AppLifecycleState state) {
++    if (state != AppLifecycleState.resumed) return;
++    final now = DateTime.now();
++    if (!hjvRefreshDue(_last, now)) return;
++    _last = now;
++    _announceRelogin();
++    if (!gFFI.userModel.isLogin) return;
++    if (gFFI.userModel.networkError.isNotEmpty) {
++      gFFI.userModel.refreshCurrentUser();
++    } else {
++      gFFI.groupModel.pull(force: true, quiet: true);
++    }
++    unawaited(_announceNewDevices());
++  }
++}
++
++final _foreground = _HjvForeground();
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+new file mode 100644
+index 0000000..f815f9f
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -0,0 +1,587 @@
++// The account screens' texts, in Korean and English, and the decisions that pick them (design v3
++// §1, §6-2, §7-5). Plain Dart without the bridge, so that ci.sh tests it with the web stand-in;
++// hjviewer_account.dart shows them. src/lang stays as it is, and no text holds braces, which
++// translate() would take for placeholders.
++
++/// Turns a Unix time into the time shown.
++typedef HjvClock = DateTime Function(int unix);
++
++DateTime hjvLocal(int unix) => DateTime.fromMillisecondsSinceEpoch(unix * 1000);
++
++String _two(int n) => n.toString().padLeft(2, '0');
++
++/// "10/20"
++String hjvDay(DateTime t) => '${t.month}/${t.day}';
++
++/// "10/20 14:03"
++String hjvTime(DateTime t) => '${hjvDay(t)} ${_two(t.hour)}:${_two(t.minute)}';
++
++/// How often coming back to the front fetches the device list again (design v3 §1-3, D10).
++const kHjvRefreshEvery = Duration(seconds: 30);
++
++/// How long the screen after a login waits for the service to turn this PC on (design v3 §4-4).
++const kHjvTurnOnWait = Duration(seconds: 10);
++
++bool hjvRefreshDue(DateTime? last, DateTime now) =>
++    last == null || now.difference(last) >= kHjvRefreshEvery;
++
++class HjvTexts {
++  final bool korean;
++  const HjvTexts(this.korean);
++
++  String _t(String ko, String en) => korean ? ko : en;
++
++  String get usernameTitle => _t('연세포탈 ID', 'Yonsei portal ID');
++  String get ok => _t('확인', 'OK');
++  String get cancel => _t('취소', 'Cancel');
++  String get close => _t('닫기', 'Close');
++  String get retry => _t('재시도', 'Retry');
++  String get logIn => _t('로그인', 'Log in');
++  String get requestFailed => _t('요청하지 못했습니다. 잠시 뒤 다시 해 주세요.',
++      'The request failed. Please try again later.');
++
++  // after a login on a PC (§1-2)
++  String get addedTitle =>
++      _t('이 PC를 내 기기 목록에 추가했습니다', 'This PC is now in your device list');
++  String get alreadyTitle =>
++      _t('이 PC는 내 기기 목록에 있습니다', 'This PC is in your device list');
++  String get notAddedTitle => _t(
++      '이 PC를 내 기기 목록에 넣지 않았습니다', 'This PC was not added to your device list');
++  String get notOnTitle =>
++      _t('비밀번호 없는 연결을 켜지 못했습니다', 'Password-less connections did not turn on');
++  String get canConnect => _t(
++      '같은 연세포탈 계정으로 로그인한 내 휴대폰과 PC에서 이 PC에 비밀번호 없이 연결할 수 있습니다.',
++      'Your phones and PCs logged in to the same Yonsei portal account can connect to this PC without its password.');
++  String get adminTurnsOn => _t('비밀번호 없는 연결은 관리자가 이 기능을 켜면 바로 쓸 수 있습니다.',
++      'Password-less connections work as soon as the administrator turns them on.');
++  String get onShortly => _t('잠시 뒤 켜집니다. 설정 → 계정에서 상태를 볼 수 있습니다.',
++      'They will turn on shortly. Settings → Account shows their state.');
++  String get howToTurnOff => _t('끄려면 설정 → 계정에서 [끄기]를 누르거나 이 PC에서 로그아웃하세요.',
++      'To turn them off, press [Turn off] in Settings → Account or log out on this PC.');
++  String get setPasswordHint => _t(
++      '비밀번호 없는 연결이 안 될 때(서버 점검, 끄기, 로그아웃) 쓸 PC 비밀번호를 정해 두세요.',
++      'Set a PC password for the times password-less connections do not work (server maintenance, turned off, logged out).');
++  String get setPasswordNow => _t('지금 정하기', 'Set it now');
++  String get removeThisPc => _t('이 PC 빼기', 'Remove this PC');
++  String get otherAccount => _t('다른 계정에 등록된 PC입니다. 관리자에게 문의하세요.',
++      'This PC belongs to another account. Please contact the administrator.');
++  String get notInstalled => _t('설치하지 않고 실행한 HJViewer라 내 기기 목록에 넣지 않았습니다.',
++      'HJViewer runs here without being installed, so this PC was not added to your device list.');
++  String get checkFailed => _t(
++      '서버에서 이 PC를 확인하지 못했습니다. 잠시 뒤 로그아웃했다가 다시 로그인해 주세요.',
++      'The server could not confirm this PC. Please log out and log in again in a while.');
++  String get removedThisPc =>
++      _t('이 PC를 내 기기 목록에서 뺐습니다.', 'This PC is out of your device list.');
++
++  // this PC in Settings → Account (§1-2)
++  String get pcPrefix => _t('이 PC: ', 'This PC: ');
++  String get mine => _t('내 기기', 'my device');
++  String get otherOwner => _t('다른 계정에 등록됨', 'in another account');
++  String get pwlessOn => _t('비밀번호 없이 연결 켜짐', 'password-less connections on');
++  String onWithKeys(int keys) => _t('비밀번호 없이 연결 켜짐(내 기기 $keys대)',
++      'password-less connections on (my devices: $keys)');
++  String get offHere => _t('이 PC에서 꺼 둠', 'turned off on this PC');
++  String get paused => _t('관리자가 일시 중지함', 'paused by the administrator');
++  String get unsynced => _t('서버와 맞추지 못함', 'not in step with the server');
++  String unsyncedSince(String time) => _t('서버와 맞추지 못함(마지막 확인 $time)',
++      'not in step with the server (last checked $time)');
++  String get keyChanged =>
++      _t('다시 로그인 필요(보안 키가 바뀜)', 'log in again (its security key changed)');
++  String get removedElsewhere =>
++      _t('다른 기기에서 목록에서 뺌', 'removed from the list on another device');
++  String get loginHereAgain =>
++      _t('이 PC에서 다시 로그인 필요', 'log in on this PC again');
++  String get notConfirmed => _t('서버에서 확인하지 못함', 'not confirmed by the server');
++  String get turnOff => _t('끄기', 'Turn off');
++  String get turnOnAgain => _t('다시 켜기', 'Turn on again');
++  String get addAgain => _t('다시 추가', 'Add again');
++  String get logInAgain => _t('다시 로그인', 'Log in again');
++  String get turnOffAsk => _t(
++      '이 PC에서 비밀번호 없는 연결을 끌까요? 다시 켜려면 이 PC가 등록된 계정으로 이 PC에서 다시 로그인해야 합니다.',
++      'Turn off password-less connections on this PC? To turn them on again, log in on this PC with the account it belongs to.');
++  String get turnedOff => _t('이 PC에서 비밀번호 없는 연결을 껐습니다.',
++      'Password-less connections are off on this PC.');
++  String get passwordSet => _t('PC 비밀번호: 정해 둠', 'PC password: set');
++  String get passwordNone => _t('PC 비밀번호: 없음', 'PC password: none');
++  String get setPassword => _t('정하기', 'Set');
++
++  // logging out (§1-7)
++  String get logoutUnbinds => _t(
++      '로그아웃하면 이 PC도 내 기기 목록에서 빠지고, 비밀번호 없이 연결할 수 없게 됩니다.',
++      'Logging out also takes this PC out of your device list, and it no longer takes password-less connections.');
++
++  // the logged-in devices (§1-7, U6)
++  String get loggedInDevices => _t('로그인한 기기', 'Logged-in devices');
++  String get thisDevice => _t('이 기기', 'this device');
++  String get onCampus => _t('학내', 'on campus');
++  String get offCampus => _t('학외', 'off campus');
++  String loggedInAt(String time, String net) => net.isEmpty
++      ? _t('로그인 $time', 'logged in $time')
++      : _t('로그인 $time($net)', 'logged in $time ($net)');
++  String lastUse(String day, String pc) => pc.isEmpty
++      ? _t('마지막 비밀번호 없는 연결 $day', 'last password-less connection $day')
++      : _t('마지막 비밀번호 없는 연결 $day $pc',
++          'last password-less connection $day to $pc');
++  String useLine(String pc, String time, int n30) => _t(
++      '$pc · 마지막 $time · 30일 동안 $n30번',
++      '$pc · last $time · $n30 times in 30 days');
++  String get noUse => _t('최근 30일 동안 비밀번호 없이 연결한 PC가 없습니다.',
++      'No password-less connections in the last 30 days.');
++  String get logOutDevice => _t('로그아웃시키기', 'Log out');
++  String get logOutOthers => _t('다른 기기 모두 로그아웃', 'Log out all other devices');
++  String get logOutDeviceAsk => _t(
++      '로그아웃시키면 다시 로그인하기 전까지 그 기기로 내 PC에 비밀번호 없이 연결할 수 없습니다.',
++      'Once logged out, that device cannot connect to your PCs without their passwords until it logs in again.');
++  String get logOutOthersAsk => _t(
++      '지금 쓰는 이 기기 말고 다른 기기를 모두 로그아웃시킬까요? 다시 로그인하기 전까지 그 기기들로는 내 PC에 비밀번호 없이 연결할 수 없습니다.',
++      'Log out every device but the one you are using? Until they log in again, they cannot connect to your PCs without their passwords.');
++  String get loggedOutDevice =>
++      _t('그 기기를 로그아웃시켰습니다.', 'The device is logged out.');
++  String get alreadyOut =>
++      _t('이미 로그아웃된 기기입니다.', 'The device is already logged out.');
++  String loggedOutOthers(int n) =>
++      _t('다른 기기 $n대를 로그아웃시켰습니다.', 'Logged out $n other device(s).');
++
++  // a new device of the account (§1-1)
++  String get newDeviceTitle => _t('새 기기에서 로그인했습니다', 'A new device logged in');
++  String get newDeviceNote => _t(
++      '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.',
++      'It can connect to your PCs without their passwords. If it was not you, press [Not me].');
++  String get onCampusNet => _t('학내 네트워크', 'campus network');
++  String get offCampusNet => _t('학외 네트워크', 'off-campus network');
++  String get itsMine => _t('내 기기 맞음', 'It is mine');
++  String get notMine => _t('아님: 로그아웃시키기', 'Not me: log it out');
++  String get notMineDone => _t('그 기기를 로그아웃시켰습니다. 연세포탈 비밀번호도 바꿔 주세요.',
++      'The device is logged out. Please change your Yonsei portal password too.');
++
++  // a login dropped for want of its account key (§1-1)
++  String get reloginTitle => _t('로그인이 풀렸습니다', 'You were logged out');
++  String get reloginBody => _t(
++      '이 기기에서 다시 로그인해 주세요. 백업에서 복원한 기기에는 보안 키가 옮겨지지 않습니다.',
++      'Please log in again on this device. A device restored from a backup does not get the security key.');
++
++  // a card's menu (§1-7)
++  String get removeFromList => _t('내 목록에서 빼기', 'Remove from my list');
++  String get removeAsk => _t(
++      '빼면 이 PC에 비밀번호 없이 연결할 수 없습니다. 다시 넣으려면 그 PC에서 다시 로그인해야 합니다.',
++      'Once removed, this PC takes no password-less connections. To add it again, log in on that PC again.');
++  String get remove => _t('빼기', 'Remove');
++  String get removed => _t('내 목록에서 뺐습니다.', 'Removed from your list.');
++  String get notInList =>
++      _t('이미 내 목록에 없는 PC입니다.', 'This PC is not in your list any more.');
++
++  // the accessible devices tab (§1-1, §1-3)
++  String get serverDown => _t(
++      'HJViewer 서버를 지금 쓸 수 없습니다. 비밀번호 없는 연결은 PC가 받아 둔 목록으로 하루 동안 계속됩니다.',
++      'The HJViewer server cannot be used right now. Password-less connections go on for a day with the lists the PCs keep.');
++  String get keyLocked => _t('이 기기의 보안 키를 지금 쓸 수 없습니다. 기기 잠금을 풀고 [재시도]를 누르세요.',
++      "This device's security key cannot be used right now. Unlock the device and press [Retry].");
++  String get emptyList => _t(
++      'PC에 HJViewer 1.6.0 이상을 설치하고, 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.',
++      'Install HJViewer 1.6.0 or later on a PC and log in there with the same Yonsei portal account: the PC then shows up here.');
++}
++
++/// The request that `http_request` refuses while the account key cannot be used (H13): its
++/// answer reads this instead of a response.
++const kHjvKeyUnavailable = 'hjv: account key unavailable';
++
++/// What hjv-api's answer says went wrong: its own text, or a general one.
++String hjvRequestError(HjvTexts t, Object? body) {
++  final error = body is Map ? body['error'] : null;
++  return error is String && error.isNotEmpty ? error : t.requestFailed;
++}
++
++/// What a request that never got an answer shows.
++String hjvFailure(HjvTexts t, Object error) =>
++    error.toString().contains(kHjvKeyUnavailable)
++        ? t.keyLocked
++        : t.requestFailed;
++
++/// Whether an account request's answer ends the login: a 401 for the Authorization the app still
++/// keeps. A login sets the user name before it stores its token, and the account settings answer
++/// the new name with a request that may go out with the token from before; that request's 401
++/// must not end the new login.
++bool hjvEndsLogin(int status, {required String? sent, required String? kept}) =>
++    status == 401 && sent == kept;
++
++// ---- this PC (hjv-pwless-state, design v3 §4-5) ----
++
++enum HjvPcKind {
++  none,
++  active,
++  off,
++  disabled,
++  expired,
++  revoked,
++  listed,
++  needsRelogin,
++  unsynced,
++  bindFailed,
++}
++
++/// The service's hjv-pwless-state: "" while the PC has no binding, `active <keys> <last list>`,
++/// `off`, `disabled`, `expired <last list>`, `revoked`, `listed`, `needs-relogin` or `error <code>
++/// <last list>`; `<last list>` is the PC's clock at the last sync that brought a list, 0 for none.
++class HjvPcState {
++  final HjvPcKind kind;
++  final int keys;
++  final int lastList;
++  final String code;
++  const HjvPcState(this.kind,
++      {this.keys = 0, this.lastList = 0, this.code = ''});
++
++  factory HjvPcState.parse(String state) {
++    final parts = state.trim().split(' ');
++    int at(int i) => i < parts.length ? int.tryParse(parts[i]) ?? 0 : 0;
++    switch (parts.first) {
++      case 'active':
++        return HjvPcState(HjvPcKind.active, keys: at(1), lastList: at(2));
++      case 'off':
++        return const HjvPcState(HjvPcKind.off);
++      case 'disabled':
++        return const HjvPcState(HjvPcKind.disabled);
++      case 'expired':
++        return HjvPcState(HjvPcKind.expired, lastList: at(1));
++      case 'revoked':
++        return const HjvPcState(HjvPcKind.revoked);
++      case 'listed':
++        return const HjvPcState(HjvPcKind.listed);
++      case 'needs-relogin':
++        return const HjvPcState(HjvPcKind.needsRelogin);
++      case 'error':
++        final code = parts.length > 1 ? parts[1] : '';
++        // a bind request hjv-api did not confirm; the others are failed syncs of a bound PC
++        return HjvPcState(
++            code.startsWith('bind-')
++                ? HjvPcKind.bindFailed
++                : HjvPcKind.unsynced,
++            lastList: at(2),
++            code: code);
++      default:
++        return const HjvPcState(HjvPcKind.none);
++    }
++  }
++}
++
++/// Whose PC this is, for the user of these screens.
++enum HjvOwner { mine, other, unknown }
++
++/// From `GET /api/hjv/this-device` of the login (`status`, null when it could not be asked), and
++/// else from whether this user's login bound the PC (`hjv-pc-bound`).
++HjvOwner hjvOwner(
++    {required bool loggedIn, String? status, required bool boundByMe}) {
++  if (!loggedIn) return HjvOwner.unknown;
++  switch (status) {
++    case 'added':
++    case 'already':
++      return HjvOwner.mine;
++    case 'other_account':
++      return HjvOwner.other;
++    case null:
++      return boundByMe ? HjvOwner.mine : HjvOwner.unknown;
++    default:
++      return HjvOwner.unknown;
++  }
++}
++
++/// What a button of this PC's line does: [끄기] switches password-less connections off here,
++/// [다시 켜기] and [다시 로그인] open the login dialog, [다시 추가] logs out and opens it.
++enum HjvPcAction { none, turnOff, turnOn, addAgain, logInAgain }
++
++class HjvPcLine {
++  final String text;
++  final HjvPcAction action;
++  const HjvPcLine(this.text, this.action);
++}
++
++String hjvActionLabel(HjvTexts t, HjvPcAction action) {
++  switch (action) {
++    case HjvPcAction.turnOff:
++      return t.turnOff;
++    case HjvPcAction.turnOn:
++      return t.turnOnAgain;
++    case HjvPcAction.addAgain:
++      return t.addAgain;
++    case HjvPcAction.logInAgain:
++      return t.logInAgain;
++    case HjvPcAction.none:
++      return '';
++  }
++}
++
++/// This PC's line in Settings → Account (design v3 §1-2), or null when the PC has nothing to show
++/// there. Anyone at the PC may switch it off; it comes on again only with a login on it.
++HjvPcLine? hjvPcLine(HjvTexts t, HjvPcState state, HjvOwner owner,
++    {HjvClock local = hjvLocal}) {
++  String line(String what) {
++    final who = switch (owner) {
++      HjvOwner.mine => '${t.mine} · ',
++      HjvOwner.other => '${t.otherOwner} · ',
++      HjvOwner.unknown => '',
++    };
++    return '${t.pcPrefix}$who$what';
++  }
++
++  switch (state.kind) {
++    case HjvPcKind.none:
++      return owner == HjvOwner.other
++          ? HjvPcLine('${t.pcPrefix}${t.otherOwner}', HjvPcAction.none)
++          : null;
++    case HjvPcKind.active:
++      return HjvPcLine(
++          line(owner == HjvOwner.mine ? t.onWithKeys(state.keys) : t.pwlessOn),
++          HjvPcAction.turnOff);
++    case HjvPcKind.off:
++      return HjvPcLine(line(t.offHere), HjvPcAction.turnOn);
++    case HjvPcKind.disabled:
++      return HjvPcLine(line(t.paused), HjvPcAction.none);
++    case HjvPcKind.expired:
++    case HjvPcKind.unsynced:
++      return HjvPcLine(
++          '${t.pcPrefix}${state.lastList > 0 ? t.unsyncedSince(hjvTime(local(state.lastList))) : t.unsynced}',
++          HjvPcAction.turnOff);
++    case HjvPcKind.needsRelogin:
++      return HjvPcLine('${t.pcPrefix}${t.keyChanged}', HjvPcAction.logInAgain);
++    case HjvPcKind.revoked:
++      return HjvPcLine(
++          '${t.pcPrefix}${t.removedElsewhere}', HjvPcAction.addAgain);
++    case HjvPcKind.listed:
++      return HjvPcLine(
++          '${t.pcPrefix}${t.loginHereAgain}', HjvPcAction.addAgain);
++    case HjvPcKind.bindFailed:
++      return HjvPcLine('${t.pcPrefix}${t.notConfirmed}', HjvPcAction.addAgain);
++  }
++}
++
++String hjvPasswordLine(HjvTexts t, bool set) =>
++    set ? t.passwordSet : t.passwordNone;
++
++// ---- after a login (design v3 §1-2, §4-4) ----
++
++/// What the service shows once it took a login's bind request: on, or paused by the
++/// administrator. Anything else, the screen waits for (kHjvTurnOnWait).
++bool hjvTurnedOn(HjvPcState state) =>
++    state.kind == HjvPcKind.active || state.kind == HjvPcKind.disabled;
++
++class HjvLoginNotice {
++  final String title;
++  final List<String> lines;
++
++  /// [이 PC 빼기]: this login added the PC, and `this-device/undo` can take it out again.
++  final bool undo;
++
++  /// The PC has no permanent password: a line with [지금 정하기].
++  final bool askPassword;
++  const HjvLoginNotice(this.title, this.lines,
++      {this.undo = false, this.askPassword = false});
++}
++
++/// The notice after a login on a Windows PC, or null for none. `status` and `undo` are
++/// `GET /api/hjv/this-device`'s (status null when it could not be asked), `boundByLogin` whether
++/// the login's answer bound this PC (`hjv-pc-bound`), `state` the service's state after the wait.
++HjvLoginNotice? hjvLoginNotice(HjvTexts t,
++    {required bool installed,
++    required String? status,
++    required bool undo,
++    required bool boundByLogin,
++    required HjvPcState state,
++    required bool passwordSet}) {
++  if (!installed) return HjvLoginNotice(t.notAddedTitle, [t.notInstalled]);
++  switch (status) {
++    case 'other_account':
++      return HjvLoginNotice(t.notAddedTitle, [t.otherAccount]);
++    case 'check_failed':
++    case 'not_eligible':
++      return HjvLoginNotice(t.notOnTitle, [t.checkFailed]);
++    case 'added':
++    case 'already':
++      break;
++    case null:
++      if (!boundByLogin) return null;
++      break;
++    default:
++      return null;
++  }
++  if (state.kind == HjvPcKind.bindFailed) {
++    return HjvLoginNotice(t.notOnTitle, [t.checkFailed]);
++  }
++  final lines = switch (state.kind) {
++    HjvPcKind.active => [t.canConnect, t.howToTurnOff],
++    HjvPcKind.disabled => [t.adminTurnsOn, t.howToTurnOff],
++    _ => [t.onShortly],
++  };
++  return HjvLoginNotice(
++      status == 'already' ? t.alreadyTitle : t.addedTitle, lines,
++      undo: status == 'added' && undo, askPassword: !passwordSet);
++}
++
++/// The logout dialog's text (design v3 §1-7): on a PC this user's login bound, logging out also
++/// takes it out of the list.
++String hjvLogoutText(HjvTexts t, String tip, {required bool boundHere}) =>
++    boundHere ? '${t.logoutUnbinds}\n$tip' : tip;
++
++// ---- the logged-in devices (`GET /api/hjv/keys`, design v3 §5-2) ----
++
++class HjvKeyUse {
++  final String pcId;
++  final String pc;
++  final int last;
++  final int n30;
++  const HjvKeyUse(this.pcId, this.pc, this.last, this.n30);
++}
++
++class HjvKey {
++  final int ckid;
++
++  /// the server's name of the device; `appName` is the device's own
++  final String name;
++  final String appName;
++
++  /// windows, ios, android, …: an iPhone's own name is its model code, which `name` already reads
++  final String platform;
++  final String appVer;
++
++  /// on-campus, off-campus or ""
++  final String net;
++  final int lastLogin;
++  final int? lastUsed;
++  final String? lastUsedPc;
++  final List<HjvKeyUse> uses;
++  final bool current;
++  final bool isNew;
++  const HjvKey(
++      {required this.ckid,
++      this.name = '',
++      this.appName = '',
++      this.platform = '',
++      this.appVer = '',
++      this.net = '',
++      this.lastLogin = 0,
++      this.lastUsed,
++      this.lastUsedPc,
++      this.uses = const [],
++      this.current = false,
++      this.isNew = false});
++
++  static HjvKey? fromJson(Object? json) {
++    if (json is! Map) return null;
++    final ckid = json['ckid'];
++    if (ckid is! int) return null;
++    String text(String key) => json[key] is String ? json[key] as String : '';
++    int number(Object? v) => v is int ? v : 0;
++    final uses = json['use'] is List
++        ? (json['use'] as List)
++            .whereType<Map>()
++            .map((u) => HjvKeyUse(
++                u['pc_id'] is String ? u['pc_id'] as String : '',
++                u['pc'] is String ? u['pc'] as String : '',
++                number(u['last']),
++                number(u['n30'])))
++            .toList()
++        : <HjvKeyUse>[];
++    return HjvKey(
++        ckid: ckid,
++        name: text('name'),
++        appName: text('app_name'),
++        platform: text('platform'),
++        appVer: text('app_ver'),
++        net: text('net'),
++        lastLogin: number(json['last_login']),
++        lastUsed: json['last_used'] is int ? json['last_used'] as int : null,
++        lastUsedPc: json['last_used_pc'] is String
++            ? json['last_used_pc'] as String
++            : null,
++        uses: uses,
++        current: json['current'] == true,
++        isNew: json['new'] == true);
++  }
++}
++
++/// The keys of `{"total":n,"data":[…]}`.
++List<HjvKey> hjvKeys(Object? body) {
++  final data = body is Map ? body['data'] : null;
++  if (data is! List) return [];
++  return data.map(HjvKey.fromJson).whereType<HjvKey>().toList();
++}
++
++/// The server's name of a device and, in parentheses, the name the device gave itself (§1-1);
++/// an iPhone's is its model code, the server's name already says it.
++String hjvDeviceName(HjvKey k) {
++  final name = k.name.isEmpty ? k.appName : k.name;
++  return k.appName.isNotEmpty && k.appName != name && k.platform != 'ios'
++      ? '$name (${k.appName})'
++      : name;
++}
++
++String hjvKeyTitle(HjvTexts t, HjvKey k) =>
++    k.current ? '${hjvDeviceName(k)} · ${t.thisDevice}' : hjvDeviceName(k);
++
++String _net(HjvTexts t, String net) => switch (net) {
++      'on-campus' => t.onCampus,
++      'off-campus' => t.offCampus,
++      _ => '',
++    };
++
++/// "로그인 10/20 14:03(학외) · 1.6.0 · 마지막 비밀번호 없는 연결 10/21 연구실-PC"
++String hjvKeyLine(HjvTexts t, HjvKey k, {HjvClock local = hjvLocal}) {
++  final parts = [
++    t.loggedInAt(hjvTime(local(k.lastLogin)), _net(t, k.net)),
++    if (k.appVer.isNotEmpty) k.appVer,
++    if (k.lastUsed != null)
++      t.lastUse(hjvDay(local(k.lastUsed!)), k.lastUsedPc ?? ''),
++  ];
++  return parts.join(' · ');
++}
++
++/// A line of the opened row (U6): "연구실-PC · 마지막 10/21 14:03 · 30일 동안 12번".
++String hjvUseLine(HjvTexts t, HjvKeyUse u, {HjvClock local = hjvLocal}) =>
++    t.useLine(u.pc.isEmpty ? u.pcId : u.pc, hjvTime(local(u.last)), u.n30);
++
++/// The keys the new-device notice is for: made after this device's and confirmed by none of the
++/// account's devices (`new`), not this device's, and not answered here yet.
++List<HjvKey> hjvNewDevices(List<HjvKey> keys, Set<int> answered) => keys
++    .where((k) => k.isNew && !k.current && !answered.contains(k.ckid))
++    .toList();
++
++/// "iPhone 14 Pro · 10/20 14:03 · 학외 네트워크 · HJViewer 1.6.0. 이 기기로 …": the values the
++/// server saw, the device's own name in parentheses.
++String hjvNewDeviceText(HjvTexts t, HjvKey k, {HjvClock local = hjvLocal}) {
++  final net = switch (k.net) {
++    'on-campus' => t.onCampusNet,
++    'off-campus' => t.offCampusNet,
++    _ => '',
++  };
++  final seen = [
++    hjvDeviceName(k),
++    hjvTime(local(k.lastLogin)),
++    if (net.isNotEmpty) net,
++    if (k.appVer.isNotEmpty) 'HJViewer ${k.appVer}',
++  ].join(' · ');
++  return '$seen. ${t.newDeviceNote}';
++}
++
++// ---- the accessible devices tab (design v3 §1-1, §1-3) ----
++
++/// The banner over the kept cards while the server fails: the server's own text when it gave one
++/// (a clock off by more than ten minutes), else what a failed request means.
++String hjvServerBanner(HjvTexts t,
++    {required String error, required bool fromServer}) {
++  if (fromServer && error.isNotEmpty) return error;
++  if (error.contains(kHjvKeyUnavailable)) return t.keyLocked;
++  return t.serverDown;
++}
++
++/// Whether the empty tab tells how a PC gets there: the list came (`pulled`: a fetch since the
++/// login or the app's start ended), without an error, and is empty.
++bool hjvShowsEmptyHint(
++        {required bool pulled,
++        required bool loading,
++        required bool empty,
++        required String networkError,
++        required String loadError}) =>
++    pulled && !loading && empty && networkError.isEmpty && loadError.isEmpty;
++
++/// Whether an accessible device's card offers "내 목록에서 빼기": the account's PCs in an account
++/// build, while logged in.
++bool hjvShowsDeviceMenu({required bool accountBuild, required bool loggedIn}) =>
++    accountBuild && loggedIn;
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index 8269494..96967a2 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -4,6 +4,7 @@ import 'dart:convert';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hbbs/hbbs.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ import 'package:flutter_hbb/models/user_model.dart';
+ import 'package:get/get.dart';
+@@ -658,7 +659,7 @@ class LoginWidgetUserPass extends StatelessWidget {
+           children: [
+             const SizedBox(height: 8.0),
+             DialogTextField(
+-                title: translate(DialogTextField.kUsernameTitle),
++                title: hjvUsernameTitle(),
+                 controller: username,
+                 focusNode: userFocusNode,
+                 prefixIcon: DialogTextField.kUsernameIcon,
+@@ -996,6 +997,7 @@ Future<bool?> _openLoginDialog() async {
+   if (res != null) {
+     await UserModel.updateOtherModels();
+   }
++  hjvAfterLogin(res);
+ 
+   return res;
+ }
+@@ -1119,7 +1121,7 @@ void logOutConfirmDialog() {
+     }
+ 
+     return CustomAlertDialog(
+-      content: Text(translate("logout_tip")),
++      content: Text(hjvLogoutTip(translate("logout_tip"))),
+       actions: [
+         dialogButton(translate("Cancel"), onPressed: close, isOutline: true),
+         dialogButton(translate("OK"), onPressed: submit),
+diff --git a/flutter/lib/common/widgets/my_group.dart b/flutter/lib/common/widgets/my_group.dart
+index 74ce34e..9ea9dbd 100644
+--- a/flutter/lib/common/widgets/my_group.dart
++++ b/flutter/lib/common/widgets/my_group.dart
+@@ -2,6 +2,7 @@ import 'dart:math';
+ 
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common/hbbs/hbbs.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/login.dart';
+ import 'package:flutter_hbb/common/widgets/peers_view.dart';
+ import 'package:flutter_hbb/models/state_model.dart';
+@@ -34,7 +35,8 @@ class _MyGroupState extends State<MyGroup> {
+         return Center(
+             child: ElevatedButton(
+                 onPressed: loginDialog, child: Text(translate("Login"))));
+-      } else if (gFFI.userModel.networkError.isNotEmpty) {
++      } else if (gFFI.userModel.networkError.isNotEmpty &&
++          !hjvKeepCachedCards()) {
+         return netWorkErrorWidget();
+       } else if (gFFI.groupModel.groupLoading.value && gFFI.groupModel.emtpy) {
+         return const Center(
+@@ -43,6 +45,7 @@ class _MyGroupState extends State<MyGroup> {
+       }
+       return Column(
+         children: [
++          ...hjvNetworkBanner(context),
+           buildErrorBanner(context,
+               loading: gFFI.groupModel.groupLoading,
+               err: gFFI.groupModel.groupLoadError,
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 1f9f3ed..c5cb1fc 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -1,6 +1,7 @@
+ import 'package:bot_toast/bot_toast.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/models/peer_tab_model.dart';
+@@ -1006,7 +1007,7 @@ class RecentPeerCard extends BasePeerCard {
+       menuItems.add(_rmFavAction(peer.id, () async {}));
+     }
+ 
+-    if (gFFI.userModel.userName.isNotEmpty) {
++    if (gFFI.userModel.userName.isNotEmpty && !bind.isDisableAb()) {
+       menuItems.add(_addToAb(peer));
+     }
+ 
+@@ -1066,7 +1067,7 @@ class FavoritePeerCard extends BasePeerCard {
+       await bind.mainLoadFavPeers();
+     }));
+ 
+-    if (gFFI.userModel.userName.isNotEmpty) {
++    if (gFFI.userModel.userName.isNotEmpty && !bind.isDisableAb()) {
+       menuItems.add(_addToAb(peer));
+     }
+ 
+@@ -1125,7 +1126,7 @@ class DiscoveredPeerCard extends BasePeerCard {
+       menuItems.add(_rmFavAction(peer.id, () async {}));
+     }
+ 
+-    if (gFFI.userModel.userName.isNotEmpty) {
++    if (gFFI.userModel.userName.isNotEmpty && !bind.isDisableAb()) {
+       menuItems.add(_addToAb(peer));
+     }
+ 
+@@ -1336,9 +1337,10 @@ class MyGroupPeerCard extends BasePeerCard {
+     // if (await bind.mainPeerHasPassword(id: peer.id)) {
+     //   menuItems.add(_unrememberPasswordAction(peer.id));
+     // }
+-    if (gFFI.userModel.userName.isNotEmpty) {
++    if (gFFI.userModel.userName.isNotEmpty && !bind.isDisableAb()) {
+       menuItems.add(_addToAb(peer));
+     }
++    menuItems.addAll(await hjvDeviceMenuItems(context, peer, menuPadding));
+     return menuItems;
+   }
+ 
+diff --git a/flutter/lib/common/widgets/toolbar.dart b/flutter/lib/common/widgets/toolbar.dart
+index c3896b0..43aef13 100644
+--- a/flutter/lib/common/widgets/toolbar.dart
++++ b/flutter/lib/common/widgets/toolbar.dart
+@@ -4,6 +4,7 @@ import 'dart:convert';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/shared_state.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/common/widgets/login.dart';
+@@ -481,7 +482,7 @@ List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
+     );
+   }
+   // note
+-  if (isDefaultConn && !bind.isDisableAccount()) {
++  if (isDefaultConn && !bind.isDisableAccount() && !hjvHidesNotes()) {
+     v.add(
+       TTextMenu(
+           child: Text(translate('Note')),
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 5c056bc..3b192e5 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/audio_input.dart';
+ import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
+ import 'package:flutter_hbb/consts.dart';
+@@ -614,7 +615,7 @@ class _GeneralState extends State<_General> {
+       ));
+     }
+ 
+-    if (!bind.isDisableAccount()) {
++    if (!bind.isDisableAccount() && !hjvHidesNotes()) {
+       children.add(_OptionCheckBox(
+         context,
+         'note-at-conn-end-tip',
+@@ -2222,7 +2223,9 @@ class _AccountState extends State<_Account> {
+     return ListView(
+       controller: scrollController,
+       children: [
+-        _Card(title: 'Account', children: [accountAction(), useInfo()]),
++        _Card(
++            title: 'Account',
++            children: [accountAction(), useInfo(), ...hjvAccountRows()]),
+       ],
+     ).marginOnly(bottom: _kListViewBottomMargin);
+   }
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index 5f234cb..747c511 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -6,6 +6,7 @@ import 'package:bot_toast/bot_toast.dart';
+ import 'package:desktop_multi_window/desktop_multi_window.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/overlay.dart';
+ import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
+ import 'package:flutter_hbb/desktop/pages/install_page.dart';
+@@ -141,6 +142,7 @@ void runMainApp(bool startService) async {
+   }
+   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
+   gFFI.userModel.refreshCurrentUser();
++  hjvInitAccount();
+   runApp(App());
+ 
+   bool? alwaysOnTop;
+@@ -181,6 +183,7 @@ void runMobileApp() async {
+   draggablePositions.load();
+   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
+   gFFI.userModel.refreshCurrentUser();
++  hjvInitAccount();
+   runApp(App());
+   await initUniLinks();
+ }
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index e105838..c65035f 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -12,6 +12,7 @@ import 'package:url_launcher/url_launcher.dart';
+ import 'package:url_launcher/url_launcher_string.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjviewer_account.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../common/widgets/login.dart';
+ import '../../consts.dart';
+@@ -745,6 +746,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                   }
+                 },
+               ),
++              ...hjvAccountTiles(),
+             ],
+           ),
+         SettingsSection(title: Text(translate("Settings")), tiles: [
+@@ -897,7 +899,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+               showThemeSettings(gFFI.dialogManager);
+             },
+           ),
+-          if (!bind.isDisableAccount())
++          if (!bind.isDisableAccount() && !hjvHidesNotes())
+             SettingsTile.switchTile(
+               title: Text(translate('note-at-conn-end-tip')),
+               initialValue: _allowAskForNoteAtEndOfConnection,
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+new file mode 100644
+index 0000000..cdb6bd2
+--- /dev/null
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -0,0 +1,491 @@
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The account screens' texts and choices (design v3 §7-5), without the bridge.
++
++const ko = HjvTexts(true);
++const en = HjvTexts(false);
++
++int unix(DateTime t) => t.millisecondsSinceEpoch ~/ 1000;
++DateTime utc(int s) =>
++    DateTime.fromMillisecondsSinceEpoch(s * 1000, isUtc: true);
++final oct20 = unix(DateTime.utc(2026, 10, 20, 14, 3));
++final oct21 = unix(DateTime.utc(2026, 10, 21, 14, 3));
++
++(String, HjvPcAction)? pcLine(String state, HjvOwner owner, {HjvTexts t = ko}) {
++  final line = hjvPcLine(t, HjvPcState.parse(state), owner, local: utc);
++  return line == null ? null : (line.text, line.action);
++}
++
++HjvLoginNotice? notice(
++        {bool installed = true,
++        String? status = 'added',
++        bool undo = true,
++        bool bound = true,
++        String state = 'active 3 1',
++        bool passwordSet = true}) =>
++    hjvLoginNotice(ko,
++        installed: installed,
++        status: status,
++        undo: undo,
++        boundByLogin: bound,
++        state: HjvPcState.parse(state),
++        passwordSet: passwordSet);
++
++/// `GET /api/hjv/keys` as hjv-api answers it (server/api/src/keys.rs key_json).
++Map<String, Object?> keysAnswer() => {
++      'total': 3,
++      'data': [
++        {
++          'ckid': 14,
++          'name': 'Windows PC',
++          'app_name': '연구실-PC',
++          'platform': 'windows',
++          'app_ver': '1.6.0',
++          'net': 'on-campus',
++          'created': oct21,
++          'last_login': oct21,
++          'last_used': null,
++          'last_used_pc': null,
++          'use': [],
++          'current': false,
++          'new': false,
++        },
++        {
++          'ckid': 12,
++          'name': 'iPhone 14 Pro',
++          'app_name': 'iPhone15,2',
++          'platform': 'ios',
++          'app_ver': '1.6.0',
++          'net': 'off-campus',
++          'created': oct20,
++          'last_login': oct20,
++          'last_used': oct21,
++          'last_used_pc': '연구실-PC',
++          'use': [
++            {'pc_id': '123456789', 'pc': '연구실-PC', 'last': oct21, 'n30': 12},
++            {'pc_id': '987654321', 'pc': '', 'last': oct20, 'n30': 1},
++          ],
++          'current': false,
++          'new': true,
++        },
++        {
++          'ckid': 11,
++          'name': 'Galaxy',
++          'app_name': 'SM-S918N',
++          'platform': 'android',
++          'app_ver': '1.6.0',
++          'net': '',
++          'created': oct20,
++          'last_login': oct20,
++          'last_used': null,
++          'last_used_pc': null,
++          'use': [],
++          'current': true,
++          'new': false,
++        },
++        {'name': 'no ckid'},
++      ],
++    };
++
++void main() {
++  test('times read as on the screens', () {
++    expect(hjvTime(DateTime(2026, 10, 5, 9, 7)), '10/5 09:07');
++    expect(hjvDay(DateTime(2026, 10, 20, 23, 59)), '10/20');
++    final at = DateTime(2026, 10, 20, 12);
++    expect(hjvRefreshDue(null, at), isTrue);
++    expect(hjvRefreshDue(at, at.add(const Duration(seconds: 29))), isFalse);
++    expect(hjvRefreshDue(at, at.add(const Duration(seconds: 30))), isTrue);
++  });
++
++  group('this PC in Settings → Account (design v3 §1-2)', () {
++    test('every state of the service has its line', () {
++      const mine = HjvOwner.mine;
++      expect(pcLine('active 3 $oct20', mine),
++          ('이 PC: 내 기기 · 비밀번호 없이 연결 켜짐(내 기기 3대)', HjvPcAction.turnOff));
++      expect(
++          pcLine('off', mine), ('이 PC: 내 기기 · 이 PC에서 꺼 둠', HjvPcAction.turnOn));
++      expect(pcLine('disabled', mine),
++          ('이 PC: 내 기기 · 관리자가 일시 중지함', HjvPcAction.none));
++      expect(pcLine('error network $oct20', mine),
++          ('이 PC: 서버와 맞추지 못함(마지막 확인 10/20 14:03)', HjvPcAction.turnOff));
++      expect(pcLine('error clock 0', mine),
++          ('이 PC: 서버와 맞추지 못함', HjvPcAction.turnOff));
++      expect(
++          pcLine('expired', mine), ('이 PC: 서버와 맞추지 못함', HjvPcAction.turnOff));
++      // the list outlived its time: when the last one came
++      expect(pcLine('expired $oct20', mine),
++          ('이 PC: 서버와 맞추지 못함(마지막 확인 10/20 14:03)', HjvPcAction.turnOff));
++      expect(pcLine('needs-relogin', mine),
++          ('이 PC: 다시 로그인 필요(보안 키가 바뀜)', HjvPcAction.logInAgain));
++      expect(pcLine('revoked', mine),
++          ('이 PC: 다른 기기에서 목록에서 뺌', HjvPcAction.addAgain));
++      expect(pcLine('listed', mine),
++          ('이 PC: 이 PC에서 다시 로그인 필요', HjvPcAction.addAgain));
++      expect(pcLine('error bind-mismatch 0', mine),
++          ('이 PC: 서버에서 확인하지 못함', HjvPcAction.addAgain));
++      expect(pcLine('error bind-released $oct20', mine),
++          ('이 PC: 서버에서 확인하지 못함', HjvPcAction.addAgain));
++      // a bind the service could not keep: no binding to switch off
++      expect(pcLine('error bind-store $oct20', mine),
++          ('이 PC: 서버에서 확인하지 못함', HjvPcAction.addAgain));
++      // no binding, and a state a later service may add
++      expect(pcLine('', mine), isNull);
++      expect(pcLine('paused-for-good', mine), isNull);
++    });
++
++    test('anyone at the PC can switch it off; it comes on only with a login',
++        () {
++      expect(pcLine('active 3 $oct20', HjvOwner.other),
++          ('이 PC: 다른 계정에 등록됨 · 비밀번호 없이 연결 켜짐', HjvPcAction.turnOff));
++      expect(pcLine('active 3 $oct20', HjvOwner.unknown),
++          ('이 PC: 비밀번호 없이 연결 켜짐', HjvPcAction.turnOff));
++      // [다시 켜기] opens the login dialog, whoever looks (design v3 §7-6)
++      for (final owner in HjvOwner.values) {
++        expect(pcLine('off', owner)?.$2, HjvPcAction.turnOn);
++      }
++      expect(
++          pcLine('', HjvOwner.other), ('이 PC: 다른 계정에 등록됨', HjvPcAction.none));
++      for (final state in [
++        '',
++        'active 3 1',
++        'disabled',
++        'expired',
++        'revoked',
++        'listed',
++        'needs-relogin',
++        'error network 1',
++        'error bind-stale 1',
++      ]) {
++        expect(pcLine(state, HjvOwner.mine)?.$2, isNot(HjvPcAction.turnOn),
++            reason: state);
++      }
++      expect(hjvActionLabel(ko, HjvPcAction.turnOff), '끄기');
++      expect(hjvActionLabel(ko, HjvPcAction.turnOn), '다시 켜기');
++      expect(hjvActionLabel(ko, HjvPcAction.addAgain), '다시 추가');
++      expect(hjvActionLabel(ko, HjvPcAction.logInAgain), '다시 로그인');
++      expect(hjvPasswordLine(ko, true), 'PC 비밀번호: 정해 둠');
++      expect(hjvPasswordLine(ko, false), 'PC 비밀번호: 없음');
++    });
++
++    test('in English', () {
++      expect(pcLine('active 3 1', HjvOwner.mine, t: en)?.$1,
++          'This PC: my device · password-less connections on (my devices: 3)');
++      expect(pcLine('off', HjvOwner.mine, t: en)?.$1,
++          'This PC: my device · turned off on this PC');
++      expect(hjvActionLabel(en, HjvPcAction.turnOn), 'Turn on again');
++    });
++
++    test('whose PC it is', () {
++      HjvOwner owner(String? status,
++              {bool loggedIn = true, bool bound = false}) =>
++          hjvOwner(loggedIn: loggedIn, status: status, boundByMe: bound);
++      expect(owner('added'), HjvOwner.mine);
++      expect(owner('already'), HjvOwner.mine);
++      expect(owner('other_account', bound: true), HjvOwner.other);
++      expect(owner(null, bound: true), HjvOwner.mine);
++      expect(owner(null), HjvOwner.unknown);
++      expect(owner('removed', bound: true), HjvOwner.unknown);
++      expect(owner('not_eligible'), HjvOwner.unknown);
++      expect(owner('added', loggedIn: false, bound: true), HjvOwner.unknown);
++    });
++  });
++
++  group('after a login on a Windows PC (design v3 §1-2)', () {
++    test('a PC added and turned on', () {
++      final n = notice()!;
++      expect(n.title, '이 PC를 내 기기 목록에 추가했습니다');
++      expect(
++          n.lines.join(' '),
++          '같은 연세포탈 계정으로 로그인한 내 휴대폰과 PC에서 이 PC에 비밀번호 없이 연결할 수 있습니다. '
++          '끄려면 설정 → 계정에서 [끄기]를 누르거나 이 PC에서 로그아웃하세요.');
++      expect(n.undo, isTrue);
++      expect(n.askPassword, isFalse);
++      expect(notice(passwordSet: false)!.askPassword, isTrue);
++      expect(notice(undo: false)!.undo, isFalse);
++    });
++
++    test('a PC already in the list cannot be undone here', () {
++      final n = notice(status: 'already')!;
++      expect(n.title, '이 PC는 내 기기 목록에 있습니다');
++      expect(n.undo, isFalse);
++    });
++
++    test('paused by the administrator, or not on in ten seconds', () {
++      expect(notice(state: 'disabled')!.lines, [
++        '비밀번호 없는 연결은 관리자가 이 기능을 켜면 바로 쓸 수 있습니다.',
++        '끄려면 설정 → 계정에서 [끄기]를 누르거나 이 PC에서 로그아웃하세요.',
++      ]);
++      for (final state in ['', 'off', 'error network 0', 'listed']) {
++        final n = notice(state: state, passwordSet: false)!;
++        expect(n.lines, ['잠시 뒤 켜집니다. 설정 → 계정에서 상태를 볼 수 있습니다.'], reason: state);
++        expect(n.askPassword, isTrue);
++      }
++    });
++
++    test('the other results', () {
++      expect(notice(installed: false)?.lines,
++          ['설치하지 않고 실행한 HJViewer라 내 기기 목록에 넣지 않았습니다.']);
++      expect(notice(status: 'other_account')?.lines,
++          ['다른 계정에 등록된 PC입니다. 관리자에게 문의하세요.']);
++      for (final status in ['check_failed', 'not_eligible']) {
++        expect(notice(status: status)?.lines,
++            ['서버에서 이 PC를 확인하지 못했습니다. 잠시 뒤 로그아웃했다가 다시 로그인해 주세요.']);
++      }
++      for (final state in ['error bind-mismatch 0', 'error bind-store 0']) {
++        final refused = notice(state: state)!;
++        expect(refused.title, '비밀번호 없는 연결을 켜지 못했습니다', reason: state);
++        expect(
++            refused.lines, ['서버에서 이 PC를 확인하지 못했습니다. 잠시 뒤 로그아웃했다가 다시 로그인해 주세요.'],
++            reason: state);
++        expect(refused.undo, isFalse, reason: state);
++      }
++    });
++
++    test('without this-device, the login answer tells whether it bound the PC',
++        () {
++      final n = notice(status: null, undo: false)!;
++      expect(n.title, '이 PC를 내 기기 목록에 추가했습니다');
++      expect(n.undo, isFalse);
++      expect(notice(status: null, bound: false), isNull);
++      expect(notice(status: 'removed'), isNull);
++      expect(notice(status: 'none'), isNull);
++    });
++
++    test('the wait ends once the service turned the PC on or found it paused',
++        () {
++      expect(hjvTurnedOn(HjvPcState.parse('active 1 1')), isTrue);
++      expect(hjvTurnedOn(HjvPcState.parse('disabled')), isTrue);
++      for (final state in ['', 'off', 'expired', 'error bind-stale 0']) {
++        expect(hjvTurnedOn(HjvPcState.parse(state)), isFalse, reason: state);
++      }
++    });
++
++    test('the logout dialog of a PC this login bound', () {
++      expect(hjvLogoutText(ko, '로그아웃하시겠습니까?', boundHere: true),
++          '로그아웃하면 이 PC도 내 기기 목록에서 빠지고, 비밀번호 없이 연결할 수 없게 됩니다.\n로그아웃하시겠습니까?');
++      expect(hjvLogoutText(ko, '로그아웃하시겠습니까?', boundHere: false), '로그아웃하시겠습니까?');
++    });
++  });
++
++  group('the logged-in devices (design v3 §1-7, U6)', () {
++    final keys = hjvKeys(keysAnswer());
++
++    test('a row per device, with what the server saw', () {
++      expect(keys.map((k) => k.ckid), [14, 12, 11]);
++      expect(hjvKeyTitle(ko, keys[0]), 'Windows PC (연구실-PC)');
++      expect(hjvKeyTitle(ko, keys[1]), 'iPhone 14 Pro');
++      expect(hjvKeyTitle(ko, keys[2]), 'Galaxy (SM-S918N) · 이 기기');
++      expect(hjvKeyLine(ko, keys[1], local: utc),
++          '로그인 10/20 14:03(학외) · 1.6.0 · 마지막 비밀번호 없는 연결 10/21 연구실-PC');
++      expect(
++          hjvKeyLine(ko, keys[0], local: utc), '로그인 10/21 14:03(학내) · 1.6.0');
++      expect(hjvKeyLine(ko, keys[2], local: utc), '로그인 10/20 14:03 · 1.6.0');
++      expect(hjvKeyLine(en, keys[1], local: utc),
++          'logged in 10/20 14:03 (off campus) · 1.6.0 · last password-less connection 10/21 to 연구실-PC');
++    });
++
++    test('an opened row has a line per PC: last use and 30-day count', () {
++      expect(keys[1].uses.map((u) => hjvUseLine(ko, u, local: utc)), [
++        '연구실-PC · 마지막 10/21 14:03 · 30일 동안 12번',
++        // a PC that left the account since: its ID
++        '987654321 · 마지막 10/20 14:03 · 30일 동안 1번',
++      ]);
++      expect(hjvUseLine(en, keys[1].uses.first, local: utc),
++          '연구실-PC · last 10/21 14:03 · 12 times in 30 days');
++      expect(keys[0].uses, isEmpty);
++      expect(ko.noUse, '최근 30일 동안 비밀번호 없이 연결한 PC가 없습니다.');
++    });
++
++    test('a broken answer has no rows', () {
++      expect(hjvKeys(null), isEmpty);
++      expect(hjvKeys({'error': 'x'}), isEmpty);
++      expect(hjvKeys({'data': 'x'}), isEmpty);
++    });
++  });
++
++  group('the new-device notice (design v3 §1-1)', () {
++    final keys = hjvKeys(keysAnswer());
++
++    test('for new keys of other devices, once', () {
++      expect(hjvNewDevices(keys, {}).map((k) => k.ckid), [12]);
++      expect(hjvNewDevices(keys, {12}), isEmpty);
++      // this device's own key is never new to it
++      final own = HjvKey(ckid: 20, current: true, isNew: true);
++      expect(hjvNewDevices([own], {}), isEmpty);
++    });
++
++    test('tells what the server saw', () {
++      expect(
++          hjvNewDeviceText(ko, keys[1], local: utc),
++          'iPhone 14 Pro · 10/20 14:03 · 학외 네트워크 · HJViewer 1.6.0. '
++          '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.');
++      expect(
++          hjvNewDeviceText(ko, keys[0], local: utc),
++          'Windows PC (연구실-PC) · 10/21 14:03 · 학내 네트워크 · HJViewer 1.6.0. '
++          '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.');
++      expect(ko.itsMine, '내 기기 맞음');
++      expect(ko.notMine, '아님: 로그아웃시키기');
++    });
++  });
++
++  group('the accessible devices tab (design v3 §1-1, §1-3)', () {
++    test('the banner over the kept cards', () {
++      const clock = '기기의 날짜와 시간이 서버와 10분 넘게 다릅니다. 날짜와 시간을 자동으로 맞추게 해 주세요.';
++      expect(hjvServerBanner(ko, error: clock, fromServer: true), clock);
++      expect(
++          hjvServerBanner(ko,
++              error:
++                  'Exception: Failed to parse response.\n$kHjvKeyUnavailable',
++              fromServer: false),
++          '이 기기의 보안 키를 지금 쓸 수 없습니다. 기기 잠금을 풀고 [재시도]를 누르세요.');
++      expect(
++          hjvServerBanner(ko,
++              error: 'Exception: The HTTP request failed', fromServer: false),
++          'HJViewer 서버를 지금 쓸 수 없습니다. 비밀번호 없는 연결은 PC가 받아 둔 목록으로 하루 동안 계속됩니다.');
++    });
++
++    test('an empty list says how a PC gets there', () {
++      bool hint(
++              {bool pulled = true,
++              bool loading = false,
++              bool empty = true,
++              String error = '',
++              String loadError = ''}) =>
++          hjvShowsEmptyHint(
++              pulled: pulled,
++              loading: loading,
++              empty: empty,
++              networkError: error,
++              loadError: loadError);
++      expect(hint(), isTrue);
++      // just logged in, or started without kept cards: the list has not come yet
++      expect(hint(pulled: false), isFalse);
++      expect(hint(loading: true), isFalse);
++      expect(hint(empty: false), isFalse);
++      expect(hint(error: 'down'), isFalse);
++      expect(hint(loadError: 'failed'), isFalse);
++      expect(ko.emptyList,
++          'PC에 HJViewer 1.6.0 이상을 설치하고, 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.');
++    });
++
++    test('a card offers "내 목록에서 빼기" while logged in to an account build', () {
++      expect(hjvShowsDeviceMenu(accountBuild: true, loggedIn: true), isTrue);
++      expect(hjvShowsDeviceMenu(accountBuild: true, loggedIn: false), isFalse);
++      expect(hjvShowsDeviceMenu(accountBuild: false, loggedIn: true), isFalse);
++      expect(ko.removeAsk,
++          '빼면 이 PC에 비밀번호 없이 연결할 수 없습니다. 다시 넣으려면 그 PC에서 다시 로그인해야 합니다.');
++    });
++
++    test('a request that failed', () {
++      expect(hjvRequestError(ko, {'error': '요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.'}),
++          '요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.');
++      expect(hjvRequestError(ko, null), '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.');
++      expect(
++          hjvFailure(
++              ko, Exception('Failed to parse response.\n$kHjvKeyUnavailable')),
++          ko.keyLocked);
++      expect(hjvFailure(ko, Exception('The HTTP request failed')),
++          ko.requestFailed);
++    });
++  });
++
++  test('a 401 ends the login only for the token the app still keeps', () {
++    const kept = 'Bearer hjv_new';
++    expect(hjvEndsLogin(401, sent: kept, kept: kept), isTrue);
++    // the account settings asked before the login stored its token: none, or the last login's
++    expect(hjvEndsLogin(401, sent: 'Bearer ', kept: kept), isFalse);
++    expect(hjvEndsLogin(401, sent: 'Bearer hjv_old', kept: kept), isFalse);
++    expect(hjvEndsLogin(200, sent: kept, kept: kept), isFalse);
++    expect(hjvEndsLogin(409, sent: kept, kept: kept), isFalse);
++  });
++
++  test('no text holds braces, which translate() takes for placeholders', () {
++    for (final t in [ko, en]) {
++      final texts = [
++        t.usernameTitle,
++        t.ok,
++        t.cancel,
++        t.close,
++        t.retry,
++        t.logIn,
++        t.requestFailed,
++        t.addedTitle,
++        t.alreadyTitle,
++        t.notAddedTitle,
++        t.notOnTitle,
++        t.canConnect,
++        t.adminTurnsOn,
++        t.onShortly,
++        t.howToTurnOff,
++        t.setPasswordHint,
++        t.setPasswordNow,
++        t.removeThisPc,
++        t.otherAccount,
++        t.notInstalled,
++        t.checkFailed,
++        t.removedThisPc,
++        t.pcPrefix,
++        t.mine,
++        t.otherOwner,
++        t.pwlessOn,
++        t.onWithKeys(3),
++        t.offHere,
++        t.paused,
++        t.unsynced,
++        t.unsyncedSince('10/20 14:03'),
++        t.keyChanged,
++        t.removedElsewhere,
++        t.loginHereAgain,
++        t.notConfirmed,
++        t.turnOff,
++        t.turnOnAgain,
++        t.addAgain,
++        t.logInAgain,
++        t.turnOffAsk,
++        t.turnedOff,
++        t.passwordSet,
++        t.passwordNone,
++        t.setPassword,
++        t.logoutUnbinds,
++        t.loggedInDevices,
++        t.thisDevice,
++        t.onCampus,
++        t.offCampus,
++        t.loggedInAt('10/20 14:03', t.offCampus),
++        t.lastUse('10/21', 'PC'),
++        t.useLine('PC', '10/21 14:03', 12),
++        t.noUse,
++        t.logOutDevice,
++        t.logOutOthers,
++        t.logOutDeviceAsk,
++        t.logOutOthersAsk,
++        t.loggedOutDevice,
++        t.alreadyOut,
++        t.loggedOutOthers(2),
++        t.newDeviceTitle,
++        t.newDeviceNote,
++        t.onCampusNet,
++        t.offCampusNet,
++        t.itsMine,
++        t.notMine,
++        t.notMineDone,
++        t.reloginTitle,
++        t.reloginBody,
++        t.removeFromList,
++        t.removeAsk,
++        t.remove,
++        t.removed,
++        t.notInList,
++        t.serverDown,
++        t.keyLocked,
++        t.emptyList,
++      ];
++      for (final text in texts) {
++        expect(text, isNot(contains('{')));
++        expect(text, isNot(contains('}')));
++        expect(text.trim(), isNotEmpty);
++      }
++    }
++  });
++}
+diff --git a/flutter/test/hjviewer_account_widgets_test.dart b/flutter/test/hjviewer_account_widgets_test.dart
+new file mode 100644
+index 0000000..e271c59
+--- /dev/null
++++ b/flutter/test/hjviewer_account_widgets_test.dart
+@@ -0,0 +1,183 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The account screens' widgets (design v3 §7-5); they import common.dart, so these tests need the
++// generated bridge, which client-build.yml makes before its Dart tests.
++
++const ko = HjvTexts(true);
++
++int unix(DateTime t) => t.millisecondsSinceEpoch ~/ 1000;
++DateTime utc(int s) =>
++    DateTime.fromMillisecondsSinceEpoch(s * 1000, isUtc: true);
++final oct20 = unix(DateTime.utc(2026, 10, 20, 14, 3));
++final oct21 = unix(DateTime.utc(2026, 10, 21, 14, 3));
++
++/// CustomAlertDialog asks for the focus in a zero timer on each build: let the last one run.
++Future<void> settle(WidgetTester tester) async {
++  await tester.pumpAndSettle();
++  await tester.pump(const Duration(milliseconds: 10));
++}
++
++Future<void> show(WidgetTester tester, Widget child) async {
++  await tester.pumpWidget(
++      MaterialApp(home: Scaffold(body: SingleChildScrollView(child: child))));
++  await tester.pump();
++}
++
++void main() {
++  testWidgets(
++      'the logged-in devices: an opened row shows the PCs it opened, and other devices log out',
++      (tester) async {
++    final out = <int>[];
++    final keys = [
++      HjvKey(
++          ckid: 12,
++          name: 'iPhone 14 Pro',
++          appName: 'iPhone15,2',
++          platform: 'ios',
++          appVer: '1.6.0',
++          net: 'off-campus',
++          lastLogin: oct20,
++          lastUsed: oct21,
++          lastUsedPc: '연구실-PC',
++          uses: [HjvKeyUse('123456789', '연구실-PC', oct21, 12)]),
++      HjvKey(
++          ckid: 11,
++          name: 'Windows PC',
++          appName: '연구실-PC',
++          platform: 'windows',
++          appVer: '1.6.0',
++          lastLogin: oct20,
++          current: true),
++    ];
++    await show(
++        tester,
++        HjvKeysList(
++            t: ko, keys: keys, onLogOut: (k) => out.add(k.ckid), local: utc));
++
++    expect(find.text('iPhone 14 Pro'), findsOneWidget);
++    expect(
++        find.text('로그인 10/20 14:03(학외) · 1.6.0 · 마지막 비밀번호 없는 연결 10/21 연구실-PC'),
++        findsOneWidget);
++    expect(find.text('Windows PC (연구실-PC) · 이 기기'), findsOneWidget);
++    // the device in use has no [로그아웃시키기]
++    expect(find.text('로그아웃시키기'), findsOneWidget);
++    expect(find.text('연구실-PC · 마지막 10/21 14:03 · 30일 동안 12번'), findsNothing);
++
++    await tester.tap(find.text('iPhone 14 Pro'));
++    await tester.pumpAndSettle();
++    expect(find.text('연구실-PC · 마지막 10/21 14:03 · 30일 동안 12번'), findsOneWidget);
++
++    await tester.tap(find.text('Windows PC (연구실-PC) · 이 기기'));
++    await tester.pumpAndSettle();
++    expect(find.text('최근 30일 동안 비밀번호 없이 연결한 PC가 없습니다.'), findsOneWidget);
++
++    await tester.tap(find.text('로그아웃시키기'));
++    await tester.pump();
++    expect(out, [12]);
++  });
++
++  testWidgets(
++      'this PC: [다시 켜기] only when switched off here, and each button asks for its action',
++      (tester) async {
++    final actions = <HjvPcAction>[];
++    var setPassword = 0;
++    Widget lines(String state, {bool? passwordSet, bool canSet = true}) =>
++        HjvPcLines(
++            key: UniqueKey(),
++            t: ko,
++            line: hjvPcLine(ko, HjvPcState.parse(state), HjvOwner.mine,
++                local: utc)!,
++            passwordSet: passwordSet,
++            canSetPassword: canSet,
++            onAction: actions.add,
++            onSetPassword: () => setPassword++);
++
++    await show(tester, lines('off', passwordSet: false));
++    expect(find.text('이 PC: 내 기기 · 이 PC에서 꺼 둠'), findsOneWidget);
++    await tester.tap(find.text('다시 켜기'));
++    expect(actions, [HjvPcAction.turnOn]);
++    expect(find.text('PC 비밀번호: 없음'), findsOneWidget);
++    await tester.tap(find.text('정하기'));
++    expect(setPassword, 1);
++
++    await show(tester, lines('active 3 $oct20', passwordSet: true));
++    expect(find.text('이 PC: 내 기기 · 비밀번호 없이 연결 켜짐(내 기기 3대)'), findsOneWidget);
++    expect(find.text('다시 켜기'), findsNothing);
++    await tester.tap(find.text('끄기'));
++    expect(actions, [HjvPcAction.turnOn, HjvPcAction.turnOff]);
++    expect(find.text('PC 비밀번호: 정해 둠'), findsOneWidget);
++    expect(find.text('정하기'), findsNothing);
++
++    await show(tester, lines('disabled', passwordSet: false, canSet: false));
++    expect(find.text('이 PC: 내 기기 · 관리자가 일시 중지함'), findsOneWidget);
++    expect(find.byType(OutlinedButton), findsNothing);
++
++    // while the PC password is being asked, no line for it
++    await show(tester, lines('revoked'));
++    expect(find.text('PC 비밀번호: 없음'), findsNothing);
++    await tester.tap(find.text('다시 추가'));
++    expect(actions.last, HjvPcAction.addAgain);
++  });
++
++  testWidgets('the notice after a login offers [이 PC 빼기] and [지금 정하기]',
++      (tester) async {
++    var ok = 0, undo = 0, password = 0;
++    final notice = hjvLoginNotice(ko,
++        installed: true,
++        status: 'added',
++        undo: true,
++        boundByLogin: true,
++        state: HjvPcState.parse('active 2 1'),
++        passwordSet: false)!;
++    await show(
++        tester,
++        hjvLoginNoticeDialog(ko, notice,
++            onOk: () => ok++,
++            onUndo: () => undo++,
++            onSetPassword: () => password++));
++    expect(find.text('이 PC를 내 기기 목록에 추가했습니다'), findsOneWidget);
++    expect(find.text('비밀번호 없는 연결이 안 될 때(서버 점검, 끄기, 로그아웃) 쓸 PC 비밀번호를 정해 두세요.'),
++        findsOneWidget);
++    await tester.tap(find.text('지금 정하기'));
++    await tester.tap(find.text('이 PC 빼기'));
++    await tester.tap(find.text('확인'));
++    expect((ok, undo, password), (1, 1, 1));
++
++    await show(tester, hjvLoginNoticeDialog(ko, notice, onOk: () => ok++));
++    expect(find.text('이 PC 빼기'), findsNothing);
++    expect(find.text('지금 정하기'), findsNothing);
++    await settle(tester);
++  });
++
++  testWidgets('the new-device notice is answered with its two buttons',
++      (tester) async {
++    final answers = <String>[];
++    final key = HjvKey(
++        ckid: 12,
++        name: 'iPhone 14 Pro',
++        appName: 'iPhone15,2',
++        platform: 'ios',
++        appVer: '1.6.0',
++        net: 'off-campus',
++        lastLogin: oct20,
++        isNew: true);
++    await show(
++        tester,
++        hjvNewDeviceDialog(ko, key,
++            onMine: () => answers.add('mine'),
++            onNotMine: () => answers.add('not mine'),
++            local: utc));
++    expect(find.text('새 기기에서 로그인했습니다'), findsOneWidget);
++    expect(
++        find.text('iPhone 14 Pro · 10/20 14:03 · 학외 네트워크 · HJViewer 1.6.0. '
++            '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.'),
++        findsOneWidget);
++    await tester.tap(find.text('아님: 로그아웃시키기'));
++    await tester.tap(find.text('내 기기 맞음'));
++    expect(answers, ['not mine', 'mine']);
++    await settle(tester);
++  });
++}
+diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
+index 88a49bd..4a7f4fb 100644
+--- a/src/hjviewer_account/pc.rs
++++ b/src/hjviewer_account/pc.rs
+@@ -577,7 +577,7 @@ impl<S: Store> Pc<S> {
+             }
+         } else {
+             if !self.store.exists() && !self.store.create() {
+-                return Err("store");
++                return Err("bind-store");
+             }
+             // another binding goes before its Off: a write cut short leaves no binding on
+             self.store.remove(BINDING);
+@@ -587,7 +587,7 @@ impl<S: Store> Pc<S> {
+         self.store.set(OWNER, &list.owner);
+         self.store.set(LOGIN_AT, &list.login_at.to_string());
+         if !self.keep_list(bytes, list, now) || !self.store.set(BINDING, &req.binding) {
+-            return Err("store");
++            return Err("bind-store");
+         }
+         Ok(())
+     }
+@@ -902,9 +902,9 @@ fn apply<S: Store>(
+ }
+ 
+ /// hjv-pwless-state, what the account settings show about this PC: `active <keys> <last list>`,
+-/// `off`, `disabled`, `expired`, `revoked`, `listed`, `needs-relogin` or `error <code> <last
+-/// list>` (`<last list>`: the PC's clock at the last sync that brought a list, 0 for none), and
+-/// empty while there is no binding.
++/// `off`, `disabled`, `expired <last list>`, `revoked`, `listed`, `needs-relogin` or `error <code>
++/// <last list>` (`<last list>`: the PC's clock at the last sync that brought a list, 0 for none),
++/// and empty while there is no binding.
+ fn display(view: &View, last: Option<&Answered>, last_ok: u64, now: u64) -> String {
+     let error = |code: &str| format!("error {code} {last_ok}");
+     if view.binding.is_none() {
+@@ -930,7 +930,7 @@ fn display(view: &View, last: Option<&Answered>, last_ok: u64, now: u64) -> Stri
+             Some(Answered::Failed(code)) => error(code),
+             _ => format!("active {} {last_ok}", c.list.keys.len()),
+         },
+-        _ => "expired".to_owned(),
++        _ => format!("expired {last_ok}"),
+     }
+ }
+ 
+diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
+index 6608787..fa0ce69 100644
+--- a/src/hjviewer_account/pc/tests.rs
++++ b/src/hjviewer_account/pc/tests.rs
+@@ -315,6 +315,22 @@ fn a_bind_needs_hjv_apis_word_and_a_login_just_now() {
+         Answered::BindRefused("bind-revoked")
+     );
+     assert!(!gone.store.exists());
++    // a binding the PC cannot keep is refused as a bind too, which the settings tell from a bound
++    // PC's failed sync by its bind- code
++    let blocked = dir("bind-store").join("file");
++    std::fs::write(&blocked, b"").unwrap();
++    let stuck = Pc {
++        store: MemStore::default(),
++        trust: blocked.join(TRUST_FILE),
++    };
++    let fresh = Signed::new(ID, "n1", NOW + 5, NOW).answer();
++    let refused = reply(&stuck, bind(), "n1", 200, &fresh, NOW + 6);
++    assert_eq!(refused, Answered::BindRefused("bind-store"));
++    assert_eq!(
++        display(&stuck.view(), Some(&refused), 0, NOW + 6),
++        "error bind-store 0"
++    );
++    cleanup(&["bind-store"]);
+     cleanup(&["bind", "bind-old", "bind-paused", "bind-revoked"]);
+ }
+ 
+@@ -921,7 +937,7 @@ fn the_settings_line() {
+         line(Some(Answered::NeedsRelogin), NOW + 10),
+         "needs-relogin"
+     );
+-    assert_eq!(line(None, NOW + 6 + 86_400), "expired");
++    assert_eq!(line(None, NOW + 6 + 86_400), format!("expired {}", NOW + 6));
+     assert_eq!(display(&View::default(), None, 0, NOW), "");
+     assert_eq!(
+         display(

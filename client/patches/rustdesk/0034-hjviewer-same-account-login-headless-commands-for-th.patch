@@ -1,0 +1,597 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 13 Oct 2026 15:11:41 +0900
+Subject: [PATCH 34/36] hjviewer: same-account login: headless commands for the
+ account E2E
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The account E2E (design v3 7-4; tools/e2e/firewall-e2e.sh of the hjviewer repository) runs real
+clients against hjv-api, so the test feature hjv-e2e gets the commands for it. They send what the
+app sends, through ui_interface::http_request, where the account hooks seal the password, sign
+the requests and observe the answers; a login on an installed PC is all it takes to bind it, as
+in the app.
+
+  --hjv-e2e-login <portal ID> <password>   the login dialog's request, then this-device
+  --hjv-e2e-logout [--during-devices]      [로그아웃]; with the flag, a device list request is
+                                           still out when the logout's hook runs
+  --hjv-e2e-devices, --hjv-e2e-keys        the device tab's list, the logged-in devices
+  --hjv-e2e-remove <PC ID>, --hjv-e2e-revoke-key <ckid>
+  --hjv-e2e-option <name> [<value> ...]    the service's options over its IPC; several pairs go
+                                           in one write, as the logout hook writes its unbind
+  --hjv-e2e-local-option <name> [<value>]  this user's LocalConfig
+  --hjv-e2e-service-password <password>    the service's permanent password, over its IPC
+  --hjv-e2e-id                             this device's ID and public key
+  --hjv-e2e-cm                             a connection manager that prints the peer and the
+                                           name the service shows for each login
+
+A session command (--hjv-e2e-screenshot, -stream, -forward) with an empty password is a
+password-less connection. It now ends with exit code 3 when the session asks for the password
+("hjv-e2e: password required <title>"), with 4 on an 'error' box ("hjv-e2e: error <title>"), and
+the two desktop commands with 1 when no screen arrived. The commands also set the app's log up
+(name hjv-e2e), which they used to return before.
+
+One seam outside the test file, compiled with the feature only: HJV_E2E_KEY_LOCKED makes the
+Linux key store say that the account key cannot be read now, as a locked iPhone's Keychain does,
+so that the E2E sees such a request stay unsent ("hjv: account key unavailable") and nobody
+logged out.
+
+A build without the feature is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_account/keystore.rs |   5 +
+ src/hjviewer_e2e.rs              | 449 +++++++++++++++++++++++++++++--
+ 2 files changed, 437 insertions(+), 17 deletions(-)
+
+diff --git a/src/hjviewer_account/keystore.rs b/src/hjviewer_account/keystore.rs
+index bf4e7a4..ad171f4 100644
+--- a/src/hjviewer_account/keystore.rs
++++ b/src/hjviewer_account/keystore.rs
+@@ -238,6 +238,11 @@ mod store_impl {
+     const OPTION: &str = "hjv-ctl-key";
+ 
+     pub(super) fn load() -> Result<Option<AccountKey>, Unavailable> {
++        // the account E2E's stand-in for a locked iPhone, whose Keychain cannot be read for now
++        #[cfg(feature = "hjv-e2e")]
++        if std::env::var_os("HJV_E2E_KEY_LOCKED").is_some() {
++            return Err(Unavailable);
++        }
+         let value = LocalConfig::get_option(OPTION);
+         if value.is_empty() {
+             return Ok(None);
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index 11d4bff..7e6e496 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -25,10 +25,22 @@ use hbb_common::{
+     Stream,
+ };
+ use scrap::{CodecFormat, ImageFormat, ImageRgb};
+-use std::sync::{Arc, RwLock};
++use serde_json::{json, Value};
++use std::{
++    sync::{Arc, RwLock},
++    time::{Duration, Instant},
++};
+ 
+ /// Handles the `--hjv-e2e-*` commands; false for any other arguments.
+ pub fn handle_args(args: &[String]) -> bool {
++    if args.first().is_some_and(|a| a.starts_with("--hjv-e2e-")) {
++        // these commands are done before core_main sets the log up
++        hbb_common::init_log(false, "hjv-e2e");
++    }
++    if let Some(code) = account_command(args) {
++        exit_with(code);
++        return true;
++    }
+     match args {
+         [cmd, password] if cmd == "--hjv-e2e-set-password" => {
+             if !Config::set_permanent_password(password) {
+@@ -51,12 +63,20 @@ pub fn handle_args(args: &[String]) -> bool {
+             true
+         }
+         [cmd, id, password, out] if cmd == "--hjv-e2e-screenshot" => {
+-            desktop(id.to_owned(), password.to_owned(), Watch::Screenshot(out.to_owned()));
++            exit_with(desktop(
++                id.to_owned(),
++                password.to_owned(),
++                Watch::Screenshot(out.to_owned()),
++            ));
+             true
+         }
+         [cmd, id, password, secs] if cmd == "--hjv-e2e-stream" => {
+             match secs.parse() {
+-                Ok(secs) => desktop(id.to_owned(), password.to_owned(), Watch::Stream(secs)),
++                Ok(secs) => exit_with(desktop(
++                    id.to_owned(),
++                    password.to_owned(),
++                    Watch::Stream(secs),
++                )),
+                 Err(_) => eprintln!("hjv-e2e: seconds must be a number"),
+             }
+             true
+@@ -65,6 +85,89 @@ pub fn handle_args(args: &[String]) -> bool {
+     }
+ }
+ 
++/// Ends the process with `code` unless it is 0.
++fn exit_with(code: i32) {
++    if code != 0 {
++        std::process::exit(code);
++    }
++}
++
++/// The commands of the account E2E (design v3 7-4); None for any other arguments. They log in and
++/// ask hjv-api as the app does: the same requests through ui_interface::http_request, where the
++/// account hooks seal, sign and observe them, so a PC's login alone gets it bound. (A session's
++/// empty password is a password-less connection: a password box ends `--hjv-e2e-screenshot`,
++/// `-stream` and `-forward` with exit code 3, an 'error' box with exit code 4.)
++///
++///     <app> --hjv-e2e-id                                  (this device's ID and public key)
++///     <app> --hjv-e2e-login <portal ID> <password>
++///     <app> --hjv-e2e-logout [--during-devices]           (with a device list request still out)
++///     <app> --hjv-e2e-devices | --hjv-e2e-keys
++///     <app> --hjv-e2e-remove <PC ID>
++///     <app> --hjv-e2e-revoke-key <ckid>
++///     <app> --hjv-e2e-option <name> [<value> [<name> <value>]...]   (the service's options, over
++///                                                         its IPC: one read, or written at once)
++///     <app> --hjv-e2e-local-option <name> [<value>]       (this device user's LocalConfig)
++///     <app> --hjv-e2e-service-password <password>         (the service's permanent password)
++///     <app> --hjv-e2e-cm             (a connection manager printing the logins it is told of)
++fn account_command(args: &[String]) -> Option<i32> {
++    Some(match args {
++        [cmd] if cmd == "--hjv-e2e-id" => {
++            let pk = Config::get_existing_key_pair()
++                .map(|(_, pk)| crate::encode64(pk))
++                .unwrap_or_else(|| "-".to_owned());
++            println!("{} {pk}", crate::ipc::get_id());
++            0
++        }
++        [cmd, user, password] if cmd == "--hjv-e2e-login" => login(user, password),
++        [cmd] if cmd == "--hjv-e2e-logout" => logout(false),
++        [cmd, flag] if cmd == "--hjv-e2e-logout" && flag == "--during-devices" => logout(true),
++        [cmd] if cmd == "--hjv-e2e-devices" => devices(),
++        [cmd, id] if cmd == "--hjv-e2e-remove" => {
++            simple_request("delete", &format!("/api/hjv/devices/{id}"), "remove")
++        }
++        [cmd] if cmd == "--hjv-e2e-keys" => keys(),
++        [cmd, ckid] if cmd == "--hjv-e2e-revoke-key" => {
++            simple_request("delete", &format!("/api/hjv/keys/{ckid}"), "revoke-key")
++        }
++        [cmd, name] if cmd == "--hjv-e2e-option" => {
++            let options = crate::ipc::get_options();
++            println!("{}", options.get(name).map(String::as_str).unwrap_or(""));
++            0
++        }
++        [cmd, pairs @ ..] if cmd == "--hjv-e2e-option" && pairs.len() % 2 == 0 => {
++            // one write, as the account hooks write theirs (an empty value removes the option)
++            let mut options = crate::ipc::get_options();
++            for pair in pairs.chunks(2) {
++                if pair[1].is_empty() {
++                    options.remove(&pair[0]);
++                } else {
++                    options.insert(pair[0].clone(), pair[1].clone());
++                }
++            }
++            crate::ui_interface::set_options(options);
++            0
++        }
++        [cmd, name] if cmd == "--hjv-e2e-local-option" => {
++            println!("{}", LocalConfig::get_option(name));
++            0
++        }
++        [cmd, name, value] if cmd == "--hjv-e2e-local-option" => {
++            LocalConfig::set_option(name.to_owned(), value.to_owned());
++            0
++        }
++        [cmd, password] if cmd == "--hjv-e2e-service-password" => {
++            if crate::ui_interface::set_permanent_password_with_result(password.to_owned()) {
++                0
++            } else {
++                eprintln!("hjv-e2e: the service did not take the password");
++                1
++            }
++        }
++        [cmd] if cmd == "--hjv-e2e-cm" => connection_manager(),
++        _ => return None,
++    })
++}
++
+ fn session(id: &str, conn_type: ConnType) -> (Headless, mpsc::UnboundedReceiver<Data>) {
+     let lc = Arc::new(RwLock::new(LoginConfigHandler::default()));
+     lc.write()
+@@ -81,9 +184,9 @@ enum Watch {
+     Stream(u64),
+ }
+ 
+-/// Logs in for a remote desktop session and watches its video.
++/// Logs in for a remote desktop session and watches its video. 0 when it saw the video, else 1.
+ #[tokio::main]
+-async fn desktop(id: String, password: String, watch: Watch) {
++async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+     let (interface, _receiver) = session(&id, ConnType::DEFAULT_CONN);
+     let key = crate::get_key(true).await;
+     let token = crate::hjviewer::rendezvous_token(LocalConfig::get_option("access_token"));
+@@ -92,7 +195,7 @@ async fn desktop(id: String, password: String, watch: Watch) {
+             Ok(res) => res,
+             Err(err) => {
+                 eprintln!("hjv-e2e: {err}");
+-                return;
++                return 1;
+             }
+         };
+     interface.update_direct(Some(direct));
+@@ -109,14 +212,14 @@ async fn desktop(id: String, password: String, watch: Watch) {
+                     video_bytes as f64 * 8.0 / 1e6 / elapsed,
+                     frames as f64 / elapsed
+                 );
+-                return;
++                return 0;
+             }
+         }
+         let bytes = match timeout(30_000, stream.next()).await {
+             Ok(Some(Ok(bytes))) => bytes,
+             _ => {
+                 eprintln!("hjv-e2e: the session ended before a screen arrived");
+-                return;
++                return 1;
+             }
+         };
+         let size = bytes.len() as u64;
+@@ -130,7 +233,7 @@ async fn desktop(id: String, password: String, watch: Watch) {
+             Some(message::Union::LoginResponse(res)) => match res.union {
+                 Some(login_response::Union::Error(err)) => {
+                     interface.handle_login_error(&err);
+-                    return;
++                    return 1;
+                 }
+                 Some(login_response::Union::PeerInfo(pi)) => {
+                     interface.handle_peer_info(pi);
+@@ -156,14 +259,19 @@ async fn desktop(id: String, password: String, watch: Watch) {
+                 let mut pixelbuffer = true;
+                 let mut chroma = None;
+                 if let Ok(true) = handler.handle_frame(vf, &mut pixelbuffer, &mut chroma) {
+-                    match write_ppm(&handler.rgb, out) {
+-                        Ok(()) => println!(
+-                            "hjv-e2e: screen {}x{} written to {out}",
+-                            handler.rgb.w, handler.rgb.h
+-                        ),
+-                        Err(err) => eprintln!("hjv-e2e: {out}: {err}"),
+-                    }
+-                    return;
++                    return match write_ppm(&handler.rgb, out) {
++                        Ok(()) => {
++                            println!(
++                                "hjv-e2e: screen {}x{} written to {out}",
++                                handler.rgb.w, handler.rgb.h
++                            );
++                            0
++                        }
++                        Err(err) => {
++                            eprintln!("hjv-e2e: {out}: {err}");
++                            1
++                        }
++                    };
+                 }
+             }
+             Some(message::Union::TestDelay(t)) => {
+@@ -233,6 +341,18 @@ impl Interface for Headless {
+ 
+     fn msgbox(&self, msgtype: &str, title: &str, text: &str, _link: &str) {
+         println!("hjv-e2e: {msgtype}: {title}: {text}");
++        // what a user would have to answer: the password, or a warning that ends the session
++        match msgtype {
++            "input-password" | "re-input-password" => {
++                println!("hjv-e2e: password required {title}");
++                std::process::exit(3);
++            }
++            "error" => {
++                println!("hjv-e2e: error {title}");
++                std::process::exit(4);
++            }
++            _ => {}
++        }
+     }
+ 
+     fn handle_login_error(&self, err: &str) -> bool {
+@@ -291,3 +411,298 @@ impl Interface for Headless {
+         self.lc.write().unwrap().direct = direct;
+     }
+ }
++
++/// The answer to an account request.
++enum Answer {
++    /// hjv-api's (or the web server's) status and body
++    Http(u16, Value),
++    /// no HTTP answer: what http_request left instead, such as "hjv: account key unavailable"
++    /// from the account hook that sent nothing, or the TLS error of a certificate it refused
++    None(String),
++}
++
++impl Answer {
++    /// "HTTP 409 clock: <error>" and the like, for a line of output.
++    fn describe(&self) -> String {
++        match self {
++            Answer::Http(status, body) => {
++                let clock = if body.get("hjv").and_then(Value::as_str) == Some("clock") {
++                    " clock"
++                } else {
++                    ""
++                };
++                let error = body.get("error").and_then(Value::as_str).unwrap_or("");
++                format!("HTTP {status}{clock}: {error}")
++            }
++            Answer::None(why) => why.to_owned(),
++        }
++    }
++}
++
++/// Sends an account request the way the app's HttpService does with flutter-http-on-rust on:
++/// ui_interface::http_request (with the account hooks H13 and H14), whose result it polls.
++fn send_request(method: &str, path: &str, body: Option<String>, headers: &Value) -> String {
++    let url = format!("{}{path}", crate::ui_interface::get_api_server());
++    crate::ui_interface::http_request(url.clone(), method.to_owned(), body, headers.to_string());
++    url
++}
++
++/// The result of a request `send_request` sent, once there is one, or None after `wait`.
++fn poll_request(url: &str, wait: Duration) -> Option<Answer> {
++    let started = Instant::now();
++    loop {
++        match crate::ui_interface::get_async_http_status(url.to_owned()) {
++            Some(result) if result != " " => return Some(parse_result(result)),
++            _ if started.elapsed() > wait => return None,
++            _ => std::thread::sleep(Duration::from_millis(50)),
++        }
++    }
++}
++
++fn parse_result(result: String) -> Answer {
++    let Ok(Value::Object(answer)) = serde_json::from_str::<Value>(&result) else {
++        return Answer::None(result);
++    };
++    let status = answer
++        .get("status_code")
++        .and_then(Value::as_u64)
++        .and_then(|s| u16::try_from(s).ok());
++    let Some(status) = status else {
++        return Answer::None(result);
++    };
++    let text = answer.get("body").and_then(Value::as_str).unwrap_or("");
++    let body = serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_owned()));
++    Answer::Http(status, body)
++}
++
++/// One account request, with a minute for its answer (two attempts of http_request's 12 s).
++fn account_request(method: &str, path: &str, body: Option<String>, headers: &Value) -> Answer {
++    let url = send_request(method, path, body, headers);
++    poll_request(&url, Duration::from_secs(60))
++        .unwrap_or_else(|| Answer::None("no answer within 60 s".to_owned()))
++}
++
++/// The app's getHttpHeaders(): the token of the login, signed on its way by the account hook.
++fn auth_headers() -> Value {
++    json!({ "Authorization": format!("Bearer {}", LocalConfig::get_option("access_token")) })
++}
++
++/// The login dialog's request (login.dart), and what the app keeps of its answer
++/// (handleLoginResponse) and asks next (`this-device`, design v3 1-2).
++fn login(user: &str, password: &str) -> i32 {
++    let id = crate::ipc::get_id();
++    let body = json!({
++        "username": user,
++        "password": password,
++        "id": id,
++        "uuid": crate::ui_interface::get_uuid(),
++        "autoLogin": true,
++        "type": "account",
++        "deviceInfo": serde_json::to_value(crate::ui_interface::get_login_device_info())
++            .unwrap_or_default(),
++    });
++    let headers = json!({ "Content-Type": "application/json" });
++    let answer = account_request("post", "/api/login", Some(body.to_string()), &headers);
++    let Answer::Http(200, body) = &answer else {
++        println!("hjv-e2e: login failed: {}", answer.describe());
++        return 1;
++    };
++    let token = body
++        .get("access_token")
++        .and_then(Value::as_str)
++        .filter(|t| !t.is_empty());
++    let (Some("access_token"), Some(token)) = (body.get("type").and_then(Value::as_str), token)
++    else {
++        println!("hjv-e2e: login failed: no token in the answer");
++        return 1;
++    };
++    let user = body.get("user").cloned().unwrap_or_else(|| json!({}));
++    LocalConfig::set_option("access_token".to_owned(), token.to_owned());
++    LocalConfig::set_option("user_info".to_owned(), user.to_string());
++    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
++    println!(
++        "hjv-e2e: logged in as {} ({}) on {id}",
++        text(&user, "display_name"),
++        text(&user, "name")
++    );
++    let hjv = body.get("hjv").cloned().unwrap_or_default();
++    match (
++        hjv.get("binding").and_then(Value::as_str),
++        hjv.get("login_at").and_then(Value::as_u64),
++    ) {
++        (Some(binding), Some(login_at)) => println!("hjv-e2e: bind request {binding}.{login_at}"),
++        _ => println!("hjv-e2e: no bind request"),
++    }
++    match account_request("get", "/api/hjv/this-device", None, &auth_headers()) {
++        Answer::Http(200, device) => {
++            println!(
++                "hjv-e2e: this device: {} {}",
++                text(&device, "status"),
++                text(&device, "pwless")
++            );
++            0
++        }
++        answer => {
++            println!("hjv-e2e: this device: {}", answer.describe());
++            1
++        }
++    }
++}
++
++/// [로그아웃] (user_model.dart logOut): `/api/logout`, whose answer the app waits two seconds for,
++/// then the token and the user go. With `during_devices` a device list request goes out first and
++/// is answered after the logout's hook ran (the test holds hjv-api meanwhile), as when the app
++/// fetches the list while its user logs out.
++fn logout(during_devices: bool) -> i32 {
++    let peers = during_devices.then(|| {
++        let url = send_request("get", PEERS, None, &auth_headers());
++        std::thread::sleep(Duration::from_millis(300));
++        url
++    });
++    let body = json!({ "id": crate::ipc::get_id(), "uuid": crate::ui_interface::get_uuid() });
++    let mut headers = auth_headers();
++    headers["Content-Type"] = json!("application/json");
++    let url = send_request("post", "/api/logout", Some(body.to_string()), &headers);
++    let wait = if during_devices { 60 } else { 2 };
++    let answer = poll_request(&url, Duration::from_secs(wait))
++        .map_or_else(|| "no answer".to_owned(), |a| a.describe());
++    LocalConfig::set_option("access_token".to_owned(), String::new());
++    LocalConfig::set_option("user_info".to_owned(), String::new());
++    println!("hjv-e2e: logged out ({answer})");
++    if let Some(url) = peers {
++        let list = poll_request(&url, Duration::from_secs(60))
++            .map_or_else(|| "no answer".to_owned(), |a| a.describe());
++        let kept = LocalConfig::get_option("hjv-my-devices");
++        println!(
++            "hjv-e2e: device list answered after the logout ({list}); hjv-my-devices {}",
++            if kept.is_empty() { "empty" } else { "kept" }
++        );
++    }
++    0
++}
++
++/// The device list request of group_model.dart.
++const PEERS: &str = "/api/peers?current=1&pageSize=100&accessible=&status=1";
++
++/// The device tab's list (group_model.dart _getPeers), 100 a page, as the app asks for it.
++fn devices() -> i32 {
++    let (mut current, mut total, mut seen) = (0u64, 0u64, 0u64);
++    loop {
++        current += 1;
++        let path = format!("/api/peers?current={current}&pageSize=100&accessible=&status=1");
++        let body = match account_request("get", &path, None, &auth_headers()) {
++            Answer::Http(200, body) => body,
++            answer => {
++                println!("hjv-e2e: devices failed: {}", answer.describe());
++                return 1;
++            }
++        };
++        if current == 1 {
++            total = body.get("total").and_then(Value::as_u64).unwrap_or(0);
++        }
++        for pc in body
++            .get("data")
++            .and_then(Value::as_array)
++            .into_iter()
++            .flatten()
++        {
++            seen += 1;
++            let text = |v: Option<&Value>| v.and_then(Value::as_str).unwrap_or("").to_owned();
++            let hjv = pc.get("hjv");
++            println!(
++                "hjv-e2e: device {} {} pwless={} pk={} kinds={} note={}",
++                text(pc.get("id")),
++                text(pc.pointer("/info/os")),
++                text(hjv.and_then(|h| h.get("pwless"))),
++                text(hjv.and_then(|h| h.get("pk"))),
++                hjv.and_then(|h| h.get("kinds"))
++                    .map_or_else(String::new, Value::to_string),
++                text(pc.get("note")),
++            );
++        }
++        if current * 100 >= total {
++            break;
++        }
++    }
++    println!("hjv-e2e: {seen} device(s)");
++    0
++}
++
++/// '로그인한 기기' (design v3 1-7): the account's keys.
++fn keys() -> i32 {
++    match account_request(
++        "get",
++        "/api/hjv/keys?current=1&pageSize=100",
++        None,
++        &auth_headers(),
++    ) {
++        Answer::Http(200, body) => {
++            for key in body
++                .get("data")
++                .and_then(Value::as_array)
++                .into_iter()
++                .flatten()
++            {
++                let text = |k: &str| key.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
++                println!(
++                    "hjv-e2e: key {} current={} app_name={} platform={} use={} name={}",
++                    key.get("ckid").map_or_else(String::new, Value::to_string),
++                    key.get("current")
++                        .map_or_else(String::new, Value::to_string),
++                    text("app_name"),
++                    text("platform"),
++                    key.get("use").map_or_else(String::new, Value::to_string),
++                    text("name"),
++                );
++            }
++            0
++        }
++        answer => {
++            println!("hjv-e2e: keys failed: {}", answer.describe());
++            1
++        }
++    }
++}
++
++/// A request of the account screens without a body (hjviewer_account.dart _request).
++fn simple_request(method: &str, path: &str, what: &str) -> i32 {
++    let answer = account_request(method, path, None, &auth_headers());
++    println!("hjv-e2e: {what}: {}", answer.describe());
++    i32::from(!matches!(answer, Answer::Http(200, _)))
++}
++
++/// Stands in for the connection manager the service starts for each session (`--cm`), and prints
++/// the peer and the name the service shows for each login.
++#[tokio::main(flavor = "current_thread")]
++async fn connection_manager() -> i32 {
++    let mut incoming = match crate::ipc::new_listener("_cm").await {
++        Ok(incoming) => incoming,
++        Err(err) => {
++            eprintln!("hjv-e2e: cm: {err}");
++            return 1;
++        }
++    };
++    println!("hjv-e2e: cm listening");
++    while let Some(stream) = incoming.next().await {
++        let Ok(stream) = stream else {
++            continue;
++        };
++        tokio::spawn(async move {
++            let mut conn = crate::ipc::Connection::new(stream);
++            while let Ok(data) = conn.next().await {
++                if let Some(crate::ipc::Data::Login {
++                    peer_id,
++                    name,
++                    authorized,
++                    ..
++                }) = data
++                {
++                    println!(
++                        "hjv-e2e: cm login from {peer_id} named {name:?}, authorized {authorized}"
++                    );
++                }
++            }
++        });
++    }
++    0
++}

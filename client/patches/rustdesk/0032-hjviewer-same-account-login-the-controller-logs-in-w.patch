@@ -1,0 +1,1414 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 13 Oct 2026 09:57:38 +0900
+Subject: [PATCH 32/36] hjviewer: same-account login: the controller logs in
+ with its account key
+
+A controller logged in to the account proves itself to the account's PCs with
+its account key instead of asking for the PC's password (design v3 3-1, 3-4,
+3-9, 1-6). Four hooks in client.rs, the rest in HJViewer's files:
+
+- Client::start notes the PC key its channel was checked against, for a
+  secured channel, under the session's ID. The connections of a session share
+  that ID and can run at once (on desktop the file transfer, camera, terminal
+  and port forwarding opened from a session's toolbar), so a session keeps
+  every such key of the last 24 hours, longer than any channel waits for its
+  login, and a login carries a proof only when all of them are the key the
+  account bound to the PC.
+- handle_hash asks hjviewer_account::key_proof, after the terminal admin
+  branch. With a proof the login goes out as create_login_msg makes it, with
+  the remembered password if there is one and the proof added, and no
+  password box comes first. When the PC's key is not the one the account's
+  device list (hjv-my-devices) has for it, an 'error' box warns and the
+  connection ends: no proof, no password. Otherwise handle_hash goes on as
+  before.
+- handle_login_error: "Empty Password" after a proof means the PC refused it;
+  the 're-input-password' box says so, and its [Retry] opens the password box.
+
+The proof goes only to a PC in the device list that is not needs-relogin, on a
+secured channel, for the remote screen, file transfer, camera or the terminal
+as far as the list's kinds allow, never over an id@server connection, never
+for port forwarding or RDP, and only with the PC's 32-byte nonce, so a PC
+without the feature never gets a lone proof to wait on. The key continuity
+check runs before the nonce and the kinds, and for port forwarding and RDP
+too: a PC that leaves its nonce out, or a port forwarding to it, does not get
+the remembered password around it. The device list, the key serial and the
+login are read through api.rs, which keeps them, so the controller reads the
+list in the format the account requests write it.
+
+The boxes' texts are in Korean and English, picked by the app's language
+(mod.rs korean(), shared with the PC's connection manager name): its own
+setting, else the system's. Phones get sys-locale for the latter
+(Cargo.toml); it was a desktop-only dependency, and ctl.rs builds everywhere.
+
+A build without HJV_SERVER, HJV_LOGIN_SEAL_PUBKEY or HJV_TRUST_PUBKEYS keeps
+1.5.1's path: the hooks return at once.
+
+Tests: the conditions as a table, the proof against the shared vectors (and
+accepted by the PC's check), no proof without a nonce, the key warning for the
+account's PCs only, for any channel of the session and for port forwarding,
+and connections through the client's own secured handshake to a PC on
+loopback that checks proofs as design 3-5 has it: the account's PC opens
+without a password box and gets the login create_login_msg makes plus the
+proof; a refused proof gets the refusal box, or goes in by the remembered
+password; a PC without the nonce, another account's PC, port forwarding to the
+PC under its bound key and a needs-relogin PC under another key get 1.5.1's
+login; a changed key warns and sends nothing, for port forwarding too; without
+the feature the hooks do nothing.
+
+Known limits: the terminal's administrator login asks for the Windows
+credentials before handle_hash reaches the hook, and a password typed into a
+port forwarding window's prompt answers its other mappings' Hash directly
+(login_from_ui), so, as in 1.5.1, neither gets the key check. A channel whose
+login comes more than 24 hours after its handshake has no key noted and goes
+the password way without the check, and so does, as in 1.5.1, a channel that
+failed the key handshake and that the user lets go on unencrypted. A session
+that noted the PC's earlier key within the last 24 hours (a window that
+connects again after the PC was installed anew and bound again) shows the key
+warning and closes; a new connection goes through.
+
+(Design v3, work package C3: patch 0032.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.toml                  |   4 +
+ src/client.rs               |   8 +
+ src/client/hjv_account.rs   | 599 +++++++++++++++++++++++++++++++++++
+ src/hjviewer_account/api.rs |  15 +
+ src/hjviewer_account/ctl.rs | 611 +++++++++++++++++++++++++++++++++++-
+ src/hjviewer_account/mod.rs |   1 -
+ 6 files changed, 1222 insertions(+), 16 deletions(-)
+ create mode 100644 src/client/hjv_account.rs
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 49cf8a8..d941375 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -112,6 +112,10 @@ portable-pty = { git = "https://github.com/rustdesk-org/wezterm", branch = "rust
+ system_shutdown = "4.0"
+ qrcode-generator = "4.1"
+ 
++[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
++# HJViewer: the same-account login's warnings follow the phone's language
++sys-locale = "0.3"
++
+ [target.'cfg(target_os = "windows")'.dependencies]
+ winapi = { version = "0.3", features = [
+     "winuser",
+diff --git a/src/client.rs b/src/client.rs
+index 34cf626..8dc61f9 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -103,6 +103,7 @@ pub mod file_trait;
+ pub mod helper;
+ pub mod io_loop;
+ pub mod screenshot;
++mod hjv_account;
+ 
+ pub const MILLI1: Duration = Duration::from_millis(1);
+ pub const SEC30: Duration = Duration::from_secs(30);
+@@ -388,6 +389,7 @@ impl Client {
+                 }
+             }
+             Ok(x) => {
++                hjv_account::note_peer_key(&interface, &x.0 .0, x.0 .2.as_deref());
+                 // Set x.2 to true only in the connect() function to indicate that direct_failures needs to be updated; everywhere else it should be set to false.
+                 if x.2 {
+                     let direct_failures = interface.get_lch().read().unwrap().direct_failures;
+@@ -4503,6 +4505,9 @@ pub fn handle_login_error(
+     err: &str,
+     interface: &impl Interface,
+ ) -> bool {
++    if hjv_account::on_login_error(&lc, err, interface) {
++        return true;
++    }
+     if err == LOGIN_MSG_PASSWORD_EMPTY {
+         lc.write().unwrap().password = Default::default();
+         interface.msgbox("input-password", "Password Required", "", "");
+@@ -4742,6 +4747,9 @@ pub async fn handle_hash(
+         return true;
+     }
+ 
++    if let Some(keep) = hjv_account::key_login(&lc, &hash, &password, interface, peer).await {
++        return keep;
++    }
+     let password = if password.is_empty() {
+         // login without password, the remote side can click accept
+         interface.msgbox("input-password", "Password Required", "", "");
+diff --git a/src/client/hjv_account.rs b/src/client/hjv_account.rs
+new file mode 100644
+index 0000000..5823efd
+--- /dev/null
++++ b/src/client/hjv_account.rs
+@@ -0,0 +1,599 @@
++//! The controller's hooks in client.rs for same-account logins (design v3 3-1, 3-4, 3-9). A child
++//! module of `client`, so that it builds the login with the private `create_login_msg` and reads
++//! LoginConfigHandler's fields. The decisions are `hjviewer_account`'s; in a build without the
++//! feature every hook does nothing.
++
++use crate::{
++    client::{Interface, LoginConfigHandler, LOGIN_MSG_PASSWORD_EMPTY},
++    hjviewer_account::{
++        enabled, key_proof, kind_of_conn_type, note_peer_key as note_session_key, take_proof_sent,
++        LoginContext, ProofDecision,
++    },
++};
++use base::message_proto::{message, Hash};
++use hbb_common::{
++    allow_err, log,
++    protobuf::MessageField,
++    sha2::{Digest, Sha256},
++    Stream,
++};
++use std::sync::{Arc, RwLock};
++
++/// H10, Client::start: the PC key this connection's channel was checked against.
++pub(super) fn note_peer_key(interface: &impl Interface, stream: &Stream, pk: Option<&[u8]>) {
++    if !enabled() {
++        return;
++    }
++    let session_id = interface.get_lch().read().unwrap().session_id;
++    note_session_key(session_id, stream.is_secured(), pk);
++}
++
++/// H11, handle_login_error: true when handled here.
++pub(super) fn on_login_error(
++    lc: &Arc<RwLock<LoginConfigHandler>>,
++    err: &str,
++    interface: &impl Interface,
++) -> bool {
++    enabled() && refused(lc, err, interface)
++}
++
++/// After a login with a proof, "Empty Password" means that the PC refused the proof and no
++/// password came with it. The 're-input-password' box says so; its [Retry] opens the password box.
++fn refused(lc: &Arc<RwLock<LoginConfigHandler>>, err: &str, interface: &impl Interface) -> bool {
++    let session_id = lc.read().unwrap().session_id;
++    let Some((title, text)) = take_proof_sent(session_id) else {
++        return false;
++    };
++    if err != LOGIN_MSG_PASSWORD_EMPTY {
++        return false;
++    }
++    lc.write().unwrap().password = Default::default();
++    interface.msgbox("re-input-password", title, text, "");
++    true
++}
++
++/// H12, handle_hash, with the remembered password (salted) as handle_hash found it. Some(true):
++/// the login went out with an account key proof and that password, without a password box first.
++/// Some(false): the PC's key is not the one the account bound to it; the warning is up, nothing
++/// was sent, and the connection ends. None: handle_hash goes on as before.
++pub(super) async fn key_login(
++    lc: &Arc<RwLock<LoginConfigHandler>>,
++    hash: &Hash,
++    password: &[u8],
++    interface: &impl Interface,
++    peer: &mut Stream,
++) -> Option<bool> {
++    if !enabled() {
++        return None;
++    }
++    login_with(lc, hash, password, interface, peer, key_proof).await
++}
++
++async fn login_with(
++    lc: &Arc<RwLock<LoginConfigHandler>>,
++    hash: &Hash,
++    password: &[u8],
++    interface: &impl Interface,
++    peer: &mut Stream,
++    decide: impl FnOnce(&LoginContext) -> ProofDecision,
++) -> Option<bool> {
++    let password = if password.is_empty() {
++        Vec::new()
++    } else {
++        let mut hasher = Sha256::new();
++        hasher.update(password);
++        hasher.update(&hash.challenge);
++        hasher.finalize()[..].into()
++    };
++    let (mut msg, session_id, kind, other_server) = {
++        let lc = lc.read().unwrap();
++        (
++            lc.create_login_msg(String::new(), String::new(), password),
++            lc.session_id,
++            kind_of_conn_type(lc.conn_type),
++            lc.other_server.is_some(),
++        )
++    };
++    let Some(message::Union::LoginRequest(lr)) = msg.union.as_mut() else {
++        return None;
++    };
++    let decision = decide(&LoginContext {
++        session_id,
++        pc_id: &lr.username,
++        ctl_id: &lr.my_id,
++        kind,
++        other_server,
++        nonce: &hash.hjv_nonce,
++        secured: peer.is_secured(),
++    });
++    match decision {
++        ProofDecision::No => None,
++        ProofDecision::KeyChanged { title, text } => {
++            lc.write().unwrap().password = Default::default();
++            interface.msgbox("error", title, text, "");
++            Some(false)
++        }
++        ProofDecision::Send(proof) => {
++            lr.hjv_key_proof = MessageField::some(proof);
++            allow_err!(peer.send(&msg).await);
++            lc.write().unwrap().hash = hash.clone();
++            Some(true)
++        }
++    }
++}
++
++/// The controller's side of a connection, through the client's own secured handshake, against a
++/// PC on loopback that takes same-account logins as design 3-5 has it (its key check, without the
++/// binding, the sync and the CM). This test build has none of the build variables, so the steps
++/// that an account build's hooks take are taken here: Client::start's note (H10), handle_hash's
++/// hook (H12) and handle_login_error's (H11), each followed by the client's own way when the hook
++/// leaves the login to it.
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::{
++        client::{handle_hash, handle_login_error, Client, Data},
++        hjviewer_account::{check_key_login, kind_of_union, vectors::*, Cached, KeyLogin},
++    };
++    use async_trait::async_trait;
++    use base::message_proto::{
++        login_response, LoginRequest, LoginResponse, Message, PeerInfo, SignedId, TestDelay,
++        WindowsSession,
++    };
++    use hbb_common::{
++        config::Config,
++        protobuf::Message as _,
++        rand,
++        rendezvous_proto::{ConnType, IdPk},
++        socket_client::connect_tcp,
++        sodiumoxide::crypto::{box_, sign},
++        tcp::{new_listener, Encrypt, FramedStream},
++        timeout,
++        tokio::{self, task::JoinHandle},
++    };
++    use std::sync::Mutex;
++
++    /// The PC's permanent password.
++    const PC_PASSWORD: &str = "pc-password";
++    const SALT: &str = "salt";
++    const CHALLENGE: &str = "abcdef";
++
++    /// A session's interface that keeps the boxes it was asked to show.
++    #[derive(Clone)]
++    struct Ui {
++        lc: Arc<RwLock<LoginConfigHandler>>,
++        boxes: Arc<Mutex<Vec<(String, String)>>>,
++    }
++
++    impl Ui {
++        fn new(conn_type: ConnType) -> Ui {
++            let lc = LoginConfigHandler {
++                id: PC_ID.to_owned(),
++                conn_type,
++                session_id: rand::random::<u64>() | 1,
++                ..Default::default()
++            };
++            Ui {
++                lc: Arc::new(RwLock::new(lc)),
++                boxes: Default::default(),
++            }
++        }
++
++        /// (type, title) of each box shown
++        fn boxes(&self) -> Vec<(String, String)> {
++            self.boxes.lock().unwrap().clone()
++        }
++    }
++
++    #[async_trait]
++    impl Interface for Ui {
++        fn send(&self, _data: Data) {}
++        fn msgbox(&self, msgtype: &str, title: &str, _text: &str, _link: &str) {
++            self.boxes
++                .lock()
++                .unwrap()
++                .push((msgtype.to_owned(), title.to_owned()));
++        }
++        fn handle_login_error(&self, err: &str) -> bool {
++            handle_login_error(self.lc.clone(), err, self)
++        }
++        fn handle_peer_info(&self, _pi: PeerInfo) {}
++        fn set_multiple_windows_session(&self, _sessions: Vec<WindowsSession>) {}
++        async fn handle_hash(&self, pass: &str, hash: Hash, peer: &mut Stream) -> bool {
++            handle_hash(self.lc.clone(), pass, hash, self, peer).await
++        }
++        async fn handle_login_from_ui(
++            &self,
++            _os_username: String,
++            _os_password: String,
++            _password: String,
++            _remember: bool,
++            _peer: &mut Stream,
++        ) {
++        }
++        async fn handle_test_delay(&self, _t: TestDelay, _peer: &mut Stream) {}
++        fn get_lch(&self) -> Arc<RwLock<LoginConfigHandler>> {
++            self.lc.clone()
++        }
++    }
++
++    fn sha256(a: &[u8], b: &[u8]) -> Vec<u8> {
++        let mut hasher = Sha256::new();
++        hasher.update(a);
++        hasher.update(b);
++        hasher.finalize()[..].into()
++    }
++
++    /// The PC, as the device list and the trust list have it.
++    struct Pc {
++        /// Hash.hjv_nonce; none from a PC without the feature (1.5.x)
++        nonce: Option<[u8; 32]>,
++        /// the trust list it checks proofs against, holding this device's account key
++        list: bool,
++    }
++
++    const PC: Pc = Pc {
++        nonce: Some(CONN_NONCE),
++        list: true,
++    };
++
++    /// The PC's answer to a login: a proof it takes, else its password; an empty password without
++    /// a proof waits for its user to accept, and gets no answer.
++    fn answer(pc: &Pc, lr: &LoginRequest) -> Option<login_response::Union> {
++        let list: Option<Cached> = pc.list.then(|| Cached {
++            // the list's key carries this device's ID, the LoginRequest's my_id
++            list: serde_json::from_str(&LIST.replace(CTL_ID, &Config::get_id())).unwrap(),
++            received: T,
++        });
++        let pc_pk = pk_bytes(PC_PK);
++        let proof = lr
++            .hjv_key_proof
++            .as_ref()
++            .zip(pc.nonce)
++            .map(|(proof, nonce)| {
++                let login = KeyLogin {
++                    pc_id: PC_ID,
++                    pc_pk: &pc_pk,
++                    secured: true,
++                    nonce: &nonce,
++                    proof,
++                    my_id: &lr.my_id,
++                    kind: kind_of_union(&lr.union),
++                };
++                check_key_login(&login, list.as_ref(), T + 60).is_ok()
++            });
++        let password = sha256(
++            &sha256(PC_PASSWORD.as_bytes(), SALT.as_bytes()),
++            CHALLENGE.as_bytes(),
++        );
++        match proof {
++            Some(true) => Some(login_response::Union::PeerInfo(Default::default())),
++            _ if lr.password.is_empty() => {
++                proof.map(|_| login_response::Union::Error(LOGIN_MSG_PASSWORD_EMPTY.to_owned()))
++            }
++            _ if lr.password[..] == password[..] => {
++                Some(login_response::Union::PeerInfo(Default::default()))
++            }
++            _ => Some(login_response::Union::Error("Wrong Password".to_owned())),
++        }
++    }
++
++    /// The PC on loopback: the controlled side's handshake under its device key (the vectors' PC
++    /// key, which the rendezvous server signs for its ID), its Hash, and its answer to the login.
++    /// Returns where it listens, its signed identity, the rendezvous key, and the login it got.
++    async fn run_pc(pc: Pc) -> (String, Vec<u8>, String, JoinHandle<Option<LoginRequest>>) {
++        let (rs_pk, rs_sk) = sign::gen_keypair();
++        let id_pk = |pk: &[u8]| {
++            IdPk {
++                id: PC_ID.to_owned(),
++                pk: pk.to_vec().into(),
++                ..Default::default()
++            }
++            .write_to_bytes()
++            .unwrap()
++        };
++        let signed_id_pk = sign::sign(&id_pk(&pk_bytes(PC_PK)), &rs_sk);
++        let listener = new_listener("127.0.0.1:0", false).await.unwrap();
++        let host = listener.local_addr().unwrap().to_string();
++        let task = tokio::spawn(async move {
++            let (stream, addr) = listener.accept().await.unwrap();
++            let mut s = FramedStream::from(stream, addr);
++            let (box_pk, box_sk) = box_::gen_keypair();
++            let mut msg = Message::new();
++            msg.set_signed_id(SignedId {
++                id: sign::sign(&id_pk(&box_pk.0), &device_key(&PC_SEED)).into(),
++                ..Default::default()
++            });
++            s.send(&msg).await.unwrap();
++            let bytes = s.next().await.unwrap().unwrap();
++            let Some(message::Union::PublicKey(pk)) =
++                Message::parse_from_bytes(&bytes).unwrap().union
++            else {
++                panic!("expected the controller's public key");
++            };
++            s.set_key(Encrypt::decode(&pk.symmetric_value, &pk.asymmetric_value, &box_sk).unwrap());
++            let mut msg = Message::new();
++            msg.set_hash(Hash {
++                salt: SALT.to_owned(),
++                challenge: CHALLENGE.to_owned(),
++                hjv_nonce: pc.nonce.map(|n| n.to_vec()).unwrap_or_default().into(),
++                ..Default::default()
++            });
++            s.send(&msg).await.unwrap();
++            // the controller closes the connection when it sends no login
++            let Ok(Some(Ok(bytes))) = timeout(10_000, s.next()).await else {
++                return None;
++            };
++            let lr = Message::parse_from_bytes(&bytes)
++                .unwrap()
++                .login_request()
++                .clone();
++            if let Some(union) = answer(&pc, &lr) {
++                let mut msg = Message::new();
++                msg.set_login_response(LoginResponse {
++                    union: Some(union),
++                    ..Default::default()
++                });
++                s.send(&msg).await.unwrap();
++            }
++            Some(lr)
++        });
++        (host, signed_id_pk, crate::encode64(rs_pk.0), task)
++    }
++
++    /// The PC's Hash, which it sends right after the handshake.
++    async fn hash_from(peer: &mut Stream) -> Hash {
++        let bytes = timeout(10_000, peer.next())
++            .await
++            .unwrap()
++            .unwrap()
++            .unwrap();
++        Message::parse_from_bytes(&bytes).unwrap().hash().clone()
++    }
++
++    /// What one connection came to.
++    struct Outcome {
++        /// (type, title) of each box the controller showed
++        boxes: Vec<(String, String)>,
++        /// handle_hash's result: false ends the session
++        kept: bool,
++        logged_in: bool,
++        /// the login the PC got
++        at_pc: Option<LoginRequest>,
++        /// what create_login_msg makes for the password the login carried
++        plain_login: LoginRequest,
++    }
++
++    /// One connection to `pc` by a device logged in to the account with its key, `my_devices` its
++    /// `hjv-my-devices`; `remembered`: the PC's password is remembered.
++    async fn connect(conn_type: ConnType, pc: Pc, my_devices: &str, remembered: bool) -> Outcome {
++        let _ = hbb_common::sodiumoxide::init();
++        let ui = Ui::new(conn_type);
++        let session_id = ui.lc.read().unwrap().session_id;
++        let (host, signed_id_pk, rs_pk, at_pc) = run_pc(pc).await;
++        let mut peer = connect_tcp(host, 3000).await.unwrap();
++        let pk = Client::secure_connection(PC_ID, signed_id_pk, &rs_pk, &mut peer)
++            .await
++            .unwrap();
++        assert!(peer.is_secured());
++        LoginContext::note_for_test(session_id, peer.is_secured(), pk.as_deref());
++        let hash = hash_from(&mut peer).await;
++        if remembered {
++            ui.lc.write().unwrap().password = sha256(PC_PASSWORD.as_bytes(), hash.salt.as_bytes());
++        }
++        let password = ui.lc.read().unwrap().password.clone();
++        let kept = match login_with(&ui.lc, &hash, &password, &ui, &mut peer, |login| {
++            login.decide_for_test(my_devices, ACCOUNT_SEED)
++        })
++        .await
++        {
++            Some(kept) => kept,
++            None => handle_hash(ui.lc.clone(), "", hash.clone(), &ui, &mut peer).await,
++        };
++        // the PC closes the connection after its answer, or without one
++        let mut logged_in = false;
++        if kept {
++            if let Ok(Some(Ok(bytes))) = timeout(10_000, peer.next()).await {
++                match Message::parse_from_bytes(&bytes).unwrap().union {
++                    Some(message::Union::LoginResponse(res)) => match res.union {
++                        Some(login_response::Union::PeerInfo(_)) => logged_in = true,
++                        Some(login_response::Union::Error(err)) => {
++                            let _ = refused(&ui.lc, &err, &ui)
++                                || handle_login_error(ui.lc.clone(), &err, &ui);
++                        }
++                        _ => {}
++                    },
++                    _ => panic!("not a login response"),
++                }
++            }
++        }
++        drop(peer);
++        let at_pc = at_pc.await.unwrap();
++        let carried = at_pc
++            .as_ref()
++            .map(|lr| lr.password.to_vec())
++            .unwrap_or_default();
++        let plain_login = ui
++            .lc
++            .read()
++            .unwrap()
++            .create_login_msg(String::new(), String::new(), carried)
++            .login_request()
++            .clone();
++        Outcome {
++            boxes: ui.boxes(),
++            kept,
++            logged_in,
++            at_pc,
++            plain_login,
++        }
++    }
++
++    /// `hjv-my-devices` with the PC at `pwless`, under the key `pk`.
++    fn my_devices(pwless: &str, pk: &str) -> String {
++        format!(
++            r#"{{"acct":"2026000001","at":1760000000,"pcs":{{"{PC_ID}":{{"pk":"{pk}","pwless":"{pwless}","kinds":["remote","file","camera"]}}}}}}"#
++        )
++    }
++
++    fn password_box() -> Vec<(String, String)> {
++        vec![("input-password".to_owned(), "Password Required".to_owned())]
++    }
++
++    /// S4, S14: the account's PC takes the proof. No password box comes up, with or without a
++    /// remembered password, and the login is the one create_login_msg makes (no account token)
++    /// with the proof, which carries the key serial of the login.
++    #[tokio::test]
++    async fn the_accounts_pc_opens_without_a_password_box() {
++        for remembered in [false, true] {
++            let o = connect(
++                ConnType::DEFAULT_CONN,
++                PC,
++                &my_devices("active", PC_PK),
++                remembered,
++            )
++            .await;
++            assert!(o.kept && o.logged_in && o.boxes.is_empty(), "{remembered}");
++            let mut lr = o.at_pc.unwrap();
++            assert_eq!(lr.password.is_empty(), !remembered);
++            assert_eq!(lr.hjv_key_proof.key_serial, CONN_KEY_SERIAL);
++            lr.hjv_key_proof.clear();
++            assert_eq!(lr, o.plain_login);
++        }
++    }
++
++    /// 1-6, 3-9: a PC that refuses the proof says "Empty Password" when no password came with it,
++    /// and the box says why; with the remembered password the PC takes that instead.
++    #[tokio::test]
++    async fn a_refused_proof_says_why_and_falls_back_to_the_password() {
++        let refusing = || Pc { list: false, ..PC };
++        let o = connect(
++            ConnType::DEFAULT_CONN,
++            refusing(),
++            &my_devices("active", PC_PK),
++            false,
++        )
++        .await;
++        assert!(o.at_pc.unwrap().hjv_key_proof.is_some());
++        assert!(!o.logged_in);
++        let [(kind, title)] = &o.boxes[..] else {
++            panic!("{:?}", o.boxes);
++        };
++        assert_eq!(kind, "re-input-password");
++        assert!([
++            "Could not connect without a password",
++            "비밀번호 없이 연결하지 못했습니다"
++        ]
++        .contains(&title.as_str()));
++        let o = connect(
++            ConnType::DEFAULT_CONN,
++            refusing(),
++            &my_devices("active", PC_PK),
++            true,
++        )
++        .await;
++        assert!(o.logged_in && o.boxes.is_empty());
++    }
++
++    /// X2, S8, S22, X7b: a PC without the feature, another account's PC, port forwarding, and a
++    /// needs-relogin PC under another key get 1.5.1's login: the password box at once, the login
++    /// (no proof) with it, and no warning.
++    #[tokio::test]
++    async fn the_rest_get_the_1_5_1_login() {
++        let other = "/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=";
++        let not_mine = r#"{"acct":"2026000001","at":1760000000,"pcs":{"555555555":{"pk":"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=","pwless":"active","kinds":["remote"]}}}"#;
++        let without_nonce = || Pc { nonce: None, ..PC };
++        for (what, conn_type, pc, devices) in [
++            (
++                "1.5.x PC",
++                ConnType::DEFAULT_CONN,
++                without_nonce(),
++                my_devices("active", PC_PK),
++            ),
++            (
++                "another's PC",
++                ConnType::DEFAULT_CONN,
++                PC,
++                not_mine.to_owned(),
++            ),
++            (
++                "port forwarding",
++                ConnType::PORT_FORWARD,
++                PC,
++                my_devices("active", PC_PK),
++            ),
++            (
++                "needs-relogin",
++                ConnType::DEFAULT_CONN,
++                PC,
++                my_devices("needs-relogin", other),
++            ),
++        ] {
++            let o = connect(conn_type, pc, &devices, false).await;
++            assert!(o.kept && !o.logged_in, "{what}");
++            assert_eq!(o.boxes, password_box(), "{what}");
++            let lr = o.at_pc.expect(what);
++            assert!(
++                lr.hjv_key_proof.is_none() && lr.password.is_empty(),
++                "{what}"
++            );
++        }
++        // and with the remembered password, straight in
++        let o = connect(
++            ConnType::DEFAULT_CONN,
++            without_nonce(),
++            &my_devices("active", PC_PK),
++            true,
++        )
++        .await;
++        assert!(o.logged_in && o.boxes.is_empty());
++    }
++
++    /// X7: the PC's key is not the one the account bound to it. The 'error' box warns, neither a
++    /// proof nor the remembered password goes out, and the session ends, for port forwarding too.
++    #[tokio::test]
++    async fn a_changed_key_warns_and_sends_nothing() {
++        let other = "/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=";
++        for (conn_type, remembered, pc) in [
++            (ConnType::DEFAULT_CONN, true, PC),
++            (ConnType::DEFAULT_CONN, false, Pc { nonce: None, ..PC }),
++            (ConnType::PORT_FORWARD, true, PC),
++        ] {
++            let o = connect(conn_type, pc, &my_devices("active", other), remembered).await;
++            assert!(!o.kept && !o.logged_in && o.at_pc.is_none());
++            let [(kind, title)] = &o.boxes[..] else {
++                panic!("{:?}", o.boxes);
++            };
++            assert_eq!(kind, "error");
++            assert!(title.contains("Security warning") || title.contains("보안 경고"));
++        }
++    }
++
++    /// A build without the feature (this test build has no HJV_* variables): the hooks leave the
++    /// password box and the login as 1.5.1 has them, whatever the PC's Hash carries.
++    #[tokio::test]
++    async fn without_the_feature_the_hooks_do_nothing() {
++        if enabled() {
++            return;
++        }
++        let _ = hbb_common::sodiumoxide::init();
++        let ui = Ui::new(ConnType::DEFAULT_CONN);
++        let (host, signed_id_pk, rs_pk, at_pc) = run_pc(PC).await;
++        let mut peer = connect_tcp(host, 3000).await.unwrap();
++        let pk = Client::secure_connection(PC_ID, signed_id_pk, &rs_pk, &mut peer)
++            .await
++            .unwrap();
++        note_peer_key(&ui, &peer, pk.as_deref());
++        let hash = hash_from(&mut peer).await;
++        assert!(handle_hash(ui.lc.clone(), "", hash, &ui, &mut peer).await);
++        assert_eq!(ui.boxes(), password_box());
++        let lr = at_pc.await.unwrap().unwrap();
++        assert!(lr.hjv_key_proof.is_none() && lr.password.is_empty());
++        assert!(handle_login_error(
++            ui.lc.clone(),
++            LOGIN_MSG_PASSWORD_EMPTY,
++            &ui
++        ));
++        assert_eq!(ui.boxes()[1].0, "input-password");
++    }
++}
+diff --git a/src/hjviewer_account/api.rs b/src/hjviewer_account/api.rs
+index be34d2c..e5b8b75 100644
+--- a/src/hjviewer_account/api.rs
++++ b/src/hjviewer_account/api.rs
+@@ -778,6 +778,21 @@ fn account_name(user_info: &str) -> String {
+         .unwrap_or_default()
+ }
+ 
++/// The controller's (ctl.rs) reading of the login: whether this device user has one.
++pub(super) fn logged_in() -> bool {
++    !LocalConfig::get_option("access_token").is_empty()
++}
++
++/// The account's PCs as the last full device list had them; empty without one.
++pub(super) fn my_devices() -> MyDevices {
++    serde_json::from_str(&LocalConfig::get_option(MY_DEVICES)).unwrap_or_default()
++}
++
++/// The account key's serial (the login answer's `hjv.ks`), a connection proof's hint; 0 unknown.
++pub(super) fn key_serial() -> u64 {
++    LocalConfig::get_option(KEY_SERIAL).parse().unwrap_or(0)
++}
++
+ /// H16 (flutter_ffi.rs main_get_common): the account screens' queries; None for any other key.
+ /// - `hjv-account`: "Y" in an account build;
+ /// - `hjv-relogin`: "Y" when the login was dropped for want of its account key;
+diff --git a/src/hjviewer_account/ctl.rs b/src/hjviewer_account/ctl.rs
+index f4201a1..6537355 100644
+--- a/src/hjviewer_account/ctl.rs
++++ b/src/hjviewer_account/ctl.rs
+@@ -1,10 +1,18 @@
+-//! The controller: the PC key each session was checked against, whether a login carries a proof,
+-//! and the proof itself.
+-//!
+-//! The names and types the hooks call; the conditions and the signing come with the controller's
+-//! patch.
++//! The controller: the PC keys each session's channels were checked against, whether a login
++//! carries a proof (design v3 3-4) and the proof itself, and the two boxes the controller shows
++//! when a same-account login does not go through (1-6), in Korean and English.
+ 
++use super::{
++    api::{self, MyDevices},
++    conn_proof, enabled, keystore, kind_name, korean, AccountKey, KIND_TERMINAL,
++};
+ use base::message_proto::HjvKeyProof;
++use hbb_common::base64::{engine::general_purpose::STANDARD, Engine as _};
++use std::{
++    collections::HashMap,
++    sync::Mutex,
++    time::{Duration, Instant},
++};
+ 
+ /// What the controller knows when the PC's Hash arrives.
+ pub(crate) struct LoginContext<'a> {
+@@ -25,22 +33,595 @@ pub(crate) struct LoginContext<'a> {
+ pub(crate) enum ProofDecision {
+     /// the login goes out as it would without the feature
+     No,
+-    /// the PC's key differs from the one the account's list bound to it: warn, send nothing, close
+-    KeyChanged,
++    /// the PC's key differs from the one the account's list bound to it: show this 'error' box,
++    /// send nothing, close
++    KeyChanged {
++        title: &'static str,
++        text: &'static str,
++    },
+     /// send this proof, with the remembered password if there is one
+     Send(HjvKeyProof),
+ }
+ 
+-/// Client::start: the PC key this session's channel was checked against, kept only for a secured
+-/// channel.
+-pub(crate) fn note_peer_key(_session_id: u64, _secured: bool, _pk: Option<&[u8]>) {}
++/// hjv-api saw this PC's key change on hbbs: the password path, without the key warning.
++const NEEDS_RELOGIN: &str = "needs-relogin";
++/// How long a channel's PC key counts: the PC sends its Hash right after the handshake, and no
++/// channel held open before its login may outlast its key's note and so skip the key check.
++const SEEN_FOR: Duration = Duration::from_secs(24 * 3600);
++const LOG_INTERVAL: Duration = Duration::from_secs(60);
++
++/// What key_proof reads from this device.
++struct Account {
++    logged_in: bool,
++    devices: MyDevices,
++    key_serial: u64,
++    korean: bool,
++}
++
++impl Account {
++    fn current() -> Account {
++        Account {
++            logged_in: api::logged_in(),
++            devices: api::my_devices(),
++            key_serial: api::key_serial(),
++            korean: korean(),
++        }
++    }
++}
++
++/// A session's notes. The connections of a session share its ID and can run at once (on desktop
++/// the file transfer, camera, terminal and port forwarding opened from a session's toolbar), so a
++/// session keeps the key of every secured channel of the last SEEN_FOR: a login carries a proof
++/// only when all of them are the key the account bound to the PC.
++#[derive(Default)]
++struct Session {
++    keys: Vec<([u8; 32], Instant)>,
++    /// the last login this session built from a Hash carried a proof
++    proof_sent: bool,
++}
++
++lazy_static::lazy_static! {
++    static ref SESSIONS: Mutex<HashMap<u64, Session>> = Default::default();
++}
++
++/// Client::start: the PC key a channel of this session was checked against, kept only for a
++/// secured channel.
++pub(crate) fn note_peer_key(session_id: u64, secured: bool, pk: Option<&[u8]>) {
++    if enabled() {
++        note(session_id, secured, pk);
++    }
++}
+ 
+ /// handle_hash: whether this login carries a proof, and the proof.
+-pub(crate) fn key_proof(_login: &LoginContext) -> ProofDecision {
+-    ProofDecision::No
++pub(crate) fn key_proof(login: &LoginContext) -> ProofDecision {
++    if !enabled() {
++        return ProofDecision::No;
++    }
++    proof_for(login, &Account::current(), load_key)
++}
++
++/// handle_login_error: when this session's last login carried a proof, the title and text of the
++/// box for a PC that refused it ('re-input-password'), and None otherwise. Either way the proof
++/// is forgotten.
++pub(crate) fn take_proof_sent(session_id: u64) -> Option<(&'static str, &'static str)> {
++    take_sent(session_id).then(|| refused(korean()))
++}
++
++fn proof_for(
++    login: &LoginContext,
++    account: &Account,
++    key: impl FnOnce() -> Result<AccountKey, &'static str>,
++) -> ProofDecision {
++    let seen = seen_keys(login.session_id);
++    let decision = match decide(login, &seen, account, key) {
++        Ok(decision) => decision,
++        Err(why) => {
++            if !why.is_empty() {
++                hbb_common::throttled_log!(
++                    LOG_INTERVAL,
++                    debug,
++                    "no same-account proof for {}: {why}",
++                    login.pc_id
++                );
++            }
++            ProofDecision::No
++        }
++    };
++    match decision {
++        ProofDecision::Send(_) => {
++            hbb_common::throttled_log!(LOG_INTERVAL, info, "same-account proof for {}", login.pc_id)
++        }
++        ProofDecision::KeyChanged { .. } => hbb_common::throttled_log!(
++            LOG_INTERVAL,
++            warn,
++            "{}: not the key the account's list has for the PC; closed without a proof or a password",
++            login.pc_id
++        ),
++        ProofDecision::No => {}
++    }
++    mark_proof_sent(login.session_id, matches!(decision, ProofDecision::Send(_)));
++    decision
++}
++
++/// 3-4's conditions. The key continuity check (its 8th) runs before what only a proof needs (a
++/// kind that goes by proof, the nonce, the list's kinds, the account key), so that neither a PC
++/// that leaves out its nonce nor a port forwarding to it has the remembered password sent without
++/// it. It covers the account's PCs that are not needs-relogin, over a secured channel; everything
++/// else goes the password way as before. Err says why no proof goes out, "" for the everyday
++/// cases (logged out, not the account's PC).
++fn decide(
++    login: &LoginContext,
++    seen: &[[u8; 32]],
++    account: &Account,
++    key: impl FnOnce() -> Result<AccountKey, &'static str>,
++) -> Result<ProofDecision, &'static str> {
++    if login.other_server || !account.logged_in {
++        return Err("");
++    }
++    let Some(pc) = account.devices.pcs.get(login.pc_id) else {
++        return Err("");
++    };
++    if pc.pwless == NEEDS_RELOGIN {
++        return Err("the PC needs its owner to log in on it again");
++    }
++    if !login.secured || seen.is_empty() {
++        return Err("the channel is not secured");
++    }
++    let Some(bound) = STANDARD
++        .decode(&pc.pk)
++        .ok()
++        .and_then(|pk| <[u8; 32]>::try_from(pk).ok())
++    else {
++        return Err("the device list has no key for the PC");
++    };
++    if seen.iter().any(|pk| *pk != bound) {
++        let (title, text) = key_changed(account.korean);
++        return Ok(ProofDecision::KeyChanged { title, text });
++    }
++    // the mappings of one port forwarding window share a session, so the key each of them was
++    // checked against cannot be told apart for a proof
++    if login.kind > KIND_TERMINAL {
++        return Err("port forwarding and RDP go by password");
++    }
++    // a proof alone would leave a PC without the feature waiting for its user to accept
++    if login.nonce.len() != 32 {
++        return Err("the PC sent no nonce");
++    }
++    if !pc.kinds.iter().any(|k| k == kind_name(login.kind)) {
++        return Err("the account does not open this kind of connection without a password");
++    }
++    let key = key()?;
++    conn_proof(
++        &key,
++        login.pc_id,
++        &bound,
++        login.nonce,
++        login.ctl_id,
++        login.kind,
++        account.key_serial,
++    )
++    .map(ProofDecision::Send)
++    .ok_or("an ID too long for a proof")
++}
++
++fn load_key() -> Result<AccountKey, &'static str> {
++    match keystore::load() {
++        Ok(Some(key)) => Ok(key),
++        Ok(None) => Err("no account key"),
++        Err(_) => Err("the account key cannot be read now"),
++    }
++}
++
++/// An unsecured channel adds nothing and removes nothing: its own login never carries a proof, and
++/// the keys the session's other channels were checked against still count.
++fn note(session_id: u64, secured: bool, pk: Option<&[u8]>) {
++    let mut sessions = SESSIONS.lock().unwrap();
++    forget_old(&mut sessions);
++    let Some(pk) = pk
++        .and_then(|pk| <[u8; 32]>::try_from(pk).ok())
++        .filter(|_| secured)
++    else {
++        return;
++    };
++    let keys = &mut sessions.entry(session_id).or_default().keys;
++    keys.retain(|(k, _)| *k != pk);
++    keys.push((pk, Instant::now()));
++}
++
++fn forget_old(sessions: &mut HashMap<u64, Session>) {
++    sessions.retain(|_, s| {
++        s.keys.retain(|(_, at)| at.elapsed() < SEEN_FOR);
++        !s.keys.is_empty()
++    });
++}
++
++fn seen_keys(session_id: u64) -> Vec<[u8; 32]> {
++    let mut sessions = SESSIONS.lock().unwrap();
++    forget_old(&mut sessions);
++    sessions
++        .get(&session_id)
++        .map(|s| s.keys.iter().map(|(pk, _)| *pk).collect())
++        .unwrap_or_default()
++}
++
++fn mark_proof_sent(session_id: u64, sent: bool) {
++    if let Some(s) = SESSIONS.lock().unwrap().get_mut(&session_id) {
++        s.proof_sent = sent;
++    }
++}
++
++fn take_sent(session_id: u64) -> bool {
++    SESSIONS
++        .lock()
++        .unwrap()
++        .get_mut(&session_id)
++        .is_some_and(|s| std::mem::take(&mut s.proof_sent))
+ }
+ 
+-/// handle_login_error: whether this session's last login carried a proof (forgetting it).
+-pub(crate) fn take_proof_sent(_session_id: u64) -> bool {
+-    false
++// The UI's translate() shows these as they are: they are not keys of its tables, and they hold no
++// braces, which it would read as a placeholder.
++
++/// 're-input-password': [Cancel] closes the session and [Retry] opens the password box, as the
++/// text says.
++fn refused(korean: bool) -> (&'static str, &'static str) {
++    if korean {
++        (
++            "비밀번호 없이 연결하지 못했습니다",
++            "이 PC에서 비밀번호 없는 연결이 꺼져 있거나 아직 준비되지 않았습니다. PC 비밀번호로 연결하려면 [재시도]를 누르세요.",
++        )
++    } else {
++        (
++            "Could not connect without a password",
++            "Password-less connections are off on this PC or not ready yet. To connect with the PC's password, press [Retry].",
++        )
++    }
++}
++
++/// 'error': only [OK], which closes the session, so that no password box follows a warning not
++/// to give the password. No button to remove the PC from the list either: an interceptor could
++/// show this on purpose, and the next connection to a removed PC sends the remembered password
++/// without the check.
++fn key_changed(korean: bool) -> (&'static str, &'static str) {
++    if korean {
++        (
++            "보안 경고: 이 PC의 키가 바뀌었습니다",
++            "그 PC를 다시 설치했거나 초기화했다면, 몇 분 뒤 기기 목록을 새로 고치고 다시 연결하세요. 그때는 PC 비밀번호로 들어갈 수 있습니다. 그런 일이 없었다면 누군가 연결을 가로채고 있을 수 있어 연결을 끊습니다.",
++        )
++    } else {
++        (
++            "Security warning: this PC's key has changed",
++            "If that PC was reinstalled or reset, refresh the device list in a few minutes and connect again; the PC's password will then let you in. If not, someone may be intercepting the connection, so it is being closed.",
++        )
++    }
++}
++
++/// What the controller's hooks do in an account build, for the tests of client/hjv_account.rs,
++/// which run in a build without the feature: ctl is private to hjviewer_account, and this type is
++/// what it exports.
++#[cfg(test)]
++impl LoginContext<'_> {
++    /// note_peer_key
++    pub(crate) fn note_for_test(session_id: u64, secured: bool, pk: Option<&[u8]>) {
++        note(session_id, secured, pk);
++    }
++
++    /// key_proof with this device's account given: logged in, `hjv-my-devices` and the account
++    /// key's seed.
++    pub(crate) fn decide_for_test(&self, my_devices: &str, seed: [u8; 32]) -> ProofDecision {
++        let account = Account {
++            logged_in: true,
++            devices: serde_json::from_str(my_devices).unwrap(),
++            key_serial: super::vectors::CONN_KEY_SERIAL,
++            korean: false,
++        };
++        proof_for(self, &account, || {
++            AccountKey::from_seed(&seed).ok_or("no account key")
++        })
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{
++        super::{api::MyPc, vectors::*, *},
++        *,
++    };
++    use hbb_common::protobuf::Message as _;
++
++    const SESSION: u64 = 0x5e55_1011;
++
++    fn devices(pwless: &str, pk: &str, kinds: &[&str]) -> MyDevices {
++        let pc = MyPc {
++            pk: pk.to_owned(),
++            pwless: pwless.to_owned(),
++            kinds: kinds.iter().map(|k| k.to_string()).collect(),
++        };
++        MyDevices {
++            pcs: [(PC_ID.to_owned(), pc)].into(),
++            ..Default::default()
++        }
++    }
++
++    fn account(devices: MyDevices) -> Account {
++        Account {
++            logged_in: true,
++            devices,
++            key_serial: CONN_KEY_SERIAL,
++            korean: false,
++        }
++    }
++
++    fn login(nonce: &[u8]) -> LoginContext<'_> {
++        LoginContext {
++            session_id: SESSION,
++            pc_id: PC_ID,
++            ctl_id: CTL_ID,
++            kind: KIND_REMOTE,
++            other_server: false,
++            nonce,
++            secured: true,
++        }
++    }
++
++    fn the_key() -> Result<AccountKey, &'static str> {
++        Ok(AccountKey::from_seed(&ACCOUNT_SEED).unwrap())
++    }
++
++    fn pc_pk() -> [u8; 32] {
++        pk_bytes(PC_PK).try_into().unwrap()
++    }
++
++    fn outcome(decision: Result<ProofDecision, &str>) -> &'static str {
++        match decision {
++            Ok(ProofDecision::Send(_)) => "proof",
++            Ok(ProofDecision::KeyChanged { .. }) => "key changed",
++            Ok(ProofDecision::No) | Err(_) => "password",
++        }
++    }
++
++    fn decide_with(login: &LoginContext, seen: &[[u8; 32]], account: &Account) -> &'static str {
++        outcome(decide(login, seen, account, the_key))
++    }
++
++    #[test]
++    fn the_conditions() {
++        let _ = hbb_common::sodiumoxide::init();
++        let pk = [pc_pk()];
++        let usual = ["remote", "file", "camera"];
++        let active = || account(devices("active", PC_PK, &usual));
++        assert_eq!(decide_with(&login(&CONN_NONCE), &pk, &active()), "proof");
++
++        // not logged in, logged in without a usable key, an id@server connection, another's PC
++        let logged_out = Account {
++            logged_in: false,
++            ..active()
++        };
++        assert_eq!(
++            decide_with(&login(&CONN_NONCE), &pk, &logged_out),
++            "password"
++        );
++        for no_key in ["no account key", "the account key cannot be read now"] {
++            let decision = decide(&login(&CONN_NONCE), &pk, &active(), || Err(no_key));
++            assert_eq!(decision.err(), Some(no_key));
++        }
++        let other_server = LoginContext {
++            other_server: true,
++            ..login(&CONN_NONCE)
++        };
++        assert_eq!(decide_with(&other_server, &pk, &active()), "password");
++        let not_mine = LoginContext {
++            pc_id: "555555555",
++            ..login(&CONN_NONCE)
++        };
++        assert_eq!(decide_with(&not_mine, &pk, &active()), "password");
++
++        // a state other than active still sends (the app's copy may be old), needs-relogin never
++        for state in ["listed", "off", "disabled", "expired", ""] {
++            let list = account(devices(state, PC_PK, &usual));
++            assert_eq!(
++                decide_with(&login(&CONN_NONCE), &pk, &list),
++                "proof",
++                "{state}"
++            );
++        }
++        let relogin = account(devices(NEEDS_RELOGIN, PC_PK, &usual));
++        assert_eq!(decide_with(&login(&CONN_NONCE), &pk, &relogin), "password");
++
++        // the kinds: what the list opens, never port forwarding or RDP
++        for (kind, opened) in [
++            (KIND_FILE, "proof"),
++            (KIND_CAMERA, "proof"),
++            (KIND_TERMINAL, "password"),
++            (KIND_PORT_FORWARD, "password"),
++        ] {
++            let l = LoginContext {
++                kind,
++                ..login(&CONN_NONCE)
++            };
++            assert_eq!(decide_with(&l, &pk, &active()), opened, "{kind}");
++        }
++        let with_terminal = account(devices("active", PC_PK, &["remote", "terminal"]));
++        let terminal = LoginContext {
++            kind: KIND_TERMINAL,
++            ..login(&CONN_NONCE)
++        };
++        assert_eq!(decide_with(&terminal, &pk, &with_terminal), "proof");
++
++        // an unsecured channel, or no key noted for this session
++        let unsecured = LoginContext {
++            secured: false,
++            ..login(&CONN_NONCE)
++        };
++        assert_eq!(decide_with(&unsecured, &pk, &active()), "password");
++        assert_eq!(decide_with(&login(&CONN_NONCE), &[], &active()), "password");
++        // a list without a usable key for the PC
++        for bad in ["", "AAAA", &STANDARD.encode([1u8; 31])] {
++            let list = account(devices("active", bad, &usual));
++            assert_eq!(decide_with(&login(&CONN_NONCE), &pk, &list), "password");
++        }
++    }
++
++    #[test]
++    fn no_proof_without_a_nonce() {
++        let _ = hbb_common::sodiumoxide::init();
++        let active = account(devices("active", PC_PK, &["remote", "file", "camera"]));
++        // a 1.5.x PC's Hash has none; anything but 32 bytes is no nonce
++        for nonce in [&[][..], &[1; 16][..], &[1; 31][..], &[1; 33][..]] {
++            let decision = decide(&login(nonce), &[pc_pk()], &active, the_key);
++            assert_eq!(
++                decision.err(),
++                Some("the PC sent no nonce"),
++                "{}",
++                nonce.len()
++            );
++        }
++    }
++
++    #[test]
++    fn a_changed_key_warns_for_the_accounts_pcs_only() {
++        let _ = hbb_common::sodiumoxide::init();
++        let impostor = [[7u8; 32]];
++        let active = || account(devices("active", PC_PK, &["remote", "file", "camera"]));
++        let decision = decide(&login(&CONN_NONCE), &impostor, &active(), || {
++            panic!("the account key is not needed to warn")
++        });
++        let Ok(ProofDecision::KeyChanged { title, text }) = decision else {
++            panic!("no warning");
++        };
++        assert_eq!((title, text), key_changed(false));
++        // whatever the PC leaves out, and whatever kind the list opens
++        for (nonce, kind) in [(&[][..], KIND_REMOTE), (&CONN_NONCE[..], KIND_TERMINAL)] {
++            let l = LoginContext {
++                kind,
++                ..login(nonce)
++            };
++            assert_eq!(decide_with(&l, &impostor, &active()), "key changed");
++        }
++        // one channel of the session to another key is enough, whichever was noted last
++        for seen in [[pc_pk(), [7; 32]], [[7; 32], pc_pk()]] {
++            assert_eq!(
++                decide_with(&login(&CONN_NONCE), &seen, &active()),
++                "key changed"
++            );
++        }
++        // not in the list, or needs-relogin: the password way, without a warning
++        let not_mine = LoginContext {
++            pc_id: "555555555",
++            ..login(&CONN_NONCE)
++        };
++        assert_eq!(decide_with(&not_mine, &impostor, &active()), "password");
++        let relogin = account(devices(NEEDS_RELOGIN, PC_PK, &["remote"]));
++        assert_eq!(
++            decide_with(&login(&CONN_NONCE), &impostor, &relogin),
++            "password"
++        );
++        // and for port forwarding, which goes by password to the PC under the bound key only
++        let forward = LoginContext {
++            kind: KIND_PORT_FORWARD,
++            ..login(&CONN_NONCE)
++        };
++        assert_eq!(decide_with(&forward, &impostor, &active()), "key changed");
++        assert_eq!(decide_with(&forward, &[pc_pk()], &active()), "password");
++    }
++
++    #[test]
++    fn the_proof_is_the_vectors() {
++        let _ = hbb_common::sodiumoxide::init();
++        let pk = pc_pk();
++        let active = account(devices("active", PC_PK, &["remote", "file", "camera"]));
++        let Ok(ProofDecision::Send(proof)) = decide(&login(&CONN_NONCE), &[pk], &active, the_key)
++        else {
++            panic!("no proof");
++        };
++        assert_eq!(
++            hex::encode(proof.write_to_bytes().unwrap()),
++            CONN_PROOF_PROTO_HEX
++        );
++        assert_eq!(STANDARD.encode(&proof.signature), CONN_SIG);
++        assert_eq!(proof.key_serial, CONN_KEY_SERIAL);
++        // and the PC that sent the nonce takes it against the vector list
++        let pinned = parse_trust_pubkeys(HJV_TRUST_PUBKEYS).unwrap();
++        let list = verify_list(&pinned, 1, &STANDARD.encode(LIST), LIST_SIG, &local(&pk)).unwrap();
++        let login = KeyLogin {
++            pc_id: PC_ID,
++            pc_pk: &pk,
++            secured: true,
++            nonce: &CONN_NONCE,
++            proof: &proof,
++            my_id: CTL_ID,
++            kind: KIND_REMOTE,
++        };
++        let cached = Cached { list, received: T };
++        assert_eq!(
++            check_key_login(&login, Some(&cached), T + 60).unwrap().id,
++            CTL_ID
++        );
++    }
++
++    #[test]
++    fn the_device_list_as_kept() {
++        let json = r#"{"acct":"2026000001","at":1760000000,"pcs":{"123456789":{"pk":"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=","pwless":"expired","kinds":["remote","file","camera"],"wol":"ok"}}}"#;
++        let list: MyDevices = serde_json::from_str(json).unwrap();
++        let pc = &list.pcs[PC_ID];
++        assert_eq!((pc.pk.as_str(), pc.pwless.as_str()), (PC_PK, "expired"));
++        assert_eq!(pc.kinds, ["remote", "file", "camera"]);
++        // a missing or damaged option is an empty list
++        for bad in ["", "{", "[]", r#"{"pcs":3}"#] {
++            let list: MyDevices = serde_json::from_str(bad).unwrap_or_default();
++            assert!(list.pcs.is_empty(), "{bad}");
++        }
++    }
++
++    #[test]
++    fn a_session_keeps_its_secured_keys_and_one_proof() {
++        let id = SESSION + 1;
++        let pk = pc_pk();
++        note(id, true, Some(&pk));
++        assert_eq!(seen_keys(id), [pk]);
++        // an unsecured channel, or one without a key, adds nothing and removes nothing
++        note(id, false, Some(&[7; 32]));
++        note(id, true, Some(&pk[..31]));
++        note(id, true, None);
++        assert_eq!(seen_keys(id), [pk]);
++        // another secured channel of the session to another key counts too, once
++        note(id, true, Some(&[7; 32]));
++        note(id, true, Some(&[7; 32]));
++        assert_eq!(seen_keys(id), [pk, [7; 32]]);
++        assert!(seen_keys(id + 1).is_empty());
++        // the proof is taken once, and only after a login that carried one
++        assert!(!take_sent(id));
++        mark_proof_sent(id, true);
++        assert!(take_sent(id));
++        assert!(!take_sent(id));
++        mark_proof_sent(id, true);
++        mark_proof_sent(id, false);
++        assert!(!take_sent(id));
++        // a key counts for a day, so a channel held open before its login does not outlast its
++        // key's note (unless the machine has not been up that long)
++        if let Some(earlier) = Instant::now().checked_sub(Duration::from_secs(3600)) {
++            SESSIONS.lock().unwrap().get_mut(&id).unwrap().keys[0].1 = earlier;
++            assert_eq!(seen_keys(id), [pk, [7; 32]]);
++        }
++        if let Some(then) = Instant::now().checked_sub(SEEN_FOR) {
++            SESSIONS.lock().unwrap().get_mut(&id).unwrap().keys[0].1 = then;
++            assert_eq!(seen_keys(id), [[7; 32]]);
++            mark_proof_sent(id, true);
++            SESSIONS.lock().unwrap().get_mut(&id).unwrap().keys[0].1 = then;
++            assert!(seen_keys(id).is_empty());
++            assert!(!take_sent(id));
++        }
++    }
++
++    #[test]
++    fn the_boxes() {
++        for korean in [true, false] {
++            let (title, text) = refused(korean);
++            let (warning, advice) = key_changed(korean);
++            for s in [title, text, warning, advice] {
++                assert!(!s.is_empty() && !s.contains(['{', '}']), "{s}");
++            }
++            // the refusal names the box's own [Retry] (ko.rs: "재시도")
++            assert!(text.contains(if korean { "[재시도]" } else { "[Retry]" }));
++        }
++    }
+ }
+diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
+index e63ca49..5837a5c 100644
+--- a/src/hjviewer_account/mod.rs
++++ b/src/hjviewer_account/mod.rs
+@@ -749,7 +749,6 @@ pub(crate) fn used_report(entries: &[UseEntry], now: u64) -> Vec<UseEntry> {
+ 
+ /// Whether the texts this module shows go in Korean: the app's language, its own setting or else
+ /// the system's, as lang.rs picks it, and English where the UI cannot show Korean.
+-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn korean() -> bool {
+     if crate::lang::cjk_ui_unavailable() {
+         return false;

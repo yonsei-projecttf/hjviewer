@@ -1,0 +1,553 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 12 Oct 2026 21:50:34 +0900
+Subject: [PATCH 4/4] hbbs: tell hjv-api a device's signed key, and keep Pro
+ fields out of relay requests
+
+hjv-api (hjviewer's server/api) adds a Windows PC to an account only with
+the key hbbs knows for its ID, and checks the PC's signatures against that
+key later. The loopback console gets the command it asks with:
+
+  hjv-pk <id>   ->   HJVPK1 <id> <signed> <age>\n
+
+<signed> is the base64 of the bytes get_pk puts into PunchHoleResponse and
+RelayResponse: IdPk {id, pk} signed with hbbs's key, or "-" when hbbs knows
+no key for the ID. <age> is the seconds since the peer last registered, or
+"-" when not within the hour (loaded from the database, detached, or just
+after a restart). The console has no authentication, and while hbbs
+restarts any local program could take its port, so hjv-api takes a key
+only with hbbs's signature over the ID it asked for. get_pk takes &mut self
+and signs only for a client that sends its version, so the command calls it
+on a clone with a version of its own. IDs unlike the ones hjv-api sends (1
+to 64 letters, digits, '-' or '_') get no answer, as bad arguments of the
+other commands get none, which also keeps every answer one short line. The
+help lists the command.
+
+RequestRelay reached the peer as the controller sent it, with the account
+token, control permissions and controlled context that only a Pro server
+sets: a hand-made controller could turn on permissions the PC's owner had
+turned off. hbbs clears the three before it forwards the request.
+
+tests/hjv_pk.rs starts hbbs with the key pair of hjv-api's own test vector
+and checks the answer byte for byte against that vector and against the
+PunchHoleResponse a controller gets; then after the peer disconnects, after
+a restart (from the database), for IDs hjv-api never sends and input longer
+than the console reads; and that a relay request reaches the peer without
+the three fields and with everything else.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/rendezvous_server.rs |  48 ++++-
+ tests/hjv_pk.rs          | 424 +++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 470 insertions(+), 2 deletions(-)
+ create mode 100644 tests/hjv_pk.rs
+
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 47ade0e..87f9af1 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -490,6 +490,12 @@ impl RendezvousServer {
+                         let id = rf.id.clone();
+                         let mut msg_out = RendezvousMessage::new();
+                         rf.socket_addr = AddrMangle::encode(addr).into();
++                        // only a Pro server sets these; from the controller they would reach the
++                        // peer as they are: an account token, permissions that override the
++                        // peer's own settings, and an audit reference
++                        rf.token.clear();
++                        rf.control_permissions.clear();
++                        rf.controlled_context.clear();
+                         msg_out.set_request_relay(rf);
+                         let peer_addr = peer.read().await.socket_addr;
+                         self.send_to_peer(&id, peer_addr, msg_out).await;
+@@ -1006,14 +1012,15 @@ impl RendezvousServer {
+         match fds.next() {
+             Some("h") => {
+                 res = format!(
+-                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
++                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                     "relay-servers(rs) <separated by ,>",
+                     "reload-geo(rg)",
+                     "ip-blocker(ib) [<ip>|<number>] [-]",
+                     "ip-changes(ic) [<id>|<number>] [-]",
+                     "punch-requests(pr) [<number>] [-]",
+                     "always-use-relay(aur)",
+-                    "test-geo(tg) <ip1> <ip2>"
++                    "test-geo(tg) <ip1> <ip2>",
++                    "hjv-pk <id>"
+                 )
+             }
+             Some("relay-servers" | "rs") => {
+@@ -1158,6 +1165,43 @@ impl RendezvousServer {
+                     }
+                 }
+             }
++            Some("hjv-pk") => {
++                // For hjv-api (hjviewer's server/api/src/hbbs.rs), one line
++                // "HJVPK1 <id> <signed> <age>": <signed> is the base64 of what get_pk gives
++                // controllers for the peer, IdPk {id, pk} signed with this server's key, or "-"
++                // for no key; <age> is the seconds since the peer last registered, or "-" if not
++                // within the hour (a peer loaded from the database or detached carries
++                // get_expired_time()). An ID unlike hjv-api's (1 to 64 letters, digits, '-' or
++                // '_') gets no answer, as bad arguments of other commands get none.
++                if let Some(id) = fds.next().filter(|id| {
++                    !id.is_empty()
++                        && id.len() <= 64
++                        && id
++                            .bytes()
++                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
++                }) {
++                    let (mut signed, mut age) = ("-".to_owned(), "-".to_owned());
++                    if let Some(peer) = self.pm.get(id).await {
++                        let (has_pk, secs) = {
++                            let peer = peer.read().await;
++                            (!peer.pk.is_empty(), peer.last_reg_time.elapsed().as_secs())
++                        };
++                        if has_pk {
++                            // get_pk takes &mut self and signs only for a client that sends
++                            // its version
++                            let mut rs = self.clone();
++                            let pk = rs.get_pk("hjv-pk", id.to_owned()).await;
++                            if !pk.is_empty() {
++                                signed = base64::encode(&pk);
++                                if secs < 3600 {
++                                    age = secs.to_string();
++                                }
++                            }
++                        }
++                    }
++                    res = format!("HJVPK1 {id} {signed} {age}\n");
++                }
++            }
+             _ => {}
+         }
+         res
+diff --git a/tests/hjv_pk.rs b/tests/hjv_pk.rs
+new file mode 100644
+index 0000000..97dce93
+--- /dev/null
++++ b/tests/hjv_pk.rs
+@@ -0,0 +1,424 @@
++//! The `hjv-pk <id>` console command, with which hjv-api (hjviewer's server/api/src/hbbs.rs)
++//! reads the key a device registered, signed by hbbs as controllers get it; and the relay
++//! request a peer receives carrying nothing only a Pro server sets.
++
++use hbb_common::{
++    futures_util::{SinkExt, StreamExt},
++    protobuf::Message as _,
++    rendezvous_proto::*,
++    tokio::{
++        self,
++        io::{AsyncReadExt, AsyncWriteExt},
++        net::TcpStream,
++        time::{sleep, timeout, Duration},
++    },
++    AddrMangle,
++};
++use sodiumoxide::crypto::sign;
++use std::{
++    fs::OpenOptions,
++    net::SocketAddr,
++    path::{Path, PathBuf},
++    process::{Child, Command},
++};
++use tokio_tungstenite::{
++    tungstenite::{client::IntoClientRequest, http::HeaderValue, Message as WsMessage},
++    MaybeTlsStream, WebSocketStream,
++};
++
++// The vector of hjv-api's test reads_what_libsodium_signed (server/api/src/hbbs.rs): hbbs's key
++// pair from SERVER_SEED, a device's key, and the signed IdPk hjv-api's parse_reply takes in
++// "HJVPK1 123456789 <SIGNED> <age>". hbbs started with that key pair must answer exactly it.
++const SERVER_SEED: &str = "yMnKy8zNzs/Q0dLT1NXW19jZ2tvc3d7f4OHi4+Tl5uc=";
++const SERVER_PK: &str = "MrU+iC49qsGA16X2Ik1htkAbQ/kB2wnw5NhM5OSicYs=";
++const PEER_ID: &str = "123456789";
++const PEER_PK: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
++const SIGNED: &str = "W/XYlnSIcSr8BWaXhBfRj6VuPOfIBXTb7klc8AKUCT866vhEtM+bA41CkCwwQls9Cn0w1IlkhhkifUJkxHLlCwoJMTIzNDU2Nzg5EiABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fIA==";
++
++struct Hbbs {
++    child: Child,
++    dir: PathBuf,
++    port: u16,
++}
++
++impl Hbbs {
++    /// hbbs in a directory of its own, with the vector's key pair as its key file.
++    fn start(name: &str) -> Self {
++        let dir = std::env::temp_dir().join(format!("hbbs-{name}-{}", std::process::id()));
++        std::fs::remove_dir_all(&dir).ok();
++        std::fs::create_dir_all(&dir).expect("create the server's working directory");
++        let seed = base64::decode(SERVER_SEED).expect("base64 seed");
++        let seed = sign::Seed::from_slice(&seed).expect("32-byte seed");
++        let (pk, sk) = sign::keypair_from_seed(&seed);
++        assert_eq!(base64::encode(pk), SERVER_PK, "the vector's key pair");
++        std::fs::write(dir.join("id_ed25519"), base64::encode(&sk.0[..]))
++            .expect("write the server's key file");
++        let (child, port) = Self::spawn(&dir);
++        Self { child, dir, port }
++    }
++
++    fn spawn(dir: &Path) -> (Child, u16) {
++        let port = free_base_port();
++        let log = OpenOptions::new()
++            .create(true)
++            .append(true)
++            .open(dir.join("hbbs.log"))
++            .expect("open the server log");
++        let child = Command::new(env!("CARGO_BIN_EXE_hbbs"))
++            .args(["-p", &port.to_string()])
++            .current_dir(dir)
++            // hbbs reads its options from the environment first
++            .env_clear()
++            .env("TEST_HBBS", "no")
++            .env("RUST_LOG", "debug")
++            .stdout(log.try_clone().expect("share the server log"))
++            .stderr(log)
++            .spawn()
++            .expect("start hbbs");
++        for _ in 0..100 {
++            if std::net::TcpStream::connect(("127.0.0.1", port + 2)).is_ok() {
++                return (child, port);
++            }
++            std::thread::sleep(std::time::Duration::from_millis(100));
++        }
++        panic!("hbbs did not start listening");
++    }
++
++    /// Stops hbbs and starts it again on the same directory, so with the same key and database.
++    fn restart(&mut self) {
++        self.child.kill().ok();
++        self.child.wait().ok();
++        let (child, port) = Self::spawn(&self.dir);
++        self.child = child;
++        self.port = port;
++    }
++
++    /// One console command over 127.0.0.1:<port - 1>, written at once as hjv-api writes it, and
++    /// the answer up to the close.
++    async fn console(&self, cmd: &str) -> String {
++        let mut stream = TcpStream::connect(("127.0.0.1", self.port - 1))
++            .await
++            .expect("connect to the console");
++        stream
++            .write_all(cmd.as_bytes())
++            .await
++            .expect("send the command");
++        let mut out = Vec::new();
++        let read = timeout(Duration::from_secs(3), stream.read_to_end(&mut out))
++            .await
++            .expect("the console answers within 3s");
++        // hbbs reads one command of at most 1 KiB; closing with more of it unread resets the
++        // connection, after whatever answer it wrote
++        if let Err(err) = read {
++            assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset, "{err}");
++        }
++        String::from_utf8(out).expect("a UTF-8 answer")
++    }
++}
++
++impl Drop for Hbbs {
++    fn drop(&mut self) {
++        self.child.kill().ok();
++        self.child.wait().ok();
++        if std::thread::panicking() {
++            let log = std::fs::read_to_string(self.dir.join("hbbs.log")).unwrap_or_default();
++            eprintln!("---- hbbs log ----\n{log}");
++        }
++        std::fs::remove_dir_all(&self.dir).ok();
++    }
++}
++
++/// A port p with p-1, p and p+2 free for TCP and p for UDP: hbbs listens on all of them.
++fn free_base_port() -> u16 {
++    for _ in 0..100 {
++        let port = std::net::TcpListener::bind("127.0.0.1:0")
++            .and_then(|l| l.local_addr())
++            .expect("pick a free port")
++            .port();
++        if !(1025..=65000).contains(&port) {
++            continue;
++        }
++        let tcp_free = [port - 1, port, port + 2]
++            .iter()
++            .all(|p| std::net::TcpListener::bind(("0.0.0.0", *p)).is_ok());
++        if tcp_free && std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok() {
++            return port;
++        }
++    }
++    panic!("no free port range for hbbs");
++}
++
++/// A client connection to hbbs's WebSocket port, with the client's address in X-Real-IP /
++/// X-Real-Port as the reverse proxy in front of it sets them.
++struct Client {
++    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
++}
++
++impl Client {
++    async fn connect(server: &Hbbs, real_addr: &str) -> Self {
++        let real_addr: SocketAddr = real_addr.parse().expect("client address");
++        let mut request = format!("ws://127.0.0.1:{}/", server.port + 2)
++            .into_client_request()
++            .expect("websocket request");
++        let headers = request.headers_mut();
++        headers.insert(
++            "X-Real-IP",
++            HeaderValue::from_str(&real_addr.ip().to_string()).expect("ip header"),
++        );
++        headers.insert(
++            "X-Real-Port",
++            HeaderValue::from_str(&real_addr.port().to_string()).expect("port header"),
++        );
++        let (ws, _) = tokio_tungstenite::connect_async(request)
++            .await
++            .expect("connect to hbbs");
++        Self { ws }
++    }
++
++    async fn send(&mut self, msg: RendezvousMessage) {
++        let bytes = msg.write_to_bytes().expect("encode");
++        self.ws
++            .send(WsMessage::Binary(bytes))
++            .await
++            .expect("send to hbbs");
++    }
++
++    /// The next message, echoing heartbeats on the way like the client does.
++    async fn recv(&mut self) -> rendezvous_message::Union {
++        loop {
++            let frame = timeout(Duration::from_secs(5), self.ws.next())
++                .await
++                .expect("a message from hbbs within 5s");
++            let Some(Ok(WsMessage::Binary(bytes))) = frame else {
++                continue;
++            };
++            if bytes.is_empty() {
++                self.ws
++                    .send(WsMessage::Binary(Vec::new()))
++                    .await
++                    .expect("echo the heartbeat");
++                continue;
++            }
++            return RendezvousMessage::parse_from_bytes(&bytes)
++                .expect("decode")
++                .union
++                .expect("a message with a body");
++        }
++    }
++}
++
++/// The vector's device registered on a connection it keeps, as a PC behind a firewall does.
++async fn register(server: &Hbbs) -> Client {
++    let mut peer = Client::connect(server, "198.51.100.10:40000").await;
++    let mut msg = RendezvousMessage::new();
++    msg.set_register_pk(RegisterPk {
++        id: PEER_ID.to_owned(),
++        uuid: b"peer-uuid".to_vec().into(),
++        pk: base64::decode(PEER_PK).expect("base64 key").into(),
++        ..Default::default()
++    });
++    peer.send(msg).await;
++    let rendezvous_message::Union::RegisterPkResponse(res) = peer.recv().await else {
++        panic!("expected a register pk response");
++    };
++    assert_eq!(
++        res.result.enum_value(),
++        Ok(register_pk_response::Result::OK)
++    );
++    peer
++}
++
++/// "HJVPK1 <id> <signed> <age>\n" split into its fields, the format hjv-api takes and nothing
++/// else: one line, one space between the four fields.
++fn fields(out: &str) -> (String, String, String) {
++    let line = out.strip_suffix('\n').expect("one line ending in \\n");
++    let fields: Vec<&str> = line.split(' ').collect();
++    let [tag, id, signed, age] = fields[..] else {
++        panic!("four fields: {out:?}");
++    };
++    assert_eq!(tag, "HJVPK1", "{out:?}");
++    (id.to_owned(), signed.to_owned(), age.to_owned())
++}
++
++/// The ID and key in a signed IdPk, checked against hbbs's public key.
++fn open_signed(signed: &[u8]) -> (String, Vec<u8>) {
++    let server_pk = base64::decode(SERVER_PK).expect("base64 public key");
++    let server_pk = sign::PublicKey::from_slice(&server_pk).expect("ed25519 public key");
++    let id_pk = sign::verify(signed, &server_pk).expect("signed with hbbs's key");
++    let id_pk = IdPk::parse_from_bytes(&id_pk).expect("an IdPk");
++    (id_pk.id, id_pk.pk.to_vec())
++}
++
++fn runtime() -> tokio::runtime::Runtime {
++    tokio::runtime::Builder::new_current_thread()
++        .enable_all()
++        .build()
++        .expect("tokio runtime")
++}
++
++#[test]
++fn hjv_pk_answers_the_signed_key_controllers_get() {
++    let server = Hbbs::start("hjv-pk");
++    runtime().block_on(async {
++        assert!(server.console("h").await.contains("\nhjv-pk <id>\n"));
++        assert_eq!(
++            server.console("hjv-pk 987654321").await,
++            "HJVPK1 987654321 - -\n"
++        );
++
++        let mut peer = register(&server).await;
++        let out = server.console(&format!("hjv-pk {PEER_ID}")).await;
++        let (id, signed, age) = fields(&out);
++        assert_eq!(id, PEER_ID);
++        assert_ne!(signed, "-", "{out:?}");
++        let signed = base64::decode(&signed).expect("base64 signed key");
++        let (signed_id, signed_pk) = open_signed(&signed);
++        assert_eq!(signed_id, PEER_ID);
++        assert_eq!(signed_pk, base64::decode(PEER_PK).expect("base64 key"));
++        assert!(age.parse::<u64>().expect("seconds") < 30, "fresh: {out:?}");
++        // byte for byte the line of hjv-api's vector, which its parse_reply takes
++        assert_eq!(out, format!("HJVPK1 {PEER_ID} {SIGNED} {age}\n"));
++
++        // the same bytes as a controller gets in the punch hole response
++        let mut controller = Client::connect(&server, "203.0.113.20:50001").await;
++        let mut msg = RendezvousMessage::new();
++        msg.set_punch_hole_request(PunchHoleRequest {
++            id: PEER_ID.to_owned(),
++            licence_key: SERVER_PK.to_owned(),
++            version: "1.5.0".to_owned(),
++            force_relay: true,
++            ..Default::default()
++        });
++        controller.send(msg).await;
++        let rendezvous_message::Union::PunchHole(ph) = peer.recv().await else {
++            panic!("expected the punch hole");
++        };
++        let mut answer = Client::connect(&server, "198.51.100.10:40001").await;
++        let mut msg = RendezvousMessage::new();
++        msg.set_punch_hole_sent(PunchHoleSent {
++            socket_addr: ph.socket_addr,
++            id: PEER_ID.to_owned(),
++            version: "1.5.0".to_owned(),
++            ..Default::default()
++        });
++        answer.send(msg).await;
++        let rendezvous_message::Union::PunchHoleResponse(res) = controller.recv().await else {
++            panic!("expected the punch hole response");
++        };
++        assert_eq!(&res.pk[..], &signed[..]);
++
++        // offline once its connection is gone: the key is still known, its age is not
++        drop(peer);
++        sleep(Duration::from_millis(500)).await;
++        assert_eq!(
++            server.console(&format!("hjv-pk {PEER_ID}")).await,
++            format!("HJVPK1 {PEER_ID} {SIGNED} -\n")
++        );
++    });
++}
++
++#[test]
++fn hjv_pk_after_a_restart_answers_from_the_database() {
++    let mut server = Hbbs::start("hjv-pk-restart");
++    let rt = runtime();
++    rt.block_on(async {
++        let peer = register(&server).await;
++        drop(peer);
++    });
++    server.restart();
++    rt.block_on(async {
++        assert_eq!(
++            server.console(&format!("hjv-pk {PEER_ID}")).await,
++            format!("HJVPK1 {PEER_ID} {SIGNED} -\n")
++        );
++        assert_eq!(
++            server.console("hjv-pk 987654321").await,
++            "HJVPK1 987654321 - -\n"
++        );
++    });
++}
++
++#[test]
++fn hjv_pk_answers_only_ids_hjv_api_sends() {
++    let server = Hbbs::start("hjv-pk-input");
++    runtime().block_on(async {
++        let longest = "a".repeat(64);
++        assert_eq!(
++            server.console(&format!("hjv-pk {longest}")).await,
++            format!("HJVPK1 {longest} - -\n")
++        );
++        // as typed into the console by hand
++        assert_eq!(
++            server.console("hjv-pk 987654321\n").await,
++            "HJVPK1 987654321 - -\n"
++        );
++        for cmd in [
++            "hjv-pk".to_owned(),
++            "hjv-pk ".to_owned(),
++            format!("hjv-pk {}", "a".repeat(65)),
++            "hjv-pk 12345678/9".to_owned(),
++            "hjv-pk 1234\t56789".to_owned(),
++            "hjv-pk 1234567\u{e9}89".to_owned(),
++            // more than the console reads
++            format!("hjv-pk {}", "1".repeat(2000)),
++        ] {
++            let out = server.console(&cmd).await;
++            assert_eq!(out, "", "{:?}", cmd.chars().take(40).collect::<String>());
++        }
++        // and hbbs keeps answering
++        let peer = register(&server).await;
++        let (id, signed, _) = fields(&server.console(&format!("hjv-pk {PEER_ID}")).await);
++        assert_eq!((id.as_str(), signed.as_str()), (PEER_ID, SIGNED));
++        drop(peer);
++    });
++}
++
++#[test]
++fn relayed_request_loses_token_and_permissions() {
++    let server = Hbbs::start("relay-strip");
++    runtime().block_on(async {
++        let mut peer = register(&server).await;
++        let mut controller = Client::connect(&server, "203.0.113.20:50000").await;
++        let mut msg = RendezvousMessage::new();
++        msg.set_request_relay(RequestRelay {
++            id: PEER_ID.to_owned(),
++            uuid: "relay-uuid".to_owned(),
++            relay_server: "relay.example.com".to_owned(),
++            secure: true,
++            licence_key: SERVER_PK.to_owned(),
++            conn_type: ConnType::FILE_TRANSFER.into(),
++            token: "account-token".to_owned(),
++            control_permissions: Some(ControlPermissions {
++                permissions: u64::MAX,
++                ..Default::default()
++            })
++            .into(),
++            controlled_context: Some(ControlledContext {
++                conn_audit_ref: "ref".to_owned(),
++                ..Default::default()
++            })
++            .into(),
++            switch_code: "switch".to_owned(),
++            ..Default::default()
++        });
++        controller.send(msg).await;
++        let rendezvous_message::Union::RequestRelay(rr) = peer.recv().await else {
++            panic!("expected the relay request");
++        };
++        assert!(rr.token.is_empty());
++        assert!(rr.control_permissions.is_none());
++        assert!(rr.controlled_context.is_none());
++        // the rest as the controller sent it, with its address from hbbs
++        assert_eq!(rr.id, PEER_ID);
++        assert_eq!(rr.uuid, "relay-uuid");
++        assert_eq!(rr.relay_server, "relay.example.com");
++        assert!(rr.secure);
++        assert_eq!(rr.licence_key, SERVER_PK);
++        assert_eq!(rr.conn_type.enum_value(), Ok(ConnType::FILE_TRANSFER));
++        assert_eq!(rr.switch_code, "switch");
++        assert_eq!(
++            AddrMangle::decode(&rr.socket_addr),
++            "203.0.113.20:50000".parse::<SocketAddr>().expect("address")
++        );
++    });
++}
