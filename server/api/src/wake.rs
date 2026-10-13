@@ -977,6 +977,10 @@ mod tests {
                     mac: "00:00:5e:00:53:10".into(),
                     ipv4: vec![addr.into()],
                     gateway: Some(gateway.into()),
+                    wake: crate::wolinfo::Wake {
+                        magic: Some("1".into()),
+                        ..Default::default()
+                    },
                     ..Adapter::default()
                 }],
                 power: Default::default(),

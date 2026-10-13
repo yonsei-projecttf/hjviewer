@@ -906,13 +906,37 @@ fn poll_reply(state: RelayState, commands: &[(String, String, i64)], send_ifaces
     Reply::ok(&body)
 }
 
+/// The refusals of PROTOCOL.md §8.1 that say the relay and hjv-api disagree, and hjv-api's own
+/// names for results it cannot place: each has its line in the journal once an hour per relay.
+const NOTED_CODES: &[&str] = &[
+    "unknown_key",
+    "bad_signature",
+    "bad_command",
+    "bad_version",
+    "wrong_relay",
+    "not_yet_valid",
+    "bad_lifetime",
+    "bad_macs",
+    "bad_params",
+    "bad_result",
+    "unknown_cmd",
+    "no_cmd",
+];
+
 /// Results that tell the operator something: a key the relays do not trust, a command they
 /// refused as malformed, results of commands hjv-api does not know.
 fn note_results(state: &AppState, id: &str, notes: &[String]) {
     let tag = short(id, 10);
     for code in notes {
+        // codes the protocol does not name share one line an hour, so that a relay cannot fill
+        // the notices (or the journal) with names of its own
+        let named = if NOTED_CODES.contains(&code.as_str()) {
+            code.as_str()
+        } else {
+            "other"
+        };
         if !state.first_notice(
-            &format!("relay-result:{id}:{code}"),
+            &format!("relay-result:{id}:{named}"),
             Duration::from_secs(HOUR as u64),
         ) {
             continue;

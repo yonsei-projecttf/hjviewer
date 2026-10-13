@@ -446,6 +446,11 @@ pub const HINT_MAGIC_OFF_SOME: Hint = Hint {
     level: Ready::Warn,
     text: "랜카드 가운데 매직 패킷 깨우기가 꺼진 것이 있습니다. 장치 관리자에서 랜카드 속성의 '고급' 탭에 있는 'Wake on Magic Packet'을 켜 주세요.",
 };
+pub const HINT_MAGIC_UNKNOWN: Hint = Hint {
+    code: "magic_unknown",
+    level: Ready::Warn,
+    text: "랜카드 드라이버가 매직 패킷 깨우기 설정을 알려 주지 않아 켜질지 확인하지 못했습니다. 켜지지 않으면 장치 관리자에서 랜카드 속성의 '고급' 탭을 확인해 주세요.",
+};
 pub const HINT_NOT_ARMED: Hint = Hint {
     code: "not_armed",
     level: Ready::Warn,
@@ -486,11 +491,15 @@ pub fn readiness(report: Option<&Report>) -> (Ready, Vec<Hint>) {
         return (Ready::No, vec![HINT_NO_WIRED]);
     }
     let mut hints = Vec::new();
-    let off = |a: &&Adapter| a.wake.magic.as_deref() == Some("0");
-    if cards.iter().all(off) {
+    // the design's `magic≠1`: off as the driver says it ("0"), or not told at all (a driver
+    // without the keyword), which is not known to be off
+    let magic = |a: &&Adapter, value: &str| a.wake.magic.as_deref() == Some(value);
+    if cards.iter().all(|a| magic(a, "0")) {
         hints.push(HINT_MAGIC_OFF);
-    } else if cards.iter().any(off) {
+    } else if cards.iter().any(|a| magic(a, "0")) {
         hints.push(HINT_MAGIC_OFF_SOME);
+    } else if !cards.iter().any(|a| magic(a, "1")) {
+        hints.push(HINT_MAGIC_UNKNOWN);
     }
     if cards.iter().all(|a| a.armed == Some(false)) {
         hints.push(HINT_NOT_ARMED);
@@ -893,10 +902,35 @@ mod tests {
             with(&|r| r.adapters[0].wake.magic = Some("0".into())),
             (Ready::No, vec!["magic_off"])
         );
-        // a driver that does not name the keyword may still wake
+        // a driver that does not name the keyword may still wake: not known, which is not off
         assert_eq!(
             with(&|r| r.adapters[0].wake.magic = None),
+            (Ready::Warn, vec!["magic_unknown"])
+        );
+        assert_eq!(
+            with(&|r| r.adapters[0].wake.magic = Some("2".into())),
+            (Ready::Warn, vec!["magic_unknown"])
+        );
+        // one card that is known to be on is enough
+        assert_eq!(
+            with(&|r| {
+                let mut second = r.adapters[0].clone();
+                second.mac = "00:00:5e:00:53:20".into();
+                second.wake.magic = None;
+                r.adapters.push(second);
+            }),
             (Ready::Ok, vec![])
+        );
+        // off and not known: the one that is off is what the user can change
+        assert_eq!(
+            with(&|r| {
+                let mut second = r.adapters[0].clone();
+                second.mac = "00:00:5e:00:53:20".into();
+                second.wake.magic = Some("0".into());
+                r.adapters[0].wake.magic = None;
+                r.adapters.push(second);
+            }),
+            (Ready::Warn, vec!["magic_off_some"])
         );
         assert_eq!(
             with(&|r| {
@@ -947,6 +981,7 @@ mod tests {
             HINT_NO_WIRED,
             HINT_MAGIC_OFF,
             HINT_MAGIC_OFF_SOME,
+            HINT_MAGIC_UNKNOWN,
             HINT_NOT_ARMED,
             HINT_FAST_STARTUP,
             HINT_ON_BATTERY,

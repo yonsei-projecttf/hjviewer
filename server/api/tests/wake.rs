@@ -447,6 +447,27 @@ async fn jobs_fail_with_the_relays_error_or_no_result() {
     assert!(hjv_api::log::captured().iter().any(|l| l.contains(
         "refused a wake command (unknown_key): it does not trust the command key in use"
     )));
+    // refusals of a relay's own naming fail their jobs too, and share one line an hour
+    for code in ["made_up_one", "made_up_two", "made_up_three"] {
+        let job = next_job(&h, &pc, &phone).await;
+        let text = delivered(&h, &r).await;
+        h.poll(
+            &r,
+            RELAY_IP,
+            0,
+            &json!([result(&text, &job, None, 0, Some(code))]),
+            None,
+            &lan(),
+        )
+        .await;
+        assert_eq!(job_row(&h, &job).await.error.as_deref(), Some(code));
+    }
+    let lines = hjv_api::log::captured();
+    let made_up: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("refused a wake command (made_up_"))
+        .collect();
+    assert_eq!(made_up.len(), 1, "{made_up:?}");
     // a result of a command hjv-api does not know changes nothing
     let a = h
         .poll(

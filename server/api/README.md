@@ -673,8 +673,9 @@ GET  /api/hjv/devices/{id}/wol
   after `no_result` still counts.
 - The verdict and its hints (the texts go to the app as they are, so the rules change without a
   new app): no wired card with an address: `no`; every card's magic packet wake off (`"magic":"0"`):
-  `no`; some: `warn`; no card armed to wake the PC, fast startup on, on battery, USB cards only,
-  modern standby without its magic packet wake: `warn`.
+  `no`; some off, or none known to be on (a driver that does not tell): `warn`; no card armed to
+  wake the PC, fast startup on, on battery, USB cards only, modern standby without its magic packet
+  wake: `warn`.
 
 ### hbbs and the SSO
 
