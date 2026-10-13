@@ -192,7 +192,7 @@ pub async fn health(state: &AppState) -> Result<Health, String> {
         h.pcs_on_synced = Some(0);
     } else {
         let mut on = Vec::new();
-        let mut failed = None;
+        let (mut failed, mut malformed) = (None, 0);
         for (id, _, stored) in &pcs {
             match hbbs::lookup(
                 state.config.hbbs_console,
@@ -211,11 +211,17 @@ pub async fn health(state: &AppState) -> Result<Health, String> {
                     on.push(id.clone())
                 }
                 Ok(_) | Err(HbbsError::BadId) => {}
+                // one PC's answer (hbbs returns whatever key a client registered, also one that
+                // is not 32 bytes): that PC is not on; hbbs fails only when every answer does
+                Err(HbbsError::Malformed) => malformed += 1,
                 Err(e) => {
                     failed = Some(e);
                     break;
                 }
             }
+        }
+        if failed.is_none() && malformed == pcs.len() {
+            failed = Some(HbbsError::Malformed);
         }
         match failed {
             Some(e) => {

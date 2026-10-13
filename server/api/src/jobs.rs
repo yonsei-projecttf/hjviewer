@@ -113,6 +113,8 @@ pub struct SeenRound {
     pub marked: usize,
     /// needs-relogin devices hbbs holds the stored key for again
     pub cleared: usize,
+    /// devices whose answer was in another format (a key that is not 32 bytes): skipped
+    pub malformed: usize,
 }
 
 /// Asks hbbs about every device in an account and records the ones it has seen.
@@ -186,6 +188,11 @@ pub async fn refresh_seen(state: &Arc<AppState>) -> SeenRound {
                 }
             }
             Ok(Lookup::Unknown) | Err(HbbsError::BadId) => {}
+            // One device's answer: hbbs signs and returns whatever key a client registered,
+            // also one that is not 32 bytes. The other devices are still checked, so that a
+            // client that registers such a key for its own ID cannot keep hbbs's view of the
+            // devices after it (their keys, when they were seen) from hjv-api.
+            Err(HbbsError::Malformed) => round.malformed += 1,
             Err(e @ HbbsError::BadSignature) => {
                 log_err!("upkeep: {e}; devices not checked today");
                 break;
@@ -195,6 +202,12 @@ pub async fn refresh_seen(state: &Arc<AppState>) -> SeenRound {
                 break;
             }
         }
+    }
+    if round.malformed > 0 {
+        log_warn!(
+            "upkeep: hbbs answered hjv-pk in an unknown format for {} devices; skipped",
+            round.malformed
+        );
     }
     if round.key_changed > 0 {
         log_notice!(

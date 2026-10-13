@@ -148,7 +148,7 @@ impl TestDevice {
 /// What the fake hbbs knows of a device.
 #[derive(Clone)]
 struct Entry {
-    public_key: [u8; 32],
+    public_key: Vec<u8>,
     /// seconds since it registered
     age: Option<u64>,
     /// the key pair that signs the answer: hbbs's, or another program's that took the port
@@ -209,11 +209,11 @@ impl FakeHbbs {
         }
     }
 
-    fn insert(&self, id: &str, public_key: [u8; 32], age: Option<u64>, signer: [u8; 32]) {
+    fn insert(&self, id: &str, public_key: &[u8], age: Option<u64>, signer: [u8; 32]) {
         self.keys.lock().unwrap().insert(
             id.to_owned(),
             Entry {
-                public_key,
+                public_key: public_key.to_vec(),
                 age,
                 signer,
             },
@@ -222,17 +222,23 @@ impl FakeHbbs {
 
     /// The device registered with hbbs, seen `age` seconds ago.
     pub fn register(&self, device: &TestDevice, age: Option<u64>) {
-        self.insert(&device.id, device.public_key(), age, HBBS_SEED);
+        self.insert(&device.id, &device.public_key(), age, HBBS_SEED);
     }
 
     pub fn register_key(&self, id: &str, key: [u8; 32]) {
+        self.insert(id, &key, Some(1), HBBS_SEED);
+    }
+
+    /// The device registered with a key that is not 32 bytes, which a client may send: patch
+    /// 0004 signs and returns it as it does any key.
+    pub fn register_odd_key(&self, id: &str, key: &[u8]) {
         self.insert(id, key, Some(1), HBBS_SEED);
     }
 
     /// Another program on the console's port answers for the device with a key of its choice,
     /// signed with a key pair of its own.
     pub fn forge(&self, id: &str, key: [u8; 32]) {
-        self.insert(id, key, Some(1), [99; 32]);
+        self.insert(id, &key, Some(1), [99; 32]);
     }
 
     /// hbbs knows the key but not when the device last registered (as after a restart).

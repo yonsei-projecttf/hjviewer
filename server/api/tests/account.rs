@@ -395,6 +395,88 @@ async fn removing_an_id_from_the_allowlist_revokes_its_tokens() {
 }
 
 #[tokio::test]
+async fn a_device_with_an_odd_key_in_hbbs_does_not_stop_the_round() {
+    // A client may register any key with hbbs, also one that is not 32 bytes, and patch 0004
+    // signs and returns it as it is: hjv-api cannot read that answer. The daily round skips that
+    // device and still checks the ones after it (it asks in the order of the device IDs).
+    let h = Harness::start().await;
+    let (odd, rekeyed, seen) = (
+        TestDevice::windows("610000001"),
+        TestDevice::windows("610000002"),
+        TestDevice::windows("610000003"),
+    );
+    for pc in [&odd, &rekeyed, &seen] {
+        h.hbbs.register(pc, Some(5));
+        h.login_ok(HONG, Some(pc)).await;
+    }
+    h.hbbs.register_odd_key(&odd.id, &[7; 33]);
+    h.hbbs.register_key(&rekeyed.id, [3; 32]);
+    let round = hjv_api::jobs::refresh_seen(&h.state).await;
+    assert_eq!(
+        (round.asked, round.malformed, round.key_changed, round.seen),
+        (3, 1, 1, 1)
+    );
+    let device = |id: &str| {
+        let id = id.to_owned();
+        h.state.db.call(move |c| db::device(c, &id))
+    };
+    assert!(device(&rekeyed.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .key_changed_at
+        .is_some());
+    assert!(device(&odd.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .key_changed_at
+        .is_none());
+    let logs = hjv_api::log::captured().join("\n");
+    assert!(
+        logs.contains("upkeep: hbbs answered hjv-pk in an unknown format for 1 devices; skipped"),
+        "{logs}"
+    );
+}
+
+#[tokio::test]
+async fn a_pc_with_an_odd_key_in_hbbs_is_no_hbbs_failure() {
+    // The five-minute check asks hbbs about the PCs that hold a list: one PC whose answer it
+    // cannot read is not on, and hbbs is fine; hbbs fails when every answer is unreadable.
+    let h = Harness::start().await;
+    let (odd, on) = (
+        TestDevice::windows("620000001"),
+        TestDevice::windows("620000002"),
+    );
+    for pc in [&odd, &on] {
+        h.hbbs.register(pc, Some(5));
+        h.login_ok(HONG, Some(pc)).await;
+    }
+    let at = hjv_api::util::now();
+    h.state
+        .db
+        .call(move |c| {
+            c.execute(
+                "UPDATE devices SET sync_state = 'present', last_sync_at = ?1",
+                [at],
+            )
+        })
+        .await
+        .unwrap();
+    h.hbbs.register_odd_key(&odd.id, &[7; 33]);
+    h.state
+        .online
+        .backdate(&on.id, std::time::Duration::from_secs(3600));
+    let health = hjv_api::check::health(&h.state).await.unwrap();
+    assert_eq!(health.hbbs, hjv_api::check::HBBS_OK);
+    assert_eq!((health.pcs_holding, health.pcs_on), (2, Some(1)));
+    h.hbbs.register_odd_key(&on.id, &[7; 33]);
+    let health = hjv_api::check::health(&h.state).await.unwrap();
+    assert_eq!(health.hbbs, "answers in an unknown format");
+    assert_eq!(health.pcs_on, None);
+}
+
+#[tokio::test]
 async fn upkeep_keeps_what_is_seen_and_drops_what_is_not() {
     let h = Harness::start().await;
     let (seen, gone, rekeyed) = (
