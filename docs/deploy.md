@@ -50,11 +50,11 @@ all checks passed: apps on this network can reach the server over 443
 |---|---|
 | `deploy/Dockerfile` | 고정된 upstream 커밋 + `server/patches`로 hbbs/hbbr 빌드 |
 | `deploy/docker-compose.yml` | A 경로: caddy(80/443 공개), hbbs, hbbr(내부 전용) |
-| `deploy/Caddyfile` | `/ws/id`는 hbbs:21118, `/ws/relay`는 hbbr:21119로 전달, `X-Real-IP`/`X-Real-Port` 전달, `/api/*`는 404 |
+| `deploy/Caddyfile` | `/ws/id`는 hbbs:21118, `/ws/relay`는 hbbr:21119로 전달, `X-Real-IP`/`X-Real-Port` 전달. 계정 경로(`/api/login`, `/api/currentUser`, `/api/logout`, `/api/users`, `/api/peers`, `/api/hjv/*`)는 hjv-api로 전달(`HJV_API`, 기본은 `/run/hjviewer-api.sock`. hjv-api가 없거나 꺼져 있으면 503), 나머지 `/api/*`는 404 |
 | `deploy/systemd/` | B 경로: hbbs, hbbr의 systemd 유닛과 설정 예시(`hjviewer.env.example`). 서비스 전용 사용자, 127.0.0.1에만 listen, 권한 없음, CPU·메모리 상한 |
 | `scripts/package-server.sh` | B 경로의 GitHub Release 패키지(바이너리, 유닛, 웹 서버 설정, 라이선스 고지)를 만듭니다 |
 | `deploy/docker-compose.behind-proxy.yml` | 이미 Docker를 쓰는 서버에서 B 경로 대신 쓸 수 있는 compose 파일: 기존 웹 서버 뒤에서 hbbs, hbbr만 실행. 호스트 네트워크의 127.0.0.1에만 listen |
-| `deploy/nginx-hjviewer.conf`, `deploy/apache-hjviewer.conf` | 기존 웹 서버의 사이트 설정. 위 Caddyfile과 같은 일을 합니다 |
+| `deploy/nginx-hjviewer.conf`, `deploy/apache-hjviewer.conf` | 기존 웹 서버의 사이트 설정. 위 Caddyfile과 같은 일을 합니다(nginx의 계정 경로는 `nginx-hjviewer-api.conf`, [server-runbook.md](server-runbook.md)) |
 | `deploy/nginx-hjviewer-locations.conf` | nginx에 넣을 HJViewer 경로(`/ws/id`, `/ws/relay`, `/api/`). 새 사이트 파일이 include하고, 이미 운영 중인 사이트와 도메인을 함께 쓸 때는 그 사이트의 server 블록에 include 한 줄로 넣습니다 |
 | `deploy/.env.example` | compose용 `HJV_DOMAIN`과 선택 설정: `COMPOSE_FILE`(behind-proxy), 이미지 레지스트리, 빌드 병렬 수, 중계 대역폭 상한 |
 

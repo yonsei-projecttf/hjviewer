@@ -29,6 +29,8 @@ scripts/ci.sh leak       # push 전 검사: 로컬 목록 build/leak-patterns.tx
 
 e2e·wol 단계가 시험 스크립트에 넘기는 값은 `HJV_E2E_WORK`, `CADDY`, `HBBS`, `HBBR`, `PROBE`, `CLIENT`, `PC_CLIENT`(설치 경로의 PC 실행 파일), `HJV_E2E_KEYS`이고, 계정 E2E에는 `HJV_E2E_ACCOUNT=1`, `HJV_API`, `HJV_FAKE_SSO`, wol에는 `HJV_API`, `HJV_FAKE_SSO`, `HJV_RELAY`가 더해집니다. `HJV_E2E_KEYS` 폴더에는 E2E의 시험 키가 있습니다. 같은 바이트를 32번 되풀이한 seed로 만든 키라서(봉인 `e2`, 목록 키 1·2 `e3`·`e4`, 명령 키 `e5`, 기록 키 `e6`) 출시 빌드의 공개키 확인이 거부합니다. `*.secret`은 비밀 쪽(base64), `seal.pub`, `trust.pub`, `command.pub`, `build.env`는 공개 값입니다.
 
+계정 E2E에는 두 가지가 더 갑니다. `CLIENT_OLD`는 태그 `client-1.5.1`의 패치와 upstream 고정 커밋으로 한 번 빌드해 `build/ci/e2e-old/rustdesk`에 두는 1.5.1 클라이언트이고(태그 커밋이나 시험 서버 키가 바뀌면 다시 빌드, 태그가 없는 저장소에서는 그 시나리오만 건너뜀), `FAKETIME_LIB`는 시스템에 있거나 Ubuntu 패키지를 `build/ci/faketime`에 풀어 둔 `libfaketime.so.1`입니다(설치하지 않음). e2e 단계의 클라이언트는 LTO 없이 빌드하는 시험용입니다([e2e.md](e2e.md)).
+
 배포 시험이 매번 확인하는 것은 다음과 같습니다.
 
 - hbbs/hbbr이 127.0.0.1에서만 listen하는지
@@ -39,6 +41,7 @@ e2e·wol 단계가 시험 스크립트에 넘기는 값은 `HJV_E2E_WORK`, `CADD
 - Apache 오류 로그에 fail2ban이 인증 실패로 세는 `AH01630`이 없는지
 - 기존 사이트에 추가한 경우: HTTP/2를 켠 listener에서도 WebSocket이 열리는지, 사이트의 다른 경로(`/`, `/wp-json/`, `.php`)와 HTTP/2가 그대로인지
 - 클라이언트가 보낸 `X-Real-IP`, `X-Forwarded-For`, `X-Real-Port`가 nginx와 Apache에서 실제 주소로 덮어써지는지(받은 헤더를 그대로 돌려주는 서버로 확인)
+- Apache와 Caddy의 계정 경로: Apache가 `/api/peers`(쿼리 포함), `/api/login-options`, `/api/hjv/…`를 hjv-api 소켓으로 넘기며 주소 헤더를 덮어쓰고 쿠키를 빼는지, 그 밖의 `/api/`는 404인지, hjv-api가 없을 때 Apache와 Caddy가 앱 배너의 503 JSON을 주는지, Caddy가 `/api/login-options`와 `/api/device-group/accessible`에 직접 답하는지. hjv-api가 떠 있을 때의 Caddy는 e2e 단계가 봅니다
 - systemd 유닛: 127.0.0.1에만 listen하는지, 키 파일이 처음부터 600인지, 권한이 없는지, `hjviewer.env`의 대역폭 상한이 적용되는지, 샌드박스 때문에 생긴 오류가 없는지
 - hjv-api의 systemd 유닛: 소켓이 `660 root:www-data`인지, 소켓으로 `/api/hjv/source`에 답하는지, 권한이 없는지, 상태 디렉터리 700과 DB 600, 관리 소켓(`admin report`), 샌드박스 오류가 없는지, 비밀번호 없는 연결 스위치가 설치 직후 꺼져 있는지(묶음의 hjv-api 실행 파일에 그 기능이 생긴 뒤부터. 그 뒤로는 `admin passwordless status`가 답하지 않아도 실패)
 - Release 패키지: hbbs·hbbr·hjv-api, 유닛, env 예시, nginx·Apache 파일, zones 파일, 고지(hjv-api의 크레이트 포함)가 들어 있는지, `SHA256SUMS`가 그 패키지 한 줄인지
