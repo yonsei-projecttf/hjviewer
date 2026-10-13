@@ -280,8 +280,10 @@ operator record hold counts only.
 - **Restore** brings back the tokens and account keys revoked since, the switches as they were and
   the bindings released since, so it is an incident of its own: `passwordless off`, stop the
   check timer, keep the current database as a backup in the backup directory (`admin backup
-  /var/lib/hjviewer-api/backup/before-restore-<time>.sqlite3`, so that it ages out with the rest),
-  stop the socket and the service, remove the database files, put the backup in their place
+  /var/lib/hjviewer-api/backup/before-restore-<time>.sqlite3`, so that it ages out with the rest;
+  only a database too damaged for that is moved aside instead, into a directory of root's, and
+  deleted within 14 days), stop the socket and the service, remove the database files, put the
+  backup in their place
   (`install -o hjviewer-api -g hjviewer-api -m 600 <backup> /var/lib/hjviewer-api/hjv-api.sqlite3`,
   no -wal or -shm left), start the socket and the service, `passwordless off` again,
   `user revoke-all --all`, look at the allowlist (`allow list`) and the switches (`passwordless
