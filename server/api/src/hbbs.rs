@@ -23,9 +23,11 @@
 //!   signature followed by the protobuf message `IdPk` (hbb_common rendezvous.proto: `string id =
 //!   1; bytes pk = 2;`) with the ID and the 32-byte public key the device registered with (from
 //!   memory or hbbs's database); or `-` when hbbs knows no key for the ID;
-//! - `<age>`: whole seconds since the device last registered, when it registered since hbbs
-//!   started (a device that is on registers every few seconds), or `-` when hbbs does not know
-//!   (a peer only loaded from the database, or right after hbbs restarted). At most ten years.
+//! - `<age>`: whole seconds since the device last registered (a device that is on registers every
+//!   few seconds), given by patch 0004 only within the last hour and, for a device registered
+//!   over WebSocket or TCP (all of them behind the server's port 443), only while it is connected;
+//!   `-` otherwise, and when hbbs does not know (a peer only loaded from the database, or right
+//!   after hbbs restarted). At most ten years.
 //!
 //! hjv-api takes a key only with a valid signature of hbbs's key pair (HJV_API_HBBS_PUBKEY, the
 //! public key the apps are built with) over an `IdPk` that names the ID asked for. The console has
