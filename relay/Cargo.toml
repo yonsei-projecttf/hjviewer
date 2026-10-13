@@ -2,6 +2,9 @@
 name = "hjv-relay"
 version = "1.6.0"
 edition = "2021"
+# zeroize 1.9 and base64ct 1.8 (through ed25519-dalek) are edition 2024; cargo test needs 1.88
+# (time 0.3.55, through rcgen); Cargo.lock version 4 needs cargo 1.78
+rust-version = "1.85"
 description = "Wake-on-LAN relay for HJViewer: runs on an always-on Linux machine in a PC's LAN (a Synology NAS) and sends magic packets on signed commands from the HJViewer server"
 license = "AGPL-3.0-only"
 publish = false

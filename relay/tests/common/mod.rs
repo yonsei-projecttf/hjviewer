@@ -30,7 +30,7 @@ use std::{
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
@@ -451,11 +451,13 @@ pub fn iface(name: &str, addrs: &[&str]) -> Iface {
 }
 
 /// Interfaces of the lab's NAS, a recorder instead of the network, and an executable that
-/// "changes" when told to.
+/// "changes" and a stop marker that appears when told to.
 pub struct FakeEnv {
     pub ifaces: Arc<Mutex<Vec<Iface>>>,
     pub sent: Arc<Mutex<Vec<SendPlan>>>,
     pub exe_changed: Arc<AtomicBool>,
+    pub stop: Arc<AtomicBool>,
+    pub tidied: Arc<AtomicUsize>,
     pub statuses: Arc<Mutex<Vec<(String, bool)>>>,
     pub sleeps: Arc<Mutex<Vec<Duration>>>,
 }
@@ -470,6 +472,8 @@ impl FakeEnv {
             ])),
             sent: Arc::default(),
             exe_changed: Arc::default(),
+            stop: Arc::default(),
+            tidied: Arc::default(),
             statuses: Arc::default(),
             sleeps: Arc::default(),
         }
@@ -504,6 +508,14 @@ impl Env for FakeEnv {
             .then(|| "test".to_owned())
     }
 
+    fn stop_requested(&mut self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    fn tidy(&mut self) {
+        self.tidied.fetch_add(1, Ordering::SeqCst);
+    }
+
     fn sleep(&mut self, d: Duration) {
         self.sleeps.lock().unwrap().push(d);
         thread::sleep(d.min(Duration::from_millis(20)));
@@ -526,6 +538,29 @@ pub fn capture_log() -> Arc<Mutex<Vec<String>>> {
         sink.lock().unwrap().push(line.to_owned());
     })));
     lines
+}
+
+/// hjv-relay built the way a release is, but for a test server on localhost and the test command
+/// key: `run` works against [`TestServer`] with `--server localhost:<port> --ca <its CA>`. Built
+/// once into target/netns-configured (the namespace and boot-up loop tests share it).
+pub fn configured_relay() -> std::path::PathBuf {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let target = manifest.join("target").join("netns-configured");
+    let key = STANDARD.encode(command_signing_key().verifying_key().to_bytes());
+    let status = std::process::Command::new(env!("CARGO"))
+        .current_dir(manifest)
+        .args(["build", "--offline", "--locked", "--bin", "hjv-relay"])
+        .env("CARGO_TARGET_DIR", &target)
+        .env("HJV_SERVER", "localhost")
+        .env("HJV_COMMAND_PUBKEY", format!("1:{key}"))
+        .env_remove("HJV_BUILD_COMMIT")
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "building the test-configured hjv-relay failed"
+    );
+    target.join("debug").join("hjv-relay")
 }
 
 pub fn wait_until(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
