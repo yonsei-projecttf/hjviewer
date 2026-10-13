@@ -15,9 +15,11 @@
 //! - `drill_populate`: a day of use: PCs bound by logins on them and syncing, phones, a released
 //!   PC, a failed login.
 //! - `drill_sync`: the PCs that are bound sync, and their lists are checked as the PCs check them
-//!   (HJV_DRILL_EXPECT: the state the lists must have).
+//!   (HJV_DRILL_EXPECT: the state the lists must have; `disabled` right after the restore's
+//!   start, before the operator's next command).
 //! - `drill_invalid_client`: a login the SSO answers with invalid_client.
-//! - `drill_after_backup`: what a restore takes back: a new login, a PC released by its owner.
+//! - `drill_after_backup`: what a restore takes back: a new login, a PC released by its owner,
+//!   an account's keys revoked (a lost phone).
 //! - `drill_after_restore`: after the restore: every token from before refused, the PCs still
 //!   bound (switched off), the released PC listed.
 //! - `drill_after_on`: the phone logs in again, and the PC's list holds the new key only.
@@ -298,7 +300,8 @@ async fn drill_populate() {
 
 async fn sync_all(state: &Value, expect: &str) {
     for id in [PC_HONG, PC_KIM] {
-        let Some(binding) = state["bindings"][id].as_str() else {
+        // a PC that cleared its mark (PC_KIM after drill_after_backup) has no list to check
+        let Some(binding) = state["bindings"][id].as_str().filter(|b| !b.is_empty()) else {
             continue;
         };
         let (status, answer, list) = sync(&pc(id), binding).await;
@@ -357,7 +360,16 @@ async fn drill_after_backup() {
     assert_eq!(list.unwrap().unwrap()["state"], "revoked");
     state["bindings"][PC_KIM] = json!("");
     save(&state);
-    println!("after the backup: 2 new logins, PC {PC_KIM} released (signed revoked, mark cleared)");
+    // HONG's phone lost: the account's keys and tokens revoked, so that its PC's list holds none
+    println!("{}", admin(&["user", "revoke-all", HONG.0]).await);
+    let hong = state["bindings"][PC_HONG].as_str().unwrap();
+    let (_, _, list) = sync(&pc(PC_HONG), hong).await;
+    let list = list.unwrap().unwrap();
+    assert_eq!(list["state"], "active", "{list}");
+    assert_eq!(list["keys"].as_array().map_or(0, Vec::len), 0, "{list}");
+    println!(
+        "after the backup: 2 new logins, PC {PC_KIM} released (signed revoked, mark cleared), HONG's keys revoked (PC {PC_HONG}: active, 0 keys)"
+    );
 }
 
 #[tokio::test]

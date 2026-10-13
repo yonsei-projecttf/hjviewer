@@ -311,7 +311,43 @@ async fn backups_go_to_closed_places_only_and_age_out() {
         std::fs::read_to_string(dir.join("b.sqlite3")).unwrap(),
         "keep me"
     );
-    // a missing directory whose parent is there: made, closed
+    // a missing directory is made only in a directory of the caller's closed to others: not in
+    // one others may enter (as /etc), nor where there is no directory
+    for nowhere in [open.join("new"), dir.join("none").join("new")] {
+        let out = backup(vec![format!("{}/", nowhere.display())]).await;
+        assert!(!out.status.success());
+        assert!(
+            text(&out).1.contains("is not there, and is made only in a directory of yours closed to others (or as /var/lib/hjviewer-api/backup): make it first (install -d -m 700"),
+            "{}",
+            text(&out).1
+        );
+        assert!(!nowhere.exists() && !dir.join("none").exists());
+    }
+    assert_eq!(std::fs::read_dir(&open).unwrap().count(), 0);
+    // one made for a backup that fails (here: no service on that socket) goes again
+    let gone = dir.join("gone");
+    let not_a_dir = dir.join("not-a-dir");
+    std::fs::write(&not_a_dir, "").unwrap();
+    let out = run(
+        args(&[
+            &"admin",
+            &"--socket",
+            &not_a_dir.join("admin.sock"),
+            &"backup",
+            &format!("{}/", gone.display()),
+        ]),
+        vec![],
+    )
+    .await;
+    assert!(!out.status.success());
+    assert!(
+        text(&out).1.contains("is hjviewer-api running"),
+        "{}",
+        text(&out).1
+    );
+    assert!(!gone.exists());
+    std::fs::remove_file(&not_a_dir).unwrap();
+    // a missing directory in a closed one of the caller's: made, closed
     let made = dir.join("backup");
     let out = backup(vec![format!("{}/", made.display())]).await;
     assert!(out.status.success(), "{}", text(&out).1);
@@ -416,7 +452,8 @@ async fn a_backup_while_requests_go_on() {
 }
 
 /// The restore of design v3 §5-9 (README.md, Backup and restore) on the database level:
-/// `passwordless off`, the backup in place of the database, `user revoke-all --all`, the
+/// `passwordless off`, the backup in place of the database, hjv-api started on it (every account
+/// off from its first answer), `passwordless off` again (no change), `user revoke-all --all`, the
 /// allowlist and the switches looked at, `passwordless on`; then the apps log in again and the
 /// PCs, still bound, get their lists.
 #[tokio::test]
@@ -435,7 +472,8 @@ async fn the_restore_procedure() {
     let backed_up = rows_of(&file);
 
     // after the backup, what the restore takes back: a new login, KIM's PC leaving its account
-    // (it gets its signed revoked and clears its mark), the switch off
+    // (it gets its signed revoked and clears its mark), and the phone lost: every account key and
+    // token revoked, so that the PC's list holds no key
     let later = h.login_ok(LEE, None).await;
     let kim_token = h.login_ok(KIM, None).await;
     assert_eq!(
@@ -446,8 +484,16 @@ async fn the_restore_procedure() {
     );
     let revoked = h.sync(&used.kim_pc, &payload(&used.kim_binding)).await;
     assert_eq!(revoked.list()["state"], "revoked");
+    h.admin(&["user", "revoke-all", "--all"], false, None)
+        .await
+        .unwrap();
+    let emptied = h.sync(&used.pc, &payload(&used.pc_binding)).await;
+    assert_eq!(emptied.list()["state"], "active");
+    assert!(emptied.keys().is_empty(), "{:?}", emptied.keys());
 
-    // the restore: hjv-api started again on the backup
+    // the restore: hjv-api started again on the backup, whose switch was on and whose keys are
+    // those revoked since. A PC syncs before the operator's first command, as the PCs syncing
+    // every two minutes do: off from the first answer, no key
     let r = Harness::with(Options {
         db_file: Some(file.clone()),
         ..Default::default()
@@ -455,11 +501,21 @@ async fn the_restore_procedure() {
     .await;
     r.adopt_keys(&h);
     assert_eq!(live_rows(&r).await, backed_up);
+    r.hbbs.register(&used.pc, Some(5));
+    let first = r.sync(&used.pc, &payload(&used.pc_binding)).await;
+    assert_eq!(first.list()["state"], "disabled");
+    assert!(first.keys().is_empty(), "{:?}", first.keys());
+    let report = r.admin(&["report"], false, None).await.unwrap();
+    assert!(
+        report.contains("password-less: off for every account, accounts on 0,"),
+        "{report}"
+    );
+    // the restore's second `passwordless off` finds it so
     assert_eq!(
         r.admin(&["passwordless", "off"], false, None)
             .await
             .unwrap(),
-        "password-less connections: off for every account"
+        "password-less connections: off for every account (no change)"
     );
     let out = r
         .admin(&["user", "revoke-all", "--all"], false, None)
@@ -499,7 +555,6 @@ async fn the_restore_procedure() {
         assert_eq!(r.post("/api/currentUser", token, None).await.status, 401);
     }
     // the bound PCs stay bound: switched off they get a signed disabled list
-    r.hbbs.register(&used.pc, Some(5));
     let off = r.sync(&used.pc, &payload(&used.pc_binding)).await;
     assert_eq!(off.list()["state"], "disabled");
     // KIM's PC is bound on the server again, but cleared its mark: no list for it (listed)
@@ -774,6 +829,45 @@ async fn the_check_with_the_service() {
     let out = check().await;
     assert!(out.status.success(), "{}{}", text(&out).0, text(&out).1);
     assert!(text(&out).0.contains("on 0"), "{}", text(&out).0);
+    // PC one set up again: on by hbbs under another key, its syncs refused until a login on it
+    // (needs-relogin), its last sync old. It is the only PC on, and its silence is no alarm
+    let mut again = TestDevice::windows(&one.id);
+    again.seed[0] ^= 0xff;
+    h.hbbs.register(&again, Some(5));
+    let refused = h.sync(&again, &payload(&b1)).await;
+    assert_eq!(refused.answer.status, 401, "{}", refused.answer.text);
+    let id = one.id.clone();
+    let marked = h
+        .state
+        .db
+        .call(move |c| db::device(c, &id))
+        .await
+        .unwrap()
+        .unwrap()
+        .key_changed_at;
+    assert!(marked.is_some(), "needs-relogin");
+    h.state.online.backdate(&one.id, Duration::from_secs(600));
+    let out = check().await;
+    assert!(out.status.success(), "{}{}", text(&out).0, text(&out).1);
+    assert!(
+        text(&out)
+            .0
+            .contains("holding their binding 2, synced in the last 10 minutes 0, on 0"),
+        "{}",
+        text(&out).0
+    );
+    // a login on it stores the new key: on again, and its syncs count
+    h.login_ok(HONG, Some(&again)).await;
+    h.sync(&again, &payload(&b1)).await.list();
+    h.state.online.backdate(&one.id, Duration::from_secs(600));
+    let out = check().await;
+    assert!(out.status.success(), "{}{}", text(&out).0, text(&out).1);
+    assert!(
+        text(&out).0.contains("on 1, of them synced 1"),
+        "{}",
+        text(&out).0
+    );
+    h.hbbs.register(&again, Some(4000));
     // the SSO refuses the client credentials: one login pauses the calls
     h.state.sso_breaker.note(Some(Failure::ClientRefused));
     let out = check().await;

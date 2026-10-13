@@ -12,6 +12,10 @@
 //! Schema changes are migrations in [`MIGRATIONS`]; later phases (WOL) add their tables with a new
 //! entry there.
 //!
+//! A restored backup (backup.rs, known by its application ID) is opened with password-less
+//! connections off for every account, before the service answers anything: its switches are
+//! those of its day, and its lists would carry the account keys revoked since (design v3 §5-9).
+//!
 //! Every change that alters what a PC's trust list would say (a key registered or revoked, a
 //! switch turned, an account deleted, leaving or coming back on the allowlist, a binding released,
 //! a PC's key found changed or back) raises the change serial ([`bump_serial`]) in the same
@@ -254,16 +258,32 @@ fn prepare(conn: Connection) -> Result<Connection, String> {
     };
     setup().map_err(|e| format!("database setup: {e}"))?;
     migrate(&conn)?;
-    // a restored backup carries the backups' application ID (backup.rs); the database served is
-    // never taken for a backup that `--keep-days` may delete
     let application_id: i32 = conn
         .query_row("PRAGMA application_id", [], |r| r.get(0))
         .map_err(|e| format!("database setup: {e}"))?;
     if application_id == crate::backup::APPLICATION_ID {
-        conn.pragma_update(None, "application_id", 0)
-            .map_err(|e| format!("database setup: {e}"))?;
+        let was_on = restored(&conn).map_err(|e| format!("database setup: {e}"))?;
+        log_notice!(
+            "the database is a restored backup: password-less connections {} off for every account until `hjv-api admin passwordless on` (README.md, Backup and restore)",
+            if was_on { "turned" } else { "stay" }
+        );
     }
     Ok(conn)
+}
+
+/// A restored backup, served for the first time (it carries the backups' application ID,
+/// backup.rs): password-less connections off for every account, as `passwordless off` turns them
+/// (design v3 §5-9). The backup's switches are those of its day, and the lists it would sign carry
+/// the account keys revoked since, a lost phone's among them; the restore's `user revoke-all
+/// --all` comes after the start, and the PCs sync meanwhile. In the same transaction the database
+/// loses the backups' ID, so that it is never taken for a backup that `--keep-days` may delete,
+/// and a start that breaks off in between does all of it again. Returns whether a switch was on.
+fn restored(conn: &Connection) -> rusqlite::Result<bool> {
+    let tx = conn.unchecked_transaction()?;
+    let was_on = set_passwordless_global(&tx, false)?;
+    tx.pragma_update(None, "application_id", 0)?;
+    tx.commit()?;
+    Ok(was_on)
 }
 
 fn migrate(conn: &Connection) -> Result<(), String> {
@@ -1942,13 +1962,18 @@ pub fn counts(c: &Connection, at: i64, list_ttl: i64) -> rusqlite::Result<Counts
 // ---- health (check.rs, design v3 §5-9) ----
 
 /// The PCs holding their binding at `at` (as in [`counts`]: their last sync, within a list's
-/// lifetime `list_ttl`, carried it), with the time of that sync, for the five-minute check.
-pub fn holding_pcs(c: &Connection, at: i64, list_ttl: i64) -> rusqlite::Result<Vec<(String, i64)>> {
+/// lifetime `list_ttl`, carried it), with the time of that sync and the public key stored for
+/// them, for the five-minute check.
+pub fn holding_pcs(
+    c: &Connection,
+    at: i64,
+    list_ttl: i64,
+) -> rusqlite::Result<Vec<(String, i64, Vec<u8>)>> {
     let mut stmt = c.prepare(
-        "SELECT device_id, last_sync_at FROM devices
+        "SELECT device_id, last_sync_at, public_key FROM devices
          WHERE sync_state = 'present' AND last_sync_at > ?1 ORDER BY device_id",
     )?;
-    let rows = stmt.query_map([at - list_ttl], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let rows = stmt.query_map([at - list_ttl], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
     rows.collect()
 }
 
@@ -2272,16 +2297,54 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hjv-api-restored-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("restored.sqlite3");
-        {
+        let application_id = |c: &Connection| -> i32 {
+            c.query_row("PRAGMA application_id", [], |r| r.get(0))
+                .unwrap()
+        };
+        // the switches on, globally and for one account, one account switched off on its own
+        let (a, b, serial) = {
             let c = open(&path).unwrap();
-            c.pragma_update(None, "application_id", crate::backup::APPLICATION_ID)
+            let a = upsert_account(&c, "a", "A", "", 1).unwrap();
+            let b = upsert_account(&c, "b", "B", "", 1).unwrap();
+            set_passwordless_global(&c, true).unwrap();
+            set_account_passwordless(&c, a, Some(true)).unwrap();
+            set_account_passwordless(&c, b, Some(false)).unwrap();
+            c.execute("UPDATE meta SET value = '0' WHERE key = 'switched_at'", [])
                 .unwrap();
-        }
+            (a, b, change_serial(&c).unwrap())
+        };
+        // a database that is no backup keeps its switches
         let c = open(&path).unwrap();
-        let id: i32 = c
-            .query_row("PRAGMA application_id", [], |r| r.get(0))
+        assert!(passwordless_global(&c).unwrap() && passwordless_on(&c, a).unwrap());
+        c.pragma_update(None, "application_id", crate::backup::APPLICATION_ID)
             .unwrap();
-        assert_eq!(id, 0);
+        drop(c);
+        // served as a restored backup: off for every account before anything reads it, the
+        // change serial up and the switch's time now, and no backup's ID
+        let c = open(&path).unwrap();
+        assert_eq!(application_id(&c), 0);
+        assert!(!passwordless_global(&c).unwrap());
+        assert!(!passwordless_on(&c, a).unwrap() && !passwordless_on(&c, b).unwrap());
+        assert_eq!(account_passwordless(&c, a).unwrap(), None);
+        assert_eq!(account_passwordless(&c, b).unwrap(), Some(false));
+        assert_eq!(change_serial(&c).unwrap(), serial + 1);
+        assert!(switched_at(&c).unwrap().unwrap() > 0);
+        drop(c);
+        // once: opened again it is the database served, switched as the operator leaves it
+        let c = open(&path).unwrap();
+        set_passwordless_global(&c, true).unwrap();
+        drop(c);
+        let c = open(&path).unwrap();
+        assert!(passwordless_global(&c).unwrap());
+        // a backup made while everything was off stays as it is, but for its ID
+        set_passwordless_global(&c, false).unwrap();
+        let serial = change_serial(&c).unwrap();
+        c.pragma_update(None, "application_id", crate::backup::APPLICATION_ID)
+            .unwrap();
+        drop(c);
+        let c = open(&path).unwrap();
+        assert_eq!(application_id(&c), 0);
+        assert_eq!(change_serial(&c).unwrap(), serial);
         drop(c);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2303,13 +2366,18 @@ mod tests {
         store_sync(&c, "1", &note("present"), 1000).unwrap();
         store_sync(&c, "2", &note("present"), 400).unwrap();
         store_sync(&c, "3", &note("absent"), 1000).unwrap();
+        // with the key stored for them, which the check compares with the one hbbs holds now
+        bind(&c, a, "2", &[2; 32], "windows", "PC", 6).unwrap();
         assert_eq!(
             holding_pcs(&c, 1100, 600).unwrap(),
-            vec![("1".to_owned(), 1000)]
+            vec![("1".to_owned(), 1000, vec![1; 32])]
         );
         assert_eq!(
             holding_pcs(&c, 1100, 1000).unwrap(),
-            vec![("1".to_owned(), 1000), ("2".to_owned(), 400)]
+            vec![
+                ("1".to_owned(), 1000, vec![1; 32]),
+                ("2".to_owned(), 400, vec![2; 32])
+            ]
         );
         assert_eq!(counts(&c, 1100, 1000).unwrap().pcs_holding, 2);
         // the relays come with phase 2's schema; before it there is nothing to say

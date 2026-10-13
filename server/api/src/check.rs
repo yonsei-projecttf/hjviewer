@@ -10,10 +10,12 @@
 //! - **admin**: the service answers `health` on its admin socket (the counts below);
 //! - **sync**: of the PCs holding their binding (as `admin report` counts them) the ones that are
 //!   on, by hbbs, which sees each PC register every few seconds: hbbs's console has seen the PC
-//!   within [`ONLINE_SECS`], at each check of the last [`STEADY_SECS`] (so that a PC that has just
-//!   woken has time for its first sync). When some are on and none of them synced in the last
-//!   [`SYNC_WINDOW`] seconds, the syncs fail somewhere between the PCs and hjv-api. PCs that are
-//!   off say nothing, so a night with every PC asleep is no alarm;
+//!   within [`ONLINE_SECS`], under the key stored for it, at each check of the last
+//!   [`STEADY_SECS`] (so that a PC that has just woken has time for its first sync). When some are
+//!   on and none of them synced in the last [`SYNC_WINDOW`] seconds, the syncs fail somewhere
+//!   between the PCs and hjv-api. PCs that are off say nothing, so a night with every PC asleep is
+//!   no alarm; nor does a PC that registered under another key (set up again: its syncs are
+//!   refused until a login on it, needs-relogin, which `admin report` counts);
 //! - **hbbs**: while PCs hold their binding, hbbs's console answers (without it the check cannot
 //!   tell which PCs are on, and nobody can connect anyway);
 //! - **sso_client**, **sso_address**, **sso**: SSO calls paused now or within the last
@@ -78,7 +80,8 @@ pub struct Health {
     pub pcs_holding: i64,
     /// … of them synced in the last SYNC_WINDOW seconds
     pub pcs_synced: i64,
-    /// … of them on, by hbbs (None when hbbs's console did not answer)
+    /// … of them on, by hbbs, under the key stored for them (None when hbbs's console did not
+    /// answer)
     pub pcs_on: Option<i64>,
     /// … of those synced in the last SYNC_WINDOW seconds
     pub pcs_on_synced: Option<i64>,
@@ -180,7 +183,7 @@ pub async fn health(state: &AppState) -> Result<Health, String> {
     h.relays = relays.map(|(active, silent)| Relays { active, silent });
     let recent = |last: i64| last > at - SYNC_WINDOW;
     h.pcs_holding = pcs.len() as i64;
-    h.pcs_synced = pcs.iter().filter(|(_, last)| recent(*last)).count() as i64;
+    h.pcs_synced = pcs.iter().filter(|(_, last, _)| recent(*last)).count() as i64;
     if pcs.is_empty() {
         state.online.clear();
         h.pcs_on = Some(0);
@@ -188,7 +191,7 @@ pub async fn health(state: &AppState) -> Result<Health, String> {
     } else {
         let mut on = Vec::new();
         let mut failed = None;
-        for (id, _) in &pcs {
+        for (id, _, stored) in &pcs {
             match hbbs::lookup(
                 state.config.hbbs_console,
                 state.config.hbbs_pubkey.as_ref(),
@@ -196,10 +199,15 @@ pub async fn health(state: &AppState) -> Result<Health, String> {
             )
             .await
             {
+                // a PC that registered under another key (set up again) has its syncs refused
+                // until a login on it (needs-relogin, design v3 §4-6): its silence says nothing
+                // of hjv-api
                 Ok(Lookup::Known {
+                    public_key,
                     seen_secs_ago: Some(age),
-                    ..
-                }) if age <= ONLINE_SECS => on.push(id.clone()),
+                }) if age <= ONLINE_SECS && public_key.as_slice() == stored.as_slice() => {
+                    on.push(id.clone())
+                }
                 Ok(_) | Err(HbbsError::BadId) => {}
                 Err(e) => {
                     failed = Some(e);
@@ -218,7 +226,7 @@ pub async fn health(state: &AppState) -> Result<Health, String> {
                 h.pcs_on = Some(steady.len() as i64);
                 h.pcs_on_synced = Some(
                     pcs.iter()
-                        .filter(|(id, last)| steady.contains(id) && recent(*last))
+                        .filter(|(id, last, _)| steady.contains(id) && recent(*last))
                         .count() as i64,
                 );
             }

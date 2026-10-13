@@ -12,8 +12,10 @@
 #   3. alerts through a stand-in for Telegram: the test message, the SSO's invalid_client, a crash
 #      of hjviewer-api.service, the socket stopped, PCs that are on but stop syncing (waits about
 #      12 minutes; HJV_DRILL_QUICK=1 skips it), PCs that are off
-#   4. the restore of the morning's backup after changes, then switching back on
+#   4. the restore of the morning's backup after changes (a PC that syncs right after the start
+#      gets a disabled list: a restored backup starts off), then switching back on
 #   5. the snapshot before an upgrade, an upgrade the old binary cannot go back from, going back
+#      (the snapshot restored, the restore's steps after it)
 #   6. old backups going after 14 days
 #   7. the host rebuilt: a new server with the seal key from its offline copy, list key 2 instead
 #      of key 1, a new log key, and the last backup restored
@@ -341,7 +343,7 @@ else
   step "A: (HJV_DRILL_QUICK: no wait for the syncs to age)"
 fi
 
-step "A: after the backup: a new login, KIM's PC released by its owner"
+step "A: after the backup: a new login, KIM's PC released by its owner, HONG's keys revoked (a lost phone)"
 client "$A" drill_after_backup
 
 step "A: restore of the morning's backup (README.md, Backup and restore; runbook 7-14)"
@@ -359,7 +361,18 @@ systemctl stop hjviewer-api.socket hjviewer-api.service
 rm -f "$D" "$D-wal" "$D-shm"
 install -o hjviewer-api -g hjviewer-api -m 600 "$B" "$D"
 systemctl start hjviewer-api.socket hjviewer-api.service
-$A passwordless off
+EOF
+# the PCs sync every two minutes: one comes before the operator's next command. The backup's
+# switch was on (and its keys are those revoked since), but a restored backup starts off
+client "$A" drill_sync HJV_DRILL_EXPECT=disabled
+on "$A" << 'EOF'
+set -euo pipefail
+A="/opt/hjviewer/bin/hjv-api admin"
+journalctl -q --namespace=hjviewer -u hjviewer-api -o cat --no-pager | grep 'restored backup' | tail -n 1 ||
+  echo '(no journal line about the restored backup yet)'
+off=$($A passwordless off)
+echo "$off"
+case $off in *'(no change)'*) ;; *) echo 'FAIL: the restored backup was not off from its start'; exit 1 ;; esac
 $A user revoke-all --all
 $A passwordless status | head -1
 $A allow list | head -1
@@ -407,6 +420,11 @@ after=$($A report | head -1)
 echo "before: $before"
 echo "after:  $after"
 [ "$before" = "$after" ] && echo "SNAPSHOT_OK"
+# the snapshot is a restored backup: off from its start; then the restore's steps
+$A passwordless status | head -1
+$A passwordless off
+$A user revoke-all --all
+$A passwordless on
 EOF
 sleep 3
 # the failing start is an alert of its own, not the crash's again (how it ended differs)

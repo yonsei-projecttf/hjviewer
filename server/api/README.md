@@ -213,9 +213,11 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
 - `hjviewer-api-check.timer` runs `hjv-api check` every five minutes (`src/check.rs`), as root
   with one capability and no network. It looks at `GET /api/hjv/source` on
   `/run/hjviewer-api.sock`, and at the service's `health` on its admin socket: of the PCs holding
-  their binding, the ones that are on (hbbs saw them register within 90 seconds at each check of
-  the last four minutes, so that a PC that has just woken has time for its first sync) and whether
-  any of them synced in the last ten minutes; whether hbbs's console answers; SSO calls paused
+  their binding, the ones that are on (hbbs saw them register within 90 seconds, under the key
+  stored for them, at each check of the last four minutes, so that a PC that has just woken has
+  time for its first sync; a PC set up again under a new key has its syncs refused until a login
+  on it, needs-relogin in `report`, and is left out) and whether any of them synced in the last
+  ten minutes; whether hbbs's console answers; SSO calls paused
   now or in the last ten minutes, with `invalid_client` (the credential
   `hjviewer-sso-client-secret` must be renewed, as when the WordPress plugin's credential
   changes) and a refused address told apart; and, with phase 2, active NAS relays silent for an hour. PCs that
@@ -255,10 +257,13 @@ checks it (`PRAGMA quick_check`), counts its rows and sends it over the admin so
 line writes it 0600 under a temporary name, checks size, SHA-256, schema and every table's rows
 against the service's counts, and only then gives it its name, which must not exist yet. The
 directory must be closed to everyone but the one who runs the command (root's
-`/var/lib/hjviewer-api/backup`, 0700; a missing one is made when its parent is there); a
-directory as the argument gets a name of the time. `--keep-days N` then deletes the backups in
-that directory older than N days (SQLite files with that application ID named `*.sqlite3`,
-nothing else). The output and the operator record hold counts only.
+`/var/lib/hjviewer-api/backup`, 0700); a missing one is made (0700) only as that directory or in a
+directory of the caller's closed to others, and removed again when the backup fails; anywhere
+else make it first (`install -d -m 700 <dir>`). A directory as the argument gets a name of the
+time. `--keep-days N` then deletes the backups in that directory older than N days (SQLite files
+with that application ID named `*.sqlite3`, nothing else) and the command's own temporary files
+(`.<name>.sqlite3.<12 hex>.partial`) of runs that broke off, a day old. The output and the
+operator record hold counts only.
 
 - **Daily**: `hjviewer-api-backup.timer` (03:30 and up to 20 minutes later, and after a boot that
   missed it) runs `hjv-api admin backup --keep-days 14 /var/lib/hjviewer-api/backup`: 14 days of
@@ -270,19 +275,26 @@ nothing else). The output and the operator record hold counts only.
 - **Before an upgrade**: schema upgrades are one way (an older hjv-api refuses a newer schema), so
   take a snapshot first, `sudo hjv-api admin backup
   /var/lib/hjviewer-api/backup/before-<VERSION>.sqlite3`, and keep the env file and the old binary
-  with it. To go back: the old binary, the snapshot (as below) and the env file together.
+  with it. To go back: the old binary, the snapshot (as below, a restore: it starts with
+  password-less connections off) and the env file together.
 - **Restore** brings back the tokens and account keys revoked since, the switches as they were and
   the bindings released since, so it is an incident of its own: `passwordless off`, stop the
-  check timer, the socket and the service, keep the current database files aside (as a backup in
-  the backup directory, so that they age out with the rest), put the backup in their place
+  check timer, keep the current database as a backup in the backup directory (`admin backup
+  /var/lib/hjviewer-api/backup/before-restore-<time>.sqlite3`, so that it ages out with the rest),
+  stop the socket and the service, remove the database files, put the backup in their place
   (`install -o hjviewer-api -g hjviewer-api -m 600 <backup> /var/lib/hjviewer-api/hjv-api.sqlite3`,
-  no -wal or -shm left), start the socket and the service, `passwordless off` again (the restored
-  switch is the backup's), `user revoke-all --all`, look at the allowlist (`allow list`) and the
-  switches (`passwordless status`), then, with the user's approval, `passwordless on` and the
-  check timer. Everybody logs in again on their phones and PCs; the PCs stay bound, so a PC whose
-  mark was not cleared gets its list at once, and a PC that cleared it meanwhile is `listed` until
-  someone logs in on it. `tests/ops.rs` (`the_restore_procedure`) runs these steps on the database;
-  `docs/hjv-api-drill.md` records the rehearsal with systemd.
+  no -wal or -shm left), start the socket and the service, `passwordless off` again,
+  `user revoke-all --all`, look at the allowlist (`allow list`) and the switches (`passwordless
+  status`), then, with the user's approval, `passwordless on` and the check timer. A restored
+  backup starts with password-less connections off for every account: hjv-api turns them off when
+  it first opens a file with the backups' application ID, before it answers anything, and says so
+  in the journal, since the PCs sync every two minutes and would otherwise get, between the start
+  and the next command, signed lists with the backup's switch and the keys revoked since. The
+  second `passwordless off` confirms it (`(no change)`). Everybody logs in again on their phones
+  and PCs; the PCs stay bound, so a PC whose mark was not cleared gets its list at once, and a PC
+  that cleared it meanwhile is `listed` until someone logs in on it. `tests/ops.rs`
+  (`the_restore_procedure`) runs these steps on the database; `docs/hjv-api-drill.md` records the
+  rehearsal with systemd.
 - **Host rebuilt** (the disk lost): the seal key comes from its offline copy, list key 1 and
   command key 1 were on the server only and are replaced by the offline key 2
   (`HJV_API_LIST_KID=2`; the apps and relays pin key 2 already), the log key is new (old records'
