@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Offline tests of scripts/release-info.py and of the client-build.yml steps of the
-minimum-version work that are not about keys: the release record of every platform job, the iOS
-export method, the list of Dart tests and the Windows smoke tests (scripts/ci.sh client):
+minimum-version work that are not about keys: the release record of every platform job with the
+Android manifest check, the iOS export method, the list of Dart tests and the Windows smoke tests
+(scripts/ci.sh client):
 
     python3 -I -B -m unittest discover -s scripts -p 'test_release_info.py'
 
@@ -9,8 +10,9 @@ More tests run when asked for:
 
     HJV_RELEASE_BIN=<the built tools/hjv-release>      the release tool takes what the script
                                                        writes, with a `gh` that replays answers
-    HJV_RELEASE_SAMPLES=<a directory of artifacts>     real APKs and IPAs are read (a download
-                                                       of a run, such as build/release-1.5.1)
+    HJV_RELEASE_SAMPLES=<a directory of artifacts>     real APKs and IPAs are read, the APKs'
+                                                       manifests too (a download of a run, such
+                                                       as build/release-1.5.1)
     HJV_PATCHED_FLUTTER=<the patched tree's flutter>   the Dart tests that the Dart tests job
                                                        requires are all in that tree
 """
@@ -57,17 +59,89 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def binary_manifest(code, name, utf8=False):
-    """A binary AndroidManifest.xml as aapt2 writes one, cut down to its <manifest> element."""
+# the android: attributes the fixtures write, by their resource IDs (as aapt2 puts them first)
+ATTRIBUTE_IDS = {"versionCode": 0x0101021B, "versionName": 0x0101021C, "compileSdkVersion": 0x01010572,
+                 "name": 0x01010003, "permission": 0x01010006, "foregroundServiceType": 0x01010599}
+# What an Android build of 1.6.0 declares, cut down: the in-app update's permission and provider,
+# and nothing of the controlled side. (depth, element, {android attribute: value}) in document
+# order below <manifest>.
+APP = "com.carriez.flutter_hbb."
+MANIFEST_1_6 = (
+    (1, "uses-permission", {"name": "android.permission.INTERNET"}),
+    (1, "uses-permission", {"name": "android.permission.REQUEST_INSTALL_PACKAGES"}),
+    (1, "uses-permission", {"name": "android.permission.RECORD_AUDIO"}),
+    (1, "uses-permission", {"name": "android.permission.WAKE_LOCK"}),
+    (1, "application", {"name": APP + "MainApplication"}),
+    (2, "activity", {"name": APP + "MainActivity"}),
+    (2, "provider", {"name": APP + "HjvUpdateFileProvider"}),
+    (3, "meta-data", {"name": "android.support.FILE_PROVIDER_PATHS"}),
+    (2, "provider", {"name": "androidx.startup.InitializationProvider"}),
+)
+# and what 1.5.1 declared of the controlled side, without the in-app update
+MANIFEST_1_5 = (
+    (1, "uses-permission", {"name": "android.permission.INTERNET"}),
+    (1, "uses-permission", {"name": "android.permission.FOREGROUND_SERVICE"}),
+    (1, "uses-permission", {"name": "android.permission.FOREGROUND_SERVICE_SPECIAL_USE"}),
+    (1, "uses-permission", {"name": "android.permission.SYSTEM_ALERT_WINDOW"}),
+    (1, "uses-permission", {"name": "android.permission.RECEIVE_BOOT_COMPLETED"}),
+    (1, "uses-permission", {"name": "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"}),
+    (1, "application", {"name": APP + "MainApplication"}),
+    (2, "receiver", {"name": APP + "BootReceiver"}),
+    (2, "service", {"name": APP + "InputService", "permission": "android.permission.BIND_ACCESSIBILITY_SERVICE"}),
+    (3, "meta-data", {"name": "android.accessibilityservice"}),
+    (2, "activity", {"name": APP + "MainActivity"}),
+    (2, "service", {"name": APP + "MainService", "foregroundServiceType": 0x400000A0}),
+    (2, "service", {"name": APP + "FloatingWindowService"}),
+)
+
+
+def binary_manifest(code, name, utf8=False, children=()):
+    """A binary AndroidManifest.xml as aapt2 writes one: its <manifest> element, and <children>
+    below it ((depth, element, {android attribute: value}), a str value a string, an int one a
+    number)."""
     filler = "x" * 300  # a string whose length takes two length units
-    strings = ["versionCode", "versionName", "compileSdkVersion", "android",
-               "http://schemas.android.com/apk/res/android", "package", "manifest", filler, name,
-               "kr.ac.yonsei.hjviewer"]
-    ids = [0x0101021B, 0x0101021C, 0x01010572]  # of the first three strings, the attribute names
+    android = "http://schemas.android.com/apk/res/android"
+    strings = [*ATTRIBUTE_IDS, "android", android, "package", "manifest", filler, name, "kr.ac.yonsei.hjviewer"]
+
+    def index(s):
+        if s not in strings:
+            strings.append(s)
+        return strings.index(s)
+
     none = 0xFFFFFFFF
+    node = struct.pack("<II", 1, none)  # line number, comment
 
     def chunk(kind, header, body):
         return struct.pack("<HHI", kind, 8 + len(header), 8 + len(header) + len(body)) + header + body
+
+    def start(element, attributes):  # attributes: (namespace, name, raw value, type, data)
+        body = struct.pack("<IIHHHHHH", none, index(element), 20, 20, len(attributes), 0, 0, 0)
+        for ns, attr, raw, kind, value in attributes:
+            body += struct.pack("<IIIHBBI", ns, attr, raw, 8, 0, kind, value)
+        return chunk(0x0102, node, body)
+
+    def end(element):
+        return chunk(0x0103, node, struct.pack("<II", none, index(element)))
+
+    def typed(attribute, value):
+        if isinstance(value, str):
+            return (index(android), index(attribute), index(value), 0x03, index(value))
+        return (index(android), index(attribute), none, 0x10, value)
+
+    elements = start("manifest", [
+        typed("compileSdkVersion", 36),
+        typed("versionCode", code),
+        typed("versionName", name),
+        (none, index("package"), index("kr.ac.yonsei.hjviewer"), 0x03, index("kr.ac.yonsei.hjviewer")),
+    ])
+    open_ = ["manifest"]
+    for depth, element, attributes in children:
+        while len(open_) > depth:
+            elements += end(open_.pop())
+        elements += start(element, [typed(a, v) for a, v in attributes.items()])
+        open_.append(element)
+    while open_:
+        elements += end(open_.pop())
 
     def length8(n):
         return bytes([n]) if n < 0x80 else bytes([0x80 | n >> 8, n & 0xFF])
@@ -83,28 +157,17 @@ def binary_manifest(code, name, utf8=False):
     data += b"\0" * (-len(data) % 4)
     header = struct.pack("<IIIII", len(strings), 0, 0x100 if utf8 else 0, 28 + 4 * len(strings), 0)
     pool = chunk(0x0001, header, struct.pack("<%dI" % len(offsets), *offsets) + data)
+    ids = list(ATTRIBUTE_IDS.values())  # of the first strings, the attribute names
     resource_map = chunk(0x0180, b"", struct.pack("<%dI" % len(ids), *ids))
-    node = struct.pack("<II", 1, none)  # line number, comment
-    namespace = chunk(0x0100, node, struct.pack("<II", 3, 4))
-    attributes = [  # namespace, name, raw value, type, data
-        (4, 2, none, 0x10, 36),      # android:compileSdkVersion="36"
-        (4, 0, none, 0x10, code),    # android:versionCode
-        (4, 1, 8, 0x03, 8),          # android:versionName
-        (none, 5, 9, 0x03, 9),       # package
-    ]
-    body = struct.pack("<IIHHHHHH", none, 6, 20, 20, len(attributes), 0, 0, 0)
-    for ns, attr, raw, kind, value in attributes:
-        body += struct.pack("<IIIHBBI", ns, attr, raw, 8, 0, kind, value)
-    element = chunk(0x0102, node, body)
-    end = chunk(0x0103, node, struct.pack("<II", none, 6))
-    rest = pool + resource_map + namespace + element + end
+    namespace = chunk(0x0100, node, struct.pack("<II", index("android"), index(android)))
+    rest = pool + resource_map + namespace + elements
     return struct.pack("<HHI", 0x0003, 8, 8 + len(rest)) + rest
 
 
-def apk(code=262872251, name="1.6.0", utf8=False):
+def apk(code=262872251, name="1.6.0", utf8=False, children=MANIFEST_1_6):
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("AndroidManifest.xml", binary_manifest(code, name, utf8))
+        z.writestr("AndroidManifest.xml", binary_manifest(code, name, utf8, children))
         z.writestr("classes.dex", b"dex\n035\0")
     return out.getvalue()
 
@@ -277,6 +340,79 @@ class RecordTest(unittest.TestCase):
             self.assertEqual(code, 1, out)
             self.assertIn("error: ", out)
             self.assertFalse(tree.has("release.json") or tree.has("SHA256SUMS"))
+
+    def test_an_android_build_of_1_6_0_only_controls_and_updates_itself(self):
+        """From 1.6.0 the APK's manifest has the in-app update's permission and provider and
+        nothing of the controlled side, in a check build and a debug-signed one too (docs/ci.md,
+        "Android 매니페스트 확인"): the step fails when a client patch went missing."""
+        def without(name):
+            return tuple(c for c in MANIFEST_1_6 if c[2]["name"] != name)
+
+        def renamed(old, new):
+            return tuple((d, e, {**a, "name": new}) if a["name"] == old else (d, e, a) for d, e, a in MANIFEST_1_6)
+
+        install, provider = "android.permission.REQUEST_INSTALL_PACKAGES", APP + "HjvUpdateFileProvider"
+        refused = [
+            # the two entries of the in-app update, of this app and where Android reads them
+            (without(install), [f"lacks permission {install}"]),
+            (without(provider), [f"lacks provider {provider}"]),
+            (without(install) + ((2, "uses-permission", {"name": install}),), [f"lacks permission {install}"]),
+            (renamed(provider, "kr.ac.yonsei.hjviewer.HjvUpdateFileProvider"), [f"lacks provider {provider}"]),
+            (tuple(c for c in MANIFEST_1_6 if c[2]["name"] not in (install, provider)),
+             [f"lacks permission {install}, provider {provider}"]),
+            # what the controlled side declares, also the 1.5.1 manifest at 1.6.0
+            (MANIFEST_1_5, [f"lacks permission {install}, provider {provider}", "permission android.permission.FOREGROUND_SERVICE,",
+                            "service " + APP + "MainService", "accessibility-service " + APP + "InputService"]),
+        ]
+        for permission in ("FOREGROUND_SERVICE", "FOREGROUND_SERVICE_MEDIA_PROJECTION", "FOREGROUND_SERVICE_MICROPHONE",
+                           "FOREGROUND_SERVICE_SPECIAL_USE", "FOREGROUND_SERVICE_DATA_SYNC", "SYSTEM_ALERT_WINDOW",
+                           "RECEIVE_BOOT_COMPLETED", "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"):
+            for element in ("uses-permission", "uses-permission-sdk-23"):
+                refused.append((MANIFEST_1_6 + ((1, element, {"name": "android.permission." + permission}),),
+                                [f"declares permission android.permission.{permission}, of the controlled side"]))
+        for element, name in (("service", "InputService"), ("service", "MainService"),
+                              ("service", "FloatingWindowService"), ("receiver", "BootReceiver")):
+            refused.append((MANIFEST_1_6 + ((2, element, {"name": APP + name}),), [f"declares {element} {APP}{name},"]))
+        # a library's foreground service or accessibility service, whatever its class
+        refused.append((MANIFEST_1_6 + ((2, "service", {"name": "androidx.work.impl.foreground.SystemForegroundService",
+                                                        "foregroundServiceType": 1}),),
+                        ["declares foreground-service-type of service androidx.work.impl.foreground.SystemForegroundService,"]))
+        refused.append((MANIFEST_1_6 + ((2, "service", {"name": "com.example.Reader",
+                                                        "permission": "android.permission.BIND_ACCESSIBILITY_SERVICE"}),),
+                        ["declares accessibility-service com.example.Reader,"]))
+        for children, said in refused:
+            for env, more in (({}, []), ({"CHECK_ONLY": "true"}, []), ({}, ["--unreleased", "debug-signed"])):
+                tree = Tree(self)
+                tree.put("app.apk", apk(children=children))
+                code, out, _ = tree.run("--platform", "android", "--file", "app.apk", *more, env=env)
+                self.assertEqual(code, 1, out)
+                self.assertIn("error: app.apk is not an Android build of 1.6.0: it ", out)
+                for text in said:
+                    self.assertIn(text, out)
+                self.assertFalse(tree.has("release.json") or tree.has("SHA256SUMS"))
+        taken = [
+            MANIFEST_1_6,
+            # the install permission in its other form; what is not the controlled side
+            without(install) + ((1, "uses-permission-sdk-23", {"name": install}),),
+            MANIFEST_1_6 + ((2, "provider", {"name": "com.example.MainService"}),
+                            (2, "receiver", {"name": "androidx.profileinstaller.ProfileInstallReceiver",
+                                             "permission": "android.permission.DUMP"}),
+                            (1, "uses-permission", {"name": "android.permission.CAMERA"}),
+                            (1, "uses-permission", {"name": "android.permission.POST_NOTIFICATIONS"})),
+        ]
+        for children in taken:
+            tree = Tree(self)
+            tree.put("app.apk", apk(children=children))
+            code, out, _ = tree.run("--platform", "android", "--file", "app.apk")
+            self.assertEqual(code, 0, out)
+            self.assertIn(f"the manifest has permission {install} and provider {provider}, and nothing of the "
+                          "controlled side", out)
+        # before 1.6.0 nothing of this is asked
+        tree = Tree(self, version="1.5.1")
+        tree.put("app.apk", apk(name="1.5.1", children=MANIFEST_1_5))
+        code, out, _ = tree.run("--platform", "android", "--file", "app.apk")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("the manifest has", out)
 
     def test_ios_takes_the_build_number_from_the_ipa(self):
         for fmt in (plistlib.FMT_BINARY, plistlib.FMT_XML):
@@ -487,6 +623,54 @@ class RecordTest(unittest.TestCase):
             with self.assertRaises(ri.Problem):
                 ri.manifest_version(good[:cut])
 
+    def test_the_elements_of_a_manifest(self):
+        application = ("manifest", "application")
+        for utf8 in (False, True):
+            found = ri.manifest_elements(binary_manifest(7, "1.6.0", utf8, MANIFEST_1_5))
+            self.assertEqual([p for p, _ in found], [("manifest",)] + [("manifest", "uses-permission")] * 6 + [
+                application, application + ("receiver",), application + ("service",),
+                application + ("service", "meta-data"), application + ("activity",), application + ("service",),
+                application + ("service",)])
+            self.assertEqual((found[0][1][0x0101021B], found[0][1][0x0101021C]), (7, "1.6.0"))
+            self.assertEqual(found[9][1], {0x01010003: APP + "InputService",
+                                           0x01010006: "android.permission.BIND_ACCESSIBILITY_SERVICE"})
+            self.assertEqual(found[12][1], {0x01010003: APP + "MainService", 0x01010599: 0x400000A0})
+            self.assertEqual(ri.android_manifest_problems(binary_manifest(7, "1.6.0", utf8, MANIFEST_1_5)), (
+                ["permission android.permission.REQUEST_INSTALL_PACKAGES", "provider " + APP + "HjvUpdateFileProvider"],
+                ["accessibility-service " + APP + "InputService", "foreground-service-type of service " + APP + "MainService",
+                 "permission android.permission.FOREGROUND_SERVICE",
+                 "permission android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+                 "permission android.permission.RECEIVE_BOOT_COMPLETED",
+                 "permission android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+                 "permission android.permission.SYSTEM_ALERT_WINDOW", "receiver " + APP + "BootReceiver",
+                 "service " + APP + "FloatingWindowService", "service " + APP + "InputService",
+                 "service " + APP + "MainService"]))
+            self.assertEqual(ri.android_manifest_problems(binary_manifest(7, "1.6.0", utf8, MANIFEST_1_6)), ([], []))
+        good = binary_manifest(7, "1.6.0", children=MANIFEST_1_6)
+        start = b"\x02\x01\x10\x00"  # an element's start: its chunk type and header size
+        first_child = good.index(start, good.index(start) + 1)
+        size = struct.unpack_from("<I", good, first_child + 4)[0]
+
+        def resized(data):
+            return data[:4] + struct.pack("<I", len(data)) + data[8:]
+
+        broken = {
+            "an element ends that did not start": resized(good[:first_child] + good[first_child + size:]),
+            "elements that do not end": resized(good[:-24]),
+            "a second root element": binary_manifest(7, "1.6.0", children=((0, "manifest", {}),)),
+            "no element": resized(good[:good.index(start)]),
+        }
+        for why, data in broken.items():
+            with self.assertRaisesRegex(ri.Problem, why):
+                ri.manifest_elements(data)
+        # whatever byte goes wrong, the reader refuses with a Problem or reads what is there
+        for at in range(len(good)):
+            data = good[:at] + bytes([good[at] ^ 0xFF]) + good[at + 1:]
+            try:
+                ri.android_manifest_problems(data)
+            except ri.Problem:
+                pass
+
     def test_real_packages(self):
         """A download of a run (HJV_RELEASE_SAMPLES): every APK and IPA says the version that
         its artifact's name does, and carries a plausible build number."""
@@ -501,6 +685,18 @@ class RecordTest(unittest.TestCase):
                 if name.endswith(".apk"):
                     code, version = ri.apk_version(path)
                     self.assertTrue(2000 < code <= 2100000000, path)
+                    # the manifest as Gradle merged it: from 1.6.0 that of a controller with the
+                    # in-app update, before it the controlled side's without
+                    missing, controlled = ri.android_manifest_problems(ri.apk_manifest(path))
+                    if ri.android_rules_apply(version):
+                        self.assertEqual((missing, controlled), ([], []), path)
+                    else:
+                        self.assertEqual(missing, sorted(ri.ANDROID_REQUIRED), path)
+                        for entry in ("accessibility-service " + APP + "InputService",
+                                      "foreground-service-type of service " + APP + "MainService",
+                                      "permission android.permission.FOREGROUND_SERVICE",
+                                      "receiver " + APP + "BootReceiver"):
+                            self.assertIn(entry, controlled, path)
                 elif name.endswith(".ipa"):
                     build, version = ri.ipa_version(path)
                     self.assertRegex(build, r"^\d{9}$", path)
@@ -689,6 +885,15 @@ class WorkflowTest(unittest.TestCase):
         for name in ("Upload Play bundle",):
             self.assertNotIn("release.json", self.step("android", name)["with"]["path"])
         self.assertNotIn("release-info.py", json.dumps(self.wf["jobs"]["play"]))
+
+    def test_the_bridge_files_are_kept_as_long_as_the_artifacts(self):
+        """A job that "Re-run failed jobs" runs again restores the generated bridge of its run:
+        kept for as long as the packages, which the release tool takes from a successful run
+        only (docs/ci.md, "릴리스 기록")."""
+        upload = self.step("generate-bridge", "Upload Artifact")["with"]
+        self.assertEqual((upload["name"], upload["retention-days"]), ("bridge-artifact", "${{ env.ARTIFACT_RETENTION_DAYS }}"))
+        for job in ("dart-tests", "windows", "android", "ios"):
+            self.assertEqual(self.step(job, "Restore bridge files")["with"]["name"], "bridge-artifact", job)
 
     def test_artifact_names_and_retention_are_as_before(self):
         """The acceptance of the work package; tools/hjv-release counts on the 7 days."""

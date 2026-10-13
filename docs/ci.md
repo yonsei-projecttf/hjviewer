@@ -103,7 +103,7 @@ macOS와 Linux 앱은 빌드하지 않습니다.
 
 | 잡 | 러너 | 하는 일 | 결과물 (artifact) |
 |---|---|---|---|
-| Bridge codegen | ubuntu-22.04 | 서버 변수와 고정 공개키를 확인하고(아래 "계정 기능의 공개키") flutter_rust_bridge 코드를 생성합니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 매번 생성합니다. | 내부용 `bridge-artifact` (1일 보관) |
+| Bridge codegen | ubuntu-22.04 | 서버 변수와 고정 공개키를 확인하고(아래 "계정 기능의 공개키") flutter_rust_bridge 코드를 생성합니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 매번 생성합니다. | 내부용 `bridge-artifact` (다른 아티팩트처럼 7일, 확인 빌드는 1일 보관. 아래 "릴리스 기록") |
 | Dart tests | ubuntu-24.04 | 생성된 bridge로 `flutter/test`의 Dart 테스트를 모두 돌립니다. 앱 패치가 더하거나 고친 테스트(제스처, iPhone 한글 입력, 화질 표시)가 하나라도 없으면 실패합니다. Windows·Android 잡은 이 잡을 기다리지 않습니다. iOS 잡과 Google Play internal 잡은 이 잡이 통과한 뒤에 시작하므로, 테스트가 실패한 빌드는 TestFlight나 Google Play에 올라가지 않습니다. | 없음 |
 | Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`, 서명 없음) |
 | Android arm64 | ubuntu-24.04 | vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 릴리스 서명. 비공개 저장소의 서명 빌드는 이어서 `flutter build appbundle`로 AAB를 만들어 업로드 키로 서명하고 검사합니다(아래 "Google Play 업로드"). | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned`. 비공개 서명 빌드는 `…-android-aarch64-play`(AAB)도 |
@@ -244,10 +244,11 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
 
 ## 업데이트 키와 릴리스 기록 (1.6.0부터)
 
-최소 버전과 강제 업데이트(최소 버전 설계 6-4)를 위해 앱 빌드가 하는 일은 넷입니다. 새 시크릿은 없습니다.
+최소 버전과 강제 업데이트(최소 버전 설계 6-4)를 위해 앱 빌드가 하는 일은 다섯입니다. 새 시크릿은 없습니다.
 
 - 업데이트 키를 공개 파일 `client/update-keys.env`에서 읽어 앱에 박습니다.
 - 산출물마다 `release.json`과 `SHA256SUMS`를 넣습니다.
+- Android 잡이 APK의 매니페스트를 확인합니다. 앱 안 업데이트가 있고 제어받는 쪽은 없어야 합니다.
 - iOS 앱에 내보내기 방식을 알려 줍니다.
 - Windows 잡이 업데이트와 패커 보호를 연기 시험으로 확인합니다.
 
@@ -354,11 +355,23 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
   - 그래서 받은 `release.json`을 고치면 안 됩니다.
   - 도구는 그 실행의 `build.yml`이 위 "비공개 빌드 저장소"의 모양인지도 봅니다. 도구가 모르는 입력을 넘기면 거부하므로, `check_only` 입력을 도구가 알기 전에는 `--allow-input check_only`를 함께 줍니다. 확인 빌드에는 `release.json`이 없어서, 이 입력을 허락해도 확인 빌드가 릴리스로 받아들여지지 않습니다.
   - **새 패키지가 든 정책 초안은 빌드한 지 7일 안에 만듭니다.** 아티팩트가 7일 뒤 지워지기 때문입니다. 더 길게 필요하면 워크플로의 `ARTIFACT_RETENTION_DAYS`를 올립니다(저장 공간을 그만큼 더 씁니다).
+  - **정책에 쓰는 실행은 성공으로 끝나야 합니다.** 도구는 잡 하나가 아니라 실행 전체의 결과를 봅니다. 그래서 Google Play나 TestFlight 업로드 하나만 실패해도 그 실행의 Windows·Android 패키지를 받지 않습니다. 이때는 실행 화면의 "Re-run failed jobs"로 실패한 잡만 다시 돌려 실행을 성공으로 끝낸 뒤 초안을 만듭니다. 다시 도는 잡은 그 실행의 아티팩트를 받습니다. Bridge codegen의 `bridge-artifact`도 다른 아티팩트처럼 7일 두므로, 7일 안에 다시 돌립니다.
+  - 그래도 안 되면 같은 태그 커밋으로 새로 실행합니다. 그 패키지를 적은 정책은 아직 없으므로 버전을 올리지 않아도 됩니다. 새 실행은 빌드 번호가 달라집니다. 그래서 Play와 TestFlight에도 새 실행의 빌드를 올리고, `--play-live`와 `--ios-valid`에는 그 번호를 줍니다.
 - **나눠 줄 수 없는 빌드에는 `release.json`이 없습니다.** 확인 빌드(`check_only`), 디버그 서명 APK(키스토어 시크릿이 없을 때), 서명 없는 IPA입니다. 확인 빌드는 출시에 필요한 공개키 없이도 만들어지고, 디버그 서명 APK는 사용자의 앱 위에 설치되지 않고, 서명 없는 IPA는 어디에도 설치되지 않습니다. `hjv-release`는 `release.json`이 없는 폴더를 릴리스로 받지 않습니다. 단계 자체는 이런 빌드에서도 돌아 같은 검사를 하고 `SHA256SUMS`를 만들며, 실행 요약에 "Not for release"와 그 이유를 적습니다.
 - Google Play용 AAB 아티팩트에는 `release.json`을 넣지 않습니다. 같은 Android 빌드이고, 도구는 한 실행에서 Android 패키지를 하나만 받습니다.
 - 이 저장소에서 직접 돌린 실행의 `release.json`은 `workflow`가 `client-build.yml`이라 도구가 받지 않습니다.
 - `client/version.env`의 버전이 도구가 받는 모양(앞의 0이 없는 숫자 셋, 앞의 둘은 세 자리까지, 마지막은 두 자리까지)이 아니면 이 단계가 실패합니다. 확인 빌드에서 먼저 드러납니다.
 - **출처 증명(artifact attestation)은 넣지 않았습니다.** 비공개 저장소에서 쓸 수 있는 요금제인지 확인하지 못했습니다. 될 때는 세 플랫폼 잡에 `actions/attest-build-provenance`(커밋 SHA로 고정)를 더하고, 빌드 저장소 `build.yml`의 잡에 `id-token: write`와 `attestations: write`를 허락한 뒤, `hjv-release policy --attest`를 씁니다. 그 전에는 위의 `gh` 확인이 출처 확인의 전부입니다.
+
+### Android 매니페스트 확인 (1.6.0부터)
+
+`client/version.env`가 1.6.0 이상이면 Android 잡의 "Write release.json and SHA256SUMS" 단계가 APK의 매니페스트도 봅니다. Gradle이 앱, 클라이언트 패치, 플러그인과 라이브러리의 매니페스트를 합친 결과입니다. 맞지 않으면 단계가 실패하고 APK는 올라가지 않습니다. 확인 빌드와 디버그 서명 APK도 같습니다.
+
+- **있어야 하는 것**: 사이드로드 APK의 앱 안 업데이트(최소 버전 설계 5-4)가 쓰는 두 항목입니다. `REQUEST_INSTALL_PACKAGES` 권한(`uses-permission`이나 `uses-permission-sdk-23`)과 `com.carriez.flutter_hbb.HjvUpdateFileProvider` provider입니다.
+- **없어야 하는 것**: 제어받는 쪽입니다. 1.6.0부터 모든 Android 빌드는 제어만 합니다(Google Play 설계의 결정 D1). 접근성 서비스(`BIND_ACCESSIBILITY_SERVICE`로 묶는 서비스), `foregroundServiceType`이 있는 요소, 권한 `FOREGROUND_SERVICE`와 `FOREGROUND_SERVICE_*`, `SYSTEM_ALERT_WINDOW`, `RECEIVE_BOOT_COMPLETED`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, 그리고 앱의 `InputService`, `MainService`, `FloatingWindowService`, `BootReceiver`입니다. 라이브러리가 가져온 것도 실패합니다.
+- 실패하면 클라이언트 패치(제어 전용, 앱 안 업데이트)가 빠졌거나, 플러그인이나 라이브러리 갱신이 이런 항목을 다시 가져온 것입니다. 오류 문장이 빠진 항목과 있으면 안 되는 항목을 모두 적습니다. 일부러 바꿀 때는 `scripts/release-info.py`의 목록과 이 절을 같은 커밋에서 고칩니다.
+- 이 확인이 없으면 패치가 통째로 빠져도 빌드는 초록입니다. Play 번들의 매니페스트 검사는 `play` 없는 실행에서 경고만 남기기 때문입니다.
+- Play 번들은 이 단계가 보지 않습니다. 번들에서는 앱 안 업데이트의 두 항목이 빠져야 하고, "Sign and check Play bundle"이 그것을 봅니다(아래 "Google Play 업로드").
 
 ### iOS 내보내기 방식
 
@@ -393,7 +406,7 @@ python3 -I -B -m unittest discover -s scripts -p 'test_release_info.py'       # 
 ```
 
 - `HJV_RELEASE_BIN=<빌드한 hjv-release>`를 주면 두 가지를 더 봅니다. 키 파일을 `hjv-release keys --production`과 같게 판정하는지, 그리고 `hjv-release policy`가 이 스크립트가 만든 산출물과 위 "비공개 빌드 저장소"의 `build.yml`로 초안을 만드는지입니다. `gh`의 답은 기록해 둔 것을 씁니다.
-- `HJV_RELEASE_SAMPLES=<받아 둔 산출물 폴더>`(예: `build/release-1.5.1`)를 주면 실제 APK와 IPA에서 버전과 빌드 번호를 읽어 봅니다.
+- `HJV_RELEASE_SAMPLES=<받아 둔 산출물 폴더>`(예: `build/release-1.5.1`)를 주면 실제 APK와 IPA에서 버전과 빌드 번호를 읽어 봅니다. APK의 매니페스트도 읽습니다. 1.6.0 전 APK에서는 위 "Android 매니페스트 확인"이 제어받는 쪽 항목을 찾아내는지, 1.6.0부터의 APK에서는 통과하는지 봅니다.
 - `HJV_PATCHED_FLUTTER=<패치를 적용한 트리의 flutter 폴더>`를 주면 Dart tests 잡의 필수 목록에 있는 파일이 그 트리에 모두 있는지 봅니다. 목록과 패치가 어긋난 것을 GitHub 실행 전에 알 수 있습니다.
 
 아래는 아직 러너에서 돌려 보지 못한 것입니다. 첫 확인 빌드에서 봅니다.
@@ -401,6 +414,8 @@ python3 -I -B -m unittest discover -s scripts -p 'test_release_info.py'       # 
 - 세 러너(Windows의 Git Bash, Linux, macOS)의 `python3`로 두 스크립트가 도는지, "Pin the update keys"가 넘긴 값으로 cargo가 빌드하는지
 - 빌드 저장소가 부른 실행에서 `release.json`의 `run_id`와 `workflow`가 빌드 저장소의 것으로 나오는지(`GITHUB_RUN_ID`, `GITHUB_WORKFLOW_REF`). 확인 빌드도 "Write release.json and SHA256SUMS" 단계의 로그에 기록을 그대로 찍으므로 거기서 봅니다. `workflow`가 `.github/workflows/build.yml`이 아니면 그 단계가 경고를 남깁니다.
 - Windows의 두 연기 시험 전체(PowerShell 단계는 개발 PC에서 실행할 수 없습니다)
+- 1.6.0 APK의 합친 매니페스트가 "Android 매니페스트 확인"을 통과하는지(Gradle 빌드는 개발 PC에서 하지 않습니다)
+- "Re-run failed jobs"로 다시 돈 잡이 같은 이름의 아티팩트를 다시 올릴 때 GitHub가 받아 주는지
 
 ## hjv-relay 빌드
 

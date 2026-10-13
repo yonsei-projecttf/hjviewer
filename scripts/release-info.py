@@ -43,6 +43,14 @@ an unsigned IPA). Without that file hjv-release takes no directory for a release
 the summary are written all the same, with every check of a release, so that such builds run
 this step too.
 
+An APK of version 1.6.0 or later must also have the manifest of such a build, as Gradle merged
+it from the app's, the client patches' and the libraries': the side-loaded app's in-app update
+(the install permission and the app's FileProvider, minimum version design 5-4) and nothing of
+the controlled side (no accessibility service, no foreground service, nothing started at boot:
+every Android build only controls from 1.6.0, decision D1 of the Google Play design). Otherwise a
+client patch went missing or a library brought something back, and the step fails, in a check
+build too (docs/ci.md, "Android 매니페스트 확인").
+
 Standard library only, for the Python of the Windows, Linux and macOS runners (3.8 or later).
 """
 import argparse
@@ -77,13 +85,34 @@ class Problem(Exception):
 _RES_STRING_POOL = 0x0001
 _RES_XML = 0x0003
 _RES_XML_START_ELEMENT = 0x0102
+_RES_XML_END_ELEMENT = 0x0103
 _RES_XML_RESOURCE_MAP = 0x0180
 _UTF8_FLAG = 0x100
+_ATTR_NAME = 0x01010003  # android:name
+_ATTR_PERMISSION = 0x01010006  # android:permission
 _ATTR_VERSION_CODE = 0x0101021B  # android:versionCode
 _ATTR_VERSION_NAME = 0x0101021C  # android:versionName
+_ATTR_FOREGROUND_SERVICE_TYPE = 0x01010599  # android:foregroundServiceType
 _TYPE_STRING = 0x03
 _TYPE_INT_DEC = 0x10
 _TYPE_INT_HEX = 0x11
+
+# What the manifest of an Android build of 1.6.0 or later has and has not (the module's
+# docstring). Gradle writes the app's classes with their package, com.carriez.flutter_hbb.
+ANDROID_RULES_FROM = (1, 6, 0)
+_APP_CLASSES = "com.carriez.flutter_hbb."
+# "<kind> <name>": a permission (uses-permission or uses-permission-sdk-23 of <manifest>) or a
+# component of <application> (its element's name as the kind)
+ANDROID_REQUIRED = (
+    "permission android.permission.REQUEST_INSTALL_PACKAGES",
+    "provider " + _APP_CLASSES + "HjvUpdateFileProvider",
+)
+# the controlled side's permissions, the four types of foreground service among them
+_CONTROLLED_PERMISSION = re.compile(
+    r"android\.permission\.(FOREGROUND_SERVICE(_[A-Z_]+)?|SYSTEM_ALERT_WINDOW|RECEIVE_BOOT_COMPLETED"
+    r"|REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)")
+_CONTROLLED_COMPONENTS = frozenset(
+    _APP_CLASSES + name for name in ("InputService", "MainService", "FloatingWindowService", "BootReceiver"))
 
 
 def _pool_string(data, pool, index):
@@ -147,14 +176,86 @@ def manifest_version(data):
         raise Problem(f"the APK's AndroidManifest.xml cannot be read ({e})")
 
 
-def apk_version(path):
-    """(versionCode, versionName) of an APK."""
+def manifest_elements(data):
+    """Every element of a binary AndroidManifest.xml in document order, as (path, attributes): the
+    path is the element names from the root down, the attributes are those with a resource ID,
+    {ID: value}, a string's value its text and any other value its number."""
+    try:
+        kind, header, size = struct.unpack_from("<HHI", data, 0)
+        if kind != _RES_XML or header < 8 or size > len(data):
+            raise ValueError("not binary XML")
+        pool, ids, at, path, found = None, (), header, [], []
+        while at + 8 <= size:
+            kind, header, chunk = struct.unpack_from("<HHI", data, at)
+            if header < 8 or chunk < header or at + chunk > size:
+                raise ValueError("a chunk past the end")
+            if kind == _RES_STRING_POOL and pool is None:
+                pool = at
+            elif kind == _RES_XML_RESOURCE_MAP:
+                ids = struct.unpack_from("<%dI" % ((chunk - header) // 4), data, at + header)
+            elif kind == _RES_XML_START_ELEMENT:
+                body = at + header
+                _, name, start, each, count = struct.unpack_from("<IIHHH", data, body)
+                if pool is None or start < 20 or each < 20 or body + start + count * each > at + chunk:
+                    raise ValueError("an element past its chunk")
+                if not path and found:
+                    raise ValueError("a second root element")
+                path.append(_pool_string(data, pool, name))
+                attributes = {}
+                for i in range(count):
+                    _, attr, _, _, _, typed, value = struct.unpack_from("<IIIHBBI", data, body + start + i * each)
+                    if attr < len(ids):
+                        attributes[ids[attr]] = _pool_string(data, pool, value) if typed == _TYPE_STRING else value
+                found.append((tuple(path), attributes))
+            elif kind == _RES_XML_END_ELEMENT:
+                _, name = struct.unpack_from("<II", data, at + header)
+                if not path or _pool_string(data, pool, name) != path[-1]:
+                    raise ValueError("an element ends that did not start")
+                path.pop()
+            at += chunk
+        if path or not found:
+            raise ValueError("elements that do not end" if path else "no element")
+        return found
+    except (struct.error, IndexError, ValueError, UnicodeDecodeError) as e:
+        raise Problem(f"the APK's AndroidManifest.xml cannot be read ({e})")
+
+
+def android_manifest_problems(data):
+    """(missing, controlled): what a binary AndroidManifest.xml lacks of ANDROID_REQUIRED, and
+    what it declares of the controlled side, as sorted "<kind> <name>" lines."""
+    have, controlled = set(), set()
+    for path, attributes in manifest_elements(data):
+        name = attributes.get(_ATTR_NAME)
+        name = name if isinstance(name, str) else ""
+        if path in (("manifest", "uses-permission"), ("manifest", "uses-permission-sdk-23")):
+            have.add("permission " + name)
+            if _CONTROLLED_PERMISSION.fullmatch(name):
+                controlled.add("permission " + name)
+        elif path[:2] == ("manifest", "application") and len(path) == 3:
+            have.add(f"{path[2]} {name}")
+            if name in _CONTROLLED_COMPONENTS:
+                controlled.add(f"{path[2]} {name}")
+        # wherever they are: a foreground service type, a service that only the accessibility
+        # framework may bind
+        if _ATTR_FOREGROUND_SERVICE_TYPE in attributes:
+            controlled.add(f"foreground-service-type of {path[-1]} {name}")
+        if attributes.get(_ATTR_PERMISSION) == "android.permission.BIND_ACCESSIBILITY_SERVICE":
+            controlled.add(f"accessibility-service {name}")
+    return sorted(set(ANDROID_REQUIRED) - have), sorted(controlled)
+
+
+def apk_manifest(path):
+    """The binary AndroidManifest.xml of an APK."""
     try:
         with zipfile.ZipFile(path) as z:
-            data = z.read("AndroidManifest.xml")
+            return z.read("AndroidManifest.xml")
     except Exception as e:  # zipfile and zlib have errors of their own
         raise Problem(f"{os.path.basename(path)} is not an APK ({e})")
-    return manifest_version(data)
+
+
+def apk_version(path):
+    """(versionCode, versionName) of an APK."""
+    return manifest_version(apk_manifest(path))
 
 
 def ipa_version(path):
@@ -246,6 +347,30 @@ def digest(path):
     return size, h.hexdigest()
 
 
+def android_rules_apply(version):
+    """Whether an APK of <version> must have the manifest of ANDROID_REQUIRED, without the
+    controlled side."""
+    return tuple(int(n) for n in version.split(".")) >= ANDROID_RULES_FROM
+
+
+def check_android_manifest(name, manifest, version):
+    """Fails an APK of 1.6.0 or later whose manifest is not one of such a build (the module's
+    docstring)."""
+    if not android_rules_apply(version):
+        return
+    missing, controlled = android_manifest_problems(manifest)
+    why = []
+    if missing:
+        why.append(f"it lacks {', '.join(missing)}, which the side-loaded app's in-app update needs")
+    if controlled:
+        why.append(f"it declares {', '.join(controlled)}, of the controlled side that no Android build has "
+                   "from 1.6.0")
+    if why:
+        raise Problem(f"{name} is not an Android build of {version}: {'; '.join(why)}. A client patch is "
+                      "missing from this build, or a library brought this back (docs/ci.md, \"Android "
+                      "매니페스트 확인\")")
+
+
 def make_record(platform, directory, name, build, version):
     """(release.json's fields in the order they are written, a note for the log or None)."""
     if not name.lower().endswith(EXTENSIONS[platform]):
@@ -257,7 +382,8 @@ def make_record(platform, directory, name, build, version):
             raise Problem(f"--build must be the Windows file version {version}.<0-65535>: {build!r}")
     else:
         if platform == "android":
-            code, in_package = apk_version(path)
+            manifest = apk_manifest(path)
+            code, in_package = manifest_version(manifest)
             found = str(code)
             if not 0 < code <= 2100000000:
                 raise Problem(f"the APK's versionCode {code} is not one Google Play takes (1-2100000000)")
@@ -270,6 +396,8 @@ def make_record(platform, directory, name, build, version):
         if build and build != found:
             raise Problem(f"{name} carries build number {found}, not {build}")
         build = found
+        if platform == "android":
+            check_android_manifest(name, manifest, version)
     size, sha256 = digest(path)
     if size == 0:
         raise Problem(f"{name} is empty")
@@ -343,6 +471,8 @@ def main(argv):
         print(("::warning::" if actions else "warning: ") + note, flush=True)
     print(text, end="")
     print("\n".join(sums), flush=True)
+    if record["platform"] == "android" and android_rules_apply(record["version"]):
+        print(f"the manifest has {' and '.join(ANDROID_REQUIRED)}, and nothing of the controlled side", flush=True)
     summary = [
         f"### HJViewer {record['version']} for {record['platform']} (build {record['build']})",
         "",
