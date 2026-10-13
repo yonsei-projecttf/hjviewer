@@ -546,6 +546,22 @@ except FileNotFoundError:
     print("")' "$RUN/pc/home/.config/hjviewer/HJViewer_binding" "$1"
 }
 pc_unbound() { [ -z "$(binding Binding)" ]; }
+pc_off() { [ -n "$(binding Off)" ]; }
+pc_binding_written() { # <value before>: the PC user's LocalConfig hjv-pc-binding changed and is set
+  local now
+  now=$(local_option pc hjv-pc-binding)
+  [ -n "$now" ] && [ "$now" != "$1" ]
+}
+within_ms() { # <ms> <command...>: retries the command for up to <ms> ms; WITHIN_MS is how long it took
+  local t0 end
+  t0=$(date +%s%N)
+  end=$((t0 + $1 * 1000000))
+  until "${@:2}"; do
+    [ "$(date +%s%N)" -lt "$end" ] || return 1
+    sleep 0.1
+  done
+  WITHIN_MS=$(ms_since "$t0")
+}
 set_binding() { # <binding ID>: writes it into HJViewer_binding, as only the service should
   python3 -I -c 'import json, sys
 values = json.load(open(sys.argv[1]))
@@ -630,6 +646,7 @@ account_common() { # hjv-pc and hjv-ctl logged in as alice, the PC bound
   want 0 "S2: the controller's login"
   has "logged in as $ALICE_NAME ($ALICE)" || fail "S2: the account's name in Korean did not come"
   CTL_ID=$(sed -n 's/^hjv-e2e: logged in as .* on \([0-9]*\)$/\1/p' <<<"$OUT")
+  [ -n "$CTL_ID" ] || fail "S2: the controller's login did not say its ID"
   keep_secrets ctl
 }
 
@@ -648,7 +665,7 @@ account_open() {
 
 account_strict() {
   local t0 n0 n1 cm0 calls e_bob e_carol tok b0 old off os_user code first_sync_ms recv ckid
-  local bind_s19b t_key spid lpid b3 ts ft=()
+  local bind_s19b t_key spid lpid b3 r3_before s25_ms ts ft=()
   log "S24: the switch is off after the install; alice logs in on the PC and the controller"
   admin passwordless status | tee "$RUN/switch.txt" | sed 's/^/    /'
   grep -qi 'off' "$RUN/switch.txt" || fail "S24: the switch is not off after the install"
@@ -785,7 +802,7 @@ account_strict() {
   asked
   [ "$(sha256sum <"$RUN/pc/home/.config/hjviewer/HJViewer_trust.json" | cut -d' ' -f1)" = "$(binding ListHash)" ] ||
     fail "S16: the cached list does not match its hash again"
-  pass "S16: an altered cached list does not match its hash: the PC fetched it again"
+  pass "S16: after the cached list was altered the PC lets in and keeps a list that matches its hash (fetched again for the mismatch, or by a periodic sync; the unit tests pin which)"
   set_binding "$(random_binding)"
   pwless_refused ctl s16c "S16: a binding file with another binding"
   asked
@@ -823,7 +840,7 @@ account_strict() {
   run ctl2 --hjv-e2e-devices
   pwless_ok ctl2 s14 "S14: the new key's first connection"
   asked
-  pass "S14: the new key's first connection gets in ($MS ms): the PC fetched its list for the key's serial"
+  pass "S14: the new key's first connection gets in ($MS ms): the PC's list had the key (its sync for the key's serial, or a periodic one; the unit tests pin which)"
 
   log "S15: the PC's service starts again; its user is logged out (the token gone)"
   stop_pc_service
@@ -864,12 +881,11 @@ account_strict() {
   pc_bound
   pwless_ok ctl2 s19a "S19: the PC bound again"
   run pc --hjv-e2e-logout
-  sleep 1
-  pwless_refused ctl2 s19b "S19: password-less 1 s after the PC's logout"
-  [ -z "$(binding Binding)" ] || fail "S19: the PC kept its binding"
+  within_ms 1500 pc_unbound || fail "S19: the PC still held its binding 1.5 s after the logout"
+  pwless_refused ctl2 s19b "S19: password-less after the PC's logout"
   admin --reveal binding list >"$RUN/bindings.txt"
   grep -q " $PC_ID " "$RUN/bindings.txt" && fail "S19: hjv-api kept the PC's binding after its logout"
-  pass "S19: refused 1 s after the logout; the PC dropped its binding, and hjv-api released it"
+  pass "S19: the PC dropped its binding $WITHIN_MS ms after the logout returned; refused, and hjv-api released it"
 
   log "S19b: the PC's user logs out while hjv-api is gone"
   pc_bound
@@ -878,9 +894,9 @@ account_strict() {
   kill "$API_PID"
   wait "$API_PID" 2>/dev/null || true
   run pc --hjv-e2e-logout
-  sleep 1
-  pwless_refused ctl2 s19d "S19b: password-less 1 s after an offline logout"
-  pass "S19b: refused 1 s after the logout, with hjv-api gone"
+  within_ms 1500 pc_unbound || fail "S19b: the PC still held its binding 1.5 s after the offline logout"
+  pwless_refused ctl2 s19d "S19b: password-less after an offline logout"
+  pass "S19b: with hjv-api gone the PC dropped its binding $WITHIN_MS ms after the logout returned; refused"
   start_api
   knock
   until_ok 20 "S19b: the account lists the PC as 'listed'" ctl2_lists listed
@@ -903,12 +919,17 @@ account_strict() {
   b3=$(binding UnboundBinding)
   spid=$(sudo ip netns pids hjv-pc | xargs -r ps -o pid=,args= -p | awk '$0 ~ / --server$/ {print $1}')
   sudo kill -STOP $spid
+  r3_before=$(local_option pc hjv-pc-binding)
   in_ns hjv-pc pc "$PC_CLIENT" --hjv-e2e-login "$ALICE" "$ALICE_PW" >"$RUN/r3-login.out" 2>>"$RUN/pc.err" &
   lpid=$!
-  sleep 1.5
+  # the login has its answer once its hook wrote the user's hjv-pc-binding, which it does before
+  # it writes the stopped service's options
+  until_ok 15 "R3: the login's answer (hjv-pc-binding written)" pc_binding_written "$r3_before"
   kill -STOP "$API_PID"
   sudo kill -CONT $spid
-  sleep 1
+  # the service sends the bind request's sync on its second tick after it goes on (about 1 s);
+  # hjv-api holds it, which an HTTP timeout of 5 s allows for some seconds more
+  sleep 2
   run pc --hjv-e2e-option hjv-bind-req >/dev/null
   BIND_REQ=$OUT
   [ -n "$BIND_REQ" ] && [ "${BIND_REQ%.*}" != "$b3" ] || fail "R3: the login left no bind request of a new binding"
@@ -929,15 +950,15 @@ account_strict() {
   pc_bound
   pwless_ok ctl2 s25a "S25: bound"
   run pc --hjv-e2e-option hjv-pwless-off Y
-  sleep 1
-  pwless_refused ctl2 s25b "S25: 1 s after [끄기]"
-  [ -n "$(binding Off)" ] || fail "S25: the PC did not keep Off"
+  within_ms 1500 pc_off || fail "S25: the PC did not keep Off within 1.5 s of [끄기]"
+  s25_ms=$WITHIN_MS
+  pwless_refused ctl2 s25b "S25: after [끄기]"
   run pc --hjv-e2e-option hjv-pwless-off N
   sleep 2
   pwless_refused ctl2 s25c "S25: with Config2's request written again"
   pc_bound
   pwless_ok ctl2 s25d "S25: after a login on the PC"
-  pass "S25: off within 1 s, kept off when Config2 is written again (Off), on again only by a login on the PC"
+  pass "S25: off $s25_ms ms after [끄기], kept off when Config2 is written again (Off), on again only by a login on the PC"
 
   log "S26: the administrator releases the PC (binding revoke, then device remove)"
   ts=$(date +%s.%N)
@@ -1064,6 +1085,8 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   lpid=$!
   run ctl2 --hjv-e2e-logout --during-devices
   wait "$lpid"
+  has 'device list answered after the logout (HTTP 200' ||
+    fail "D1: the device list was not answered 200 after the logout, so the key check was not reached"
   has 'hjv-my-devices empty' || fail "D1: the device list came back after the logout"
   pass "D1: $(grep -o 'device list answered after the logout.*' <<<"$OUT")"
 
@@ -1130,9 +1153,10 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   keep_secrets pc2
   run pc2 --hjv-e2e-devices
   has "device $PC_ID linux pwless=active" || fail "X4: the second PC's list has no active PC"
+  has "device $PC2_ID " && fail "X4: the second PC lists itself"
   pwless_ok pc2 x4 "X4: PC to PC"
   asked
-  pass "X4: the second PC (alice) connects to the PC without a password"
+  pass "X4: the second PC (alice), not in its own list, connects to the PC without a password"
 
   log "S20: the portal passwords, tokens and account keys in $RUN"
   keep_secrets ctl
