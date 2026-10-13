@@ -3,7 +3,7 @@
 //! How a package goes out (body.rs, server.rs; the design of the minimum version and forced
 //! update, §4-6): a piece at a time whatever the size of the file and the speed of its reader,
 //! longer than a request may take, at most HJV_API_DOWNLOADS_MAX at once, and never held by a
-//! reader that stops.
+//! reader that stops, nor past its hour by one that takes a few bytes at a time.
 //!
 //! The tests of time run on tokio's paused clock, with hjv-api on one end of a connection in
 //! memory (`server::serve_stream`), so that a minute and an hour pass at once and nothing depends
@@ -359,6 +359,48 @@ async fn a_download_ends_after_an_hour() {
     );
     assert!(total > 32 * PIECE as u64 && total < size / 2, "{total}");
     assert_eq!(state.updates.slots.free(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reader_that_takes_a_few_bytes_at_a_time_loses_its_slot_after_an_hour() {
+    let size = 256 * PIECE as u64;
+    let dir = area(size, true);
+    let state = state(&dir, &[("HJV_API_DOWNLOADS_MAX", "1")]);
+    let mut stream = connect(&state, 4096);
+    let started = Instant::now();
+    let head = ask(&mut stream, "GET", DOWNLOAD).await;
+    assert_eq!((head.status, head.length()), (200, size));
+    assert_eq!(state.updates.slots.free(), 0);
+    // 200 bytes every 50 seconds: never a minute without taking any, and so slow that hyper
+    // never gets to ask the body for its second piece
+    let mut buf = [0u8; 200];
+    let freed = loop {
+        tokio::time::sleep(Duration::from_secs(50)).await;
+        if state.updates.slots.free() == 1 {
+            break started.elapsed();
+        }
+        assert!(
+            started.elapsed() < DOWNLOAD_TIME + Duration::from_secs(300),
+            "the slot is still held after {:?}",
+            started.elapsed()
+        );
+        let n = stream.read(&mut buf).await.unwrap();
+        assert!(n > 0, "the connection ended, and the slot is still held");
+    };
+    // the first write after the hour fails, and this loop looks every 50 seconds
+    assert!(freed >= DOWNLOAD_TIME, "{freed:?}");
+    assert!(
+        freed <= DOWNLOAD_TIME + Duration::from_secs(100),
+        "{freed:?}"
+    );
+    // what was on its way still comes, and then the end
+    let rest = read_to_the_end(&mut stream).await;
+    assert!(rest <= 4096, "{rest}");
+    // and the slot is for the next one
+    let mut next = connect(&state, PIECE);
+    let head = ask(&mut next, "GET", DOWNLOAD).await;
+    assert_eq!((head.status, head.length()), (200, size));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

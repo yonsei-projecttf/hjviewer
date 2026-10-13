@@ -14,7 +14,8 @@
 //!
 //! **What is sent.** The policy is the file nginx hands to the apps (HJV_API_VERSION_POLICY, read
 //! again when it changes; its signature is the apps' to check, not hjv-api's, which reads a file
-//! only root writes). A package is the file of the policy's `package.file` in
+//! only root writes; one older than a policy read before is an error in the journal, as the apps
+//! keep the newer one). A package is the file of the policy's `package.file` in
 //! HJV_API_PACKAGE_DIR: a plain file there, no link, of exactly the policy's `size`. No name or
 //! path comes from a request. Without the policy, the entry, its package or the file the answer is
 //! 404. The file is streamed (body.rs) with `Content-Type` by its extension, `Content-Length`,
@@ -22,8 +23,9 @@
 //! `Referrer-Policy: no-referrer`, and for nginx `X-Accel-Buffering: no` (it passes the file on as
 //! it comes and writes it to no file of its own) and `X-Accel-Limit-Rate`. hjv-api itself sends a
 //! file no faster than 3 840 000 bytes a second, about 30 Mb/s: nginx does not slow down an answer
-//! that it passes on as it comes. At most HJV_API_DOWNLOADS_MAX packages go out at once; one more
-//! gets 503 with `Retry-After: 60`. A HEAD gets the same head, takes no slot and counts nowhere.
+//! that it passes on as it comes. At most HJV_API_DOWNLOADS_MAX files, packages and notice files
+//! alike, go out at once; one more gets 503 with `Retry-After: 60`. A HEAD gets the same head,
+//! takes no slot and counts nowhere.
 //!
 //! **Door 1** takes one of two proofs:
 //!
@@ -68,13 +70,15 @@
 //! network) share it. The HEAD without any of the caller's headers that the app's HTTP client
 //! sends first counts nowhere. Downloads that begin count 10 a day (HJV_API_LIMIT_UPDATE) per
 //! account for its logins and per PC for its device key; an account makes 20 links a day. Door 2
-//! has the download slots only.
+//! has the download slots only, which its notice files take too.
 //!
 //! **Records**: every package sent and every link made is a record of kind `update` (the account
 //! and the PC as tags, the address as its tag, never itself) and a line in the journal, where a
-//! code shows as the first eight hex digits of its SHA-256. The first download by a PC's key from
-//! an address that PC never used is a record of its own (`device-new-address`), a notice in the
-//! journal and a line in the operator record (oplog.rs). Door 2's records stop at 20 a minute.
+//! code shows as the first eight hex digits of its tag, a hash keyed with the log key (log.rs): of
+//! a short link's 40 bits, a hash anyone can compute would leave a reader of the journal a few
+//! hundred codes to try. The first download by a PC's key from an address that PC never used is a
+//! record of its own (`device-new-address`), a notice in the journal and a line in the operator
+//! record (oplog.rs). Door 2's records stop at 20 a minute.
 
 use crate::{
     api::{session, ApiRequest, Reply},
@@ -85,9 +89,10 @@ use crate::{
         self, Admit, RecordBudget, SCOPE_UPDATE_FAIL_IP, SCOPE_UPDATE_LINK,
         SCOPE_UPDATE_OK_ACCOUNT, SCOPE_UPDATE_OK_DEVICE,
     },
+    log::Tagger,
     oplog::OpEntry,
     state::AppState,
-    util::{datetime, day_number, hex, now, random_bytes, sha256, valid_device_id, DAY},
+    util::{datetime, day_number, now, random_bytes, valid_device_id, DAY},
 };
 use hyper::{
     body::Bytes,
@@ -419,18 +424,22 @@ impl Door2 {
         })
     }
 
-    fn summary(&self) -> String {
+    fn summary(&self, tags: &Tagger) -> String {
         format!(
             "open until {} (code={})",
             datetime(self.until),
-            code_tag(&self.code)
+            code_tag(tags, &self.code)
         )
     }
 }
 
-/// How a code shows in the journal: the first eight hex digits of its SHA-256.
-fn code_tag(code: &str) -> String {
-    hex(&sha256(code.as_bytes())[..4])
+/// How a code shows in the journal: the first eight hex digits of its tag, which only who holds
+/// the log key can compute (a short link's code is 40 bits: a plain hash of it would leave a
+/// reader of the journal a few hundred codes to try).
+fn code_tag(tags: &Tagger, code: &str) -> String {
+    let mut tag = tags.tag("code", code);
+    tag.truncate(8);
+    tag
 }
 
 /// Whether two byte strings are the same, in a time that does not tell where they differ.
@@ -439,7 +448,8 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// A small file of the operator's as it was last read. It is read again when another file is in
-/// its place or it was changed (its device, inode, size and time of change).
+/// its place or it was changed (its device, inode, size and time of change, the ctime, which a
+/// new owner or mode sets too: a file that could not be read may be readable now).
 struct Watched<T> {
     seen: Option<(u64, u64, u64, i64, i64)>,
     read: Option<Arc<T>>,
@@ -467,7 +477,7 @@ fn watched<T>(
     let meta = std::fs::metadata(path).ok().filter(|m| m.is_file());
     let seen = meta
         .as_ref()
-        .map(|m| (m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec()));
+        .map(|m| (m.dev(), m.ino(), m.len(), m.ctime(), m.ctime_nsec()));
     let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
     if seen == kept.seen {
         return kept.read.clone();
@@ -661,6 +671,8 @@ struct Link {
 /// What the update paths keep between requests.
 pub struct Updates {
     policy: Mutex<Watched<Policy>>,
+    /// the newest (epoch, seq) of a policy read since the start
+    newest: Mutex<Option<(u64, u64)>>,
     door2: Mutex<Watched<Door2>>,
     links: Mutex<HashMap<String, Link>>,
     /// the packages that may go out at once (HJV_API_DOWNLOADS_MAX)
@@ -677,6 +689,7 @@ impl Updates {
     pub fn new(config: &Config) -> Updates {
         Updates {
             policy: Mutex::default(),
+            newest: Mutex::default(),
             door2: Mutex::default(),
             links: Mutex::default(),
             slots: Slots::new(config.downloads_max),
@@ -693,19 +706,38 @@ impl Updates {
             MAX_POLICY_FILE,
             "the version policy (HJV_API_VERSION_POLICY)",
             Policy::parse,
-            Policy::summary,
+            |policy| {
+                self.went_back(policy);
+                policy.summary()
+            },
         )
     }
 
+    /// Says so when a policy just read is older (by epoch, then seq) than one read before since
+    /// the start: the apps never take an older policy and ask for the `latest` of the newer one,
+    /// while hjv-api hands out this one's. Going back is a newer policy that asks for less.
+    fn went_back(&self, policy: &Policy) {
+        let mut newest = self.newest.lock().unwrap_or_else(|e| e.into_inner());
+        let read = (policy.epoch, policy.seq);
+        match *newest {
+            Some((epoch, seq)) if read < (epoch, seq) => log_err!(
+                "update: the version policy (HJV_API_VERSION_POLICY) went back to epoch {}, seq {} from epoch {epoch}, seq {seq}: the apps keep the newer one, and hjv-api hands out this one's packages; put out a newer policy instead",
+                read.0,
+                read.1
+            ),
+            _ => *newest = Some(read),
+        }
+    }
+
     /// Door 2's file as it is now (it reads a file: not for an async thread).
-    fn door2(&self, config: &Config) -> Option<Arc<Door2>> {
+    fn door2(&self, config: &Config, tags: &Tagger) -> Option<Arc<Door2>> {
         watched(
             &self.door2,
             &config.door2_file,
             MAX_DOOR2_FILE,
             "door 2's file (HJV_API_DOOR2_FILE)",
             Door2::parse,
-            Door2::summary,
+            |door| door.summary(tags),
         )
     }
 
@@ -1389,7 +1421,7 @@ async fn make_link(state: &Arc<AppState>, req: &ApiRequest, platform: &str) -> R
         "update: a short link for {} {} (acct={account_tag}, code={})",
         platform.name(),
         opened.version,
-        code_tag(&code)
+        code_tag(&state.tags, &code)
     );
     let result = match platform {
         Platform::Windows => "link-made-windows",
@@ -1461,7 +1493,7 @@ async fn short_link(state: &Arc<AppState>, req: &ApiRequest, typed: &str) -> Rep
         link.platform.name(),
         link.version,
         link.account_tag,
-        code_tag(&code)
+        code_tag(&state.tags, &code)
     );
     let result = match link.platform {
         Platform::Windows => "link-windows",
@@ -1484,7 +1516,7 @@ async fn door2(state: &Arc<AppState>, req: &ApiRequest, code: &str, file: Option
     let at = now();
     let door = {
         let state = state.clone();
-        off_thread(move || state.updates.door2(&state.config))
+        off_thread(move || state.updates.door2(&state.config, &state.tags))
             .await
             .flatten()
     };
@@ -1523,7 +1555,13 @@ async fn door2(state: &Arc<AppState>, req: &ApiRequest, code: &str, file: Option
     let head = req.method == Method::HEAD;
     match found {
         None => no_link(),
-        Some(Door2File::Notice(file, size)) => file_reply(file, size, None, &name, false),
+        Some(Door2File::Notice(file, size)) if head => file_reply(file, size, None, &name, false),
+        // a notice file goes out as a package does: within a slot, so that readers who take
+        // their time cannot hold more of the service than the slots allow
+        Some(Door2File::Notice(file, size)) => match state.updates.slots.take() {
+            Some(slot) => file_reply(file, size, Some(slot), &name, false),
+            None => busy(),
+        },
         Some(Door2File::Package(_, opened)) if head => {
             file_reply(opened.file, opened.size, None, &name, true)
         }
@@ -1538,7 +1576,7 @@ async fn door2(state: &Arc<AppState>, req: &ApiRequest, code: &str, file: Option
                         "update: {} {} through door 2 (ip={ip_tag}, code={})",
                         platform.name(),
                         opened.version,
-                        code_tag(code)
+                        code_tag(&state.tags, code)
                     );
                     let result = match platform {
                         Platform::Windows => "door2-windows",
@@ -1695,8 +1733,12 @@ fn page_html(
         }
         None => html.push_str("<p>새 버전을 준비하고 있습니다. 잠시 뒤 다시 열어 주세요.</p>\n"),
     }
+    // from 1.6.0 on, every Android build only controls other devices (the Play design's D1, B'): a
+    // device that others control has to stay on the version it has
     html.push_str(
-        "<h2>Android</h2>\n<p>Play 스토어에서 설치했다면 Play 스토어에서 업데이트하세요.</p>\n",
+        "<h2>Android</h2>\n\
+         <p>1.6.0부터 Android 앱에는 다른 기기를 제어하는 기능만 있습니다. 다른 기기에서 이 Android 기기를 원격으로 제어하고 있다면 업데이트하지 말고 관리자에게 알려 주세요.</p>\n\
+         <p>Play 스토어에서 설치했다면 Play 스토어에서 업데이트하세요.</p>\n",
     );
     match package(Platform::Android) {
         Some((entry, package)) => html.push_str(&format!(
@@ -1807,7 +1849,7 @@ async fn page(state: &Arc<AppState>) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::b64_decode;
+    use crate::util::{b64_decode, hex, sha256};
     use http_body_util::BodyExt;
     use std::path::PathBuf;
 
@@ -2128,16 +2170,20 @@ mod tests {
             Door2::parse(format!("CODE={code}\nUNTIL=2026-12-22T15:00:00Z\n").as_bytes()).unwrap();
         assert_eq!(door.code, code);
         assert_eq!(datetime(door.until), "2026-12-22T15:00:00Z");
-        // the journal names a code by a tag, never itself
-        let summary = door.summary();
+        // the journal names a code by a tag keyed with the log key, never by itself, nor by a
+        // hash that anyone could compute
+        let tags = Tagger::new(b"log key");
+        let summary = door.summary(&tags);
         assert_eq!(
             summary,
             format!(
                 "open until 2026-12-22T15:00:00Z (code={})",
-                &hex(&sha256(code.as_bytes()))[..8]
+                &tags.tag("code", code)[..8]
             )
         );
         assert!(!summary.contains(code));
+        assert!(!summary.contains(&hex(&sha256(code.as_bytes()))[..8]));
+        assert_ne!(summary, door.summary(&Tagger::new(b"another key")));
         let door = Door2::parse(
             format!("# door 2\r\n\r\n  UNTIL=2027-01-01T00:00:00Z  \r\nCODE= {code} \r\n")
                 .as_bytes(),
@@ -2522,14 +2568,43 @@ mod tests {
         crate::log::capture();
         let dir = temp_dir();
         let config = config(&dir);
+        let tags = Tagger::new(b"log key");
         let updates = Updates::new(&config);
         assert!(updates.policy(&config).is_none());
-        assert!(updates.door2(&config).is_none());
+        assert!(updates.door2(&config, &tags).is_none());
         std::fs::write(&config.version_policy, TOOL_POLICY).unwrap();
         let first = updates.policy(&config).unwrap();
         assert_eq!(first.seq, 2);
         // not read again while it is the same file
         assert!(Arc::ptr_eq(&first, &updates.policy(&config).unwrap()));
+        // a new mode alone is a change too: a file that could not be read may be readable now.
+        // (The time of change is the clock's, in its ticks or on some file systems in whole
+        // seconds: a change in the same one would not show.)
+        let mode = |mode: u32| {
+            std::fs::set_permissions(
+                &config.version_policy,
+                std::os::unix::fs::PermissionsExt::from_mode(mode),
+            )
+            .unwrap()
+        };
+        std::thread::sleep(Duration::from_millis(1100));
+        mode(0o000);
+        match File::open(&config.version_policy) {
+            Err(_) => {
+                assert!(updates.policy(&config).is_none());
+                std::thread::sleep(Duration::from_millis(1100));
+                mode(0o644);
+                let again = updates.policy(&config).unwrap();
+                assert_eq!(again.seq, 2);
+            }
+            Ok(_) => {
+                // root reads it all the same: read again, as the change of mode asks
+                let again = updates.policy(&config).unwrap();
+                assert!(!Arc::ptr_eq(&first, &again));
+                eprintln!("skipped: a policy that cannot be read (root reads every file)");
+                mode(0o644);
+            }
+        }
         // replaced as the runbook replaces it: a new file moved over the old one
         let next = policy_text(json!({"windows": windows("HJViewer-1.6.2-windows-x86_64.exe", 9)}));
         let new = dir.join("version-policy.json.new");
@@ -2562,20 +2637,29 @@ mod tests {
             format!("CODE={code}\nUNTIL=2026-12-22T15:00:00Z\n"),
         )
         .unwrap();
-        let door = updates.door2(&config).unwrap();
+        let door = updates.door2(&config, &tags).unwrap();
         assert_eq!((door.code.as_str(), door.until), (code, 1_797_951_600));
+        // written over in place, with another size (the same size would need a new time of
+        // change, as above)
         std::fs::write(
             &config.door2_file,
-            format!("CODE={code}\nUNTIL=2027-01-01T00:00:00Z\n"),
+            format!("# a month more\nCODE={code}\nUNTIL=2027-01-01T00:00:00Z\n"),
         )
         .unwrap();
-        assert_eq!(updates.door2(&config).unwrap().until, 1_798_761_600);
+        assert_eq!(updates.door2(&config, &tags).unwrap().until, 1_798_761_600);
         std::fs::remove_file(&config.door2_file).unwrap();
-        assert!(updates.door2(&config).is_none());
+        assert!(updates.door2(&config, &tags).is_none());
         // the journal heard of each change, and never of the code
         let lines = crate::log::captured();
         let mine: Vec<&String> = lines.iter().filter(|l| l.starts_with("update: ")).collect();
         assert!(mine.iter().any(|l| l.contains("the version policy (HJV_API_VERSION_POLICY) read: epoch 2, seq 2; packages: windows 1.6.1, android 1.6.1")));
+        // and of the policy that went back: the apps hold on to the newer one
+        assert!(mine.iter().any(|l| l.starts_with(
+            "update: the version policy (HJV_API_VERSION_POLICY) went back to epoch 1, seq 7 from epoch 2, seq 2: "
+        )));
+        assert!(!mine
+            .iter()
+            .any(|l| l.contains("went back to epoch 2, seq 2 ")));
         assert!(mine
             .iter()
             .any(|l| l.contains("is not used: not an envelope of version 1")));
@@ -2646,7 +2730,7 @@ mod tests {
         assert!(open_notice(&pkg, "1.6.3", "LICENSE").is_none());
         std::os::unix::fs::symlink(&secret, pkg.join("notices-1.6.1/SOURCE.txt")).unwrap();
         assert!(open_notice(&pkg, "1.6.1", "SOURCE").is_none());
-        // a notice file is a text of a few megabytes at most: it goes out without a slot
+        // a notice file is a text of a few megabytes at most
         let large = File::create(pkg.join("notices-1.6.1/NOTICE.txt")).unwrap();
         large.set_len(MAX_NOTICE).unwrap();
         assert_eq!(open_notice(&pkg, "1.6.1", "NOTICE").unwrap().1, MAX_NOTICE);
@@ -2668,8 +2752,20 @@ mod tests {
         ] {
             assert!(!same(a, b) && !same(b, a));
         }
-        assert_eq!(code_tag("K7M2Q9XD").len(), 8);
-        assert_ne!(code_tag("K7M2Q9XD"), code_tag("K7M2Q9XE"));
+        // the tag of a code: eight hex digits keyed with the log key, not the start of its
+        // SHA-256, which anyone could compute for every short link's code there is
+        let tags = Tagger::new(b"log key");
+        assert_eq!(code_tag(&tags, "K7M2Q9XD").len(), 8);
+        assert_eq!(
+            code_tag(&tags, "K7M2Q9XD"),
+            tags.tag("code", "K7M2Q9XD")[..8]
+        );
+        assert_ne!(code_tag(&tags, "K7M2Q9XD"), code_tag(&tags, "K7M2Q9XE"));
+        assert_ne!(
+            code_tag(&tags, "K7M2Q9XD"),
+            code_tag(&Tagger::new(b"another key"), "K7M2Q9XD")
+        );
+        assert_ne!(code_tag(&tags, "K7M2Q9XD"), hex(&sha256(b"K7M2Q9XD")[..4]));
     }
 
     #[test]
@@ -2691,7 +2787,9 @@ mod tests {
             "<li>'Windows의 PC 보호' 창이 뜨면 [추가 정보] → [실행]을 누르세요. 아래 SHA-256이 관리자가 알려 준 값과 같은지 볼 수 있습니다.</li>",
             "번호가 붙은 파일은 지우고 HJViewer-1.6.1-install.exe를 실행하세요.",
             "크기 25,400,320바이트(약 25 MB) · SHA-256 <code>9cbbb39735478859c75c6ba12439e589e0d383d398559347352dd48e61bc6ca9</code>",
-            "Play 스토어에서 설치했다면 Play 스토어에서 업데이트하세요.",
+            // a device that others control stays where it is: from 1.6.0 on, the app only
+            // controls (the Play design's D1, B')
+            "<h2>Android</h2>\n<p>1.6.0부터 Android 앱에는 다른 기기를 제어하는 기능만 있습니다. 다른 기기에서 이 Android 기기를 원격으로 제어하고 있다면 업데이트하지 말고 관리자에게 알려 주세요.</p>\n<p>Play 스토어에서 설치했다면 Play 스토어에서 업데이트하세요.</p>",
             "<a href=\"HJViewer-1.6.1-android-arm64.apk\">HJViewer-1.6.1-android-arm64.apk</a>를 받아 여세요(HJViewer 1.6.1).",
             "크기 28,800,004바이트(약 28 MB) · SHA-256 <code>35e9781fea8aeddf96eb036b607e75b5f9fc1d26f947ff22a94220547c90a3c0</code>",
             "TestFlight 앱에서 HJViewer의 [업데이트]를 누르세요.",
@@ -2730,6 +2828,7 @@ mod tests {
             let html = page_html(policy.as_ref(), &[], "https://example.com/hjviewer");
             assert!(html.contains("<p>새 버전을 준비하고 있습니다. 잠시 뒤 다시 열어 주세요.</p>"));
             assert!(html.contains("그 밖의 기기에 쓸 새 버전은 준비하고 있습니다."));
+            assert!(html.contains("이 Android 기기를 원격으로 제어하고 있다면 업데이트하지 말고"));
             assert!(
                 !html.contains(".exe") && !html.contains(".apk") && !html.contains("알림 파일")
             );

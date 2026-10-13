@@ -1234,7 +1234,8 @@ async fn door_2() {
         assert_eq!((got.status, got.header("allow")), (405, "GET, HEAD"));
     }
 
-    // a wrong code: the same 404 as a closed door, and a failure of the address
+    // a wrong code: the same 404 as a closed door, and a failure of the address, also for a HEAD
+    // (a guess at the code all the same)
     let mut near = DOOR2.to_owned();
     near.replace_range(31.., "b");
     for (i, wrong) in [
@@ -1248,18 +1249,25 @@ async fn door_2() {
     .iter()
     .enumerate()
     {
-        for path in [
-            format!("/api/hjv/get/{wrong}/"),
-            format!("/api/hjv/get/{wrong}/HJViewer-1.6.1.exe"),
+        for (method, path) in [
+            (Method::GET, format!("/api/hjv/get/{wrong}/")),
+            (
+                Method::GET,
+                format!("/api/hjv/get/{wrong}/HJViewer-1.6.1.exe"),
+            ),
+            (
+                Method::HEAD,
+                format!("/api/hjv/get/{wrong}/HJViewer-1.6.1.exe"),
+            ),
         ] {
-            let got = bare(&h, Method::GET, &path, "203.0.113.21").await;
+            let got = bare(&h, method, &path, "203.0.113.21").await;
             assert_eq!(got.status, 404, "{path}");
             assert!(got.headers.get("content-disposition").is_none());
         }
         assert_eq!(
             h.counted(SCOPE_UPDATE_FAIL_IP, h.state.tags.ip("203.0.113.21"))
                 .await,
-            2 * (i as i64 + 1)
+            3 * (i as i64 + 1)
         );
     }
 
@@ -1368,6 +1376,56 @@ async fn door_2() {
         .await
         .unwrap();
     assert_eq!(rows, [(None, None, h.state.tags.ip(ip))]);
+}
+
+#[tokio::test]
+async fn a_download_waits_for_a_slot_and_loses_nothing_meanwhile() {
+    let area = Area::new();
+    let (exe, _) = area.usual();
+    area.put(
+        "notices-1.6.1/LICENSE.txt",
+        b"GNU AFFERO GENERAL PUBLIC LICENSE",
+    );
+    area.door2(DOOR2, now() + 3600);
+    let h = start(&area, &[("HJV_API_DOWNLOADS_MAX", "1")]).await;
+    let token = h.login_ok(HONG, None).await;
+    let (url, _) = link(&h, &token, "windows", "{\"installed\":true}").await;
+    let notice = format!("/api/hjv/get/{DOOR2}/HJViewer-1.6.1-LICENSE.txt");
+    let ip = "203.0.113.60";
+
+    // the one slot is taken, as by a download that goes on: a short link and a notice file wait
+    // with the rest, and HEAD is free
+    let taken = h.state.updates.slots.take().unwrap();
+    for path in [url.as_str(), notice.as_str()] {
+        for _ in 0..4 {
+            let got = bare(&h, Method::GET, path, ip).await;
+            assert_eq!(
+                (got.status, got.header("retry-after")),
+                (503, "60"),
+                "{path}"
+            );
+            assert_eq!(got.json()["hjv"], "busy");
+            assert_eq!(got.header("cache-control"), "private, no-store");
+        }
+        assert_eq!(bare(&h, Method::HEAD, path, ip).await.status, 200, "{path}");
+    }
+    drop(taken);
+    // a busy answer took none of the link's three downloads, nor counted against the address
+    for i in 0..3 {
+        let got = bare(&h, Method::GET, &url, ip).await;
+        assert_eq!((got.status, &got.body), (200, &exe), "{i}");
+    }
+    assert_eq!(bare(&h, Method::GET, &url, ip).await.status, 404);
+    let got = bare(&h, Method::GET, &notice, ip).await;
+    assert_eq!(
+        (got.status, got.text().as_str()),
+        (200, "GNU AFFERO GENERAL PUBLIC LICENSE")
+    );
+    assert_eq!(
+        h.counted(SCOPE_UPDATE_FAIL_IP, h.state.tags.ip(ip)).await,
+        1
+    );
+    assert_eq!(h.state.updates.slots.free(), 1);
 }
 
 #[tokio::test]
@@ -1986,6 +2044,10 @@ async fn the_journal_and_the_records_hold_tags_only() {
     }
 
     let code = &url["/api/hjv/u/".len()..];
+    // the start of a code's SHA-256: anyone could compute it for each of a short link's 2^40
+    // codes, and so find the few hundred that a line of the journal leaves
+    let plain_hash = |code: &str| hex(&sha256(code.as_bytes()))[..8].to_owned();
+    let (short_hash, door_hash) = (plain_hash(&code.replace('-', "")), plain_hash(DOOR2));
     let secrets = [
         token.as_str(),
         &token[4..],
@@ -2000,6 +2062,8 @@ async fn the_journal_and_the_records_hold_tags_only() {
         "ZZZZZZZZ",
         DOOR2,
         "ffffffffffffffffffffffffffffffff",
+        &short_hash,
+        &door_hash,
         // and who and where: the journal and the update records know people, devices and
         // addresses by their tags
         LEE.0,
@@ -2017,14 +2081,15 @@ async fn the_journal_and_the_records_hold_tags_only() {
             assert!(!line.contains(secret), "{secret} in: {line}");
         }
     }
-    // what the journal does say: the package, the tags, a code as the start of its SHA-256
+    // what the journal does say: the package, the tags, a code as the start of its tag (keyed
+    // with the log key)
     let (account, device, ip_tag) = (
         h.account_tag(LEE.0),
         h.state.tags.device(&pc.id),
         h.state.tags.ip(ip),
     );
-    let short = &hex(&sha256(code.replace('-', "").as_bytes()))[..8];
-    let door_tag = &hex(&sha256(DOOR2.as_bytes()))[..8];
+    let short = &h.state.tags.tag("code", &code.replace('-', ""))[..8];
+    let door_tag = &h.state.tags.tag("code", DOOR2)[..8];
     for line in [
         format!("update: windows 1.6.1 to a login (acct={account}, ip={ip_tag})"),
         format!("update: windows 1.6.1 to a PC (acct={account}, dev={device}, ip={ip_tag})"),

@@ -6,7 +6,7 @@
 //! Every answer but a file is a few bytes sent at once ([`Body::Full`]). A file (update.rs: a
 //! package of tens of megabytes, or one of its notice files) is read [`PIECE`] bytes at a time,
 //! each piece only when hyper has room for it: a download takes the memory of a piece or two
-//! however large the file is and however slowly it is read. A package holds one of the service's
+//! however large the file is and however slowly it is read. A file sent holds one of the service's
 //! download slots ([`Slots`], HJV_API_DOWNLOADS_MAX) from before its first byte until its last
 //! one went or its connection ended.
 //!
@@ -19,8 +19,11 @@
 //! than it was when it was opened, and when it takes longer than [`DOWNLOAD_TIME`]. The time limit
 //! of a request (server.rs) ends when the answer's head is ready, so [`StallGuard`] is around
 //! every connection: a write that the other side does not take for [`WRITE_STALL`] closes the
-//! connection. Without the two, a reader that stops in the middle of a package, or takes it a
-//! few bytes at a time, would hold a download slot for as long as it likes.
+//! connection, and so does a write after the time of the download it sends ([`Deadline`]). The
+//! body alone cannot keep that time: hyper asks it for the next piece only once the last one has
+//! gone, which for a reader that takes a few bytes at a time is hours later. Without the two, a
+//! reader that stops in the middle of a package, or takes it a few bytes at a time, would hold a
+//! download slot for as long as it likes.
 
 use http_body_util::Full;
 use hyper::body::{Bytes, Frame, SizeHint};
@@ -30,7 +33,7 @@ use std::{
     io,
     os::unix::fs::FileExt,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
 };
@@ -255,24 +258,69 @@ impl hyper::body::Body for Body {
     }
 }
 
+/// The time by which the answer a connection sends has to be out: while that answer is a file,
+/// the end of its [`DOWNLOAD_TIME`]. What makes the connection's answers sets it (server.rs) and
+/// the connection's [`StallGuard`] keeps to it.
+#[derive(Clone, Default)]
+pub struct Deadline(Arc<Mutex<Option<Instant>>>);
+
+impl Deadline {
+    /// The time of the answer `body` from now on: its download's end for a file, none for bytes
+    /// that are there already.
+    pub fn follow(&self, body: &Body) {
+        let at = match body {
+            Body::File(file) => Some(file.deadline),
+            Body::Full(_) => None,
+        };
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = at;
+    }
+
+    /// No time from now on, as when a new request comes on the connection.
+    pub fn clear(&self) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    fn passed(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some_and(|at| Instant::now() >= at)
+    }
+}
+
 /// A connection whose writes may not wait longer than [`WRITE_STALL`] for the other side: a
 /// write that is not taken for that long ends with an error, which makes hyper close the
-/// connection and drop what it was sending. A connection that has nothing to write (an idle one,
-/// a held poll) is not timed.
+/// connection and drop what it was sending. So does a write once the [`Deadline`] of the answer
+/// has passed, however fast it would go. A connection that has nothing to write (an idle one, a
+/// held poll) is not timed.
 pub struct StallGuard<S> {
     stream: S,
     limit: Duration,
+    deadline: Deadline,
     /// set while a write waits
     waiting: Option<Pin<Box<Sleep>>>,
 }
 
 impl<S> StallGuard<S> {
-    pub fn new(stream: S) -> StallGuard<S> {
+    pub fn new(stream: S, deadline: Deadline) -> StallGuard<S> {
         StallGuard {
             stream,
             limit: WRITE_STALL,
+            deadline,
             waiting: None,
         }
+    }
+
+    /// The error for a write after the answer's time.
+    fn late(&mut self) -> Option<io::Error> {
+        if !self.deadline.passed() {
+            return None;
+        }
+        self.waiting = None;
+        Some(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "the download took too long",
+        ))
     }
 
     /// What a write came to: one that went on ends the wait, one that still waits is given up
@@ -320,6 +368,9 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for StallGuard<S> {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
+        if let Some(late) = this.late() {
+            return Poll::Ready(Err(late));
+        }
         let polled = Pin::new(&mut this.stream).poll_write(cx, buf);
         this.watch(cx, polled)
     }
@@ -330,6 +381,9 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for StallGuard<S> {
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
+        if let Some(late) = this.late() {
+            return Poll::Ready(Err(late));
+        }
         let polled = Pin::new(&mut this.stream).poll_write_vectored(cx, bufs);
         this.watch(cx, polled)
     }
@@ -340,6 +394,9 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for StallGuard<S> {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
+        if let Some(late) = this.late() {
+            return Poll::Ready(Err(late));
+        }
         let polled = Pin::new(&mut this.stream).poll_flush(cx);
         this.watch(cx, polled)
     }
@@ -544,7 +601,7 @@ mod tests {
         // a minute, as nginx gives a reader of its own (send_timeout)
         assert_eq!(WRITE_STALL, Duration::from_secs(60));
         let (near, mut far) = tokio::io::duplex(16);
-        let mut guarded = StallGuard::new(near);
+        let mut guarded = StallGuard::new(near, Deadline::default());
         let started = Instant::now();
         // the first 16 bytes fit; the rest waits for a reader that never reads (a write that
         // waited for ever would end the test here, not hang it)
@@ -568,7 +625,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_slow_reader_is_not_given_up() {
         let (near, mut far) = tokio::io::duplex(16);
-        let mut guarded = StallGuard::new(near);
+        let mut guarded = StallGuard::new(near, Deadline::default());
         let reader = tokio::spawn(async move {
             let mut got = Vec::new();
             let mut buf = [0u8; 8];
@@ -592,9 +649,60 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_download_past_its_time_ends_however_its_reader_reads() {
+        let (near, mut far) = tokio::io::duplex(16);
+        let deadline = Deadline::default();
+        let mut guarded = StallGuard::new(near, deadline.clone());
+        // the answer is a file: its hour runs from when its body was made
+        let (file, _) = file_of(10);
+        let started = Instant::now();
+        deadline.follow(&Body::file(Source::new(file, 10, None)));
+        let reader = tokio::spawn(async move {
+            // eight bytes every 50 seconds: never a minute without taking any, and so slow that
+            // hyper would not ask a body for its next piece within the hour
+            let mut got = 0;
+            let mut buf = [0u8; 8];
+            loop {
+                tokio::time::sleep(WRITE_STALL - Duration::from_secs(10)).await;
+                match far.read(&mut buf).await {
+                    Ok(0) | Err(_) => return got,
+                    Ok(n) => got += n,
+                }
+            }
+        });
+        let failed = guarded.write_all(&[7u8; 4096]).await.unwrap_err();
+        assert_eq!(failed.kind(), io::ErrorKind::TimedOut);
+        let took = started.elapsed();
+        assert!(took >= DOWNLOAD_TIME, "{took:?}");
+        assert!(took < DOWNLOAD_TIME + WRITE_STALL, "{took:?}");
+        // nothing more goes, also not a flush
+        assert!(guarded.flush().await.is_err());
+        drop(guarded);
+        let got = reader.await.unwrap();
+        assert!(got < 2048, "{got}");
+
+        // an answer of bytes that are there has no time, and nor has a new request
+        let (near, mut far) = tokio::io::duplex(16);
+        let mut guarded = StallGuard::new(near, deadline.clone());
+        assert!(deadline.passed());
+        deadline.follow(&Body::empty());
+        assert!(!deadline.passed());
+        guarded.write_all(b"ok").await.unwrap();
+        let (file, _) = file_of(10);
+        deadline.follow(&Body::file(Source::new(file, 10, None)));
+        tokio::time::sleep(DOWNLOAD_TIME).await;
+        assert!(deadline.passed());
+        deadline.clear();
+        guarded.write_all(b"ok").await.unwrap();
+        let mut got = [0u8; 4];
+        far.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"okok");
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn reads_and_idle_connections_are_not_timed() {
         let (near, mut far) = tokio::io::duplex(16);
-        let mut guarded = StallGuard::new(near);
+        let mut guarded = StallGuard::new(near, Deadline::default());
         let writer = tokio::spawn(async move {
             tokio::time::sleep(10 * WRITE_STALL).await;
             far.write_all(b"late").await.unwrap();

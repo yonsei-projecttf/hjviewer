@@ -115,7 +115,8 @@ absolute paths). `HJV_API_LIMIT_UPDATE` (10 a day) is the downloads that begin, 
 its logins and per PC for its device key; `HJV_API_LIMIT_UPDATE_FAIL_IP` (30 a day) the requests
 that fail for who asks, per client address, after which such a request gets 429, while one with
 the right token, signature or code is never refused for its address. `HJV_API_DOWNLOADS_MAX` (4,
-at most 16) is the packages sent at the same time; one more gets 503 with `Retry-After: 60`.
+at most 16) is the files sent at the same time, packages and their notice files alike; one more
+gets 503 with `Retry-After: 60`.
 
 ## Credentials
 
@@ -757,15 +758,17 @@ The design of the minimum version and forced update, §4-6. The operator install
 then the signed policy (`hjv-release` makes both; the runbook has the steps); the apps get the
 policy from nginx and its `latest` from hjv-api.
 
-- **What is sent.** hjv-api reads the policy file again when it changes and takes from it, for
-  `windows` and `android`, `latest`, `source` and `package` (`file`, `size`, `sha256`), each by
-  the policy's own rules (a version is three numbers; a package's file is a name of
-  `[A-Za-z0-9._-]` with the platform's extension that neither ends in `install.exe` nor holds
-  `-qs-`; a size is 1 byte to 200 MiB): a file that breaks one of them is no policy at all, and
-  nothing is handed out. It does not check the signature (only root writes the file; the apps
-  check it, and the size and SHA-256 of what they get). A package is the policy's `package.file`
-  in `HJV_API_PACKAGE_DIR`: a plain file, no link, of exactly `package.size`; no name or path
-  comes from a request. A missing policy, entry, package or file is 404.
+- **What is sent.** hjv-api reads the policy file again when it changes (also its owner or mode
+  alone) and takes from it, for `windows` and `android`, `latest`, `source` and `package` (`file`,
+  `size`, `sha256`), each by the policy's own rules (a version is three numbers; a package's file
+  is a name of `[A-Za-z0-9._-]` with the platform's extension that neither ends in `install.exe`
+  nor holds `-qs-`; a size is 1 byte to 200 MiB): a file that breaks one of them is no policy at
+  all, and nothing is handed out. It does not check the signature (only root writes the file; the
+  apps check it, and the size and SHA-256 of what they get). A policy older (by `epoch`, then
+  `seq`) than one read before since the start is an error in the journal: the apps keep the newer
+  one, so going back is a newer policy that asks for less. A package is the policy's
+  `package.file` in `HJV_API_PACKAGE_DIR`: a plain file, no link, of exactly `package.size`; no
+  name or path comes from a request. A missing policy, entry, package or file is 404.
 - **How.** The file is read and sent 64 KiB at a time, as fast as its reader takes it and no
   faster than 3 840 000 bytes a second (about 30 Mb/s, the relay's limit for a session on the same
   line), within an hour; a reader that takes nothing for a minute loses the connection. With it:
@@ -776,9 +779,11 @@ policy from nginx and its `latest` from hjv-api.
   `Referrer-Policy: no-referrer`, `Accept-Ranges: none`, and for nginx `X-Accel-Buffering: no` and
   `X-Accel-Limit-Rate: 3840000`. nginx passes such an answer on as it comes and writes it to no
   file of its own; it does not slow one down (nginx 1.24 follows `X-Accel-Limit-Rate` only for an
-  answer it buffers), which is why hjv-api keeps the rate itself. `HJV_API_DOWNLOADS_MAX` packages
-  go out at once; one more gets `503 {"error":…,"hjv":"busy","retry_after":60}` with `Retry-After:
-  60`. HEAD gets the same head, takes no slot and counts nowhere.
+  answer it buffers), which is why hjv-api keeps the rate itself; it also ends a download whose
+  hour is over at its next write, however few bytes its reader takes at a time.
+  `HJV_API_DOWNLOADS_MAX` files, packages and notice files alike, go out at once; one more gets
+  `503 {"error":…,"hjv":"busy","retry_after":60}` with `Retry-After: 60`. HEAD gets the same
+  head, takes no slot and counts nowhere.
 - **Door 1**, `GET, HEAD /api/hjv/update/{windows,android}/{x.y.z}`: 400 for another platform or
   what is no version; then who asks; then 404 unless `x.y.z` is the platform's `latest` with a
   package. The download is named `HJViewer-<v>.exe` (never a name that makes the packer open the
@@ -829,10 +834,12 @@ policy from nginx and its `latest` from hjv-api.
 - **Records.** Every package sent and every link made is a record of kind `update` (`token-…`,
   `device-…`, `link-made-…`, `link-…`, `door2-…` with the platform) with the account and the PC
   as tags and the client address as its tag, and a line in the journal; a code shows there as the
-  first eight hex digits of its SHA-256. The first download by a PC's key from an address that PC
-  did not use before is a record of its own, `device-new-address`, a notice in the journal and a
-  line in the operator record (a key that someone took along with a PC's disk shows as an address
-  the PC was never at). Door 2's records stop at 20 a minute.
+  first eight hex digits of its tag, a hash keyed with the log key like the other tags (a plain
+  hash of a short link's 40 bits would leave a reader of the journal a few hundred codes to try).
+  The first download by a PC's key from an address that PC did not use before is a record of its
+  own, `device-new-address`, a notice in the journal and a line in the operator record (a key that
+  someone took along with a PC's disk shows as an address the PC was never at). Door 2's records
+  stop at 20 a minute.
 
 ### hbbs and the SSO
 
@@ -990,8 +997,8 @@ ahead after 7 days; wake jobs, the wake record, six months (`HJV_API_EVENT_DAYS`
 go with it. No password, SSO token, e-mail, uuid or user name of a device is stored, and the journal
 gets tags and counts only. Short links live in memory, ten minutes, never in the database; no
 code of a short link or of door 2 is stored or logged (the journal shows the first eight hex
-digits of its SHA-256), and the policy, the packages and door 2's file are the operator's files,
-which hjv-api only reads.
+digits of its tag, keyed with the log key), and the policy, the packages and door 2's file are the
+operator's files, which hjv-api only reads.
 
 ## Wake-on-LAN, where it is
 

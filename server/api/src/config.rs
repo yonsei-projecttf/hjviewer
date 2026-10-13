@@ -166,8 +166,9 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_DOWNLOADS_MAX", Some("4")),
 ];
 
-/// The most packages hjv-api sends at once, whatever HJV_API_DOWNLOADS_MAX says: each takes a
-/// thread while it reads a piece of its file, and the unit allows 64 tasks.
+/// The most files (packages and notice files) hjv-api sends at once, whatever
+/// HJV_API_DOWNLOADS_MAX says: each takes a thread while it reads a piece of its file, and the unit
+/// allows 64 tasks.
 pub const MAX_DOWNLOADS: usize = 16;
 
 impl Config {
