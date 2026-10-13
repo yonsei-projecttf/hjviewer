@@ -411,6 +411,7 @@ sudo stat -c '%a %U %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519
   - (나) 기존 사이트에 추가한 경우, 302(로그인 페이지 등)는 그 사이트가 아직 이 경로를 받는 것입니다. include가 다른 server 블록에 들어갔거나, server 수준의 `return`·`rewrite`가 먼저 실행된 것입니다.
   - 401은 사이트 전체에 걸린 인증(`auth_basic` 등)입니다.
 - 세 키 값이 다르면 둘 다 파일의 키를 다시 읽게 하고 다시 확인합니다. A는 `sudo docker compose restart hbbs hbbr`, B는 `sudo systemctl restart hjviewer-hbbs hjviewer-hbbr`입니다. 그래도 다르면 멈춥니다.
+- `/api/heartbeat`는 어느 경로에서나 404입니다. 다만 1.6.0의 `Caddyfile`(A 경로)과 `apache-hjviewer.conf`((가) 새 사이트)는 계정 경로(`/api/login`, `/api/peers`, `/api/hjv/…` 등)를 hjv-api로 넘기는데, 1~6단계는 hjv-api를 설치하지 않으므로 그 경로는 503과 JSON으로 답합니다. 고장이 아닙니다(7-14의 "hjv-api가 멈춰 있는 동안").
 - 바깥 네트워크에서 하는 확인은 서버 안에서 할 수 없습니다. 보고 뒤에 사용자가 합니다(아래 "보고 뒤 사용자가 할 일").
 
 ## 6. 마무리
@@ -515,7 +516,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 
 ## 7. 계정 API 추가 (1.6.0)
 
-1.6.0의 연세포탈 로그인, 내 기기 목록, 같은 계정 기기끼리 비밀번호 없는 연결, 원격 켜기를 위해 계정 API **hjv-api**를 더하고 hbbs를 패치 0004로 바꾸는 절차입니다. 1~6단계로 B 경로(systemd, nginx)를 마친 서버가 대상입니다. Apache와 A 경로(Caddy)는 다루지 않습니다.
+1.6.0의 연세포탈 로그인, 내 기기 목록, 같은 계정 기기끼리 비밀번호 없는 연결, 원격 켜기를 위해 계정 API **hjv-api**를 더하고 hbbs를 패치 0004로 바꾸는 절차입니다. 1~6단계로 B 경로(systemd, nginx)를 마친 서버가 대상입니다. Apache와 A 경로(Caddy)는 다루지 않습니다. 그런 서버가 1.6.0의 설정 파일로 계정 경로에 503을 답하는 것은 고장이 아니며, 7-14의 "hjv-api가 멈춰 있는 동안"에 설명과 할 일이 있습니다.
 
 - 동작 원리: [architecture.md](architecture.md) 5절. hjv-api의 설정, 관리 명령, 형식: [server/api/README.md](../server/api/README.md). 개인정보: [privacy.md](privacy.md). NAS 중계기 설치: [relay-dsm.md](relay-dsm.md).
 - 아래 표의 순서대로 합니다. 소절 번호는 표의 단계를 따릅니다. 서버에서 하는 것은 3~7단계, 9단계, 12단계, 15단계의 승인 명령입니다.
@@ -942,6 +943,18 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
   sudo systemctl start hjviewer-api-alert@test.service   # 시험 메시지
   ```
   같은 유닛이 같은 방식으로 끝나고(systemd가 넘기는 `MONITOR_SERVICE_RESULT`, `MONITOR_EXIT_CODE`, `MONITOR_EXIT_STATUS`) 결과도 같으면 6시간에 한 번만 보내고, 그 밖에는 바로 보냅니다. 비정상 종료와 그 뒤의 시작 실패는 서로 다른 경보입니다. 메시지에는 유닛, 끝난 방식, 호스트 이름, 시각, 결과(개수와 상태)만 있고 사람, 기기, 주소, 비밀은 없습니다. 보내지 않으려면 그 자격 증명 파일을 지웁니다.
+- **hjv-api가 멈춰 있는 동안**: 원격 세션과 ID·비밀번호 연결은 그대로이고, 비밀번호 없는 연결도 PC가 받아 둔 목록으로 하루 동안 계속됩니다. 달라지는 것은 웹 서버가 hjv-api로 넘기는 계정 경로(`/api/login`, `/api/currentUser`, `/api/logout`, `/api/users`, `/api/peers`, `/api/hjv/…`)의 답입니다. 세 웹 서버 모두 그 경로에 503과 JSON `{"error":"HJViewer 서버를 지금 쓸 수 없습니다. 비밀번호 없는 연결은 PC가 받아 둔 목록으로 하루 동안 계속됩니다. 잠시 뒤 다시 시도해 주세요."}`로 답하고, 로그인한 앱은 "HJViewer 서버를 지금 쓸 수 없습니다" 안내를 보입니다. 그 밖의 `/api/`(`/api/heartbeat` 등)는 전처럼 404입니다.
+  - **nginx**(7-8의 전환을 한 서버): `/api/login-options`와 `/api/device-group/accessible`은 nginx가 직접 답하므로 그대로입니다. 비정상 종료는 systemd가 5초 뒤 스스로 다시 시작하고 경보가 갑니다. 그래도 503이 이어지면 다음을 보고 사용자에게 알립니다.
+    ```bash
+    systemctl is-active hjviewer-api.socket hjviewer-api.service
+    sudo journalctl --namespace=hjviewer -u hjviewer-api -p warning --since -1h -o cat | wc -l   # 개수만
+    ```
+    멈춰 있으면(`inactive`, `failed`) 사용자 승인 뒤 `sudo systemctl start hjviewer-api.socket hjviewer-api.service`를 하고 `sudo /opt/hjviewer/bin/hjv-api admin selfcheck`로 확인합니다. 시작하지 않으면 7-5의 마지막 항목처럼 오류 줄을 사용자에게만 보여 주고 멈춥니다. 하루 안에 되살리지 못하면 모든 PC가 비밀번호 창으로 돌아간다는 것도 알립니다.
+  - **Caddy(A 경로)와 Apache**: 1.6.0의 `deploy/Caddyfile`과 `deploy/apache-hjviewer.conf`도 같은 경로를 hjv-api의 소켓 `/run/hjviewer-api.sock`으로 넘기고, 닿지 않으면 위의 503 JSON으로 답합니다(1.5.1까지의 파일은 404). 이 런북에는 그 두 웹 서버 뒤에 hjv-api를 두는 절차가 없으므로, 이 런북대로 설치한 A 경로 서버와 Apache 서버에서 이 503은 hjv-api가 없는 서버의 정상 응답입니다.
+    - 고칠 것이 없습니다. `Caddyfile`이나 Apache 사이트 파일을 고쳐 404로 되돌리지 않습니다. 5절의 확인(`/ws/id`·`/ws/relay` 101, `/api/heartbeat` 404)이 그대로이면 됩니다.
+    - 그 서버용 앱은 계정 공개키(`HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`) 없이 빌드합니다([ci.md](ci.md)의 "계정 기능의 공개키"). 그런 앱에는 로그인이 없어 계정 경로를 부르지 않습니다([architecture.md](architecture.md) 5-9). 계정 공개키를 넣은 앱을 이런 서버에 붙이면 로그인할 때 위 문구가 나옵니다.
+    - Caddy는 `/api/login-options`와 `/api/device-group/accessible`에 직접 답하고, Apache는 이 둘도 hjv-api로 넘기므로 함께 503입니다. nginx와 달리 두 웹 서버에는 로그인과 중계기 등록의 주소별 한도가 없고 hjv-api 자신의 한도만 있습니다.
+    - 이 런북 밖에서 hjv-api를 직접 붙여 둔 서버라면 nginx와 같은 순서(상태, 시작, `selfcheck`)로 봅니다. 소켓 유닛의 그룹이 그 웹 서버의 작업 프로세스 그룹이어야 합니다(7-3의 드롭인).
 - **백업**: 매일 타이머(`hjviewer-api-backup.timer`)가 `hjv-api admin backup --keep-days 14 /var/lib/hjviewer-api/backup`(SQLite 온라인 백업)으로 그 폴더에 root만 읽는 0600 파일(`hjv-api-<UTC 시각>.sqlite3`)을 만들고 14일이 지난 백업을 지웁니다. 아래의 복원 전 사본과 업그레이드 스냅숏도 이 폴더에 두므로 14일 뒤 함께 지워집니다. 디스크 손상이나 잘못된 업그레이드에서 되돌리는 용도입니다. 자격 증명, `/var/lib/systemd/credential.secret`, 운영자 기록은 넣지 않습니다. 서버 밖 사본은 1.6.0에서 만들지 않습니다(질문 8). 디스크를 통째로 잃으면 사용자 약 10명이 기기마다 한 번 다시 로그인합니다.
 - **복원**: 백업은 그 뒤에 폐기한 키와 토큰, 스위치 변경, 묶음 해제, 중계기 폐기를 되돌리므로, 복원은 그 자체로 사고 대응입니다. 복원한 백업은 비밀번호 없는 연결이 모든 계정에서 꺼진 채로 시작합니다. hjv-api가 백업 파일을 처음 열 때 첫 응답 전에 끄고 저널에 남깁니다. PC들은 2분마다 동기화하므로, 그렇지 않으면 시작과 다음 명령 사이에 백업 때의 스위치와 그 뒤 폐기한 키가 담긴 서명된 목록을 받을 수 있습니다. DB 파일을 바꾸는 일은 7-0의 "하지 말 것"의 예외이므로, 사용자가 직접 하거나 사용자가 이 복원을 승인한 뒤에만 합니다. 파일 내용은 출력하지 않습니다.
   ```bash
