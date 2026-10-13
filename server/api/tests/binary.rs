@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     time::Duration,
 };
 use tokio::{
@@ -28,6 +28,34 @@ fn find(program: &str) -> Option<PathBuf> {
         .split(':')
         .map(|d| Path::new(d).join(program))
         .find(|p| p.is_file())
+}
+
+/// The hjv-api a test started (systemd-socket-activate execs it in its own process). A dropped
+/// Child goes on running, so a test that failed before it stopped the server would leave it
+/// serving, with its database and sockets under /tmp: this kills it then.
+struct Server(Child);
+
+impl std::ops::Deref for Server {
+    type Target = Child;
+
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Server {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        if let Ok(None) = self.0.try_wait() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
 }
 
 /// One HTTP/1.1 request over a Unix socket, as nginx sends it.
@@ -127,25 +155,27 @@ async fn runs_as_systemd_starts_it() {
         dir.join("hjv-api.sqlite3"),
         dir.join("operator.log"),
     );
-    let mut child = Command::new(activate)
-        .arg("-l")
-        .arg(&socket)
-        .arg(BIN)
-        .arg("serve")
-        .arg("--db")
-        .arg(&db)
-        .arg("--env-file")
-        .arg(&env)
-        .arg("--credentials")
-        .arg(&creds)
-        .arg("--admin-socket")
-        .arg(&admin_socket)
-        .arg("--operator-log")
-        .arg(&oplog)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = Server(
+        Command::new(activate)
+            .arg("-l")
+            .arg(&socket)
+            .arg(BIN)
+            .arg("serve")
+            .arg("--db")
+            .arg(&db)
+            .arg("--env-file")
+            .arg(&env)
+            .arg("--credentials")
+            .arg(&creds)
+            .arg("--admin-socket")
+            .arg(&admin_socket)
+            .arg("--operator-log")
+            .arg(&oplog)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
 
     // the first connection starts hjv-api with the socket (fd 3)
     let (status, source) = unix_request(&socket, "GET", "/api/hjv/source", None).await;
@@ -483,25 +513,27 @@ async fn an_unusable_operator_log_takes_out_the_admin_commands_only() {
     let hbbs = FakeHbbs::start().await;
     let (env, creds, _) = write_setup(&dir, &sso, &hbbs);
     let (socket, admin_socket) = (dir.join("api.sock"), dir.join("admin.sock"));
-    let mut child = Command::new(activate)
-        .arg("-l")
-        .arg(&socket)
-        .arg(BIN)
-        .arg("serve")
-        .arg("--db")
-        .arg(dir.join("hjv-api.sqlite3"))
-        .arg("--env-file")
-        .arg(&env)
-        .arg("--credentials")
-        .arg(&creds)
-        .arg("--admin-socket")
-        .arg(&admin_socket)
-        .arg("--operator-log")
-        .arg(dir.join("missing").join("operator.log"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = Server(
+        Command::new(activate)
+            .arg("-l")
+            .arg(&socket)
+            .arg(BIN)
+            .arg("serve")
+            .arg("--db")
+            .arg(dir.join("hjv-api.sqlite3"))
+            .arg("--env-file")
+            .arg(&env)
+            .arg("--credentials")
+            .arg(&creds)
+            .arg("--admin-socket")
+            .arg(&admin_socket)
+            .arg("--operator-log")
+            .arg(dir.join("missing").join("operator.log"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     // logins and the account paths still work, only the admin socket is missing
     let (status, source) = unix_request(&socket, "GET", "/api/hjv/source", None).await;
     assert_eq!(status, 200, "{source}");
