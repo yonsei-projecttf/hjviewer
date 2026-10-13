@@ -4,6 +4,7 @@
 
 One edit per run: insert -> tracks.list + bundles.list -> bundles.upload -> tracks.update -> commit
 (or validate + delete with --mode validate). Any failure deletes the edit, so nothing half-lands.
+A bundle with a lower versionCode than the track already serves is refused before it is uploaded.
 Python standard library only; the JWT is signed by the runner's openssl.
 
 Credentials come from the environment only, never from arguments or files:
@@ -252,6 +253,14 @@ def inspect_bundle(path: str) -> tuple[bytes, str]:
 
 # ---- the edit --------------------------------------------------------------------------------------
 
+# What Play's answers about an unfinished declaration or policy item contain. They come as 403, and
+# they name permissions, so they must be recognised before the service account's own 401/403.
+DECLARATION_WORDS = ("foreground service", "declar", "let us know", "privacy policy", "app content",
+                     "accessibility")
+# The answers that do mean the service account lacks access (docs/ci.md, "오류와 대처")
+NO_ACCESS_WORDS = ("does not have permission", "caller does not have", "insufficient permission")
+
+
 def hint(error: PlayError, args) -> str:
     """One actionable sentence for the errors setting up Play produces most."""
     text = f"{error.message} {error.words}".lower()
@@ -269,6 +278,9 @@ def hint(error: PlayError, args) -> str:
     if "already been used" in text or "versionconflict" in text:
         return ("This versionCode is taken in Play (uploaded before): build again so the bundle gets a new "
                 "build number.")
+    if "existing users to upgrade" in text or "shadowed" in text or "higher version code" in text:
+        return ("Play already serves a newer versionCode than this bundle's, so it would reach no tester: "
+                "start a new build (its versionCode will be higher). Nothing was committed.")
     if "draft app" in text:
         return ("The Play app is still a draft: upload with release status 'draft' and roll it out in Play "
                 "Console, or finish the app's first rollout there.")
@@ -281,7 +293,12 @@ def hint(error: PlayError, args) -> str:
     if "language" in text or "releasenotes" in text:
         return (f"Release notes in {args.notes_language} were refused: the language must be one of the app's "
                 "store listing languages.")
-    if error.status in (401, 403) or "permission" in text:
+    if any(word in text for word in DECLARATION_WORDS):
+        return ("Play wants a declaration or policy item finished first, the one Google's message above "
+                "names: complete it in Play Console > App content, then use Re-run failed jobs (the bundle "
+                "is kept). Nothing was committed.")
+    # Not every 403: Play also answers 403 for reasons that have nothing to do with the account.
+    if error.status == 401 or any(word in text for word in NO_ACCESS_WORDS):
         return (f"The service account (PLAY_SA_EMAIL) has no release permission for {args.package}: in Play "
                 "Console > Users and permissions, invite it with 'Release apps to testing tracks' for this "
                 "app (new permissions can take a while to apply).")
@@ -296,6 +313,23 @@ def summary(line: str) -> None:
     if path:
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
+
+
+def live_version(tracks: list, track: str) -> int:
+    """The highest versionCode the track serves: its releases that are not drafts (0: none)."""
+    return max((int(code) for entry in tracks if entry.get("track") == track
+                for release in entry.get("releases") or [] if release.get("status") != "draft"
+                for code in release.get("versionCodes") or []), default=0)
+
+
+def refuse_older(version_code: int, live: int, track: str) -> None:
+    """Play jobs run in the order they arrive, not in versionCode order. A bundle below what the
+    track serves would reach no tester, and Play may accept such a release all the same."""
+    if version_code < live:
+        raise PlayError(0, f"Play already serves versionCode {live} on {track}; this run's bundle "
+                           f"({version_code}) is older", "",
+                        "A bundle of an older run cannot replace a newer release: nothing was released. "
+                        "Start a new build (its versionCode will be higher).")
 
 
 def release_body(track: str, version_code: int, args, notes: str) -> dict:
@@ -335,6 +369,7 @@ def upload(args, env) -> int:
     token = access_token(env)
     base = f"{API}/{args.package}/edits"
     edit = None
+    left = "nothing committed"  # said when the edit is deleted; not known after an unanswered commit
     try:
         edit = call("POST", base, token, body={}, retries=2)["id"]
         url = f"{base}/{edit}"
@@ -347,6 +382,7 @@ def upload(args, env) -> int:
                 raise PlayError(0, f"Play has no track {track!r} for {args.package}; it has {names}", "usage")
             print(f"track {track!r} is called {alias!r} in this app")
             track = alias
+        live = live_version(tracks, track)
 
         held = {b.get("sha256"): int(b["versionCode"])
                 for b in call("GET", f"{url}/bundles", token, retries=2).get("bundles", [])}
@@ -360,6 +396,8 @@ def upload(args, env) -> int:
                                 f"({args.status}); nothing to do.")
                         return 0
         else:
+            if args.version_code:
+                refuse_older(args.version_code, live, track)  # before the upload: nothing is sent
             uploaded = call("POST", f"{UPLOAD_API}/{args.package}/edits/{edit}/bundles?uploadType=media",
                             token, data=data, content_type="application/octet-stream", timeout=UPLOAD_TIMEOUT)
             if uploaded.get("sha256") and uploaded["sha256"].lower() != sha256:
@@ -371,6 +409,7 @@ def upload(args, env) -> int:
                                f"{args.version_code}", "usage",
                             "The bundle is not the one the build reported: check the bundle artifact of this "
                             "run, then run the workflow again.")
+        refuse_older(version_code, live, track)
 
         call("PUT", f"{url}/tracks/{urllib.parse.quote(track, safe=':')}", token,
              body=release_body(track, version_code, args, notes))
@@ -379,7 +418,16 @@ def upload(args, env) -> int:
             summary(f"Google Play {track}: versionCode {version_code} validated ({args.status}); "
                     "nothing was released (validate mode).")
             return 0
-        call("POST", f"{url}:commit?changesInReviewBehavior=ERROR_IF_IN_REVIEW", token)
+        try:
+            call("POST", f"{url}:commit?changesInReviewBehavior=ERROR_IF_IN_REVIEW", token)
+        except PlayError as error:
+            if error.status == 0 or error.status >= 500:
+                # no refusal, only no proper answer: Play may have committed and its reply got lost
+                left = "it was still open"
+                error.advice = ("Google Play did not answer the commit properly, so the release may or may "
+                                "not have gone through: run the play job again (Re-run failed jobs). A bundle "
+                                "that is already released is detected and left as it is.")
+            raise
         edit = None  # committed: nothing to delete
         summary(f"Uploaded {args.package} versionCode {version_code} to Google Play {track} ({args.status}). "
                 + ("Internal testers get it from the Play Store once Play has processed it."
@@ -389,7 +437,7 @@ def upload(args, env) -> int:
         if edit:
             try:
                 call("DELETE", f"{base}/{edit}", token)
-                print(f"deleted edit {edit} (nothing committed)")
+                print(f"deleted edit {edit} ({left})")
             except PlayError:
                 pass  # an edit left open expires on its own; the next insert invalidates it anyway
 

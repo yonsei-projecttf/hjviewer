@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!--
+  Manifest overlay of the Google Play bundle only. "Build Play bundle" in
+  .github/workflows/client-build.yml copies this file to
+  flutter/android/app/src/release/AndroidManifest.xml after the APK has been built, so Gradle
+  merges it over the app's manifest and the plugins' (a build type's manifest outranks them)
+  for the bundle and never for the side-loaded APK.
+
+  What only the side-loaded APK may have is removed here: its in-app update installs an APK,
+  and an app that comes from Google Play must not update itself any other way than through
+  Play. Add such permissions and components here, never to PLAY_MANIFEST in the workflow.
+  "Sign and check Play bundle" fails when one of them (PLAY_FORBIDDEN there) is in the bundle,
+  or when the marker at the end is not: that is how a run proves this file was merged.
+
+  Class names are written in full (the app's classes are in com.carriez.flutter_hbb): this file
+  has no package attribute to complete a short name with.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+    <uses-permission-sdk-23
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+
+    <application>
+        <provider
+            android:name="com.carriez.flutter_hbb.HjvUpdateFileProvider"
+            tools:node="remove" />
+
+        <meta-data
+            android:name="kr.ac.yonsei.hjviewer.PLAY_OVERLAY"
+            android:value="play" />
+    </application>
+
+</manifest>
