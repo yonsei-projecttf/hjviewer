@@ -80,6 +80,7 @@ deploy/                      서버 구성: Docker Compose + Caddy(443, 자동 T
                              계정 API의 nginx 위치(nginx-hjviewer-api.conf)와 그 한도(nginx-hjviewer-api-zones.conf), 유닛(hjviewer-api*)
 tools/hjv-probe/             방화벽 진단 도구: 이 네트워크에서 서버까지 연결되는지 단계별로 확인
 tools/e2e/                   방화벽 E2E: 443만 허용하는 네임스페이스 두 개에서 실제 클라이언트로 접속·화면 수신 검증 (docs/e2e.md)
+                             원격 켜기 E2E: sudo 없이, NAS 중계기가 잠든 PC의 랜카드에 보내는 매직 패킷과 켜짐 확인까지 (같은 문서)
 tools/hjv-load/              부하 측정 도구: 상시 등록 PC와 중계 세션을 흉내 내어 서버 용량 확인 (docs/deploy.md 용량 산정)
 upstream/                    (git 제외) 패치가 적용된 작업 사본
 ```
