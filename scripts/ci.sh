@@ -26,9 +26,16 @@
 #                          unprivileged network namespace).
 #   scripts/ci.sh e2e      tools/e2e/firewall-e2e.sh strict and open (sudo: namespaces, iptables)
 #                          with a client built for its test server, Caddy pinned by SHA-256, and the
-#                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; the
-#                          client's account tests and scenarios once the patches have them
-#   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, unprivileged, once it exists
+#                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; with the
+#                          account code in the patches, also its unit tests and the account
+#                          scenarios (docs/e2e.md) against hjv-api and the fake SSO, with a 1.5.1
+#                          client built once from the tag client-1.5.1 and Ubuntu's libfaketime,
+#                          unpacked under build/ci
+#   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, the Wake-on-LAN E2E (docs/e2e.md), without sudo: in
+#                          this user's own namespaces a PC that sleeps is woken through hjv-api
+#                          and hjv-relay, with the E2E's client, Caddy, hjv-api and fake SSO, and
+#                          hjv-relay built for the test server with the E2E's command key; before
+#                          it, the unit tests of the client's wake report (src/hjviewer_wol)
 #   scripts/ci.sh leak     the push gate (design v3 11 steps 1-2): no value of the local list
 #                          build/leak-patterns.txt in tracked files, unpushed commits or staged
 #                          changes (scripts/leak-check.py)
@@ -50,6 +57,13 @@ CADDY_SHA256=727b91701a392de6ebc5027509f548bf39979e5216340d0faed8fa5e69c84f8b
 # where the E2E installs the PC's client: Linux counts only programs under /usr as installed, and
 # hjv-api adds only installed PCs to an account (design v3 7-4)
 E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
+# The E2E's clients are test builds (feature hjv-e2e) of a fresh checkout, whose crates cargo
+# compiles anew each time. Without link-time optimization and in 16 units the client and its unit
+# tests take under a minute each once their dependencies are built, instead of three and a half
+# minutes each with the release profile as it is.
+E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
+# the 1.5.1 client the account E2E compares with (X2, X3)
+E2E_OLD_TAG=client-1.5.1
 export PATH="$HOME/.cargo/bin:$PATH"
 mkdir -p "$CI"
 
@@ -125,13 +139,17 @@ wait_for() { # <seconds> <command...>
   return 1
 }
 
-# A server on 127.0.0.1:18599 that answers with the address headers it got, for check_headers
+# A server on 127.0.0.1:18599 that answers with the address headers it got, for check_headers, and
+# for an /api/ path also with the path and the cookie, for check_account_proxy
 start_echo() {
   python3 -I -c '
 import http.server
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = "".join("%s: %s\n" % (k, self.headers.get(k, "")) for k in ("x-real-ip", "x-real-port", "x-forwarded-for")).encode()
+        body = "".join("%s: %s\n" % (k, self.headers.get(k, "")) for k in ("x-real-ip", "x-real-port", "x-forwarded-for"))
+        if self.path.startswith("/api/"):
+            body += "path: %s\ncookie: %s\n" % (self.path, self.headers.get("cookie", ""))
+        body = body.encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -159,6 +177,37 @@ check_headers() { # <port> <name>
     esac
     case "$got" in *"x-real-port: 1 "*) fail "$name passes the client's X-Real-Port on $path" ;; esac
   done
+}
+
+# The account API's paths (design v3 5-8) through a web server whose hjv-api is start_echo's
+# server: hjv-api counts logins per address from X-Real-IP, so the path and query must arrive as
+# sent and the client's own address headers and the site's cookie must not; the rest of /api/
+# keeps its 404.
+check_account_proxy() { # <port> <name>
+  local port=$1 name=$2 p got code
+  step "deploy: through $name, the account paths reach hjv-api with the address $name saw"
+  for p in '/api/peers?current=2&pageSize=100&accessible=&status=1' /api/login-options /api/hjv/keys/12; do
+    got=$(curl -s --cacert "$CERTS/cert.pem" -H 'X-Real-IP: 203.0.113.66' -H 'X-Forwarded-For: 203.0.113.66' \
+      -H 'Cookie: site=1' "https://localhost:$port$p" | tr '\n' ' ')
+    echo "$p -> $got"
+    [ "$got" = "x-real-ip: 127.0.0.1 x-real-port:  x-forwarded-for: 127.0.0.1 path: $p cookie:  " ] ||
+      fail "$name does not pass $p on to hjv-api as it should"
+  done
+  for p in /api/heartbeat /api/loginx /api/hjv /api/peers/x; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CERTS/cert.pem" "https://localhost:$port$p" || true)
+    [ "$code" = 404 ] || fail "$name: $p answered $code, not 404"
+  done
+}
+
+# With hjv-api stopped, an account path answers 503 with the text the app shows (JSON).
+check_account_down() { # <port> <CA file> <name>
+  local got
+  got=$(curl -s -w ' %{http_code} %{content_type}' --cacert "$2" "https://localhost:$1/api/peers" || true)
+  echo "/api/peers without hjv-api -> $got"
+  case "$got" in
+    '{"error":"HJViewer 서버를 지금 쓸 수 없습니다.'*'"} 503 application/json; charset=utf-8') ;;
+    *) fail "$3: an account path without hjv-api does not answer the app's 503" ;;
+  esac
 }
 
 server_stage() {
@@ -784,7 +833,9 @@ EOF
   grep -q '<VirtualHost \*:18444>' "$ap/site.conf" || fail "apache-hjviewer.conf: no '<VirtualHost *:443>'"
   # the 443 VirtualHost again, in front of the header echo server (see the nginx check)
   awk '/<VirtualHost \*:18444>/{on=1} on{print} on&&/<\/VirtualHost>/{exit}' "$ap/site.conf" |
-    sed -e 's/<VirtualHost \*:18444>/<VirtualHost *:18448>/' -e 's#ws://127\.0\.0\.1:2111[89]#ws://127.0.0.1:18599#' > "$ap/echo.conf"
+    sed -e 's/<VirtualHost \*:18444>/<VirtualHost *:18448>/' -e 's#ws://127\.0\.0\.1:2111[89]#ws://127.0.0.1:18599#' \
+      -e 's#unix:/run/hjviewer-api\.sock|http://localhost#http://127.0.0.1:18599#' > "$ap/echo.conf"
+  grep -q 'http://127.0.0.1:18599/api/' "$ap/echo.conf" || fail "apache-hjviewer.conf: no account paths to hjv-api's socket"
   {
     echo "ServerRoot \"$ap\""
     echo "DefaultRuntimeDir \"$ap\""
@@ -812,10 +863,13 @@ EOF
   check_site 18444 "$CERTS/cert.pem" 404 Apache
   start_echo
   check_headers 18448 Apache
+  check_account_proxy 18448 Apache
   [ "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:18081/x)" = "301 https://localhost/x" ] ||
     fail "Apache: port 80 does not redirect to https"
   # "client denied by server configuration" would feed fail2ban's apache-auth filter
   if grep -E 'AH01630|:(error|crit|alert|emerg)\]' "$ap/error.log"; then fail "Apache logged errors"; fi
+  # last, since Apache logs the upstream it cannot reach: the site as shipped, without hjv-api
+  check_account_down 18444 "$CERTS/cert.pem" Apache
   stop_web
 
   step "deploy A: Caddy (docker-compose.yml) with the same image and key, on 127.0.0.1:18082/18445"
@@ -837,6 +891,15 @@ EOF
   wait_for 30 curl -s -o /dev/null --cacert "$CI/caddy-root.crt" https://localhost:18445/ || fail "Caddy does not serve https"
   check_stack
   check_site 18445 "$CI/caddy-root.crt" 200 Caddy
+  # the account paths of deploy/Caddyfile in a stack without hjv-api: what Caddy answers itself
+  # (the E2E has them in front of hjv-api)
+  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/login-options)" = '[]' ] ||
+    fail "Caddy: /api/login-options is not []"
+  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/device-group/accessible)" = '{"total":0,"data":[]}' ] ||
+    fail "Caddy: /api/device-group/accessible is not the empty list"
+  [ "$(curl -s -w ' %{http_code}' --cacert "$CI/caddy-root.crt" -X POST -d '{}' https://localhost:18445/api/heartbeat)" = '{"error":"not found"} 404' ] ||
+    fail "Caddy: the rest of /api/ does not answer 404 in JSON"
+  check_account_down 18445 "$CI/caddy-root.crt" Caddy
 
   step "deploy B, systemd: the release package (scripts/package-server.sh) without Docker"
   dc down
@@ -975,11 +1038,13 @@ e2e_server_key() { # <work dir>
 # The client of the E2E (docs/e2e.md): a fresh upstream checkout with client/patches, built for
 # the test server hjv.test with the test feature hjv-e2e. Once the patches have the account code
 # (src/hjviewer_account) and firewall-e2e.sh its account part (HJV_E2E_ACCOUNT), it also pins the
-# E2E's public keys and runs the account code's unit tests; before, it is built like 1.5.1.
-build_e2e_client() { # <work dir>
-  local work=$1 src="$CI/upstream-e2e/rustdesk" keys=()
+# E2E's public keys and runs the unit tests of one module in that build: the account code's
+# (design v3 7-3), or for the wol stage the wake report's (hjviewer_wol, design v3 8-10); before,
+# it is built like 1.5.1.
+build_e2e_client() { # <work dir> [<module of src/ whose unit tests run>]
+  local work=$1 unit=${2:-hjviewer_account} src="$CI/upstream-e2e/rustdesk" keys=()
   if [ -n "${E2E_CLIENT:-}" ]; then
-    echo "skipped: the client build and the account E2E (E2E_CLIENT=$E2E_CLIENT is used as it is)"
+    echo "skipped: the client build, its unit tests and the account E2E (E2E_CLIENT=$E2E_CLIENT is used as it is)"
     return 0
   fi
   step "e2e: upstream checkout with client/patches"
@@ -996,16 +1061,70 @@ build_e2e_client() { # <work dir>
   step "e2e: the client for the test server hjv.test (--features linux-pkg-config,hjv-e2e)"
   pkgconfig
   (cd "$src" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" \
-    "${keys[@]}" CARGO_TARGET_DIR="$CI/target-e2e" cargo build --release --locked --features linux-pkg-config,hjv-e2e) ||
-    fail "e2e: the client build"
+    "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
+    cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the client build"
   E2E_CLIENT="$CI/target-e2e/release/rustdesk"
-  if [ -d "$src/src/hjviewer_account" ]; then
-    step "e2e: the client's account unit tests (src/hjviewer_account, design v3 7-3)"
+  if [ -e "$src/src/$unit" ] || [ -e "$src/src/$unit.rs" ]; then
+    step "e2e: the client's unit tests of src/$unit"
     (cd "$src" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" \
-      "${keys[@]}" CARGO_TARGET_DIR="$CI/target-e2e" cargo test --release --locked --features linux-pkg-config,hjv-e2e \
-      --lib hjviewer_account) || fail "e2e: the account unit tests"
+      "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
+      cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib "$unit") ||
+      fail "e2e: the client's unit tests of src/$unit"
   else
-    echo "skipped: the account unit tests (no src/hjviewer_account in the patched tree)"
+    echo "skipped: the client's unit tests of src/$unit (not in the patched tree)"
+  fi
+}
+
+# The 1.5.1 client of the account E2E's X2 and X3 (design v3 7-4): the patches and the upstream
+# pin of the tag client-1.5.1, built for the test server like the client above. Built once for a
+# tag commit and server key, and kept as build/ci/e2e-old/rustdesk; the scenarios are skipped
+# where the repository has no such tag (a shallow checkout).
+build_e2e_client_old() { # <work dir>
+  local work=$1 dir="$CI/e2e-old" stamp
+  E2E_CLIENT_OLD=""
+  if ! git -C "$ROOT" rev-parse -q --verify "refs/tags/$E2E_OLD_TAG^{commit}" > /dev/null; then
+    echo "skipped: the 1.5.1 client of X2 and X3 (this repository has no tag $E2E_OLD_TAG)"
+    return 0
+  fi
+  stamp="$(git -C "$ROOT" rev-parse "refs/tags/$E2E_OLD_TAG^{commit}") $(cat "$work/srv/id_ed25519.pub")"
+  if [ ! -x "$dir/rustdesk" ] || [ "$(cat "$dir/stamp" 2> /dev/null)" != "$stamp" ]; then
+    step "e2e: the 1.5.1 client (tag $E2E_OLD_TAG) for the test server, once"
+    rm -rf "$dir" "$CI/target-e2e-old"
+    mkdir -p "$dir/repo"
+    git -C "$ROOT" archive "refs/tags/$E2E_OLD_TAG" scripts client | tar -x -C "$dir/repo"
+    UPSTREAM_DIR="$dir/upstream" "$dir/repo/scripts/fetch-upstream.sh" client
+    pkgconfig
+    (cd "$dir/upstream/rustdesk" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test \
+      HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e-old" \
+      cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the 1.5.1 client build"
+    cp "$CI/target-e2e-old/release/rustdesk" "$dir/rustdesk"
+    echo "$stamp" > "$dir/stamp"
+    # the binary is what is kept
+    rm -rf "$dir/repo" "$dir/upstream" "$CI/target-e2e-old"
+  fi
+  E2E_CLIENT_OLD="$dir/rustdesk"
+}
+
+# libfaketime for the account E2E's S27 (a controller's clock 15 minutes ahead): the system's if
+# it is installed, else Ubuntu's package unpacked under build/ci, as nginx and Apache are for the
+# deploy stage. Without either, S27 is skipped with a line saying so.
+fetch_faketime() {
+  local dir="$CI/faketime" lib=usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
+  E2E_FAKETIME=""
+  if [ -f "/$lib" ]; then
+    E2E_FAKETIME="/$lib"
+  elif [ -f "$dir/root/$lib" ]; then
+    E2E_FAKETIME="$dir/root/$lib"
+  else
+    step "e2e: Ubuntu's libfaketime, unpacked"
+    rm -rf "$dir"
+    mkdir -p "$dir/root"
+    if (cd "$dir" && apt-get download libfaketime > /dev/null 2>&1) && dpkg-deb -x "$dir"/libfaketime_*.deb "$dir/root" &&
+      [ -f "$dir/root/$lib" ]; then
+      E2E_FAKETIME="$dir/root/$lib"
+    else
+      echo "skipped: libfaketime (apt-get download libfaketime failed): the E2E skips S27"
+    fi
   fi
 }
 
@@ -1039,7 +1158,10 @@ e2e_stage() {
   sudo install -D -m 755 "$E2E_CLIENT" "$E2E_PC_DIR/rustdesk"
   if [ -n "$E2E_ACCOUNT" ]; then
     build_e2e_api
-    extra=(HJV_E2E_ACCOUNT=1 HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" HJV_E2E_KEYS="$work/api")
+    build_e2e_client_old "$work"
+    fetch_faketime
+    extra=(HJV_E2E_ACCOUNT=1 HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" HJV_E2E_KEYS="$work/api"
+      CLIENT_OLD="$E2E_CLIENT_OLD" FAKETIME_LIB="$E2E_FAKETIME")
   fi
   for mode in strict open; do
     step "e2e: tools/e2e/firewall-e2e.sh $mode"
@@ -1051,22 +1173,23 @@ e2e_stage() {
   trap - EXIT
 }
 
-# Without privileges: tools/e2e/wol-e2e.sh runs its PC, NAS and networks in user namespaces
-# (design v3 8-10). It gets the same programs as the E2E, and hjv-relay built for hjv.test with
-# the E2E's command key.
+# Without privileges: tools/e2e/wol-e2e.sh runs its server, PC, NAS and networks in namespaces of
+# this user (design v3 8-10, docs/e2e.md). It gets the same programs as the E2E, and hjv-relay
+# built for hjv.test with the E2E's command key. The client's unit tests are those of its wake
+# report here; the E2E runs once the client has the report's command (client patch 0035).
 wol_stage() {
   local work="$CI/e2e"
-  if [ ! -f "$ROOT/tools/e2e/wol-e2e.sh" ]; then
-    echo "skipped: the WOL E2E (no tools/e2e/wol-e2e.sh yet)"
-    return 0
-  fi
   if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
     fail "wol: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
   fi
   fetch_caddy
   e2e_server_key "$work"
   e2e_keys "$work/api"
-  build_e2e_client "$work"
+  build_e2e_client "$work" hjviewer_wol
+  if ! grep -q -a -- '--hjv-e2e-wol-report' "$E2E_CLIENT"; then
+    echo "skipped: the WOL E2E (the client has no --hjv-e2e-wol-report: client/patches has no wake report yet)"
+    return 0
+  fi
   build_e2e_api
   step "wol: hjv-relay for hjv.test with the E2E's command key"
   (cd "$ROOT/relay" && HJV_SERVER=hjv.test HJV_COMMAND_PUBKEY="$(cat "$work/api/command.pub")" \
