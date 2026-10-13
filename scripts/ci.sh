@@ -54,7 +54,10 @@
 # tree yet or a tool this machine lacks. Every skip is counted, those that the E2E scripts and the
 # other checks print too, and the last line says how many: "CI passed: <stage> (<n> skipped)". With
 # HJV_CI_STRICT=1 (prepush) a run with a skip fails at its end with the list: a pass with skipped
-# lines is no pass before a push.
+# lines is no pass before a push. hjv-api's and hjv-relay's tests run with the output of the tests
+# that pass, so that a test that skips itself is counted too. A run that skipped nothing fails
+# when an E2E has fewer PASS lines, or a client unit test filter fewer passed tests, than the last
+# full run (E2E_LEAST_*, WOL_LEAST, UNIT_LEAST below).
 # One run at a time on a CI directory (HJV_CI_DIR, default build/ci): a run holds the lock
 # <CI directory>/ci.lock, and a run started meanwhile stops at once.
 # Needs cargo, curl, openssl, Docker with compose v2 (used through sudo, as the runbook does), and
@@ -93,6 +96,13 @@ E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS
 E2E_OLD_TAG=client-1.5.1
 # the stages of prepush, in their order
 PREPUSH_STAGES="server client deploy e2e wol leak"
+# The fewest PASS lines of the E2E scripts and the fewest client unit tests that the last full run
+# passed with (2026-10-13). A run that skipped nothing and has fewer lost a scenario or a test (one
+# moved under a condition that does not hold, a test filter that picks nothing), and the stage
+# fails (at_least). Raise them as scenarios and tests come; lower one only with what was taken out.
+E2E_LEAST_STRICT=60 E2E_LEAST_OPEN=2 WOL_LEAST=20
+# by the filter of build_e2e_client's cargo test --lib <filter>
+declare -A UNIT_LEAST=([hjv]=83 [hjviewer_wol]=6)
 export PATH="$HOME/.cargo/bin:$PATH"
 
 SRC="$CI/src" PKGS="$CI/pkgs" CERTS="$CI/certs"
@@ -131,6 +141,24 @@ with_skips() { # <file> <command...>
   wait "$pid" || status=$?
   count_skips "$log"
   return "$status"
+}
+# A count against its least (E2E_LEAST_*, WOL_LEAST, UNIT_LEAST): fewer fails the stage when this run
+# skipped nothing. A run that skipped a part may pass with fewer, and with HJV_CI_STRICT=1 it fails
+# at its end anyway.
+at_least() { # <what> <count> <least>
+  local n=$2
+  [[ $n =~ ^[0-9]+$ ]] || n=0
+  echo "$1: $n (at least $3)"
+  [ "$n" -lt "$3" ] || return 0
+  if [ ${#SKIPPED[@]} -gt 0 ]; then
+    echo "$1: fewer than $3, in a run that skipped ${#SKIPPED[@]} part(s)"
+  else
+    fail "$1: $n, fewer than the $3 of the last full run: a scenario or a test went missing"
+  fi
+}
+# The tests that passed by a cargo test log's "test result" lines, all of its test binaries
+passed_tests() { # <file>
+  sed -n -E 's/^test result: ok\. ([0-9]+) passed;.*/\1/p' "$1" | awk '{ n += $1 } END { print n + 0 }'
 }
 dc() { (cd "$SRC/deploy" && sudo docker compose -p "$PROJECT" "$@"); }
 hbbs_logs() {
@@ -299,7 +327,10 @@ server_stage() {
   for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
   if [ -d "$ROOT/server/api" ]; then
     step "server: hjv-api tests and release build (server/api)"
-    (cd "$ROOT/server/api" && CARGO_TARGET_DIR="$CI/target-api" cargo test --locked)
+    # with the output of the tests that pass: a test that cannot run here (no systemd tools) passes
+    # with a line "skipped: ...", which only then is seen and counted
+    with_skips "$CI/api-tests.log" env -C "$ROOT/server/api" CARGO_TARGET_DIR="$CI/target-api" \
+      cargo test --locked -- --show-output || fail "server: hjv-api tests"
     (cd "$ROOT/server/api" && HJV_API_COMMIT=$(git -C "$ROOT" rev-parse HEAD) \
       CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api)
   else
@@ -309,12 +340,15 @@ server_stage() {
     step "server: hjv-relay tests (relay/)"
     # Here the netns test fails instead of skipping when user and network namespaces are missing;
     # GitHub's runners (server.yml) restrict them, so it may skip there. HJV_RELAY_NETNS= lets it
-    # skip anywhere. cargo test shows no output of a test that passes, so that is counted here.
+    # skip anywhere. Its own line does not start with "skipped:", so that is counted here. The
+    # tests run with the output of those that pass, as hjv-api's do: a test that cannot run with
+    # this build passes with a line "skipped: ...".
     netns=require
     if [ -n "${GITHUB_ACTIONS:-}" ]; then netns=; fi
     netns=${HJV_RELAY_NETNS-$netns}
     [ "$netns" = require ] || skip "hjv-relay's network namespace test, where it cannot run (HJV_RELAY_NETNS=$netns)"
-    (cd "$ROOT/relay" && HJV_RELAY_NETNS=$netns CARGO_TARGET_DIR="$CI/target-relay" cargo test --locked)
+    with_skips "$CI/relay-tests.log" env -C "$ROOT/relay" HJV_RELAY_NETNS="$netns" CARGO_TARGET_DIR="$CI/target-relay" \
+      cargo test --locked -- --show-output || fail "server: hjv-relay tests"
   else
     skip "hjv-relay (no relay/)"
   fi
@@ -782,7 +816,10 @@ deploy_stage() {
     step "deploy: hjv-relay's packages (scripts/package-relay.sh): the static build, its SHA256SUMS, the field test package"
     [ -n "$(rustup target list --installed 2>/dev/null | grep -x x86_64-unknown-linux-musl)" ] && command -v musl-gcc > /dev/null ||
       fail "deploy: hjv-relay's packages need the x86_64-unknown-linux-musl target and musl-gcc (rustup target add x86_64-unknown-linux-musl; Ubuntu: apt-get install musl-tools)"
-    (cd "$ROOT/relay" && CARGO_TARGET_DIR="$CI/target-relay" cargo test --locked --test package -- --ignored) ||
+    # with the output of the tests that pass: scripts/package-relay.sh says "skipped: ..." where it
+    # cannot run the binary in an empty root
+    with_skips "$CI/relay-package.log" env -C "$ROOT/relay" CARGO_TARGET_DIR="$CI/target-relay" \
+      cargo test --locked --test package -- --ignored --show-output ||
       fail "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
   else
     skip "hjv-relay's packages (no relay/)"
@@ -1157,11 +1194,13 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
     cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the client build"
   E2E_CLIENT="$CI/target-e2e/release/rustdesk"
   if [ -e "$src/src/$unit" ] || [ -e "$src/src/$unit.rs" ]; then
-    step "e2e: the client's unit tests (--lib $filter)"
-    (cd "$src" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" \
-      "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
-      cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib "$filter") ||
+    step "e2e: the client's unit tests (--lib $filter, output also in build/ci/e2e-unit-$filter.log)"
+    with_skips "$CI/e2e-unit-$filter.log" env -C "$src" PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test \
+      HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
+      cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib "$filter" ||
       fail "e2e: the client's unit tests (--lib $filter)"
+    at_least "e2e: the client's unit tests that passed (--lib $filter)" "$(passed_tests "$CI/e2e-unit-$filter.log")" \
+      "${UNIT_LEAST[$filter]:-1}"
   else
     skip "the client's unit tests of src/$unit (not in the patched tree)"
   fi
@@ -1282,7 +1321,8 @@ e2e_stage() {
       HBBR="$CI/target/release/hbbr" PROBE="$PROBE" CLIENT="$E2E_CLIENT" PC_CLIENT="$E2E_PC_DIR/rustdesk" "${extra[@]}" \
       "$ROOT/tools/e2e/firewall-e2e.sh" "$mode" || fail "e2e: firewall-e2e.sh $mode"
   done
-  echo "e2e: PASS lines: strict $(grep -c '^PASS' "$CI/e2e-strict.log"), open $(grep -c '^PASS' "$CI/e2e-open.log")"
+  at_least "e2e: PASS lines (strict)" "$(grep -c '^PASS' "$CI/e2e-strict.log" || true)" "$E2E_LEAST_STRICT"
+  at_least "e2e: PASS lines (open)" "$(grep -c '^PASS' "$CI/e2e-open.log" || true)" "$E2E_LEAST_OPEN"
   cleanup_e2e
   trap - EXIT
 }
@@ -1327,7 +1367,7 @@ wol_stage() {
     HBBR="$CI/target/release/hbbr" PROBE="$PROBE" CLIENT="$E2E_CLIENT" HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" \
     HJV_RELAY="$CI/target-relay/release/hjv-relay" HJV_E2E_KEYS="$work/api" \
     "$ROOT/tools/e2e/wol-e2e.sh" || fail "wol: wol-e2e.sh"
-  echo "wol: PASS lines: $(grep -c '^PASS' "$CI/wol-e2e.log")"
+  at_least "wol: PASS lines" "$(grep -c '^PASS' "$CI/wol-e2e.log" || true)" "$WOL_LEAST"
 }
 
 # The push gate of design v3 11 steps 1-2: none of the values of build/leak-patterns.txt (a local

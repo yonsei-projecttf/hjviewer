@@ -161,7 +161,8 @@ if unshare --user --map-root-user --mount true 2> /dev/null; then
   rm -r -- "$empty"
   echo "hjv-relay runs in an empty root directory"
 else
-  echo "warning: no unprivileged namespaces here; skipped the empty-root check" >&2
+  # a line of its own that scripts/ci.sh counts as a skip
+  echo "skipped: the empty-root check (no unprivileged namespaces here)" >&2
 fi
 grep -qx "commit: $commit" "$work/$name.version.txt"
 if [ -z "$fieldtest" ] && grep -Eq '^(server|command keys): (none|invalid)' "$work/$name.version.txt"; then
