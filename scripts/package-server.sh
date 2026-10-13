@@ -6,7 +6,8 @@
 # writes <out dir>/hjviewer-server-<version>-linux-x86_64.tar.gz and <out dir>/SHA256SUMS with that
 # file's line only (hjv-relay's package goes to build/release-relay). The archive holds
 #   bin/      hbbs and hbbr, built on Ubuntu 24.04 from a fresh upstream checkout with server/patches
-#             (so they need glibc 2.39 or later), and hjv-api, the account API (server/api)
+#             (so they need glibc 2.39 or later), hjv-api, the account API (server/api), and
+#             hjv-update-verify.sh, the server's check of a signed version policy (python3, openssl)
 #   systemd/  the units of deploy/systemd: hbbs, hbbr, hjv-api's socket and service, and the
 #             hjviewer-api-* services and timers that watch and back it up; hjviewer.env.example
 #             and hjviewer-api.env.example; journald@hjviewer.conf, hjv-api's journal namespace
@@ -67,6 +68,7 @@ stage="$work/$name"
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/systemd" "$stage/web"
 install -m 755 "$bin/hbbs" "$bin/hbbr" "$stage/bin/"
+install -m 755 "$ROOT/deploy/hjv-update-verify.sh" "$stage/bin/"
 install -m 644 "$ROOT/deploy/systemd/hjviewer.env.example" "$stage/systemd/"
 install -m 644 "$ROOT/deploy/nginx-hjviewer-locations.conf" "$ROOT/deploy/nginx-hjviewer.conf" \
   "$ROOT/deploy/apache-hjviewer.conf" "$stage/web/"
