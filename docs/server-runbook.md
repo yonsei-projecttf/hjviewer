@@ -526,9 +526,9 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 
 | 단계 | 할 일 | 누가 | 소절 |
 |---|---|---|---|
-| 0 | 원격 켜기 현장 시험(NAS의 DSM 작업), 남은 결정과 질문의 답 | 사용자 | 7-1 |
+| 0 | 원격 켜기 현장 시험(NAS의 DSM 작업. 8단계의 출시 태그 전까지), 남은 결정과 질문의 답 | 사용자 | 7-1 |
 | 1 | 개발 PC에서 모든 작업을 합치고 `scripts/ci.sh`의 모든 단계(`leak` 포함) 통과, 문서 갱신 | 개발 PC | 7-1 |
-| 2 | 마지막 push(출시 태그 없이)와 서버 묶음 `server-<VERSION>` | 개발 PC | 7-1 |
+| 2 | push(출시 태그 없이), 확인 빌드, 서버 묶음 `server-<VERSION>` | 개발 PC | 7-1 |
 | 3 | 읽기 점검 | 운영 에이전트 | 7-2 |
 | 4 | hjv-api 설치. 비밀번호 없는 연결 스위치는 꺼진 채로, nginx는 그대로 | 운영 에이전트(사용자 승인) | 7-3 |
 | 5 | 키와 자격 증명 만들기 | **사용자만**(운영 에이전트는 멈춤) | 7-4 |
@@ -560,12 +560,11 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 
 ### 7-1. 시작하기 전 (0~2단계, 사용자와 개발 PC)
 
-서버에서 하는 일이 아닙니다. 3단계를 시작하기 전에 다음이 끝났는지 사용자에게 확인합니다.
+서버에서 하는 일이 아닙니다. 3단계를 시작하기 전에 1번의 결정·질문의 답과 2~4번이 끝났는지 사용자에게 확인합니다. 1번의 현장 시험과 5번은 push 뒤에 해도 되지만, 5번에 적은 때까지는 끝나야 합니다.
 
-1. 원격 켜기의 현장 시험(NAS의 DSM 작업으로 PC를 깨워 봄, [relay-dsm.md](relay-dsm.md)의 현장 시험 장과 [부록](relay-dsm.md#부록-현장-시험-보충))과 남은 결정·질문의 답.
-2. 개발 PC: 모든 작업 묶음을 합친 커밋에서 `scripts/ci.sh server`, `client`(Rust 1.75 check 포함), `deploy`, `e2e`, `wol`, `leak`이 통과하고, privacy.md, architecture.md, 이 런북이 그 커밋에 들어 있음([ci.md](ci.md)).
-   - 출시 전에 Windows·iOS 전용 코드를 따로 빌드해 보지 않습니다(결정 O2). 그 코드는 8단계에서 처음 컴파일되고, 실패하면 고친 뒤 한 번 더 push합니다.
-   - 1번의 현장 시험 결과가 [wol-pc-setup.md](wol-pc-setup.md) 2장의 "현장 시험 결과"에 들어 있음: 표, 시험한 HJViewer 판, 상태 줄. 결과가 그 문서나 [relay-dsm.md](relay-dsm.md) 부록의 일반 안내와 다르면 그 안내도 고치고(대조할 곳은 그 절의 주석에 있음), 고친 뒤 `leak`을 다시 돌립니다. 표에 '시험 전'이 남아 있으면 push하지 않습니다.
+1. 원격 켜기의 현장 시험(NAS의 DSM 작업으로 PC를 깨워 봄, [relay-dsm.md](relay-dsm.md)의 현장 시험 장과 [부록](relay-dsm.md#부록-현장-시험-보충))과 남은 결정·질문의 답. 현장 시험은 깨울 PC인 개발 PC가 작업을 쉬는 동안에만 할 수 있어서, push를 막지 않고 출시 태그를 막습니다(5번).
+2. 개발 PC: 모든 작업 묶음을 합친 커밋에서 `scripts/ci.sh server`, `client`(Rust 1.75 check 포함), `deploy`, `e2e`, `wol`, `leak`이 통과하고, privacy.md, architecture.md, 이 런북, README의 "현재 상태" 표가 그 커밋의 내용으로 고쳐져 있음([ci.md](ci.md)).
+   - Windows·iOS 전용 코드를 작업 브랜치로 미리 빌드해 보지 않습니다(결정 O2). 그 코드는 4번의 push 바로 뒤에 돌리는 **확인 빌드**(`check_only=true`, [ci.md](ci.md)의 "실행")에서 처음 컴파일됩니다. 확인 빌드는 공개키 없이 돌고, 산출물을 나눠 주지 않으며, 태그를 붙이지 않습니다. 실패하면 고친 뒤 한 번 더 push합니다. 구현이 모두 끝나면 바로 앱 빌드를 시작한다는 사용자 결정(2026-10-13)에 따른 순서입니다.
 3. **push 전 관문 둘**
    - `scripts/ci.sh leak` 통과: 운영 도메인, 학교 공인 주소 대역, NAS·PC의 주소와 MAC, 부서 공유 폴더 이름, 실제 포탈 ID가 추적 파일, 패치, push할 커밋에 없음. 값 목록 `build/leak-patterns.txt`는 사용자가 만듭니다([ci.md](ci.md)의 "push 전 검사").
    - **연세 SSO 연동 코드를 공개해도 되는지에 대한 답**(질문 10). `server/api`(연세 SSO password grant를 하는 `sso.rs` 포함)는 이 push로 처음 공개됩니다. 비밀값은 저장소에 없습니다.
@@ -573,7 +572,16 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
      - '안 됨'이면 push 전에 아직 push하지 않은 커밋을 다시 짜서 `server/api`와 그 배치 파일(`deploy/systemd/hjviewer-api*`, `deploy/nginx-hjviewer-api*.conf`)을 공개 역사에서 빼고, 사용자가 따로 만드는 비공개 저장소에 둡니다. 코드를 두지 않는 빌드 전용 저장소(`hjviewer-private`)는 쓰지 않습니다. 서버 묶음의 hjv-api는 그 비공개 저장소에서 만들고, 공개 저장소의 `scripts/package-server.sh`는 `server/api`가 없으면 hjv-api를 빼고 묶습니다. 앱의 봉인·요청 서명 코드(클라이언트 패치)와 hbbs 0004는 배포하거나 네트워크로 제공하는 AGPL 코드의 수정이라 그대로 공개합니다. `GET /api/hjv/source`는 공개된 부분만 가리킵니다.
        - 이때 hjv-api 묶음은 그 비공개 저장소의 Release에 둡니다. 배치는 공개 묶음과 같게 합니다(`bin/hjv-api`, `systemd/hjviewer-api*`, `web/nginx-hjviewer-api*.conf`, env 예시, 저널 보관 설정, 고지, 그 묶음만의 `SHA256SUMS`). 서버는 토큰 없이 비공개 Release를 받을 수 없으므로, 사용자가 받아 서버에 올리고 7-3을 그 묶음으로 합니다(7-3 끝, 고지는 따로 둠). hbbs, hbbr과 그 고지(7-6)는 공개 묶음에서 받습니다.
        - push 전에 README, NOTICE, architecture.md 7절에서 hjv-api를 이 저장소의 AGPL 프로그램이라고 적은 문장과 `server/api/README.md`를 가리키는 링크(README, architecture.md, 이 런북)도 고칩니다.
-4. 마지막 push(출시 태그는 아직 붙이지 않음). 그 공개 커밋으로 서버 묶음 `server-<VERSION>`을 만들어 Release에 올립니다([ci.md](ci.md)의 "서버 Release 만들기"). 묶음에는 hbbs(패치 0004, 최소 버전 작업이 있으면 0005도), hbbr, hjv-api, 유닛(소켓, 서비스, 감시·백업 타이머), nginx 파일과 zones 파일, env 예시, 저널 보관 설정, 고지가 들어 있고, `SHA256SUMS`에는 그 묶음 한 줄만 있습니다.
+4. push(출시 태그는 아직 붙이지 않음)와 확인 빌드. 그 공개 커밋으로 서버 묶음 `server-<VERSION>`을 만들어 Release에 올립니다([ci.md](ci.md)의 "서버 Release 만들기"). 묶음에는 hbbs(패치 0004, 최소 버전 작업이 있으면 0005도), hbbr, hjv-api, 유닛(소켓, 서비스, 감시·백업 타이머), nginx 파일과 zones 파일, env 예시, 저널 보관 설정, 고지가 들어 있고, `SHA256SUMS`에는 그 묶음 한 줄만 있습니다.
+5. **개발 PC의 CI가 보지 못해 push 뒤에 남는 것**. 하나씩 사용자와 확인하고, 적힌 때까지 끝냅니다.
+   - **현장 시험 결과(출시 태그 전)**: 사용자가 1번의 현장 시험을 마치면 [wol-pc-setup.md](wol-pc-setup.md) 2장 "현장 시험 결과"의 표, 시험한 HJViewer 판, 상태 줄을 채우고, 그 절의 주석에 있는 대조 목록(그 문서의 일반 안내와 [relay-dsm.md](relay-dsm.md) 부록의 결과 읽기 표)을 처리한 뒤 `scripts/ci.sh leak`을 다시 돌려 push합니다. 표에 '시험 전'이 남아 있는 동안에는 출시 태그 `client-1.6.0`을 붙이지 않습니다. 확인 빌드를 위한 첫 push는 표를 '현장 시험 전'이라고 사실대로 둔 채 나가도 됩니다.
+   - **TCP 펀치 시험(출시 태그 전)**: 클라이언트 lib 시험 `rendezvous_mediator::tests::a_punch_that_meets_the_peers_syn_connects_both_ends`(루프백에서 TCP 동시 열기)는 WSL2인 개발 PC에서 통과할 수 없고(1.5.1의 트리에서도 실패), 클라이언트 패치 0031이 그 파일 `src/rendezvous_mediator.rs`를 건드렸습니다. WSL이 아닌 리눅스(CPU 2개 이상. 하나뿐이면 이 시험은 아무것도 확인하지 않고 통과함)에서 패치를 적용한 트리로 한 번 돌려 통과를 확인합니다([e2e.md](e2e.md) "실행"의 3)과 같은 빌드 환경에서 `cargo test --locked --features linux-pkg-config --lib a_punch_that_meets_the_peers_syn_connects_both_ends`). 그럴 수 없으면 방화벽 E2E가 그 경로를 덮는다고 보는 이유를 [e2e.md](e2e.md)에 적어 둡니다.
+   - **열린 질문(8단계의 출시 빌드 전에 사용자가 정함)**: 기기 키가 바뀐 PC(설정까지 지우고 다시 설치한 PC 등)가 `needs-relogin`이 되기까지 설계는 1분 안이라고 했지만, 지금 구현은 다시 켜진 뒤 약 2분(96~144초)입니다. 다시 켜진 PC가 hbbs에 등록하기 전에 첫 동기화를 보내 거절되고, 다음 동기화가 약 120초 뒤이기 때문입니다. 그동안 컨트롤러에는 비밀번호 창 대신 키 바뀜 경고가 뜹니다(안전한 쪽). 그대로 두고 문서를 '약 2분'으로 맞출지, 거절된 PC가 60초쯤 뒤에 한 번 더 묻게 앱을 고칠지 정합니다.
+   - **사용자만 할 수 있는 실기기 시험**. Windows·iOS 전용 코드는 컴파일만 확인했고 실행해 본 적이 없으며, 실제 DSM과 실제 랜카드도 써 보지 못했습니다. 결과가 기대와 다르면 고친 뒤 다시 빌드합니다.
+     - Windows 설치와 비밀번호 없는 로그인(11단계, 7-9): 1.6.0을 1.5.1 위에 설치하고 로그인해 알림과 설정 → 계정의 줄을 보고, 관리자가 스위치를 켠 뒤(12단계) 휴대폰에서 비밀번호 없이 연결합니다. [끄기], [이 PC 빼기], 로그아웃이 그 PC에서 바로 듣는지, 재부팅 뒤 로그온 화면, 다른 Windows 사용자, 다시 설치와 제거 뒤도 봅니다.
+     - 아이폰 로그인(11단계, 7-9): TestFlight의 1.6.0에서 로그인해 "액세스 가능한 장치"의 내 PC에 비밀번호 없이 연결하고, 새 기기 알림([내 기기 맞음], [아님]), '로그인한 기기' 목록, 잠긴 동안의 "보안 키를 지금 쓸 수 없습니다", 백업에서 복원한 뒤의 "로그인이 풀렸습니다"를 봅니다.
+     - NAS 중계기 설치(15단계, 7-11): [relay-dsm.md](relay-dsm.md)대로 DSM에 설치하고(부서의 허락을 받은 뒤, 질문 14) 로그의 등록 코드, 승인 뒤의 `등록이 승인되어 켜기 명령을 기다립니다.`, `status` 작업의 결과를 봅니다.
+     - 휴대폰의 켜기 메뉴(15단계 뒤): 꺼진 내 PC의 카드 메뉴 "켜기"와 카드를 누를 때의 권유, 진행 문구의 순서, 켜진 뒤 연결("연결합니다…"가 30초 안인지), 진행 창을 닫았다가 다시 뜨는 것, NAS를 껐을 때와 5분 안에 켜지지 않을 때의 문구를 봅니다. PC 쪽에서는 묶은 뒤 1~3분 안에 서비스 로그의 `hjv: wake-on-LAN report: 1 wired card(s)`, 깨운 뒤 아무도 연결하지 않아도 10분 넘게 깨어 있는지와 `hjv: resumed: staying awake for ten minutes`를 봅니다.
 
 ### 7-2. 읽기 점검 (3단계)
 
@@ -806,9 +814,9 @@ cd / && rm -rf "$T"
 서버에서 할 일은 `sudo /opt/hjviewer/bin/hjv-api admin selfcheck`의 지문 줄을 다시 보고하는 것뿐입니다. 나머지는 개발 PC와 사용자가 합니다([ci.md](ci.md)의 "계정 기능의 공개키", "hjv-relay 빌드").
 
 1. 비공개 빌드 저장소의 시크릿에 `HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`, `HJV_COMMAND_PUBKEY`(그리고 최소 버전 작업의 `HJV_UPDATE_PUBKEY`)를 넣습니다. 공개값입니다.
-2. 2단계의 커밋으로 Windows(`HJViewer.exe`), Android, iOS, hjv-relay를 **`testflight=false`**로 빌드합니다. Windows·iOS 전용 코드는 여기서 처음 컴파일됩니다(결정 O2). 실패하면 개발 PC에서 고치고 다시 push한 커밋으로 빌드합니다. 서버 코드가 바뀌었으면 서버 묶음과 3~7단계의 해당 부분도 다시 합니다.
+2. 2단계의 커밋으로 Windows(`HJViewer.exe`), Android, iOS, hjv-relay를 **`testflight=false`**로 빌드합니다. Windows·iOS 전용 코드는 2단계의 확인 빌드에서 이미 컴파일해 본 것이고(7-1), 여기서는 공개키를 넣은 출시 빌드를 만듭니다. 실패하면 개발 PC에서 고치고 다시 push한 커밋으로 빌드합니다. 서버 코드가 바뀌었으면 서버 묶음과 3~7단계의 해당 부분도 다시 합니다.
 3. 빌드 요약의 고정 공개키 지문이 `selfcheck`의 지문, 그리고 5단계에서 사용자가 본 지문과 같은지 사람이 대조합니다. 봉인 키 ID는 지문의 앞 16자리입니다.
-4. 같으면 그 커밋에 출시 태그 `client-1.6.0`, `relay-1.6.0`을 붙입니다. 아직 나눠 주지 않습니다(TestFlight 업로드는 9단계 뒤).
+4. 같고, 7-1의 5번에서 출시 태그 전에 끝내기로 한 것(현장 시험 결과, TCP 펀치 시험)이 끝났으면 그 커밋에 출시 태그 `client-1.6.0`, `relay-1.6.0`을 붙입니다. 아직 나눠 주지 않습니다(TestFlight 업로드는 9단계 뒤).
 
 ### 7-8. nginx 전환 (9단계)
 
