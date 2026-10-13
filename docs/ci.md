@@ -92,7 +92,7 @@ macOS와 Linux 앱은 빌드하지 않습니다.
 - **실제 서버용 빌드**: 비공개 빌드 저장소에서 실행합니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=all`
 - **TestFlight 업로드**: `testflight`를 켜면 서명된 App Store IPA를 App Store Connect에 올립니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=ios -f testflight=true`. 비공개 저장소, App Store 프로파일, 아래의 App Store Connect 시크릿이 필요합니다.
 - **Google Play 업로드**: `play`를 켜면 서명된 AAB를 Google Play **내부 테스트** 트랙에 올립니다. TestFlight 업로드의 Android판입니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=android -f play=true`. 비공개 저장소, Android 키스토어, 아래 "Google Play 업로드"의 시크릿 2개가 필요하고, `platforms`는 `android`나 `all`이어야 합니다. `play_release`로 올리는 방식을 고릅니다.
-  - `completed`(기본값): 바로 출시합니다. 테스터의 Play 스토어가 몇 분 안에 업데이트합니다.
+  - `completed`(기본값): 바로 출시합니다. Play가 처리를 마치면 보통 몇 분 안에 테스터가 받을 수 있게 됩니다. 실제로 설치되는 때는 휴대폰마다 다릅니다. Play 스토어의 자동 업데이트 설정을 따르고, 테스터가 Play 스토어에서 직접 업데이트할 수도 있습니다.
   - `draft`: 초안으로만 올립니다. Play Console에서 직접 출시합니다.
   - `validate`: 번들을 올리고 트랙까지 설정한 뒤 Play의 검증만 받고 버립니다. 아무것도 출시하지 않습니다. 설정을 마친 뒤 첫 실행에 씁니다.
 - **확인 빌드(`check_only`)**: 출시 전에 코드가 세 플랫폼에서 빌드되는지만 봅니다(설계 3판 6-4, 결정 O2 (a)). 1.6.0의 공개키 필수 검사를 건너뛰므로 키를 만들기 전에도 돌릴 수 있습니다. 산출물 이름에 `-check`가 붙고 하루만 남으며, `testflight`나 `play`를 함께 켜면 실행이 바로 실패합니다. hjv-relay는 서버 값 없는 시험 빌드가 되고 Release를 만들지 않습니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=all -f check_only=true`. 확인 빌드의 산출물은 나눠 주지 않습니다.
@@ -342,11 +342,16 @@ gh secret set IOS_TEAM_ID --body ABCDE12345
 
 워크플로가 하는 일은 다음과 같습니다.
 
-1. **AAB 빌드**: 비공개 저장소의 서명 빌드는 `play`와 상관없이, APK 아티팩트를 올린 다음 arm64 AAB를 만듭니다. 번들이 실패해도 APK는 남습니다. 첫 업로드는 Play Console에서 직접 해야 하므로, 그때 쓸 AAB가 늘 있습니다. 아티팩트 이름은 `HJViewer-<이름>-android-aarch64-play`입니다.
-2. **서명과 검사**: 릴리스 키스토어로 jarsigner 서명을 한 번 합니다. 비밀번호는 환경 변수로만 넘깁니다. 이어서 다음을 확인하고, 하나라도 틀리면 Android 잡이 실패합니다.
+1. **AAB 빌드**: 비공개 저장소의 서명 빌드는 `play`와 상관없이, APK 아티팩트를 올린 다음 arm64 AAB를 만듭니다. 첫 업로드는 Play Console에서 직접 해야 하므로, 그때 쓸 AAB가 늘 있습니다. 아티팩트 이름은 `HJViewer-<이름>-android-aarch64-play`입니다.
+   - 번들을 빌드하기 직전에 Play 전용 매니페스트(`client/play/AndroidManifest.xml`)를 넣습니다. APK는 이미 빌드된 뒤라 이 파일은 번들에만 적용됩니다(아래 "Play 번들에서 빼는 것").
+   - APK 서명 액션이 작업 폴더에 남긴 키스토어 사본은 번들 빌드(Gradle, 플러그인의 빌드 스크립트)가 시작되기 전에 지웁니다.
+   - **번들 단계가 실패하면**: APK 아티팩트는 번들 단계보다 먼저 올라가므로 어느 경우든 그대로 쓸 수 있습니다. `play`를 켠 실행과 확인 빌드(`check_only`)에서는 Android 잡이 실패합니다. 그 밖의 실행에서는 Android 잡이 성공으로 끝나고, 실행 화면에 경고 "This run has no Play bundle"과 요약 한 줄이 남으며, `…-android-aarch64-play` 아티팩트가 없습니다. Play에 아무것도 올리지 않는 실행이 번들 때문에 실패로 보이지 않게 하려는 것입니다.
+2. **서명과 검사**: 릴리스 키스토어로 jarsigner 서명을 한 번 합니다. 비밀번호는 환경 변수로만 넘깁니다. 서명을 확인한 뒤에는 키스토어 파일을 지우고 비밀번호를 환경에서 없앤 다음에 bundletool을 내려받아 돌립니다. 이어서 다음을 확인하고, 하나라도 틀리면 이 단계가 실패합니다(잡이 실패하는지는 1번과 같음). 검사에 실패한 번들은 아티팩트로 올리지 않습니다.
    - 서명자가 하나이고, 그 인증서가 키스토어의 것인지
    - `bundletool validate`, 패키지 이름 `kr.ac.yonsei.hjviewer`, versionCode(같은 실행의 APK와 같은지), versionName(`HJV_VERSION`), targetSdk 36 이상, 디버그 빌드가 아닌지
    - 네이티브 라이브러리가 arm64-v8a뿐이고 16KB 페이지에 맞게 정렬되었는지
+   - Rust 코어 `librustdesk.so`와 `libc++_shared.so`, Flutter의 `libflutter.so`, `libapp.so`가 들어 있는지. Rust 코어가 빠진 번들은 어느 기기에서도 시작되지 않는데, Flutter 라이브러리만으로도 위 검사는 통과하기 때문입니다.
+   - Play 전용 매니페스트가 병합되었는지, 사이드로드 전용 항목(`PLAY_FORBIDDEN`)이 없는지(아래 "Play 번들에서 빼는 것")
    - Play 선언 대상 목록(`PLAY_MANIFEST`, 아래)이 그대로인지
 
    실행 요약에 versionCode, 크기, 업로드 인증서 SHA-256이 나옵니다.
@@ -354,6 +359,7 @@ gh secret set IOS_TEAM_ID --body ABCDE12345
    - 어디서 실패하든 편집을 지우므로, 반쯤 올라간 상태가 남지 않습니다.
    - 진행 중인 심사는 취소하지 않습니다. 심사 중이면 실패하고 아무것도 커밋하지 않습니다.
    - 이미 출시된 같은 번들(같은 sha256)을 다시 올리면 아무것도 바꾸지 않고 성공합니다.
+   - 트랙이 이미 내보내는 versionCode보다 낮은 번들은 올리지 않고 실패합니다. Google Play internal 잡은 도착한 순서로 돌고 versionCode 순서로 돌지 않습니다. 그래서 옛 실행의 잡을 나중에 다시 돌리면 더 낮은 번들이 올라갈 수 있고, Play가 그런 출시를 받아들이면 테스터는 아무도 그 번들을 받지 못합니다. 비교 대상은 내부 테스트 트랙의 출시 가운데 초안이 아닌 것입니다.
    - 출시 노트(ko-KR)는 `HJViewer <버전> (<versionCode>)`와 이 빌드의 소스 커밋 링크입니다.
    - 서비스 계정 키는 이 잡의 업로드 단계에만 들어갑니다. 서드파티 빌드 코드(Gradle, cargo, pub)가 도는 Android 잡에는 들어가지 않습니다. 스크립트는 키도 토큰도 출력하지 않습니다.
 
@@ -373,20 +379,25 @@ gh secret set IOS_TEAM_ID --body ABCDE12345
 
 Play 개발자 계정은 이미 있습니다. 계정에 남은 확인 요청(신원, 연락처, Android 기기 인증)이 있으면 먼저 끝냅니다.
 
-1–3, 6–8단계는 지금 해도 됩니다. 4–5단계는 이 워크플로가 공개 저장소에 올라가고, 비공개 `build.yml`이 그 커밋을 가리킨 뒤에 합니다. 서비스 계정 권한은 적용에 시간이 걸릴 수 있으니 6–8단계를 일찍 하는 편이 좋습니다.
+1, 3, 6–8단계는 지금 해도 됩니다. 4–5단계는 이 워크플로가 공개 저장소에 올라가고, 비공개 `build.yml`이 그 커밋을 가리킨 뒤에 합니다. 2단계와 5단계는 개인정보처리방침에 카메라·마이크 절이 들어간 뒤에 합니다(표 아래). 서비스 계정 권한은 적용에 시간이 걸릴 수 있으니 6–8단계를 일찍 하는 편이 좋습니다.
 
 | # | 어디서 | 할 일 |
 |---|---|---|
 | 1 | Play Console → 앱 만들기 | 이름 `HJViewer`, 기본 언어 **한국어(ko-KR)**, 앱, 무료, 선언 동의. 출시 노트가 ko-KR이므로 기본 언어를 한국어로 둡니다. 패키지 이름은 첫 업로드로 `kr.ac.yonsei.hjviewer`로 정해지고, 바꿀 수 없습니다. |
-| 2 | 앱 콘텐츠 | 개인정보처리방침 URL `https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md`, 광고 없음, 광고 ID 사용 안 함. [privacy.md](privacy.md)에 카메라·마이크 사용 문장이 먼저 있어야 합니다. 스토어 등록정보, 콘텐츠 등급, 타깃층, 데이터 보안은 **하지 않습니다.** 내부 테스트는 앱 설정을 마치기 전에 시작할 수 있고, 설정을 다 마친 앱은 첫 내부 출시도 심사를 받기 때문입니다. 전체 앱을 올리면 접근성 API 선언과 포그라운드 서비스 선언(유형마다 설명과 시연 영상)도 여기서 합니다. 제어 전용 Play 빌드라면 이 두 선언은 필요 없습니다([distribution.md](distribution.md)의 "정할 것"). |
+| 2 | 앱 콘텐츠 | 개인정보처리방침 URL `https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md`, 광고 없음, 광고 ID 사용 안 함. 방침에 카메라·마이크 절이 먼저 있어야 합니다(표 아래). 스토어 등록정보, 콘텐츠 등급, 타깃층, 데이터 보안은 **하지 않습니다.** 내부 테스트는 앱 설정을 마치기 전에 시작할 수 있고, 설정을 다 마친 앱은 첫 내부 출시도 심사를 받기 때문입니다. 1.6.0부터 모든 Android 빌드가 제어 전용이라 접근성 API 선언과 포그라운드 서비스 선언은 필요 없습니다([distribution.md](distribution.md)의 "Android: Google Play 내부 테스트"). 두 선언이 필요한 1.5.1 이하의 번들은 Play에 올리지 않습니다. |
 | 3 | 테스트 및 출시 → 내부 테스트 → 테스터 | 이메일 목록을 만들어 테스터의 Google 계정을 넣습니다(최대 100명). 휴대폰 Play 스토어에 로그인한 계정이어야 합니다. 피드백 이메일을 적고 저장한 뒤, "웹에서 참여" 링크를 복사해 둡니다. |
-| 4 | 터미널 | 첫 AAB를 만들어 받습니다. `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=android`가 끝나면 `gh run download <실행 ID> -R yonsei-projecttf/hjviewer-private -n HJViewer-<버전>-<커밋 7자리>-android-aarch64-play`. 실행 요약에서 versionCode와 업로드 인증서 SHA-256을 봅니다. 제어 전용 Play 빌드로 정했다면 그 패치가 들어간 커밋으로 빌드합니다. |
+| 4 | 터미널 | 첫 AAB를 만들어 받습니다. `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=android`가 끝나면 `gh run download <실행 ID> -R yonsei-projecttf/hjviewer-private -n HJViewer-<버전>-<커밋 7자리>-android-aarch64-play`. 실행 요약에서 versionCode와 업로드 인증서 SHA-256을 봅니다. 제어 전용 패치가 들어간 1.6.0 이후의 커밋으로 빌드합니다. 실행 화면에 경고 "This run has no Play bundle"이 있으면 번들이 만들어지지 않은 것입니다. Android 잡의 번들 단계 로그에서 까닭을 봅니다. |
 | 5 | 내부 테스트 → 새 버전 만들기 | ① 처음 한 번 나오는 앱 서명 키 선택은 **Google 생성 키(기본값)** 를 그대로 둡니다. ② 4의 AAB를 올립니다. ③ 출시 노트를 적습니다. ④ 다음을 눌러 오류 요약을 봅니다. 오류는 해결해야 하고(선언 등), 경고는 출시를 막지 않습니다. ⑤ 내부 테스트로 출시를 시작합니다. ⑥ 설정 → 앱 무결성의 업로드 인증서 SHA-256이 실행 요약의 값과 같은지 봅니다. API로는 첫 업로드를 할 수 없어서 이 단계는 직접 합니다. |
 | 6 | Google Cloud 콘솔 | 새 프로젝트를 만듭니다. 조직이 없는 개인 Google 계정의 프로젝트를 권장합니다. API 및 서비스 → 라이브러리에서 **Google Play Android Developer API**를 사용 설정합니다. IAM 및 관리자 → 서비스 계정 → 만들기(예: `play-upload`, Cloud 역할 없음) → 키 → 키 추가 → 새 키 만들기 → **JSON**으로 `key.json`을 내려받습니다. Play 계정과 Cloud 프로젝트를 연결할 필요는 없습니다. |
 | 7 | Play Console → 사용자 및 권한 | 새 사용자 초대 → 서비스 계정 이메일. 계정 권한은 모두 끕니다. 앱 권한 → HJViewer → **"테스트 트랙에 앱 출시"(Release apps to testing tracks)만** 켜고 초대합니다. 프로덕션에는 출시할 수 없는 권한입니다. |
 | 8 | 키 파일이 있는 PC의 터미널 | 아래 명령으로 시크릿 2개를 넣고 `key.json`을 지웁니다. |
 | 9 | 터미널 | 첫 CI 업로드는 검증만 합니다. `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=android -f play=true -f play_release=validate`. 요약이 "validated … nothing was released"이면 `play_release` 없이(기본값 `completed`) 다시 실행합니다. 새 실행이라 다시 빌드합니다. |
 | 10 | 테스터에게 | 3의 참여 링크를 보냅니다. 테스터는 링크에서 참여한 뒤 Play 스토어에서 설치합니다. 사이드로드한 HJViewer가 있으면 먼저 지웁니다. 서명이 달라서 Play 앱이 그 위에 설치되지 않기 때문입니다. 이때 그 휴대폰의 로컬 설정, 기기 ID, 최근 접속 목록이 지워집니다. |
+
+**개인정보처리방침의 카메라·마이크 절**: 번들은 `CAMERA`와 `RECORD_AUDIO` 권한을 요청합니다. 이런 번들은 방침 URL이 없으면 내부 트랙에서도 거절된다는 보고가 있고, 방침은 그 권한을 어디에 쓰는지 말해야 합니다. 그래서 2단계(URL 등록)와 5단계(첫 업로드)는 [privacy.md](privacy.md)에 이 절이 들어간 판이 공개 저장소 main에 올라간 뒤에 합니다. 이 절은 1.6.0 문서 작업이 "카메라와 마이크"라는 제목으로 넣습니다. 1.6.0보다 먼저 Play에 올리려면 이 절만 먼저 넣습니다. 절에는 다음 내용이 있어야 합니다.
+
+- 마이크는 세션 중 직접 시작한 음성 통화에만 씁니다. 소리는 상대 기기로 종단 간 암호화되어 가고 저장하지 않습니다.
+- 카메라는 설정 화면의 QR 코드 읽기에만 쓰고, 영상은 기기 밖으로 나가지 않습니다.
 
 8단계 명령(키를 채팅이나 저장소, `build/`에 두지 않습니다):
 
@@ -400,38 +411,99 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
 
 - 값은 파이프로 `gh`에 들어가므로 셸 기록이나 명령줄에 남지 않습니다.
 - 2024-05-03 이후 만든 Google Cloud 조직은 서비스 계정 키 생성을 기본으로 막습니다. 6단계에서 키를 만들 수 없으면 Workload Identity Federation(키 없는 인증)으로 바꿔야 하고, 그때는 워크플로도 고칩니다.
-- 권한 적용에 24–48시간 걸렸다는 보고가 있습니다. 설정 직후 403이 나면 기다렸다가 다시 실행합니다. 트랙이나 번들 목록을 읽다가 403이 계속 나면 같은 앱 권한에 "앱 정보 보기(읽기 전용)"를 더합니다.
+- 권한 적용에 24–48시간 걸렸다는 보고가 있습니다. 설정 직후 `does not have permission`이나 `insufficient permissions`라는 메시지로 실패하면 기다렸다가 다시 실행합니다. 기다리는 것은 이 메시지일 때만입니다. 다른 메시지의 403은 기다려도 풀리지 않으니 아래 "오류와 대처"를 봅니다. 트랙이나 번들 목록을 읽다가 같은 메시지가 계속 나면 같은 앱 권한에 "앱 정보 보기(읽기 전용)"를 더합니다.
 
 ### Play 선언 대상 (`PLAY_MANIFEST`)
 
 Play Console의 권한·포그라운드 서비스·접근성 선언 안내는 손으로 올릴 때만 나오고, CI 업로드에서는 나오지 않는다는 보고가 있습니다. 선언이 빠진 번들은 커밋이 막힐 수 있습니다(포그라운드 서비스 선언이 없어 내부 테스트 트랙 커밋이 403으로 실패한 보고가 있음). 그래서 "Sign and check Play bundle" 단계는 번들의 다음 항목을 고정 목록 `PLAY_MANIFEST`와 비교합니다.
 
 - 요청하는 권한 전체(`uses-permission`, `uses-permission-sdk-23`)
-- 포그라운드 서비스 유형(지금 `0x400000a0` = specialUse, mediaProjection, microphone)
-- 접근성 서비스(지금 `com.carriez.flutter_hbb.InputService`)
+- 포그라운드 서비스 유형
+- 접근성 서비스
 
-다르면 diff(`>` = 새로 생김, `<` = 없어짐)를 보여 주고 Android 잡이 실패합니다. 패치나 플러그인 업데이트로 항목이 바뀌면, Play Console → 앱 콘텐츠에서 해당 선언을 먼저 확인하거나 고친 뒤 같은 커밋에서 목록을 고칩니다.
+다르면 diff(`>` = 새로 생김, `<` = 없어짐)를 보여 주고 단계가 실패합니다. 패치나 플러그인 업데이트로 항목이 바뀌면, Play Console → 앱 콘텐츠에서 해당 선언을 먼저 확인하거나 고친 뒤 같은 커밋에서 목록을 고칩니다.
 
-지금 목록은 1.5.1에서 잰 값입니다. 권한 14개 가운데 `CAMERA`는 QR 스캐너 플러그인이 더합니다. `MANAGE_EXTERNAL_STORAGE`와 저장소 읽기·쓰기 권한은 upstream이 빼므로 없습니다. Play용 빌드를 제어 전용으로 만들면 접근성 서비스, 포그라운드 서비스 유형과 관련 권한이 빠지므로, 이 목록도 그 패치와 같은 커밋에서 줄입니다.
+지금 목록은 제어 전용 빌드의 것입니다. 1.6.0부터 모든 Android 빌드가 제어 전용입니다. 권한 7개뿐이고, 포그라운드 서비스 유형과 접근성 서비스는 없습니다. 하나라도 나타나면 실패합니다.
+
+| 권한 | 쓰임 |
+|---|---|
+| `INTERNET`, `ACCESS_NETWORK_STATE` | 서버와 상대 기기에 연결 |
+| `RECORD_AUDIO` | 세션 중 음성 통화 |
+| `CAMERA` | 설정의 QR 읽기. QR 스캐너 플러그인이 더합니다 |
+| `POST_NOTIFICATIONS`, `WAKE_LOCK` | 앱의 매니페스트에 남아 있는 것 |
+| `kr.ac.yonsei.hjviewer.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` | AndroidX가 앱마다 더하는 내부 권한 |
+
+- 이 목록은 아직 실제 빌드에서 재지 않았습니다. 1.5.1 번들에서 잰 권한 14개에서 제어 전용 패치가 빼는 7개(`FOREGROUND_SERVICE` 4종, `SYSTEM_ALERT_WINDOW`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `RECEIVE_BOOT_COMPLETED`)를 뺀 값입니다. 플러그인이 같은 권한을 따로 요청하면 첫 실제 실행에서 diff로 드러납니다. 그때 diff를 보고 패치나 목록을 맞춥니다.
+- `MANAGE_EXTERNAL_STORAGE`와 저장소 읽기·쓰기 권한은 upstream이 빼므로 없습니다.
+- 사이드로드 전용 권한은 이 목록에 넣지 않습니다(다음 절).
+
+### Play 번들에서 빼는 것 (`client/play/AndroidManifest.xml`)
+
+사이드로드 APK에만 있어야 하는 권한과 구성요소는 Play 번들에서 뺍니다. 지금은 앱 안 업데이트가 쓰는 둘입니다. 앱 안 업데이트는 새 APK를 받아 설치하는데, Play에서 받은 앱은 Play 말고 다른 방법으로 자신을 업데이트하면 안 됩니다.
+
+- 권한 `android.permission.REQUEST_INSTALL_PACKAGES`
+- 제공자 `com.carriez.flutter_hbb.HjvUpdateFileProvider`
+
+**빼는 방법**: "Build Play bundle" 단계가 `client/play/AndroidManifest.xml`을 `flutter/android/app/src/release/AndroidManifest.xml`로 복사한 뒤에 번들을 빌드합니다. 빌드 유형(release)의 매니페스트는 앱의 매니페스트와 플러그인의 매니페스트보다 우선합니다. 그래서 이 파일이 `tools:node="remove"`로 적은 항목은 병합된 매니페스트에서 빠집니다. APK는 그 전에 빌드되므로 그대로입니다.
+
+**확인하는 방법**: "Sign and check Play bundle" 단계가 번들의 매니페스트에서 두 가지를 봅니다.
+
+- 표지 `<meta-data android:name="kr.ac.yonsei.hjviewer.PLAY_OVERLAY" android:value="play">`가 있는지. 이 표지는 Play 전용 매니페스트에만 있습니다. 없으면 그 파일 없이 빌드된 번들입니다.
+- 고정 목록 `PLAY_FORBIDDEN`(위 두 항목)이 번들에 없는지. 권한은 `uses-permission`과 `uses-permission-sdk-23`을 모두 보고, 제공자는 번들의 모든 `provider`를 봅니다.
+
+**고칠 때의 규칙**
+
+- 사이드로드 전용 권한이나 구성요소가 새로 생기면 `client/play/AndroidManifest.xml`과 `PLAY_FORBIDDEN`에 함께 넣습니다. **`PLAY_MANIFEST`에는 넣지 않습니다.** 거기에 넣으면 검사는 통과하지만 그 권한이 Play로 나갑니다.
+- 같은 내용을 두 곳에 적는 까닭이 있습니다. 매니페스트 파일에서 이름을 잘못 적으면 그 항목은 빠지지 않는데, 그때 `PLAY_FORBIDDEN` 검사가 잡습니다.
+- 두 곳이 서로 맞는지는 빌드 전에도 확인됩니다. `scripts/ci.sh client`의 오프라인 시험(`scripts/test_play_upload.py`의 `PlayBundleListsTest`)이 다음을 봅니다. 매니페스트 파일이 빼는 항목과 `PLAY_FORBIDDEN`이 같은지, 그 항목이 `PLAY_MANIFEST`에 없는지, `PLAY_MANIFEST`에 피제어 쪽 항목이 없는지, 표지의 이름과 값이 검사 단계의 것과 같은지, 파일을 복사하는 자리가 APK 빌드와 번들 빌드 사이인지. 앱 안 업데이트 패치가 `client/patches`에 들어온 뒤에는, 그 패치가 앱의 매니페스트에 더하는 설치 권한과 제공자(`hjv_update_paths`를 쓰는 것)가 `PLAY_FORBIDDEN`에 있는지도 봅니다. 그 전에는 이 시험만 건너뜁니다.
+- 클래스 이름은 전체 이름으로 적습니다(앱의 클래스는 `com.carriez.flutter_hbb`에 있음). 이 파일에는 짧은 이름을 채워 줄 `package` 속성이 없습니다.
+- 위 두 이름은 앱 안 업데이트 패치가 쓰기로 한 이름입니다. 그 패치가 다른 이름을 쓰면 위 시험이 실패합니다. 그때는 두 곳을 같은 커밋에서 고칩니다.
+- upstream에 `src/release/AndroidManifest.xml`이 생기면 "Build Play bundle" 단계가 실패합니다. 그때는 두 파일을 합치도록 단계를 고칩니다.
+- 실제 러너의 Gradle이 이 파일을 병합하는지는 첫 실제 실행에서 표지 검사로 확인됩니다. 개발 PC에서는 Android SDK의 매니페스트 병합 도구로 병합 결과를, 1.5.1 APK로 만든 번들로 검사 단계를 확인했습니다.
 
 ### 오류와 대처
 
-스크립트는 Google의 메시지 다음 줄에 대처를 알려 줍니다. 업로드 중에 실패하면 편집을 지우므로 커밋된 것은 없습니다.
+스크립트는 Google의 메시지 다음 줄에 대처를 알려 줍니다. 업로드 중에 실패하면 편집을 지우므로 커밋된 것은 없습니다. 커밋의 응답을 받지 못한 경우만 예외입니다(아래 `did not answer the commit properly`).
 
 | 메시지 | 대처 |
 |---|---|
 | `Set the secrets PLAY_SA_EMAIL and PLAY_SA_PRIVATE_KEY` | 시크릿을 넣은 뒤 실행 화면에서 "Re-run failed jobs"를 누릅니다. 같은 AAB로 Google Play internal 잡만 다시 돕니다. |
 | 404 `Package not found` | Play Console에서 앱을 만들고 첫 번들을 직접 올린 뒤 다시 실행합니다(위 1, 5단계). |
-| 403 `does not have permission` | 서비스 계정을 "테스트 트랙에 앱 출시" 권한으로 초대했는지 봅니다. 적용에 시간이 걸릴 수 있습니다. |
+| 403 `does not have permission`, `insufficient permissions`, 401 | 서비스 계정을 "테스트 트랙에 앱 출시" 권한으로 초대했는지 봅니다. 적용에 24–48시간 걸릴 수 있으니, 설정 직후라면 기다렸다가 다시 실행합니다. |
+| 403 선언·정책: `You must let us know whether your app uses any Foreground Service permissions`, `privacy policy`, `declaration` 등 | 서비스 계정 문제가 아니고, 기다려도 풀리지 않습니다. Play Console → 앱 콘텐츠에서 Google의 메시지가 말하는 항목(선언, 개인정보처리방침)을 끝낸 뒤 "Re-run failed jobs"를 누릅니다. 같은 AAB로 다시 올립니다. |
+| 그 밖의 403 | 스크립트는 까닭을 추측하지 않고 "See Google's message above."만 알려 줍니다. Google의 메시지를 읽습니다. |
 | `has not been used in project` | 키를 만든 Cloud 프로젝트에서 Google Play Android Developer API를 사용 설정합니다. |
 | `invalid_grant` | 키가 지워졌거나 다른 키입니다. 새 JSON 키를 만들고 시크릿 2개를 다시 넣습니다. |
 | `already been used` (versionCode) | 같은 versionCode의 다른 번들이 먼저 올라갔습니다. 다시 빌드합니다. |
+| `Play already serves versionCode N on internal; this run's bundle (M) is older` | 더 새 빌드가 이미 트랙에 있습니다. 옛 실행의 잡을 다시 돌렸거나, 두 실행의 잡이 거꾸로 끝난 경우입니다. 아무것도 올리지 않았습니다. 이 빌드가 꼭 필요하면 새로 빌드합니다. |
+| `doesn't allow any existing users to upgrade`, `shadowed`, `higher version codes` | Play가 거절했습니다. 이 트랙이나 다른 트랙에 더 높은 versionCode가 있어서 이 번들을 받을 테스터가 없습니다. 새로 빌드합니다. |
+| `did not answer the commit properly` | 커밋의 응답을 받지 못했습니다. 출시가 됐을 수도 있고 안 됐을 수도 있습니다. Google Play internal 잡을 다시 실행합니다. 이미 출시됐으면 "already released; nothing to do"로 끝나고, 아니면 다시 올립니다. |
 | `draft app` | 첫 출시를 Play Console에서 끝내거나, `play_release=draft`로 올린 뒤 Play Console에서 출시합니다. |
 | 심사 중 (`in review`) | Play Console의 게시 개요에서 정리한 뒤 다시 실행합니다. |
 | 다른 키로 서명 | 업로드 키로 서명했는지 봅니다. 업로드 키를 바꿨다면 앱 무결성에서 업로드 키를 재설정합니다. |
 | 편집이 지워짐 (`edit` … `deleted`) | 다른 실행이나 Play Console 변경과 겹쳤습니다. 다시 실행합니다. |
 | 출시 노트 언어 | 앱의 스토어 등록정보 언어여야 합니다(1단계의 기본 언어 한국어). |
 | `The android job passed no bundle name or version` | GitHub는 시크릿 값이 든 잡 출력을 버립니다. 키 별칭 같은 시크릿 값이 번들 이름(`HJViewer-<버전>-<커밋>`)이나 버전에 들어 있지 않은지 봅니다. |
+
+Android 잡의 번들 단계가 내는 메시지는 다음과 같습니다.
+
+| 메시지 | 대처 |
+|---|---|
+| 경고 `This run has no Play bundle` | `play`를 켜지 않은 실행에서 번들 단계가 실패했습니다. 이 실행의 APK는 그대로 씁니다. "Build Play bundle"과 "Sign and check Play bundle"의 로그에서 까닭을 보고 고칩니다. `play`를 켠 실행과 확인 빌드에서는 같은 문제로 Android 잡이 실패합니다. |
+| `the bundle has '…', which only the side-loaded APK may have` | 사이드로드 전용 항목이 번들에 들어 있습니다. `client/play/AndroidManifest.xml`이 그 항목을 정확한 이름으로 빼는지 봅니다. `PLAY_MANIFEST`에 넣어서 통과시키지 않습니다. |
+| `the bundle was built without the Play manifest overlay` | 번들에 Play 전용 매니페스트의 표지가 없습니다. "Build Play bundle"이 그 파일을 복사했는지, Gradle이 `src/release/AndroidManifest.xml`을 병합했는지 봅니다. |
+| `the bundle's permissions, foreground service types or accessibility services changed` | 위 "Play 선언 대상"대로 합니다. |
+| `the bundle has no librustdesk.so for arm64-v8a` (또는 다른 라이브러리) | 번들에 네이티브 라이브러리가 빠졌습니다. `jniLibs/arm64-v8a`에 라이브러리를 넣는 APK 빌드 단계와 번들 빌드 사이에 그 폴더를 지우는 것이 없는지 봅니다. |
+| `bundletool … could not be downloaded`, `does not have the pinned SHA-256` | 내려받기가 실패했거나 받은 파일이 고정한 해시와 다릅니다. 다시 실행해 보고, 해시가 계속 다르면 쓰지 않고 원인을 확인합니다. |
+
+### 출시된 versionCode 확인
+
+최소 버전 정책은 Play 트랙에 어떤 versionCode가 출시됐는지 확인한 뒤에만 Play 쪽 값을 올립니다(`hjv-release policy --play-live <versionCode>`). 확인하는 곳은 두 가지입니다.
+
+- 업로드한 실행의 요약: "Uploaded kr.ac.yonsei.hjviewer versionCode N to Google Play internal (completed)". 이 줄은 Play가 커밋을 받아들인 뒤에만 나옵니다. 트랙에 더 새 번들이 있었다면 업로드가 실패하므로 이 줄이 나오지 않습니다.
+- 나중에 다시 볼 때: Play Console → 테스트 및 출시 → 내부 테스트의 출시 목록.
+
+상태만 읽는 실행(`play_release=status`)은 만들지 않았습니다. 최소 버전 설계가 요청했던 것입니다. Play API로는 읽기만 하려 해도 편집을 하나 열어야 하고, 빌드 없이 그 잡만 돌리려면 다른 모든 잡의 실행 조건을 바꿔야 하는데, 얻는 정보는 위 두 가지와 같습니다. Google Play internal 잡을 다시 실행하는 것도 상태 확인으로 쓰지 않습니다. 트랙에서 그 번들이 빠져 있고 더 새 번들도 없으면, 그 번들을 다시 출시하기 때문입니다.
 
 ### 키 교체와 유출
 
