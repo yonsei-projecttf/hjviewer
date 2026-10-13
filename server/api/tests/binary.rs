@@ -518,9 +518,10 @@ async fn an_unusable_operator_log_takes_out_the_admin_commands_only() {
 }
 
 /// The command key (design v3 §5-3, relay/PROTOCOL.md §3.2): `keygen command --kid N` shows the
-/// public key as exactly one line `N:<base64>` on the screen and writes the seed only where it is
-/// kept; `selfcheck` compares the key in the credentials with HJV_API_COMMAND_PUBKEYS and shows
-/// the fingerprints, and fails when they do not match or one is missing.
+/// public key as exactly the line `N:<base64>` on the screen, then its fingerprint, and writes the
+/// seed only where it is kept; `selfcheck` compares the key in the credentials with
+/// HJV_API_COMMAND_PUBKEYS and shows the same fingerprints, and fails when they do not match or one
+/// is missing.
 #[tokio::test]
 async fn keygen_command_and_selfcheck_of_the_command_key() {
     let out = Command::new(BIN)
@@ -532,7 +533,14 @@ async fn keygen_command_and_selfcheck_of_the_command_key() {
         hjv_api::config::parse_list_key(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
     let public = hjv_api::devsig::public_key(&seed);
     let note = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(note, format!("{}\n", hjv_api::trust::entry(2, &public)));
+    assert_eq!(
+        note,
+        format!(
+            "{}\nfingerprint: {}\n",
+            hjv_api::trust::entry(2, &public),
+            hjv_api::trust::fingerprint(2, &public)
+        )
+    );
     assert!(!note.contains(&util::b64(&*seed)));
     for bad in [
         &["keygen", "command"][..],
@@ -581,7 +589,16 @@ async fn keygen_command_and_selfcheck_of_the_command_key() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    let pin = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+    // the screen: the pin on a line of its own, then the fingerprint to compare later
+    let note = String::from_utf8_lossy(&out.stderr).into_owned();
+    let mut lines = note.lines();
+    let pin = lines.next().unwrap().to_owned();
+    let shown = lines
+        .next()
+        .and_then(|l| l.strip_prefix("fingerprint: "))
+        .unwrap()
+        .to_owned();
+    assert_eq!(lines.next(), None, "{note}");
     let other = hjv_api::trust::entry(2, &hjv_api::devsig::public_key(&NEXT_COMMAND_SEED));
     let text = std::fs::read_to_string(&env).unwrap();
     std::fs::write(
@@ -600,6 +617,8 @@ async fn keygen_command_and_selfcheck_of_the_command_key() {
         )),
         "{report}"
     );
+    // the fingerprint the key's maker saw is the one selfcheck shows
+    assert_eq!(shown, mine);
     assert!(!report.contains(&util::b64(&*seed)));
     // the next key put in before the relays were built with it
     std::fs::write(

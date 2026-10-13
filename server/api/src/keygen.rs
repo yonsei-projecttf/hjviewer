@@ -13,10 +13,11 @@
 //!   HJV_API_TRUST_PUBKEYS) and its fingerprint `N:<hex SHA-256>`.
 //! - `keygen command --kid N`: an Ed25519 command key with the number N, which signs the wake
 //!   commands (design v3 §5-3, phase 2). Its 32-byte seed goes to the credential
-//!   hjviewer-api-command-key; stderr shows exactly one line, the public key as `N:<base64>`, the
-//!   entry of the relay build variable HJV_COMMAND_PUBKEY and of hjv-api's HJV_API_COMMAND_PUBKEYS
-//!   (relay/PROTOCOL.md §3.2: one text form wherever a command public key is written; `hjv-api
-//!   selfcheck` shows its fingerprint).
+//!   hjviewer-api-command-key; stderr shows two lines: the public key as exactly the line
+//!   `N:<base64>`, the entry of the relay build variable HJV_COMMAND_PUBKEY and of hjv-api's
+//!   HJV_API_COMMAND_PUBKEYS (relay/PROTOCOL.md §3.2: one text form wherever a command public key
+//!   is written), and `fingerprint: N:<hex SHA-256>`, which the one who made the key compares with
+//!   `hjv-api selfcheck`, the relay build's summary and `hjv-relay version`.
 //!
 //! The secret goes, base64 on one line, straight into `systemd-creds encrypt` with
 //! `--encrypt-to <file>` (credential name: the file name), into a new file with `--out <file>`
@@ -90,9 +91,17 @@ pub fn run(kind: &str, kid: Option<u32>, target: Target<'_>) -> Result<(), Strin
         }
         ("list", _) => return Err("keygen list --kid <1-65535>".into()),
         ("command", Some(kid)) if (1..=trust::MAX_KID).contains(&kid) => {
-            // the same kind of key as a list key: an Ed25519 seed, its public key in one form
+            // the same kind of key as a list key: an Ed25519 seed; its public key on a line of
+            // its own, in the one form the relays' build takes, then its fingerprint
             let (secret, public) = list_key();
-            (secret, format!("{}\n", trust::entry(kid, &public)))
+            (
+                secret,
+                format!(
+                    "{}\nfingerprint: {}\n",
+                    trust::entry(kid, &public),
+                    trust::fingerprint(kid, &public)
+                ),
+            )
         }
         ("command", _) => return Err("keygen command --kid <1-65535>".into()),
         _ => return Err(USAGE.into()),

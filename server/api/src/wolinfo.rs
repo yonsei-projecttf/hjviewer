@@ -426,7 +426,7 @@ impl Ready {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hint {
     pub code: &'static str,
-    /// No: it cannot be woken so; Warn: it may not wake, or not from every state
+    /// No: it cannot be woken (no wired card); Warn: it may not wake, or not from every state
     pub level: Ready,
     pub text: &'static str,
 }
@@ -438,7 +438,7 @@ pub const HINT_NO_WIRED: Hint = Hint {
 };
 pub const HINT_MAGIC_OFF: Hint = Hint {
     code: "magic_off",
-    level: Ready::No,
+    level: Ready::Warn,
     text: "랜카드의 매직 패킷 깨우기가 꺼져 있습니다. 장치 관리자에서 랜카드 속성의 '고급' 탭에 있는 'Wake on Magic Packet'을 켜 주세요.",
 };
 pub const HINT_MAGIC_OFF_SOME: Hint = Hint {
@@ -491,8 +491,11 @@ pub fn readiness(report: Option<&Report>) -> (Ready, Vec<Hint>) {
         return (Ready::No, vec![HINT_NO_WIRED]);
     }
     let mut hints = Vec::new();
-    // the design's `magic≠1`: off as the driver says it ("0"), or not told at all (a driver
-    // without the keyword), which is not known to be off
+    // Only a PC without a wired card cannot be woken at all (design v3 §8-4: "불가"); every other
+    // rule is a hint, which the app shows when a wake was not confirmed, so the PC stays one the
+    // user may try (a driver's keyword does not always say what the card does when it is off).
+    // The design's `magic≠1`: off as the driver says it ("0"), or not told at all (a driver
+    // without the keyword), which is not known to be off.
     let magic = |a: &&Adapter, value: &str| a.wake.magic.as_deref() == Some(value);
     if cards.iter().all(|a| magic(a, "0")) {
         hints.push(HINT_MAGIC_OFF);
@@ -898,9 +901,10 @@ mod tests {
             with(&|r| r.adapters[0].ipv4.clear()),
             (Ready::No, vec!["no_wired"])
         );
+        // off: a hint, shown when a wake was not confirmed; the user may still try
         assert_eq!(
             with(&|r| r.adapters[0].wake.magic = Some("0".into())),
-            (Ready::No, vec!["magic_off"])
+            (Ready::Warn, vec!["magic_off"])
         );
         // a driver that does not name the keyword may still wake: not known, which is not off
         assert_eq!(
@@ -974,8 +978,22 @@ mod tests {
                 r.adapters[0].wake.magic = Some("0".into());
                 r.power.fast_startup = Some(true);
             }),
-            (Ready::No, vec!["magic_off", "fast_startup"])
+            (Ready::Warn, vec!["magic_off", "fast_startup"])
         );
+        // only a PC without a wired card is a "no"
+        for hint in [
+            HINT_MAGIC_OFF,
+            HINT_MAGIC_OFF_SOME,
+            HINT_MAGIC_UNKNOWN,
+            HINT_NOT_ARMED,
+            HINT_FAST_STARTUP,
+            HINT_ON_BATTERY,
+            HINT_USB,
+            HINT_MODERN_STANDBY,
+        ] {
+            assert_eq!(hint.level, Ready::Warn, "{}", hint.code);
+        }
+        assert_eq!(HINT_NO_WIRED.level, Ready::No);
         // the texts never carry the word the app takes for a logout
         for hint in [
             HINT_NO_WIRED,

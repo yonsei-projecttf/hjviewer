@@ -381,7 +381,8 @@ fn prepare(conn: Connection) -> Result<Connection, String> {
             .unwrap_or(0);
         if relays > 0 {
             log_notice!(
-                "the restored backup has {relays} active NAS relays: one revoked since the backup is active again (`hjv-api admin relay list`, then `relay revoke` what was revoked since; README.md, Backup and restore)"
+                "the restored backup has {relays} active NAS {}: one revoked since the backup is active again (`hjv-api admin relay list`, then `relay revoke` what was revoked since; README.md, Backup and restore)",
+                if relays == 1 { "relay" } else { "relays" }
             );
         }
     }
@@ -3307,7 +3308,7 @@ mod tests {
         assert!(said(
             "the database is a restored backup: password-less connections turned off"
         ));
-        assert!(said("the restored backup has 1 active NAS relays"));
+        assert!(said("the restored backup has 1 active NAS relay:"));
         assert_eq!(application_id(&c), 0);
         assert!(!passwordless_global(&c).unwrap());
         assert!(!passwordless_on(&c, a).unwrap() && !passwordless_on(&c, b).unwrap());

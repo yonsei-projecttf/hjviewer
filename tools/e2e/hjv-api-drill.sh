@@ -99,10 +99,15 @@ rm -rf "$offline"
 install -d -m 700 "$offline"
 printf '%s\n' "$SEAL_KEY" > "$offline/hjviewer-seal.key"
 printf '%s\n' "$LIST_KEY_2" > "$offline/hjviewer-list-2.key"
-# command key 2, made offline as the runbook makes it (design v3 §5-3): its public key is the
-# entry the relays are built with next to key 1's
-COMMAND_PUBKEY_2=$("$stage/bin/hjv-api" keygen command --kid 2 --out "$offline/hjviewer-command-2.key" 2>&1)
-case $COMMAND_PUBKEY_2 in 2:*) ;; *) fail "keygen command --kid 2: $COMMAND_PUBKEY_2" ;; esac
+# command key 2, made offline as the runbook makes it (design v3 §5-3). The screen shows two
+# lines: its public key, the entry the relays are built with next to key 1's, and its fingerprint,
+# which the one who made it compares with selfcheck's later
+screen=$("$stage/bin/hjv-api" keygen command --kid 2 --out "$offline/hjviewer-command-2.key" 2>&1) ||
+  fail "keygen command --kid 2: $screen"
+COMMAND_PUBKEY_2=$(printf '%s\n' "$screen" | sed -n '1p')
+COMMAND_FINGERPRINT_2=$(printf '%s\n' "$screen" | sed -n 's/^fingerprint: //p')
+case $COMMAND_PUBKEY_2 in 2:*) ;; *) fail "keygen command --kid 2: $screen" ;; esac
+case $COMMAND_FINGERPRINT_2 in 2:*) ;; *) fail "keygen command --kid 2 showed no fingerprint" ;; esac
 TOKEN=123456:TEST-not-a-real-bot-token_x
 
 step "image: Ubuntu 24.04 with systemd ($IMAGE)"
@@ -254,15 +259,24 @@ EOF
 cred_from "$A" hjviewer-api-login-key "$offline/hjviewer-seal.key"
 # command key 1, made on the server: its secret goes straight into systemd-creds, its public key
 # (the one line on the screen) next to key 2's into the settings and the relay build
-COMMAND_PUBKEY_1=$(d exec "$A" /opt/hjviewer/bin/hjv-api keygen command --kid 1 \
-  --encrypt-to /etc/credstore.encrypted/hjviewer-api-command-key 2>&1 | grep -E '^1:' || true)
-[ -n "$COMMAND_PUBKEY_1" ] || fail "keygen command --kid 1 showed no public key"
+screen=$(d exec "$A" /opt/hjviewer/bin/hjv-api keygen command --kid 1 \
+  --encrypt-to /etc/credstore.encrypted/hjviewer-api-command-key 2>&1 || true)
+COMMAND_PUBKEY_1=$(printf '%s\n' "$screen" | sed -n '/^1:/p')
+COMMAND_FINGERPRINT_1=$(printf '%s\n' "$screen" | sed -n 's/^fingerprint: //p')
+case $COMMAND_PUBKEY_1 in 1:*) ;; *) fail "keygen command --kid 1 showed no public key" ;; esac
+case $COMMAND_FINGERPRINT_1 in 1:*) ;; *) fail "keygen command --kid 1 showed no fingerprint" ;; esac
 COMMAND_PUBKEYS="$COMMAND_PUBKEY_1,$COMMAND_PUBKEY_2"
 echo "HJV_API_COMMAND_PUBKEYS=$COMMAND_PUBKEYS"
 d exec "$A" ls /etc/credstore.encrypted
 settings "$A" 1 1
 step "A: runbook 7-5, start"
 start_api "$A"
+# the fingerprint that keygen showed for command key 1 is the one selfcheck shows (the comparison
+# a person makes again with the relay build's summary)
+case $(d exec "$A" /opt/hjviewer/bin/hjv-api admin selfcheck || true) in
+  *"command key in use (HJV_API_COMMAND_KID 1): the pinned key 1, $COMMAND_FINGERPRINT_1"*) echo "command key 1: selfcheck shows the fingerprint keygen showed" ;;
+  *) fail "selfcheck does not show the fingerprint keygen showed for command key 1" ;;
+esac
 check_now "$A"
 
 step "A: a day of use"
@@ -508,6 +522,11 @@ $A selfcheck | grep -E 'list key|command key' | cut -c1-120
 $A passwordless on
 for t in hjviewer-api-check.timer hjviewer-api-backup.timer; do systemctl enable -q --now "$t"; done
 EOF
+# the offline key's fingerprint, as its maker saw it, is the one selfcheck shows on the new host
+case $(d exec "$B" /opt/hjviewer/bin/hjv-api admin selfcheck || true) in
+  *"command key in use (HJV_API_COMMAND_KID 2): the pinned key 2, $COMMAND_FINGERPRINT_2"*) echo "command key 2: selfcheck shows the fingerprint keygen showed" ;;
+  *) fail "selfcheck does not show the fingerprint keygen showed for command key 2" ;;
+esac
 client "$B" drill_rebuilt
 check_now "$B"
 

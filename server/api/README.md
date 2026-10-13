@@ -131,10 +131,11 @@ only, key 2 waits offline until it replaces key 1 (design v3 §5-3: put it in wi
 encrypt` from standard input, set `HJV_API_LIST_KID=2`, restart; a PC that got a list of key 2
 never takes one of key 1 again).
 
-`keygen command --kid N` makes a command key the same way and shows its public key as exactly one
-line, `N:<base64>`, on stderr: the one text form wherever a command public key is written, the
-entry of the relay build's `HJV_COMMAND_PUBKEY` and of `HJV_API_COMMAND_PUBKEYS` (relay/PROTOCOL.md
-§3.2); `selfcheck` shows its fingerprint `N:<hex SHA-256>`, as `hjv-relay version` does. Key 1 lives
+`keygen command --kid N` makes a command key the same way and shows two lines on stderr: its
+public key as exactly the line `N:<base64>`, the one text form wherever a command public key is
+written, the entry of the relay build's `HJV_COMMAND_PUBKEY` and of `HJV_API_COMMAND_PUBKEYS`
+(relay/PROTOCOL.md §3.2), and `fingerprint: N:<hex SHA-256>`, which `selfcheck`, the relay build's
+summary and `hjv-relay version` show too, for the one who made the key to compare. Key 1 lives
 on the server only, key 2 offline; the relays are built with both. To change keys: put key 2 in
 from standard input (`systemd-creds encrypt --name=hjviewer-api-command-key - …`), set
 `HJV_API_COMMAND_KID=2`, restart; commands queued before go out as they were signed (the relays
@@ -656,9 +657,11 @@ GET  /api/hjv/devices/{id}/wol
 
 - The wake request, in this order: a PC of the token's account (else 404, as for any other ID);
   on already (it synced, or hbbs saw it register, within 30 seconds): 409 `online`; no wake report:
-  409 `no_wol_info`; a job of this PC under way (queued or sent): that job, 202; one job a minute
-  per PC and 20 an hour per account: 429; the relay; 10 jobs a minute per relay: 429; the command,
-  signed and queued, and the relay's held poll gets it at once.
+  409 `no_wol_info`; one job a minute per PC: within the minute the job under way (queued or sent)
+  is the answer, 202, and one that is over 429; 20 jobs an hour per account: 429; the relay; 10
+  jobs a minute per relay: 429; the command, signed and queued, and the relay's held poll gets it
+  at once. A minute after a job that still waits for its PC the packets may be sent again, as a
+  new job; each job is confirmed on its own.
 - The relay: of the account's active relays (a relay wakes its account's PCs only), the online ones
   with the best grade (`exact`: an interface on the PC's network with its prefix and the same
   gateway IP; `overlap`: overlapping networks and the same gateway IP or MAC; `history`: it woke
@@ -677,10 +680,11 @@ GET  /api/hjv/devices/{id}/wol
   the relay and hjv-api disagree) or `no_result` (45 seconds after the command expired). A result
   after `no_result` still counts.
 - The verdict and its hints (the texts go to the app as they are, so the rules change without a
-  new app): no wired card with an address: `no`; every card's magic packet wake off (`"magic":"0"`):
-  `no`; some off, or none known to be on (a driver that does not tell): `warn`; no card armed to
-  wake the PC, fast startup on, on battery, USB cards only, modern standby without its magic packet
-  wake: `warn`.
+  new app): no wired card with an address: `no`, the one verdict that takes "켜기" off the app's
+  menu. Everything else is a hint with `warn`, shown when a wake was not confirmed: the cards'
+  magic packet wake off (`"magic":"0"`, all of them or some) or not known to be on for any (a
+  driver that does not tell), no card armed to wake the PC, fast startup on, on battery, USB cards
+  only, modern standby without its magic packet wake.
 
 ### hbbs and the SSO
 

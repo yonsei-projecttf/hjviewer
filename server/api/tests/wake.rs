@@ -422,14 +422,23 @@ async fn jobs_fail_with_the_relays_error_or_no_result() {
     .await;
     let row = job_row(&h, &job).await;
     assert_eq!((row.state.as_str(), row.packets), ("sent", Some(6)));
-    // (a sent job is under way until confirmed or not: this one is over)
-    sql(
-        &h,
-        format!("UPDATE wake_jobs SET state = 'not_confirmed' WHERE job = '{job}'"),
-    )
-    .await;
+    // within its minute the job that waits for the PC is the answer to another request; a minute
+    // after it the packets may be sent again, as the new jobs below, and it keeps waiting
+    let again = wake_pc(&h, &pc.id, &phone, None).await;
+    assert_eq!(
+        (
+            again.status,
+            again.json["job"].as_str(),
+            again.json["state"].as_str(),
+            again.json["packets"].as_i64()
+        ),
+        (202, Some(job.as_str()), Some("sent"), Some(6))
+    );
+    let waiting = job;
     // a refusal that says the relay does not trust the key: failed, and the journal hears of it
     let job = next_job(&h, &pc, &phone).await;
+    assert_ne!(job, waiting);
+    assert_eq!(job_row(&h, &waiting).await.state, "sent");
     let text = delivered(&h, &r).await;
     h.poll(
         &r,
@@ -561,10 +570,14 @@ async fn jobs_fail_with_the_relays_error_or_no_result() {
     assert_eq!(wake::tick(&h.state).await.confirmed, 0);
     let s = h.sync_from(&pc, &payload(&binding), PC_IP).await;
     assert_eq!(s.answer.status, 200);
-    assert_eq!(wake::tick(&h.state).await.confirmed, 1);
-    let row = job_row(&h, &job).await;
-    assert_eq!(row.state, "confirmed");
-    assert!(row.confirmed_at.unwrap() > row.sent_at.unwrap());
+    // each job that waited for the PC is confirmed on its own: this one, and the one whose
+    // packets went out earlier
+    assert_eq!(wake::tick(&h.state).await.confirmed, 2);
+    for id in [&job, &waiting] {
+        let row = job_row(&h, id).await;
+        assert_eq!(row.state, "confirmed");
+        assert!(row.confirmed_at.unwrap() > row.sent_at.unwrap());
+    }
 }
 
 #[tokio::test]
@@ -798,6 +811,36 @@ async fn the_device_list_and_readiness() {
         )
     );
     assert_eq!(peer().await["hjv"]["wol"], "warn");
+    // the card's magic packet wake off, or not told by its driver: hints too, so that "켜기"
+    // stays on the app's menu and the hint comes with a wake that was not confirmed
+    for (magic, hint) in [
+        (json!("0"), "랜카드의 매직 패킷 깨우기가 꺼져 있습니다."),
+        (
+            Value::Null,
+            "랜카드 드라이버가 매직 패킷 깨우기 설정을 알려 주지 않아",
+        ),
+    ] {
+        let mut told = wol_report(PC_MAC, "192.0.2.67/24", "192.0.2.1", None);
+        told["adapters"][0]["wake"]["magic"] = magic.clone();
+        h.sync_from(&pc, &payload_with_wol(&binding, &told, "h2b"), PC_IP)
+            .await;
+        let a = wol().await;
+        assert_eq!(a.json["ready"], "warn", "{magic}");
+        assert_eq!(a.json["hints"].as_array().unwrap().len(), 1, "{}", a.text);
+        assert!(
+            a.json["hints"][0].as_str().unwrap().starts_with(hint),
+            "{}",
+            a.text
+        );
+        let p = peer().await;
+        assert_eq!(
+            (p["hjv"]["wol"].as_str(), p["note"].as_str()),
+            (
+                Some("warn"),
+                Some("비밀번호 없는 연결 일시 중지(관리자) · 켜기 가능")
+            )
+        );
+    }
     // no wired card: it cannot be woken
     report["adapters"] = json!([]);
     h.sync_from(&pc, &payload_with_wol(&binding, &report, "h3"), PC_IP)

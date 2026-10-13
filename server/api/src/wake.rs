@@ -5,18 +5,20 @@
 //!
 //! | path | answer |
 //! |---|---|
-//! | `POST /api/hjv/devices/{id}/wake` | body `{}` or `{"any_relay":true}` ("모든 중계기로 시도"): 202 `{"job","state","relay":{"name","match"},"hints":[…]}`, the new job queued, or the job of this PC under way |
+//! | `POST /api/hjv/devices/{id}/wake` | body `{}` or `{"any_relay":true}` ("모든 중계기로 시도"): 202 `{"job","state","relay":{"name","match"},"hints":[…]}`, the new job queued, or the job of this PC made within the last minute and still under way |
 //! | `GET /api/hjv/wake/{job}` | `{"job","state","sent_at","confirmed_at","packets","error","relay":{"name","match"},"hints":[…]}` |
 //! | `GET /api/hjv/devices/{id}/wol` | `{"ready","hints","reported_at","relay":{"name","match","online"}}`, no MAC |
 //!
 //! Each takes the token with its key's `X-HJV-Proof` (api.rs `session`); a PC of another account,
 //! or a job, is the same 404 as one that does not exist. The wake request, in this order: the PC
 //! of the account; already on (hbbs saw it within [`ONLINE_AGE`] seconds, or it synced as long
-//! ago): 409 `online`; no wake report: 409 `no_wol_info`; a job of this PC under way: that job;
-//! the PC's limit (one a minute), the account's (20 an hour): 429; the relay (below): 409
-//! `no_relay` or 503 `relay_offline`; the relay's limit (10 a minute): 429; then the command,
-//! signed, queued for the relay, whose held poll gets it at once (relay.rs). Errors carry the
-//! text the account API's rules ask for and the code in `hjv`:
+//! ago): 409 `online`; no wake report: 409 `no_wol_info`; the PC's limit, one job a minute: within
+//! it the job under way (queued or sent) is the answer, 202, and one that is over 429; the
+//! account's limit (20 an hour): 429; the relay (below): 409 `no_relay` or 503 `relay_offline`;
+//! the relay's limit (10 a minute): 429; then the command, signed, queued for the relay, whose
+//! held poll gets it at once (relay.rs). A minute after a job that still waits for its PC, the
+//! user may send the packets again: that is a new job, and each is confirmed on its own. Errors
+//! carry the text the account API's rules ask for and the code in `hjv`:
 //!
 //! ```text
 //! 409 {"error":"이미 켜져 있습니다.","hjv":"online"}
@@ -491,25 +493,23 @@ async fn wake(state: &Arc<AppState>, req: &ApiRequest, device_id: &str) -> Reply
             json!({}),
         );
     };
-    // a job under way: that one
-    if let Some(job) = found
-        .latest
-        .as_ref()
-        .filter(|j| j.state == "queued" || j.state == "sent")
-    {
-        return Reply::json(
-            StatusCode::ACCEPTED,
-            &job_json(job, found.latest_relay.as_ref(), Some(&info)),
-        );
-    }
-    // the limits of the PC and the account
+    // the PC's limit, one job a minute (design v3 §5-5): within it, the job under way is the
+    // answer (a second tap, a request sent again), and a job that is over means waiting. After
+    // it, a job still waiting for the PC does not keep the user from sending the packets again.
     if let Some(job) = found
         .latest
         .as_ref()
         .filter(|j| j.created_at > at - PC_EVERY)
     {
+        if job.state == "queued" || job.state == "sent" {
+            return Reply::json(
+                StatusCode::ACCEPTED,
+                &job_json(job, found.latest_relay.as_ref(), Some(&info)),
+            );
+        }
         return too_often(job.created_at + PC_EVERY - at);
     }
+    // the account's limit
     if found.account_jobs >= ACCOUNT_PER_HOUR {
         if state.first_notice(
             &format!("wake-hour:{account_tag}"),
