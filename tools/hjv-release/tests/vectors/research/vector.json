@@ -1,0 +1,28 @@
+{
+  "update_key": {
+    "id": 1,
+    "seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "public_key_b64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+    "build_variable": "HJV_UPDATE_PUBKEY=1:JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0="
+  },
+  "policy": {
+    "p": "{\"v\":1,\"seq\":7,\"issued\":\"2026-11-02T00:00:00Z\",\"server\":\"rd.example.com\",\"contact_ko\":\"설치 파일은 관리자에게 받으세요.\",\"platforms\":{\"windows\":{\"min\":\"1.6.0\",\"latest\":\"1.6.1\",\"grace_until\":\"2026-11-09T00:00:00Z\",\"os_min\":\"10.0\",\"notes_ko\":\"연결 안정성 개선\",\"source\":\"client-1.6.1\",\"package\":{\"file\":\"HJViewer-1.6.1-windows-x86_64.exe\",\"size\":26214400,\"sha256\":\"e6a39ba1c067edf949f7e2906b801d919d1f36f4fd52987d149303e5f11a8607\",\"build\":\"1.6.1.7\",\"auto_install_after\":\"2026-11-04T00:00:00Z\"}},\"android\":{\"min\":\"1.6.0\",\"latest\":\"1.6.1\",\"os_min\":\"5.1\",\"package\":{\"file\":\"HJViewer-1.6.1-android-aarch64.apk\",\"size\":30408704,\"sha256\":\"2183b8d680809f991816eb45ba8661c9f686111223fdecc35e1c0cbf56569d96\",\"build\":\"263052251\"}},\"ios\":{\"min\":\"1.6.0\",\"latest\":\"1.6.1\",\"os_min\":\"13.0\",\"testflight_build\":\"263050249\"}},\"rendezvous\":{\"min_controller\":\"1.6.0\",\"enforce_after\":\"2026-11-09T00:00:00Z\",\"message_ko\":\"HJViewer를 1.6.0 이상으로 업데이트해야 연결할 수 있습니다.\"},\"relay\":{\"min\":\"1.0.0\",\"latest\":\"1.0.0\"},\"revoke_keys\":[]}",
+    "signed_bytes_sha256": "e30993a1ee9a7e8e5ad4e13468e9fe62e252252c6e6f3f69d154616a76b1a4ed",
+    "signature_b64": "eOs5X1U8CeeBSyBV/fDSzya/ANnECv9NSdLFmFxWNkxyfToGs5pOL3AE8GGeoKAy/ppBv+QPQ1ckopOrE/EQAw==",
+    "envelope": "{\"v\":1,\"k\":1,\"p\":\"{\\\"v\\\":1,\\\"seq\\\":7,\\\"issued\\\":\\\"2026-11-02T00:00:00Z\\\",\\\"server\\\":\\\"rd.example.com\\\",\\\"contact_ko\\\":\\\"설치 파일은 관리자에게 받으세요.\\\",\\\"platforms\\\":{\\\"windows\\\":{\\\"min\\\":\\\"1.6.0\\\",\\\"latest\\\":\\\"1.6.1\\\",\\\"grace_until\\\":\\\"2026-11-09T00:00:00Z\\\",\\\"os_min\\\":\\\"10.0\\\",\\\"notes_ko\\\":\\\"연결 안정성 개선\\\",\\\"source\\\":\\\"client-1.6.1\\\",\\\"package\\\":{\\\"file\\\":\\\"HJViewer-1.6.1-windows-x86_64.exe\\\",\\\"size\\\":26214400,\\\"sha256\\\":\\\"e6a39ba1c067edf949f7e2906b801d919d1f36f4fd52987d149303e5f11a8607\\\",\\\"build\\\":\\\"1.6.1.7\\\",\\\"auto_install_after\\\":\\\"2026-11-04T00:00:00Z\\\"}},\\\"android\\\":{\\\"min\\\":\\\"1.6.0\\\",\\\"latest\\\":\\\"1.6.1\\\",\\\"os_min\\\":\\\"5.1\\\",\\\"package\\\":{\\\"file\\\":\\\"HJViewer-1.6.1-android-aarch64.apk\\\",\\\"size\\\":30408704,\\\"sha256\\\":\\\"2183b8d680809f991816eb45ba8661c9f686111223fdecc35e1c0cbf56569d96\\\",\\\"build\\\":\\\"263052251\\\"}},\\\"ios\\\":{\\\"min\\\":\\\"1.6.0\\\",\\\"latest\\\":\\\"1.6.1\\\",\\\"os_min\\\":\\\"13.0\\\",\\\"testflight_build\\\":\\\"263050249\\\"}},\\\"rendezvous\\\":{\\\"min_controller\\\":\\\"1.6.0\\\",\\\"enforce_after\\\":\\\"2026-11-09T00:00:00Z\\\",\\\"message_ko\\\":\\\"HJViewer를 1.6.0 이상으로 업데이트해야 연결할 수 있습니다.\\\"},\\\"relay\\\":{\\\"min\\\":\\\"1.0.0\\\",\\\"latest\\\":\\\"1.0.0\\\"},\\\"revoke_keys\\\":[]}\",\"s\":\"eOs5X1U8CeeBSyBV/fDSzya/ANnECv9NSdLFmFxWNkxyfToGs5pOL3AE8GGeoKAy/ppBv+QPQ1ckopOrE/EQAw==\"}",
+    "envelope_bytes": 1311
+  },
+  "device_download": {
+    "seed_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+    "public_key_b64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+    "signed_fields": [
+      "hjv-update-v1",
+      "123456789",
+      "1793577600",
+      "windows",
+      "1.6.1"
+    ],
+    "signed_bytes_hex": "686a762d7570646174652d76310031323334353637383900313739333537373630300077696e646f777300312e362e31",
+    "signature_b64": "9SMz/B9qthKAtR/xDS6vk+fep97TTkCtFVTJRJ51ypTwmwxZMoH2EUoFrHlIN2LH5c+K5lTUfUoYMAQovYRLDg=="
+  }
+}

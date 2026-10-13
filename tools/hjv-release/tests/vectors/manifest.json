@@ -1,0 +1,1125 @@
+{
+  "about": "Test vectors of HJViewer's signed version policy (design 1-1, 1-4, 6-2). README.md explains the fields. Made and checked by tools/hjv-release/tests/vectors.rs.",
+  "cases": [
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/e1-s1.json",
+      "name": "e1-s1",
+      "rule": "first",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "c63c8a2bf3f0d52b75c5b84769973278d1b47bc2065afedc86894fbded23d8ca",
+        "revoked": [],
+        "seq": 1
+      },
+      "why": "the first policy, by signing key 1: 1.6.0 is out, nothing is enforced"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/e1-s2.json",
+      "name": "e1-s2",
+      "rule": "seq",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "7142c82818d4ab488e7e516788710e50ad0dbcf5e8f0f04e95228560aa9726a4",
+        "revoked": [],
+        "seq": 2
+      },
+      "why": "every min raised to 1.6.0 with 14 days of grace"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/e1-s3.json",
+      "name": "e1-s3",
+      "rule": "seq",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "9ef975244e970e75d44bb148f07a8d4061b7382011722c1937ceee5c62ee66a6",
+        "revoked": [],
+        "seq": 3
+      },
+      "why": "by signing key 2: 1.6.1 with packages, notes, an unattended install date, the Google Play entry"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/e2-s1.json",
+      "name": "e2-s1",
+      "rule": "root-declaration",
+      "state_after": {
+        "epoch": 2,
+        "p_sha256": "09a4a37abc3edee76bebf24af17373b4e953509f2e38fea6be0790997793f5ea",
+        "revoked": [
+          1
+        ],
+        "seq": 1
+      },
+      "why": "the root key revokes signing key 1 and starts epoch 2; seq starts again at 1"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/e2-s2.json",
+      "name": "e2-s2",
+      "rule": "seq",
+      "state_after": {
+        "epoch": 2,
+        "p_sha256": "a09b39dd7ec73110e1f9892aec226f6fe23337f5d398f0f50ed48c3aa382db66",
+        "revoked": [
+          1
+        ],
+        "seq": 2
+      },
+      "why": "the same declaration goes along; auto_install_after is removed (the emergency stop is no relaxation)"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/e2-s3-root-relax.json",
+      "name": "e2-s3-root-relax",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 2,
+        "p_sha256": "8aa9e9602d0223b49cf3c1f264e8523169a15cd1d59e3eccbb2796b93989cf7d",
+        "revoked": [
+          1
+        ],
+        "seq": 3
+      },
+      "why": "the root key signs a policy that lowers every min and drops the deadlines"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json",
+        "accepted/e2-s3-root-relax.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/e2-s4.json",
+      "name": "e2-s4",
+      "rule": "seq",
+      "state_after": {
+        "epoch": 2,
+        "p_sha256": "75cb1b3a02dbc84dc6dd1780aadcb0f0a0d30bc90f10e6437496f5d9298d476e",
+        "revoked": [
+          1
+        ],
+        "seq": 4
+      },
+      "why": "a signing key raises min again after the root key's relaxation"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/e1-s2.json",
+      "name": "e1-s2-again",
+      "rule": "seq",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "7142c82818d4ab488e7e516788710e50ad0dbcf5e8f0f04e95228560aa9726a4",
+        "revoked": [],
+        "seq": 2
+      },
+      "why": "the same position with the same bytes: the app keeps what it has"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/e2-s2.json",
+      "name": "fresh-install-e2-s2",
+      "rule": "root-declaration",
+      "state_after": {
+        "epoch": 2,
+        "p_sha256": "a09b39dd7ec73110e1f9892aec226f6fe23337f5d398f0f50ed48c3aa382db66",
+        "revoked": [
+          1
+        ],
+        "seq": 2
+      },
+      "why": "a fresh install takes the current policy and learns the epoch and the revocation from the declaration it carries"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/e2-s2.json",
+      "floor": "2:2",
+      "name": "floor-exact",
+      "rule": "floor",
+      "state_after": {
+        "epoch": 2,
+        "p_sha256": "a09b39dd7ec73110e1f9892aec226f6fe23337f5d398f0f50ed48c3aa382db66",
+        "revoked": [
+          1
+        ],
+        "seq": 2
+      },
+      "why": "a build whose floor is 2:2 takes the policy at 2:2"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/seq-step-1000.json",
+      "name": "seq-step-1000",
+      "rule": "seq",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "ec530c2ff154ce54a88812f7a7894ca67703fa3dad7af4ca03d583cdfbceb7d8",
+        "revoked": [],
+        "seq": 1001
+      },
+      "why": "a signing key's policy 1000 above the stored seq"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/fresh-install-seq-1000.json",
+      "name": "fresh-install-seq-1000",
+      "rule": "seq",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "acd665f53399d023b8df9c60894913c0e9aaf6d108a90125777860c2071c32a2",
+        "revoked": [],
+        "seq": 1000
+      },
+      "why": "a fresh install with floor 1:0 takes seq 1000"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/root-seq-jump.json",
+      "name": "root-seq-jump",
+      "rule": "seq",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "ecd6493babfc07e86a0b5de705647eaa3f8f7a79b324b43e6a20f5c015c21f73",
+        "revoked": [],
+        "seq": 5000
+      },
+      "why": "the root key's policy may be any distance above the stored seq"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/root-policy-raises-epoch.json",
+      "name": "root-policy-raises-epoch",
+      "rule": "epoch",
+      "state_after": {
+        "epoch": 2,
+        "p_sha256": "57f12e2e09f09a529f8da93758d6220b9d8cb68ecae12c159869ff372e4d6c9a",
+        "revoked": [],
+        "seq": 1
+      },
+      "why": "a policy signed by the root key may carry a higher epoch without a declaration"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/revoke-in-the-same-epoch.json",
+      "name": "revoke-in-the-same-epoch",
+      "rule": "root-declaration",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "4d3f1f3b533fdd0c761d2e99c1813e34cbd09483f75461dcbe0220767b05ddf7",
+        "revoked": [
+          2
+        ],
+        "seq": 3
+      },
+      "why": "a declaration may revoke a key without a new epoch"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/relax-min-lowered.json",
+      "name": "relax-min-lowered",
+      "rule": "relaxation",
+      "why": "a signing key lowers a min"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/relax-min-lowered-root.json",
+      "name": "relax-min-lowered-root",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "aea9db494adfa581981085390d538d6db2f1cdd045f97bdb32d12366c72531dc",
+        "revoked": [],
+        "seq": 3
+      },
+      "why": "the same policy signed by the root key"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/relax-grace-later.json",
+      "name": "relax-grace-later",
+      "rule": "relaxation",
+      "why": "a signing key delays the deadline of an unchanged min"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/relax-grace-later-root.json",
+      "name": "relax-grace-later-root",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "5f55477c59f2d19518d9a5bff999a2b3dc73dc32bdcd4da6ecf89d714e83b229",
+        "revoked": [],
+        "seq": 3
+      },
+      "why": "the same policy signed by the root key"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/relax-grace-added.json",
+      "name": "relax-grace-added",
+      "rule": "relaxation",
+      "why": "a signing key gives an unchanged min a deadline it did not have"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/relax-grace-added-root.json",
+      "name": "relax-grace-added-root",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "8320b35d6db0ad5c95da82ff8cbb448422d8dac6db5f0a3bb86d74a8902fddc5",
+        "revoked": [],
+        "seq": 2
+      },
+      "why": "the same policy signed by the root key"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/relax-latest-lowered.json",
+      "name": "relax-latest-lowered",
+      "rule": "relaxation",
+      "why": "a signing key lowers latest"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/relax-latest-lowered-root.json",
+      "name": "relax-latest-lowered-root",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "c568ad54cb48a6dd31cb672fa734f6594df1b36ee0dd5ea4a1e0d1f101b2db71",
+        "revoked": [],
+        "seq": 4
+      },
+      "why": "the same policy signed by the root key"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/relax-entry-removed.json",
+      "name": "relax-entry-removed",
+      "rule": "relaxation",
+      "why": "a signing key removes an entry"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/relax-entry-removed-root.json",
+      "name": "relax-entry-removed-root",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "56111312f8455f88dd5af6868a9b63a7af074d5f9b2c6a97cec27f86daaf83bd",
+        "revoked": [],
+        "seq": 3
+      },
+      "why": "the same policy signed by the root key"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/stop-auto-install.json",
+      "name": "stop-auto-install",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "b3f5f6f33dd6f49c06ecd221e389ee8b0d2c432a7f979542dbeef16ac9059285",
+        "revoked": [],
+        "seq": 4
+      },
+      "why": "removing auto_install_after is the emergency stop, not a relaxation"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/delay-auto-install.json",
+      "name": "delay-auto-install",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "f6cce6ebf61e8dd9477507366e5eef018e4f47dc207e6c12108783c41ed68e5e",
+        "revoked": [],
+        "seq": 4
+      },
+      "why": "delaying auto_install_after is not a relaxation"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/min-raised-with-new-grace.json",
+      "name": "min-raised-with-new-grace",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "9714ec10d881ca0c1788f412b906460f1265b4a80e381a2fcfc5b414bdf580a3",
+        "revoked": [],
+        "seq": 4
+      },
+      "why": "a higher min may come with a new, later deadline"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/grace-earlier.json",
+      "name": "grace-earlier",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "f7873e4b86ebe56e2bb80af7f08143ddadd6165278b0f62b1347af74dfaf36f1",
+        "revoked": [],
+        "seq": 3
+      },
+      "why": "an earlier deadline tightens"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "accept",
+      "file": "accepted/grace-removed.json",
+      "name": "grace-removed",
+      "rule": "relaxation",
+      "state_after": {
+        "epoch": 1,
+        "p_sha256": "39cdd4b6850fde05e336d22239709dbb4078581c3b821ab2226fc6d600424394",
+        "revoked": [],
+        "seq": 3
+      },
+      "why": "no deadline at all tightens"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/tampered-policy.json",
+      "name": "tampered-policy",
+      "rule": "signature",
+      "why": "one byte of the policy text changed after signing"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/tampered-signature.json",
+      "name": "tampered-signature",
+      "rule": "signature",
+      "why": "one character of the signature changed"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/wake-domain.json",
+      "name": "wake-domain",
+      "rule": "signature",
+      "why": "signed under the relay's wake-command domain hjv-wake-v1"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/policy-under-root-domain.json",
+      "name": "policy-under-root-domain",
+      "rule": "signature",
+      "why": "the policy signed under the root declaration's domain"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/unknown-key.json",
+      "name": "unknown-key",
+      "rule": "key",
+      "why": "signed by a key the build does not hold (k = 3)"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/another-key-as-1.json",
+      "name": "another-key-as-1",
+      "rule": "signature",
+      "why": "signed by another key under the number 1"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/another-root-as-101.json",
+      "name": "another-root-as-101",
+      "rule": "signature",
+      "why": "signed by another root key under the number 101"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/envelope-v2.json",
+      "name": "envelope-v2",
+      "rule": "version",
+      "why": "an envelope version the app does not know"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/policy-v2.json",
+      "name": "policy-v2",
+      "rule": "version",
+      "why": "a correctly signed policy of version 2: the app ignores it"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/wrong-server.json",
+      "name": "wrong-server",
+      "rule": "server",
+      "why": "a correctly signed policy of another server"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/key-number-zero.json",
+      "name": "key-number-zero",
+      "rule": "envelope",
+      "why": "the key number 0"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/key-number-as-text.json",
+      "name": "key-number-as-text",
+      "rule": "envelope",
+      "why": "the key number as a JSON string"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/signature-63-bytes.json",
+      "name": "signature-63-bytes",
+      "rule": "envelope",
+      "why": "a signature of 63 bytes"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/too-large.json",
+      "name": "too-large",
+      "rule": "size",
+      "why": "a correctly signed envelope over 16 KiB: the app does not read that much"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/declaration-by-signing-key.json",
+      "name": "declaration-by-signing-key",
+      "rule": "root-declaration",
+      "why": "the declaration is signed by signing key 2 under its own number"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/declaration-signing-key-as-101.json",
+      "name": "declaration-signing-key-as-101",
+      "rule": "root-declaration",
+      "why": "the declaration is signed by signing key 2 under the root key's number"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/declaration-under-policy-domain.json",
+      "name": "declaration-under-policy-domain",
+      "rule": "root-declaration",
+      "why": "the declaration is signed by the root key under the policy's domain"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/declaration-tampered.json",
+      "name": "declaration-tampered",
+      "rule": "root-declaration",
+      "why": "the declaration's text changed after signing"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/declaration-revokes-root.json",
+      "name": "declaration-revokes-root",
+      "rule": "root-declaration",
+      "why": "the declaration lists the root key's number as revoked"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/declaration-wrong-server.json",
+      "name": "declaration-wrong-server",
+      "rule": "root-declaration",
+      "why": "a declaration of another server"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/declaration-v2.json",
+      "name": "declaration-v2",
+      "rule": "root-declaration",
+      "why": "a declaration of version 2"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/revoked-key-with-declaration.json",
+      "name": "revoked-key-with-declaration",
+      "rule": "revoked",
+      "why": "the policy is signed by the key its own declaration revokes"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/revoked-key-later.json",
+      "name": "revoked-key-later",
+      "rule": "revoked",
+      "why": "signing key 1 stays revoked for an envelope that carries no declaration"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/old-epoch-after-new.json",
+      "name": "old-epoch-after-new",
+      "rule": "epoch",
+      "why": "a policy of epoch 1 after the app has moved to epoch 2"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/declaration-epoch-back.json",
+      "name": "declaration-epoch-back",
+      "rule": "epoch",
+      "why": "a declaration of epoch 1 after the app has moved to epoch 2"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/signing-key-raises-epoch.json",
+      "name": "signing-key-raises-epoch",
+      "rule": "epoch",
+      "why": "a signing key's policy names epoch 2 without a declaration"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/epoch-differs-from-declaration.json",
+      "name": "epoch-differs-from-declaration",
+      "rule": "epoch",
+      "why": "a signing key's policy of epoch 3 with a declaration of epoch 2"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/good-declaration-bad-policy.json",
+      "name": "good-declaration-bad-policy",
+      "rule": "signature",
+      "then_accept": "accepted/e1-s2.json",
+      "why": "a valid declaration with a policy whose signature fails: nothing of the envelope is taken, so signing key 1 is still good"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/revoke-in-the-same-epoch.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/revoked-in-the-same-epoch.json",
+      "name": "revoked-in-the-same-epoch",
+      "rule": "revoked",
+      "why": "signing key 2 after a declaration of the same epoch revoked it"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "accepted/e1-s1.json",
+      "name": "seq-lower",
+      "rule": "seq",
+      "why": "an older policy after a newer one (rollback)"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/same-position-other-bytes.json",
+      "name": "same-position-other-bytes",
+      "rule": "seq",
+      "why": "another policy at the position the app already has"
+    },
+    {
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/seq-step-1001.json",
+      "name": "seq-step-1001",
+      "rule": "seq",
+      "why": "a signing key's policy 1001 above the stored seq"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/fresh-install-seq-1001.json",
+      "name": "fresh-install-seq-1001",
+      "rule": "seq",
+      "why": "a fresh install with floor 1:0 does not take a signing key's seq 1001"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/below-floor.json",
+      "floor": "1:5",
+      "name": "below-floor",
+      "rule": "floor",
+      "why": "a policy at 1:4 for a build whose floor is 1:5"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/below-floor-by-root.json",
+      "floor": "1:5",
+      "name": "below-floor-by-root",
+      "rule": "floor",
+      "why": "the same by the root key: the floor holds for every key"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "accepted/e2-s1.json",
+      "floor": "2:2",
+      "name": "below-floor-in-epoch-2",
+      "rule": "floor",
+      "why": "the policy at 2:1 for a build whose floor is 2:2"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/min-above-latest.json",
+      "name": "min-above-latest",
+      "rule": "fields",
+      "why": "min 1.6.1 above latest 1.6.0"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/version-two-numbers.json",
+      "name": "version-two-numbers",
+      "rule": "fields",
+      "why": "\"1.6\": the apps' version comparison reads it as 1.0.60"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/version-v-prefix.json",
+      "name": "version-v-prefix",
+      "rule": "fields",
+      "why": "\"v1.6.0\": read as 0.6.0"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/version-three-digit-patch.json",
+      "name": "version-three-digit-patch",
+      "rule": "fields",
+      "why": "\"1.5.100\": read as 1.6.0"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/version-four-numbers.json",
+      "name": "version-four-numbers",
+      "rule": "fields",
+      "why": "\"1.6.0.1\": four numbers"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/version-plus-build.json",
+      "name": "version-plus-build",
+      "rule": "fields",
+      "why": "\"1.6.0+1\": read as 1.6.0 with the build dropped, or as 1.5.x"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/issued-not-rfc3339.json",
+      "name": "issued-not-rfc3339",
+      "rule": "fields",
+      "why": "issued is not of the form 2026-10-01T03:00:00Z"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/package-file-install-exe.json",
+      "name": "package-file-install-exe",
+      "rule": "fields",
+      "why": "a package name ending in install.exe would open the installer"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/package-file-qs.json",
+      "name": "package-file-qs",
+      "rule": "fields",
+      "why": "a package name with -qs- would run as quick support"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/package-file-path.json",
+      "name": "package-file-path",
+      "rule": "fields",
+      "why": "a package name with a path"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/package-size-zero.json",
+      "name": "package-size-zero",
+      "rule": "fields",
+      "why": "a package of 0 bytes"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/package-size-over-200-mib.json",
+      "name": "package-size-over-200-mib",
+      "rule": "fields",
+      "why": "a package over 200 MiB"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/package-sha256-uppercase.json",
+      "name": "package-sha256-uppercase",
+      "rule": "fields",
+      "why": "a SHA-256 that is not 64 lowercase hex digits"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/contact-201-characters.json",
+      "name": "contact-201-characters",
+      "rule": "fields",
+      "why": "contact_ko over 200 characters"
+    },
+    {
+      "after": [],
+      "binding": "app",
+      "expect": "reject",
+      "file": "refused/notes-2001-characters.json",
+      "name": "notes-2001-characters",
+      "rule": "fields",
+      "why": "notes_ko over 2000 characters"
+    },
+    {
+      "after": [],
+      "binding": "tool",
+      "expect": "reject",
+      "file": "refused/text-with-url.json",
+      "name": "text-with-url",
+      "rule": "fields",
+      "why": "a URL in contact_ko: the tool never signs one, and an app never makes text a link"
+    },
+    {
+      "after": [],
+      "binding": "tool",
+      "expect": "reject",
+      "file": "refused/unknown-field.json",
+      "name": "unknown-field",
+      "rule": "fields",
+      "why": "a field the format does not have"
+    },
+    {
+      "after": [],
+      "binding": "tool",
+      "expect": "reject",
+      "file": "refused/duplicate-field.json",
+      "name": "duplicate-field",
+      "rule": "fields",
+      "why": "a field twice"
+    },
+    {
+      "after": [],
+      "binding": "tool",
+      "expect": "reject",
+      "file": "refused/not-canonical.json",
+      "name": "not-canonical",
+      "rule": "fields",
+      "why": "a space the tool does not write"
+    }
+  ],
+  "domains": {
+    "policy": "hjv-version-v1",
+    "root_declaration": "hjv-version-root-v1"
+  },
+  "key_file": {
+    "HJV_POLICY_FLOOR": "1:0",
+    "HJV_UPDATE_PUBKEY": "1:JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=,2:zRSzf5VulTGU/3+3Oz2B3MVh1hp1OAlLfD4aZD7l86o=",
+    "HJV_UPDATE_ROOT_PUBKEY": "101:T9CZzNR9eJPf6ewkQU7LDZtUICMqrTDZHEZb4zy+ZcQ=",
+    "file": "update-keys.env",
+    "fingerprint_sha256": "6fb0ed8ff5085b36853973067ea623089cbc2422b783f8139326a35d659917cc"
+  },
+  "key_file_example": {
+    "file": "keyfile/signing-1.age",
+    "holds": "test key signing-1",
+    "made_by": "the age crate 0.11.5 (scrypt work factor 10), not by this tool",
+    "passphrase": "test passphrase, not a secret"
+  },
+  "research_vector": {
+    "file": "research/version-policy.json",
+    "note": "the first draft of the format (build/minver/policy-distribution): the signature is good for signing key 1, the policy text has no epoch and is refused as a policy"
+  },
+  "root_declaration": {
+    "file": "root-declaration-e2.json",
+    "p": "{\"v\":1,\"server\":\"rd.example.com\",\"epoch\":2,\"revoked\":[1],\"issued\":\"2026-10-06T03:00:00Z\"}",
+    "signed_bytes_sha256": "ccba8808d7df1ac29b0adacd32738befae4876eb50126a486838b27432314424"
+  },
+  "server": "rd.example.com",
+  "test_keys": [
+    {
+      "id": 1,
+      "in_the_key_file": true,
+      "name": "signing-1",
+      "public": "1:JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+      "role": "signing",
+      "seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+    },
+    {
+      "id": 2,
+      "in_the_key_file": true,
+      "name": "signing-2",
+      "public": "2:zRSzf5VulTGU/3+3Oz2B3MVh1hp1OAlLfD4aZD7l86o=",
+      "role": "signing",
+      "seed_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+    },
+    {
+      "id": 101,
+      "in_the_key_file": true,
+      "name": "root-101",
+      "public": "101:T9CZzNR9eJPf6ewkQU7LDZtUICMqrTDZHEZb4zy+ZcQ=",
+      "role": "root",
+      "seed_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+    },
+    {
+      "id": 3,
+      "in_the_key_file": false,
+      "name": "signing-3",
+      "public": "3:3eO8zsfzpmoRFfRdcg9NwTXDrnxOItyjj9se/WpJX/g=",
+      "role": "signing",
+      "seed_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf"
+    },
+    {
+      "id": 102,
+      "in_the_key_file": false,
+      "name": "root-102",
+      "public": "102:E9mQinCSWZLtVGAH0n9Q2mi6chfvYqw8ynhFKf8QRxw=",
+      "role": "root",
+      "seed_hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+    }
+  ]
+}

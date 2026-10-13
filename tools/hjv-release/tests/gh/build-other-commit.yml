@@ -1,0 +1,25 @@
+# Builds the HJViewer apps from the public repository with this repository's secrets (real server
+# values, signing keys). The code and the build steps come from the public repository at one
+# reviewed commit; see docs/ci.md there.
+name: build
+on:
+  workflow_dispatch:
+    inputs:
+      platforms: { type: choice, options: [windows, android, ios, all], default: all }
+      testflight: { type: boolean, default: false }
+      play: { type: boolean, default: false }
+      play_release: { type: choice, options: [completed, draft, validate], default: completed }
+permissions:
+  contents: read
+jobs:
+  client:
+    # The reviewed public commit, as the full 40-character SHA (git rev-parse HEAD), in both places:
+    # the build steps (uses) and the code (source_ref) come from the same commit.
+    uses: yonsei-projecttf/hjviewer/.github/workflows/client-build.yml@3333333333333333333333333333333333333333
+    with:
+      platforms: ${{ inputs.platforms }}
+      testflight: ${{ inputs.testflight }}
+      play: ${{ inputs.play }}
+      play_release: ${{ inputs.play_release }}
+      source_ref: 3333333333333333333333333333333333333333
+    secrets: inherit
