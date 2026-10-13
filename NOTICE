@@ -21,7 +21,8 @@ What HJViewer changes, since 2026-10-10:
   iOS build sets its own signing on the Runner target and drops entitlements the provisioning
   profile does not grant, and the Windows package ships the app as HJViewer.exe and leaves out
   RustDesk's printer driver and its closed-source adapter (remote printing is off).
-Everything else in this repository (scripts, tools, deploy, docs) is original work; the client
+Everything else in this repository is original work: hjv-api, the account service (server/api);
+hjv-relay, the Wake-on-LAN relay (relay); and the scripts, tools, deploy files and docs. The client
 workflow follows the steps of RustDesk's own CI.
 
 License: this repository is licensed under the GNU Affero General Public License, version 3 only
