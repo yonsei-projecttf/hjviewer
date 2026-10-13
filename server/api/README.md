@@ -32,6 +32,13 @@ ring and the system's CA certificates; SQLite is built in (rusqlite `bundled`).
   service), then switch nginx over: the allowlist is empty until then, so nobody can log in early.
 - Its log lines go to the journal namespace `hjviewer`: `journalctl --namespace=hjviewer -u
   hjviewer-api`. They hold counts, results and tags (log.rs), never IDs, addresses or secrets.
+  `deploy/journald@hjviewer.conf` (installed as `/etc/systemd/journald@hjviewer.conf`) keeps that
+  namespace 30 days.
+- Watched and backed up by units of their own (Monitoring, Backup and restore below):
+  `hjviewer-api-check.timer` every five minutes, `hjviewer-api-backup.timer` every day, and
+  `hjviewer-api-alert@.service` when one of them or the service fails. Enable the two timers once
+  the service runs: `sudo systemctl enable --now hjviewer-api-check.timer
+  hjviewer-api-backup.timer`.
 - `deploy/nginx-hjviewer-api.conf` replaces the `/api/` block of
   `deploy/nginx-hjviewer-locations.conf`: the account paths go to the socket, `/api/login-options`
   and `/api/device-group/accessible` get static answers, all other `/api/` paths stay 404, and
@@ -160,6 +167,10 @@ report                    counts, the login results of the last day and week, th
 selfcheck                 DNS, TCP and TLS to the SSO and hbbs's console, from inside the sandbox;
                           the fingerprints of the pinned list keys and whether the key in use is
                           the pinned one
+backup [--keep-days N] <file>.sqlite3 | <directory>
+                          a checked copy of the database into a directory only you may enter
+                          (Backup and restore)
+health                    the counts the five-minute check reads, as JSON (not recorded)
 keygen seal|log-key|list  as hjv-api keygen (runs locally, not in the service)
 ```
 
@@ -192,6 +203,91 @@ owned by `hjviewer-api` (0700) and hjv-api creates `operator.log` in it (0600); 
 file, and the unit does not start. (To create it in advance: `sudo install -d -o hjviewer-api -g
 hjviewer-api -m 0700 /var/log/hjviewer-api`.) If the record cannot be opened, hjv-api still serves
 logins, without the admin socket, and says so in the journal.
+
+## Monitoring
+
+While hjv-api is down, or only the PCs' syncs fail, password-less connections go on for a day on
+the lists the PCs hold, and nobody notices until every PC falls back to its password at once
+(design v3 §5-9). So three units watch it (`deploy/systemd/`):
+
+- `hjviewer-api-check.timer` runs `hjv-api check` every five minutes (`src/check.rs`), as root
+  with one capability and no network. It looks at `GET /api/hjv/source` on
+  `/run/hjviewer-api.sock`, and at the service's `health` on its admin socket: of the PCs holding
+  their binding, the ones that are on (hbbs saw them register within 90 seconds at each check of
+  the last four minutes, so that a PC that has just woken has time for its first sync) and whether
+  any of them synced in the last ten minutes; whether hbbs's console answers; SSO calls paused
+  now or in the last ten minutes, with `invalid_client` (the credential
+  `hjviewer-sso-client-secret` must be renewed, as when the WordPress plugin's changes) and a
+  refused address told apart; and, with phase 2, active NAS relays silent for an hour. PCs that
+  are off say nothing, so a night with every PC asleep is no alarm. All well: one line in the
+  journal. A finding: an error line each, the findings in `/run/hjviewer-api-check/findings`, and
+  the unit fails.
+- `hjviewer-api-alert@.service` is the `OnFailure=` of `hjviewer-api.service` (each crash, also
+  while systemd restarts it), of the check and of the backup: `hjv-api alert <unit>`
+  (`src/alert.rs`) writes an error line to the journal. That line is the alert while no Telegram
+  bot is set up; the operations agent's daily report counts them:
+  `sudo journalctl --namespace=hjviewer -p warning --since yesterday -o cat | wc -l`.
+- With a Telegram bot (design v3 question 12), the alert also goes to its chat: the same unit,
+  ended the same way (systemd's `MONITOR_SERVICE_RESULT`, `MONITOR_EXIT_CODE`,
+  `MONITOR_EXIT_STATUS`), with the same findings once in six hours, anything else at once: a crash
+  and a start that fails are two alerts. The message holds the unit, how it ended, the host name,
+  the time and the findings (counts and states, no person, device, address or secret, in Korean
+  with the check's English line). The user puts the bot in, on the server, without an agent:
+
+  ```sh
+  { printf 'TELEGRAM_BOT_TOKEN='; systemd-ask-password -n "bot token:"; printf '\nTELEGRAM_CHAT_ID=%s\n' '<chat number>'; } |
+    sudo systemd-creds encrypt --name=hjviewer-api-telegram - /etc/credstore.encrypted/hjviewer-api-telegram
+  sudo systemctl start hjviewer-api-alert@test.service   # a test message
+  ```
+
+  The alert unit imports the credential when it is there (`ImportCredential=`, systemd 254 and
+  later; nothing happens without it). Its address carries the token, so hjv-api prints neither,
+  and clears the token from every error. To stop sending, delete the file.
+- During planned work that stops hjv-api (a restore), stop `hjviewer-api-check.timer` first and
+  start it after.
+
+## Backup and restore
+
+`sudo hjv-api admin backup [--keep-days N] <file>.sqlite3 | <directory>` (`src/backup.rs`): the
+running service takes a consistent copy of its database (`VACUUM INTO`, one read transaction
+while requests go on), makes it a standalone file (rollback journal, application ID `HJVA`),
+checks it (`PRAGMA quick_check`), counts its rows and sends it over the admin socket; the command
+line writes it 0600 under a temporary name, checks size, SHA-256, schema and every table's rows
+against the service's counts, and only then gives it its name, which must not exist yet. The
+directory must be closed to everyone but the one who runs the command (root's
+`/var/lib/hjviewer-api/backup`, 0700; a missing one is made when its parent is there); a
+directory as the argument gets a name of the time. `--keep-days N` then deletes the backups in
+that directory older than N days (SQLite files with that application ID named `*.sqlite3`,
+nothing else). The output and the operator record hold counts only.
+
+- **Daily**: `hjviewer-api-backup.timer` (03:30 and up to 20 minutes later, and after a boot that
+  missed it) runs `hjv-api admin backup --keep-days 14 /var/lib/hjviewer-api/backup`: 14 days of
+  backups, upgrade snapshots included, inside the server only (design v3 §5-9; a copy off the
+  server is question 8). The unit creates the directory, root's, inside the service's state
+  directory, where the service's user cannot read it. The credentials,
+  `/var/lib/systemd/credential.secret` and the operator record are not in a backup; the keys come
+  back from their offline copies (design v3 §5-3).
+- **Before an upgrade**: schema upgrades are one way (an older hjv-api refuses a newer schema), so
+  take a snapshot first, `sudo hjv-api admin backup
+  /var/lib/hjviewer-api/backup/before-<VERSION>.sqlite3`, and keep the env file and the old binary
+  with it. To go back: the old binary, the snapshot (as below) and the env file together.
+- **Restore** brings back the tokens and account keys revoked since, the switches as they were and
+  the bindings released since, so it is an incident of its own: `passwordless off`, stop the
+  check timer, the socket and the service, keep the current database files aside (as a backup in
+  the backup directory, so that they age out with the rest), put the backup in their place
+  (`install -o hjviewer-api -g hjviewer-api -m 600 <backup> /var/lib/hjviewer-api/hjv-api.sqlite3`,
+  no -wal or -shm left), start the socket and the service, `passwordless off` again (the restored
+  switch is the backup's), `user revoke-all --all`, look at the allowlist (`allow list`) and the
+  switches (`passwordless status`), then, with the user's approval, `passwordless on` and the
+  check timer. Everybody logs in again on their phones and PCs; the PCs stay bound, so a PC whose
+  mark was not cleared gets its list at once, and a PC that cleared it meanwhile is `listed` until
+  someone logs in on it. `tests/ops.rs` (`the_restore_procedure`) runs these steps on the database;
+  `docs/hjv-api-drill.md` records the rehearsal with systemd.
+- **Host rebuilt** (the disk lost): the seal key comes from its offline copy, list key 1 and
+  command key 1 were on the server only and are replaced by the offline key 2
+  (`HJV_API_LIST_KID=2`; the apps and relays pin key 2 already), the log key is new (old records'
+  tags no longer match). Without a backup the database starts empty: the allowlist is imported
+  again and everyone logs in again, the PCs too.
 
 ## API
 
@@ -480,7 +576,11 @@ requests (`tests/common/mod.rs`); `tests/keys.rs` has the account keys, the swit
 vectors above and in `tests/data/v3-vectors.json`, `tests/http.rs` the request proof, and
 `tests/pcsync.rs` the PC sync: its checks in order, the lists as the PC checks them, the
 ten-second repeat, key use, the device list's states, every way a PC leaves its account, the key
-change confirmed with hbbs, the report and selfcheck.
+change confirmed with hbbs, the report and selfcheck. `tests/ops.rs` has the backups (the rows of
+a backup's file, the places refused, the old backups deleted, a backup while requests go on), the
+restore procedure on a restored database, the check (a fake report with a stopped socket and no
+syncs, then the service's own counts), the alert with a stand-in for Telegram, and the units under
+`systemd-analyze verify` (skipped without it).
 Their files and sockets go to the system's temporary directory (`/tmp` when `$TMPDIR` is long), so
 that socket paths stay short whatever the target directory. Nothing calls the real SSO.
 `hjv-fake-sso --listen 127.0.0.1:18600` serves the fake SSO for the E2E with fixed test accounts
@@ -510,9 +610,10 @@ unseen (a sync counts as seen); released bindings 180 days; key use and refusals
 they go with the PC when it leaves its account (key use also with its key); accounts until a year
 unused, unless still on the allowlist with a PC in use (seen within the device time), so that a lab
 PC logged in once stays listed while it is on; records six months; limit counters for their longest
-window, a day at least. Of failed logins, at most 20 a minute are recorded (the rest are counted in
-the daily summary of the journal), so that a flood cannot fill the disk; successes are always
-recorded. No password, SSO token, e-mail, uuid or user name of a device is stored, and the journal
+window, a day at least; backups of the database 14 days (`/var/lib/hjviewer-api/backup`, root
+only); the journal namespace `hjviewer` 30 days. Of failed logins, at most 20 a minute are
+recorded (the rest are counted in the daily summary of the journal), so that a flood cannot fill
+the disk; successes are always recorded. No password, SSO token, e-mail, uuid or user name of a device is stored, and the journal
 gets tags and counts only.
 
 ## Later phases

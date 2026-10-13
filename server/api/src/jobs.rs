@@ -11,7 +11,9 @@
 //! device in an account (a device counts as seen when hbbs has it with the stored key; logins,
 //! list requests and syncs from it count as well), mark the ones hbbs holds another key for as
 //! needs-relogin (for the PCs that do not sync; a sync does it at once: design v3 §4-6), and write
-//! a summary of the day's logins to the journal, with counts only.
+//! a summary of the day's logins to the journal, with counts only. Every hour too: delete the
+//! copies of the database that a backup left when the service stopped in the middle of sending
+//! one (backup.rs).
 
 use crate::{
     db,
@@ -57,6 +59,13 @@ pub async fn purge_now(state: &Arc<AppState>) -> Option<db::Purged> {
     state.key_calls.purge();
     state.lists.purge();
     state.key_checks.purge();
+    match crate::backup::remove_stale_copies(state).await {
+        Ok(0) => {}
+        Ok(n) => {
+            log_notice!("upkeep: removed {n} copies of the database left by broken-off backups")
+        }
+        Err(e) => log_warn!("upkeep: {e}"),
+    }
     let retention = state.retention();
     let at = now();
     match state.db.call(move |c| db::purge(c, at, &retention)).await {

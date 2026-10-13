@@ -242,6 +242,8 @@ pub struct Options {
     /// portal IDs on the allowlist (the three test accounts when empty)
     pub allow: Vec<&'static str>,
     pub sso_slow: Option<Duration>,
+    /// start from a copy of this database (a restored backup), its allowlist as it is
+    pub db_file: Option<PathBuf>,
 }
 
 pub struct Harness {
@@ -346,16 +348,22 @@ impl Harness {
             list_key: Zeroizing::new(LIST_SEED),
         };
         let dir = temp_dir("harness");
-        let mut conn = db::open(&dir.join("hjv-api.sqlite3")).unwrap();
-        let allow: Vec<String> = if opts.allow.is_empty() {
-            vec![HONG.0, KIM.0, LEE.0]
-        } else {
-            opts.allow
+        let db_path = dir.join("hjv-api.sqlite3");
+        if let Some(file) = &opts.db_file {
+            std::fs::copy(file, &db_path).unwrap();
         }
-        .iter()
-        .map(|id| hjv_api::util::login_key(id))
-        .collect();
-        db::allow_add(&mut conn, &allow, now()).unwrap();
+        let mut conn = db::open(&db_path).unwrap();
+        if opts.db_file.is_none() {
+            let allow: Vec<String> = if opts.allow.is_empty() {
+                vec![HONG.0, KIM.0, LEE.0]
+            } else {
+                opts.allow
+            }
+            .iter()
+            .map(|id| hjv_api::util::login_key(id))
+            .collect();
+            db::allow_add(&mut conn, &allow, now()).unwrap();
+        }
         let state = AppState::new(config, secrets, conn, opts.second_factor).unwrap();
 
         let (stop, stop_rx) = watch::channel(false);
@@ -480,6 +488,18 @@ impl Harness {
     /// The account key's seed of a token's login, when this harness made the login.
     pub fn key_of(&self, token: &str) -> Option<[u8; 32]> {
         self.keys.lock().unwrap().get(token).copied()
+    }
+
+    /// Takes the account keys of `other`'s logins, so that their tokens sign here as their apps
+    /// would (a restored database, the same apps).
+    pub fn adopt_keys(&self, other: &Harness) {
+        let theirs = other.keys.lock().unwrap().clone();
+        self.keys.lock().unwrap().extend(theirs);
+    }
+
+    /// The database file this harness serves.
+    pub fn db_path(&self) -> PathBuf {
+        self.dir.join("hjv-api.sqlite3")
     }
 
     /// The `X-HJV-Proof` the app would send with a request (with the token's key, now).

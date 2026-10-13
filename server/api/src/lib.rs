@@ -17,7 +17,10 @@
 pub mod log;
 
 pub mod admin;
+pub mod alert;
 pub mod api;
+pub mod backup;
+pub mod check;
 pub mod config;
 pub mod db;
 pub mod devmodel;

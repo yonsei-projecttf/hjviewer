@@ -7,10 +7,13 @@
 //!     hjv-api admin [--socket <path>] [--reveal] <command>…
 //!     hjv-api keygen seal|log-key|list --kid N [--encrypt-to <credential file> | --out <file>]
 //!     hjv-api selfcheck [--env-file <file>] [--credentials <dir>] [--log-only]
+//!     hjv-api check [--api-socket <path>] [--admin-socket <path>] [--findings <file>]
+//!     hjv-api alert <unit>|test [--findings <file>] [--state-dir <dir>]
 //!     hjv-api oplog-verify [<file>]
 
 use hjv_api::{
     admin::{self, AdminRequest},
+    alert, backup, check,
     config::{load_list_key, read_env_file, Config, Secrets, ENV_PREFIX},
     db, jobs,
     keygen::{self, Target},
@@ -41,6 +44,8 @@ hjv-api serve [--db <file>] [--env-file <file>] [--credentials <dir>]
 hjv-api admin [--socket <path>] [--reveal] <command> (hjv-api admin help)
 hjv-api keygen seal|log-key|list --kid N [--encrypt-to <credential file> | --out <file>]
 hjv-api selfcheck [--env-file <file>] [--credentials <dir>] [--log-only]
+hjv-api check [--api-socket <path>] [--admin-socket <path>] [--findings <file>]
+hjv-api alert <unit>|test [--findings <file>] [--state-dir <dir>]
 hjv-api oplog-verify [<file>]
 hjv-api version";
 
@@ -57,6 +62,9 @@ fn main() -> ExitCode {
         Some("admin") => runtime(false).and_then(|rt| rt.block_on(admin_cli(&args[1..]))),
         Some("keygen") => keygen_cli(&args[1..]),
         Some("selfcheck") => runtime(false).and_then(|rt| rt.block_on(selfcheck_cli(&args[1..]))),
+        // the five-minute check and the alert of its units (design v3 §5-9)
+        Some("check") => runtime(false).and_then(|rt| rt.block_on(check::cli(&args[1..]))),
+        Some("alert") => runtime(false).and_then(|rt| rt.block_on(alert::cli(&args[1..]))),
         Some("oplog-verify") => {
             let path = args.get(1).map_or(DEFAULT_OPLOG, String::as_str);
             oplog::verify(Path::new(path)).map(|n| println!("{n} lines, chain intact"))
@@ -280,6 +288,13 @@ async fn admin_cli(args: &[String]) -> Result<(), String> {
     let socket = opts
         .get("--socket")
         .map_or_else(|| PathBuf::from(admin::DEFAULT_SOCKET), PathBuf::from);
+    let sudo_user = std::env::var("SUDO_USER").unwrap_or_default();
+    // the copy of the database comes back through the socket and is written here, as root
+    if argv[0] == "backup" {
+        let output = backup::cli(&socket, &argv[1..], sudo_user).await?;
+        print!("{output}");
+        return Ok(());
+    }
     let mut argv = argv;
     // the allowlist file is read here, as root, and sent; only counts come back
     let input = match argv.as_slice() {
@@ -296,7 +311,7 @@ async fn admin_cli(args: &[String]) -> Result<(), String> {
     let request = AdminRequest {
         argv,
         reveal: opts.contains_key("--reveal"),
-        sudo_user: std::env::var("SUDO_USER").unwrap_or_default(),
+        sudo_user,
         input,
     };
     let output = admin::send(&socket, &request).await?;

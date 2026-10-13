@@ -1,0 +1,14 @@
+# Runs hjviewer-api-backup.service every day at a quiet hour (design v3 §5-9), and after a boot
+# that missed it. Enable it once hjv-api runs: sudo systemctl enable --now hjviewer-api-backup.timer
+
+[Unit]
+Description=Back up hjv-api's database every day
+Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/server/api/README.md
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

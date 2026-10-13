@@ -254,6 +254,15 @@ fn prepare(conn: Connection) -> Result<Connection, String> {
     };
     setup().map_err(|e| format!("database setup: {e}"))?;
     migrate(&conn)?;
+    // a restored backup carries the backups' application ID (backup.rs); the database served is
+    // never taken for a backup that `--keep-days` may delete
+    let application_id: i32 = conn
+        .query_row("PRAGMA application_id", [], |r| r.get(0))
+        .map_err(|e| format!("database setup: {e}"))?;
+    if application_id == crate::backup::APPLICATION_ID {
+        conn.pragma_update(None, "application_id", 0)
+            .map_err(|e| format!("database setup: {e}"))?;
+    }
     Ok(conn)
 }
 
@@ -1930,6 +1939,42 @@ pub fn counts(c: &Connection, at: i64, list_ttl: i64) -> rusqlite::Result<Counts
     })
 }
 
+// ---- health (check.rs, design v3 §5-9) ----
+
+/// The PCs holding their binding at `at` (as in [`counts`]: their last sync, within a list's
+/// lifetime `list_ttl`, carried it), with the time of that sync, for the five-minute check.
+pub fn holding_pcs(c: &Connection, at: i64, list_ttl: i64) -> rusqlite::Result<Vec<(String, i64)>> {
+    let mut stmt = c.prepare(
+        "SELECT device_id, last_sync_at FROM devices
+         WHERE sync_state = 'present' AND last_sync_at > ?1 ORDER BY device_id",
+    )?;
+    let rows = stmt.query_map([at - list_ttl], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
+}
+
+/// The NAS relays that are active (relay/PROTOCOL.md section 11) and, of them, the ones that have
+/// not polled for `silent_after` seconds at `at`; `None` until phase 2's schema has the table
+/// `relays` with its columns `state` and `last_poll_at` (design v3 §5-4).
+pub fn relay_health(
+    c: &Connection,
+    at: i64,
+    silent_after: i64,
+) -> rusqlite::Result<Option<(i64, i64)>> {
+    let columns: Vec<String> = column(c, "SELECT name FROM pragma_table_info('relays')", [])?;
+    if !["state", "last_poll_at"]
+        .iter()
+        .all(|name| columns.iter().any(|c| c == name))
+    {
+        return Ok(None);
+    }
+    c.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(last_poll_at IS NULL OR last_poll_at <= ?1), 0)
+         FROM relays WHERE state = 'active'",
+        [at - silent_after],
+        |r| Ok(Some((r.get(0)?, r.get(1)?))),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2220,6 +2265,63 @@ mod tests {
         assert!(!use_pc_nonce(&c, "1", b"n", 700, 1300).unwrap());
         assert!(use_pc_nonce(&c, "2", b"n", 700, 1300).unwrap());
         assert!(use_pc_nonce(&c, "1", b"n", 701, 1301).unwrap());
+    }
+
+    #[test]
+    fn a_restored_backup_is_no_backup_once_served() {
+        let dir = std::env::temp_dir().join(format!("hjv-api-restored-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("restored.sqlite3");
+        {
+            let c = open(&path).unwrap();
+            c.pragma_update(None, "application_id", crate::backup::APPLICATION_ID)
+                .unwrap();
+        }
+        let c = open(&path).unwrap();
+        let id: i32 = c
+            .query_row("PRAGMA application_id", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(id, 0);
+        drop(c);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn health_queries() {
+        let c = conn();
+        let a = upsert_account(&c, "a", "A", "", 1).unwrap();
+        for id in ["1", "2", "3", "4"] {
+            bind(&c, a, id, &[1; 32], "windows", "PC", 5).unwrap();
+        }
+        let note = |mark| SyncNote {
+            mark,
+            app_ver: "1.6.0",
+            off: false,
+        };
+        // the PCs of `counts`' "holding their binding": their binding in a sync within a list's
+        // lifetime
+        store_sync(&c, "1", &note("present"), 1000).unwrap();
+        store_sync(&c, "2", &note("present"), 400).unwrap();
+        store_sync(&c, "3", &note("absent"), 1000).unwrap();
+        assert_eq!(
+            holding_pcs(&c, 1100, 600).unwrap(),
+            vec![("1".to_owned(), 1000)]
+        );
+        assert_eq!(
+            holding_pcs(&c, 1100, 1000).unwrap(),
+            vec![("1".to_owned(), 1000), ("2".to_owned(), 400)]
+        );
+        assert_eq!(counts(&c, 1100, 1000).unwrap().pcs_holding, 2);
+        // the relays come with phase 2's schema; before it there is nothing to say
+        assert_eq!(relay_health(&c, 5000, 3600).unwrap(), None);
+        c.execute_batch(
+            "CREATE TABLE relays (relay_id TEXT PRIMARY KEY, state TEXT NOT NULL, last_poll_at INTEGER);
+             INSERT INTO relays VALUES ('r1', 'active', 4900), ('r2', 'active', 1000),
+                 ('r3', 'active', NULL), ('r4', 'pending', NULL), ('r5', 'revoked', 10);",
+        )
+        .unwrap();
+        assert_eq!(relay_health(&c, 5000, 3600).unwrap(), Some((3, 2)));
+        assert_eq!(relay_health(&c, 5000, 4500).unwrap(), Some((3, 1)));
     }
 
     #[test]

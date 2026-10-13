@@ -161,9 +161,14 @@ pub const UPSTREAM_PAUSE: Duration = Duration::from_secs(120);
 /// outcomes): logins get the same 503 at once then, before the allowlist and without a call
 /// (login.rs, design v3 §4-1), and the operator hears of it once rather than with every login.
 /// The first call after a pause tries the SSO again.
+///
+/// It also keeps when a failure last paused the calls, and why, past the pause and past the next
+/// answer: the five-minute check (check.rs, design v3 §5-9) reports a pause of the last ten
+/// minutes even when it ran out between two checks.
 #[derive(Default)]
 pub struct Breaker {
     state: Mutex<BreakerState>,
+    last: Mutex<Option<(i64, &'static str)>>,
 }
 
 #[derive(Default)]
@@ -212,12 +217,21 @@ impl Breaker {
         };
         state.paused_until = Some(now + pause);
         state.reason = reason;
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((crate::util::now(), reason));
         (!was_paused).then_some(pause)
     }
 
-    /// Ends a pause and starts the count over (tests; in service a pause simply runs out).
+    /// When a failure last paused the calls (Unix time) and why ("address", "client" or
+    /// "upstream"), whether or not the pause still runs.
+    pub fn last_pause(&self) -> Option<(i64, &'static str)> {
+        *self.last.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Ends a pause and starts the count over, forgetting the last one too (tests; in service a
+    /// pause simply runs out).
     pub fn reset(&self) {
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = BreakerState::default();
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
@@ -406,6 +420,18 @@ mod tests {
         // so do refused client credentials (invalid_client)
         assert_eq!(b.note(Some(Failure::ClientRefused)), Some(ADDRESS_PAUSE));
         assert_eq!(b.pause_reason(), Some("client"));
+        // the last pause outlives the pause and the next answer, for the check
+        let (at, reason) = b.last_pause().unwrap();
+        assert_eq!(reason, "client");
+        assert!((crate::util::now() - at).abs() <= 1);
+        assert_eq!(b.note(None), None);
+        assert!(!b.paused());
+        assert_eq!(b.last_pause().map(|(_, r)| r), Some("client"));
+        b.reset();
+        assert_eq!(b.last_pause(), None);
+        // a failure that does not pause leaves no mark
+        assert_eq!(b.note(Some(Failure::Upstream)), None);
+        assert_eq!(b.last_pause(), None);
     }
 
     #[test]

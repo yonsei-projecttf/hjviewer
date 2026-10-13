@@ -1,0 +1,55 @@
+# The alert of hjv-api's units (design v3 §5-9; server/api/README.md, Monitoring): the
+# OnFailure= of hjviewer-api.service, hjviewer-api-check.service and hjviewer-api-backup.service
+# starts hjviewer-api-alert@<the failed unit>.service, which runs `hjv-api alert <the failed unit>`.
+#
+# It always writes the alert to the journal (journalctl --namespace=hjviewer -p err), which the
+# operations agent's daily report counts. With a Telegram bot in the credential
+# hjviewer-api-telegram (the user makes it on the server; README.md, Monitoring), it also sends the
+# alert there: the same unit with the same findings once in six hours. Without the credential
+# ImportCredential= finds nothing and the journal is all. A test message:
+#   sudo systemctl start hjviewer-api-alert@test.service
+
+[Unit]
+Description=HJViewer account API alert: %i
+Documentation=https://github.com/yonsei-projecttf/hjviewer/blob/main/server/api/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/opt/hjviewer/bin/hjv-api alert %i
+TimeoutStartSec=1min
+# the Telegram bot and chat, when the user has put them in (/etc/credstore.encrypted)
+ImportCredential=hjviewer-api-telegram
+# when each alert was last sent
+StateDirectory=hjviewer-api-alert
+StateDirectoryMode=0700
+UMask=0077
+LogNamespace=hjviewer
+
+# root without capabilities: it reads the check's findings (root's) and sends HTTPS to Telegram
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+InaccessiblePaths=-/var/lib/hjviewer -/var/lib/hjviewer-api -/etc/credstore -/etc/credstore.encrypted -/var/lib/systemd/credential.secret
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryMax=64M
+TasksMax=16

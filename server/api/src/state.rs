@@ -4,6 +4,7 @@
 
 use crate::{
     api::Reply,
+    check::OnlineSince,
     config::{Config, Secrets},
     db::{self, Db, Record},
     keys::CallLimiter,
@@ -62,6 +63,9 @@ pub struct AppState {
     pub lists: ListCache,
     /// when hbbs was last asked about a PC's key after a sync its stored key did not sign
     pub key_checks: KeyChecks,
+    /// since when hbbs has seen each PC holding its binding on, for the five-minute check
+    /// (check.rs)
+    pub online: OnlineSince,
     /// limits already reported, so that hammering a full limit writes no more records or lines
     notices: Mutex<HashMap<String, Instant>>,
 }
@@ -93,6 +97,7 @@ impl AppState {
             list_key: ListKey::new(config.list_kid, &list_key),
             lists: ListCache::default(),
             key_checks: KeyChecks::default(),
+            online: OnlineSince::default(),
             sso: SsoClient::new(&config.sso, sso_basic, sso_api_uuid)?,
             seal: SealKeys::new(&seal_keys),
             tags: Tagger::new(&log_key),

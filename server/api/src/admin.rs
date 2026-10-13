@@ -22,9 +22,17 @@
 //! remove` as its other name: both release the PC through `db::release_binding`, so that its next
 //! sync gets a signed `revoked`) and the PC sync's counts in `report`. Device names, host names,
 //! the names apps give themselves and portal IDs show only with `--reveal`.
+//!
+//! Design v3 §5-9 adds `backup` (backup.rs): the service takes a copy of its database and sends
+//! its bytes after the answer's line (`"backup":{size, sha256, schema, counts}` says how many),
+//! and the command line writes and checks the file; and `health` (check.rs), the counts the
+//! five-minute check reads: it changes nothing, shows no person or device, and is the one command
+//! the operator record leaves out, so that the check's 288 calls a day do not bury what people
+//! did.
 
 use crate::{
-    db, limits,
+    backup::{self, BackupInfo, Snapshot},
+    check, db, limits,
     oplog::{OpEntry, OpLog},
     pcsync,
     selfcheck::ListKeyCheck,
@@ -87,6 +95,11 @@ hjv-api admin [--socket <path>] [--reveal] <command>
                             bindings, password-less connections of 30 days
   selfcheck                 the service checks that it can reach the SSO and hbbs, and that its
                             list key is the one the apps pin (with the fingerprints)
+  backup [--keep-days N] <file>.sqlite3 | <directory>
+                            a checked copy of the database (0600) into a directory only you may
+                            enter (/var/lib/hjviewer-api/backup); a directory gets a name of the
+                            time; --keep-days N then deletes the backups there older than N days
+  health                    the counts the five-minute check reads, as JSON (not recorded)
   keygen seal|log-key|list --kid N [--encrypt-to <file> | --out <file>]
                             make a secret for a credential (runs here, not in the service)";
 
@@ -101,13 +114,16 @@ pub struct AdminRequest {
     pub input: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct AdminResponse {
     pub ok: bool,
     #[serde(default)]
     pub output: String,
     #[serde(default)]
     pub error: String,
+    /// `backup`: the copy whose bytes follow the answer's line
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<BackupInfo>,
 }
 
 /// Creates the admin socket at `path` (a stale one is replaced), readable by its owner only.
@@ -165,13 +181,15 @@ async fn connection(
         .map_err(|e| format!("peer credentials: {e}"))?
         .uid();
     let (read, mut write) = stream.into_split();
-    let response = if uid != 0 && uid != own_uid {
+    let (response, snapshot) = if uid != 0 && uid != own_uid {
         log_warn!("admin: refused a connection from uid {uid}");
-        AdminResponse {
-            ok: false,
-            output: String::new(),
-            error: "admin commands are for root only".into(),
-        }
+        (
+            AdminResponse {
+                error: "admin commands are for root only".into(),
+                ..AdminResponse::default()
+            },
+            None,
+        )
     } else {
         let mut line = String::new();
         let read = tokio::time::timeout(
@@ -182,11 +200,13 @@ async fn connection(
         match read {
             Ok(Ok(_)) => match serde_json::from_str::<AdminRequest>(&line) {
                 Ok(request) => run(state, oplog, uid, request).await,
-                Err(_) => AdminResponse {
-                    ok: false,
-                    output: String::new(),
-                    error: "not an admin request".into(),
-                },
+                Err(_) => (
+                    AdminResponse {
+                        error: "not an admin request".into(),
+                        ..AdminResponse::default()
+                    },
+                    None,
+                ),
             },
             _ => return Err("no request".into()),
         }
@@ -196,7 +216,14 @@ async fn connection(
     tokio::time::timeout(IO_TIMEOUT, write.write_all(text.as_bytes()))
         .await
         .map_err(|_| "answer timed out".to_owned())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // a backup's bytes follow its line; the copy is deleted when `snapshot` goes
+    if let Some(snapshot) = snapshot {
+        backup::send_file(&snapshot, &mut write)
+            .await
+            .map_err(|e| format!("backup: {e}"))?;
+    }
+    Ok(())
 }
 
 /// What a command line points at: an account or a device, by value or by tag.
@@ -219,8 +246,31 @@ fn target(arg: &str) -> Result<Target, String> {
     }
 }
 
-async fn run(state: &Arc<AppState>, oplog: &OpLog, uid: u32, req: AdminRequest) -> AdminResponse {
+async fn run(
+    state: &Arc<AppState>,
+    oplog: &OpLog,
+    uid: u32,
+    req: AdminRequest,
+) -> (AdminResponse, Option<Snapshot>) {
     let words: Vec<&str> = req.argv.iter().map(String::as_str).collect();
+    // the five-minute check's counts: not recorded (see the module's notes)
+    if words == ["health"] {
+        let response = match check::health(state).await {
+            Ok(health) => AdminResponse {
+                ok: true,
+                output: serde_json::to_string(&health).unwrap_or_default(),
+                ..AdminResponse::default()
+            },
+            Err(error) => {
+                log_err!("health: {error}");
+                AdminResponse {
+                    error,
+                    ..AdminResponse::default()
+                }
+            }
+        };
+        return (response, None);
+    }
     // known command names only: a mistyped command line may hold an ID
     let command = match words.as_slice() {
         ["allow", sub @ ("import" | "remove" | "list"), ..]
@@ -230,7 +280,7 @@ async fn run(state: &Arc<AppState>, oplog: &OpLog, uid: u32, req: AdminRequest) 
         | ["key", sub @ ("list" | "revoke"), ..]
         | ["passwordless", sub @ ("status" | "on" | "off"), ..]
         | ["strict", sub @ ("on" | "off"), ..] => format!("{} {sub}", words[0]),
-        [one @ ("users" | "devices" | "unlock" | "revoke" | "report" | "selfcheck"), ..] => {
+        [one @ ("users" | "devices" | "unlock" | "revoke" | "report" | "selfcheck" | "backup"), ..] => {
             (*one).to_owned()
         }
         _ => "unknown".to_owned(),
@@ -262,6 +312,8 @@ async fn run(state: &Arc<AppState>, oplog: &OpLog, uid: u32, req: AdminRequest) 
             Err(_) => vec![],
         },
         ["key", "revoke", n] if key_number(n).is_some() => vec![format!("ckid:{}", n.trim())],
+        // the backup's file name, which the command line sends for the record only
+        ["backup", name] if backup_name(name) => vec![(*name).to_owned()],
         _ => vec![],
     };
     let entry = OpEntry {
@@ -273,16 +325,28 @@ async fn run(state: &Arc<AppState>, oplog: &OpLog, uid: u32, req: AdminRequest) 
     };
     if let Err(e) = oplog.append(&entry) {
         log_err!("admin: {e}; the command did not run");
-        return AdminResponse {
-            ok: false,
-            output: String::new(),
-            error: format!("{e}; the command did not run"),
-        };
+        return (
+            AdminResponse {
+                error: format!("{e}; the command did not run"),
+                ..AdminResponse::default()
+            },
+            None,
+        );
     }
-    let result = execute(state, &req).await;
-    // what changed, in counts; the output of a listing stays out of the record
+    let (result, snapshot) = match words.as_slice() {
+        ["backup"] | ["backup", _] => match backup::snapshot(state).await {
+            Ok(snapshot) => (Ok(snapshot.info.summary()), Some(snapshot)),
+            Err(e) => {
+                log_err!("admin: {e}");
+                (Err(e), None)
+            }
+        },
+        _ => (execute(state, &req).await, None),
+    };
+    // what changed (or, for a backup, what was copied), in counts; the output of a listing stays
+    // out of the record
     let done = match &result {
-        Ok(output) if CHANGES.contains(&command.as_str()) => {
+        Ok(output) if CHANGES.contains(&command.as_str()) || command == "backup" => {
             format!("ok: {}", output.lines().next().unwrap_or(""))
         }
         Ok(_) => "ok".to_owned(),
@@ -291,18 +355,29 @@ async fn run(state: &Arc<AppState>, oplog: &OpLog, uid: u32, req: AdminRequest) 
     if let Err(e) = oplog.append_done(&entry, &done) {
         log_err!("admin: {e}");
     }
-    match result {
+    let response = match result {
         Ok(output) => AdminResponse {
             ok: true,
             output,
-            error: String::new(),
+            backup: snapshot.as_ref().map(|s| s.info.clone()),
+            ..AdminResponse::default()
         },
         Err(error) => AdminResponse {
-            ok: false,
-            output: String::new(),
             error,
+            ..AdminResponse::default()
         },
-    }
+    };
+    (response, snapshot)
+}
+
+/// A backup's file name as the command line sends it for the record: `<name>.sqlite3`, short and
+/// plain.
+fn backup_name(name: &str) -> bool {
+    name.len() <= 64
+        && name.ends_with(".sqlite3")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
 fn show(value: &str, reveal: bool) -> String {
@@ -1105,14 +1180,46 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
     }
 }
 
+/// How long the command line waits for the admin socket of a service that is starting: it binds
+/// the socket after opening its database, a moment after `systemctl start` returns.
+pub const START_WAIT: Duration = Duration::from_secs(10);
+
+/// Connects to the admin socket; while it is not there yet or refuses, tries again for `wait`.
+pub async fn connect(socket: &Path, wait: Duration) -> Result<UnixStream, String> {
+    let until = tokio::time::Instant::now() + wait;
+    loop {
+        match UnixStream::connect(socket).await {
+            Ok(stream) => return Ok(stream),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) && tokio::time::Instant::now() < until =>
+            {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(e) => {
+                return Err(format!(
+                    "{}: {e} (is hjviewer-api running, and are you root?)",
+                    socket.display()
+                ))
+            }
+        }
+    }
+}
+
 /// The command line side: sends one command to the service and returns its output.
 pub async fn send(socket: &Path, request: &AdminRequest) -> Result<String, String> {
-    let mut stream = UnixStream::connect(socket).await.map_err(|e| {
-        format!(
-            "{}: {e} (is hjviewer-api running, and are you root?)",
-            socket.display()
-        )
-    })?;
+    send_within(socket, request, START_WAIT).await
+}
+
+/// [`send`], waiting at most `wait` for the admin socket.
+pub async fn send_within(
+    socket: &Path,
+    request: &AdminRequest,
+    wait: Duration,
+) -> Result<String, String> {
+    let mut stream = connect(socket, wait).await?;
     let mut text = serde_json::to_string(request).map_err(|e| e.to_string())?;
     text.push('\n');
     stream
