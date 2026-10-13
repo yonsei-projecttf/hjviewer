@@ -797,6 +797,28 @@ async fn wakes_are_limited_per_account_and_relay() {
     assert_eq!(wake_pc(&h, &pc.id, &phone, None).await.status, 202);
 }
 
+/// A refused wake makes no job and so no limit counts it: the journal says so once per account in
+/// ten minutes, not once per request (the release review's server-wake-refusal-unlimited).
+#[tokio::test]
+async fn refused_wakes_do_not_fill_the_journal() {
+    let h = Harness::start().await;
+    let (pc, _) = reported(&h, HONG, "524000007", "192.0.2.67/24", "192.0.2.1", PC_IP).await;
+    asleep(&h, &pc).await;
+    let phone = h.login_ok(HONG, None).await;
+    for _ in 0..5 {
+        let a = wake_pc(&h, &pc.id, &phone, None).await;
+        assert_eq!((a.status, a.json["hjv"].as_str()), (409, Some("no_relay")));
+    }
+    // (the tests of this file run at once and log under the same account tags: the PC's tag is
+    // this test's own)
+    let dev = h.state.tags.device(&pc.id);
+    let lines = hjv_api::log::captured()
+        .iter()
+        .filter(|l| l.starts_with("wake: no relay") && l.contains(&format!("dev={dev}")))
+        .count();
+    assert_eq!(lines, 1);
+}
+
 /// The PC's limit, and the job under way that answers a second request, are an account's own: a
 /// job that another account made for the same PC ID (a PC that changed hands within the minute) is
 /// neither this account's answer nor its wait.

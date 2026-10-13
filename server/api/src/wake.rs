@@ -532,7 +532,14 @@ async fn wake(state: &Arc<AppState>, req: &ApiRequest, device_id: &str) -> Reply
     let chosen = match choose(candidates, &info, any_relay) {
         Choice::Relay(chosen) => *chosen,
         Choice::NoRelay { reason, any_relay } => {
-            log_info!("wake: no relay, {reason} (acct={account_tag}, dev={device_tag})");
+            // a refused wake makes no job, so no limit counts it: one line per account in ten
+            // minutes keeps a flood of them from filling the journal
+            if state.first_notice(
+                &format!("wake-refused:{account_tag}"),
+                std::time::Duration::from_secs(600),
+            ) {
+                log_info!("wake: no relay, {reason} (acct={account_tag}, dev={device_tag}); the next ten minutes of this account's refused wakes are not logged");
+            }
             return error(
                 StatusCode::CONFLICT,
                 TEXT_NO_RELAY,
@@ -541,7 +548,12 @@ async fn wake(state: &Arc<AppState>, req: &ApiRequest, device_id: &str) -> Reply
             );
         }
         Choice::Offline { last_seen } => {
-            log_info!("wake: the relay is offline (acct={account_tag}, dev={device_tag})");
+            if state.first_notice(
+                &format!("wake-refused:{account_tag}"),
+                std::time::Duration::from_secs(600),
+            ) {
+                log_info!("wake: the relay is offline (acct={account_tag}, dev={device_tag}); the next ten minutes of this account's refused wakes are not logged");
+            }
             return error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 TEXT_RELAY_OFFLINE,
