@@ -26,8 +26,11 @@
 #                          unprivileged network namespace).
 #   scripts/ci.sh e2e      tools/e2e/firewall-e2e.sh strict and open (sudo: namespaces, iptables)
 #                          with a client built for its test server, Caddy pinned by SHA-256, and the
-#                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; the
-#                          client's account tests and scenarios once the patches have them
+#                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; with the
+#                          account code in the patches, also its unit tests and the account
+#                          scenarios (docs/e2e.md) against hjv-api and the fake SSO, with a 1.5.1
+#                          client built once from the tag client-1.5.1 and Ubuntu's libfaketime,
+#                          unpacked under build/ci
 #   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, unprivileged, once it exists
 #   scripts/ci.sh leak     the push gate (design v3 11 steps 1-2): no value of the local list
 #                          build/leak-patterns.txt in tracked files, unpushed commits or staged
@@ -50,6 +53,12 @@ CADDY_SHA256=727b91701a392de6ebc5027509f548bf39979e5216340d0faed8fa5e69c84f8b
 # where the E2E installs the PC's client: Linux counts only programs under /usr as installed, and
 # hjv-api adds only installed PCs to an account (design v3 7-4)
 E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
+# The E2E's clients are test builds (feature hjv-e2e) of a fresh checkout, which cargo compiles
+# anew each time. Without link-time optimization and in 16 units that takes under a minute, and
+# the unit tests two, instead of three and a half minutes each with the release profile as it is.
+E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
+# the 1.5.1 client the account E2E compares with (X2, X3)
+E2E_OLD_TAG=client-1.5.1
 export PATH="$HOME/.cargo/bin:$PATH"
 mkdir -p "$CI"
 
@@ -1045,16 +1054,70 @@ build_e2e_client() { # <work dir>
   step "e2e: the client for the test server hjv.test (--features linux-pkg-config,hjv-e2e)"
   pkgconfig
   (cd "$src" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" \
-    "${keys[@]}" CARGO_TARGET_DIR="$CI/target-e2e" cargo build --release --locked --features linux-pkg-config,hjv-e2e) ||
-    fail "e2e: the client build"
+    "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
+    cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the client build"
   E2E_CLIENT="$CI/target-e2e/release/rustdesk"
   if [ -d "$src/src/hjviewer_account" ]; then
     step "e2e: the client's account unit tests (src/hjviewer_account, design v3 7-3)"
     (cd "$src" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" \
-      "${keys[@]}" CARGO_TARGET_DIR="$CI/target-e2e" cargo test --release --locked --features linux-pkg-config,hjv-e2e \
-      --lib hjviewer_account) || fail "e2e: the account unit tests"
+      "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
+      cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib hjviewer_account) ||
+      fail "e2e: the account unit tests"
   else
     echo "skipped: the account unit tests (no src/hjviewer_account in the patched tree)"
+  fi
+}
+
+# The 1.5.1 client of the account E2E's X2 and X3 (design v3 7-4): the patches and the upstream
+# pin of the tag client-1.5.1, built for the test server like the client above. Built once for a
+# tag commit and server key, and kept as build/ci/e2e-old/rustdesk; the scenarios are skipped
+# where the repository has no such tag (a shallow checkout).
+build_e2e_client_old() { # <work dir>
+  local work=$1 dir="$CI/e2e-old" stamp
+  E2E_CLIENT_OLD=""
+  if ! git -C "$ROOT" rev-parse -q --verify "refs/tags/$E2E_OLD_TAG^{commit}" > /dev/null; then
+    echo "skipped: the 1.5.1 client of X2 and X3 (this repository has no tag $E2E_OLD_TAG)"
+    return 0
+  fi
+  stamp="$(git -C "$ROOT" rev-parse "refs/tags/$E2E_OLD_TAG^{commit}") $(cat "$work/srv/id_ed25519.pub")"
+  if [ ! -x "$dir/rustdesk" ] || [ "$(cat "$dir/stamp" 2> /dev/null)" != "$stamp" ]; then
+    step "e2e: the 1.5.1 client (tag $E2E_OLD_TAG) for the test server, once"
+    rm -rf "$dir" "$CI/target-e2e-old"
+    mkdir -p "$dir/repo"
+    git -C "$ROOT" archive "refs/tags/$E2E_OLD_TAG" scripts client | tar -x -C "$dir/repo"
+    UPSTREAM_DIR="$dir/upstream" "$dir/repo/scripts/fetch-upstream.sh" client
+    pkgconfig
+    (cd "$dir/upstream/rustdesk" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test \
+      HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e-old" \
+      cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the 1.5.1 client build"
+    cp "$CI/target-e2e-old/release/rustdesk" "$dir/rustdesk"
+    echo "$stamp" > "$dir/stamp"
+    # the binary is what is kept
+    rm -rf "$dir/repo" "$dir/upstream" "$CI/target-e2e-old"
+  fi
+  E2E_CLIENT_OLD="$dir/rustdesk"
+}
+
+# libfaketime for the account E2E's S27 (a controller's clock 15 minutes ahead): the system's if
+# it is installed, else Ubuntu's package unpacked under build/ci, as nginx and Apache are for the
+# deploy stage. Without either, S27 is skipped with a line saying so.
+fetch_faketime() {
+  local dir="$CI/faketime" lib=usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
+  E2E_FAKETIME=""
+  if [ -f "/$lib" ]; then
+    E2E_FAKETIME="/$lib"
+  elif [ -f "$dir/root/$lib" ]; then
+    E2E_FAKETIME="$dir/root/$lib"
+  else
+    step "e2e: Ubuntu's libfaketime, unpacked"
+    rm -rf "$dir"
+    mkdir -p "$dir/root"
+    if (cd "$dir" && apt-get download libfaketime > /dev/null 2>&1) && dpkg-deb -x "$dir"/libfaketime_*.deb "$dir/root" &&
+      [ -f "$dir/root/$lib" ]; then
+      E2E_FAKETIME="$dir/root/$lib"
+    else
+      echo "skipped: libfaketime (apt-get download libfaketime failed): the E2E skips S27"
+    fi
   fi
 }
 
@@ -1088,7 +1151,10 @@ e2e_stage() {
   sudo install -D -m 755 "$E2E_CLIENT" "$E2E_PC_DIR/rustdesk"
   if [ -n "$E2E_ACCOUNT" ]; then
     build_e2e_api
-    extra=(HJV_E2E_ACCOUNT=1 HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" HJV_E2E_KEYS="$work/api")
+    build_e2e_client_old "$work"
+    fetch_faketime
+    extra=(HJV_E2E_ACCOUNT=1 HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" HJV_E2E_KEYS="$work/api"
+      CLIENT_OLD="$E2E_CLIENT_OLD" FAKETIME_LIB="$E2E_FAKETIME")
   fi
   for mode in strict open; do
     step "e2e: tools/e2e/firewall-e2e.sh $mode"
