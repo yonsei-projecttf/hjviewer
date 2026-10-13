@@ -6,11 +6,10 @@ client-build.yml runs it after the checkout, with the build variables in the env
 sees them:
 
     python3 -I scripts/check-build-keys.py [--version-file client/version.env]
+                                           [--update-keys client/update-keys.env]
 
     HJV_LOGIN_SEAL_PUBKEY  standard base64 of the 32-byte X25519 key `hjv-api keygen seal` prints
     HJV_TRUST_PUBKEYS      <key id>:<base64>,<key id>:<base64>: the two Ed25519 trust-list keys
-    HJV_UPDATE_PUBKEY      <key id>:<base64>[,<key id>:<base64>]: the update keys of the
-                           minimum-version work, optional for now
     HJV_SERVER_KEY         hbbs's public key, whose fingerprint is shown (the workflow's "Check
                            server variables" step checks that it is set)
     CALLED                 non-empty when the private build repository called the workflow
@@ -26,6 +25,28 @@ repository). In other runs these are warnings: without the account keys an app i
 1.5.1, with no login. The SHA-256 fingerprints of the pinned keys go to the run summary
 ($GITHUB_STEP_SUMMARY, else stdout), for comparing with `hjv-api selfcheck` before the release tag
 (design v3 11 step 8).
+
+The update keys of the minimum-version work come from the file client/update-keys.env of the
+checked-out source and from nowhere else (minimum version design 6-4): a secret or a variable of
+the repository that builds the apps cannot change whom they believe about versions.
+
+    HJV_UPDATE_PUBKEY=<key id>:<base64>[,<key id>:<base64>]   the signing keys, two at most
+    HJV_UPDATE_ROOT_PUBKEY=<key id>:<base64>                  the root key
+    HJV_POLICY_FLOOR=<epoch>:<seq>                            the oldest policy the build takes
+
+Every run fails when that file is malformed: another form than NAME=value lines, '#' comments
+and empty lines, a key that the apps would refuse (they drop the whole set over one such key), a
+key or key id twice, one key line without the other, a floor that is not <epoch>:<seq>, or one
+of the three names set to another value in the environment. A called run of 1.6.0 or later also
+fails when the file holds a public test key, and when it holds no keys at all (not with
+CHECK_ONLY): apps built from it would never check the version policy. In other runs these two
+are warnings.
+
+    python3 -I scripts/check-build-keys.py --pin-update-keys [--version-file ...] [--update-keys ...]
+
+checks that file in the same way and hands its three values to the later steps of a job
+($GITHUB_ENV), where cargo reads them (option_env!): the "Pin the update keys" step of every
+platform job. It prints them when there is no $GITHUB_ENV.
 
     python3 -I scripts/check-build-keys.py --relay
 
@@ -49,6 +70,9 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_KEYS_FILE = os.path.join(ROOT, "scripts", "public-test-keys.txt")
+UPDATE_KEYS_FILE = os.path.join(ROOT, "client", "update-keys.env")
+UPDATE_NAMES = ("HJV_UPDATE_PUBKEY", "HJV_UPDATE_ROOT_PUBKEY", "HJV_POLICY_FLOOR")
+# the first version with the account features, and with the version policy
 ACCOUNT_VERSION = (1, 6, 0)
 
 # --- Edwards25519 and Curve25519 (RFC 8032, RFC 7748), just enough to derive and check keys ---
@@ -60,6 +84,8 @@ _BX = 15112221349535400772501151409588531511454012693041857206046113283949847762
 _BY = 46316835694926478169428394003475163141307993866256225615783033603165251855960
 BASE = (_BX, _BY, 1, _BX * _BY % P)
 IDENTITY = (0, 1, 1, 0)
+# the order of the base point: the size of the subgroup every honest public key is in
+L = 2**252 + 27742317777372353535851937790883648493
 
 
 def _add(p, q):
@@ -126,6 +152,14 @@ def ed25519_public(seed):
 def ed25519_weak(point):
     """Whether the point has a small order, as ed25519-dalek's VerifyingKey::is_weak says."""
     x, y, z, _ = _mul(8, point)
+    return x % P == 0 and (y - z) % P == 0
+
+
+def ed25519_in_subgroup(point):
+    """Whether the point is in the prime-order subgroup. A point outside it has a small-order
+    part; no key pair has such a public key, and the apps refuse one where they pin the update
+    keys (libsodium's crypto_sign_ed25519_pk_to_curve25519)."""
+    x, y, z, _ = _mul(L, point)
     return x % P == 0 and (y - z) % P == 0
 
 
@@ -296,14 +330,18 @@ def fingerprint(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def check_ed25519(name, kid, raw):
-    """Problems of an Ed25519 public key, as ed25519-dalek and hjv-relay judge it."""
+def check_ed25519(name, kid, raw, subgroup=False):
+    """Problems of an Ed25519 public key, as ed25519-dalek and hjv-relay judge it; with
+    subgroup, as the apps judge an update key."""
     what = f"{name} key {kid}" if kid is not None else name
     point = _decode(raw)
     if point is None:
         return [f"{what} is not an Ed25519 public key"]
     if ed25519_weak(point):
         return [f"{what} is a weak key (small order): anyone could sign with it"]
+    if subgroup and not ed25519_in_subgroup(point):
+        return [f"{what} is outside the prime-order subgroup: no key pair has such a public key, "
+                "and the apps refuse it"]
     return []
 
 
@@ -320,7 +358,7 @@ def parse_seal(name, text):
     return [(None, raw)], []
 
 
-def parse_list(name, text, exactly=None, most=2):
+def parse_list(name, text, exactly=None, most=2, subgroup=False):
     """(keys, problems): <key id>:<base64>[,...], ids 1-65535, distinct ids and keys."""
     keys, problems = [], []
     entries = [e.strip() for e in text.split(",")]
@@ -337,7 +375,7 @@ def parse_list(name, text, exactly=None, most=2):
         if raw is None:
             problems.append(f"{name} key {kid} is not the standard base64 of a 32-byte key")
             continue
-        found = check_ed25519(name, kid, raw)
+        found = check_ed25519(name, kid, raw, subgroup)
         if found:
             problems += found
             continue
@@ -352,7 +390,7 @@ def parse_list(name, text, exactly=None, most=2):
         if exactly is not None and len(keys) != exactly:
             problems.append(f"{name} must have {exactly} keys (the current and the next), has {len(keys)}")
         elif len(keys) > most:
-            problems.append(f"{name} has more than {most} keys")
+            problems.append(f"{name} has more than {most} key{'s' if most > 1 else ''}")
     return keys, problems
 
 
@@ -365,19 +403,109 @@ def read_version(path):
     raise SystemExit(f"{path}: no HJV_VERSION=<x.y.z> line")
 
 
+# One line of client/update-keys.env that sets a value. The value's characters are those of key
+# lists and of the floor, so that a shell, tools/hjv-release, the server's check script and this
+# script all read the same value from the line, and $GITHUB_ENV gets nothing else.
+_UPDATE_LINE = re.compile(r"(HJV_UPDATE_PUBKEY|HJV_UPDATE_ROOT_PUBKEY|HJV_POLICY_FLOOR)=([0-9A-Za-z+/=:,]*)")
+# <epoch>:<seq> as the apps read it: plain numbers of 15 digits at most, an epoch from 1
+_FLOOR = re.compile(r"[1-9][0-9]{0,14}:(0|[1-9][0-9]{0,14})")
+
+
+def read_update_keys(path):
+    """(values, problems): the three values of client/update-keys.env by name, or None with the
+    reasons why the file is not in its one form: NAME=value from the first column, each of the
+    three names once, besides them only empty lines and lines that start with '#', LF line
+    endings. A problem names a line by its number: what the line holds is never repeated, in
+    case something else than a public key was pasted there."""
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return None, [f"{path} is not a file: the builds take the update keys from it "
+                          "(minimum version design 6-4)"]
+        with open(path, "rb") as f:
+            data = f.read(65537)
+    except OSError as e:
+        return None, [f"{path} cannot be read ({e.strerror})"]
+    if len(data) > 65536:
+        return None, [f"{path} is larger than 64 KiB"]
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, [f"{path} is not UTF-8 text"]
+    problems = []
+    if text.startswith("\ufeff"):
+        problems.append(f"{path} starts with a byte order mark; save it as UTF-8 without one")
+        text = text[1:]
+    if "\r" in text:
+        problems.append(f"{path} has CR line endings; save it with LF line endings")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    values = {}
+    for n, line in enumerate(text.split("\n"), 1):
+        if not line or line.startswith("#"):
+            continue
+        m = _UPDATE_LINE.fullmatch(line)
+        if m is None:
+            problems.append(
+                f"{path}:{n}: neither a comment (# in the first column) nor one of "
+                f"{', '.join(name + '=' for name in UPDATE_NAMES)} followed by its value and nothing "
+                "else (no spaces, quotes or export)")
+        elif m.group(1) in values:
+            problems.append(f"{path}:{n}: {m.group(1)} is set a second time")
+        else:
+            values[m.group(1)] = m.group(2)
+    problems += [f"{path} has no {name}= line" for name in UPDATE_NAMES if name not in values]
+    return (None, problems) if problems else (values, [])
+
+
+def parse_update_keys(values):
+    """(signing, root, problems) of a key file's values: the signing keys and the root key as
+    [(key id, key)], both empty for a file without keys. The rules are the apps' (the client
+    core's pinned(), which uses none of the keys when one of them breaks a rule) and those of
+    tools/hjv-release, which wants the floor too."""
+    signing_text, root_text, floor = (values[name] for name in UPDATE_NAMES)
+    problems = []
+    if floor and not _FLOOR.fullmatch(floor):
+        problems.append("HJV_POLICY_FLOOR is not <epoch>:<seq>, such as 1:0 (plain numbers, an epoch from 1)")
+    if not signing_text and not root_text:
+        return [], [], problems
+    if not signing_text or not root_text:
+        missing = UPDATE_NAMES[0] if not signing_text else UPDATE_NAMES[1]
+        return [], [], problems + [
+            f"{missing} is empty while the other key line is set: the apps need the signing keys "
+            "and the root key, and use none without both"]
+    signing, found = parse_list(UPDATE_NAMES[0], signing_text, most=2, subgroup=True)
+    problems += found
+    root, found = parse_list(UPDATE_NAMES[1], root_text, most=1, subgroup=True)
+    problems += found
+    if not floor:
+        problems.append("HJV_POLICY_FLOOR is empty: with keys the file names the floor too, 1:0 before the first policy")
+    for kid, raw in root:
+        if any(k == kid for k, _ in signing):
+            problems.append(f"key id {kid} is the root key's and a signing key's: the ids must differ")
+        if any(r == raw for _, r in signing):
+            problems.append("the root key is also a signing key: they must be different keys")
+    if problems:
+        return [], [], problems
+    return signing, root, []
+
+
 # --- the check ---
 
 
 class Report:
-    def __init__(self):
+    def __init__(self, warn=True):
         self.errors = 0
         self.rows = []
         self.notes = []
         self.actions = os.environ.get("GITHUB_ACTIONS") == "true"
+        # False where another step of the run has given the same warnings already
+        self.warn = warn
 
     def say(self, level, message):
         if level == "error":
             self.errors += 1
+        if level == "warning" and not self.warn:
+            print("note: " + message, flush=True)
+            return
         prefix = f"::{level}::" if self.actions else f"{level}: "
         print(prefix + message, flush=True)
 
@@ -436,15 +564,65 @@ def judge(report, name, keys, problems, strict):
             )
 
 
-def check_app(version_file):
-    report = Report()
+def check_update_keys(report, path, strict, check_only, wanted):
+    """Checks the key file client/update-keys.env and returns its three values by name for the
+    builds, or None when no build may take them. A malformed file is an error in every run. A
+    public test key, and a file without keys, are errors where strict (a called run of 1.6.0 or
+    later; a file without keys not with check_only) and warnings elsewhere. `wanted` is false
+    for a version before 1.6.0, which looked for no update keys."""
+    before = report.errors
+    values, problems = read_update_keys(path)
+    signing, root = [], []
+    if values is not None:
+        signing, root, problems = parse_update_keys(values)
+        for name in UPDATE_NAMES:
+            other = os.environ.get(name, "")
+            if other.strip() and other != values[name]:
+                problems.append(
+                    f"{name} is set in the environment to another value than in {path}: the builds "
+                    "take the update keys from that file alone, never from a secret or a variable")
+    for problem in problems:
+        report.say("error", problem)
+    if problems:
+        return None
+    if not signing:
+        what = (f"{path} holds no update keys: apps built from it never check the version policy, "
+                "so they learn of no minimum version and of no update")
+        if strict and not check_only:
+            report.say(
+                "error",
+                f"{what} (minimum version design 6-4). The user makes the keys "
+                "(tools/hjv-release/README.md) and their public lines go into that file; or run "
+                "with check_only for a check build.",
+            )
+        elif wanted and not check_only:
+            report.say("warning", f"{what} (like 1.5.1).")
+        report.notes.append(f"`{path}` holds no update keys: these apps check no version policy (like 1.5.1).")
+        return None if report.errors > before else values
+    for name, keys in ((UPDATE_NAMES[0], signing), (UPDATE_NAMES[1], root)):
+        judge(report, name, keys, [], strict)
+        for kid, raw in keys:
+            report.key(name, kid, raw)
+    report.notes.append(
+        f"The update keys and `HJV_POLICY_FLOOR` ({values['HJV_POLICY_FLOOR']}) are those of `{path}` at "
+        "the source commit, the file `hjv-release keys --production` reads.")
+    return None if report.errors > before else values
+
+
+def flags(version_file):
+    """(called, check_only, wanted): what kind of run this is, and whether its version is one
+    that pins the account keys and the update keys."""
     called = bool(os.environ.get("CALLED", "").strip())
     check_only = os.environ.get("CHECK_ONLY", "").strip() == "true"
-    version = read_version(version_file)
-    account = version >= ACCOUNT_VERSION
+    return called, check_only, read_version(version_file) >= ACCOUNT_VERSION
+
+
+def check_app(version_file, update_file):
+    report = Report()
+    called, check_only, account = flags(version_file)
     strict = called and account
     env = {k: os.environ.get(k, "").strip() for k in (
-        "HJV_SERVER_KEY", "HJV_LOGIN_SEAL_PUBKEY", "HJV_TRUST_PUBKEYS", "HJV_UPDATE_PUBKEY")}
+        "HJV_SERVER_KEY", "HJV_LOGIN_SEAL_PUBKEY", "HJV_TRUST_PUBKEYS")}
 
     raw = b64_32(env["HJV_SERVER_KEY"])
     if raw is not None:
@@ -456,7 +634,6 @@ def check_app(version_file):
     for name, parse, required in (
         ("HJV_LOGIN_SEAL_PUBKEY", parse_seal, True),
         ("HJV_TRUST_PUBKEYS", lambda n, t: parse_list(n, t, exactly=2), True),
-        ("HJV_UPDATE_PUBKEY", parse_list, False),
     ):
         text = env[name]
         if not text:
@@ -480,14 +657,38 @@ def check_app(version_file):
             )
         else:
             report.say("warning", f"{what} not set: this build has no account features (like 1.5.1).")
-    if not env["HJV_UPDATE_PUBKEY"]:
-        report.notes.append("`HJV_UPDATE_PUBKEY` is not set (the minimum-version work adds it).")
+    check_update_keys(report, update_file, strict, check_only, account)
     if check_only:
         report.notes.append(
             "**Check build** (`check_only`): not for distribution. Its artifacts end in `-check`, are "
             "kept one day, and nothing goes to TestFlight or Google Play.")
     report.summary("Pinned public keys")
     return 1 if report.errors else 0
+
+
+def pin_update_keys(version_file, update_file):
+    """The "Pin the update keys" step of a platform job: after the same check as check_app's,
+    the key file's three values go to the later steps of the job ($GITHUB_ENV), where cargo
+    reads them. Nothing is handed on when the check fails. The Bridge codegen job has shown
+    this run's warnings and written its summary, so warnings are plain lines here."""
+    report = Report(warn=False)
+    called, check_only, wanted = flags(version_file)
+    values = check_update_keys(report, update_file, called and wanted, check_only, wanted)
+    if values is None:
+        return 1
+    lines = "".join(f"{name}={values[name]}\n" for name in UPDATE_NAMES)
+    target = os.environ.get("GITHUB_ENV")
+    if target:
+        with open(target, "a", encoding="utf-8", newline="\n") as f:
+            f.write(lines)
+    else:
+        print(lines, end="", flush=True)
+    for name, kid, digest in report.rows:
+        print(f"pinned {name} key {kid}, SHA-256 {digest}", file=sys.stderr)
+    if not report.rows:
+        print("no update keys to pin: the builds of this job check no version policy", file=sys.stderr)
+    print(f"pinned HJV_POLICY_FLOOR={values['HJV_POLICY_FLOOR']}", file=sys.stderr)
+    return 0
 
 
 def check_relay():
@@ -524,9 +725,25 @@ def main(argv):
         return 0
     parser = argparse.ArgumentParser(description="Checks the public keys an HJViewer build pins.")
     parser.add_argument("--version-file", default=os.path.join(ROOT, "client", "version.env"))
+    parser.add_argument("--update-keys", default=None, metavar="FILE",
+                        help="the update keys' file (default: client/update-keys.env of this tree)")
     parser.add_argument("--relay", action="store_true", help="check HJV_COMMAND_PUBKEY for the hjv-relay job")
+    parser.add_argument("--pin-update-keys", action="store_true",
+                        help="check the update keys' file and hand its values to the job's later steps")
     args = parser.parse_args(argv)
-    return check_relay() if args.relay else check_app(args.version_file)
+    if args.relay and (args.pin_update_keys or args.update_keys):
+        parser.error("--relay checks the command key only")
+    if args.relay:
+        return check_relay()
+    update_file = args.update_keys
+    if update_file is None:
+        try:
+            update_file = os.path.relpath(UPDATE_KEYS_FILE)
+        except ValueError:  # another drive on Windows
+            update_file = UPDATE_KEYS_FILE
+    if args.pin_update_keys:
+        return pin_update_keys(args.version_file, update_file)
+    return check_app(args.version_file, update_file)
 
 
 if __name__ == "__main__":

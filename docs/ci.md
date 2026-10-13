@@ -227,7 +227,7 @@ gh variable set HJV_SERVER_KEY --body "$(ssh <서버> cat hjviewer/deploy/data/i
 |---|---|---|
 | `HJV_LOGIN_SEAL_PUBKEY` | 로그인 비밀번호를 봉인하는 X25519 공개키: `hjv-api keygen seal`이 출력하는 표준 base64 한 개(32바이트) | 세 앱 |
 | `HJV_TRUST_PUBKEYS` | 신뢰 목록 키(Ed25519) 둘, 현재와 다음: `1:<base64>,2:<base64>` | 세 앱 |
-| `HJV_UPDATE_PUBKEY` | 업데이트 서명 키: `1:<base64>[,2:<base64>]`. 최소 버전 작업이 더하며, 지금은 비워도 됩니다 | 세 앱 |
+| (업데이트 키) | 시크릿이나 변수로 넣지 않습니다. 공개 파일 `client/update-keys.env`에서만 읽습니다(아래 "업데이트 키와 릴리스 기록") | 세 앱 |
 | `HJV_COMMAND_PUBKEY` | 켜기 명령 키(Ed25519): `1:<base64>[,2:<base64>]` ([relay/PROTOCOL.md](../relay/PROTOCOL.md) 3.2) | hjv-relay만 (앱은 받지 않음) |
 
 ```bash
@@ -241,6 +241,154 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
 - **확인 단계**: Bridge codegen 잡의 "Check the pinned public keys"(`scripts/check-build-keys.py`)가 봅니다. 빌드 저장소가 부른 실행이고 `client/version.env`가 1.6.0 이상이면 `HJV_LOGIN_SEAL_PUBKEY`와 `HJV_TRUST_PUBKEYS`가 꼭 있어야 하고(`check_only`면 건너뜀), 넣은 키는 모두 형식(공백과 줄바꿈 없는 한 줄, 키 번호 1–65535, 표준 base64 32바이트, 목록 키는 정확히 두 개, 번호와 키가 겹치지 않음)과 약한 키(작은 위수의 점) 여부를 봅니다. 빌드는 값을 바이트 그대로 받으므로, 파일에서 넣다가 끝에 붙은 줄바꿈도 실패로 잡습니다. 이 저장소에 개인키가 공개된 **시험 키**면 실패합니다. 같은 바이트를 32번 되풀이하거나 32개의 연속한 바이트로 된 seed로 만든 모든 키, RFC 8032·7748의 예시 키, `scripts/public-test-keys.txt`의 키, 그리고 git이 추적하는 파일에 base64나 16진수로 적힌 32바이트 값마다 그 값을 Ed25519 seed나 X25519 비밀키로 본 공개키입니다. 마지막 것은 시험 벡터처럼 비밀키가 공개키 옆에 적힌 경우(예: `server/api/src/seal.rs`의 봉인 시험 키)를 목록에 적지 않아도 잡습니다. 거부할 때는 그 비밀키가 있는 파일과 줄을 알려 줍니다. `scripts/public-test-keys.txt`가 없으면 확인 단계가 실패합니다. 이 저장소에서 직접 돌리는 실행에서는 같은 문제가 경고로만 나옵니다. hjv-relay 잡은 `HJV_COMMAND_PUBKEY`를 같은 방식으로 보고, `package-relay.sh`가 같은 검사(`check-build-keys.py --relay`, 엄격 모드)를 빌드 전과 빌드한 실행 파일의 키로 한 번 더 하며 서버 이름도 봅니다.
 - 계정 공개키가 없는 빌드는 로그인도 비밀번호 없는 연결도 없이 1.5.1처럼 동작합니다(설계 3판 6-5). 확인 단계가 막는 것은 빌드 저장소의 1.6.0 출시 빌드에서 그런 앱이 나가는 일입니다.
 - **지문 대조**: 확인 단계는 고정한 공개키마다 SHA-256 지문(원래 32바이트의 SHA-256, 16진수)을 실행 요약에 표로 적습니다. `HJV_SERVER_KEY`도 함께 적습니다. 출시 태그를 붙이기 전에 이 표를 서버의 `hjv-api selfcheck`가 출력한 지문과 사람이 대조합니다(설계 3판 11장 8단계). 봉인 키의 키 ID 칸은 지문의 앞 16자리이고, `hjv-api keygen seal`이 출력하는 키 ID와 같습니다.
+
+## 업데이트 키와 릴리스 기록 (1.6.0부터)
+
+최소 버전과 강제 업데이트(최소 버전 설계 6-4)를 위해 앱 빌드가 하는 일은 넷입니다. 새 시크릿은 없습니다.
+
+- 업데이트 키를 공개 파일 `client/update-keys.env`에서 읽어 앱에 박습니다.
+- 산출물마다 `release.json`과 `SHA256SUMS`를 넣습니다.
+- iOS 앱에 내보내기 방식을 알려 줍니다.
+- Windows 잡이 업데이트와 패커 보호를 연기 시험으로 확인합니다.
+
+### 업데이트 키 파일 `client/update-keys.env`
+
+앱은 서버가 내주는 버전 정책을 이 파일의 공개키로 확인합니다. 값은 세 줄입니다.
+
+| 이름 | 값 |
+|---|---|
+| `HJV_UPDATE_PUBKEY` | 서명 키의 공개키. 현재 키와 다음 키, 둘까지입니다: `1:<base64>[,2:<base64>]` |
+| `HJV_UPDATE_ROOT_PUBKEY` | 루트 키의 공개키 하나: `101:<base64>`. 번호와 키가 서명 키와 달라야 합니다 |
+| `HJV_POLICY_FLOOR` | 이 빌드를 만들 때의 정책 위치 `<세대>:<seq>`. 첫 정책이 나오기 전에는 `1:0`입니다 |
+
+- **시크릿이나 변수로 넣지 않습니다.** 계정 기능의 공개키와 다른 점입니다. 세 플랫폼 잡의 "Pin the update keys" 단계가 체크아웃한 소스의 이 파일을 읽어 빌드에 넘기고, 다른 곳에서는 받지 않습니다. 그래서 빌드 저장소의 시크릿이나 변수로는 앱이 믿는 업데이트 키를 바꿀 수 없습니다. 키를 바꾸려면 공개 저장소에서 이 파일을 고쳐야 하고, 그 변경은 검토를 거쳐 소스 태그에 남습니다. 워크플로의 `env:`에 이 세 이름을 더하지 마세요(`scripts/test_check_build_keys.py`가 막습니다).
+- **지금은 키가 없습니다.** 두 키 줄이 비어 있고 하한만 `1:0`입니다. 키는 사용자가 만듭니다(아래 "업데이트 키 보관 규칙"). 키가 없는 빌드는 정책을 확인하지 않고 1.5.1처럼 동작합니다.
+- **형식**: 세 이름이 한 번씩, 줄 맨 앞에서 `이름=값`으로 있어야 합니다. 값 뒤에는 아무것도 둘 수 없습니다. 공백, 따옴표, `export`, 줄 끝 주석이 모두 안 됩니다. 그 밖에는 빈 줄과 `#`으로 시작하는 줄만 둘 수 있습니다. 줄 끝은 LF이고, BOM은 안 됩니다. 이렇게 한 가지 모양만 받는 이유는 이 파일을 여러 곳이 읽기 때문입니다(CI, `hjv-release`, 서버의 확인 스크립트).
+
+확인은 두 곳에서 같은 코드(`scripts/check-build-keys.py`)로 합니다. Bridge codegen 잡의 "Check the pinned public keys" 단계가 한 번 보고 실행 요약에 적습니다. 세 플랫폼 잡의 "Pin the update keys" 단계가 값을 빌드에 넘기기 직전에 다시 봅니다.
+
+| 파일의 상태 | 빌드 저장소의 출시 빌드 | 빌드 저장소의 확인 빌드(`check_only`) | 이 저장소에서 직접 실행 |
+|---|---|---|---|
+| 형식이 틀림 | 실패 | 실패 | 실패 |
+| 키가 없음(지금 상태) | 실패 | 통과 | 경고 |
+| 이 저장소의 시험 키가 있음 | 실패 | 실패 | 경고 |
+| 올바른 키 | 통과 | 통과 | 통과 |
+
+- "출시 빌드"는 빌드 저장소가 부른 실행이고 `client/version.env`가 1.6.0 이상이며 `check_only`가 아닌 실행입니다. 계정 기능의 공개키와 같은 기준입니다.
+- **형식이 틀린 경우**는 다음과 같습니다. 어느 실행에서든 실패합니다.
+  - 위의 줄 모양이 아니거나, 이름이 빠졌거나 두 번 나옴
+  - 키 번호가 1–65535가 아니거나, 키가 표준 base64 32바이트가 아님
+  - Ed25519 공개키가 아니거나, 약한 키(작은 위수의 점)이거나, 주 부분군 밖의 점임
+  - 서명 키가 셋 이상이거나 루트 키가 둘 이상임. 번호나 키가 서로 겹침
+  - 두 키 줄 가운데 하나만 채워져 있음. 키는 있는데 하한이 비어 있음
+  - 하한이 `<세대>:<seq>`가 아님(세대는 1 이상, 앞의 0 없는 숫자)
+  - 환경 변수에 같은 이름이 파일과 다른 값으로 들어 있음(시크릿이나 변수로 넣으려 한 경우)
+- 이렇게 엄격한 이유: 앱은 키 하나라도 규칙을 어기면 키 전체를 쓰지 않습니다. 그런 빌드는 정책을 영영 확인하지 않습니다. 규칙은 앱의 코어(`src/hjviewer_update/trust.rs`)와 `hjv-release keys --production`의 것과 같습니다.
+- **시험 키**의 기준은 계정 기능의 공개키와 같습니다(위 "확인 단계"). `hjv-release test-keys`가 내는 업데이트 시험 키는 `scripts/public-test-keys.txt`에도 적어 두었습니다.
+- 오류 문장은 줄 번호만 말하고 줄의 내용은 출력하지 않습니다. 공개키가 아닌 것을 잘못 붙여 넣었을 때 로그에 남지 않게 하기 위해서입니다.
+- 통과하면 실행 요약의 표에 키마다 번호와 SHA-256 지문이 나오고, 하한도 함께 나옵니다.
+
+키를 넣는 순서는 다음과 같습니다.
+
+1. 사용자가 `hjv-release keygen`으로 키 셋을 만듭니다(`tools/hjv-release/README.md` 1장). 화면에 나오는 공개 줄 `N:<base64>`만 이 파일에 옮깁니다.
+2. 개발 PC에서 확인합니다. 둘 다 통과해야 합니다.
+
+   ```bash
+   hjv-release keys --production                                   # 도구의 확인
+   CALLED=1 python3 -I scripts/check-build-keys.py --pin-update-keys   # 출시 빌드가 하는 확인. 통과하면 세 줄을 출력
+   ```
+3. 커밋합니다. 이 파일이 마지막 push에 들어가야 출시 빌드가 됩니다.
+4. 릴리스마다 `HJV_POLICY_FLOOR`를 그때의 정책 위치로 올립니다. `hjv-release floor --policy <지금 정책>`이 그 줄을 출력합니다.
+
+### 업데이트 키 보관 규칙
+
+사용자 결정 D-K(최소 버전 설계 6-3)입니다.
+
+| 키 | 두는 곳 |
+|---|---|
+| 서명 키 1 | 개발 PC의 `~/hjviewer-secrets/hjviewer-update-1.key`(비밀번호로 암호화, 0600)와 사용자의 오프라인 사본 |
+| 서명 키 2(다음 교체용) | 오프라인 매체에만 |
+| 루트 키(번호 101) | 오프라인 매체 두 곳에만. 개발 PC 디스크에 쓰지 않습니다 |
+| 공개키 셋 | 이 저장소의 `client/update-keys.env`, 서버의 `/etc/hjviewer/update-keys.env` |
+
+- 비밀키는 저장소, GitHub 시크릿과 변수, 빌드 저장소, 운영 서버, `build/` 폴더, 메모, 에이전트 세션 어디에도 두지 않습니다.
+- 키 만들기(`keygen`)와 서명(`sign`)은 **사용자만** 합니다. 에이전트는 실제 키를 만들지 않고, 실제 정책에 서명하지 않고, 키 파일을 읽지 않습니다. 도구도 터미널이 없으면 두 명령을 거부합니다.
+- CI에는 업데이트 키에 관한 시크릿이 없습니다. 빌드 저장소나 운영 서버가 뚫려도 정책을 위조할 수 없게 하려는 것입니다.
+- 키를 바꾸는 일은 이 파일을 고친 새 빌드로만 됩니다. 정해진 교체와 키가 샜을 때의 절차는 `tools/hjv-release/README.md` 3장에 있습니다.
+
+### 릴리스 기록 `release.json`, `SHA256SUMS`
+
+세 플랫폼 잡은 고지 파일을 넣은 다음 "Write release.json and SHA256SUMS" 단계(`scripts/release-info.py`)에서 두 파일을 만들어 기존 아티팩트에 함께 넣습니다. 아티팩트 이름과 보관 기간(7일)은 그대로입니다.
+
+```json
+{"platform": "windows", "version": "1.6.0", "build": "1.6.0.41", "file": "HJViewer.exe",
+ "size": 25329664, "sha256": "<소문자 hex 64자>", "source_sha": "<공개 저장소 커밋 40자리>",
+ "run_id": "<실행 번호>", "workflow": ".github/workflows/build.yml"}
+```
+
+| 필드 | 어디서 오나 |
+|---|---|
+| `platform` | `windows`, `android`, `ios` |
+| `version` | `client/version.env`. APK의 versionName, IPA의 CFBundleShortVersionString이 다르면 잡이 실패합니다 |
+| `build` | Windows는 `<앱 버전>.<실행 번호>`(설치된 앱의 파일 버전). Android는 APK에서 읽은 versionCode, iOS는 IPA에서 읽은 CFBundleVersion입니다 |
+| `file`, `size`, `sha256` | 그 아티팩트의 패키지 파일. Windows는 `HJViewer.exe`, Android는 올라가는 APK, iOS는 IPA입니다 |
+| `source_sha` | 잡이 체크아웃한 공개 저장소 커밋 |
+| `run_id` | 실행 번호. 빌드 저장소가 부른 실행이면 빌드 저장소의 실행입니다 |
+| `workflow` | 그 실행의 워크플로 파일. 빌드 저장소가 부른 실행이면 `.github/workflows/build.yml`입니다 |
+
+- **`SHA256SUMS`**는 그 아티팩트에 올라가는 파일의 해시입니다(`sha256sum` 형식). 패키지, Windows의 `HJViewer-install.exe`, 고지 파일 넷, `release.json`이 들어갑니다. 받은 폴더에서 `sha256sum -c SHA256SUMS`로 확인합니다.
+- **실행 요약**에 패키지의 SHA-256이 나옵니다. 정책에 서명하는 사람은 `hjv-release sign`이 보여 주는 해시를 이 값과 대조합니다.
+- **쓰는 곳**: `hjv-release policy`의 출처 확인입니다. `gh run download <실행 번호> -R <빌드 저장소> -D build/release-<버전>`으로 받은 폴더를 그대로 `--release-dir`에 줍니다. 도구는 그 실행의 산출물을 직접 다시 받아, 패키지와 `release.json`이 그 안에 바이트 그대로 있는지 봅니다.
+  - 그래서 받은 `release.json`을 고치면 안 됩니다.
+  - 도구는 그 실행의 `build.yml`이 위 "비공개 빌드 저장소"의 모양인지도 봅니다. 도구가 모르는 입력을 넘기면 거부하므로, `check_only` 입력을 도구가 알기 전에는 `--allow-input check_only`를 함께 줍니다. 확인 빌드에는 `release.json`이 없어서, 이 입력을 허락해도 확인 빌드가 릴리스로 받아들여지지 않습니다.
+  - **새 패키지가 든 정책 초안은 빌드한 지 7일 안에 만듭니다.** 아티팩트가 7일 뒤 지워지기 때문입니다. 더 길게 필요하면 워크플로의 `ARTIFACT_RETENTION_DAYS`를 올립니다(저장 공간을 그만큼 더 씁니다).
+- **나눠 줄 수 없는 빌드에는 `release.json`이 없습니다.** 확인 빌드(`check_only`), 디버그 서명 APK(키스토어 시크릿이 없을 때), 서명 없는 IPA입니다. 확인 빌드는 출시에 필요한 공개키 없이도 만들어지고, 디버그 서명 APK는 사용자의 앱 위에 설치되지 않고, 서명 없는 IPA는 어디에도 설치되지 않습니다. `hjv-release`는 `release.json`이 없는 폴더를 릴리스로 받지 않습니다. 단계 자체는 이런 빌드에서도 돌아 같은 검사를 하고 `SHA256SUMS`를 만들며, 실행 요약에 "Not for release"와 그 이유를 적습니다.
+- Google Play용 AAB 아티팩트에는 `release.json`을 넣지 않습니다. 같은 Android 빌드이고, 도구는 한 실행에서 Android 패키지를 하나만 받습니다.
+- 이 저장소에서 직접 돌린 실행의 `release.json`은 `workflow`가 `client-build.yml`이라 도구가 받지 않습니다.
+- `client/version.env`의 버전이 도구가 받는 모양(앞의 0이 없는 숫자 셋, 앞의 둘은 세 자리까지, 마지막은 두 자리까지)이 아니면 이 단계가 실패합니다. 확인 빌드에서 먼저 드러납니다.
+- **출처 증명(artifact attestation)은 넣지 않았습니다.** 비공개 저장소에서 쓸 수 있는 요금제인지 확인하지 못했습니다. 될 때는 세 플랫폼 잡에 `actions/attest-build-provenance`(커밋 SHA로 고정)를 더하고, 빌드 저장소 `build.yml`의 잡에 `id-token: write`와 `attestations: write`를 허락한 뒤, `hjv-release policy --attest`를 씁니다. 그 전에는 위의 `gh` 확인이 출처 확인의 전부입니다.
+
+### iOS 내보내기 방식
+
+서명 빌드는 `flutter build ipa`에 `--dart-define=HJV_IOS_EXPORT=<내보내기 방식>`을 넘깁니다. 값은 "Set up code signing" 단계가 프로파일을 보고 정한 것입니다(`app-store-connect`, `release-testing`, `debugging`, `enterprise`). 앱은 이 값이 `app-store-connect`일 때만 업데이트 화면에서 TestFlight를 엽니다. Ad Hoc 같은 다른 설치본은 TestFlight로 업데이트할 수 없기 때문입니다(최소 버전 설계 5-5). 서명 없는 빌드에는 값이 없습니다.
+
+### Dart 테스트
+
+Dart tests 잡의 필수 목록에 업데이트 화면의 테스트 둘을 더했습니다. 순수 테스트 `test/hjv_update_test.dart`와, 생성된 bridge가 필요한 게이트 테스트 `test/hjv_update_gate_test.dart`입니다. 패치된 트리에 이 파일이 없으면 잡이 실패합니다.
+
+### Windows 업데이트·패커 연기 시험
+
+Windows 잡은 설치 시험(위 "Windows 설치 시험") 다음에 두 단계를 더 돕니다. 둘 다 서버 값이 있는 빌드에서만 돌고, 설치 시험처럼 실패해도 빌드를 멈추지 않습니다(continue-on-error). 결과는 그 단계의 표시와 로그로 봅니다. 몇 번 통과한 뒤 필수로 바꿉니다.
+
+- **Update smoke test**: 설치된 PC는 서비스가 새 파일을 SYSTEM으로 `--update`와 함께 실행해 스스로 업데이트합니다(최소 버전 설계 5-1). 러너에는 이전 버전이 없으므로, 방금 설치한 같은 빌드를 예약 작업으로 SYSTEM에서 `HJViewer-<버전>.exe --update`로 한 번 더 돌립니다. 확인하는 것은 다음과 같습니다.
+  - 업데이트 로그에 `Update completed.`가 있는지
+  - 서비스가 자동 시작이고 실행 중인지
+  - 앱 목록의 `DisplayVersion`이 업데이트 전과 같고 `client/version.env`와 같은지
+  - 설치된 `HJViewer.exe`가 새로 쓰였는지
+  - 서버 이름을 127.0.0.1로 돌린 hosts 줄이 그대로인지(러너가 운영 서버에 등록하지 않게 하는 가드)
+
+  설치 시험이 실패하면 이 단계는 건너뜁니다.
+- **Packer guard smoke test**: 옛 HJViewer가 압축을 푼 폴더에서 아직 실행 중이면, 새 압축 해제 실행기는 파일을 바꿀 수 없으므로 아무것도 실행하지 않고 종료 코드 32로 끝나야 합니다(최소 버전 설계 5-3). 러너에서는 그 폴더의 `HJViewer.exe` 자리에 다른 내용을 두고, 실행 중인 프로그램의 파일처럼 쓰기와 삭제를 막은 채 열어 둡니다. 그 상태에서 실행기를 `--update`로 돌려 종료 코드가 32인지, 그 폴더에서 시작된 프로세스가 없는지, 잡아 둔 파일이 그대로인지 봅니다. 실행기는 `--update`나 `--silent-install`로 시작하면 안내 창(K1)을 띄우지 않습니다. 창이 뜨면 누를 사람이 없어 단계가 멈추므로 `--update`로 돌립니다.
+- **한계**: 같은 버전을 다시 설치하므로 버전이 오르는 것은 보지 못합니다. 예약 작업은 세션 0에서 돌고, 실제 PC에서는 서비스가 사용자 세션에서 실행합니다. 서명된 정책 받기, 내려받기와 해시 확인, 안내 창은 이 시험에 없습니다. 기기 시험으로 봅니다.
+
+### 개발 PC에서 확인하기
+
+GitHub 실행 없이 볼 수 있는 것은 아래 두 오프라인 시험이 봅니다. 네트워크와 자격 증명이 필요 없습니다.
+
+```bash
+python3 -I -B -m unittest discover -s scripts -p 'test_check_build_keys.py'   # 키 파일 확인, 워크플로의 확인·고정 단계
+python3 -I -B -m unittest discover -s scripts -p 'test_release_info.py'       # release.json, SHA256SUMS, 워크플로의 나머지 단계
+```
+
+- `HJV_RELEASE_BIN=<빌드한 hjv-release>`를 주면 두 가지를 더 봅니다. 키 파일을 `hjv-release keys --production`과 같게 판정하는지, 그리고 `hjv-release policy`가 이 스크립트가 만든 산출물과 위 "비공개 빌드 저장소"의 `build.yml`로 초안을 만드는지입니다. `gh`의 답은 기록해 둔 것을 씁니다.
+- `HJV_RELEASE_SAMPLES=<받아 둔 산출물 폴더>`(예: `build/release-1.5.1`)를 주면 실제 APK와 IPA에서 버전과 빌드 번호를 읽어 봅니다.
+- `HJV_PATCHED_FLUTTER=<패치를 적용한 트리의 flutter 폴더>`를 주면 Dart tests 잡의 필수 목록에 있는 파일이 그 트리에 모두 있는지 봅니다. 목록과 패치가 어긋난 것을 GitHub 실행 전에 알 수 있습니다.
+
+아래는 아직 러너에서 돌려 보지 못한 것입니다. 첫 확인 빌드에서 봅니다.
+
+- 세 러너(Windows의 Git Bash, Linux, macOS)의 `python3`로 두 스크립트가 도는지, "Pin the update keys"가 넘긴 값으로 cargo가 빌드하는지
+- 빌드 저장소가 부른 실행에서 `release.json`의 `run_id`와 `workflow`가 빌드 저장소의 것으로 나오는지(`GITHUB_RUN_ID`, `GITHUB_WORKFLOW_REF`). 확인 빌드도 "Write release.json and SHA256SUMS" 단계의 로그에 기록을 그대로 찍으므로 거기서 봅니다. `workflow`가 `.github/workflows/build.yml`이 아니면 그 단계가 경고를 남깁니다.
+- Windows의 두 연기 시험 전체(PowerShell 단계는 개발 PC에서 실행할 수 없습니다)
 
 ## hjv-relay 빌드
 
