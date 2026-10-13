@@ -3,11 +3,14 @@
 //! The DSM boot-up script exactly as docs/relay-dsm.md prints it, run by this machine's POSIX `sh`
 //! (paths moved to a temporary folder, the 30-second pause shortened, the SHA-256 placeholder of
 //! its first line filled in). Against a stand-in for hjv-relay: it runs only a file whose SHA-256
-//! is the first line's, and only the checked copy in the state folder, never the uploaded file;
-//! it ends on a file that does not match, also one that changes between two runs; it computes
-//! the hash with sha256sum or, without it, with openssl, and with neither runs nothing; it ends on
-//! the stop marker, before a run and right after one; it waits for a volume that is not there
-//! yet; it restarts the relay after 0 and 1, ends on 2 and 78 and, after a few tries, on 75.
+//! is the first line's, all 64 digits of it, and only the checked copy in the state folder, never
+//! the uploaded file; it ends on a file that does not match, also one that changes between two
+//! runs; when the copy cannot be made it says so once and runs nothing, not an older copy
+//! either; a file that takes the upload's place right before the copy is made does not become
+//! the copy and does not run; it computes the hash with sha256sum or, without it, with openssl,
+//! and with neither runs nothing; it ends on the stop marker, before a run and right after one;
+//! it waits for a volume that is not there yet; it restarts the relay after 0 and 1, ends on 2
+//! and 78 and, after four tries in a row, on 75.
 //! Against the real relay (built for a test server): the relay drops the log lines older than
 //! 180 days, runs from the checked copy, ends with the loop on the stop marker, and ends on an
 //! upload whose SHA-256 the task does not have yet, until the task gets the new value. The
@@ -289,6 +292,14 @@ fn fake_relay(nas: &Nas, codes: &[u8], body: &str) -> String {
     sha256_hex(&nas.bin())
 }
 
+/// The names in a folder.
+fn names_in(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
 /// How the loop starts the relay: the checked copy, with the guide's arguments.
 fn expected_call(nas: &Nas) -> String {
     let (share, state) = (nas.share(), nas.state());
@@ -313,15 +324,16 @@ fn the_boot_script_of_the_guide() {
     let nas = Nas::new("main");
 
     // exits 0 (a new executable) and 1 (an error) are restarted; 75 (another relay runs) is tried
-    // four times; each run is the checked copy with the guide's arguments
-    let hash = fake_relay(&nas, &[0, 1, 75, 75, 75, 75], "");
+    // four times in a row (another exit in between starts the count again); each run is the
+    // checked copy with the guide's arguments
+    let hash = fake_relay(&nas, &[0, 1, 75, 75, 75, 0, 75, 75, 75, 75], "");
     nas.start(&hash);
-    wait_for("six runs", || nas.calls().len() >= 6);
+    wait_for("ten runs", || nas.calls().len() >= 10);
     nas.wait_for_the_loop_to_end();
-    assert_eq!(nas.calls(), vec![expected_call(&nas); 6]);
+    assert_eq!(nas.calls(), vec![expected_call(&nas); 10]);
     assert_eq!(
         nas.log().matches("stand-in started: run --state").count(),
-        6
+        10
     );
     // the copy: in a folder only its owner can use, executable by its owner only, the same bytes
     let copy = nas.state().join("hjv-relay");
@@ -330,11 +342,7 @@ fn the_boot_script_of_the_guide() {
     assert_eq!(mode(&copy), 0o700);
     assert_eq!(fs::read(&copy).unwrap(), fs::read(nas.bin()).unwrap());
     // no temporary copies are left behind
-    let names: Vec<String> = fs::read_dir(nas.state())
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(names, ["hjv-relay"]);
+    assert_eq!(names_in(&nas.state()), ["hjv-relay"]);
 
     // 78 (configuration) and 2 (command line) end the loop at once
     for code in [78, 2] {
@@ -361,20 +369,36 @@ fn a_file_that_does_not_match_is_never_run() {
     let nas = Nas::new("mismatch");
     let pwned = nas.dir.join("pwned");
 
-    // the task has the value of another file: nothing runs, the loop ends and says so with the
-    // first 8 digits of what it found
-    let hash = fake_relay(&nas, &[0], "");
-    let other = "1".repeat(64);
-    nas.start(&other);
-    nas.wait_for_the_loop_to_end();
-    assert!(nas.calls().is_empty());
+    // the task has another value than the file's: nothing runs, the loop ends and says so with
+    // the first 8 digits of what it found. All 64 digits count: the task may have the guide's
+    // placeholder still, another file's value, the file's with only its last or only its first
+    // digit changed, no more than the 8 digits that the loop's line shows, or nothing at all
+    let hash = fake_relay(&nas, &[78], "");
+    let with_another_digit = |at: usize| {
+        let mut digits = hash.clone().into_bytes();
+        digits[at] = if digits[at] == b'0' { b'1' } else { b'0' };
+        String::from_utf8(digits).unwrap()
+    };
     let line = format!(
         "hjv-relay의 SHA-256({}…)이 작업 스크립트 첫 줄의 값과 달라 실행하지 않고 감시 루프를 끝냅니다.",
         &hash[..8]
     );
-    assert!(nas.log().contains(&line), "{}", nas.log());
-    assert!(!nas.log().contains(&hash), "the full value is never shown");
-    assert!(!nas.state().join("hjv-relay").exists());
+    for other in [
+        "0".repeat(64),
+        "1".repeat(64),
+        with_another_digit(63),
+        with_another_digit(0),
+        hash[..8].to_owned(),
+        String::new(),
+    ] {
+        let _ = fs::remove_file(nas.share().join("hjv-relay.log"));
+        nas.start(&other);
+        nas.wait_for_the_loop_to_end();
+        assert!(nas.calls().is_empty(), "it ran with {other:?} in the task");
+        assert!(nas.log().contains(&line), "{other:?}: {}", nas.log());
+        assert!(!nas.log().contains(&hash), "the full value is never shown");
+        assert!(!nas.state().join("hjv-relay").exists(), "{other:?}");
+    }
 
     // a matching file that is swapped for another while it runs (someone who can write the
     // shared folder): the loop checks again before the next run and ends
@@ -415,6 +439,81 @@ fn a_file_that_does_not_match_is_never_run() {
     assert_eq!(nas.calls(), [expected_call(&nas)]);
     assert!(!pwned.exists());
     assert_eq!(sha256_hex(&nas.state().join("hjv-relay")), hash);
+
+    // an update whose copy goes wrong twice. The first try fails outright (a full volume, say).
+    // At the second the upload is swapped for another file at the worst moment, after the loop
+    // looked at it and before the copy is made (for certain here: the `cp` that the loop finds
+    // does both). The temporary copy is made in the state folder, where only root can write, and
+    // checked there: the other file does not take the copy's place, and the copy that is there,
+    // the older version, does not run either
+    fs::remove_file(nas.dir.join("calls")).unwrap();
+    fs::remove_file(nas.share().join("hjv-relay.log")).unwrap();
+    let hash = fake_relay(&nas, &[78], "");
+    let copy = nas.state().join("hjv-relay");
+    let older = format!(
+        "#!/bin/sh\n# an older version\ntouch '{}'\n",
+        pwned.display()
+    );
+    fs::write(&copy, &older).unwrap();
+    fs::set_permissions(&copy, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = tools(&nas, &["cp"]);
+    let (copies, failed) = (nas.dir.join("copies"), nas.dir.join("cp-failed"));
+    fs::write(
+        path.join("cp"),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{copies}'\n\
+             [ -e '{failed}' ] || {{ : > '{failed}'; exit 1; }}\n\
+             '{cp}' '{evil}' '{bin}'\nexec '{cp}' \"$@\"\n",
+            copies = copies.display(),
+            failed = failed.display(),
+            cp = installed("cp"),
+            evil = evil.display(),
+            bin = nas.bin().display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(path.join("cp"), fs::Permissions::from_mode(0o755)).unwrap();
+    nas.start_script(&nas.script(&hash, |s| s), Some(&path));
+    nas.wait_for_the_loop_to_end();
+    assert!(nas.calls().is_empty());
+    assert!(!pwned.exists(), "a file that is not the task's ran");
+    let made = fs::read_to_string(&copies).unwrap_or_default();
+    let made: Vec<&Path> = made.lines().map(Path::new).collect();
+    assert_eq!(made.len(), 4, "two copies, from and to: {made:?}");
+    for from_and_to in made.chunks(2) {
+        assert_eq!(from_and_to[0], nas.bin());
+        assert_eq!(
+            from_and_to[1].parent(),
+            Some(nas.state().as_path()),
+            "the temporary copy is made in the state folder"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(&copy).unwrap(),
+        older,
+        "nothing unchecked takes the copy's place"
+    );
+    assert_eq!(names_in(&nas.state()), ["hjv-relay"]);
+    // twice without a copy to run, and the loop says so once; its next look finds the other file
+    let log = nas.log();
+    let waits = "hjv-relay를 상태 폴더에 복사하지 못해 30초마다 다시 합니다.";
+    assert_eq!(log.matches(waits).count(), 1, "{log}");
+    let refused = format!(
+        "hjv-relay의 SHA-256({}…)이 작업 스크립트 첫 줄의 값과 달라",
+        &sha256_hex(&evil)[..8]
+    );
+    assert!(position(&log, waits) < position(&log, &refused), "{log}");
+}
+
+/// Where this machine has `tool`.
+fn installed(tool: &str) -> String {
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {tool}"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{tool} is not installed");
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
 }
 
 /// A folder of links to this machine's tools, without the ones in `without`, for PATH.
@@ -440,14 +539,7 @@ fn tools(nas: &Nas, without: &[&str]) -> PathBuf {
         if without.contains(&tool) {
             continue;
         }
-        let out = Command::new("sh")
-            .arg("-c")
-            .arg(format!("command -v {tool}"))
-            .output()
-            .unwrap();
-        let path = String::from_utf8(out.stdout).unwrap();
-        assert!(out.status.success(), "{tool} is not installed");
-        std::os::unix::fs::symlink(path.trim(), bin.join(tool)).unwrap();
+        std::os::unix::fs::symlink(installed(tool), bin.join(tool)).unwrap();
     }
     bin
 }
@@ -598,6 +690,22 @@ fn the_tasks_of_the_guide_run_only_the_checked_copy() {
     // the boot-up loop starts only $X, the copy it checked
     let script = boot_script();
     assert!(script.contains("X=$S/hjv-relay "));
+    // its temporary copy is made where only root can write and checked before it takes the
+    // copy's place, and the copy is checked right before it runs
+    assert!(script.contains(" T=$S/hjv-relay.$$\n"), "{script}");
+    assert!(
+        script.contains(
+            "cp \"$D/hjv-relay\" \"$T\" && chmod 700 \"$T\" && [ \"$(sum \"$T\")\" = \"$H\" ] && mv -f \"$T\" \"$X\"\n"
+        ),
+        "{script}"
+    );
+    assert_eq!(
+        script
+            .matches("if [ \"$(sum \"$X\")\" = \"$H\" ]; then\n")
+            .count(),
+        1,
+        "{script}"
+    );
     assert_eq!(script.matches("\"$X\" run ").count(), 1);
 
     // none of the root tasks sends output into the shared folder through the shell, which would
