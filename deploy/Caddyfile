@@ -24,7 +24,7 @@
 	@hjv_api path /api/login /api/currentUser /api/logout /api/users /api/peers /api/hjv/*
 	handle @hjv_api {
 		request_body {
-			max_size 64KB
+			max_size 64KiB
 		}
 		reverse_proxy {$HJV_API:unix//run/hjviewer-api.sock} {
 			header_up X-Real-IP {remote_host}
