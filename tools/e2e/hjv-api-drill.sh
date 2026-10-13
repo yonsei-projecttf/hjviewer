@@ -390,7 +390,8 @@ client "$A" drill_sync HJV_DRILL_EXPECT=disabled
 on "$A" << 'EOF'
 set -euo pipefail
 A="/opt/hjviewer/bin/hjv-api admin"
-journalctl -q --namespace=hjviewer -u hjviewer-api -o cat --no-pager | grep 'restored backup' | tail -n 1 ||
+# two lines: every account off, and the relays that came back with the backup
+journalctl -q --namespace=hjviewer -u hjviewer-api -o cat --no-pager | grep 'restored backup' | tail -n 2 ||
   echo '(no journal line about the restored backup yet)'
 off=$($A passwordless off)
 echo "$off"
@@ -399,6 +400,8 @@ $A user revoke-all --all
 $A passwordless status | head -1
 $A allow list | head -1
 $A report | head -5
+# the relays are the backup's too: one revoked since would be revoked again here
+$A relay list | head -1
 EOF
 client "$A" drill_after_restore
 on "$A" << 'EOF'

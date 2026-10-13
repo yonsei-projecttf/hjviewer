@@ -16,6 +16,8 @@
 //! A restored backup (backup.rs, known by its application ID) is opened with password-less
 //! connections off for every account, before the service answers anything: its switches are
 //! those of its day, and its lists would carry the account keys revoked since (design v3 §5-9).
+//! Its relays are those of its day as well, which the journal says when it has active ones: a
+//! relay revoked since is revoked again by the operator.
 //!
 //! Every change that alters what a PC's trust list would say (a key registered or revoked, a
 //! switch turned, an account deleted, leaving or coming back on the allowlist, a binding released,
@@ -368,6 +370,20 @@ fn prepare(conn: Connection) -> Result<Connection, String> {
             "the database is a restored backup: password-less connections {} off for every account until `hjv-api admin passwordless on` (README.md, Backup and restore)",
             if was_on { "turned" } else { "stay" }
         );
+        // its relays are the backup's too: one revoked since is active again, which only the
+        // operator can tell (the record of `relay revoke` is not in the database)
+        let relays: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM relays WHERE state = 'active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if relays > 0 {
+            log_notice!(
+                "the restored backup has {relays} active NAS relays: one revoked since the backup is active again (`hjv-api admin relay list`, then `relay revoke` what was revoked since; README.md, Backup and restore)"
+            );
+        }
     }
     Ok(conn)
 }
@@ -3252,10 +3268,31 @@ mod tests {
         assert!(passwordless_global(&c).unwrap() && passwordless_on(&c, a).unwrap());
         c.pragma_update(None, "application_id", crate::backup::APPLICATION_ID)
             .unwrap();
+        // (a relay of the backup's day, active)
+        insert_relay(
+            &c,
+            &NewRelay {
+                relay_id: "r-restored",
+                pk: &[7; 32],
+                state: RelayState::Active,
+                owner_account: Some(a),
+                name: "NAS",
+                source: None,
+                at: 1,
+            },
+        )
+        .unwrap();
         drop(c);
         // served as a restored backup: off for every account before anything reads it, the
-        // change serial up and the switch's time now, and no backup's ID
+        // change serial up and the switch's time now, and no backup's ID; the journal names the
+        // relays that came back with it
+        crate::log::capture();
         let c = open(&path).unwrap();
+        let said = |what: &str| crate::log::captured().iter().any(|l| l.contains(what));
+        assert!(said(
+            "the database is a restored backup: password-less connections turned off"
+        ));
+        assert!(said("the restored backup has 1 active NAS relays"));
         assert_eq!(application_id(&c), 0);
         assert!(!passwordless_global(&c).unwrap());
         assert!(!passwordless_on(&c, a).unwrap() && !passwordless_on(&c, b).unwrap());

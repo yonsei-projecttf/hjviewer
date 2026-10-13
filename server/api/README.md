@@ -353,7 +353,10 @@ operator record hold counts only.
   allowlist is imported again and everyone logs in again, the PCs too, and the relays say hello
   and are approved again.
 - A restore also brings back the relays as they were: one revoked since the backup is active
-  again. After a restore, `relay list`, and revoke again what was revoked since.
+  again, and only the operator record tells which. When the restored backup has active relays,
+  the journal says so at the start; after a restore, `relay list`, and `relay revoke` again what
+  was revoked since. (Such a relay gets wake commands of its account's PCs only, when their owner
+  asks for one; it reaches no PC.)
 
 ## API
 
