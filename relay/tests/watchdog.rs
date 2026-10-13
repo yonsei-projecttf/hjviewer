@@ -22,8 +22,13 @@ use common::{configured_relay, Reply, TestServer};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
+    cell::RefCell,
     fs,
-    os::unix::fs::PermissionsExt,
+    io::{self, Read},
+    os::{
+        fd::AsRawFd,
+        unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt},
+    },
     path::{Path, PathBuf},
     process::Command,
     thread,
@@ -55,6 +60,10 @@ fn sha256_hex(path: &Path) -> String {
 /// it goes, so do the boot-up loops and relays it started (also when a test fails).
 struct Nas {
     dir: PathBuf,
+    /// One end of a socket pair for every boot-up task it ran. The task's loop holds the other
+    /// end as long as it lives, as do the tools it starts: this end is at its end of file when
+    /// they are gone.
+    loops: RefCell<Vec<UnixStream>>,
 }
 
 impl Nas {
@@ -66,7 +75,10 @@ impl Nas {
             let _ = fs::remove_dir_all(&dir);
         }
         fs::create_dir_all(&dir).unwrap();
-        Nas { dir }
+        Nas {
+            dir,
+            loops: RefCell::new(Vec::new()),
+        }
     }
 
     fn share(&self) -> PathBuf {
@@ -121,31 +133,87 @@ impl Nas {
         if let Some(path) = path {
             cmd.env("PATH", path);
         }
+        // The loop inherits one end of a socket pair and holds it as long as it lives (the
+        // script neither uses nor closes it), as do the tools it starts. The process list cannot
+        // say when a loop is gone: while a process starts a program, as the loop does twice
+        // (nohup, then sh), it has no command line.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let fd = theirs.as_raw_fd();
+        // SAFETY: runs in the new process before its exec and calls only fcntl, which is
+        // async-signal-safe: this one process keeps the descriptor across the exec.
+        unsafe {
+            cmd.pre_exec(move || match libc::fcntl(fd, libc::F_SETFD, 0) {
+                -1 => Err(io::Error::last_os_error()),
+                _ => Ok(()),
+            });
+        }
         let out = cmd.output().unwrap();
+        drop(theirs);
+        self.loops.borrow_mut().push(ours);
         assert!(out.status.success(), "{out:?}");
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
-    /// Processes (the loop's sh and what it started) that name this NAS's folder.
+    /// Processes (the loop's sh and what it started) that name this NAS's folder. A child that
+    /// still has its parent's command line is not one yet: a shell's child, a moment before it
+    /// becomes `sleep` or `date`.
     fn processes(&self) -> Vec<i32> {
-        processes_of(&self.dir)
+        let all = processes_of(&self.dir);
+        let parent = |p: &Process| all.iter().find(|q| q.pid == p.ppid);
+        all.iter()
+            .filter(|p| parent(p).is_none_or(|q| q.cmdline != p.cmdline))
+            .map(|p| p.pid)
+            .collect()
     }
 
+    /// Whether the loops of this NAS's tasks are gone, with the tools they started.
+    fn the_loops_have_ended(&self) -> bool {
+        // nothing is ever sent: a read of 0 bytes is the end of file
+        self.loops
+            .borrow()
+            .iter()
+            .all(|mut ours| matches!(ours.read(&mut [0]), Ok(0)))
+    }
+
+    /// Nothing is left of a loop that ended: the relay, which closes the descriptors it
+    /// inherits, ended before it.
     fn wait_for_the_loop_to_end(&self) {
-        wait_for("the loop to end", || self.processes().is_empty());
+        wait_for("the loop to end", || self.the_loops_have_ended());
+        let left: Vec<i32> = processes_of(&self.dir).iter().map(|p| p.pid).collect();
+        assert!(left.is_empty(), "the loop is gone, but not {left:?}");
     }
 }
 
 impl Drop for Nas {
     fn drop(&mut self) {
-        kill_processes_of(&self.dir);
+        // again while a loop is left (a test failed): one look at the process list can miss a
+        // process that is starting a program
+        let end = Instant::now() + Duration::from_secs(2);
+        loop {
+            kill_processes_of(&self.dir);
+            if self.the_loops_have_ended() || Instant::now() >= end {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
-fn processes_of(dir: &Path) -> Vec<i32> {
-    let needle = dir.as_os_str().as_encoded_bytes().to_vec();
+struct Process {
+    pid: i32,
+    ppid: i32,
+    cmdline: Vec<u8>,
+}
+
+/// The processes that name `dir` in their command line.
+fn processes_of(dir: &Path) -> Vec<Process> {
+    let needle = dir.as_os_str().as_encoded_bytes();
     let mut found = Vec::new();
+    // room for a whole command line in one read: a second read could come after the process
+    // started another program, and leave the first part of the old command line
+    let mut buf = vec![0; 1 << 16];
     for entry in fs::read_dir("/proc").unwrap().flatten() {
         let Some(pid) = entry
             .file_name()
@@ -157,20 +225,35 @@ fn processes_of(dir: &Path) -> Vec<i32> {
         if pid == std::process::id() as i32 {
             continue;
         }
-        let Ok(cmdline) = fs::read(entry.path().join("cmdline")) else {
+        let Ok(len) =
+            fs::File::open(entry.path().join("cmdline")).and_then(|mut f| f.read(&mut buf))
+        else {
             continue;
         };
-        if cmdline.windows(needle.len()).any(|w| w == needle) {
-            found.push(pid);
+        let cmdline = &buf[..len];
+        if !cmdline.windows(needle.len()).any(|w| w == needle) {
+            continue;
         }
+        // "<pid> (<name>) <state> <parent's pid> ...", and the name may hold ") " itself
+        let Some(ppid) = fs::read_to_string(entry.path().join("stat"))
+            .ok()
+            .and_then(|stat| stat.rsplit_once(") ")?.1.split(' ').nth(1)?.parse().ok())
+        else {
+            continue;
+        };
+        found.push(Process {
+            pid,
+            ppid,
+            cmdline: cmdline.to_vec(),
+        });
     }
     found
 }
 
 fn kill_processes_of(dir: &Path) {
-    for pid in processes_of(dir) {
+    for process in processes_of(dir) {
         // SAFETY: a signal to a process of this test.
-        unsafe { libc::kill(pid, libc::SIGKILL) };
+        unsafe { libc::kill(process.pid, libc::SIGKILL) };
     }
 }
 
@@ -447,7 +530,10 @@ fn a_volume_that_appears_after_the_boot_up_task() {
     assert!(!nas.state().exists());
     assert_eq!(nas.processes().len(), 1, "the loop waits");
     fs::create_dir(nas.share()).unwrap();
-    fs::write(nas.bin(), content).unwrap();
+    // whole, as a file on a volume that gets mounted is: the loop may look at any moment
+    let whole = nas.dir.join("whole");
+    fs::write(&whole, content).unwrap();
+    fs::rename(&whole, nas.bin()).unwrap();
     nas.wait_for_the_loop_to_end();
     assert_eq!(nas.calls(), [expected_call(&nas)]);
     assert!(nas.log().contains("stand-in started: run --state"));
