@@ -291,6 +291,33 @@ pub fn plan(
             if (policy.epoch, policy.seq) != (decl.epoch, 1) {
                 return Err("새 루트 선언과 함께 가는 정책은 그 세대의 seq 1입니다".to_owned());
             }
+            // the live file should be the archive's newest: a server file rolled back to an older
+            // archived one would make a base of old requirements (said and asked)
+            if let (Some(h), Some(old)) = (archive.highest()?, old) {
+                if (h.epoch, h.seq) > (old.epoch, old.seq) {
+                    dangers.push(format!(
+                        "보관소에 서버의 정책({}:{})보다 높은 파일({}:{})이 있습니다. 서버의 파일이 되돌려졌다면 먼저 \
+                         보관소의 마지막 파일로 바로잡으세요(런북 5-8 2번). 서명하고 내지 않은 파일이면(5-13) 그대로 \
+                         진행합니다",
+                        old.epoch, old.seq, h.epoch, h.seq
+                    ));
+                }
+            }
+            // every revocation any archived declaration made, not only the previous one's
+            for (epoch, part) in archive.declarations()? {
+                if let Ok(earlier) = RootDecl::read(&part.p) {
+                    for id in earlier
+                        .revoked
+                        .iter()
+                        .filter(|id| !decl.revoked.contains(id))
+                    {
+                        dangers.push(format!(
+                            "보관소의 루트 선언(세대 {epoch})이 폐기한 서명 키 {id}가 새 선언의 폐기 목록에 없습니다. \
+                             그 선언을 내지 않았다면 그대로 진행하고, 냈다면 --revoke-key {id}로 다시 만드세요"
+                        ));
+                    }
+                }
+            }
             let newly: Vec<u32> = decl
                 .revoked
                 .iter()

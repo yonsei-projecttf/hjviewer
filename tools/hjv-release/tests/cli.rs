@@ -3039,3 +3039,231 @@ fn after_a_relaxing_declaration_the_signing_key_goes_on() {
     );
     assert_eq!(world.verify_after("policy2.json", "policy5.json").code, 0);
 }
+
+#[test]
+fn the_archive_decides_what_comes_next() {
+    let world = World::new("archive");
+    world.two_policies("14");
+    let keys = world.file("keys.env");
+    // a policy signed and not published: the server still hands out policy 2
+    let made = world.policy(&[
+        "--prev",
+        "policy2.json",
+        "--contact",
+        "내선 1234",
+        "--out",
+        "draft3.json",
+    ]);
+    assert_eq!(made.code, 0, "{}", made.all());
+    assert_eq!(
+        world
+            .sign("signing-1.key", "draft3.json", "policy3.json")
+            .code,
+        0
+    );
+    // the weekly check sees it
+    let check = world.tool(&["check", "--keys", &keys, "--live", "policy2.json"]);
+    assert!(
+        check
+            .stdout
+            .contains("보관소에 서버의 정책(1:2)보다 높은 정책(1:3)이 있습니다"),
+        "{}",
+        check.stdout
+    );
+    assert!(check.stdout.contains("기록된 키 집합: keyset-"));
+    // the next policy is made from the archive's last file (X11), not from the live one
+    let stale = world.policy(&[
+        "--prev",
+        "policy2.json",
+        "--contact",
+        "x",
+        "--out",
+        "d.json",
+    ]);
+    assert_eq!(stale.code, 1);
+    assert!(stale.stderr.contains("X11"), "{}", stale.stderr);
+    // policy 3 never left this machine: void it (asked)
+    let void = |live: &str, script: &[(&str, &str)]| {
+        world.person(
+            &[
+                "void",
+                "--keys",
+                &keys,
+                "--allow-test-keys",
+                "--live",
+                live,
+                "policy3.json",
+            ],
+            script,
+        )
+    };
+    let refused = void("policy2.json", &[("yes를 입력하세요: ", "no")]);
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    assert!(refused.tty.contains("컴퓨터 밖으로 나가지 않았습니까"));
+    let not_live = void("policy3.json", &[("yes를 입력하세요: ", "yes")]);
+    assert_eq!(not_live.code, 1);
+    assert!(
+        not_live.stderr.contains("이미 서버에"),
+        "{}",
+        not_live.stderr
+    );
+    let voided = void("policy2.json", &[("yes를 입력하세요: ", "yes")]);
+    assert_eq!(voided.code, 0, "{}", voided.all());
+    assert!(world.dir.join("archive/void-e1-s3").exists());
+    // now the live file is the archive's last one again, and the next seq is above the void one
+    let next = world.policy(&[
+        "--prev",
+        "policy2.json",
+        "--contact",
+        "x",
+        "--out",
+        "draft4.json",
+    ]);
+    assert_eq!(next.code, 0, "{}", next.all());
+    assert!(next.stdout.contains("seq: 2 → 4"), "{}", next.stdout);
+
+    // a lost archive: the files signed here are adopted into a new one, after a yes
+    let other = world.file("archive-2");
+    let adopt = |file: &str, answer: &str| {
+        world.person(
+            &[
+                "archive",
+                "adopt",
+                "--archive",
+                &other,
+                "--keys",
+                &keys,
+                "--allow-test-keys",
+                file,
+            ],
+            &[("yes를 입력하세요: ", answer)],
+        )
+    };
+    let no = adopt("policy1.json", "no");
+    assert_eq!(no.code, 1);
+    assert!(
+        no.tty.contains("직접 서명한 파일로 보관소에 넣습니까"),
+        "{}",
+        no.tty
+    );
+    assert!(no.tty.contains("서명: 서명 키 1 · 위치 1:1"), "{}", no.tty);
+    let yes = adopt("policy1.json", "yes");
+    assert_eq!(yes.code, 0, "{}", yes.all());
+    assert_eq!(
+        world.read("archive-2/policy-e1-s1.json"),
+        world.read("policy1.json")
+    );
+    let keyset = world.tool(&[
+        "archive",
+        "adopt",
+        "--archive",
+        &other,
+        "--keys",
+        &keys,
+        "--allow-test-keys",
+        "--server",
+        SERVER,
+        "--version",
+        "1.6.0",
+    ]);
+    assert_eq!(keyset.code, 0, "{}", keyset.all());
+    assert!(keyset.stdout.contains("기록한 키 집합"));
+    // the same file again changes nothing; another text at a position the archive holds (the
+    // vectors' own e1-s1, signed by the same test key) is not adopted
+    assert_eq!(adopt("policy1.json", "yes").code, 0);
+    let foreign = vectors().join("accepted/e1-s1.json");
+    let wrong = adopt(foreign.to_str().unwrap(), "yes");
+    assert_eq!(wrong.code, 1, "{}", wrong.all());
+    assert!(wrong.stderr.contains("같은 위치(1:1)"), "{}", wrong.stderr);
+}
+
+#[test]
+fn a_build_floor_comes_from_the_live_file() {
+    let world = World::new("floor-live");
+    world.two_policies("14");
+    let keys = world.file("keys.env");
+    let floor = |live: &str| {
+        world.tool(&[
+            "floor",
+            "--live",
+            live,
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+        ])
+    };
+    let ok = floor("policy2.json");
+    assert_eq!(
+        (ok.code, ok.stdout.as_str()),
+        (0, "HJV_POLICY_FLOOR=1:2\n"),
+        "{}",
+        ok.all()
+    );
+    // a declaration revokes key 1: a key file that still pins it makes no build (X6)
+    let made = world.policy(&[
+        "--prev",
+        "policy2.json",
+        "--live",
+        "policy2.json",
+        "--revoke-key",
+        "1",
+        "--out",
+        "draft3.json",
+    ]);
+    assert_eq!(made.code, 0, "{}", made.all());
+    let (root, signing2) = (world.file("root-102.key"), world.file("signing-2.key"));
+    let signed = world.person(
+        &[
+            "sign",
+            "--key",
+            &root,
+            "--key",
+            &signing2,
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+            "--live",
+            "policy2.json",
+            "--out",
+            "policy3.json",
+            "draft3.json",
+        ],
+        &[
+            ("yes를 입력하세요: ", "yes"),
+            ("root-102.key의 비밀번호: ", PASS),
+            ("signing-2.key의 비밀번호: ", PASS),
+        ],
+    );
+    assert_eq!(signed.code, 0, "{}", signed.all());
+    assert_eq!(
+        Envelope::parse(&world.read("policy3.json"))
+            .unwrap()
+            .root
+            .unwrap()
+            .k,
+        102
+    );
+    let x6 = floor("policy3.json");
+    assert_eq!(x6.code, 1);
+    assert!(x6.stderr.contains("X6"), "{}", x6.stderr);
+    // the server check's word for the declaration
+    let verify = world.tool(&[
+        "verify",
+        "--keys",
+        &keys,
+        "--allow-test-keys",
+        "--server",
+        SERVER,
+        "--prev",
+        "policy2.json",
+        "--live",
+        "policy2.json",
+        "policy3.json",
+    ]);
+    assert_eq!(verify.code, 0, "{}", verify.all());
+    assert!(
+        verify.stdout.contains("--relaxes 없이"),
+        "{}",
+        verify.stdout
+    );
+}
