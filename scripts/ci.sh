@@ -41,7 +41,10 @@
 #                          HJViewer code (--lib hjv) in that build and the account scenarios
 #                          (docs/e2e.md) against hjv-api and the fake SSO, with a 1.5.1 client
 #                          built once from the tag client-1.5.1 and Ubuntu's libfaketime, unpacked
-#                          under build/ci
+#                          under build/ci; with server patch 0005, hbbs's lowest controller
+#                          version, and with the update code in the patches (src/hjviewer_update),
+#                          a client with the update test keys and the signed version policy that
+#                          tools/hjv-release signs for it (the minimum version's V1-V8)
 #   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, the Wake-on-LAN E2E (docs/e2e.md), without sudo: in
 #                          this user's own namespaces a PC that sleeps is woken through hjv-api
 #                          and hjv-relay, with the E2E's client, Caddy, hjv-api and fake SSO, and
@@ -101,6 +104,8 @@ PREPUSH_STAGES="server client deploy e2e wol leak"
 # moved under a condition that does not hold, a test filter that picks nothing), and the stage
 # fails (at_least). Raise them as scenarios and tests come; lower one only with what was taken out.
 E2E_LEAST_STRICT=60 E2E_LEAST_OPEN=2 WOL_LEAST=20
+# strict: and the minimum version's V1-V8 (2026-10-14)
+E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 9))
 # by the filter of build_e2e_client's cargo test --lib <filter>
 declare -A UNIT_LEAST=([hjv]=83 [hjviewer_wol]=6)
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -111,6 +116,10 @@ NGINX_PID="" APACHE_PID="" ECHO_PID=""
 DEPLOY_LOGS=""
 # set by build_e2e_client when the E2E has its account part
 E2E_ACCOUNT=""
+# and when its client has the update test keys (the minimum version's policy)
+E2E_KEYED=""
+# set by e2e_minimum_version
+E2E_MINVER=()
 # a client given by hand (E2E_CLIENT=<binary>, the wol stage only), and the E2E's client in use
 E2E_CLIENT_GIVEN=${E2E_CLIENT:-} E2E_CLIENT=""
 # the stack under test: the compose files (docker) or the release package's systemd units
@@ -1157,6 +1166,21 @@ e2e_server_key() { # <work dir>
   [ -s "$1/srv/id_ed25519.pub" ] || fail "e2e: hbbs made no key in $1/srv"
 }
 
+# The update keys of the E2E's clients (minimum version design 1-7): the test keys of
+# tools/hjv-release (hjv-release test-keys --env), from seeds of 32 consecutive bytes that start at
+# 40, 80 and a0 (signing keys 1 and 2, root key 101), and the floor 1:0. A build with the E2E's
+# commands (hjv-e2e) takes part in the version policy with these keys and the server hjv.test only.
+e2e_update_keys() {
+  local first seed key pub=()
+  for first in 40 80 a0; do
+    seed=$(python3 -I -c 'import sys; f = int(sys.argv[1], 16); print(bytes(range(f, f + 32)).hex())' "$first") || return 1
+    key=$(python3 -I "$ROOT/scripts/check-build-keys.py" pubkey ed25519 "$seed") || return 1
+    [ ${#key} = 44 ] || return 1
+    pub+=("$key")
+  done
+  printf '%s\n' "HJV_UPDATE_PUBKEY=1:${pub[0]},2:${pub[1]}" "HJV_UPDATE_ROOT_PUBKEY=101:${pub[2]}" HJV_POLICY_FLOOR=1:0
+}
+
 # The client of the E2E (docs/e2e.md): a fresh upstream checkout with client/patches, built for
 # the test server hjv.test with the test feature hjv-e2e. Once the patches have the account code
 # (src/hjviewer_account) and firewall-e2e.sh its account part (HJV_E2E_ACCOUNT), it also pins the
@@ -1164,10 +1188,13 @@ e2e_server_key() { # <work dir>
 # that <filter> picks (cargo test --lib <filter>, by default the module's). The e2e stage runs all
 # of the client's HJViewer tests (hjv: the account code's, design v3 7-3, its hooks' in the
 # controller, hjviewer.rs's and the wake report's), the wol stage the wake report's (hjviewer_wol,
-# design v3 8-10). Before the account code, it is built like 1.5.1. A client given by hand
+# design v3 8-10). Before the account code, it is built like 1.5.1. Once the patches have the update
+# code (src/hjviewer_update) and firewall-e2e.sh its part (HJV_E2E_UPDATE_KEYS), the build and its
+# unit tests also get the update test keys (e2e_update_keys; E2E_KEYED), so that the update code's
+# tests run as in a build that takes part. A client given by hand
 # (E2E_CLIENT, which only the wol stage takes) is used as it is, and that is a skip.
 build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
-  local work=$1 unit=${2:-hjviewer_account} src="$CI/upstream-e2e/rustdesk" keys=()
+  local work=$1 unit=${2:-hjviewer_account} src="$CI/upstream-e2e/rustdesk" keys=() update_keys
   local filter=${3:-$unit}
   if [ -n "$E2E_CLIENT_GIVEN" ]; then
     E2E_CLIENT=$E2E_CLIENT_GIVEN
@@ -1186,6 +1213,13 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
     keys=(HJV_LOGIN_SEAL_PUBKEY="$(cat "$work/api/seal.pub")" HJV_TRUST_PUBKEYS="$(cat "$work/api/trust.pub")")
   else
     skip "the account E2E (no src/hjviewer_account in the patched tree, or no HJV_E2E_ACCOUNT part in tools/e2e/firewall-e2e.sh): the client is built without the account keys, like 1.5.1"
+  fi
+  # the update test keys, once the patches have the update code: the e2e stage says what it skips
+  E2E_KEYED=
+  if [ -d "$src/src/hjviewer_update" ] && grep -q HJV_E2E_UPDATE_KEYS "$ROOT/tools/e2e/firewall-e2e.sh"; then
+    E2E_KEYED=1
+    update_keys=$(e2e_update_keys) || fail "e2e: the update test keys (scripts/check-build-keys.py pubkey)"
+    readarray -t -O "${#keys[@]}" keys <<< "$update_keys"
   fi
   step "e2e: the client for the test server hjv.test (--features linux-pkg-config,hjv-e2e)"
   pkgconfig
@@ -1286,6 +1320,36 @@ cleanup_e2e() {
   sudo rm -rf "$E2E_PC_DIR"
 }
 
+# The minimum version's parts of the E2E (its design 2-4, 1-7; docs/e2e.md), as values for
+# firewall-e2e.sh in E2E_MINVER: hbbs's lowest controller version (V1-V4) once hbbs has server patch
+# 0005; once server/patches has that patch, an hbbs without it (built by an earlier server stage)
+# fails the stage instead of skipping the part. And the signed version policy (V5-V8) once the
+# client has the update test keys, with tools/hjv-release, which signs its test policies; without
+# the tool, firewall-e2e.sh says that it skips them.
+e2e_minimum_version() {
+  local help
+  E2E_MINVER=()
+  help=$(cd "$CI" && "$CI/target/release/hbbs" --help 2>&1 || true)
+  if grep -q -- '--hjv-min-controller-file' <<< "$help"; then
+    E2E_MINVER+=(HJV_E2E_MIN_CONTROLLER=1)
+  elif grep -q -- 'hjv-min-controller-file' "$ROOT"/server/patches/*.patch; then
+    fail "e2e: hbbs has no --hjv-min-controller-file, though server/patches has it (patch 0005): scripts/ci.sh server builds it again"
+  else
+    skip "the minimum version's V1-V4 (hbbs has no --hjv-min-controller-file: no server patch 0005)"
+  fi
+  if [ -z "$E2E_KEYED" ]; then
+    skip "the minimum version's V5-V8 (no src/hjviewer_update in the patched tree, or no HJV_E2E_UPDATE_KEYS part in tools/e2e/firewall-e2e.sh): the client is built without the update keys, like 1.5.1"
+    return 0
+  fi
+  E2E_MINVER+=(HJV_E2E_UPDATE_KEYS=1)
+  if [ -f "$ROOT/tools/hjv-release/Cargo.toml" ]; then
+    step "e2e: tools/hjv-release, which signs the E2E's version policies with the test keys"
+    (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
+      fail "e2e: hjv-release build"
+    E2E_MINVER+=(HJV_RELEASE="$CI/target-hjv-release/release/hjv-release")
+  fi
+}
+
 e2e_stage() {
   local work="$CI/e2e" mode extra=()
   # a client given by hand would go without the build's unit tests and, built without the E2E's
@@ -1315,6 +1379,8 @@ e2e_stage() {
     extra=(HJV_E2E_ACCOUNT=1 HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" HJV_E2E_KEYS="$work/api"
       CLIENT_OLD="$E2E_CLIENT_OLD" FAKETIME_LIB="$E2E_FAKETIME")
   fi
+  e2e_minimum_version
+  extra+=("${E2E_MINVER[@]}")
   for mode in strict open; do
     step "e2e: tools/e2e/firewall-e2e.sh $mode (output also in build/ci/e2e-$mode.log)"
     with_skips "$CI/e2e-$mode.log" env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" \

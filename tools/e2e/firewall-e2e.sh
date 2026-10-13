@@ -35,6 +35,18 @@
 #                 from them, and PC_CLIENT installed under /usr
 #   CLIENT_OLD    optional: a 1.5.1 client built for this server (X2, X3; skipped without it)
 #   FAKETIME_LIB  optional: libfaketime.so.1 (S27; skipped without it)
+#
+# The minimum version (its design 2-2, 2-4; docs/e2e.md), in strict mode after the parts above:
+# HJV_E2E_MIN_CONTROLLER=1 gives hbbs (server patch 0005) the file $RUN/min-controller.conf, which
+# V1-V4 write as an operator would: a controller below MIN is refused with the file's text and
+# connects again once MIN is emptied. HJV_E2E_UPDATE_KEYS=1 says that CLIENT and PC_CLIENT were
+# built with the update test keys (hjv-release test-keys --env): such an app shows its own text R1
+# for a refusal for its version, and with HJV_RELEASE, tools/hjv-release, which signs the test
+# policies (test-sign, the test key 1), Caddy serves the policy at /api/hjv/version (a site block of
+# that path in the run's Caddyfile; the public deploy/Caddyfile serves none). The PC's service
+# takes it by itself; V5-V8 check that it lets a controller below the minimum in before the
+# deadline and refuses its login once the deadline has passed. CLIENT_OLD adds the 1.5.1
+# controller to V3 and V8.
 set -euo pipefail
 
 MODE=${1:-strict}
@@ -70,8 +82,46 @@ if [ -n "$ACCOUNT" ]; then
   esac
   [ "$MODE" = strict ] && NAMESPACES+=(hjv-ctl2 hjv-pc2)
 fi
+# the minimum version's parts run in strict mode only
+MIN_HBBS="" KEYED="" POLICY=""
+if [ "$MODE" = strict ]; then
+  MIN_HBBS=${HJV_E2E_MIN_CONTROLLER:-} KEYED=${HJV_E2E_UPDATE_KEYS:-}
+  if [ -n "$KEYED" ] && [ -n "${HJV_RELEASE:-}" ]; then POLICY=1; fi
+fi
 
 log() { printf '\n== %s\n' "$*"; }
+
+# <seq> <deadline>: signs a policy of epoch 1 and that seq with the test key 1 (hjv-release
+# test-sign) and serves it at https://hjv.test/api/hjv/version, replaced at once as the server's
+# file is. Its one entry, windows, is the one an E2E build on Linux is held to: NEXT_MINOR, until
+# <deadline> only for apps below it (grace_until). Its package is made up: Linux downloads nothing.
+serve_policy() {
+  local text="$RUN/policy/policy-$1.json"
+  printf '{"v":1,"epoch":1,"seq":%s,"issued":"%s","server":"%s","platforms":{"windows":{"min":"%s","latest":"%s","grace_until":"%s","package":{"file":"HJViewer-%s-windows-x86_64.exe","size":1,"sha256":"%s","build":"%s.0"}}}}\n' \
+    "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$DOMAIN" "$NEXT_MINOR" "$NEXT_MINOR" "$2" "$NEXT_MINOR" \
+    "$(printf 'e2e0%.0s' $(seq 16))" "$NEXT_MINOR" >"$text"
+  if ! timeout 30 "$HJV_RELEASE" test-sign --policy "$text" --out "$RUN/policy/version-policy.json.new" \
+    >>"$RUN/hjv-release.log" 2>&1; then
+    cat "$RUN/hjv-release.log"
+    echo "FAIL: hjv-release test-sign $text"
+    exit 1
+  fi
+  mv -f "$RUN/policy/version-policy.json.new" "$RUN/policy/version-policy.json"
+}
+
+# <MIN> [<FROM> <TEXT>]: hbbs's file of the lowest controller version, written next to it and moved
+# over it as an operator does; MIN alone, empty, turns the minimum off
+min_conf() {
+  {
+    echo "# the E2E's lowest controller version (server patch 0005), read again every 10 seconds"
+    echo "MIN=$1"
+    if [ -n "$1" ]; then
+      echo "FROM=$2"
+      echo "TEXT=$3"
+    fi
+  } >"$RUN/min-controller.conf.new"
+  mv -f "$RUN/min-controller.conf.new" "$RUN/min-controller.conf"
+}
 
 # <-I|-D>: the host forwards UDP between hjv-pc and hjv-ctl (open mode)
 forward_rules() {
@@ -154,6 +204,20 @@ echo "$TOKEN" >"$RUN/site/index.html"
 convert -size 1280x720 xc:'#1e6fd9' \( -size 760x220 xc:white -fill '#1e6fd9' -pointsize 54 \
   -gravity center -annotate +0+0 "HJViewer E2E\n$MODE firewall" \) -gravity center -composite \
   "$RUN/pc/desktop.png"
+# The minimum version: the E2E's clients send the version of the upstream checkout, as every build
+# whose version scripts/set-client-version.sh did not stamp; hbbs's MIN is the next patch version
+# above it, the policy's minimum the next minor one (1.5.1 and 1.6.0 for 1.5.0). The first policy
+# is served from the start, so that the PC's service takes it 30 s after its start, by itself: it
+# holds the PC's controllers to NEXT_MINOR from tomorrow on.
+if [ -n "$MIN_HBBS$POLICY" ]; then
+  mkdir -p "$RUN/version" "$RUN/policy"
+  CUR=$(env -i HOME="$RUN/version" PATH=/usr/bin:/bin timeout 10 "$CLIENT" --version) || { echo "FAIL: $CLIENT --version"; exit 1; }
+  [[ $CUR =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || { echo "FAIL: the client's version '$CUR' is not x.y.z"; exit 1; }
+  NEXT_MINOR="${BASH_REMATCH[1]}.$((BASH_REMATCH[2] + 1)).0"
+  NEXT_PATCH="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+  [ "${BASH_REMATCH[3]}" -lt 99 ] || NEXT_PATCH=$NEXT_MINOR
+  [ -z "$POLICY" ] || serve_policy 1 "$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)"
+fi
 
 log "network: ${#NAMESPACES[@]} namespaces, firewall '$MODE' (out: TCP 443 to the server$([ "$MODE" = open ] && echo ', UDP between peers'))"
 setup_ns hjv-pc veth-hjvpc 10.77.1 10.77.2.2
@@ -225,10 +289,25 @@ EOF
 fi
 
 log "server: hbbs + hbbr behind Caddy (deploy/Caddyfile) on :443"
-(cd "$RUN/srv" && exec env -i TEST_HBBS=no RUST_LOG=debug "$HBBS" -p "$HBBS_PORT" -r "$DOMAIN" >"$RUN/hbbs.log" 2>&1) &
+# (with the minimum version, hbbs reads the lowest controller version from a file, while there is one)
+(cd "$RUN/srv" && exec env -i TEST_HBBS=no RUST_LOG=debug ${MIN_HBBS:+"HJV_MIN_CONTROLLER_FILE=$RUN/min-controller.conf"} \
+  "$HBBS" -p "$HBBS_PORT" -r "$DOMAIN" >"$RUN/hbbs.log" 2>&1) &
 SERVER_PIDS+=($!)
 (cd "$RUN/srv" && exec env -i RUST_LOG=info "$HBBR" -p "$HBBR_PORT" -k _ >"$RUN/hbbr.log" 2>&1) &
 SERVER_PIDS+=($!)
+# The version policy, which the server's nginx serves from a file (minimum version design 4-2): a
+# site block of that path alone, which Caddy puts before deploy/Caddyfile's site of the same host
+# (a path in a site address is deprecated in Caddy 2.11, and works)
+POLICY_SITE=""
+if [ -n "$POLICY" ]; then
+  POLICY_SITE="$DOMAIN/api/hjv/version {
+	root * $RUN/policy
+	rewrite * /version-policy.json
+	header Cache-Control no-cache
+	header X-Content-Type-Options nosniff
+	file_server
+}"
+fi
 # (debug, for the account part: Caddy's log then has every request it passes to hjv-api with the
 # status that came back; it leaves the Authorization header's value out)
 cat >"$RUN/Caddyfile" <<EOF
@@ -241,6 +320,7 @@ cat >"$RUN/Caddyfile" <<EOF
 	https_port $HTTPS_PORT
 	storage file_system $RUN/caddy
 }
+$POLICY_SITE
 import $ROOT/deploy/Caddyfile
 EOF
 env -i HOME="$RUN" HJV_DOMAIN="$DOMAIN" HJV_HBBS_WS="127.0.0.1:$((HBBS_PORT + 2))" \
@@ -1206,12 +1286,181 @@ ctl2_lists() {
   has "device $PC_ID linux pwless=$1"
 }
 
+# ---------------------------------------------------------------------------------------------
+# The minimum version (its design 2-2, 2-4, 2-5): hbbs's lowest controller version (V1-V4), and the
+# signed policy by which the PC refuses the login of an old controller (V5-V8). The controllers are
+# sides of their own in the controller's network that never logged in: ver runs CLIENT, old the
+# 1.5.1 client. Every call of a client ends within 30 s or fails the run.
+# ---------------------------------------------------------------------------------------------
+# the text an app with the update keys shows in place of a refusal for its version
+R1="이 버전으로는 연결할 수 없다는 답을 받았습니다. 업데이트를 확인하고 있습니다. (version not allowed)"
+# <version>: what the PC answers the login of a controller of that version (L1; the policy's
+# minimum is NEXT_MINOR)
+l1() {
+  echo "이 PC는 HJViewer $NEXT_MINOR 이상에서만 연결을 받습니다. 이 기기의 HJViewer를 업데이트한 뒤 다시 연결하세요(지금 버전 $1). (version not allowed)"
+}
+# hbbs's text: the design's S1, with the test server and a made-up code of door 2
+HBBS_TEXT="HJViewer를 %MIN% 이상으로 업데이트해야 연결할 수 있습니다. Play 스토어에서 설치했다면 Play 스토어에서, iPhone은 TestFlight 앱에서 업데이트하세요. 그 밖의 Windows·Android는 https://$DOMAIN/api/hjv/get/0123456789abcdef0123456789abcdef/ 에서 새 버전을 받으세요. (version not allowed)"
+
+# <side> <client> <args...>: one call of a client in the controller's network as <side>: its exit
+# code $RC, standard output $OUT, the hjv-e2e lines of its standard error $ERR and its time $MS
+# (ms), all also in $RUN/<side>.out with the PC's password masked. A call that did not end within
+# 30 s fails the run.
+vrun() {
+  local side=$1 client=$2 t0 a shown=()
+  shift 2
+  for a in "$@"; do
+    if [ "$a" = "$PASSWORD" ]; then shown+=("***"); else shown+=("$a"); fi
+  done
+  mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
+  t0=$(date +%s%N)
+  RC=0
+  OUT=$(in_ns hjv-ctl "$side" timeout -k 5 30 "$client" "$@" 2>"$RUN/$side.err") || RC=$?
+  MS=$(ms_since "$t0")
+  ERR=$(grep '^hjv-e2e:' "$RUN/$side.err" || true)
+  {
+    echo "== $(basename "$client") ${shown[*]} (exit $RC, $MS ms)"
+    printf '%s\n' "$OUT"
+    cat "$RUN/$side.err"
+  } >>"$RUN/$side.out"
+  case $RC in 124 | 137) fail "$side: '${shown[*]}' did not end within 30 s" ;; esac
+}
+# <side> <client> <tag>: the PC's remote screen with its password, into $RUN/<tag>.ppm
+vscreen() { vrun "$1" "$2" --hjv-e2e-screenshot "$PC_ID" "$PASSWORD" "$RUN/$3.ppm"; }
+version_of() { env -i HOME="$RUN/version" PATH=/usr/bin:/bin timeout 10 "$1" --version; } # <client>
+hbbs_has() { grep -qF -- "$1" "$RUN/hbbs.log"; }
+# <version>: hbbs's lines of the punch hole requests for the PC that it refused for that version
+hbbs_refusals() { grep -cF -- "for \"$PC_ID\": version \"$1\"" "$RUN/hbbs.log" || true; }
+hbbs_refused_more() { [ "$(hbbs_refusals "$1")" -gt "$2" ]; }
+# the hjv-e2e lines of $OUT from the login error on
+from_login_error() { sed -n '/^hjv-e2e: login error: /,$p' <<<"$OUT" | grep '^hjv-e2e:' || true; }
+# <scenario> <epoch:seq>: the PC's log says that it took that policy; a policy that it refused, or
+# a build that takes none, fails the run at once
+policy_taken() {
+  if pc_log_has 'version policy: off in this build' || pc_log_has 'version policy: refused ('; then
+    fail "$1: $(pc_log | grep -o 'version policy: \(off in this build\|refused (\).*' | head -1)"
+  fi
+  pc_log_has "version policy: now at $2"
+}
+
+min_controller_part() {
+  local conf="$RUN/min-controller.conf" from=2026-01-01T00:00:00Z text n0 t0 ms old_version
+  text=${HBBS_TEXT//%MIN%/$NEXT_PATCH}
+  log "V1: hbbs takes MIN=$NEXT_PATCH from its file within its 10 s, without a restart"
+  hbbs_has "min-controller off: no file $conf" ||
+    fail "V1: hbbs did not look for $conf (HJV_MIN_CONTROLLER_FILE, server patch 0005)"
+  t0=$(date +%s%N)
+  min_conf "$NEXT_PATCH" "$from" "$HBBS_TEXT"
+  until_ok 13 "V1: hbbs's line 'min-controller $NEXT_PATCH from $from'" hbbs_has "min-controller $NEXT_PATCH from $from"
+  pass "V1: hbbs took MIN=$NEXT_PATCH, FROM=$from $(ms_since "$t0") ms after the file was replaced (it reads it every 10 s)"
+
+  log "V2: a controller of $CUR is refused by hbbs$([ -n "$KEYED" ] && echo "; with the update keys it shows its own R1")"
+  n0=$(hbbs_refusals "$CUR")
+  vscreen ver "$CLIENT" v2
+  [ "$RC" = 1 ] || fail "V2: exit $RC, expected 1 (no session)"
+  if [ -n "$KEYED" ]; then
+    [ "$ERR" = "hjv-e2e: $R1" ] || fail "V2: not R1 alone in place of hbbs's text: '$ERR'"
+  else
+    [ "$ERR" = "hjv-e2e: $text" ] || fail "V2: not hbbs's text: '$ERR'"
+  fi
+  if has 'connected over' || [ -e "$RUN/v2.ppm" ]; then fail "V2: a session started"; fi
+  until_ok 5 "V2: hbbs's line of the refusal" hbbs_refused_more "$CUR" "$n0"
+  # the log is written a moment later: a second request of the same attempt would be in by now
+  sleep 2
+  [ "$(hbbs_refusals "$CUR")" = $((n0 + 1)) ] ||
+    fail "V2: hbbs refused $(($(hbbs_refusals "$CUR") - n0)) requests of one attempt"
+  pass "V2: exit 1 after $MS ms with $([ -n "$KEYED" ] && echo "R1 (no link)" || echo "hbbs's text"), one refusal in hbbs's log (version \"$CUR\"); the text ends with '(version not allowed)', which keeps an app from connecting again by itself"
+
+  log "V3: a 1.5.1 controller shows hbbs's text as it came, with its link"
+  if [ -n "${CLIENT_OLD:-}" ]; then
+    old_version=$(version_of "$CLIENT_OLD") || fail "V3: $CLIENT_OLD --version"
+    n0=$(hbbs_refusals "$old_version")
+    vscreen old "$CLIENT_OLD" v3
+    # (the 1.5.1 client's headless commands end with 0 whatever happened)
+    [ "$RC" = 0 ] || fail "V3: exit $RC, expected 0"
+    [ "$ERR" = "hjv-e2e: $text" ] || fail "V3: not hbbs's text with MIN filled in: '$ERR'"
+    if has 'connected over' || [ -e "$RUN/v3.ppm" ]; then fail "V3: a session started"; fi
+    until_ok 5 "V3: hbbs's line of the refusal" hbbs_refused_more "$old_version" "$n0"
+    pass "V3: the 1.5.1 controller ($old_version) shows hbbs's text with MIN filled in and the link of door 2 ($MS ms)"
+  else
+    echo "skipped: V3 (no CLIENT_OLD, a 1.5.1 client built for this server)"
+  fi
+
+  log "V4: MIN emptied: the controller of $CUR gets through hbbs again within its 10 s"
+  t0=$(date +%s%N)
+  min_conf ""
+  until_ok 13 "V4: hbbs's line 'min-controller off: MIN is empty in $conf'" hbbs_has "min-controller off: MIN is empty in $conf"
+  ms=$(ms_since "$t0")
+  n0=$(hbbs_refusals "$CUR")
+  vscreen ver "$CLIENT" v4
+  [ "$RC" = 0 ] || fail "V4: exit $RC ($(tail -n 1 <<<"$ERR"))"
+  screen_is_pc v4 || fail "V4: the decoded screen is not the PC's desktop"
+  [ "$(hbbs_refusals "$CUR")" = "$n0" ] || fail "V4: hbbs refused the controller again"
+  pass "V4: hbbs dropped its minimum $ms ms after MIN was emptied; the controller got the PC's screen ($MS ms)"
+}
+
+policy_part() {
+  local t0 cm0="" old_version want
+  log "V5: the PC's service took the first policy by itself (it asks 30 s after its start)"
+  until_ok 60 "V5: the PC's log line 'version policy: now at 1:1'" policy_taken V5 1:1
+  pass "V5: the PC holds the policy 1:1 that it fetched from https://$DOMAIN/api/hjv/version and checked against the build's update keys"
+
+  log "V6: before the deadline (tomorrow) the PC lets a controller below the minimum ($CUR < $NEXT_MINOR) in"
+  vscreen ver "$CLIENT" v6
+  [ "$RC" = 0 ] || fail "V6: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
+  screen_is_pc v6 || fail "V6: the decoded screen is not the PC's desktop"
+  if pc_log_has 'version policy: refused the login'; then fail "V6: the PC refused a login before the deadline"; fi
+  pass "V6: the PC's screen ($MS ms): a deadline that has not passed lets the old controller in"
+
+  log "V7: the minimum in force (seq 2, its deadline an hour ago): the PC takes it and refuses the login"
+  serve_policy 2 "$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)"
+  # the service asks by itself 30 s after its start, then every six hours: it starts again
+  stop_pc_service
+  start_pc_service
+  t0=$(date +%s)
+  until_ok 75 "V7: the PC's log line 'version policy: now at 1:2'" policy_taken V7 1:2
+  pass "V7: the PC's service took the policy 1:2 by itself, $(($(date +%s) - t0)) s after it started"
+  until_ok 40 "V7: the PC online again" online "$PC_ID" ctl
+  if [ -f "$RUN/pc-cm.log" ]; then cm0=$(wc -l <"$RUN/pc-cm.log"); fi
+  vscreen ver "$CLIENT" v7
+  want=$(printf '%s\n' "hjv-e2e: login error: $(l1 "$CUR")" "hjv-e2e: error: Login Error: $R1" "hjv-e2e: error Login Error")
+  [ "$RC" = 4 ] || fail "V7: exit $RC, expected 4 (an 'error' box)"
+  [ "$(from_login_error)" = "$want" ] || fail "V7: not the PC's L1, then R1 in a 'Login Error' box: $(from_login_error)"
+  if has 'logged in to' || [ -e "$RUN/v7.ppm" ]; then fail "V7: the controller got in"; fi
+  until_ok 5 "V7: the PC's log line of the refusal" \
+    pc_log_has "version policy: refused the login of a controller (\"Linux\", version \"$CUR\")"
+  if [ -n "$cm0" ] && [ "$(wc -l <"$RUN/pc-cm.log")" != "$cm0" ]; then
+    fail "V7: the refused login reached the PC's connection manager"
+  fi
+  pass "V7: exit 4 after $MS ms: the PC's L1 ('… $NEXT_MINOR 이상 … (지금 버전 $CUR)'), then R1 in a 'Login Error' box, which no app reconnects from by itself$([ -n "$cm0" ] && echo "; the login never reached the PC's connection manager")"
+
+  log "V8: a 1.5.1 controller shows the PC's L1 as it came"
+  if [ -n "${CLIENT_OLD:-}" ]; then
+    old_version=$(version_of "$CLIENT_OLD") || fail "V8: $CLIENT_OLD --version"
+    vscreen old "$CLIENT_OLD" v8
+    want=$(printf '%s\n' "hjv-e2e: login error: $(l1 "$old_version")" "hjv-e2e: error: Login Error: $(l1 "$old_version")")
+    [ "$RC" = 0 ] || fail "V8: exit $RC, expected 0"
+    [ "$(from_login_error)" = "$want" ] || fail "V8: not the PC's L1 in a 'Login Error' box: $(from_login_error)"
+    if has 'logged in to' || [ -e "$RUN/v8.ppm" ]; then fail "V8: the controller got in"; fi
+    pass "V8: the 1.5.1 controller ($old_version) shows the PC's L1 in its 'Login Error' box ($MS ms)"
+  else
+    echo "skipped: V8 (no CLIENT_OLD, a 1.5.1 client built for this server)"
+  fi
+}
+
 if [ -n "$ACCOUNT" ]; then
   if [ "$MODE" = strict ]; then account_strict; else account_open; fi
+fi
+if [ -n "$MIN_HBBS" ]; then min_controller_part; fi
+if [ -n "$POLICY" ]; then
+  policy_part
+elif [ -n "$KEYED" ]; then
+  echo "skipped: V5-V8, the version policy (no HJV_RELEASE, tools/hjv-release to sign its test policies)"
 fi
 
 log "what hbbs saw"
 # (|| true: with pipefail, head leaving early fails the pipeline once the log is long)
 grep -E "update_pk|Punch hole|Tcp connection from 10\.77" "$RUN/hbbs.log" | sed 's/^\[[^]]*\] //' | head -8 || true
 echo
-echo "PASS ($MODE): $(grep -o 'transport: .*' "$RUN/ctl.log" | tail -1)$([ -n "$ACCOUNT" ] && echo ", same-account logins")"
+echo "PASS ($MODE): $(grep -o 'transport: .*' "$RUN/ctl.log" | tail -1)$([ -n "$ACCOUNT" ] && echo ", same-account logins")$(
+  [ -n "$MIN_HBBS" ] && echo ", hbbs's minimum")$([ -n "$POLICY" ] && echo ", the version policy")"
