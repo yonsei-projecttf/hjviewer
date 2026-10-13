@@ -192,7 +192,8 @@ Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shar
 
 - **The operator** of the server runs the account service, answers requests and is responsible for
   this data. Administration commands show IDs shortened and leave out names, addresses and device
-  names unless a person asks for them; every command is recorded.
+  names unless a person asks for them; every command is recorded, except the one the five-minute
+  check reads, which returns counts only and changes nothing.
 - **The Yonsei SSO** checks your portal ID and password at login.
 - **An AI assistant**: the operator uses an AI assistant for work on the server. Its rules let it
   see only shortened, masked output and counts, and what it sees goes to the external AI service
@@ -284,7 +285,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 9. 정보를 다루는 곳
 
-- **운영자**: 서버의 계정 서비스를 운영하고, 요청에 답하며, 이 정보를 책임집니다. 관리 명령은 사람이 따로 요청하지 않는 한 ID를 줄여 보이고 이름, 주소, 기기 이름을 보이지 않습니다. 관리 명령은 모두 기록됩니다.
+- **운영자**: 서버의 계정 서비스를 운영하고, 요청에 답하며, 이 정보를 책임집니다. 관리 명령은 사람이 따로 요청하지 않는 한 ID를 줄여 보이고 이름, 주소, 기기 이름을 보이지 않습니다. 관리 명령은 모두 기록됩니다. 5분마다 도는 점검이 읽는 명령 하나만 예외이고, 그 명령은 개수만 돌려주며 아무것도 바꾸지 않습니다.
 - **연세 SSO**: 로그인할 때 포탈 ID와 비밀번호를 확인합니다.
 - **AI 도우미**: 운영자는 서버 작업에 AI 도우미를 씁니다. AI 도우미는 줄이고 가린 출력과 개수만 보도록 규칙으로 정해져 있고, 본 내용은 AI 도우미를 실행하는 외부 AI 서비스로 갑니다. 원래 값 보기와 키 만들기는 사람만 합니다.
 - **STUN 서버**(2절). 그 밖에는 없습니다. 광고나 분석 회사에 넘기지 않습니다.

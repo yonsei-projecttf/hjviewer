@@ -997,7 +997,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
 
 ### 7-15. 일상 운영
 
-관리 명령은 `sudo /opt/hjviewer/bin/hjv-api admin <명령>`이고, 출력은 가려져 있습니다(포탈 ID는 앞 4자, 이름·기기 이름·주소는 없음, 대신 꼬리표). 모든 명령은 운영자 기록에 남습니다. 전체 목록은 `hjv-api admin help`와 [server/api/README.md](../server/api/README.md)의 "Admin"에 있습니다.
+관리 명령은 `sudo /opt/hjviewer/bin/hjv-api admin <명령>`이고, 출력은 가려져 있습니다(포탈 ID는 앞 4자, 이름·기기 이름·주소는 없음, 대신 꼬리표). 모든 명령은 운영자 기록에 남습니다(5분 점검이 읽는 `health`만 예외: 개수만 돌려주고 아무것도 바꾸지 않음). 전체 목록은 `hjv-api admin help`와 [server/api/README.md](../server/api/README.md)의 "Admin"에 있습니다.
 
 - **명단**: 넣기 `allow import <파일>`, 빼기 `allow remove <파일>`(사용자가 쓴 파일, 7-5처럼). 빼면 그 계정의 토큰과 계정 키가 바로 폐기됩니다. 그 계정에 묶인 PC는 남고 키 없는 목록을 받습니다. 그 PC를 다른 사람에게 넘길 때는 아래처럼 풉니다.
 - **PC를 계정에서 풀기**: `binding list`로 보고 `binding revoke <PC ID>`로 풉니다. `device remove <PC ID>`는 같은 명령의 옛 이름입니다. 어느 이름이든 그 PC의 묶음 ID를 180일 동안 무덤으로 남기므로, 그 PC는 다음 동기화에서 서명된 `revoked`를 받아 허용 표시를 지웁니다. 그 뒤 그 PC의 빈 보고에는 서명 없는 `unbound`가 갑니다.
