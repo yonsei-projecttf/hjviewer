@@ -388,7 +388,9 @@ pub async fn authenticate(
                                 Proof::Replayed
                             }
                         }
-                        Retry::Again(_) => Proof::Valid,
+                        // its answer is the first request's, which moved the token's idle
+                        // time already
+                        Retry::Again(_) => Proof::Replayed,
                         Retry::Reused => Proof::Replayed,
                     };
                     retry = Some(begun);

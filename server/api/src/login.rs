@@ -345,7 +345,13 @@ impl LoginAnswer {
 /// something by its proof, under the key's nonce (api.rs `authenticate`, design v3 §4-2).
 pub struct RetryCache<A> {
     window: Duration,
-    entries: Mutex<HashMap<String, RetryEntry<A>>>,
+    entries: Mutex<Entries<A>>,
+}
+
+struct Entries<A> {
+    map: HashMap<String, RetryEntry<A>>,
+    /// when the entries past the window last went
+    swept: Instant,
 }
 
 struct RetryEntry<A> {
@@ -368,19 +374,30 @@ impl<A> RetryCache<A> {
     pub fn new(window_secs: i64) -> RetryCache<A> {
         RetryCache {
             window: Duration::from_secs(window_secs as u64),
-            entries: Mutex::new(HashMap::new()),
+            entries: Mutex::new(Entries {
+                map: HashMap::new(),
+                swept: Instant::now(),
+            }),
         }
     }
 
     pub fn begin(&self, key: &str, sent: [u8; 32]) -> Retry<A> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries.retain(|_, e| e.created.elapsed() < self.window);
-        match entries.get(key) {
-            Some(e) if e.sent == sent => Retry::Again(e.answer.clone()),
-            Some(_) => Retry::Reused,
-            None => {
+        // the entries past the window go once a second at most: an account request calls this
+        // with the database's lock held, and a sweep each time would cost one look per entry
+        if entries.swept.elapsed() >= Duration::from_secs(1) {
+            let window = self.window;
+            entries.map.retain(|_, e| e.created.elapsed() < window);
+            entries.swept = Instant::now();
+        }
+        match entries.map.get(key) {
+            Some(e) if e.created.elapsed() < self.window && e.sent == sent => {
+                Retry::Again(e.answer.clone())
+            }
+            Some(e) if e.created.elapsed() < self.window => Retry::Reused,
+            _ => {
                 let (tx, rx) = watch::channel(None);
-                entries.insert(
+                entries.map.insert(
                     key.to_owned(),
                     RetryEntry {
                         sent,
@@ -395,7 +412,9 @@ impl<A> RetryCache<A> {
 
     pub fn purge(&self) {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries.retain(|_, e| e.created.elapsed() < self.window);
+        let window = self.window;
+        entries.map.retain(|_, e| e.created.elapsed() < window);
+        entries.swept = Instant::now();
     }
 }
 
