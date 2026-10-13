@@ -82,6 +82,9 @@ forward_rules() {
 cleanup() {
   set +e
   [ "$MODE" = open ] && forward_rules -D 2>/dev/null
+  # a sudo of in_ns that a stopped command stopped (R3, or a run that failed between its stop and
+  # go on) would stay stopped: it goes on, and ends with its command below
+  sudo pkill -CONT -f '^sudo ip netns exec hjv-' 2>/dev/null
   for ns in "${NAMESPACES[@]}"; do
     sudo ip netns pids "$ns" 2>/dev/null | xargs -r sudo kill 2>/dev/null
   done
@@ -926,7 +929,10 @@ account_strict() {
   # it writes the stopped service's options
   until_ok 15 "R3: the login's answer (hjv-pc-binding written)" pc_binding_written "$r3_before"
   kill -STOP "$API_PID"
-  sudo kill -CONT $spid
+  # The sudo that runs the service in the namespace stopped itself when the service stopped (sudo
+  # follows its command's stop): it goes on too, or it stays stopped after the run, holding the
+  # service as a zombie
+  for p in $spid; do sudo kill -CONT "$p" "$(ps -o ppid= -p "$p" | tr -d ' ')"; done
   # the service sends the bind request's sync on its second tick after it goes on (about 1 s);
   # hjv-api holds it, which an HTTP timeout of 5 s allows for some seconds more
   sleep 2
