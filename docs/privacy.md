@@ -27,8 +27,10 @@ password as before.
 - **Server logs**: the server logs a device's ID, IP address and port, machine identifier and public
   key when it first registers and when its address or key changes; the relay server logs, for each
   session it relays, the IP addresses of the two ends and the time; and the web server logs
-  connection times and IP addresses. Put together, these logs can show which device connected to
-  which PC through the relay, and when. They are kept as long as the server's system logs are (the
+  connection times and IP addresses. A request to the account service while that service is
+  stopped or past a limit can leave, in the web server's error log, the client's IP address and
+  the request's path, which can name a PC's ID. Put together, these logs can show which device
+  connected to which PC through the relay, and when. They are kept as long as the server's system logs are (the
   operator's settings).
 - **Session contents are not readable by the server.** Screen, input, clipboard, files, camera
   pictures and sound are end-to-end encrypted between the two devices; when the server relays a
@@ -47,7 +49,9 @@ password as before.
 
 ### 3. Accounts (from version 1.6.0)
 
-Only for people on the operator's list who log in. The account service runs on the same server.
+Only for people on the operator's list who log in. The account service runs on the same server. A
+login with an ID that is not on the list still leaves a login record (tags of the ID typed and of
+the device, the client's IP address, the result, the time; 6 months) and the login limit counters.
 
 **Logging in.** You type your Yonsei portal ID and password in the app. The app seals the password
 to the server's key, so that only the account service can open it, even on a network that inspects
@@ -75,7 +79,7 @@ let in today and yesterday and their number, and how many attempts it refused fo
 | List | the portal IDs the operator put on the list, also of people who never logged in | until the operator takes them off |
 | Account | portal ID and name (from the SSO), times of creation and last login, the account's switch for connections without the PC's password | until a year without use (an account still on the list with a PC in use stays), or deleted on request |
 | Login tokens | a hash of each token, never the token | until logout, 90 days without use, a year at most |
-| Account keys (one per logged-in device) | public key; device ID; a tag computed from the machine identifier of section 2 (not the identifier); platform; the device model as the server names it; the device name the app sent; app version; whether the login came from the university's network or from outside (not the address); times of creation, last login and confirmation | while the device is logged in, then 30 days |
+| Account keys (one per logged-in device) | public key; device ID; a tag computed from the machine identifier of section 2 (not the identifier); platform, the device model the server names from it, the device name and the app version, as the device reported them; whether the login came from the university's network or from outside (not the address); times of creation and last login; your devices' answers to the notice below; when and how its login ended and which of your devices ended it | while the device is logged in, then 30 days |
 | PCs in your account | PC ID, OS, host name, the PC's public key, a random binding ID, times added, last seen and last synced, app version, whether switched off on the PC; per reason, counts of refused attempts (30 days) | until removed from the account or 180 days unseen. After that the binding ID, the PC ID and its public key stay 180 days, so that the PC learns that it was removed |
 | Connections without the PC's password | per account key, PC and day: the time of the last one and their number, as the PC reported them. There is no record per connection | 30 days; deleted with the key or the PC |
 | Records of logins, devices and keys | tags of the account and the device (not your ID), the client's IP address, the result, the time | 6 months |
@@ -94,15 +98,23 @@ the machine identifier itself, OS user names, CPU and memory details, heartbeats
 information, a record of each connection or file transfer, and session contents.
 
 **What your other devices show.** When a device logs in to your account, your other devices show
-it once, with the time, whether it was on the university's network, the app version and the device
-model as the server saw them, so that you notice a login you did not make. The list of logged-in
-devices shows, for each of your PCs, when a device last connected to it without its password and
-how often in 30 days.
+it with the time and whether it was on the university's network, which the server saw, and the app
+version and the device model, which the device reported about itself and nobody checks, so that
+you notice a login you did not make. The notice stays until you answer it on one of your devices
+("It is mine" or "Not me"), however long that takes; it also comes for a device that logged in
+before the one you are using, and for one whose login ended before anyone answered, saying how it
+ended. The list of logged-in devices shows, for each of your PCs, when a device last connected to
+it without its password and how often in 30 days, and for 30 days the devices whose login ended:
+their platform and name, login time, last use and how they left (logged out by themselves, logged
+out from another of your devices and which one, expired, replaced by a new login of the same
+device, logged out by the administrator).
 
 **What others see.** When you connect to someone else's PC, that PC shows your Windows user name
 (from a phone, the device's name), as before 1.6.0: logging in does not send your name or portal
 ID to other people's PCs. On your own PC, the connection window shows the connecting device's name
-and your name masked (such as 홍\*동), taken from the signed list.
+and your name masked (such as 홍\*동), taken from the signed list; that device name is the model the
+server named from what the device reported at login, and the PC's log names the device by the ID
+the device itself gave.
 
 ### 4. On your devices
 
@@ -122,7 +134,8 @@ and your name masked (such as 홍\*동), taken from the signed list.
   connection it let in without the password (the device's ID and name, the time). HJViewer keeps
   about 90 days of logs.
   Other people who use that PC can read the masked name and, with some effort, the list.
-  Uninstalling HJViewer deletes the registry key.
+  Uninstalling HJViewer deletes the registry key; each Windows user's settings and
+  `%LOCALAPPDATA%\HJViewer-account\`, and the service's settings, list file and logs stay.
 
 ### 5. Switching a PC on (Wake-on-LAN)
 
@@ -152,8 +165,9 @@ and your name masked (such as 홍\*동), taken from the signed list.
   PC leaves the account or the relay is revoked, and it is deleted with the account. The signed
   command itself names the MAC addresses of the PC's adapters on that network; it is kept only
   until the relay answers, about two minutes at most.
-- **The relay's log on the NAS**: for each wake request, its number, the time and the MAC address
-  with only its last two bytes shown. While it runs, the relay deletes the lines older than 180
+- **The relay's log on the NAS**: for each wake request, its number, the time, the MAC address
+  with only its last two bytes shown, the PC's network and the NAS adapter's address it sent from;
+  when it starts, the server's name, the relay's ID and its enrollment code. While it runs, the relay deletes the lines older than 180
   days. It does not tidy the log while it is stopped, so when it is stopped for long, the NAS's
   administrator deletes the log. Every administrator of that NAS can read it.
 
@@ -184,7 +198,11 @@ Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shar
 - **Yourself, in the app**: log out on a device (its key and token end at once); on another of your
   devices, log out a lost one ("로그인한 기기", Logged-in devices) or all others; remove a PC from
   your list; log out on a PC before you give it away. Uninstalling HJViewer from a PC deletes what
-  it kept in the registry.
+  it kept in the registry. Changing your portal password does not log out the devices already
+  logged in: after a change, also use "Log out all other devices". A logout from another device
+  stops new connections without the password; a connection that is open already stays until it is
+  ended in the PC's connection window, by "Restart remote device" from your own device with the
+  PC's password, or by restarting the PC.
 - **Through the operator**: you can ask to see what is kept about you, to have it corrected or
   deleted, or to stop its processing. Deleting your account takes you off the list, revokes its
   relays and deletes everything kept about it, the wake requests too. What stays: the removed PCs'
@@ -223,14 +241,14 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 ### 2. 기기 연결 (모든 사용자)
 
 - **기기 등록부**: 서버는 기기마다 ID, 공개키, 기기 식별값(PC는 운영체제가 정한 값으로 Windows에서는 MachineGuid, 휴대폰은 기기 공개키), 마지막 접속 IP를 보관합니다. 다른 기기가 이 기기를 찾을 수 있게 하기 위해서입니다.
-- **서버 로그**: 서버는 기기가 처음 등록할 때와 주소나 키가 바뀔 때 기기 ID, IP 주소와 포트, 기기 식별값, 공개키를 기록합니다. 중계 서버는 중계한 세션마다 두 끝의 IP 주소와 시각을, 웹 서버는 접속 시각과 IP 주소를 기록합니다. 이 로그를 맞춰 보면 어느 기기가 언제 어느 PC에 중계로 연결했는지 알 수 있습니다. 이 로그는 서버의 시스템 로그가 보관되는 동안 남습니다(운영자 설정).
+- **서버 로그**: 서버는 기기가 처음 등록할 때와 주소나 키가 바뀔 때 기기 ID, IP 주소와 포트, 기기 식별값, 공개키를 기록합니다. 중계 서버는 중계한 세션마다 두 끝의 IP 주소와 시각을, 웹 서버는 접속 시각과 IP 주소를 기록합니다. 계정 서비스가 멈춰 있거나 한도에 걸린 동안의 계정 요청은 웹 서버의 오류 로그에 접속한 IP 주소와 요청 경로(PC ID가 들어갈 수 있음)를 남길 수 있습니다. 이 로그를 맞춰 보면 어느 기기가 언제 어느 PC에 중계로 연결했는지 알 수 있습니다. 이 로그는 서버의 시스템 로그가 보관되는 동안 남습니다(운영자 설정).
 - **서버는 세션 내용을 볼 수 없습니다.** 화면, 입력, 클립보드, 파일, 카메라 영상, 소리는 두 기기 사이에서 종단 간 암호화됩니다. 서버가 중계할 때도 암호화된 바이트만 전달합니다. 계정 서비스는 연결마다의 기록을 두지 않습니다(3절).
 - **시스템 정보와 접속 기록**: 원격 접속을 받는 PC는 upstream RustDesk처럼 서버의 `/api` 주소로 하트비트, 호스트 이름, OS 사용자 이름, OS, CPU, 메모리 정보, 그리고 연결과 파일 전송마다의 기록(상대 기기의 주소·ID·이름, 파일 이름과 크기)을 보내려 합니다. 로그인한 앱도 세션에 남길 수 있는 메모를 그 주소로 보내려 합니다. 이 배포는 그 주소에 요청을 읽지 않고 404로 답하며 아무것도 저장하지 않습니다. 계정 서비스에는 3절의 계정 요청만 갑니다.
 - **STUN 서버**: 두 기기를 직접 연결(P2P)하려고, 앱은 공개 STUN 서버(stun.cloudflare.com, stun.l.google.com, stun.antisip.com, stun.nextcloud.com)에 자신의 공인 IP와 포트를 묻습니다. 이 서버 운영자는 기기의 IP 주소와 시각을 알 수 있지만, 세션 내용은 알 수 없습니다.
 
 ### 3. 계정 (1.6.0부터)
 
-운영자의 명단에 있고 로그인한 사람에게만 해당합니다. 계정 서비스는 같은 서버에서 돕니다.
+운영자의 명단에 있고 로그인한 사람에게만 해당합니다. 계정 서비스는 같은 서버에서 돕니다. 명단에 없는 ID로 로그인을 시도해도 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다.
 
 **로그인.** 앱에 연세포탈 ID와 비밀번호를 넣습니다. 앱은 비밀번호를 서버의 키로 봉인하므로, 암호화된 통신을 들여다보는 네트워크에서도 계정 서비스만 열 수 있습니다. 계정 서비스는 연세 SSO(학교의 로그인 시스템)에 비밀번호를 확인받은 뒤 바로 버립니다. 비밀번호와 SSO 토큰은 저장하지도 기록하지도 않습니다. SSO에서 받은 것 가운데 포탈 ID와 성명만 보관합니다. 로그인할 때마다 그 기기의 **계정 키**도 새로 등록합니다. 서버는 공개키만 보관하고 개인키는 기기에 남으며, 로그인 뒤의 모든 계정 요청에 그 키로 서명합니다.
 
@@ -243,7 +261,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 | 명단 | 운영자가 명단에 넣은 포탈 ID(로그인한 적이 없는 사람 것도) | 운영자가 뺄 때까지 |
 | 계정 | 포탈 ID와 성명(SSO에서 받음), 만든 시각과 마지막 로그인 시각, 그 계정의 비밀번호 없는 연결 스위치 | 1년 동안 쓰지 않을 때까지(명단에 있고 쓰는 PC가 있는 계정은 남김), 또는 요청하면 삭제 |
 | 로그인 토큰 | 토큰의 해시만(토큰 자체는 없음) | 로그아웃할 때까지, 90일 동안 쓰지 않거나 최대 1년 |
-| 계정 키(로그인한 기기마다 하나) | 공개키, 기기 ID, 기기 식별값(2절)으로 만든 꼬리표(식별값 자체는 없음), 플랫폼, 서버가 정한 기기 모델 이름, 앱이 보낸 기기 이름, 앱 버전, 학내 네트워크에서 로그인했는지(주소는 없음), 만든 시각·마지막 로그인 시각·확인한 시각 | 그 기기가 로그인해 있는 동안, 그 뒤 30일 |
+| 계정 키(로그인한 기기마다 하나) | 공개키, 기기 ID, 기기 식별값(2절)으로 만든 꼬리표(식별값 자체는 없음), 기기가 알린 플랫폼·기기 이름·앱 버전과 그것으로 서버가 정한 기기 모델 이름, 학내 네트워크에서 로그인했는지(주소는 없음), 만든 시각·마지막 로그인 시각, 아래 알림에 내 기기들이 한 답, 로그인이 언제 어떻게 끝났는지와 끝낸 내 기기 | 그 기기가 로그인해 있는 동안, 그 뒤 30일 |
 | 내 계정의 PC | PC ID, OS, 호스트 이름, PC 공개키, 무작위 묶음 ID, 추가한 시각·마지막으로 보인 시각·마지막 동기화 시각, 앱 버전, 그 PC에서 꺼 두었는지, 거절한 시도의 이유별 개수(30일) | 계정에서 빼거나 180일 동안 보이지 않을 때까지. 그 뒤 묶음 ID, PC ID, PC 공개키만 180일 남깁니다. PC가 빠졌다는 것을 그 PC에 알리기 위해서입니다 |
 | 비밀번호 없는 연결 | 계정 키·PC·날짜마다 마지막 연결 시각과 횟수(PC가 알린 값). 연결마다의 기록은 없음 | 30일. 그 키나 PC와 함께 삭제 |
 | 로그인·기기·키 기록 | 계정과 기기의 꼬리표(ID가 아님), 접속한 IP 주소, 결과, 시각 | 6개월 |
@@ -255,22 +273,22 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 **계정 서비스가 보관하지 않는 것**: 비밀번호, 연세 SSO 토큰, 이메일 주소, 소속, 기기 식별값 자체, OS 사용자 이름, CPU·메모리 정보, 하트비트, 기기 정보, 연결이나 파일 전송마다의 기록, 세션 내용.
 
-**다른 내 기기에 보이는 것.** 어떤 기기가 내 계정에 로그인하면 다른 내 기기에 한 번 알림이 뜹니다. 서버가 본 시각, 학내 네트워크인지, 앱 버전, 기기 모델이 나오므로, 내가 하지 않은 로그인을 알아챌 수 있습니다. '로그인한 기기' 목록에는 내 PC마다 그 기기가 마지막으로 비밀번호 없이 연결한 시각과 30일 동안의 횟수가 나옵니다.
+**다른 내 기기에 보이는 것.** 어떤 기기가 내 계정에 로그인하면 다른 내 기기에 알림이 뜹니다. 서버가 본 시각과 학내 네트워크인지, 그리고 그 기기가 스스로 알린(아무도 확인하지 않는) 앱 버전과 기기 모델이 나오므로, 내가 하지 않은 로그인을 알아챌 수 있습니다. 알림은 내 기기 하나에서 [내 기기 맞음]이나 [아님]으로 답할 때까지 기한 없이 남습니다. 지금 쓰는 기기보다 먼저 로그인한 기기에도, 아무도 답하기 전에 로그인이 끝난 기기에도 알림이 뜨고, 끝난 기기는 어떻게 끝났는지도 나옵니다. '로그인한 기기' 목록에는 내 PC마다 그 기기가 마지막으로 비밀번호 없이 연결한 시각과 30일 동안의 횟수가 나오고, 로그인이 끝난 기기도 30일 동안 따로 나옵니다. 플랫폼과 이름, 로그인 시각, 마지막 사용, 어떻게 끝났는지(스스로 로그아웃, 다른 내 기기 중 어느 것에서 로그아웃시킴, 기간 만료, 같은 기기의 새 로그인으로 바뀜, 관리자가 로그아웃시킴)가 나옵니다.
 
-**다른 사람에게 보이는 것.** 다른 사람의 PC에 연결하면 그 PC에는 1.6.0 전처럼 내 Windows 사용자 이름(휴대폰은 기기 이름)이 보입니다. 로그인해도 성명이나 포탈 ID를 다른 사람의 PC에 보내지 않습니다. 내 PC의 연결 창에는 연결한 기기의 이름과 가린 내 이름(예: 홍\*동)이 서명된 목록에서 나옵니다.
+**다른 사람에게 보이는 것.** 다른 사람의 PC에 연결하면 그 PC에는 1.6.0 전처럼 내 Windows 사용자 이름(휴대폰은 기기 이름)이 보입니다. 로그인해도 성명이나 포탈 ID를 다른 사람의 PC에 보내지 않습니다. 내 PC의 연결 창에는 연결한 기기의 이름과 가린 내 이름(예: 홍\*동)이 서명된 목록에서 나옵니다. 그 기기 이름은 기기가 로그인할 때 알린 값으로 서버가 정한 모델 이름이고, PC의 로그에 남는 기기 ID도 그 기기가 스스로 알린 값입니다.
 
 ### 4. 기기에 저장되는 정보
 
 - **모든 앱**: 설정, 기기 ID와 키 쌍, 접속했던 기기 ID.
 - **로그인한 앱**은 계정 키의 개인키도 보관합니다. 아이폰은 Keychain에 이 기기 전용, 잠금이 풀렸을 때만 쓰도록 두므로 백업에 들어가지 않습니다. 안드로이드는 앱 데이터에 두며, 클라우드 백업과 기기 간 이전에서 뺍니다. Windows는 `%LOCALAPPDATA%\HJViewer-account\`에 Windows DPAPI로 그 Windows 사용자만 풀 수 있게 암호화해 두고, 로밍하지 않습니다. 그 밖에 로그인 토큰, 서버가 보낸 성명과 포탈 ID, 내 PC 목록(PC ID, 공개키, 상태), 서버와의 시계 차이를 보관합니다. 계정 키가 없는 토큰으로는 아무것도 할 수 없습니다.
-- **계정에 들어간 PC**는 Windows 레지스트리(`HKLM\SOFTWARE\HJViewer\Account`)에 묶음 ID, 가린 내 이름, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 풀린 묶음의 기록, 계정 키마다 오늘과 어제의 비밀번호 없는 연결의 마지막 시각과 횟수를 둡니다. 서비스 폴더에는 서명된 목록(내 기기들의 이름·ID·공개키와 가린 내 이름)을, HJViewer 로그에는 비밀번호 없이 받아들인 연결마다 한 줄(그 기기의 ID와 이름, 시각)을 둡니다. HJViewer 로그는 약 90일치를 둡니다. 그 PC를 쓰는 다른 사람은 가린 이름을 볼 수 있고, 마음먹으면 그 목록도 볼 수 있습니다. HJViewer를 제거하면 레지스트리 키가 지워집니다.
+- **계정에 들어간 PC**는 Windows 레지스트리(`HKLM\SOFTWARE\HJViewer\Account`)에 묶음 ID, 가린 내 이름, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 풀린 묶음의 기록, 계정 키마다 오늘과 어제의 비밀번호 없는 연결의 마지막 시각과 횟수를 둡니다. 서비스 폴더에는 서명된 목록(내 기기들의 이름·ID·공개키와 가린 내 이름)을, HJViewer 로그에는 비밀번호 없이 받아들인 연결마다 한 줄(그 기기의 ID와 이름, 시각)을 둡니다. HJViewer 로그는 약 90일치를 둡니다. 그 PC를 쓰는 다른 사람은 가린 이름을 볼 수 있고, 마음먹으면 그 목록도 볼 수 있습니다. HJViewer를 제거하면 레지스트리 키가 지워지고, Windows 사용자마다의 설정과 `%LOCALAPPDATA%\HJViewer-account\`, 서비스의 설정·목록 파일·로그는 남습니다.
 
 ### 5. 꺼진 PC 켜기 (Wake-on-LAN)
 
 - **계정에 들어간 PC**는 켤 수 있는지 서버가 판단하는 데 필요한 것을 알립니다. 유선 랜카드의 MAC 주소, IPv4 주소와 서브넷, 게이트웨이의 IP와 MAC 주소, 랜카드의 이름·드라이버·링크 속도와 USB 랜카드인지, Wake-on-LAN 설정과 Windows가 그 랜카드로 PC를 깨우도록 허용했는지, PC가 쓸 수 있는 절전 방식, 빠른 시작을 켰는지, 전원에 연결되어 있는지, Windows가 켜진 뒤 지난 시간(서버는 이 값을 보관하지 않음), PC가 쓰는 공인 주소입니다. 계정에 들어간 PC만 알리고, PC가 계정에서 빠지면 바로 지웁니다. 앱에는 MAC 주소를 보내지 않습니다.
 - **중계기**: PC와 같은 네트워크의 NAS에서 도는 중계기에 대해 서버는 ID와 공개키, 맡은 계정, 관리자가 붙인 이름, NAS의 랜카드(이름, IP와 MAC 주소, 네트워크, 게이트웨이의 IP와 MAC 주소), 중계기 프로그램·DSM·커널 버전, NAS가 쓰는 공인 주소, 처음 요청한 시각·승인한 시각·마지막으로 물은 시각을 보관합니다. 요청만 하고 승인받지 못한 중계기는 24시간 뒤 지우고, 중계기보다 먼저 승인해 둔 등록 코드는 7일 동안 둡니다. 중계기를 폐기하면 ID, 키, 시각만 남깁니다.
 - **켜기 요청**: 켜기 요청마다 기록을 하나 남깁니다. 요청의 무작위 번호, 계정과 그 꼬리표, PC ID, 중계기 ID, 중계기와 PC의 네트워크가 얼마나 맞았는지, 신호를 보낸 네트워크(192.0.2.0/24처럼 네트워크를 가리키는 값. PC의 주소나 MAC 주소는 아님), 서명된 명령의 해시, 시각(요청, 전송, PC가 켜진 것을 확인한 때, 끝난 때), 보낸 패킷 수, 결과입니다. 앱의 진행 표시가 이 기록을 읽고, 요청 한도(PC는 1분에 한 번, 계정은 1시간에 20번, 중계기는 1분에 10번)를 이 기록으로 셉니다. 네트워크는 그 네트워크에서 이 PC를 켠 적이 있는 중계기를 다음에도 고르려고 둡니다. 6개월 동안 보관하고, PC가 계정에서 빠지거나 중계기가 폐기된 뒤에도 그때까지 남으며, 계정을 지우면 함께 지웁니다. 서명된 명령 자체에는 그 네트워크에 있는 PC 랜카드의 MAC 주소가 들어 있고, 중계기가 답할 때까지만(길어야 2분쯤) 둡니다.
-- **NAS의 중계기 로그**: 켜기 요청마다 번호, 시각, 끝 2바이트만 보이는 MAC 주소를 남깁니다. 중계기는 실행 중일 때 180일이 지난 줄을 지웁니다. 멈춰 둔 동안에는 정리하지 않으므로, 오래 멈춰 둘 때는 NAS 관리자가 로그를 지웁니다. 그 NAS의 관리자는 모두 읽을 수 있습니다.
+- **NAS의 중계기 로그**: 켜기 요청마다 번호, 시각, 끝 2바이트만 보이는 MAC 주소, PC의 네트워크, 신호를 보낸 NAS 랜카드의 주소를 남기고, 시작할 때 서버 이름, 중계기 ID, 등록 코드를 남깁니다. 중계기는 실행 중일 때 180일이 지난 줄을 지웁니다. 멈춰 둔 동안에는 정리하지 않으므로, 오래 멈춰 둘 때는 NAS 관리자가 로그를 지웁니다. 그 NAS의 관리자는 모두 읽을 수 있습니다.
 
 ### 6. 카메라와 마이크
 
@@ -284,7 +302,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 8. 삭제와 권리 행사
 
-- **앱에서 직접**: 기기에서 로그아웃하면 그 기기의 키와 토큰이 바로 끝납니다. 잃어버린 기기는 다른 내 기기의 '로그인한 기기'에서 로그아웃시키거나 다른 기기를 모두 로그아웃시킵니다. 내 목록에서 PC를 뺄 수 있고, PC를 남에게 넘기기 전에는 그 PC에서 로그아웃합니다. PC에서 HJViewer를 제거하면 레지스트리에 둔 것이 지워집니다.
+- **앱에서 직접**: 기기에서 로그아웃하면 그 기기의 키와 토큰이 바로 끝납니다. 잃어버린 기기는 다른 내 기기의 '로그인한 기기'에서 로그아웃시키거나 다른 기기를 모두 로그아웃시킵니다. 내 목록에서 PC를 뺄 수 있고, PC를 남에게 넘기기 전에는 그 PC에서 로그아웃합니다. PC에서 HJViewer를 제거하면 레지스트리에 둔 것이 지워집니다. 연세포탈 비밀번호를 바꿔도 이미 로그인한 기기는 남으므로, 바꾼 뒤에는 [다른 기기 모두 로그아웃]도 누릅니다. 다른 기기에서 로그아웃시키면 비밀번호 없는 새 연결은 막히지만, 이미 열려 있는 연결은 PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 장치 다시 시작'을 누르거나, PC를 다시 시작할 때까지 남습니다.
 - **운영자에게 요청**: 나에 대해 보관하는 것을 보여 달라고, 고치거나 지워 달라고, 처리를 멈춰 달라고 요청할 수 있습니다. 계정을 지우면 명단에서도 빠지고, 그 계정의 중계기는 폐기되며, 켜기 요청 기록을 포함해 그 계정에 대해 보관하던 것이 모두 지워집니다. 남는 것은 뺀 PC의 묶음 ID·PC ID·공개키(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록이고, 백업은 14일 뒤에 사라집니다.
 - 명단에서 빠지면 내 기기들은 바로 로그아웃됩니다.
 
