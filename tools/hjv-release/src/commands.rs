@@ -156,11 +156,13 @@ fn load_keys(args: &Args, gate: bool) -> Result<KeySet, String> {
 }
 
 /// The archive of `--archive`, or the default one. A key file with test keys never uses the
-/// default archive (a test must not leave files among the operator's), and no archive lies in
-/// the repository's `build/`, where agents make and delete worktrees.
+/// default archive: a command that writes to it is refused (a test must not leave files among
+/// the operator's), one that only reads it reads an empty archive (a test must not depend on
+/// them). No archive lies in the repository's `build/`, where agents make and delete worktrees.
 fn open_archive(args: &Args, keys: &KeySet, create: bool) -> Result<Archive, String> {
     let dir = match args.one("--archive")? {
         Some(dir) => PathBuf::from(dir),
+        None if keys.has_test_key() && !create => return Ok(Archive::none()),
         None if keys.has_test_key() => {
             return Err(
                 "시험 키의 키 파일로는 기본 보관소(~/hjviewer-policy-archive)를 쓰지 않습니다. --archive <시험용 디렉터리>를 \

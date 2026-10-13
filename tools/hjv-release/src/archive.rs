@@ -139,6 +139,13 @@ impl Archive {
         Ok(PathBuf::from(home).join(DEFAULT_NAME))
     }
 
+    /// No archive: reads as empty, and nothing can be written to it.
+    pub fn none() -> Archive {
+        Archive {
+            dir: PathBuf::new(),
+        }
+    }
+
     /// Opens the archive at `dir`, making the directory when `create` is set (the writers). An
     /// archive that does not exist yet reads as empty (the first policy).
     pub fn open(dir: &Path, create: bool) -> Result<Archive, String> {
@@ -287,9 +294,17 @@ impl Archive {
             .map(|(_, p)| p))
     }
 
+    fn writable(&self) -> Result<(), String> {
+        if self.dir.as_os_str().is_empty() {
+            return Err("보관소가 정해지지 않았습니다(--archive DIR)".to_owned());
+        }
+        Ok(())
+    }
+
     /// Adds a signed envelope at its position. The same bytes again change nothing; another
     /// text at a position the archive holds is refused (X11).
     pub fn add_policy(&self, epoch: u64, seq: u64, file: &str) -> Result<Option<PathBuf>, String> {
+        self.writable()?;
         match self.at(epoch, seq)? {
             Some(a) if a.file == file => return Ok(None),
             Some(a) => {
@@ -308,6 +323,7 @@ impl Archive {
     /// Adds a declaration's root part. The same text again changes nothing; another text for an
     /// epoch the archive holds is refused (an epoch number is never used twice).
     pub fn add_declaration(&self, epoch: u64, part: &Part) -> Result<Option<PathBuf>, String> {
+        self.writable()?;
         match self.declaration(epoch)? {
             Some(p) if p.p == part.p => return Ok(None),
             Some(_) => {
@@ -324,6 +340,7 @@ impl Archive {
 
     /// Marks a position as voided (`void`).
     pub fn add_void(&self, epoch: u64, seq: u64, now: i64) -> Result<PathBuf, String> {
+        self.writable()?;
         let path = self.dir.join(format!("void-e{epoch}-s{seq}"));
         create(
             &path,
@@ -391,6 +408,7 @@ impl Archive {
         server: &str,
         version: Option<&str>,
     ) -> Result<Option<PathBuf>, String> {
+        self.writable()?;
         let path = self.dir.join(Archive::keyset_name(keys, server));
         let mut versions: Vec<String> = Vec::new();
         if path.exists() {
@@ -503,6 +521,19 @@ mod tests {
         fs::write(dir.join("a/policy-e01-s1.json"), "x").unwrap();
         assert!(archive.policies().is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn no_archive_reads_empty_and_takes_nothing() {
+        let none = Archive::none();
+        assert!(none.highest().unwrap().is_none());
+        assert_eq!(none.max_epoch().unwrap(), 0);
+        assert!(none.keysets().unwrap().is_empty());
+        assert!(none.add_policy(1, 1, "x\n").is_err());
+        assert!(none.add_void(1, 1, 0).is_err());
+        assert!(none
+            .record_keyset(&test_key_set(), "rd.example.com", None)
+            .is_err());
     }
 
     #[test]

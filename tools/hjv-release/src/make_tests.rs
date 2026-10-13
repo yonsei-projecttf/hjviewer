@@ -1531,9 +1531,17 @@ fn raises_keep_the_level_in_force() {
         "{:?}",
         plan.dangers
     );
-    // c with an earlier deadline keeps the grace_min
+    // c with an earlier deadline keeps the grace_min, and the signer is asked
     let earlier = raise(soon, Some(Grace::Until(deadline - DAY)), None).unwrap();
     assert_eq!(pair(&earlier).2, Some(v("1.5.0")));
+    let plan = signing::plan(&earlier.draft, &test_key_set(), &archive(), None, t(soon)).unwrap();
+    assert!(
+        plan.dangers
+            .iter()
+            .any(|d| d.contains("유예 끝을 앞당깁니다") && d.contains("1.5.0 이상 1.6.1 미만")),
+        "{:?}",
+        plan.dangers
+    );
     // c with a later deadline: the pending minimum is enforced at once (asked)
     let later = raise(soon, Some(Grace::Days(14)), None).unwrap();
     assert_eq!(

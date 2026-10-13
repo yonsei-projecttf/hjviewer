@@ -116,6 +116,12 @@ pub fn effects(
                                 time::format_kst(new_until)
                             ))
                         }
+                        (Some(new_until), Some(_)) if new_until < until => dangers.push(format!(
+                            "{platform}: 유예 끝을 앞당깁니다({} → {}). {gm} 이상 {} 미만은 그때까지만 씁니다",
+                            time::format_kst(until),
+                            time::format_kst(new_until),
+                            entry.min
+                        )),
                         (Some(new_until), Some(_)) => dangers.push(format!(
                             "{platform}: {} 이상 {} 미만은 지금 유예와 같은 {}까지만 씁니다",
                             b.min,

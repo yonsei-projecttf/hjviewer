@@ -65,7 +65,7 @@ HJV_POLICY_FLOOR=1:0
 | `void-e<세대>-s<seq>` | `void`: 그 정책은 컴퓨터 밖으로 나가지 않았음 |
 | `keyset-<지문 16자리>.env` | 기록된 키 집합: 빌드가 박은 두 키 줄과 `# versions: 1.6.0 1.6.1 …`. 처음 `sign`, `floor --live`, `archive adopt --keys`가 씀 |
 
-- **보관소에는 `sign`, `floor --live`, `void`, `archive adopt`만 씁니다.** `policy`와 `verify`는 읽기만 합니다. 저장소 안(특히 에이전트가 worktree를 만들고 지우는 `build/`)에는 두지 않습니다. 시험 키의 키 파일로는 기본 보관소를 쓰지 않습니다(`--archive`를 직접 줘야 함).
+- **보관소에는 `sign`, `floor --live`, `void`, `archive adopt`만 씁니다.** `policy`와 `verify`는 읽기만 합니다. 저장소 안(특히 에이전트가 worktree를 만들고 지우는 `build/`)에는 두지 않습니다. 시험 키의 키 파일로는 기본 보관소를 쓰지 않습니다: 쓰는 명령은 `--archive`를 직접 줘야 하고, 읽는 명령(`policy`, `verify`, `check`)은 `--archive`가 없으면 빈 보관소로 읽습니다.
 - **서명한 파일은 `void`하지 않는 한 낸 것으로 칩니다.** 낼 것이 아니면 서명하지 않습니다.
 - `sign` 뒤에는 보관소를 서명 키의 오프라인 매체에 복사합니다. 깨끗한 컴퓨터(3장 5-0)는 그 사본으로 일하고, 거기서 생긴 파일은 다시 개발 PC의 보관소로 옮깁니다.
 - 지우는 것은 키 집합 기록뿐이고, 운영자가 손으로 지웁니다: 관리자 보고(`hjv-api admin report`)에 그 키 집합으로 만든 빌드의 기기가 하나도 없을 때만(3장 5-9).
