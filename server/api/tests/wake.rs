@@ -296,8 +296,13 @@ async fn a_pc_is_woken_through_its_relay() {
             "192.0.2.0/24"
         )
     );
-    // once a minute per PC
+    // once a minute per PC; the limit comes before the relay, here one that stopped polling
     h.hbbs.register(&pc, Some(100));
+    sql(
+        &h,
+        format!("UPDATE relays SET last_poll_at = {}", now() - 600),
+    )
+    .await;
     let a = wake_pc(&h, &pc.id, &phone, None).await;
     assert_eq!(
         (a.status, a.json["hjv"].as_str()),
