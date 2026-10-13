@@ -1,5 +1,6 @@
 # hjv-api, the HJViewer account API (server/api/README.md): Yonsei portal login, the
-# per-account device list and the bound PCs' trust lists. Started by hjviewer-api.socket, whose
+# per-account device list, the bound PCs' trust lists and Wake-on-LAN through the NAS relays
+# (their hello and long-poll come through nginx too). Started by hjviewer-api.socket, whose
 # Unix socket it serves; it opens no port of its own. It runs as its own system user, apart from
 # hbbs's user (the server key pair).
 #   /opt/hjviewer/bin/hjv-api              the binary (GitHub release hjviewer-server-*.tar.gz)
@@ -48,12 +49,15 @@ LogsDirectoryMode=0700
 UMask=0077
 # secrets, never in the environment: the SSO client secret and api uuid (the values the WordPress
 # plugin's SSO login uses, D2), the key that opens sealed passwords, the key of the log tags, the
-# list key that signs the PCs' trust lists (design v3 §5-3; hjv-api keygen list --kid 1)
+# list key that signs the PCs' trust lists (design v3 §5-3; hjv-api keygen list --kid 1), and the
+# command key that signs the NAS relays' wake commands (design v3 §5-3, §8-4; hjv-api keygen
+# command --kid 1)
 LoadCredentialEncrypted=hjviewer-sso-client-secret
 LoadCredentialEncrypted=hjviewer-sso-api-uuid
 LoadCredentialEncrypted=hjviewer-api-login-key
 LoadCredentialEncrypted=hjviewer-api-log-key
 LoadCredentialEncrypted=hjviewer-api-list-key
+LoadCredentialEncrypted=hjviewer-api-command-key
 ExecStart=/opt/hjviewer/bin/hjv-api serve --db /var/lib/hjviewer-api/hjv-api.sqlite3
 # checks DNS, TCP and TLS to the SSO and hbbs's console from inside this sandbox after each start,
 # and that the list key is the one the apps pin (HJV_API_TRUST_PUBKEYS), results in the journal;

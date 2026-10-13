@@ -17,15 +17,19 @@
 //! application ID, the row counts the service gave), and only then gives it its name, which must
 //! not exist yet (a hard link, which never replaces a file). The directory must belong to whoever
 //! runs the command and be closed to everyone else, as root's /var/lib/hjviewer-api/backup (0700)
-//! is: the copy holds what the database holds. A missing directory is created (0700) when its
-//! parent exists. With `--keep-days N` the command then deletes the backups in that directory
+//! is: the copy holds what the database holds. A missing directory is made (0700) only as that
+//! daily backup's directory ([`DEFAULT_DIR`]) or in a directory of the caller's that is closed to
+//! everyone else, and removed again when the backup fails; anywhere else (/etc, say) it must be
+//! made first. With `--keep-days N` the command then deletes the backups in that directory
 //! older than N days: regular files named *.sqlite3 that carry the application ID, and nothing
-//! else, besides temporary files of runs that broke off, after a day.
+//! else, besides its own temporary files (`.<name>.sqlite3.<12 hex>.partial`) of runs that broke
+//! off, after a day.
 //!
 //! The copy holds the database only: the credentials (/etc/credstore.encrypted,
 //! /var/lib/systemd/credential.secret) and the operator record are not in it (design v3 §5-9). A
 //! restore is an incident of its own: it brings back revoked keys and tokens, switches and
-//! released bindings (README.md, Backup and restore).
+//! released bindings (README.md, Backup and restore). hjv-api therefore opens a restored backup
+//! with password-less connections off for every account (db.rs).
 
 use crate::{
     admin::{self, AdminRequest, AdminResponse},
@@ -54,6 +58,10 @@ const CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
 const CHUNK: usize = 64 * 1024;
 /// The longest `--keep-days`.
 pub const MAX_KEEP_DAYS: i64 = 3650;
+/// The daily backup's directory: root's, 0700, inside the service's state directory, made by
+/// deploy/systemd/hjviewer-api-backup.service (`StateDirectory=`), and by the command line when
+/// a backup by hand comes first.
+pub const DEFAULT_DIR: &str = "/var/lib/hjviewer-api/backup";
 const SUFFIX: &str = ".sqlite3";
 const PARTIAL: &str = ".partial";
 
@@ -118,6 +126,24 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         if let Some(path) = self.0.take() {
             let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// A directory this run made for its backup: removed again when the backup fails (if empty by
+/// then: the temporary file goes first), kept once the backup is in it.
+struct MadeDir(Option<PathBuf>);
+
+impl MadeDir {
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for MadeDir {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take() {
+            let _ = std::fs::remove_dir(dir);
         }
     }
 }
@@ -373,8 +399,54 @@ fn destination(arg: &str, at: i64) -> Result<(PathBuf, String, bool), String> {
     Ok((dir.to_owned(), name.to_owned(), false))
 }
 
-/// The directory of a backup: there (or made, 0700, when its parent is), closed to everyone but
-/// its owner, and owned by whoever writes `probe` in it (the backup's temporary file).
+/// The user this process acts as: the effective user ID of /proc/self/status (Linux).
+fn effective_uid() -> Option<u32> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+/// Makes the backup's directory (0700) when it is missing, only where a backup may go: as the
+/// daily backup's directory [`DEFAULT_DIR`] (its parent, the service's state directory, is the
+/// service user's), or in a directory of the caller's that is closed to everyone else, as
+/// [`check_dir`] asks of the backup's directory itself. Anywhere else, /etc say, the command
+/// makes nothing: the directory must be there first.
+fn make_dir(dir: &Path) -> Result<MadeDir, String> {
+    if dir.symlink_metadata().is_ok() {
+        return Ok(MadeDir(None));
+    }
+    if dir != Path::new(DEFAULT_DIR) {
+        let parent = dir
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let closed_and_mine = std::fs::metadata(parent).is_ok_and(|meta| {
+            meta.is_dir()
+                && meta.mode() & 0o077 == 0
+                && effective_uid().is_some_and(|uid| uid == meta.uid())
+        });
+        if !closed_and_mine {
+            return Err(format!(
+                "{} is not there, and is made only in a directory of yours closed to others (or as {DEFAULT_DIR}): make it first (install -d -m 700 {})",
+                dir.display(),
+                dir.display()
+            ));
+        }
+    }
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(MadeDir(Some(dir.to_owned())))
+}
+
+/// The directory of a backup: there (or made by [`make_dir`]), closed to everyone but its owner,
+/// and owned by whoever writes `probe` in it (the backup's temporary file).
 fn check_dir(dir: &Path, probe: &Path) -> Result<(), String> {
     let meta = std::fs::metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     if !meta.is_dir() {
@@ -429,6 +501,30 @@ fn is_backup(path: &Path) -> bool {
         && i32::from_be_bytes([head[68], head[69], head[70], head[71]]) == APPLICATION_ID
 }
 
+/// The name of the temporary file a backup named `name` is written to: `.<name>.<12 hex>.partial`.
+fn partial_name(name: &str, random: &[u8; 6]) -> String {
+    format!(".{name}.{}{PARTIAL}", hex(random))
+}
+
+/// Whether `name` is one of [`partial_name`]'s, for a backup's name (`<name>.sqlite3`, not
+/// starting with a dot).
+fn is_partial(name: &str) -> bool {
+    let Some((backup, random)) = name
+        .strip_prefix('.')
+        .and_then(|n| n.strip_suffix(PARTIAL))
+        .and_then(|n| n.rsplit_once('.'))
+    else {
+        return false;
+    };
+    random.len() == 12
+        && random
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && backup.ends_with(SUFFIX)
+        && backup.len() > SUFFIX.len()
+        && !backup.starts_with('.')
+}
+
 /// What [`prune`] removed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Pruned {
@@ -436,8 +532,9 @@ pub struct Pruned {
     pub partial: usize,
 }
 
-/// Deletes the backups in `dir` older than `keep_days` (by modification time at `now`), and
-/// temporary files of broken-off runs older than a day; never `except`, never anything else.
+/// Deletes the backups in `dir` older than `keep_days` (by modification time at `now`), and this
+/// command's temporary files ([`is_partial`]) of broken-off runs older than a day; never `except`,
+/// never anything else.
 pub fn prune(dir: &Path, keep_days: i64, now: SystemTime, except: &Path) -> Result<Pruned, String> {
     let older = |meta: &std::fs::Metadata, secs: i64| {
         meta.modified()
@@ -460,7 +557,7 @@ pub fn prune(dir: &Path, keep_days: i64, now: SystemTime, except: &Path) -> Resu
         if !meta.file_type().is_file() || path == except {
             continue;
         }
-        let partial = name.starts_with('.') && name.ends_with(PARTIAL);
+        let partial = is_partial(name);
         let backup = !name.starts_with('.') && name.ends_with(SUFFIX);
         let gone = if partial && older(&meta, DAY) {
             &mut pruned.partial
@@ -490,16 +587,13 @@ pub async fn cli(socket: &Path, args: &[String], sudo_user: String) -> Result<St
     let args = parse_args(args)?;
     let at = crate::util::now();
     let (dir, name, named_here) = destination(&args.dest, at)?;
-    if !dir.exists() && dir.parent().is_some_and(Path::is_dir) {
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&dir)
-            .map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
+    // a directory made here goes again on any failure below, after the temporary file (declared
+    // later, so dropped first)
+    let made = make_dir(&dir)?;
     if !named_here && dir.join(&name).symlink_metadata().is_ok() {
         return Err(format!("{} exists already", dir.join(&name).display()));
     }
-    let temp = dir.join(format!(".{name}.{}{PARTIAL}", hex(&random_bytes::<6>())));
+    let temp = dir.join(partial_name(&name, &random_bytes::<6>()));
     let file = create_private(&temp).map_err(|e| format!("{}: {e}", temp.display()))?;
     let temp = Scratch(Some(temp));
     check_dir(&dir, temp.path())?;
@@ -583,6 +677,7 @@ pub async fn cli(socket: &Path, args: &[String], sudo_user: String) -> Result<St
         }
     }
     drop(temp);
+    made.keep();
     File::open(&dir)
         .and_then(|d| d.sync_all())
         .map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -694,6 +789,71 @@ mod tests {
     }
 
     #[test]
+    fn temporary_names() {
+        let name = partial_name("hjv-api-20261013-020012Z.sqlite3", &[0xab; 6]);
+        assert_eq!(
+            name,
+            ".hjv-api-20261013-020012Z.sqlite3.abababababab.partial"
+        );
+        assert!(is_partial(&name));
+        assert!(is_partial(&partial_name("b.sqlite3", &random_bytes::<6>())));
+        for other in [
+            ".b.sqlite3.ababab.partial",
+            ".b.sqlite3.ABABABABABAB.partial",
+            ".b.sqlite3.abababababag.partial",
+            ".sqlite3.abababababab.partial",
+            "..b.sqlite3.abababababab.partial",
+            ".b.db.abababababab.partial",
+            "b.sqlite3.abababababab.partial",
+            ".b.sqlite3.abababababab.partial.x",
+            ".abababababab.partial",
+            ".partial",
+            ".x.partial",
+        ] {
+            assert!(!is_partial(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn directories_are_made_where_backups_go_only() {
+        let d = dir("make");
+        let uid = effective_uid().unwrap();
+        assert_eq!(uid, std::fs::metadata(&d).unwrap().uid());
+        // there already: nothing to make or remove
+        drop(make_dir(&d).unwrap());
+        assert!(d.is_dir());
+        // in a directory of ours closed to others: made 0700, gone again unless kept
+        let new = d.join("new");
+        let made = make_dir(&new).unwrap();
+        assert_eq!(std::fs::metadata(&new).unwrap().mode() & 0o777, 0o700);
+        drop(made);
+        assert!(!new.exists());
+        make_dir(&new).unwrap().keep();
+        assert!(new.is_dir());
+        // a directory made here and not empty stays (the backup is in it)
+        let full = d.join("full");
+        let made = make_dir(&full).unwrap();
+        std::fs::write(full.join("b.sqlite3"), "").unwrap();
+        drop(made);
+        assert!(full.join("b.sqlite3").exists());
+        // not in a directory others may enter, a missing one, or one of another user's
+        std::fs::set_permissions(&d, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let err = make_dir(&d.join("open")).err().unwrap();
+        assert!(err.contains("make it first (install -d -m 700"), "{err}");
+        assert!(!d.join("open").exists());
+        std::fs::set_permissions(&d, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        assert!(make_dir(&d.join("none").join("new")).is_err());
+        let root = Path::new("/root");
+        if root
+            .metadata()
+            .is_ok_and(|m| m.mode() & 0o077 == 0 && m.uid() != uid)
+        {
+            assert!(make_dir(&root.join("hjv-api-backup-test")).is_err());
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
     fn directories() {
         let d = dir("dirs");
         let probe = d.join("probe");
@@ -777,11 +937,32 @@ mod tests {
         std::fs::write(&text, "x").unwrap();
         let link = d.join("link.sqlite3");
         std::os::unix::fs::symlink(&old, &link).unwrap();
-        let partial = d.join(".x.sqlite3.0123.partial");
+        let partial = d.join(partial_name(
+            "x.sqlite3",
+            &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab],
+        ));
         std::fs::write(&partial, "").unwrap();
-        let fresh_partial = d.join(".y.sqlite3.4567.partial");
+        let fresh_partial = d.join(partial_name("y.sqlite3", &[0; 6]));
         std::fs::write(&fresh_partial, "").unwrap();
-        for p in [&old, &snapshot, &foreign, &text, &partial] {
+        // old hidden files that are not this command's temporary files
+        let others: Vec<PathBuf> = [
+            ".x.sqlite3.0123.partial",
+            ".keep.partial",
+            ".x.sqlite3.0123456789AB.partial",
+            ".x.db.0123456789ab.partial",
+            "..x.sqlite3.0123456789ab.partial",
+            "x.sqlite3.0123456789ab.partial",
+        ]
+        .iter()
+        .map(|n| d.join(n))
+        .collect();
+        for p in &others {
+            std::fs::write(p, "").unwrap();
+        }
+        for p in [&old, &snapshot, &foreign, &text, &partial]
+            .into_iter()
+            .chain(&others)
+        {
             age(p, 20);
         }
         age(&new, 3);
@@ -794,7 +975,10 @@ mod tests {
             }
         );
         assert!(!old.exists() && !snapshot.exists() && !partial.exists());
-        for p in [&new, &foreign, &text, &fresh_partial] {
+        for p in [&new, &foreign, &text, &fresh_partial]
+            .into_iter()
+            .chain(&others)
+        {
             assert!(p.exists(), "{}", p.display());
         }
         assert!(link.symlink_metadata().is_ok());

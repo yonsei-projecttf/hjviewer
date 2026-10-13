@@ -11,10 +11,18 @@
 //!   Its 32-byte seed goes to the credential hjviewer-api-list-key; stderr shows the public key as
 //!   the entry `N:<base64>` of the app build variable HJV_TRUST_PUBKEYS (and of hjv-api's
 //!   HJV_API_TRUST_PUBKEYS) and its fingerprint `N:<hex SHA-256>`.
+//! - `keygen command --kid N`: an Ed25519 command key with the number N, which signs the wake
+//!   commands (design v3 §5-3, phase 2). Its 32-byte seed goes to the credential
+//!   hjviewer-api-command-key; stderr shows two lines: the public key as exactly the line
+//!   `N:<base64>`, the entry of the relay build variable HJV_COMMAND_PUBKEY and of hjv-api's
+//!   HJV_API_COMMAND_PUBKEYS (relay/PROTOCOL.md §3.2: one text form wherever a command public key
+//!   is written), and `fingerprint: N:<hex SHA-256>`, which the one who made the key compares with
+//!   `hjv-api selfcheck`, the relay build's summary and `hjv-relay version`.
 //!
 //! The secret goes, base64 on one line, straight into `systemd-creds encrypt` with
 //! `--encrypt-to <file>` (credential name: the file name), into a new file with `--out <file>`
-//! (removable media, for a key kept offline: the seal key, list key 2), or else to stdout, which
+//! (removable media, for a key kept offline: the seal key, list key 2, command key 2), or else to
+//! stdout, which
 //! must not be a terminal: for example `hjv-api keygen list --kid 1 | systemd-creds encrypt
 //! --name=hjviewer-api-list-key - /etc/credstore.encrypted/hjviewer-api-list-key`. A seal key
 //! credential may hold several keys, one per line (the current one first), while the apps move to
@@ -82,6 +90,20 @@ pub fn run(kind: &str, kid: Option<u32>, target: Target<'_>) -> Result<(), Strin
             )
         }
         ("list", _) => return Err("keygen list --kid <1-65535>".into()),
+        ("command", Some(kid)) if (1..=trust::MAX_KID).contains(&kid) => {
+            // the same kind of key as a list key: an Ed25519 seed; its public key on a line of
+            // its own, in the one form the relays' build takes, then its fingerprint
+            let (secret, public) = list_key();
+            (
+                secret,
+                format!(
+                    "{}\nfingerprint: {}\n",
+                    trust::entry(kid, &public),
+                    trust::fingerprint(kid, &public)
+                ),
+            )
+        }
+        ("command", _) => return Err("keygen command --kid <1-65535>".into()),
         _ => return Err(USAGE.into()),
     };
     match target {
@@ -104,8 +126,7 @@ pub fn run(kind: &str, kid: Option<u32>, target: Target<'_>) -> Result<(), Strin
     Ok(())
 }
 
-pub const USAGE: &str =
-    "keygen seal | keygen log-key | keygen list --kid N  [--encrypt-to <file> | --out <file>]";
+pub const USAGE: &str = "keygen seal | keygen log-key | keygen list --kid N | keygen command --kid N  [--encrypt-to <file> | --out <file>]";
 
 fn encrypt(secret: &str, path: &Path) -> Result<(), String> {
     let name = path
@@ -183,11 +204,19 @@ mod tests {
         // never over an existing key
         assert!(run("list", Some(2), Target::Out(&path)).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        // a command key: the seed for the credential, the public key in the relays' one form
+        let path = dir.join("command-2.key");
+        run("command", Some(2), Target::Out(&path)).unwrap();
+        let seed = crate::config::parse_list_key(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(crate::wake::CommandKey::new(2, &seed).kid(), 2);
         for (kind, kid) in [
             ("list", None),
             ("list", Some(0)),
             ("list", Some(65_536)),
             ("seal", Some(1)),
+            ("command", None),
+            ("command", Some(0)),
+            ("command", Some(65_536)),
         ] {
             assert!(
                 run(kind, kid, Target::Out(&dir.join("x"))).is_err(),

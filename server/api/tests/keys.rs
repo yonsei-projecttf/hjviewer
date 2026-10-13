@@ -618,7 +618,8 @@ async fn the_device_list_carries_the_password_less_state() {
         p["hjv"],
         json!({
             "pk": b64(&pc.public_key()), "pwless": "disabled",
-            "kinds": ["remote", "file"], "wol": "unknown",
+            // no NAS relay in the account: nothing could wake it (tests/wake.rs has the rest)
+            "kinds": ["remote", "file"], "wol": "no",
         })
     );
     // switched on for the owner of the PC: listed until the PC confirms through its sync

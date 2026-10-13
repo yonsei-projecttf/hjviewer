@@ -4,9 +4,12 @@ The HJViewer account API: login with a Yonsei portal ID through the university's
 per-account list of Windows PCs that the apps show as "accessible devices" (design v2 §9). Since
 design v3 every login also registers an account key of its device, which signs every account
 request after it, and each bound PC's service syncs with hjv-api for its trust list: the account
-keys that may open it without its password, signed with hjv-api's list key. It runs next to
-hbbs/hbbr on the server, behind nginx, as a systemd service that listens only on a Unix socket
-systemd holds. GNU AGPL-3.0-only, like the rest of the repository.
+keys that may open it without its password, signed with hjv-api's list key. Its phase 2 wakes a
+sleeping PC of the account (Wake-on-LAN): the PC tells in its sync how to wake it, a relay on the
+PC's LAN (hjv-relay on a NAS, relay/) long-polls hjv-api, and the app's wake request becomes a
+command signed with hjv-api's command key, which the relay checks before it sends magic packets on
+its own network. It runs next to hbbs/hbbr on the server, behind nginx, as a systemd service that
+listens only on a Unix socket systemd holds. GNU AGPL-3.0-only, like the rest of the repository.
 
 ## Build
 
@@ -82,6 +85,13 @@ the key in use is not the pinned key of its number: the PCs would refuse every l
 hold it to; production 60 to 300) and `HJV_API_TRUST_TTL` how long a list lives on a PC that
 cannot reach hjv-api (U4: 86400, a day; at most 259200, the apps' bound of 72 hours).
 
+Wake-on-LAN (design v3 §8, relay/PROTOCOL.md §3.2): `HJV_API_COMMAND_PUBKEYS` is the command keys
+the relays pin, the value of their build variable `HJV_COMMAND_PUBKEY` (`1:<base64>,2:<base64>`),
+and `HJV_API_COMMAND_KID` the number of the key in the credential `hjviewer-api-command-key` (1; 2
+after a change of keys). As with the list key, the journal at start and `selfcheck` say so when
+the key in use is not the pinned key of its number: the relays would refuse every command. Without
+the credential no PC is woken (a wake request gets 503); everything else works.
+
 ## Credentials
 
 Secrets come only from systemd credentials (`$CREDENTIALS_DIRECTORY`; `--credentials <dir>` for
@@ -94,6 +104,7 @@ tests), never from the environment or the repository:
 | `hjviewer-api-login-key` | X25519 secret key(s) that open sealed passwords, base64, one per line, current first |
 | `hjviewer-api-log-key` | base64 of 32+ random bytes: the HMAC key of the tags in logs and records |
 | `hjviewer-api-list-key` | base64 of the 32-byte Ed25519 seed of the list key in use, number `HJV_API_LIST_KID`, which signs the trust lists |
+| `hjviewer-api-command-key` | base64 of the 32-byte Ed25519 seed of the command key in use, number `HJV_API_COMMAND_KID`, which signs the relays' wake commands |
 
 The user makes them on the server, without an agent (v2 §10-3), for example:
 
@@ -103,6 +114,8 @@ hjv-api keygen seal | tee /media/usb/hjviewer-seal.key | sudo systemd-creds encr
 sudo hjv-api keygen log-key --encrypt-to /etc/credstore.encrypted/hjviewer-api-log-key
 sudo hjv-api keygen list --kid 1 --encrypt-to /etc/credstore.encrypted/hjviewer-api-list-key
 hjv-api keygen list --kid 2 --out /media/usb/hjviewer-list-2.key     # offline, away from agents
+sudo hjv-api keygen command --kid 1 --encrypt-to /etc/credstore.encrypted/hjviewer-api-command-key
+hjv-api keygen command --kid 2 --out /media/usb/hjviewer-command-2.key   # offline, as list key 2
 ```
 
 `keygen` never prints a secret to a terminal; `keygen seal` shows the public key for the app
@@ -117,6 +130,16 @@ new file (0600, never over an existing one) for a key kept offline: key 1 lives 
 only, key 2 waits offline until it replaces key 1 (design v3 §5-3: put it in with `systemd-creds
 encrypt` from standard input, set `HJV_API_LIST_KID=2`, restart; a PC that got a list of key 2
 never takes one of key 1 again).
+
+`keygen command --kid N` makes a command key the same way and shows two lines on stderr: its
+public key as exactly the line `N:<base64>`, the one text form wherever a command public key is
+written, the entry of the relay build's `HJV_COMMAND_PUBKEY` and of `HJV_API_COMMAND_PUBKEYS`
+(relay/PROTOCOL.md §3.2), and `fingerprint: N:<hex SHA-256>`, which `selfcheck`, the relay build's
+summary and `hjv-relay version` show too, for the one who made the key to compare. Key 1 lives
+on the server only, key 2 offline; the relays are built with both. To change keys: put key 2 in
+from standard input (`systemd-creds encrypt --name=hjviewer-api-command-key - …`), set
+`HJV_API_COMMAND_KID=2`, restart; commands queued before go out as they were signed (the relays
+take both keys), and later relay builds drop key 1.
 
 ## Admin
 
@@ -163,16 +186,55 @@ report                    counts, the login results of the last day and week, th
                           their binding and those synced in the last 10 minutes, those not synced
                           since the last switch change, needs-relogin, PCs by app version,
                           refusals, released bindings by how they went, password-less
-                          connections of 30 days
+                          connections of 30 days; the relays by state and each active relay's
+                          last poll, the PCs that reported how to wake them, the wake jobs of the
+                          last day and week by result
 selfcheck                 DNS, TCP and TLS to the SSO and hbbs's console, from inside the sandbox;
-                          the fingerprints of the pinned list keys and whether the key in use is
-                          the pinned one
+                          the fingerprints of the pinned list keys and command keys and whether the
+                          keys in use are the pinned ones
 backup [--keep-days N] <file>.sqlite3 | <directory>
                           a checked copy of the database into a directory only you may enter
                           (Backup and restore)
 health                    the counts the five-minute check reads, as JSON (not recorded)
-keygen seal|log-key|list  as hjv-api keygen (runs locally, not in the service)
+relay list                the NAS relays: state, account, name, last poll, version; for an active
+                          relay whether it is on the network of each PC of its account (the
+                          verdicts; the addresses and networks with --reveal, MACs always masked);
+                          pending relays with their codes; the codes approved ahead
+relay approve <code> --owner-of <PC ID> [--name <name>] [--force]
+                          approve a relay for the account that has the PC (no portal ID typed),
+                          after the PC's owner confirmed the code: shows the verdicts of the
+                          relay against that PC's wake report and approves when the relay is on
+                          the PC's network (by the relay's own report), or with --force; a code
+                          no relay has said hello with is approved ahead for 7 days. --name is
+                          what the apps call the relay (else "NAS" and the code's first group);
+                          given for a relay already active for that account, it renames it
+relay revoke <relay ID|code>
+                          the relay takes no commands any more; it keeps only its ID, key and
+                          times, and its key is never approved again; withdraws an approval ahead
+relay share on|off <relay ID>
+                          kept for later: in this version a relay wakes its account's PCs only (W2)
+keygen seal|log-key|list|command
+                          as hjv-api keygen (runs locally, not in the service)
 ```
+
+Approving a relay (design v3 §8-3, relay/PROTOCOL.md §11): the NAS's owner reports the enrollment
+code from the relay's log together with the ID of one of their PCs; before approving, confirm the
+request with that person through a channel already trusted (in person, by phone, a known e-mail
+address), since PC IDs are not secret. The verdicts say whether one of the relay's interfaces is on
+the PC's network (the same network and gateway, or overlapping networks with the same gateway IP or
+MAC; on a private network also behind the same egress address), whether the egress addresses are
+the same, and how long the entry has waited; the default output holds no address, so that it may
+go into a chat or a ticket. A relay that cannot reach the PC's network is the wrong entry. The
+verdict on the network rests on what the relay says of itself, a pending one too: its interfaces,
+their networks and gateways are its own report (kept only with the prefixes a relay uses, /8 to
+/30), compared with the PC's signed report, and only the egress addresses are what hjv-api saw
+itself. So a "yes" catches a mistake, a wrong code or another NAS, and it is no proof against a
+relay that reports the PC's network on purpose: what decides is the owner's confirmation of the
+code, before the approval, with or without `--force`.
+
+The relay's name is what the apps show for it as it is, in the progress of a wake ("… 에 켜기
+요청을 전달하는 중…"), so one that reads on its own does best, such as "연구실 NAS"; without
+`--name` it is `NAS` and the first group of the code.
 
 The rollout (design v3 §11): install with the switch off, `passwordless on --owner-of <the
 operator's PC ID>`, a week of use, then `passwordless on`. To stop password-less connections, run
@@ -213,9 +275,11 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
 - `hjviewer-api-check.timer` runs `hjv-api check` every five minutes (`src/check.rs`), as root
   with one capability and no network. It looks at `GET /api/hjv/source` on
   `/run/hjviewer-api.sock`, and at the service's `health` on its admin socket: of the PCs holding
-  their binding, the ones that are on (hbbs saw them register within 90 seconds at each check of
-  the last four minutes, so that a PC that has just woken has time for its first sync) and whether
-  any of them synced in the last ten minutes; whether hbbs's console answers; SSO calls paused
+  their binding, the ones that are on (hbbs saw them register within 90 seconds, under the key
+  stored for them, at each check of the last four minutes, so that a PC that has just woken has
+  time for its first sync; a PC set up again under a new key has its syncs refused until a login
+  on it, needs-relogin in `report`, and is left out) and whether any of them synced in the last
+  ten minutes; whether hbbs's console answers; SSO calls paused
   now or in the last ten minutes, with `invalid_client` (the credential
   `hjviewer-sso-client-secret` must be renewed, as when the WordPress plugin's credential
   changes) and a refused address told apart; and, with phase 2, active NAS relays silent for an hour. PCs that
@@ -255,10 +319,13 @@ checks it (`PRAGMA quick_check`), counts its rows and sends it over the admin so
 line writes it 0600 under a temporary name, checks size, SHA-256, schema and every table's rows
 against the service's counts, and only then gives it its name, which must not exist yet. The
 directory must be closed to everyone but the one who runs the command (root's
-`/var/lib/hjviewer-api/backup`, 0700; a missing one is made when its parent is there); a
-directory as the argument gets a name of the time. `--keep-days N` then deletes the backups in
-that directory older than N days (SQLite files with that application ID named `*.sqlite3`,
-nothing else). The output and the operator record hold counts only.
+`/var/lib/hjviewer-api/backup`, 0700); a missing one is made (0700) only as that directory or in a
+directory of the caller's closed to others, and removed again when the backup fails; anywhere
+else make it first (`install -d -m 700 <dir>`). A directory as the argument gets a name of the
+time. `--keep-days N` then deletes the backups in that directory older than N days (SQLite files
+with that application ID named `*.sqlite3`, nothing else) and the command's own temporary files
+(`.<name>.sqlite3.<12 hex>.partial`) of runs that broke off, a day old. The output and the
+operator record hold counts only.
 
 - **Daily**: `hjviewer-api-backup.timer` (03:30 and up to 20 minutes later, and after a boot that
   missed it) runs `hjv-api admin backup --keep-days 14 /var/lib/hjviewer-api/backup`: 14 days of
@@ -270,24 +337,39 @@ nothing else). The output and the operator record hold counts only.
 - **Before an upgrade**: schema upgrades are one way (an older hjv-api refuses a newer schema), so
   take a snapshot first, `sudo hjv-api admin backup
   /var/lib/hjviewer-api/backup/before-<VERSION>.sqlite3`, and keep the env file and the old binary
-  with it. To go back: the old binary, the snapshot (as below) and the env file together.
+  with it. To go back: the old binary, the snapshot (as below, a restore: it starts with
+  password-less connections off) and the env file together.
 - **Restore** brings back the tokens and account keys revoked since, the switches as they were and
   the bindings released since, so it is an incident of its own: `passwordless off`, stop the
-  check timer, the socket and the service, keep the current database files aside (as a backup in
-  the backup directory, so that they age out with the rest), put the backup in their place
+  check timer, keep the current database as a backup in the backup directory (`admin backup
+  /var/lib/hjviewer-api/backup/before-restore-<time>.sqlite3`, so that it ages out with the rest;
+  only a database too damaged for that is moved aside instead, into a directory of root's, and
+  deleted within 14 days), stop the socket and the service, remove the database files, put the
+  backup in their place
   (`install -o hjviewer-api -g hjviewer-api -m 600 <backup> /var/lib/hjviewer-api/hjv-api.sqlite3`,
-  no -wal or -shm left), start the socket and the service, `passwordless off` again (the restored
-  switch is the backup's), `user revoke-all --all`, look at the allowlist (`allow list`) and the
-  switches (`passwordless status`), then, with the user's approval, `passwordless on` and the
-  check timer. Everybody logs in again on their phones and PCs; the PCs stay bound, so a PC whose
-  mark was not cleared gets its list at once, and a PC that cleared it meanwhile is `listed` until
-  someone logs in on it. `tests/ops.rs` (`the_restore_procedure`) runs these steps on the database;
-  `docs/hjv-api-drill.md` records the rehearsal with systemd.
+  no -wal or -shm left), start the socket and the service, `passwordless off` again,
+  `user revoke-all --all`, look at the allowlist (`allow list`) and the switches (`passwordless
+  status`), then, with the user's approval, `passwordless on` and the check timer. A restored
+  backup starts with password-less connections off for every account: hjv-api turns them off when
+  it first opens a file with the backups' application ID, before it answers anything, and says so
+  in the journal, since the PCs sync every two minutes and would otherwise get, between the start
+  and the next command, signed lists with the backup's switch and the keys revoked since. The
+  second `passwordless off` confirms it (`(no change)`). Everybody logs in again on their phones
+  and PCs; the PCs stay bound, so a PC whose mark was not cleared gets its list at once, and a PC
+  that cleared it meanwhile is `listed` until someone logs in on it. `tests/ops.rs`
+  (`the_restore_procedure`) runs these steps on the database; `docs/hjv-api-drill.md` records the
+  rehearsal with systemd.
 - **Host rebuilt** (the disk lost): the seal key comes from its offline copy, list key 1 and
-  command key 1 were on the server only and are replaced by the offline key 2
-  (`HJV_API_LIST_KID=2`; the apps and relays pin key 2 already), the log key is new (old records'
-  tags no longer match). Without a backup the database starts empty: the allowlist is imported
-  again and everyone logs in again, the PCs too.
+  command key 1 were on the server only and are replaced by the offline keys 2
+  (`HJV_API_LIST_KID=2`, `HJV_API_COMMAND_KID=2`; the apps and relays pin key 2 already), the log
+  key is new (old records' tags no longer match). Without a backup the database starts empty: the
+  allowlist is imported again and everyone logs in again, the PCs too, and the relays say hello
+  and are approved again.
+- A restore also brings back the relays as they were: one revoked since the backup is active
+  again, and only the operator record tells which. When the restored backup has active relays,
+  the journal says so at the start; after a restore, `relay list`, and `relay revoke` again what
+  was revoked since. (Such a relay gets wake commands of its account's PCs only, when their owner
+  asks for one; it reaches no PC.)
 
 ## API
 
@@ -305,6 +387,11 @@ Every path that takes a token takes it only with the signature of the token's ac
 (`X-HJV-Proof`, below): a token alone opens nothing. The one exception is `POST /api/logout`
 without the signature, which ends that token and its key, and nothing else. `POST
 /api/hjv/pc/sync` takes no token: a bound PC signs it with its device key (below).
+
+hjv-relay's requests (`POST /api/hjv/relay/hello`, `/api/hjv/relay/poll`) take no token either:
+the relay signs them with its own key, in the PC sync's envelope (relay/PROTOCOL.md, below). The
+app's wake paths (`POST /api/hjv/devices/{id}/wake`, `GET /api/hjv/wake/{job}`, `GET
+/api/hjv/devices/{id}/wol`) take the token with its signature as every account path does.
 
 A PC leaves its account in one place only, `db::release_binding`: its row goes, its binding ID
 stays 180 days as a tombstone, and the change serial goes up, in one transaction, so that the
@@ -396,7 +483,7 @@ X-HJV-Proof: v1.<t>.<n>.<sig>
   token or key (a logout) gets the 401 of an ended token; the retry of a request that ended
   without an answer, 500.
 - On every token path: currentUser, logout, users, peers, `/api/hjv/this-device` and its undo,
-  `/api/hjv/devices/{id}`, `/api/hjv/keys…`.
+  `/api/hjv/devices/{id}` (and its `/wake` and `/wol`), `/api/hjv/wake/{job}`, `/api/hjv/keys…`.
 - `POST /api/logout`: the token and its key are revoked. Signed by the token's key (the time may
   be off: the token ends with this request) and when the token's login added or found the PC in
   the account, the PC also leaves the list. Without the signature the PC stays: a stolen token
@@ -428,7 +515,7 @@ devices. A key of another account or none, and `ack` of the asking key or an old
 
 ```text
 {"total":n,"data":[{"id":"<PC ID>","user_name":"<portal ID>","info":{"device_name":"<host name>","os":"windows"},"status":1,
-  "note":"<the card's second line>","hjv":{"pk":"<base64 of the PC's key>","pwless":"<state>","kinds":["remote","file","camera"],"wol":"unknown"}}]}
+  "note":"<the card's second line>","hjv":{"pk":"<base64 of the PC's key>","pwless":"<state>","kinds":["remote","file","camera"],"wol":"ok"}}]}
 ```
 
 `pk` is the key hbbs held when the PC was bound (the app checks the PC it reaches against it),
@@ -442,6 +529,12 @@ devices. A key of another account or none, and `ack` of the asking key or an old
 | `expired` | the last sync is older than a list lives (`HJV_API_TRUST_TTL`) | 마지막 확인 <n>분/시간/일 전 |
 | `off` | the PC's users switched it off there | PC에서 꺼 둠 |
 | `active` | the last sync carried its binding | 비밀번호 없이 연결 |
+
+`wol` is whether the PC can be woken (design v3 §5-2, §8-4): the verdict of its wake report
+(`ok`, `warn`, `no`, `unknown` without a report; Waking a PC, below), but `no` while the account
+has no active relay, since nothing could wake it, so that the app offers "켜기" on a sleeping PC
+only when it is not `no`. Once the account has a relay, the note ends with " · 켜기 가능" (`ok`,
+`warn`) or " · 켜기 준비 안 됨" (`no`).
 
 `GET /api/hjv/this-device` of a login that proved it is a PC of the account also has
 `"binding":"<32 hex>"`, `"pwless":"<state>"` and `"activation":"present|absent|stale"` (what the
@@ -466,10 +559,12 @@ with the PC's device key (the key hbbs held when it was bound):
   the one a login on it asks for, or empty after it let one go; `used` (U6) per account key and
   UTC day the latest time the PC let it in and that day's running count, today and yesterday;
   `refused` the counts of refused proofs since the last report taken, under the seven reasons
-  above (other names are left out, so that a PC adds at most seven rows a day). `wol` is
-  Wake-on-LAN's, not stored yet. A field of the wrong JSON type refuses the request; a line out of
-  range (a day outside the last 30, a time not of its day, a count of 0, a key of no account of
-  the PC) is left out, and a time after the server's time of the report is taken as that time.
+  above (other names are left out, so that a PC adds at most seven rows a day). `wol` is the PC's
+  wake report and `wol_hash` its summary (Waking a PC, below). A field of the wrong JSON type
+  refuses the request; a line out of range (a day outside the last 30, a time not of its day, a
+  count of 0, a key of no account of the PC) is left out, and a time after the server's time of
+  the report is taken as that time. A `wol` object that is not a report is left out, and not asked
+  for again.
 - The checks, the first failure answering: size (413 `too_large`), shape (400 `bad_request`), the
   row of `id` (the PC's binding, else the ID's latest tombstone; neither: 404 `unbound`), the
   signature with that row's key (401 `bad_signature`; for a bound PC hjv-api then asks hbbs, at
@@ -480,7 +575,10 @@ with the PC's device key (the key hbbs held when it was bound):
   contents again, for its own `n`.
 - An accepted sync of a bound PC stores its report (it also counts as the PC seen) and ends a
   `needs-relogin`; key use is merged by the larger values, so that a report cannot lower what is
-  stored. Then:
+  stored. A sync that carries the PC's binding keeps its `wol` with its `wol_hash` and the address
+  the sync came from (the PC's egress address); without `wol` only the address moves, and when
+  `wol_hash` is not empty and not the summary kept, the answer has `"send_wol":true`, which asks
+  the PC for the whole report in its next sync. Then:
 
 | row | `binding` | answer |
 |---|---|---|
@@ -508,6 +606,105 @@ with the PC's device key (the key hbbs held when it was bound):
   takes a list only with a key number it pins, at or above the highest it has taken, its own ID
   and key, the binding and `n` of its request, and `0 < exp − iat ≤ 72 hours`; it counts the
   lifetime from receipt, and drops its binding only for a signed `revoked`.
+
+### NAS relays: `POST /api/hjv/relay/hello`, `/api/hjv/relay/poll` (`src/relay.rs`)
+
+relay/PROTOCOL.md is the contract; hjv-api implements its server side. The envelope is the PC
+sync's with the context `hjv-relay-v1` and the operation `hello` or `poll` (a hello also carries
+the relay's key, `pk`, and its ID must be that key's: `r-` and base32 of the first 10 bytes of its
+SHA-256), at most 64 KiB, checked in the same order: size (413 `too_large`), shape (400
+`bad_request`), the key (a relay kept under the ID keeps its key, else 401; a poll of an unknown
+relay 404 `unknown_relay`), the signature (401 `bad_signature`), the time within 300 s (400
+`clock` with `server_time`), the nonce within 600 s (409 `replay`; 503 `unavailable` with
+`retry_after` while 100 000 nonces are kept), the payload (400 `bad_request`).
+
+The limits (429 `rate_limited` with `retry_after`) are not among those checks, and a request they
+refuse leaves nothing: no nonce, no write. A known relay's own limit, 60 hellos an hour and 120
+polls a minute, is taken once a request is known to be that relay's and of this time, after the
+time and before the nonce: it counts every such request, also one that is then refused as a
+replay or for its payload (the latter keeps its nonce), and no request that is not the relay's.
+The limits on new entries come after the payload, and a hello of a key hjv-api does not know
+keeps its nonce only when it makes the entry. So the nonces kept, and the database's writes, are
+bounded by hjv-api's own limits. They have to be: a pending relay is a known one, and anyone with
+a key can become one (relay/PROTOCOL.md §4.3).
+
+- hello: a new key becomes a pending entry (its egress address, versions and interfaces kept), 5
+  an hour per source address (an IPv6 address by its /64), 20 in all, each for 24 hours; a code
+  approved ahead makes it active at once; a known relay may say hello 60 times an hour. Answer:
+  `{"server_time","state":"pending|active|revoked","code":"KZDV-VJ2U-MNDU-YAUF"}`.
+- poll: the results are applied, what the relay reports is kept, `"send_ifaces":true` asks for its
+  interfaces when their summary changed; a revoked relay is answered at once, a pending one when it
+  is approved or revoked or after `min(wait, 20)` seconds, an active one at once with its queued
+  commands, else when one is queued or after `min(wait, 20)` seconds (at most 120 polls a minute
+  per relay). Answer: `{"server_time","state","commands":[{"c","s","k"}],"send_ifaces"}`. The time
+  of its last poll is its liveness (online within 60 seconds).
+- A command `c` is compact JSON, `{"v":1,"job","relay","iat","exp":iat+60,"net","macs","ports":[9,7],
+  "repeat":3,"gap_ms":200}`, signed by the command key over `"hjv-wake-v1" NUL c` (`s`, base64; `k`
+  the key's number); its text, signature and number are kept and sent as they are until a result
+  names it (by `cmd`, the hex SHA-256 of `c`) or it expires. relay/PROTOCOL.md §13's vector,
+  checked by `src/wake.rs`'s tests:
+
+```text
+command key       1:Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=   (seed 20 21 … 3f)
+fingerprint       1:24f6ed6acbfe1009c030d7ca567c33ca4830911498236b5561a6c82abec5de28
+c                 {"v":1,"job":"0123456789abcdef0123456789abcdef","relay":"r-kzdvvj2umnduyauf","iat":1760000000,"exp":1760000060,"net":"10.1.4.0/22","macs":["00:00:5e:00:53:01"],"ports":[9,7],"repeat":3,"gap_ms":200}
+s                 91MXS5rMOB9k3ZP7XxPue9M++nXy9w4VIpjcqGJspnFI46U37TGC+st2hv6D8DxcUJOaN/2PcY7XeQ6wgfmLBw==
+cmd               eefb709bfc6dae46233f75d43c02d0dfb173218d3ed9010c40dc316b4c3d7abe
+```
+
+- A result (`{"cmd","job","sent_at","iface","packets","error"}`) is matched by `cmd`, idempotently:
+  no error, or `partial` with packets, makes the job `sent` at the relay's `sent_at`; `replayed`
+  says nothing new; any other error fails the job with that code, and one that says the relay and
+  hjv-api disagree (`unknown_key`, `bad_signature`, `bad_command`, …) goes to the journal.
+
+### Waking a PC: `/api/hjv/devices/{id}/wake`, `/api/hjv/wake/{job}`, `/api/hjv/devices/{id}/wol` (`src/wake.rs`, `src/wolinfo.rs`)
+
+```text
+POST /api/hjv/devices/{id}/wake   {} or {"any_relay":true}
+  202 {"job":"<32 hex>","state":"queued","relay":{"name":"NAS KZDV","match":"exact"},"hints":[]}
+  409 {"error":"이미 켜져 있습니다.","hjv":"online"}
+  409 {"error":"…","hjv":"no_wol_info"}
+  409 {"error":"…","hjv":"no_relay","reason":"no_relays|other_network|different_egress|unconfirmed","any_relay":false}
+  503 {"error":"…","hjv":"relay_offline","last_seen":<time or null>}
+  429 {"error":"잠시 뒤 다시 시도해 주세요.","hjv":"rate_limited","retry_after":<seconds>}
+  503 {"error":"…","hjv":"unavailable"}   (no command key)
+GET  /api/hjv/wake/{job}
+  {"job","state":"queued|sent|confirmed|not_confirmed|failed","sent_at","confirmed_at","packets","error","relay":{"name","match"},"hints":[]}
+GET  /api/hjv/devices/{id}/wol
+  {"ready":"ok|warn|no|unknown","hints":[],"reported_at":<time or null>,"relay":{"name","match","online"} or null}
+```
+
+- The wake request, in this order: a PC of the token's account (else 404, as for any other ID);
+  on already (it synced, or hbbs saw it register, within 30 seconds): 409 `online`; no wake report:
+  409 `no_wol_info`; one job a minute per PC, of the account's own: within the minute the job
+  under way (queued or sent) is the answer, 202, and one that is over 429; 20 jobs an hour per
+  account: 429; the relay; 10 jobs a minute per relay: 429; the command, signed and queued, and
+  the relay's held poll gets it at once. A minute after a job that still waits for its PC the
+  packets may be sent again, as a new job; each job is confirmed on its own.
+- The relay: of the account's active relays (a relay wakes its account's PCs only), the online ones
+  with the best grade (`exact`: an interface on the PC's network with its prefix and the same
+  gateway IP; `overlap`: overlapping networks and the same gateway IP or MAC; `history`: it woke
+  this PC on this network before and still has an address on it); on a private or shared network
+  (RFC 1918, 100.64.0.0/10) the PC's and the relay's egress addresses must be the same too. One
+  that would do but is not online: 503 `relay_offline`. None: 409 `no_relay`, `any_relay` true
+  when an online relay shares a network with the PC that could not be confirmed (another gateway,
+  no egress address to compare); `{"any_relay":true}` then uses it (`match` `any`).
+  `different_egress`: a private network behind another address, another site; the app hides
+  "모든 중계기로 시도" then.
+- The command names the PC's network that matched and the MACs of its cards on it, from its signed
+  report only; no MAC goes to an app.
+- States: `queued` → `sent` (the relay's result) → `confirmed` (the PC synced after the packets,
+  or hbbs saw it register under its key within 30 seconds and after them; looked at every five
+  seconds) or `not_confirmed` (five minutes after the packets); `queued` → `failed` with the
+  relay's error (`no_iface`, `send_failed`, `expired`, `not_active`, `rate_limited`; others mean
+  the relay and hjv-api disagree) or `no_result` (45 seconds after the command expired). A result
+  after `no_result` still counts.
+- The verdict and its hints (the texts go to the app as they are, so the rules change without a
+  new app): no wired card with an address: `no`, the one verdict that takes "켜기" off the app's
+  menu. Everything else is a hint with `warn`, shown when a wake was not confirmed: the cards'
+  magic packet wake off (`"magic":"0"`, all of them or some) or not known to be on for any (a
+  driver that does not tell), no card armed to wake the PC, fast startup on, on battery, USB cards
+  only, modern standby without its magic packet wake.
 
 ### hbbs and the SSO
 
@@ -576,7 +773,23 @@ requests (`tests/common/mod.rs`); `tests/keys.rs` has the account keys, the swit
 vectors above and in `tests/data/v3-vectors.json`, `tests/http.rs` the request proof, and
 `tests/pcsync.rs` the PC sync: its checks in order, the lists as the PC checks them, the
 ten-second repeat, key use, the device list's states, every way a PC leaves its account, the key
-change confirmed with hbbs, the report and selfcheck. `tests/ops.rs` has the backups (the rows of
+change confirmed with hbbs, the report and selfcheck. `tests/relay.rs` has hjv-relay's requests:
+the checks in their order with the cases of relay/tests/common's `check_request` and the vector of
+relay/PROTOCOL.md §13, the states, approval (no address in the default output) and revocation,
+approval ahead, the limits (what they refuse leaves no nonce; a relay's own counts the requests of
+its that are then refused, and nobody else's), the nonce store's bound, the long-poll, the
+interface reports;
+`tests/wake.rs` the wake reports in the sync, the wake paths in their order, the choice of relay,
+the command as the relay checks it, the jobs' states, the limits, the verdicts in the device list,
+what goes with an account or past its time, and the command key's checks; `tests/relay_loop.rs`
+runs hjv-relay itself (relay/'s library, its loop step by step) against hjv-api behind a TLS
+terminator that stands in for nginx: enrollment, approval, a long-poll a wake ends at once, twelve
+packets recorded on the PC's wire, the result, the confirmation, revocation, enrolling again, and a
+relay that does not trust the key in use; and it gives the same 900 requests, well-formed and
+broken in every part, and a hello whose key is no point of the curve, to relay/tests/common's
+`check_request` (the relay's reference of PROTOCOL.md §4.3) and to hjv-api, which must come to
+the same verdict each time (within hjv-api's limits: the reference has none). That file needs
+relay/ next to server/ (a dev dependency by path). `tests/ops.rs` has the backups (the rows of
 a backup's file, the places refused, the old backups deleted, a backup while requests go on), the
 restore procedure on a restored database, the check (a fake report with a stopped socket and no
 syncs, then the service's own counts), the alert with a stand-in for Telegram, and the units under
@@ -601,7 +814,13 @@ the PC's public key, time, how it went); per account key, PC and UTC day the PCs
 password-less use (latest time, count) and per PC, reason and day the counts of refused proofs;
 the nonces of accepted syncs for 10 minutes; the change serial, the switches and the time of the
 last switch change; login-limit counters under tags; login, device and key records (tags, client
-address, result, time).
+address, result, time). Since schema 3 (Wake-on-LAN, design v3 §10-1): per bound PC its wake report
+(its wired cards' MACs, addresses, gateways and their MACs, names, drivers and wake settings, its
+power facts, without its uptime), its summary and the PC's egress address; the NAS relays (ID,
+public key, state, owner account, name, the source of the first hello, versions, interfaces,
+egress address, times), the codes approved ahead, the relays' nonces for 10 minutes; the wake jobs
+(the account and its tag, the PC, the relay, the grade, the network, the times, the result) with
+their signed commands while they wait.
 
 Kept: tokens 90 days unused / a year at most (a new login replaces the token of the same device,
 and an account keeps at most 20); account keys while their token lasts (an hourly upkeep revokes
@@ -613,13 +832,21 @@ PC logged in once stays listed while it is on; records six months; limit counter
 window, a day at least; backups of the database 14 days (`/var/lib/hjviewer-api/backup`, root
 only); the journal namespace `hjviewer` 30 days. Of failed logins, at most 20 a minute are
 recorded (the rest are counted in the daily summary of the journal), so that a flood cannot fill
-the disk; successes are always recorded. No password, SSO token, e-mail, uuid or user name of a device is stored, and the journal
+the disk; successes are always recorded. A PC's wake report goes when it leaves its account; a
+revoked relay keeps only its ID, key and times; a pending relay goes after 24 hours, an approval
+ahead after 7 days; wake jobs, the wake record, six months (`HJV_API_EVENT_DAYS`), and an account's
+go with it. No password, SSO token, e-mail, uuid or user name of a device is stored, and the journal
 gets tags and counts only.
 
-## Later phases
+## Wake-on-LAN, where it is
 
-Wake-on-LAN plugs in as modules of its own: routes in `api::route`, the relay's signed envelope
-from `envelope` (the PC sync's checks, with the relay's `Spec`), sessions from `api::session`,
-hbbs keys from `hbbs`, tables through `db::MIGRATIONS` (schema 3), records through
-`AppState::record`, and every change to what a trust list says through `db::bump_serial`. The
-sync's `wol` and `wol_hash` are read there (`pcsync`), and its answer's `send_wol`.
+Phase 2 plugged in as modules of its own: `src/wolinfo.rs` (the PCs' reports, the verdicts and
+hints, the relays' interfaces, the grades), `src/relay.rs` (relay/PROTOCOL.md's server side and the
+`relay` admin commands), `src/wake.rs` (the app's paths, the command key and commands, the choice
+of relay, the jobs' ticker that `jobs.rs` runs every five seconds), routes in `api::route`, the
+relays' envelope from `envelope` with the relay's `Spec`, tables through `db::MIGRATIONS` (schema
+3), the PC's report through `pcsync` with the answer's `send_wol`. In front of hjv-api's own
+limits nginx limits relay/hello per source (design v3 §5-8): that location of
+deploy/nginx-hjviewer-api.conf and its zones file come with the packaging work (WP-B). relay/poll
+needs no such limit for the nonce store, which hjv-api's own limits bound (above); one per source
+there would only spare hjv-api the signature checks of a flood.

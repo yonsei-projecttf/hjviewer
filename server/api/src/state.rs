@@ -12,11 +12,13 @@ use crate::{
     log::Tagger,
     login::{LoginAnswer, RetryCache},
     pcsync::{KeyChecks, ListCache},
+    relay::RelayHub,
     seal::SealKeys,
     sso::SsoClient,
     tfa::{PendingStore, SecondFactor},
     trust::ListKey,
     util::DAY,
+    wake::CommandKey,
 };
 use rusqlite::Connection;
 use std::{
@@ -66,6 +68,11 @@ pub struct AppState {
     /// since when hbbs has seen each PC holding its binding on, for the five-minute check
     /// (check.rs)
     pub online: OnlineSince,
+    /// the command key that signs wake commands (credential hjviewer-api-command-key, number
+    /// HJV_API_COMMAND_KID), when there is one (wake.rs)
+    pub command_key: Option<CommandKey>,
+    /// the relays' held polls and per-relay limits (relay.rs)
+    pub relays: RelayHub,
     /// limits already reported, so that hammering a full limit writes no more records or lines
     notices: Mutex<HashMap<String, Instant>>,
 }
@@ -92,9 +99,12 @@ impl AppState {
             seal_keys,
             log_key,
             list_key,
+            command_key,
         } = secrets;
         Ok(Arc::new(AppState {
             list_key: ListKey::new(config.list_kid, &list_key),
+            command_key: command_key.map(|seed| CommandKey::new(config.command_kid, &seed)),
+            relays: RelayHub::default(),
             lists: ListCache::default(),
             key_checks: KeyChecks::default(),
             online: OnlineSince::default(),

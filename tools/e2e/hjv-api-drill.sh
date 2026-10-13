@@ -6,17 +6,22 @@
 # the server package carries (bin/hjv-api; systemd/ with the hjviewer-api* units, the env example
 # and journald@hjviewer.conf), the fake SSO, a fake hbbs console and the test keys of
 # server/api/tests/common. Then, in order:
-#   1. install, keys as credentials (systemd-creds), settings, start, allowlist, timers (7-3 to 7-5)
-#   2. a day of use (logins, PCs bound and syncing; server/api/tests/drill.rs), the check, the
-#      daily backup, the journal namespace and its 30 days
+#   1. install, keys as credentials (systemd-creds; command key 1 made on the server with keygen,
+#      command key 2 offline), settings, start, allowlist, timers (7-3 to 7-5)
+#   2. a day of use (logins, PCs bound and syncing; server/api/tests/drill.rs), a NAS relay
+#      approved by its code and a PC woken through it (Wake-on-LAN, WP-W2), the check, the daily
+#      backup, the journal namespace and its 30 days
 #   3. alerts through a stand-in for Telegram: the test message, the SSO's invalid_client, a crash
 #      of hjviewer-api.service, the socket stopped, PCs that are on but stop syncing (waits about
 #      12 minutes; HJV_DRILL_QUICK=1 skips it), PCs that are off
-#   4. the restore of the morning's backup after changes, then switching back on
+#   4. the restore of the morning's backup after changes (a PC that syncs right after the start
+#      gets a disabled list: a restored backup starts off), then switching back on
 #   5. the snapshot before an upgrade, an upgrade the old binary cannot go back from, going back
+#      (the snapshot restored, the restore's steps after it)
 #   6. old backups going after 14 days
-#   7. the host rebuilt: a new server with the seal key from its offline copy, list key 2 instead
-#      of key 1, a new log key, and the last backup restored
+#   7. the host rebuilt: a new server with the seal key from its offline copy, list key 2 and
+#      command key 2 instead of keys 1, a new log key, and the last backup restored; the relay of
+#      the backup takes a wake command signed with command key 2
 # Nothing calls the real SSO or Telegram, nothing leaves this machine, and the containers go at the
 # end (the image hjv-drill:local stays for the next run). The output is build/drill/drill.log.
 #   tools/e2e/hjv-api-drill.sh
@@ -94,6 +99,15 @@ rm -rf "$offline"
 install -d -m 700 "$offline"
 printf '%s\n' "$SEAL_KEY" > "$offline/hjviewer-seal.key"
 printf '%s\n' "$LIST_KEY_2" > "$offline/hjviewer-list-2.key"
+# command key 2, made offline as the runbook makes it (design v3 §5-3). The screen shows two
+# lines: its public key, the entry the relays are built with next to key 1's, and its fingerprint,
+# which the one who made it compares with selfcheck's later
+screen=$("$stage/bin/hjv-api" keygen command --kid 2 --out "$offline/hjviewer-command-2.key" 2>&1) ||
+  fail "keygen command --kid 2: $screen"
+COMMAND_PUBKEY_2=$(printf '%s\n' "$screen" | sed -n '1p')
+COMMAND_FINGERPRINT_2=$(printf '%s\n' "$screen" | sed -n 's/^fingerprint: //p')
+case $COMMAND_PUBKEY_2 in 2:*) ;; *) fail "keygen command --kid 2: $screen" ;; esac
+case $COMMAND_FINGERPRINT_2 in 2:*) ;; *) fail "keygen command --kid 2 showed no fingerprint" ;; esac
 TOKEN=123456:TEST-not-a-real-bot-token_x
 
 step "image: Ubuntu 24.04 with systemd ($IMAGE)"
@@ -165,9 +179,11 @@ systemctl daemon-reload
 EOF
 }
 
-# runbook 7-3 and 7-5: the settings of the fake SSO, hbbs's public key, the pinned list keys
-settings() { # <host> <list kid>
-  on "$1" "HBBS_PUBKEY=$HBBS_PUBKEY" "TRUST=$TRUST_PUBKEYS" "CLIENT_ID=$SSO_CLIENT_ID" "KID=$2" << 'EOF'
+# runbook 7-3 and 7-5: the settings of the fake SSO, hbbs's public key, the pinned list keys and
+# command keys, and the numbers of the keys in use
+settings() { # <host> <list kid> <command kid>
+  on "$1" "HBBS_PUBKEY=$HBBS_PUBKEY" "TRUST=$TRUST_PUBKEYS" "CLIENT_ID=$SSO_CLIENT_ID" "KID=$2" \
+    "COMMAND=$COMMAND_PUBKEYS" "COMMAND_KID=$3" << 'EOF'
 set -euo pipefail
 E=/etc/hjviewer/hjviewer-api.env
 sed -i -e "s|^HJV_API_SSO_TOKEN_URL=.*|HJV_API_SSO_TOKEN_URL=http://127.0.0.1:18600/oauth/token.do|" \
@@ -175,8 +191,10 @@ sed -i -e "s|^HJV_API_SSO_TOKEN_URL=.*|HJV_API_SSO_TOKEN_URL=http://127.0.0.1:18
   -e "s|^HJV_API_SSO_CLIENT_ID=.*|HJV_API_SSO_CLIENT_ID=$CLIENT_ID|" \
   -e "s|^HJV_API_HBBS_PUBKEY=.*|HJV_API_HBBS_PUBKEY=$HBBS_PUBKEY|" \
   -e "s|^#\?HJV_API_TRUST_PUBKEYS=.*|HJV_API_TRUST_PUBKEYS=$TRUST|" \
-  -e "s|^#\?HJV_API_LIST_KID=.*|HJV_API_LIST_KID=$KID|" "$E"
-grep -cE '^HJV_API_(SSO_TOKEN_URL|SSO_USERINFO_URL|SSO_CLIENT_ID|HBBS_PUBKEY|TRUST_PUBKEYS|LIST_KID)=.+' "$E"
+  -e "s|^#\?HJV_API_LIST_KID=.*|HJV_API_LIST_KID=$KID|" \
+  -e "s|^#\?HJV_API_COMMAND_PUBKEYS=.*|HJV_API_COMMAND_PUBKEYS=$COMMAND|" \
+  -e "s|^#\?HJV_API_COMMAND_KID=.*|HJV_API_COMMAND_KID=$COMMAND_KID|" "$E"
+grep -cE '^HJV_API_(SSO_TOKEN_URL|SSO_USERINFO_URL|SSO_CLIENT_ID|HBBS_PUBKEY|TRUST_PUBKEYS|LIST_KID|COMMAND_PUBKEYS|COMMAND_KID)=.+' "$E"
 EOF
 }
 
@@ -191,7 +209,7 @@ stat -c '%a %U:%G %n' /run/hjviewer-api.sock /var/lib/hjviewer-api /var/lib/hjvi
 chattr +a /var/log/hjviewer-api/operator.log 2>&1 || echo "(chattr: not on this container's file system)"
 A="/opt/hjviewer/bin/hjv-api admin"
 $A passwordless status | head -1
-$A selfcheck | grep -E '^\[' | cut -c1-80 || true
+$A selfcheck | grep -E '^\[' | cut -c1-100 || true
 printf '2026000001\n2026000002\nY9001\nsso-invalid-client\n' > /root/hjviewer-allow.txt
 chmod 600 /root/hjviewer-allow.txt
 $A allow import /root/hjviewer-allow.txt
@@ -239,14 +257,34 @@ printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$TOKEN" -1001234 | c hjvi
 EOF
 # the seal key from the removable medium
 cred_from "$A" hjviewer-api-login-key "$offline/hjviewer-seal.key"
+# command key 1, made on the server: its secret goes straight into systemd-creds, its public key
+# (the one line on the screen) next to key 2's into the settings and the relay build
+screen=$(d exec "$A" /opt/hjviewer/bin/hjv-api keygen command --kid 1 \
+  --encrypt-to /etc/credstore.encrypted/hjviewer-api-command-key 2>&1 || true)
+COMMAND_PUBKEY_1=$(printf '%s\n' "$screen" | sed -n '/^1:/p')
+COMMAND_FINGERPRINT_1=$(printf '%s\n' "$screen" | sed -n 's/^fingerprint: //p')
+case $COMMAND_PUBKEY_1 in 1:*) ;; *) fail "keygen command --kid 1 showed no public key" ;; esac
+case $COMMAND_FINGERPRINT_1 in 1:*) ;; *) fail "keygen command --kid 1 showed no fingerprint" ;; esac
+COMMAND_PUBKEYS="$COMMAND_PUBKEY_1,$COMMAND_PUBKEY_2"
+echo "HJV_API_COMMAND_PUBKEYS=$COMMAND_PUBKEYS"
 d exec "$A" ls /etc/credstore.encrypted
-settings "$A" 1
+settings "$A" 1 1
 step "A: runbook 7-5, start"
 start_api "$A"
+# the fingerprint that keygen showed for command key 1 is the one selfcheck shows (the comparison
+# a person makes again with the relay build's summary)
+case $(d exec "$A" /opt/hjviewer/bin/hjv-api admin selfcheck || true) in
+  *"command key in use (HJV_API_COMMAND_KID 1): the pinned key 1, $COMMAND_FINGERPRINT_1"*) echo "command key 1: selfcheck shows the fingerprint keygen showed" ;;
+  *) fail "selfcheck does not show the fingerprint keygen showed for command key 1" ;;
+esac
 check_now "$A"
 
 step "A: a day of use"
 client "$A" drill_populate
+step "A: Wake-on-LAN: a NAS relay approved by its code, a PC woken through it (WP-W2)"
+client "$A" drill_relay
+d exec "$A" /opt/hjviewer/bin/hjv-api admin health
+echo
 check_now "$A"
 step "A: the daily backup (the timer's service, now)"
 on "$A" << 'EOF'
@@ -341,7 +379,7 @@ else
   step "A: (HJV_DRILL_QUICK: no wait for the syncs to age)"
 fi
 
-step "A: after the backup: a new login, KIM's PC released by its owner"
+step "A: after the backup: a new login, KIM's PC released by its owner, HONG's keys revoked (a lost phone)"
 client "$A" drill_after_backup
 
 step "A: restore of the morning's backup (README.md, Backup and restore; runbook 7-14)"
@@ -359,11 +397,25 @@ systemctl stop hjviewer-api.socket hjviewer-api.service
 rm -f "$D" "$D-wal" "$D-shm"
 install -o hjviewer-api -g hjviewer-api -m 600 "$B" "$D"
 systemctl start hjviewer-api.socket hjviewer-api.service
-$A passwordless off
+EOF
+# the PCs sync every two minutes: one comes before the operator's next command. The backup's
+# switch was on (and its keys are those revoked since), but a restored backup starts off
+client "$A" drill_sync HJV_DRILL_EXPECT=disabled
+on "$A" << 'EOF'
+set -euo pipefail
+A="/opt/hjviewer/bin/hjv-api admin"
+# two lines: every account off, and the relays that came back with the backup
+journalctl -q --namespace=hjviewer -u hjviewer-api -o cat --no-pager | grep 'restored backup' | tail -n 2 ||
+  echo '(no journal line about the restored backup yet)'
+off=$($A passwordless off)
+echo "$off"
+case $off in *'(no change)'*) ;; *) echo 'FAIL: the restored backup was not off from its start'; exit 1 ;; esac
 $A user revoke-all --all
 $A passwordless status | head -1
 $A allow list | head -1
 $A report | head -5
+# the relays are the backup's too: one revoked since would be revoked again here
+$A relay list | head -1
 EOF
 client "$A" drill_after_restore
 on "$A" << 'EOF'
@@ -386,13 +438,14 @@ install -d -m 700 /root/hjv-backup
 cp -p /etc/hjviewer/hjviewer-api.env /root/hjv-backup/hjviewer-api.env.before-$V
 cp -p /opt/hjviewer/bin/hjv-api /root/hjv-backup/hjv-api.before-$V
 before=$($A report | head -1)
-# the new version's first start upgrades the schema (a version 3 the old binary does not know)
+# the new version's first start upgrades the schema (one past the schemas the old binary knows)
 systemctl stop hjviewer-api-check.timer hjviewer-api.socket hjviewer-api.service
-sqlite3 "$D" 'PRAGMA user_version = 3;'
+next=$(($(sqlite3 "$D" 'PRAGMA user_version;') + 1))
+sqlite3 "$D" "PRAGMA user_version = $next;"
 systemctl start hjviewer-api.socket hjviewer-api.service || true
 sleep 7
 systemctl is-active hjviewer-api.service || true
-journalctl -q --namespace=hjviewer -u hjviewer-api -n 30 -o cat --no-pager | grep -m1 'schema 3' || true
+journalctl -q --namespace=hjviewer -u hjviewer-api -n 30 -o cat --no-pager | grep -m1 "schema $next" || true
 # going back: the old binary, the snapshot, the settings, together
 systemctl stop hjviewer-api.socket hjviewer-api.service
 systemctl reset-failed hjviewer-api.service hjviewer-api.socket 2> /dev/null || true
@@ -407,6 +460,11 @@ after=$($A report | head -1)
 echo "before: $before"
 echo "after:  $after"
 [ "$before" = "$after" ] && echo "SNAPSHOT_OK"
+# the snapshot is a restored backup: off from its start; then the restore's steps
+$A passwordless status | head -1
+$A passwordless off
+$A user revoke-all --all
+$A passwordless on
 EOF
 sleep 3
 # the failing start is an alert of its own, not the crash's again (how it ended differs)
@@ -432,7 +490,7 @@ EOF
 d cp "$A:/var/tmp/hjv-drill/last.sqlite3" "$WORK/last.sqlite3"
 d cp "$A:/var/tmp/hjv-drill/state.json" "$WORK/state.json"
 
-step "host B: the server rebuilt ($B): seal key from the offline copy, list key 2, a new log key"
+step "host B: the server rebuilt ($B): seal key from the offline copy, list key 2, command key 2, a new log key"
 start_host "$B"
 install_api "$B"
 on "$B" "SSO_BASIC=$SSO_BASIC" "SSO_API_UUID=$SSO_API_UUID" << 'EOF'
@@ -445,8 +503,9 @@ printf '%s' "$SSO_API_UUID" | c hjviewer-sso-api-uuid
 EOF
 cred_from "$B" hjviewer-api-login-key "$offline/hjviewer-seal.key"
 cred_from "$B" hjviewer-api-list-key "$offline/hjviewer-list-2.key"
+cred_from "$B" hjviewer-api-command-key "$offline/hjviewer-command-2.key"
 d exec "$B" ls /etc/credstore.encrypted
-settings "$B" 2
+settings "$B" 2 2
 d cp "$WORK/last.sqlite3" "$B:/var/tmp/hjv-drill/last.sqlite3"
 d cp "$WORK/state.json" "$B:/var/tmp/hjv-drill/state.json"
 on "$B" << 'EOF'
@@ -459,10 +518,15 @@ sleep 3
 A="/opt/hjviewer/bin/hjv-api admin"
 $A passwordless off
 $A user revoke-all --all
-$A selfcheck | grep -E 'list key' | cut -c1-110
+$A selfcheck | grep -E 'list key|command key' | cut -c1-120
 $A passwordless on
 for t in hjviewer-api-check.timer hjviewer-api-backup.timer; do systemctl enable -q --now "$t"; done
 EOF
+# the offline key's fingerprint, as its maker saw it, is the one selfcheck shows on the new host
+case $(d exec "$B" /opt/hjviewer/bin/hjv-api admin selfcheck || true) in
+  *"command key in use (HJV_API_COMMAND_KID 2): the pinned key 2, $COMMAND_FINGERPRINT_2"*) echo "command key 2: selfcheck shows the fingerprint keygen showed" ;;
+  *) fail "selfcheck does not show the fingerprint keygen showed for command key 2" ;;
+esac
 client "$B" drill_rebuilt
 check_now "$B"
 

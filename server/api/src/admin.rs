@@ -23,6 +23,13 @@
 //! sync gets a signed `revoked`) and the PC sync's counts in `report`. Device names, host names,
 //! the names apps give themselves and portal IDs show only with `--reveal`.
 //!
+//! Design v3 §5-6 and §8-3 add the NAS relays (relay.rs): `relay list`, `relay approve <code>
+//! --owner-of <PC ID>` (the account by one of its PCs; it shows the verdicts of the relay against
+//! that PC, never the addresses unless `--reveal`, and approves only a relay on the PC's network,
+//! as the relay itself reports its interfaces, unless `--force`; a code no relay has said hello
+//! with is approved ahead for 7 days), `relay revoke` and `relay share on|off` (kept for later).
+//! Their records name the relay ID and the PC's tag.
+//!
 //! Design v3 §5-9 adds `backup` (backup.rs): the service takes a copy of its database and sends
 //! its bytes after the answer's line (`"backup":{size, sha256, schema, counts}` says how many),
 //! and the command line writes and checks the file; and `health` (check.rs), the counts the
@@ -34,8 +41,8 @@ use crate::{
     backup::{self, BackupInfo, Snapshot},
     check, db, limits,
     oplog::{OpEntry, OpLog},
-    pcsync,
-    selfcheck::ListKeyCheck,
+    pcsync, relay,
+    selfcheck::{CommandKeyCheck, ListKeyCheck},
     state::AppState,
     util::{
         date, datetime, hex, login_key, mask, now, sha256, valid_device_id, valid_portal_id, DAY,
@@ -100,7 +107,20 @@ hjv-api admin [--socket <path>] [--reveal] <command>
                             enter (/var/lib/hjviewer-api/backup); a directory gets a name of the
                             time; --keep-days N then deletes the backups there older than N days
   health                    the counts the five-minute check reads, as JSON (not recorded)
-  keygen seal|log-key|list --kid N [--encrypt-to <file> | --out <file>]
+  relay list                the NAS relays: state, account, last poll; for an active relay whether
+                            it is on the network of each of its account's PCs (values with --reveal)
+  relay approve <code> --owner-of <PC ID> [--name <name>] [--force]
+                            approve a relay's enrollment code for the account that has the PC,
+                            after the PC's owner confirmed the code: when the verdict says the
+                            relay is on the PC's network (by the relay's own report), or with
+                            --force; a code no relay has said hello with is approved ahead for
+                            7 days; --name for a relay already active for that account renames it
+  relay revoke <relay ID|code>
+                            the relay takes no commands any more (its key is kept and never
+                            approved again); withdraws a code approved ahead
+  relay share on|off <relay ID>
+                            kept for later: in this version a relay wakes its account's PCs only
+  keygen seal|log-key|list --kid N|command --kid N [--encrypt-to <file> | --out <file>]
                             make a secret for a credential (runs here, not in the service)";
 
 #[derive(Serialize, Deserialize)]
@@ -279,7 +299,9 @@ async fn run(
         | ["user", sub @ ("delete" | "revoke-all"), ..]
         | ["key", sub @ ("list" | "revoke"), ..]
         | ["passwordless", sub @ ("status" | "on" | "off"), ..]
-        | ["strict", sub @ ("on" | "off"), ..] => format!("{} {sub}", words[0]),
+        | ["strict", sub @ ("on" | "off"), ..]
+        | ["relay", sub @ ("list" | "approve" | "revoke"), ..] => format!("{} {sub}", words[0]),
+        ["relay", "share", turn @ ("on" | "off"), ..] => format!("relay share {turn}"),
         [one @ ("users" | "devices" | "unlock" | "revoke" | "report" | "selfcheck" | "backup"), ..] => {
             (*one).to_owned()
         }
@@ -312,6 +334,21 @@ async fn run(
             Err(_) => vec![],
         },
         ["key", "revoke", n] if key_number(n).is_some() => vec![format!("ckid:{}", n.trim())],
+        // a relay by its ID (not a person's); the PC of --owner-of by its tag
+        ["relay", "approve", code, rest @ ..] => {
+            let mut targets: Vec<String> = relay::parse_code(code).into_iter().collect();
+            if let Ok(options) = approve_options(rest) {
+                match target(options.pc) {
+                    Ok(Target::Tag(t)) => targets.push(t),
+                    Ok(Target::Value(v)) => targets.push(state.tags.device(&v)),
+                    Err(_) => {}
+                }
+            }
+            targets
+        }
+        ["relay", "revoke", arg] | ["relay", "share", _, arg] => {
+            relay::parse_code(arg).into_iter().collect()
+        }
         // the backup's file name, which the command line sends for the record only
         ["backup", name] if backup_name(name) => vec![(*name).to_owned()],
         _ => vec![],
@@ -404,7 +441,37 @@ const CHANGES: &[&str] = &[
     "passwordless off",
     "strict on",
     "strict off",
+    "relay approve",
+    "relay revoke",
+    "relay share on",
+    "relay share off",
 ];
+
+/// The options of `relay approve <code>`: `--owner-of <PC ID>` (required), `--name <name>`,
+/// `--force`.
+struct ApproveOptions<'a> {
+    pc: &'a str,
+    name: Option<&'a str>,
+    force: bool,
+}
+
+fn approve_options<'a>(rest: &[&'a str]) -> Result<ApproveOptions<'a>, String> {
+    let (mut pc, mut name, mut force) = (None, None, false);
+    let mut it = rest.iter();
+    while let Some(arg) = it.next() {
+        match *arg {
+            "--owner-of" => pc = Some(*it.next().ok_or("--owner-of takes a PC ID")?),
+            "--name" => name = Some(*it.next().ok_or("--name takes a name")?),
+            "--force" => force = true,
+            _ => return Err(format!("relay approve: unknown option\n{USAGE}")),
+        }
+    }
+    Ok(ApproveOptions {
+        pc: pc.ok_or("relay approve <code> --owner-of <PC ID>: which PC's account?")?,
+        name,
+        force,
+    })
+}
 
 /// An account key's number.
 fn key_number(text: &str) -> Option<i64> {
@@ -1147,6 +1214,29 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 "password-less connections of the last 30 days: {}",
                 counts.uses
             );
+            // Wake-on-LAN (design v3 §5-6): the relays, their last polls, the PCs' reports, the jobs
+            let _ = writeln!(
+                out,
+                "relays: {}; codes approved ahead: {}",
+                pairs_text(&counts.relays),
+                counts.preapprovals
+            );
+            for (id, last) in &counts.relay_polls {
+                let _ = writeln!(
+                    out,
+                    "  active relay {id}: last poll {}",
+                    last.map_or_else(|| "never".to_owned(), |t| format!("{} s ago", at - t))
+                );
+            }
+            let _ = writeln!(
+                out,
+                "PCs that reported how to wake them: {}",
+                counts.wol_reports
+            );
+            out.push_str("wake jobs (last day / last week):\n");
+            for (result, day, week) in &counts.wakes {
+                let _ = writeln!(out, "  {result:<28} {day:>5} / {week}");
+            }
             out.push_str("records (last day / last week):\n");
             for (result, day, week) in counts.results {
                 let _ = writeln!(out, "  {result:<28} {day:>5} / {week}");
@@ -1164,12 +1254,28 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
             let _ = writeln!(out, "seal key IDs: {}", state.seal.key_ids().join(", "));
             Ok(out)
         }
+        ["relay", "list"] => relay::admin_list(state, reveal).await,
+        ["relay", "approve", code, rest @ ..] => {
+            let options = approve_options(rest)?;
+            relay::admin_approve(state, code, options.pc, options.name, options.force, reveal).await
+        }
+        ["relay", "revoke", arg] => relay::admin_revoke(state, arg).await,
+        ["relay", "share", turn @ ("on" | "off"), arg] => {
+            relay::admin_share(state, arg, *turn == "on").await
+        }
         ["selfcheck"] => {
             let held = ListKeyCheck::Held {
                 kid: state.list_key.kid(),
                 public_key: state.list_key.public_key(),
             };
-            let (report, ok) = crate::selfcheck::run(&state.config, &held).await;
+            let command = match &state.command_key {
+                Some(key) => CommandKeyCheck::Held {
+                    kid: key.kid(),
+                    public_key: key.public_key(),
+                },
+                None => CommandKeyCheck::Absent,
+            };
+            let (report, ok) = crate::selfcheck::run(&state.config, &held, &command).await;
             if ok {
                 Ok(report)
             } else {

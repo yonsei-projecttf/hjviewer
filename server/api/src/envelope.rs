@@ -3,7 +3,8 @@
 //! The signed request envelope of the machines that talk to hjv-api without a user's token: the
 //! PCs' sync (design v3 §3-6, pcsync.rs) and hjv-relay (relay/PROTOCOL.md §4, design v3 §8-3).
 //! One body format, one signature layout and one order of checks for both; what differs is a
-//! [`Spec`]: the signature's context string and operation, the largest body, and which IDs exist.
+//! [`Spec`]: the signature's context string and operation, the largest body, and which IDs exist
+//! (pcsync.rs `SPEC`; relay.rs `HELLO` and `POLL`).
 //!
 //! The body is one JSON object:
 //!
@@ -244,22 +245,9 @@ mod tests {
         with_pk: false,
     };
 
-    fn relay_id(id: &str) -> bool {
-        id.len() == 18
-            && id.starts_with("r-")
-            && id[2..]
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
-    }
-
-    /// relay/PROTOCOL.md §13: the hello of the relay key of seed 00 01 … 1f.
-    const HELLO: Spec = Spec {
-        context: "hjv-relay-v1",
-        op: "hello",
-        max_body: 65_536,
-        id_ok: relay_id,
-        with_pk: true,
-    };
+    /// relay/PROTOCOL.md §13: the hello of the relay key of seed 00 01 … 1f, in the relays' spec
+    /// (relay.rs).
+    const HELLO: Spec = crate::relay::HELLO;
     const HELLO_BODY: &str = r#"{"id":"r-kzdvvj2umnduyauf","t":1760000000,"n":"AAECAwQFBgcICQoLDA0ODw","p":"{\"v\":1,\"version\":\"1.6.0\",\"arch\":\"x86_64\",\"os\":\"DSM 7.2.1-69057 Update 5\",\"kernel\":\"5.10.55+\",\"ifaces_hash\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\",\"ifaces\":[]}","s":"xfOpDyAd0LYdAww0n+eYJg2DvHTymuHWYOZuGIy89rWYRqHcqEb0PVwTD5MUQIlzSNdUAmsGenMyLh8iqngcAQ==","pk":"A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="}"#;
     const HELLO_SIGNED: &[u8] = b"hjv-relay-v1\x00hello\x00r-kzdvvj2umnduyauf\x001760000000\x00AAECAwQFBgcICQoLDA0ODw\x00PZ3ddx3dke+FIcRE2SqeSlomxD+MMZtr3gsC2ztzq0Q=";
 

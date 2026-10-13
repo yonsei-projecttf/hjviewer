@@ -18,7 +18,7 @@ use hjv_api::{
     fake_sso::{self, FakeSso},
     hbbs, keys,
     oplog::OpLog,
-    pcsync, proof, seal,
+    pcsync, proof, relay, seal,
     server::{self, Listener},
     state::AppState,
     tfa::SecondFactor,
@@ -67,6 +67,28 @@ pub fn hbbs_pubkey() -> String {
 /// shared vectors' keys.
 pub const LIST_SEED: [u8; 32] = [1; 32];
 pub const NEXT_LIST_SEED: [u8; 32] = [9; 32];
+
+/// The command key hjv-api signs wake commands with (number 1: relay/PROTOCOL.md §13's key, the
+/// seed 20 21 … 3f), and the next one the relays pin (number 2).
+pub const COMMAND_SEED: [u8; 32] = {
+    let mut seed = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        seed[i] = i as u8 + 32;
+        i += 1;
+    }
+    seed
+};
+pub const NEXT_COMMAND_SEED: [u8; 32] = [43; 32];
+
+/// HJV_API_COMMAND_PUBKEYS, as the test relays pin them (HJV_COMMAND_PUBKEY).
+pub fn command_pubkeys() -> String {
+    format!(
+        "{},{}",
+        trust::entry(1, &devsig::public_key(&COMMAND_SEED)),
+        trust::entry(2, &devsig::public_key(&NEXT_COMMAND_SEED))
+    )
+}
 
 /// HJV_API_TRUST_PUBKEYS, as the test apps pin them (HJV_TRUST_PUBKEYS).
 pub fn trust_pubkeys() -> String {
@@ -244,6 +266,8 @@ pub struct Options {
     pub sso_slow: Option<Duration>,
     /// start from a copy of this database (a restored backup), its allowlist as it is
     pub db_file: Option<PathBuf>,
+    /// no command key (credential hjviewer-api-command-key): no wake command is signed
+    pub no_command_key: bool,
 }
 
 pub struct Harness {
@@ -332,6 +356,7 @@ impl Harness {
             // tests log one account in several times a minute: more than a quarter of 20 calls
             ("HJV_API_LIMIT_SSO", "100/60".to_owned()),
             ("HJV_API_TRUST_PUBKEYS", trust_pubkeys()),
+            ("HJV_API_COMMAND_PUBKEYS", command_pubkeys()),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
@@ -346,6 +371,11 @@ impl Harness {
             seal_keys: vec![Zeroizing::new(SEAL_SECRET)],
             log_key: Zeroizing::new(LOG_KEY.to_vec()),
             list_key: Zeroizing::new(LIST_SEED),
+            command_key: if opts.no_command_key {
+                None
+            } else {
+                Some(Zeroizing::new(COMMAND_SEED))
+            },
         };
         let dir = temp_dir("harness");
         let db_path = dir.join("hjv-api.sqlite3");
@@ -483,6 +513,11 @@ impl Harness {
             });
         }
         body
+    }
+
+    /// Stops the service, as SIGTERM does: no new requests, the open ones finish.
+    pub fn stop(&self) {
+        let _ = self.stop.send(true);
     }
 
     /// The account key's seed of a token's login, when this harness made the login.
@@ -745,14 +780,169 @@ impl Harness {
 
     /// A PC's sync signed with the time `t`.
     pub async fn sync_at(&self, pc: &TestDevice, p: &Value, t: i64) -> Synced {
+        self.sync_signed(pc, p, t, "192.0.2.40").await
+    }
+
+    /// A PC's sync now from the address `ip` (its egress address, X-Real-IP).
+    pub async fn sync_from(&self, pc: &TestDevice, p: &Value, ip: &str) -> Synced {
+        self.sync_signed(pc, p, now(), ip).await
+    }
+
+    async fn sync_signed(&self, pc: &TestDevice, p: &Value, t: i64, ip: &str) -> Synced {
         let nonce = random_bytes::<16>();
         let body = sync_body(pc, t, &nonce, &p.to_string());
-        let answer = self.sync_raw(body.into_bytes()).await;
+        let answer = self
+            .request(
+                Method::POST,
+                pcsync::PATH,
+                &[("content-type", "application/json"), ("x-real-ip", ip)],
+                Some(body.into_bytes()),
+            )
+            .await;
         let binding = p["binding"].as_str().unwrap_or("").to_owned();
         let n = b64url(&nonce);
         let list = check_list(&answer.json, pc, &binding, &n);
         Synced { answer, n, list }
     }
+
+    /// POST to a relay path (relay/PROTOCOL.md §5) with this body, from `ip` (X-Real-IP).
+    pub async fn relay_raw(&self, path: &str, body: Vec<u8>, ip: &str) -> Answer {
+        self.request(
+            Method::POST,
+            path,
+            &[("content-type", "application/json"), ("x-real-ip", ip)],
+            Some(body),
+        )
+        .await
+    }
+
+    /// A relay's hello now, reporting `ifaces`.
+    pub async fn hello(&self, relay: &TestRelay, ip: &str, ifaces: &Value) -> Answer {
+        let body = relay.body(&relay::HELLO, now(), &hello_payload(ifaces));
+        self.relay_raw(relay::HELLO_PATH, body.into_bytes(), ip)
+            .await
+    }
+
+    /// A relay's poll now: `wait` seconds, its `results`, and its interfaces when `ifaces` is
+    /// given (their summary always, of `ifaces` or else of `reported`).
+    pub async fn poll(
+        &self,
+        relay: &TestRelay,
+        ip: &str,
+        wait: u64,
+        results: &Value,
+        ifaces: Option<&Value>,
+        reported: &Value,
+    ) -> Answer {
+        let body = relay.body(
+            &relay::POLL,
+            now(),
+            &poll_payload(wait, results, ifaces, reported),
+        );
+        self.relay_raw(relay::POLL_PATH, body.into_bytes(), ip)
+            .await
+    }
+}
+
+/// A NAS relay as hjv-relay runs it: its key pair, ID and enrollment code (relay/PROTOCOL.md
+/// §3.1).
+#[derive(Clone)]
+pub struct TestRelay {
+    pub seed: [u8; 32],
+    pub id: String,
+    pub code: String,
+}
+
+impl TestRelay {
+    pub fn new(seed: [u8; 32]) -> TestRelay {
+        let id = relay::relay_id_of(&devsig::public_key(&seed));
+        TestRelay {
+            seed,
+            code: relay::code_of(&id),
+            id,
+        }
+    }
+
+    /// relay/PROTOCOL.md §13's relay: the seed 00 01 … 1f, `r-kzdvvj2umnduyauf`.
+    pub fn of_protocol_md() -> TestRelay {
+        let mut seed = [0u8; 32];
+        for (i, b) in seed.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        TestRelay::new(seed)
+    }
+
+    pub fn public_key(&self) -> [u8; 32] {
+        devsig::public_key(&self.seed)
+    }
+
+    /// The body of a request: the envelope signed with the relay's key, a new nonce.
+    pub fn body(&self, spec: &envelope::Spec, t: i64, p: &str) -> String {
+        envelope::sign_body(spec, &self.seed, &self.id, t, &random_bytes::<16>(), p)
+    }
+}
+
+/// A relay's interface as it reports it (relay/PROTOCOL.md §9.1).
+pub fn iface(name: &str, addr: &str, gateway: Option<&str>, gateway_mac: Option<&str>) -> Value {
+    json!({
+        "name": name, "mac": "02:00:00:00:00:01", "ipv4": [addr], "up": true, "running": true,
+        "gateway": gateway, "gateway_mac": gateway_mac,
+    })
+}
+
+/// hex SHA-256 of the interfaces' JSON text, as the relay sends `ifaces_hash`.
+pub fn ifaces_hash(ifaces: &Value) -> String {
+    hjv_api::util::hex(&hjv_api::util::sha256(ifaces.to_string().as_bytes()))
+}
+
+/// A hello's payload (relay/PROTOCOL.md §5.1).
+pub fn hello_payload(ifaces: &Value) -> String {
+    json!({
+        "v": 1, "version": "1.6.0", "arch": "x86_64", "os": "DSM 7.2.1-69057 Update 5",
+        "kernel": "5.10.55+", "ifaces_hash": ifaces_hash(ifaces), "ifaces": ifaces,
+    })
+    .to_string()
+}
+
+/// A poll's payload (relay/PROTOCOL.md §5.2); `reported` names the interfaces whose summary it
+/// carries when `ifaces` is not sent.
+pub fn poll_payload(
+    wait: u64,
+    results: &Value,
+    ifaces: Option<&Value>,
+    reported: &Value,
+) -> String {
+    let mut p = json!({
+        "v": 1, "version": "1.6.0", "arch": "x86_64", "os": "DSM 7.2.1-69057 Update 5",
+        "kernel": "5.10.55+", "wait": wait, "ifaces_hash": ifaces_hash(ifaces.unwrap_or(reported)),
+        "results": results,
+    });
+    if let Some(ifaces) = ifaces {
+        p["ifaces"] = ifaces.clone();
+    }
+    p.to_string()
+}
+
+/// A PC's wake report (design v3 §8-2) of one wired card, documentation values.
+pub fn wol_report(mac: &str, addr: &str, gateway: &str, gateway_mac: Option<&str>) -> Value {
+    json!({"v": 1,
+        "adapters": [{"mac": mac, "ipv4": [addr], "gateway": gateway, "gateway_mac": gateway_mac,
+            "desc": "Example PCIe GbE Controller", "bus": "pci", "link_mbps": 1000,
+            "driver": {"provider": "Example", "version": "1.0.0.0", "date": "1-1-2024"},
+            "wake": {"magic": "1", "pattern": "1", "ms_magic": null, "s5": "1",
+                     "shutdown_speed": "0", "eee": "0", "green": "0"},
+            "armed": true}],
+        "power": {"s3": true, "s4": true, "s5": true, "hiberfile": true, "aoac": false,
+                  "fast_startup": false, "on_ac": true},
+        "uptime_s": 3600})
+}
+
+/// A sync's payload that carries a wake report with its summary.
+pub fn payload_with_wol(binding: &str, wol: &Value, hash: &str) -> Value {
+    let mut p = payload(binding);
+    p["wol"] = wol.clone();
+    p["wol_hash"] = json!(hash);
+    p
 }
 
 /// A sync's payload as the PC's service writes it (design v3 §3-6), with nothing to report.
