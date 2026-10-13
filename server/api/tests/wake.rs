@@ -392,17 +392,56 @@ async fn jobs_fail_with_the_relays_error_or_no_result() {
             )
             .await;
         assert_eq!(a.json["commands"], json!([]), "{code}");
-        let status = h.get(&format!("/api/hjv/wake/{job}"), &phone).await;
-        assert_eq!(
-            (
-                status.json["state"].as_str(),
-                status.json["error"].as_str(),
-                status.json["packets"].as_i64()
-            ),
-            (Some("failed"), Some(code), Some(0)),
-            "{code}"
-        );
+        let failed = |status: &Answer| {
+            assert_eq!(
+                (
+                    status.json["state"].as_str(),
+                    status.json["error"].as_str(),
+                    status.json["packets"].as_i64(),
+                    status.json["sent_at"].clone()
+                ),
+                (Some("failed"), Some(code), Some(0), Value::Null),
+                "{code}"
+            );
+        };
+        failed(&h.get(&format!("/api/hjv/wake/{job}"), &phone).await);
+        // the relay's refusal is its word on the job: a result that comes after it and says the
+        // packets went changes nothing
+        h.poll(
+            &r,
+            RELAY_IP,
+            0,
+            &json!([result(&text, &job, Some(now()), 12, None)]),
+            None,
+            &lan(),
+        )
+        .await;
+        failed(&h.get(&format!("/api/hjv/wake/{job}"), &phone).await);
     }
+    // partial without a packet: nothing went out, so the job failed and is not waited for
+    let job = next_job(&h, &pc, &phone).await;
+    let text = delivered(&h, &r).await;
+    let a = h
+        .poll(
+            &r,
+            RELAY_IP,
+            0,
+            &json!([result(&text, &job, Some(now()), 0, Some("partial"))]),
+            None,
+            &lan(),
+        )
+        .await;
+    assert_eq!(a.json["commands"], json!([]));
+    let row = job_row(&h, &job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.error.as_deref(),
+            row.packets,
+            row.sent_at
+        ),
+        ("failed", Some("partial"), Some(0), None)
+    );
     // partial, with packets: sent; replayed: nothing new
     let job = next_job(&h, &pc, &phone).await;
     let text = delivered(&h, &r).await;
@@ -756,6 +795,114 @@ async fn wakes_are_limited_per_account_and_relay() {
     )
     .await;
     assert_eq!(wake_pc(&h, &pc.id, &phone, None).await.status, 202);
+}
+
+/// The PC's limit, and the job under way that answers a second request, are an account's own: a
+/// job that another account made for the same PC ID (a PC that changed hands within the minute) is
+/// neither this account's answer nor its wait.
+#[tokio::test]
+async fn another_accounts_job_of_the_pc_is_not_this_accounts() {
+    let h = Harness::start().await;
+    let (pc, _) = reported(&h, HONG, "524000016", "192.0.2.67/24", "192.0.2.1", PC_IP).await;
+    asleep(&h, &pc).await;
+    approved(&h, 47, &lan(), RELAY_IP, &pc).await;
+    let phone = h.login_ok(HONG, None).await;
+    let kim = h.login_ok(KIM, None).await;
+    // KIM's job for this PC ID, ten seconds ago, its packets sent: under way
+    let theirs = "f".repeat(32);
+    sql(
+        &h,
+        format!(
+            "INSERT INTO wake_jobs (job, account_id, account_tag, device_id, relay_id, grade, net, cmd, created_at, exp, state, sent_at, packets)
+             SELECT '{theirs}', MAX(id), 't', '{}', 'r-theirs', 'exact', '192.0.2.0/24', 'c-theirs', {}, {}, 'sent', {}, 12 FROM accounts",
+            pc.id,
+            now() - 10,
+            now() + 50,
+            now() - 5
+        ),
+    )
+    .await;
+    assert_eq!(
+        h.get(&format!("/api/hjv/wake/{theirs}"), &kim).await.json["state"],
+        "sent"
+    );
+    // HONG's request gets a job of its own, queued: not theirs (whose ID it could not even ask
+    // about), and no wait for theirs
+    let a = wake_pc(&h, &pc.id, &phone, None).await;
+    assert_eq!(
+        (a.status, a.json["state"].as_str()),
+        (202, Some("queued")),
+        "{}",
+        a.text
+    );
+    let job = a.json["job"].as_str().unwrap().to_owned();
+    assert_ne!(job, theirs);
+    assert_eq!(job_row(&h, &job).await.account_tag, h.account_tag(HONG.0));
+    assert_eq!(
+        h.get(&format!("/api/hjv/wake/{job}"), &phone).await.status,
+        200
+    );
+    // and then its own job is the one under way
+    let again = wake_pc(&h, &pc.id, &phone, None).await;
+    assert_eq!(
+        (again.status, again.json["job"].as_str()),
+        (202, Some(job.as_str()))
+    );
+    assert_eq!(
+        h.get(&format!("/api/hjv/wake/{theirs}"), &phone)
+            .await
+            .status,
+        404
+    );
+}
+
+/// The command names the PC's cards on the network that matched, and no other card of the PC: a
+/// magic packet for a card on another network is for nobody on this one (relay/PROTOCOL.md §7.1).
+#[tokio::test]
+async fn the_command_names_the_cards_on_the_matched_network() {
+    let h = Harness::start().await;
+    let pc = TestDevice::windows("524000017");
+    h.hbbs.register(&pc, Some(100));
+    h.login_ok(HONG, Some(&pc)).await;
+    let binding = h.binding_of(&pc.id).await;
+    // three wired cards: one on another network, listed first, and two on the relay's
+    let mut wol = wol_report(
+        PC_MAC,
+        "192.0.2.67/24",
+        "192.0.2.1",
+        Some("00:00:5e:00:53:01"),
+    );
+    let card = |mac: &str, addr: &str, gateway: &str| {
+        let mut card = wol["adapters"][0].clone();
+        card["mac"] = json!(mac);
+        card["ipv4"] = json!([addr]);
+        card["gateway"] = json!(gateway);
+        card
+    };
+    let mut elsewhere = card("00:00:5e:00:53:11", "203.0.113.5/24", "203.0.113.1");
+    elsewhere["gateway_mac"] = json!("00:00:5e:00:53:02");
+    let second = card("00:00:5e:00:53:12", "192.0.2.68/24", "192.0.2.1");
+    let first = wol["adapters"][0].clone();
+    wol["adapters"] = json!([elsewhere, first, second]);
+    let s = h
+        .sync_from(&pc, &payload_with_wol(&binding, &wol, "h1"), PC_IP)
+        .await;
+    assert_eq!(s.answer.status, 200, "{}", s.answer.text);
+    asleep(&h, &pc).await;
+    let r = approved(&h, 48, &lan(), RELAY_IP, &pc).await;
+    let phone = h.login_ok(HONG, None).await;
+    let a = wake_pc(&h, &pc.id, &phone, None).await;
+    assert_eq!(
+        (a.status, a.json["relay"]["match"].as_str()),
+        (202, Some("exact")),
+        "{}",
+        a.text
+    );
+    let got = commands(&h.poll(&r, RELAY_IP, 0, &json!([]), None, &lan()).await);
+    assert_eq!(got.len(), 1);
+    let c = &got[0].0;
+    assert_eq!(c["net"], "192.0.2.0/24");
+    assert_eq!(c["macs"], json!([PC_MAC, "00:00:5e:00:53:12"]));
 }
 
 #[tokio::test]

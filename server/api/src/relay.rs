@@ -14,8 +14,21 @@
 //! signature (strict, 401 `bad_signature`), 5 the time within 300 s (400 `clock` with
 //! `server_time`), 6 the pair (`id`, `n`) not accepted in 600 s (409 `replay`; 503 `unavailable`
 //! with `retry_after` while the store holds [`MAX_NONCES`]), 7 the payload (400 `bad_request`). A
-//! request refused in steps 1-6 changes nothing; after them come the limits (429 `rate_limited`
-//! with `retry_after`). Errors are `{"error":"<code>","server_time":<time>}`.
+//! request refused in steps 1-6 changes nothing. Errors are
+//! `{"error":"<code>","server_time":<time>}`.
+//!
+//! **The limits** (429 `rate_limited` with `retry_after`) are not among those checks, and a
+//! request they refuse changes nothing either: no nonce is kept of it, nothing is written. A
+//! relay hjv-api knows has its own ([`HELLOS_PER_HOUR`], [`POLLS_PER_MINUTE`]), taken after step
+//! 5, once a request is known to be that relay's and of this time, and before its nonce is kept:
+//! it counts every such request, whatever steps 6 and 7 make of it, and over it the answer is 429
+//! whatever the nonce and the payload are. The limits on new entries come after step 7, and a
+//! hello of a key hjv-api does not know keeps its nonce only when it makes an entry. So these
+//! limits bound the nonces kept and the database's writes: [`PENDING_MAX`] pending relays, all at
+//! their limits, keep about 24 000 nonces of the [`MAX_NONCES`]. A limit that came after the
+//! nonce would not: a pending relay is a known one, anyone with a key can become one, and its
+//! requests over the limit, or with payloads that do not read, would fill the store (503 for
+//! every relay, no PC woken) at a commit each.
 //!
 //! **hello** (§5.1): a key never seen becomes a pending entry (its ID, key, time, egress address,
 //! versions and interfaces), at most [`PENDING_PER_SOURCE`] new ones an hour per source address
@@ -468,13 +481,21 @@ fn hello(
     if row.as_ref().is_some_and(|r| r.pk != pk) {
         return Ok(Decided::Refused(Refusal::BadSignature));
     }
-    // 4. the signature, 5. the time, 6. the nonce
+    // 4. the signature, 5. the time
     if !env.verify(&HELLO, &pk) {
         return Ok(Decided::Refused(Refusal::BadSignature));
     }
     if !env.fresh(at) {
         return Ok(Decided::Refused(Refusal::Clock));
     }
+    // the limit of a relay kept here, before anything is kept of the request: over it, no nonce
+    // and no write (the transaction rolls back)
+    if row.is_some() {
+        if let Err(retry) = hub.take_hello(&env.id) {
+            return Ok(Decided::Limited(retry));
+        }
+    }
+    // 6. the nonce
     match db::use_relay_nonce(
         &tx,
         &env.id,
@@ -487,9 +508,12 @@ fn hello(
         NonceUse::Replayed => return Ok(Decided::Refused(Refusal::Replay)),
         NonceUse::Full => return Ok(Decided::Full),
     }
-    // 7. the payload (the nonce stays used)
+    // 7. the payload: the nonce of a relay kept here stays used, within its limit; of a key never
+    // seen nothing is kept, since no limit of hjv-api's counts its requests
     let Some(hello) = parse_hello(&env.p) else {
-        tx.commit()?;
+        if row.is_some() {
+            tx.commit()?;
+        }
         return Ok(Decided::Refused(Refusal::BadRequest));
     };
     let ifaces = ifaces_json(hello.ifaces.as_deref().unwrap_or_default());
@@ -503,16 +527,13 @@ fn hello(
         poll: false,
     };
     let decided = match row {
-        Some(r) => match hub.take_hello(&env.id) {
-            Err(retry) => Decided::Limited(retry),
-            Ok(()) => {
-                db::relay_seen(&tx, &env.id, &seen, at)?;
-                Decided::Hello {
-                    state: r.state,
-                    activated: false,
-                }
+        Some(r) => {
+            db::relay_seen(&tx, &env.id, &seen, at)?;
+            Decided::Hello {
+                state: r.state,
+                activated: false,
             }
-        },
+        }
         None => {
             // an expired pending entry makes room for the new one, with the same code
             db::drop_expired_pending(&tx, at - PENDING_LIFETIME)?;
@@ -538,15 +559,17 @@ fn hello(
                     }
                 }
                 None => {
+                    // the limits on new entries: a hello they refuse keeps nothing either, not
+                    // its nonce (the transaction rolls back)
                     let source = address_group(ip);
                     let (total, from_source, first) = db::pending_counts(&tx, &source, at - HOUR)?;
                     if from_source >= PENDING_PER_SOURCE {
                         let free = first.map_or(HOUR, |f| f + HOUR - at);
-                        Decided::Limited(free.clamp(1, 3600) as u64)
+                        return Ok(Decided::Limited(free.clamp(1, 3600) as u64));
                     } else if total >= PENDING_MAX {
                         let free =
                             db::oldest_pending(&tx)?.map_or(HOUR, |o| o + PENDING_LIFETIME - at);
-                        Decided::Limited(free.clamp(60, 3600) as u64)
+                        return Ok(Decided::Limited(free.clamp(60, 3600) as u64));
                     } else {
                         db::insert_relay(
                             &tx,
@@ -587,13 +610,19 @@ fn poll(
     let Some(relay) = live(db::relay(&tx, &env.id)?, at) else {
         return Ok(Decided::UnknownRelay);
     };
-    // 4. the signature, 5. the time, 6. the nonce
+    // 4. the signature, 5. the time
     if !env.verify(&POLL, &relay.pk) {
         return Ok(Decided::Refused(Refusal::BadSignature));
     }
     if !env.fresh(at) {
         return Ok(Decided::Refused(Refusal::Clock));
     }
+    // the relay's limit, before anything is kept of the request: over it, no nonce and no write
+    // (the transaction rolls back). A pending relay is a known one too.
+    if let Err(retry) = hub.take_poll(&env.id) {
+        return Ok(Decided::Limited(retry));
+    }
+    // 6. the nonce
     match db::use_relay_nonce(
         &tx,
         &env.id,
@@ -606,15 +635,11 @@ fn poll(
         NonceUse::Replayed => return Ok(Decided::Refused(Refusal::Replay)),
         NonceUse::Full => return Ok(Decided::Full),
     }
-    // 7. the payload (the nonce stays used)
+    // 7. the payload (the nonce stays used, within the relay's limit)
     let Some(poll) = parse_poll(&env.p) else {
         tx.commit()?;
         return Ok(Decided::Refused(Refusal::BadRequest));
     };
-    if let Err(retry) = hub.take_poll(&env.id) {
-        tx.commit()?;
-        return Ok(Decided::Limited(retry));
-    }
     // 1. the results; then what the relay reported
     let notes = if relay.state == RelayState::Active {
         apply_results(&tx, &relay, &poll.results, at)?
@@ -988,6 +1013,12 @@ fn ago(secs: i64) -> String {
     }
 }
 
+/// What `relay approve` says under its verdicts: the one on the network compares what the relay
+/// reports of itself (wolinfo.rs keeps of it only addresses with a prefix a relay uses) with the
+/// PC's signed report, so it catches a wrong code or another NAS, and is no proof against a relay
+/// that reports the PC's network on purpose. Only the egress addresses are what hjv-api saw.
+const VERDICT_NOTE: &str = "  (on the PC's network: by the relay's own report of its interfaces, which hjv-api cannot check; what decides is that the PC's owner confirmed this code)\n";
+
 /// The verdict lines of a relay and a PC (PROTOCOL.md §11): default output holds no address,
 /// network or MAC; `reveal` adds them, MACs masked to their last two bytes.
 fn verdict_lines(
@@ -1236,7 +1267,9 @@ pub async fn admin_list(state: &Arc<AppState>, reveal: bool) -> Result<String, S
 /// v3 §8-3): a pending relay becomes active for the account that has the PC, once its verdict says
 /// that it is on the PC's network (or `--force`, after the owner confirmed the code); a code
 /// without a pending entry is approved ahead for PREAPPROVAL_LIFETIME. For a relay that is active
-/// for that account already, `--name` gives it a new name.
+/// for that account already, `--name` gives it a new name. The verdict is a check against
+/// mistakes, of what the relay itself reports (`VERDICT_NOTE`): the owner's confirmation of the
+/// code is what an approval rests on, with the verdict or with `--force`.
 pub async fn admin_approve(
     state: &Arc<AppState>,
     code: &str,
@@ -1323,6 +1356,9 @@ pub async fn admin_approve(
         crate::util::mask(&device_id)
     );
     let verdict = verdict_lines(&mut out, &relay, info.as_ref(), at, reveal, "  ");
+    // what the verdict on the network is worth, where the operator reads it: a pending relay
+    // reports its interfaces itself
+    out.push_str(VERDICT_NOTE);
     // the outcome first: the operator record keeps the first line
     if relay.state == RelayState::Active {
         // a name given for a relay of that account is its new name (a revoked key is never

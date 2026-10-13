@@ -201,13 +201,13 @@ relay list                the NAS relays: state, account, name, last poll, versi
                           verdicts; the addresses and networks with --reveal, MACs always masked);
                           pending relays with their codes; the codes approved ahead
 relay approve <code> --owner-of <PC ID> [--name <name>] [--force]
-                          approve a relay for the account that has the PC (no portal ID typed):
-                          shows the verdicts of the relay against that PC's wake report and
-                          approves only when the relay is on the PC's network, or with --force
-                          once the PC's owner confirmed the code; a code no relay has said hello
-                          with is approved ahead for 7 days. --name is what the apps call the
-                          relay (else "NAS" and the code's first group); given for a relay that
-                          is active for that account already, it renames it
+                          approve a relay for the account that has the PC (no portal ID typed),
+                          after the PC's owner confirmed the code: shows the verdicts of the
+                          relay against that PC's wake report and approves when the relay is on
+                          the PC's network (by the relay's own report), or with --force; a code
+                          no relay has said hello with is approved ahead for 7 days. --name is
+                          what the apps call the relay (else "NAS" and the code's first group);
+                          given for a relay already active for that account, it renames it
 relay revoke <relay ID|code>
                           the relay takes no commands any more; it keeps only its ID, key and
                           times, and its key is never approved again; withdraws an approval ahead
@@ -225,9 +225,16 @@ the PC's network (the same network and gateway, or overlapping networks with the
 MAC; on a private network also behind the same egress address), whether the egress addresses are
 the same, and how long the entry has waited; the default output holds no address, so that it may
 go into a chat or a ticket. A relay that cannot reach the PC's network is the wrong entry. The
-relay's name is what the apps show for it as it is, in the progress of a wake ("… 에 켜기 요청을
-전달하는 중…"), so one that reads on its own does best, such as "연구실 NAS"; without `--name` it is
-`NAS` and the first group of the code.
+verdict on the network rests on what the relay says of itself, a pending one too: its interfaces,
+their networks and gateways are its own report (kept only with the prefixes a relay uses, /8 to
+/30), compared with the PC's signed report, and only the egress addresses are what hjv-api saw
+itself. So a "yes" catches a mistake, a wrong code or another NAS, and it is no proof against a
+relay that reports the PC's network on purpose: what decides is the owner's confirmation of the
+code, before the approval, with or without `--force`.
+
+The relay's name is what the apps show for it as it is, in the progress of a wake ("… 에 켜기
+요청을 전달하는 중…"), so one that reads on its own does best, such as "연구실 NAS"; without
+`--name` it is `NAS` and the first group of the code.
 
 The rollout (design v3 §11): install with the switch off, `passwordless on --owner-of <the
 operator's PC ID>`, a week of use, then `passwordless on`. To stop password-less connections, run
@@ -609,8 +616,17 @@ SHA-256), at most 64 KiB, checked in the same order: size (413 `too_large`), sha
 `bad_request`), the key (a relay kept under the ID keeps its key, else 401; a poll of an unknown
 relay 404 `unknown_relay`), the signature (401 `bad_signature`), the time within 300 s (400
 `clock` with `server_time`), the nonce within 600 s (409 `replay`; 503 `unavailable` with
-`retry_after` while 100 000 nonces are kept), the payload (400 `bad_request`); then the limits (429
-`rate_limited` with `retry_after`).
+`retry_after` while 100 000 nonces are kept), the payload (400 `bad_request`).
+
+The limits (429 `rate_limited` with `retry_after`) are not among those checks, and a request they
+refuse leaves nothing: no nonce, no write. A known relay's own limit, 60 hellos an hour and 120
+polls a minute, is taken once a request is known to be that relay's and of this time, after the
+time and before the nonce: it counts every such request, also one that is then refused as a
+replay or for its payload (the latter keeps its nonce), and no request that is not the relay's.
+The limits on new entries come after the payload, and a hello of a key hjv-api does not know
+keeps its nonce only when it makes the entry. So the nonces kept, and the database's writes, are
+bounded by hjv-api's own limits. They have to be: a pending relay is a known one, and anyone with
+a key can become one (relay/PROTOCOL.md §4.3).
 
 - hello: a new key becomes a pending entry (its egress address, versions and interfaces kept), 5
   an hour per source address (an IPv6 address by its /64), 20 in all, each for 24 hours; a code
@@ -660,20 +676,21 @@ GET  /api/hjv/devices/{id}/wol
 
 - The wake request, in this order: a PC of the token's account (else 404, as for any other ID);
   on already (it synced, or hbbs saw it register, within 30 seconds): 409 `online`; no wake report:
-  409 `no_wol_info`; one job a minute per PC: within the minute the job under way (queued or sent)
-  is the answer, 202, and one that is over 429; 20 jobs an hour per account: 429; the relay; 10
-  jobs a minute per relay: 429; the command, signed and queued, and the relay's held poll gets it
-  at once. A minute after a job that still waits for its PC the packets may be sent again, as a
-  new job; each job is confirmed on its own.
+  409 `no_wol_info`; one job a minute per PC, of the account's own: within the minute the job
+  under way (queued or sent) is the answer, 202, and one that is over 429; 20 jobs an hour per
+  account: 429; the relay; 10 jobs a minute per relay: 429; the command, signed and queued, and
+  the relay's held poll gets it at once. A minute after a job that still waits for its PC the
+  packets may be sent again, as a new job; each job is confirmed on its own.
 - The relay: of the account's active relays (a relay wakes its account's PCs only), the online ones
   with the best grade (`exact`: an interface on the PC's network with its prefix and the same
   gateway IP; `overlap`: overlapping networks and the same gateway IP or MAC; `history`: it woke
-  this PC on this network before); on a private or shared network (RFC 1918, 100.64.0.0/10) the PC's
-  and the relay's egress addresses must be the same too. One that would do but is not online: 503
-  `relay_offline`. None: 409 `no_relay`, `any_relay` true when an online relay shares a network
-  with the PC that could not be confirmed (another gateway, no egress address to compare);
-  `{"any_relay":true}` then uses it (`match` `any`). `different_egress`: a private network behind
-  another address, another site; the app hides "모든 중계기로 시도" then.
+  this PC on this network before and still has an address on it); on a private or shared network
+  (RFC 1918, 100.64.0.0/10) the PC's and the relay's egress addresses must be the same too. One
+  that would do but is not online: 503 `relay_offline`. None: 409 `no_relay`, `any_relay` true
+  when an online relay shares a network with the PC that could not be confirmed (another gateway,
+  no egress address to compare); `{"any_relay":true}` then uses it (`match` `any`).
+  `different_egress`: a private network behind another address, another site; the app hides
+  "모든 중계기로 시도" then.
 - The command names the PC's network that matched and the MACs of its cards on it, from its signed
   report only; no MAC goes to an app.
 - States: `queued` → `sent` (the relay's result) → `confirmed` (the PC synced after the packets,
@@ -759,7 +776,9 @@ ten-second repeat, key use, the device list's states, every way a PC leaves its 
 change confirmed with hbbs, the report and selfcheck. `tests/relay.rs` has hjv-relay's requests:
 the checks in their order with the cases of relay/tests/common's `check_request` and the vector of
 relay/PROTOCOL.md §13, the states, approval (no address in the default output) and revocation,
-approval ahead, the limits, the nonce store's bound, the long-poll, the interface reports;
+approval ahead, the limits (what they refuse leaves no nonce; a relay's own counts the requests of
+its that are then refused, and nobody else's), the nonce store's bound, the long-poll, the
+interface reports;
 `tests/wake.rs` the wake reports in the sync, the wake paths in their order, the choice of relay,
 the command as the relay checks it, the jobs' states, the limits, the verdicts in the device list,
 what goes with an account or past its time, and the command key's checks; `tests/relay_loop.rs`
@@ -767,8 +786,9 @@ runs hjv-relay itself (relay/'s library, its loop step by step) against hjv-api 
 terminator that stands in for nginx: enrollment, approval, a long-poll a wake ends at once, twelve
 packets recorded on the PC's wire, the result, the confirmation, revocation, enrolling again, and a
 relay that does not trust the key in use; and it gives the same 900 requests, well-formed and
-broken in every part, to relay/tests/common's `check_request` (the relay's reference of
-PROTOCOL.md §4.3) and to hjv-api, which must come to the same verdict each time. That file needs
+broken in every part, and a hello whose key is no point of the curve, to relay/tests/common's
+`check_request` (the relay's reference of PROTOCOL.md §4.3) and to hjv-api, which must come to
+the same verdict each time (within hjv-api's limits: the reference has none). That file needs
 relay/ next to server/ (a dev dependency by path). `tests/ops.rs` has the backups (the rows of
 a backup's file, the places refused, the old backups deleted, a backup while requests go on), the
 restore procedure on a restored database, the check (a fake report with a stopped socket and no
@@ -827,4 +847,6 @@ of relay, the jobs' ticker that `jobs.rs` runs every five seconds), routes in `a
 relays' envelope from `envelope` with the relay's `Spec`, tables through `db::MIGRATIONS` (schema
 3), the PC's report through `pcsync` with the answer's `send_wol`. In front of hjv-api's own
 limits nginx limits relay/hello per source (design v3 §5-8): that location of
-deploy/nginx-hjviewer-api.conf and its zones file come with the packaging work (WP-B).
+deploy/nginx-hjviewer-api.conf and its zones file come with the packaging work (WP-B). relay/poll
+needs no such limit for the nonce store, which hjv-api's own limits bound (above); one per source
+there would only spare hjv-api the signature checks of a flood.

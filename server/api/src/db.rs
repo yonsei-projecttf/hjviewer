@@ -2829,14 +2829,19 @@ pub fn job(c: &Connection, job: &str) -> rusqlite::Result<Option<Job>> {
     .optional()
 }
 
-/// The latest job of a PC.
-pub fn latest_job_of(c: &Connection, device_id: &str) -> rusqlite::Result<Option<Job>> {
+/// The latest job an account made for a PC. Only its own: the jobs another account made for the
+/// same ID (a PC that changed hands) are not this account's to be answered with or to wait for.
+pub fn latest_job_of(
+    c: &Connection,
+    device_id: &str,
+    account_id: i64,
+) -> rusqlite::Result<Option<Job>> {
     c.query_row(
         &format!(
-            "SELECT {JOB_COLUMNS} FROM wake_jobs WHERE device_id = ?1
+            "SELECT {JOB_COLUMNS} FROM wake_jobs WHERE device_id = ?1 AND account_id = ?2
              ORDER BY created_at DESC, rowid DESC LIMIT 1"
         ),
-        [device_id],
+        params![device_id, account_id],
         job_row,
     )
     .optional()
@@ -3597,7 +3602,18 @@ mod tests {
         );
         queue(&c, &new_job("j4", "1", "r-1", 5000));
         assert_eq!(open_jobs(&c).unwrap().len(), 1);
-        assert_eq!(latest_job_of(&c, "1").unwrap().unwrap().job, "j4");
+        assert_eq!(latest_job_of(&c, "1", a).unwrap().unwrap().job, "j4");
+        // the latest job of a PC is an account's own: a later one that another account made for
+        // the same ID is not
+        let b = upsert_account(&c, "b", "B", "", 1).unwrap();
+        let mut theirs = new_job("j5", "1", "r-9", 5001);
+        theirs.account_id = b;
+        queue(&c, &theirs);
+        assert_eq!(latest_job_of(&c, "1", a).unwrap().unwrap().job, "j4");
+        assert_eq!(latest_job_of(&c, "1", b).unwrap().unwrap().job, "j5");
+        assert_eq!(latest_job_of(&c, "2", a).unwrap(), None);
+        delete_account(&c, b, 5002).unwrap();
+        assert_eq!(job(&c, "j5").unwrap(), None, "it went with its account");
         assert_eq!(jobs_of_account_since(&c, a, 3999).unwrap(), 2);
         assert_eq!(jobs_of_relay_since(&c, "r-1", 0).unwrap(), 4);
         // revoked: its waiting job fails, its commands go, the row keeps what PROTOCOL.md §11 allows

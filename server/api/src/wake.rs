@@ -444,7 +444,7 @@ async fn wake(state: &Arc<AppState>, req: &ApiRequest, device_id: &str) -> Reply
             let Some(device) = db::device(c, &id)?.filter(|d| d.account_id == account_id) else {
                 return Ok(None);
             };
-            let latest = db::latest_job_of(c, &id)?;
+            let latest = db::latest_job_of(c, &id, account_id)?;
             let latest_relay = match &latest {
                 Some(job) => db::relay(c, &job.relay_id)?,
                 None => None,
@@ -595,7 +595,7 @@ async fn wake(state: &Arc<AppState>, req: &ApiRequest, device_id: &str) -> Reply
             move |c| {
                 db::in_tx(c, |tx| {
                     // another request of this PC may have queued one meanwhile
-                    if let Some(other) = db::latest_job_of(tx, &job.device_id)?
+                    if let Some(other) = db::latest_job_of(tx, &job.device_id, account_id)?
                         .filter(|j| j.created_at > at - PC_EVERY)
                     {
                         return Ok(Err(other));

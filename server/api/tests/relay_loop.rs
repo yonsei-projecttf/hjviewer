@@ -492,7 +492,8 @@ fn flip(text: &str, rng: &mut Rng) -> String {
 /// One run of requests from two relays, right and wrong in what is signed (the time, a nonce
 /// again, the payload, another key, another ID) and in the envelope as sent (a field gone, of
 /// another type, a character changed, the body cut, too large), each given to the relay's
-/// reference and to hjv-api: (requests, accepted ones, verdicts by code).
+/// reference and to hjv-api: (requests, accepted ones, verdicts by code). Before them, a hello
+/// whose key is no point of the curve, which the generator does not make.
 async fn compare(seed: u64, cases: usize) -> (usize, usize, HashMap<String, usize>) {
     let h = Harness::start().await;
     let relays = [
@@ -511,6 +512,33 @@ async fn compare(seed: u64, cases: usize) -> (usize, usize, HashMap<String, usiz
     let mut used: Vec<(String, [u8; 16])> = Vec::new();
     let mut rng = Rng(seed);
     let (mut accepted, mut by_code) = (0, HashMap::<String, usize>::new());
+    // A hello whose `pk` is 32 bytes that are no point of the curve (y = 2), under the relay ID
+    // those bytes give: its shape passes (PROTOCOL.md §4.3 step 2), and no signature verifies
+    // under such a key, which is step 4's refusal from both.
+    {
+        let mut no_point = [0u8; 32];
+        no_point[0] = 2;
+        assert!(ed25519_dalek::VerifyingKey::from_bytes(&no_point).is_err());
+        let id = hjv_api::relay::relay_id_of(&no_point);
+        let body = envelope::sign_body(
+            &HELLO,
+            &relays[0].seed,
+            &id,
+            now(),
+            &random_bytes::<16>(),
+            &hello_payload(&ifaces),
+        );
+        let mut value: Value = serde_json::from_str(&body).unwrap();
+        value["pk"] = json!(b64(&no_point));
+        let bytes = value.to_string().into_bytes();
+        let expected = reference::check_request("hello", &bytes, &known, &mut nonces, now())
+            .map(|_| ())
+            .unwrap_err();
+        let a = h.relay_raw(HELLO_PATH, bytes, SITE_IP).await;
+        let got = (a.status, a.json["error"].as_str().unwrap_or("ok"));
+        assert_eq!(got, (401, "bad_signature"), "hjv-api: {}", a.text);
+        assert_eq!(expected, got, "the relay's reference");
+    }
     for case in 0..cases {
         let r = &relays[rng.below(2)];
         let hello = rng.below(3) == 0 || !known.contains_key(&r.id);
@@ -616,7 +644,8 @@ async fn the_relays_reference_checks_and_hjv_api_agree() {
     let mut codes: HashMap<String, usize> = HashMap::new();
     let (mut requests, mut accepted) = (0, 0);
     // within hjv-api's own limits, which the reference has none of: 60 hellos an hour and 120
-    // polls a minute per known relay (a run takes about a fifth of its requests)
+    // polls a minute per known relay, of the requests that are that relay's own and of this
+    // time, whatever becomes of them then (a run takes about a third of each limit)
     for seed in [
         0x9e37_79b9_7f4a_7c15u64,
         0xc2b2_ae3d_27d4_eb4f,

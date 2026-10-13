@@ -63,6 +63,22 @@ async fn count(h: &Harness, sql: &'static str) -> i64 {
         .unwrap()
 }
 
+/// The nonces kept of a relay's requests.
+async fn nonces_of(h: &Harness, id: &str) -> i64 {
+    let id = id.to_owned();
+    h.state
+        .db
+        .call(move |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM relay_nonces WHERE relay_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap()
+}
+
 /// A PC of `account` bound by a login on it, with a wake report on 192.0.2.0/24 from its sync.
 async fn reported_pc(h: &Harness, account: (&str, &str), id: &str) -> TestDevice {
     let pc = TestDevice::windows(id);
@@ -182,9 +198,11 @@ async fn the_checks_in_their_order() {
         401,
         "bad_signature",
     );
-    // 5. the time, either way, with the server's time to take
+    // 5. the time, either way, with the server's time to take. A second may pass before hjv-api
+    // reads its clock, which makes a time behind it older and one ahead of it nearer: the one
+    // ahead is well past the 300 seconds (src/envelope.rs's tests have the bounds themselves).
     let nonce = [9u8; 16];
-    for t in [now() - 301, now() + 301] {
+    for t in [now() - 301, now() + 305] {
         let body = envelope::sign_body(&HELLO, &r.seed, &r.id, t, &nonce, &p);
         let a = send(HELLO_PATH, body).await;
         refused(&a, 400, "clock");
@@ -239,6 +257,23 @@ async fn the_checks_in_their_order() {
     for body in bad_payloads {
         refused(&send(HELLO_PATH, body).await, 409, "replay");
     }
+    // of a key hjv-api does not know nothing is kept, its nonce neither, unless the hello makes
+    // the entry: none of hjv-api's limits counts such requests. The same body again is refused
+    // for its payload again.
+    let stranger = TestRelay::new([3; 32]);
+    let body = envelope::sign_body(
+        &HELLO,
+        &stranger.seed,
+        &stranger.id,
+        now(),
+        &rand_nonce(),
+        "not json",
+    );
+    for _ in 0..2 {
+        refused(&send(HELLO_PATH, body.clone()).await, 400, "bad_request");
+    }
+    assert_eq!(nonces_of(&h, &stranger.id).await, 0);
+    assert!(relay_row(&h, &stranger.id).await.is_none());
     // a poll's payload: wait, results
     for p in [
         poll_payload(0, &json!({}), None, &lan()),
@@ -381,6 +416,11 @@ async fn registration_approval_and_revocation() {
     );
     assert!(
         out.contains("the same egress address as the PC: no"),
+        "{out}"
+    );
+    // and what that verdict is worth: the relay's own report, no proof
+    assert!(
+        out.contains("(on the PC's network: by the relay's own report of its interfaces"),
         "{out}"
     );
     assert!(
@@ -638,6 +678,40 @@ async fn the_approval_tool_shows_verdicts_and_values_only_with_reveal() {
         revealed.contains("203.0.113.10/24") && revealed.contains(RELAY_IP),
         "{revealed}"
     );
+    // The verdict on the network rests on what the relay reports of itself. An address as wide as
+    // the whole address space is not one a relay uses (relay/PROTOCOL.md §9.1: /8 to /30) and is
+    // not kept, so it does not put a relay "on the PC's network", with the PC's gateway neither.
+    let wide = TestRelay::new([26; 32]);
+    let everywhere = json!([
+        iface(
+            "eth0",
+            "10.9.9.9/0",
+            Some("192.0.2.1"),
+            Some("00:00:5e:00:53:01")
+        ),
+        iface("eth1", "192.0.2.200/32", Some("192.0.2.1"), None),
+    ]);
+    assert_eq!(
+        h.hello(&wide, RELAY_IP, &everywhere).await.json["state"],
+        "pending"
+    );
+    let err = h
+        .admin(
+            &["relay", "approve", &wide.code, "--owner-of", &pc.id],
+            false,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("on the PC's network: no (no network in common)"),
+        "{err}"
+    );
+    assert!(err.contains("nothing changed"), "{err}");
+    assert_eq!(
+        relay_row(&h, &wide.id).await.unwrap().state,
+        db::RelayState::Pending
+    );
     // bad arguments
     for argv in [
         vec!["relay", "approve", "KZDV", "--owner-of", &pc.id],
@@ -776,6 +850,26 @@ async fn new_entries_are_limited_per_source_and_in_all() {
     refused(&a, 429, "rate_limited");
     let retry = a.json["retry_after"].as_i64().unwrap();
     assert!((3590..=3600).contains(&retry), "{retry}");
+    // a hello the limit refuses keeps nothing, its nonce neither: the very same request passes
+    // once there is room (here from another source)
+    let body = relays[29].body(&HELLO, now(), &hello_payload(&lan()));
+    let send = |ip: &'static str| {
+        let (h, body) = (&h, body.clone());
+        async move { h.relay_raw(HELLO_PATH, body.into_bytes(), ip).await }
+    };
+    for _ in 0..3 {
+        refused(&send("198.51.100.77").await, 429, "rate_limited");
+    }
+    assert_eq!(nonces_of(&h, &relays[29].id).await, 0);
+    assert_eq!(nonces_of(&h, &relays[5].id).await, 0);
+    let a = send("198.51.100.78").await;
+    assert_eq!((a.status, a.json["state"].as_str()), (200, Some("pending")));
+    refused(&send("198.51.100.78").await, 409, "replay");
+    sql(
+        &h,
+        format!("DELETE FROM relays WHERE relay_id = '{}'", relays[29].id),
+    )
+    .await;
     // an IPv6 /64 is one source
     for (i, r) in relays[6..11].iter().enumerate() {
         let ip = format!("2001:db8:1:2::{}", i + 1);
@@ -813,6 +907,7 @@ async fn new_entries_are_limited_per_source_and_in_all() {
     let a = h.hello(&relays[21], "198.51.100.200", &lan()).await;
     refused(&a, 429, "rate_limited");
     assert!(a.json["retry_after"].as_i64().unwrap() >= 60);
+    assert_eq!(nonces_of(&h, &relays[21].id).await, 0);
     // a code approved ahead passes whatever the limits
     h.admin(
         &["relay", "approve", &relays[22].code, "--owner-of", &pc.id],
@@ -846,6 +941,27 @@ async fn new_entries_are_limited_per_source_and_in_all() {
         429,
         "rate_limited",
     );
+    // over its limit it leaves nothing: no nonce, and nothing of what it reports is kept
+    let kept = nonces_of(&h, &relays[0].id).await;
+    assert_eq!(kept, 1 + relay::HELLOS_PER_HOUR as i64);
+    let before = relay_row(&h, &relays[0].id).await.unwrap();
+    let moved = json!([iface("eth0", "192.0.2.99/24", Some("192.0.2.1"), None)]);
+    for _ in 0..10 {
+        refused(
+            &h.hello(&relays[0], "198.51.100.99", &moved).await,
+            429,
+            "rate_limited",
+        );
+    }
+    let unread = relays[0].body(&HELLO, now(), "not json");
+    refused(
+        &h.relay_raw(HELLO_PATH, unread.into_bytes(), "198.51.100.77")
+            .await,
+        429,
+        "rate_limited",
+    );
+    assert_eq!(nonces_of(&h, &relays[0].id).await, kept);
+    assert_eq!(relay_row(&h, &relays[0].id).await.unwrap(), before);
 }
 
 #[tokio::test]
@@ -993,17 +1109,137 @@ async fn a_known_relays_polls_are_limited() {
     let h = Harness::start().await;
     let r = TestRelay::new([21; 32]);
     h.hello(&r, RELAY_IP, &lan()).await;
+    let quiet = poll_payload(0, &json!([]), None, &lan());
+    let mut taken = String::new();
     for _ in 0..relay::POLLS_PER_MINUTE {
-        assert_eq!(
-            h.poll(&r, RELAY_IP, 0, &json!([]), None, &lan())
-                .await
-                .status,
-            200
-        );
+        taken = r.body(&POLL, now(), &quiet);
+        let a = h
+            .relay_raw(POLL_PATH, taken.clone().into_bytes(), RELAY_IP)
+            .await;
+        assert_eq!(a.status, 200, "{}", a.text);
     }
     let a = h.poll(&r, RELAY_IP, 0, &json!([]), None, &lan()).await;
     refused(&a, 429, "rate_limited");
     assert!(a.json["retry_after"].as_i64().unwrap() >= 1);
+    // Over its limit a relay leaves nothing, and this one is only pending, which anyone with a
+    // key can be: the answer comes before the request's nonce is kept, whatever the request is
+    // (new, one taken before, one whose payload does not read), and its row stays as it was.
+    let kept = nonces_of(&h, &r.id).await;
+    assert_eq!(
+        kept,
+        1 + relay::POLLS_PER_MINUTE as i64,
+        "its hello and the polls taken"
+    );
+    let before = relay_row(&h, &r.id).await.unwrap();
+    for _ in 0..30 {
+        refused(
+            &h.poll(&r, "198.51.100.99", 0, &json!([]), None, &lan())
+                .await,
+            429,
+            "rate_limited",
+        );
+    }
+    for body in [taken, r.body(&POLL, now(), "not json")] {
+        refused(
+            &h.relay_raw(POLL_PATH, body.into_bytes(), RELAY_IP).await,
+            429,
+            "rate_limited",
+        );
+    }
+    assert_eq!(nonces_of(&h, &r.id).await, kept);
+    assert_eq!(relay_row(&h, &r.id).await.unwrap(), before);
+    // the limit is that relay's: another one polls
+    let other = TestRelay::new([24; 32]);
+    h.hello(&other, RELAY_IP, &lan()).await;
+    assert_eq!(
+        h.poll(&other, RELAY_IP, 0, &json!([]), None, &lan())
+            .await
+            .status,
+        200
+    );
+}
+
+/// A relay's limit counts every request that is its own and of this time, also one that is then
+/// refused for its nonce or its payload: such a request keeps its nonce (relay/PROTOCOL.md §4.3
+/// step 7 comes after step 6), and without the limit before it a pending relay would fill the
+/// nonce store with them. What is not the relay's own counts nothing: nobody else can use up a
+/// relay's limit.
+#[tokio::test]
+async fn a_relays_limit_counts_its_refused_requests_and_no_one_elses() {
+    let h = Harness::start().await;
+    let r = TestRelay::new([23; 32]);
+    h.hello(&r, RELAY_IP, &lan()).await;
+    let quiet = poll_payload(0, &json!([]), None, &lan());
+    // with this relay's ID, signed with another key or for another time: as many as its limit
+    // and more, none counted
+    for i in 0..relay::POLLS_PER_MINUTE + 5 {
+        let (seed, t, status, code) = if i % 2 == 0 {
+            ([6u8; 32], now(), 401, "bad_signature")
+        } else {
+            (r.seed, now() - 400, 400, "clock")
+        };
+        let body = envelope::sign_body(&POLL, &seed, &r.id, t, &rand_nonce(), &quiet);
+        refused(
+            &h.relay_raw(POLL_PATH, body.into_bytes(), RELAY_IP).await,
+            status,
+            code,
+        );
+    }
+    assert_eq!(nonces_of(&h, &r.id).await, 1, "its hello");
+    // its own: payloads that do not read, and every other one of them sent again
+    for i in 0..relay::POLLS_PER_MINUTE / 2 {
+        let body = r.body(&POLL, now(), "not json");
+        for (status, code) in [(400, "bad_request"), (409, "replay")] {
+            let a = h
+                .relay_raw(POLL_PATH, body.clone().into_bytes(), RELAY_IP)
+                .await;
+            assert_eq!(
+                (a.status, a.json["error"].as_str()),
+                (status, Some(code)),
+                "{i}: {}",
+                a.text
+            );
+        }
+    }
+    // the limit is used up: nothing more is kept, of a poll that would pass neither
+    for body in [
+        r.body(&POLL, now(), "not json"),
+        r.body(&POLL, now(), &quiet),
+    ] {
+        refused(
+            &h.relay_raw(POLL_PATH, body.into_bytes(), RELAY_IP).await,
+            429,
+            "rate_limited",
+        );
+    }
+    assert_eq!(
+        nonces_of(&h, &r.id).await,
+        1 + relay::POLLS_PER_MINUTE as i64 / 2
+    );
+    assert_eq!(relay_row(&h, &r.id).await.unwrap().last_poll_at, None);
+    // hello the same way: the relay's key in the envelope and another key's signature, more
+    // often than the relay may say hello, and then its own hello
+    let s = TestRelay::new([25; 32]);
+    h.hello(&s, RELAY_IP, &lan()).await;
+    for _ in 0..relay::HELLOS_PER_HOUR + 5 {
+        let mut body: Value = serde_json::from_str(&envelope::sign_body(
+            &HELLO,
+            &[6; 32],
+            &s.id,
+            now(),
+            &rand_nonce(),
+            &hello_payload(&lan()),
+        ))
+        .unwrap();
+        body["pk"] = json!(b64(&s.public_key()));
+        refused(
+            &h.relay_raw(HELLO_PATH, body.to_string().into_bytes(), RELAY_IP)
+                .await,
+            401,
+            "bad_signature",
+        );
+    }
+    assert_eq!(h.hello(&s, RELAY_IP, &lan()).await.status, 200);
 }
 
 #[tokio::test]

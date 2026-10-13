@@ -25,10 +25,10 @@
 //!
 //! Design v3 §5-6 and §8-3 add the NAS relays (relay.rs): `relay list`, `relay approve <code>
 //! --owner-of <PC ID>` (the account by one of its PCs; it shows the verdicts of the relay against
-//! that PC, never the addresses unless `--reveal`, and approves only a relay on the PC's network
-//! unless `--force`; a code no relay has said hello with is approved ahead for 7 days), `relay
-//! revoke` and `relay share on|off` (kept for later). Their records name the relay ID and the PC's
-//! tag.
+//! that PC, never the addresses unless `--reveal`, and approves only a relay on the PC's network,
+//! as the relay itself reports its interfaces, unless `--force`; a code no relay has said hello
+//! with is approved ahead for 7 days), `relay revoke` and `relay share on|off` (kept for later).
+//! Their records name the relay ID and the PC's tag.
 //!
 //! Design v3 §5-9 adds `backup` (backup.rs): the service takes a copy of its database and sends
 //! its bytes after the answer's line (`"backup":{size, sha256, schema, counts}` says how many),
@@ -110,11 +110,11 @@ hjv-api admin [--socket <path>] [--reveal] <command>
   relay list                the NAS relays: state, account, last poll; for an active relay whether
                             it is on the network of each of its account's PCs (values with --reveal)
   relay approve <code> --owner-of <PC ID> [--name <name>] [--force]
-                            approve a relay's enrollment code for the account that has the PC, once
-                            the verdict says the relay is on the PC's network (--force: after the
-                            owner confirmed the code); a code no relay has said hello with is
-                            approved ahead for 7 days; --name for a relay already active for that
-                            account renames it
+                            approve a relay's enrollment code for the account that has the PC,
+                            after the PC's owner confirmed the code: when the verdict says the
+                            relay is on the PC's network (by the relay's own report), or with
+                            --force; a code no relay has said hello with is approved ahead for
+                            7 days; --name for a relay already active for that account renames it
   relay revoke <relay ID|code>
                             the relay takes no commands any more (its key is kept and never
                             approved again); withdraws a code approved ahead

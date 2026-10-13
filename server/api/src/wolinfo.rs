@@ -33,7 +33,8 @@
 //! 2. `overlap`: one network holds the other (a NAS with a /24 on the PC's /22 wire), and the same
 //!    gateway IP or the same gateway MAC: the relay's own broadcast reaches the PC (experiment
 //!    T10), while the PC's broadcast address would leave the NAS through its gateway (T11);
-//! 3. `history`: the relay woke this PC on this network before (a confirmed job).
+//! 3. `history`: the relay woke this PC on this network before (a confirmed job) and still has
+//!    an address on it, whatever the gateways are now.
 //!
 //! On a private or shared (CGNAT) network the PC's and the relay's egress addresses must be the
 //! same too (an IPv6 address by its /64): such networks repeat from one site to the next. A gateway
@@ -52,6 +53,10 @@ pub const MAX_TEXT: usize = 64;
 /// The interfaces taken from a relay's report (PROTOCOL.md §9.1), and the addresses of each.
 pub const MAX_IFACES: usize = 16;
 pub const MAX_IFACE_ADDRESSES: usize = 8;
+/// The prefixes of the addresses a relay uses and reports (PROTOCOL.md §9.1: 8 to 30). A relay
+/// reports its interfaces itself, a pending one too: an address with another prefix is not one a
+/// relay would send from, and one as wide as `/0` would overlap every PC's network.
+pub const IFACE_PREFIXES: std::ops::RangeInclusive<u8> = 8..=30;
 
 // ---- addresses ----
 
@@ -546,8 +551,9 @@ pub struct RelayIface {
 }
 
 /// A relay's `ifaces` as hjv-api keeps them; `None` when it is not an array of objects with a
-/// name and an address list (PROTOCOL.md §4.3 step 7). Addresses that are not `a.b.c.d/p` are left
-/// out, and anything past [`MAX_IFACES`] interfaces and [`MAX_IFACE_ADDRESSES`] addresses.
+/// name and an address list (PROTOCOL.md §4.3 step 7). Addresses that are not `a.b.c.d/p` with a
+/// prefix a relay can use ([`IFACE_PREFIXES`]) are left out, and anything past [`MAX_IFACES`]
+/// interfaces and [`MAX_IFACE_ADDRESSES`] addresses.
 pub fn parse_ifaces(value: &Value) -> Option<Vec<RelayIface>> {
     let items = value.as_array()?;
     let mut ifaces = Vec::new();
@@ -568,6 +574,7 @@ pub fn parse_ifaces(value: &Value) -> Option<Vec<RelayIface>> {
             ipv4: addresses
                 .iter()
                 .filter_map(|a| Net4::parse(a.as_str()?))
+                .filter(|n| IFACE_PREFIXES.contains(&n.prefix()))
                 .map(|n| n.to_string())
                 .take(MAX_IFACE_ADDRESSES)
                 .collect(),
@@ -674,11 +681,13 @@ pub fn judge(
         // on a network that repeats between sites, the same egress address shows the same site
         let site_ok = !pc_net.is_private() || egress == Egress::Same;
         let mut grade = None;
+        let mut overlapped = false;
         for iface in ifaces {
             for relay_net in iface.ipv4.iter().filter_map(|a| Net4::parse(a)) {
                 if !relay_net.overlaps(&pc_net) {
                     continue;
                 }
+                overlapped = true;
                 first_overlap.get_or_insert(pc_net);
                 let same_gateway = same_text(&iface.gateway, &adapter.gateway);
                 let found = if relay_net.same_network(&pc_net) && same_gateway {
@@ -691,7 +700,9 @@ pub fn judge(
                 grade = Some(grade.map_or(found, |g: Grade| g.min(found)));
             }
         }
-        if grade.is_none() && woken_on.contains(&pc_net.canonical()) {
+        // it woke this PC here before, and is still here: without an address on this network
+        // it would only answer `no_iface`
+        if grade.is_none() && overlapped && woken_on.contains(&pc_net.canonical()) {
             grade = Some(Grade::History);
         }
         if let (Some(g), true) = (grade, site_ok) {
@@ -1027,6 +1038,14 @@ mod tests {
         assert_eq!(ifaces[0].ipv4, vec!["10.1.5.20/22"]);
         assert_eq!(ifaces[1].gateway_mac.as_deref(), Some("02:00:00:00:00:fe"));
         assert!(ifaces[0].running && !ifaces[1].running);
+        // only the prefixes a relay uses (PROTOCOL.md §9.1): one as wide as /0 would overlap every
+        // PC's network, and a /31 or /32 has no broadcast address to send to
+        let odd = parse_ifaces(&json!([{"name": "eth0", "ipv4": [
+            "10.9.9.9/0", "192.0.0.1/7", "192.0.2.200/31", "192.0.2.200/32", "192.0.0.1/8",
+            "192.0.2.200/30"
+        ]}]))
+        .unwrap();
+        assert_eq!(odd[0].ipv4, vec!["192.0.0.1/8", "192.0.2.200/30"]);
         assert_eq!(parse_ifaces(&json!([])), Some(vec![]));
         for bad in [
             json!({}),
@@ -1120,6 +1139,14 @@ mod tests {
             ),
             Some(Grade::History)
         );
+        // history is of a network the relay is still on: moved elsewhere, or without an
+        // interface to report, it has no grade (it could only answer no_iface)
+        let woken = ["192.0.2.0/24".to_owned()];
+        assert_eq!(grade(&relay("203.0.113.10/24", gw, None), &p, &woken), None);
+        assert_eq!(grade(&[], &p, &woken), None);
+        let mut no_address = relay("192.0.2.10/24", gw, None);
+        no_address[0].ipv4.clear();
+        assert_eq!(grade(&no_address, &p, &woken), None);
         // another network
         let v = judge(&relay("198.51.100.10/24", gw, None), None, &p, None, &[]);
         assert_eq!((v.grade, v.overlap, v.net), (None, false, None));

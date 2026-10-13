@@ -166,18 +166,33 @@ failure (section 6 lists the bodies):
 7. **Payload**: `p` is a JSON object with `"v": 1` and the endpoint's required fields with the
    right JSON types; otherwise `400 bad_request`.
 
-Only after these come hjv-api's rate limits (`429`) and the endpoint's work. A request refused in
-steps 1–6 changes nothing on the server.
+A request refused in steps 1–6 changes nothing on the server. hjv-api's rate limits (`429`) are
+not among these checks, and a request they refuse changes nothing either: the server keeps no
+nonce entry of it.
 
-Requests cost the server a signature check and a nonce entry before any of hjv-api's limits
-apply, and hello is open to anyone with a key, which costs nothing to make. So:
+- A limit on the requests of one relay (the 60 hellos an hour of section 5.1; hjv-api also takes
+  at most 120 polls a minute from a relay) applies as soon as a request is known to be that
+  relay's and of this time: after step 5 and before step 6. It counts every such request, whatever
+  steps 6 and 7 then make of it, and a relay over it gets `429` whatever its nonce and payload are.
+- The limits on new pending entries (section 5.1) apply after step 7. A hello from a key the
+  server does not know leaves a nonce entry only when it makes the relay's entry.
+
+Then comes the endpoint's work.
+
+A request costs the server a signature check before any of hjv-api's limits can apply, hello is
+open to anyone with a key, which costs nothing to make, and a pending relay is a known one, so
+poll is open to anyone as well. The limits above are what bounds the nonce store, which is why
+the server MUST apply them before it keeps a nonce entry. So:
 
 - nginx MUST limit `POST /api/hjv/relay/hello` per source before the request reaches hjv-api,
   keyed by the IPv4 address or the IPv6 /64 (for example `limit_req` at 10 requests per minute
   with a burst of 5, and `limit_req_status 429`). It SHOULD answer with the JSON body of
   section 6 (`{"error":"rate_limited","retry_after":60}`, for example through `error_page 429`);
-  a relay that gets any other body backs off. Poll needs no such limit: it is refused at step 3
-  unless the relay is known.
+  a relay that gets any other body backs off. The nonce store needs no such limit on poll: a
+  poll is refused at step 3 unless the relay is known, and a known relay, a pending one too, is
+  held to its own limit before anything of its request is kept. (nginx MAY limit poll per source
+  as well, to spare hjv-api the signature checks of a flood; generously, since the relays behind
+  one address share such a limit and a relay polls again at once after it sent packets.)
 - hjv-api SHOULD bound the nonce store (for example at 100 000 entries) and answer
   `503 unavailable` with `retry_after` while it is full, rather than forget nonces early.
 
