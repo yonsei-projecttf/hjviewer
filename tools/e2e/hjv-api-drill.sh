@@ -423,7 +423,7 @@ tags=$(grep -a 'cmd="block" targets=' /var/log/hjviewer-api/operator.log | sed -
 for t in $tags; do $A block "tag:$t"; done
 $A passwordless status | head -1
 $A allow list | head -1
-$A report | head -5
+$A report | head -7
 # the relays are the backup's too: one revoked since would be revoked again here
 $A relay list | head -1
 EOF

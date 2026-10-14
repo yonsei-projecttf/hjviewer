@@ -212,7 +212,8 @@ Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shar
   binding IDs, PC IDs and public keys (180 days), the revoked relays' IDs, keys and times, the
   records of logins, devices and keys under tags (6 months), the operator record, and a block the
   operator set (your portal ID with it, until the block is lifted); the backups age out after 14
-  days. If you log in again later, your portal ID goes on the list again.
+  days. If you log in again later, your portal ID goes on the list again (while the operator lets
+  in only the IDs already on the list, the operator puts it there again first).
 - If the operator blocks your account, your devices are logged out at once, and your next login
   is refused with a message that says so.
 
@@ -308,7 +309,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 ### 8. 삭제와 권리 행사
 
 - **앱에서 직접**: 기기에서 로그아웃하면 그 기기의 키와 토큰이 바로 끝납니다. 잃어버린 기기는 다른 내 기기의 '로그인한 기기'에서 로그아웃시키거나 다른 기기를 모두 로그아웃시킵니다. 내 목록에서 PC를 뺄 수 있고, PC를 남에게 넘기기 전에는 그 PC에서 로그아웃합니다. PC에서 HJViewer를 제거하면 레지스트리에 둔 것이 지워집니다. 연세포탈 비밀번호를 바꿔도 이미 로그인한 기기는 남으므로, 바꾼 뒤에는 [다른 기기 모두 로그아웃]도 누릅니다. 다른 기기에서 로그아웃시키면 비밀번호 없는 새 연결은 막히지만, 이미 열려 있는 연결은 PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 장치 다시 시작'을 누르거나, PC를 다시 시작할 때까지 남습니다.
-- **운영자에게 요청**: 나에 대해 보관하는 것을 보여 달라고, 고치거나 지워 달라고, 처리를 멈춰 달라고 요청할 수 있습니다. 계정을 지우면 명단에서도 빠지고, 그 계정의 중계기는 폐기되며, 켜기 요청 기록을 포함해 그 계정에 대해 보관하던 것이 모두 지워집니다. 남는 것은 뺀 PC의 묶음 ID·PC ID·공개키(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록, 그리고 운영자가 걸어 둔 막기(그 포탈 ID와 함께, 막기를 풀 때까지)이고, 백업은 14일 뒤에 사라집니다. 나중에 다시 로그인하면 다시 명단에 오릅니다.
+- **운영자에게 요청**: 나에 대해 보관하는 것을 보여 달라고, 고치거나 지워 달라고, 처리를 멈춰 달라고 요청할 수 있습니다. 계정을 지우면 명단에서도 빠지고, 그 계정의 중계기는 폐기되며, 켜기 요청 기록을 포함해 그 계정에 대해 보관하던 것이 모두 지워집니다. 남는 것은 뺀 PC의 묶음 ID·PC ID·공개키(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록, 그리고 운영자가 걸어 둔 막기(그 포탈 ID와 함께, 막기를 풀 때까지)이고, 백업은 14일 뒤에 사라집니다. 나중에 다시 로그인하면 다시 명단에 오릅니다(운영자가 명단에 있는 ID만 받는 동안에는 운영자가 먼저 다시 넣어야 합니다).
 - 운영자가 내 계정을 막으면 내 기기들은 바로 로그아웃되고, 다음 로그인은 막혔다는 안내와 함께 거절됩니다.
 
 ### 9. 정보를 다루는 곳

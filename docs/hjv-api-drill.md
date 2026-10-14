@@ -93,7 +93,7 @@ HJV_DRILL_QUICK=1 tools/e2e/hjv-api-drill.sh   # 그 기다림 없이 약 3분
    sudo systemctl start hjviewer-api.socket hjviewer-api.service   # 모든 계정이 꺼진 채로 시작
    $A passwordless off             # 확인: "(no change)"여야 함
    $A user revoke-all --all        # 모든 계정 키와 토큰을 폐기
-   $A passwordless status; $A allow list | head -1; $A report | head -5
+   $A passwordless status; $A allow list | head -1; $A report | head -7
    $A relay list                   # 백업 뒤에 폐기한 중계기가 다시 활성이면 relay revoke
    ```
    두 번째 `off`가 `(no change)`가 아니면 그대로 보고합니다. `STOP: 지금 DB를 백업하지 못함`이면 사용자에게 보고하고 점검 타이머를 다시 켭니다. DB가 망가져 백업이 되지 않는 경우에만, 사용자 승인 뒤 `rm -f` 대신 그 파일들을 `/root/hjv-backup/before-restore-<시각>/`(700)로 옮기고 그 사본은 14일 안에 지웁니다. 백업 뒤에 폐기한 중계기는 운영자 기록의 `relay revoke` 줄로 찾아, 사용자 승인 뒤 다시 폐기합니다. 명단과 스위치를 확인한 뒤 사용자 승인을 받아 `passwordless on`과 `sudo systemctl start hjviewer-api-check.timer`.
