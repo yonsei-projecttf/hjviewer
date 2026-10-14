@@ -1036,11 +1036,14 @@ policy from nginx and its `latest` from hjv-api.
   (`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`; `…/{code}` without
   its `/` is a 307 to it): the steps for an installed PC and for one that only runs HJViewer, the
   two names of the Windows package, the APK, each with its size and SHA-256, the source tag, and
-  the notice files. The files are `HJViewer-<v>-install.exe` and `HJViewer-<v>.exe` (one file,
-  two names), the APK under its own name, and `HJViewer-<v>-LICENSE.txt`, `-NOTICE.txt`,
-  `-SOURCE.txt`, `-THIRD_PARTY_NOTICES.txt` from `notices-<v>/` of the package directory. A wrong
-  code, a closed door and any other name are the same 404. To close door 2, delete the file; to
-  change the code, replace it.
+  the notice files. The page names no outside site (the user's request, 2026-10-14): it says that
+  the SOURCE notice next to the packages tells where to get the source of that tag, and that
+  notice is the AGPL's "clear directions next to the object code" (section 6(d)). Its only link
+  off the page is TestFlight's `itms-beta://`. The files are `HJViewer-<v>-install.exe` and
+  `HJViewer-<v>.exe` (one file, two names), the APK under its own name, and
+  `HJViewer-<v>-LICENSE.txt`, `-NOTICE.txt`, `-SOURCE.txt`, `-THIRD_PARTY_NOTICES.txt` from
+  `notices-<v>/` of the package directory. A wrong code, a closed door and any other name are the
+  same 404. To close door 2, delete the file; to change the code, replace it.
 - **Limits.** A request that fails for who asks (no or a wrong token, proof, signature or code)
   counts against its client address; past `HJV_API_LIMIT_UPDATE_FAIL_IP` such a request gets `429
   {"error":…,"hjv":"rate_limited","retry_after":<seconds>}` with `Retry-After` in place of its

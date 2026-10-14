@@ -79,7 +79,7 @@ e2e·wol 단계가 시험 스크립트에 넘기는 값은 `HJV_E2E_WORK`, `CADD
    - 고지: `THIRD_PARTY_NOTICES.txt`에 hjv-api의 크레이트도 들어갑니다. `server/api`가 없는 저장소에서는 hjv-api 부분을 빼고 묶습니다(설계 3판 10-2).
 3. `gh release create server-<버전> build/release/hjviewer-server-<버전>-linux-x86_64.tar.gz build/release/SHA256SUMS`로 올립니다. Release를 만들어도 워크플로는 돌지 않습니다.
 
-hjv-relay의 묶음은 `scripts/package-relay.sh`가 따로 `build/release-relay/`에 만들고, `SHA256SUMS`도 그 묶음 한 줄만 씁니다. 나눠 주는 hjv-relay는 비공개 빌드 저장소에서 만듭니다(아래 "hjv-relay 빌드"). 개발 PC의 `package-relay.sh`는 시험과 해시 대조에만 씁니다.
+hjv-relay의 묶음은 `scripts/package-relay.sh`가 따로 `build/release-relay/`에 만들고, `SHA256SUMS`도 그 묶음만의 것을 씁니다. 그 `SHA256SUMS`는 두 줄입니다: 묶음과 그 안의 `hjv-relay`(아래 "hjv-relay 빌드" 3번). 나눠 주는 hjv-relay는 비공개 빌드 저장소에서 만듭니다(아래 "hjv-relay 빌드"). 개발 PC의 `package-relay.sh`는 시험과 해시 대조에만 씁니다.
 
 개발 PC는 운영 서버와 같은 Ubuntu 24.04라서, 여기서 빌드한 바이너리(glibc 2.39)가 그대로 돕니다.
 
@@ -444,8 +444,8 @@ NAS의 hjv-relay는 비공개 빌드 저장소의 hjv-relay 잡에서 만듭니�
 
 1. `HJV_COMMAND_PUBKEY` 시크릿을 넣습니다(위 표). `HJV_SERVER`는 앱과 같은 값을 씁니다.
 2. 공개 저장소 main의 커밋으로 `platforms=relay`(또는 `all`)를 실행합니다. 출시 빌드는 그 커밋이 공개 저장소 main에 있어야 합니다(`package-relay.sh`가 확인).
-3. 잡이 끝나면 빌드 저장소에 **초안** Release `relay-<판>`이 생깁니다. 묶음(`hjviewer-relay-<판>-linux-x86_64.tar.gz`)과 그 한 줄짜리 `SHA256SUMS`가 들어 있습니다. 같은 이름의 Release가 이미 있으면 새로 만들지 않으므로, 다시 만들려면 옛 Release(초안 포함)를 지웁니다.
-4. 실행 요약의 명령 키 지문을 `hjv-api selfcheck`의 지문과 대조한 뒤 Release를 게시하고, 공개 저장소의 그 커밋에 `relay-<판>` 태그를 붙입니다. NAS 설치는 [relay-dsm.md](relay-dsm.md)를 따릅니다. 작업 화면에 적는 SHA-256은 실행 요약이나 Release의 `SHA256SUMS`에서 옮깁니다.
+3. 잡이 끝나면 빌드 저장소에 **초안** Release `relay-<판>`이 생깁니다. 묶음(`hjviewer-relay-<판>-linux-x86_64.tar.gz`)과 `SHA256SUMS`가 들어 있습니다. `SHA256SUMS`는 두 줄입니다: 묶음과 그 안의 실행 파일 `hjviewer-relay-<판>-linux-x86_64/hjv-relay`. 같은 이름의 Release가 이미 있으면 새로 만들지 않으므로, 다시 만들려면 옛 Release(초안 포함)를 지웁니다.
+4. 실행 요약의 명령 키 지문을 `hjv-api selfcheck`의 지문과 대조한 뒤 Release를 게시하고, 공개 저장소의 그 커밋에 `relay-<판>` 태그를 붙입니다. NAS 설치는 [relay-dsm.md](relay-dsm.md)를 따릅니다. 작업 화면에 적는 SHA-256은 실행 요약이나 Release의 `SHA256SUMS`에서 `…/hjv-relay` 줄의 값을 옮깁니다(relay-dsm.md 3장). 1.6.0은 2026-10-15에 했습니다: 8622975의 태그 `relay-1.6.0`과 Release 'hjv-relay 1.6.0'의 게시(런북 7-7, 7-11).
 
 ## push 전 검사 (`scripts/ci.sh leak`)
 
@@ -582,14 +582,14 @@ Play 개발자 계정은 이미 있습니다. 계정에 남은 확인 요청(신
 |---|---|---|
 | 1 | Play Console → 앱 만들기 | 이름 `HJViewer`, 기본 언어 **한국어(ko-KR)**, 앱, 무료, 선언 동의. 출시 노트가 ko-KR이므로 기본 언어를 한국어로 둡니다. 패키지 이름은 첫 업로드로 `kr.ac.yonsei.hjviewer`로 정해지고, 바꿀 수 없습니다. |
 | 2 | 앱 콘텐츠 | 개인정보처리방침 URL `https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md`, 광고 없음, 광고 ID 사용 안 함. 방침에는 카메라·마이크 절이 있어야 하고, 이미 있습니다(표 아래). 스토어 등록정보, 콘텐츠 등급, 타깃층, 데이터 보안은 **하지 않습니다.** 내부 테스트는 앱 설정을 마치기 전에 시작할 수 있고, 설정을 다 마친 앱은 첫 내부 출시도 심사를 받기 때문입니다. 1.6.0부터 모든 Android 빌드가 제어 전용이라 접근성 API 선언과 포그라운드 서비스 선언은 필요 없습니다([distribution.md](distribution.md)의 "Android: Google Play 내부 테스트"). 두 선언이 필요한 1.5.1 이하의 번들은 Play에 올리지 않습니다. |
-| 3 | 테스트 및 출시 → 내부 테스트 → 테스터 | 이메일 목록을 만들어 테스터의 Google 계정을 넣습니다(최대 100명). 휴대폰 Play 스토어에 로그인한 계정이어야 합니다. 피드백 이메일을 적고 저장합니다. 참여 링크는 첫 출시를 게시한 뒤에 복사합니다(10단계). |
+| 3 | 테스트 및 출시 → 내부 테스트 → 테스터 | 이메일 목록을 만들어 테스터의 Google 계정을 넣습니다(최대 100명). [런북](server-runbook.md) 7-9의 관문이 끝나기 전에는 운영자의 계정만 넣고, 다른 테스터는 관문 뒤에 더합니다. 휴대폰 Play 스토어에 로그인한 계정이어야 합니다. 피드백 이메일을 적고 저장합니다. 참여 링크는 첫 출시를 게시한 뒤에 복사합니다(10단계). |
 | 4 | 터미널 | 첫 AAB를 만들어 받습니다. `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=android`가 끝나면 `gh run download <실행 ID> -R yonsei-projecttf/hjviewer-private -n HJViewer-<버전>-<커밋 7자리>-android-aarch64-play`. 실행 요약에서 versionCode와 업로드 인증서 SHA-256을 봅니다. 최소 SDK 24 패치(0047)가 들어간 1.6.1 이후의 커밋으로 빌드합니다. 출시 빌드가 있으면 따로 빌드하지 않고 그 실행의 `-play` 아티팩트를 받습니다. 확인 빌드(`check_only`)의 `-check` AAB(`…-check-android-aarch64-play`)는 올리지 않습니다. 출시에 필요한 공개키 없이도 만들어지는 빌드이기 때문입니다. 실행 화면에 경고 "This run has no Play bundle"이 있으면 번들이 만들어지지 않은 것입니다. Android 잡의 번들 단계 로그에서 까닭을 봅니다. |
 | 5 | 내부 테스트 → 새 버전 만들기 | 먼저, 이 트랙에 게시하지 않은 버전(임시 버전)이 남아 있으면 "임시 버전 삭제"로 지웁니다. 1.6.0 번들로 만들다 오류로 멈춘 버전이 남아 있을 수 있습니다. 그런 버전이 있는 동안에는 새 버전을 만들 수 없습니다. ① 새 앱은 첫 번들을 올릴 때 Google이 만든 키로 Play 앱 서명에 저절로 등록됩니다. "앱 서명 키 변경"은 누르지 않습니다. ② 4의 AAB를 올립니다. ③ 출시 노트를 적습니다. ④ 다음을 눌러 오류 요약을 봅니다. 오류는 해결해야 하고(선언 등), 경고는 출시를 막지 않습니다. Play의 자동 보호(Automatic protection)는 최소 SDK 24를 요구합니다. 최소 SDK 22였던 1.6.0 번들은 이 오류로 막혔고, 1.6.1부터 최소 SDK가 24입니다. ⑤ 다음을 눌러 나오는 "미리보기 및 확인" 화면에서 "출시 시작"(또는 "게시")을 누릅니다. "임시보관함에 저장"에서 멈추지 않습니다. "저장"만 있으면 그 변경은 Google의 검토를 받아야 하는 것이므로 거기서 멈춥니다. ⑥ Google Play로 보호됨 → Play 스토어 보호 → Play 앱 서명 관리 → 업로드 키 인증서의 SHA-256 인증서 지문이 실행 요약의 업로드 인증서 SHA-256과 같은지 봅니다. 옛 "앱 무결성" 페이지는 "Google Play로 보호됨"으로 바뀌었습니다. 실행 요약은 콜론 없는 소문자 16진수로, Play는 콜론으로 나눈 대문자 16진수로 보여 줍니다. ⑦ 첫 출시 뒤, 이 패키지가 Android 개발자 인증에 등록됐는지 봅니다. Play Console 홈의 알림(신원 확인을 마친 계정에만 나옴)이나 "Android 개발자 인증" 페이지에서 봅니다. Google이 등록하지 않았으면 멈추고, 직접 등록하는 방법을 메인 세션과 정합니다. 같은 "Android 개발자 인증" 페이지에서 사이드로드 APK의 서명 키도 이 패키지에 등록돼 있는지 봅니다. 그 키는 키스토어, 곧 업로드 키입니다. SHA-256은 실행 요약의 업로드 인증서 SHA-256입니다. 없으면 2027년의 전 세계 시행 전에 더하는 방법을 메인 세션과 정합니다. API로는 첫 업로드를 할 수 없어서 이 단계는 직접 합니다. |
 | 6 | Google Cloud 콘솔 | 새 프로젝트를 만듭니다. 조직이 없는 개인 Google 계정의 프로젝트를 권장합니다. API 및 서비스 → 라이브러리에서 **Google Play Android Developer API**를 사용 설정합니다. IAM 및 관리자 → 서비스 계정 → 만들기(예: `play-upload`, Cloud 역할 없음) → 키 → 키 추가 → 새 키 만들기 → **JSON**으로 `key.json`을 내려받습니다. Play 계정과 Cloud 프로젝트를 연결할 필요는 없습니다. |
 | 7 | Play Console → 사용자 및 권한 | 새 사용자 초대 → 서비스 계정 이메일. 계정 권한은 모두 끕니다. 앱 권한 → HJViewer → **"앱을 테스트 트랙으로 출시"(Release apps to testing tracks)만** 켜고 초대합니다. 프로덕션에는 출시할 수 없는 권한입니다. 다만 이 권한으로 내부 앱 공유에도 올릴 수 있습니다. 내부 앱 공유의 파일은 어느 키로 서명해도 되고, 그 링크는 기본으로 누구나 내려받을 수 있습니다. 그래서 테스트 및 출시 → 설정 → 내부 앱 공유에서 내려받을 수 있는 사람을 이메일 목록으로 제한하고, JSON 키는 업로드 키처럼 지킵니다. |
 | 8 | 키 파일이 있는 PC의 터미널 | 아래 명령으로 시크릿 2개를 넣고 `key.json`을 지웁니다. |
 | 9 | 터미널 | 첫 CI 업로드는 검증만 합니다. `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=android -f play=true -f play_release=validate`. 실행 요약(터미널에서는 표 아래의 명령)이 "validated … nothing was released"이면 됩니다. 5단계에서 손으로 올린 버전에는 이 검증 실행만 합니다. 같은 버전을 `completed`로 다시 올리면 테스터가 같은 버전을 두 번 받기 때문입니다(위 "앱 버전"). 첫 CI `completed` 업로드는 다음 버전의 출시 실행(`platforms=all`, `testflight=true`, `play=true`)과 함께 합니다. |
-| 10 | 내부 테스트 → 테스터 | 첫 출시가 게시된 뒤에 참여 링크를 복사해 테스터에게 보냅니다. Google의 한국어 도움말은 "공유 가능한 링크 복사"라고 하고, 콘솔에는 "웹에서 참여"로도 나옵니다. 첫 출시 뒤 링크가 동작하기까지 몇 시간 걸릴 수 있습니다. 테스터는 링크에서 참여한 뒤 Play 스토어에서 설치합니다. 앱을 처음 올린 뒤 최대 48시간 동안은 테스터에게 임시 앱 이름과 스토어 등록정보가 보일 수 있습니다. 사이드로드한 HJViewer가 있으면 먼저 지웁니다. 서명이 달라서 Play 앱이 그 위에 설치되지 않기 때문입니다. 이때 그 휴대폰의 로컬 설정, 기기 ID, 최근 접속 목록이 지워집니다. |
+| 10 | 내부 테스트 → 테스터 | 첫 출시가 게시된 뒤에 참여 링크를 복사해 테스터에게 보냅니다. 런북 7-9의 관문 전에는 운영자만 씁니다. 다른 테스터에게는 관문 뒤에 보냅니다. Google의 한국어 도움말은 "공유 가능한 링크 복사"라고 하고, 콘솔에는 "웹에서 참여"로도 나옵니다. 첫 출시 뒤 링크가 동작하기까지 몇 시간 걸릴 수 있습니다. 테스터는 링크에서 참여한 뒤 Play 스토어에서 설치합니다. 앱을 처음 올린 뒤 최대 48시간 동안은 테스터에게 임시 앱 이름과 스토어 등록정보가 보일 수 있습니다. 사이드로드한 HJViewer가 있으면 먼저 지웁니다. 서명이 달라서 Play 앱이 그 위에 설치되지 않기 때문입니다. 이때 그 휴대폰의 로컬 설정, 기기 ID, 최근 접속 목록이 지워집니다. |
 
 **개인정보처리방침의 카메라·마이크 절**: 번들은 `CAMERA`와 `RECORD_AUDIO` 권한을 요청합니다. 이런 번들은 방침 URL이 없으면 내부 트랙에서도 거절된다는 보고가 있고, 방침은 그 권한을 어디에 쓰는지 말해야 합니다. 그래서 2단계(URL 등록)와 5단계(첫 업로드)에는 [privacy.md](privacy.md)에 이 절이 있어야 합니다. 이 절은 공개 저장소 main의 privacy.md 6절 "카메라와 마이크"입니다. 절에는 다음 내용이 있어야 하고, 6절에 둘 다 있습니다.
 
