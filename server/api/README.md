@@ -8,8 +8,11 @@ keys that may open it without its password, signed with hjv-api's list key. Its 
 sleeping PC of the account (Wake-on-LAN): the PC tells in its sync how to wake it, a relay on the
 PC's LAN (hjv-relay on a NAS, relay/) long-polls hjv-api, and the app's wake request becomes a
 command signed with hjv-api's command key, which the relay checks before it sends magic packets on
-its own network. It runs next to hbbs/hbbr on the server, behind nginx, as a systemd service that
-listens only on a Unix socket systemd holds. GNU AGPL-3.0-only, like the rest of the repository.
+its own network. It also hands out the packages of new app versions (the Windows exe and the
+Android APK that the signed version policy names): it checks who asks and sends the file itself,
+so that nginx and the web site on the same server never read one (Updates below). It runs next to
+hbbs/hbbr on the server, behind nginx, as a systemd service that listens only on a Unix socket
+systemd holds. GNU AGPL-3.0-only, like the rest of the repository.
 
 ## Build
 
@@ -55,6 +58,19 @@ ring and the system's CA certificates; SQLite is built in (rusqlite `bundled`).
   lines). Before installing, check that the server and http blocks have no `real_ip_header` or
   `set_real_ip_from` that would let a client choose `$remote_addr`: hjv-api's address limits trust
   the `X-Real-IP` nginx sets from it.
+- The packages of new app versions (Updates below) need three things of the operator's, none of
+  them in the unit: the signed policy `/etc/hjviewer/version-policy.json` (root:root 0644, the
+  file nginx hands to the apps), the package directory `/srv/hjviewer-updates/pkg`
+  (root:hjviewer-api 0750, its files 0640: hjv-api reads them through its group, nginx's and the
+  web site's user cannot), and, while door 2 is open, `/etc/hjviewer/door2.conf`
+  (root:hjviewer-api 0640). hjv-api only reads them (`ProtectSystem=strict`) and reads each again
+  when it changes: installing a package, a policy or door 2's file restarts nothing. Until they
+  are there, the update paths answer 404 and everything else works. In
+  `deploy/nginx-hjviewer-api.conf` three things are for them: `proxy_max_temp_file_size 0` (no
+  answer of hjv-api goes to a temporary file of nginx), the locations of `/api/hjv/u/` and
+  `/api/hjv/get/` with `error_log /dev/null crit` (nginx's error log names the request of every
+  error, and these two have their code in the path), and `access_log off` in the error locations
+  (where a request of `/api/` ends while hjv-api is down).
 - For tests and the E2E only: `hjv-api serve --listen 127.0.0.1:<port> --env-file <file>
   --credentials <dir> --db <file> --admin-socket <path> --operator-log <file>`.
 
@@ -133,6 +149,16 @@ and `HJV_API_COMMAND_KID` the number of the key in the credential `hjviewer-api-
 after a change of keys). As with the list key, the journal at start and `selfcheck` say so when
 the key in use is not the pinned key of its number: the relays would refuse every command. Without
 the credential no PC is woken (a wake request gets 503); everything else works.
+
+The packages of new app versions (Updates below): `HJV_API_VERSION_POLICY`, `HJV_API_PACKAGE_DIR`
+and `HJV_API_DOOR2_FILE` are where the signed policy, the packages and door 2's file are
+(`/etc/hjviewer/version-policy.json`, `/srv/hjviewer-updates/pkg`, `/etc/hjviewer/door2.conf`;
+absolute paths). `HJV_API_LIMIT_UPDATE` (10 a day) is the downloads that begin, per account for
+its logins and per PC for its device key; `HJV_API_LIMIT_UPDATE_FAIL_IP` (30 a day) the requests
+that fail for who asks, per client address, after which such a request gets 429, while one with
+the right token, signature or code is never refused for its address. `HJV_API_DOWNLOADS_MAX` (4,
+at most 16) is the files sent at the same time, packages and their notice files alike; one more
+gets 503 with `Retry-After: 60`.
 
 ## Credentials
 
@@ -279,6 +305,15 @@ keygen seal|log-key|list|command
                           as hjv-api keygen (runs locally, not in the service)
 ```
 
+The packages' counters are in the same table as the logins' (Updates below), so `unlock` clears
+them too: an account's downloads and links with its login counters (`unlock <id>`), a PC's
+downloads by its tag from the journal (`unlock tag:<tag>`), an address's failed requests (`unlock
+ip:<address>`). `report` shows them among the limit counters (`update-fail-ip`,
+`update-ok-account`, `update-ok-device`, `update-link`) and the packages sent among the records
+(`update token-windows`, `update device-windows`, `update link-windows`, `update door2-windows`,
+…). A PC that is given away or scrapped leaves its account with `device remove`: until then its
+device key gets the PC's package.
+
 Approving a relay (design v3 §8-3, relay/PROTOCOL.md §11): the NAS's owner reports the enrollment
 code from the relay's log together with the ID of one of their PCs; before approving, confirm the
 request with that person through a channel already trusted (in person, by phone, a known e-mail
@@ -336,6 +371,9 @@ The service writes two lines per command to `/var/log/hjviewer-api/operator.log`
 command runs (a command whose line cannot be written does not run), with its targets as tags
 (an allowlist file as the tags of its IDs), and one after, with what it changed in counts or that it
 failed. Each line carries the hash of the one before; `hjv-api oplog-verify` checks the chain.
+One kind of line is the service's own, written without a command, under its own user ID and no
+sudo user: `cmd="update device-new-address" targets=<PC's tag>,<address's tag>`, when a PC's
+device key downloads a package from an address that PC did not use before (Updates below).
 
 To make it append-only: start the service once, so that systemd creates `/var/log/hjviewer-api`
 owned by `hjviewer-api` (0700) and hjv-api creates `operator.log` in it (0600); then
@@ -506,6 +544,14 @@ hjv-relay's requests (`POST /api/hjv/relay/hello`, `/api/hjv/relay/poll`) take n
 the relay signs them with its own key, in the PC sync's envelope (relay/PROTOCOL.md, below). The
 app's wake paths (`POST /api/hjv/devices/{id}/wake`, `GET /api/hjv/wake/{job}`, `GET
 /api/hjv/devices/{id}/wol`) take the token with its signature as every account path does.
+
+The packages of new app versions (`src/update.rs`, Formats below) are the one thing hjv-api
+answers that is not JSON. `GET, HEAD /api/hjv/update/{windows,android}/{x.y.z}` (door 1) takes a
+login, the token with its signature as every account path, or without a login the device key of a
+PC in an account, for that PC's own platform; `POST /api/hjv/update/{platform}/link` takes a login
+and answers a short link; `GET, HEAD /api/hjv/u/{code}` (the short link) and `GET, HEAD
+/api/hjv/get/{code}/…` (door 2) take the code in their path, are what a browser opens, and so are
+the only paths that take a request with an `Origin` header.
 
 A PC leaves its account in one place only, `db::release_binding`: its row goes, its binding ID
 stays 180 days as a tombstone, and the change serial goes up, in one transaction, so that the
@@ -715,7 +761,7 @@ For a super operator (Admin overview; API above for the other answers), read-onl
   is the client address that sync came from (X-Real-IP, as for every request), `lan` the IPv4
   addresses with their prefixes of its wired cards from its wake report (`[]` without one), and
   `passwordless` its state as `hjv-api admin binding list` names it (the states of the device list
-  above; `disabled` also while the account is off the allowlist).
+  above; `disabled` also while the account is blocked).
 
 ### PC sync: `POST /api/hjv/pc/sync` (`src/pcsync.rs`, `src/envelope.rs`, `src/trust.rs`)
 
@@ -894,6 +940,95 @@ GET  /api/hjv/devices/{id}/wol
   driver that does not tell), no card armed to wake the PC, fast startup on, on battery, USB cards
   only, modern standby without its magic packet wake.
 
+### Updates: the packages of new app versions, `/api/hjv/update`, `/api/hjv/u`, `/api/hjv/get` (`src/update.rs`, `src/body.rs`)
+
+The design of the minimum version and forced update, §4-6. The operator installs the packages,
+then the signed policy (`hjv-release` makes both; the runbook has the steps); the apps get the
+policy from nginx and its `latest` from hjv-api.
+
+- **What is sent.** hjv-api reads the policy file again when it changes (also its owner or mode
+  alone) and takes from it, for `windows` and `android`, `latest`, `source` and `package` (`file`,
+  `size`, `sha256`), each by the policy's own rules (a version is three numbers; a package's file
+  is a name of `[A-Za-z0-9._-]` with the platform's extension that neither ends in `install.exe`
+  nor holds `-qs-`; a size is 1 byte to 200 MiB): a file that breaks one of them is no policy at
+  all, and nothing is handed out. It does not check the signature (only root writes the file; the
+  apps check it, and the size and SHA-256 of what they get). A policy older (by `epoch`, then
+  `seq`) than one read before since the start is an error in the journal: the apps keep the newer
+  one, so going back is a newer policy that asks for less. A package is the policy's
+  `package.file` in `HJV_API_PACKAGE_DIR`: a plain file, no link, of exactly `package.size`; no
+  name or path comes from a request. A missing policy, entry, package or file is 404.
+- **How.** The file is read and sent 64 KiB at a time, as fast as its reader takes it and no
+  faster than 3 840 000 bytes a second (about 30 Mb/s, the relay's limit for a session on the same
+  line), within an hour; a reader that takes nothing for a minute loses the connection. With it:
+  `Content-Type` by the extension (`application/vnd.microsoft.portable-executable`,
+  `application/vnd.android.package-archive`, `text/plain; charset=utf-8`), `Content-Length`,
+  `Content-Disposition: attachment; filename="…"`, `Cache-Control: private, no-store`,
+  `X-Content-Type-Options: nosniff`, `X-Robots-Tag: noindex, nofollow, noarchive`,
+  `Referrer-Policy: no-referrer`, `Accept-Ranges: none`, and for nginx `X-Accel-Buffering: no` and
+  `X-Accel-Limit-Rate: 3840000`. nginx passes such an answer on as it comes and writes it to no
+  file of its own; it does not slow one down (nginx 1.24 follows `X-Accel-Limit-Rate` only for an
+  answer it buffers), which is why hjv-api keeps the rate itself; it also ends a download whose
+  hour is over at its next write, however few bytes its reader takes at a time.
+  `HJV_API_DOWNLOADS_MAX` files, packages and notice files alike, go out at once; one more gets
+  `503 {"error":…,"hjv":"busy","retry_after":60}` with `Retry-After: 60`. HEAD gets the same
+  head, takes no slot and counts nowhere.
+- **Door 1**, `GET, HEAD /api/hjv/update/{windows,android}/{x.y.z}`: 400 for another platform or
+  what is no version; then who asks; then 404 unless `x.y.z` is the platform's `latest` with a
+  package. The download is named `HJViewer-<v>.exe` (never a name that makes the packer open the
+  installer) or as the APK is. Who asks is one of two:
+  - a login: `Authorization: Bearer hjv_…` with `X-HJV-Proof`, checked as on every account path
+    (401, or 409 `clock`);
+  - a PC in an account, without a login: `X-HJV-Device: <PC ID>`, `X-HJV-Time: <t>` (Unix
+    seconds, decimal) and `X-HJV-Sig`, standard base64 of the Ed25519 signature by the PC's device
+    key over `"hjv-update-v1" NUL <id> NUL <t> NUL <platform> NUL <version>` (`t` as the header
+    has it, the platform and the version as the path has them), checked strictly with the key
+    stored with the PC's binding. The PC's account must be on the allowlist, `|t − server time| ≤
+    600 s`, and the platform must be the PC's own (the `os` of its binding: a PC's key gets the
+    package of the app that PC runs, and no APK). Whatever of this fails, a PC in no account
+    included, the answer is the same `403 {"error":"이 기기는 새 버전을 받을 수 없습니다."}`.
+- **Short links**, `POST /api/hjv/update/{windows,android}/link` with a login and the body
+  `{"installed":true}` or `{"installed":false}` (`{}` is false): `200
+  {"url":"/api/hjv/u/K7M2-Q9XD","file":"HJViewer-1.6.1-install.exe","expires_in":600}`. The code
+  is 40 random bits as eight symbols of Crockford's base32 (`0-9A-HJKMNP-TV-Z`), shown `XXXX-XXXX`;
+  `GET, HEAD /api/hjv/u/{code}` reads it without regard to case, `-` and spaces, with `O` as `0`
+  and `I` or `L` as `1`. `file` is what the download is saved as: for Windows
+  `HJViewer-<v>-install.exe` for a PC with HJViewer installed (the packer opens the installer for
+  that name) and `HJViewer-<v>.exe` otherwise. A link is bound to its account, platform, version
+  and name; it lives ten minutes and three downloads (HEAD is free), ends when its package is no
+  longer the latest or its account is blocked, and is kept in memory only (a restart
+  ends it). The app shows the link under its own server name and takes `url` only in the form
+  above.
+- **Door 2**, `GET, HEAD /api/hjv/get/{code}/` and `…/{code}/{file}`, open while
+  `HJV_API_DOOR2_FILE` is there with `CODE=<32 lowercase hex digits>` and `UNTIL=<UTC time,
+  2026-12-22T15:00:00Z>` (and `#` comments; `hjv-release hbbs-conf --door2-out` writes it) and
+  `UNTIL` has not come. `…/{code}/` is a page in Korean made from the policy at each request
+  (`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`; `…/{code}` without
+  its `/` is a 307 to it): the steps for an installed PC and for one that only runs HJViewer, the
+  two names of the Windows package, the APK, each with its size and SHA-256, the source tag, and
+  the notice files. The files are `HJViewer-<v>-install.exe` and `HJViewer-<v>.exe` (one file,
+  two names), the APK under its own name, and `HJViewer-<v>-LICENSE.txt`, `-NOTICE.txt`,
+  `-SOURCE.txt`, `-THIRD_PARTY_NOTICES.txt` from `notices-<v>/` of the package directory. A wrong
+  code, a closed door and any other name are the same 404. To close door 2, delete the file; to
+  change the code, replace it.
+- **Limits.** A request that fails for who asks (no or a wrong token, proof, signature or code)
+  counts against its client address; past `HJV_API_LIMIT_UPDATE_FAIL_IP` such a request gets `429
+  {"error":…,"hjv":"rate_limited","retry_after":<seconds>}` with `Retry-After` in place of its
+  401, 403 or 404, and is counted no further. A request with the right token, signature or code
+  is never refused for its address. The HEAD without `Authorization` and without the three device
+  headers, which the app's HTTP client sends first to learn how to connect, gets its 401 and
+  counts nowhere. A download that begins counts under `HJV_API_LIMIT_UPDATE` for the account (all
+  its logins) or for the PC (its device key), a link made under 20 a day for its account; the
+  downloads of a link are the link's three, and door 2 has the download slots only.
+- **Records.** Every package sent and every link made is a record of kind `update` (`token-…`,
+  `device-…`, `link-made-…`, `link-…`, `door2-…` with the platform) with the account and the PC
+  as tags and the client address as its tag, and a line in the journal; a code shows there as the
+  first eight hex digits of its tag, a hash keyed with the log key like the other tags (a plain
+  hash of a short link's 40 bits would leave a reader of the journal a few hundred codes to try).
+  The first download by a PC's key from an address that PC did not use before is a record of its
+  own, `device-new-address`, a notice in the journal and a line in the operator record (a key that
+  someone took along with a PC's disk shows as an address the PC was never at). Door 2's records
+  stop at 20 a minute.
+
 ### hbbs and the SSO
 
 - hbbs's `hjv-pk <id>` answer, a device key signed with hbbs's key pair: `src/hbbs.rs`.
@@ -949,6 +1084,17 @@ signed (103)     686a762d70632d76310073796e6300313233343536373839003137363030303
 s                VVlqZ2wbpNnG3trz+58Y7RftEQMb1GwlsUWg7Yf4XXd94z3RiDzLQqJJPT6mKSLBA9eHEKxK/arHQ39alppkCQ==
 ```
 
+The signature of a PC that downloads its package (`tests/update.rs`, `src/update.rs`): the vector
+of the design's research notes, which the client checks its side against too; the device key is
+the key of the seed `60 61 … 7f`.
+
+```text
+device key       F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=
+GET /api/hjv/update/windows/1.6.1, X-HJV-Device: 123456789, X-HJV-Time: 1793577600
+signed (48)      686a762d7570646174652d76310031323334353637383900313739333537373630300077696e646f777300312e362e31
+X-HJV-Sig        9SMz/B9qthKAtR/xDS6vk+fep97TTkCtFVTJRJ51ypTwmwxZMoH2EUoFrHlIN2LH5c+K5lTUfUoYMAQovYRLDg==
+```
+
 These keys are public test values: never use them for anything else.
 
 ## Tests
@@ -989,7 +1135,17 @@ relay/ next to server/ (a dev dependency by path). `tests/ops.rs` has the backup
 a backup's file, the places refused, the old backups deleted, a backup while requests go on), the
 restore procedure on a restored database, the check (a fake report with a stopped socket and no
 syncs, then the service's own counts), the alert with a stand-in for Telegram, and the units under
-`systemd-analyze verify` (skipped without it).
+`systemd-analyze verify` (skipped without it). `tests/update.rs` has the packages of new app
+versions: door 1 by a login (the right proof, each wrong one and none) and by a PC's device key
+(the vector above, and everything that gets the one 403), short links (their forms, ten minutes,
+three downloads, the same link for a request sent again), door 2 (its page from the policy, its
+names, a closed door), the limits (thirty failures of an address, right requests never refused,
+the HEAD without headers), a package that is not as the policy says, and that the journal and the
+records hold tags only; `tests/update_stream.rs` how a package goes out, on tokio's paused clock
+with hjv-api on one end of a connection in memory (a slow reader past the minute a request has, a
+reader that stops, the fifth download at once, the hour a download may take, 200 MiB at the rate),
+and the program itself sending from a 200 MiB file without holding more memory than for a small
+answer.
 Their files and sockets go to the system's temporary directory (`/tmp` when `$TMPDIR` is long), so
 that socket paths stay short whatever the target directory. Nothing calls the real SSO.
 `hjv-fake-sso --listen 127.0.0.1:18600` serves the fake SSO for the E2E with fixed test accounts
@@ -1011,8 +1167,11 @@ the binding, and since when hbbs holds another key for it); released bindings (b
 the PC's public key, time, how it went); per account key, PC and UTC day the PCs' reports of
 password-less use (latest time, count) and per PC, reason and day the counts of refused proofs;
 the nonces of accepted syncs for 10 minutes; the change serial, the switches and the time of the
-last switch change; login-limit counters under tags; login, device and key records (tags, client
-address, result, time). Since schema 3 (Wake-on-LAN, design v3 §10-1): per bound PC its wake report
+last switch change; login-limit counters under tags, and under tags too the counters of the
+packages of new app versions (an address's failed requests, an account's and a PC's downloads, an
+account's links); login, device and key records (tags, client address, result, time), and the
+records of the packages sent and links made (the account and the PC as tags, the client address as
+its tag only, result, time). Since schema 3 (Wake-on-LAN, design v3 §10-1): per bound PC its wake report
 (its wired cards' MACs, addresses, gateways and their MACs, names, drivers and wake settings, its
 power facts, without its uptime), its summary and the PC's egress address; the NAS relays (ID,
 public key, state, owner account, name, the source of the first hello, versions, interfaces,
@@ -1039,7 +1198,10 @@ the disk; successes are always recorded. A PC's wake report goes when it leaves 
 revoked relay keeps only its ID, key and times; a pending relay goes after 24 hours, an approval
 ahead after 7 days; wake jobs, the wake record, six months (`HJV_API_EVENT_DAYS`), and an account's
 go with it. No password, SSO token, e-mail, uuid or user name of a device is stored, and the journal
-gets tags and counts only.
+gets tags and counts only. Short links live in memory, ten minutes, never in the database; no
+code of a short link or of door 2 is stored or logged (the journal shows the first eight hex
+digits of its tag, keyed with the log key), and the policy, the packages and door 2's file are the
+operator's files, which hjv-api only reads.
 
 ## Wake-on-LAN, where it is
 

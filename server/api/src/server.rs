@@ -2,17 +2,23 @@
 
 //! HTTP/1.1 on the listening socket: the Unix socket systemd holds and passes in (socket
 //! activation; deploy/systemd/hjviewer-api.socket), or for tests a TCP port on 127.0.0.1.
+//!
+//! A request has [`REQUEST_TIMEOUT`] until the head of its answer is ready. The body of an answer
+//! is sent after that, a package for as long as body.rs lets a download take, and every write of
+//! a connection goes through body.rs's `StallGuard`, which keeps the time of the download it
+//! sends (`Deadline`, set here for each answer).
 
 use crate::{
     api::{self, ApiRequest, BodyError, Reply, MAX_BODY},
+    body::{Body, Deadline, StallGuard},
     state::AppState,
 };
-use http_body_util::{BodyExt, Full};
+use http_body_util::BodyExt;
 use hyper::{
     body::{Bytes, Incoming},
     header::{HeaderMap, CONTENT_LENGTH},
     server::conn::http1,
-    service::service_fn,
+    service::{service_fn, HttpService},
     Method, Request, Response, StatusCode,
 };
 use hyper_util::{
@@ -121,26 +127,66 @@ fn spawn<S>(graceful: &GracefulShutdown, state: Arc<AppState>, stream: S, peer: 
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let service = service_fn(move |req| {
-        let state = state.clone();
-        async move { Ok::<_, Infallible>(handle(state, req, peer).await) }
+    let deadline = Deadline::default();
+    let service = service_fn({
+        let deadline = deadline.clone();
+        move |req| {
+            let (state, deadline) = (state.clone(), deadline.clone());
+            async move { Ok::<_, Infallible>(handle(state, req, peer, deadline).await) }
+        }
     });
-    let conn = http1::Builder::new()
-        .timer(TokioTimer::new())
-        .header_read_timeout(HEADER_TIMEOUT)
-        .max_buf_size(MAX_BODY)
-        .serve_connection(TokioIo::new(stream), service);
-    let conn = graceful.watch(conn);
+    let conn = graceful.watch(connection(stream, deadline, service));
     tokio::spawn(async move {
         let _ = conn.await;
     });
 }
 
+/// A connection on `stream`, as every connection is served: hyper's settings, and each write
+/// through the guard that gives up a reader who takes nothing, or a download past its time
+/// (body.rs). `deadline` is the one the connection's answers set.
+fn connection<S, V>(
+    stream: S,
+    deadline: Deadline,
+    service: V,
+) -> http1::Connection<TokioIo<StallGuard<S>>, V>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    V: HttpService<Incoming, ResBody = Body>,
+    V::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_TIMEOUT)
+        .max_buf_size(MAX_BODY)
+        .serve_connection(TokioIo::new(StallGuard::new(stream, deadline)), service)
+}
+
+/// Serves the one connection `stream` until it ends, as [`serve`] serves each connection of its
+/// socket: the way in for tests that go without a socket.
+pub async fn serve_stream<S>(state: Arc<AppState>, stream: S)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let deadline = Deadline::default();
+    let service = service_fn({
+        let deadline = deadline.clone();
+        move |req| {
+            let (state, deadline) = (state.clone(), deadline.clone());
+            async move { Ok::<_, Infallible>(handle(state, req, None, deadline).await) }
+        }
+    });
+    let _ = connection(stream, deadline, service).await;
+}
+
+/// Answers one request of a connection, whose writes keep to `deadline` (body.rs).
 async fn handle(
     state: Arc<AppState>,
     req: Request<Incoming>,
     peer: Option<IpAddr>,
-) -> Response<Full<Bytes>> {
+    deadline: Deadline,
+) -> Response<Body> {
+    // the time of an answer sent before on this connection is over
+    deadline.clear();
     let (parts, body) = req.into_parts();
     let head = parts.method == Method::HEAD;
     let declared = parts
@@ -172,7 +218,9 @@ async fn handle(
             )
         }
     };
-    reply.into_response(head)
+    let response = reply.into_response(head);
+    deadline.follow(response.body());
+    response
 }
 
 /// Reads the body. Up to 64 KiB is kept; a larger one is still read on, up to 1 MiB, and refused,

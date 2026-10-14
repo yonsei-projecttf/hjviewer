@@ -13,7 +13,9 @@
 //! hands each one its signed trust list ([`trust`]) in the signed envelope it shares with
 //! hjv-relay ([`envelope`]). Its phase 2, Wake-on-LAN through NAS relays: the PCs' wake reports
 //! and their judgement ([`wolinfo`]), hjv-relay's hello and long-poll ([`relay`], the server side
-//! of relay/PROTOCOL.md), and the app's wake requests with the signed commands ([`wake`]).
+//! of relay/PROTOCOL.md), and the app's wake requests with the signed commands ([`wake`]). The
+//! minimum version and forced update add the packages of new app versions ([`update`]), which
+//! hjv-api streams itself ([`body`]).
 
 #[macro_use]
 pub mod log;
@@ -22,6 +24,7 @@ pub mod admin;
 pub mod alert;
 pub mod api;
 pub mod backup;
+pub mod body;
 pub mod check;
 pub mod config;
 pub mod db;
@@ -47,6 +50,7 @@ pub mod sso;
 pub mod state;
 pub mod tfa;
 pub mod trust;
+pub mod update;
 pub mod util;
 pub mod wake;
 pub mod wolinfo;

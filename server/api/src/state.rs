@@ -18,6 +18,7 @@ use crate::{
     sso::SsoClient,
     tfa::{PendingStore, SecondFactor},
     trust::ListKey,
+    update::Updates,
     util::DAY,
     wake::CommandKey,
 };
@@ -76,8 +77,12 @@ pub struct AppState {
     pub command_key: Option<CommandKey>,
     /// the relays' held polls and per-relay limits (relay.rs)
     pub relays: RelayHub,
+    /// the packages of new app versions: the policy and door 2's file as last read, the short
+    /// links, the download slots (update.rs)
+    pub updates: Updates,
     /// the operator record and the service's own user ID, from when the admin socket is served
-    /// (admin.rs): where overview.rs writes each look of a super operator
+    /// (admin.rs): where update.rs writes what the operator is to see without asking, and
+    /// overview.rs each look of a super operator
     pub operator_record: OnceLock<(Arc<OpLog>, u32)>,
     /// limits already reported, so that hammering a full limit writes no more records or lines
     notices: Mutex<HashMap<String, Instant>>,
@@ -111,6 +116,7 @@ impl AppState {
             list_key: ListKey::new(config.list_kid, &list_key),
             command_key: command_key.map(|seed| CommandKey::new(config.command_kid, &seed)),
             relays: RelayHub::default(),
+            updates: Updates::new(&config),
             operator_record: OnceLock::new(),
             lists: ListCache::default(),
             key_checks: KeyChecks::default(),
