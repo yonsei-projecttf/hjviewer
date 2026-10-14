@@ -213,13 +213,13 @@ jobs:
 
 | 값 | 어디에 쓰이나 | 정하는 곳 |
 |---|---|---|
-| 앱 버전 (`1.5.1`) | iOS CFBundleShortVersionString, Android versionName, Windows 파일·제품 버전, 앱 정보 화면, 설치 프로그램 목록 | `client/version.env`의 `HJV_VERSION`. `scripts/set-client-version.sh`가 빌드 전에 `Cargo.toml`(Rust 코어와 압축 해제 실행기), `Cargo.lock`, `pubspec.yaml`에 적습니다. |
+| 앱 버전 (`1.6.0`) | iOS CFBundleShortVersionString, Android versionName, Windows 파일·제품 버전, 앱 정보 화면, 설치 프로그램 목록 | `client/version.env`의 `HJV_VERSION`. `scripts/set-client-version.sh`가 빌드 전에 `Cargo.toml`(Rust 코어와 압축 해제 실행기), `Cargo.lock`, `pubspec.yaml`에 적습니다. |
 | iOS·Android 빌드 번호 | iOS CFBundleVersion, Android versionCode | 빌드 시각(UTC `YYDDDHHMM`). 실행할 때마다 자동으로 커집니다. |
-| Windows 빌드 번호 | Windows 파일 버전의 네 번째 숫자(예: `1.5.1.12`) | 워크플로 실행 번호. Windows 버전 숫자는 65535까지라 시각을 쓸 수 없습니다. 실행할 때마다 자동으로 커집니다. |
+| Windows 빌드 번호 | Windows 파일 버전의 네 번째 숫자(예: `1.6.0.12`) | 워크플로 실행 번호. Windows 버전 숫자는 65535까지라 시각을 쓸 수 없습니다. 실행할 때마다 자동으로 커집니다. |
 
 - 새 버전을 나눠 줄 때마다 `HJV_VERSION`을 올립니다. upstream RustDesk 버전보다 낮으면 스크립트가 실패합니다. 상대 기기가 이 버전을 비교해 기능을 켜기 때문입니다.
 - Android versionCode는 빌드 번호에 2000을 더한 값입니다(1.5.1: 262840251 → 262842251). `--split-per-abi`가 arm64 APK에 2000을 더하기 때문입니다. Play용 AAB는 이 오프셋이 붙지 않으므로 같은 값을 직접 받습니다. 그래서 같은 실행의 APK와 AAB는 versionCode가 같고, 워크플로가 이를 확인합니다. 같은 분(UTC)에 시작한 두 실행은 versionCode가 같으므로 Play는 두 번째를 받지 않습니다. 그때는 다시 빌드합니다.
-- iOS가 허용하는 형식은 숫자 세 개(`1.5.1`)뿐입니다.
+- iOS가 허용하는 형식은 숫자 세 개(`1.6.0`)뿐입니다.
 - Windows에서 내려받는 파일 이름은 `HJViewer.exe`이고, 같은 파일을 `HJViewer-install.exe`로도 냅니다(더블클릭하면 바로 설치 화면). 설치하면 `C:\Program Files\HJViewer\HJViewer.exe`가 됩니다. 압축 해제 실행기는 파일 이름을 읽습니다. 이름이 `install.exe`로 끝나면 바로 설치하고, `-qs-`가 들어가면 일회용 지원 모드로 실행합니다. 그러니 이름을 바꿀 때는 이 둘을 피하세요.
 
 ## 서버 값 (필수)
