@@ -1237,6 +1237,10 @@ async fn sso_login(
             if state.first_notice("sso-calls", Duration::from_secs(60)) {
                 log_warn!("login: SSO call limit reached");
             }
+            // no call is made: a first login's call of the IDs not on the allowlist goes back
+            if unlisted {
+                state.sso_calls_new.give_back(&new_holders);
+            }
             return run
                 .fail(StatusCode::UNAUTHORIZED, Outcome::Refused, "limited-sso")
                 .await;
@@ -1246,6 +1250,9 @@ async fn sso_login(
                 log_warn!(
                     "login: one account's share of the SSO calls reached (acct={account_tag})"
                 );
+            }
+            if unlisted {
+                state.sso_calls_new.give_back(&new_holders);
             }
             return run
                 .fail(StatusCode::UNAUTHORIZED, Outcome::Refused, "limited-sso")

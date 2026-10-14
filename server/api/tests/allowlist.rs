@@ -926,6 +926,56 @@ impl SecondFactor for FixedCode {
 }
 
 /// Code dialogs for `id` with a wrong password, one from each address; their secrets.
+/// While the SSO calls of all accounts (HJV_API_LIMIT_SSO) are used up, a first login makes no
+/// call, and the ID and its address take back the call they took of HJV_API_LIMIT_SSO_NEW: a
+/// full window does not use up an address's share of the first logins (reverify:WP-OPEN:2).
+#[tokio::test]
+async fn a_first_login_that_the_full_window_refuses_keeps_no_share() {
+    let h = Harness::with(Options {
+        allow: vec![HONG.0],
+        vars: vec![
+            ("HJV_API_LIMIT_SSO", "1/3600".into()),
+            ("HJV_API_LIMIT_NEW_ID", "10/86400".into()),
+            ("HJV_API_LIMIT_SSO_NEW", "8/3600".into()),
+        ],
+        ..Default::default()
+    })
+    .await;
+    // the registered HONG takes the one call of the window
+    h.login_ok_from(HONG, None, "10.48.0.1").await;
+    assert_eq!(h.sso.token_calls(), 1);
+    // three IDs nobody registered from one address, whose share is two calls of the eight: each
+    // is refused for the full window, none for the address's share
+    for n in 1..=3 {
+        let a = h
+            .login(
+                &h.login_body(&format!("2026777{n:03}"), "wrong", None),
+                "10.48.1.1",
+            )
+            .await;
+        assert_eq!(a.status, 401);
+    }
+    assert_eq!(h.sso.token_calls(), 1);
+    let results = h.results().await;
+    assert_eq!(
+        results[results.len() - 3..],
+        [
+            "login:limited-sso",
+            "login:limited-sso",
+            "login:limited-sso"
+        ]
+    );
+    // and the IDs' window holds nothing of them
+    for n in 1..=3 {
+        let id = format!("2026777{n:03}");
+        let tag = h.account_tag(&id);
+        assert!(!h
+            .state
+            .sso_calls_new
+            .give_back(&[tag.as_str(), &h.state.tags.ip("10.48.1.1")]));
+    }
+}
+
 async fn code_dialogs(h: &Harness, id: &str, ips: &[&str]) -> Vec<String> {
     let mut secrets = Vec::new();
     for ip in ips {
