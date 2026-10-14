@@ -106,7 +106,7 @@ PREPUSH_STAGES="server client deploy e2e wol leak"
 # fails (at_least). Raise them as scenarios and tests come; lower one only with what was taken out.
 E2E_LEAST_STRICT=60 E2E_LEAST_OPEN=2 WOL_LEAST=20
 # strict: and the minimum version's V1-V9 (2026-10-14)
-E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 11))
+E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 12))
 # by the filter of build_e2e_client's cargo test --lib <filter>
 declare -A UNIT_LEAST=([hjv]=83 [hjviewer_wol]=6)
 # and the update code's tests in the e2e stage's build without the update keys (2026-10-14)

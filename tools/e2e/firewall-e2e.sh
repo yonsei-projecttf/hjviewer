@@ -47,8 +47,9 @@
 # takes it by itself; V5-V8 check that it lets a controller below the minimum in before the
 # deadline and refuses its login once the deadline has passed. V9 serves a policy signed with the
 # test key 3, which no E2E build pins, and starts the PC's service again: the PC refuses the login
-# by the policy it stored, refuses the new one and takes nothing from it. CLIENT_OLD adds the 1.5.1
-# controller to V3 and V8.
+# by the policy it stored, refuses the new one and takes nothing from it. It does the same with a
+# policy of the test key 1 that carries the signature of another one, which only the signature
+# itself gives away. CLIENT_OLD adds the 1.5.1 controller to V3 and V8.
 set -euo pipefail
 
 MODE=${1:-strict}
@@ -93,22 +94,36 @@ fi
 
 log() { printf '\n== %s\n' "$*"; }
 
-# <seq> <deadline> [<test key>]: signs a policy of epoch 1 and that seq with the test key 1
-# (hjv-release test-sign), or with <test key> as it is (--raw, as the tool signs for a key that no
-# E2E build pins), and serves it at https://hjv.test/api/hjv/version, replaced at once as the
-# server's file is. Its one entry, windows, is the one an E2E build on Linux is held to:
-# NEXT_MINOR, until <deadline> only for apps below it (grace_until). Its package is made up: Linux
-# downloads nothing.
+# <seq> <deadline> [<test key> [<seq of an earlier policy>]]: signs a policy of epoch 1 and that seq
+# with the test key 1 (hjv-release test-sign), or with <test key> as it is (--raw, as the tool signs
+# for a key that no E2E build pins), keeps the envelope as envelope-<seq>.json and serves it at
+# https://hjv.test/api/hjv/version, replaced at once as the server's file is. With <seq of an
+# earlier policy> of the same key, the envelope served carries that policy's signature in place of
+# its own. Its one entry, windows, is the one an E2E build on Linux is held to: NEXT_MINOR, until
+# <deadline> only for apps below it (grace_until). Its package is made up: Linux downloads nothing.
 serve_policy() {
-  local text="$RUN/policy/policy-$1.json" key=()
+  local text="$RUN/policy/policy-$1.json" signed="$RUN/policy/envelope-$1.json" key=()
   [ -z "${3:-}" ] || key=(--key "$3" --raw)
   printf '{"v":1,"epoch":1,"seq":%s,"issued":"%s","server":"%s","platforms":{"windows":{"min":"%s","latest":"%s","grace_until":"%s","package":{"file":"HJViewer-%s-windows-x86_64.exe","size":1,"sha256":"%s","build":"%s.0"}}}}\n' \
     "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$DOMAIN" "$NEXT_MINOR" "$NEXT_MINOR" "$2" "$NEXT_MINOR" \
     "$(printf 'e2e0%.0s' $(seq 16))" "$NEXT_MINOR" >"$text"
-  if ! timeout 30 "$HJV_RELEASE" test-sign "${key[@]}" --policy "$text" --out "$RUN/policy/version-policy.json.new" \
+  if ! timeout 30 "$HJV_RELEASE" test-sign "${key[@]}" --policy "$text" --out "$signed" \
     >>"$RUN/hjv-release.log" 2>&1; then
     cat "$RUN/hjv-release.log"
     echo "FAIL: hjv-release test-sign $text"
+    exit 1
+  fi
+  if [ -z "${4:-}" ]; then
+    cp "$signed" "$RUN/policy/version-policy.json.new"
+  elif ! python3 -I -c '
+import json, sys
+envelope, other = (json.load(open(path, encoding="utf-8")) for path in sys.argv[1:3])
+if envelope["k"] != other["k"] or envelope["p"] == other["p"] or envelope["s"] == other["s"]:
+    sys.exit("not a signature of the same key over another text")
+envelope["s"] = other["s"]
+print(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")))' "$signed" "$RUN/policy/envelope-$4.json" \
+    >"$RUN/policy/version-policy.json.new"; then
+    echo "FAIL: the policy $1 with the signature of the policy $4"
     exit 1
   fi
   mv -f "$RUN/policy/version-policy.json.new" "$RUN/policy/version-policy.json"
@@ -1348,15 +1363,16 @@ policy_taken() {
   pc_log_has "version policy: now at $2"
 }
 
-# V9: the PC refused the policy of the test key 3 for that key; a PC that took it, or refused it for
-# another reason, fails the run at once
-key3_refused() {
+# V9: <epoch:seq> <reason> [<reason before>]: the PC refused the policy <epoch:seq> for <reason>
+# (UnknownKey, its key; BadSignature, its signature). A PC that took it, or refused a policy for
+# another reason than these (<reason before>: what it refused in V9 before), fails the run at once.
+v9_refused() {
   local text other
   text=$(pc_log)
-  if grep -q 'version policy: now at 1:3' <<<"$text"; then fail "V9: the PC took the policy 1:3 of the test key 3"; fi
-  other=$(grep -o 'version policy: refused (.*' <<<"$text" | grep -v '^version policy: refused (UnknownKey)' | head -1 || true)
-  [ -z "$other" ] || fail "V9: the PC refused the policy of the test key 3, but not for its key: $other"
-  grep -q 'version policy: refused (UnknownKey)' <<<"$text"
+  if grep -q "version policy: now at $1" <<<"$text"; then fail "V9: the PC took the policy $1"; fi
+  other=$(grep -o 'version policy: refused (.*' <<<"$text" | grep -vE "^version policy: refused \(($2|${3:-$2})\)" | head -1 || true)
+  [ -z "$other" ] || fail "V9: the PC refused the policy $1, but not for $2: $other"
+  grep -qF "version policy: refused ($2)" <<<"$text"
 }
 
 min_controller_part() {
@@ -1464,7 +1480,7 @@ policy_part() {
     echo "skipped: V8 (no CLIENT_OLD, a 1.5.1 client built for this server)"
   fi
 
-  # (last: from here on the PC's log has a policy that it refused, which policy_taken fails on)
+  # (last: from here on the PC's log has policies that it refused, which policy_taken fails on)
   log "V9: a policy signed with the test key 3, which the build does not pin (seq 3, as 1:2): the PC's service starts again"
   # (with 1:2's deadline: a later one puts the deadline off, which even a PC that took any key
   # would refuse, as a relaxation)
@@ -1490,7 +1506,7 @@ policy_part() {
   until_ok 5 "V9: the PC's log line of the refusal" pc_log_count_above "$line" "$n0"
   pass "V9: the PC's service, started again, refused the login by the policy 1:2 it stored, $after s after its start, before it asked the server (exit 4, the PC's L1, then R1)"
   # the refused login has the service ask at once
-  until_ok 40 "V9: the PC's log line 'version policy: refused (UnknownKey)'" key3_refused
+  until_ok 40 "V9: the PC's log line 'version policy: refused (UnknownKey)'" v9_refused 1:3 UnknownKey
   vscreen ver "$CLIENT" v9b
   if [ "$RC" != 4 ] || [ "$(from_login_error)" != "$want" ]; then
     fail "V9: after the policy of the test key 3, exit $RC, not 4 with the PC's L1, then R1: $(from_login_error)"
@@ -1500,6 +1516,30 @@ policy_part() {
     fail "V9: a refused login reached the PC's connection manager"
   fi
   pass "V9: the PC refused the policy 1:3 of the test key 3 (UnknownKey), took nothing from it and still refuses the controller by 1:2 ($MS ms)"
+
+  log "V9: the policy 1:4 of the test key 1 with the signature of 1:2 in place of its own: the PC's service starts again"
+  # A signature of a pinned key over another text, which only the signature itself gives away: as
+  # 1:2 otherwise, so that a PC that does not check the signature takes it. A service that refused a
+  # policy asks again only after half an hour, also for a refused login, and logs one refused policy
+  # in that time: started again, it asks at its first refused login, and logs.
+  serve_policy 4 "$deadline" "" 2
+  n0=$(pc_log_count "$line")
+  n1=$(pc_log_count 'keep_alive: ')
+  stop_pc_service
+  start_pc_service
+  until_ok 20 "V9: the PC registered with hbbs again" pc_log_count_above 'keep_alive: ' "$n1"
+  # refused by the 1:2 it stored, which the policy of the test key 3 left as it was
+  vscreen ver "$CLIENT" v9c
+  if [ "$RC" != 4 ] || [ "$(from_login_error)" != "$want" ]; then
+    fail "V9: after a new start, exit $RC, not 4 with the PC's L1, then R1: $(from_login_error)"
+  fi
+  if has 'logged in to' || [ -e "$RUN/v9c.ppm" ]; then fail "V9: the controller got in after a new start"; fi
+  until_ok 5 "V9: the PC's log line of the refusal" pc_log_count_above "$line" "$n0"
+  until_ok 40 "V9: the PC's log line 'version policy: refused (BadSignature)'" v9_refused 1:4 BadSignature UnknownKey
+  if [ -n "$cm0" ] && [ "$(wc -l <"$RUN/pc-cm.log")" != "$cm0" ]; then
+    fail "V9: a refused login reached the PC's connection manager"
+  fi
+  pass "V9: the PC refused the policy 1:4 with the signature of 1:2 (BadSignature) and took nothing from it; started again, it refused the controller by the 1:2 it stored ($MS ms)"
 }
 
 if [ -n "$ACCOUNT" ]; then
