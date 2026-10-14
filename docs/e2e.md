@@ -174,7 +174,7 @@ PASS (strict): transport: relay
 | S27 | 컨트롤러 시계 +15분(`libfaketime`) | 첫 요청 409 `clock`, 토큰·`hjv-my-devices` 그대로, `hjv-clock-offset` -900. 다음 프로세스부터 목록과 `""` 성공. 로그인도 시계 문구 뒤 다시 하면 성공 |
 | X7b | X7 뒤 hjv-api가 hbbs의 새 키를 봄 → 목록 새로 고침 → `""` → PC에서 다시 로그인 → `""` | 65초 뒤 `needs-relogin`, 경고 없이 비밀번호 창(종료 3). 다시 로그인하면 새 키로 `active`, 성공 |
 | X4 | 두 번째 1.6.0 PC(alice)가 컨트롤러 | 두 번째 PC의 목록에 자기 자신은 없음, 성공(PC → PC) |
-| S28 | hjv-ctl2(D1 뒤로 비어 있음)에서 미리 넣지 않은 carol이 로그인 | 성공(SSO 호출 1번). `allow list` 첫 줄 `allowlist: 3 IDs, 3 registered (1 by a login), 0 blocked; login open`, carol의 항목은 `from login`. hjv-api 로그에 `… was registered (acct=<꼬리표>)` 한 줄, 로그와 가린 명단에 carol의 ID 없음 |
+| S28 | hjv-ctl2(D1 뒤로 비어 있음)에서 미리 넣지 않은 carol이 로그인 | 성공(SSO 호출 1번). `allow list` 첫 줄 `allowlist: 3 IDs, 3 registered (1 by a login), 0 blocked; login open`, carol의 항목은 `from login`. hjv-api 로그에 `… was registered (acct=<꼬리표>)` 한 줄, 로그와 가린 명단에 carol의 ID 없음(대소문자 무시: hjv-api는 ID를 소문자로 둠) |
 | S29 | `admin block Y9001` | 출력 `blocked: 1 blocked …, 1 tokens and 1 account keys revoked; …`. carol의 기기 목록 요청이 바로 401. 틀린 비밀번호는 bob과 같은 실패 문구, 맞는 비밀번호는 SSO를 거친 뒤 403 `이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요.`(SSO 호출 각 1번) |
 | S30 | `admin unblock Y9001` | carol이 다시 로그인하고 기기 목록 성공 |
 | S31 | `admin user delete Y9001`(명단 항목도 함께 지워짐) → hjv-api를 `HJV_API_LOGIN=list`로 다시 시작 | `report` 둘째 줄 `login: list (…)`. 명단에 없는 carol은 맞는 비밀번호로도 틀린 비밀번호와 같은 실패 문구, SSO 호출 0. 미리 넣은 bob은 로그인 성공. 그 뒤 기본값(open)으로 다시 시작 |

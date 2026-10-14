@@ -101,6 +101,8 @@ PREPUSH_STAGES="server client deploy e2e wol leak"
 # moved under a condition that does not hold, a test filter that picks nothing), and the stage
 # fails (at_least). Raise them as scenarios and tests come; lower one only with what was taken out.
 E2E_LEAST_STRICT=60 E2E_LEAST_OPEN=2 WOL_LEAST=20
+# strict: and the open login's S28-S31 (2026-10-14)
+E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 4))
 # by the filter of build_e2e_client's cargo test --lib <filter>
 declare -A UNIT_LEAST=([hjv]=83 [hjviewer_wol]=6)
 export PATH="$HOME/.cargo/bin:$PATH"

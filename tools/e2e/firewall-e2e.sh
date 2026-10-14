@@ -1218,7 +1218,8 @@ account_allowlist() {
     fail "S28: the allowlist after carol's login: $(head -1 "$RUN/allow.txt")"
   grep -q " registered  from login " "$RUN/allow.txt" || fail "S28: no entry from a login"
   grep -q "logged in and was registered (acct=" "$RUN/hjv-api.log" || fail "S28: no journal line of the registration"
-  grep -q "$CAROL" "$RUN/hjv-api.log" "$RUN/allow.txt" && fail "S28: carol's portal ID in hjv-api's log or the masked list"
+  # (in any case: hjv-api keeps and shows portal IDs case-folded)
+  grep -qi "$CAROL" "$RUN/hjv-api.log" "$RUN/allow.txt" && fail "S28: carol's portal ID in hjv-api's log or the masked list"
   run ctl2 --hjv-e2e-devices
   want 0 "S28: carol's device list"
   pass "S28: carol logged in (one SSO call) and is on the allowlist as a login's entry; the journal has her tag, not her ID"
