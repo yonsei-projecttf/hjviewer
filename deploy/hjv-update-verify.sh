@@ -169,7 +169,7 @@ def version_number(text):
 
 
 def days_from_civil(y, m, d):
-    """Days since 1970-01-01 of a proleptic Gregorian date (any year 0-9999, as chrono reads it)."""
+    """Days since 1970-01-01 of a proleptic Gregorian date (any year 0-9999)."""
     y -= m <= 2
     era = y // 400
     yoe = y - era * 400
@@ -178,7 +178,8 @@ def days_from_civil(y, m, d):
 
 
 def parse_utc(text):
-    """Unix seconds of the one form of a time, YYYY-MM-DDTHH:MM:SSZ (today's parse_utc), else None."""
+    """Unix seconds of the one form of a time, YYYY-MM-DDTHH:MM:SSZ with a year 0001-9999 (spec 1-2,
+    decided 2026-10-14: no implementation reads the year 0000), else None."""
     if not text.isascii() or len(text) != 20 or [text[i] for i in (4, 7, 10, 13, 16, 19)] != list("--T::Z"):
         return None
     fields = (text[0:4], text[5:7], text[8:10], text[11:13], text[14:16], text[17:19])
@@ -187,7 +188,7 @@ def parse_utc(text):
     y, mo, d, h, mi, s = (int(f) for f in fields)
     leap = y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)
     days = (31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-    if not 1 <= mo <= 12 or not 1 <= d <= days[mo - 1] or h > 23 or mi > 59 or s > 59:
+    if y < 1 or not 1 <= mo <= 12 or not 1 <= d <= days[mo - 1] or h > 23 or mi > 59 or s > 59:
         return None
     return days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s
 
@@ -388,8 +389,9 @@ def json_value(text, what):
 
 
 # The member order, type and presence of every text, exactly as hjv-release writes it (spec 1-3).
-# A member a policy text does not name is not canonical; base is not required here (B3 refuses a
-# declaration without one as RootFormat, as the vector declaration-without-base says).
+# A member a text does not name is not canonical, and so is a text without a member the tool always
+# writes: a declaration has all six (the term `canonical`, decided 2026-10-14; the vectors
+# declaration-without-base and declaration-without-revoked).
 PACKAGE = (("file", "str", True), ("size", "int", True), ("sha256", "str", True), ("build", "str", True))
 ENTRY = (("min", "str", True), ("latest", "str", True), ("grace_until", "str", False),
          ("grace_min", "str", False), ("os_min", "str", False), ("notes_ko", "str", False),
@@ -403,7 +405,7 @@ BASE_ENTRY = (("min", "str", True), ("latest", "str", True), ("grace_until", "st
               ("grace_min", "str", False))
 DECLARATION = (("v", "int", True), ("server", "str", True), ("epoch", "int", True),
                ("revoked", "ints", True), ("issued", "str", True),
-               ("base", tuple((name, BASE_ENTRY, False) for name in NAMES), False))
+               ("base", tuple((name, BASE_ENTRY, False) for name in NAMES), True))
 PART = (("k", "key", True), ("p", "str", True), ("s", "sig", True))
 ENVELOPE = (("v", "int", True), ("k", "key", True), ("p", "str", True), ("s", "sig", True),
             ("root", PART, False))

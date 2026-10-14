@@ -370,7 +370,7 @@ def cases():
     case("below-floor-in-epoch-2", [], HISTORY["e2-s1"], "Rollback", floor="2:2", kept=base_kept(D2))
     case("declaration-epoch-back", upto("e3-s1-relax"), HISTORY["e2-s2"], "RootEpoch")
     case("declaration-of-epoch-1", upto("e2-s1"), envelope(part(2, policy(1, 4, day(7), E13)), root_part(
-        101, J({"v": 1, "server": SERVER, "epoch": 1, "revoked": [], "issued": day(6)}))), "RootFormat")
+        101, J({"v": 1, "server": SERVER, "epoch": 1, "revoked": [], "issued": day(6), "base": {}}))), "RootFormat")
     case("relaxation-declaration-alone", upto("e2-s2"), envelope(dict(part(2, P31), p=P31.replace(
         "1.5.0", "1.4.0", 1)), R3), "BadSignature", kept=base_kept(D3, held=P22), then="e3-s2")
     case("raise-keeps-the-old-min", upto("e1-s3"), envelope(part(2, policy(1, 4, day(6), dict(
@@ -394,7 +394,11 @@ def cases():
         case(name, ["e1-s1"], envelope(part(1, policy(1, 2, day(2), dict(E11, windows=e)))), "Field:grace_min")
     case("root-signed-policy-taken", ["e1-s1", "e1-s2"], envelope(part(101, policy(1, 3, day(2), E12))), "taken")
     case("declaration-without-base", [], envelope(part(2, P21), root_part(101, J(
-        {"v": 1, "server": SERVER, "epoch": 2, "revoked": [1], "issued": day(6)}))), "RootFormat")
+        {"v": 1, "server": SERVER, "epoch": 2, "revoked": [1], "issued": day(6)}))), "RootFormat",
+         canonical=False)
+    case("declaration-without-revoked", [], envelope(part(2, P21), root_part(101, J(
+        {"v": 1, "server": SERVER, "epoch": 2, "issued": day(6), "base": requirements(E13)}))), "taken",
+         binding="tool", canonical=False)
     case("declaration-base-bad-entry", [], envelope(part(2, P21), root_part(101, declaration(
         2, [1], day(6), {"windows": {"min": "1.6", "latest": "1.6.1"}}))), "RootFormat")
     case("declaration-base-grace-min-not-below-min", [], envelope(part(2, P21), root_part(101, declaration(
@@ -596,7 +600,9 @@ class Texts(Common):
         self.assertEqual(H.parse_utc("1970-01-01T00:00:00Z"), 0)
         self.assertEqual(H.parse_utc("2026-11-22T15:00:00Z"), 1_795_359_600)
         self.assertEqual(H.parse_utc("2028-02-29T23:59:59Z"), 1_835_481_599)
-        self.assertEqual(H.parse_utc("0000-01-01T00:00:00Z"), -62_167_219_200)
+        self.assertEqual(H.parse_utc("0001-01-01T00:00:00Z"), -62_135_596_800)
+        self.assertEqual(H.parse_utc("9999-12-31T23:59:59Z"), 253_402_300_799)
+        self.assertIsNone(H.parse_utc("0000-01-01T00:00:00Z"))
         for bad in ("", "2026-11-22", "2026-11-22T15:00:00+00:00", "2026-11-22T15:00:00.000Z", "2026-13-01T00:00:00Z",
                     "2026-02-29T00:00:00Z", "2026-11-22T24:00:00Z", "2026-11-22T15:60:00Z", "2026-11-22T15:00:60Z",
                     "２026-11-22T15:00:00Z", "2026-11-22t15:00:00Z", "+026-11-22T15:00:00Z"):
@@ -634,8 +640,14 @@ class Texts(Common):
             "build as a number": (J(dict(env, p=env["p"].replace('"build":"262782100"', '"build":262782100')))
                                   + "\n").encode(),
             "a package without build": (J(dict(env, p=env["p"].replace(',"build":"262782100"', ""))) + "\n").encode(),
+            "build beyond a 64-bit float": (J(dict(env, p=env["p"].replace('"build":"262782100"', '"build":1e400')))
+                                            + "\n").encode(),
             "a declaration without revoked": (J(dict(env, root=dict(env["root"], p=env["root"]["p"].replace(
                 '"revoked":[1],', "")))) + "\n").encode(),
+            "a declaration without base": (J(dict(env, root=dict(env["root"], p=env["root"]["p"].split(',"base"')[0]
+                                                                + "}"))) + "\n").encode(),
+            "a declaration without v": (J(dict(env, root=dict(env["root"], p=env["root"]["p"].replace(
+                '"v":1,', "", 1)))) + "\n").encode(),
             "a base entry out of order": (J(dict(env, root=dict(env["root"], p=env["root"]["p"].replace(
                 '"min":"1.6.0","latest":"1.6.1"', '"latest":"1.6.1","min":"1.6.0"', 1)))) + "\n").encode(),
             "a negative revoked number": (J(dict(env, root=dict(env["root"], p=env["root"]["p"].replace(
@@ -652,7 +664,7 @@ class Texts(Common):
             H.canonical_envelope(changes["an unknown member"])
         # what the tool writes but the apps refuse is canonical: the apps' codes say why
         for name in ("envelope-v2", "policy-v2", "declaration-v2", "wrong-server", "min-above-latest",
-                     "declaration-without-base", "declaration-of-epoch-1", "contact-201-characters"):
+                     "declaration-of-epoch-1", "contact-201-characters"):
             data = [c for c in CASES if c[0] == name][0][2]
             H.canonical_envelope(data)
 
