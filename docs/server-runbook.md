@@ -904,7 +904,7 @@ sudo journalctl --namespace=hjviewer -u hjviewer-api -p warning --since -10min -
 - 지문 줄(공개값)은 사용자가 5단계에서 키를 만들 때 본 지문과 같아야 하고, 8단계의 대조에 쓰므로 목록 키와 명령 키 것을 모두 보고에 옮깁니다.
 - 서비스가 시작하지 않으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -n 20 -o cat`의 오류 줄을 사용자에게만 보여 줍니다. 설정 파일의 모르는 `HJV_API_` 이름, 빠진 SSO 값, 없는 자격 증명(명령 키 포함, 7-4)이 흔한 원인입니다.
 
-로그인 방식을 확인합니다. 설정 파일에 `HJV_API_LOGIN` 줄이 없거나 `open`이면(기본값, 2026-10-14 사용자 결정) 연세 SSO를 통과한 교직원은 누구나 로그인하고, 처음 로그인할 때 명단에 저절로 올라갑니다. 교직원만 되는 것은 hjv-api의 ID 규칙 때문입니다(연세 SSO 자체는 다른 계정도 받음). 입력한 ID를 대문자로 바꿔 Z나 Y로 시작하고 ZA로 시작하지 않아야 SSO에 묻고, SSO가 알려 준 그 사람의 pcode도 같은 규칙에 맞아야 합니다(행정허브 플러그인은 Z와 B를 받음). 그래서 명단을 미리 넣을 필요가 없습니다. `selfcheck`의 마지막 줄이 `[ OK ] login (HJV_API_LOGIN): open, …`이고, `report`의 둘째 줄이 `login: open (…)`이어야 합니다.
+로그인 방식을 확인합니다. 설정 파일에 `HJV_API_LOGIN` 줄이 없거나 `open`이면(기본값, 2026-10-14 사용자 결정) 연세 SSO를 통과한 교직원은 누구나 로그인하고, 처음 로그인할 때 명단에 저절로 올라갑니다. 교직원만 되는 것은 연세 SSO가 아니라 hjv-api의 ID 규칙 때문입니다. 입력한 ID를 대문자로 바꿔 Z나 Y로 시작하고 ZA로 시작하지 않아야 SSO에 묻고, SSO가 알려 준 그 사람의 pcode도 같은 규칙에 맞아야 합니다(행정허브 플러그인은 Z와 B를 받음). 그래서 명단을 미리 넣을 필요가 없습니다. `selfcheck`의 마지막 줄이 `[ OK ] login (HJV_API_LOGIN): open, …`이고, `report`의 둘째 줄이 `login: open (…)`이어야 합니다.
 
 ```bash
 sudo /opt/hjviewer/bin/hjv-api admin report | head -3
