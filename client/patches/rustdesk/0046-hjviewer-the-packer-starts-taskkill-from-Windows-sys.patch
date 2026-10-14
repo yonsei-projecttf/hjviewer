@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Wed, 14 Oct 2026 16:14:21 +0900
+Subject: [PATCH 46/46] hjviewer: the packer starts taskkill from Windows'
+ system folder
+
+Upstream's packer starts `taskkill` by its bare name before it copies the
+privacy mode's RuntimeBroker (main.rs copy_runtime_broker). Rust's Command
+looks for such a name in the folder of the running executable before it
+looks in Windows' system folder, and the packer runs from the folder it was
+saved to. An app that is not installed and updates itself saves the new
+HJViewer-<version>.exe in the downloads folder and starts it there
+(src/hjviewer_update/win.rs into_downloads and hand_over), and a web page
+can leave a taskkill.exe in the downloads without asking. The packer then
+started that file, with the user's rights and without a SmartScreen
+prompt, whenever it unpacked a new version.
+
+A build pinned to an hjviewer server now starts taskkill.exe in the folder
+GetSystemDirectoryW names, or in C:\Windows\System32, where main.rs already
+takes RuntimeBroker.exe from, when Windows names none. A build that is not
+pinned starts it by name, as upstream does. The hook is the argument of
+Command::new; the logic is in hjv_guard.rs, with tests of the choice and of
+how GetSystemDirectoryW's answer is read. The Windows code is type-checked
+for x86_64-pc-windows-msvc with stable Rust and 1.75, pinned and not; the
+first Windows build and a run from a downloads folder that holds a
+stand-in taskkill.exe check the rest.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/portable/src/hjv_guard.rs | 80 ++++++++++++++++++++++++++++++++++
+ libs/portable/src/main.rs      |  2 +-
+ 2 files changed, 81 insertions(+), 1 deletion(-)
+
+diff --git a/libs/portable/src/hjv_guard.rs b/libs/portable/src/hjv_guard.rs
+index c494f89..e470d9e 100644
+--- a/libs/portable/src/hjv_guard.rs
++++ b/libs/portable/src/hjv_guard.rs
+@@ -128,6 +128,53 @@ fn wait_for(id: u32) {
+ #[cfg(not(windows))]
+ fn wait_for(_id: u32) {}
+ 
++/// The `taskkill` that main.rs `copy_runtime_broker` starts. Upstream names it alone, and Windows
++/// looks for a program beside the packer before its own folders. The packer runs from the folder
++/// it was saved to: the downloads, for one that an app put there to update itself
++/// (src/hjviewer_update/win.rs), where a web page can leave a `taskkill.exe` without asking.
++#[cfg(windows)]
++pub fn taskkill() -> std::path::PathBuf {
++    taskkill_in(pinned(), system_dir)
++}
++
++/// Windows' folder when Windows does not name it: where main.rs takes RuntimeBroker.exe from.
++#[cfg(any(windows, test))]
++const SYSTEM_DIR: &str = "C:\\Windows\\System32";
++
++#[cfg(any(windows, test))]
++fn taskkill_in(
++    pinned: bool,
++    system_dir: impl FnOnce() -> Option<std::path::PathBuf>,
++) -> std::path::PathBuf {
++    if !pinned {
++        return "taskkill".into();
++    }
++    system_dir()
++        .unwrap_or_else(|| SYSTEM_DIR.into())
++        .join("taskkill.exe")
++}
++
++#[cfg(windows)]
++fn system_dir() -> Option<std::path::PathBuf> {
++    use std::os::windows::ffi::OsStringExt;
++    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
++    let mut buffer = [0u16; 260];
++    // SAFETY: it writes into the slice it is given, within the slice's length
++    let len = unsafe { GetSystemDirectoryW(Some(&mut buffer[..])) };
++    let dir = answered(&buffer, len)?;
++    Some(std::ffi::OsString::from_wide(dir).into())
++}
++
++/// The folder in what GetSystemDirectoryW wrote. Its answer is the folder's length without the
++/// closing zero; 0 is an error, and a length that leaves no room for the zero is the size needed.
++#[cfg(any(windows, test))]
++fn answered(buffer: &[u16], len: u32) -> Option<&[u16]> {
++    let len = len as usize;
++    buffer
++        .get(..len)
++        .filter(|dir| !dir.is_empty() && len < buffer.len())
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -234,4 +281,37 @@ mod tests {
+         }
+         assert_eq!(EXIT_IN_USE, 32);
+     }
++
++    /// A pinned packer never names `taskkill` alone, which Windows would look for beside the
++    /// packer first: in the downloads, for one an app saved there.
++    #[test]
++    fn a_pinned_packer_starts_the_taskkill_of_windows() {
++        let asked = std::cell::Cell::new(false);
++        let by_name = taskkill_in(false, || {
++            asked.set(true);
++            None
++        });
++        // upstream's build, as it always did: by its name, without asking Windows anything
++        assert_eq!(by_name, PathBuf::from("taskkill"));
++        assert!(!asked.get());
++        let system = PathBuf::from("/windows/system32");
++        assert_eq!(
++            taskkill_in(true, || Some(system.clone())),
++            system.join("taskkill.exe")
++        );
++        // Windows named no folder: its usual one, never the name alone
++        let fallback = taskkill_in(true, || None);
++        assert_eq!(fallback, PathBuf::from(SYSTEM_DIR).join("taskkill.exe"));
++        assert_ne!(fallback.parent(), Some(std::path::Path::new("")));
++    }
++
++    #[test]
++    fn the_folder_that_windows_names() {
++        let buffer = [b'C' as u16, b':' as u16, b'\\' as u16, 0];
++        assert_eq!(answered(&buffer, 3), Some(&buffer[..3]));
++        // an error, and the sizes it needs when the buffer is too short
++        for len in [0, 4, 5, 261] {
++            assert_eq!(answered(&buffer, len), None, "{len}");
++        }
++    }
+ }
+diff --git a/libs/portable/src/main.rs b/libs/portable/src/main.rs
+index 96c2c46..2fc1ea1 100644
+--- a/libs/portable/src/main.rs
++++ b/libs/portable/src/main.rs
+@@ -329,7 +329,7 @@ mod win {
+                 }
+             }
+         }
+-        let _allow_err = Command::new("taskkill")
++        let _allow_err = Command::new(crate::hjv_guard::taskkill())
+             .args(&["/F", "/IM", "RuntimeBroker_rustdesk.exe"])
+             .creation_flags(winapi::um::winbase::CREATE_NO_WINDOW)
+             .output();

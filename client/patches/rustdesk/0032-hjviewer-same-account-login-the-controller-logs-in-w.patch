@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 13 Oct 2026 09:57:38 +0900
-Subject: [PATCH 32/45] hjviewer: same-account login: the controller logs in
+Subject: [PATCH 32/46] hjviewer: same-account login: the controller logs in
  with its account key
 
 A controller logged in to the account proves itself to the account's PCs with
