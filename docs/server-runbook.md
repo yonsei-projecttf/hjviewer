@@ -530,7 +530,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 
 | 단계 | 할 일 | 누가 | 소절 |
 |---|---|---|---|
-| 0 | 원격 켜기 현장 시험(NAS의 DSM 작업. 8단계의 출시 태그 전까지), 남은 결정과 질문의 답 | 사용자 | 7-1 |
+| 0 | 원격 켜기 현장 시험(NAS의 DSM 작업. 10단계의 배포 전까지. 출시 태그는 사용자 결정으로 2026-10-14에 먼저 붙임), 남은 결정과 질문의 답 | 사용자 | 7-1 |
 | 1 | 개발 PC에서 모든 작업을 합치고 `scripts/ci.sh`의 모든 단계(`leak` 포함) 통과, 문서 갱신 | 개발 PC | 7-1 |
 | 2 | push(출시 태그 없이), 확인 빌드, 서버 묶음 `server-<VERSION>` | 개발 PC | 7-1 |
 | 3 | 읽기 점검 | 운영 에이전트 | 7-2 |
@@ -566,7 +566,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 
 서버에서 하는 일이 아닙니다. 3단계를 시작하기 전에 1번의 결정·질문의 답과 2~4번이 끝났는지 사용자에게 확인합니다. 1번의 현장 시험과 5번은 push 뒤에 해도 되지만, 5번에 적은 때까지는 끝나야 합니다. 6번은 2026-10-14 통합의 점검표이고, 줄마다 적은 사람과 때를 따릅니다.
 
-1. 원격 켜기의 현장 시험(NAS의 DSM 작업으로 PC를 깨워 봄, [relay-dsm.md](relay-dsm.md)의 현장 시험 장과 [부록](relay-dsm.md#부록-현장-시험-보충))과 남은 결정·질문의 답. 현장 시험은 깨울 PC인 개발 PC가 작업을 쉬는 동안에만 할 수 있어서, push를 막지 않고 출시 태그를 막습니다(5번).
+1. 원격 켜기의 현장 시험(NAS의 DSM 작업으로 PC를 깨워 봄, [relay-dsm.md](relay-dsm.md)의 현장 시험 장과 [부록](relay-dsm.md#부록-현장-시험-보충))과 남은 결정·질문의 답. 현장 시험은 깨울 PC인 개발 PC가 작업을 쉬는 동안에만 할 수 있어서, push와 출시 태그를 막지 않고 배포(10단계, 7-9)를 막습니다(5번).
 2. 개발 PC: 모든 작업 묶음을 합친 커밋에서 `scripts/ci.sh server`, `client`(Rust 1.75 check 포함), `deploy`, `e2e`, `wol`, `leak`이 통과하고, privacy.md, architecture.md, 이 런북, README의 "현재 상태" 표가 그 커밋의 내용으로 고쳐져 있음([ci.md](ci.md)).
    - Windows·iOS 전용 코드를 작업 브랜치로 미리 빌드해 보지 않습니다(결정 O2). 그 코드는 4번의 push 바로 뒤에 돌리는 **확인 빌드**(`check_only=true`, [ci.md](ci.md)의 "실행")에서 처음 컴파일됩니다. 확인 빌드는 공개키 없이 돌고, 산출물을 나눠 주지 않으며, 태그를 붙이지 않습니다. 실패하면 고친 뒤 한 번 더 push합니다. 구현이 모두 끝나면 바로 앱 빌드를 시작한다는 사용자 결정(2026-10-13)에 따른 순서입니다.
    - 이 확인은 `scripts/ci.sh prepush`로 합니다([ci.md](ci.md)의 "push 전 전체 검사"). 깨끗한 트리에서 여섯 단계를 엄격 모드로 차례로 돌리므로, 건너뛴 것이 하나라도 있으면 실패합니다. 엄격 모드가 아닌 실행은 건너뛴 것이 있어도 `CI passed: <단계> (<n> skipped)`로 끝나므로, 그 통과는 push 전의 통과가 아닙니다. 모든 묶음을 합친 커밋의 기록에는 `skipped:`로 시작하는 줄이 없어야 합니다. `PASS` 줄의 수와 클라이언트 단위 시험의 통과 수가 `scripts/ci.sh`의 하한(`E2E_LEAST_*`, `WOL_LEAST`, `UNIT_LEAST`, `VECTORS_LEAST`. 2026-10-14의 수: `e2e` strict 76줄과 open 2줄, `wol` 20줄, `--lib hjv` 224개, 업데이트 키를 뺀 빌드의 `--lib hjviewer_update` 141개, 클라이언트 코어가 돈 공유 벡터 141건)보다 적으면 단계가 실패하고, 기록의 수도 지금까지의 통과 기록과 견줍니다(`wol`은 [e2e.md](e2e.md#원격-켜기-단계-160) 표의 19단계와 마지막 `PASS (wol)` 줄입니다). `wol`은 클라이언트 패치에 켜기 정보 보고(0035)가 있는데 클라이언트에 그 시험 명령(`--hjv-e2e-wol-report`)이 없으면 실패합니다. 패치에 보고가 없을 때만 E2E를 돌리지 않고 `skipped:` 줄과 함께 통과로 끝납니다.
@@ -584,8 +584,8 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
        - push 전에 README, NOTICE, architecture.md 7절에서 hjv-api를 이 저장소의 AGPL 프로그램이라고 적은 문장과 `server/api/README.md`를 가리키는 링크(README, architecture.md, 이 런북)도 고칩니다.
 4. push(출시 태그는 아직 붙이지 않음)와 확인 빌드. 그 공개 커밋으로 서버 묶음 `server-<VERSION>`을 만들어 Release에 올립니다([ci.md](ci.md)의 "서버 Release 만들기"). 묶음에는 hbbs(패치 0004, 최소 버전 작업이 있으면 0005도), hbbr, hjv-api, 유닛(소켓, 서비스, 감시·백업 타이머), nginx 파일과 zones 파일, env 예시, 저널 보관 설정, 고지가 들어 있고, `SHA256SUMS`에는 그 묶음 한 줄만 있습니다.
 5. **개발 PC의 CI가 보지 못해 push 뒤에 남는 것**. 하나씩 사용자와 확인하고, 적힌 때까지 끝냅니다.
-   - **현장 시험 결과(출시 태그 전)**: 사용자가 1번의 현장 시험을 마치면 [wol-pc-setup.md](wol-pc-setup.md) 2장 "현장 시험 결과"의 표, 시험한 HJViewer 판, 상태 줄을 채우고, 그 절의 주석에 있는 대조 목록(그 문서의 일반 안내와 [relay-dsm.md](relay-dsm.md) 부록의 결과 읽기 표)을 처리한 뒤 `scripts/ci.sh leak`을 다시 돌려 push합니다. 표에 '시험 전'이 남아 있는 동안에는 출시 태그 `client-1.6.1`을 붙이지 않습니다. 확인 빌드를 위한 첫 push는 표를 '현장 시험 전'이라고 사실대로 둔 채 나가도 됩니다.
-   - **TCP 펀치 시험(출시 태그 전)**: 클라이언트 lib 시험 `rendezvous_mediator::tests::a_punch_that_meets_the_peers_syn_connects_both_ends`(루프백에서 TCP 동시 열기)는 WSL2인 개발 PC에서 통과할 수 없고(1.5.1의 트리에서도 실패), 클라이언트 패치 0031이 그 파일 `src/rendezvous_mediator.rs`를 건드렸습니다. WSL이 아닌 리눅스(CPU 2개 이상. 하나뿐이면 이 시험은 아무것도 확인하지 않고 통과함)에서 패치를 적용한 트리로 한 번 돌려 통과를 확인합니다([e2e.md](e2e.md) "실행"의 3)과 같은 빌드 환경에서 `cargo test --locked --features linux-pkg-config --lib a_punch_that_meets_the_peers_syn_connects_both_ends`). 그럴 수 없으면 방화벽 E2E가 그 경로를 덮는다고 보는 이유를 [e2e.md](e2e.md)에 적어 둡니다.
+   - **현장 시험 결과(배포 전, 7-9)**: 사용자가 1번의 현장 시험을 마치면 [wol-pc-setup.md](wol-pc-setup.md) 2장 "현장 시험 결과"의 표, 시험한 HJViewer 판, 상태 줄을 채우고, 그 절의 주석에 있는 대조 목록(그 문서의 일반 안내와 [relay-dsm.md](relay-dsm.md) 부록의 결과 읽기 표)을 처리한 뒤 `scripts/ci.sh leak`을 다시 돌려 push합니다. 표에 '시험 전'이 남아 있는 동안에는 나눠 주지 않습니다(7-9의 관문). 처음에는 출시 태그 전에 끝낼 것이었지만, 사용자 결정("지금 태그, WOL은 뒤에")으로 출시 태그 `client-1.6.1`을 2026-10-14에 이 시험보다 먼저 붙였습니다. 확인 빌드를 위한 첫 push는 표를 '현장 시험 전'이라고 사실대로 둔 채 나가도 됩니다.
+   - **TCP 펀치 시험(배포 전, 7-9)**: 위 현장 시험과 같은 관문입니다. 클라이언트 lib 시험 `rendezvous_mediator::tests::a_punch_that_meets_the_peers_syn_connects_both_ends`(루프백에서 TCP 동시 열기)는 WSL2인 개발 PC에서 통과할 수 없고(1.5.1의 트리에서도 실패), 클라이언트 패치 0031이 그 파일 `src/rendezvous_mediator.rs`를 건드렸습니다. WSL이 아닌 리눅스(CPU 2개 이상. 하나뿐이면 이 시험은 아무것도 확인하지 않고 통과함)에서 패치를 적용한 트리로 한 번 돌려 통과를 확인합니다([e2e.md](e2e.md) "실행"의 3)과 같은 빌드 환경에서 `cargo test --locked --features linux-pkg-config --lib a_punch_that_meets_the_peers_syn_connects_both_ends`). 그럴 수 없으면 방화벽 E2E가 그 경로를 덮는다고 보는 이유를 [e2e.md](e2e.md)에 적어 둡니다.
    - **열린 질문(8단계의 출시 빌드 전에 사용자가 정함. 2026-10-14 결정: 그대로 두고 문서를 "약 2분"으로 맞춤)**: 기기 키가 바뀐 PC(설정까지 지우고 다시 설치한 PC 등)가 `needs-relogin`이 되기까지 설계는 1분 안이라고 했지만, 지금 구현은 다시 켜진 뒤 약 2분(96~144초)입니다. 다시 켜진 PC가 hbbs에 등록하기 전에 첫 동기화를 보내 거절되고, 다음 동기화가 약 120초 뒤이기 때문입니다. 그동안 컨트롤러에는 비밀번호 창 대신 키 바뀜 경고가 뜹니다(안전한 쪽). 그대로 두고 문서를 '약 2분'으로 맞출지, 거절된 PC가 60초쯤 뒤에 한 번 더 묻게 앱을 고칠지 정합니다.
    - **열린 질문(사설 주소 망의 PC에 중계기를 승인하기 전에 사용자가 정함)**: PC의 망이 사설 주소(RFC 1918, 100.64.0.0/10)이면 hjv-api는 PC와 NAS의 나가는 주소가 같을 때만 같은 곳으로 봅니다. 사설 망은 곳마다 되풀이되기 때문입니다. 공유기 뒤의 집과 사무실은 둘이 같은 주소로 나가므로 괜찮지만, NAT 없이 서버에 닿는 사내망처럼 서버가 둘의 사설 주소를 그대로 보는 곳에서는 늘 다른 곳이 됩니다. 그러면 승인 도구가 `no (a private network of another site: the egress addresses differ)`로 멈추고, `--force`로 승인해도 켜기 요청이 409 `no_relay`(`different_egress`)를 받으며 앱에 "모든 중계기로 시도"도 나오지 않아 그 PC를 켤 수 없습니다([e2e.md](e2e.md#원격-켜기-단계로-찾은-것)). 그런 PC가 있으면 hjv-api의 판정(`server/api/src/wolinfo.rs`)을 넓힐지 정합니다.
    - **열린 질문(8단계의 출시 빌드 전에 사용자가 정함, 보안. 2026-10-14 결정: 1.6.0은 그대로 두고 패치 0032의 Known limits로 남기며 1.6.x에서 다시 봄)**: 키 교환에 실패한 연결에서 사용자가 "종단 간 암호화를 확인할 수 없습니다" 창의 계속을 고르면, 내 목록의 PC에도 1.5.1처럼 기억한 비밀번호가 키 확인 없이 갑니다. hbbs 키를 훔치고 중계를 가로챈 쪽은 이 길로 키 바뀜 경고를 피할 수 있습니다. 그대로 둘지, 내 목록에서 비밀번호 없는 연결이 켜진 PC에는 그런 연결을 키 바뀜 경고로 끊을지 정합니다. 끊으면 hbbs가 PC 키를 잃었을 때 비밀번호로 들어가는 길도 막히므로, 그때 되살리는 방법(그 PC에서 다시 로그인)도 함께 정합니다. 고칠 곳은 클라이언트의 `src/hjviewer_account/ctl.rs` `decide()`이고, 클라이언트 패치 0032의 Known limits에 이 한계가 적혀 있습니다.
@@ -624,7 +624,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
    - **(다) push 뒤의 확인 빌드와 첫 출시**
      - **메인 세션(push 바로 뒤의 확인 빌드)**: 처음 컴파일되는 것을 봅니다. Windows는 `src/hjviewer_update/win.rs`(version.dll의 `GetFileVersionInfoW` 등), `src/platform/windows.rs`의 업데이트 줄, 패커의 `hjv_guard.rs`, `Runner.rc`의 한글 CompanyName·LegalCopyright(`#pragma code_page(65001)`)입니다. Android는 `HjvUpdate.kt`, 매니페스트 병합(lintVital), 스플래시 리소스 링크, Play 번들 단계(표지 `PLAY_OVERLAY`는 AAB에만)입니다. APK의 권한은 ACCESS_NETWORK_STATE, CAMERA, INTERNET, POST_NOTIFICATIONS, RECORD_AUDIO, WAKE_LOCK, `kr.ac.yonsei.hjviewer.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, REQUEST_INSTALL_PACKAGES뿐이고 `HjvUpdateFileProvider`가 있어야 하며, AAB에는 뒤의 둘이 없어야 합니다(PLAY_FORBIDDEN 단계). iOS는 `LaunchScreen.storyboard`의 컴파일입니다. 업데이트 키 단계의 'no update keys to pin'과 'pinned HJV_POLICY_FLOOR=1:0', 산출물(`-check`)의 `SHA256SUMS`(`sha256sum -c`)와 `release.json` 없음도 봅니다. 그 밖은 [ci.md](ci.md)의 "아직 러너에서 돌려 보지 못한 것"입니다.
      - **메인 세션(확인 빌드 뒤)**: Windows 잡의 두 연기 시험('Update smoke test', 'Packer guard smoke test')이 몇 번 통과하면 그 단계의 `continue-on-error`를 지웁니다.
-     - **사용자(첫 Play 업로드)**: 첫 AAB는 Play Console 내부 테스트에 손으로 올립니다. 개인정보처리방침 URL(공개 main의 privacy.md, 카메라·마이크 절 포함)을 먼저 등록하고, 접근성·포그라운드 서비스 선언 요구가 나오지 않는지 봅니다. 그 뒤 `play=true`로 `play_release=validate`, 실제 업로드, 순서 검사(먼저 시작한 실행의 play 잡을 다시 돌리면 거부)를 차례로 봅니다([ci.md](ci.md)의 "Google Play 업로드").
+     - **사용자(첫 Play 업로드)**: 첫 AAB는 Play Console 내부 테스트에 손으로 올립니다. 개인정보처리방침 URL(공개 main의 privacy.md, 카메라·마이크 절 포함)을 먼저 등록하고, 접근성·포그라운드 서비스 선언 요구가 나오지 않는지 봅니다. 손으로 올린 버전에는 그 뒤 검증 실행(`play=true`, `play_release=validate`)만 합니다. 실제 업로드와 순서 검사(먼저 시작한 실행의 play 잡을 다시 돌리면 거부)는 다음 버전의 출시 실행과 함께 봅니다([ci.md](ci.md)의 "Google Play 업로드", "처음 한 번 할 일" 9단계).
      - **사용자(첫 실제 정책, 출시 빌드 뒤 7일 안)**: 출시 빌드의 산출물을 `gh run download`로 `build/release-<버전>`에 받고, `hjv-release policy … --release-dir build/release-<버전> --allow-input check_only`가 windows와 android 모두 '확인함'과 '패키지와 release.json이 실행 …의 산출물과 같음'을 내는지 봅니다. 도구가 `check_only` 입력을 아직 모르므로 `--allow-input check_only`가 필요합니다(도구에 넣을지는 메인 세션). `--attest`는 `gh attestation`이 있는 새 gh와 비공개 저장소의 출처 증명 요금제가 있을 때만 됩니다(요금제는 사용자가 확인).
      - **사용자(키를 만든 뒤)**: 공개 줄을 넣은 `client/update-keys.env`로 `hjv-release keys --production`과 `CALLED=1 python3 -I scripts/check-build-keys.py --pin-update-keys`가 둘 다 통과하는지, 출시 빌드 요약에 키 지문과 하한이 나오는지 봅니다.
      - **사용자(첫 출시 빌드)**: Android 출시 산출물의 `release.json`에 있는 build가 그 APK의 versionCode인지, 키스토어가 없는 실행의 `-debugsigned` 산출물에는 `release.json`이 없는지 봅니다.
@@ -661,8 +661,8 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
      - **사용자(열린 로그인, 실제 연세 SSO)**: 명단에 없는 교직원 ID로 1.6.0 앱에서 로그인하면 성공하고 `hjv-api admin allow list`에 'from login'으로 오릅니다(운영 에이전트는 '(n by a login)' 수와 'was registered' 줄 수만 봄). `admin block` 뒤에는 그 기기의 다음 계정 요청과 새 로그인이 거절되고 앱의 로그인 창에 '이 계정은 관리자가 HJViewer 사용을 막았습니다. …'가 그대로 보이며, `admin unblock` 뒤 다시 됩니다. 포탈 ID로 로그인한 뒤 저널에 'login: the portal ID typed and the pcode the SSO names differ' 줄(입력한 ID와 SSO가 알려 준 pcode가 다를 때 생김)이 있는지 보고 결과를 문서에 적습니다. 계정의 열쇠는 pcode가 아니라 로그인할 때 입력한 ID(앞뒤 공백을 지우고 소문자로 바꾼 것)입니다. pcode는 그 사람의 고정 ID로 계정에 함께 두고, 막기, 그 사람의 다른 계정 확인, 최고운영자 화면이 그것을 씁니다. 그래서 이 줄이 있으면 SSO가 같은 pcode로 알려 주는 다른 ID로 같은 사람이 로그인할 때 계정이 둘이 되어 기기와 PC 목록이 나뉩니다(어느 ID를 막아도 그 사람은 막힘). 운영 에이전트는 이 줄의 개수만, 사용자는 두 가지 ID로 로그인했는지를 메인 세션에 알립니다. 계정의 열쇠를 pcode로 바꿀지는 사용자가 정합니다. 맞는 비밀번호인데 앱에 '이 계정으로는 HJViewer를 쓸 수 없습니다. …'가 나오면, 운영 에이전트는 저널의 'login: the SSO accepted the password, but the person may not use HJViewer (…)' 줄의 괄호 안 사유(`user call: refused (access denied)`, `user call: a pcode outside HJViewer's ID rule`, 또는 `user call: data[0].name has a control character`처럼 `data[0].pcode`나 `data[0].name`의 값을 말하는 것)만 메인 세션에 알립니다. 차례로 행정허브 등록의 사용자 정보 호출이 거절한 것, 그 사람의 pcode가 Z·Y로 시작하지 않거나 ZA로 시작한 것, 그 사람의 SSO 자료(pcode나 성명)에 제어 문자가 있거나 너무 길거나 비어 있는 것입니다. 마지막 것은 그 사람만의 자료라 SSO 차단기에 세지 않습니다. `admin report`의 `login denied-user-refused`, `login denied-pcode-rule`, `login denied-bad-value`가 사유별 수입니다. 서로 다른 교직원이 모두 `user call: refused (access denied)`를 받으면 사람이 아니라 이 서버의 설정 문제이므로 7-5의 "모두가 거절되면"대로 합니다. 앱이 '로그인할 수 없습니다. …'만 내고 저널에 `login: SSO error: user call: …`(예: `data[0].pcode is not a string`) 줄이 있으면 답이 행정허브 계약과 다른 것이므로 그 줄만 알립니다. 교직원 포탈 ID가 아닌 형태(예: `test`)를 넣으면 SSO를 부르지 않고 바로 '연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. …'가 보입니다(운영 에이전트는 `admin report`의 `login id-rule` 수만 봄).
      - **사용자(문 2 페이지)**: 운영 에이전트가 `door2.conf`를 둔 뒤 `/api/hjv/get/<코드>/`를 휴대폰과 PC 브라우저로 열면 맨 위에 시범 서비스 안내 두 문장이 보여야 합니다. iPhone Safari에서 'TestFlight 열기'(`itms-beta://`)가 열리는지, Android의 앱 안 브라우저(Custom Tab)에서 APK가 받아지는지(설계의 [불확실]) 봅니다.
      - **사용자(최고운영자)**: 배포 때 사용자가 서버의 `HJV_API_OPERATORS`에 자기 ID를 넣고(7-15. 저장소 파일에는 넣지 않음) 조용한 시간에 hjv-api를 다시 시작합니다. `admin operators`에서 그 줄의 account와 allowlist가 yes이고, 앱의 '최고운영자: 사용자와 PC'에 막히지 않은 사용자와 계정에 든 PC가 보이며, `admin block`한 계정은 사용자 목록에서 빠지고 그 계정의 PC는 주인의 포탈 ID·성명과 함께 PC 목록에 남는지 봅니다([privacy.md](privacy.md) 3절).
-     - **운영 에이전트(hbbs 0005, 조용한 시간)**: 사용자의 `hjv-release hbbs-conf`가 쓴 `/etc/hjviewer/min-controller.conf`를 넣으면 hbbs 저널에 'min-controller 1.6.0 from <FROM>' 한 줄이 나옵니다. FROM이 지난 뒤 1.5.1은 TEXT 문구로 거절되고 1.6.0은 연결됩니다.
-     - **운영 에이전트와 사용자(첫 실제 정책)**: 사용자의 실제 키로 서명한 첫 정책을 8-2대로 `deploy/hjv-update-verify.sh`로 확인해 넣습니다. 체크섬이나 SHA-256이 다르면 전송을 `incoming/refused-<버전>-<위치>-<UTC 시각>`으로 옮기고 1단계부터 다시 합니다. 그 정책을 받은 1.6.0 Windows·Android·iOS 앱이 업데이트 안내와 강제를 하는지 사용자가 봅니다.
+     - **운영 에이전트(hbbs 0005, 조용한 시간, 사용자가 8-3을 정한 뒤)**: 사용자의 `hjv-release hbbs-conf`가 쓴 `/etc/hjviewer/min-controller.conf`를 넣으면 hbbs 저널에 'min-controller 1.6.1 from <FROM>' 한 줄이 나옵니다. 첫 정책으로 만든 파일은 `FROM`이 이미 지났으므로, 넣는 즉시 1.5.1과 1.6.0은 TEXT 문구로 거절되고 1.6.1은 연결됩니다.
+     - **운영 에이전트와 사용자(첫 실제 정책)**: 사용자가 2026-10-14에 실제 키로 서명한 첫 정책(세대 1, seq 1. 모든 항목의 최소 버전 1.6.1, 유예 없음, 7-10)을 8-2대로 `deploy/hjv-update-verify.sh`로 확인해 넣습니다. 같은 확인은 2026-10-14에 게시 디렉터리에서 이미 통과했습니다. 체크섬이나 SHA-256이 다르면 전송을 `incoming/refused-<버전>-<위치>-<UTC 시각>`으로 옮기고 1단계부터 다시 합니다. 넣은 뒤 사용자가 봅니다: 1.6.1 앱의 설정 → 정보에 "세대 1 · 순번 1"이 보이고 업데이트 안내가 없음, 1.6.0 앱(시험 설치본)은 업데이트 화면이고 내 기기 목록의 설치된 1.6.0 PC는 1.6.1을 강제로 설치함, 정책을 받은 1.6.1 PC는 1.6.1 미만의 컨트롤러(1.5.1, 1.6.0)를 거절함.
    - **(바) 저장소 밖의 설계 문서와 메모리 (메인 세션)**
      - **메인 세션**: 최소 버전 설계 8-1 표의 1단계(업데이트 키를 마지막 push 전에 만든다고 적음)를 런북과 distribution.md의 순서(첫 push와 서버 묶음, 깨끗한 컴퓨터에서 루트 키, 키 파일 push, 출시 빌드)로 고칩니다(보안).
      - **메인 세션**: 신뢰 규칙 명세의 R11과 3-4 끝의 'Not changed by these rules' 문장을 구현에 맞춥니다. 구현은 내려받은 exe의 FileVersion 앞 세 숫자를 정책의 latest와 비교합니다(패커는 x.y.z.0, package.build는 x.y.z.<실행 번호>). 명세 3-4에는 설치 직전 재질문의 시간 조건(답은 40초까지, 그 밖에는 30분 안에 확인된 정책)을 적습니다.
@@ -673,7 +673,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
      - **메인 세션**: decisions.json WP-R1 범위의 '되돌리기(이전 정책 파일, MIN 비우기)'를 '언제나 seq가 더 높은 새 정책'으로 고칩니다.
      - **메인 세션**: Play 설계 2-11에 덮어쓰기 계약(`client/play/AndroidManifest.xml`과 워크플로의 PLAY_FORBIDDEN이 같은 항목)을 적습니다.
      - **메인 세션**: 신뢰 규칙의 남은 위험에 루트 키 의식의 도구를 공개 저장소에서 빌드하는 위험, 깨끗한 컴퓨터의 시계(5-0은 확인하라고만 함), 위 (나)의 저장 경합을 정한 결과를 적습니다.
-     - **메인 세션**: 설계 3판 결정 JSON: WP-W6b의 status('시험 전이면 push하지 않음')를 설계 11장(출시 태그만 막음)에 맞춥니다.
+     - **메인 세션**: 설계 3판 결정 JSON의 WP-W6b status('시험 전이면 push하지 않음')와 설계 11장(출시 태그만 막음)을 2026-10-14 결정(시험 전이면 배포만 막음, 7-9)에 맞춥니다.
      - **메인 세션**: 설계 3판 11장: 이미 고친 watchdog 줄을 지우고, '런북 7-1의 2번'을 push 관문인 3번으로 고칩니다.
      - **메인 세션**: 설계 3판 13-2: 열린 질문 INT-C 2, 같은 MachineGuid, nginx 주소 한도를 더합니다(지금은 이 런북 5번에만 있음).
      - **메인 세션**: 설계 3판 docs-late 목록: 4-2의 재시도 한 줄, 4-5의 `expired <시각>`과 bind-store, 7-6의 3분을 10분으로, 9-1의 암호화되지 않은 채널, 6-2·6-3·H16·8-5, X7b 문구.
@@ -954,19 +954,26 @@ cd / && rm -rf "$T"
 - `grep -E 'ERROR|panicked'` 줄에는 아래 둘 말고 아무것도 없어야 합니다. 다른 줄이 있으면 멈추고 보고합니다.
   - 다시 시작할 때마다 나오는 hbb_common의 클라이언트 설정 줄은 해가 없으므로 세지 않습니다: ERROR `config.rs:566` `Failed to load config '<홈>/.config/rustdesk/RustDesk.toml'`과 ERROR `config.rs:605` `Failed to store config: …`, 그리고 같은 때의 WARN `ID is invalid, generating new one`과 INFO `Generated id …` 한 쌍(grep에는 나오지 않음)입니다. upstream hbbs는 시작할 때 RustDesk 클라이언트의 설정 파일을 한 번 읽는데, 지금 운영 서버처럼 hbbs 사용자의 홈에 있는 `~/.config/rustdesk` 디렉터리에 실행 권한(x)이 없으면(600) 그 파일을 열지도 쓰지도 못해 이 줄들이 납니다. hbbs의 서버 기능은 그 파일을 쓰지 않으므로 고칠 것이 없습니다.
 - `hbbs console: answers hjv-pk (patch 0004)`가 나와야 합니다. 이 확인은 hjv-api의 관리 소켓으로 하므로, hjv-api를 아직 시작하지 않았으면(7-5 전에 이 절을 하는 경우) 실패합니다. 그때는 이 줄을 건너뛰고 7-5의 `selfcheck`에서 `hbbs console` 줄을 봅니다. 5절의 첫 블록을 다시 실행해 `/ws/id`, `/ws/relay`가 101인지도 봅니다. 사용자는 바깥에서 `hjv-probe`로 확인합니다.
-- `/etc/hjviewer/min-controller.conf`가 이미 있는 서버(8-3, M7 뒤)에서는 hbbs의 `min-controller` 줄도 봅니다(8-3의 "hbbs를 다시 시작한 뒤" 블록). `min-controller <MIN> from …`(또는 `min-controller off: …`)여야 하고, ERROR(`… no minimum is in force`)면 hbbs가 최소 버전 없이 도는 것이니 멈추고 보고합니다.
+- `/etc/hjviewer/min-controller.conf`가 이미 있는 서버(8-3의 파일을 넣은 뒤)에서는 hbbs의 `min-controller` 줄도 봅니다(8-3의 "hbbs를 다시 시작한 뒤" 블록). `min-controller <MIN> from …`(또는 `min-controller off: …`)여야 하고, ERROR(`… no minimum is in force`)면 hbbs가 최소 버전 없이 도는 것이니 멈추고 보고합니다.
 - 되돌리기: 보관한 `/root/hjv-backup/hbbs-before-<VERSION>`을 같은 방법으로 넣고 hbbs만 다시 시작합니다(7-12).
 
 ### 7-7. 앱과 중계기 빌드, 지문 대조 (8단계, 개발 PC)
 
 서버에서 할 일은 `sudo /opt/hjviewer/bin/hjv-api admin selfcheck`의 지문 줄을 다시 보고하는 것뿐입니다. 나머지는 개발 PC와 사용자가 합니다([ci.md](ci.md)의 "계정 기능의 공개키", "hjv-relay 빌드").
 
-1.6.0의 첫 출시 빌드(2026-10-14)는 Google Play가 최소 SDK 22인 번들을 받지 않아(자동 보호의 요건) 1.6.1로 다시 빌드했습니다. 이 절과 뒤의 절에서 기능을 말하는 '1.6.0'은 그 기능이 처음 들어간 판이고, 출시 태그는 `client-1.6.1`과 `relay-1.6.0`입니다. 중계기의 판은 `relay/Cargo.toml`의 것이고, 바뀌지 않았습니다([distribution.md](distribution.md)의 "순서").
+1.6.0의 첫 출시 빌드(2026-10-14)는 Google Play가 최소 SDK 22인 번들을 받지 않아(자동 보호의 요건) 1.6.1로 다시 빌드했습니다. 이 절과 뒤의 절에서 기능을 말하는 '1.6.0'은 그 기능이 처음 들어간 판입니다([distribution.md](distribution.md)의 "순서").
+
+출시 태그는 `client-1.6.1`과 `relay-1.6.0`이고, 두 태그의 커밋이 다릅니다.
+
+- `client-1.6.1`은 아래 2번의 출시 빌드 커밋 992fefe(1.6.1의 출시 실행 38568720786)에 있습니다. 2026-10-14에 붙였습니다(4번).
+- `relay-1.6.0`은 8622975에 붙입니다. 빌드 저장소의 초안 Release `relay-1.6.0`을 만든 커밋입니다(1.6.0의 출시 실행 38559428611). 중계기의 판은 `relay/Cargo.toml`의 것이고 1.6.1에서 바뀌지 않았습니다. 그래서 1.6.1 실행의 Release 이름도 `relay-1.6.0`이었고, 그 Release가 이미 있어 건드리지 않고 자기 중계기 빌드를 아티팩트에만 남겼습니다([ci.md](ci.md)의 "hjv-relay 빌드" 3번).
+- 1.6.1 실행의 중계기 아티팩트는 나눠 주지 않습니다. 그 안의 `README-DSM.md`는 빌드한 커밋의 relay-dsm.md, 곧 b3f58bb가 잘못 고친 판이라서 `hjviewer-relay-1.6.1` 파일 이름을 적기 때문입니다. hjv-relay는 빌드한 커밋을 실행 파일에 넣으므로, NAS의 작업 화면에 적는 SHA-256도 초안 Release의 것입니다.
+- 중계기 태그는 중계기를 나눠 줄 때(7-11) 붙입니다.
 
 1. 비공개 빌드 저장소의 시크릿에 `HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`, `HJV_COMMAND_PUBKEY`를 넣습니다. 공개값입니다. 최소 버전 작업의 업데이트 키는 시크릿이 아니라 빌드하는 커밋의 `client/update-keys.env`에서 읽습니다([ci.md](ci.md)).
 2. 2단계의 커밋으로 Windows(`HJViewer.exe`), Android, iOS, hjv-relay를 **`testflight=false`**로 빌드합니다. Windows·iOS 전용 코드는 2단계의 확인 빌드에서 이미 컴파일해 본 것이고(7-1), 여기서는 공개키를 넣은 출시 빌드를 만듭니다. 실패하면 개발 PC에서 고치고 다시 push한 커밋으로 빌드합니다. 서버 코드가 바뀌었으면 서버 묶음과 3~7단계의 해당 부분도 다시 합니다.
 3. 빌드 요약의 고정 공개키 지문이 `selfcheck`의 지문, 그리고 5단계에서 사용자가 본 지문과 같은지 사람이 대조합니다. 봉인 키 ID는 지문의 앞 16자리입니다.
-4. 같고, 7-1의 5번에서 출시 태그 전에 끝내기로 한 것(현장 시험 결과, TCP 펀치 시험)이 끝났으면 그 커밋에 출시 태그 `client-1.6.1`과 `relay-1.6.0`을 붙입니다. 아직 나눠 주지 않습니다(TestFlight 업로드는 9단계 뒤).
+4. 같으면 2번의 커밋에 출시 태그 `client-1.6.1`을 붙입니다. 아직 나눠 주지 않습니다(TestFlight 업로드는 9단계 뒤). 7-1의 5번의 현장 시험 결과와 TCP 펀치 시험은 처음에는 이 태그 전에 끝낼 것이었지만, 사용자 결정("지금 태그, WOL은 뒤에")으로 태그가 아니라 배포(7-9)를 막습니다. 태그는 2026-10-14에 그 시험들보다 먼저 992fefe에 붙였습니다(메모에 패키지의 SHA-256). 9단계의 nginx 전환도 사용자 결정으로 그 전(같은 날 21:45)에 했습니다. `relay-1.6.0`은 위 목록대로 중계기를 나눠 줄 때 붙입니다.
 
 ### 7-8. nginx 전환 (9단계)
 
@@ -1020,7 +1027,9 @@ cd / && rm -rf "$T"
 
 ### 7-9. 배포와 켜기 (10~13단계)
 
-1. **배포(10단계, 개발 PC)**: 7-7의 커밋으로 iOS 잡을 `testflight=true`로 다시 돌려 TestFlight 내부 그룹에 올립니다(빌드 번호만 바뀜). Windows·Android 산출물을 나눠 줍니다(Google Play 내부 테스트는 그 작업의 문서대로). nginx 전환 뒤에 올리는 이유는 1.6.0 아이폰이 전환 전의 `/api` 404를 받지 않게 하려는 것입니다.
+**관문**: 다른 사용자에게 나눠 주기 전에(10단계의 Windows·Android 산출물, TestFlight와 Google Play 내부 테스트에 다른 사람을 더하는 것, 13단계) 7-1의 5번의 현장 시험 결과와 TCP 펀치 시험이 끝났는지 사용자에게 확인합니다. 하나라도 아니면 나눠 주지 않습니다. 이 둘은 처음에는 출시 태그(8단계)를 막았지만, 사용자 결정으로 태그를 2026-10-14에 먼저 붙이고 이 관문으로 옮겼습니다(7-7의 4번).
+
+1. **배포(10단계, 개발 PC)**: 7-7의 커밋으로 iOS 잡을 `testflight=true`로 다시 돌려 TestFlight 내부 그룹에 올립니다(빌드 번호만 바뀜). 1.6.1은 2026-10-14에 같은 커밋의 iOS 실행 38574804439로 올렸습니다(TestFlight 빌드 262871353. 출시 실행의 iOS 산출물은 빌드 262871309). Windows·Android 산출물을 나눠 줍니다(Google Play 내부 테스트는 그 작업의 문서대로). nginx 전환 뒤에 올리는 이유는 1.6.0 아이폰이 전환 전의 `/api` 404를 받지 않게 하려는 것입니다.
 2. **운영자 PC(11단계, 사용자)**: 운영자의 Windows PC에 1.6.0을 1.5.1 위에 설치하고 로그인합니다. 알림에 "관리자가 이 기능을 켜면 바로 쓸 수 있습니다"가 나오고, 설정 → 계정에 "관리자가 일시 중지함"이 보여야 합니다. PC 비밀번호(영구 비밀번호)가 정해져 있는지 보고, 아이폰에서도 로그인합니다.
 3. **운영자 계정부터 켜기(12단계)**: 사용자가 알려 준 운영자 PC의 ID로 그 계정만 켭니다.
    ```bash
@@ -1037,13 +1046,16 @@ cd / && rm -rf "$T"
 
 ### 7-10. 최소 버전 강제 (14단계)
 
-먼저 8-1의 3번(업데이트 공개키 파일)을 합니다. 출시 태그(8단계) 뒤라야 받을 수 있고, 첫 정책(8-2)의 서버 확인이 그 파일을 읽습니다. 그 뒤 [8절](#8-최소-버전과-업데이트-배포-160)을 따릅니다. 처음 정책(M5, `seq` 1)은 1.6.0이 모든 배포 경로에 준비된 뒤에 넣어도 아무도 막지 않습니다. 처음 강제(M7: 정책 `seq` 2와 hbbs 파일)는 세 플랫폼의 1.6.0이 나가고 PC들이 1.6.0으로 올라간 뒤에만, 사용자 승인으로 합니다.
+먼저 8-1의 3번(업데이트 공개키 파일)을 합니다. 출시 태그(8단계) 뒤라야 받을 수 있고, 첫 정책(8-2)의 서버 확인이 그 파일을 읽습니다. 2026-10-14에 `client-1.6.1`의 파일로 했습니다. 그 뒤 [8절](#8-최소-버전과-업데이트-배포-160)을 따릅니다.
+
+- **첫 정책(세대 1, `seq` 1)**: 사용자가 2026-10-14에 서명했습니다. 모든 항목의 최소 버전이 1.6.1이고 유예가 없습니다(사용자 결정. 만든 명령은 도구 README 2장의 "첫 정책"). 서버에 넣는 즉시(8-2) 정책을 받은 1.6.x PC는 1.6.1 미만의 컨트롤러(1.5.x와 1.6.0)를 거절합니다. 1.6.0 앱은 나가는 연결이 막히고 업데이트 화면을 보이며, 내 기기 목록의 설치된 1.6.0 PC는 1.6.1을 강제로 설치합니다(정책에 무인 설치 시각이 없어도). 1.5.1 앱과 PC는 정책을 읽지 않으므로 그대로입니다. Android 5.1~6.0 휴대폰은 1.6.1을 설치할 수 없어 1.5.1에 남고, 1.6.x PC에는 연결할 수 없습니다. 2026-10-14 기준으로 서버에 넣는 일(8-2)은 허브-운영이 할 차례입니다.
+- **따로 강제하는 정책은 없습니다.** 옛 계획의 처음 강제(정책 `seq` 2와 hbbs 파일) 가운데 남은 것은 hbbs의 최소 버전 파일(8-3)뿐입니다. 이 파일은 넣는 즉시 서버를 거치는 1.5.x 컨트롤러를 모두 거절하므로, 넣을지와 때는 사용자가 따로 정합니다. 문 2(8-4)도 따로 정합니다. 2026-10-14에는 둘 다 하지 않았습니다.
 
 ### 7-11. NAS 중계기 승인과 켜기 (15단계)
 
 nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone 포함).
 
-1. 사용자가 NAS에 hjv-relay를 설치합니다([relay-dsm.md](relay-dsm.md): File Station으로 올리고, 작업 화면에 SHA-256을 적음). NAS의 관리자 계정은 에이전트에게 주지 않습니다.
+1. 먼저 개발 PC가(사용자 승인) 1.6.0 출시 실행(38559428611) 요약의 명령 키 지문을 `hjv-api selfcheck`의 지문과 대조한 뒤, 빌드 저장소의 초안 Release `relay-1.6.0`을 게시하고 공개 저장소의 8622975에 태그 `relay-1.6.0`을 붙입니다([ci.md](ci.md)의 "hjv-relay 빌드" 4번, 7-7). 1.6.1 실행의 중계기 아티팩트는 쓰지 않습니다. 그다음 사용자가 NAS에 hjv-relay를 설치합니다([relay-dsm.md](relay-dsm.md): File Station으로 올리고, 작업 화면에 그 Release의 `SHA256SUMS`에 있는 SHA-256을 적음). NAS의 관리자 계정은 에이전트에게 주지 않습니다.
 2. 사용자가 로그의 **등록 코드**와, 그 NAS로 켤 PC 하나의 ID를 알려 줍니다.
 3. 승인하기 전에, 그 PC의 주인에게 이미 아는 길(대면, 전화, 알려진 메일)로 확인했는지 사용자에게 묻습니다. PC ID는 비밀이 아니므로 ID만으로는 주인을 확인할 수 없습니다.
 4. 사용자 승인을 받고 실행합니다(질문 17).
@@ -1336,7 +1348,7 @@ report: 계정 <n>, 활성 키 <n>, 묶음을 가진 PC <n>, 그중 10분 안에
 
 사용자가 개발 PC에서 `hjv-release publish-dir`로 만든 디렉터리(아래 모양)를 서버의 자기 홈으로 보내고, 네 가지를 알려 줍니다: 버전, 정책의 위치(`sign`이 보관소에 쓴 파일 이름 `policy-e<세대>-s<seq>.json`의 `e<세대>-s<seq>`, 예: `e1-s3`), `sign`이 출력한 정책 파일의 SHA-256, 완화하는 항목(`--relaxes`, 보통 없음).
 
-**정책만 바뀌는 경우**(M7의 `seq` 2, 8-5의 비상 정책, 8-6의 되돌리기)도 이 절차 그대로입니다. 버전은 그대로여도 위치가 다르므로, 서버의 디렉터리 `incoming/<버전>-<위치>`는 겹치지 않습니다. 그런 디렉터리에는 패키지가 없거나 이미 설치한 것과 같은 패키지만 있습니다(서버 확인은 없는 패키지를 `/srv/hjviewer-updates/pkg`에서 찾음).
+**정책만 바뀌는 경우**(최소 버전만 올리는 정책, 8-5의 비상 정책, 8-6의 되돌리기)도 이 절차 그대로입니다. 버전은 그대로여도 위치가 다르므로, 서버의 디렉터리 `incoming/<버전>-<위치>`는 겹치지 않습니다. 그런 디렉터리에는 패키지가 없거나 이미 설치한 것과 같은 패키지만 있습니다(서버 확인은 없는 패키지를 `/srv/hjviewer-updates/pkg`에서 찾음).
 
 ```text
 publish-<v>/version-policy.json        서명된 정책
@@ -1437,7 +1449,7 @@ publish-<v>/SHA256SUMS                 위 파일 모두
 hbbs는 이 파일을 10초마다 다시 읽고, `MIN`보다 낮은 버전의 컨트롤러가 연결을 시작하면(punch hole) `TEXT`로 거절합니다. 1.5.1을 포함한 모든 앱이 그 문구를 "연결 오류" 창에 보이고 다시 연결하지 않습니다. 1.5.1 컨트롤러를 막는 것은 이것뿐입니다. 파일 형식은 [deploy/min-controller.conf.example](../deploy/min-controller.conf.example)에 있고, 실제 파일은 사용자가 `hjv-release hbbs-conf`로 만들어 보냅니다(`MIN`과 `FROM`은 도구가 정함).
 
 - **기준은 하나입니다.** hbbs는 `FROM`부터 `MIN` 미만을 거절하고, 그 전에는 아무도 거절하지 않습니다. 그래서 `MIN`을 올리면서 `FROM`이 미래인 파일로 바꾸면 그 시각까지 거절이 멈춥니다. 도구는 그럴 때 파일을 쓰지 않고 다시 돌릴 시각을 알려 줍니다. 손으로 만든 파일을 일찍 넣지 않습니다.
-- 처음 강제(M7): 사용자가 보낸 파일(`MIN=1.6.0`, `FROM`=유예 끝)을 바로 넣습니다. hbbs가 `FROM`부터 스스로 거절합니다.
+- 첫 파일: 넣을지와 때는 사용자가 따로 정합니다(7-10. 2026-10-14에는 넣지 않음). 정하면 사용자가 첫 정책으로 만든 파일(`MIN=1.6.1`, `FROM`=정책의 발행 시각)을 보내고, 그 파일을 바로 넣습니다. 첫 정책에는 유예가 없어 `FROM`이 이미 지났으므로, 넣는 즉시 서버를 거치는 1.6.1 미만의 컨트롤러(1.5.x 모두)를 거절합니다.
 
 보낸 파일 옮기기(이 파일과 8-4의 `door2.conf`): 둘 다 문 2의 코드가 들어 있습니다. 홈의 전송 사본은 옮긴 뒤 지우고, `incoming/`의 사본은 root만 읽습니다(0600).
 
@@ -1492,7 +1504,7 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
 
 1.5.1 사용자가 1.6.0을 받는 비밀 링크 `https://<도메인>/api/hjv/get/<코드>/`입니다. 링크는 hbbs 거절 문구(S1)와 운영자가 사용자에게 직접 보내는 메시지에만 나옵니다. 형식은 [deploy/door2.conf.example](../deploy/door2.conf.example)에 있고, 실제 파일은 사용자가 `hjv-release hbbs-conf --door2-out`으로 만들어 보냅니다.
 
-- **열기(M5)**: 사용자가 보낸 `door2.conf`를 8-3의 "보낸 파일 옮기기" 블록으로 `incoming/`에 옮긴 뒤 넣습니다. 그 뒤 M7에 S1 문구(같은 코드의 링크)가 든 hbbs 파일을 8-3대로 넣습니다.
+- **열기(여는 때는 사용자가 정함. 2026-10-14에는 열지 않음, 7-10)**: 사용자가 보낸 `door2.conf`를 8-3의 "보낸 파일 옮기기" 블록으로 `incoming/`에 옮긴 뒤 넣습니다. 그 뒤 hbbs 파일(8-3)을 넣을 때는 S1 문구(같은 코드의 링크)가 든 파일을 넣습니다.
   ```bash
   F=/srv/hjviewer-updates/incoming/conf-20261020T060000Z/door2.conf   # ← 8-3의 옮기기 블록이 출력한 F= 줄
   sudo grep -c '^CODE=[0-9a-f]\{32\}$' "$F"                        # 1
@@ -1510,8 +1522,8 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
   - 파일 권한을 나중에 고치지 않습니다. hjv-api는 읽지 못한 파일을 권한만 고쳐서는 다시 읽지 않을 수 있습니다. 위처럼 권한을 정해 임시 이름으로 넣고 `mv`합니다.
 - **코드 바꾸기**(링크가 퍼졌거나, hbbs를 trace로 돌렸을 때): 사용자가 `--door2-rotate`로 새 `door2.conf`와 새 hbbs 파일을 함께 만들어 보냅니다. 두 파일을 8-3의 옮기기 블록으로 함께 옮기고, `door2.conf`를 넣고 바로 이어서 hbbs 파일을 8-3대로 넣습니다. 옛 링크는 바로 404가 되고, 그 사이 10초쯤은 hbbs 문구가 옛 링크를 보입니다.
 - **닫는 시각 바꾸기**: 사용자가 `--door2-until`로 만든 파일을 위처럼 넣습니다.
-- **닫기(M9)**: 아래를 모두 만족하면 사용자 승인 뒤 닫습니다.
-  - 유예가 끝난 지 30일이 지났거나, hbbs 기록에 거절이 7일 동안 없음(8-3의 거절 수).
+- **닫기**: 아래를 모두 만족하면 사용자 승인 뒤 닫습니다.
+  - hbbs가 1.5.x를 거절하기 시작한 지(8-3의 파일을 넣은 때) 30일이 지났거나, hbbs 기록에 거절이 7일 동안 없음(8-3의 거절 수).
   - 운영자의 PC 목록과 `sudo /opt/hjviewer/bin/hjv-api admin report`의 앱 버전별 PC에 1.5.x가 없음(hbbs는 오래된 PC를 보지 못함).
   - 순서: 먼저 S2 문구의 hbbs 파일(사용자가 `hbbs-conf --text s2 --out`으로 만듦, 링크 없음)을 8-3대로 넣고, 그다음 문 2 파일을 지웁니다.
     ```bash

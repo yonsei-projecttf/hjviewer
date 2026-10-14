@@ -104,27 +104,25 @@ HJV_POLICY_FLOOR=1:0
 
 6. 사용자가 승인하면 `build/publish-1.6.1/`을 서버의 `incoming/`으로 보냅니다. 서버에서는 서명과 해시를 다시 확인한 뒤 **패키지를 먼저, 정책을 나중에** 넣습니다(`docs/server-runbook.md`). 서버 확인에 `--relaxes`는 루트 선언으로 일부러 완화할 때만 줍니다(`sign`이 목록을 출력).
 
-### 처음 두 정책 (1.6.0, 런북 5-1, 5-2)
+### 첫 정책 (1.6.1, 3장 5-1)
+
+2026-10-14에 사용자가 만들어 서명한 첫 정책(세대 1, seq 1, 서명 키 1)입니다. 모든 항목의 최소 버전이 1.6.1이고 유예가 없습니다(사용자 결정). 쓴 명령은 이렇습니다.
 
 ```sh
-# seq 1(M5, 서명 키 1): 1.6.0이 나왔음을 알릴 뿐, 아무도 막지 않음. 첫 정책에는 유예 쌍이 없음
-hjv-release policy --prev none --server rd.example.com --release-dir build/release-1.6.0 \
-    --min all=1.5.0 --auto-after windows=none --ios-valid <TestFlight 빌드 번호> \
-    --play-live <Play 내부 트랙의 versionCode> \
+hjv-release policy --prev none --server rd.example.com --release-dir build/release-1.6.1 \
+    --allow-input check_only --min all=1.6.1 --auto-after windows=none \
+    --ios-valid 262871353 --latest ios=1.6.1 \
     --os-min windows=10 --os-min android=24 --os-min ios=13.0 \
     --contact "설치 파일은 관리자에게 받으세요." --out build/policy/draft-1.json
-
-# seq 2(M7, 서명 키): 모든 항목의 최소 버전을 1.6.0으로, 유예 14일(한국 시각 0시에 끝남)
-hjv-release policy --prev ~/hjviewer-policy-archive/policy-e1-s1.json \
-    --min all=1.6.0 --grace-days 14 --ios-valid <TestFlight 빌드 번호> \
-    --play-live <Play 내부 트랙의 versionCode> \
-    --out build/policy/draft-2.json
 ```
 
-- seq 1의 `sign`이 보관소를 시작하고 1.6.0의 키 집합을 기록합니다. 이어서 리허설(3장 5-14)을 합니다.
-- seq 2에는 도구가 `grace_min` 1.5.0을 씁니다. 유예 끝까지 1.5.0 미만은 막히고, 1.5.x는 유예를 받습니다. hbbs 파일은 `hbbs-conf --current none`이 바로 씁니다(`MIN=1.6.0`, `FROM`=유예 끝). 허브-운영이 M7에 설치하고, hbbs는 `FROM`부터 스스로 거절합니다.
-- `--play-live`는 Google Play 내부 트랙에 그 버전이 출시(completed)된 뒤에만 줍니다. 아직 Play에 없으면 빼고, 나온 뒤의 정책에서 넣습니다(5-5). `android_play` 항목이 없는 동안에는 Play로 설치한 앱이 앱 안 안내 없이 PC에서 `android` 항목의 최소 버전으로, hbbs에서 `MIN`으로 거절됩니다. `policy`가 "바뀌는 것"에 그렇게 알립니다.
-- 1.6.0은 손으로 설치하므로 seq 1에는 무인 설치 시각을 두지 않습니다. 1.6.1부터는 이 옵션을 주지 않으면 게시 2일 뒤부터 고리별로 설치합니다.
+- `--allow-input check_only`: 빌드 저장소의 `build.yml`이 `check_only` 입력을 넘기는데, 도구가 아직 그 입력을 모릅니다(`docs/ci.md`의 "릴리스 기록"). 도구는 모르는 입력을 넘기는 `build.yml`을 거부하므로 이 옵션으로 허락합니다(아래 "출처 확인" 3번).
+- `--latest ios=1.6.1`: TestFlight 빌드 262871353은 출시 실행(릴리스 디렉터리의 iOS 산출물은 빌드 262871309)이 아니라 같은 커밋의 iOS만 돌린 실행에서 왔습니다. 도구는 `--ios-valid`의 빌드 번호를 릴리스 디렉터리의 iOS 산출물과 맞춰 버전을 알아내므로, 다른 실행의 빌드면 버전을 `--latest ios=V`로 줍니다.
+- 유예: 첫 정책의 항목은 유예를 물을 때만(`--grace-days`, `--grace-until`) 유예 쌍을 받습니다(아래 표의 e, `grace_min` 0.0.0). 이 정책은 묻지 않았으므로 서버에 넣는 즉시 1.6.1 미만을 막습니다. 정책을 받은 1.6.x PC는 1.6.1 미만의 컨트롤러(1.5.x와 1.6.0)를 바로 거절하고, 1.6.0 앱은 업데이트 화면으로 바뀝니다. 1.5.1 앱은 정책을 읽지 않습니다. Android 5.1~6.0 휴대폰은 1.6.1을 설치할 수 없습니다(minSdk 24. 정책의 `os_min`도 24).
+- `--play-live`는 Google Play 내부 트랙에 그 버전이 출시(completed)된 뒤에만 줍니다. Play에는 아직 완료된 출시가 없어서 이 정책에는 `android_play` 항목이 없습니다. 나온 뒤의 정책에서 넣습니다(5-5). `android_play` 항목이 없는 동안에는 Play로 설치한 앱이 앱 안 안내 없이 PC에서 `android` 항목의 최소 버전으로, hbbs에서 `MIN`으로 거절됩니다. `policy`가 "바뀌는 것"에 그렇게 알립니다.
+- `--auto-after windows=none`: 1.5.1 PC에는 업데이트 기능이 없어 1.6.1은 손으로 설치하므로, 이 정책에는 무인 설치 시각을 두지 않습니다. 다만 최소 버전 아래인 1.6.0 시험 설치본 PC(내 기기 목록에 있는 설치된 PC)는 1.6.1을 강제로 설치합니다. `none`은 강제 설치를 멈추지 않습니다(5-6). 모두에게 처음 무인 설치가 쓰이는 것은 1.6.1 다음 버전이고, 그때부터는 이 옵션을 주지 않으면 게시 2일 뒤부터 고리별로 설치합니다.
+- seq 1의 `sign`이 보관소를 시작하고(`policy-e1-s1.json`) 1.6.1의 키 집합을 기록했습니다. 서버에 넣은 뒤(런북 8-2) 리허설(3장 5-14)을 합니다.
+- **따로 강제하는 정책은 없습니다.** 옛 계획의 둘째 정책(seq 2: 모든 항목의 최소 1.6.0, 유예 14일) 가운데 남은 것은 hbbs의 최소 컨트롤러 파일(4장, 런북 8-3)뿐입니다. 이 정책으로 만든 파일은 `MIN=1.6.1`, `FROM`=정책의 발행 시각이라, 넣는 즉시 서버를 거치는 1.5.x 컨트롤러를 모두 거절합니다. 넣을지와 때는 사용자가 따로 정합니다. 문 2(런북 8-4)도 따로 정합니다.
 
 ### 항목이 막는 것: `min`과 유예 쌍
 
@@ -275,9 +273,10 @@ hjv-release sign --key FILE [--key FILE] [--live FILE] --out FILE DRAFT
 3. 그 컴퓨터에서 서버의 파일을 받고, `sign --archive <사본> --key <루트 키> [--key <서명 키>] --live <받은 파일> --out <파일> <초안>`을 실행합니다. `sign`은 보관소 사본과 서버의 파일로 다시 확인하고(X10, X11, X12), 기준 표와 완화 항목과 모든 패키지를 보여 주고, "깨끗한 컴퓨터"를 포함해 `yes`를 묻습니다. 시계도 확인합니다(발행 시각이 이 컴퓨터의 시계).
 4. 서명한 파일과 `sign`이 출력한 보관소 파일을 키 매체와 개발 PC의 보관소에 복사하고, 평소대로 게시합니다.
 
-### 5-1. 첫 정책, 5-2. 첫 강제
+### 5-1. 첫 정책, 5-2. hbbs의 첫 파일
 
-2장 "처음 두 정책"을 봅니다.
+- 5-1: 2장 "첫 정책 (1.6.1)"을 봅니다.
+- 5-2: 따로 강제하는 정책은 없습니다(옛 계획의 "첫 강제"). 남은 것은 hbbs의 첫 파일이고, 넣을지와 때는 사용자가 정합니다. 서버에 파일이 없으므로 `hbbs-conf --policy <첫 정책> --current none`이 새 파일을 바로 씁니다(4장). 그 파일은 넣는 즉시 1.6.1 미만을 거절합니다(런북 8-3).
 
 ### 5-3. 최소 버전 올리기 (유예 포함, 서명 키)
 
@@ -360,7 +359,7 @@ hjv-release policy --prev <보관소의 마지막 파일> --auto-after windows=n
 - 내지 않을 선언: 곧 그보다 높은 선언을 냅니다(`policy --new-epoch --live <받은 파일>`, 5-0). 선언은 void하지 않습니다.
 - 서버 확인은 거부한 파일을 지우고, 보관소에는 남습니다. 보관소와 그 사본을 잃으면 안 됩니다. 잃었으면 `archive adopt <파일>`(내가 서명했다고 확실한 파일만, `yes`를 물음)과 `archive adopt --keys <태그의 update-keys.env> --version <버전> --server <서버>`(관리자 보고에 아직 보이는 버전마다)로 다시 만듭니다.
 
-### 5-14. 리허설 (두 번, M5에 운영자 기기만 1.6.0일 때)
+### 5-14. 리허설 (두 번, 첫 정책을 서버에 넣은 뒤 운영자 기기만 1.6.1일 때)
 
 깨끗한 컴퓨터에서 `policy --prev <보관소의 마지막 파일> --live <받은 파일> --new-epoch` → 루트 키 101과 서명 키 1로 서명 → 게시(`--relaxes` 없음) → 운영자 기기 정보 화면에서 `policy_epoch 2`를 확인합니다. 같은 것을 루트 키 102로 한 번 더 합니다(세대 3). 비상 전에 루트 키마다 매체와 비밀번호, 깨끗한 컴퓨터, 의식 전체를 시험할 유일한 기회입니다.
 
@@ -379,10 +378,12 @@ hjv-release policy --prev <보관소의 마지막 파일> --auto-after windows=n
 hbbs는 플랫폼을 모르므로 기준이 하나입니다.
 
 ```sh
-hjv-release hbbs-conf --policy build/policy/version-policy-2.json \
-    --prev-policy build/policy/version-policy-1.json --current none --door2-out ~/hjviewer-secrets/door2
+# 첫 파일(3장 5-2): 첫 정책으로, 서버에 파일이 없을 때. 문 2를 열지 않으면 --door2-out 대신 --text s2 --out <파일>
+hjv-release hbbs-conf --policy ~/hjviewer-policy-archive/policy-e1-s1.json --current none \
+    --door2-out ~/hjviewer-secrets/door2
 ```
 
+- 첫 정책에는 유예가 없으므로 첫 파일은 `MIN=1.6.1`, `FROM`=정책의 발행 시각입니다. 도구가 "FROM(…)이 이미 지났습니다. 이 파일을 넣는 즉시 1.6.1 미만을 거절합니다"라고 알립니다. 넣을지와 때는 사용자가 따로 정합니다(런북 8-3).
 - `MIN` = 정책의 모든 항목 `min` 중 가장 낮은 값.
 - `FROM`은 `MIN`이 바뀔 때만 다시 정합니다. 새 `MIN`에 방금 이른 항목들의 유예 끝 중 가장 늦은 값입니다(유예가 없으면 정책 발행 시각).
 - `--current`에는 지금 서버에 있는 파일의 사본을 줍니다(없으면 `none`: 새 파일을 바로 씀, 5-2). `MIN`이 그대로면 `hbbs 파일은 바꾸지 않음`이라고 답합니다.
@@ -395,7 +396,7 @@ hjv-release hbbs-conf --policy build/policy/version-policy-2.json \
 ### 문 2 (`/etc/hjviewer/door2.conf`)
 
 ```sh
-# 문 2 열기(M5): door2.conf만 만듦
+# 문 2 열기(여는 때는 사용자가 정함, 런북 8-4): door2.conf만 만듦
 hjv-release hbbs-conf --door2-out ~/hjviewer-secrets/door2 --door2-only --door2-until 2026-12-27
 # 코드 바꾸기: --door2-rotate. 닫는 시각 바꾸기: --door2-until
 ```
