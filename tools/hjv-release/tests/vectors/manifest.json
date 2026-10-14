@@ -1,5 +1,5 @@
 {
-  "about": "Test vectors of HJViewer's signed version policy (build/minver/trust-rules/spec.md, 1.6.0). README.md explains the fields. Made by generate.py from the model (model.py); checked by generate.py --check and by tools/hjv-release/tests/vectors.rs.",
+  "about": "Test vectors of HJViewer's signed version policy (the trust rules of 1.6.0, whose executable form is model.py). README.md explains the fields. Made by generate.py from the model; checked by generate.py --check and by tools/hjv-release/tests/vectors.rs.",
   "model_sha256": "fb864c1df4b0e1f034442fbdba377ff15e6a6422b59028220317fe5bbfdc8af5",
   "server": "rd.example.com",
   "domains": {
@@ -1206,6 +1206,18 @@
       "why": "issued is not of the form 2026-10-02T03:00:00Z"
     },
     {
+      "name": "issued-year-0000",
+      "file": "refused/issued-year-0000.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:issued",
+      "why": "issued in the year 0000, which no implementation reads (spec 1-2)"
+    },
+    {
       "name": "package-file-install-exe",
       "file": "refused/package-file-install-exe.json",
       "after": [
@@ -1817,7 +1829,7 @@
       "file": "refused/declaration-without-base.json",
       "after": [],
       "binding": "app",
-      "canonical": true,
+      "canonical": false,
       "expect": "reject",
       "reason": "RootFormat",
       "why": "a declaration without base"
@@ -2295,6 +2307,60 @@
       },
       "app_expect": "accept",
       "why": "a declaration revoking [1, 103]: no vector build pins 103 (the tool refuses any 101-199, X2)"
+    },
+    {
+      "name": "issued-1999",
+      "file": "tool/issued-1999.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "c917320844b66fe28761bbc58cac33f77ba8906a0fdd06c574899c61320730bf",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "issued in 1999: an app reads the years 0001-9999, the tool writes and signs only 2000-2199 (spec 1-2)"
+    },
+    {
+      "name": "package-build-1e400",
+      "file": "refused/package-build-1e400.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": false,
+      "expect": "reject",
+      "reason": "Field:json",
+      "why": "package.build is the number 1e400, beyond a 64-bit float: a shape error, as serde_json reads it (spec 1-3)"
+    },
+    {
+      "name": "declaration-without-revoked",
+      "file": "tool/declaration-without-revoked.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": false,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": "644df3eedc9afdc95aedaecfe03b95b951dbaec9c49e06375959f47fe1b2cc1b",
+        "root_k": 101,
+        "p_sha256": "7172ba7972caa03326a0a64b405278a691917bcf21e1da299d398f70fca80860",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "a declaration without revoked: the app reads no revocation; not canonical, the tool always writes the list"
     }
   ]
 }

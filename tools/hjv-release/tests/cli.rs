@@ -1430,7 +1430,11 @@ fn ctrl_c_at_the_prompt_leaves_the_terminal_usable() {
 fn provenance_refusals_from_recorded_gh_output() {
     let world = World::new("provenance");
     let cases = [
-        ("run-failed.json", "build.yml", "성공으로 끝나지 않았습니다"),
+        (
+            "run-failed.json",
+            "build.yml",
+            "성공으로 끝나지 않았습니다(상태 \"completed\", 결과 \"failure\"). 실패한 잡을 'Re-run failed jobs'로",
+        ),
         (
             "run-other-workflow.json",
             "build.yml",

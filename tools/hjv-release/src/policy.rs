@@ -13,7 +13,8 @@
 //!   ([`PolicyForm::judge`], [`DeclForm::judge`]): what the tool's simulated app answers.
 //!
 //! The tool keeps rules of its own on top ([`Policy::check`], [`RootDecl::check`]): no URL in a
-//! text, the package and platform rules of the design, key numbers 1-100 in `revoked`. A policy
+//! text, the package and platform rules of the design, key numbers 1-100 in `revoked`, times in
+//! the years 2000-2199 (an app reads 0001-9999). A policy
 //! never holds a URL or a secret: it is public, and an app builds every address itself from its
 //! compiled-in server name.
 
@@ -698,13 +699,27 @@ impl DeclForm {
         w.finish()
     }
 
-    /// The form of a canonical text, or why the text is not one.
+    /// The form of a canonical text, or why the text is not one: as the tool writes it, with every
+    /// member it always writes (trust rules 1-1, `canonical`; decided 2026-10-14).
     pub fn canonical(text: &str) -> Result<DeclForm, String> {
         let form = DeclForm::read(text)?;
         if form.to_text() != text {
             return Err(
                 "루트 선언이 이 도구가 쓰는 형식(필드 순서, 공백 없음)과 다릅니다".to_owned(),
             );
+        }
+        let members = [
+            ("v", form.v.is_some()),
+            ("server", form.server.is_some()),
+            ("epoch", form.epoch.is_some()),
+            ("revoked", form.revoked.is_some()),
+            ("issued", form.issued.is_some()),
+            ("base", form.base.is_some()),
+        ];
+        if let Some((member, _)) = members.iter().find(|(_, there)| !there) {
+            return Err(format!(
+                "루트 선언에 {member}가 없습니다(이 도구는 늘 씁니다)"
+            ));
         }
         Ok(form)
     }
@@ -833,6 +848,12 @@ impl Entry {
             }
             None => {}
         }
+        if let Some(until) = self.grace_until {
+            time::check_tool_years("grace_until", until)?;
+        }
+        if let Some(after) = self.auto_install_after {
+            time::check_tool_years("auto_install_after", after)?;
+        }
         if let Some(os_min) = &self.os_min {
             check_os_min(platform, os_min)?;
         }
@@ -928,6 +949,7 @@ impl Policy {
     pub fn check(&self) -> Result<(), String> {
         check_counters(self.epoch, Some(self.seq))?;
         check_server(&self.server)?;
+        time::check_tool_years("issued", self.issued)?;
         if let Some(contact) = &self.contact_ko {
             check_text("contact_ko", contact, MAX_CONTACT_CHARS, false)?;
         }
@@ -998,6 +1020,7 @@ impl RootDecl {
             return Err("루트 선언의 세대는 2 이상입니다(세대 1에는 선언이 없습니다)".to_owned());
         }
         check_server(&self.server)?;
+        time::check_tool_years("루트 선언의 issued", self.issued)?;
         if self.revoked.len() > MAX_REVOKED {
             return Err(format!("루트 선언: 폐기 목록은 {MAX_REVOKED}개까지입니다"));
         }
@@ -1021,6 +1044,12 @@ impl RootDecl {
                 return Err(format!(
                     "루트 선언: base의 {platform}: {member} 규칙에 어긋납니다"
                 ));
+            }
+            if let Some(until) = entry.grace_until {
+                time::check_tool_years(
+                    &format!("루트 선언: base의 {platform} grace_until"),
+                    until,
+                )?;
             }
         }
         Ok(())
@@ -1707,9 +1736,23 @@ pub(crate) mod tests {
             let bad = text.replacen(from, to, 1);
             assert!(RootDecl::parse(&bad).is_err(), "{to} parsed");
         }
-        // a missing member is the app's RootFormat, not a matter of form
+        // a member the tool always writes, missing: not canonical (the term `canonical`, decided
+        // 2026-10-14); the app reads past a missing `revoked` and refuses a missing `base`
+        for member in [
+            r#""v":1,"#,
+            r#""server":"rd.example.com","#,
+            r#""epoch":2,"#,
+            r#""revoked":[1,3],"#,
+            r#""issued":"2026-11-08T03:00:00Z","#,
+        ] {
+            let without = text.replacen(member, "", 1);
+            assert_ne!(without, text, "{member}");
+            assert!(DeclForm::read(&without).is_ok(), "{member}");
+            let err = DeclForm::canonical(&without).unwrap_err();
+            assert!(err.contains("가 없습니다"), "{member}: {err}");
+        }
         let without = text.replacen(r#","revoked":[1,3]"#, "", 1);
-        assert!(DeclForm::canonical(&without).is_ok());
+        assert!(DeclForm::canonical(&without).is_err());
         assert_eq!(
             DeclForm::read(&without)
                 .unwrap()
@@ -1719,7 +1762,7 @@ pub(crate) mod tests {
             Vec::<u32>::new()
         );
         let no_base = text.split(r#","base""#).next().unwrap().to_owned() + "}";
-        assert!(DeclForm::canonical(&no_base).is_ok());
+        assert!(DeclForm::canonical(&no_base).is_err());
         assert_eq!(
             DeclForm::read(&no_base).unwrap().judge(None),
             Err(Reason::RootFormat)
@@ -1876,6 +1919,52 @@ pub(crate) mod tests {
         };
         assert!(judge(&url.to_text()).is_ok());
         assert!(url.check().is_err());
+    }
+
+    /// The tool writes and signs times of the years 2000-2199 only; its simulated app reads every
+    /// year an app reads, 0001-9999 (trust rules 1-2, decided 2026-10-14).
+    #[test]
+    fn the_tools_years() {
+        let edges = [
+            ("1999-12-31T23:59:59Z", false),
+            ("2000-01-01T00:00:00Z", true),
+            ("2199-12-31T23:59:59Z", true),
+            ("2200-01-01T00:00:00Z", false),
+        ];
+        for (time, tool) in edges {
+            let issued = |p: &mut Policy| p.issued = t(time);
+            let until = |p: &mut Policy| windows(p).grace_until = Some(t(time));
+            let auto = |p: &mut Policy| windows(p).auto_install_after = Some(t(time));
+            for (what, f) in [
+                ("issued", &issued as &dyn Fn(&mut Policy)),
+                ("grace_until", &until),
+                ("auto_install_after", &auto),
+            ] {
+                let mut policy = sample();
+                f(&mut policy);
+                let err = policy.check().err();
+                assert_eq!(err.is_none(), tool, "{what} {time}: {err:?}");
+                if let Some(err) = err {
+                    assert!(err.contains("2000-2199"), "{err}");
+                    // what the tool refuses an app takes
+                    let form = PolicyForm::read(&policy.to_text()).unwrap();
+                    assert_eq!(form.judge(Some("rd.example.com")).unwrap(), policy);
+                }
+            }
+            let mut declaration = decl();
+            declaration.issued = t(time);
+            assert_eq!(
+                declaration.check().is_ok(),
+                tool,
+                "declaration issued {time}"
+            );
+            let mut declaration = decl();
+            let windows = declaration.base.get_mut(&Platform::Windows).unwrap();
+            windows.grace_until = Some(t(time));
+            assert_eq!(declaration.check().is_ok(), tool, "base grace_until {time}");
+            let form = DeclForm::read(&declaration.to_text()).unwrap();
+            assert_eq!(form.judge(Some("rd.example.com")).unwrap(), declaration);
+        }
     }
 
     #[test]

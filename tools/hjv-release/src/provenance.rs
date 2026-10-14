@@ -333,7 +333,9 @@ pub fn check(
     let (status, conclusion) = (text(&run, "status"), text(&run, "conclusion"));
     if status != "completed" || conclusion != "success" {
         return Err(fail(format!(
-            "실행 {}: 성공으로 끝나지 않았습니다(상태 {status:?}, 결과 {conclusion:?})",
+            "실행 {}: 성공으로 끝나지 않았습니다(상태 {status:?}, 결과 {conclusion:?}). 실패한 잡을 \
+             'Re-run failed jobs'로 다시 돌린 뒤 다시 하세요. 그래도 안 되면 docs/ci.md '릴리스 \
+             기록'대로 새로 빌드합니다",
             info.run_id
         )));
     }

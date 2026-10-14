@@ -4,7 +4,7 @@ HJViewer의 **서명된 버전 정책**(최소 버전과 강제 업데이트)을
 
 - 에이전트가 하는 일: 정책 초안 만들기(`policy`), 확인(`verify`), 서버로 보낼 디렉터리 모으기(`publish-dir`), 서버 설정 값(`hbbs-conf`, `floor`), 주 1회 점검(`check`).
 - **사용자만 하는 일: 키 만들기(`keygen`), 서명(`sign`), 보관소의 파일 무효(`void`)와 들이기(`archive adopt`).** 이 명령은 터미널에서 키 비밀번호나 `yes`를 받습니다. 터미널이 없으면(스크립트, CI, 에이전트의 셸) 실행을 거부합니다. 비밀번호는 표준 입력, 환경 변수, 인자로 받지 않습니다.
-- 앱이 정책을 받는 규칙은 `build/minver/trust-rules/spec.md`(1.6.0)입니다. 도구의 `src/trust.rs`가 같은 단계와 거절 코드로 그 규칙을 따르고, 서명하기 전에 앱이 받을지 확인합니다.
+- 앱이 정책을 받는 규칙(1.6.0의 신뢰 규칙)은 이 저장소의 참조 모델 `tests/vectors/model.py`와 그 시험 벡터(`tests/vectors/`)가 정합니다. 도구의 `src/trust.rs`가 같은 단계와 거절 코드로 그 규칙을 따르고, 서명하기 전에 앱이 받을지 확인합니다.
 - 이 도구는 비밀키, 비밀번호, 문 2 코드를 화면·로그·오류에 쓰지 않습니다.
 
 이 문서의 예시는 서버 이름을 `rd.example.com`으로 씁니다.
@@ -110,17 +110,20 @@ HJV_POLICY_FLOOR=1:0
 # seq 1(M5, 서명 키 1): 1.6.0이 나왔음을 알릴 뿐, 아무도 막지 않음. 첫 정책에는 유예 쌍이 없음
 hjv-release policy --prev none --server rd.example.com --release-dir build/release-1.6.0 \
     --min all=1.5.0 --auto-after windows=none --ios-valid <TestFlight 빌드 번호> \
+    --play-live <Play 내부 트랙의 versionCode> \
     --os-min windows=10 --os-min android=22 --os-min ios=13.0 \
     --contact "설치 파일은 관리자에게 받으세요." --out build/policy/draft-1.json
 
 # seq 2(M7, 서명 키): 모든 항목의 최소 버전을 1.6.0으로, 유예 14일(한국 시각 0시에 끝남)
 hjv-release policy --prev ~/hjviewer-policy-archive/policy-e1-s1.json \
     --min all=1.6.0 --grace-days 14 --ios-valid <TestFlight 빌드 번호> \
+    --play-live <Play 내부 트랙의 versionCode> \
     --out build/policy/draft-2.json
 ```
 
 - seq 1의 `sign`이 보관소를 시작하고 1.6.0의 키 집합을 기록합니다. 이어서 리허설(3장 5-14)을 합니다.
 - seq 2에는 도구가 `grace_min` 1.5.0을 씁니다. 유예 끝까지 1.5.0 미만은 막히고, 1.5.x는 유예를 받습니다. hbbs 파일은 `hbbs-conf --current none`이 바로 씁니다(`MIN=1.6.0`, `FROM`=유예 끝). 허브-운영이 M7에 설치하고, hbbs는 `FROM`부터 스스로 거절합니다.
+- `--play-live`는 Google Play 내부 트랙에 그 버전이 출시(completed)된 뒤에만 줍니다. 아직 Play에 없으면 빼고, 나온 뒤의 정책에서 넣습니다(5-5). `android_play` 항목이 없는 동안에는 Play로 설치한 앱에 최소 버전이 걸리지 않고, `policy`가 "바뀌는 것"에 그렇게 알립니다.
 - 1.6.0은 손으로 설치하므로 seq 1에는 무인 설치 시각을 두지 않습니다. 1.6.1부터는 이 옵션을 주지 않으면 게시 2일 뒤부터 고리별로 설치합니다.
 
 ### 항목이 막는 것: `min`과 유예 쌍
@@ -199,7 +202,7 @@ hjv-release policy --prev ~/hjviewer-policy-archive/policy-e1-s1.json \
 
 새 Windows·Android 패키지마다 `policy`가 확인합니다. 하나라도 틀리면 초안을 만들지 않습니다.
 
-1. `release.json`의 실행이 빌드 저장소 `build.yml`의, 손으로 시작한, 성공한 실행인지(`gh api repos/<빌드 저장소>/actions/runs/<실행 번호>`).
+1. `release.json`의 실행이 빌드 저장소 `build.yml`의, 손으로 시작한, 성공한 실행인지(`gh api repos/<빌드 저장소>/actions/runs/<실행 번호>`). 업로드 같은 잡 하나가 실패해 실행이 성공하지 않았으면 빌드 저장소에서 그 실행을 'Re-run failed jobs'로 다시 돌리고, 성공으로 끝나면 같은 실행 번호로 진행합니다. 그래도 안 되면 같은 태그 커밋으로 새로 실행합니다. 이때 실패한 실행이 TestFlight나 Google Play에 빌드를 하나도 올리지 않았으면 버전을 그대로 두고, 하나라도 올라갔으면 `client/version.env`의 버전을 올려 새로 빌드합니다(`docs/ci.md` "릴리스 기록").
 2. 그 실행이 부른 워크플로가 공개 저장소의 `client-build.yml` 하나이고, `release.json`의 소스 커밋(40자리)과 같은 커밋인지.
 3. 그 실행 커밋의 `build.yml`이 문서(`docs/ci.md`)의 모양 그대로인지: job 하나, `uses:`와 `source_ref`가 같은 커밋으로 고정, 자기 단계 없음, 모르는 입력 없음.
 4. 그 커밋이 이 저장소의 태그 `client-<버전>`과 같은지.
@@ -246,7 +249,7 @@ hjv-release sign --key FILE [--key FILE] [--live FILE] --out FILE DRAFT
 
 ## 3. 비상 절차와 운영 규칙 (런북)
 
-`build/minver/trust-rules/spec.md` 5장의 절차입니다.
+신뢰 규칙의 운영 절차입니다. 규칙 자체는 참조 모델 `tests/vectors/model.py`와 시험 벡터가 정합니다(6장).
 
 먼저 지킬 규칙:
 
@@ -432,13 +435,13 @@ hjv-release check --door2 ~/hjviewer-secrets/door2/door2.conf --live /tmp/live.j
 - 보관소에 서버의 위치보다 높은 파일이 있음(서명하고 내지 않음: 5-13).
 - 키 파일의 하한이 서버의 위치보다 높음(그 키 파일로 만든 빌드는 서버의 정책을 받지 않음).
 - 기록된 모든 빌드가 박은 서명 키가 없음(루트 키가 정책에 서명: 5-8 6번). 기록된 키 집합과 그것들이 모두 박은 키도 보여 줍니다.
-- 남은 1.5.x PC는 이 도구가 볼 수 없습니다. 서버의 `hjv-api admin report`와 운영자 PC 목록으로 확인합니다.
+- 남은 1.5.x PC는 이 도구가 볼 수 없습니다. 1.5.x PC는 계정에 묶이지 않아 서버의 `hjv-api admin report`에도 나오지 않습니다. 운영자 PC 목록으로 확인합니다.
 
 ## 6. 시험용 명령과 벡터
 
 - `hjv-release test-keys`: 이 저장소에 비밀키가 공개된 시험 키 목록. `--env`는 시험 빌드용 `update-keys.env` 내용입니다. 실서버 빌드는 이 키를 믿으면 안 됩니다.
 - `hjv-release test-sign --policy FILE [--root-decl FILE] [--key NAME] [--root-key NAME] [--out FILE]`: 손으로 쓴 정책 JSON(과 루트 선언)을 **시험 키로만** 서명합니다(E2E와 다른 묶음의 시험용). 터미널이 필요 없습니다. 실제 키를 받는 옵션은 없습니다. `--raw`는 규칙을 어긴 봉투를 일부러 만들 때 씁니다. 시험 키는 서명 키 1, 2, 루트 키 101, 102(시험 키 파일이 박음)와 어느 빌드도 박지 않는 3, 103입니다.
-- `tests/vectors/`: 앱이 받아야 하는 봉투와 거부해야 하는 봉투 137건(`manifest.json`, 거절 코드와 그 뒤의 상태까지), `covers.json`. `generate.py`가 참조 모델(`model.py`, `build/minver/trust-rules/model.py`와 바이트까지 같은 사본)로 만들고 확인합니다. 클라이언트 코어와 서버 확인 스크립트가 같은 파일을 읽습니다. 설명은 `tests/vectors/README.md`.
+- `tests/vectors/`: 앱이 받아야 하는 봉투와 거부해야 하는 봉투 141건(`manifest.json`, 거절 코드와 그 뒤의 상태까지), `covers.json`. `generate.py`가 참조 모델(`model.py`, 신뢰 규칙을 실행할 수 있게 옮긴 것)로 만들고 확인합니다. 클라이언트 코어와 서버 확인 스크립트가 같은 파일을 읽습니다. 설명은 `tests/vectors/README.md`.
 - `tests/gh/`: 출처 확인 시험에 쓰는 기록된 `gh` 출력.
 
 ## 7. 파일 형식
@@ -453,7 +456,7 @@ hjv-release check --door2 ~/hjviewer-secrets/door2/door2.conf --live /tmp/live.j
 - `root`는 그 세대의 루트 선언이고, 세대 2 이상의 모든 봉투에 그대로 붙습니다(세대 1에는 선언이 없음).
 - 정책 텍스트: `v, epoch, seq, issued, server, contact_ko, platforms{windows, android, android_play, ios}`. 항목: `min, latest, grace_until, grace_min, os_min, notes_ko, source, package{file, size, sha256, build}, auto_install_after, move_to_play, version_code, testflight_build`. `grace_until`과 `grace_min`은 함께 있거나 함께 없고, `grace_min`은 `min`보다 낮습니다(`"0.0.0"` 가능).
 - 루트 선언 텍스트: `v, server, epoch(2 이상), revoked(1-100, 오름차순, 누적), issued, base{windows, android, android_play, ios}`. base 항목은 `min, latest, grace_until, grace_min`이고, 그 세대 첫 정책의 요구 부분입니다. 도구가 서버의 정책에서 계산합니다.
-- 필드와 규칙은 `src/policy.rs`, 앱이 받는 규칙은 `src/trust.rs`(`build/minver/trust-rules/spec.md`)에 있습니다.
+- 필드와 규칙은 `src/policy.rs`, 앱이 받는 규칙은 `src/trust.rs`(참조 모델 `tests/vectors/model.py`와 같은 판정)에 있습니다. 시각은 앱이 0001-9999년을 읽고, 도구는 2000-2199년만 쓰고 서명합니다(도구의 규칙).
 
 **키 파일**: age 형식(age-encryption.org/v1)의 비밀번호 암호화 파일입니다(scrypt 작업 계수 18). 이 도구가 없어도 `age -d`로 열 수 있습니다. 안에는 역할, 번호, 32바이트 seed, 공개키가 들어 있습니다.
 

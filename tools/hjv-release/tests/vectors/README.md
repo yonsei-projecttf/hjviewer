@@ -1,9 +1,10 @@
 # Test vectors of the signed version policy
 
 Envelopes of HJViewer's version policy (the file apps fetch from `/api/hjv/version`) that an app
-must take or must refuse, for every implementation of the rules of
-`build/minver/trust-rules/spec.md` (1.6.0): this tool (`src/trust.rs`), the client core and the
-server-side check script read the same bytes.
+must take or must refuse, for every implementation of the trust rules of 1.6.0: this tool
+(`src/trust.rs`), the client core and the server-side check script read the same bytes. The rules
+themselves are the design's (not part of this repository); `model.py` is their executable form,
+and these vectors are what every implementation is held to.
 
 **Test keys only.** The private halves of every key here are published (`src/keys.rs`,
 `TEST_KEYS`): seeds of 32 consecutive bytes. A build for the real server must never hold one of
@@ -11,9 +12,10 @@ these keys; `hjv-release keys --production` and CI refuse them.
 
 ## How they are made
 
-`generate.py` makes every file here from the cases of spec 7-4. `model.py` is the executable
-reference model of the rules, a **byte-identical copy** of `build/minver/trust-rules/model.py`
-(`generate.py` refuses to run when its SHA-256 is not the one it names). The verdicts are the
+`generate.py` makes every file here from the cases of spec 7-4 (the design's list) and the cases
+decided on 2026-10-14 (`cases_of_2026_10_14`). `model.py` is the executable reference model of the
+rules, a **byte-identical copy** of the design's model (`generate.py` refuses to run when its
+SHA-256 is not the one it names). The verdicts are the
 model's: `generate.py` reads every envelope back from its bytes as an app does (spec 2-2, steps A
 to C: size, UTF-8, the JSON rules, strict Ed25519 with the pinned test keys, the member rules),
 runs the model's `accept()` over the case's history and the case's file, and writes what the model
@@ -98,21 +100,28 @@ The keys an app holds in every case are those of `update-keys.env`; its server n
 
 ### Canonical
 
-`canonical: true`: the file is one line and a line feed; no member is given twice and none is
-`null`; only the members of spec 1-3 appear, in 1-3's order, each with its JSON type (unsigned
+`canonical: true`: the file is exactly what the tool writes, with every member the tool always
+writes and only values it can write: one line and a line feed; no member is given twice and none
+is `null`; only the members of spec 1-3 appear, in 1-3's order, each with its JSON type (unsigned
 integers up to 2^64-1, `move_to_play` only `true`, `package.build` a string); strings escaped as
 serde_json writes them; the envelope's `k` is 1-65535 and every `s` is the canonical base64 of 64
-bytes; a policy text has its required members. Value rules are not part of it: an envelope or
-text of version 2, a version or time of the wrong form, a text too long, another server, a
-declaration of epoch 1 or without `base` is canonical, and the tool gives the app's reason for it.
-Not canonical: `key-number-zero`, `key-number-as-text`, `signature-63-bytes`,
+bytes; a policy text has its required members (`v, epoch, seq, issued, server, platforms`), a
+declaration text all six of its members (`v, server, epoch, revoked, issued, base`). Value rules
+are not part of it: an envelope or text of version 2, a version or time of the wrong form or year,
+a text too long, another server, a declaration of epoch 1 is canonical, and the tool gives the
+app's reason for it. Not canonical: `key-number-zero`, `key-number-as-text`, `signature-63-bytes`,
 `signature-trailing-bits`, `body-not-utf8`, `duplicate-field`, `grace-min-as-number`,
-`policy-without-epoch`, `lone-surrogate-in-known-member`, and seven of the `binding: tool` cases.
+`policy-without-epoch`, `package-build-1e400`, `declaration-without-base`,
+`lone-surrogate-in-known-member`, and eight of the `binding: tool` cases (among them
+`declaration-without-revoked`).
 
-This is the model's marking. The specification describes the form in three places that do not
-agree on two of these cases (1-1 and 4-8 item 1 would call `key-number-zero` and
-`policy-without-epoch` canonical, 4-1 would not); it is reported as open, and nothing but the
-server check's `Canonical` answer depends on it: the app refuses both cases for the reason given.
+The definition was settled on 2026-10-14: a key number 0, a policy without `epoch` and a
+declaration without one of its six members are not canonical. Nothing but the server check's
+`Canonical` answer depends on it: the app refuses those cases for the reasons given, or reads past
+a missing `revoked` as no revocation.
+
+Times: an app reads the years 0001-9999 (`issued-year-0000` is refused for its `issued`); the
+tool writes and signs only 2000-2199, a rule of its own (`issued-1999`, `binding: tool`).
 
 ### Who checks what
 

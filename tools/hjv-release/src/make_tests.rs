@@ -275,6 +275,9 @@ fn the_first_policy() {
     crate::draft::check_notes(&draft.notes).unwrap();
     assert_eq!(Draft::parse(&draft.to_text()).unwrap(), *draft);
     assert!(made.report.iter().any(|l| l.contains("첫 정책")));
+    // the first policy has no Google Play entry (no --play-live): the report says what that leaves
+    assert!(!p.platforms.contains_key(&Platform::AndroidPlay));
+    assert!(made.report.iter().any(|l| l == crate::make::NO_PLAY_ENTRY));
     assert!(made.report.iter().any(|l| l
         .contains("windows: 무인 설치는 기본값대로 게시 2일 뒤(2026-11-10 13:00 한국 시각)부터")));
     let mut without = first(&f);
@@ -918,6 +921,7 @@ fn google_play() {
         .notes
         .iter()
         .any(|n| n.contains("Play 내부 트랙의 versionCode(263102200)를 확인함")));
+    assert!(!made3.report.iter().any(|l| l == crate::make::NO_PLAY_ENTRY));
     // a later build on the track is fine, an earlier one is not; the version needs its build
     assert!(add(code_160 + 5, f.release("1.6.0", IOS_160, APK_160)).is_ok());
     let err = add(code_160 - 1, f.release("1.6.0", IOS_160, APK_160)).unwrap_err();

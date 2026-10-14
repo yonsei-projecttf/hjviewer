@@ -55,14 +55,14 @@ fn digits(s: &[u8]) -> Option<i64> {
     })
 }
 
-/// `YYYY-MM-DD` as days from 1970-01-01; years 2000-2199 only.
+/// `YYYY-MM-DD` as days from 1970-01-01; years 0001-9999, as an app reads them (trust rules 1-2).
 fn parse_date(s: &[u8]) -> Option<i64> {
     if s.len() != 10 || s[4] != b'-' || s[7] != b'-' {
         return None;
     }
     let (year, month, day) = (digits(&s[..4])?, digits(&s[5..7])?, digits(&s[8..])?);
     let (month, day) = (u32::try_from(month).ok()?, u32::try_from(day).ok()?);
-    if !(2000..2200).contains(&year) || !(1..=12).contains(&month) {
+    if year < 1 || !(1..=12).contains(&month) {
         return None;
     }
     if day < 1 || day > days_in_month(year, month) {
@@ -80,13 +80,30 @@ fn parse_clock(s: &[u8]) -> Option<i64> {
     (h < 24 && m < 60 && sec < 60).then_some(h * HOUR + m * 60 + sec)
 }
 
-/// The one form the policy uses and the tool writes: `YYYY-MM-DDTHH:MM:SSZ`, as Unix seconds.
+/// The one form the policy uses and the tool writes: `YYYY-MM-DDTHH:MM:SSZ`, as Unix seconds. Years
+/// 0001-9999, as an app reads them: the tool's own years are [`check_tool_years`].
 pub fn parse_utc(s: &str) -> Result<i64, String> {
     let b = s.as_bytes();
     let parsed = (b.len() == 20 && b[10] == b'T' && b[19] == b'Z')
         .then(|| Some(parse_date(&b[..10])? * DAY + parse_clock(&b[11..19])?))
         .flatten();
     parsed.ok_or_else(|| format!("시각은 2026-11-22T15:00:00Z 형식이어야 합니다: {s:?}"))
+}
+
+/// The first second of 2000 and of 2200 (UTC).
+const TOOL_YEARS: (i64, i64) = (946_684_800, 7_258_118_400);
+
+/// The tool's own rule for a time it writes or signs (trust rules 1-2, `binding: tool`): years
+/// 2000-2199. An app reads every year from 0001 to 9999 ([`parse_utc`]).
+pub fn check_tool_years(what: &str, t: i64) -> Result<(), String> {
+    if (TOOL_YEARS.0..TOOL_YEARS.1).contains(&t) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what}의 연도는 2000-2199년이어야 합니다(도구의 규칙): {}",
+            format_utc(t)
+        ))
+    }
 }
 
 /// What an operator may type: the policy's form, the same with an offset (`+09:00`), or a bare
@@ -238,14 +255,35 @@ mod tests {
             "2026-11-02T24:00:00Z",
             "2026-11-02T00:60:00Z",
             "2026-11-02T00:00:60Z",
-            "1999-11-02T00:00:00Z",
-            "2200-01-01T00:00:00Z",
+            "0000-12-31T23:59:59Z",
             "2026-1-02T00:00:00ZZ",
             "２０２６-11-02T00:00:00Z",
             "2026-11-0２T00:00:00Z",
         ] {
             assert!(parse_utc(bad).is_err(), "{bad:?} parsed");
         }
+    }
+
+    /// An app reads the years 0001-9999 (trust rules 1-2); the tool writes and signs 2000-2199 only.
+    #[test]
+    fn the_apps_years_and_the_tools() {
+        for (text, tool) in [
+            ("0001-01-01T00:00:00Z", false),
+            ("1999-12-31T23:59:59Z", false),
+            ("2000-01-01T00:00:00Z", true),
+            ("2199-12-31T23:59:59Z", true),
+            ("2200-01-01T00:00:00Z", false),
+            ("9999-12-31T23:59:59Z", false),
+        ] {
+            let t = parse_utc(text).unwrap();
+            assert_eq!(format_utc(t), text);
+            assert_eq!(check_tool_years("issued", t).is_ok(), tool, "{text}");
+        }
+        assert_eq!(
+            check_tool_years("issued", parse_utc("1999-12-31T23:59:59Z").unwrap()).unwrap_err(),
+            "issued의 연도는 2000-2199년이어야 합니다(도구의 규칙): 1999-12-31T23:59:59Z"
+        );
+        assert!(parse_utc("0000-01-01T00:00:00Z").is_err());
     }
 
     #[test]

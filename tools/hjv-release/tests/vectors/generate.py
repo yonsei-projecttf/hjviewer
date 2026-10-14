@@ -31,6 +31,7 @@ import calendar
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import sys
@@ -731,6 +732,13 @@ def recipes():
                                                           "signing-1"))
     r["package-withdrawn"] = envelope(with_entry(p3_4, "windows", package=None, auto_install_after=None), "signing-2")
     r["declaration-revokes-old-root-number"] = declared(p4(), d2(revoked=[1, 103]))
+    # decided on 2026-10-14 (spec 1-2, 1-3, the term `canonical`)
+    r["issued-1999"] = envelope(at(p1(), issued="1999-12-31T23:59:59Z"), "signing-1")
+    r["issued-year-0000"] = envelope(at(p2(), issued="0000-01-01T00:00:00Z"), "signing-1")
+    r["package-build-1e400"] = raw_file(part(replaced(p2t, '"build":"1.6.0.37"', '"build":1e400'), "signing-1"))
+    r["declaration-without-revoked"] = raw_file(part(p4t, "signing-2"),
+                                                part(decl_text({k: v for k, v in d2().items() if k != "revoked"}),
+                                                     "root-101", ROOT_DOMAIN))
     return r
 
 
@@ -744,7 +752,7 @@ EXPANDED = {
                   ("package-file-path", "Field:package.file"), ("package-size-zero", "Field:package.size"),
                   ("package-size-over-200-mib", "Field:package.size"),
                   ("package-sha256-uppercase", "Field:package.sha256")],
-    "issued-not-rfc3339": [("issued-not-rfc3339", "Field:issued")],
+    "issued-not-rfc3339": [("issued-not-rfc3339", "Field:issued"), ("issued-year-0000", "Field:issued")],
     "contact-201-characters": [("contact-201-characters", "Field:contact_ko")],
     "notes-2001-characters": [("notes-2001-characters", "Field:notes_ko")],
 }
@@ -754,6 +762,7 @@ EXPANDED = {
 # model's run over the concrete bytes, as for every case.
 COARSE = {
     "declaration-revoked-null": "the app reads revoked null as no revocation: revoked [] (spec 7-4)",
+    "declaration-without-revoked": "the app reads no revoked as no revocation: revoked [] (the model reuses e2-s1)",
     "entry-null": "e1-s1 with android_play null: epoch 1, no declaration (spec 7-4)",
     "declaration-base-extra-member": "the model reuses e2-s1",
     "declaration-unknown-member": "the model reuses e2-s1",
@@ -897,6 +906,10 @@ WHY = {
     "lone-surrogate-in-unknown-member": "an unknown member's value is the escape \\ud800: skipped",
     "package-withdrawn": "the windows package and auto_install_after removed (--withdraw-package): no relaxation",
     "declaration-revokes-old-root-number": "a declaration revoking [1, 103]: no vector build pins 103 (the tool refuses any 101-199, X2)",
+    "issued-1999": "issued in 1999: an app reads the years 0001-9999, the tool writes and signs only 2000-2199 (spec 1-2)",
+    "issued-year-0000": "issued in the year 0000, which no implementation reads (spec 1-2)",
+    "package-build-1e400": "package.build is the number 1e400, beyond a 64-bit float: a shape error, as serde_json reads it (spec 1-3)",
+    "declaration-without-revoked": "a declaration without revoked: the app reads no revocation; not canonical, the tool always writes the list",
 }
 
 
@@ -1115,7 +1128,9 @@ def read_policy(text):
 
 
 def build_value(value):
-    """package.build is read as any JSON value: its strings must hold no lone surrogate."""
+    """package.build is read as any JSON value, as serde_json reads one: its strings must hold no
+    lone surrogate, and a number must be within the range of a 64-bit float (spec 1-3, decided
+    2026-10-14: `1e400` is a shape error, as the client already has it)."""
     if isinstance(value, str):
         as_str(value)
     elif isinstance(value, list):
@@ -1125,8 +1140,14 @@ def build_value(value):
         for name, v in value.pairs:
             as_str(name)
             build_value(v)
-    elif isinstance(value, Flt) and value.literal.lstrip("-").lower() in ("inf", "nan"):
-        raise Shape("not a number")
+    elif isinstance(value, Flt):
+        if value.literal.lstrip("-").lower() in ("inf", "nan") or math.isinf(float(value.literal)):
+            raise Shape("a number beyond a 64-bit float")
+    elif isinstance(value, Int):
+        try:
+            float(value.value)
+        except OverflowError:
+            raise Shape("a number beyond a 64-bit float")
 
 
 def read_declaration(text):
@@ -1285,9 +1306,10 @@ def canonical(body):
     keeps: one line and a line feed; no duplicate member and no null; only the members of 1-3, in
     1-3's order, with their JSON types (unsigned 64-bit integers, `move_to_play` only true,
     package.build a string); serde_json's escaping; the envelope's k 1-65535 and every s the
-    canonical base64 of 64 bytes; a policy text with its required members. Value rules (v,
-    versions, times, lengths, the server, epoch >= 2, a declaration's missing members) are not
-    part of it: a canonical text that breaks one gets the app's reason from the tool."""
+    canonical base64 of 64 bytes; a policy text with its required members, a declaration text
+    with all six of its members (the term `canonical`, decided 2026-10-14). Value rules (v,
+    versions, times, lengths, the server, epoch >= 2) are not part of it: a canonical text that
+    breaks one gets the app's reason from the tool."""
     try:
         text = body.decode("utf-8")
         if not text.endswith("\n") or "\n" in text[:-1]:
@@ -1306,7 +1328,7 @@ def canonical(body):
         if dumps(p) != e["p"]:
             return False
         if "root" in e:
-            d = rewrite(strict_load(e["root"]["p"]), DECL_SCHEMA)
+            d = rewrite(strict_load(e["root"]["p"]), DECL_SCHEMA, DECL_ORDER)
             if dumps(d) != e["root"]["p"]:
                 return False
         return True
@@ -1318,11 +1340,38 @@ def canonical(body):
 # Cases: the model's list of 7-4, its verdicts on the concrete files, the manifest
 # ------------------------------------------------------------------------------------------------
 
+def cases_of_2026_10_14(hist):
+    """The cases the main session decided on 2026-10-14, after the model's list of 7-4 (spec 1-2,
+    1-3 and the term `canonical`), written with the model's own constructors: model.py stays the
+    byte-identical copy of the model."""
+    def case(name, after, env, expect, binding="app", canonical=True):
+        return M.Case(name, after, env, M.VECTOR_BUILD, expect, None, None, binding, canonical)
+    p11 = hist["e1-s1"].pol.text
+    return [
+        # an app reads the years 0001-9999; the tool writes and signs 2000-2199 only (spec 1-2)
+        case("issued-1999", [], M.Env(M.Part(1, M.policy(1, 1, M.H(1), p11.ents, notes="issued 1999"))), "Taken",
+             binding="tool"),
+        # a number serde_json cannot read is a shape error, in package.build as anywhere (spec 1-3)
+        case("package-build-1e400", ["e1-s1"], M.Env(M.Part(1, hist["e1-s2"].pol.text, form="Field:json")),
+             "Refused(Field:json)", canonical=False),
+        # a declaration without one of the members the tool always writes is not canonical
+        case("declaration-without-revoked", [], hist["e2-s1"], "Taken", binding="tool", canonical=False),
+    ]
+
+
+# The model's cases whose `canonical` the definition of 2026-10-14 changes: a declaration without
+# one of its six members is not canonical.
+CANONICAL_2026_10_14 = {"declaration-without-base": False}
+
+
 def concrete_cases():
-    """[(name, model case, expected reason or None)] in the model's order, families expanded."""
-    cases, _ = M.fixed_cases()
+    """[(name, model case, expected reason or None)] in the model's order, families expanded, then
+    the cases of 2026-10-14."""
+    cases, hist = M.fixed_cases()
     out = []
-    for c in cases:
+    for c in cases + cases_of_2026_10_14(hist):
+        if c.name in CANONICAL_2026_10_14:
+            c = c._replace(canonical=CANONICAL_2026_10_14[c.name])
         for name, reason in EXPANDED.get(c.name, [(c.name, None)]):
             out.append((name, c, reason))
     return out
@@ -1490,8 +1539,8 @@ def generate():
     out_files["root-declaration-e2.json"] = (dumps(d2_part) + "\n").encode()
     out_files["covers.json"] = covers_file()
     manifest = {
-        "about": "Test vectors of HJViewer's signed version policy (build/minver/trust-rules/spec.md, 1.6.0). "
-                 "README.md explains the fields. Made by generate.py from the model (model.py); checked by "
+        "about": "Test vectors of HJViewer's signed version policy (the trust rules of 1.6.0, whose executable "
+                 "form is model.py). README.md explains the fields. Made by generate.py from the model; checked by "
                  "generate.py --check and by tools/hjv-release/tests/vectors.rs.",
         "model_sha256": MODEL_SHA256,
         "server": SERVER,
@@ -1568,6 +1617,15 @@ def canonical_edges(made):
         body = first.replace(b'\\"seq\\":1,', b'\\"seq\\":' + literal + b",", 1)
         if body == first or canonical(body) != want:
             bad.append("canonical() of seq %s is not %s" % (literal.decode(), want))
+    # a declaration without one of its six members (the term `canonical`, decided 2026-10-14)
+    declared_file = made["accepted/e2-s1.json"]
+    env = json.loads(declared_file)
+    if not canonical(declared_file):
+        bad.append("canonical() of e2-s1 is not True")
+    for member in DECL_ORDER:
+        root = dict(env["root"], p=dumps({k: v for k, v in json.loads(env["root"]["p"]).items() if k != member}))
+        if canonical((dumps(dict(env, root=root)) + "\n").encode()):
+            bad.append("canonical() of a declaration without %s is True" % member)
     return bad
 
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The trust rules of the version policy (build/minver/trust-rules/spec.md, 1.6.0) as an app
-//! applies them: what a device holds (1-5), how it takes or refuses an envelope (2), what LOAD
+//! The trust rules of the version policy (1.6.0; the reference model tests/vectors/model.py is
+//! their executable form) as an app applies them: what a device holds (1-5), how it takes or refuses an envelope (2), what LOAD
 //! keeps of a stored record (1-6), COVERS and RELAXES (2-3). The same steps, outcomes and reason
 //! codes as the client core, so that the tool never signs what an app would refuse, and the shared
 //! vectors (tests/vectors) hold for both.
