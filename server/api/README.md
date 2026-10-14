@@ -1043,7 +1043,8 @@ policy from nginx and its `latest` from hjv-api.
   `HJViewer-<v>.exe` (one file, two names), the APK under its own name, and
   `HJViewer-<v>-LICENSE.txt`, `-NOTICE.txt`, `-SOURCE.txt`, `-THIRD_PARTY_NOTICES.txt` from
   `notices-<v>/` of the package directory. A wrong code, a closed door and any other name are the
-  same 404. To close door 2, delete the file; to change the code, replace it.
+  same 404. To close door 2, delete the file (while the hbbs file's text carries door 2's link,
+  put its S2 text in first: runbook 8-4); to change the code, replace it.
 - **Limits.** A request that fails for who asks (no or a wrong token, proof, signature or code)
   counts against its client address; past `HJV_API_LIMIT_UPDATE_FAIL_IP` such a request gets `429
   {"error":…,"hjv":"rate_limited","retry_after":<seconds>}` with `Retry-After` in place of its
