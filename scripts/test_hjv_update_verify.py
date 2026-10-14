@@ -817,24 +817,78 @@ class Rules(Common):
         self.assertEqual(H.summary(self.build, st)["may_install"], True)
 
     def test_load_keeps_what_the_build_verifies(self):
-        # L4: a policy of epoch 2 or later comes with its own epoch's declaration
-        st = H.holding(self.build, H.read_envelope(envelope(part(2, P22))), self.verifier)
-        self.assertIsNone(st.held)
-        st = H.holding(self.build, H.read_envelope(envelope(part(2, policy(3, 1, day(8), E22)), R2)), self.verifier)
-        self.assertIsNone(st.held)
-        self.assertEqual(st.decl.epoch, 2)
-        st = H.holding(self.build, H.read_envelope(HISTORY["e3-s2"]), self.verifier)
-        self.assertEqual((st.decl.epoch, st.held.P.seq), (3, 2))
-        # a build that pins neither signing key 2 nor root key 101
+        def load(data, build=None):
+            return H.load(build or self.build, H.read_envelope(data), self.verifier)
+
+        # L4: a policy of epoch 2 or later comes with its own epoch's declaration, one of epoch 1
+        # with none; the declaration stays. The reason sends the operator to runbook 8-5 (바)
+        for data, why, decl in (
+                (envelope(part(2, P22)), "a policy of epoch 2 without that epoch's declaration", None),
+                (envelope(part(2, policy(3, 1, day(8), E22)), R2),
+                 "a policy of epoch 3 without that epoch's declaration (it comes with epoch 2's)", 2),
+                (envelope(part(2, P22), R3), "a policy of epoch 2 without that epoch's declaration (it comes with "
+                                             "epoch 3's)", 3),
+                (envelope(part(1, P13), R2), "a policy of epoch 1 with a declaration (of epoch 2)", 2)):
+            st, missing = load(data)
+            self.assertIsNone(st.held, why)
+            self.assertEqual(None if st.decl is None else st.decl.epoch, decl, why)
+            self.assertEqual(missing, (why, False))
+            self.assertEqual(H.holding(self.build, H.read_envelope(data), self.verifier), st)
+        st, missing = load(HISTORY["e3-s2"])
+        self.assertEqual((st.decl.epoch, st.held.P.seq, missing), (3, 2, None))
+        # a build that pins neither signing key 2 nor root key 101: the key file's reason (8-5 (마))
         other = H.Build(SERVER, {1: public(SEEDS[1]), 3: public(SEEDS[3])}, {102: public(SEEDS[102])}, (1, 0))
-        st = H.holding(other, H.read_envelope(HISTORY["e3-s2"]), self.verifier)
+        st, missing = load(HISTORY["e3-s2"], other)
         self.assertIsNone(st.held)
         self.assertIsNone(st.decl)
+        self.assertEqual(missing, ("it pins no root key 101, which signed the declaration", True))
         # root key 101 pinned, signing key 2 not: the declaration stays, its base is enforced
         half = H.Build(SERVER, {1: public(SEEDS[1])}, {101: public(SEEDS[101])}, (1, 0))
-        st = H.holding(half, H.read_envelope(HISTORY["e3-s2"]), self.verifier)
+        st, missing = load(HISTORY["e3-s2"], half)
         self.assertIsNone(st.held)
         self.assertEqual(H.summary(half, st)["enforces"], "base")
+        self.assertEqual(missing, ("it pins no key 2, which signed the policy", True))
+        # what no key file mends: a signature that does not hold, a declaration broken, a policy
+        # that breaks a rule
+        st, missing = load(envelope(dict(part(2, P21), p=P21.replace("1.6.1", "1.6.2", 1)), R2))
+        self.assertEqual((st.held, st.decl.epoch), (None, 2))
+        self.assertEqual(missing, ("the policy's signature does not hold (strictly) for key 2", False))
+        st, missing = load(envelope(part(2, P21), dict(R2, p=D2.replace('"revoked":[1]', '"revoked":[2]'))))
+        self.assertEqual((st.held, st.decl), (None, None))
+        self.assertTrue(missing[0].startswith("its declaration: RootSignature"), missing)
+        self.assertFalse(missing[1])
+        st, missing = load(envelope(part(1, policy(1, 1, day(1), E11, server="rd.example.org"))))
+        self.assertIsNone(st.held)
+        self.assertTrue(missing[0].startswith("its policy: Server"), missing)
+        self.assertFalse(missing[1])
+
+    def test_what_hjv_api_reads(self):
+        # hjv-api's is_package_file (server/api/src/update.rs) for the two entries it reads
+        for name, extension, ok in (
+                ("HJViewer-1.6.1-windows-x86_64.exe", ".exe", True), ("HJViewer-1.6.1-android-arm64.apk", ".apk", True),
+                ("HJViewer.EXE", ".exe", True), ("x.exe", ".exe", True), ("a" * 96 + ".exe", ".exe", True),
+                ("a" * 97 + ".exe", ".exe", False), ("HJViewer-1.6.1-windows-x86_64.apk", ".exe", False),
+                ("HJViewer-1.6.1-android-arm64.exe", ".apk", False), (".exe", ".exe", False), ("exe", ".exe", False),
+                (".HJViewer.exe", ".exe", False), ("HJViewer..1.6.0.exe", ".exe", False), ("HJViewer..exe", ".exe", False),
+                ("HJViewer-qs-1.exe", ".exe", False), ("HJViewer-INSTALL.exe", ".exe", False),
+                ("HJViewer 1.exe", ".exe", False), ("HJViewer/1.exe", ".exe", False), ("HJViewer-한.exe", ".exe", False)):
+            self.assertEqual(H.api_package_file(name, extension), ok, name)
+        for platforms in (json.loads(P13)["platforms"], json.loads(P32)["platforms"],
+                          {"windows": {"source": "c" * 64}}, {"ios": {"source": "c" * 65}},
+                          {"ios": {"package": {"file": ".x.ipa"}}}, {"android_play": {"source": "c" * 100}}):
+            self.assertIsNone(H.api_problem(platforms), platforms)
+        for platforms, why in (
+                ({"windows": {"source": "c" * 65}}, "the windows entry's source is not a tag name of at most 64"),
+                ({"android": {"source": "client 1.6.1"}}, "the android entry's source"),
+                ({"windows": {"package": {"file": "HJViewer-1.6.1-windows-x86_64.apk"}}},
+                 'the windows entry\'s package file "HJViewer-1.6.1-windows-x86_64.apk" is not a name hjv-api hands out'),
+                ({"android": {"package": {"file": "HJViewer-1.6.1-android-arm64.exe"}}}, "the android entry's package"),
+                ({"windows": {"package": {"file": "HJViewer..1.6.1.exe"}}}, "no \"..\""),
+                ({"android": {"package": {"file": ".HJViewer.apk"}}}, "no leading \".\"")):
+            self.assertIn(why, H.api_problem(platforms) or "")
+        # the package directory never hands out a file whose name starts with a dot (item 8)
+        with self.assertRaisesRegex(H.Refused, "Package"):
+            H.find_package([os.path.dirname(SCRIPT)], ".x.ipa", 1, "0" * 64)
 
 
 class Command(unittest.TestCase):
@@ -922,13 +976,16 @@ class Command(unittest.TestCase):
         self.refused("LiveRelaxes", HISTORY["e1-s1"], relaxes="ios")
 
     def test_a_live_file_this_check_cannot_read(self):
-        # signed by a key the key file does not pin
+        # signed by a key the key file does not pin: the key file was replaced too early (8-5 (마))
         self.set_live(envelope(part(3, P11)))
-        self.refused("LiveUnreadable", HISTORY["e1-s2"])
-        # not canonical: the apps refuse it too. It stays where it is, and the new file is checked
-        # against the last file installed (runbook 8-5 (바)); no old file is put back
+        out = self.refused("LiveUnreadable", HISTORY["e1-s2"])
+        self.assertIn("the key file does not verify the live file (it pins no key 3, which signed the policy)", out)
+        self.assertNotIn("with --live", out)
+        # not canonical: a file that did not pass this check. It stays where it is, and the new file
+        # is checked against the last file installed (runbook 8-5 (바)); no old file is put back
         self.set_live(HISTORY["e1-s1"].replace(b'"v":1,', b'"v": 1,', 1))
         out = self.refused("LiveUnreadable", HISTORY["e1-s2"])
+        self.assertIn("the live file is not one this check reads", out)
         self.assertIn("with --live", out)
         self.assertNotIn("put back", out)
         last = self.file("last-installed.json", HISTORY["e1-s1"])
@@ -937,18 +994,58 @@ class Command(unittest.TestCase):
                                       self.file("new.json", HISTORY["e1-s2"]))
         self.assertEqual(status, 0, out + err)
         self.assertIn("a device that holds the live policy takes it", out)
-        # an epoch-2 policy without its declaration
-        self.set_live(envelope(part(2, P22)))
-        self.refused("LiveUnreadable", HISTORY["e2-s2"])
+        # what the apps hold under no key file (L4, a signature broken by hand): 8-5 (바) too
+        for live, new, why in (
+                (envelope(part(2, P22)), HISTORY["e2-s2"], "a policy of epoch 2 without that epoch's declaration"),
+                (envelope(part(1, P13), R2), HISTORY["e2-s1"], "a policy of epoch 1 with a declaration (of epoch 2)"),
+                (envelope(part(2, P22), R3), HISTORY["e3-s2"], "(it comes with epoch 3's)"),
+                (envelope(dict(part(1, P12), p=P12.replace("1.5.0", "1.4.0", 1))), HISTORY["e1-s3"],
+                 "the policy's signature does not hold (strictly) for key 1")):
+            self.set_live(live)
+            out = self.refused("LiveUnreadable", new)
+            self.assertIn("the live file is not one this check reads (", out)
+            self.assertIn(why, out)
+            self.assertIn("with --live", out)
         # an epoch-2 policy whose declaration a root key signed that the key file does not pin
         self.set_live(envelope(part(2, P21), root_part(103, D2)))
-        self.refused("LiveUnreadable", HISTORY["e2-s2"])
+        out = self.refused("LiveUnreadable", HISTORY["e2-s2"])
+        self.assertIn("the key file does not verify the live file (it pins no root key 103", out)
         # a key file of the next build that pins key 2 and 3 only reads key 2's live files
         keys = self.file("next-keys.env", key_file(signing=(2, 3)))
         self.set_live(HISTORY["e1-s2"])
-        self.refused("LiveUnreadable", HISTORY["e1-s3"], keys=keys)
+        self.assertIn("it pins no key 1, which signed the policy",
+                      self.refused("LiveUnreadable", HISTORY["e1-s3"], keys=keys))
         self.set_live(HISTORY["e1-s3"])
         self.passes(envelope(part(2, policy(1, 4, day(6), E22))), keys=keys)
+
+    def test_a_stolen_signing_key(self):
+        # runbook 8-5 (라): after the user's e1-s3, a policy signed with the stolen key 1 went live
+        # (min 99.0.0 everywhere). The user's recovery is the declaration of epoch 2 that revokes
+        # key 1, made from the archive's last own file (e2-s1: its base is e1-s3's requirements)
+        self.set_live(HISTORY["forged-minimum"])
+        out = self.refused("LiveRelaxes", HISTORY["e2-s1"])
+        self.assertIn("relaxes {windows,android,android_play,ios}; --relaxes names {}", out)
+        self.assertIn("a signing key may be stolen (runbook 8-5)", out)
+        # and the user's own file is what a device that holds the thief's refuses
+        self.assertIn("a signing key may be stolen", self.refused("Rollback", HISTORY["e1-s3"]))
+        # step 2: the user's last own file is checked on its own, against itself, then put back
+        own = self.file("own.json", HISTORY["e1-s3"])
+        status, out, err = run_script("--keys", self.keys, "--live", own, "--server", SERVER, "--now",
+                                      "2026-10-09T12:00:00Z", "--packages", self.pkg, own)
+        self.assertEqual(status, 0, out + err)
+        self.assertIn("a fresh install of the newest build (floor 1:0) takes it", out)
+        self.assertTrue(out.rstrip().endswith("OK, nothing to install: it is the live file"), out)
+        self.assertTrue(os.path.exists(own))
+        # what is not a file of the apps does not pass that way either
+        broken = self.file("broken.json", envelope(dict(part(2, P13), p=P13.replace("1.6.1", "1.6.2", 1))))
+        status, out, _ = run_script("--keys", self.keys, "--live", broken, "--server", SERVER, "--now",
+                                    "2026-10-09T12:00:00Z", "--packages", self.pkg, broken)
+        self.assertEqual(status, 1, out)
+        self.assertIn("REFUSED BadSignature", out)
+        self.assertTrue(os.path.exists(broken))
+        # step 3: the declaration against the file now live, with no --relaxes
+        self.set_live(HISTORY["e1-s3"])
+        self.assertIn("relaxes {} against the live policy", self.passes(HISTORY["e2-s1"]))
 
     def test_what_a_device_that_holds_the_live_file_refuses(self):
         self.set_live(HISTORY["e1-s2"])
@@ -1005,6 +1102,47 @@ class Command(unittest.TestCase):
         out = self.passes(envelope(part(3, policy(3, 1, day(8), E22)), root_part(101, declaration(
             3, [1, 2], day(8), requirements(E22)))), keys=self.file("k.env", key_file(signing=(2, 3))))
         self.assertIn("relaxes {}", out)
+        # issued before the live policy (e2-s2, 7 October): every device takes it, its basis reset
+        # by the declaration, so only this item sees it
+        early = declaration(3, [1], day(6, 4), requirements(E22))
+        out = self.refused("LiveIssued", envelope(part(2, policy(3, 1, day(6, 4), E22)), root_part(101, early)))
+        self.assertIn("the new policy is issued 2026-10-06T04:00:00Z, before the live one (2026-10-07T03:00:00Z)", out)
+        # --relaxes names exactly what the declaration relaxes, no more
+        same = envelope(part(2, policy(3, 1, day(8), E22)), root_part(101, declaration(3, [1], day(8), requirements(E22))))
+        self.assertIn("relaxes {}; --relaxes names {ios}", self.refused("LiveRelaxes", same, relaxes="ios"))
+        self.passes(same)
+        lower = dict(E22, windows=entry("1.5.0", "1.6.1", source="client-1.6.1", package=WIN161))
+        windows = envelope(part(2, policy(3, 1, day(8), lower)), root_part(101, declaration(
+            3, [1], day(8), requirements(lower))))
+        self.assertIn("relaxes {windows}; --relaxes names {windows,ios}",
+                      self.refused("LiveRelaxes", windows, relaxes="windows,ios"))
+        self.refused("LiveRelaxes", windows)
+        self.assertIn("relaxes {windows} against the live policy", self.passes(windows, relaxes="windows"))
+
+    def test_what_hjv_api_reads_as_no_policy(self):
+        def first(**change):
+            ents = dict(E11)
+            for name, members in change.items():
+                ents[name] = dict(E11[name], **members)
+            return envelope(part(1, policy(1, 1, day(1), ents)))
+
+        out = self.refused("HjvApi", first(windows={"source": "c" * 65}))
+        self.assertIn("the windows entry's source is not a tag name of at most 64", out)
+        self.assertIn("door 1, door 2 and the short links would answer 404", out)
+        self.assertIn("hjv-api reads its windows and android entries", self.passes(first(windows={"source": "c" * 64})))
+        for name in ("HJViewer-1.6.0-windows-x86_64.apk", "HJViewer..1.6.0.exe", ".HJViewer-1.6.0-windows-x86_64.exe",
+                     ".exe"):
+            out = self.refused("HjvApi", first(windows={"package": dict(WIN16, file=name)}))
+            self.assertIn("the windows entry's package file %s" % json.dumps(name), out)
+        out = self.refused("HjvApi", first(android={"package": dict(APK16, file="HJViewer-1.6.0-android-arm64.exe")}))
+        self.assertIn("the android entry's package file", out)
+        # hjv-api reads no other entry; the package directory hands out no name with a leading dot
+        out = self.refused("Package", first(ios={"package": dict(WIN16, file=".HJViewer-1.6.0-ios.ipa")}))
+        self.assertIn("a package name that starts with a dot", out)
+        # hjv-api compares the extension in lower case
+        upper = dict(WIN16, file="HJViewer-1.6.0-windows-x86_64.EXE")
+        self.file(os.path.join("srv-pkg", upper["file"]), PACKAGE_BYTES[WIN16["file"]])
+        self.passes(first(windows={"package": upper}))
 
     def test_the_packages(self):
         self.set_live(HISTORY["e1-s2"])
@@ -1050,6 +1188,19 @@ class Command(unittest.TestCase):
                                     "2026-10-09T12:00:00Z", "--packages", self.pkg, self.live)
         self.assertEqual(status, 0, out)
         self.assertTrue(os.path.exists(self.live))
+        # a refused file elsewhere stays: in incoming/, or beside the live one while --live names
+        # another file (runbook 8-5 (바) removes that .new by hand)
+        elsewhere = self.file("elsewhere.json", HISTORY["e1-s1"])
+        last = self.file("last-installed.json", HISTORY["e1-s2"])
+        with open(beside, "wb") as f:
+            f.write(HISTORY["e1-s1"])
+        for live, new in ((self.live, elsewhere), (last, beside)):
+            status, out, _ = run_script("--keys", self.keys, "--live", live, "--server", SERVER, "--now",
+                                        "2026-10-09T12:00:00Z", "--packages", self.pkg, new)
+            self.assertEqual(status, 1, out)
+            self.assertIn("REFUSED Rollback", out)
+            self.assertNotIn("removed", out)
+            self.assertTrue(os.path.exists(new), new)
 
     def test_what_stops_the_check_itself(self):
         for name, text in (("no keys", "HJV_UPDATE_PUBKEY=\nHJV_UPDATE_ROOT_PUBKEY=\nHJV_POLICY_FLOOR=1:0\n"),

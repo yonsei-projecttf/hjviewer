@@ -438,7 +438,10 @@ sudo stat -c '%a %U %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519
      sudo systemctl daemon-reload
      sudo systemctl restart hjviewer-hbbs hjviewer-hbbr
      ```
-  3. 재시작하면 PC는 몇 초 안에 다시 등록되지만, 진행 중인 원격 세션은 끊깁니다.
+  3. 재시작하면 PC는 몇 초 안에 다시 등록되지만, 진행 중인 원격 세션은 끊깁니다. `/etc/hjviewer/min-controller.conf`가 있는 서버(8-3)에서는 12초 뒤 hbbs의 `min-controller` 줄을 봅니다. `min-controller <MIN> from …`(또는 `min-controller off: …`)여야 하고, ERROR(`… no minimum is in force`)면 멈추고 보고합니다.
+     ```bash
+     if sudo test -e /etc/hjviewer/min-controller.conf; then sleep 12; sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep min-controller | tail -2; fi
+     ```
   4. 1.6.0부터 묶음에는 hjv-api도 들어 있습니다. hjv-api가 설치된 서버에서는 위 명령에 더해, 7-14의 "업그레이드"대로 스냅숏, 설정 파일, 옛 실행 파일을 남긴 뒤 같은 디렉터리에서 다음을 실행합니다. 유닛 파일을 바꾼 뒤 `daemon-reload`를 하지 않으면 systemd는 옛 유닛으로 다시 시작합니다.
      ```bash
      [ -x bin/hjv-api ] || { echo 'STOP: 묶음에 hjv-api가 없음'; exit 1; }
@@ -823,6 +826,7 @@ cd / && rm -rf "$T"
 - 지금 운영 중인 서버의 유닛은 `server-2026.10.10` 묶음의 것이고, 1.6.0 묶음의 유닛과는 `Documentation=` 줄(저장소를 옮기기 전의 주소라 지금은 404)만 다릅니다. 그래서 비교에서 그 줄을 빼고, 같으면 두 유닛을 새것으로 바꿔 링크도 고칩니다. hbbr은 다시 시작하지 않습니다. 바뀐 것이 설명 줄뿐이라 `daemon-reload`로 충분합니다.
 - `STOP: hbbs 유닛도 바뀜`(또는 `hbbr`)이면 아무것도 바꾸지 않은 채 멈추고, `diff`가 보인 차이를 보고합니다. 그 차이는 "B 경로 업데이트"처럼 사용자 승인을 받아 따로 반영합니다.
 - `hbbs console: answers hjv-pk (patch 0004)`가 나와야 합니다. 5절의 첫 블록을 다시 실행해 `/ws/id`, `/ws/relay`가 101인지도 봅니다. 사용자는 바깥에서 `hjv-probe`로 확인합니다.
+- `/etc/hjviewer/min-controller.conf`가 이미 있는 서버(8-3, M7 뒤)에서는 hbbs의 `min-controller` 줄도 봅니다(8-3의 "hbbs를 다시 시작한 뒤" 블록). `min-controller <MIN> from …`(또는 `min-controller off: …`)여야 하고, ERROR(`… no minimum is in force`)면 hbbs가 최소 버전 없이 도는 것이니 멈추고 보고합니다.
 - 되돌리기: 보관한 `/root/hjv-backup/hbbs-before-<VERSION>`을 같은 방법으로 넣고 hbbs만 다시 시작합니다(7-12).
 
 ### 7-7. 앱과 중계기 빌드, 지문 대조 (8단계, 개발 PC)
@@ -930,12 +934,27 @@ nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone
 ### 7-12. 되돌리기
 
 1. **비밀번호 없는 연결만 멈출 때**: `sudo /opt/hjviewer/bin/hjv-api admin passwordless off`. 그 뒤 **hjv-api를 24시간 동안, 또는 `report`의 `PCs holding their binding that have not synced since the last switch change`가 0이 될 때까지** 켜 둡니다. 그러면 모든 PC가 PC 비밀번호로만 연결을 받습니다. 그 전에 hjv-api를 멈추거나 nginx를 되돌리면, 그동안 잠들어 있던 PC는 꺼짐을 받지 못하고 받아 둔 목록을 받은 때부터 24시간까지 씁니다.
-2. **계정 기능 전체**: 먼저 1번을 하고 그 조건까지 기다립니다. 그다음 7-8의 백업(`/root/hjv-backup/hjviewer-locations.conf.before-api`)으로 옛 `location ^~ /api/` 블록을 되돌리고 `sudo nginx -t && sudo systemctl reload nginx`. zones 파일과 `snippets/hjviewer-api.conf`는 남겨도 해가 없습니다. 로그인한 앱은 회수할 수 없으므로 로그인 창과 "액세스 가능한 장치" 탭에 오류가 남습니다. hjv-api를 멈추면 PC들의 목록은 24시간 안에 만료되어 저절로 비밀번호로 돌아갑니다. hjv-api를 일부러 멈춰 둘 때는 점검 타이머와 백업 타이머를 먼저 멈춥니다(`sudo systemctl disable --now hjviewer-api-check.timer hjviewer-api-backup.timer`). 그대로 두면 점검과 백업이 실패할 때마다 경보가 납니다. 다시 켤 때 타이머도 켭니다(7-5의 마지막 블록).
+2. **계정 기능 전체**: 먼저 1번을 하고 그 조건까지 기다립니다. 그다음 경로 파일을 묶음의 `nginx-hjviewer-locations.conf` 그대로로 바꿉니다. 그 파일에는 1.5.1처럼 404를 주는 `location ^~ /api/` 블록과 버전 정책 위치(`/api/hjv/version`)가 함께 있습니다. 7-8의 백업(`…before-api`)은 쓰지 않습니다. 1.6.0 전의 파일이라 버전 정책 위치가 없어, 앱의 정책 확인이 `/api/` 블록의 404가 되고 새 정책(키 도난 뒤의 선언까지)이 기기에 닿지 않습니다(8-6). zones 파일과 `snippets/hjviewer-api.conf`는 남겨도 해가 없습니다.
+   ```bash
+   L=/etc/nginx/snippets/hjviewer-locations.conf W=/opt/hjviewer/share/web
+   grep -q '^location = /api/hjv/version {' "$W/nginx-hjviewer-locations.conf" || { echo 'STOP: 묶음의 경로 파일에 버전 정책 위치가 없음'; exit 1; }
+   sudo install -d -m 700 /root/hjv-backup && sudo cp -p "$L" /root/hjv-backup/hjviewer-locations.conf.before-rollback
+   sudo install -m 644 "$W/nginx-hjviewer-locations.conf" "$L"
+   out=$(sudo nginx -t 2>&1); echo "$out"
+   if echo "$out" | grep -qE 'emerg|test failed'; then
+     sudo cp -p /root/hjv-backup/hjviewer-locations.conf.before-rollback "$L"; echo 'STOP: 설정 오류, 되돌림'; exit 1
+   fi
+   sudo systemctl reload nginx
+   DOMAIN=$(sed -n 's/^HJV_DOMAIN=//p' /etc/hjviewer/hjviewer.env); [ -n "$DOMAIN" ] || exit 1
+   c() { curl -s --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" -o /tmp/hjv-body -w '%{http_code}' "https://$DOMAIN$1"; echo " $(head -c 60 /tmp/hjv-body)"; }
+   echo "version  $(c /api/hjv/version)"     # 정책 파일이 있으면 200과 그 파일, 없으면 404 {"error":"no version policy"}
+   echo "peers    $(c /api/peers)"           # 404(본문 없음): 계정 API가 꺼짐
+   ``` 로그인한 앱은 회수할 수 없으므로 로그인 창과 "액세스 가능한 장치" 탭에 오류가 남습니다. hjv-api를 멈추면 PC들의 목록은 24시간 안에 만료되어 저절로 비밀번호로 돌아갑니다. hjv-api를 일부러 멈춰 둘 때는 점검 타이머와 백업 타이머를 먼저 멈춥니다(`sudo systemctl disable --now hjviewer-api-check.timer hjviewer-api-backup.timer`). 그대로 두면 점검과 백업이 실패할 때마다 경보가 납니다. 다시 켤 때 타이머도 켭니다(7-5의 마지막 블록).
 3. **hbbs**: 보관한 옛 실행 파일(`/root/hjv-backup/hbbs-before-<VERSION>`)을 넣고 조용한 시간에 hbbs만 다시 시작합니다. 로그인은 되지만 새 PC 묶기와 켜짐 확인은 안 되고, 0005가 있었다면 최소 버전 거절도 멈춥니다.
 4. **중계기**: `hjv-api admin relay revoke <중계기 ID>`. NAS에서는 사용자가 공유 폴더에 `hjv-relay.stop`을 두고 작업을 끕니다(재부팅 없이, [relay-dsm.md](relay-dsm.md) 10장). 폐기한 중계기의 키는 다시 승인되지 않습니다(`relay approve`가 거절). 잘못 폐기했으면 사용자가 NAS에서 중계기의 상태 폴더를 지워(같은 장의 "제거") 새 키와 새 등록 코드를 만든 뒤 7-11처럼 다시 승인받습니다.
 5. **hjv-api 새 판**: 설치 전에 남긴 스냅숏과 설정 파일을 옛 실행 파일과 함께 되돌립니다(7-14의 업그레이드).
 6. **앱을 1.5.1로**: 사용자에게 먼저 그 기기에서 로그아웃하라고 안내합니다. 로그인한 채로 1.5.1을 설치하면 설정이 남고, 1.5.1은 저장된 성명(또는 포탈 ID)을 연결하는 PC마다 보냅니다. 최소 버전 강제(7-10)가 켜진 뒤에는 이 길이 닫힙니다.
-7. **최소 버전**: 정책, hbbs 파일, 문 2는 8-6에 있습니다. hbbs의 거절은 `MIN=`으로 10초 안에 멈출 수 있습니다. 정책은 옛 파일로 되돌리거나 지우지 않고, `seq`가 더 높은 새 정책으로만 되돌립니다(앱이 이미 받은 정책은 옛 파일로 풀리지 않음).
+7. **최소 버전**: 정책, hbbs 파일, 문 2는 8-6에 있습니다. hbbs의 거절은 `MIN=`으로 10초 안에 멈출 수 있습니다. 정책은 옛 파일로 되돌리거나 지우지 않고, `seq`가 더 높은 새 정책으로만 되돌립니다(앱이 이미 받은 정책은 옛 파일로 풀리지 않음. 예외는 키 도난 때의 8-5 (라) 2번뿐).
 
 ### 7-13. 사고 대응
 
@@ -1071,14 +1090,15 @@ report: 계정 <n>, 활성 키 <n>, 묶음을 가진 PC <n>, 그중 10분 안에
 | `/etc/hjviewer/door2.conf` | root:hjviewer-api 0640 | 문 2의 코드와 닫는 시각 | hjv-api |
 | `/srv/hjviewer-updates/` | root:hjviewer-api 0750 | 업데이트 구역. WordPress 문서 루트와 `/var/lib/hjviewer` 밖 | — |
 | `/srv/hjviewer-updates/pkg/` | root:hjviewer-api 0750, 파일 0640 | 패키지(`HJViewer-<v>-windows-x86_64.exe`, `HJViewer-<v>-android-arm64.apk`)와 `notices-<v>/`(0750) | hjv-api |
-| `/srv/hjviewer-updates/incoming/` | root:root 0700 | 사용자가 보낸 묶음을 확인하는 곳 | 운영 에이전트 |
+| `/srv/hjviewer-updates/incoming/` | root:root 0700 | 사용자가 보낸 것을 확인하고 남기는 곳: 정책 묶음은 `<버전>-<위치>/`(8-2), hbbs·문 2 파일은 `conf-<UTC 시각>/`(8-3) | 운영 에이전트 |
 | `/opt/hjviewer/bin/hjv-update-verify.sh` | root 0755 | 서버 확인 스크립트(서버 묶음의 `bin/`, python3와 openssl만 씀) | 운영 에이전트 |
 
 ### 8-0. 이 절의 규칙
 
 - **서명과 키는 사용자만** 다룹니다. 운영 에이전트는 `hjv-release sign`, 키 만들기, 키 파일 열기를 하지 않습니다. 루트 키는 사용자가 깨끗한 컴퓨터에서만 엽니다(도구 README 3장의 5-0).
-- 정책 파일은 **서버 확인(`hjv-update-verify.sh`)을 통과한 것만** 넣습니다. 손으로 고치지 않습니다(서명이 깨져 앱이 거부합니다). 서버 확인이 거부한 파일은 어떤 이유로도 넣지 않습니다. 예외는 없습니다.
+- 정책 파일은 **서버 확인(`hjv-update-verify.sh`)을 통과한 것만** 넣습니다. 손으로 고치지 않습니다(서명이 깨져 앱이 거부합니다). 서버 확인이 거부한 파일은 어떤 이유로도 넣지 않습니다.
 - **정책은 앞으로만 바꿉니다.** 옛 정책 파일로 되돌리거나 정책 파일을 지우지 않습니다. 되돌리기는 언제나 사용자가 서명한, `seq`가(또는 세대가) 더 높은 새 정책을 8-2로 넣는 것입니다(8-6). 앱은 이미 받은 것보다 오래된 정책을 받지 않고, hjv-api는 오래된 파일을 읽으면 저널에 ERROR(`… went back to epoch …`)를 남기면서 그 파일의 설치 파일을 내주어 앱이 찾는 버전과 어긋납니다. 파일이 없으면 앱의 확인은 404이고 hjv-api는 설치 파일을 내주지 않습니다.
+- **위 둘의 예외는 하나입니다(8-5의 (라) 2번): 사용자가 서명한 적 없는 파일이 걸려 있을 때**(서명 키 도난). 그때만 사용자 승인을 받아 보관소의 마지막 내 파일로 되돌립니다. 그 파일은 걸린 도둑 파일과 비교하지 않고(비교하면 `Rollback` 등으로 거부됨) 그 파일 자체만 서버 확인으로 봅니다. 이때 hjv-api의 `went back` ERROR는 예상된 것입니다. 사용자가 서명한 정책을 고치는 일에는 이 예외를 쓰지 않습니다.
 - `--relaxes`는 사용자가 `sign`의 출력으로 알려 준 항목만 줍니다. 알려 주지 않았으면 주지 않습니다.
 - 순서는 **패키지 먼저, 정책 나중**입니다. 정책, hbbs 파일, 문 2 파일은 바꿔도 nginx reload나 서비스 재시작이 필요 없습니다(hbbs는 10초마다, hjv-api는 바뀔 때마다 다시 읽음). 그래도 운영 서버 변경이므로 사용자 승인을 받고 합니다.
 - **문 2의 코드는 반쯤 비밀입니다.** 코드는 `door2.conf`와 `min-controller.conf`(TEXT의 링크) 두 파일에만 있습니다. 이 두 파일을 `cat`·`less`로 열거나 내용을 보고와 대화에 옮기지 않습니다. 확인은 아래 블록의 `grep`과 저널 줄(코드의 해시 앞 8자)로만 합니다.
@@ -1141,57 +1161,63 @@ report: 계정 <n>, 활성 키 <n>, 묶음을 가진 PC <n>, 그중 10분 안에
 
 ### 8-2. 릴리스마다: 서버 확인, 패키지 먼저, 정책 나중
 
-사용자가 개발 PC에서 `hjv-release publish-dir`로 만든 디렉터리(아래 모양)를 서버의 자기 홈으로 보내고, 세 가지를 알려 줍니다: 버전, `sign`이 출력한 정책 파일의 SHA-256, 완화하는 항목(`--relaxes`, 보통 없음).
+사용자가 개발 PC에서 `hjv-release publish-dir`로 만든 디렉터리(아래 모양)를 서버의 자기 홈으로 보내고, 네 가지를 알려 줍니다: 버전, 정책의 위치(`sign`이 보관소에 쓴 파일 이름 `policy-e<세대>-s<seq>.json`의 `e<세대>-s<seq>`, 예: `e1-s3`), `sign`이 출력한 정책 파일의 SHA-256, 완화하는 항목(`--relaxes`, 보통 없음).
+
+**정책만 바뀌는 경우**(M7의 `seq` 2, 8-5의 비상 정책, 8-6의 되돌리기)도 이 절차 그대로입니다. 버전은 그대로여도 위치가 다르므로, 서버의 디렉터리 `incoming/<버전>-<위치>`는 겹치지 않습니다. 그런 디렉터리에는 패키지가 없거나 이미 설치한 것과 같은 패키지만 있습니다(서버 확인은 없는 패키지를 `/srv/hjviewer-updates/pkg`에서 찾음).
 
 ```text
 publish-<v>/version-policy.json        서명된 정책
-publish-<v>/pkg/HJViewer-<v>-windows-x86_64.exe, HJViewer-<v>-android-arm64.apk
+publish-<v>/pkg/HJViewer-<v>-windows-x86_64.exe, HJViewer-<v>-android-arm64.apk   (정책만 바뀌면 없을 수 있음)
 publish-<v>/pkg/notices-<v>/LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt
 publish-<v>/SHA256SUMS                 위 파일 모두
 ```
 
-1. `incoming/`으로 옮기고 묶음의 체크섬을 봅니다.
+1. `incoming/<버전>-<위치>`로 옮기고 묶음의 체크섬을 봅니다. 맞으면 홈의 전송 사본은 지웁니다(다음에 같은 이름으로 보내도 섞이지 않게).
    ```bash
-   V=1.6.1                           # ← 이 릴리스의 버전
+   V=1.6.1                           # ← 사용자가 알려 준 버전
+   P=e1-s3                           # ← 사용자가 알려 준 위치(policy-e1-s3.json이면 e1-s3)
    SRC="/home/<사용자>/publish-$V"    # ← 사용자가 보낸 디렉터리
-   D=/srv/hjviewer-updates/incoming/$V
+   [[ $V =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,2}$ && $P =~ ^e[1-9][0-9]*-s[1-9][0-9]*$ && $SRC == /home/*/publish-* ]] || { echo 'STOP: 버전, 위치, 디렉터리의 꼴이 다름'; exit 1; }
+   D=/srv/hjviewer-updates/incoming/$V-$P
    sudo test -e "$D" && { echo "STOP: $D 이(가) 이미 있음"; exit 1; }
    sudo test -f "$SRC/version-policy.json" && sudo test -f "$SRC/SHA256SUMS" || { echo 'STOP: version-policy.json이나 SHA256SUMS가 없음'; exit 1; }
    if sudo find "$SRC" ! -type f ! -type d | grep -q .; then echo 'STOP: 보통 파일과 디렉터리가 아닌 것이 있음'; exit 1; fi
    sudo cp -r "$SRC" "$D" && sudo chown -R root:root "$D" && sudo chmod -R go-rwx "$D"
-   sudo sh -c 'cd "$1" && sha256sum -c --quiet SHA256SUMS' _ "$D" && echo SUMS_OK
+   sudo sh -c 'cd "$1" && sha256sum -c --quiet SHA256SUMS' _ "$D" && echo SUMS_OK && sudo rm -r "$SRC"
    sudo sha256sum "$D/version-policy.json"
    ```
    `SUMS_OK`가 아니거나 마지막 줄의 SHA-256이 사용자가 알려 준 값과 다르면 멈춥니다.
 2. 서버 확인을 돌립니다. 패키지는 `$D/pkg`에서 찾고, 없으면 `/srv/hjviewer-updates/pkg`(이미 설치한 것)에서 찾습니다.
    ```bash
-   V=1.6.1; D=/srv/hjviewer-updates/incoming/$V
+   V=1.6.1; P=e1-s3; D=/srv/hjviewer-updates/incoming/$V-$P   # ← 1번과 같게
    RELAXES=                          # ← 사용자가 알려 준 항목(예: windows,android). 없으면 빈 채로
    sudo /opt/hjviewer/bin/hjv-update-verify.sh ${RELAXES:+--relaxes "$RELAXES"} "$D/version-policy.json"
    ```
-   마지막 줄이 `OK: install it, ...`이면 3번으로 갑니다. `OK, nothing to install: it is the live file`이면 이미 걸린 파일이니 아무것도 하지 않습니다. `REFUSED <이유>`이면 멈추고 그 줄을 사용자에게 보고합니다. 이유와 할 일은 이 소절 끝의 표에 있습니다.
-3. 패키지를 넣습니다. 같은 이름의 파일은 임시 이름으로 넣은 뒤 `mv`로 바꿉니다.
+   마지막 줄이 `OK: install it, ...`이면 3번으로 갑니다. `OK, nothing to install: it is the live file`이면 이미 걸린 파일이니 아무것도 하지 않습니다. `REFUSED <이유>`이면 멈추고 그 줄을 사용자에게 보고합니다. 이유와 할 일은 이 소절 끝의 표에 있습니다. `new:` 줄의 `epoch`와 `seq`가 위치와 다르면(`e1-s3`이면 `epoch 1, seq 3`) 그것도 멈추고 보고합니다.
+3. 패키지를 넣습니다. 같은 이름의 파일은 임시 이름으로 넣은 뒤 `mv`로 바꿉니다. 패키지가 없는 디렉터리(정책만 바뀜)에서는 목록만 보입니다.
    ```bash
-   V=1.6.1                           # ← 이 릴리스의 버전
-   sudo bash -s -- "$V" << 'EOF'
+   V=1.6.1; P=e1-s3                  # ← 1번과 같게
+   sudo bash -s -- "/srv/hjviewer-updates/incoming/$V-$P" << 'EOF'
    set -eu
-   V=$1 D=/srv/hjviewer-updates/incoming/$1 P=/srv/hjviewer-updates/pkg
+   D=$1 PKG=/srv/hjviewer-updates/pkg
    for f in "$D"/pkg/*; do
      [ -f "$f" ] || continue
      n=$(basename "$f")
-     install -o root -g hjviewer-api -m 0640 "$f" "$P/.$n.new"
-     mv -f "$P/.$n.new" "$P/$n"
+     install -o root -g hjviewer-api -m 0640 "$f" "$PKG/.$n.new"
+     mv -f "$PKG/.$n.new" "$PKG/$n"
    done
-   if [ -d "$D/pkg/notices-$V" ]; then
-     install -d -o root -g hjviewer-api -m 0750 "$P/notices-$V"
-     for f in "$D/pkg/notices-$V"/*; do install -o root -g hjviewer-api -m 0640 "$f" "$P/notices-$V/"; done
-   fi
-   find "$P" -maxdepth 2 -printf '%m %u:%g %s %p\n' | sort -k4
+   for d in "$D"/pkg/notices-*; do
+     [ -d "$d" ] || continue
+     n=$(basename "$d")
+     install -d -o root -g hjviewer-api -m 0750 "$PKG/$n"
+     for f in "$d"/*; do install -o root -g hjviewer-api -m 0640 "$f" "$PKG/$n/"; done
+   done
+   find "$PKG" -maxdepth 2 -printf '%m %u:%g %s %p\n' | sort -k4
    EOF
    ```
 4. 정책을 넣습니다. 옮길 바로 그 파일(`.new`)을 설치한 패키지로 한 번 더 확인하고, 통과할 때만 `mv`합니다. 거부되면 스크립트가 `.new`를 지웁니다.
    ```bash
-   V=1.6.1; D=/srv/hjviewer-updates/incoming/$V
+   V=1.6.1; P=e1-s3; D=/srv/hjviewer-updates/incoming/$V-$P   # ← 1번과 같게
    RELAXES=                          # ← 2번과 같게
    N=/etc/hjviewer/version-policy.json.new
    sudo install -o root -g root -m 0644 "$D/version-policy.json" "$N"
@@ -1207,9 +1233,9 @@ publish-<v>/SHA256SUMS                 위 파일 모두
    ```
    - SHA-256이 사용자가 알려 준 값과 같아야 합니다(`200`, `application/json; charset=utf-8`, `no-cache`).
    - hjv-api 저널의 `update: the version policy (HJV_API_VERSION_POLICY) read: epoch E, seq S; packages: windows V, android V`가 새 세대·`seq`·버전이어야 합니다. 이 줄은 hjv-api가 정책을 처음 쓸 때(내려받기 요청이 올 때) 나오므로, 아직 없으면 사용자가 운영자 PC의 [지금 업데이트]로 확인합니다.
-   - 그 저널에 `went back to epoch …`(ERROR)가 있으면 걸린 파일이 hjv-api가 전에 읽은 것보다 오래된 것입니다. 멈추고 보고합니다(8-0).
+   - 그 저널에 `went back to epoch …`(ERROR)가 있으면 걸린 파일이 hjv-api가 전에 읽은 것보다 오래된 것입니다. 멈추고 보고합니다(8-0). 8-5의 (라) 2번으로 되돌린 뒤의 그 줄은 예상된 것입니다.
    - 문 2가 열려 있으면 닫는 시각만 봅니다: `sudo sed -n 's/^UNTIL=//p' /etc/hjviewer/door2.conf`.
-6. 정리: `incoming/<v>`는 다음 릴리스까지 둡니다. `pkg/`의 옛 패키지는 정책이 더 이상 가리키지 않으면 지우되, 직전 버전 하나는 남깁니다(문제가 생겼을 때 손으로 다시 설치하기 위해). hbbs 파일은 사용자가 새 파일을 보낼 때만 바꿉니다(8-3).
+6. 정리: `incoming/<버전>-<위치>`의 `version-policy.json`은 지우지 않습니다. 서버 확인을 거쳐 넣은 정책의 사본이고, 8-5의 (라)·(바)에서 SHA-256으로 찾아 씁니다. 공간이 모자라면 지금 걸린 정책과 그 직전 것의 디렉터리 말고는 `pkg/`만 지웁니다(`sudo rm -r <디렉터리>/pkg`). `/srv/hjviewer-updates/pkg/`의 옛 패키지는 정책이 더 이상 가리키지 않으면 지우되, 직전 버전 하나는 남깁니다(문제가 생겼을 때 손으로 다시 설치하기 위해). hbbs 파일은 사용자가 새 파일을 보낼 때만 바꿉니다(8-3).
 
 서버 확인이 보는 것과 거부 이유입니다. 스크립트는 앱(libsodium, 클라이언트 코어)과 같은 규칙으로 판단하고, 도구(`hjv-release`)가 쓴 꼴의 파일만 읽습니다.
 
@@ -1217,12 +1243,12 @@ publish-<v>/SHA256SUMS                 위 파일 모두
 |---|---|---|---|
 | 1 | 파일이 도구가 쓴 꼴 그대로(한 줄과 줄바꿈, 필드 순서, 이스케이프, base64) | `Canonical` | 사용자에게 보고. 서버에서 고치지 않음 |
 | 2 | 서명이 엄격한지: R이 작은 차수인 서명(OpenSSL만으로는 받음)과 S가 군의 차수 이상인 서명을 거부 | `WeakSignature` | 사용자에게 보고 |
-| 3 | 최신 빌드를 새로 설치한 앱(키 파일의 하한)이 받는지 | 앱의 이유(`BadSignature`, `UnknownKey`, `Epoch`, `Field:…` 등) | 사용자에게 보고. 키 파일이 오래되었을 수도 있음(8-5의 (마)) |
-| 4 | 지금 걸린 파일을 가진 앱이 받는지 | 앱의 이유. 걸린 파일을 읽지 못하면 `LiveUnreadable` | `Rollback`, `Fork`, `Relaxation`인데 걸린 파일이 사용자가 서명한 것이 아니면 서명 키 도난일 수 있음: 8-5의 (라). `LiveUnreadable`은 키 파일이 걸린 파일을 확인하지 못하면 8-5의 (마), 걸린 파일을 읽지 못하면 (바) |
-| 5 | 새 루트 선언이면: 걸린 정책보다 발행이 늦고, 걸린 정책보다 완화하는 항목이 `--relaxes`와 같음 | `LiveIssued`, `LiveRelaxes` | 입력 오류(`--relaxes`가 빠지거나 틀림)면 고쳐서 **같은 파일로** 다시 확인. 오래된 파일로 만든 선언이면 사용자가 새로 만듦 |
+| 3 | 최신 빌드를 새로 설치한 앱(키 파일의 하한)이 받는지. hjv-api가 Windows·Android 항목을 읽는지(`source`는 64자 이하, 패키지 이름은 그 항목의 확장자 `.exe`·`.apk`이고 `.`으로 시작하지 않으며 `..`가 없음) | 앱의 이유(`BadSignature`, `UnknownKey`, `Epoch`, `Field:…` 등), `HjvApi` | 사용자에게 보고. 키 파일이 오래되었을 수도 있음(8-5의 (마)). `HjvApi`는 hjv-api가 파일 전체를 "정책 없음"으로 읽어 문 1·짧은 링크·문 2가 모두 404가 되는 파일(도구는 쓰지 않음) |
+| 4 | 지금 걸린 파일을 가진 앱이 받는지 | 앱의 이유. 걸린 파일을 읽지 못하면 `LiveUnreadable` | `Rollback`, `Fork`, `Relaxation`인데 걸린 파일이 사용자가 서명한 것이 아니면 서명 키 도난일 수 있음: 8-5의 (라). `LiveUnreadable`은 `the key file does not verify the live file`이면 8-5의 (마), `the live file is not one this check reads`이면 (바) |
+| 5 | 새 루트 선언이면: 걸린 정책보다 발행이 늦고, 걸린 정책보다 완화하는 항목이 `--relaxes`와 같음 | `LiveIssued`, `LiveRelaxes` | 입력 오류(`--relaxes`가 빠지거나 틀림)면 고쳐서 **같은 파일로** 다시 확인. 오래된 파일로 만든 선언이면 사용자가 새로 만듦. 걸린 파일이 사용자가 서명한 것이 아니면 8-5의 (라) |
 | 6 | 정책(과 새 선언)의 발행 시각이 이 서버 시계보다 300초 넘게 늦지 않음 | `Clock` | 서버 시계(`timedatectl`)를 보고 사용자에게 보고 |
 | 7 | 새 선언이면: 세대가 걸린 정책보다 높고, 걸린 선언의 폐기를 모두 담고, 101–199(루트 키 번호)를 폐기하지 않음 | `DeclarationEpoch`, `DeclarationRevoked` | 사용자에게 보고 |
-| 8 | 정책이 가리키는 패키지가 그 크기와 SHA-256으로 있음(보통 파일만) | `Package` | 패키지가 아직 없으면 사용자가 보낸 뒤 **같은 파일로** 다시 확인 |
+| 8 | 정책이 가리키는 패키지가 그 크기와 SHA-256으로 있음(보통 파일만) | `Package` | 패키지가 아직 없으면 사용자가 그 파일을 보낸 뒤 `sudo install -D -o root -g root -m 0600 <보낸 파일> "$D/pkg/<그 이름>"`으로 넣고 홈의 사본을 지운 다음, 2번부터 **같은 파일로** 다시 확인(크기와 SHA-256은 정책과 대조됨) |
 
 - `--relaxes`를 줬는데 새 선언이 없거나 걸린 정책이 없으면 `LiveRelaxes`로 거부합니다(엉뚱한 파일일 수 있음).
 - 종료 코드 2(`cannot check: …`)는 확인 자체를 못 한 것입니다(키 파일 없음·잘못됨, 서버 이름 없음, openssl 이상). 사용자에게 보고합니다.
@@ -1235,13 +1261,28 @@ hbbs는 이 파일을 10초마다 다시 읽고, `MIN`보다 낮은 버전의 �
 - **기준은 하나입니다.** hbbs는 `FROM`부터 `MIN` 미만을 거절하고, 그 전에는 아무도 거절하지 않습니다. 그래서 `MIN`을 올리면서 `FROM`이 미래인 파일로 바꾸면 그 시각까지 거절이 멈춥니다. 도구는 그럴 때 파일을 쓰지 않고 다시 돌릴 시각을 알려 줍니다. 손으로 만든 파일을 일찍 넣지 않습니다.
 - 처음 강제(M7): 사용자가 보낸 파일(`MIN=1.6.0`, `FROM`=유예 끝)을 바로 넣습니다. hbbs가 `FROM`부터 스스로 거절합니다.
 
-넣기와 확인:
+보낸 파일 옮기기(이 파일과 8-4의 `door2.conf`): 둘 다 문 2의 코드가 들어 있습니다. 홈의 전송 사본은 옮긴 뒤 지우고, `incoming/`의 사본은 root만 읽습니다(0600).
 
 ```bash
-F=/srv/hjviewer-updates/incoming/1.6.1/min-controller.conf     # ← 사용자가 보낸 파일(incoming/ 안으로 옮긴 것)
+set -- "/home/<사용자>/min-controller.conf"         # ← 사용자가 보낸 파일(문 2 파일도 보냈으면 그 경로를 뒤에 더함)
+I=/srv/hjviewer-updates/incoming/conf-$(date -u +%Y%m%dT%H%M%SZ)
+sudo install -d -o root -g root -m 0700 "$I"
+for SRC in "$@"; do
+  [[ $SRC == /home/*/* ]] && sudo test -f "$SRC" && ! sudo test -L "$SRC" || { echo "STOP: $SRC 이(가) 홈의 보통 파일이 아님"; exit 1; }
+  sudo install -o root -g root -m 0600 "$SRC" "$I/" && sudo rm -f "$SRC" && echo "F=$I/$(basename "$SRC")"
+done
+```
+
+넣기와 확인(지금 파일은 `/root/hjv-backup/min-controller.conf.before`로 남김):
+
+```bash
+F=/srv/hjviewer-updates/incoming/conf-20261122T060000Z/min-controller.conf   # ← 위 블록이 출력한 F= 줄
 sudo test -f "$F" || { echo 'STOP: 파일이 없음'; exit 1; }
 sudo grep -cE '^(MIN|FROM|TEXT)=' "$F"                          # 3
 sudo grep -E '^(MIN|FROM)=' "$F"                                # TEXT 줄은 보이지 않음(문 2 링크)
+B=/root/hjv-backup/min-controller.conf.before
+sudo install -d -m 700 /root/hjv-backup
+if sudo test -e /etc/hjviewer/min-controller.conf; then sudo cp -p /etc/hjviewer/min-controller.conf "$B"; else sudo rm -f "$B"; fi
 sudo install -o root -g hjviewer -m 0640 "$F" /etc/hjviewer/min-controller.conf.new &&
   sudo mv -f /etc/hjviewer/min-controller.conf.new /etc/hjviewer/min-controller.conf
 sleep 12
@@ -1249,7 +1290,21 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
 ```
 
 - 마지막 줄이 `min-controller 1.6.0 from 2026-11-22T15:00:00Z`(`FROM`이 비면 `from now`)여야 합니다.
-- `ERROR … min-controller file …: line N: …; … stays in force`이면 hbbs가 새 파일을 받지 않고 이전 규칙을 계속 쓰는 것입니다(이유는 그 줄에 있고, 문구는 옮기지 않음). 이전 파일로 되돌리고 그 줄을 사용자에게 보고합니다. 1시간마다 같은 ERROR가 다시 나옵니다.
+- `ERROR … min-controller file …: line N: …; … stays in force`이면 hbbs가 새 파일을 받지 않고 이전 규칙을 계속 쓰는 것입니다(이유는 그 줄에 있고, 문구는 옮기지 않음). 1시간마다 같은 ERROR가 다시 나오고, 그 파일을 둔 채 hbbs가 다시 시작하면 최소 버전이 꺼집니다. 바로 이전 파일로 되돌리고 그 줄을 사용자에게 보고합니다.
+  ```bash
+  B=/root/hjv-backup/min-controller.conf.before
+  if sudo test -f "$B"; then
+    sudo install -o root -g hjviewer -m 0640 "$B" /etc/hjviewer/min-controller.conf.new &&
+      sudo mv -f /etc/hjviewer/min-controller.conf.new /etc/hjviewer/min-controller.conf
+  else
+    sudo rm -f /etc/hjviewer/min-controller.conf   # 전에는 파일이 없었음
+  fi
+  sleep 12; sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller' | tail -2
+  ```
+- **hbbs를 다시 시작한 뒤**(6절의 B 경로 업데이트, 7-6, 재부팅): 이 파일이 있으면 12초 뒤 같은 줄을 봅니다. 시작할 때 파일이 hbbs 규칙에 맞지 않으면 hbbs는 최소 버전 없이 돌고 ERROR(`no minimum is in force`)를 남깁니다. 그때는 멈추고 보고합니다.
+  ```bash
+  if sudo test -e /etc/hjviewer/min-controller.conf; then sleep 12; sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep min-controller | tail -2; fi
+  ```
 - 끄기(즉시): `MIN=`만 남긴 파일로 바꾸거나 파일을 지웁니다. 10초쯤 뒤 `min-controller off: …`가 나옵니다. 되돌리기와 비상 때 씁니다(8-6).
 - 거절 수: `sudo journalctl -q -u hjviewer-hbbs --since yesterday -o cat | grep -c 'min-controller refused'`(개수만. 그 줄에는 주소와 PC ID가 있음). 10초에 30줄을 넘으면 `min-controller refused N more`로 묶이니 그 N도 더합니다.
 - 파일의 `MIN`과 `FROM`이 필요하면(사용자가 `hbbs-conf --current`에 쓸 사본) `sudo grep -E '^(MIN|FROM)=' /etc/hjviewer/min-controller.conf`의 두 줄만 알려 줍니다. 사용자는 그 두 줄로 된 파일을 `--current`로 줍니다.
@@ -1259,22 +1314,23 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
 
 1.5.1 사용자가 1.6.0을 받는 비밀 링크 `https://<도메인>/api/hjv/get/<코드>/`입니다. 링크는 hbbs 거절 문구(S1)와 운영자가 사용자에게 직접 보내는 메시지에만 나옵니다. 형식은 [deploy/door2.conf.example](../deploy/door2.conf.example)에 있고, 실제 파일은 사용자가 `hjv-release hbbs-conf --door2-out`으로 만들어 보냅니다.
 
-- **열기(M5)**: 사용자가 보낸 `door2.conf`를 넣습니다. 그 뒤 M7에 S1 문구(같은 코드의 링크)가 든 hbbs 파일을 8-3대로 넣습니다.
+- **열기(M5)**: 사용자가 보낸 `door2.conf`를 8-3의 "보낸 파일 옮기기" 블록으로 `incoming/`에 옮긴 뒤 넣습니다. 그 뒤 M7에 S1 문구(같은 코드의 링크)가 든 hbbs 파일을 8-3대로 넣습니다.
   ```bash
-  F=/srv/hjviewer-updates/incoming/door2/door2.conf               # ← 사용자가 보낸 파일(incoming/ 안으로 옮긴 것)
+  F=/srv/hjviewer-updates/incoming/conf-20261020T060000Z/door2.conf   # ← 8-3의 옮기기 블록이 출력한 F= 줄
   sudo grep -c '^CODE=[0-9a-f]\{32\}$' "$F"                        # 1
   sudo sed -n 's/^UNTIL=//p' "$F"                                 # 닫는 시각(UTC)
   sudo install -o root -g hjviewer-api -m 0640 "$F" /etc/hjviewer/door2.conf.new &&
     sudo mv -f /etc/hjviewer/door2.conf.new /etc/hjviewer/door2.conf
   DOMAIN=$(sed -n 's/^HJV_DOMAIN=//p' /etc/hjviewer/hjviewer.env); [ -n "$DOMAIN" ] || exit 1
   code=$(sudo sed -n 's/^CODE=//p' /etc/hjviewer/door2.conf)
-  echo "door 2: $(curl -s -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/api/hjv/get/$code/")"
+  # 주소는 curl의 표준 입력으로 줍니다(명령줄은 이 서버의 모든 사용자가 /proc에서 읽음). printf는 셸 안에서 돕니다
+  echo "door 2: $(printf 'url = "https://%s/api/hjv/get/%s/"\n' "$DOMAIN" "$code" | curl -s -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" -K -)"
   unset code
   sudo journalctl --namespace=hjviewer -u hjviewer-api --since -2min -o cat | grep "door 2's file" | tail -1
   ```
-  `door 2: 200`과 `update: door 2's file (HJV_API_DOOR2_FILE) read: open until <UTC> (code=<8자리>)`가 나와야 합니다. 8자리는 코드의 SHA-256 앞부분이라 옮겨도 됩니다. 코드 자체는 화면에 나오지 않습니다(위 블록은 변수로만 다룸).
+  `door 2: 200`과 `update: door 2's file (HJV_API_DOOR2_FILE) read: open until <UTC> (code=<8자리>)`가 나와야 합니다. 8자리는 코드의 SHA-256 앞부분이라 옮겨도 됩니다. 코드 자체는 화면에도, 다른 프로세스의 명령줄에도 나오지 않습니다(위 블록은 변수와 표준 입력으로만 다룸). 코드를 명령의 인자로 쓰지 않습니다.
   - 파일 권한을 나중에 고치지 않습니다. hjv-api는 읽지 못한 파일을 권한만 고쳐서는 다시 읽지 않을 수 있습니다. 위처럼 권한을 정해 임시 이름으로 넣고 `mv`합니다.
-- **코드 바꾸기**(링크가 퍼졌거나, hbbs를 trace로 돌렸을 때): 사용자가 `--door2-rotate`로 새 `door2.conf`와 새 hbbs 파일을 함께 만들어 보냅니다. `door2.conf`를 넣고 바로 이어서 hbbs 파일을 8-3대로 넣습니다. 옛 링크는 바로 404가 되고, 그 사이 10초쯤은 hbbs 문구가 옛 링크를 보입니다.
+- **코드 바꾸기**(링크가 퍼졌거나, hbbs를 trace로 돌렸을 때): 사용자가 `--door2-rotate`로 새 `door2.conf`와 새 hbbs 파일을 함께 만들어 보냅니다. 두 파일을 8-3의 옮기기 블록으로 함께 옮기고, `door2.conf`를 넣고 바로 이어서 hbbs 파일을 8-3대로 넣습니다. 옛 링크는 바로 404가 되고, 그 사이 10초쯤은 hbbs 문구가 옛 링크를 보입니다.
 - **닫는 시각 바꾸기**: 사용자가 `--door2-until`로 만든 파일을 위처럼 넣습니다.
 - **닫기(M9)**: 아래를 모두 만족하면 사용자 승인 뒤 닫습니다.
   - 유예가 끝난 지 30일이 지났거나, hbbs 기록에 거절이 7일 동안 없음(8-3의 거절 수).
@@ -1284,13 +1340,14 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
     DOMAIN=$(sed -n 's/^HJV_DOMAIN=//p' /etc/hjviewer/hjviewer.env); [ -n "$DOMAIN" ] || exit 1
     code=$(sudo sed -n 's/^CODE=//p' /etc/hjviewer/door2.conf)
     sudo rm /etc/hjviewer/door2.conf
-    echo "door 2: $(curl -s -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/api/hjv/get/$code/")"   # 404
+    echo "door 2: $(printf 'url = "https://%s/api/hjv/get/%s/"\n' "$DOMAIN" "$code" | curl -s -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" -K -)"   # 404
     unset code
+    sudo sh -c 'rm -f /srv/hjviewer-updates/incoming/conf-*/door2.conf'   # 옮겨 둔 사본도
     ```
 
 ### 8-5. 비상 절차
 
-정책을 고치는 일은 모두 사용자가 개발 PC(루트 키는 깨끗한 컴퓨터)에서 하고, 서버에서는 8-2로 넣습니다. 아래는 서버 쪽에서 할 일과 순서입니다. 도구 쪽 명령은 `tools/hjv-release/README.md` 3장에 있습니다.
+정책을 고치는 일은 모두 사용자가 개발 PC(루트 키는 깨끗한 컴퓨터)에서 하고, 서버에서는 8-2로 넣습니다. 앱 버전이 그대로인 정책도 위치(`e<세대>-s<seq>`)가 새로우므로 8-2의 디렉터리 이름이 겹치지 않습니다. 아래는 서버 쪽에서 할 일과 순서입니다. 도구 쪽 명령은 `tools/hjv-release/README.md` 3장에 있습니다.
 
 - **(가) 무인 설치를 멈출 때**(새 버전에 문제가 보임): 사용자가 `auto_install_after`를 지운 정책(`--auto-after windows=none`)을 서명 키로 만듭니다. 최소 버전 아래의 PC가 그 버전을 강제로 설치하면 안 되면 `--withdraw-package windows`도 줍니다. 8-2로 넣습니다(`--relaxes` 없음). 내려받는 중이거나 600초 예고 중인 PC도 설치를 시작하지 않습니다. 고친 버전은 더 높은 버전 번호로 냅니다.
 - **(나) 업데이트 경로가 오래 멈췄을 때**(hjv-api가 멈췄거나 패키지가 없어짐): 막힌 Windows 실행본과 Android 사용자는 나가는 연결도 앱 안 업데이트도 못 합니다.
@@ -1299,10 +1356,21 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
   3. 앱 쪽은 사용자가 루트 선언으로 잠시 낮춥니다(`--relax --min all=<낮은 버전>`, 깨끗한 컴퓨터). `sign`이 출력한 완화 항목을 `--relaxes`로 주어 8-2로 넣습니다.
   4. 고친 뒤 사용자가 서명 키로 다시 올리고(8-2), hbbs 파일은 `hbbs-conf`가 만든 것으로 되돌립니다(8-3).
 - **(다) 잘못된 정책을 냈을 때**: 너무 엄격하면(최소 버전이 너무 높음, 기한이 너무 이름) (나)의 3번과 같습니다(루트 선언, `--relaxes`). 너무 느슨하거나 문구가 틀렸으면 다음 정책을 서명 키로 냅니다(`--relaxes` 없음). 옛 정책 파일을 다시 넣지 않습니다(8-0, 8-6).
-- **(라) 서명 키를 도난당했을 수 있을 때**: 서버 확인이 걸린 파일을 기준으로 `Rollback`, `Fork`, `Relaxation`을 냈는데 사용자가 그 걸린 파일을 서명한 적이 없거나, 사용자의 주 1회 점검(`hjv-release check --live`)이 "보관소에 없는 걸린 정책"을 경고할 때입니다.
+- **(라) 서명 키를 도난당했을 수 있을 때**: 서버 확인이 걸린 파일을 기준으로 `Rollback`, `Fork`, `Relaxation`, `LiveRelaxes`를 냈는데 사용자가 그 걸린 파일을 서명한 적이 없거나, 사용자의 주 1회 점검(`hjv-release check --live`)이 "보관소에 없는 걸린 정책"을 경고할 때입니다. 도구는 보관소에 없는 걸린 파일로는 선언을 만들지 않고(X10), 서버 확인은 도둑 파일과 비교해 사용자의 선언을 `LiveRelaxes`로 거부합니다. 그래서 먼저 걸린 파일을 사용자의 마지막 파일로 되돌립니다(신뢰 규칙 명세와 도구 README의 5-8).
   1. 멈추고 사용자에게 알립니다. 걸린 파일의 SHA-256과 첫 줄(`sudo head -c 200 /etc/hjviewer/version-policy.json`)은 공개값이므로 보고에 넣어도 됩니다.
-  2. 걸린 파일은 사용자 것이 아니어도 그대로 둡니다. 옛 파일로 되돌리거나 지우지 않습니다(8-0): 그 파일을 이미 받은 앱은 옛 파일을 받지 않고, 지우면 hjv-api가 설치 파일을 내주지 못합니다. 걸린 파일을 바꾸는 길은 3번의 새 정책뿐입니다.
-  3. 사용자가 깨끗한 컴퓨터에서 도난 키를 폐기하는 루트 선언과 그 세대의 새 정책을 만들어 보냅니다. 8-2로 넣습니다(`--relaxes`는 사용자가 알려 준 대로). hbbs 파일은 사용자가 바꾸라고 할 때만 바꿉니다.
+  2. 사용자가 걸린 파일을 서명한 적이 없다고 확인하고(보관소에 그 SHA-256이 없음), 보관소의 마지막 내 파일(`void`하지 않은 가장 높은 `policy-e<세대>-s<seq>.json`)의 SHA-256을 키 매체의 보관소 사본에서 읽어 알려 주면, 사용자 승인을 받아 그 파일로 되돌립니다. 8-0의 유일한 예외입니다. 그 파일은 걸린 도둑 파일과 비교하지 않고, 그 파일 자체만 서버 확인으로 봅니다(`--live`로 자기 자신을 줌).
+     ```bash
+     WANT='<사용자가 알려 준 SHA-256>'   # ← 보관소의 마지막 내 파일, 64자리
+     F=$(sudo sh -c 'sha256sum /srv/hjviewer-updates/incoming/*/version-policy.json' | awk -v w="$WANT" 'tolower($1) == tolower(w) { print $2; exit }')
+     [ -n "$F" ] || { echo 'STOP: incoming/에 그 파일이 없음(사용자가 보낸 것을 8-2의 1번으로 옮긴 뒤 다시)'; exit 1; }
+     echo "$F"
+     sudo /opt/hjviewer/bin/hjv-update-verify.sh --live "$F" --packages /srv/hjviewer-updates/pkg "$F" &&
+       sudo install -o root -g root -m 0644 "$F" /etc/hjviewer/version-policy.json.new &&
+       sudo mv -f /etc/hjviewer/version-policy.json.new /etc/hjviewer/version-policy.json && echo POLICY_PUT_BACK
+     sudo sha256sum /etc/hjviewer/version-policy.json
+     ```
+     서버 확인의 마지막 줄은 `OK, nothing to install: it is the live file`이어야 합니다(앱이 받는 파일인지와 패키지만 봄). `Package`로 거부되면 그 디렉터리로 8-2의 3번을 한 뒤 다시 하고, 다른 거부면 멈추고 보고합니다. 되돌린 뒤 hjv-api 저널의 `went back to epoch …`(ERROR)는 예상된 것입니다(도둑 파일보다 낮은 위치). 도둑 파일을 이미 받은 앱은 이 파일을 받지 않고(3번의 선언이 풀어 줌), 아직 받지 않은 앱은 도둑 파일을 더 받지 않습니다. 사용자가 서버의 파일을 다시 받아 그 SHA-256인지 확인합니다.
+  3. 사용자가 깨끗한 컴퓨터에서 그 보관소 파일을 `--prev`로, 다시 받은 서버의 파일을 `--live`로 주어 도난 키를 폐기하는 루트 선언과 그 세대의 새 정책을 만들어 보냅니다. 8-2로 넣습니다(`--relaxes` 없음: 걸린 파일이 이제 사용자의 것이라 선언이 완화하는 항목이 없음. `sign`이 완화 항목을 출력했으면 그 항목만). hbbs 파일은 사용자가 바꾸라고 할 때만 바꿉니다.
   4. 키 파일(`update-keys.env`)은 바로 바꾸지 않습니다. 다음 빌드의 태그 뒤, 걸린 정책이 새 키 파일이 박은 키로 서명된 다음에 (마)대로 바꿉니다.
 - **(마) 업데이트 키 파일을 바꿀 때**(사용자의 계획된 키 교체나 도난 뒤 새 빌드): 사용자가 새 태그를 알려 주면, 지금 걸린 정책이 새 키 파일로 읽히는지 먼저 봅니다. 읽히지 않으면 바꾸지 않습니다.
   ```bash
@@ -1317,14 +1385,18 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
   cd / && rm -rf "$T"
   ```
   걸린 파일을 걸린 파일과 비교하므로 `OK, nothing to install: it is the live file`이 나와야 바뀝니다. `LiveUnreadable`이나 다른 거부면 멈춥니다(걸린 정책이 아직 새 키 파일이 박지 않은 키로 서명됨).
-- **(바) 걸린 파일을 읽지 못할 때**(`LiveUnreadable: the live file is not one this check reads …`): 서버 확인을 거치지 않은 파일이 걸려 있는 것입니다(손으로 고쳤거나 다른 파일을 넣음). 앱도 그 파일을 거부하고 전에 받은 정책을 지킵니다.
+- **(바) 걸린 파일을 읽지 못할 때**(`LiveUnreadable: the live file is not one this check reads …`): 서버 확인을 거치지 않은 파일이 걸려 있는 것입니다(손으로 고쳤거나 다른 파일을 넣음). 앱은 그 파일을 거부하고 전에 받은 정책을 지킵니다(서명된 부분은 그대로이고 봉투의 꼴만 바뀐 파일이면 같은 정책으로 받음). 어느 쪽이든 마지막으로 넣은 파일이 기준입니다.
   1. 멈추고 (라)의 1번처럼 보고합니다. 걸린 파일은 그대로 둡니다(8-0).
-  2. 사용자에게 마지막으로 넣은 정책의 SHA-256을 묻고, 그 릴리스의 `/srv/hjviewer-updates/incoming/<버전>/version-policy.json`(없으면 사용자가 다시 보낸 것)이 그 값인지 `sudo sha256sum`으로 봅니다.
-  3. 사용자가 보낸 새 정책을 8-2대로 넣되, 2번과 4번의 확인 명령에 `--live /srv/hjviewer-updates/incoming/<그 버전>/version-policy.json`을 더해 그 파일을 가진 앱을 기준으로 확인합니다. 4번의 확인이 거부하면 `.new`가 남으므로(`--live`가 다른 곳을 가리켜 스크립트가 지우지 않음) `sudo rm -f /etc/hjviewer/version-policy.json.new`로 지웁니다. 그 옛 파일을 걸린 자리로 옮기지는 않습니다.
+  2. 사용자에게 마지막으로 넣은 정책의 SHA-256을 묻고 `incoming/`에서 그 파일을 찾습니다. 없으면 사용자가 다시 보낸 것을 8-2의 1번으로 옮긴 뒤 찾습니다.
+     ```bash
+     WANT='<사용자가 알려 준 SHA-256>'   # ← 64자리
+     sudo sh -c 'sha256sum /srv/hjviewer-updates/incoming/*/version-policy.json' | awk -v w="$WANT" 'tolower($1) == tolower(w) { print $2; exit }'
+     ```
+  3. 사용자가 보낸 새 정책을 8-2대로 넣되, 2번과 4번의 확인 명령에 `--live <2번이 출력한 파일>`을 더해 그 파일을 가진 앱을 기준으로 확인합니다. 4번의 확인이 거부하면 `.new`가 남으므로(`--live`가 다른 곳을 가리켜 스크립트가 지우지 않음) `sudo rm -f /etc/hjviewer/version-policy.json.new`로 지웁니다. 그 옛 파일을 걸린 자리로 옮기지는 않습니다((라)의 2번과 다름).
 
 ### 8-6. 되돌리기
 
-- **정책**: 옛 정책 파일로 되돌리거나 정책 파일을 지우지 않습니다(8-0). 되돌리기는 언제나 `seq`가 더 높은 새 정책을 8-2로 넣는 것입니다. 최소 버전이나 기한을 낮추는 것이면 사용자가 루트 선언으로 완화한 정책(8-5의 (다)), 문구·`latest`·무인 설치를 고치는 것이면 서명 키로 만든 다음 정책입니다. 옛 파일은 새 파일을 이미 받은 앱이 거부하고(`Rollback`), hjv-api는 `went back` ERROR를 남기면서 옛 파일의 설치 파일을 내주므로 앱이 찾는 버전과 어긋납니다. 지우면 앱의 확인이 404가 되고 hjv-api는 설치 파일을 내주지 않습니다.
+- **정책**: 옛 정책 파일로 되돌리거나 정책 파일을 지우지 않습니다(8-0. 예외는 키 도난 때 사용자가 서명한 적 없는 파일을 바꾸는 8-5의 (라) 2번뿐). 되돌리기는 언제나 `seq`가 더 높은 새 정책을 8-2로 넣는 것입니다. 최소 버전이나 기한을 낮추는 것이면 사용자가 루트 선언으로 완화한 정책(8-5의 (다)), 문구·`latest`·무인 설치를 고치는 것이면 서명 키로 만든 다음 정책입니다. 옛 파일은 새 파일을 이미 받은 앱이 거부하고(`Rollback`), hjv-api는 `went back` ERROR를 남기면서 옛 파일의 설치 파일을 내주므로 앱이 찾는 버전과 어긋납니다. 지우면 앱의 확인이 404가 되고 hjv-api는 설치 파일을 내주지 않습니다.
 - **hbbs**: `MIN=`만 남긴 파일로 바꾸거나 파일을 지우면 10초 안에 거절이 멈춥니다. 다시 켤 때는 이전 파일을 8-3대로 넣습니다.
 - **패키지**: 정책이 크기와 SHA-256을 정하므로 같은 이름의 파일을 바꿔 넣을 수 없습니다(hjv-api가 404, 앱이 거부). 다른 빌드는 새 버전 번호와 새 정책으로 냅니다. 직전 버전 패키지는 손으로 다시 설치할 때를 위해 남깁니다.
 - **nginx 위치**: 지우지 않습니다. 지우면 그 경로가 `/api/` 블록(1.6.0에서는 hjv-api)으로 가서 앱이 정책을 받지 못합니다.
@@ -1372,10 +1444,10 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
 아래 형식으로 알려 줍니다. 문 2의 코드, 거절 기록의 주소와 PC ID는 적지 않습니다.
 
 ```
-단계: <8-1 | 8-2 (<버전>) | 8-3 | 8-4 열기·코드 바꾸기·닫기 | 8-5 (<가~바>)>
+단계: <8-1 | 8-2 (<버전>-<위치>) | 8-3 | 8-4 열기·코드 바꾸기·닫기 | 8-5 (<가~바>)>
 확인 스크립트: --self-test <통과 | 실패>, 키 집합 <key set 줄의 지문 앞 16자리>, 하한 <e:s>
 서버 확인: <OK | OK, nothing to install | REFUSED <이유와 그 줄>>, --relaxes <항목 | 없음>
-정책: /api/hjv/version <코드>, SHA-256 <값>(사용자 값과 같음: 예/아니오), hjv-api 저널 <epoch E, seq S; packages: …>, went back <없음 | 있음>
+정책: /api/hjv/version <코드>, SHA-256 <값>(사용자 값과 같음: 예/아니오), hjv-api 저널 <epoch E, seq S; packages: …>, went back <없음 | 있음(8-5 (라) 2번 뒤면 예상된 것)>
 패키지: <pkg/에 넣은 파일과 크기>, 남긴 직전 버전 <버전>
 hbbs: <min-controller 줄 그대로(MIN, FROM) | off>, 어제 거절 <n>줄
 문 2: <열림, UNTIL <UTC>, 저널 code=<8자리> | 닫힘>

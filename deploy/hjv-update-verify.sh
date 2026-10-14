@@ -20,12 +20,12 @@
 #
 # It decides like the apps (libsodium, the client core): the envelope must be what a fresh install
 # of the newest build and a device that holds the live policy both take, every signature strict
-# (OpenSSL alone would take a signature whose R has a small order), a new declaration must relax
-# exactly the entries named, nothing may be dated ahead of this server's clock, and every package
-# named must be there with its size and SHA-256. It reads only texts exactly as hjv-release writes
-# them. Exit 0: install it; 1: refused, with the reason; 2: the check could not run. A refused new
-# file that lies beside the live one is removed, so that no "mv" can make it live by mistake (the
-# operator's archive keeps it).
+# (OpenSSL alone would take a signature whose R has a small order), hjv-api must read its Windows
+# and Android entries, a new declaration must relax exactly the entries named, nothing may be dated
+# ahead of this server's clock, and every package named must be there with its size and SHA-256.
+# It reads only texts exactly as hjv-release writes them. Exit 0: install it; 1: refused, with the
+# reason; 2: the check could not run. A refused new file that lies beside the live one is removed,
+# so that no "mv" can make it live by mistake (the operator's archive keeps it).
 #
 # Only bash, python3's standard library and openssl: the server never runs the operator's tool, so
 # that one machine cannot vouch for itself.
@@ -535,8 +535,13 @@ class Envelope:
     __slots__ = ("pol", "root", "data", "P", "D")
 
 
+def token(text, most):
+    """Letters, digits, ".", "_" and "-" (ASCII), at least one and at most `most` of them."""
+    return 1 <= len(text) <= most and all(c.isascii() and (c.isalnum() or c in "._-") for c in text)
+
+
 def plain_name(name):
-    return 1 <= len(name) <= 100 and all(c.isascii() and (c.isalnum() or c in "._-") for c in name)
+    return token(name, 100)
 
 
 def _entry(e, where):
@@ -591,6 +596,39 @@ def _entry(e, where):
         if "auto_install_after" in e and parse_utc(e["auto_install_after"]) is None:
             bad("auto_install_after")
     return Entry(mn, latest, gu, gm, e["min"], package)
+
+
+# What hjv-api reads of a policy (server/api/src/update.rs, Policy::parse): of the windows and
+# android entries the latest, the source and the package. A text that breaks one of its rules there
+# is no policy at all for hjv-api, so that door 1, door 2 and the short links answer 404, while the
+# apps' rules (C3) may take it: they allow a source of up to 100 characters and a package file of
+# any plain name. hjv-release writes no such text; a stolen key or a fault of the tool could.
+API_ENTRIES = (("windows", ".exe"), ("android", ".apk"))
+API_MAX_SOURCE = 64
+
+
+def api_package_file(name, extension):
+    """hjv-api's is_package_file(): a name of its package directory for an entry of `extension`."""
+    lower = name.lower()
+    return (token(name, 100) and not name.startswith(".") and ".." not in name and lower.endswith(extension)
+            and len(name) > len(extension) and "-qs-" not in lower and not lower.endswith("install.exe"))
+
+
+def api_problem(platforms):
+    """Why hjv-api would read a policy text with these `platforms` as no policy, or None."""
+    for name, extension in API_ENTRIES:
+        e = platforms.get(name)
+        if e is None:
+            continue
+        source = e.get("source")
+        if source is not None and not token(source, API_MAX_SOURCE):
+            return "the %s entry's source is not a tag name of at most %d letters, digits, \".\", \"_\" and \"-\"" % (
+                name, API_MAX_SOURCE)
+        package = e.get("package")
+        if package is not None and not api_package_file(package["file"], extension):
+            return ("the %s entry's package file %s is not a name hjv-api hands out (a plain name ending in %s, "
+                    "no leading \".\", no \"..\")" % (name, json.dumps(package["file"]), extension))
+    return None
 
 
 def parse_policy(p, d, server):
@@ -834,27 +872,45 @@ def accept(build, st, env, verifier):
 def holding(build, env, verifier):
     """LOAD (1-6, L2-L5) of a record whose declaration is `env`'s root part and whose envelope is
     `env`: the state of a device that holds `env`. Item 4 and the vectors' state checks use it."""
-    decl = None
+    return load(build, env, verifier)[0]
+
+
+def load(build, env, verifier):
+    """holding(), and when it holds no policy, why: (text, keys), `keys` true when the key file pins
+    no key that signed the envelope (the key file is replaced too early: runbook 8-5), false when
+    the envelope is not one the apps hold whatever the keys (it did not pass this check)."""
+    decl, why = None, None
     if env.root is not None:
-        try:
-            decl = check_root(build, verifier, env.root, env.D)
-        except Refused:
-            decl = None
+        if env.root.k not in build.roots:
+            why = ("it pins no root key %d, which signed the declaration" % env.root.k, True)
+        else:
+            try:
+                decl = check_root(build, verifier, env.root, env.D)
+            except Refused as r:
+                why = ("its declaration: %s" % r.text(), False)
     held = None
-    try:
-        root_ok = env.root is None or decl is not None
-        key = build.roots.get(env.pol.k) or build.signing.get(env.pol.k)
-        if root_ok and key is not None and verifier.verify(key, POLICY_CONTEXT, env.pol.p, env.pol.s):
+    key = build.roots.get(env.pol.k) or build.signing.get(env.pol.k)
+    if why is not None:
+        pass
+    elif key is None:
+        why = ("it pins no key %d, which signed the policy" % env.pol.k, True)
+    elif not verifier.verify(key, POLICY_CONTEXT, env.pol.p, env.pol.s):
+        why = ("the policy's signature does not hold (strictly) for key %d" % env.pol.k, False)
+    else:
+        try:
             Pn = parse_policy(env.pol.p, env.P, build.server)
-            if Pn.epoch == 1:
-                ok = env.root is None
+        except Refused as r:
+            why = ("its policy: %s" % r.text(), False)
+        else:
+            # L4: a policy of epoch 1 comes alone, one of a later epoch with that epoch's declaration
+            if Pn.epoch == 1 and env.root is not None:
+                why = ("a policy of epoch 1 with a declaration (of epoch %d)" % decl.epoch, False)
+            elif Pn.epoch >= 2 and (decl is None or decl.epoch != Pn.epoch):
+                why = ("a policy of epoch %d without that epoch's declaration%s" % (
+                    Pn.epoch, "" if decl is None else " (it comes with epoch %d's)" % decl.epoch), False)
             else:
-                ok = env.root is not None and decl is not None and decl.epoch == Pn.epoch
-            if ok:
                 held = Held(Pn, env.pol.k, env.root, None if env.root is None else env.root.p)
-    except Refused:
-        held = None
-    return State(decl, held)
+    return State(decl, held), why
 
 
 def summary(build, st):
@@ -1003,7 +1059,13 @@ def find_package(dirs, name, size, sha256):
 
 def install_check(build, new_data, live_data, relaxes, package_dirs, now, verifier, say):
     """Items 1-8 of spec 4-8 for the bytes of the new envelope, and of the live one (None: the
-    first install). Raises Refused; returns "install" or "unchanged"."""
+    first install), with hjv-api's reading in item 3. Raises Refused; returns "install" or
+    "unchanged"."""
+
+    def unreadable(why):
+        return Refused("LiveUnreadable", "the live file is not one this check reads (%s). Leave it where it is "
+                       "and check the new file against the last one installed, with --live (runbook 8-5)" % why)
+
     # 1. the canonical form, before anything else is read
     try:
         new = read_envelope(new_data)
@@ -1023,6 +1085,11 @@ def install_check(build, new_data, live_data, relaxes, package_dirs, now, verifi
             build.floor[0], build.floor[1], out.detail)
         raise out
     say("a fresh install of the newest build (floor %d:%d) takes it" % build.floor)
+    problem = api_problem(new.P["platforms"])
+    if problem:
+        raise Refused("HjvApi", "%s: hjv-api would take the whole file for no policy, and door 1, door 2 and "
+                      "the short links would answer 404" % problem)
+    say("hjv-api reads its windows and android entries")
     nP = fresh.held.P
     new_decl = None if new.root is None else new.root.p
     live, live_outcome = None, None
@@ -1031,16 +1098,15 @@ def install_check(build, new_data, live_data, relaxes, package_dirs, now, verifi
         try:
             live = read_envelope(live_data)
         except (NotCanonical, Refused) as e:
-            raise Refused("LiveUnreadable", "the live file is not one this check reads (%s): the apps "
-                          "refuse it too and keep the policy they had. Leave it where it is and check the "
-                          "new file against the last one installed, with --live (runbook 8-5)" % (
-                              e if isinstance(e, NotCanonical) else e.text()))
+            raise unreadable(e if isinstance(e, NotCanonical) else e.text())
         say("live:  %s" % describe_env(live))
-        holder = holding(build, live, verifier)
+        holder, missing = load(build, live, verifier)
         if holder.held is None:
-            raise Refused("LiveUnreadable", "the key file does not verify the live file (signer key %d%s): "
-                          "replace the key file only after the live policy is signed by a key it pins "
-                          "(runbook 8-5)" % (live.pol.k, "" if live.root is None else ", root key %d" % live.root.k))
+            text, keys = missing
+            if not keys:
+                raise unreadable(text)
+            raise Refused("LiveUnreadable", "the key file does not verify the live file (%s): replace the key "
+                          "file only after the live policy is signed by a key it pins (runbook 8-5)" % text)
         _, live_outcome = accept(build, holder, new, verifier)
         if isinstance(live_outcome, Refused):
             hint = ""
@@ -1068,7 +1134,8 @@ def install_check(build, new_data, live_data, relaxes, package_dirs, now, verifi
         found = relaxed(lP.entries, nP.entries)
         if found != named:
             raise Refused("LiveRelaxes", "against the live policy it relaxes {%s}; --relaxes names {%s}. A "
-                          "declaration made from a stale or forged --prev shows here" % (
+                          "declaration made from a stale or forged --prev shows here; if the live file is not "
+                          "one you signed, a signing key may be stolen (runbook 8-5)" % (
                               ",".join(n for n in NAMES if n in found), ",".join(n for n in NAMES if n in named)))
         say("the new declaration relaxes {%s} against the live policy, as --relaxes names"
             % ",".join(n for n in NAMES if n in found))
