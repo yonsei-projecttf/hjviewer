@@ -146,7 +146,7 @@ PASS (strict): transport: relay
 
 ### TCP 펀치 시험
 
-런북 7-1의 5번은 클라이언트 lib 시험 `rendezvous_mediator::tests::a_punch_that_meets_the_peers_syn_connects_both_ends`(루프백에서 TCP 동시 열기)를 패치를 적용한 트리로 한 번 돌리라고 합니다. 이 시험은 WSL2인 개발 PC에서 통과하지 못하고(1.5.1의 트리에서도 실패), 이 E2E도 그 경로를 지나지 않습니다(443만 열면 중계, UDP를 열면 WebRTC P2P). 그래서 시험 대신 그 경로가 바뀌지 않았다고 보는 근거를 적습니다(2026-10-15, 1.6.1).
+런북 7-1의 5번은 클라이언트 lib 시험 `rendezvous_mediator::tests::a_punch_that_meets_the_peers_syn_connects_both_ends`(루프백에서 TCP 동시 열기)를 패치를 적용한 트리로 한 번 돌리라고 합니다. 이 시험은 WSL2인 개발 PC에서 통과하지 못하고(1.5.1의 트리에서도 실패), 이 E2E도 그 경로를 지나지 않습니다(443만 열면 중계, UDP를 열면 WebRTC P2P). 그래서 시험 대신 그 경로가 바뀌지 않았다고 보는 근거를 적습니다(2026-10-15, 1.6.1). 사용자는 같은 날 이 근거로 런북 7-9 관문의 TCP 펀치 시험을 갈음하기로 정했습니다.
 
 - 클라이언트 패치가 `src/rendezvous_mediator.rs`에서 바꾸는 것은 두 줄뿐입니다. `crate::hbbs_http::sync::start();` 바로 뒤에서 HJViewer의 작업을 시작하는 줄로, 0031이 `hjviewer_account::start_pc_sync()`, 0038이 `hjviewer_update::start_service_checks()`를 더합니다(`git diff <RUSTDESK_COMMIT> hjviewer -- src/rendezvous_mediator.rs`).
 - 시험이 쓰는 `hbb_common`의 `socket_client::connect_tcp_local`과 `tcp`의 리스너·소켓 함수도 바뀌지 않았습니다. `hbb_common` 패치 두 개(0001, 0002)는 `src/websocket.rs`만 바꿉니다.
