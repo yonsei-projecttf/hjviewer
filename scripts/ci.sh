@@ -44,7 +44,7 @@
 #                          under build/ci; with server patch 0005, hbbs's lowest controller
 #                          version, and with the update code in the patches (src/hjviewer_update),
 #                          a client with the update test keys and the signed version policy that
-#                          tools/hjv-release signs for it (the minimum version's V1-V8), and the
+#                          tools/hjv-release signs for it (the minimum version's V1-V9), and the
 #                          update code's unit tests once more in a build without those keys
 #   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, the Wake-on-LAN E2E (docs/e2e.md), without sudo: in
 #                          this user's own namespaces a PC that sleeps is woken through hjv-api
@@ -105,8 +105,8 @@ PREPUSH_STAGES="server client deploy e2e wol leak"
 # moved under a condition that does not hold, a test filter that picks nothing), and the stage
 # fails (at_least). Raise them as scenarios and tests come; lower one only with what was taken out.
 E2E_LEAST_STRICT=60 E2E_LEAST_OPEN=2 WOL_LEAST=20
-# strict: and the minimum version's V1-V8 (2026-10-14)
-E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 9))
+# strict: and the minimum version's V1-V9 (2026-10-14)
+E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 11))
 # by the filter of build_e2e_client's cargo test --lib <filter>
 declare -A UNIT_LEAST=([hjv]=83 [hjviewer_wol]=6)
 # and the update code's tests in the e2e stage's build without the update keys (2026-10-14)
@@ -1352,7 +1352,7 @@ cleanup_e2e() {
 # The minimum version's parts of the E2E (its design 2-4, 1-7; docs/e2e.md), as values for
 # firewall-e2e.sh in E2E_MINVER: hbbs's lowest controller version (V1-V4) once hbbs has server patch
 # 0005; once server/patches has that patch, an hbbs without it (built by an earlier server stage)
-# fails the stage instead of skipping the part. And the signed version policy (V5-V8) once the
+# fails the stage instead of skipping the part. And the signed version policy (V5-V9) once the
 # client has the update test keys, with tools/hjv-release, which signs its test policies; without
 # the tool, firewall-e2e.sh says that it skips them.
 e2e_minimum_version() {
@@ -1367,7 +1367,7 @@ e2e_minimum_version() {
     skip "the minimum version's V1-V4 (hbbs has no --hjv-min-controller-file: no server patch 0005)"
   fi
   if [ -z "$E2E_KEYED" ]; then
-    skip "the minimum version's V5-V8 (no src/hjviewer_update in the patched tree, or no HJV_E2E_UPDATE_KEYS part in tools/e2e/firewall-e2e.sh): the client is built without the update keys, like 1.5.1"
+    skip "the minimum version's V5-V9 (no src/hjviewer_update in the patched tree, or no HJV_E2E_UPDATE_KEYS part in tools/e2e/firewall-e2e.sh): the client is built without the update keys, like 1.5.1"
     return 0
   fi
   E2E_MINVER+=(HJV_E2E_UPDATE_KEYS=1)

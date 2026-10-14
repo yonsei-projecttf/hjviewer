@@ -45,7 +45,9 @@
 # policies (test-sign, the test key 1), Caddy serves the policy at /api/hjv/version (a site block of
 # that path in the run's Caddyfile; the public deploy/Caddyfile serves none). The PC's service
 # takes it by itself; V5-V8 check that it lets a controller below the minimum in before the
-# deadline and refuses its login once the deadline has passed. CLIENT_OLD adds the 1.5.1
+# deadline and refuses its login once the deadline has passed. V9 serves a policy signed with the
+# test key 3, which no E2E build pins, and starts the PC's service again: the PC refuses the login
+# by the policy it stored, refuses the new one and takes nothing from it. CLIENT_OLD adds the 1.5.1
 # controller to V3 and V8.
 set -euo pipefail
 
@@ -91,16 +93,19 @@ fi
 
 log() { printf '\n== %s\n' "$*"; }
 
-# <seq> <deadline>: signs a policy of epoch 1 and that seq with the test key 1 (hjv-release
-# test-sign) and serves it at https://hjv.test/api/hjv/version, replaced at once as the server's
-# file is. Its one entry, windows, is the one an E2E build on Linux is held to: NEXT_MINOR, until
-# <deadline> only for apps below it (grace_until). Its package is made up: Linux downloads nothing.
+# <seq> <deadline> [<test key>]: signs a policy of epoch 1 and that seq with the test key 1
+# (hjv-release test-sign), or with <test key> as it is (--raw, as the tool signs for a key that no
+# E2E build pins), and serves it at https://hjv.test/api/hjv/version, replaced at once as the
+# server's file is. Its one entry, windows, is the one an E2E build on Linux is held to:
+# NEXT_MINOR, until <deadline> only for apps below it (grace_until). Its package is made up: Linux
+# downloads nothing.
 serve_policy() {
-  local text="$RUN/policy/policy-$1.json"
+  local text="$RUN/policy/policy-$1.json" key=()
+  [ -z "${3:-}" ] || key=(--key "$3" --raw)
   printf '{"v":1,"epoch":1,"seq":%s,"issued":"%s","server":"%s","platforms":{"windows":{"min":"%s","latest":"%s","grace_until":"%s","package":{"file":"HJViewer-%s-windows-x86_64.exe","size":1,"sha256":"%s","build":"%s.0"}}}}\n' \
     "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$DOMAIN" "$NEXT_MINOR" "$NEXT_MINOR" "$2" "$NEXT_MINOR" \
     "$(printf 'e2e0%.0s' $(seq 16))" "$NEXT_MINOR" >"$text"
-  if ! timeout 30 "$HJV_RELEASE" test-sign --policy "$text" --out "$RUN/policy/version-policy.json.new" \
+  if ! timeout 30 "$HJV_RELEASE" test-sign "${key[@]}" --policy "$text" --out "$RUN/policy/version-policy.json.new" \
     >>"$RUN/hjv-release.log" 2>&1; then
     cat "$RUN/hjv-release.log"
     echo "FAIL: hjv-release test-sign $text"
@@ -1288,7 +1293,7 @@ ctl2_lists() {
 
 # ---------------------------------------------------------------------------------------------
 # The minimum version (its design 2-2, 2-4, 2-5): hbbs's lowest controller version (V1-V4), and the
-# signed policy by which the PC refuses the login of an old controller (V5-V8). The controllers are
+# signed policy by which the PC refuses the login of an old controller (V5-V9). The controllers are
 # sides of their own in the controller's network that never logged in: ver runs CLIENT, old the
 # 1.5.1 client. Every call of a client ends within 30 s or fails the run.
 # ---------------------------------------------------------------------------------------------
@@ -1341,6 +1346,17 @@ policy_taken() {
     fail "$1: $(pc_log | grep -o 'version policy: \(off in this build\|refused (\).*' | head -1)"
   fi
   pc_log_has "version policy: now at $2"
+}
+
+# V9: the PC refused the policy of the test key 3 for that key; a PC that took it, or refused it for
+# another reason, fails the run at once
+key3_refused() {
+  local text other
+  text=$(pc_log)
+  if grep -q 'version policy: now at 1:3' <<<"$text"; then fail "V9: the PC took the policy 1:3 of the test key 3"; fi
+  other=$(grep -o 'version policy: refused (.*' <<<"$text" | grep -v '^version policy: refused (UnknownKey)' | head -1 || true)
+  [ -z "$other" ] || fail "V9: the PC refused the policy of the test key 3, but not for its key: $other"
+  grep -q 'version policy: refused (UnknownKey)' <<<"$text"
 }
 
 min_controller_part() {
@@ -1400,7 +1416,7 @@ min_controller_part() {
 }
 
 policy_part() {
-  local t0 cm0="" old_version want
+  local t0 cm0="" old_version want deadline line n0 n1 after
   log "V5: the PC's service took the first policy by itself (it asks 30 s after its start)"
   until_ok 60 "V5: the PC's log line 'version policy: now at 1:1'" policy_taken V5 1:1
   pass "V5: the PC holds the policy 1:1 that it fetched from https://$DOMAIN/api/hjv/version and checked against the build's update keys"
@@ -1413,7 +1429,8 @@ policy_part() {
   pass "V6: the PC's screen ($MS ms): a deadline that has not passed lets the old controller in"
 
   log "V7: the minimum in force (seq 2, its deadline an hour ago): the PC takes it and refuses the login"
-  serve_policy 2 "$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)"
+  deadline=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
+  serve_policy 2 "$deadline"
   # the service asks by itself 30 s after its start, then every six hours: it starts again
   stop_pc_service
   start_pc_service
@@ -1446,6 +1463,43 @@ policy_part() {
   else
     echo "skipped: V8 (no CLIENT_OLD, a 1.5.1 client built for this server)"
   fi
+
+  # (last: from here on the PC's log has a policy that it refused, which policy_taken fails on)
+  log "V9: a policy signed with the test key 3, which the build does not pin (seq 3, as 1:2): the PC's service starts again"
+  # (with 1:2's deadline: a later one puts the deadline off, which even a PC that took any key
+  # would refuse, as a relaxation)
+  serve_policy 3 "$deadline" signing-3
+  line="version policy: refused the login of a controller (\"Linux\", version \"$CUR\")"
+  n0=$(pc_log_count "$line")
+  n1=$(pc_log_count 'keep_alive: ')
+  cm0=""
+  if [ -f "$RUN/pc-cm.log" ]; then cm0=$(wc -l <"$RUN/pc-cm.log"); fi
+  stop_pc_service
+  t0=$(date +%s)
+  start_pc_service
+  until_ok 20 "V9: the PC registered with hbbs again" pc_log_count_above 'keep_alive: ' "$n1"
+  vscreen ver "$CLIENT" v9
+  after=$(($(date +%s) - t0))
+  # The service asks the server 30 s after its start, or once it has refused a login: a login
+  # refused sooner was refused by the policy it read from its store, before it asked anything.
+  [ "$after" -lt 30 ] || fail "V9: the login ended $after s after the PC's start, when the PC may have asked the server already"
+  want=$(printf '%s\n' "hjv-e2e: login error: $(l1 "$CUR")" "hjv-e2e: error: Login Error: $R1" "hjv-e2e: error Login Error")
+  [ "$RC" = 4 ] || fail "V9: exit $RC, expected 4: the PC did not refuse by the policy 1:2 it stored"
+  [ "$(from_login_error)" = "$want" ] || fail "V9: not the PC's L1, then R1 in a 'Login Error' box: $(from_login_error)"
+  if has 'logged in to' || [ -e "$RUN/v9.ppm" ]; then fail "V9: the controller got in"; fi
+  until_ok 5 "V9: the PC's log line of the refusal" pc_log_count_above "$line" "$n0"
+  pass "V9: the PC's service, started again, refused the login by the policy 1:2 it stored, $after s after its start, before it asked the server (exit 4, the PC's L1, then R1)"
+  # the refused login has the service ask at once
+  until_ok 40 "V9: the PC's log line 'version policy: refused (UnknownKey)'" key3_refused
+  vscreen ver "$CLIENT" v9b
+  if [ "$RC" != 4 ] || [ "$(from_login_error)" != "$want" ]; then
+    fail "V9: after the policy of the test key 3, exit $RC, not 4 with the PC's L1, then R1: $(from_login_error)"
+  fi
+  if has 'logged in to' || [ -e "$RUN/v9b.ppm" ]; then fail "V9: the controller got in after the policy of the test key 3"; fi
+  if [ -n "$cm0" ] && [ "$(wc -l <"$RUN/pc-cm.log")" != "$cm0" ]; then
+    fail "V9: a refused login reached the PC's connection manager"
+  fi
+  pass "V9: the PC refused the policy 1:3 of the test key 3 (UnknownKey), took nothing from it and still refuses the controller by 1:2 ($MS ms)"
 }
 
 if [ -n "$ACCOUNT" ]; then
@@ -1455,7 +1509,7 @@ if [ -n "$MIN_HBBS" ]; then min_controller_part; fi
 if [ -n "$POLICY" ]; then
   policy_part
 elif [ -n "$KEYED" ]; then
-  echo "skipped: V5-V8, the version policy (no HJV_RELEASE, tools/hjv-release to sign its test policies)"
+  echo "skipped: V5-V9, the version policy (no HJV_RELEASE, tools/hjv-release to sign its test policies)"
 fi
 
 log "what hbbs saw"
