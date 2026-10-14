@@ -88,14 +88,20 @@ the SSO would see this server's address (the WordPress plugin's too) as the sour
 that is not on the allowlist has lower limits of its own: its failed logins
 (`HJV_API_LIMIT_NEW_ID`, 2 a day, instead of `HJV_API_LIMIT_ID`, in the same counters), and the
 SSO calls of all such IDs together (`HJV_API_LIMIT_SSO_NEW`, 10 an hour, one window, besides
-`HJV_API_LIMIT_SSO`; one ID may take a quarter): at most 240 such calls a day, and the IDs on the
-list keep their own. When that window is full, a first login fails like a wrong password
-(`limited-sso-new` in the record, its failures not counted), the journal says
+`HJV_API_LIMIT_SSO`): at most 240 such calls a day that log no one in, and the IDs on the list
+keep their own. One ID and one client address (an IPv6 address by its /64) may each hold a
+quarter of the window, and a first login that goes through gives its call back, so that people
+logging in for the first time one after another behind one address are not held. When that
+window is full, a first login fails like a wrong password (`limited-sso-new` in the record, its
+failures not counted), the journal says
 `login: SSO call limit of the portal IDs not on the allowlist reached` once a minute, and the
-five-minute check alarms (`sso_new`). An ID imported ahead is on the list and not held by these
-limits. The user decides the numbers; list mode does not use them (an ID off the list never
-reaches the SSO there). This lowers the risk and does not remove it (docs/architecture.md 5-7,
-docs/server-runbook.md 7-13).
+five-minute check alarms (`sso_new`); when an ID or an address holds its share, its first logins
+fail the same way and the journal names its tag (`... holds its share ...`), which
+`admin unlock` takes. One address cannot fill the window, but five can, with two wrong passwords
+an hour each: someone with a few addresses can keep first logins failing, which list mode ends.
+An ID imported ahead is on the list and not held by these limits. The user decides the numbers;
+list mode does not use them (an ID off the list never reaches the SSO there). This lowers the
+risk and does not remove it (docs/architecture.md 5-7, docs/server-runbook.md 7-13).
 
 `HJV_API_CAMPUS_NETS` (the university's networks, such as `192.0.2.0/24,2001:db8::/32`) lets the
 account's other devices see whether a new login came from on or off campus; the address itself is
@@ -201,10 +207,10 @@ key list [<id|tag:T>]     account keys: number, account, platform, the server's 
                           with --reveal), and a line per PC that reported the key's password-less
                           use: the last time and the count of 30 days (U6; host name with --reveal)
 key revoke <ckid>         revoke an account key with its token
-unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes',
-                          and the SSO calls it holds while not on the allowlist), of a tag from a
-                          journal warning (an account's or an address's), or of a client address
-                          (an IPv6 address by its /64)
+unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
+                          of a tag from a journal warning (an account's or an address's), or of a
+                          client address (an IPv6 address by its /64), and the SSO calls of IDs
+                          not on the allowlist that the ID or address holds
 user revoke-all <id|tag:T> | --all
                           revoke every token and account key of an account, or of every account
                           (devices log in again; PCs stay in their accounts)

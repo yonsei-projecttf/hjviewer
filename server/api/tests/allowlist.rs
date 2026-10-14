@@ -7,7 +7,9 @@
 //! the block comes while a login runs; `allow remove` blocks; an account deleted takes its entry
 //! with it unless the entry is blocked; list mode admits the IDs on the list only, as D3 did. A
 //! block holds for every form of the person's ID the SSO names, and in open mode an ID nobody
-//! registered has lower limits of its own (HJV_API_LIMIT_NEW_ID, HJV_API_LIMIT_SSO_NEW).
+//! registered has lower limits of its own (HJV_API_LIMIT_NEW_ID, HJV_API_LIMIT_SSO_NEW), of whose
+//! SSO calls one ID and one client address hold a quarter each, also at the code step of a second
+//! factor.
 
 mod common;
 
@@ -17,6 +19,8 @@ use hjv_api::{
     db::{self, Listing},
     limits::{SCOPE_ID, SCOPE_OK_ID},
     login::{FAILURE_TEXT, TEXT_BLOCKED},
+    tfa::SecondFactor,
+    util::{b64, now, random_bytes},
 };
 use serde_json::json;
 use std::{
@@ -619,7 +623,7 @@ async fn ids_nobody_registered_have_lower_limits_in_open_mode() {
         h.admin(&["unlock", &format!("tag:{tag}")], false, None)
             .await
             .unwrap(),
-        "cleared 2 counted login attempts and 2 SSO calls of an ID not on the allowlist"
+        "cleared 2 counted login attempts and 2 SSO calls of IDs not on the allowlist"
     );
     let a = h
         .login(&h.login_body(stranger, "wrong", None), "10.42.0.9")
@@ -721,4 +725,269 @@ async fn ids_nobody_registered_have_lower_limits_in_open_mode() {
     h.login_ok(KIM, None).await;
     h.login_ok(KIM, None).await;
     assert_eq!(h.state.sso_calls_new.last_full(), None);
+}
+
+/// The counterexample of the second review: one address sends two wrong passwords for each of
+/// five IDs nobody registered, ten requests (its limit of ten minutes). Those calls once filled
+/// HJV_API_LIMIT_SSO_NEW, so that every first login failed for an hour; now the address holds a
+/// quarter of the window (two of ten), and the first login of someone else goes through. An IPv6
+/// address counts by its /64, and unlocking the address frees its share with its counters.
+#[tokio::test]
+async fn one_address_cannot_shut_the_first_logins() {
+    let h = Harness::with(Options {
+        allow: vec![KIM.0],
+        vars: vec![
+            ("HJV_API_LIMIT_NEW_ID", "2/86400".into()),
+            ("HJV_API_LIMIT_SSO_NEW", "10/3600".into()),
+        ],
+        ..Default::default()
+    })
+    .await;
+    let attacker = "192.0.2.7";
+    for _ in 0..2 {
+        for n in 0..5 {
+            let a = h
+                .login(
+                    &h.login_body(&format!("2026888{n:03}"), "wrong", None),
+                    attacker,
+                )
+                .await;
+            assert_eq!(
+                (a.status, &a.json),
+                (401, &json!({ "error": FAILURE_TEXT }))
+            );
+        }
+    }
+    // two of them reached the SSO, the other eight failed alike without a call
+    assert_eq!(h.sso.token_calls(), 2);
+    let results = h.results().await;
+    let count = |result: &str| results.iter().filter(|r| *r == result).count();
+    assert_eq!(
+        (count("login:credentials"), count("login:limited-sso-new")),
+        (2, 8)
+    );
+    let ip = h.state.tags.ip(attacker);
+    let logs = hjv_api::log::captured().join("\n");
+    assert!(
+        logs.contains(&format!(
+            "login: an address holds its share of the SSO calls of the portal IDs not on the allowlist (ip={ip}); hjv-api admin unlock tag:{ip} lifts it"
+        )),
+        "{logs}"
+    );
+    // the window is not full: a first login from another address goes through
+    assert_eq!(h.state.sso_calls_new.last_full(), None);
+    h.login_ok_from(HONG, None, "192.0.2.20").await;
+    assert_eq!(listing(&h, HONG.0).await, Listing::Registered);
+    assert_eq!(h.sso.token_calls(), 3);
+    // an IPv6 address counts by its /64, as for the address limit
+    for (n, ip6) in ["2001:db8:5::1", "2001:db8:5::2", "2001:db8:5:0:1::3"]
+        .into_iter()
+        .enumerate()
+    {
+        let a = h
+            .login(
+                &h.login_body(&format!("2026888{:03}", 10 + n), "wrong", None),
+                ip6,
+            )
+            .await;
+        assert_eq!(a.status, 401);
+    }
+    assert_eq!(h.sso.token_calls(), 5);
+    assert_eq!(h.results().await.last().unwrap(), "login:limited-sso-new");
+    // unlocking the address clears its counters and frees its share
+    assert_eq!(
+        h.admin(&["unlock", &format!("ip:{attacker}")], false, None)
+            .await
+            .unwrap(),
+        "cleared 10 counted login attempts and 2 SSO calls of IDs not on the allowlist"
+    );
+    let a = h
+        .login(&h.login_body("2026888020", "wrong", None), attacker)
+        .await;
+    assert_eq!(a.status, 401);
+    assert_eq!(h.sso.token_calls(), 6);
+}
+
+/// One ID and one address each hold a quarter of HJV_API_LIMIT_SSO_NEW (here one call of four),
+/// and the journal names the one that holds it by its tag, for unlock. A first login that goes
+/// through gives its call back, so that people logging in for the first time one after another
+/// behind one address (a campus NAT) are not held; one the SSO accepted that went no further (a
+/// bad account key) keeps it.
+#[tokio::test]
+async fn an_id_and_an_address_hold_a_quarter_each_and_a_first_login_gives_its_call_back() {
+    // only an ID nobody uses is on the list: HONG, KIM and LEE log in for the first time
+    let h = Harness::with(Options {
+        allow: vec!["2026999998"],
+        vars: vec![
+            ("HJV_API_LIMIT_NEW_ID", "10/86400".into()),
+            ("HJV_API_LIMIT_SSO_NEW", "4/3600".into()),
+        ],
+        ..Default::default()
+    })
+    .await;
+    let failure = json!({ "error": FAILURE_TEXT });
+    // the ID's share: its second call fails without an SSO call, from another address too, and
+    // only the call made counts as its failure
+    let stranger = "2026999999";
+    let tag = h.account_tag(stranger);
+    for ip in ["10.47.0.1", "10.47.0.2"] {
+        let a = h.login(&h.login_body(stranger, "wrong", None), ip).await;
+        assert_eq!((a.status, &a.json), (401, &failure));
+    }
+    assert_eq!(h.sso.token_calls(), 1);
+    assert_eq!(
+        h.results().await,
+        vec!["login:credentials", "login:limited-sso-new"]
+    );
+    assert_eq!(h.counted(SCOPE_ID, tag.clone()).await, 1);
+    // the address's share: another ID from the first address fails the same way
+    let a = h
+        .login(&h.login_body("2026888000", "wrong", None), "10.47.0.1")
+        .await;
+    assert_eq!((a.status, &a.json), (401, &failure));
+    assert_eq!(h.sso.token_calls(), 1);
+    assert_eq!(h.results().await.last().unwrap(), "login:limited-sso-new");
+    let ip = h.state.tags.ip("10.47.0.1");
+    let logs = hjv_api::log::captured().join("\n");
+    for line in [
+        format!("login: a portal ID not on the allowlist holds its share of their SSO calls (acct={tag}); hjv-api admin unlock tag:{tag} lifts it"),
+        format!("login: an address holds its share of the SSO calls of the portal IDs not on the allowlist (ip={ip}); hjv-api admin unlock tag:{ip} lifts it"),
+    ] {
+        assert!(logs.contains(&line), "{line}\n{logs}");
+    }
+    // a first login the SSO accepted that went no further keeps its call: hong-alias with an
+    // account key whose proof is wrong (400), and then KIM behind the same address is held
+    let body = h.login_body_with(
+        ALIAS.0,
+        ALIAS.1,
+        None,
+        now(),
+        &b64(&random_bytes::<16>()),
+        KeyChoice::WrongProof,
+    );
+    let a = h.login(&body, "10.47.1.1").await;
+    assert_eq!(a.status, 400, "{}", a.text);
+    assert_eq!(h.sso.token_calls(), 2);
+    let a = h
+        .login(&h.login_body(KIM.0, KIM.1, None), "10.47.1.1")
+        .await;
+    assert_eq!((a.status, &a.json), (401, &failure));
+    assert_eq!(h.sso.token_calls(), 2);
+    // first logins that go through give their calls back: three people one after another
+    // behind one address, of whose share is one call
+    for account in [HONG, KIM, LEE] {
+        h.login_ok_from(account, None, "10.47.2.1").await;
+        assert_eq!(listing(&h, account.0).await, Listing::Registered);
+    }
+    assert_eq!(h.sso.token_calls(), 5);
+    // so the window holds the stranger's and hong-alias's calls: two more fit, then it is full
+    for n in 1..3 {
+        let a = h
+            .login(
+                &h.login_body(&format!("2026888{n:03}"), "wrong", None),
+                &format!("10.47.3.{n}"),
+            )
+            .await;
+        assert_eq!(a.status, 401);
+    }
+    assert_eq!(h.sso.token_calls(), 7);
+    assert_eq!(h.state.sso_calls_new.last_full(), None);
+    let a = h
+        .login(&h.login_body("2026888009", "wrong", None), "10.47.4.1")
+        .await;
+    assert_eq!((a.status, &a.json), (401, &failure));
+    assert_eq!(h.sso.token_calls(), 7);
+    assert!(h.state.sso_calls_new.last_full().is_some());
+    // unlocking the ID's tag clears its counters and frees what it holds
+    assert_eq!(
+        h.admin(&["unlock", &format!("tag:{tag}")], false, None)
+            .await
+            .unwrap(),
+        "cleared 1 counted login attempts and 1 SSO calls of IDs not on the allowlist"
+    );
+    let a = h
+        .login(&h.login_body("2026888009", "wrong", None), "10.47.4.1")
+        .await;
+    assert_eq!(a.status, 401);
+    assert_eq!(h.sso.token_calls(), 8);
+}
+
+/// A second factor for the code step (tfa.rs; off by D11 and U1): "123456" is right for everyone.
+struct FixedCode;
+
+impl SecondFactor for FixedCode {
+    fn required(&self) -> bool {
+        true
+    }
+
+    fn verify(&self, _login_key: &str, code: &str) -> bool {
+        code == "123456"
+    }
+}
+
+/// Code dialogs for `id` with a wrong password, one from each address; their secrets.
+async fn code_dialogs(h: &Harness, id: &str, ips: &[&str]) -> Vec<String> {
+    let mut secrets = Vec::new();
+    for ip in ips {
+        let a = h.login(&h.login_body(id, "wrong", None), ip).await;
+        assert_eq!(a.json["type"], "email_check", "{}", a.text);
+        secrets.push(a.json["secret"].as_str().unwrap().to_owned());
+    }
+    secrets
+}
+
+/// The code request of a dialog, as the app sends it.
+fn code_request(id: &str, secret: &str) -> serde_json::Value {
+    json!({
+        "verificationCode": "123456", "tfaCode": "123456", "secret": secret, "username": id,
+        "id": "", "uuid": "dXVpZA==", "autoLogin": true, "type": "email_code",
+        "deviceInfo": {"os": "ios", "type": "client", "name": "iPhone15,2"},
+    })
+}
+
+/// With a second factor the code step of an ID nobody registered counts under
+/// HJV_API_LIMIT_NEW_ID as its first step does, and an ID on the list keeps HJV_API_LIMIT_ID.
+#[tokio::test]
+async fn the_code_step_keeps_the_lower_limit_of_an_id_nobody_registered() {
+    let h = Harness::with(Options {
+        allow: vec![KIM.0],
+        second_factor: Some(Arc::new(FixedCode)),
+        vars: vec![("HJV_API_LIMIT_NEW_ID", "1/86400".into())],
+        ..Default::default()
+    })
+    .await;
+    let failure = json!({ "error": FAILURE_TEXT });
+    // two dialogs: a dialog does not count against the ID
+    let stranger = "2026999999";
+    let secrets = code_dialogs(&h, stranger, &["10.48.0.1", "10.48.0.2"]).await;
+    assert_eq!(h.sso.token_calls(), 0);
+    // the first code step reaches the SSO with the wrong password: the one failure of its day
+    let a = h
+        .login(&code_request(stranger, &secrets[0]), "10.48.0.1")
+        .await;
+    assert_eq!((a.status, &a.json), (401, &failure));
+    assert_eq!(h.sso.token_calls(), 1);
+    // the second stops at that limit, without an SSO call
+    let a = h
+        .login(&code_request(stranger, &secrets[1]), "10.48.0.2")
+        .await;
+    assert_eq!((a.status, &a.json), (401, &failure));
+    assert_eq!(h.sso.token_calls(), 1);
+    assert_eq!(h.results().await.last().unwrap(), "login:limited-id");
+    let tag = h.account_tag(stranger);
+    let logs = hjv_api::log::captured().join("\n");
+    assert!(
+        logs.contains(&format!(
+            "login: ID limit reached (acct={tag}, an ID not on the allowlist)"
+        )),
+        "{logs}"
+    );
+    // an ID on the list keeps HJV_API_LIMIT_ID (3 in ten minutes) at its code step
+    let ips = ["10.48.1.1", "10.48.1.2"];
+    let secrets = code_dialogs(&h, KIM.0, &ips).await;
+    for (secret, ip) in secrets.iter().zip(ips) {
+        let a = h.login(&code_request(KIM.0, secret), ip).await;
+        assert_eq!((a.status, &a.json), (401, &failure));
+    }
+    assert_eq!(h.sso.token_calls(), 3);
 }

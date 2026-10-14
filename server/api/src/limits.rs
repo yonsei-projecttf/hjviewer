@@ -24,7 +24,10 @@
 //! the SSO took lately (the failure delay follows it, step 10); and how many failed logins a
 //! minute are written to the records. With HJV_API_LOGIN=open the SSO calls of the portal IDs not
 //! on the allowlist have a small window of their own besides (HJV_API_LIMIT_SSO_NEW), so that any
-//! portal ID reaching the SSO cannot use up the calls of the people registered.
+//! portal ID reaching the SSO cannot use up the calls of the people registered. One ID and one
+//! client address (an IPv6 address by its /64) may each hold a quarter of that window, so that one
+//! address cannot fill it with a few wrong passwords and shut the first logins of everyone, and a
+//! first login that goes through gives its call back (login.rs).
 
 use crate::{config::Window, sso::Failure};
 use rusqlite::{params, Connection};
@@ -107,17 +110,19 @@ pub enum Take {
     Taken,
     /// the window is full
     Full,
-    /// this account holds its share of the window
-    Share,
+    /// the holder `who[n]` of [`GlobalLimiter::try_take`] holds its share of the window
+    Share(usize),
 }
 
-/// The SSO calls of all accounts together (v2 §9-2 step 7), in memory. One account may hold a
-/// quarter of a window (at least one call), so that one known password cannot use up the budget
-/// of everyone. The same for the SSO calls of the portal IDs not on the allowlist in open mode
-/// (HJV_API_LIMIT_SSO_NEW), whose last full window the five-minute check reports (check.rs).
+/// The SSO calls of all accounts together (v2 §9-2 step 7), in memory. A call is held by the tags
+/// it was taken for, and each of them may hold a quarter of a window (at least one call), so that
+/// one known password cannot use up the budget of everyone. The same for the SSO calls of the
+/// portal IDs not on the allowlist in open mode (HJV_API_LIMIT_SSO_NEW), held by the ID and by the
+/// client address, whose last full window the five-minute check reports (check.rs).
 pub struct GlobalLimiter {
     window: Window,
-    calls: Mutex<VecDeque<(Instant, String)>>,
+    /// when each call was taken, and the tags that hold it
+    calls: Mutex<VecDeque<(Instant, Vec<String>)>>,
     /// when a call last found the window full (Unix time)
     last_full: Mutex<Option<i64>>,
 }
@@ -136,21 +141,24 @@ impl GlobalLimiter {
         *self.last_full.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Forgets the calls the tags `who` hold in the window (admin unlock); returns how many.
+    /// Forgets the calls that any of the tags `who` holds in the window (admin unlock); returns
+    /// how many.
     pub fn forget(&self, who: &[String]) -> usize {
         let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
         let before = calls.len();
-        calls.retain(|(_, w)| !who.contains(w));
+        calls.retain(|(_, holders)| !holders.iter().any(|h| who.contains(h)));
         before - calls.len()
     }
 
-    /// The calls of a window one account may hold.
+    /// The calls of a window one holder may hold.
     pub fn share(&self) -> usize {
         (self.window.count as usize / 4).max(1)
     }
 
-    /// Takes a call for the account tagged `who` if the window has room for it.
-    pub fn try_take(&self, who: &str) -> Take {
+    /// Takes a call held by the tags `who` (an account's, for the SSO calls of the IDs not on the
+    /// allowlist also an address's) if the window has room for it and none of them holds its
+    /// share yet.
+    pub fn try_take(&self, who: &[&str]) -> Take {
         let now = Instant::now();
         let span = Duration::from_secs(self.window.secs as u64);
         let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
@@ -164,11 +172,27 @@ impl GlobalLimiter {
             *self.last_full.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::util::now());
             return Take::Full;
         }
-        if calls.iter().filter(|(_, w)| w == who).count() >= self.share() {
-            return Take::Share;
+        for (n, w) in who.iter().enumerate() {
+            let held = calls
+                .iter()
+                .filter(|(_, holders)| holders.iter().any(|h| h == w))
+                .count();
+            if held >= self.share() {
+                return Take::Share(n);
+            }
         }
-        calls.push_back((now, who.to_owned()));
+        calls.push_back((now, who.iter().map(|w| (*w).to_owned()).collect()));
         Take::Taken
+    }
+
+    /// Gives back the newest call held by the tags `who`, a call that is not to count after all
+    /// (login.rs: a first login that went through); returns whether there was one.
+    pub fn give_back(&self, who: &[&str]) -> bool {
+        let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+        let newest = calls
+            .iter()
+            .rposition(|(_, holders)| holders.iter().map(String::as_str).eq(who.iter().copied()));
+        newest.and_then(|n| calls.remove(n)).is_some()
     }
 }
 
@@ -395,31 +419,80 @@ mod tests {
     fn global_with_shares() {
         let g = GlobalLimiter::new(Window { count: 2, secs: 60 });
         assert_eq!(g.share(), 1);
-        assert_eq!(g.try_take("a"), Take::Taken);
-        assert_eq!(g.try_take("a"), Take::Share);
+        assert_eq!(g.try_take(&["a"]), Take::Taken);
+        assert_eq!(g.try_take(&["a"]), Take::Share(0));
         // one account's full share is not a full window
         assert_eq!(g.last_full(), None);
-        assert_eq!(g.try_take("b"), Take::Taken);
-        assert_eq!(g.try_take("c"), Take::Full);
+        assert_eq!(g.try_take(&["b"]), Take::Taken);
+        assert_eq!(g.try_take(&["c"]), Take::Full);
         let full = g.last_full().unwrap();
         assert!((crate::util::now() - full).abs() <= 1, "{full}");
         // forgetting an account's calls frees its share and the window
         assert_eq!(g.forget(&["a".to_owned(), "x".to_owned()]), 1);
-        assert_eq!(g.try_take("a"), Take::Taken);
-        assert_eq!(g.try_take("d"), Take::Full);
+        assert_eq!(g.try_take(&["a"]), Take::Taken);
+        assert_eq!(g.try_take(&["d"]), Take::Full);
         let g = GlobalLimiter::new(Window {
             count: 20,
             secs: 60,
         });
         assert_eq!(g.share(), 5);
         for _ in 0..5 {
-            assert_eq!(g.try_take("a"), Take::Taken);
+            assert_eq!(g.try_take(&["a"]), Take::Taken);
         }
-        assert_eq!(g.try_take("a"), Take::Share);
+        assert_eq!(g.try_take(&["a"]), Take::Share(0));
         for i in 0..15 {
-            assert_eq!(g.try_take(&format!("x{i}")), Take::Taken);
+            assert_eq!(g.try_take(&[&format!("x{i}")]), Take::Taken);
         }
-        assert_eq!(g.try_take("y"), Take::Full);
+        assert_eq!(g.try_take(&["y"]), Take::Full);
+    }
+
+    #[test]
+    fn each_holder_has_its_share() {
+        // the window of the IDs not on the allowlist: each call held by an ID and an address
+        let g = GlobalLimiter::new(Window {
+            count: 8,
+            secs: 3600,
+        });
+        assert_eq!(g.share(), 2);
+        assert_eq!(g.try_take(&["id1", "ip1"]), Take::Taken);
+        assert_eq!(g.try_take(&["id2", "ip1"]), Take::Taken);
+        // the address holds its share, whatever the ID
+        assert_eq!(g.try_take(&["id3", "ip1"]), Take::Share(1));
+        // the ID holds its share, whatever the address
+        assert_eq!(g.try_take(&["id1", "ip2"]), Take::Taken);
+        assert_eq!(g.try_take(&["id1", "ip3"]), Take::Share(0));
+        // a call given back frees both shares: the newest of the very same holders goes
+        assert!(g.give_back(&["id1", "ip2"]));
+        assert!(!g.give_back(&["id1", "ip2"]));
+        assert!(!g.give_back(&["ip1", "id1"]));
+        assert_eq!(g.try_take(&["id4", "ip2"]), Take::Taken);
+        assert_eq!(g.try_take(&["id4", "ip2"]), Take::Taken);
+        assert_eq!(g.try_take(&["id5", "ip2"]), Take::Share(1));
+        // forgetting an address forgets the calls it holds, whichever IDs they were for
+        assert_eq!(g.forget(&["ip1".to_owned()]), 2);
+        assert_eq!(g.try_take(&["id3", "ip1"]), Take::Taken);
+        assert_eq!(g.try_take(&["id1", "ip4"]), Take::Taken);
+        assert_eq!(g.try_take(&["id1", "ip5"]), Take::Taken);
+        assert_eq!(g.try_take(&["id1", "ip6"]), Take::Share(0));
+        // with the default window (10 an hour) one address gets two calls, whatever the IDs: it
+        // takes five addresses to fill the window
+        let g = GlobalLimiter::new(Window {
+            count: 10,
+            secs: 3600,
+        });
+        for n in 0..10 {
+            let want = if n < 2 { Take::Taken } else { Take::Share(1) };
+            assert_eq!(g.try_take(&[&format!("id{n}"), "ip0"]), want);
+        }
+        for a in 1..5 {
+            for n in 0..2 {
+                let (id, ip) = (format!("id{a}{n}"), format!("ip{a}"));
+                assert_eq!(g.try_take(&[&id, &ip]), Take::Taken);
+            }
+        }
+        assert_eq!(g.last_full(), None);
+        assert_eq!(g.try_take(&["y", "ip9"]), Take::Full);
+        assert!(g.last_full().is_some());
     }
 
     #[test]

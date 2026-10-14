@@ -95,9 +95,9 @@ hjv-api admin [--socket <path>] [--reveal] <command>
   key list [<id|tag:T>]     account keys: number, account, platform, device, version, network,
                             times, and per PC the last password-less use and the uses of 30 days
   key revoke <ckid>         revoke an account key with its token (that device must log in again)
-  unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes',
-                            and the SSO calls it holds while not on the allowlist), of the tag from
-                            a journal warning, or of a client address
+  unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
+                            of the tag from a journal warning, or of a client address, and the SSO
+                            calls of IDs not on the allowlist that the ID or address holds
   user revoke-all <id|tag:T> | --all
                             revoke every token and account key of an account, or of every account
                             (each device must log in again; PCs stay in the accounts)
@@ -1139,7 +1139,8 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
         }
         ["unlock", arg] => {
             let keys = unlock_keys(state, arg).await?;
-            // and the SSO calls an ID not on the allowlist holds of their window (in memory)
+            // and the SSO calls of the IDs not on the allowlist that the ID or the address holds
+            // (in memory)
             let forgotten = state.sso_calls_new.forget(&keys);
             let cleared = state
                 .db
@@ -1147,7 +1148,7 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 .await
                 .map_err(dberr)?;
             Ok(if forgotten > 0 {
-                format!("cleared {cleared} counted login attempts and {forgotten} SSO calls of an ID not on the allowlist")
+                format!("cleared {cleared} counted login attempts and {forgotten} SSO calls of IDs not on the allowlist")
             } else {
                 format!("cleared {cleared} counted login attempts")
             })

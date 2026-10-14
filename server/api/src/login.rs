@@ -31,7 +31,9 @@
 //!    account's share of them (limits.rs); in open mode an ID that is not on the allowlist first
 //!    takes one of the few SSO calls of all such IDs (HJV_API_LIMIT_SSO_NEW, `limited-sso-new`),
 //!    so that it cannot use up the calls of the people registered, and the five-minute check
-//!    reports that window full (check.rs);
+//!    reports that window full (check.rs). One ID and one client address may each hold a quarter
+//!    of it, so that one address cannot shut the first logins of everyone with a few wrong
+//!    passwords, and a first login that goes through gives its call back;
 //! 9. the second factor when it is on (tfa.rs; off by D11 and U1), before the SSO call;
 //! 10. the SSO (sso.rs), sorted into refused credentials (counted), a refused server address or
 //!     client and upstream errors (counted against the address only);
@@ -1181,9 +1183,13 @@ async fn sso_login(
         return run.sso_down().await;
     }
     // in open mode the IDs not on the allowlist first take one of their own few calls, so that
-    // trying passwords on many portal IDs cannot use up the calls of the people registered
+    // trying passwords on many portal IDs cannot use up the calls of the people registered; the
+    // ID and the client address hold it, each at most a quarter of them, so that one address
+    // with a few wrong passwords cannot shut the first logins of everyone
+    let ip_tag = run.ip_tag.clone();
+    let new_holders = [account_tag.as_str(), ip_tag.as_str()];
     if unlisted {
-        let refused = match state.sso_calls_new.try_take(&account_tag) {
+        let refused = match state.sso_calls_new.try_take(&new_holders) {
             Take::Taken => false,
             Take::Full => {
                 if state.first_notice("sso-calls-new", Duration::from_secs(60)) {
@@ -1193,13 +1199,21 @@ async fn sso_login(
                 }
                 true
             }
-            Take::Share => {
+            Take::Share(0) => {
                 if state.first_notice(
                     &format!("sso-share-new:{account_tag}"),
                     Duration::from_secs(60),
                 ) {
                     log_warn!(
                         "login: a portal ID not on the allowlist holds its share of their SSO calls (acct={account_tag}); hjv-api admin unlock tag:{account_tag} lifts it"
+                    );
+                }
+                true
+            }
+            Take::Share(_) => {
+                if state.first_notice(&format!("sso-share-new:{ip_tag}"), Duration::from_secs(60)) {
+                    log_warn!(
+                        "login: an address holds its share of the SSO calls of the portal IDs not on the allowlist (ip={ip_tag}); hjv-api admin unlock tag:{ip_tag} lifts it"
                     );
                 }
                 true
@@ -1216,7 +1230,7 @@ async fn sso_login(
         }
     }
     // the SSO calls of all accounts, and this account's share of them
-    match state.sso_calls.try_take(&account_tag) {
+    match state.sso_calls.try_take(&[account_tag.as_str()]) {
         Take::Taken => {}
         Take::Full => {
             if state.first_notice("sso-calls", Duration::from_secs(60)) {
@@ -1226,7 +1240,7 @@ async fn sso_login(
                 .fail(StatusCode::UNAUTHORIZED, Outcome::Refused, "limited-sso")
                 .await;
         }
-        Take::Share => {
+        Take::Share(_) => {
             if state.first_notice(&format!("sso-share:{account_tag}"), Duration::from_secs(60)) {
                 log_warn!(
                     "login: one account's share of the SSO calls reached (acct={account_tag})"
@@ -1251,7 +1265,16 @@ async fn sso_login(
         );
     }
     match result {
-        Ok(user) => success(run, key, user, device).await,
+        Ok(user) => {
+            let answer = success(run, key, user, device).await;
+            // a first login that went through gives its call back: the window keeps the calls
+            // that logged no one in, so that people logging in for the first time one after
+            // another behind one address (a campus NAT) do not use up its share
+            if unlisted && !answer.failure {
+                state.sso_calls_new.give_back(&new_holders);
+            }
+            answer
+        }
         Err(e) => {
             note_sso_message(state, &e, username);
             match e.failure {
