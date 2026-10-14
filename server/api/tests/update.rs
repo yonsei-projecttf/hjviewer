@@ -573,6 +573,67 @@ async fn the_token_alone_opens_nothing() {
     );
 }
 
+/// Door 1 with the integrated account service (the test WP-A1 left to the integration): an
+/// account that the open login registered at its first login, with no import, downloads with its
+/// token and the proof of the account key its login made (200); the same token without a proof
+/// gets the 401 of a wrong token, and so does the proof once the account is blocked.
+#[tokio::test]
+async fn door_1_takes_the_proof_of_an_account_the_open_login_registered() {
+    let area = Area::new();
+    let (exe, _) = area.usual();
+    // only an ID nobody uses is on the list: HONG's first login registers it (HJV_API_LOGIN=open)
+    let h = Harness::with(Options {
+        vars: area.vars(&[]),
+        allow: vec!["2026999998"],
+        ..Default::default()
+    })
+    .await;
+    let entry = |h: &Harness| {
+        let state = h.state.clone();
+        async move {
+            state
+                .db
+                .call(|c| hjv_api::db::listing(c, "2026000001"))
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(entry(&h).await, hjv_api::db::Listing::Absent);
+    let token = h.login_ok(HONG, None).await;
+    assert_eq!(entry(&h).await, hjv_api::db::Listing::Registered);
+
+    // the token and its account key's proof: the package
+    let got = by_login(&h, Method::GET, WINDOWS, &token, "10.3.9.1", None).await;
+    assert_package_head(&got, EXE_TYPE, "HJViewer-1.6.1.exe", exe.len());
+    assert_eq!(got.body, exe);
+    // the token alone: the 401 of a wrong token, no package
+    let auth = format!("Bearer {token}");
+    let got = send(
+        &h,
+        Method::GET,
+        WINDOWS,
+        &[("authorization", &auth), ("x-real-ip", "10.3.9.1")],
+        None,
+    )
+    .await;
+    assert_eq!(got.status, 401);
+    assert_eq!(
+        got.json()["error"],
+        "로그인이 필요합니다. 다시 로그인해 주세요."
+    );
+    assert!(got.headers.get("content-disposition").is_none());
+    // blocked, the proof opens nothing either
+    h.admin(&["block", HONG.0], false, None).await.unwrap();
+    assert_eq!(entry(&h).await, hjv_api::db::Listing::Blocked);
+    let got = by_login(&h, Method::GET, WINDOWS, &token, "10.3.9.1", None).await;
+    assert_eq!(got.status, 401);
+    assert_eq!(
+        update_results(&h).await,
+        ["update:token-windows"],
+        "one download in all"
+    );
+}
+
 #[tokio::test]
 async fn a_blocked_account_gets_nothing() {
     let area = Area::new();

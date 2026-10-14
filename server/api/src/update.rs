@@ -1695,10 +1695,12 @@ h1 { font-size: 1.4em; }
 h2 { font-size: 1.15em; margin-top: 1.8em; }
 code { word-break: break-all; }
 .facts { font-size: 0.9em; color: #444; }
+.pilot { border-left: 4px solid #c90; padding-left: 0.8em; }
 </style>
 </head>
 <body>
 <h1>HJViewer 새 버전 받기</h1>
+<p class="pilot">본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.</p>
 <p>이 페이지의 주소는 받은 사람만 쓰세요. 다른 사람에게 알리거나 인터넷에 올리지 마세요.</p>
 "#;
 
@@ -2790,6 +2792,8 @@ mod tests {
         for part in [
             "<html lang=\"ko\">",
             "<meta name=\"robots\" content=\"noindex, nofollow, noarchive\">",
+            // the pilot notice of 2026-10-14, word for word, at the top
+            "<h1>HJViewer 새 버전 받기</h1>\n<p class=\"pilot\">본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.</p>",
             "새 버전은 HJViewer 1.6.1입니다.",
             // the design's text K2, the installed PC's file and the other one apart
             "<li>설치 없이 실행만 했다면 먼저 HJViewer를 완전히 끝내세요(작업 표시줄 오른쪽 아래 아이콘의 [끝내기]).</li>",
