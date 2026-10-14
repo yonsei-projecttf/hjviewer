@@ -107,7 +107,7 @@ ANDROID_REQUIRED = (
     "permission android.permission.REQUEST_INSTALL_PACKAGES",
     "provider " + _APP_CLASSES + "HjvUpdateFileProvider",
 )
-# the controlled side's permissions, the four types of foreground service among them
+# the controlled side's permissions, FOREGROUND_SERVICE and every FOREGROUND_SERVICE_<type> among them
 _CONTROLLED_PERMISSION = re.compile(
     r"android\.permission\.(FOREGROUND_SERVICE(_[A-Z_]+)?|SYSTEM_ALERT_WINDOW|RECEIVE_BOOT_COMPLETED"
     r"|REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)")

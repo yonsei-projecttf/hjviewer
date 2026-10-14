@@ -19,12 +19,14 @@ Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=
 SjgH0GTQdxgcwHCYnnaJHSDcpVWVSNwsd8GlAnOIKzg=
 
 # tools/hjv-release (`hjv-release test-keys`), the update keys of the minimum-version vectors and
-# of the E2E builds: signing keys 1 and 2 (seeds 40 41 .. 5f and 80 81 .. 9f), root key 101
-# (seed a0 a1 .. bf), a signing key and a root key that no vector build trusts (seeds c0 c1 .. df
-# and e0 e1 .. ff), and the device key of the research vector (seed 60 61 .. 7f)
+# of the E2E builds: signing keys 1 and 2 (seeds 40 41 .. 5f and 80 81 .. 9f), root keys 101 and
+# 102 (seeds a0 a1 .. bf and e0 e1 .. ff), signing key 3 and root key 103, which no vector build
+# trusts (seeds c0 c1 .. df and 10 11 .. 2f), and the device key of the research vector (seed
+# 60 61 .. 7f)
 JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=
 zRSzf5VulTGU/3+3Oz2B3MVh1hp1OAlLfD4aZD7l86o=
 T9CZzNR9eJPf6ewkQU7LDZtUICMqrTDZHEZb4zy+ZcQ=
-3eO8zsfzpmoRFfRdcg9NwTXDrnxOItyjj9se/WpJX/g=
 E9mQinCSWZLtVGAH0n9Q2mi6chfvYqw8ynhFKf8QRxw=
+3eO8zsfzpmoRFfRdcg9NwTXDrnxOItyjj9se/WpJX/g=
+d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=
 F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=

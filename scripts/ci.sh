@@ -11,15 +11,20 @@
 #                          order: after a fix, the stages that read what it changed (docs/ci.md).
 #   scripts/ci.sh server   a fresh upstream checkout with server/patches and all of its tests in
 #                          release (the library's and binaries' unit tests, the signaling, relay,
-#                          protobuf and hbbs hjv-pk tests), hjv-probe and hjv-load; hjv-api's tests
-#                          and release build (server/api); hjv-relay's tests (relay/)
+#                          protobuf, hbbs hjv-pk and lowest controller version tests), hjv-probe and
+#                          hjv-load; hjv-api's tests and release build (server/api); hjv-relay's
+#                          tests (relay/); tools/hjv-release's format, lints, tests (its shared test
+#                          vectors among them) and release build
 #   scripts/ci.sh client   the offline tests of the Google Play upload script and of the build-key
-#                          check (scripts/test_*.py), actionlint on the workflows when it is
-#                          installed, then a fresh upstream checkout with client/patches,
-#                          hbb_common's WebSocket tests, cargo +1.75.0 check (the app builds'
-#                          toolchain) and the client's pure Dart tests, with the Flutter SDK the app
-#                          builds use (downloaded once, checked against Flutter's release index).
-#                          Tests that need the generated bridge run in client-build.yml.
+#                          check (scripts/test_*.py, the key files also against hjv-release), actionlint
+#                          on the workflows when it is installed, then a fresh upstream checkout with
+#                          client/patches, the release records' tests (scripts/release-info.py, on
+#                          the patched tree and build/release-1.5.1), hbb_common's WebSocket tests,
+#                          cargo +1.75.0 check (the app builds' toolchain), the client core's
+#                          agreement with the shared vectors of tools/hjv-release (the trust rules)
+#                          and the client's pure Dart tests, with the Flutter SDK the app builds use
+#                          (downloaded once, checked against Flutter's release index). Tests that
+#                          need the generated bridge run in client-build.yml.
 #   scripts/ci.sh deploy   docs/server-runbook.md's deployment with Docker, as on the server, from a
 #                          copy of this working tree: path B (hbbs/hbbr on 127.0.0.1) behind
 #                          deploy/nginx-hjviewer.conf and deploy/apache-hjviewer.conf, then path A
@@ -109,10 +114,14 @@ E2E_LEAST_STRICT=60 E2E_LEAST_OPEN=2 WOL_LEAST=20
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 4))
 # strict: and the minimum version's V1-V9 (2026-10-14)
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 12))
-# by the filter of build_e2e_client's cargo test --lib <filter>
-declare -A UNIT_LEAST=([hjv]=83 [hjviewer_wol]=6)
+# by the filter of build_e2e_client's cargo test --lib <filter>; hjv as the minimum version's E2E
+# counted it (224, 2026-10-14, the series with src/hjviewer_update)
+declare -A UNIT_LEAST=([hjv]=224 [hjviewer_wol]=6)
 # and the update code's tests in the e2e stage's build without the update keys (2026-10-14)
 UNIT_LEAST[hjviewer_update-nokeys]=141
+# and the cases of the shared vectors the client core runs in the client stage (tools/hjv-release,
+# 2026-10-14)
+VECTORS_LEAST=141
 export PATH="$HOME/.cargo/bin:$PATH"
 
 SRC="$CI/src" PKGS="$CI/pkgs" CERTS="$CI/certs"
@@ -366,12 +375,30 @@ server_stage() {
   else
     skip "hjv-relay (no relay/)"
   fi
+  if [ -d "$ROOT/tools/hjv-release" ]; then
+    # the operator's tool of the signed version policy: its tests hold the shared test vectors to
+    # the reference model (python3 tests/vectors/generate.py --check) and read every one; the release
+    # build is the one the client stage's key-file test and the E2E use
+    step "server: hjv-release format, lints, tests and release build (tools/hjv-release)"
+    (cd "$ROOT/tools/hjv-release" && cargo fmt --check) || fail "server: hjv-release is not formatted (cargo fmt)"
+    (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo clippy --locked --all-targets -- -D warnings) ||
+      fail "server: hjv-release lints"
+    with_skips "$CI/hjv-release-tests.log" env -C "$ROOT/tools/hjv-release" CARGO_TARGET_DIR="$CI/target-hjv-release" \
+      cargo test --locked || fail "server: hjv-release tests"
+    (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
+      fail "server: hjv-release release build"
+  else
+    skip "hjv-release (no tools/hjv-release)"
+  fi
 }
 
 FLUTTER_VERSION=3.24.5 # client-build.yml FLUTTER_VERSION
 # The pure Dart tests of the client patches, which run with the bridge's web stand-in. The gesture
 # and quality monitor tests need the generated bridge and run in client-build.yml.
 CLIENT_DART_TESTS="test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart test/hjviewer_account_test.dart"
+# the update screens' (minimum version design 6-4), the controller-only Android app's (Play design
+# 3-3) and the super operator's view's pure tests (2026-10-14)
+CLIENT_DART_TESTS+=" test/hjv_update_test.dart test/hjviewer_android_test.dart test/hjviewer_admin_test.dart"
 # Pure Dart tests that a work package not in client/patches yet adds: run when the patched tree
 # has them, else skipped with a note. Once the patch is in, move them to CLIENT_DART_TESTS, so that
 # a dropped patch fails (the account screens' tests, design v3 7-5, moved with client patch 0033).
@@ -387,12 +414,20 @@ pkgconfig() {
 client_stage() {
   local fl="$CI/flutter-$FLUTTER_VERSION" app="$CI/upstream/rustdesk/flutter" sum t tests=() lint
   local index=https://storage.googleapis.com/flutter_infra_release/releases
+  # the server stage's release build of tools/hjv-release, against which the key files and the
+  # release records are read too (its tests skip that part without it)
+  local release_bin="$CI/target-hjv-release/release/hjv-release" samples="$ROOT/build/release-1.5.1"
+  local vectors="$ROOT/tools/hjv-release/tests/vectors" ran cases
+  if [ ! -x "$release_bin" ]; then
+    release_bin=""
+    skip "the key files and release records against hjv-release (no $CI/target-hjv-release/release/hjv-release: scripts/ci.sh server builds it)"
+  fi
   # no network, no Google credentials (-B: no __pycache__ in scripts/)
   step "client: Google Play upload script, offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_play_upload.py' ||
     fail "client: Google Play upload script tests"
   step "client: the pinned public keys' check (scripts/check-build-keys.py, client-build.yml), offline tests"
-  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_build_keys.py' ||
+  HJV_RELEASE_BIN="$release_bin" python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_build_keys.py' ||
     fail "client: build-key check tests"
   step "client: actionlint on .github/workflows"
   if lint=$(command -v actionlint || ls "$HOME/.local/bin/actionlint" 2> /dev/null); then
@@ -417,6 +452,13 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   rm -rf "$CI/upstream/rustdesk"
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" client
   echo "the patched tree: $(git -C "$CI/upstream/rustdesk" rev-parse 'HEAD^{tree}') (and the overlay files)"
+  # release.json, SHA256SUMS and the workflow's minimum-version steps, also on the patched tree (the
+  # Dart tests the workflow requires) and on the 1.5.1 artifacts kept under build/ (the manifest
+  # gate on a real APK)
+  step "client: the release records (scripts/release-info.py, client-build.yml), offline tests"
+  [ -d "$samples" ] || { samples=""; skip "the release records on real artifacts (no build/release-1.5.1)"; }
+  HJV_RELEASE_BIN="$release_bin" HJV_PATCHED_FLUTTER="$app" HJV_RELEASE_SAMPLES="$samples" \
+    python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_release_info.py' || fail "client: release record tests"
   step "client: hbb_common WebSocket tests"
   (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket)
   # The apps build with Rust 1.75 (client-build.yml RUST_VERSION); the development machine's
@@ -427,6 +469,24 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   pkgconfig
   (cd "$CI/upstream/rustdesk" && PKG_CONFIG_PATH="$CI/pkgconfig" CARGO_TARGET_DIR="$CI/target-175" \
     cargo +1.75.0 check --locked --features linux-pkg-config,hjv-e2e) || fail "client: cargo +1.75.0 check"
+  # INV-13 of the trust rules: the client core takes and refuses every envelope of the shared vectors
+  # as the reference model says (src/hjviewer_update/vectors.rs, a test run with --ignored only)
+  if [ -d "$CI/upstream/rustdesk/src/hjviewer_update" ]; then
+    step "client: the client core against the shared vectors of tools/hjv-release (output also in build/ci/client-vectors.log)"
+    with_skips "$CI/client-vectors.log" env -C "$CI/upstream/rustdesk" PKG_CONFIG_PATH="$CI/pkgconfig" \
+      CARGO_TARGET_DIR="$CI/target-client" HJV_UPDATE_VECTORS="$vectors" \
+      cargo test --locked --features linux-pkg-config --lib hjviewer_update::vectors -- --ignored --nocapture ||
+      fail "client: the client core disagrees with the shared vectors"
+    at_least "client: the vector test that passed" "$(passed_tests "$CI/client-vectors.log")" 1
+    # the cases it ran, by its counts of canonical and non-canonical cases, against the manifest's
+    ran=$(sed -n -E 's/.*"canonical false": ([0-9]+), "canonical true": ([0-9]+).*/\1 \2/p' "$CI/client-vectors.log" |
+      awk '{ print $1 + $2; exit }')
+    cases=$(python3 -I -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$vectors/manifest.json")
+    [ "${ran:-0}" = "$cases" ] || fail "client: the vector test ran ${ran:-no} cases, the manifest has $cases"
+    at_least "client: the vector cases the client core ran" "$ran" "$VECTORS_LEAST"
+  else
+    skip "the client core against the shared vectors (no src/hjviewer_update in the patched tree)"
+  fi
   step "client: pure Dart tests"
   for t in $CLIENT_DART_TESTS; do
     [ -f "$app/$t" ] || fail "client: $t is not in the patched tree"
@@ -1237,17 +1297,18 @@ e2e_server_key() { # <work dir>
 
 # The update keys of the E2E's clients (minimum version design 1-7): the test keys of
 # tools/hjv-release (hjv-release test-keys --env), from seeds of 32 consecutive bytes that start at
-# 40, 80 and a0 (signing keys 1 and 2, root key 101), and the floor 1:0. A build with the E2E's
-# commands (hjv-e2e) takes part in the version policy with these keys and the server hjv.test only.
+# 40, 80, a0 and e0 (signing keys 1 and 2, root keys 101 and 102: two, as a release build pins),
+# and the floor 1:0. A build with the E2E's commands (hjv-e2e) takes part in the version policy
+# with these keys and the server hjv.test only.
 e2e_update_keys() {
   local first seed key pub=()
-  for first in 40 80 a0; do
+  for first in 40 80 a0 e0; do
     seed=$(python3 -I -c 'import sys; f = int(sys.argv[1], 16); print(bytes(range(f, f + 32)).hex())' "$first") || return 1
     key=$(python3 -I "$ROOT/scripts/check-build-keys.py" pubkey ed25519 "$seed") || return 1
     [ ${#key} = 44 ] || return 1
     pub+=("$key")
   done
-  printf '%s\n' "HJV_UPDATE_PUBKEY=1:${pub[0]},2:${pub[1]}" "HJV_UPDATE_ROOT_PUBKEY=101:${pub[2]}" HJV_POLICY_FLOOR=1:0
+  printf '%s\n' "HJV_UPDATE_PUBKEY=1:${pub[0]},2:${pub[1]}" "HJV_UPDATE_ROOT_PUBKEY=101:${pub[2]},102:${pub[3]}" HJV_POLICY_FLOOR=1:0
 }
 
 # The client of the E2E (docs/e2e.md): a fresh upstream checkout with client/patches, built for

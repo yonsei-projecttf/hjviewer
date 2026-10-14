@@ -412,17 +412,19 @@ class UpdateKeysTest(unittest.TestCase):
 
     def test_well_formed_keys_pass_and_show_in_the_summary(self):
         signing = [ed(fresh()), ed(fresh())]
-        root = ed(fresh())
-        text = key_file(f"1:{signing[0]},2:{signing[1]}", f"101:{root}", "2:17")
+        roots = [ed(fresh()), ed(fresh())]
+        text = key_file(f"1:{signing[0]},2:{signing[1]}", f"101:{roots[0]},102:{roots[1]}", "2:17")
         for r in self.run_kinds(text):
             self.assertEqual(r.code, 0, r.out)
             self.assertEqual(r.errors() + r.warnings(), [])
             for kid, key in ((1, signing[0]), (2, signing[1])):
                 self.assertIn(f"| `HJV_UPDATE_PUBKEY` | {kid} | `{cbk.fingerprint(base64.b64decode(key))}` |", r.summary)
-            self.assertIn(f"| `HJV_UPDATE_ROOT_PUBKEY` | 101 | `{cbk.fingerprint(base64.b64decode(root))}` |", r.summary)
+            # both root keys (the trust rules' 1-4: 1.6.0 pins two)
+            for kid, key in ((101, roots[0]), (102, roots[1])):
+                self.assertIn(f"| `HJV_UPDATE_ROOT_PUBKEY` | {kid} | `{cbk.fingerprint(base64.b64decode(key))}` |", r.summary)
             self.assertIn("`HJV_POLICY_FLOOR` (2:17)", r.summary)
-        # one signing key is enough; the largest numbers the apps read
-        one = key_file(f"65535:{signing[0]}", f"1:{root}", "999999999999999:999999999999999")
+        # one signing key and one root key are enough; the largest numbers of each and of the floor
+        one = key_file(f"100:{signing[0]}", f"199:{roots[0]}", "999999999999999:999999999999999")
         self.assertEqual([r.code for r in self.run_kinds(one)], [0, 0, 0])
 
     def test_a_file_without_keys(self):
@@ -535,7 +537,10 @@ class UpdateKeysTest(unittest.TestCase):
         root = ed(fresh())
         cases = {
             "three signing keys": key_file(signing=f"1:{a},2:{b},3:{c}"),
-            "two root keys": key_file(root=f"101:{a},102:{b}"),
+            "three root keys": key_file(root=f"101:{a},102:{b},103:{c}"),
+            "a signing key numbered 101": key_file(signing=f"1:{a},101:{b}"),
+            "a root key numbered 100": key_file(root=f"100:{root}"),
+            "a root key numbered 200": key_file(root=f"101:{root},200:{c}"),
             "the root key's id is a signing key's": key_file(signing=f"1:{a},2:{b}", root=f"2:{root}"),
             "the root key is a signing key": key_file(signing=f"1:{a},2:{b}", root=f"101:{b}"),
             "a signing key twice": key_file(signing=f"1:{a},2:{a}"),
@@ -570,7 +575,10 @@ class UpdateKeysTest(unittest.TestCase):
                 self.assertTrue(r.errors(), what)
         for what, said in (
             ("three signing keys", "HJV_UPDATE_PUBKEY has more than 2 keys"),
-            ("two root keys", "HJV_UPDATE_ROOT_PUBKEY has more than 1 key"),
+            ("three root keys", "HJV_UPDATE_ROOT_PUBKEY has more than 2 keys"),
+            ("a signing key numbered 101", "HJV_UPDATE_PUBKEY: a signing key's id is not 1-100"),
+            ("a root key numbered 100", "HJV_UPDATE_ROOT_PUBKEY: a root key's id is not 101-199"),
+            ("a root key numbered 200", "HJV_UPDATE_ROOT_PUBKEY: a root key's id is not 101-199"),
             ("the root key's id is a signing key's", "key id 2 is the root key's and a signing key's"),
             ("the root key is a signing key", "the root key is also a signing key"),
             ("signing keys without a root key", "HJV_UPDATE_ROOT_PUBKEY is empty while the other key line is set"),

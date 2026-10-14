@@ -9,9 +9,9 @@
 ```bash
 scripts/ci.sh            # = all: server + deploy만 (처음에는 15분 안팎, 이후에는 캐시로 더 빠름). 나머지 단계는 따로 실행
 scripts/ci.sh prepush    # push 전 관문: 깨끗한 트리에서 엄격 모드로 여섯 단계 전부를 차례로, 단계마다 로그 (아래)
-scripts/ci.sh server     # 서버 테스트만 (hbbs·hbbr, hjv-api, hjv-relay)
+scripts/ci.sh server     # 서버 테스트만 (hbbs·hbbr, hjv-api, hjv-relay, hjv-release)
 scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe·hjv-load·hjv-api가 있어야 함)
-scripts/ci.sh client     # 앱 시험: Play 업로드 스크립트, 공개키 확인, actionlint, hbb_common WebSocket, Rust 1.75 check, 순수 Dart
+scripts/ci.sh client     # 앱 시험: Play 업로드 스크립트, 공개키 확인, actionlint, 릴리스 기록, hbb_common WebSocket, Rust 1.75 check, 공유 벡터, 순수 Dart (server를 먼저 돌려야 hjv-release와 맞춰 봄)
 scripts/ci.sh e2e        # 방화벽 E2E (docs/e2e.md): sudo, 클라이언트 빌드 포함. server를 먼저 돌려야 함
 scripts/ci.sh wol        # 원격 켜기 E2E (docs/e2e.md): sudo 없이, 클라이언트 빌드 포함. server를 먼저 돌려야 함
 scripts/ci.sh leak       # push 전 검사: 로컬 목록 build/leak-patterns.txt의 값이 올라갈 내용에 없는지
@@ -26,8 +26,8 @@ scripts/ci.sh leak       # push 전 검사: 로컬 목록 build/leak-patterns.tx
 
 | 단계 | 하는 일 |
 |---|---|
-| client | 먼저 오프라인 시험 두 가지를 돌립니다. Google Play 업로드 스크립트(`scripts/test_play_upload.py`, 가짜 Play API와 버리는 키)와 앱 빌드의 공개키 확인(`scripts/test_check_build_keys.py`, 아래 "계정 기능의 공개키")입니다. 네트워크와 자격 증명이 필요 없습니다. actionlint가 있으면 워크플로도 검사합니다. 그다음 `build/ci/upstream`에 upstream rustdesk를 새로 받아 `client/patches`를 적용하고, `hbb_common`의 WebSocket 테스트(프록시, `TCP_NODELAY`), 앱 빌드와 같은 Rust 1.75로 `cargo +1.75.0 check --features linux-pkg-config,hjv-e2e`, 앱의 순수 Dart 테스트(`CLIENT_DART_TESTS`: iPhone 한글 입력과 키보드 기록, 계정 화면의 `hjviewer_account_test.dart`)를 돌립니다. 1.75 툴체인이 없으면 실패합니다(`rustup toolchain install 1.75.0 --profile minimal`). Flutter는 앱 빌드와 같은 3.24.5를 처음 한 번 받아 Flutter 릴리스 목록의 SHA-256과 맞춰 봅니다. 생성된 bridge가 필요한 제스처·화질 표시 테스트는 GitHub Actions의 Dart tests 잡에서만 돕니다. |
-| server | `build/ci/upstream`에 upstream rustdesk-server를 새로 받아 `server/patches`를 적용하고, 그 시험 전체를 릴리스 빌드로 돌립니다. 라이브러리와 실행 파일(hbbs, hbbr)의 단위 시험, 신호·중계 통합 테스트(`tcp_signaling`, `relay_pairing`), `protobuf_recursion`, hbbs 패치 0004의 `hjv_pk` 테스트입니다. 패치가 바꾼 코드의 upstream 단위 시험도 이렇게 함께 돕니다. `hjv_pk` 테스트가 쓰는 벡터(서버 키, 기기 키, 서명된 답)가 hjv-api 시험의 것(`server/api/src/hbbs.rs`)과 같은지도 봅니다. 다르면 두 시험이 각각 통과해도 hjv-api가 hbbs의 답을 읽는다는 보장이 없으므로 실패합니다. `hjv-probe`, `hjv-load`도 빌드합니다. 이어서 hjv-api(`server/api`)의 시험과 릴리스 빌드, hjv-relay(`relay/`)의 시험을 돌립니다. hjv-relay의 네트워크 네임스페이스 시험은 무권한 네임스페이스가 없으면 건너뛰지 않고 실패합니다. 무권한 네임스페이스를 막아 둔 GitHub 러너(`server.yml`)에서는 건너뛸 수 있고, 다른 곳에서도 `HJV_RELAY_NETNS=`로 비우면 건너뜁니다. |
+| client | 먼저 오프라인 시험 두 가지를 돌립니다. Google Play 업로드 스크립트(`scripts/test_play_upload.py`, 가짜 Play API와 버리는 키)와 앱 빌드의 공개키 확인(`scripts/test_check_build_keys.py`, 아래 "계정 기능의 공개키")입니다. 네트워크와 자격 증명이 필요 없습니다. actionlint가 있으면 워크플로도 검사합니다. server 단계가 만든 `hjv-release` 릴리스 빌드(`build/ci/target-hjv-release`)가 있으면 공개키 확인 시험이 업데이트 키 파일을 도구와도 맞춰 봅니다(없으면 건너뛴 것으로 셉니다). 그다음 `build/ci/upstream`에 upstream rustdesk를 새로 받아 `client/patches`를 적용하고, 릴리스 기록의 시험(`scripts/test_release_info.py`: 패치를 적용한 트리에 워크플로가 요구하는 Dart 시험이 있는지, `build/release-1.5.1`이 있으면 실제 APK와 IPA로 매니페스트 확인), `hbb_common`의 WebSocket 테스트(프록시, `TCP_NODELAY`), 앱 빌드와 같은 Rust 1.75로 `cargo +1.75.0 check --features linux-pkg-config,hjv-e2e`, 클라이언트 코어가 `tools/hjv-release/tests/vectors`의 공유 벡터를 모두 참조 모델대로 받고 거절하는지(`--lib hjviewer_update::vectors -- --ignored`, 출력은 `build/ci/client-vectors.log`. 돈 사례 수가 manifest의 수와 같아야 하고 하한 `VECTORS_LEAST`도 봅니다), 앱의 순수 Dart 테스트(`CLIENT_DART_TESTS`: iPhone 한글 입력과 키보드 기록, 계정 화면의 `hjviewer_account_test.dart`, 업데이트 화면의 `hjv_update_test.dart`, 제어 전용 Android의 `hjviewer_android_test.dart`, 최고운영자 화면의 `hjviewer_admin_test.dart`)를 돌립니다. 1.75 툴체인이 없으면 실패합니다(`rustup toolchain install 1.75.0 --profile minimal`). Flutter는 앱 빌드와 같은 3.24.5를 처음 한 번 받아 Flutter 릴리스 목록의 SHA-256과 맞춰 봅니다. 생성된 bridge가 필요한 제스처·화질 표시 테스트는 GitHub Actions의 Dart tests 잡에서만 돕니다. |
+| server | `build/ci/upstream`에 upstream rustdesk-server를 새로 받아 `server/patches`를 적용하고, 그 시험 전체를 릴리스 빌드로 돌립니다. 라이브러리와 실행 파일(hbbs, hbbr)의 단위 시험, 신호·중계 통합 테스트(`tcp_signaling`, `relay_pairing`), `protobuf_recursion`, hbbs 패치 0004의 `hjv_pk` 테스트입니다. 패치가 바꾼 코드의 upstream 단위 시험도 이렇게 함께 돕니다. `hjv_pk` 테스트가 쓰는 벡터(서버 키, 기기 키, 서명된 답)가 hjv-api 시험의 것(`server/api/src/hbbs.rs`)과 같은지도 봅니다. 다르면 두 시험이 각각 통과해도 hjv-api가 hbbs의 답을 읽는다는 보장이 없으므로 실패합니다. `hjv-probe`, `hjv-load`도 빌드합니다. 서버 패치 0005의 최소 컨트롤러 버전 시험(`min_version`)도 이렇게 돕니다. 이어서 hjv-api(`server/api`)의 시험과 릴리스 빌드, hjv-relay(`relay/`)의 시험을 돌립니다. 끝으로 `tools/hjv-release`의 `cargo fmt --check`, clippy(`-D warnings`), 시험(공유 벡터를 참조 모델로 다시 만들어 맞춰 보는 `tests/vectors.rs` 포함, python3 필요), 릴리스 빌드를 합니다(`build/ci/target-hjv-release`, client와 e2e 단계가 씀). hjv-relay의 네트워크 네임스페이스 시험은 무권한 네임스페이스가 없으면 건너뛰지 않고 실패합니다. 무권한 네임스페이스를 막아 둔 GitHub 러너(`server.yml`)에서는 건너뛸 수 있고, 다른 곳에서도 `HJV_RELAY_NETNS=`로 비우면 건너뜁니다. |
 | deploy | 작업 트리 사본(`build/ci/src`, 커밋하지 않은 변경 포함)으로 런북의 배포를 Docker에서 그대로 합니다. B 경로는 hbbs/hbbr을 127.0.0.1에 띄우고, 그 앞에 `deploy/nginx-hjviewer.conf`와 `deploy/apache-hjviewer.conf`를 차례로 둡니다. nginx는 기존 사이트에 `deploy/nginx-hjviewer-locations.conf`를 include 한 줄로 넣은 경우도 함께 시험합니다. 이 기존 사이트는 HTTP/2를 켜고 모든 경로를 로그인 페이지로 보내는 WordPress 같은 사이트입니다. 마지막으로 런북 B 경로의 Release 패키지를 `scripts/package-server.sh`로 만들고, 그 안의 systemd 유닛(hbbs, hbbr, hjv-api의 소켓과 서비스)을 띄워 같은 nginx 뒤에서 시험합니다. 개발 PC를 건드리지 않도록 런타임 유닛, 임시 사용자, 별도 디렉터리로 바꾼 이름만 다르고, 보안 옵션과 자원 상한은 배포 파일 그대로입니다. hjv-api의 자격 증명은 버리는 시험 값을 평문 파일(`LoadCredential=`)로 주고, 저널 네임스페이스 줄은 빼고 띄웁니다. 웹 서버는 운영 서버와 같은 Ubuntu 패키지를 내려받아 풀어서 실행할 뿐, 설치하지 않습니다. 그다음 A 경로(Caddy)를 같은 이미지와 키로 띄웁니다. 끝으로 hjv-api의 운영 설정값, 계정 API의 nginx 한도, 깨끗한 Ubuntu 24.04 컨테이너에 서버 묶음을 설치하는 시험을 합니다(아래). Docker 시험 전에는 hjv-relay 묶음(`scripts/package-relay.sh`)을 만드는 시험을 돌립니다. `relay/tests/package.rs`의 `--ignored` 시험으로, 정적 빌드, 그 묶음만의 SHA256SUMS, 현장 시험 묶음을 봅니다. 다른 단계는 이 시험을 돌리지 않습니다. x86_64-unknown-linux-musl용 정적 빌드라서 그 Rust 타깃과 musl-gcc가 있어야 하고, 없으면 실패합니다(`rustup target add x86_64-unknown-linux-musl`, Ubuntu는 `apt-get install musl-tools`). |
 | e2e | `tools/e2e/firewall-e2e.sh`를 strict와 open으로 돌립니다([e2e.md](e2e.md)). Caddy는 버전과 SHA-256을 `scripts/ci.sh`에 고정해 처음 한 번 받습니다. upstream rustdesk를 새로 받아 시험 서버 `hjv.test`용 클라이언트(`hjv-e2e` 기능)를 빌드하고, PC 쪽 실행 파일을 `/usr/local/lib/hjviewer-e2e/rustdesk`에 설치합니다(리눅스는 `/usr` 아래 실행 파일만 설치형으로 봅니다). 계정 코드가 패치에 들어오고 `firewall-e2e.sh`에 계정 단계(`HJV_E2E_ACCOUNT`)가 생기면, 클라이언트에 E2E 시험 공개키를 넣어 빌드하고, 그 빌드로 클라이언트의 HJViewer 코드 단위 시험 전체(`--lib hjv`: 계정 코드, 컨트롤러 쪽 훅, `hjviewer.rs`, 켜기 정보 보고)와 계정 시나리오도 돌립니다. 그 전에는 1.5.1처럼 빌드합니다. 이 단계는 `E2E_CLIENT`를 받지 않습니다(주면 바로 실패). 패치에서 새로 빌드한 클라이언트여야 그 빌드의 단위 시험과 계정 시나리오가 함께 돌기 때문입니다. 최소 버전의 두 부분도 더합니다([e2e.md](e2e.md#최소-버전-단계-160)). hbbs에 서버 패치 0005의 `--hjv-min-controller-file`이 있으면 V1-V4를 돌리고, `server/patches`에 0005가 있는데 hbbs에 그 옵션이 없으면 실패합니다(전의 server 단계가 빌드한 hbbs). 패치에 업데이트 코드(`src/hjviewer_update`)가 있으면 클라이언트와 그 단위 시험을 업데이트 시험 키(`hjv-release test-keys --env`와 같은 키, 하한 `1:0`)로 빌드합니다. 그래서 업데이트 코드의 시험이 정책을 따르는 빌드로 돕니다. 업데이트 키 없는 빌드가 1.5.1처럼 아무것도 하지 않는지 보는 시험은 키가 든 빌드에서는 첫 줄에서 끝나므로, 업데이트 코드의 시험(`--lib hjviewer_update`)을 업데이트 키만 뺀 빌드로 한 번 더 돌립니다(출력은 `build/ci/e2e-unit-hjviewer_update-nokeys.log`). 같은 빌드 폴더에서 클라이언트 크레이트의 시험을 다시 컴파일하므로 1분쯤 더 걸립니다. 다시 컴파일하지 않았으면 키가 빠지지 않은 것이므로 실패합니다. `tools/hjv-release`가 있으면 빌드해(`build/ci/target-hjv-release`) 시험 정책에 서명하게 하고 V5-V9를 돌립니다. 셋 중 없는 것은 건너뛴 것으로 셉니다. 스크립트의 출력은 `build/ci/e2e-strict.log`, `e2e-open.log`에, 단위 시험의 출력은 `build/ci/e2e-unit-hjv.log`에도 남습니다. 단계는 모드마다 `PASS` 줄의 수와 단위 시험의 통과 수를 찍고, 건너뛴 것이 없는데 하한보다 적으면 실패합니다(아래 "e2e와 wol"). sudo가 비밀번호 없이 되어야 합니다(네트워크 네임스페이스, iptables). |
 | wol | `tools/e2e/wol-e2e.sh`(원격 켜기 E2E, [e2e.md](e2e.md#원격-켜기-단계-160))를 sudo 없이 돌립니다. e2e와 같은 방법으로 클라이언트를 새로 받아 빌드하고, 그 빌드에서 켜기 정보 보고(`src/hjviewer_wol`)의 단위 시험을 돌린 뒤, e2e와 같은 Caddy·hjv-api·가짜 SSO에 E2E의 명령 키로 빌드한 hjv-relay(`HJV_SERVER=hjv.test`)를 더해 스크립트에 넘깁니다. 클라이언트에 `--hjv-e2e-wol-report` 명령이 없을 때, 패치에 켜기 정보 보고(클라이언트 패치 0035)가 없으면 E2E를 건너뛰고, 있으면 실패합니다. `E2E_CLIENT=<빌드한 클라이언트>`를 주면 클라이언트 빌드와 단위 시험을 건너뛰고 그 파일로 돌립니다. 이것도 건너뛴 것으로 세므로 엄격 모드에서는 실패합니다. `prepush`에서는 같은 실행의 e2e 단계가 빌드한 클라이언트를 손으로 값을 주지 않아도 그대로 씁니다. 그 빌드의 입력(`client/` 전체, upstream 고정값과 받는 스크립트, 시험 서버 키, 시험 공개키, 빌드 설정, 툴체인)과 실행 파일의 해시가 e2e 단계가 남긴 기록과 같을 때만이고, 단위 시험은 e2e 단계의 `--lib hjv`(켜기 정보 보고의 시험 포함)로 갈음합니다. 스크립트의 출력은 `build/ci/wol-e2e.log`에도 남고, 단계는 `PASS` 줄의 수(직접 빌드했으면 단위 시험의 통과 수도)를 찍으며, 건너뛴 것이 없는데 하한보다 적으면 실패합니다. 무권한 사용자 네임스페이스가 있어야 하고, 없으면 실패합니다. 스크립트의 네트워크와 포트는 그 실행만의 네임스페이스 안에 있어 방화벽 E2E와 겹치지 않지만, 두 단계는 같은 클라이언트 체크아웃과 빌드 폴더를 쓰므로 `scripts/ci.sh`는 한 번에 하나만 돌립니다. |
@@ -279,8 +279,8 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
 
 | 이름 | 값 |
 |---|---|
-| `HJV_UPDATE_PUBKEY` | 서명 키의 공개키. 현재 키와 다음 키, 둘까지입니다: `1:<base64>[,2:<base64>]` |
-| `HJV_UPDATE_ROOT_PUBKEY` | 루트 키의 공개키 하나: `101:<base64>`. 번호와 키가 서명 키와 달라야 합니다 |
+| `HJV_UPDATE_PUBKEY` | 서명 키의 공개키. 현재 키와 다음 키, 둘까지입니다: `1:<base64>[,2:<base64>]`. 번호는 1–100입니다 |
+| `HJV_UPDATE_ROOT_PUBKEY` | 루트 키의 공개키 둘까지: `101:<base64>,102:<base64>`. 번호는 101–199이고, 1.6.0은 루트 키 둘을 박습니다(신뢰 규칙 1-4). 번호와 키가 서명 키와 달라야 합니다 |
 | `HJV_POLICY_FLOOR` | 이 빌드를 만들 때의 정책 위치 `<세대>:<seq>`. 첫 정책이 나오기 전에는 `1:0`입니다 |
 
 - **시크릿이나 변수로 넣지 않습니다.** 계정 기능의 공개키와 다른 점입니다. 세 플랫폼 잡의 "Pin the update keys" 단계가 체크아웃한 소스의 이 파일을 읽어 빌드에 넘기고, 다른 곳에서는 받지 않습니다. 그래서 빌드 저장소의 시크릿이나 변수로는 앱이 믿는 업데이트 키를 바꿀 수 없습니다. 키를 바꾸려면 공개 저장소에서 이 파일을 고쳐야 하고, 그 변경은 검토를 거쳐 소스 태그에 남습니다. 워크플로의 `env:`에 이 세 이름을 더하지 마세요(`scripts/test_check_build_keys.py`가 막습니다).
@@ -301,7 +301,7 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
   - 위의 줄 모양이 아니거나, 이름이 빠졌거나 두 번 나옴
   - 키 번호가 1–65535가 아니거나, 키가 표준 base64 32바이트가 아님
   - Ed25519 공개키가 아니거나, 약한 키(작은 위수의 점)이거나, 주 부분군 밖의 점임
-  - 서명 키가 셋 이상이거나 루트 키가 둘 이상임. 번호나 키가 서로 겹침
+  - 서명 키나 루트 키가 셋 이상임. 서명 키 번호가 1–100 밖이거나 루트 키 번호가 101–199 밖임(선언은 서명 키 번호만 폐기합니다). 번호나 키가 서로 겹침
   - 두 키 줄 가운데 하나만 채워져 있음. 키는 있는데 하한이 비어 있음
   - 하한이 `<세대>:<seq>`가 아님(세대는 1 이상, 앞의 0 없는 숫자)
   - 환경 변수에 같은 이름이 파일과 다른 값으로 들어 있음(시크릿이나 변수로 넣으려 한 경우)
@@ -320,7 +320,7 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
    CALLED=1 python3 -I scripts/check-build-keys.py --pin-update-keys   # 출시 빌드가 하는 확인. 통과하면 세 줄을 출력
    ```
 3. 커밋합니다. 이 파일이 마지막 push에 들어가야 출시 빌드가 됩니다.
-4. 릴리스마다 `HJV_POLICY_FLOOR`를 그때의 정책 위치로 올립니다. `hjv-release floor --policy <지금 정책>`이 그 줄을 출력합니다.
+4. 릴리스마다 `HJV_POLICY_FLOOR`를 서버에 걸린 정책의 위치로 올립니다. `hjv-release floor --live <서버에서 받은 정책 파일>`이 그 줄을 출력합니다(보관소에 있는 파일만 받습니다. `tools/hjv-release/README.md` 2장).
 
 ### 업데이트 키 보관 규칙
 
@@ -330,8 +330,8 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
 |---|---|
 | 서명 키 1 | 개발 PC의 `~/hjviewer-secrets/hjviewer-update-1.key`(비밀번호로 암호화, 0600)와 사용자의 오프라인 사본 |
 | 서명 키 2(다음 교체용) | 오프라인 매체에만 |
-| 루트 키(번호 101) | 오프라인 매체 두 곳에만. 개발 PC 디스크에 쓰지 않습니다 |
-| 공개키 셋 | 이 저장소의 `client/update-keys.env`, 서버의 `/etc/hjviewer/update-keys.env` |
+| 루트 키 둘(번호 101, 102) | 키마다 오프라인 매체 두 곳에만. 개발 PC 디스크에 쓰지 않고, 깨끗한 컴퓨터에서만 엽니다 |
+| 공개키(서명 키 둘, 루트 키 둘) | 이 저장소의 `client/update-keys.env`, 서버의 `/etc/hjviewer/update-keys.env` |
 
 - 비밀키는 저장소, GitHub 시크릿과 변수, 빌드 저장소, 운영 서버, `build/` 폴더, 메모, 에이전트 세션 어디에도 두지 않습니다.
 - 키 만들기(`keygen`)와 서명(`sign`)은 **사용자만** 합니다. 에이전트는 실제 키를 만들지 않고, 실제 정책에 서명하지 않고, 키 파일을 읽지 않습니다. 도구도 터미널이 없으면 두 명령을 거부합니다.
@@ -347,7 +347,7 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
 
 - 순서를 지키는 이유: 앱은 자기 빌드에 박힌 키로 서명한 정책만 받습니다. 다음 키를 모르는 앱이 남았는데 그 키로 서명하면, 그 앱은 새 정책을 받지 못해 손으로 설치해야 합니다. 서버의 정책이 아직 옛 키로 서명돼 있는데 옛 키를 뺀 빌드를 내면, 그 빌드는 지금 정책을 받지 못합니다.
 - 키 1을 지우는 이유: 키 1을 박은 빌드는 3단계 뒤에도 기기에 남아 있고, 키 1로 서명한 정책을 받습니다. 폐기 선언을 받은 앱은 키 1을 더 믿지 않습니다. 하지만 선언을 아직 받지 못한 앱은 여전히 믿습니다. 옛 설치 파일로 새로 설치한 앱도 그렇습니다. 그래서 비밀키가 남아 있다가 새면 그 앱들에 가짜 정책을 낼 수 있습니다.
-- **키를 바꾼 빌드마다 `HJV_POLICY_FLOOR`를 그때의 정책 위치로 올립니다**(`hjv-release floor --policy <지금 정책>`). 앱은 키가 다른 빌드로 바뀌면 저장한 정책 상태를 버리고 그 빌드의 하한에서 다시 시작합니다(최소 버전 설계 1-4). 하한이 낮으면 그 빌드로 바꾼 앱이 이미 지난 옛 정책을 다시 받을 수 있습니다.
+- **키를 바꾼 빌드마다 `HJV_POLICY_FLOOR`를 서버에 걸린 정책의 위치로 올립니다**(`hjv-release floor --live <서버에서 받은 정책 파일>`). 앱은 키가 다른 빌드로 바뀌면 저장한 정책 상태를 버리고 그 빌드의 하한에서 다시 시작합니다(최소 버전 설계 1-4). 하한이 낮으면 그 빌드로 바꾼 앱이 이미 지난 옛 정책을 다시 받을 수 있습니다.
 - 다음 교체도 같습니다. 정책을 확인하는 앱이 모두 키 3을 박은 빌드로 올라오면 키 3으로 서명하고, 그다음 빌드에 `3:<키 3>,4:<키 4>`를 넣습니다. 그 빌드를 낸 뒤 키 2의 비밀키를 지우고, 다음 루트 선언에서 `--revoke-key 2`로 폐기합니다.
 
 ### 릴리스 기록 `release.json`, `SHA256SUMS`
@@ -377,7 +377,7 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
   - 도구는 그 실행의 `build.yml`이 위 "비공개 빌드 저장소"의 모양인지도 봅니다. 도구가 모르는 입력을 넘기면 거부하므로, `check_only` 입력을 도구가 알기 전에는 `--allow-input check_only`를 함께 줍니다. 확인 빌드에는 `release.json`이 없어서, 이 입력을 허락해도 확인 빌드가 릴리스로 받아들여지지 않습니다.
   - **새 패키지가 든 정책 초안은 빌드한 지 7일 안에 만듭니다.** 아티팩트가 7일 뒤 지워지기 때문입니다. 더 길게 필요하면 워크플로의 `ARTIFACT_RETENTION_DAYS`를 올립니다(저장 공간을 그만큼 더 씁니다).
   - **정책에 쓰는 실행은 성공으로 끝나야 합니다.** 도구는 잡 하나가 아니라 실행 전체의 결과를 봅니다. 그래서 Google Play나 TestFlight 업로드 하나만 실패해도 그 실행의 Windows·Android 패키지를 받지 않습니다. 이때는 실행 화면의 "Re-run failed jobs"로 실패한 잡만 다시 돌려 실행을 성공으로 끝낸 뒤 초안을 만듭니다. 다시 도는 잡은 그 실행의 아티팩트를 받습니다. Bridge codegen의 `bridge-artifact`도 다른 아티팩트처럼 7일 두므로, 7일 안에 다시 돌립니다.
-  - 그래도 안 되면 같은 태그 커밋으로 새로 실행합니다. 그 패키지를 적은 정책은 아직 없으므로 버전을 올리지 않아도 됩니다. 새 실행은 빌드 번호가 달라집니다. 그래서 Play와 TestFlight에도 새 실행의 빌드를 올리고, `--play-live`와 `--ios-valid`에는 그 번호를 줍니다.
+  - 그래도 안 되면 같은 태그 커밋으로 새로 실행합니다. 실패한 실행이 TestFlight나 Google Play에 빌드를 하나도 올리지 않았을 때만 버전을 그대로 둡니다(그 패키지를 적은 정책은 아직 없습니다). 새 실행은 빌드 번호가 달라지므로 Play와 TestFlight에도 새 실행의 빌드를 올리고, `--play-live`와 `--ios-valid`에는 그 번호를 줍니다. 하나라도 올라갔으면 테스터가 같은 버전을 두 번 받지 않게 "앱 버전"대로 `client/version.env`의 버전을 올려 새로 빌드합니다. 판단하기 어려우면 사용자에게 묻습니다.
 - **나눠 줄 수 없는 빌드에는 `release.json`이 없습니다.** 확인 빌드(`check_only`), 디버그 서명 APK(키스토어 시크릿이 없을 때), 서명 없는 IPA입니다. 확인 빌드는 출시에 필요한 공개키 없이도 만들어지고, 디버그 서명 APK는 사용자의 앱 위에 설치되지 않고, 서명 없는 IPA는 어디에도 설치되지 않습니다. `hjv-release`는 `release.json`이 없는 폴더를 릴리스로 받지 않습니다. 단계 자체는 이런 빌드에서도 돌아 같은 검사를 하고 `SHA256SUMS`를 만들며, 실행 요약에 "Not for release"와 그 이유를 적습니다.
 - Google Play용 AAB 아티팩트에는 `release.json`을 넣지 않습니다. 같은 Android 빌드이고, 도구는 한 실행에서 Android 패키지를 하나만 받습니다.
 - 이 저장소에서 직접 돌린 실행의 `release.json`은 `workflow`가 `client-build.yml`이라 도구가 받지 않습니다.
@@ -391,7 +391,7 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
 - **있어야 하는 것**: 사이드로드 APK의 앱 안 업데이트(최소 버전 설계 5-4)가 쓰는 두 항목입니다. `REQUEST_INSTALL_PACKAGES` 권한(`uses-permission`이나 `uses-permission-sdk-23`)과 `com.carriez.flutter_hbb.HjvUpdateFileProvider` provider입니다.
 - **없어야 하는 것**: 제어받는 쪽입니다. 1.6.0부터 모든 Android 빌드는 제어만 합니다(Google Play 설계의 결정 D1). 접근성 서비스(`BIND_ACCESSIBILITY_SERVICE`로 묶는 서비스), `foregroundServiceType`이 있는 요소, 권한 `FOREGROUND_SERVICE`와 `FOREGROUND_SERVICE_*`, `SYSTEM_ALERT_WINDOW`, `RECEIVE_BOOT_COMPLETED`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, 그리고 앱의 `InputService`, `MainService`, `FloatingWindowService`, `BootReceiver`입니다. 라이브러리가 가져온 것도 실패합니다.
 - 실패하면 클라이언트 패치(제어 전용, 앱 안 업데이트)가 빠졌거나, 플러그인이나 라이브러리 갱신이 이런 항목을 다시 가져온 것입니다. 오류 문장이 빠진 항목과 있으면 안 되는 항목을 모두 적습니다. 일부러 바꿀 때는 `scripts/release-info.py`의 목록과 이 절을 같은 커밋에서 고칩니다.
-- 이 확인이 없으면 패치가 통째로 빠져도 빌드는 초록입니다. Play 번들의 매니페스트 검사는 `play` 없는 실행에서 경고만 남기기 때문입니다.
+- 이 확인이 없으면 패치가 통째로 빠져도 빌드는 초록입니다. Play 번들의 매니페스트 검사는 공개 저장소의 실행과 서명 없는 실행에서는 돌지 않고, `play`도 `check_only`도 아닌 실행에서는 경고만 남깁니다(확인 빌드에서는 잡이 실패합니다). 앱 안 업데이트 두 항목이 빠진 것은 번들 검사가 어느 실행에서도 잡지 못합니다.
 - Play 번들은 이 단계가 보지 않습니다. 번들에서는 앱 안 업데이트의 두 항목이 빠져야 하고, "Sign and check Play bundle"이 그것을 봅니다(아래 "Google Play 업로드").
 
 ### iOS 내보내기 방식

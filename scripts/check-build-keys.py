@@ -469,10 +469,12 @@ def read_update_keys(path):
 
 
 def parse_update_keys(values):
-    """(signing, root, problems) of a key file's values: the signing keys and the root key as
+    """(signing, root, problems) of a key file's values: the signing keys and the root keys as
     [(key id, key)], both empty for a file without keys. The rules are the apps' (the client
     core's pinned(), which uses none of the keys when one of them breaks a rule) and those of
-    tools/hjv-release, which wants the floor too."""
+    tools/hjv-release, which wants the floor too: at most two signing keys numbered 1-100 and two
+    root keys numbered 101-199 (the trust rules' 1-4: a declaration revokes signing key numbers
+    only, and 1.6.0 pins two root keys, each kept offline on its own media)."""
     signing_text, root_text, floor = (values[name] for name in UPDATE_NAMES)
     problems = []
     if floor and not _FLOOR.fullmatch(floor):
@@ -486,8 +488,12 @@ def parse_update_keys(values):
             "and the root key, and use none without both"]
     signing, found = parse_list(UPDATE_NAMES[0], signing_text, most=2, subgroup=True)
     problems += found
-    root, found = parse_list(UPDATE_NAMES[1], root_text, most=1, subgroup=True)
+    root, found = parse_list(UPDATE_NAMES[1], root_text, most=2, subgroup=True)
     problems += found
+    if any(not 1 <= kid <= 100 for kid, _ in signing):
+        problems.append(f"{UPDATE_NAMES[0]}: a signing key's id is not 1-100")
+    if any(not 101 <= kid <= 199 for kid, _ in root):
+        problems.append(f"{UPDATE_NAMES[1]}: a root key's id is not 101-199")
     if not floor:
         problems.append("HJV_POLICY_FLOOR is empty: with keys the file names the floor too, 1:0 before the first policy")
     for kid, raw in root:
