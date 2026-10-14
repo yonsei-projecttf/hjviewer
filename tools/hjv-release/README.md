@@ -123,7 +123,7 @@ hjv-release policy --prev ~/hjviewer-policy-archive/policy-e1-s1.json \
 
 - seq 1의 `sign`이 보관소를 시작하고 1.6.0의 키 집합을 기록합니다. 이어서 리허설(3장 5-14)을 합니다.
 - seq 2에는 도구가 `grace_min` 1.5.0을 씁니다. 유예 끝까지 1.5.0 미만은 막히고, 1.5.x는 유예를 받습니다. hbbs 파일은 `hbbs-conf --current none`이 바로 씁니다(`MIN=1.6.0`, `FROM`=유예 끝). 허브-운영이 M7에 설치하고, hbbs는 `FROM`부터 스스로 거절합니다.
-- `--play-live`는 Google Play 내부 트랙에 그 버전이 출시(completed)된 뒤에만 줍니다. 아직 Play에 없으면 빼고, 나온 뒤의 정책에서 넣습니다(5-5). `android_play` 항목이 없는 동안에는 Play로 설치한 앱에 최소 버전이 걸리지 않고, `policy`가 "바뀌는 것"에 그렇게 알립니다.
+- `--play-live`는 Google Play 내부 트랙에 그 버전이 출시(completed)된 뒤에만 줍니다. 아직 Play에 없으면 빼고, 나온 뒤의 정책에서 넣습니다(5-5). `android_play` 항목이 없는 동안에는 Play로 설치한 앱이 앱 안 안내 없이 PC에서 `android` 항목의 최소 버전으로, hbbs에서 `MIN`으로 거절됩니다. `policy`가 "바뀌는 것"에 그렇게 알립니다.
 - 1.6.0은 손으로 설치하므로 seq 1에는 무인 설치 시각을 두지 않습니다. 1.6.1부터는 이 옵션을 주지 않으면 게시 2일 뒤부터 고리별로 설치합니다.
 
 ### 항목이 막는 것: `min`과 유예 쌍

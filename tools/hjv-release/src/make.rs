@@ -43,8 +43,8 @@ use std::collections::BTreeMap;
 
 /// What `policy` says of a draft without the Google Play entry.
 pub const NO_PLAY_ENTRY: &str =
-    "android_play 항목이 없습니다: Google Play로 설치한 앱에는 이 정책의 \
-     최소 버전이 걸리지 않습니다. Play 내부 트랙에 출시(completed)한 뒤 --play-live로 넣으세요";
+    "android_play 항목이 없습니다: Google Play로 설치한 앱은 앱 안 안내 없이 PC에서 android 항목의 \
+     최소 버전으로, hbbs에서 MIN으로 거절됩니다. Play 내부 트랙에 출시(completed)한 뒤 --play-live로 넣으세요";
 
 /// A TestFlight build stops working 90 days after its upload; a policy may name one younger than
 /// this.
@@ -1494,8 +1494,9 @@ pub fn make(
     let mut report = describe_changes(old, &policy);
     report.append(&mut maker.report);
     report.append(&mut warnings);
-    // without the Google Play entry no minimum reaches the apps installed from Google Play: said,
-    // not refused, since Play may not carry the version yet
+    // without the Google Play entry the apps installed from Google Play get no notice in the app,
+    // while PCs refuse them by the `android` entry (the Android family's only one) and hbbs below
+    // its one threshold: said, not refused, since Play may not carry the version yet
     if !policy.platforms.contains_key(&Platform::AndroidPlay) {
         report.push(NO_PLAY_ENTRY.to_owned());
     }
