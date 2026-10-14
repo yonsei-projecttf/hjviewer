@@ -566,6 +566,18 @@ mod tests {
             .not_pinning(Role::Signing, &keys.signing[1])
             .unwrap()
             .is_empty());
+        // a record pins a key, not a number: another key under a pinned number is not pinned
+        for (role, key) in [
+            (Role::Signing, &keys.signing[1]),
+            (Role::Root, &keys.roots[1]),
+        ] {
+            let renumbered = PublicKey {
+                id: if role == Role::Signing { 1 } else { 101 },
+                key: key.key,
+            };
+            assert!(!records[0].pins(role, &renumbered), "{role:?}");
+            assert_eq!(archive.not_pinning(role, &renumbered).unwrap().len(), 1);
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 }

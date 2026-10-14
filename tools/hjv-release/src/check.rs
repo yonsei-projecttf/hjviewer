@@ -192,7 +192,8 @@ fn archive_look(
             (Ok((epoch, seq)), Ok(envelope)) => {
                 if archive.find(live)?.is_none() {
                     report.warn(format!(
-                        "서버의 정책({epoch}:{seq}, 키 {})이 보관소에 없습니다: 다른 곳에서 서명된 것입니다. 서명 키를                          도둑맞았거나(런북 5-8), 깨끗한 컴퓨터에서 한 서명의 파일을 보관소로 옮기지 않았습니다(5-0)",
+                        "서버의 정책({epoch}:{seq}, 키 {})이 보관소에 없습니다: 다른 곳에서 서명된 것입니다. 서명 키를 \
+                         도둑맞았거나(런북 5-8), 깨끗한 컴퓨터에서 한 서명의 파일을 보관소로 옮기지 않았습니다(5-0)",
                         envelope.policy.k
                     ));
                 }
@@ -213,7 +214,8 @@ fn archive_look(
                 }
                 if archive.max_epoch()? > *epoch {
                     report.warn(format!(
-                        "보관소에 서버의 세대({epoch})보다 높은 세대의 파일이 있습니다: 서명하고 내지 않은 루트 선언이면 그 위의                          선언을 곧 내세요(런북 5-13)"
+                        "보관소에 서버의 세대({epoch})보다 높은 세대의 파일이 있습니다: 서명하고 내지 않은 루트 선언이면 그 위의 \
+                         선언을 곧 내세요(런북 5-13)"
                     ));
                 }
                 if let Some(h) = archive
@@ -221,13 +223,15 @@ fn archive_look(
                     .filter(|h| (h.epoch, h.seq) > (*epoch, *seq))
                 {
                     report.warn(format!(
-                        "보관소에 서버의 정책({epoch}:{seq})보다 높은 정책({}:{})이 있습니다: 서명하고 아직 내지 않았습니다.                          내거나, 컴퓨터 밖으로 나가지 않았다면 void로 무효로 하세요(런북 5-13)",
+                        "보관소에 서버의 정책({epoch}:{seq})보다 높은 정책({}:{})이 있습니다: 서명하고 아직 내지 않았습니다. \
+                         내거나, 컴퓨터 밖으로 나가지 않았다면 void로 무효로 하세요(런북 5-13)",
                         h.epoch, h.seq
                     ));
                 }
                 if (keys.floor.epoch, keys.floor.seq) > (*epoch, *seq) {
                     report.warn(format!(
-                        "키 파일의 하한({})이 서버의 정책({epoch}:{seq})보다 높습니다. 이 키 파일로 만든 빌드는 서버의 정책을                          받지 않습니다(floor --live로 하한을 정하세요)",
+                        "키 파일의 하한({})이 서버의 정책({epoch}:{seq})보다 높습니다. 이 키 파일로 만든 빌드는 서버의 정책을 \
+                         받지 않습니다(floor --live로 하한을 정하세요)",
                         keys.floor
                     ));
                 }
@@ -425,5 +429,130 @@ mod tests {
         assert_eq!(at(1500, floor(0)), 2);
         // a raised floor makes room again
         assert_eq!(at(1500, floor(1400)), 1);
+    }
+
+    fn vector(path: &str) -> String {
+        std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/vectors")
+                .join(path),
+        )
+        .unwrap()
+    }
+
+    /// The live file against the archive (trust rules 4-7): each warning, in its own words.
+    #[test]
+    fn the_live_file_against_the_archive() {
+        let keys = test_key_set();
+        let dir = crate::release::tests::temp_dir("check-archive");
+        let archive = Archive::open(&dir, true).unwrap();
+        for name in ["e1-s1", "e1-s2", "e1-s3", "e2-s1", "e2-s2"] {
+            let text = vector(&format!("accepted/{name}.json"));
+            let (epoch, seq) = position_of(&text).unwrap();
+            archive.add_policy(epoch, seq, &text).unwrap();
+            if let Some(part) = Envelope::parse(&text).unwrap().root {
+                let _ = archive.add_declaration(epoch, &part);
+            }
+        }
+        archive
+            .record_keyset(&keys, "rd.example.com", Some("1.6.0"))
+            .unwrap();
+        let local = vector("accepted/e2-s2.json");
+        let checked = check_envelope(&local, &keys, "rd.example.com").unwrap();
+        let look = |live: &str, keys: &KeySet| {
+            let report = check(
+                &checked,
+                &local,
+                None,
+                Some(live),
+                keys,
+                Some(&archive),
+                t("2026-10-10T00:00:00Z"),
+            );
+            let warnings: Vec<String> = warnings(&report).into_iter().cloned().collect();
+            for line in &report.lines {
+                assert!(!line.trim_start().contains("  "), "a run of spaces: {line}");
+            }
+            warnings
+        };
+        let has = |warnings: &[String], text: &str| warnings.iter().any(|w| w.contains(text));
+        // the live file is the archive's last one: only the test keys are a warning
+        let same = look(&local, &keys);
+        assert_eq!(same.len(), 1, "{same:?}");
+        // a live envelope of epoch 2 without its declaration, signed elsewhere
+        let w = look(&vector("refused/epoch-2-without-declaration.json"), &keys);
+        let elsewhere = "서버의 정책(2:2, 키 2)이 보관소에 없습니다: 다른 곳에서 서명된 것입니다. \
+                         서명 키를 도둑맞았거나(런북 5-8), 깨끗한 컴퓨터에서 한 서명의 파일을 보관소로 \
+                         옮기지 않았습니다(5-0)";
+        assert!(has(&w, elsewhere), "{w:?}");
+        let no_declaration =
+            "서버의 정책은 세대 2인데 루트 선언이 붙어 있지 않습니다. 앱은 이 봉투를 받지 않습니다(Epoch)";
+        assert!(has(&w, no_declaration), "{w:?}");
+        // a live declaration the archive holds otherwise, or not at all
+        let w = look(&vector("refused/declaration-fork.json"), &keys);
+        assert!(
+            has(&w, "서버의 루트 선언(세대 2)이 보관소의 것과 다릅니다"),
+            "{w:?}"
+        );
+        let w = look(&vector("accepted/e3-s2.json"), &keys);
+        assert!(
+            has(&w, "서버의 루트 선언(세대 3)이 보관소에 없습니다"),
+            "{w:?}"
+        );
+        // a signed policy above the live one, signed and not published
+        let w = look(&vector("accepted/e2-s1.json"), &keys);
+        let unpublished = "보관소에 서버의 정책(2:1)보다 높은 정책(2:2)이 있습니다: 서명하고 아직 내지 \
+                           않았습니다. 내거나, 컴퓨터 밖으로 나가지 않았다면 void로 무효로 하세요(런북 5-13)";
+        assert!(has(&w, unpublished), "{w:?}");
+        // a key file whose floor is above the live position
+        let mut high = keys.clone();
+        high.floor = Floor { epoch: 2, seq: 3 };
+        let w = look(&local, &high);
+        let floor =
+            "키 파일의 하한(2:3)이 서버의 정책(2:2)보다 높습니다. 이 키 파일로 만든 빌드는 서버의 \
+             정책을 받지 않습니다(floor --live로 하한을 정하세요)";
+        assert!(has(&w, floor), "{w:?}");
+        // a declaration above the live epoch, signed and not published
+        let e3 = Envelope::parse(&vector("accepted/e3-s1-relax.json")).unwrap();
+        archive.add_declaration(3, &e3.root.unwrap()).unwrap();
+        let w = look(&local, &keys);
+        let epoch_above =
+            "보관소에 서버의 세대(2)보다 높은 세대의 파일이 있습니다: 서명하고 내지 않은 루트 \
+             선언이면 그 위의 선언을 곧 내세요(런북 5-13)";
+        assert!(has(&w, epoch_above), "{w:?}");
+        // a recorded build that pins no signing key of the key file: root keys sign the policies
+        assert!(!has(&w, "박은 서명 키가 없습니다"));
+        let pin = |name: &str| test_key(name).unwrap().public().to_string();
+        let other = KeySet::from_values(&pin("signing-3"), &keys.root_line, "2:2").unwrap();
+        archive
+            .record_keyset(&other, "rd.example.com", Some("1.6.1"))
+            .unwrap();
+        let report = check(
+            &checked,
+            &local,
+            None,
+            Some(&local),
+            &keys,
+            Some(&archive),
+            t("2026-10-10T00:00:00Z"),
+        );
+        let no_signing_key =
+            "경고: 기록된 모든 빌드가 박은 서명 키가 없습니다. 그 빌드가 쓰이는 동안은 루트 \
+             키가 정책에 서명합니다(런북 5-8 6번)";
+        assert!(
+            warnings(&report).iter().any(|w| *w == no_signing_key),
+            "{:?}",
+            report.lines
+        );
+        assert!(
+            report
+                .lines
+                .iter()
+                .any(|l| l
+                    == "기록된 모든 빌드가 박은 키(서명할 수 있는 키): 루트 키 101, 루트 키 102"),
+            "{:?}",
+            report.lines
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

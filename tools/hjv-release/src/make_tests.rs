@@ -1448,7 +1448,7 @@ fn a_new_entry_below_the_present_minimums() {
     // every entry at min 1.6.0 until November 22; no Google Play entry yet
     let (_, file2) = history(&f);
     let code: u64 = APK_160.parse().unwrap();
-    let add = |min: &str, relax: bool| {
+    let request_for = |min: &str, relax: bool| {
         let artifacts = f.release("1.6.0", IOS_160, APK_160);
         let mut request = req(Some(&file2), artifacts, "2026-11-10T04:00:00Z");
         request.play_live = Some(code);
@@ -1457,8 +1457,9 @@ fn a_new_entry_below_the_present_minimums() {
         if relax {
             request.live = Some(file2.clone());
         }
-        made(&request)
+        request
     };
+    let add = |min: &str, relax: bool| made(&request_for(min, relax));
     // at android's level it copies android's deadline pair (derivation f), by a signing key
     let level = add("1.6.0", false).unwrap();
     assert_eq!(level.draft.signer, Role::Signing);
@@ -1468,6 +1469,11 @@ fn a_new_entry_below_the_present_minimums() {
         (play.grace_until, play.grace_min),
         (android.grace_until, android.grace_min)
     );
+    // a deadline of its own at android's level is refused: another deadline is a relaxation or
+    // a new raise
+    let mut request = request_for("1.6.0", false);
+    request.grace = vec![(Target::One(Platform::AndroidPlay), Grace::Days(3))];
+    assert!(error(&request).contains("유예 옵션을 주지 마세요"));
     // Below it the PC's rule for Android controllers would go down (problem (나)): a
     // relaxation of the Android pair, and hbbs's MIN would follow (X8)
     let err = add("1.5.0", false).unwrap_err();
@@ -1475,6 +1481,26 @@ fn a_new_entry_below_the_present_minimums() {
     let made = add("1.5.0", true).unwrap();
     assert_eq!(made.draft.signer, Role::Signing);
     assert!(made.draft.root_p.is_some());
+    let play = &made.policy.platforms[&Platform::AndroidPlay];
+    assert_eq!((play.grace_until, play.grace_min), (None, None));
+    // ... and a grace option for it is refused, not dropped (as for a lowered minimum)
+    for (grace, grace_min) in [
+        (
+            vec![(Target::One(Platform::AndroidPlay), Grace::Days(3))],
+            None,
+        ),
+        (vec![(Target::All, Grace::Days(3))], None),
+        (Vec::new(), Some(v("1.4.0"))),
+    ] {
+        let mut request = request_for("1.5.0", true);
+        request.grace = grace;
+        request.grace_min = grace_min
+            .map(|gm| (Platform::AndroidPlay, gm))
+            .into_iter()
+            .collect();
+        let err = error(&request);
+        assert!(err.contains("유예 옵션을 줄 수 없습니다"), "{err}");
+    }
     assert!(
         made.report
             .iter()
@@ -1731,6 +1757,11 @@ fn derivations_a_to_f() {
         derive_existing(w, &o, v("1.6.1"), now, GraceAsk::None, false, None),
         Ok(None)
     );
+    // the pending deadline itself, asked for: the same deadline, so the same grace_min
+    assert_eq!(
+        derive_existing(w, &o, v("1.6.1"), now, GraceAsk::At(pending), false, None),
+        Ok(Some((pending, v("1.5.0"))))
+    );
     // d: lowered
     assert!(
         derive_existing(w, &o, v("1.5.0"), now, GraceAsk::Default, false, None)
@@ -1830,6 +1861,31 @@ fn derivations_a_to_f() {
     )
     .unwrap_err()
     .contains("X1"));
+    // below the sibling with a declaration: no pair, and no grace option (as in d)
+    assert_eq!(
+        derive_new(
+            p,
+            v("1.5.0"),
+            now,
+            GraceAsk::Default,
+            Some(&android),
+            true,
+            None
+        ),
+        Ok(None)
+    );
+    for (grace, grace_min) in [
+        (GraceAsk::At(week), None),
+        (GraceAsk::None, None),
+        (GraceAsk::Default, Some(v("1.4.0"))),
+    ] {
+        assert!(
+            derive_new(p, v("1.5.0"), now, grace, Some(&android), true, grace_min)
+                .unwrap_err()
+                .contains("유예 옵션을 줄 수 없습니다"),
+            "{grace:?} {grace_min:?}"
+        );
+    }
     // INV-14: a raise covers the old entry, and blocks nothing new before its own deadline
     // unless it is c with a later deadline
     for o in [o, plain, passed] {
@@ -1898,6 +1954,24 @@ fn the_package_rule_and_withdrawal() {
     let mut request = req_after(&file3, now);
     request.withdraw = vec![Platform::Ios];
     assert!(error(&request).contains("windows와 android"));
+    // an Android withdrawal keeps the operator's word about the hint to move to Play
+    let mut request = req_after(&file3, now);
+    request.withdraw = vec![Platform::Android];
+    request.move_to_play = Some(true);
+    let moved = made(&request).unwrap();
+    let android = &moved.policy.platforms[&Platform::Android];
+    assert_eq!(
+        (android.package.as_ref(), android.move_to_play),
+        (None, true)
+    );
+    assert!(
+        moved
+            .report
+            .iter()
+            .any(|l| l == "android: 패키지를 거둬들임, Play로 옮기기 안내 켬"),
+        "{:?}",
+        moved.report
+    );
     let file4 = signed(&withdrawn);
     assert!(check_after(&file4, Some(&file3), &test_key_set(), SERVER).is_ok());
     // the entry stays without a package while latest stays
@@ -2015,4 +2089,128 @@ fn signers_serve_every_recorded_build() {
     )
     .unwrap_err();
     assert!(err.contains("floor --live"), "{err}");
+}
+
+/// X8, the tool's own rule: a new entry below the lowest minimum of `--prev` would let hbbs's one
+/// MIN go down. Only a declaration does that.
+#[test]
+fn a_new_entry_below_hbbs_min_needs_a_declaration() {
+    let f = Fixture::new("make-x8");
+    // Windows and Android only, both at min 1.6.0 from seq 2 on
+    let mut request = first(&f);
+    request.ios_valid = None;
+    request.os_min.retain(|(p, _)| *p != Platform::Ios);
+    let file1 = signed(&made(&request).unwrap());
+    let mut request = enforce(&file1);
+    request.ios_valid = None;
+    let file2 = signed(&made(&request).unwrap());
+    let ios_at = |min: &str| {
+        let mut request = req(
+            Some(&file2),
+            f.release("1.6.0", IOS_160, APK_160),
+            "2026-11-08T06:00:00Z",
+        );
+        request.ios_valid = Some(IOS_160.to_owned());
+        request.min = vec![(Target::One(Platform::Ios), v(min))];
+        request
+    };
+    // a new iOS entry at the lowest minimum is a signing key's policy
+    assert_eq!(made(&ios_at("1.6.0")).unwrap().draft.signer, Role::Signing);
+    // below it: X8, though no entry of --prev asks less
+    let err = error(&ios_at("1.5.0"));
+    assert!(
+        err.starts_with("X8: ")
+            && err.contains(
+                "ios: 새 항목의 최소 버전(1.5.0)이 지금 가장 낮은 최소 버전(1.6.0)보다 낮아 hbbs의 MIN이 내려감"
+            ),
+        "{err}"
+    );
+    // with a declaration it is made, and said
+    let mut request = ios_at("1.5.0");
+    request.relax = true;
+    request.live = Some(file2.clone());
+    let relaxed = made(&request).unwrap();
+    assert!(relaxed.draft.root_p.is_some());
+    assert!(
+        relaxed
+            .report
+            .iter()
+            .any(|l| l.starts_with("완화(도구 규칙): ios: 새 항목의 최소 버전(1.5.0)")),
+        "{:?}",
+        relaxed.report
+    );
+}
+
+/// A new declaration and the archive: its epoch is above every epoch the archive holds (also one
+/// signed and never published), its live file is the operator's own (X10), and its root key is one
+/// every recorded build pins (X12).
+#[test]
+fn a_declaration_follows_the_archive() {
+    let f = Fixture::new("make-decl-archive");
+    let (_, file2) = history(&f);
+    let now = "2026-11-10T04:00:00Z";
+    let new_epoch = |file: &str| {
+        let mut request = req_after(file, now);
+        request.new_epoch = true;
+        request.live = Some(file.to_owned());
+        request
+    };
+    // a live file signed elsewhere (another text at 1:2, by a key the build trusts): no
+    // declaration is made from it
+    let mut stolen = Policy::parse(&Envelope::parse(&file2).unwrap().policy.p).unwrap();
+    stolen.contact_ko = Some("다른 곳에서 서명된 정책".to_owned());
+    let key = test_key("signing-1").unwrap();
+    let elsewhere = Envelope {
+        policy: Part::sign(
+            &SigningKey::from_bytes(&key.seed()),
+            1,
+            crate::envelope::POLICY_DOMAIN,
+            &stolen.to_text(),
+        ),
+        root: None,
+    }
+    .to_file();
+    assert!(check_envelope(&elsewhere, &test_key_set(), SERVER).is_ok());
+    let err = error(&new_epoch(&elsewhere));
+    assert!(err.contains("X10") && err.contains("보관소"), "{err}");
+    // a declaration of epoch 2 signed and never published: the next one from the live file opens
+    // epoch 3, not 2 again
+    let made3 = made(&new_epoch(&file2)).unwrap();
+    assert_eq!(made3.policy.epoch, 2);
+    signed(&made3);
+    assert_eq!(archive().max_epoch().unwrap(), 2);
+    let again = made(&new_epoch(&file2)).unwrap();
+    assert_eq!((again.policy.epoch, again.policy.seq), (3, 1));
+    let decl = RootDecl::parse(again.draft.root_p.as_ref().unwrap()).unwrap();
+    assert_eq!(decl.epoch, 3);
+    // a recorded build that pins root keys 102 and 103 only: root key 102 signs the declaration
+    let keys = test_key_set();
+    let pin = |name: &str| test_key(name).unwrap().public().to_string();
+    let roots_102_103 = KeySet::from_values(
+        &keys.signing_line,
+        &format!("{},{}", pin("root-102"), pin("root-103")),
+        "1:2",
+    )
+    .unwrap();
+    archive()
+        .record_keyset(&roots_102_103, SERVER, Some("1.6.1"))
+        .unwrap();
+    let by_102 = made(&new_epoch(&file2)).unwrap();
+    assert!(
+        by_102
+            .report
+            .iter()
+            .any(|l| l.contains("루트 선언은 루트 키 102")),
+        "{:?}",
+        by_102.report
+    );
+    assert!(sign_with(&by_102, "root-101").unwrap_err().contains("X12"));
+    assert_eq!(
+        Envelope::parse(&sign_with(&by_102, "root-102").unwrap())
+            .unwrap()
+            .root
+            .unwrap()
+            .k,
+        102
+    );
 }

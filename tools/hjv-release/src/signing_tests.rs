@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Tests of signing.rs with the shared vectors' files: what `sign` refuses in a draft whoever
-//! made it (the base recomputed, X2, X10, X11), whom it lets sign (X9, X12), and what it says.
+//! made it (the base recomputed, X1, X2, X10, X11, the times, the first position, X4 on the
+//! signed bytes), whom it lets sign (X9, X12 by key, not by number), and what it says.
 //! make_tests.rs signs every policy it makes through the same functions.
 
 use super::*;
@@ -9,7 +10,7 @@ use crate::{
     archive::Archive,
     keyfile::SecretKey,
     keys::{test_key, test_key_set},
-    policy::tests::t,
+    policy::tests::{t, v},
     release::tests::temp_dir,
 };
 use std::path::Path;
@@ -374,4 +375,283 @@ fn a_declaration_after_a_rolled_back_live_file_is_asked_about() {
         "{:?}",
         plan.dangers
     );
+}
+
+/// The draft `e1-s3` after `e1-s2` with its policy changed by hand.
+fn edited_next(change: impl FnOnce(&mut Policy)) -> Draft {
+    let mut p = Policy::parse(&p_of("e1-s3")).unwrap();
+    change(&mut p);
+    Draft {
+        p: p.to_text(),
+        signer: Role::Signing,
+        root: None,
+        root_p: None,
+        prev: Some(vector("accepted/e1-s2.json")),
+        notes: Vec::new(),
+    }
+}
+
+/// An envelope of `p` alone, signed with the test key `by`.
+fn envelope_of(p: &str, by: &str) -> String {
+    let key = test_key(by).unwrap();
+    Envelope {
+        policy: Part::sign(
+            &ed25519_dalek::SigningKey::from_bytes(&key.seed()),
+            key.id,
+            POLICY_DOMAIN,
+            p,
+        ),
+        root: None,
+    }
+    .to_file()
+}
+
+/// What `policy` never makes, refused by `sign` all the same: the draft is a file an agent wrote
+/// and `sign` is the last check before a key is used. The times, the positions and X4 on the
+/// signed bytes, each in a draft edited by hand.
+#[test]
+fn hand_edited_drafts() {
+    let keys = test_key_set();
+    let now = t("2026-10-05T03:00:00Z");
+    let archive = archive_with("sign-edited", &["e1-s1", "e1-s2"]);
+    assert!(plan(&edited_next(|_| {}), &keys, &archive, None, now).is_ok());
+    // issued ahead of this PC's clock (300 s are allowed), or before the previous policy
+    let ahead = |seconds: i64| edited_next(|p| p.issued = now + seconds);
+    assert!(plan(&ahead(CLOCK_SLACK), &keys, &archive, None, now).is_ok());
+    assert!(plan_err(&ahead(CLOCK_SLACK + 1), &keys, &archive, None, now).contains("미래"));
+    assert!(plan_err(&ahead(DAY), &keys, &archive, None, now).contains("미래"));
+    let before_prev = edited_next(|p| p.issued = t("2026-10-02T02:59:59Z"));
+    assert!(plan_err(&before_prev, &keys, &archive, None, now).contains("이전 정책보다 이릅니다"));
+    // a minimum lowered without a declaration (X1)
+    let lowered = edited_next(|p| {
+        let windows = p.platforms.get_mut(&Platform::Windows).unwrap();
+        windows.min = v("1.5.0");
+        windows.grace_until = None;
+        windows.grace_min = None;
+    });
+    let err = plan_err(&lowered, &keys, &archive, None, now);
+    assert!(err.contains("X1") && err.contains("windows"), "{err}");
+    // a seq 1001 above the previous one: asked about, and then refused on the signed bytes (X4);
+    // nothing reaches the archive
+    let jump = edited_next(|p| p.seq = 2 + 1001);
+    let planned = plan(&jump, &keys, &archive, None, now).unwrap();
+    assert!(planned
+        .dangers
+        .iter()
+        .any(|d| d.contains("seq가 한 번에 뜁니다(2 → 1003")));
+    let err = sign(
+        &jump,
+        &planned,
+        &[secret("signing-1")],
+        &keys,
+        &archive,
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("서명한 정책을 앱이 받지 않으므로 쓰지 않습니다")
+            && err.contains("X4")
+            && err.contains("Jump"),
+        "{err}"
+    );
+    assert!(archive.at(1, 1003).unwrap().is_none());
+    assert!(archive.keysets().unwrap().is_empty());
+    // a key file whose floor is above the draft: the plan has nothing against it, X4 has
+    let mut high_floor = test_key_set();
+    high_floor.floor = crate::keys::Floor { epoch: 1, seq: 9 };
+    let next = edited_next(|_| {});
+    let planned = plan(&next, &high_floor, &archive, None, now).unwrap();
+    let err = sign(
+        &next,
+        &planned,
+        &[secret("signing-2")],
+        &high_floor,
+        &archive,
+        None,
+    )
+    .unwrap_err();
+    assert!(err.contains("X4"), "{err}");
+    assert!(archive.at(1, 3).unwrap().is_none());
+    // a seq not above a voided file of the epoch, though its own position is free (X11)
+    let voided = archive_with("sign-edited-void", &["e1-s1", "e1-s2"]);
+    let at_5 = Policy::parse(&p_of("e1-s3"))
+        .map(|p| Policy { seq: 5, ..p })
+        .unwrap();
+    voided
+        .add_policy(1, 5, &envelope_of(&at_5.to_text(), "signing-2"))
+        .unwrap();
+    voided.add_void(1, 5, now).unwrap();
+    for seq in [3, 4, 5] {
+        let err = plan_err(&edited_next(|p| p.seq = seq), &keys, &voided, None, now);
+        assert!(err.contains("X11") && err.contains("(5)"), "{seq}: {err}");
+    }
+    assert!(plan(&edited_next(|p| p.seq = 6), &keys, &voided, None, now).is_ok());
+    // the first policy lies just above the key file's floor
+    let empty = Archive::open(&temp_dir("sign-edited-first"), true).unwrap();
+    let first = |seq: u64| {
+        let mut p = Policy::parse(&p_of("e1-s1")).unwrap();
+        p.seq = seq;
+        Draft {
+            p: p.to_text(),
+            signer: Role::Signing,
+            root: None,
+            root_p: None,
+            prev: None,
+            notes: Vec::new(),
+        }
+    };
+    let first_now = t("2026-10-01T03:00:00Z");
+    assert!(plan(&first(1), &keys, &empty, None, first_now).is_ok());
+    let err = plan_err(&first(5), &keys, &empty, None, first_now);
+    assert!(
+        err.contains("첫 정책의 위치") && err.contains("1:1"),
+        "{err}"
+    );
+    let mut floor_4 = test_key_set();
+    floor_4.floor = crate::keys::Floor { epoch: 1, seq: 4 };
+    assert!(plan(&first(5), &floor_4, &empty, None, first_now).is_ok());
+    assert!(plan_err(&first(1), &floor_4, &empty, None, first_now).contains("1:5"));
+}
+
+/// A declaration's draft edited by hand: its policy is seq 1 of the new epoch, issued with the
+/// declaration, for the same server.
+#[test]
+fn a_hand_edited_declaration() {
+    let keys = test_key_set();
+    let archive = archive_with("sign-edited-decl", &["e1-s1", "e1-s2", "e1-s3"]);
+    let now = t("2026-10-06T03:00:00Z");
+    let live = vector("accepted/e1-s3.json");
+    assert!(plan(&declaration_draft(), &keys, &archive, Some(&live), now).is_ok());
+    let mut p = Policy::parse(&p_of("e2-s1")).unwrap();
+    p.seq = 2;
+    let second = Draft {
+        p: p.to_text(),
+        ..declaration_draft()
+    };
+    let err = plan_err(&second, &keys, &archive, Some(&live), now);
+    assert!(err.contains("seq 1"), "{err}");
+    let decl = RootDecl::parse(&root_p_of("e2-s1")).unwrap();
+    for (changed, why) in [
+        (
+            RootDecl {
+                issued: decl.issued + 1,
+                ..decl.clone()
+            },
+            "발행 시각이 정책의 발행 시각과 다릅니다",
+        ),
+        (
+            RootDecl {
+                server: "hjv.test".to_owned(),
+                ..decl.clone()
+            },
+            "서버가 정책의 서버와 다릅니다",
+        ),
+    ] {
+        let draft = Draft {
+            root_p: Some(changed.to_text()),
+            ..declaration_draft()
+        };
+        let err = plan_err(&draft, &keys, &archive, Some(&live), now);
+        assert!(err.contains(why), "{why}: {err}");
+    }
+}
+
+/// A record pins keys, not numbers (X12): a build that pins another key under a number is not
+/// served by this key file's key of that number, signing key or root key.
+#[test]
+fn a_record_pins_keys_not_numbers() {
+    let keys = test_key_set();
+    let as_number = |id: u32, name: &str| {
+        crate::keys::PublicKey {
+            id,
+            key: test_key(name).unwrap().public().key,
+        }
+        .to_string()
+    };
+    let pin = |name: &str| test_key(name).unwrap().public().to_string();
+    // the archive records the key file's key set (1.6.0) and the build of 1.6.1
+    let recorded = |name: &str, upto: &[&str], signing: String, roots: String| {
+        let archive = archive_with(name, upto);
+        archive
+            .record_keyset(&keys, "rd.example.com", Some("1.6.0"))
+            .unwrap();
+        let other = KeySet::from_values(&signing, &roots, "1:2").unwrap();
+        archive
+            .record_keyset(&other, "rd.example.com", Some("1.6.1"))
+            .unwrap();
+        archive
+    };
+    // 1.6.1 pins signing key 1 and another key as 2
+    let archive = recorded(
+        "sign-x12-number",
+        &["e1-s1", "e1-s2"],
+        format!("{},{}", pin("signing-1"), as_number(2, "signing-3")),
+        keys.root_line.clone(),
+    );
+    let next = Draft {
+        p: p_of("e1-s3"),
+        signer: Role::Signing,
+        root: None,
+        root_p: None,
+        prev: Some(vector("accepted/e1-s2.json")),
+        notes: Vec::new(),
+    };
+    let now = t("2026-10-05T03:00:00Z");
+    let planned = plan(&next, &keys, &archive, None, now).unwrap();
+    let err = sign(
+        &next,
+        &planned,
+        &[secret("signing-2")],
+        &keys,
+        &archive,
+        None,
+    )
+    .unwrap_err();
+    assert!(err.contains("X12") && err.contains("서명 키 2"), "{err}");
+    assert!(sign(
+        &next,
+        &planned,
+        &[secret("signing-1")],
+        &keys,
+        &archive,
+        None
+    )
+    .is_ok());
+    // 1.6.1 pins another key as root key 101: a declaration is signed by 102
+    let archive = recorded(
+        "sign-x12-root-number",
+        &["e1-s1", "e1-s2", "e1-s3"],
+        keys.signing_line.clone(),
+        format!("{},{}", as_number(101, "root-103"), pin("root-102")),
+    );
+    let draft = declaration_draft();
+    let live = vector("accepted/e1-s3.json");
+    let planned = plan(
+        &draft,
+        &keys,
+        &archive,
+        Some(&live),
+        t("2026-10-06T03:00:00Z"),
+    )
+    .unwrap();
+    let err = sign(
+        &draft,
+        &planned,
+        &[secret("root-101"), secret("signing-2")],
+        &keys,
+        &archive,
+        None,
+    )
+    .unwrap_err();
+    assert!(err.contains("X12") && err.contains("루트 키 101"), "{err}");
+    let signed = sign(
+        &draft,
+        &planned,
+        &[secret("root-102"), secret("signing-2")],
+        &keys,
+        &archive,
+        None,
+    )
+    .unwrap();
+    assert_eq!(Envelope::parse(&signed.file).unwrap().root.unwrap().k, 102);
 }

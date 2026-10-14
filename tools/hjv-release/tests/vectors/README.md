@@ -100,12 +100,12 @@ The keys an app holds in every case are those of `update-keys.env`; its server n
 
 `canonical: true`: the file is one line and a line feed; no member is given twice and none is
 `null`; only the members of spec 1-3 appear, in 1-3's order, each with its JSON type (unsigned
-integers, `move_to_play` only `true`, `package.build` a string); strings escaped as serde_json
-writes them; the envelope's `k` is 1-65535 and every `s` is the canonical base64 of 64 bytes; a
-policy text has its required members. Value rules are not part of it: an envelope or text of
-version 2, a version or time of the wrong form, a text too long, another server, a declaration of
-epoch 1 or without `base` is canonical, and the tool gives the app's reason for it. Not
-canonical: `key-number-zero`, `key-number-as-text`, `signature-63-bytes`,
+integers up to 2^64-1, `move_to_play` only `true`, `package.build` a string); strings escaped as
+serde_json writes them; the envelope's `k` is 1-65535 and every `s` is the canonical base64 of 64
+bytes; a policy text has its required members. Value rules are not part of it: an envelope or
+text of version 2, a version or time of the wrong form, a text too long, another server, a
+declaration of epoch 1 or without `base` is canonical, and the tool gives the app's reason for it.
+Not canonical: `key-number-zero`, `key-number-as-text`, `signature-63-bytes`,
 `signature-trailing-bits`, `body-not-utf8`, `duplicate-field`, `grace-min-as-number`,
 `policy-without-epoch`, `lone-surrogate-in-known-member`, and seven of the `binding: tool` cases.
 

@@ -3097,6 +3097,28 @@ fn the_archive_decides_what_comes_next() {
             script,
         )
     };
+    // only the archive's highest policy is voided, never one below it
+    let lower = world.person(
+        &[
+            "void",
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+            "--live",
+            "policy1.json",
+            "policy2.json",
+        ],
+        &[("yes를 입력하세요: ", "yes")],
+    );
+    assert_eq!(lower.code, 1, "{}", lower.all());
+    assert!(
+        lower.stderr.contains("가장 높은 정책(1:3)뿐입니다"),
+        "{}",
+        lower.stderr
+    );
+    assert!(!lower.tty.contains("yes를 입력"));
+    assert!(!world.dir.join("archive/void-e1-s2").exists());
+    assert!(!world.dir.join("archive/void-e1-s3").exists());
     let refused = void("policy2.json", &[("yes를 입력하세요: ", "no")]);
     assert_eq!(refused.code, 1, "{}", refused.all());
     assert!(refused.tty.contains("컴퓨터 밖으로 나가지 않았습니까"));
@@ -3175,6 +3197,38 @@ fn the_archive_decides_what_comes_next() {
     let wrong = adopt(foreign.to_str().unwrap(), "yes");
     assert_eq!(wrong.code, 1, "{}", wrong.all());
     assert!(wrong.stderr.contains("같은 위치(1:1)"), "{}", wrong.stderr);
+    // nor a policy whose declaration is another text of an epoch the archive holds: refused
+    // before anything is asked or written
+    let third = world.file("archive-3");
+    let adopt_into = |name: &str| {
+        let file = vectors().join(name);
+        world.person(
+            &[
+                "archive",
+                "adopt",
+                "--archive",
+                &third,
+                "--keys",
+                &keys,
+                "--allow-test-keys",
+                file.to_str().unwrap(),
+            ],
+            &[("yes를 입력하세요: ", "yes")],
+        )
+    };
+    let e2 = adopt_into("accepted/e2-s1.json");
+    assert_eq!(e2.code, 0, "{}", e2.all());
+    assert!(world.dir.join("archive-3/declaration-e2.json").exists());
+    let fork = adopt_into("refused/declaration-fork.json");
+    assert_eq!(fork.code, 1, "{}", fork.all());
+    assert!(
+        fork.stderr
+            .contains("보관소에 세대 2의 다른 루트 선언이 있습니다"),
+        "{}",
+        fork.stderr
+    );
+    assert!(!fork.tty.contains("yes를 입력"));
+    assert!(!world.dir.join("archive-3/policy-e2-s2.json").exists());
 }
 
 #[test]
@@ -3199,6 +3253,51 @@ fn a_build_floor_comes_from_the_live_file() {
         "{}",
         ok.all()
     );
+    // a key file that does not pin the live file's signing key (1) gives no floor and records
+    // nothing: a build of it would not take the live policy
+    let pin = |name: &str| test_key(name).unwrap().public().to_string();
+    fs::write(
+        world.dir.join("keys-23.env"),
+        format!(
+            "HJV_UPDATE_PUBKEY={},{}\nHJV_UPDATE_ROOT_PUBKEY={},{}\nHJV_POLICY_FLOOR=1:0\n",
+            pin("signing-2"),
+            pin("signing-3"),
+            pin("root-101"),
+            pin("root-102")
+        ),
+    )
+    .unwrap();
+    let records = || {
+        fs::read_dir(world.dir.join("archive"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("keyset-")
+            })
+            .count()
+    };
+    let before = records();
+    let unpinned = world.tool(&[
+        "floor",
+        "--live",
+        "policy2.json",
+        "--keys",
+        "keys-23.env",
+        "--allow-test-keys",
+    ]);
+    assert_eq!(unpinned.code, 1, "{}", unpinned.all());
+    assert!(
+        unpinned
+            .stderr
+            .contains("서버의 정책을 이 키 파일로 확인하지 못합니다"),
+        "{}",
+        unpinned.stderr
+    );
+    assert!(unpinned.stdout.is_empty());
+    assert_eq!(records(), before);
     // a declaration revokes key 1: a key file that still pins it makes no build (X6)
     let made = world.policy(&[
         "--prev",
@@ -3266,4 +3365,205 @@ fn a_build_floor_comes_from_the_live_file() {
         "{}",
         verify.stdout
     );
+    // a declaration made from a --prev that is not the live file is no declaration from the
+    // live file (X10)
+    let stale = world.tool(&[
+        "verify",
+        "--keys",
+        &keys,
+        "--allow-test-keys",
+        "--server",
+        SERVER,
+        "--prev",
+        "policy1.json",
+        "--live",
+        "policy2.json",
+        "policy3.json",
+    ]);
+    assert_eq!(stale.code, 1, "{}", stale.all());
+    assert!(
+        stale.stderr.contains("X10") && stale.stderr.contains("--prev"),
+        "{}",
+        stale.stderr
+    );
+    // the server still has policy 2, but the policy that opened epoch 2 is not voided: the
+    // declaration above it comes next (runbook 5-13)
+    let void = world.person(
+        &[
+            "void",
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+            "--live",
+            "policy2.json",
+            "policy3.json",
+        ],
+        &[("yes를 입력하세요: ", "yes")],
+    );
+    assert_eq!(void.code, 1, "{}", void.all());
+    assert!(
+        void.stderr
+            .contains("새 세대를 연 정책(새 루트 선언)은 무효로 하지 않습니다"),
+        "{}",
+        void.stderr
+    );
+    assert!(!world.dir.join("archive/void-e2-s1").exists());
+}
+
+/// Runbook 5-6: the policy that withdraws the Windows package is made, signed, checked and put in
+/// the publish directory by the steps of chapter 2, and goes to the server without the package.
+#[test]
+fn an_emergency_stop_reaches_the_server_without_its_package() {
+    let world = World::new("emergency-stop");
+    world.two_policies("14");
+    let made = world.policy(&[
+        "--prev",
+        "policy2.json",
+        "--auto-after",
+        "windows=none",
+        "--withdraw-package",
+        "windows",
+        "--out",
+        "draft3.json",
+    ]);
+    assert_eq!(made.code, 0, "{}", made.all());
+    assert!(
+        made.stdout
+            .contains("windows: 패키지 HJViewer-1.6.0-windows-x86_64.exe"),
+        "{}",
+        made.stdout
+    );
+    let signed = world.sign_as(
+        "signing-1.key",
+        "draft3.json",
+        "policy3.json",
+        &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
+    );
+    assert_eq!(signed.code, 0, "{}", signed.all());
+    assert!(signed.tty.contains("windows: 패키지를 거둬들입니다"));
+    let policy3 = world.checked("policy3.json");
+    assert_eq!(policy3.platforms[&Platform::Windows].package, None);
+    let verify = world.verify_after("policy2.json", "policy3.json");
+    assert_eq!(verify.code, 0, "{}", verify.all());
+    // the publish directory, as for a release (README 2-5)
+    let (keys, release) = (world.file("keys.env"), world.release("1.6.0"));
+    let output = world.tool(&[
+        "publish-dir",
+        "--policy",
+        "policy3.json",
+        "--release-dir",
+        &release,
+        "--out",
+        "publish-stop",
+        "--keys",
+        &keys,
+        "--allow-test-keys",
+    ]);
+    assert_eq!(output.code, 0, "{}", output.all());
+    assert!(
+        output
+            .stdout
+            .contains("windows 1.6.0: 패키지를 거둬들인 항목입니다. 넣을 파일이 없습니다"),
+        "{}",
+        output.stdout
+    );
+    assert_eq!(
+        world.read("publish-stop/version-policy.json"),
+        world.read("policy3.json")
+    );
+    assert!(!world
+        .dir
+        .join("publish-stop/pkg/HJViewer-1.6.0-windows-x86_64.exe")
+        .exists());
+    assert_eq!(
+        world.read("publish-stop/pkg/HJViewer-1.6.0-android-arm64.apk"),
+        "android package 1.6.0"
+    );
+    let sums = world.read("publish-stop/SHA256SUMS");
+    assert!(!sums.contains("windows-x86_64"), "{sums}");
+    let check = Command::new("sha256sum")
+        .args(["-c", "--quiet", "SHA256SUMS"])
+        .current_dir(world.dir.join("publish-stop"))
+        .status()
+        .unwrap();
+    assert!(check.success());
+}
+
+/// The archive never lies in the repository's build/, and a key file with test keys never uses
+/// the default archive: a command that writes to it is refused, one that reads it reads nothing.
+#[test]
+fn the_archive_is_kept_apart() {
+    let world = World::new("archive-apart");
+    world.two_policies("14");
+    let keys = world.file("keys.env");
+    for archive in ["build", "build/policy-archive"] {
+        let output = world.tool(&[
+            "check",
+            "--keys",
+            &keys,
+            "--policy",
+            "policy2.json",
+            "--archive",
+            archive,
+        ]);
+        assert_eq!(output.code, 1, "{archive}: {}", output.all());
+        assert!(
+            output.stderr.contains("build/ 안에 둘 수 없습니다"),
+            "{archive}: {}",
+            output.stderr
+        );
+    }
+    // a default archive under HOME, with a record of its own
+    let home = world.dir.join("home");
+    let default = home.join("hjviewer-policy-archive");
+    fs::create_dir_all(&default).unwrap();
+    let parsed = KeySet::parse(&world.read("keys.env")).unwrap();
+    fs::write(
+        default.join("keyset-0000000000000000.env"),
+        format!(
+            "HJV_UPDATE_PUBKEY={}\nHJV_UPDATE_ROOT_PUBKEY={}\n# versions: 9.9.9\n",
+            parsed.signing_line, parsed.root_line
+        ),
+    )
+    .unwrap();
+    let home = home.to_str().unwrap().to_owned();
+    let env = [("HOME", home.as_str())];
+    let read = run_with(
+        &["check", "--keys", &keys, "--policy", "policy2.json"],
+        &world.dir,
+        &env,
+        "",
+    );
+    assert_eq!(read.code, 3, "{}", read.all());
+    assert!(
+        read.stdout.contains("기록된 모든 빌드가 박은 키"),
+        "{}",
+        read.stdout
+    );
+    assert!(!read.stdout.contains("기록된 키 집합"), "{}", read.stdout);
+    let write = run_with(
+        &[
+            "archive",
+            "adopt",
+            "--keys",
+            &keys,
+            "--allow-test-keys",
+            "--server",
+            SERVER,
+            "--version",
+            "1.6.0",
+        ],
+        &world.dir,
+        &env,
+        "",
+    );
+    assert_eq!(write.code, 1, "{}", write.all());
+    assert!(
+        write.stderr.contains(
+            "시험 키의 키 파일로는 기본 보관소(~/hjviewer-policy-archive)를 쓰지 않습니다"
+        ),
+        "{}",
+        write.stderr
+    );
+    assert_eq!(fs::read_dir(&default).unwrap().count(), 1);
 }

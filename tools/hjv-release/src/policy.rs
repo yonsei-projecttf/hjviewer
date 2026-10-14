@@ -1734,6 +1734,17 @@ pub(crate) mod tests {
             judge(&text.replacen(r#""epoch":2"#, r#""epoch":1"#, 1)),
             Err(Reason::RootFormat)
         );
+        // a key number outside 1-65535 in revoked breaks a rule of a declaration (the app's B3)
+        for revoked in [
+            r#""revoked":[0]"#,
+            r#""revoked":[65536]"#,
+            r#""revoked":[1,0]"#,
+        ] {
+            let bad = text.replacen(r#""revoked":[1,3]"#, revoked, 1);
+            assert!(DeclForm::canonical(&bad).is_ok(), "{revoked}");
+            assert_eq!(judge(&bad), Err(Reason::RootFormat), "{revoked}");
+        }
+        assert!(judge(&text.replacen(r#""revoked":[1,3]"#, r#""revoked":[65535]"#, 1)).is_ok());
         assert_eq!(
             judge(&text.replacen(r#""grace_min":"1.5.0""#, r#""grace_min":"1.6.0""#, 1)),
             Err(Reason::RootFormat)

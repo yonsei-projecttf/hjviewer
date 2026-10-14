@@ -217,7 +217,15 @@ fn load_keeps_what_verifies_part_by_part() {
         ),
         (fork, None)
     );
-    // an epoch 1 policy with a root part, an epoch 2 policy without one
+    // an epoch 1 policy with a root part (each part signed and good), an epoch 2 policy without one
+    let with_root = epoch_1_with_root(&e1s3, &d2);
+    assert!(load(&keys, SERVER, Some(&d2), Some(&with_root))
+        .held
+        .is_none());
+    assert_eq!(
+        load(&keys, SERVER, None, Some(&with_root)),
+        State::default()
+    );
     let without_root = vector("refused/epoch-2-without-declaration.json");
     assert!(load(&keys, SERVER, Some(&d2), Some(&without_root))
         .held
@@ -239,6 +247,16 @@ fn load_keeps_what_verifies_part_by_part() {
     assert_eq!(load(&keys, SERVER, None, None), State::default());
     let spaced = e1s3.replacen("{\"v\":1,", "{ \"v\":1,", 1);
     assert_eq!(load(&keys, SERVER, None, Some(&spaced)), State::default());
+}
+
+/// The policy part of an epoch 1 envelope with the root part of a declaration put next to it: both
+/// parts keep their signatures, only their pairing is wrong.
+fn epoch_1_with_root(file: &str, root: &Part) -> String {
+    Envelope {
+        policy: Envelope::parse(file).unwrap().policy,
+        root: Some(root.clone()),
+    }
+    .to_file()
 }
 
 /// A newer build whose floor is later keeps the held policy in force, compares with it while it
@@ -310,6 +328,48 @@ fn the_strict_layer() {
         let err = check_envelope(&vector(file), &keys, SERVER).unwrap_err();
         assert!(err.contains(why), "{file}: {err}");
     }
+    // a policy's epoch and its declaration go together: epoch 1 without one, epoch 2 and later with
+    // their own epoch's
+    let e2s2 = vector("accepted/e2-s2.json");
+    let d2 = root_of(&e2s2).unwrap();
+    for file in [
+        epoch_1_with_root(&vector("accepted/e1-s3.json"), &d2),
+        vector("refused/epoch-differs-from-declaration.json"),
+    ] {
+        let err = check_envelope(&file, &keys, SERVER).unwrap_err();
+        assert!(err.contains("루트 선언이 맞지 않습니다"), "{err}");
+    }
+    // a root part whose text is not the tool's form, though its signature holds
+    let spaced = d2.p.replacen("{\"v\":1,", "{ \"v\":1,", 1);
+    assert_ne!(spaced, d2.p);
+    let key = crate::keys::test_key("root-101").unwrap();
+    let respaced = Envelope {
+        policy: Envelope::parse(&e2s2).unwrap().policy,
+        root: Some(Part::sign(
+            &ed25519_dalek::SigningKey::from_bytes(&key.seed()),
+            101,
+            ROOT_DOMAIN,
+            &spaced,
+        )),
+    }
+    .to_file();
+    assert!(Envelope::parse(&respaced)
+        .unwrap()
+        .root
+        .unwrap()
+        .verifies(&key.public().key, ROOT_DOMAIN));
+    let err = canonical(respaced.as_bytes()).unwrap_err();
+    assert!(err.contains("루트 선언"), "{err}");
+    assert!(check_envelope(&respaced, &keys, SERVER).is_err());
+    assert_eq!(
+        load(
+            &keys,
+            SERVER,
+            Envelope::parse(&respaced).unwrap().root.as_ref(),
+            None
+        ),
+        State::default()
+    );
     // the app's reason is the app's, a text that is not canonical is no app's matter here
     assert!(accept(
         &keys,

@@ -13,7 +13,8 @@
 //!
 //! Each package is copied from the release directory and then hashed again where it lies: the
 //! copy must have the size and the SHA-256 the policy names. The third-party notices differ by
-//! platform, so the one file holds a section for each package of that version.
+//! platform, so the one file holds a section for each package of that version. An entry without
+//! a package (withdrawn, runbook 5-6) has no file to send: the policy goes alone for it.
 //!
 //! Nothing is written through a link. What lies in `<out>` already is looked at before the
 //! first file is written (directories and plain files only), and every file is created anew or
@@ -164,10 +165,15 @@ pub fn publish(
         let Some(entry) = policy.platforms.get(&platform) else {
             continue;
         };
-        let package = entry
-            .package
-            .as_ref()
-            .ok_or_else(|| format!("{platform}: 정책에 package가 없습니다"))?;
+        // a withdrawn package (runbook 5-6), or an entry still without one at the same latest:
+        // the policy names no file, and nothing of this entry goes to the server
+        let Some(package) = entry.package.as_ref() else {
+            report.push(format!(
+                "{platform} {}: 패키지를 거둬들인 항목입니다. 넣을 파일이 없습니다",
+                entry.latest
+            ));
+            continue;
+        };
         let artifact = artifacts
             .iter()
             .find(|a| a.info.platform.platform() == platform && a.info.version == entry.latest);
@@ -565,6 +571,64 @@ mod tests {
         let third =
             fs::read_to_string(out.join("pkg/notices-1.6.1/THIRD_PARTY_NOTICES.txt")).unwrap();
         assert!(third.contains("windows") && !third.contains("android"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Runbook 5-6: the policy that withdraws a package goes to the server without it, though
+    /// the release directory still holds the build.
+    #[test]
+    fn a_withdrawn_package_stays_behind() {
+        let (mut policy, artifacts, root) = fixture("publish-withdrawn");
+        let windows = policy.platforms.get_mut(&Platform::Windows).unwrap();
+        windows.package = None;
+        windows.auto_install_after = None;
+        let out = root.join("out");
+        let report = publish(&policy, Some("{\"v\":1}\n"), &artifacts, &out).unwrap();
+        assert!(
+            report
+                .iter()
+                .any(|l| l == "windows 1.6.1: 패키지를 거둬들인 항목입니다. 넣을 파일이 없습니다"),
+            "{report:?}"
+        );
+        assert_eq!(
+            files_under(&out).unwrap(),
+            [
+                "SHA256SUMS",
+                "pkg/HJViewer-1.6.1-android-arm64.apk",
+                "pkg/notices-1.6.1/LICENSE.txt",
+                "pkg/notices-1.6.1/NOTICE.txt",
+                "pkg/notices-1.6.1/SOURCE.txt",
+                "pkg/notices-1.6.1/THIRD_PARTY_NOTICES.txt",
+                "version-policy.json",
+            ]
+        );
+        let third =
+            fs::read_to_string(out.join("pkg/notices-1.6.1/THIRD_PARTY_NOTICES.txt")).unwrap();
+        assert!(third.contains("android") && !third.contains("windows"));
+        // a copy of the withdrawn package left in the directory does not ride along
+        fs::write(
+            out.join("pkg/HJViewer-1.6.1-windows-x86_64.exe"),
+            b"windows package 1.6.1",
+        )
+        .unwrap();
+        assert!(publish(&policy, Some("{\"v\":1}\n"), &artifacts, &out)
+            .unwrap_err()
+            .contains("관계없는 파일"));
+        // both packages withdrawn: the policy goes alone
+        policy
+            .platforms
+            .get_mut(&Platform::Android)
+            .unwrap()
+            .package = None;
+        let out = root.join("out-alone");
+        let report = publish(&policy, Some("{\"v\":1}\n"), &artifacts, &out).unwrap();
+        assert!(report
+            .iter()
+            .any(|l| l.starts_with("android 1.6.1: 패키지를 거둬들인")));
+        assert_eq!(
+            files_under(&out).unwrap(),
+            ["SHA256SUMS", "version-policy.json"]
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

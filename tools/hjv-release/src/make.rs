@@ -244,7 +244,8 @@ pub fn derive_existing(
 }
 
 /// Derivations e and f of 4-2 for an entry `--prev` does not have. `prev` is `--prev`'s
-/// requirements, or none for the first policy.
+/// requirements, or none for the first policy. Below its sibling (a relaxation, with `relax`) an
+/// Android entry gets no pair, and a grace option for it is refused, as in d.
 pub fn derive_new(
     platform: Platform,
     b: Version,
@@ -270,6 +271,13 @@ pub fn derive_new(
             return Err(format!(
                 "{platform}: 새 항목의 최소 버전({b})이 {s}의 최소 버전({})보다 낮습니다. PC가 Android \
                  컨트롤러에 쓰는 기준이 내려가는 완화입니다(X1): --relax --live <서버의 정책 파일>",
+                x.min
+            ));
+        }
+        // below the sibling, as in d: no pair, and a grace option for it is refused
+        if grace != GraceAsk::Default || grace_min.is_some() {
+            return Err(format!(
+                "{platform}: {s}의 최소 버전({})보다 낮은 새 항목에는 유예 옵션을 줄 수 없습니다",
                 x.min
             ));
         }
@@ -597,6 +605,12 @@ impl<'a> Maker<'a> {
             }
             (None, None) => return Ok(None),
         };
+        // the hint to move to Play goes with a withdrawn package as well (its fix may be Play)
+        if platform == Platform::Android {
+            if let Some(move_to_play) = self.req.move_to_play {
+                entry.move_to_play = move_to_play;
+            }
+        }
         if withdraw {
             let Some(package) = entry.package.take() else {
                 return Err(format!(
@@ -649,11 +663,6 @@ impl<'a> Maker<'a> {
                     );
                 }
                 entry.auto_install_after = None;
-            }
-        }
-        if platform == Platform::Android {
-            if let Some(move_to_play) = self.req.move_to_play {
-                entry.move_to_play = move_to_play;
             }
         }
         Ok(Some((entry, latest_changed)))
@@ -1397,8 +1406,14 @@ pub fn make(
         })
         .collect();
     if !new_decl && !(loosened.is_empty() && below.is_empty()) {
+        // X8 is the tool's own rule (hbbs's one MIN); its way out is X1's
+        let rules = match (loosened.is_empty(), below.is_empty()) {
+            (false, false) => "X1, X8",
+            (false, true) => "X1",
+            (true, _) => "X8",
+        };
         return Err(format!(
-            "X1: 이전 정책보다 덜 막습니다({}). 루트 키의 선언이 있어야 합니다: --relax --live <서버의 정책 파일>(새 세대)",
+            "{rules}: 이전 정책보다 덜 막습니다({}). 루트 키의 선언이 있어야 합니다: --relax --live <서버의 정책 파일>(새 세대)",
             loosened.iter().chain(&below).cloned().collect::<Vec<_>>().join("; ")
         ));
     }

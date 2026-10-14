@@ -1232,7 +1232,8 @@ def strict_load(text):
 
 def typed(value, kind):
     if kind == "int":
-        if not isinstance(value, Int) or value.literal.startswith("-"):
+        # an unsigned 64-bit integer, as the tool's reader keeps it (u64)
+        if not isinstance(value, Int) or value.literal.startswith("-") or value.value > 2 ** 64 - 1:
             raise Shape("int")
         return value.value
     if kind == "str":
@@ -1282,11 +1283,11 @@ DECL_SCHEMA = {"v": "int", "server": "str", "epoch": "int", "revoked": int_list,
 def canonical(body):
     """Whether the file is exactly what hjv-release writes, by the form the tool's strict reader
     keeps: one line and a line feed; no duplicate member and no null; only the members of 1-3, in
-    1-3's order, with their JSON types (unsigned integers, `move_to_play` only true, package.build
-    a string); serde_json's escaping; the envelope's k 1-65535 and every s the canonical base64 of
-    64 bytes; a policy text with its required members. Value rules (v, versions, times, lengths,
-    the server, epoch >= 2, a declaration's missing members) are not part of it: a canonical text
-    that breaks one gets the app's reason from the tool."""
+    1-3's order, with their JSON types (unsigned 64-bit integers, `move_to_play` only true,
+    package.build a string); serde_json's escaping; the envelope's k 1-65535 and every s the
+    canonical base64 of 64 bytes; a policy text with its required members. Value rules (v,
+    versions, times, lengths, the server, epoch >= 2, a declaration's missing members) are not
+    part of it: a canonical text that breaks one gets the app's reason from the tool."""
     try:
         text = body.decode("utf-8")
         if not text.endswith("\n") or "\n" in text[:-1]:
@@ -1557,6 +1558,19 @@ def check_disk(made):
     return bad
 
 
+def canonical_edges(made):
+    """What canonical() decides that no vector shows: an integer is unsigned and 64-bit, as the
+    tool's strict reader keeps it (seq of the first vector, changed)."""
+    first = made["accepted/e1-s1.json"]
+    bad = []
+    for literal, want in [(b"18446744073709551615", True), (b"18446744073709551616", False),
+                          (b"-0", False), (b"1.0", False)]:
+        body = first.replace(b'\\"seq\\":1,', b'\\"seq\\":' + literal + b",", 1)
+        if body == first or canonical(body) != want:
+            bad.append("canonical() of seq %s is not %s" % (literal.decode(), want))
+    return bad
+
+
 def model_over_disk():
     """The model's verdict on every file on disk, compared with manifest.json on disk: a check that
     does not use the recipes above."""
@@ -1620,7 +1634,7 @@ def main(argv=None):
         raise SystemExit("Ed25519 does not verify its own signature")
     made = generate()
     if args.check:
-        bad = check_disk(made)
+        bad = check_disk(made) + canonical_edges(made)
         disk_bad, n = model_over_disk() if not bad else ([], 0)
         for line in bad + disk_bad:
             print("vectors: " + line)
