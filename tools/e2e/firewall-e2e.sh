@@ -1400,8 +1400,10 @@ account_allowlist() {
   has "login failed: HTTP 403: $denied_text" || fail "S32: a ZA pcode did not get the denial's text ($(grep 'login failed' <<<"$OUT"))"
   [ "$(sso_calls)" = $((calls + 2)) ] || fail "S32: the denied logins did not reach the fake SSO once each"
   admin report >"$RUN/report.txt"
-  grep -q 'login id-rule' "$RUN/report.txt" && grep -q 'login denied' "$RUN/report.txt" ||
-    fail "S32: the report does not count the refusals: $(grep -c . "$RUN/report.txt") lines"
+  # the denials by reason: the user call refused, a pcode outside the rule
+  grep -q 'login id-rule' "$RUN/report.txt" && grep -q 'login denied-user-refused' "$RUN/report.txt" &&
+    grep -q 'login denied-pcode-rule' "$RUN/report.txt" ||
+    fail "S32: the report does not count the refusals by reason: $(grep -c . "$RUN/report.txt") lines"
   grep -qiE '1234567890|zatest01|bztest01|zzsso-denied|zzsso-za' "$RUN/hjv-api.log" && fail "S32: an ID typed in hjv-api's log"
   run ctl2 --hjv-e2e-devices
   want 0 "S32: the login of hjv-ctl2 (bob's) after the refused ones"

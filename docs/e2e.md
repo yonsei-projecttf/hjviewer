@@ -203,7 +203,7 @@ PASS (strict): transport: relay
 | S29 | `admin block YZTEST03` | 출력 `blocked: 1 blocked …, 1 tokens and 1 account keys revoked; …`. carol의 기기 목록 요청이 바로 401. 틀린 비밀번호는 bob과 같은 실패 문구, 맞는 비밀번호는 SSO를 거친 뒤 403 `이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요.`(SSO 호출 각 1번) |
 | S30 | `admin unblock YZTEST03` | carol이 다시 로그인하고 기기 목록 성공 |
 | S31 | `admin user delete YZTEST03`(명단 항목도 함께 지워짐) → hjv-api를 `HJV_API_LOGIN=list`로 다시 시작 | `report` 둘째 줄 `login: list (…)`. 명단에 없는 carol은 맞는 비밀번호로도 틀린 비밀번호와 같은 실패 문구, SSO 호출 0. 미리 넣은 bob은 로그인 성공. 그 뒤 기본값(open)으로 다시 시작 |
-| S32 | HJViewer의 ID 규칙: 학번 꼴 `1234567890`, `zatest01`, `BZTEST01`로 로그인. 이어서 가짜 SSO의 `ZZSSO-DENIED`(사용자 정보 호출이 거절)와 `ZZSSO-ZA`(pcode가 ZA로 시작) | 앞의 셋은 SSO 호출 0으로 403 `연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요.`, 뒤의 둘은 SSO 호출 각 1번 뒤 403 `이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요.`. `report`에 `login id-rule`과 `login denied`, hjv-api 로그에 입력한 ID 없음, hjv-ctl2의 bob 로그인은 그대로 |
+| S32 | HJViewer의 ID 규칙: 학번 꼴 `1234567890`, `zatest01`, `BZTEST01`로 로그인. 이어서 가짜 SSO의 `ZZSSO-DENIED`(사용자 정보 호출이 거절)와 `ZZSSO-ZA`(pcode가 ZA로 시작) | 앞의 셋은 SSO 호출 0으로 403 `연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요.`, 뒤의 둘은 SSO 호출 각 1번 뒤 403 `이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요.`. `report`에 `login id-rule`과 사유별 `login denied-user-refused`, `login denied-pcode-rule`, hjv-api 로그에 입력한 ID 없음, hjv-ctl2의 bob 로그인은 그대로 |
 | S20 | 실행 폴더 전체(Caddy의 debug 로그 포함)에서 포탈 비밀번호 4개, 토큰·계정 키 30개, hjv-api의 키 셋(봉인·목록·기록) 찾기 | 각 클라이언트의 LocalConfig 파일 밖에는 없음. hjv-api의 키는 자격 증명 폴더 밖에는 없음 |
 | S21 | open 모드에서 `""` | `direct (P2P)`로 성공(2.9초) |
 
