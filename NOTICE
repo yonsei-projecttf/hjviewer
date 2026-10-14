@@ -1,5 +1,5 @@
 HJViewer
-Copyright (C) 2026 HJViewer contributors
+Copyright (C) 2026 프로젝트TF
 
 HJViewer is a modified version of these programs:
 
@@ -31,6 +31,7 @@ licenses, reproduced in the THIRD_PARTY_NOTICES.txt that ships with each build. 
 include the Amyuni USB Mobile Monitor virtual display driver (usbmmidd_v2), Copyright 2014-2021
 Amyuni Technologies Inc., under its own license.
 
-HJViewer is not affiliated with or endorsed by RustDesk or Purslane Tech Pte. Ltd. The app shows
-"Powered by RustDesk" as attribution, and some internal names still say rustdesk (the rustdesk:// URL
-scheme on mobile, Android package internals).
+HJViewer is not affiliated with or endorsed by RustDesk or Purslane Tech Pte. Ltd. The app's About
+screen keeps RustDesk's copyright line; its "Powered by RustDesk" link is hidden by default on the
+desktop and in the mobile apps. Some internal names still say rustdesk (the rustdesk:// URL scheme
+on mobile, Android package internals).

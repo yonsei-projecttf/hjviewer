@@ -1,14 +1,19 @@
 # HJViewer
 
-모바일 앱(iOS/Android)에서 Windows PC를 원격으로 보고 제어하는 서비스입니다. **방화벽·NAT 뒤에서도 HTTPS(443)만으로 연결**되는 것이 핵심입니다.
+> 본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.
+>
+> This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.
+
+모바일 앱(iOS/Android)에서 Windows PC를 원격으로 보고 제어하는 서비스입니다. 프로젝트TF가 만듭니다. **방화벽·NAT 뒤에서도 HTTPS(443)만으로 연결**되는 것이 핵심입니다.
 [RustDesk](https://github.com/rustdesk/rustdesk) 클라이언트와 [rustdesk-server](https://github.com/rustdesk/rustdesk-server)를 포크해서 만듭니다.
-1.6.0부터는 연세포탈 ID로 로그인하면 앱에 내 Windows PC 목록이 나오고, 같은 계정으로 로그인한 내 기기끼리는 PC 비밀번호 없이 연결하며, 꺼진 PC를 같은 네트워크의 NAS 중계기로 켭니다.
+1.6.0부터는 연세포탈 ID로 로그인하면 앱에 내 Windows PC 목록이 나오고, 같은 계정으로 로그인한 내 기기끼리는 PC 비밀번호 없이 연결하며, 꺼진 PC를 같은 네트워크의 NAS 중계기로 켭니다. 로그인은 연세 SSO를 거치고, 연세 SSO는 연세대학교 교직원 계정만 받습니다. 그 SSO를 통과한 사람은 처음 로그인할 때 저절로 등록되고, 운영자는 계정을 막을 수 있습니다(`hjv-api admin block`). 서버에서 `HJV_API_LOGIN=list`로 바꾸면 운영자가 미리 명단에 올린 ID만 로그인합니다. 운영자가 정한 최소 버전보다 낮은 앱은 연결이 거절되고, 새 버전은 앱 안에서 받습니다(서명된 버전 정책).
 
 - 설계와 동작 원리: [docs/architecture.md](docs/architecture.md)
 - 서버 배포: [docs/deploy.md](docs/deploy.md)
 - CI(개발 PC)와 앱 빌드: [docs/ci.md](docs/ci.md)
 - 방화벽 E2E 검증과 결과: [docs/e2e.md](docs/e2e.md)
-- 앱 배포(10명 이내, 스토어 없이)와 스토어 자동화에 필요한 것: [docs/distribution.md](docs/distribution.md)
+- 앱 배포(10명 이내, 스토어 없이)와 업데이트(1.5.1에서 1.6.0으로, 최소 버전과 서명된 버전 정책), 스토어 자동화에 필요한 것: [docs/distribution.md](docs/distribution.md)
+- 서명된 버전 정책을 만들고 확인하는 운영자 도구(hjv-release): [tools/hjv-release/README.md](tools/hjv-release/README.md)
 - 서버에서 작업할 사람·에이전트용 배포 절차: [docs/server-runbook.md](docs/server-runbook.md) (1.6.0의 계정 API는 7절)
 - 개인정보 처리방침: [docs/privacy.md](docs/privacy.md)
 - 계정 API(hjv-api)의 설정, 관리 명령, 형식: [server/api/README.md](server/api/README.md)
@@ -23,7 +28,7 @@
 | 앱 빌드: Windows x64 / Android arm64 / iOS | 1.5.0: GitHub Actions에서 세 플랫폼 빌드 성공. 앱 이름·ID·아이콘·라이선스 파일 확인. 1.5.1(마우스·터치·키보드 입력 개선, 새 아이콘, 앱 버전, Windows 자동 시작 수정, 보안 강화): 2026-10-11 비공개 빌드 저장소에서 세 플랫폼 빌드 성공. Windows 설치 시험(자동 시작 서비스, 트레이 바로가기)과 Dart 테스트 160개 통과, iOS는 TestFlight 내부 테스트에 배포. 빌드한 커밋은 태그 `client-1.5.1`. GitHub CI는 지금 일시 중지(직접 실행할 때만) |
 | 방화벽 E2E: 실제 클라이언트, 서버로 가는 443만 허용 | 등록, 비밀번호 로그인, 데이터, **원격 화면** 모두 통과 (중계). UDP를 허용하면 WebRTC P2P로 통과 |
 | 운영 | 운영 서버 배포 완료(런북 B 경로: systemd, 기존 웹 서버에 include). 실제 서버 값의 앱은 비공개 빌드 저장소에서 빌드하고, iOS는 TestFlight 내부 테스트로 배포 |
-| 1.6.0: 연세포탈 로그인, 내 기기 목록, 비밀번호 없는 연결, 원격 켜기 | 개발 PC에서 이 판의 작업 묶음을 모두 합쳤고, 아직 push·배포하지 않음. 들어 있는 것: 계정 API hjv-api(계정 키, 요청 서명, PC 동기화와 신뢰 목록, 켜기 API, 감시·백업), hbbs 패치 0004, NAS 중계기 hjv-relay와 DSM 설치 안내, 앱의 계정 요청·계정 키 저장·PC 쪽·컨트롤러 쪽·계정 화면·켜기 메뉴와 PC의 켜기 정보 보고(클라이언트 패치 0030–0036, Rust 1.75로 컴파일 확인). 개발 PC의 CI(`scripts/ci.sh prepush`)에서 서버·앱·배포 시험, 실제 클라이언트로 한 계정 E2E와 원격 켜기 E2E, push 전 검사가 건너뛴 것 없이 통과. 남은 것: 최소 버전 작업과 Android 제어 전용 패치를 합치기, Windows·iOS 코드의 첫 빌드(push 뒤 확인 빌드), 실기기 점검과 원격 켜기 현장 시험, 배포([docs/server-runbook.md](docs/server-runbook.md) 7절) |
+| 1.6.0: 연세포탈 로그인, 내 기기 목록, 비밀번호 없는 연결, 원격 켜기, 최소 버전과 업데이트 | 개발 PC에서 이 판의 작업 묶음을 합치는 중이고, 아직 push·배포하지 않음. 들어 있는 것: 계정 API hjv-api(계정 키, 요청 서명, PC 동기화와 신뢰 목록, 켜기 API, 감시·백업, 열린 로그인과 막기, 최고운영자의 사용자·PC 보기, 새 버전 내려받기), hbbs 패치 0004·0005(최소 컨트롤러 버전), NAS 중계기 hjv-relay와 DSM 설치 안내, 운영자 도구 hjv-release와 신뢰 규칙의 시험 벡터, 서버의 버전 정책 확인 스크립트와 nginx 위치, 앱의 계정 기능·켜기 메뉴(클라이언트 패치 0030–0036). 2026-10-14의 저장소 통합에서 최소 버전·열린 로그인·최고운영자 화면·Play 업로드·CI의 묶음을 합쳤고, 앱 쪽(최소 버전과 업데이트 화면, Android 제어 전용, 최고운영자 화면, 시작 화면)의 패치는 같은 통합의 클라이언트 시리즈로 들어옴. 남은 것: push 전 전체 검사(`scripts/ci.sh prepush`), Windows·iOS 코드의 첫 빌드(push 뒤 확인 빌드), 사용자의 업데이트 키 만들기, 실기기 점검과 원격 켜기 현장 시험, 배포([docs/server-runbook.md](docs/server-runbook.md) 7절, 8절) |
 | 남은 일 | 1.5.1 실기기 테스트(입력, Windows 자동 시작)와 그 결과에 따른 입력 미세 조정, 1.6.0 마무리와 배포 |
 
 ## 빠른 시작: 실제 기기로 연결하기
@@ -58,7 +63,8 @@ scripts/export-patches.sh    upstream/ 의 커밋을 다시 패치 파일로 내
 scripts/ci.sh                개발 PC의 CI: 서버 패치·hjv-api·hjv-relay 테스트, 런북대로 한 배포 시험(Docker, systemd),
                              앱 패치 테스트, 방화벽·원격 켜기 E2E, push 전 검사(leak) (docs/ci.md)
 scripts/leak-check.py        push 전 검사: 로컬 목록(build/leak-patterns.txt)의 실제 값이 올라갈 내용에 없는지
-scripts/check-build-keys.py  앱·중계기 빌드에 고정하는 공개키의 형식과 시험 키 차단, 지문
+scripts/check-build-keys.py  앱·중계기 빌드에 고정하는 공개키(계정 기능, 업데이트 키 client/update-keys.env)의 형식과 시험 키 차단, 지문
+scripts/release-info.py      앱 결과물마다 release.json과 SHA256SUMS(정책의 출처 확인이 읽음), 1.6.0부터 Android 매니페스트 확인
 scripts/check-api-settings.py hjv-api 운영 설정값 검사
 scripts/package-server.sh    서버 Release 패키지: systemd로 띄울 hbbs/hbbr, hjv-api, 유닛, 웹 서버 설정, 라이선스 고지
 scripts/package-relay.sh     NAS 중계기 hjv-relay의 묶음(정적 실행 파일, 고지, 따로 쓰는 SHA256SUMS)
@@ -68,7 +74,7 @@ scripts/make-icons.sh        client/icons의 SVG 원본으로 client/overlay의 
 server/api/                  hjv-api: 계정 API (연세포탈 로그인, 내 기기 목록, 계정 키, PC 동기화와 신뢰 목록, 켜기 명령)
 relay/                       hjv-relay: NAS에서 도는 원격 켜기 중계기와 서버와의 규약(PROTOCOL.md)
 server/patches/              hbbs/hbbr 패치 (TCP/WS 등록, WebRTC 시그널링 중계, 중계 짝 맺기 경쟁 상태 수정,
-                             계정 API용 hjv-pk 콘솔 명령과 중계 요청 정리)
+                             계정 API용 hjv-pk 콘솔 명령과 중계 요청 정리, 최소 컨트롤러 버전)
 client/patches/rustdesk/     앱 패치 (서버 고정, WebSocket+WebRTC 기본, 브랜딩, E2E용 헤드리스 명령, 보안 강화,
                              Windows 실행 파일 이름, 마우스·터치·키보드 입력과 한글 입력 개선,
                              1.6.0의 연세포탈 로그인과 같은 계정 기기끼리 비밀번호 없는 연결)
@@ -76,12 +82,16 @@ client/patches/hbb_common/   공용 라이브러리 패치 (WebSocket 연결의 
 client/overlay/rustdesk/     패치 대신 통째로 덮어쓰는 파일 (아이콘 이미지, scripts/make-icons.sh로 생성)
 client/icons/                아이콘 SVG 원본
 client/version.env           앱 버전 (사용자에게 나눠 줄 새 빌드마다 올림)
+client/update-keys.env       앱이 믿는 업데이트 공개키와 정책 하한 (공개 파일, 빌드가 이 파일에서만 읽음)
+client/play/                 Google Play 번들에서 사이드로드 전용 항목을 빼는 매니페스트
 deploy/                      서버 구성: Docker Compose + Caddy(443, 자동 TLS), 또는 기존 nginx/Apache 뒤의 systemd 서비스(deploy/systemd).
                              계정 API의 nginx 위치(nginx-hjviewer-api.conf)와 그 한도(nginx-hjviewer-api-zones.conf), 유닛(hjviewer-api*)
 tools/hjv-probe/             방화벽 진단 도구: 이 네트워크에서 서버까지 연결되는지 단계별로 확인
 tools/e2e/                   방화벽 E2E: 443만 허용하는 네임스페이스 두 개에서 실제 클라이언트로 접속·화면 수신 검증 (docs/e2e.md)
                              원격 켜기 E2E: sudo 없이, NAS 중계기가 잠든 PC의 랜카드에 보내는 매직 패킷과 켜짐 확인까지 (같은 문서)
 tools/hjv-load/              부하 측정 도구: 상시 등록 PC와 중계 세션을 흉내 내어 서버 용량 확인 (docs/deploy.md 용량 산정)
+tools/hjv-release/           운영자 도구: 서명된 버전 정책(최소 버전과 강제 업데이트)을 만들고 서명하고 확인. 신뢰 규칙의
+                             참조 모델(model.py)과 앱·도구·서버 확인이 함께 읽는 시험 벡터(tests/vectors)
 upstream/                    (git 제외) 패치가 적용된 작업 사본
 ```
 
@@ -100,6 +110,6 @@ scripts/ci.sh client                 # 앱 패치(client/patches)를 바꿨다�
 
 ## License / 라이선스
 
-HJViewer is a modified version of [RustDesk](https://github.com/rustdesk/rustdesk) and [rustdesk-server](https://github.com/rustdesk/rustdesk-server) (Copyright Purslane Tech Pte. Ltd., open-trade and the RustDesk contributors). It is licensed under the GNU Affero General Public License v3.0 only ([LICENSE](LICENSE)), as RustDesk is, and comes with no warranty. The account service (hjv-api, `server/api`) and the Wake-on-LAN relay (hjv-relay, `relay/`) are programs written in this repository, under the same license. [NOTICE](NOTICE) lists the upstream versions and what HJViewer changes; every downloadable build ships its license, source location and third-party notices (TestFlight builds carry only the in-app source link). HJViewer is not affiliated with or endorsed by RustDesk.
+HJViewer, made by 프로젝트TF, is a modified version of [RustDesk](https://github.com/rustdesk/rustdesk) and [rustdesk-server](https://github.com/rustdesk/rustdesk-server) (Copyright Purslane Tech Pte. Ltd., open-trade and the RustDesk contributors). It is licensed under the GNU Affero General Public License v3.0 only ([LICENSE](LICENSE)), as RustDesk is, and comes with no warranty. The account service (hjv-api, `server/api`) and the Wake-on-LAN relay (hjv-relay, `relay/`) are programs written in this repository, under the same license. [NOTICE](NOTICE) lists the upstream versions and what HJViewer changes; every downloadable build ships its license, source location and third-party notices (TestFlight builds carry only the in-app source link). HJViewer is not affiliated with or endorsed by RustDesk.
 
-RustDesk가 AGPL-3.0-only이므로 이 저장소도 AGPL-3.0-only입니다. 이 저장소에서 새로 쓴 계정 API(hjv-api, `server/api`)와 NAS 중계기(hjv-relay, `relay/`)도 같습니다. 앱이나 서버를 쓰는 사람에게 수정한 소스를 제공해야 하고, 이 공개 저장소가 그 소스입니다. 계정 API는 `https://<서버>/api/hjv/source`로 라이선스와 소스 위치를 알립니다. 사람들에게 나눠 주는 빌드는 반드시 이 저장소에 올라간 커밋으로 만들고, 결과물에 들어 있는 LICENSE·NOTICE·SOURCE·THIRD_PARTY_NOTICES 파일도 함께 전달하세요. 나눠 준 빌드의 커밋에는 `client-<앱 버전>` 태그를 붙입니다. TestFlight 빌드에는 이 파일들이 없고 앱 정보 화면의 소스 링크만 있으므로, 내부 테스터가 아닌 사람에게 나눠 주기 전에 고지를 따로 전달하세요. 앱 이름과 아이콘은 HJViewer 것이고, 출처 표시로 "Powered by RustDesk"를 남겨 두었습니다. Windows 실행 파일은 `HJViewer.exe`입니다. 모바일의 `rustdesk://` URL 스킴 같은 일부 내부 이름은 아직 rustdesk입니다. 개인정보 처리방침: [docs/privacy.md](docs/privacy.md)
+HJViewer는 프로젝트TF가 만듭니다. RustDesk가 AGPL-3.0-only이므로 이 저장소도 AGPL-3.0-only입니다. 이 저장소에서 새로 쓴 계정 API(hjv-api, `server/api`)와 NAS 중계기(hjv-relay, `relay/`)도 같습니다. 앱이나 서버를 쓰는 사람에게 수정한 소스를 제공해야 하고, 이 공개 저장소가 그 소스입니다. 계정 API는 `https://<서버>/api/hjv/source`로 라이선스와 소스 위치를 알립니다. 사람들에게 나눠 주는 빌드는 반드시 이 저장소에 올라간 커밋으로 만들고, 결과물에 들어 있는 LICENSE·NOTICE·SOURCE·THIRD_PARTY_NOTICES 파일도 함께 전달하세요. 나눠 준 빌드의 커밋에는 `client-<앱 버전>` 태그를 붙입니다. TestFlight 빌드에는 이 파일들이 없고 앱 정보 화면의 소스 링크만 있으므로, 내부 테스터가 아닌 사람에게 나눠 주기 전에 고지를 따로 전달하세요. 앱 이름과 아이콘은 HJViewer 것입니다. 앱 정보 화면에 RustDesk의 저작권 줄이 있고, "Powered by RustDesk"(RustDesk 제공) 링크는 데스크톱과 앱에서 기본으로 숨깁니다. Windows 실행 파일은 `HJViewer.exe`입니다. 모바일의 `rustdesk://` URL 스킴 같은 일부 내부 이름은 아직 rustdesk입니다. 개인정보 처리방침: [docs/privacy.md](docs/privacy.md)

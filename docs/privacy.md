@@ -4,6 +4,8 @@ English first. 한국어는 [아래](#한국어)에 있습니다. The two parts 
 
 ## English
 
+> This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.
+
 ### 1. In short
 
 HJViewer is a self-hosted remote desktop app. The people who build it collect nothing: there are
@@ -73,7 +75,8 @@ version policy, and new versions come from the server (section 2, "Updates").
 
 Only for people who log in. The Yonsei SSO lets only the university's faculty and staff through its
 login, and each of them may use HJViewer unless the operator blocks them; the account service puts
-the portal ID on its list at the first login. The account service runs on the same server. A login
+the portal ID on its list at the first login. The operator can also go back to letting in only the
+IDs put on the list ahead. The account service runs on the same server. A login
 that fails (a wrong password, a blocked account) still leaves a login record (tags of the ID typed
 and of the device, the client's IP address, the result, the time; 6 months) and the login limit
 counters.
@@ -102,7 +105,7 @@ let in today and yesterday and their number, and how many attempts it refused fo
 | What | Content | Kept |
 |---|---|---|
 | List | the portal ID of each person who logged in, put on the list at the first login, or whom the operator put on it ahead; how and when the entry came; whether the operator blocked it, and since when | with the account (below); an entry without an account a year after it came on the list; a blocked entry until the operator lifts the block |
-| Account | portal ID and name (from the SSO), times of creation and last login, the account's switch for connections without the PC's password | until a year without use (an account with a PC in use stays, unless it is blocked), or deleted on request |
+| Account | portal ID and name (from the SSO), times of creation, last login and last use (to the hour), the account's switch for connections without the PC's password | until a year without use (an account with a PC in use stays, unless it is blocked), or deleted on request |
 | Login tokens | a hash of each token, never the token | until logout, 90 days without use, a year at most |
 | Account keys (one per logged-in device) | public key; device ID; a tag computed from the machine identifier of section 2 (not the identifier); platform, the device model the server names from it, the device name and the app version, as the device reported them; whether the login came from the university's network or from outside (not the address); times of creation and last login; your devices' answers to the notice below; when and how its login ended and which of your devices ended it | while the device is logged in, then 30 days |
 | PCs in your account | PC ID, OS, host name, the PC's public key, a random binding ID, times added, last seen and last synced, the IP address its last sync came from (replaced by the next one's), app version, whether switched off on the PC; per reason, counts of refused attempts (30 days) | until removed from the account or 180 days unseen. After that the binding ID, the PC ID and its public key stay 180 days, so that the PC learns that it was removed |
@@ -146,8 +149,8 @@ the device itself gave.
 
 **What the operator sees.** The operator names the super operators (최고운영자) by their portal
 IDs in the server's own settings, not in the app or its code; everyone else is a normal user. A
-super operator sees in the app, and can only look at, the users of the service and the PCs in
-their accounts: for each user the portal ID and name, when one of their devices or PCs was last
+super operator sees in the app, and can only look at, the users of the service (the accounts that
+have logged in and are not blocked) and the PCs in their accounts: for each user the portal ID and name, when one of their devices or PCs was last
 used and whether that was within 30 days, and how many logged-in devices and PCs they have; for
 each PC its ID and host name, its owner's portal ID and name, the OS and app version, the time of
 its last sync and the IP address that sync came from, the IPv4 addresses of its wired network
@@ -232,8 +235,6 @@ On a Windows PC that accepts connections, a connected device sees its screen and
 PC's permission settings allow, its cameras and sound, and can hold a voice call that someone at
 the PC accepts. All of it is end-to-end encrypted and not stored.
 
-<!-- 설계 3판 10-2의 nginx 전환 관문(질문 7): 답이 오면 7절의 처리 근거(학교가 공공기관이면 제15조 제1항의 다른 호가 될 수 있음), 9절의 처리자 이름, 10절의 연락처를 그 답대로 고치고, AI 운영 에이전트가 처리위탁·국외 이전에 해당하면 받는 곳과 나라도 9절에 적는다. 영어와 한국어를 같이 고친다. -->
-
 ### 7. Why, and on what basis
 
 The account data is used to log you in and keep you logged in, to show your PCs and their state,
@@ -267,8 +268,8 @@ Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shar
 
 ### 9. Who handles the data
 
-- **The operator** of the server runs the account service, answers requests and is responsible for
-  this data. Administration commands show IDs shortened and leave out names, addresses and device
+- **The operator**, 프로젝트TF (the controller of this data, 개인정보 처리자), runs the server and
+  its account service, answers requests and is responsible for this data. Administration commands show IDs shortened and leave out names, addresses and device
   names unless a person asks for them; every command is recorded, except the one the five-minute
   check reads, which returns counts only and changes nothing. The super operators the operator
   names in the server's settings see in the app the users and PCs of section 3; each look is
@@ -276,7 +277,8 @@ Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shar
 - **The Yonsei SSO** checks your portal ID and password at login.
 - **An AI assistant**: the operator uses an AI assistant for work on the server. Its rules let it
   see only shortened, masked output and counts, and what it sees goes to the external AI service
-  that runs it. Showing full values and making keys are done by people only.
+  that runs it: Anthropic, in the United States. Showing full values and making keys are done by
+  people only.
 - **STUN servers** (section 2). Nobody else: no advertising or analytics companies.
 - Not about you: as in upstream rustdesk-server, the server's hbbs asks RustDesk's update service
   (api.rustdesk.com) at start and once a day whether a newer server version exists. It sends the
@@ -285,12 +287,15 @@ Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shar
 
 ### 10. Contact and changes
 
-Send requests about your data (section 8) to the operator of the server you use, directly. Do not
-write personal information, such as your portal ID or name, in a public issue. Questions about the
-app itself can go to an issue at https://github.com/yonsei-projecttf/hjviewer. Changes to this
-statement are in the history of that repository.
+**Privacy manager** (개인정보 보호책임자): 프로젝트TF, haejin.cho@yonsei.ac.kr. Send requests
+about your data (section 8) to that address, not to a public issue, and do not write personal
+information, such as your portal ID or name, in a public issue. Questions about the app itself can
+go to an issue at https://github.com/yonsei-projecttf/hjviewer. Changes to this statement are in the
+history of that repository.
 
 ## 한국어
+
+> 본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.
 
 ### 1. 요약
 
@@ -312,7 +317,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 3. 계정 (1.6.0부터)
 
-로그인한 사람에게만 해당합니다. 연세 SSO는 학교의 교직원 계정만 통과시키고, 그 사람은 운영자가 막지 않는 한 누구나 HJViewer를 쓸 수 있습니다. 계정 서비스는 처음 로그인할 때 그 포탈 ID를 명단에 올립니다. 계정 서비스는 같은 서버에서 돕니다. 로그인에 실패해도(틀린 비밀번호, 막힌 계정) 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다.
+로그인한 사람에게만 해당합니다. 연세 SSO는 학교의 교직원 계정만 통과시키고, 그 사람은 운영자가 막지 않는 한 누구나 HJViewer를 쓸 수 있습니다. 계정 서비스는 처음 로그인할 때 그 포탈 ID를 명단에 올립니다. 운영자는 미리 명단에 올린 ID만 받는 방식으로 되돌릴 수도 있습니다. 계정 서비스는 같은 서버에서 돕니다. 로그인에 실패해도(틀린 비밀번호, 막힌 계정) 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다.
 
 **로그인.** 앱에 연세포탈 ID와 비밀번호를 넣습니다. 앱은 비밀번호를 서버의 키로 봉인하므로, 암호화된 통신을 들여다보는 네트워크에서도 계정 서비스만 열 수 있습니다. 계정 서비스는 연세 SSO(학교의 로그인 시스템)에 비밀번호를 확인받은 뒤 바로 버립니다. 비밀번호와 SSO 토큰은 저장하지도 기록하지도 않습니다. SSO에서 받은 것 가운데 포탈 ID와 성명만 보관합니다. 로그인할 때마다 그 기기의 **계정 키**도 새로 등록합니다. 서버는 공개키만 보관하고 개인키는 기기에 남으며, 로그인 뒤의 모든 계정 요청에 그 키로 서명합니다.
 
@@ -323,7 +328,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 | 항목 | 내용 | 보관 |
 |---|---|---|
 | 명단 | 로그인한 사람의 포탈 ID(처음 로그인할 때 올라감)나 운영자가 미리 올린 포탈 ID, 어떻게 언제 올랐는지, 운영자가 막았는지와 언제부터인지 | 계정과 함께(아래). 계정이 없는 항목은 오른 지 1년 뒤. 막힌 항목은 운영자가 막기를 풀 때까지 |
-| 계정 | 포탈 ID와 성명(SSO에서 받음), 만든 시각과 마지막 로그인 시각, 그 계정의 비밀번호 없는 연결 스위치 | 1년 동안 쓰지 않을 때까지(쓰는 PC가 있는 계정은 막히지 않았으면 남김), 또는 요청하면 삭제 |
+| 계정 | 포탈 ID와 성명(SSO에서 받음), 만든 시각·마지막 로그인 시각·마지막 사용 시각(한 시간 단위), 그 계정의 비밀번호 없는 연결 스위치 | 1년 동안 쓰지 않을 때까지(쓰는 PC가 있는 계정은 막히지 않았으면 남김), 또는 요청하면 삭제 |
 | 로그인 토큰 | 토큰의 해시만(토큰 자체는 없음) | 로그아웃할 때까지, 90일 동안 쓰지 않거나 최대 1년 |
 | 계정 키(로그인한 기기마다 하나) | 공개키, 기기 ID, 기기 식별값(2절)으로 만든 꼬리표(식별값 자체는 없음), 기기가 알린 플랫폼·기기 이름·앱 버전과 그것으로 서버가 정한 기기 모델 이름, 학내 네트워크에서 로그인했는지(주소는 없음), 만든 시각·마지막 로그인 시각, 아래 알림에 내 기기들이 한 답, 로그인이 언제 어떻게 끝났는지와 끝낸 내 기기 | 그 기기가 로그인해 있는 동안, 그 뒤 30일 |
 | 내 계정의 PC | PC ID, OS, 호스트 이름, PC 공개키, 무작위 묶음 ID, 추가한 시각·마지막으로 보인 시각·마지막 동기화 시각, 마지막 동기화가 온 IP 주소(다음 동기화의 주소로 바뀜), 앱 버전, 그 PC에서 꺼 두었는지, 거절한 시도의 이유별 개수(30일) | 계정에서 빼거나 180일 동안 보이지 않을 때까지. 그 뒤 묶음 ID, PC ID, PC 공개키만 180일 남깁니다. PC가 빠졌다는 것을 그 PC에 알리기 위해서입니다 |
@@ -342,7 +347,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 **다른 사람에게 보이는 것.** 다른 사람의 PC에 연결하면 그 PC에는 1.6.0 전처럼 내 Windows 사용자 이름(휴대폰은 기기 이름)이 보입니다. 로그인해도 성명이나 포탈 ID를 다른 사람의 PC에 보내지 않습니다. 내 PC의 연결 창에는 연결한 기기의 이름과 가린 내 이름(예: 홍\*동)이 서명된 목록에서 나옵니다. 그 기기 이름은 기기가 로그인할 때 알린 값으로 서버가 정한 모델 이름이고, PC의 로그에 남는 기기 ID도 그 기기가 스스로 알린 값입니다.
 
-**운영자에게 보이는 것.** 운영자는 최고운영자를 포탈 ID로 서버의 설정에서만 정합니다(앱이나 코드에는 없음). 그 밖의 사람은 모두 일반 사용자입니다. 최고운영자는 앱에서 이 서비스의 사용자와 그 계정의 PC를 보기만 할 수 있습니다. 사용자마다 포탈 ID와 성명, 그 사람의 기기나 PC를 마지막으로 쓴 때와 그것이 30일 안인지, 로그인한 기기 수와 PC 수가 보이고, PC마다 PC ID와 호스트 이름, 주인의 포탈 ID와 성명, OS와 앱 버전, 마지막 동기화 시각과 그 동기화가 온 IP 주소, 유선 랜카드의 IPv4 주소(5절의 보고에서), 비밀번호 없는 연결 상태가 보입니다. PC는 누군가 그 PC에서 HJViewer에 로그인한 뒤에야 보입니다. 이 화면으로는 다른 사람의 PC에 연결하거나 무엇을 바꿀 수 없습니다. 누가 어느 PC에서 이 서비스를 쓰는지 운영자가 알고, 사용자를 돕고 서비스를 지키기 위한 것입니다. 볼 때마다 운영자 기록에 남습니다: 어느 최고운영자인지(꼬리표), 언제, 몇 명의 사용자와 몇 대의 PC를 보였는지.
+**운영자에게 보이는 것.** 운영자는 최고운영자를 포탈 ID로 서버의 설정에서만 정합니다(앱이나 코드에는 없음). 그 밖의 사람은 모두 일반 사용자입니다. 최고운영자는 앱에서 이 서비스의 사용자(로그인한 적이 있고 막히지 않은 계정)와 그 계정의 PC를 보기만 할 수 있습니다. 사용자마다 포탈 ID와 성명, 그 사람의 기기나 PC를 마지막으로 쓴 때와 그것이 30일 안인지, 로그인한 기기 수와 PC 수가 보이고, PC마다 PC ID와 호스트 이름, 주인의 포탈 ID와 성명, OS와 앱 버전, 마지막 동기화 시각과 그 동기화가 온 IP 주소, 유선 랜카드의 IPv4 주소(5절의 보고에서), 비밀번호 없는 연결 상태가 보입니다. PC는 누군가 그 PC에서 HJViewer에 로그인한 뒤에야 보입니다. 이 화면으로는 다른 사람의 PC에 연결하거나 무엇을 바꿀 수 없습니다. 누가 어느 PC에서 이 서비스를 쓰는지 운영자가 알고, 사용자를 돕고 서비스를 지키기 위한 것입니다. 볼 때마다 운영자 기록에 남습니다: 어느 최고운영자인지(꼬리표), 언제, 몇 명의 사용자와 몇 대의 PC를 보였는지.
 
 ### 4. 기기에 저장되는 정보
 
@@ -376,12 +381,12 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 9. 정보를 다루는 곳
 
-- **운영자**: 서버의 계정 서비스를 운영하고, 요청에 답하며, 이 정보를 책임집니다. 관리 명령은 사람이 따로 요청하지 않는 한 ID를 줄여 보이고 이름, 주소, 기기 이름을 보이지 않습니다. 관리 명령은 모두 기록됩니다. 5분마다 도는 점검이 읽는 명령 하나만 예외이고, 그 명령은 개수만 돌려주며 아무것도 바꾸지 않습니다. 운영자가 서버의 설정에서 정한 최고운영자는 앱에서 3절의 사용자와 PC를 보며, 볼 때마다 기록됩니다.
+- **운영자**: 프로젝트TF(이 정보의 개인정보 처리자)가 서버와 그 계정 서비스를 운영하고, 요청에 답하며, 이 정보를 책임집니다. 관리 명령은 사람이 따로 요청하지 않는 한 ID를 줄여 보이고 이름, 주소, 기기 이름을 보이지 않습니다. 관리 명령은 모두 기록됩니다. 5분마다 도는 점검이 읽는 명령 하나만 예외이고, 그 명령은 개수만 돌려주며 아무것도 바꾸지 않습니다. 운영자가 서버의 설정에서 정한 최고운영자는 앱에서 3절의 사용자와 PC를 보며, 볼 때마다 기록됩니다.
 - **연세 SSO**: 로그인할 때 포탈 ID와 비밀번호를 확인합니다.
-- **AI 도우미**: 운영자는 서버 작업에 AI 도우미를 씁니다. AI 도우미는 줄이고 가린 출력과 개수만 보도록 규칙으로 정해져 있고, 본 내용은 AI 도우미를 실행하는 외부 AI 서비스로 갑니다. 원래 값 보기와 키 만들기는 사람만 합니다.
+- **AI 도우미**: 운영자는 서버 작업에 AI 도우미를 씁니다. AI 도우미는 줄이고 가린 출력과 개수만 보도록 규칙으로 정해져 있고, 본 내용은 AI 도우미를 실행하는 외부 AI 서비스로 갑니다. 그 서비스는 미국의 Anthropic입니다. 원래 값 보기와 키 만들기는 사람만 합니다.
 - **STUN 서버**(2절). 그 밖에는 없습니다. 광고나 분석 회사에 넘기지 않습니다.
 - 사용자에 관한 것이 아닌 것: upstream rustdesk-server와 같이, 서버의 hbbs는 시작할 때와 하루에 한 번 RustDesk의 업데이트 서비스(api.rustdesk.com)에 더 새 서버 버전이 있는지 묻습니다. 서버의 운영체제와 그 버전, 프로세서 종류, 서버 기계의 지문을 보냅니다. 사용자나 기기에 관한 것은 보내지 않습니다.
 
 ### 10. 문의와 변경
 
-내 정보에 관한 요청(8절)은 사용 중인 서버의 운영자에게 직접 해 주세요. 공개 이슈에는 포탈 ID나 성명 같은 개인정보를 쓰지 마세요. 앱 자체에 관한 문의는 https://github.com/yonsei-projecttf/hjviewer 에 이슈로 남길 수 있습니다. 이 문서가 바뀐 내역은 그 저장소의 기록에 남습니다.
+**개인정보 보호책임자**: 프로젝트TF, haejin.cho@yonsei.ac.kr. 내 정보에 관한 요청(8절)은 공개 이슈가 아니라 이 주소로 보내 주세요. 공개 이슈에는 포탈 ID나 성명 같은 개인정보를 쓰지 마세요. 앱 자체에 관한 문의는 https://github.com/yonsei-projecttf/hjviewer 에 이슈로 남길 수 있습니다. 이 문서가 바뀐 내역은 그 저장소의 기록에 남습니다.
