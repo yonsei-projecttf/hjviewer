@@ -1448,6 +1448,8 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
     } else {
         state.tags.tag("uuid", &device.uuid)
     };
+    // the answer's user object, with the account's role when it has one (overview.rs)
+    let user_object = crate::overview::with_role(state, key, user_json(&user.persl_no, &user.name));
     let (key, user_db) = (key.to_owned(), user.clone());
     let (id, name, version, os, hostname) = (
         device.id.clone(),
@@ -1605,7 +1607,7 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
     LoginAnswer::ok(json!({
         "type": "access_token",
         "access_token": token,
-        "user": user_json(&user.persl_no, &user.name),
+        "user": user_object,
         "hjv": hjv,
     }))
 }

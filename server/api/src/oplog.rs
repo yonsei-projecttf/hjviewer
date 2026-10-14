@@ -102,6 +102,28 @@ impl OpLog {
         self.write(entry, &format!("done=\"{}\"", safe(done, 160)))
     }
 
+    /// The one line of a look through the app (overview.rs), written after the data was read and
+    /// before it is answered, under the service's own user ID and no sudo user: who looked, as the
+    /// account's tag, and what was shown, in counts.
+    /// `… uid=<service> sudo_user=- cmd="app overview" acct=<tag> done="ok: 3 users (2 active), 2 PCs"`
+    pub fn append_look(
+        &self,
+        uid: u32,
+        command: &str,
+        account_tag: &str,
+        done: &str,
+    ) -> Result<(), String> {
+        let entry = OpEntry {
+            uid,
+            sudo_user: "",
+            command,
+            targets: &[],
+            reveal: false,
+        };
+        let who = safe(account_tag, 40).replace([' ', ','], "?");
+        self.write(&entry, &format!("acct={who} done=\"{}\"", safe(done, 160)))
+    }
+
     fn write(&self, entry: &OpEntry<'_>, rest: &str) -> Result<(), String> {
         let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         let sudo_user = if entry.sudo_user.is_empty() {
@@ -209,6 +231,46 @@ mod tests {
         assert!(verify(&path).is_err());
         std::fs::write(&path, text.replace("report", "rep0rt")).unwrap();
         assert!(verify(&path).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_look_through_the_app() {
+        let dir = std::env::temp_dir().join(format!("hjv-api-oplog-look-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("operator.log");
+        let _ = std::fs::remove_file(&path);
+        let log = OpLog::open(&path).unwrap();
+        log.append_look(
+            998,
+            "app overview",
+            "0123456789abcdef",
+            "ok: 3 users (2 active), 2 PCs",
+        )
+        .unwrap();
+        log.append(&OpEntry {
+            uid: 0,
+            sudo_user: "alice",
+            command: "users",
+            targets: &[],
+            reveal: false,
+        })
+        .unwrap();
+        log.append_look(998, "app overview", "bad tag, x\"y", "ok\" prev=forged")
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines[0].contains(&format!(
+                " uid=998 sudo_user=- cmd=\"app overview\" acct=0123456789abcdef done=\"ok: 3 users (2 active), 2 PCs\" prev={GENESIS}"
+            )),
+            "{text}"
+        );
+        assert!(
+            lines[2].contains("acct=bad?tag??x?y done=\"ok? prev?forged\" prev="),
+            "{text}"
+        );
+        assert_eq!(verify(&path).unwrap(), 3);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

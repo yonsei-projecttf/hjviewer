@@ -30,7 +30,7 @@
 //!
 //! | path | answer |
 //! |---|---|
-//! | `GET /api/hjv/keys` | `{"total":n,"data":[{"ckid","name","app_name","platform","app_ver","net","created","last_login","last_used","last_used_pc","use":[{"pc_id","pc","last","n30"}],"current","new"}],"ended":[…]}`: the account's active keys, newest first; `ended` the keys that ended in the last 30 days (at most [`MAX_ENDED`], the latest first), each with `"ended"` (its time), `"left"` and, when a device ended it, `"left_by":{"ckid","name","app_name","platform"}` |
+//! | `GET /api/hjv/keys` | `{"total":n,"data":[{"ckid","name","app_name","platform","app_ver","net","created","last_login","last_used","last_used_pc","use":[{"pc_id","pc","last","n30"}],"current","new"}],"ended":[…]}`: the account's active keys, newest first; `ended` the keys that ended in the last 30 days (at most [`MAX_ENDED`], the latest first), each with `"ended"` (its time), `"left"` and, when a device ended it, `"left_by":{"ckid","name","app_name","platform"}`; for a super operator's account also `"hjv_role":"operator"` (overview.rs) |
 //! | `POST /api/hjv/keys/{ckid}/ack` | `{"ack":true}`: a device of the account answered "내 기기 맞음" |
 //! | `POST /api/hjv/keys/{ckid}/not-mine` | `{"revoked":b}`: a device of the account answered "아님": the key is marked, and logged out with its token if it was active (`b`) |
 //! | `DELETE /api/hjv/keys/{ckid}` | `{"revoked":true}`: the key and its token are revoked ("로그아웃시키기") |
@@ -81,7 +81,7 @@ pub const CONTEXT: &[u8] = b"hjv-ckey-v1";
 pub const MAX_ACTIVE_KEYS: usize = 20;
 /// Calls of the keys paths per key and minute (design v3 §5-5).
 pub const CALLS_PER_MINUTE: usize = 30;
-const TEXT_TOO_OFTEN: &str = "요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.";
+pub const TEXT_TOO_OFTEN: &str = "요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.";
 /// The ended keys an answer carries at most.
 pub const MAX_ENDED: usize = 50;
 
@@ -325,6 +325,7 @@ pub async fn route(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
                 };
                 let mut answer = paged(keys.iter().map(item).collect(), &req.query);
                 answer["ended"] = Value::Array(ended.iter().map(item).collect());
+                crate::overview::mark_role(state, &s.account.login_key, &mut answer);
                 Reply::ok(&answer)
             }
             Err(e) => {

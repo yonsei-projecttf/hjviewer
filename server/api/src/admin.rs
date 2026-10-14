@@ -45,6 +45,10 @@
 //! five-minute check reads: it changes nothing, shows no person or device, and is the one command
 //! the operator record leaves out, so that the check's 288 calls a day do not bury what people
 //! did.
+//!
+//! The super operator's view (overview.rs) adds `operators`: which portal IDs of
+//! HJV_API_OPERATORS have an account, masked unless `--reveal`, each with its account's tag, the
+//! tag that the record's lines of the view carry.
 
 use crate::{
     backup::{self, BackupInfo, Snapshot},
@@ -91,6 +95,8 @@ hjv-api admin [--socket <path>] [--reveal] <command>
   unblock <id|tag:T>        lift a block (with the person's other IDs): the account may log in
                             again (its devices log in again)
   users                     accounts: tag, ID, devices, account keys, tokens, last login
+  operators                 the super operators of HJV_API_OPERATORS: tag, ID, whether each has an
+                            account and is on the allowlist, last login
   devices                   devices in accounts: tag, ID, account tag, OS, last seen
   key list [<id|tag:T>]     account keys: number, account, platform, device, version, network,
                             times, and per PC the last password-less use and the uses of 30 days
@@ -187,6 +193,7 @@ pub async fn serve(
 ) {
     // the socket file belongs to the service's user; that user and root may connect
     let own_uid = std::fs::metadata(&path).map(|m| m.uid()).unwrap_or(0);
+    let _ = state.operator_record.set((oplog.clone(), own_uid));
     tokio::pin!(shutdown);
     loop {
         let stream = tokio::select! {
@@ -322,6 +329,7 @@ async fn run(
         | ["strict", sub @ ("on" | "off"), ..]
         | ["relay", sub @ ("list" | "approve" | "revoke"), ..] => format!("{} {sub}", words[0]),
         ["relay", "share", turn @ ("on" | "off"), ..] => format!("relay share {turn}"),
+        ["operators", ..] => "operators".to_owned(),
         [one @ ("users" | "devices" | "unlock" | "revoke" | "report" | "selfcheck" | "backup"), ..]
         | [one @ ("block" | "unblock"), ..] => (*one).to_owned(),
         _ => "unknown".to_owned(),
@@ -1075,6 +1083,7 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
             }
             Ok(out)
         }
+        ["operators"] => crate::overview::operators(state, reveal).await,
         ["key", "list"] => key_list(state, None, reveal).await,
         ["key", "list", arg] => {
             let account = find_account(state, target(arg)?)

@@ -11,6 +11,7 @@ use crate::{
     limits::{Admit, Breaker, GlobalLimiter, Latency, RecordBudget, FAILURE_RECORDS_PER_MINUTE},
     log::Tagger,
     login::{LoginAnswer, RetryCache},
+    oplog::OpLog,
     pcsync::{KeyChecks, ListCache},
     relay::RelayHub,
     seal::SealKeys,
@@ -23,7 +24,7 @@ use crate::{
 use rusqlite::Connection;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::sync::Semaphore;
@@ -75,6 +76,9 @@ pub struct AppState {
     pub command_key: Option<CommandKey>,
     /// the relays' held polls and per-relay limits (relay.rs)
     pub relays: RelayHub,
+    /// the operator record and the service's own user ID, from when the admin socket is served
+    /// (admin.rs): where overview.rs writes each look of a super operator
+    pub operator_record: OnceLock<(Arc<OpLog>, u32)>,
     /// limits already reported, so that hammering a full limit writes no more records or lines
     notices: Mutex<HashMap<String, Instant>>,
 }
@@ -107,6 +111,7 @@ impl AppState {
             list_key: ListKey::new(config.list_kid, &list_key),
             command_key: command_key.map(|seed| CommandKey::new(config.command_kid, &seed)),
             relays: RelayHub::default(),
+            operator_record: OnceLock::new(),
             lists: ListCache::default(),
             key_checks: KeyChecks::default(),
             online: OnlineSince::default(),
