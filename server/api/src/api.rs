@@ -14,6 +14,7 @@
 //! | `POST /api/hjv/this-device/undo` | takes that device out of the list again |
 //! | `DELETE /api/hjv/devices/{id}` | takes a device out of the list ("내 목록에서 빼기") |
 //! | `GET /api/hjv/keys`, `…/keys/{ckid}/ack`, `DELETE …/keys/{ckid}`, `POST …/keys/revoke-others` | the account keys (keys.rs) |
+//! | `GET /api/hjv/admin/overview` | the super operator's view of the service's users and PCs, read-only; for every other account the 404 of an unknown path (overview.rs) |
 //! | `POST /api/hjv/pc/sync` | a bound PC's sync, signed with its device key, no token (pcsync.rs) |
 //! | `POST /api/hjv/relay/hello`, `POST /api/hjv/relay/poll` | hjv-relay's requests, signed with its own key, no token (relay.rs, relay/PROTOCOL.md) |
 //! | `POST /api/hjv/devices/{id}/wake`, `GET /api/hjv/wake/{job}`, `GET /api/hjv/devices/{id}/wol` | waking a PC of the account through a NAS relay, and how ready it is (wake.rs) |
@@ -48,7 +49,7 @@ use crate::{
     db::{self, Device, Session},
     envelope, keys,
     login::{self, BindStatus, Retry},
-    pcsync, proof, relay,
+    overview, pcsync, proof, relay,
     state::AppState,
     util::{b64, hex, now, sha256, valid_device_id},
     wake,
@@ -71,7 +72,7 @@ const TEXT_UNAUTHORIZED: &str = "로그인이 필요합니다. 다시 로그인�
 const TEXT_FORBIDDEN: &str = "접근이 차단되었습니다";
 const TEXT_TOO_LARGE: &str = "요청이 너무 큽니다";
 const TEXT_MEDIA_TYPE: &str = "JSON 요청만 받습니다";
-const TEXT_METHOD: &str = "허용되지 않는 요청입니다";
+pub const TEXT_METHOD: &str = "허용되지 않는 요청입니다";
 const TEXT_INCOMPLETE: &str = "요청을 다 받지 못했습니다. 잠시 뒤 다시 시도해 주세요";
 const TEXT_SERVER: &str = "서버 오류입니다. 잠시 뒤 다시 시도해 주세요";
 const TEXT_NOT_FOUND: &str = "not found";
@@ -180,7 +181,7 @@ pub fn user_json(portal_id: &str, display_name: &str) -> Value {
 fn allowed_methods(path: &str) -> Option<&'static str> {
     Some(match path {
         "/api/login" | "/api/currentUser" | "/api/logout" | "/api/hjv/this-device/undo" => "POST",
-        "/api/users" | "/api/peers" | "/api/hjv/this-device" => "GET",
+        "/api/users" | "/api/peers" | "/api/hjv/this-device" | overview::PATH => "GET",
         "/api/login-options" | "/api/device-group/accessible" | "/api/hjv/source" => "GET, HEAD",
         p if wake::allowed_methods(p).is_some() => return wake::allowed_methods(p),
         p if p.starts_with("/api/hjv/devices/") => "DELETE",
@@ -235,6 +236,7 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         ("/api/peers", &Method::GET) => peers(state, &req).await,
         ("/api/hjv/this-device", &Method::GET) => this_device(state, &req).await,
         ("/api/hjv/this-device/undo", &Method::POST) => undo(state, &req).await,
+        (overview::PATH, _) => overview::route(state, &req).await,
         (path, method) if wake::allowed_methods(path) == Some(method.as_str()) => {
             wake::route(state, &req).await
         }
@@ -464,7 +466,7 @@ pub async fn session(state: &Arc<AppState>, req: &ApiRequest) -> Result<Session,
 
 async fn current_user(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     match session(state, req).await {
-        Ok(s) => Reply::ok(&user_json(&s.account.portal_id, &s.account.display_name)),
+        Ok(s) => Reply::ok(&overview::user_of(state, &s)),
         Err(reply) => reply,
     }
 }
@@ -573,10 +575,7 @@ pub(crate) fn paged(items: Vec<Value>, query: &str) -> Value {
 
 async fn users(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     match session(state, req).await {
-        Ok(s) => Reply::ok(&paged(
-            vec![user_json(&s.account.portal_id, &s.account.display_name)],
-            &req.query,
-        )),
+        Ok(s) => Reply::ok(&paged(vec![overview::user_of(state, &s)], &req.query)),
         Err(reply) => reply,
     }
 }

@@ -60,9 +60,11 @@
 //!
 //! **Answer.** An accepted sync of a bound PC stores its report: the time of the sync (which also
 //! counts as the PC seen, so that the upkeep does not release a PC in use), the version, `off`,
-//! the PC's mark (`present`: it sent its binding, `absent`: none, `stale`: another one), the key
-//! use merged by the larger values and the refusals added under the server's day; a sync signed
-//! with the stored key ends a needs-relogin. Then, by the row found and the binding sent:
+//! the PC's mark (`present`: it sent its binding, `absent`: none, `stale`: another one), the
+//! client address it came from (X-Real-IP, in place of the last one: the super operator's view,
+//! overview.rs), the key use merged by the larger values and the refusals added under the server's
+//! day; a sync signed with the stored key ends a needs-relogin. Then, by the row found and the
+//! binding sent:
 //!
 //! | row | `binding` sent | answer |
 //! |---|---|---|
@@ -619,6 +621,7 @@ fn decide(
                 },
                 at,
             )?;
+            db::store_sync_address(&tx, &d.device_id, egress_ip)?;
             db::merge_use(&tx, d.account_id, &d.device_id, &report.used)?;
             db::add_refusals(&tx, &d.device_id, &report.refused, &date(at))?;
             // signed with the stored key: the PC that was bound is there (design v3 §4-6)

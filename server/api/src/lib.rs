@@ -36,6 +36,7 @@ pub mod keys;
 pub mod limits;
 pub mod login;
 pub mod oplog;
+pub mod overview;
 pub mod pcsync;
 pub mod proof;
 pub mod relay;

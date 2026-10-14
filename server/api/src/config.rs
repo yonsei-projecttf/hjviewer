@@ -82,6 +82,11 @@ pub struct Config {
     /// the connection kinds a same-account device may open without the PC's password (U3; the
     /// trust list's and the device list's `kinds`)
     pub passwordless_kinds: Vec<String>,
+    /// the super operators (최고운영자, HJV_API_OPERATORS): case-folded portal IDs whose accounts
+    /// see the service's users and PCs (overview.rs); empty, nobody
+    pub operators: Vec<String>,
+    /// how recent a use makes an account active in that view, in days (HJV_API_ACTIVE_DAYS)
+    pub active_days: i64,
     /// the number of the list key in use (the credential hjviewer-api-list-key), design v3 §5-3
     pub list_kid: u32,
     /// the list keys the apps pin (their HJV_TRUST_PUBKEYS): selfcheck compares the key in use
@@ -136,6 +141,8 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_MAX_LOGINS", Some("64")),
     ("HJV_API_CAMPUS_NETS", Some("")),
     ("HJV_API_PASSWORDLESS_KINDS", Some("remote,file,camera")),
+    ("HJV_API_OPERATORS", Some("")),
+    ("HJV_API_ACTIVE_DAYS", Some("30")),
     ("HJV_API_LIST_KID", Some("1")),
     ("HJV_API_TRUST_PUBKEYS", Some("")),
     ("HJV_API_TRUST_REFRESH", Some("120")),
@@ -318,6 +325,8 @@ impl Config {
             max_logins_in_flight: num("HJV_API_MAX_LOGINS")? as usize,
             campus_nets,
             passwordless_kinds,
+            operators: crate::overview::parse_operators(&get("HJV_API_OPERATORS")?)?,
+            active_days: crate::overview::parse_active_days(num("HJV_API_ACTIVE_DAYS")?)?,
             list_kid,
             trust_pubkeys,
             trust_refresh_secs,

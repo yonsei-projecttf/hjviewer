@@ -12,7 +12,9 @@
 //! Schema changes are migrations in [`MIGRATIONS`]. Schema 3 (design v3 §5-4, §8) is Wake-on-LAN:
 //! the PCs' wake reports, the NAS relays with their pre-approvals and nonces, and the wake jobs
 //! with their signed commands (wolinfo.rs, relay.rs, wake.rs). Schema 4 (design v3 §5-2) keeps
-//! who ended an account key and what the account's devices answered about it (keys.rs).
+//! who ended an account key and what the account's devices answered about it (keys.rs). Schema 5
+//! keeps the client address of each bound PC's last sync for the super operator's view
+//! (overview.rs).
 //!
 //! A restored backup (backup.rs, known by its application ID) is opened with password-less
 //! connections off for every account, before the service answers anything: its switches are
@@ -336,6 +338,13 @@ CREATE TABLE key_answers (
     PRIMARY KEY (ckid, by_ckid)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX key_answers_by ON key_answers(by_ckid);
+"#,
+    // Schema 5 (the super operator's view, overview.rs): where each bound PC's last sync came from.
+    r#"
+-- the client address of the PC's last accepted sync, by the rule of every client address
+-- (X-Real-IP, which nginx sets: server.rs); overwritten by each sync, NULL before the first one
+-- or when it was no address, and gone with the row when the PC leaves its account
+ALTER TABLE devices ADD COLUMN last_sync_ip TEXT;
 "#,
 ];
 
@@ -1825,6 +1834,22 @@ pub fn store_sync(
                                  ELSE activated_at END
          WHERE device_id = ?1",
         params![device_id, at, note.app_ver, note.off, note.mark],
+    )?;
+    Ok(())
+}
+
+/// Keeps the client address an accepted sync of a bound PC came from (`ip`, server.rs's
+/// `client_ip`) as the address of its last sync, in place of the one before; one that is not an
+/// address ("invalid", "unknown") is kept as none (schema 5, overview.rs).
+pub fn store_sync_address(c: &Connection, device_id: &str, ip: &str) -> rusqlite::Result<()> {
+    let ip = ip
+        .trim()
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .map(|ip| ip.to_string());
+    c.execute(
+        "UPDATE devices SET last_sync_ip = ?2 WHERE device_id = ?1",
+        params![device_id, ip],
     )?;
     Ok(())
 }
@@ -3570,6 +3595,56 @@ mod tests {
             assert_eq!(n, 0, "{table}");
         }
         assert_eq!(relay_health(&c, 5000, 3600).unwrap(), Some((0, 0)));
+    }
+
+    /// Schema 5 keeps what schema 4 holds, and the address of each PC's last sync is none until
+    /// its next sync; an address that is not one is kept as none; it goes with the binding.
+    #[test]
+    fn schema_four_moves_to_five() {
+        let c = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..4] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.pragma_update(None, "user_version", 4).unwrap();
+        let a = upsert_account(&c, "a", "A", "", 1).unwrap();
+        bind(&c, a, "1", &[1; 32], "windows", "PC", 5).unwrap();
+        let c = prepare(c).unwrap();
+        let v: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, MIGRATIONS.len() as i64);
+        assert_eq!(device(&c, "1").unwrap().unwrap().account_id, a);
+        let ip = |c: &Connection| -> Option<String> {
+            c.query_row(
+                "SELECT last_sync_ip FROM devices WHERE device_id = '1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(ip(&c), None);
+        for (seen, kept) in [
+            ("192.0.2.7", Some("192.0.2.7")),
+            (" 2001:DB8::1 ", Some("2001:db8::1")),
+            ("invalid", None),
+            ("unknown", None),
+            ("198.51.100.4", Some("198.51.100.4")),
+        ] {
+            store_sync_address(&c, "1", seen).unwrap();
+            assert_eq!(ip(&c).as_deref(), kept, "{seen}");
+        }
+        // a PC that no account has gets no row
+        store_sync_address(&c, "2", "192.0.2.8").unwrap();
+        assert!(device(&c, "2").unwrap().is_none());
+        assert!(release_binding(&c, "1", "admin", 9).unwrap());
+        let kept: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM devices WHERE last_sync_ip IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 0);
     }
 
     fn new_job(id: &str, device: &str, relay: &str, at: i64) -> Job {

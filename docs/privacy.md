@@ -80,10 +80,10 @@ let in today and yesterday and their number, and how many attempts it refused fo
 | Account | portal ID and name (from the SSO), times of creation and last login, the account's switch for connections without the PC's password | until a year without use (an account still on the list with a PC in use stays), or deleted on request |
 | Login tokens | a hash of each token, never the token | until logout, 90 days without use, a year at most |
 | Account keys (one per logged-in device) | public key; device ID; a tag computed from the machine identifier of section 2 (not the identifier); platform, the device model the server names from it, the device name and the app version, as the device reported them; whether the login came from the university's network or from outside (not the address); times of creation and last login; your devices' answers to the notice below; when and how its login ended and which of your devices ended it | while the device is logged in, then 30 days |
-| PCs in your account | PC ID, OS, host name, the PC's public key, a random binding ID, times added, last seen and last synced, app version, whether switched off on the PC; per reason, counts of refused attempts (30 days) | until removed from the account or 180 days unseen. After that the binding ID, the PC ID and its public key stay 180 days, so that the PC learns that it was removed |
+| PCs in your account | PC ID, OS, host name, the PC's public key, a random binding ID, times added, last seen and last synced, the IP address its last sync came from (replaced by the next one's), app version, whether switched off on the PC; per reason, counts of refused attempts (30 days) | until removed from the account or 180 days unseen. After that the binding ID, the PC ID and its public key stay 180 days, so that the PC learns that it was removed |
 | Connections without the PC's password | per account key, PC and day: the time of the last one and their number, as the PC reported them. There is no record per connection | 30 days; deleted with the key or the PC |
 | Records of logins, devices and keys | tags of the account and the device (not your ID), the client's IP address, the result, the time | 6 months |
-| Operator record | which administration command ran when, its targets as tags | at least a year |
+| Operator record | which administration command ran when, its targets as tags; each look of a super operator at the users and PCs (below), with that super operator as a tag and how many users and PCs it showed | at least a year |
 | Database backups | a copy of all of the above, on the server, readable by root only: one a day, and one before an upgrade or a restore | 14 days |
 | The service's log | counts and tags, never IDs, addresses or secrets | 30 days |
 
@@ -115,6 +115,19 @@ ID to other people's PCs. On your own PC, the connection window shows the connec
 and your name masked (such as 홍\*동), taken from the signed list; that device name is the model the
 server named from what the device reported at login, and the PC's log names the device by the ID
 the device itself gave.
+
+**What the operator sees.** The operator names the super operators (최고운영자) by their portal
+IDs in the server's own settings, not in the app or its code; everyone else is a normal user. A
+super operator sees in the app, and can only look at, the users of the service and the PCs in
+their accounts: for each user the portal ID and name, when one of their devices or PCs was last
+used and whether that was within 30 days, and how many logged-in devices and PCs they have; for
+each PC its ID and host name, its owner's portal ID and name, the OS and app version, the time of
+its last sync and the IP address that sync came from, the IPv4 addresses of its wired network
+adapters (from the report of section 5) and the state of connections without the password. A PC
+shows only once someone has logged in to HJViewer on it. The view cannot connect to anyone's PC or
+change anything. It is there so that the operator knows who uses the service and on which PCs, to
+help them and to protect the service. Each look is recorded in the operator record: which super
+operator (as a tag), when, and how many users and PCs it showed.
 
 ### 4. On your devices
 
@@ -188,8 +201,9 @@ the PC accepts. All of it is end-to-end encrypted and not stored.
 
 The account data is used to log you in and keep you logged in, to show your PCs and their state,
 to let your own devices connect to your PCs without the PC's password, to let you notice and stop
-logins and connections you did not make, to switch your PCs on, and to protect the service (login
-limits, records, backups). The basis is the service you ask for by logging in (Personal Information
+logins and connections you did not make, to switch your PCs on, to protect the service (login
+limits, records, backups), and to let the super operators see who uses it and on which PCs
+(section 3). The basis is the service you ask for by logging in (Personal Information
 Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shared beyond section
 9.
 
@@ -216,7 +230,9 @@ Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shar
 - **The operator** of the server runs the account service, answers requests and is responsible for
   this data. Administration commands show IDs shortened and leave out names, addresses and device
   names unless a person asks for them; every command is recorded, except the one the five-minute
-  check reads, which returns counts only and changes nothing.
+  check reads, which returns counts only and changes nothing. The super operators the operator
+  names in the server's settings see in the app the users and PCs of section 3; each look is
+  recorded.
 - **The Yonsei SSO** checks your portal ID and password at login.
 - **An AI assistant**: the operator uses an AI assistant for work on the server. Its rules let it
   see only shortened, masked output and counts, and what it sees goes to the external AI service
@@ -262,10 +278,10 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 | 계정 | 포탈 ID와 성명(SSO에서 받음), 만든 시각과 마지막 로그인 시각, 그 계정의 비밀번호 없는 연결 스위치 | 1년 동안 쓰지 않을 때까지(명단에 있고 쓰는 PC가 있는 계정은 남김), 또는 요청하면 삭제 |
 | 로그인 토큰 | 토큰의 해시만(토큰 자체는 없음) | 로그아웃할 때까지, 90일 동안 쓰지 않거나 최대 1년 |
 | 계정 키(로그인한 기기마다 하나) | 공개키, 기기 ID, 기기 식별값(2절)으로 만든 꼬리표(식별값 자체는 없음), 기기가 알린 플랫폼·기기 이름·앱 버전과 그것으로 서버가 정한 기기 모델 이름, 학내 네트워크에서 로그인했는지(주소는 없음), 만든 시각·마지막 로그인 시각, 아래 알림에 내 기기들이 한 답, 로그인이 언제 어떻게 끝났는지와 끝낸 내 기기 | 그 기기가 로그인해 있는 동안, 그 뒤 30일 |
-| 내 계정의 PC | PC ID, OS, 호스트 이름, PC 공개키, 무작위 묶음 ID, 추가한 시각·마지막으로 보인 시각·마지막 동기화 시각, 앱 버전, 그 PC에서 꺼 두었는지, 거절한 시도의 이유별 개수(30일) | 계정에서 빼거나 180일 동안 보이지 않을 때까지. 그 뒤 묶음 ID, PC ID, PC 공개키만 180일 남깁니다. PC가 빠졌다는 것을 그 PC에 알리기 위해서입니다 |
+| 내 계정의 PC | PC ID, OS, 호스트 이름, PC 공개키, 무작위 묶음 ID, 추가한 시각·마지막으로 보인 시각·마지막 동기화 시각, 마지막 동기화가 온 IP 주소(다음 동기화의 주소로 바뀜), 앱 버전, 그 PC에서 꺼 두었는지, 거절한 시도의 이유별 개수(30일) | 계정에서 빼거나 180일 동안 보이지 않을 때까지. 그 뒤 묶음 ID, PC ID, PC 공개키만 180일 남깁니다. PC가 빠졌다는 것을 그 PC에 알리기 위해서입니다 |
 | 비밀번호 없는 연결 | 계정 키·PC·날짜마다 마지막 연결 시각과 횟수(PC가 알린 값). 연결마다의 기록은 없음 | 30일. 그 키나 PC와 함께 삭제 |
 | 로그인·기기·키 기록 | 계정과 기기의 꼬리표(ID가 아님), 접속한 IP 주소, 결과, 시각 | 6개월 |
-| 운영자 기록 | 어떤 관리 명령을 언제 실행했는지, 대상은 꼬리표로 | 1년 이상 |
+| 운영자 기록 | 어떤 관리 명령을 언제 실행했는지, 대상은 꼬리표로. 최고운영자가 사용자와 PC 목록(아래)을 볼 때마다 그 최고운영자(꼬리표)와 보인 사용자·PC의 수 | 1년 이상 |
 | DB 백업 | 위 전부의 사본(서버 안, root만 읽음). 매일 하나, 그리고 업그레이드나 복원 전에 하나 | 14일 |
 | 계정 서비스의 로그 | 개수와 꼬리표만(ID, 주소, 비밀값은 없음) | 30일 |
 
@@ -276,6 +292,8 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 **다른 내 기기에 보이는 것.** 어떤 기기가 내 계정에 로그인하면 다른 내 기기에 알림이 뜹니다. 서버가 본 시각과 학내 네트워크인지, 그리고 그 기기가 스스로 알린(아무도 확인하지 않는) 앱 버전과 기기 모델이 나오므로, 내가 하지 않은 로그인을 알아챌 수 있습니다. 알림은 내 기기 하나에서 [내 기기 맞음]이나 [아님]으로 답할 때까지 기한 없이 남습니다. 지금 쓰는 기기보다 먼저 로그인한 기기에도, 아무도 답하기 전에 로그인이 끝난 기기에도 알림이 뜨고, 끝난 기기는 어떻게 끝났는지도 나옵니다. '로그인한 기기' 목록에는 내 PC마다 그 기기가 마지막으로 비밀번호 없이 연결한 시각과 30일 동안의 횟수가 나오고, 로그인이 끝난 기기도 30일 동안 따로 나옵니다. 플랫폼과 이름, 로그인 시각, 마지막 사용, 어떻게 끝났는지(스스로 로그아웃, 다른 내 기기 중 어느 것에서 로그아웃시킴, 기간 만료, 같은 기기의 새 로그인으로 바뀜, 관리자가 로그아웃시킴)가 나옵니다.
 
 **다른 사람에게 보이는 것.** 다른 사람의 PC에 연결하면 그 PC에는 1.6.0 전처럼 내 Windows 사용자 이름(휴대폰은 기기 이름)이 보입니다. 로그인해도 성명이나 포탈 ID를 다른 사람의 PC에 보내지 않습니다. 내 PC의 연결 창에는 연결한 기기의 이름과 가린 내 이름(예: 홍\*동)이 서명된 목록에서 나옵니다. 그 기기 이름은 기기가 로그인할 때 알린 값으로 서버가 정한 모델 이름이고, PC의 로그에 남는 기기 ID도 그 기기가 스스로 알린 값입니다.
+
+**운영자에게 보이는 것.** 운영자는 최고운영자를 포탈 ID로 서버의 설정에서만 정합니다(앱이나 코드에는 없음). 그 밖의 사람은 모두 일반 사용자입니다. 최고운영자는 앱에서 이 서비스의 사용자와 그 계정의 PC를 보기만 할 수 있습니다. 사용자마다 포탈 ID와 성명, 그 사람의 기기나 PC를 마지막으로 쓴 때와 그것이 30일 안인지, 로그인한 기기 수와 PC 수가 보이고, PC마다 PC ID와 호스트 이름, 주인의 포탈 ID와 성명, OS와 앱 버전, 마지막 동기화 시각과 그 동기화가 온 IP 주소, 유선 랜카드의 IPv4 주소(5절의 보고에서), 비밀번호 없는 연결 상태가 보입니다. PC는 누군가 그 PC에서 HJViewer에 로그인한 뒤에야 보입니다. 이 화면으로는 다른 사람의 PC에 연결하거나 무엇을 바꿀 수 없습니다. 누가 어느 PC에서 이 서비스를 쓰는지 운영자가 알고, 사용자를 돕고 서비스를 지키기 위한 것입니다. 볼 때마다 운영자 기록에 남습니다: 어느 최고운영자인지(꼬리표), 언제, 몇 명의 사용자와 몇 대의 PC를 보였는지.
 
 ### 4. 기기에 저장되는 정보
 
@@ -298,7 +316,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 7. 처리 목적과 근거
 
-계정 정보는 로그인과 로그인 유지, 내 PC와 그 상태 보이기, 내 기기끼리 PC 비밀번호 없이 연결하기, 내가 하지 않은 로그인과 연결을 알아채고 막기, 내 PC 켜기, 서비스 보호(로그인 한도, 기록, 백업)에 씁니다. 처리 근거는 로그인으로 요청한 서비스의 제공입니다(개인정보 보호법 제15조 제1항 제4호). 다른 목적으로 쓰거나 팔지 않고, 9절 밖으로 넘기지 않습니다.
+계정 정보는 로그인과 로그인 유지, 내 PC와 그 상태 보이기, 내 기기끼리 PC 비밀번호 없이 연결하기, 내가 하지 않은 로그인과 연결을 알아채고 막기, 내 PC 켜기, 서비스 보호(로그인 한도, 기록, 백업), 최고운영자가 누가 어느 PC에서 서비스를 쓰는지 보기(3절)에 씁니다. 처리 근거는 로그인으로 요청한 서비스의 제공입니다(개인정보 보호법 제15조 제1항 제4호). 다른 목적으로 쓰거나 팔지 않고, 9절 밖으로 넘기지 않습니다.
 
 ### 8. 삭제와 권리 행사
 
@@ -308,7 +326,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 9. 정보를 다루는 곳
 
-- **운영자**: 서버의 계정 서비스를 운영하고, 요청에 답하며, 이 정보를 책임집니다. 관리 명령은 사람이 따로 요청하지 않는 한 ID를 줄여 보이고 이름, 주소, 기기 이름을 보이지 않습니다. 관리 명령은 모두 기록됩니다. 5분마다 도는 점검이 읽는 명령 하나만 예외이고, 그 명령은 개수만 돌려주며 아무것도 바꾸지 않습니다.
+- **운영자**: 서버의 계정 서비스를 운영하고, 요청에 답하며, 이 정보를 책임집니다. 관리 명령은 사람이 따로 요청하지 않는 한 ID를 줄여 보이고 이름, 주소, 기기 이름을 보이지 않습니다. 관리 명령은 모두 기록됩니다. 5분마다 도는 점검이 읽는 명령 하나만 예외이고, 그 명령은 개수만 돌려주며 아무것도 바꾸지 않습니다. 운영자가 서버의 설정에서 정한 최고운영자는 앱에서 3절의 사용자와 PC를 보며, 볼 때마다 기록됩니다.
 - **연세 SSO**: 로그인할 때 포탈 ID와 비밀번호를 확인합니다.
 - **AI 도우미**: 운영자는 서버 작업에 AI 도우미를 씁니다. AI 도우미는 줄이고 가린 출력과 개수만 보도록 규칙으로 정해져 있고, 본 내용은 AI 도우미를 실행하는 외부 AI 서비스로 갑니다. 원래 값 보기와 키 만들기는 사람만 합니다.
 - **STUN 서버**(2절). 그 밖에는 없습니다. 광고나 분석 회사에 넘기지 않습니다.

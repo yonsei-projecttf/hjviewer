@@ -79,6 +79,14 @@ open without the PC's password (U3: `remote,file,camera`; `terminal` can be adde
 and RDP always ask for the password). The password-less switch is not a setting but state in the
 database, off when installed (`hjv-api admin passwordless`).
 
+`HJV_API_OPERATORS` is the super operators (최고운영자): portal IDs, comma-separated, compared as
+the allowlist compares them; unset or empty, nobody is one, and every other account is a normal
+user. They see in the app, read-only, who uses the service and the PCs in accounts with their names
+and addresses (Admin overview below). Only the server's env file holds a real ID, never the
+repository (the example has the setting empty); a change takes effect at the next restart, and
+`hjv-api admin operators` shows which of them have an account. `HJV_API_ACTIVE_DAYS` (30, at most
+365) is how recent a use makes an account active in that view.
+
 The trust lists (design v3 §3-6, §5-3): `HJV_API_TRUST_PUBKEYS` is the list keys the apps pin, the
 value of their build variable `HJV_TRUST_PUBKEYS` (`1:<base64>,2:<base64>`, the key in use and the
 next one); `HJV_API_LIST_KID` is the number of the key in the credential `hjviewer-api-list-key`
@@ -160,6 +168,9 @@ allow remove <file>       remove them; their tokens and account keys stop workin
                           PCs stay in their accounts and get a trust list without keys)
 allow list                the allowlist
 users | devices           accounts and the devices in them
+operators                 the super operators of HJV_API_OPERATORS: the tag of each, its ID,
+                          whether it has an account and is on the allowlist, its last login (its
+                          name with --reveal)
 key list [<id|tag:T>]     account keys: number, account, platform, the server's device name,
                           version, on or off campus, created, state (the device's own name and ID
                           with --reveal), and a line per PC that reported the key's password-less
@@ -272,6 +283,25 @@ owned by `hjviewer-api` (0700) and hjv-api creates `operator.log` in it (0600); 
 file, and the unit does not start. (To create it in advance: `sudo install -d -o hjviewer-api -g
 hjviewer-api -m 0700 /var/log/hjviewer-api`.) If the record cannot be opened, hjv-api still serves
 logins, without the admin socket, and says so in the journal.
+
+### Admin overview
+
+The super operators of `HJV_API_OPERATORS` (Settings) see in the app who uses the service and on
+which PCs: `GET /api/hjv/admin/overview` (Formats below, `src/overview.rs`). It shows and changes
+nothing else: no connection to anyone's PC, no command; everyone else's app gets the 404 of an
+unknown path. A user is an account that has logged in and is on the allowlist, active when one of
+its account keys or PCs was used within `HJV_API_ACTIVE_DAYS`; the PCs are those bound to an
+account, by a login on them: a PC on which nobody logged in is unknown to hjv-api and not in the
+list (the app's help line says so). The privacy statement (docs/privacy.md, sections 3 and 9)
+tells the users what the super operators see and that each look is recorded.
+
+Each look writes one line to the operator record before it is answered, under the service's own
+user ID and no sudo user, with the account's tag and never its portal ID: `cmd="app overview"
+acct=<tag> done="ok: 3 users (2 active), 2 PCs"`; a look whose line cannot be written is not shown
+(503). The journal gets the same tag and counts. `hjv-api admin operators` shows the tag of each
+super operator, the one in those lines. To make someone a super operator, or to stop it, the user
+edits the line in `/etc/hjviewer/hjviewer-api.env` on the server and restarts the service
+(docs/server-runbook.md 7-15).
 
 ## Monitoring
 
@@ -412,6 +442,13 @@ PC's next sync gets a signed `revoked` (design v3 §4-3). The signed logout from
 deletion of unused accounts (their PCs first), and the upkeep's release of PCs unseen for 180 days
 all go through it; `tests/pcsync.rs` checks that no other SQL deletes a binding.
 
+`GET /api/hjv/admin/overview` (Admin overview) takes the token with its signature too, with the
+same 401 and 409 as every account path. For an account that is not a super operator the answer is
+then the 404 of an unknown path, `{"error":"not found"}`, for every method and however often, so
+that a normal user's app cannot tell the path from one that does not exist. A super operator gets
+405 for another method than GET, 429 past 30 calls a minute of the account key, counted with its
+key list's (the same limit), and 503 when the operator record does not take the look's line.
+
 ## Formats
 
 The formats the app (client patches 0030-0031), hbbs (server patch 0004) and hjv-api must agree
@@ -453,10 +490,12 @@ padding, NUL is the byte 0x00, times are Unix seconds.
 
 ```text
 {"type":"access_token","access_token":"hjv_<base64url of 32 bytes>",
- "user":{"name":"<portal ID>","display_name":"<name>","status":1},
+ "user":{"name":"<portal ID>","display_name":"<name>","status":1,"hjv_role":"operator"},
  "hjv":{"ks":<the key's serial>,"binding":"<32 hex>","login_at":<time>}}
 ```
 
+  `hjv_role` is there only for a super operator's account (Admin overview), as in the user object
+  that `POST /api/currentUser` and `GET /api/users` answer; no other account has the member.
   `ks` is the change serial the key's registration made. `binding` (the PC's binding ID, random
   128 bits, kept while the same account logs in on the PC again) and `login_at` (the server's time
   of this login, also the device row's `login_at`) come only when this login added the device or
@@ -541,6 +580,10 @@ revoked one (but for `ack` and `not-mine`), and `ack` or `not-mine` of the askin
 `{"error":"not found"}`. At most 30 calls a minute per key (429), so that no device can use up
 another's.
 
+The key list of a super operator's account also has `"hjv_role":"operator"` at its top, beside
+`total`, `data` and `ended`; no other account's has the member. The app reads the list anyway, so
+a role given or taken away on the server (at its restart) shows without a new login.
+
 ### Device list: `GET /api/peers`
 
 ```text
@@ -569,6 +612,33 @@ only when it is not `no`. Once the account has a relay, the note ends with " · 
 `GET /api/hjv/this-device` of a login that proved it is a PC of the account also has
 `"binding":"<32 hex>"`, `"pwless":"<state>"` and `"activation":"present|absent|stale"` (what the
 PC's last sync carried: its binding, none, another one).
+
+### The overview: `GET /api/hjv/admin/overview` (`src/overview.rs`)
+
+For a super operator (Admin overview; API above for the other answers), read-only:
+
+```text
+{"v":1,"at":"2026-10-14T09:30:00Z","active_days":30,
+ "users":[{"id":"<portal ID>","name":"<name>","active":true,"last_use":"<RFC 3339 or null>","keys":2,"pcs":1}],
+ "pcs":[{"pc":"<PC ID>","host":"<host name or null>","owner":"<portal ID>","owner_name":"<name>",
+         "os":"<OS or null>","version":"<app version or null>","last_sync":"<RFC 3339 or null>",
+         "ip":"<address or null>","lan":["192.0.2.67/24"],"passwordless":"active"}]}
+```
+
+- `at` is the server's time of the answer, times are RFC 3339 in UTC, `active_days` is
+  `HJV_API_ACTIVE_DAYS`.
+- `users`: every account that has logged in and is on the allowlist. `last_use` is the latest of:
+  a login or a signed request of one of its account keys (the account's activity, which moves at
+  most once an hour), a connection without the PC's password that a PC reported for one of its
+  keys, and the last time one of its PCs was seen (a sync, hbbs, a login on it); `active` when that
+  is at most `active_days` days ago. `keys` is its active account keys, `pcs` the PCs in it. The
+  active ones first, then by `last_use`, the newest first.
+- `pcs`: every PC bound to an account, also one whose account has left the allowlist, by owner (its
+  portal ID), then host name (without case). `version` and `last_sync` are of its last sync; `ip`
+  is the client address that sync came from (X-Real-IP, as for every request), `lan` the IPv4
+  addresses with their prefixes of its wired cards from its wake report (`[]` without one), and
+  `passwordless` its state as `hjv-api admin binding list` names it (the states of the device list
+  above; `disabled` also while the account is off the allowlist).
 
 ### PC sync: `POST /api/hjv/pc/sync` (`src/pcsync.rs`, `src/envelope.rs`, `src/trust.rs`)
 
@@ -611,8 +681,9 @@ with the PC's device key (the key hbbs held when it was bound):
   registered and on anyway (design v3 §9-1).
   There is no 429: a repeat within 10 s while the change serial stayed gets the last list's
   contents again, for its own `n`.
-- An accepted sync of a bound PC stores its report (it also counts as the PC seen) and ends a
-  `needs-relogin`; key use is merged by the larger values, so that a report cannot lower what is
+- An accepted sync of a bound PC stores its report (it also counts as the PC seen) and the client
+  address it came from, in place of the last one (Admin overview), and ends a `needs-relogin`; key
+  use is merged by the larger values, so that a report cannot lower what is
   stored. A sync that carries the PC's binding keeps its `wol` with its `wol_hash` and the address
   the sync came from (the PC's egress address); without `wol` only the address moves, and when
   `wol_hash` is not empty and not the summary kept, the answer has `"send_wol":true`, which asks
@@ -814,7 +885,12 @@ vectors above and in `tests/data/v3-vectors.json`, `tests/http.rs` the request p
 retries (after the first answer, while the first attempt runs, after it was dropped unanswered), and
 `tests/pcsync.rs` the PC sync: its checks in order, the lists as the PC checks them, the
 ten-second repeat, key use, the device list's states, every way a PC leaves its account, the key
-change confirmed with hbbs, the report and selfcheck. `tests/relay.rs` has hjv-relay's requests:
+change confirmed with hbbs, the report and selfcheck. `tests/overview.rs` has the super operator's
+view: its answer (counts, order, fields), the 404 of an unknown path for every other account and
+method, the refusals of a request without its proof, nobody without `HJV_API_OPERATORS`, the role
+in the login's answer, the user object and the key list as the setting says at each start, the
+address of a PC's last sync (overwritten, gone with the PC), the record's line of each look without
+a portal ID, and `admin operators`. `tests/relay.rs` has hjv-relay's requests:
 the checks in their order with the cases of relay/tests/common's `check_request` and the vector of
 relay/PROTOCOL.md §13, the states, approval (no address in the default output) and revocation,
 approval ahead, the limits (what they refuse leaves no nonce; a relay's own counts the requests of
@@ -861,12 +937,14 @@ power facts, without its uptime), its summary and the PC's egress address; the N
 public key, state, owner account, name, the source of the first hello, versions, interfaces,
 egress address, times), the codes approved ahead, the relays' nonces for 10 minutes; the wake jobs
 (the account and its tag, the PC, the relay, the grade, the network, the times, the result) with
-their signed commands while they wait.
+their signed commands while they wait. Since schema 5 (Admin overview): per bound PC the client
+address its last sync came from (X-Real-IP).
 
 Kept: tokens 90 days unused / a year at most (a new login replaces the token of the same device,
 and an account keeps at most 20); account keys while their token lasts (an hourly upkeep revokes
 the keys no valid token is left for), then 30 days revoked; devices until removed or 180 days
-unseen (a sync counts as seen); released bindings 180 days; key use and refusals 30 days, and
+unseen (a sync counts as seen), the address of a PC's last sync replaced by the next one's and
+gone with the PC; released bindings 180 days; key use and refusals 30 days, and
 they go with the PC when it leaves its account (key use also with its key); accounts until a year
 unused, unless still on the allowlist with a PC in use (seen within the device time), so that a lab
 PC logged in once stays listed while it is on; records six months; limit counters for their longest
