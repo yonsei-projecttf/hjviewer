@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Wed, 14 Oct 2026 21:46:21 +0900
+Subject: [PATCH 48/48] hjviewer: a login without the account service's answer
+ says which
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Before the nginx switch, /api/login and /api/login-options answered with
+nginx's 404 page. The login dialog then showed "Unknown Error:
+FormatException: Unexpected character (at character 1) <html>" after a
+login, and the options request's RequestException in red as soon as it
+opened. Another proxy's error page, or the web site behind the same name,
+would do the same; hjv-api's answers, and nginx's own while it is down
+(@hjv_down), are JSON and keep their texts.
+
+UserModel.login now turns an answer it cannot read as JSON into a
+RequestException whose cause is "서버의 계정 서비스가 답하지 않았습니다(HTTP
+<status>). 잠시 뒤 다시 해 주세요." (HjvTexts.serviceNotAnswering), and a
+login that gets no answer at all (no network, a name or a certificate
+that fails, so also a Wi-Fi login page) into "서버에 연결하지 못했습니다.
+네트워크 연결을 확인한 뒤 다시 해 주세요." (networkFailed), in place of the
+transport's error. The dialog shows either in place of the password
+message; the red 'HTTP <status>' toast goes, since the message carries the
+status. An options answer that is not the options shows nothing: HJViewer
+has no third-party login, and hjv-api answers it with an empty list; no
+answer at all still shows the network tip and Retry. The pure Dart tests
+check both texts and that neither holds braces.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../lib/common/hjviewer_account_texts.dart    | 11 ++++++++
+ flutter/lib/common/widgets/login.dart         |  9 ++++++-
+ flutter/lib/models/user_model.dart            | 26 +++++++++++++------
+ flutter/test/hjviewer_account_test.dart       | 12 +++++++++
+ 4 files changed, 49 insertions(+), 9 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index dc520af..bf413e5 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -42,6 +42,17 @@ class HjvTexts {
+   String get requestFailed => _t('요청하지 못했습니다. 잠시 뒤 다시 해 주세요.',
+       'The request failed. Please try again later.');
+ 
++  /// A login answer that is not JSON, so not the account service's: nginx's 404 before the
++  /// service was in place, another proxy's error page, or the web site behind the same name.
++  String serviceNotAnswering(int status) => _t(
++      '서버의 계정 서비스가 답하지 않았습니다(HTTP $status). 잠시 뒤 다시 해 주세요.',
++      "The server's account service did not answer (HTTP $status). Please try again later.");
++
++  /// A login that got no answer at all: no network, a name that does not resolve, a certificate
++  /// that fails (a Wi-Fi login page cannot answer for the server).
++  String get networkFailed => _t('서버에 연결하지 못했습니다. 네트워크 연결을 확인한 뒤 다시 해 주세요.',
++      'Could not reach the server. Check the network connection and try again.');
++
+   // after a login on a PC (§1-2)
+   String get addedTitle =>
+       _t('이 PC를 내 기기 목록에 추가했습니다', 'This PC is now in your device list');
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index a087392..ad72280 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -745,7 +745,14 @@ Future<bool?> _openLoginDialog() async {
+       loginOptionsError.value = null;
+     } catch (e) {
+       debugPrint("queryOidcLoginOptions failed: $e");
+-      loginOptionsError.value = e;
++      // hjviewer has no third-party login: an answer that is not the options (nginx's 404 before
++      // the account service was in place, a web page) shows nothing, where it showed the error in
++      // red as soon as the dialog opened; no answer at all still shows the network tip and Retry
++      if (e is RequestException || e is FormatException) {
++        loginOptions.value = [];
++      } else {
++        loginOptionsError.value = e;
++      }
+     } finally {
+       loginOptionsInProgress.value = false;
+     }
+diff --git a/flutter/lib/models/user_model.dart b/flutter/lib/models/user_model.dart
+index 405a9fa..f87dabe 100644
+--- a/flutter/lib/models/user_model.dart
++++ b/flutter/lib/models/user_model.dart
+@@ -1,13 +1,14 @@
+ import 'dart:async';
+ import 'dart:convert';
+ 
+-import 'package:bot_toast/bot_toast.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common/hbbs/hbbs.dart';
+ import 'package:flutter_hbb/models/ab_model.dart';
+ import 'package:get/get.dart';
+ 
+ import '../common.dart';
++import '../common/hjviewer_account_texts.dart';
++import 'package:http/http.dart' as hjv_http show Response;
+ import '../utils/http_service.dart' as http;
+ import 'model.dart';
+ import 'platform_model.dart';
+@@ -192,19 +193,28 @@ class UserModel {
+   /// throw [RequestException]
+   Future<LoginResponse> login(LoginRequest loginRequest) async {
+     final url = await bind.mainGetApiServer();
+-    final resp = await http.post(Uri.parse('$url/api/login'),
+-        body: jsonEncode(loginRequest.toJson()));
++    final hjvTexts = HjvTexts(translate('Cancel') == '취소');
++    final hjv_http.Response resp;
++    try {
++      resp = await http.post(Uri.parse('$url/api/login'),
++          body: jsonEncode(loginRequest.toJson()));
++    } on RequestException {
++      rethrow;
++    } catch (e) {
++      // hjviewer: no answer at all says so, in place of the transport's error behind "Unknown Error"
++      debugPrint("login: request failed: ${e.toString()}");
++      throw RequestException(0, hjvTexts.networkFailed);
++    }
+ 
+     final Map<String, dynamic> body;
+     try {
+       body = jsonDecode(decode_http_response(resp));
+     } catch (e) {
+       debugPrint("login: jsonDecode resp body failed: ${e.toString()}");
+-      if (resp.statusCode != 200) {
+-        BotToast.showText(
+-            contentColor: Colors.red, text: 'HTTP ${resp.statusCode}');
+-      }
+-      rethrow;
++      // hjviewer: a web page in place of the service's JSON says so, not the parser's
++      // FormatException behind "Unknown Error"
++      throw RequestException(
++          resp.statusCode, hjvTexts.serviceNotAnswering(resp.statusCode));
+     }
+     if (resp.statusCode != 200) {
+       throw RequestException(resp.statusCode, body['error'] ?? '');
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index d318e27..f2784ef 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -281,6 +281,16 @@ void main() {
+     expect(hjvRefreshDue(at, at.add(const Duration(seconds: 30))), isTrue);
+   });
+ 
++  test('a login without the account service\'s answer says which', () {
++    expect(ko.serviceNotAnswering(404),
++        '서버의 계정 서비스가 답하지 않았습니다(HTTP 404). 잠시 뒤 다시 해 주세요.');
++    expect(en.serviceNotAnswering(502),
++        "The server's account service did not answer (HTTP 502). Please try again later.");
++    expect(ko.networkFailed, '서버에 연결하지 못했습니다. 네트워크 연결을 확인한 뒤 다시 해 주세요.');
++    expect(en.networkFailed,
++        'Could not reach the server. Check the network connection and try again.');
++  });
++
+   group('this PC in Settings → Account (design v3 §1-2)', () {
+     test('every state of the service has its line', () {
+       const mine = HjvOwner.mine;
+@@ -1284,6 +1294,8 @@ void main() {
+         t.retry,
+         t.logIn,
+         t.requestFailed,
++        t.serviceNotAnswering(404),
++        t.networkFailed,
+         t.addedTitle,
+         t.alreadyTitle,
+         t.notAddedTitle,
