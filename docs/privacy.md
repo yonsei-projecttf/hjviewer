@@ -150,12 +150,13 @@ the device itself gave.
 **What the operator sees.** The operator names the super operators (최고운영자) by their portal
 IDs in the server's own settings, not in the app or its code; everyone else is a normal user. A
 super operator sees in the app, and can only look at, the users of the service (the accounts that
-have logged in and are not blocked) and the PCs in their accounts: for each user the portal ID and name, when one of their devices or PCs was last
+have logged in and are not blocked) and every PC in an account, also in an account the operator blocked: for each user the portal ID and name, when one of their devices or PCs was last
 used and whether that was within 30 days, and how many logged-in devices and PCs they have; for
 each PC its ID and host name, its owner's portal ID and name, the OS and app version, the time of
 its last sync and the IP address that sync came from, the IPv4 addresses of its wired network
-adapters (from the report of section 5) and the state of connections without the password. A PC
-shows only once someone has logged in to HJViewer on it. The view cannot connect to anyone's PC or
+adapters (from the report of section 5) and the state of connections without the password. A
+blocked account is no longer among the users, but its PCs stay in the list, with the owner's portal
+ID and name, as long as the table above keeps them. A PC shows only once someone has logged in to HJViewer on it. The view cannot connect to anyone's PC or
 change anything. It is there so that the operator knows who uses the service and on which PCs, to
 help them and to protect the service. Each look is recorded in the operator record: which super
 operator (as a tag), when, and how many users and PCs it showed.
@@ -347,7 +348,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 **다른 사람에게 보이는 것.** 다른 사람의 PC에 연결하면 그 PC에는 1.6.0 전처럼 내 Windows 사용자 이름(휴대폰은 기기 이름)이 보입니다. 로그인해도 성명이나 포탈 ID를 다른 사람의 PC에 보내지 않습니다. 내 PC의 연결 창에는 연결한 기기의 이름과 가린 내 이름(예: 홍\*동)이 서명된 목록에서 나옵니다. 그 기기 이름은 기기가 로그인할 때 알린 값으로 서버가 정한 모델 이름이고, PC의 로그에 남는 기기 ID도 그 기기가 스스로 알린 값입니다.
 
-**운영자에게 보이는 것.** 운영자는 최고운영자를 포탈 ID로 서버의 설정에서만 정합니다(앱이나 코드에는 없음). 그 밖의 사람은 모두 일반 사용자입니다. 최고운영자는 앱에서 이 서비스의 사용자(로그인한 적이 있고 막히지 않은 계정)와 그 계정의 PC를 보기만 할 수 있습니다. 사용자마다 포탈 ID와 성명, 그 사람의 기기나 PC를 마지막으로 쓴 때와 그것이 30일 안인지, 로그인한 기기 수와 PC 수가 보이고, PC마다 PC ID와 호스트 이름, 주인의 포탈 ID와 성명, OS와 앱 버전, 마지막 동기화 시각과 그 동기화가 온 IP 주소, 유선 랜카드의 IPv4 주소(5절의 보고에서), 비밀번호 없는 연결 상태가 보입니다. PC는 누군가 그 PC에서 HJViewer에 로그인한 뒤에야 보입니다. 이 화면으로는 다른 사람의 PC에 연결하거나 무엇을 바꿀 수 없습니다. 누가 어느 PC에서 이 서비스를 쓰는지 운영자가 알고, 사용자를 돕고 서비스를 지키기 위한 것입니다. 볼 때마다 운영자 기록에 남습니다: 어느 최고운영자인지(꼬리표), 언제, 몇 명의 사용자와 몇 대의 PC를 보였는지.
+**운영자에게 보이는 것.** 운영자는 최고운영자를 포탈 ID로 서버의 설정에서만 정합니다(앱이나 코드에는 없음). 그 밖의 사람은 모두 일반 사용자입니다. 최고운영자는 앱에서 이 서비스의 사용자(로그인한 적이 있고 막히지 않은 계정)와 계정에 든 모든 PC(운영자가 막은 계정의 PC도)를 보기만 할 수 있습니다. 사용자마다 포탈 ID와 성명, 그 사람의 기기나 PC를 마지막으로 쓴 때와 그것이 30일 안인지, 로그인한 기기 수와 PC 수가 보이고, PC마다 PC ID와 호스트 이름, 주인의 포탈 ID와 성명, OS와 앱 버전, 마지막 동기화 시각과 그 동기화가 온 IP 주소, 유선 랜카드의 IPv4 주소(5절의 보고에서), 비밀번호 없는 연결 상태가 보입니다. 막힌 계정은 사용자 목록에서 빠지지만, 그 계정의 PC는 위 표의 보관 기간 동안 주인의 포탈 ID·성명과 함께 PC 목록에 남습니다. PC는 누군가 그 PC에서 HJViewer에 로그인한 뒤에야 보입니다. 이 화면으로는 다른 사람의 PC에 연결하거나 무엇을 바꿀 수 없습니다. 누가 어느 PC에서 이 서비스를 쓰는지 운영자가 알고, 사용자를 돕고 서비스를 지키기 위한 것입니다. 볼 때마다 운영자 기록에 남습니다: 어느 최고운영자인지(꼬리표), 언제, 몇 명의 사용자와 몇 대의 PC를 보였는지.
 
 ### 4. 기기에 저장되는 정보
 
