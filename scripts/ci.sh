@@ -44,7 +44,8 @@
 #                          under build/ci; with server patch 0005, hbbs's lowest controller
 #                          version, and with the update code in the patches (src/hjviewer_update),
 #                          a client with the update test keys and the signed version policy that
-#                          tools/hjv-release signs for it (the minimum version's V1-V8)
+#                          tools/hjv-release signs for it (the minimum version's V1-V8), and the
+#                          update code's unit tests once more in a build without those keys
 #   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, the Wake-on-LAN E2E (docs/e2e.md), without sudo: in
 #                          this user's own namespaces a PC that sleeps is woken through hjv-api
 #                          and hjv-relay, with the E2E's client, Caddy, hjv-api and fake SSO, and
@@ -108,6 +109,8 @@ E2E_LEAST_STRICT=60 E2E_LEAST_OPEN=2 WOL_LEAST=20
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 9))
 # by the filter of build_e2e_client's cargo test --lib <filter>
 declare -A UNIT_LEAST=([hjv]=83 [hjviewer_wol]=6)
+# and the update code's tests in the e2e stage's build without the update keys (2026-10-14)
+UNIT_LEAST[hjviewer_update-nokeys]=141
 export PATH="$HOME/.cargo/bin:$PATH"
 
 SRC="$CI/src" PKGS="$CI/pkgs" CERTS="$CI/certs"
@@ -1191,7 +1194,8 @@ e2e_update_keys() {
 # design v3 8-10). Before the account code, it is built like 1.5.1. Once the patches have the update
 # code (src/hjviewer_update) and firewall-e2e.sh its part (HJV_E2E_UPDATE_KEYS), the build and its
 # unit tests also get the update test keys (e2e_update_keys; E2E_KEYED), so that the update code's
-# tests run as in a build that takes part. A client given by hand
+# tests run as in a build that takes part; when <filter> picks those tests, they run once more
+# without the keys (e2e_unit_without_update_keys). A client given by hand
 # (E2E_CLIENT, which only the wol stage takes) is used as it is, and that is a skip.
 build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
   local work=$1 unit=${2:-hjviewer_account} src="$CI/upstream-e2e/rustdesk" keys=() update_keys
@@ -1235,9 +1239,34 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
       fail "e2e: the client's unit tests (--lib $filter)"
     at_least "e2e: the client's unit tests that passed (--lib $filter)" "$(passed_tests "$CI/e2e-unit-$filter.log")" \
       "${UNIT_LEAST[$filter]:-1}"
+    if [ -n "$E2E_KEYED" ] && [[ hjviewer_update == *"$filter"* ]]; then e2e_unit_without_update_keys "$work" "${keys[@]}"; fi
   else
     skip "the client's unit tests of src/$unit (not in the patched tree)"
   fi
+}
+
+# The update code's unit tests once more, in a build without the update keys (minimum version
+# design 1-7): such a build takes no part and does what 1.5.1 did, and the tests that pin this
+# return at once in the keyed build. The build variables of build_e2e_client without the update
+# keys, which are taken out of this shell's environment too, in the same target directory: cargo
+# compiles the client crate's tests again (about a minute), which shows that the keys are gone, and
+# leaves the client built there as it is.
+e2e_unit_without_update_keys() { # <work dir> <build variables...>
+  local work=$1 v vars=() log="$CI/e2e-unit-hjviewer_update-nokeys.log"
+  shift
+  for v in "$@"; do
+    case $v in HJV_UPDATE_PUBKEY=* | HJV_UPDATE_ROOT_PUBKEY=* | HJV_POLICY_FLOOR=*) ;; *) vars+=("$v") ;; esac
+  done
+  step "e2e: the update code's unit tests without the update keys (--lib hjviewer_update, output also in build/ci/e2e-unit-hjviewer_update-nokeys.log)"
+  with_skips "$log" env -C "$CI/upstream-e2e/rustdesk" -u HJV_UPDATE_PUBKEY -u HJV_UPDATE_ROOT_PUBKEY -u HJV_POLICY_FLOOR \
+    PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${vars[@]}" \
+    "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
+    cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib hjviewer_update ||
+    fail "e2e: the update code's unit tests without the update keys (--lib hjviewer_update)"
+  grep -q '^ *Compiling rustdesk v' "$log" ||
+    fail "e2e: cargo did not compile the client's tests again without the update keys: they ran with the keys"
+  at_least "e2e: the update code's unit tests that passed without the update keys" "$(passed_tests "$log")" \
+    "${UNIT_LEAST[hjviewer_update-nokeys]}"
 }
 
 # What the E2E's client is built from and with: client/ (the patches, the overlay), the upstream

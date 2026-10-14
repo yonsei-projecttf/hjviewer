@@ -34,7 +34,7 @@
 
 - 패치를 적용한 클라이언트를 새로 받아 시험용으로 빌드하고, Caddy를 고정한 SHA-256으로 받고, PC 쪽 클라이언트를 `/usr/local/lib/hjviewer-e2e/rustdesk`에 설치한 뒤 strict와 open을 차례로 돌립니다. 끝나면 설치한 파일을 지웁니다.
 - 패치에 계정 코드가 있으면 [계정 단계](#계정-단계-160)도 돕니다. 클라이언트의 HJViewer 코드 단위 시험(`--lib hjv`), hjv-api와 가짜 SSO 빌드, 태그 `client-1.5.1`로 만드는 1.5.1 비교용 클라이언트(태그와 서버 키가 같으면 한 번만 빌드해 `build/ci/e2e-old/rustdesk`에 둠), Ubuntu의 `libfaketime` 패키지 풀기(`build/ci/faketime`, 설치하지 않음)가 더해집니다.
-- hbbs에 서버 패치 0005가 있으면(`--hjv-min-controller-file`) [최소 버전 단계](#최소-버전-단계-160)의 V1-V4를 돌립니다. `server/patches`에 0005가 있는데 hbbs에 그 옵션이 없으면(전에 빌드한 hbbs) 실패합니다. 패치에 업데이트 코드(`src/hjviewer_update`)가 있으면 클라이언트를 업데이트 시험 키로 빌드하고 단위 시험(`--lib hjv`)도 그 빌드로 돌립니다. 이 저장소에 `tools/hjv-release`가 있으면 그것을 빌드해(`build/ci/target-hjv-release`) 시험 정책에 서명하고 V5-V8을 돌립니다. 셋 중 없는 것은 건너뛴 것으로 셉니다.
+- hbbs에 서버 패치 0005가 있으면(`--hjv-min-controller-file`) [최소 버전 단계](#최소-버전-단계-160)의 V1-V4를 돌립니다. `server/patches`에 0005가 있는데 hbbs에 그 옵션이 없으면(전에 빌드한 hbbs) 실패합니다. 패치에 업데이트 코드(`src/hjviewer_update`)가 있으면 클라이언트를 업데이트 시험 키로 빌드하고 단위 시험(`--lib hjv`)도 그 빌드로 돌립니다. 업데이트 코드의 단위 시험(`--lib hjviewer_update`)은 키만 뺀 빌드로 한 번 더 돌립니다. 키 없는 빌드가 1.5.1처럼 아무것도 하지 않는지 보는 시험은 키가 든 빌드에서는 바로 끝나기 때문입니다. 이 저장소에 `tools/hjv-release`가 있으면 그것을 빌드해(`build/ci/target-hjv-release`) 시험 정책에 서명하고 V5-V8을 돌립니다. 셋 중 없는 것은 건너뛴 것으로 셉니다.
 - 시험용 클라이언트는 LTO 없이, 코드 생성 단위 16개로 빌드합니다. 트리를 새로 받으므로 클라이언트 크레이트는 실행마다 다시 컴파일됩니다(의존성은 `build/ci/target-e2e`에 남음). 릴리스 프로필 그대로면 실행 파일과 단위 시험이 각각 3분 반쯤 걸리고, 이렇게 하면 각각 45초쯤입니다. 제품 빌드의 프로필은 그대로입니다.
 
 손으로 돌릴 때는 다음과 같습니다.
