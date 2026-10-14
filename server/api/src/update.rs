@@ -1989,11 +1989,21 @@ mod tests {
 
     #[test]
     fn the_policy_of_the_operators_tool() {
-        // the copy is the tool's vector (compare with tools/hjv-release/tests/vectors)
+        // the copy is the tool's vector (tools/hjv-release/tests/vectors), byte for byte
         assert_eq!(
             hex(&sha256(TOOL_POLICY)),
-            "3f76af335aacc32c7caefbc04832150b29c002e9e406c48d449ed0385a7f41f9"
+            "83771abc6a27bd5d77e0ecb1eb9c21b1cf5270eb993e1088c7886a7e36a93173"
         );
+        let vector = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tools/hjv-release/tests/vectors/accepted/e2-s2.json"
+        );
+        if let Ok(vector) = std::fs::read(vector) {
+            assert_eq!(
+                vector, TOOL_POLICY,
+                "regenerated vectors: copy e2-s2.json again"
+            );
+        }
         let policy = Policy::parse(TOOL_POLICY).unwrap();
         assert_eq!((policy.epoch, policy.seq), (2, 2));
         let (entry, package) = policy.package(Platform::Windows).unwrap();
