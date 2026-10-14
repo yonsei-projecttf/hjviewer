@@ -99,12 +99,13 @@ log() { printf '\n== %s\n' "$*"; }
 # for a key that no E2E build pins), keeps the envelope as envelope-<seq>.json and serves it at
 # https://hjv.test/api/hjv/version, replaced at once as the server's file is. With <seq of an
 # earlier policy> of the same key, the envelope served carries that policy's signature in place of
-# its own. Its one entry, windows, is the one an E2E build on Linux is held to: NEXT_MINOR, until
-# <deadline> only for apps below it (grace_until). Its package is made up: Linux downloads nothing.
+# its own. Its one entry, windows, is the one an E2E build on Linux is held to: NEXT_MINOR from
+# <deadline> on, and nothing before it (grace_until with grace_min 0.0.0, the pair of the trust
+# rules). Its package is made up: Linux downloads nothing.
 serve_policy() {
   local text="$RUN/policy/policy-$1.json" signed="$RUN/policy/envelope-$1.json" key=()
   [ -z "${3:-}" ] || key=(--key "$3" --raw)
-  printf '{"v":1,"epoch":1,"seq":%s,"issued":"%s","server":"%s","platforms":{"windows":{"min":"%s","latest":"%s","grace_until":"%s","package":{"file":"HJViewer-%s-windows-x86_64.exe","size":1,"sha256":"%s","build":"%s.0"}}}}\n' \
+  printf '{"v":1,"epoch":1,"seq":%s,"issued":"%s","server":"%s","platforms":{"windows":{"min":"%s","latest":"%s","grace_until":"%s","grace_min":"0.0.0","package":{"file":"HJViewer-%s-windows-x86_64.exe","size":1,"sha256":"%s","build":"%s.0"}}}}\n' \
     "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$DOMAIN" "$NEXT_MINOR" "$NEXT_MINOR" "$2" "$NEXT_MINOR" \
     "$(printf 'e2e0%.0s' $(seq 16))" "$NEXT_MINOR" >"$text"
   if ! timeout 30 "$HJV_RELEASE" test-sign "${key[@]}" --policy "$text" --out "$signed" \
