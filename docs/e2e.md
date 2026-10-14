@@ -90,7 +90,21 @@ sudo rm -rf /usr/local/lib/hjviewer-e2e
    $(../../tools/hjv-release/target/release/hjv-release test-keys --env) \
    cargo build --release --features linux-pkg-config,hjv-e2e)
 HJV_E2E_MIN_CONTROLLER=1 HJV_E2E_UPDATE_KEYS=1 HJV_RELEASE=$PWD/tools/hjv-release/target/release/hjv-release \
-  CADDY=/path/to/caddy tools/e2e/firewall-e2e.sh strict    # 계정 단계의 값과 함께 줘도 됨(그 뒤에 돔)
+  CADDY=/path/to/caddy tools/e2e/firewall-e2e.sh strict
+#    계정 단계와 함께 돌리려면(최소 버전 단계는 계정 단계 뒤에 돔) 6)의 빌드를 쓰지 않습니다. 그 빌드에는 계정
+#    공개키가 없고 /usr 아래에 설치하지도 않습니다. 5)의 계정 공개키와 6)의 업데이트 키를 빌드 하나에 함께 넣고,
+#    그것을 5)처럼 설치해 PC_CLIENT로 준 뒤 5)와 6)의 값을 모두 줍니다. scripts/ci.sh e2e가 이렇게 합니다
+(cd upstream/rustdesk && env PKG_CONFIG_PATH=$HJV_E2E_WORK/pkgconfig HJV_SERVER=hjv.test \
+   HJV_SERVER_KEY=$(cat $HJV_E2E_WORK/srv/id_ed25519.pub) \
+   HJV_LOGIN_SEAL_PUBKEY=$(cat $KEYS/seal.pub) HJV_TRUST_PUBKEYS=$(cat $KEYS/trust.pub) \
+   $(../../tools/hjv-release/target/release/hjv-release test-keys --env) \
+   cargo build --release --features linux-pkg-config,hjv-e2e)
+sudo install -D -m 755 upstream/rustdesk/target/release/rustdesk /usr/local/lib/hjviewer-e2e/rustdesk
+HJV_E2E_ACCOUNT=1 HJV_E2E_KEYS=$KEYS PC_CLIENT=/usr/local/lib/hjviewer-e2e/rustdesk \
+  HJV_API=$PWD/server/api/target/release/hjv-api HJV_FAKE_SSO=$PWD/server/api/target/release/hjv-fake-sso \
+  HJV_E2E_MIN_CONTROLLER=1 HJV_E2E_UPDATE_KEYS=1 HJV_RELEASE=$PWD/tools/hjv-release/target/release/hjv-release \
+  CADDY=/path/to/caddy tools/e2e/firewall-e2e.sh strict
+sudo rm -rf /usr/local/lib/hjviewer-e2e
 ```
 
 필요한 패키지(Ubuntu 24.04): `iptables xvfb imagemagick`(계정 단계는 `curl python3`도), 그리고 upstream 클라이언트 빌드 의존성(`libgtk-3-dev libvpx-dev libyuv-dev libopus-dev libaom-dev libxdo-dev libpulse-dev libpam0g-dev clang nasm` 등)입니다. 전체 목록은 RustDesk CI를 참고하세요.
