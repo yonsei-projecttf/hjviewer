@@ -305,7 +305,7 @@ EOF
   "$HJV_FAKE_SSO" --listen "127.0.0.1:$SSO_PORT" >"$RUN/fake-sso.log" 2>&1 &
   SERVER_PIDS+=($!)
   start_api
-  printf '2026000001\n2026000002\n' >"$RUN/api/allow.txt"
+  printf 'ZZTEST01\nZZTEST02\n' >"$RUN/api/allow.txt"
   admin allow import "$RUN/api/allow.txt"
 fi
 
@@ -468,11 +468,11 @@ fi
 # The same-account logins (design v3 7-4). Each step prints PASS or FAIL with what it saw.
 # ---------------------------------------------------------------------------------------------
 PC_ID=$ID
-# the fake SSO's test accounts (server/api/src/fake_sso.rs); CAROL is not imported: her first login
-# puts her on the allowlist (S28)
-ALICE=2026000001 ALICE_PW=hjv-test-pass-1 ALICE_NAME=홍길동
-BOB=2026000002 BOB_PW=hjv-test-pass-2
-CAROL=Y9001 CAROL_PW=hjv-test-pass-3
+# the fake SSO's test accounts (server/api/src/fake_sso.rs), fake IDs of HJViewer's ID rule (Z or
+# Y, not ZA); CAROL, a Y code, is not imported: her first login puts her on the allowlist (S28)
+ALICE=ZZTEST01 ALICE_PW=hjv-test-pass-1 ALICE_NAME=홍길동
+BOB=ZZTEST02 BOB_PW=hjv-test-pass-2
+CAROL=YZTEST03 CAROL_PW=hjv-test-pass-3
 WRONG_PW=hjv-wrong-pass
 SECRETS=() # the tokens and account keys the clients held, for S20
 LAST_ASK=0 # when a proof last made the PC sync at once
@@ -1305,9 +1305,14 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
 # The open login of 2026-10-14 (server/api/README.md, Admin): an ID the SSO accepts and nobody
 # imported logs in and is registered, a block logs its devices out and refuses its next login
 # after the SSO, unblock lets it in again, and in list mode an ID off the list is refused without
-# an SSO call. On hjv-ctl2, free since D1; hjv-api starts again for list mode, after X7b.
+# an SSO call. Then HJViewer's ID rule of the same day (README.md, hbbs and the SSO): an ID that is
+# not a faculty or staff one gets its own answer without an SSO call, and a person the SSO
+# accepts and HJViewer denies gets its own after it. On hjv-ctl2, free since D1; hjv-api starts
+# again for list mode, after X7b.
 account_allowlist() {
   local calls e_wrong blocked_text="이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요."
+  local id_rule_text="연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요."
+  local denied_text="이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요."
   log "S28: a portal ID never imported logs in and is registered"
   calls=$(sso_calls)
   run ctl2 --hjv-e2e-login "$CAROL" "$CAROL_PW"
@@ -1378,6 +1383,29 @@ account_allowlist() {
   admin report >"$RUN/report.txt"
   sed -n 2p "$RUN/report.txt" | grep -q '^login: open (' || fail "S31: hjv-api is not in open mode again: $(sed -n 2p "$RUN/report.txt")"
   pass "S31: in list mode carol (deleted, off the list) gets the wrong password's failure without an SSO call; bob (imported) logs in; open mode again after"
+
+  log "S32: HJViewer's ID rule: IDs that are not faculty or staff ones are refused before the SSO; a person the SSO accepts and HJViewer denies is told so after it"
+  calls=$(sso_calls)
+  for id in 1234567890 zatest01 BZTEST01; do
+    run ctl2 --hjv-e2e-login "$id" "$WRONG_PW"
+    want 1 "S32: $id"
+    has "login failed: HTTP 403: $id_rule_text" || fail "S32: $id did not get the ID rule's text ($(grep 'login failed' <<<"$OUT"))"
+  done
+  [ "$(sso_calls)" = "$calls" ] || fail "S32: an ID outside the rule reached the fake SSO"
+  run ctl2 --hjv-e2e-login ZZSSO-DENIED "$WRONG_PW"
+  want 1 "S32: a person the SSO's user call refuses"
+  has "login failed: HTTP 403: $denied_text" || fail "S32: not the denial's text ($(grep 'login failed' <<<"$OUT"))"
+  run ctl2 --hjv-e2e-login ZZSSO-ZA "$WRONG_PW"
+  want 1 "S32: a person whose pcode starts with ZA"
+  has "login failed: HTTP 403: $denied_text" || fail "S32: a ZA pcode did not get the denial's text ($(grep 'login failed' <<<"$OUT"))"
+  [ "$(sso_calls)" = $((calls + 2)) ] || fail "S32: the denied logins did not reach the fake SSO once each"
+  admin report >"$RUN/report.txt"
+  grep -q 'login id-rule' "$RUN/report.txt" && grep -q 'login denied' "$RUN/report.txt" ||
+    fail "S32: the report does not count the refusals: $(grep -c . "$RUN/report.txt") lines"
+  grep -qiE '1234567890|zatest01|bztest01|zzsso-denied|zzsso-za' "$RUN/hjv-api.log" && fail "S32: an ID typed in hjv-api's log"
+  run ctl2 --hjv-e2e-devices
+  want 0 "S32: the login of hjv-ctl2 (bob's) after the refused ones"
+  pass "S32: a student-like number, ZA and B: 403 '$id_rule_text' without an SSO call; the user call refused and a ZA pcode: 403 '$denied_text' after one SSO call each"
 }
 
 # the device list of hjv-ctl (hjv-ctl2) has the PC in state <state>

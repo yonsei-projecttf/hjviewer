@@ -120,8 +120,8 @@ HBBS_PORT=41116 HBBR_PORT=41117 API_PORT=41120 SSO_PORT=41600 IMPOSTOR_PORT=4170
 PC=/usr/local/lib/hjviewer-e2e/rustdesk # where the PC's commands see the client
 PASSWORD="Hjv-e2e-$RANDOM$RANDOM"
 # the fake SSO's test accounts (server/api/src/fake_sso.rs)
-ALICE=2026000001 ALICE_PW=hjv-test-pass-1
-BOB=2026000002 BOB_PW=hjv-test-pass-2
+ALICE=ZZTEST01 ALICE_PW=hjv-test-pass-1
+BOB=ZZTEST02 BOB_PW=hjv-test-pass-2
 STARTED=$(date +%s)
 
 log() { printf '\n== [%3d s] %s\n' "$(($(date +%s) - STARTED))" "$*"; }

@@ -202,7 +202,7 @@ EOF
 }
 
 # runbook 7-5: start, the files' modes, the switch, selfcheck, the login mode, the timers; two IDs
-# imported ahead (the runbook needs none in open mode: Y9001 goes on the list at its first login)
+# imported ahead (the runbook needs none in open mode: YZTEST03 goes on the list at its first login)
 start_api() { # <host>
   on "$1" << 'EOF'
 set -euo pipefail
@@ -215,7 +215,7 @@ A="/opt/hjviewer/bin/hjv-api admin"
 $A passwordless status | head -1
 $A selfcheck | grep -E '^\[' | cut -c1-100 || true
 $A report | sed -n 2p
-printf '2026000001\n2026000002\nsso-invalid-client\n' > /root/hjviewer-allow.txt
+printf 'ZZTEST01\nZZTEST02\nZZSSO-INVALID-CLIENT\n' > /root/hjviewer-allow.txt
 chmod 600 /root/hjviewer-allow.txt
 $A allow import /root/hjviewer-allow.txt
 rm /root/hjviewer-allow.txt

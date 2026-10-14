@@ -114,6 +114,8 @@ E2E_LEAST_STRICT=60 E2E_LEAST_OPEN=2 WOL_LEAST=20
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 4))
 # strict: and the minimum version's V1-V9 (2026-10-14)
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 12))
+# strict: and HJViewer's ID rule's S32 (2026-10-14)
+E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 1))
 # by the filter of build_e2e_client's cargo test --lib <filter>; hjv as the minimum version's E2E
 # counted it (224, 2026-10-14, the series with src/hjviewer_update)
 declare -A UNIT_LEAST=([hjv]=224 [hjviewer_wol]=6)
