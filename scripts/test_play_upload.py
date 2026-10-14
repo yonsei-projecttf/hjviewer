@@ -2,7 +2,11 @@
 # Offline tests for scripts/play-upload.py: no network and no Google credentials. The fake Play API
 # below answers the calls; the key tests sign with throwaway RSA keys that openssl makes in a temporary
 # directory or in memory (they belong to no Google account and are gone at the end).
+# PlayBundleListsTest, at the end, reads no script: it holds the Play bundle check of client-build.yml
+# and the Play manifest overlay (client/play/AndroidManifest.xml) to each other, and the bundle steps'
+# conditions and order to what docs/ci.md says a failed bundle does.
 # Run: python3 -I -B -m unittest discover -s scripts -p 'test_play_upload.py'  (scripts/ci.sh client)
+import argparse
 import contextlib
 import hashlib
 import http.client
@@ -10,10 +14,12 @@ import importlib.util
 import io
 import json
 import pathlib
+import re
 import subprocess
 import tempfile
 import unittest
 import urllib.parse
+import xml.etree.ElementTree
 import zipfile
 from unittest import mock
 
@@ -214,6 +220,65 @@ class PlayUploadTest(unittest.TestCase):
         self.assertIn("versionCode is taken", text)
         self.assertEqual(fake.names()[-1], "DELETE edit-1")
 
+    def test_bundle_older_than_the_track_serves_is_refused_before_the_upload(self):
+        # "Re-run failed jobs" on an older run after a newer run has released: the jobs run in the
+        # order they arrive, and Play may accept a release that no tester can install
+        fake = FakePlay(tracks=[{"track": "internal", "releases": [
+            {"versionCodes": ["262851000"], "status": "halted"},
+            {"versionCodes": ["262851300"], "status": "completed"}]}])
+        code, text = self.run_script(fake, extra=["--version-code", "262851234"])
+        self.assertEqual(code, 1)
+        self.assertIn("Play already serves versionCode 262851300 on internal", text)
+        self.assertIn("(262851234) is older", text)
+        self.assertIn("Start a new build", text)
+        self.assertEqual(fake.names(), ["POST edits", "GET tracks", "GET bundles", "DELETE edit-1"])
+
+    def test_older_bundle_is_refused_after_the_upload_when_no_version_code_was_given(self):
+        fake = FakePlay(tracks=[{"track": "internal", "releases": [
+            {"versionCodes": ["262851300"], "status": "completed"}]}])
+        code, text = self.run_script(fake)  # Play's answer is the first to say 262851234
+        self.assertEqual(code, 1)
+        self.assertIn("Play already serves versionCode 262851300 on internal", text)
+        self.assertEqual(fake.names(), ["POST edits", "GET tracks", "GET bundles", "POST bundles",
+                                        "DELETE edit-1"])
+
+    def test_older_bundle_that_play_still_holds_is_not_released_again(self):
+        fake = FakePlay(bundles=[{"versionCode": 262851234, "sha256": self.sha}],
+                        tracks=[{"track": "internal", "releases": [
+                            {"versionCodes": ["262851300"], "status": "completed"}]}])
+        for mode in ("commit", "validate"):
+            fake.calls.clear()
+            code, text = self.run_script(fake, extra=["--version-code", "262851234"], mode=mode)
+            self.assertEqual(code, 1, mode)
+            self.assertIn("is older", text)
+            self.assertEqual(fake.names(), ["POST edits", "GET tracks", "GET bundles", "DELETE edit-1"])
+
+    def test_only_what_the_track_serves_counts_as_newer(self):
+        # a higher draft on the track, a higher release on another track and an older release here
+        fake = FakePlay(tracks=[
+            {"track": "production", "releases": [{"versionCodes": ["999999999"], "status": "completed"}]},
+            {"track": "internal", "releases": [{"versionCodes": ["262851300"], "status": "draft"},
+                                               {"versionCodes": ["262851000", "262850000"],
+                                                "status": "completed"}]}])
+        code, text = self.run_script(fake, extra=["--version-code", "262851234"])
+        self.assertEqual(code, 0, text)
+        self.assertIn("POST edit-1:commit", fake.names())
+
+    def test_the_renamed_track_is_the_one_compared(self):
+        fake = FakePlay(tracks=[{"track": "qa", "releases": [
+            {"versionCodes": ["262851300"], "status": "inProgress"}]}])
+        code, text = self.run_script(fake, extra=["--version-code", "262851234"])
+        self.assertEqual(code, 1)
+        self.assertIn("Play already serves versionCode 262851300 on qa", text)
+
+    def test_same_version_code_is_left_to_play(self):
+        # another bundle with this versionCode: Play refuses the upload itself (test_version_code_taken)
+        fake = FakePlay(tracks=[{"track": "internal", "releases": [
+            {"versionCodes": ["262851234"], "status": "completed"}]}])
+        code, text = self.run_script(fake, extra=["--version-code", "262851234"])
+        self.assertEqual(code, 0, text)
+        self.assertIn("POST bundles", fake.names())
+
     def test_app_not_created(self):
         fake = FakePlay(fail={("POST", "/edits"): (404, {"error": {
             "code": 404, "message": "Package not found: kr.ac.yonsei.hjviewer.", "status": "NOT_FOUND"}})})
@@ -235,6 +300,117 @@ class PlayUploadTest(unittest.TestCase):
         code, text = self.run_script(fake)
         self.assertEqual(code, 1)
         self.assertIn("Release apps to testing tracks", text)
+
+    def advice(self, status, message, words=""):
+        return play.hint(play.PlayError(status, message, words),
+                         argparse.Namespace(package=PKG, notes_language="ko-KR"))
+
+    def test_declaration_answer_is_not_taken_for_a_missing_permission(self):
+        # what a missing foreground service declaration produced on an internal track (403, and the
+        # message says "permissions"): the service account is fine, App content is not finished
+        fake = FakePlay(fail={("POST", ":commit"): (403, {"error": {
+            "code": 403, "message": "You must let us know whether your app uses any Foreground Service "
+                                    "permissions.",
+            "status": "PERMISSION_DENIED", "errors": [{"reason": "forbidden"}]}})})
+        code, text = self.run_script(fake)
+        self.assertEqual(code, 1)
+        self.assertIn("Play Console > App content", text)
+        self.assertIn("Nothing was committed", text)
+        self.assertNotIn("PLAY_SA_EMAIL", text)
+        self.assertNotIn("Release apps to testing tracks", text)
+        self.assertEqual(fake.names()[-1], "DELETE edit-1")
+
+    def test_policy_answers_point_at_app_content(self):
+        # worded after reports of what Play answers for a bundle with the camera permission and no
+        # privacy policy; what the rule reads are the words of DECLARATION_WORDS, each tried below
+        policy = ("Your app has an APK with version code 262851234 using permissions that require a privacy "
+                  "policy: (android.permission.CAMERA).")
+        for status, message in [(403, policy), (400, policy)] + [
+                (403, f"Play refused the release: {word} is not finished.") for word in play.DECLARATION_WORDS]:
+            advice = self.advice(status, message, "PERMISSION_DENIED forbidden")
+            self.assertIn("Play Console > App content", advice, message)
+            self.assertNotIn("PLAY_SA_EMAIL", advice, message)
+
+    def test_release_older_than_the_track_has_its_own_advice(self):
+        # wordings Play has for a release that no tester would get, should one get past
+        # refuse_older (which compares only this track's releases that are not drafts)
+        for message in ("You can't rollout this release because it doesn't allow any existing users to "
+                        "upgrade to the newly added app bundles.",
+                        "Version 262851234 of this app can not be downloaded by any devices as they will all "
+                        "receive APKs with higher version codes.",
+                        "This app bundle is fully shadowed by one or more app bundles of the release."):
+            advice = self.advice(403, message, "PERMISSION_DENIED forbidden")
+            self.assertIn("already serves a newer versionCode", advice, message)
+            self.assertNotIn("PLAY_SA_EMAIL", advice, message)
+
+    def test_permission_advice_only_for_answers_about_the_account(self):
+        account = "Release apps to testing tracks"
+        self.assertIn(account, self.advice(403, "The caller does not have permission", "PERMISSION_DENIED"))
+        self.assertIn(account, self.advice(401, "The current user has insufficient permissions to perform "
+                                                "the requested operation.", "permissionDenied"))
+        self.assertIn(account, self.advice(403, "The current user has insufficient permissions to perform "
+                                                "the requested operation.", "forbidden"))
+        self.assertIn(account, self.advice(401, "Request had invalid authentication credentials.",
+                                           "UNAUTHENTICATED"))
+        # a 403 that says nothing about the account gets no guess
+        for message in ("Something Play has not said before.", "This release is not compliant with a permission "
+                                                               "policy."):
+            self.assertEqual(self.advice(403, message, "PERMISSION_DENIED forbidden"),
+                             "See Google's message above.", message)
+
+    def test_earlier_advice_keeps_its_place(self):
+        # answers that also arrive as 403 PERMISSION_DENIED and were recognised before
+        denied = "PERMISSION_DENIED"
+        self.assertIn("versionCode is taken", self.advice(
+            403, "APK specifies a version code that has already been used.", denied + " apkUpgradeVersionConflict"))
+        self.assertIn("still a draft", self.advice(
+            403, "Only releases with status draft may be created on draft app.", denied))
+        self.assertIn("Publishing overview", self.advice(403, "Changes are in review.", denied))
+        self.assertIn("upload key", self.advice(
+            403, "The Android App Bundle was signed with the wrong key.", denied))
+        self.assertIn("store listing languages", self.advice(
+            400, "Release notes are in a language the store listing does not have.", "INVALID_ARGUMENT"))
+        self.assertIn("Developer API", self.advice(
+            403, "Google Play Android Developer API has not been used in project 123 before or it is disabled.",
+            denied + " accessNotConfigured"))
+
+    def test_unanswered_commit_may_have_gone_through(self):
+        for failure in (TimeoutError("timed out"), (503, {"error": {"code": 503, "message": "Backend Error"}})):
+            fake = FakePlay()
+
+            def commit_fails(method, url, headers, data, timeout, fake=fake, failure=failure):
+                if method == "POST" and url.split("?")[0].endswith(":commit"):
+                    fake.calls.append((method, url, headers, data))
+                    if isinstance(failure, Exception):
+                        raise failure
+                    return failure[0], json.dumps(failure[1]).encode()
+                return fake(method, url, headers, data, timeout)
+
+            code, text = self.run_script(commit_fails)
+            self.assertEqual(code, 1)
+            self.assertIn("may or may not have gone through", text)
+            self.assertIn("run the play job again", text)
+            self.assertNotIn("othing was committed", text)
+            self.assertNotIn("nothing committed", text)
+            self.assertIn("deleted edit edit-1 (it was still open)", text)
+            self.assertEqual(fake.names()[-2:], ["POST edit-1:commit", "DELETE edit-1"])  # no second commit
+
+    def test_refused_commit_committed_nothing(self):
+        fake = FakePlay(fail={("POST", ":commit"): (403, {"error": {
+            "code": 403, "message": "Changes cannot be sent for review automatically.",
+            "status": "PERMISSION_DENIED", "errors": [{"reason": "changesNotSentForReview"}]}})})
+        code, text = self.run_script(fake)
+        self.assertEqual(code, 1)
+        self.assertIn("Nothing was committed", text)
+        self.assertIn("deleted edit edit-1 (nothing committed)", text)
+        self.assertNotIn("may or may not", text)
+
+    def test_unanswered_call_before_the_commit_committed_nothing(self):
+        fake = FakePlay(fail={("PUT", "/internal"): (503, {"error": {"code": 503, "message": "Backend Error"}})})
+        code, text = self.run_script(fake)
+        self.assertEqual(code, 1)
+        self.assertIn("run it again later. Nothing was committed", text)
+        self.assertIn("deleted edit edit-1 (nothing committed)", text)
 
     def test_qa_track_name(self):
         fake = FakePlay(tracks=[{"track": "production"}, {"track": "qa"}])
@@ -390,6 +566,249 @@ class PlayUploadTest(unittest.TestCase):
         code, text = self.run_script(fake, env={"PLAY_SA_EMAIL": SA_EMAIL, "PLAY_SA_PRIVATE_KEY": throwaway_key()})
         self.assertEqual(code, 1)
         self.assertIn("refused the service account key", text)
+
+
+def update_entries(manifest: str) -> list:
+    """The in-app update's entries in manifest text, as "<kind> <name>" lines of PLAY_FORBIDDEN:
+    a provider whose element names the update's paths (res/xml/hjv_update_paths.xml, minimum
+    version design 5-4), with a short class name completed by the app's namespace, and the
+    install permission."""
+    entries = []
+    # a provider element: self-closing, or up to its end tag (its meta-data may come in any order)
+    for match in re.finditer(r"<provider\b(?:[^>]*/>|.*?</provider>)", manifest, re.S):
+        block = match.group(0)
+        if "hjv_update" in block:
+            name = re.search(r'android:name="([^"]+)"', block).group(1)
+            entries.append("provider " + ("com.carriez.flutter_hbb" + name if name.startswith(".") else name))
+    if re.search(r'<uses-permission(?:-sdk-23)?\s+android:name="android\.permission\.REQUEST_INSTALL_PACKAGES"',
+                 manifest):
+        entries.append("permission android.permission.REQUEST_INSTALL_PACKAGES")
+    return entries
+
+
+class PlayBundleListsTest(unittest.TestCase):
+    """What a run can only show after a 20-minute build: the lists of "Sign and check Play bundle"
+    and the Play-only manifest overlay must say the same thing, the overlay must never reach the
+    side-loaded APK, and a bundle that failed a step must go nowhere."""
+
+    WORKFLOW = HERE.parent / ".github" / "workflows" / "client-build.yml"
+    OVERLAY = HERE.parent / "client" / "play" / "AndroidManifest.xml"
+    ANDROID = "{http://schemas.android.com/apk/res/android}"
+    TOOLS = "{http://schemas.android.com/tools}"
+    # the in-app update of the side-loaded APK installs an APK: an app from Google Play must not
+    SIDE_LOAD_ONLY = {"permission android.permission.REQUEST_INSTALL_PACKAGES",
+                      "provider com.carriez.flutter_hbb.HjvUpdateFileProvider"}
+    # The lines that decide what a failed bundle step does (docs/ci.md, the Google Play section, step
+    # 1), which only a failing run on GitHub shows at work. Without `play` and outside a check build a
+    # failed bundle step leaves the job green and "Report a failed Play bundle" says that the run has
+    # no bundle; with either it fails the job, so the play job does not start. Only a bundle that
+    # passed every check becomes the -play artifact, which the play job uploads and which the first
+    # upload in Play Console takes by hand.
+    BUNDLE_STEPS = {
+        "Build Play bundle": {
+            "if": "env.ANDROID_SIGNING == 'true' && github.event.repository.private",
+            "id": "play-build",
+            "continue-on-error": "${{ !inputs.play && !inputs.check_only }}"},
+        "Sign and check Play bundle": {
+            "if": "steps.play-build.outcome == 'success'",
+            "id": "play-bundle",
+            "continue-on-error": "${{ !inputs.play && !inputs.check_only }}"},
+        "Upload Play bundle": {"if": "steps.play-bundle.outcome == 'success'"},
+        # no status function: GitHub adds success(), which is false once a failed step failed the job
+        "Report a failed Play bundle": {
+            "if": "steps.play-build.outcome == 'failure' || steps.play-bundle.outcome == 'failure'"},
+        # the keystore that "Sign and check Play bundle" decodes, also when a step before failed
+        "Remove the upload keystore": {"if": "always() && env.ANDROID_SIGNING == 'true'"},
+    }
+
+    def setUp(self):
+        self.workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        self.overlay = xml.etree.ElementTree.parse(self.OVERLAY).getroot()
+
+    def block(self, name):
+        """The lines of the step's `NAME: |` environment value."""
+        lines = self.workflow.splitlines()
+        (start,) = [i for i, line in enumerate(lines) if line.strip() == f"{name}: |"]
+        indent = len(lines[start]) - len(lines[start].lstrip())
+        value = []
+        for line in lines[start + 1:]:
+            if line.strip() and len(line) - len(line.lstrip()) <= indent:
+                break
+            if line.strip():
+                value.append(line.strip())
+        return value
+
+    def job_steps(self, job):
+        """The steps of the job in their order, each as {key: the text after the colon on the key's
+        line} for the step's own keys (a block value such as `run: |` gives "|"), read as text like
+        block()."""
+        lines = self.workflow.splitlines()
+        (start,) = [i for i, line in enumerate(lines) if line == f"  {job}:"]
+        steps, in_steps = [], False
+        for line in lines[start + 1:]:
+            text, indent = line.strip(), len(line) - len(line.lstrip())
+            if not text or text.startswith("#"):
+                continue
+            if indent <= 2:  # the next job
+                break
+            if indent == 4:
+                in_steps = text == "steps:"
+            elif in_steps and indent in (6, 8):
+                if indent == 6:
+                    self.assertTrue(text.startswith("- "), line)
+                    steps.append({})
+                    text = text[2:]
+                key, colon, value = text.partition(":")
+                self.assertTrue(colon and re.fullmatch(r"[a-z-]+", key), line)
+                self.assertNotIn(key, steps[-1], f"a step of the {job} job has {key} twice")
+                steps[-1][key] = value.strip()
+        return steps
+
+    def removed_by_the_overlay(self):
+        kinds = {"uses-permission": "permission", "uses-permission-sdk-23": "permission", "provider": "provider"}
+        removed = set()
+        for element in self.overlay.iter():
+            if element.get(self.TOOLS + "node") is not None:
+                self.assertEqual(element.get(self.TOOLS + "node"), "remove", element.tag)
+                self.assertIn(element.tag, kinds, "the bundle check has no list for this kind of entry")
+                removed.add(f"{kinds[element.tag]} {element.get(self.ANDROID + 'name')}")
+        return removed
+
+    def test_side_load_only_entries_are_forbidden_and_removed(self):
+        forbidden = self.block("PLAY_FORBIDDEN")
+        self.assertEqual(len(forbidden), len(set(forbidden)))
+        self.assertLessEqual(self.SIDE_LOAD_ONLY, set(forbidden))
+        # the overlay takes out what the check forbids, name for name: a name misspelt in one of the
+        # two would leave the entry in the bundle or leave it unchecked
+        self.assertEqual(self.removed_by_the_overlay(), set(forbidden))
+        # a permission can be asked for with either element, and removing one leaves the other
+        asked = {(e.tag, e.get(self.ANDROID + "name")) for e in self.overlay}
+        for line in forbidden:
+            kind, name = line.split()
+            if kind == "permission":
+                self.assertIn(("uses-permission", name), asked)
+                self.assertIn(("uses-permission-sdk-23", name), asked)
+
+    def test_a_forbidden_entry_is_never_an_expected_one(self):
+        # adding it to PLAY_MANIFEST is the quick way to make a red check green, and would ship it
+        expected = self.block("PLAY_MANIFEST")
+        self.assertEqual(expected, sorted(set(expected)))
+        self.assertFalse(set(expected) & set(self.block("PLAY_FORBIDDEN")))
+        self.assertFalse(set(expected) & self.SIDE_LOAD_ONLY)
+
+    def test_expected_entries_are_the_controller_only_ones(self):
+        # every Android build is controller-only: an entry of the controlled side here means the
+        # app got one back, which Play wants declared (accessibility, foreground services)
+        controlled = ("accessibility-service ", "foreground-service-type ", "permission android.permission."
+                      "FOREGROUND_SERVICE", "permission android.permission.SYSTEM_ALERT_WINDOW",
+                      "permission android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+                      "permission android.permission.RECEIVE_BOOT_COMPLETED")
+        for line in self.block("PLAY_MANIFEST"):
+            self.assertRegex(line, r"^permission [A-Za-z0-9_.]+$")
+            self.assertFalse(line.startswith(controlled), line)
+
+    def test_marker_of_the_overlay_is_the_one_the_step_checks(self):
+        (application,) = self.overlay.findall("application")
+        (marker,) = application.findall("meta-data")
+        name, value = marker.get(self.ANDROID + "name"), marker.get(self.ANDROID + "value")
+        self.assertIn(f"overlay=$(x \"/manifest/application/meta-data[@android:name='{name}']/@android:value\")",
+                      self.workflow)
+        self.assertIn(f'[ "$overlay" = {value} ] || fail ', self.workflow)
+        # a string that no resource compiler turns into a number or a boolean
+        self.assertRegex(value, r"^[a-z]+$")
+        self.assertNotIn(value, ("true", "false"))
+
+    def test_overlay_has_no_package_and_full_class_names(self):
+        self.assertEqual(self.overlay.tag, "manifest")
+        self.assertIsNone(self.overlay.get("package"))  # nothing would complete a short class name
+        components = [e for e in self.overlay.iter() if e.tag in ("provider", "service", "receiver", "activity")]
+        self.assertTrue(components)
+        for element in components:
+            self.assertRegex(element.get(self.ANDROID + "name"), r"^[a-z][a-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+
+    def test_entries_that_client_patches_add_for_the_update_are_the_removed_ones(self):
+        # The in-app update's entries come from a client patch: what that patch names must be what
+        # the overlay removes, or the bundle keeps them. Skipped until a patch adds them.
+        added = []
+        for patch in sorted((HERE.parent / "client" / "patches" / "rustdesk").glob("*.patch")):
+            in_manifest = False
+            for line in patch.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("diff --git "):
+                    in_manifest = line.endswith(" b/flutter/android/app/src/main/AndroidManifest.xml")
+                elif in_manifest and line.startswith("+") and not line.startswith("+++"):
+                    added.append(line[1:])
+        found = set(update_entries("\n".join(added)))
+        if not found:
+            self.skipTest("no client patch adds the in-app update's manifest entries yet")
+        self.assertLessEqual(found, set(self.block("PLAY_FORBIDDEN")))
+
+    def test_update_entries_are_recognised_in_a_manifest(self):
+        # update_entries() as the test above uses it, on the forms a patch may write
+        manifest = """
+            <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+            <provider
+                android:name=".HjvUpdateFileProvider"
+                android:authorities="${applicationId}.fileprovider"
+                android:exported="false">
+                <meta-data
+                    android:name="android.support.FILE_PROVIDER_PATHS"
+                    android:resource="@xml/hjv_update_paths" />
+            </provider>
+            <provider android:name="io.flutter.plugins.imagepicker.ImagePickerFileProvider"
+                android:authorities="${applicationId}.flutter.image_provider" />
+            <provider android:authorities="x" android:resource="@xml/hjv_update_paths"
+                android:name="com.example.Other"/>
+            <provider android:name="com.example.Third">
+                <meta-data android:name="first" android:value="1" />
+                <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                    android:resource="@xml/hjv_update_paths" />
+            </provider>
+            <provider android:name="com.example.Unrelated">
+                <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/paths" />
+            </provider>"""
+        self.assertEqual(update_entries(manifest), [
+            "provider com.carriez.flutter_hbb.HjvUpdateFileProvider", "provider com.example.Other",
+            "provider com.example.Third", "permission android.permission.REQUEST_INSTALL_PACKAGES"])
+        self.assertEqual(update_entries('<uses-permission android:name="android.permission.CAMERA" />'), [])
+
+    def test_overlay_is_copied_in_between_the_two_builds(self):
+        # before the APK build it would take the update out of the side-loaded APK as well
+        apk = self.workflow.index("flutter build apk ")
+        copy = self.workflow.index('cp "$overlay" "$release"')
+        bundle = self.workflow.index("flutter build appbundle ")
+        self.assertLess(apk, copy)
+        self.assertLess(copy, bundle)
+        self.assertIn('overlay="$GITHUB_WORKSPACE/client/play/AndroidManifest.xml"', self.workflow)
+        self.assertIn("release=flutter/android/app/src/release/AndroidManifest.xml", self.workflow)
+        # client/overlay is copied over the tree when it is fetched, before every build
+        self.assertFalse((HERE.parent / "client" / "overlay" / "rustdesk" / "flutter" / "android" / "app" / "src"
+                          / "release").exists())
+
+    def test_bundle_steps_keep_their_conditions_and_order(self):
+        # The shell of these steps can be dry-run on the development machine, their conditions work
+        # only on GitHub, and actionlint (when installed) checks no more than the step ids they read
+        steps = self.job_steps("android")
+        names = [step.get("name") for step in steps]
+        for name, conditions in self.BUNDLE_STEPS.items():
+            self.assertEqual(names.count(name), 1, name)
+            step = steps[names.index(name)]
+            # a change that is meant goes into BUNDLE_STEPS and docs/ci.md as well
+            self.assertEqual({key: step[key] for key in ("if", "id", "continue-on-error") if key in step},
+                             conditions, name)
+        at = {name: names.index(name) for name in self.BUNDLE_STEPS}
+        # the APK is uploaded before the first bundle step: a failed bundle never costs it, also where
+        # the failure fails the job
+        self.assertLess(max(names.index("Upload signed APK"), names.index("Upload debug-signed APK")),
+                        at["Build Play bundle"], "an APK upload comes after the first bundle step")
+        # a condition reads only steps that ran before it: a step yet to run has no outcome
+        ids = {step["id"]: i for i, step in enumerate(steps) if "id" in step}
+        for i, step in enumerate(steps):
+            for read in re.findall(r"\bsteps\.([A-Za-z0-9_-]+)\.", step.get("if", "")):
+                self.assertIn(read, ids, step.get("name"))
+                self.assertLess(ids[read], i, f"{step.get('name')} reads steps.{read}")
+        # the keystore is removed after the step that decodes it
+        self.assertLess(at["Sign and check Play bundle"], at["Remove the upload keystore"],
+                        "the upload keystore is removed before the step that decodes it")
 
 
 if __name__ == "__main__":

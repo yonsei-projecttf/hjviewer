@@ -1112,13 +1112,34 @@ jobs:
       # bundle is built with no signing config and signed once below (jarsigner: apksigner cannot
       # sign bundles). Its versionCode is this run's arm64 APK's: `--split-per-abi` adds 2000 for
       # arm64 to the build number, a bundle gets the build number as given.
+      # Without `play` nothing goes to Google Play: a failure of the two bundle steps then does not
+      # fail the job, whose APK is fine ("Report a failed Play bundle"). With `play` it does, and in
+      # a check build too, which is there to find such a failure before the release run.
       - name: Build Play bundle
         if: env.ANDROID_SIGNING == 'true' && github.event.repository.private
+        id: play-build
+        continue-on-error: ${{ !inputs.play && !inputs.check_only }}
         shell: bash
         env:
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
         run: |
           export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          # The APK signing action leaves its copy of the keystore in the workspace: gone before
+          # Gradle and the plugins' build scripts run again ("Remove the upload keystore" is the
+          # backstop).
+          rm -f signed-apk/signingKey.jks
+          # The Play-only manifest overlay. The APK is built, so a manifest of the release build type
+          # now changes the bundle alone: it outranks the app's manifest and the plugins', and its
+          # tools:node="remove" entries take out what only the side-loaded APK may have.
+          # "Sign and check Play bundle" proves that it was merged.
+          overlay="$GITHUB_WORKSPACE/client/play/AndroidManifest.xml"
+          release=flutter/android/app/src/release/AndroidManifest.xml
+          if [ ! -f "$overlay" ] || [ -e "$release" ]; then
+            echo "::error::The Play manifest overlay needs client/play/AndroidManifest.xml in this repository and no $release in upstream; update this step."
+            exit 1
+          fi
+          mkdir -p "$(dirname "$release")"
+          cp "$overlay" "$release"
           gradle=flutter/android/app/build.gradle
           if [ "$(grep -c '^ *signingConfig signingConfigs\.debug$' "$gradle")" != 1 ]; then
             echo "::error::$gradle does not have the one debug signing line the APK build writes; update this step."
@@ -1132,8 +1153,9 @@ jobs:
           popd
 
       - name: Sign and check Play bundle
-        if: env.ANDROID_SIGNING == 'true' && github.event.repository.private
+        if: steps.play-build.outcome == 'success'
         id: play-bundle
+        continue-on-error: ${{ !inputs.play && !inputs.check_only }}
         shell: bash
         env:
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
@@ -1145,26 +1167,26 @@ jobs:
           BUNDLETOOL_VERSION: "1.18.3" # 2025-12-15, the latest release on 2026-10-12
           BUNDLETOOL_SHA256: a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29
           # What Play's declarations look at (docs/ci.md, "Google Play 업로드"): permissions, foreground
-          # service types (0x400000a0 = specialUse|mediaProjection|microphone) and accessibility
-          # services. A change needs Play Console > App content checked before Play takes the bundle;
-          # then update this list. CI uploads never show Play Console's declaration prompts.
+          # service types and accessibility services. Every Android build is controller-only from
+          # 1.6.0, so the bundle has no foreground service type, no accessibility service and none of
+          # their permissions: one that appears fails this step. A change needs Play Console > App
+          # content checked before Play takes the bundle; then update this list. CI uploads never
+          # show Play Console's declaration prompts.
           PLAY_MANIFEST: |
-            accessibility-service com.carriez.flutter_hbb.InputService
-            foreground-service-type 0x400000a0
             permission android.permission.ACCESS_NETWORK_STATE
             permission android.permission.CAMERA
-            permission android.permission.FOREGROUND_SERVICE
-            permission android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION
-            permission android.permission.FOREGROUND_SERVICE_MICROPHONE
-            permission android.permission.FOREGROUND_SERVICE_SPECIAL_USE
             permission android.permission.INTERNET
             permission android.permission.POST_NOTIFICATIONS
-            permission android.permission.RECEIVE_BOOT_COMPLETED
             permission android.permission.RECORD_AUDIO
-            permission android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
-            permission android.permission.SYSTEM_ALERT_WINDOW
             permission android.permission.WAKE_LOCK
             permission kr.ac.yonsei.hjviewer.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+          # What only the side-loaded APK may have, as "permission <name>" or "provider <class>": its
+          # in-app update, which installs an APK. An app from Google Play must not update itself any
+          # other way, so client/play/AndroidManifest.xml removes these from the bundle. They never
+          # go into PLAY_MANIFEST.
+          PLAY_FORBIDDEN: |
+            permission android.permission.REQUEST_INSTALL_PACKAGES
+            provider com.carriez.flutter_hbb.HjvUpdateFileProvider
         run: |
           set -euo pipefail
           export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
@@ -1197,12 +1219,6 @@ jobs:
             exit 1
           fi
 
-          bt_jar="$RUNNER_TEMP/bundletool-all-$BUNDLETOOL_VERSION.jar"
-          curl -fsSL --retry 3 -o "$bt_jar" \
-            "https://github.com/google/bundletool/releases/download/$BUNDLETOOL_VERSION/bundletool-all-$BUNDLETOOL_VERSION.jar"
-          echo "$BUNDLETOOL_SHA256  $bt_jar" | sha256sum -c --quiet -
-          bt() { java -jar "$bt_jar" "$@"; }
-
           # 1. The JAR signature verifies (not -strict, which fails on any self-signed certificate),
           #    covers every entry, has one signer, and that signer is the upload key
           jarsigner -verify "$aab" > "$work/verify.txt" 2>&1 || { cat "$work/verify.txt"; fail "jarsigner cannot verify the bundle"; }
@@ -1216,10 +1232,20 @@ jobs:
             sha256sum | cut -d' ' -f1)
           if [ -z "$got" ] || [ "$got" != "$want" ]; then fail "the bundle is not signed with the upload key"; fi
           rm -f "$ks"
+          # Nothing below signs: the downloaded bundletool and the other tools run without the secrets
+          unset KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD ANDROID_KEY_ALIAS HJV_KEY_PASS
           echo "upload certificate SHA-256: $got"
 
-          # 2. Manifest: package, versionCode (this run's arm64 APK's), versionName, target SDK, and
-          #    what Play's declarations look at (PLAY_MANIFEST above)
+          bt_jar="$RUNNER_TEMP/bundletool-all-$BUNDLETOOL_VERSION.jar"
+          curl -fsSL --retry 3 -o "$bt_jar" \
+            "https://github.com/google/bundletool/releases/download/$BUNDLETOOL_VERSION/bundletool-all-$BUNDLETOOL_VERSION.jar" ||
+            { echo "::error::bundletool $BUNDLETOOL_VERSION could not be downloaded."; exit 1; }
+          echo "$BUNDLETOOL_SHA256  $bt_jar" | sha256sum -c --quiet - ||
+            { echo "::error::The downloaded bundletool $BUNDLETOOL_VERSION does not have the pinned SHA-256."; exit 1; }
+          bt() { java -jar "$bt_jar" "$@"; }
+
+          # 2. Manifest: package, versionCode (this run's arm64 APK's), versionName, target SDK, the
+          #    Play overlay and what Play's declarations look at (PLAY_MANIFEST above)
           bt validate --bundle="$aab" > "$work/validate.txt" || { cat "$work/validate.txt"; fail "bundletool validate failed"; }
           x() { bt dump manifest --bundle="$aab" --xpath="$1" 2> /dev/null | tr -d '\r\n'; }
           pkg=$(x /manifest/@package)
@@ -1227,6 +1253,7 @@ jobs:
           vn=$(x /manifest/@android:versionName)
           tsdk=$(x /manifest/uses-sdk/@android:targetSdkVersion)
           dbg=$(x /manifest/application/@android:debuggable)
+          overlay=$(x "/manifest/application/meta-data[@android:name='kr.ac.yonsei.hjviewer.PLAY_OVERLAY']/@android:value")
           # shellcheck source=/dev/null
           source "$GITHUB_WORKSPACE/client/version.env"
           apk_vc=$("$ANDROID_HOME/build-tools/$ANDROID_SIGN_TOOL_VERSION/aapt2" dump badging "$GITHUB_WORKSPACE/$SIGNED_APK" |
@@ -1239,6 +1266,9 @@ jobs:
           [ "$vn" = "$HJV_VERSION" ] || fail "versionName is $vn, expected $HJV_VERSION"
           [ "${tsdk:-0}" -ge 36 ] 2> /dev/null || fail "targetSdk $tsdk is below 36, which Play requires from 2026-08-31"
           [ "$dbg" != true ] || fail "the bundle is debuggable"
+          # client/play/AndroidManifest.xml adds this marker: a bundle without it was built without
+          # the overlay, whatever else its manifest shows
+          [ "$overlay" = play ] || fail "the bundle was built without the Play manifest overlay (client/play/AndroidManifest.xml, which \"Build Play bundle\" copies in)"
           # one line per match, "<kind> <value>"; bundletool prints an empty line when nothing matches
           dump() { bt dump manifest --bundle="$aab" --xpath="$2" | sed '/^[[:space:]]*$/d' | sed "s/^/$1 /"; }
           {
@@ -1248,8 +1278,18 @@ jobs:
             dump accessibility-service \
               "/manifest/application/service[@android:permission='android.permission.BIND_ACCESSIBILITY_SERVICE']/@android:name"
           } | tr -d '\r' | sort > "$work/manifest.txt"
+          # the side-load only entries first, with their own advice: the diff below must not ask for them
+          dump provider /manifest/application/provider/@android:name | tr -d '\r' > "$work/providers.txt"
+          sed 's/[[:space:]]*$//; /^$/d' <<< "$PLAY_FORBIDDEN" > "$work/forbidden.txt"
+          if grep -Ev '^(permission|provider) [A-Za-z0-9_.]+$' "$work/forbidden.txt"; then
+            fail "PLAY_FORBIDDEN has a line (above) that is not 'permission <name>' or 'provider <class>'"
+          fi
+          while read -r entry; do
+            fail "the bundle has '$entry', which only the side-loaded APK may have: client/play/AndroidManifest.xml must remove it (never add it to PLAY_MANIFEST)"
+          done < <(cat "$work/manifest.txt" "$work/providers.txt" | grep -Fxf "$work/forbidden.txt" || true)
+          grep -vFxf "$work/forbidden.txt" "$work/manifest.txt" > "$work/manifest.declared" || true
           sed '/^$/d' <<< "$PLAY_MANIFEST" | sort > "$work/manifest.expected"
-          if ! diff "$work/manifest.expected" "$work/manifest.txt" > "$work/manifest.diff"; then
+          if ! diff "$work/manifest.expected" "$work/manifest.declared" > "$work/manifest.diff"; then
             cat "$work/manifest.diff"
             fail "the bundle's permissions, foreground service types or accessibility services changed (diff above, > = new): check Play Console > App content, then update PLAY_MANIFEST in this step"
           fi
@@ -1267,7 +1307,12 @@ jobs:
           fi
           abis=$(unzip -Z1 "$aab" | sed -n 's|^base/lib/\([^/]*\)/.*|\1|p' | sort -u | tr '\n' ' ')
           [ "$abis" = "arm64-v8a " ] || fail "native code for ABIs other than arm64-v8a: $abis"
-          unzip -q -o "$aab" 'base/lib/arm64-v8a/*.so' -d "$work/lib"
+          unzip -q -o "$aab" 'base/lib/arm64-v8a/*.so' -d "$work/lib" || fail "the bundle has no native libraries for arm64-v8a"
+          # the Rust core and what it loads: without them the app starts on no device, and the two
+          # Flutter libraries alone would pass the checks above
+          for lib in librustdesk.so libc++_shared.so libflutter.so libapp.so; do
+            [ -s "$work/lib/base/lib/arm64-v8a/$lib" ] || fail "the bundle has no $lib for arm64-v8a"
+          done
           for so in "$work"/lib/base/lib/arm64-v8a/*.so; do
             small=""
             while read -r a; do
@@ -1280,14 +1325,15 @@ jobs:
           unzip -Z1 "$aab" | grep -x 'BUNDLE-METADATA/com.android.tools.build.obfuscation/proguard.map' > /dev/null ||
             echo "::warning::The bundle has no R8 mapping; Play will show obfuscated stack traces."
 
+          # a bundle that failed a check goes nowhere: no summary line and no outputs for the play job
+          [ "$status" = 0 ] || exit 1
           cp signed-apk/*.txt play-bundle/
           echo "Play bundle $(basename "$aab"): versionCode $vc, $(stat -c %s "$aab") bytes, upload certificate SHA-256 $got" >> "$GITHUB_STEP_SUMMARY"
           # for the play job: the artifact below and the version it carries
           { echo "artifact=$BUILD_NAME-android-aarch64-play"; echo "version_name=$vn"; echo "version_code=$vc"; } >> "$GITHUB_OUTPUT"
-          exit $status
 
       - name: Upload Play bundle
-        if: env.ANDROID_SIGNING == 'true' && github.event.repository.private
+        if: steps.play-bundle.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.BUILD_NAME }}-android-aarch64-play
@@ -1296,6 +1342,16 @@ jobs:
             upstream/rustdesk/play-bundle/*.txt
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      # Runs only where the two steps may fail (no `play`, no check build): elsewhere the failed
+      # step has failed the job. The job stays green because its APK is fine, so this is where the
+      # run page says that there is no bundle.
+      - name: Report a failed Play bundle
+        if: steps.play-build.outcome == 'failure' || steps.play-bundle.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning::This run has no Play bundle: a bundle step of the Android job failed (its log says why). The APK of this run is not affected; with play, or in a check build, the job would have failed."
+          echo "Play bundle: **none**, a bundle step of the Android job failed. The APK of this run is not affected." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove the upload keystore
         if: always() && env.ANDROID_SIGNING == 'true'
