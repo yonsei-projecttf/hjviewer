@@ -584,7 +584,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
        - push 전에 README, NOTICE, architecture.md 7절에서 hjv-api를 이 저장소의 AGPL 프로그램이라고 적은 문장과 `server/api/README.md`를 가리키는 링크(README, architecture.md, 이 런북)도 고칩니다.
 4. push(출시 태그는 아직 붙이지 않음)와 확인 빌드. 그 공개 커밋으로 서버 묶음 `server-<VERSION>`을 만들어 Release에 올립니다([ci.md](ci.md)의 "서버 Release 만들기"). 묶음에는 hbbs(패치 0004, 최소 버전 작업이 있으면 0005도), hbbr, hjv-api, 유닛(소켓, 서비스, 감시·백업 타이머), nginx 파일과 zones 파일, env 예시, 저널 보관 설정, 고지가 들어 있고, `SHA256SUMS`에는 그 묶음 한 줄만 있습니다.
 5. **개발 PC의 CI가 보지 못해 push 뒤에 남는 것**. 하나씩 사용자와 확인하고, 적힌 때까지 끝냅니다.
-   - **현장 시험 결과(출시 태그 전)**: 사용자가 1번의 현장 시험을 마치면 [wol-pc-setup.md](wol-pc-setup.md) 2장 "현장 시험 결과"의 표, 시험한 HJViewer 판, 상태 줄을 채우고, 그 절의 주석에 있는 대조 목록(그 문서의 일반 안내와 [relay-dsm.md](relay-dsm.md) 부록의 결과 읽기 표)을 처리한 뒤 `scripts/ci.sh leak`을 다시 돌려 push합니다. 표에 '시험 전'이 남아 있는 동안에는 출시 태그 `client-1.6.0`을 붙이지 않습니다. 확인 빌드를 위한 첫 push는 표를 '현장 시험 전'이라고 사실대로 둔 채 나가도 됩니다.
+   - **현장 시험 결과(출시 태그 전)**: 사용자가 1번의 현장 시험을 마치면 [wol-pc-setup.md](wol-pc-setup.md) 2장 "현장 시험 결과"의 표, 시험한 HJViewer 판, 상태 줄을 채우고, 그 절의 주석에 있는 대조 목록(그 문서의 일반 안내와 [relay-dsm.md](relay-dsm.md) 부록의 결과 읽기 표)을 처리한 뒤 `scripts/ci.sh leak`을 다시 돌려 push합니다. 표에 '시험 전'이 남아 있는 동안에는 출시 태그 `client-1.6.1`을 붙이지 않습니다. 확인 빌드를 위한 첫 push는 표를 '현장 시험 전'이라고 사실대로 둔 채 나가도 됩니다.
    - **TCP 펀치 시험(출시 태그 전)**: 클라이언트 lib 시험 `rendezvous_mediator::tests::a_punch_that_meets_the_peers_syn_connects_both_ends`(루프백에서 TCP 동시 열기)는 WSL2인 개발 PC에서 통과할 수 없고(1.5.1의 트리에서도 실패), 클라이언트 패치 0031이 그 파일 `src/rendezvous_mediator.rs`를 건드렸습니다. WSL이 아닌 리눅스(CPU 2개 이상. 하나뿐이면 이 시험은 아무것도 확인하지 않고 통과함)에서 패치를 적용한 트리로 한 번 돌려 통과를 확인합니다([e2e.md](e2e.md) "실행"의 3)과 같은 빌드 환경에서 `cargo test --locked --features linux-pkg-config --lib a_punch_that_meets_the_peers_syn_connects_both_ends`). 그럴 수 없으면 방화벽 E2E가 그 경로를 덮는다고 보는 이유를 [e2e.md](e2e.md)에 적어 둡니다.
    - **열린 질문(8단계의 출시 빌드 전에 사용자가 정함. 2026-10-14 결정: 그대로 두고 문서를 "약 2분"으로 맞춤)**: 기기 키가 바뀐 PC(설정까지 지우고 다시 설치한 PC 등)가 `needs-relogin`이 되기까지 설계는 1분 안이라고 했지만, 지금 구현은 다시 켜진 뒤 약 2분(96~144초)입니다. 다시 켜진 PC가 hbbs에 등록하기 전에 첫 동기화를 보내 거절되고, 다음 동기화가 약 120초 뒤이기 때문입니다. 그동안 컨트롤러에는 비밀번호 창 대신 키 바뀜 경고가 뜹니다(안전한 쪽). 그대로 두고 문서를 '약 2분'으로 맞출지, 거절된 PC가 60초쯤 뒤에 한 번 더 묻게 앱을 고칠지 정합니다.
    - **열린 질문(사설 주소 망의 PC에 중계기를 승인하기 전에 사용자가 정함)**: PC의 망이 사설 주소(RFC 1918, 100.64.0.0/10)이면 hjv-api는 PC와 NAS의 나가는 주소가 같을 때만 같은 곳으로 봅니다. 사설 망은 곳마다 되풀이되기 때문입니다. 공유기 뒤의 집과 사무실은 둘이 같은 주소로 나가므로 괜찮지만, NAT 없이 서버에 닿는 사내망처럼 서버가 둘의 사설 주소를 그대로 보는 곳에서는 늘 다른 곳이 됩니다. 그러면 승인 도구가 `no (a private network of another site: the egress addresses differ)`로 멈추고, `--force`로 승인해도 켜기 요청이 409 `no_relay`(`different_egress`)를 받으며 앱에 "모든 중계기로 시도"도 나오지 않아 그 PC를 켤 수 없습니다([e2e.md](e2e.md#원격-켜기-단계로-찾은-것)). 그런 PC가 있으면 hjv-api의 판정(`server/api/src/wolinfo.rs`)을 넓힐지 정합니다.
@@ -617,7 +617,6 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
      - **메인 세션**: 패커 `HJViewer.exe`(`libs/portable`의 winres)에는 CompanyName이 없습니다. 설치된 앱의 `HJViewer.exe`(`Runner.rc`)는 '프로젝트TF'입니다. 넣으려면 `libs/portable/Cargo.toml`에 `CompanyName = "프로젝트TF"` 한 줄입니다.
      - **메인 세션**: Play 빌드를 설치 출처(`installerStore`) 대신 빌드 값(`--dart-define=HJV_ANDROID_CHANNEL=play`)으로 알아볼지 정합니다. 바꾸면 client-build.yml 한 줄, Dart, `PlayBundleListsTest`를 함께 고칩니다.
      - **사용자**: E4 화면(받은 APK가 이 앱의 새 버전이 아님)에서 [다시 시도]를 뺄지 정합니다. 빼면 정책이 고쳐져 와도 그 실행에서는 다시 받을 길이 없습니다.
-     - **사용자**: Android 5.1(API 22)의 스플래시는 바탕색만 보입니다. 마크와 글자는 Android 6부터입니다. 원하면 밀도별 PNG로 넣을 수 있고 APK가 수십 KB 늘어납니다.
      - **메인 세션**: 설치하지 않고 실행 중인 1.5.1 Windows PC에 맞는 컨트롤러 카드 C1a와 짧은 링크 안내 U1 문구가 없습니다(설계 2-5에 없는 새 문구가 필요). 1.6.0 이상 실행본 PC의 카드 C1b는 이미 나눴습니다. C1a와 U1도 나눌지 정합니다.
      - **메인 세션**: 업데이트 키가 있는 설치 PC에서는 대화 상자를 쓰는 어느 프로세스(연결 관리 창 포함)든 업데이트 상태를 처음 읽을 때 Windows의 감시 스레드가 시작됩니다. 주 창에서만 시작하도록 좁힐지 검토합니다.
      - **메인 세션**: E2E에 신뢰 규칙의 '선언 하나' 시나리오(루트 선언 뒤, 그것을 놓친 PC가 받는 서명 키 정책)가 없습니다. 클라이언트 단위 시험과 공유 벡터가 그 길을 봅니다. 더할지 정합니다.
@@ -962,10 +961,12 @@ cd / && rm -rf "$T"
 
 서버에서 할 일은 `sudo /opt/hjviewer/bin/hjv-api admin selfcheck`의 지문 줄을 다시 보고하는 것뿐입니다. 나머지는 개발 PC와 사용자가 합니다([ci.md](ci.md)의 "계정 기능의 공개키", "hjv-relay 빌드").
 
+1.6.0의 첫 출시 빌드(2026-10-14)는 Google Play가 최소 SDK 22인 번들을 받지 않아(자동 보호의 요건) 1.6.1로 다시 빌드했습니다. 이 절과 뒤의 절에서 기능을 말하는 '1.6.0'은 그 기능이 처음 들어간 판이고, 출시 태그는 `client-1.6.1`, `relay-1.6.1`입니다([distribution.md](distribution.md)의 "순서").
+
 1. 비공개 빌드 저장소의 시크릿에 `HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`, `HJV_COMMAND_PUBKEY`를 넣습니다. 공개값입니다. 최소 버전 작업의 업데이트 키는 시크릿이 아니라 빌드하는 커밋의 `client/update-keys.env`에서 읽습니다([ci.md](ci.md)).
 2. 2단계의 커밋으로 Windows(`HJViewer.exe`), Android, iOS, hjv-relay를 **`testflight=false`**로 빌드합니다. Windows·iOS 전용 코드는 2단계의 확인 빌드에서 이미 컴파일해 본 것이고(7-1), 여기서는 공개키를 넣은 출시 빌드를 만듭니다. 실패하면 개발 PC에서 고치고 다시 push한 커밋으로 빌드합니다. 서버 코드가 바뀌었으면 서버 묶음과 3~7단계의 해당 부분도 다시 합니다.
 3. 빌드 요약의 고정 공개키 지문이 `selfcheck`의 지문, 그리고 5단계에서 사용자가 본 지문과 같은지 사람이 대조합니다. 봉인 키 ID는 지문의 앞 16자리입니다.
-4. 같고, 7-1의 5번에서 출시 태그 전에 끝내기로 한 것(현장 시험 결과, TCP 펀치 시험)이 끝났으면 그 커밋에 출시 태그 `client-1.6.0`, `relay-1.6.0`을 붙입니다. 아직 나눠 주지 않습니다(TestFlight 업로드는 9단계 뒤).
+4. 같고, 7-1의 5번에서 출시 태그 전에 끝내기로 한 것(현장 시험 결과, TCP 펀치 시험)이 끝났으면 그 커밋에 출시 태그 `client-1.6.1`, `relay-1.6.1`을 붙입니다. 아직 나눠 주지 않습니다(TestFlight 업로드는 9단계 뒤).
 
 ### 7-8. nginx 전환 (9단계)
 
@@ -1308,7 +1309,7 @@ report: 계정 <n>, 활성 키 <n>, 묶음을 가진 PC <n>, 그중 10분 안에
    `750 root:hjviewer-api` 둘과 `700 root:root` 하나여야 합니다. hjv-api의 세 설정은 주석 줄(기본값: `/etc/hjviewer/version-policy.json`, `/srv/hjviewer-updates/pkg`, `/etc/hjviewer/door2.conf`) 그대로 둡니다.
 3. 업데이트 공개키 파일을 공개 저장소의 출시 태그에서 받습니다. 출시 태그(8단계) 뒤에 합니다(위). 사용자가 태그 이름과, 자기 PC에서 본 그 파일의 SHA-256을 알려 줍니다.
    ```bash
-   TAG=client-1.6.0                  # ← 사용자가 알려 준 출시 태그
+   TAG=client-1.6.1                  # ← 사용자가 알려 준 출시 태그
    WANT='<사용자가 알려 준 SHA-256>'   # ← 64자리
    T=$(mktemp -d) && cd "$T" || exit 1
    curl -fsSL --max-time 30 -o update-keys.env "https://raw.githubusercontent.com/yonsei-projecttf/hjviewer/$TAG/client/update-keys.env" || { echo 'STOP: 받지 못함'; exit 1; }

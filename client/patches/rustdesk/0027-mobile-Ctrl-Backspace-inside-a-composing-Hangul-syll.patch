@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 11:00:03 +0900
-Subject: [PATCH 27/46] mobile: Ctrl+Backspace inside a composing Hangul
+Subject: [PATCH 27/47] mobile: Ctrl+Backspace inside a composing Hangul
  syllable stays a Backspace
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

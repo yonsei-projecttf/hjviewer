@@ -111,7 +111,7 @@ HJV_POLICY_FLOOR=1:0
 hjv-release policy --prev none --server rd.example.com --release-dir build/release-1.6.0 \
     --min all=1.5.0 --auto-after windows=none --ios-valid <TestFlight 빌드 번호> \
     --play-live <Play 내부 트랙의 versionCode> \
-    --os-min windows=10 --os-min android=22 --os-min ios=13.0 \
+    --os-min windows=10 --os-min android=24 --os-min ios=13.0 \
     --contact "설치 파일은 관리자에게 받으세요." --out build/policy/draft-1.json
 
 # seq 2(M7, 서명 키): 모든 항목의 최소 버전을 1.6.0으로, 유예 14일(한국 시각 0시에 끝남)
@@ -163,7 +163,7 @@ hjv-release policy --prev ~/hjviewer-policy-archive/policy-e1-s1.json \
 | `--hold P` | 이 항목은 그대로 둠 |
 | `--auto-after windows=+2d\|T\|none` | 설치된 Windows PC의 무인 설치 시작. 새 Windows 버전을 낼 때 주지 않으면 게시 2일 뒤입니다. `none`은 무인 설치를 하지 않거나 멈춤(강제 설치는 멈추지 않음: `--withdraw-package`) |
 | `--withdraw-package P` | P(windows, android)의 패키지를 거둬들임: 앱 안 내려받기, 무인 설치, 강제 설치가 멈춥니다. 완화가 아니어서 서명 키로 합니다. 더 높은 `latest`가 나올 때까지 패키지 없이 갑니다 |
-| `--os-min P=V` | `latest`가 도는 가장 낮은 OS(ios `13.0`, android API 수준 `22`, windows `10`) |
+| `--os-min P=V` | `latest`가 도는 가장 낮은 OS(ios `13.0`, android API 수준 `24`, windows `10`) |
 | `--contact TEXT`, `--notes [P=]FILE` | 안내 문구와 알림 글. URL은 넣을 수 없습니다 |
 | `--ios-valid BUILD` | 운영자가 TestFlight에서 확인한 빌드 번호(VALID, 내부 그룹에서 시험 중) |
 | `--play-live VERSIONCODE` | 운영자가 Play 내부 트랙에서 출시(completed)를 확인한 versionCode |

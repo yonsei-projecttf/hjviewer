@@ -47,25 +47,25 @@ hjv-relay 파일과 로그를 둘 폴더입니다. 감시 루프가 SHA-256을 �
 1. Windows PC에서 받은 두 파일(설치 묶음과 `SHA256SUMS`)이 있는 폴더를 열고, 주소창에 `cmd`를 입력해 명령 프롬프트를 엽니다.
 2. 설치 묶음의 체크섬을 확인합니다.
    ```
-   certutil -hashfile hjviewer-relay-1.6.0-linux-x86_64.tar.gz SHA256
+   certutil -hashfile hjviewer-relay-1.6.1-linux-x86_64.tar.gz SHA256
    ```
-   출력된 64자리 값이 `SHA256SUMS`의 `hjviewer-relay-1.6.0-linux-x86_64.tar.gz` 줄과 같아야 합니다. 다르면 설치하지 말고 다시 받습니다.
+   출력된 64자리 값이 `SHA256SUMS`의 `hjviewer-relay-1.6.1-linux-x86_64.tar.gz` 줄과 같아야 합니다. 다르면 설치하지 말고 다시 받습니다.
 3. 압축을 풉니다. Windows 10 이상에는 `tar`가 들어 있습니다.
    ```
-   tar -xzf hjviewer-relay-1.6.0-linux-x86_64.tar.gz
+   tar -xzf hjviewer-relay-1.6.1-linux-x86_64.tar.gz
    ```
-   `hjviewer-relay-1.6.0-linux-x86_64` 폴더에 `hjv-relay`, 이 안내서(`README-DSM.md`), 라이선스 파일이 생깁니다.
+   `hjviewer-relay-1.6.1-linux-x86_64` 폴더에 `hjv-relay`, 이 안내서(`README-DSM.md`), 라이선스 파일이 생깁니다.
 4. 실행 파일의 체크섬을 확인합니다.
    ```
-   certutil -hashfile hjviewer-relay-1.6.0-linux-x86_64\hjv-relay SHA256
+   certutil -hashfile hjviewer-relay-1.6.1-linux-x86_64\hjv-relay SHA256
    ```
-   출력된 값이 `SHA256SUMS`의 `hjviewer-relay-1.6.0-linux-x86_64/hjv-relay` 줄과 같아야 합니다. **이 64자리 값이 이번 판의 SHA-256입니다.** 4장의 작업 스크립트 첫 줄에 적습니다. 값은 늘 `SHA256SUMS`에서 옮깁니다. 로그나 다른 곳에 보이는 값을 옮기지 않습니다.
+   출력된 값이 `SHA256SUMS`의 `hjviewer-relay-1.6.1-linux-x86_64/hjv-relay` 줄과 같아야 합니다. **이 64자리 값이 이번 판의 SHA-256입니다.** 4장의 작업 스크립트 첫 줄에 적습니다. 값은 늘 `SHA256SUMS`에서 옮깁니다. 로그나 다른 곳에 보이는 값을 옮기지 않습니다.
 5. 브라우저로 DSM에 로그인해 **File Station**을 열고, `hjv-relay` 공유 폴더에 `hjv-relay` 파일을 업로드합니다. 경로는 `/volume1/hjv-relay/hjv-relay`가 됩니다. 실행 권한은 신경 쓰지 않아도 됩니다. 감시 루프가 복사본에 줍니다.
 
 **저장된 자격 증명으로 SMB를 쓰지 않습니다.** 이 폴더는 관리자만 쓸 수 있으므로, PC에서 SMB로 올리려면 Windows에 DSM 관리자 자격 증명을 저장해야 합니다. 그러면 그 PC에서 도는 모든 프로그램(예약된 백업 작업 포함)이 묻지 않고 NAS 관리자로 공유 폴더들을 읽고 쓸 수 있고, Windows는 한 서버에 자격 증명 하나만 쓰므로 그 NAS의 다른 공유 폴더 연결도 관리자 계정으로 바뀝니다. SMB를 꼭 써야 하면 저장하지 않는 일회성 연결만 씁니다.
 ```
 net use \\<NAS 주소>\hjv-relay /user:<관리자 계정> /persistent:no
-copy hjviewer-relay-1.6.0-linux-x86_64\hjv-relay \\<NAS 주소>\hjv-relay\
+copy hjviewer-relay-1.6.1-linux-x86_64\hjv-relay \\<NAS 주소>\hjv-relay\
 net use \\<NAS 주소>\hjv-relay /delete
 ```
 - 비밀번호는 `net use`가 물을 때 입력합니다. `/savecred`를 쓰지 않고, Windows 자격 증명 관리자에 저장하지 않습니다.

@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Wed, 14 Oct 2026 21:37:29 +0900
+Subject: [PATCH 47/47] hjviewer: Android 7.0 (API 24) and later
+
+Google Play's automatic protection, which the Play Console applies to the
+app's bundles, needs a minimum SDK of 24: the Console refused the 1.6.0
+bundle (minSdkVersion 22, Android 5.1). The app now runs on Android 7.0
+and later; the side-loaded APK gets the same minimum. In-app updates
+already needed Android 7.0, so every supported device now has them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/android/app/build.gradle | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/flutter/android/app/build.gradle b/flutter/android/app/build.gradle
+index 2817853..5427095 100644
+--- a/flutter/android/app/build.gradle
++++ b/flutter/android/app/build.gradle
+@@ -100,7 +100,7 @@ android {
+     defaultConfig {
+         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+         applicationId "kr.ac.yonsei.hjviewer"
+-        minSdkVersion 22
++        minSdkVersion 24
+         targetSdkVersion 36
+         versionCode flutterVersionCode.toInteger()
+         versionName flutterVersionName

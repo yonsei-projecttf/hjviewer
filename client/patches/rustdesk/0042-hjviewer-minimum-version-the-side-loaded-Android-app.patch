@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Wed, 14 Oct 2026 00:39:58 +0900
-Subject: [PATCH 42/46] hjviewer: minimum version: the side-loaded Android app
+Subject: [PATCH 42/47] hjviewer: minimum version: the side-loaded Android app
  installs its update
 
 The update screen of a side-loaded Android app has the core download the
