@@ -276,11 +276,11 @@ async fn a_forged_address_header_is_only_an_address() {
     })
     .await;
     for ip in ["1.2.3.4, 5.6.7.8", "not an address"] {
-        let a = h.login(&h.login_body("nobody", "x", None), ip).await;
+        let a = h.login(&h.login_body("ZZNOBODY", "x", None), ip).await;
         assert_eq!(a.status, 401);
     }
     let a = h
-        .login(&h.login_body("nobody2", "x", None), "garbage")
+        .login(&h.login_body("ZZNOBODY2", "x", None), "garbage")
         .await;
     assert_eq!(a.status, 429);
 }

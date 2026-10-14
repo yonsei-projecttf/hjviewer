@@ -253,7 +253,7 @@ async fn the_checks_in_their_order() {
         h.sync(&pc, &payload(&binding)).await.list()["state"],
         "active"
     );
-    h.admin(&["allow", "remove"], false, Some("2026000001\n"))
+    h.admin(&["allow", "remove"], false, Some("ZZTEST01\n"))
         .await
         .unwrap();
     let list = h.sync(&pc, &payload(&binding)).await.list();
@@ -295,7 +295,7 @@ async fn a_repeat_within_ten_seconds_is_signed_again() {
     // the owner's name changes without the change serial: a repeat does not read the list again
     sql(
         &h,
-        "UPDATE accounts SET display_name = '김철수' WHERE login_key = '2026000001'",
+        "UPDATE accounts SET display_name = '김철수' WHERE login_key = 'zztest01'",
     )
     .await;
     let again = h.sync(&pc, &payload(&binding)).await;
@@ -711,7 +711,7 @@ async fn the_device_list_follows_the_pcs() {
         }
     };
     assert_eq!(listed_as().await, "active");
-    h.admin(&["allow", "remove"], false, Some("2026000001\n"))
+    h.admin(&["allow", "remove"], false, Some("ZZTEST01\n"))
         .await
         .unwrap();
     let list = h.sync(&pc, &payload(&binding)).await.list();
@@ -807,10 +807,10 @@ async fn every_way_out_leaves_a_tombstone() {
     released(&h, &pc, &binding, before, "account-delete").await;
     let pc = TestDevice::windows("550000007");
     let (binding, _) = bound_to(&h, LEE, &pc).await;
-    h.admin(&["allow", "remove"], false, Some("Y9001\n"))
+    h.admin(&["allow", "remove"], false, Some("YZTEST03\n"))
         .await
         .unwrap();
-    sql(&h, "UPDATE accounts SET last_active_at = last_active_at - 400 * 86400 WHERE login_key = 'y9001'").await;
+    sql(&h, "UPDATE accounts SET last_active_at = last_active_at - 400 * 86400 WHERE login_key = 'yztest03'").await;
     let before = h.change_serial().await;
     let purged = jobs::purge_now(&h.state).await.unwrap();
     assert_eq!((purged.accounts, purged.devices), (1, 0));

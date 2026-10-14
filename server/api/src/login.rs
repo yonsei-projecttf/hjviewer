@@ -13,7 +13,12 @@
 //!    when its time is more than ten minutes off (design v3 §4-1), so that the app can tell a
 //!    wrong clock from a wrong password; the very same body again within the retry window gets
 //!    the first answer, without a second SSO call;
-//! 4. the portal ID, trimmed and case-folded;
+//! 4. the portal ID, trimmed: HJViewer's ID rule (util.rs `staff_id`: uppercased, Z or Y and not
+//!    ZA, the portal IDs of faculty and staff) before anything else is done with the ID. One that
+//!    fails it gets 403 [`TEXT_ID_RULE`] at once: no SSO call, none of the SSO calls of step 8
+//!    taken, counted against the address only (a client's failure, as a bad seal is), and the
+//!    record keeps no tag of it. The rule is public, so the answer tells nothing about the
+//!    allowlist or an account. The ID goes on case-folded (the account's key);
 //! 5. failures per ID, the same for every ID typed; a request signed by a PC already in that
 //!    account (devsig.rs) counts under a limit of its own, one for all the account's PCs, so that
 //!    someone who knows only the ID cannot lock the owner out of their PC. With
@@ -35,15 +40,18 @@
 //!    of it, so that one address cannot shut the first logins of everyone with a few wrong
 //!    passwords, and a first login that goes through gives its call back;
 //! 9. the second factor when it is on (tfa.rs; off by D11 and U1), before the SSO call;
-//! 10. the SSO (sso.rs), sorted into refused credentials (counted), a refused server address or
-//!     client and upstream errors (counted against the address only);
+//! 10. the SSO (sso.rs), with the ID typed uppercased, sorted into refused credentials (counted),
+//!     a denied person (the user call refused, or its pcode outside HJViewer's ID rule: 403
+//!     [`TEXT_DENIED`], which only someone who knows the password sees, counted as a success, as
+//!     a blocked account is in step 12), a refused server address or client and upstream errors
+//!     (counted against the address only);
 //! 11. the account key of the sealed payload (keys.rs, design v3 §4-1): 400 without `ck` and
 //!     `cp`, with a `cp` that is not its signature or with a key another row has. Past the
 //!     account's active keys the least recently used one is logged out (keys.rs): a login is not
 //!     refused for it;
 //! 12. the allowlist once more (schema 5), before anything is looked up or written for the
 //!     account and again inside the login's transaction: a blocked account (the entry of the ID
-//!     typed, of the ID the SSO names for the person, its perslNo, or of another account the SSO
+//!     typed, of the ID the SSO names for the person, its pcode, or of another account the SSO
 //!     named so: db.rs `login_listing`) gets 403 [`TEXT_BLOCKED`] with `"hjv":"blocked"`, which
 //!     only someone who knows its password sees (its successes count, its failures are taken
 //!     back); in open mode an ID not on the list is put on it (`source` 'login', one journal line
@@ -55,11 +63,12 @@
 //! that depends on the ID is a 401 with the same body, whatever stopped it: a wrong password, an
 //! ID off the list (list mode), a limit of the ID or the account, the SSO-call limit, a single SSO
 //! error. The answer does not tell whether an ID is on the list (D3); the record and the journal
-//! keep the real reason. The one answer of its own is a blocked account's 403, given only after
-//! the SSO accepted its password (step 12). The other statuses do not depend on the ID: 429 for
-//! the address limit, 400 for sealing errors, 409 for a seal's time, 503 while SSO calls are
-//! paused or too many logins run at once, 500 for the server's own errors. The app shows the
-//! body's text whatever the status (research notes §9).
+//! keep the real reason. The answers of their own are 403s: an ID outside HJViewer's ID rule
+//! (step 4), which the rule makes public, and a denied person (step 10) or a blocked account
+//! (step 12), given only after the SSO accepted the password. The other statuses do not depend
+//! on the ID: 429 for the address limit, 400 for sealing errors, 409 for a seal's time, 503 while
+//! SSO calls are paused or too many logins run at once, 500 for the server's own errors. The app
+//! shows the body's text whatever the status (research notes §9).
 //!
 //! After the SSO accepted the password, in one transaction: the allowlist entry checked, or made
 //! in open mode (step 12), the account created or updated, the account key registered (keys.rs),
@@ -83,8 +92,8 @@ use crate::{
     state::AppState,
     tfa::{Busy, Pending},
     util::{
-        b64url, clean_text, hex, login_key, now, random_below, random_bytes, sha256,
-        valid_device_id, valid_portal_id,
+        b64url, clean_text, hex, login_key, now, random_below, random_bytes, sha256, staff_id,
+        valid_device_id,
     },
 };
 use hyper::{header::ORIGIN, Method, StatusCode};
@@ -109,6 +118,14 @@ pub const TEXT_SSO_DOWN: &str = "연세 인증 서버에 지금 연결할 수 �
 /// password (step 12).
 pub const TEXT_BLOCKED: &str =
     "이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요.";
+/// The answer to a portal ID outside HJViewer's ID rule (util.rs `staff_id`), before any SSO
+/// call (step 4).
+pub const TEXT_ID_RULE: &str =
+    "연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요.";
+/// The answer to a person the SSO accepted the password of and HJViewer denies: the SSO's user
+/// call refused, or named a pcode outside HJViewer's ID rule (step 10).
+pub const TEXT_DENIED: &str =
+    "이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요.";
 
 /// The tokens an account keeps: a login past it revokes the least recently used.
 pub const MAX_TOKENS: usize = 20;
@@ -249,8 +266,8 @@ impl DeviceClaim {
     }
 }
 
-/// What a sealed login claims: the portal ID as typed, its case-folded key when it is an ID at
-/// all, and the device.
+/// What a sealed login claims: the portal ID as typed (trimmed), its case-folded key when it
+/// passes HJViewer's ID rule (step 4), and the device.
 struct Claim {
     username: String,
     key: Option<String>,
@@ -261,7 +278,7 @@ impl Claim {
     fn new(body: &LoginBody, opened: &Opened) -> Claim {
         let username = body.username.as_deref().unwrap_or("").trim().to_owned();
         Claim {
-            key: valid_portal_id(&username).then(|| login_key(&username)),
+            key: staff_id(&username).map(|_| login_key(&username)),
             username,
             device: DeviceClaim::new(body, opened),
         }
@@ -507,8 +524,9 @@ enum Outcome {
     Challenge,
     /// the success counters count; the failure counters, also the code dialog's, are taken back
     Success,
-    /// a blocked account whose password the SSO accepted (step 12): counted as a success, so
-    /// that a known password cannot keep calling the SSO, and answered as a failure
+    /// a blocked account whose password the SSO accepted (step 12), or a person it denies (step
+    /// 10): counted as a success, so that a known password cannot keep calling the SSO, and
+    /// answered as a failure
     Blocked,
 }
 
@@ -875,14 +893,15 @@ async fn sealed_login(
     bound: Option<Limit>,
 ) -> LoginAnswer {
     let state = run.state;
-    // 4. the portal ID
+    // 4. the portal ID: one outside HJViewer's ID rule goes no further, before its tag is taken,
+    // with an answer of its own
     if !claim.device.id.is_empty() {
         run.device_tag = Some(state.tags.device(&claim.device.id));
     }
     let Some(key) = claim.key.clone() else {
-        return run
-            .fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "bad-id")
-            .await;
+        let answer =
+            LoginAnswer::failed_with(StatusCode::FORBIDDEN, json!({ "error": TEXT_ID_RULE }));
+        return run.fail_with(answer, Outcome::Failed, "id-rule").await;
     };
     run.account_tag = Some(state.tags.account(&key));
 
@@ -1290,6 +1309,7 @@ async fn sso_login(
                     run.fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "credentials")
                         .await
                 }
+                Failure::Denied => denied(run, &e).await,
                 Failure::AddressRefused => {
                     log_crit!(
                         "login: the SSO refuses this server's address ({}); no one can log in until it is registered again",
@@ -1392,11 +1412,29 @@ async fn blocked(run: &mut Run<'_>) -> LoginAnswer {
     run.fail_with(answer, Outcome::Blocked, "blocked").await
 }
 
+/// The answer to a person the SSO accepted the password of and HJViewer denies (step 10): 403
+/// with [`TEXT_DENIED`], counted as a blocked account's login is. The journal hears of it once in
+/// ten minutes per account.
+async fn denied(run: &mut Run<'_>, e: &SsoError) -> LoginAnswer {
+    let state = run.state;
+    let tag = run.account_tag.clone().unwrap_or_default();
+    if state.first_notice(&format!("denied:{tag}"), Duration::from_secs(600)) {
+        log_notice!(
+            "login: the SSO accepted the password, but the person may not use HJViewer ({}; acct={tag})",
+            e.detail
+        );
+    }
+    let answer = LoginAnswer::failed_with(StatusCode::FORBIDDEN, json!({ "error": TEXT_DENIED }));
+    run.fail_with(answer, Outcome::Blocked, "denied").await
+}
+
 async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClaim) -> LoginAnswer {
     let state = run.state;
     let account_tag = run.account_tag.clone().unwrap_or_default();
-    if login_key(&user.persl_no) != key {
-        log_notice!("login: the portal ID typed and the SSO's perslNo differ (acct={account_tag})");
+    if login_key(&user.pcode) != key {
+        log_notice!(
+            "login: the portal ID typed and the pcode the SSO names differ (acct={account_tag})"
+        );
     }
     // 11. the account key the seal carried (design v3 §4-1 steps 1-2)
     let public_key = match device.key.verify() {
@@ -1415,12 +1453,12 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
     // the SSO names), nor (list mode) one whose entry went since step 7; the transaction below
     // asks again
     let open = state.config.login == LoginMode::Open;
-    let persl_key = login_key(&user.persl_no);
+    let pcode_key = login_key(&user.pcode);
     let listing = {
-        let (key, persl_key) = (key.to_owned(), persl_key.clone());
+        let (key, pcode_key) = (key.to_owned(), pcode_key.clone());
         state
             .db
-            .call(move |c| db::login_listing(c, &key, &persl_key))
+            .call(move |c| db::login_listing(c, &key, &pcode_key))
             .await
     };
     match listing {
@@ -1457,7 +1495,7 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
         state.tags.tag("uuid", &device.uuid)
     };
     // the answer's user object, with the account's role when it has one (overview.rs)
-    let user_object = crate::overview::with_role(state, key, user_json(&user.persl_no, &user.name));
+    let user_object = crate::overview::with_role(state, key, user_json(&user.pcode, &user.name));
     let (key, user_db) = (key.to_owned(), user.clone());
     let (id, name, version, os, hostname) = (
         device.id.clone(),
@@ -1471,13 +1509,13 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
         .call(move |c| {
             let tx = c.transaction()?;
             // step 12 within the transaction: nothing is written for a refused login
-            let registered = match db::admit_login(&tx, &key, &persl_key, open, at)? {
+            let registered = match db::admit_login(&tx, &key, &pcode_key, open, at)? {
                 Admission::Listed => false,
                 Admission::Registered => true,
                 Admission::Blocked => return Ok(Written::Blocked),
                 Admission::Refused => return Ok(Written::NotListed),
             };
-            let account_id = db::upsert_account(&tx, &key, &user_db.persl_no, &user_db.name, at)?;
+            let account_id = db::upsert_account(&tx, &key, &user_db.pcode, &user_db.name, at)?;
             let new_key = NewKey {
                 account_id,
                 public_key: &public_key,
@@ -1681,8 +1719,11 @@ mod tests {
 
     #[test]
     fn masks_the_id_in_sso_messages() {
-        assert_eq!(mask_id("user Y1234 locked", "y1234"), "user *** locked");
-        assert_eq!(mask_id("y1234y1234", "Y1234"), "******");
+        assert_eq!(
+            mask_id("user YZTEST02 locked", "yztest02"),
+            "user *** locked"
+        );
+        assert_eq!(mask_id("yztest02YZTEST02", "YZTEST02"), "******");
         assert_eq!(mask_id("사용자 abc 없음", "ABC"), "사용자 *** 없음");
         assert_eq!(mask_id("nothing", "x9"), "nothing");
     }

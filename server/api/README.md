@@ -35,9 +35,9 @@ ring and the system's CA certificates; SQLite is built in (rusqlite `bundled`).
   socket alone, hjv-api would start only at the first request, and until then the admin commands
   and the hourly and daily upkeep (retention included) would not run.
 - Start the service before any `hjv-api admin` command (they talk to the running service), then
-  switch nginx over. With `HJV_API_LOGIN=open` (the default) everyone the Yonsei SSO accepts can
-  log in from then on, and no import is needed; with `list`, import the allowlist first (`allow
-  import`), or nobody can log in.
+  switch nginx over. With `HJV_API_LOGIN=open` (the default) the faculty and staff whom the Yonsei
+  SSO accepts can log in from then on (HJViewer's ID rule, below), and no import is needed; with
+  `list`, import the allowlist first (`allow import`), or nobody can log in.
 - Its log lines go to the journal namespace `hjviewer`: `journalctl --namespace=hjviewer -u
   hjviewer-api`. They hold counts, results and tags (log.rs), never IDs, addresses or secrets.
   `deploy/journald@hjviewer.conf` (installed as `/etc/systemd/journald@hjviewer.conf`) keeps that
@@ -81,10 +81,11 @@ Not secret, from the environment (`EnvironmentFile=/etc/hjviewer/hjviewer-api.en
 settings are required. Unknown `HJV_API_` names stop the start.
 
 `HJV_API_LOGIN` (the user's decision of 2026-10-14) says who may log in: `open` (the default),
-everyone the Yonsei SSO accepts (the SSO takes the university's faculty and staff only), a portal
-ID that is not on the allowlist being put on it at its first login; or `list`, only the IDs on the
-allowlist (imported, or registered by a login before), as at first (D3): an ID off it never
-reaches the SSO and no login adds one, for an incident or a later decision, without a new build.
+the faculty and staff whom the Yonsei SSO accepts (HJViewer's ID rule takes their portal IDs only:
+hbbs and the SSO, below), a portal ID that is not on the allowlist being put on it at its first
+login; or `list`, only the IDs on the allowlist (imported, or registered by a login before), as at
+first (D3): an ID off it never reaches the SSO and no login adds one, for an incident or a later
+decision, without a new build.
 In either mode an entry the operator blocked keeps its account out (`admin block`, below).
 `selfcheck`, `report` and `allow list` say which mode runs, and the journal's start line too.
 
@@ -98,26 +99,25 @@ WordPress plugin's limit for the same IDs, below the portal's own lockout. `HJV_
 and `HJV_API_LIMIT_OK_IP` limit successful logins, so that one known password cannot keep calling
 the SSO; of the SSO calls of a minute (`HJV_API_LIMIT_SSO`) one account may take a quarter.
 
-With `HJV_API_LOGIN=open` any portal ID reaches the SSO, which would make the login a way to try
-passwords on every Yonsei account, or to lock them where the SSO locks an account after failures;
-the SSO would see this server's address (the WordPress plugin's too) as the source. So a portal ID
-that is not on the allowlist has lower limits of its own: its failed logins
-(`HJV_API_LIMIT_NEW_ID`, 2 a day, instead of `HJV_API_LIMIT_ID`, in the same counters), and the
-SSO calls of all such IDs together (`HJV_API_LIMIT_SSO_NEW`, 10 an hour, one window, besides
-`HJV_API_LIMIT_SSO`): at most 240 such calls a day that log no one in, and the IDs on the list
-keep their own. One ID and one client address (an IPv6 address by its /64) may each hold a
-quarter of the window, and a first login that goes through gives its call back, so that people
-logging in for the first time one after another behind one address are not held. When that
-window is full, a first login fails like a wrong password (`limited-sso-new` in the record, its
-failures not counted), the journal says
-`login: SSO call limit of the portal IDs not on the allowlist reached` once a minute, and the
-five-minute check alarms (`sso_new`); when an ID or an address holds its share, its first logins
-fail the same way and the journal names its tag (`... holds its share ...`), which
-`admin unlock` takes. One address cannot fill the window, but five can, with two wrong passwords
-an hour each: someone with a few addresses can keep first logins failing, which list mode ends.
-An ID imported ahead is on the list and not held by these limits. The user decides the numbers;
-list mode does not use them (an ID off the list never reaches the SSO there). This lowers the
-risk and does not remove it (docs/architecture.md 5-7, docs/server-runbook.md 7-13).
+With `HJV_API_LOGIN=open` any portal ID of HJViewer's ID rule reaches the SSO, which would make the
+login a way to try passwords on every faculty and staff account, or to lock them where the SSO locks
+an account after failures; the SSO would see this server's address (the WordPress plugin's too) as
+the source. So a portal ID that is not on the allowlist has lower limits of its own: its failed
+logins (`HJV_API_LIMIT_NEW_ID`, 2 a day, instead of `HJV_API_LIMIT_ID`, in the same counters), and
+the SSO calls of all such IDs together (`HJV_API_LIMIT_SSO_NEW`, 10 an hour, one window, besides
+`HJV_API_LIMIT_SSO`): at most 240 such calls a day that log no one in, and the IDs on the list keep
+their own. One ID and one client address (an IPv6 address by its /64) may each hold a quarter of the
+window, and a first login that goes through gives its call back, so that people logging in for the
+first time one after another behind one address are not held. When that window is full, a first
+login fails like a wrong password (`limited-sso-new` in the record, its failures not counted), the
+journal says `login: SSO call limit of the portal IDs not on the allowlist reached` once a minute,
+and the five-minute check alarms (`sso_new`); when an ID or an address holds its share, its first
+logins fail the same way and the journal names its tag (`... holds its share ...`), which `admin
+unlock` takes. One address cannot fill the window, but five can, with two wrong passwords an hour
+each: someone with a few addresses can keep first logins failing, which list mode ends. An ID
+imported ahead is on the list and not held by these limits. The user decides the numbers; list mode
+does not use them (an ID off the list never reaches the SSO there). This lowers the risk and does
+not remove it (docs/architecture.md 5-7, docs/server-runbook.md 7-13).
 
 `HJV_API_CAMPUS_NETS` (the university's networks, such as `192.0.2.0/24,2001:db8::/32`) lets the
 account's other devices see whether a new login came from on or off campus; the address itself is
@@ -354,7 +354,8 @@ keeps its trust list for up to a day.
 
 An allowlist file has one portal ID per line; `#` starts a comment, and a byte-order mark,
 zero-width characters and Windows line ends do no harm. A line that is anything else refuses the
-whole file (nothing changes) and the answer names only its line number.
+whole file (nothing changes) and the answer names only its line number. An ID outside HJViewer's
+ID rule (hbbs and the SSO, below) can be imported, but its login is refused before the SSO.
 
 Blocking (the open login of 2026-10-14): a login puts every portal ID the SSO accepts on the
 allowlist, so the way to keep an account out is a block, not taking its ID off the list. A blocked
@@ -364,9 +365,9 @@ password, so that the answer tells nobody else who is blocked; its successes cou
 block (an old file imported again lets nobody back in); only `unblock` does. A block holds for the
 person, whichever form of the portal ID the SSO takes (whether it takes more than one is not
 known, design v2 §4-1): a login is refused when the entry of the ID typed is blocked, or that of
-the ID the SSO names for the person (its perslNo), or that of another account the SSO named so.
+the ID the SSO names for the person (its pcode), or that of another account the SSO named so.
 `block` and `unblock` take with the ID named the other IDs the server knows for the same person
-(the perslNo of its account, and that person's other accounts), and say how many they took; once
+(the pcode of its account, and that person's other accounts), and say how many they took; once
 one of those accounts is deleted, the server no longer knows its ID with the others, so its entry
 stays blocked until it is unblocked by name. Point with `tag:<tag>` from `users` or `allow list`;
 an ID that never logged in has no tag known to the operator, so it is blocked through a file
@@ -541,8 +542,9 @@ operator record hold counts only.
 in the order of v2 §9-2. Every failed login that depends on the ID gets the same 401 and body,
 whatever stopped it (a wrong password, an ID off the list in list mode, a limit, a single SSO
 error), so that the answer does not tell who is on the allowlist; v2 §9-1 had 503 for the SSO-call
-limit and 502 for SSO errors. The one exception is a blocked account whose password the SSO
-accepted: 403 with the blocked text (below), which only someone who knows the password sees. 429
+limit and 502 for SSO errors. The exceptions are 403s with texts of their own (below): a portal ID
+outside HJViewer's ID rule, which the rule makes public, and, once the SSO accepted the password, a
+person HJViewer denies and a blocked account, which only someone who knows the password sees. 429
 (address limit), 400 (sealing, account key), 409 (a seal's time) and 503 (SSO calls paused, too
 many logins at once) do not depend on the ID. While the SSO refuses this server (its address or
 its client credentials) or fails five times in a row, SSO calls pause for a few minutes, every
@@ -625,6 +627,7 @@ padding, NUL is the byte 0x00, times are Unix seconds.
  "hjv":{"ks":<the key's serial>,"binding":"<32 hex>","login_at":<time>}}
 ```
 
+  `name` is the person's ID as the SSO names it (its pcode, uppercased: hbbs and the SSO, below).
   `hjv_role` is there only for a super operator's account (Admin overview), as in the user object
   that `POST /api/currentUser` and `GET /api/users` answer; no other account has the member.
   `ks` is the change serial the key's registration made. `binding` (the PC's binding ID, random
@@ -635,8 +638,15 @@ padding, NUL is the byte 0x00, times are Unix seconds.
 - A seal whose `t` is more than `HJV_API_SEAL_MAX_SKEW` (600 s) off the server's clock: 409
   `{"error":"기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요.","hjv":"clock","server_time":<time>}`.
   Other sealing errors: 400 with the failure text.
+- A portal ID outside HJViewer's ID rule (hbbs and the SSO, below), at once, before any SSO call
+  and counted against the address only: 403
+  `{"error":"연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요."}`.
 - While SSO calls are paused: 503 `{"error":"연세 인증 서버에 지금 연결할 수 없습니다. 잠시 뒤 다시 해 주세요."}`
   for every ID.
+- A person HJViewer denies once the SSO accepted the password (the SSO's user call refuses, or
+  names a pcode outside the ID rule), before anything is written for it, counted as a success and
+  not as a wrong password: 403
+  `{"error":"이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요."}`.
 - A blocked account (`admin block`), once the SSO accepted its password, before anything is
   written for it: 403
   `{"error":"이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요.","hjv":"blocked"}`.
@@ -1045,7 +1055,29 @@ policy from nginx and its `latest` from hjv-api.
 ### hbbs and the SSO
 
 - hbbs's `hjv-pk <id>` answer, a device key signed with hbbs's key pair: `src/hbbs.rs`.
-- The SSO calls and how their outcomes are sorted: `src/sso.rs`.
+- The SSO calls and how their outcomes are sorted: `src/sso.rs`. hjv-api uses the registration of
+  the 행정허브 WordPress plugin on the same server (D2) and reads the answers as that plugin does.
+  Both calls are a `POST` of a form (`application/x-www-form-urlencoded`): the token call of
+  exactly `username` (the portal ID, uppercased), `password` and `grant_type=password` with
+  `Authorization: Basic <hjviewer-sso-client-secret>`, the user call of exactly `apiUuid` and
+  `clientId` with `Authorization: Bearer <access_token>`. Each answer is HTTP 2xx, at most 1 MiB,
+  JSON nested at most 32 deep, with a top-level `success`: `true`, `1`, `"true"` or `"1"` goes on,
+  `false`, `0`, `"false"` or `"0"` refuses (in the token call a wrong password, in the user call
+  the person is denied), anything else or none is a format error, as is an `access_token` that is
+  not a string of 1 to 16384 characters without control characters or whitespace. The user call's
+  fields depend on the api uuid; for this registration `data[0]` holds `pcode`, `name`, `email`
+  and `deptNm`, and hjv-api reads `pcode` and `name` only: strings without control characters,
+  trimmed, of at most 60 and 250 characters, the name not empty. The pcode, uppercased, is the
+  person's fixed ID: the account keeps it (the column `portal_id`) with the name, and a block of
+  the person goes by it. E-mail and department are neither read nor kept. hjv-api's own sorting
+  on top of this (a refused server address by the SSO's `msg`, `invalid_client`, `invalid_grant`)
+  makes no login succeed that the plugin's reading refuses.
+- HJViewer's ID rule (`util::staff_id`, the user's decision of 2026-10-14): a portal ID, uppercased,
+  is Z or Y and then 1 to 59 of A-Z, 0-9, `_` and `-`, and does not start with ZA: the faculty's
+  and staff's. The plugin takes Z and B with the same tail; another first letter is one line of
+  `src/util.rs`. The ID typed must pass it before any SSO call (any other gets its 403 at once and
+  takes none of the SSO calls), and so must the pcode the SSO names (else the person is denied:
+  Login, above).
 
 ### Test vectors
 
@@ -1161,16 +1193,21 @@ and the program itself sending from a 200 MiB file without holding more memory t
 answer.
 Their files and sockets go to the system's temporary directory (`/tmp` when `$TMPDIR` is long), so
 that socket paths stay short whatever the target directory. Nothing calls the real SSO.
-`hjv-fake-sso --listen 127.0.0.1:18600` serves the fake SSO for the E2E with fixed test accounts
-(`2026000001`, `2026000002`, `Y9001`; passwords in `src/fake_sso.rs`) and usernames `sso-*` that
-play the SSO's failures.
+`hjv-fake-sso --listen 127.0.0.1:18600` serves the fake SSO for the E2E, in the 행정허브 answer
+shape, with fixed test accounts (`ZZTEST01`, `ZZTEST02`, `YZTEST03`: fake IDs of HJViewer's ID rule;
+passwords in `src/fake_sso.rs`) and usernames `ZZSSO-*` that play the SSO's failures and its
+answers about the person. It refuses a request that is not the contract's form (`invalid_request`)
+and a username that is not uppercased. `src/sso.rs`'s unit tests have the contract's answers
+(every form of `success`, the token, `data[0]`, the pcode against the ID rule), and
+`tests/login.rs` the login's checks in order through the fake SSO, among them an ID outside the
+rule (no SSO request at all) and a denied person.
 
 ## Data
 
 SQLite with `secure_delete`, the WAL truncated after deletions: the allowlist (case-folded
 portal IDs, how each came, an import or a login, when, and since when the operator blocks
-it, schema 5); accounts (portal ID as the SSO sends it, name, times, the account's
-password-less switch); token hashes, each with the
+it, schema 5); accounts (the portal ID typed, case-folded, and the person's ID the SSO names, its
+pcode uppercased; name, times, the account's password-less switch); token hashes, each with the
 account key of its login; account keys (public key, the tag of the app's uuid, the device ID, the
 platform, the server's device name, the device's own name, the app version, on or off campus, the
 times of creation, login, confirmation and revocation, the key that confirmed it); the nonces of
@@ -1210,11 +1247,11 @@ recorded (the rest are counted in the daily summary of the journal), so that a f
 the disk; successes are always recorded. A PC's wake report goes when it leaves its account; a
 revoked relay keeps only its ID, key and times; a pending relay goes after 24 hours, an approval
 ahead after 7 days; wake jobs, the wake record, six months (`HJV_API_EVENT_DAYS`), and an account's
-go with it. No password, SSO token, e-mail, uuid or user name of a device is stored, and the journal
-gets tags and counts only. Short links live in memory, ten minutes, never in the database; no
-code of a short link or of door 2 is stored or logged (the journal shows the first eight hex
-digits of its tag, keyed with the log key), and the policy, the packages and door 2's file are the
-operator's files, which hjv-api only reads.
+go with it. No password, SSO token, e-mail, department, uuid or user name of a device is stored,
+and the journal gets tags and counts only. Short links live in memory, ten minutes, never in the
+database; no code of a short link or of door 2 is stored or logged (the journal shows the first
+eight hex digits of its tag, keyed with the log key), and the policy, the packages and door 2's
+file are the operator's files, which hjv-api only reads.
 
 ## Wake-on-LAN, where it is
 

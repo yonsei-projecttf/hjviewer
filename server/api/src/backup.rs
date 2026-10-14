@@ -887,7 +887,7 @@ mod tests {
         let live = d.join("live.sqlite3");
         let c = crate::db::open(&live).unwrap();
         c.execute(
-            "INSERT INTO allowlist (login_key, added_at) VALUES ('2026000001', 1)",
+            "INSERT INTO allowlist (login_key, added_at) VALUES ('zztest01', 1)",
             [],
         )
         .unwrap();

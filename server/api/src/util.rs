@@ -68,7 +68,7 @@ pub fn hex(data: &[u8]) -> String {
 }
 
 /// What admin listings show of a portal or device ID: the first four characters, and no more than
-/// half of a short one ("2026123456" → "2026******").
+/// half of a short one ("ZZTEST0001" → "ZZTE******").
 pub fn mask(value: &str) -> String {
     let count = value.chars().count();
     let keep = (count / 2).min(4);
@@ -101,6 +101,28 @@ pub fn valid_portal_id(id: &str) -> bool {
 /// (design v2 §9-2 step 4).
 pub fn login_key(id: &str) -> String {
     id.trim().to_lowercase()
+}
+
+/// The first letters of the portal IDs [`staff_id`] takes: Z and Y (the 행정허브 plugin takes Z
+/// and B; B only if the user says so later, as one more letter here).
+const ID_FIRST_LETTERS: &[u8] = b"ZY";
+
+/// HJViewer's ID rule (the user's decision of 2026-10-14), the one place it is written: a portal
+/// ID, uppercased, is one of `ID_FIRST_LETTERS` and then 1 to 59 of A-Z, 0-9, '_' and '-'
+/// (`^[ZY][A-Z0-9_-]{1,59}$`), and does not start with "ZA": the IDs of faculty and staff, with
+/// the tail of the 행정허브 plugin, whose SSO registration hjv-api uses (D2). The ID typed at login
+/// must pass it before any SSO call (login.rs), and the pcode the SSO names for the person after
+/// the password (sso.rs). Returns the ID uppercased, the form the SSO takes and names, or `None`.
+pub fn staff_id(id: &str) -> Option<String> {
+    let id = id.to_ascii_uppercase();
+    let b = id.as_bytes();
+    let ok = (2..=60).contains(&b.len())
+        && ID_FIRST_LETTERS.contains(&b[0])
+        && !id.starts_with("ZA")
+        && b[1..]
+            .iter()
+            .all(|&c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_' || c == b'-');
+    ok.then_some(id)
 }
 
 /// The address a login limit counts under: an IPv4 address itself, an IPv6 address by its /64
@@ -279,7 +301,7 @@ mod tests {
 
     #[test]
     fn masking() {
-        assert_eq!(mask("2026123456"), "2026******");
+        assert_eq!(mask("ZZTEST0001"), "ZZTE******");
         assert_eq!(mask("abcd"), "ab**");
         assert_eq!(mask("a"), "*");
         assert_eq!(mask(""), "");
@@ -288,18 +310,66 @@ mod tests {
 
     #[test]
     fn ids() {
-        assert!(valid_portal_id("2026123456"));
-        assert!(valid_portal_id("Y1234"));
+        assert!(valid_portal_id("ZZTEST01"));
+        assert!(valid_portal_id("yztest02"));
+        // a portal ID by its form, which HJViewer's rule does not take (staff_id)
+        assert!(valid_portal_id("1234567890"));
         assert!(!valid_portal_id(""));
         assert!(!valid_portal_id("a b"));
         assert!(!valid_portal_id("홍길동"));
         assert!(!valid_portal_id(&"1".repeat(65)));
-        assert_eq!(login_key("  Y1234 "), "y1234");
+        assert_eq!(login_key("  YZTEST02 "), "yztest02");
         assert!(valid_device_id("123456789"));
         assert!(valid_device_id("my-pc_2"));
         assert!(!valid_device_id("12 3"));
         assert!(!valid_device_id("1\n2"));
         assert!(!valid_device_id(""));
+    }
+
+    /// HJViewer's ID rule: Z or Y, then 1 to 59 of A-Z, 0-9, '_' and '-', uppercased, not ZA.
+    #[test]
+    fn the_id_rule() {
+        for (id, upper) in [
+            ("ZZTEST01", "ZZTEST01"),
+            ("zztest01", "ZZTEST01"),
+            ("YZTEST02", "YZTEST02"),
+            ("yZtest_02-x", "YZTEST_02-X"),
+            ("Z1", "Z1"),
+            ("Y-", "Y-"),
+            ("YA_TEST", "YA_TEST"),
+        ] {
+            assert_eq!(staff_id(id).as_deref(), Some(upper), "{id}");
+        }
+        let longest = format!("Z{}", "9".repeat(59));
+        assert_eq!(staff_id(&longest), Some(longest.clone()));
+        for id in [
+            // ZA, in any case
+            "ZATEST01",
+            "zatest01",
+            "Za",
+            // B, which the 행정허브 plugin takes and HJViewer does not (yet)
+            "BZTEST01",
+            // a student-like number, other letters, too short, too long
+            "1234567890",
+            "AZTEST01",
+            "XZTEST01",
+            "Z",
+            "Y",
+            &format!("Z{}", "9".repeat(60)),
+            // characters outside A-Z, 0-9, '_' and '-', also those that uppercasing would not
+            // turn into them, and spaces (login.rs trims before)
+            "ZZ.TEST",
+            "ZZ TEST",
+            " ZZTEST01",
+            "ZZTEST01\n",
+            "ZZTEST01\u{0}",
+            "ZZTEST\u{131}",
+            "ＺＺTEST01",
+            "Ｚ1",
+            "",
+        ] {
+            assert_eq!(staff_id(id), None, "{id:?}");
+        }
     }
 
     #[test]

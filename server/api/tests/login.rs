@@ -7,9 +7,9 @@ mod common;
 
 use common::*;
 use hjv_api::{
-    fake_sso,
+    db, fake_sso,
     limits::{SCOPE_BOUND, SCOPE_ID, SCOPE_IP, SCOPE_OK_ID},
-    login::{FAILURE_TEXT, TEXT_SEAL_CLOCK, TEXT_SSO_DOWN},
+    login::{FAILURE_TEXT, TEXT_DENIED, TEXT_ID_RULE, TEXT_SEAL_CLOCK, TEXT_SSO_DOWN},
     seal,
     tfa::SecondFactor,
     util::{b64, login_key, now, random_bytes},
@@ -49,7 +49,7 @@ async fn success_returns_the_apps_token_shape() {
     assert_eq!(a.json["type"], "access_token");
     assert_eq!(
         a.json["user"],
-        json!({"name": "2026000001", "display_name": "홍길동", "status": 1})
+        json!({"name": "ZZTEST01", "display_name": "홍길동", "status": 1})
     );
     let token = a.token();
     assert!(token.starts_with("hjv_") && token.len() == 47, "{token}");
@@ -70,12 +70,14 @@ async fn success_returns_the_apps_token_shape() {
         stored,
         vec![hjv_api::util::sha256(token.as_bytes()).to_vec()]
     );
-    // case-insensitive IDs: the allowlist and the account match "y9001" and "Y9001"
+    // case-insensitive IDs: the allowlist and the account match "yztest03" and "YZTEST03", the
+    // SSO gets the ID uppercased (the fake SSO refuses any other form), and the pcode it names in
+    // lower case comes back uppercased
     let a = h
-        .login(&h.login_body(" y9001 ", LEE.1, None), "10.0.0.1")
+        .login(&h.login_body(" yztest03 ", LEE.1, None), "10.0.0.1")
         .await;
     assert_eq!(a.status, 200, "{}", a.text);
-    assert_eq!(a.json["user"]["name"], "Y9001");
+    assert_eq!(a.json["user"]["name"], "YZTEST03");
 }
 
 /// List mode (HJV_API_LOGIN=list, D3): an ID off the list fails like a wrong password, without
@@ -95,7 +97,7 @@ async fn allowlisted_and_unlisted_ids_look_the_same() {
         .login(&h.login_body(HONG.0, "wrong", None), "10.0.0.1")
         .await;
     let unlisted = h
-        .login(&h.login_body("2026999999", "wrong", None), "10.0.0.2")
+        .login(&h.login_body("ZZTEST99", "wrong", None), "10.0.0.2")
         .await;
     assert_failure(&listed, 401);
     assert_failure(&unlisted, 401);
@@ -107,7 +109,7 @@ async fn allowlisted_and_unlisted_ids_look_the_same() {
     // the unlisted ID never reached the SSO, and both failures count
     assert_eq!(h.sso.token_calls(), 1);
     assert_eq!(h.counted(SCOPE_ID, h.account_tag(HONG.0)).await, 1);
-    assert_eq!(h.counted(SCOPE_ID, h.account_tag("2026999999")).await, 1);
+    assert_eq!(h.counted(SCOPE_ID, h.account_tag("ZZTEST99")).await, 1);
     assert_eq!(
         h.results().await,
         vec!["login:credentials", "login:not-allowed"]
@@ -125,7 +127,7 @@ async fn failures_wait_two_seconds_by_default() {
     })
     .await;
     let a = h
-        .login(&h.login_body("2026999999", "x", None), "10.0.0.1")
+        .login(&h.login_body("ZZTEST99", "x", None), "10.0.0.1")
         .await;
     assert_failure(&a, 401);
     assert!(a.elapsed >= Duration::from_millis(1500), "{:?}", a.elapsed);
@@ -155,13 +157,13 @@ async fn id_limit_applies_to_every_id_and_stops_sso_calls() {
     // an unlisted ID is limited the same way
     for _ in 0..3 {
         assert_failure(
-            &h.login(&h.login_body("unlisted1", "x", None), "10.0.2.1")
+            &h.login(&h.login_body("zzunlisted1", "x", None), "10.0.2.1")
                 .await,
             401,
         );
     }
     assert_failure(
-        &h.login(&h.login_body("UNLISTED1", "x", None), "10.0.2.2")
+        &h.login(&h.login_body("ZZUNLISTED1", "x", None), "10.0.2.2")
             .await,
         401,
     );
@@ -171,7 +173,7 @@ async fn id_limit_applies_to_every_id_and_stops_sso_calls() {
         2
     );
     // refused tries do not extend the lock
-    assert_eq!(h.counted(SCOPE_ID, h.account_tag("unlisted1")).await, 3);
+    assert_eq!(h.counted(SCOPE_ID, h.account_tag("zzunlisted1")).await, 3);
     // the admin clears it
     let out = h.admin(&["unlock", HONG.0], false, None).await.unwrap();
     assert!(out.contains("cleared 3"), "{out}");
@@ -190,11 +192,14 @@ async fn address_limit() {
     .await;
     for i in 0..4 {
         let a = h
-            .login(&h.login_body(&format!("someone{i}"), "x", None), "10.0.3.1")
+            .login(
+                &h.login_body(&format!("ZZSOMEONE{i}"), "x", None),
+                "10.0.3.1",
+            )
             .await;
         assert_failure(&a, 401);
     }
-    // (each of those reached the SSO: in open mode any ID does)
+    // (each of those reached the SSO: in open mode any ID of HJViewer's ID rule does)
     let calls = h.sso.token_calls();
     let a = h
         .login(&h.login_body(HONG.0, HONG.1, None), "10.0.3.1")
@@ -373,19 +378,22 @@ async fn sso_outcomes_are_sorted_and_counted_as_the_design_says() {
     // (username, record, counted against the ID); every one is the same 401 on the wire, so
     // that SSO trouble does not tell which IDs are on the list
     let cases = [
-        ("sso-invalid-grant", "credentials", true),
-        ("sso-address", "sso-address", false),
-        ("sso-address-user", "sso-address", false),
-        ("sso-500", "upstream", false),
-        ("sso-empty", "upstream", false),
-        ("sso-no-success", "upstream", false),
-        ("sso-no-token", "upstream", false),
-        ("sso-html", "upstream", false),
-        ("sso-invalid-client", "sso-client", false),
-        ("sso-false-nomsg", "upstream", false),
-        ("sso-user-500", "upstream", false),
-        ("sso-no-perslno", "upstream", false),
-        ("sso-slow", "upstream", false),
+        ("ZZSSO-INVALID-GRANT", "credentials", true),
+        // a refusal of the token call needs no message (the 행정허브 contract)
+        ("ZZSSO-FALSE-NOMSG", "credentials", true),
+        ("ZZSSO-ADDRESS", "sso-address", false),
+        ("ZZSSO-ADDRESS-USER", "sso-address", false),
+        ("ZZSSO-500", "upstream", false),
+        ("ZZSSO-EMPTY", "upstream", false),
+        ("ZZSSO-NO-SUCCESS", "upstream", false),
+        ("ZZSSO-NO-TOKEN", "upstream", false),
+        ("ZZSSO-HTML", "upstream", false),
+        ("ZZSSO-HUGE", "upstream", false),
+        ("ZZSSO-INVALID-CLIENT", "sso-client", false),
+        ("ZZSSO-USER-500", "upstream", false),
+        // a perslNo is not read in place of the pcode
+        ("ZZSSO-NO-PCODE", "upstream", false),
+        ("ZZSSO-SLOW", "upstream", false),
     ];
     for (n, (user, result, counted)) in cases.into_iter().enumerate() {
         // each case on its own, without the pause that SSO trouble starts
@@ -405,7 +413,7 @@ async fn sso_outcomes_are_sorted_and_counted_as_the_design_says() {
             &format!("login:{result}"),
             "{user}"
         );
-        if user == "sso-slow" {
+        if user == "ZZSSO-SLOW" {
             assert!(a.elapsed < Duration::from_millis(1500), "{:?}", a.elapsed);
         }
     }
@@ -413,13 +421,16 @@ async fn sso_outcomes_are_sorted_and_counted_as_the_design_says() {
     h.state.sso_breaker.reset();
     let before = h.sso.token_calls();
     assert_failure(
-        &h.login(&h.login_body("sso-500", "pw", None), "10.0.8.100")
+        &h.login(&h.login_body("ZZSSO-500", "pw", None), "10.0.8.100")
             .await,
         401,
     );
     assert_failure(
-        &h.login(&h.login_body("sso-invalid-grant", "pw", None), "10.0.8.100")
-            .await,
+        &h.login(
+            &h.login_body("ZZSSO-INVALID-GRANT", "pw", None),
+            "10.0.8.100",
+        )
+        .await,
         401,
     );
     assert_eq!(h.sso.token_calls(), before + 1);
@@ -429,10 +440,146 @@ async fn sso_outcomes_are_sorted_and_counted_as_the_design_says() {
     assert!(logs.contains("SSO message seen for the first time: Not Allowed IP Address"));
 }
 
+/// HJViewer's ID rule (util.rs `staff_id`): a portal ID that is not Z or Y, or starts with ZA, gets
+/// the faculty-and-staff answer at once. No request reaches the SSO and no SSO call is taken; it
+/// counts against the address only, and the record keeps no tag of the ID.
+#[tokio::test]
+async fn ids_outside_the_rule_never_reach_the_sso() {
+    let h = Harness::with(Options {
+        vars: vec![
+            ("HJV_API_LIMIT_IP", "100/600".into()),
+            // one SSO call a minute for everyone, one an hour for the IDs not on the allowlist
+            ("HJV_API_LIMIT_SSO", "1/60".into()),
+            ("HJV_API_LIMIT_SSO_NEW", "1/3600".into()),
+        ],
+        ..Default::default()
+    })
+    .await;
+    let ip = "10.0.40.1";
+    let ids = [
+        // a student-like number, ZA in any case, B (which the 행정허브 plugin takes), others
+        "1234567890",
+        "ZATEST01",
+        "zatest01",
+        " Za1 ",
+        "BZTEST01",
+        "bztest01",
+        "AZTEST01",
+        "Z",
+        "ZZ.TEST",
+        "ZZ TEST",
+        "홍길동",
+        "",
+    ];
+    for (n, id) in ids.into_iter().enumerate() {
+        let a = h.login(&h.login_body(id, "pw", None), ip).await;
+        assert_eq!(a.status, 403, "{id:?}: {}", a.text);
+        assert_eq!(a.json, json!({ "error": TEXT_ID_RULE }), "{id:?}");
+        assert_eq!(h.results().await.last().unwrap(), "login:id-rule", "{id:?}");
+        // counted against the address, as a client's failure; nothing under the ID
+        assert_eq!(
+            h.counted(SCOPE_IP, h.state.tags.ip(ip)).await,
+            n as i64 + 1,
+            "{id:?}"
+        );
+        assert_eq!(h.attempts(SCOPE_ID, h.account_tag(id)).await, 0, "{id:?}");
+    }
+    // the fake SSO saw no request at all
+    assert_eq!((h.sso.token_calls(), h.sso.user_calls()), (0, 0));
+    let tagged: i64 = h
+        .state
+        .db
+        .call(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM events WHERE result = 'id-rule' AND account_tag IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(tagged, 0);
+    // and took no SSO call: the one call of the minute, and of the hour for an ID not on the
+    // allowlist, is still there for one that passes the rule (typed in lower case; the SSO's
+    // string and number forms of success)
+    let a = h
+        .login(&h.login_body("zzsso-strings", "pw", None), "10.0.40.2")
+        .await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    assert_eq!(
+        a.json["user"],
+        json!({"name": "ZZSSO-STRINGS", "display_name": "문자열", "status": 1})
+    );
+    assert_eq!((h.sso.token_calls(), h.sso.user_calls()), (1, 1));
+}
+
+/// A person the SSO took the password of and HJViewer denies: the user call refuses (access
+/// denied), or names a pcode outside HJViewer's ID rule (ZA, B, a student-like number). 403 with
+/// the denial text; not a wrong password, so neither the ID's nor the address's failures count,
+/// but a success does; no account, and open mode puts nobody on the allowlist. The SSO answered,
+/// so its calls do not pause.
+#[tokio::test]
+async fn denied_people_are_told_so_after_the_sso() {
+    let h = Harness::with(Options {
+        vars: vec![
+            // one failure of an ID not on the allowlist would stop its second login
+            ("HJV_API_LIMIT_NEW_ID", "1/600".into()),
+            ("HJV_API_LIMIT_IP", "100/600".into()),
+        ],
+        ..Default::default()
+    })
+    .await;
+    for (n, user) in ["ZZSSO-DENIED", "ZZSSO-ZA", "ZZSSO-B", "ZZSSO-STUDENT"]
+        .into_iter()
+        .enumerate()
+    {
+        let ip = format!("10.0.41.{n}");
+        let calls = (h.sso.token_calls(), h.sso.user_calls());
+        for _ in 0..2 {
+            let a = h.login(&h.login_body(user, "pw", None), &ip).await;
+            assert_eq!(a.status, 403, "{user}: {}", a.text);
+            assert_eq!(a.json, json!({ "error": TEXT_DENIED }), "{user}");
+            assert_eq!(h.results().await.last().unwrap(), "login:denied", "{user}");
+        }
+        assert_eq!(
+            (h.sso.token_calls(), h.sso.user_calls()),
+            (calls.0 + 2, calls.1 + 2),
+            "{user}"
+        );
+        assert_eq!(h.counted(SCOPE_ID, h.account_tag(user)).await, 0, "{user}");
+        assert_eq!(h.counted(SCOPE_IP, h.state.tags.ip(&ip)).await, 0, "{user}");
+        assert_eq!(
+            h.counted(SCOPE_OK_ID, h.account_tag(user)).await,
+            2,
+            "{user}"
+        );
+        let key = login_key(user);
+        let (account, listing) = h
+            .state
+            .db
+            .call(move |c| Ok((db::account_by_key(c, &key)?, db::listing(c, &key)?)))
+            .await
+            .unwrap();
+        assert!(account.is_none(), "{user}");
+        assert_eq!(listing, db::Listing::Absent, "{user}");
+    }
+    assert!(!h.state.sso_breaker.paused());
+    let logs = hjv_api::log::captured().join("\n");
+    for detail in [
+        "may not use HJViewer (user call: refused (access denied); acct=",
+        "may not use HJViewer (user call: a pcode outside HJViewer's ID rule; acct=",
+    ] {
+        assert!(logs.contains(detail), "{detail}: {logs}");
+    }
+    for code in ["ZATEST01", "BZTEST01", "1234567890", "ZZSSO-ZA", "zzsso-za"] {
+        assert!(!logs.contains(code), "{code} in the logs: {logs}");
+    }
+}
+
 #[tokio::test]
 async fn sso_trouble_pauses_the_calls() {
     let h = Harness::with(Options {
-        allow: vec![HONG.0, KIM.0, "sso-address", "sso-500"],
+        allow: vec![HONG.0, KIM.0, "ZZSSO-ADDRESS", "ZZSSO-500"],
         vars: vec![
             ("HJV_API_LIMIT_ID", "100/600".into()),
             ("HJV_API_LIMIT_IP", "100/600".into()),
@@ -443,7 +590,7 @@ async fn sso_trouble_pauses_the_calls() {
     .await;
     // a refused address pauses every SSO call at once
     let a = h
-        .login(&h.login_body("sso-address", "pw", None), "10.0.15.1")
+        .login(&h.login_body("ZZSSO-ADDRESS", "pw", None), "10.0.15.1")
         .await;
     assert_failure(&a, 401);
     assert_eq!(h.sso.token_calls(), 1);
@@ -466,17 +613,17 @@ async fn sso_trouble_pauses_the_calls() {
     );
     // five upstream errors in a row pause them too; an answer of the SSO in between starts over
     for _ in 0..4 {
-        h.login(&h.login_body("sso-500", "pw", None), "10.0.15.3")
+        h.login(&h.login_body("ZZSSO-500", "pw", None), "10.0.15.3")
             .await;
     }
     h.login(&h.login_body(KIM.0, "wrong", None), "10.0.15.4")
         .await;
     for _ in 0..4 {
-        h.login(&h.login_body("sso-500", "pw", None), "10.0.15.3")
+        h.login(&h.login_body("ZZSSO-500", "pw", None), "10.0.15.3")
             .await;
     }
     assert!(!h.state.sso_breaker.paused());
-    h.login(&h.login_body("sso-500", "pw", None), "10.0.15.3")
+    h.login(&h.login_body("ZZSSO-500", "pw", None), "10.0.15.3")
         .await;
     assert!(h.state.sso_breaker.paused());
     let calls = h.sso.token_calls();
@@ -707,7 +854,7 @@ async fn second_factor_hook() {
     .await;
     // every well-formed ID gets the code dialog, on the list or not
     let mut challenges = Vec::new();
-    for user in [HONG.0, "2026999999"] {
+    for user in [HONG.0, "ZZTEST99"] {
         let a = h
             .login(&h.login_body(user, "anything", None), "10.0.11.1")
             .await;
@@ -728,7 +875,7 @@ async fn second_factor_hook() {
     // off the list: the same failure as a wrong code, and no SSO call
     let a = h
         .login(
-            &code_request("2026999999", &challenges[1], "123456"),
+            &code_request("ZZTEST99", &challenges[1], "123456"),
             "10.0.11.1",
         )
         .await;
@@ -781,7 +928,7 @@ async fn code_requests_fail_while_the_second_factor_is_off() {
 #[tokio::test]
 async fn nothing_secret_reaches_the_logs() {
     let h = Harness::with(Options {
-        allow: vec![HONG.0, KIM.0, "sso-address"],
+        allow: vec![HONG.0, KIM.0, "ZZSSO-ADDRESS"],
         ..Default::default()
     })
     .await;
@@ -796,7 +943,7 @@ async fn nothing_secret_reaches_the_logs() {
     }
     let a = h
         .login(
-            &h.login_body("sso-address", "pw-of-someone", None),
+            &h.login_body("ZZSSO-ADDRESS", "pw-of-someone", None),
             "10.0.13.1",
         )
         .await;
@@ -815,6 +962,8 @@ async fn nothing_secret_reaches_the_logs() {
         token.as_str(),
         HONG.0,
         KIM.0,
+        &login_key(HONG.0),
+        &login_key(KIM.0),
         "홍길동",
         pc.id.as_str(),
         pc.uuid.as_str(),
@@ -857,13 +1006,16 @@ async fn an_ipv6_client_counts_by_its_64() {
     for n in 1..=3 {
         let ip = format!("2001:db8:1:2::{n:x}");
         assert_failure(
-            &h.login(&h.login_body("someone", "x", None), &ip).await,
+            &h.login(&h.login_body("ZZSOMEONE", "x", None), &ip).await,
             401,
         );
     }
     assert_failure(
-        &h.login(&h.login_body("someone", "x", None), "2001:db8:1:2:ffff::9")
-            .await,
+        &h.login(
+            &h.login_body("ZZSOMEONE", "x", None),
+            "2001:db8:1:2:ffff::9",
+        )
+        .await,
         429,
     );
     // another /64 is another client
@@ -902,7 +1054,7 @@ async fn the_owners_pc_gets_past_a_full_address_limit() {
     let ip = "10.0.18.1";
     for n in 0..3 {
         let a = h
-            .login(&h.login_body(&format!("guess{n}"), "x", None), ip)
+            .login(&h.login_body(&format!("ZZGUESS{n}"), "x", None), ip)
             .await;
         assert_failure(&a, 401);
     }
@@ -946,7 +1098,7 @@ async fn the_owners_pc_gets_past_a_full_address_limit() {
         200
     );
     for n in 0..3 {
-        h.login(&h.login_body(&format!("guess{n}"), "x", None), ip)
+        h.login(&h.login_body(&format!("ZZGUESS{n}"), "x", None), ip)
             .await;
     }
     let out = h
@@ -1012,7 +1164,7 @@ async fn failure_records_are_capped_per_minute() {
     for n in 0..25 {
         let a = h
             .login(
-                &h.login_body(&format!("unlisted{n}"), "x", None),
+                &h.login_body(&format!("ZZUNLISTED{n}"), "x", None),
                 &format!("10.0.21.{n}"),
             )
             .await;
@@ -1022,7 +1174,7 @@ async fn failure_records_are_capped_per_minute() {
     assert_eq!(h.results().await.len(), 20);
     assert_eq!(h.state.failure_records.take_skipped(), 5);
     // the limits still count every one
-    assert_eq!(h.counted(SCOPE_ID, h.account_tag("unlisted24")).await, 1);
+    assert_eq!(h.counted(SCOPE_ID, h.account_tag("ZZUNLISTED24")).await, 1);
     // successes are always written
     h.login_ok(HONG, None).await;
     assert_eq!(h.results().await.last().unwrap(), "login:ok");
@@ -1037,7 +1189,7 @@ async fn failure_records_are_capped_per_minute() {
 async fn a_slow_sso_slows_every_failure() {
     // in list mode, where an ID off the list is a failure without an SSO call
     let h = Harness::with(Options {
-        allow: vec![HONG.0, "sso-slow"],
+        allow: vec![HONG.0, "ZZSSO-SLOW"],
         sso_slow: Some(Duration::from_millis(1000)),
         vars: vec![
             ("HJV_API_SSO_TIMEOUT_MS", "4000".into()),
@@ -1047,7 +1199,7 @@ async fn a_slow_sso_slows_every_failure() {
     })
     .await;
     let quick = h
-        .login(&h.login_body("2026999999", "x", None), "10.0.22.1")
+        .login(&h.login_body("ZZTEST99", "x", None), "10.0.22.1")
         .await;
     assert_failure(&quick, 401);
     assert!(
@@ -1057,12 +1209,12 @@ async fn a_slow_sso_slows_every_failure() {
     );
     // the SSO takes a second for one login
     let slow = h
-        .login(&h.login_body("sso-slow", "x", None), "10.0.22.2")
+        .login(&h.login_body("ZZSSO-SLOW", "x", None), "10.0.22.2")
         .await;
     assert_eq!(slow.status, 200, "{}", slow.text);
     // now an ID off the list, which never reaches the SSO, takes as long as one that does
     let a = h
-        .login(&h.login_body("2026999998", "x", None), "10.0.22.3")
+        .login(&h.login_body("ZZTEST98", "x", None), "10.0.22.3")
         .await;
     assert_failure(&a, 401);
     assert!(a.elapsed >= Duration::from_millis(1000), "{:?}", a.elapsed);
@@ -1086,13 +1238,13 @@ async fn code_dialogs_count_and_are_capped() {
     // three dialogs from one address, each counting against it until answered
     for n in 0..3 {
         let a = h
-            .login(&h.login_body(&format!("user{n}"), "x", None), ip)
+            .login(&h.login_body(&format!("ZZUSER{n}"), "x", None), ip)
             .await;
         assert_eq!(a.json["type"], "email_check", "{}", a.text);
     }
     assert_eq!(h.counted(SCOPE_IP, h.state.tags.ip(ip)).await, 3);
     // a fourth is refused like a failed login
-    let a = h.login(&h.login_body("user3", "x", None), ip).await;
+    let a = h.login(&h.login_body("ZZUSER3", "x", None), ip).await;
     assert_failure(&a, 401);
     assert_eq!(h.results().await.last().unwrap(), "login:tfa-busy");
     // three for one ID from anywhere
@@ -1135,7 +1287,7 @@ async fn a_seal_out_of_time_gets_the_clock_answer() {
     // the seal is checked before the ID: listed or not, the same answer but the server's time
     let ip = "10.0.31.1";
     let mut answers = Vec::new();
-    for user in [HONG.0, "2026999999"] {
+    for user in [HONG.0, "ZZTEST99"] {
         let body = h.login_body_at(user, "x", None, now() - 700, &b64(&random_bytes::<16>()));
         let a = h.login(&body, ip).await;
         assert_clock(&a);
@@ -1172,7 +1324,7 @@ async fn a_seal_out_of_time_gets_the_clock_answer() {
 #[tokio::test]
 async fn while_sso_calls_pause_every_id_gets_the_same_503() {
     let h = Harness::with(Options {
-        allow: vec![HONG.0, KIM.0, "sso-500", "sso-invalid-client"],
+        allow: vec![HONG.0, KIM.0, "ZZSSO-500", "ZZSSO-INVALID-CLIENT"],
         vars: vec![
             ("HJV_API_LIMIT_ID", "100/600".into()),
             ("HJV_API_LIMIT_IP", "100/600".into()),
@@ -1185,7 +1337,7 @@ async fn while_sso_calls_pause_every_id_gets_the_same_503() {
     // five SSO errors in a row pause the calls
     for _ in 0..5 {
         assert_failure(
-            &h.login(&h.login_body("sso-500", "pw", None), "10.0.32.1")
+            &h.login(&h.login_body("ZZSSO-500", "pw", None), "10.0.32.1")
                 .await,
             401,
         );
@@ -1198,7 +1350,7 @@ async fn while_sso_calls_pause_every_id_gets_the_same_503() {
         .login(&h.login_body(HONG.0, HONG.1, None), "10.0.32.2")
         .await;
     let unlisted = h
-        .login(&h.login_body("2026999999", "x", None), "10.0.32.3")
+        .login(&h.login_body("ZZTEST99", "x", None), "10.0.32.3")
         .await;
     assert_sso_down(&listed);
     assert_sso_down(&unlisted);
@@ -1212,7 +1364,7 @@ async fn while_sso_calls_pause_every_id_gets_the_same_503() {
     }
     assert_eq!(h.sso.token_calls(), calls);
     // no password was tried: nothing counts, for the IDs or the addresses
-    for (id, ip) in [(HONG.0, "10.0.32.2"), ("2026999999", "10.0.32.3")] {
+    for (id, ip) in [(HONG.0, "10.0.32.2"), ("ZZTEST99", "10.0.32.3")] {
         assert_eq!(h.attempts(SCOPE_ID, h.account_tag(id)).await, 0, "{id}");
         assert_eq!(h.attempts(SCOPE_IP, h.state.tags.ip(ip)).await, 0, "{ip}");
     }
@@ -1224,8 +1376,11 @@ async fn while_sso_calls_pause_every_id_gets_the_same_503() {
     // refused client credentials (invalid_client) pause the calls at once, as a refused address
     h.state.sso_breaker.reset();
     assert_failure(
-        &h.login(&h.login_body("sso-invalid-client", "pw", None), "10.0.32.4")
-            .await,
+        &h.login(
+            &h.login_body("ZZSSO-INVALID-CLIENT", "pw", None),
+            "10.0.32.4",
+        )
+        .await,
         401,
     );
     assert_eq!(h.results().await.last().unwrap(), "login:sso-client");

@@ -866,15 +866,15 @@ async fn switches_by_account_and_by_pc() {
         .unwrap();
     assert!(out.contains("accounts switched one by one: 1"), "{out}");
     assert!(
-        out.contains(&h.account_tag(HONG.0)) && out.contains("2026******"),
+        out.contains(&h.account_tag(HONG.0)) && out.contains("ZZTE****"),
         "{out}"
     );
-    assert!(!out.contains("2026000001"), "{out}");
+    assert!(!out.to_lowercase().contains("zztest01"), "{out}");
     assert!(h
         .admin(&["passwordless", "status"], true, None)
         .await
         .unwrap()
-        .contains("2026000001"));
+        .contains("ZZTEST01"));
     // a PC no account has, a device ID that is none
     for bad in ["999999999", "12 34"] {
         assert!(h
@@ -939,8 +939,8 @@ async fn switches_by_account_and_by_pc() {
         record.contains(&format!("targets={}", h.account_tag(KIM.0))),
         "{record}"
     );
-    for id in ["123456789", "2026000002"] {
-        assert!(!record.contains(id), "{id}: {record}");
+    for id in ["123456789", "zztest02"] {
+        assert!(!record.to_lowercase().contains(id), "{id}: {record}");
     }
 }
 
@@ -1079,7 +1079,7 @@ async fn deleting_an_account_leaves_no_row_of_it() {
     let account = h
         .state
         .db
-        .call(|c| db::account_by_key(c, "2026000001"))
+        .call(|c| db::account_by_key(c, "zztest01"))
         .await
         .unwrap()
         .unwrap()

@@ -156,7 +156,7 @@ impl LoginMode {
     pub fn describe(self) -> &'static str {
         match self {
             LoginMode::Open => {
-                "anyone the Yonsei SSO accepts, unless blocked; a portal ID not on the allowlist is registered at its first login"
+                "faculty and staff whom the Yonsei SSO accepts (HJViewer's ID rule: Z or Y, not ZA), unless blocked; a portal ID not on the allowlist is registered at its first login"
             }
             LoginMode::List => {
                 "only the portal IDs on the allowlist, unless blocked; an ID off it is refused before the SSO and no login registers one"

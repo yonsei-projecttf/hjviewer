@@ -129,9 +129,9 @@ async fn an_operator_sees_who_uses_the_service_and_on_which_pcs() {
     sql(
         &h,
         format!(
-            "UPDATE accounts SET last_active_at = {} WHERE login_key = '2026000002';
+            "UPDATE accounts SET last_active_at = {} WHERE login_key = 'zztest02';
              UPDATE devices SET last_seen_at = {} WHERE device_id = '710000003';
-             UPDATE accounts SET last_active_at = {} WHERE login_key = 'y9001';",
+             UPDATE accounts SET last_active_at = {} WHERE login_key = 'yztest03';",
             at - 2 * DAY,
             at - 2 * DAY,
             at - 40 * DAY
@@ -161,9 +161,9 @@ async fn an_operator_sees_who_uses_the_service_and_on_which_pcs() {
     assert_eq!(
         summary,
         vec![
-            json!(["2026000001", "홍길동", true, 3, 2]),
-            json!(["2026000002", "김연세", true, 1, 1]),
-            json!(["Y9001", "이교수", false, 1, 0]),
+            json!(["ZZTEST01", "홍길동", true, 3, 2]),
+            json!(["ZZTEST02", "김연세", true, 1, 1]),
+            json!(["YZTEST03", "이교수", false, 1, 0]),
         ]
     );
     for u in users {
@@ -183,9 +183,9 @@ async fn an_operator_sees_who_uses_the_service_and_on_which_pcs() {
     assert_eq!(
         order,
         vec![
-            ("2026000001", "710000002"),
-            ("2026000001", "710000001"),
-            ("2026000002", "710000003"),
+            ("ZZTEST01", "710000002"),
+            ("ZZTEST01", "710000001"),
+            ("ZZTEST02", "710000003"),
         ]
     );
     for p in pcs {
@@ -229,7 +229,7 @@ async fn an_operator_sees_who_uses_the_service_and_on_which_pcs() {
 
     // a blocked account (allow remove blocks since the open login) is no user any more; its PC
     // stays in the list
-    h.admin(&["allow", "remove"], false, Some("2026000002\n"))
+    h.admin(&["allow", "remove"], false, Some("ZZTEST02\n"))
         .await
         .unwrap();
     let v = h.get(PATH, &phone).await.json;
@@ -239,8 +239,8 @@ async fn an_operator_sees_who_uses_the_service_and_on_which_pcs() {
         .iter()
         .map(|u| u["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, vec!["2026000001", "Y9001"]);
-    assert_eq!(v["pcs"][2]["owner"], "2026000002");
+    assert_eq!(ids, vec!["ZZTEST01", "YZTEST03"]);
+    assert_eq!(v["pcs"][2]["owner"], "ZZTEST02");
     assert_eq!(v["pcs"][2]["passwordless"], "disabled");
     // nothing changed by looking: the PCs, the keys and the change serial
     let serial = h.change_serial().await;
@@ -251,7 +251,7 @@ async fn an_operator_sees_who_uses_the_service_and_on_which_pcs() {
 
 #[tokio::test]
 async fn an_id_is_an_operator_whatever_its_case() {
-    let h = Harness::with(with_operators(&["y9001", " 2026000077 "])).await;
+    let h = Harness::with(with_operators(&["yztest03", " ZZTEST77 "])).await;
     // the login's answer and the key list carry the role of the ID typed in another case
     let answer = h.login(&h.login_body(LEE.0, LEE.1, None), "10.9.8.7").await;
     assert_eq!(answer.status, 200, "{}", answer.text);
@@ -283,7 +283,7 @@ async fn the_active_days_are_the_settings() {
         sql(
             &h,
             format!(
-                "UPDATE accounts SET last_active_at = {} WHERE login_key = '2026000002'",
+                "UPDATE accounts SET last_active_at = {} WHERE login_key = 'zztest02'",
                 now() - 2 * DAY
             ),
         )
@@ -463,7 +463,7 @@ async fn the_role_follows_the_setting_at_each_start() {
     let user = b.post("/api/currentUser", &hong, None).await.json;
     assert_eq!(
         user,
-        json!({"name": "2026000001", "display_name": "홍길동", "status": 1, "hjv_role": "operator"})
+        json!({"name": "ZZTEST01", "display_name": "홍길동", "status": 1, "hjv_role": "operator"})
     );
     assert_eq!(
         b.get("/api/users", &hong).await.json["data"][0]["hjv_role"],
@@ -476,12 +476,12 @@ async fn the_role_follows_the_setting_at_each_start() {
         .await;
     assert_eq!(
         login.json["user"],
-        json!({"name": "2026000001", "display_name": "홍길동", "status": 1, "hjv_role": "operator"})
+        json!({"name": "ZZTEST01", "display_name": "홍길동", "status": 1, "hjv_role": "operator"})
     );
     let login = b.login(&b.login_body(KIM.0, KIM.1, None), "10.9.9.9").await;
     assert_eq!(
         login.json["user"],
-        json!({"name": "2026000002", "display_name": "김연세", "status": 1})
+        json!({"name": "ZZTEST02", "display_name": "김연세", "status": 1})
     );
     assert!(b
         .get("/api/hjv/keys", &kim)
@@ -693,7 +693,7 @@ async fn an_operator_has_the_key_lists_calls() {
 
 #[tokio::test]
 async fn admin_operators_shows_which_ids_have_an_account() {
-    let h = Harness::with(with_operators(&[HONG.0, "2026000077"])).await;
+    let h = Harness::with(with_operators(&[HONG.0, "ZZTEST77"])).await;
     h.login_ok(HONG, None).await;
     let out = h.admin(&["operators"], false, None).await.unwrap();
     assert!(
@@ -705,23 +705,24 @@ async fn admin_operators_shows_which_ids_have_an_account() {
         .find(|l| l.contains(&h.account_tag(HONG.0)))
         .unwrap_or_else(|| panic!("{out}"));
     assert!(
-        hong_line.contains("2026******") && hong_line.contains("yes      yes"),
+        hong_line.contains("ZZTE****") && hong_line.contains("yes      yes"),
         "{hong_line}"
     );
     let other = out
         .lines()
-        .find(|l| l.contains(&h.account_tag("2026000077")))
+        .find(|l| l.contains(&h.account_tag("ZZTEST77")))
         .unwrap_or_else(|| panic!("{out}"));
     assert!(
         other.contains("no       no") && other.ends_with('-'),
         "{other}"
     );
-    for secret in [HONG.0, "2026000077", "홍길동"] {
+    for secret in [HONG.0, "zztest01", "ZZTEST77", "zztest77", "홍길동"] {
         assert!(!out.contains(secret), "{secret}: {out}");
     }
+    // revealed: the account's ID as the SSO named it, the other as configured, case-folded
     let shown = h.admin(&["operators"], true, None).await.unwrap();
     assert!(
-        shown.contains("2026000001") && shown.contains("홍길동") && shown.contains("2026000077"),
+        shown.contains("ZZTEST01") && shown.contains("홍길동") && shown.contains("zztest77"),
         "{shown}"
     );
     let record = std::fs::read_to_string(&h.oplog).unwrap();

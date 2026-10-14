@@ -11,11 +11,11 @@ use hjv_api::{limits::SCOPE_ID, oplog};
 #[tokio::test]
 async fn allowlist_from_a_file_prints_counts_only() {
     let h = Harness::with(Options {
-        allow: vec!["seed0001"],
+        allow: vec!["ZZSEED01"],
         ..Default::default()
     })
     .await;
-    let file = "# lab\n2026000001\nY9001  # professor\ny9001\n\n";
+    let file = "# lab\nZZTEST01\nYZTEST03  # professor\nyztest03\n\n";
     let out = h
         .admin(&["allow", "import"], false, Some(file))
         .await
@@ -31,7 +31,7 @@ async fn allowlist_from_a_file_prints_counts_only() {
         .admin(
             &["allow", "import"],
             false,
-            Some("2026000002\n2026000003 홍길동\n"),
+            Some("ZZTEST02\nZZTEST03 홍길동\n"),
         )
         .await
         .unwrap_err();
@@ -39,20 +39,20 @@ async fn allowlist_from_a_file_prints_counts_only() {
         err.starts_with("nothing changed: line 2 of the file"),
         "{err}"
     );
-    assert!(!err.contains("2026000003"), "{err}");
+    assert!(!err.to_lowercase().contains("zztest03"), "{err}");
     let masked = h.admin(&["allow", "list"], false, None).await.unwrap();
     assert!(masked.starts_with("allowlist: 3 IDs"), "{masked}");
     assert!(
-        masked.contains("2026******") && masked.contains("y9***"),
+        masked.contains("zzte****") && masked.contains("yzte****"),
         "{masked}"
     );
     assert!(
-        !masked.contains("2026000001") && !masked.contains("y9001"),
+        !masked.to_lowercase().contains("zztest01") && !masked.to_lowercase().contains("yztest03"),
         "{masked}"
     );
     let shown = h.admin(&["allow", "list"], true, None).await.unwrap();
     assert!(
-        shown.contains("2026000001") && shown.contains("y9001"),
+        shown.contains("zztest01") && shown.contains("yztest03"),
         "{shown}"
     );
     assert!(h.admin(&["allow", "import"], false, None).await.is_err());
@@ -66,7 +66,7 @@ async fn removing_ids_saved_with_a_byte_order_mark() {
     let hong = h.login_ok(HONG, None).await;
     let kim = h.login_ok(KIM, None).await;
     // as Windows Notepad saves a file: a byte-order mark and CR LF line ends; removing blocks
-    let file = "\u{feff}2026000001\r\n2026000002\r\n2026999999\r\n";
+    let file = "\u{feff}ZZTEST01\r\nZZTEST02\r\nZZTEST99\r\n";
     let out = h
         .admin(&["allow", "remove"], false, Some(file))
         .await
@@ -95,16 +95,16 @@ async fn listings_are_masked_and_carry_tags() {
     let tag = h.account_tag(HONG.0);
     assert!(users.starts_with("accounts: 1"), "{users}");
     assert!(
-        users.contains(&tag) && users.contains("2026******"),
+        users.contains(&tag) && users.contains("ZZTE****"),
         "{users}"
     );
     assert!(
-        !users.contains("2026000001") && !users.contains("홍길동"),
+        !users.to_lowercase().contains("zztest01") && !users.contains("홍길동"),
         "{users}"
     );
     let revealed = h.admin(&["users"], true, None).await.unwrap();
     assert!(
-        revealed.contains("2026000001") && revealed.contains("홍길동"),
+        revealed.contains("ZZTEST01") && revealed.contains("홍길동"),
         "{revealed}"
     );
     let devices = h.admin(&["devices"], false, None).await.unwrap();
@@ -129,7 +129,7 @@ async fn listings_are_masked_and_carry_tags() {
     );
     assert!(report.contains("login ok"), "{report}");
     assert!(report.contains("seal key IDs: "), "{report}");
-    assert!(!report.contains("2026000001"));
+    assert!(!report.to_lowercase().contains("zztest01"));
 }
 
 #[tokio::test]
@@ -184,7 +184,7 @@ async fn commands_by_id_or_tag() {
     // the ID on the list again)
     h.login_ok(HONG, Some(&pc)).await;
     let out = h
-        .admin(&["user", "delete", "2026000001"], false, None)
+        .admin(&["user", "delete", "ZZTEST01"], false, None)
         .await
         .unwrap();
     assert_eq!(
@@ -192,7 +192,7 @@ async fn commands_by_id_or_tag() {
         "deleted the account with 1 devices, 1 account keys and 1 tokens (and its allowlist entry)"
     );
     assert!(h
-        .admin(&["user", "delete", "2026000001"], false, None)
+        .admin(&["user", "delete", "ZZTEST01"], false, None)
         .await
         .is_err());
     assert!(h.admin(&["revoke", "tag:zz"], false, None).await.is_err());
@@ -208,16 +208,14 @@ async fn commands_by_id_or_tag() {
 async fn every_command_is_recorded_with_tags_only() {
     let h = Harness::start().await;
     h.admin(&["report"], false, None).await.unwrap();
-    h.admin(&["unlock", "2026000002"], false, None)
-        .await
-        .unwrap();
+    h.admin(&["unlock", "ZZTEST02"], false, None).await.unwrap();
     h.admin(&["users"], true, None).await.unwrap();
-    h.admin(&["allow", "import"], false, Some("2026123123\n"))
+    h.admin(&["allow", "import"], false, Some("ZZTEST123\n"))
         .await
         .unwrap();
-    let _ = h.admin(&["2026000003"], false, None).await;
+    let _ = h.admin(&["ZZTEST03"], false, None).await;
     let _ = h
-        .admin(&["allow", "remove"], false, Some("2026123123\nnot an id\n"))
+        .admin(&["allow", "remove"], false, Some("ZZTEST123\nnot an id\n"))
         .await;
     let text = std::fs::read_to_string(&h.oplog).unwrap();
     let lines: Vec<&str> = text.lines().collect();
@@ -245,7 +243,7 @@ async fn every_command_is_recorded_with_tags_only() {
     assert!(
         lines[6].contains(&format!(
             "cmd=\"allow import\" targets={}",
-            h.account_tag("2026123123")
+            h.account_tag("ZZTEST123")
         )),
         "{text}"
     );
@@ -260,12 +258,15 @@ async fn every_command_is_recorded_with_tags_only() {
             && lines[11].contains("done=\"failed\""),
         "{text}"
     );
-    for id in ["2026000002", "2026123123", "2026000003"] {
-        assert!(!text.contains(id), "{id} in the record:\n{text}");
+    for id in ["ZZTEST02", "ZZTEST123", "ZZTEST03"] {
+        assert!(
+            !text.to_lowercase().contains(&id.to_lowercase()),
+            "{id} in the record:\n{text}"
+        );
     }
     assert_eq!(oplog::verify(&h.oplog).unwrap(), 12);
     // a long file is named by its count and the hash of its tags
-    let file: String = (0..40).map(|n| format!("2026{n:06}\n")).collect();
+    let file: String = (0..40).map(|n| format!("ZZTEST{n:06}\n")).collect();
     h.admin(&["allow", "import"], false, Some(&file))
         .await
         .unwrap();

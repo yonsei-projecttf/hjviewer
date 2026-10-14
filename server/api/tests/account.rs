@@ -19,7 +19,7 @@ async fn current_user_users_and_logout() {
     assert_eq!(a.status, 200, "{}", a.text);
     assert_eq!(
         a.json,
-        json!({"name": "2026000001", "display_name": "홍길동", "status": 1})
+        json!({"name": "ZZTEST01", "display_name": "홍길동", "status": 1})
     );
     // users: {total, data}, never a bare list
     let a = h
@@ -30,7 +30,7 @@ async fn current_user_users_and_logout() {
         .await;
     assert_eq!(
         a.json,
-        json!({"total": 1, "data": [{"name": "2026000001", "display_name": "홍길동", "status": 1}]})
+        json!({"total": 1, "data": [{"name": "ZZTEST01", "display_name": "홍길동", "status": 1}]})
     );
     let a = h.get("/api/users?current=2&pageSize=100", &token).await;
     assert_eq!(a.json, json!({"total": 1, "data": []}));
@@ -88,7 +88,7 @@ async fn an_installed_windows_pc_is_added_and_listed_on_other_devices() {
     assert_eq!(
         a.json,
         json!({"total": 1, "data": [{
-            "id": "123456789", "user_name": "2026000001",
+            "id": "123456789", "user_name": "ZZTEST01",
             "info": {"device_name": "PC-123456789", "os": "windows"}, "status": 1,
             "note": "비밀번호 없는 연결 일시 중지(관리자)",
             // no NAS relay in the account: nothing could wake it (wake.rs peer_wol)
@@ -379,7 +379,7 @@ async fn removing_an_id_from_the_allowlist_revokes_its_tokens() {
     let kim = h.login_ok(KIM, None).await;
     // removing is blocking now (the open login of 2026-10-14): the entry stays, blocked
     let out = h
-        .admin(&["allow", "remove"], false, Some("2026000001\n"))
+        .admin(&["allow", "remove"], false, Some("ZZTEST01\n"))
         .await
         .unwrap();
     assert_eq!(

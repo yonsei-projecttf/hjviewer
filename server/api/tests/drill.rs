@@ -349,7 +349,7 @@ async fn drill_sync() {
 async fn drill_invalid_client() {
     // the fake SSO refuses this server's client credentials for this name: that login fails like
     // any other, and the SSO calls pause, so that the next login gets the 503 of SSO trouble
-    let (status, answer, _) = login("sso-invalid-client", "x", None).await;
+    let (status, answer, _) = login("ZZSSO-INVALID-CLIENT", "x", None).await;
     assert_eq!(status, 401, "{answer}");
     let (status, answer, _) = login(KIM.0, KIM.1, None).await;
     assert_eq!(status, 503, "{answer}");

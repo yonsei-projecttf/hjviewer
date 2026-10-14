@@ -17,7 +17,7 @@
 //! and `block <id|tag:T>` keeps an account out where taking its ID off the list used to: its
 //! tokens and account keys end at once, its PCs get lists without keys, the entry stays blocked
 //! and its next login is refused after the SSO; `unblock` lifts it. Both take with the ID the
-//! others the server knows for the same person (the perslNo the SSO named for its account, and
+//! others the server knows for the same person (the pcode the SSO named for its account, and
 //! that person's other accounts: db.rs `person_keys`). `allow remove <file>` blocks the IDs of a
 //! file (an ID without an account has no tag to name it by).
 //!
@@ -1525,20 +1525,20 @@ mod tests {
 
     #[test]
     fn allowlist_files() {
-        let ids = read_ids(Some("# staff\n2026000001\n Y1234 # 교수\ny1234\n\n")).unwrap();
-        assert_eq!(ids, vec!["2026000001".to_owned(), "y1234".to_owned()]);
+        let ids = read_ids(Some("# staff\nZZTEST01\n YZTEST02 # 교수\nyztest02\n\n")).unwrap();
+        assert_eq!(ids, vec!["yztest02".to_owned(), "zztest01".to_owned()]);
         assert!(read_ids(None).is_err());
         // a byte-order mark, zero-width characters, Windows line ends
         let ids = read_ids(Some(
-            "\u{feff}2026000001\r\nY12\u{200b}34\r\n\u{a0}2026000002\u{a0}\r\n",
+            "\u{feff}ZZTEST01\r\nYZTE\u{200b}ST02\r\n\u{a0}ZZTEST03\u{a0}\r\n",
         ))
         .unwrap();
-        assert_eq!(ids, vec!["2026000001", "2026000002", "y1234"]);
+        assert_eq!(ids, vec!["yztest02", "zztest01", "zztest03"]);
         // a line that is not an ID refuses the whole file, naming line numbers only
-        let err = read_ids(Some("2026000001\n홍길동 2026000002\n\nnot an id\n")).unwrap_err();
+        let err = read_ids(Some("ZZTEST01\n홍길동 ZZTEST02\n\nnot an id\n")).unwrap_err();
         assert!(err.starts_with("nothing changed: line 2, 4 of"), "{err}");
         assert!(
-            !err.contains("2026000002") && !err.contains("홍길동"),
+            !err.contains("ZZTEST02") && !err.contains("홍길동"),
             "{err}"
         );
         let many: String = (0..12).map(|i| format!("bad id {i}\n")).collect();
@@ -1551,7 +1551,7 @@ mod tests {
     fn addresses() {
         assert_eq!(address("ip:192.0.2.1").unwrap(), "192.0.2.1");
         assert_eq!(address(" ip: 2001:DB8::1 ").unwrap(), "2001:db8::1");
-        assert!(address("ip:2026000001x").is_err());
+        assert!(address("ip:ZZTEST01x").is_err());
         assert!(address("ip:").is_err());
     }
 

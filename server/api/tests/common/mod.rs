@@ -99,10 +99,10 @@ pub fn trust_pubkeys() -> String {
     )
 }
 
-/// The test accounts of the fake SSO.
-pub const HONG: (&str, &str) = ("2026000001", "hjv-test-pass-1");
-pub const KIM: (&str, &str) = ("2026000002", "hjv-test-pass-2");
-pub const LEE: (&str, &str) = ("Y9001", "hjv-test-pass-3");
+/// The test accounts of the fake SSO (fake IDs of HJViewer's ID rule; LEE's is a Y code).
+pub const HONG: (&str, &str) = ("ZZTEST01", "hjv-test-pass-1");
+pub const KIM: (&str, &str) = ("ZZTEST02", "hjv-test-pass-2");
+pub const LEE: (&str, &str) = ("YZTEST03", "hjv-test-pass-3");
 
 /// A device as the app runs it: an ID, the Ed25519 key pair it registered with hbbs, and its
 /// uuid (the same for every login from it).

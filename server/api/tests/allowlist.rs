@@ -51,8 +51,8 @@ async fn has_account(h: &Harness, id: &str) -> bool {
         .is_some()
 }
 
-/// The fake SSO's other username of HONG's person: it names HONG's perslNo for it.
-const ALIAS: (&str, &str) = ("hong-alias", "hjv-test-pass-1");
+/// The fake SSO's other username of HONG's person: it names HONG's pcode for it.
+const ALIAS: (&str, &str) = ("ZZTEST01-ALIAS", "hjv-test-pass-1");
 
 #[tokio::test]
 async fn an_id_never_imported_logs_in_and_is_registered() {
@@ -69,7 +69,7 @@ async fn an_id_never_imported_logs_in_and_is_registered() {
     let tag = h.account_tag(HONG.0);
     // on the list now, as a login's entry
     let before = entries(&h).await;
-    let hong = before.iter().find(|e| e.login_key == "2026000001").unwrap();
+    let hong = before.iter().find(|e| e.login_key == "zztest01").unwrap();
     assert_eq!((hong.source.as_str(), hong.blocked_at), ("login", None));
     let listed = h.admin(&["allow", "list"], false, None).await.unwrap();
     assert!(
@@ -78,10 +78,10 @@ async fn an_id_never_imported_logs_in_and_is_registered() {
     );
     let line = listed.lines().find(|l| l.contains(&tag)).unwrap();
     assert!(
-        line.contains("2026******") && line.contains(" registered ") && line.contains("from login"),
+        line.contains("zzte****") && line.contains(" registered ") && line.contains("from login"),
         "{line}"
     );
-    assert!(!listed.contains("2026000001"), "{listed}");
+    assert!(!listed.to_lowercase().contains("zztest01"), "{listed}");
     // one journal line with the account's tag, no portal ID
     let logs = hjv_api::log::captured().join("\n");
     assert!(
@@ -90,11 +90,11 @@ async fn an_id_never_imported_logs_in_and_is_registered() {
         )),
         "{logs}"
     );
-    assert!(!logs.contains("2026000001"), "{logs}");
+    assert!(!logs.to_lowercase().contains("zztest01"), "{logs}");
     // the report and selfcheck say which mode runs, and the report counts the registrations
     let report = h.admin(&["report"], false, None).await.unwrap();
     assert!(
-        report.contains("\nlogin: open (anyone the Yonsei SSO accepts, unless blocked; "),
+        report.contains("\nlogin: open (faculty and staff whom the Yonsei SSO accepts (HJViewer's ID rule: Z or Y, not ZA), unless blocked; "),
         "{report}"
     );
     assert!(
@@ -103,7 +103,9 @@ async fn an_id_never_imported_logs_in_and_is_registered() {
     );
     let check = h.admin(&["selfcheck"], false, None).await.unwrap();
     assert!(
-        check.contains("[ OK ] login (HJV_API_LOGIN): open, anyone the Yonsei SSO accepts"),
+        check.contains(
+            "[ OK ] login (HJV_API_LOGIN): open, faculty and staff whom the Yonsei SSO accepts"
+        ),
         "{check}"
     );
     // the next login finds it there: nothing changes
@@ -127,7 +129,7 @@ async fn new_and_registered_ids_look_the_same() {
         .login(&h.login_body(KIM.0, "wrong", None), "10.5.0.1")
         .await;
     let new = h
-        .login(&h.login_body("2026999999", "wrong", None), "10.5.0.2")
+        .login(&h.login_body("ZZTEST99", "wrong", None), "10.5.0.2")
         .await;
     for a in [&listed, &new] {
         assert_eq!(a.status, 401, "{}", a.text);
@@ -137,7 +139,7 @@ async fn new_and_registered_ids_look_the_same() {
     // both reached the SSO and count; a failed login puts nothing on the list
     assert_eq!(h.sso.token_calls(), 2);
     assert_eq!(h.counted(SCOPE_ID, h.account_tag(KIM.0)).await, 1);
-    assert_eq!(h.counted(SCOPE_ID, h.account_tag("2026999999")).await, 1);
+    assert_eq!(h.counted(SCOPE_ID, h.account_tag("ZZTEST99")).await, 1);
     assert_eq!(
         h.results().await,
         vec!["login:credentials", "login:credentials"]
@@ -214,9 +216,9 @@ async fn a_blocked_account_is_logged_out_and_refused_until_unblocked() {
         .call(|c| {
             c.query_row(
                 "SELECT (SELECT COUNT(*) FROM tokens t JOIN accounts a ON a.id = t.account_id
-                         WHERE a.login_key = '2026000001'),
+                         WHERE a.login_key = 'zztest01'),
                         (SELECT COUNT(*) FROM ctl_keys k JOIN accounts a ON a.id = k.account_id
-                         WHERE a.login_key = '2026000001' AND k.revoked_at IS NULL)",
+                         WHERE a.login_key = 'zztest01' AND k.revoked_at IS NULL)",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -226,7 +228,7 @@ async fn a_blocked_account_is_logged_out_and_refused_until_unblocked() {
     assert_eq!((tokens, keys), (0, 0));
     // an import lifts no block
     let out = h
-        .admin(&["allow", "import"], false, Some("2026000001\n"))
+        .admin(&["allow", "import"], false, Some("ZZTEST01\n"))
         .await
         .unwrap();
     assert_eq!(
@@ -280,7 +282,7 @@ async fn a_blocked_account_is_logged_out_and_refused_until_unblocked() {
         record.contains(&format!("cmd=\"unblock\" targets={tag} ")),
         "{record}"
     );
-    assert!(!record.contains("2026000001"), "{record}");
+    assert!(!record.to_lowercase().contains("zztest01"), "{record}");
     // what block and unblock take
     assert!(h.admin(&["block", "two words"], false, None).await.is_err());
     assert_eq!(
@@ -329,7 +331,7 @@ async fn a_block_while_a_login_runs_wins() {
     assert!(h
         .state
         .db
-        .call(|c| db::account_by_key(c, "2026000001"))
+        .call(|c| db::account_by_key(c, "zztest01"))
         .await
         .unwrap()
         .is_none());
@@ -337,7 +339,7 @@ async fn a_block_while_a_login_runs_wins() {
     let hong = entries(&h)
         .await
         .into_iter()
-        .find(|e| e.login_key == "2026000001");
+        .find(|e| e.login_key == "zztest01");
     assert_eq!(
         hong.map(|e| (e.source, e.blocked_at.is_some())),
         Some(("import".to_owned(), true))
@@ -381,7 +383,7 @@ async fn an_account_deleted_takes_its_entry_unless_it_is_blocked() {
     assert!(h
         .state
         .db
-        .call(|c| db::account_by_key(c, "2026000002"))
+        .call(|c| db::account_by_key(c, "zztest02"))
         .await
         .unwrap()
         .is_none());
@@ -398,7 +400,7 @@ async fn list_mode_admits_the_ids_on_the_list_only() {
     // an entry that a login made before the switch to list mode
     h.state
         .db
-        .call(|c| db::admit_login(c, "y9001", "y9001", true, hjv_api::util::now()))
+        .call(|c| db::admit_login(c, "yztest03", "yztest03", true, hjv_api::util::now()))
         .await
         .unwrap();
     // an ID off the list: a wrong password's failure, no SSO call, nothing put on the list
@@ -415,7 +417,7 @@ async fn list_mode_admits_the_ids_on_the_list_only() {
     h.login_ok(KIM, None).await;
     h.login_ok(LEE, None).await;
     // an import lets an ID in
-    h.admin(&["allow", "import"], false, Some("2026000001\n"))
+    h.admin(&["allow", "import"], false, Some("ZZTEST01\n"))
         .await
         .unwrap();
     h.login_ok(HONG, None).await;
@@ -490,10 +492,10 @@ async fn the_tag_of_an_entry_without_an_account_names_it() {
     h.login_ok(KIM, None).await;
 }
 
-/// A second form of a person's portal ID (the fake SSO's `hong-alias`, for which it names HONG's
-/// perslNo; whether the real SSO has such forms is not known, design v2 §4-1): a block holds for
-/// the person whichever form was blocked and whichever is typed, also after the account of one
-/// form is deleted.
+/// A second form of a person's portal ID (the fake SSO's `ZZTEST01-ALIAS`, for which it names
+/// HONG's pcode; whether the real SSO has such forms is not known, design v2 §4-1): a block holds
+/// for the person whichever form was blocked and whichever is typed, also after the account of
+/// one form is deleted.
 #[tokio::test]
 async fn a_block_holds_for_each_form_of_the_persons_id() {
     // HONG was never imported
@@ -502,7 +504,7 @@ async fn a_block_holds_for_each_form_of_the_persons_id() {
         ..Default::default()
     })
     .await;
-    // the perslNo form blocked: the other form is refused after the SSO, and gets nothing
+    // the pcode form blocked: the other form is refused after the SSO, and gets nothing
     h.login_ok(HONG, None).await;
     h.admin(&["block", HONG.0], false, None).await.unwrap();
     let a = h
@@ -520,7 +522,7 @@ async fn a_block_holds_for_each_form_of_the_persons_id() {
         h.admin(&["unblock", HONG.0], false, None).await.unwrap(),
         "unblocked: the account may log in again (its devices log in again)"
     );
-    // the person logs in with both forms (two accounts, the same perslNo in both), and the
+    // the person logs in with both forms (two accounts, the same pcode in both), and the
     // account of the other form is blocked by its tag: both forms are blocked, both logged out
     let alias_token = h.login_ok(ALIAS, None).await;
     let hong_token = h.login_ok(HONG, None).await;
@@ -564,7 +566,7 @@ async fn a_block_holds_for_each_form_of_the_persons_id() {
     assert_eq!(a.status, 403, "{}", a.text);
     h.admin(&["unblock", &alias], false, None).await.unwrap();
     h.login_ok(ALIAS, None).await;
-    // blocking the perslNo form takes the account of the other form with it, and unblocking
+    // blocking the pcode form takes the account of the other form with it, and unblocking
     // either lifts both
     let out = h.admin(&["block", HONG.0], false, None).await.unwrap();
     assert!(
@@ -578,11 +580,12 @@ async fn a_block_holds_for_each_form_of_the_persons_id() {
     h.login_ok(HONG, None).await;
 }
 
-/// In open mode, where any portal ID reaches the SSO, an ID nobody registered fails at most
-/// HJV_API_LIMIT_NEW_ID times, and all such IDs together call the SSO at most HJV_API_LIMIT_SSO_NEW
-/// times, so that the login is no way to try passwords on every Yonsei account or to lock it. The
-/// IDs on the list keep their limits and their SSO calls, an import puts an ID among them, and the
-/// five-minute check reports the window full. List mode keeps D3's limits.
+/// In open mode, where any portal ID of HJViewer's ID rule reaches the SSO, an ID nobody
+/// registered fails at most HJV_API_LIMIT_NEW_ID times, and all such IDs together call the SSO at
+/// most HJV_API_LIMIT_SSO_NEW times, so that the login is no way to try passwords on every
+/// faculty or staff account or to lock it. The IDs on the list keep their limits and their SSO
+/// calls, an import puts an ID among them, and the five-minute check reports the window full.
+/// List mode keeps D3's limits.
 #[tokio::test]
 async fn ids_nobody_registered_have_lower_limits_in_open_mode() {
     let h = Harness::with(Options {
@@ -595,7 +598,7 @@ async fn ids_nobody_registered_have_lower_limits_in_open_mode() {
     })
     .await;
     // an ID nobody registered: two wrong passwords reach the SSO, the third does not
-    let stranger = "2026999999";
+    let stranger = "ZZTEST99";
     for n in 0..3 {
         let a = h
             .login(
@@ -642,7 +645,7 @@ async fn ids_nobody_registered_have_lower_limits_in_open_mode() {
     for n in 0..7 {
         let a = h
             .login(
-                &h.login_body(&format!("2026888{n:03}"), "wrong", None),
+                &h.login_body(&format!("ZZTEST888{n:03}"), "wrong", None),
                 &format!("10.42.2.{n}"),
             )
             .await;
@@ -686,7 +689,7 @@ async fn ids_nobody_registered_have_lower_limits_in_open_mode() {
         "{found:?}"
     );
     // an ID imported ahead is not held by those limits
-    h.admin(&["allow", "import"], false, Some("2026000001\n"))
+    h.admin(&["allow", "import"], false, Some("ZZTEST01\n"))
         .await
         .unwrap();
     h.login_ok(HONG, None).await;
@@ -748,7 +751,7 @@ async fn one_address_cannot_shut_the_first_logins() {
         for n in 0..5 {
             let a = h
                 .login(
-                    &h.login_body(&format!("2026888{n:03}"), "wrong", None),
+                    &h.login_body(&format!("ZZTEST888{n:03}"), "wrong", None),
                     attacker,
                 )
                 .await;
@@ -786,7 +789,7 @@ async fn one_address_cannot_shut_the_first_logins() {
     {
         let a = h
             .login(
-                &h.login_body(&format!("2026888{:03}", 10 + n), "wrong", None),
+                &h.login_body(&format!("ZZTEST888{:03}", 10 + n), "wrong", None),
                 ip6,
             )
             .await;
@@ -802,7 +805,7 @@ async fn one_address_cannot_shut_the_first_logins() {
         "cleared 10 counted login attempts and 2 SSO calls of IDs not on the allowlist"
     );
     let a = h
-        .login(&h.login_body("2026888020", "wrong", None), attacker)
+        .login(&h.login_body("ZZTEST888020", "wrong", None), attacker)
         .await;
     assert_eq!(a.status, 401);
     assert_eq!(h.sso.token_calls(), 6);
@@ -817,7 +820,7 @@ async fn one_address_cannot_shut_the_first_logins() {
 async fn an_id_and_an_address_hold_a_quarter_each_and_a_first_login_gives_its_call_back() {
     // only an ID nobody uses is on the list: HONG, KIM and LEE log in for the first time
     let h = Harness::with(Options {
-        allow: vec!["2026999998"],
+        allow: vec!["ZZTEST98"],
         vars: vec![
             ("HJV_API_LIMIT_NEW_ID", "10/86400".into()),
             ("HJV_API_LIMIT_SSO_NEW", "4/3600".into()),
@@ -828,7 +831,7 @@ async fn an_id_and_an_address_hold_a_quarter_each_and_a_first_login_gives_its_ca
     let failure = json!({ "error": FAILURE_TEXT });
     // the ID's share: its second call fails without an SSO call, from another address too, and
     // only the call made counts as its failure
-    let stranger = "2026999999";
+    let stranger = "ZZTEST99";
     let tag = h.account_tag(stranger);
     for ip in ["10.47.0.1", "10.47.0.2"] {
         let a = h.login(&h.login_body(stranger, "wrong", None), ip).await;
@@ -842,7 +845,7 @@ async fn an_id_and_an_address_hold_a_quarter_each_and_a_first_login_gives_its_ca
     assert_eq!(h.counted(SCOPE_ID, tag.clone()).await, 1);
     // the address's share: another ID from the first address fails the same way
     let a = h
-        .login(&h.login_body("2026888000", "wrong", None), "10.47.0.1")
+        .login(&h.login_body("ZZTEST888000", "wrong", None), "10.47.0.1")
         .await;
     assert_eq!((a.status, &a.json), (401, &failure));
     assert_eq!(h.sso.token_calls(), 1);
@@ -855,7 +858,7 @@ async fn an_id_and_an_address_hold_a_quarter_each_and_a_first_login_gives_its_ca
     ] {
         assert!(logs.contains(&line), "{line}\n{logs}");
     }
-    // a first login the SSO accepted that went no further keeps its call: hong-alias with an
+    // a first login the SSO accepted that went no further keeps its call: the alias with an
     // account key whose proof is wrong (400), and then KIM behind the same address is held
     let body = h.login_body_with(
         ALIAS.0,
@@ -880,11 +883,11 @@ async fn an_id_and_an_address_hold_a_quarter_each_and_a_first_login_gives_its_ca
         assert_eq!(listing(&h, account.0).await, Listing::Registered);
     }
     assert_eq!(h.sso.token_calls(), 5);
-    // so the window holds the stranger's and hong-alias's calls: two more fit, then it is full
+    // so the window holds the stranger's and the alias's calls: two more fit, then it is full
     for n in 1..3 {
         let a = h
             .login(
-                &h.login_body(&format!("2026888{n:03}"), "wrong", None),
+                &h.login_body(&format!("ZZTEST888{n:03}"), "wrong", None),
                 &format!("10.47.3.{n}"),
             )
             .await;
@@ -893,7 +896,7 @@ async fn an_id_and_an_address_hold_a_quarter_each_and_a_first_login_gives_its_ca
     assert_eq!(h.sso.token_calls(), 7);
     assert_eq!(h.state.sso_calls_new.last_full(), None);
     let a = h
-        .login(&h.login_body("2026888009", "wrong", None), "10.47.4.1")
+        .login(&h.login_body("ZZTEST888009", "wrong", None), "10.47.4.1")
         .await;
     assert_eq!((a.status, &a.json), (401, &failure));
     assert_eq!(h.sso.token_calls(), 7);
@@ -906,7 +909,7 @@ async fn an_id_and_an_address_hold_a_quarter_each_and_a_first_login_gives_its_ca
         "cleared 1 counted login attempts and 1 SSO calls of IDs not on the allowlist"
     );
     let a = h
-        .login(&h.login_body("2026888009", "wrong", None), "10.47.4.1")
+        .login(&h.login_body("ZZTEST888009", "wrong", None), "10.47.4.1")
         .await;
     assert_eq!(a.status, 401);
     assert_eq!(h.sso.token_calls(), 8);
@@ -949,7 +952,7 @@ async fn a_first_login_that_the_full_window_refuses_keeps_no_share() {
     for n in 1..=3 {
         let a = h
             .login(
-                &h.login_body(&format!("2026777{n:03}"), "wrong", None),
+                &h.login_body(&format!("ZZTEST777{n:03}"), "wrong", None),
                 "10.48.1.1",
             )
             .await;
@@ -967,7 +970,7 @@ async fn a_first_login_that_the_full_window_refuses_keeps_no_share() {
     );
     // and the IDs' window holds nothing of them
     for n in 1..=3 {
-        let id = format!("2026777{n:03}");
+        let id = format!("ZZTEST777{n:03}");
         let tag = h.account_tag(&id);
         assert!(!h
             .state
@@ -1008,7 +1011,7 @@ async fn the_code_step_keeps_the_lower_limit_of_an_id_nobody_registered() {
     .await;
     let failure = json!({ "error": FAILURE_TEXT });
     // two dialogs: a dialog does not count against the ID
-    let stranger = "2026999999";
+    let stranger = "ZZTEST99";
     let secrets = code_dialogs(&h, stranger, &["10.48.0.1", "10.48.0.2"]).await;
     assert_eq!(h.sso.token_calls(), 0);
     // the first code step reaches the SSO with the wrong password: the one failure of its day

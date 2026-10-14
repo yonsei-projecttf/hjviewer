@@ -280,14 +280,14 @@ impl Breaker {
             .then_some(state.reason)
     }
 
-    /// Notes how a call ended (`None`: the SSO answered, with a user or refused credentials);
-    /// returns the pause this outcome started, if it started one.
+    /// Notes how a call ended (`None`: the SSO answered with a user; refused credentials and a
+    /// denied person are answers too); returns the pause this outcome started, if it started one.
     pub fn note(&self, failure: Option<Failure>) -> Option<Duration> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let was_paused = state.paused_until.is_some_and(|t| now < t);
         let (pause, reason) = match failure {
-            None | Some(Failure::Credentials) => {
+            None | Some(Failure::Credentials | Failure::Denied) => {
                 *state = BreakerState::default();
                 return None;
             }
@@ -609,6 +609,11 @@ mod tests {
             assert_eq!(b.note(Some(Failure::Upstream)), None);
         }
         assert_eq!(b.note(Some(Failure::Credentials)), None);
+        for _ in 0..UPSTREAM_ERRORS - 1 {
+            assert_eq!(b.note(Some(Failure::Upstream)), None);
+        }
+        // a denied person is an answer of the SSO too
+        assert_eq!(b.note(Some(Failure::Denied)), None);
         for _ in 0..UPSTREAM_ERRORS - 1 {
             assert_eq!(b.note(Some(Failure::Upstream)), None);
         }

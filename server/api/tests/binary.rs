@@ -190,7 +190,7 @@ async fn runs_as_systemd_starts_it() {
 
     // the allowlist from a file, through the command line
     let list = dir.join("allow.txt");
-    std::fs::write(&list, "2026000001\n").unwrap();
+    std::fs::write(&list, "ZZTEST01\n").unwrap();
     let out = Command::new(BIN)
         .args(["admin", "--socket"])
         .arg(&admin_socket)
@@ -212,7 +212,7 @@ async fn runs_as_systemd_starts_it() {
     let nonce = util::b64(&[3u8; 16]);
     let (ck, cp) = keys::proof(&[5u8; 32], &nonce, "");
     let body = json!({
-        "username": "2026000001",
+        "username": "zztest01",
         "password": seal::seal_login(&seal_pk, "hjv-test-pass-1", util::now(), &nonce, "", &ck, &cp),
         "id": "", "uuid": "", "autoLogin": true, "type": "account",
         "deviceInfo": {"os": "ios", "type": "client", "name": "iPhone15,2"},
@@ -270,7 +270,7 @@ async fn runs_as_systemd_starts_it() {
     assert!(stderr.contains("ready: seal keys "), "{stderr}");
     assert!(stderr.contains("hjv-api stopped"), "{stderr}");
     assert!(
-        !stderr.contains("hjv-test-pass-1") && !stderr.contains("2026000001"),
+        !stderr.contains("hjv-test-pass-1") && !stderr.to_lowercase().contains("zztest01"),
         "{stderr}"
     );
 

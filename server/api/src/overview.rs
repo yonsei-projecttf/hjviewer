@@ -481,21 +481,21 @@ mod tests {
         }
         // trimmed, case-folded as the allowlist compares IDs, each once
         let c = Config::from_vars(&vars(&[
-            ("HJV_API_OPERATORS", " Y9001 ,2026000001,y9001"),
+            ("HJV_API_OPERATORS", " YZTEST03 ,ZZTEST01,yztest03"),
             ("HJV_API_ACTIVE_DAYS", "7"),
         ]))
         .unwrap();
-        assert_eq!(c.operators, vec!["y9001", "2026000001"]);
+        assert_eq!(c.operators, vec!["yztest03", "zztest01"]);
         assert_eq!(c.active_days, 7);
         // an entry that is not an ID stops the start, and the error does not repeat it
-        for bad in ["2026000001,홍길동", "2026000001,a b", &"1".repeat(65)] {
+        for bad in ["ZZTEST01,홍길동", "ZZTEST01,a b", &"1".repeat(65)] {
             let err = Config::from_vars(&vars(&[("HJV_API_OPERATORS", bad)])).unwrap_err();
             assert!(
                 err.starts_with("HJV_API_OPERATORS takes portal IDs"),
                 "{err}"
             );
             assert!(
-                !err.contains("홍길동") && !err.contains("a b") && !err.contains("2026000001"),
+                !err.contains("홍길동") && !err.contains("a b") && !err.contains("ZZTEST01"),
                 "{err}"
             );
         }
@@ -514,16 +514,15 @@ mod tests {
     /// a wake report, at the time `at`.
     fn sample(at: i64) -> Connection {
         let mut c = db::open_in_memory().unwrap();
-        let keys: Vec<String> = ["2026000001", "2026000002", "y9001"]
+        let keys: Vec<String> = ["zztest01", "zztest02", "yztest03"]
             .iter()
             .map(|k| k.to_string())
             .collect();
         db::allow_add(&mut c, &keys, at).unwrap();
-        let hong =
-            db::upsert_account(&c, "2026000001", "2026000001", "홍길동", at - 3 * DAY).unwrap();
-        let kim = db::upsert_account(&c, "2026000002", "2026000002", "김철수", at - DAY).unwrap();
-        let lee = db::upsert_account(&c, "y9001", "Y9001", "이영희", at - 40 * DAY).unwrap();
-        let off = db::upsert_account(&c, "2026000009", "2026000009", "박민수", at).unwrap();
+        let hong = db::upsert_account(&c, "zztest01", "ZZTEST01", "홍길동", at - 3 * DAY).unwrap();
+        let kim = db::upsert_account(&c, "zztest02", "ZZTEST02", "김철수", at - DAY).unwrap();
+        let lee = db::upsert_account(&c, "yztest03", "YZTEST03", "이영희", at - 40 * DAY).unwrap();
+        let off = db::upsert_account(&c, "zztest09", "ZZTEST09", "박민수", at).unwrap();
         for (account, n) in [(hong, 1u8), (hong, 2), (hong, 5), (kim, 3), (lee, 4)] {
             let key = [n; 32];
             let new = db::NewKey {
@@ -601,9 +600,9 @@ mod tests {
         assert_eq!(
             users,
             vec![
-                ("2026000001", true, 3600, 2, 2),
-                ("2026000002", true, DAY, 1, 1),
-                ("Y9001", false, 40 * DAY, 1, 0),
+                ("ZZTEST01", true, 3600, 2, 2),
+                ("ZZTEST02", true, DAY, 1, 1),
+                ("YZTEST03", false, 40 * DAY, 1, 0),
             ]
         );
         // every PC in an account, by owner and host name; the one off the allowlist's too
@@ -615,10 +614,10 @@ mod tests {
         assert_eq!(
             pcs,
             vec![
-                ("2026000001", "PC-A", "active"),
-                ("2026000001", "pc-b", "listed"),
-                ("2026000002", "", "listed"),
-                ("2026000009", "PC-X", "disabled"),
+                ("ZZTEST01", "PC-A", "active"),
+                ("ZZTEST01", "pc-b", "listed"),
+                ("ZZTEST02", "", "listed"),
+                ("ZZTEST09", "PC-X", "disabled"),
             ]
         );
         let a = &view.pcs[0];
@@ -656,8 +655,8 @@ mod tests {
         )
         .unwrap();
         let view = read(&c, at, 30, 86_400).unwrap();
-        let lee = view.users.iter().find(|u| u.id == "Y9001").unwrap();
+        let lee = view.users.iter().find(|u| u.id == "YZTEST03").unwrap();
         assert!(lee.active && lee.last_use == at - 60, "{lee:?}");
-        assert_eq!(view.users[0].id, "Y9001");
+        assert_eq!(view.users[0].id, "YZTEST03");
     }
 }

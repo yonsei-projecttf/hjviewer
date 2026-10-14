@@ -584,7 +584,7 @@ async fn door_1_takes_the_proof_of_an_account_the_open_login_registered() {
     // only an ID nobody uses is on the list: HONG's first login registers it (HJV_API_LOGIN=open)
     let h = Harness::with(Options {
         vars: area.vars(&[]),
-        allow: vec!["2026999998"],
+        allow: vec!["ZZTEST98"],
         ..Default::default()
     })
     .await;
@@ -593,7 +593,7 @@ async fn door_1_takes_the_proof_of_an_account_the_open_login_registered() {
         async move {
             state
                 .db
-                .call(|c| hjv_api::db::listing(c, "2026000001"))
+                .call(|c| hjv_api::db::listing(c, "zztest01"))
                 .await
                 .unwrap()
         }
@@ -653,9 +653,7 @@ async fn a_blocked_account_gets_nothing() {
     assert_eq!(bare(&h, Method::HEAD, &url, "10.3.2.3").await.status, 200);
 
     // blocked (allow remove blocks too since the open login): db::allowed says no
-    h.admin(&["block", "2026000001"], false, None)
-        .await
-        .unwrap();
+    h.admin(&["block", "ZZTEST01"], false, None).await.unwrap();
     // the login is over (a block ends its tokens), as on every account path
     let got = by_login(&h, Method::GET, WINDOWS, &token, "10.3.2.1", None).await;
     assert_eq!(got.status, 401);
@@ -674,7 +672,7 @@ async fn a_blocked_account_gets_nothing() {
         );
     }
     // unblocked, the PC's key works again without a login (allow import lifts no block)
-    h.admin(&["unblock", "2026000001"], false, None)
+    h.admin(&["unblock", "ZZTEST01"], false, None)
         .await
         .unwrap();
     let got = by_device(&h, Method::GET, &pc, WINDOWS, "10.3.2.2").await;
