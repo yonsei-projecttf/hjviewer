@@ -569,10 +569,10 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 1. 원격 켜기의 현장 시험(NAS의 DSM 작업으로 PC를 깨워 봄, [relay-dsm.md](relay-dsm.md)의 현장 시험 장과 [부록](relay-dsm.md#부록-현장-시험-보충))과 남은 결정·질문의 답. 현장 시험은 깨울 PC인 개발 PC가 작업을 쉬는 동안에만 할 수 있어서, push를 막지 않고 출시 태그를 막습니다(5번).
 2. 개발 PC: 모든 작업 묶음을 합친 커밋에서 `scripts/ci.sh server`, `client`(Rust 1.75 check 포함), `deploy`, `e2e`, `wol`, `leak`이 통과하고, privacy.md, architecture.md, 이 런북, README의 "현재 상태" 표가 그 커밋의 내용으로 고쳐져 있음([ci.md](ci.md)).
    - Windows·iOS 전용 코드를 작업 브랜치로 미리 빌드해 보지 않습니다(결정 O2). 그 코드는 4번의 push 바로 뒤에 돌리는 **확인 빌드**(`check_only=true`, [ci.md](ci.md)의 "실행")에서 처음 컴파일됩니다. 확인 빌드는 공개키 없이 돌고, 산출물을 나눠 주지 않으며, 태그를 붙이지 않습니다. 실패하면 고친 뒤 한 번 더 push합니다. 구현이 모두 끝나면 바로 앱 빌드를 시작한다는 사용자 결정(2026-10-13)에 따른 순서입니다.
-   - 이 확인은 `scripts/ci.sh prepush`로 합니다([ci.md](ci.md)의 "push 전 전체 검사"). 깨끗한 트리에서 여섯 단계를 엄격 모드로 차례로 돌리므로, 건너뛴 것이 하나라도 있으면 실패합니다. 엄격 모드가 아닌 실행은 건너뛴 것이 있어도 `CI passed: <단계> (<n> skipped)`로 끝나므로, 그 통과는 push 전의 통과가 아닙니다. 모든 묶음을 합친 커밋의 기록에는 `skipped:`로 시작하는 줄이 없어야 합니다. `PASS` 줄의 수와 클라이언트 단위 시험의 통과 수가 `scripts/ci.sh`의 하한(2026-10-13의 수: `e2e` 62줄, `wol` 20줄, `--lib hjv` 83개)보다 적으면 단계가 실패하고, 기록의 수도 지금까지의 통과 기록과 견줍니다(`wol`은 [e2e.md](e2e.md#원격-켜기-단계-160) 표의 19단계와 마지막 `PASS (wol)` 줄입니다). `wol`은 클라이언트 패치에 켜기 정보 보고(0035)가 있는데 클라이언트에 그 시험 명령(`--hjv-e2e-wol-report`)이 없으면 실패합니다. 패치에 보고가 없을 때만 E2E를 돌리지 않고 `skipped:` 줄과 함께 통과로 끝납니다.
-   - **시리즈에 아직 없는 클라이언트 작업(통합 담당)**: Android 제어 전용 패치(브랜치 `v3-android-ctl`, Google Play 작업의 결정 D1)와 최소 버전 작업의 클라이언트 커밋(브랜치 `hjv-minver-int`에 모으는 중)은 아직 클라이언트 패치 0030–0036의 시리즈에 없습니다. 통합 담당이 설계 3판 12-1의 절차로 0036 뒤에(0037부터) 넣고 패치를 다시 내보낸 뒤, 그 트리로 클라이언트 확인 묶음(Rust 1.75 check, 플랫폼 하니스, Dart 시험), 클라이언트 전체 lib 시험, `scripts/ci.sh prepush`를 한 번 돌립니다. [privacy.md](privacy.md) 6절(영어와 한국어), README의 설치 줄, [architecture.md](architecture.md) 2·6절은 이미 "Android 앱은 다른 기기를 제어하기만 함"이라고 적고, privacy.md는 Google Play에 내는 개인정보처리방침입니다. 제어 전용 패치 없이 push해야 하면 그 문장들을 먼저 되돌립니다.
+   - 이 확인은 `scripts/ci.sh prepush`로 합니다([ci.md](ci.md)의 "push 전 전체 검사"). 깨끗한 트리에서 여섯 단계를 엄격 모드로 차례로 돌리므로, 건너뛴 것이 하나라도 있으면 실패합니다. 엄격 모드가 아닌 실행은 건너뛴 것이 있어도 `CI passed: <단계> (<n> skipped)`로 끝나므로, 그 통과는 push 전의 통과가 아닙니다. 모든 묶음을 합친 커밋의 기록에는 `skipped:`로 시작하는 줄이 없어야 합니다. `PASS` 줄의 수와 클라이언트 단위 시험의 통과 수가 `scripts/ci.sh`의 하한(`E2E_LEAST_*`, `WOL_LEAST`, `UNIT_LEAST`, `VECTORS_LEAST`. 2026-10-14의 수: `e2e` strict 76줄과 open 2줄, `wol` 20줄, `--lib hjv` 224개, 업데이트 키를 뺀 빌드의 `--lib hjviewer_update` 141개, 클라이언트 코어가 돈 공유 벡터 141건)보다 적으면 단계가 실패하고, 기록의 수도 지금까지의 통과 기록과 견줍니다(`wol`은 [e2e.md](e2e.md#원격-켜기-단계-160) 표의 19단계와 마지막 `PASS (wol)` 줄입니다). `wol`은 클라이언트 패치에 켜기 정보 보고(0035)가 있는데 클라이언트에 그 시험 명령(`--hjv-e2e-wol-report`)이 없으면 실패합니다. 패치에 보고가 없을 때만 E2E를 돌리지 않고 `skipped:` 줄과 함께 통과로 끝납니다.
+   - **클라이언트 시리즈의 1.6.0 작업(통합 담당)**: Android 제어 전용 패치(브랜치 `v3-android-ctl`, Google Play 작업의 결정 D1), 최소 버전 작업, 최고운영자 화면, 시작 화면의 클라이언트 커밋은 2026-10-14의 통합(WP-I1)이 설계 3판 12-1의 절차로 0036 뒤에(0037부터) 넣고 패치를 다시 내보냅니다. 그 트리로 클라이언트 확인 묶음(Rust 1.75 check, 플랫폼 하니스, Dart 시험), 클라이언트 전체 lib 시험, `scripts/ci.sh prepush`를 한 번 돌립니다. 여러 문서가 이미 "Android 앱은 다른 기기를 제어하기만 함"이라고 적고, privacy.md는 Google Play에 내는 개인정보처리방침입니다: [privacy.md](privacy.md) 6절(영어와 한국어), README의 설치 줄, [architecture.md](architecture.md) 2절의 표, 4절의 1.6.0 줄과 6절, [distribution.md](distribution.md)의 결론 아래 문단("모든 Android 빌드는 제어 전용"), "1.5.1에서 1.6.0으로"의 Android 줄과 사용자에게 보내는 안내의 Android 줄, "기기마다 할 일"의 Android 절과 "제어받던 Android 기기", Google Play 내부 테스트 절의 결정 줄. 제어 전용 패치 없이 push해야 하면 그 문장들을 먼저 되돌립니다.
    - **hbbs 패치 0004의 남은 두 가지(최소 버전 작업의 hbbs 0005를 만드는 담당)**: 0004를 0005와 함께 다시 내보낼 때 고칩니다. `hjv-pk`가 32바이트가 아닌 키도 서명해 돌려주므로 32바이트 키만 아는 키로 답하게 하고, WebSocket으로 33바이트 키를 등록해 `- -` 답을 보는 시험을 더합니다(hjv-api는 그런 답 하나에 매일 확인이 멈추지 않게 이미 고침). 0004 시험이 포트를 고른 뒤 hbbs가 `SO_REUSEPORT`로 여는 사이의 경쟁(`tcp_signaling`과 같은 방식, 한 번 실패가 보고됨)도 고칩니다.
-   - **업데이트 키(최소 버전 작업, 사용자만)**: 사용자가 서명 키 1·2와 루트 키 101·102를 만들고(루트 키는 깨끗한 컴퓨터에서, `tools/hjv-release/README.md` 1장) 공개 줄을 `client/update-keys.env`에 넣어 이 push에 포함합니다. 앱 빌드는 그 파일에서만 키를 읽고, 키 줄이 빈 파일로는 1.6.0 출시 빌드가 실패합니다([ci.md](ci.md)). 서버에는 출시 태그의 그 파일을 둡니다(8-1의 3번).
+   - **업데이트 키(최소 버전 작업, 사용자만)**: 순서는 [distribution.md](distribution.md)의 "순서"를 따릅니다. 4번의 push와 서버 묶음 `server-<버전>`이 먼저입니다(이 push는 키 없이 나가고, 확인 빌드는 키 없이 통과합니다). 그 뒤 사용자가 서명 키 1·2와 루트 키 101·102를 만들고, 네 공개 줄을 `client/update-keys.env`에 넣어 출시 빌드(8단계) 전에 한 번 더 push합니다. 루트 키는 깨끗한 컴퓨터에서만 만들고 엽니다. 그 컴퓨터는 도구를 공개 저장소의 릴리스 태그(4번의 `server-<버전>`)로 빌드하므로, 루트 키는 첫 push 전에 만들 수 없습니다(`tools/hjv-release/README.md` 1장과 3장의 5-0). 앱 빌드는 그 파일에서만 키를 읽고, 키 줄이 빈 파일로는 1.6.0 출시 빌드가 실패합니다([ci.md](ci.md)). 서버에는 출시 태그의 그 파일을 둡니다(8-1의 3번).
    - **운영 연습 전체(통합 담당)**: 마지막 `server/api` 커밋(최소 버전 작업의 hjv-api를 합친 뒤)에서 `tools/e2e/hjv-api-drill.sh`를 빠른 모드 없이 한 번 돌립니다(약 13분, [hjv-api-drill.md](hjv-api-drill.md)). 빠른 연습(`HJV_DRILL_QUICK=1`)은 동기화가 10분 묵은 상태(점검·복원 뒤)를 보지 않는데, 2026-10-14까지는 빠른 연습만 돌았습니다.
 3. **push 전 관문 둘**
    - `scripts/ci.sh leak` 통과: 운영 도메인, 학교 공인 주소 대역, NAS·PC의 주소와 MAC, 부서 공유 폴더 이름, 실제 포탈 ID가 추적 파일, 패치, push할 커밋에 없음. 값 목록 `build/leak-patterns.txt`는 사용자가 만듭니다([ci.md](ci.md)의 "push 전 검사").
@@ -742,7 +742,7 @@ sudo ls -l /etc/credstore.encrypted/
 - 여섯 자격 증명(SSO 둘, 봉인 키, 기록 키, 목록 키, 명령 키)이 모두 있어야 6단계에서 서비스가 시작합니다. 유닛이 명령 키(`hjviewer-api-command-key`)도 요구합니다.
 - `keygen list`와 `keygen command`는 화면에 공개키(`N:<base64>`)와 지문(`fingerprint: N:<SHA-256 16진수>`)을 냅니다. `keygen command`의 첫 줄은 `N:<base64>`뿐이라 `HJV_COMMAND_PUBKEY`의 항목으로 그대로 씁니다. 지문은 적어 두었다가 6단계의 `selfcheck`, 8단계의 빌드 요약과 대조합니다.
 - 기록 키를 잃으면 새로 만듭니다(옛 기록의 꼬리표와 이어지지 않을 뿐). 목록 키 1번과 명령 키 1번을 잃으면 오프라인의 2번으로 바꿉니다(7-15).
-- 최소 버전 작업의 업데이트 키(서명 키 1·2, 루트 키 101·102)는 여기서 만들지 않습니다. 앱 빌드가 공개 저장소의 `client/update-keys.env`에서 읽으므로, 사용자가 1단계에서 만들어 공개 줄을 그 파일에 넣고 push합니다(`tools/hjv-release/README.md` 1장, 루트 키는 깨끗한 컴퓨터에서). 서버에는 그 공개 파일만 둡니다(8-1의 3번).
+- 최소 버전 작업의 업데이트 키(서명 키 1·2, 루트 키 101·102)는 여기서 만들지 않습니다. 앱 빌드가 공개 저장소의 `client/update-keys.env`에서 읽으므로, 사용자가 7-1의 4번(첫 push와 서버 묶음 `server-<버전>`) 뒤에 만들어 공개 줄을 그 파일에 넣고, 출시 빌드 전에 push합니다([distribution.md](distribution.md)의 "순서" 2단계. 루트 키는 그 릴리스 태그로 빌드한 도구로 깨끗한 컴퓨터에서, `tools/hjv-release/README.md` 1장). 서버에는 그 공개 파일만 둡니다(8-1의 3번).
 
 **(다) 알려 줄 것**: 공개값만 운영 에이전트와 개발 PC에 알립니다. 모두 비밀이 아닙니다.
 
@@ -1056,7 +1056,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
 - **대상 가리키기**: 포탈 ID나 주소를 명령 인자로 치지 않습니다. sudo가 명령줄 전체를 시스템 로그(`/var/log/auth.log`, 저널)에 남기고, 사람이 친 명령은 셸 기록에도 남기 때문입니다(운영자 기록에는 꼬리표만 남음). 사람 운영자는 `users --reveal`로 꼬리표를 찾아 `tag:<T>`로 가리키고, PC는 `--owner-of <PC ID>`나 `binding list`의 꼬리표로 가리킵니다.
 - **계정 키**: `key list [tag:T]`(키마다 PC별 마지막 비밀번호 없는 연결과 30일 횟수), `key revoke <ckid>`(잃어버린 기기를 사용자가 직접 로그아웃시킬 수 없을 때), `user revoke-all tag:<T>`. 한 계정에는 활성 키가 20개까지이고, 넘으면 새 로그인이 그 계정에서 가장 오래 쓰지 않은 키를 로그아웃시킵니다(저널의 `login: the account had 20 active keys`). 사용자가 모르는 기기가 많으면 비밀번호 유출로 보고 7-13의 4·5번을 합니다.
 - **계정 삭제 요청**: 요청을 받은 날짜를 사용자가 서버 밖에 적어 둡니다(복원·재구축 뒤 다시 지우기 위해, 7-14). `user delete tag:<T>`. 명단의 항목도 계정과 함께 지워집니다. 열린 로그인에서는 그 사람이 나중에 다시 로그인하면 다시 오르고, 명단 방식에서는 `allow import <파일>`로 다시 넣어야 로그인합니다. 막힌 항목은 계정을 지워도 남습니다(막기를 지키는 데 필요한 포탈 ID만 남음). `user delete`는 그 계정의 PC를 먼저 풀고(무덤) 그 계정의 중계기를 폐기한 뒤, 계정과 그 키·토큰·사용 기록·켜기 기록을 지웁니다. 남는 것은 묶음 무덤(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록이고, 백업은 14일 뒤 사라진다고 요청한 사람에게 알립니다.
-- **열람 요청**(사람 운영자만, 운영 에이전트는 하지 않음): `users --reveal`, `devices --reveal`, `key list tag:<T> --reveal`, `binding list --reveal`, `relay list --reveal`로 그 사람의 것을 봅니다. 로그인 기록(`events`), 켜기 기록(`wake_jobs`), 켜기 정보(`wol_info`)는 관리 명령이 없으므로 root가 DB를 읽기 전용으로 엽니다: `sudo sqlite3 -readonly /var/lib/hjviewer-api/hjv-api.sqlite3`에서 `SELECT at, kind, device_tag, ip, result FROM events WHERE account_tag = '<T>';`, `SELECT created_at, device_id, relay_id, state, finished_at FROM wake_jobs WHERE account_tag = '<T>';`, `SELECT w.device_id, w.reported_at, w.info_json FROM wol_info w JOIN devices d USING (device_id) JOIN accounts a ON a.id = d.account_id WHERE a.login_key = '<소문자 포탈 ID>';`. 결과는 요청한 사람에게만 전하고 서버나 대화에 남기지 않습니다.
+- **열람 요청**(사람 운영자만, 운영 에이전트는 하지 않음): `users --reveal`, `devices --reveal`, `key list tag:<T> --reveal`, `binding list --reveal`, `relay list --reveal`로 그 사람의 것을 봅니다. 로그인 기록(`events`), 켜기 기록(`wake_jobs`), 켜기 정보(`wol_info`)는 관리 명령이 없으므로 root가 DB를 읽기 전용으로 엽니다: `sudo sqlite3 -readonly /var/lib/hjviewer-api/hjv-api.sqlite3`에서 `SELECT at, kind, device_tag, ip, result FROM events WHERE account_tag = '<T>';`, `SELECT created_at, device_id, relay_id, state, finished_at FROM wake_jobs WHERE account_tag = '<T>';`, `SELECT w.device_id, w.reported_at, w.info_json FROM wol_info w JOIN devices d USING (device_id) JOIN accounts a ON a.id = d.account_id WHERE a.login_key = '<소문자 포탈 ID>';`, PC마다 마지막 동기화와 그 주소(`devices --reveal`에 없음) `SELECT d.device_id, d.hostname, d.last_sync_at, d.last_sync_ip FROM devices d JOIN accounts a ON a.id = d.account_id WHERE a.login_key = '<소문자 포탈 ID>';`. 결과는 요청한 사람에게만 전하고 서버나 대화에 남기지 않습니다.
 - **최고운영자 정하기**(사용자 승인): 최고운영자는 앱에서 이 서비스의 사용자와 PC(이름, 주소)를 보기만 하는 사람입니다([server/api/README.md](../server/api/README.md)의 "Admin overview"). 누구로 할지는 사용자가 정하고, 포탈 ID는 저장소에도 대화에도 두지 않으므로 사용자가 서버에서 직접 넣습니다: `sudoedit /etc/hjviewer/hjviewer-api.env`에서 `HJV_API_OPERATORS=` 줄 끝에 포탈 ID를 적습니다(여럿이면 쉼표로). 운영 에이전트는 사용자 승인을 받아 조용한 시간에 `sudo systemctl restart hjviewer-api`와 확인만 합니다. `sudo /opt/hjviewer/bin/hjv-api admin operators`의 첫 줄이 `super operators (HJV_API_OPERATORS): 1 configured, 1 with an account`이고 그 사람의 줄에서 `account`와 `allowlist`가 `yes`이면 됩니다(아직 로그인하지 않았으면 `account`가 `no`이니 로그인한 뒤 다시 봅니다. 열린 로그인에서는 처음 로그인할 때 명단에 저절로 올라 `allowlist`가 `yes`가 됩니다. `blocked`이면 막힌 것이니 사용자 승인 뒤 `unblock`합니다. 명단 방식(`HJV_API_LOGIN=list`)에서 `no`이면 `allow import`로 넣습니다). 출력의 ID는 가려져 있고, 그 줄의 꼬리표가 운영자 기록에 남는 `cmd="app overview" acct=<꼬리표>` 줄의 것입니다. 그만두게 할 때는 그 줄의 값을 지우고 같은 방법으로 다시 시작합니다. 볼 때마다 운영자 기록과 저널에 한 줄씩 남는다는 것은 개인정보 처리방침에 있습니다([privacy.md](privacy.md) 3절, 9절).
 - **SSO 자격 증명이 바뀔 때**: hjv-api는 같은 서버의 WordPress SSO 로그인 플러그인(projecttf-auth)과 같은 SSO 등록을 씁니다. 그 플러그인의 client secret이나 api uuid가 바뀌면 같은 날 사용자가 7-4의 (나)처럼 `hjviewer-sso-client-secret`(또는 `hjviewer-sso-api-uuid`)를 다시 만들고 `sudo systemctl restart hjviewer-api`를 합니다. 그대로 두면 SSO가 `invalid_client`로 거절해 모든 로그인이 "연세 인증 서버에 지금 연결할 수 없습니다"가 되고, 감시가 경보를 냅니다.
 - **목록 키 바꾸기**(목록 키 1번이 샜거나 잃었을 때):
@@ -1196,7 +1196,12 @@ publish-<v>/SHA256SUMS                 위 파일 모두
    sudo sh -c 'cd "$1" && sha256sum -c --quiet SHA256SUMS' _ "$D" && echo SUMS_OK && sudo rm -r "$SRC"
    sudo sha256sum "$D/version-policy.json"
    ```
-   `SUMS_OK`가 아니거나 마지막 줄의 SHA-256이 사용자가 알려 준 값과 다르면 멈춥니다.
+   `SUMS_OK`가 아니거나 마지막 줄의 SHA-256이 사용자가 알려 준 값과 다르면 멈춥니다. 그 디렉터리는 지우지 않고 옆으로 치운 뒤 사용자에게 보고합니다. 사용자가 다시 보내면 1번부터 다시 합니다(같은 이름의 디렉터리가 없으므로 `STOP: … 이미 있음`에 걸리지 않습니다).
+   ```bash
+   V=1.6.1; P=e1-s3                  # ← 1번과 같게
+   sudo mv "/srv/hjviewer-updates/incoming/$V-$P" "/srv/hjviewer-updates/incoming/refused-$V-$P-$(date -u +%Y%m%dT%H%M%SZ)"
+   ```
+   `refused-*` 디렉터리는 정책의 사본이 아닙니다. 6번의 정리와 8-5의 (라)·(바)가 SHA-256으로 찾는 `incoming/<버전>-<위치>/`(숫자로 시작하는 이름)에 들지 않고, 사용자가 확인한 뒤 지워도 됩니다.
 2. 서버 확인을 돌립니다. 패키지는 `$D/pkg`에서 찾고, 없으면 `/srv/hjviewer-updates/pkg`(이미 설치한 것)에서 찾습니다.
    ```bash
    V=1.6.1; P=e1-s3; D=/srv/hjviewer-updates/incoming/$V-$P   # ← 1번과 같게
@@ -1317,7 +1322,7 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
   ```
 - 끄기(즉시): `MIN=`만 남긴 파일로 바꾸거나 파일을 지웁니다. 10초쯤 뒤 `min-controller off: …`가 나옵니다. 되돌리기와 비상 때 씁니다(8-6).
 - 거절 수: `sudo journalctl -q -u hjviewer-hbbs --since yesterday -o cat | grep -c 'min-controller refused'`(개수만. 그 줄에는 주소와 PC ID가 있음). 10초에 30줄을 넘으면 `min-controller refused N more`로 묶이니 그 N도 더합니다.
-- 파일의 `MIN`과 `FROM`이 필요하면(사용자가 `hbbs-conf --current`에 쓸 사본) `sudo grep -E '^(MIN|FROM)=' /etc/hjviewer/min-controller.conf`의 두 줄만 알려 줍니다. 사용자는 그 두 줄로 된 파일을 `--current`로 줍니다.
+- 사용자가 `hbbs-conf --current`에 주는 파일은 사용자가 보낸 파일 그대로입니다(개발 PC의 `~/hjviewer-secrets/door2/min-controller.conf`). 도구는 hbbs가 쓰는 온전한 파일만 읽으므로(`MIN`, `FROM`, `TEXT` 세 줄과 끝 줄바꿈) 두 줄만 옮긴 파일은 거부합니다. 서버의 파일이 그 파일과 같은지는 `sudo grep -E '^(MIN|FROM)=' /etc/hjviewer/min-controller.conf`의 두 줄과 `sudo sha256sum /etc/hjviewer/min-controller.conf`의 해시로 대조합니다(`TEXT` 줄은 보이지 않음: 문 2 링크). 다르면 사용자에게 알리고, 서버의 파일을 사용자가 보낸 파일로 다시 넣을지 묻습니다.
 - **Docker로 hbbs를 돌리는 서버**(A 경로, 이 런북 밖): 파일이 아니라 **디렉터리**를 컨테이너에 넣습니다. 파일 하나를 bind mount하면 `mv -f`로 바꾼 새 파일을 컨테이너가 보지 못하고(옛 inode를 봄) `MIN`을 비워도 거절이 멈추지 않습니다. 예: hbbs 서비스에 `HJV_MIN_CONTROLLER_FILE=/etc/hjviewer-min/min-controller.conf`와 볼륨 `./min-controller:/etc/hjviewer-min:ro`를 compose의 덮어쓰기 파일로 더하고(`COMPOSE_FILE`에 그 파일을 덧붙임), 파일은 `deploy/min-controller/`에 둡니다. 바꾼 뒤에는 `sudo docker compose logs --no-log-prefix hbbs | grep min-controller | tail -3`으로 같은 줄을 봅니다.
 
 ### 8-4. 문 2 (`/etc/hjviewer/door2.conf`)
@@ -1371,7 +1376,7 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
   2. 사용자가 걸린 파일을 서명한 적이 없다고 확인하고(보관소에 그 SHA-256이 없음), 보관소의 마지막 내 파일(`void`하지 않은 가장 높은 `policy-e<세대>-s<seq>.json`)의 SHA-256을 키 매체의 보관소 사본에서 읽어 알려 주면, 사용자 승인을 받아 그 파일로 되돌립니다. 8-0의 유일한 예외입니다. 그 파일은 걸린 도둑 파일과 비교하지 않고, 그 파일 자체만 서버 확인으로 봅니다(`--live`로 자기 자신을 줌).
      ```bash
      WANT='<사용자가 알려 준 SHA-256>'   # ← 보관소의 마지막 내 파일, 64자리
-     F=$(sudo sh -c 'sha256sum /srv/hjviewer-updates/incoming/*/version-policy.json' | awk -v w="$WANT" 'tolower($1) == tolower(w) { print $2; exit }')
+     F=$(sudo sh -c 'sha256sum /srv/hjviewer-updates/incoming/[0-9]*/version-policy.json' | awk -v w="$WANT" 'tolower($1) == tolower(w) { print $2; exit }')
      [ -n "$F" ] || { echo 'STOP: incoming/에 그 파일이 없음(사용자가 보낸 것을 8-2의 1번으로 옮긴 뒤 다시)'; exit 1; }
      echo "$F"
      sudo /opt/hjviewer/bin/hjv-update-verify.sh --live "$F" --packages /srv/hjviewer-updates/pkg "$F" &&
@@ -1400,7 +1405,7 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
   2. 사용자에게 마지막으로 넣은 정책의 SHA-256을 묻고 `incoming/`에서 그 파일을 찾습니다. 없으면 사용자가 다시 보낸 것을 8-2의 1번으로 옮긴 뒤 찾습니다.
      ```bash
      WANT='<사용자가 알려 준 SHA-256>'   # ← 64자리
-     sudo sh -c 'sha256sum /srv/hjviewer-updates/incoming/*/version-policy.json' | awk -v w="$WANT" 'tolower($1) == tolower(w) { print $2; exit }'
+     sudo sh -c 'sha256sum /srv/hjviewer-updates/incoming/[0-9]*/version-policy.json' | awk -v w="$WANT" 'tolower($1) == tolower(w) { print $2; exit }'
      ```
   3. 사용자가 보낸 새 정책을 8-2대로 넣되, 2번과 4번의 확인 명령에 `--live <2번이 출력한 파일>`을 더해 그 파일을 가진 앱을 기준으로 확인합니다. 4번의 확인이 거부하면 `.new`가 남으므로(`--live`가 다른 곳을 가리켜 스크립트가 지우지 않음) `sudo rm -f /etc/hjviewer/version-policy.json.new`로 지웁니다. 그 옛 파일을 걸린 자리로 옮기지는 않습니다((라)의 2번과 다름).
 
