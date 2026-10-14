@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 06:12:58 +0900
-Subject: [PATCH 3/4] hbbr: pair relay halves that arrive at the same moment
+Subject: [PATCH 3/5] hbbr: pair relay halves that arrive at the same moment
 
 make_pair_ looked for the other half under one lock and parked the
 incoming one under another. Two halves of a session arriving together, as

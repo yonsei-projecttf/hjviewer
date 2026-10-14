@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 12 Oct 2026 21:50:34 +0900
-Subject: [PATCH 4/4] hbbs: tell hjv-api a device's signed key, and keep Pro
+Subject: [PATCH 4/5] hbbs: tell hjv-api a device's signed key, and keep Pro
  fields out of relay requests
 
 hjv-api (hjviewer's server/api) adds a Windows PC to an account only with
