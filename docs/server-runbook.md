@@ -526,7 +526,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 1.6.0의 연세포탈 로그인, 내 기기 목록, 같은 계정 기기끼리 비밀번호 없는 연결, 원격 켜기를 위해 계정 API **hjv-api**를 더하고 hbbs를 패치 0004로 바꾸는 절차입니다. 1~6단계로 B 경로(systemd, nginx)를 마친 서버가 대상입니다. Apache와 A 경로(Caddy)는 다루지 않습니다. 그런 서버가 1.6.0의 설정 파일로 계정 경로에 503을 답하는 것은 고장이 아니며, 7-14의 "hjv-api가 멈춰 있는 동안"에 설명과 할 일이 있습니다.
 
 - 동작 원리: [architecture.md](architecture.md) 5절. hjv-api의 설정, 관리 명령, 형식: [server/api/README.md](../server/api/README.md). 개인정보: [privacy.md](privacy.md). NAS 중계기 설치: [relay-dsm.md](relay-dsm.md).
-- 아래 표의 순서대로 합니다. 소절 번호는 표의 단계를 따릅니다. 서버에서 하는 것은 3~7단계, 9단계, 12단계, 15단계의 승인 명령입니다.
+- 아래 표의 순서대로 합니다. 소절 번호는 표의 단계를 따릅니다. 서버에서 하는 것은 3~7단계, 9단계, 12단계, 14단계(8절), 15단계의 승인 명령입니다.
 
 | 단계 | 할 일 | 누가 | 소절 |
 |---|---|---|---|
@@ -541,7 +541,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 | 8 | 앱과 중계기 빌드, 지문 대조, 출시 태그 | 개발 PC, 사용자 확인 | 7-7 |
 | 9 | nginx 전환 | 운영 에이전트(사용자 승인), 조용한 저녁 | 7-8 |
 | 10~13 | 배포, 운영자 PC부터 켜기, 다른 사용자 | 개발 PC·사용자·운영 에이전트 | 7-9 |
-| 14 | 최소 버전 강제 | 사용자 승인 | 7-10 |
+| 14 | 업데이트 공개키 파일(8-1의 3번), 최소 버전 강제 | 사용자 승인 | 7-10 |
 | 15 | NAS 중계기 승인과 켜기 | 사용자, 운영 에이전트(승인 명령) | 7-11 |
 
 그 뒤의 소절은 되돌리기(7-12), 사고 대응(7-13), 감시와 백업(7-14), 일상 운영(7-15), 보고(7-16)입니다.
@@ -658,7 +658,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
      - **운영 에이전트(8-5의 (라), 시험 서버)**: 시험 키로 도둑 정책(보관소에 없는 e1-sN)을 건 뒤 (라)의 2번을 하면 저널에 went back ERROR가 한 줄 나오고, 이어서 선언이 8-2로 들어가는지 봅니다.
      - **운영 에이전트(8-8)**: nginx·php-fpm 사용자의 READABLE 줄이 0인지, `auto_block_ips.sh`가 무엇을 세는지, 사이트에 `error_page 404`가 있는지 봅니다.
      - **운영 에이전트(Docker를 쓰는 서버만)**: hbbs가 Docker이면 디렉터리를 마운트했을 때 `min-controller.conf` 교체(`mv`)가 10초 안에 반영되는지 봅니다.
-     - **운영 에이전트(문 1, 문 2, 패키지)**: `sudo runuser -u www-data -- test -r /srv/hjviewer-updates/pkg/<패키지> && echo READABLE`이 아무것도 내지 않고(8-8의 1번처럼 `runuser`로. `sudo -u`는 root로만 실행을 허락하는 sudo에서 거절되어 통과처럼 보임), 8-4처럼 주소를 표준 입력으로 준 `curl -K -`(코드가 명령줄에 남지 않음)로 문 2의 `HJViewer-<v>-install.exe` HEAD가 200과 정책의 크기이고, `/api/hjv/u/0000-0000`이 링크 오류 JSON이고, nginx 기록에 문 2 코드가 없고(코드를 명령줄에 쓰지 않음. 예: `sudo sh -c "sed -n 's/^CODE=//p' /etc/hjviewer/door2.conf | grep -c -F -f - /var/log/nginx/*.log"`가 모두 0), 실제 회선의 내려받기가 약 3.8 MB/s이고, 다음 날 `auto_block_ips.sh`가 이 404를 세지 않는지 봅니다. 설치된 Windows PC가 무인 설치한 뒤 저널의 'update: windows <v> to a PC'와 처음 주소 notice, `operator.log`의 `cmd="update device-new-address"`, `admin report`의 update device-windows를 봅니다.
+     - **운영 에이전트(문 1, 문 2, 패키지)**: `sudo test -e /srv/hjviewer-updates/pkg/<패키지> || echo MISSING; sudo runuser -u www-data -- test -r /srv/hjviewer-updates/pkg/<패키지> && echo READABLE`이 아무것도 내지 않고(8-8의 1번처럼 존재 확인을 앞에 두고 `runuser`로. `sudo -u`는 root로만 실행을 허락하는 sudo에서 거절되어 통과처럼 보이고, `test -r`만으로는 패키지 경로를 잘못 써도 통과처럼 보임), 8-4처럼 주소를 표준 입력으로 준 `curl -K -`(코드가 명령줄에 남지 않음)로 문 2의 `HJViewer-<v>-install.exe` HEAD가 200과 정책의 크기이고, `/api/hjv/u/0000-0000`이 링크 오류 JSON이고, nginx 기록에 문 2 코드가 없고(코드를 명령줄에 쓰지 않음. 예: `sudo sh -c "sed -n 's/^CODE=//p' /etc/hjviewer/door2.conf | grep -c -F -f - /var/log/nginx/*.log"`가 모두 0), 실제 회선의 내려받기가 약 3.8 MB/s이고, 다음 날 `auto_block_ips.sh`가 이 404를 세지 않는지 봅니다. 설치된 Windows PC가 무인 설치한 뒤 저널의 'update: windows <v> to a PC'와 처음 주소 notice, `operator.log`의 `cmd="update device-new-address"`, `admin report`의 update device-windows를 봅니다.
      - **사용자(열린 로그인, 실제 연세 SSO)**: 명단에 없는 교직원 ID로 1.6.0 앱에서 로그인하면 성공하고 `hjv-api admin allow list`에 'from login'으로 오릅니다(운영 에이전트는 '(n by a login)' 수와 'was registered' 줄 수만 봄). `admin block` 뒤에는 그 기기의 다음 계정 요청과 새 로그인이 거절되고 앱의 로그인 창에 '이 계정은 관리자가 HJViewer 사용을 막았습니다. …'가 그대로 보이며, `admin unblock` 뒤 다시 됩니다. 포탈 ID로 로그인한 뒤 저널에 'login: the portal ID typed and the SSO's perslNo differ' 줄이 있는지 보고 결과를 문서에 적습니다.
      - **사용자(문 2 페이지)**: 운영 에이전트가 `door2.conf`를 둔 뒤 `/api/hjv/get/<코드>/`를 휴대폰과 PC 브라우저로 열면 맨 위에 시범 서비스 안내 두 문장이 보여야 합니다. iPhone Safari에서 'TestFlight 열기'(`itms-beta://`)가 열리는지, Android의 앱 안 브라우저(Custom Tab)에서 APK가 받아지는지(설계의 [불확실]) 봅니다.
      - **사용자(최고운영자)**: 배포 때 사용자가 서버의 `HJV_API_OPERATORS`에 자기 ID를 넣고(7-15. 저장소 파일에는 넣지 않음) 조용한 시간에 hjv-api를 다시 시작합니다. `admin operators`에서 그 줄의 account와 allowlist가 yes이고, 앱의 '최고운영자: 사용자와 PC'에 막히지 않은 사용자와 계정에 든 PC가 보이며, `admin block`한 계정은 사용자 목록에서 빠지고 그 계정의 PC는 주인의 포탈 ID·성명과 함께 PC 목록에 남는지 봅니다([privacy.md](privacy.md) 3절).
@@ -724,6 +724,7 @@ echo "== php-fpm pools"; $S grep -hE '^\s*(user|group|listen\.group)\s*=' /etc/p
 echo "== DNS"; grep -E '^nameserver' /etc/resolv.conf
 echo "== outbound without a proxy (000 = blocked)"; for u in https://github.com https://release-assets.githubusercontent.com https://objects.githubusercontent.com https://raw.githubusercontent.com https://api.telegram.org; do echo "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 10 "$u") $u"; done; echo "proxy variables: $(env | grep -ciE '^(https?|all)_proxy=')"
 echo "== journald, credentials"; systemctl --version | head -1; ls /etc/systemd/journald*.conf* 2>/dev/null; systemd-creds has-tpm2 2>&1 | head -1; ls -d /dev/tpm* 2>/dev/null; $S ls -l /var/lib/systemd/credential.secret 2>&1
+echo "== for the TPM choice (step 5)"; echo "virtualization $(systemd-detect-virt), firmware $([ -d /sys/firmware/efi ] && echo uefi || echo bios), $(mokutil --sb-state 2>/dev/null | head -1 | grep . || echo 'SecureBoot unknown'), Automatic-Reboot $(apt-config dump | sed -n 's/^Unattended-Upgrade::Automatic-Reboot "\(.*\)";$/\1/p' | tail -1 | grep . || echo unset)"
 echo "== disk"; df -h / /var
 echo "== timers and cron (names only)"; systemctl list-timers --all --no-legend | awk '{print $(NF-1)}' | sort -u; ls /etc/cron.d; $S sh -c 'grep -lE "nginx|auto_block|backup|rsync|restic|borg" /etc/crontab /etc/cron.d/* /etc/cron.daily/* /etc/cron.weekly/* /var/spool/cron/crontabs/* 2>/dev/null' | sed 's|^/var/spool/cron/crontabs/.*|a user crontab|'; command -v etckeeper; $S test -d /etc/.git && echo ETC_IS_GIT
 echo "== IP filter: without, then with IPAddressDeny (the second should be 000)"
@@ -739,15 +740,15 @@ $S systemd-run --wait --pipe --quiet -p IPAddressDeny=127.0.0.1 curl -sk -o /dev
 - `real_ip_header`나 `set_real_ip_from`이 HJViewer 경로가 있는 server 블록이나 http 블록에 있고 넓은 범위(예: 0.0.0.0/0)를 믿으면 멈춥니다. hjv-api는 nginx가 `$remote_addr`로 채우는 `X-Real-IP`로 로그인 시도를 셉니다.
 - `zone=hjv_` 이름을 다른 설정이 이미 쓰거나, nginx.conf가 http 블록에서 `conf.d/*.conf`를 읽지 않으면 멈춥니다(zones 파일을 둘 곳).
 - nginx.conf가 `conf.d/*.conf`를 http 밖(main, stream, mail)에서도 읽으면 7-8 전에 보고합니다. 7-8의 zones 파일이 그 자리에서 `nginx -t`를 깹니다.
-- HJViewer 경로가 든 server 블록이나 http 블록에 바로(location 밖에) `limit_req`·`limit_conn`·`limit_rate`·`modsecurity`가 있거나, 그 server 블록에 바로 `if`·`return`·`rewrite`가 있으면 보고합니다. 7-8 뒤 계정 경로에도 걸립니다.
+- HJViewer 경로가 든 server 블록이나 http 블록에 바로(location 밖에) `limit_req`·`limit_conn`·`limit_rate`·`modsecurity`가 있거나, 그 server 블록에 바로 `if`·`return`·`rewrite`가 있으면 보고합니다. 7-8 뒤 계정 경로에도 걸립니다. grep 줄만으로는 그 줄이 location 안인지 알 수 없습니다(WordPress 사이트에는 location 안의 `if`·`return`·`rewrite`가 흔함). 걸린 줄마다 `sudo nginx -T` 출력에서 그 줄 번호의 앞을 보고, location 밖인 줄만 셉니다.
 - nginx 작업 프로세스의 그룹이 `www-data`가 아니면 보고합니다. 7-3에서 소켓 그룹을 드롭인으로 바꿉니다.
 - PHP-FPM이 `www-data`로 돌면 보고합니다. 같은 서버의 PHP도 hjv-api 소켓을 부를 수 있다는 뜻입니다(키, 자격 증명, DB는 다른 사용자라 읽지 못함).
 - 바깥 연결(프록시 없이): github.com이 000이거나, release-assets와 objects가 둘 다 000이면 멈춥니다(7-3, 7-6, 8-1의 내려받기). raw.githubusercontent.com만 000이면 진행하고, 8-1의 3번은 `incoming/`으로 받는 길로 합니다. api.telegram.org가 000이면 질문 12(경보 경로)를 정하기 전에 사용자에게 알립니다. `proxy variables`가 0이 아니면 보고합니다. hjv-api는 프록시 없이 SSO로 바로 나가므로, 셸의 프록시로 되는 연결은 증거가 되지 않습니다.
 - systemd가 254보다 낮으면 멈추고 판을 보고합니다. 경보 유닛의 `ImportCredential=`은 254부터입니다.
-- `has-tpm2`가 `yes`이거나 `/dev/tpm*`이 있으면 보고합니다(5단계의 자격 증명은 TPM에 묶이되 PCR에는 묶이지 않음).
+- `has-tpm2`가 `yes`이거나 `/dev/tpm*`이 있으면 보고하고, 5단계 전에 사용자에게 알려 TPM 방식을 정합니다. `for the TPM choice` 줄(가상화, 펌웨어, Secure Boot 상태, 자동 재부팅)도 함께 알립니다. 기본은 TPM에는 묶되 PCR에는 묶지 않는 `--tpm2-pcrs=`이고, 사용자는 TPM을 쓰지 않는 `--with-key=host`를 고를 수도 있습니다(7-4 머리). `Automatic-Reboot`가 `true`이면(`unset`은 기본값 false) 업데이트 뒤 사람 없이 재부팅하므로, 자격 증명을 풀지 못하는 일이 생기면 사람이 없는 시간에 드러납니다.
 - IP 필터의 두 줄: 첫 줄이 000이면 웹 서버가 127.0.0.1에서 받지 않는 것이니 판단하지 않고 보고합니다. 첫 줄은 000이 아닌데 둘째 줄도 000이 아니면, 이 커널에서는 systemd의 IP 필터가 효과가 없으므로 보고하고 7-3의 나가는 연결 제한(선택)을 넣지 않습니다.
 - cron에 `nginx`나 `auto_block`이 든 작업이 보이면(`a user crontab` 포함) nginx를 다시 읽는 시각을 사용자에게 확인합니다. 7단계와 9단계는 그 시각을 피합니다(7-0).
-- 백업이나 동기화 작업이 `/var/lib`나 `/etc`를 서버 밖으로 보내면 보고합니다. hjv-api의 DB와 자격 증명은 서버 밖 사본을 두지 않기로 했습니다(7-14).
+- 백업이나 동기화 작업이 `/var/lib`나 `/etc`를 서버 밖으로 보내면 보고합니다. hjv-api의 DB와 자격 증명은 서버 밖 사본을 두지 않기로 했습니다(7-14). `/etc/cron.daily/dpkg`와 `dpkg-db-backup.timer`는 Ubuntu 기본 작업(dpkg 상태를 서버 안의 `/var/backups`에 남김)이므로 보고하지 않습니다.
 - etckeeper가 있거나 `ETC_IS_GIT`이 나오면 멈추고 사용자와 정합니다. `/etc/hjviewer`(문 2 코드, 최고운영자의 포탈 ID)와 `/etc/credstore.encrypted`가 `/etc/.git`에 커밋됩니다.
 
 보고: 위 판단의 결과와 개수만. 설정 파일 내용, 주소, 이름은 옮기지 않습니다.
@@ -806,10 +807,11 @@ sudo grep -cE '^HJV_API_(SSO_TOKEN_URL|SSO_USERINFO_URL|SSO_CLIENT_ID|HBBS_PUBKE
 sudo grep -E '^#?HJV_API_(BIND_OS|SECOND_FACTOR|TRUST_REFRESH|TRUST_TTL|PASSWORDLESS_KINDS)=' "$E"
 ```
 
-- 마지막 줄의 기본값을 바꾸지 않습니다: `HJV_API_BIND_OS=windows`, `HJV_API_SECOND_FACTOR=off`(결정 U1), `HJV_API_TRUST_REFRESH=120`(60~300), `HJV_API_TRUST_TTL=86400`(U4, 72시간 이하), `HJV_API_PASSWORDLESS_KINDS=remote,file,camera`(U3). 개발 PC의 `scripts/ci.sh deploy`는 이 가운데 `BIND_OS`, `SECOND_FACTOR`, `TRUST_REFRESH`, `TRUST_TTL` 넷을 묶음의 예시에서 검사하고, 이 서버의 설정 파일 사본으로도 검사할 수 있습니다(`HJV_API_ENV_FILE`, [ci.md](ci.md)). 사본에서는 `HJV_API_OPERATORS`와 `HJV_API_CAMPUS_NETS` 줄을 뺍니다. 포탈 ID와 학교 주소 대역이 개발 PC로 가지 않게 하기 위해서입니다: `sudo grep -vE '^[[:space:]]*HJV_API_(OPERATORS|CAMPUS_NETS)[[:space:]]*=' /etc/hjviewer/hjviewer-api.env > hjviewer-api.env.copy`. `PASSWORDLESS_KINDS`는 검사하지 않으므로 이 출력으로 확인합니다.
+- 마지막 줄의 기본값을 바꾸지 않습니다: `HJV_API_BIND_OS=windows`, `HJV_API_SECOND_FACTOR=off`(결정 U1), `HJV_API_TRUST_REFRESH=120`(60~300), `HJV_API_TRUST_TTL=86400`(U4, 72시간 이하), `HJV_API_PASSWORDLESS_KINDS=remote,file,camera`(U3). 개발 PC의 `scripts/ci.sh deploy`는 이 가운데 `BIND_OS`, `SECOND_FACTOR`, `TRUST_REFRESH`, `TRUST_TTL` 넷을 묶음의 예시에서 검사하고, 이 서버의 설정 파일 사본으로도 검사할 수 있습니다(`HJV_API_ENV_FILE`, [ci.md](ci.md)). 사본에서는 `HJV_API_OPERATORS`와 `HJV_API_CAMPUS_NETS` 줄을 뺍니다. 포탈 ID와 학교 주소 대역이 개발 PC로 가지 않게 하기 위해서입니다: `sudo grep -vE '^[[:space:]]*HJV_API_(OPERATORS|CAMPUS_NETS)[[:space:]]*=' /etc/hjviewer/hjviewer-api.env > ~/hjviewer-api.env.copy`(운영 에이전트의 홈. 설치 블록이 `cd /`로 끝나므로 상대 경로를 쓰지 않음). 사본은 개발 PC로 옮긴 뒤 서버에서 지웁니다. `PASSWORDLESS_KINDS`는 검사하지 않으므로 이 출력으로 확인합니다.
 - nginx 작업 프로세스의 그룹이 `www-data`가 아니면(7-2) 소켓 그룹을 드롭인으로 바꿉니다. `www-data`면 할 일이 없습니다. `sudo systemctl edit`은 편집기를 열어 운영 에이전트가 쓸 수 없고, 표준 입력을 받는 `systemctl edit --stdin`은 systemd 256부터입니다(Ubuntu 24.04는 255). 그래서 다음 줄로 둡니다.
   ```bash
   G='<그 그룹>'                      # ← 7-2의 nginx workers 줄에 나온 그룹
+  getent group "$G" > /dev/null || { echo 'STOP: 그 그룹이 없음'; exit 1; }
   sudo install -d -m 755 /etc/systemd/system/hjviewer-api.socket.d && printf '%s\n' '[Socket]' "SocketGroup=$G" | sudo tee /etc/systemd/system/hjviewer-api.socket.d/group.conf > /dev/null && sudo systemctl daemon-reload
   ```
 - (선택, 사용자 승인 뒤) 나가는 연결 제한: 7-2의 IP 필터 시험에서 둘째 줄만 000이었으면 `/etc/systemd/system/hjviewer-api.service.d/egress.conf`에 `[Service]`, `IPAddressDeny=any`, `IPAddressAllow=localhost <SSO 주소들> <DNS 서버 주소, 127.0.0.53이 아닐 때>`를 둡니다. `IPAddressAllow=`는 이름이 아니라 주소만 받습니다. SSO 주소들은 SSO 토큰 주소와 사용자 정보 주소의 호스트마다 `getent ahosts <호스트>`로 나온 모든 주소입니다(두 호스트가 다를 수 있고, 이름 하나가 주소 여럿을 가리킬 수 있음). 물을 때마다 주소가 바뀌어 나오는 이름이면 이 제한을 넣지 않습니다. SSO 서버의 주소가 바뀌면 로그인이 멈추므로, 넣었다는 것을 보고에 적습니다.
@@ -818,7 +820,7 @@ sudo grep -E '^#?HJV_API_(BIND_OS|SECOND_FACTOR|TRUST_REFRESH|TRUST_TTL|PASSWORD
 
 **멈춤.** 운영 에이전트는 이 단계를 하지 않고, 사용자가 끝났다고 알려 줄 때까지 기다립니다. 사용자는 에이전트 세션의 터미널이 아닌 곳에서 합니다. 개인키는 화면에 나오지 않고, 화면에는 공개키, 키 번호, 지문만 나옵니다.
 
-이 절과 7-14, 7-15의 `systemd-creds encrypt`에는 모두 `--tpm2-pcrs=`(빈 값)를 붙여, TPM이 있으면 자격 증명을 TPM에는 묶되 PCR에는 묶지 않습니다. 기본값은 PCR 7(Secure Boot 상태와 키 목록)에도 묶어서, Secure Boot 키 목록 갱신이나 펌웨어 설정 변경 뒤 재부팅하면 자격 증명을 모두 풀지 못해 hjv-api가 시작하지 않고 서버에만 있는 목록 키 1번, 명령 키 1번, 기록 키를 잃기 때문입니다. TPM이 없는 서버에서는 달라지는 것이 없습니다.
+이 절과 7-14, 7-15의 `systemd-creds encrypt`에는 모두 `--tpm2-pcrs=`(빈 값)를 붙여, TPM이 있으면 자격 증명을 TPM에는 묶되 PCR에는 묶지 않습니다. 기본값은 PCR 7(Secure Boot 상태와 키 목록)에도 묶어서, Secure Boot 키 목록 갱신이나 펌웨어 설정 변경 뒤 재부팅하면 자격 증명을 모두 풀지 못해 hjv-api가 시작하지 않고 서버에만 있는 목록 키 1번, 명령 키 1번, 기록 키를 잃기 때문입니다. TPM이 없는 서버에서는 달라지는 것이 없습니다. PCR에 묶지 않아도 TPM을 지우거나 바꾸면(펌웨어 초기화로 fTPM이 지워짐, VM을 옮기며 vTPM을 가져가지 않음) 자격 증명을 풀지 못합니다. 그래서 7-2에서 TPM이 보였으면 이 단계 전에 사용자가 방식을 정합니다. 이것도 피하려면 `--with-key=host`(호스트 키 `/var/lib/systemd/credential.secret`만 씀)를 골라, 이 절과 7-14, 7-15의 모든 `encrypt` 줄에서 `--tpm2-pcrs=` 자리에 씁니다. 그때는 서버의 디스크나 그 백업을 가진 사람이 자격 증명을 풀 수 있습니다. 따로 정하지 않으면 `--tpm2-pcrs=` 그대로입니다.
 
 **(가) 오프라인 키**: 봉인 키, 목록 키 2번, 명령 키 2번. 서버가 없어져도 되살리거나 교체할 수 있게 서버 밖에 둡니다.
 
@@ -851,15 +853,16 @@ sudo install -d -m 700 /etc/credstore.encrypted
 # SSO 자격 증명: WordPress SSO 로그인 플러그인(projecttf-auth)과 같은 값(D2)
 systemd-ask-password -n "SSO client secret:" | sudo systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-sso-client-secret - /etc/credstore.encrypted/hjviewer-sso-client-secret
 systemd-ask-password -n "SSO api uuid:" | sudo systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-sso-api-uuid - /etc/credstore.encrypted/hjviewer-sso-api-uuid
-# 서버에만 있는 키(오프라인 사본 없음). 비밀은 keygen의 표준 출력에서 systemd-creds로 바로 감
-sudo /opt/hjviewer/bin/hjv-api keygen log-key | sudo systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-log-key - /etc/credstore.encrypted/hjviewer-api-log-key
-sudo /opt/hjviewer/bin/hjv-api keygen list --kid 1 | sudo systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-list-key - /etc/credstore.encrypted/hjviewer-api-list-key              # 화면: 1:<base64>와 지문
-sudo /opt/hjviewer/bin/hjv-api keygen command --kid 1 | sudo systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-command-key - /etc/credstore.encrypted/hjviewer-api-command-key  # 원격 켜기용. 화면: 1:<base64>와 지문
+# 서버에만 있는 키(오프라인 사본 없음). 비밀은 keygen의 표준 출력에서 systemd-creds로 바로 감. 줄마다 sudo 하나, 어느 쪽이 실패해도 STOP
+sudo bash -c 'set -o pipefail; /opt/hjviewer/bin/hjv-api keygen log-key | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-log-key - /etc/credstore.encrypted/hjviewer-api-log-key' || echo 'STOP: 기록 키를 넣지 못함'
+sudo bash -c 'set -o pipefail; /opt/hjviewer/bin/hjv-api keygen list --kid 1 | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-list-key - /etc/credstore.encrypted/hjviewer-api-list-key' || echo 'STOP: 목록 키 1번을 넣지 못함'           # 화면: 1:<base64>와 지문
+sudo bash -c 'set -o pipefail; /opt/hjviewer/bin/hjv-api keygen command --kid 1 | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-command-key - /etc/credstore.encrypted/hjviewer-api-command-key' || echo 'STOP: 명령 키 1번을 넣지 못함'  # 원격 켜기용. 화면: 1:<base64>와 지문
 sudo ls -l /etc/credstore.encrypted/
 ```
 
 - SSO client secret은 토큰 요청의 `Authorization: Basic ` 뒤에 오는 값 그대로입니다. `-n`은 끝에 줄바꿈을 붙이지 않습니다.
 - `keygen`의 `--encrypt-to`는 `systemd-creds encrypt`를 `--tpm2-pcrs=` 없이 부르므로 쓰지 않습니다. 비밀은 `keygen`의 표준 출력으로 나가 파이프의 `systemd-creds encrypt`에 바로 들어가고(표준 출력이 터미널이면 `keygen`이 거부함), 화면에는 표준 오류의 공개값만 나옵니다.
+- 키 세 줄은 줄마다 `sudo` 하나로 돌고(두 `sudo`가 한꺼번에 비밀번호를 묻지 않음) `pipefail`을 켜므로, `keygen`과 `systemd-creds` 가운데 어느 쪽이 실패해도 `STOP:` 줄이 나옵니다. `keygen`은 비밀을 파이프에 쓴 뒤 공개값을 내므로 `systemd-creds`가 실패해도 공개키와 지문이 화면에 나오고, `keygen`이 실패하면 `systemd-creds`는 빈 입력으로 자격 증명을 만듭니다. 그래서 `STOP:`이 나오면 그 줄에서 나온 공개키와 지문은 버리고 그 줄만 다시 합니다(다시 하면 새 키이고, 자격 증명 파일도 새것으로 바뀜). 마지막의 `sudo ls -l`에 여섯 파일이 모두 있는지 봅니다.
 - 여섯 자격 증명(SSO 둘, 봉인 키, 기록 키, 목록 키, 명령 키)이 모두 있어야 6단계에서 서비스가 시작합니다. 유닛이 명령 키(`hjviewer-api-command-key`)도 요구합니다.
 - `keygen list`와 `keygen command`는 화면에 공개키(`N:<base64>`)와 지문(`fingerprint: N:<SHA-256 16진수>`)을 냅니다. `keygen command`의 첫 줄은 `N:<base64>`뿐이라 `HJV_COMMAND_PUBKEY`의 항목으로 그대로 씁니다. 지문은 적어 두었다가 6단계의 `selfcheck`, 8단계의 빌드 요약과 대조합니다.
 - 기록 키를 잃으면 새로 만듭니다(옛 기록의 꼬리표와 이어지지 않을 뿐). 목록 키 1번과 명령 키 1번을 잃으면 오프라인의 2번으로 바꿉니다(7-15).
@@ -1027,7 +1030,7 @@ cd / && rm -rf "$T"
 
 ### 7-10. 최소 버전 강제 (14단계)
 
-[8절](#8-최소-버전과-업데이트-배포-160)을 따릅니다. 처음 정책(M5, `seq` 1)은 1.6.0이 모든 배포 경로에 준비된 뒤에 넣어도 아무도 막지 않습니다. 처음 강제(M7: 정책 `seq` 2와 hbbs 파일)는 세 플랫폼의 1.6.0이 나가고 PC들이 1.6.0으로 올라간 뒤에만, 사용자 승인으로 합니다.
+먼저 8-1의 3번(업데이트 공개키 파일)을 합니다. 출시 태그(8단계) 뒤라야 받을 수 있고, 첫 정책(8-2)의 서버 확인이 그 파일을 읽습니다. 그 뒤 [8절](#8-최소-버전과-업데이트-배포-160)을 따릅니다. 처음 정책(M5, `seq` 1)은 1.6.0이 모든 배포 경로에 준비된 뒤에 넣어도 아무도 막지 않습니다. 처음 강제(M7: 정책 `seq` 2와 hbbs 파일)는 세 플랫폼의 1.6.0이 나가고 PC들이 1.6.0으로 올라간 뒤에만, 사용자 승인으로 합니다.
 
 ### 7-11. NAS 중계기 승인과 켜기 (15단계)
 
@@ -1184,13 +1187,13 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
 - **대상 가리키기**: 포탈 ID나 주소를 명령 인자로 치지 않습니다. sudo가 명령줄 전체를 시스템 로그(`/var/log/auth.log`, 저널)에 남기고, 사람이 친 명령은 셸 기록에도 남기 때문입니다(운영자 기록에는 꼬리표만 남음). 사람 운영자는 `users --reveal`로 꼬리표를 찾아 `tag:<T>`로 가리키고, PC는 `--owner-of <PC ID>`나 `binding list`의 꼬리표로 가리킵니다.
 - **계정 키**: `key list [tag:T]`(키마다 PC별 마지막 비밀번호 없는 연결과 30일 횟수), `key revoke <ckid>`(잃어버린 기기를 사용자가 직접 로그아웃시킬 수 없을 때), `user revoke-all tag:<T>`. 한 계정에는 활성 키가 20개까지이고, 넘으면 새 로그인이 그 계정에서 가장 오래 쓰지 않은 키를 로그아웃시킵니다(저널의 `login: the account had 20 active keys`). 사용자가 모르는 기기가 많으면 비밀번호 유출로 보고 7-13의 4·5번을 합니다.
 - **계정 삭제 요청**: 요청을 받은 날짜를 사용자가 서버 밖에 적어 둡니다(복원·재구축 뒤 다시 지우기 위해, 7-14). `user delete tag:<T>`. 명단의 항목도 계정과 함께 지워집니다. 열린 로그인에서는 그 사람이 나중에 다시 로그인하면 다시 오르고, 명단 방식에서는 `allow import <파일>`로 다시 넣어야 로그인합니다. 막힌 항목은 계정을 지워도 남습니다(막기를 지키는 데 필요한 포탈 ID만 남음). `user delete`는 그 계정의 PC를 먼저 풀고(무덤) 그 계정의 중계기를 폐기한 뒤, 계정과 그 키·토큰·사용 기록·켜기 기록을 지웁니다. 남는 것은 묶음 무덤(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록이고, 백업은 14일 뒤 사라진다고 요청한 사람에게 알립니다.
-- **열람 요청**(사람 운영자만, 운영 에이전트는 하지 않음): `users --reveal`, `devices --reveal`, `key list tag:<T> --reveal`, `binding list --reveal`, `relay list --reveal`로 그 사람의 것을 봅니다. 로그인 기록(`events`), 켜기 기록(`wake_jobs`), 켜기 정보(`wol_info`), PC마다 마지막 동기화와 그 주소(`devices --reveal`에 없음)는 관리 명령이 없으므로, root가 DB를 읽기 전용으로 열어 아래 블록으로 봅니다. 서버에 `sqlite3` 명령이 없어도 되도록(이 런북은 그 패키지를 설치하지 않음) python3의 sqlite3 모듈로 열고(`mode=ro`, 쓰기는 거부됨), 값은 SQL 글에 넣지 않고 `?`로 묶습니다. 꼬리표는 인자로, 포탈 ID는 표준 입력으로 주므로 포탈 ID가 명령줄과 sudo 기록에 남지 않습니다(위 "대상 가리키기"). 결과는 요청한 사람에게만 전하고 서버나 대화에 남기지 않습니다.
+- **열람 요청**(사람 운영자만, 운영 에이전트는 하지 않음): `users --reveal`, `devices --reveal`, `key list tag:<T> --reveal`, `binding list --reveal`, `relay list --reveal`로 그 사람의 것을 봅니다. 로그인 기록(`events`), 켜기 기록(`wake_jobs`), 켜기 정보(`wol_info`), PC마다 마지막 동기화와 그 주소(`devices --reveal`에 없음)는 관리 명령이 없으므로, root가 DB를 읽기 전용으로 열어 아래 블록으로 봅니다. 서버에 `sqlite3` 명령이 없어도 되도록(이 런북은 그 패키지를 설치하지 않음) python3의 sqlite3 모듈로 열고(`mode=ro`, 쓰기는 거부됨), 값은 SQL 글에 넣지 않고 `?`로 묶습니다. 꼬리표는 인자로, 포탈 ID는 표준 입력으로 주므로 포탈 ID가 명령줄과 sudo 기록에 남지 않습니다(위 "대상 가리키기"). 포탈 ID는 hjv-api처럼 앞뒤 공백을 빼고 소문자로 바꿔 찾으므로, 대문자로 쳐도 됩니다. 결과는 요청한 사람에게만 전하고 서버나 대화에 남기지 않습니다.
 
 ```bash
 T='<꼬리표>'                              # ← users --reveal로 찾은 꼬리표
-read -r -p '소문자 포탈 ID: ' ID          # 명령줄과 셸 기록에 남기지 않음
+read -r -p '포탈 ID: ' ID                # 명령줄과 셸 기록에 남기지 않음
 printf '%s\n' "$ID" | sudo python3 -I -B -c 'import sqlite3, sys
-tag, key = sys.argv[1], sys.stdin.readline().strip()
+tag, key = sys.argv[1], sys.stdin.readline().strip().lower()
 db = sqlite3.connect("file:/var/lib/hjviewer-api/hjv-api.sqlite3?mode=ro", uri=True)
 for name, sql, arg in (
         ("events", "SELECT at, kind, device_tag, ip, result FROM events WHERE account_tag = ?", tag),
@@ -1205,12 +1208,12 @@ for name, sql, arg in (
 - **최고운영자 정하기**(사용자 승인): 최고운영자는 앱에서 이 서비스의 사용자와 PC(이름, 주소)를 보기만 하는 사람입니다([server/api/README.md](../server/api/README.md)의 "Admin overview"). 누구로 할지는 사용자가 정하고, 포탈 ID는 저장소에도 대화에도 두지 않으므로 사용자가 서버에서 직접 넣습니다: `sudoedit /etc/hjviewer/hjviewer-api.env`에서 `HJV_API_OPERATORS=` 줄 끝에 포탈 ID를 적습니다(여럿이면 쉼표로). 운영 에이전트는 사용자 승인을 받아 조용한 시간에 `sudo systemctl restart hjviewer-api`와 확인만 합니다. `sudo /opt/hjviewer/bin/hjv-api admin operators`의 첫 줄이 `super operators (HJV_API_OPERATORS): 1 configured, 1 with an account`이고 그 사람의 줄에서 `account`와 `allowlist`가 `yes`이면 됩니다(아직 로그인하지 않았으면 `account`가 `no`이니 로그인한 뒤 다시 봅니다. 열린 로그인에서는 처음 로그인할 때 명단에 저절로 올라 `allowlist`가 `yes`가 됩니다. `blocked`이면 막힌 것이니 사용자 승인 뒤 `unblock`합니다. 명단 방식(`HJV_API_LOGIN=list`)에서 `no`이면 `allow import`로 넣습니다). 출력의 ID는 가려져 있고, 그 줄의 꼬리표가 운영자 기록에 남는 `cmd="app overview" acct=<꼬리표>` 줄의 것입니다. 그만두게 할 때는 그 줄의 값을 지우고 같은 방법으로 다시 시작합니다. 볼 때마다 운영자 기록과 저널에 한 줄씩 남는다는 것은 개인정보 처리방침에 있습니다([privacy.md](privacy.md) 3절, 9절).
 - **SSO 자격 증명이 바뀔 때**: hjv-api는 같은 서버의 WordPress SSO 로그인 플러그인(projecttf-auth)과 같은 SSO 등록을 씁니다. 그 플러그인의 client secret이나 api uuid가 바뀌면 같은 날 사용자가 7-4의 (나)처럼 `hjviewer-sso-client-secret`(또는 `hjviewer-sso-api-uuid`)를 다시 만들고 `sudo systemctl restart hjviewer-api`를 합니다. 그대로 두면 SSO가 `invalid_client`로 거절해 모든 로그인이 "연세 인증 서버에 지금 연결할 수 없습니다"가 되고, 감시가 경보를 냅니다.
 - **목록 키 바꾸기**(목록 키 1번이 샜거나 잃었을 때):
-  1. 사용자가 오프라인 매체의 목록 키 2번(`hjviewer-list-2.key`)을 7-4의 (가) 3번처럼 표준 입력으로 넣습니다. 자격 증명 이름은 그대로 `hjviewer-api-list-key`이고(명령의 `--name=`과 파일 이름만 그것으로 바꾸고 `--tpm2-pcrs=`는 그대로 둠), 그 안의 키가 2번으로 바뀝니다.
+  1. 사용자가 오프라인 매체의 목록 키 2번(`hjviewer-list-2.key`)을 7-4의 (가) 3번처럼 표준 입력으로 넣습니다. 자격 증명 이름은 그대로 `hjviewer-api-list-key`이고(명령의 `--name=`과 파일 이름만 그것으로 바꾸고 `--tpm2-pcrs=`(7-4에서 `--with-key=host`를 골랐으면 그것)는 그대로 둠), 그 안의 키가 2번으로 바뀝니다.
   2. 설정 파일에 `HJV_API_LIST_KID=2`를 넣고 `sudo systemctl restart hjviewer-api`, `admin selfcheck`로 확인합니다(`HJV_API_TRUST_PUBKEYS`는 그대로 `1:…,2:…`).
   3. 모든 1.6.x 앱은 이미 2번을 믿습니다. PC는 2번 목록을 한 번 받으면 1번 목록을 다시 받지 않고, 서버에 닿는 PC는 늦어도 5분 안에 받습니다.
   4. 다음 앱 빌드는 2번과 새 3번을 고정하고, 그 빌드가 나가면 서버의 `HJV_API_TRUST_PUBKEYS`도 `2:…,3:…`로 바꿉니다. `report`의 `PCs by app version`으로 아직 옛 빌드인 PC를 봅니다.
 - **명령 키 바꾸기**(명령 키 1번이 샜거나 잃었을 때): 같은 방법으로 `hjviewer-command-2.key`를 `hjviewer-api-command-key`에 넣고 `HJV_API_COMMAND_KID=2`, 다시 시작한 뒤 `admin selfcheck`의 명령 키 두 줄을 봅니다([relay/PROTOCOL.md](../relay/PROTOCOL.md) 3.2). hjv-relay 빌드가 1번과 2번을 함께 고정하므로 NAS는 건드리지 않고, 승인한 중계기는 다시 승인받지 않습니다. 다음 hjv-relay 빌드가 2번과 새 3번을 고정합니다.
-- **봉인 키 바꾸기**: 자격 증명 `hjviewer-api-login-key`는 여러 줄을 받고 첫 줄이 지금 키입니다. 사용자가 새 키 파일과 옛 키 파일(오프라인 매체)을 이 순서로 이어(`cat 새 옛`) 7-4의 (가) 3번처럼(`--tpm2-pcrs=` 포함) 넣고 `sudo systemctl restart hjviewer-api`를 합니다. 새 공개키로 빌드한 앱이 모두 나간 뒤 새 키만 다시 넣습니다.
+- **봉인 키 바꾸기**: 자격 증명 `hjviewer-api-login-key`는 여러 줄을 받고 첫 줄이 지금 키입니다. 사용자가 새 키 파일과 옛 키 파일(오프라인 매체)을 이 순서로 이어(`cat 새 옛`) 7-4의 (가) 3번처럼(`--tpm2-pcrs=`나 7-4에서 고른 `--with-key=host` 포함) 넣고 `sudo systemctl restart hjviewer-api`를 합니다. 새 공개키로 빌드한 앱이 모두 나간 뒤 새 키만 다시 넣습니다.
 
 ### 7-16. 보고 (7절)
 
