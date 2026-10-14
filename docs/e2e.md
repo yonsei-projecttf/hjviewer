@@ -177,7 +177,7 @@ PASS (strict): transport: relay
 | S28 | hjv-ctl2(D1 뒤로 비어 있음)에서 미리 넣지 않은 carol이 로그인 | 성공(SSO 호출 1번). `allow list` 첫 줄 `allowlist: 3 IDs, 3 registered (1 by a login), 0 blocked; login open`, carol의 항목은 `from login`. hjv-api 로그에 `… was registered (acct=<꼬리표>)` 한 줄, 로그와 가린 명단에 carol의 ID 없음 |
 | S29 | `admin block Y9001` | 출력 `blocked: 1 blocked …, 1 tokens and 1 account keys revoked; …`. carol의 기기 목록 요청이 바로 401. 틀린 비밀번호는 bob과 같은 실패 문구, 맞는 비밀번호는 SSO를 거친 뒤 403 `이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요.`(SSO 호출 각 1번) |
 | S30 | `admin unblock Y9001` | carol이 다시 로그인하고 기기 목록 성공 |
-| S31 | `admin user delete Y9001`(명단 항목도 함께 지워짐) → hjv-api를 `HJV_API_LOGIN=list`로 다시 시작 | `report` 둘째 줄 `login: list (…)`. 명단에 없는 carol은 맞는 비밀번호로도 틀린 비밀번호와 같은 실패 문구, SSO 호출 0. 미리 넣은 bob은 로그인 성공 |
+| S31 | `admin user delete Y9001`(명단 항목도 함께 지워짐) → hjv-api를 `HJV_API_LOGIN=list`로 다시 시작 | `report` 둘째 줄 `login: list (…)`. 명단에 없는 carol은 맞는 비밀번호로도 틀린 비밀번호와 같은 실패 문구, SSO 호출 0. 미리 넣은 bob은 로그인 성공. 그 뒤 기본값(open)으로 다시 시작 |
 | S20 | 실행 폴더 전체(Caddy의 debug 로그 포함)에서 포탈 비밀번호 4개, 토큰·계정 키 30개, hjv-api의 키 셋(봉인·목록·기록) 찾기 | 각 클라이언트의 LocalConfig 파일 밖에는 없음. hjv-api의 키는 자격 증명 폴더 밖에는 없음 |
 | S21 | open 모드에서 `""` | `direct (P2P)`로 성공(2.9초) |
 

@@ -1268,7 +1268,14 @@ account_allowlist() {
   run ctl2 --hjv-e2e-login "$BOB" "$BOB_PW"
   want 0 "S31: bob, imported, in list mode"
   keep_secrets ctl2
-  pass "S31: in list mode carol (deleted, off the list) gets the wrong password's failure without an SSO call; bob (imported) logs in"
+  # back to the default for what runs after the account part
+  sed -i '/^HJV_API_LOGIN=list$/d' "$RUN/api/hjviewer-api.env"
+  kill "$API_PID"
+  wait "$API_PID" 2>/dev/null || true
+  start_api
+  admin report >"$RUN/report.txt"
+  sed -n 2p "$RUN/report.txt" | grep -q '^login: open (' || fail "S31: hjv-api is not in open mode again: $(sed -n 2p "$RUN/report.txt")"
+  pass "S31: in list mode carol (deleted, off the list) gets the wrong password's failure without an SSO call; bob (imported) logs in; open mode again after"
 }
 
 # the device list of hjv-ctl (hjv-ctl2) has the PC in state <state>
