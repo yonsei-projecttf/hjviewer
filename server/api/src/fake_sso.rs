@@ -7,8 +7,10 @@
 //! call checks the bearer token and a form of exactly `apiUuid` and `clientId`, and answers
 //! `data[0]` with `pcode`, `name`, `email` and `deptNm`. A request that breaks the contract gets
 //! 400 `{"error":"invalid_request"}` (hjv-api takes it for an upstream error, so that a test sees
-//! it), an unknown bearer token 401 `{"error":"invalid_token"}`. It keeps no password and writes
-//! no log; it counts calls, which `GET /_stats` reports.
+//! it), an unknown bearer token 401 `{"error":"invalid_token"}`. An `apiUuid` or `clientId` other
+//! than this registration's gets the user call's refusal, for everyone, as the SSO may answer a
+//! wrong one: `{"success":false,"msg":"access denied"}`. It keeps no password and writes no log;
+//! it counts calls, which `GET /_stats` reports.
 //!
 //! The integration tests start it in-process; the E2E runs `hjv-fake-sso` (cargo feature
 //! `fake-sso`) on 127.0.0.1 with the fixed credentials and accounts below. The usernames of
@@ -87,7 +89,8 @@ pub const ACCOUNTS: &[FakeAccount] = &[
 ];
 
 /// The usernames that play the SSO's failures and its answers about the person (sso.rs sorts
-/// each).
+/// each). Any username that starts with "ZZSSO-DENIED" plays the refused user call too, so that
+/// tests can have several different accounts refused.
 pub const SCENARIOS: &[&str] = &[
     "ZZSSO-ADDRESS",
     "ZZSSO-ADDRESS-USER",
@@ -107,8 +110,14 @@ pub const SCENARIOS: &[&str] = &[
     "ZZSSO-ZA",
     "ZZSSO-B",
     "ZZSSO-STUDENT",
+    "ZZSSO-BAD-NAME",
     "ZZSSO-STRINGS",
 ];
+
+/// The usernames whose user call the SSO refuses (access denied).
+fn refused_user(username: &str) -> bool {
+    username.starts_with("ZZSSO-DENIED")
+}
 
 #[derive(Default)]
 pub struct Stats {
@@ -204,6 +213,9 @@ fn reply(status: u16, body: impl Into<String>) -> Response<Full<Bytes>> {
     );
     r
 }
+
+/// The user call's refusal.
+const ACCESS_DENIED: &str = r#"{"success":false,"msg":"access denied"}"#;
 
 /// The answer to a request that breaks the contract.
 fn invalid_request() -> Response<Full<Bytes>> {
@@ -320,8 +332,9 @@ async fn token(fake: &Fake, auth: &str, form: &HashMap<String, String>) -> Respo
             200,
             json!({ "success": "true", "access_token": new_token(fake, username) }).to_string(),
         ),
-        "ZZSSO-ADDRESS-USER" | "ZZSSO-USER-500" | "ZZSSO-NO-PCODE" | "ZZSSO-DENIED"
-        | "ZZSSO-ZA" | "ZZSSO-B" | "ZZSSO-STUDENT" => reply(200, issue(fake, username)),
+        "ZZSSO-ADDRESS-USER" | "ZZSSO-USER-500" | "ZZSSO-NO-PCODE" | "ZZSSO-ZA" | "ZZSSO-B"
+        | "ZZSSO-STUDENT" | "ZZSSO-BAD-NAME" => reply(200, issue(fake, username)),
+        u if refused_user(u) => reply(200, issue(fake, username)),
         _ => {
             let found = ACCOUNTS
                 .iter()
@@ -359,10 +372,11 @@ fn user(fake: &Fake, auth: &str, form: &HashMap<String, String>) -> Response<Ful
     let Some(username) = username else {
         return reply(401, r#"{"error":"invalid_token"}"#);
     };
+    // another registration's api uuid or client ID: the user call refuses everyone
     if form.get("apiUuid").map(String::as_str) != Some(API_UUID)
         || form.get("clientId").map(String::as_str) != Some(CLIENT_ID)
     {
-        return invalid_request();
+        return reply(200, ACCESS_DENIED);
     }
     match username.as_str() {
         "ZZSSO-ADDRESS-USER" => reply(200, r#"{"success":false,"msg":"not allowed ip"}"#),
@@ -373,11 +387,13 @@ fn user(fake: &Fake, auth: &str, form: &HashMap<String, String>) -> Response<Ful
             r#"{"success":true,"data":[{"perslNo":"ZZSSO-NO-PCODE","name":"x","email":null,"deptNm":null}]}"#,
         ),
         // the user call refuses: access denied
-        "ZZSSO-DENIED" => reply(200, r#"{"success":false,"msg":"access denied"}"#),
+        u if refused_user(u) => reply(200, ACCESS_DENIED),
         // codes outside HJViewer's ID rule: ZA, B (which the 행정허브 plugin takes), a number
         "ZZSSO-ZA" => reply(200, person("ZATEST01", "가짜")),
         "ZZSSO-B" => reply(200, person("BZTEST01", "가짜")),
         "ZZSSO-STUDENT" => reply(200, person("1234567890", "가짜")),
+        // one person's data with a value the contract refuses: a tab at the end of the name
+        "ZZSSO-BAD-NAME" => reply(200, person("ZZSSO-BAD-NAME", "가짜\t")),
         "ZZSSO-SLOW" => reply(200, person("ZZSSO-SLOW", "느림")),
         "ZZSSO-HUGE" => reply(200, person("ZZSSO-HUGE", "큼")),
         "ZZSSO-STRINGS" => reply(

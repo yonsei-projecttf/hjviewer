@@ -41,10 +41,12 @@
 //!    passwords, and a first login that goes through gives its call back;
 //! 9. the second factor when it is on (tfa.rs; off by D11 and U1), before the SSO call;
 //! 10. the SSO (sso.rs), with the ID typed uppercased, sorted into refused credentials (counted),
-//!     a denied person (the user call refused, or its pcode outside HJViewer's ID rule: 403
-//!     [`TEXT_DENIED`], which only someone who knows the password sees, counted as a success, as
-//!     a blocked account is in step 12), a refused server address or client and upstream errors
-//!     (counted against the address only);
+//!     a denied person (the user call refused, its pcode outside HJViewer's ID rule, or a pcode
+//!     or name whose value the contract refuses: 403 [`TEXT_DENIED`], which only someone who
+//!     knows the password sees, counted as a success, as a blocked account is in step 12; the
+//!     record and the journal keep the reason), a refused server address or client and upstream
+//!     errors (counted against the address only). The user call refusing several different
+//!     accounts in a row alerts the operator (limits::UserRefusals);
 //! 11. the account key of the sealed payload (keys.rs, design v3 §4-1): 400 without `ck` and
 //!     `cp`, with a `cp` that is not its signature or with a key another row has. Past the
 //!     account's active keys the least recently used one is logged out (keys.rs): a login is not
@@ -88,7 +90,7 @@ use crate::{
     keys::{KeyClaim, KeyError, MAX_ACTIVE_KEYS},
     limits::{self, Take, SCOPE_BOUND, SCOPE_ID, SCOPE_IP, SCOPE_OK_ID, SCOPE_OK_IP},
     seal::{Opened, SealError},
-    sso::{Failure, SsoError, SsoUser},
+    sso::{Denial, Failure, SsoError, SsoUser},
     state::AppState,
     tfa::{Busy, Pending},
     util::{
@@ -123,7 +125,8 @@ pub const TEXT_BLOCKED: &str =
 pub const TEXT_ID_RULE: &str =
     "연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요.";
 /// The answer to a person the SSO accepted the password of and HJViewer denies: the SSO's user
-/// call refused, or named a pcode outside HJViewer's ID rule (step 10).
+/// call refused, named a pcode outside HJViewer's ID rule, or a pcode or name whose value the
+/// contract refuses (step 10).
 pub const TEXT_DENIED: &str =
     "이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요.";
 
@@ -1282,13 +1285,16 @@ async fn sso_login(
     let started = Instant::now();
     let result = state.sso.authenticate(username, password).await;
     state.sso_latency.note(started.elapsed());
-    if let Some(pause) = state
-        .sso_breaker
-        .note(result.as_ref().err().map(|e| e.failure))
-    {
+    let failure = result.as_ref().err().map(|e| e.failure);
+    if let Some(pause) = state.sso_breaker.note(failure) {
         log_err!(
             "login: SSO calls paused for {} s; logins fail meanwhile without calling it",
             pause.as_secs()
+        );
+    }
+    if let Some(accounts) = state.sso_user_refusals.note(failure, &account_tag) {
+        log_crit!(
+            "login: the SSO's user call refused {accounts} different accounts in a row (access denied) and answered none between; if it refuses everyone, no one can log in until HJV_API_SSO_CLIENT_ID and the credential hjviewer-sso-api-uuid are right"
         );
     }
     match result {
@@ -1309,7 +1315,7 @@ async fn sso_login(
                     run.fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "credentials")
                         .await
                 }
-                Failure::Denied => denied(run, &e).await,
+                Failure::Denied(denial) => denied(run, &e, denial).await,
                 Failure::AddressRefused => {
                     log_crit!(
                         "login: the SSO refuses this server's address ({}); no one can log in until it is registered again",
@@ -1413,9 +1419,10 @@ async fn blocked(run: &mut Run<'_>) -> LoginAnswer {
 }
 
 /// The answer to a person the SSO accepted the password of and HJViewer denies (step 10): 403
-/// with [`TEXT_DENIED`], counted as a blocked account's login is. The journal hears of it once in
-/// ten minutes per account.
-async fn denied(run: &mut Run<'_>, e: &SsoError) -> LoginAnswer {
+/// with [`TEXT_DENIED`] whatever the reason, counted as a blocked account's login is; the record
+/// keeps the reason (`denied-user-refused`, `denied-pcode-rule`, `denied-bad-value`). The journal
+/// hears of it once in ten minutes per account, with the reason.
+async fn denied(run: &mut Run<'_>, e: &SsoError, denial: Denial) -> LoginAnswer {
     let state = run.state;
     let tag = run.account_tag.clone().unwrap_or_default();
     if state.first_notice(&format!("denied:{tag}"), Duration::from_secs(600)) {
@@ -1425,7 +1432,8 @@ async fn denied(run: &mut Run<'_>, e: &SsoError) -> LoginAnswer {
         );
     }
     let answer = LoginAnswer::failed_with(StatusCode::FORBIDDEN, json!({ "error": TEXT_DENIED }));
-    run.fail_with(answer, Outcome::Blocked, "denied").await
+    run.fail_with(answer, Outcome::Blocked, denial.result())
+        .await
 }
 
 async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClaim) -> LoginAnswer {

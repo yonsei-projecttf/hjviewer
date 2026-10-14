@@ -7,8 +7,9 @@ mod common;
 
 use common::*;
 use hjv_api::{
+    check::{self, Health, Probe},
     db, fake_sso,
-    limits::{SCOPE_BOUND, SCOPE_ID, SCOPE_IP, SCOPE_OK_ID},
+    limits::{SCOPE_BOUND, SCOPE_ID, SCOPE_IP, SCOPE_OK_ID, UPSTREAM_ERRORS},
     login::{FAILURE_TEXT, TEXT_DENIED, TEXT_ID_RULE, TEXT_SEAL_CLOCK, TEXT_SSO_DOWN},
     seal,
     tfa::SecondFactor,
@@ -514,10 +515,11 @@ async fn ids_outside_the_rule_never_reach_the_sso() {
 }
 
 /// A person the SSO took the password of and HJViewer denies: the user call refuses (access
-/// denied), or names a pcode outside HJViewer's ID rule (ZA, B, a student-like number). 403 with
-/// the denial text; not a wrong password, so neither the ID's nor the address's failures count,
-/// but a success does; no account, and open mode puts nobody on the allowlist. The SSO answered,
-/// so its calls do not pause.
+/// denied), names a pcode outside HJViewer's ID rule (ZA, B, a student-like number), or a value
+/// the contract refuses in the person's data (a tab in the name). 403 with the denial text,
+/// whatever the reason, which the record and the journal keep; not a wrong password, so neither
+/// the ID's nor the address's failures count, but a success does; no account, and open mode puts
+/// nobody on the allowlist. The SSO answered, so its calls do not pause.
 #[tokio::test]
 async fn denied_people_are_told_so_after_the_sso() {
     let h = Harness::with(Options {
@@ -529,9 +531,15 @@ async fn denied_people_are_told_so_after_the_sso() {
         ..Default::default()
     })
     .await;
-    for (n, user) in ["ZZSSO-DENIED", "ZZSSO-ZA", "ZZSSO-B", "ZZSSO-STUDENT"]
-        .into_iter()
-        .enumerate()
+    for (n, (user, result)) in [
+        ("ZZSSO-DENIED", "login:denied-user-refused"),
+        ("ZZSSO-ZA", "login:denied-pcode-rule"),
+        ("ZZSSO-B", "login:denied-pcode-rule"),
+        ("ZZSSO-STUDENT", "login:denied-pcode-rule"),
+        ("ZZSSO-BAD-NAME", "login:denied-bad-value"),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let ip = format!("10.0.41.{n}");
         let calls = (h.sso.token_calls(), h.sso.user_calls());
@@ -539,7 +547,7 @@ async fn denied_people_are_told_so_after_the_sso() {
             let a = h.login(&h.login_body(user, "pw", None), &ip).await;
             assert_eq!(a.status, 403, "{user}: {}", a.text);
             assert_eq!(a.json, json!({ "error": TEXT_DENIED }), "{user}");
-            assert_eq!(h.results().await.last().unwrap(), "login:denied", "{user}");
+            assert_eq!(h.results().await.last().unwrap(), result, "{user}");
         }
         assert_eq!(
             (h.sso.token_calls(), h.sso.user_calls()),
@@ -568,12 +576,192 @@ async fn denied_people_are_told_so_after_the_sso() {
     for detail in [
         "may not use HJViewer (user call: refused (access denied); acct=",
         "may not use HJViewer (user call: a pcode outside HJViewer's ID rule; acct=",
+        "may not use HJViewer (user call: data[0].name has a control character; acct=",
     ] {
         assert!(logs.contains(detail), "{detail}: {logs}");
     }
-    for code in ["ZATEST01", "BZTEST01", "1234567890", "ZZSSO-ZA", "zzsso-za"] {
+    for code in [
+        "ZATEST01",
+        "BZTEST01",
+        "1234567890",
+        "ZZSSO-ZA",
+        "zzsso-za",
+        "ZZSSO-BAD-NAME",
+        "zzsso-bad-name",
+    ] {
         assert!(!logs.contains(code), "{code} in the logs: {logs}");
     }
+    // the report counts the denials by reason
+    let report = h.admin(&["report"], false, None).await.unwrap();
+    for line in [
+        "login denied-bad-value",
+        "login denied-pcode-rule",
+        "login denied-user-refused",
+    ] {
+        assert!(report.contains(line), "{line}: {report}");
+    }
+}
+
+/// One person's data with a value the contract refuses (a tab at the end of the name) denies that
+/// person, the reason in the journal and the record, and counts for nothing that pauses the SSO
+/// calls of everyone: the person may retry as often as their success limit lets them, and the
+/// others log in meanwhile. An answer whose form breaks the contract (no pcode) is the SSO's
+/// trouble, the same for everyone, and five in a row still pause the calls.
+#[tokio::test]
+async fn one_persons_bad_value_never_pauses_the_sso_calls() {
+    let bad = "ZZSSO-BAD-NAME";
+    let h = Harness::with(Options {
+        allow: vec![HONG.0, bad, "ZZSSO-NO-PCODE"],
+        vars: vec![
+            ("HJV_API_LIMIT_ID", "100/600".into()),
+            ("HJV_API_LIMIT_IP", "100/600".into()),
+            ("HJV_API_LIMIT_OK_ID", "100/3600".into()),
+            ("HJV_API_LIMIT_OK_IP", "100/3600".into()),
+        ],
+        ..Default::default()
+    })
+    .await;
+    for n in 0..2 * UPSTREAM_ERRORS {
+        let a = h.login(&h.login_body(bad, "pw", None), "10.0.42.1").await;
+        assert_eq!(a.status, 403, "{n}: {}", a.text);
+        assert_eq!(a.json, json!({ "error": TEXT_DENIED }), "{n}");
+        assert_eq!(h.results().await.last().unwrap(), "login:denied-bad-value");
+        assert!(!h.state.sso_breaker.paused(), "{n}");
+    }
+    assert_eq!(h.sso.user_calls(), 2 * UPSTREAM_ERRORS as usize);
+    // the person's successes count, not their failures
+    assert_eq!(
+        h.counted(SCOPE_OK_ID, h.account_tag(bad)).await,
+        i64::from(2 * UPSTREAM_ERRORS)
+    );
+    assert_eq!(h.counted(SCOPE_ID, h.account_tag(bad)).await, 0);
+    h.login_ok(HONG, None).await;
+    let logs = hjv_api::log::captured().join("\n");
+    assert!(
+        logs.contains(&format!(
+            "may not use HJViewer (user call: data[0].name has a control character; acct={})",
+            h.account_tag(bad)
+        )),
+        "{logs}"
+    );
+    // the answer's form is the SSO's trouble: five in a row pause the calls
+    for n in 0..UPSTREAM_ERRORS {
+        assert!(!h.state.sso_breaker.paused(), "{n}");
+        let a = h
+            .login(&h.login_body("ZZSSO-NO-PCODE", "pw", None), "10.0.42.2")
+            .await;
+        assert_failure(&a, 401);
+        assert_eq!(h.results().await.last().unwrap(), "login:upstream");
+    }
+    assert!(h.state.sso_breaker.paused());
+}
+
+/// What the five-minute check would read from the service.
+async fn health(h: &Harness) -> Health {
+    serde_json::from_str(&h.admin(&["health"], false, None).await.unwrap()).unwrap()
+}
+
+/// A login whose user call the SSO refuses: 403 with the denial text, recorded as such.
+async fn refused(h: &Harness, user: &str, ip: &str) {
+    let a = h.login(&h.login_body(user, "pw", None), ip).await;
+    assert_eq!(a.status, 403, "{user}: {}", a.text);
+    assert_eq!(a.json, json!({ "error": TEXT_DENIED }), "{user}");
+    assert_eq!(
+        h.results().await.last().unwrap(),
+        "login:denied-user-refused",
+        "{user}"
+    );
+}
+
+/// A wrong HJV_API_SSO_CLIENT_ID (or credential hjviewer-sso-api-uuid) makes the SSO's user call
+/// refuse everyone: each person gets the denial text, and nothing pauses, as for one person. Three
+/// different accounts refused in a row, with no user call answered between, alert the operator:
+/// one critical line, the five-minute check's `sso_user`, and the report counts the refusals.
+#[tokio::test]
+async fn a_user_call_that_refuses_everyone_alerts_the_operator() {
+    let h = Harness::with(Options {
+        vars: vec![("HJV_API_SSO_CLIENT_ID", "hjv-another-client".into())],
+        ..Default::default()
+    })
+    .await;
+    // two accounts, one of them twice: no alert yet
+    for (n, account) in [HONG, KIM, HONG].into_iter().enumerate() {
+        let a = h
+            .login(
+                &h.login_body(account.0, account.1, None),
+                &format!("10.0.43.{n}"),
+            )
+            .await;
+        assert_eq!(a.status, 403, "{}: {}", account.0, a.text);
+        assert_eq!(a.json, json!({ "error": TEXT_DENIED }), "{}", account.0);
+        assert_eq!(
+            h.results().await.last().unwrap(),
+            "login:denied-user-refused"
+        );
+        assert_eq!(h.state.sso_user_refusals.last_alert(), None);
+    }
+    assert!(check::evaluate(&Probe::Answered(1), &Ok(health(&h).await)).is_empty());
+    // the third different account
+    let a = h
+        .login(&h.login_body(LEE.0, LEE.1, None), "10.0.43.9")
+        .await;
+    assert_eq!(a.status, 403, "{}", a.text);
+    assert!(h.state.sso_user_refusals.last_alert().is_some());
+    assert!(!h.state.sso_breaker.paused());
+    let logs = hjv_api::log::captured().join("\n");
+    assert!(
+        logs.contains("login: the SSO's user call refused 3 different accounts in a row (access denied) and answered none between; if it refuses everyone, no one can log in until HJV_API_SSO_CLIENT_ID and the credential hjviewer-sso-api-uuid are right"),
+        "{logs}"
+    );
+    // the five-minute check reports it
+    let health = health(&h).await;
+    assert!(
+        health
+            .sso_user_refused
+            .is_some_and(|ago| (0..=2).contains(&ago)),
+        "{health:?}"
+    );
+    let found = check::evaluate(&Probe::Answered(1), &Ok(health));
+    assert_eq!(
+        found.iter().map(|f| f.code).collect::<Vec<_>>(),
+        ["sso_user"],
+        "{found:?}"
+    );
+    let report = h.admin(&["report"], false, None).await.unwrap();
+    assert!(
+        report.contains(&format!(
+            "  {:<28} {:>5} / 4",
+            "login denied-user-refused", 4
+        )),
+        "{report}"
+    );
+}
+
+/// The alert needs the refusals in a row: a person found, or a person denied for their pcode or
+/// a value of their data, shows that the user call works and ends the run; those denials count
+/// for nothing themselves.
+#[tokio::test]
+async fn refusals_with_an_answer_between_do_not_alert() {
+    let h = Harness::start().await;
+    refused(&h, "ZZSSO-DENIED-1", "10.0.44.1").await;
+    refused(&h, "ZZSSO-DENIED-2", "10.0.44.2").await;
+    h.login_ok(HONG, None).await;
+    refused(&h, "ZZSSO-DENIED-3", "10.0.44.3").await;
+    refused(&h, "ZZSSO-DENIED-4", "10.0.44.4").await;
+    for (user, result) in [
+        ("ZZSSO-ZA", "login:denied-pcode-rule"),
+        ("ZZSSO-BAD-NAME", "login:denied-bad-value"),
+    ] {
+        let a = h.login(&h.login_body(user, "pw", None), "10.0.44.5").await;
+        assert_eq!(a.status, 403, "{user}: {}", a.text);
+        assert_eq!(h.results().await.last().unwrap(), result);
+        refused(&h, "ZZSSO-DENIED-5", "10.0.44.6").await;
+        refused(&h, "ZZSSO-DENIED-6", "10.0.44.7").await;
+    }
+    assert_eq!(h.state.sso_user_refusals.last_alert(), None);
+    // without an answer between, the third different account raises it
+    refused(&h, "ZZSSO-DENIED-7", "10.0.44.8").await;
+    assert!(h.state.sso_user_refusals.last_alert().is_some());
 }
 
 #[tokio::test]

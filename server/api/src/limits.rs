@@ -26,16 +26,20 @@
 //! makes. A request with the right token, signature or code is never refused for its address.
 //!
 //! In memory: the SSO calls of all accounts together, of which one account may hold a quarter
-//! (step 7); the pause of SSO calls while the SSO refuses this server or keeps failing; how long
-//! the SSO took lately (the failure delay follows it, step 10); and how many failed logins a
-//! minute are written to the records. With HJV_API_LOGIN=open the SSO calls of the portal IDs not
-//! on the allowlist have a small window of their own besides (HJV_API_LIMIT_SSO_NEW), so that any
-//! portal ID reaching the SSO cannot use up the calls of the people registered. One ID and one
-//! client address (an IPv6 address by its /64) may each hold a quarter of that window, so that one
+//! (step 7); the pause of SSO calls while the SSO refuses this server or keeps failing; the user
+//! call's refusals of different accounts in a row, which alert the operator; how long the SSO
+//! took lately (the failure delay follows it, step 10); and how many failed logins a minute are
+//! written to the records. With HJV_API_LOGIN=open the SSO calls of the portal IDs not on the
+//! allowlist have a small window of their own besides (HJV_API_LIMIT_SSO_NEW), so that any portal
+//! ID reaching the SSO cannot use up the calls of the people registered. One ID and one client
+//! address (an IPv6 address by its /64) may each hold a quarter of that window, so that one
 //! address cannot fill it with a few wrong passwords and shut the first logins of everyone, and a
 //! first login that goes through gives its call back (login.rs).
 
-use crate::{config::Window, sso::Failure};
+use crate::{
+    config::Window,
+    sso::{Denial, Failure},
+};
 use rusqlite::{params, Connection};
 use std::{
     collections::VecDeque,
@@ -281,13 +285,14 @@ impl Breaker {
     }
 
     /// Notes how a call ended (`None`: the SSO answered with a user; refused credentials and a
-    /// denied person are answers too); returns the pause this outcome started, if it started one.
+    /// denied person, whatever the reason, are answers too: one person's data never pauses the
+    /// calls of everyone); returns the pause this outcome started, if it started one.
     pub fn note(&self, failure: Option<Failure>) -> Option<Duration> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let was_paused = state.paused_until.is_some_and(|t| now < t);
         let (pause, reason) = match failure {
-            None | Some(Failure::Credentials | Failure::Denied) => {
+            None | Some(Failure::Credentials | Failure::Denied(_)) => {
                 *state = BreakerState::default();
                 return None;
             }
@@ -318,6 +323,79 @@ impl Breaker {
     pub fn reset(&self) {
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = BreakerState::default();
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// The user call refusing this many different accounts in a row …
+pub const USER_REFUSED_ACCOUNTS: usize = 3;
+/// … within this long, with no user call answered in between, alerts the operator.
+pub const USER_REFUSED_WINDOW: Duration = Duration::from_secs(600);
+/// The refusals kept: more than the alert needs, few enough to look through at each.
+const USER_REFUSED_KEPT: usize = 64;
+
+/// The SSO's user call refusing person after person (sso.rs `Denial::UserRefused`). A refusal is
+/// a person's answer, which tells that person the denial text and pauses nothing (Breaker); but a
+/// wrong HJV_API_SSO_CLIENT_ID or credential hjviewer-sso-api-uuid may refuse everyone, and that is
+/// the operator's to fix. So [`USER_REFUSED_ACCOUNTS`] different accounts refused within
+/// [`USER_REFUSED_WINDOW`], with no user call answered in between, raise an alert: login.rs writes
+/// one critical line when it is raised, and the five-minute check reports it for ten minutes after
+/// the last refusal that held it (check.rs `sso_user`). A user call that answers ends the run: a
+/// person found, or denied for their pcode or a value of their data (those are about the person,
+/// and they show the call itself works).
+#[derive(Default)]
+pub struct UserRefusals {
+    state: Mutex<RefusalState>,
+}
+
+#[derive(Default)]
+struct RefusalState {
+    /// the refusals of the run within the window, one per account (its tag) at its latest
+    recent: VecDeque<(Instant, String)>,
+    /// whether the run holds the alert now (it is raised once until it falls below)
+    raised: bool,
+    /// when a refusal last held the alert (Unix time), past the run, for the check
+    last: Option<i64>,
+}
+
+impl UserRefusals {
+    /// Notes how a login's SSO call ended for the account tagged `account` (`None`: it found the
+    /// person); returns the different accounts refused in a row when this refusal raises the alert.
+    pub fn note(&self, failure: Option<Failure>, account: &str) -> Option<usize> {
+        self.note_at(failure, account, Instant::now())
+    }
+
+    fn note_at(&self, failure: Option<Failure>, account: &str, now: Instant) -> Option<usize> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        match failure {
+            None | Some(Failure::Denied(Denial::PcodeRule | Denial::BadValue)) => {
+                state.recent.clear();
+                state.raised = false;
+                None
+            }
+            Some(Failure::Denied(Denial::UserRefused)) => {
+                state.recent.retain(|(at, tag)| {
+                    now.saturating_duration_since(*at) < USER_REFUSED_WINDOW && tag != account
+                });
+                if state.recent.len() >= USER_REFUSED_KEPT {
+                    state.recent.pop_front();
+                }
+                state.recent.push_back((now, account.to_owned()));
+                let accounts = state.recent.len();
+                if accounts < USER_REFUSED_ACCOUNTS {
+                    state.raised = false;
+                    return None;
+                }
+                state.last = Some(crate::util::now());
+                (!std::mem::replace(&mut state.raised, true)).then_some(accounts)
+            }
+            // the token call's outcomes and the SSO's trouble say nothing of the user call
+            Some(_) => None,
+        }
+    }
+
+    /// When a refusal last held the alert (Unix time), since the start.
+    pub fn last_alert(&self) -> Option<i64> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).last
     }
 }
 
@@ -612,8 +690,19 @@ mod tests {
         for _ in 0..UPSTREAM_ERRORS - 1 {
             assert_eq!(b.note(Some(Failure::Upstream)), None);
         }
-        // a denied person is an answer of the SSO too
-        assert_eq!(b.note(Some(Failure::Denied)), None);
+        // a denied person is an answer of the SSO too, whatever the reason
+        for denial in [Denial::UserRefused, Denial::PcodeRule, Denial::BadValue] {
+            assert_eq!(b.note(Some(Failure::Denied(denial))), None);
+            for _ in 0..UPSTREAM_ERRORS - 1 {
+                assert_eq!(b.note(Some(Failure::Upstream)), None);
+            }
+        }
+        // one person retrying with a bad value in their data (a control character in the name,
+        // a pcode too long) never pauses the calls of everyone
+        for _ in 0..3 * UPSTREAM_ERRORS {
+            assert_eq!(b.note(Some(Failure::Denied(Denial::BadValue))), None);
+            assert!(!b.paused());
+        }
         for _ in 0..UPSTREAM_ERRORS - 1 {
             assert_eq!(b.note(Some(Failure::Upstream)), None);
         }
@@ -645,6 +734,74 @@ mod tests {
         // a failure that does not pause leaves no mark
         assert_eq!(b.note(Some(Failure::Upstream)), None);
         assert_eq!(b.last_pause(), None);
+    }
+
+    #[test]
+    fn user_refusals_in_a_row() {
+        let refused = Some(Failure::Denied(Denial::UserRefused));
+        let r = UserRefusals::default();
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        assert_eq!(r.last_alert(), None);
+        // the same account again and again is one account
+        assert_eq!(r.note_at(refused, "a", at(0)), None);
+        assert_eq!(r.note_at(refused, "a", at(1)), None);
+        assert_eq!(r.note_at(refused, "b", at(2)), None);
+        assert_eq!(r.note_at(refused, "b", at(3)), None);
+        assert_eq!(r.last_alert(), None);
+        // the third different account raises the alert, once for the run
+        assert_eq!(r.note_at(refused, "c", at(4)), Some(USER_REFUSED_ACCOUNTS));
+        let raised = r.last_alert().unwrap();
+        assert!((crate::util::now() - raised).abs() <= 1, "{raised}");
+        assert_eq!(r.note_at(refused, "d", at(5)), None);
+        assert_eq!(r.note_at(refused, "a", at(6)), None);
+        // a found person ends the run; the check still has the last alert
+        assert_eq!(r.note_at(None, "e", at(7)), None);
+        assert!(r
+            .last_alert()
+            .is_some_and(|last| (raised..=raised + 1).contains(&last)));
+        assert_eq!(r.note_at(refused, "a", at(8)), None);
+        assert_eq!(r.note_at(refused, "b", at(9)), None);
+        // so do a pcode outside the rule and a bad value (about the person: the call works),
+        // which count for nothing themselves
+        for answered in [Denial::PcodeRule, Denial::BadValue] {
+            assert_eq!(
+                r.note_at(Some(Failure::Denied(answered)), "x", at(10)),
+                None
+            );
+            assert_eq!(
+                r.note_at(Some(Failure::Denied(answered)), "y", at(10)),
+                None
+            );
+            assert_eq!(
+                r.note_at(Some(Failure::Denied(answered)), "z", at(10)),
+                None
+            );
+            assert_eq!(r.note_at(refused, "c", at(11)), None);
+            assert_eq!(r.note_at(refused, "d", at(12)), None);
+        }
+        // the token call's outcomes and the SSO's trouble neither count nor end the run
+        for other in [
+            Failure::Credentials,
+            Failure::AddressRefused,
+            Failure::ClientRefused,
+            Failure::Upstream,
+        ] {
+            assert_eq!(r.note_at(Some(other), "w", at(13)), None);
+        }
+        assert_eq!(r.note_at(refused, "e", at(14)), Some(USER_REFUSED_ACCOUNTS));
+        // refusals older than the window drop out: the run falls below and may rise again
+        assert_eq!(r.note_at(refused, "f", at(14 + 600)), None);
+        assert_eq!(r.note_at(refused, "g", at(14 + 601)), None);
+        assert_eq!(
+            r.note_at(refused, "h", at(14 + 602)),
+            Some(USER_REFUSED_ACCOUNTS)
+        );
+        // many accounts: the run keeps a bounded number, and the alert holds
+        for n in 0..2 * USER_REFUSED_KEPT {
+            assert_eq!(r.note_at(refused, &format!("n{n}"), at(700)), None);
+        }
+        assert_eq!(r.state.lock().unwrap().recent.len(), USER_REFUSED_KEPT);
     }
 
     #[test]

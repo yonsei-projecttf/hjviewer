@@ -8,7 +8,10 @@ use crate::{
     config::{Config, Secrets},
     db::{self, Db, Record},
     keys::CallLimiter,
-    limits::{Admit, Breaker, GlobalLimiter, Latency, RecordBudget, FAILURE_RECORDS_PER_MINUTE},
+    limits::{
+        Admit, Breaker, GlobalLimiter, Latency, RecordBudget, UserRefusals,
+        FAILURE_RECORDS_PER_MINUTE,
+    },
     log::Tagger,
     login::{LoginAnswer, RetryCache},
     oplog::OpLog,
@@ -45,6 +48,8 @@ pub struct AppState {
     pub sso_calls_new: GlobalLimiter,
     /// the pause of SSO calls while the SSO refuses this server or keeps failing
     pub sso_breaker: Breaker,
+    /// the user call's refusals of different accounts in a row, which alert the operator
+    pub sso_user_refusals: UserRefusals,
     /// how long SSO calls took lately (the failure delay follows it)
     pub sso_latency: Latency,
     /// failure records written per minute
@@ -129,6 +134,7 @@ impl AppState {
             sso_calls: GlobalLimiter::new(config.limit_sso),
             sso_calls_new: GlobalLimiter::new(config.limit_sso_new),
             sso_breaker: Breaker::default(),
+            sso_user_refusals: UserRefusals::default(),
             sso_latency: Latency::default(),
             failure_records: RecordBudget::default(),
             retries: RetryCache::new(config.retry_window_secs),

@@ -26,6 +26,10 @@
 //!   their window full (HJV_API_LIMIT_SSO_NEW) within the last [`SSO_RECENT`] seconds: someone may
 //!   be trying passwords on many portal IDs through hjv-api, or many people log in for the first
 //!   time, and first logins fail meanwhile;
+//! - **sso_user**: the SSO's user call refused different accounts in a row (limits::UserRefusals,
+//!   access denied), the last of them within the last [`SSO_RECENT`] seconds: when it refuses
+//!   everyone, HJV_API_SSO_CLIENT_ID or the credential hjviewer-sso-api-uuid is wrong, and every
+//!   person whose password the SSO takes gets the denial text, while nothing pauses;
 //! - **relay**: an active NAS relay (Wake-on-LAN, relay.rs) that has not polled for
 //!   [`RELAY_SILENT`] seconds: an active relay keeps a long-poll open, so one silent for an hour
 //!   is down, or its NAS is off (design v3 question 15: a NAS that is switched off at night would
@@ -43,6 +47,7 @@ use crate::{
     admin::{self, AdminRequest},
     db,
     hbbs::{self, HbbsError, Lookup},
+    limits::{USER_REFUSED_ACCOUNTS, USER_REFUSED_WINDOW},
     state::AppState,
     util::now,
 };
@@ -99,6 +104,10 @@ pub struct Health {
     /// full (open mode, HJV_API_LIMIT_SSO_NEW), when they did since the service started
     #[serde(default)]
     pub sso_new_full: Option<i64>,
+    /// seconds since a refusal of the SSO's user call last held the alert of different accounts
+    /// refused in a row (limits::UserRefusals), when one did since the service started
+    #[serde(default)]
+    pub sso_user_refused: Option<i64>,
 }
 
 /// The SSO calls' last pause (limits::Breaker).
@@ -260,6 +269,10 @@ pub async fn health(state: &AppState) -> Result<Health, String> {
         .sso_calls_new
         .last_full()
         .map(|when| (at - when).max(0));
+    h.sso_user_refused = state
+        .sso_user_refusals
+        .last_alert()
+        .map(|when| (at - when).max(0));
     Ok(h)
 }
 
@@ -346,6 +359,16 @@ pub fn evaluate(probe: &Probe, health: &Result<Health, String>) -> Vec<Finding> 
             "sso_new",
             format!(
                 "the SSO calls of the portal IDs not on the allowlist reached their limit (HJV_API_LIMIT_SSO_NEW) {} minutes ago: someone may be trying passwords on many portal IDs through hjv-api, or many people log in for the first time; first logins fail meanwhile",
+                ago / 60
+            ),
+        ));
+    }
+    if let Some(ago) = h.sso_user_refused.filter(|ago| *ago <= SSO_RECENT) {
+        found.push(finding(
+            "sso_user",
+            format!(
+                "the SSO's user call refused {USER_REFUSED_ACCOUNTS} or more different accounts in a row within {} minutes (access denied), the last {} minutes ago: if it refuses everyone, HJV_API_SSO_CLIENT_ID or the credential hjviewer-sso-api-uuid is wrong, and everyone whose password the SSO takes is told they may not use HJViewer",
+                USER_REFUSED_WINDOW.as_secs() / 60,
                 ago / 60
             ),
         ));
@@ -551,6 +574,7 @@ mod tests {
             sso: None,
             relays: None,
             sso_new_full: None,
+            sso_user_refused: None,
         }
     }
 
@@ -664,9 +688,28 @@ mod tests {
         );
         assert_eq!(codes(&evaluate(&ok, &Ok(new_ids(SSO_RECENT)))), ["sso_new"]);
         assert!(evaluate(&ok, &Ok(new_ids(SSO_RECENT + 1))).is_empty());
-        // a health answer without the field (an older service) reads as none
+        // the SSO's user call refused different accounts in a row within ten minutes
+        let refused = |ago| Health {
+            sso_user_refused: Some(ago),
+            ..healthy()
+        };
+        let found = evaluate(&ok, &Ok(refused(190)));
+        assert_eq!(codes(&found), ["sso_user"]);
+        assert!(
+            found[0].text.starts_with("the SSO's user call refused 3 or more different accounts in a row within 10 minutes (access denied), the last 3 minutes ago: "),
+            "{found:?}"
+        );
+        assert!(found[0].text.contains("HJV_API_SSO_CLIENT_ID"));
+        assert!(found[0].text.contains("hjviewer-sso-api-uuid"));
+        assert_eq!(
+            codes(&evaluate(&ok, &Ok(refused(SSO_RECENT)))),
+            ["sso_user"]
+        );
+        assert!(evaluate(&ok, &Ok(refused(SSO_RECENT + 1))).is_empty());
+        // a health answer without the fields (an older service) reads as none
         let mut json = serde_json::to_value(healthy()).unwrap();
         json.as_object_mut().unwrap().remove("sso_new_full");
+        json.as_object_mut().unwrap().remove("sso_user_refused");
         assert_eq!(serde_json::from_value::<Health>(json).unwrap(), healthy());
     }
 

@@ -165,6 +165,7 @@ fn meaning(code: &str) -> &'static str {
         "sso_address" => "연세 SSO가 이 서버의 주소를 거절합니다. 그동안 로그인이 안 됩니다.",
         "sso" => "연세 SSO가 계속 실패해 로그인을 잠시 멈췄습니다.",
         "sso_new" => "명단에 없는 포탈 ID들의 SSO 호출이 한도를 채웠습니다. 누군가 hjv-api로 여러 포탈 ID에 비밀번호를 시험하고 있을 수 있습니다(처음 로그인하는 사람이 몰렸을 수도 있음). 그동안 처음 로그인하는 사람은 실패합니다. 런북 7-13대로 봅니다.",
+        "sso_user" => "연세 SSO의 사용자 정보 호출이 서로 다른 계정을 잇달아 거절했습니다. 모두를 거절하는 것이면 HJV_API_SSO_CLIENT_ID나 자격 증명 hjviewer-sso-api-uuid가 틀린 것이고, 그동안 맞는 비밀번호로 로그인한 교직원도 '이 계정으로는 HJViewer를 쓸 수 없습니다'를 받습니다. 런북 7-13대로 봅니다.",
         "relay" => "NAS 중계기가 1시간 넘게 연락하지 않아 PC 켜기가 안 됩니다.",
         _ => "알 수 없는 점검 결과입니다.",
     }
@@ -466,11 +467,15 @@ mod tests {
             "sso_address",
             "sso",
             "sso_new",
+            "sso_user",
             "relay",
         ] {
             assert_ne!(meaning(code), unknown, "{code}");
         }
         assert!(meaning("sso_new").contains("런북 7-13"));
+        assert!(meaning("sso_user").contains("런북 7-13"));
+        assert!(meaning("sso_user").contains("HJV_API_SSO_CLIENT_ID"));
+        assert!(meaning("sso_user").contains("hjviewer-sso-api-uuid"));
     }
 
     #[test]

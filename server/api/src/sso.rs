@@ -16,19 +16,29 @@
 //! Each answer is HTTP 2xx, at most 1 MiB and JSON nested at most 32 deep, with a top-level
 //! `success`: `true`, `1`, `"true"` or `"1"` goes on, `false`, `0`, `"false"` or `"0"` refuses,
 //! and anything else, or none, is a format error. `data[0]` must be an object; of it hjv-api reads
-//! `pcode` and `name` only: strings without control characters, trimmed, of at most 60 and 250
-//! characters, the name not empty. The pcode, uppercased, must pass HJViewer's ID rule (util.rs
-//! `staff_id`: Z or Y, not ZA): it is the person's fixed ID, which the account keeps with the name
-//! (db.rs `accounts.portal_id`). The e-mail and the department are not read, and the SSO's token
-//! goes at once.
+//! `pcode` and `name` only, which must be there as strings (else a format error), and whose values
+//! must be without control characters, of at most 60 and 250 characters, and not empty once
+//! trimmed (else the person is denied, below). The pcode, uppercased, must pass HJViewer's ID rule
+//! (util.rs `staff_id`: Z or Y, not ZA): it is the person's fixed ID, which the account keeps with
+//! the name (db.rs `accounts.portal_id`). The SSO's token goes at once.
+//!
+//! The e-mail and the department are neither read nor checked, on purpose: the 행정허브 plugin
+//! checks that `email` and `deptNm` are there (strings, or null), within their lengths and without
+//! control characters, and that an e-mail looks like one, but hjv-api keeps no more of a person
+//! than it uses. So an answer that the plugin refuses for its `email` or `deptNm` alone, such as a
+//! malformed e-mail, logs in here.
 //!
 //! The outcomes, sorted as v2 §4-1 says (not every client does it this way):
 //!
 //! - credentials refused (counted against the ID's login limit): the token call refuses, or
 //!   answers 400 `{"error":"invalid_grant"}` (the OAuth way);
-//! - denied (not counted against the ID; the person is told so, login.rs): the user call refuses
-//!   (access denied), or names a pcode outside HJViewer's ID rule. The SSO took the password, but
-//!   the person may not use HJViewer;
+//! - denied (not counted against the ID; the person is told so, login.rs; [`Denial`] says why):
+//!   the user call refuses (access denied), names a pcode outside HJViewer's ID rule, or a pcode or
+//!   name whose value breaks the rules above. The SSO took the password, but the person may not use
+//!   HJViewer. A value is one person's data, so it is a denial and not an upstream error: one
+//!   person retrying must not pause the SSO calls of everyone. The user call refusing several
+//!   different accounts in a row alerts the operator instead (limits::UserRefusals): a wrong
+//!   HJV_API_SSO_CLIENT_ID or credential hjviewer-sso-api-uuid may refuse everyone;
 //! - address refused (not counted against the ID, the operator is alerted): a `msg` containing
 //!   both "not allow" and the word "ip" (or "ips"), in any case, from either call. "ip" must stand
 //!   as a word of its own ("Not Allowed IP", "IP-address", "IP입니다"), so that "multiple" or
@@ -38,8 +48,9 @@
 //!   400 or 401 `{"error":"invalid_client"}`, which every login gets until the credential
 //!   hjviewer-sso-client-secret is fixed;
 //! - upstream error (not counted against the ID): everything else, such as 5xx, timeouts, an
-//!   answer too large or not JSON, `{}`, no `success` or another value, a token or a `data[0]`
-//!   that breaks the rules above.
+//!   answer too large or not JSON, `{}`, no `success` or another value, a token that breaks the
+//!   rules above, no `data[0]` object, or a `pcode` or `name` missing or not a string: the form of
+//!   the answer, which is the same whoever logs in.
 //!
 //! The plugin reads neither `msg` nor `error`: the refused address, the refused client and
 //! invalid_grant are hjv-api's own sorting on top of the contract (v2 §4-1), so that the SSO
@@ -97,13 +108,37 @@ pub struct SsoUser {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
     Credentials,
-    /// the SSO took the password, but the person may not use HJViewer: the user call refused, or
-    /// its pcode is outside HJViewer's ID rule
-    Denied,
+    /// the SSO took the password, but the person may not use HJViewer
+    Denied(Denial),
     AddressRefused,
     /// the SSO refuses this server's client credentials (`invalid_client`)
     ClientRefused,
     Upstream,
+}
+
+/// Why a person whose password the SSO took is denied. The person gets the same answer for each
+/// (login.rs); the record and the journal keep the reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Denial {
+    /// the user call refuses (access denied): about the person, or about this server when it
+    /// refuses everyone (limits::UserRefusals)
+    UserRefused,
+    /// the user call names a pcode outside HJViewer's ID rule
+    PcodeRule,
+    /// the user call names a pcode or name whose value breaks the contract: a control character,
+    /// too long, or empty once trimmed
+    BadValue,
+}
+
+impl Denial {
+    /// The login record's result, which `admin report` counts.
+    pub fn result(self) -> &'static str {
+        match self {
+            Denial::UserRefused => "denied-user-refused",
+            Denial::PcodeRule => "denied-pcode-rule",
+            Denial::BadValue => "denied-bad-value",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -184,25 +219,40 @@ fn valid_token(token: &str) -> bool {
         && !token.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
-/// A member of `data[0]` as the contract reads it: a string of at most `max` characters without a
-/// control character, trimmed of its spaces.
-fn field(row: &Map<String, Value>, key: &str, max: usize) -> Result<String, SsoError> {
-    let Some(Value::String(value)) = row.get(key) else {
-        return Err(SsoError::upstream(format!(
+/// A member of `data[0]` that the contract reads: it must be there as a string. Else the answer
+/// is not of the contract's form, whoever logs in: an upstream error.
+fn member<'a>(row: &'a Map<String, Value>, key: &str) -> Result<&'a str, SsoError> {
+    match row.get(key) {
+        Some(Value::String(value)) => Ok(value),
+        _ => Err(SsoError::upstream(format!(
             "user call: data[0].{key} is not a string"
-        )));
+        ))),
+    }
+}
+
+/// The value of a member of `data[0]` as the contract takes it: at most `max` characters without
+/// a control character, trimmed of its spaces, not empty. One that breaks this is the person's
+/// data, not the SSO's trouble: the person is denied ([`Denial::BadValue`]; the detail names the
+/// member and the rule, never the value).
+fn value(text: &str, key: &str, max: usize) -> Result<String, SsoError> {
+    let bad = |rule: String| {
+        SsoError::new(
+            Failure::Denied(Denial::BadValue),
+            format!("user call: data[0].{key} {rule}"),
+            None,
+        )
     };
-    if value.chars().any(char::is_control) {
-        return Err(SsoError::upstream(format!(
-            "user call: data[0].{key} has a control character"
-        )));
+    if text.chars().any(char::is_control) {
+        return Err(bad("has a control character".to_owned()));
     }
-    if value.chars().count() > max {
-        return Err(SsoError::upstream(format!(
-            "user call: data[0].{key} is longer than {max} characters"
-        )));
+    if text.chars().count() > max {
+        return Err(bad(format!("is longer than {max} characters")));
     }
-    Ok(value.trim_matches(' ').to_owned())
+    let trimmed = text.trim_matches(' ');
+    if trimmed.is_empty() {
+        return Err(bad("is empty".to_owned()));
+    }
+    Ok(trimmed.to_owned())
 }
 
 /// Sorts the answer of the token call.
@@ -298,7 +348,7 @@ pub fn classify_user(status: u16, body: &[u8]) -> Result<SsoUser, SsoError> {
         Ok(true) => {}
         Ok(false) => {
             return Err(SsoError::new(
-                Failure::Denied,
+                Failure::Denied(Denial::UserRefused),
                 "user call: refused (access denied)",
                 msg,
             ))
@@ -320,15 +370,14 @@ pub fn classify_user(status: u16, body: &[u8]) -> Result<SsoUser, SsoError> {
     let Some(Value::Object(first)) = first else {
         return Err(SsoError::upstream("user call: data[0] is not an object"));
     };
-    let pcode = field(first, "pcode", MAX_PCODE)?;
-    let name = field(first, "name", MAX_NAME)?;
-    if name.is_empty() {
-        return Err(SsoError::upstream("user call: data[0].name is empty"));
-    }
+    // the form first, the same for everyone; then this person's values
+    let (pcode, name) = (member(first, "pcode")?, member(first, "name")?);
+    let pcode = value(pcode, "pcode", MAX_PCODE)?;
+    let name = value(name, "name", MAX_NAME)?;
     match staff_id(&pcode) {
         Some(pcode) => Ok(SsoUser { pcode, name }),
         None => Err(SsoError::new(
-            Failure::Denied,
+            Failure::Denied(Denial::PcodeRule),
             "user call: a pcode outside HJViewer's ID rule",
             None,
         )),
@@ -514,6 +563,7 @@ mod tests {
     /// refuse, and everything else a format error, also no `success` at all.
     #[test]
     fn the_success_forms() {
+        use Denial::*;
         use Failure::*;
         let yes = [json!(true), json!(1), json!("true"), json!("1")];
         let no = [json!(false), json!(0), json!("false"), json!("0")];
@@ -546,7 +596,7 @@ mod tests {
             let t = json!({ "success": value, "access_token": "abc" }).to_string();
             assert_eq!(token(200, &t), Err(Credentials), "{t}");
             let u = json!({ "success": value, "data": row }).to_string();
-            assert_eq!(user(200, &u), Err(Denied), "{u}");
+            assert_eq!(user(200, &u), Err(Denied(UserRefused)), "{u}");
         }
         for value in &other {
             let t = json!({ "success": value, "access_token": "abc" }).to_string();
@@ -566,7 +616,7 @@ mod tests {
         );
         // a refusal needs no message
         assert_eq!(token(200, r#"{"success":false}"#), Err(Credentials));
-        assert_eq!(user(200, r#"{"success":false}"#), Err(Denied));
+        assert_eq!(user(200, r#"{"success":false}"#), Err(Denied(UserRefused)));
     }
 
     #[test]
@@ -683,15 +733,20 @@ mod tests {
 
     #[test]
     fn user_outcomes() {
+        use Denial::*;
         use Failure::*;
         // the 행정허브 shape: pcode and name read; e-mail and department neither read nor kept
         assert_eq!(hong("ZZTEST01"), found("ZZTEST01", "홍길동"));
-        // with or without e-mail and department, also null or of another type: never read
+        // with or without e-mail and department, also null or of another type: never read nor
+        // checked, on purpose (the plugin takes the second row only)
         for row in [
             json!({ "pcode": "ZZTEST01", "name": "홍길동" }),
             json!({ "pcode": "ZZTEST01", "name": "홍길동", "email": null, "deptNm": null }),
             json!({ "pcode": "ZZTEST01", "name": "홍길동", "email": 5, "deptNm": ["x"] }),
             json!({ "pcode": "ZZTEST01", "name": "홍길동", "email": "not an address" }),
+            json!({
+                "pcode": "ZZTEST01", "name": "홍길동", "email": "a\tb", "deptNm": "가".repeat(1001)
+            }),
         ] {
             assert_eq!(user_row(row.clone()), found("ZZTEST01", "홍길동"), "{row}");
         }
@@ -719,7 +774,7 @@ mod tests {
         // the user call refuses: access denied, not a wrong password
         assert_eq!(
             user(200, r#"{"success":false,"msg":"no such api"}"#),
-            Err(Denied)
+            Err(Denied(UserRefused))
         );
         for (status, body) in [
             (
@@ -755,44 +810,55 @@ mod tests {
         }
     }
 
-    /// pcode and name: strings without control characters, trimmed of spaces, at most 60 and 250
-    /// characters, the name not empty; else a format error.
+    /// pcode and name: there as strings, else a format error (the answer's form, the same for
+    /// everyone); their values without control characters, at most 60 and 250 characters, not
+    /// empty once trimmed of spaces, else the person is denied (one person's data).
     #[test]
     fn pcode_and_name() {
+        use Denial::*;
         use Failure::*;
         let row = |pcode: Value, name: Value| user_row(json!({ "pcode": pcode, "name": name }));
-        // missing or not a string
+        // missing or not a string: a format error
         assert_eq!(user_row(json!({ "name": "홍길동" })), Err(Upstream));
         assert_eq!(user_row(json!({ "pcode": "ZZTEST01" })), Err(Upstream));
         for bad in [json!(null), json!(12345678), json!(["ZZTEST01"]), json!({})] {
             assert_eq!(row(bad.clone(), json!("홍길동")), Err(Upstream), "{bad}");
             assert_eq!(row(json!("ZZTEST01"), bad.clone()), Err(Upstream), "{bad}");
+            // the form goes before the values: a bad value of the other member changes nothing
+            assert_eq!(row(bad.clone(), json!("홍\t길동")), Err(Upstream), "{bad}");
+            assert_eq!(row(json!(""), bad.clone()), Err(Upstream), "{bad}");
         }
-        // trimmed of spaces; the name not empty
+        // trimmed of spaces
         assert_eq!(
             row(json!("  ZZTEST01 "), json!(" 홍 길동  ")),
             found("ZZTEST01", "홍 길동")
         );
-        for name in ["", " ", "   "] {
+        // empty once trimmed: the person is denied, the pcode as the name
+        for empty in ["", " ", "   "] {
             assert_eq!(
-                row(json!("ZZTEST01"), json!(name)),
-                Err(Upstream),
-                "{name:?}"
+                row(json!("ZZTEST01"), json!(empty)),
+                Err(Denied(BadValue)),
+                "{empty:?}"
+            );
+            assert_eq!(
+                row(json!(empty), json!("홍길동")),
+                Err(Denied(BadValue)),
+                "{empty:?}"
             );
         }
-        // the longest of each, and one character more (in characters, not bytes)
+        // the longest of each, and one character more (in characters, not bytes): denied
         let pcode = format!("Z{}", "9".repeat(MAX_PCODE - 1));
         let name = "가".repeat(MAX_NAME);
         assert_eq!(row(json!(pcode), json!(name)), found(&pcode, &name));
         assert_eq!(
             row(json!(format!("{pcode}9")), json!("홍길동")),
-            Err(Upstream)
+            Err(Denied(BadValue))
         );
         assert_eq!(
             row(json!("ZZTEST01"), json!(format!("{name}가"))),
-            Err(Upstream)
+            Err(Denied(BadValue))
         );
-        // control characters anywhere, also at the ends that trimming would take
+        // control characters anywhere, also at the ends that trimming would take: denied
         for bad in [
             "\n", "\t", "\r", "\u{0}", "\u{b}", "\u{1b}", "\u{7f}", "\u{85}", "\u{9f}",
         ] {
@@ -804,10 +870,36 @@ mod tests {
             ] {
                 assert_eq!(
                     row(json!(pcode), json!(name)),
-                    Err(Upstream),
+                    Err(Denied(BadValue)),
                     "{pcode:?} {name:?}"
                 );
             }
+        }
+        // the journal's reason names the member and the rule, never the value
+        let long = "홍".repeat(MAX_NAME + 1);
+        for (pcode, name, detail) in [
+            (
+                "ZZTEST01",
+                "홍길동\t",
+                "user call: data[0].name has a control character",
+            ),
+            (" ", "홍길동", "user call: data[0].pcode is empty"),
+            (
+                "ZZTEST01",
+                long.as_str(),
+                "user call: data[0].name is longer than 250 characters",
+            ),
+        ] {
+            let e = classify_user(
+                200,
+                json!({ "success": true, "data": [{ "pcode": pcode, "name": name }] })
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap_err();
+            assert_eq!(e.failure, Denied(BadValue));
+            assert_eq!(e.detail, detail);
+            assert_eq!(e.message, None);
         }
     }
 
@@ -815,6 +907,7 @@ mod tests {
     /// not ZA); else the person is denied, whatever ID was typed.
     #[test]
     fn the_pcode_rule() {
+        use Denial::*;
         use Failure::*;
         // Z and Y codes, uppercased
         assert_eq!(hong("ZZTEST01"), found("ZZTEST01", "홍길동"));
@@ -832,10 +925,8 @@ mod tests {
             "ZZ TEST",
             "ZZ.TEST",
             "ＺＺTEST01",
-            "",
-            " ",
         ] {
-            assert_eq!(hong(pcode), Err(Denied), "{pcode:?}");
+            assert_eq!(hong(pcode), Err(Denied(PcodeRule)), "{pcode:?}");
         }
         // a denial carries no user data
         let e = classify_user(
@@ -845,9 +936,18 @@ mod tests {
                 .as_bytes(),
         )
         .unwrap_err();
-        assert_eq!(e.failure, Denied);
+        assert_eq!(e.failure, Denied(PcodeRule));
         assert!(!e.detail.contains("ZATEST01") && !e.detail.contains("홍길동"));
         assert_eq!(e.message, None);
+        // each reason has its record
+        assert_eq!(
+            [UserRefused, PcodeRule, BadValue].map(Denial::result),
+            [
+                "denied-user-refused",
+                "denied-pcode-rule",
+                "denied-bad-value"
+            ]
+        );
     }
 
     /// Answers nested deeper than json_decode's 32 levels are a format error, in both calls.
@@ -885,7 +985,7 @@ mod tests {
         assert_eq!(e.message.as_deref(), Some("badpassword"));
         assert!(!e.detail.contains("bad"));
         let e = classify_user(200, br#"{"success":"0","msg":"denied"}"#).unwrap_err();
-        assert_eq!(e.failure, Failure::Denied);
+        assert_eq!(e.failure, Failure::Denied(Denial::UserRefused));
         assert_eq!(e.message.as_deref(), Some("denied"));
     }
 }

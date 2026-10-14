@@ -281,13 +281,15 @@ passwordless status | on | off [--account <id|tag:T> | --owner-of <PC ID>]
 strict on | off           PCs ask the server at each password-less connection (incidents)
 report                    counts, the login mode, the allowlist (who may log in, how many a login
                           registered in the last day and week, how many are blocked), the login
-                          results of the last day and week, the limit counters, the account keys,
-                          the switches and the change serial; the PCs holding their binding and
-                          those synced in the last 10 minutes, those not synced since the last
-                          switch change, needs-relogin, PCs by app version, refusals, released
-                          bindings by how they went, password-less connections of 30 days; the
-                          relays by state and each active relay's last poll, the PCs that reported
-                          how to wake them, the wake jobs of the last day and week by result
+                          results of the last day and week (a denied person by the reason:
+                          denied-user-refused, denied-pcode-rule, denied-bad-value), the limit
+                          counters, the account keys, the switches and the change serial; the PCs
+                          holding their binding and those synced in the last 10 minutes, those not
+                          synced since the last switch change, needs-relogin, PCs by app version,
+                          refusals, released bindings by how they went, password-less connections
+                          of 30 days; the relays by state and each active relay's last poll, the
+                          PCs that reported how to wake them, the wake jobs of the last day and
+                          week by result
 selfcheck                 DNS, TCP and TLS to the SSO and hbbs's console, from inside the sandbox;
                           the fingerprints of the pinned list keys and command keys and whether the
                           keys in use are the pinned ones; the login mode
@@ -435,10 +437,12 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
   changes) and a refused address told apart; with `HJV_API_LOGIN=open`, the SSO calls of the
   portal IDs not on the allowlist found full (`HJV_API_LIMIT_SSO_NEW`) in the last ten minutes
   (`sso_new`: someone may be trying passwords on many portal IDs, or many people log in for the
-  first time); and, with phase 2, active NAS relays silent for an hour. PCs that
-  are off say nothing, so a night with every PC asleep is no alarm. All well: one line in the
-  journal. A finding: an error line each, the findings in `/run/hjviewer-api-check/findings`, and
-  the unit fails.
+  first time); the SSO's user call refusing three different accounts in a row, the last in the
+  last ten minutes (`sso_user`: when it refuses everyone, `HJV_API_SSO_CLIENT_ID` or the
+  credential `hjviewer-sso-api-uuid` is wrong; hbbs and the SSO, below); and, with phase 2, active
+  NAS relays silent for an hour. PCs that are off say nothing, so a night with every PC asleep is
+  no alarm. All well: one line in the journal. A finding: an error line each, the findings in
+  `/run/hjviewer-api-check/findings`, and the unit fails.
 - `hjviewer-api-alert@.service` is the `OnFailure=` of `hjviewer-api.service` (each crash, also
   while systemd restarts it), of the check and of the backup: `hjv-api alert <unit>`
   (`src/alert.rs`) writes an error line to the journal. That line is the alert while no Telegram
@@ -643,10 +647,14 @@ padding, NUL is the byte 0x00, times are Unix seconds.
   `{"error":"연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요."}`.
 - While SSO calls are paused: 503 `{"error":"연세 인증 서버에 지금 연결할 수 없습니다. 잠시 뒤 다시 해 주세요."}`
   for every ID.
-- A person HJViewer denies once the SSO accepted the password (the SSO's user call refuses, or
-  names a pcode outside the ID rule), before anything is written for it, counted as a success and
-  not as a wrong password: 403
+- A person HJViewer denies once the SSO accepted the password (the SSO's user call refuses, names
+  a pcode outside the ID rule, or a pcode or name whose value the contract refuses: hbbs and the
+  SSO, below), before anything is written for it, counted as a success and not as a wrong
+  password: 403
   `{"error":"이 계정으로는 HJViewer를 쓸 수 없습니다. 연세대학교 교직원만 쓸 수 있으며, 교직원인데도 이 문구가 나오면 관리자에게 문의하세요."}`.
+  The answer is the same for each reason; the record keeps it (`denied-user-refused`,
+  `denied-pcode-rule`, `denied-bad-value`, which `report` counts apart), and the journal says it
+  once in ten minutes per account.
 - A blocked account (`admin block`), once the SSO accepted its password, before anything is
   written for it: 403
   `{"error":"이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요.","hjv":"blocked"}`.
@@ -1066,12 +1074,36 @@ policy from nginx and its `latest` from hjv-api.
   the person is denied), anything else or none is a format error, as is an `access_token` that is
   not a string of 1 to 16384 characters without control characters or whitespace. The user call's
   fields depend on the api uuid; for this registration `data[0]` holds `pcode`, `name`, `email`
-  and `deptNm`, and hjv-api reads `pcode` and `name` only: strings without control characters,
-  trimmed, of at most 60 and 250 characters, the name not empty. The pcode, uppercased, is the
+  and `deptNm`, and hjv-api reads `pcode` and `name` only. Both must be there as strings: else the
+  answer's form is not the contract's, the same for everyone, and it is an upstream error (five in
+  a row pause the SSO calls). Their values must be without control characters, of at most 60 and
+  250 characters, and not empty once trimmed: a value that breaks this is one person's data, so
+  that person is denied (`denied-bad-value`, the journal names the member and the rule, not the
+  value), and one person retrying never pauses the calls of everyone. The pcode, uppercased, is the
   person's fixed ID: the account keeps it (the column `portal_id`) with the name, and a block of
-  the person goes by it. E-mail and department are neither read nor kept. hjv-api's own sorting
-  on top of this (a refused server address by the SSO's `msg`, `invalid_client`, `invalid_grant`)
-  makes no login succeed that the plugin's reading refuses.
+  the person goes by it. hjv-api's own sorting on top of this (a refused server address by the
+  SSO's `msg`, `invalid_client`, `invalid_grant`) makes no login succeed that the plugin's reading
+  refuses.
+- E-mail and department, on purpose: hjv-api neither reads nor checks `email` and `deptNm`, to
+  keep no more of a person than it uses. The plugin checks that they are there (strings, or null),
+  within their lengths and without control characters, and that an e-mail looks like one; so an
+  answer that the plugin refuses for its `email` or `deptNm` alone, such as a malformed e-mail,
+  logs in here.
+- An account's key is the portal ID typed at login, trimmed and lowercased, not the pcode: the
+  pcode is kept as the person's fixed ID, which blocks, the check of the person's other accounts
+  (Admin, Blocking) and the operator's view (Admin overview) go by. Someone who logs in with two
+  different IDs that the SSO names one pcode for has two accounts, each with its own devices and
+  PCs; the journal line `login: the portal ID typed and the pcode the SSO names differ` shows such
+  a login, and a block of either ID holds for the person. Whether the SSO takes more than one form
+  of a person's ID is not known (design v2 §4-1); keying accounts by the pcode instead is the
+  user's decision.
+- A wrong `HJV_API_SSO_CLIENT_ID` or credential `hjviewer-sso-api-uuid` may make the user call
+  refuse everyone (`success` false, access denied): then each login gets the denial text, and
+  nothing pauses, as for one person. So three different accounts refused by the user call within
+  ten minutes, with no user call answered between (a person found, or denied for their pcode or
+  data), write one critical line to the journal (`login: the SSO's user call refused 3 different
+  accounts in a row …`), and the five-minute check reports `sso_user` for ten minutes after the
+  last of them (Monitoring).
 - HJViewer's ID rule (`util::staff_id`, the user's decision of 2026-10-14): a portal ID, uppercased,
   is Z or Y and then 1 to 59 of A-Z, 0-9, `_` and `-`, and does not start with ZA: the faculty's
   and staff's. The plugin takes Z and B with the same tail; another first letter is one line of
@@ -1197,10 +1229,13 @@ that socket paths stay short whatever the target directory. Nothing calls the re
 shape, with fixed test accounts (`ZZTEST01`, `ZZTEST02`, `YZTEST03`: fake IDs of HJViewer's ID rule;
 passwords in `src/fake_sso.rs`) and usernames `ZZSSO-*` that play the SSO's failures and its
 answers about the person. It refuses a request that is not the contract's form (`invalid_request`)
-and a username that is not uppercased. `src/sso.rs`'s unit tests have the contract's answers
-(every form of `success`, the token, `data[0]`, the pcode against the ID rule), and
-`tests/login.rs` the login's checks in order through the fake SSO, among them an ID outside the
-rule (no SSO request at all) and a denied person.
+and a username that is not uppercased, and its user call refuses everyone (access denied) when the
+`apiUuid` or `clientId` is not its own, as the SSO may for a wrong `HJV_API_SSO_CLIENT_ID` or
+credential. `src/sso.rs`'s unit tests have the contract's answers (every form of `success`, the
+token, `data[0]`, the pcode against the ID rule), and `tests/login.rs` the login's checks in order
+through the fake SSO, among them an ID outside the rule (no SSO request at all), a denied person
+for each reason, one person's bad value that never pauses the SSO calls, and a user call that
+refuses everyone.
 
 ## Data
 
