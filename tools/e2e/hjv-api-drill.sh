@@ -7,7 +7,8 @@
 # and journald@hjviewer.conf), the fake SSO, a fake hbbs console and the test keys of
 # server/api/tests/common. Then, in order:
 #   1. install, keys as credentials (systemd-creds; command key 1 made on the server with keygen,
-#      command key 2 offline), settings, start, allowlist, timers (7-3 to 7-5)
+#      command key 2 offline), settings, start, the login mode (open: two IDs imported ahead, the
+#      third registered at its first login), timers (7-3 to 7-5)
 #   2. a day of use (logins, PCs bound and syncing; server/api/tests/drill.rs), a NAS relay
 #      approved by its code and a PC woken through it (Wake-on-LAN, WP-W2), the check, the daily
 #      backup, the journal namespace and its 30 days
@@ -15,7 +16,8 @@
 #      of hjviewer-api.service, the socket stopped, PCs that are on but stop syncing (waits about
 #      12 minutes; HJV_DRILL_QUICK=1 skips it), PCs that are off
 #   4. the restore of the morning's backup after changes (a PC that syncs right after the start
-#      gets a disabled list: a restored backup starts off), then switching back on
+#      gets a disabled list: a restored backup starts off; an account blocked since is blocked
+#      again by the operator record's tag), then switching back on and lifting that block
 #   5. the snapshot before an upgrade, an upgrade the old binary cannot go back from, going back
 #      (the snapshot restored, the restore's steps after it)
 #   6. old backups going after 14 days
@@ -198,7 +200,8 @@ grep -cE '^HJV_API_(SSO_TOKEN_URL|SSO_USERINFO_URL|SSO_CLIENT_ID|HBBS_PUBKEY|TRU
 EOF
 }
 
-# runbook 7-5: start, the files' modes, the switch, selfcheck, the allowlist, the timers
+# runbook 7-5: start, the files' modes, the switch, selfcheck, the login mode, the timers; two IDs
+# imported ahead (the runbook needs none in open mode: Y9001 goes on the list at its first login)
 start_api() { # <host>
   on "$1" << 'EOF'
 set -euo pipefail
@@ -210,7 +213,8 @@ chattr +a /var/log/hjviewer-api/operator.log 2>&1 || echo "(chattr: not on this 
 A="/opt/hjviewer/bin/hjv-api admin"
 $A passwordless status | head -1
 $A selfcheck | grep -E '^\[' | cut -c1-100 || true
-printf '2026000001\n2026000002\nY9001\nsso-invalid-client\n' > /root/hjviewer-allow.txt
+$A report | sed -n 2p
+printf '2026000001\n2026000002\nsso-invalid-client\n' > /root/hjviewer-allow.txt
 chmod 600 /root/hjviewer-allow.txt
 $A allow import /root/hjviewer-allow.txt
 rm /root/hjviewer-allow.txt
@@ -379,7 +383,7 @@ else
   step "A: (HJV_DRILL_QUICK: no wait for the syncs to age)"
 fi
 
-step "A: after the backup: a new login, KIM's PC released by its owner, HONG's keys revoked (a lost phone)"
+step "A: after the backup: a new login, KIM's PC released by its owner, HONG's keys revoked (a lost phone), LEE blocked"
 client "$A" drill_after_backup
 
 step "A: restore of the morning's backup (README.md, Backup and restore; runbook 7-14)"
@@ -411,9 +415,15 @@ off=$($A passwordless off)
 echo "$off"
 case $off in *'(no change)'*) ;; *) echo 'FAIL: the restored backup was not off from its start'; exit 1 ;; esac
 $A user revoke-all --all
+# the blocks made after the backup are lifted by it: made again by the operator record's tags
+# (runbook 7-14; here every block of the record came after the backup)
+$A allow list | head -1
+tags=$(grep -a 'cmd="block" targets=' /var/log/hjviewer-api/operator.log | sed -n 's/.* targets=\([0-9a-f]\{16\}\) .*/\1/p' | sort -u)
+[ -n "$tags" ] || { echo 'FAIL: no block in the operator record'; exit 1; }
+for t in $tags; do $A block "tag:$t"; done
 $A passwordless status | head -1
 $A allow list | head -1
-$A report | head -5
+$A report | head -7
 # the relays are the backup's too: one revoked since would be revoked again here
 $A relay list | head -1
 EOF

@@ -41,7 +41,7 @@
 //! `logout` (the device logged out, also by DELETE of its own key), `removed` (another device of
 //! the account logged it out: `left_by`), `expired` (its login expired), `replaced` (a new login
 //! of the same device), `evicted` (the account's [`MAX_ACTIVE_KEYS`]), `admin` (the operator, or
-//! the account left the allowlist).
+//! the account was blocked or left the allowlist).
 //!
 //! `new` is the new-device notice (design v3 §1-1, U1-a, U1-c): every key of the account but the
 //! asking one's, active or ended, whatever order the keys were made in, until it is answered,

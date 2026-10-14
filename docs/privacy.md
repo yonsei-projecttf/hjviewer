@@ -10,7 +10,7 @@ HJViewer is a self-hosted remote desktop app. The people who build it collect no
 no analytics, crash reports or ads. The app talks only to the server it was built for, which that
 server's operator runs, and to public STUN servers (section 2).
 
-From version 1.6.0 the server can also have accounts. People whom the operator has put on a list
+From version 1.6.0 the server can also have accounts. Faculty and staff whom the Yonsei SSO accepts
 log in with their Yonsei portal ID; they then see their own Windows PCs in the app, connect between
 their own devices without the PC's password, and can switch a sleeping PC on through a relay in its
 network. This statement says what the server, your devices and that relay keep, for how long, and
@@ -49,9 +49,12 @@ password as before.
 
 ### 3. Accounts (from version 1.6.0)
 
-Only for people on the operator's list who log in. The account service runs on the same server. A
-login with an ID that is not on the list still leaves a login record (tags of the ID typed and of
-the device, the client's IP address, the result, the time; 6 months) and the login limit counters.
+Only for people who log in. The Yonsei SSO lets only the university's faculty and staff through its
+login, and each of them may use HJViewer unless the operator blocks them; the account service puts
+the portal ID on its list at the first login. The account service runs on the same server. A login
+that fails (a wrong password, a blocked account) still leaves a login record (tags of the ID typed
+and of the device, the client's IP address, the result, the time; 6 months) and the login limit
+counters.
 
 **Logging in.** You type your Yonsei portal ID and password in the app. The app seals the password
 to the server's key, so that only the account service can open it, even on a network that inspects
@@ -76,8 +79,8 @@ let in today and yesterday and their number, and how many attempts it refused fo
 
 | What | Content | Kept |
 |---|---|---|
-| List | the portal IDs the operator put on the list, also of people who never logged in | until the operator takes them off |
-| Account | portal ID and name (from the SSO), times of creation and last login, the account's switch for connections without the PC's password | until a year without use (an account still on the list with a PC in use stays), or deleted on request |
+| List | the portal ID of each person who logged in, put on the list at the first login, or whom the operator put on it ahead; how and when the entry came; whether the operator blocked it, and since when | with the account (below); an entry without an account a year after it came on the list; a blocked entry until the operator lifts the block |
+| Account | portal ID and name (from the SSO), times of creation and last login, the account's switch for connections without the PC's password | until a year without use (an account with a PC in use stays, unless it is blocked), or deleted on request |
 | Login tokens | a hash of each token, never the token | until logout, 90 days without use, a year at most |
 | Account keys (one per logged-in device) | public key; device ID; a tag computed from the machine identifier of section 2 (not the identifier); platform, the device model the server names from it, the device name and the app version, as the device reported them; whether the login came from the university's network or from outside (not the address); times of creation and last login; your devices' answers to the notice below; when and how its login ended and which of your devices ended it | while the device is logged in, then 30 days |
 | PCs in your account | PC ID, OS, host name, the PC's public key, a random binding ID, times added, last seen and last synced, app version, whether switched off on the PC; per reason, counts of refused attempts (30 days) | until removed from the account or 180 days unseen. After that the binding ID, the PC ID and its public key stay 180 days, so that the PC learns that it was removed |
@@ -207,9 +210,12 @@ Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shar
   deleted, or to stop its processing. Deleting your account takes you off the list, revokes its
   relays and deletes everything kept about it, the wake requests too. What stays: the removed PCs'
   binding IDs, PC IDs and public keys (180 days), the revoked relays' IDs, keys and times, the
-  records of logins, devices and keys under tags (6 months) and the operator record; the backups
-  age out after 14 days.
-- Once you are taken off the list, your devices are logged out at once.
+  records of logins, devices and keys under tags (6 months), the operator record, and a block the
+  operator set (your portal ID with it, until the block is lifted); the backups age out after 14
+  days. If you log in again later, your portal ID goes on the list again (while the operator lets
+  in only the IDs already on the list, the operator puts it there again first).
+- If the operator blocks your account, your devices are logged out at once, and your next login
+  is refused with a message that says so.
 
 ### 9. Who handles the data
 
@@ -236,7 +242,7 @@ statement are in the history of that repository.
 
 HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니다. 앱을 만든 쪽은 아무 정보도 수집하지 않습니다. 분석, 오류 보고, 광고가 없습니다. 앱은 빌드할 때 정해진 서버, 그리고 공개 STUN 서버(2절)하고만 통신합니다. 서버는 그 서버의 운영자가 관리합니다.
 
-1.6.0부터 서버에 계정 기능이 생깁니다. 운영자가 명단에 넣은 사람은 연세포탈 ID로 로그인하고, 앱에서 자기 Windows PC를 보고, 자기 기기끼리 PC 비밀번호 없이 연결하고, PC와 같은 네트워크의 중계기로 꺼진 PC를 켤 수 있습니다. 이 문서는 서버, 사용자의 기기, 그 중계기가 무엇을 얼마 동안 보관하는지와 지우는 방법을 적습니다. 로그인은 선택입니다. 로그인하지 않은 앱과 계정 기능이 없는 빌드는 계정 서비스에 아무것도 보내지 않고, 지금처럼 PC의 ID와 비밀번호로 연결합니다.
+1.6.0부터 서버에 계정 기능이 생깁니다. 연세 SSO를 통과한 교직원은 연세포탈 ID로 로그인하고, 앱에서 자기 Windows PC를 보고, 자기 기기끼리 PC 비밀번호 없이 연결하고, PC와 같은 네트워크의 중계기로 꺼진 PC를 켤 수 있습니다. 이 문서는 서버, 사용자의 기기, 그 중계기가 무엇을 얼마 동안 보관하는지와 지우는 방법을 적습니다. 로그인은 선택입니다. 로그인하지 않은 앱과 계정 기능이 없는 빌드는 계정 서비스에 아무것도 보내지 않고, 지금처럼 PC의 ID와 비밀번호로 연결합니다.
 
 ### 2. 기기 연결 (모든 사용자)
 
@@ -248,7 +254,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 3. 계정 (1.6.0부터)
 
-운영자의 명단에 있고 로그인한 사람에게만 해당합니다. 계정 서비스는 같은 서버에서 돕니다. 명단에 없는 ID로 로그인을 시도해도 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다.
+로그인한 사람에게만 해당합니다. 연세 SSO는 학교의 교직원 계정만 통과시키고, 그 사람은 운영자가 막지 않는 한 누구나 HJViewer를 쓸 수 있습니다. 계정 서비스는 처음 로그인할 때 그 포탈 ID를 명단에 올립니다. 계정 서비스는 같은 서버에서 돕니다. 로그인에 실패해도(틀린 비밀번호, 막힌 계정) 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다.
 
 **로그인.** 앱에 연세포탈 ID와 비밀번호를 넣습니다. 앱은 비밀번호를 서버의 키로 봉인하므로, 암호화된 통신을 들여다보는 네트워크에서도 계정 서비스만 열 수 있습니다. 계정 서비스는 연세 SSO(학교의 로그인 시스템)에 비밀번호를 확인받은 뒤 바로 버립니다. 비밀번호와 SSO 토큰은 저장하지도 기록하지도 않습니다. SSO에서 받은 것 가운데 포탈 ID와 성명만 보관합니다. 로그인할 때마다 그 기기의 **계정 키**도 새로 등록합니다. 서버는 공개키만 보관하고 개인키는 기기에 남으며, 로그인 뒤의 모든 계정 요청에 그 키로 서명합니다.
 
@@ -258,8 +264,8 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 | 항목 | 내용 | 보관 |
 |---|---|---|
-| 명단 | 운영자가 명단에 넣은 포탈 ID(로그인한 적이 없는 사람 것도) | 운영자가 뺄 때까지 |
-| 계정 | 포탈 ID와 성명(SSO에서 받음), 만든 시각과 마지막 로그인 시각, 그 계정의 비밀번호 없는 연결 스위치 | 1년 동안 쓰지 않을 때까지(명단에 있고 쓰는 PC가 있는 계정은 남김), 또는 요청하면 삭제 |
+| 명단 | 로그인한 사람의 포탈 ID(처음 로그인할 때 올라감)나 운영자가 미리 올린 포탈 ID, 어떻게 언제 올랐는지, 운영자가 막았는지와 언제부터인지 | 계정과 함께(아래). 계정이 없는 항목은 오른 지 1년 뒤. 막힌 항목은 운영자가 막기를 풀 때까지 |
+| 계정 | 포탈 ID와 성명(SSO에서 받음), 만든 시각과 마지막 로그인 시각, 그 계정의 비밀번호 없는 연결 스위치 | 1년 동안 쓰지 않을 때까지(쓰는 PC가 있는 계정은 막히지 않았으면 남김), 또는 요청하면 삭제 |
 | 로그인 토큰 | 토큰의 해시만(토큰 자체는 없음) | 로그아웃할 때까지, 90일 동안 쓰지 않거나 최대 1년 |
 | 계정 키(로그인한 기기마다 하나) | 공개키, 기기 ID, 기기 식별값(2절)으로 만든 꼬리표(식별값 자체는 없음), 기기가 알린 플랫폼·기기 이름·앱 버전과 그것으로 서버가 정한 기기 모델 이름, 학내 네트워크에서 로그인했는지(주소는 없음), 만든 시각·마지막 로그인 시각, 아래 알림에 내 기기들이 한 답, 로그인이 언제 어떻게 끝났는지와 끝낸 내 기기 | 그 기기가 로그인해 있는 동안, 그 뒤 30일 |
 | 내 계정의 PC | PC ID, OS, 호스트 이름, PC 공개키, 무작위 묶음 ID, 추가한 시각·마지막으로 보인 시각·마지막 동기화 시각, 앱 버전, 그 PC에서 꺼 두었는지, 거절한 시도의 이유별 개수(30일) | 계정에서 빼거나 180일 동안 보이지 않을 때까지. 그 뒤 묶음 ID, PC ID, PC 공개키만 180일 남깁니다. PC가 빠졌다는 것을 그 PC에 알리기 위해서입니다 |
@@ -303,8 +309,8 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 ### 8. 삭제와 권리 행사
 
 - **앱에서 직접**: 기기에서 로그아웃하면 그 기기의 키와 토큰이 바로 끝납니다. 잃어버린 기기는 다른 내 기기의 '로그인한 기기'에서 로그아웃시키거나 다른 기기를 모두 로그아웃시킵니다. 내 목록에서 PC를 뺄 수 있고, PC를 남에게 넘기기 전에는 그 PC에서 로그아웃합니다. PC에서 HJViewer를 제거하면 레지스트리에 둔 것이 지워집니다. 연세포탈 비밀번호를 바꿔도 이미 로그인한 기기는 남으므로, 바꾼 뒤에는 [다른 기기 모두 로그아웃]도 누릅니다. 다른 기기에서 로그아웃시키면 비밀번호 없는 새 연결은 막히지만, 이미 열려 있는 연결은 PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 장치 다시 시작'을 누르거나, PC를 다시 시작할 때까지 남습니다.
-- **운영자에게 요청**: 나에 대해 보관하는 것을 보여 달라고, 고치거나 지워 달라고, 처리를 멈춰 달라고 요청할 수 있습니다. 계정을 지우면 명단에서도 빠지고, 그 계정의 중계기는 폐기되며, 켜기 요청 기록을 포함해 그 계정에 대해 보관하던 것이 모두 지워집니다. 남는 것은 뺀 PC의 묶음 ID·PC ID·공개키(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록이고, 백업은 14일 뒤에 사라집니다.
-- 명단에서 빠지면 내 기기들은 바로 로그아웃됩니다.
+- **운영자에게 요청**: 나에 대해 보관하는 것을 보여 달라고, 고치거나 지워 달라고, 처리를 멈춰 달라고 요청할 수 있습니다. 계정을 지우면 명단에서도 빠지고, 그 계정의 중계기는 폐기되며, 켜기 요청 기록을 포함해 그 계정에 대해 보관하던 것이 모두 지워집니다. 남는 것은 뺀 PC의 묶음 ID·PC ID·공개키(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록, 그리고 운영자가 걸어 둔 막기(그 포탈 ID와 함께, 막기를 풀 때까지)이고, 백업은 14일 뒤에 사라집니다. 나중에 다시 로그인하면 다시 명단에 오릅니다(운영자가 명단에 있는 ID만 받는 동안에는 운영자가 먼저 다시 넣어야 합니다).
+- 운영자가 내 계정을 막으면 내 기기들은 바로 로그아웃되고, 다음 로그인은 막혔다는 안내와 함께 거절됩니다.
 
 ### 9. 정보를 다루는 곳
 

@@ -64,6 +64,15 @@ HJV_DRILL_QUICK=1 tools/e2e/hjv-api-drill.sh   # 그 기다림 없이 약 3분
 - **호스트 재구축과 명령 키 2번**: WP-O 때 연습에 없던 것입니다. 중계기 빌드가 명령 키 1번과 2번을 함께 고정하므로, 1번을 잃은 서버는 매체의 2번을 넣고 `HJV_API_COMMAND_KID=2`로 바꾸면 되고 NAS는 건드리지 않습니다. 연습의 B 서버가 그렇게 해서 백업에 있던 중계기에 2번으로 서명한 명령을 보냅니다.
 - **업그레이드 단계의 스키마 번호**: 새 판의 저장 이전을 흉내 내는 번호를 3으로 적어 두었던 것을 "지금 번호 + 1"로 바꿨습니다. 스키마 3은 이제 진짜이기 때문입니다. 진짜 2 → 3 이전은 WP-W2 작업 중에 따로 한 번 봤습니다. WP-O 때의 실행 파일이 만든 스키마 2 DB를 새 실행 파일이 3으로 올려 시작했고, 그 DB를 옛 실행 파일은 `the database has schema 3; this hjv-api knows up to 2`로 거부했습니다.
 
+## 열린 로그인(2026-10-14)을 넣으며 달라진 것
+
+사용자 결정으로 연세 SSO를 통과한 사람은 누구나 로그인하고 처음 로그인할 때 명단에 오르며, 운영자는 명단에서 빼는 대신 막습니다(`admin block`, 스키마 5). 연습도 그에 맞췄습니다.
+
+- **설치(7-5)**: 명단에 둘(HONG, KIM)과 `sso-invalid-client`만 가져오고, LEE는 가져오지 않습니다. 하루 사용에서 LEE의 첫 로그인이 성공하고 `allow list` 첫 줄이 `allowlist: 4 IDs, 4 registered (1 by a login), 0 blocked; login open`인지 봅니다. 시작 때 `report` 둘째 줄(`login: open (…)`)도 찍습니다.
+- **백업 뒤의 변경**: LEE를 막습니다(`admin block`). LEE의 토큰은 바로 401이고, 맞는 비밀번호의 로그인은 403 `blocked`입니다.
+- **복원**: 복원한 DB에서는 그 막기가 풀려 있습니다. 런북 7-14대로 `user revoke-all --all` 뒤 운영자 기록의 `cmd="block" targets=<꼬리표>` 줄에서 꼬리표를 찾아 `block tag:<꼬리표>`로 다시 막고(연습에서는 기록의 막기가 모두 백업 뒤의 것), 복원 뒤 확인에서 LEE의 로그인이 다시 403인지 봅니다. `passwordless on` 뒤에는 막기를 풀고(`unblock`) LEE가 다시 로그인합니다.
+- **업그레이드 단계**: 흉내 내는 번호가 "지금 번호 + 1"이므로 그대로입니다. 명단의 진짜 저장 이전(옛 명단의 항목은 `import`로, 명단에서 뺐던 계정은 막힌 항목으로)은 `cargo test`의 `db::tests::the_allowlist_of_schema_four_moves_on`이 봅니다.
+
 ## 런북과 다른 것 (런북에 반영함)
 
 연습할 때 런북은 문서 작업(`v3-docs`)에 있었고, 이 연습과 구현은 아래처럼 달랐습니다. 저장소를 합치기 전에 1~6번은 런북(7-4, 7-5, 7-11, 7-12, 7-14, 7-15, 7-16)에, 7번은 개인정보 처리방침과 `docs/wol-pc-setup.md`에 반영했습니다. 1~3번은 7-14이고, 4번부터는 원격 켜기(WP-W2)로 생긴 것입니다.
@@ -84,7 +93,7 @@ HJV_DRILL_QUICK=1 tools/e2e/hjv-api-drill.sh   # 그 기다림 없이 약 3분
    sudo systemctl start hjviewer-api.socket hjviewer-api.service   # 모든 계정이 꺼진 채로 시작
    $A passwordless off             # 확인: "(no change)"여야 함
    $A user revoke-all --all        # 모든 계정 키와 토큰을 폐기
-   $A passwordless status; $A allow list | head -1; $A report | head -5
+   $A passwordless status; $A allow list | head -1; $A report | head -7
    $A relay list                   # 백업 뒤에 폐기한 중계기가 다시 활성이면 relay revoke
    ```
    두 번째 `off`가 `(no change)`가 아니면 그대로 보고합니다. `STOP: 지금 DB를 백업하지 못함`이면 사용자에게 보고하고 점검 타이머를 다시 켭니다. DB가 망가져 백업이 되지 않는 경우에만, 사용자 승인 뒤 `rm -f` 대신 그 파일들을 `/root/hjv-backup/before-restore-<시각>/`(700)로 옮기고 그 사본은 14일 안에 지웁니다. 백업 뒤에 폐기한 중계기는 운영자 기록의 `relay revoke` 줄로 찾아, 사용자 승인 뒤 다시 폐기합니다. 명단과 스위치를 확인한 뒤 사용자 승인을 받아 `passwordless on`과 `sudo systemctl start hjviewer-api-check.timer`.
@@ -103,6 +112,6 @@ HJV_DRILL_QUICK=1 tools/e2e/hjv-api-drill.sh   # 그 기다림 없이 약 3분
 - 진짜 hjv-relay 실행 파일과 매직 패킷, 실제로 깨어나는 PC. 중계기는 시험 프로그램이 대신하고, 켜짐은 가짜 hbbs와 PC의 동기화로 알립니다. WOL E2E(WP-W5)와 현장 시험의 몫입니다.
 - 운영자 기록의 `chattr +a`: 컨테이너의 파일 시스템이 지원하지 않습니다.
 - 진짜 판 올림: 연습은 `PRAGMA user_version`으로 다음 판의 저장 이전을 흉내 냅니다. 2 → 3은 위에 적은 대로 따로 한 번 봤습니다.
-- 디스크를 잃고 백업도 없는 재구축: DB가 빈 채 시작하는 것은 A의 첫 설치와 같고, 그 뒤 명단을 다시 넣고 모두 다시 로그인하며, 중계기는 hello를 다시 보내 다시 승인받습니다.
+- 디스크를 잃고 백업도 없는 재구축: DB가 빈 채 시작하는 것은 A의 첫 설치와 같고, 그 뒤 막기를 서버 밖에 적어 둔 것으로 다시 하고(명단 방식이면 명단도 다시 넣고) 모두 다시 로그인하며, 중계기는 hello를 다시 보내 다시 승인받습니다.
 - 실제 시간의 14일과 30일: 14일은 파일 시각을 앞당겨 봤고, 30일은 저널 설정만 확인했습니다.
 - 매일 백업 타이머가 03:30에 도는 것: 타이머를 켜고 그 서비스를 직접 시작했습니다. 5분 점검 타이머는 연습 중에도 제 시각에 돌았습니다.

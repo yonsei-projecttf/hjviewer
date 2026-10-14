@@ -12,6 +12,15 @@
 //! portal IDs do not pass through an agent's conversation. A file with a line that is not a portal
 //! ID changes nothing, and the answer names only the line numbers.
 //!
+//! Since the open login of 2026-10-14 (HJV_API_LOGIN=open, login.rs) a login puts every portal ID
+//! the SSO accepts on the list, so an import only registers IDs ahead (and decides in list mode),
+//! and `block <id|tag:T>` keeps an account out where taking its ID off the list used to: its
+//! tokens and account keys end at once, its PCs get lists without keys, the entry stays blocked
+//! and its next login is refused after the SSO; `unblock` lifts it. Both take with the ID the
+//! others the server knows for the same person (the perslNo the SSO named for its account, and
+//! that person's other accounts: db.rs `person_keys`). `allow remove <file>` blocks the IDs of a
+//! file (an ID without an account has no tag to name it by).
+//!
 //! The protocol is one JSON line each way: `{"argv":[…],"reveal":false,"sudo_user":"…","input":"…"}`
 //! and `{"ok":true,"output":"…"}` or `{"ok":false,"error":"…"}`.
 //!
@@ -70,16 +79,25 @@ const IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub const USAGE: &str = "\
 hjv-api admin [--socket <path>] [--reveal] <command>
   allow import <file>       add the portal IDs in <file> (one per line, # comments) to the allowlist
-  allow remove <file>       remove the IDs in <file>; their tokens and account keys stop working
-                            at once (their PCs stay in the accounts)
-  allow list                the allowlist
+                            ahead of their first login (in list mode only the list may log in); a
+                            blocked ID stays blocked
+  allow remove <file>       block the IDs in <file>, as block does (removing is blocking now)
+  allow list                the allowlist: each entry's tag, ID, state (registered or blocked),
+                            how it came (login or import) and its dates
+  block <id|tag:T>          keep an account out: its tokens and account keys stop working at once,
+                            its PCs stay in the account with lists without keys, and its next login
+                            is refused after the SSO; an ID not on the list is put on it blocked.
+                            The other IDs the SSO named for the same person are blocked with it
+  unblock <id|tag:T>        lift a block (with the person's other IDs): the account may log in
+                            again (its devices log in again)
   users                     accounts: tag, ID, devices, account keys, tokens, last login
   devices                   devices in accounts: tag, ID, account tag, OS, last seen
   key list [<id|tag:T>]     account keys: number, account, platform, device, version, network,
                             times, and per PC the last password-less use and the uses of 30 days
   key revoke <ckid>         revoke an account key with its token (that device must log in again)
   unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
-                            of the tag from a journal warning, or of a client address
+                            of the tag from a journal warning, or of a client address, and the SSO
+                            calls of IDs not on the allowlist that the ID or address holds
   user revoke-all <id|tag:T> | --all
                             revoke every token and account key of an account, or of every account
                             (each device must log in again; PCs stay in the accounts)
@@ -97,11 +115,13 @@ hjv-api admin [--socket <path>] [--reveal] <command>
                             for everyone (off when installed; off also ends the accounts turned on
                             one by one), or for one account
   strict on | off           PCs ask the server at each password-less connection (incidents)
-  report                    counts: accounts, devices, tokens, keys, switches, logins of the last
-                            day and week, the PCs' syncs, needs-relogin, refusals, released
-                            bindings, password-less connections of 30 days
+  report                    counts: accounts, devices, tokens, keys, switches, the login mode and
+                            the allowlist, logins of the last day and week, the PCs' syncs,
+                            needs-relogin, refusals, released bindings, password-less connections
+                            of 30 days
   selfcheck                 the service checks that it can reach the SSO and hbbs, and that its
-                            list key is the one the apps pin (with the fingerprints)
+                            list key is the one the apps pin (with the fingerprints); the login
+                            mode
   backup [--keep-days N] <file>.sqlite3 | <directory>
                             a checked copy of the database (0600) into a directory only you may
                             enter (/var/lib/hjviewer-api/backup); a directory gets a name of the
@@ -302,9 +322,8 @@ async fn run(
         | ["strict", sub @ ("on" | "off"), ..]
         | ["relay", sub @ ("list" | "approve" | "revoke"), ..] => format!("{} {sub}", words[0]),
         ["relay", "share", turn @ ("on" | "off"), ..] => format!("relay share {turn}"),
-        [one @ ("users" | "devices" | "unlock" | "revoke" | "report" | "selfcheck" | "backup"), ..] => {
-            (*one).to_owned()
-        }
+        [one @ ("users" | "devices" | "unlock" | "revoke" | "report" | "selfcheck" | "backup"), ..]
+        | [one @ ("block" | "unblock"), ..] => (*one).to_owned(),
         _ => "unknown".to_owned(),
     };
     // the record shows tags, never the IDs or addresses the operator typed
@@ -318,7 +337,7 @@ async fn run(
             Err(_) => vec![],
         },
         ["user", "revoke-all", "--all"] => vec!["all".to_owned()],
-        ["unlock" | "revoke", arg]
+        ["unlock" | "revoke" | "block" | "unblock", arg]
         | ["user", "delete" | "revoke-all", arg]
         | ["key", "list", arg]
         | ["passwordless", _, "--account", arg] => match target(arg) {
@@ -430,6 +449,8 @@ fn show(value: &str, reveal: bool) -> String {
 const CHANGES: &[&str] = &[
     "allow import",
     "allow remove",
+    "block",
+    "unblock",
     "unlock",
     "revoke",
     "device remove",
@@ -575,6 +596,46 @@ async fn find_account(state: &Arc<AppState>, t: Target) -> Result<Option<db::Acc
             .into_iter()
             .find(|a| state.tags.account(&a.login_key) == tag),
     })
+}
+
+/// The case-folded portal ID that `block` or `unblock` names: an ID as typed, or `tag:` of an
+/// account or of an allowlist entry (the tags of `users` and `allow list`).
+async fn listed_key(state: &Arc<AppState>, arg: &str) -> Result<String, String> {
+    match target(arg)? {
+        Target::Value(v) if valid_portal_id(&v) => Ok(login_key(&v)),
+        Target::Value(_) => Err("not a portal ID".into()),
+        Target::Tag(tag) => {
+            let keys = state
+                .db
+                .call(|c| {
+                    let mut keys: Vec<String> =
+                        db::allowlist(c)?.into_iter().map(|e| e.login_key).collect();
+                    keys.extend(db::accounts(c)?.into_iter().map(|a| a.login_key));
+                    Ok(keys)
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+            keys.into_iter()
+                .find(|k| state.tags.account(k) == tag)
+                .ok_or_else(|| "no account or allowlist entry has that tag".to_owned())
+        }
+    }
+}
+
+/// The answer of `block` and `allow remove`: what changed, in counts.
+fn blocked_text(b: &db::Blocked) -> String {
+    let person = if b.person > 0 {
+        format!(
+            "; {} of them another ID the SSO names for the same person",
+            b.person
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "{} blocked ({} of them not on the allowlist before{person}), {} blocked already, {} tokens and {} account keys revoked",
+        b.blocked, b.new, b.already, b.tokens, b.keys
+    )
 }
 
 fn on_off(on: bool) -> &'static str {
@@ -853,37 +914,111 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
     match words.as_slice() {
         ["allow", "import", ..] => {
             let ids = read_ids(req.input.as_deref())?;
-            let (added, already) = state
-                .db
-                .call(move |c| db::allow_add(c, &ids, at))
-                .await
-                .map_err(dberr)?;
-            Ok(format!("allowlist: {added} added, {already} already there"))
-        }
-        ["allow", "remove", ..] => {
-            let ids = read_ids(req.input.as_deref())?;
-            let listed = ids.len();
-            let (removed, tokens, keys) = state
+            let (added, already, blocked) = state
                 .db
                 .call(move |c| {
-                    let r = db::allow_remove(c, &ids, at)?;
+                    let (added, already) = db::allow_add(c, &ids, at)?;
+                    let mut blocked = 0;
+                    for id in &ids {
+                        blocked += usize::from(db::listing(c, id)? == db::Listing::Blocked);
+                    }
+                    Ok((added, already, blocked))
+                })
+                .await
+                .map_err(dberr)?;
+            let blocked = if blocked > 0 {
+                format!(" ({blocked} of them blocked, which only unblock lifts)")
+            } else {
+                String::new()
+            };
+            Ok(format!(
+                "allowlist: {added} added, {already} already there{blocked}"
+            ))
+        }
+        // removing an ID from the list kept its account out while only the list let anyone in;
+        // now that a login registers every ID the SSO accepts, that is what block does
+        ["allow", "remove", ..] => {
+            let ids = read_ids(req.input.as_deref())?;
+            let b = state
+                .db
+                .call(move |c| {
+                    let b = db::allow_block(c, &ids, at)?;
                     db::checkpoint(c)?;
-                    Ok(r)
+                    Ok(b)
                 })
                 .await
                 .map_err(dberr)?;
             Ok(format!(
-                "allowlist: {removed} removed, {} not on it, {tokens} tokens and {keys} account keys revoked",
-                listed - removed
+                "allowlist: {} (allow remove blocks now; hjv-api admin unblock lifts a block)",
+                blocked_text(&b)
             ))
         }
         ["allow", "list"] => {
             let list = state.db.call(|c| db::allowlist(c)).await.map_err(dberr)?;
-            let mut out = format!("allowlist: {} IDs\n", list.len());
-            for (key, added) in list {
-                let _ = writeln!(out, "  {:<24} added {}", show(&key, reveal), date(added));
+            let blocked = list.iter().filter(|e| e.blocked_at.is_some()).count();
+            let by_login = list
+                .iter()
+                .filter(|e| e.blocked_at.is_none() && e.source == "login")
+                .count();
+            let mut out = format!(
+                "allowlist: {} IDs, {} registered ({by_login} by a login), {blocked} blocked; login {}\n",
+                list.len(),
+                list.len() - blocked,
+                state.config.login.as_str()
+            );
+            for e in list {
+                let _ = writeln!(
+                    out,
+                    "  {:<16}  {:<24}  {:<10}  from {:<6}  added {}{}",
+                    state.tags.account(&e.login_key),
+                    show(&e.login_key, reveal),
+                    if e.blocked_at.is_some() {
+                        "blocked"
+                    } else {
+                        "registered"
+                    },
+                    e.source,
+                    date(e.added_at),
+                    e.blocked_at
+                        .map_or_else(String::new, |b| format!("  blocked {}", date(b)))
+                );
             }
             Ok(out)
+        }
+        ["block", arg] => {
+            let key = listed_key(state, arg).await?;
+            let b = state
+                .db
+                .call(move |c| {
+                    let b = db::allow_block(c, &[key], at)?;
+                    db::checkpoint(c)?;
+                    Ok(b)
+                })
+                .await
+                .map_err(dberr)?;
+            Ok(if b.blocked > 0 {
+                format!(
+                    "blocked: {}; the account's PCs get lists without keys, and its next login is refused after the SSO (hjv-api admin unblock lifts it)",
+                    blocked_text(&b)
+                )
+            } else {
+                format!("blocked already (no change): {}", blocked_text(&b))
+            })
+        }
+        ["unblock", arg] => {
+            let key = listed_key(state, arg).await?;
+            let (unblocked, _) = state
+                .db
+                .call(move |c| db::allow_unblock(c, &[key], at))
+                .await
+                .map_err(dberr)?;
+            Ok(match unblocked {
+                0 => "not blocked (no change)".to_owned(),
+                1 => "unblocked: the account may log in again (its devices log in again)".to_owned(),
+                n => format!(
+                    "unblocked: the account may log in again (its devices log in again); {n} entries, the IDs the SSO names for the same person"
+                ),
+            })
         }
         ["users"] => {
             let (accounts, devices, tokens, keys) = state
@@ -1004,12 +1139,19 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
         }
         ["unlock", arg] => {
             let keys = unlock_keys(state, arg).await?;
+            // and the SSO calls of the IDs not on the allowlist that the ID or the address holds
+            // (in memory)
+            let forgotten = state.sso_calls_new.forget(&keys);
             let cleared = state
                 .db
                 .call(move |c| limits::clear(c, &keys))
                 .await
                 .map_err(dberr)?;
-            Ok(format!("cleared {cleared} counted login attempts"))
+            Ok(if forgotten > 0 {
+                format!("cleared {cleared} counted login attempts and {forgotten} SSO calls of IDs not on the allowlist")
+            } else {
+                format!("cleared {cleared} counted login attempts")
+            })
         }
         ["user", "revoke-all", "--all"] => {
             let (keys, tokens) = state
@@ -1074,25 +1216,33 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 .await?
                 .ok_or("no such account")?;
             let id = account.id;
-            let (devices, keys, tokens) = state
+            let key = account.login_key.clone();
+            let (devices, keys, tokens, listing) = state
                 .db
                 .call(move |c| {
                     let counts = db::in_tx(c, |tx| {
                         let devices = db::devices_of(tx, id)?.len();
                         let keys = db::keys_of(tx, id)?.len();
                         let tokens = db::revoke_tokens(tx, id)?;
+                        let listing = db::listing(tx, &key)?;
                         // its PCs are released first (tombstones); the keys, their nonces and
-                        // their reported use go with the account (cascade)
+                        // their reported use go with the account (cascade), and so does its
+                        // allowlist entry unless it is blocked
                         db::delete_account(tx, id, at)?;
-                        Ok((devices, keys, tokens))
+                        Ok((devices, keys, tokens, listing))
                     })?;
                     db::checkpoint(c)?;
                     Ok(counts)
                 })
                 .await
                 .map_err(dberr)?;
+            let entry = match listing {
+                db::Listing::Blocked => "its allowlist entry stays blocked",
+                db::Listing::Registered => "and its allowlist entry",
+                db::Listing::Absent => "it had no allowlist entry",
+            };
             Ok(format!(
-                "deleted the account with {devices} devices, {keys} account keys and {tokens} tokens (the allowlist entry stays)"
+                "deleted the account with {devices} devices, {keys} account keys and {tokens} tokens ({entry})"
             ))
         }
         ["passwordless", "status"] => passwordless_status(state, reveal).await,
@@ -1154,6 +1304,17 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
             let mut out = format!(
                 "allowlist {}, accounts {}, devices {}, tokens {}\n",
                 counts.allowlist, counts.accounts, counts.devices, counts.tokens
+            );
+            let mode = state.config.login;
+            let _ = writeln!(out, "login: {} ({})", mode.as_str(), mode.describe());
+            let _ = writeln!(
+                out,
+                "allowlist: {} may log in ({} registered by a login: {} in the last day, {} in the last week), {} blocked",
+                counts.allowlist,
+                counts.allowlist_by_login,
+                counts.registered_day,
+                counts.registered_week,
+                counts.blocked
             );
             let revoked: Vec<String> = counts
                 .keys_revoked

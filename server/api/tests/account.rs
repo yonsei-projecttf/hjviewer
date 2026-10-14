@@ -377,21 +377,23 @@ async fn removing_an_id_from_the_allowlist_revokes_its_tokens() {
     let h = Harness::start().await;
     let token = h.login_ok(HONG, None).await;
     let kim = h.login_ok(KIM, None).await;
+    // removing is blocking now (the open login of 2026-10-14): the entry stays, blocked
     let out = h
         .admin(&["allow", "remove"], false, Some("2026000001\n"))
         .await
         .unwrap();
     assert_eq!(
         out,
-        "allowlist: 1 removed, 0 not on it, 1 tokens and 1 account keys revoked"
+        "allowlist: 1 blocked (0 of them not on the allowlist before), 0 blocked already, 1 tokens and 1 account keys revoked (allow remove blocks now; hjv-api admin unblock lifts a block)"
     );
     assert_eq!(h.get("/api/users", &token).await.status, 401);
     assert_eq!(h.get("/api/users", &kim).await.status, 200);
-    // and the next login is refused like any unlisted ID
+    // and the next login, its password right, gets the blocked account's answer
     let a = h
         .login(&h.login_body(HONG.0, HONG.1, None), "10.1.0.1")
         .await;
-    assert_eq!(a.status, 401);
+    assert_eq!(a.status, 403, "{}", a.text);
+    assert_eq!(a.json["hjv"], "blocked");
 }
 
 #[tokio::test]

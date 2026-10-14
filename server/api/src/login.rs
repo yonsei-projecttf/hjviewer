@@ -16,46 +16,65 @@
 //! 4. the portal ID, trimmed and case-folded;
 //! 5. failures per ID, the same for every ID typed; a request signed by a PC already in that
 //!    account (devsig.rs) counts under a limit of its own, one for all the account's PCs, so that
-//!    someone who knows only the ID cannot lock the owner out of their PC;
+//!    someone who knows only the ID cannot lock the owner out of their PC. With
+//!    HJV_API_LOGIN=open an ID that is not on the allowlist counts under the lower
+//!    HJV_API_LIMIT_NEW_ID: there any portal ID reaches the SSO, and this keeps the login from
+//!    becoming a way to try passwords on every Yonsei account or to lock it;
 //! 6. while SSO calls are paused (the SSO refuses this server, its address or its client
 //!    credentials, or keeps failing: limits.rs), every ID gets the same 503 [`TEXT_SSO_DOWN`]
 //!    here, before the allowlist shows (design v3 §4-1), and nothing counts;
-//! 7. the allowlist (D3): an ID off the list never reaches the SSO and fails like a wrong
-//!    password, counted;
+//! 7. the allowlist: with HJV_API_LOGIN=open (the user's decision of 2026-10-14) every ID goes on
+//!    to the SSO; with `list` (D3) an ID off the list never reaches the SSO and fails like a
+//!    wrong password, counted. A blocked entry goes on in either mode: what it gets is decided
+//!    once the SSO accepted the password (step 12);
 //! 8. successes per account and per address, the SSO calls of all accounts together and one
-//!    account's share of them (limits.rs);
+//!    account's share of them (limits.rs); in open mode an ID that is not on the allowlist first
+//!    takes one of the few SSO calls of all such IDs (HJV_API_LIMIT_SSO_NEW, `limited-sso-new`),
+//!    so that it cannot use up the calls of the people registered, and the five-minute check
+//!    reports that window full (check.rs). One ID and one client address may each hold a quarter
+//!    of it, so that one address cannot shut the first logins of everyone with a few wrong
+//!    passwords, and a first login that goes through gives its call back;
 //! 9. the second factor when it is on (tfa.rs; off by D11 and U1), before the SSO call;
 //! 10. the SSO (sso.rs), sorted into refused credentials (counted), a refused server address or
 //!     client and upstream errors (counted against the address only);
 //! 11. the account key of the sealed payload (keys.rs, design v3 §4-1): 400 without `ck` and
 //!     `cp`, with a `cp` that is not its signature or with a key another row has. Past the
 //!     account's active keys the least recently used one is logged out (keys.rs): a login is not
-//!     refused for it.
+//!     refused for it;
+//! 12. the allowlist once more (schema 5), before anything is looked up or written for the
+//!     account and again inside the login's transaction: a blocked account (the entry of the ID
+//!     typed, of the ID the SSO names for the person, its perslNo, or of another account the SSO
+//!     named so: db.rs `login_listing`) gets 403 [`TEXT_BLOCKED`] with `"hjv":"blocked"`, which
+//!     only someone who knows its password sees (its successes count, its failures are taken
+//!     back); in open mode an ID not on the list is put on it (`source` 'login', one journal line
+//!     with the account's tag), in list mode it fails as in step 7.
 //!
 //! Every failure leaves no sooner than HJV_API_FAILURE_DELAY_MS (2 s) ± HJV_API_FAILURE_JITTER_MS
 //! (0.5 s) after the request came, and while the SSO is slow no sooner than its slowest recent
 //! call plus the jitter, so that failures with and without an SSO call take as long. Every failure
 //! that depends on the ID is a 401 with the same body, whatever stopped it: a wrong password, an
-//! ID off the list, a limit of the ID or the account, the SSO-call limit, a single SSO error. The
-//! answer does not tell whether an ID is on the list (D3); the record and the journal keep the
-//! real reason. The other statuses do not depend on the ID: 429 for the address limit, 400 for
-//! sealing errors, 409 for a seal's time, 503 while SSO calls are paused or too many logins run at
-//! once, 500 for the server's own errors. The app shows the body's text whatever the status
-//! (research notes §9).
+//! ID off the list (list mode), a limit of the ID or the account, the SSO-call limit, a single SSO
+//! error. The answer does not tell whether an ID is on the list (D3); the record and the journal
+//! keep the real reason. The one answer of its own is a blocked account's 403, given only after
+//! the SSO accepted its password (step 12). The other statuses do not depend on the ID: 429 for
+//! the address limit, 400 for sealing errors, 409 for a seal's time, 503 while SSO calls are
+//! paused or too many logins run at once, 500 for the server's own errors. The app shows the
+//! body's text whatever the status (research notes §9).
 //!
-//! After the SSO accepted the password, in one transaction: the account is created or updated,
-//! the account key registered (keys.rs), the device added to the account when it is an installed
-//! Windows PC whose signature matches the key hbbs holds (D9, D10, v2 §5), and a token issued:
-//! 256 random bits, of which only the SHA-256 is stored, bound to the account key. A new token
-//! replaces the account's token from the same device, and that token's key with it, and an
-//! account keeps at most [`MAX_TOKENS`]. The answer adds `"hjv":{"ks":<the key's serial>}`, and for a PC added by the
-//! login or already in the account also `"binding":"<32 hex>","login_at":<server time>` (design
-//! v3 §4-1), from which the PC's service takes up the binding (§4-4).
+//! After the SSO accepted the password, in one transaction: the allowlist entry checked, or made
+//! in open mode (step 12), the account created or updated, the account key registered (keys.rs),
+//! the device added to the account when it is an installed Windows PC whose signature matches the
+//! key hbbs holds (D9, D10, v2 §5), and a token issued: 256 random bits, of which only the SHA-256
+//! is stored, bound to the account key. A new token replaces the account's token from the same
+//! device, and that token's key with it, and an account keeps at most [`MAX_TOKENS`]. The answer
+//! adds `"hjv":{"ks":<the key's serial>}`, and for a PC added by the login or already in the
+//! account also `"binding":"<32 hex>","login_at":<server time>` (design v3 §4-1), from which the
+//! PC's service takes up the binding (§4-4).
 
 use crate::{
     api::{is_json, user_json, ApiRequest, BodyError, Reply},
-    config::Window,
-    db::{self, Bound, KeyAdmission, NewKey, NewToken, Record},
+    config::{LoginMode, Window},
+    db::{self, Admission, Bound, KeyAdmission, Listing, NewKey, NewToken, Record},
     devmodel, devsig, hbbs,
     keys::{KeyClaim, KeyError, MAX_ACTIVE_KEYS},
     limits::{self, Take, SCOPE_BOUND, SCOPE_ID, SCOPE_IP, SCOPE_OK_ID, SCOPE_OK_IP},
@@ -86,6 +105,10 @@ pub const TEXT_SEAL_CLOCK: &str =
     "기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요.";
 /// The answer of every login while SSO calls are paused (design v3 §1-1, §4-1).
 pub const TEXT_SSO_DOWN: &str = "연세 인증 서버에 지금 연결할 수 없습니다. 잠시 뒤 다시 해 주세요.";
+/// The answer to the login of an account the operator blocked, once the SSO accepted its
+/// password (step 12).
+pub const TEXT_BLOCKED: &str =
+    "이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요.";
 
 /// The tokens an account keeps: a login past it revokes the least recently used.
 pub const MAX_TOKENS: usize = 20;
@@ -483,6 +506,9 @@ enum Outcome {
     Challenge,
     /// the success counters count; the failure counters, also the code dialog's, are taken back
     Success,
+    /// a blocked account whose password the SSO accepted (step 12): counted as a success, so
+    /// that a known password cannot keep calling the SSO, and answered as a failure
+    Blocked,
 }
 
 /// The limit a login's ID counts under (step 5).
@@ -490,6 +516,8 @@ struct Limit {
     scope: &'static str,
     key: String,
     windows: Vec<Window>,
+    /// an ID not on the allowlist, in open mode (HJV_API_LIMIT_NEW_ID)
+    unlisted: bool,
 }
 
 /// One login's reserved limit counters and its record.
@@ -554,7 +582,7 @@ impl<'a> Run<'a> {
                 back.extend(id.into_iter().chain(slots));
             }
             Outcome::Released => back.extend(ip.into_iter().chain(id).chain(slots)),
-            Outcome::Success => {
+            Outcome::Success | Outcome::Blocked => {
                 keep.extend(slots);
                 back.extend(
                     ip.into_iter()
@@ -564,7 +592,10 @@ impl<'a> Run<'a> {
             }
         }
         let record = result
-            .filter(|_| outcome == Outcome::Success || self.state.admit_failure_record())
+            .filter(|_| {
+                matches!(outcome, Outcome::Success | Outcome::Blocked)
+                    || self.state.admit_failure_record()
+            })
             .map(|result| Record {
                 at: now(),
                 kind: "login",
@@ -816,7 +847,24 @@ async fn bound_limit(state: &Arc<AppState>, claim: &Claim) -> Option<Limit> {
         scope: SCOPE_BOUND,
         key: state.tags.bound(key),
         windows: state.config.limit_bound.clone(),
+        unlisted: false,
     })
+}
+
+/// Where the ID's entry stands with the allowlist; `Err` after the journal heard of the error.
+async fn listing_of(state: &AppState, key: &str) -> Result<Listing, ()> {
+    let key = key.to_owned();
+    state
+        .db
+        .call(move |c| db::listing(c, &key))
+        .await
+        .map_err(|e| log_err!("login: {e}"))
+}
+
+/// Whether a login counts under the limits of the IDs not on the allowlist (steps 5 and 8): in
+/// open mode only, as in list mode such an ID never reaches the SSO.
+fn unlisted(state: &AppState, listing: Listing) -> bool {
+    state.config.login == LoginMode::Open && listing == Listing::Absent
 }
 
 async fn sealed_login(
@@ -837,6 +885,19 @@ async fn sealed_login(
     };
     run.account_tag = Some(state.tags.account(&key));
 
+    // the ID's allowlist entry, for the limits of steps 5 and 8 (an ID not on the list counts
+    // under lower ones in open mode); what it says shows no sooner than step 7
+    let Ok(listing) = listing_of(state, &key).await else {
+        return run
+            .fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Outcome::Released,
+                "error",
+            )
+            .await;
+    };
+    let unlisted = unlisted(state, listing);
+
     // 5. failures per ID
     let limit = match bound {
         Some(limit) => limit,
@@ -845,7 +906,12 @@ async fn sealed_login(
             None => Limit {
                 scope: SCOPE_ID,
                 key: state.tags.account(&key),
-                windows: state.config.limit_id.clone(),
+                windows: if unlisted {
+                    state.config.limit_new_id.clone()
+                } else {
+                    state.config.limit_id.clone()
+                },
+                unlisted,
             },
         },
     };
@@ -871,23 +937,8 @@ async fn sealed_login(
         return run.sso_down().await;
     }
 
-    // 7. the allowlist
-    let allowed = {
-        let key = key.clone();
-        match state.db.call(move |c| db::allowed(c, &key)).await {
-            Ok(allowed) => allowed,
-            Err(e) => {
-                log_err!("login: {e}");
-                return run
-                    .fail(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Outcome::Released,
-                        "error",
-                    )
-                    .await;
-            }
-        }
-    };
+    // 7. the allowlist: in list mode an ID off it does not reach the SSO
+    let allowed = listing != Listing::Absent || state.config.login == LoginMode::Open;
 
     let Claim {
         username, device, ..
@@ -933,7 +984,7 @@ async fn sealed_login(
             .fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "not-allowed")
             .await;
     }
-    sso_login(run, &username, &key, &opened.password, device).await
+    sso_login(run, &username, &key, &opened.password, device, unlisted).await
 }
 
 /// A login refused by a full ID limit: counted against the address only; the journal hears of
@@ -942,6 +993,8 @@ async fn id_limited(run: &mut Run<'_>, limit: &Limit) -> LoginAnswer {
     let state = run.state;
     let (result, from) = if limit.scope == SCOPE_BOUND {
         ("limited-bound", "from a PC in the account")
+    } else if limit.unlisted {
+        ("limited-id", "an ID not on the allowlist")
     } else {
         ("limited-id", "any device")
     };
@@ -1008,15 +1061,28 @@ async fn code_login(run: &mut Run<'_>, parsed: LoginBody, challenge: &str) -> Lo
             .fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "no-challenge")
             .await;
     }
-    // 5. the ID limit of the first step
+    // 5. the ID limit of the first step (an ID not on the allowlist under its own in open mode)
+    let Ok(listing) = listing_of(state, &pending.login_key).await else {
+        return run
+            .fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Outcome::Released,
+                "error",
+            )
+            .await;
+    };
+    let unlisted = pending.limit_scope != SCOPE_BOUND && unlisted(state, listing);
     let limit = Limit {
         scope: pending.limit_scope,
         key: pending.limit_key.clone(),
         windows: if pending.limit_scope == SCOPE_BOUND {
             state.config.limit_bound.clone()
+        } else if unlisted {
+            state.config.limit_new_id.clone()
         } else {
             state.config.limit_id.clone()
         },
+        unlisted,
     };
     match run
         .reserve(limit.scope, limit.key.clone(), limit.windows.clone())
@@ -1059,6 +1125,7 @@ async fn code_login(run: &mut Run<'_>, parsed: LoginBody, challenge: &str) -> Lo
         &pending.login_key,
         &pending.password,
         pending.device,
+        unlisted,
     )
     .await
 }
@@ -1069,6 +1136,7 @@ async fn sso_login(
     key: &str,
     password: &str,
     device: DeviceClaim,
+    unlisted: bool,
 ) -> LoginAnswer {
     let state = run.state;
     let account_tag = run.account_tag.clone().unwrap_or_default();
@@ -1114,8 +1182,55 @@ async fn sso_login(
     if state.sso_breaker.paused() {
         return run.sso_down().await;
     }
+    // in open mode the IDs not on the allowlist first take one of their own few calls, so that
+    // trying passwords on many portal IDs cannot use up the calls of the people registered; the
+    // ID and the client address hold it, each at most a quarter of them, so that one address
+    // with a few wrong passwords cannot shut the first logins of everyone
+    let ip_tag = run.ip_tag.clone();
+    let new_holders = [account_tag.as_str(), ip_tag.as_str()];
+    if unlisted {
+        let refused = match state.sso_calls_new.try_take(&new_holders) {
+            Take::Taken => false,
+            Take::Full => {
+                if state.first_notice("sso-calls-new", Duration::from_secs(60)) {
+                    log_warn!(
+                        "login: SSO call limit of the portal IDs not on the allowlist reached (HJV_API_LIMIT_SSO_NEW); their first logins fail meanwhile"
+                    );
+                }
+                true
+            }
+            Take::Share(0) => {
+                if state.first_notice(
+                    &format!("sso-share-new:{account_tag}"),
+                    Duration::from_secs(60),
+                ) {
+                    log_warn!(
+                        "login: a portal ID not on the allowlist holds its share of their SSO calls (acct={account_tag}); hjv-api admin unlock tag:{account_tag} lifts it"
+                    );
+                }
+                true
+            }
+            Take::Share(_) => {
+                if state.first_notice(&format!("sso-share-new:{ip_tag}"), Duration::from_secs(60)) {
+                    log_warn!(
+                        "login: an address holds its share of the SSO calls of the portal IDs not on the allowlist (ip={ip_tag}); hjv-api admin unlock tag:{ip_tag} lifts it"
+                    );
+                }
+                true
+            }
+        };
+        if refused {
+            return run
+                .fail(
+                    StatusCode::UNAUTHORIZED,
+                    Outcome::Refused,
+                    "limited-sso-new",
+                )
+                .await;
+        }
+    }
     // the SSO calls of all accounts, and this account's share of them
-    match state.sso_calls.try_take(&account_tag) {
+    match state.sso_calls.try_take(&[account_tag.as_str()]) {
         Take::Taken => {}
         Take::Full => {
             if state.first_notice("sso-calls", Duration::from_secs(60)) {
@@ -1125,7 +1240,7 @@ async fn sso_login(
                 .fail(StatusCode::UNAUTHORIZED, Outcome::Refused, "limited-sso")
                 .await;
         }
-        Take::Share => {
+        Take::Share(_) => {
             if state.first_notice(&format!("sso-share:{account_tag}"), Duration::from_secs(60)) {
                 log_warn!(
                     "login: one account's share of the SSO calls reached (acct={account_tag})"
@@ -1150,7 +1265,16 @@ async fn sso_login(
         );
     }
     match result {
-        Ok(user) => success(run, key, user, device).await,
+        Ok(user) => {
+            let answer = success(run, key, user, device).await;
+            // a first login that went through gives its call back: the window keeps the calls
+            // that logged no one in, so that people logging in for the first time one after
+            // another behind one address (a campus NAT) do not use up its share
+            if unlisted && !answer.failure {
+                state.sso_calls_new.give_back(&new_holders);
+            }
+            answer
+        }
         Err(e) => {
             note_sso_message(state, &e, username);
             match e.failure {
@@ -1233,8 +1357,31 @@ enum Written {
         key_serial: i64,
         /// keys logged out to keep the account's MAX_ACTIVE_KEYS
         evicted: usize,
+        /// the login put its portal ID on the allowlist (step 12, open mode)
+        registered: bool,
     },
     KeyInUse,
+    /// the allowlist refused it in the transaction (step 12): blocked, or not on the list in
+    /// list mode
+    Blocked,
+    NotListed,
+}
+
+/// The answer to the login of a blocked account, once the SSO accepted its password (step 12):
+/// 403 with [`TEXT_BLOCKED`]. The journal hears of it once in ten minutes per account.
+async fn blocked(run: &mut Run<'_>) -> LoginAnswer {
+    let state = run.state;
+    let tag = run.account_tag.clone().unwrap_or_default();
+    if state.first_notice(&format!("blocked:{tag}"), Duration::from_secs(600)) {
+        log_notice!(
+            "login: an account the operator blocked logged in with the right password and was refused (acct={tag}); hjv-api admin unblock tag:{tag} lets it in"
+        );
+    }
+    let answer = LoginAnswer::failed_with(
+        StatusCode::FORBIDDEN,
+        json!({ "error": TEXT_BLOCKED, "hjv": "blocked" }),
+    );
+    run.fail_with(answer, Outcome::Blocked, "blocked").await
 }
 
 async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClaim) -> LoginAnswer {
@@ -1256,6 +1403,38 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
                 .await;
         }
     };
+    // 12. the allowlist once more: a blocked account goes no further (the ID typed or the one
+    // the SSO names), nor (list mode) one whose entry went since step 7; the transaction below
+    // asks again
+    let open = state.config.login == LoginMode::Open;
+    let persl_key = login_key(&user.persl_no);
+    let listing = {
+        let (key, persl_key) = (key.to_owned(), persl_key.clone());
+        state
+            .db
+            .call(move |c| db::login_listing(c, &key, &persl_key))
+            .await
+    };
+    match listing {
+        Ok(Listing::Registered) => {}
+        Ok(Listing::Absent) if open => {}
+        Ok(Listing::Blocked) => return blocked(run).await,
+        Ok(Listing::Absent) => {
+            return run
+                .fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "not-allowed")
+                .await
+        }
+        Err(e) => {
+            log_err!("login: {e}");
+            return run
+                .fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Outcome::Released,
+                    "error",
+                )
+                .await;
+        }
+    }
     let check = check_device(state, &device, &account_tag).await;
     let token = format!("hjv_{}", b64url(&random_bytes::<32>()));
     let hash = sha256(token.as_bytes());
@@ -1281,6 +1460,13 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
         .db
         .call(move |c| {
             let tx = c.transaction()?;
+            // step 12 within the transaction: nothing is written for a refused login
+            let registered = match db::admit_login(&tx, &key, &persl_key, open, at)? {
+                Admission::Listed => false,
+                Admission::Registered => true,
+                Admission::Blocked => return Ok(Written::Blocked),
+                Admission::Refused => return Ok(Written::NotListed),
+            };
             let account_id = db::upsert_account(&tx, &key, &user_db.persl_no, &user_db.name, at)?;
             let new_key = NewKey {
                 account_id,
@@ -1333,6 +1519,7 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
                 binding,
                 key_serial,
                 evicted,
+                registered,
             })
         })
         .await;
@@ -1342,7 +1529,13 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
             binding,
             key_serial,
             evicted,
+            registered,
         }) => {
+            if registered {
+                log_notice!(
+                    "login: a portal ID that was not on the allowlist logged in and was registered (acct={account_tag})"
+                );
+            }
             if evicted > 0
                 && state.first_notice(
                     &format!("keys-full:{account_tag}"),
@@ -1358,6 +1551,12 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
         Ok(Written::KeyInUse) => {
             return run
                 .fail(StatusCode::BAD_REQUEST, Outcome::Refused, "key-in-use")
+                .await
+        }
+        Ok(Written::Blocked) => return blocked(run).await,
+        Ok(Written::NotListed) => {
+            return run
+                .fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "not-allowed")
                 .await
         }
         Err(e) => {

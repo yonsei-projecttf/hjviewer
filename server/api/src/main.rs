@@ -270,14 +270,15 @@ async fn serve(
     check_command_key(&state);
     tokio::spawn(jobs::run(state.clone(), stopped()));
     log_notice!(
-        "hjv-api {} ready: seal keys {}, list key {}, command key {}, second factor {second_factor}",
+        "hjv-api {} ready: seal keys {}, list key {}, command key {}, second factor {second_factor}, login {}",
         env!("CARGO_PKG_VERSION"),
         state.seal.key_ids().join(" "),
         &trust::fingerprint(state.list_key.kid(), &state.list_key.public_key())[..18],
         state.command_key.as_ref().map_or_else(
             || "none".to_owned(),
             |k| trust::fingerprint(k.kid(), &k.public_key())[..18].to_owned()
-        )
+        ),
+        state.config.login.as_str()
     );
     server::serve(state, listener, stopped()).await;
     log_notice!("hjv-api stopped");

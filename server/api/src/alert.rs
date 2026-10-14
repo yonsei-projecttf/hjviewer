@@ -164,6 +164,7 @@ fn meaning(code: &str) -> &'static str {
         "sso_client" => "연세 SSO가 이 서버의 client 자격 증명을 거절합니다(invalid_client). hjviewer-sso-client-secret을 새로 넣기 전까지 로그인이 안 됩니다.",
         "sso_address" => "연세 SSO가 이 서버의 주소를 거절합니다. 그동안 로그인이 안 됩니다.",
         "sso" => "연세 SSO가 계속 실패해 로그인을 잠시 멈췄습니다.",
+        "sso_new" => "명단에 없는 포탈 ID들의 SSO 호출이 한도를 채웠습니다. 누군가 hjv-api로 여러 포탈 ID에 비밀번호를 시험하고 있을 수 있습니다(처음 로그인하는 사람이 몰렸을 수도 있음). 그동안 처음 로그인하는 사람은 실패합니다. 런북 7-13대로 봅니다.",
         "relay" => "NAS 중계기가 1시간 넘게 연락하지 않아 PC 켜기가 안 됩니다.",
         _ => "알 수 없는 점검 결과입니다.",
     }
@@ -451,6 +452,25 @@ mod tests {
             let err = parse_credential(&bad).err().unwrap();
             assert!(!err.contains("TEST-not"), "{err}");
         }
+    }
+
+    #[test]
+    fn every_finding_of_the_check_has_its_meaning() {
+        let unknown = meaning("no such code");
+        for code in [
+            "socket",
+            "admin",
+            "sync",
+            "hbbs",
+            "sso_client",
+            "sso_address",
+            "sso",
+            "sso_new",
+            "relay",
+        ] {
+            assert_ne!(meaning(code), unknown, "{code}");
+        }
+        assert!(meaning("sso_new").contains("런북 7-13"));
     }
 
     #[test]

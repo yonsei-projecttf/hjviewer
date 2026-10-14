@@ -2,7 +2,9 @@
 
 //! Upkeep (design v2 §6, §9-3, §13-1). Every hour: delete what is past its keeping time (tokens
 //! idle 90 days or a year old, accounts unused for a year unless still allowlisted with a PC in
-//! use, records older than six months, spent nonces, and limit counters past the longest window),
+//! use, each with its allowlist entry unless blocked, entries without an account a year after
+//! they came on the list unless blocked, records older than six months, spent nonces, and limit
+//! counters past the longest window),
 //! release the PCs not seen for 180 days (`db::release_binding`, which leaves the tombstone that
 //! gets them a signed `revoked`: design v3 §4-3), revoke the account keys no valid token is left
 //! for (their logins expired, or their tokens went without them: design v3 §1-8, §14 question 6),
@@ -86,6 +88,12 @@ pub async fn purge_now(state: &Arc<AppState>) -> Option<db::Purged> {
                     "upkeep: released {} PCs not seen for long and deleted {} unused accounts",
                     p.devices,
                     p.accounts
+                );
+            }
+            if p.entries > 0 {
+                log_notice!(
+                    "upkeep: deleted {} allowlist entries without an account, on the list for the account time",
+                    p.entries
                 );
             }
             if p.keys_revoked > 0 {

@@ -12,7 +12,10 @@
 //! Schema changes are migrations in [`MIGRATIONS`]. Schema 3 (design v3 §5-4, §8) is Wake-on-LAN:
 //! the PCs' wake reports, the NAS relays with their pre-approvals and nonces, and the wake jobs
 //! with their signed commands (wolinfo.rs, relay.rs, wake.rs). Schema 4 (design v3 §5-2) keeps
-//! who ended an account key and what the account's devices answered about it (keys.rs).
+//! who ended an account key and what the account's devices answered about it (keys.rs). Schema 5
+//! (open login, 2026-10-14) gives each allowlist entry how it came (an import or a login) and its
+//! block: the list means "may use HJViewer" as before, an entry that is not blocked, and every
+//! check of it ([`allowed`], [`session`], [`list_on`]) leaves blocked entries out.
 //!
 //! A restored backup (backup.rs, known by its application ID) is opened with password-less
 //! connections off for every account, before the service answers anything: its switches are
@@ -21,9 +24,10 @@
 //! relay revoked since is revoked again by the operator.
 //!
 //! Every change that alters what a PC's trust list would say (a key registered or revoked, a
-//! switch turned, an account deleted, leaving or coming back on the allowlist, a binding released,
-//! a PC's key found changed or back) raises the change serial ([`bump_serial`]) in the same
-//! transaction; a new key carries the serial its registration made (design v3 §3-5, §5-2).
+//! switch turned, an account deleted, blocked, unblocked or coming back on the allowlist, a
+//! binding released, a PC's key found changed or back) raises the change serial
+//! ([`bump_serial`]) in the same transaction; a new key carries the serial its registration made
+//! (design v3 §3-5, §5-2).
 //!
 //! A PC leaves an account in one place only, [`release_binding`]: its row goes, its binding ID
 //! goes to the tombstones, so that the PC's next sync gets a signed `revoked` (design v3 §4-3),
@@ -337,6 +341,23 @@ CREATE TABLE key_answers (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX key_answers_by ON key_answers(by_ckid);
 "#,
+    // Schema 5 (open login, the user's decision of 2026-10-14): everyone the Yonsei SSO accepts
+    // may log in, and a portal ID that is not on the allowlist is put on it at its first login;
+    // the operator blocks an entry where removing it was the way to keep someone out (login.rs,
+    // admin.rs).
+    r#"
+-- how an entry came on the list: 'import' (the operator's file, or a block of an ID that had no
+-- entry) or 'login' (its first login); blocked_at is set while the operator blocks the entry,
+-- which keeps its account out whatever HJV_API_LOGIN says
+ALTER TABLE allowlist ADD COLUMN source TEXT NOT NULL DEFAULT 'import';
+ALTER TABLE allowlist ADD COLUMN blocked_at INTEGER;
+-- an account whose portal ID was taken off the list (allow remove, before blocks) stays out:
+-- that is what taking it off meant, and without an entry its next login would register it
+INSERT INTO allowlist (login_key, added_at, source, blocked_at)
+    SELECT login_key, CAST(strftime('%s', 'now') AS INTEGER), 'import',
+           CAST(strftime('%s', 'now') AS INTEGER)
+    FROM accounts WHERE login_key NOT IN (SELECT login_key FROM allowlist);
+"#,
 ];
 
 /// Opens (and creates or upgrades) the database at `path`.
@@ -556,9 +577,9 @@ fn set_flag(c: &Connection, key: &str, on: bool) -> rusqlite::Result<bool> {
     Ok(changed)
 }
 
-/// Notes the time of a switch change (a password-less switch, strict, an account leaving or
-/// coming back on the allowlist): the report counts the PCs that have not synced since, which
-/// hjv-api must stay up for after an incident switch (design v3 §5-6).
+/// Notes the time of a switch change (a password-less switch, strict, an account blocked,
+/// unblocked or coming back on the allowlist): the report counts the PCs that have not synced
+/// since, which hjv-api must stay up for after an incident switch (design v3 §5-6).
 fn switched(c: &Connection) -> rusqlite::Result<()> {
     c.execute(
         "INSERT INTO meta (key, value) VALUES ('switched_at', CAST(strftime('%s', 'now') AS TEXT))
@@ -641,13 +662,13 @@ pub fn passwordless_on(c: &Connection, account_id: i64) -> rusqlite::Result<bool
 }
 
 /// Whether the trust lists of an account's PCs are `active` (design v3 §5-2): the account is on
-/// the allowlist and password-less connections are on for it. Off the allowlist, its PCs stay
-/// bound with `disabled` lists without keys (§5-6). The PC sync and `admin binding list` both
-/// judge by it.
+/// the allowlist, not blocked, and password-less connections are on for it. Off the allowlist or
+/// blocked, its PCs stay bound with `disabled` lists without keys (§5-6). The PC sync and `admin
+/// binding list` both judge by it.
 pub fn list_on(c: &Connection, account_id: i64) -> rusqlite::Result<bool> {
     let listed: bool = c.query_row(
         "SELECT EXISTS (SELECT 1 FROM accounts a JOIN allowlist l ON l.login_key = a.login_key
-                        WHERE a.id = ?1)",
+                        WHERE a.id = ?1 AND l.blocked_at IS NULL)",
         [account_id],
         |r| r.get(0),
     )?;
@@ -665,8 +686,126 @@ pub fn set_strict(c: &Connection, on: bool) -> rusqlite::Result<bool> {
 
 // ---- allowlist ----
 
-/// Adds case-folded IDs; returns (added, already there). An account that comes back on the list
-/// changes its PCs' trust lists (design v3 §5-2): the change serial goes up.
+/// Where a case-folded portal ID stands with the allowlist (schema 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Listing {
+    /// on the list and not blocked: the account may use HJViewer
+    Registered,
+    /// on the list and blocked by the operator: its login is refused after the SSO
+    Blocked,
+    /// not on the list
+    Absent,
+}
+
+pub fn listing(c: &Connection, key: &str) -> rusqlite::Result<Listing> {
+    let blocked: Option<bool> = c
+        .query_row(
+            "SELECT blocked_at IS NOT NULL FROM allowlist WHERE login_key = ?1",
+            [key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(match blocked {
+        Some(false) => Listing::Registered,
+        Some(true) => Listing::Blocked,
+        None => Listing::Absent,
+    })
+}
+
+/// Where a login that the SSO accepted stands with the allowlist: blocked when the entry of the ID
+/// typed (`key`) is blocked, or that of the ID the SSO names for the person (`persl_key`, its
+/// perslNo case-folded), or that of an account the SSO named so before under another ID, so that
+/// a block holds whatever form of the portal ID the SSO takes; else as the typed ID's entry.
+pub fn login_listing(c: &Connection, key: &str, persl_key: &str) -> rusqlite::Result<Listing> {
+    let typed = listing(c, key)?;
+    if typed == Listing::Blocked || (persl_key != key && listing(c, persl_key)? == Listing::Blocked)
+    {
+        return Ok(Listing::Blocked);
+    }
+    let blocked: Vec<String> = column(
+        c,
+        "SELECT a.portal_id FROM accounts a JOIN allowlist l ON l.login_key = a.login_key
+         WHERE l.blocked_at IS NOT NULL",
+        [],
+    )?;
+    if blocked
+        .iter()
+        .any(|portal_id| crate::util::login_key(portal_id) == persl_key)
+    {
+        return Ok(Listing::Blocked);
+    }
+    Ok(typed)
+}
+
+/// The case-folded portal IDs that the server knows as the same person's as `key`: `key` itself,
+/// the ID the SSO named for its account (the account's perslNo), and the IDs of the other accounts
+/// the SSO named so. Whether the portal ID typed is always the perslNo is not known (design v2
+/// §4-1), so a block and its lifting take them all ([`allow_block`], [`allow_unblock`]).
+fn person_keys(c: &Connection, key: &str) -> rusqlite::Result<Vec<String>> {
+    let persl = match account_by_key(c, key)? {
+        Some(account) => crate::util::login_key(&account.portal_id),
+        None => key.to_owned(),
+    };
+    let mut keys = vec![key.to_owned()];
+    if persl != key {
+        keys.push(persl.clone());
+    }
+    for account in accounts(c)? {
+        if crate::util::login_key(&account.portal_id) == persl && !keys.contains(&account.login_key)
+        {
+            keys.push(account.login_key);
+        }
+    }
+    Ok(keys)
+}
+
+/// What the allowlist says to a login the SSO accepted ([`admit_login`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    /// on the list already
+    Listed,
+    /// not on the list, and put on it now (open mode)
+    Registered,
+    /// blocked by the operator
+    Blocked,
+    /// not on the list, and no login puts one on it (list mode)
+    Refused,
+}
+
+/// Admits a login the SSO accepted, inside the login's transaction (login.rs): an ID on the list
+/// goes on, a blocked one is refused (also when the ID the SSO names is blocked:
+/// [`login_listing`]), and one not on the list is put on it (`source` 'login') when `register`
+/// (HJV_API_LOGIN=open), else refused. An account that exists without an entry and comes back on
+/// the list this way changes its PCs' trust lists, as with [`allow_add`].
+pub fn admit_login(
+    c: &Connection,
+    key: &str,
+    persl_key: &str,
+    register: bool,
+    at: i64,
+) -> rusqlite::Result<Admission> {
+    match login_listing(c, key, persl_key)? {
+        Listing::Registered => Ok(Admission::Listed),
+        Listing::Blocked => Ok(Admission::Blocked),
+        Listing::Absent if !register => Ok(Admission::Refused),
+        Listing::Absent => {
+            c.execute(
+                "INSERT INTO allowlist (login_key, added_at, source) VALUES (?1, ?2, 'login')",
+                params![key, at],
+            )?;
+            if account_by_key(c, key)?.is_some() {
+                bump_serial(c)?;
+                switched(c)?;
+            }
+            Ok(Admission::Registered)
+        }
+    }
+}
+
+/// Adds case-folded IDs (`source` 'import'); returns (added, already there). An entry already
+/// there keeps its source and its block: only [`allow_unblock`] lifts a block, so that importing
+/// an old file again lets nobody back in. An account that comes back on the list changes its
+/// PCs' trust lists (design v3 §5-2): the change serial goes up.
 pub fn allow_add(c: &mut Connection, keys: &[String], at: i64) -> rusqlite::Result<(usize, usize)> {
     in_tx(c, |tx| {
         let (mut added, mut relisted) = (0, false);
@@ -692,52 +831,167 @@ pub fn allow_add(c: &mut Connection, keys: &[String], at: i64) -> rusqlite::Resu
     })
 }
 
-/// Removes IDs and revokes their accounts' tokens and account keys (design v3 §5-6; their PCs
-/// stay bound, with lists without keys: §5-2, so the change serial goes up, keys or not);
-/// returns (removed, tokens revoked, keys revoked).
-pub fn allow_remove(
-    c: &mut Connection,
-    keys: &[String],
-    at: i64,
-) -> rusqlite::Result<(usize, usize, usize)> {
+/// What [`allow_block`] did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Blocked {
+    /// entries blocked now, and of them the ones that were not on the list (put on it blocked)
+    pub blocked: usize,
+    pub new: usize,
+    /// entries blocked before: nothing changed for them
+    pub already: usize,
+    pub tokens: usize,
+    pub keys: usize,
+    /// of the entries blocked now, those of another ID of the same person ([`person_keys`])
+    pub person: usize,
+}
+
+/// Blocks case-folded IDs (admin block, allow remove): where removing an ID kept its account out
+/// while only the list let anyone in, the entry now stays, blocked, so that its next login is
+/// refused after the SSO, in either HJV_API_LOGIN mode; an ID not on the list is put on it
+/// blocked (`source` 'import'). The other IDs the server knows for the same person are blocked
+/// with it ([`person_keys`]: the ID the SSO named for its account and that person's other
+/// accounts), so that the block stays when one of those accounts is deleted. Their accounts'
+/// tokens and account keys are revoked at once (design v3 §5-6), and their PCs stay bound with
+/// lists without keys (§5-2), so the change serial goes up, keys or not.
+pub fn allow_block(c: &mut Connection, keys: &[String], at: i64) -> rusqlite::Result<Blocked> {
     in_tx(c, |tx| {
-        let (mut removed, mut tokens, mut revoked, mut delisted) = (0, 0, 0, false);
-        for key in keys {
-            let n = tx.execute("DELETE FROM allowlist WHERE login_key = ?1", [key])?;
-            removed += n;
-            let account: Option<i64> = tx
-                .query_row("SELECT id FROM accounts WHERE login_key = ?1", [key], |r| {
-                    r.get(0)
-                })
-                .optional()?;
-            if let Some(account_id) = account {
-                tokens += revoke_tokens(tx, account_id)?;
-                revoked += revoke_account_keys(tx, account_id, "allow-remove", at)?;
-                delisted |= n > 0;
+        let (mut b, mut delisted) = (Blocked::default(), false);
+        let mut done: Vec<String> = Vec::new();
+        for named in keys {
+            for key in person_keys(tx, named)? {
+                if done.contains(&key) {
+                    continue;
+                }
+                done.push(key.clone());
+                let other = &key != named;
+                let changed = block_entry(tx, &key, at, &mut b, other)?;
+                b.person += usize::from(changed && other);
+                if let Some(account) = account_by_key(tx, &key)? {
+                    b.tokens += revoke_tokens(tx, account.id)?;
+                    b.keys += revoke_account_keys(tx, account.id, "blocked", at)?;
+                    delisted |= changed;
+                }
             }
         }
         // revoking keys raised it already
-        if delisted && revoked == 0 {
+        if delisted && b.keys == 0 {
             bump_serial(tx)?;
         }
         if delisted {
             switched(tx)?;
         }
-        Ok((removed, tokens, revoked))
+        Ok(b)
     })
 }
 
+/// Blocks one entry for [`allow_block`]; whether it changed. An entry blocked before counts as
+/// `already` when it is one the operator named (`other` false).
+fn block_entry(
+    tx: &Connection,
+    key: &str,
+    at: i64,
+    b: &mut Blocked,
+    other: bool,
+) -> rusqlite::Result<bool> {
+    let changed = match listing(tx, key)? {
+        Listing::Blocked => {
+            b.already += usize::from(!other);
+            false
+        }
+        Listing::Registered => {
+            tx.execute(
+                "UPDATE allowlist SET blocked_at = ?2 WHERE login_key = ?1",
+                params![key, at],
+            )?;
+            true
+        }
+        Listing::Absent => {
+            tx.execute(
+                "INSERT INTO allowlist (login_key, added_at, source, blocked_at)
+                 VALUES (?1, ?2, 'import', ?2)",
+                params![key, at],
+            )?;
+            b.new += 1;
+            true
+        }
+    };
+    b.blocked += usize::from(changed);
+    Ok(changed)
+}
+
+/// Lifts the blocks of case-folded IDs (admin unblock), with those of the other IDs the server
+/// knows for the same person ([`person_keys`], as [`allow_block`] took them): the entry is on the
+/// list again as of `at` (an entry without an account keeps from then on), and its account may
+/// log in again; its PCs' lists change with it. Returns (entries unblocked, IDs named that had
+/// no block to lift).
+pub fn allow_unblock(
+    c: &mut Connection,
+    keys: &[String],
+    at: i64,
+) -> rusqlite::Result<(usize, usize)> {
+    in_tx(c, |tx| {
+        let (mut unblocked, mut untouched, mut relisted) = (0, 0, false);
+        let mut done: Vec<String> = Vec::new();
+        for named in keys {
+            let mut lifted = false;
+            for key in person_keys(tx, named)? {
+                if done.contains(&key) {
+                    continue;
+                }
+                done.push(key.clone());
+                let n = tx.execute(
+                    "UPDATE allowlist SET blocked_at = NULL, added_at = ?2
+                     WHERE login_key = ?1 AND blocked_at IS NOT NULL",
+                    params![key, at],
+                )?;
+                unblocked += n;
+                lifted |= n > 0;
+                if n > 0 && !relisted {
+                    relisted = account_by_key(tx, &key)?.is_some();
+                }
+            }
+            untouched += usize::from(!lifted);
+        }
+        if relisted {
+            bump_serial(tx)?;
+            switched(tx)?;
+        }
+        Ok((unblocked, untouched))
+    })
+}
+
+/// Whether the account of a case-folded portal ID may use HJViewer: its entry is on the allowlist
+/// and not blocked (schema 5). Everything that asks whether an account is on the list means this.
 pub fn allowed(c: &Connection, key: &str) -> rusqlite::Result<bool> {
     c.query_row(
-        "SELECT EXISTS (SELECT 1 FROM allowlist WHERE login_key = ?1)",
+        "SELECT EXISTS (SELECT 1 FROM allowlist WHERE login_key = ?1 AND blocked_at IS NULL)",
         [key],
         |r| r.get(0),
     )
 }
 
-pub fn allowlist(c: &Connection) -> rusqlite::Result<Vec<(String, i64)>> {
-    let mut stmt = c.prepare("SELECT login_key, added_at FROM allowlist ORDER BY login_key")?;
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+/// An entry of the allowlist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListEntry {
+    pub login_key: String,
+    pub added_at: i64,
+    /// 'import' or 'login'
+    pub source: String,
+    pub blocked_at: Option<i64>,
+}
+
+pub fn allowlist(c: &Connection) -> rusqlite::Result<Vec<ListEntry>> {
+    let mut stmt = c.prepare(
+        "SELECT login_key, added_at, source, blocked_at FROM allowlist ORDER BY login_key",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(ListEntry {
+            login_key: r.get(0)?,
+            added_at: r.get(1)?,
+            source: r.get(2)?,
+            blocked_at: r.get(3)?,
+        })
+    })?;
     rows.collect()
 }
 
@@ -819,8 +1073,9 @@ pub fn account_by_key(c: &Connection, login_key: &str) -> rusqlite::Result<Optio
 /// first (reason `account-delete`), so that it gets a signed `revoked`, and each of its relays is
 /// revoked; then the account row goes and with it (cascade) its tokens, account keys, their
 /// nonces, the key use reported for them, its relay pre-approvals and its wake jobs with their
-/// commands. Inside the caller's transaction. What stays is the tombstones, the revoked relays'
-/// keys and the operator record.
+/// commands. Inside the caller's transaction. Its allowlist entry goes with it unless it is
+/// blocked (schema 5: a block stays until it is lifted). What stays is the tombstones, the revoked
+/// relays' keys, a blocked entry and the operator record.
 pub fn delete_account(c: &Connection, account_id: i64, at: i64) -> rusqlite::Result<bool> {
     let pcs: Vec<String> = column(
         c,
@@ -840,6 +1095,11 @@ pub fn delete_account(c: &Connection, account_id: i64, at: i64) -> rusqlite::Res
     for relay_id in relays {
         revoke_relay(c, &relay_id, at)?;
     }
+    c.execute(
+        "DELETE FROM allowlist WHERE blocked_at IS NULL
+             AND login_key = (SELECT login_key FROM accounts WHERE id = ?1)",
+        [account_id],
+    )?;
     let deleted = c.execute("DELETE FROM accounts WHERE id = ?1", [account_id])? > 0;
     if deleted {
         bump_serial(c)?;
@@ -940,8 +1200,9 @@ pub fn insert_token_tx(
 }
 
 /// The session of a token hash, if the token is valid: not idle longer than `idle`, not older
-/// than `max`, and its account still on the allowlist. An expired token is deleted. Whether the
-/// request is signed by the session's key is the caller's to check (api.rs, proof.rs).
+/// than `max`, and its account still on the allowlist and not blocked. An expired token is
+/// deleted. Whether the request is signed by the session's key is the caller's to check (api.rs,
+/// proof.rs).
 pub fn session(
     c: &Connection,
     hash: &[u8],
@@ -954,7 +1215,8 @@ pub fn session(
             &format!(
                 "SELECT {ACCOUNT_COLUMNS}, t.device_id, t.device_verified, t.bind_status,
                         t.created_at, t.last_used_at,
-                        EXISTS (SELECT 1 FROM allowlist l WHERE l.login_key = a.login_key),
+                        EXISTS (SELECT 1 FROM allowlist l
+                                WHERE l.login_key = a.login_key AND l.blocked_at IS NULL),
                         k.ckid, k.pk
                  FROM tokens t JOIN accounts a ON a.id = t.account_id
                  LEFT JOIN ctl_keys k ON k.ckid = t.ckid AND k.revoked_at IS NULL
@@ -2028,6 +2290,9 @@ pub struct Purged {
     /// Wake-on-LAN (design v3 §8): pending relays past their 24 hours, pre-approvals past their
     /// 7 days, relay nonces, commands past their lifetime, wake jobs past the record's six months
     pub wake: usize,
+    /// allowlist entries without an account, not blocked, put on the list more than the account
+    /// time ago (schema 5); an account's own entry goes with the account
+    pub entries: usize,
 }
 
 impl Purged {
@@ -2035,6 +2300,7 @@ impl Purged {
         self.tokens
             + self.devices
             + self.accounts
+            + self.entries
             + self.events
             + self.other
             + self.keys_revoked
@@ -2053,12 +2319,16 @@ pub const KEY_RETENTION: i64 = 30 * DAY;
 ///
 /// A PC not seen for the device time (by hbbs, a login or list request from it, or its sync)
 /// leaves its account through [`release_binding`]. An account unused for the account time goes
-/// with its devices, tokens and account keys ([`delete_account`]), unless it is still on the
-/// allowlist and one of its PCs was seen within the device time: a lab PC logged in once stays
-/// listed while it is in use, whether or not its owner opens the app (v2 §5 lists the ways a PC
-/// leaves the list; the account's own expiry is not one of them). The account keys of expired
-/// tokens are revoked with them (design v3 §14 question 6), and revoked keys are deleted after
-/// KEY_RETENTION; tombstones after TOMBSTONE_RETENTION, key use and refusals after USE_DAYS.
+/// with its devices, tokens, account keys and allowlist entry ([`delete_account`]), unless one
+/// of its PCs was seen within the device time and the account is on the allowlist, not blocked
+/// (in open mode every account that logged in is): a lab PC logged in once stays listed while it
+/// is in use, whether or not its owner opens the app (v2 §5 lists the ways a PC leaves the list;
+/// the account's own expiry is not one of them), while a blocked account goes after its year as
+/// one taken off the list did. An entry without an account (imported and never used, or its
+/// account deleted) goes after the account time from when it was put on the list; a blocked
+/// entry stays until it is unblocked (schema 5). The account keys of expired tokens are revoked
+/// with them (design v3 §14 question 6), and revoked keys are deleted after KEY_RETENTION;
+/// tombstones after TOMBSTONE_RETENTION, key use and refusals after USE_DAYS.
 pub fn purge(c: &mut Connection, at: i64, r: &Retention) -> rusqlite::Result<Purged> {
     let p = in_tx(c, |c| {
         let tokens = c.execute(
@@ -2079,7 +2349,8 @@ pub fn purge(c: &mut Connection, at: i64, r: &Retention) -> rusqlite::Result<Pur
         let unused: Vec<i64> = column(
             c,
             "SELECT id FROM accounts WHERE last_active_at <= ?1 AND NOT (
-                 EXISTS (SELECT 1 FROM allowlist l WHERE l.login_key = accounts.login_key)
+                 EXISTS (SELECT 1 FROM allowlist l
+                         WHERE l.login_key = accounts.login_key AND l.blocked_at IS NULL)
                  AND EXISTS (SELECT 1 FROM devices d
                              WHERE d.account_id = accounts.id AND d.last_seen_at > ?2))",
             [at - r.account, at - r.device_unseen],
@@ -2087,11 +2358,17 @@ pub fn purge(c: &mut Connection, at: i64, r: &Retention) -> rusqlite::Result<Pur
         for id in unused {
             accounts += usize::from(delete_account(c, id, at)?);
         }
+        let entries = c.execute(
+            "DELETE FROM allowlist WHERE blocked_at IS NULL AND added_at <= ?1
+                 AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.login_key = allowlist.login_key)",
+            [at - r.account],
+        )?;
         let since = use_since(at);
         Ok(Purged {
             tokens,
             devices,
             accounts,
+            entries,
             events: c.execute("DELETE FROM events WHERE at <= ?1", [at - r.events])?,
             other: c.execute("DELETE FROM seal_nonces WHERE expires_at < ?1", [at])?
                 + c.execute("DELETE FROM req_nonces WHERE expires_at < ?1", [at])?
@@ -2134,7 +2411,13 @@ pub fn purge(c: &mut Connection, at: i64, r: &Retention) -> rusqlite::Result<Pur
 
 #[derive(Debug, Default)]
 pub struct Counts {
+    /// allowlist entries that are not blocked, of them the ones a login put there, of those the
+    /// ones of the last day and week, and the blocked entries (schema 5)
     pub allowlist: i64,
+    pub allowlist_by_login: i64,
+    pub registered_day: i64,
+    pub registered_week: i64,
+    pub blocked: i64,
     pub accounts: i64,
     pub devices: i64,
     pub tokens: i64,
@@ -2178,6 +2461,16 @@ pub struct Counts {
     /// wake jobs over the last day and the last week: (result, day, week), a failure with its
     /// error ("failed no_iface")
     pub wakes: Vec<(String, i64, i64)>,
+}
+
+/// The entries a login put on the allowlist after `since` that are not blocked.
+fn registered_since(c: &Connection, since: i64) -> rusqlite::Result<i64> {
+    c.query_row(
+        "SELECT COUNT(*) FROM allowlist
+         WHERE blocked_at IS NULL AND source = 'login' AND added_at > ?1",
+        [since],
+        |r| r.get(0),
+    )
 }
 
 /// The counts of `admin report` at `at`; `list_ttl` is the lifetime of a trust list.
@@ -2241,7 +2534,13 @@ pub fn counts(c: &Connection, at: i64, list_ttl: i64) -> rusqlite::Result<Counts
             [&since],
             |r| r.get(0),
         )?,
-        allowlist: one("SELECT COUNT(*) FROM allowlist")?,
+        allowlist: one("SELECT COUNT(*) FROM allowlist WHERE blocked_at IS NULL")?,
+        allowlist_by_login: one(
+            "SELECT COUNT(*) FROM allowlist WHERE blocked_at IS NULL AND source = 'login'",
+        )?,
+        registered_day: registered_since(c, at - DAY)?,
+        registered_week: registered_since(c, at - 7 * DAY)?,
+        blocked: one("SELECT COUNT(*) FROM allowlist WHERE blocked_at IS NOT NULL")?,
         accounts: one("SELECT COUNT(*) FROM accounts")?,
         devices: one("SELECT COUNT(*) FROM devices")?,
         tokens: one("SELECT COUNT(*) FROM tokens")?,
@@ -3256,16 +3555,30 @@ mod tests {
         );
         insert_token(&mut c, &token(b"h2", id, ""), 100, 20).unwrap();
         assert!(session(&c, b"h2", 5100, 10_000, 5000).unwrap().is_none());
-        // off the allowlist: no session, tokens revoked
+        // blocked: no session, tokens revoked, the entry kept blocked
         insert_token(&mut c, &token(b"h3", id, ""), 100, 20).unwrap();
         assert!(session(&c, b"h3", 200, 1000, 5000).unwrap().is_some());
         assert_eq!(
-            allow_remove(&mut c, &["a1".to_owned()], 300).unwrap(),
-            (1, 1, 0)
+            allow_block(&mut c, &["a1".to_owned()], 300).unwrap(),
+            Blocked {
+                blocked: 1,
+                tokens: 1,
+                ..Blocked::default()
+            }
         );
         assert!(session(&c, b"h3", 200, 1000, 5000).unwrap().is_none());
         assert!(!allowed(&c, "a1").unwrap());
+        assert_eq!(listing(&c, "a1").unwrap(), Listing::Blocked);
         assert!(allowed(&c, "b2").unwrap());
+        // a token of a blocked account opens nothing, however it came
+        insert_token(&mut c, &token(b"h4", id, ""), 300, 20).unwrap();
+        assert!(session(&c, b"h4", 301, 1000, 5000).unwrap().is_none());
+        // unblocked, it does again
+        assert_eq!(
+            allow_unblock(&mut c, &["a1".to_owned()], 302).unwrap(),
+            (1, 0)
+        );
+        assert!(session(&c, b"h4", 303, 1000, 5000).unwrap().is_some());
     }
 
     #[test]
@@ -4254,10 +4567,13 @@ mod tests {
         assert!(passwordless_on(&c, a).unwrap() && !list_on(&c, a).unwrap());
         allow_add(&mut c, &["a".to_owned()], 1).unwrap();
         assert!(list_on(&c, a).unwrap());
-        // off the allowlist, or its switch off
-        allow_remove(&mut c, &["a".to_owned()], 2).unwrap();
+        // blocked (an import does not lift it, unblock does), or its switch off
+        allow_block(&mut c, &["a".to_owned()], 2).unwrap();
         assert!(!list_on(&c, a).unwrap());
         allow_add(&mut c, &["a".to_owned()], 3).unwrap();
+        assert!(!list_on(&c, a).unwrap());
+        allow_unblock(&mut c, &["a".to_owned()], 3).unwrap();
+        assert!(list_on(&c, a).unwrap());
         set_account_passwordless(&c, a, Some(false)).unwrap();
         assert!(!list_on(&c, a).unwrap());
         // no such account
@@ -4299,20 +4615,238 @@ mod tests {
     }
 
     #[test]
-    fn removing_from_the_allowlist_revokes_keys() {
+    fn blocking_revokes_keys() {
         let mut c = conn();
         allow_add(&mut c, &["a".to_owned()], 1).unwrap();
         let a = upsert_account(&c, "a", "A", "", 1).unwrap();
         login_with_key(&mut c, a, 1, "");
         login_with_key(&mut c, a, 2, "");
+        // an ID not on the list is put on it blocked
         assert_eq!(
-            allow_remove(&mut c, &["a".to_owned(), "zz".to_owned()], 500).unwrap(),
-            (1, 2, 2)
+            allow_block(&mut c, &["a".to_owned(), "zz".to_owned()], 500).unwrap(),
+            Blocked {
+                blocked: 2,
+                new: 1,
+                already: 0,
+                tokens: 2,
+                keys: 2,
+                person: 0
+            }
         );
         assert!(keys_of(&c, a).unwrap().is_empty());
         let counts = counts(&c, 600, DAY).unwrap();
         assert_eq!(counts.keys_active, 0);
-        assert_eq!(counts.keys_revoked, vec![("allow-remove".to_owned(), 2)]);
+        assert_eq!(counts.keys_revoked, vec![("blocked".to_owned(), 2)]);
+        assert_eq!((counts.allowlist, counts.blocked), (0, 2));
+        let list = allowlist(&c).unwrap();
+        assert_eq!(
+            list,
+            vec![
+                ListEntry {
+                    login_key: "a".into(),
+                    added_at: 1,
+                    source: "import".into(),
+                    blocked_at: Some(500)
+                },
+                ListEntry {
+                    login_key: "zz".into(),
+                    added_at: 500,
+                    source: "import".into(),
+                    blocked_at: Some(500)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_login_registers_its_id_unless_blocked_or_in_list_mode() {
+        let mut c = conn();
+        // open mode: an ID not on the list is put on it, as a login's
+        assert_eq!(
+            admit_login(&c, "new", "new", true, 5).unwrap(),
+            Admission::Registered
+        );
+        assert_eq!(
+            admit_login(&c, "new", "new", true, 6).unwrap(),
+            Admission::Listed
+        );
+        assert_eq!(
+            allowlist(&c).unwrap(),
+            vec![ListEntry {
+                login_key: "new".into(),
+                added_at: 5,
+                source: "login".into(),
+                blocked_at: None
+            }]
+        );
+        assert!(allowed(&c, "new").unwrap());
+        // list mode: no login puts an ID on the list
+        assert_eq!(
+            admit_login(&c, "other", "other", false, 7).unwrap(),
+            Admission::Refused
+        );
+        assert_eq!(listing(&c, "other").unwrap(), Listing::Absent);
+        // a block holds in either mode, and an import does not lift it
+        allow_block(&mut c, &["new".to_owned()], 8).unwrap();
+        allow_add(&mut c, &["new".to_owned()], 8).unwrap();
+        for register in [true, false] {
+            assert_eq!(
+                admit_login(&c, "new", "new", register, 9).unwrap(),
+                Admission::Blocked
+            );
+        }
+        // the ID the SSO names for the person counts too: typed in another form, still blocked
+        assert_eq!(
+            admit_login(&c, "other-form", "new", true, 9).unwrap(),
+            Admission::Blocked
+        );
+        assert_eq!(listing(&c, "other-form").unwrap(), Listing::Absent);
+        assert_eq!(
+            login_listing(&c, "other-form", "new").unwrap(),
+            Listing::Blocked
+        );
+        assert_eq!(
+            login_listing(&c, "other", "unknown").unwrap(),
+            Listing::Absent
+        );
+        // no account had those IDs: no PC's list changed
+        assert_eq!(change_serial(&c).unwrap(), 0);
+        // an account without an entry comes back on the list: its PCs' lists change
+        upsert_account(&c, "acct", "ACCT", "", 1).unwrap();
+        assert_eq!(
+            admit_login(&c, "acct", "acct", true, 10).unwrap(),
+            Admission::Registered
+        );
+        assert_eq!(change_serial(&c).unwrap(), 1);
+        let n = counts(&c, 10, DAY).unwrap();
+        assert_eq!(
+            (
+                n.allowlist,
+                n.allowlist_by_login,
+                n.registered_day,
+                n.registered_week,
+                n.blocked
+            ),
+            (1, 1, 1, 1, 1)
+        );
+        let n = counts(&c, 10 + 2 * DAY, DAY).unwrap();
+        assert_eq!((n.registered_day, n.registered_week), (0, 1));
+    }
+
+    /// The SSO named one person's perslNo for two portal IDs (whether it does is not known, design
+    /// v2 §4-1): blocking either blocks both and ends both accounts' keys, a login with a third
+    /// form is refused, the block stays when one account is deleted, and unblock lifts them
+    /// together; the person's other accounts only, not someone else's.
+    #[test]
+    fn a_block_takes_every_id_of_the_person() {
+        let mut c = conn();
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let alias = upsert_account(&c, "alias", "P1", "", 1).unwrap();
+        let main = upsert_account(&c, "p1", "P1", "", 1).unwrap();
+        let other = upsert_account(&c, "p2", "P2", "", 1).unwrap();
+        for (key, persl) in [("alias", "p1"), ("p1", "p1"), ("p2", "p2")] {
+            admit_login(&c, key, persl, true, 1).unwrap();
+        }
+        login_with_key(&mut c, alias, 1, "");
+        login_with_key(&mut c, main, 2, "");
+        login_with_key(&mut c, other, 3, "");
+        assert_eq!(
+            allow_block(&mut c, &ids(&["alias"]), 5).unwrap(),
+            Blocked {
+                blocked: 2,
+                new: 0,
+                already: 0,
+                tokens: 2,
+                keys: 2,
+                person: 1
+            }
+        );
+        assert!(!allowed(&c, "alias").unwrap() && !allowed(&c, "p1").unwrap());
+        assert!(keys_of(&c, alias).unwrap().is_empty() && keys_of(&c, main).unwrap().is_empty());
+        assert!(allowed(&c, "p2").unwrap());
+        assert_eq!(keys_of(&c, other).unwrap().len(), 1);
+        // a third form with the same perslNo: refused, and put on no list
+        assert_eq!(
+            admit_login(&c, "alias2", "p1", true, 6).unwrap(),
+            Admission::Blocked
+        );
+        assert_eq!(listing(&c, "alias2").unwrap(), Listing::Absent);
+        // the account typed with the alias deleted: the perslNo form stays blocked
+        let tx = c.transaction().unwrap();
+        delete_account(&tx, alias, 7).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(login_listing(&c, "p1", "p1").unwrap(), Listing::Blocked);
+        // unblock through the perslNo form lifts what the server still knows of the person
+        assert_eq!(allow_unblock(&mut c, &ids(&["p1"]), 8).unwrap(), (1, 0));
+        assert_eq!(login_listing(&c, "p1", "p1").unwrap(), Listing::Registered);
+        // the deleted account's entry is not linked to the person any more: named, it is lifted
+        assert_eq!(listing(&c, "alias").unwrap(), Listing::Blocked);
+        assert_eq!(allow_unblock(&mut c, &ids(&["alias"]), 9).unwrap(), (1, 0));
+        // blocking the perslNo form takes the person's accounts under other IDs with it
+        let alias = upsert_account(&c, "alias", "P1", "", 10).unwrap();
+        login_with_key(&mut c, alias, 4, "");
+        let b = allow_block(&mut c, &ids(&["p1"]), 11).unwrap();
+        assert_eq!((b.blocked, b.person, b.keys), (2, 1, 1));
+        assert!(!allowed(&c, "alias").unwrap());
+        assert_eq!(allow_unblock(&mut c, &ids(&["alias"]), 12).unwrap(), (2, 0));
+        assert!(allowed(&c, "alias").unwrap() && allowed(&c, "p1").unwrap());
+        // an account blocked alone under another ID (as a block made before the person's IDs were
+        // taken together left it): a login whose perslNo is that account's is refused
+        c.execute(
+            "UPDATE allowlist SET blocked_at = 13 WHERE login_key = 'alias'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(listing(&c, "p1").unwrap(), Listing::Registered);
+        assert_eq!(login_listing(&c, "p1", "p1").unwrap(), Listing::Blocked);
+        assert_eq!(login_listing(&c, "p2", "p2").unwrap(), Listing::Registered);
+    }
+
+    /// Schema 5 keeps the entries as imported ones, and an account whose ID was taken off the list
+    /// before stays out: its entry comes back blocked.
+    #[test]
+    fn the_allowlist_of_schema_four_moves_on() {
+        let c = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..4] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.pragma_update(None, "user_version", 4).unwrap();
+        c.execute_batch(
+            "INSERT INTO allowlist VALUES ('kept', 7), ('unused', 8);
+             INSERT INTO accounts (login_key, portal_id, display_name, created_at, last_login_at,
+                                   last_active_at)
+                 VALUES ('kept', 'KEPT', '', 1, 1, 1), ('removed', 'REMOVED', '', 1, 1, 1);",
+        )
+        .unwrap();
+        let c = prepare(c).unwrap();
+        let v: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, MIGRATIONS.len() as i64);
+        let list = allowlist(&c).unwrap();
+        let state: Vec<(&str, &str, bool)> = list
+            .iter()
+            .map(|e| {
+                (
+                    e.login_key.as_str(),
+                    e.source.as_str(),
+                    e.blocked_at.is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            state,
+            vec![
+                ("kept", "import", false),
+                ("removed", "import", true),
+                ("unused", "import", false)
+            ]
+        );
+        assert_eq!((list[0].added_at, list[2].added_at), (7, 8));
+        assert!(list[1].blocked_at.unwrap() > 1_700_000_000);
+        assert!(allowed(&c, "kept").unwrap() && !allowed(&c, "removed").unwrap());
+        // nothing a PC's list says changed
+        assert_eq!(change_serial(&c).unwrap(), 0);
     }
 
     #[test]
@@ -4321,25 +4855,41 @@ mod tests {
         let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // IDs nobody logged in with: no PC's list changes
         allow_add(&mut c, &ids(&["a", "b"]), 1).unwrap();
-        allow_remove(&mut c, &ids(&["b"]), 1).unwrap();
+        allow_block(&mut c, &ids(&["b"]), 1).unwrap();
+        allow_unblock(&mut c, &ids(&["b"]), 1).unwrap();
         assert_eq!(change_serial(&c).unwrap(), 0);
-        // an account without active keys leaves: its PCs' lists change all the same
+        // an account without active keys is blocked: its PCs' lists change all the same
         let a = upsert_account(&c, "a", "A", "", 1).unwrap();
-        assert_eq!(allow_remove(&mut c, &ids(&["a"]), 2).unwrap(), (1, 0, 0));
+        assert_eq!(allow_block(&mut c, &ids(&["a"]), 2).unwrap().blocked, 1);
         assert_eq!(change_serial(&c).unwrap(), 1);
-        assert_eq!(allow_remove(&mut c, &ids(&["a"]), 3).unwrap(), (0, 0, 0));
+        assert_eq!(
+            allow_block(&mut c, &ids(&["a"]), 3).unwrap(),
+            Blocked {
+                already: 1,
+                ..Blocked::default()
+            }
+        );
         assert_eq!(change_serial(&c).unwrap(), 1);
-        // back on the list
-        assert_eq!(allow_add(&mut c, &ids(&["a", "b"]), 4).unwrap(), (2, 0));
+        // an import lifts no block; unblock does, once
+        assert_eq!(allow_add(&mut c, &ids(&["a", "b"]), 4).unwrap(), (0, 2));
+        assert_eq!(change_serial(&c).unwrap(), 1);
+        assert_eq!(allow_unblock(&mut c, &ids(&["a", "b"]), 4).unwrap(), (1, 1));
         assert_eq!(change_serial(&c).unwrap(), 2);
-        assert_eq!(allow_add(&mut c, &ids(&["a"]), 5).unwrap(), (0, 1));
+        assert_eq!(allow_unblock(&mut c, &ids(&["a"]), 5).unwrap(), (0, 1));
         assert_eq!(change_serial(&c).unwrap(), 2);
         // with keys: once, as they are revoked
         login_with_key(&mut c, a, 1, "");
         let serial = change_serial(&c).unwrap();
         assert_eq!(
-            allow_remove(&mut c, &ids(&["a", "b"]), 6).unwrap(),
-            (2, 1, 1)
+            allow_block(&mut c, &ids(&["a", "b"]), 6).unwrap(),
+            Blocked {
+                blocked: 2,
+                new: 0,
+                already: 0,
+                tokens: 1,
+                keys: 1,
+                person: 0
+            }
         );
         assert_eq!(change_serial(&c).unwrap(), serial + 1);
     }
@@ -4403,21 +4953,44 @@ mod tests {
         let lab = upsert_account(&c, "lab", "LAB", "", old).unwrap();
         bind(&c, lab, "1", &[1; 32], "windows", "PC", old).unwrap();
         assert!(seen_by_hbbs(&c, "1", &[1; 32], t - DAY).unwrap());
-        // the same, but off the allowlist since: deleted with its PC
+        // the same, but blocked since: deleted with its PC, its entry stays blocked
         let gone = upsert_account(&c, "gone", "GONE", "", old).unwrap();
         bind(&c, gone, "2", &[1; 32], "windows", "PC", old).unwrap();
         assert!(seen_by_hbbs(&c, "2", &[1; 32], t - DAY).unwrap());
-        allow_remove(&mut c, &["gone".to_owned()], t).unwrap();
-        // on the list, its PC not seen for 200 days: the PC goes, then the account
+        allow_block(&mut c, &["gone".to_owned()], t).unwrap();
+        // on the list, its PC not seen for 200 days: the PC goes, then the account with its entry
         let idle = upsert_account(&c, "idle", "IDLE", "", old).unwrap();
-        allow_add(&mut c, &["idle".to_owned()], old).unwrap();
+        admit_login(&c, "idle", "idle", true, old).unwrap();
         bind(&c, idle, "3", &[1; 32], "windows", "PC", t - 200 * DAY).unwrap();
+        // entries without an account: imported over a year ago and never used (goes), imported
+        // yesterday (stays), blocked (stays until unblocked)
+        allow_add(&mut c, &["never".to_owned()], old).unwrap();
+        allow_add(&mut c, &["recent".to_owned()], t - DAY).unwrap();
+        allow_block(&mut c, &["banned".to_owned()], old).unwrap();
         let p = purge(&mut c, t, &retention()).unwrap();
-        assert_eq!((p.accounts, p.devices), (2, 1));
+        assert_eq!((p.accounts, p.devices, p.entries), (2, 1, 1));
         assert!(account_by_key(&c, "lab").unwrap().is_some());
         assert!(device(&c, "1").unwrap().is_some());
         assert!(account_by_key(&c, "gone").unwrap().is_none());
         assert!(device(&c, "2").unwrap().is_none());
         assert!(account_by_key(&c, "idle").unwrap().is_none());
+        let kept: Vec<(String, bool)> = allowlist(&c)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.login_key, e.blocked_at.is_some()))
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                ("banned".to_owned(), true),
+                ("gone".to_owned(), true),
+                ("lab".to_owned(), false),
+                ("recent".to_owned(), false)
+            ]
+        );
+        // an unblocked entry without an account keeps from its unblocking
+        allow_unblock(&mut c, &["banned".to_owned()], t).unwrap();
+        assert_eq!(purge(&mut c, t + DAY, &retention()).unwrap().entries, 0);
+        assert!(allowed(&c, "banned").unwrap());
     }
 }

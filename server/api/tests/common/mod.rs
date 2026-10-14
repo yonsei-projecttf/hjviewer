@@ -163,6 +163,9 @@ pub struct FakeHbbs {
     keys: Registry,
     pub unpatched: Arc<AtomicBool>,
     pub queries: Arc<AtomicUsize>,
+    /// a test that holds this lock holds every answer until it lets go (hjv-api waits two
+    /// seconds for one)
+    pub hold: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl FakeHbbs {
@@ -172,19 +175,26 @@ impl FakeHbbs {
         let keys: Registry = Default::default();
         let unpatched = Arc::new(AtomicBool::new(false));
         let queries = Arc::new(AtomicUsize::new(0));
-        let (k, u, q) = (keys.clone(), unpatched.clone(), queries.clone());
+        let hold = Arc::new(tokio::sync::Mutex::new(()));
+        let (k, u, q, held) = (
+            keys.clone(),
+            unpatched.clone(),
+            queries.clone(),
+            hold.clone(),
+        );
         tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     continue;
                 };
-                let (k, u, q) = (k.clone(), u.clone(), q.clone());
+                let (k, u, q, held) = (k.clone(), u.clone(), q.clone(), held.clone());
                 tokio::spawn(async move {
                     let mut buf = [0u8; 1024];
                     let Ok(n) = stream.read(&mut buf).await else {
                         return;
                     };
                     q.fetch_add(1, Ordering::SeqCst);
+                    drop(held.lock().await);
                     let cmd = String::from_utf8_lossy(&buf[..n]).trim().to_owned();
                     let mut parts = cmd.split(' ');
                     let reply = match (parts.next(), parts.next()) {
@@ -206,6 +216,7 @@ impl FakeHbbs {
             keys,
             unpatched,
             queries,
+            hold,
         }
     }
 
@@ -361,6 +372,10 @@ impl Harness {
             ("HJV_API_SSO_TIMEOUT_MS", "1500".to_owned()),
             // tests log one account in several times a minute: more than a quarter of 20 calls
             ("HJV_API_LIMIT_SSO", "100/60".to_owned()),
+            // and try many IDs nobody registered, as any ID reaches the SSO in open mode: those
+            // count as every ID does here; tests/allowlist.rs sets the lower limits of such IDs
+            ("HJV_API_LIMIT_NEW_ID", "3/600,5/86400".to_owned()),
+            ("HJV_API_LIMIT_SSO_NEW", "100/60".to_owned()),
             ("HJV_API_TRUST_PUBKEYS", trust_pubkeys()),
             ("HJV_API_COMMAND_PUBKEYS", command_pubkeys()),
         ]

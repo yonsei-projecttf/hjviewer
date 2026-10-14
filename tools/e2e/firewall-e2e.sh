@@ -171,9 +171,9 @@ fi
 
 # The account API (design v3 7-4): the fake Yonsei SSO and hjv-api on the host's loopback, with the
 # E2E's test settings: Linux PCs bind, a PC asks every 5 seconds and keeps a list 30 seconds, the
-# password-less switch is off as after an install, only the first two test accounts are on the
-# allowlist, and the limits of successful logins and SSO calls fit the two dozen logins of one
-# account in a few minutes
+# password-less switch is off as after an install, the first two test accounts are imported ahead
+# (open login, the default: the third goes on the allowlist at its first login), and the limits of
+# successful logins and SSO calls fit the two dozen logins of one account in a few minutes
 API_PORT=41120
 SSO_PORT=41600
 API_PID=""
@@ -367,7 +367,8 @@ fi
 # The same-account logins (design v3 7-4). Each step prints PASS or FAIL with what it saw.
 # ---------------------------------------------------------------------------------------------
 PC_ID=$ID
-# the fake SSO's test accounts (server/api/src/fake_sso.rs); CAROL is not on the allowlist
+# the fake SSO's test accounts (server/api/src/fake_sso.rs); CAROL is not imported: her first login
+# puts her on the allowlist (S28)
 ALICE=2026000001 ALICE_PW=hjv-test-pass-1 ALICE_NAME=홍길동
 BOB=2026000002 BOB_PW=hjv-test-pass-2
 CAROL=Y9001 CAROL_PW=hjv-test-pass-3
@@ -1068,19 +1069,21 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   run ctl --hjv-e2e-option allow-insecure-tls-fallback ""
   pass "K2: with the insecure TLS fallback allowed, the account request still fails on the certificate (H15)"
 
-  log "S11: a portal ID off the allowlist fails as a wrong password does, without an SSO call"
+  log "S11: a wrong password gets the same answer for an imported ID and one never imported"
   calls=$(sso_calls)
   run ctl2 --hjv-e2e-login "$BOB" "$WRONG_PW"
   want 1 "S11: bob's wrong password"
   e_bob=$(sed -n 's/^hjv-e2e: login failed: //p' <<<"$OUT")
   [ "$(sso_calls)" = $((calls + 1)) ] || fail "S11: a wrong password did not reach the fake SSO once"
   calls=$(sso_calls)
-  run ctl2 --hjv-e2e-login "$CAROL" "$CAROL_PW"
-  want 1 "S11: a portal ID off the allowlist"
+  run ctl2 --hjv-e2e-login "$CAROL" "$WRONG_PW"
+  want 1 "S11: a wrong password of a portal ID never imported"
   e_carol=$(sed -n 's/^hjv-e2e: login failed: //p' <<<"$OUT")
   [ "$e_carol" = "$e_bob" ] || fail "S11: '$e_carol' is not the wrong password's '$e_bob'"
-  [ "$(sso_calls)" = "$calls" ] || fail "S11: the fake SSO was called for an ID off the allowlist"
-  pass "S11: the same failure ($e_carol), no SSO call"
+  [ "$(sso_calls)" = $((calls + 1)) ] || fail "S11: the ID never imported did not reach the fake SSO once (open login)"
+  admin allow list >"$RUN/allow.txt"
+  [ "$(head -1 "$RUN/allow.txt" | cut -d, -f1)" = "allowlist: 2 IDs" ] || fail "S11: a failed login changed the allowlist"
+  pass "S11: the same failure ($e_carol), one SSO call each; a failed login puts nobody on the allowlist"
   # the failed logins leave the login of hjv-ctl2 (alice's) as it was
   run ctl2 --hjv-e2e-devices
   want 0 "S11: the login of hjv-ctl2 after the failed ones"
@@ -1164,6 +1167,8 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   asked
   pass "X4: the second PC (alice), not in its own list, connects to the PC without a password"
 
+  account_allowlist
+
   log "S20: the portal passwords, tokens and account keys in $RUN"
   keep_secrets ctl
   keep_secrets ctl2
@@ -1194,6 +1199,84 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   done
   [ "$found" = 0 ] || exit 1
   pass "S20: ${#SECRETS[@]} tokens and keys and 4 portal passwords: none outside the clients' own LocalConfig; hjv-api's $keys keys: none outside its credentials"
+}
+
+# The open login of 2026-10-14 (server/api/README.md, Admin): an ID the SSO accepts and nobody
+# imported logs in and is registered, a block logs its devices out and refuses its next login
+# after the SSO, unblock lets it in again, and in list mode an ID off the list is refused without
+# an SSO call. On hjv-ctl2, free since D1; hjv-api starts again for list mode, after X7b.
+account_allowlist() {
+  local calls e_wrong blocked_text="이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요."
+  log "S28: a portal ID never imported logs in and is registered"
+  calls=$(sso_calls)
+  run ctl2 --hjv-e2e-login "$CAROL" "$CAROL_PW"
+  want 0 "S28: carol's login"
+  keep_secrets ctl2
+  [ "$(sso_calls)" = $((calls + 1)) ] || fail "S28: carol's login did not reach the fake SSO once"
+  admin allow list >"$RUN/allow.txt"
+  head -1 "$RUN/allow.txt" | grep -q '^allowlist: 3 IDs, 3 registered (1 by a login), 0 blocked; login open$' ||
+    fail "S28: the allowlist after carol's login: $(head -1 "$RUN/allow.txt")"
+  grep -q " registered  from login " "$RUN/allow.txt" || fail "S28: no entry from a login"
+  grep -q "logged in and was registered (acct=" "$RUN/hjv-api.log" || fail "S28: no journal line of the registration"
+  # (in any case: hjv-api keeps and shows portal IDs case-folded)
+  grep -qi "$CAROL" "$RUN/hjv-api.log" "$RUN/allow.txt" && fail "S28: carol's portal ID in hjv-api's log or the masked list"
+  run ctl2 --hjv-e2e-devices
+  want 0 "S28: carol's device list"
+  pass "S28: carol logged in (one SSO call) and is on the allowlist as a login's entry; the journal has her tag, not her ID"
+
+  log "S29: carol blocked: her device is logged out, her next login refused after the SSO"
+  admin block "$CAROL" | tee "$RUN/block.txt" | sed 's/^/    /'
+  grep -q '^blocked: 1 blocked (0 of them not on the allowlist before), 0 blocked already, 1 tokens and 1 account keys revoked;' "$RUN/block.txt" ||
+    fail "S29: block said: $(cat "$RUN/block.txt")"
+  run ctl2 --hjv-e2e-devices
+  want 1 "S29: carol's device list after the block"
+  has 'devices failed: HTTP 401' || fail "S29: not a 401 for the blocked account's device ($(grep 'devices failed' <<<"$OUT"))"
+  calls=$(sso_calls)
+  run ctl2 --hjv-e2e-login "$CAROL" "$WRONG_PW"
+  want 1 "S29: a wrong password of the blocked account"
+  e_wrong=$(sed -n 's/^hjv-e2e: login failed: //p' <<<"$OUT")
+  [ "$e_wrong" = "$e_bob" ] || fail "S29: the blocked account's wrong password got '$e_wrong', not '$e_bob'"
+  run ctl2 --hjv-e2e-login "$CAROL" "$CAROL_PW"
+  want 1 "S29: the blocked account's login"
+  has "login failed: HTTP 403: $blocked_text" || fail "S29: not the blocked text ($(grep 'login failed' <<<"$OUT"))"
+  [ "$(sso_calls)" = $((calls + 2)) ] || fail "S29: the blocked account's logins did not reach the fake SSO once each"
+  pass "S29: the device got 401 at once; a wrong password the usual failure; the right one, after the SSO, 403 '$blocked_text'"
+
+  log "S30: carol unblocked logs in again"
+  admin unblock "$CAROL" | sed 's/^/    /'
+  run ctl2 --hjv-e2e-login "$CAROL" "$CAROL_PW"
+  want 0 "S30: carol's login after unblock"
+  keep_secrets ctl2
+  run ctl2 --hjv-e2e-devices
+  want 0 "S30: carol's device list after unblock"
+  pass "S30: unblock lets carol in again"
+
+  log "S31: list mode (HJV_API_LOGIN=list): an ID off the list is refused without an SSO call"
+  admin user delete "$CAROL" | tee "$RUN/delete.txt" | sed 's/^/    /'
+  grep -q '(and its allowlist entry)$' "$RUN/delete.txt" || fail "S31: the deleted account's entry stayed"
+  kill "$API_PID"
+  wait "$API_PID" 2>/dev/null || true
+  echo "HJV_API_LOGIN=list" >>"$RUN/api/hjviewer-api.env"
+  start_api
+  admin report >"$RUN/report.txt"
+  sed -n 2p "$RUN/report.txt" | grep -q '^login: list (' || fail "S31: the report does not say list mode: $(sed -n 2p "$RUN/report.txt")"
+  calls=$(sso_calls)
+  run ctl2 --hjv-e2e-login "$CAROL" "$CAROL_PW"
+  want 1 "S31: carol, off the list, in list mode"
+  e_wrong=$(sed -n 's/^hjv-e2e: login failed: //p' <<<"$OUT")
+  [ "$e_wrong" = "$e_bob" ] || fail "S31: carol off the list got '$e_wrong', not the wrong password's '$e_bob'"
+  [ "$(sso_calls)" = "$calls" ] || fail "S31: the fake SSO was called for an ID off the list"
+  run ctl2 --hjv-e2e-login "$BOB" "$BOB_PW"
+  want 0 "S31: bob, imported, in list mode"
+  keep_secrets ctl2
+  # back to the default for what runs after the account part
+  sed -i '/^HJV_API_LOGIN=list$/d' "$RUN/api/hjviewer-api.env"
+  kill "$API_PID"
+  wait "$API_PID" 2>/dev/null || true
+  start_api
+  admin report >"$RUN/report.txt"
+  sed -n 2p "$RUN/report.txt" | grep -q '^login: open (' || fail "S31: hjv-api is not in open mode again: $(sed -n 2p "$RUN/report.txt")"
+  pass "S31: in list mode carol (deleted, off the list) gets the wrong password's failure without an SSO call; bob (imported) logs in; open mode again after"
 }
 
 # the device list of hjv-ctl (hjv-ctl2) has the PC in state <state>

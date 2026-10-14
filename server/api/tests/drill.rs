@@ -19,10 +19,12 @@
 //!   start, before the operator's next command).
 //! - `drill_invalid_client`: a login the SSO answers with invalid_client.
 //! - `drill_after_backup`: what a restore takes back: a new login, a PC released by its owner,
-//!   an account's keys revoked (a lost phone).
+//!   an account's keys revoked (a lost phone), an account blocked (the open login of 2026-10-14:
+//!   LEE, whom no import put on the list, came on it at the first login of `drill_populate`).
 //! - `drill_after_restore`: after the restore: every token from before refused, the PCs still
-//!   bound (switched off), the released PC listed.
-//! - `drill_after_on`: the phone logs in again, and the PC's list holds the new key only.
+//!   bound (switched off), the released PC listed, the block the script made again holds.
+//! - `drill_after_on`: the phone logs in again, and the PC's list holds the new key only; the
+//!   block is lifted and LEE logs in again.
 //! - `drill_relay`: Wake-on-LAN (design v3 §8, WP-W2): HONG's PC reports how to wake it, a NAS
 //!   relay says hello and is approved by its code for the account of that PC, and the phone wakes
 //!   the PC through it: the command, checked with the command keys the relays pin
@@ -280,7 +282,15 @@ async fn drill_populate() {
         admin(&["passwordless", "on", "--owner-of", id]).await;
     }
     login_as(&mut state, "phone_hong", HONG, None).await;
+    // LEE was never imported: the login puts the ID on the allowlist (open login)
     login_as(&mut state, "phone_lee", LEE, None).await;
+    let listed = admin(&["allow", "list"]).await;
+    let first = listed.lines().next().unwrap_or("");
+    assert!(
+        first.starts_with("allowlist: 4 IDs, 4 registered (1 by a login), 0 blocked; login open"),
+        "{listed}"
+    );
+    println!("{first}");
     // PC_GONE leaves its account at once: a tombstone
     let (status, answer) = signed(
         &state,
@@ -374,8 +384,18 @@ async fn drill_after_backup() {
     let list = list.unwrap().unwrap();
     assert_eq!(list["state"], "active", "{list}");
     assert_eq!(list["keys"].as_array().map_or(0, Vec::len), 0, "{list}");
+    // LEE blocked: the tokens end at once, and the next login gets the blocked answer
+    println!("{}", admin(&["block", LEE.0]).await);
+    let (status, _) = signed(&state, "later_lee", "POST", "/api/currentUser", b"{}").await;
+    assert_eq!(status, 401);
+    let (status, answer, _) = login(LEE.0, LEE.1, None).await;
+    assert_eq!(
+        (status, &answer["hjv"]),
+        (403, &json!("blocked")),
+        "{answer}"
+    );
     println!(
-        "after the backup: 2 new logins, PC {PC_KIM} released (signed revoked, mark cleared), HONG's keys revoked (PC {PC_HONG}: active, 0 keys)"
+        "after the backup: 2 new logins, PC {PC_KIM} released (signed revoked, mark cleared), HONG's keys revoked (PC {PC_HONG}: active, 0 keys), LEE blocked (token 401, login 403)"
     );
 }
 
@@ -408,6 +428,14 @@ async fn drill_after_restore() {
     assert_eq!(answer["state"], "listed", "{status} {answer}");
     assert!(list.is_none());
     println!("PC {PC_KIM}: {status} listed (its mark was cleared before the restore)");
+    // the block of after the backup, made again by the record's tag
+    let (status, answer, _) = login(LEE.0, LEE.1, None).await;
+    assert_eq!(
+        (status, &answer["hjv"]),
+        (403, &json!("blocked")),
+        "{answer}"
+    );
+    println!("LEE: the login gets 403 blocked again");
 }
 
 #[tokio::test]
@@ -434,6 +462,11 @@ async fn drill_after_on() {
         "PC {PC_HONG}: active with the new key of the phone's login, not the old one ({} keys)",
         keys.len()
     );
+    // the block lifted, LEE logs in again
+    println!("{}", admin(&["unblock", LEE.0]).await);
+    login_as(&mut state, "lee_again", LEE, None).await;
+    save(&state);
+    println!("LEE: unblocked, logs in again");
 }
 
 #[tokio::test]

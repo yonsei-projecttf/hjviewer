@@ -14,8 +14,8 @@
 //! The app then sends `{"type":"email_code","secret":…,"verificationCode":<code>,"tfaCode":<code>,
 //! "username":…,"id":…,"uuid":…}` without a password (client research notes §2-1: the type is
 //! "email_code" even for TOTP). hjv-api keeps the sealed password's content in memory only, under
-//! the challenge, for at most five minutes and one try; an ID off the list fails at the code
-//! step with the same answer as a wrong code (login.rs).
+//! the challenge, for at most five minutes and one try; an ID off the list (HJV_API_LOGIN=list)
+//! fails at the code step with the same answer as a wrong code (login.rs).
 //!
 //! A code dialog counts against the address like a failed login until its code step succeeds
 //! (an unanswered or expired one keeps counting), and an address or an ID may have three dialogs
@@ -69,6 +69,7 @@ pub struct Pending {
     pub username: String,
     pub login_key: String,
     pub password: Zeroizing<String>,
+    /// whether the login goes on to the SSO (login.rs step 7)
     pub allowed: bool,
     pub limit_scope: &'static str,
     pub limit_key: String,

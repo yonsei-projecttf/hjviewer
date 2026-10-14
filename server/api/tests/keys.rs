@@ -1027,20 +1027,17 @@ async fn admin_keys_and_revoking_everything() {
 }
 
 #[tokio::test]
-async fn leaving_the_allowlist_revokes_the_keys() {
+async fn blocking_an_account_revokes_its_keys() {
     let h = Harness::start().await;
     let pc = TestDevice::windows("123456789");
     h.hbbs.register(&pc, Some(1));
     h.login_ok(HONG, Some(&pc)).await;
     h.login_ok(HONG, None).await;
     let kim = h.login_ok(KIM, None).await;
-    let out = h
-        .admin(&["allow", "remove"], false, Some("2026000001\n"))
-        .await
-        .unwrap();
-    assert_eq!(
-        out,
-        "allowlist: 1 removed, 0 not on it, 2 tokens and 2 account keys revoked"
+    let out = h.admin(&["block", HONG.0], false, None).await.unwrap();
+    assert!(
+        out.starts_with("blocked: 1 blocked (0 of them not on the allowlist before), 0 blocked already, 2 tokens and 2 account keys revoked;"),
+        "{out}"
     );
     let keys = stored_keys(&h).await;
     let hong_keys: Vec<&db::Key> = keys
@@ -1050,7 +1047,7 @@ async fn leaving_the_allowlist_revokes_the_keys() {
     assert_eq!(hong_keys.len(), 2);
     assert!(hong_keys
         .iter()
-        .all(|k| k.revoke_reason.as_deref() == Some("allow-remove")));
+        .all(|k| k.revoke_reason.as_deref() == Some("blocked")));
     assert_eq!(h.get("/api/users", &kim).await.status, 200);
     // the PC stays bound to the account (design v3 §5-6)
     let bound = h.state.db.call(|c| db::all_devices(c)).await.unwrap();
