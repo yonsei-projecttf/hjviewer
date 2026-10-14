@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 09:41:44 +0900
-Subject: [PATCH 04/36] hjviewer: no printer option without the adapter; own
+Subject: [PATCH 04/45] hjviewer: no printer option without the adapter; own
  install notice and Android service names
 
 - hjviewer builds leave out RustDesk's closed-source printer driver

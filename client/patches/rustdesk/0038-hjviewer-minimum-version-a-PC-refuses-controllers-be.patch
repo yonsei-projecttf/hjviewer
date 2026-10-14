@@ -1,0 +1,1358 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 13 Oct 2026 19:43:25 +0900
+Subject: [PATCH 38/45] hjviewer: minimum version: a PC refuses controllers
+ below their platform's minimum
+
+A PC that holds the version policy refuses, at login, a controller whose app is below
+what the policy blocks for the controller's platform. hbbs refuses old controllers
+before that, but only this holds a controller that came by IP address, and a newer app
+that could not get the policy and so did not hold itself back.
+
+- hjviewer_update/refuse.rs decides, by the family rule of the trust rules: a controller
+  is refused below LIMIT(now), the lowest of what the entries of the platform the login
+  names block at that time, and is told the lowest min of them. That platform is
+  Windows, Android (both Android entries together, the APK's and Google Play's, for the
+  PC cannot tell the two apart) or iOS; other platforms are not looked at. Before a
+  deadline only a controller below the version the grace period starts at (grace_min)
+  is refused; where the two Android entries cross (the APK's higher minimum still in its
+  grace period, Play's lower one at once), only what both block is refused until the
+  APK's deadline. The version counts as hbb_common::get_version_number counts it, but
+  without that function's overflow on what a stranger sends: a version that cannot be
+  counted is 0, the oldest of all, as hbbs has it. Without a policy, or without an entry
+  for the platform, nobody is refused. A refusal also has the policy checked, a check
+  nobody waits for and so under the usual limits whoever knocks (one request a minute at
+  most, none for half an hour after a failure): a minimum set too high by mistake and
+  taken back by a root declaration no longer keeps a PC with nobody at it refusing
+  everyone for up to 6.6 hours, until its next six-hourly check. The login itself is
+  decided by the policy the process holds; the next one finds the corrected policy (the
+  trigger is in table 3-1 of the minimum version design).
+- hjviewer_update/texts.rs writes the answer, the login error an old app shows as it
+  comes: which version the PC takes, where the platform's update is, and the mark that
+  keeps a session from connecting again by itself. It takes the minimum from the policy
+  and shows the controller's own version only if that is digits and dots.
+- connection.rs asks right after the ID whitelist, in the login and where switched
+  sides come back: before the permissions, the connection window, the password and a
+  login by account key.
+- client.rs: a refusal for the version, by hbbs or by a PC, is shown as the app's own
+  text and makes the app check the policy at once (on_refusal, on_login_refusal).
+- rendezvous_mediator.rs: a process that takes connections checks the policy by itself,
+  half a minute after its start and then every six hours.
+- lang/ko.rs: the two results of --update in Korean.
+
+A build without the update keys does none of this: its logins and its errors are those
+of 1.5.1.
+
+Tests: the rule, the texts and the counting of versions with the rule given by hand:
+the empty version before the deadline, a version below grace_min, a policy without a
+deadline, which drops grace_min with it, and the Android cases with Play's deadline
+later, Play ahead of the APK, and the two crossing. A test of the hook's way through the
+process's policy in a build that takes part (compiled with HJV_SERVER and the update
+keys, as the pinned test build of the checks is): the process is given a policy signed
+with the tests' key, and refuse_controller refuses by it once its deadline has passed by
+the device's clock, in a PC's words, and lets in a controller at the minimum, one of a
+platform that is not checked, and everyone while the deadline is still ahead. It also
+holds that only a refused login asks for a check: a controller let in while the
+process's own check is due leaves no check asked for and the due one where it was, and a
+refused one has the check asked for and put off by that minute. In any other build the
+test has nothing to ask and ends at once. The hook lines themselves (connection.rs,
+client.rs, rendezvous_mediator.rs) are reached by the E2E alone.
+
+(Minimum version design, work package C2; trust rules, work package TR.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/client.rs                 |   3 +-
+ src/hjviewer_update/mod.rs    |   6 +
+ src/hjviewer_update/refuse.rs | 782 ++++++++++++++++++++++++++++++++++
+ src/hjviewer_update/texts.rs  | 384 +++++++++++++++++
+ src/lang/ko.rs                |   2 +
+ src/rendezvous_mediator.rs    |   1 +
+ src/server/connection.rs      |  10 +
+ 7 files changed, 1187 insertions(+), 1 deletion(-)
+ create mode 100644 src/hjviewer_update/refuse.rs
+ create mode 100644 src/hjviewer_update/texts.rs
+
+diff --git a/src/client.rs b/src/client.rs
+index 8dc61f9..1dd94c7 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -994,7 +994,7 @@ impl Client {
+                     Some(rendezvous_message::Union::PunchHoleResponse(ph)) => {
+                         if ph.socket_addr.is_empty() {
+                             if !ph.other_failure.is_empty() {
+-                                bail!(ph.other_failure);
++                                bail!(crate::hjviewer_update::on_refusal(&ph.other_failure));
+                             }
+                             match ph.failure.enum_value() {
+                                 Ok(punch_hole_response::Failure::ID_NOT_EXIST) => {
+@@ -4508,6 +4508,7 @@ pub fn handle_login_error(
+     if hjv_account::on_login_error(&lc, err, interface) {
+         return true;
+     }
++    let err = crate::hjviewer_update::on_login_refusal(err);
+     if err == LOGIN_MSG_PASSWORD_EMPTY {
+         lc.write().unwrap().password = Default::default();
+         interface.msgbox("input-password", "Password Required", "", "");
+diff --git a/src/hjviewer_update/mod.rs b/src/hjviewer_update/mod.rs
+index 708fefd..5c70c63 100644
+--- a/src/hjviewer_update/mod.rs
++++ b/src/hjviewer_update/mod.rs
+@@ -8,6 +8,9 @@
+ //!   what the rest of the app calls: the screens through `main_get_common`/`main_set_common`
+ //!   (keys `hjv-update-…`, `hjv-min-version-…`; event `hjv-update`), and the connection code
+ //!   through `on_refusal`, `on_login_refusal` and `controller_rule`.
++//! - `refuse` is the side of a PC that takes connections: by `controller_rule` it refuses the
++//!   login of a controller below the minimum of its platform (`refuse_controller`), with a text
++//!   that `texts` writes.
+ //!
+ //! A build takes part only if it is pinned to a server (HJV_SERVER) and has usable update keys
+ //! (HJV_UPDATE_PUBKEY, HJV_UPDATE_ROOT_PUBKEY; HJV_POLICY_FLOOR). Any other build asks the server
+@@ -40,13 +43,16 @@ use std::{
+ mod door;
+ mod fetch;
+ mod policy;
++mod refuse;
+ mod store;
++mod texts;
+ mod trust;
+ #[cfg(test)]
+ pub(crate) mod vectors;
+ mod verdict;
+ 
+ use fetch::Kind;
++pub(crate) use refuse::refuse_controller;
+ use verdict::State;
+ 
+ const BUILD_SERVER: Option<&str> = option_env!("HJV_SERVER");
+diff --git a/src/hjviewer_update/refuse.rs b/src/hjviewer_update/refuse.rs
+new file mode 100644
+index 0000000..409e6d3
+--- /dev/null
++++ b/src/hjviewer_update/refuse.rs
+@@ -0,0 +1,782 @@
++//! The PC's side of the minimum version: a controller whose app is below the minimum of its
++//! platform is refused when it logs in.
++//!
++//! The connection asks here right after the ID whitelist, before it looks at the permissions, the
++//! connection window, the password or a login by account key, and again when switched sides come
++//! back. So this also holds a controller that came by IP address, past hbbs, and a newer app
++//! that could not get the policy and so did not hold itself back.
++//!
++//! The policy is the one this process holds: a process that takes connections asks the server by
++//! itself (`start_service_checks`). Without a policy, or without an entry for the controller's
++//! platform, nobody is refused, and platforms other than Windows, Android and iOS are not looked
++//! at. Before a minimum's deadline only a controller below the version its grace period starts
++//! at is refused, and of the two Android entries only what both block.
++//!
++//! A login that was refused makes the process ask the server again, within the limits of checks
++//! nobody waits for. The process asks by itself only every six hours, and a minimum that was set
++//! too high by mistake and taken back would refuse everyone until then, on a PC with nobody at it
++//! to start the service again.
++//!
++//! The version is what the controller says it is: this makes an honest app update, it is no
++//! access control.
++
++use super::{fetch::Kind, policy::Version, texts, verdict, ControllerRule};
++use base::message_proto::LoginRequest;
++use std::time::Duration;
++
++/// No app's version is this long; a longer one is not counted.
++const MAX_VERSION_BYTES: usize = 64;
++/// How much of what the controller sent a log line shows.
++const LOGGED_CHARS: usize = 32;
++const LOG_INTERVAL: Duration = Duration::from_secs(60);
++
++/// `hbb_common::get_version_number`, which is how the apps and hbbs compare versions, for what a
++/// stranger sent: None where that function overflows (a panic in a debug build, a wrong number in
++/// a release build) and for a text longer than any version.
++fn counted(version: &str) -> Option<i64> {
++    if version.len() > MAX_VERSION_BYTES {
++        return None;
++    }
++    let mut parts = version.split('-');
++    let mut n: i64 = 0;
++    if let Some(dotted) = parts.next() {
++        let mut last = 0;
++        for x in dotted.split('.') {
++            last = x.parse::<i64>().unwrap_or(0);
++            n = n.checked_mul(1000)?.checked_add(last)?;
++        }
++        n = n.checked_sub(last)?.checked_add(last.checked_mul(10)?)?;
++    }
++    if let Some(patch) = parts.next() {
++        n = n.checked_add(patch.parse::<i64>().unwrap_or(0))?;
++    }
++    Some(n)
++}
++
++/// A controller's version as a number. One that cannot be counted is 0 like an empty one, the
++/// oldest of all, as hbbs has it for punch hole requests.
++fn version_number(version: &str) -> i64 {
++    counted(version).unwrap_or(0)
++}
++
++/// The text that refuses the login `lr`, when the rule its platform is held to (`rule_of` that
++/// platform) blocks anyone and the login's version is below what it blocks now.
++fn refusal(
++    lr: &LoginRequest,
++    rule_of: impl FnOnce(&str) -> Option<ControllerRule>,
++    e2e: bool,
++    host: texts::Host,
++) -> Option<String> {
++    let rule = rule_of(&lr.my_platform)?;
++    if !rule.enforced || version_number(&lr.version) >= rule.min_number {
++        return None;
++    }
++    let platform = verdict::normalize_platform(&lr.my_platform, e2e)?;
++    // by its type only a policy's `x.y.z` gets into the text as the minimum
++    let min = Version::parse(&rule.min)?;
++    Some(texts::login_refusal(host, platform, &min, &lr.version))
++}
++
++fn head(text: &str) -> String {
++    text.chars().take(LOGGED_CHARS).collect()
++}
++
++/// The login hook of connection.rs: the text to refuse this login with, as a login error, when
++/// the controller's app is below the minimum of its platform; None lets the login go on as it
++/// always did, which is all a build that takes no part answers. A refusal also has the policy
++/// checked again.
++pub(crate) fn refuse_controller(lr: &LoginRequest) -> Option<String> {
++    let e2e = cfg!(feature = "hjv-e2e");
++    let text = refusal(lr, super::controller_rule, e2e, texts::Host::this())?;
++    super::request_check(Kind::Regular);
++    hbb_common::throttled_log!(
++        LOG_INTERVAL,
++        info,
++        "version policy: refused the login of a controller ({:?}, version {:?})",
++        head(&lr.my_platform),
++        head(&lr.version)
++    );
++    Some(text)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{
++        super::{
++            fetch::{self, Kind, Reply},
++            store,
++            texts::{
++                tests::{problem, S1, S2},
++                Host,
++            },
++            vectors::*,
++            verdict::{Os, R1, R2},
++            wall, Core, Outcome, CORE,
++        },
++        *,
++    };
++    use crate::client::{
++        check_if_retry, handle_login_error, Data, Interface, LoginConfigHandler, LOGIN_MSG_OFFLINE,
++        LOGIN_MSG_PASSWORD_WRONG,
++    };
++    use async_trait::async_trait;
++    use base::message_proto::{Hash, PeerInfo, TestDelay, WindowsSession};
++    use hbb_common::Stream;
++    use std::sync::{Arc, Mutex, RwLock};
++
++    /// The deadline of the vectors' policy, from which on its minimums hold, and the second before.
++    const AFTER: u64 = GRACE as u64;
++    const BEFORE: u64 = GRACE as u64 - 1;
++    const L1: &str = "이 PC는 HJViewer 1.6.0 이상에서만 연결을 받습니다. 이 기기의 HJViewer를 업데이트한 뒤 다시 연결하세요(지금 버전 1.5.1). (version not allowed)";
++    const L2: &str = "이 PC는 HJViewer 1.6.0 이상에서만 연결을 받습니다. iPhone의 TestFlight 앱에서 HJViewer를 업데이트한 뒤 다시 연결하세요. (version not allowed)";
++
++    /// A process on `os` that holds `policy`, as the server gave it signed with signing key 1.
++    fn holding(test: &str, os: Os, e2e: bool, policy: &str) -> (TempFile, Core) {
++        let file = TempFile::new(test, store::FILE);
++        let mut core = Core::open(pins(), file.0.clone(), os, e2e);
++        core.begin(Kind::Regular, 0).unwrap();
++        let reply = Reply {
++            status: 200,
++            date: None,
++            body: envelope(1, &SIGNING_1, policy, None).into_bytes(),
++        };
++        assert_eq!(
++            core.finish(Ok(reply), ISSUED as u64, 0, 0),
++            Outcome::Updated
++        );
++        (file, core)
++    }
++
++    fn login(version: &str, my_platform: &str) -> LoginRequest {
++        LoginRequest {
++            version: version.to_owned(),
++            my_platform: my_platform.to_owned(),
++            ..Default::default()
++        }
++    }
++
++    /// What the process answers a login with at the time `wall`, as `refuse_controller` asks it.
++    fn answer(core: &Core, version: &str, my_platform: &str, wall: u64) -> Option<String> {
++        let rule_of = |platform: &str| core.controller_rule(platform, wall);
++        refusal(&login(version, my_platform), rule_of, core.e2e, Host::Pc)
++    }
++
++    fn rule(min: &str, enforced: bool) -> Option<ControllerRule> {
++        Some(ControllerRule {
++            min: min.to_owned(),
++            min_number: hbb_common::get_version_number(min),
++            enforced,
++        })
++    }
++
++    /// `get_version_number` in numbers that cannot overflow: None where the result is beyond i64.
++    fn exact(version: &str) -> Option<i64> {
++        if version.len() > MAX_VERSION_BYTES {
++            return None;
++        }
++        let part = |x: &str| i128::from(x.parse::<i64>().unwrap_or(0));
++        let mut parts = version.split('-');
++        let (mut n, mut last) = (0i128, 0i128);
++        for x in parts.next().unwrap_or_default().split('.') {
++            last = part(x);
++            n = n.checked_mul(1000)?.checked_add(last)?;
++        }
++        let n = n
++            .checked_sub(last)?
++            .checked_add(last.checked_mul(10)?)?
++            .checked_add(parts.next().map_or(0, part))?;
++        i64::try_from(n).ok()
++    }
++
++    #[test]
++    fn versions_count_as_the_apps_count_them() {
++        // the numbers of the design's research (version-exchange, section 2)
++        for (version, number) in [
++            ("1.5.0", 1_005_000),
++            ("1.5.1", 1_005_010),
++            ("1.6.0", 1_006_000),
++            ("1.4.3", 1_004_030),
++            ("", 0),
++            ("1.5.1+123", 1_005_000),
++            ("1.5.1.123", 1_005_002_230),
++            ("1.5.1-2", 1_005_012),
++            ("1.5.1-ios", 1_005_010),
++            ("1.6", 1_060),
++            ("v1.6.0", 6_000),
++            ("1.5.1 ", 1_005_000),
++            ("1.5.100", 1_006_000),
++            ("1.10.0", 1_010_000),
++            ("1.9.9", 1_009_090),
++        ] {
++            assert_eq!(version_number(version), number, "{version:?}");
++            assert_eq!(hbb_common::get_version_number(version), number);
++        }
++        // whatever a stranger sends: the same number as the apps', or 0 where theirs overflows
++        let mut seed = 0x2545_f491_4f6c_dd1du64;
++        let mut next = move || {
++            seed ^= seed << 13;
++            seed ^= seed >> 7;
++            seed ^= seed << 17;
++            seed
++        };
++        let alphabet: Vec<char> = "0123456789......-+ v９".chars().collect();
++        let (mut counted_ones, mut overflowing) = (0, 0);
++        for _ in 0..20_000 {
++            let length = next() % 40;
++            let version: String = (0..length)
++                .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
++                .collect();
++            let expected = exact(&version);
++            assert_eq!(counted(&version), expected, "{version:?}");
++            match expected {
++                Some(number) => {
++                    assert_eq!(hbb_common::get_version_number(&version), number);
++                    assert!(number >= 0);
++                    counted_ones += 1;
++                }
++                None => {
++                    assert_eq!(version_number(&version), 0, "{version:?}");
++                    overflowing += 1;
++                }
++            }
++        }
++        assert!(
++            counted_ones > 1000 && overflowing > 1000,
++            "{counted_ones} {overflowing}"
++        );
++        // at the edges of what a number holds
++        for (version, number) in [
++            ("922337203685477580", Some(9_223_372_036_854_775_800)),
++            ("922337203685477581", None),
++            ("9223372036854775807", None),
++            ("9223372036854775808", Some(0)),
++            ("9223372036854775.80", Some(9_223_372_036_854_775_800)),
++            ("9223372036854775.81", None),
++            ("9223372036854776.0", None),
++            ("9.0.0.0.0.0.0", Some(9_000_000_000_000_000_000)),
++            ("10.0.0.0.0.0.0", None),
++            ("9.223.372.036.854.775.80", Some(9_223_372_036_854_775_800)),
++            ("9.223.372.036.854.775.81", None),
++            ("0-9223372036854775807", Some(i64::MAX)),
++            ("0.1-9223372036854775807", None),
++        ] {
++            assert_eq!(counted(version), number, "{version}");
++            assert_eq!(exact(version), number, "{version}");
++        }
++        // longer than any version: not counted, however small its number would be
++        let long = format!("1.6.0{}", " ".repeat(60));
++        assert_eq!((long.len(), counted(&long)), (65, None));
++        assert_eq!(counted(&long[..64]), Some(1_006_000));
++        assert_eq!(version_number(&"9".repeat(1_000_000)), 0);
++    }
++
++    /// `refusal` with the rule given: below `min_number`, while the rule blocks anyone at all.
++    #[test]
++    fn a_controller_below_the_rule_is_refused() {
++        let windows = |rule: Option<ControllerRule>, version: &str| {
++            refusal(&login(version, "Windows"), |_| rule, false, Host::Pc)
++        };
++        assert_eq!(windows(rule("1.6.0", true), "1.5.1").as_deref(), Some(L1));
++        // at the minimum and above it
++        for version in ["1.6.0", "1.6.1", "1.10.0", "2.0.0", "1.6.0-1", "1.6.0.0"] {
++            assert_eq!(windows(rule("1.6.0", true), version), None, "{version}");
++        }
++        // below it: also what does not count as a version at all
++        for version in [
++            "1.5.99",
++            "1.5.1",
++            "1.5.0",
++            "0.0.1",
++            "",
++            "1.6",
++            "v1.6.0",
++            "1.5.1 ",
++            "abc",
++            "99999999999999999999.0.0",
++            "10.0.0.0.0.0.0",
++        ] {
++            let text = windows(rule("1.6.0", true), version);
++            assert!(
++                text.is_some_and(|text| problem(&text).is_none()),
++                "{version:?}"
++            );
++        }
++        // a rule that blocks nobody (a grace period from 0.0.0) refuses nobody, nor no rule
++        assert_eq!(windows(rule("1.6.0", false), "1.5.1"), None);
++        assert_eq!(windows(rule("1.6.0", false), ""), None);
++        assert_eq!(windows(None, "1.5.1"), None);
++        assert_eq!(windows(None, ""), None);
++        // a minimum nobody is below
++        assert_eq!(windows(rule("0.0.0", true), ""), None);
++        // the text is the platform's
++        let of = |my_platform: &str, e2e| {
++            let rule_of = |_: &str| rule("1.6.0", true);
++            refusal(&login("1.5.1", my_platform), rule_of, e2e, Host::Pc)
++        };
++        assert_eq!(of("Unknown: iOS", false).as_deref(), Some(L2));
++        assert_eq!(
++            of("Android", false).as_deref(),
++            Some(
++                L1.replace(
++                    "1.5.1). ",
++                    "1.5.1). Play 스토어에서 설치했다면 Play 스토어에서 업데이트하세요. "
++                )
++                .as_str()
++            )
++        );
++        // a platform that is not checked gets no text, whatever rule were given with it
++        for other in ["Linux", "Mac OS", "", "Windows 11", "Unknown: FreeBSD"] {
++            assert_eq!(of(other, false), None, "{other:?}");
++        }
++        assert_eq!(of("Linux", true).as_deref(), Some(L1));
++        // a minimum that is no policy's `x.y.z` is no rule to refuse by
++        for min in ["1.6", "", "1.6.0 https://rd.example.com/", "{1.6.0}"] {
++            let odd = Some(ControllerRule {
++                min: min.to_owned(),
++                min_number: 1_006_000,
++                enforced: true,
++            });
++            assert_eq!(windows(odd, "1.5.1"), None, "{min:?}");
++        }
++    }
++
++    /// The vectors' policy: Windows, the APK and iOS at minimum 1.6.0 from GRACE on, Android from
++    /// Play at minimum 1.5.0.
++    #[test]
++    fn the_policy_this_process_holds_decides() {
++        let file = TempFile::new("refuse-none", store::FILE);
++        let empty = Core::open(pins(), file.0.clone(), Os::Windows, false);
++        // no policy yet: nobody is refused, whatever the version
++        for platform in ["Windows", "Android", "Unknown: iOS"] {
++            assert_eq!(answer(&empty, "1.5.1", platform, AFTER), None);
++            assert_eq!(answer(&empty, "", platform, u64::MAX), None);
++        }
++
++        let (_file, core) = holding("refuse", Os::Windows, false, &policy_text(1, 7));
++        assert_eq!(answer(&core, "1.5.1", "Windows", BEFORE), None);
++        assert_eq!(
++            answer(&core, "1.5.1", "Windows", AFTER).as_deref(),
++            Some(L1)
++        );
++        assert_eq!(
++            answer(&core, "1.5.1", "Windows", u64::MAX).as_deref(),
++            Some(L1)
++        );
++        assert_eq!(answer(&core, "1.5.1", "Unknown: iOS", BEFORE), None);
++        assert_eq!(
++            answer(&core, "1.5.1", "Unknown: iOS", AFTER).as_deref(),
++            Some(L2)
++        );
++        assert_eq!(answer(&core, "1.5.1", "iOS", AFTER).as_deref(), Some(L2));
++        for platform in ["Windows", "Unknown: iOS", "Android"] {
++            for version in ["1.6.0", "1.6.1", "2.0.0"] {
++                assert_eq!(answer(&core, version, platform, AFTER), None);
++            }
++        }
++        // an empty version is the oldest of all; before the deadline what is below the version
++        // the grace period starts at (1.5.0) is refused too
++        assert!(answer(&core, "", "Windows", AFTER).is_some());
++        assert!(answer(&core, "", "Windows", BEFORE).is_some());
++        assert_eq!(
++            answer(&core, "1.4.9", "Windows", BEFORE).as_deref(),
++            Some(L1.replace("1.5.1", "1.4.9").as_str())
++        );
++        // upstream's apps on other systems are not this policy's business
++        for other in [
++            "Linux",
++            "Mac OS",
++            "",
++            "Windows 11",
++            "windows.",
++            "Unknown: FreeBSD",
++        ] {
++            assert_eq!(answer(&core, "0.0.1", other, AFTER), None, "{other:?}");
++            assert_eq!(answer(&core, "", other, u64::MAX), None, "{other:?}");
++        }
++        // a device whose clock was set back is held to the day the policy was issued, no further
++        assert_eq!(answer(&core, "1.5.1", "Windows", 0), None);
++
++        // the E2E's Linux client stands in for a Windows controller, in an E2E build alone
++        let (_file, e2e) = holding("refuse-e2e", Os::Linux, true, &policy_text(1, 7));
++        assert_eq!(answer(&e2e, "1.5.0", "Linux", BEFORE), None);
++        assert_eq!(
++            answer(&e2e, "1.5.0", "Linux", AFTER).as_deref(),
++            Some(L1.replace("1.5.1", "1.5.0").as_str())
++        );
++        assert_eq!(answer(&e2e, "1.6.0", "Linux", AFTER), None);
++
++        // a policy without a deadline holds at once; one without the platform holds nobody
++        let at_once = policy_with(1, 8, |p| {
++            let platforms = p["platforms"].as_object_mut().unwrap();
++            let windows = platforms["windows"].as_object_mut().unwrap();
++            windows.remove("grace_until");
++            windows.remove("grace_min");
++            platforms.remove("ios");
++        });
++        let (_file, core) = holding("refuse-at-once", Os::Windows, false, &at_once);
++        assert_eq!(
++            answer(&core, "1.5.1", "Windows", ISSUED as u64).as_deref(),
++            Some(L1)
++        );
++        assert_eq!(answer(&core, "1.5.1", "Unknown: iOS", u64::MAX), None);
++    }
++
++    /// An Android controller does not say whether it came from Google Play: it is refused only
++    /// below what both Android entries block at the time, and its text names the lower minimum
++    /// and both ways to update.
++    #[test]
++    fn android_is_held_to_what_both_its_entries_block() {
++        let play_text = |min: &str, version: &str| {
++            format!("이 PC는 HJViewer {min} 이상에서만 연결을 받습니다. 이 기기의 HJViewer를 업데이트한 뒤 다시 연결하세요(지금 버전 {version}). Play 스토어에서 설치했다면 Play 스토어에서 업데이트하세요. (version not allowed)")
++        };
++        // the APK at 1.6.0 from GRACE on (from 1.5.0 before it), Play at 1.5.0: 1.5.0, always
++        let (_file, core) = holding("refuse-android", Os::Windows, false, &policy_text(1, 7));
++        for wall in [BEFORE, AFTER] {
++            assert_eq!(answer(&core, "1.5.1", "Android", wall), None);
++            assert_eq!(answer(&core, "1.5.0", "Android", wall), None);
++            assert_eq!(
++                answer(&core, "1.4.9", "Android", wall),
++                Some(play_text("1.5.0", "1.4.9"))
++            );
++        }
++        // both at 1.6.0, Play's deadline a week later: from 1.5.0 on let in until that one
++        let later = AFTER + 7 * 86_400;
++        let both = policy_with(1, 8, |p| {
++            let play = &mut p["platforms"]["android_play"];
++            play["min"] = "1.6.0".into();
++            play["grace_until"] = "2026-11-23T15:00:00Z".into();
++            play["grace_min"] = "1.5.0".into();
++        });
++        let (_file, core) = holding("refuse-android-both", Os::Windows, false, &both);
++        assert_eq!(answer(&core, "1.5.1", "Android", AFTER), None);
++        assert_eq!(answer(&core, "1.5.1", "Android", later - 1), None);
++        assert_eq!(
++            answer(&core, "1.4.9", "Android", BEFORE),
++            Some(play_text("1.6.0", "1.4.9"))
++        );
++        assert_eq!(
++            answer(&core, "1.5.1", "Android", later),
++            Some(play_text("1.6.0", "1.5.1"))
++        );
++        // a Windows controller is not put off by Android's deadline
++        assert_eq!(
++            answer(&core, "1.5.1", "Windows", AFTER).as_deref(),
++            Some(L1)
++        );
++        // Play ahead of the APK, its own grace from 1.6.0: the APK's deadline decides
++        let play_ahead = policy_with(1, 8, |p| {
++            let play = &mut p["platforms"]["android_play"];
++            play["min"] = "1.6.1".into();
++            play["grace_until"] = "2026-11-23T15:00:00Z".into();
++            play["grace_min"] = "1.6.0".into();
++        });
++        let (_file, core) = holding("refuse-android-play", Os::Windows, false, &play_ahead);
++        assert_eq!(answer(&core, "1.6.0", "Android", later), None);
++        assert_eq!(answer(&core, "1.5.1", "Android", BEFORE), None);
++        assert_eq!(
++            answer(&core, "1.5.1", "Android", AFTER),
++            Some(play_text("1.6.0", "1.5.1"))
++        );
++        // the two cross: the APK at 1.6.1 with its deadline, Play at 1.6.0 at once. Until the
++        // deadline only what the APK's grace period blocks too is refused
++        let crossing = policy_with(1, 8, |p| {
++            p["platforms"]["android"]["min"] = "1.6.1".into();
++            p["platforms"]["android_play"]["min"] = "1.6.0".into();
++        });
++        let (_file, core) = holding("refuse-android-cross", Os::Windows, false, &crossing);
++        assert_eq!(answer(&core, "1.5.1", "Android", BEFORE), None);
++        assert_eq!(
++            answer(&core, "1.4.9", "Android", BEFORE),
++            Some(play_text("1.6.0", "1.4.9"))
++        );
++        assert_eq!(
++            answer(&core, "1.5.1", "Android", AFTER),
++            Some(play_text("1.6.0", "1.5.1"))
++        );
++        assert_eq!(answer(&core, "1.6.0", "Android", AFTER), None);
++        // one Android entry alone is the Android entry; none, and no Android controller is held
++        let only_file = policy_with(1, 8, |p| {
++            p["platforms"]
++                .as_object_mut()
++                .unwrap()
++                .remove("android_play");
++        });
++        let (_file, core) = holding("refuse-android-file", Os::Windows, false, &only_file);
++        assert_eq!(answer(&core, "1.5.1", "Android", BEFORE), None);
++        assert_eq!(
++            answer(&core, "1.5.1", "Android", AFTER),
++            Some(play_text("1.6.0", "1.5.1"))
++        );
++        let no_android = policy_with(1, 8, |p| {
++            let platforms = p["platforms"].as_object_mut().unwrap();
++            platforms.remove("android");
++            platforms.remove("android_play");
++        });
++        let (_file, core) = holding("refuse-android-none", Os::Windows, false, &no_android);
++        assert_eq!(answer(&core, "", "Android", u64::MAX), None);
++        assert_eq!(
++            answer(&core, "1.5.1", "Windows", AFTER).as_deref(),
++            Some(L1)
++        );
++    }
++
++    /// The controller chooses its version and its platform: neither can put anything of its own
++    /// into the answer, stop the process, or make the session try again by itself.
++    #[test]
++    fn nothing_a_controller_sends_gets_into_the_answer() {
++        let (_file, core) = holding("refuse-hostile", Os::Windows, false, &policy_text(1, 7));
++        let without = L1.replace("(지금 버전 1.5.1)", "");
++        let huge = "9".repeat(1_000_000);
++        let many = "9.".repeat(40);
++        for version in [
++            "1.5.1 https://localhost/update",
++            "1) 새 버전은 www.example 에서 받으세요. (",
++            "{1.5.1}",
++            "Failed",
++            "1.5.1\r\n(version allowed)",
++            "1.5.1\u{202e}",
++            "99999999999999999999",
++            many.as_str(),
++            huge.as_str(),
++        ] {
++            let text = answer(&core, version, "Windows", AFTER);
++            let sent: String = version.chars().take(40).collect();
++            assert_eq!(text.as_deref(), Some(without.as_str()), "{sent:?}");
++        }
++        // a platform is only ever one of three kinds of text
++        let odd_platforms = [
++            "WINDOWS",
++            " windows ",
++            "android",
++            "ANDROID",
++            "https://x/ iOS",
++            "{}ios",
++        ];
++        for platform in odd_platforms {
++            let text = answer(&core, "1.4.0", platform, AFTER).unwrap();
++            assert_eq!(problem(&text), None, "{platform:?}");
++            assert!(
++                !text.contains("https") && !text.contains('{'),
++                "{platform:?}"
++            );
++        }
++        // every answer is one a 1.5.1 app shows as it is, under a title it does not retry
++        for platform in ["Windows", "Android", "Unknown: iOS"] {
++            for version in ["1.4.9", "", "1.4.3", "{0}", "10054", "0.104.0"] {
++                let text = answer(&core, version, platform, AFTER).unwrap();
++                assert_eq!(problem(&text), None, "{text}");
++                for retry_for_relay in [false, true] {
++                    assert!(!check_if_retry(
++                        "error",
++                        "Login Error",
++                        &text,
++                        retry_for_relay
++                    ));
++                }
++            }
++        }
++    }
++
++    /// A session's interface that keeps the boxes it was asked to show.
++    #[derive(Clone, Default)]
++    struct Ui {
++        lc: Arc<RwLock<LoginConfigHandler>>,
++        boxes: Arc<Mutex<Vec<[String; 4]>>>,
++    }
++
++    #[async_trait]
++    impl Interface for Ui {
++        fn send(&self, _data: Data) {}
++        fn msgbox(&self, msgtype: &str, title: &str, text: &str, link: &str) {
++            self.boxes
++                .lock()
++                .unwrap()
++                .push([msgtype, title, text, link].map(str::to_owned));
++        }
++        fn handle_login_error(&self, err: &str) -> bool {
++            handle_login_error(self.lc.clone(), err, self)
++        }
++        fn handle_peer_info(&self, _pi: PeerInfo) {}
++        fn set_multiple_windows_session(&self, _sessions: Vec<WindowsSession>) {}
++        async fn handle_hash(&self, _pass: &str, _hash: Hash, _peer: &mut Stream) -> bool {
++            false
++        }
++        async fn handle_login_from_ui(
++            &self,
++            _os_username: String,
++            _os_password: String,
++            _password: String,
++            _remember: bool,
++            _peer: &mut Stream,
++        ) {
++        }
++        async fn handle_test_delay(&self, _t: TestDelay, _peer: &mut Stream) {}
++        fn get_lch(&self) -> Arc<RwLock<LoginConfigHandler>> {
++            self.lc.clone()
++        }
++    }
++
++    /// The box the controller's own code (client.rs, handle_login_error) shows for a login error.
++    fn box_for(err: &str) -> (bool, [String; 4]) {
++        let ui = Ui::default();
++        let go_on = ui.handle_login_error(err);
++        let mut boxes = ui.boxes.lock().unwrap().clone();
++        assert_eq!(boxes.len(), 1, "{err}");
++        (go_on, boxes.remove(0))
++    }
++
++    /// The login errors a PC always sent come to the controller's screen as they did.
++    #[test]
++    fn other_login_errors_are_left_as_they_are() {
++        let (again, wrong) = box_for(LOGIN_MSG_PASSWORD_WRONG);
++        assert!(again);
++        assert_eq!(wrong[..2], ["re-input-password", LOGIN_MSG_PASSWORD_WRONG]);
++        for err in [
++            LOGIN_MSG_OFFLINE,
++            "No permission of file transfer",
++            "Your ID is blocked by the peer",
++            "Connection not allowed",
++            "not allowed",
++            "version",
++            "",
++        ] {
++            assert_eq!(crate::hjviewer_update::on_login_refusal(err), err);
++            assert_eq!(crate::hjviewer_update::on_refusal(err), err);
++            let (go_on, shown) = box_for(err);
++            assert!(!go_on, "{err}");
++            assert_eq!(shown, ["error", "Login Error", err, ""], "{err}");
++        }
++    }
++
++    /// A build that takes no part refuses nobody and shows refusals as 1.5.1 does: the PC's text
++    /// under "Login Error", hbbs's as the connection's error, neither tried again.
++    #[test]
++    fn a_build_that_takes_no_part_changes_nothing() {
++        if crate::hjviewer_update::enabled() {
++            return;
++        }
++        for (version, my_platform) in [("1.5.1", "Windows"), ("", "Android"), ("0", "iOS")] {
++            let lr = LoginRequest {
++                version: version.to_owned(),
++                my_platform: my_platform.to_owned(),
++                ..Default::default()
++            };
++            assert_eq!(refuse_controller(&lr), None);
++        }
++        for text in [L1, L2, S1, S2, R1, R2] {
++            assert_eq!(crate::hjviewer_update::on_refusal(text), text);
++            assert!(!check_if_retry("error", "Connection Error", text, false));
++            let (go_on, shown) = box_for(text);
++            assert!(!go_on);
++            assert_eq!(shown, ["error", "Login Error", text, ""]);
++            assert!(!check_if_retry(&shown[0], &shown[1], &shown[2], true));
++        }
++    }
++
++    /// The way the hook of connection.rs goes, in a build that takes part (one compiled with
++    /// HJV_SERVER and the update keys; the policies here are signed with the tests' first key):
++    /// `refuse_controller` answers by the policy this process holds, read by the device's clock,
++    /// in the words of this device, and a login it refused, and no other, makes the process check
++    /// the policy. Any other build has nothing to ask here and the test ends at once, so it is
++    /// run in a build with the keys of `vectors`:
++    ///
++    ///     HJV_SERVER=hjv.test HJV_UPDATE_PUBKEY=<vectors::HJV_UPDATE_PUBKEY> \
++    ///         HJV_UPDATE_ROOT_PUBKEY=<vectors::HJV_UPDATE_ROOT_PUBKEY> \
++    ///         cargo test --lib hjviewer_update
++    #[test]
++    fn the_hook_goes_by_the_policy_this_process_holds() {
++        let Some(build) = crate::hjviewer_update::build() else {
++            return;
++        };
++        if !build.signing.contains(&(SIGNING_1.id, SIGNING_1.public())) {
++            return;
++        }
++        let file = TempFile::new("refuse-process", store::FILE);
++        // the vectors' policy for this build's server, issued long ago: Windows at the minimum
++        // 1.6.0 from `deadline` on; the time it came at, by the forward clock
++        let hold = |deadline: &str| {
++            let policy = policy_with(build.floor.epoch, build.floor.seq + 1, |p| {
++                p["server"] = build.server.as_str().into();
++                p["issued"] = "2020-01-01T00:00:00Z".into();
++                p["platforms"]["windows"]["grace_until"] = deadline.into();
++            });
++            let e2e = cfg!(feature = "hjv-e2e");
++            let mut core = Core::open(build.clone(), file.0.clone(), Os::Windows, e2e);
++            let mono = fetch::mono();
++            core.begin(Kind::Regular, mono).unwrap();
++            let reply = Reply {
++                status: 200,
++                date: None,
++                body: envelope(1, &SIGNING_1, &policy, None).into_bytes(),
++            };
++            assert_eq!(core.finish(Ok(reply), wall(), mono, 0), Outcome::Updated);
++            *CORE.lock().unwrap() = Some(core);
++            mono
++        };
++        fn held<R>(f: impl FnOnce(&mut Core) -> R) -> R {
++            f(CORE.lock().unwrap().as_mut().unwrap())
++        }
++        // Here the process's own check is due, and the minute between checks nobody waits for
++        // has not passed since the policy came. A login that is let in has nothing checked: no
++        // check is asked for, and the one that is due is left where it is.
++        let came = hold("2020-01-02T00:00:00Z");
++        held(|core| core.next_check = 0);
++        assert_eq!(refuse_controller(&login("1.6.0", "Windows")), None);
++        assert_eq!(held(|core| (core.checking, core.next_check)), (false, 0));
++        // A refused login has the policy checked again, as a check nobody waits for: the thread
++        // that was woken puts the check off to the end of that minute and asks no server.
++        assert!(refuse_controller(&login("1.5.1", "Windows")).is_some());
++        let woken = (0..1500).any(|_| {
++            std::thread::sleep(Duration::from_millis(20));
++            held(|core| core.next_check) != 0
++        });
++        assert!(woken, "the refused login did not have the policy checked");
++        assert_eq!(held(|core| core.next_check), came + fetch::REGULAR_GAP);
++        // a deadline that passed years ago by the device's clock; the policy's day of issue, the
++        // earliest the time is taken for, is the day before it, so the clock itself is read
++        hold("2020-01-02T00:00:00Z");
++        assert_eq!(
++            refuse_controller(&login("1.5.1", "Windows")).as_deref(),
++            Some(L1)
++        );
++        assert_eq!(refuse_controller(&login("1.6.0", "Windows")), None);
++        assert_eq!(refuse_controller(&login("1.5.1", "Mac OS")), None);
++        // a deadline this device's clock has not reached
++        hold("2099-01-01T00:00:00Z");
++        assert_eq!(refuse_controller(&login("1.5.1", "Windows")), None);
++    }
++
++    /// In a build that takes part the controller shows its own text in place of a refusal for the
++    /// version, R1 or R2, which a refused login's box then carries; that text too is one the
++    /// session stops at.
++    #[test]
++    fn what_the_controller_shows_in_place_of_a_refusal() {
++        let (_file, core) = holding("refuse-shown", Os::Windows, false, &policy_text(1, 7));
++        let (old, new) = (
++            hbb_common::get_version_number("1.5.1"),
++            hbb_common::get_version_number("1.6.1"),
++        );
++        for text in [L1, L2, S1, S2] {
++            // this app is below the minimum: its update screen takes over
++            assert_eq!(core.refusal(text, old, AFTER, 1), Some(R1));
++            // the policy was just checked and asks nothing of this app: the two disagree
++            assert_eq!(core.refusal(text, new, AFTER, 1), Some(R2));
++        }
++        for other in [
++            LOGIN_MSG_PASSWORD_WRONG,
++            LOGIN_MSG_OFFLINE,
++            "Connection not allowed",
++        ] {
++            assert_eq!(core.refusal(other, old, AFTER, 1), None);
++        }
++        for text in [R1, R2] {
++            assert_eq!(problem(text), None);
++            assert!(!text.contains("://") && !text.contains("www."));
++            for title in ["Login Error", "Connection Error"] {
++                for retry_for_relay in [false, true] {
++                    assert!(!check_if_retry("error", title, text, retry_for_relay));
++                }
++            }
++        }
++    }
++}
+diff --git a/src/hjviewer_update/texts.rs b/src/hjviewer_update/texts.rs
+new file mode 100644
+index 0000000..b5f3f9b
+--- /dev/null
++++ b/src/hjviewer_update/texts.rs
+@@ -0,0 +1,384 @@
++//! The texts this app sends to another app, which shows them as they come: what a PC answers the
++//! login of a controller whose app is below the minimum of its platform.
++//!
++//! That controller may be 1.5.1, whose code cannot be changed any more. It puts the text of a
++//! refused login in its "Login Error" box after its translation and its dialog had their way with
++//! it, so a text keeps to what that code leaves alone:
++//! - it ends with the mark that apps from 1.6.0 on know a refusal for the version by, and whose
++//!   "not allowed" keeps a session from connecting again by itself;
++//! - it does not start with "Failed" and its first word does not end in "_tip", both of which the
++//!   dialog takes apart, and it has no braces, which the translation takes for a placeholder;
++//! - it has no link, which the dialog would let the user open.
++//!
++//! The PC writes the numbers into the text. No particle that changes with the sound before it
++//! (을/를, 이/가, 은/는, 으로/로) follows a number.
++
++use super::{policy::Version, verdict::Platform};
++
++/// The end of every refusal for the version (`verdict::is_version_refusal`).
++const MARK: &str = "(version not allowed)";
++
++/// The device that refuses, as the text names it to the person at the controller.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum Host {
++    Pc,
++    /// an Android device that shares its screen
++    Android,
++}
++
++impl Host {
++    pub(crate) fn this() -> Host {
++        if cfg!(target_os = "android") {
++            Host::Android
++        } else {
++            Host::Pc
++        }
++    }
++}
++
++/// A controller's version as a text may show it, `[0-9.]{1,16}`: the controller sent it, so
++/// anything else is left out.
++fn shown(version: &str) -> Option<&str> {
++    let plain = (1..=16).contains(&version.len())
++        && version.bytes().all(|b| b.is_ascii_digit() || b == b'.');
++    plain.then_some(version)
++}
++
++/// What a controller on `platform` reads when its login was refused because its `version` is
++/// below `min`: where to get the update of its platform, and for an Android app, which cannot
++/// say where it was installed from, both ways.
++pub(crate) fn login_refusal(
++    host: Host,
++    platform: Platform,
++    min: &Version,
++    version: &str,
++) -> String {
++    let host = match host {
++        Host::Pc => "이 PC는",
++        Host::Android => "연결하려는 기기는",
++    };
++    let min = min.as_str();
++    let how = match platform {
++        Platform::Ios => {
++            "iPhone의 TestFlight 앱에서 HJViewer를 업데이트한 뒤 다시 연결하세요.".to_owned()
++        }
++        Platform::Windows | Platform::Android => {
++            let now = shown(version)
++                .map(|version| format!("(지금 버전 {version})"))
++                .unwrap_or_default();
++            let play = match platform {
++                Platform::Android => " Play 스토어에서 설치했다면 Play 스토어에서 업데이트하세요.",
++                _ => "",
++            };
++            format!("이 기기의 HJViewer를 업데이트한 뒤 다시 연결하세요{now}.{play}")
++        }
++    };
++    format!("{host} HJViewer {min} 이상에서만 연결을 받습니다. {how} {MARK}")
++}
++
++#[cfg(test)]
++pub(crate) mod tests {
++    use super::{super::verdict, *};
++    use crate::client::{
++        check_if_retry, LOGIN_MSG_2FA_WRONG, LOGIN_MSG_NO_PASSWORD_ACCESS, LOGIN_MSG_OFFLINE,
++        LOGIN_MSG_PASSWORD_EMPTY, LOGIN_MSG_PASSWORD_WRONG, LOGIN_SCREEN_WAYLAND, REQUIRE_2FA,
++        SCRAP_X11_REQUIRED,
++    };
++
++    /// The design's examples of what hbbs answers (its TEXT, with the minimum filled in): with
++    /// the link of the migration door, and after that door was closed.
++    pub(crate) const S1: &str = "HJViewer를 1.6.0 이상으로 업데이트해야 연결할 수 있습니다. Play 스토어에서 설치했다면 Play 스토어에서, iPhone은 TestFlight 앱에서 업데이트하세요. 그 밖의 Windows·Android는 https://rd.example.com/api/hjv/get/0123456789abcdef0123456789abcdef/ 에서 새 버전을 받으세요. (version not allowed)";
++    pub(crate) const S2: &str = "HJViewer를 1.6.0 이상으로 업데이트해야 연결할 수 있습니다. 앱의 업데이트 화면을 쓰거나 관리자에게 새 버전을 받으세요. Play 스토어나 TestFlight로 설치했다면 그곳에서 업데이트하세요. (version not allowed)";
++
++    fn min(version: &str) -> Version {
++        Version::parse(version).unwrap()
++    }
++
++    /// Every text a PC can answer with for these versions: each host, each platform.
++    fn every_refusal(min_version: &str, version: &str) -> Vec<String> {
++        let mut texts = Vec::new();
++        for host in [Host::Pc, Host::Android] {
++            for platform in [Platform::Windows, Platform::Android, Platform::Ios] {
++                texts.push(login_refusal(host, platform, &min(min_version), version));
++            }
++        }
++        texts
++    }
++
++    /// Whether each http(s) address in `text` ends at a space: the dialog makes a link of
++    /// everything up to the next white space, less the `.,;!?` at its end.
++    fn links_end_at_spaces(text: &str) -> bool {
++        let mut rest = text;
++        loop {
++            let start = match (rest.find("http://"), rest.find("https://")) {
++                (Some(a), Some(b)) => a.min(b),
++                (Some(a), None) | (None, Some(a)) => a,
++                (None, None) => return true,
++            };
++            let link = &rest[start..];
++            let (link, after) = link.split_at(link.find(char::is_whitespace).unwrap_or(link.len()));
++            let link = link.trim_end_matches(['.', ',', ';', '!', '?']);
++            let of_a_link = |b: u8| b.is_ascii_alphanumeric() || b"-._~:/?#@!$&*+,;=%".contains(&b);
++            if !link.bytes().all(of_a_link) {
++                return false;
++            }
++            rest = after;
++        }
++    }
++
++    /// What an app that shows `text` as it comes would do to it, if anything: the rules of
++    /// 1.5.1's client.rs (check_if_retry, the "Failed" suffix, the login errors with a meaning of
++    /// their own), lang.rs (placeholders, the app's name) and flutter/lib/common.dart (the
++    /// dialog's "Failed" and "_tip" handling and its links).
++    pub(crate) fn problem(text: &str) -> Option<&'static str> {
++        if text.is_empty() || text.chars().count() > 2000 {
++            return Some("empty or too long");
++        }
++        if text.chars().any(char::is_control) {
++            return Some("a control character");
++        }
++        if !text.ends_with(MARK) || !verdict::is_version_refusal(text) {
++            return Some("no mark at the end");
++        }
++        if text.starts_with("Failed") {
++            return Some("starts with Failed");
++        }
++        if text
++            .split(' ')
++            .next()
++            .is_some_and(|word| word.ends_with("_tip"))
++        {
++            return Some("the first word ends in _tip");
++        }
++        if text.contains(['{', '}']) {
++            return Some("a brace");
++        }
++        if text.contains("RustDesk") {
++            return Some("names RustDesk");
++        }
++        if !links_end_at_spaces(text) {
++            return Some("a link that does not end at a space");
++        }
++        let special = [
++            LOGIN_MSG_PASSWORD_EMPTY,
++            LOGIN_MSG_PASSWORD_WRONG,
++            LOGIN_MSG_2FA_WRONG,
++            REQUIRE_2FA,
++            LOGIN_MSG_NO_PASSWORD_ACCESS,
++            LOGIN_MSG_OFFLINE,
++            LOGIN_SCREEN_WAYLAND,
++        ];
++        if special.contains(&text) || text.contains(SCRAP_X11_REQUIRED) {
++            return Some("a login error with a meaning of its own");
++        }
++        None
++    }
++
++    fn has_link(text: &str) -> bool {
++        text.contains("://") || text.contains("www.")
++    }
++
++    /// The texts of the design's table, to the letter.
++    #[test]
++    fn the_texts_of_the_design() {
++        let text = |platform, version| login_refusal(Host::Pc, platform, &min("1.6.0"), version);
++        assert_eq!(
++            text(Platform::Windows, "1.5.1"),
++            "이 PC는 HJViewer 1.6.0 이상에서만 연결을 받습니다. 이 기기의 HJViewer를 업데이트한 뒤 다시 연결하세요(지금 버전 1.5.1). (version not allowed)"
++        );
++        assert_eq!(
++            text(Platform::Android, "1.5.1"),
++            "이 PC는 HJViewer 1.6.0 이상에서만 연결을 받습니다. 이 기기의 HJViewer를 업데이트한 뒤 다시 연결하세요(지금 버전 1.5.1). Play 스토어에서 설치했다면 Play 스토어에서 업데이트하세요. (version not allowed)"
++        );
++        assert_eq!(
++            text(Platform::Ios, "1.5.1"),
++            "이 PC는 HJViewer 1.6.0 이상에서만 연결을 받습니다. iPhone의 TestFlight 앱에서 HJViewer를 업데이트한 뒤 다시 연결하세요. (version not allowed)"
++        );
++        // the numbers are the policy's and the controller's
++        assert_eq!(
++            login_refusal(Host::Pc, Platform::Windows, &min("2.10.3"), "1.6.12"),
++            "이 PC는 HJViewer 2.10.3 이상에서만 연결을 받습니다. 이 기기의 HJViewer를 업데이트한 뒤 다시 연결하세요(지금 버전 1.6.12). (version not allowed)"
++        );
++        // an Android device that shares its screen is no PC
++        assert_eq!(
++            login_refusal(Host::Android, Platform::Windows, &min("1.6.0"), "1.5.1"),
++            "연결하려는 기기는 HJViewer 1.6.0 이상에서만 연결을 받습니다. 이 기기의 HJViewer를 업데이트한 뒤 다시 연결하세요(지금 버전 1.5.1). (version not allowed)"
++        );
++        assert_eq!(
++            login_refusal(Host::Android, Platform::Ios, &min("1.6.0"), "1.5.1"),
++            "연결하려는 기기는 HJViewer 1.6.0 이상에서만 연결을 받습니다. iPhone의 TestFlight 앱에서 HJViewer를 업데이트한 뒤 다시 연결하세요. (version not allowed)"
++        );
++        let here = if cfg!(target_os = "android") {
++            Host::Android
++        } else {
++            Host::Pc
++        };
++        assert_eq!(Host::this(), here);
++    }
++
++    /// The controller sends its version: only digits and dots get into the text, and only so many.
++    #[test]
++    fn a_version_that_is_not_plain_is_left_out() {
++        let without = "이 PC는 HJViewer 1.6.0 이상에서만 연결을 받습니다. 이 기기의 HJViewer를 업데이트한 뒤 다시 연결하세요. (version not allowed)";
++        let long = "1".repeat(17);
++        let huge = "9".repeat(100_000);
++        for odd in [
++            "",
++            " ",
++            "1.5.1 ",
++            " 1.5.1",
++            "v1.5.1",
++            "1.5.1-2",
++            "1.5.1+123",
++            "1,5,1",
++            "1.5.1\n",
++            "1.5.1\u{0}",
++            "１.５.１",
++            "{1.5.1}",
++            "1.5.1) https://rd.example.com/x (",
++            "<b>1.5.1</b>",
++            "Failed",
++            "RustDesk",
++            "not allowed",
++            long.as_str(),
++            huge.as_str(),
++        ] {
++            let text = login_refusal(Host::Pc, Platform::Windows, &min("1.6.0"), odd);
++            assert_eq!(
++                text,
++                without,
++                "{:?}",
++                odd.chars().take(40).collect::<String>()
++            );
++            let android = login_refusal(Host::Pc, Platform::Android, &min("1.6.0"), odd);
++            assert_eq!(
++                android,
++                without.replace(
++                    "연결하세요. (",
++                    "연결하세요. Play 스토어에서 설치했다면 Play 스토어에서 업데이트하세요. ("
++                )
++            );
++        }
++        for plain in [
++            "1.5.1",
++            "0",
++            "1",
++            "1.5",
++            "1.5.1.123",
++            "...",
++            "1234567890123456",
++        ] {
++            let text = login_refusal(Host::Pc, Platform::Windows, &min("1.6.0"), plain);
++            assert_eq!(
++                text,
++                without.replace(
++                    "연결하세요. (",
++                    &format!("연결하세요(지금 버전 {plain}). (")
++                ),
++                "{plain}"
++            );
++        }
++        // the iPhone's text shows no version, whatever came
++        let iphone = |version| login_refusal(Host::Pc, Platform::Ios, &min("1.6.0"), version);
++        assert_eq!(iphone("1.5.1"), iphone("<b>"));
++        assert!(!iphone("1.5.1").contains("1.5.1"));
++    }
++
++    /// Whatever the versions, a text is one that an app shows as it is and stops at.
++    #[test]
++    fn every_text_keeps_the_rules_of_the_apps_that_show_it() {
++        let long = "9".repeat(64);
++        let mut texts = vec![
++            verdict::R1.to_owned(),
++            verdict::R2.to_owned(),
++            S1.to_owned(),
++            S2.to_owned(),
++        ];
++        for min_version in [
++            "1.6.0",
++            "1.5.0",
++            "0.0.0",
++            "999.999.99",
++            "1.104.0",
++            "10.0.54",
++        ] {
++            for version in [
++                "1.5.1",
++                "",
++                "1.4.3",
++                "0.0.0.0.0.0.0.0",
++                "1.5.1-2",
++                "{0}",
++                "Failed_tip x",
++                "https://rd.example.com/",
++                "10054",
++                long.as_str(),
++            ] {
++                texts.extend(every_refusal(min_version, version));
++            }
++        }
++        assert_eq!(texts.len(), 4 + 6 * 10 * 6);
++        for text in &texts {
++            assert_eq!(problem(text), None, "{text}");
++            // a refused login is never tried again by itself, whatever its text
++            for retry_for_relay in [false, true] {
++                assert!(!check_if_retry(
++                    "error",
++                    "Login Error",
++                    text,
++                    retry_for_relay
++                ));
++            }
++            // nor is a connection that hbbs refused: "not allowed" stops it
++            assert!(!check_if_retry("error", "Connection Error", text, false));
++        }
++        // the texts of this app carry no link at all; only the server's own text may
++        for text in texts.iter().filter(|text| *text != S1) {
++            assert!(!has_link(text), "{text}");
++        }
++        assert!(has_link(S1));
++        // what an app from 1.6.0 on shows in their place stops a connection in every case
++        for text in [verdict::R1, verdict::R2] {
++            assert!(!check_if_retry("error", "Connection Error", text, true));
++        }
++    }
++
++    /// The rules above are the ones the apps trip over: each broken one is seen.
++    #[test]
++    fn a_text_that_breaks_a_rule_is_seen() {
++        let good = login_refusal(Host::Pc, Platform::Windows, &min("1.6.0"), "1.5.1");
++        assert_eq!(problem(&good), None);
++        let retried = |text: &str| check_if_retry("error", "Connection Error", text, false);
++        // without the words that stop it, a refused connection is tried again for ever
++        let unmarked = good.replace(" (version not allowed)", "");
++        assert!(problem(&unmarked).is_some());
++        assert!(retried(&unmarked));
++        let weak = good.replace("version not allowed", "version no longer allowed");
++        assert!(problem(&weak).is_some());
++        assert!(retried(&weak));
++        assert!(!retried(&good));
++        for bad in [
++            String::new(),
++            format!("Failed: {good}"),
++            format!("update_tip {good}"),
++            good.replace("1.6.0", "{1.6.0}"),
++            good.replace("HJViewer", "RustDesk"),
++            good.replace("연결하세요", "연결하세요\n"),
++            good.replace(
++                "받습니다.",
++                "받습니다. https://rd.example.com/get/에서 받으세요.",
++            ),
++            good.replace("(version not allowed)", "(version not allowed) "),
++            "Wrong Password".to_owned(),
++            format!("x11 expected {good}"),
++        ] {
++            assert!(problem(&bad).is_some(), "{bad}");
++        }
++        // a link is fine where a space ends it
++        let linked = good.replace(
++            "받습니다.",
++            "받습니다. https://rd.example.com/get/ 에서 받으세요.",
++        );
++        assert_eq!(problem(&linked), None);
++    }
++}
+diff --git a/src/lang/ko.rs b/src/lang/ko.rs
+index c5e577f..f9f3435 100644
+--- a/src/lang/ko.rs
++++ b/src/lang/ko.rs
+@@ -670,6 +670,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("download-new-version-failed-tip", "다운로드에 실패했습니다. 다시 시도하거나 \"다운로드\" 버튼을 클릭하여 릴리스 페이지에서 다운로드하고 수동으로 업그레이드할 수 있습니다."),
+         ("Auto update", "자동 업데이트"),
+         ("update-failed-check-msi-tip", "설치 방법 확인에 실패했습니다. \"다운로드\" 버튼을 클릭하여 릴리스 페이지에서 다운로드하고 수동으로 업그레이드하세요."),
++        ("Updated successfully!", "업데이트했습니다."),
++        ("Update failed!", "업데이트하지 못했습니다."),
+         ("websocket_tip", "WebSocket을 사용할 때는 릴레이 연결만 지원됩니다."),
+         ("Use WebSocket", "웹소켓 사용"),
+         ("Trackpad speed", "트랙패드 속도"),
+diff --git a/src/rendezvous_mediator.rs b/src/rendezvous_mediator.rs
+index 3d66a45..941d47e 100644
+--- a/src/rendezvous_mediator.rs
++++ b/src/rendezvous_mediator.rs
+@@ -280,6 +280,7 @@ impl RendezvousMediator {
+         }
+         crate::hbbs_http::sync::start();
+         crate::hjviewer_account::start_pc_sync();
++        crate::hjviewer_update::start_service_checks();
+         #[cfg(target_os = "windows")]
+         if crate::platform::is_installed() && crate::is_server() {
+             crate::updater::start_auto_update();
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index 7d596b0..50f73ad 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -2877,6 +2877,11 @@ impl Connection {
+             if !self.check_id_whitelist().await {
+                 return false;
+             }
++            if let Some(text) = crate::hjviewer_update::refuse_controller(&lr) {
++                self.send_login_error(text).await;
++                sleep(1.).await;
++                return false;
++            }
+             match lr.union {
+                 Some(login_request::Union::FileTransfer(ft)) => {
+                     if !Self::permission(
+@@ -3136,6 +3141,11 @@ impl Connection {
+                             if !self.check_id_whitelist().await {
+                                 return false;
+                             }
++                            if let Some(text) = crate::hjviewer_update::refuse_controller(&lr) {
++                                self.send_login_error(text).await;
++                                sleep(1.).await;
++                                return false;
++                            }
+                             self.from_switch = true;
+                             self.set_conn_audit_primary_auth(ConnAuditPrimaryAuth::SwitchSides);
+                             if !self.send_logon_response_and_keep_alive().await {

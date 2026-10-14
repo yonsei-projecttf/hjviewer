@@ -1,0 +1,255 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Wed, 14 Oct 2026 00:39:58 +0900
+Subject: [PATCH 42/45] hjviewer: minimum version: the side-loaded Android app
+ installs its update
+
+The update screen of a side-loaded Android app has the core download the
+new APK into the app's cache (cache/updates), where the core checks its
+size and SHA-256 against the signed version policy, and then hands the
+file to MainActivity's "hjv_install_apk" (design 5-4). This adds that call
+and what the manifest needs for it.
+
+- HjvUpdate.kt takes only a file right in cache/updates. It reads the APK
+  with getPackageArchiveInfo and goes on only if the package name is this
+  app's and the APK is signed with the certificates of the installed app:
+  SigningInfo.apkContentsSigners from Android 9 on, the signatures before,
+  compared as sets. Otherwise it deletes the file and answers "mismatch",
+  which the screen shows as E4 with a new download. An APK of another
+  package would install beside this app as a new one, since Android
+  compares signing certificates only within one package. Where Android
+  reads no certificates from an archive, the package name decides: Android
+  installs an APK of an installed package only when it is signed like it.
+- Reading the certificates verifies the signature over the whole file, so
+  the check runs on a thread of its own and answers on the main thread.
+- Then it opens the system installer: ACTION_VIEW with a content URI of
+  HjvUpdateFileProvider and FLAG_GRANT_READ_URI_PERMISSION ("ok"). From
+  Android 8 on, while the app may not install apps
+  (canRequestPackageInstalls), it answers "permission": the screen shows
+  A4, opens the app's "Install unknown apps" setting and asks again when
+  the app comes back. Everything else answers "failed", Android before 7.0
+  too, which takes no content URI; the screen sends it to the browser and
+  never calls.
+- The manifest declares REQUEST_INSTALL_PACKAGES and the provider
+  (authority ${applicationId}.fileprovider; res/xml/hjv_update_paths.xml
+  shares cache/updates and nothing else). The provider has a class of its
+  own so that the manifest overlay of the Google Play bundle removes
+  exactly it, together with the permission: an app from Google Play
+  updates through Play only. The installer step resolves the provider
+  before it looks at the permission, so a bundle-made APK that was not
+  installed by Play fails cleanly instead of sending the user to a setting
+  it cannot have.
+
+A build without the update keys never calls; the permission only lists
+HJViewer under "Install unknown apps" there.
+
+Known limits: a rotation of the APK signing key would need this check to
+accept the APK's certificate history first, in a release before the
+rotation; until then the rotated APK is refused as E4. With ACTION_VIEW,
+Android may offer another app that opens APK files beside the system
+installer; the user picks the installer. If Android clears the cache
+between the download and the installer, the screen shows that the
+installer did not open until the app is started again, which offers the
+download anew. On Android 11, changing the app's "Install unknown apps"
+setting ends the app's process (AOSP; still to be seen on a device): back
+from the setting, the app starts anew without its download, and the
+installer opens after a second download. Kotlin and the manifest are not
+built on the development machine; the new Kotlin file compiles against
+Android 16's framework classes (Robolectric's android-all) with a stand-in
+of androidx.core's FileProvider, and the first Android build and devices
+check the rest.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../android/app/src/main/AndroidManifest.xml  |  14 ++
+ .../com/carriez/flutter_hbb/HjvUpdate.kt      | 122 ++++++++++++++++++
+ .../com/carriez/flutter_hbb/MainActivity.kt   |   1 +
+ .../app/src/main/res/xml/hjv_update_paths.xml |   6 +
+ 4 files changed, 143 insertions(+)
+ create mode 100644 flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/HjvUpdate.kt
+ create mode 100644 flutter/android/app/src/main/res/xml/hjv_update_paths.xml
+
+diff --git a/flutter/android/app/src/main/AndroidManifest.xml b/flutter/android/app/src/main/AndroidManifest.xml
+index d509f6d..243a316 100644
+--- a/flutter/android/app/src/main/AndroidManifest.xml
++++ b/flutter/android/app/src/main/AndroidManifest.xml
+@@ -8,6 +8,8 @@
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+     <uses-permission android:name="android.permission.INTERNET" />
++    <!-- HJViewer: the in-app update (HjvUpdate.kt); the Google Play bundle removes it -->
++    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+     <uses-permission android:name="android.permission.WAKE_LOCK" />
+@@ -64,6 +66,18 @@
+         <meta-data
+             android:name="flutterEmbedding"
+             android:value="2" />
++
++        <!-- HJViewer: hands the checked update APK to the system installer (HjvUpdate.kt). The
++             Google Play bundle removes this provider by its class name. -->
++        <provider
++            android:name=".HjvUpdateFileProvider"
++            android:authorities="${applicationId}.fileprovider"
++            android:exported="false"
++            android:grantUriPermissions="true">
++            <meta-data
++                android:name="android.support.FILE_PROVIDER_PATHS"
++                android:resource="@xml/hjv_update_paths" />
++        </provider>
+     </application>
+ 
+ </manifest>
+diff --git a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/HjvUpdate.kt b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/HjvUpdate.kt
+new file mode 100644
+index 0000000..0909057
+--- /dev/null
++++ b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/HjvUpdate.kt
+@@ -0,0 +1,122 @@
++package com.carriez.flutter_hbb
++
++import android.app.Activity
++import android.content.Intent
++import android.content.pm.PackageInfo
++import android.content.pm.PackageManager
++import android.os.Build
++import android.util.Log
++import androidx.core.content.FileProvider
++import io.flutter.plugin.common.MethodChannel
++import java.io.File
++import kotlin.concurrent.thread
++
++// HJViewer: the in-app update of the side-loaded APK (minimum version design 5-4). The Rust core
++// downloads the new version into the app's cache (cache/updates) and checks its size and SHA-256
++// against the signed version policy. The system installer gets the file only if it is also this
++// app: an APK with another package name would install beside this one as a new app, since Android
++// compares signing certificates only within one package.
++
++/**
++ * Serves cache/updates only (res/xml/hjv_update_paths.xml). A class of its own, so that the
++ * manifest of the Google Play bundle can remove exactly this provider, together with
++ * REQUEST_INSTALL_PACKAGES: an app from Google Play updates through Play only.
++ */
++class HjvUpdateFileProvider : FileProvider()
++
++private const val HJV_UPDATE_TAG = "hjvUpdate"
++
++/**
++ * MainActivity's "hjv_install_apk", with the path of the APK the core checked. Answers "ok" once
++ * Android was asked to open the system installer (from Android 10 on it opens none for an app in
++ * the background, so the screen asks only while the app is in front), "permission" while this
++ * app may not ask to install apps (Android 8 and later), "mismatch" when the file is not this app
++ * (it is deleted then), and "failed" otherwise. Android before 7.0 takes no content URI; the
++ * screen sends it to the browser instead.
++ */
++fun hjvInstallApk(activity: Activity, path: Any?, result: MethodChannel.Result) {
++    val apk = (path as? String)?.let { hjvUpdateFile(activity, it) }
++    if (apk == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
++        result.success("failed")
++        return
++    }
++    // reading an archive's certificates verifies its signature over the whole file
++    thread(name = "hjv-update-install") {
++        val same = try {
++            hjvSameApp(activity, apk)
++        } catch (e: Exception) {
++            Log.w(HJV_UPDATE_TAG, "the APK could not be read", e)
++            null
++        }
++        if (same == false) apk.delete()
++        activity.runOnUiThread {
++            result.success(
++                when (same) {
++                    true -> hjvOpenInstaller(activity, apk)
++                    false -> "mismatch"
++                    null -> "failed"
++                }
++            )
++        }
++    }
++}
++
++/** The file at `path` if it is an APK right in cache/updates, where the core writes. */
++private fun hjvUpdateFile(activity: Activity, path: String): File? = try {
++    val folder = File(activity.cacheDir, "updates").canonicalFile
++    File(path).canonicalFile.takeIf {
++        it.parentFile == folder && it.name.endsWith(".apk") && it.isFile
++    }
++} catch (e: Exception) {
++    null
++}
++
++/**
++ * Whether the APK has this app's package name and the signing certificates of the installed app.
++ * When Android reads no certificates from the archive, the package name decides: Android then
++ * installs it only as an update that is signed like the installed app.
++ */
++@Suppress("DEPRECATION")
++private fun hjvSameApp(activity: Activity, apk: File): Boolean {
++    val manager = activity.packageManager
++    // some versions read an archive's certificates for GET_SIGNATURES only
++    val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
++        PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
++    } else {
++        PackageManager.GET_SIGNATURES
++    }
++    val archive = manager.getPackageArchiveInfo(apk.path, flags) ?: return false
++    if (archive.packageName != activity.packageName) return false
++    val signers = hjvSigners(archive) ?: return true
++    return signers == hjvSigners(manager.getPackageInfo(activity.packageName, flags))
++}
++
++/** The certificates a package is signed with now, as hex; null when Android gives none. */
++@Suppress("DEPRECATION")
++private fun hjvSigners(info: PackageInfo): Set<String>? {
++    val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
++        info.signingInfo?.apkContentsSigners
++    } else {
++        info.signatures
++    }
++    return signatures?.map { it.toCharsString() }?.toSet()?.takeIf { it.isNotEmpty() }
++}
++
++private fun hjvOpenInstaller(activity: Activity, apk: File): String = try {
++    // before the permission: a Play bundle has neither the provider nor the permission
++    val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", apk)
++    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
++        !activity.packageManager.canRequestPackageInstalls()
++    ) {
++        "permission"
++    } else {
++        activity.startActivity(Intent(Intent.ACTION_VIEW).apply {
++            setDataAndType(uri, "application/vnd.android.package-archive")
++            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
++        })
++        "ok"
++    }
++} catch (e: Exception) {
++    Log.w(HJV_UPDATE_TAG, "the installer did not open", e)
++    "failed"
++}
+diff --git a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
+index 08f1239..0230161 100644
+--- a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
++++ b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
+@@ -647,6 +647,7 @@ class MainActivity : FlutterActivity() {
+                 "on_voice_call_closed" -> {
+                     onVoiceCallClosed()
+                 }
++                "hjv_install_apk" -> hjvInstallApk(this, call.arguments, result)
+                 else -> {
+                     result.error("-1", "No such method", null)
+                 }
+diff --git a/flutter/android/app/src/main/res/xml/hjv_update_paths.xml b/flutter/android/app/src/main/res/xml/hjv_update_paths.xml
+new file mode 100644
+index 0000000..5b993a3
+--- /dev/null
++++ b/flutter/android/app/src/main/res/xml/hjv_update_paths.xml
+@@ -0,0 +1,6 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- HJViewer: what HjvUpdateFileProvider may hand out, the update APK that the core downloads to
++     the app's cache (cache/updates) and nothing else. -->
++<paths>
++    <cache-path name="updates" path="updates/" />
++</paths>

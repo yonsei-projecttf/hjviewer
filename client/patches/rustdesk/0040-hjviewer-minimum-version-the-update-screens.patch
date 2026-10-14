@@ -1,0 +1,4632 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 13 Oct 2026 23:25:20 +0900
+Subject: [PATCH 40/45] hjviewer: minimum version: the update screens
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The screens of the signed version policy (design minver 2-1, 2-3, 2-5, 3-1,
+5-1 to 5-5, 9-3), written against the Rust core's main_get_common and
+main_set_common keys, so the generated bridge does not change. A build
+without the update keys answers "" for hjv-update-state, and every hook then
+leaves its screen as 1.5.1 has it.
+
+- The gate: an app below its platform's minimum gets an update screen in
+  place of the connection page's outgoing side; connect(), newSession and
+  newTerminal refuse to start a session and say so (B1). The verdict is the
+  core's, read at once in every window; when the policy was last asked for
+  over half an hour ago, a connection waits up to two seconds for a new
+  answer. Incoming connections, the settings, the connection manager, the
+  install page and running sessions are left alone.
+- A line above the connection page for a newer version and for the
+  deadline in the device's own time (N1, N2), and the note about moving to
+  Google Play (M1).
+- The update screen per platform and install source: an installed Windows
+  PC asks its service to install now after a confirmation (W1, W2, W4-W6);
+  a Windows app that is not installed fetches the new file into Downloads
+  and hands over to it (W3); an Android app from Google Play opens the Play
+  Store; one from a file downloads into the app's cache and, while the app
+  is in front (Android 10 and later open no installer for an app in the
+  background), hands the checked APK to MainActivity's hjv_install_apk
+  (WP-C5), or below Android 7.0 opens a short link in the browser; an
+  iPhone opens TestFlight when the build was exported for it
+  (HJV_IOS_EXPORT), else says whom to ask (I1-I3). A system too old for
+  the new version is told so (O1).
+- Checks: at the start after telling the core the device (install source,
+  system version), when the app comes back to the front after an hour,
+  right after a login, and by hand.
+- A controller that connects to a Windows PC below the minimum hears how
+  that PC is updated (C1a, C1b) on a card over the session: an installed
+  PC by [지금 업데이트], one that runs without being installed by [업데이트]
+  and [지금 실행]; for a PC without an update screen it can make a short
+  link for the PC's browser, shown large and copied (U1, U2). Android peers
+  get no notice: an updated Android app is no longer controlled.
+- Dialogs make no links of addresses in the texts of servers and peers
+  (D9), and Settings -> About shows the versions, the policy and the last
+  check, with [업데이트 확인].
+- A failure is told by the core's code; a downloaded file whose own version
+  is not the policy's ("version") is told as one that is not this app's new
+  version (E4).
+
+Known limits: while a connection waits for the policy (two seconds at
+most, when the last check is over half an hour old), another start for the
+same PC, a file transfer beside a remote screen say, is dropped without a
+word; it starts when tried again. The wait is held per PC so that a second
+click does not open the same session twice.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                       |    3 +
+ flutter/lib/common/hjv_update.dart            | 1047 +++++++++++++
+ flutter/lib/common/hjv_update_model.dart      | 1050 +++++++++++++
+ .../lib/desktop/pages/connection_page.dart    |    5 +-
+ .../desktop/pages/desktop_setting_page.dart   |    2 +
+ flutter/lib/main.dart                         |    3 +
+ flutter/lib/mobile/pages/connection_page.dart |    5 +-
+ flutter/lib/mobile/pages/settings_page.dart   |    2 +
+ flutter/lib/models/model.dart                 |    2 +
+ flutter/lib/utils/multi_window_manager.dart   |    3 +
+ flutter/test/hjv_update_gate_test.dart        | 1335 +++++++++++++++++
+ flutter/test/hjv_update_test.dart             |  895 +++++++++++
+ 12 files changed, 4348 insertions(+), 4 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_update.dart
+ create mode 100644 flutter/lib/common/hjv_update_model.dart
+ create mode 100644 flutter/test/hjv_update_gate_test.dart
+ create mode 100644 flutter/test/hjv_update_test.dart
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index b80e0b5..8de1b92 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -29,6 +29,7 @@ import 'package:window_manager/window_manager.dart';
+ import 'package:window_size/window_size.dart' as window_size;
+ 
+ import '../consts.dart';
++import 'common/hjv_update.dart';
+ import 'common/widgets/overlay.dart';
+ import 'mobile/pages/file_manager_page.dart';
+ import 'mobile/pages/remote_page.dart';
+@@ -1134,6 +1135,7 @@ class CustomAlertDialog extends StatelessWidget {
+ Widget createDialogContent(String text) {
+   final RegExp linkRegExp = RegExp(r'(https?://[^\s]+)');
+   bool hasLink = linkRegExp.hasMatch(text);
++  if (hjvLinksOff()) hasLink = false;
+ 
+   // Early return: no link, use default theme color
+   if (!hasLink) {
+@@ -2580,6 +2582,7 @@ connect(BuildContext context, String id,
+     String? connToken,
+     bool? isSharedPassword}) async {
+   if (id == '') return;
++  if (hjvEnabled() && await hjvBlockConnect(id)) return;
+   if (!isDesktop || desktopType == DesktopType.main) {
+     try {
+       if (Get.isRegistered<IDTextEditingController>()) {
+diff --git a/flutter/lib/common/hjv_update.dart b/flutter/lib/common/hjv_update.dart
+new file mode 100644
+index 0000000..54a2f55
+--- /dev/null
++++ b/flutter/lib/common/hjv_update.dart
+@@ -0,0 +1,1047 @@
++// HJViewer: the screens of the minimum app version. An app below its platform's minimum stops
++// connecting out and shows how to update; hjv_update_model.dart holds the texts and what each
++// platform offers, this file the hooks into the app (D1-D9 below), the widgets and the calls
++// into the Rust core (src/hjviewer_update), which go through main_get_common and
++// main_set_common, so the generated bridge stays as it is:
++//   get "hjv-update-state"              the verdict as JSON; "" in a build that takes no part
++//   get "hjv-min-version-<platform>"    the minimum a peer of that platform is held to
++//   set "hjv-update-device"             what only the screen knows of the device (first of all)
++//   set "hjv-update-check"              "" for a check nobody waits for, "now" for one somebody does
++//   set "hjv-update-download" | "hjv-update-now" | "hjv-update-run" | "hjv-update-link"
++//   event "hjv-update"                  the state again, with a link request's answer
++// A build without the update keys answers "" and every hook leaves its screen as 1.5.1 has it.
++// Only outgoing connections are held back: the PC's ID and password, the settings, the
++// connection manager, the install page and sessions that run stay as they are.
++
++import 'dart:async';
++import 'dart:io';
++import 'dart:isolate';
++import 'dart:ui' show IsolateNameServer;
++
++import 'package:device_info_plus/device_info_plus.dart';
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/formatter/id_formatter.dart';
++import 'package:flutter_hbb/common/hjv_update_model.dart';
++import 'package:flutter_hbb/common/widgets/login.dart';
++import 'package:flutter_hbb/consts.dart';
++import 'package:flutter_hbb/models/model.dart';
++import 'package:flutter_hbb/models/platform_model.dart';
++import 'package:flutter_hbb/utils/multi_window_manager.dart';
++import 'package:get/get.dart';
++import 'package:package_info_plus/package_info_plus.dart';
++import 'package:path_provider/path_provider.dart';
++import 'package:settings_ui/settings_ui.dart';
++import 'package:url_launcher/url_launcher.dart';
++import 'package:window_manager/window_manager.dart';
++
++const _kEvent = 'hjv-update';
++const _kState = 'hjv-update-state';
++const _kCheck = 'hjv-update-check';
++
++/// The name under which the window that asked for a short link waits for it. The core answers
++/// the main window only, and the windows of a desktop app are isolates of one process.
++const _kLinkPort = 'hjv-update-link';
++
++/// A link request is answered within the core's 20 seconds.
++const _kLinkWait = Duration(seconds: 30);
++
++/// A check by hand waits for the request's end, which the core gives 20 seconds.
++const _kCheckWait = Duration(seconds: 25);
++
++/// How long the notice about a PC stays when nobody touches it.
++const _kPeerNoticeFor = Duration(seconds: 60);
++
++/// The `latest` whose banner was closed, and "Y" once the note about Google Play was.
++const _kBannerClosed = 'hjv-update-banner-closed';
++const _kMoveClosed = 'hjv-update-move-closed';
++
++const _kBlockedTag = 'hjv-update-blocked';
++const _kPanelTag = 'hjv-update-panel';
++
++/// What these screens ask of the core and of the app around them, in one place. The tests put a
++/// stand-in of the core here.
++class HjvHost {
++  /// main_get_common, read at once: every window gets the core's own answer.
++  String get(String key) => bind.mainGetCommonSync(key: key);
++
++  Future<void> set(String key, String value) =>
++      bind.mainSetCommon(key: key, value: value);
++
++  HjvDevice get device => HjvDevice(
++        platform: isWindows
++            ? HjvPlatform.windows
++            : isAndroid
++                ? HjvPlatform.android
++                : isIOS
++                    ? HjvPlatform.ios
++                    : HjvPlatform.other,
++        sdk: isAndroid ? androidVersion : 0,
++        iosExport: const String.fromEnvironment('HJV_IOS_EXPORT'),
++        takesIncoming: isDesktop && !bind.isOutgoingOnly(),
++      );
++
++  /// The main window of a desktop app, or the phone app: where the update screen is.
++  bool get isMain => !isDesktop || desktopType == DesktopType.main;
++
++  int now() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
++
++  Future<void> pause(Duration time) => Future.delayed(time);
++
++  OverlayDialogManager get dialogs => gFFI.dialogManager;
++
++  OverlayState? get overlay => globalKey.currentState?.overlay;
++
++  void toast(String text) =>
++      showToast(text, timeout: const Duration(seconds: 5));
++
++  void logIn() => loginDialog();
++
++  /// Calls `then` with the login's name whenever it changes.
++  void listenLogin(void Function(String name) then) =>
++      gFFI.userModel.userName.listen(then);
++
++  /// Whether the app is in front: Android 10 and later start no activity, the installer
++  /// included, for an app in the background. Unknown counts as in front.
++  bool get inFront {
++    final state = WidgetsBinding.instance.lifecycleState;
++    return state == null || state == AppLifecycleState.resumed;
++  }
++
++  /// Outside the app: an https link opened inside it would not reach TestFlight, the Play Store
++  /// or the browser's downloads. Not canLaunchUrl first: iOS answers that for itms-beta only
++  /// when Info.plist lists the scheme, and opening needs no such entry.
++  Future<bool> launch(Uri uri) =>
++      launchUrl(uri, mode: LaunchMode.externalApplication);
++
++  Future<void> copy(String text) =>
++      Clipboard.setData(ClipboardData(text: text));
++
++  /// Raises the main window, where a link or a command line may have started with it hidden.
++  void showMain() {
++    if (!isDesktop) return;
++    if (isMain) {
++      windowOnTop(null);
++    } else {
++      rustDeskWinManager.call(WindowType.Main, kWindowMainWindowOnTop, '');
++    }
++  }
++
++  /// The value of "hjv-update-device".
++  Future<String> deviceValue() async {
++    String? installer, os;
++    try {
++      if (isAndroid) {
++        os = androidVersion > 0 ? '$androidVersion' : null;
++        installer = (await PackageInfo.fromPlatform()).installerStore ?? '';
++      } else if (isIOS) {
++        os = (await DeviceInfoPlugin().iosInfo).systemVersion;
++      } else if (isWindows) {
++        final info = await DeviceInfoPlugin().windowsInfo;
++        os = '${info.majorVersion}.${info.minorVersion}.${info.buildNumber}';
++      }
++    } catch (e) {
++      debugPrint('hjv update: device: $e');
++    }
++    return hjvDeviceValue(installer: installer, os: os);
++  }
++
++  Future<String> packageName() async =>
++      (await PackageInfo.fromPlatform()).packageName;
++
++  /// Where the core puts a download: the app's cache on Android, which the installer reads
++  /// through the app's FileProvider. Windows has its own places and reads no value.
++  Future<String> downloadFolder() async =>
++      isAndroid ? '${(await getTemporaryDirectory()).path}/updates' : '';
++
++  /// Android: what earlier downloads left in the app's cache. The job that made them ended
++  /// with the run of the app that asked for them.
++  Future<void> clearDownloads() async {
++    if (!isAndroid) return;
++    try {
++      final folder = Directory(await downloadFolder());
++      if (await folder.exists()) await folder.delete(recursive: true);
++    } catch (e) {
++      debugPrint('hjv update: cache: $e');
++    }
++  }
++
++  /// MainActivity "hjv_install_apk" (see hjvInstallResult).
++  Future<Object?> installApk(String path) async =>
++      await platformFFI.invokeMethod('hjv_install_apk', path);
++
++  void openInstallSettings() => AndroidPermissionManager.startAction(
++      'android.settings.MANAGE_UNKNOWN_APP_SOURCES');
++
++  String option(String key) => bind.getLocalFlutterOption(k: key);
++
++  void setOption(String key, String value) =>
++      bind.setLocalFlutterOption(k: key, v: value);
++}
++
++HjvHost hjvHost = HjvHost();
++
++/// The verdict as the main window or the phone app last heard it. The other windows of a
++/// desktop app have their own Dart state and read the core when they need it (hjvReadState).
++final hjvUpdate = HjvUpdateInfo.none.obs;
++
++/// The steps of an update that this screen runs itself.
++final hjvSteps = const HjvSteps().obs;
++
++/// The banner's `latest` that was closed, for good; a banner with a deadline only for this run.
++final _bannerClosed = ''.obs;
++final _graceClosed = false.obs;
++final _moveClosed = false.obs;
++
++bool? _takesPart;
++var _installWhenReady = false;
++var _checkingByHand = false;
++final _connecting = <String>{};
++final _peersTold = <String>{};
++OverlayEntry? _peerCard;
++
++/// Whether this build takes part: a build pinned to a server, with its update keys. False
++/// while the core cannot be asked yet.
++bool hjvEnabled() {
++  final known = _takesPart;
++  if (known != null) return known;
++  try {
++    return _takesPart = hjvHost.get(_kState).isNotEmpty;
++  } catch (_) {
++    return false;
++  }
++}
++
++/// For a test: another host, and nothing remembered of the one before.
++void hjvUseHost(HjvHost host) {
++  hjvHost = host;
++  _takesPart = null;
++  _installWhenReady = false;
++  _checkingByHand = false;
++  _connecting.clear();
++  _peersTold.clear();
++  _closePeerCard();
++  hjvUpdate.value = HjvUpdateInfo.none;
++  hjvSteps.value = const HjvSteps();
++  _bannerClosed.value = '';
++  _graceClosed.value = false;
++  _moveClosed.value = false;
++}
++
++/// The core's verdict, read at once.
++HjvUpdateInfo hjvReadState() {
++  try {
++    return HjvUpdateInfo.fromJson(hjvHost.get(_kState));
++  } catch (_) {
++    return HjvUpdateInfo.none;
++  }
++}
++
++/// Takes a state of the core. Android: the download this screen asked for goes on to the
++/// system installer as soon as its file is there and the app is in front; one that ends in the
++/// background waits for hjvCameToFront.
++void _took(HjvUpdateInfo info) {
++  hjvUpdate.value = info;
++  if (_installWhenReady &&
++      info.phase != HjvPhase.downloading &&
++      hjvHost.inFront) {
++    _installWhenReady = false;
++    if (info.phase == HjvPhase.ready) unawaited(_install(info.file));
++  }
++}
++
++void _refresh() => _took(hjvReadState());
++
++void _ask(String key, String value) {
++  hjvHost
++      .set(key, value)
++      .catchError((Object e) => debugPrint('hjv update: $key: $e'));
++}
++
++/// Shows a dialog, in place of an earlier one of the same tag; a dialog that cannot be shown
++/// yet (no overlay) is left out.
++Future<T?> _show<T>(DialogBuilder builder, {String? tag}) async {
++  try {
++    final dialogs = hjvHost.dialogs;
++    if (tag != null) dialogs.dismissByTag(tag);
++    return await dialogs.show<T>(builder, tag: tag);
++  } catch (e) {
++    debugPrint('hjv update: $e');
++    return null;
++  }
++}
++
++/// A button as dialogButton() draws it, for a text of these screens, which translate() must not
++/// see.
++Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) {
++  if (isDesktop || isWebDesktop) {
++    return outline
++        ? OutlinedButton(onPressed: onPressed, child: Text(label))
++        : ElevatedButton(
++            style: ElevatedButton.styleFrom(elevation: 0),
++            onPressed: onPressed,
++            child: Text(label));
++  }
++  return TextButton(onPressed: onPressed, child: Text(label));
++}
++
++// ---- the hooks ----
++
++/// D1, D2 (main.dart, beside hjvInitAccount; the main window and the phone app, not the
++/// connection manager, the install page or a session window): tells the core the device, has it
++/// check the policy, which it then does every six hours by itself, and checks again when the
++/// app comes back to the front after an hour and right after a login.
++void hjvInitUpdate() {
++  if (!hjvEnabled()) return;
++  // the app starts whatever happens here
++  try {
++    _refresh();
++    _bannerClosed.value = hjvHost.option(_kBannerClosed);
++    _moveClosed.value = hjvHost.option(_kMoveClosed) == 'Y';
++    platformFFI.registerEventHandler(
++        _kEvent, _kEvent, (evt) async => hjvOnUpdateEvent(evt),
++        replace: true);
++    WidgetsBinding.instance.addObserver(_front);
++    if (isDesktop) windowManager.addListener(_front);
++    hjvHost.listenLogin(hjvOnLogin);
++    unawaited(hjvStart());
++  } catch (e) {
++    debugPrint('hjv update: init: $e');
++  }
++}
++
++/// D3, D4 (the connection pages): the outgoing side of the home page, the ID field and the
++/// device lists. An app that must update gets the update screen in its place; a newer version
++/// that is not required yet is a line above it. A build that takes no part gets the page itself.
++Widget hjvGate(Widget child) => hjvEnabled() ? Obx(() => _gate(child)) : child;
++
++Widget _gate(Widget child) {
++  final info = hjvUpdate.value;
++  if (!info.enabled) return child;
++  final device = hjvHost.device;
++  final banner = switch (info.state) {
++    HjvState.available => _bannerClosed.value != info.latest,
++    HjvState.grace => !_graceClosed.value,
++    _ => false,
++  };
++  // only an Android app that came from a file has this entry
++  final move =
++      info.moveToPlay && info.channel == 'android' && !_moveClosed.value;
++  return Column(children: [
++    if (move)
++      _HjvStrip(
++          text: HjvUpdateText.moveToPlay,
++          action: HjvUpdateText.moveHow,
++          onAction: _showMoveToPlay,
++          onClose: _closeMove),
++    if (banner)
++      _HjvStrip(
++          text: hjvBannerText(info),
++          action: HjvUpdateText.update,
++          onAction: hjvShowUpdate,
++          onClose: () => _closeBanner(info)),
++    Expanded(
++        child: info.required
++            ? HjvUpdatePage(
++                model: hjvPanelModel(info, device, steps: hjvSteps.value),
++                onAction: hjvRunAction)
++            : child),
++  ]);
++}
++
++/// D5-D7 (connect() in common.dart, newSession and newTerminal in multi_window_manager.dart):
++/// every way to start an outgoing session asks this first, also links, command lines and the
++/// session windows. True when the session must not start: the app has to update, and the user
++/// is told so in the window they acted in. The verdict is the core's; when the policy was last
++/// asked for over half an hour ago, the answer to a new request is waited for, two seconds at
++/// most. Any other start for the same PC during that wait is dropped, so that a second click
++/// does not open the session twice.
++Future<bool> hjvBlockConnect(String id) async {
++  if (!hjvEnabled()) return false;
++  if (!_connecting.add(id)) return true;
++  try {
++    final info = await hjvStateForConnect(
++        read: hjvReadState,
++        checkNow: () => hjvHost.set(_kCheck, 'now'),
++        now: hjvHost.now,
++        pause: hjvHost.pause);
++    _took(info);
++    if (!info.required) return false;
++    try {
++      _showBlocked(info);
++    } catch (e) {
++      debugPrint('hjv update: blocked: $e');
++    }
++    return true;
++  } finally {
++    _connecting.remove(id);
++  }
++}
++
++/// D6, D7: what a session that did not start answers.
++MultiWindowCallResult hjvNoWindow() =>
++    MultiWindowCallResult(kInvalidWindowId, null);
++
++/// D8 (handlePeerInfo in model.dart): a controller that has connected to a Windows PC below the
++/// minimum hears how that PC gets updated; the connection goes on (design 2-3). Not a dialog:
++/// the session's message boxes close every dialog.
++void hjvOnPeerInfo(
++    String peerId, Map<String, dynamic> evt, ConnType? connType) {
++  if (connType != ConnType.defaultConn || !hjvEnabled()) return;
++  // the session goes on whatever happens here
++  try {
++    final version = evt['version'], platform = evt['platform'];
++    if (version is! String || platform != kPeerPlatformWindows) return;
++    final notice = hjvPeerNotice(
++        version: version,
++        platform: kPeerPlatformWindows,
++        min: hjvHost.get('hjv-min-version-windows'),
++        additions: evt['platform_additions']);
++    if (notice == null || _peersTold.contains('$peerId@$version')) return;
++    final copies = hjvHost.device.platform != HjvPlatform.ios;
++    final shown = _showPeerCard((close) => HjvPeerCard(
++        peer: formatID(peerId),
++        notice: notice,
++        copies: copies,
++        askLink: () => hjvAskLink('windows', notice.installed),
++        copy: hjvHost.copy,
++        onClose: close));
++    if (shown) _peersTold.add('$peerId@$version');
++  } catch (e) {
++    debugPrint('hjv update: peer: $e');
++  }
++}
++
++/// D9 (createDialogContent in common.dart): in a build that takes part, dialogs show the texts
++/// of servers and peers without making their addresses into links (design 2-1): the way to an
++/// update is the app's own screen, by the signed policy.
++bool hjvLinksOff() => hjvEnabled();
++
++/// Settings → About on the desktop: the versions, the policy, [업데이트 확인].
++List<Widget> hjvAboutRows() => hjvEnabled() ? [const HjvAbout()] : [];
++
++/// Settings → About on a phone.
++List<AbstractSettingsTile> hjvAboutTiles() => hjvEnabled()
++    ? [
++        // the lines as the description: an iPhone's tile has its value in the title's row
++        CustomSettingsTile(
++            child: Obx(() => SettingsTile(
++                  title: Text(hjvUpdate.value.checking
++                      ? HjvUpdateText.checking
++                      : HjvUpdateText.check),
++                  description: Text(hjvAboutLines(hjvUpdate.value).join('\n')),
++                  leading: const Icon(Icons.system_update),
++                  onPressed: (_) => hjvCheckByHand(),
++                ))),
++      ]
++    : [];
++
++// ---- checks ----
++
++/// The start: the device first, since an Android app has no entry to be judged by until the
++/// core knows where it was installed from, then the check.
++Future<void> hjvStart() async {
++  try {
++    // a download of an earlier run of the screens may still go on in the core
++    final phase = hjvReadState().phase;
++    if (phase != HjvPhase.downloading && phase != HjvPhase.ready) {
++      await hjvHost.clearDownloads();
++    }
++    final device = await hjvHost.deviceValue();
++    if (device.isNotEmpty) await hjvHost.set('hjv-update-device', device);
++    await hjvHost.set(_kCheck, '');
++  } catch (e) {
++    debugPrint('hjv update: start: $e');
++  }
++  _refresh();
++}
++
++/// The app came back to the front (a phone app resumed, the main window focused).
++void hjvCameToFront() {
++  final info = hjvReadState();
++  _took(info);
++  if (hjvCheckDue(info, hjvHost.now(), kHjvFrontAge)) _ask(_kCheck, '');
++  // back from the system's settings, where the app was allowed to install
++  if (hjvSteps.value.install == HjvInstall.permission &&
++      info.phase == HjvPhase.ready) {
++    unawaited(_install(info.file));
++  }
++}
++
++class _HjvFront extends WindowListener with WidgetsBindingObserver {
++  // a desktop window tells its focus (peers_view.dart)
++  @override
++  void didChangeAppLifecycleState(AppLifecycleState state) {
++    if (state == AppLifecycleState.resumed && !isDesktop) hjvCameToFront();
++  }
++
++  @override
++  void onWindowFocus() => hjvCameToFront();
++
++  // on Windows a restored window reports a blur, not a focus (peers_view.dart)
++  @override
++  void onWindowRestore() => hjvCameToFront();
++}
++
++final _front = _HjvFront();
++
++/// The login's name changed: a login is followed by a check at once, and either way the state
++/// says anew what this app can show the server.
++void hjvOnLogin(String name) {
++  _refresh();
++  if (name.isNotEmpty) _ask(_kCheck, 'now');
++}
++
++/// The core's "hjv-update" event, which the main window or the phone app gets: the state, and
++/// the answer to a link request, which goes on to the window that asked.
++void hjvOnUpdateEvent(Map<String, dynamic> evt) {
++  final answer = hjvLinkMessage(evt);
++  if (answer != null) {
++    IsolateNameServer.lookupPortByName(_kLinkPort)?.send(answer);
++  }
++  _took(HjvUpdateInfo.fromMap(evt));
++}
++
++/// Has the core check now and waits for the end of that request.
++Future<HjvUpdateInfo> hjvCheckNow() async {
++  try {
++    await hjvHost.set(_kCheck, 'now');
++  } catch (e) {
++    debugPrint('hjv update: check: $e');
++  }
++  var info = hjvReadState();
++  _took(info);
++  for (var waited = Duration.zero;
++      info.checking && waited < _kCheckWait;
++      waited += kHjvPoll) {
++    await hjvHost.pause(kHjvPoll);
++    info = hjvReadState();
++  }
++  _took(info);
++  return info;
++}
++
++/// [업데이트 확인] and [다시 확인]: checks and says what came of it; from the settings, a
++/// newer version opens the update screen.
++Future<void> hjvCheckByHand({bool opens = true}) async {
++  if (_checkingByHand) return;
++  _checkingByHand = true;
++  try {
++    final info = await hjvCheckNow();
++    if (opens && info.behind && !info.required) {
++      hjvShowUpdate();
++    } else {
++      hjvHost.toast(hjvCheckResult(info, hjvHost.now()));
++    }
++  } finally {
++    _checkingByHand = false;
++  }
++}
++
++// ---- the update screen ----
++
++/// The update screen as a dialog, where the connection page is not replaced by it: from the
++/// banner, from Settings → About and from a connection that was held back.
++void hjvShowUpdate() {
++  _refresh();
++  _show<void>(
++      (setState, close, context) => CustomAlertDialog(
++            content: Obx(() => HjvUpdateBody(
++                model: hjvPanelModel(hjvUpdate.value, hjvHost.device,
++                    steps: hjvSteps.value),
++                onAction: hjvRunAction)),
++            actions: [_button(HjvUpdateText.close, close, outline: true)],
++            onCancel: close,
++          ),
++      tag: _kPanelTag);
++}
++
++/// B1: a connection that did not start.
++CustomAlertDialog hjvBlockedDialog(HjvUpdateInfo info,
++        {required VoidCallback onClose, required VoidCallback onUpdate}) =>
++    CustomAlertDialog(
++      title: const Text(HjvUpdateText.blockedTitle),
++      content: Text(HjvUpdateText.blockedBody(info.min)),
++      actions: [
++        _button(HjvUpdateText.close, onClose, outline: true),
++        _button(HjvUpdateText.update, onUpdate),
++      ],
++      onCancel: onClose,
++    );
++
++void _showBlocked(HjvUpdateInfo info) {
++  final main = hjvHost.isMain;
++  if (main) hjvHost.showMain();
++  _show<void>(
++      (setState, close, context) =>
++          hjvBlockedDialog(info, onClose: close, onUpdate: () {
++            close();
++            // a session window has no update screen: the main window does
++            main ? hjvShowUpdate() : hjvHost.showMain();
++          }),
++      tag: _kBlockedTag);
++}
++
++void _closeBanner(HjvUpdateInfo info) {
++  if (info.state == HjvState.grace) {
++    _graceClosed.value = true;
++  } else {
++    _bannerClosed.value = info.latest;
++    hjvHost.setOption(_kBannerClosed, info.latest);
++  }
++}
++
++void _closeMove() {
++  _moveClosed.value = true;
++  hjvHost.setOption(_kMoveClosed, 'Y');
++}
++
++void _showMoveToPlay() {
++  final contact = hjvUpdate.value.contact;
++  _show<void>((setState, close, context) => CustomAlertDialog(
++        title: const Text(HjvUpdateText.moveTitle),
++        content: Text([
++          HjvUpdateText.moveSteps,
++          if (contact.isNotEmpty) contact,
++        ].join('\n\n')),
++        actions: [_button(HjvUpdateText.close, close)],
++        onCancel: close,
++      ));
++}
++
++/// What a button of the update screen does.
++Future<void> hjvRunAction(HjvAction action) async {
++  try {
++    switch (action) {
++      case HjvAction.recheck:
++        await hjvCheckByHand(opens: false);
++      case HjvAction.logIn:
++        hjvHost.logIn();
++      case HjvAction.openTestFlight:
++        if (!await hjvOpenFirst(hjvTestFlightLinks, hjvHost.launch)) {
++          hjvHost.toast(HjvUpdateText.iosFailed);
++        }
++      case HjvAction.openPlay:
++        final links = hjvPlayLinks(await hjvHost.packageName());
++        if (!await hjvOpenFirst(links, hjvHost.launch)) {
++          hjvHost.toast(HjvUpdateText.playFailed);
++        }
++      case HjvAction.download:
++        hjvSteps.value = const HjvSteps();
++        _installWhenReady = false;
++        await hjvHost.set(
++            'hjv-update-download', await hjvHost.downloadFolder());
++        // from here on the core's job is this download
++        _installWhenReady = hjvHost.device.platform == HjvPlatform.android;
++      case HjvAction.browser:
++        await _openInBrowser();
++      case HjvAction.install:
++        await _install(hjvUpdate.value.file);
++      case HjvAction.installSettings:
++        hjvHost.openInstallSettings();
++      case HjvAction.updateNow:
++        _confirmUpdateNow();
++      case HjvAction.run:
++        await hjvHost.set('hjv-update-run', '');
++    }
++  } catch (e) {
++    debugPrint('hjv update: ${action.name}: $e');
++  }
++  _refresh();
++}
++
++/// W5: installing closes the app and ends every session, so it asks first.
++void _confirmUpdateNow() {
++  _show<void>(
++      (setState, close, context) => CustomAlertDialog(
++            title: const Text(HjvUpdateText.updateNow),
++            content: const Text(HjvUpdateText.closesNow),
++            actions: [
++              _button(HjvUpdateText.close, close, outline: true),
++              _button(HjvUpdateText.updateNow, () {
++                close();
++                hjvHost
++                    .set('hjv-update-now', '')
++                    .catchError((Object e) => debugPrint('hjv update: $e'))
++                    .whenComplete(_refresh);
++              }),
++            ],
++            onCancel: close,
++          ),
++      tag: 'hjv-update-now');
++}
++
++/// Android: the checked APK goes to the system installer, which MainActivity starts after it
++/// has compared the file's package and certificate with this app's.
++Future<void> _install(String path) async {
++  if (path.isEmpty) return;
++  Object? answer;
++  try {
++    answer = await hjvHost.installApk(path);
++  } catch (e) {
++    debugPrint('hjv update: install: $e');
++  }
++  hjvSteps.value = HjvSteps(install: hjvInstallResult(answer));
++}
++
++/// Android below 7.0: the browser downloads the APK from a short link.
++Future<void> _openInBrowser() async {
++  if (hjvSteps.value.linking) return;
++  hjvSteps.value = const HjvSteps(linking: true);
++  final answer = await hjvAskLink('android', false);
++  hjvSteps.value = HjvSteps(linkError: answer.error);
++  final link = answer.link;
++  if (link != null && !await hjvOpenFirst([link.url], hjvHost.launch)) {
++    hjvHost.toast(HjvUpdateText.browserFailed);
++  }
++}
++
++/// Asks the core for a short link to the platform's package and waits for the answer. Any
++/// window may ask: the core answers the main window, whose hjvOnUpdateEvent passes the answer
++/// to the port registered here.
++Future<HjvLinkAnswer> hjvAskLink(String platform, bool installed) async {
++  final port = ReceivePort();
++  IsolateNameServer.removePortNameMapping(_kLinkPort);
++  if (!IsolateNameServer.registerPortWithName(port.sendPort, _kLinkPort)) {
++    port.close();
++    return const HjvLinkAnswer.failed('http');
++  }
++  try {
++    await hjvHost.set('hjv-update-link', hjvLinkRequest(platform, installed));
++    return hjvLinkFromMessage(await port.first.timeout(_kLinkWait));
++  } on TimeoutException {
++    return const HjvLinkAnswer.failed('network');
++  } catch (e) {
++    debugPrint('hjv update: link: $e');
++    return const HjvLinkAnswer.failed('http');
++  } finally {
++    if (IsolateNameServer.lookupPortByName(_kLinkPort) == port.sendPort) {
++      IsolateNameServer.removePortNameMapping(_kLinkPort);
++    }
++    port.close();
++  }
++}
++
++// ---- widgets ----
++
++/// The update screen's texts and buttons, top to bottom.
++class HjvUpdateBody extends StatelessWidget {
++  final HjvPanelModel model;
++  final void Function(HjvAction) onAction;
++  const HjvUpdateBody({Key? key, required this.model, required this.onAction})
++      : super(key: key);
++
++  @override
++  Widget build(BuildContext context) {
++    final theme = Theme.of(context);
++    final small = theme.textTheme.bodySmall;
++    return Column(
++      mainAxisSize: MainAxisSize.min,
++      crossAxisAlignment: CrossAxisAlignment.stretch,
++      children: [
++        Text(model.title,
++            textAlign: TextAlign.center, style: theme.textTheme.titleLarge),
++        const SizedBox(height: 12),
++        for (final line in model.body) Text(line),
++        const SizedBox(height: 6),
++        Text(model.versions, style: small),
++        for (final hint in model.hints) ...[
++          const SizedBox(height: 12),
++          Text(hint),
++        ],
++        if (model.status.isNotEmpty) ...[
++          const SizedBox(height: 12),
++          Text(model.status,
++              style: const TextStyle(fontWeight: FontWeight.bold)),
++        ],
++        if (model.busy) ...[
++          const SizedBox(height: 8),
++          LinearProgressIndicator(value: model.progress),
++        ],
++        const SizedBox(height: 16),
++        for (final (n, button) in model.buttons.indexed)
++          n == 0
++              ? ElevatedButton(
++                  onPressed: () => onAction(button.action),
++                  child: Text(button.label))
++              : OutlinedButton(
++                  onPressed: () => onAction(button.action),
++                  child: Text(button.label)),
++        TextButton(
++            onPressed:
++                model.checking ? null : () => onAction(HjvAction.recheck),
++            child: Text(model.checking
++                ? HjvUpdateText.checking
++                : HjvUpdateText.recheck)),
++        for (final note in model.notes) ...[
++          const SizedBox(height: 8),
++          Text(note, style: small),
++        ],
++      ],
++    );
++  }
++}
++
++/// The update screen in the place of the connection page.
++class HjvUpdatePage extends StatelessWidget {
++  final HjvPanelModel model;
++  final void Function(HjvAction) onAction;
++  const HjvUpdatePage({Key? key, required this.model, required this.onAction})
++      : super(key: key);
++
++  @override
++  Widget build(BuildContext context) => Center(
++        child: SingleChildScrollView(
++          padding: const EdgeInsets.all(24),
++          child: ConstrainedBox(
++            constraints: const BoxConstraints(maxWidth: 480),
++            child: Column(mainAxisSize: MainAxisSize.min, children: [
++              const Icon(Icons.system_update, size: 48, color: MyTheme.accent),
++              const SizedBox(height: 12),
++              HjvUpdateBody(model: model, onAction: onAction),
++            ]),
++          ),
++        ),
++      );
++}
++
++/// A line above the connection page, with one button and a way to close it.
++class _HjvStrip extends StatelessWidget {
++  final String text;
++  final String action;
++  final VoidCallback onAction;
++  final VoidCallback onClose;
++  const _HjvStrip(
++      {required this.text,
++      required this.action,
++      required this.onAction,
++      required this.onClose});
++
++  @override
++  Widget build(BuildContext context) => Container(
++        color: MyTheme.accent.withOpacity(0.12),
++        padding: const EdgeInsets.only(left: 10),
++        margin: const EdgeInsets.only(bottom: 4),
++        child: Row(children: [
++          const Icon(Icons.system_update, size: 20, color: MyTheme.accent),
++          const SizedBox(width: 8),
++          Expanded(
++              child: Padding(
++                  padding: const EdgeInsets.symmetric(vertical: 6),
++                  child: Text(text))),
++          TextButton(onPressed: onAction, child: Text(action)),
++          IconButton(
++              tooltip: HjvUpdateText.close,
++              icon: const Icon(Icons.close, size: 18),
++              onPressed: onClose),
++        ]),
++      );
++}
++
++/// Settings → About on the desktop.
++class HjvAbout extends StatelessWidget {
++  const HjvAbout({Key? key}) : super(key: key);
++
++  @override
++  Widget build(BuildContext context) => Obx(() {
++        final info = hjvUpdate.value;
++        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
++          for (final line in hjvAboutLines(info))
++            SelectionArea(child: Text(line)).marginSymmetric(vertical: 4.0),
++          Row(children: [
++            OutlinedButton(
++                onPressed: info.checking ? null : hjvCheckByHand,
++                child: Text(info.checking
++                    ? HjvUpdateText.checking
++                    : HjvUpdateText.check)),
++            if (info.behind) ...[
++              const SizedBox(width: 8),
++              ElevatedButton(
++                  style: ElevatedButton.styleFrom(elevation: 0),
++                  onPressed: hjvShowUpdate,
++                  child: const Text(HjvUpdateText.update)),
++            ],
++          ]).marginSymmetric(vertical: 4.0),
++        ]);
++      });
++}
++
++void _closePeerCard() {
++  final card = _peerCard;
++  _peerCard = null;
++  if (card != null && card.mounted) card.remove();
++}
++
++/// Puts a card over the session, at the top, without taking the screen below it away from the
++/// user: the address on it is typed into the remote PC while it shows. False when the window has
++/// no overlay yet.
++bool _showPeerCard(Widget Function(VoidCallback close) card) {
++  final overlay = hjvHost.overlay;
++  if (overlay == null) return false;
++  _closePeerCard();
++  late final OverlayEntry entry;
++  void close() {
++    if (identical(_peerCard, entry)) _peerCard = null;
++    if (entry.mounted) entry.remove();
++  }
++
++  entry = OverlayEntry(
++      builder: (context) => SafeArea(
++          child: Align(
++              alignment: Alignment.topCenter,
++              child: Padding(
++                  padding: EdgeInsets.fromLTRB(12, isDesktop ? 56 : 12, 12, 0),
++                  child: card(close)))));
++  overlay.insert(entry);
++  _peerCard = entry;
++  return true;
++}
++
++/// The notice about a PC whose app is below the minimum (C1a, C1b), and for a PC without an
++/// update screen the short link to the new version (U1), typed or pasted into the PC's browser.
++class HjvPeerCard extends StatefulWidget {
++  /// The PC's ID as the app shows it: a window may hold sessions to several PCs.
++  final String peer;
++  final HjvPeerNotice notice;
++
++  /// Whether the link also goes to the clipboard: an iPhone's does not reach the remote PC.
++  final bool copies;
++  final Future<HjvLinkAnswer> Function() askLink;
++  final Future<void> Function(String text) copy;
++  final VoidCallback onClose;
++
++  const HjvPeerCard(
++      {Key? key,
++      required this.peer,
++      required this.notice,
++      required this.copies,
++      required this.askLink,
++      required this.copy,
++      required this.onClose})
++      : super(key: key);
++
++  @override
++  State<HjvPeerCard> createState() => _HjvPeerCardState();
++}
++
++class _HjvPeerCardState extends State<HjvPeerCard> {
++  Timer? _timer;
++  var _asking = false;
++  HjvLinkAnswer? _answer;
++
++  @override
++  void initState() {
++    super.initState();
++    _closeAfter(_kPeerNoticeFor);
++  }
++
++  @override
++  void dispose() {
++    _timer?.cancel();
++    super.dispose();
++  }
++
++  void _closeAfter(Duration time) {
++    _timer?.cancel();
++    _timer = Timer(time, widget.onClose);
++  }
++
++  Future<void> _ask() async {
++    if (_asking) return;
++    _timer?.cancel();
++    setState(() {
++      _asking = true;
++      _answer = null;
++    });
++    final answer = await widget.askLink();
++    final link = answer.link;
++    if (link != null && widget.copies) {
++      try {
++        await widget.copy(link.url);
++      } catch (e) {
++        debugPrint('hjv update: copy: $e');
++      }
++    }
++    if (!mounted) return;
++    setState(() {
++      _asking = false;
++      _answer = answer;
++    });
++    // a link that has run out is of no use on the screen
++    _closeAfter(
++        link == null ? _kPeerNoticeFor : Duration(seconds: link.expiresIn));
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final theme = Theme.of(context);
++    final answer = _answer;
++    final link = answer?.link;
++    const gap = SizedBox(height: 8);
++    final lines = <Widget>[
++      Text(HjvUpdateText.peerRemote(widget.peer),
++          style: theme.textTheme.bodySmall),
++      gap,
++      if (link != null) ...[
++        Text(HjvUpdateText.linkEnter(link.minutes)),
++        gap,
++        Wrap(crossAxisAlignment: WrapCrossAlignment.end, children: [
++          Text(link.typed, style: const TextStyle(fontSize: 18)),
++          Text(link.code,
++              style: const TextStyle(
++                  fontSize: 24,
++                  fontWeight: FontWeight.bold,
++                  letterSpacing: 1.5)),
++        ]),
++        gap,
++        if (widget.copies)
++          Text(HjvUpdateText.linkCopied, style: theme.textTheme.bodySmall),
++        Text(HjvUpdateText.linkThen),
++      ] else if (answer != null)
++        Text(answer.error == 'login'
++            ? HjvUpdateText.linkNeedsLogin
++            : HjvUpdateText.linkFailed)
++      else ...[
++        Text(widget.notice.text),
++        if (_asking) ...[
++          gap,
++          const Text(HjvUpdateText.linkAsking),
++          gap,
++          const LinearProgressIndicator(),
++        ],
++      ],
++    ];
++    final again = answer != null && link == null && answer.error != 'login';
++    return Material(
++      elevation: 6,
++      color: theme.dialogBackgroundColor,
++      borderRadius: BorderRadius.circular(8),
++      child: ConstrainedBox(
++        constraints: const BoxConstraints(maxWidth: 440),
++        child: Padding(
++          padding: const EdgeInsets.fromLTRB(14, 10, 8, 4),
++          child: Column(
++            mainAxisSize: MainAxisSize.min,
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              ...lines,
++              Row(mainAxisAlignment: MainAxisAlignment.end, children: [
++                if (widget.notice.offersLink && answer == null && !_asking)
++                  TextButton(
++                      onPressed: _ask,
++                      child: const Text(HjvUpdateText.linkButton)),
++                if (again)
++                  TextButton(
++                      onPressed: _ask, child: const Text(HjvUpdateText.retry)),
++                TextButton(
++                    onPressed: widget.onClose,
++                    child: const Text(HjvUpdateText.close)),
++              ]),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
+diff --git a/flutter/lib/common/hjv_update_model.dart b/flutter/lib/common/hjv_update_model.dart
+new file mode 100644
+index 0000000..8df01e6
+--- /dev/null
++++ b/flutter/lib/common/hjv_update_model.dart
+@@ -0,0 +1,1050 @@
++// HJViewer: the minimum app version as the screens show it. The Rust core (src/hjviewer_update)
++// fetches the signed version policy, judges this app by it and reports the JSON read here
++// (main_get_common "hjv-update-state", event "hjv-update"); this file turns that into what each
++// platform shows and offers. Plain Dart without the bridge, so that ci.sh tests it with the web
++// stand-in; hjv_update.dart holds the widgets and the calls. The texts are Korean only, as the
++// refusals of hbbs and of the PCs are, and never pass through translate().
++
++import 'dart:convert';
++import 'dart:math';
++
++/// The core's verdict on this app. `disabled` is a build that takes no part (an empty answer):
++/// its screens stay as they were in 1.5.1.
++enum HjvState { disabled, unknown, ok, available, grace, required }
++
++/// How far the update got: a download by this app (downloading, ready), the service of an
++/// installed Windows PC (waiting, downloading, verifying, notice, installing), or error.
++enum HjvPhase {
++  idle,
++  waiting,
++  downloading,
++  verifying,
++  notice,
++  ready,
++  installing,
++  error
++}
++
++enum HjvPlatform { windows, android, ios, other }
++
++/// How a TestFlight build is exported (client-build.yml IOS_EXPORT_METHOD, passed to the app as
++/// HJV_IOS_EXPORT); any other iOS build cannot be updated through TestFlight.
++const kHjvTestFlightExport = 'app-store-connect';
++
++/// The first Android that takes an APK from the app's own files (a content URI); older ones get
++/// the browser and a short link.
++const kHjvInAppInstallSdk = 24;
++
++/// The first version with an update screen of its own: an older PC needs a link to the new one.
++const kHjvFirstUpdaterVersion = '1.6.0';
++
++/// Before a connection the policy is asked for again when the last time is older than this, ...
++const kHjvConnectAge = Duration(minutes: 30);
++
++/// ... and the connection waits this long for the answer at most, looking this often.
++const kHjvConnectWait = Duration(seconds: 2);
++const kHjvPoll = Duration(milliseconds: 100);
++
++/// Coming back to the front asks again when the last time is older than this.
++const kHjvFrontAge = Duration(hours: 1);
++
++const kHjvSourceRepo = 'github.com/yonsei-projecttf/hjviewer';
++
++/// Turns a Unix time into the time shown: the device's own, since the deadlines are meant for
++/// the person in front of it.
++typedef HjvLocalTime = DateTime Function(int unix);
++
++DateTime hjvLocalTime(int unix) =>
++    DateTime.fromMillisecondsSinceEpoch(unix * 1000);
++
++String _two(int n) => n.toString().padLeft(2, '0');
++
++/// "11월 23일 0시", with the minutes only when there are some.
++String hjvDeadline(DateTime t) =>
++    '${t.month}월 ${t.day}일 ${t.hour}시${t.minute == 0 ? '' : ' ${t.minute}분'}';
++
++/// "02:10"
++String hjvClockTime(DateTime t) => '${_two(t.hour)}:${_two(t.minute)}';
++
++/// "2026-11-02 14:03"
++String hjvStamp(DateTime t) =>
++    '${t.year}-${_two(t.month)}-${_two(t.day)} ${hjvClockTime(t)}';
++
++/// What the core knows: the verdict for this app, the versions, the policy it came from and how
++/// far an update got. Texts of the policy (`notes`, `contact`, `source`) are shown as plain
++/// text, never as links.
++class HjvUpdateInfo {
++  final HjvState state;
++
++  /// The policy's entry this app is judged by: windows, android, android_play, ios, or "".
++  final String channel;
++  final String current;
++  final String min;
++  final String latest;
++
++  /// Unix seconds until which an app below `min` still connects; 0 for none.
++  final int graceUntil;
++  final String osMin;
++
++  /// The device's system cannot run `latest`.
++  final bool osTooOld;
++  final String notes;
++  final String contact;
++  final String source;
++  final bool moveToPlay;
++
++  /// The entry has a package that the app or the PC's service can fetch.
++  final bool hasPackage;
++
++  /// Windows: this is the installed app, which its service updates.
++  final bool installed;
++
++  /// Windows, installed: the service installs `latest` by itself. Until the core says so, the
++  /// screens do not promise it.
++  final bool autoInstall;
++
++  /// What can be shown at door 1: token (a login), none, and on an installed Windows PC device
++  /// or unbound (the PC is on no account).
++  final String credential;
++  final int policyEpoch;
++  final int policySeq;
++  final int policyIssued;
++
++  /// The last answer with a policy, and the last attempt of this run; Unix seconds, 0 for none.
++  final int checkedAt;
++  final int triedAt;
++
++  /// A check was asked for and has not ended.
++  final bool checking;
++  final HjvPhase phase;
++
++  /// With the phase error: why.
++  final String error;
++  final int done;
++  final int total;
++
++  /// With the phase ready: the checked file.
++  final String file;
++
++  /// With the phase notice: when the install starts, Unix seconds.
++  final int until;
++
++  const HjvUpdateInfo({
++    this.state = HjvState.disabled,
++    this.channel = '',
++    this.current = '',
++    this.min = '',
++    this.latest = '',
++    this.graceUntil = 0,
++    this.osMin = '',
++    this.osTooOld = false,
++    this.notes = '',
++    this.contact = '',
++    this.source = '',
++    this.moveToPlay = false,
++    this.hasPackage = false,
++    this.installed = false,
++    this.autoInstall = false,
++    this.credential = '',
++    this.policyEpoch = 0,
++    this.policySeq = 0,
++    this.policyIssued = 0,
++    this.checkedAt = 0,
++    this.triedAt = 0,
++    this.checking = false,
++    this.phase = HjvPhase.idle,
++    this.error = '',
++    this.done = 0,
++    this.total = 0,
++    this.file = '',
++    this.until = 0,
++  });
++
++  static const none = HjvUpdateInfo();
++
++  bool get enabled => state != HjvState.disabled;
++  bool get required => state == HjvState.required;
++
++  /// A newer version exists for this app: there is something to show.
++  bool get behind =>
++      state == HjvState.available ||
++      state == HjvState.grace ||
++      state == HjvState.required;
++
++  bool get fromPlay => channel == 'android_play';
++
++  /// Download progress from 0 to 1; null while the size is unknown.
++  double? get progress => total > 0 ? (done / total).clamp(0.0, 1.0) : null;
++
++  factory HjvUpdateInfo.fromMap(Map m) {
++    T pick<T extends Enum>(List<T> values, Object? name, T fallback) {
++      for (final v in values) {
++        // "disabled" is this side's word for no answer, never the core's
++        if (v.name == name && v != HjvState.disabled) return v;
++      }
++      return fallback;
++    }
++
++    int number(Object? v) => v is int
++        ? v
++        : v is double
++            ? v.toInt()
++            : int.tryParse('${v ?? ''}') ?? 0;
++    String text(Object? v) => v is String ? v : '';
++    final job = m['job'] is Map ? m['job'] as Map : const {};
++    return HjvUpdateInfo(
++      state: pick(HjvState.values, m['state'], HjvState.unknown),
++      channel: text(m['channel']),
++      current: text(m['current']),
++      min: text(m['min']),
++      latest: text(m['latest']),
++      graceUntil: number(m['grace_until']),
++      osMin: text(m['os_min']),
++      osTooOld: m['os_too_old'] == true,
++      notes: text(m['notes']),
++      contact: text(m['contact']),
++      source: text(m['source']),
++      moveToPlay: m['move_to_play'] == true,
++      hasPackage: m['package'] is Map,
++      installed: m['installed'] == true,
++      autoInstall: m['auto_install'] == true,
++      credential: text(m['credential']),
++      policyEpoch: number(m['policy_epoch']),
++      policySeq: number(m['policy_seq']),
++      policyIssued: number(m['policy_issued']),
++      checkedAt: number(m['checked_at']),
++      triedAt: number(m['tried_at']),
++      checking: m['checking'] == true,
++      phase: pick(HjvPhase.values, job['phase'], HjvPhase.idle),
++      error: text(job['error']),
++      done: number(job['done']),
++      total: number(job['total']),
++      file: text(job['file']),
++      until: number(job['until']),
++    );
++  }
++
++  /// An empty answer is a build that takes no part. An answer that cannot be read is treated
++  /// the same: it never blocks.
++  factory HjvUpdateInfo.fromJson(String s) {
++    if (s.isEmpty) return none;
++    try {
++      final m = jsonDecode(s);
++      return m is Map ? HjvUpdateInfo.fromMap(m) : none;
++    } catch (_) {
++      return none;
++    }
++  }
++}
++
++/// What only the screen knows of the device it runs on.
++class HjvDevice {
++  final HjvPlatform platform;
++
++  /// Android's API level; 0 elsewhere and while unknown.
++  final int sdk;
++
++  /// iOS: how the build was exported (HJV_IOS_EXPORT).
++  final String iosExport;
++
++  /// This app takes connections from other devices (a PC), so they go on while it is blocked.
++  final bool takesIncoming;
++
++  const HjvDevice({
++    this.platform = HjvPlatform.other,
++    this.sdk = 0,
++    this.iosExport = '',
++    this.takesIncoming = false,
++  });
++
++  bool get testFlight => iosExport == kHjvTestFlightExport;
++
++  /// Android before 7.0 takes no APK from the app's own files.
++  bool get browserInstall => sdk > 0 && sdk < kHjvInAppInstallSdk;
++}
++
++/// What the system installer answered when the app handed it the checked APK (Android).
++enum HjvInstall { none, opened, permission, mismatch, failed }
++
++/// The answer of MainActivity's "hjv_install_apk": "ok" when Android was asked to start the
++/// installer, "permission" when the app may not install packages yet, "mismatch" when the file
++/// is not this app's (another package or another certificate; the file is gone then). Anything
++/// else, and a build without the call, failed.
++HjvInstall hjvInstallResult(Object? answer) => switch (answer) {
++      'ok' => HjvInstall.opened,
++      'permission' => HjvInstall.permission,
++      'mismatch' => HjvInstall.mismatch,
++      _ => HjvInstall.failed,
++    };
++
++/// The steps of an update that the screen runs itself, which the core's state does not hold.
++class HjvSteps {
++  final HjvInstall install;
++
++  /// Android below 7.0: a short link for the browser is being asked for, ...
++  final bool linking;
++
++  /// ... or did not come, for this reason.
++  final String linkError;
++
++  const HjvSteps({
++    this.install = HjvInstall.none,
++    this.linking = false,
++    this.linkError = '',
++  });
++}
++
++/// The Korean texts (design 2-5). Variables never carry a particle whose form depends on them.
++class HjvUpdateText {
++  // P1-P7
++  static const title = '업데이트가 필요합니다';
++  static String body(String min) =>
++      '지금 버전으로는 다른 기기에 연결할 수 없습니다. ${updateTo(min)}';
++  static String updateTo(String min) => 'HJViewer를 $min 이상으로 업데이트하세요.';
++  static String versions(HjvUpdateInfo i) => [
++        '현재 ${i.current}',
++        if (i.min.isNotEmpty) '최소 ${i.min}',
++        if (i.latest.isNotEmpty) '최신 ${i.latest}',
++      ].join(' · ');
++  static const incomingStillWorks =
++      '업데이트 전에도 다른 기기에서 이 기기로 들어오는 연결은 받을 수 있습니다.';
++  static const preparing = '새 버전을 준비하고 있습니다. 잠시 뒤 [다시 확인]을 누르세요.';
++  static const update = '업데이트';
++  static const recheck = '다시 확인';
++  static const retry = '다시 시도';
++  static const close = '닫기';
++  static const logIn = '로그인';
++  static String askAdmin(String contact) =>
++      ['새 버전은 관리자에게 받을 수도 있습니다.', if (contact.isNotEmpty) contact].join(' ');
++
++  // B1
++  static const blockedTitle = '업데이트 필요';
++  static String blockedBody(String min) =>
++      'HJViewer를 $min 이상으로 업데이트한 뒤 연결할 수 있습니다.';
++
++  // N1, N2
++  static const newerTitle = '새 버전이 나왔습니다';
++  static String newerBody(String latest) =>
++      'HJViewer를 새 버전($latest)으로 업데이트할 수 있습니다.';
++  static String newer(String latest) => '$newerTitle($latest).';
++  static String graceLine(String date) => '$date부터는 업데이트해야 연결할 수 있습니다.';
++  static const installsItself = '쓰지 않을 때 자동으로 설치됩니다.';
++
++  // C1a, C1b, U1, U2
++  static String peerRemote(String id) => '원격 PC $id';
++  static String peerNeedsLink(String version, String min) =>
++      '이 PC의 원격 앱은 업데이트가 필요합니다(지금 $version, 최소 $min). PC의 브라우저로 새 버전을 받아 설치할 수 있습니다.';
++  static String peerUpdatesItself(String version, String min) =>
++      '이 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min). PC의 HJViewer 창에서 [지금 업데이트]를 누르면 설치됩니다. 설치하는 동안 연결이 잠시 끊깁니다.';
++  static String peerRunsNew(String version, String min) =>
++      '이 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min). PC의 HJViewer 창에서 [업데이트]를 누르면 새 버전을 내려받고, [지금 실행]을 누르면 새 버전이 열립니다. 그때 연결이 잠시 끊깁니다.';
++  static const linkButton = '이 PC용 설치 링크';
++  static const linkAsking = '설치 링크를 만드는 중…';
++  static String linkEnter(int minutes) =>
++      'PC의 브라우저 주소창에 아래 주소를 입력하세요. $minutes분 동안 쓸 수 있습니다.';
++  static const linkCopied = '주소를 복사했습니다. 원격 PC의 주소창에 붙여 넣어도 됩니다.';
++  static const linkThen =
++      '내려받은 파일을 실행하고 Windows 확인 창에서 [예]를 누르세요. 설치하는 동안 연결이 잠시 끊깁니다. HJViewer 파일 전송으로 설치 파일을 보내도 됩니다.';
++  static const linkNeedsLogin =
++      '로그인하면 설치 링크를 만들 수 있습니다. 또는 관리자에게 받은 설치 파일을 HJViewer 파일 전송으로 보내세요.';
++  static const linkFailed =
++      '설치 링크를 만들지 못했습니다. 잠시 뒤 다시 시도하세요. 관리자에게 받은 설치 파일을 HJViewer 파일 전송으로 보내도 됩니다.';
++
++  // W1-W6
++  static const winInstalls = '이 PC는 쓰지 않을 때 새 버전을 자동으로 설치합니다.';
++  static const winNow =
++      '지금 설치하려면 [지금 업데이트]를 누르세요. 설치하는 동안 HJViewer가 잠시 닫히고 원격 연결이 끊깁니다.';
++  static const winUnbound =
++      '이 PC는 아직 내 기기 목록에 없어 새 버전을 받을 수 없습니다. 이 PC에서 로그인하면 자동으로 업데이트됩니다.';
++  static String winPortable(String latest) =>
++      "[업데이트]를 누르면 새 버전을 '다운로드' 폴더에 내려받아 확인한 뒤 실행합니다. 이 창은 닫히고 새 버전이 열립니다. 다음부터는 새 파일(HJViewer-$latest.exe)을 실행하세요.";
++  static const updateNow = '지금 업데이트';
++  static const runNow = '지금 실행';
++  static const waiting = '업데이트를 준비하는 중…';
++  static String downloading(double? progress) => progress == null
++      ? '새 버전을 내려받는 중…'
++      : '새 버전을 내려받는 중… ${(progress * 100).floor()}%';
++  static const verifying = '내려받은 파일을 확인하는 중…';
++  static const installing = '설치하는 중…';
++  static const closesNow =
++      'HJViewer가 지금 닫히고 새 버전을 설치합니다. 진행 중인 원격 연결은 모두 끊기고, 설치가 끝나면 다시 연결할 수 있습니다.';
++  static String closesAt(String time) =>
++      'HJViewer가 $time에 닫히고 새 버전을 설치합니다. 진행 중인 원격 연결은 모두 끊기고, 설치가 끝나면 다시 연결할 수 있습니다.';
++  static const opensNow = 'HJViewer가 지금 닫히고 새 버전이 열립니다. 진행 중인 원격 연결은 모두 끊깁니다.';
++  static const attempts =
++      '자동 업데이트를 마치지 못했습니다(3번 시도). [다시 시도]를 누르거나 관리자에게 알려 주세요.';
++  static const installFailed = '새 버전을 설치하지 못했습니다. [다시 시도]를 누르거나 관리자에게 알려 주세요.';
++  static const serviceSilent =
++      'HJViewer 서비스가 응답하지 않아 업데이트를 시작하지 못했습니다. 잠시 뒤 다시 시도하세요.';
++
++  // A1-A4, M1
++  static const androidHint =
++      '[새 버전 내려받기]를 누르면 새 버전을 내려받아 확인한 뒤 설치 화면을 엽니다. [업데이트]를 누르세요.';
++  static const androidBrowserHint =
++      "[새 버전 내려받기]를 누르면 브라우저가 설치 파일(APK)을 내려받습니다. 다 받으면 알림을 눌러 설치하세요. 처음에는 '이 출처 허용'을 켜야 할 수 있습니다.";
++  static const androidButton = '새 버전 내려받기';
++  static const androidInstaller = '설치 화면에서 [업데이트]를 누르세요.';
++  static const openInstaller = '설치 화면 열기';
++  static const installerFailed = '설치 화면을 열지 못했습니다. 다시 시도하거나 관리자에게 새 버전을 받으세요.';
++  static const browserFailed = '브라우저를 열지 못했습니다. 관리자에게 새 버전을 받으세요.';
++  static const playHint = 'Play 스토어에서 HJViewer를 업데이트하세요.';
++  static const playButton = 'Play 스토어 열기';
++  static const playFailed =
++      'Play 스토어를 열지 못했습니다. Play 스토어 앱에서 HJViewer를 찾아 업데이트하세요.';
++  static const needsLogin = '새 버전을 받으려면 로그인하세요.';
++  static const allowSource =
++      "새 버전을 설치하려면 HJViewer에 '이 출처 허용'이 필요합니다. 설정에서 켠 뒤 돌아오세요.";
++  static const openSettings = '설정 열기';
++  static const moveToPlay =
++      'Play 스토어의 HJViewer로 옮길 수 있습니다. 옮기면 이 앱을 지우고 Play에서 설치한 뒤 다시 로그인합니다. 기기 ID와 설정은 새로 생깁니다.';
++  static const moveHow = '방법 보기';
++  static const moveTitle = 'Play 스토어로 옮기기';
++  static const moveSteps = '1. 관리자에게 Play 스토어 내부 테스트 초대를 받습니다.\n'
++      '2. 이 앱을 지웁니다.\n'
++      '3. 초대받은 Google 계정으로 Play 스토어에서 HJViewer를 설치합니다.\n'
++      '4. 다시 로그인합니다. 기기 ID와 설정은 새로 생깁니다.';
++
++  // I1-I3
++  static const iosHint =
++      'TestFlight 앱에서 HJViewer의 [업데이트]를 누르세요. TestFlight 설정에서 자동 업데이트를 켜 두면 다음부터는 저절로 설치됩니다.';
++  static const iosButton = 'TestFlight 열기';
++  static const iosFailed =
++      'TestFlight 앱을 열지 못했습니다. App Store에서 TestFlight를 설치한 뒤 다시 시도하세요.';
++  static const iosNotTestFlight =
++      '이 iPhone의 HJViewer는 TestFlight로 설치하지 않아 앱에서 업데이트할 수 없습니다. 관리자에게 새 버전을 받으세요.';
++
++  // E1-E4, O1
++  static const errDownload = '새 버전을 내려받지 못했습니다. 인터넷 연결을 확인하고 다시 시도하세요.';
++  static const errVerify = '내려받은 파일이 올바르지 않아 설치하지 않았습니다. 관리자에게 알려 주세요.';
++  static const errTls =
++      '이 네트워크에서는 보안 연결을 확인할 수 없어 새 버전을 받지 못했습니다. 다른 네트워크에서 다시 시도하거나 관리자에게 받으세요.';
++  static const errNotThisApp =
++      '내려받은 파일이 이 앱의 새 버전이 아니어서 설치하지 않았습니다. 관리자에게 알려 주세요.';
++  static const errBusy = '지금은 새 버전을 받는 요청이 많습니다. 잠시 뒤 다시 시도하세요.';
++  static const errRefused = '이 계정으로는 새 버전을 받을 수 없습니다. 관리자에게 문의하세요.';
++  static const errFile = '새 버전 파일을 저장하지 못했습니다. 저장 공간을 확인하고 다시 시도하세요.';
++  static String osTooOld(String need) =>
++      '이 기기의 OS에서는 새 버전을 쓸 수 없습니다(필요: $need 이상). 관리자에게 문의하세요.';
++
++  // Settings → About, and the source of an update that comes without its notice files (AGPL)
++  static const check = '업데이트 확인';
++  static const checking = '확인하는 중…';
++  static const upToDate = '최신 버전입니다.';
++  static const noEntry = '이 기기에 맞는 업데이트 정보가 아직 없습니다.';
++  static const checkFailed = '업데이트를 확인하지 못했습니다. 인터넷 연결을 확인하고 다시 시도하세요.';
++  static String policy(int epoch, int seq, String issued) =>
++      '업데이트 정책: 세대 $epoch · 순번 $seq · 발행 $issued';
++  static const noPolicy = '업데이트 정책: 아직 받지 못했습니다';
++  static String checked(String at) => '마지막 확인: $at';
++  static const neverChecked = '마지막 확인: 없음';
++  static String source(String tag) =>
++      '소스 코드(GNU AGPL-3.0): $kHjvSourceRepo 저장소의 태그 $tag';
++
++  /// Why a download, a link or the service's install did not get through (the core's codes).
++  static String failure(String code) => switch (code) {
++        'tls' => errTls,
++        'verify' => errVerify,
++        'version' => errNotThisApp,
++        'busy' => errBusy,
++        'refused' => errRefused,
++        'file' => errFile,
++        'missing' => preparing,
++        'login' => needsLogin,
++        'install' => installFailed,
++        'attempts' => attempts,
++        'service' => serviceSilent,
++        _ => errDownload,
++      };
++}
++
++/// What a button of the update screen does.
++enum HjvAction {
++  recheck,
++  logIn,
++  openTestFlight,
++  openPlay,
++
++  /// Has the core fetch the package: into the app's cache on Android, into the user's Downloads
++  /// in a Windows app that is not installed.
++  download,
++
++  /// Android below 7.0: asks for a short link and opens it in the browser.
++  browser,
++
++  /// Android: hands the checked APK to the system installer.
++  install,
++  installSettings,
++
++  /// Windows, installed: after a confirmation, has the service install now.
++  updateNow,
++
++  /// Windows, not installed: starts the downloaded file in place of this app.
++  run,
++}
++
++class HjvButton {
++  final String label;
++  final HjvAction action;
++  const HjvButton(this.label, this.action);
++
++  @override
++  bool operator ==(Object other) =>
++      other is HjvButton && other.label == label && other.action == action;
++
++  @override
++  int get hashCode => Object.hash(label, action);
++
++  @override
++  String toString() => '[$label → ${action.name}]';
++}
++
++/// What the update screen shows: the texts from top to bottom and the buttons, the first one
++/// being what the screen is there for. [다시 확인] is always there besides.
++class HjvPanelModel {
++  final String title;
++  final List<String> body;
++  final String versions;
++  final List<String> hints;
++  final String status;
++
++  /// Something is under way: a bar shows `progress`, or runs while that is unknown.
++  final bool busy;
++  final double? progress;
++  final List<HjvButton> buttons;
++
++  /// The policy is being asked for: [다시 확인] waits.
++  final bool checking;
++
++  /// Below the buttons, small: whom to ask, the policy's notes, where the source is.
++  final List<String> notes;
++
++  const HjvPanelModel({
++    required this.title,
++    required this.body,
++    required this.versions,
++    this.hints = const [],
++    this.status = '',
++    this.busy = false,
++    this.progress,
++    this.buttons = const [],
++    this.checking = false,
++    this.notes = const [],
++  });
++
++  HjvAction? get primary => buttons.isEmpty ? null : buttons.first.action;
++}
++
++/// The system `os_min` asks for, as a person names it: Android's API level becomes its version.
++String hjvOsNeed(HjvPlatform platform, String osMin) {
++  const android = {
++    21: '5.0',
++    22: '5.1',
++    23: '6.0',
++    24: '7.0',
++    25: '7.1',
++    26: '8.0',
++    27: '8.1',
++    28: '9',
++    29: '10',
++    30: '11',
++    31: '12',
++    32: '12L',
++    33: '13',
++    34: '14',
++    35: '15',
++    36: '16',
++  };
++  switch (platform) {
++    case HjvPlatform.android:
++      final name = android[int.tryParse(osMin)];
++      return name == null ? 'Android API $osMin' : 'Android $name';
++    case HjvPlatform.ios:
++      return 'iOS $osMin';
++    case HjvPlatform.windows:
++      return 'Windows $osMin';
++    case HjvPlatform.other:
++      return osMin;
++  }
++}
++
++/// The update screen of one platform, state and step (design 2-5, 5-1 to 5-5).
++HjvPanelModel hjvPanelModel(HjvUpdateInfo i, HjvDevice d,
++    {HjvSteps steps = const HjvSteps(), HjvLocalTime local = hjvLocalTime}) {
++  HjvPanelModel make(
++          {List<String> hints = const [],
++          String status = '',
++          bool busy = false,
++          double? progress,
++          List<HjvButton> buttons = const [],
++          bool askAdmin = false}) =>
++      HjvPanelModel(
++        title: i.required ? HjvUpdateText.title : HjvUpdateText.newerTitle,
++        body: [
++          if (i.required)
++            HjvUpdateText.body(i.min)
++          else if (i.state == HjvState.grace) ...[
++            if (i.graceUntil > 0)
++              HjvUpdateText.graceLine(hjvDeadline(local(i.graceUntil))),
++            HjvUpdateText.updateTo(i.min),
++          ] else
++            HjvUpdateText.newerBody(i.latest),
++        ],
++        versions: HjvUpdateText.versions(i),
++        hints: [
++          ...hints,
++          if (i.required && d.takesIncoming) HjvUpdateText.incomingStillWorks,
++        ],
++        status: status,
++        busy: busy,
++        progress: progress,
++        buttons: buttons,
++        checking: i.checking,
++        notes: [
++          if (askAdmin)
++            HjvUpdateText.askAdmin(i.contact)
++          else if (i.osTooOld && i.contact.isNotEmpty)
++            i.contact,
++          if (i.notes.isNotEmpty) i.notes,
++          if (i.source.isNotEmpty) HjvUpdateText.source(i.source),
++        ],
++      );
++
++  const logIn = HjvButton(HjvUpdateText.logIn, HjvAction.logIn);
++  HjvPanelModel needsLogin(List<HjvButton> more) => make(
++      hints: [HjvUpdateText.needsLogin],
++      buttons: [logIn, ...more],
++      askAdmin: true);
++
++  /// A download or an install that failed: its reason and, unless asking again cannot help,
++  /// [다시 시도] with what started it.
++  HjvPanelModel failed(String code, HjvAction again, List<String> hints) {
++    final retry = HjvButton(HjvUpdateText.retry, again);
++    if (code == 'login') {
++      return needsLogin([if (i.credential == 'token') retry]);
++    }
++    final refused = code == 'refused';
++    return make(
++        hints: hints,
++        status: HjvUpdateText.failure(code),
++        buttons: [if (!refused) retry],
++        askAdmin: refused);
++  }
++
++  if (!i.behind) {
++    return HjvPanelModel(
++        title: HjvUpdateText.upToDate,
++        body: const [],
++        versions: HjvUpdateText.versions(i),
++        checking: i.checking);
++  }
++  if (i.osTooOld) {
++    return make(
++        hints: [HjvUpdateText.osTooOld(hjvOsNeed(d.platform, i.osMin))]);
++  }
++  switch (d.platform) {
++    case HjvPlatform.ios:
++      return d.testFlight
++          ? make(hints: [
++              HjvUpdateText.iosHint
++            ], buttons: const [
++              HjvButton(HjvUpdateText.iosButton, HjvAction.openTestFlight)
++            ])
++          : make(hints: [HjvUpdateText.iosNotTestFlight], askAdmin: true);
++    case HjvPlatform.android:
++      if (i.fromPlay) {
++        return make(hints: [
++          HjvUpdateText.playHint
++        ], buttons: const [
++          HjvButton(HjvUpdateText.playButton, HjvAction.openPlay)
++        ]);
++      }
++      if (!i.hasPackage) return make(hints: [HjvUpdateText.preparing]);
++      if (i.credential == 'none') return needsLogin(const []);
++      if (d.browserInstall) {
++        const hints = [HjvUpdateText.androidBrowserHint];
++        if (steps.linking) {
++          return make(
++              hints: hints, status: HjvUpdateText.linkAsking, busy: true);
++        }
++        return steps.linkError.isEmpty
++            ? make(hints: hints, buttons: const [
++                HjvButton(HjvUpdateText.androidButton, HjvAction.browser)
++              ])
++            : failed(steps.linkError, HjvAction.browser, hints);
++      }
++      const hints = [HjvUpdateText.androidHint];
++      const download =
++          HjvButton(HjvUpdateText.androidButton, HjvAction.download);
++      switch (i.phase) {
++        case HjvPhase.downloading:
++          return make(
++              hints: hints,
++              status: HjvUpdateText.downloading(i.progress),
++              busy: true,
++              progress: i.progress);
++        case HjvPhase.ready:
++          const open =
++              HjvButton(HjvUpdateText.openInstaller, HjvAction.install);
++          switch (steps.install) {
++            case HjvInstall.permission:
++              return make(
++                  hints: hints,
++                  status: HjvUpdateText.allowSource,
++                  buttons: const [
++                    HjvButton(
++                        HjvUpdateText.openSettings, HjvAction.installSettings),
++                    open
++                  ]);
++            case HjvInstall.mismatch:
++              return make(
++                  hints: hints,
++                  status: HjvUpdateText.errNotThisApp,
++                  buttons: const [
++                    HjvButton(HjvUpdateText.retry, HjvAction.download)
++                  ]);
++            case HjvInstall.failed:
++              return make(
++                  hints: hints,
++                  status: HjvUpdateText.installerFailed,
++                  buttons: const [
++                    HjvButton(HjvUpdateText.retry, HjvAction.install)
++                  ],
++                  askAdmin: true);
++            case HjvInstall.none:
++            case HjvInstall.opened:
++              return make(
++                  hints: hints,
++                  status: HjvUpdateText.androidInstaller,
++                  buttons: const [open]);
++          }
++        case HjvPhase.error:
++          return failed(i.error, HjvAction.download, hints);
++        default:
++          return make(hints: hints, buttons: const [download]);
++      }
++    case HjvPlatform.windows:
++      if (!i.hasPackage) return make(hints: [HjvUpdateText.preparing]);
++      if (i.installed) {
++        if (i.credential == 'unbound') {
++          return make(
++              hints: [HjvUpdateText.winUnbound],
++              buttons: const [logIn],
++              askAdmin: true);
++        }
++        final hints = [
++          if (i.required || i.autoInstall) HjvUpdateText.winInstalls,
++          HjvUpdateText.winNow,
++        ];
++        const now = HjvButton(HjvUpdateText.updateNow, HjvAction.updateNow);
++        switch (i.phase) {
++          case HjvPhase.waiting:
++            return make(
++                hints: hints, status: HjvUpdateText.waiting, busy: true);
++          case HjvPhase.downloading:
++            return make(
++                hints: hints,
++                status: HjvUpdateText.downloading(null),
++                busy: true);
++          case HjvPhase.verifying:
++            return make(
++                hints: hints, status: HjvUpdateText.verifying, busy: true);
++          case HjvPhase.installing:
++            return make(
++                hints: hints, status: HjvUpdateText.installing, busy: true);
++          case HjvPhase.notice:
++            return make(
++                hints: hints,
++                status: HjvUpdateText.closesAt(hjvClockTime(local(i.until))),
++                buttons: const [now]);
++          case HjvPhase.error:
++            return failed(i.error, HjvAction.updateNow, hints);
++          default:
++            return make(hints: hints, buttons: const [now]);
++        }
++      }
++      if (i.credential == 'none') return needsLogin(const []);
++      final hints = [HjvUpdateText.winPortable(i.latest)];
++      switch (i.phase) {
++        case HjvPhase.downloading:
++          return make(
++              hints: hints,
++              status: HjvUpdateText.downloading(i.progress),
++              busy: true,
++              progress: i.progress);
++        case HjvPhase.ready:
++          return make(
++              hints: hints,
++              status: HjvUpdateText.opensNow,
++              buttons: const [HjvButton(HjvUpdateText.runNow, HjvAction.run)]);
++        case HjvPhase.error:
++          return failed(i.error, HjvAction.download, hints);
++        default:
++          return make(hints: hints, buttons: const [
++            HjvButton(HjvUpdateText.update, HjvAction.download)
++          ]);
++      }
++    case HjvPlatform.other:
++      return make(askAdmin: true);
++  }
++}
++
++/// The line above the connection page while a newer version is out but nothing is blocked yet:
++/// the version, the deadline in the device's own time when there is one, and on an installed
++/// Windows PC that the service installs it.
++String hjvBannerText(HjvUpdateInfo i, {HjvLocalTime local = hjvLocalTime}) => [
++      HjvUpdateText.newer(i.latest),
++      if (i.state == HjvState.grace && i.graceUntil > 0)
++        HjvUpdateText.graceLine(hjvDeadline(local(i.graceUntil))),
++      if (i.installed && i.autoInstall) HjvUpdateText.installsItself,
++    ].join(' ');
++
++/// Settings → About: the versions, the policy they come from and when it was last checked.
++List<String> hjvAboutLines(HjvUpdateInfo i,
++        {HjvLocalTime local = hjvLocalTime}) =>
++    [
++      HjvUpdateText.versions(i),
++      i.policySeq > 0
++          ? HjvUpdateText.policy(
++              i.policyEpoch, i.policySeq, hjvStamp(local(i.policyIssued)))
++          : HjvUpdateText.noPolicy,
++      i.checkedAt > 0
++          ? HjvUpdateText.checked(hjvStamp(local(i.checkedAt)))
++          : HjvUpdateText.neverChecked,
++      if (i.source.isNotEmpty) HjvUpdateText.source(i.source),
++    ];
++
++/// What a check by hand found, in one line.
++String hjvCheckResult(HjvUpdateInfo i, int now) {
++  if (now - i.checkedAt > 60 || i.checkedAt - now > 60) {
++    return HjvUpdateText.checkFailed;
++  }
++  return switch (i.state) {
++    HjvState.required => HjvUpdateText.title,
++    HjvState.grace || HjvState.available => HjvUpdateText.newer(i.latest),
++    HjvState.ok => HjvUpdateText.upToDate,
++    _ => HjvUpdateText.noEntry,
++  };
++}
++
++/// Whether the policy was last asked for longer ago than `age`: never, or by a clock that has
++/// been set back since. An attempt that failed counts, so that a server that is down does not
++/// hold up every connection.
++bool hjvCheckDue(HjvUpdateInfo i, int now, Duration age) {
++  final last = max(i.checkedAt, i.triedAt);
++  return last <= 0 || (now - last).abs() > age.inSeconds;
++}
++
++/// The verdict a connection that is about to start goes by (design 3-1): the one the core
++/// holds; when the policy was last asked for over half an hour ago, the core is asked first and
++/// the connection waits for the answer, two seconds at most, then takes what the core holds.
++Future<HjvUpdateInfo> hjvStateForConnect({
++  required HjvUpdateInfo Function() read,
++  required Future<void> Function() checkNow,
++  required int Function() now,
++  required Future<void> Function(Duration) pause,
++}) async {
++  var info = read();
++  if (!info.enabled || !hjvCheckDue(info, now(), kHjvConnectAge)) return info;
++  try {
++    await checkNow();
++  } catch (_) {
++    return info;
++  }
++  for (var waited = Duration.zero;
++      waited < kHjvConnectWait;
++      waited += kHjvPoll) {
++    await pause(kHjvPoll);
++    info = read();
++    if (!info.checking) break;
++  }
++  return info;
++}
++
++final _version = RegExp(r'^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-[0-9]{1,4})?$');
++
++/// A version as hbb_common::get_version_number counts it ("1.5.1" is 1005010), which is how the
++/// core and the PCs compare versions.
++int hjvVersionNumber(String v) {
++  final parts = v.split('-');
++  var n = 0;
++  var last = 0;
++  for (final x in parts.first.split('.')) {
++    last = int.tryParse(x) ?? 0;
++    n = n * 1000 + last;
++  }
++  n = n - last + last * 10;
++  if (parts.length > 1) n += int.tryParse(parts[1]) ?? 0;
++  return n;
++}
++
++/// What a controller is told about the PC it has just connected to.
++class HjvPeerNotice {
++  final String text;
++
++  /// The PC has no update screen of its own (below 1.6.0): the controller can make a link to
++  /// the new version for the PC's browser.
++  final bool offersLink;
++
++  /// The PC's app is installed there, so the link's file is the one that opens the installer.
++  final bool installed;
++
++  const HjvPeerNotice(
++      {required this.text, required this.offersLink, required this.installed});
++}
++
++/// Whether PeerInfo.platform_additions says the PC's app is installed there.
++bool hjvPeerInstalled(Object? additions) {
++  try {
++    final m = additions is String && additions.isNotEmpty
++        ? jsonDecode(additions)
++        : additions;
++    return m is Map && m['is_installed'] == true;
++  } catch (_) {
++    return false;
++  }
++}
++
++/// The notice for a Windows PC whose app is below the minimum of its platform (design 2-3): the
++/// connection goes on, the controller hears how the PC gets updated. Null for a PC that is up to
++/// date, for a version that is not one, and for every other platform: Android devices that are
++/// controlled stay on the last version that can be, and only Windows PCs get a package.
++HjvPeerNotice? hjvPeerNotice({
++  required String version,
++  required String platform,
++  required String min,
++  Object? additions,
++}) {
++  if (platform != 'Windows') return null;
++  if (!_version.hasMatch(version) || !_version.hasMatch(min)) return null;
++  final peer = hjvVersionNumber(version);
++  if (peer >= hjvVersionNumber(min)) return null;
++  final offersLink = peer < hjvVersionNumber(kHjvFirstUpdaterVersion);
++  final installed = hjvPeerInstalled(additions);
++  return HjvPeerNotice(
++      text: offersLink
++          ? HjvUpdateText.peerNeedsLink(version, min)
++          : installed
++              ? HjvUpdateText.peerUpdatesItself(version, min)
++              : HjvUpdateText.peerRunsNew(version, min),
++      offersLink: offersLink,
++      installed: installed);
++}
++
++/// A short link for the browser of a remote device: good for `expiresIn` seconds, `file` is the
++/// name the browser saves.
++class HjvLink {
++  final String url;
++  final String file;
++  final int expiresIn;
++  const HjvLink(this.url, this.file, this.expiresIn);
++
++  static const _codeLength = 9;
++
++  /// What a person types into the PC's browser, shown without "https://", which browsers add by
++  /// themselves (design 2-5 U1): "<server>/api/hjv/u/", then "K7M2-Q9XD" shown larger.
++  String get typed =>
++      url.substring('https://'.length, url.length - _codeLength);
++  String get code => url.substring(url.length - _codeLength);
++  int get minutes => max(1, expiresIn ~/ 60);
++}
++
++/// The answer to a link request: the link, or the code of why there is none.
++class HjvLinkAnswer {
++  final HjvLink? link;
++  final String error;
++  const HjvLinkAnswer.ok(HjvLink this.link) : error = '';
++  const HjvLinkAnswer.failed(this.error) : link = null;
++}
++
++final _shortLink = RegExp(
++    r'^https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?/api/hjv/u/[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$');
++final _linkFile = RegExp(r'^[A-Za-z0-9._-]{1,100}$');
++
++/// The `link` or `link_error` of an "hjv-update" event; null for an event that answers no link
++/// request. The core has made the link from its own server name; all the same, only an https
++/// address of exactly a short link's form is shown or opened.
++HjvLinkAnswer? hjvLinkAnswer(Map evt) {
++  final link = evt['link'];
++  if (link is Map) {
++    final url = link['url'], file = link['file'], expires = link['expires_in'];
++    if (url is String &&
++        file is String &&
++        expires is int &&
++        _shortLink.hasMatch(url) &&
++        _linkFile.hasMatch(file) &&
++        expires >= 1 &&
++        expires <= 3600) {
++      return HjvLinkAnswer.ok(HjvLink(url, file, expires));
++    }
++    return const HjvLinkAnswer.failed('http');
++  }
++  final error = evt['link_error'];
++  if (error is String) return HjvLinkAnswer.failed(error);
++  return evt.containsKey('link') || evt.containsKey('link_error')
++      ? const HjvLinkAnswer.failed('http')
++      : null;
++}
++
++/// The same answer as the text that goes from the main window to the window that asked, and
++/// back from it.
++String? hjvLinkMessage(Map evt) =>
++    evt.containsKey('link') || evt.containsKey('link_error')
++        ? jsonEncode({
++            if (evt['link'] != null) 'link': evt['link'],
++            if (evt['link_error'] != null) 'link_error': evt['link_error'],
++          })
++        : null;
++
++HjvLinkAnswer hjvLinkFromMessage(Object? message) {
++  try {
++    final evt = message is String ? jsonDecode(message) : null;
++    final answer = evt is Map && evt.isNotEmpty ? hjvLinkAnswer(evt) : null;
++    return answer ?? const HjvLinkAnswer.failed('http');
++  } catch (_) {
++    return const HjvLinkAnswer.failed('http');
++  }
++}
++
++/// The value of "hjv-update-link".
++String hjvLinkRequest(String platform, bool installed) =>
++    jsonEncode({'platform': platform, 'installed': installed});
++
++/// The App Store page of TestFlight, for an iPhone on which TestFlight itself does not open.
++const kHjvTestFlightAppStore =
++    'https://apps.apple.com/app/testflight/id899247664';
++
++/// Tried in order on an iPhone. itms-beta:// is what TestFlight's invitations use; Apple does
++/// not document it, so it is never the only way.
++const hjvTestFlightLinks = ['itms-beta://', kHjvTestFlightAppStore];
++
++/// Tried in order on an Android app that came from Google Play: the Play Store app, then its
++/// web page.
++List<String> hjvPlayLinks(String package) => [
++      'market://details?id=$package',
++      'https://play.google.com/store/apps/details?id=$package',
++    ];
++
++/// Opens the first of `links` that `launch` takes; false when none opens.
++Future<bool> hjvOpenFirst(
++    List<String> links, Future<bool> Function(Uri) launch) async {
++  for (final link in links) {
++    final uri = Uri.tryParse(link);
++    if (uri == null) continue;
++    try {
++      if (await launch(uri)) return true;
++    } catch (_) {}
++  }
++  return false;
++}
++
++/// The value of "hjv-update-device": what only the screen knows of the device. `installer` is
++/// the store an Android app was installed by ("" for a file: null would leave the core without
++/// an entry to judge by), `os` the system that `os_min` is held against: Android's API level,
++/// the iOS version, the Windows version. Empty when there is nothing to tell.
++String hjvDeviceValue({String? installer, String? os}) {
++  final value = {
++    if (installer != null) 'installer': installer,
++    if (os != null && os.isNotEmpty) 'os': os,
++  };
++  return value.isEmpty ? '' : jsonEncode(value);
++}
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 1d4928b..55712ea 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -15,6 +15,7 @@ import 'package:window_manager/window_manager.dart';
+ import 'package:flutter_hbb/models/peer_model.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_update.dart';
+ import '../../common/formatter/id_formatter.dart';
+ import '../../common/widgets/peer_tab_page.dart';
+ import '../../common/widgets/autocomplete.dart';
+@@ -307,7 +308,7 @@ class _ConnectionPageState extends State<ConnectionPage>
+     return Column(
+       children: [
+         Expanded(
+-            child: Column(
++            child: hjvGate(Column(
+           children: [
+             Row(
+               children: [
+@@ -318,7 +319,7 @@ class _ConnectionPageState extends State<ConnectionPage>
+             Divider().paddingOnly(right: 12),
+             Expanded(child: PeerTabPage()),
+           ],
+-        ).paddingOnly(left: 12.0)),
++        ).paddingOnly(left: 12.0))),
+         if (!isOutgoingOnly) const Divider(height: 1),
+         if (!isOutgoingOnly) OnlineStatusWidget()
+       ],
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 3b192e5..2a6151b 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/audio_input.dart';
+ import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
+@@ -2555,6 +2556,7 @@ class _AboutState extends State<_About> {
+               SelectionArea(
+                   child: Text('${translate('ID')}: $myId')
+                       .marginSymmetric(vertical: 4.0)),
++              ...hjvAboutRows(),
+               InkWell(
+                   onTap: () {
+                     launchUrlString('https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md');
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index 747c511..33afe91 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -6,6 +6,7 @@ import 'package:bot_toast/bot_toast.dart';
+ import 'package:desktop_multi_window/desktop_multi_window.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/overlay.dart';
+ import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
+@@ -143,6 +144,7 @@ void runMainApp(bool startService) async {
+   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
+   gFFI.userModel.refreshCurrentUser();
+   hjvInitAccount();
++  hjvInitUpdate();
+   runApp(App());
+ 
+   bool? alwaysOnTop;
+@@ -184,6 +186,7 @@ void runMobileApp() async {
+   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
+   gFFI.userModel.refreshCurrentUser();
+   hjvInitAccount();
++  hjvInitUpdate();
+   runApp(App());
+   await initUniLinks();
+ }
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index ff5dc82..7955192 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
+ import 'package:flutter_hbb/models/peer_model.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_update.dart';
+ import '../../common/widgets/peer_tab_page.dart';
+ import '../../common/widgets/autocomplete.dart';
+ import '../../consts.dart';
+@@ -80,7 +81,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
+   @override
+   Widget build(BuildContext context) {
+     Provider.of<FfiModel>(context);
+-    return CustomScrollView(
++    return hjvGate(CustomScrollView(
+       slivers: [
+         SliverList(
+             delegate: SliverChildListDelegate([
+@@ -93,7 +94,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
+           child: PeerTabPage(),
+         )
+       ],
+-    ).marginOnly(top: 2, left: 10, right: 10);
++    ).marginOnly(top: 2, left: 10, right: 10));
+   }
+ 
+   /// Callback for the connect button.
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index c65035f..4590a1f 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -12,6 +12,7 @@ import 'package:url_launcher/url_launcher.dart';
+ import 'package:url_launcher/url_launcher_string.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_update.dart';
+ import '../../common/hjviewer_account.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../common/widgets/login.dart';
+@@ -1062,6 +1063,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                   child: Text(_myId),
+                 ),
+                 leading: Icon(Icons.perm_identity)),
++            ...hjvAboutTiles(),
+             SettingsTile(
+               title: Text(translate("Privacy Statement")),
+               onPressed: (context) =>
+diff --git a/flutter/lib/models/model.dart b/flutter/lib/models/model.dart
+index 964f213..9d32984 100644
+--- a/flutter/lib/models/model.dart
++++ b/flutter/lib/models/model.dart
+@@ -38,6 +38,7 @@ import 'package:file_picker/file_picker.dart';
+ import 'package:vector_math/vector_math.dart' show Vector2;
+ 
+ import '../common.dart';
++import '../common/hjv_update.dart';
+ import '../utils/image.dart' as img;
+ import '../common/widgets/dialog.dart';
+ import 'input_model.dart';
+@@ -1364,6 +1365,7 @@ class FfiModel with ChangeNotifier {
+     _pi.username = evt['username'];
+     _pi.hostname = evt['hostname'];
+     _pi.platform = evt['platform'];
++    if (!isCache) hjvOnPeerInfo(peerId, evt, parent.target?.connType);
+     _pi.sasEnabled = evt['sas_enabled'] == 'true';
+     final currentDisplay = int.parse(evt['current_display']);
+     if (_pi.primaryDisplay == kInvalidDisplayIndex) {
+diff --git a/flutter/lib/utils/multi_window_manager.dart b/flutter/lib/utils/multi_window_manager.dart
+index 9e26f8c..126d1c1 100644
+--- a/flutter/lib/utils/multi_window_manager.dart
++++ b/flutter/lib/utils/multi_window_manager.dart
+@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/main.dart';
+ import 'package:flutter_hbb/models/input_model.dart';
+ 
+@@ -231,6 +232,7 @@ class RustDeskMultiWindowManager {
+     bool? isSharedPassword,
+     String? connToken,
+   }) async {
++    if (hjvEnabled() && await hjvBlockConnect(remoteId)) return hjvNoWindow();
+     var params = {
+       "type": type.index,
+       "id": remoteId,
+@@ -354,6 +356,7 @@ class RustDeskMultiWindowManager {
+     bool? forceRelay,
+     String? connToken,
+   }) async {
++    if (hjvEnabled() && await hjvBlockConnect(remoteId)) return hjvNoWindow();
+     // Iterate through terminal windows in reverse order to prioritize
+     // the most recently added or used windows, as they are more likely
+     // to have an active session.
+diff --git a/flutter/test/hjv_update_gate_test.dart b/flutter/test/hjv_update_gate_test.dart
+new file mode 100644
+index 0000000..7c3f30a
+--- /dev/null
++++ b/flutter/test/hjv_update_gate_test.dart
+@@ -0,0 +1,1335 @@
++import 'dart:async';
++import 'dart:convert';
++
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_update.dart';
++import 'package:flutter_hbb/common/hjv_update_model.dart';
++import 'package:flutter_hbb/models/model.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:window_manager/window_manager.dart';
++
++// The screens of the minimum app version against a stand-in of the Rust core, which answers
++// "hjv-update-state" and takes the "hjv-update-…" requests as src/hjviewer_update does. These
++// tests import common.dart, so they need the generated bridge, which client-build.yml makes
++// before its Dart tests; ci.sh runs hjv_update_test.dart.
++
++const checkedAt = 1793581200;
++const pc = HjvDevice(platform: HjvPlatform.windows, takesIncoming: true);
++const android = HjvDevice(platform: HjvPlatform.android, sdk: 34);
++const oldAndroid = HjvDevice(platform: HjvPlatform.android, sdk: 23);
++const iphone =
++    HjvDevice(platform: HjvPlatform.ios, iosExport: 'app-store-connect');
++
++/// The state as the core writes it.
++Map<String, Object?> core(String state,
++        {String channel = 'windows',
++        Map<String, Object?> more = const {},
++        Map<String, Object?> job = const {}}) =>
++    {
++      'state': state,
++      'channel': channel,
++      'current': '1.6.0',
++      'min': '1.6.1',
++      'latest': '1.6.2',
++      'grace_until': state == 'grace' ? 1795014000 : 0,
++      'os_min': '',
++      'os_too_old': false,
++      'notes': '',
++      'source': '',
++      'contact': '',
++      'move_to_play': false,
++      'package': {'file': 'HJViewer-1.6.2-windows-x86_64.exe', 'size': 200},
++      'installed': false,
++      'installer': '',
++      'credential': 'token',
++      'policy_epoch': 1,
++      'policy_seq': 12,
++      'policy_issued': 1793577600,
++      'checked_at': checkedAt,
++      'tried_at': checkedAt,
++      'checking': false,
++      ...more,
++      'job': {
++        'phase': 'idle',
++        'error': '',
++        'done': 0,
++        'total': 0,
++        'file': '',
++        ...job
++      },
++    };
++
++class FakeHost extends HjvHost {
++  FakeHost(this.state, {this.dev = pc, this.main = true});
++
++  /// The core's state; null is a build that takes no part, which answers "".
++  Map<String, Object?>? state;
++  HjvDevice dev;
++  bool main;
++  int clock = checkedAt + 60;
++
++  /// What the core was asked, in order, as "key=value".
++  final asked = <String>[];
++
++  /// What a request does to the core.
++  void Function(String key, String value)? onSet;
++  Future<void> Function()? onPause;
++  String minWindows = '1.6.1';
++  String deviceJson = '';
++  final toasts = <String>[];
++  final launched = <String>[];
++  Set<String> opens = {};
++  final copied = <String>[];
++  final installs = <String>[];
++  Object? installAnswer = 'ok';
++  final options = <String, String>{};
++  final manager = OverlayDialogManager();
++  int reads = 0, logins = 0, shownMain = 0, settingsOpened = 0;
++
++  /// The core tells the main window that its state changed.
++  void push([Map<String, Object?> extra = const {}]) =>
++      hjvOnUpdateEvent({...?state, ...extra, 'name': 'hjv-update'});
++
++  @override
++  String get(String key) {
++    reads++;
++    final now = state;
++    if (now == null) return '';
++    return key == 'hjv-update-state'
++        ? jsonEncode(now)
++        : key == 'hjv-min-version-windows'
++            ? minWindows
++            : '';
++  }
++
++  @override
++  Future<void> set(String key, String value) async {
++    asked.add('$key=$value');
++    onSet?.call(key, value);
++  }
++
++  @override
++  HjvDevice get device => dev;
++  @override
++  bool get isMain => main;
++  @override
++  int now() => clock;
++  @override
++  Future<void> pause(Duration time) async => await onPause?.call();
++  @override
++  OverlayDialogManager get dialogs => manager;
++  @override
++  OverlayState? get overlay => globalKey.currentState?.overlay;
++  @override
++  void toast(String text) => toasts.add(text);
++  @override
++  void logIn() => logins++;
++
++  /// What a change of the login's name calls.
++  void Function(String name)? loginListener;
++  @override
++  void listenLogin(void Function(String name) then) => loginListener = then;
++
++  /// Whether the app is in front (Android starts no installer for an app in the background).
++  bool front = true;
++  @override
++  bool get inFront => front;
++  @override
++  Future<bool> launch(Uri uri) async {
++    launched.add('$uri');
++    return opens.contains('$uri');
++  }
++
++  @override
++  Future<void> copy(String text) async => copied.add(text);
++  @override
++  void showMain() => shownMain++;
++  @override
++  Future<String> deviceValue() async => deviceJson;
++  int cleared = 0;
++  @override
++  Future<void> clearDownloads() async => cleared++;
++  @override
++  Future<String> packageName() async => 'com.example.hjv';
++  @override
++  Future<String> downloadFolder() async =>
++      dev.platform == HjvPlatform.android ? '/cache/updates' : '';
++  @override
++  Future<Object?> installApk(String path) async {
++    installs.add(path);
++    return installAnswer;
++  }
++
++  @override
++  void openInstallSettings() => settingsOpened++;
++  @override
++  String option(String key) => options[key] ?? '';
++  @override
++  void setOption(String key, String value) => options[key] = value;
++}
++
++FakeHost use(Map<String, Object?>? state,
++    {HjvDevice device = pc, bool main = true}) {
++  final host = FakeHost(state, dev: device, main: main);
++  hjvUseHost(host);
++  if (state != null) host.push();
++  return host;
++}
++
++Widget app(Widget home) =>
++    MaterialApp(navigatorKey: globalKey, home: Scaffold(body: home));
++
++/// CustomAlertDialog asks for the focus in a zero timer on each build: let the last one run.
++Future<void> settle(WidgetTester tester) async {
++  await tester.pumpAndSettle();
++  await tester.pump(const Duration(milliseconds: 10));
++}
++
++Finder inDialog(Finder what) =>
++    find.descendant(of: find.byType(CustomAlertDialog), matching: what);
++
++const page = Text('connection page');
++const linkText = 'see https://rd.example.com/a now';
++
++void main() {
++  tearDown(() => hjvUseHost(HjvHost()));
++
++  group('a build that takes no part', () {
++    testWidgets(
++        'keeps the connection page, the links and the connections as 1.5.1',
++        (tester) async {
++      final host = use(null);
++      await tester.pumpWidget(app(hjvGate(page)));
++      expect(find.text('connection page'), findsOneWidget);
++      // the page itself, as 1.5.1 builds it
++      expect(tester.widget<Scaffold>(find.byType(Scaffold)).body, same(page));
++
++      expect(await hjvBlockConnect('123456789'), isFalse);
++      hjvOnPeerInfo('123456789', {'version': '1.5.1', 'platform': 'Windows'},
++          ConnType.defaultConn);
++      await tester.pump();
++      expect(find.textContaining('업데이트'), findsNothing);
++      expect(hjvAboutRows(), isEmpty);
++      expect(hjvAboutTiles(), isEmpty);
++      // nothing was asked of the core but whether it takes part, once
++      expect(host.asked, isEmpty);
++      expect(host.reads, 1);
++
++      final content = createDialogContent(linkText) as SelectableText;
++      final link = content.textSpan!.children!
++          .whereType<TextSpan>()
++          .singleWhere((span) => span.recognizer != null);
++      expect(link.text, 'https://rd.example.com/a');
++    });
++
++    testWidgets('a core that cannot be asked yet is asked again later',
++        (tester) async {
++      // "" is the answer of a build, which does not change; an error is not an answer
++      final host = _NotYet();
++      hjvUseHost(host);
++      expect(hjvEnabled(), isFalse);
++      expect(hjvLinksOff(), isFalse);
++      expect(await hjvBlockConnect('1'), isFalse);
++      expect(hjvReadState().state, HjvState.disabled);
++      expect(host.asked, isEmpty);
++      host.ready = true;
++      expect(hjvEnabled(), isTrue);
++      expect(await hjvBlockConnect('1'), isTrue);
++    });
++  });
++
++  group('the connection page', () {
++    testWidgets('stays as it is while the app is up to date', (tester) async {
++      final host = use(core('ok'));
++      await tester.pumpWidget(app(hjvGate(page)));
++      expect(find.text('connection page'), findsOneWidget);
++      expect(find.textContaining('새 버전'), findsNothing);
++      host.state = core('unknown', channel: '');
++      host.push();
++      await tester.pump();
++      expect(find.text('connection page'), findsOneWidget);
++      expect(find.textContaining('업데이트'), findsNothing);
++    });
++
++    testWidgets('gets a line for a newer version, which can be closed for good',
++        (tester) async {
++      tester.view.physicalSize = const Size(360, 640);
++      tester.view.devicePixelRatio = 1;
++      addTearDown(tester.view.reset);
++      final host = use(core('available'));
++      await tester.pumpWidget(app(hjvGate(page)));
++      expect(find.text('connection page'), findsOneWidget);
++      expect(find.text('새 버전이 나왔습니다(1.6.2).'), findsOneWidget);
++      expect(tester.takeException(), isNull);
++
++      // [업데이트] opens the update screen over the page
++      await tester.tap(find.text('업데이트'));
++      await settle(tester);
++      expect(inDialog(find.text('HJViewer를 새 버전(1.6.2)으로 업데이트할 수 있습니다.')),
++          findsOneWidget);
++      expect(inDialog(find.text('현재 1.6.0 · 최소 1.6.1 · 최신 1.6.2')),
++          findsOneWidget);
++      await tester.tap(inDialog(find.text('닫기')));
++      await settle(tester);
++      expect(find.byType(CustomAlertDialog), findsNothing);
++
++      await tester.tap(find.byIcon(Icons.close));
++      await tester.pump();
++      expect(find.text('새 버전이 나왔습니다(1.6.2).'), findsNothing);
++      expect(find.text('connection page'), findsOneWidget);
++      expect(host.options['hjv-update-banner-closed'], '1.6.2');
++      // the next version shows again
++      host.state = core('available', more: {'latest': '1.6.3'});
++      host.push();
++      await tester.pump();
++      expect(find.text('새 버전이 나왔습니다(1.6.3).'), findsOneWidget);
++    });
++
++    testWidgets(
++        'a deadline shows in the line, and closing it lasts for this run only',
++        (tester) async {
++      final host = use(core('grace'));
++      await tester.pumpWidget(app(hjvGate(page)));
++      final line = hjvBannerText(hjvUpdate.value);
++      expect(line, contains('부터는 업데이트해야 연결할 수 있습니다.'));
++      expect(find.text(line), findsOneWidget);
++      expect(find.text('connection page'), findsOneWidget);
++      await tester.tap(find.byIcon(Icons.close));
++      await tester.pump();
++      expect(find.text(line), findsNothing);
++      expect(host.options, isEmpty);
++    });
++
++    testWidgets('is replaced by the update screen when the app must update',
++        (tester) async {
++      tester.view.physicalSize = const Size(360, 640);
++      tester.view.devicePixelRatio = 1;
++      addTearDown(tester.view.reset);
++      final host = use(core('required', more: {'contact': '조교 02-000-0000'}));
++      await tester.pumpWidget(app(hjvGate(page)));
++      expect(find.text('connection page'), findsNothing);
++      expect(find.text('업데이트가 필요합니다'), findsOneWidget);
++      expect(find.text('현재 1.6.0 · 최소 1.6.1 · 최신 1.6.2'), findsOneWidget);
++      expect(find.text(HjvUpdateText.incomingStillWorks), findsOneWidget);
++      expect(find.widgetWithText(ElevatedButton, '업데이트'), findsOneWidget);
++      expect(tester.takeException(), isNull);
++
++      // the policy was taken back: the page returns
++      host.state = core('ok');
++      host.push();
++      await tester.pump();
++      expect(find.text('connection page'), findsOneWidget);
++
++      // not logged in: the screen asks for the login and names whom to ask
++      host.state = core('required',
++          more: {'credential': 'none', 'contact': '조교 02-000-0000'});
++      host.push();
++      await tester.pump();
++      expect(find.text('새 버전을 받으려면 로그인하세요.'), findsOneWidget);
++      expect(
++          find.text('새 버전은 관리자에게 받을 수도 있습니다. 조교 02-000-0000'), findsOneWidget);
++      await tester.tap(find.widgetWithText(ElevatedButton, '로그인'));
++      await tester.pump();
++      expect(host.logins, 1);
++    });
++
++    testWidgets(
++        'an Android app from a file is told once how to move to Google Play',
++        (tester) async {
++      final host = use(
++          core('ok', channel: 'android', more: {'move_to_play': true}),
++          device: android);
++      await tester.pumpWidget(app(hjvGate(page)));
++      expect(find.text(HjvUpdateText.moveToPlay), findsOneWidget);
++      expect(find.text('connection page'), findsOneWidget);
++      await tester.tap(find.text('방법 보기'));
++      await settle(tester);
++      expect(inDialog(find.textContaining('2. 이 앱을 지웁니다.')), findsOneWidget);
++      await tester.tap(inDialog(find.text('닫기')));
++      await settle(tester);
++      await tester.tap(find.byIcon(Icons.close));
++      await tester.pump();
++      expect(find.text(HjvUpdateText.moveToPlay), findsNothing);
++      expect(host.options['hjv-update-move-closed'], 'Y');
++      // not for an app that came from Google Play, nor on another system
++      use(core('ok', channel: 'android_play', more: {'move_to_play': true}),
++          device: android);
++      await tester.pump();
++      expect(find.text(HjvUpdateText.moveToPlay), findsNothing);
++      use(core('ok', more: {'move_to_play': true}));
++      await tester.pump();
++      expect(find.text(HjvUpdateText.moveToPlay), findsNothing);
++    });
++  });
++
++  group('a connection about to start', () {
++    testWidgets(
++        'starts while the app need not update, without asking the server',
++        (tester) async {
++      for (final state in ['ok', 'available', 'grace', 'unknown']) {
++        final host = use(core(state));
++        expect(await hjvBlockConnect('123456789'), isFalse, reason: state);
++        expect(host.asked, isEmpty, reason: state);
++      }
++    });
++
++    testWidgets('is held back when the app must update, and says so',
++        (tester) async {
++      final host = use(core('required'));
++      await tester.pumpWidget(app(page));
++      expect(await hjvBlockConnect('123456789'), isTrue);
++      await settle(tester);
++      expect(inDialog(find.text('업데이트 필요')), findsOneWidget);
++      expect(inDialog(find.text('HJViewer를 1.6.1 이상으로 업데이트한 뒤 연결할 수 있습니다.')),
++          findsOneWidget);
++      // a link or a command line may have come with the window hidden
++      expect(host.shownMain, 1);
++
++      // a second try does not stack a second dialog
++      expect(await hjvBlockConnect('123456789'), isTrue);
++      await settle(tester);
++      expect(find.byType(CustomAlertDialog), findsOneWidget);
++
++      // [업데이트] goes on to the update screen
++      await tester.tap(inDialog(find.text('업데이트')));
++      await settle(tester);
++      expect(inDialog(find.text('업데이트 필요')), findsNothing);
++      expect(inDialog(find.text('업데이트가 필요합니다')), findsOneWidget);
++      await tester.tap(inDialog(find.text('닫기')));
++      await settle(tester);
++      expect(find.byType(CustomAlertDialog), findsNothing);
++    });
++
++    testWidgets(
++        'in a session window the dialog sends the user to the main window',
++        (tester) async {
++      final host = use(core('required'), main: false);
++      await tester.pumpWidget(app(page));
++      expect(await hjvBlockConnect('123456789'), isTrue);
++      await settle(tester);
++      expect(host.shownMain, 0);
++      await tester.tap(inDialog(find.text('업데이트')));
++      await settle(tester);
++      expect(host.shownMain, 1);
++      expect(find.byType(CustomAlertDialog), findsNothing);
++    });
++
++    testWidgets(
++        'asks the server first when the last answer is over half an hour old',
++        (tester) async {
++      final host = use(core('ok'));
++      await tester.pumpWidget(app(page));
++      host.clock = checkedAt + 1801;
++      var pauses = 0;
++      host.onSet = (key, value) {
++        if (key == 'hjv-update-check' && value == 'now') {
++          host.state = core('ok', more: {'checking': true});
++        }
++      };
++      // the answer comes after 300 ms: the minimum was raised
++      host.onPause = () async {
++        if (++pauses == 3) {
++          host.state = core('required', more: {'checked_at': host.clock});
++        }
++      };
++      expect(await hjvBlockConnect('123456789'), isTrue);
++      expect(host.asked, ['hjv-update-check=now']);
++      expect(pauses, 3);
++      await settle(tester);
++      expect(inDialog(find.text('업데이트 필요')), findsOneWidget);
++      await tester.tap(inDialog(find.text('닫기')));
++      await settle(tester);
++
++      // no answer in two seconds: the connection goes by what the app holds
++      final slow = use(core('ok'));
++      slow.clock = checkedAt + 1801;
++      pauses = 0;
++      slow.onSet =
++          (key, value) => slow.state = core('ok', more: {'checking': true});
++      slow.onPause = () async => pauses++;
++      expect(await hjvBlockConnect('123456789'), isFalse);
++      expect(slow.asked, ['hjv-update-check=now']);
++      expect(pauses, 20);
++    });
++
++    testWidgets('a second start for the same PC during the wait is dropped',
++        (tester) async {
++      final host = use(core('ok'));
++      host.clock = checkedAt + 1801;
++      final answer = Completer<void>();
++      host.onSet =
++          (key, value) => host.state = core('ok', more: {'checking': true});
++      host.onPause = () async {
++        await answer.future;
++        host.state = core('ok', more: {'checked_at': host.clock});
++      };
++      final first = hjvBlockConnect('123456789');
++      await tester.pump();
++      expect(await hjvBlockConnect('123456789'), isTrue);
++      // a connection to another PC is its own
++      final other = hjvBlockConnect('987654321');
++      answer.complete();
++      expect(await first, isFalse);
++      expect(await other, isFalse);
++      expect(host.asked.length, 2);
++      // and afterwards the same one starts again
++      expect(await hjvBlockConnect('123456789'), isFalse);
++    });
++  });
++
++  testWidgets(
++      'dialogs make no links of the addresses in a server\'s or a PC\'s text',
++      (tester) async {
++    use(core('ok'));
++    expect(hjvLinksOff(), isTrue);
++    final content = createDialogContent(linkText) as SelectableText;
++    expect(content.data, linkText);
++    expect(content.textSpan, isNull);
++  });
++
++  testWidgets('the app is in front only while it is resumed', (tester) async {
++    final host = HjvHost();
++    Future<void> to(AppLifecycleState state) =>
++        tester.binding.defaultBinaryMessenger.handlePlatformMessage(
++            'flutter/lifecycle',
++            const StringCodec().encodeMessage(state.toString()),
++            (_) {});
++    await to(AppLifecycleState.resumed);
++    expect(host.inFront, isTrue);
++    await to(AppLifecycleState.inactive);
++    expect(host.inFront, isFalse);
++    await to(AppLifecycleState.paused);
++    expect(host.inFront, isFalse);
++    await to(AppLifecycleState.resumed);
++    expect(host.inFront, isTrue);
++  });
++
++  group('the update screen\'s buttons', () {
++    testWidgets(
++        'an installed Windows PC asks before it has the service install now',
++        (tester) async {
++      final host = use(
++          core('required', more: {'installed': true, 'credential': 'device'}));
++      host.onSet = (key, value) {
++        if (key == 'hjv-update-now') {
++          host.state = core('required',
++              more: {'installed': true, 'credential': 'device'},
++              job: {'phase': 'waiting'});
++        }
++      };
++      await tester.pumpWidget(app(hjvGate(page)));
++      expect(find.text(HjvUpdateText.winNow), findsOneWidget);
++      await tester.tap(find.widgetWithText(ElevatedButton, '지금 업데이트'));
++      await settle(tester);
++      expect(inDialog(find.text(HjvUpdateText.closesNow)), findsOneWidget);
++      expect(host.asked, isEmpty);
++      // [닫기] installs nothing
++      await tester.tap(inDialog(find.text('닫기')));
++      await settle(tester);
++      expect(host.asked, isEmpty);
++
++      await tester.tap(find.widgetWithText(ElevatedButton, '지금 업데이트'));
++      await settle(tester);
++      await tester
++          .tap(inDialog(find.widgetWithText(ElevatedButton, '지금 업데이트')));
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 10));
++      expect(host.asked, ['hjv-update-now=']);
++      expect(find.text('업데이트를 준비하는 중…'), findsOneWidget);
++      expect(find.byType(LinearProgressIndicator), findsOneWidget);
++      expect(find.widgetWithText(ElevatedButton, '지금 업데이트'), findsNothing);
++
++      // three installs did not take: [다시 시도] asks the service again
++      host.state = core('required',
++          more: {'installed': true, 'credential': 'device'},
++          job: {'phase': 'error', 'error': 'attempts'});
++      host.push();
++      await tester.pump();
++      expect(find.text(HjvUpdateText.attempts), findsOneWidget);
++      await tester.tap(find.widgetWithText(ElevatedButton, '다시 시도'));
++      await settle(tester);
++      await tester
++          .tap(inDialog(find.widgetWithText(ElevatedButton, '지금 업데이트')));
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 10));
++      expect(host.asked, ['hjv-update-now=', 'hjv-update-now=']);
++    });
++
++    testWidgets(
++        'a Windows app that is not installed downloads, then hands over',
++        (tester) async {
++      final host = use(core('required'));
++      host.onSet = (key, value) {
++        if (key == 'hjv-update-download') {
++          host.state = core('required',
++              job: {'phase': 'downloading', 'done': 50, 'total': 200});
++        }
++      };
++      await tester.pumpWidget(app(hjvGate(page)));
++      await tester.tap(find.widgetWithText(ElevatedButton, '업데이트'));
++      await tester.pump();
++      expect(host.asked, ['hjv-update-download=']);
++      expect(find.text('새 버전을 내려받는 중… 25%'), findsOneWidget);
++      expect(
++          tester
++              .widget<LinearProgressIndicator>(
++                  find.byType(LinearProgressIndicator))
++              .value,
++          0.25);
++
++      host.state = core('required', job: {
++        'phase': 'ready',
++        'file': r'C:\Users\u\Downloads\HJViewer-1.6.2.exe'
++      });
++      host.push();
++      await tester.pump();
++      expect(find.text(HjvUpdateText.opensNow), findsOneWidget);
++      // a Windows app hands nothing to an installer
++      expect(host.installs, isEmpty);
++      await tester.tap(find.widgetWithText(ElevatedButton, '지금 실행'));
++      await tester.pump();
++      expect(host.asked, ['hjv-update-download=', 'hjv-update-run=']);
++    });
++
++    testWidgets('[다시 확인] checks now and says what came of it', (tester) async {
++      final host = use(core('required'));
++      host.onSet = (key, value) {
++        host.state = core('required', more: {'checking': true});
++      };
++      var pauses = 0;
++      host.onPause = () async {
++        if (++pauses == 2) {
++          host.clock = checkedAt + 100;
++          host.state = core('ok', more: {'checked_at': checkedAt + 100});
++        }
++      };
++      await tester.pumpWidget(app(hjvGate(page)));
++      await tester.tap(find.text('다시 확인'));
++      await tester.pump();
++      expect(host.asked, ['hjv-update-check=now']);
++      expect(host.toasts, ['최신 버전입니다.']);
++      expect(find.text('connection page'), findsOneWidget);
++    });
++
++    testWidgets('[다시 확인] waits while the server is being asked',
++        (tester) async {
++      final host = use(core('required'));
++      final answer = Completer<void>();
++      host.onSet = (key, value) =>
++          host.state = core('required', more: {'checking': true});
++      host.onPause = () async {
++        await answer.future;
++        host.clock = checkedAt + 100;
++        host.state = core('required', more: {'checked_at': checkedAt + 100});
++      };
++      await tester.pumpWidget(app(hjvGate(page)));
++      await tester.tap(find.text('다시 확인'));
++      await tester.pump();
++      expect(find.text('다시 확인'), findsNothing);
++      // a second press while it waits asks nothing more
++      await tester.tap(find.text('확인하는 중…'), warnIfMissed: false);
++      await tester.pump();
++      expect(host.asked, ['hjv-update-check=now']);
++      answer.complete();
++      await tester.pump();
++      await tester.pump();
++      expect(find.text('다시 확인'), findsOneWidget);
++      expect(host.toasts, ['업데이트가 필요합니다']);
++    });
++
++    testWidgets(
++        'a newer version that is not required downloads from the dialog',
++        (tester) async {
++      final host = use(core('available'));
++      host.onSet = (key, value) {
++        if (key == 'hjv-update-download') {
++          host.state = core('available', job: {'phase': 'downloading'});
++        }
++      };
++      await tester.pumpWidget(app(hjvGate(page)));
++      await tester.tap(find.text('업데이트'));
++      await settle(tester);
++      // [다시 확인] in the dialog says what it found and leaves the dialog as it is
++      await tester.tap(inDialog(find.text('다시 확인')));
++      await settle(tester);
++      expect(host.asked, ['hjv-update-check=now']);
++      expect(host.toasts, ['새 버전이 나왔습니다(1.6.2).']);
++      expect(find.byType(CustomAlertDialog), findsOneWidget);
++      host.asked.clear();
++
++      await tester.tap(inDialog(find.widgetWithText(ElevatedButton, '업데이트')));
++      await tester.pump();
++      await tester.pump(const Duration(milliseconds: 10));
++      expect(host.asked, ['hjv-update-download=']);
++      expect(inDialog(find.text('새 버전을 내려받는 중…')), findsOneWidget);
++      expect(inDialog(find.byType(LinearProgressIndicator)), findsOneWidget);
++      expect(tester.takeException(), isNull);
++      // the page stays in use meanwhile
++      expect(find.text('connection page'), findsOneWidget);
++      host.state = core('available', job: {
++        'phase': 'ready',
++        'file': r'C:\Users\u\Downloads\HJViewer-1.6.2.exe'
++      });
++      host.push();
++      await settle(tester);
++      expect(inDialog(find.widgetWithText(ElevatedButton, '지금 실행')),
++          findsOneWidget);
++    });
++
++    test('an iPhone opens TestFlight, or its App Store page, or says why not',
++        () async {
++      const store = 'https://apps.apple.com/app/testflight/id899247664';
++      final host = use(core('required', channel: 'ios'), device: iphone);
++      host.opens = {'itms-beta://', store};
++      await hjvRunAction(HjvAction.openTestFlight);
++      expect(host.launched, ['itms-beta://']);
++      host.launched.clear();
++      host.opens = {store};
++      await hjvRunAction(HjvAction.openTestFlight);
++      expect(host.launched, ['itms-beta://', store]);
++      expect(host.toasts, isEmpty);
++      host.opens = {};
++      await hjvRunAction(HjvAction.openTestFlight);
++      expect(host.toasts, [HjvUpdateText.iosFailed]);
++      // the app itself downloads nothing on an iPhone
++      expect(host.asked, isEmpty);
++    });
++
++    test('an Android app from Google Play opens the Play Store', () async {
++      final host =
++          use(core('required', channel: 'android_play'), device: android);
++      host.opens = {
++        'https://play.google.com/store/apps/details?id=com.example.hjv'
++      };
++      await hjvRunAction(HjvAction.openPlay);
++      expect(host.launched, [
++        'market://details?id=com.example.hjv',
++        'https://play.google.com/store/apps/details?id=com.example.hjv'
++      ]);
++      expect(host.asked, isEmpty);
++      host.opens = {};
++      await hjvRunAction(HjvAction.openPlay);
++      expect(host.toasts, [HjvUpdateText.playFailed]);
++    });
++
++    test(
++        'an Android app from a file downloads, then goes to the system installer',
++        () async {
++      const file = '/cache/updates/HJViewer-1.6.2.apk';
++      Map<String, Object?> at(Map<String, Object?> job) =>
++          core('required', channel: 'android', job: job);
++      final host = use(at(const {}), device: android);
++      host.onSet = (key, value) {
++        if (key == 'hjv-update-download') {
++          host.state = at({'phase': 'downloading', 'total': 200});
++        }
++      };
++      await hjvRunAction(HjvAction.download);
++      // into the app's own cache, which only its FileProvider hands on
++      expect(host.asked, ['hjv-update-download=/cache/updates']);
++      expect(hjvUpdate.value.phase, HjvPhase.downloading);
++      host.state = at({'phase': 'downloading', 'done': 100, 'total': 200});
++      host.push();
++      expect(host.installs, isEmpty);
++
++      // the file is there and is the signed one: the installer is asked, once
++      host.installAnswer = 'permission';
++      host.state = at({'phase': 'ready', 'file': file});
++      host.push();
++      await Future<void>.delayed(Duration.zero);
++      expect(host.installs, [file]);
++      expect(hjvSteps.value.install, HjvInstall.permission);
++      host.push();
++      await Future<void>.delayed(Duration.zero);
++      expect(host.installs, [file]);
++
++      // [설정 열기], and back in the app the installer is asked again
++      await hjvRunAction(HjvAction.installSettings);
++      expect(host.settingsOpened, 1);
++      host.installAnswer = 'ok';
++      hjvCameToFront();
++      await Future<void>.delayed(Duration.zero);
++      expect(host.installs, [file, file]);
++      expect(hjvSteps.value.install, HjvInstall.opened);
++      // coming back once more does not open it again by itself
++      hjvCameToFront();
++      await Future<void>.delayed(Duration.zero);
++      expect(host.installs, [file, file]);
++
++      // [설치 화면 열기]; a file that is not this app's is told so
++      host.installAnswer = 'mismatch';
++      await hjvRunAction(HjvAction.install);
++      expect(host.installs, [file, file, file]);
++      expect(hjvSteps.value.install, HjvInstall.mismatch);
++    });
++
++    test('a download that ends while the app is in the background waits for it',
++        () async {
++      const file = '/cache/updates/HJViewer-1.6.2.apk';
++      Map<String, Object?> at(Map<String, Object?> job) =>
++          core('required', channel: 'android', job: job);
++      final host = use(at(const {}), device: android);
++      host.onSet = (key, value) {
++        if (key == 'hjv-update-download') {
++          host.state = at({'phase': 'downloading', 'total': 200});
++        }
++      };
++      await hjvRunAction(HjvAction.download);
++      // the user went to another app, and Android opens no installer for this one there
++      host.front = false;
++      host.state = at({'phase': 'ready', 'file': file});
++      host.push();
++      await Future<void>.delayed(Duration.zero);
++      expect(host.installs, isEmpty);
++      // back in the app, the installer opens, once
++      host.front = true;
++      hjvCameToFront();
++      await Future<void>.delayed(Duration.zero);
++      expect(host.installs, [file]);
++      expect(hjvSteps.value.install, HjvInstall.opened);
++      hjvCameToFront();
++      await Future<void>.delayed(Duration.zero);
++      expect(host.installs, [file]);
++    });
++
++    testWidgets(
++        'the update screen and its dialog show the step the install is at',
++        (tester) async {
++      const file = '/cache/updates/HJViewer-1.6.2.apk';
++      Map<String, Object?> at(String state) => core(state,
++          channel: 'android', job: {'phase': 'ready', 'file': file});
++      final host = use(at('required'), device: android);
++      host.installAnswer = 'permission';
++      await tester.pumpWidget(app(hjvGate(page)));
++      await tester.tap(find.widgetWithText(ElevatedButton, '설치 화면 열기'));
++      await tester.pump();
++      expect(host.installs, [file]);
++      // the app may not install apps yet: the way to the setting
++      expect(find.text(HjvUpdateText.allowSource), findsOneWidget);
++      expect(find.widgetWithText(ElevatedButton, '설정 열기'), findsOneWidget);
++
++      // a newer version that is not required: the dialog shows the same step
++      host.state = at('available');
++      host.push();
++      await tester.pump();
++      expect(find.text('connection page'), findsOneWidget);
++      hjvShowUpdate();
++      await settle(tester);
++      expect(inDialog(find.text(HjvUpdateText.allowSource)), findsOneWidget);
++      expect(inDialog(find.text('설정 열기')), findsOneWidget);
++      await tester.tap(inDialog(find.text('닫기')));
++      await settle(tester);
++    });
++
++    test(
++        'a download that fails opens no installer, and a build without one says so',
++        () async {
++      Map<String, Object?> at(Map<String, Object?> job) =>
++          core('required', channel: 'android', job: job);
++      final host = use(at(const {}), device: android);
++      host.onSet =
++          (key, value) => host.state = at({'phase': 'downloading', 'total': 9});
++      await hjvRunAction(HjvAction.download);
++      // whatever the state names as its file, only a ready one is installed
++      host.state = at({
++        'phase': 'error',
++        'error': 'verify',
++        'file': '/cache/updates/HJViewer-1.6.2.apk'
++      });
++      host.push();
++      // a later download of another screen's is not this one's
++      host.state = at({'phase': 'ready', 'file': '/cache/updates/x.apk'});
++      host.push();
++      await Future<void>.delayed(Duration.zero);
++      expect(host.installs, isEmpty);
++      // a ready job that names no file hands nothing to the installer
++      host.state = at({'phase': 'ready', 'file': ''});
++      host.push();
++      await hjvRunAction(HjvAction.install);
++      expect(host.installs, isEmpty);
++      expect(hjvSteps.value.install, HjvInstall.none);
++
++      final bare = _NoInstaller(at({'phase': 'ready', 'file': '/c/a.apk'}));
++      hjvUseHost(bare);
++      bare.push();
++      await hjvRunAction(HjvAction.install);
++      expect(hjvSteps.value.install, HjvInstall.failed);
++    });
++  });
++
++  group('when the policy is checked', () {
++    test('at the start the device is told first, then the check is asked for',
++        () async {
++      final host = use(core('unknown', channel: ''), device: android);
++      host.deviceJson = '{"installer":"","os":"34"}';
++      host.onSet = (key, value) {
++        if (key == 'hjv-update-device') {
++          host.state = core('required', channel: 'android');
++        }
++      };
++      await hjvStart();
++      expect(host.asked, [
++        'hjv-update-device={"installer":"","os":"34"}',
++        'hjv-update-check='
++      ]);
++      // what the app held from its last run shows before the server answers
++      expect(hjvUpdate.value.required, isTrue);
++      // what earlier runs downloaded is gone
++      expect(host.cleared, 1);
++
++      final bare = use(core('ok'));
++      await hjvStart();
++      expect(bare.asked, ['hjv-update-check=']);
++
++      // a download of the screens' earlier run goes on in the core: its file stays
++      for (final phase in ['downloading', 'ready']) {
++        final busy = use(core('required', channel: 'android', job: {
++          'phase': phase,
++          'file': phase == 'ready' ? '/cache/updates/x.apk' : ''
++        }));
++        await hjvStart();
++        expect(busy.cleared, 0, reason: phase);
++      }
++    });
++
++    test('coming back to the front checks after an hour', () async {
++      final host = use(core('ok'));
++      host.clock = checkedAt + 3600;
++      hjvCameToFront();
++      expect(host.asked, isEmpty);
++      host.clock = checkedAt + 3601;
++      host.state = core('available');
++      hjvCameToFront();
++      expect(host.asked, ['hjv-update-check=']);
++      expect(hjvUpdate.value.state, HjvState.available);
++    });
++
++    test('a login checks at once', () async {
++      final host = use(core('required', more: {'credential': 'none'}));
++      host.state = core('required');
++      hjvOnLogin('tester');
++      expect(host.asked, ['hjv-update-check=now']);
++      expect(hjvUpdate.value.credential, 'token');
++      host.state = core('required', more: {'credential': 'none'});
++      hjvOnLogin('');
++      expect(host.asked, ['hjv-update-check=now']);
++      expect(hjvUpdate.value.credential, 'none');
++    });
++
++    testWidgets(
++        'the start, the main window coming back and a login are what check',
++        (tester) async {
++      final host = use(core('available'));
++      host.deviceJson = '{"os":"10.0.19045"}';
++      // the line of this version was closed in an earlier run
++      host.options['hjv-update-banner-closed'] = '1.6.2';
++      hjvInitUpdate();
++      final front = windowManager.listeners.last;
++      addTearDown(() {
++        windowManager.removeListener(front);
++        WidgetsBinding.instance.removeObserver(front as WidgetsBindingObserver);
++      });
++      await tester.pumpWidget(app(hjvGate(page)));
++      expect(host.asked,
++          ['hjv-update-device={"os":"10.0.19045"}', 'hjv-update-check=']);
++      expect(find.text('connection page'), findsOneWidget);
++      expect(find.text('새 버전이 나왔습니다(1.6.2).'), findsNothing);
++
++      // focused or restored an hour after the last check, the main window asks again
++      host.asked.clear();
++      host.clock = checkedAt + 3601;
++      front.onWindowFocus();
++      expect(host.asked, ['hjv-update-check=']);
++      front.onWindowRestore();
++      expect(host.asked, ['hjv-update-check=', 'hjv-update-check=']);
++
++      host.asked.clear();
++      host.loginListener!('tester');
++      expect(host.asked, ['hjv-update-check=now']);
++    });
++  });
++
++  group('a PC below the minimum', () {
++    const url = 'https://rd.example.com/api/hjv/u/K7M2-Q9XD';
++    final old = {
++      'version': '1.5.1',
++      'platform': 'Windows',
++      'platform_additions': '{"is_installed":true}'
++    };
++
++    testWidgets('is told to the controller once, over the session, and goes on',
++        (tester) async {
++      final host = use(core('ok'));
++      host.minWindows = '1.6.0';
++      await tester.pumpWidget(app(page));
++      hjvOnPeerInfo('123456789', old, ConnType.defaultConn);
++      await tester.pump();
++      expect(find.text('원격 PC 123 456 789'), findsOneWidget);
++      expect(find.text(HjvUpdateText.peerNeedsLink('1.5.1', '1.6.0')),
++          findsOneWidget);
++      expect(find.text('이 PC용 설치 링크'), findsOneWidget);
++      // the session below stays in reach
++      expect(find.text('connection page').hitTestable(), findsOneWidget);
++      await tester.tap(find.text('닫기'));
++      await tester.pump();
++      expect(find.text('이 PC용 설치 링크'), findsNothing);
++
++      // a reconnection does not tell it again
++      hjvOnPeerInfo('123456789', old, ConnType.defaultConn);
++      await tester.pump();
++      expect(find.textContaining('업데이트가 필요합니다'), findsNothing);
++
++      // a PC with an update screen of its own gets no link
++      hjvOnPeerInfo(
++          '987654321', {...old, 'version': '1.6.0'}, ConnType.defaultConn);
++      host.minWindows = '1.6.1';
++      hjvOnPeerInfo(
++          '987654321', {...old, 'version': '1.6.0'}, ConnType.defaultConn);
++      await tester.pump();
++      expect(find.text(HjvUpdateText.peerUpdatesItself('1.6.0', '1.6.1')),
++          findsOneWidget);
++      expect(find.text('이 PC용 설치 링크'), findsNothing);
++      await tester.tap(find.text('닫기'));
++      await tester.pump();
++    });
++
++    testWidgets('no notice for other sessions, other systems and current PCs',
++        (tester) async {
++      final host = use(core('ok'));
++      host.minWindows = '1.6.0';
++      await tester.pumpWidget(app(page));
++      hjvOnPeerInfo('1', old, ConnType.fileTransfer);
++      hjvOnPeerInfo('2', old, null);
++      hjvOnPeerInfo('3', {...old, 'platform': 'Android'}, ConnType.defaultConn);
++      hjvOnPeerInfo('4', {...old, 'version': '1.6.0'}, ConnType.defaultConn);
++      hjvOnPeerInfo('5', {...old, 'version': null}, ConnType.defaultConn);
++      host.minWindows = '';
++      hjvOnPeerInfo('6', old, ConnType.defaultConn);
++      await tester.pump();
++      expect(find.textContaining('업데이트가 필요합니다'), findsNothing);
++    });
++
++    testWidgets('the link is shown large and copied, for ten minutes',
++        (tester) async {
++      final copied = <String>[];
++      var closed = 0;
++      await tester.pumpWidget(app(Align(
++          child: HjvPeerCard(
++              peer: '123 456 789',
++              notice: hjvPeerNotice(
++                  version: '1.5.1', platform: 'Windows', min: '1.6.0')!,
++              copies: true,
++              askLink: () async => const HjvLinkAnswer.ok(
++                  HjvLink(url, 'HJViewer-1.6.2-install.exe', 600)),
++              copy: (text) async => copied.add(text),
++              onClose: () => closed++))));
++      await tester.tap(find.text('이 PC용 설치 링크'));
++      await tester.pump();
++      expect(find.text('PC의 브라우저 주소창에 아래 주소를 입력하세요. 10분 동안 쓸 수 있습니다.'),
++          findsOneWidget);
++      expect(find.text('rd.example.com/api/hjv/u/'), findsOneWidget);
++      expect(find.text('K7M2-Q9XD'), findsOneWidget);
++      expect(find.text(HjvUpdateText.linkCopied), findsOneWidget);
++      expect(find.text(HjvUpdateText.linkThen), findsOneWidget);
++      expect(copied, [url]);
++      expect(find.text('이 PC용 설치 링크'), findsNothing);
++      // the card leaves with the link
++      await tester.pump(const Duration(seconds: 599));
++      expect(closed, 0);
++      await tester.pump(const Duration(seconds: 2));
++      expect(closed, 1);
++    });
++
++    testWidgets('the card says that the link is being made', (tester) async {
++      final answer = Completer<HjvLinkAnswer>();
++      var closed = 0;
++      await tester.pumpWidget(app(Align(
++          child: HjvPeerCard(
++              peer: '123 456 789',
++              notice: hjvPeerNotice(
++                  version: '1.5.1', platform: 'Windows', min: '1.6.0')!,
++              copies: true,
++              askLink: () => answer.future,
++              copy: (text) async {},
++              onClose: () => closed++))));
++      await tester.tap(find.text('이 PC용 설치 링크'));
++      await tester.pump();
++      expect(find.text('설치 링크를 만드는 중…'), findsOneWidget);
++      expect(find.byType(LinearProgressIndicator), findsOneWidget);
++      expect(find.text('이 PC용 설치 링크'), findsNothing);
++      expect(tester.takeException(), isNull);
++      // the notice does not leave while the answer is on its way
++      await tester.pump(const Duration(seconds: 61));
++      expect(closed, 0);
++      answer.complete(const HjvLinkAnswer.failed('busy'));
++      await tester.pump();
++      expect(find.text(HjvUpdateText.linkFailed), findsOneWidget);
++      await tester.pumpWidget(app(page));
++    });
++
++    testWidgets('a notice nobody touches leaves after a minute',
++        (tester) async {
++      final host = use(core('ok'));
++      host.minWindows = '1.6.0';
++      await tester.pumpWidget(app(page));
++      hjvOnPeerInfo('123456789', old, ConnType.defaultConn);
++      await tester.pump();
++      expect(find.text('이 PC용 설치 링크'), findsOneWidget);
++      await tester.pump(const Duration(seconds: 61));
++      await tester.pump();
++      expect(find.text('이 PC용 설치 링크'), findsNothing);
++    });
++
++    testWidgets('what a PC sends cannot stop the session', (tester) async {
++      final host = use(core('ok'));
++      host.minWindows = '1.6.0';
++      await tester.pumpWidget(app(page));
++      for (final evt in <Map<String, dynamic>>[
++        {},
++        {'version': 7, 'platform': 'Windows'},
++        {'version': '1.5.1', 'platform': 7},
++        {'version': '1.5.1\n(version not allowed)', 'platform': 'Windows'},
++        {'version': '1.5.1', 'platform': 'Windows', 'platform_additions': 7},
++        {'version': '1.5.1', 'platform': 'Windows', 'platform_additions': '{'},
++      ]) {
++        hjvOnPeerInfo('123456789', evt, ConnType.defaultConn);
++      }
++      await tester.pump();
++      // the last two are a PC below the minimum with unreadable extras: told, not installed
++      expect(find.text(HjvUpdateText.peerNeedsLink('1.5.1', '1.6.0')),
++          findsOneWidget);
++      await tester.tap(find.text('닫기'));
++      await tester.pump();
++      // a window without an overlay yet tells nothing and tries again later
++      await tester.pumpWidget(const SizedBox());
++      hjvOnPeerInfo('555555555', old, ConnType.defaultConn);
++      await tester.pumpWidget(app(page));
++      hjvOnPeerInfo('555555555', old, ConnType.defaultConn);
++      await tester.pump();
++      expect(find.text('원격 PC 555 555 555'), findsOneWidget);
++      await tester.tap(find.text('닫기'));
++      await tester.pump();
++    });
++
++    testWidgets(
++        'the card asks for the file that fits the PC, and an iPhone copies nothing',
++        (tester) async {
++      final host = use(core('ok'), device: iphone);
++      host.minWindows = '1.6.0';
++      host.onSet = (key, value) => scheduleMicrotask(() => host.push({
++            'link': {
++              'url': url,
++              'file': 'HJViewer-1.6.2-install.exe',
++              'expires_in': 600
++            }
++          }));
++      await tester.pumpWidget(app(page));
++      hjvOnPeerInfo('123456789', old, ConnType.defaultConn);
++      await tester.pump();
++      final card = tester.widget<HjvPeerCard>(find.byType(HjvPeerCard));
++      expect(card.copies, isFalse);
++      expect(card.notice.installed, isTrue);
++      final answer = await tester.runAsync(card.askLink);
++      expect(host.asked,
++          ['hjv-update-link={"platform":"windows","installed":true}']);
++      expect(answer!.link!.url, url);
++      await tester.tap(find.text('닫기'));
++      await tester.pump();
++      // a PC that only runs the app gets the file that runs it
++      hjvOnPeerInfo('987654321', {...old, 'platform_additions': ''},
++          ConnType.defaultConn);
++      await tester.pump();
++      expect(
++          tester.widget<HjvPeerCard>(find.byType(HjvPeerCard)).notice.installed,
++          isFalse);
++      await tester.tap(find.text('닫기'));
++      await tester.pump();
++      // other devices copy the link for the remote clipboard
++      use(core('ok'), device: android).minWindows = '1.6.0';
++      hjvOnPeerInfo('123456789', old, ConnType.defaultConn);
++      await tester.pump();
++      expect(
++          tester.widget<HjvPeerCard>(find.byType(HjvPeerCard)).copies, isTrue);
++      await tester.tap(find.text('닫기'));
++      await tester.pump();
++    });
++
++    testWidgets('an iPhone shows the link without copying it', (tester) async {
++      final copied = <String>[];
++      await tester.pumpWidget(app(Align(
++          child: HjvPeerCard(
++              peer: '123 456 789',
++              notice: hjvPeerNotice(
++                  version: '1.5.1', platform: 'Windows', min: '1.6.0')!,
++              copies: false,
++              askLink: () async => const HjvLinkAnswer.ok(
++                  HjvLink(url, 'HJViewer-1.6.2-install.exe', 600)),
++              copy: (text) async => copied.add(text),
++              onClose: () {}))));
++      await tester.tap(find.text('이 PC용 설치 링크'));
++      await tester.pump();
++      expect(find.text('K7M2-Q9XD'), findsOneWidget);
++      expect(find.text(HjvUpdateText.linkCopied), findsNothing);
++      expect(copied, isEmpty);
++      await tester.pumpWidget(app(page));
++    });
++
++    testWidgets(
++        'without a login there is no link, and a failure can be tried again',
++        (tester) async {
++      final asked = <Completer<HjvLinkAnswer>>[];
++      Widget card(String key) => app(Align(
++          child: HjvPeerCard(
++              key: ValueKey(key),
++              peer: '123 456 789',
++              notice: hjvPeerNotice(
++                  version: '1.5.1', platform: 'Windows', min: '1.6.0')!,
++              copies: true,
++              askLink: () {
++                asked.add(Completer());
++                return asked.last.future;
++              },
++              copy: (text) async {},
++              onClose: () {})));
++      await tester.pumpWidget(card('login'));
++      await tester.tap(find.text('이 PC용 설치 링크'));
++      await tester.pump();
++      asked.last.complete(const HjvLinkAnswer.failed('login'));
++      await tester.pump();
++      expect(find.text(HjvUpdateText.linkNeedsLogin), findsOneWidget);
++      expect(find.text('다시 시도'), findsNothing);
++
++      await tester.pumpWidget(card('network'));
++      await tester.tap(find.text('이 PC용 설치 링크'));
++      await tester.pump();
++      asked.last.complete(const HjvLinkAnswer.failed('network'));
++      await tester.pump();
++      expect(find.text(HjvUpdateText.linkFailed), findsOneWidget);
++      // trying again shows that the link is being made, not the old failure
++      await tester.tap(find.text('다시 시도'));
++      await tester.pump();
++      expect(asked.length, 3);
++      expect(find.text(HjvUpdateText.linkFailed), findsNothing);
++      expect(find.text('설치 링크를 만드는 중…'), findsOneWidget);
++      expect(find.text('다시 시도'), findsNothing);
++      asked.last.complete(const HjvLinkAnswer.ok(
++          HjvLink(url, 'HJViewer-1.6.2-install.exe', 600)));
++      await tester.pump();
++      expect(find.text('K7M2-Q9XD'), findsOneWidget);
++      await tester.pumpWidget(app(page));
++    });
++
++    test('the window that asked gets the answer the main window got', () async {
++      final host = use(core('ok'));
++      host.onSet = (key, value) {
++        if (key == 'hjv-update-link') {
++          scheduleMicrotask(() => host.push({
++                'link': {
++                  'url': url,
++                  'file': 'HJViewer-1.6.2-install.exe',
++                  'expires_in': 600
++                }
++              }));
++        }
++      };
++      final answer = await hjvAskLink('windows', true);
++      expect(host.asked,
++          ['hjv-update-link={"platform":"windows","installed":true}']);
++      expect(answer.link!.url, url);
++
++      host.onSet = (key, value) =>
++          scheduleMicrotask(() => host.push({'link_error': 'login'}));
++      final refused = await hjvAskLink('windows', false);
++      expect([refused.link, refused.error], [null, 'login']);
++    });
++
++    test('an Android before 7.0 opens its own short link in the browser',
++        () async {
++      const apk = 'https://rd.example.com/api/hjv/u/0123-4567';
++      final host =
++          use(core('required', channel: 'android'), device: oldAndroid);
++      host.opens = {apk};
++      host.onSet = (key, value) => scheduleMicrotask(() => host.push({
++            'link': {
++              'url': apk,
++              'file': 'HJViewer-1.6.2-android-arm64.apk',
++              'expires_in': 600
++            }
++          }));
++      await hjvRunAction(HjvAction.browser);
++      expect(host.asked,
++          ['hjv-update-link={"platform":"android","installed":false}']);
++      expect(host.launched, [apk]);
++      expect(host.toasts, isEmpty);
++      expect(hjvSteps.value.linking, isFalse);
++
++      // an answer that is no short link of the server opens nothing
++      host.launched.clear();
++      host.onSet = (key, value) => scheduleMicrotask(() => host.push({
++            'link': {
++              'url': 'https://evil.example/HJViewer.apk',
++              'file': 'HJViewer.apk',
++              'expires_in': 600
++            }
++          }));
++      await hjvRunAction(HjvAction.browser);
++      expect(host.launched, isEmpty);
++      expect(hjvSteps.value.linkError, 'http');
++    });
++  });
++
++  testWidgets('Settings → About shows the policy and checks by hand',
++      (tester) async {
++    final host = use(core('available', more: {'source': 'client-1.6.2'}));
++    await tester.pumpWidget(
++        app(Column(mainAxisSize: MainAxisSize.min, children: hjvAboutRows())));
++    for (final line in hjvAboutLines(hjvUpdate.value)) {
++      expect(find.text(line), findsOneWidget);
++    }
++    expect(find.text('현재 1.6.0 · 최소 1.6.1 · 최신 1.6.2'), findsOneWidget);
++    expect(find.textContaining('세대 1 · 순번 12'), findsOneWidget);
++    expect(find.widgetWithText(ElevatedButton, '업데이트'), findsOneWidget);
++    expect(hjvAboutTiles().length, 1);
++
++    // a newer version: the check opens the update screen
++    host.onSet = (key, value) =>
++        host.state = core('available', more: {'checked_at': host.clock});
++    await tester.tap(find.text('업데이트 확인'));
++    await settle(tester);
++    expect(host.asked, ['hjv-update-check=now']);
++    expect(host.toasts, isEmpty);
++    expect(inDialog(find.text('새 버전이 나왔습니다')), findsOneWidget);
++    await tester.tap(inDialog(find.text('닫기')));
++    await settle(tester);
++
++    // none: it says so
++    host.onSet = (key, value) =>
++        host.state = core('ok', more: {'checked_at': host.clock});
++    await tester.tap(find.text('업데이트 확인'));
++    await tester.pump();
++    expect(host.toasts, ['최신 버전입니다.']);
++    expect(find.widgetWithText(ElevatedButton, '업데이트'), findsNothing);
++    expect(find.byType(CustomAlertDialog), findsNothing);
++  });
++}
++
++/// A core that cannot be asked at first: the bridge is not there yet.
++class _NotYet extends FakeHost {
++  _NotYet() : super(core('required'));
++  bool ready = false;
++
++  @override
++  String get(String key) =>
++      ready ? super.get(key) : throw StateError('no bridge');
++}
++
++/// A build whose MainActivity has no "hjv_install_apk".
++class _NoInstaller extends FakeHost {
++  _NoInstaller(Map<String, Object?> state) : super(state, dev: android);
++
++  @override
++  Future<Object?> installApk(String path) =>
++      throw StateError('MissingPluginException');
++}
+diff --git a/flutter/test/hjv_update_test.dart b/flutter/test/hjv_update_test.dart
+new file mode 100644
+index 0000000..3832893
+--- /dev/null
++++ b/flutter/test/hjv_update_test.dart
+@@ -0,0 +1,895 @@
++import 'dart:convert';
++
++import 'package:flutter_hbb/common/hjv_update_model.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The minimum app version as the screens show it: plain Dart, which ci.sh runs with the bridge's
++// web stand-in. The states are written as the Rust core writes them (src/hjviewer_update/mod.rs
++// state_json, and on an installed Windows PC install.rs overlay).
++
++int unix(DateTime t) => t.millisecondsSinceEpoch ~/ 1000;
++
++/// The device's time in these tests: Korea's, whatever the machine that runs them has.
++DateTime kst(int s) =>
++    DateTime.fromMillisecondsSinceEpoch(s * 1000, isUtc: true)
++        .add(const Duration(hours: 9));
++
++/// 2026-11-23 00:00 in Korea, the deadline a policy sets by default.
++final grace = unix(DateTime.utc(2026, 11, 22, 15));
++final issued = unix(DateTime.utc(2026, 11, 2, 0));
++final checked = unix(DateTime.utc(2026, 11, 2, 5, 3));
++
++HjvUpdateInfo state(String state,
++        {String channel = 'windows',
++        Map<String, Object?> more = const {},
++        Map<String, Object?> job = const {}}) =>
++    HjvUpdateInfo.fromMap({
++      'state': state,
++      'channel': channel,
++      'current': '1.6.0',
++      'min': '1.6.1',
++      'latest': '1.6.2',
++      'grace_until': state == 'grace' ? grace : 0,
++      'os_min': '',
++      'os_too_old': false,
++      'notes': '',
++      'source': '',
++      'contact': '',
++      'move_to_play': false,
++      'package': {'file': 'HJViewer-1.6.2-windows-x86_64.exe', 'size': 200},
++      'installed': false,
++      'installer': '',
++      'credential': 'token',
++      'policy_epoch': 1,
++      'policy_seq': 12,
++      'policy_issued': issued,
++      'checked_at': checked,
++      'tried_at': checked,
++      'checking': false,
++      ...more,
++      'job': {
++        'phase': 'idle',
++        'error': '',
++        'done': 0,
++        'total': 0,
++        'file': '',
++        ...job
++      },
++    });
++
++const windowsPc = HjvDevice(platform: HjvPlatform.windows, takesIncoming: true);
++const android = HjvDevice(platform: HjvPlatform.android, sdk: 34);
++const oldAndroid = HjvDevice(platform: HjvPlatform.android, sdk: 23);
++const iphone =
++    HjvDevice(platform: HjvPlatform.ios, iosExport: 'app-store-connect');
++const adHocIphone =
++    HjvDevice(platform: HjvPlatform.ios, iosExport: 'release-testing');
++
++HjvPanelModel panel(HjvUpdateInfo i, HjvDevice d,
++        {HjvSteps steps = const HjvSteps()}) =>
++    hjvPanelModel(i, d, steps: steps, local: kst);
++
++void main() {
++  group('the state', () {
++    test('an empty or broken answer is a build that takes no part', () {
++      for (final s in ['', 'null', '[]', '{', 'x', '"required"', '7']) {
++        final i = HjvUpdateInfo.fromJson(s);
++        expect(i.state, HjvState.disabled, reason: s);
++        expect(i.enabled, isFalse, reason: s);
++        expect(i.required, isFalse, reason: s);
++        expect(i.behind, isFalse, reason: s);
++      }
++    });
++
++    test('a state this app does not know blocks nothing', () {
++      for (final s in ['later', 'disabled', '', 'REQUIRED']) {
++        final i = HjvUpdateInfo.fromJson(jsonEncode({'state': s}));
++        expect(i.state, HjvState.unknown, reason: s);
++        expect(i.enabled, isTrue);
++        expect(i.required, isFalse);
++      }
++      expect(HjvUpdateInfo.fromJson('{}').state, HjvState.unknown);
++      // fields of another type are left out, not thrown at the screen
++      final odd = HjvUpdateInfo.fromJson(
++          '{"state":"required","min":7,"grace_until":"x","job":"none","package":"x"}');
++      expect(odd.required, isTrue);
++      expect(odd.min, '');
++      expect(odd.graceUntil, 0);
++      expect(odd.phase, HjvPhase.idle);
++      expect(odd.hasPackage, isFalse);
++    });
++
++    test('reads what the core writes', () {
++      final i = HjvUpdateInfo.fromJson(
++          '{"state":"grace","channel":"android","current":"1.6.0","min":"1.6.1",'
++          '"latest":"1.6.2","grace_until":1795014000,"os_min":"24","os_too_old":true,'
++          '"notes":"n","source":"client-1.6.2","contact":"c","move_to_play":true,'
++          '"package":{"file":"HJViewer-1.6.2-android-arm64.apk","size":200},'
++          '"installed":false,"installer":"","credential":"none","policy_epoch":2,'
++          '"policy_seq":12,"policy_issued":1793577600,"checked_at":1793581200,'
++          '"tried_at":1793581260,"checking":true,'
++          '"job":{"phase":"downloading","error":"","done":50,"total":200,"file":""}}');
++      expect(i.state, HjvState.grace);
++      expect(i.behind, isTrue);
++      expect(i.required, isFalse);
++      expect(i.channel, 'android');
++      expect(i.fromPlay, isFalse);
++      expect([i.current, i.min, i.latest], ['1.6.0', '1.6.1', '1.6.2']);
++      expect(i.graceUntil, 1795014000);
++      expect([i.osMin, i.osTooOld], ['24', true]);
++      expect([i.notes, i.source, i.contact], ['n', 'client-1.6.2', 'c']);
++      expect([i.moveToPlay, i.hasPackage, i.installed], [true, true, false]);
++      expect(i.credential, 'none');
++      expect([i.policyEpoch, i.policySeq, i.policyIssued], [2, 12, 1793577600]);
++      expect(
++          [i.checkedAt, i.triedAt, i.checking], [1793581200, 1793581260, true]);
++      expect(i.phase, HjvPhase.downloading);
++      expect(i.progress, 0.25);
++      // the service of an installed Windows PC
++      final pc = state('available',
++          more: {'installed': true, 'credential': 'unbound'},
++          job: {'phase': 'notice', 'until': 1795014600});
++      expect([pc.installed, pc.credential], [true, 'unbound']);
++      expect([pc.phase, pc.until], [HjvPhase.notice, 1795014600]);
++      expect(pc.autoInstall, isFalse);
++      expect(state('ok', job: {'phase': 'error', 'error': 'tls'}).error, 'tls');
++      expect(state('ok', job: {'phase': 'ready', 'file': '/c/u/a.apk'}).file,
++          '/c/u/a.apk');
++      expect(state('ok', job: {'phase': 'soon'}).phase, HjvPhase.idle);
++      expect(state('ok', job: {'done': 5}).progress, isNull);
++      expect(state('ok', channel: 'android_play').fromPlay, isTrue);
++      expect(state('ok', more: {'package': null}).hasPackage, isFalse);
++    });
++  });
++
++  group('the update screen', () {
++    test(
++        'says what is required, with the versions and without a particle on them',
++        () {
++      final m = panel(state('required'), windowsPc);
++      expect(m.title, '업데이트가 필요합니다');
++      expect(m.body,
++          ['지금 버전으로는 다른 기기에 연결할 수 없습니다. HJViewer를 1.6.1 이상으로 업데이트하세요.']);
++      expect(m.versions, '현재 1.6.0 · 최소 1.6.1 · 최신 1.6.2');
++      // a PC goes on taking connections; a phone takes none
++      expect(m.hints.last, '업데이트 전에도 다른 기기에서 이 기기로 들어오는 연결은 받을 수 있습니다.');
++      for (final phone in [android, iphone]) {
++        expect(panel(state('required', channel: 'android'), phone).hints,
++            isNot(contains(HjvUpdateText.incomingStillWorks)));
++      }
++      expect(panel(state('available'), windowsPc).hints,
++          isNot(contains(HjvUpdateText.incomingStillWorks)));
++    });
++
++    test('a newer version that is not required yet, and its deadline', () {
++      final newer = panel(state('available'), windowsPc);
++      expect(newer.title, '새 버전이 나왔습니다');
++      expect(newer.body, ['HJViewer를 새 버전(1.6.2)으로 업데이트할 수 있습니다.']);
++      final soon = panel(state('grace'), windowsPc);
++      expect(soon.title, '새 버전이 나왔습니다');
++      expect(soon.body, [
++        '11월 23일 0시부터는 업데이트해야 연결할 수 있습니다.',
++        'HJViewer를 1.6.1 이상으로 업데이트하세요.'
++      ]);
++      expect(panel(state('ok'), windowsPc).title, '최신 버전입니다.');
++      expect(panel(state('unknown'), windowsPc).buttons, isEmpty);
++    });
++
++    test('an iPhone goes to TestFlight, unless it was not installed from there',
++        () {
++      final m = panel(state('required', channel: 'ios'), iphone);
++      expect(m.hints, [HjvUpdateText.iosHint]);
++      expect(m.buttons,
++          [const HjvButton('TestFlight 열기', HjvAction.openTestFlight)]);
++      expect(m.notes, isEmpty);
++      for (final other in [
++        adHocIphone,
++        const HjvDevice(platform: HjvPlatform.ios)
++      ]) {
++        final adHoc = panel(
++            state('required',
++                channel: 'ios', more: {'contact': '조교 02-000-0000'}),
++            other);
++        expect(adHoc.hints, [HjvUpdateText.iosNotTestFlight]);
++        expect(adHoc.buttons, isEmpty);
++        expect(adHoc.notes, ['새 버전은 관리자에게 받을 수도 있습니다. 조교 02-000-0000']);
++      }
++    });
++
++    test('an Android app from Google Play goes to the Play Store', () {
++      // nothing to download and no login to ask for: the store updates it
++      final m = panel(
++          state('required',
++              channel: 'android_play',
++              more: {'package': null, 'credential': 'none'}),
++          android);
++      expect(m.hints, [HjvUpdateText.playHint]);
++      expect(m.buttons, [const HjvButton('Play 스토어 열기', HjvAction.openPlay)]);
++    });
++
++    test('an Android app from a file downloads and installs in the app', () {
++      HjvPanelModel of(
++              {Map<String, Object?> more = const {},
++              Map<String, Object?> job = const {},
++              HjvSteps steps = const HjvSteps(),
++              HjvDevice device = android}) =>
++          panel(state('required', channel: 'android', more: more, job: job),
++              device,
++              steps: steps);
++
++      expect(of().hints, [HjvUpdateText.androidHint]);
++      expect(of().buttons, [const HjvButton('새 버전 내려받기', HjvAction.download)]);
++      // no package in the policy yet
++      expect(of(more: {'package': null}).hints, [HjvUpdateText.preparing]);
++      expect(of(more: {'package': null}).buttons, isEmpty);
++      // not logged in
++      final login = of(more: {'credential': 'none'});
++      expect(login.hints, ['새 버전을 받으려면 로그인하세요.']);
++      expect(login.buttons, [const HjvButton('로그인', HjvAction.logIn)]);
++      expect(login.notes, ['새 버전은 관리자에게 받을 수도 있습니다.']);
++
++      final half = of(job: {'phase': 'downloading', 'done': 50, 'total': 200});
++      expect(half.status, '새 버전을 내려받는 중… 25%');
++      expect([half.busy, half.progress], [true, 0.25]);
++      expect(half.buttons, isEmpty);
++
++      const ready = {
++        'phase': 'ready',
++        'file': '/cache/updates/HJViewer-1.6.2.apk'
++      };
++      final installer = of(job: ready);
++      expect(installer.status, HjvUpdateText.androidInstaller);
++      expect(
++          installer.buttons, [const HjvButton('설치 화면 열기', HjvAction.install)]);
++      final allow =
++          of(job: ready, steps: const HjvSteps(install: HjvInstall.permission));
++      expect(allow.status, HjvUpdateText.allowSource);
++      expect(allow.buttons, [
++        const HjvButton('설정 열기', HjvAction.installSettings),
++        const HjvButton('설치 화면 열기', HjvAction.install)
++      ]);
++      final other =
++          of(job: ready, steps: const HjvSteps(install: HjvInstall.mismatch));
++      expect(other.status, HjvUpdateText.errNotThisApp);
++      expect(other.buttons, [const HjvButton('다시 시도', HjvAction.download)]);
++      final closed =
++          of(job: ready, steps: const HjvSteps(install: HjvInstall.failed));
++      expect(closed.status, HjvUpdateText.installerFailed);
++      expect(closed.buttons, [const HjvButton('다시 시도', HjvAction.install)]);
++      expect(closed.notes, isNotEmpty);
++    });
++
++    test('an Android before 7.0 downloads in the browser, by a short link', () {
++      HjvPanelModel of(HjvSteps steps, {String credential = 'token'}) => panel(
++          state('required',
++              channel: 'android', more: {'credential': credential}),
++          oldAndroid,
++          steps: steps);
++      expect(of(const HjvSteps()).hints, [HjvUpdateText.androidBrowserHint]);
++      expect(of(const HjvSteps()).buttons,
++          [const HjvButton('새 버전 내려받기', HjvAction.browser)]);
++      final asking = of(const HjvSteps(linking: true));
++      expect([asking.status, asking.busy], [HjvUpdateText.linkAsking, true]);
++      expect(asking.buttons, isEmpty);
++      final failed = of(const HjvSteps(linkError: 'network'));
++      expect(failed.status, HjvUpdateText.errDownload);
++      expect(failed.buttons, [const HjvButton('다시 시도', HjvAction.browser)]);
++      expect(of(const HjvSteps(linkError: 'login')).primary, HjvAction.logIn);
++      expect(of(const HjvSteps(), credential: 'none').primary, HjvAction.logIn);
++      // an Android whose version is not known yet takes the way of today's Androids
++      expect(
++          panel(state('required', channel: 'android'),
++                  const HjvDevice(platform: HjvPlatform.android))
++              .primary,
++          HjvAction.download);
++      // 7.0 is the first that installs from the app's own files
++      expect(
++          panel(state('required', channel: 'android'),
++                  const HjvDevice(platform: HjvPlatform.android, sdk: 24))
++              .primary,
++          HjvAction.download);
++    });
++
++    test('an installed Windows PC is updated by its service', () {
++      HjvPanelModel of(String state_,
++              {Map<String, Object?> more = const {},
++              Map<String, Object?> job = const {}}) =>
++          panel(
++              state(state_,
++                  more: {'installed': true, 'credential': 'device', ...more},
++                  job: job),
++              windowsPc);
++
++      const now = HjvButton('지금 업데이트', HjvAction.updateNow);
++      // below the minimum the service installs whatever the policy says about the rest
++      expect(of('required').hints.take(2),
++          [HjvUpdateText.winInstalls, HjvUpdateText.winNow]);
++      expect(of('required').buttons, [now]);
++      // above it, only when the core says the policy has it install by itself
++      expect(of('available').hints, [HjvUpdateText.winNow]);
++      expect(of('available', more: {'auto_install': true}).hints,
++          [HjvUpdateText.winInstalls, HjvUpdateText.winNow]);
++
++      final unbound = of('required', more: {'credential': 'unbound'});
++      expect(unbound.hints.first, HjvUpdateText.winUnbound);
++      expect(unbound.buttons, [const HjvButton('로그인', HjvAction.logIn)]);
++
++      expect(of('required', job: {'phase': 'waiting'}).status, '업데이트를 준비하는 중…');
++      final down = of('required', job: {'phase': 'downloading'});
++      expect([down.status, down.busy, down.progress],
++          ['새 버전을 내려받는 중…', true, null]);
++      expect(of('required', job: {'phase': 'verifying'}).status,
++          '내려받은 파일을 확인하는 중…');
++      expect(of('required', job: {'phase': 'installing'}).status, '설치하는 중…');
++      for (final phase in [
++        'waiting',
++        'downloading',
++        'verifying',
++        'installing'
++      ]) {
++        expect(of('required', job: {'phase': phase}).buttons, isEmpty);
++      }
++      // 02:10 in Korea
++      final notice = of('required', job: {
++        'phase': 'notice',
++        'until': unix(DateTime.utc(2026, 11, 22, 17, 10))
++      });
++      expect(notice.status, startsWith('HJViewer가 02:10에 닫히고 새 버전을 설치합니다.'));
++      expect(notice.buttons, [now]);
++
++      const again = HjvButton('다시 시도', HjvAction.updateNow);
++      final attempts =
++          of('required', job: {'phase': 'error', 'error': 'attempts'});
++      expect(attempts.status,
++          '자동 업데이트를 마치지 못했습니다(3번 시도). [다시 시도]를 누르거나 관리자에게 알려 주세요.');
++      expect(attempts.buttons, [again]);
++      for (final code in ['install', 'service', 'network', 'verify', 'tls']) {
++        final failed = of('required', job: {'phase': 'error', 'error': code});
++        expect(failed.status, HjvUpdateText.failure(code), reason: code);
++        expect(failed.buttons, [again], reason: code);
++      }
++      // a file whose own version is not the policy's
++      expect(of('required', job: {'phase': 'error', 'error': 'version'}).status,
++          '내려받은 파일이 이 앱의 새 버전이 아니어서 설치하지 않았습니다. 관리자에게 알려 주세요.');
++      expect(of('required', more: {'package': null}).hints.first,
++          HjvUpdateText.preparing);
++    });
++
++    test(
++        'a Windows app that is not installed fetches the new file and hands over',
++        () {
++      HjvPanelModel of(
++              {Map<String, Object?> more = const {},
++              Map<String, Object?> job = const {}}) =>
++          panel(state('required', more: more, job: job), windowsPc);
++
++      expect(of().hints.first, contains('새 파일(HJViewer-1.6.2.exe)을 실행하세요.'));
++      expect(of().buttons, [const HjvButton('업데이트', HjvAction.download)]);
++      expect(of(more: {'credential': 'none'}).primary, HjvAction.logIn);
++      expect(
++          of(job: {'phase': 'downloading', 'done': 199, 'total': 200}).status,
++          '새 버전을 내려받는 중… 99%');
++      final ready = of(job: {
++        'phase': 'ready',
++        'file': r'C:\Users\u\Downloads\HJViewer-1.6.2.exe'
++      });
++      expect(ready.status, HjvUpdateText.opensNow);
++      expect(ready.buttons, [const HjvButton('지금 실행', HjvAction.run)]);
++    });
++
++    test('a failure says why and what to do next', () {
++      HjvPanelModel of(String code, {String credential = 'token'}) => panel(
++          state('required',
++              channel: 'android',
++              more: {'credential': credential},
++              job: {'phase': 'error', 'error': code}),
++          android);
++      const again = HjvButton('다시 시도', HjvAction.download);
++      expect(of('network').status, HjvUpdateText.errDownload);
++      expect(of('http').status, HjvUpdateText.errDownload);
++      expect(of('something new').status, HjvUpdateText.errDownload);
++      expect(of('tls').status, HjvUpdateText.errTls);
++      expect(of('busy').status, HjvUpdateText.errBusy);
++      expect(of('file').status, HjvUpdateText.errFile);
++      expect(of('missing').status, HjvUpdateText.preparing);
++      // a file that is not the signed one is never installed; fetching it again is safe
++      expect(of('verify').status, HjvUpdateText.errVerify);
++      for (final code in [
++        'network',
++        'tls',
++        'busy',
++        'file',
++        'missing',
++        'verify'
++      ]) {
++        expect(of(code).buttons, [again], reason: code);
++      }
++      // asking again cannot help
++      expect(of('refused').status, HjvUpdateText.errRefused);
++      expect(of('refused').buttons, isEmpty);
++      expect(of('refused').notes, isNotEmpty);
++      // the server did not take the login
++      expect(of('login').hints.first, HjvUpdateText.needsLogin);
++      expect(of('login').buttons,
++          [const HjvButton('로그인', HjvAction.logIn), again]);
++    });
++
++    test('a system too old for the new version is told so, with what it needs',
++        () {
++      final m = panel(
++          state('required',
++              channel: 'android',
++              more: {'os_min': '24', 'os_too_old': true, 'contact': '조교'}),
++          oldAndroid);
++      expect(m.title, HjvUpdateText.title);
++      expect(m.hints,
++          ['이 기기의 OS에서는 새 버전을 쓸 수 없습니다(필요: Android 7.0 이상). 관리자에게 문의하세요.']);
++      expect(m.buttons, isEmpty);
++      expect(m.notes, ['조교']);
++      expect(hjvOsNeed(HjvPlatform.android, '22'), 'Android 5.1');
++      expect(hjvOsNeed(HjvPlatform.android, '99'), 'Android API 99');
++      expect(hjvOsNeed(HjvPlatform.ios, '15.0'), 'iOS 15.0');
++      expect(hjvOsNeed(HjvPlatform.windows, '10'), 'Windows 10');
++    });
++
++    test('the notes and the source of the new version are plain lines below',
++        () {
++      final m = panel(
++          state('available',
++              more: {'notes': '화면 공유가 빨라졌습니다.', 'source': 'client-1.6.2'}),
++          windowsPc);
++      expect(m.notes, [
++        '화면 공유가 빨라졌습니다.',
++        '소스 코드(GNU AGPL-3.0): github.com/yonsei-projecttf/hjviewer 저장소의 태그 client-1.6.2'
++      ]);
++    });
++
++    test('other systems get no way to update, only whom to ask', () {
++      final m = panel(state('required'), const HjvDevice());
++      expect(m.buttons, isEmpty);
++      expect(m.notes, [HjvUpdateText.askAdmin('')]);
++    });
++  });
++
++  group('the banner and Settings → About', () {
++    test(
++        'the banner names the version and, with one, the deadline in local time',
++        () {
++      expect(
++          hjvBannerText(state('available'), local: kst), '새 버전이 나왔습니다(1.6.2).');
++      expect(hjvBannerText(state('grace'), local: kst),
++          '새 버전이 나왔습니다(1.6.2). 11월 23일 0시부터는 업데이트해야 연결할 수 있습니다.');
++      // the same deadline on a device in another zone
++      expect(
++          hjvBannerText(state('grace'),
++              local: (s) =>
++                  DateTime.fromMillisecondsSinceEpoch(s * 1000, isUtc: true)),
++          contains('11월 22일 15시부터는'));
++      expect(hjvDeadline(DateTime(2026, 11, 23, 9, 30)), '11월 23일 9시 30분');
++      // what the screens show is in the device's own time zone
++      expect(hjvLocalTime(grace),
++          DateTime.fromMillisecondsSinceEpoch(grace * 1000));
++      expect(hjvLocalTime(grace).isUtc, isFalse);
++      expect(
++          hjvBannerText(
++              state('available',
++                  more: {'installed': true, 'auto_install': true}),
++              local: kst),
++          '새 버전이 나왔습니다(1.6.2). 쓰지 않을 때 자동으로 설치됩니다.');
++      expect(
++          hjvBannerText(state('available', more: {'installed': true}),
++              local: kst),
++          '새 버전이 나왔습니다(1.6.2).');
++    });
++
++    test('About shows the versions, the policy and the last check', () {
++      expect(
++          hjvAboutLines(state('available', more: {'source': 'client-1.6.2'}),
++              local: kst),
++          [
++            '현재 1.6.0 · 최소 1.6.1 · 최신 1.6.2',
++            '업데이트 정책: 세대 1 · 순번 12 · 발행 2026-11-02 09:00',
++            '마지막 확인: 2026-11-02 14:03',
++            '소스 코드(GNU AGPL-3.0): github.com/yonsei-projecttf/hjviewer 저장소의 태그 client-1.6.2',
++          ]);
++      // before the first policy
++      expect(
++          hjvAboutLines(
++              HjvUpdateInfo.fromMap({'state': 'unknown', 'current': '1.6.0'})),
++          ['현재 1.6.0', '업데이트 정책: 아직 받지 못했습니다', '마지막 확인: 없음']);
++    });
++
++    test('a check by hand says what it found', () {
++      expect(hjvCheckResult(state('ok'), checked + 2), '최신 버전입니다.');
++      expect(hjvCheckResult(state('available'), checked + 2),
++          '새 버전이 나왔습니다(1.6.2).');
++      expect(hjvCheckResult(state('grace'), checked), '새 버전이 나왔습니다(1.6.2).');
++      expect(hjvCheckResult(state('required'), checked), '업데이트가 필요합니다');
++      expect(hjvCheckResult(state('unknown'), checked), HjvUpdateText.noEntry);
++      // the last answer is old: this check got none
++      expect(
++          hjvCheckResult(state('ok'), checked + 61), HjvUpdateText.checkFailed);
++      expect(hjvCheckResult(state('ok', more: {'checked_at': 0}), checked),
++          HjvUpdateText.checkFailed);
++    });
++  });
++
++  group('when the policy is asked for', () {
++    test(
++        'a check is due after its time, at first, and when the clock went back',
++        () {
++      const age = Duration(minutes: 30);
++      final i = state('ok');
++      expect(hjvCheckDue(i, checked + 1800, age), isFalse);
++      expect(hjvCheckDue(i, checked + 1801, age), isTrue);
++      expect(hjvCheckDue(i, checked - 1801, age), isTrue);
++      expect(
++          hjvCheckDue(
++              state('ok', more: {'checked_at': 0, 'tried_at': 0}), 5, age),
++          isTrue);
++      // an attempt that failed counts: a server that is down is not asked at every connection
++      final failed = state('ok', more: {'tried_at': checked + 7200});
++      expect(hjvCheckDue(failed, checked + 7200 + 60, age), isFalse);
++      expect(kHjvConnectAge, const Duration(minutes: 30));
++      expect(kHjvFrontAge, const Duration(hours: 1));
++    });
++
++    /// A core that answers a check after `answerAfter` looks at its state.
++    Future<(HjvUpdateInfo, int, int)> connect(HjvUpdateInfo held, int now,
++        {int? answerAfter, HjvUpdateInfo? answer, bool refuses = false}) async {
++      var asked = 0, pauses = 0;
++      var checking = false;
++      final got = await hjvStateForConnect(
++          read: () {
++            if (checking && answerAfter != null && pauses >= answerAfter) {
++              checking = false;
++              held = answer ?? held;
++            }
++            return HjvUpdateInfo.fromMap({
++              'state': held.state.name,
++              'checked_at': held.checkedAt,
++              'tried_at': held.triedAt,
++              'checking': checking
++            });
++          },
++          checkNow: () async {
++            asked++;
++            if (refuses) throw StateError('no core');
++            checking = true;
++          },
++          now: () => now,
++          pause: (time) async {
++            expect(time, const Duration(milliseconds: 100));
++            pauses++;
++          });
++      return (got, asked, pauses);
++    }
++
++    test('a connection goes by the held verdict while it is fresh', () async {
++      final (got, asked, pauses) = await connect(state('ok'), checked + 60);
++      expect([got.state, asked, pauses], [HjvState.ok, 0, 0]);
++      final blocked = (await connect(state('required'), checked + 60)).$1;
++      expect(blocked.required, isTrue);
++    });
++
++    test('a connection waits for a new answer when the last one is old',
++        () async {
++      final later = checked + 1801;
++      final fresh = state('required', more: {'checked_at': later});
++      final (got, asked, pauses) =
++          await connect(state('ok'), later, answerAfter: 3, answer: fresh);
++      expect([got.required, asked, pauses], [true, 1, 3]);
++      // an old "required" is asked about again too, and may be gone
++      final freed = await connect(state('required'), later,
++          answerAfter: 1, answer: state('ok', more: {'checked_at': later}));
++      expect(freed.$1.required, isFalse);
++    });
++
++    test('the wait ends after two seconds, with the verdict held then',
++        () async {
++      final (got, asked, pauses) =
++          await connect(state('ok'), checked + 1801, answerAfter: null);
++      expect(
++          [got.state, got.checking, asked, pauses], [HjvState.ok, true, 1, 20]);
++      final (still, _, waited) =
++          await connect(state('required'), checked + 1801, answerAfter: null);
++      expect([still.required, waited], [true, 20]);
++    });
++
++    test('a core that cannot be asked, and a build that takes no part',
++        () async {
++      final (got, asked, pauses) =
++          await connect(state('ok'), checked + 1801, refuses: true);
++      expect([got.state, asked, pauses], [HjvState.ok, 1, 0]);
++      var touched = 0;
++      final none = await hjvStateForConnect(
++          read: () => HjvUpdateInfo.none,
++          checkNow: () async => touched++,
++          now: () => 0,
++          pause: (_) async => touched++);
++      expect([none.state, touched], [HjvState.disabled, 0]);
++    });
++
++    test('the device is told before the first check', () {
++      expect(hjvDeviceValue(installer: 'com.android.vending', os: '34'),
++          '{"installer":"com.android.vending","os":"34"}');
++      // an app installed from a file says so: silence would leave it without an entry
++      expect(hjvDeviceValue(installer: '', os: '23'),
++          '{"installer":"","os":"23"}');
++      expect(hjvDeviceValue(os: '17.5.1'), '{"os":"17.5.1"}');
++      expect(hjvDeviceValue(os: '10.0.19045'), '{"os":"10.0.19045"}');
++      expect(hjvDeviceValue(), '');
++      expect(hjvDeviceValue(os: ''), '');
++    });
++  });
++
++  group('opening the stores', () {
++    /// Whether one of the links opened, and the links that were tried.
++    Future<List<Object>> open(List<String> links, Set<String> opening,
++        {Set<String> throwing = const {}}) async {
++      final tried = <String>[];
++      final ok = await hjvOpenFirst(links, (uri) async {
++        tried.add('$uri');
++        if (throwing.contains('$uri')) throw StateError('no handler');
++        return opening.contains('$uri');
++      });
++      return [ok, tried];
++    }
++
++    test('TestFlight first, its App Store page when the app does not open',
++        () async {
++      const store = 'https://apps.apple.com/app/testflight/id899247664';
++      expect(hjvTestFlightLinks, ['itms-beta://', store]);
++      expect(await open(hjvTestFlightLinks, {'itms-beta://', store}), [
++        true,
++        ['itms-beta://']
++      ]);
++      expect(await open(hjvTestFlightLinks, {store}), [
++        true,
++        ['itms-beta://', store]
++      ]);
++      expect(
++          await open(hjvTestFlightLinks, {store}, throwing: {'itms-beta://'}), [
++        true,
++        ['itms-beta://', store]
++      ]);
++      expect(await open(hjvTestFlightLinks, {}), [
++        false,
++        ['itms-beta://', store]
++      ]);
++    });
++
++    test('the Play Store app first, then its page', () async {
++      final links = hjvPlayLinks('com.example.hjv');
++      expect(links, [
++        'market://details?id=com.example.hjv',
++        'https://play.google.com/store/apps/details?id=com.example.hjv'
++      ]);
++      expect(await open(links, {links[1]}), [true, links]);
++      expect(await open(links, {links[0]}), [
++        true,
++        [links[0]]
++      ]);
++    });
++
++    test('the answer of the system installer', () {
++      expect(hjvInstallResult('ok'), HjvInstall.opened);
++      expect(hjvInstallResult('permission'), HjvInstall.permission);
++      expect(hjvInstallResult('mismatch'), HjvInstall.mismatch);
++      for (final other in [null, false, true, '', 'OK', 7]) {
++        expect(hjvInstallResult(other), HjvInstall.failed, reason: '$other');
++      }
++    });
++  });
++
++  group('a PC below the minimum', () {
++    HjvPeerNotice? notice(String version,
++            {String platform = 'Windows',
++            String min = '1.6.1',
++            Object? additions}) =>
++        hjvPeerNotice(
++            version: version,
++            platform: platform,
++            min: min,
++            additions: additions);
++
++    test('a PC before 1.6.0 gets a link, a later one updates itself', () {
++      final old = notice('1.5.1', additions: '{"is_installed":true}')!;
++      expect(old.offersLink, isTrue);
++      expect(old.installed, isTrue);
++      expect(old.text,
++          '이 PC의 원격 앱은 업데이트가 필요합니다(지금 1.5.1, 최소 1.6.1). PC의 브라우저로 새 버전을 받아 설치할 수 있습니다.');
++      final own = notice('1.6.0', additions: {'is_installed': true})!;
++      expect(own.offersLink, isFalse);
++      expect(own.installed, isTrue);
++      expect(own.text,
++          '이 PC의 HJViewer는 업데이트가 필요합니다(지금 1.6.0, 최소 1.6.1). PC의 HJViewer 창에서 [지금 업데이트]를 누르면 설치됩니다. 설치하는 동안 연결이 잠시 끊깁니다.');
++      // one that runs without being installed has [업데이트] and [지금 실행] instead
++      final run = notice('1.6.0', additions: {'is_installed': false})!;
++      expect(run.installed, isFalse);
++      expect(run.text,
++          '이 PC의 HJViewer는 업데이트가 필요합니다(지금 1.6.0, 최소 1.6.1). PC의 HJViewer 창에서 [업데이트]를 누르면 새 버전을 내려받고, [지금 실행]을 누르면 새 버전이 열립니다. 그때 연결이 잠시 끊깁니다.');
++      expect(notice('1.5.9', min: '1.6.0')!.offersLink, isTrue);
++      expect(notice('1.6.0', min: '1.10.0')!.offersLink, isFalse);
++    });
++
++    test('no notice for a PC that is up to date, or that is no Windows PC', () {
++      expect(notice('1.6.1'), isNull);
++      expect(notice('1.6.2'), isNull);
++      expect(notice('1.10.0'), isNull);
++      expect(notice('1.5.1', min: ''), isNull);
++      // a controlled Android stays on the last version that can be controlled
++      for (final platform in [
++        'Android',
++        'Linux',
++        'Mac OS',
++        'Unknown: iOS',
++        ''
++      ]) {
++        expect(notice('1.5.1', platform: platform), isNull, reason: platform);
++      }
++    });
++
++    test('a version that is not one is not shown', () {
++      for (final version in [
++        '',
++        '1.5',
++        'v1.5.1',
++        '1.5.1 ',
++        '1.5.1+7',
++        '1.5.x',
++        '<b>1.5.1</b>',
++        '99999.1.1'
++      ]) {
++        expect(notice(version), isNull, reason: version);
++      }
++      expect(notice('1.5.1-2')!.text, contains('지금 1.5.1-2'));
++    });
++
++    test('versions count as the core counts them', () {
++      expect(hjvVersionNumber('1.5.1'), 1005010);
++      expect(hjvVersionNumber('1.6.0'), 1006000);
++      expect(hjvVersionNumber('1.5.1-2'), 1005012);
++      expect(hjvVersionNumber('1.6'), 1060);
++      expect(hjvVersionNumber('1.5.1+123'), 1005000);
++      expect(hjvVersionNumber(''), 0);
++    });
++
++    test('whether the PC has the app installed', () {
++      expect(hjvPeerInstalled('{"is_installed":true}'), isTrue);
++      expect(hjvPeerInstalled('{"is_installed":"true"}'), isFalse);
++      expect(hjvPeerInstalled('{"is_wayland":false}'), isFalse);
++      for (final other in [null, '', '{', '[]', 7]) {
++        expect(hjvPeerInstalled(other), isFalse, reason: '$other');
++      }
++    });
++  });
++
++  group('a short link', () {
++    Map<String, Object?> event(Object? url,
++            {Object? file = 'HJViewer-1.6.2-install.exe',
++            Object? expires = 600}) =>
++        {
++          'name': 'hjv-update',
++          'state': 'ok',
++          'link': {'url': url, 'file': file, 'expires_in': expires}
++        };
++    const good = 'https://rd.example.com/api/hjv/u/K7M2-Q9XD';
++
++    test('is this server\'s address with the code, for ten minutes', () {
++      final link = hjvLinkAnswer(event(good))!.link!;
++      expect(link.url, good);
++      expect(link.typed, 'rd.example.com/api/hjv/u/');
++      expect(link.code, 'K7M2-Q9XD');
++      expect(link.file, 'HJViewer-1.6.2-install.exe');
++      expect(link.minutes, 10);
++      expect(HjvUpdateText.linkEnter(link.minutes),
++          'PC의 브라우저 주소창에 아래 주소를 입력하세요. 10분 동안 쓸 수 있습니다.');
++      expect(
++          hjvLinkAnswer(
++                  event('https://rd.example.com:8443/api/hjv/u/0123-4567'))!
++              .link,
++          isNotNull);
++    });
++
++    test('anything else is not shown and not opened', () {
++      for (final url in [
++        'http://rd.example.com/api/hjv/u/K7M2-Q9XD',
++        'https://rd.example.com/api/hjv/u/K7M2-Q9XD/',
++        'https://rd.example.com/api/hjv/u/K7M2-Q9XD?next=https://evil.example',
++        'https://rd.example.com/api/hjv/u/K7M2Q9XD',
++        'https://rd.example.com/api/hjv/u/k7m2-q9xd',
++        'https://rd.example.com/api/hjv/u/K7M2-Q9XI',
++        'https://rd.example.com/api/hjv/u/K7M2-Q9XL',
++        'https://rd.example.com/api/hjv/u/K7M2-Q9XO',
++        'https://rd.example.com/api/hjv/u/K7M2-Q9XU',
++        'https://rd.example.com/api/hjv/get/K7M2-Q9XD',
++        'https://user@rd.example.com/api/hjv/u/K7M2-Q9XD',
++        'https://rd.example.com/x/../api/hjv/u/K7M2-Q9XD',
++        'https://evil.example/#https://rd.example.com/api/hjv/u/K7M2-Q9XD',
++        ' https://rd.example.com/api/hjv/u/K7M2-Q9XD',
++        'https://rd.example.com/api/hjv/u/K7M2-Q9XD\n',
++        '/api/hjv/u/K7M2-Q9XD',
++        'javascript:alert(1)',
++        '',
++        null,
++        7,
++      ]) {
++        final answer = hjvLinkAnswer(event(url))!;
++        expect(answer.link, isNull, reason: '$url');
++        expect(answer.error, 'http', reason: '$url');
++      }
++      for (final file in ['', 'a b.exe', '../x.exe', 'x' * 101, null]) {
++        expect(hjvLinkAnswer(event(good, file: file))!.link, isNull,
++            reason: '$file');
++      }
++      for (final expires in [0, -1, 3601, '600', null]) {
++        expect(hjvLinkAnswer(event(good, expires: expires))!.link, isNull,
++            reason: '$expires');
++      }
++    });
++
++    test('a refusal carries its reason, and other events are no answer', () {
++      final refused = hjvLinkAnswer({'state': 'ok', 'link_error': 'login'})!;
++      expect([refused.link, refused.error], [null, 'login']);
++      expect(hjvLinkAnswer({'state': 'ok', 'link_error': 7})!.error, 'http');
++      expect(hjvLinkAnswer({'state': 'ok', 'link': 'x'})!.error, 'http');
++      expect(hjvLinkAnswer({'name': 'hjv-update', 'state': 'ok'}), isNull);
++    });
++
++    test('goes from the main window to the window that asked as it came', () {
++      expect(hjvLinkMessage({'state': 'ok'}), isNull);
++      final sent = hjvLinkMessage(event(good))!;
++      expect(hjvLinkFromMessage(sent).link!.url, good);
++      final refused = hjvLinkMessage({'state': 'ok', 'link_error': 'busy'})!;
++      expect(hjvLinkFromMessage(refused).error, 'busy');
++      expect(hjvLinkFromMessage(hjvLinkMessage({'link': null})!).error, 'http');
++      for (final other in [null, '', '{', '[]', '{}', 7]) {
++        final answer = hjvLinkFromMessage(other);
++        expect([answer.link, answer.error], [null, 'http'], reason: '$other');
++      }
++      expect(hjvLinkRequest('windows', true),
++          '{"platform":"windows","installed":true}');
++    });
++  });
++
++  test('the texts hold no braces and no link', () {
++    final i = state('required', more: {'contact': 'c'});
++    final texts = <String>[
++      for (final d in [
++        windowsPc,
++        android,
++        oldAndroid,
++        iphone,
++        adHocIphone
++      ]) ...[
++        ...panel(i, d).hints,
++        ...panel(i, d).notes,
++        panel(i, d).title,
++        ...panel(i, d).body,
++      ],
++      for (final code in [
++        'login', 'network', 'tls', 'refused', 'missing', 'busy', 'http', //
++        'verify', 'version', 'file', 'install', 'attempts', 'service'
++      ])
++        HjvUpdateText.failure(code),
++      HjvUpdateText.blockedBody('1.6.1'),
++      HjvUpdateText.peerNeedsLink('1.5.1', '1.6.0'),
++      HjvUpdateText.peerUpdatesItself('1.6.0', '1.6.1'),
++      HjvUpdateText.peerRunsNew('1.6.0', '1.6.1'),
++      HjvUpdateText.linkEnter(10),
++      HjvUpdateText.linkThen,
++      HjvUpdateText.linkNeedsLogin,
++      HjvUpdateText.linkFailed,
++      HjvUpdateText.moveToPlay,
++      HjvUpdateText.moveSteps,
++      HjvUpdateText.closesNow,
++      hjvBannerText(state('grace'), local: kst),
++    ];
++    for (final text in texts) {
++      expect(text, isNot(contains('{')), reason: text);
++      expect(text, isNot(contains('://')), reason: text);
++      expect(text, isNot(contains('RustDesk')), reason: text);
++    }
++  });
++}

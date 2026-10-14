@@ -1,0 +1,2548 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Wed, 14 Oct 2026 09:37:51 +0900
+Subject: [PATCH 43/45] hjviewer: operator's view: the users and the PCs of the
+ service, for its operator
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+hjv-api names its operators by portal ID (HJV_API_OPERATORS, set on the server
+only; its privacy statement calls them 최고운영자, super operators). In an
+account build the app gives such an account a read-only view of who uses
+HJViewer and of the PCs logged in to an account: Settings → Account has
+"최고운영자: 사용자와 PC" ("Super operator: users and PCs") for it, and for
+nobody else. Nothing in the view acts on a
+user or a PC.
+
+The role (src/hjviewer_account/api.rs): the account module learns it from the
+answers it already observes, before the app reads them, and keeps it in
+LocalConfig "hjv-role", which main_get_common gives the screens:
+
+- the login answer's user.hjv_role, with the token, as it takes the key
+  serial; an answer without it is another account's;
+- the key list's top-level hjv_role (GET /api/hjv/keys, 200), which the app
+  asks when it starts and when it comes back to the front, so that a role the
+  server gave or took back shows without a new login;
+- the overview's 404, hjv-api's answer to an account that is no operator, as
+  to an unknown path: the role goes (the 404 of any other path does not);
+- an explicit logout, and a login dropped for want of its account key, forget
+  it.
+
+Only "operator" is a role. It only picks what the screens offer: hjv-api
+checks it on every request of the view.
+
+The screens are in hjviewer_admin.dart; their texts, the reading of the
+answer, its order and the search are in hjviewer_admin_texts.dart, plain Dart
+for ci.sh's web stand-in:
+
+- the entry: a button under [로그인한 기기] in the desktop's account card (D7's
+  panel), a tile above "로그인한 기기" on a phone (D8). It follows the login
+  and the role as they change. For everybody else the phone's tile is empty,
+  which settings_ui's iOS section draws nothing for between two tiles.
+- the view: a dialog on a desktop, a page on a phone. GET
+  /api/hjv/admin/overview goes as the account screens' requests do
+  (hjvAccountGet: signed with the account key, a 401 ending the login). On
+  top: "계정에 로그인한 PC만 보입니다. 아무도 로그인하지 않은 PC는 서버가 알지
+  못합니다. IP는 PC가 마지막으로 서버와 동기화할 때 서버가 본 주소입니다. 이
+  화면을 열거나 새로 고칠 때마다 운영자 기록에 남습니다.", a search and
+  [새로 고침]; then "사용자 5명 · 활성 3명(최근 30일 사용) · PC 4대 · 10/14 09:30
+  기준" and two tabs:
+  - users: name and portal ID, 활성 or 비활성, the last use, the logged-in
+    devices and the PCs; the active ones first, then by last use, newest
+    first;
+  - PCs: host name and PC ID, the account, the system (hjv-api's platform
+    word: windows reads Windows, macos macOS, linux Linux, android Android,
+    ios iOS, another word as it is) and HJViewer version, the last
+    sync, the IP of the last sync and the LAN addresses of the PC's wake
+    report, and its password-less state in words (켜짐, PC에서 꺼 둠, 관리자가
+    일시 중지함, 서버와 맞추지 못함, PC가 아직 확인하지 않음, 다시 로그인 필요;
+    another state as hjv-api names it); by account, then by host name, those
+    without one last.
+  Where the view is 720 wide or more each tab is a table, narrower a tile of
+  lines per user or PC. Times show in the device's time zone, with the year
+  when it is not the overview's. The part above the lists takes at most 60%
+  of the view's height and scrolls in it when it is higher (a phone on its
+  side with the keyboard up, a big font): the lists keep the rest, and
+  nothing overflows. The search keeps, in both tabs, the rows that hold each
+  of its words in any case; a user's state is a word that must be all of it
+  (활성 finds the active users only, though it is in 비활성); a user's ID or
+  name also finds the user's PCs, and the tabs then say how many of how many.
+  [새로 고침] asks again, one request at a time; a failure says why and keeps
+  what was shown, and the next answer takes the failure's words away. Only
+  version 1 of the answer is read; another says to update the app.
+- the view closes, takes its lists off the screen at once and asks nothing
+  more:
+  - at a 404, with "이 계정은 최고운영자가 아니어서 화면을 닫았습니다."; the
+    entry goes, also when the view that asked was closed before the answer
+    came (hjvAdminLoad has the entries look again after any 404 of the
+    overview);
+  - at a 401 of its request, and as soon as the login ends while it is open
+    (gFFI.userModel.userName empty: a key logged out from another device,
+    found by any request), with "로그인이 풀려서 화면을 닫았습니다.".
+  The dialog closes once, however many of these come together.
+- hjviewer_account.dart gets one-line hooks: the import, hjvAccountGet (its
+  own request, for the view), the tile, the button, and after the key list
+  hjvAdminRoleChanged, which has the entries read the role again.
+
+Outside an account build none of this runs: the hooks are in the account
+screens, which such a build does not show, and api.rs observes nothing.
+
+Tests:
+- src/hjviewer_account/api.rs: the_operators_entry_follows_the_role_hjv_api_gives
+  (the login answer with and without the role and with other values, a
+  second factor's question and a refused login, the key list's answers and
+  what is not one, the overview's 404 and its other answers, the 404 of other
+  paths, a logout, a dropped login).
+- flutter/test/hjviewer_admin_test.dart (pure; for ci.sh's list): the entry's
+  condition, reading the contract's answer and what is not version 1 or
+  cannot be used, the 404 and the 401 that close the view and the other
+  failures, the two orders, the search (by IP apart from the LAN, version,
+  the user's state as a whole word in both languages), local times and the
+  year, the rows of both layouts in Korean and English, a name that is the
+  portal ID, the password-less states, no braces in any text.
+- flutter/test/hjviewer_admin_widgets_test.dart (needs the generated bridge):
+  the entry follows the login and the role, the phone's tile between two
+  tiles on iOS and Android, the two tabs as a table and as tiles with nothing
+  to press on a user or a PC and their text selectable, the search and
+  [새로 고침] one at a time with a failure keeping the lists in the tab they
+  were in and the next answer clearing it, empty lists and times read against
+  the answer's own, a phone on its side with the keyboard up and big fonts
+  without an overflow, a 404 taking the entry also after the view closed, a
+  401 and the end of the login closing the view once and taking its lists, a
+  close that throws leaving the logout to its other listeners, a view gone
+  before its answer closing and failing nothing, the desktop dialog laying the
+  table out and closing with [닫기] and Esc.
+
+Known limits:
+- A role given or taken back on the server shows at the app's next key list
+  (its start, or back to the front after 30 seconds), or at once with the
+  view's 404.
+- The IP is what hjv-api saw: behind NAT, the address of the network's way
+  out.
+- On a phone on its side with the keyboard up the lists have 40% of a low
+  screen while the search is typed; the part above them scrolls.
+- The view learns that the login ended from the app's next account request
+  (its own [새로 고침], the key list when the app comes back to the front):
+  until one goes out, an open view stays as it is.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart      |   7 +
+ flutter/lib/common/hjviewer_admin.dart        | 462 ++++++++++++
+ flutter/lib/common/hjviewer_admin_texts.dart  | 477 +++++++++++++
+ flutter/test/hjviewer_admin_test.dart         | 545 ++++++++++++++
+ flutter/test/hjviewer_admin_widgets_test.dart | 663 ++++++++++++++++++
+ src/hjviewer_account/api.rs                   | 127 ++++
+ 6 files changed, 2281 insertions(+)
+ create mode 100644 flutter/lib/common/hjviewer_admin.dart
+ create mode 100644 flutter/lib/common/hjviewer_admin_texts.dart
+ create mode 100644 flutter/test/hjviewer_admin_test.dart
+ create mode 100644 flutter/test/hjviewer_admin_widgets_test.dart
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 70dd1d6..94996df 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/formatter/id_formatter.dart';
+ import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
++import 'package:flutter_hbb/common/hjviewer_admin.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/common/widgets/login.dart';
+ import 'package:flutter_hbb/consts.dart';
+@@ -92,6 +93,9 @@ Future<(int, Object?)> _request(String method, String path,
+   return (resp.statusCode, body);
+ }
+ 
++/// The operator's view's request (hjviewer_admin.dart), as this file's own go.
++Future<(int, Object?)> hjvAccountGet(String path) => _request('GET', path);
++
+ /// Shows a dialog; a dialog that cannot be shown yet (no overlay) is left out.
+ Future<T?> _show<T>(DialogBuilder builder) =>
+     gFFI.dialogManager.show<T>(builder).catchError((Object e) {
+@@ -176,6 +180,7 @@ List<Widget> hjvAccountRows() =>
+ /// woken, whether a wake goes on to connect.
+ List<AbstractSettingsTile> hjvAccountTiles() => _accountBuild
+     ? [
++        hjvAdminTile(),
+         CustomSettingsTile(
+             child: Obx(() => SettingsTile(
+                   title: Text(_t.loggedInDevices),
+@@ -494,6 +499,7 @@ class _HjvAccountPanelState extends State<_HjvAccountPanel> {
+           if (loggedIn && _wakesAny()) const _HjvWakeConnects(),
+           if (loggedIn)
+             _button(t.loggedInDevices, _showLoggedInDevices, outline: true),
++          hjvAdminButton(),
+         ],
+       ).marginOnly(left: 18, top: 8);
+     });
+@@ -664,6 +670,7 @@ Future<(List<HjvKey>, List<HjvKey>)> _getKeys() => _keysInFlight ??= () async {
+       try {
+         final (code, body) =
+             await _request('GET', '/api/hjv/keys?current=1&pageSize=100');
++        hjvAdminRoleChanged();
+         if (code != 200) throw _HjvError(hjvRequestError(_t, body));
+         return (hjvKeys(body), hjvEndedKeys(body));
+       } finally {
+diff --git a/flutter/lib/common/hjviewer_admin.dart b/flutter/lib/common/hjviewer_admin.dart
+new file mode 100644
+index 0000000..2ab1565
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_admin.dart
+@@ -0,0 +1,462 @@
++// The operator's view on the screen (hjviewer_admin_texts.dart has its texts and choices): the
++// entry in Settings → Account of the account hjv-api names its operator, and the read-only screen
++// of the users and of the PCs logged in to an account, a dialog on a desktop and a page on a
++// phone. The overview goes out as the account screens' requests do (hjvAccountGet), signed with
++// the account key; hjv-api answers it for its operator only and records each answer. Outside an
++// account build the hooks of hjviewer_account.dart do not reach this file.
++
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
++import 'package:flutter_hbb/common/hjviewer_admin_texts.dart';
++import 'package:flutter_hbb/models/platform_model.dart';
++import 'package:get/get.dart';
++import 'package:settings_ui/settings_ui.dart';
++
++/// The texts in the language of the account screens (hjviewer_account.dart).
++HjvAdminTexts get _t => HjvAdminTexts(translate('Cancel') == '취소');
++
++/// Counts the answers that may have changed the role; the entries read the role again then.
++final _roleAnswers = 0.obs;
++
++/// After an answer that may have changed the role (the key list, a 404 of the overview), which the
++/// account module took: the entries look at it again.
++void hjvAdminRoleChanged() => _roleAnswers.value++;
++
++/// Whether the entry shows, as its Obx asks: `role` reads the role the account module keeps, again
++/// after each hjvAdminRoleChanged.
++bool hjvAdminEntryShown(
++    {required bool loggedIn, required String Function() role}) {
++  // the entry's Obx reads the counter here, and so builds again after hjvAdminRoleChanged
++  _roleAnswers.value;
++  return hjvShowsAdminEntry(loggedIn: loggedIn, role: role());
++}
++
++String _role() {
++  try {
++    return bind.mainGetCommonSync(key: kHjvRoleKey);
++  } catch (e) {
++    return '';
++  }
++}
++
++bool _entryShown() =>
++    hjvAdminEntryShown(loggedIn: gFFI.userModel.isLogin, role: _role);
++
++/// D7's panel (desktop Settings → Account): the button to the operator's view.
++Widget hjvAdminButton() =>
++    HjvAdminEntry(texts: () => _t, shown: _entryShown, open: hjvOpenAdmin);
++
++/// D8's tiles (the phone's Settings → Account): the tile of the operator's view. It is an empty
++/// tile for everybody else, so it stands between two tiles, where settings_ui's iOS section draws
++/// no border of its own for it.
++AbstractSettingsTile hjvAdminTile() => CustomSettingsTile(
++    child: HjvAdminEntry(
++        texts: () => _t, shown: _entryShown, open: hjvOpenAdmin, tile: true));
++
++/// The entry to the operator's view while `shown` says so. `shown` runs inside an Obx: the Rx it
++/// reads (the login, the role's counter) bring the entry and take it away.
++class HjvAdminEntry extends StatelessWidget {
++  final HjvAdminTexts Function() texts;
++  final bool Function() shown;
++  final void Function(BuildContext context) open;
++
++  /// a tile of the phone's settings, else a button of the desktop's account card
++  final bool tile;
++  const HjvAdminEntry(
++      {super.key,
++      required this.texts,
++      required this.shown,
++      required this.open,
++      this.tile = false});
++
++  @override
++  Widget build(BuildContext context) {
++    return Obx(() {
++      if (!shown()) return const SizedBox.shrink();
++      final t = texts();
++      if (tile) {
++        return SettingsTile(
++            title: Text(t.title),
++            leading: const Icon(Icons.admin_panel_settings_outlined),
++            onPressed: open);
++      }
++      return OutlinedButton(
++              onPressed: () => open(context), child: Text(t.title))
++          .marginOnly(top: 8);
++    });
++  }
++}
++
++/// Opens the operator's view: a dialog on a desktop, a page on a phone. It closes, and says why,
++/// when hjv-api answers that the account is no operator (404, the entry goes with the role) or
++/// when the login ends (a 401, a logout from another device).
++void hjvOpenAdmin(BuildContext context) {
++  final t = _t;
++  final login = gFFI.userModel.userName;
++  if (isDesktop || isWebDesktop) {
++    var open = true;
++    gFFI.dialogManager
++        .show<void>((setState, close, context) {
++          // once: a second close would take the dialog's overlay entry out again, which throws
++          void shut() {
++            if (!open) return;
++            open = false;
++            close();
++          }
++
++          return hjvAdminDialog(t,
++              load: () => _overview(t),
++              login: login,
++              onClose: shut,
++              onGone: (toast) {
++                shut();
++                showToast(toast);
++              });
++        })
++        .whenComplete(() => open = false)
++        .catchError((Object e) => debugPrint('hjv: $e'));
++    return;
++  }
++  late final MaterialPageRoute<void> route;
++  route = MaterialPageRoute<void>(
++      builder: (page) => HjvAdminPage(
++          t: t,
++          load: () => _overview(t),
++          login: login,
++          onGone: (toast) {
++            // this page, also under a route that came on top of it meanwhile
++            final navigator = route.navigator;
++            if (navigator != null && route.isActive) {
++              route.isCurrent ? navigator.pop() : navigator.removeRoute(route);
++            }
++            showToast(toast);
++          }));
++  Navigator.of(context).push(route);
++}
++
++Future<HjvAdminAnswer> _overview(HjvAdminTexts t) =>
++    hjvAdminLoad(t, hjvAccountGet);
++
++/// `GET /api/hjv/admin/overview` with `get` (hjvAccountGet), as the screen reads it. The account
++/// module took the role from the answer before (a 404 ends it): after a 404 the entries look at
++/// it again, whether the view that asked is still open or not.
++Future<HjvAdminAnswer> hjvAdminLoad(
++    HjvAdminTexts t, Future<(int, Object?)> Function(String path) get) async {
++  try {
++    final (code, body) = await get(kHjvAdminPath);
++    if (code == 404) hjvAdminRoleChanged();
++    return hjvAdminAnswer(t, code, body);
++  } catch (e) {
++    return HjvAdminAnswer(error: hjvAdminFailure(t, e));
++  }
++}
++
++/// The desktop's dialog of the operator's view.
++CustomAlertDialog hjvAdminDialog(HjvAdminTexts t,
++        {required Future<HjvAdminAnswer> Function() load,
++        required VoidCallback onClose,
++        required void Function(String toast) onGone,
++        RxString? login,
++        HjvAdminClock local = hjvAdminLocal}) =>
++    CustomAlertDialog(
++      title: Text(t.title),
++      contentBoxConstraints: const BoxConstraints(maxWidth: 1100),
++      content: Builder(
++          // the dialog's IntrinsicWidth stops at a box of its own size, which the lists need
++          builder: (context) => SizedBox(
++              width: double.maxFinite,
++              height: (MediaQuery.of(context).size.height * 0.7)
++                  .clamp(320.0, 720.0),
++              child: HjvAdminView(
++                  t: t,
++                  load: load,
++                  onGone: onGone,
++                  login: login,
++                  local: local))),
++      actions: [
++        ElevatedButton(
++            style: ElevatedButton.styleFrom(elevation: 0),
++            onPressed: onClose,
++            child: Text(t.account.close)),
++      ],
++      onCancel: onClose,
++    );
++
++/// The phone's page of the operator's view.
++class HjvAdminPage extends StatelessWidget {
++  final HjvAdminTexts t;
++  final Future<HjvAdminAnswer> Function() load;
++  final void Function(String toast) onGone;
++  final RxString? login;
++  final HjvAdminClock local;
++  const HjvAdminPage(
++      {super.key,
++      required this.t,
++      required this.load,
++      required this.onGone,
++      this.login,
++      this.local = hjvAdminLocal});
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      appBar: AppBar(title: Text(t.title)),
++      body: SafeArea(
++          child: HjvAdminView(
++                  t: t, load: load, onGone: onGone, login: login, local: local)
++              .paddingOnly(left: 12, right: 12, top: 8)),
++    );
++  }
++}
++
++/// The operator's view (read-only): what it shows and what hjv-api's record keeps of it, a
++/// search, [새로 고침], and the users and the PCs in two tabs, as a table where the screen is wide
++/// and as lines on a phone. `load` asks hjv-api. The view closes through `onGone`, with what to
++/// say, after a 404 or a 401 of it and when `login` ends: no list stays on the screen without the
++/// operator's login.
++class HjvAdminView extends StatefulWidget {
++  final HjvAdminTexts t;
++  final Future<HjvAdminAnswer> Function() load;
++  final void Function(String toast) onGone;
++
++  /// the login the view was opened in (gFFI.userModel.userName); its end closes the view
++  final RxString? login;
++  final HjvAdminClock local;
++  const HjvAdminView(
++      {super.key,
++      required this.t,
++      required this.load,
++      required this.onGone,
++      this.login,
++      this.local = hjvAdminLocal});
++
++  @override
++  State<HjvAdminView> createState() => _HjvAdminViewState();
++}
++
++/// Where the lists are a table, and the shares of its columns.
++const _kWide = 720.0;
++const _kUserFlex = [4, 2, 3, 2, 2];
++const _kPcFlex = [3, 3, 3, 2, 3, 2];
++
++/// The share of the view's height the part above the lists takes at most; a higher one (a phone
++/// on its side with the keyboard up, a big font) scrolls in it, and the lists keep the rest.
++const _kHead = 0.6;
++
++class _HjvAdminViewState extends State<HjvAdminView> {
++  HjvAdminOverview? _overview;
++  var _error = '';
++  var _loading = true;
++  var _query = '';
++  var _closed = false;
++  Worker? _loginWorker;
++
++  @override
++  void initState() {
++    super.initState();
++    final login = widget.login;
++    if (login != null) {
++      _loginWorker = ever<String>(login, (name) {
++        if (name.isEmpty) {
++          // inside the login's own notice (UserModel.reset): what closing throws stays here
++          try {
++            _close(widget.t.ended);
++          } catch (e) {
++            debugPrint('hjv: $e');
++          }
++        }
++      });
++    }
++    _fetch();
++  }
++
++  @override
++  void dispose() {
++    _loginWorker?.dispose();
++    super.dispose();
++  }
++
++  /// Once: the lists go from the screen, and the dialog or the page with them. A closed view asks
++  /// nothing more.
++  void _close(String toast) {
++    if (_closed) return;
++    _closed = true;
++    if (mounted) {
++      setState(() {
++        _overview = null;
++        _loading = false;
++        _error = '';
++      });
++    }
++    widget.onGone(toast);
++  }
++
++  void _refresh() {
++    if (_loading) return;
++    setState(() => _loading = true);
++    _fetch();
++  }
++
++  /// One request at a time: [새로 고침] waits for the one under way.
++  Future<void> _fetch() async {
++    HjvAdminAnswer answer;
++    try {
++      answer = await widget.load();
++    } catch (e) {
++      answer = HjvAdminAnswer(error: hjvAdminFailure(widget.t, e));
++    }
++    if (!mounted || _closed) return;
++    if (answer.closes.isNotEmpty) {
++      _close(answer.closes);
++      return;
++    }
++    setState(() {
++      _loading = false;
++      final overview = answer.overview;
++      if (overview != null) _overview = overview;
++      _error = overview == null ? answer.error : '';
++    });
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final t = widget.t;
++    final overview = _overview;
++    final now = overview?.at ?? DateTime.now();
++    final (users, pcs) = overview == null
++        ? (const <HjvAdminUser>[], const <HjvAdminPc>[])
++        : hjvAdminSearch(t, overview, _query);
++    return DefaultTabController(
++      length: 2,
++      child: LayoutBuilder(
++        builder: (context, box) => Column(
++          crossAxisAlignment: CrossAxisAlignment.stretch,
++          children: [
++            ConstrainedBox(
++              constraints: BoxConstraints(maxHeight: box.maxHeight * _kHead),
++              child: SingleChildScrollView(
++                primary: false,
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.stretch,
++                  children: [
++                    Text('${t.onlyLoggedIn} ${t.ipNote} ${t.recorded}',
++                        style: Theme.of(context).textTheme.bodySmall),
++                    Row(children: [
++                      Expanded(
++                          child: TextField(
++                              decoration: InputDecoration(
++                                  hintText: t.search,
++                                  prefixIcon: const Icon(Icons.search),
++                                  isDense: true),
++                              onChanged: (query) =>
++                                  setState(() => _query = query))),
++                      IconButton(
++                          tooltip: t.refresh,
++                          onPressed: _loading || _closed ? null : _refresh,
++                          icon: const Icon(Icons.refresh)),
++                    ]).marginOnly(top: 8),
++                    if (_loading)
++                      const LinearProgressIndicator().marginOnly(top: 4),
++                    if (_error.isNotEmpty)
++                      Text(_error,
++                              style: TextStyle(
++                                  color: Theme.of(context).colorScheme.error))
++                          .marginOnly(top: 8),
++                    if (overview != null) ...[
++                      Text(hjvAdminSummary(t, overview,
++                              now: now, local: widget.local))
++                          .marginOnly(top: 8),
++                      TabBar(tabs: [
++                        Tab(
++                            text: t.usersTab(
++                                users.length, overview.users.length)),
++                        Tab(text: t.pcsTab(pcs.length, overview.pcs.length)),
++                      ]),
++                    ],
++                  ],
++                ),
++              ),
++            ),
++            if (overview != null)
++              Expanded(child: _lists(t, overview, users, pcs, now)),
++          ],
++        ),
++      ),
++    );
++  }
++
++  Widget _lists(HjvAdminTexts t, HjvAdminOverview o, List<HjvAdminUser> users,
++      List<HjvAdminPc> pcs, DateTime now) {
++    final local = widget.local;
++    Widget user(HjvAdminUser u) => ListTile(
++        contentPadding: EdgeInsets.zero,
++        leading: Icon(u.active ? Icons.person : Icons.person_outline),
++        title: Text(hjvAdminUserTitle(u)),
++        subtitle: Text(hjvAdminUserLine(t, u, now: now, local: local)));
++    Widget pc(HjvAdminPc p) => ListTile(
++        contentPadding: EdgeInsets.zero,
++        leading: const Icon(Icons.computer),
++        title: Text(hjvAdminPcTitle(p)),
++        subtitle:
++            Text(hjvAdminPcLines(t, p, now: now, local: local).join('\n')));
++    return LayoutBuilder(builder: (context, size) {
++      final wide = size.maxWidth >= _kWide;
++      return SelectionArea(
++        child: TabBarView(children: [
++          _list(
++              o.users.isEmpty ? t.noUsers : t.noMatch,
++              wide
++                  ? _table(_kUserFlex, t.userColumns, [
++                      for (final u in users)
++                        hjvAdminUserCells(t, u, now: now, local: local)
++                    ])
++                  : users.map(user).toList()),
++          _list(
++              o.pcs.isEmpty ? t.noPcs : t.noMatch,
++              wide
++                  ? _table(_kPcFlex, t.pcColumns, [
++                      for (final p in pcs)
++                        hjvAdminPcCells(t, p, now: now, local: local)
++                    ])
++                  : pcs.map(pc).toList()),
++        ]),
++      );
++    });
++  }
++
++  /// The rows of a list, or what an empty one says.
++  Widget _list(String empty, List<Widget> rows) {
++    if (rows.isEmpty) return Center(child: Text(empty));
++    return ListView.separated(
++      itemCount: rows.length,
++      itemBuilder: (context, i) => rows[i],
++      separatorBuilder: (context, i) => const Divider(height: 1),
++    );
++  }
++
++  /// A table's rows under its header; none without rows.
++  List<Widget> _table(
++          List<int> flex, List<String> header, List<List<String>> rows) =>
++      rows.isEmpty
++          ? []
++          : [
++              _row(flex, header, bold: true),
++              for (final cells in rows) _row(flex, cells),
++            ];
++
++  /// A row of the table: each cell its share of the width.
++  Widget _row(List<int> flex, List<String> cells, {bool bold = false}) => Row(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          for (var i = 0; i < cells.length; i++)
++            Expanded(
++                flex: i < flex.length ? flex[i] : 1,
++                child: Text(cells[i],
++                        style: bold
++                            ? const TextStyle(fontWeight: FontWeight.bold)
++                            : null)
++                    .marginOnly(right: 8)),
++        ],
++      ).paddingSymmetric(vertical: 6);
++}
+diff --git a/flutter/lib/common/hjviewer_admin_texts.dart b/flutter/lib/common/hjviewer_admin_texts.dart
+new file mode 100644
+index 0000000..a504efb
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_admin_texts.dart
+@@ -0,0 +1,477 @@
++// The operator's view of HJViewer: the people who use it and the PCs logged in to an account, as
++// hjv-api's `GET /api/hjv/admin/overview` gives them to the account it names its operator (the
++// server's HJV_API_OPERATORS). It is read-only: nothing here acts on a user or a PC. The texts in
++// Korean and English, the reading of the answer, its order and the search; plain Dart without the
++// bridge, so that ci.sh tests it with the web stand-in. hjviewer_admin.dart shows it. No text
++// holds braces, which translate() would take for placeholders.
++
++import 'package:flutter_hbb/common/formatter/id_formatter.dart';
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
++
++/// The overview: a signed account request, which hjv-api answers with the 404 of an unknown path
++/// for an account that is not its operator.
++const kHjvAdminPath = '/api/hjv/admin/overview';
++
++/// What the account module (src/hjviewer_account/api.rs) keeps of the role hjv-api gave the
++/// login, through main_get_common: "operator" or "".
++const kHjvRoleKey = 'hjv-role';
++
++/// How many days of use make a user active when hjv-api does not say (HJV_API_ACTIVE_DAYS).
++const kHjvActiveDays = 30;
++
++/// Whether Settings → Account offers the operator's view: while logged in, to the account hjv-api
++/// named its operator. It only picks what the screen shows; hjv-api checks the role itself on
++/// every request of the view.
++bool hjvShowsAdminEntry({required bool loggedIn, required String role}) =>
++    loggedIn && role == 'operator';
++
++/// Turns a time of the answer, UTC, into the time shown.
++typedef HjvAdminClock = DateTime Function(DateTime time);
++
++/// The device's own time zone.
++DateTime hjvAdminLocal(DateTime time) => time.toLocal();
++
++class HjvAdminTexts {
++  final bool korean;
++  const HjvAdminTexts(this.korean);
++
++  String _t(String ko, String en) => korean ? ko : en;
++
++  /// The account screens' texts in the same language (닫기, the request errors).
++  HjvTexts get account => HjvTexts(korean);
++
++  String get title => _t('최고운영자: 사용자와 PC', 'Super operator: users and PCs');
++  String get onlyLoggedIn => _t(
++      '계정에 로그인한 PC만 보입니다. 아무도 로그인하지 않은 PC는 서버가 알지 못합니다.',
++      'Only PCs logged in to an account are listed: the server does not know a PC nobody logged in on.');
++  String get ipNote => _t('IP는 PC가 마지막으로 서버와 동기화할 때 서버가 본 주소입니다.',
++      "A PC's IP is the address the server saw at its last sync.");
++  String get recorded => _t('이 화면을 열거나 새로 고칠 때마다 운영자 기록에 남습니다.',
++      'Each opening and refresh of this screen goes into the operator record.');
++  String get search => _t('검색: 이름, ID, PC, IP', 'Search: name, ID, PC, IP');
++  String get refresh => _t('새로 고침', 'Refresh');
++  String usersTab(int shown, int all) => shown == all
++      ? _t('사용자 $all', 'Users $all')
++      : _t('사용자 $shown/$all', 'Users $shown/$all');
++  String pcsTab(int shown, int all) => shown == all
++      ? _t('PC $all', 'PCs $all')
++      : _t('PC $shown/$all', 'PCs $shown/$all');
++  String summary(int users, int active, int days, int pcs) => _t(
++      '사용자 $users명 · 활성 $active명(최근 $days일 사용) · PC $pcs대',
++      'Users: $users · active: $active (used in the last $days days) · PCs: $pcs');
++  String asOf(String time) => _t('$time 기준', 'as of $time');
++  String get active => _t('활성', 'active');
++  String get inactive => _t('비활성', 'inactive');
++  String lastUse(String time) => _t('마지막 사용 $time', 'last use $time');
++  String get notUsed => _t('사용 기록 없음', 'not used yet');
++  String devices(int n) => _t('로그인한 기기 $n대', 'logged-in devices: $n');
++  String pcs(int n) => _t('PC $n대', 'PCs: $n');
++  String owner(String who) => _t('계정 $who', 'account $who');
++  String get unknownOs => _t('OS 모름', 'OS unknown');
++  String get unknownVersion => _t('버전 모름', 'version unknown');
++  String lastSync(String time) => _t('마지막 동기화 $time', 'last sync $time');
++  String get notSynced => _t('동기화 기록 없음', 'not synced yet');
++  String get unknownIp => _t('IP 모름', 'IP unknown');
++  String pwless(String state) =>
++      _t('비밀번호 없는 연결: $state', 'password-less connections: $state');
++  String get pwlessOn => _t('켜짐', 'on');
++  String get pwlessOff => _t('PC에서 꺼 둠', 'turned off on the PC');
++  String get pwlessPaused => _t('관리자가 일시 중지함', 'paused by the administrator');
++  String get pwlessExpired => _t('서버와 맞추지 못함', 'not in step with the server');
++  String get pwlessListed =>
++      _t('PC가 아직 확인하지 않음', 'not confirmed by the PC yet');
++  String get pwlessRelogin => _t('다시 로그인 필요', 'needs a new login');
++  String get noUsers => _t('로그인한 사용자가 없습니다.', 'Nobody has logged in yet.');
++  String get noPcs =>
++      _t('계정에 로그인한 PC가 없습니다.', 'No PC is logged in to an account.');
++  String get noMatch => _t('찾는 항목이 없습니다.', 'Nothing matches.');
++  String get gone => _t('이 계정은 최고운영자가 아니어서 화면을 닫았습니다.',
++      'This account is not a super operator, so the screen closed.');
++  String get ended =>
++      _t('로그인이 풀려서 화면을 닫았습니다.', 'You were logged out, so the screen closed.');
++  String get unreadable => _t('서버의 답을 읽지 못했습니다. 앱을 업데이트해 주세요.',
++      "The server's answer could not be read. Please update the app.");
++  String get keyLocked => _t('이 기기의 보안 키를 지금 쓸 수 없습니다. 기기 잠금을 풀고 새로 고쳐 주세요.',
++      "This device's security key cannot be used right now. Unlock the device and refresh.");
++
++  /// The columns of the wide layout's tables.
++  List<String> get userColumns => [
++        _t('사용자', 'User'),
++        _t('상태', 'State'),
++        _t('마지막 사용', 'Last use'),
++        _t('로그인한 기기', 'Devices'),
++        _t('PC', 'PCs'),
++      ];
++  List<String> get pcColumns => [
++        'PC',
++        _t('계정', 'Account'),
++        _t('OS·버전', 'OS · version'),
++        _t('마지막 동기화', 'Last sync'),
++        'IP · LAN',
++        _t('비밀번호 없는 연결', 'Password-less'),
++      ];
++}
++
++String _text(Object? value) => value is String ? value : '';
++
++int _count(Object? value) => value is int && value > 0 ? value : 0;
++
++/// A time of the answer (RFC 3339); null for none or anything else.
++DateTime? hjvAdminTime(Object? value) =>
++    value is String ? DateTime.tryParse(value) : null;
++
++/// A user of the service: an account that logged in once and is still allowed to.
++class HjvAdminUser {
++  /// the portal ID
++  final String id;
++  final String name;
++
++  /// whether an account key or a PC of it was used in the last `active_days`
++  final bool active;
++  final DateTime? lastUse;
++
++  /// the account's logged-in devices, and the PCs logged in to it
++  final int keys;
++  final int pcs;
++  const HjvAdminUser(
++      {required this.id,
++      this.name = '',
++      this.active = false,
++      this.lastUse,
++      this.keys = 0,
++      this.pcs = 0});
++
++  /// null for an entry without its portal ID
++  static HjvAdminUser? fromJson(Object? json) {
++    if (json is! Map) return null;
++    final id = _text(json['id']);
++    if (id.isEmpty) return null;
++    return HjvAdminUser(
++        id: id,
++        name: _text(json['name']),
++        active: json['active'] == true,
++        lastUse: hjvAdminTime(json['last_use']),
++        keys: _count(json['keys']),
++        pcs: _count(json['pcs']));
++  }
++}
++
++/// A PC logged in to an account ("installed PCs": hjv-api knows no other).
++class HjvAdminPc {
++  /// its RustDesk ID
++  final String pc;
++
++  /// "" where the answer has null
++  final String host;
++  final String owner;
++  final String ownerName;
++  final String os;
++  final String version;
++  final DateTime? lastSync;
++
++  /// the client address hjv-api saw at the PC's last sync
++  final String ip;
++
++  /// IPv4/prefix of the PC's networks, from its wake report
++  final List<String> lan;
++
++  /// as hjv-api's `binding list` names it: active, off, disabled, expired, listed, needs-relogin
++  final String passwordless;
++  const HjvAdminPc(
++      {required this.pc,
++      this.host = '',
++      this.owner = '',
++      this.ownerName = '',
++      this.os = '',
++      this.version = '',
++      this.lastSync,
++      this.ip = '',
++      this.lan = const [],
++      this.passwordless = ''});
++
++  /// null for an entry without its PC ID
++  static HjvAdminPc? fromJson(Object? json) {
++    if (json is! Map) return null;
++    final pc = _text(json['pc']);
++    if (pc.isEmpty) return null;
++    final lan = json['lan'];
++    return HjvAdminPc(
++        pc: pc,
++        host: _text(json['host']),
++        owner: _text(json['owner']),
++        ownerName: _text(json['owner_name']),
++        os: _text(json['os']),
++        version: _text(json['version']),
++        lastSync: hjvAdminTime(json['last_sync']),
++        ip: _text(json['ip']),
++        lan: lan is List ? lan.whereType<String>().toList() : const [],
++        passwordless: _text(json['passwordless']));
++  }
++}
++
++/// Newest first, the ones without a time last.
++int _newestFirst(DateTime? a, DateTime? b) {
++  if (a == null || b == null) return a == null ? (b == null ? 0 : 1) : -1;
++  return b.compareTo(a);
++}
++
++/// The users as the screen lists them: the active ones first, then by last use, newest first.
++List<HjvAdminUser> hjvSortUsers(Iterable<HjvAdminUser> users) => users.toList()
++  ..sort((a, b) {
++    if (a.active != b.active) return a.active ? -1 : 1;
++    final use = _newestFirst(a.lastUse, b.lastUse);
++    return use != 0 ? use : a.id.compareTo(b.id);
++  });
++
++/// The PCs as the screen lists them: by owner, then by host name, the ones without one last.
++List<HjvAdminPc> hjvSortPcs(Iterable<HjvAdminPc> pcs) => pcs.toList()
++  ..sort((a, b) {
++    final owner = a.owner.compareTo(b.owner);
++    if (owner != 0) return owner;
++    if (a.host.isEmpty != b.host.isEmpty) return a.host.isEmpty ? 1 : -1;
++    final host = a.host.toLowerCase().compareTo(b.host.toLowerCase());
++    return host != 0 ? host : a.pc.compareTo(b.pc);
++  });
++
++/// Version 1 of the overview.
++class HjvAdminOverview {
++  /// when hjv-api answered
++  final DateTime? at;
++  final int activeDays;
++  final List<HjvAdminUser> users;
++  final List<HjvAdminPc> pcs;
++  const HjvAdminOverview(
++      {this.at,
++      this.activeDays = kHjvActiveDays,
++      this.users = const [],
++      this.pcs = const []});
++
++  /// null for anything but version 1 with both lists; the lists in the screen's order
++  static HjvAdminOverview? fromJson(Object? json) {
++    if (json is! Map || json['v'] != 1) return null;
++    final users = json['users'];
++    final pcs = json['pcs'];
++    if (users is! List || pcs is! List) return null;
++    final days = json['active_days'];
++    return HjvAdminOverview(
++        at: hjvAdminTime(json['at']),
++        activeDays: days is int && days > 0 ? days : kHjvActiveDays,
++        users: hjvSortUsers(
++            users.map(HjvAdminUser.fromJson).whereType<HjvAdminUser>()),
++        pcs: hjvSortPcs(pcs.map(HjvAdminPc.fromJson).whereType<HjvAdminPc>()));
++  }
++
++  int get activeUsers => users.where((u) => u.active).length;
++}
++
++/// What a request of the overview came back with: the overview, what failed, or why the view
++/// closes.
++class HjvAdminAnswer {
++  final HjvAdminOverview? overview;
++
++  /// The view closes with this said, its lists with it: the 404 of an account that is not
++  /// hjv-api's operator (any more), or the 401 of a login that ended (the request logged the app
++  /// out, hjvEndsLogin). "" while the view stays.
++  final String closes;
++  final String error;
++  const HjvAdminAnswer({this.overview, this.closes = '', this.error = ''});
++}
++
++HjvAdminAnswer hjvAdminAnswer(HjvAdminTexts t, int status, Object? body) {
++  if (status == 404) return HjvAdminAnswer(closes: t.gone);
++  if (status == 401) return HjvAdminAnswer(closes: t.ended);
++  if (status != 200) {
++    return HjvAdminAnswer(error: hjvRequestError(t.account, body));
++  }
++  final overview = HjvAdminOverview.fromJson(body);
++  return overview == null
++      ? HjvAdminAnswer(error: t.unreadable)
++      : HjvAdminAnswer(overview: overview);
++}
++
++/// What a request that never got an answer shows: the account key could not be used (a locked
++/// iPhone, hjvFailure), or the request failed.
++String hjvAdminFailure(HjvAdminTexts t, Object error) =>
++    error.toString().contains(kHjvKeyUnavailable)
++        ? t.keyLocked
++        : t.account.requestFailed;
++
++/// "10/14 09:30" in the device's time zone, with the year when it is not `now`'s.
++String hjvAdminWhen(DateTime time, DateTime now,
++    {HjvAdminClock local = hjvAdminLocal}) {
++  final shown = local(time);
++  return shown.year == local(now).year
++      ? hjvTime(shown)
++      : '${shown.year}/${hjvTime(shown)}';
++}
++
++/// "사용자 5명 · 활성 3명(최근 30일 사용) · PC 4대 · 10/14 09:30 기준"
++String hjvAdminSummary(HjvAdminTexts t, HjvAdminOverview o,
++    {required DateTime now, HjvAdminClock local = hjvAdminLocal}) {
++  final at = o.at;
++  final counts =
++      t.summary(o.users.length, o.activeUsers, o.activeDays, o.pcs.length);
++  return at == null
++      ? counts
++      : '$counts · ${t.asOf(hjvAdminWhen(at, now, local: local))}';
++}
++
++/// "홍길동 (2026000001)", or the portal ID alone.
++String hjvAdminUserTitle(HjvAdminUser u) =>
++    u.name.isEmpty || u.name == u.id ? u.id : '${u.name} (${u.id})';
++
++String hjvAdminUserState(HjvAdminTexts t, HjvAdminUser u) =>
++    u.active ? t.active : t.inactive;
++
++/// The user's last use, or that there is none.
++String hjvAdminLastUse(HjvAdminTexts t, HjvAdminUser u,
++    {required DateTime now, HjvAdminClock local = hjvAdminLocal}) {
++  final use = u.lastUse;
++  return use == null ? t.notUsed : hjvAdminWhen(use, now, local: local);
++}
++
++/// A user's line on a phone: "활성 · 마지막 사용 10/14 09:30 · 로그인한 기기 2대 · PC 1대".
++String hjvAdminUserLine(HjvAdminTexts t, HjvAdminUser u,
++    {required DateTime now, HjvAdminClock local = hjvAdminLocal}) {
++  final use = u.lastUse;
++  return [
++    hjvAdminUserState(t, u),
++    use == null ? t.notUsed : t.lastUse(hjvAdminWhen(use, now, local: local)),
++    t.devices(u.keys),
++    t.pcs(u.pcs),
++  ].join(' · ');
++}
++
++/// "연구실-PC · 123 456 789", or the ID alone.
++String hjvAdminPcTitle(HjvAdminPc p) =>
++    p.host.isEmpty ? formatID(p.pc) : '${p.host} · ${formatID(p.pc)}';
++
++/// "홍길동 (2026000001)", or the owner's portal ID alone.
++String hjvAdminOwner(HjvAdminPc p) =>
++    p.ownerName.isEmpty || p.ownerName == p.owner
++        ? p.owner
++        : '${p.ownerName} (${p.owner})';
++
++/// "Windows · HJViewer 1.6.0": hjv-api names the system by the app's platform word (`windows`),
++/// which the known ones show by their names.
++String hjvAdminSystem(HjvAdminTexts t, HjvAdminPc p) => [
++      p.os.isEmpty ? t.unknownOs : hjvAdminOsName(p.os),
++      p.version.isEmpty ? t.unknownVersion : 'HJViewer ${p.version}',
++    ].join(' · ');
++
++String hjvAdminOsName(String os) => switch (os) {
++      'windows' => 'Windows',
++      'macos' => 'macOS',
++      'linux' => 'Linux',
++      'android' => 'Android',
++      'ios' => 'iOS',
++      _ => os,
++    };
++
++/// The PC's last sync, or that there was none.
++String hjvAdminSync(HjvAdminTexts t, HjvAdminPc p,
++    {required DateTime now, HjvAdminClock local = hjvAdminLocal}) {
++  final sync = p.lastSync;
++  return sync == null ? t.notSynced : hjvAdminWhen(sync, now, local: local);
++}
++
++/// The PC's address at its last sync: "192.0.2.10", or that hjv-api has none.
++String hjvAdminIp(HjvAdminTexts t, HjvAdminPc p) =>
++    p.ip.isEmpty ? t.unknownIp : p.ip;
++
++/// "192.0.2.10/24, 198.51.100.7/24", or "" for none.
++String hjvAdminLan(HjvAdminPc p) => p.lan.join(', ');
++
++/// The password-less state as the screen says it; a state this app does not know, as it is.
++String hjvAdminPwless(HjvAdminTexts t, String state) => switch (state) {
++      'active' => t.pwlessOn,
++      'off' => t.pwlessOff,
++      'disabled' => t.pwlessPaused,
++      'expired' => t.pwlessExpired,
++      'listed' => t.pwlessListed,
++      'needs-relogin' => t.pwlessRelogin,
++      _ => state,
++    };
++
++/// A PC's lines on a phone, under its title: the owner, the system, the last sync and IP, the
++/// LAN addresses when there are any, and the password-less state.
++List<String> hjvAdminPcLines(HjvAdminTexts t, HjvAdminPc p,
++    {required DateTime now, HjvAdminClock local = hjvAdminLocal}) {
++  final sync = p.lastSync;
++  final lan = hjvAdminLan(p);
++  return [
++    t.owner(hjvAdminOwner(p)),
++    hjvAdminSystem(t, p),
++    [
++      sync == null
++          ? t.notSynced
++          : t.lastSync(hjvAdminWhen(sync, now, local: local)),
++      p.ip.isEmpty ? t.unknownIp : 'IP ${p.ip}',
++    ].join(' · '),
++    if (lan.isNotEmpty) 'LAN $lan',
++    t.pwless(hjvAdminPwless(t, p.passwordless)),
++  ];
++}
++
++/// A user's row of the wide table: the user, whether active, the last use, the logged-in devices
++/// and the PCs.
++List<String> hjvAdminUserCells(HjvAdminTexts t, HjvAdminUser u,
++        {required DateTime now, HjvAdminClock local = hjvAdminLocal}) =>
++    [
++      hjvAdminUserTitle(u),
++      hjvAdminUserState(t, u),
++      hjvAdminLastUse(t, u, now: now, local: local),
++      '${u.keys}',
++      '${u.pcs}',
++    ];
++
++/// A PC's row of the wide table: the host name over the PC's ID, the owner, the system, the last
++/// sync, the IP over the LAN addresses, and the password-less state.
++List<String> hjvAdminPcCells(HjvAdminTexts t, HjvAdminPc p,
++        {required DateTime now, HjvAdminClock local = hjvAdminLocal}) =>
++    [
++      p.host.isEmpty ? formatID(p.pc) : '${p.host}\n${formatID(p.pc)}',
++      hjvAdminOwner(p),
++      hjvAdminSystem(t, p),
++      hjvAdminSync(t, p, now: now, local: local),
++      [hjvAdminIp(t, p), hjvAdminLan(p)].where((s) => s.isNotEmpty).join('\n'),
++      hjvAdminPwless(t, p.passwordless),
++    ];
++
++List<String> _pcFields(HjvAdminTexts t, HjvAdminPc p) => [
++      p.pc,
++      p.host,
++      p.owner,
++      p.ownerName,
++      p.os,
++      p.version,
++      p.ip,
++      ...p.lan,
++      hjvAdminPwless(t, p.passwordless),
++    ];
++
++/// What a search keeps: the users and the PCs that have each word of `query` in what their row
++/// shows, in any case. A user's state (활성, 비활성) is a word that must be all of it, as 활성 is
++/// in 비활성 and active in inactive. A user's portal ID or name also finds the user's PCs; a PC's
++/// ID as the screen writes it (123 456 789) is words that are each in the ID.
++(List<HjvAdminUser>, List<HjvAdminPc>) hjvAdminSearch(
++    HjvAdminTexts t, HjvAdminOverview o, String query) {
++  final words = query
++      .toLowerCase()
++      .split(RegExp(r'\s+'))
++      .where((w) => w.isNotEmpty)
++      .toList();
++  if (words.isEmpty) return (o.users, o.pcs);
++  bool keeps(List<String> fields, {String state = ''}) {
++    final text = fields.join('\n').toLowerCase();
++    final whole = state.toLowerCase();
++    return words.every((w) => text.contains(w) || w == whole);
++  }
++
++  return (
++    o.users
++        .where((u) => keeps([u.id, u.name], state: hjvAdminUserState(t, u)))
++        .toList(),
++    o.pcs.where((p) => keeps(_pcFields(t, p))).toList(),
++  );
++}
+diff --git a/flutter/test/hjviewer_admin_test.dart b/flutter/test/hjviewer_admin_test.dart
+new file mode 100644
+index 0000000..c0f2873
+--- /dev/null
++++ b/flutter/test/hjviewer_admin_test.dart
+@@ -0,0 +1,545 @@
++import 'package:flutter_hbb/common/hjviewer_admin_texts.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The operator's view: reading hjv-api's overview, its order, the search and the texts, without
++// the bridge. The portal IDs, names, hosts and addresses are test values.
++
++const ko = HjvAdminTexts(true);
++const en = HjvAdminTexts(false);
++
++/// The times as a device in Korea shows them, whatever the zone of the machine the tests run on.
++DateTime kst(DateTime t) => t.toUtc().add(const Duration(hours: 9));
++
++/// `GET /api/hjv/admin/overview` as the contract has it, its lists in no particular order.
++Map<String, Object?> overviewAnswer() => {
++      'v': 1,
++      'at': '2026-10-14T00:30:00Z',
++      'active_days': 30,
++      'users': [
++        {
++          'id': '2026000003',
++          'name': '성춘향',
++          'active': false,
++          'last_use': '2026-08-01T03:00:00Z',
++          'keys': 0,
++          'pcs': 0,
++        },
++        {
++          'id': '2026000001',
++          'name': '홍길동',
++          'active': true,
++          'last_use': '2026-10-13T09:20:00Z',
++          'keys': 2,
++          'pcs': 2,
++        },
++        {
++          'id': '2026000004',
++          'name': '',
++          'active': false,
++          'last_use': null,
++          'keys': 0,
++          'pcs': 0,
++        },
++        {
++          'id': '2026000002',
++          'name': '이몽룡',
++          'active': true,
++          'last_use': '2026-10-14T00:10:00Z',
++          'keys': 1,
++          'pcs': 1,
++        },
++      ],
++      'pcs': [
++        {
++          'pc': '987654321',
++          'host': 'lab-pc2',
++          'owner': '2026000002',
++          'owner_name': '이몽룡',
++          'os': 'windows',
++          'version': '1.6.0',
++          'last_sync': '2026-10-14T00:28:00Z',
++          'ip': '198.51.100.7',
++          'lan': ['198.51.100.7/24'],
++          'passwordless': 'off',
++        },
++        {
++          'pc': '111222333',
++          'host': null,
++          'owner': '2026000001',
++          'owner_name': '홍길동',
++          'os': null,
++          'version': null,
++          'last_sync': null,
++          'ip': null,
++          'lan': [],
++          'passwordless': 'listed',
++        },
++        {
++          'pc': '123456789',
++          'host': '연구실-PC',
++          'owner': '2026000001',
++          'owner_name': '홍길동',
++          'os': 'windows',
++          'version': '1.6.0',
++          'last_sync': '2026-10-14T00:29:00Z',
++          'ip': '192.0.2.10',
++          'lan': ['192.0.2.10/24', '203.0.113.5/24'],
++          'passwordless': 'active',
++        },
++      ],
++    };
++
++HjvAdminOverview overview() => HjvAdminOverview.fromJson(overviewAnswer())!;
++
++List<String> ids(List<HjvAdminUser> users) => users.map((u) => u.id).toList();
++List<String> pcIds(List<HjvAdminPc> pcs) => pcs.map((p) => p.pc).toList();
++
++void main() {
++  test('the entry is the operator\'s, while logged in', () {
++    expect(hjvShowsAdminEntry(loggedIn: true, role: 'operator'), isTrue);
++    expect(hjvShowsAdminEntry(loggedIn: false, role: 'operator'), isFalse);
++    for (final role in ['', 'Operator', 'admin', ' operator']) {
++      expect(hjvShowsAdminEntry(loggedIn: true, role: role), isFalse,
++          reason: role);
++    }
++  });
++
++  test('the overview reads as hjv-api gives it', () {
++    final o = overview();
++    expect(o.at, DateTime.utc(2026, 10, 14, 0, 30));
++    expect(o.activeDays, 30);
++    expect(o.activeUsers, 2);
++    final hong = o.users.firstWhere((u) => u.id == '2026000001');
++    expect((hong.name, hong.active, hong.lastUse, hong.keys, hong.pcs),
++        ('홍길동', true, DateTime.utc(2026, 10, 13, 9, 20), 2, 2));
++    final lab = o.pcs.firstWhere((p) => p.pc == '123456789');
++    expect((
++      lab.host,
++      lab.owner,
++      lab.ownerName,
++      lab.os,
++      lab.version,
++      lab.lastSync,
++      lab.ip,
++      lab.passwordless
++    ), (
++      '연구실-PC',
++      '2026000001',
++      '홍길동',
++      'windows',
++      '1.6.0',
++      DateTime.utc(2026, 10, 14, 0, 29),
++      '192.0.2.10',
++      'active'
++    ));
++    expect(lab.lan, ['192.0.2.10/24', '203.0.113.5/24']);
++    // what hjv-api does not know is empty
++    final bare = o.pcs.firstWhere((p) => p.pc == '111222333');
++    expect((bare.host, bare.os, bare.version, bare.lastSync, bare.ip),
++        ('', '', '', null, ''));
++    expect(bare.lan, isEmpty);
++  });
++
++  test(
++      'only version 1 with both lists is read; entries it cannot use are left out',
++      () {
++    expect(HjvAdminOverview.fromJson(null), isNull);
++    expect(HjvAdminOverview.fromJson('overview'), isNull);
++    expect(HjvAdminOverview.fromJson({...overviewAnswer(), 'v': 2}), isNull);
++    expect(HjvAdminOverview.fromJson({...overviewAnswer(), 'v': '1'}), isNull);
++    expect(HjvAdminOverview.fromJson({...overviewAnswer(), 'users': null}),
++        isNull);
++    expect(HjvAdminOverview.fromJson({...overviewAnswer(), 'pcs': {}}), isNull);
++    final o = HjvAdminOverview.fromJson({
++      'v': 1,
++      'at': 'yesterday',
++      'active_days': 0,
++      'users': [
++        'user',
++        {'name': '이름만'},
++        {'id': 7},
++        {'id': '2026000005', 'active': 'yes', 'keys': -1, 'pcs': '2'},
++      ],
++      'pcs': [
++        {'host': 'no-id'},
++        {
++          'pc': '222333444',
++          'lan': [1, '192.0.2.20/24', null],
++          'last_sync': 1760000000
++        },
++      ],
++    })!;
++    expect(o.at, isNull);
++    expect(o.activeDays, kHjvActiveDays);
++    expect(ids(o.users), ['2026000005']);
++    final u = o.users.single;
++    expect((u.active, u.keys, u.pcs, u.lastUse), (false, 0, 0, null));
++    expect(pcIds(o.pcs), ['222333444']);
++    expect(o.pcs.single.lan, ['192.0.2.20/24']);
++    expect(o.pcs.single.lastSync, isNull);
++    expect(
++        HjvAdminOverview.fromJson({...overviewAnswer(), 'active_days': 7})!
++            .activeDays,
++        7);
++  });
++
++  test(
++      'the 404 of an unknown path and the 401 of an ended login close the view; any other failure says why',
++      () {
++    final gone = hjvAdminAnswer(ko, 404, {'error': 'not found'});
++    expect((gone.closes, gone.overview, gone.error),
++        ('이 계정은 최고운영자가 아니어서 화면을 닫았습니다.', null, ''));
++    final ended = hjvAdminAnswer(ko, 401, {'error': 'invalid token'});
++    expect((ended.closes, ended.overview, ended.error),
++        ('로그인이 풀려서 화면을 닫았습니다.', null, ''));
++    expect(hjvAdminAnswer(en, 401, null).closes,
++        'You were logged out, so the screen closed.');
++    final ok = hjvAdminAnswer(ko, 200, overviewAnswer());
++    expect((ok.closes, ok.error), ('', ''));
++    expect(ids(ok.overview!.users).length, 4);
++    final busy = hjvAdminAnswer(ko, 429, {'error': '요청이 너무 많습니다.'});
++    expect(
++        (busy.closes, busy.overview, busy.error), ('', null, '요청이 너무 많습니다.'));
++    expect(hjvAdminAnswer(ko, 500, null).error, ko.account.requestFailed);
++    expect(
++        hjvAdminAnswer(ko, 403, {'error': ''}).error, ko.account.requestFailed);
++    // no answer at all: a locked iPhone's key, which the screen's own button gets past
++    expect(hjvAdminFailure(ko, Exception('hjv: account key unavailable')),
++        '이 기기의 보안 키를 지금 쓸 수 없습니다. 기기 잠금을 풀고 새로 고쳐 주세요.');
++    expect(hjvAdminFailure(ko, Exception('Connection refused')),
++        '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.');
++    final newer = hjvAdminAnswer(ko, 200, {...overviewAnswer(), 'v': 2});
++    expect((newer.closes, newer.overview, newer.error),
++        ('', null, '서버의 답을 읽지 못했습니다. 앱을 업데이트해 주세요.'));
++  });
++
++  test('users: the active ones first, then by last use, newest first', () {
++    expect(ids(overview().users),
++        ['2026000002', '2026000001', '2026000003', '2026000004']);
++    final at = DateTime.utc(2026, 10, 1);
++    expect(
++        ids(hjvSortUsers([
++          HjvAdminUser(id: 'c', lastUse: at),
++          const HjvAdminUser(id: 'd'),
++          HjvAdminUser(id: 'b', lastUse: at),
++          const HjvAdminUser(id: 'a', active: true),
++          HjvAdminUser(id: 'e', active: true, lastUse: at),
++        ])),
++        ['e', 'a', 'b', 'c', 'd']);
++  });
++
++  test('PCs: by owner, then by host name, those without one last', () {
++    expect(pcIds(overview().pcs), ['123456789', '111222333', '987654321']);
++    expect(
++        pcIds(hjvSortPcs([
++          const HjvAdminPc(pc: '5', owner: 'b'),
++          const HjvAdminPc(pc: '4', owner: 'a', host: 'beta'),
++          const HjvAdminPc(pc: '3', owner: 'a'),
++          const HjvAdminPc(pc: '2', owner: 'a', host: 'Alpha'),
++          const HjvAdminPc(pc: '1', owner: 'a', host: 'alpha'),
++        ])),
++        ['1', '2', '4', '3', '5']);
++  });
++
++  test('the search keeps the rows that hold each word, in any case', () {
++    // and a PC whose address at its last sync is none of its LAN's
++    final o = HjvAdminOverview.fromJson({
++      ...overviewAnswer(),
++      'pcs': [
++        ...overviewAnswer()['pcs'] as List,
++        {
++          'pc': '444555666',
++          'host': 'home-pc',
++          'owner': '2026000002',
++          'owner_name': '이몽룡',
++          'os': 'windows',
++          'version': '1.5.1',
++          'last_sync': '2026-10-13T12:00:00Z',
++          'ip': '203.0.113.77',
++          'lan': ['192.0.2.30/24'],
++          'passwordless': 'expired',
++        },
++      ],
++    })!;
++    List<List<String>> find(String query, [HjvAdminTexts t = ko]) {
++      final (users, pcs) = hjvAdminSearch(t, o, query);
++      return [ids(users), pcIds(pcs)];
++    }
++
++    // a user's name or portal ID finds the user and the user's PCs
++    expect(find('홍길동'), [
++      ['2026000001'],
++      ['123456789', '111222333']
++    ]);
++    expect(find('2026000002'), [
++      ['2026000002'],
++      ['444555666', '987654321']
++    ]);
++    // a PC by its address, its LAN, its host name, its system and version, and its ID as the app
++    // writes it
++    expect(find('203.0.113.77'), [
++      <String>[],
++      ['444555666']
++    ]);
++    expect(find('192.0.2'), [
++      <String>[],
++      ['123456789', '444555666']
++    ]);
++    expect(find('192.0.2.10'), [
++      <String>[],
++      ['123456789']
++    ]);
++    expect(find('1.5.1'), [
++      <String>[],
++      ['444555666']
++    ]);
++    expect(find('203.0.113.5'), [
++      <String>[],
++      ['123456789']
++    ]);
++    expect(find('LAB-PC2'), [
++      <String>[],
++      ['987654321']
++    ]);
++    expect(find('Windows'), [
++      <String>[],
++      ['123456789', '444555666', '987654321']
++    ]);
++    expect(find('123 456 789'), [
++      <String>[],
++      ['123456789']
++    ]);
++    expect(find('444555666'), [
++      <String>[],
++      ['444555666']
++    ]);
++    // what the rows say: the password-less state, active or not, which must be the whole word
++    expect(find('꺼 둠'), [
++      <String>[],
++      ['987654321']
++    ]);
++    expect(find('비활성'), [
++      ['2026000003', '2026000004'],
++      <String>[]
++    ]);
++    expect(find('활성'), [
++      ['2026000002', '2026000001'],
++      <String>[]
++    ]);
++    expect(find('활성 홍길동'), [
++      ['2026000001'],
++      <String>[]
++    ]);
++    expect(find('Active', en), [
++      ['2026000002', '2026000001'],
++      <String>[]
++    ]);
++    expect(find('inactive', en), [
++      ['2026000003', '2026000004'],
++      <String>[]
++    ]);
++    expect(find('활성', en), [<String>[], <String>[]]);
++    // every word must be there
++    expect(find('홍길동 192.0.2'), [
++      <String>[],
++      ['123456789']
++    ]);
++    expect(find('이몽룡 192.0.2'), [
++      <String>[],
++      ['444555666']
++    ]);
++    expect(find('nobody'), [<String>[], <String>[]]);
++    expect(find('  '), [ids(o.users), pcIds(o.pcs)]);
++  });
++
++  test(
++      'times show in the device\'s time zone, with the year when it is not this one\'s',
++      () {
++    final utc = DateTime.utc(2026, 10, 14, 0, 30);
++    expect(hjvAdminLocal(utc).isUtc, isFalse);
++    expect(hjvAdminLocal(utc), utc.toLocal());
++    final now = DateTime.utc(2026, 10, 14, 0, 30);
++    expect(hjvAdminWhen(DateTime.utc(2026, 10, 13, 9, 20), now, local: kst),
++        '10/13 18:20');
++    // New Year's Eve in UTC is already the new year in Korea
++    expect(hjvAdminWhen(DateTime.utc(2025, 12, 31, 16), now, local: kst),
++        '1/1 01:00');
++    expect(hjvAdminWhen(DateTime.utc(2025, 12, 31, 14), now, local: kst),
++        '2025/12/31 23:00');
++    // the year is the one of `now` where the device is: already 2026 in Korea
++    expect(
++        hjvAdminWhen(
++            DateTime.utc(2026, 1, 1, 1), DateTime.utc(2025, 12, 31, 16),
++            local: kst),
++        '1/1 10:00');
++  });
++
++  test('the rows read as the screen shows them', () {
++    final o = overview();
++    final now = o.at!;
++    final [lee, hong, chun, nameless] = o.users;
++    final [lab, bare, office] = o.pcs;
++    expect(hjvAdminSummary(ko, o, now: now, local: kst),
++        '사용자 4명 · 활성 2명(최근 30일 사용) · PC 3대 · 10/14 09:30 기준');
++    expect(hjvAdminSummary(ko, const HjvAdminOverview(), now: now, local: kst),
++        '사용자 0명 · 활성 0명(최근 30일 사용) · PC 0대');
++
++    // a phone's lines
++    expect(hjvAdminUserTitle(hong), '홍길동 (2026000001)');
++    expect(hjvAdminUserTitle(nameless), '2026000004');
++    // a name that is the portal ID is said once
++    expect(
++        hjvAdminUserTitle(
++            const HjvAdminUser(id: '2026000009', name: '2026000009')),
++        '2026000009');
++    expect(
++        hjvAdminOwner(const HjvAdminPc(
++            pc: '1', owner: '2026000009', ownerName: '2026000009')),
++        '2026000009');
++    expect(hjvAdminOwner(const HjvAdminPc(pc: '1', owner: '2026000009')),
++        '2026000009');
++    expect(hjvAdminUserLine(ko, hong, now: now, local: kst),
++        '활성 · 마지막 사용 10/13 18:20 · 로그인한 기기 2대 · PC 2대');
++    expect(hjvAdminUserLine(ko, nameless, now: now, local: kst),
++        '비활성 · 사용 기록 없음 · 로그인한 기기 0대 · PC 0대');
++    expect(hjvAdminPcTitle(lab), '연구실-PC · 123 456 789');
++    expect(hjvAdminPcTitle(bare), '111 222 333');
++    expect(hjvAdminPcLines(ko, lab, now: now, local: kst), [
++      '계정 홍길동 (2026000001)',
++      'Windows · HJViewer 1.6.0',
++      '마지막 동기화 10/14 09:29 · IP 192.0.2.10',
++      'LAN 192.0.2.10/24, 203.0.113.5/24',
++      '비밀번호 없는 연결: 켜짐',
++    ]);
++    expect(hjvAdminPcLines(ko, bare, now: now, local: kst), [
++      '계정 홍길동 (2026000001)',
++      'OS 모름 · 버전 모름',
++      '동기화 기록 없음 · IP 모름',
++      '비밀번호 없는 연결: PC가 아직 확인하지 않음',
++    ]);
++
++    // the wide table's cells
++    expect(hjvAdminUserCells(ko, lee, now: now, local: kst),
++        ['이몽룡 (2026000002)', '활성', '10/14 09:10', '1', '1']);
++    expect(hjvAdminUserCells(ko, chun, now: now, local: kst),
++        ['성춘향 (2026000003)', '비활성', '8/1 12:00', '0', '0']);
++    expect(hjvAdminPcCells(ko, lab, now: now, local: kst), [
++      '연구실-PC\n123 456 789',
++      '홍길동 (2026000001)',
++      'Windows · HJViewer 1.6.0',
++      '10/14 09:29',
++      '192.0.2.10\n192.0.2.10/24, 203.0.113.5/24',
++      '켜짐',
++    ]);
++    expect(hjvAdminPcCells(ko, bare, now: now, local: kst), [
++      '111 222 333',
++      '홍길동 (2026000001)',
++      'OS 모름 · 버전 모름',
++      '동기화 기록 없음',
++      'IP 모름',
++      'PC가 아직 확인하지 않음',
++    ]);
++    expect(hjvAdminPcCells(en, office, now: now, local: kst), [
++      'lab-pc2\n987 654 321',
++      '이몽룡 (2026000002)',
++      'Windows · HJViewer 1.6.0',
++      '10/14 09:28',
++      '198.51.100.7\n198.51.100.7/24',
++      'turned off on the PC',
++    ]);
++    expect(hjvAdminUserLine(en, hong, now: now, local: kst),
++        'active · last use 10/13 18:20 · logged-in devices: 2 · PCs: 2');
++  });
++
++  test('each password-less state of hjv-api has its words', () {
++    expect([
++      for (final state in [
++        'active',
++        'off',
++        'disabled',
++        'expired',
++        'listed',
++        'needs-relogin',
++        'frozen',
++      ])
++        hjvAdminPwless(ko, state)
++    ], [
++      '켜짐',
++      'PC에서 꺼 둠',
++      '관리자가 일시 중지함',
++      '서버와 맞추지 못함',
++      'PC가 아직 확인하지 않음',
++      '다시 로그인 필요',
++      'frozen',
++    ]);
++  });
++
++  test('the entry\'s name, and the systems hjv-api names by their words', () {
++    expect(ko.title, '최고운영자: 사용자와 PC');
++    expect(en.title, 'Super operator: users and PCs');
++    expect(
++        ['windows', 'macos', 'linux', 'android', 'ios', 'freebsd', 'Windows 11']
++            .map(hjvAdminOsName),
++        [
++          'Windows',
++          'macOS',
++          'Linux',
++          'Android',
++          'iOS',
++          'freebsd',
++          'Windows 11'
++        ]);
++  });
++
++  test('no text holds braces, which translate() takes for placeholders', () {
++    for (final t in [ko, en]) {
++      final texts = [
++        t.title,
++        t.onlyLoggedIn,
++        t.ipNote,
++        t.recorded,
++        t.search,
++        t.refresh,
++        t.usersTab(4, 4),
++        t.usersTab(1, 4),
++        t.pcsTab(3, 3),
++        t.pcsTab(0, 3),
++        t.summary(4, 2, 30, 3),
++        t.asOf('10/14 09:30'),
++        t.active,
++        t.inactive,
++        t.lastUse('10/14 09:30'),
++        t.notUsed,
++        t.devices(2),
++        t.pcs(1),
++        t.owner('홍길동 (2026000001)'),
++        t.unknownOs,
++        t.unknownVersion,
++        t.lastSync('10/14 09:29'),
++        t.notSynced,
++        t.unknownIp,
++        t.pwless(t.pwlessOn),
++        t.pwlessOn,
++        t.pwlessOff,
++        t.pwlessPaused,
++        t.pwlessExpired,
++        t.pwlessListed,
++        t.pwlessRelogin,
++        t.noUsers,
++        t.noPcs,
++        t.noMatch,
++        t.gone,
++        t.ended,
++        t.unreadable,
++        t.keyLocked,
++        ...t.userColumns,
++        ...t.pcColumns,
++      ];
++      for (final text in texts) {
++        expect(text, isNot(contains('{')));
++        expect(text, isNot(contains('}')));
++        expect(text.trim(), isNotEmpty);
++      }
++    }
++  });
++}
+diff --git a/flutter/test/hjviewer_admin_widgets_test.dart b/flutter/test/hjviewer_admin_widgets_test.dart
+new file mode 100644
+index 0000000..c6f6abd
+--- /dev/null
++++ b/flutter/test/hjviewer_admin_widgets_test.dart
+@@ -0,0 +1,663 @@
++import 'dart:async';
++
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjviewer_admin.dart';
++import 'package:flutter_hbb/common/hjviewer_admin_texts.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:get/get.dart';
++import 'package:settings_ui/settings_ui.dart';
++
++// The operator's view's widgets: its entry in Settings → Account and its screen. They import
++// common.dart, so these tests need the generated bridge, which client-build.yml makes before its
++// Dart tests. The portal IDs, names, hosts and addresses are test values.
++
++const ko = HjvAdminTexts(true);
++const title = '최고운영자: 사용자와 PC';
++const ended = '로그인이 풀려서 화면을 닫았습니다.';
++
++/// The times as a device in Korea shows them, whatever the zone of the machine the tests run on.
++DateTime kst(DateTime t) => t.toUtc().add(const Duration(hours: 9));
++
++/// `GET /api/hjv/admin/overview` as the contract has it.
++Map<String, Object?> overviewAnswer() => {
++      'v': 1,
++      'at': '2026-10-14T00:30:00Z',
++      'active_days': 30,
++      'users': [
++        {
++          'id': '2026000003',
++          'name': '성춘향',
++          'active': false,
++          'last_use': '2026-08-01T03:00:00Z',
++          'keys': 0,
++          'pcs': 0,
++        },
++        {
++          'id': '2026000001',
++          'name': '홍길동',
++          'active': true,
++          'last_use': '2026-10-13T09:20:00Z',
++          'keys': 2,
++          'pcs': 2,
++        },
++        {
++          'id': '2026000002',
++          'name': '이몽룡',
++          'active': true,
++          'last_use': '2026-10-14T00:10:00Z',
++          'keys': 1,
++          'pcs': 1,
++        },
++      ],
++      'pcs': [
++        {
++          'pc': '987654321',
++          'host': 'lab-pc2',
++          'owner': '2026000002',
++          'owner_name': '이몽룡',
++          'os': 'windows',
++          'version': '1.6.0',
++          'last_sync': '2026-10-14T00:28:00Z',
++          'ip': '198.51.100.7',
++          'lan': ['198.51.100.7/24'],
++          'passwordless': 'off',
++        },
++        {
++          'pc': '111222333',
++          'host': null,
++          'owner': '2026000001',
++          'owner_name': '홍길동',
++          'os': null,
++          'version': null,
++          'last_sync': null,
++          'ip': null,
++          'lan': [],
++          'passwordless': 'listed',
++        },
++        {
++          'pc': '123456789',
++          'host': '연구실-PC',
++          'owner': '2026000001',
++          'owner_name': '홍길동',
++          'os': 'windows',
++          'version': '1.6.0',
++          'last_sync': '2026-10-14T00:29:00Z',
++          'ip': '192.0.2.10',
++          'lan': ['192.0.2.10/24', '203.0.113.5/24'],
++          'passwordless': 'active',
++        },
++      ],
++    };
++
++Future<HjvAdminAnswer> answered() async =>
++    hjvAdminAnswer(ko, 200, overviewAnswer());
++
++/// CustomAlertDialog asks for the focus in a zero timer on each build: let the last one run.
++Future<void> settle(WidgetTester tester) async {
++  await tester.pumpAndSettle();
++  await tester.pump(const Duration(milliseconds: 10));
++}
++
++void screen(WidgetTester tester, Size size) {
++  tester.view.physicalSize = size;
++  tester.view.devicePixelRatio = 1.0;
++  addTearDown(tester.view.reset);
++}
++
++Future<void> show(WidgetTester tester, Widget child) async {
++  await tester.pumpWidget(MaterialApp(home: Scaffold(body: child)));
++  await tester.pump();
++}
++
++double top(WidgetTester tester, String text) =>
++    tester.getTopLeft(find.text(text)).dy;
++
++/// The overview's requests, answered as each test says.
++class Answers {
++  final all = <Completer<HjvAdminAnswer>>[];
++  Future<HjvAdminAnswer> load() {
++    final answer = Completer<HjvAdminAnswer>();
++    all.add(answer);
++    return answer.future;
++  }
++
++  void give(int status, [Object? body]) =>
++      all.last.complete(hjvAdminAnswer(ko, status, body ?? overviewAnswer()));
++}
++
++void main() {
++  testWidgets(
++      'the entry is there for the operator while logged in, and goes with the role',
++      (tester) async {
++    final user = '2026000001'.obs;
++    final role = ''.obs;
++    final opened = <BuildContext>[];
++    await show(
++        tester,
++        Column(children: [
++          HjvAdminEntry(
++              texts: () => ko,
++              shown: () => hjvShowsAdminEntry(
++                  loggedIn: user.value.isNotEmpty, role: role.value),
++              open: opened.add),
++        ]));
++    expect(find.text(title), findsNothing);
++    role.value = 'operator';
++    await tester.pump();
++    expect(find.text(title), findsOneWidget);
++    await tester.tap(find.text(title));
++    expect(opened, hasLength(1));
++    // a logout, and a role the server took back
++    user.value = '';
++    await tester.pump();
++    expect(find.text(title), findsNothing);
++    user.value = '2026000001';
++    await tester.pump();
++    expect(find.text(title), findsOneWidget);
++    role.value = '';
++    await tester.pump();
++    expect(find.text(title), findsNothing);
++  });
++
++  testWidgets(
++      'on a phone the entry is a tile of the account section, an empty one for everybody else',
++      (tester) async {
++    final role = ''.obs;
++    var opened = 0;
++    for (final platform in [DevicePlatform.iOS, DevicePlatform.android]) {
++      role.value = '';
++      await show(
++          tester,
++          SettingsList(platform: platform, sections: [
++            SettingsSection(title: const Text('계정'), tiles: [
++              SettingsTile(title: const Text('로그아웃')),
++              CustomSettingsTile(
++                  child: HjvAdminEntry(
++                      texts: () => ko,
++                      shown: () =>
++                          hjvShowsAdminEntry(loggedIn: true, role: role.value),
++                      open: (_) => opened++,
++                      tile: true)),
++              SettingsTile(title: const Text('로그인한 기기')),
++            ]),
++          ]));
++      expect(find.text(title), findsNothing, reason: '$platform');
++      expect(find.text('로그인한 기기'), findsOneWidget);
++      role.value = 'operator';
++      await tester.pump();
++      expect(
++          top(tester, '로그아웃') < top(tester, title) &&
++              top(tester, title) < top(tester, '로그인한 기기'),
++          isTrue,
++          reason: '$platform');
++      await tester.tap(find.text(title));
++      // the iOS tile lights up for 100 ms
++      await tester.pump(const Duration(milliseconds: 200));
++    }
++    expect(opened, 2);
++  });
++
++  testWidgets(
++      'the view: the users and the PCs in two tabs, as a table where it is wide, and nothing to press on them',
++      (tester) async {
++    screen(tester, const Size(1100, 800));
++    var loads = 0;
++    await show(
++        tester,
++        HjvAdminView(
++            t: ko,
++            load: () {
++              loads++;
++              return answered();
++            },
++            onGone: (_) {},
++            local: kst));
++    await settle(tester);
++    expect(loads, 1);
++    expect(
++        find.text('계정에 로그인한 PC만 보입니다. 아무도 로그인하지 않은 PC는 서버가 알지 못합니다. '
++            'IP는 PC가 마지막으로 서버와 동기화할 때 서버가 본 주소입니다. '
++            '이 화면을 열거나 새로 고칠 때마다 운영자 기록에 남습니다.'),
++        findsOneWidget);
++    expect(find.text('사용자 3명 · 활성 2명(최근 30일 사용) · PC 3대 · 10/14 09:30 기준'),
++        findsOneWidget);
++    expect(find.text('사용자 3'), findsOneWidget);
++    expect(find.text('PC 3'), findsOneWidget);
++    for (final cell in [
++      '사용자',
++      '상태',
++      '마지막 사용',
++      '로그인한 기기',
++      '이몽룡 (2026000002)',
++      '10/14 09:10',
++      '홍길동 (2026000001)',
++      '10/13 18:20',
++      '성춘향 (2026000003)',
++      '비활성',
++      '8/1 12:00',
++    ]) {
++      expect(find.text(cell), findsOneWidget, reason: cell);
++    }
++    // the active ones first, the newest use first
++    expect(top(tester, '이몽룡 (2026000002)') < top(tester, '홍길동 (2026000001)'),
++        isTrue);
++    expect(top(tester, '홍길동 (2026000001)') < top(tester, '성춘향 (2026000003)'),
++        isTrue);
++
++    await tester.tap(find.text('PC 3'));
++    await settle(tester);
++    for (final cell in [
++      '계정',
++      'OS·버전',
++      '마지막 동기화',
++      'IP · LAN',
++      '비밀번호 없는 연결',
++      '연구실-PC\n123 456 789',
++      '10/14 09:29',
++      '192.0.2.10\n192.0.2.10/24, 203.0.113.5/24',
++      '켜짐',
++      '111 222 333',
++      'OS 모름 · 버전 모름',
++      '동기화 기록 없음',
++      'IP 모름',
++      'PC가 아직 확인하지 않음',
++      'lab-pc2\n987 654 321',
++      '198.51.100.7\n198.51.100.7/24',
++      'PC에서 꺼 둠',
++    ]) {
++      expect(find.text(cell), findsOneWidget, reason: cell);
++    }
++    // hjv-api's "windows" of both PCs
++    expect(find.text('Windows · HJViewer 1.6.0'), findsNWidgets(2));
++    // by owner, then by host name
++    expect(top(tester, '연구실-PC\n123 456 789') < top(tester, '111 222 333'),
++        isTrue);
++    expect(top(tester, '111 222 333') < top(tester, 'lab-pc2\n987 654 321'),
++        isTrue);
++    // read-only: the search, [새로 고침] and the tabs, no button for a user or a PC
++    expect(find.byType(OutlinedButton), findsNothing);
++    expect(find.byType(ElevatedButton), findsNothing);
++    expect(find.byType(TextButton), findsNothing);
++    expect(find.byType(IconButton), findsOneWidget);
++    // what the lists show can be selected and copied
++    expect(find.byType(SelectionArea), findsOneWidget);
++  });
++
++  testWidgets('on a phone each user and each PC is a tile with its lines',
++      (tester) async {
++    screen(tester, const Size(400, 800));
++    await show(tester,
++        HjvAdminPage(t: ko, load: answered, onGone: (_) {}, local: kst));
++    await settle(tester);
++    expect(find.text(title), findsOneWidget);
++    expect(find.text('상태'), findsNothing);
++    expect(find.text('홍길동 (2026000001)'), findsOneWidget);
++    expect(find.text('활성 · 마지막 사용 10/13 18:20 · 로그인한 기기 2대 · PC 2대'),
++        findsOneWidget);
++    await tester.tap(find.text('PC 3'));
++    await settle(tester);
++    expect(find.text('연구실-PC · 123 456 789'), findsOneWidget);
++    expect(
++        find.text([
++          '계정 홍길동 (2026000001)',
++          'Windows · HJViewer 1.6.0',
++          '마지막 동기화 10/14 09:29 · IP 192.0.2.10',
++          'LAN 192.0.2.10/24, 203.0.113.5/24',
++          '비밀번호 없는 연결: 켜짐',
++        ].join('\n')),
++        findsOneWidget);
++    expect(find.byType(OutlinedButton), findsNothing);
++    expect(find.byType(TextButton), findsNothing);
++  });
++
++  testWidgets(
++      'the search narrows both tabs; [새로 고침] asks once at a time and keeps the lists when it fails',
++      (tester) async {
++    screen(tester, const Size(1100, 800));
++    final answers = <Completer<HjvAdminAnswer>>[];
++    Future<HjvAdminAnswer> load() {
++      final answer = Completer<HjvAdminAnswer>();
++      answers.add(answer);
++      return answer.future;
++    }
++
++    await show(tester, HjvAdminView(t: ko, load: load, onGone: (_) {}));
++    expect(answers, hasLength(1));
++    expect(find.byType(LinearProgressIndicator), findsOneWidget);
++    answers[0].complete(hjvAdminAnswer(ko, 200, overviewAnswer()));
++    await settle(tester);
++    expect(find.byType(LinearProgressIndicator), findsNothing);
++
++    await tester.enterText(find.byType(TextField), '192.0.2');
++    await tester.pump();
++    expect(find.text('사용자 0/3'), findsOneWidget);
++    expect(find.text('PC 1/3'), findsOneWidget);
++    expect(find.text('찾는 항목이 없습니다.'), findsOneWidget);
++    await tester.tap(find.text('PC 1/3'));
++    // the tab slides over (a focused search field's cursor keeps the frames coming)
++    await tester.pump();
++    await tester.pump(const Duration(seconds: 1));
++    expect(find.text('연구실-PC\n123 456 789'), findsOneWidget);
++
++    await tester.tap(find.byIcon(Icons.refresh));
++    await tester.pump();
++    expect(answers, hasLength(2));
++    expect(find.byType(LinearProgressIndicator), findsOneWidget);
++    await tester.tap(find.byIcon(Icons.refresh));
++    await tester.pump();
++    expect(answers, hasLength(2));
++    answers[1].complete(
++        hjvAdminAnswer(ko, 429, {'error': '요청이 너무 많습니다. 잠시 뒤 다시 해 주세요.'}));
++    await tester.pump();
++    await tester.pump();
++    expect(find.text('요청이 너무 많습니다. 잠시 뒤 다시 해 주세요.'), findsOneWidget);
++    expect(find.byType(LinearProgressIndicator), findsNothing);
++    // what was shown stays, in the tab it was in
++    expect(find.text('PC 1/3'), findsOneWidget);
++    expect(find.text('연구실-PC\n123 456 789'), findsOneWidget);
++    // and the failure's words go with the next answer
++    await tester.tap(find.byIcon(Icons.refresh));
++    await tester.pump();
++    expect(answers, hasLength(3));
++    answers[2].complete(hjvAdminAnswer(ko, 200, overviewAnswer()));
++    await tester.pump();
++    await tester.pump();
++    expect(find.text('요청이 너무 많습니다. 잠시 뒤 다시 해 주세요.'), findsNothing);
++    expect(find.byType(LinearProgressIndicator), findsNothing);
++    expect(find.text('연구실-PC\n123 456 789'), findsOneWidget);
++  });
++
++  testWidgets('empty lists say so, and times read against the answer\'s own',
++      (tester) async {
++    screen(tester, const Size(400, 800));
++    await show(
++        tester,
++        HjvAdminView(
++            t: ko,
++            load: () async => hjvAdminAnswer(ko, 200, {
++                  'v': 1,
++                  'at': '2020-06-01T00:00:00Z',
++                  'users': [
++                    {
++                      'id': '2026000001',
++                      'name': '2026000001',
++                      'active': false,
++                      'last_use': '2020-05-31T03:00:00Z',
++                    },
++                  ],
++                  'pcs': [],
++                }),
++            onGone: (_) {},
++            local: kst));
++    await settle(tester);
++    // no year where it is the answer's, whatever this machine's clock says
++    expect(find.text('사용자 1명 · 활성 0명(최근 30일 사용) · PC 0대 · 6/1 09:00 기준'),
++        findsOneWidget);
++    // a name that is the portal ID is said once
++    expect(find.text('2026000001'), findsOneWidget);
++    expect(find.text('비활성 · 마지막 사용 5/31 12:00 · 로그인한 기기 0대 · PC 0대'),
++        findsOneWidget);
++    await tester.tap(find.text('PC 0'));
++    await settle(tester);
++    expect(find.text('계정에 로그인한 PC가 없습니다.'), findsOneWidget);
++    expect(find.text('찾는 항목이 없습니다.'), findsNothing);
++
++    await show(
++        tester,
++        HjvAdminView(
++            key: const ValueKey('empty'),
++            t: ko,
++            load: () async =>
++                hjvAdminAnswer(ko, 200, {'v': 1, 'users': [], 'pcs': []}),
++            onGone: (_) {}));
++    await settle(tester);
++    expect(find.text('사용자 0명 · 활성 0명(최근 30일 사용) · PC 0대'), findsOneWidget);
++    expect(find.text('로그인한 사용자가 없습니다.'), findsOneWidget);
++  });
++
++  testWidgets(
++      'on a phone on its side with the keyboard up, or with a big font, the lists keep their room',
++      (tester) async {
++    addTearDown(tester.view.reset);
++    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
++    for (final (size, keyboard, scale) in [
++      (const Size(844, 390), 210.0, 1.0),
++      (const Size(390, 844), 300.0, 2.0),
++      (const Size(390, 844), 0.0, 3.0),
++      (const Size(844, 390), 0.0, 2.0),
++    ]) {
++      final what = '$size, keyboard $keyboard, font x$scale';
++      tester.view.physicalSize = size;
++      tester.view.devicePixelRatio = 1.0;
++      tester.view.viewInsets = FakeViewPadding(bottom: keyboard);
++      tester.platformDispatcher.textScaleFactorTestValue = scale;
++      await tester.pumpWidget(MaterialApp(
++          key: ValueKey(what),
++          home:
++              HjvAdminPage(t: ko, load: answered, onGone: (_) {}, local: kst)));
++      await settle(tester);
++      expect(tester.takeException(), isNull, reason: what);
++      final view = tester.getSize(find.byType(HjvAdminView)).height;
++      final lists = tester.getSize(find.byType(TabBarView)).height;
++      expect(lists, greaterThanOrEqualTo(view * 0.4 - 1), reason: what);
++      // the search still finds
++      await tester.enterText(find.byType(TextField), '홍길동');
++      await tester.pump();
++      expect(find.text('사용자 1/3'), findsOneWidget, reason: what);
++      expect(tester.takeException(), isNull, reason: what);
++    }
++  });
++
++  testWidgets('a 404 ends the view, and the entry goes with the role',
++      (tester) async {
++    final role = 'operator'.obs;
++    final gone = <String>[];
++    await show(
++        tester,
++        Column(children: [
++          HjvAdminEntry(
++              texts: () => ko,
++              shown: () => hjvShowsAdminEntry(loggedIn: true, role: role.value),
++              open: (_) {}),
++          Expanded(
++              child: HjvAdminView(
++                  t: ko,
++                  load: () async =>
++                      hjvAdminAnswer(ko, 404, {'error': 'not found'}),
++                  onGone: (toast) {
++                    gone.add(toast);
++                    role.value = '';
++                  })),
++        ]));
++    await tester.pump();
++    expect(gone, ['이 계정은 최고운영자가 아니어서 화면을 닫았습니다.']);
++    expect(find.text(title), findsNothing);
++    expect(find.text('사용자 3'), findsNothing);
++  });
++
++  testWidgets(
++      'a 404 takes the entry also when the view that asked has closed meanwhile',
++      (tester) async {
++    // what the account module keeps: it takes the role from the 404 before the app reads it
++    var kept = 'operator';
++    await show(
++        tester,
++        HjvAdminEntry(
++            texts: () => ko,
++            shown: () => hjvAdminEntryShown(loggedIn: true, role: () => kept),
++            open: (_) {}));
++    expect(find.text(title), findsOneWidget);
++    kept = '';
++    await tester.pump();
++    expect(find.text(title), findsOneWidget, reason: 'nothing said so yet');
++    // the request alone: the view that asked is gone
++    final asked = <String>[];
++    final answer = await hjvAdminLoad(ko, (path) async {
++      asked.add(path);
++      return (404, {'error': 'not found'});
++    });
++    expect(asked, ['/api/hjv/admin/overview']);
++    expect(answer.closes, '이 계정은 최고운영자가 아니어서 화면을 닫았습니다.');
++    await tester.pump();
++    expect(find.text(title), findsNothing);
++    // a request that got no answer says why
++    final failed = await hjvAdminLoad(
++        ko, (path) async => throw Exception('Connection refused'));
++    expect((failed.closes, failed.overview, failed.error),
++        ('', null, '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.'));
++  });
++
++  testWidgets('a 401 closes the view: no list stays without the login',
++      (tester) async {
++    screen(tester, const Size(1100, 800));
++    final answers = Answers();
++    final gone = <String>[];
++    await show(tester,
++        HjvAdminView(t: ko, load: answers.load, onGone: gone.add, local: kst));
++    answers.give(200);
++    await settle(tester);
++    expect(find.text('홍길동 (2026000001)'), findsOneWidget);
++    await tester.tap(find.byIcon(Icons.refresh));
++    await tester.pump();
++    answers.give(401, {'error': 'invalid token'});
++    await settle(tester);
++    expect(gone, [ended]);
++    expect(find.text('홍길동 (2026000001)'), findsNothing);
++    expect(find.text('사용자 3'), findsNothing);
++    expect(find.text('invalid token'), findsNothing);
++    expect(find.byType(LinearProgressIndicator), findsNothing);
++    // [새로 고침] asks nothing more
++    await tester.tap(find.byIcon(Icons.refresh));
++    await tester.pump();
++    expect(answers.all, hasLength(2));
++  });
++
++  testWidgets(
++      'the end of the login closes the view at once and takes its lists, once',
++      (tester) async {
++    screen(tester, const Size(1100, 800));
++    final login = '2026000001'.obs;
++    final answers = Answers();
++    final gone = <String>[];
++    await show(
++        tester,
++        HjvAdminView(
++            t: ko,
++            load: answers.load,
++            onGone: gone.add,
++            login: login,
++            local: kst));
++    answers.give(200);
++    await settle(tester);
++    // a refresh is under way when another device logs this one out
++    await tester.tap(find.byIcon(Icons.refresh));
++    await tester.pump();
++    login.value = '';
++    await settle(tester);
++    expect(gone, [ended]);
++    expect(find.text('홍길동 (2026000001)'), findsNothing);
++    expect(find.text('PC 3'), findsNothing);
++    // the refresh's answer comes after: it shows nothing, and the view closed once
++    answers.give(200);
++    await tester.pump();
++    await tester.pump();
++    expect(find.text('홍길동 (2026000001)'), findsNothing);
++    expect(find.text('PC 3'), findsNothing);
++    login.value = '2026000001';
++    login.value = '';
++    await tester.pump();
++    expect(gone, [ended]);
++  });
++
++  testWidgets(
++      'what closing throws stays in the view: the logout goes on to its other listeners',
++      (tester) async {
++    final login = '2026000001'.obs;
++    await show(
++        tester,
++        HjvAdminView(
++            t: ko,
++            load: answered,
++            onGone: (_) => throw StateError('the dialog was closed already'),
++            login: login));
++    await settle(tester);
++    final heard = <String>[];
++    login.listen(heard.add);
++    login.value = '';
++    expect(heard, ['']);
++    await tester.pump();
++    expect(find.text('홍길동 (2026000001)'), findsNothing);
++  });
++
++  testWidgets(
++      'a view that goes before its answer closes nothing and fails nothing',
++      (tester) async {
++    for (final status in [200, 401, 404]) {
++      final login = '2026000001'.obs;
++      final answers = Answers();
++      final gone = <String>[];
++      await show(
++          tester,
++          HjvAdminView(
++              key: ValueKey(status),
++              t: ko,
++              load: answers.load,
++              onGone: gone.add,
++              login: login));
++      // [닫기], Esc or back before the answer
++      await tester.pumpWidget(const MaterialApp(home: Scaffold()));
++      answers.give(status, status == 200 ? null : {'error': 'x'});
++      await tester.pump();
++      login.value = '';
++      await tester.pump();
++      expect(tester.takeException(), isNull, reason: '$status');
++      expect(gone, isEmpty, reason: '$status');
++    }
++  });
++
++  testWidgets('the desktop dialog lays the table out; [닫기] and Esc close it',
++      (tester) async {
++    screen(tester, const Size(1280, 900));
++    var closed = 0;
++    var loads = 0;
++    final gone = <String>[];
++    final login = '2026000001'.obs;
++    await show(
++        tester,
++        hjvAdminDialog(ko,
++            load: () {
++              loads++;
++              return answered();
++            },
++            onClose: () => closed++,
++            onGone: gone.add,
++            login: login,
++            local: kst));
++    await settle(tester);
++    expect(tester.takeException(), isNull);
++    expect(find.text(title), findsOneWidget);
++    expect(find.text('상태'), findsOneWidget);
++    expect(find.text('홍길동 (2026000001)'), findsOneWidget);
++    // Enter in the search closes nothing, Esc closes the dialog
++    await tester.tap(find.byType(TextField));
++    await tester.pump();
++    await tester.enterText(find.byType(TextField), '홍길동');
++    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
++    await tester.pump();
++    expect(closed, 0);
++    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
++    await tester.pump();
++    expect(closed, 1);
++    await tester.tap(find.text('닫기'));
++    expect(closed, 2);
++    // the dialog's view follows the login too, and asks nothing more
++    login.value = '';
++    await tester.pump();
++    expect(gone, [ended]);
++    expect(find.text('홍길동 (2026000001)'), findsNothing);
++    await tester.tap(find.byIcon(Icons.refresh));
++    await tester.pump();
++    expect(loads, 1);
++  });
++}
+diff --git a/src/hjviewer_account/api.rs b/src/hjviewer_account/api.rs
+index f9bf73c..59159d1 100644
+--- a/src/hjviewer_account/api.rs
++++ b/src/hjviewer_account/api.rs
+@@ -50,6 +50,10 @@ const KEY_SERIAL: &str = "hjv-key-serial";
+ const PC_BINDING: &str = "hjv-pc-binding";
+ /// LocalConfig: "Y" after a token was dropped for want of its account key: log in again.
+ const RELOGIN: &str = "hjv-relogin";
++/// LocalConfig: "operator" while hjv-api names the login's account its operator (the login
++/// answer's `user.hjv_role`, the key list's `hjv_role`). It only picks what the screens offer:
++/// hjv-api checks the role on each request of the operator's view.
++const ROLE: &str = "hjv-role";
+ 
+ const PROOF_HEADER: &str = "X-HJV-Proof";
+ const SEALED_PREFIX: &str = "hjv-sealed-v1.";
+@@ -553,6 +557,7 @@ fn log_out(env: &impl Env) {
+     for key in [MY_DEVICES, KEY_SERIAL, RELOGIN] {
+         env.set_local(key, "");
+     }
++    env.set_local(ROLE, "");
+     unbind_this_pc(env);
+ }
+ 
+@@ -579,6 +584,7 @@ fn drop_login(env: &impl Env) {
+     for (key, value) in [("access_token", ""), ("user_info", ""), (RELOGIN, "Y")] {
+         env.set_local(key, value);
+     }
++    env.set_local(ROLE, "");
+     log::warn!("account: no account key for the login, logged out");
+ }
+ 
+@@ -625,10 +631,20 @@ fn observe(env: &impl Env, url: &str, response: &str) {
+         {
+             unbind_this_pc(env)
+         }
++        "/api/hjv/keys" if ok => learn_role(env, &body),
++        // hjv-api answers an account that is no operator (any more) as it answers an unknown path
++        "/api/hjv/admin/overview" if answer.status_code == 404 => env.set_local(ROLE, ""),
+         _ => {}
+     }
+ }
+ 
++/// The role of `holder` (the login answer's `user`, the key list's answer): hjv-api's
++/// `hjv_role`, which only an operator's answer carries.
++fn learn_role(env: &impl Env, holder: &Value) {
++    let operator = holder.get("hjv_role").and_then(Value::as_str) == Some("operator");
++    env.set_local(ROLE, if operator { "operator" } else { "" });
++}
++
+ /// §4-2: the server's clock, from the `server_time` of a 409 `clock` answer or else from the
+ /// `Date` header, minus this device's. Kept for the next signature and seal, and in LocalConfig
+ /// when it moved by more than CLOCK_KEEP_STEP, for the next process.
+@@ -686,6 +702,7 @@ fn login_answered(env: &impl Env, ok: bool, body: &Value) {
+         &serial.map(|s| s.to_string()).unwrap_or_default(),
+     );
+     env.set_local(RELOGIN, "");
++    learn_role(env, body.get("user").unwrap_or(&Value::Null));
+     let account = body
+         .get("user")
+         .and_then(|u| u.get("name"))
+@@ -806,6 +823,8 @@ pub(super) fn key_serial() -> u64 {
+ /// - `hjv-account`: "Y" in an account build;
+ /// - `hjv-relogin`: "Y" when the login was dropped for want of its account key;
+ /// - `hjv-pc-bound`: "Y" when this user's login keeps this PC bound (logging out unbinds it);
++/// - `hjv-role`: "operator" while hjv-api names the login's account its operator (the login
++///   answer, the key list), else "";
+ /// - `hjv-wol:<PC ID>`: whether that PC of the account can be woken, as the last device list said
+ ///   (`hjv.wol`), "" for a PC that is not in it.
+ pub(crate) fn get_common(key: &str) -> Option<String> {
+@@ -821,6 +840,7 @@ fn common_value(env: &impl Env, key: &str) -> Option<String> {
+         "hjv-account" => yes(true),
+         RELOGIN => yes(env.local(RELOGIN) == "Y"),
+         "hjv-pc-bound" => yes(!env.local(PC_BINDING).is_empty()),
++        ROLE => env.local(ROLE),
+         _ => {
+             let pc = key.strip_prefix("hjv-wol:")?;
+             let mut list: MyDevices =
+@@ -1716,4 +1736,111 @@ mod tests {
+         }
+         assert_eq!(get("hjv-wol"), None);
+     }
++
++    #[test]
++    fn the_operators_entry_follows_the_role_hjv_api_gives() {
++        let fake = Fake::new();
++        let role = |fake: &Fake| common_value(fake, ROLE).unwrap_or_default();
++        let log_in_as = |user: Value| {
++            let login = Some(login_body("account"));
++            prepare(&fake, &url("/api/login"), "post", login, json_header()).unwrap();
++            let token = json!({ "type": "access_token", "access_token": REQ_TOKEN, "user": user });
++            observe(&fake, &url("/api/login"), &answer(200, &token));
++        };
++        // the login answer names an operator's account, and says nothing of another
++        log_in_as(json!({ "name": ACCOUNT_ID, "status": 1, "hjv_role": "operator" }));
++        assert_eq!(role(&fake), "operator");
++        log_in_as(json!({ "name": "2026000002", "status": 1 }));
++        assert_eq!(role(&fake), "");
++        for other in [
++            json!("admin"),
++            json!("Operator"),
++            json!(true),
++            json!(1),
++            Value::Null,
++        ] {
++            log_in_as(json!({ "name": ACCOUNT_ID, "hjv_role": other }));
++            assert_eq!(role(&fake), "", "{other}");
++        }
++        // a second factor's question and a refused login are no login: the role stays
++        log_in_as(json!({ "name": ACCOUNT_ID, "hjv_role": "operator" }));
++        let challenge = json!({ "type": "email_check", "tfa_type": "tfa_check", "secret": "s" });
++        observe(&fake, &url("/api/login"), &answer(200, &challenge));
++        let refused = json!({ "error": "wrong password" });
++        observe(&fake, &url("/api/login"), &answer(401, &refused));
++        assert_eq!(role(&fake), "operator");
++
++        // the key list, which the app asks when it starts and comes back, gives it again
++        let keys = url("/api/hjv/keys?current=1&pageSize=100");
++        let list = |role: Option<&str>| {
++            let mut list = json!({ "total": 0, "data": [], "ended": [] });
++            if let Some(role) = role {
++                list["hjv_role"] = role.into();
++            }
++            list
++        };
++        observe(&fake, &keys, &answer(200, &list(None)));
++        assert_eq!(role(&fake), "");
++        observe(&fake, &keys, &answer(200, &list(Some("operator"))));
++        assert_eq!(role(&fake), "operator");
++        // what is not the list leaves it: a refused token (the app logs out by itself), a busy
++        // or failing server, the requests about one key
++        let invalid = json!({ "error": "invalid token" });
++        observe(&fake, &keys, &answer(401, &invalid));
++        observe(&fake, &keys, &answer(429, &list(None)));
++        observe(&fake, &keys, &answer(500, &list(None)));
++        observe(&fake, &url("/api/hjv/keys/12"), &answer(200, &list(None)));
++        let revoked = json!({ "revoked": 1 });
++        observe(
++            &fake,
++            &url("/api/hjv/keys/revoke-others"),
++            &answer(200, &revoked),
++        );
++        assert_eq!(role(&fake), "operator");
++
++        // the overview's 404, hjv-api's answer to an account that is no operator, ends it; the
++        // 404 of another path does not
++        let overview = url("/api/hjv/admin/overview");
++        for status in [200, 401, 429, 500] {
++            observe(&fake, &overview, &answer(status, &json!({})));
++            assert_eq!(role(&fake), "operator", "{status}");
++        }
++        let not_found = json!({ "error": "not found" });
++        for other in [
++            "/api/hjv/keys/12",
++            "/api/hjv/keys?current=1&pageSize=100",
++            "/api/hjv/this-device",
++            "/api/hjv/admin/overview/2026000002",
++            "/api/hjv/admin",
++        ] {
++            observe(&fake, &url(other), &answer(404, &not_found));
++            assert_eq!(role(&fake), "operator", "{other}");
++        }
++        observe(
++            &fake,
++            &overview,
++            &answer(404, &json!({ "error": "not found" })),
++        );
++        assert_eq!(role(&fake), "");
++
++        // a logout forgets it, and so does a login dropped for want of its account key
++        let pc = Fake::logged_in();
++        pc.set_local(ROLE, "operator");
++        let logout = Some(API_LOGOUT_BODY.to_owned());
++        prepare(
++            &pc,
++            &url("/api/logout"),
++            "post",
++            logout,
++            token_header(REQ_TOKEN),
++        )
++        .unwrap();
++        assert_eq!(role(&pc), "");
++        let restored = Fake::new();
++        restored.set_local("access_token", REQ_TOKEN);
++        restored.set_local(ROLE, "operator");
++        prepare(&restored, &keys, "get", None, token_header(REQ_TOKEN)).unwrap();
++        assert_eq!(role(&restored), "");
++        assert_eq!(restored.local(RELOGIN), "Y");
++    }
+ }

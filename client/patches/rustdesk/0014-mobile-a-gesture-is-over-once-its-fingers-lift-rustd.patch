@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:12:00 +0900
-Subject: [PATCH 14/36] mobile: a gesture is over once its fingers lift
+Subject: [PATCH 14/45] mobile: a gesture is over once its fingers lift
  (rustdesk PR #16243)
 
 CustomTouchGestureRecognizer used one timer both to debounce state changes and

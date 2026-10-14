@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash icon: glyph.svg (the adaptive launcher icon's foreground) on a 240dp canvas; the
+     system splash (API 31+) and launch_background (API 23-30) show its central 160dp circle
+     on @color/ic_launcher_background -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="240dp"
+    android:height="240dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M340.73 303.3 H683.27 A68 68 0 0 1 751.27 371.3 V604.2 A68 68 0 0 1 683.27 672.2 H533.25 V706.2 H592.75 A12.75 12.75 0 0 1 605.5 718.95 V735.95 A12.75 12.75 0 0 1 592.75 748.7 H431.25 A12.75 12.75 0 0 1 418.5 735.95 V718.95 A12.75 12.75 0 0 1 431.25 706.2 H490.75 V672.2 H340.73 A68 68 0 0 1 272.73 604.2 V371.3 A68 68 0 0 1 340.73 303.3 Z M340.73 345.8 A25.5 25.5 0 0 0 315.23 371.3 V604.2 A25.5 25.5 0 0 0 340.73 629.7 H683.27 A25.5 25.5 0 0 0 708.77 604.2 V371.3 A25.5 25.5 0 0 0 683.27 345.8 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M385.35 388.3 L427.85 388.3 L427.85 466.5 L478.85 466.5 L478.85 388.3 L521.35 388.3 L521.35 587.2 L478.85 587.2 L478.85 509 L427.85 509 L427.85 587.2 L385.35 587.2 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M596.15 388.3 H638.65 V519.2 A68 68 0 0 1 570.65 587.2 H548.55 V544.7 H570.65 A25.5 25.5 0 0 0 596.15 519.2 Z" />
+</vector>

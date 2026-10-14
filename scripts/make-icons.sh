@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# Regenerates every file in client/overlay/rustdesk (the icons scripts/fetch-upstream.sh copies over
-# the client tree) from the SVG masters in client/icons, with ImageMagick 6 `convert` and its own SVG
-# renderer (msvg:), so no librsvg or Inkscape is involved.
+# Regenerates every file in client/overlay/rustdesk (the icons and splash images
+# scripts/fetch-upstream.sh copies over the client tree) from the SVG masters in client/icons, with
+# ImageMagick 6 `convert` and its own SVG renderer (msvg:), so no librsvg or Inkscape is involved.
 # Usage: scripts/make-icons.sh [<out dir>]   (default: client/overlay/rustdesk)
-#   icon.svg         rounded tile: Windows ICOs, Android legacy icons, res/ PNGs, the SVG logo copies
+#   icon.svg         rounded tile: Windows ICOs, Android legacy icons, res/ PNGs, the SVG logo
+#                    copies, the iOS launch image
 #   icon-square.svg  the same design full-bleed and opaque: iOS, which applies its own mask
 #   glyph.svg        the white foreground alone: Android adaptive foreground (also the monochrome
-#                    layer), notification icon, macOS tray template, Android floating-window vector
+#                    layer), notification icon, macOS tray template, Android floating-window and
+#                    splash vectors
+#   splash-text.svg  the splash screen's line of text as outlines (scripts/make-splash-text.py): the
+#                    Android splash branding vector; iOS draws the line as a label
 #   small.svg        optional redraw on the 16 px grid for the 16 and 32 px ICO entries
 #   small-24.svg     optional redraw on the 24 px grid for the 24 px ICO entries
 # The PNGs keep the formats the overlay has always had (16-bit RGBA; iOS 16-bit RGB without alpha;
 # 8-bit gray+alpha for single-colour glyphs) and carry no timestamp, so unchanged masters give
-# byte-identical files.
+# byte-identical files. The iOS launch image is 8-bit RGBA without ancillary chunks (untagged sRGB):
+# 16 bits would only double its size.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,6 +26,7 @@ OUT="${1:-$ROOT/client/overlay/rustdesk}"
 BLUE='#1E6FD9' # the tile colour, also Android's adaptive background (ic_launcher_background)
 ANDROID=flutter/android/app/src/main/res
 IOS=flutter/ios/Runner/Assets.xcassets/AppIcon.appiconset
+LAUNCH=flutter/ios/Runner/Assets.xcassets/LaunchImage.imageset
 
 version=$(convert -version 2>/dev/null || true)
 if [[ $version != "Version: ImageMagick 6."* ]]; then
@@ -50,6 +56,23 @@ fi
 for d in "${glyph_paths[@]}"; do
   if ! [[ $d =~ ^[MLHVCSQTAZmlhvcsqtaz0-9eE.,\ +-]+$ ]]; then
     echo "error: glyph.svg has path data a VectorDrawable cannot take: $d" >&2
+    exit 1
+  fi
+done
+# so does splash-text.svg's, whose viewBox is the 200x80dp of the Android 12+ branding image
+tags=$(grep -oE '<[A-Za-z][A-Za-z0-9:-]*' "$SRC/splash-text.svg" | sort -u | tr '\n' ' ')
+mapfile -t text_paths < <(grep -oE '[[:space:]]d="[^"]*"' "$SRC/splash-text.svg" |
+  sed -E 's/^[[:space:]]d="(.*)"$/\1/')
+if [ "$tags" != "<path <svg " ] || [ ${#text_paths[@]} = 0 ] ||
+  ! grep -q 'viewBox="0 0 200 80"' "$SRC/splash-text.svg" ||
+  grep -qE 'transform|stroke|fill-rule|clip|mask' "$SRC/splash-text.svg"; then
+  echo "error: splash-text.svg must hold only fill-only <path d=...> elements without transforms" \
+    "on viewBox=\"0 0 200 80\"" >&2
+  exit 1
+fi
+for d in "${text_paths[@]}"; do
+  if ! [[ $d =~ ^[MLHVCSQTAZmlhvcsqtaz0-9eE.,\ +-]+$ ]]; then
+    echo "error: splash-text.svg has path data a VectorDrawable cannot take: $d" >&2
     exit 1
   fi
 done
@@ -125,7 +148,7 @@ copy() { # <master> <out>
 }
 
 mkdir -p "$OUT/res" "$OUT/flutter/assets" "$OUT/$IOS" "$OUT/flutter/windows/runner/resources" \
-  "$OUT/$ANDROID/drawable"
+  "$OUT/$ANDROID/drawable" "$OUT/$LAUNCH"
 
 # Android: legacy launcher icons (48dp), adaptive foreground (108dp), notification icon (24dp)
 for d in mdpi:2 hdpi:3 xhdpi:4 xxhdpi:6 xxxhdpi:8; do # density:scale x2
@@ -158,6 +181,46 @@ EOF
 } > "$OUT/$ANDROID/drawable/floating_window.xml"
 count=$((count + 1))
 
+# Android splash (the client patch's values-v31 styles and drawable-v23/launch_background.xml): the
+# icon is glyph.svg's paths on a 240dp canvas, of which the splash shows the central 160dp circle on
+# ic_launcher_background, as the launcher shows the adaptive foreground; the branding line is
+# splash-text.svg's outlines in @color/hjv_splash_text, which the patch defines per theme
+{
+  cat <<'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash icon: glyph.svg (the adaptive launcher icon's foreground) on a 240dp canvas; the
+     system splash (API 31+) and launch_background (API 23-30) show its central 160dp circle
+     on @color/ic_launcher_background -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="240dp"
+    android:height="240dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+EOF
+  for d in "${glyph_paths[@]}"; do
+    printf '    <path\n        android:fillColor="#FFFFFF"\n        android:pathData="%s" />\n' "$d"
+  done
+  echo '</vector>'
+} > "$OUT/$ANDROID/drawable/hjv_splash_icon.xml"
+{
+  cat <<'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash branding line (client/icons/splash-text.svg): glyph outlines of Noto Sans CJK KR,
+     SIL Open Font License 1.1. 200x80dp is the size Android 12+ gives the branding image -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="80dp"
+    android:viewportWidth="200"
+    android:viewportHeight="80">
+EOF
+  for d in "${text_paths[@]}"; do
+    printf '    <path\n        android:fillColor="@color/hjv_splash_text"\n'
+    printf '        android:pathData="%s" />\n' "$d"
+  done
+  echo '</vector>'
+} > "$OUT/$ANDROID/drawable/hjv_splash_branding.xml"
+count=$((count + 2))
+
 # iOS app icon set: <name> <pixels>
 while read -r name px; do
   opaque "$px" "$IOS/Icon-App-$name.png"
@@ -177,6 +240,19 @@ done <<'EOF'
 76x76@2x 152
 83.5x83.5@2x 167
 1024x1024@1x 1024
+EOF
+
+# iOS launch screen (LaunchScreen.storyboard): icon.svg at 120pt, twice the home screen icon. It
+# replaces Flutter's 1x1 transparent placeholders under the same names.
+while read -r name px; do
+  src icon.svg "$px"
+  convert "${args[@]}" -define png:color-type=6 -define png:bit-depth=8 \
+    -define png:compression-level=9 -define png:exclude-chunk=all "$OUT/$LAUNCH/$name"
+  count=$((count + 1))
+done <<'EOF'
+LaunchImage.png 120
+LaunchImage@2x.png 240
+LaunchImage@3x.png 360
 EOF
 
 # desktop: the Rust binaries and packages (res/), the Flutter Windows runner, the tray icons

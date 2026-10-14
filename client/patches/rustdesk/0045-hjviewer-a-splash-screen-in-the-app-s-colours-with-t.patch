@@ -1,0 +1,354 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Wed, 14 Oct 2026 10:44:03 +0900
+Subject: [PATCH 45/45] hjviewer: a splash screen in the app's colours, with
+ the organisation line
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The splash was Flutter's template: white on Android up to 11, black in the dark theme; the
+system default on Android 12+; on iOS a white screen with a 1x1 transparent image, white in the
+dark theme too. Now Android 6 and later and iOS show the app icon in the middle of the Flutter UI's own
+background colour (#FFFFFF light, #18191E dark: MyTheme's scaffold colours), so the first frame
+changes nothing, and the line 연세대학교 프로젝트TF small and grey near the bottom (#6B7684
+light, #848B97 dark). Light or dark follows the system setting. No animation, no new dependency.
+
+- Android 12+ (values-v31, values-night-v31): the system splash. windowSplashScreenBackground is
+  the background colour; windowSplashScreenAnimatedIcon is the launcher icon's foreground on a
+  240dp canvas, shown in the 160dp circle of windowSplashScreenIconBackgroundColor
+  (ic_launcher_background), as the adaptive launcher icon; windowSplashScreenBrandingImage is the
+  line. values-night outranks values-v31, so the dark theme needs its own copy.
+- Android 6-11 (drawable-v23/launch_background.xml): a layer-list of the same parts, the line 24dp
+  above the bottom of the window background, which ends at the navigation bar. Layer-list items
+  have no size or gravity before API 23, so API 22 keeps drawable-v21: the background colour.
+- values/hjv_splash.xml and values-night/hjv_splash.xml hold the colours.
+- The activity names its NormalTheme (io.flutter.embedding.android.NormalTheme, as in Flutter's
+  template), whose window background is now the same colour. Without it the launch theme, now with
+  the icon and the line, stays behind the Flutter UI, where rotation, the keyboard or a resize can
+  show it. The dark window background behind the UI was black; it is #18191E now.
+- iOS (LaunchScreen.storyboard): the named colours LaunchBackground and LaunchText with any and
+  dark appearances, the LaunchImage tile at 120pt (twice the home screen icon) in the centre, and
+  a label with the line in the 13pt system font, 24pt above the bottom of the safe area. The line is
+  a proper name and needs no translation.
+
+The drawings come from the hjviewer repository's client/overlay (scripts/make-icons.sh), which
+this commit needs: drawable/hjv_splash_icon.xml and drawable/hjv_splash_branding.xml (the line as
+glyph outlines of Noto Sans CJK KR; no font file ships) and the iOS LaunchImage PNGs. Windows is
+unchanged: its window appears only once Flutter runs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../android/app/src/main/AndroidManifest.xml  |  4 ++
+ .../res/drawable-v23/launch_background.xml    | 26 ++++++++++++
+ .../src/main/res/values-night-v31/styles.xml  | 12 ++++++
+ .../src/main/res/values-night/hjv_splash.xml  |  7 ++++
+ .../app/src/main/res/values-night/styles.xml  |  2 +-
+ .../app/src/main/res/values-v31/styles.xml    | 12 ++++++
+ .../app/src/main/res/values/hjv_splash.xml    |  7 ++++
+ .../app/src/main/res/values/styles.xml        |  2 +-
+ .../LaunchBackground.colorset/Contents.json   | 38 +++++++++++++++++
+ .../LaunchText.colorset/Contents.json         | 38 +++++++++++++++++
+ .../Runner/Base.lproj/LaunchScreen.storyboard | 41 ++++++++++++++-----
+ 11 files changed, 177 insertions(+), 12 deletions(-)
+ create mode 100644 flutter/android/app/src/main/res/drawable-v23/launch_background.xml
+ create mode 100644 flutter/android/app/src/main/res/values-night-v31/styles.xml
+ create mode 100644 flutter/android/app/src/main/res/values-night/hjv_splash.xml
+ create mode 100644 flutter/android/app/src/main/res/values-v31/styles.xml
+ create mode 100644 flutter/android/app/src/main/res/values/hjv_splash.xml
+ create mode 100644 flutter/ios/Runner/Assets.xcassets/LaunchBackground.colorset/Contents.json
+ create mode 100644 flutter/ios/Runner/Assets.xcassets/LaunchText.colorset/Contents.json
+
+diff --git a/flutter/android/app/src/main/AndroidManifest.xml b/flutter/android/app/src/main/AndroidManifest.xml
+index 243a316..355574f 100644
+--- a/flutter/android/app/src/main/AndroidManifest.xml
++++ b/flutter/android/app/src/main/AndroidManifest.xml
+@@ -39,6 +39,10 @@
+             android:launchMode="singleTop"
+             android:theme="@style/LaunchTheme"
+             android:windowSoftInputMode="adjustResize">
++            <!-- after the splash, the window behind the Flutter UI is a plain colour -->
++            <meta-data
++                android:name="io.flutter.embedding.android.NormalTheme"
++                android:resource="@style/NormalTheme" />
+             <intent-filter>
+                 <action android:name="android.intent.action.MAIN" />
+ 
+diff --git a/flutter/android/app/src/main/res/drawable-v23/launch_background.xml b/flutter/android/app/src/main/res/drawable-v23/launch_background.xml
+new file mode 100644
+index 0000000..e295369
+--- /dev/null
++++ b/flutter/android/app/src/main/res/drawable-v23/launch_background.xml
+@@ -0,0 +1,26 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Splash for API 23-30 (API 31+ shows the system splash of values-v31/styles.xml with the same
++     parts): the Flutter UI's background colour, the launcher icon in a 160dp circle in the centre
++     and the organisation line near the bottom. API 22 keeps drawable-v21 (no item gravity there). -->
++<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
++    <item android:drawable="@color/hjv_splash_background" />
++    <item
++        android:width="160dp"
++        android:height="160dp"
++        android:gravity="center">
++        <shape android:shape="oval">
++            <solid android:color="@color/ic_launcher_background" />
++        </shape>
++    </item>
++    <item
++        android:width="240dp"
++        android:height="240dp"
++        android:drawable="@drawable/hjv_splash_icon"
++        android:gravity="center" />
++    <item
++        android:width="200dp"
++        android:height="80dp"
++        android:bottom="24dp"
++        android:drawable="@drawable/hjv_splash_branding"
++        android:gravity="bottom|center_horizontal" />
++</layer-list>
+diff --git a/flutter/android/app/src/main/res/values-night-v31/styles.xml b/flutter/android/app/src/main/res/values-night-v31/styles.xml
+new file mode 100644
+index 0000000..da107c7
+--- /dev/null
++++ b/flutter/android/app/src/main/res/values-night-v31/styles.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <!-- LaunchTheme of values-night/styles.xml plus the Android 12+ splash screen. The night
++         qualifier outranks the API level, so values-v31 alone would not reach the dark theme. -->
++    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
++        <item name="android:windowBackground">@drawable/launch_background</item>
++        <item name="android:windowSplashScreenBackground">@color/hjv_splash_background</item>
++        <item name="android:windowSplashScreenAnimatedIcon">@drawable/hjv_splash_icon</item>
++        <item name="android:windowSplashScreenIconBackgroundColor">@color/ic_launcher_background</item>
++        <item name="android:windowSplashScreenBrandingImage">@drawable/hjv_splash_branding</item>
++    </style>
++</resources>
+diff --git a/flutter/android/app/src/main/res/values-night/hjv_splash.xml b/flutter/android/app/src/main/res/values-night/hjv_splash.xml
+new file mode 100644
+index 0000000..a678c66
+--- /dev/null
++++ b/flutter/android/app/src/main/res/values-night/hjv_splash.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <!-- Splash colours: the background is the Flutter UI's dark scaffold colour, so the first frame
++         does not change it -->
++    <color name="hjv_splash_background">#18191E</color>
++    <color name="hjv_splash_text">#848B97</color>
++</resources>
+diff --git a/flutter/android/app/src/main/res/values-night/styles.xml b/flutter/android/app/src/main/res/values-night/styles.xml
+index 449a9f9..eef3dc9 100644
+--- a/flutter/android/app/src/main/res/values-night/styles.xml
++++ b/flutter/android/app/src/main/res/values-night/styles.xml
+@@ -13,6 +13,6 @@
+          
+          This Theme is only used starting with V2 of Flutter's Android embedding. -->
+     <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+-        <item name="android:windowBackground">?android:colorBackground</item>
++        <item name="android:windowBackground">@color/hjv_splash_background</item>
+     </style>
+ </resources>
+diff --git a/flutter/android/app/src/main/res/values-v31/styles.xml b/flutter/android/app/src/main/res/values-v31/styles.xml
+new file mode 100644
+index 0000000..9e500c1
+--- /dev/null
++++ b/flutter/android/app/src/main/res/values-v31/styles.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <!-- LaunchTheme of values/styles.xml plus the Android 12+ splash screen: the Flutter UI's
++         background colour, the launcher icon and the organisation line -->
++    <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
++        <item name="android:windowBackground">@drawable/launch_background</item>
++        <item name="android:windowSplashScreenBackground">@color/hjv_splash_background</item>
++        <item name="android:windowSplashScreenAnimatedIcon">@drawable/hjv_splash_icon</item>
++        <item name="android:windowSplashScreenIconBackgroundColor">@color/ic_launcher_background</item>
++        <item name="android:windowSplashScreenBrandingImage">@drawable/hjv_splash_branding</item>
++    </style>
++</resources>
+diff --git a/flutter/android/app/src/main/res/values/hjv_splash.xml b/flutter/android/app/src/main/res/values/hjv_splash.xml
+new file mode 100644
+index 0000000..bd25904
+--- /dev/null
++++ b/flutter/android/app/src/main/res/values/hjv_splash.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <!-- Splash colours: the background is the Flutter UI's light scaffold colour, so the first frame
++         does not change it -->
++    <color name="hjv_splash_background">#FFFFFF</color>
++    <color name="hjv_splash_text">#6B7684</color>
++</resources>
+diff --git a/flutter/android/app/src/main/res/values/styles.xml b/flutter/android/app/src/main/res/values/styles.xml
+index 146267c..9ee0a84 100644
+--- a/flutter/android/app/src/main/res/values/styles.xml
++++ b/flutter/android/app/src/main/res/values/styles.xml
+@@ -13,7 +13,7 @@
+          
+          This Theme is only used starting with V2 of Flutter's Android embedding. -->
+     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
+-        <item name="android:windowBackground">?android:colorBackground</item>
++        <item name="android:windowBackground">@color/hjv_splash_background</item>
+     </style>
+     <style name="Transparent" parent="Theme.AppCompat.NoActionBar">
+         <item name="android:windowIsTranslucent">true</item>
+diff --git a/flutter/ios/Runner/Assets.xcassets/LaunchBackground.colorset/Contents.json b/flutter/ios/Runner/Assets.xcassets/LaunchBackground.colorset/Contents.json
+new file mode 100644
+index 0000000..2b8d737
+--- /dev/null
++++ b/flutter/ios/Runner/Assets.xcassets/LaunchBackground.colorset/Contents.json
+@@ -0,0 +1,38 @@
++{
++  "colors" : [
++    {
++      "color" : {
++        "color-space" : "srgb",
++        "components" : {
++          "alpha" : "1.000",
++          "blue" : "0xFF",
++          "green" : "0xFF",
++          "red" : "0xFF"
++        }
++      },
++      "idiom" : "universal"
++    },
++    {
++      "appearances" : [
++        {
++          "appearance" : "luminosity",
++          "value" : "dark"
++        }
++      ],
++      "color" : {
++        "color-space" : "srgb",
++        "components" : {
++          "alpha" : "1.000",
++          "blue" : "0x1E",
++          "green" : "0x19",
++          "red" : "0x18"
++        }
++      },
++      "idiom" : "universal"
++    }
++  ],
++  "info" : {
++    "author" : "xcode",
++    "version" : 1
++  }
++}
+diff --git a/flutter/ios/Runner/Assets.xcassets/LaunchText.colorset/Contents.json b/flutter/ios/Runner/Assets.xcassets/LaunchText.colorset/Contents.json
+new file mode 100644
+index 0000000..2abe71c
+--- /dev/null
++++ b/flutter/ios/Runner/Assets.xcassets/LaunchText.colorset/Contents.json
+@@ -0,0 +1,38 @@
++{
++  "colors" : [
++    {
++      "color" : {
++        "color-space" : "srgb",
++        "components" : {
++          "alpha" : "1.000",
++          "blue" : "0x84",
++          "green" : "0x76",
++          "red" : "0x6B"
++        }
++      },
++      "idiom" : "universal"
++    },
++    {
++      "appearances" : [
++        {
++          "appearance" : "luminosity",
++          "value" : "dark"
++        }
++      ],
++      "color" : {
++        "color-space" : "srgb",
++        "components" : {
++          "alpha" : "1.000",
++          "blue" : "0x97",
++          "green" : "0x8B",
++          "red" : "0x84"
++        }
++      },
++      "idiom" : "universal"
++    }
++  ],
++  "info" : {
++    "author" : "xcode",
++    "version" : 1
++  }
++}
+diff --git a/flutter/ios/Runner/Base.lproj/LaunchScreen.storyboard b/flutter/ios/Runner/Base.lproj/LaunchScreen.storyboard
+index f2e259c..adabe42 100644
+--- a/flutter/ios/Runner/Base.lproj/LaunchScreen.storyboard
++++ b/flutter/ios/Runner/Base.lproj/LaunchScreen.storyboard
+@@ -1,28 +1,43 @@
+-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+-<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="12121" systemVersion="16G29" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
++<?xml version="1.0" encoding="UTF-8"?>
++<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="21701" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
++    <device id="retina6_12" orientation="portrait" appearance="light"/>
+     <dependencies>
+         <deployment identifier="iOS"/>
+-        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="12089"/>
++        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="21679"/>
++        <capability name="Named colors" minToolsVersion="9.0"/>
++        <capability name="Safe area layout guides" minToolsVersion="9.0"/>
++        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+     </dependencies>
+     <scenes>
+         <!--View Controller-->
+         <scene sceneID="EHf-IW-A2E">
+             <objects>
+                 <viewController id="01J-lp-oVM" sceneMemberID="viewController">
+-                    <layoutGuides>
+-                        <viewControllerLayoutGuide type="top" id="Ydg-fD-yQy"/>
+-                        <viewControllerLayoutGuide type="bottom" id="xbc-2k-c8Z"/>
+-                    </layoutGuides>
+                     <view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">
++                        <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
+                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                         <subviews>
+-                            <imageView opaque="NO" clipsSubviews="YES" multipleTouchEnabled="YES" contentMode="center" image="LaunchImage" translatesAutoresizingMaskIntoConstraints="NO" id="YRO-k0-Ey4">
++                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="LaunchImage" translatesAutoresizingMaskIntoConstraints="NO" id="YRO-k0-Ey4">
++                                <rect key="frame" x="136.66666666666666" y="366" width="120" height="120"/>
++                                <constraints>
++                                    <constraint firstAttribute="height" constant="120" id="hJv-ih-120"/>
++                                    <constraint firstAttribute="width" constant="120" id="hJv-iw-120"/>
++                                </constraints>
+                             </imageView>
++                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="연세대학교 프로젝트TF" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="hJv-lb-Org">
++                                <rect key="frame" x="132" y="778.66666666666663" width="129" height="15.333333333333334"/>
++                                <fontDescription key="fontDescription" type="system" pointSize="13"/>
++                                <color key="textColor" name="LaunchText"/>
++                                <nil key="highlightedColor"/>
++                            </label>
+                         </subviews>
+-                        <color key="backgroundColor" red="1" green="1" blue="1" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
++                        <viewLayoutGuide key="safeArea" id="hJv-sa-Lay"/>
++                        <color key="backgroundColor" name="LaunchBackground"/>
+                         <constraints>
+                             <constraint firstItem="YRO-k0-Ey4" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="1a2-6s-vTC"/>
+                             <constraint firstItem="YRO-k0-Ey4" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" id="4X2-HB-R7a"/>
++                            <constraint firstItem="hJv-sa-Lay" firstAttribute="bottom" secondItem="hJv-lb-Org" secondAttribute="bottom" constant="24" id="hJv-lb-Btm"/>
++                            <constraint firstItem="hJv-lb-Org" firstAttribute="centerX" secondItem="hJv-sa-Lay" secondAttribute="centerX" id="hJv-lx-Ctr"/>
+                         </constraints>
+                     </view>
+                 </viewController>
+@@ -32,6 +47,12 @@
+         </scene>
+     </scenes>
+     <resources>
+-        <image name="LaunchImage" width="168" height="185"/>
++        <image name="LaunchImage" width="120" height="120"/>
++        <namedColor name="LaunchBackground">
++            <color red="1" green="1" blue="1" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
++        </namedColor>
++        <namedColor name="LaunchText">
++            <color red="0.41960784313725491" green="0.46274509803921571" blue="0.51764705882352946" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
++        </namedColor>
+     </resources>
+ </document>

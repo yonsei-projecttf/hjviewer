@@ -1,0 +1,253 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Wed, 14 Oct 2026 12:30:46 +0900
+Subject: [PATCH 44/45] =?UTF-8?q?hjviewer:=20the=20maker=20is=20=ED=94=84?=
+ =?UTF-8?q?=EB=A1=9C=EC=A0=9D=ED=8A=B8TF,=20the=20pilot=20notice,=20and=20?=
+ =?UTF-8?q?no=20"Powered=20by=20RustDesk"?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+What HJViewer says about itself, as decided on 2026-10-14:
+
+- The maker is 프로젝트TF. Settings → About says so on a desktop and on a
+  phone ("만든 곳: 프로젝트TF", "Made by 프로젝트TF"), and so do the HJViewer
+  part of the copyright line on the desktop's About page and of the Windows
+  version info (LegalCopyright of the Flutter runner, of the rustdesk crate
+  and of the packer) and the runner's CompanyName. Upstream's copyright line
+  stays as it is, as the AGPL asks.
+- The pilot notice, in Korean and English like the account screens' other
+  texts: "본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될
+  수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다." ("This service
+  is not an official service yet. It is a pilot implementation and may change
+  without notice. Login is currently available only to Yonsei University
+  faculty and staff."). An account build shows it in a short line under the
+  title of the login dialog, whose login goes to the Yonsei SSO, and in
+  Settings → About.
+- hjviewer.rs hides upstream's "Powered by RustDesk" link ("RustDesk 제공")
+  in every build pinned to the hjviewer server, beside the other built-in
+  settings it sets. Flutter's loadPowered (common.dart), which the desktop's
+  home page and the phone's settings show, and the legacy UI already read
+  hide-powered-by-me; apply() runs in the desktop processes
+  (load_custom_client) and in the phone apps (flutter_ffi's initialize). A
+  build without HJV_SERVER keeps upstream's link.
+
+Hooks: one line each in login.dart, desktop_setting_page.dart and
+settings_page.dart (hjvLoginPilot, hjvAboutNotice and hjvAboutNoticeTiles of
+hjviewer_account.dart; the texts in hjviewer_account_texts.dart). Outside an
+account build the login dialog stays as it was and About gains the maker's
+line only.
+
+Tests: hjviewer_account_test.dart holds both texts in both languages, the
+About lines with and without an account build, and no braces in either.
+The Windows version info, the login dialog, the About pages and the missing
+link on each platform are checked on devices.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.toml                                    |  2 +-
+ flutter/lib/common/hjviewer_account.dart      | 27 +++++++++++++++++++
+ .../lib/common/hjviewer_account_texts.dart    | 11 ++++++++
+ flutter/lib/common/widgets/login.dart         |  1 +
+ .../desktop/pages/desktop_setting_page.dart   |  3 ++-
+ flutter/lib/mobile/pages/settings_page.dart   |  1 +
+ flutter/test/hjviewer_account_test.dart       | 17 ++++++++++++
+ flutter/windows/runner/Runner.rc              |  4 +--
+ libs/portable/Cargo.toml                      |  2 +-
+ src/hjviewer.rs                               |  1 +
+ 10 files changed, 64 insertions(+), 5 deletions(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 43695c8..0e3dcfc 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -267,7 +267,7 @@ webrtc-util = { git = "https://github.com/rustdesk-org/webrtc", rev = "49c89bd8d
+ webrtc-sctp = { git = "https://github.com/rustdesk-org/webrtc", rev = "49c89bd8d30e6e62e4c1a96cee38fdc11f79ef63" }
+ 
+ [package.metadata.winres]
+-LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 HJViewer contributors. AGPL-3.0."
++LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 프로젝트TF. AGPL-3.0."
+ ProductName = "HJViewer"
+ FileDescription = "HJViewer Remote Desktop"
+ OriginalFilename = "rustdesk.exe"
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 94996df..e2e28e5 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -133,6 +133,33 @@ void hjvAfterLogin(bool? res) {
+   if (isWindows) unawaited(_announceThisPc());
+ }
+ 
++/// D12 (login.dart): under the login dialog's title, that the service is a pilot.
++List<Widget> hjvLoginPilot() => _accountBuild
++    ? [
++        Text(_t.pilotNotice,
++                style: const TextStyle(fontSize: 12, color: Colors.grey))
++            .marginOnly(top: 8)
++      ]
++    : [];
++
++/// D13 (desktop settings, About): who makes HJViewer and, in an account build, the pilot notice.
++List<Widget> hjvAboutNotice() => [
++      for (final line in hjvAboutNoticeLines(_t, accountBuild: _accountBuild))
++        SelectionArea(child: Text(line).marginSymmetric(vertical: 4.0)),
++    ];
++
++/// D14 (mobile settings, About): the same, as a tile.
++List<AbstractSettingsTile> hjvAboutNoticeTiles() {
++  final lines = hjvAboutNoticeLines(_t, accountBuild: _accountBuild);
++  return [
++    SettingsTile(
++      title: Text(lines.first),
++      description: lines.length > 1 ? Text(lines.skip(1).join('\n')) : null,
++      leading: const Icon(Icons.info_outline),
++    ),
++  ];
++}
++
+ /// D3 (login.dart): the logout dialog's text.
+ String hjvLogoutTip(String tip) => _accountBuild
+     ? hjvLogoutText(_t, tip, boundHere: _commonSync('hjv-pc-bound') == 'Y')
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index cab5828..dc520af 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -267,8 +267,19 @@ class HjvTexts {
+   String get connect => _t('연결', 'Connect');
+   String get wakeConnects =>
+       _t('PC를 켠 뒤 바로 연결', 'Connect right after waking a PC');
++
++  // Settings → About and the login dialog (decisions of 2026-10-14)
++  String get maker => _t('만든 곳: 프로젝트TF', 'Made by 프로젝트TF');
++  String get pilotNotice => _t(
++      '본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.',
++      'This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.');
+ }
+ 
++/// What Settings → About says of HJViewer: who makes it, and in an account build, whose login
++/// goes to the service, that the service is a pilot.
++List<String> hjvAboutNoticeLines(HjvTexts t, {required bool accountBuild}) =>
++    [t.maker, if (accountBuild) t.pilotNotice];
++
+ /// The request that `http_request` refuses while the account key cannot be used (H13): its
+ /// answer reads this instead of a response.
+ const kHjvKeyUnavailable = 'hjv: account key unavailable';
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index 96967a2..a087392 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -973,6 +973,7 @@ Future<bool?> _openLoginDialog() async {
+       content: Column(
+         crossAxisAlignment: CrossAxisAlignment.center,
+         children: [
++          ...hjvLoginPilot(),
+           const SizedBox(
+             height: 8.0,
+           ),
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 2a6151b..658e1ec 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -2557,6 +2557,7 @@ class _AboutState extends State<_About> {
+                   child: Text('${translate('ID')}: $myId')
+                       .marginSymmetric(vertical: 4.0)),
+               ...hjvAboutRows(),
++              ...hjvAboutNotice(),
+               InkWell(
+                   onTap: () {
+                     launchUrlString('https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md');
+@@ -2593,7 +2594,7 @@ class _AboutState extends State<_About> {
+                         crossAxisAlignment: CrossAxisAlignment.start,
+                         children: [
+                           Text(
+-                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Tech Pte. Ltd.\nHJViewer modifications © 2026 HJViewer contributors, GNU AGPL-3.0\n$license',
++                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Tech Pte. Ltd.\nHJViewer modifications © 2026 프로젝트TF, GNU AGPL-3.0\n$license',
+                             style: const TextStyle(color: Colors.white),
+                           ),
+                           Text(
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index 4590a1f..2bc93e4 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -1064,6 +1064,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                 ),
+                 leading: Icon(Icons.perm_identity)),
+             ...hjvAboutTiles(),
++            ...hjvAboutNoticeTiles(),
+             SettingsTile(
+               title: Text(translate("Privacy Statement")),
+               onPressed: (context) =>
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index d7a78f8..d318e27 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -1257,9 +1257,26 @@ void main() {
+     expect(hjvEndsLogin(409, sent: kept, kept: kept), isFalse);
+   });
+ 
++  test(
++      'About and the login dialog say who makes HJViewer and that it is a pilot',
++      () {
++    expect(hjvAboutNoticeLines(ko, accountBuild: true), [
++      '만든 곳: 프로젝트TF',
++      '본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.',
++    ]);
++    expect(hjvAboutNoticeLines(en, accountBuild: true), [
++      'Made by 프로젝트TF',
++      'This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.',
++    ]);
++    // a build without the account keys has no login to the service
++    expect(hjvAboutNoticeLines(ko, accountBuild: false), ['만든 곳: 프로젝트TF']);
++  });
++
+   test('no text holds braces, which translate() takes for placeholders', () {
+     for (final t in [ko, en]) {
+       final texts = [
++        t.maker,
++        t.pilotNotice,
+         t.usernameTitle,
+         t.ok,
+         t.cancel,
+diff --git a/flutter/windows/runner/Runner.rc b/flutter/windows/runner/Runner.rc
+index 256c1b1..3b006ac 100644
+--- a/flutter/windows/runner/Runner.rc
++++ b/flutter/windows/runner/Runner.rc
+@@ -89,11 +89,11 @@ BEGIN
+     BEGIN
+         BLOCK "040904e4"
+         BEGIN
+-            VALUE "CompanyName", "HJViewer contributors" "\0"
++            VALUE "CompanyName", "프로젝트TF" "\0"
+             VALUE "FileDescription", "HJViewer Remote Desktop" "\0"
+             VALUE "FileVersion", VERSION_AS_STRING "\0"
+             VALUE "InternalName", "HJViewer" "\0"
+-            VALUE "LegalCopyright", "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 HJViewer contributors. AGPL-3.0." "\0"
++            VALUE "LegalCopyright", "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 프로젝트TF. AGPL-3.0." "\0"
+             VALUE "OriginalFilename", "HJViewer.exe" "\0"
+             VALUE "ProductName", "HJViewer" "\0"
+             VALUE "ProductVersion", VERSION_AS_STRING "\0"
+diff --git a/libs/portable/Cargo.toml b/libs/portable/Cargo.toml
+index 382120a..8dd4f2e 100644
+--- a/libs/portable/Cargo.toml
++++ b/libs/portable/Cargo.toml
+@@ -26,7 +26,7 @@ windows = { version = "0.61", features = [
+ native-windows-gui = {version = "1.0", default-features = false, features = ["animation-timer", "image-decoder"]}
+ 
+ [package.metadata.winres]
+-LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 HJViewer contributors. AGPL-3.0."
++LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. and RustDesk contributors; HJViewer modifications © 2026 프로젝트TF. AGPL-3.0."
+ ProductName = "HJViewer"
+ OriginalFilename = "HJViewer.exe"
+ FileDescription = "HJViewer Remote Desktop"
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+index c0bbd84..bd5f214 100644
+--- a/src/hjviewer.rs
++++ b/src/hjviewer.rs
+@@ -51,6 +51,7 @@ pub fn apply() {
+     let mut builtin = config::BUILTIN_SETTINGS.write().unwrap();
+     builtin.insert(keys::OPTION_HIDE_SERVER_SETTINGS.to_owned(), "Y".to_owned());
+     builtin.insert(keys::OPTION_HIDE_WEBSOCKET_SETTINGS.to_owned(), "Y".to_owned());
++    builtin.insert(keys::OPTION_HIDE_POWERED_BY_ME.to_owned(), "Y".to_owned());
+     // "Stop service" deletes the service and the Startup tray link, so an installed PC would stop
+     // starting with Windows; uninstalling remains the way out
+     #[cfg(target_os = "windows")]

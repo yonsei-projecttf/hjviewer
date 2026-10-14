@@ -15,7 +15,9 @@ HJViewer is a modified version of these programs:
 
 What HJViewer changes, since 2026-10-10:
 - the patch series in server/patches and client/patches, each with its date and description;
-- the replacement image files in client/overlay;
+- the replacement image files in client/overlay; the splash screen's line of text among them is
+  glyph outlines of Noto Sans CJK KR (Copyright 2014-2021 Adobe, SIL Open Font License 1.1), and
+  no font file ships;
 - at build time (.github/workflows/client-build.yml): the app version is set from
   client/version.env, the Android build switches to debug signing and more Gradle memory, the
   iOS build sets its own signing on the Runner target and drops entitlements the provisioning

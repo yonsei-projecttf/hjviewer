@@ -1,0 +1,400 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 13 Oct 2026 22:25:52 +0900
+Subject: [PATCH 41/45] hjviewer: every Android build is controller-only
+
+A phone or tablet with HJViewer controls PCs and is never controlled
+(decision D1, option B' of the Google Play design 3-3). Without the
+accessibility service and the foreground services Google Play asks for no
+declaration beyond a privacy policy, and the side-loaded APK and the Play
+bundle stay one variant.
+
+- The manifest no longer declares InputService (accessibility), MainService
+  (foreground service: specialUse, mediaProjection, microphone),
+  FloatingWindowService and BootReceiver, nor the permissions only they
+  used: FOREGROUND_SERVICE and its three types, SYSTEM_ALERT_WINDOW,
+  REQUEST_IGNORE_BATTERY_OPTIMIZATIONS and RECEIVE_BOOT_COMPLETED. The
+  accessibility service's configuration and the two strings of the removed
+  entries go with them. RECORD_AUDIO stays for a voice call started on the
+  phone; the QR scanner's plugin still brings CAMERA.
+- hjviewer.rs sets the hard setting conn-type to "outgoing" on Android, in a
+  build without HJV_SERVER too, since the manifest is the same there.
+  Upstream then leaves out the "Chat" and "Share screen" tabs and, in the
+  settings, Deploy, Disable UDP, 2FA, "Share screen", "Enhancements" and
+  the recording of incoming sessions. Those are all the places that started
+  or stopped the services, opened the accessibility settings, asked for the
+  overlay and battery permissions or kept the start-on-boot switch.
+- MainActivity.onStart stops FloatingWindowService at every start. Android
+  documents a SecurityException for a service that cannot be found, so the
+  call is caught. Nothing else reaches a removed component: MainActivity
+  binds MainService and starts the floating window only when
+  MainService.isReady, which only a running MainService sets, and
+  "init_service" is only sent from the "Share screen" tab or after a running
+  MainService reported itself.
+- A voice call records with the microphone permission, and the "Share
+  screen" tab was the one place that asked for it. The "Voice call" menu of
+  a session now asks itself (hjviewer_android.dart): it says why with the
+  existing config_microphone text, shows Android's prompt, and requests the
+  call once the permission is there. Other platforms call as before.
+
+The Kotlin classes of the removed components stay in the tree, unreachable,
+and PermissionRequestTransparentActivity stays declared: MainActivity and
+MainService refer to them, and taking them out would change more of
+upstream's files for no difference in the app.
+
+Tests: conn-type as set here is what upstream's is_outgoing_only() reads; a
+voice call asks for the microphone it lacks and is not made when it is
+refused; the manifest declares nothing of the controlled side and keeps
+RECORD_AUDIO.
+
+Known limits: "Show terminal extra keys" is in the hidden "Enhancements"
+section, so it stays as it was set (shown by default); iOS never had the
+switch. Android tells the app only when the microphone is allowed, and a
+refusal ends as the request's two-minute timeout, so the notice comes with
+the prompt, not after a refusal. If the permission is gone by the time the
+PC accepts the call (a one-time grant that lapsed in the background), the
+call fails with upstream's message, which still points to the hidden
+"Share screen" page; pressing "Voice call" again asks for the permission.
+(A permission taken back in Android's settings ends the app's process, and
+with it the session.) A voice call records while HJViewer
+is on screen: the microphone foreground service went with MainService, as
+it was for a phone that never started screen sharing. Kotlin and the
+manifest are not built on the development machine: the first Android
+build and a device check them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../android/app/src/main/AndroidManifest.xml  | 48 ----------------
+ .../com/carriez/flutter_hbb/MainActivity.kt   |  3 +-
+ .../app/src/main/res/values/strings.xml       |  2 -
+ .../res/xml/accessibility_service_config.xml  |  7 ---
+ flutter/lib/common/hjviewer_android.dart      | 17 ++++++
+ .../lib/common/hjviewer_android_rules.dart    | 20 +++++++
+ flutter/lib/mobile/pages/remote_page.dart     |  3 +-
+ .../lib/mobile/pages/view_camera_page.dart    |  3 +-
+ flutter/test/hjviewer_android_test.dart       | 56 +++++++++++++++++++
+ src/hjviewer.rs                               | 24 +++++++-
+ 10 files changed, 122 insertions(+), 61 deletions(-)
+ delete mode 100644 flutter/android/app/src/main/res/xml/accessibility_service_config.xml
+ create mode 100644 flutter/lib/common/hjviewer_android.dart
+ create mode 100644 flutter/lib/common/hjviewer_android_rules.dart
+ create mode 100644 flutter/test/hjviewer_android_test.dart
+
+diff --git a/flutter/android/app/src/main/AndroidManifest.xml b/flutter/android/app/src/main/AndroidManifest.xml
+index 6ab1384..d509f6d 100644
+--- a/flutter/android/app/src/main/AndroidManifest.xml
++++ b/flutter/android/app/src/main/AndroidManifest.xml
+@@ -7,17 +7,10 @@
+     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+     <uses-permission android:name="android.permission.INTERNET" />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+     <uses-permission android:name="android.permission.WAKE_LOCK" />
+-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+ 
+     <queries>
+         <intent>
+@@ -36,33 +29,6 @@
+         android:roundIcon="@mipmap/ic_launcher"
+         android:supportsRtl="true">
+ 
+-        <receiver
+-            android:name=".BootReceiver"
+-            android:enabled="true"
+-            android:exported="true">
+-            <intent-filter android:priority="1000">
+-                <action android:name="android.intent.action.BOOT_COMPLETED" />
+-                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+-                <!--ACTION_BOOT_COMPLETED for debug test on no root device-->
+-                <action android:name="com.carriez.flutter_hbb.DEBUG_BOOT_COMPLETED" />
+-            </intent-filter>
+-        </receiver>
+-
+-        <service
+-            android:name=".InputService"
+-            android:enabled="true"
+-            android:exported="false"
+-            android:label="HJViewer Input"
+-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+-            <intent-filter>
+-                <action android:name="android.accessibilityservice.AccessibilityService" />
+-            </intent-filter>
+-
+-            <meta-data
+-                android:name="android.accessibilityservice"
+-                android:resource="@xml/accessibility_service_config" />
+-        </service>
+-
+         <activity
+             android:name=".MainActivity"
+             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode|navigation"
+@@ -91,20 +57,6 @@
+             android:excludeFromRecents="true"
+             android:theme="@style/Transparent" />
+ 
+-        <service
+-            android:name=".MainService"
+-            android:enabled="true"
+-            android:exported="false"
+-            android:foregroundServiceType="specialUse|mediaProjection|microphone">
+-            <property
+-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+-                android:value="@string/foreground_service_special_use_subtype" />
+-        </service>
+-
+-        <service
+-            android:name=".FloatingWindowService"
+-            android:enabled="true" />
+-
+         <!--
+  Don't delete the meta-data below.
+              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java
+diff --git a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
+index 7225e52..08f1239 100644
+--- a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
++++ b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
+@@ -1005,6 +1005,7 @@ class MainActivity : FlutterActivity() {
+ 
+     override fun onStart() {
+         super.onStart()
+-        stopService(Intent(this, FloatingWindowService::class.java))
++        // a controller-only build does not declare the service
++        runCatching { stopService(Intent(this, FloatingWindowService::class.java)) }
+     }
+ }
+diff --git a/flutter/android/app/src/main/res/values/strings.xml b/flutter/android/app/src/main/res/values/strings.xml
+index dba2837..8f2af86 100644
+--- a/flutter/android/app/src/main/res/values/strings.xml
++++ b/flutter/android/app/src/main/res/values/strings.xml
+@@ -1,5 +1,3 @@
+ <resources>
+     <string name="app_name">HJViewer</string>
+-    <string name="accessibility_service_description">Allow other devices to control your phone using virtual touch, when HJViewer screen sharing is established</string>
+-    <string name="foreground_service_special_use_subtype">Keeps the HJViewer remote desktop host available for authorized unattended connections and foreground notifications without starting screen capture before user approval.</string>
+ </resources>
+diff --git a/flutter/android/app/src/main/res/xml/accessibility_service_config.xml b/flutter/android/app/src/main/res/xml/accessibility_service_config.xml
+deleted file mode 100644
+index 90b57cd..0000000
+--- a/flutter/android/app/src/main/res/xml/accessibility_service_config.xml
++++ /dev/null
+@@ -1,7 +0,0 @@
+-<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+-    android:accessibilityEventTypes="typeWindowsChanged"
+-    android:canRetrieveWindowContent="true"
+-    android:accessibilityFlags="flagDefault"
+-    android:notificationTimeout="50"
+-    android:description="@string/accessibility_service_description"
+-    android:canPerformGestures="true"/>
+diff --git a/flutter/lib/common/hjviewer_android.dart b/flutter/lib/common/hjviewer_android.dart
+new file mode 100644
+index 0000000..8aeb094
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_android.dart
+@@ -0,0 +1,17 @@
++// HJViewer's Android builds are controller-only (src/hjviewer.rs controller_only): upstream's
++// outgoing-only switch hides the controlled-side screens, and the hooks here do what a controller
++// still needed those screens for. The decisions are in hjviewer_android_rules.dart.
++
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjviewer_android_rules.dart';
++import 'package:flutter_hbb/consts.dart';
++import 'package:flutter_hbb/models/platform_model.dart';
++
++/// Requests a voice call, on Android once the microphone is allowed ([hjvVoiceCall]).
++Future<void> hjvRequestVoiceCall(SessionID sessionId) => hjvVoiceCall(
++      android: isAndroid,
++      granted: () => AndroidPermissionManager.check(kRecordAudio),
++      explain: () => showToast(translate('config_microphone')),
++      ask: () => AndroidPermissionManager.request(kRecordAudio),
++      call: () => bind.sessionRequestVoiceCall(sessionId: sessionId),
++    );
+diff --git a/flutter/lib/common/hjviewer_android_rules.dart b/flutter/lib/common/hjviewer_android_rules.dart
+new file mode 100644
+index 0000000..8e1514c
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_android_rules.dart
+@@ -0,0 +1,20 @@
++// What HJViewer's controller-only Android build decides, in plain Dart without the bridge, so that
++// ci.sh tests it with the web stand-in; hjviewer_android.dart wires it to the app.
++
++/// A voice call records with Android's microphone permission. The "Share screen" page was the one
++/// place that asked for it and a controller-only build does not show that page, so the call asks
++/// itself: [explain] says why, [ask] is Android's prompt, and without the permission [call] is
++/// not made. Other platforms call as before.
++Future<void> hjvVoiceCall({
++  required bool android,
++  required Future<bool> Function() granted,
++  required void Function() explain,
++  required Future<bool> Function() ask,
++  required void Function() call,
++}) async {
++  if (android && !await granted()) {
++    explain();
++    if (!await ask()) return;
++  }
++  call();
++}
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 48b8770..fd02270 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -15,6 +15,7 @@ import 'package:get/get.dart';
+ import 'package:provider/provider.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjviewer_android.dart';
+ import '../../common/widgets/overlay.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../common/widgets/remote_input.dart';
+@@ -941,7 +942,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   }
+ 
+   showChatOptions(String id) async {
+-    onPressVoiceCall() => bind.sessionRequestVoiceCall(sessionId: sessionId);
++    onPressVoiceCall() => hjvRequestVoiceCall(sessionId);
+     onPressEndVoiceCall() => bind.sessionCloseVoiceCall(sessionId: sessionId);
+ 
+     makeTextMenu(String label, Widget icon, VoidCallback onPressed,
+diff --git a/flutter/lib/mobile/pages/view_camera_page.dart b/flutter/lib/mobile/pages/view_camera_page.dart
+index 1bedca1..441db17 100644
+--- a/flutter/lib/mobile/pages/view_camera_page.dart
++++ b/flutter/lib/mobile/pages/view_camera_page.dart
+@@ -13,6 +13,7 @@ import 'package:get/get.dart';
+ import 'package:provider/provider.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjviewer_android.dart';
+ import '../../common/widgets/overlay.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../common/widgets/remote_input.dart';
+@@ -493,7 +494,7 @@ class _ViewCameraPageState extends State<ViewCameraPage>
+   }
+ 
+   showChatOptions(String id) async {
+-    onPressVoiceCall() => bind.sessionRequestVoiceCall(sessionId: sessionId);
++    onPressVoiceCall() => hjvRequestVoiceCall(sessionId);
+     onPressEndVoiceCall() => bind.sessionCloseVoiceCall(sessionId: sessionId);
+ 
+     makeTextMenu(String label, Widget icon, VoidCallback onPressed,
+diff --git a/flutter/test/hjviewer_android_test.dart b/flutter/test/hjviewer_android_test.dart
+new file mode 100644
+index 0000000..3954b69
+--- /dev/null
++++ b/flutter/test/hjviewer_android_test.dart
+@@ -0,0 +1,56 @@
++import 'dart:io';
++
++import 'package:flutter_hbb/common/hjviewer_android_rules.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// HJViewer's controller-only Android build, without the bridge.
++
++/// What a voice call does, in order.
++Future<List<String>> voiceCall(
++    {bool android = true, bool granted = false, bool allow = false}) async {
++  final steps = <String>[];
++  await hjvVoiceCall(
++    android: android,
++    granted: () async => granted,
++    explain: () => steps.add('explain'),
++    ask: () async {
++      steps.add('ask');
++      return allow;
++    },
++    call: () => steps.add('call'),
++  );
++  return steps;
++}
++
++void main() {
++  test('a voice call on Android asks for the microphone it lacks', () async {
++    expect(await voiceCall(allow: true), ['explain', 'ask', 'call']);
++    expect(await voiceCall(granted: true), ['call']);
++    expect(await voiceCall(android: false), ['call']);
++  });
++
++  test('a voice call is not made when the microphone is refused', () async {
++    expect(await voiceCall(), ['explain', 'ask']);
++  });
++
++  test('the Android manifest declares nothing of the controlled side', () {
++    final manifest =
++        File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
++    for (final name in [
++      '.InputService',
++      '.MainService',
++      '.FloatingWindowService',
++      '.BootReceiver',
++      'BIND_ACCESSIBILITY_SERVICE',
++      'foregroundServiceType',
++      'FOREGROUND_SERVICE',
++      'SYSTEM_ALERT_WINDOW',
++      'REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
++      'RECEIVE_BOOT_COMPLETED',
++    ]) {
++      expect(manifest, isNot(contains(name)));
++    }
++    // a voice call from the phone records with it
++    expect(manifest, contains('android.permission.RECORD_AUDIO'));
++  });
++}
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+index 1553bd6..c0bbd84 100644
+--- a/src/hjviewer.rs
++++ b/src/hjviewer.rs
+@@ -6,12 +6,15 @@ const SERVER: Option<&str> = option_env!("HJV_SERVER");
+ const SERVER_KEY: Option<&str> = option_env!("HJV_SERVER_KEY");
+ 
+ /// Pins the build to the hjviewer server named by `HJV_SERVER` / `HJV_SERVER_KEY` at build time;
+-/// a build without `HJV_SERVER` behaves as upstream.
++/// a build without `HJV_SERVER` behaves as upstream, except that Android is controller-only.
+ ///
+ /// Signaling and relay go over WebSocket, `wss://<server>/ws/{id,relay}` on 443, the one port
+ /// firewalls reliably let out, while WebRTC still connects peers directly wherever their networks
+ /// allow it.
+ pub fn apply() {
++    if cfg!(target_os = "android") {
++        controller_only();
++    }
+     let Some(server) = SERVER.filter(|s| !s.is_empty()) else {
+         return;
+     };
+@@ -78,6 +81,16 @@ pub(crate) fn pinned() -> bool {
+     SERVER.is_some_and(|s| !s.is_empty())
+ }
+ 
++/// Every Android build is controller-only, pinned or not: its manifest declares none of the
++/// services and permissions a controlled phone needs. Upstream's outgoing-only switch hides the
++/// screens that would start them.
++fn controller_only() {
++    config::HARD_SETTINGS
++        .write()
++        .unwrap()
++        .insert("conn-type".to_owned(), "outgoing".to_owned());
++}
++
+ /// A heartbeat reply can rewrite options of every PC (`strategy`) and end its sessions
+ /// (`disconnect`). The hjviewer server answers /api/heartbeat with 404, so such a reply could only
+ /// come from a TLS interceptor that the TLS fallback let through; hjviewer builds drop both keys.
+@@ -155,4 +168,13 @@ mod tests {
+         let kept = rendezvous_token("token".to_owned());
+         assert_eq!(kept, if pinned() { "" } else { "token" });
+     }
++
++    #[test]
++    fn controller_only_is_upstreams_outgoing_only() {
++        assert!(!config::is_outgoing_only());
++        controller_only();
++        let outgoing_only = config::is_outgoing_only();
++        config::HARD_SETTINGS.write().unwrap().remove("conn-type");
++        assert!(outgoing_only);
++    }
+ }
