@@ -73,19 +73,22 @@ version policy, and new versions come from the server (section 2, "Updates").
 
 ### 3. Accounts (from version 1.6.0)
 
-Only for people who log in. The Yonsei SSO lets only the university's faculty and staff through its
-login, and each of them may use HJViewer unless the operator blocks them; the account service puts
-the portal ID on its list at the first login. The operator can also go back to letting in only the
-IDs put on the list ahead. The account service runs on the same server. A login
-that fails (a wrong password, a blocked account) still leaves a login record (tags of the ID typed
-and of the device, the client's IP address, the result, the time; 6 months) and the login limit
-counters.
+Only for people who log in. Only the university's faculty and staff can log in: the account
+service takes only their portal IDs (by their form: Z or Y first, not ZA) and checks the code the
+Yonsei SSO gives for the person against the same rule. Each of them may use HJViewer unless the
+operator blocks them; the account service puts the portal ID on its list at the first login. The
+operator can also go back to letting in only the IDs put on the list ahead. The account service
+runs on the same server. A login that fails (a wrong password, a blocked account) still leaves a
+login record (tags of the ID typed and of the device, the client's IP address, the result, the
+time; 6 months) and the login limit counters. An ID of another form is refused at once, before
+the SSO: neither it nor the password is sent on, and its record keeps no tag of the ID.
 
 **Logging in.** You type your Yonsei portal ID and password in the app. The app seals the password
 to the server's key, so that only the account service can open it, even on a network that inspects
 encrypted traffic. The service has the Yonsei SSO (the university's login system) check it and
 forgets it at once; the password and the SSO's token are never stored or logged. From the SSO the
-service keeps only your portal ID and name. Each login also registers a new **account key** of
+service reads and keeps only the code it gives for you (your portal ID) and your name; it does not
+read your e-mail address or department. Each login also registers a new **account key** of
 that device: the server keeps its public key, the private key stays on the device, and every
 account request after the login is signed with it.
 
@@ -318,9 +321,9 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 3. 계정 (1.6.0부터)
 
-로그인한 사람에게만 해당합니다. 연세 SSO는 학교의 교직원 계정만 통과시키고, 그 사람은 운영자가 막지 않는 한 누구나 HJViewer를 쓸 수 있습니다. 계정 서비스는 처음 로그인할 때 그 포탈 ID를 명단에 올립니다. 운영자는 미리 명단에 올린 ID만 받는 방식으로 되돌릴 수도 있습니다. 계정 서비스는 같은 서버에서 돕니다. 로그인에 실패해도(틀린 비밀번호, 막힌 계정) 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다.
+로그인한 사람에게만 해당합니다. 학교의 교직원만 로그인할 수 있습니다. 계정 서비스는 교직원의 포탈 ID(형식으로 가림: Z나 Y로 시작하고 ZA로 시작하지 않음)만 받고, 연세 SSO가 알려 준 그 사람의 코드도 같은 규칙으로 확인합니다. 그 사람은 운영자가 막지 않는 한 누구나 HJViewer를 쓸 수 있습니다. 계정 서비스는 처음 로그인할 때 그 포탈 ID를 명단에 올립니다. 운영자는 미리 명단에 올린 ID만 받는 방식으로 되돌릴 수도 있습니다. 계정 서비스는 같은 서버에서 돕니다. 로그인에 실패해도(틀린 비밀번호, 막힌 계정) 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다. 다른 형식의 ID는 SSO에 묻기 전에 바로 거절하며, 그 ID와 비밀번호를 SSO에 보내지 않고 시도 기록에도 그 ID의 꼬리표를 남기지 않습니다.
 
-**로그인.** 앱에 연세포탈 ID와 비밀번호를 넣습니다. 앱은 비밀번호를 서버의 키로 봉인하므로, 암호화된 통신을 들여다보는 네트워크에서도 계정 서비스만 열 수 있습니다. 계정 서비스는 연세 SSO(학교의 로그인 시스템)에 비밀번호를 확인받은 뒤 바로 버립니다. 비밀번호와 SSO 토큰은 저장하지도 기록하지도 않습니다. SSO에서 받은 것 가운데 포탈 ID와 성명만 보관합니다. 로그인할 때마다 그 기기의 **계정 키**도 새로 등록합니다. 서버는 공개키만 보관하고 개인키는 기기에 남으며, 로그인 뒤의 모든 계정 요청에 그 키로 서명합니다.
+**로그인.** 앱에 연세포탈 ID와 비밀번호를 넣습니다. 앱은 비밀번호를 서버의 키로 봉인하므로, 암호화된 통신을 들여다보는 네트워크에서도 계정 서비스만 열 수 있습니다. 계정 서비스는 연세 SSO(학교의 로그인 시스템)에 비밀번호를 확인받은 뒤 바로 버립니다. 비밀번호와 SSO 토큰은 저장하지도 기록하지도 않습니다. SSO에서 받은 것 가운데 그 사람의 코드(포탈 ID)와 성명만 읽고 보관하며, 이메일 주소와 소속은 읽지 않습니다. 로그인할 때마다 그 기기의 **계정 키**도 새로 등록합니다. 서버는 공개키만 보관하고 개인키는 기기에 남으며, 로그인 뒤의 모든 계정 요청에 그 키로 서명합니다.
 
 **내 PC.** HJViewer를 설치한 Windows PC에서 HJViewer에 로그인하면 그 PC가 내 계정에 들어갑니다. 그때부터 로그인한 다른 내 기기는 그 PC에 PC 비밀번호 없이 원격 화면, 파일 전송, 카메라로 연결할 수 있습니다. 터미널과 포트 포워딩은 지금처럼 PC 비밀번호를 묻습니다. 그 PC의 HJViewer 서비스는 보통 2분마다, 서버에 닿는 동안에는 늦어도 5분마다 PC의 기기 키로 서명한 짧은 요청을 서버에 보내고, 서명된 내 계정의 키 목록을 받습니다(닿지 못하면 30초 뒤부터 간격을 늘려 가며 최대 10분마다 다시 해 봅니다). 이때 PC는 앱 버전, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 계정 키마다 오늘과 어제 받아들인 비밀번호 없는 연결의 마지막 시각과 횟수, 거절한 시도의 이유별 개수(개수만)를 함께 알립니다.
 

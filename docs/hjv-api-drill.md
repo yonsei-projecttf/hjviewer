@@ -68,10 +68,14 @@ HJV_DRILL_QUICK=1 tools/e2e/hjv-api-drill.sh   # 그 기다림 없이 약 3분
 
 사용자 결정으로 연세 SSO를 통과한 사람은 누구나 로그인하고 처음 로그인할 때 명단에 오르며, 운영자는 명단에서 빼는 대신 막습니다(`admin block`, 스키마 5). 연습도 그에 맞췄습니다.
 
-- **설치(7-5)**: 명단에 둘(HONG, KIM)과 `sso-invalid-client`만 가져오고, LEE는 가져오지 않습니다. 하루 사용에서 LEE의 첫 로그인이 성공하고 `allow list` 첫 줄이 `allowlist: 4 IDs, 4 registered (1 by a login), 0 blocked; login open`인지 봅니다. 시작 때 `report` 둘째 줄(`login: open (…)`)도 찍습니다.
+- **설치(7-5)**: 명단에 둘(HONG, KIM)과 `ZZSSO-INVALID-CLIENT`만 가져오고, LEE는 가져오지 않습니다. 하루 사용에서 LEE의 첫 로그인이 성공하고 `allow list` 첫 줄이 `allowlist: 4 IDs, 4 registered (1 by a login), 0 blocked; login open`인지 봅니다. 시작 때 `report` 둘째 줄(`login: open (…)`)도 찍습니다.
 - **백업 뒤의 변경**: LEE를 막습니다(`admin block`). LEE의 토큰은 바로 401이고, 맞는 비밀번호의 로그인은 403 `blocked`입니다.
 - **복원**: 복원한 DB에서는 그 막기가 풀려 있습니다. 런북 7-14대로 `user revoke-all --all` 뒤 운영자 기록의 `cmd="block" targets=<꼬리표>` 줄에서 꼬리표를 찾아 `block tag:<꼬리표>`로 다시 막고(연습에서는 기록의 막기가 모두 백업 뒤의 것), 복원 뒤 확인에서 LEE의 로그인이 다시 403인지 봅니다. `passwordless on` 뒤에는 막기를 풀고(`unblock`) LEE가 다시 로그인합니다.
 - **업그레이드 단계**: 흉내 내는 번호가 "지금 번호 + 1"이므로 그대로입니다. 명단의 진짜 저장 이전(옛 명단의 항목은 `import`로, 명단에서 뺐던 계정은 막힌 항목으로)은 `cargo test`의 `db::tests::the_allowlist_of_schema_four_moves_on`이 봅니다.
+
+## 행정허브 SSO 계약과 ID 규칙(2026-10-14)을 넣으며 달라진 것
+
+hjv-api가 같은 서버의 행정허브 WordPress 플러그인과 같은 SSO 등록의 답(사용자 정보의 `pcode`, `name`)을 읽고, HJViewer의 ID 규칙(대문자로 바꿔 Z나 Y로 시작, ZA 제외)에 맞는 ID만 SSO에 묻게 되었습니다. 연습의 가짜 SSO도 행정허브의 모양으로 답하고, 대문자로 바꾸지 않은 사용자 이름이나 계약과 다른 양식은 거절합니다. 연습의 시험 계정은 규칙에 맞는 가짜 ID입니다: HONG `ZZTEST01`, KIM `ZZTEST02`, 가져오지 않는 LEE `YZTEST03`(Y 코드). SSO의 `invalid_client`를 흉내 내는 이름은 `ZZSSO-INVALID-CLIENT`입니다. 연습의 단계와 기대하는 결과는 그대로입니다.
 
 ## 런북과 다른 것 (런북에 반영함)
 
