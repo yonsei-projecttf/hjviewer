@@ -1705,12 +1705,10 @@ code { word-break: break-all; }
 "#;
 
 /// Door 2's page (the design's text K2), from the policy as it is now. `notices` is the notice
-/// files that are there, by version. Every value of the policy and the settings is escaped.
-fn page_html(
-    policy: Option<&Policy>,
-    notices: &[(String, Vec<&'static str>)],
-    source_url: &str,
-) -> String {
+/// files that are there, by version. Every value of the policy is escaped. The page names no
+/// outside site (the user, 2026-10-14): where the source is comes from each version's SOURCE
+/// notice, which stands next to the packages as the AGPL asks.
+fn page_html(policy: Option<&Policy>, notices: &[(String, Vec<&'static str>)]) -> String {
     let package = |platform| policy.and_then(|policy| policy.package(platform));
     let mut html = String::from(PAGE_HEAD);
     html.push_str("<h2>Windows PC</h2>\n");
@@ -1760,21 +1758,20 @@ fn page_html(
     html.push_str(
         "<h2>소스 코드와 라이선스</h2>\n<p>HJViewer는 GNU AGPL-3.0 라이선스로 배포합니다.",
     );
-    let source = match source_url.starts_with("https://") {
-        true => format!(
-            " 소스 코드: <a href=\"{0}\" rel=\"noreferrer noopener\">{0}</a>",
-            esc(source_url)
-        ),
-        false => String::new(),
-    };
-    html.push_str(&source);
     let mut tags: Vec<&str> = Platform::ALL
         .into_iter()
         .filter_map(|platform| package(platform)?.0.source.as_deref())
         .collect();
     tags.dedup();
-    if !tags.is_empty() {
-        html.push_str(&format!(" (태그 {})", esc(&tags.join(", "))));
+    let source = notices.iter().any(|(_, names)| names.contains(&"SOURCE"));
+    let tags = esc(&tags.join(", "));
+    match (source, tags.is_empty()) {
+        (true, false) => html.push_str(&format!(
+            " 소스 코드(태그 {tags})를 받는 곳은 아래 알림 파일의 SOURCE에 있습니다."
+        )),
+        (true, true) => html.push_str(" 소스 코드를 받는 곳은 아래 알림 파일의 SOURCE에 있습니다."),
+        (false, false) => html.push_str(&format!(" (태그 {tags})")),
+        (false, true) => {}
     }
     html.push_str("</p>\n");
     for (version, names) in notices {
@@ -1820,7 +1817,7 @@ async fn page(state: &Arc<AppState>) -> Reply {
                     notices.push((entry.latest.clone(), there));
                 }
             }
-            page_html(policy.as_deref(), &notices, &state.config.source_url)
+            page_html(policy.as_deref(), &notices)
         })
         .await
     };
@@ -2783,12 +2780,11 @@ mod tests {
     #[test]
     fn the_page_of_door_2() {
         let policy = Policy::parse(TOOL_POLICY).unwrap();
-        let notices = vec![("1.6.1".to_owned(), vec!["LICENSE", "THIRD_PARTY_NOTICES"])];
-        let html = page_html(
-            Some(&policy),
-            &notices,
-            "https://github.com/yonsei-projecttf/hjviewer",
-        );
+        let notices = vec![(
+            "1.6.1".to_owned(),
+            vec!["LICENSE", "SOURCE", "THIRD_PARTY_NOTICES"],
+        )];
+        let html = page_html(Some(&policy), &notices);
         for part in [
             "<html lang=\"ko\">",
             "<meta name=\"robots\" content=\"noindex, nofollow, noarchive\">",
@@ -2807,13 +2803,14 @@ mod tests {
             "<a href=\"HJViewer-1.6.1-android-arm64.apk\">HJViewer-1.6.1-android-arm64.apk</a>를 받아 여세요(HJViewer 1.6.1).",
             "크기 28,800,004바이트(약 28 MB) · SHA-256 <code>35e9781fea8aeddf96eb036b607e75b5f9fc1d26f947ff22a94220547c90a3c0</code>",
             "TestFlight 앱에서 HJViewer의 [업데이트]를 누르세요.",
-            "<a href=\"https://github.com/yonsei-projecttf/hjviewer\" rel=\"noreferrer noopener\">https://github.com/yonsei-projecttf/hjviewer</a> (태그 client-1.6.1)",
-            "HJViewer 1.6.1의 알림 파일: <a href=\"HJViewer-1.6.1-LICENSE.txt\">LICENSE</a> · <a href=\"HJViewer-1.6.1-THIRD_PARTY_NOTICES.txt\">THIRD_PARTY_NOTICES</a>",
+            "HJViewer는 GNU AGPL-3.0 라이선스로 배포합니다. 소스 코드(태그 client-1.6.1)를 받는 곳은 아래 알림 파일의 SOURCE에 있습니다.</p>",
+            "HJViewer 1.6.1의 알림 파일: <a href=\"HJViewer-1.6.1-LICENSE.txt\">LICENSE</a> · <a href=\"HJViewer-1.6.1-SOURCE.txt\">SOURCE</a> · <a href=\"HJViewer-1.6.1-THIRD_PARTY_NOTICES.txt\">THIRD_PARTY_NOTICES</a>",
         ] {
             assert!(html.contains(part), "{part}\n{html}");
         }
-        // the links stay in the page's own directory, the one to the source apart: the code of
-        // the address is nowhere in the page, and nothing is loaded from anywhere
+        // the links stay in the page's own directory: no outside site (the source's address is in
+        // the SOURCE notice), the code of the address is nowhere in the page, and nothing is
+        // loaded from anywhere
         let links: Vec<&str> = html
             .split("href=\"")
             .skip(1)
@@ -2822,14 +2819,11 @@ mod tests {
         assert_eq!(links.len(), 7);
         for link in &links {
             let own = link.starts_with("HJViewer-") && !link.contains('/');
-            assert!(
-                own || *link == "itms-beta://"
-                    || *link == "https://github.com/yonsei-projecttf/hjviewer",
-                "{link}"
-            );
+            assert!(own || *link == "itms-beta://", "{link}");
         }
         for none in [
-            "<script", "<img", "<link", "<iframe", "<form", " src=", "url(", "@import",
+            "<script", "<img", "<link", "<iframe", "<form", " src=", "url(", "@import", "http",
+            "github",
         ] {
             assert!(!html.contains(none), "{none}");
         }
@@ -2839,7 +2833,7 @@ mod tests {
             None,
             Some(Policy::parse(&envelope(&policy_text(json!({})))).unwrap()),
         ] {
-            let html = page_html(policy.as_ref(), &[], "https://example.com/hjviewer");
+            let html = page_html(policy.as_ref(), &[]);
             assert!(html.contains("<p>새 버전을 준비하고 있습니다. 잠시 뒤 다시 열어 주세요.</p>"));
             assert!(html.contains("그 밖의 기기에 쓸 새 버전은 준비하고 있습니다."));
             assert!(html.contains("이 Android 기기를 원격으로 제어하고 있다면 업데이트하지 말고"));
@@ -2848,26 +2842,10 @@ mod tests {
             );
             assert!(!html.contains("태그"));
         }
-        // what comes from the settings is text, and only an https address is a link
-        let html = page_html(
-            None,
-            &[],
-            "https://example.com/\"><script>alert(1)</script>&x='y'",
-        );
-        assert!(!html.contains("<script"));
-        assert!(html.contains(
-            "https://example.com/&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;x=&#39;y&#39;"
-        ));
-        for not_a_link in [
-            "javascript:alert(1)",
-            "http://example.com/",
-            "example.com",
-            "",
-        ] {
-            let html = page_html(None, &[], not_a_link);
-            assert!(!html.contains("소스 코드:"), "{not_a_link}");
-            assert_eq!(html.matches("href=").count(), 1);
-        }
+        // without packages there is nothing to point to: no SOURCE sentence, only TestFlight
+        let html = page_html(None, &[]);
+        assert!(!html.contains("소스 코드(") && !html.contains("SOURCE"), "{html}");
+        assert_eq!(html.matches("href=").count(), 1);
         assert_eq!(
             esc("<a href=\"x\">&'</a>"),
             "&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;"
