@@ -149,7 +149,9 @@ PASS (strict): transport: relay
 런북 7-1의 5번은 클라이언트 lib 시험 `rendezvous_mediator::tests::a_punch_that_meets_the_peers_syn_connects_both_ends`(루프백에서 TCP 동시 열기)를 패치를 적용한 트리로 한 번 돌리라고 합니다. 이 시험은 WSL2인 개발 PC에서 통과하지 못하고(1.5.1의 트리에서도 실패), 이 E2E도 그 경로를 지나지 않습니다(443만 열면 중계, UDP를 열면 WebRTC P2P). 그래서 시험 대신 그 경로가 바뀌지 않았다고 보는 근거를 적습니다(2026-10-15, 1.6.1).
 
 - 클라이언트 패치가 `src/rendezvous_mediator.rs`에서 바꾸는 것은 두 줄뿐입니다. `crate::hbbs_http::sync::start();` 바로 뒤에서 HJViewer의 작업을 시작하는 줄로, 0031이 `hjviewer_account::start_pc_sync()`, 0038이 `hjviewer_update::start_service_checks()`를 더합니다(`git diff <RUSTDESK_COMMIT> hjviewer -- src/rendezvous_mediator.rs`).
+- 시험이 쓰는 `hbb_common`의 `socket_client::connect_tcp_local`과 `tcp`의 리스너·소켓 함수도 바뀌지 않았습니다. `hbb_common` 패치 두 개(0001, 0002)는 `src/websocket.rs`만 바꿉니다.
 - 펀치 코드와 이 시험은 `scripts/upstream.env`의 upstream 1.5.0 그대로입니다. 그래서 WSL이 아닌 리눅스에서 돌려도 upstream과 같은 코드를 시험하게 됩니다. 두 작업은 따로 도는 작업이고 펀치의 소켓을 건드리지 않습니다.
+- 2026-10-15에 개발 PC(WSL2, 커널 6.18.33.2-microsoft-standard-WSL2, CPU 16개)에서 패치를 적용한 트리(0048까지)로 돌려 보았습니다. 보통의 셸에서도, 루프백만 있는 새 네트워크 네임스페이스(`ip netns`) 안에서도 "no punch met the peer's SYN in 256 rounds"로 실패했습니다(약 30초). 그러니 WSL의 미러 네트워크 탓이 아니라 이 커널과 가상 CPU에서 두 연결이 겹치지 않는 것입니다.
 - WSL이 아닌 리눅스(CPU 2개 이상. 하나뿐이면 이 시험은 아무것도 확인하지 않고 통과함)를 쓸 수 있게 되면, "실행"의 3)과 같은 빌드 환경에서 `cargo test --locked --features linux-pkg-config --lib a_punch_that_meets_the_peers_syn_connects_both_ends`를 돌리고 결과를 여기에 더합니다.
 
 ## 계정 단계 (1.6.0)
