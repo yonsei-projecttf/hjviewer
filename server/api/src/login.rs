@@ -16,7 +16,10 @@
 //! 4. the portal ID, trimmed and case-folded;
 //! 5. failures per ID, the same for every ID typed; a request signed by a PC already in that
 //!    account (devsig.rs) counts under a limit of its own, one for all the account's PCs, so that
-//!    someone who knows only the ID cannot lock the owner out of their PC;
+//!    someone who knows only the ID cannot lock the owner out of their PC. With
+//!    HJV_API_LOGIN=open an ID that is not on the allowlist counts under the lower
+//!    HJV_API_LIMIT_NEW_ID: there any portal ID reaches the SSO, and this keeps the login from
+//!    becoming a way to try passwords on every Yonsei account or to lock it;
 //! 6. while SSO calls are paused (the SSO refuses this server, its address or its client
 //!    credentials, or keeps failing: limits.rs), every ID gets the same 503 [`TEXT_SSO_DOWN`]
 //!    here, before the allowlist shows (design v3 §4-1), and nothing counts;
@@ -25,7 +28,10 @@
 //!    wrong password, counted. A blocked entry goes on in either mode: what it gets is decided
 //!    once the SSO accepted the password (step 12);
 //! 8. successes per account and per address, the SSO calls of all accounts together and one
-//!    account's share of them (limits.rs);
+//!    account's share of them (limits.rs); in open mode an ID that is not on the allowlist first
+//!    takes one of the few SSO calls of all such IDs (HJV_API_LIMIT_SSO_NEW, `limited-sso-new`),
+//!    so that it cannot use up the calls of the people registered, and the five-minute check
+//!    reports that window full (check.rs);
 //! 9. the second factor when it is on (tfa.rs; off by D11 and U1), before the SSO call;
 //! 10. the SSO (sso.rs), sorted into refused credentials (counted), a refused server address or
 //!     client and upstream errors (counted against the address only);
@@ -35,11 +41,11 @@
 //!     refused for it;
 //! 12. the allowlist once more (schema 5), before anything is looked up or written for the
 //!     account and again inside the login's transaction: a blocked account (the entry of the ID
-//!     typed, or of the ID the SSO names for the person, its perslNo) gets 403
-//!     [`TEXT_BLOCKED`] with `"hjv":"blocked"`, which only someone who knows its password sees
-//!     (its successes count, its failures are taken back); in open mode an ID not on the list is
-//!     put on it (`source` 'login', one journal line with the account's tag), in list mode it
-//!     fails as in step 7.
+//!     typed, of the ID the SSO names for the person, its perslNo, or of another account the SSO
+//!     named so: db.rs `login_listing`) gets 403 [`TEXT_BLOCKED`] with `"hjv":"blocked"`, which
+//!     only someone who knows its password sees (its successes count, its failures are taken
+//!     back); in open mode an ID not on the list is put on it (`source` 'login', one journal line
+//!     with the account's tag), in list mode it fails as in step 7.
 //!
 //! Every failure leaves no sooner than HJV_API_FAILURE_DELAY_MS (2 s) ± HJV_API_FAILURE_JITTER_MS
 //! (0.5 s) after the request came, and while the SSO is slow no sooner than its slowest recent
@@ -508,6 +514,8 @@ struct Limit {
     scope: &'static str,
     key: String,
     windows: Vec<Window>,
+    /// an ID not on the allowlist, in open mode (HJV_API_LIMIT_NEW_ID)
+    unlisted: bool,
 }
 
 /// One login's reserved limit counters and its record.
@@ -837,7 +845,24 @@ async fn bound_limit(state: &Arc<AppState>, claim: &Claim) -> Option<Limit> {
         scope: SCOPE_BOUND,
         key: state.tags.bound(key),
         windows: state.config.limit_bound.clone(),
+        unlisted: false,
     })
+}
+
+/// Where the ID's entry stands with the allowlist; `Err` after the journal heard of the error.
+async fn listing_of(state: &AppState, key: &str) -> Result<Listing, ()> {
+    let key = key.to_owned();
+    state
+        .db
+        .call(move |c| db::listing(c, &key))
+        .await
+        .map_err(|e| log_err!("login: {e}"))
+}
+
+/// Whether a login counts under the limits of the IDs not on the allowlist (steps 5 and 8): in
+/// open mode only, as in list mode such an ID never reaches the SSO.
+fn unlisted(state: &AppState, listing: Listing) -> bool {
+    state.config.login == LoginMode::Open && listing == Listing::Absent
 }
 
 async fn sealed_login(
@@ -858,6 +883,19 @@ async fn sealed_login(
     };
     run.account_tag = Some(state.tags.account(&key));
 
+    // the ID's allowlist entry, for the limits of steps 5 and 8 (an ID not on the list counts
+    // under lower ones in open mode); what it says shows no sooner than step 7
+    let Ok(listing) = listing_of(state, &key).await else {
+        return run
+            .fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Outcome::Released,
+                "error",
+            )
+            .await;
+    };
+    let unlisted = unlisted(state, listing);
+
     // 5. failures per ID
     let limit = match bound {
         Some(limit) => limit,
@@ -866,7 +904,12 @@ async fn sealed_login(
             None => Limit {
                 scope: SCOPE_ID,
                 key: state.tags.account(&key),
-                windows: state.config.limit_id.clone(),
+                windows: if unlisted {
+                    state.config.limit_new_id.clone()
+                } else {
+                    state.config.limit_id.clone()
+                },
+                unlisted,
             },
         },
     };
@@ -893,22 +936,7 @@ async fn sealed_login(
     }
 
     // 7. the allowlist: in list mode an ID off it does not reach the SSO
-    let allowed = {
-        let key = key.clone();
-        match state.db.call(move |c| db::listing(c, &key)).await {
-            Ok(listing) => listing != Listing::Absent || state.config.login == LoginMode::Open,
-            Err(e) => {
-                log_err!("login: {e}");
-                return run
-                    .fail(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Outcome::Released,
-                        "error",
-                    )
-                    .await;
-            }
-        }
-    };
+    let allowed = listing != Listing::Absent || state.config.login == LoginMode::Open;
 
     let Claim {
         username, device, ..
@@ -954,7 +982,7 @@ async fn sealed_login(
             .fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "not-allowed")
             .await;
     }
-    sso_login(run, &username, &key, &opened.password, device).await
+    sso_login(run, &username, &key, &opened.password, device, unlisted).await
 }
 
 /// A login refused by a full ID limit: counted against the address only; the journal hears of
@@ -963,6 +991,8 @@ async fn id_limited(run: &mut Run<'_>, limit: &Limit) -> LoginAnswer {
     let state = run.state;
     let (result, from) = if limit.scope == SCOPE_BOUND {
         ("limited-bound", "from a PC in the account")
+    } else if limit.unlisted {
+        ("limited-id", "an ID not on the allowlist")
     } else {
         ("limited-id", "any device")
     };
@@ -1029,15 +1059,28 @@ async fn code_login(run: &mut Run<'_>, parsed: LoginBody, challenge: &str) -> Lo
             .fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "no-challenge")
             .await;
     }
-    // 5. the ID limit of the first step
+    // 5. the ID limit of the first step (an ID not on the allowlist under its own in open mode)
+    let Ok(listing) = listing_of(state, &pending.login_key).await else {
+        return run
+            .fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Outcome::Released,
+                "error",
+            )
+            .await;
+    };
+    let unlisted = pending.limit_scope != SCOPE_BOUND && unlisted(state, listing);
     let limit = Limit {
         scope: pending.limit_scope,
         key: pending.limit_key.clone(),
         windows: if pending.limit_scope == SCOPE_BOUND {
             state.config.limit_bound.clone()
+        } else if unlisted {
+            state.config.limit_new_id.clone()
         } else {
             state.config.limit_id.clone()
         },
+        unlisted,
     };
     match run
         .reserve(limit.scope, limit.key.clone(), limit.windows.clone())
@@ -1080,6 +1123,7 @@ async fn code_login(run: &mut Run<'_>, parsed: LoginBody, challenge: &str) -> Lo
         &pending.login_key,
         &pending.password,
         pending.device,
+        unlisted,
     )
     .await
 }
@@ -1090,6 +1134,7 @@ async fn sso_login(
     key: &str,
     password: &str,
     device: DeviceClaim,
+    unlisted: bool,
 ) -> LoginAnswer {
     let state = run.state;
     let account_tag = run.account_tag.clone().unwrap_or_default();
@@ -1134,6 +1179,41 @@ async fn sso_login(
     // the SSO calls were paused meanwhile (limits::Breaker)
     if state.sso_breaker.paused() {
         return run.sso_down().await;
+    }
+    // in open mode the IDs not on the allowlist first take one of their own few calls, so that
+    // trying passwords on many portal IDs cannot use up the calls of the people registered
+    if unlisted {
+        let refused = match state.sso_calls_new.try_take(&account_tag) {
+            Take::Taken => false,
+            Take::Full => {
+                if state.first_notice("sso-calls-new", Duration::from_secs(60)) {
+                    log_warn!(
+                        "login: SSO call limit of the portal IDs not on the allowlist reached (HJV_API_LIMIT_SSO_NEW); their first logins fail meanwhile"
+                    );
+                }
+                true
+            }
+            Take::Share => {
+                if state.first_notice(
+                    &format!("sso-share-new:{account_tag}"),
+                    Duration::from_secs(60),
+                ) {
+                    log_warn!(
+                        "login: a portal ID not on the allowlist holds its share of their SSO calls (acct={account_tag}); hjv-api admin unlock tag:{account_tag} lifts it"
+                    );
+                }
+                true
+            }
+        };
+        if refused {
+            return run
+                .fail(
+                    StatusCode::UNAUTHORIZED,
+                    Outcome::Refused,
+                    "limited-sso-new",
+                )
+                .await;
+        }
     }
     // the SSO calls of all accounts, and this account's share of them
     match state.sso_calls.try_take(&account_tag) {

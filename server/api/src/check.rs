@@ -22,6 +22,10 @@
 //!   [`SSO_RECENT`] seconds, because the SSO refused this server's client credentials
 //!   (`invalid_client`: hjviewer-sso-client-secret must be renewed), refused its address, or kept
 //!   failing (limits::Breaker);
+//! - **sso_new**: the SSO calls of the portal IDs not on the allowlist (HJV_API_LOGIN=open) found
+//!   their window full (HJV_API_LIMIT_SSO_NEW) within the last [`SSO_RECENT`] seconds: someone may
+//!   be trying passwords on many portal IDs through hjv-api, or many people log in for the first
+//!   time, and first logins fail meanwhile;
 //! - **relay**: an active NAS relay (Wake-on-LAN, relay.rs) that has not polled for
 //!   [`RELAY_SILENT`] seconds: an active relay keeps a long-poll open, so one silent for an hour
 //!   is down, or its NAS is off (design v3 question 15: a NAS that is switched off at night would
@@ -91,6 +95,10 @@ pub struct Health {
     pub hbbs: String,
     pub sso: Option<SsoPause>,
     pub relays: Option<Relays>,
+    /// seconds since the SSO calls of the portal IDs not on the allowlist last found their window
+    /// full (open mode, HJV_API_LIMIT_SSO_NEW), when they did since the service started
+    #[serde(default)]
+    pub sso_new_full: Option<i64>,
 }
 
 /// The SSO calls' last pause (limits::Breaker).
@@ -248,6 +256,10 @@ pub async fn health(state: &AppState) -> Result<Health, String> {
             paused: state.sso_breaker.pause_reason().is_some(),
             secs_ago: (at - when).max(0),
         });
+    h.sso_new_full = state
+        .sso_calls_new
+        .last_full()
+        .map(|when| (at - when).max(0));
     Ok(h)
 }
 
@@ -328,6 +340,15 @@ pub fn evaluate(probe: &Probe, health: &Result<Health, String>) -> Vec<Finding> 
             };
             found.push(finding(code, text));
         }
+    }
+    if let Some(ago) = h.sso_new_full.filter(|ago| *ago <= SSO_RECENT) {
+        found.push(finding(
+            "sso_new",
+            format!(
+                "the SSO calls of the portal IDs not on the allowlist reached their limit (HJV_API_LIMIT_SSO_NEW) {} minutes ago: someone may be trying passwords on many portal IDs through hjv-api, or many people log in for the first time; first logins fail meanwhile",
+                ago / 60
+            ),
+        ));
     }
     if let Some(r) = &h.relays {
         if r.silent > 0 {
@@ -529,6 +550,7 @@ mod tests {
             hbbs: HBBS_OK.into(),
             sso: None,
             relays: None,
+            sso_new_full: None,
         }
     }
 
@@ -629,6 +651,23 @@ mod tests {
         };
         assert!(evaluate(&ok, &Ok(relays(1, 0))).is_empty());
         assert_eq!(codes(&evaluate(&ok, &Ok(relays(2, 1)))), ["relay"]);
+        // the SSO calls of the IDs not on the allowlist found full within ten minutes
+        let new_ids = |ago| Health {
+            sso_new_full: Some(ago),
+            ..healthy()
+        };
+        let found = evaluate(&ok, &Ok(new_ids(130)));
+        assert_eq!(codes(&found), ["sso_new"]);
+        assert!(
+            found[0].text.starts_with("the SSO calls of the portal IDs not on the allowlist reached their limit (HJV_API_LIMIT_SSO_NEW) 2 minutes ago: "),
+            "{found:?}"
+        );
+        assert_eq!(codes(&evaluate(&ok, &Ok(new_ids(SSO_RECENT)))), ["sso_new"]);
+        assert!(evaluate(&ok, &Ok(new_ids(SSO_RECENT + 1))).is_empty());
+        // a health answer without the field (an older service) reads as none
+        let mut json = serde_json::to_value(healthy()).unwrap();
+        json.as_object_mut().unwrap().remove("sso_new_full");
+        assert_eq!(serde_json::from_value::<Health>(json).unwrap(), healthy());
     }
 
     #[test]

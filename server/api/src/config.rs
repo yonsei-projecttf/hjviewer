@@ -59,6 +59,12 @@ pub struct Config {
     pub limit_ok_ip: Vec<Window>,
     /// calls to the SSO, all accounts together (step 7)
     pub limit_sso: Window,
+    /// with HJV_API_LOGIN=open, where every portal ID reaches the SSO: failed logins per portal ID
+    /// that is not on the allowlist (instead of `limit_id`), and the SSO calls of all those IDs
+    /// together (besides `limit_sso`), so that the login cannot be a way to try passwords on every
+    /// Yonsei account or to lock them (login.rs steps 5 and 8)
+    pub limit_new_id: Vec<Window>,
+    pub limit_sso_new: Window,
     pub token_idle_secs: i64,
     pub token_max_secs: i64,
     pub account_retention_secs: i64,
@@ -166,6 +172,8 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_LIMIT_OK_ID", Some("10/3600,30/86400")),
     ("HJV_API_LIMIT_OK_IP", Some("30/3600")),
     ("HJV_API_LIMIT_SSO", Some("20/60")),
+    ("HJV_API_LIMIT_NEW_ID", Some("2/86400")),
+    ("HJV_API_LIMIT_SSO_NEW", Some("10/3600")),
     ("HJV_API_TOKEN_IDLE_DAYS", Some("90")),
     ("HJV_API_TOKEN_MAX_DAYS", Some("365")),
     ("HJV_API_ACCOUNT_DAYS", Some("365")),
@@ -256,6 +264,10 @@ impl Config {
         let limit_sso = windows("HJV_API_LIMIT_SSO")?;
         if limit_sso.len() != 1 {
             return Err("HJV_API_LIMIT_SSO takes one window, such as 20/60".into());
+        }
+        let limit_sso_new = windows("HJV_API_LIMIT_SSO_NEW")?;
+        if limit_sso_new.len() != 1 {
+            return Err("HJV_API_LIMIT_SSO_NEW takes one window, such as 10/3600".into());
         }
         let failure_delay = Duration::from_millis(
             get("HJV_API_FAILURE_DELAY_MS")?
@@ -352,6 +364,8 @@ impl Config {
             limit_ok_id: windows("HJV_API_LIMIT_OK_ID")?,
             limit_ok_ip: windows("HJV_API_LIMIT_OK_IP")?,
             limit_sso: limit_sso[0],
+            limit_new_id: windows("HJV_API_LIMIT_NEW_ID")?,
+            limit_sso_new: limit_sso_new[0],
             token_idle_secs: num("HJV_API_TOKEN_IDLE_DAYS")? * DAY,
             token_max_secs: num("HJV_API_TOKEN_MAX_DAYS")? * DAY,
             account_retention_secs: num("HJV_API_ACCOUNT_DAYS")? * DAY,
@@ -388,6 +402,7 @@ impl Config {
         [
             &self.limit_ip,
             &self.limit_id,
+            &self.limit_new_id,
             &self.limit_bound,
             &self.limit_ok_id,
             &self.limit_ok_ip,
@@ -671,6 +686,22 @@ mod tests {
                 secs: 60
             }
         );
+        // open login: an ID not on the allowlist fails twice a day at most, and all such IDs
+        // together call the SSO ten times an hour at most
+        assert_eq!(
+            c.limit_new_id,
+            vec![Window {
+                count: 2,
+                secs: 86400
+            }]
+        );
+        assert_eq!(
+            c.limit_sso_new,
+            Window {
+                count: 10,
+                secs: 3600
+            }
+        );
         assert_eq!(c.token_idle_secs, 90 * DAY);
         assert_eq!(c.token_max_secs, 365 * DAY);
         assert_eq!(c.device_unseen_secs, 180 * DAY);
@@ -862,6 +893,14 @@ mod tests {
         assert!(with("HJV_API_LIMIT_ID", "3").is_err());
         assert!(with("HJV_API_LIMIT_ID", "0/600").is_err());
         assert!(with("HJV_API_LIMIT_SSO", "20/60,30/120").is_err());
+        assert!(with("HJV_API_LIMIT_SSO_NEW", "10/3600,20/86400").is_err());
+        assert!(with("HJV_API_LIMIT_NEW_ID", "0/86400").is_err());
+        assert_eq!(
+            with("HJV_API_LIMIT_NEW_ID", "1/600,3/604800")
+                .unwrap()
+                .longest_window(),
+            7 * DAY
+        );
         assert!(with("HJV_API_TOKEN_IDLE_DAYS", "400").is_err());
         assert!(with("HJV_API_TOKEN_MAX_DAYS", "-1").is_err());
         assert!(with("HJV_API_FAILURE_JITTER_MS", "3000").is_err());

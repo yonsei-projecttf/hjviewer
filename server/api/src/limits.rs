@@ -5,7 +5,9 @@
 //! Counted in the database, so that a restart does not reset them:
 //!
 //! - failed logins per client address (step 2), an IPv6 address by its /64;
-//! - failed logins per portal ID, for every ID typed, allowlisted or not (step 5);
+//! - failed logins per portal ID, for every ID typed, allowlisted or not (step 5); with
+//!   HJV_API_LOGIN=open an ID that is not on the allowlist counts under the lower
+//!   HJV_API_LIMIT_NEW_ID instead of HJV_API_LIMIT_ID, in the same counters;
 //! - failed logins of a portal ID from the PCs already in its account (step 5), one limit for all
 //!   of them, so that the owner can log in from their PC while others use up the ID's limit;
 //! - successful logins per account and per client address (step 7), so that a known password
@@ -20,7 +22,9 @@
 //! In memory: the SSO calls of all accounts together, of which one account may hold a quarter
 //! (step 7); the pause of SSO calls while the SSO refuses this server or keeps failing; how long
 //! the SSO took lately (the failure delay follows it, step 10); and how many failed logins a
-//! minute are written to the records.
+//! minute are written to the records. With HJV_API_LOGIN=open the SSO calls of the portal IDs not
+//! on the allowlist have a small window of their own besides (HJV_API_LIMIT_SSO_NEW), so that any
+//! portal ID reaching the SSO cannot use up the calls of the people registered.
 
 use crate::{config::Window, sso::Failure};
 use rusqlite::{params, Connection};
@@ -109,10 +113,13 @@ pub enum Take {
 
 /// The SSO calls of all accounts together (v2 §9-2 step 7), in memory. One account may hold a
 /// quarter of a window (at least one call), so that one known password cannot use up the budget
-/// of everyone.
+/// of everyone. The same for the SSO calls of the portal IDs not on the allowlist in open mode
+/// (HJV_API_LIMIT_SSO_NEW), whose last full window the five-minute check reports (check.rs).
 pub struct GlobalLimiter {
     window: Window,
     calls: Mutex<VecDeque<(Instant, String)>>,
+    /// when a call last found the window full (Unix time)
+    last_full: Mutex<Option<i64>>,
 }
 
 impl GlobalLimiter {
@@ -120,7 +127,21 @@ impl GlobalLimiter {
         GlobalLimiter {
             window,
             calls: Mutex::new(VecDeque::new()),
+            last_full: Mutex::new(None),
         }
+    }
+
+    /// When a call last found the window full (Unix time), since the start.
+    pub fn last_full(&self) -> Option<i64> {
+        *self.last_full.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Forgets the calls the tags `who` hold in the window (admin unlock); returns how many.
+    pub fn forget(&self, who: &[String]) -> usize {
+        let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+        let before = calls.len();
+        calls.retain(|(_, w)| !who.contains(w));
+        before - calls.len()
     }
 
     /// The calls of a window one account may hold.
@@ -140,6 +161,7 @@ impl GlobalLimiter {
             calls.pop_front();
         }
         if calls.len() >= self.window.count as usize {
+            *self.last_full.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::util::now());
             return Take::Full;
         }
         if calls.iter().filter(|(_, w)| w == who).count() >= self.share() {
@@ -375,8 +397,16 @@ mod tests {
         assert_eq!(g.share(), 1);
         assert_eq!(g.try_take("a"), Take::Taken);
         assert_eq!(g.try_take("a"), Take::Share);
+        // one account's full share is not a full window
+        assert_eq!(g.last_full(), None);
         assert_eq!(g.try_take("b"), Take::Taken);
         assert_eq!(g.try_take("c"), Take::Full);
+        let full = g.last_full().unwrap();
+        assert!((crate::util::now() - full).abs() <= 1, "{full}");
+        // forgetting an account's calls frees its share and the window
+        assert_eq!(g.forget(&["a".to_owned(), "x".to_owned()]), 1);
+        assert_eq!(g.try_take("a"), Take::Taken);
+        assert_eq!(g.try_take("d"), Take::Full);
         let g = GlobalLimiter::new(Window {
             count: 20,
             secs: 60,

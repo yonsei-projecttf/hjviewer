@@ -713,15 +713,50 @@ pub fn listing(c: &Connection, key: &str) -> rusqlite::Result<Listing> {
 }
 
 /// Where a login that the SSO accepted stands with the allowlist: blocked when the entry of the ID
-/// typed (`key`) or that of the ID the SSO names for the person (`persl_key`, its perslNo
-/// case-folded) is blocked, so that a block holds whatever form of the portal ID the SSO takes;
-/// else as the typed ID's entry.
+/// typed (`key`) is blocked, or that of the ID the SSO names for the person (`persl_key`, its
+/// perslNo case-folded), or that of an account the SSO named so before under another ID, so that
+/// a block holds whatever form of the portal ID the SSO takes; else as the typed ID's entry.
 pub fn login_listing(c: &Connection, key: &str, persl_key: &str) -> rusqlite::Result<Listing> {
     let typed = listing(c, key)?;
-    if typed != Listing::Blocked && persl_key != key && listing(c, persl_key)? == Listing::Blocked {
+    if typed == Listing::Blocked || (persl_key != key && listing(c, persl_key)? == Listing::Blocked)
+    {
+        return Ok(Listing::Blocked);
+    }
+    let blocked: Vec<String> = column(
+        c,
+        "SELECT a.portal_id FROM accounts a JOIN allowlist l ON l.login_key = a.login_key
+         WHERE l.blocked_at IS NOT NULL",
+        [],
+    )?;
+    if blocked
+        .iter()
+        .any(|portal_id| crate::util::login_key(portal_id) == persl_key)
+    {
         return Ok(Listing::Blocked);
     }
     Ok(typed)
+}
+
+/// The case-folded portal IDs that the server knows as the same person's as `key`: `key` itself,
+/// the ID the SSO named for its account (the account's perslNo), and the IDs of the other accounts
+/// the SSO named so. Whether the portal ID typed is always the perslNo is not known (design v2
+/// §4-1), so a block and its lifting take them all ([`allow_block`], [`allow_unblock`]).
+fn person_keys(c: &Connection, key: &str) -> rusqlite::Result<Vec<String>> {
+    let persl = match account_by_key(c, key)? {
+        Some(account) => crate::util::login_key(&account.portal_id),
+        None => key.to_owned(),
+    };
+    let mut keys = vec![key.to_owned()];
+    if persl != key {
+        keys.push(persl.clone());
+    }
+    for account in accounts(c)? {
+        if crate::util::login_key(&account.portal_id) == persl && !keys.contains(&account.login_key)
+        {
+            keys.push(account.login_key);
+        }
+    }
+    Ok(keys)
 }
 
 /// What the allowlist says to a login the SSO accepted ([`admit_login`]).
@@ -806,45 +841,36 @@ pub struct Blocked {
     pub already: usize,
     pub tokens: usize,
     pub keys: usize,
+    /// of the entries blocked now, those of another ID of the same person ([`person_keys`])
+    pub person: usize,
 }
 
 /// Blocks case-folded IDs (admin block, allow remove): where removing an ID kept its account out
 /// while only the list let anyone in, the entry now stays, blocked, so that its next login is
 /// refused after the SSO, in either HJV_API_LOGIN mode; an ID not on the list is put on it
-/// blocked (`source` 'import'). Its account's tokens and account keys are revoked at once
-/// (design v3 §5-6), and its PCs stay bound with lists without keys (§5-2), so the change serial
-/// goes up, keys or not.
+/// blocked (`source` 'import'). The other IDs the server knows for the same person are blocked
+/// with it ([`person_keys`]: the ID the SSO named for its account and that person's other
+/// accounts), so that the block stays when one of those accounts is deleted. Their accounts'
+/// tokens and account keys are revoked at once (design v3 §5-6), and their PCs stay bound with
+/// lists without keys (§5-2), so the change serial goes up, keys or not.
 pub fn allow_block(c: &mut Connection, keys: &[String], at: i64) -> rusqlite::Result<Blocked> {
     in_tx(c, |tx| {
         let (mut b, mut delisted) = (Blocked::default(), false);
-        for key in keys {
-            let changed = match listing(tx, key)? {
-                Listing::Blocked => {
-                    b.already += 1;
-                    false
+        let mut done: Vec<String> = Vec::new();
+        for named in keys {
+            for key in person_keys(tx, named)? {
+                if done.contains(&key) {
+                    continue;
                 }
-                Listing::Registered => {
-                    tx.execute(
-                        "UPDATE allowlist SET blocked_at = ?2 WHERE login_key = ?1",
-                        params![key, at],
-                    )?;
-                    true
+                done.push(key.clone());
+                let other = &key != named;
+                let changed = block_entry(tx, &key, at, &mut b, other)?;
+                b.person += usize::from(changed && other);
+                if let Some(account) = account_by_key(tx, &key)? {
+                    b.tokens += revoke_tokens(tx, account.id)?;
+                    b.keys += revoke_account_keys(tx, account.id, "blocked", at)?;
+                    delisted |= changed;
                 }
-                Listing::Absent => {
-                    tx.execute(
-                        "INSERT INTO allowlist (login_key, added_at, source, blocked_at)
-                         VALUES (?1, ?2, 'import', ?2)",
-                        params![key, at],
-                    )?;
-                    b.new += 1;
-                    true
-                }
-            };
-            b.blocked += usize::from(changed);
-            if let Some(account) = account_by_key(tx, key)? {
-                b.tokens += revoke_tokens(tx, account.id)?;
-                b.keys += revoke_account_keys(tx, account.id, "blocked", at)?;
-                delisted |= changed;
             }
         }
         // revoking keys raised it already
@@ -858,32 +884,79 @@ pub fn allow_block(c: &mut Connection, keys: &[String], at: i64) -> rusqlite::Re
     })
 }
 
-/// Lifts the blocks of case-folded IDs (admin unblock): the entry is on the list again as of
-/// `at` (an entry without an account keeps from then on), and its account may log in again;
-/// its PCs' lists change with it. Returns (unblocked, not blocked).
+/// Blocks one entry for [`allow_block`]; whether it changed. An entry blocked before counts as
+/// `already` when it is one the operator named (`other` false).
+fn block_entry(
+    tx: &Connection,
+    key: &str,
+    at: i64,
+    b: &mut Blocked,
+    other: bool,
+) -> rusqlite::Result<bool> {
+    let changed = match listing(tx, key)? {
+        Listing::Blocked => {
+            b.already += usize::from(!other);
+            false
+        }
+        Listing::Registered => {
+            tx.execute(
+                "UPDATE allowlist SET blocked_at = ?2 WHERE login_key = ?1",
+                params![key, at],
+            )?;
+            true
+        }
+        Listing::Absent => {
+            tx.execute(
+                "INSERT INTO allowlist (login_key, added_at, source, blocked_at)
+                 VALUES (?1, ?2, 'import', ?2)",
+                params![key, at],
+            )?;
+            b.new += 1;
+            true
+        }
+    };
+    b.blocked += usize::from(changed);
+    Ok(changed)
+}
+
+/// Lifts the blocks of case-folded IDs (admin unblock), with those of the other IDs the server
+/// knows for the same person ([`person_keys`], as [`allow_block`] took them): the entry is on the
+/// list again as of `at` (an entry without an account keeps from then on), and its account may
+/// log in again; its PCs' lists change with it. Returns (entries unblocked, IDs named that had
+/// no block to lift).
 pub fn allow_unblock(
     c: &mut Connection,
     keys: &[String],
     at: i64,
 ) -> rusqlite::Result<(usize, usize)> {
     in_tx(c, |tx| {
-        let (mut unblocked, mut relisted) = (0, false);
-        for key in keys {
-            let n = tx.execute(
-                "UPDATE allowlist SET blocked_at = NULL, added_at = ?2
-                 WHERE login_key = ?1 AND blocked_at IS NOT NULL",
-                params![key, at],
-            )?;
-            unblocked += n;
-            if n > 0 && !relisted {
-                relisted = account_by_key(tx, key)?.is_some();
+        let (mut unblocked, mut untouched, mut relisted) = (0, 0, false);
+        let mut done: Vec<String> = Vec::new();
+        for named in keys {
+            let mut lifted = false;
+            for key in person_keys(tx, named)? {
+                if done.contains(&key) {
+                    continue;
+                }
+                done.push(key.clone());
+                let n = tx.execute(
+                    "UPDATE allowlist SET blocked_at = NULL, added_at = ?2
+                     WHERE login_key = ?1 AND blocked_at IS NOT NULL",
+                    params![key, at],
+                )?;
+                unblocked += n;
+                lifted |= n > 0;
+                if n > 0 && !relisted {
+                    relisted = account_by_key(tx, &key)?.is_some();
+                }
             }
+            untouched += usize::from(!lifted);
         }
         if relisted {
             bump_serial(tx)?;
             switched(tx)?;
         }
-        Ok((unblocked, keys.len() - unblocked))
+        Ok((unblocked, untouched))
     })
 }
 
@@ -4556,7 +4629,8 @@ mod tests {
                 new: 1,
                 already: 0,
                 tokens: 2,
-                keys: 2
+                keys: 2,
+                person: 0
             }
         );
         assert!(keys_of(&c, a).unwrap().is_empty());
@@ -4659,6 +4733,75 @@ mod tests {
         assert_eq!((n.registered_day, n.registered_week), (0, 1));
     }
 
+    /// The SSO named one person's perslNo for two portal IDs (whether it does is not known, design
+    /// v2 §4-1): blocking either blocks both and ends both accounts' keys, a login with a third
+    /// form is refused, the block stays when one account is deleted, and unblock lifts them
+    /// together; the person's other accounts only, not someone else's.
+    #[test]
+    fn a_block_takes_every_id_of_the_person() {
+        let mut c = conn();
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let alias = upsert_account(&c, "alias", "P1", "", 1).unwrap();
+        let main = upsert_account(&c, "p1", "P1", "", 1).unwrap();
+        let other = upsert_account(&c, "p2", "P2", "", 1).unwrap();
+        for (key, persl) in [("alias", "p1"), ("p1", "p1"), ("p2", "p2")] {
+            admit_login(&c, key, persl, true, 1).unwrap();
+        }
+        login_with_key(&mut c, alias, 1, "");
+        login_with_key(&mut c, main, 2, "");
+        login_with_key(&mut c, other, 3, "");
+        assert_eq!(
+            allow_block(&mut c, &ids(&["alias"]), 5).unwrap(),
+            Blocked {
+                blocked: 2,
+                new: 0,
+                already: 0,
+                tokens: 2,
+                keys: 2,
+                person: 1
+            }
+        );
+        assert!(!allowed(&c, "alias").unwrap() && !allowed(&c, "p1").unwrap());
+        assert!(keys_of(&c, alias).unwrap().is_empty() && keys_of(&c, main).unwrap().is_empty());
+        assert!(allowed(&c, "p2").unwrap());
+        assert_eq!(keys_of(&c, other).unwrap().len(), 1);
+        // a third form with the same perslNo: refused, and put on no list
+        assert_eq!(
+            admit_login(&c, "alias2", "p1", true, 6).unwrap(),
+            Admission::Blocked
+        );
+        assert_eq!(listing(&c, "alias2").unwrap(), Listing::Absent);
+        // the account typed with the alias deleted: the perslNo form stays blocked
+        let tx = c.transaction().unwrap();
+        delete_account(&tx, alias, 7).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(login_listing(&c, "p1", "p1").unwrap(), Listing::Blocked);
+        // unblock through the perslNo form lifts what the server still knows of the person
+        assert_eq!(allow_unblock(&mut c, &ids(&["p1"]), 8).unwrap(), (1, 0));
+        assert_eq!(login_listing(&c, "p1", "p1").unwrap(), Listing::Registered);
+        // the deleted account's entry is not linked to the person any more: named, it is lifted
+        assert_eq!(listing(&c, "alias").unwrap(), Listing::Blocked);
+        assert_eq!(allow_unblock(&mut c, &ids(&["alias"]), 9).unwrap(), (1, 0));
+        // blocking the perslNo form takes the person's accounts under other IDs with it
+        let alias = upsert_account(&c, "alias", "P1", "", 10).unwrap();
+        login_with_key(&mut c, alias, 4, "");
+        let b = allow_block(&mut c, &ids(&["p1"]), 11).unwrap();
+        assert_eq!((b.blocked, b.person, b.keys), (2, 1, 1));
+        assert!(!allowed(&c, "alias").unwrap());
+        assert_eq!(allow_unblock(&mut c, &ids(&["alias"]), 12).unwrap(), (2, 0));
+        assert!(allowed(&c, "alias").unwrap() && allowed(&c, "p1").unwrap());
+        // an account blocked alone under another ID (as a block made before the person's IDs were
+        // taken together left it): a login whose perslNo is that account's is refused
+        c.execute(
+            "UPDATE allowlist SET blocked_at = 13 WHERE login_key = 'alias'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(listing(&c, "p1").unwrap(), Listing::Registered);
+        assert_eq!(login_listing(&c, "p1", "p1").unwrap(), Listing::Blocked);
+        assert_eq!(login_listing(&c, "p2", "p2").unwrap(), Listing::Registered);
+    }
+
     /// Schema 5 keeps the entries as imported ones, and an account whose ID was taken off the list
     /// before stays out: its entry comes back blocked.
     #[test]
@@ -4744,7 +4887,8 @@ mod tests {
                 new: 0,
                 already: 0,
                 tokens: 1,
-                keys: 1
+                keys: 1,
+                person: 0
             }
         );
         assert_eq!(change_serial(&c).unwrap(), serial + 1);

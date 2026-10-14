@@ -16,8 +16,10 @@
 //! the SSO accepts on the list, so an import only registers IDs ahead (and decides in list mode),
 //! and `block <id|tag:T>` keeps an account out where taking its ID off the list used to: its
 //! tokens and account keys end at once, its PCs get lists without keys, the entry stays blocked
-//! and its next login is refused after the SSO; `unblock` lifts it. `allow remove <file>` blocks
-//! the IDs of a file (an ID without an account has no tag to name it by).
+//! and its next login is refused after the SSO; `unblock` lifts it. Both take with the ID the
+//! others the server knows for the same person (the perslNo the SSO named for its account, and
+//! that person's other accounts: db.rs `person_keys`). `allow remove <file>` blocks the IDs of a
+//! file (an ID without an account has no tag to name it by).
 //!
 //! The protocol is one JSON line each way: `{"argv":[…],"reveal":false,"sudo_user":"…","input":"…"}`
 //! and `{"ok":true,"output":"…"}` or `{"ok":false,"error":"…"}`.
@@ -84,15 +86,18 @@ hjv-api admin [--socket <path>] [--reveal] <command>
                             how it came (login or import) and its dates
   block <id|tag:T>          keep an account out: its tokens and account keys stop working at once,
                             its PCs stay in the account with lists without keys, and its next login
-                            is refused after the SSO; an ID not on the list is put on it blocked
-  unblock <id|tag:T>        lift a block: the account may log in again (its devices log in again)
+                            is refused after the SSO; an ID not on the list is put on it blocked.
+                            The other IDs the SSO named for the same person are blocked with it
+  unblock <id|tag:T>        lift a block (with the person's other IDs): the account may log in
+                            again (its devices log in again)
   users                     accounts: tag, ID, devices, account keys, tokens, last login
   devices                   devices in accounts: tag, ID, account tag, OS, last seen
   key list [<id|tag:T>]     account keys: number, account, platform, device, version, network,
                             times, and per PC the last password-less use and the uses of 30 days
   key revoke <ckid>         revoke an account key with its token (that device must log in again)
-  unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
-                            of the tag from a journal warning, or of a client address
+  unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes',
+                            and the SSO calls it holds while not on the allowlist), of the tag from
+                            a journal warning, or of a client address
   user revoke-all <id|tag:T> | --all
                             revoke every token and account key of an account, or of every account
                             (each device must log in again; PCs stay in the accounts)
@@ -619,8 +624,16 @@ async fn listed_key(state: &Arc<AppState>, arg: &str) -> Result<String, String> 
 
 /// The answer of `block` and `allow remove`: what changed, in counts.
 fn blocked_text(b: &db::Blocked) -> String {
+    let person = if b.person > 0 {
+        format!(
+            "; {} of them another ID the SSO names for the same person",
+            b.person
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{} blocked ({} of them not on the allowlist before), {} blocked already, {} tokens and {} account keys revoked",
+        "{} blocked ({} of them not on the allowlist before{person}), {} blocked already, {} tokens and {} account keys revoked",
         b.blocked, b.new, b.already, b.tokens, b.keys
     )
 }
@@ -999,10 +1012,12 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 .call(move |c| db::allow_unblock(c, &[key], at))
                 .await
                 .map_err(dberr)?;
-            Ok(if unblocked > 0 {
-                "unblocked: the account may log in again (its devices log in again)".to_owned()
-            } else {
-                "not blocked (no change)".to_owned()
+            Ok(match unblocked {
+                0 => "not blocked (no change)".to_owned(),
+                1 => "unblocked: the account may log in again (its devices log in again)".to_owned(),
+                n => format!(
+                    "unblocked: the account may log in again (its devices log in again); {n} entries, the IDs the SSO names for the same person"
+                ),
             })
         }
         ["users"] => {
@@ -1124,12 +1139,18 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
         }
         ["unlock", arg] => {
             let keys = unlock_keys(state, arg).await?;
+            // and the SSO calls an ID not on the allowlist holds of their window (in memory)
+            let forgotten = state.sso_calls_new.forget(&keys);
             let cleared = state
                 .db
                 .call(move |c| limits::clear(c, &keys))
                 .await
                 .map_err(dberr)?;
-            Ok(format!("cleared {cleared} counted login attempts"))
+            Ok(if forgotten > 0 {
+                format!("cleared {cleared} counted login attempts and {forgotten} SSO calls of an ID not on the allowlist")
+            } else {
+                format!("cleared {cleared} counted login attempts")
+            })
         }
         ["user", "revoke-all", "--all"] => {
             let (keys, tokens) = state

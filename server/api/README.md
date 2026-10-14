@@ -82,6 +82,21 @@ WordPress plugin's limit for the same IDs, below the portal's own lockout. `HJV_
 and `HJV_API_LIMIT_OK_IP` limit successful logins, so that one known password cannot keep calling
 the SSO; of the SSO calls of a minute (`HJV_API_LIMIT_SSO`) one account may take a quarter.
 
+With `HJV_API_LOGIN=open` any portal ID reaches the SSO, which would make the login a way to try
+passwords on every Yonsei account, or to lock them where the SSO locks an account after failures;
+the SSO would see this server's address (the WordPress plugin's too) as the source. So a portal ID
+that is not on the allowlist has lower limits of its own: its failed logins
+(`HJV_API_LIMIT_NEW_ID`, 2 a day, instead of `HJV_API_LIMIT_ID`, in the same counters), and the
+SSO calls of all such IDs together (`HJV_API_LIMIT_SSO_NEW`, 10 an hour, one window, besides
+`HJV_API_LIMIT_SSO`; one ID may take a quarter): at most 240 such calls a day, and the IDs on the
+list keep their own. When that window is full, a first login fails like a wrong password
+(`limited-sso-new` in the record, its failures not counted), the journal says
+`login: SSO call limit of the portal IDs not on the allowlist reached` once a minute, and the
+five-minute check alarms (`sso_new`). An ID imported ahead is on the list and not held by these
+limits. The user decides the numbers; list mode does not use them (an ID off the list never
+reaches the SSO there). This lowers the risk and does not remove it (docs/architecture.md 5-7,
+docs/server-runbook.md 7-13).
+
 `HJV_API_CAMPUS_NETS` (the university's networks, such as `192.0.2.0/24,2001:db8::/32`) lets the
 account's other devices see whether a new login came from on or off campus; the address itself is
 never stored. `HJV_API_PASSWORDLESS_KINDS` is the connection kinds a device of the same account may
@@ -176,18 +191,20 @@ block <id|tag:T>          keep an account out: its tokens and account keys stop 
                           its PCs stay in the account and get a trust list without keys, and its
                           next login, once the SSO accepted the password, gets 403 with the
                           blocked text; the entry stays blocked until unblock. An ID not on the
-                          list is put on it blocked
-unblock <id|tag:T>        lift a block: the account may log in again (its devices log in again);
-                          its entry counts as put on the list now
+                          list is put on it blocked. The other IDs the SSO named for the same
+                          person are blocked with it (below)
+unblock <id|tag:T>        lift a block (with the person's other IDs): the account may log in
+                          again (its devices log in again); its entry counts as put on the list now
 users | devices           accounts and the devices in them
 key list [<id|tag:T>]     account keys: number, account, platform, the server's device name,
                           version, on or off campus, created, state (the device's own name and ID
                           with --reveal), and a line per PC that reported the key's password-less
                           use: the last time and the count of 30 days (U6; host name with --reveal)
 key revoke <ckid>         revoke an account key with its token
-unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
-                          of a tag from a journal warning (an account's or an address's), or of a
-                          client address (an IPv6 address by its /64)
+unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes',
+                          and the SSO calls it holds while not on the allowlist), of a tag from a
+                          journal warning (an account's or an address's), or of a client address
+                          (an IPv6 address by its /64)
 user revoke-all <id|tag:T> | --all
                           revoke every token and account key of an account, or of every account
                           (devices log in again; PCs stay in their accounts)
@@ -280,10 +297,16 @@ login is told so (`이 계정은 관리자가 HJViewer 사용을 막았습니다
 password, so that the answer tells nobody else who is blocked; its successes count against
 `HJV_API_LIMIT_OK_ID`, so a known password cannot keep calling the SSO. An import does not lift a
 block (an old file imported again lets nobody back in); only `unblock` does. A block holds for the
-person: a login is refused when the entry of the ID typed or that of the ID the SSO names for the
-person (its perslNo) is blocked. Point with `tag:<tag>` from `users` or `allow list`; an ID that
-never logged in has no tag known to the operator, so it is blocked through a file (`allow remove
-<file>`).
+person, whichever form of the portal ID the SSO takes (whether it takes more than one is not
+known, design v2 §4-1): a login is refused when the entry of the ID typed is blocked, or that of
+the ID the SSO names for the person (its perslNo), or that of another account the SSO named so.
+`block` and `unblock` take with the ID named the other IDs the server knows for the same person
+(the perslNo of its account, and that person's other accounts), and say how many they took; once
+one of those accounts is deleted, the server no longer knows its ID with the others, so its entry
+stays blocked until it is unblocked by name. Point with `tag:<tag>` from `users` or `allow list`;
+an ID that never logged in has no tag known to the operator, so it is blocked through a file
+(`allow remove <file>`). The user notes each block and unblock (date and ID) outside the server:
+a restored or rebuilt database does not have the later ones (Backup and restore).
 
 `sudo hjv-api selfcheck --env-file /etc/hjviewer/hjviewer-api.env` runs the same check outside the
 service, by hand (it compares the list key in use only where it can read the credentials:
@@ -321,7 +344,10 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
   ten minutes; whether hbbs's console answers; SSO calls paused
   now or in the last ten minutes, with `invalid_client` (the credential
   `hjviewer-sso-client-secret` must be renewed, as when the WordPress plugin's credential
-  changes) and a refused address told apart; and, with phase 2, active NAS relays silent for an hour. PCs that
+  changes) and a refused address told apart; with `HJV_API_LOGIN=open`, the SSO calls of the
+  portal IDs not on the allowlist found full (`HJV_API_LIMIT_SSO_NEW`) in the last ten minutes
+  (`sso_new`: someone may be trying passwords on many portal IDs, or many people log in for the
+  first time); and, with phase 2, active NAS relays silent for an hour. PCs that
   are off say nothing, so a night with every PC asleep is no alarm. All well: one line in the
   journal. A finding: an error line each, the findings in `/run/hjviewer-api-check/findings`, and
   the unit fails.
@@ -400,7 +426,11 @@ operator record hold counts only.
   unblocked since is) and the bindings released since the backup: before `passwordless on`, find
   those commands (`user delete`, `block`, `allow remove`, `unblock`, `binding revoke`, `device
   remove`) after the backup's time in the operator record and run them again with the tags it
-  names (docs/server-runbook.md 7-14); a binding released in the app is in the database only, so
+  names (docs/server-runbook.md 7-14). A block whose tag the restored database does not have (`no
+  account or allowlist entry has that tag`: an ID registered by a login after the backup, or one
+  blocked through a file without an account) is made again with `allow remove <file>`, a file of
+  the IDs from the operator's own notes, as is every block after a rebuild; in open mode such a
+  person would otherwise log in again. A binding released in the app is in the database only, so
   the users are asked to remove again a PC that shows up in their list. The IDs a login put on the
   allowlist since the backup are put on it again at their next login (in open mode). `tests/ops.rs`
   (`the_restore_procedure`) runs these steps on the database; `docs/hjv-api-drill.md` records the

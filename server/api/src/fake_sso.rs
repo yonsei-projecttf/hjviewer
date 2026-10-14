@@ -65,6 +65,15 @@ pub const ACCOUNTS: &[FakeAccount] = &[
         persl_no: "Y9001",
         name: "이교수",
     },
+    // another username of 홍길동, for which the SSO names the perslNo of the first account:
+    // whether the real SSO takes such forms is not known (design v2 §4-1), and a block holds
+    // across them (tests/allowlist.rs)
+    FakeAccount {
+        username: "hong-alias",
+        password: "hjv-test-pass-1",
+        persl_no: "2026000001",
+        name: "홍길동",
+    },
 ];
 
 /// The usernames that play SSO failures (sso.rs sorts each).

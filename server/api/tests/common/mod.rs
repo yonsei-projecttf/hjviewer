@@ -372,6 +372,10 @@ impl Harness {
             ("HJV_API_SSO_TIMEOUT_MS", "1500".to_owned()),
             // tests log one account in several times a minute: more than a quarter of 20 calls
             ("HJV_API_LIMIT_SSO", "100/60".to_owned()),
+            // and try many IDs nobody registered, as any ID reaches the SSO in open mode: those
+            // count as every ID does here; tests/allowlist.rs sets the lower limits of such IDs
+            ("HJV_API_LIMIT_NEW_ID", "3/600,5/86400".to_owned()),
+            ("HJV_API_LIMIT_SSO_NEW", "100/60".to_owned()),
             ("HJV_API_TRUST_PUBKEYS", trust_pubkeys()),
             ("HJV_API_COMMAND_PUBKEYS", command_pubkeys()),
         ]

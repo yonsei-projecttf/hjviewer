@@ -5,12 +5,15 @@
 //! operator blocks keeps its account out (its tokens and account keys end at once, its PCs get
 //! lists without keys, its next login is refused after the SSO) until it is unblocked, also when
 //! the block comes while a login runs; `allow remove` blocks; an account deleted takes its entry
-//! with it unless the entry is blocked; list mode admits the IDs on the list only, as D3 did.
+//! with it unless the entry is blocked; list mode admits the IDs on the list only, as D3 did. A
+//! block holds for every form of the person's ID the SSO names, and in open mode an ID nobody
+//! registered has lower limits of its own (HJV_API_LIMIT_NEW_ID, HJV_API_LIMIT_SSO_NEW).
 
 mod common;
 
 use common::*;
 use hjv_api::{
+    check::{self, Health, Probe},
     db::{self, Listing},
     limits::{SCOPE_ID, SCOPE_OK_ID},
     login::{FAILURE_TEXT, TEXT_BLOCKED},
@@ -33,6 +36,19 @@ async fn listing(h: &Harness, id: &str) -> Listing {
 async fn entries(h: &Harness) -> Vec<db::ListEntry> {
     h.state.db.call(|c| db::allowlist(c)).await.unwrap()
 }
+
+async fn has_account(h: &Harness, id: &str) -> bool {
+    let key = hjv_api::util::login_key(id);
+    h.state
+        .db
+        .call(move |c| db::account_by_key(c, &key))
+        .await
+        .unwrap()
+        .is_some()
+}
+
+/// The fake SSO's other username of HONG's person: it names HONG's perslNo for it.
+const ALIAS: (&str, &str) = ("hong-alias", "hjv-test-pass-1");
 
 #[tokio::test]
 async fn an_id_never_imported_logs_in_and_is_registered() {
@@ -429,4 +445,280 @@ async fn list_mode_admits_the_ids_on_the_list_only() {
             "login:blocked"
         ]
     );
+}
+
+#[tokio::test]
+async fn the_tag_of_an_entry_without_an_account_names_it() {
+    // the harness imports HONG, KIM and LEE; LEE never logged in, so only the entry has the tag
+    let h = Harness::start().await;
+    let lee = h.account_tag(LEE.0);
+    let out = h
+        .admin(&["block", &format!("tag:{lee}")], false, None)
+        .await
+        .unwrap();
+    assert!(
+        out.starts_with("blocked: 1 blocked (0 of them not on the allowlist before), 0 blocked already, 0 tokens and 0 account keys revoked;"),
+        "{out}"
+    );
+    assert_eq!(listing(&h, LEE.0).await, Listing::Blocked);
+    let a = h
+        .login(&h.login_body(LEE.0, LEE.1, None), "10.41.0.1")
+        .await;
+    assert_eq!(a.status, 403, "{}", a.text);
+    let out = h
+        .admin(&["unblock", &format!("tag:{lee}")], false, None)
+        .await
+        .unwrap();
+    assert!(out.starts_with("unblocked: "), "{out}");
+    h.login_ok(LEE, None).await;
+    // an account blocked, then deleted: its entry stays blocked, and its tag still names it
+    h.login_ok(KIM, None).await;
+    let kim = format!("tag:{}", h.account_tag(KIM.0));
+    h.admin(&["block", &kim], false, None).await.unwrap();
+    h.admin(&["user", "delete", &kim], false, None)
+        .await
+        .unwrap();
+    assert!(!has_account(&h, KIM.0).await);
+    let out = h.admin(&["block", &kim], false, None).await.unwrap();
+    assert!(out.starts_with("blocked already (no change): "), "{out}");
+    let out = h.admin(&["unblock", &kim], false, None).await.unwrap();
+    assert!(out.starts_with("unblocked: "), "{out}");
+    h.login_ok(KIM, None).await;
+}
+
+/// A second form of a person's portal ID (the fake SSO's `hong-alias`, for which it names HONG's
+/// perslNo; whether the real SSO has such forms is not known, design v2 §4-1): a block holds for
+/// the person whichever form was blocked and whichever is typed, also after the account of one
+/// form is deleted.
+#[tokio::test]
+async fn a_block_holds_for_each_form_of_the_persons_id() {
+    // HONG was never imported
+    let h = Harness::with(Options {
+        allow: vec![KIM.0],
+        ..Default::default()
+    })
+    .await;
+    // the perslNo form blocked: the other form is refused after the SSO, and gets nothing
+    h.login_ok(HONG, None).await;
+    h.admin(&["block", HONG.0], false, None).await.unwrap();
+    let a = h
+        .login(&h.login_body(ALIAS.0, ALIAS.1, None), "10.40.0.1")
+        .await;
+    assert_eq!(
+        (a.status, &a.json),
+        (403, &json!({ "error": TEXT_BLOCKED, "hjv": "blocked" })),
+        "{}",
+        a.text
+    );
+    assert!(!has_account(&h, ALIAS.0).await);
+    assert_eq!(listing(&h, ALIAS.0).await, Listing::Absent);
+    assert_eq!(
+        h.admin(&["unblock", HONG.0], false, None).await.unwrap(),
+        "unblocked: the account may log in again (its devices log in again)"
+    );
+    // the person logs in with both forms (two accounts, the same perslNo in both), and the
+    // account of the other form is blocked by its tag: both forms are blocked, both logged out
+    let alias_token = h.login_ok(ALIAS, None).await;
+    let hong_token = h.login_ok(HONG, None).await;
+    let alias = format!("tag:{}", h.account_tag(ALIAS.0));
+    let out = h.admin(&["block", &alias], false, None).await.unwrap();
+    assert!(
+        out.starts_with("blocked: 2 blocked (0 of them not on the allowlist before; 1 of them another ID the SSO names for the same person), 0 blocked already, 2 tokens and 2 account keys revoked;"),
+        "{out}"
+    );
+    for token in [&alias_token, &hong_token] {
+        assert_eq!(h.get("/api/users", token).await.status, 401);
+    }
+    let a = h
+        .login(&h.login_body(HONG.0, HONG.1, None), "10.40.0.2")
+        .await;
+    assert_eq!(a.status, 403, "{}", a.text);
+    // the account of the other form deleted: the person stays blocked in either form
+    let out = h
+        .admin(&["user", "delete", &alias], false, None)
+        .await
+        .unwrap();
+    assert!(
+        out.ends_with("(its allowlist entry stays blocked)"),
+        "{out}"
+    );
+    for (n, (id, password)) in [HONG, ALIAS].into_iter().enumerate() {
+        let a = h
+            .login(&h.login_body(id, password, None), &format!("10.40.1.{n}"))
+            .await;
+        assert_eq!(a.status, 403, "{id}: {}", a.text);
+    }
+    assert!(!has_account(&h, ALIAS.0).await);
+    // unblock through HONG lifts what the server still knows together (HONG's account); the
+    // entry of the deleted account is named on its own
+    let out = h.admin(&["unblock", HONG.0], false, None).await.unwrap();
+    assert!(out.starts_with("unblocked: "), "{out}");
+    h.login_ok(HONG, None).await;
+    let a = h
+        .login(&h.login_body(ALIAS.0, ALIAS.1, None), "10.40.2.1")
+        .await;
+    assert_eq!(a.status, 403, "{}", a.text);
+    h.admin(&["unblock", &alias], false, None).await.unwrap();
+    h.login_ok(ALIAS, None).await;
+    // blocking the perslNo form takes the account of the other form with it, and unblocking
+    // either lifts both
+    let out = h.admin(&["block", HONG.0], false, None).await.unwrap();
+    assert!(
+        out.starts_with("blocked: 2 blocked (0 of them not on the allowlist before; 1 of them another ID the SSO names for the same person),"),
+        "{out}"
+    );
+    assert_eq!(
+        h.admin(&["unblock", &alias], false, None).await.unwrap(),
+        "unblocked: the account may log in again (its devices log in again); 2 entries, the IDs the SSO names for the same person"
+    );
+    h.login_ok(HONG, None).await;
+}
+
+/// In open mode, where any portal ID reaches the SSO, an ID nobody registered fails at most
+/// HJV_API_LIMIT_NEW_ID times, and all such IDs together call the SSO at most HJV_API_LIMIT_SSO_NEW
+/// times, so that the login is no way to try passwords on every Yonsei account or to lock it. The
+/// IDs on the list keep their limits and their SSO calls, an import puts an ID among them, and the
+/// five-minute check reports the window full. List mode keeps D3's limits.
+#[tokio::test]
+async fn ids_nobody_registered_have_lower_limits_in_open_mode() {
+    let h = Harness::with(Options {
+        allow: vec![KIM.0, LEE.0],
+        vars: vec![
+            ("HJV_API_LIMIT_NEW_ID", "2/86400".into()),
+            ("HJV_API_LIMIT_SSO_NEW", "8/3600".into()),
+        ],
+        ..Default::default()
+    })
+    .await;
+    // an ID nobody registered: two wrong passwords reach the SSO, the third does not
+    let stranger = "2026999999";
+    for n in 0..3 {
+        let a = h
+            .login(
+                &h.login_body(stranger, "wrong", None),
+                &format!("10.42.0.{n}"),
+            )
+            .await;
+        assert_eq!(
+            (a.status, &a.json),
+            (401, &json!({ "error": FAILURE_TEXT }))
+        );
+    }
+    assert_eq!(h.sso.token_calls(), 2);
+    let tag = h.account_tag(stranger);
+    assert_eq!(h.counted(SCOPE_ID, tag.clone()).await, 2);
+    let logs = hjv_api::log::captured().join("\n");
+    assert!(
+        logs.contains(&format!(
+            "login: ID limit reached (acct={tag}, an ID not on the allowlist)"
+        )),
+        "{logs}"
+    );
+    // the operator's unlock clears its counters and its share of the SSO calls (2 of 8)
+    assert_eq!(
+        h.admin(&["unlock", &format!("tag:{tag}")], false, None)
+            .await
+            .unwrap(),
+        "cleared 2 counted login attempts and 2 SSO calls of an ID not on the allowlist"
+    );
+    let a = h
+        .login(&h.login_body(stranger, "wrong", None), "10.42.0.9")
+        .await;
+    assert_eq!(a.status, 401);
+    assert_eq!(h.sso.token_calls(), 3);
+    // an ID on the list keeps HJV_API_LIMIT_ID (3 in ten minutes)
+    for n in 0..4 {
+        let a = h
+            .login(&h.login_body(KIM.0, "wrong", None), &format!("10.42.1.{n}"))
+            .await;
+        assert_eq!(a.status, 401);
+    }
+    assert_eq!(h.sso.token_calls(), 6);
+    // the IDs nobody registered call the SSO 8 times an hour together: 1 above, 7 here
+    for n in 0..7 {
+        let a = h
+            .login(
+                &h.login_body(&format!("2026888{n:03}"), "wrong", None),
+                &format!("10.42.2.{n}"),
+            )
+            .await;
+        assert_eq!(a.status, 401);
+    }
+    assert_eq!(h.sso.token_calls(), 13);
+    assert_eq!(h.state.sso_calls_new.last_full(), None);
+    // then a first login fails like a wrong password, without an SSO call, and the ID's
+    // failures do not count
+    let a = h
+        .login(&h.login_body(HONG.0, HONG.1, None), "10.42.3.1")
+        .await;
+    assert_eq!(
+        (a.status, &a.json),
+        (401, &json!({ "error": FAILURE_TEXT }))
+    );
+    assert_eq!(h.sso.token_calls(), 13);
+    assert_eq!(h.counted(SCOPE_ID, h.account_tag(HONG.0)).await, 0);
+    assert_eq!(listing(&h, HONG.0).await, Listing::Absent);
+    assert_eq!(h.results().await.last().unwrap(), "login:limited-sso-new");
+    let logs = hjv_api::log::captured().join("\n");
+    assert!(
+        logs.contains("login: SSO call limit of the portal IDs not on the allowlist reached (HJV_API_LIMIT_SSO_NEW)"),
+        "{logs}"
+    );
+    // the people on the list do not feel it
+    h.login_ok(LEE, None).await;
+    // the five-minute check reports it
+    let health: Health =
+        serde_json::from_str(&h.admin(&["health"], false, None).await.unwrap()).unwrap();
+    assert!(
+        health
+            .sso_new_full
+            .is_some_and(|ago| (0..=2).contains(&ago)),
+        "{health:?}"
+    );
+    let found = check::evaluate(&Probe::Answered(1), &Ok(health));
+    assert_eq!(
+        found.iter().map(|f| f.code).collect::<Vec<_>>(),
+        ["sso_new"],
+        "{found:?}"
+    );
+    // an ID imported ahead is not held by those limits
+    h.admin(&["allow", "import"], false, Some("2026000001\n"))
+        .await
+        .unwrap();
+    h.login_ok(HONG, None).await;
+    assert_eq!(h.sso.token_calls(), 15);
+
+    // list mode: an ID off the list fails without an SSO call under HJV_API_LIMIT_ID, as in D3
+    let h = Harness::with(Options {
+        allow: vec![KIM.0],
+        vars: vec![
+            ("HJV_API_LOGIN", "list".into()),
+            ("HJV_API_LIMIT_NEW_ID", "1/86400".into()),
+            ("HJV_API_LIMIT_SSO_NEW", "1/3600".into()),
+        ],
+        ..Default::default()
+    })
+    .await;
+    for n in 0..4 {
+        let a = h
+            .login(
+                &h.login_body(stranger, "wrong", None),
+                &format!("10.43.0.{n}"),
+            )
+            .await;
+        assert_eq!(a.status, 401);
+    }
+    assert_eq!(
+        h.results().await,
+        vec![
+            "login:not-allowed",
+            "login:not-allowed",
+            "login:not-allowed",
+            "login:limited-id"
+        ]
+    );
+    assert_eq!(h.sso.token_calls(), 0);
+    h.login_ok(KIM, None).await;
+    h.login_ok(KIM, None).await;
+    assert_eq!(h.state.sso_calls_new.last_full(), None);
 }

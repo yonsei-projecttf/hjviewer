@@ -671,6 +671,7 @@ async fn the_check_catches_a_stopped_socket_and_no_syncs() {
         hbbs: "ok".into(),
         sso: None,
         relays: None,
+        sso_new_full: None,
     };
     fake_admin(&admin, no_syncs.clone()).await;
     let check_args = || {

@@ -39,6 +39,8 @@ pub struct AppState {
     pub second_factor: Arc<dyn SecondFactor>,
     /// SSO calls of all accounts (v2 §9-2 step 7)
     pub sso_calls: GlobalLimiter,
+    /// SSO calls of the portal IDs not on the allowlist, in open mode (HJV_API_LIMIT_SSO_NEW)
+    pub sso_calls_new: GlobalLimiter,
     /// the pause of SSO calls while the SSO refuses this server or keeps failing
     pub sso_breaker: Breaker,
     /// how long SSO calls took lately (the failure delay follows it)
@@ -114,6 +116,7 @@ impl AppState {
             db: Db::new(conn),
             second_factor,
             sso_calls: GlobalLimiter::new(config.limit_sso),
+            sso_calls_new: GlobalLimiter::new(config.limit_sso_new),
             sso_breaker: Breaker::default(),
             sso_latency: Latency::default(),
             failure_records: RecordBudget::default(),
