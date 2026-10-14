@@ -712,6 +712,18 @@ pub fn listing(c: &Connection, key: &str) -> rusqlite::Result<Listing> {
     })
 }
 
+/// Where a login that the SSO accepted stands with the allowlist: blocked when the entry of the ID
+/// typed (`key`) or that of the ID the SSO names for the person (`persl_key`, its perslNo
+/// case-folded) is blocked, so that a block holds whatever form of the portal ID the SSO takes;
+/// else as the typed ID's entry.
+pub fn login_listing(c: &Connection, key: &str, persl_key: &str) -> rusqlite::Result<Listing> {
+    let typed = listing(c, key)?;
+    if typed != Listing::Blocked && persl_key != key && listing(c, persl_key)? == Listing::Blocked {
+        return Ok(Listing::Blocked);
+    }
+    Ok(typed)
+}
+
 /// What the allowlist says to a login the SSO accepted ([`admit_login`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Admission {
@@ -726,16 +738,18 @@ pub enum Admission {
 }
 
 /// Admits a login the SSO accepted, inside the login's transaction (login.rs): an ID on the list
-/// goes on, a blocked one is refused, and one not on the list is put on it (`source` 'login')
-/// when `register` (HJV_API_LOGIN=open), else refused. An account that exists without an entry
-/// and comes back on the list this way changes its PCs' trust lists, as with [`allow_add`].
+/// goes on, a blocked one is refused (also when the ID the SSO names is blocked:
+/// [`login_listing`]), and one not on the list is put on it (`source` 'login') when `register`
+/// (HJV_API_LOGIN=open), else refused. An account that exists without an entry and comes back on
+/// the list this way changes its PCs' trust lists, as with [`allow_add`].
 pub fn admit_login(
     c: &Connection,
     key: &str,
+    persl_key: &str,
     register: bool,
     at: i64,
 ) -> rusqlite::Result<Admission> {
-    match listing(c, key)? {
+    match login_listing(c, key, persl_key)? {
         Listing::Registered => Ok(Admission::Listed),
         Listing::Blocked => Ok(Admission::Blocked),
         Listing::Absent if !register => Ok(Admission::Refused),
@@ -4575,10 +4589,13 @@ mod tests {
         let mut c = conn();
         // open mode: an ID not on the list is put on it, as a login's
         assert_eq!(
-            admit_login(&c, "new", true, 5).unwrap(),
+            admit_login(&c, "new", "new", true, 5).unwrap(),
             Admission::Registered
         );
-        assert_eq!(admit_login(&c, "new", true, 6).unwrap(), Admission::Listed);
+        assert_eq!(
+            admit_login(&c, "new", "new", true, 6).unwrap(),
+            Admission::Listed
+        );
         assert_eq!(
             allowlist(&c).unwrap(),
             vec![ListEntry {
@@ -4591,7 +4608,7 @@ mod tests {
         assert!(allowed(&c, "new").unwrap());
         // list mode: no login puts an ID on the list
         assert_eq!(
-            admit_login(&c, "other", false, 7).unwrap(),
+            admit_login(&c, "other", "other", false, 7).unwrap(),
             Admission::Refused
         );
         assert_eq!(listing(&c, "other").unwrap(), Listing::Absent);
@@ -4600,16 +4617,30 @@ mod tests {
         allow_add(&mut c, &["new".to_owned()], 8).unwrap();
         for register in [true, false] {
             assert_eq!(
-                admit_login(&c, "new", register, 9).unwrap(),
+                admit_login(&c, "new", "new", register, 9).unwrap(),
                 Admission::Blocked
             );
         }
+        // the ID the SSO names for the person counts too: typed in another form, still blocked
+        assert_eq!(
+            admit_login(&c, "other-form", "new", true, 9).unwrap(),
+            Admission::Blocked
+        );
+        assert_eq!(listing(&c, "other-form").unwrap(), Listing::Absent);
+        assert_eq!(
+            login_listing(&c, "other-form", "new").unwrap(),
+            Listing::Blocked
+        );
+        assert_eq!(
+            login_listing(&c, "other", "unknown").unwrap(),
+            Listing::Absent
+        );
         // no account had those IDs: no PC's list changed
         assert_eq!(change_serial(&c).unwrap(), 0);
         // an account without an entry comes back on the list: its PCs' lists change
         upsert_account(&c, "acct", "ACCT", "", 1).unwrap();
         assert_eq!(
-            admit_login(&c, "acct", true, 10).unwrap(),
+            admit_login(&c, "acct", "acct", true, 10).unwrap(),
             Admission::Registered
         );
         assert_eq!(change_serial(&c).unwrap(), 1);
@@ -4785,7 +4816,7 @@ mod tests {
         allow_block(&mut c, &["gone".to_owned()], t).unwrap();
         // on the list, its PC not seen for 200 days: the PC goes, then the account with its entry
         let idle = upsert_account(&c, "idle", "IDLE", "", old).unwrap();
-        admit_login(&c, "idle", true, old).unwrap();
+        admit_login(&c, "idle", "idle", true, old).unwrap();
         bind(&c, idle, "3", &[1; 32], "windows", "PC", t - 200 * DAY).unwrap();
         // entries without an account: imported over a year ago and never used (goes), imported
         // yesterday (stays), blocked (stays until unblocked)

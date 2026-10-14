@@ -34,7 +34,8 @@
 //!     account's active keys the least recently used one is logged out (keys.rs): a login is not
 //!     refused for it;
 //! 12. the allowlist once more (schema 5), before anything is looked up or written for the
-//!     account and again inside the login's transaction: a blocked account gets 403
+//!     account and again inside the login's transaction: a blocked account (the entry of the ID
+//!     typed, or of the ID the SSO names for the person, its perslNo) gets 403
 //!     [`TEXT_BLOCKED`] with `"hjv":"blocked"`, which only someone who knows its password sees
 //!     (its successes count, its failures are taken back); in open mode an ID not on the list is
 //!     put on it (`source` 'login', one journal line with the account's tag), in list mode it
@@ -1299,12 +1300,17 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
                 .await;
         }
     };
-    // 12. the allowlist once more: a blocked account goes no further, nor (list mode) one whose
-    // entry went since step 7; the transaction below asks again
+    // 12. the allowlist once more: a blocked account goes no further (the ID typed or the one
+    // the SSO names), nor (list mode) one whose entry went since step 7; the transaction below
+    // asks again
     let open = state.config.login == LoginMode::Open;
+    let persl_key = login_key(&user.persl_no);
     let listing = {
-        let key = key.to_owned();
-        state.db.call(move |c| db::listing(c, &key)).await
+        let (key, persl_key) = (key.to_owned(), persl_key.clone());
+        state
+            .db
+            .call(move |c| db::login_listing(c, &key, &persl_key))
+            .await
     };
     match listing {
         Ok(Listing::Registered) => {}
@@ -1352,7 +1358,7 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
         .call(move |c| {
             let tx = c.transaction()?;
             // step 12 within the transaction: nothing is written for a refused login
-            let registered = match db::admit_login(&tx, &key, open, at)? {
+            let registered = match db::admit_login(&tx, &key, &persl_key, open, at)? {
                 Admission::Listed => false,
                 Admission::Registered => true,
                 Admission::Blocked => return Ok(Written::Blocked),

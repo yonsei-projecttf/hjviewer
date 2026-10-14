@@ -279,9 +279,11 @@ allowlist, so the way to keep an account out is a block, not taking its ID off t
 login is told so (`이 계정은 관리자가 HJViewer 사용을 막았습니다. …`) only after the SSO accepted its
 password, so that the answer tells nobody else who is blocked; its successes count against
 `HJV_API_LIMIT_OK_ID`, so a known password cannot keep calling the SSO. An import does not lift a
-block (an old file imported again lets nobody back in); only `unblock` does. Point with `tag:<tag>`
-from `users` or `allow list`; an ID that never logged in has no tag known to the operator, so it
-is blocked through a file (`allow remove <file>`).
+block (an old file imported again lets nobody back in); only `unblock` does. A block holds for the
+person: a login is refused when the entry of the ID typed or that of the ID the SSO names for the
+person (its perslNo) is blocked. Point with `tag:<tag>` from `users` or `allow list`; an ID that
+never logged in has no tag known to the operator, so it is blocked through a file (`allow remove
+<file>`).
 
 `sudo hjv-api selfcheck --env-file /etc/hjviewer/hjviewer-api.env` runs the same check outside the
 service, by hand (it compares the list key in use only where it can read the credentials:

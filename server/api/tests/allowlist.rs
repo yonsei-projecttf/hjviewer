@@ -378,7 +378,7 @@ async fn list_mode_admits_the_ids_on_the_list_only() {
     // an entry that a login made before the switch to list mode
     h.state
         .db
-        .call(|c| db::admit_login(c, "y9001", true, hjv_api::util::now()))
+        .call(|c| db::admit_login(c, "y9001", "y9001", true, hjv_api::util::now()))
         .await
         .unwrap();
     // an ID off the list: a wrong password's failure, no SSO call, nothing put on the list
