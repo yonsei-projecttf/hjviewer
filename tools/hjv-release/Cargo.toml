@@ -1,0 +1,37 @@
+[package]
+name = "hjv-release"
+version = "0.1.0"
+edition = "2021"
+description = "Makes, signs and checks HJViewer's signed version policy: the update keys, release provenance, the publish directory and the server's minimum-version settings"
+license = "AGPL-3.0-only"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+getrandom = "0.2"
+hkdf = "0.12"
+hmac = "0.12"
+libc = "0.2"
+scrypt = { version = "0.11", default-features = false }
+serde = "1"
+serde_json = "1"
+sha2 = "0.10"
+zeroize = "1"
+
+[dev-dependencies]
+# The tests make what no honest key gives: a public key outside the prime-order subgroup, a
+# signature with a small-order R. That takes the curve's arithmetic, which the tool itself never
+# touches (ed25519-dalek brings this crate along already).
+curve25519-dalek = { version = "4", default-features = false, features = ["digest"] }
+
+# The tests make and open key files with age's work factor (scrypt, 256 MiB): the dependencies
+# are optimized in every profile, or one such test would take a minute.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+panic = "abort"
+
+[workspace]

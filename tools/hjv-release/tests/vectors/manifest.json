@@ -1,0 +1,2300 @@
+{
+  "about": "Test vectors of HJViewer's signed version policy (build/minver/trust-rules/spec.md, 1.6.0). README.md explains the fields. Made by generate.py from the model (model.py); checked by generate.py --check and by tools/hjv-release/tests/vectors.rs.",
+  "model_sha256": "fb864c1df4b0e1f034442fbdba377ff15e6a6422b59028220317fe5bbfdc8af5",
+  "server": "rd.example.com",
+  "domains": {
+    "policy": "hjv-version-v1",
+    "root_declaration": "hjv-version-root-v1"
+  },
+  "key_file": {
+    "file": "update-keys.env",
+    "HJV_UPDATE_PUBKEY": "1:JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=,2:zRSzf5VulTGU/3+3Oz2B3MVh1hp1OAlLfD4aZD7l86o=",
+    "HJV_UPDATE_ROOT_PUBKEY": "101:T9CZzNR9eJPf6ewkQU7LDZtUICMqrTDZHEZb4zy+ZcQ=,102:E9mQinCSWZLtVGAH0n9Q2mi6chfvYqw8ynhFKf8QRxw=",
+    "HJV_POLICY_FLOOR": "1:0",
+    "fingerprint_sha256": "3d5fdc2ae12abd2dac598179aff56bdf121f60ea4089ba01dbef11f22399fb8b"
+  },
+  "test_keys": [
+    {
+      "name": "signing-1",
+      "role": "signing",
+      "id": 1,
+      "seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "public": "1:JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+      "in_the_key_file": true,
+      "about": "signing key 1 of the vectors (seed 40 41 .. 5f)"
+    },
+    {
+      "name": "signing-2",
+      "role": "signing",
+      "id": 2,
+      "seed_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "public": "2:zRSzf5VulTGU/3+3Oz2B3MVh1hp1OAlLfD4aZD7l86o=",
+      "in_the_key_file": true,
+      "about": "signing key 2 of the vectors (seed 80 81 .. 9f)"
+    },
+    {
+      "name": "root-101",
+      "role": "root",
+      "id": 101,
+      "seed_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "public": "101:T9CZzNR9eJPf6ewkQU7LDZtUICMqrTDZHEZb4zy+ZcQ=",
+      "in_the_key_file": true,
+      "about": "root key 101 of the vectors (seed a0 a1 .. bf)"
+    },
+    {
+      "name": "root-102",
+      "role": "root",
+      "id": 102,
+      "seed_hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "public": "102:E9mQinCSWZLtVGAH0n9Q2mi6chfvYqw8ynhFKf8QRxw=",
+      "in_the_key_file": true,
+      "about": "root key 102 of the vectors (seed e0 e1 .. ff)"
+    },
+    {
+      "name": "signing-3",
+      "role": "signing",
+      "id": 3,
+      "seed_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+      "public": "3:3eO8zsfzpmoRFfRdcg9NwTXDrnxOItyjj9se/WpJX/g=",
+      "in_the_key_file": false,
+      "about": "a signing key no vector build trusts (seed c0 c1 .. df)"
+    },
+    {
+      "name": "root-103",
+      "role": "root",
+      "id": 103,
+      "seed_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "public": "103:d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+      "in_the_key_file": false,
+      "about": "a root key no vector build trusts (seed 10 11 .. 2f)"
+    }
+  ],
+  "root_declaration": {
+    "file": "root-declaration-e2.json",
+    "p": "{\"v\":1,\"server\":\"rd.example.com\",\"epoch\":2,\"revoked\":[1],\"issued\":\"2026-10-06T03:00:00Z\",\"base\":{\"windows\":{\"min\":\"1.6.0\",\"latest\":\"1.6.1\",\"grace_until\":\"2026-10-16T15:00:00Z\",\"grace_min\":\"1.5.0\"},\"android\":{\"min\":\"1.6.0\",\"latest\":\"1.6.1\",\"grace_until\":\"2026-10-16T15:00:00Z\",\"grace_min\":\"1.5.0\"},\"android_play\":{\"min\":\"1.6.0\",\"latest\":\"1.6.1\"},\"ios\":{\"min\":\"1.6.0\",\"latest\":\"1.6.0\",\"grace_until\":\"2026-10-16T15:00:00Z\",\"grace_min\":\"1.5.0\"}}}",
+    "signed_bytes_sha256": "0e53fbdacbef5e1b4ba64e215b62992436a711ddbdeff322d01fa778302c6bdb"
+  },
+  "covers": {
+    "file": "covers.json",
+    "about": "COVERS(new, old) of spec 2-3 for every pair of 16 entries"
+  },
+  "key_file_example": {
+    "file": "keyfile/signing-1.age",
+    "passphrase": "test passphrase, not a secret",
+    "made_by": "the age crate 0.11.5 (scrypt work factor 10), not by this tool",
+    "holds": "test key signing-1"
+  },
+  "research_vector": {
+    "file": "research/version-policy.json",
+    "note": "the first draft of the format (build/minver/policy-distribution): the signature is good for signing key 1, the policy text has no epoch and is refused as a policy"
+  },
+  "cases": [
+    {
+      "name": "e1-s1",
+      "file": "accepted/e1-s1.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "c63c8a2bf3f0d52b75c5b84769973278d1b47bc2065afedc86894fbded23d8ca",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the first policy, by signing key 1: 1.6.0 is out, nothing is enforced"
+    },
+    {
+      "name": "e1-s2",
+      "file": "accepted/e1-s2.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 2,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "ddf9900a5a041223f01792e70fabbb56691ae0826524e4d6db8fa93d5930df72",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "every min raised to 1.6.0 until 10-16 with grace_min 1.5.0 (spec 5-2)"
+    },
+    {
+      "name": "e1-s3",
+      "file": "accepted/e1-s3.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 3,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "0610bba0829ffed94884b0a4210d442871e3595dfdc262a95507a3df7b543293",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "by signing key 2: 1.6.1 with packages, an unattended install date, the Google Play entry"
+    },
+    {
+      "name": "e2-s1",
+      "file": "accepted/e2-s1.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": "7172ba7972caa03326a0a64b405278a691917bcf21e1da299d398f70fca80860",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the declaration of epoch 2 by root key 101 revokes signing key 1; its base is e1-s3's requirements"
+    },
+    {
+      "name": "e2-s2",
+      "file": "accepted/e2-s2.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": "996f61e8e53fea790fb078a66b5aa7f83dd760837940b8bbd49256e9a3933f9b",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the same declaration goes along; auto_install_after is removed (the emergency stop is no relaxation)"
+    },
+    {
+      "name": "e3-s1-relax",
+      "file": "accepted/e3-s1-relax.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 3,
+        "seq": 1,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "8d6931c73d8495ebecea9025f418dc7f69fdc4a43cf046760fdb1fa2ae1fa3bd",
+        "root_k": 101,
+        "p_sha256": "a2a44a7e851ff76df621ecb0d20777b916432d857d2426adaba84a4dab1c1d2d",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the declaration of epoch 3 relaxes: every min 1.5.0 without deadlines (spec 5-12)"
+    },
+    {
+      "name": "e3-s2",
+      "file": "accepted/e3-s2.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json",
+        "accepted/e3-s1-relax.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 3,
+        "seq": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "8d6931c73d8495ebecea9025f418dc7f69fdc4a43cf046760fdb1fa2ae1fa3bd",
+        "root_k": 101,
+        "p_sha256": "cffc34fc306a6c5d3b100de82461d1e165aa3537af621ef77481959b2c9d28d2",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "a signing key raises min again after the relaxation, grace_min 1.5.0"
+    },
+    {
+      "name": "e1-s2-again",
+      "file": "accepted/e1-s2.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "unchanged",
+      "state_after": {
+        "epoch": 1,
+        "seq": 2,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "ddf9900a5a041223f01792e70fabbb56691ae0826524e4d6db8fa93d5930df72",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the same position with the same bytes: the app keeps what it has (Unchanged)"
+    },
+    {
+      "name": "fresh-install-e2-s2",
+      "file": "accepted/e2-s2.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": "996f61e8e53fea790fb078a66b5aa7f83dd760837940b8bbd49256e9a3933f9b",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "a fresh install takes the current policy and its declaration"
+    },
+    {
+      "name": "e3-s2-missed-the-relaxation",
+      "file": "accepted/e3-s2.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 3,
+        "seq": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "8d6931c73d8495ebecea9025f418dc7f69fdc4a43cf046760fdb1fa2ae1fa3bd",
+        "root_k": 101,
+        "p_sha256": "cffc34fc306a6c5d3b100de82461d1e165aa3537af621ef77481959b2c9d28d2",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "an app that was off during the relaxation takes the declaration first and compares e3-s2 with its base (problems (다), (바))"
+    },
+    {
+      "name": "floor-exact",
+      "file": "accepted/e2-s2.json",
+      "after": [],
+      "floor": "2:2",
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": "996f61e8e53fea790fb078a66b5aa7f83dd760837940b8bbd49256e9a3933f9b",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "a build whose floor is 2:2 takes the policy at 2:2"
+    },
+    {
+      "name": "seq-step-1000",
+      "file": "accepted/seq-step-1000.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 1001,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "ec530c2ff154ce54a88812f7a7894ca67703fa3dad7af4ca03d583cdfbceb7d8",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "a policy 1000 above the stored seq"
+    },
+    {
+      "name": "fresh-install-seq-1000",
+      "file": "accepted/fresh-install-seq-1000.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 1000,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "acd665f53399d023b8df9c60894913c0e9aaf6d108a90125777860c2071c32a2",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "a fresh install with floor 1:0 takes seq 1000"
+    },
+    {
+      "name": "stop-auto-install",
+      "file": "accepted/stop-auto-install.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 4,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "30a9804ee0a84bbba510b199c4c8773b5d405553dd519e97f066d3120ca56af1",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "removing auto_install_after is the emergency stop, not a relaxation"
+    },
+    {
+      "name": "delay-auto-install",
+      "file": "accepted/delay-auto-install.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 4,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "205f1a17e368c5196f2b5c679a84fe64a95b9348d69f9b17f7865358d1bce981",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "delaying auto_install_after is not a relaxation"
+    },
+    {
+      "name": "grace-earlier",
+      "file": "accepted/grace-earlier.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 3,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "ed09738d8a5d6e55e21bd944c9221251ef90da7a273d78f625daab27d2fa33f6",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "an earlier deadline asks more"
+    },
+    {
+      "name": "grace-removed",
+      "file": "accepted/grace-removed.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 3,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "7f295f75b281cba36332e4a825491782d080f55eb0d7f6a88e9ea2362594d18d",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "no deadline at all asks more"
+    },
+    {
+      "name": "size-at-the-limit",
+      "file": "accepted/size-at-the-limit.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 2,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "300af8a90d9c6feedb320a5c0206f1a320d2bde8334b6088661e502c375a71d6",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "an envelope file of exactly 16384 bytes, its line feed counted"
+    },
+    {
+      "name": "relax-min-lowered",
+      "file": "refused/relax-min-lowered.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "a signing key lowers a min"
+    },
+    {
+      "name": "relax-min-lowered-root",
+      "file": "refused/relax-min-lowered-root.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "the relaxation signed by root key 101: a root key relaxes by declaration only"
+    },
+    {
+      "name": "relax-min-lowered-by-declaration",
+      "file": "accepted/relax-min-lowered-by-declaration.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": "ebae56626c9b14afa1fe1ff7d5a45330d8686b7e032533fce17b043eb5edc4b4",
+        "root_k": 101,
+        "p_sha256": "ad899a17a8624e01a349574e5e59865f8e0f2da89079c089cb00b2efde5d450c",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the relaxed policy by key 2 with a declaration of epoch 2 whose base it is"
+    },
+    {
+      "name": "relax-grace-later",
+      "file": "refused/relax-grace-later.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "a signing key puts off the deadline of an unchanged min"
+    },
+    {
+      "name": "relax-grace-later-root",
+      "file": "refused/relax-grace-later-root.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "the relaxation signed by root key 101"
+    },
+    {
+      "name": "relax-grace-later-by-declaration",
+      "file": "accepted/relax-grace-later-by-declaration.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": "0d2451980997c1aecf27d52c09f510f00006fe0325e45f269030a07784ee189e",
+        "root_k": 101,
+        "p_sha256": "bd47b25ea178ef7fd10c7292eaa91f341e28ee314d854e04c103a9e97ee3ecc2",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the relaxed policy by key 2 with a declaration of epoch 2 whose base it is"
+    },
+    {
+      "name": "relax-grace-added",
+      "file": "refused/relax-grace-added.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "a signing key gives an unchanged min a deadline it did not have"
+    },
+    {
+      "name": "relax-grace-added-root",
+      "file": "refused/relax-grace-added-root.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "the relaxation signed by root key 101"
+    },
+    {
+      "name": "relax-grace-added-by-declaration",
+      "file": "accepted/relax-grace-added-by-declaration.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": "1ca62ec8b901c5a4c3025616219a9d10bca13bd99b9879e0b2a5a10611fb26aa",
+        "root_k": 101,
+        "p_sha256": "1eff6f4679e48e4eac4f4bde16f6f80eb29ec7eba44772e00a70ab0424ba6167",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the relaxed policy by key 2 with a declaration of epoch 2 whose base it is"
+    },
+    {
+      "name": "relax-latest-lowered",
+      "file": "refused/relax-latest-lowered.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "a signing key lowers latest"
+    },
+    {
+      "name": "relax-latest-lowered-root",
+      "file": "refused/relax-latest-lowered-root.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "the relaxation signed by root key 101"
+    },
+    {
+      "name": "relax-latest-lowered-by-declaration",
+      "file": "accepted/relax-latest-lowered-by-declaration.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": "6d8739aeb5a580b7c0fad30821cc2dd062b73d5acc31e43b08816867f934182f",
+        "root_k": 101,
+        "p_sha256": "5cc20599e6f281b9f6dac40ddbc9cec0ca2f773dab7352e4ec65535d7bed8aec",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the relaxed policy by key 2 with a declaration of epoch 2 whose base it is"
+    },
+    {
+      "name": "relax-entry-removed",
+      "file": "refused/relax-entry-removed.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "a signing key removes an entry"
+    },
+    {
+      "name": "relax-entry-removed-root",
+      "file": "refused/relax-entry-removed-root.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "the relaxation signed by root key 101"
+    },
+    {
+      "name": "relax-entry-removed-by-declaration",
+      "file": "accepted/relax-entry-removed-by-declaration.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": "51b164510634825b16b98ad36f45d3aa968fc235f91eb64e53c352f741717c40",
+        "root_k": 101,
+        "p_sha256": "51db0c8c6036e390c27b6462710bad9f54fb81eece28225ff818cb9af5fe185c",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the relaxed policy by key 2 with a declaration of epoch 2 whose base it is"
+    },
+    {
+      "name": "tampered-policy",
+      "file": "refused/tampered-policy.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "BadSignature",
+      "why": "one byte of the policy text changed after signing"
+    },
+    {
+      "name": "tampered-signature",
+      "file": "refused/tampered-signature.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "BadSignature",
+      "why": "one character of the signature changed"
+    },
+    {
+      "name": "wake-domain",
+      "file": "refused/wake-domain.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "BadSignature",
+      "why": "signed under the relay's wake-command domain hjv-wake-v1"
+    },
+    {
+      "name": "policy-under-root-domain",
+      "file": "refused/policy-under-root-domain.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "BadSignature",
+      "why": "the policy signed under the declaration's domain"
+    },
+    {
+      "name": "another-key-as-1",
+      "file": "refused/another-key-as-1.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "BadSignature",
+      "why": "signed by another key under the number 1"
+    },
+    {
+      "name": "signature-with-identity-r",
+      "file": "refused/signature-with-identity-r.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "BadSignature",
+      "why": "R is the identity point: the equation of Ed25519 holds, a strict check (libsodium, verify_strict) refuses the small-order R"
+    },
+    {
+      "name": "another-root-as-101",
+      "file": "refused/another-root-as-101.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "BadSignature",
+      "why": "signed by root key 102 under the number 101"
+    },
+    {
+      "name": "unknown-key",
+      "file": "refused/unknown-key.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "UnknownKey",
+      "why": "signed by a key the build does not pin (k = 3)"
+    },
+    {
+      "name": "envelope-v2",
+      "file": "refused/envelope-v2.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Version",
+      "why": "an envelope version the app does not know"
+    },
+    {
+      "name": "policy-v2",
+      "file": "refused/policy-v2.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Version",
+      "why": "a correctly signed policy of version 2"
+    },
+    {
+      "name": "declaration-v2",
+      "file": "refused/declaration-v2.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Version",
+      "why": "a correctly signed declaration of version 2"
+    },
+    {
+      "name": "wrong-server",
+      "file": "refused/wrong-server.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Server",
+      "why": "a correctly signed policy of another server"
+    },
+    {
+      "name": "key-number-zero",
+      "file": "refused/key-number-zero.json",
+      "after": [],
+      "binding": "app",
+      "canonical": false,
+      "expect": "reject",
+      "reason": "Envelope",
+      "why": "the key number 0"
+    },
+    {
+      "name": "key-number-as-text",
+      "file": "refused/key-number-as-text.json",
+      "after": [],
+      "binding": "app",
+      "canonical": false,
+      "expect": "reject",
+      "reason": "Envelope",
+      "why": "the key number as a JSON string"
+    },
+    {
+      "name": "signature-63-bytes",
+      "file": "refused/signature-63-bytes.json",
+      "after": [],
+      "binding": "app",
+      "canonical": false,
+      "expect": "reject",
+      "reason": "Envelope",
+      "why": "a signature of 63 bytes"
+    },
+    {
+      "name": "too-large",
+      "file": "refused/too-large.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "TooLarge",
+      "why": "a correctly signed envelope over 16 KiB"
+    },
+    {
+      "name": "size-one-over",
+      "file": "refused/size-one-over.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "TooLarge",
+      "why": "16385 bytes"
+    },
+    {
+      "name": "declaration-by-signing-key",
+      "file": "refused/declaration-by-signing-key.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootKey",
+      "why": "the declaration is signed by signing key 2 under its own number"
+    },
+    {
+      "name": "declaration-signing-key-as-101",
+      "file": "refused/declaration-signing-key-as-101.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootSignature",
+      "why": "the declaration is signed by signing key 2 under the number 101"
+    },
+    {
+      "name": "declaration-under-policy-domain",
+      "file": "refused/declaration-under-policy-domain.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootSignature",
+      "why": "the declaration is signed by root key 101 under the policy's domain"
+    },
+    {
+      "name": "declaration-tampered",
+      "file": "refused/declaration-tampered.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootSignature",
+      "why": "the declaration's text changed after signing"
+    },
+    {
+      "name": "declaration-revokes-root",
+      "file": "refused/declaration-revokes-root.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootRevokesRoot",
+      "why": "the declaration lists a pinned root key (101) as revoked"
+    },
+    {
+      "name": "declaration-wrong-server",
+      "file": "refused/declaration-wrong-server.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootServer",
+      "why": "a declaration of another server"
+    },
+    {
+      "name": "revoked-key-later",
+      "file": "refused/revoked-key-later.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RevokedKey",
+      "why": "signing key 1's policy of epoch 2 with the declaration that revokes it"
+    },
+    {
+      "name": "old-epoch-after-new",
+      "file": "refused/old-epoch-after-new.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Epoch",
+      "why": "a policy of epoch 1 after the app has moved to epoch 2"
+    },
+    {
+      "name": "signing-key-raises-epoch",
+      "file": "refused/signing-key-raises-epoch.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Epoch",
+      "why": "a policy of epoch 2 without a declaration"
+    },
+    {
+      "name": "root-policy-of-an-old-epoch",
+      "file": "refused/root-policy-of-an-old-epoch.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Epoch",
+      "why": "a root key's policy of epoch 1 after epoch 2: refused for its epoch, whoever signed"
+    },
+    {
+      "name": "seq-lower",
+      "file": "accepted/e1-s1.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Rollback",
+      "why": "an older policy after a newer one"
+    },
+    {
+      "name": "below-floor",
+      "file": "refused/below-floor.json",
+      "after": [],
+      "floor": "1:5",
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Rollback",
+      "why": "a policy at 1:4 for a build whose floor is 1:5"
+    },
+    {
+      "name": "below-floor-by-root",
+      "file": "refused/below-floor-by-root.json",
+      "after": [],
+      "floor": "1:5",
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Rollback",
+      "why": "the same by root key 101: the floor holds for every key"
+    },
+    {
+      "name": "same-position-other-bytes",
+      "file": "refused/same-position-other-bytes.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Fork",
+      "why": "another policy at the position the app holds"
+    },
+    {
+      "name": "seq-step-1001",
+      "file": "refused/seq-step-1001.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Jump",
+      "why": "a policy 1001 above the stored seq"
+    },
+    {
+      "name": "fresh-install-seq-1001",
+      "file": "refused/fresh-install-seq-1001.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Jump",
+      "why": "a fresh install with floor 1:0 does not take seq 1001"
+    },
+    {
+      "name": "min-above-latest",
+      "file": "refused/min-above-latest.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:min",
+      "why": "min 1.6.0 above latest 1.5.0"
+    },
+    {
+      "name": "version-two-numbers",
+      "file": "refused/version-two-numbers.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:min",
+      "why": "\"1.6\": the apps' version comparison reads it as 1.0.60"
+    },
+    {
+      "name": "version-v-prefix",
+      "file": "refused/version-v-prefix.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:min",
+      "why": "\"v1.6.0\""
+    },
+    {
+      "name": "version-three-digit-patch",
+      "file": "refused/version-three-digit-patch.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:latest",
+      "why": "\"1.5.100\": read as 1.6.0"
+    },
+    {
+      "name": "version-four-numbers",
+      "file": "refused/version-four-numbers.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:latest",
+      "why": "\"1.6.0.1\": four numbers"
+    },
+    {
+      "name": "version-plus-build",
+      "file": "refused/version-plus-build.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:latest",
+      "why": "\"1.6.0+1\""
+    },
+    {
+      "name": "issued-not-rfc3339",
+      "file": "refused/issued-not-rfc3339.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:issued",
+      "why": "issued is not of the form 2026-10-02T03:00:00Z"
+    },
+    {
+      "name": "package-file-install-exe",
+      "file": "refused/package-file-install-exe.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:package.file",
+      "why": "a package name ending in install.exe would open the installer"
+    },
+    {
+      "name": "package-file-qs",
+      "file": "refused/package-file-qs.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:package.file",
+      "why": "a package name with -qs- would run as quick support"
+    },
+    {
+      "name": "package-file-path",
+      "file": "refused/package-file-path.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:package.file",
+      "why": "a package name with a path"
+    },
+    {
+      "name": "package-size-zero",
+      "file": "refused/package-size-zero.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:package.size",
+      "why": "a package of 0 bytes"
+    },
+    {
+      "name": "package-size-over-200-mib",
+      "file": "refused/package-size-over-200-mib.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:package.size",
+      "why": "a package over 200 MiB"
+    },
+    {
+      "name": "package-sha256-uppercase",
+      "file": "refused/package-sha256-uppercase.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:package.sha256",
+      "why": "a SHA-256 that is not 64 lowercase hex digits"
+    },
+    {
+      "name": "contact-201-characters",
+      "file": "refused/contact-201-characters.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:contact_ko",
+      "why": "contact_ko over 200 characters"
+    },
+    {
+      "name": "notes-2001-characters",
+      "file": "refused/notes-2001-characters.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:notes_ko",
+      "why": "notes_ko over 2000 characters"
+    },
+    {
+      "name": "text-with-url",
+      "file": "tool/text-with-url.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "21aacfc52f8a496b003bc5684c05df332bd0ff712d8864cf543f761ad3370f22",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "a URL in contact_ko: the tool never signs one; an app shows the text as it is"
+    },
+    {
+      "name": "unknown-field",
+      "file": "tool/unknown-field.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": false,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "b28ccd102d2f53d44f11062eca1259d466c88993459c5c3e2dc9615fad25959e",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "a member the format does not have: the app skips it"
+    },
+    {
+      "name": "not-canonical",
+      "file": "tool/not-canonical.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": false,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "5a9233873ca5b9b8ecaf3dd08551a4ad4a044f7bcd9535e2210dcbd3b20455a7",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "a space the tool does not write"
+    },
+    {
+      "name": "root-seq-jump",
+      "file": "refused/root-seq-jump.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Jump",
+      "why": "a root key's policy 4999 above the stored seq: no special rights (Jump)"
+    },
+    {
+      "name": "root-policy-raises-epoch",
+      "file": "refused/root-policy-raises-epoch.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Epoch",
+      "why": "only a declaration moves the epoch"
+    },
+    {
+      "name": "revoke-in-the-same-epoch",
+      "file": "refused/revoke-in-the-same-epoch.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootFormat",
+      "why": "a declaration of epoch 1: declarations start at epoch 2"
+    },
+    {
+      "name": "min-raised-with-new-grace",
+      "file": "refused/min-raised-with-new-grace.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "a raise with a later deadline whose grace_min lets the old minimum go (problem (가))"
+    },
+    {
+      "name": "new-entry-below-the-minimums",
+      "file": "refused/new-entry-below-the-minimums.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "an android_play entry below its sibling android (problem (나))"
+    },
+    {
+      "name": "revoked-key-with-declaration",
+      "file": "refused/revoked-key-with-declaration.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RevokedKey",
+      "state_after_refusal": {
+        "epoch": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": null,
+        "enforces": "base",
+        "may_install": false
+      },
+      "why": "the policy is signed by the key its own declaration revokes; the declaration is kept"
+    },
+    {
+      "name": "epoch-differs-from-declaration",
+      "file": "refused/epoch-differs-from-declaration.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Epoch",
+      "state_after_refusal": {
+        "epoch": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": null,
+        "enforces": "base",
+        "may_install": false
+      },
+      "why": "a policy of epoch 3 with the declaration of epoch 2; the declaration is kept"
+    },
+    {
+      "name": "good-declaration-bad-policy",
+      "file": "refused/good-declaration-bad-policy.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "BadSignature",
+      "state_after_refusal": {
+        "epoch": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": "c63c8a2bf3f0d52b75c5b84769973278d1b47bc2065afedc86894fbded23d8ca",
+        "enforces": "base",
+        "may_install": false
+      },
+      "then_accept": "accepted/e2-s2.json",
+      "then_outcome": "taken",
+      "why": "a good declaration with a policy part whose signature fails: the declaration is kept, key 1's policy is no longer enforced"
+    },
+    {
+      "name": "below-floor-in-epoch-2",
+      "file": "accepted/e2-s1.json",
+      "after": [],
+      "floor": "2:2",
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Rollback",
+      "state_after_refusal": {
+        "epoch": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": null,
+        "enforces": "base",
+        "may_install": false
+      },
+      "why": "the policy at 2:1 for a build whose floor is 2:2; the declaration is kept"
+    },
+    {
+      "name": "declaration-epoch-back",
+      "file": "accepted/e2-s2.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json",
+        "accepted/e3-s1-relax.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootEpoch",
+      "why": "the declaration of epoch 2 after the app took epoch 3"
+    },
+    {
+      "name": "declaration-of-epoch-1",
+      "file": "refused/declaration-of-epoch-1.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootFormat",
+      "why": "a declaration of epoch 1 (epoch 1 never has one)"
+    },
+    {
+      "name": "duplicate-field",
+      "file": "refused/duplicate-field.json",
+      "after": [],
+      "binding": "app",
+      "canonical": false,
+      "expect": "reject",
+      "reason": "Field:json",
+      "why": "a known member twice is a shape error"
+    },
+    {
+      "name": "relaxation-declaration-alone",
+      "file": "refused/relaxation-declaration-alone.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "BadSignature",
+      "state_after_refusal": {
+        "epoch": 3,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "8d6931c73d8495ebecea9025f418dc7f69fdc4a43cf046760fdb1fa2ae1fa3bd",
+        "root_k": 101,
+        "p_sha256": "996f61e8e53fea790fb078a66b5aa7f83dd760837940b8bbd49256e9a3933f9b",
+        "enforces": "base",
+        "may_install": false
+      },
+      "then_accept": "accepted/e3-s2.json",
+      "then_outcome": "taken",
+      "why": "the relaxing declaration of epoch 3 with a policy part that fails: kept and enforced"
+    },
+    {
+      "name": "raise-keeps-the-old-min",
+      "file": "accepted/raise-keeps-the-old-min.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 4,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "86e1f2b583660547118fc8c42c9e62a50fddb8ef69ab39edce06621c8b84f718",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "a raise with a later deadline that keeps the level in force (grace_min 1.6.0)"
+    },
+    {
+      "name": "raise-far-deadline-level-kept",
+      "file": "accepted/raise-far-deadline-level-kept.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 4,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "de5b112ade0172ed8c63762cfb219380cbe9639a1c37b54dc28efa01779a4e3b",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "every min 1.6.1 until 2099 with grace_min 1.6.0"
+    },
+    {
+      "name": "raise-while-pending-same-deadline",
+      "file": "accepted/raise-while-pending-same-deadline.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 3,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "d458b9e6692f8a801f81f31d3724cdbcfe1f51baf5f2d90e368df870c1d8b90b",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "a second raise before the pending deadline, the same deadline"
+    },
+    {
+      "name": "raise-while-pending-later-deadline",
+      "file": "refused/raise-while-pending-later-deadline.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "a second raise with a later deadline keeping grace_min 1.5.0 lets the pending minimum go"
+    },
+    {
+      "name": "raise-while-pending-later-deadline-pending-min-now",
+      "file": "accepted/raise-while-pending-later-deadline-pending-min-now.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 3,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "e86d301ab5f572b4668bf73bb3ef1d0d1c2983f7ba1850beae2cc07bf2424ac6",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "derivation c: a later deadline with grace_min = the pending minimum"
+    },
+    {
+      "name": "android-play-same-min-later-deadline",
+      "file": "refused/android-play-same-min-later-deadline.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "why": "a new android_play entry whose deadline is later than its sibling's"
+    },
+    {
+      "name": "android-play-at-level",
+      "file": "accepted/android-play-at-level.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 3,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "577e7bf2cd23c69e3eb15eefed87c09109c4928fcbc09c22259572960204ad06",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "a new android_play entry at its sibling's level"
+    },
+    {
+      "name": "grace-min-without-grace-until",
+      "file": "refused/grace-min-without-grace-until.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:grace_min",
+      "why": "grace_min without grace_until"
+    },
+    {
+      "name": "grace-until-without-grace-min",
+      "file": "refused/grace-until-without-grace-min.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:grace_min",
+      "why": "grace_until without grace_min"
+    },
+    {
+      "name": "grace-min-not-below-min",
+      "file": "refused/grace-min-not-below-min.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Field:grace_min",
+      "why": "grace_min equal to min"
+    },
+    {
+      "name": "grace-min-as-number",
+      "file": "refused/grace-min-as-number.json",
+      "after": [
+        "accepted/e1-s1.json"
+      ],
+      "binding": "app",
+      "canonical": false,
+      "expect": "reject",
+      "reason": "Field:json",
+      "why": "grace_min as a JSON number"
+    },
+    {
+      "name": "policy-without-epoch",
+      "file": "refused/policy-without-epoch.json",
+      "after": [],
+      "binding": "app",
+      "canonical": false,
+      "expect": "reject",
+      "reason": "Field:json",
+      "why": "a policy text without its required epoch"
+    },
+    {
+      "name": "root-signed-policy-taken",
+      "file": "accepted/root-signed-policy-taken.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 3,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "acc1c8de7d5e00914e90ecb3fd209599c88b0c50dc1005678e13f00465ffe9c1",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "a root key may sign a policy that asks no less (spec 4-2 Signer, X9)"
+    },
+    {
+      "name": "declaration-without-base",
+      "file": "refused/declaration-without-base.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootFormat",
+      "why": "a declaration without base"
+    },
+    {
+      "name": "declaration-base-bad-entry",
+      "file": "refused/declaration-base-bad-entry.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootFormat",
+      "why": "a base entry with min \"1.6\""
+    },
+    {
+      "name": "declaration-base-grace-min-not-below-min",
+      "file": "refused/declaration-base-grace-min-not-below-min.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootFormat",
+      "why": "a base entry whose grace_min is not below min"
+    },
+    {
+      "name": "declaration-base-extra-member",
+      "file": "tool/declaration-base-extra-member.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": false,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "4bcce3c3c0c2494c021e6d503b1bc5d1472178b074f869aed8011d16471580ab",
+        "root_k": 101,
+        "p_sha256": "7172ba7972caa03326a0a64b405278a691917bcf21e1da299d398f70fca80860",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "a base entry with os_min: the app skips it, the tool never writes one"
+    },
+    {
+      "name": "declaration-unknown-member",
+      "file": "tool/declaration-unknown-member.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": false,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "7ee866843510287da363a749844268c5a1a35496588192c86d2d2bd50873e4b1",
+        "root_k": 101,
+        "p_sha256": "7172ba7972caa03326a0a64b405278a691917bcf21e1da299d398f70fca80860",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "a declaration with an unknown member: the app skips it"
+    },
+    {
+      "name": "declaration-revoked-null",
+      "file": "tool/declaration-revoked-null.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": false,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": "137f0131e8df4b8782e91fa6b3ea1531fbbcd2913f5bc2ec81642f0ddaeeb35b",
+        "root_k": 101,
+        "p_sha256": "7172ba7972caa03326a0a64b405278a691917bcf21e1da299d398f70fca80860",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "revoked null: the app reads no revocation, the tool writes a list"
+    },
+    {
+      "name": "entry-null",
+      "file": "tool/entry-null.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": false,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "87856231ecd7239aa8b9553b204b75dec437ed99f0367a7cceba52bc797a2376",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "an entry that is null: the app reads no entry, the tool writes none"
+    },
+    {
+      "name": "declaration-fork",
+      "file": "refused/declaration-fork.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootFork",
+      "why": "another text of the declaration of the app's epoch"
+    },
+    {
+      "name": "declaration-by-second-root",
+      "file": "accepted/declaration-by-second-root.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 102,
+        "p_sha256": "7172ba7972caa03326a0a64b405278a691917bcf21e1da299d398f70fca80860",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the declaration of epoch 2 signed by the second pinned root key 102"
+    },
+    {
+      "name": "declaration-by-unpinned-root",
+      "file": "refused/declaration-by-unpinned-root.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootKey",
+      "why": "a declaration signed by root key 103, which no vector build pins"
+    },
+    {
+      "name": "declaration-revokes-second-root",
+      "file": "refused/declaration-revokes-second-root.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "RootRevokesRoot",
+      "why": "the declaration revokes pinned root key 102"
+    },
+    {
+      "name": "epoch-2-without-declaration",
+      "file": "refused/epoch-2-without-declaration.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Epoch",
+      "why": "a policy of epoch 2 without its declaration"
+    },
+    {
+      "name": "e2-s2-stripped",
+      "file": "refused/epoch-2-without-declaration.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Epoch",
+      "why": "e2-s2 without its declaration"
+    },
+    {
+      "name": "unknown-key-with-declaration",
+      "file": "refused/unknown-key-with-declaration.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "UnknownKey",
+      "state_after_refusal": {
+        "epoch": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": null,
+        "enforces": "base",
+        "may_install": false
+      },
+      "why": "the declaration of epoch 2 with a policy of key 3: the declaration is kept"
+    },
+    {
+      "name": "forged-minimum",
+      "file": "accepted/forged-minimum.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 4,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "9e1ec9ce71746ba70fcb732d1f88c4b8fc927c0f72e853ba773ee26b38192529",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "a thief's policy (key 1, before its revocation): every min and latest 99.0.0"
+    },
+    {
+      "name": "forgery-healed-by-the-declaration",
+      "file": "accepted/e2-s1.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/forged-minimum.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": "7172ba7972caa03326a0a64b405278a691917bcf21e1da299d398f70fca80860",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the declaration that revokes the stolen key lifts the forgery"
+    },
+    {
+      "name": "forgery-then-the-newest",
+      "file": "accepted/e3-s2.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/forged-minimum.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 3,
+        "seq": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "8d6931c73d8495ebecea9025f418dc7f69fdc4a43cf046760fdb1fa2ae1fa3bd",
+        "root_k": 101,
+        "p_sha256": "cffc34fc306a6c5d3b100de82461d1e165aa3537af621ef77481959b2c9d28d2",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the newest envelope reaches the device that took the forgery"
+    },
+    {
+      "name": "forgery-then-declaration-alone",
+      "file": "refused/good-declaration-bad-policy.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/forged-minimum.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "BadSignature",
+      "state_after_refusal": {
+        "epoch": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": "9e1ec9ce71746ba70fcb732d1f88c4b8fc927c0f72e853ba773ee26b38192529",
+        "enforces": "base",
+        "may_install": false
+      },
+      "why": "the declaration alone: the forgery is no longer enforced, the base is"
+    },
+    {
+      "name": "policy-below-its-base",
+      "file": "refused/policy-below-its-base.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Relaxation",
+      "state_after_refusal": {
+        "epoch": 2,
+        "revoked": [],
+        "root_sha256": "eb79066dedfcb6c3b62246c1b2d24335398f9bb15fa0d2ecd04eda1af7db3fbc",
+        "root_k": 101,
+        "p_sha256": null,
+        "enforces": "base",
+        "may_install": false
+      },
+      "why": "a policy of epoch 2 that asks less than its declaration's base"
+    },
+    {
+      "name": "issued-back",
+      "file": "refused/issued-back.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Issued",
+      "why": "a policy issued before the one the app holds"
+    },
+    {
+      "name": "issued-before-declaration",
+      "file": "refused/issued-before-declaration.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "reject",
+      "reason": "Issued",
+      "state_after_refusal": {
+        "epoch": 2,
+        "revoked": [
+          1
+        ],
+        "root_sha256": "409548e25ba8648a8e347cb0e313fab94cc2b63dd0ce41997babccd9228438d6",
+        "root_k": 101,
+        "p_sha256": null,
+        "enforces": "base",
+        "may_install": false
+      },
+      "why": "a policy issued before its declaration"
+    },
+    {
+      "name": "signature-trailing-bits",
+      "file": "refused/signature-trailing-bits.json",
+      "after": [],
+      "binding": "app",
+      "canonical": false,
+      "expect": "reject",
+      "reason": "Envelope",
+      "why": "the character before == in s has non-zero unused bits (a lenient decoder reads the same bytes)"
+    },
+    {
+      "name": "body-not-utf8",
+      "file": "refused/body-not-utf8.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json",
+        "accepted/e2-s1.json",
+        "accepted/e2-s2.json"
+      ],
+      "binding": "app",
+      "canonical": false,
+      "expect": "reject",
+      "reason": "Envelope",
+      "why": "e3-s2 with a member whose string holds the byte 0xFF: refused before the declaration is read"
+    },
+    {
+      "name": "lone-surrogate-in-known-member",
+      "file": "refused/lone-surrogate-in-known-member.json",
+      "after": [],
+      "binding": "app",
+      "canonical": false,
+      "expect": "reject",
+      "reason": "Field:json",
+      "why": "contact_ko is the escape \\ud800: a shape error in a member that is read"
+    },
+    {
+      "name": "lone-surrogate-in-unknown-member",
+      "file": "tool/lone-surrogate-in-unknown-member.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": false,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "e24c4228d6af06a6f88a3cd1fba6558df1a64034369907f7d622414c8ca38799",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "an unknown member's value is the escape \\ud800: skipped"
+    },
+    {
+      "name": "package-withdrawn",
+      "file": "accepted/package-withdrawn.json",
+      "after": [
+        "accepted/e1-s1.json",
+        "accepted/e1-s2.json",
+        "accepted/e1-s3.json"
+      ],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 4,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "3f0bc763d0481832ee180783cecb115f915ddf2863547ee0d3030b812883e193",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the windows package and auto_install_after removed (--withdraw-package): no relaxation"
+    },
+    {
+      "name": "declaration-revokes-old-root-number",
+      "file": "tool/declaration-revokes-old-root-number.json",
+      "after": [],
+      "binding": "tool",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 2,
+        "seq": 1,
+        "revoked": [
+          1,
+          103
+        ],
+        "root_sha256": "9fafd56d4d855e6165cda79db8b1b0f1533982d666f208e9fbfcabd6f1f7726f",
+        "root_k": 101,
+        "p_sha256": "7172ba7972caa03326a0a64b405278a691917bcf21e1da299d398f70fca80860",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "app_expect": "accept",
+      "why": "a declaration revoking [1, 103]: no vector build pins 103 (the tool refuses any 101-199, X2)"
+    }
+  ]
+}
