@@ -532,7 +532,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 | 3 | 읽기 점검 | 운영 에이전트 | 7-2 |
 | 4 | hjv-api 설치. 비밀번호 없는 연결 스위치는 꺼진 채로, nginx는 그대로 | 운영 에이전트(사용자 승인) | 7-3 |
 | 5 | 키와 자격 증명 만들기 | **사용자만**(운영 에이전트는 멈춤) | 7-4 |
-| 6 | 공개키 대조값, 시작, selfcheck, 명단 | 운영 에이전트 | 7-5 |
+| 6 | 공개키 대조값, 시작, selfcheck, 로그인 방식 | 운영 에이전트 | 7-5 |
 | 7 | hbbs 0004로 교체 | 운영 에이전트, 조용한 시간 | 7-6 |
 | 8 | 앱과 중계기 빌드, 지문 대조, 출시 태그 | 개발 PC, 사용자 확인 | 7-7 |
 | 9 | nginx 전환 | 운영 에이전트(사용자 승인), 조용한 저녁 | 7-8 |
@@ -591,7 +591,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
        - 제거: 시작 메뉴의 Uninstall로 제거한 뒤 레지스트리에 `HKLM\SOFTWARE\HJViewer\Account`가 없는지 보고, 다시 설치한 그 PC에 예전 주인의 휴대폰이 비밀번호 없이 들어가지 못하는지(비밀번호 창이 뜸) 봅니다. 제거 때 이 키를 지우는 일(클라이언트 패치 0031)은 지금까지 명령 문자열의 시험만 거쳤습니다.
        - 문구: 장치 관리자의 랜카드 속성 '전원 관리' 탭에 있는 항목 이름을 [wol-pc-setup.md](wol-pc-setup.md) 2장의 세 항목과 앱의 켜기 안내(`server/api/src/wolinfo.rs`의 `HINT_NOT_ARMED`, "…대기 모드를 종료할 수 있음")와 견줍니다. 다르면 둘을 실제 문구로 고칩니다(`server/api`를 바꾸면 `scripts/ci.sh`의 server, deploy, e2e, wol 단계를 다시 돌림).
        - Windows 전용 단위 시험: 키보드의 한/영·한자 시험(`src/keyboard.rs`)은 어느 CI 단계도, 확인 빌드도 돌리지 않습니다. 패치를 적용한 트리로 Windows에서 `cargo test --lib keyboard`를 한 번 돌립니다(확인 빌드의 Windows 잡에 단계를 더할지, Windows PC에서 돌릴지는 사용자가 정함).
-     - 실제 연세 SSO의 답(11단계, 사용자와 운영 에이전트): 사용자가 앱에서 특수 문자가 든 틀린 비밀번호와 256바이트가 넘는 비밀번호로 한 번씩 로그인해 보고(잠긴 계정이 있으면 그것도), 운영 에이전트는 그동안의 저널에서 `login: SSO error:` 줄의 개수만 봅니다. 그런 상류 오류는 ID별 한도에 세지 않는데, 5번 이어지면 SSO 차단기가 모든 로그인을 2분 멈춥니다. 줄이 생기는 입력이 있으면 명단의 ID 하나로 이 정지를 계속 열 수 있으므로, hjv-api가 상류 오류도 ID별로 세게 고칩니다(`server/api/src/login.rs`의 `Failure::Upstream` 갈래).
+     - 실제 연세 SSO의 답(11단계, 사용자와 운영 에이전트): 사용자가 앱에서 특수 문자가 든 틀린 비밀번호와 256바이트가 넘는 비밀번호로 한 번씩 로그인해 보고(잠긴 계정이 있으면 그것도), 운영 에이전트는 그동안의 저널에서 `login: SSO error:` 줄의 개수만 봅니다. 그런 상류 오류는 ID별 한도에 세지 않는데, 5번 이어지면 SSO 차단기가 모든 로그인을 2분 멈춥니다. 줄이 생기는 입력이 있으면 아무 포탈 ID 하나로(명단 방식이면 명단의 ID로) 이 정지를 계속 열 수 있으므로, hjv-api가 상류 오류도 ID별로 세게 고칩니다(`server/api/src/login.rs`의 `Failure::Upstream` 갈래).
      - 아이폰 로그인(11단계, 7-9): TestFlight의 1.6.0에서 로그인해 "액세스 가능한 장치"의 내 PC에 비밀번호 없이 연결하고, 새 기기 알림([내 기기 맞음], [아님]), '로그인한 기기' 목록, 잠긴 동안의 "보안 키를 지금 쓸 수 없습니다", 백업에서 복원한 뒤의 "로그인이 풀렸습니다"를 봅니다.
      - NAS 중계기 설치(15단계, 7-11): [relay-dsm.md](relay-dsm.md)대로 DSM에 설치하고(부서의 허락을 받은 뒤, 질문 14) 로그의 등록 코드, 승인 뒤의 `등록이 승인되어 켜기 명령을 기다립니다.`, `status` 작업의 결과를 봅니다.
      - NAS에서만 볼 수 있는 중계기 동작(15단계, 7-11): 개발 PC의 시험은 중계기를 root가 아닌 사용자로 돌려 권한 내리기를 거치지 않고, DSM 부트업 스크립트도 개발 PC의 `sh`로만 돌려 봤습니다. Synology 공유 폴더의 권한(ACL) 아래에서 멈춤 표지를 본 적도 없습니다. 그래서 [relay-dsm.md](relay-dsm.md) 5장의 첫 로그에 `권한을 uid 65534 gid 65534로 낮췄습니다.`가 있는지, 6장 8번의 멈춤 확인(10장의 두 줄)이 되는지, NAS가 다음에 재부팅된 뒤 로그에 시작 줄이 생기는지(11장 끝)를 봅니다.
@@ -745,7 +745,7 @@ sudo ls -l /etc/credstore.encrypted/
 - `HJV_TRUST_PUBKEYS`: `1:<base64>,2:<base64>`와 두 지문
 - `HJV_COMMAND_PUBKEY`: `1:<base64>,2:<base64>`와 두 지문
 
-### 7-5. 공개키 대조값, 시작, selfcheck, 명단 (6단계)
+### 7-5. 공개키 대조값, 시작, selfcheck, 로그인 방식 (6단계)
 
 ```bash
 TRUST='1:<base64>,2:<base64>'      # ← 사용자가 알려 준 HJV_TRUST_PUBKEYS
@@ -773,14 +773,13 @@ sudo journalctl --namespace=hjviewer -u hjviewer-api -p warning --since -10min -
 - 지문 줄(공개값)은 사용자가 5단계에서 키를 만들 때 본 지문과 같아야 하고, 8단계의 대조에 쓰므로 목록 키와 명령 키 것을 모두 보고에 옮깁니다.
 - 서비스가 시작하지 않으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -n 20 -o cat`의 오류 줄을 사용자에게만 보여 줍니다. 설정 파일의 모르는 `HJV_API_` 이름, 빠진 SSO 값, 없는 자격 증명(명령 키 포함, 7-4)이 흔한 원인입니다.
 
-명단을 넣습니다. 사용자가 포탈 ID를 한 줄에 하나씩 적은 파일을 서버에 두고(예: `/root/hjviewer-allow.txt`, 600) 경로만 알려 줍니다. 운영 에이전트는 파일을 열지 않고 가져오기만 합니다. 출력은 개수뿐입니다.
+로그인 방식을 확인합니다. 설정 파일에 `HJV_API_LOGIN` 줄이 없거나 `open`이면(기본값, 2026-10-14 사용자 결정) 연세 SSO를 통과한 사람은 누구나 로그인하고, 처음 로그인할 때 명단에 저절로 올라갑니다. 연세 SSO는 교직원 계정만 받습니다. 그래서 명단을 미리 넣을 필요가 없습니다. `selfcheck`의 마지막 줄이 `[ OK ] login (HJV_API_LOGIN): open, …`이고, `report`의 둘째 줄이 `login: open (…)`이어야 합니다.
 
 ```bash
-sudo /opt/hjviewer/bin/hjv-api admin allow import /root/hjviewer-allow.txt
 sudo /opt/hjviewer/bin/hjv-api admin report | head -3
 ```
 
-가져온 뒤 파일은 사용자가 지웁니다. 명단은 DB에 있습니다.
+명단 방식(`HJV_API_LOGIN=list`, 명단에 있는 ID만 로그인)으로 시작하기로 사용자가 정했을 때만 명단을 넣습니다. 사용자가 포탈 ID를 한 줄에 하나씩 적은 파일을 서버에 두고(예: `/root/hjviewer-allow.txt`, 600) 경로만 알려 줍니다. 운영 에이전트는 파일을 열지 않고 `sudo /opt/hjviewer/bin/hjv-api admin allow import /root/hjviewer-allow.txt`로 가져오기만 합니다. 출력은 개수뿐이고, 가져온 뒤 파일은 사용자가 지웁니다. 명단은 DB에 있습니다.
 
 감시와 백업 타이머를 켭니다(7-14).
 
@@ -895,7 +894,7 @@ cd / && rm -rf "$T"
    sudo /opt/hjviewer/bin/hjv-api admin passwordless on
    sudo /opt/hjviewer/bin/hjv-api admin report | head -6
    ```
-4. **다른 사용자(13단계)**: 한 사람씩 명단에 넣고(7-15), 각자 PC에 설치하고 로그인합니다. 아이폰 사용자는 먼저 App Store Connect 사용자로 초대해 TestFlight 내부 그룹에 넣어야 합니다([distribution.md](distribution.md)의 "아이폰 사용자 추가").
+4. **다른 사용자(13단계)**: 각자 PC에 설치하고 로그인합니다. 명단에 미리 넣을 필요는 없습니다(첫 로그인 때 저절로 올라감, 7-15). 아이폰 사용자는 먼저 App Store Connect 사용자로 초대해 TestFlight 내부 그룹에 넣어야 합니다([distribution.md](distribution.md)의 "아이폰 사용자 추가").
 
 ### 7-10. 최소 버전 강제 (14단계)
 
@@ -939,7 +938,7 @@ nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone
 1. `passwordless off`. 7-12의 1번 규칙대로 hjv-api를 켜 둡니다.
 2. 필요하면 `strict on`(연결마다 확인). 서버에 닿는 PC는 증명이 올 때마다 목록을 새로 받습니다.
 3. 목록 키를 2번으로 바꿉니다(7-15). 서버에 닿는 PC는 늦어도 5분 안에 2번 목록을 받고, 그 뒤로 1번 목록을 받지 않습니다.
-4. `user revoke-all --all`로 모든 계정 키와 토큰을 폐기합니다. 모두 기기마다 다시 로그인합니다. PC의 묶음은 남습니다. 한 계정의 포탈 비밀번호만 샜으면 `user revoke-all tag:<T>`로 그 계정만 폐기하고, 사용자에게 비밀번호를 바꾸게 합니다. 포탈 비밀번호를 바꿔도 이미 로그인한 기기는 남으므로 폐기가 필요합니다.
+4. `user revoke-all --all`로 모든 계정 키와 토큰을 폐기합니다. 모두 기기마다 다시 로그인합니다. PC의 묶음은 남습니다. 한 계정의 포탈 비밀번호만 샜으면 `user revoke-all tag:<T>`로 그 계정만 폐기하고, 사용자에게 비밀번호를 바꾸게 합니다. 포탈 비밀번호를 바꿔도 이미 로그인한 기기는 남으므로 폐기가 필요합니다. 그 계정이 다시 로그인하지 못하게 해야 하면 `block tag:<T>`(폐기와 함께 다음 로그인도 막음, 7-15). 모르는 계정이 잇달아 새로 등록되면(`report`의 셋째 줄, 저널의 `was registered` 줄) 명단 방식으로 바꿔 새 등록을 멈춥니다(7-15).
 5. 위의 폐기와 스위치는 **새 연결만** 막습니다. 이미 열려 있는 비밀번호 없는 연결은 끊기지 않습니다(1.6.0의 한계, U1-d). 사용자에게 알려 끊게 합니다: PC의 연결 창에서 끊거나, 자기 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 장치 다시 시작'을 누르거나, PC를 다시 시작합니다.
 6. 개인정보가 샜을 가능성이 있으면 사용자와 학교 정보보호팀에 바로 알립니다. 2026-09-11부터 시행된 개정 개인정보 보호법은 유출 가능성도 통지하게 합니다.
 
@@ -1006,23 +1005,25 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
   - 두 번째 `passwordless off`가 `(no change)`가 아니면(복원한 DB가 꺼진 채로 시작하지 않았다는 뜻) 그대로 보고합니다.
   - `STOP: 지금 DB를 백업하지 못함`이면 사용자에게 보고하고 점검 타이머를 다시 켭니다(`sudo systemctl start hjviewer-api-check.timer`). DB가 망가져 백업이 되지 않는 경우에만, 사용자 승인 뒤 `rm -f` 대신 그 파일들을 `/root/hjv-backup/before-restore-<시각>/`(700)로 옮기고, 그 사본은 14일 안에 지웁니다(개인정보 처리방침의 백업 14일).
   - 중계기도 백업 때의 상태로 돌아옵니다. 백업 뒤에 폐기한 중계기는 다시 활성이 되고, hjv-api는 복원한 백업에 활성 중계기가 있으면 시작할 때 저널에 그 수를 적습니다. 무엇을 폐기했었는지는 운영자 기록에만 있습니다: `sudo grep -a 'cmd="relay revoke" targets=' /var/log/hjviewer-api/operator.log | awk '{print $1, $6}'`(시각과 중계기 ID). 백업 파일 이름의 시각(UTC)보다 뒤에 폐기한 것을 사용자 승인 뒤 다시 `relay revoke`합니다. 되살아난 중계기가 받는 것은 그 계정의 PC를 주인이 켤 때의 켜기 명령뿐이고, PC에 연결할 권한은 없습니다.
-  - 백업 뒤의 계정 삭제, 명단 빼기, 묶음 풀기도 되살아납니다. 지운 계정의 행(포탈 ID, 성명, PC, 켜기 정보와 기록)이 돌아오고, 명단에서 뺀 사람은 다시 로그인할 수 있으며, 풀린 PC 가운데 그 사이 동기화하지 못한 PC는 이전 주인의 기기에 다시 열립니다. `passwordless on` 전에 운영자 기록에서 백업 시각(UTC) 뒤의 그런 명령을 찾습니다: `sudo grep -a -E 'cmd="(user delete|allow remove|binding revoke|device remove)" targets=' /var/log/hjviewer-api/operator.log | awk '{print $1, $4, $5, $6}'`(시각, 명령, 꼬리표). 사용자 승인 뒤 다시 실행합니다. `user delete tag:<T>`와 `binding revoke tag:<T>`는 기록의 꼬리표로 되고, 명단 빼기는 사용자가 그 ID 파일을 다시 줍니다. 앱에서 빼거나 PC에서 로그아웃해 풀린 묶음은 DB에만 기록이 있으므로, 복원 뒤 사용자들에게 "백업 뒤에 빼거나 넘긴 PC가 내 목록에 다시 보이면 다시 빼 주세요"라고 알립니다. 호스트를 재구축하면 기록 키가 새로 생겨 옛 꼬리표가 맞지 않으므로, 삭제와 명단 빼기 요청은 7-15대로 날짜와 함께 서버 밖에 적어 둔 것을 씁니다.
+  - 백업 뒤의 계정 삭제, 막기와 막기 풀기, 묶음 풀기도 되돌아갑니다. 지운 계정의 행(포탈 ID, 성명, PC, 켜기 정보와 기록)이 돌아오고, 백업 뒤에 막은 사람은 다시 로그인할 수 있고 백업 뒤에 막기를 푼 사람은 다시 막히며, 풀린 PC 가운데 그 사이 동기화하지 못한 PC는 이전 주인의 기기에 다시 열립니다. `user revoke-all --all` 바로 뒤에 운영자 기록에서 백업 시각(UTC) 뒤의 그런 명령을 찾습니다: `sudo grep -a -E 'cmd="(user delete|block|unblock|allow remove|binding revoke|device remove)" targets=' /var/log/hjviewer-api/operator.log | awk '{print $1, $4, $5, $6}'`(시각, 명령, 꼬리표). 사용자 승인 뒤 다시 실행합니다. `user delete tag:<T>`, `block tag:<T>`, `unblock tag:<T>`, `binding revoke tag:<T>`는 기록의 꼬리표로 되고, `allow remove`는 기록에 남은 꼬리표마다 `block tag:<T>`로 합니다. 백업 뒤에 로그인으로 명단에 오른 사람은 다음 로그인 때 다시 오릅니다. 앱에서 빼거나 PC에서 로그아웃해 풀린 묶음은 DB에만 기록이 있으므로, 복원 뒤 사용자들에게 "백업 뒤에 빼거나 넘긴 PC가 내 목록에 다시 보이면 다시 빼 주세요"라고 알립니다. 호스트를 재구축하면 기록 키가 새로 생겨 옛 꼬리표가 맞지 않으므로, 삭제와 막기 요청은 7-15대로 날짜와 함께 서버 밖에 적어 둔 것을 씁니다.
 
-  명단과 계정별 스위치를 확인하고 사용자 승인을 받아 `passwordless on`과 `sudo systemctl start hjviewer-api-check.timer`. 모두 휴대폰과 PC에서 한 번 다시 로그인합니다. PC의 묶음은 남으므로, 그 PC로 들어오는 연결을 위해 PC에서 다시 로그인할 필요는 없습니다. 백업 뒤에 풀렸던 묶음이 서버에 되살아나도, 허용 표시가 이미 지워진 PC는 증명을 받지 않습니다(`listed`).
+  막힌 계정(`allow list`)과 계정별 스위치를 확인하고 사용자 승인을 받아 `passwordless on`과 `sudo systemctl start hjviewer-api-check.timer`. 모두 휴대폰과 PC에서 한 번 다시 로그인합니다. PC의 묶음은 남으므로, 그 PC로 들어오는 연결을 위해 PC에서 다시 로그인할 필요는 없습니다. 백업 뒤에 풀렸던 묶음이 서버에 되살아나도, 허용 표시가 이미 지워진 PC는 증명을 받지 않습니다(`listed`).
 - **업그레이드**: hjv-api의 저장 이전은 한 방향입니다(옛 실행 파일은 새 스키마를 거부). 새 판을 설치하기 전에 `sudo /opt/hjviewer/bin/hjv-api admin backup /var/lib/hjviewer-api/backup/before-<VERSION>.sqlite3`로 스냅숏을 남기고, 옛 실행 파일과 설정 파일도 `/root/hjv-backup/`에 복사합니다(`sudo cp -p /opt/hjviewer/bin/hjv-api /root/hjv-backup/hjv-api-before-<VERSION>`, 설정 파일은 `hjviewer-api.env-before-<VERSION>`). 되돌릴 때는 옛 실행 파일, 스냅숏, 설정 파일을 함께 되돌립니다. 옛 실행 파일과 설정 파일을 제자리에 넣고, 위의 복원 블록을 `B`=스냅숏으로 합니다. 새 판이 돌지 않아 `backup` 줄이 실패하면, 사용자 승인 뒤 그 줄 대신 지금 DB 파일들을 `/root/hjv-backup/before-restore-<시각>/`(700)로 옮기고 14일 안에 지웁니다. 스냅숏도 복원한 백업이므로 모든 계정이 꺼진 채로 시작하고, 확인과 `user revoke-all --all` 뒤 사용자 승인을 받아 켭니다. 스냅숏은 다른 백업처럼 14일 뒤 지워지므로 되돌리기는 그 안에 정합니다.
-- **호스트 재구축**: 봉인 키는 오프라인 사본에서 되살립니다(7-4의 (가) 3번). 목록 키 1번과 명령 키 1번은 서버에만 있었으므로 오프라인의 2번을 넣고 `HJV_API_LIST_KID=2`, `HJV_API_COMMAND_KID=2`로 바꿉니다(7-15). 앱과 hjv-relay 빌드가 1번과 2번을 함께 고정하므로 앱과 NAS는 건드리지 않습니다. 기록 키는 새로 만듭니다. 백업이 남아 있으면 위의 복원처럼 넣어 꺼진 채로 시작하고, `user revoke-all --all` 뒤 사용자 승인을 받아 켭니다. 백업도 없으면 빈 DB로 시작하므로 명단을 다시 넣고(7-5), 모두 PC에서도 다시 로그인하며, 중계기는 다시 등록을 요청해 다시 승인받습니다(7-11). 이 절차들은 시험 서버에서 연습했습니다([hjv-api-drill.md](hjv-api-drill.md)).
+- **호스트 재구축**: 봉인 키는 오프라인 사본에서 되살립니다(7-4의 (가) 3번). 목록 키 1번과 명령 키 1번은 서버에만 있었으므로 오프라인의 2번을 넣고 `HJV_API_LIST_KID=2`, `HJV_API_COMMAND_KID=2`로 바꿉니다(7-15). 앱과 hjv-relay 빌드가 1번과 2번을 함께 고정하므로 앱과 NAS는 건드리지 않습니다. 기록 키는 새로 만듭니다. 백업이 남아 있으면 위의 복원처럼 넣어 꺼진 채로 시작하고, `user revoke-all --all` 뒤 사용자 승인을 받아 켭니다. 백업도 없으면 빈 DB로 시작하므로 막기를 서버 밖에 적어 둔 것으로 다시 하고(꼬리표가 맞지 않으므로 사용자가 쓴 ID 파일로 `allow remove <파일>`, 명단 방식이면 명단도 다시 넣음, 7-5), 모두 PC에서도 다시 로그인하며, 중계기는 다시 등록을 요청해 다시 승인받습니다(7-11). 이 절차들은 시험 서버에서 연습했습니다([hjv-api-drill.md](hjv-api-drill.md)).
 
 ### 7-15. 일상 운영
 
 관리 명령은 `sudo /opt/hjviewer/bin/hjv-api admin <명령>`이고, 출력은 가려져 있습니다(포탈 ID는 앞 4자, 이름·기기 이름·주소는 없음, 대신 꼬리표). 모든 명령은 운영자 기록에 남습니다(5분 점검이 읽는 `health`만 예외: 개수만 돌려주고 아무것도 바꾸지 않음). 전체 목록은 `hjv-api admin help`와 [server/api/README.md](../server/api/README.md)의 "Admin"에 있습니다.
 
-- **명단**: 넣기 `allow import <파일>`, 빼기 `allow remove <파일>`(사용자가 쓴 파일, 7-5처럼). 빼면 그 계정의 토큰과 계정 키가 바로 폐기됩니다. 그 계정에 묶인 PC는 남고 키 없는 목록을 받습니다. 그 PC를 다른 사람에게 넘길 때는 아래처럼 풉니다.
+- **누가 로그인하나**: `HJV_API_LOGIN=open`(기본)이면 연세 SSO를 통과한 사람(교직원)은 누구나 로그인하고, 처음 로그인할 때 명단에 저절로 올라갑니다(저널에 `login: a portal ID that was not on the allowlist logged in and was registered (acct=<꼬리표>)` 한 줄). 아이폰 사용자를 초대하기 전에도 명단에 넣을 일이 없습니다. `allow list`는 명단의 항목마다 꼬리표, 가린 ID, 상태(`registered` 또는 `blocked`), 들어온 길(`login` 또는 `import`)과 날짜를 보여 주고, `report`의 둘째·셋째 줄은 로그인 방식과 명단의 개수(로그인으로 오른 수, 막힌 수)입니다.
+- **막기와 풀기**(사용자 승인 뒤): 어떤 사람이 HJViewer를 쓰지 못하게 하려면 `block tag:<T>`(꼬리표는 `users`나 `allow list`). 그 계정의 토큰과 계정 키가 바로 폐기되어 그 사람의 기기가 모두 로그아웃되고, 그 계정에 묶인 PC는 남되 키 없는 목록을 받습니다(그 PC를 다른 사람에게 넘길 때는 아래처럼 풉니다). 그 사람이 다시 로그인하면 SSO가 비밀번호를 받아들인 뒤에 "이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요."로 거절합니다. 비밀번호를 아는 사람에게만 보이는 답입니다. 로그인한 적이 없어 꼬리표를 모르는 ID는 사용자가 쓴 파일로 `allow remove <파일>`(막기와 같음, 7-5의 파일처럼)을 합니다. 풀기는 `unblock tag:<T>`이고, 그 사람의 기기는 다시 로그인합니다. `allow import`는 막힌 항목을 풀지 않습니다.
+- **명단 방식으로 바꾸기**(사고 대응이나 나중의 결정, 사용자 승인 뒤 조용한 시간에): `sudoedit /etc/hjviewer/hjviewer-api.env`에서 `HJV_API_LOGIN=list` 줄을 넣고 `sudo systemctl restart hjviewer-api`. 그때부터는 명단에 있는 ID(가져온 것과 그때까지 로그인으로 오른 것)만 로그인하고, 명단에 없는 ID는 SSO에 묻지 않고 틀린 비밀번호와 같은 답을 받습니다. 이미 로그인한 기기는 그대로입니다. 새 사람은 `allow import <파일>`로 넣습니다. 되돌릴 때는 그 줄을 `HJV_API_LOGIN=open`으로 바꾸거나 지우고 다시 시작합니다. 어느 쪽인지는 `selfcheck`의 마지막 줄과 `report`의 둘째 줄로 확인합니다.
 - **PC를 계정에서 풀기**: `binding list`로 보고 `binding revoke <PC ID>`로 풉니다. `device remove <PC ID>`는 같은 명령의 옛 이름입니다. 어느 이름이든 그 PC의 묶음 ID를 180일 동안 무덤으로 남기므로, 그 PC는 다음 동기화에서 서명된 `revoked`를 받아 허용 표시를 지웁니다. 그 뒤 그 PC의 빈 보고에는 서명 없는 `unbound`가 갑니다.
 - **PC를 넘기거나 버릴 때**(사용자 안내): 그 PC에서 **온라인일 때** 로그아웃한 뒤 넘기거나 제거합니다. 제거만 해도 그 PC의 허용 표시는 지워지지만 서버의 묶음은 남아, 이전 주인의 카드에 "마지막 확인 n일 전"이 보이고 새 사용자의 로그인은 "다른 계정에 등록된 PC"가 됩니다. 그때는 이전 주인이 다른 기기에서 "내 목록에서 빼기"를 하거나 관리자가 `binding revoke <PC ID>`를 합니다.
 - **PC의 기기 키가 바뀌었을 때**: 설정을 잃은 PC(설정까지 지우고 다시 설치 등)는 같은 ID로 새 키를 등록합니다. 서버는 그 PC의 첫 동기화에서 hbbs에 키를 묻고, 진짜 hbbs가 새 키를 가졌으면 그 PC를 `needs-relogin`으로 둡니다(`report`의 `PCs that need a login on them`). 목록을 새로 고친 컨트롤러는 그 PC에 비밀번호 창을 띄웁니다. **그 PC에서 같은 계정으로 다시 로그인**하면 새 키가 저장되고 묶음 ID는 그대로라 비밀번호 없는 연결이 돌아옵니다. PC가 새 ID를 받았으면 새 ID는 그 PC에서 다시 로그인해야 목록에 오르고, 옛 ID의 카드는 주인이 빼거나 180일 정리가 지웁니다.
 - **대상 가리키기**: 포탈 ID나 주소를 명령 인자로 치지 않습니다. sudo가 명령줄 전체를 시스템 로그(`/var/log/auth.log`, 저널)에 남기고, 사람이 친 명령은 셸 기록에도 남기 때문입니다(운영자 기록에는 꼬리표만 남음). 사람 운영자는 `users --reveal`로 꼬리표를 찾아 `tag:<T>`로 가리키고, PC는 `--owner-of <PC ID>`나 `binding list`의 꼬리표로 가리킵니다.
 - **계정 키**: `key list [tag:T]`(키마다 PC별 마지막 비밀번호 없는 연결과 30일 횟수), `key revoke <ckid>`(잃어버린 기기를 사용자가 직접 로그아웃시킬 수 없을 때), `user revoke-all tag:<T>`. 한 계정에는 활성 키가 20개까지이고, 넘으면 새 로그인이 그 계정에서 가장 오래 쓰지 않은 키를 로그아웃시킵니다(저널의 `login: the account had 20 active keys`). 사용자가 모르는 기기가 많으면 비밀번호 유출로 보고 7-13의 4·5번을 합니다.
-- **계정 삭제 요청**: 요청을 받은 날짜를 사용자가 서버 밖에 적어 둡니다(복원·재구축 뒤 다시 지우기 위해, 7-14). 명단에서 빼고(`allow remove <파일>`, 사용자가 쓴 파일) `user delete tag:<T>`. 명단은 `user delete`로 지워지지 않습니다. `user delete`는 그 계정의 PC를 먼저 풀고(무덤) 그 계정의 중계기를 폐기한 뒤, 계정과 그 키·토큰·사용 기록·켜기 기록을 지웁니다. 남는 것은 묶음 무덤(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록이고, 백업은 14일 뒤 사라진다고 요청한 사람에게 알립니다.
+- **계정 삭제 요청**: 요청을 받은 날짜를 사용자가 서버 밖에 적어 둡니다(복원·재구축 뒤 다시 지우기 위해, 7-14). `user delete tag:<T>`. 명단의 항목도 계정과 함께 지워지고, 그 사람이 나중에 다시 로그인하면 다시 오릅니다. 막힌 항목은 계정을 지워도 남습니다(막기를 지키는 데 필요한 포탈 ID만 남음). `user delete`는 그 계정의 PC를 먼저 풀고(무덤) 그 계정의 중계기를 폐기한 뒤, 계정과 그 키·토큰·사용 기록·켜기 기록을 지웁니다. 남는 것은 묶음 무덤(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록이고, 백업은 14일 뒤 사라진다고 요청한 사람에게 알립니다.
 - **열람 요청**(사람 운영자만, 운영 에이전트는 하지 않음): `users --reveal`, `devices --reveal`, `key list tag:<T> --reveal`, `binding list --reveal`, `relay list --reveal`로 그 사람의 것을 봅니다. 로그인 기록(`events`), 켜기 기록(`wake_jobs`), 켜기 정보(`wol_info`)는 관리 명령이 없으므로 root가 DB를 읽기 전용으로 엽니다: `sudo sqlite3 -readonly /var/lib/hjviewer-api/hjv-api.sqlite3`에서 `SELECT at, kind, device_tag, ip, result FROM events WHERE account_tag = '<T>';`, `SELECT created_at, device_id, relay_id, state, finished_at FROM wake_jobs WHERE account_tag = '<T>';`, `SELECT w.device_id, w.reported_at, w.info_json FROM wol_info w JOIN devices d USING (device_id) JOIN accounts a ON a.id = d.account_id WHERE a.login_key = '<소문자 포탈 ID>';`. 결과는 요청한 사람에게만 전하고 서버나 대화에 남기지 않습니다.
 - **SSO 자격 증명이 바뀔 때**: hjv-api는 같은 서버의 WordPress SSO 로그인 플러그인(projecttf-auth)과 같은 SSO 등록을 씁니다. 그 플러그인의 client secret이나 api uuid가 바뀌면 같은 날 사용자가 7-4의 (나)처럼 `hjviewer-sso-client-secret`(또는 `hjviewer-sso-api-uuid`)를 다시 만들고 `sudo systemctl restart hjviewer-api`를 합니다. 그대로 두면 SSO가 `invalid_client`로 거절해 모든 로그인이 "연세 인증 서버에 지금 연결할 수 없습니다"가 되고, 감시가 경보를 냅니다.
 - **목록 키 바꾸기**(목록 키 1번이 샜거나 잃었을 때):
@@ -1042,7 +1043,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
 hjv-api: <hjv-api version의 판과 커밋>, 소켓 <권한 소유자>, DB 600(예/아니오), operator.log 추가 전용(예/아니오)
 selfcheck: [ OK ] <n>줄, [FAIL] <n>줄(<어느 항목>), 고정 목록 키 지문 <1:…, 2:…>, 고정 명령 키 지문 <1:…, 2:…>(공개값)
 스위치: passwordless <off | 운영자 계정만 | 모두>, strict <off | on>
-명단: <개수>
+로그인: <open | list>, 명단: <로그인할 수 있는 n, 그중 로그인으로 오른 n, 막힌 n>(report 둘째·셋째 줄)
 nginx: /api/hjv/source <코드>, /api/login-options <코드와 본문>, /api/heartbeat <코드>, /api/x.php <코드>, 다른 사이트 응답 코드 변화 없음(예/아니오), /ws/id·/ws/relay 101(예/아니오)
 report: 계정 <n>, 활성 키 <n>, 묶음을 가진 PC <n>, 그중 10분 안에 동기화 <n>, 스위치 뒤 아직 동기화하지 않은 PC <n>, needs-relogin <n>
 감시·백업: 타이머 활성(예/아니오), 마지막 백업 <sudo ls -t /var/lib/hjviewer-api/backup | head -1 의 파일 이름에 있는 UTC 시각>, 경보 경로 <텔레그램 | 저널>
