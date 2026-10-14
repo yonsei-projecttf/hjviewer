@@ -675,7 +675,7 @@ pub struct Updates {
     newest: Mutex<Option<(u64, u64)>>,
     door2: Mutex<Watched<Door2>>,
     links: Mutex<HashMap<String, Link>>,
-    /// the packages that may go out at once (HJV_API_DOWNLOADS_MAX)
+    /// the files (packages and their notice files) that may go out at once (HJV_API_DOWNLOADS_MAX)
     pub slots: Slots,
     /// door 2's downloads written to the records per minute: whoever has its link downloads as
     /// often as they like

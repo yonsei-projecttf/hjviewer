@@ -404,6 +404,46 @@ async fn a_reader_that_takes_a_few_bytes_at_a_time_loses_its_slot_after_an_hour(
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The hour is the answer's, not the connection's: a download that ends a few seconds before its
+/// hour leaves the connection as it was, and the next request on it, past the hour, is answered,
+/// also when its head comes in pieces of 16 bytes, between which hyper flushes (the review of the
+/// sweep: server.rs handle() clears the deadline for each request, body.rs looks at it in the
+/// writes of the body only).
+#[tokio::test(start_paused = true)]
+async fn the_hour_of_a_download_is_not_the_connections() {
+    for (buffer, chunk) in [(4096, 4096u64), (16, 16)] {
+        // 72 chunks for one every 50 seconds, and the rest at once at the end
+        let size = 72 * chunk + 4 * 1024;
+        let dir = area(size, false);
+        let state = state(&dir, &[]);
+        let mut stream = connect(&state, buffer);
+        let started = Instant::now();
+        let head = ask(&mut stream, "GET", DOWNLOAD).await;
+        assert_eq!((head.status, head.length()), (200, size));
+        let mut buf = vec![0u8; chunk as usize];
+        let mut at = 0u64;
+        while started.elapsed() < Duration::from_secs(3540) {
+            tokio::time::sleep(Duration::from_secs(50)).await;
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "the body ended at {at}");
+            at += n as u64;
+        }
+        // the rest six seconds before the hour: the answer is complete
+        tokio::time::sleep_until(started + Duration::from_secs(3594)).await;
+        read_checked(&mut stream, at, size - at).await;
+        assert!(started.elapsed() < DOWNLOAD_TIME);
+        // the next request on the connection, past the hour
+        tokio::time::sleep_until(started + DOWNLOAD_TIME + Duration::from_secs(2)).await;
+        let head = ask(&mut stream, "HEAD", DOWNLOAD).await;
+        assert_eq!(
+            (head.status, head.length()),
+            (200, size),
+            "a pipe of {buffer} bytes"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 /// The largest package a policy names, all of it, on the paused clock: every mark in its place,
 /// no faster than the rate files go out at, and this process (hjv-api and its reader in one)
 /// holds no more memory after it than before.

@@ -393,10 +393,9 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for StallGuard<S> {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // no look at the deadline here: bytes go out through the two writes, which look at it,
+        // and hyper flushes also while it reads the next request's head, after the answer ended
         let this = self.get_mut();
-        if let Some(late) = this.late() {
-            return Poll::Ready(Err(late));
-        }
         let polled = Pin::new(&mut this.stream).poll_flush(cx);
         this.watch(cx, polled)
     }
@@ -675,8 +674,8 @@ mod tests {
         let took = started.elapsed();
         assert!(took >= DOWNLOAD_TIME, "{took:?}");
         assert!(took < DOWNLOAD_TIME + WRITE_STALL, "{took:?}");
-        // nothing more goes, also not a flush
-        assert!(guarded.flush().await.is_err());
+        // nothing more goes: the next write fails too
+        assert!(guarded.write_all(&[7u8; 16]).await.is_err());
         drop(guarded);
         let got = reader.await.unwrap();
         assert!(got < 2048, "{got}");

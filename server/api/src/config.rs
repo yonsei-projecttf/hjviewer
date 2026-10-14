@@ -120,7 +120,7 @@ pub struct Config {
     pub limit_update: Vec<Window>,
     /// requests for a package that fail for who asks, per client address (update.rs)
     pub limit_update_fail_ip: Vec<Window>,
-    /// packages sent at the same time; one more gets 503
+    /// files (packages and their notice files) sent at the same time; one more gets 503
     pub downloads_max: usize,
 }
 
