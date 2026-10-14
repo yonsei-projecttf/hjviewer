@@ -252,10 +252,69 @@ async fn an_operator_sees_who_uses_the_service_and_on_which_pcs() {
 #[tokio::test]
 async fn an_id_is_an_operator_whatever_its_case() {
     let h = Harness::with(with_operators(&["y9001", " 2026000077 "])).await;
-    let lee = h.login_ok(LEE, None).await;
+    // the login's answer and the key list carry the role of the ID typed in another case
+    let answer = h.login(&h.login_body(LEE.0, LEE.1, None), "10.9.8.7").await;
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert_eq!(
+        answer.json["user"]["hjv_role"], "operator",
+        "{}",
+        answer.text
+    );
+    let lee = answer.token();
+    assert_eq!(
+        h.get("/api/hjv/keys", &lee).await.json["hjv_role"],
+        "operator"
+    );
     assert_eq!(h.get(PATH, &lee).await.status, 200);
     let hong = h.login_ok(HONG, None).await;
     assert_eq!(h.get(PATH, &hong).await.status, 404);
+}
+
+/// HJV_API_ACTIVE_DAYS reaches the answer: with one day, an account last used two days ago is
+/// not active, which it is with the default 30 days.
+#[tokio::test]
+async fn the_active_days_are_the_settings() {
+    for (days, active) in [("1", false), ("30", true)] {
+        let mut opts = with_operators(&[HONG.0]);
+        opts.vars.push(("HJV_API_ACTIVE_DAYS", days.to_owned()));
+        let h = Harness::with(opts).await;
+        let hong = h.login_ok(HONG, None).await;
+        h.login_ok(KIM, None).await;
+        sql(
+            &h,
+            format!(
+                "UPDATE accounts SET last_active_at = {} WHERE login_key = '2026000002'",
+                now() - 2 * DAY
+            ),
+        )
+        .await;
+        let v = h.get(PATH, &hong).await.json;
+        assert_eq!(v["active_days"], days.parse::<i64>().unwrap());
+        let kim = v["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == KIM.0)
+            .unwrap_or_else(|| panic!("{v}"))
+            .clone();
+        assert_eq!(kim["active"], active, "{days} days: {kim}");
+    }
+}
+
+/// Without the admin socket hjv-api has no operator record: a look that cannot be recorded is
+/// not made (503 with the text, no data).
+#[tokio::test]
+async fn without_the_operator_record_nothing_is_shown() {
+    let h = Harness::with(Options {
+        no_admin: true,
+        ..with_operators(&[HONG.0])
+    })
+    .await;
+    let hong = h.login_ok(HONG, None).await;
+    let a = h.get(PATH, &hong).await;
+    assert_eq!(a.status, 503, "{}", a.text);
+    assert_eq!(a.json, json!({ "error": overview::TEXT_NOT_RECORDED }));
+    assert!(!a.text.contains("users") && !a.text.contains(HONG.0));
 }
 
 #[tokio::test]

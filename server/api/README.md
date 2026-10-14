@@ -132,7 +132,8 @@ user. They see in the app, read-only, who uses the service and the PCs in accoun
 and addresses (Admin overview below). Only the server's env file holds a real ID, never the
 repository (the example has the setting empty); a change takes effect at the next restart, and
 `hjv-api admin operators` shows which of them have an account. `HJV_API_ACTIVE_DAYS` (30, at most
-365) is how recent a use makes an account active in that view.
+365) is how recent a use makes an account active in that view; docs/privacy.md section 3 states
+the 30 days, so a change of the setting changes that sentence too.
 
 The trust lists (design v3 §3-6, §5-3): `HJV_API_TRUST_PUBKEYS` is the list keys the apps pin, the
 value of their build variable `HJV_TRUST_PUBKEYS` (`1:<base64>,2:<base64>`, the key in use and the

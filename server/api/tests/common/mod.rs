@@ -285,6 +285,8 @@ pub struct Options {
     pub db_file: Option<PathBuf>,
     /// no command key (credential hjviewer-api-command-key): no wake command is signed
     pub no_command_key: bool,
+    /// no admin socket, and so no operator record, as when hjv-api cannot open the record
+    pub no_admin: bool,
 }
 
 pub struct Harness {
@@ -433,14 +435,16 @@ impl Harness {
         ));
         let admin_socket = dir.join("admin.sock");
         let oplog = dir.join("operator.log");
-        let admin_listener = admin::bind(&admin_socket).unwrap();
-        tokio::spawn(admin::serve(
-            state.clone(),
-            admin_listener,
-            admin_socket.clone(),
-            Arc::new(OpLog::open(&oplog).unwrap()),
-            stopped(),
-        ));
+        if !opts.no_admin {
+            let admin_listener = admin::bind(&admin_socket).unwrap();
+            tokio::spawn(admin::serve(
+                state.clone(),
+                admin_listener,
+                admin_socket.clone(),
+                Arc::new(OpLog::open(&oplog).unwrap()),
+                stopped(),
+            ));
+        }
         let seal_pk = *crypto_box::SecretKey::from_bytes(SEAL_SECRET)
             .public_key()
             .as_bytes();
