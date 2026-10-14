@@ -19,6 +19,8 @@
 //! pin would have every relay refuse every command. Without the credential and the setting, Wake-
 //! on-LAN is simply off.
 //!
+//! It also says who may log in (HJV_API_LOGIN, the open login of 2026-10-14): `open` or `list`.
+//!
 //! The unit can run it after each start (`ExecStartPost=-… selfcheck --log-only`, commented out
 //! in hjviewer-api.service until the operator agrees), and `hjv-api admin selfcheck` runs it
 //! inside the running service, with the list key and the command key the service holds.
@@ -249,6 +251,12 @@ pub async fn run(
     }
     ok &= list_keys(config, list_key, &mut report);
     ok &= command_keys(config, command_key, &mut report);
+    let _ = writeln!(
+        report,
+        "[ OK ] login (HJV_API_LOGIN): {}, {}",
+        config.login.as_str(),
+        config.login.describe()
+    );
     (report, ok)
 }
 

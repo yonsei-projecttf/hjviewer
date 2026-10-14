@@ -78,12 +78,15 @@ async fn success_returns_the_apps_token_shape() {
     assert_eq!(a.json["user"]["name"], "Y9001");
 }
 
+/// List mode (HJV_API_LOGIN=list, D3): an ID off the list fails like a wrong password, without
+/// an SSO call. In open mode every ID reaches the SSO (tests/allowlist.rs).
 #[tokio::test]
 async fn allowlisted_and_unlisted_ids_look_the_same() {
     let h = Harness::with(Options {
         vars: vec![
             ("HJV_API_FAILURE_DELAY_MS", "600".into()),
             ("HJV_API_FAILURE_JITTER_MS", "100".into()),
+            ("HJV_API_LOGIN", "list".into()),
         ],
         ..Default::default()
     })
@@ -191,11 +194,13 @@ async fn address_limit() {
             .await;
         assert_failure(&a, 401);
     }
+    // (each of those reached the SSO: in open mode any ID does)
+    let calls = h.sso.token_calls();
     let a = h
         .login(&h.login_body(HONG.0, HONG.1, None), "10.0.3.1")
         .await;
     assert_failure(&a, 429);
-    assert_eq!(h.sso.token_calls(), 0);
+    assert_eq!(h.sso.token_calls(), calls);
     // other addresses are not affected
     let a = h
         .login(&h.login_body(HONG.0, HONG.1, None), "10.0.3.2")
@@ -693,8 +698,10 @@ impl SecondFactor for FixedCode {
 
 #[tokio::test]
 async fn second_factor_hook() {
+    // in list mode, where an ID off the list never reaches the SSO
     let h = Harness::with(Options {
         second_factor: Some(Arc::new(FixedCode)),
+        vars: vec![("HJV_API_LOGIN", "list".into())],
         ..Default::default()
     })
     .await;
@@ -1028,10 +1035,14 @@ async fn failure_records_are_capped_per_minute() {
 
 #[tokio::test]
 async fn a_slow_sso_slows_every_failure() {
+    // in list mode, where an ID off the list is a failure without an SSO call
     let h = Harness::with(Options {
         allow: vec![HONG.0, "sso-slow"],
         sso_slow: Some(Duration::from_millis(1000)),
-        vars: vec![("HJV_API_SSO_TIMEOUT_MS", "4000".into())],
+        vars: vec![
+            ("HJV_API_SSO_TIMEOUT_MS", "4000".into()),
+            ("HJV_API_LOGIN", "list".into()),
+        ],
         ..Default::default()
     })
     .await;

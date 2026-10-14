@@ -65,7 +65,7 @@ async fn removing_ids_saved_with_a_byte_order_mark() {
     let h = Harness::start().await;
     let hong = h.login_ok(HONG, None).await;
     let kim = h.login_ok(KIM, None).await;
-    // as Windows Notepad saves a file: a byte-order mark and CR LF line ends
+    // as Windows Notepad saves a file: a byte-order mark and CR LF line ends; removing blocks
     let file = "\u{feff}2026000001\r\n2026000002\r\n2026999999\r\n";
     let out = h
         .admin(&["allow", "remove"], false, Some(file))
@@ -73,7 +73,7 @@ async fn removing_ids_saved_with_a_byte_order_mark() {
         .unwrap();
     assert_eq!(
         out,
-        "allowlist: 2 removed, 1 not on it, 2 tokens and 2 account keys revoked"
+        "allowlist: 3 blocked (1 of them not on the allowlist before), 0 blocked already, 2 tokens and 2 account keys revoked (allow remove blocks now; hjv-api admin unblock lifts a block)"
     );
     for token in [&hong, &kim] {
         assert_eq!(h.get("/api/users", token).await.status, 401);
@@ -81,7 +81,7 @@ async fn removing_ids_saved_with_a_byte_order_mark() {
     let a = h
         .login(&h.login_body(HONG.0, HONG.1, None), "10.2.1.1")
         .await;
-    assert_eq!(a.status, 401);
+    assert_eq!(a.status, 403);
     assert_eq!(h.login_ok(LEE, None).await.len(), 47);
 }
 
@@ -180,15 +180,16 @@ async fn commands_by_id_or_tag() {
         .admin(&["binding", "revoke", "12 34"], false, None)
         .await
         .is_err());
-    // delete the account; the allowlist entry stays
+    // delete the account, and its allowlist entry with it (in open mode the next login puts
+    // the ID on the list again)
     h.login_ok(HONG, Some(&pc)).await;
     let out = h
         .admin(&["user", "delete", "2026000001"], false, None)
         .await
         .unwrap();
-    assert!(
-        out.starts_with("deleted the account with 1 devices, 1 account keys and 1 tokens"),
-        "{out}"
+    assert_eq!(
+        out,
+        "deleted the account with 1 devices, 1 account keys and 1 tokens (and its allowlist entry)"
     );
     assert!(h
         .admin(&["user", "delete", "2026000001"], false, None)

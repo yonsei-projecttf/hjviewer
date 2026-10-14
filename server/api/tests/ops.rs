@@ -454,8 +454,9 @@ async fn a_backup_while_requests_go_on() {
 /// The restore of design v3 §5-9 (README.md, Backup and restore) on the database level:
 /// `passwordless off`, the backup in place of the database, hjv-api started on it (every account
 /// off from its first answer), `passwordless off` again (no change), `user revoke-all --all`, the
-/// allowlist and the switches looked at, `passwordless on`; then the apps log in again and the
-/// PCs, still bound, get their lists.
+/// blocks made since the backup made again by the operator record's tags, the allowlist and the
+/// switches looked at, `passwordless on`; then the apps log in again and the PCs, still bound, get
+/// their lists.
 #[tokio::test]
 async fn the_restore_procedure() {
     let h = Harness::start().await;
@@ -490,6 +491,8 @@ async fn the_restore_procedure() {
     let emptied = h.sync(&used.pc, &payload(&used.pc_binding)).await;
     assert_eq!(emptied.list()["state"], "active");
     assert!(emptied.keys().is_empty(), "{:?}", emptied.keys());
+    // and LEE blocked, which the backup does not know
+    h.admin(&["block", LEE.0], false, None).await.unwrap();
 
     // the restore: hjv-api started again on the backup, whose switch was on and whose keys are
     // those revoked since. A PC syncs before the operator's first command, as the PCs syncing
@@ -549,7 +552,34 @@ async fn the_restore_procedure() {
         .admin(&["allow", "list"], false, None)
         .await
         .unwrap()
-        .starts_with("allowlist: 3 IDs"));
+        .starts_with("allowlist: 3 IDs, 3 registered (0 by a login), 0 blocked"));
+    // the block made after the backup is gone with the restore: the operator record names it by
+    // its tag, which blocks again
+    let record = std::fs::read_to_string(&h.oplog).unwrap();
+    let tag = record
+        .lines()
+        .find_map(|l| l.split("cmd=\"block\" targets=").nth(1))
+        .and_then(|t| t.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    assert_eq!(tag, h.account_tag(LEE.0));
+    assert_eq!(
+        r.login(&r.login_body(LEE.0, LEE.1, None), "10.4.0.9")
+            .await
+            .status,
+        200
+    );
+    let out = r
+        .admin(&["block", &format!("tag:{tag}")], false, None)
+        .await
+        .unwrap();
+    assert!(out.starts_with("blocked: 1 blocked"), "{out}");
+    assert_eq!(
+        r.login(&r.login_body(LEE.0, LEE.1, None), "10.4.0.9")
+            .await
+            .status,
+        403
+    );
     // every token from before is gone, also the one the backup never saw
     for token in [&used.phone, &later, &kim_token] {
         assert_eq!(r.post("/api/currentUser", token, None).await.status, 401);

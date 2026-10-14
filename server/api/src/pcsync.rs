@@ -66,7 +66,7 @@
 //!
 //! | row | `binding` sent | answer |
 //! |---|---|---|
-//! | bound | the binding | a signed list, `active` (the account's keys that are not revoked) or `disabled` (the account's switch is off, or it is off the allowlist: no keys) |
+//! | bound | the binding | a signed list, `active` (the account's keys that are not revoked) or `disabled` (the account's switch is off, or it is off the allowlist or blocked: no keys) |
 //! | bound | empty, or one no tombstone of the ID has | 200 `listed`, no list |
 //! | bound | a released binding of the ID | a signed `revoked` |
 //! | tombstone only | a released binding of the ID | a signed `revoked` |
@@ -462,7 +462,7 @@ enum Decided {
 
 /// The list of a bound PC whose sync carried its binding: `active` with the account's keys that
 /// are not revoked, or `disabled` without keys while the account's switch is off or the account is
-/// off the allowlist (design v3 §5-2).
+/// off the allowlist or blocked (design v3 §5-2).
 #[allow(clippy::too_many_arguments)]
 fn bound_list(
     c: &Connection,

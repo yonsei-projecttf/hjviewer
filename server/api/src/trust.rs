@@ -20,10 +20,10 @@
 //!
 //! and its signature is the list key's Ed25519 signature over `"hjv-trust-v1" NUL` and the list
 //! bytes ([`message`]). `state` is `active` (with the account's keys that are not revoked),
-//! `disabled` (switched off, or the account is off the allowlist: no keys) or `revoked` (the
-//! binding the PC sent was released: no keys, `pc_pk` the key its request was checked with,
-//! `binding` the value it sent). `exp − iat` is HJV_API_TRUST_TTL, never more than the apps'
-//! bound of 72 hours.
+//! `disabled` (switched off, or the account is off the allowlist or blocked: no keys) or
+//! `revoked` (the binding the PC sent was released: no keys, `pc_pk` the key its request was
+//! checked with, `binding` the value it sent). `exp − iat` is HJV_API_TRUST_TTL, never more than
+//! the apps' bound of 72 hours.
 //!
 //! The list key is an Ed25519 key with a key number (1 on the server, 2 kept offline for the
 //! change, design v3 §5-3): its 32-byte seed is the credential hjviewer-api-list-key (`hjv-api

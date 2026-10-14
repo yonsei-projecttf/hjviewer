@@ -31,8 +31,10 @@ ring and the system's CA certificates; SQLite is built in (rusqlite `bundled`).
   start both: `sudo systemctl enable --now hjviewer-api.socket hjviewer-api.service`. With the
   socket alone, hjv-api would start only at the first request, and until then the admin commands
   and the hourly and daily upkeep (retention included) would not run.
-- Start the service before `hjv-api admin allow import` (the admin commands talk to the running
-  service), then switch nginx over: the allowlist is empty until then, so nobody can log in early.
+- Start the service before any `hjv-api admin` command (they talk to the running service), then
+  switch nginx over. With `HJV_API_LOGIN=open` (the default) everyone the Yonsei SSO accepts can
+  log in from then on, and no import is needed; with `list`, import the allowlist first (`allow
+  import`), or nobody can log in.
 - Its log lines go to the journal namespace `hjviewer`: `journalctl --namespace=hjviewer -u
   hjviewer-api`. They hold counts, results and tags (log.rs), never IDs, addresses or secrets.
   `deploy/journald@hjviewer.conf` (installed as `/etc/systemd/journald@hjviewer.conf`) keeps that
@@ -61,6 +63,14 @@ ring and the system's CA certificates; SQLite is built in (rusqlite `bundled`).
 Not secret, from the environment (`EnvironmentFile=/etc/hjviewer/hjviewer-api.env`, or
 `--env-file`). `hjviewer-api.env.example` lists every name with its default; only the three SSO
 settings are required. Unknown `HJV_API_` names stop the start.
+
+`HJV_API_LOGIN` (the user's decision of 2026-10-14) says who may log in: `open` (the default),
+everyone the Yonsei SSO accepts (the SSO takes the university's faculty and staff only), a portal
+ID that is not on the allowlist being put on it at its first login; or `list`, only the IDs on the
+allowlist (imported, or registered by a login before), as at first (D3): an ID off it never
+reaches the SSO and no login adds one, for an incident or a later decision, without a new build.
+In either mode an entry the operator blocked keeps its account out (`admin block`, below).
+`selfcheck`, `report` and `allow list` say which mode runs, and the journal's start line too.
 
 Set `HJV_API_HBBS_PUBKEY` to hbbs's public key (the text of its `id_ed25519.pub`, the key the apps
 are built with): hbbs signs its `hjv-pk` answers with it, and without it no PC is added to an
@@ -155,10 +165,20 @@ address: sudo logs the whole command line, and the shell keeps it in its history
 operator record keeps tags only.
 
 ```text
-allow import <file>       add the portal IDs in <file> to the allowlist (counts only)
-allow remove <file>       remove them; their tokens and account keys stop working at once (their
-                          PCs stay in their accounts and get a trust list without keys)
-allow list                the allowlist
+allow import <file>       add the portal IDs in <file> to the allowlist ahead of their first login
+                          (counts only); in list mode only the IDs on it may log in. An entry there
+                          already keeps its block
+allow remove <file>       block the IDs in <file>, as block does (removing is blocking since the
+                          open login; an ID without an account has no tag to name it by)
+allow list                the allowlist: per entry its tag, the ID, registered or blocked, how it
+                          came (login or import), when, and since when blocked; the mode in use
+block <id|tag:T>          keep an account out: its tokens and account keys stop working at once,
+                          its PCs stay in the account and get a trust list without keys, and its
+                          next login, once the SSO accepted the password, gets 403 with the
+                          blocked text; the entry stays blocked until unblock. An ID not on the
+                          list is put on it blocked
+unblock <id|tag:T>        lift a block: the account may log in again (its devices log in again);
+                          its entry counts as put on the list now
 users | devices           accounts and the devices in them
 key list [<id|tag:T>]     account keys: number, account, platform, the server's device name,
                           version, on or off campus, created, state (the device's own name and ID
@@ -186,17 +206,18 @@ passwordless status | on | off [--account <id|tag:T> | --owner-of <PC ID>]
                           on one by one, so it is the incident switch), or for one account, named
                           by its portal ID or by one of its PCs
 strict on | off           PCs ask the server at each password-less connection (incidents)
-report                    counts, the login results of the last day and week, the limit counters,
-                          the account keys, the switches and the change serial; the PCs holding
-                          their binding and those synced in the last 10 minutes, those not synced
-                          since the last switch change, needs-relogin, PCs by app version,
-                          refusals, released bindings by how they went, password-less
-                          connections of 30 days; the relays by state and each active relay's
-                          last poll, the PCs that reported how to wake them, the wake jobs of the
-                          last day and week by result
+report                    counts, the login mode, the allowlist (who may log in, how many a login
+                          registered in the last day and week, how many are blocked), the login
+                          results of the last day and week, the limit counters, the account keys,
+                          the switches and the change serial; the PCs holding their binding and
+                          those synced in the last 10 minutes, those not synced since the last
+                          switch change, needs-relogin, PCs by app version, refusals, released
+                          bindings by how they went, password-less connections of 30 days; the
+                          relays by state and each active relay's last poll, the PCs that reported
+                          how to wake them, the wake jobs of the last day and week by result
 selfcheck                 DNS, TCP and TLS to the SSO and hbbs's console, from inside the sandbox;
                           the fingerprints of the pinned list keys and command keys and whether the
-                          keys in use are the pinned ones
+                          keys in use are the pinned ones; the login mode
 backup [--keep-days N] <file>.sqlite3 | <directory>
                           a checked copy of the database into a directory only you may enter
                           (Backup and restore)
@@ -252,6 +273,15 @@ keeps its trust list for up to a day.
 An allowlist file has one portal ID per line; `#` starts a comment, and a byte-order mark,
 zero-width characters and Windows line ends do no harm. A line that is anything else refuses the
 whole file (nothing changes) and the answer names only its line number.
+
+Blocking (the open login of 2026-10-14): a login puts every portal ID the SSO accepts on the
+allowlist, so the way to keep an account out is a block, not taking its ID off the list. A blocked
+login is told so (`이 계정은 관리자가 HJViewer 사용을 막았습니다. …`) only after the SSO accepted its
+password, so that the answer tells nobody else who is blocked; its successes count against
+`HJV_API_LIMIT_OK_ID`, so a known password cannot keep calling the SSO. An import does not lift a
+block (an old file imported again lets nobody back in); only `unblock` does. Point with `tag:<tag>`
+from `users` or `allow list`; an ID that never logged in has no tag known to the operator, so it
+is blocked through a file (`allow remove <file>`).
 
 `sudo hjv-api selfcheck --env-file /etc/hjviewer/hjviewer-api.env` runs the same check outside the
 service, by hand (it compares the list key in use only where it can read the credentials:
@@ -355,7 +385,7 @@ operator record hold counts only.
   backup in their place
   (`install -o hjviewer-api -g hjviewer-api -m 600 <backup> /var/lib/hjviewer-api/hjv-api.sqlite3`,
   no -wal or -shm left), start the socket and the service, `passwordless off` again,
-  `user revoke-all --all`, look at the allowlist (`allow list`) and the switches (`passwordless
+  `user revoke-all --all`, look at the blocks (`allow list`) and the switches (`passwordless
   status`), then, with the user's approval, `passwordless on` and the check timer. A restored
   backup starts with password-less connections off for every account: hjv-api turns them off when
   it first opens a file with the backups' application ID, before it answers anything, and says so
@@ -364,19 +394,22 @@ operator record hold counts only.
   second `passwordless off` confirms it (`(no change)`). Everybody logs in again on their phones
   and PCs; the PCs stay bound, so a PC whose mark was not cleared gets its list at once, and a PC
   that cleared it meanwhile is `listed` until someone logs in on it. The restored database also
-  has back the accounts deleted, the IDs taken off the allowlist and the bindings released since
-  the backup: before `passwordless on`, find those commands after the backup's time in the
-  operator record and run them again (docs/server-runbook.md 7-14); a binding released in the app
-  is in the database only, so the users are asked to remove again a PC that shows up in their
-  list. `tests/ops.rs`
+  has back the accounts deleted, the blocks as they were (an account blocked since is not, one
+  unblocked since is) and the bindings released since the backup: before `passwordless on`, find
+  those commands (`user delete`, `block`, `allow remove`, `unblock`, `binding revoke`, `device
+  remove`) after the backup's time in the operator record and run them again with the tags it
+  names (docs/server-runbook.md 7-14); a binding released in the app is in the database only, so
+  the users are asked to remove again a PC that shows up in their list. The IDs a login put on the
+  allowlist since the backup are put on it again at their next login (in open mode). `tests/ops.rs`
   (`the_restore_procedure`) runs these steps on the database; `docs/hjv-api-drill.md` records the
   rehearsal with systemd.
 - **Host rebuilt** (the disk lost): the seal key comes from its offline copy, list key 1 and
   command key 1 were on the server only and are replaced by the offline keys 2
   (`HJV_API_LIST_KID=2`, `HJV_API_COMMAND_KID=2`; the apps and relays pin key 2 already), the log
-  key is new (old records' tags no longer match). Without a backup the database starts empty: the
-  allowlist is imported again and everyone logs in again, the PCs too, and the relays say hello
-  and are approved again.
+  key is new (old records' tags no longer match). Without a backup the database starts empty:
+  everyone logs in again, the PCs too (in list mode once the allowlist is imported again), the
+  blocks are made again from the operator's own notes, as an ID file for `allow remove` (the old
+  record's tags no longer match), and the relays say hello and are approved again.
 - A restore also brings back the relays as they were: one revoked since the backup is active
   again, and only the operator record tells which. When the restored backup has active relays,
   the journal says so at the start; after a restore, `relay list`, and `relay revoke` again what
@@ -387,13 +420,14 @@ operator record hold counts only.
 
 `src/api.rs` lists the paths and the rules every request follows; `src/login.rs` the login checks
 in the order of v2 §9-2. Every failed login that depends on the ID gets the same 401 and body,
-whatever stopped it (a wrong password, an ID off the list, a limit, a single SSO error), so that
-the answer does not tell who is on the allowlist; v2 §9-1 had 503 for the SSO-call limit and 502
-for SSO errors. 429 (address limit), 400 (sealing, account key), 409 (a seal's time) and 503 (SSO
-calls paused, too many logins at once) do not depend on the ID. While the SSO refuses this server
-(its address or its client credentials) or fails five times in a row, SSO calls pause for a few
-minutes, every login gets the same 503 before the allowlist is looked at, and the journal hears of
-it once.
+whatever stopped it (a wrong password, an ID off the list in list mode, a limit, a single SSO
+error), so that the answer does not tell who is on the allowlist; v2 §9-1 had 503 for the SSO-call
+limit and 502 for SSO errors. The one exception is a blocked account whose password the SSO
+accepted: 403 with the blocked text (below), which only someone who knows the password sees. 429
+(address limit), 400 (sealing, account key), 409 (a seal's time) and 503 (SSO calls paused, too
+many logins at once) do not depend on the ID. While the SSO refuses this server (its address or
+its client credentials) or fails five times in a row, SSO calls pause for a few minutes, every
+login gets the same 503 before the allowlist is looked at, and the journal hears of it once.
 
 Every path that takes a token takes it only with the signature of the token's account key
 (`X-HJV-Proof`, below): a token alone opens nothing. The one exception is `POST /api/logout`
@@ -467,6 +501,11 @@ padding, NUL is the byte 0x00, times are Unix seconds.
   Other sealing errors: 400 with the failure text.
 - While SSO calls are paused: 503 `{"error":"연세 인증 서버에 지금 연결할 수 없습니다. 잠시 뒤 다시 해 주세요."}`
   for every ID.
+- A blocked account (`admin block`), once the SSO accepted its password, before anything is
+  written for it: 403
+  `{"error":"이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요.","hjv":"blocked"}`.
+  With `HJV_API_LOGIN=open` a portal ID that is not on the allowlist is put on it by the login
+  that succeeds (one journal line with the account's tag).
 
 ### Account requests: `X-HJV-Proof` (`src/proof.rs`, checked in `api::session`)
 
@@ -518,8 +557,8 @@ that ended in the last 30 days (at most 50, the latest first), each with `"ended
 and, for `removed`, `"left_by":{"ckid","name","app_name","platform"}`, the device that logged it
 out. `left` is `logout` (the device logged out, also by `DELETE` of its own key), `removed`
 (another device of the account), `expired` (its login expired), `replaced` (a new login of the
-same device), `evicted` (the account's 20 keys) or `admin` (the operator, or the account left the
-allowlist). `name` is the device name the server made of what the device said, `app_name` the
+same device), `evicted` (the account's 20 keys) or `admin` (the operator, or the account was
+blocked). `name` is the device name the server made of what the device said, `app_name` the
 device's own; neither is checked (only the time and `net` are the server's own view); `net` is
 `on-campus`, `off-campus` or `""`; `use` is what the PCs reported of the key through their sync
 (U6): per PC `{"pc_id","pc","last","n30"}`, the latest time the key opened it without its password
@@ -620,7 +659,7 @@ with the PC's device key (the key hbbs held when it was bound):
 
 | row | `binding` | answer |
 |---|---|---|
-| bound | the PC's binding | 200, a signed list: `active` with the account's keys that are not revoked, or `disabled` without keys (the account's switch is off, or it is off the allowlist) |
+| bound | the PC's binding | 200, a signed list: `active` with the account's keys that are not revoked, or `disabled` without keys (the account's switch is off, or it is blocked or off the allowlist) |
 | bound | empty, or one no tombstone of the ID has | 200 `{"server_time":…,"state":"listed","refresh":120}`, no list |
 | bound | a released binding of the ID | 200, a signed `revoked` |
 | tombstone only | a released binding of the ID | 200, a signed `revoked` |
@@ -809,7 +848,9 @@ These keys are public test values: never use them for anything else.
 integration tests that start hjv-api in-process with the fake SSO (`src/fake_sso.rs`), a fake hbbs
 console and the admin socket, and the binary under `systemd-socket-activate` when it is installed.
 The test client logs in as the app does, with a new account key each time, and signs its account
-requests (`tests/common/mod.rs`); `tests/keys.rs` has the account keys, the switches and the test
+requests (`tests/common/mod.rs`); `tests/allowlist.rs` has the open login of 2026-10-14 (an ID
+never imported registered at its login, blocks and unblocks, a block while a login runs, list
+mode); `tests/keys.rs` has the account keys, the switches and the test
 vectors above and in `tests/data/v3-vectors.json`, `tests/http.rs` the request proof and its
 retries (after the first answer, while the first attempt runs, after it was dropped unanswered), and
 `tests/pcsync.rs` the PC sync: its checks in order, the lists as the PC checks them, the
@@ -843,8 +884,10 @@ play the SSO's failures.
 
 ## Data
 
-SQLite with `secure_delete`, the WAL truncated after deletions: the allowlist; accounts (portal ID
-as the SSO sends it, name, times, the account's password-less switch); token hashes, each with the
+SQLite with `secure_delete`, the WAL truncated after deletions: the allowlist (case-folded
+portal IDs, how each came, an import or a login, when, and since when the operator blocks
+it, schema 5); accounts (portal ID as the SSO sends it, name, times, the account's
+password-less switch); token hashes, each with the
 account key of its login; account keys (public key, the tag of the app's uuid, the device ID, the
 platform, the server's device name, the device's own name, the app version, on or off campus, the
 times of creation, login, confirmation and revocation, the key that confirmed it); the nonces of
@@ -868,8 +911,11 @@ and an account keeps at most 20); account keys while their token lasts (an hourl
 the keys no valid token is left for), then 30 days revoked; devices until removed or 180 days
 unseen (a sync counts as seen); released bindings 180 days; key use and refusals 30 days, and
 they go with the PC when it leaves its account (key use also with its key); accounts until a year
-unused, unless still on the allowlist with a PC in use (seen within the device time), so that a lab
-PC logged in once stays listed while it is on; records six months; limit counters for their longest
+unused, unless one of their PCs is in use (seen within the device time) and they are not
+blocked, so that a lab PC logged in once stays listed while it is on; an account's allowlist
+entry goes with it (also with `user delete`), an entry without an account (imported, never
+used) a year after it came on the list, a blocked entry until it is unblocked; records six
+months; limit counters for their longest
 window, a day at least; backups of the database 14 days (`/var/lib/hjviewer-api/backup`, root
 only); the journal namespace `hjviewer` 30 days. Of failed logins, at most 20 a minute are
 recorded (the rest are counted in the daily summary of the journal), so that a flood cannot fill

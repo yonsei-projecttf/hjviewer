@@ -74,6 +74,9 @@ pub struct Config {
     pub bind_os: Vec<String>,
     /// D11: "off" (the only value this version accepts; the hook is tfa.rs)
     pub second_factor: String,
+    /// who may log in (HJV_API_LOGIN, login.rs step 7): everyone the SSO accepts, or only the
+    /// portal IDs on the allowlist
+    pub login: LoginMode,
     pub max_logins_in_flight: usize,
     /// the university's address networks: a login from one of them is "on-campus", from
     /// elsewhere "off-campus" (shown to the account's other devices, design v3 §4-1); empty: not
@@ -95,6 +98,47 @@ pub struct Config {
     /// the command keys the relays pin (their HJV_COMMAND_PUBKEY): selfcheck compares the key in
     /// use
     pub command_pubkeys: Vec<(u32, [u8; 32])>,
+}
+
+/// Who may log in (HJV_API_LOGIN). The user's decision of 2026-10-14 replaced D3's allowlist by
+/// `Open`; `List` is the way back to D3 for an incident or a later decision, without a new build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginMode {
+    /// everyone the Yonsei SSO accepts; a portal ID not on the allowlist is put on it at its
+    /// first login, and only a blocked entry keeps its account out
+    Open,
+    /// only the portal IDs on the allowlist (imported, or registered by a login before), as D3:
+    /// an ID off it never reaches the SSO, and no login adds one
+    List,
+}
+
+impl LoginMode {
+    pub fn parse(text: &str) -> Option<LoginMode> {
+        match text {
+            "open" => Some(LoginMode::Open),
+            "list" => Some(LoginMode::List),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LoginMode::Open => "open",
+            LoginMode::List => "list",
+        }
+    }
+
+    /// What the mode means, for `selfcheck` and `report`.
+    pub fn describe(self) -> &'static str {
+        match self {
+            LoginMode::Open => {
+                "anyone the Yonsei SSO accepts, unless blocked; a portal ID not on the allowlist is registered at its first login"
+            }
+            LoginMode::List => {
+                "only the portal IDs on the allowlist, unless blocked; an ID off it is refused before the SSO and no login registers one"
+            }
+        }
+    }
 }
 
 /// The connection kinds of a same-account proof (design v3 §3-3): port forwarding and RDP never
@@ -133,6 +177,7 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_FAILURE_JITTER_MS", Some("500")),
     ("HJV_API_BIND_OS", Some("windows")),
     ("HJV_API_SECOND_FACTOR", Some("off")),
+    ("HJV_API_LOGIN", Some("open")),
     ("HJV_API_MAX_LOGINS", Some("64")),
     ("HJV_API_CAMPUS_NETS", Some("")),
     ("HJV_API_PASSWORDLESS_KINDS", Some("remote,file,camera")),
@@ -230,6 +275,9 @@ impl Config {
             .map(|s| s.trim().to_ascii_lowercase())
             .filter(|s| !s.is_empty())
             .collect();
+        let login = LoginMode::parse(&get("HJV_API_LOGIN")?.to_ascii_lowercase()).ok_or(
+            "HJV_API_LOGIN takes open (anyone the SSO accepts) or list (only the IDs on the allowlist)",
+        )?;
         let mut campus_nets = Vec::new();
         for part in get("HJV_API_CAMPUS_NETS")?
             .split(',')
@@ -315,6 +363,7 @@ impl Config {
             failure_jitter,
             bind_os,
             second_factor: get("HJV_API_SECOND_FACTOR")?,
+            login,
             max_logins_in_flight: num("HJV_API_MAX_LOGINS")? as usize,
             campus_nets,
             passwordless_kinds,
@@ -633,6 +682,8 @@ mod tests {
         assert_eq!(c.sso.total_timeout, Duration::from_secs(8));
         assert_eq!(c.bind_os, vec!["windows"]);
         assert_eq!(c.second_factor, "off");
+        // the user's decision of 2026-10-14: everyone the SSO accepts
+        assert_eq!(c.login, LoginMode::Open);
         assert_eq!(c.hbbs_console, "127.0.0.1:21115".parse().unwrap());
         assert_eq!(c.hbbs_pubkey, None);
         assert_eq!(
@@ -815,6 +866,16 @@ mod tests {
         assert!(with("HJV_API_TOKEN_MAX_DAYS", "-1").is_err());
         assert!(with("HJV_API_FAILURE_JITTER_MS", "3000").is_err());
         assert!(with("HJV_API_TYPO", "1").is_err());
+        for (value, mode) in [
+            ("list", LoginMode::List),
+            (" List ", LoginMode::List),
+            ("open", LoginMode::Open),
+        ] {
+            assert_eq!(with("HJV_API_LOGIN", value).unwrap().login, mode, "{value}");
+        }
+        for bad in ["allowlist", "closed", "on"] {
+            assert!(with("HJV_API_LOGIN", bad).is_err(), "{bad}");
+        }
         let mut vars = base();
         vars.remove("HJV_API_SSO_CLIENT_ID");
         assert!(Config::from_vars(&vars).is_err());
