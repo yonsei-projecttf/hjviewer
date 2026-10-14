@@ -961,12 +961,12 @@ cd / && rm -rf "$T"
 
 서버에서 할 일은 `sudo /opt/hjviewer/bin/hjv-api admin selfcheck`의 지문 줄을 다시 보고하는 것뿐입니다. 나머지는 개발 PC와 사용자가 합니다([ci.md](ci.md)의 "계정 기능의 공개키", "hjv-relay 빌드").
 
-1.6.0의 첫 출시 빌드(2026-10-14)는 Google Play가 최소 SDK 22인 번들을 받지 않아(자동 보호의 요건) 1.6.1로 다시 빌드했습니다. 이 절과 뒤의 절에서 기능을 말하는 '1.6.0'은 그 기능이 처음 들어간 판이고, 출시 태그는 `client-1.6.1`, `relay-1.6.1`입니다([distribution.md](distribution.md)의 "순서").
+1.6.0의 첫 출시 빌드(2026-10-14)는 Google Play가 최소 SDK 22인 번들을 받지 않아(자동 보호의 요건) 1.6.1로 다시 빌드했습니다. 이 절과 뒤의 절에서 기능을 말하는 '1.6.0'은 그 기능이 처음 들어간 판이고, 출시 태그는 `client-1.6.1`과 `relay-1.6.0`입니다. 중계기의 판은 `relay/Cargo.toml`의 것이고, 바뀌지 않았습니다([distribution.md](distribution.md)의 "순서").
 
 1. 비공개 빌드 저장소의 시크릿에 `HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`, `HJV_COMMAND_PUBKEY`를 넣습니다. 공개값입니다. 최소 버전 작업의 업데이트 키는 시크릿이 아니라 빌드하는 커밋의 `client/update-keys.env`에서 읽습니다([ci.md](ci.md)).
 2. 2단계의 커밋으로 Windows(`HJViewer.exe`), Android, iOS, hjv-relay를 **`testflight=false`**로 빌드합니다. Windows·iOS 전용 코드는 2단계의 확인 빌드에서 이미 컴파일해 본 것이고(7-1), 여기서는 공개키를 넣은 출시 빌드를 만듭니다. 실패하면 개발 PC에서 고치고 다시 push한 커밋으로 빌드합니다. 서버 코드가 바뀌었으면 서버 묶음과 3~7단계의 해당 부분도 다시 합니다.
 3. 빌드 요약의 고정 공개키 지문이 `selfcheck`의 지문, 그리고 5단계에서 사용자가 본 지문과 같은지 사람이 대조합니다. 봉인 키 ID는 지문의 앞 16자리입니다.
-4. 같고, 7-1의 5번에서 출시 태그 전에 끝내기로 한 것(현장 시험 결과, TCP 펀치 시험)이 끝났으면 그 커밋에 출시 태그 `client-1.6.1`, `relay-1.6.1`을 붙입니다. 아직 나눠 주지 않습니다(TestFlight 업로드는 9단계 뒤).
+4. 같고, 7-1의 5번에서 출시 태그 전에 끝내기로 한 것(현장 시험 결과, TCP 펀치 시험)이 끝났으면 그 커밋에 출시 태그 `client-1.6.1`과 `relay-1.6.0`을 붙입니다. 아직 나눠 주지 않습니다(TestFlight 업로드는 9단계 뒤).
 
 ### 7-8. nginx 전환 (9단계)
 

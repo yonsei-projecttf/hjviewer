@@ -1247,13 +1247,14 @@ jobs:
             { echo "::error::The downloaded bundletool $BUNDLETOOL_VERSION does not have the pinned SHA-256."; exit 1; }
           bt() { java -jar "$bt_jar" "$@"; }
 
-          # 2. Manifest: package, versionCode (this run's arm64 APK's), versionName, target SDK, the
-          #    Play overlay and what Play's declarations look at (PLAY_MANIFEST above)
+          # 2. Manifest: package, versionCode (this run's arm64 APK's), versionName, minimum and
+          #    target SDK, the Play overlay and what Play's declarations look at (PLAY_MANIFEST above)
           bt validate --bundle="$aab" > "$work/validate.txt" || { cat "$work/validate.txt"; fail "bundletool validate failed"; }
           x() { bt dump manifest --bundle="$aab" --xpath="$1" 2> /dev/null | tr -d '\r\n'; }
           pkg=$(x /manifest/@package)
           vc=$(x /manifest/@android:versionCode)
           vn=$(x /manifest/@android:versionName)
+          msdk=$(x /manifest/uses-sdk/@android:minSdkVersion)
           tsdk=$(x /manifest/uses-sdk/@android:targetSdkVersion)
           dbg=$(x /manifest/application/@android:debuggable)
           overlay=$(x "/manifest/application/meta-data[@android:name='kr.ac.yonsei.hjviewer.PLAY_OVERLAY']/@android:value")
@@ -1261,12 +1262,13 @@ jobs:
           source "$GITHUB_WORKSPACE/client/version.env"
           apk_vc=$("$ANDROID_HOME/build-tools/$ANDROID_SIGN_TOOL_VERSION/aapt2" dump badging "$GITHUB_WORKSPACE/$SIGNED_APK" |
             sed -n "s/^package: .* versionCode='\([0-9]*\)'.*/\1/p")
-          echo "bundle: $pkg $vn ($vc), targetSdk $tsdk; arm64 APK of this run: $apk_vc"
+          echo "bundle: $pkg $vn ($vc), minSdk $msdk, targetSdk $tsdk; arm64 APK of this run: $apk_vc"
           [ "$pkg" = kr.ac.yonsei.hjviewer ] || fail "package is $pkg"
           [ "$vc" = "$PLAY_VERSION_CODE" ] || fail "versionCode is $vc, expected $PLAY_VERSION_CODE"
           [ "$vc" = "$apk_vc" ] || fail "versionCode $vc differs from this run's APK ($apk_vc)"
           [ "$vc" -le 2100000000 ] 2> /dev/null || fail "versionCode $vc is above Play's limit 2100000000"
           [ "$vn" = "$HJV_VERSION" ] || fail "versionName is $vn, expected $HJV_VERSION"
+          [ "${msdk:-0}" -ge 24 ] 2> /dev/null || fail "minSdk $msdk is below 24, which Google Play's automatic protection requires"
           [ "${tsdk:-0}" -ge 36 ] 2> /dev/null || fail "targetSdk $tsdk is below 36, which Play requires from 2026-08-31"
           [ "$dbg" != true ] || fail "the bundle is debuggable"
           # client/play/AndroidManifest.xml adds this marker: a bundle without it was built without

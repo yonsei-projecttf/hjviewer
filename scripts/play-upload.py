@@ -289,7 +289,8 @@ def hint(error: PlayError, args) -> str:
                 "overview in Play Console, then retry. Nothing was committed.")
     if "signed with" in text or "certificate" in text or "upload key" in text:
         return ("The bundle is not signed with the upload key Play expects (the message names its "
-                "fingerprint): sign with that keystore, or reset the upload key in Play Console > App integrity.")
+                "fingerprint): sign with that keystore, or reset the upload key in Play Console > Protected "
+                "with Play > Play Store protection > Manage Play app signing > Upload key certificate.")
     if "language" in text or "releasenotes" in text:
         return (f"Release notes in {args.notes_language} were refused: the language must be one of the app's "
                 "store listing languages.")
