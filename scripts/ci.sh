@@ -465,6 +465,37 @@ check_site() { # <port> <CA file> <status of />, or "site" when / belongs to ano
     fail "$name: hjv-load relay"
 }
 
+# The signed version policy at /api/hjv/version (deploy/nginx-hjviewer-locations.conf, runbook 8),
+# through an nginx whose location reads <file> instead of /etc/hjviewer/version-policy.json:
+# without the file a 404 of its own in JSON (not the site's error page), with it the file's bytes
+# as JSON, not cached, nosniff, a 304 for its ETag and 405 for a POST. The access and error logs
+# are looked at after the last site.
+check_version_policy() { # <port> <CA file> <name> <file>
+  local url="https://localhost:$1/api/hjv/version" ca=$2 name=$3 file=$4 got etag h
+  step "deploy: through $name, the version policy at /api/hjv/version"
+  rm -f "$file"
+  got=$(curl -s --cacert "$ca" -D "$CI/policy-head" -o "$CI/policy-body" -w '%{http_code}' "$url" || true)
+  echo "no policy file: $got $(head -c 60 "$CI/policy-body")"
+  [ "$got" = 404 ] && [ "$(cat "$CI/policy-body")" = '{"error":"no version policy"}' ] ||
+    fail "$name: /api/hjv/version without a policy file answered $got, not its own 404"
+  # a stand-in: nginx hands the file out without reading it (deploy/hjv-update-verify.sh checks it)
+  printf '%s\n' '{"v":1,"k":1,"p":"{\"contact_ko\":\"설치 파일은 관리자에게 받으세요.\"}","s":"ci"}' > "$file"
+  got=$(curl -s --cacert "$ca" -D "$CI/policy-head" -o "$CI/policy-body" -w '%{http_code}' "$url" || true)
+  echo "with the file: $got, $(wc -c < "$CI/policy-body") bytes"
+  [ "$got" = 200 ] && cmp -s "$CI/policy-body" "$file" || fail "$name: /api/hjv/version answered $got, not the file's bytes"
+  for h in 'content-type: application/json; charset=utf-8' 'cache-control: no-cache' 'x-content-type-options: nosniff'; do
+    tr -d '\r' < "$CI/policy-head" | grep -qix "$h" || fail "$name: /api/hjv/version without the header $h"
+  done
+  etag=$(tr -d '\r' < "$CI/policy-head" | sed -n 's/^[Ee][Tt][Aa][Gg]: //p')
+  [ -n "$etag" ] || fail "$name: /api/hjv/version without an ETag"
+  got=$(curl -s -o /dev/null --cacert "$ca" -H "If-None-Match: $etag" -w '%{http_code}' "$url" || true)
+  echo "If-None-Match $etag: $got"
+  [ "$got" = 304 ] || fail "$name: /api/hjv/version with its ETag answered $got, not 304"
+  got=$(curl -s -o /dev/null --cacert "$ca" -X POST -d '{}' -w '%{http_code}' "$url" || true)
+  echo "POST: $got"
+  [ "$got" = 405 ] || fail "$name: a POST to /api/hjv/version answered $got, not 405"
+}
+
 check_stack() { # keys, key file permissions, container hardening
   local key s k
   key=$(sudo cat "$SRC/deploy/data/id_ed25519.pub")
@@ -694,7 +725,7 @@ step() { printf '\n== container: %s\n' "$*"; }
 step "Ubuntu's nginx, systemd (systemd-analyze, systemd-socket-activate) and curl"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq > /dev/null
-apt-get install -y -qq --no-install-recommends nginx systemd curl openssl ca-certificates > /dev/null 2>&1
+apt-get install -y -qq --no-install-recommends nginx systemd curl openssl ca-certificates python3 > /dev/null 2>&1
 grep PRETTY_NAME /etc/os-release
 nginx -v
 step "unpack; the binaries' libraries"
@@ -783,6 +814,13 @@ expect "/api/hjv/source through nginx to hjv-api" 200 '"license":"AGPL-3.0-only"
 expect "/api/login-options (nginx)" 200 '^\[\]$' https://rd.example.com/api/login-options
 expect "/api/heartbeat (nginx)" 404 'not found' -X POST https://rd.example.com/api/heartbeat
 expect "/ (the source notice)" 200 'github.com/yonsei-projecttf/hjviewer' https://rd.example.com/
+step "the version policy at /api/hjv/version: /etc/hjviewer/version-policy.json, read by nginx's workers"
+expect "/api/hjv/version before a policy is installed" 404 '^\{"error":"no version policy"\}$' https://rd.example.com/api/hjv/version
+printf '%s\n' '{"v":1,"k":1,"p":"{}","s":"ci"}' > /etc/hjviewer/version-policy.json.new
+chmod 644 /etc/hjviewer/version-policy.json.new && mv -f /etc/hjviewer/version-policy.json.new /etc/hjviewer/version-policy.json
+expect "/api/hjv/version (nginx, not hjv-api)" 200 '^\{"v":1,"k":1,"p":"\{\}","s":"ci"\}$' https://rd.example.com/api/hjv/version
+step "the server's check of a version policy (bin/hjv-update-verify.sh) on this Ubuntu's python3 and openssl"
+/opt/hjviewer/bin/hjv-update-verify.sh --self-test || { echo "FAIL: hjv-update-verify.sh --self-test"; exit 1; }
 for i in 1 2 3 4 5 6; do c -X POST -d '{}' https://rd.example.com/api/hjv/relay/hello > /dev/null; done
 expect "the 7th relay hello at once" 429 '^\{"error":"rate_limited","retry_after":60\}$' -X POST -d '{}' https://rd.example.com/api/hjv/relay/hello
 step "hjv-api's passwordless switch after the install"
@@ -813,6 +851,19 @@ deploy_stage() {
   step "deploy: the production settings check (scripts/check-api-settings.py), offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_api_settings.py' ||
     fail "deploy: tests of the settings check"
+  # the server's own check of a signed version policy before it is installed (runbook 8-2): its
+  # tests, then the shared test vectors of tools/hjv-release that the apps and the tool agree on
+  step "deploy: the server's check of a version policy (deploy/hjv-update-verify.sh), offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_hjv_update_verify.py' ||
+    fail "deploy: tests of deploy/hjv-update-verify.sh"
+  local vectors=${HJV_UPDATE_VECTORS:-$ROOT/tools/hjv-release/tests/vectors}
+  if [ -f "$vectors/manifest.json" ]; then
+    step "deploy: deploy/hjv-update-verify.sh against the shared test vectors ($vectors)"
+    "$ROOT/deploy/hjv-update-verify.sh" --vectors "$vectors" ||
+      fail "deploy: deploy/hjv-update-verify.sh and the shared test vectors disagree (above)"
+  else
+    skip "deploy/hjv-update-verify.sh against the shared test vectors (no $vectors/manifest.json: tools/hjv-release is not in this tree yet)"
+  fi
   if [ -d "$ROOT/relay" ]; then
     # relay/tests/package.rs's packages run only with --ignored, which no other stage gives
     step "deploy: hjv-relay's packages (scripts/package-relay.sh): the static build, its SHA256SUMS, the field test package"
@@ -875,7 +926,11 @@ deploy_stage() {
   local ng="$CI/nginx"
   rm -rf "$ng"
   mkdir -p "$ng/tmp" "$ng/snippets"
-  cp "$SRC/deploy/nginx-hjviewer-locations.conf" "$ng/snippets/hjviewer-locations.conf"
+  # the version policy from a test file under build/ci instead of /etc/hjviewer/version-policy.json
+  sed "s#alias /etc/hjviewer/version-policy.json;#alias $ng/version-policy.json;#" \
+    "$SRC/deploy/nginx-hjviewer-locations.conf" > "$ng/snippets/hjviewer-locations.conf"
+  grep -q "alias $ng/version-policy.json;" "$ng/snippets/hjviewer-locations.conf" ||
+    fail "nginx-hjviewer-locations.conf: no 'alias /etc/hjviewer/version-policy.json;' line"
   sed -e 's/DOMAIN/localhost/g' \
       -e "s#/etc/letsencrypt/live/localhost/fullchain.pem#$CERTS/cert.pem#" \
       -e "s#/etc/letsencrypt/live/localhost/privkey.pem#$CERTS/key.pem#" \
@@ -900,8 +955,9 @@ server {
 }
 EOF
   # The same locations in front of a server that echoes the headers it gets, to check that a
-  # client cannot choose the address hbbs/hbbr trust
-  sed 's#http://127\.0\.0\.1:2111[89]#http://127.0.0.1:18599#' "$SRC/deploy/nginx-hjviewer-locations.conf" \
+  # client cannot choose the address hbbs/hbbr trust. This site sends every 404 to a PHP page, as
+  # some WordPress sites do: the version policy's own 404 must not go there.
+  sed 's#http://127\.0\.0\.1:2111[89]#http://127.0.0.1:18599#' "$ng/snippets/hjviewer-locations.conf" \
     > "$ng/snippets/hjviewer-locations-echo.conf"
   cat > "$ng/echo.conf" << EOF
 server {
@@ -909,7 +965,11 @@ server {
     server_name localhost;
     ssl_certificate     $CERTS/cert.pem;
     ssl_certificate_key $CERTS/key.pem;
+    error_page 404 /index.php;
     include snippets/hjviewer-locations-echo.conf;
+    location ~ \.php\$ {
+        return 302 https://\$host/404/;
+    }
 }
 EOF
   start_echo
@@ -933,15 +993,19 @@ EOF
   NGINX_PID=$!
   wait_for 10 curl -s -o /dev/null --cacert "$CERTS/cert.pem" https://localhost:18443/ || fail "nginx did not start"
   check_site 18443 "$CERTS/cert.pem" 200 nginx
+  check_version_policy 18443 "$CERTS/cert.pem" nginx "$ng/version-policy.json"
   [ "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:18080/x)" = "301 https://localhost/x" ] ||
     fail "nginx: port 80 does not redirect to https"
   check_site 18446 "$CERTS/cert.pem" site "nginx, existing site with HTTP/2"
+  check_version_policy 18446 "$CERTS/cert.pem" "nginx, existing site with HTTP/2" "$ng/version-policy.json"
   # the existing site still answers everything else, over HTTP/2 for browsers
   [ "$(curl -s -o /dev/null -w '%{http_version} %{http_code} %{redirect_url}' --http2 --cacert "$CERTS/cert.pem" https://localhost:18446/)" = \
     "2 302 https://localhost/login/?redirect_to=/" ] || fail "nginx: the existing site's / changed"
   [ "$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CERTS/cert.pem" https://localhost:18446/wp-json/)" = 302 ] ||
     fail "nginx: the existing site's other paths changed"
   check_headers 18447 nginx
+  check_version_policy 18447 "$CERTS/cert.pem" "nginx, a site whose 404s go to a PHP page" "$ng/version-policy.json"
+  if grep ' /api/hjv/version ' "$ng/access.log"; then fail "nginx: /api/hjv/version is in the access log"; fi
   if grep -E '\[(emerg|alert|crit|error)\]' "$ng/error.log"; then fail "nginx logged errors"; fi
   stop_web
 
@@ -1048,7 +1112,7 @@ EOF
   else
     skip "hjv-api in the release package (no server/api)"
   fi
-  for f in bin/hbbs bin/hbbr systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service systemd/hjviewer.env.example \
+  for f in bin/hbbs bin/hbbr bin/hjv-update-verify.sh systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service systemd/hjviewer.env.example \
     web/nginx-hjviewer-locations.conf web/nginx-hjviewer.conf web/apache-hjviewer.conf \
     LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt "${api_files[@]}"; do
     [ -s "$pkg/$f" ] || fail "release package: no $f"

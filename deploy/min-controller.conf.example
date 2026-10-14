@@ -1,0 +1,24 @@
+# /etc/hjviewer/min-controller.conf: the lowest app version hbbs lets a controller connect with
+# (minimum version design 2-4; docs/server-runbook.md 8-3). hjviewer.env's HJV_MIN_CONTROLLER_FILE
+# names it, and hbbs reads it again every 10 seconds: a change needs no restart, and the log says
+# "min-controller <MIN> from <FROM>" (or "min-controller off: ...") within about 10 seconds. The
+# operator's tool writes the real file (hjv-release hbbs-conf); this one shows the form, and as it
+# is it refuses nobody.
+#
+# MIN=   x.y.z: a controller below it is refused at its punch hole request, whatever it runs on.
+#        MIN= alone: no minimum (no other line is read then). Deleting the file does the same.
+# FROM=  the time the refusals start at, RFC 3339 (2026-11-22T15:00:00Z is 0:00 on 23 November in
+#        Korea); FROM= alone: at once. hbbs has one threshold: a new file with a higher MIN and a
+#        later FROM refuses nobody until its FROM, so hjv-release hbbs-conf says when to install it.
+# TEXT=  what a refused app shows, 1.5.1 included; %MIN% stands for MIN. It holds "version not
+#        allowed" (without it a 1.5.1 app asks again on a timer), a space after each URL, no { or },
+#        no other %NAME%, and does not start with "Failed". While door 2 is open it holds door 2's
+#        link: the file is then root:hjviewer 0640, and hbbs is not run at trace level (the
+#        WebSocket library logs every frame there, this text among them).
+#
+# While MIN names a version, FROM= and TEXT= are there too, each once, and every line ends with a
+# line break. A file that breaks a rule changes nothing: hbbs keeps the last good rule and logs
+# why, never the text. Write a new file beside this one and mv it into place.
+MIN=
+FROM=
+TEXT=HJViewer를 %MIN% 이상으로 업데이트해야 연결할 수 있습니다. 앱의 업데이트 화면을 쓰거나 관리자에게 새 버전을 받으세요. Play 스토어나 TestFlight로 설치했다면 그곳에서 업데이트하세요. (version not allowed)
