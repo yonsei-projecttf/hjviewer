@@ -4,7 +4,9 @@
 # Unix socket it serves; it opens no port of its own. It runs as its own system user, apart from
 # hbbs's user (the server key pair).
 #   /opt/hjviewer/bin/hjv-api              the binary (GitHub release hjviewer-server-*.tar.gz)
-#   /etc/hjviewer/hjviewer-api.env         settings, not secret (server/api/hjviewer-api.env.example)
+#   /etc/hjviewer/hjviewer-api.env         settings (server/api/hjviewer-api.env.example), not
+#                                          secret but root's only (0600): campus ranges and the
+#                                          super operators' portal IDs
 #   /etc/credstore.encrypted/<name>        the secrets below (systemd-creds encrypt; README.md)
 #   /var/lib/hjviewer-api                  the database
 #   /var/log/hjviewer-api/operator.log     the operator access record (chattr +a after the first

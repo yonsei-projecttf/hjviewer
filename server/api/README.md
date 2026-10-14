@@ -175,17 +175,29 @@ tests), never from the environment or the repository:
 | `hjviewer-api-list-key` | base64 of the 32-byte Ed25519 seed of the list key in use, number `HJV_API_LIST_KID`, which signs the trust lists |
 | `hjviewer-api-command-key` | base64 of the 32-byte Ed25519 seed of the command key in use, number `HJV_API_COMMAND_KID`, which signs the relays' wake commands |
 
-The user makes them on the server, without an agent (v2 §10-3), for example:
+The user makes them on the server, without an agent (v2 §10-3; the steps are
+docs/server-runbook.md 7-4), for example:
 
 ```sh
-systemd-ask-password -n "SSO client secret:" | sudo systemd-creds encrypt --name=hjviewer-sso-client-secret - /etc/credstore.encrypted/hjviewer-sso-client-secret
-hjv-api keygen seal | tee /media/usb/hjviewer-seal.key | sudo systemd-creds encrypt --name=hjviewer-api-login-key - /etc/credstore.encrypted/hjviewer-api-login-key
-sudo hjv-api keygen log-key --encrypt-to /etc/credstore.encrypted/hjviewer-api-log-key
-sudo hjv-api keygen list --kid 1 --encrypt-to /etc/credstore.encrypted/hjviewer-api-list-key
+systemd-ask-password -n "SSO client secret:" | sudo systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-sso-client-secret - /etc/credstore.encrypted/hjviewer-sso-client-secret
+hjv-api keygen seal | tee /media/usb/hjviewer-seal.key | sudo systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-login-key - /etc/credstore.encrypted/hjviewer-api-login-key
+sudo bash -c 'set -o pipefail; hjv-api keygen log-key | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-log-key - /etc/credstore.encrypted/hjviewer-api-log-key' || echo 'STOP: no log key'
+sudo bash -c 'set -o pipefail; hjv-api keygen list --kid 1 | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-list-key - /etc/credstore.encrypted/hjviewer-api-list-key' || echo 'STOP: no list key 1'
 hjv-api keygen list --kid 2 --out /media/usb/hjviewer-list-2.key     # offline, away from agents
-sudo hjv-api keygen command --kid 1 --encrypt-to /etc/credstore.encrypted/hjviewer-api-command-key
+sudo bash -c 'set -o pipefail; hjv-api keygen command --kid 1 | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-command-key - /etc/credstore.encrypted/hjviewer-api-command-key' || echo 'STOP: no command key 1'
 hjv-api keygen command --kid 2 --out /media/usb/hjviewer-command-2.key   # offline, as list key 2
 ```
+
+`--tpm2-pcrs=` with an empty value binds a credential to the TPM, where there is one, but to no
+PCR. By default systemd-creds binds it to PCR 7 too (the Secure Boot state and its key lists), and
+a reboot after a Secure Boot key update or a firmware setting change would leave every credential
+sealed: hjv-api would not start, and the keys that live on the server only would be lost. A
+cleared or replaced TPM still leaves them sealed; `--with-key=host` in its place keeps the TPM
+out (the runbook's 7-4 leaves that choice to the user). `keygen --encrypt-to <file>` runs
+`systemd-creds encrypt` with its defaults, hence the pipe. keygen writes the secret to the pipe
+first and then shows the public values, so they show even when systemd-creds fails; `pipefail`
+makes either failure print STOP: drop what that line showed and run it again (a new key, the file
+replaced).
 
 `keygen` never prints a secret to a terminal; `keygen seal` shows the public key for the app
 build variable `HJV_LOGIN_SEAL_PUBKEY` and its key ID on stderr. Keep the offline copy of the seal
@@ -206,7 +218,7 @@ written, the entry of the relay build's `HJV_COMMAND_PUBKEY` and of `HJV_API_COM
 (relay/PROTOCOL.md §3.2), and `fingerprint: N:<hex SHA-256>`, which `selfcheck`, the relay build's
 summary and `hjv-relay version` show too, for the one who made the key to compare. Key 1 lives
 on the server only, key 2 offline; the relays are built with both. To change keys: put key 2 in
-from standard input (`systemd-creds encrypt --name=hjviewer-api-command-key - …`), set
+from standard input (`systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-command-key - …`), set
 `HJV_API_COMMAND_KID=2`, restart; commands queued before go out as they were signed (the relays
 take both keys), and later relay builds drop key 1.
 
@@ -440,7 +452,7 @@ the lists the PCs hold, and nobody notices until every PC falls back to its pass
 
   ```sh
   { printf 'TELEGRAM_BOT_TOKEN='; systemd-ask-password -n "bot token:"; printf '\nTELEGRAM_CHAT_ID=%s\n' '<chat number>'; } |
-    sudo systemd-creds encrypt --name=hjviewer-api-telegram - /etc/credstore.encrypted/hjviewer-api-telegram
+    sudo systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-telegram - /etc/credstore.encrypted/hjviewer-api-telegram
   sudo systemctl start hjviewer-api-alert@test.service   # a test message
   ```
 

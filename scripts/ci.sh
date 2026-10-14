@@ -1235,7 +1235,9 @@ EOF
 
   if [ ${#api_files[@]} -gt 0 ]; then
     check_api_env "$pkg/systemd/hjviewer-api.env.example" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
-    # a server's own settings, e.g. a copy of /etc/hjviewer/hjviewer-api.env (nothing in it is secret)
+    # a server's own settings, e.g. a copy of /etc/hjviewer/hjviewer-api.env: no secret in it, but
+    # the copy leaves out the HJV_API_OPERATORS and HJV_API_CAMPUS_NETS lines (portal IDs and
+    # campus ranges, why only root reads the server's file: docs/server-runbook.md 7-3)
     if [ -n "${HJV_API_ENV_FILE:-}" ]; then
       check_api_env "$HJV_API_ENV_FILE" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
     fi

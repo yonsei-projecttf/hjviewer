@@ -448,8 +448,8 @@ D=/var/lib/hjviewer-api/hjv-api.sqlite3
 V=9.9.9
 $A backup /var/lib/hjviewer-api/backup/before-$V.sqlite3 | head -2
 install -d -m 700 /root/hjv-backup
-cp -p /etc/hjviewer/hjviewer-api.env /root/hjv-backup/hjviewer-api.env.before-$V
-cp -p /opt/hjviewer/bin/hjv-api /root/hjv-backup/hjv-api.before-$V
+cp -p /etc/hjviewer/hjviewer-api.env /root/hjv-backup/hjviewer-api.env-before-$V
+cp -p /opt/hjviewer/bin/hjv-api /root/hjv-backup/hjv-api-before-$V
 before=$($A report | head -1)
 # the new version's first start upgrades the schema (one past the schemas the old binary knows)
 systemctl stop hjviewer-api-check.timer hjviewer-api.socket hjviewer-api.service
@@ -462,8 +462,8 @@ journalctl -q --namespace=hjviewer -u hjviewer-api -n 30 -o cat --no-pager | gre
 # going back: the old binary, the snapshot, the settings, together
 systemctl stop hjviewer-api.socket hjviewer-api.service
 systemctl reset-failed hjviewer-api.service hjviewer-api.socket 2> /dev/null || true
-install -m 755 /root/hjv-backup/hjv-api.before-$V /opt/hjviewer/bin/hjv-api
-cp -p /root/hjv-backup/hjviewer-api.env.before-$V /etc/hjviewer/hjviewer-api.env
+install -m 755 /root/hjv-backup/hjv-api-before-$V /opt/hjviewer/bin/hjv-api
+cp -p /root/hjv-backup/hjviewer-api.env-before-$V /etc/hjviewer/hjviewer-api.env
 rm -f "$D" "$D-wal" "$D-shm"
 install -o hjviewer-api -g hjviewer-api -m 600 /var/lib/hjviewer-api/backup/before-$V.sqlite3 "$D"
 systemctl start hjviewer-api.socket hjviewer-api.service hjviewer-api-check.timer
