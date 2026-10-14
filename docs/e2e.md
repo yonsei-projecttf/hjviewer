@@ -125,7 +125,7 @@ PASS (strict): transport: relay
 **구성**
 - 443만 열린 네트워크 네임스페이스 넷: `hjv-pc`(PC), `hjv-ctl`·`hjv-ctl2`(컨트롤러), `hjv-pc2`(1.5.1 PC, 그다음 두 번째 1.6.0 PC). 네임스페이스마다 machine-id를 따로 줍니다. hjv-api가 한 계정의 기기를 앱의 uuid로 구분하기 때문입니다(같으면 한 기기의 다시 로그인으로 보고 앞 키를 폐기함).
 - 호스트 루프백에 hbbs·hbbr(패치 0004), Caddy(`deploy/Caddyfile`의 계정 경로), hjv-api(`--listen 127.0.0.1:41120`), 가짜 SSO `hjv-fake-sso`(127.0.0.1:41600). 방화벽 확인에 hbbs 콘솔, hjv-api, 가짜 SSO 포트를 더합니다. 실제 연세 SSO는 부르지 않습니다. 계정 단계의 Caddy는 `debug`로 띄워, hjv-api에 넘긴 요청마다 돌아온 상태 코드가 `caddy.log`에 남습니다(Authorization 값은 Caddy가 가림). S26이 PC의 동기화 응답을 여기서 봅니다.
-- 시험 계정은 가짜 SSO의 것입니다: alice `2026000001`(홍길동), bob `2026000002`, 명단에 넣지 않는 `Y9001`.
+- 시험 계정은 가짜 SSO의 것입니다: alice `2026000001`(홍길동), bob `2026000002`, 미리 넣지 않는 carol `Y9001`. hjv-api는 운영 기본값처럼 열린 로그인(`HJV_API_LOGIN=open`)으로 시작하고, alice와 bob만 미리 가져옵니다. carol은 처음 로그인할 때 명단에 오릅니다(S28).
 - hjv-api 시험 설정: `HJV_API_BIND_OS=windows,linux`, `HJV_API_TRUST_REFRESH=5`, `HJV_API_TRUST_TTL=30`, E2E 시험 키. 한 계정이 몇 분 안에 스무 번 넘게 로그인하므로 성공 로그인 한도와 SSO 호출 한도(`HJV_API_LIMIT_OK_ID`, `_OK_IP`, `_SSO`)는 올려 둡니다(운영값이면 한 계정의 분당 다섯 번째 SSO 호출부터 401). 비밀번호 없는 연결 스위치는 운영처럼 **꺼진 채로 시작**합니다.
 - 클라이언트는 시험 공개키(`HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`)를 넣어 빌드합니다. PC 쪽 실행 파일은 `/usr/local/lib/hjviewer-e2e/rustdesk`에 설치해 그 경로로 실행합니다. 리눅스는 `/usr` 아래의 실행 파일만 설치형으로 보고, hjv-api는 설치된 기기만 계정에 묶기 때문입니다. 리눅스 PC는 Windows의 HKLM 값을 설정 폴더의 `HJViewer_binding`(0600)에 둡니다.
 - PC에는 연결 창(CM) 대신 `--hjv-e2e-cm`을 띄워, 서비스가 연결마다 CM에 넘기는 상대 ID와 이름을 받아 적습니다.
@@ -169,16 +169,21 @@ PASS (strict): transport: relay
 | X2, X3 | 1.5.1 PC에 alice가 `""`, 1.5.1 컨트롤러가 비밀번호로 | 바로 비밀번호 창(종료 3, 2.8초 ≤ B) / 성공 |
 | K1 | 계정 키를 읽을 수 없는 동안의 계정 요청(잠긴 아이폰의 대역) | 요청을 보내지 않고 `hjv: account key unavailable`, 로그아웃 없음 |
 | K2 | 기기가 믿지 않는 인증서 앞에서 로그인, "insecure TLS fallback"을 켠 채 | 인증서 오류로 실패, SSO 호출 0(H15) |
-| S11 | bob의 틀린 비밀번호, 명단 밖 `Y9001` | 같은 실패 문구, 명단 밖 ID는 SSO 호출 0 |
+| S11 | bob의 틀린 비밀번호, 미리 넣지 않은 carol의 틀린 비밀번호 | 같은 실패 문구, SSO 호출 각 1번(열린 로그인), 실패한 로그인은 명단을 바꾸지 않음(명단 2개 그대로) |
 | D1 | 목록 요청이 나가 있는 동안 로그아웃 | 목록 요청이 200으로 답을 받았고(그래야 키 확인을 지남), 뒤늦게 온 목록이 `hjv-my-devices`를 다시 만들지 않음 |
 | S27 | 컨트롤러 시계 +15분(`libfaketime`) | 첫 요청 409 `clock`, 토큰·`hjv-my-devices` 그대로, `hjv-clock-offset` -900. 다음 프로세스부터 목록과 `""` 성공. 로그인도 시계 문구 뒤 다시 하면 성공 |
 | X7b | X7 뒤 hjv-api가 hbbs의 새 키를 봄 → 목록 새로 고침 → `""` → PC에서 다시 로그인 → `""` | 65초 뒤 `needs-relogin`, 경고 없이 비밀번호 창(종료 3). 다시 로그인하면 새 키로 `active`, 성공 |
 | X4 | 두 번째 1.6.0 PC(alice)가 컨트롤러 | 두 번째 PC의 목록에 자기 자신은 없음, 성공(PC → PC) |
+| S28 | hjv-ctl2(D1 뒤로 비어 있음)에서 미리 넣지 않은 carol이 로그인 | 성공(SSO 호출 1번). `allow list` 첫 줄 `allowlist: 3 IDs, 3 registered (1 by a login), 0 blocked; login open`, carol의 항목은 `from login`. hjv-api 로그에 `… was registered (acct=<꼬리표>)` 한 줄, 로그와 가린 명단에 carol의 ID 없음 |
+| S29 | `admin block Y9001` | 출력 `blocked: 1 blocked …, 1 tokens and 1 account keys revoked; …`. carol의 기기 목록 요청이 바로 401. 틀린 비밀번호는 bob과 같은 실패 문구, 맞는 비밀번호는 SSO를 거친 뒤 403 `이 계정은 관리자가 HJViewer 사용을 막았습니다. 다시 쓰려면 관리자에게 문의하세요.`(SSO 호출 각 1번) |
+| S30 | `admin unblock Y9001` | carol이 다시 로그인하고 기기 목록 성공 |
+| S31 | `admin user delete Y9001`(명단 항목도 함께 지워짐) → hjv-api를 `HJV_API_LOGIN=list`로 다시 시작 | `report` 둘째 줄 `login: list (…)`. 명단에 없는 carol은 맞는 비밀번호로도 틀린 비밀번호와 같은 실패 문구, SSO 호출 0. 미리 넣은 bob은 로그인 성공 |
 | S20 | 실행 폴더 전체(Caddy의 debug 로그 포함)에서 포탈 비밀번호 4개, 토큰·계정 키 30개, hjv-api의 키 셋(봉인·목록·기록) 찾기 | 각 클라이언트의 LocalConfig 파일 밖에는 없음. hjv-api의 키는 자격 증명 폴더 밖에는 없음 |
 | S21 | open 모드에서 `""` | `direct (P2P)`로 성공(2.9초) |
 
 - 걸린 시간: `scripts/ci.sh e2e` 전체 7분 42초~9분 12초(다섯 번, 같은 PC에서 다른 빌드가 도는 정도에 따라). 그중 strict 약 5분 50초(계정 단계 약 5분 30초), open 약 22초이고, 나머지는 새로 받은 트리의 클라이언트 빌드와 계정 단위 시험입니다(각각 42~47초, 다른 빌드와 겹치면 1분~1분 40초). 맨 처음 한 번은 의존성 전체(클라이언트 2분 29초, 단위 시험 1분 49초, hjv-api 42초)와 1.5.1 클라이언트(2분 45초), Caddy와 `libfaketime`을 준비하느라 13분 55초가 걸렸습니다.
 - 기다림이 긴 곳은 둘입니다: S13b(목록 수명 30초)와 X7b(아래).
+- S11과 S28~S31은 열린 로그인(2026-10-14 사용자 결정)을 넣으며 바꾸거나 더한 시나리오입니다. 명단 방식으로 다시 시작하는 S31은 X7b의 1분 확인을 건드리지 않도록 X4 뒤에 둡니다(hjv-api를 다시 시작하면 "같은 PC는 1분에 한 번"의 기억이 사라져, X7b가 기다리는 다시 묻기가 1분을 채우지 않고 일어남).
 
 **고침을 되돌렸을 때 실패하는지**: 다섯 군데를 되돌린 클라이언트로 같은 스크립트를 돌려, 해당 시나리오만 실패하는 것을 확인했습니다(커밋하지 않은 확인용 빌드). H21의 이름 훅을 빼면 S9, 로그아웃이 거둔 묶기 요청의 확인을 버리는 처리를 빼면 R3(로그아웃한 PC가 묶이고 `""`가 들어감), 포트 포워딩의 키 비교 순서를 되돌리면 X7(비밀번호가 나가 포워딩이 붙음), 계정 요청의 엄격 TLS(H15)를 빼면 K2, 로그아웃 뒤 목록 확인을 빼면 D1이 실패했습니다.
 
