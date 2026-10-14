@@ -662,6 +662,7 @@ start_systemd_api() { # <unpacked package>
   sed -e 's/^HJV_API_SSO_CLIENT_ID=.*/HJV_API_SSO_CLIENT_ID=hjv-ci/' \
     -e "s#^HJV_API_HBBS_PUBKEY=.*#HJV_API_HBBS_PUBKEY=$(sudo cat /var/lib/hjv-ci/id_ed25519.pub)#" \
     "$pkg/systemd/hjviewer-api.env.example" | sudo tee /run/hjv-ci/hjviewer-api.env > /dev/null
+  sudo chmod 600 /run/hjv-ci/hjviewer-api.env  # root only, as docs/server-runbook.md 7-3 installs it
   sed -e 's/^User=hjviewer-api$/DynamicUser=yes\nUser=hjv-ci-api/' -e '/^Group=hjviewer-api$/d' \
     -e 's#/etc/hjviewer/hjviewer-api.env#/run/hjv-ci/hjviewer-api.env#' \
     -e 's#/var/lib/hjviewer-api#/var/lib/hjv-ci-api#g' -e 's/^StateDirectory=hjviewer-api$/StateDirectory=hjv-ci-api/' \
@@ -814,7 +815,7 @@ install -m 755 bin/* /opt/hjviewer/bin/
 install -m 644 LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt /opt/hjviewer/share/
 install -m 644 web/* /opt/hjviewer/share/web/
 sed 's/^HJV_DOMAIN=.*/HJV_DOMAIN=rd.example.com/' systemd/hjviewer.env.example > /etc/hjviewer/hjviewer.env
-install -m 644 systemd/hjviewer-api.env.example /etc/hjviewer/hjviewer-api.env
+install -m 600 systemd/hjviewer-api.env.example /etc/hjviewer/hjviewer-api.env
 units=()
 for u in systemd/*.service systemd/*.socket systemd/*.timer; do
   [ -e "$u" ] || continue

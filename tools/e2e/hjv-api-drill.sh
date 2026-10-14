@@ -62,9 +62,10 @@ client() { # <host> <phase> [NAME=value...]
   d exec "${envs[@]}" "$host" /pkg/drill/drill-client --ignored --exact "$phase" --nocapture --test-threads 1 2>&1 |
     grep -vE '^(running [0-9]+ test|test result: |$)' || fail "the drill client's $phase"
 }
-# a credential from a file on the removable medium, through standard input (runbook 7-4)
+# a credential from a file on the removable medium, through standard input (runbook 7-4: bound to
+# no PCR, --tpm2-pcrs= with an empty value)
 cred_from() { # <host> <credential> <file>
-  d exec -i "$1" systemd-creds encrypt -q --name="$2" - "/etc/credstore.encrypted/$2" < "$3"
+  d exec -i "$1" systemd-creds encrypt -q --tpm2-pcrs= --name="$2" - "/etc/credstore.encrypted/$2" < "$3"
 }
 cleanup() { d rm -f "$A" "$B" > /dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -163,7 +164,7 @@ cd /pkg
 getent passwd hjviewer-api > /dev/null || useradd --system --user-group --home-dir /var/lib/hjviewer-api --no-create-home --shell /usr/sbin/nologin hjviewer-api
 install -d -m 755 /opt/hjviewer/bin /etc/hjviewer
 install -m 755 bin/hjv-api /opt/hjviewer/bin/
-install -m 644 systemd/hjviewer-api.env.example /etc/hjviewer/hjviewer-api.env
+install -m 600 systemd/hjviewer-api.env.example /etc/hjviewer/hjviewer-api.env
 units=()
 for u in systemd/hjviewer-api*.socket systemd/hjviewer-api*.service systemd/hjviewer-api*.timer; do
   [ -e "$u" ] || continue
@@ -251,7 +252,7 @@ step "A: runbook 7-4, the keys as credentials (systemd-creds; the user's step)"
 on "$A" "SSO_BASIC=$SSO_BASIC" "SSO_API_UUID=$SSO_API_UUID" "LOG_KEY=$LOG_KEY" "LIST_KEY_1=$LIST_KEY_1" "TOKEN=$TOKEN" << 'EOF'
 set -euo pipefail
 install -d -m 700 /etc/credstore.encrypted
-c() { systemd-creds encrypt -q --name="$1" - "/etc/credstore.encrypted/$1"; }
+c() { systemd-creds encrypt -q --tpm2-pcrs= --name="$1" - "/etc/credstore.encrypted/$1"; }
 printf '%s' "$SSO_BASIC" | c hjviewer-sso-client-secret
 printf '%s' "$SSO_API_UUID" | c hjviewer-sso-api-uuid
 printf '%s\n' "$LOG_KEY" | c hjviewer-api-log-key
@@ -261,10 +262,12 @@ printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$TOKEN" -1001234 | c hjvi
 EOF
 # the seal key from the removable medium
 cred_from "$A" hjviewer-api-login-key "$offline/hjviewer-seal.key"
-# command key 1, made on the server: its secret goes straight into systemd-creds, its public key
-# (the one line on the screen) next to key 2's into the settings and the relay build
-screen=$(d exec "$A" /opt/hjviewer/bin/hjv-api keygen command --kid 1 \
-  --encrypt-to /etc/credstore.encrypted/hjviewer-api-command-key 2>&1 || true)
+# command key 1, made on the server: its secret goes from keygen's standard output straight into
+# systemd-creds (as the runbook pipes it, for --tpm2-pcrs=), its public key (the one line on the
+# screen) next to key 2's into the settings and the relay build
+screen=$(d exec "$A" sh -c '/opt/hjviewer/bin/hjv-api keygen command --kid 1 |
+  systemd-creds encrypt -q --tpm2-pcrs= --name=hjviewer-api-command-key - /etc/credstore.encrypted/hjviewer-api-command-key' 2>&1) ||
+  fail "keygen command --kid 1 | systemd-creds encrypt: $screen"
 COMMAND_PUBKEY_1=$(printf '%s\n' "$screen" | sed -n '/^1:/p')
 COMMAND_FINGERPRINT_1=$(printf '%s\n' "$screen" | sed -n 's/^fingerprint: //p')
 case $COMMAND_PUBKEY_1 in 1:*) ;; *) fail "keygen command --kid 1 showed no public key" ;; esac
@@ -460,7 +463,7 @@ journalctl -q --namespace=hjviewer -u hjviewer-api -n 30 -o cat --no-pager | gre
 systemctl stop hjviewer-api.socket hjviewer-api.service
 systemctl reset-failed hjviewer-api.service hjviewer-api.socket 2> /dev/null || true
 install -m 755 /root/hjv-backup/hjv-api.before-$V /opt/hjviewer/bin/hjv-api
-install -m 644 /root/hjv-backup/hjviewer-api.env.before-$V /etc/hjviewer/hjviewer-api.env
+cp -p /root/hjv-backup/hjviewer-api.env.before-$V /etc/hjviewer/hjviewer-api.env
 rm -f "$D" "$D-wal" "$D-shm"
 install -o hjviewer-api -g hjviewer-api -m 600 /var/lib/hjviewer-api/backup/before-$V.sqlite3 "$D"
 systemctl start hjviewer-api.socket hjviewer-api.service hjviewer-api-check.timer
@@ -506,10 +509,10 @@ install_api "$B"
 on "$B" "SSO_BASIC=$SSO_BASIC" "SSO_API_UUID=$SSO_API_UUID" << 'EOF'
 set -euo pipefail
 install -d -m 700 /etc/credstore.encrypted
-c() { systemd-creds encrypt -q --name="$1" - "/etc/credstore.encrypted/$1"; }
+c() { systemd-creds encrypt -q --tpm2-pcrs= --name="$1" - "/etc/credstore.encrypted/$1"; }
 printf '%s' "$SSO_BASIC" | c hjviewer-sso-client-secret
 printf '%s' "$SSO_API_UUID" | c hjviewer-sso-api-uuid
-/opt/hjviewer/bin/hjv-api keygen log-key --encrypt-to /etc/credstore.encrypted/hjviewer-api-log-key
+/opt/hjviewer/bin/hjv-api keygen log-key | c hjviewer-api-log-key
 EOF
 cred_from "$B" hjviewer-api-login-key "$offline/hjviewer-seal.key"
 cred_from "$B" hjviewer-api-list-key "$offline/hjviewer-list-2.key"
