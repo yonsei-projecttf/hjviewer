@@ -8,6 +8,8 @@
 # scripts/package-relay.sh; in the private build repository a draft release gets the package.
 # `check_only` makes a check build: no public key needed, artifacts named -check and kept a day,
 # nothing uploaded to TestFlight or Google Play, no release (design v3 6-4).
+# Every platform job pins the update keys of client/update-keys.env and puts release.json and
+# SHA256SUMS beside its package, for tools/hjv-release (minimum version design 6-4).
 # Variables, signing secrets, run times and billing are documented in docs/ci.md.
 name: client
 
@@ -85,16 +87,17 @@ env:
   HJV_SERVER: ${{ inputs.server || secrets.HJV_SERVER || vars.HJV_SERVER }}
   HJV_SERVER_KEY: ${{ inputs.server_key || secrets.HJV_SERVER_KEY || vars.HJV_SERVER_KEY }}
   # The account features' public keys, pinned the same way (design v3 6-4): the key that seals
-  # login passwords, the two trust-list keys and, from the minimum-version work, the update keys.
+  # login passwords and the two trust-list keys.
   # Not secret; the build repository keeps them as secrets like the server values. A build that
-  # lacks one of the first two has no account features, like 1.5.1; "Check the pinned public keys"
+  # lacks one of them has no account features, like 1.5.1; "Check the pinned public keys"
   # requires them in the build repository's runs of version 1.6.0 and later.
   HJV_LOGIN_SEAL_PUBKEY: ${{ secrets.HJV_LOGIN_SEAL_PUBKEY || vars.HJV_LOGIN_SEAL_PUBKEY }}
   HJV_TRUST_PUBKEYS: ${{ secrets.HJV_TRUST_PUBKEYS || vars.HJV_TRUST_PUBKEYS }}
-  # Optional until the minimum-version work. If that work pins the update keys in a committed file
-  # instead (its design does), this line goes in the same change: a value set here and one a step
-  # exports from that file must not both set HJV_UPDATE_PUBKEY, and the check then requires it.
-  HJV_UPDATE_PUBKEY: ${{ secrets.HJV_UPDATE_PUBKEY || vars.HJV_UPDATE_PUBKEY }}
+  # The update keys of the minimum-version work (HJV_UPDATE_PUBKEY, HJV_UPDATE_ROOT_PUBKEY and
+  # HJV_POLICY_FLOOR) are not set here, on purpose: every platform job takes them from
+  # client/update-keys.env of the checked-out source ("Pin the update keys"), so that no secret
+  # or variable of the repository that runs this workflow can change whom the apps believe about
+  # versions and updates (minimum version design 6-4). Never add them to an `env:` of this file.
   # check_only: a check build's artifacts carry -check in their names and are kept one day
   BUILD_SUFFIX: ${{ inputs.check_only && '-check' || '' }}
   # Tool versions copied from upstream at RUSTDESK_COMMIT; bump them together with scripts/upstream.env.
@@ -184,12 +187,15 @@ jobs:
       # seal and trust-list keys (unless check_only), and any run with a malformed key or a public
       # test key of this repository; elsewhere these are warnings. The keys' SHA-256 fingerprints
       # go to the run summary, to compare with hjv-api selfcheck before tagging (docs/ci.md).
+      # The update keys come from client/update-keys.env: such a run fails as well when that file
+      # holds no keys (unless check_only) or a public test key, and every run fails when the file
+      # is malformed (minimum version design 6-4).
       - name: Check the pinned public keys
         working-directory: ${{ github.workspace }}
         env:
           CALLED: ${{ inputs.source_ref }}
           CHECK_ONLY: ${{ inputs.check_only }}
-        run: python3 -I scripts/check-build-keys.py --version-file client/version.env
+        run: python3 -I scripts/check-build-keys.py --version-file client/version.env --update-keys client/update-keys.env
 
       - name: Fetch upstream and apply hjviewer patches
         working-directory: ${{ github.workspace }}
@@ -254,13 +260,15 @@ jobs:
           ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
           cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
 
-      # bridge.yml L106-116
+      # bridge.yml L106-116. Kept as long as the packages, not upstream's one day: a platform job
+      # that "Re-run failed jobs" starts again restores it, and tools/hjv-release takes the
+      # packages of a successful run only (docs/ci.md, "릴리스 기록")
       - name: Upload Artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bridge-artifact
           if-no-files-found: error
-          retention-days: 1
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
           path: |
             upstream/rustdesk/src/bridge_generated.rs
             upstream/rustdesk/src/bridge_generated.io.rs
@@ -315,13 +323,16 @@ jobs:
       # tests those patches add or update must be there, so a dropped patch fails the job. The
       # gesture and quality monitor tests need the generated bridge. hjviewer_account_test.dart
       # holds the account screens' pure tests (design v3 7-5), hjviewer_account_widgets_test.dart
-      # their tests that need the generated bridge, with the wake menu's (client patches 0033, 0036).
+      # their tests that need the generated bridge, with the wake menu's (client patches 0033, 0036);
+      # hjv_update_test.dart those of the update screens and hjv_update_gate_test.dart their gate's,
+      # which needs the bridge (minimum version design 6-4).
       - name: Run the tests
         run: |
           for t in test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart \
             test/mobile_gestures_test.dart test/common/widgets/gestures_test.dart \
             test/quality_monitor_transport_test.dart test/hjviewer_account_test.dart \
-            test/hjviewer_account_widgets_test.dart; do
+            test/hjviewer_account_widgets_test.dart test/hjv_update_test.dart \
+            test/hjv_update_gate_test.dart; do
             if [ ! -f "$t" ]; then echo "::error::$t is not in the patched tree"; exit 1; fi
           done
           flutter pub get
@@ -359,6 +370,18 @@ jobs:
           git config core.eol lf
           git rm -q --cached -r .
           git reset -q --hard
+
+      # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
+      # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
+      # and from nowhere else: after the same check as in the Bridge codegen job, the file's
+      # values go to the steps below, where cargo reads them (minimum version design 6-4).
+      - name: Pin the update keys
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          CALLED: ${{ inputs.source_ref }}
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: python3 -I scripts/check-build-keys.py --pin-update-keys --version-file client/version.env --update-keys client/update-keys.env
 
       - name: Fetch upstream and apply hjviewer patches
         working-directory: ${{ github.workspace }}
@@ -554,6 +577,23 @@ jobs:
             rustdesk/usbmmidd_v2/License.txt "Amyuni USB Mobile Monitor virtual display driver (usbmmidd_v2)" \
             "$RUNNER_TEMP/RustDeskTempTopMostWindow/LICENSE" "RustDeskTempTopMostWindow (WindowInjection.dll)"
 
+      # Not in upstream. What this build says about its package (release.json: platform, version,
+      # build, file, size, SHA-256, source commit, run, workflow) and the hashes of the files the
+      # upload below takes (SHA256SUMS), by scripts/release-info.py. tools/hjv-release looks for
+      # the package and this release.json among the run's artifacts before a version policy may
+      # name the package (minimum version design 4-5, docs/ci.md). A check build gets no
+      # release.json. The package's hash goes to the run summary. The build number is the
+      # installed app's file version, <version>.<run number>, as scripts/set-client-version.sh
+      # wrote it into pubspec.yaml.
+      - name: Write release.json and SHA256SUMS
+        shell: bash
+        env:
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: |
+          build=$(sed -n 's/^version: \([0-9.]*\)+\([0-9]*\).*/\1.\2/p' flutter/pubspec.yaml)
+          python3 -I "$GITHUB_WORKSPACE/scripts/release-info.py" --platform windows --dir SignOutput \
+            --file HJViewer.exe --also HJViewer-install.exe --build "$build"
+
       - name: Upload Windows build (unsigned)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -562,6 +602,8 @@ jobs:
             upstream/rustdesk/SignOutput/HJViewer.exe
             upstream/rustdesk/SignOutput/HJViewer-install.exe
             upstream/rustdesk/SignOutput/*.txt
+            upstream/rustdesk/SignOutput/release.json
+            upstream/rustdesk/SignOutput/SHA256SUMS
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
@@ -571,6 +613,7 @@ jobs:
       # registers a device on the real server. Advisory (continue-on-error) until it has passed on a
       # few builds; the step's own result shows in the run summary.
       - name: Install smoke test
+        id: install-smoke
         if: env.HJV_SERVER != ''
         continue-on-error: true
         timeout-minutes: 10
@@ -602,6 +645,137 @@ jobs:
           foreach ($f in $failed) { Write-Host "::error::$f" }
           if ($failed) { exit 1 }
           Write-Host 'HJViewer is installed and will start with Windows.'
+
+      # Not in upstream. An installed PC updates itself with nobody at it: its service starts the
+      # new HJViewer-<version>.exe as SYSTEM with --update (minimum version design 5-1). No older
+      # build exists here to update from, so a scheduled task runs this same build that way over
+      # the install of the step above, and the checks are an update's: the installed HJViewer.exe
+      # was written anew, the service is automatic and running, the version in Windows' list of
+      # apps is unchanged, and the update's own log says that it completed. The server's name
+      # still points at 127.0.0.1. Advisory (continue-on-error) like the install smoke test.
+      - name: Update smoke test
+        if: env.HJV_SERVER != '' && steps.install-smoke.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
+          if (-not (Select-String -Path $hosts -Pattern "127.0.0.1 $env:HJV_SERVER" -SimpleMatch -Quiet)) {
+            Add-Content -Path $hosts -Value "`n127.0.0.1 $env:HJV_SERVER"
+            Clear-DnsClientCache
+          }
+          $version = (Select-String -Path "$env:GITHUB_WORKSPACE\client\version.env" -Pattern '^HJV_VERSION=(\S+)$').Matches[0].Groups[1].Value
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\HJViewer'
+          $exe = Join-Path $env:ProgramFiles 'HJViewer\HJViewer.exe'
+          $before = (Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).DisplayVersion
+          $written = (Get-Item $exe).LastWriteTimeUtc
+          # the file under a name as the service gives it: no "install.exe" at the end, no "-qs-"
+          $dir = Join-Path $env:RUNNER_TEMP 'hjv-update-smoke'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $pkg = Join-Path $dir "HJViewer-$version.exe"
+          Copy-Item -Path (Resolve-Path .\SignOutput\HJViewer.exe) -Destination $pkg -Force
+          $task = 'HJViewer update smoke test'
+          $action = New-ScheduledTaskAction -Execute "`"$pkg`"" -Argument '--update'
+          $principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+          Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+          # the app logs --update under SYSTEM's profile, which it maps to LocalService's
+          $logs = @("$env:SystemRoot\ServiceProfiles\LocalService\AppData\Roaming\HJViewer\log\update",
+            "$env:SystemRoot\System32\config\systemprofile\AppData\Roaming\HJViewer\log\update")
+          $failed = @()
+          $log = $null
+          $text = ''
+          $svc = $null
+          $start = (Get-Date).AddSeconds(-5)
+          try {
+            Start-ScheduledTask -TaskName $task
+            # The packer unpacks into SYSTEM's profile, starts the app with --update and ends; the
+            # app stops the service, copies its files over the installed ones, starts the service
+            # and writes the last line of its log.
+            $deadline = (Get-Date).AddMinutes(6)
+            do {
+              Start-Sleep -Seconds 5
+              $log = Get-ChildItem -Path $logs -Filter *.log -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -ge $start } | Sort-Object LastWriteTime | Select-Object -Last 1
+              if ($log) { $text = Get-Content -Path $log.FullName -Raw -ErrorAction SilentlyContinue }
+            } until ($text -match 'Update completed\.|Failed with error|Error preparing' -or (Get-Date) -gt $deadline)
+            $deadline = (Get-Date).AddMinutes(2)
+            do {
+              Start-Sleep -Seconds 5
+              $svc = Get-CimInstance Win32_Service -Filter "Name='HJViewer'" -ErrorAction SilentlyContinue
+            } until (($svc -and $svc.State -eq 'Running') -or (Get-Date) -gt $deadline)
+            # the packer's exit code, once the task has ended (267009: the task still runs)
+            $result = (Get-ScheduledTaskInfo -TaskName $task).LastTaskResult
+            Write-Host "the task that ran the packer as SYSTEM: last result $result"
+            if ($result -ne 0 -and $result -ne 267009) { $failed += "the packer ended with $result as SYSTEM (32: a file of the app was in use; 267011: the task never ran)" }
+          } finally {
+            Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+          }
+          if ($log) {
+            Write-Host "the update's log, $($log.FullName):"
+            Get-Content -Path $log.FullName -Tail 25 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
+          }
+          if ($text -notmatch 'Update completed\.') { $failed += "the update's log does not say 'Update completed.' (looked in $($logs -join ' and '))" }
+          if ($svc) { Write-Host "service: $($svc.StartMode) $($svc.State) $($svc.PathName)" }
+          if (-not $svc -or $svc.StartMode -ne 'Auto' -or $svc.State -ne 'Running') { $failed += 'the HJViewer service is not automatic and running after the update' }
+          $after = (Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).DisplayVersion
+          Write-Host "DisplayVersion: '$before' before the update, '$after' after it; client/version.env: $version"
+          if ($after -ne $before -or $after -ne $version) { $failed += "DisplayVersion is '$after' after the update (before it: '$before'; client/version.env: $version)" }
+          if (-not (Test-Path $exe) -or (Get-Item $exe).LastWriteTimeUtc -le $written) { $failed += "$exe was not written anew by the update" }
+          if (-not (Select-String -Path $hosts -Pattern "127.0.0.1 $env:HJV_SERVER" -SimpleMatch -Quiet)) { $failed += 'the hosts line that keeps this runner off the real server is gone' }
+          foreach ($f in $failed) { Write-Host "::error::$f" }
+          if ($failed) { exit 1 }
+          Write-Host 'The update as SYSTEM left HJViewer installed, with its service running.'
+
+      # Not in upstream. The packer of a build pinned to a server starts nothing while it cannot
+      # put its files in place, as when an older HJViewer still runs from the folder it unpacks
+      # into: it ends with exit code 32 (minimum version design 5-3, libs/portable/src/hjv_guard.rs).
+      # Here other bytes stand in for the older HJViewer.exe, held open as Windows holds the file
+      # of a running program: nobody can write or delete it. The packer is started with --update,
+      # with which it shows no message box that would wait for a person. Advisory
+      # (continue-on-error) like the install smoke test.
+      - name: Packer guard smoke test
+        if: env.HJV_SERVER != ''
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA 'hjviewer'
+          $inner = Join-Path $dir 'HJViewer.exe'
+          $from = { @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($dir, [System.StringComparison]::OrdinalIgnoreCase) }) }
+          # nothing of the steps above still runs from that folder
+          & $from | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 2
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $old = [System.Text.Encoding]::ASCII.GetBytes('an older HJViewer.exe (packer guard smoke test)')
+          try {
+            [System.IO.File]::WriteAllBytes($inner, $old)
+            $hold = [System.IO.File]::Open($inner, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+          } catch {
+            Write-Host "::error::the stand-in for an older HJViewer.exe could not be put in place: $_"
+            exit 1
+          }
+          $failed = @()
+          try {
+            $p = Start-Process -FilePath (Resolve-Path .\SignOutput\HJViewer.exe) -ArgumentList '--update' -PassThru
+            $null = $p.Handle
+            if (-not $p.WaitForExit(120000)) {
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              $failed += 'the packer did not end within two minutes'
+            } elseif ($p.ExitCode -ne 32) {
+              $failed += "the packer ended with exit code $($p.ExitCode), not 32: it did not stop at the file in use"
+            }
+            Start-Sleep -Seconds 3
+            $started = @(& $from)
+            if ($started.Count -gt 0) { $failed += "$($started.Count) process(es) run from $dir after the packer: it started the app" }
+          } finally {
+            $hold.Dispose()
+          }
+          if ([System.IO.File]::ReadAllBytes($inner).Length -ne $old.Length) { $failed += 'the file in use was replaced' }
+          Remove-Item -Path $inner -Force -ErrorAction SilentlyContinue
+          foreach ($f in $failed) { Write-Host "::error::$f" }
+          if ($failed) { exit 1 }
+          Write-Host 'The packer started nothing while a file of the app was in use (exit code 32).'
 
   # upstream: L1036-1327 (build-rustdesk-android), aarch64 matrix entry L1044-1050. Dropped: the
   # armv7/x86_64 entries, the universal APK job (L1329-1512), the librustdesk.so upload and the release
@@ -707,6 +881,18 @@ jobs:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ needs.generate-bridge.outputs.source_sha }}
           persist-credentials: false
+
+      # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
+      # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
+      # and from nowhere else: after the same check as in the Bridge codegen job, the file's
+      # values go to the steps below, where cargo reads them (minimum version design 6-4).
+      - name: Pin the update keys
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          CALLED: ${{ inputs.source_ref }}
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: python3 -I scripts/check-build-keys.py --pin-update-keys --version-file client/version.env --update-keys client/update-keys.env
 
       - name: Fetch upstream and apply hjviewer patches
         working-directory: ${{ github.workspace }}
@@ -876,6 +1062,23 @@ jobs:
             "$ANDROID_NDK_HOME/NOTICE" "?Android NDK, including libc++_shared.so" \
             "$ANDROID_NDK_HOME/NOTICE.toolchain" "?Android NDK toolchain"
 
+      # Not in upstream. release.json and SHA256SUMS, as in the Windows job. The package is the APK
+      # that one of the two uploads below takes; its versionCode, the build number, is read from
+      # the APK. A debug-signed APK, which installs over no user's app, gets no release.json; nor
+      # does the Play bundle's artifact: tools/hjv-release takes one Android package of a run.
+      # From 1.6.0 the step also fails an APK whose manifest lacks the in-app update or declares
+      # something of the controlled side (docs/ci.md, "Android 매니페스트 확인").
+      - name: Write release.json and SHA256SUMS
+        shell: bash
+        env:
+          CHECK_ONLY: ${{ inputs.check_only }}
+          SIGNED_APK: ${{ steps.sign-apk.outputs.signedReleaseFile }}
+        run: |
+          apk="$BUILD_NAME-android-aarch64.apk" unreleased=debug-signed
+          if [ "$ANDROID_SIGNING" = true ]; then apk=$(basename "$SIGNED_APK") unreleased=; fi
+          python3 -I "$GITHUB_WORKSPACE/scripts/release-info.py" --platform android --dir signed-apk --file "$apk" \
+            --unreleased "$unreleased"
+
       # L1304-1309
       - name: Upload signed APK
         if: env.ANDROID_SIGNING == 'true' && steps.sign-apk.outputs.signedReleaseFile != ''
@@ -885,6 +1088,8 @@ jobs:
           path: |
             ${{ steps.sign-apk.outputs.signedReleaseFile }}
             upstream/rustdesk/signed-apk/*.txt
+            upstream/rustdesk/signed-apk/release.json
+            upstream/rustdesk/signed-apk/SHA256SUMS
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
@@ -896,6 +1101,8 @@ jobs:
           path: |
             upstream/rustdesk/signed-apk/${{ env.BUILD_NAME }}-android-aarch64.apk
             upstream/rustdesk/signed-apk/*.txt
+            upstream/rustdesk/signed-apk/release.json
+            upstream/rustdesk/signed-apk/SHA256SUMS
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
@@ -1231,6 +1438,18 @@ jobs:
           ref: ${{ needs.generate-bridge.outputs.source_sha }}
           persist-credentials: false
 
+      # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
+      # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
+      # and from nowhere else: after the same check as in the Bridge codegen job, the file's
+      # values go to the steps below, where cargo reads them (minimum version design 6-4).
+      - name: Pin the update keys
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          CALLED: ${{ inputs.source_ref }}
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: python3 -I scripts/check-build-keys.py --pin-update-keys --version-file client/version.env --update-keys client/update-keys.env
+
       - name: Fetch upstream and apply hjviewer patches
         working-directory: ${{ github.workspace }}
         run: |
@@ -1462,7 +1681,10 @@ jobs:
         shell: bash
         run: |
           pushd flutter
-          flutter build ipa --release --export-options-plist="$IOS_EXPORT_OPTIONS" --build-number "$BUILD_NUMBER"
+          # HJV_IOS_EXPORT tells the app how it is handed out: only an app-store-connect build can
+          # be updated in TestFlight, and the update screen says so (minimum version design 5-5)
+          flutter build ipa --release --export-options-plist="$IOS_EXPORT_OPTIONS" --build-number "$BUILD_NUMBER" \
+            --dart-define=HJV_IOS_EXPORT="$IOS_EXPORT_METHOD"
           popd
           mkdir -p ios-out
           mv flutter/build/ios/ipa/*.ipa "ios-out/$BUILD_NAME-ios.ipa"
@@ -1476,6 +1698,21 @@ jobs:
           ls ios-out/*.ipa > /dev/null
           bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" ios-out .
 
+      # Not in upstream. release.json and SHA256SUMS, as in the Windows job. The build number is the
+      # IPA's CFBundleVersion, read from the IPA: the number a TestFlight build is known by. An
+      # unsigned IPA, which installs nowhere, gets no release.json.
+      - name: Write release.json and SHA256SUMS
+        shell: bash
+        env:
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: |
+          ipas=(ios-out/*.ipa)
+          if [ ${#ipas[@]} != 1 ]; then echo "::error::ios-out holds ${#ipas[@]} IPAs, not one"; exit 1; fi
+          unreleased=unsigned
+          if [ "$IOS_SIGNING" = true ]; then unreleased=; fi
+          python3 -I "$GITHUB_WORKSPACE/scripts/release-info.py" --platform ios --dir ios-out --file "$(basename "${ipas[0]}")" \
+            --unreleased "$unreleased"
+
       - name: Upload IPA
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1483,6 +1720,8 @@ jobs:
           path: |
             upstream/rustdesk/ios-out/*.ipa
             upstream/rustdesk/ios-out/*.txt
+            upstream/rustdesk/ios-out/release.json
+            upstream/rustdesk/ios-out/SHA256SUMS
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
