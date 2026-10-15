@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Thu, 15 Oct 2026 12:57:28 +0900
+Subject: [PATCH 49/49] hjviewer: the iPhone Korean keyboard's own selection
+ stays
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A device log of 2026-10-15 (the opt-in keyboard log of patch 0020) shows how
+the iOS Korean keyboard edits the hidden field: to compose a syllable and to
+delete a jamo it selects the jamo or syllable before the caret and replaces
+it, with no composing range. _keepIOSSoftKeyboardCaretAtEnd (patch 0015)
+moved the caret to the end as soon as that selection appeared, and broke the
+keyboard's edit: 한글입력 typed left ㅎㄴㄱㄹㅇㅂㄹㄱ (the vowels lost), and
+every Backspace after the first put the deleted jamo back and deleted it
+again, so nothing reached the remote side and the next letter sent the jamo
+again.
+
+softKeyboardCaretNeedsMoving keeps a selection that ends at the end and lies
+in the typed text; a caret or a selection that ends before the end, or
+reaches into the filler (the space-bar trackpad, two keys at once), still
+goes back to the end. Tests: the decision on the log's values, and the
+select-and-replace steps of composing 한글 and deleting it jamo by jamo.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/mobile/pages/remote_page.dart   |  8 ++--
+ flutter/lib/models/soft_keyboard_input.dart | 16 +++++++
+ flutter/test/soft_keyboard_input_test.dart  | 47 +++++++++++++++++++++
+ 3 files changed, 67 insertions(+), 4 deletions(-)
+
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index fd02270..b96fa0d 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -315,13 +315,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+ 
+   // Two keys pressed at once or the space-bar trackpad move the caret or
+   // select text in the hidden field, and typing there would replay filler
+-  // characters. The remote side has no such caret: keep it at the end.
++  // characters. The remote side has no such caret: keep it at the end, but
++  // leave the Korean keyboard's own selection of the text before the caret
++  // (softKeyboardCaretNeedsMoving).
+   void _keepIOSSoftKeyboardCaretAtEnd() {
+     final value = _textController.value;
+     final end = value.text.length;
+-    if (value.isComposingRangeValid ||
+-        !value.selection.isValid ||
+-        (value.selection.isCollapsed && value.selection.baseOffset == end)) {
++    if (!softKeyboardCaretNeedsMoving(value)) {
+       return;
+     }
+     scheduleMicrotask(() {
+diff --git a/flutter/lib/models/soft_keyboard_input.dart b/flutter/lib/models/soft_keyboard_input.dart
+index 6fa48fb..6ee559f 100644
+--- a/flutter/lib/models/soft_keyboard_input.dart
++++ b/flutter/lib/models/soft_keyboard_input.dart
+@@ -92,6 +92,22 @@ bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
+ bool softKeyboardFillerRunsLow(TextEditingValue value, {int minimum = 512}) =>
+     !value.isComposingRangeValid && _fillerLength(value.text) < minimum;
+ 
++/// Whether the caret of the hidden iOS field has to go back to the end: the
++/// caret or the selection ends before the end (two keys pressed at once, the
++/// space-bar trackpad), where typing would replay filler characters.
++///
++/// A selection that ends at the end and lies in the typed text is the Korean
++/// keyboard's own. On a device (2026-10-15 log) it composes and deletes by
++/// selecting the jamo or syllable before the caret and replacing it, with no
++/// composing range; moving the caret in between broke that edit: the vowels
++/// of 한글입력 were lost, and a deleted jamo came back on every Backspace.
++bool softKeyboardCaretNeedsMoving(TextEditingValue value) {
++  final selection = value.selection;
++  if (value.isComposingRangeValid || !selection.isValid) return false;
++  if (selection.end != value.text.length) return true;
++  return !selection.isCollapsed && selection.start < _fillerLength(value.text);
++}
++
+ /// The number of filler characters ('1', see remote_page.dart `initText`) the
+ /// field starts with.
+ int _fillerLength(String value) {
+diff --git a/flutter/test/soft_keyboard_input_test.dart b/flutter/test/soft_keyboard_input_test.dart
+index e945fa2..a21c8cf 100644
+--- a/flutter/test/soft_keyboard_input_test.dart
++++ b/flutter/test/soft_keyboard_input_test.dart
+@@ -115,6 +115,53 @@ void main() {
+           (backspaces: 0, text: '11한'));
+     });
+ 
++    test('the keyboard\'s own selection before the caret stays', () {
++      // A device log (2026-10-15): Backspace after 한글입력, which had lost
++      // its vowels, selected the last jamo, then deleted it, with no
++      // composing range. Moving the caret in between (sel 1032) made the
++      // keyboard put the jamo back on every later Backspace.
++      TextEditingValue at(String tail, int base,
++              [int? extent]) =>
++          TextEditingValue(
++              text: '$filler$tail',
++              selection: TextSelection(
++                  baseOffset: filler.length + base,
++                  extentOffset: filler.length + (extent ?? base)));
++      expect(softKeyboardCaretNeedsMoving(at('ㅎㄴㄱㄹㅇㅂㄹㄱ', 7, 8)), isFalse);
++      expect(softKeyboardCaretNeedsMoving(at('하', 0, 1)), isFalse);
++      expect(softKeyboardCaretNeedsMoving(at('하', 1)), isFalse);
++      // The trackpad or two keys at once: a caret or a selection that ends
++      // before the end, or reaches into the filler, still goes back.
++      expect(softKeyboardCaretNeedsMoving(at('하나', 1)), isTrue);
++      expect(softKeyboardCaretNeedsMoving(at('하나', 0, 1)), isTrue);
++      expect(softKeyboardCaretNeedsMoving(at('하', -3, 1)), isTrue);
++      expect(softKeyboardCaretNeedsMoving(at('', -5)), isTrue);
++      // Nothing while composing, or without a selection.
++      expect(
++          softKeyboardCaretNeedsMoving(value('하', composingFrom: 0).copyWith(
++              selection: TextSelection.collapsed(offset: filler.length))),
++          isFalse);
++      expect(softKeyboardCaretNeedsMoving(TextEditingValue(text: filler)),
++          isFalse);
++
++      // The settled edits of select-and-replace: composing 한 and deleting
++      // it jamo by jamo reach the remote side as it was typed.
++      final remote = _Remote(filler, shipped)
++        ..type('ㅎ')
++        ..apply(at('하', 1))
++        ..apply(at('한', 1))
++        ..apply(at('한ㄱ', 2))
++        ..apply(at('한그', 2))
++        ..apply(at('한글', 2));
++      expect(remote.text, '한글');
++      remote
++        ..apply(at('한그', 2))
++        ..apply(at('한ㄱ', 2))
++        ..apply(at('한', 1));
++      expect(remote.text, '한');
++      expect(remote.deletedBeforeStart, 0);
++    });
++
+     test('Backspace on a committed syllable and on an empty field', () {
+       expect(iosSoftKeyboardEdit('$filler한 ', value('한')),
+           (backspaces: 1, text: ''));

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:11:12 +0900
-Subject: [PATCH 09/48] input: mouse, touch and soft-keyboard calls reach the
+Subject: [PATCH 09/49] input: mouse, touch and soft-keyboard calls reach the
  session in call order
 
 session_send_mouse, session_send_pointer, session_input_key and

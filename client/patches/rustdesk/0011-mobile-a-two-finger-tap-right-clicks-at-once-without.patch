@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:11:52 +0900
-Subject: [PATCH 11/48] mobile: a two-finger tap right-clicks at once, without
+Subject: [PATCH 11/49] mobile: a two-finger tap right-clicks at once, without
  a left click first
 
 In mouse mode a two-finger tap sent a left click when the first finger lifted
