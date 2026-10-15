@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:11:52 +0900
-Subject: [PATCH 12/49] mobile: pinch zoom stays under the fingers
+Subject: [PATCH 12/57] mobile: pinch zoom stays under the fingers
 
 onTwoFingerScaleUpdate anchored the zoom on the global focal point, but the
 canvas lives inside SafeArea, so the content slid away from the fingers by the

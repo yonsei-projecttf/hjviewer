@@ -1,0 +1,1236 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Thu, 15 Oct 2026 20:01:01 +0900
+Subject: [PATCH 56/57] hjviewer: ui: remote-session: the session toolbar and
+ the phone overlays in the new look
+
+The screens of a remote session still had RustDesk's solid blue tiles and bars. Now, in
+the palette, radii and text of hjv_style.dart (visuals only; sizes that the toolbar's
+drag and the canvas depend on are kept):
+
+- Desktop toolbar: the bar is a floating card (card colour, thin border, soft shadow),
+  rounded on the side facing away from its docked edge like the handle. Buttons are
+  icons in the secondary text colour with the hover colour under them; pinned, the
+  current display, an open menu and a call going on are primarySoft/primary; close,
+  a call being set up and recording use the danger colour. The monitor layout and
+  the display switchers follow the palette.
+- Toolbar menus: radius 12 with inset 28 px rows, the hover colour on rows, the
+  palette's text, icon and divider colours, the app's popup menu shadow.
+- Handle: a small card with the secondary text colour icons, a shadow when alone.
+- Remote window tabs: the selected tab's line in the palette's primary; the
+  relative mouse mode hint as a soft warning chip.
+- Phone: the bottom bar is a card with a hairline on top and outlined icons, close
+  in the danger colour; the key bar shows keycaps (on: primarySoft/primary, kept
+  on: primary); the gesture help has a segmented control and calm pictograms; the
+  display options use the theme's dividers and display chips; the FAB uses the
+  palette's primary.
+
+After an independent review (screens in light and dark, the diff, the code rules):
+
+- Phone key bar: 8 px side gutters, so the keycaps no longer touch the screen
+  edge; the frame colour at 85 % opacity, so the remote screen shows through
+  the bar again as under upstream's dark bar (the canvas moves out of its way
+  only while the soft keyboard is up).
+- Gesture help: the outlined mouse and touch icons, like the bar's buttons.
+- The FAB's colours and the toolbar menus' shadow come from the theme
+  (the shared commit); the local overrides that repeated it are gone.
+- Toolbar: the bar's card is its own builder (_hjvToolbarCard) in place of
+  upstream's Material; upstream's scroll view, theme, borderWrapper and Flex
+  lines stay as they were.
+- Toolbar buttons: recording and a call being set up darken under the pointer
+  like the other buttons that are on. The open-menu tint and its post-frame
+  setState are gone.
+- Voice call menu: End call in the danger colour.
+- Remote tabs: selectedBorderColor back to upstream's (the pill tabs do not
+  read it); the relative mouse hint's text in the text colour (it was 3.1:1
+  in the light theme).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/toolbar.dart       |   8 +-
+ .../lib/desktop/pages/remote_tab_page.dart    |  19 +-
+ .../lib/desktop/widgets/remote_toolbar.dart   | 304 ++++++++++++++----
+ flutter/lib/mobile/pages/remote_page.dart     | 154 +++++----
+ flutter/lib/mobile/widgets/gesture_help.dart  |  34 +-
+ 5 files changed, 373 insertions(+), 146 deletions(-)
+
+diff --git a/flutter/lib/common/widgets/toolbar.dart b/flutter/lib/common/widgets/toolbar.dart
+index 43aef13..e98afaf 100644
+--- a/flutter/lib/common/widgets/toolbar.dart
++++ b/flutter/lib/common/widgets/toolbar.dart
+@@ -4,6 +4,7 @@ import 'dart:convert';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/shared_state.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+@@ -287,7 +288,7 @@ void showWaylandKeyboardInputWarningDialog(
+                     }
+                   },
+             style: TextButton.styleFrom(
+-              foregroundColor: Colors.blue,
++              foregroundColor: HjvPalette.of(context).primary,
+               padding: EdgeInsets.zero,
+               minimumSize: Size.zero,
+               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+@@ -366,7 +367,8 @@ List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
+               }
+               handleOsPasswordEditIcon(sessionId, ffi.dialogManager);
+             },
+-            icon: Icon(Icons.edit, color: isMobile ? MyTheme.accent : null),
++            icon: Icon(Icons.edit_outlined,
++                color: isMobile ? HjvPalette.of(context).primary : null),
+           ),
+         ),
+         onPressed: () => handleOsPasswordAction(sessionId, ffi.dialogManager),
+@@ -592,7 +594,7 @@ List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
+                   ffi.recordingModel.start
+                       ? Icons.pause_circle_filled
+                       : Icons.videocam_outlined,
+-                  color: MyTheme.accent),
++                  color: HjvPalette.of(context).primary),
+             )
+           ],
+         ),
+diff --git a/flutter/lib/desktop/pages/remote_tab_page.dart b/flutter/lib/desktop/pages/remote_tab_page.dart
+index 0b94a49..240367a 100644
+--- a/flutter/lib/desktop/pages/remote_tab_page.dart
++++ b/flutter/lib/desktop/pages/remote_tab_page.dart
+@@ -20,6 +20,7 @@ import 'package:flutter_svg/flutter_svg.dart';
+ import 'package:get/get.dart';
+ import 'package:bot_toast/bot_toast.dart';
+ 
++import '../../common/hjv_style.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../models/platform_model.dart';
+ 
+@@ -593,29 +594,33 @@ class _RelativeMouseModeHint extends StatelessWidget {
+         return const SizedBox.shrink();
+       }
+ 
++      // HJViewer: a soft chip in the palette's warning colour; the text in the text colour, since
++      // the tint's own foreground is too light on it in the light theme
++      final (background, foreground) =
++          hjvTint(context, HjvPalette.of(context).warning);
+       return Container(
+         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+         margin: const EdgeInsets.only(right: 8),
+         decoration: BoxDecoration(
+-          color: Colors.orange.withOpacity(0.2),
+-          borderRadius: BorderRadius.circular(4),
+-          border: Border.all(color: Colors.orange.withOpacity(0.5)),
++          color: background,
++          borderRadius: BorderRadius.circular(HjvRadius.sm),
+         ),
+         child: Row(
+           mainAxisSize: MainAxisSize.min,
+           children: [
+             Icon(
+-              Icons.mouse,
++              Icons.mouse_outlined,
+               size: 14,
+-              color: Colors.orange[700],
++              color: foreground,
+             ),
+             const SizedBox(width: 4),
+             Text(
+               translate(
+                   'rel-mouse-exit-{${isMacOS ? "Cmd+G" : "Ctrl+Alt"}}-tip'),
+               style: TextStyle(
+-                fontSize: 11,
+-                color: Colors.orange[700],
++                fontSize: 12,
++                fontWeight: FontWeight.w600,
++                color: HjvPalette.of(context).text,
+               ),
+             ),
+           ],
+diff --git a/flutter/lib/desktop/widgets/remote_toolbar.dart b/flutter/lib/desktop/widgets/remote_toolbar.dart
+index 19b3fa9..a858c06 100644
+--- a/flutter/lib/desktop/widgets/remote_toolbar.dart
++++ b/flutter/lib/desktop/widgets/remote_toolbar.dart
+@@ -17,6 +17,7 @@ import 'package:desktop_multi_window/desktop_multi_window.dart';
+ import 'package:window_size/window_size.dart' as window_size;
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../models/model.dart';
+ import '../../models/platform_model.dart';
+ import '../../common/shared_state.dart';
+@@ -161,7 +162,7 @@ Alignment _alignmentForEdge(_ToolbarEdge edge, double fraction) {
+ // The drag handle hangs off the side of the toolbar facing away from the
+ // docked edge, so the icons themselves sit flush against that edge.
+ BorderRadius _collapseHandleBorderRadius(_ToolbarEdge edge) {
+-  const r = Radius.circular(5);
++  const r = Radius.circular(HjvRadius.sm);
+   switch (edge) {
+     case _ToolbarEdge.top:
+       return const BorderRadius.vertical(bottom: r);
+@@ -174,6 +175,52 @@ BorderRadius _collapseHandleBorderRadius(_ToolbarEdge edge) {
+   }
+ }
+ 
++// HJViewer: the bar is rounded like the handle, on the side facing away from the docked edge.
++BorderRadius _hjvToolbarBorderRadius(_ToolbarEdge edge) {
++  const r = Radius.circular(HjvRadius.lg);
++  switch (edge) {
++    case _ToolbarEdge.top:
++      return const BorderRadius.vertical(bottom: r);
++    case _ToolbarEdge.bottom:
++      return const BorderRadius.vertical(top: r);
++    case _ToolbarEdge.left:
++      return const BorderRadius.horizontal(right: r);
++    case _ToolbarEdge.right:
++      return const BorderRadius.horizontal(left: r);
++  }
++}
++
++// HJViewer: a toolbar button's colours: an icon in the secondary text colour on the card with
++// the hover colour under it, primarySoft/primary while it is on, and the danger colour for the
++// buttons upstream paints red (close, a call being set up, recording). A button that is on
++// darkens a little under the pointer.
++({Color bg, Color fg}) _hjvToolbarButtonColors(
++    BuildContext context, Color color,
++    {required bool hover, required bool active}) {
++  final p = HjvPalette.of(context);
++  if (color == _ToolbarTheme.redColor) {
++    final tint = hjvTint(context, p.danger).$1;
++    return (
++      bg: active
++          ? (hover ? Color.alphaBlend(p.danger.withOpacity(0.08), tint) : tint)
++          : (hover ? tint : Colors.transparent),
++      fg: p.danger
++    );
++  }
++  if (active) {
++    return (
++      bg: hover
++          ? Color.alphaBlend(p.primary.withOpacity(0.08), p.primarySoft)
++          : p.primarySoft,
++      fg: p.primary
++    );
++  }
++  return (
++    bg: hover ? p.hover : Colors.transparent,
++    fg: hover ? p.text : p.textSecondary
++  );
++}
++
+ int _monitorMenuQuarterTurns(_ToolbarEdge edge) {
+   switch (edge) {
+     case _ToolbarEdge.left:
+@@ -339,21 +386,20 @@ class _ToolbarTheme {
+   static const double buttonHMargin = 2;
+   static const double buttonVMargin = 6;
+   static const double iconRadius = 8;
+-  static const double elevation = 3;
+ 
+   static double dividerSpaceToAction = isWindows ? 8 : 14;
+ 
+-  static double menuBorderRadius = isWindows ? 5.0 : 7.0;
+-  static EdgeInsets menuPadding = isWindows
+-      ? EdgeInsets.fromLTRB(4, 12, 4, 12)
+-      : EdgeInsets.fromLTRB(6, 14, 6, 14);
+-  static const double menuButtonBorderRadius = 3.0;
++  // HJViewer: menus like the app's (hjv_theme.dart): radius 12, rows inset
++  static double menuBorderRadius = 12.0;
++  static EdgeInsets menuPadding =
++      const EdgeInsets.symmetric(horizontal: 6, vertical: 8);
++  static const double menuButtonBorderRadius = HjvRadius.sm;
+ 
+   static Color borderColor(BuildContext context) =>
+-      MyTheme.color(context).border3 ?? MyTheme.border;
++      HjvPalette.of(context).border;
+ 
+   static Color? dividerColor(BuildContext context) =>
+-      MyTheme.color(context).divider;
++      HjvPalette.of(context).border;
+ 
+   static MenuStyle defaultMenuStyle(BuildContext context) => MenuStyle(
+         side: MaterialStateProperty.all(BorderSide(
+@@ -754,7 +800,7 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
+         height: previewSize.height,
+         decoration: BoxDecoration(
+           color: color.withOpacity(0.10),
+-          borderRadius: BorderRadius.circular(6),
++          borderRadius: BorderRadius.circular(HjvRadius.md),
+           border: Border.all(color: color.withOpacity(0.55), width: 1.5),
+         ),
+       ),
+@@ -771,9 +817,8 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
+       return Offstage(
+         offstage: _dragging.isTrue,
+         child: Material(
+-          elevation: _ToolbarTheme.elevation,
+-          shadowColor: MyTheme.color(context).shadow,
+-          borderRadius: borderRadius,
++          // HJViewer: the handle draws its own card and shadow
++          type: MaterialType.transparency,
+           child: _DraggableShowHide(
+             id: widget.id,
+             ffi: widget.ffi,
+@@ -851,7 +896,7 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
+     }
+     if (!isWeb) toolbarItems.add(_RecordMenu());
+     toolbarItems.add(_CloseMenu(id: widget.id, ffi: widget.ffi));
+-    final toolbarBorderRadius = BorderRadius.all(Radius.circular(4.0));
++    final toolbarBorderRadius = _hjvToolbarBorderRadius(edge);
+     // innerAxis: how the toolbar icons themselves flow.
+     // outerAxis: how the toolbar block and the handle stack against each other
+     // (perpendicular to the dock edge, so the handle hangs off the interior face).
+@@ -860,15 +905,9 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
+     final spacer = isHorizontal
+         ? SizedBox(width: _ToolbarTheme.buttonHMargin * 2)
+         : SizedBox(height: _ToolbarTheme.buttonHMargin * 2);
+-    final toolbarMaterial = Material(
+-      elevation: _ToolbarTheme.elevation,
+-      shadowColor: MyTheme.color(context).shadow,
+-      borderRadius: toolbarBorderRadius,
+-      color: Theme.of(context)
+-          .menuBarTheme
+-          .style
+-          ?.backgroundColor
+-          ?.resolve(MaterialState.values.toSet()),
++    final toolbarMaterial = _hjvToolbarCard(
++      context,
++      toolbarBorderRadius,
+       child: SingleChildScrollView(
+         scrollDirection: innerAxis,
+         child: Theme(
+@@ -902,17 +941,47 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
+     );
+   }
+ 
++  // HJViewer: the bar as a floating card (hjv_style.dart): the card colour and its shadow, in
++  // place of upstream's Material; borderWrapper inside draws the border. The menu bars in it are
++  // transparent (themeData).
++  Widget _hjvToolbarCard(BuildContext context, BorderRadius radius,
++      {required Widget child}) {
++    return Container(
++      decoration: BoxDecoration(
++        color: HjvPalette.of(context).card,
++        borderRadius: radius,
++        boxShadow: hjvCardDecoration(context, shadow: true).boxShadow,
++      ),
++      child: Material(type: MaterialType.transparency, child: child),
++    );
++  }
++
+   ThemeData themeData() {
++    final p = HjvPalette.of(context);
+     return Theme.of(context).copyWith(
+       menuButtonTheme: MenuButtonThemeData(
+         style: ButtonStyle(
+-          minimumSize: MaterialStatePropertyAll(Size(64, 32)),
++          // HJViewer: 28 px rows on the desktop's compact density
++          minimumSize: MaterialStatePropertyAll(Size(64, 36)),
+           textStyle: MaterialStatePropertyAll(
+             TextStyle(fontWeight: FontWeight.normal),
+           ),
+           shape: MaterialStatePropertyAll(RoundedRectangleBorder(
+               borderRadius:
+                   BorderRadius.circular(_ToolbarTheme.menuButtonBorderRadius))),
++          // HJViewer: the palette's text, icon and hover colours
++          foregroundColor: WidgetStateProperty.resolveWith((states) =>
++              states.contains(WidgetState.disabled) ? p.textDisabled : p.text),
++          iconColor: WidgetStateProperty.resolveWith((states) =>
++              states.contains(WidgetState.disabled)
++                  ? p.textDisabled
++                  : p.textSecondary),
++          overlayColor: WidgetStateProperty.resolveWith((states) =>
++              states.contains(WidgetState.pressed) ||
++                      states.contains(WidgetState.hovered) ||
++                      states.contains(WidgetState.focused)
++                  ? p.hover
++                  : null),
+         ),
+       ),
+       dividerTheme: DividerThemeData(
+@@ -925,8 +994,9 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
+         elevation: MaterialStatePropertyAll(0),
+         shape: MaterialStatePropertyAll(BeveledRectangleBorder()),
+       ).copyWith(
++              // HJViewer: the bar's card shows through
+               backgroundColor:
+-                  Theme.of(context).menuBarTheme.style?.backgroundColor)),
++                  const WidgetStatePropertyAll(Colors.transparent))),
+     );
+   }
+ }
+@@ -947,6 +1017,7 @@ class _PinMenu extends StatelessWidget {
+         hoverColor: state.pin
+             ? _ToolbarTheme.hoverBlueColor
+             : _ToolbarTheme.hoverInactiveColor,
++        hjvActive: state.pin,
+       ),
+     );
+   }
+@@ -970,6 +1041,7 @@ class _MobileActionMenu extends StatelessWidget {
+           hoverColor: ffi.dialogManager.mobileActionsOverlayVisible.isTrue
+               ? _ToolbarTheme.hoverBlueColor
+               : _ToolbarTheme.hoverInactiveColor,
++          hjvActive: ffi.dialogManager.mobileActionsOverlayVisible.isTrue,
+         ));
+   }
+ }
+@@ -1016,6 +1088,7 @@ class _MainMonitorSwitchButton extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     final cycle = _MonitorCycle(id, ffi);
++    final p = HjvPalette.of(context);
+     return Obx(() {
+       if (cycle.total < 2) return const Offstage();
+       final label = cycle.label;
+@@ -1033,16 +1106,16 @@ class _MainMonitorSwitchButton extends StatelessWidget {
+             children: [
+               SvgPicture.asset(
+                 'assets/display_switcher.svg',
+-                colorFilter:
+-                    const ColorFilter.mode(Colors.white, BlendMode.srcIn),
++                // HJViewer: the screen in the icon colour, its number cut out of it
++                colorFilter: ColorFilter.mode(p.textSecondary, BlendMode.srcIn),
+                 width: _ToolbarTheme.buttonSize,
+                 height: _ToolbarTheme.buttonSize,
+               ),
+               Text(
+                 label,
+                 textAlign: TextAlign.center,
+-                style: const TextStyle(
+-                  color: Colors.black,
++                style: TextStyle(
++                  color: p.card,
+                   fontSize: 11,
+                   height: 1,
+                   fontWeight: FontWeight.bold,
+@@ -1090,8 +1163,7 @@ class _MonitorMenu extends StatelessWidget {
+ 
+   Widget buildMonitorMenu(BuildContext context) {
+     final width = SimpleWrapper<double>(0);
+-    final monitorsIcon =
+-        globalMonitorsWidget(width, Colors.white, Colors.black38);
++    final monitorsIcon = _hjvGlobalMonitorsWidget(context, width);
+     return _IconSubmenuButton(
+         tooltip: 'Select Monitor',
+         icon: monitorsIcon,
+@@ -1149,6 +1221,7 @@ class _MonitorMenu extends StatelessWidget {
+   List<Widget> buildMonitorList(BuildContext context, bool isMulti) {
+     final List<Widget> monitorList = [];
+     final pi = ffi.ffiModel.pi;
++    final p = HjvPalette.of(context);
+ 
+     buildMonitorButton(int i) => Obx(() {
+           RxInt display = CurrentDisplayState.find(id);
+@@ -1157,8 +1230,7 @@ class _MonitorMenu extends StatelessWidget {
+           final width = SimpleWrapper<double>(0);
+           Widget? monitorsIcon;
+           if (isAllMonitors) {
+-            monitorsIcon = globalMonitorsWidget(
+-                width, Colors.white, _ToolbarTheme.blueColor);
++            monitorsIcon = _hjvGlobalMonitorsWidget(context, width);
+           }
+           return _IconMenuButton(
+             tooltip: isMulti
+@@ -1175,6 +1247,7 @@ class _MonitorMenu extends StatelessWidget {
+             hoverColor: i == display.value
+                 ? _ToolbarTheme.hoverBlueColor
+                 : _ToolbarTheme.hoverInactiveColor,
++            hjvActive: i == display.value,
+             width: isAllMonitors ? width.value : null,
+             icon: isAllMonitors
+                 ? monitorsIcon
+@@ -1185,12 +1258,22 @@ class _MonitorMenu extends StatelessWidget {
+                     child: Stack(
+                       alignment: Alignment.center,
+                       children: [
++                        // HJViewer: the screen in the button's icon colour, its number
++                        // cut out of it
+                         SvgPicture.asset(
+                           "assets/screen.svg",
+-                          colorFilter:
+-                              ColorFilter.mode(Colors.white, BlendMode.srcIn),
++                          colorFilter: ColorFilter.mode(
++                              i == display.value ? p.primary : p.textSecondary,
++                              BlendMode.srcIn),
++                        ),
++                        Text(
++                          '${i + 1}',
++                          style: TextStyle(
++                            color: p.card,
++                            fontSize: 12,
++                            fontWeight: FontWeight.bold,
++                          ),
+                         ),
+-                        Obx(() => buildOneMonitorButton(i, display.value)),
+                       ],
+                     ),
+                   ),
+@@ -1278,6 +1361,80 @@ class _MonitorMenu extends StatelessWidget {
+     );
+   }
+ 
++  // HJViewer: globalMonitorsWidget in the palette: each display a small outlined screen, the
++  // current one filled with the primary colour. Upstream's stays as it is, unused.
++  Widget _hjvGlobalMonitorsWidget(
++      BuildContext context, SimpleWrapper<double> width) {
++    final p = HjvPalette.of(context);
++    getMonitors() {
++      final pi = ffi.ffiModel.pi;
++      RxInt display = CurrentDisplayState.find(id);
++      final rect = ffi.ffiModel.globalDisplaysRect();
++      if (rect == null) {
++        return Offstage();
++      }
++
++      final scale = _ToolbarTheme.buttonSize / rect.height * 0.75;
++      final height = rect.height * scale;
++      final startY = (_ToolbarTheme.buttonSize - height) * 0.5;
++      final startX = startY;
++
++      final children = <Widget>[];
++      for (var i = 0; i < pi.displays.length; i++) {
++        final d = pi.displays[i];
++        double s = d.scale;
++        int dWidth = d.width.toDouble() ~/ s;
++        int dHeight = d.height.toDouble() ~/ s;
++        final fontSize = (dWidth * scale < dHeight * scale
++                ? dWidth * scale
++                : dHeight * scale) *
++            0.6;
++        final current = display.value == i;
++        children.add(Positioned(
++          left: (d.x - rect.left) * scale + startX,
++          top: (d.y - rect.top) * scale + startY,
++          width: dWidth * scale,
++          height: dHeight * scale,
++          child: Container(
++            // a hairline apart from the display next to it
++            margin: const EdgeInsets.all(1),
++            decoration: BoxDecoration(
++              color: current ? p.primary : p.card,
++              border: Border.all(color: current ? p.primary : p.textTertiary),
++              borderRadius: BorderRadius.circular(3),
++            ),
++            child: Center(
++                child: Text(
++              '${i + 1}',
++              style: TextStyle(
++                color: current ? Colors.white : p.textSecondary,
++                fontSize: fontSize,
++                height: 1,
++                fontWeight: FontWeight.bold,
++              ),
++            )),
++          ),
++        ));
++      }
++      width.value = rect.width * scale + startX * 2;
++      return SizedBox(
++        width: width.value,
++        height: height + startY * 2,
++        child: Stack(
++          children: children,
++        ),
++      );
++    }
++
++    return Stack(
++      alignment: Alignment.center,
++      children: [
++        SizedBox(height: _ToolbarTheme.buttonSize),
++        getMonitors(),
++      ],
++    );
++  }
++
+   onPressed(int i, PeerInfo pi, bool isMulti) {
+     if (!isMulti) {
+       // If show monitors in toolbar(`buildMultiMonitorMenu()`), then the menu will dismiss automatically.
+@@ -2904,7 +3061,9 @@ class _VoiceCallMenu extends StatelessWidget {
+         audioInput,
+         Divider(),
+         MenuButton(
+-          child: Text(translate('End call')),
++          // HJViewer: a danger action
++          child: Text(translate('End call'),
++              style: TextStyle(color: HjvPalette.of(context).danger)),
+           onPressed: () => bind.sessionCloseVoiceCall(sessionId: ffi.sessionId),
+           ffi: ffi,
+         ),
+@@ -2924,6 +3083,7 @@ class _VoiceCallMenu extends StatelessWidget {
+               hoverColor: _ToolbarTheme.hoverBlueColor,
+               menuChildrenGetter: menuChildrenGetter,
+               ffi: ffi,
++              hjvActive: true,
+             );
+           default:
+             return Offstage();
+@@ -2939,6 +3099,7 @@ class _VoiceCallMenu extends StatelessWidget {
+       onPressed: () => bind.sessionCloseVoiceCall(sessionId: ffi.sessionId),
+       color: _ToolbarTheme.redColor,
+       hoverColor: _ToolbarTheme.hoverRedColor,
++      hjvActive: true,
+     );
+   }
+ }
+@@ -2967,6 +3128,7 @@ class _RecordMenu extends StatelessWidget {
+       hoverColor: recordingModel.start
+           ? _ToolbarTheme.hoverRedColor
+           : _ToolbarTheme.hoverBlueColor,
++      hjvActive: recordingModel.start,
+     );
+   }
+ }
+@@ -3005,6 +3167,8 @@ class _IconMenuButton extends StatefulWidget {
+   final double? vMargin;
+   final bool topLevel;
+   final double? width;
++  // HJViewer: on (pinned, shown, the current display, recording): _hjvToolbarButtonColors
++  final bool hjvActive;
+   const _IconMenuButton({
+     Key? key,
+     this.assetName,
+@@ -3017,6 +3181,7 @@ class _IconMenuButton extends StatefulWidget {
+     this.vMargin,
+     this.topLevel = true,
+     this.width,
++    this.hjvActive = false,
+   }) : super(key: key);
+ 
+   @override
+@@ -3029,10 +3194,12 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
+   @override
+   Widget build(BuildContext context) {
+     assert(widget.assetName != null || widget.icon != null);
++    final colors = _hjvToolbarButtonColors(context, widget.color,
++        hover: hover, active: widget.hjvActive);
+     final icon = widget.icon ??
+         SvgPicture.asset(
+           widget.assetName!,
+-          colorFilter: ColorFilter.mode(Colors.white, BlendMode.srcIn),
++          colorFilter: ColorFilter.mode(colors.fg, BlendMode.srcIn),
+           width: _ToolbarTheme.buttonSize,
+           height: _ToolbarTheme.buttonSize,
+         );
+@@ -3056,7 +3223,7 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
+                     decoration: BoxDecoration(
+                       borderRadius:
+                           BorderRadius.circular(_ToolbarTheme.iconRadius),
+-                      color: hover ? widget.hoverColor : widget.color,
++                      color: colors.bg,
+                     ),
+                     child: icon)),
+           )),
+@@ -3085,6 +3252,8 @@ class _IconSubmenuButton extends StatefulWidget {
+   final MenuStyle? menuStyle;
+   final FFI? ffi;
+   final double? width;
++  // HJViewer: on (a call going on): _hjvToolbarButtonColors
++  final bool hjvActive;
+ 
+   _IconSubmenuButton({
+     Key? key,
+@@ -3097,6 +3266,7 @@ class _IconSubmenuButton extends StatefulWidget {
+     this.ffi,
+     this.menuStyle,
+     this.width,
++    this.hjvActive = false,
+   }) : super(key: key);
+ 
+   @override
+@@ -3114,10 +3284,12 @@ class _IconSubmenuButtonState extends State<_IconSubmenuButton> {
+   @override
+   Widget build(BuildContext context) {
+     assert(widget.svg != null || widget.icon != null);
++    final colors = _hjvToolbarButtonColors(context, widget.color,
++        hover: hover, active: widget.hjvActive);
+     final icon = widget.icon ??
+         SvgPicture.asset(
+           widget.svg!,
+-          colorFilter: ColorFilter.mode(Colors.white, BlendMode.srcIn),
++          colorFilter: ColorFilter.mode(colors.fg, BlendMode.srcIn),
+           width: _ToolbarTheme.buttonSize,
+           height: _ToolbarTheme.buttonSize,
+         );
+@@ -3139,7 +3311,7 @@ class _IconSubmenuButtonState extends State<_IconSubmenuButton> {
+                         decoration: BoxDecoration(
+                           borderRadius:
+                               BorderRadius.circular(_ToolbarTheme.iconRadius),
+-                          color: hover ? widget.hoverColor : widget.color,
++                          color: colors.bg,
+                         ),
+                         child: icon))),
+             menuChildren: widget
+@@ -3502,8 +3674,8 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
+         axis: widget.multiEdgeEnabled ? null : Axis.horizontal,
+         child: Icon(
+           widget.isHorizontal ? Icons.drag_indicator : Icons.drag_handle,
+-          size: 20,
+-          color: MyTheme.color(context).drag_indicator,
++          size: 18,
++          color: HjvPalette.of(context).textTertiary,
+         ),
+         feedback: widget,
+         onDragStarted: () {
+@@ -3528,12 +3700,18 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
+ 
+   @override
+   Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
+     final ButtonStyle buttonStyle = ButtonStyle(
+       minimumSize: MaterialStateProperty.all(const Size(0, 0)),
+       padding: MaterialStateProperty.all(EdgeInsets.zero),
++      // HJViewer: the icons in the secondary text colour, a rounded hover
++      foregroundColor: WidgetStatePropertyAll(p.textSecondary),
++      overlayColor: const WidgetStatePropertyAll(Colors.transparent),
++      shape: WidgetStatePropertyAll(
++          RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
+     );
+     final isFullscreen = stateGlobal.fullscreen;
+-    const double iconSize = 20;
++    const double iconSize = 18;
+ 
+     buttonWrapper(VoidCallback? onPressed, Widget child,
+         {Color hoverColor = _ToolbarTheme.blueColor}) {
+@@ -3544,7 +3722,11 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
+         style: buttonStyle.copyWith(
+           backgroundColor: MaterialStateProperty.resolveWith((states) {
+             if (states.contains(MaterialState.hovered)) {
+-              return (bgColor ?? hoverColor).withOpacity(0.15);
++              // HJViewer: the hover colour, a soft red for closing
++              return bgColor ??
++                  (hoverColor == _ToolbarTheme.redColor
++                      ? hjvTint(context, p.danger).$1
++                      : p.hover);
+             }
+             return bgColor;
+           }),
+@@ -3615,7 +3797,7 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
+                   child: Icon(
+                     Icons.close,
+                     size: iconSize,
+-                    color: _ToolbarTheme.redColor,
++                    color: p.danger,
+                   ),
+                 ),
+                 hoverColor: _ToolbarTheme.redColor,
+@@ -3627,18 +3809,13 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
+     return TextButtonTheme(
+       data: TextButtonThemeData(style: buttonStyle),
+       child: Container(
+-        decoration: BoxDecoration(
+-          color: Theme.of(context)
+-              .menuBarTheme
+-              .style
+-              ?.backgroundColor
+-              ?.resolve(MaterialState.values.toSet()),
+-          border: Border.all(
+-            color: _ToolbarTheme.borderColor(context),
+-            width: 1,
+-          ),
+-          borderRadius: widget.borderRadius,
+-        ),
++        // HJViewer: a card like the bar's; alone (collapsed) it floats, so it has the shadow
++        decoration: hjvCardDecoration(context, shadow: collapse.isTrue)
++            .copyWith(borderRadius: widget.borderRadius),
++        // room for the rounded corners at both ends
++        padding: widget.isHorizontal
++            ? const EdgeInsets.symmetric(horizontal: 3)
++            : const EdgeInsets.symmetric(vertical: 3),
+         child: SizedBox(
+           height: widget.isHorizontal ? 20 : null,
+           width: widget.isHorizontal ? null : 20,
+@@ -3736,6 +3913,7 @@ class _MinimizedMonitorSwitchButton extends StatelessWidget {
+   Widget build(BuildContext context) {
+     const double iconSize = 20;
+     final cycle = _MonitorCycle(id, ffi);
++    final p = HjvPalette.of(context);
+ 
+     return Obx(() {
+       final label = cycle.label;
+@@ -3760,7 +3938,7 @@ class _MinimizedMonitorSwitchButton extends StatelessWidget {
+             padding: MaterialStateProperty.all(EdgeInsets.zero),
+             backgroundColor: MaterialStateProperty.resolveWith((states) {
+               if (states.contains(MaterialState.hovered)) {
+-                return _ToolbarTheme.blueColor.withOpacity(0.15);
++                return p.hover;
+               }
+               return null;
+             }),
+@@ -3768,17 +3946,17 @@ class _MinimizedMonitorSwitchButton extends StatelessWidget {
+           child: Stack(
+             alignment: const Alignment(0, -0.125),
+             children: [
++              // HJViewer: the handle's icon colour, the number cut out of the screen
+               SvgPicture.asset(
+                 'assets/display_switcher.svg',
+-                colorFilter:
+-                    ColorFilter.mode(_ToolbarTheme.blueColor, BlendMode.srcIn),
++                colorFilter: ColorFilter.mode(p.textSecondary, BlendMode.srcIn),
+                 width: iconSize,
+                 height: iconSize,
+               ),
+               Text(
+                 label,
+-                style: const TextStyle(
+-                  color: Colors.white,
++                style: TextStyle(
++                  color: p.card,
+                   fontSize: 9,
+                   height: 1,
+                   fontWeight: FontWeight.bold,
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index b96fa0d..1f7bbfe 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -15,6 +15,7 @@ import 'package:get/get.dart';
+ import 'package:provider/provider.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_android.dart';
+ import '../../common/widgets/overlay.dart';
+ import '../../common/widgets/dialog.dart';
+@@ -554,11 +555,19 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   }
+ 
+   Widget _bottomWidget() => _showGestureHelp
+-      ? getGestureHelp()
++      ? _hjvBarHairline(getGestureHelp())
+       : (_showBar && gFFI.ffiModel.pi.displays.isNotEmpty
+-          ? getBottomAppBar()
++          ? _hjvBarHairline(getBottomAppBar())
+           : Offstage());
+ 
++  // HJViewer: the hairline on top of the bottom bars, drawn over them so their height stays
++  Widget _hjvBarHairline(Widget bar) => Container(
++        foregroundDecoration: BoxDecoration(
++            border:
++                Border(top: BorderSide(color: HjvPalette.of(context).border))),
++        child: bar,
++      );
++
+   @override
+   Widget build(BuildContext context) {
+     final keyboardIsVisible =
+@@ -581,11 +590,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                   mini: !keyboardIsVisible,
+                   child: Icon(
+                     (keyboardIsVisible || _showGestureHelp)
+-                        ? Icons.expand_more
+-                        : Icons.expand_less,
++                        ? Icons.expand_more_rounded
++                        : Icons.expand_less_rounded,
+                     color: Colors.white,
+                   ),
+-                  backgroundColor: MyTheme.accent,
+                   onPressed: () {
+                     setState(() {
+                       if (keyboardIsVisible) {
+@@ -672,9 +680,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+ 
+   Widget getBottomAppBar() {
+     final ffiModel = Provider.of<FfiModel>(context);
++    // HJViewer: a card over the remote screen (_hjvBarHairline on top), icons in the secondary
++    // text colour, closing in the danger colour
++    final p = HjvPalette.of(context);
++    final iconColor = p.textSecondary;
+     return BottomAppBar(
+-      elevation: 10,
+-      color: MyTheme.accent,
++      elevation: 0,
++      color: p.card,
+       child: Row(
+         mainAxisSize: MainAxisSize.max,
+         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+@@ -682,15 +694,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+           Row(
+               children: <Widget>[
+                     IconButton(
+-                      color: Colors.white,
+-                      icon: Icon(Icons.clear),
++                      color: p.danger,
++                      icon: Icon(Icons.close_rounded),
+                       onPressed: () {
+                         clientClose(sessionId, gFFI);
+                       },
+                     ),
+                     IconButton(
+-                      color: Colors.white,
+-                      icon: Icon(Icons.tv),
++                      color: iconColor,
++                      icon: Icon(Icons.tv_outlined),
+                       onPressed: () {
+                         setState(() => _showEdit = false);
+                         showOptions(context, widget.id, gFFI.dialogManager);
+@@ -705,13 +717,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                                 onLongPress:
+                                     isIOS ? _onKeyboardButtonLongPress : null,
+                                 child: IconButton(
+-                                    color: Colors.white,
+-                                    icon: Icon(Icons.keyboard),
++                                    color: iconColor,
++                                    icon: Icon(Icons.keyboard_outlined),
+                                     onPressed: openKeyboard),
+                               ),
+                               IconButton(
+-                                color: Colors.white,
+-                                icon: const Icon(Icons.build),
++                                color: iconColor,
++                                icon: const Icon(Icons.build_outlined),
+                                 onPressed: () => gFFI.dialogManager
+                                     .toggleMobileActionsOverlay(ffi: gFFI),
+                               )
+@@ -721,15 +733,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                                 onLongPress:
+                                     isIOS ? _onKeyboardButtonLongPress : null,
+                                 child: IconButton(
+-                                    color: Colors.white,
+-                                    icon: Icon(Icons.keyboard),
++                                    color: iconColor,
++                                    icon: Icon(Icons.keyboard_outlined),
+                                     onPressed: openKeyboard),
+                               ),
+                               IconButton(
+-                                color: Colors.white,
++                                color: iconColor,
+                                 icon: Icon(gFFI.ffiModel.touchMode
+-                                    ? Icons.touch_app
+-                                    : Icons.mouse),
++                                    ? Icons.touch_app_outlined
++                                    : Icons.mouse_outlined),
+                                 onPressed: () => setState(
+                                     () => _showGestureHelp = !_showGestureHelp),
+                               ),
+@@ -741,12 +753,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                               future: gFFI.invokeMethod(
+                                   "get_value", "KEY_IS_SUPPORT_VOICE_CALL"),
+                               hasData: (isSupportVoiceCall) => IconButton(
+-                                    color: Colors.white,
++                                    color: iconColor,
+                                     icon: isAndroid && isSupportVoiceCall
+                                         ? SvgPicture.asset('assets/chat.svg',
+                                             colorFilter: ColorFilter.mode(
+-                                                Colors.white, BlendMode.srcIn))
+-                                        : Icon(Icons.message),
++                                                iconColor, BlendMode.srcIn))
++                                        : Icon(Icons.message_outlined),
+                                     onPressed: () =>
+                                         isAndroid && isSupportVoiceCall
+                                             ? showChatOptions(widget.id)
+@@ -755,8 +767,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                         ]) +
+                   [
+                     IconButton(
+-                      color: Colors.white,
+-                      icon: Icon(Icons.more_vert),
++                      color: iconColor,
++                      icon: Icon(Icons.more_vert_rounded),
+                       onPressed: () {
+                         setState(() => _showEdit = false);
+                         showActions(widget.id);
+@@ -764,8 +776,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                     ),
+                   ]),
+           Obx(() => IconButton(
+-                color: Colors.white,
+-                icon: Icon(Icons.expand_more),
++                color: iconColor,
++                icon: Icon(Icons.expand_more_rounded),
+                 onPressed: gFFI.ffiModel.waitForFirstImage.isTrue
+                     ? null
+                     : () {
+@@ -965,24 +977,25 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+       VoiceCallStatus.waitingForResponse,
+       VoiceCallStatus.connected
+     ].contains(gFFI.chatModel.voiceCallStatus.value);
++    // HJViewer: the palette's primary and danger colours
++    final p = HjvPalette.of(context);
+     final menus = [
+-      makeTextMenu('Text chat', Icon(Icons.message, color: MyTheme.accent),
++      makeTextMenu('Text chat', Icon(Icons.message_outlined, color: p.primary),
+           () => onPressedTextChat(widget.id)),
+       isInVoice
+           ? makeTextMenu(
+               'End voice call',
+               SvgPicture.asset(
+                 'assets/call_wait.svg',
+-                colorFilter:
+-                    ColorFilter.mode(Colors.redAccent, BlendMode.srcIn),
++                colorFilter: ColorFilter.mode(p.danger, BlendMode.srcIn),
+               ),
+               onPressEndVoiceCall,
+-              labelStyle: TextStyle(color: Colors.redAccent))
++              labelStyle: TextStyle(color: p.danger))
+           : makeTextMenu(
+               'Voice call',
+               SvgPicture.asset(
+                 'assets/call_wait.svg',
+-                colorFilter: ColorFilter.mode(MyTheme.accent, BlendMode.srcIn),
++                colorFilter: ColorFilter.mode(p.primary, BlendMode.srcIn),
+               ),
+               onPressVoiceCall),
+     ];
+@@ -1011,6 +1024,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   /// aka changeTouchMode
+   BottomAppBar getGestureHelp() {
+     return BottomAppBar(
++        // HJViewer: the card colour, flat (_hjvBarHairline on top)
++        color: HjvPalette.of(context).card,
++        elevation: 0,
+         child: SingleChildScrollView(
+             controller: ScrollController(),
+             padding: EdgeInsets.symmetric(vertical: 10),
+@@ -1111,6 +1127,16 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+ 
+   Widget wrap(String text, void Function() onPressed,
+       {bool? active, bool? locked, IconData? icon}) {
++    // HJViewer: keycaps on the bar: a card key with a hairline, primarySoft/primary for a key
++    // that is on, the primary colour for a modifier kept on (upstream: an outline)
++    final p = HjvPalette.of(context);
++    final dark = Theme.of(context).brightness == Brightness.dark;
++    final on = active == true || locked == true;
++    final Color fg = locked == true
++        ? Colors.white
++        : on
++            ? p.primary
++            : p.text;
+     return TextButton(
+         style: TextButton.styleFrom(
+           minimumSize: Size(0, 0),
+@@ -1119,15 +1145,18 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+           //limits the touch area to the button area
+           shape: RoundedRectangleBorder(
+-            borderRadius: BorderRadius.circular(5.0),
++            borderRadius: BorderRadius.circular(HjvRadius.sm),
+           ),
+-          backgroundColor: active == true ? MyTheme.accent80 : null,
+-          side: locked == true ? BorderSide(color: Colors.white) : null,
++          backgroundColor: locked == true
++              ? p.primary
++              : on
++                  ? p.primarySoft
++                  : (dark ? p.fill : p.card),
++          side: BorderSide(color: on ? Colors.transparent : p.border),
+         ),
+         child: icon != null
+-            ? Icon(icon, size: 14, color: Colors.white)
+-            : Text(translate(text),
+-                style: TextStyle(color: Colors.white, fontSize: 11)),
++            ? Icon(icon, size: 14, color: fg)
++            : Text(translate(text), style: TextStyle(color: fg, fontSize: 11)),
+         onPressed: onPressed);
+   }
+ 
+@@ -1309,9 +1338,18 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+     });
+     return Container(
+         key: _key,
+-        color: Color(0xAA000000),
++        // HJViewer: a bar in the frame colour with a hairline below, drawn over it so the
++        // measured size stays (keyHelpToolsVisibilityChanged). See-through like upstream's: the
++        // canvas moves out of its way only while the soft keyboard is up.
++        color: HjvPalette.of(context).canvas.withOpacity(0.85),
++        foregroundDecoration: BoxDecoration(
++            border: Border(
++                bottom: BorderSide(color: HjvPalette.of(context).border))),
+         padding: EdgeInsets.only(
+-            top: _keyboardVisibilityController.isVisible ? 24 : 4, bottom: 8),
++            left: 8,
++            right: 8,
++            top: _keyboardVisibilityController.isVisible ? 24 : 4,
++            bottom: 8),
+         child: Wrap(
+           spacing: space,
+           runSpacing: space,
+@@ -1416,14 +1454,8 @@ void showOptions(
+           allowDisplaySwitchInPrivacyMode(pi, privacyModeState.value))) {
+     final cur = pi.currentDisplay;
+     final children = <Widget>[];
+-    final isDarkTheme = MyTheme.currentThemeMode() == ThemeMode.dark;
+-    final numColorSelected = Colors.white;
+-    final numColorUnselected = isDarkTheme ? Colors.grey : Colors.black87;
+-    // We can't use `Theme.of(context).primaryColor` here, the color is:
+-    // - light theme: 0xff2196f3 (Colors.blue)
+-    // - dark theme: 0xff212121 (the canvas color?)
+-    final numBgSelected =
+-        Theme.of(context).colorScheme.primary.withOpacity(0.6);
++    // HJViewer: the displays as keys in the palette, the current one primarySoft/primary
++    final p = HjvPalette.of(context);
+     for (var i = 0; i < pi.displays.length; ++i) {
+       children.add(InkWell(
+           onTap: () {
+@@ -1431,19 +1463,21 @@ void showOptions(
+             openMonitorInTheSameTab(i, gFFI, pi);
+             gFFI.dialogManager.dismissAll();
+           },
++          borderRadius: BorderRadius.circular(HjvRadius.sm),
+           child: Ink(
+               width: 40,
+               height: 40,
+               decoration: BoxDecoration(
+-                  border: Border.all(color: Theme.of(context).hintColor),
+-                  borderRadius: BorderRadius.circular(2),
+-                  color: i == cur ? numBgSelected : null),
++                  border:
++                      Border.all(color: i == cur ? p.primary : p.borderStrong),
++                  borderRadius: BorderRadius.circular(HjvRadius.sm),
++                  color: i == cur ? p.primarySoft : null),
+               child: Center(
+                   child: Text((i + 1).toString(),
+                       style: TextStyle(
+-                          color:
+-                              i == cur ? numColorSelected : numColorUnselected,
+-                          fontWeight: FontWeight.bold))))));
++                          color: i == cur ? p.primary : p.textSecondary,
++                          fontWeight: FontWeight.bold,
++                          fontFeatures: HjvText.tabular))))));
+     }
+     displays.add(Padding(
+         padding: const EdgeInsets.only(top: 8),
+@@ -1454,7 +1488,7 @@ void showOptions(
+         )));
+   }
+   if (displays.isNotEmpty) {
+-    displays.add(const Divider(color: MyTheme.border));
++    displays.add(const Divider());
+   }
+ 
+   List<TRadioMenu<String>> viewStyleRadios =
+@@ -1506,7 +1540,7 @@ void showOptions(
+       Obx(() => viewStyle.value == kRemoteViewStyleCustom
+           ? MobileCustomScaleControls(ffi: gFFI)
+           : const SizedBox.shrink()),
+-      const Divider(color: MyTheme.border),
++      const Divider(),
+       for (var e in imageQualityRadios)
+         Obx(() => getRadio<String>(
+             e.child,
+@@ -1518,7 +1552,7 @@ void showOptions(
+                     if (v != null) imageQuality.value = v;
+                   }
+                 : null)),
+-      const Divider(color: MyTheme.border),
++      const Divider(),
+       for (var e in codecRadios)
+         Obx(() => getRadio<String>(
+             e.child,
+@@ -1530,7 +1564,7 @@ void showOptions(
+                     if (v != null) codec.value = v;
+                   }
+                 : null)),
+-      if (codecRadios.isNotEmpty) const Divider(color: MyTheme.border),
++      if (codecRadios.isNotEmpty) const Divider(),
+     ];
+     final rxCursorToggleValues = cursorToggles.map((e) => e.value.obs).toList();
+     final cursorTogglesList = cursorToggles
+@@ -1567,7 +1601,7 @@ void showOptions(
+         .toList();
+     final toggles = [
+       ...cursorTogglesList,
+-      if (cursorToggles.isNotEmpty) const Divider(color: MyTheme.border),
++      if (cursorToggles.isNotEmpty) const Divider(),
+       ...displayTogglesList,
+     ];
+ 
+@@ -1608,7 +1642,7 @@ void showOptions(
+       ));
+     }
+     if (popupDialogMenus.isNotEmpty) {
+-      popupDialogMenus.add(const Divider(color: MyTheme.border));
++      popupDialogMenus.add(const Divider());
+     }
+ 
+     return CustomAlertDialog(
+diff --git a/flutter/lib/mobile/widgets/gesture_help.dart b/flutter/lib/mobile/widgets/gesture_help.dart
+index 8e86681..3c1e430 100644
+--- a/flutter/lib/mobile/widgets/gesture_help.dart
++++ b/flutter/lib/mobile/widgets/gesture_help.dart
+@@ -1,5 +1,6 @@
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/models/input_model.dart';
+ import 'package:flutter_hbb/models/model.dart';
+ import 'package:get/get.dart';
+@@ -75,6 +76,7 @@ class _GestureHelpState extends State<GestureHelp> {
+ 
+   @override
+   Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
+     final size = MediaQuery.of(context).size;
+     final space = 12.0;
+     var width = size.width - 2 * space;
+@@ -96,19 +98,25 @@ class _GestureHelpState extends State<GestureHelp> {
+                     children: [
+                       ToggleSwitch(
+                         initialLabelIndex: _selectedIndex,
+-                        activeFgColor: Colors.white,
+-                        inactiveFgColor: Colors.white60,
+-                        activeBgColor: [MyTheme.accent],
+-                        inactiveBgColor: Theme.of(context).hintColor,
++                        // HJViewer: a segmented control in the palette, the mode in use
++                        // primarySoft/primary
++                        activeFgColor: p.primary,
++                        inactiveFgColor: p.textSecondary,
++                        activeBgColor: [p.primarySoft],
++                        inactiveBgColor: p.card,
++                        borderColor: [p.border],
++                        borderWidth: 1,
++                        dividerColor: p.border,
++                        cornerRadius: HjvRadius.md,
+                         totalSwitches: 2,
+                         minWidth: 150,
+-                        fontSize: 15,
++                        fontSize: 14,
+                         iconSize: 18,
+                         labels: [
+                           translate("Mouse mode"),
+                           translate("Touch mode")
+                         ],
+-                        icons: [Icons.mouse, Icons.touch_app],
++                        icons: [Icons.mouse_outlined, Icons.touch_app_outlined],
+                         onToggle: (index) {
+                           setState(() {
+                             if (_selectedIndex != index) {
+@@ -360,11 +368,13 @@ class GestureInfo extends StatelessWidget {
+   final IconData icon;
+   final double width;
+ 
+-  final iconSize = 35.0;
++  final iconSize = 32.0;
+   final iconColor = MyTheme.accent;
+ 
+   @override
+   Widget build(BuildContext context) {
++    // HJViewer: the gesture in the icon colour, the action it does in bold below
++    final p = HjvPalette.of(context);
+     return Container(
+         width: width,
+         child: Column(
+@@ -372,19 +382,17 @@ class GestureInfo extends StatelessWidget {
+             Icon(
+               icon,
+               size: iconSize,
+-              color: iconColor,
++              color: p.textSecondary,
+             ),
+             SizedBox(height: 6),
+             Text(fromText,
+                 textAlign: TextAlign.center,
+-                style:
+-                    TextStyle(fontSize: 9, color: Theme.of(context).hintColor)),
+-            SizedBox(height: 3),
++                style: TextStyle(fontSize: 11, color: p.textTertiary)),
++            SizedBox(height: 2),
+             Text(toText,
+                 textAlign: TextAlign.center,
+                 style: TextStyle(
+-                    fontSize: 12,
+-                    color: Theme.of(context).textTheme.bodySmall?.color))
++                    fontSize: 13, fontWeight: FontWeight.w600, color: p.text))
+           ],
+         ));
+   }

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 13 Oct 2026 19:43:25 +0900
-Subject: [PATCH 38/49] hjviewer: minimum version: a PC refuses controllers
+Subject: [PATCH 38/57] hjviewer: minimum version: a PC refuses controllers
  below their platform's minimum
 
 A PC that holds the version policy refuses, at login, a controller whose app is below

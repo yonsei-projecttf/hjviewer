@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:14:54 +0900
-Subject: [PATCH 17/49] mobile: shortcuts typed with the Korean keyboard reach
+Subject: [PATCH 17/57] mobile: shortcuts typed with the Korean keyboard reach
  the PC as the Latin key
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

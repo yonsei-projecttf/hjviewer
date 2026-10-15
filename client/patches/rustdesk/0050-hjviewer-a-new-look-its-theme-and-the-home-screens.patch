@@ -1,0 +1,1313 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Thu, 15 Oct 2026 20:01:01 +0900
+Subject: [PATCH 50/57] hjviewer: a new look, its theme and the home screens
+
+The app kept RustDesk's look of 2022: Material 2 with a saturated blue, grey panels, square
+fields, peer tiles in loud colours and, on Windows, Malgun Gothic. Now:
+
+- common/hjv_style.dart holds the look: one palette per theme (the app icon's blue
+  #1E6FD9 as the only accent, cool greys, thin borders instead of shadows), the radii, the
+  text sizes, and a card decoration. The typeface is Pretendard (SIL OFL 1.1, Regular,
+  SemiBold, Bold; the files come with the overlay in assets/fonts with their licence), so
+  Windows, Android and iOS read alike.
+- common/hjv_theme.dart: hjvRestyle takes upstream's lightTheme and darkTheme as they are
+  and replaces colours and component shapes (app bar, dialogs, fields, buttons, menus,
+  tooltips, switches, navigation bars, the window tab bar's colours). The roles stay
+  upstream's: colorScheme.background is the frame, scaffoldBackgroundColor the content.
+  MyTheme's named colours move to the new palette.
+- Peer cards (grid, tile, list and the phone's list): a card with the platform in a soft
+  tile of the peer's colour, the name in bold, user@host below. Upstream's builders stay,
+  unused.
+- Desktop home: the ID on a tinted card, the one-time password on a card, the connect box
+  as a raised card with a filled field and 40 px buttons.
+- Phone home: the remote ID on a card with a round connect button, a light canvas behind
+  the cards, and the bottom bar's selected tab on a soft pill (activeIcon). The bar stays a
+  BottomNavigationBar, which chat_model.dart and the phone's server page look up by
+  navigationBarKey; its labels keep one height and take the theme's colours.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                       |  27 +-
+ flutter/lib/common/hjv_style.dart             | 187 +++++++++++
+ flutter/lib/common/hjv_theme.dart             | 305 ++++++++++++++++++
+ flutter/lib/common/widgets/peer_card.dart     | 225 ++++++++++++-
+ .../lib/desktop/pages/connection_page.dart    |  26 +-
+ .../lib/desktop/pages/desktop_home_page.dart  | 147 ++++++++-
+ flutter/lib/mobile/pages/connection_page.dart |  39 ++-
+ flutter/lib/mobile/pages/home_page.dart       |  36 ++-
+ flutter/pubspec.yaml                          |   8 +
+ 9 files changed, 943 insertions(+), 57 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_style.dart
+ create mode 100644 flutter/lib/common/hjv_theme.dart
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index 8de1b92..bca05f4 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -30,6 +30,7 @@ import 'package:window_size/window_size.dart' as window_size;
+ 
+ import '../consts.dart';
+ import 'common/hjv_update.dart';
++import 'common/hjv_theme.dart';
+ import 'common/widgets/overlay.dart';
+ import 'mobile/pages/file_manager_page.dart';
+ import 'mobile/pages/remote_page.dart';
+@@ -249,18 +250,18 @@ class ColorThemeExtension extends ThemeExtension<ColorThemeExtension> {
+ class MyTheme {
+   MyTheme._();
+ 
+-  static const Color grayBg = Color(0xFFEFEFF2);
+-  static const Color accent = Color(0xFF0071FF);
+-  static const Color accent50 = Color(0x770071FF);
+-  static const Color accent80 = Color(0xAA0071FF);
++  static const Color grayBg = Color(0xFFF1F3F6);
++  static const Color accent = Color(0xFF1E6FD9);
++  static const Color accent50 = Color(0x771E6FD9);
++  static const Color accent80 = Color(0xAA1E6FD9);
+   static const Color canvasColor = Color(0xFF212121);
+-  static const Color border = Color(0xFFCCCCCC);
+-  static const Color idColor = Color(0xFF00B6F0);
+-  static const Color darkGray = Color.fromARGB(255, 148, 148, 148);
++  static const Color border = Color(0xFFD1D6DD);
++  static const Color idColor = Color(0xFF1E6FD9);
++  static const Color darkGray = Color(0xFF8B95A1);
+   static const Color cmIdColor = Color(0xFF21790B);
+   static const Color dark = Colors.black87;
+-  static const Color button = Color(0xFF2C8CFF);
+-  static const Color hoverBorder = Color(0xFF999999);
++  static const Color button = Color(0xFF1E6FD9);
++  static const Color hoverBorder = Color(0xFFB0B8C1);
+ 
+   // ListTile
+   static const ListTileThemeData listTileTheme = ListTileThemeData(
+@@ -370,7 +371,7 @@ class MyTheme {
+     }),
+   );
+ 
+-  static ThemeData lightTheme = ThemeData(
++  static ThemeData lightTheme = hjvRestyle(ThemeData(
+     // https://stackoverflow.com/questions/77537315/after-upgrading-to-flutter-3-16-the-app-bar-background-color-button-size-and
+     useMaterial3: false,
+     brightness: Brightness.light,
+@@ -468,8 +469,8 @@ class MyTheme {
+       ColorThemeExtension.light,
+       TabbarTheme.light,
+     ],
+-  );
+-  static ThemeData darkTheme = ThemeData(
++  ));
++  static ThemeData darkTheme = hjvRestyle(ThemeData(
+     useMaterial3: false,
+     brightness: Brightness.dark,
+     hoverColor: Color.fromARGB(255, 45, 46, 53),
+@@ -575,7 +576,7 @@ class MyTheme {
+       ColorThemeExtension.dark,
+       TabbarTheme.dark,
+     ],
+-  );
++  ));
+ 
+   static ThemeMode getThemeModePreference() {
+     return themeModeFromString(bind.mainGetLocalOption(key: kCommConfKeyTheme));
+diff --git a/flutter/lib/common/hjv_style.dart b/flutter/lib/common/hjv_style.dart
+new file mode 100644
+index 0000000..be50659
+--- /dev/null
++++ b/flutter/lib/common/hjv_style.dart
+@@ -0,0 +1,187 @@
++// HJViewer: the look of the app (2026-10). The colours, shapes and text the themes in common.dart
++// (MyTheme.lightTheme, MyTheme.darkTheme) are built from, and the few decorations the screens
++// share: a calm canvas with white (in the dark theme, slightly lifted) cards, thin borders
++// instead of shadows, rounded corners, the app icon's blue as the one accent, and the Pretendard
++// typeface (SIL Open Font License 1.1, assets/fonts) on every platform, so Windows, Android and
++// iOS read alike. Plain Flutter without the bridge.
++
++import 'package:flutter/material.dart';
++
++/// The typeface every text uses, bundled in assets/fonts (Regular 400, SemiBold 600, Bold 700).
++const String kHjvFont = 'Pretendard';
++
++/// One theme's colours.
++class HjvPalette {
++  /// the app icon's blue, and its darker and its faint tint
++  final Color primary;
++  final Color primaryStrong;
++  final Color primarySoft;
++
++  /// the frame around the content (title and tab bars, side panels: colorScheme.background), the
++  /// content (scaffoldBackgroundColor), a card on the content, and the fill of fields
++  final Color canvas;
++  final Color surface;
++  final Color card;
++  final Color fill;
++
++  /// thin lines: around cards and between sections
++  final Color border;
++  final Color borderStrong;
++
++  /// text, from the most to the least prominent
++  final Color text;
++  final Color textSecondary;
++  final Color textTertiary;
++  final Color textDisabled;
++
++  final Color success;
++  final Color warning;
++  final Color danger;
++
++  /// the hover of a row or an icon button
++  final Color hover;
++
++  const HjvPalette({
++    required this.primary,
++    required this.primaryStrong,
++    required this.primarySoft,
++    required this.canvas,
++    required this.surface,
++    required this.card,
++    required this.fill,
++    required this.border,
++    required this.borderStrong,
++    required this.text,
++    required this.textSecondary,
++    required this.textTertiary,
++    required this.textDisabled,
++    required this.success,
++    required this.warning,
++    required this.danger,
++    required this.hover,
++  });
++
++  static const light = HjvPalette(
++    primary: Color(0xFF1E6FD9),
++    primaryStrong: Color(0xFF1659BE),
++    primarySoft: Color(0xFFEAF2FE),
++    canvas: Color(0xFFF3F5F8),
++    surface: Color(0xFFFFFFFF),
++    card: Color(0xFFFFFFFF),
++    fill: Color(0xFFF1F3F6),
++    border: Color(0xFFE5E8EC),
++    borderStrong: Color(0xFFD1D6DD),
++    text: Color(0xFF191F28),
++    textSecondary: Color(0xFF4E5968),
++    textTertiary: Color(0xFF8B95A1),
++    textDisabled: Color(0xFFB0B8C1),
++    success: Color(0xFF12B76A),
++    warning: Color(0xFFF79009),
++    danger: Color(0xFFF04438),
++    hover: Color(0xFFEEF1F5),
++  );
++
++  static const dark = HjvPalette(
++    primary: Color(0xFF4C8DF0),
++    primaryStrong: Color(0xFF6CA2F4),
++    primarySoft: Color(0xFF1A2639),
++    canvas: Color(0xFF1A1D23),
++    surface: Color(0xFF121418),
++    card: Color(0xFF1A1D23),
++    fill: Color(0xFF242830),
++    border: Color(0xFF2A2E37),
++    borderStrong: Color(0xFF3A404B),
++    text: Color(0xFFECEFF3),
++    textSecondary: Color(0xFFB4BCC6),
++    textTertiary: Color(0xFF7E8794),
++    textDisabled: Color(0xFF555D69),
++    success: Color(0xFF32D583),
++    warning: Color(0xFFFDB022),
++    danger: Color(0xFFF97066),
++    hover: Color(0xFF242832),
++  );
++
++  static HjvPalette of(BuildContext context) =>
++      Theme.of(context).brightness == Brightness.dark ? dark : light;
++}
++
++/// Corner radii: small controls, fields and buttons, cards, dialogs and sheets.
++class HjvRadius {
++  static const double sm = 8;
++  static const double md = 10;
++  static const double lg = 14;
++  static const double xl = 20;
++}
++
++/// The text sizes and weights, without colours (the theme adds them).
++class HjvText {
++  static const TextStyle titleLarge =
++      TextStyle(fontSize: 20, fontWeight: FontWeight.w700, height: 1.3);
++  static const TextStyle titleMedium =
++      TextStyle(fontSize: 16, fontWeight: FontWeight.w600, height: 1.35);
++  static const TextStyle titleSmall =
++      TextStyle(fontSize: 14, fontWeight: FontWeight.w600, height: 1.35);
++  static const TextStyle body =
++      TextStyle(fontSize: 14, fontWeight: FontWeight.w400, height: 1.4);
++  static const TextStyle bodySmall =
++      TextStyle(fontSize: 12, fontWeight: FontWeight.w400, height: 1.35);
++  static const TextStyle label =
++      TextStyle(fontSize: 14, fontWeight: FontWeight.w600, height: 1.2);
++
++  /// Digits of the same width, so that an ID or a code does not jitter as it changes.
++  static const List<FontFeature> tabular = [FontFeature.tabularFigures()];
++
++  /// A device ID shown large (the home screen's own ID).
++  static const TextStyle idLarge = TextStyle(
++      fontSize: 26,
++      fontWeight: FontWeight.w700,
++      height: 1.2,
++      letterSpacing: 0.3,
++      fontFeatures: tabular);
++
++  /// A device ID typed into the connect field.
++  static const TextStyle idInput = TextStyle(
++      fontSize: 20,
++      fontWeight: FontWeight.w600,
++      height: 1.4,
++      letterSpacing: 0.3,
++      fontFeatures: tabular);
++}
++
++/// A card: the surface colour, a thin border and the large radius.
++BoxDecoration hjvCardDecoration(BuildContext context,
++    {Color? color, double radius = HjvRadius.lg, bool shadow = false}) {
++  final p = HjvPalette.of(context);
++  final dark = Theme.of(context).brightness == Brightness.dark;
++  return BoxDecoration(
++    color: color ?? p.card,
++    borderRadius: BorderRadius.circular(radius),
++    border: Border.all(color: p.border),
++    boxShadow: shadow
++        ? [
++            BoxShadow(
++              color: Colors.black.withOpacity(dark ? 0.35 : 0.06),
++              blurRadius: 16,
++              offset: const Offset(0, 4),
++            ),
++          ]
++        : null,
++  );
++}
++
++/// The soft background of an icon tile in a peer's colour (light: a pale tint, dark: a deep one),
++/// and the icon colour that reads on it.
++(Color, Color) hjvTint(BuildContext context, Color color) {
++  final dark = Theme.of(context).brightness == Brightness.dark;
++  final hsl = HSLColor.fromColor(color);
++  if (dark) {
++    return (
++      hsl.withSaturation((hsl.saturation * 0.55).clamp(0.0, 1.0)).withLightness(0.22).toColor(),
++      hsl.withSaturation((hsl.saturation * 0.9).clamp(0.0, 1.0)).withLightness(0.72).toColor(),
++    );
++  }
++  return (
++    hsl.withSaturation((hsl.saturation * 0.7).clamp(0.0, 1.0)).withLightness(0.93).toColor(),
++    hsl.withSaturation((hsl.saturation * 0.85).clamp(0.0, 1.0)).withLightness(0.42).toColor(),
++  );
++}
+diff --git a/flutter/lib/common/hjv_theme.dart b/flutter/lib/common/hjv_theme.dart
+new file mode 100644
+index 0000000..d8de37f
+--- /dev/null
++++ b/flutter/lib/common/hjv_theme.dart
+@@ -0,0 +1,305 @@
++// HJViewer: the app's themes in its own look (hjv_style.dart). MyTheme.lightTheme and darkTheme
++// keep upstream's definitions and pass them through hjvRestyle, which sets the typeface and
++// replaces the colours and the shapes of the components; what upstream's definitions set and
++// this does not touch stays as it is. The roles stay upstream's: colorScheme.background is the
++// frame around the content (title and tab bars, side panels), scaffoldBackgroundColor the
++// content, cardColor a quiet grey block.
++
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++
++import '../common.dart';
++import '../desktop/widgets/tabbar_widget.dart';
++import 'hjv_style.dart';
++
++ThemeData hjvRestyle(ThemeData base) {
++  final dark = base.brightness == Brightness.dark;
++  final p = dark ? HjvPalette.dark : HjvPalette.light;
++  final desktop = isDesktop || isWebDesktop;
++  final radius = BorderRadius.circular(HjvRadius.md);
++  final font = base.textTheme.apply(fontFamily: kHjvFont);
++  TextStyle? colored(TextStyle? s, Color color) => s?.copyWith(color: color);
++  final textTheme = font.copyWith(
++    titleLarge: colored(font.titleLarge, p.text)
++        ?.copyWith(fontWeight: FontWeight.w700, letterSpacing: -0.2),
++    titleMedium: colored(font.titleMedium, p.text),
++    titleSmall: colored(font.titleSmall, p.text),
++    bodyLarge: colored(font.bodyLarge, p.text),
++    bodyMedium: colored(font.bodyMedium, p.text),
++    bodySmall: colored(font.bodySmall, p.textSecondary),
++  );
++  final noBorder = OutlineInputBorder(
++    borderRadius: radius,
++    borderSide: const BorderSide(color: Colors.transparent, width: 0),
++  );
++  return base.copyWith(
++    textTheme: textTheme,
++    primaryTextTheme: base.primaryTextTheme.apply(fontFamily: kHjvFont),
++    primaryColor: p.primary,
++    scaffoldBackgroundColor: p.surface,
++    canvasColor: p.surface,
++    dialogBackgroundColor: p.card,
++    cardColor: p.fill,
++    hoverColor: p.hover,
++    hintColor: p.textTertiary,
++    dividerColor: p.border,
++    iconTheme: base.iconTheme.copyWith(color: p.textSecondary),
++    colorScheme: base.colorScheme.copyWith(
++      primary: p.primary,
++      onPrimary: Colors.white,
++      primaryContainer: p.primarySoft,
++      onPrimaryContainer: p.primary,
++      secondary: p.primary,
++      onSecondary: Colors.white,
++      // upstream's widgets read the frame colour from colorScheme.background
++      // ignore: deprecated_member_use
++      background: p.canvas,
++      // ignore: deprecated_member_use
++      onBackground: p.text,
++      surface: p.surface,
++      onSurface: p.text,
++      surfaceContainerHighest: p.fill,
++      onSurfaceVariant: p.textSecondary,
++      outline: p.border,
++      error: p.danger,
++    ),
++    appBarTheme: AppBarTheme(
++      backgroundColor: p.surface,
++      foregroundColor: p.text,
++      elevation: 0,
++      scrolledUnderElevation: 0,
++      shadowColor: Colors.transparent,
++      centerTitle: true,
++      iconTheme: IconThemeData(color: p.text),
++      actionsIconTheme: IconThemeData(color: p.textSecondary),
++      titleTextStyle: TextStyle(
++          fontFamily: kHjvFont,
++          fontSize: 17,
++          fontWeight: FontWeight.w700,
++          color: p.text),
++      shape: Border(bottom: BorderSide(color: p.border)),
++      systemOverlayStyle:
++          dark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
++    ),
++    dialogTheme: DialogTheme(
++      backgroundColor: p.card,
++      elevation: 12,
++      shadowColor: Colors.black.withOpacity(dark ? 0.6 : 0.18),
++      shape: RoundedRectangleBorder(
++        borderRadius: BorderRadius.circular(HjvRadius.xl),
++        side: BorderSide(color: p.border),
++      ),
++      titleTextStyle: TextStyle(
++          fontFamily: kHjvFont,
++          fontSize: 18,
++          fontWeight: FontWeight.w700,
++          color: p.text),
++    ),
++    inputDecorationTheme: InputDecorationTheme(
++      filled: true,
++      fillColor: p.fill,
++      isDense: desktop,
++      hintStyle: TextStyle(color: p.textTertiary),
++      contentPadding: desktop
++          ? const EdgeInsets.symmetric(horizontal: 12, vertical: 11)
++          : const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
++      border: noBorder,
++      enabledBorder: noBorder,
++      disabledBorder: noBorder,
++      focusedBorder: OutlineInputBorder(
++        borderRadius: radius,
++        borderSide: BorderSide(color: p.primary, width: 1.5),
++      ),
++      errorBorder: OutlineInputBorder(
++        borderRadius: radius,
++        borderSide: BorderSide(color: p.danger),
++      ),
++      focusedErrorBorder: OutlineInputBorder(
++        borderRadius: radius,
++        borderSide: BorderSide(color: p.danger, width: 1.5),
++      ),
++    ),
++    elevatedButtonTheme: ElevatedButtonThemeData(
++      style: ElevatedButton.styleFrom(
++        backgroundColor: p.primary,
++        foregroundColor: Colors.white,
++        disabledBackgroundColor: p.fill,
++        disabledForegroundColor: p.textDisabled,
++        elevation: 0,
++        shadowColor: Colors.transparent,
++        textStyle: const TextStyle(
++            fontFamily: kHjvFont, fontWeight: FontWeight.w600),
++        shape: RoundedRectangleBorder(borderRadius: radius),
++        splashFactory: desktop ? NoSplash.splashFactory : null,
++      ),
++    ),
++    outlinedButtonTheme: OutlinedButtonThemeData(
++      style: OutlinedButton.styleFrom(
++        backgroundColor: p.card,
++        foregroundColor: p.text,
++        disabledForegroundColor: p.textDisabled,
++        side: BorderSide(color: p.borderStrong),
++        textStyle: const TextStyle(
++            fontFamily: kHjvFont, fontWeight: FontWeight.w600),
++        shape: RoundedRectangleBorder(borderRadius: radius),
++        splashFactory: desktop ? NoSplash.splashFactory : null,
++      ),
++    ),
++    textButtonTheme: TextButtonThemeData(
++      style: TextButton.styleFrom(
++        foregroundColor: p.primary,
++        disabledForegroundColor: p.textDisabled,
++        textStyle: const TextStyle(
++            fontFamily: kHjvFont, fontWeight: FontWeight.w600),
++        padding: desktop
++            ? null
++            : const EdgeInsets.symmetric(
++                horizontal: MyTheme.mobileTextButtonPaddingLR),
++        shape: RoundedRectangleBorder(borderRadius: radius),
++        splashFactory: desktop ? NoSplash.splashFactory : null,
++      ),
++    ),
++    checkboxTheme: base.checkboxTheme.copyWith(
++      fillColor: WidgetStateProperty.resolveWith((states) =>
++          states.contains(WidgetState.selected) ? p.primary : null),
++      checkColor: const WidgetStatePropertyAll(Colors.white),
++      side: BorderSide(color: p.borderStrong, width: 1.5),
++      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
++    ),
++    radioTheme: base.radioTheme.copyWith(
++      fillColor: WidgetStateProperty.resolveWith((states) =>
++          states.contains(WidgetState.selected) ? p.primary : p.textTertiary),
++    ),
++    switchTheme: base.switchTheme.copyWith(
++      thumbColor: WidgetStateProperty.resolveWith((states) =>
++          states.contains(WidgetState.selected)
++              ? Colors.white
++              : (dark ? p.textSecondary : Colors.white)),
++      trackColor: WidgetStateProperty.resolveWith((states) =>
++          states.contains(WidgetState.selected) ? p.primary : p.borderStrong),
++    ),
++    listTileTheme: base.listTileTheme.copyWith(
++      shape: RoundedRectangleBorder(borderRadius: radius),
++    ),
++    popupMenuTheme: PopupMenuThemeData(
++      color: p.card,
++      elevation: 8,
++      shadowColor: Colors.black.withOpacity(dark ? 0.5 : 0.12),
++      textStyle: TextStyle(fontFamily: kHjvFont, fontSize: 14, color: p.text),
++      shape: RoundedRectangleBorder(
++        borderRadius: BorderRadius.circular(12),
++        side: BorderSide(color: p.border),
++      ),
++    ),
++    menuTheme: MenuThemeData(
++      style: MenuStyle(
++        backgroundColor: WidgetStatePropertyAll(p.card),
++        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
++        elevation: const WidgetStatePropertyAll(8),
++        shape: WidgetStatePropertyAll(RoundedRectangleBorder(
++          borderRadius: BorderRadius.circular(12),
++          side: BorderSide(color: p.border),
++        )),
++      ),
++    ),
++    menuBarTheme: MenuBarThemeData(
++      style: MenuStyle(backgroundColor: WidgetStatePropertyAll(p.card)),
++    ),
++    tooltipTheme: base.tooltipTheme.copyWith(
++      decoration: BoxDecoration(
++        color: dark ? const Color(0xFFE6E9EE) : const Color(0xFF2B313B),
++        borderRadius: BorderRadius.circular(HjvRadius.sm),
++      ),
++      textStyle: TextStyle(
++          fontFamily: kHjvFont,
++          fontSize: 12,
++          color: dark ? const Color(0xFF191F28) : Colors.white),
++    ),
++    tabBarTheme: base.tabBarTheme.copyWith(
++      labelColor: p.text,
++      unselectedLabelColor: p.textTertiary,
++      indicatorColor: p.primary,
++      labelStyle:
++          const TextStyle(fontFamily: kHjvFont, fontWeight: FontWeight.w600),
++      unselectedLabelStyle: const TextStyle(fontFamily: kHjvFont),
++    ),
++    dividerTheme: base.dividerTheme.copyWith(color: p.border),
++    bottomNavigationBarTheme: BottomNavigationBarThemeData(
++      backgroundColor: p.surface,
++      elevation: 0,
++      selectedItemColor: p.primary,
++      unselectedItemColor: p.textTertiary,
++      selectedLabelStyle: const TextStyle(
++          fontFamily: kHjvFont, fontSize: 12, fontWeight: FontWeight.w600),
++      unselectedLabelStyle:
++          const TextStyle(fontFamily: kHjvFont, fontSize: 12),
++    ),
++    navigationBarTheme: NavigationBarThemeData(
++      backgroundColor: p.surface,
++      surfaceTintColor: Colors.transparent,
++      elevation: 0,
++      height: 64,
++      indicatorColor: p.primarySoft,
++      iconTheme: WidgetStateProperty.resolveWith((states) => IconThemeData(
++          color: states.contains(WidgetState.selected)
++              ? p.primary
++              : p.textTertiary)),
++      labelTextStyle: WidgetStateProperty.resolveWith((states) => TextStyle(
++          fontFamily: kHjvFont,
++          fontSize: 12,
++          fontWeight: states.contains(WidgetState.selected)
++              ? FontWeight.w600
++              : FontWeight.w400,
++          color: states.contains(WidgetState.selected)
++              ? p.primary
++              : p.textTertiary)),
++    ),
++    snackBarTheme: SnackBarThemeData(
++      backgroundColor: dark ? const Color(0xFFE6E9EE) : const Color(0xFF2B313B),
++      contentTextStyle: TextStyle(
++          fontFamily: kHjvFont,
++          color: dark ? const Color(0xFF191F28) : Colors.white),
++      shape: RoundedRectangleBorder(borderRadius: radius),
++    ),
++    progressIndicatorTheme: ProgressIndicatorThemeData(color: p.primary),
++    textSelectionTheme: TextSelectionThemeData(
++      cursorColor: p.primary,
++      selectionColor: p.primary.withOpacity(0.25),
++      selectionHandleColor: p.primary,
++    ),
++    chipTheme: base.chipTheme.copyWith(
++      backgroundColor: p.fill,
++      side: BorderSide.none,
++      shape: const StadiumBorder(),
++      labelStyle: TextStyle(fontFamily: kHjvFont, color: p.text),
++    ),
++    scrollbarTheme: base.scrollbarTheme.copyWith(
++      radius: const Radius.circular(3),
++      thumbColor: WidgetStateProperty.resolveWith((states) =>
++          states.contains(WidgetState.dragged) ||
++                  states.contains(WidgetState.hovered)
++              ? p.textTertiary
++              : p.borderStrong),
++    ),
++    extensions: <ThemeExtension<dynamic>>[
++      (dark ? ColorThemeExtension.dark : ColorThemeExtension.light).copyWith(
++        border: p.borderStrong,
++        border2: p.borderStrong,
++        highlight: p.hover,
++        divider: p.borderStrong,
++      ) as ColorThemeExtension,
++      TabbarTheme(
++        selectedTabIconColor: p.primary,
++        unSelectedTabIconColor: p.textTertiary,
++        selectedTextColor: p.text,
++        unSelectedTextColor: p.textSecondary,
++        selectedIconColor: p.text,
++        unSelectedIconColor: p.textSecondary,
++        dividerColor: p.border,
++        hoverColor: p.hover,
++        closeHoverColor: p.card,
++        selectedTabBackgroundColor: p.surface,
++      ),
++    ],
++  );
++}
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 7f63f09..626d263 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -6,11 +6,13 @@ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/models/peer_tab_model.dart';
+ import 'package:flutter_hbb/models/state_model.dart';
++import 'package:flutter_svg/flutter_svg.dart';
+ import 'package:get/get.dart';
+ import 'package:provider/provider.dart';
+ 
+ import '../../common.dart';
+ import '../../common/formatter/id_formatter.dart';
++import '../../common/hjv_style.dart';
+ import '../../models/peer_model.dart';
+ import '../../models/platform_model.dart';
+ import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
+@@ -49,14 +51,14 @@ class _PeerCardState extends State<_PeerCard>
+     with AutomaticKeepAliveClientMixin {
+   var _menuPos = RelativeRect.fill;
+   final double _cardRadius = 16;
+-  final double _tileRadius = 5;
++  final double _tileRadius = 10;
+   final double _borderWidth = 2;
+ 
+   @override
+   Widget build(BuildContext context) {
+     super.build(context);
+     return Obx(() =>
+-        stateGlobal.isPortrait.isTrue ? _buildPortrait() : _buildLandscape());
++        stateGlobal.isPortrait.isTrue ? _hjvBuildPortrait() : _buildLandscape());
+   }
+ 
+   Widget gestureDetector({required Widget child}) {
+@@ -123,7 +125,7 @@ class _PeerCardState extends State<_PeerCard>
+       },
+       child: gestureDetector(
+           child: Obx(() => peerCardUiType.value == PeerUiType.grid
+-              ? _buildPeerCard(context, peer, deco)
++              ? _hjvPeerCard(context, peer, deco)
+               : _buildPeerTile(context, peer, deco))),
+     );
+   }
+@@ -261,10 +263,10 @@ class _PeerCardState extends State<_PeerCard>
+       child: Stack(children: [
+         Obx(
+           () => deco == null
+-              ? makeChild(stateGlobal.isPortrait.isTrue, peer)
++              ? _hjvMakeChild(stateGlobal.isPortrait.isTrue, peer)
+               : Container(
+                   foregroundDecoration: deco.value,
+-                  child: makeChild(stateGlobal.isPortrait.isTrue, peer),
++                  child: _hjvMakeChild(stateGlobal.isPortrait.isTrue, peer),
+                 ),
+         ),
+         if (colors.isNotEmpty)
+@@ -412,6 +414,202 @@ class _PeerCardState extends State<_PeerCard>
+     );
+   }
+ 
++  // HJViewer: the cards in the app's look (common/hjv_style.dart): a card with a thin border, the
++  // platform in a soft tile of the peer's colour, the name in bold and user@host below it.
++  // Upstream's _buildPortrait, makeChild and _buildPeerCard stay as they are, unused.
++  Widget _hjvBuildPortrait() {
++    final peer = super.widget.peer;
++    return Container(
++      decoration: hjvCardDecoration(context),
++      child: gestureDetector(
++        child: Container(
++            color: Colors.transparent,
++            padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
++            child: _buildPeerTile(context, peer, null)),
++      ),
++    );
++  }
++
++  String _hjvName(Peer peer) => hideUsernameOnCard == true
++      ? peer.hostname
++      : '${peer.username}${peer.username.isNotEmpty && peer.hostname.isNotEmpty ? '@' : ''}${peer.hostname}';
++
++  Widget _hjvAvatar(Peer peer, double size) {
++    final (background, foreground) =
++        hjvTint(context, str2color('${peer.id}${peer.platform}'));
++    return Container(
++      width: size,
++      height: size,
++      alignment: Alignment.center,
++      decoration: BoxDecoration(
++          color: background, borderRadius: BorderRadius.circular(size * 0.28)),
++      child: hjvPlatformIcon(peer.platform, size * 0.55, foreground),
++    );
++  }
++
++  Widget _hjvMakeChild(bool isPortrait, Peer peer) {
++    final p = HjvPalette.of(context);
++    final name = _hjvName(peer);
++    final title = peer.alias.isEmpty ? formatID(peer.id) : peer.alias;
++    final sub = TextStyle(fontSize: 12, color: p.textTertiary, height: 1.3);
++    final row = Row(
++      children: [
++        Stack(clipBehavior: Clip.none, children: [
++          _hjvAvatar(peer, isPortrait ? 44 : 30),
++          if (_shouldBuildPasswordIcon(peer))
++            Positioned(
++                top: -2,
++                left: -2,
++                child: Icon(Icons.key, size: 10, color: p.textTertiary)),
++        ]),
++        SizedBox(width: isPortrait ? 12 : 10),
++        Expanded(
++          child: Column(
++            mainAxisAlignment: MainAxisAlignment.center,
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              Text(
++                title,
++                maxLines: 1,
++                overflow: TextOverflow.ellipsis,
++                style: TextStyle(
++                    fontSize: isPortrait ? 15 : 13,
++                    fontWeight: FontWeight.w600,
++                    color: p.text,
++                    height: 1.3,
++                    fontFeatures:
++                        peer.alias.isEmpty ? HjvText.tabular : null),
++              ),
++              Row(children: [
++                getOnline(5, peer.online),
++                Flexible(
++                  child: Tooltip(
++                    message: name,
++                    waitDuration: const Duration(seconds: 1),
++                    child: Text(name,
++                        maxLines: 1,
++                        overflow: TextOverflow.ellipsis,
++                        style: sub),
++                  ),
++                ),
++                if (_showNote(peer))
++                  Expanded(
++                    child: Tooltip(
++                      message: peer.note,
++                      waitDuration: const Duration(seconds: 1),
++                      child: Text(peer.note,
++                              maxLines: 1,
++                              overflow: TextOverflow.ellipsis,
++                              style: sub)
++                          .marginOnly(left: 8),
++                    ),
++                  ),
++              ]),
++            ],
++          ),
++        ),
++        isPortrait
++            ? checkBoxOrActionMorePortrait(peer)
++            : checkBoxOrActionMoreLandscape(peer, isTile: true),
++      ],
++    );
++    if (isPortrait) return row;
++    return Container(
++      decoration: hjvCardDecoration(context, radius: _tileRadius),
++      padding: const EdgeInsets.only(left: 6),
++      child: row,
++    );
++  }
++
++  Widget _hjvPeerCard(
++      BuildContext context, Peer peer, Rx<BoxDecoration?> deco) {
++    hideUsernameOnCard ??=
++        bind.mainGetBuildinOption(key: kHideUsernameOnCard) == 'Y';
++    final p = HjvPalette.of(context);
++    final name = _hjvName(peer);
++    final title = peer.alias.isEmpty ? formatID(peer.id) : peer.alias;
++    final colors = _frontN(peer.tags, 25)
++        .map((e) => gFFI.abModel.getCurrentAbTagColor(e))
++        .toList();
++    final card = Obx(
++      () => Container(
++        foregroundDecoration: deco.value,
++        decoration: hjvCardDecoration(context, radius: _cardRadius),
++        padding: const EdgeInsets.fromLTRB(14, 12, 4, 12),
++        child: Column(
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            Row(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                _hjvAvatar(peer, 44),
++                const Spacer(),
++                checkBoxOrActionMoreLandscape(peer, isTile: false),
++              ],
++            ),
++            const Spacer(),
++            Text(
++              title,
++              maxLines: 1,
++              overflow: TextOverflow.ellipsis,
++              style: TextStyle(
++                  fontSize: 15,
++                  fontWeight: FontWeight.w600,
++                  color: p.text,
++                  height: 1.3,
++                  fontFeatures: peer.alias.isEmpty ? HjvText.tabular : null),
++            ).marginOnly(right: 10),
++            const SizedBox(height: 2),
++            Row(children: [
++              getOnline(5, peer.online),
++              Expanded(
++                child: Tooltip(
++                  message: name,
++                  waitDuration: const Duration(seconds: 1),
++                  child: Text(name,
++                      maxLines: 1,
++                      overflow: TextOverflow.ellipsis,
++                      style: TextStyle(fontSize: 12, color: p.textTertiary)),
++                ),
++              ),
++            ]).marginOnly(right: 10),
++            if (_showNote(peer))
++              Tooltip(
++                message: peer.note,
++                waitDuration: const Duration(seconds: 1),
++                child: Text(peer.note,
++                    maxLines: 1,
++                    overflow: TextOverflow.ellipsis,
++                    style: TextStyle(fontSize: 11, color: p.textTertiary)),
++              ).marginOnly(right: 10),
++          ],
++        ),
++      ),
++    );
++    return Tooltip(
++      message: peer.tags.isNotEmpty
++          ? '${translate('Tags')}: ${peer.tags.join(', ')}'
++          : '',
++      child: Stack(children: [
++        card,
++        if (_shouldBuildPasswordIcon(peer))
++          Positioned(
++            top: 10,
++            left: 12,
++            child: Icon(Icons.key, size: 12, color: p.textTertiary),
++          ),
++        if (colors.isNotEmpty)
++          Positioned(
++            top: 16,
++            right: 44,
++            child: CustomPaint(
++              painter: TagPainter(radius: 4, colors: colors),
++            ),
++          )
++      ]),
++    );
++  }
++
+   List _frontN<T>(List list, int n) {
+     if (list.length <= n) {
+       return list;
+@@ -1466,6 +1664,23 @@ void _rdpDialog(String id) async {
+   });
+ }
+ 
++/// HJViewer: getPlatformImage in one colour, for the soft tiles of the peer cards.
++Widget hjvPlatformIcon(String platform, double size, Color color) {
++  if (platform.isEmpty) return SizedBox(width: size, height: size);
++  if (platform == kPeerPlatformMacOS) {
++    platform = 'mac';
++  } else if (platform != kPeerPlatformLinux &&
++      platform != kPeerPlatformAndroid) {
++    platform = 'win';
++  } else {
++    platform = platform.toLowerCase();
++  }
++  return SvgPicture.asset('assets/$platform.svg',
++      height: size,
++      width: size,
++      colorFilter: ColorFilter.mode(color, BlendMode.srcIn));
++}
++
+ Widget getOnline(double rightPadding, bool online) {
+   return Tooltip(
+       message: translate(online ? 'Online' : 'Offline'),
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 55712ea..29bda93 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -15,6 +15,7 @@ import 'package:window_manager/window_manager.dart';
+ import 'package:flutter_hbb/models/peer_model.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../common/hjv_update.dart';
+ import '../../common/formatter/id_formatter.dart';
+ import '../../common/widgets/peer_tab_page.dart';
+@@ -347,9 +348,7 @@ class _ConnectionPageState extends State<ConnectionPage>
+     var w = Container(
+       width: 320 + 20 * 2,
+       padding: const EdgeInsets.fromLTRB(20, 24, 20, 22),
+-      decoration: BoxDecoration(
+-          borderRadius: const BorderRadius.all(Radius.circular(13)),
+-          border: Border.all(color: Theme.of(context).colorScheme.background)),
++      decoration: hjvCardDecoration(context, radius: HjvRadius.xl, shadow: true),
+       child: Ink(
+         child: Column(
+           children: [
+@@ -420,16 +419,11 @@ class _ConnectionPageState extends State<ConnectionPage>
+                           enableSuggestions: false,
+                           keyboardType: TextInputType.visiblePassword,
+                           focusNode: fieldFocusNode,
+-                          style: const TextStyle(
+-                            fontFamily: 'WorkSans',
+-                            fontSize: 22,
+-                            height: 1.4,
+-                          ),
++                          style: HjvText.idInput,
+                           maxLines: 1,
+                           cursorColor:
+                               Theme.of(context).textTheme.titleLarge?.color,
+                           decoration: InputDecoration(
+-                              filled: false,
+                               counterText: '',
+                               hintText: _idInputFocused.value
+                                   ? null
+@@ -520,8 +514,10 @@ class _ConnectionPageState extends State<ConnectionPage>
+               padding: const EdgeInsets.only(top: 13.0),
+               child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                 SizedBox(
+-                  height: 28.0,
++                  height: 40.0,
+                   child: ElevatedButton(
++                    style: ElevatedButton.styleFrom(
++                        padding: const EdgeInsets.symmetric(horizontal: 22)),
+                     onPressed: () {
+                       onConnect();
+                     },
+@@ -530,11 +526,13 @@ class _ConnectionPageState extends State<ConnectionPage>
+                 ),
+                 const SizedBox(width: 8),
+                 Container(
+-                  height: 28.0,
+-                  width: 28.0,
++                  height: 40.0,
++                  width: 40.0,
+                   decoration: BoxDecoration(
+-                    border: Border.all(color: Theme.of(context).dividerColor),
+-                    borderRadius: BorderRadius.circular(8),
++                    color: HjvPalette.of(context).card,
++                    border:
++                        Border.all(color: HjvPalette.of(context).borderStrong),
++                    borderRadius: BorderRadius.circular(HjvRadius.md),
+                   ),
+                   child: Center(
+                     child: StatefulBuilder(
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 1c7ae3d..5f67617 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -6,6 +6,7 @@ import 'package:auto_size_text/auto_size_text.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/widgets/animated_rotation_widget.dart';
+ import 'package:flutter_hbb/common/widgets/custom_password.dart';
+ import 'package:flutter_hbb/consts.dart';
+@@ -90,8 +91,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+         child: loadLogo(),
+       ),
+       buildTip(context),
+-      if (!isOutgoingOnly) buildIDBoard(context),
+-      if (!isOutgoingOnly) buildPasswordBoard(context),
++      if (!isOutgoingOnly) _hjvIDBoard(context),
++      if (!isOutgoingOnly) _hjvPasswordBoard(context),
+       FutureBuilder<Widget>(
+         future: Future.value(
+             Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
+@@ -386,6 +387,148 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+     );
+   }
+ 
++  // HJViewer: the ID and the password as cards (common/hjv_style.dart); upstream's buildIDBoard
++  // and buildPasswordBoard stay as they are, unused.
++  Widget _hjvIDBoard(BuildContext context) {
++    final model = gFFI.serverModel;
++    final p = HjvPalette.of(context);
++    return Container(
++      margin: const EdgeInsets.fromLTRB(12, 6, 12, 8),
++      padding: const EdgeInsets.fromLTRB(12, 8, 4, 10),
++      decoration: BoxDecoration(
++        color: p.primarySoft,
++        borderRadius: BorderRadius.circular(HjvRadius.lg),
++      ),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Row(
++            children: [
++              Expanded(
++                child: Text(translate("ID"),
++                    style: TextStyle(
++                        fontSize: 12,
++                        fontWeight: FontWeight.w600,
++                        color: p.primary)),
++              ),
++              buildPopupMenu(context),
++            ],
++          ),
++          GestureDetector(
++            onDoubleTap: () {
++              Clipboard.setData(ClipboardData(text: model.serverId.text));
++              showToast(translate("Copied"));
++            },
++            child: TextFormField(
++              controller: model.serverId,
++              readOnly: true,
++              decoration: const InputDecoration(
++                filled: false,
++                isDense: true,
++                border: InputBorder.none,
++                enabledBorder: InputBorder.none,
++                focusedBorder: InputBorder.none,
++                contentPadding: EdgeInsets.only(top: 2, bottom: 2),
++              ),
++              style: HjvText.idLarge.copyWith(fontSize: 24, color: p.text),
++            ).workaroundFreezeLinuxMint(),
++          ),
++        ],
++      ),
++    );
++  }
++
++  Widget _hjvPasswordBoard(BuildContext context) {
++    return ChangeNotifierProvider.value(
++        value: gFFI.serverModel,
++        child: Consumer<ServerModel>(
++          builder: (context, model, child) {
++            final p = HjvPalette.of(context);
++            RxBool refreshHover = false.obs;
++            RxBool editHover = false.obs;
++            final showOneTime = model.approveMode != 'click' &&
++                model.verificationMethod != kUsePermanentPassword;
++            Widget action(IconData icon, RxBool hover) => Obx(() => Icon(icon,
++                size: 18, color: hover.value ? p.text : p.textTertiary));
++            return Container(
++              margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
++              padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
++              decoration: hjvCardDecoration(context),
++              child: Column(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  AutoSizeText(
++                    translate("One-time Password"),
++                    style: TextStyle(
++                        fontSize: 12,
++                        fontWeight: FontWeight.w600,
++                        color: p.textTertiary),
++                    maxLines: 1,
++                  ),
++                  Row(
++                    children: [
++                      Expanded(
++                        child: GestureDetector(
++                          onDoubleTap: () {
++                            if (showOneTime) {
++                              Clipboard.setData(
++                                  ClipboardData(text: model.serverPasswd.text));
++                              showToast(translate("Copied"));
++                            }
++                          },
++                          child: TextFormField(
++                            controller: model.serverPasswd,
++                            readOnly: true,
++                            decoration: const InputDecoration(
++                              filled: false,
++                              isDense: true,
++                              border: InputBorder.none,
++                              enabledBorder: InputBorder.none,
++                              focusedBorder: InputBorder.none,
++                              contentPadding:
++                                  EdgeInsets.only(top: 4, bottom: 4),
++                            ),
++                            style: TextStyle(
++                                fontSize: 17,
++                                fontWeight: FontWeight.w600,
++                                letterSpacing: 1,
++                                color: p.text,
++                                fontFeatures: HjvText.tabular),
++                          ).workaroundFreezeLinuxMint(),
++                        ),
++                      ),
++                      if (showOneTime)
++                        AnimatedRotationWidget(
++                          onPressed: () => bind.mainUpdateTemporaryPassword(),
++                          child: Tooltip(
++                            message: translate('Refresh Password'),
++                            child: RotatedBox(
++                                quarterTurns: 2,
++                                child: action(Icons.refresh, refreshHover)),
++                          ),
++                          onHover: (value) => refreshHover.value = value,
++                        ).marginOnly(right: 6),
++                      if (!bind.isDisableSettings())
++                        InkWell(
++                          borderRadius: BorderRadius.circular(HjvRadius.sm),
++                          child: Tooltip(
++                            message: translate('Change Password'),
++                            child: action(Icons.edit_outlined, editHover)
++                                .marginAll(4),
++                          ),
++                          onTap: () => DesktopSettingPage.switch2page(
++                              SettingsTabKey.safety),
++                          onHover: (value) => editHover.value = value,
++                        ),
++                    ],
++                  ),
++                ],
++              ),
++            );
++          },
++        ));
++  }
++
+   buildTip(BuildContext context) {
+     final isOutgoingOnly = bind.isOutgoingOnly();
+     return Padding(
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index 7955192..8bb8f05 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
+ import 'package:flutter_hbb/models/peer_model.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../common/hjv_update.dart';
+ import '../../common/widgets/peer_tab_page.dart';
+ import '../../common/widgets/autocomplete.dart';
+@@ -154,10 +155,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
+       child: Padding(
+         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
+         child: Ink(
+-          decoration: BoxDecoration(
+-            color: Theme.of(context).cardColor,
+-            borderRadius: BorderRadius.all(Radius.circular(13)),
+-          ),
++          decoration: hjvCardDecoration(context, radius: 16),
+           child: Row(
+             children: <Widget>[
+               Expanded(
+@@ -231,15 +229,14 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                         onChanged: (String text) {
+                           _idController.id = text;
+                         },
+-                        style: const TextStyle(
+-                          fontFamily: 'WorkSans',
+-                          fontWeight: FontWeight.bold,
+-                          fontSize: 30,
+-                          color: MyTheme.idColor,
+-                        ),
++                        style: HjvText.idInput.copyWith(
++                            fontSize: 24,
++                            fontWeight: FontWeight.w700,
++                            color: HjvPalette.of(context).text),
+                         decoration: InputDecoration(
+                           labelText: translate('Remote ID'),
+                           // hintText: 'Enter your remote ID',
++                          filled: false,
+                           border: InputBorder.none,
+                           helperStyle: const TextStyle(
+                             fontWeight: FontWeight.bold,
+@@ -335,13 +332,21 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                         },
+                         icon: Icon(Icons.clear, color: MyTheme.darkGray)),
+                   )),
+-              SizedBox(
+-                width: 60,
+-                height: 60,
+-                child: IconButton(
+-                  icon: const Icon(Icons.arrow_forward,
+-                      color: MyTheme.darkGray, size: 45),
+-                  onPressed: onConnect,
++              Padding(
++                padding: const EdgeInsets.only(right: 12, left: 4),
++                child: SizedBox(
++                  width: 44,
++                  height: 44,
++                  child: Material(
++                    color: HjvPalette.of(context).primary,
++                    shape: const CircleBorder(),
++                    clipBehavior: Clip.antiAlias,
++                    child: InkWell(
++                      onTap: onConnect,
++                      child: const Icon(Icons.arrow_forward_rounded,
++                          color: Colors.white, size: 24),
++                    ),
++                  ),
+                 ),
+               ),
+             ],
+diff --git a/flutter/lib/mobile/pages/home_page.dart b/flutter/lib/mobile/pages/home_page.dart
+index 651ec4f..4cbb5bb 100644
+--- a/flutter/lib/mobile/pages/home_page.dart
++++ b/flutter/lib/mobile/pages/home_page.dart
+@@ -4,6 +4,7 @@ import 'package:flutter_hbb/mobile/pages/settings_page.dart';
+ import 'package:flutter_hbb/web/settings_page.dart';
+ import 'package:get/get.dart';
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../common/widgets/chat_page.dart';
+ import '../../models/platform_model.dart';
+ import '../../models/state_model.dart';
+@@ -74,21 +75,30 @@ class HomePageState extends State<HomePage> {
+         },
+         child: Scaffold(
+           // backgroundColor: MyTheme.grayBg,
++          backgroundColor: Theme.of(context).brightness == Brightness.dark
++              ? HjvPalette.dark.surface
++              : HjvPalette.light.canvas,
+           appBar: AppBar(
+             centerTitle: true,
+             title: appTitle(),
+             actions: _pages.elementAt(_selectedIndex).appBarActions,
+           ),
+-          bottomNavigationBar: BottomNavigationBar(
++          bottomNavigationBar: Container(
++            decoration: BoxDecoration(
++                border: Border(
++                    top: BorderSide(color: HjvPalette.of(context).border))),
++            child: BottomNavigationBar(
+             key: navigationBarKey,
+             items: _pages
+-                .map((page) =>
+-                    BottomNavigationBarItem(icon: page.icon, label: page.title))
++                .map((page) => BottomNavigationBarItem(
++                    icon: _hjvNavPill(page.icon, selected: false),
++                    activeIcon: _hjvNavPill(page.icon),
++                    label: page.title))
+                 .toList(),
+             currentIndex: _selectedIndex,
+             type: BottomNavigationBarType.fixed,
+-            selectedItemColor: MyTheme.accent, //
+-            unselectedItemColor: MyTheme.darkGray,
++            selectedItemColor: HjvPalette.of(context).primary, //
++            unselectedItemColor: HjvPalette.of(context).textTertiary,
+             onTap: (index) => setState(() {
+               // close chat overlay when go chat page
+               if (_selectedIndex != index) {
+@@ -101,11 +111,25 @@ class HomePageState extends State<HomePage> {
+                 }
+               }
+             }),
+-          ),
++          )),
+           body: _pages.elementAt(_selectedIndex),
+         ));
+   }
+ 
++  // HJViewer: the selected tab's icon on a soft pill, as a NavigationBar draws it; the bar stays
++  // a BottomNavigationBar, which chat_model.dart and server_page.dart look up by its key.
++  Widget _hjvNavPill(Widget icon, {bool selected = true}) => Container(
++        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 3),
++        margin: const EdgeInsets.only(bottom: 2),
++        decoration: BoxDecoration(
++          color: selected
++              ? HjvPalette.of(context).primarySoft
++              : Colors.transparent,
++          borderRadius: BorderRadius.circular(16),
++        ),
++        child: icon,
++      );
++
+   Widget appTitle() {
+     final currentUser = gFFI.chatModel.currentUser;
+     final currentKey = gFFI.chatModel.currentKey;
+diff --git a/flutter/pubspec.yaml b/flutter/pubspec.yaml
+index c235597..744e9b5 100644
+--- a/flutter/pubspec.yaml
++++ b/flutter/pubspec.yaml
+@@ -157,8 +157,16 @@ flutter:
+   # To add assets to your application, add an assets section, like this:
+   assets:
+     - assets/
++    - assets/fonts/Pretendard-LICENSE.txt
+ 
+   fonts:
++    - family: Pretendard
++      fonts:
++        - asset: assets/fonts/Pretendard-Regular.otf
++        - asset: assets/fonts/Pretendard-SemiBold.otf
++          weight: 600
++        - asset: assets/fonts/Pretendard-Bold.otf
++          weight: 700
+     - family: GestureIcons
+       fonts:
+         - asset: assets/gestures.ttf

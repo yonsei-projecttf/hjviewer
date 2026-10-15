@@ -762,7 +762,7 @@ Google Play 경로는 Android 실행마다 Linux 약 6분(AAB 4, Google Play int
   - 시크릿은 로그에서 `***`로 가려집니다. 하지만 저장소 **변수**는 각 단계의 로그에 그대로 찍힙니다. 서버 주소와 키를 로그에 남기지 않으려면 `HJV_SERVER`/`HJV_SERVER_KEY`를 시크릿으로 등록하세요(워크플로는 둘 다 받습니다).
   - 서버 주소와 키는 **앱 안에 들어갑니다**. 공개 아티팩트로 받은 앱이나 소스로 직접 빌드한 앱은 그 서버에 접속할 수 있습니다. 소수만 쓰는 서버라면 실제 서버 값으로 빌드한 앱은 공개 아티팩트로 내지 말고, 비공개 빌드 저장소에서 빌드하세요. ([deploy.md](deploy.md)의 "소규모 비공개 운영")
   - 서명된 IPA는 공개 저장소에서 아티팩트로 올리지 않습니다. 프로비저닝 프로파일에 Apple 개발자 이름, 팀 ID, Ad Hoc의 경우 기기 UDID가 들어 있기 때문입니다. 서명 단계의 로그에서도 인증서 이름과 팀을 가립니다.
-- 내려받는 모든 결과물(artifact)에는 `LICENSE.txt`, `NOTICE.txt`, `SOURCE.txt`(이 빌드의 소스 위치), `THIRD_PARTY_NOTICES.txt`(Rust 크레이트, vcpkg 포트, 동봉 드라이버의 라이선스)가 함께 들어갑니다. AGPL이 요구하는 고지입니다. TestFlight로 올리는 IPA와 Google Play에서 설치하는 앱에는 이 파일이 없고, 앱 정보 화면의 소스 링크만 있습니다. Google Play 출시 노트에는 워크플로가 이 빌드의 소스 커밋 링크를 넣습니다. 내부 테스터가 아닌 사람에게 TestFlight로 나눠 주기 전에, 고지를 앱 안에 넣거나 TestFlight의 "테스트할 내용"에 이 빌드의 소스 커밋(`client-<앱 버전>` 태그)과 고지 링크를 적어야 합니다.
+- 내려받는 모든 결과물(artifact)에는 `LICENSE.txt`, `NOTICE.txt`, `SOURCE.txt`(이 빌드의 소스 위치), `THIRD_PARTY_NOTICES.txt`(Rust 크레이트, vcpkg 포트, 동봉 드라이버, 앱 글꼴 Pretendard의 라이선스)가 함께 들어갑니다. AGPL이 요구하는 고지입니다. 글꼴의 라이선스(SIL OFL 1.1)는 글꼴 파일과 함께 앱 안(`flutter/assets/fonts`, `client/overlay`에서 옴)에도 들어 있어, 고지 파일이 없는 TestFlight와 Google Play 앱에도 따라갑니다. TestFlight로 올리는 IPA와 Google Play에서 설치하는 앱에는 이 파일이 없고, 앱 정보 화면의 소스 링크만 있습니다. Google Play 출시 노트에는 워크플로가 이 빌드의 소스 커밋 링크를 넣습니다. 내부 테스터가 아닌 사람에게 TestFlight로 나눠 주기 전에, 고지를 앱 안에 넣거나 TestFlight의 "테스트할 내용"에 이 빌드의 소스 커밋(`client-<앱 버전>` 태그)과 고지 링크를 적어야 합니다.
 
 ## 캐시
 

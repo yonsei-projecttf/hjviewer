@@ -16,8 +16,12 @@ HJViewer is a modified version of these programs:
 What HJViewer changes, since 2026-10-10:
 - the patch series in server/patches and client/patches, each with its date and description;
 - the replacement image files in client/overlay; the splash screen's line of text among them is
-  glyph outlines of Noto Sans CJK KR (Copyright 2014-2021 Adobe, SIL Open Font License 1.1), and
-  no font file ships;
+  glyph outlines of Noto Sans CJK KR (Copyright 2014-2021 Adobe, SIL Open Font License 1.1);
+- the typeface of the app's text, Pretendard 1.3.9 (Regular, SemiBold and Bold, unmodified;
+  https://github.com/orioncactus/pretendard), Copyright (c) 2021 Kil Hyung-jin, with Reserved
+  Font Name Pretendard, under the SIL Open Font License 1.1: client/overlay puts the font files
+  and their license into the app (flutter/assets/fonts), and each build's
+  THIRD_PARTY_NOTICES.txt repeats the license;
 - at build time (.github/workflows/client-build.yml): the app version is set from
   client/version.env, the Android build switches to debug signing and more Gradle memory, the
   iOS build sets its own signing on the Runner target and drops entitlements the provisioning

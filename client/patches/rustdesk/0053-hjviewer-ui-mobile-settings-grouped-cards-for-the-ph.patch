@@ -1,0 +1,484 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Thu, 15 Oct 2026 20:01:01 +0900
+Subject: [PATCH 53/57] hjviewer: ui: mobile-settings: grouped cards for the
+ phone settings
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The phone's Settings tab and its display defaults page were settings_ui's
+flat Android list on Android (18 px rows, blue section titles, the system
+font) and its plain iOS list on an iPhone. Both now use one grouped look:
+
+- the canvas behind (the dark theme's surface), each section a card
+  (hjvCardDecoration) under a small grey title, settings_ui's iOS rows
+  inside in the palette's colours: 16 px titles in Pretendard, 22 px
+  outlined icons in textSecondary, inset dividers, values at the row's
+  end in textSecondary (capped so a long one wraps instead of running
+  past the card), Cupertino switches in the primary colour.
+- Off an iPhone a switch row still toggles from anywhere on it, as the
+  Android row did. The fingerprint moves under its row, where its 64
+  digits fit; the trusted devices' delete button is no longer white on
+  the light app bar.
+
+Behaviour, texts and keys are unchanged.
+
+After an independent review (screens in light and dark, the diff, the code rules):
+
+- A tile's description (the fingerprint, the 프로젝트TF notice, the
+  recording directory) sits under its title inside the row: it takes the
+  row's tap and press colour (a tap on the fingerprint's digits copies it
+  again, as upstream's Android row did), starts at the title's edge and
+  gets the row's inset divider, and settings_ui no longer rounds the next
+  row in the middle of a card. An empty fingerprint shows no description.
+- In a section with icons a row without one keeps the icon's room, so the
+  Settings card has one text edge and one divider inset; the value cap
+  counts that room only in such sections.
+- Off an iPhone rows are 48 px high, Android's touch target; on an iPhone
+  they stay 44.
+- The pickers (view style, image quality, codec, keep screen on) are
+  navigation rows that end in the app's chevron after their value
+  (settings_ui's own is a CupertinoIcons glyph, a font the app does not
+  bundle); a picker that cannot be opened shows none.
+- Row icons and the account avatar are 24 px, on the icon scale.
+
+Behaviour, texts and keys are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/mobile/pages/settings_page.dart | 269 +++++++++++++++++---
+ 1 file changed, 239 insertions(+), 30 deletions(-)
+
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index 2bc93e4..fe9a783 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -1,7 +1,9 @@
+ import 'dart:async';
+ import 'dart:convert';
++import 'dart:math' show max;
+ import 'dart:typed_data';
+ 
++import 'package:flutter/cupertino.dart' show CupertinoTheme;
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
+ import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
+@@ -12,6 +14,7 @@ import 'package:url_launcher/url_launcher.dart';
+ import 'package:url_launcher/url_launcher_string.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../common/hjv_update.dart';
+ import '../../common/hjviewer_account.dart';
+ import '../../common/widgets/dialog.dart';
+@@ -368,7 +371,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+       if (enable2fa && _enableTrustedDevices)
+         SettingsTile(
+             title: Text(translate('Manage trusted devices')),
+-            trailing: Icon(Icons.arrow_forward_ios),
++            trailing: Icon(Icons.chevron_right_rounded,
++                color: HjvPalette.of(context).textTertiary),
+             onPressed: (context) {
+               Navigator.push(context, MaterialPageRoute(builder: (context) {
+                 return _ManageTrustedDevices();
+@@ -397,8 +401,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+           Expanded(child: Text(translate('Use IP Whitelisting'))),
+           Offstage(
+                   offstage: !_onlyWhiteList,
+-                  child: const Icon(Icons.warning_amber_rounded,
+-                      color: Color.fromARGB(255, 255, 204, 0)))
++                  child: Icon(Icons.warning_amber_rounded,
++                      color: HjvPalette.of(context).warning))
+               .marginOnly(left: 5)
+         ]),
+         initialValue: _onlyWhiteList,
+@@ -420,8 +424,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+           Expanded(child: Text(translate('Use ID whitelisting'))),
+           Offstage(
+                   offstage: !_onlyIdWhiteList,
+-                  child: const Icon(Icons.warning_amber_rounded,
+-                      color: Color.fromARGB(255, 255, 204, 0)))
++                  child: Icon(Icons.warning_amber_rounded,
++                      color: HjvPalette.of(context).warning))
+               .marginOnly(left: 5)
+         ]),
+         initialValue: _onlyIdWhiteList,
+@@ -487,7 +491,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                   child: IconButton(
+                       padding: EdgeInsets.zero,
+                       icon: Icon(
+-                        Icons.edit,
++                        Icons.edit_outlined,
+                         size: 20,
+                       ),
+                       onPressed: isOptionFixed(kOptionDirectAccessPort)
+@@ -534,7 +538,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                   child: IconButton(
+                       padding: EdgeInsets.zero,
+                       icon: Icon(
+-                        Icons.edit,
++                        Icons.edit_outlined,
+                         size: 20,
+                       ),
+                       onPressed: isOptionFixed(kOptionAutoDisconnectTimeout)
+@@ -717,7 +721,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+     final disabledSettings = bind.isDisableSettings();
+     final hideSecuritySettings =
+         bind.mainGetBuildinOption(key: kOptionHideSecuritySetting) == 'Y';
+-    final settings = SettingsList(
++    final settings = _hjvSettingsList(
++      context,
+       sections: [
+         customClientSection,
+         if (!bind.isDisableAccount())
+@@ -733,11 +738,11 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                       avatar: gFFI.userModel.avatar.value);
+                   return buildAvatarWidget(
+                         avatar: avatar,
+-                        size: 28,
++                        size: 24,
+                         borderRadius: null,
+-                        fallback: Icon(Icons.person),
++                        fallback: Icon(Icons.person_outline_rounded),
+                       ) ??
+-                      Icon(Icons.person);
++                      Icon(Icons.person_outline_rounded);
+                 }),
+                 onPressed: (context) {
+                   if (gFFI.userModel.userName.value.isEmpty) {
+@@ -754,7 +759,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+           if (!disabledSettings && !_hideNetwork && !_hideServer)
+             SettingsTile(
+                 title: Text(translate('ID/Relay Server')),
+-                leading: Icon(Icons.cloud),
++                leading: Icon(Icons.cloud_outlined),
+                 onPressed: (context) {
+                   showServerSettings(gFFI.dialogManager, (callback) async {
+                     _isUsingPublicServer = await bind.mainIsUsingPublicServer();
+@@ -764,14 +769,14 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+           if (!_hideNetwork && !_hideProxy)
+             SettingsTile(
+                 title: Text(translate('Socks5/Http(s) Proxy')),
+-                leading: Icon(Icons.network_ping),
++                leading: Icon(Icons.network_ping_rounded),
+                 onPressed: (context) {
+                   changeSocks5Proxy();
+                 }),
+           if (isAndroid && !bind.isOutgoingOnly())
+             SettingsTile(
+                 title: Text(translate('Deploy')),
+-                leading: Icon(Icons.cloud_upload),
++                leading: Icon(Icons.cloud_upload_outlined),
+                 onPressed: (context) {
+                   showDeployDialog();
+                 }),
+@@ -884,7 +889,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+             ),
+           SettingsTile(
+               title: Text(translate('Language')),
+-              leading: Icon(Icons.translate),
++              leading: Icon(Icons.translate_rounded),
+               onPressed: (context) {
+                 showLanguageSettings(gFFI.dialogManager);
+               }),
+@@ -894,8 +899,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                     ? 'Light Theme'
+                     : 'Dark Theme')),
+             leading: Icon(Theme.of(context).brightness == Brightness.light
+-                ? Icons.dark_mode
+-                : Icons.light_mode),
++                ? Icons.dark_mode_outlined
++                : Icons.light_mode_outlined),
+             onPressed: (context) {
+               showThemeSettings(gFFI.dialogManager);
+             },
+@@ -1038,23 +1043,23 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                         decoration: TextDecoration.underline,
+                       )),
+                 ),
+-                leading: Icon(Icons.info)),
++                leading: Icon(Icons.info_outline_rounded)),
+             SettingsTile(
+                 title: Text(translate("Build Date")),
+                 value: Padding(
+                   padding: EdgeInsets.symmetric(vertical: 8),
+                   child: Text(_buildDate),
+                 ),
+-                leading: Icon(Icons.query_builder)),
++                leading: Icon(Icons.schedule_rounded)),
+             if (isAndroid)
+               SettingsTile(
+                   onPressed: (context) => onCopyFingerprint(_fingerprint),
+                   title: Text(translate("Fingerprint")),
+-                  value: Padding(
+-                    padding: EdgeInsets.symmetric(vertical: 8),
+-                    child: Text(_fingerprint),
+-                  ),
+-                  leading: Icon(Icons.fingerprint)),
++                  // HJViewer: under the title, where its 64 digits have room; none while
++                  // the key is not confirmed yet and the fingerprint is empty
++                  description:
++                      _fingerprint.isEmpty ? null : Text(_fingerprint),
++                  leading: Icon(Icons.fingerprint_rounded)),
+             SettingsTile(
+                 onPressed: (context) => onCopyId(_myId),
+                 title: Text(translate("ID")),
+@@ -1069,7 +1074,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+               title: Text(translate("Privacy Statement")),
+               onPressed: (context) =>
+                   launchUrlString('https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md'),
+-              leading: Icon(Icons.privacy_tip),
++              leading: Icon(Icons.privacy_tip_outlined),
+             )
+           ],
+         ),
+@@ -1096,7 +1101,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+         SettingsTile(
+             title: Text(translate('Display Settings')),
+             leading: Icon(Icons.desktop_windows_outlined),
+-            trailing: Icon(Icons.arrow_forward_ios),
++            trailing: Icon(Icons.chevron_right_rounded,
++                color: HjvPalette.of(context).textTertiary),
+             onPressed: (context) {
+               Navigator.push(context, MaterialPageRoute(builder: (context) {
+                 return _DisplayPage();
+@@ -1240,11 +1246,11 @@ class __DisplayPageState extends State<_DisplayPage> {
+       appBar: AppBar(
+         leading: IconButton(
+             onPressed: () => Navigator.pop(context),
+-            icon: Icon(Icons.arrow_back_ios)),
++            icon: Icon(Icons.arrow_back_ios_new_rounded, size: 20)),
+         title: Text(translate('Display Settings')),
+         centerTitle: true,
+       ),
+-      body: SettingsList(sections: [
++      body: _hjvSettingsList(context, sections: [
+         SettingsSection(
+           tiles: [
+             _getPopupDialogRadioEntry(
+@@ -1349,7 +1355,8 @@ class __ManageTrustedDevicesState extends State<_ManageTrustedDevices> {
+         centerTitle: true,
+         actions: [
+           Obx(() => IconButton(
+-              icon: Icon(Icons.delete, color: Colors.white),
++              color: HjvPalette.of(context).danger,
++              icon: Icon(Icons.delete_outline_rounded),
+               onPressed: selectedDevices.isEmpty
+                   ? null
+                   : () {
+@@ -1436,7 +1443,8 @@ SettingsTile _getPopupDialogRadioEntry({
+     }, backDismiss: true, clickMaskDismiss: true);
+   }
+ 
+-  return SettingsTile(
++  // HJViewer: a navigation row, since it opens a picker: the grouped list ends it with a chevron
++  return SettingsTile.navigation(
+     title: Text(translate(title)),
+     onPressed: asyncSetter == null ? null : (context) => showDialog(),
+     value: Padding(
+@@ -1445,3 +1453,204 @@ SettingsTile _getPopupDialogRadioEntry({
+     ),
+   );
+ }
++
++// HJViewer: the phone's settings as a grouped list, on Android as on an iPhone: the canvas
++// behind, each section a card under its small grey title, settings_ui's iOS rows inside in the
++// palette's colours, and the switches in the accent colour.
++Widget _hjvSettingsList(BuildContext context,
++    {required List<AbstractSettingsSection> sections}) {
++  final p = HjvPalette.of(context);
++  final dark = Theme.of(context).brightness == Brightness.dark;
++  // the cards paint their own colour; a tile's description, which settings_ui paints in the
++  // list's colour below the tile, stays on its card
++  final theme = SettingsThemeData(
++    settingsListBackground: Colors.transparent,
++    settingsSectionBackground: Colors.transparent,
++    titleTextColor: p.textSecondary,
++    settingsTileTextColor: p.text,
++    tileDescriptionTextColor: p.textSecondary,
++    leadingIconsColor: p.textSecondary,
++    tileHighlightColor: p.hover,
++    dividerColor: p.border,
++    trailingTextColor: p.textTertiary,
++    inactiveTitleColor: p.textDisabled,
++    inactiveSubtitleColor: p.textDisabled,
++  );
++  return ColoredBox(
++    color: dark ? p.surface : p.canvas,
++    child: CupertinoTheme(
++      data: CupertinoTheme.of(context)
++          .copyWith(primaryColor: p.primary, applyThemeToAll: true),
++      child: SettingsList(
++        platform: DevicePlatform.iOS,
++        lightTheme: theme,
++        darkTheme: theme,
++        contentPadding: const EdgeInsets.only(top: 16, bottom: 8),
++        sections: [
++          for (final section in sections)
++            section is SettingsSection ? _HjvSettingsSection(section) : section,
++        ],
++      ),
++    ),
++  );
++}
++
++// HJViewer: a section of the grouped list: its title over a card that holds its rows, which
++// settings_ui's iOS section lays out (dividers between them, none for a tile that is empty).
++class _HjvSettingsSection extends AbstractSettingsSection {
++  const _HjvSettingsSection(this.section);
++
++  final SettingsSection section;
++
++  @override
++  Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final title = section.title;
++    // in a section with icons, a row without one keeps the icon's room, so that the titles and
++    // the dividers start at one edge
++    final reserve =
++        section.tiles.any((t) => t is SettingsTile && t.leading != null);
++    return Padding(
++      padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          if (title != null)
++            Padding(
++              padding: const EdgeInsetsDirectional.only(
++                  start: 19, end: 19, bottom: 8),
++              child: DefaultTextStyle.merge(
++                style: TextStyle(
++                    fontSize: 13,
++                    fontWeight: FontWeight.w600,
++                    color: p.textTertiary),
++                child: title,
++              ),
++            ),
++          if (section.tiles.isNotEmpty)
++            LayoutBuilder(builder: (context, constraints) {
++              // a row's room for its title and value: the card less its border, the row's
++              // padding and, in a section with icons, the icon's room (24 + 12)
++              final room = constraints.maxWidth - 2 - 34 - (reserve ? 36 : 0);
++              // a value leaves the title at least 120 px (or half the row) and wraps beyond
++              final valueWidth = max(0.0, max(room / 2, room - 120));
++              return Container(
++                decoration: hjvCardDecoration(context),
++                child: ClipRRect(
++                  borderRadius: BorderRadius.circular(HjvRadius.lg - 1),
++                  child: IconTheme.merge(
++                    data: const IconThemeData(size: 24),
++                    child: SettingsSection(
++                      margin: EdgeInsetsDirectional.zero,
++                      tiles: [
++                        for (final tile in section.tiles)
++                          _hjvTile(context, tile, valueWidth, reserve)
++                      ],
++                    ),
++                  ),
++                ),
++              );
++            }),
++        ],
++      ),
++    );
++  }
++}
++
++// HJViewer: a row of the grouped list with its texts in the app's typeface (settings_ui gives
++// them none), a gap between a long title and the switch or value at the end, and the value in a
++// quieter colour, at most `valueWidth` wide. A description goes under the title, inside the row:
++// settings_ui's iOS row puts it below the row, outside its tap and press colour, with no divider
++// after it. With `reserve` a row without an icon keeps the icon's room. Off an iPhone a row is
++// 48 px high, Android's touch target, and a switch row still toggles from anywhere on it, as
++// settings_ui's Android row did.
++AbstractSettingsTile _hjvTile(BuildContext context, AbstractSettingsTile tile,
++    double valueWidth, bool reserve) {
++  if (tile is! SettingsTile) return tile;
++  final p = HjvPalette.of(context);
++  Widget font(Widget child, [TextStyle? style, TextAlign? textAlign]) =>
++      DefaultTextStyle.merge(
++          style: const TextStyle(fontFamily: kHjvFont).merge(style),
++          textAlign: textAlign,
++          child: child);
++  final description = tile.description;
++  final title = Padding(
++      padding: EdgeInsetsDirectional.only(
++          end: 12, top: isIOS ? 0 : 2, bottom: isIOS ? 0 : 2),
++      child: description == null
++          ? font(tile.title)
++          : Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                font(tile.title),
++                Padding(
++                  padding: const EdgeInsets.only(top: 2),
++                  child: font(
++                      description,
++                      TextStyle(
++                          fontSize: 13,
++                          height: 1.4,
++                          color: tile.enabled
++                              ? p.textSecondary
++                              : p.textDisabled)),
++                ),
++              ],
++            ));
++  final leading = tile.leading ?? (reserve ? const SizedBox(width: 24) : null);
++  Widget? value(double maxWidth) => tile.value == null
++      ? null
++      : ConstrainedBox(
++          constraints: BoxConstraints(maxWidth: max(0.0, maxWidth)),
++          child: font(
++              tile.value!,
++              TextStyle(
++                  fontSize: 14,
++                  color: p.textSecondary,
++                  fontFeatures: HjvText.tabular),
++              TextAlign.end));
++  switch (tile.tileType) {
++    case SettingsTileType.switchTile:
++      final onToggle = tile.onToggle;
++      final on = tile.initialValue ?? false;
++      return SettingsTile.switchTile(
++        key: tile.key,
++        initialValue: tile.initialValue,
++        onToggle: onToggle,
++        activeSwitchColor: tile.activeSwitchColor,
++        leading: leading,
++        trailing: tile.trailing,
++        title: title,
++        enabled: tile.enabled,
++        onPressed: tile.onPressed ??
++            (isIOS || onToggle == null ? null : (_) => onToggle(!on)),
++      );
++    case SettingsTileType.navigationTile:
++      // the value and the app's chevron as the trailing: settings_ui's own chevron is a
++      // CupertinoIcons glyph, a font the app does not bundle. A row that cannot be opened (a
++      // fixed option) shows no chevron.
++      final valueBox = value(valueWidth - 24);
++      return SettingsTile.navigation(
++        key: tile.key,
++        leading: leading,
++        trailing: tile.trailing ??
++            Row(mainAxisSize: MainAxisSize.min, children: [
++              if (valueBox != null) valueBox,
++              if (tile.onPressed != null)
++                Icon(Icons.chevron_right_rounded, color: p.textTertiary),
++            ]),
++        title: title,
++        onPressed: tile.onPressed,
++        enabled: tile.enabled,
++      );
++    case SettingsTileType.simpleTile:
++      return SettingsTile(
++        key: tile.key,
++        leading: leading,
++        trailing: tile.trailing,
++        value: value(valueWidth),
++        title: title,
++        onPressed: tile.onPressed,
++        enabled: tile.enabled,
++      );
++  }
++}

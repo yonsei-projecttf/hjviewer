@@ -1,0 +1,1750 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Thu, 15 Oct 2026 20:01:01 +0900
+Subject: [PATCH 55/57] hjviewer: ui: desktop-chrome: pill tabs, window
+ buttons, menus, install page and CM
+
+The window chrome and the shared desktop menus in the new look (common/hjv_style.dart):
+
+- Title bar: the tabs are soft 22 px pills, the selected one on the content colour with a thin
+  border, the others quiet until hovered; the close button sits inside the pill (always on the
+  selected tab). The window buttons are as tall as the bar and 40 px wide, the close button in
+  danger; the bar's icon buttons (menu, add, tab list) have a rounded hover. The home and
+  settings tabs use rounded icons (a gear for the settings).
+- Menus (material_mod_popup_menu.dart, popup_menu.dart): 32 px rows (40 on a phone) inset from
+  the menu's edges with a rounded hover in the palette's hover colour, icons in the secondary
+  text colour, dividers with room around them, the theme's softer shadow, and 4 px of distance
+  from the window's edges.
+- button.dart: accent and outline buttons with radius 10 and palette hovers.
+- Install page: the title with the app icon, the path and the shortcuts on one card, the licence
+  as a quiet note, 40 px buttons with the main one last.
+- Connection manager: the peer on a tinted card with a soft avatar tile, the permissions on a
+  card with palette tiles, 36 px buttons with a visible hover, the title bar's close button like
+  the main window's.
+- The CM's tab list menu no longer renders as an error box: its Obx read no observable for a tab
+  without a close callback.
+
+Upstream's tab and install page builders stay, unused. No texts, keys or callbacks change.
+
+After an independent review (screens in light and dark, the diff, the code rules):
+
+- The palette's new tokens instead of the workarounds: the title bar's hovers (tabs, window
+  buttons, the menu, add and tab list buttons) in hoverStrong; the close hovers (the window's,
+  the CM's title bar) and the CM's red buttons in dangerFill.
+- Accept and Elevate on the primary fill: white text on the success colour read below 3:1.
+- The title bar's icon buttons take the pointer on their whole box again, as upstream's; the
+  rounded hover is painted inside it.
+- The CM's permission tiles: the icons of the off ones in the secondary text colour, at 20 px.
+- The close confirmation's checkbox in line with the text above it.
+- The CM's title bar close button: a _hjvBuild next to upstream's builder.
+- The tab list menu's Obx condition back in upstream's order: making the CM's list show is a
+  separate fix, not part of the new look.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../lib/desktop/pages/desktop_tab_page.dart   |   6 +-
+ flutter/lib/desktop/pages/install_page.dart   | 236 ++++++++++++-
+ flutter/lib/desktop/pages/server_page.dart    | 278 ++++++++-------
+ flutter/lib/desktop/widgets/button.dart       |  70 ++--
+ .../widgets/material_mod_popup_menu.dart      |  57 ++-
+ flutter/lib/desktop/widgets/popup_menu.dart   |  35 +-
+ .../lib/desktop/widgets/tabbar_widget.dart    | 329 ++++++++++++++++--
+ 7 files changed, 807 insertions(+), 204 deletions(-)
+
+diff --git a/flutter/lib/desktop/pages/desktop_tab_page.dart b/flutter/lib/desktop/pages/desktop_tab_page.dart
+index 6440e55..ac32b27 100644
+--- a/flutter/lib/desktop/pages/desktop_tab_page.dart
++++ b/flutter/lib/desktop/pages/desktop_tab_page.dart
+@@ -25,8 +25,8 @@ class DesktopTabPage extends StatefulWidget {
+       tabController.add(TabInfo(
+           key: kTabLabelSettingPage,
+           label: kTabLabelSettingPage,
+-          selectedIcon: Icons.build_sharp,
+-          unselectedIcon: Icons.build_outlined,
++          selectedIcon: Icons.settings_rounded,
++          unselectedIcon: Icons.settings_outlined,
+           page: DesktopSettingPage(
+             key: const ValueKey(kTabLabelSettingPage),
+             initialTabkey: initialPage,
+@@ -46,7 +46,7 @@ class _DesktopTabPageState extends State<DesktopTabPage> {
+     tabController.add(TabInfo(
+         key: kTabLabelHomePage,
+         label: kTabLabelHomePage,
+-        selectedIcon: Icons.home_sharp,
++        selectedIcon: Icons.home_rounded,
+         unselectedIcon: Icons.home_outlined,
+         closable: false,
+         page: DesktopHomePage(
+diff --git a/flutter/lib/desktop/pages/install_page.dart b/flutter/lib/desktop/pages/install_page.dart
+index 2c22f90..70d37bb 100644
+--- a/flutter/lib/desktop/pages/install_page.dart
++++ b/flutter/lib/desktop/pages/install_page.dart
+@@ -3,6 +3,7 @@ import 'dart:convert';
+ import 'package:file_picker/file_picker.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ import 'package:flutter_hbb/models/state_model.dart';
+@@ -153,7 +154,240 @@ class _InstallPageBodyState extends State<_InstallPageBody>
+   }
+ 
+   @override
+-  Widget build(BuildContext context) {
++  Widget build(BuildContext context) => _hjvBuild(context);
++
++  // HJViewer: the page in the app's look (common/hjv_style.dart): the title with the app icon,
++  // the path and the shortcuts on one card, the licence as a quiet note, the buttons 40 px tall
++  // with the main one last. Upstream's layout stays below as _buildUpstream, unused.
++  Widget _hjvBuild(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final style = ButtonStyle(
++      textStyle: const WidgetStatePropertyAll(TextStyle(
++          fontFamily: kHjvFont, fontSize: 14, fontWeight: FontWeight.w600)),
++      padding: const WidgetStatePropertyAll(
++          EdgeInsets.symmetric(horizontal: 16)),
++      minimumSize: const WidgetStatePropertyAll(Size(0, 40)),
++      iconSize: const WidgetStatePropertyAll(18),
++    );
++    final divider = Divider(height: 1, thickness: 1, color: p.border);
++    return Scaffold(
++      backgroundColor: null,
++      body: SingleChildScrollView(
++        padding: const EdgeInsets.fromLTRB(40, 32, 40, 24),
++        child: Align(
++          alignment: Alignment.topCenter,
++          child: ConstrainedBox(
++            constraints: const BoxConstraints(maxWidth: 640),
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Row(
++                  children: [
++                    loadIcon(36),
++                    const SizedBox(width: 12),
++                    Expanded(
++                      child: Text(translate('Installation'),
++                          style: TextStyle(
++                              fontSize: 22,
++                              fontWeight: FontWeight.w700,
++                              height: 1.3,
++                              color: p.text)),
++                    ),
++                  ],
++                ),
++                const SizedBox(height: 24),
++                // the card as a Material, so that the rows' hover shows on it
++                Material(
++                  color: p.card,
++                  shape: RoundedRectangleBorder(
++                      borderRadius: BorderRadius.circular(HjvRadius.lg),
++                      side: BorderSide(color: p.border)),
++                  clipBehavior: Clip.antiAlias,
++                  child: Column(
++                    crossAxisAlignment: CrossAxisAlignment.start,
++                    children: [
++                      Padding(
++                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
++                        child: Column(
++                          crossAxisAlignment: CrossAxisAlignment.start,
++                          children: [
++                            Text('${translate('Installation Path')}:',
++                                style: TextStyle(
++                                    fontSize: 13,
++                                    fontWeight: FontWeight.w600,
++                                    color: p.textSecondary)),
++                            const SizedBox(height: 8),
++                            Row(
++                              children: [
++                                Expanded(
++                                  child: TextField(
++                                    controller: controller,
++                                    readOnly: true,
++                                    style: TextStyle(
++                                        fontSize: 14, color: p.text),
++                                  ).workaroundFreezeLinuxMint(),
++                                ),
++                                const SizedBox(width: 8),
++                                Obx(
++                                  () => OutlinedButton.icon(
++                                    icon: const Icon(Icons.folder_outlined),
++                                    onPressed: btnEnabled.value
++                                        ? selectInstallPath
++                                        : null,
++                                    style: style,
++                                    label: Text(translate('Change Path')),
++                                  ),
++                                ),
++                              ],
++                            ),
++                          ],
++                        ),
++                      ),
++                      divider,
++                      _hjvOption(startmenu,
++                          label: 'Create start menu shortcuts'),
++                      divider.marginSymmetric(horizontal: 16),
++                      _hjvOption(desktopicon, label: 'Create desktop icon'),
++                    ],
++                  ),
++                ),
++                const SizedBox(height: 16),
++                Container(
++                  padding: const EdgeInsets.fromLTRB(14, 12, 16, 12),
++                  decoration: BoxDecoration(
++                    color: p.fill,
++                    borderRadius: BorderRadius.circular(HjvRadius.lg),
++                  ),
++                  child: Row(
++                    crossAxisAlignment: CrossAxisAlignment.start,
++                    children: [
++                      Icon(Icons.info_outline_rounded,
++                          size: 20, color: p.textTertiary),
++                      const SizedBox(width: 12),
++                      Expanded(
++                        child: Column(
++                          crossAxisAlignment: CrossAxisAlignment.start,
++                          children: [
++                            Text(
++                                'HJViewer is free software under the GNU AGPL-3.0, with no warranty.',
++                                style: TextStyle(
++                                    fontSize: 13,
++                                    height: 1.5,
++                                    color: p.textSecondary)),
++                            const SizedBox(height: 6),
++                            InkWell(
++                              hoverColor: Colors.transparent,
++                              onTap: () => launchUrlString(
++                                  'https://github.com/yonsei-projecttf/hjviewer/blob/main/LICENSE'),
++                              child: Tooltip(
++                                message:
++                                    'https://github.com/yonsei-projecttf/hjviewer/blob/main/LICENSE',
++                                child: Row(
++                                    mainAxisSize: MainAxisSize.min,
++                                    children: [
++                                      Icon(Icons.launch_rounded,
++                                          size: 16, color: p.primary),
++                                      const SizedBox(width: 6),
++                                      Text(
++                                        'License',
++                                        style: TextStyle(
++                                            fontSize: 13,
++                                            fontWeight: FontWeight.w600,
++                                            color: p.primary),
++                                      )
++                                    ]),
++                              ),
++                            ),
++                          ],
++                        ),
++                      ),
++                    ],
++                  ),
++                ),
++                const SizedBox(height: 24),
++                Row(
++                  children: [
++                    Expanded(
++                      // NOT use Offstage to wrap LinearProgressIndicator
++                      child: Obx(() => showProgress.value
++                          ? LinearProgressIndicator(
++                              minHeight: 4,
++                              color: p.primary,
++                              backgroundColor: p.fill,
++                              borderRadius: BorderRadius.circular(2),
++                            ).marginOnly(right: 16)
++                          : Offstage()),
++                    ),
++                    Offstage(
++                      offstage: bind.installShowRunWithoutInstall(),
++                      child: Obx(
++                        () => OutlinedButton.icon(
++                          icon: const Icon(Icons.screen_share_outlined),
++                          label: Text(translate('Run without install')),
++                          onPressed: btnEnabled.value
++                              ? () => bind.installRunWithoutInstall()
++                              : null,
++                          style: style,
++                        ).marginOnly(right: 8),
++                      ),
++                    ),
++                    Obx(
++                      () => OutlinedButton.icon(
++                        icon: const Icon(Icons.close_rounded),
++                        label: Text(translate('Cancel')),
++                        onPressed: cancelEnabled.value
++                            ? () => windowManager.close()
++                            : null,
++                        style: style,
++                      ).marginOnly(right: 8),
++                    ),
++                    Obx(
++                      () => ElevatedButton.icon(
++                        icon: const Icon(Icons.done_rounded),
++                        label: Text(translate('Accept and Install')),
++                        onPressed: btnEnabled.value ? install : null,
++                        style: style,
++                      ),
++                    ),
++                  ],
++                ),
++              ],
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++
++  /// A shortcut option as a row of the card: the whole row toggles it, as upstream's Option does.
++  Widget _hjvOption(RxBool option, {String label = ''}) {
++    // `this.`: path.dart's context would shadow the State's here
++    final p = HjvPalette.of(this.context);
++    return InkWell(
++      onTap: () => btnEnabled.value ? option.value = !option.value : null,
++      child: Padding(
++        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
++        child: Row(
++          children: [
++            Obx(
++              () => Checkbox(
++                visualDensity: VisualDensity(horizontal: -4, vertical: -4),
++                value: option.value,
++                onChanged: (v) =>
++                    btnEnabled.value ? option.value = !option.value : null,
++              ).marginOnly(right: 8),
++            ),
++            Expanded(
++              child: Text(translate(label),
++                  style: TextStyle(fontSize: 14, color: p.text)),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++
++  Widget _buildUpstream(BuildContext context) {
+     final double em = 13;
+     final isDarkTheme = MyTheme.currentThemeMode() == ThemeMode.dark;
+     return Scaffold(
+diff --git a/flutter/lib/desktop/pages/server_page.dart b/flutter/lib/desktop/pages/server_page.dart
+index eeb51b6..f9967cb 100644
+--- a/flutter/lib/desktop/pages/server_page.dart
++++ b/flutter/lib/desktop/pages/server_page.dart
+@@ -17,6 +17,7 @@ import 'package:window_manager/window_manager.dart';
+ import 'package:flutter_svg/flutter_svg.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../common/widgets/chat_page.dart';
+ import '../../models/file_model.dart';
+ import '../../models/platform_model.dart';
+@@ -310,9 +311,6 @@ class ConnectionManagerState extends State<ConnectionManager>
+               ),
+             ),
+           ),
+-          const SizedBox(
+-            width: 4.0,
+-          ),
+           const _CloseButton()
+         ],
+       ),
+@@ -391,8 +389,8 @@ class _AppIcon extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     return Container(
+-      margin: EdgeInsets.symmetric(horizontal: 4.0),
+-      child: loadIcon(30),
++      margin: EdgeInsets.only(left: 10.0, right: 6.0),
++      child: loadIcon(16),
+     );
+   }
+ }
+@@ -401,7 +399,34 @@ class _CloseButton extends StatelessWidget {
+   const _CloseButton({Key? key}) : super(key: key);
+ 
+   @override
+-  Widget build(BuildContext context) {
++  Widget build(BuildContext context) => _hjvBuild(context);
++
++  // HJViewer: like the window buttons of the tab bar (tabbar_widget.dart): as tall as the bar, a
++  // danger fill on hover. Upstream's look stays below as _buildUpstream, unused.
++  Widget _hjvBuild(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final hover = false.obs;
++    return InkWell(
++      onTap: () {
++        windowManager.close();
++      },
++      onHover: (value) => hover.value = value,
++      hoverColor: p.dangerFill,
++      highlightColor: p.dangerFill.withOpacity(0.85),
++      splashFactory: NoSplash.splashFactory,
++      child: SizedBox(
++        width: 40,
++        height: kDesktopRemoteTabBarHeight,
++        child: Obx(() => Icon(
++              IconFont.close,
++              size: 12,
++              color: hover.value ? Colors.white : p.textSecondary,
++            )),
++      ),
++    );
++  }
++
++  Widget _buildUpstream(BuildContext context) {
+     return IconButton(
+       onPressed: () {
+         windowManager.close();
+@@ -455,29 +480,26 @@ class _CmHeaderState extends State<_CmHeader>
+   @override
+   Widget build(BuildContext context) {
+     super.build(context);
++    // HJViewer: the peer on a tinted card like the home screen's ID (common/hjv_style.dart).
++    final p = HjvPalette.of(context);
++    final typeStyle =
++        TextStyle(color: p.primary, fontSize: 12, fontWeight: FontWeight.w600);
+     return Container(
+       decoration: BoxDecoration(
+-        borderRadius: BorderRadius.circular(10.0),
+-        gradient: LinearGradient(
+-          begin: Alignment.topRight,
+-          end: Alignment.bottomLeft,
+-          colors: [
+-            Color(0xff00bfe1),
+-            Color(0xff0071ff),
+-          ],
+-        ),
++        borderRadius: BorderRadius.circular(HjvRadius.lg),
++        color: p.primarySoft,
+       ),
+-      margin: EdgeInsets.symmetric(horizontal: 5.0, vertical: 10.0),
++      margin: EdgeInsets.symmetric(horizontal: 4.0, vertical: 8.0),
+       padding: EdgeInsets.only(
+-        top: 10.0,
+-        bottom: 10.0,
+-        left: 10.0,
+-        right: 5.0,
++        top: 12.0,
++        bottom: 12.0,
++        left: 12.0,
++        right: 4.0,
+       ),
+       child: Row(
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+-          _buildClientAvatar().marginOnly(right: 10.0),
++          _buildClientAvatar().marginOnly(right: 12.0),
+           Expanded(
+             child: Column(
+               mainAxisAlignment: MainAxisAlignment.start,
+@@ -487,9 +509,10 @@ class _CmHeaderState extends State<_CmHeader>
+                     child: Text(
+                   client.name,
+                   style: TextStyle(
+-                    color: Colors.white,
+-                    fontWeight: FontWeight.bold,
+-                    fontSize: 20,
++                    color: p.text,
++                    fontWeight: FontWeight.w700,
++                    fontSize: 18,
++                    height: 1.3,
+                     overflow: TextOverflow.ellipsis,
+                   ),
+                   maxLines: 1,
+@@ -497,38 +520,41 @@ class _CmHeaderState extends State<_CmHeader>
+                 FittedBox(
+                   child: Text(
+                     "(${client.peerId})",
+-                    style: TextStyle(color: Colors.white, fontSize: 14),
++                    style: TextStyle(
++                        color: p.textSecondary,
++                        fontSize: 13,
++                        fontFeatures: HjvText.tabular),
+                   ),
+                 ),
+                 if (client.type_() == ClientType.terminal)
+                   FittedBox(
+                     child: Text(
+                       translate("Terminal"),
+-                      style: TextStyle(color: Colors.white70, fontSize: 12),
++                      style: typeStyle,
+                     ),
+-                  ),
++                  ).marginOnly(top: 2),
+                 if (client.type_() == ClientType.file)
+                   FittedBox(
+                     child: Text(
+                       translate("Transfer file"),
+-                      style: TextStyle(color: Colors.white70, fontSize: 12),
++                      style: typeStyle,
+                     ),
+-                  ),
++                  ).marginOnly(top: 2),
+                 if (client.type_() == ClientType.camera)
+                   FittedBox(
+                     child: Text(
+                       translate("View camera"),
+-                      style: TextStyle(color: Colors.white70, fontSize: 12),
++                      style: typeStyle,
+                     ),
+-                  ),
++                  ).marginOnly(top: 2),
+                 if (client.portForward.isNotEmpty)
+                   FittedBox(
+                     child: Text(
+                       "Port Forward: ${client.portForward}",
+-                      style: TextStyle(color: Colors.white70, fontSize: 12),
++                      style: typeStyle,
+                     ),
+-                  ),
+-                SizedBox(height: 10.0),
++                  ).marginOnly(top: 2),
++                SizedBox(height: 8.0),
+                 FittedBox(
+                     child: Row(
+                   children: [
+@@ -538,7 +564,7 @@ class _CmHeaderState extends State<_CmHeader>
+                               ? translate("Disconnected")
+                               : translate("Connected")
+                           : "${translate("Request access to your device")}...",
+-                      style: TextStyle(color: Colors.white),
++                      style: TextStyle(color: p.textSecondary, fontSize: 13),
+                     ).marginOnly(right: 8.0),
+                     if (client.authorized)
+                       Obx(
+@@ -546,7 +572,11 @@ class _CmHeaderState extends State<_CmHeader>
+                           formatDurationToTime(
+                             Duration(seconds: _time.value),
+                           ),
+-                          style: TextStyle(color: Colors.white),
++                          style: TextStyle(
++                              color: p.text,
++                              fontSize: 13,
++                              fontWeight: FontWeight.w600,
++                              fontFeatures: HjvText.tabular),
+                         ),
+                       )
+                   ],
+@@ -568,9 +598,11 @@ class _CmHeaderState extends State<_CmHeader>
+                       .toggleCMChatPage(MessageKey(client.peerId, client.id));
+                 }
+               }),
+-              icon: SvgPicture.asset(client.type_() == ClientType.file
+-                  ? 'assets/file_transfer.svg'
+-                  : 'assets/chat2.svg'),
++              icon: SvgPicture.asset(
++                  client.type_() == ClientType.file
++                      ? 'assets/file_transfer.svg'
++                      : 'assets/chat2.svg',
++                  colorFilter: svgColor(p.primary)),
+               splashRadius: kDesktopIconButtonSplashRadius,
+             ),
+           )
+@@ -585,28 +617,30 @@ class _CmHeaderState extends State<_CmHeader>
+   Widget _buildClientAvatar() {
+     return buildAvatarWidget(
+           avatar: client.avatar,
+-          size: 70,
+-          borderRadius: 15,
++          size: 56,
++          borderRadius: HjvRadius.lg,
+           fallback: _buildInitialAvatar(),
+         ) ??
+         _buildInitialAvatar();
+   }
+ 
+   Widget _buildInitialAvatar() {
++    // HJViewer: the initial in a soft tile of the peer's colour, like the peer cards' tiles.
++    final (background, foreground) = hjvTint(context, str2color(client.name));
+     return Container(
+-      width: 70,
+-      height: 70,
++      width: 56,
++      height: 56,
+       alignment: Alignment.center,
+       decoration: BoxDecoration(
+-        color: str2color(client.name),
+-        borderRadius: BorderRadius.circular(15.0),
++        color: background,
++        borderRadius: BorderRadius.circular(HjvRadius.lg),
+       ),
+       child: Text(
+         client.name.isNotEmpty ? client.name[0] : '?',
+         style: TextStyle(
+-          fontWeight: FontWeight.bold,
+-          color: Colors.white,
+-          fontSize: 55,
++          fontWeight: FontWeight.w700,
++          color: foreground,
++          fontSize: 26,
+         ),
+       ),
+     );
+@@ -627,15 +661,17 @@ class _PrivilegeBoardState extends State<_PrivilegeBoard> {
+   Widget buildPermissionIcon(bool enabled, IconData iconData,
+       Function(bool)? onTap, String tooltipText,
+       {required bool canModify}) {
++    // HJViewer: on in the accent, off in the quiet fill (common/hjv_style.dart).
++    final p = HjvPalette.of(context);
+     return Tooltip(
+       message: "$tooltipText: ${enabled ? "ON" : "OFF"}",
+       waitDuration: Duration.zero,
+       child: Container(
+         decoration: BoxDecoration(
+           color: enabled
+-              ? (canModify ? MyTheme.accent : MyTheme.accent.withOpacity(0.6))
+-              : Colors.grey[700],
+-          borderRadius: BorderRadius.circular(10.0),
++              ? (canModify ? p.primary : p.primary.withOpacity(0.55))
++              : p.fill,
++          borderRadius: BorderRadius.circular(HjvRadius.md),
+         ),
+         padding: EdgeInsets.all(8.0),
+         child: InkWell(
+@@ -649,7 +685,8 @@ class _PrivilegeBoardState extends State<_PrivilegeBoard> {
+               Expanded(
+                 child: Icon(
+                   iconData,
+-                  color: Colors.white,
++                  size: 20,
++                  color: enabled ? Colors.white : p.textSecondary,
+                 ),
+               ),
+             ],
+@@ -666,31 +703,24 @@ class _PrivilegeBoardState extends State<_PrivilegeBoard> {
+     final canModifyPermission =
+         bind.mainGetBuildinOption(key: kOptionEnablePermChangeInAcceptWindow) !=
+             'N';
++    // HJViewer: a card with its title as a small label (common/hjv_style.dart).
++    final p = HjvPalette.of(context);
+     return Container(
+       width: double.infinity,
+       height: 160.0,
+-      margin: EdgeInsets.all(5.0),
+-      padding: EdgeInsets.all(5.0),
+-      decoration: BoxDecoration(
+-        borderRadius: BorderRadius.circular(10.0),
+-        color: Theme.of(context).colorScheme.background,
+-        boxShadow: [
+-          BoxShadow(
+-            color: Colors.black.withOpacity(0.2),
+-            spreadRadius: 1,
+-            blurRadius: 1,
+-            offset: Offset(0, 1.5),
+-          ),
+-        ],
+-      ),
++      margin: EdgeInsets.symmetric(horizontal: 4.0),
++      padding: EdgeInsets.fromLTRB(0, 10.0, 0, 2.0),
++      decoration: hjvCardDecoration(context),
+       child: Column(
+-        crossAxisAlignment: CrossAxisAlignment.center,
++        crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+           Text(
+             translate("Permissions"),
+-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+-            textAlign: TextAlign.center,
+-          ).marginOnly(left: 4.0, bottom: 8.0),
++            style: TextStyle(
++                fontSize: 12,
++                fontWeight: FontWeight.w600,
++                color: p.textTertiary),
++          ).marginOnly(left: 12.0, bottom: 6.0),
+           Expanded(
+             child: GridView.count(
+               crossAxisCount: crossAxisCount,
+@@ -880,6 +910,7 @@ class _CmControlPanel extends StatelessWidget {
+   }
+ 
+   buildAuthorized(BuildContext context) {
++    final p = HjvPalette.of(context);
+     final bool canElevate = bind.cmCanElevate();
+     final model = Provider.of<ServerModel>(context);
+     final showElevation = canElevate &&
+@@ -894,7 +925,7 @@ class _CmControlPanel extends StatelessWidget {
+             children: [
+               Expanded(
+                 child: buildButton(context,
+-                    color: MyTheme.accent,
++                    color: p.primary,
+                     onClick: null, onTapDown: (details) async {
+                   final devicesInfo =
+                       await AudioInput.getDevicesInfo(true, true);
+@@ -960,7 +991,7 @@ class _CmControlPanel extends StatelessWidget {
+               Expanded(
+                 child: buildButton(
+                   context,
+-                  color: Colors.red,
++                  color: p.dangerFill,
+                   onClick: () => closeVoiceCall(),
+                   icon: Icon(
+                     Icons.call_end_rounded,
+@@ -980,7 +1011,7 @@ class _CmControlPanel extends StatelessWidget {
+             children: [
+               Expanded(
+                 child: buildButton(context,
+-                    color: MyTheme.accent,
++                    color: p.primary,
+                     onClick: () => handleVoiceCall(true),
+                     icon: Icon(
+                       Icons.call_rounded,
+@@ -993,7 +1024,7 @@ class _CmControlPanel extends StatelessWidget {
+               Expanded(
+                 child: buildButton(
+                   context,
+-                  color: Colors.red,
++                  color: p.dangerFill,
+                   onClick: () => handleVoiceCall(false),
+                   icon: Icon(
+                     Icons.phone_disabled_rounded,
+@@ -1010,9 +1041,9 @@ class _CmControlPanel extends StatelessWidget {
+         Offstage(
+           offstage: !client.fromSwitch,
+           child: buildButton(context,
+-              color: Colors.purple,
++              color: p.primary,
+               onClick: () => handleSwitchBack(context),
+-              icon: Icon(Icons.reply, color: Colors.white),
++              icon: Icon(Icons.reply, color: Colors.white, size: 14),
+               text: "Switch Sides",
+               textColor: Colors.white),
+         ),
+@@ -1020,7 +1051,7 @@ class _CmControlPanel extends StatelessWidget {
+           offstage: !showElevation,
+           child: buildButton(
+             context,
+-            color: MyTheme.accent,
++            color: p.primary,
+             onClick: () {
+               handleElevate(context);
+               windowManager.minimize();
+@@ -1038,7 +1069,7 @@ class _CmControlPanel extends StatelessWidget {
+           children: [
+             Expanded(
+               child: buildButton(context,
+-                  color: Colors.redAccent,
++                  color: p.dangerFill,
+                   onClick: handleDisconnect,
+                   text: 'Disconnect',
+                   icon: Icon(
+@@ -1055,12 +1086,13 @@ class _CmControlPanel extends StatelessWidget {
+   }
+ 
+   buildDisconnected(BuildContext context) {
++    final p = HjvPalette.of(context);
+     return Row(
+       mainAxisAlignment: MainAxisAlignment.center,
+       children: [
+         Expanded(
+             child: buildButton(context,
+-                color: MyTheme.accent,
++                color: p.primary,
+                 onClick: handleClose,
+                 text: 'Close',
+                 textColor: Colors.white)),
+@@ -1069,6 +1101,7 @@ class _CmControlPanel extends StatelessWidget {
+   }
+ 
+   buildUnAuthorized(BuildContext context) {
++    final p = HjvPalette.of(context);
+     final bool canElevate = bind.cmCanElevate();
+     final model = Provider.of<ServerModel>(context);
+     final showElevation = canElevate &&
+@@ -1083,7 +1116,7 @@ class _CmControlPanel extends StatelessWidget {
+       children: [
+         Offstage(
+           offstage: !showElevation || !showAccept,
+-          child: buildButton(context, color: Colors.green[700], onClick: () {
++          child: buildButton(context, color: p.primary, onClick: () {
+             handleAccept(context);
+             handleElevate(context);
+             windowManager.minimize();
+@@ -1106,7 +1139,7 @@ class _CmControlPanel extends StatelessWidget {
+                   children: [
+                     buildButton(
+                       context,
+-                      color: MyTheme.accent,
++                      color: p.primary,
+                       onClick: () {
+                         handleAccept(context);
+                         windowManager.minimize();
+@@ -1120,8 +1153,8 @@ class _CmControlPanel extends StatelessWidget {
+             Expanded(
+               child: buildButton(
+                 context,
+-                color: Colors.transparent,
+-                border: Border.all(color: Colors.grey),
++                color: p.card,
++                border: Border.all(color: p.borderStrong),
+                 onClick: handleDisconnect,
+                 text: 'Cancel',
+                 textColor: null,
+@@ -1143,45 +1176,56 @@ class _CmControlPanel extends StatelessWidget {
+       String? tooltip,
+       GestureTapDownCallback? onTapDown}) {
+     assert(!(onClick == null && onTapDown == null));
++    // HJViewer: 36 px tall with the text in semibold, and a hover that shows on the fill.
++    final p = HjvPalette.of(context);
++    final textStyle = TextStyle(
++        color: textColor ?? p.text, fontSize: 13, fontWeight: FontWeight.w600);
+     Widget textWidget;
+     if (icon != null) {
+       textWidget = Text(
+         translate(text),
+-        style: TextStyle(color: textColor),
++        style: textStyle,
+         textAlign: TextAlign.center,
+       );
+     } else {
+       textWidget = Expanded(
+         child: Text(
+           translate(text),
+-          style: TextStyle(color: textColor),
++          style: textStyle,
+           textAlign: TextAlign.center,
+         ),
+       );
+     }
+-    final borderRadius = BorderRadius.circular(10.0);
++    final borderRadius = BorderRadius.circular(HjvRadius.md);
+     final btn = Container(
+-      height: 28,
++      height: 36,
+       decoration: BoxDecoration(
+           color: color, borderRadius: borderRadius, border: border),
+-      child: InkWell(
+-        borderRadius: borderRadius,
+-        onTap: () {
+-          if (onClick == null) return;
+-          checkClickTime(client.id, onClick);
+-        },
+-        onTapDown: (details) {
+-          if (onTapDown == null) return;
+-          checkClickTime(client.id, () {
+-            onTapDown.call(details);
+-          });
+-        },
+-        child: Row(
+-          mainAxisAlignment: MainAxisAlignment.center,
+-          children: [
+-            Offstage(offstage: icon == null, child: icon).marginOnly(right: 5),
+-            textWidget,
+-          ],
++      child: Material(
++        type: MaterialType.transparency,
++        child: InkWell(
++          borderRadius: borderRadius,
++          hoverColor: (textColor ?? p.text).withOpacity(0.1),
++          highlightColor: (textColor ?? p.text).withOpacity(0.16),
++          splashFactory: NoSplash.splashFactory,
++          onTap: () {
++            if (onClick == null) return;
++            checkClickTime(client.id, onClick);
++          },
++          onTapDown: (details) {
++            if (onTapDown == null) return;
++            checkClickTime(client.id, () {
++              onTapDown.call(details);
++            });
++          },
++          child: Row(
++            mainAxisAlignment: MainAxisAlignment.center,
++            children: [
++              Offstage(offstage: icon == null, child: icon)
++                  .marginOnly(right: 6),
++              textWidget,
++            ],
++          ),
+         ),
+       ),
+     );
+@@ -1262,12 +1306,7 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
+ 
+   Widget generateCard(Widget child) {
+     return Container(
+-      decoration: BoxDecoration(
+-        color: Theme.of(context).cardColor,
+-        borderRadius: BorderRadius.all(
+-          Radius.circular(15.0),
+-        ),
+-      ),
++      decoration: hjvCardDecoration(context),
+       child: child,
+     );
+   }
+@@ -1367,7 +1406,7 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
+                                             '${translate("Total")} ${readableFileSize(item.totalSize.toDouble())}',
+                                             style: TextStyle(
+                                               fontSize: 12,
+-                                              color: MyTheme.darkGray,
++                                              color: HjvPalette.of(context).textTertiary,
+                                             ),
+                                           ),
+                                         if (item.totalSize > 0)
+@@ -1378,7 +1417,7 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
+                                               '${translate("Speed")} ${readableFileSize(item.speed)}/s',
+                                               style: TextStyle(
+                                                 fontSize: 12,
+-                                                color: MyTheme.darkGray,
++                                                color: HjvPalette.of(context).textTertiary,
+                                               ),
+                                             ),
+                                           ),
+@@ -1392,7 +1431,7 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
+                                             ),
+                                             style: TextStyle(
+                                               fontSize: 12,
+-                                              color: MyTheme.darkGray,
++                                              color: HjvPalette.of(context).textTertiary,
+                                             ),
+                                           ),
+                                         ),
+@@ -1410,9 +1449,11 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
+                                               barRadius: Radius.circular(15),
+                                               percent: item.finishedSize /
+                                                   item.totalSize,
+-                                              progressColor: MyTheme.accent,
++                                              progressColor:
++                                                  HjvPalette.of(context)
++                                                      .primary,
+                                               backgroundColor:
+-                                                  Theme.of(context).hoverColor,
++                                                  HjvPalette.of(context).fill,
+                                               lineHeight:
+                                                   kDesktopFileTransferRowHeight,
+                                             ).paddingSymmetric(vertical: 15),
+@@ -1443,7 +1484,7 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
+                             SvgPicture.asset(
+                               "assets/transfer.svg",
+                               colorFilter: svgColor(
+-                                  Theme.of(context).tabBarTheme.labelColor),
++                                  HjvPalette.of(context).textTertiary),
+                               height: 40,
+                             ).paddingOnly(bottom: 10),
+                             Text(
+@@ -1451,8 +1492,7 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
+                               textAlign: TextAlign.center,
+                               textScaler: TextScaler.linear(1.20),
+                               style: TextStyle(
+-                                  color:
+-                                      Theme.of(context).tabBarTheme.labelColor),
++                                  color: HjvPalette.of(context).textSecondary),
+                             ),
+                           ],
+                         ),
+diff --git a/flutter/lib/desktop/widgets/button.dart b/flutter/lib/desktop/widgets/button.dart
+index 0c09f7c..22e06aa 100644
+--- a/flutter/lib/desktop/widgets/button.dart
++++ b/flutter/lib/desktop/widgets/button.dart
+@@ -3,6 +3,23 @@ import 'package:flutter/material.dart';
+ import 'package:get/get.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
++
++// HJViewer: the fill and the border of these buttons in the app's look (common/hjv_style.dart):
++// a filled one in the accent, darker while hovered or pressed; an outlined one with a thin border
++// and a faint wash of its text colour while hovered or pressed.
++Color _hjvButtonFill(BuildContext context, bool isOutline, bool hover,
++    bool pressed, Color? textColor) {
++  final p = HjvPalette.of(context);
++  if (!isOutline) return hover || pressed ? p.primaryStrong : p.primary;
++  return (textColor ?? p.text).withOpacity(pressed ? 0.14 : (hover ? 0.08 : 0));
++}
++
++Color _hjvButtonBorder(BuildContext context, bool isOutline, bool hover,
++    bool pressed, Color? borderColor) {
++  if (!isOutline) return _hjvButtonFill(context, false, hover, pressed, null);
++  return borderColor ?? HjvPalette.of(context).borderStrong;
++}
+ 
+ class Button extends StatefulWidget {
+   final GestureTapCallback onTap;
+@@ -39,6 +56,10 @@ class _ButtonState extends State<Button> {
+   @override
+   Widget build(BuildContext context) {
+     return Obx(() => InkWell(
++          borderRadius: BorderRadius.circular(widget.radius ?? HjvRadius.md),
++          hoverColor: Colors.transparent,
++          highlightColor: Colors.transparent,
++          splashFactory: NoSplash.splashFactory,
+           onTapDown: (_) => pressed.value = true,
+           onTapUp: (_) => pressed.value = false,
+           onTapCancel: () => pressed.value = false,
+@@ -49,31 +70,25 @@ class _ButtonState extends State<Button> {
+                 minWidth: widget.minWidth ?? 70.0,
+               ),
+               child: Container(
+-                padding: EdgeInsets.all(widget.padding ?? 4.5),
++                padding: EdgeInsets.all(widget.padding ?? 8),
+                 alignment: Alignment.center,
+                 decoration: BoxDecoration(
+-                  color: pressed.value
+-                      ? MyTheme.accent
+-                      : (widget.isOutline
+-                          ? Colors.transparent
+-                          : MyTheme.button),
++                  color: _hjvButtonFill(context, widget.isOutline, hover.value,
++                      pressed.value, widget.textColor),
+                   border: Border.all(
+-                    color: pressed.value
+-                        ? MyTheme.accent
+-                        : hover.value
+-                            ? MyTheme.hoverBorder
+-                            : (widget.isOutline
+-                                ? widget.borderColor ?? MyTheme.border
+-                                : MyTheme.button),
++                    color: _hjvButtonBorder(context, widget.isOutline,
++                        hover.value, pressed.value, widget.borderColor),
+                   ),
+-                  borderRadius: BorderRadius.circular(widget.radius ?? 5),
++                  borderRadius:
++                      BorderRadius.circular(widget.radius ?? HjvRadius.md),
+                 ),
+                 child: Text(
+                   translate(
+                     widget.text,
+                   ),
+                   style: TextStyle(
+-                      fontSize: widget.textSize ?? 12.0,
++                      fontSize: widget.textSize ?? 13.0,
++                      fontWeight: FontWeight.w600,
+                       color: widget.isOutline
+                           ? widget.textColor ??
+                               Theme.of(context).textTheme.titleLarge?.color
+@@ -121,6 +136,10 @@ class _FixedWidthButtonState extends State<FixedWidthButton> {
+   @override
+   Widget build(BuildContext context) {
+     return Obx(() => InkWell(
++          borderRadius: BorderRadius.circular(widget.radius ?? HjvRadius.md),
++          hoverColor: Colors.transparent,
++          highlightColor: Colors.transparent,
++          splashFactory: NoSplash.splashFactory,
+           onTapDown: (_) => pressed.value = true,
+           onTapUp: (_) => pressed.value = false,
+           onTapCancel: () => pressed.value = false,
+@@ -128,22 +147,16 @@ class _FixedWidthButtonState extends State<FixedWidthButton> {
+           onTap: widget.onTap,
+           child: Container(
+             width: widget.width,
+-            padding: EdgeInsets.all(widget.padding ?? 4.5),
++            padding: EdgeInsets.all(widget.padding ?? 8),
+             alignment: Alignment.center,
+             decoration: BoxDecoration(
+-              color: pressed.value
+-                  ? MyTheme.accent
+-                  : (widget.isOutline ? Colors.transparent : MyTheme.button),
++              color: _hjvButtonFill(context, widget.isOutline, hover.value,
++                  pressed.value, widget.textColor),
+               border: Border.all(
+-                color: pressed.value
+-                    ? MyTheme.accent
+-                    : hover.value
+-                        ? MyTheme.hoverBorder
+-                        : (widget.isOutline
+-                            ? widget.borderColor ?? MyTheme.border
+-                            : MyTheme.button),
++                color: _hjvButtonBorder(context, widget.isOutline, hover.value,
++                    pressed.value, widget.borderColor),
+               ),
+-              borderRadius: BorderRadius.circular(widget.radius ?? 5),
++              borderRadius: BorderRadius.circular(widget.radius ?? HjvRadius.md),
+             ),
+             child: Row(
+               mainAxisAlignment: MainAxisAlignment.center,
+@@ -156,7 +169,8 @@ class _FixedWidthButtonState extends State<FixedWidthButton> {
+                     maxLines: widget.maxLines ?? 1,
+                     textAlign: TextAlign.center,
+                     style: TextStyle(
+-                        fontSize: widget.textSize ?? 12.0,
++                        fontSize: widget.textSize ?? 13.0,
++                        fontWeight: FontWeight.w600,
+                         color: widget.isOutline
+                             ? widget.textColor ??
+                                 Theme.of(context).textTheme.titleLarge?.color
+diff --git a/flutter/lib/desktop/widgets/material_mod_popup_menu.dart b/flutter/lib/desktop/widgets/material_mod_popup_menu.dart
+index 0e085a1..c459e88 100644
+--- a/flutter/lib/desktop/widgets/material_mod_popup_menu.dart
++++ b/flutter/lib/desktop/widgets/material_mod_popup_menu.dart
+@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
+ import 'package:flutter/rendering.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/desktop/widgets/menu_button.dart';
+ 
+ // Examples can assume:
+@@ -19,16 +20,17 @@ import 'package:flutter_hbb/desktop/widgets/menu_button.dart';
+ // const Duration _kMenuDuration = Duration(milliseconds: 300);
+ const Duration _kMenuDuration = Duration(milliseconds: 0);
+ const double _kMenuCloseIntervalEnd = 2.0 / 3.0;
+-const double _kMenuHorizontalPadding = 16.0;
++const double _kMenuHorizontalPadding = 12.0;
+ const double _kMenuDividerHeight = 16.0;
+ //const double _kMenuMaxWidth = 5.0 * _kMenuWidthStep;
+ const double _kMenuMinWidth = 2.0 * _kMenuWidthStep;
+ const double _kMenuMaxWidth = double.infinity;
+ // const double _kMenuVerticalPadding = 8.0;
+-const double _kMenuVerticalPadding = 8.0;
++const double _kMenuVerticalPadding = 6.0;
+ const double _kMenuWidthStep = 0.0;
+ //const double _kMenuScreenPadding = 8.0;
+-const double _kMenuScreenPadding = 0.0;
++// HJViewer: a menu keeps a little distance from the window's edges
++const double _kMenuScreenPadding = 4.0;
+ const double _kDefaultIconSize = 24.0;
+ 
+ /// Used to configure how the [PopupMenuButton] positions its popup menu.
+@@ -48,6 +50,39 @@ enum PopupMenuPosition {
+   underSide,
+ }
+ 
++// HJViewer: a menu row in the app's look (common/hjv_style.dart): inset from the menu's edges by
++// [hjvMenuRowInset], rounded, the palette's hover, 32 px tall on a desktop and 40 on a phone.
++const double hjvMenuRowInset = 6.0;
++
++ButtonStyle hjvMenuRowStyle(BuildContext context) {
++  final p = HjvPalette.of(context);
++  return TextButton.styleFrom(
++    foregroundColor: p.text,
++    disabledForegroundColor: p.textDisabled,
++    iconColor: p.textSecondary,
++    disabledIconColor: p.textDisabled,
++    textStyle: const TextStyle(
++        fontFamily: kHjvFont, fontSize: 14, fontWeight: FontWeight.w400),
++    padding: EdgeInsets.zero,
++    minimumSize: Size(0, isDesktop || isWebDesktop ? 32 : 40),
++    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
++    visualDensity: VisualDensity.standard,
++    alignment: AlignmentDirectional.centerStart,
++    shape: RoundedRectangleBorder(
++        borderRadius: BorderRadius.circular(HjvRadius.sm)),
++    splashFactory: NoSplash.splashFactory,
++  ).copyWith(
++    overlayColor: WidgetStateProperty.resolveWith((states) {
++      if (states.contains(WidgetState.pressed)) return p.border;
++      if (states.contains(WidgetState.hovered) ||
++          states.contains(WidgetState.focused)) {
++        return p.hover;
++      }
++      return null;
++    }),
++  );
++}
++
+ /// A base class for entries in a material design popup menu.
+ ///
+ /// The popup menu widget uses this interface to interact with the menu items.
+@@ -354,7 +389,9 @@ class PopupMenuItemState<T, W extends PopupMenuItem<T>> extends State<W> {
+         popupMenuTheme.textStyle ??
+         theme.textTheme.titleMedium!;
+ 
+-    if (!widget.enabled) style = style.copyWith(color: theme.disabledColor);
++    if (!widget.enabled) {
++      style = style.copyWith(color: HjvPalette.of(context).textDisabled);
++    }
+ 
+     Widget item = AnimatedDefaultTextStyle(
+       style: style,
+@@ -387,9 +424,13 @@ class PopupMenuItemState<T, W extends PopupMenuItem<T>> extends State<W> {
+         //       widget.mouseCursor, popupMenuTheme.mouseCursor),
+         //   child: item,
+         // ),
+-        child: TextButton(
+-          onPressed: widget.enabled ? handleTap : null,
+-          child: item,
++        child: Padding(
++          padding: const EdgeInsets.symmetric(horizontal: hjvMenuRowInset),
++          child: TextButton(
++            style: hjvMenuRowStyle(context),
++            onPressed: widget.enabled ? handleTap : null,
++            child: item,
++          ),
+         ),
+       ),
+     );
+@@ -632,6 +673,7 @@ class _PopupMenu<T> extends StatelessWidget {
+           child: Material(
+             shape: route.shape ?? popupMenuTheme.shape,
+             color: route.color ?? popupMenuTheme.color,
++            shadowColor: popupMenuTheme.shadowColor,
+             type: MaterialType.card,
+             elevation: route.elevation ?? popupMenuTheme.elevation ?? 8.0,
+             child: Align(
+@@ -951,6 +993,7 @@ class PopupMenu<T> extends StatelessWidget {
+     return Material(
+       shape: popupMenuTheme.shape,
+       color: popupMenuTheme.color,
++      shadowColor: popupMenuTheme.shadowColor,
+       type: MaterialType.card,
+       elevation: popupMenuTheme.elevation ?? 8.0,
+       child: child,
+diff --git a/flutter/lib/desktop/widgets/popup_menu.dart b/flutter/lib/desktop/widgets/popup_menu.dart
+index 28432a9..3397c81 100644
+--- a/flutter/lib/desktop/widgets/popup_menu.dart
++++ b/flutter/lib/desktop/widgets/popup_menu.dart
+@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
+ import 'package:get/get.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import './material_mod_popup_menu.dart' as mod_menu;
+ 
+ // https://stackoverflow.com/questions/68318314/flutter-popup-menu-inside-popup-menu
+@@ -109,6 +110,12 @@ class MenuConfig {
+ 
+ typedef DismissCallback = Function();
+ 
++// HJViewer: the padding of a row's content when the menu gives none (the phone's menus), so that
++// the text does not touch the row's rounded hover (mod_menu.hjvMenuRowStyle).
++EdgeInsets _hjvRowPadding(EdgeInsets? padding) =>
++    padding ??
++    EdgeInsets.symmetric(horizontal: isDesktop || isWebDesktop ? 12 : 16);
++
+ abstract class MenuEntryBase<T> {
+   bool dismissOnClicked;
+   DismissCallback? dismissCallback;
+@@ -125,8 +132,8 @@ abstract class MenuEntryBase<T> {
+       color: Theme.of(context).textTheme.titleLarge?.color,
+       fontSize: MenuConfig.fontSize,
+       fontWeight: FontWeight.normal);
+-  disabledStyle() => TextStyle(
+-      color: Colors.grey,
++  disabledStyle(BuildContext context) => TextStyle(
++      color: HjvPalette.of(context).textDisabled,
+       fontSize: MenuConfig.fontSize,
+       fontWeight: FontWeight.normal);
+ }
+@@ -214,7 +221,7 @@ class MenuEntryRadios<T> extends MenuEntryBase<T> {
+       );
+       final disabledTextChild = Text(
+         opt.text,
+-        style: disabledStyle(),
++        style: disabledStyle(context),
+       );
+       if (opt.enabled == null) {
+         return enabledTextChild;
+@@ -225,7 +232,7 @@ class MenuEntryRadios<T> extends MenuEntryBase<T> {
+     }
+ 
+     final child = Container(
+-      padding: padding,
++      padding: _hjvRowPadding(padding),
+       alignment: AlignmentDirectional.centerStart,
+       constraints:
+           BoxConstraints(minHeight: conf.height, maxHeight: conf.height),
+@@ -272,10 +279,12 @@ class MenuEntryRadios<T> extends MenuEntryBase<T> {
+         width: conf.boxWidth,
+         child: opt.enabled == null
+             ? TextButton(
++                style: mod_menu.hjvMenuRowStyle(context),
+                 child: child,
+                 onPressed: onPressed,
+               )
+             : Obx(() => TextButton(
++                  style: mod_menu.hjvMenuRowStyle(context),
+                   child: child,
+                   onPressed: opt.enabled!.isTrue ? onPressed : null,
+                 )),
+@@ -335,8 +344,9 @@ class MenuEntrySubRadios<T> extends MenuEntryBase<T> {
+       child: Container(
+           width: conf.boxWidth,
+           child: TextButton(
++            style: mod_menu.hjvMenuRowStyle(context),
+             child: Container(
+-              padding: padding,
++              padding: _hjvRowPadding(padding),
+               alignment: AlignmentDirectional.centerStart,
+               constraints: BoxConstraints(
+                   minHeight: conf.height, maxHeight: conf.height),
+@@ -470,8 +480,9 @@ abstract class MenuEntrySwitchBase<T> extends MenuEntryBase<T> {
+         child: Container(
+             width: conf.boxWidth,
+             child: TextButton(
++              style: mod_menu.hjvMenuRowStyle(context),
+               child: Container(
+-                  padding: padding,
++                  padding: _hjvRowPadding(padding),
+                   alignment: AlignmentDirectional.centerStart,
+                   height: conf.height,
+                   child: Row(children: [
+@@ -673,7 +684,7 @@ class MenuEntrySubMenu<T> extends MenuEntryBase<T> {
+                 text,
+                 style: super.enabled!.value
+                     ? enabledStyle(context)
+-                    : disabledStyle(),
++                    : disabledStyle(context),
+               )),
+           Expanded(
+               child: Align(
+@@ -712,6 +723,7 @@ class MenuEntryButton<T> extends MenuEntryBase<T> {
+     return Obx(() => Container(
+         width: conf.boxWidth,
+         child: TextButton(
++          style: mod_menu.hjvMenuRowStyle(context),
+           onPressed: super.enabled!.value
+               ? () {
+                   if (super.dismissOnClicked && Navigator.canPop(context)) {
+@@ -724,12 +736,13 @@ class MenuEntryButton<T> extends MenuEntryBase<T> {
+                 }
+               : null,
+           child: Container(
+-            padding: padding,
++            padding: _hjvRowPadding(padding),
+             alignment: AlignmentDirectional.centerStart,
+             constraints:
+                 BoxConstraints(minHeight: conf.height, maxHeight: conf.height),
+-            child: childBuilder(
+-                super.enabled!.value ? enabledStyle(context) : disabledStyle()),
++            child: childBuilder(super.enabled!.value
++                ? enabledStyle(context)
++                : disabledStyle(context)),
+           ),
+         )));
+   }
+@@ -751,5 +764,5 @@ class CustomPopupMenuTheme {
+   static const Color commonColor = MyTheme.accent;
+   // kMinInteractiveDimension
+   static const double height = 20.0;
+-  static const double dividerHeight = 3.0;
++  static const double dividerHeight = 9.0;
+ }
+diff --git a/flutter/lib/desktop/widgets/tabbar_widget.dart b/flutter/lib/desktop/widgets/tabbar_widget.dart
+index 9ef7d38..8476124 100644
+--- a/flutter/lib/desktop/widgets/tabbar_widget.dart
++++ b/flutter/lib/desktop/widgets/tabbar_widget.dart
+@@ -7,6 +7,7 @@ import 'package:desktop_multi_window/desktop_multi_window.dart';
+ import 'package:flutter/gestures.dart';
+ import 'package:flutter/material.dart' hide TabBarTheme;
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/desktop/pages/remote_page.dart';
+ import 'package:flutter_hbb/desktop/pages/view_camera_page.dart';
+@@ -26,6 +27,20 @@ const double _kIconSize = 18;
+ const double _kDividerIndent = 10;
+ const double _kActionIconSize = 12;
+ 
++// HJViewer: the tabs are soft pills inside the title bar, the window buttons as wide as Windows'
++// own (common/hjv_style.dart).
++const double _kHjvTabHeight = 22;
++const double _kHjvTabIconSize = 16;
++const double _kHjvCaptionButtonWidth = 40;
++
++/// HJViewer: room at the end of a window's tab list for the list's ▾ (_TabDropDownButton), which
++/// narrows the list when it appears: the last pill would be cut under it otherwise (upstream's
++/// tabs kept their close button's room there). The main window never shows the ▾.
++EdgeInsets _hjvTabListPadding(DesktopTabType type) =>
++    type == DesktopTabType.main || type == DesktopTabType.install
++        ? EdgeInsets.zero
++        : const EdgeInsets.only(right: _kTabBarHeight - 1);
++
+ class TabInfo {
+   final String key; // Notice: cm use client_id.toString() as key
+   final String label;
+@@ -645,8 +660,8 @@ class _DesktopTabState extends State<DesktopTab>
+                               style: TextStyle(fontSize: 13),
+                             ).marginOnly(left: 2))
+                       ]).marginOnly(
+-                        left: 5,
+-                        right: 10,
++                        left: 10,
++                        right: 6,
+                       ),
+                     ),
+                     Expanded(
+@@ -770,7 +785,7 @@ class WindowActionPanelState extends State<WindowActionPanel> {
+           Row(
+             children: [
+               if (widget.showMinimize && !isMacOS)
+-                ActionIcon(
++                _HjvCaptionButton(
+                   message: 'Minimize',
+                   icon: IconFont.min,
+                   onTap: () {
+@@ -783,7 +798,7 @@ class WindowActionPanelState extends State<WindowActionPanel> {
+                   isClose: false,
+                 ),
+               if (widget.showMaximize && !isMacOS)
+-                Obx(() => ActionIcon(
++                Obx(() => _HjvCaptionButton(
+                       message: stateGlobal.isMaximized.isTrue
+                           ? 'Restore'
+                           : 'Maximize',
+@@ -796,7 +811,7 @@ class WindowActionPanelState extends State<WindowActionPanel> {
+                       isClose: false,
+                     )),
+               if (widget.showClose && !isMacOS)
+-                ActionIcon(
++                _HjvCaptionButton(
+                   message: 'Close',
+                   icon: IconFont.close,
+                   onTap: () async {
+@@ -881,8 +896,8 @@ Future<bool> closeConfirmDialog() async {
+ 
+     return CustomAlertDialog(
+       title: Row(children: [
+-        const Icon(Icons.warning_amber_sharp,
+-            color: Colors.redAccent, size: 28),
++        Icon(Icons.warning_amber_rounded,
++            color: HjvPalette.of(context).warning, size: 24),
+         const SizedBox(width: 10),
+         Text(translate("Warning")),
+       ]),
+@@ -891,18 +906,29 @@ Future<bool> closeConfirmDialog() async {
+           crossAxisAlignment: CrossAxisAlignment.start,
+           children: [
+             Text(translate("Disconnect all devices?")),
+-            CheckboxListTile(
+-              contentPadding: const EdgeInsets.all(0),
+-              dense: true,
+-              controlAffinity: ListTileControlAffinity.leading,
+-              title: Text(
+-                translate("Confirm before closing multiple tabs"),
++            // HJViewer: the checkbox close to its text, so that the text keeps the room, and in line
++            // with the text above (the tile's Checkbox takes its density from the checkbox theme)
++            ListTileTheme.merge(
++              horizontalTitleGap: 8,
++              minLeadingWidth: 0,
++              child: CheckboxTheme(
++                data: CheckboxTheme.of(context).copyWith(
++                    visualDensity:
++                        const VisualDensity(horizontal: -4, vertical: -4)),
++                child: CheckboxListTile(
++                  contentPadding: const EdgeInsets.all(0),
++                  dense: true,
++                  controlAffinity: ListTileControlAffinity.leading,
++                  title: Text(
++                    translate("Confirm before closing multiple tabs"),
++                  ),
++                  value: confirm,
++                  onChanged: (v) {
++                    if (v == null) return;
++                    setState(() => confirm = v);
++                  },
++                ),
+               ),
+-              value: confirm,
+-              onChanged: (v) {
+-                if (v == null) return;
+-                setState(() => confirm = v);
+-              },
+             )
+           ]),
+       // confirm checkbox
+@@ -973,6 +999,7 @@ class _ListView extends StatelessWidget {
+         scrollDirection: Axis.horizontal,
+         shrinkWrap: true,
+         physics: const BouncingScrollPhysics(),
++        padding: _hjvTabListPadding(controller.tabType),
+         children: isHideSingleItem()
+             ? List.empty()
+             : state.value.tabs.asMap().entries.map((e) {
+@@ -1141,7 +1168,163 @@ class _TabState extends State<_Tab> with RestorationMixin {
+   }
+ 
+   @override
+-  Widget build(BuildContext context) {
++  Widget build(BuildContext context) => _hjvBuild(context);
++
++  // HJViewer: the tab as a soft pill in the title bar (common/hjv_style.dart): the selected one on
++  // the content colour with a thin border, the others quiet until hovered, the close button inside
++  // the pill. The pill is the selected tab's only mark in every window, so selectedBorderColor's
++  // underline is not drawn. Upstream's look stays below as _buildUpstream, unused.
++  Widget _hjvBuild(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final isSelected = widget.index == widget.selected;
++    final radius = BorderRadius.circular(HjvRadius.sm);
++    RxBool hover = restoreHover.value.obs;
++    return SizedBox(
++      // _kTabBarHeight also displays normally
++      height: _showTabBarBottomDivider(widget.tabType)
++          ? _kTabBarHeight - 1
++          : _kTabBarHeight,
++      child: Center(
++        child: Obx(() {
++          final hovered = hover.value;
++          return Container(
++            height: _kHjvTabHeight,
++            margin: const EdgeInsets.symmetric(horizontal: 2),
++            decoration: BoxDecoration(
++              color: isSelected
++                  ? (widget.selectedTabBackgroundColor ?? p.surface)
++                  : (hovered
++                      ? p.hoverStrong
++                      : widget.unSelectedTabBackgroundColor),
++              borderRadius: radius,
++              border:
++                  Border.all(color: isSelected ? p.border : Colors.transparent),
++            ),
++            child: Material(
++              type: MaterialType.transparency,
++              child: InkWell(
++                borderRadius: radius,
++                hoverColor: Colors.transparent,
++                highlightColor: Colors.transparent,
++                splashFactory: NoSplash.splashFactory,
++                onHover: (value) {
++                  hover.value = value;
++                  restoreHover.value = value;
++                },
++                onTap: () => widget.onTap(),
++                child: Padding(
++                  padding: EdgeInsets.only(
++                      left: 10, right: widget.closable ? 3 : 10),
++                  child: Row(
++                    mainAxisSize: MainAxisSize.min,
++                    children: [
++                      _hjvTabContent(isSelected),
++                      // on the selected tab always, on the others while hovered
++                      if (widget.closable)
++                        _hjvCloseButton(hovered || isSelected)
++                            .marginOnly(left: 4),
++                    ],
++                  ),
++                ),
++              ),
++            ),
++          );
++        }),
++      ),
++    );
++  }
++
++  Widget _hjvTabContent(bool isSelected) {
++    final p = HjvPalette.of(context);
++    final showIcon =
++        widget.selectedIcon != null && widget.unselectedIcon != null;
++    final icon = Offstage(
++        offstage: !showIcon,
++        child: Icon(
++          isSelected ? widget.selectedIcon : widget.unselectedIcon,
++          size: _kHjvTabIconSize,
++          color: isSelected ? p.primary : p.textTertiary,
++        ).paddingOnly(right: 6));
++    final labelWidget = Obx(() {
++      return ConstrainedBox(
++          constraints: BoxConstraints(maxWidth: widget.maxLabelWidth ?? 200),
++          child: Tooltip(
++            message:
++                widget.tabType == DesktopTabType.main ? '' : widget.label.value,
++            child: Text(
++              widget.tabType == DesktopTabType.main
++                  ? translate(widget.label.value)
++                  : widget.label.value,
++              textAlign: TextAlign.center,
++              maxLines: 1,
++              style: TextStyle(
++                  fontSize: 13,
++                  height: 1.2,
++                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
++                  color: isSelected ? p.text : p.textSecondary),
++              overflow: TextOverflow.ellipsis,
++            ),
++          ));
++    });
++    return Listener(
++      onPointerDown: (e) {
++        if (e.kind != ui.PointerDeviceKind.mouse) {
++          return;
++        }
++        if (e.buttons == 2) {
++          if (widget.tabMenuBuilder != null) {
++            showRightMenu(
++              (cacel) {
++                return widget.tabMenuBuilder!(widget.tabInfoKey);
++              },
++              target: e.position,
++            );
++          }
++        }
++      },
++      child: widget.tabBuilder == null
++          ? Row(
++              mainAxisSize: MainAxisSize.min,
++              children: [icon, labelWidget],
++            )
++          : widget.tabBuilder!(
++              widget.tabInfoKey,
++              icon,
++              labelWidget,
++              TabThemeConf(iconSize: _kHjvTabIconSize),
++            ),
++    );
++  }
++
++  /// The close button keeps its place, so the label does not move when it shows on hover.
++  Widget _hjvCloseButton(bool visible) {
++    final p = HjvPalette.of(context);
++    final hover = false.obs;
++    return SizedBox(
++      width: 16,
++      height: 16,
++      child: visible
++          ? Material(
++              type: MaterialType.transparency,
++              child: InkWell(
++                borderRadius: BorderRadius.circular(4),
++                hoverColor: p.text.withOpacity(0.08),
++                highlightColor: p.text.withOpacity(0.12),
++                splashFactory: NoSplash.splashFactory,
++                onHover: (value) => hover.value = value,
++                onTap: () => widget.onClose(),
++                child: Obx(() => Icon(
++                      Icons.close_rounded,
++                      size: 13,
++                      color: hover.value ? p.text : p.textTertiary,
++                    )),
++              ),
++            )
++          : null,
++    );
++  }
++
++  Widget _buildUpstream(BuildContext context) {
+     bool isSelected = widget.index == widget.selected;
+     bool showDivider =
+         widget.index != widget.selected - 1 && widget.index != widget.selected;
+@@ -1274,17 +1457,23 @@ class ActionIcon extends StatefulWidget {
+ 
+ class _ActionIconState extends State<ActionIcon> {
+   final hover = false.obs;
++  final pressed = false.obs;
+ 
+   @override
+   Widget build(BuildContext context) {
++    // HJViewer: the whole box takes the pointer, as upstream's; the hover is a rounded fill inset
++    // in it, in the palette's colours, a close button in danger.
++    final p = HjvPalette.of(context);
++    final radius = BorderRadius.circular(HjvRadius.sm);
+     return Tooltip(
+       message: widget.message != null ? translate(widget.message!) : "",
+       waitDuration: const Duration(seconds: 1),
+       child: InkWell(
+-        hoverColor: widget.isClose
+-            ? const Color.fromARGB(255, 196, 43, 28)
+-            : MyTheme.tabbar(context).hoverColor,
++        hoverColor: Colors.transparent,
++        highlightColor: Colors.transparent,
++        splashFactory: NoSplash.splashFactory,
+         onHover: (value) => hover.value = value,
++        onHighlightChanged: (value) => pressed.value = value,
+         onTap: widget.onTap,
+         onTapDown: widget.onTapDown,
+         child: SizedBox(
+@@ -1293,18 +1482,85 @@ class _ActionIconState extends State<ActionIcon> {
+           child: widget.onTap == null
+               ? Icon(
+                   widget.icon,
+-                  color: Colors.grey,
++                  color: p.textDisabled,
+                   size: widget.iconSize,
+                 )
+-              : Obx(
+-                  () => Icon(
+-                    widget.icon,
+-                    color: hover.value && widget.isClose
+-                        ? Colors.white
+-                        : MyTheme.tabbar(context).unSelectedIconColor,
+-                    size: widget.iconSize,
+-                  ),
+-                ),
++              : Obx(() {
++                  final active = hover.value || pressed.value;
++                  return Container(
++                    margin: const EdgeInsets.all(2),
++                    decoration: BoxDecoration(
++                      color: !active
++                          ? null
++                          : widget.isClose
++                              ? p.dangerFill
++                              : (pressed.value
++                                  ? p.borderStrong
++                                  : p.hoverStrong),
++                      borderRadius: radius,
++                    ),
++                    child: Icon(
++                      widget.icon,
++                      color: active
++                          ? (widget.isClose ? Colors.white : p.text)
++                          : p.textSecondary,
++                      size: widget.iconSize,
++                    ),
++                  );
++                }),
++        ),
++      ),
++    );
++  }
++}
++
++// HJViewer: a window button (minimise, maximise or restore, close) in the title bar: as tall as
++// the bar and as wide as Windows' own, the bar's hover, the close button in danger.
++class _HjvCaptionButton extends StatefulWidget {
++  final String message;
++  final IconData icon;
++  final GestureTapCallback? onTap;
++  final bool isClose;
++
++  const _HjvCaptionButton({
++    required this.message,
++    required this.icon,
++    required this.onTap,
++    required this.isClose,
++  });
++
++  @override
++  State<_HjvCaptionButton> createState() => _HjvCaptionButtonState();
++}
++
++class _HjvCaptionButtonState extends State<_HjvCaptionButton> {
++  final hover = false.obs;
++
++  @override
++  Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    return Tooltip(
++      message: translate(widget.message),
++      waitDuration: const Duration(seconds: 1),
++      child: InkWell(
++        hoverColor: widget.isClose ? p.dangerFill : p.hoverStrong,
++        highlightColor:
++            widget.isClose ? p.dangerFill.withOpacity(0.85) : p.borderStrong,
++        splashFactory: NoSplash.splashFactory,
++        onHover: (value) => hover.value = value,
++        onTap: widget.onTap,
++        child: SizedBox(
++          height: _kTabBarHeight - 1,
++          width: _kHjvCaptionButtonWidth,
++          child: Obx(() => Icon(
++                widget.icon,
++                size: _kActionIconSize,
++                color: widget.onTap == null
++                    ? p.textDisabled
++                    : (hover.value
++                        ? (widget.isClose ? Colors.white : p.text)
++                        : p.textSecondary),
++              )),
+         ),
+       ),
+     );
+@@ -1408,9 +1664,12 @@ class _TabDropDownButtonState extends State<_TabDropDownButton> {
+                                       setState(() => btnHover.value = true),
+                                   onExit: (event) =>
+                                       setState(() => btnHover.value = false),
+-                                  child: Icon(Icons.close,
+-                                      color:
+-                                          btnHover.value ? Colors.red : null)));
++                                  child: Icon(Icons.close_rounded,
++                                      size: 18,
++                                      color: btnHover.value
++                                          ? HjvPalette.of(context).danger
++                                          : HjvPalette.of(context)
++                                              .textTertiary)));
+                         } else {
+                           return Offstage();
+                         }

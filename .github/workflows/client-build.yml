@@ -578,7 +578,8 @@ jobs:
           test -s SignOutput/HJViewer-install.exe
           bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" SignOutput . \
             rustdesk/usbmmidd_v2/License.txt "Amyuni USB Mobile Monitor virtual display driver (usbmmidd_v2)" \
-            "$RUNNER_TEMP/RustDeskTempTopMostWindow/LICENSE" "RustDeskTempTopMostWindow (WindowInjection.dll)"
+            "$RUNNER_TEMP/RustDeskTempTopMostWindow/LICENSE" "RustDeskTempTopMostWindow (WindowInjection.dll)" \
+            flutter/assets/fonts/Pretendard-LICENSE.txt "Pretendard typeface, in the app (assets/fonts)"
 
       # Not in upstream. What this build says about its package (release.json: platform, version,
       # build, file, size, SHA-256, source commit, run, workflow) and the hashes of the files the
@@ -1063,7 +1064,8 @@ jobs:
           ls signed-apk/*.apk > /dev/null
           bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" signed-apk . \
             "$ANDROID_NDK_HOME/NOTICE" "?Android NDK, including libc++_shared.so" \
-            "$ANDROID_NDK_HOME/NOTICE.toolchain" "?Android NDK toolchain"
+            "$ANDROID_NDK_HOME/NOTICE.toolchain" "?Android NDK toolchain" \
+            flutter/assets/fonts/Pretendard-LICENSE.txt "Pretendard typeface, in the app (assets/fonts)"
 
       # Not in upstream. release.json and SHA256SUMS, as in the Windows job. The package is the APK
       # that one of the two uploads below takes; its versionCode, the build number, is read from
@@ -1757,7 +1759,8 @@ jobs:
           NOTICES_TARGET: aarch64-apple-ios
         run: |
           ls ios-out/*.ipa > /dev/null
-          bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" ios-out .
+          bash "$GITHUB_WORKSPACE/scripts/package-notices.sh" ios-out . \
+            flutter/assets/fonts/Pretendard-LICENSE.txt "Pretendard typeface, in the app (assets/fonts)"
 
       # Not in upstream. release.json and SHA256SUMS, as in the Windows job. The build number is the
       # IPA's CFBundleVersion, read from the IPA: the number a TestFlight build is known by. An

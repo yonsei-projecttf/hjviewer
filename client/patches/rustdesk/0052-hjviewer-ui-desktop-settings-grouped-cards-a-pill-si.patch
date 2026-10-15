@@ -1,0 +1,1178 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Thu, 15 Oct 2026 20:01:01 +0900
+Subject: [PATCH 52/57] hjviewer: ui: desktop-settings: grouped cards, a pill
+ sidebar, even rows
+
+Settings kept upstream's grey cards with a shadow and a 20 px title inside, a sidebar
+with a blue bar, filled blue buttons everywhere and rows 32 or 36 px apart. Now:
+
+- Sidebar: the title bold in the text colour; each tab a rounded pill, primarySoft with
+  the icon and label in primary when selected, the hover colour under the pointer.
+  Upstream's _listItem stays, unused.
+- _Card: the section title small above the card (13/600, textTertiary), the card from
+  hjvCardDecoration, 24 px page margins and room below the last card; checkboxes and
+  radios 36 px high in every card; a dropdown's menu on the card's colour with its
+  current item tinted. Network's tiles sit inset so their hover is even, with quiet
+  icons and a chevron on the rows that open a dialog.
+- Buttons 36 px: _Button, _SubButton and the other secondary actions are the theme's
+  outlined button; Login and Apply stay filled; the unlock button is a full-width
+  filled button in the cards' margins instead of a grey card.
+- Rows on the 4/8 grid: dropdowns, sub-fields and the recording folder; sub-options
+  start under the parent's label; sub-labels in textSecondary and allowed to wrap.
+- Account: the logged-in user as the card's first row (the avatar or a tinted person),
+  then the logout button. About: thin lines around the update and the notice, links in
+  primary, the copyright on primarySoft instead of a block of blue.
+- Palette colours for the whitelist warning, the printer and Wayland errors and, in
+  setting_widgets.dart, the server dialog's icons; slider values 14 px, tabular digits.
+
+After an independent review (screens in light and dark, the diff, the code rules):
+
+- Sidebar: the hover in hoverStrong, which shows on the canvas (hover did not).
+- _Card: no canvasColor or focusColor of its own any more. The combo box's menu takes its
+  colour from ComboBox, and keyboard focus in a card shows in the theme's focus colour
+  again instead of primarySoft on the card.
+- About: no rule above the update block, which has its own border; the links without a
+  grey hover box flush with their text. The recording folder reads as a link, like About's.
+- Network: a locked row's icon and chevron in the disabled colour.
+- The relay delay, port and timeout fields at 14 px with tabular digits, as their labels.
+- Socks5/Http(s) proxy on the desktop: the labels above the fields (hjvFieldLabel), as in
+  the other dialogs; the help icon and the password's eye in the tertiary colour.
+- Custom image quality (setting_widgets.dart): More shares the label's two shares and goes
+  below the label as a whole when they do not fit, instead of both breaking between
+  syllables in a narrow window; the quality and FPS rows stay aligned.
+- Printer: the tips and the install button at the content margin; the unused
+  _kCardLeftMargin goes.
+- Wayland: the danger buttons on dangerFill.
+
+_Card, _Button, _SubButton, _SubLabeledWidget and _lock stay restyled in place
+rather than as _hjv builders beside upstream's: they have many call sites (26 for _Card),
+and upstream's bodies would only remain as dead code.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../lib/common/widgets/setting_widgets.dart   |  60 ++-
+ .../desktop/pages/desktop_setting_page.dart   | 477 ++++++++++++------
+ 2 files changed, 365 insertions(+), 172 deletions(-)
+
+diff --git a/flutter/lib/common/widgets/setting_widgets.dart b/flutter/lib/common/widgets/setting_widgets.dart
+index 3941ed0..c694494 100644
+--- a/flutter/lib/common/widgets/setting_widgets.dart
++++ b/flutter/lib/common/widgets/setting_widgets.dart
+@@ -2,6 +2,7 @@ import 'package:debounce_throttle/debounce_throttle.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ import 'package:get/get.dart';
+@@ -69,29 +70,35 @@ customImageQualityWidget(
+                   flex: 1,
+                   child: Text(
+                     '${qualityValue.value.round()}%',
+-                    style: const TextStyle(fontSize: 15),
++                    style: const TextStyle(
++                        fontSize: 14, fontFeatures: HjvText.tabular),
+                   )),
++              // HJViewer: on the desktop More shares the label's two shares (as FPS has them):
++              // beside the label while both fit, below it as a whole when they do not, instead of
++              // a share of its own in which both broke between syllables in a narrow window
+               Expanded(
+-                  flex: isMobile ? 2 : 1,
+-                  child: Text(
+-                    translate('Bitrate'),
+-                    style: const TextStyle(fontSize: 15),
+-                  )),
+-              // mobile doesn't have enough space
+-              if (showMoreQuality && !isMobile)
+-                Expanded(
+-                    flex: 1,
+-                    child: Row(
+-                      children: [
+-                        Checkbox(
+-                          value: moreQualityChecked.value,
+-                          onChanged: onMoreChanged,
++                  flex: 2,
++                  child: Wrap(
++                    crossAxisAlignment: WrapCrossAlignment.center,
++                    children: [
++                      Text(
++                        translate('Bitrate'),
++                        style: const TextStyle(fontSize: 14),
++                      ).marginOnly(right: 8),
++                      // mobile doesn't have enough space
++                      if (showMoreQuality && !isMobile)
++                        Row(
++                          mainAxisSize: MainAxisSize.min,
++                          children: [
++                            Checkbox(
++                              value: moreQualityChecked.value,
++                              onChanged: onMoreChanged,
++                            ),
++                            Text(translate('More')),
++                          ],
+                         ),
+-                        Expanded(
+-                          child: Text(translate('More')),
+-                        )
+-                      ],
+-                    ))
++                    ],
++                  )),
+             ],
+           )),
+       if (showMoreQuality && isMobile)
+@@ -133,13 +140,14 @@ customImageQualityWidget(
+                     flex: 1,
+                     child: Text(
+                       '${fpsValue.value.round()}',
+-                      style: const TextStyle(fontSize: 15),
++                      style: const TextStyle(
++                          fontSize: 14, fontFeatures: HjvText.tabular),
+                     )),
+                 Expanded(
+                     flex: 2,
+                     child: Text(
+                       translate('FPS'),
+-                      style: const TextStyle(fontSize: 15),
++                      style: const TextStyle(fontSize: 14),
+                     ))
+               ],
+             )),
+@@ -203,13 +211,11 @@ List<Widget> ServerConfigImportExportWidgets(
+   return [
+     Tooltip(
+       message: translate('Import server config'),
+-      child: IconButton(
+-          icon: Icon(Icons.paste, color: Colors.grey), onPressed: import),
++      child: IconButton(icon: Icon(Icons.paste), onPressed: import),
+     ),
+     Tooltip(
+         message: translate('Export Server Config'),
+-        child: IconButton(
+-            icon: Icon(Icons.copy, color: Colors.grey), onPressed: export))
++        child: IconButton(icon: Icon(Icons.copy), onPressed: export))
+   ];
+ }
+ 
+@@ -391,7 +397,7 @@ class TrackpadSpeedWidgetState extends State<TrackpadSpeedWidget> {
+                 ).marginOnly(right: 8.0),
+                 Text(
+                   '%',
+-                  style: const TextStyle(fontSize: 15),
++                  style: const TextStyle(fontSize: 14),
+                 )
+               ],
+             )),
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 658e1ec..1cbf0bd 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/audio_input.dart';
+@@ -28,17 +29,26 @@ import '../../common/widgets/dialog.dart';
+ import '../../common/widgets/login.dart';
+ 
+ const double _kTabWidth = 200;
+-const double _kTabHeight = 42;
+-const double _kCardFixedWidth = 540;
+-const double _kCardLeftMargin = 15;
+-const double _kContentHMargin = 15;
+-const double _kContentHSubMargin = _kContentHMargin + 33;
++const double _kTabHeight = 40;
++const double _kCardFixedWidth = 640;
++const double _kContentHMargin = 16;
++const double _kContentHSubMargin = _kContentHMargin + 31;
+ const double _kCheckBoxLeftMargin = 10;
+ const double _kRadioLeftMargin = 10;
+-const double _kListViewBottomMargin = 15;
++const double _kListViewBottomMargin = 0;
+ const double _kTitleFontSize = 20;
+-const double _kContentFontSize = 15;
++const double _kContentFontSize = 14;
+ const Color _accentColor = MyTheme.accent;
++// HJViewer: the margin around the pages' cards and below the last one (the pages scroll to the
++// window's edge), and the settings' buttons: 36 px high, the colours and the shape from the
++// theme (common/hjv_theme.dart)
++const double _kHjvPageMargin = 24;
++const EdgeInsets _hjvEnd = EdgeInsets.only(bottom: _kHjvPageMargin);
++const ButtonStyle _hjvButtonStyle = ButtonStyle(
++  minimumSize: WidgetStatePropertyAll(Size(0, 36)),
++  padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 16)),
++  visualDensity: VisualDensity.standard,
++);
+ const String _kSettingPageControllerTag = 'settingPageController';
+ const String _kSettingPageTabKeyTag = 'settingPageTabKey';
+ 
+@@ -308,10 +318,10 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
+     final settingsText = Text(
+       translate('Settings'),
+       textAlign: TextAlign.left,
+-      style: const TextStyle(
+-        color: _accentColor,
++      style: TextStyle(
++        color: HjvPalette.of(context).text,
+         fontSize: _kTitleFontSize,
+-        fontWeight: FontWeight.w400,
++        fontWeight: FontWeight.w700,
+       ),
+     );
+     return Row(
+@@ -335,9 +345,9 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
+           ).marginOnly(left: 20),
+         if (!isWeb)
+           SizedBox(
+-            height: 62,
++            height: 46,
+             child: settingsText,
+-          ).marginOnly(left: 20, top: 10),
++          ).marginOnly(left: 24, top: 18),
+         const Spacer(),
+       ],
+     );
+@@ -347,7 +357,7 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
+     final scrollController = ScrollController();
+     return ListView(
+       controller: scrollController,
+-      children: tabs.map((tab) => _listItem(tab: tab)).toList(),
++      children: tabs.map((tab) => _hjvListItem(tab: tab)).toList(),
+     );
+   }
+ 
+@@ -391,6 +401,61 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
+       );
+     });
+   }
++
++  // HJViewer: a tab of the sidebar as a rounded pill: primarySoft with the icon and the label in
++  // primary when selected, the canvas's hover colour (hoverStrong) under the pointer otherwise.
++  // Upstream's _listItem stays as it is, unused.
++  Widget _hjvListItem({required _TabInfo tab}) {
++    return Obx(() {
++      final p = HjvPalette.of(context);
++      final selected = tab.key == selectedTab.value;
++      final radius = BorderRadius.circular(HjvRadius.md);
++      return Padding(
++        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
++        child: Material(
++          color: selected ? p.primarySoft : Colors.transparent,
++          borderRadius: radius,
++          child: InkWell(
++            borderRadius: radius,
++            // not transparent: a hover that turns transparent paints black
++            hoverColor: selected ? p.primarySoft : p.hoverStrong,
++            onTap: () {
++              if (selectedTab.value != tab.key) {
++                int index = DesktopSettingPage.tabKeys.indexOf(tab.key);
++                if (index == -1) {
++                  return;
++                }
++                controller.jumpToPage(index);
++              }
++              selectedTab.value = tab.key;
++            },
++            child: SizedBox(
++              height: _kTabHeight,
++              child: Row(children: [
++                Icon(
++                  selected ? tab.selected : tab.unselected,
++                  color: selected ? p.primary : p.textSecondary,
++                  size: 20,
++                ).marginOnly(left: 12, right: 12),
++                Expanded(
++                  child: Text(
++                    translate(tab.label),
++                    maxLines: 1,
++                    overflow: TextOverflow.ellipsis,
++                    style: TextStyle(
++                        color: selected ? p.primary : p.textSecondary,
++                        fontWeight:
++                            selected ? FontWeight.w600 : FontWeight.w400,
++                        fontSize: _kContentFontSize),
++                  ),
++                ),
++              ]),
++            ),
++          ),
++        ),
++      );
++    });
++  }
+ }
+ 
+ //#region pages
+@@ -413,6 +478,7 @@ class _GeneralState extends State<_General> {
+     final scrollController = ScrollController();
+     return ListView(
+       controller: scrollController,
++      padding: _hjvEnd,
+       children: [
+         if (!isWeb) service(),
+         theme(),
+@@ -748,7 +814,7 @@ class _GeneralState extends State<_General> {
+           setDevice(key);
+           setState(() {});
+         },
+-      ).marginOnly(left: _kContentHMargin);
++      ).marginOnly(left: _kContentHMargin, top: 4);
+       return _Card(title: 'Audio Input Device', children: [child]);
+     }
+ 
+@@ -788,7 +854,9 @@ class _GeneralState extends State<_General> {
+           Row(
+             children: [
+               Text(
+-                  '${translate(bind.isIncomingOnly() ? "Directory" : "Incoming")}:'),
++                  '${translate(bind.isIncomingOnly() ? "Directory" : "Incoming")}:',
++                  style:
++                      TextStyle(color: HjvPalette.of(context).textSecondary)),
+               Expanded(
+                 child: GestureDetector(
+                     onTap: root_dir_exists
+@@ -797,19 +865,21 @@ class _GeneralState extends State<_General> {
+                     child: Text(
+                       root_dir,
+                       softWrap: true,
++                      // HJViewer: a folder that opens as a link, like About's
+                       style: root_dir_exists
+-                          ? const TextStyle(
+-                              decoration: TextDecoration.underline)
++                          ? TextStyle(color: HjvPalette.of(context).primary)
+                           : null,
+                     )).marginOnly(left: 10),
+               ),
+             ],
+-          ).marginOnly(left: _kContentHMargin),
++          ).marginOnly(left: _kContentHMargin, top: 4, bottom: 4),
+         if (!(showRootDir && bind.isIncomingOnly()))
+           Row(
+             children: [
+               Text(
+-                  '${translate((showRootDir && !bind.isOutgoingOnly()) ? "Outgoing" : "Directory")}:'),
++                  '${translate((showRootDir && !bind.isOutgoingOnly()) ? "Outgoing" : "Directory")}:',
++                  style:
++                      TextStyle(color: HjvPalette.of(context).textSecondary)),
+               Expanded(
+                 child: GestureDetector(
+                     onTap: user_dir_exists
+@@ -819,12 +889,12 @@ class _GeneralState extends State<_General> {
+                       user_dir,
+                       softWrap: true,
+                       style: user_dir_exists
+-                          ? const TextStyle(
+-                              decoration: TextDecoration.underline)
++                          ? TextStyle(color: HjvPalette.of(context).primary)
+                           : null,
+                     )).marginOnly(left: 10),
+               ),
+-              ElevatedButton(
++              OutlinedButton(
++                      style: _hjvButtonStyle,
+                       onPressed: isOptionFixed(kOptionVideoSaveDirectory)
+                           ? null
+                           : () async {
+@@ -845,9 +915,9 @@ class _GeneralState extends State<_General> {
+                               }
+                             },
+                       child: Text(translate('Change')))
+-                  .marginOnly(left: 5),
++                  .marginOnly(left: 12),
+             ],
+-          ).marginOnly(left: _kContentHMargin),
++          ).marginOnly(left: _kContentHMargin, top: 4, bottom: 4),
+       ]);
+     });
+   }
+@@ -880,7 +950,7 @@ class _GeneralState extends State<_General> {
+           if (!isWeb) bind.mainChangeLanguage(lang: key);
+         },
+         enabled: !isOptFixed,
+-      ).marginOnly(left: _kContentHMargin);
++      ).marginOnly(left: _kContentHMargin, top: 4);
+     });
+   }
+ 
+@@ -928,6 +998,8 @@ class _GeneralState extends State<_General> {
+                       FilteringTextInputFormatter.allow(
+                           RegExp(r'^([0-9]|[1-9][0-9])(\.[0-9]?)?$')),
+                     ],
++                    style: const TextStyle(
++                        fontSize: 14, fontFeatures: HjvText.tabular),
+                     decoration: const InputDecoration(
+                       hintText: '2.5',
+                       contentPadding:
+@@ -938,6 +1010,7 @@ class _GeneralState extends State<_General> {
+                 Obx(() => Offstage(
+                       offstage: typed.value.trim() == saved.value.trim(),
+                       child: ElevatedButton(
++                        style: _hjvButtonStyle,
+                         onPressed: enabled &&
+                                 !isOptFixed &&
+                                 !typed.value.trim().endsWith('.') &&
+@@ -988,6 +1061,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+     super.build(context);
+     return SingleChildScrollView(
+         controller: scrollController,
++        padding: _hjvEnd,
+         child: Column(
+           children: [
+             _lock(locked, 'Unlock Security Settings', () {
+@@ -1110,7 +1184,8 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+             ),
+           ),
+           if (mainGetBoolOptionSync(kOptionEnableTrustedDevices))
+-            ElevatedButton(
++            OutlinedButton(
++                style: _hjvButtonStyle,
+                 onPressed: locked
+                     ? null
+                     : () {
+@@ -1184,7 +1259,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+             onChanged: (mode) async {
+               await bind.mainSetOption(key: kOptionAccessMode, value: mode);
+               setState(() {});
+-            }).marginOnly(left: _kContentHMargin),
++            }).marginOnly(left: _kContentHMargin, top: 4),
+         Column(
+           children: [
+             _OptionCheckBox(
+@@ -1340,7 +1415,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+             onTap: isNumOPTChangable
+                 ? () => model.switchAllowNumericOneTimePassword()
+                 : null,
+-          ).marginOnly(left: _kContentHSubMargin - 5);
++          ).marginOnly(left: _kContentHSubMargin - 7);
+ 
+           final modeKeys = <String>[
+             'password',
+@@ -1366,7 +1441,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+               values: modeValues,
+               initialKey: modeInitialKey,
+               onChanged: (key) => model.setApproveMode(key),
+-            ).marginOnly(left: _kContentHMargin),
++            ).marginOnly(left: _kContentHMargin, top: 4),
+             if (usePassword) radios[0],
+             if (usePassword)
+               _SubLabeledWidget(
+@@ -1470,6 +1545,8 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+                       FilteringTextInputFormatter.allow(RegExp(
+                           r'^([0-9]|[1-9]\d|[1-9]\d{2}|[1-9]\d{3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$')),
+                     ],
++                    style: const TextStyle(
++                        fontSize: 14, fontFeatures: HjvText.tabular),
+                     decoration: const InputDecoration(
+                       hintText: '21118',
+                       contentPadding:
+@@ -1478,6 +1555,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+                   ).workaroundFreezeLinuxMint().marginOnly(right: 15),
+                 ),
+                 Obx(() => ElevatedButton(
++                      style: _hjvButtonStyle,
+                       onPressed: applyEnabled.value &&
+                               enabled &&
+                               !locked &&
+@@ -1530,8 +1608,8 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+                   Offstage(
+                     offstage: !hasWhitelist.value,
+                     child: MouseRegion(
+-                      child: const Icon(Icons.warning_amber_rounded,
+-                              color: Color.fromARGB(255, 255, 204, 0))
++                      child: Icon(Icons.warning_amber_rounded,
++                              size: 20, color: HjvPalette.of(context).warning)
+                           .marginOnly(right: 5),
+                       cursor: SystemMouseCursors.click,
+                     ),
+@@ -1580,8 +1658,8 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+                 Offstage(
+                   offstage: !hasIdWhitelist.value,
+                   child: MouseRegion(
+-                    child: const Icon(Icons.warning_amber_rounded,
+-                            color: Color.fromARGB(255, 255, 204, 0))
++                    child: Icon(Icons.warning_amber_rounded,
++                            size: 20, color: HjvPalette.of(context).warning)
+                         .marginOnly(right: 5),
+                     cursor: SystemMouseCursors.click,
+                   ),
+@@ -1673,6 +1751,8 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+                     FilteringTextInputFormatter.allow(RegExp(
+                         r'^([0-9]|[1-9]\d|[1-9]\d{2}|[1-9]\d{3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$')),
+                   ],
++                  style: const TextStyle(
++                      fontSize: 14, fontFeatures: HjvText.tabular),
+                   decoration: const InputDecoration(
+                     hintText: '10',
+                     contentPadding:
+@@ -1681,6 +1761,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+                 ).workaroundFreezeLinuxMint().marginOnly(right: 15),
+               ),
+               Obx(() => ElevatedButton(
++                    style: _hjvButtonStyle,
+                     onPressed:
+                         applyEnabled.value && enabled && !locked && !isOptFixed
+                             ? () async {
+@@ -1754,7 +1835,7 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
+   @override
+   Widget build(BuildContext context) {
+     super.build(context);
+-    return ListView(controller: scrollController, children: [
++    return ListView(controller: scrollController, padding: _hjvEnd, children: [
+       _lock(locked, 'Unlock Network Settings', () {
+         locked = false;
+         setState(() => {});
+@@ -1805,11 +1886,7 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
+                       Icon(
+                         Icons.help_outline,
+                         size: 14,
+-                        color: Theme.of(context)
+-                            .textTheme
+-                            .titleLarge
+-                            ?.color
+-                            ?.withOpacity(0.7),
++                        color: HjvPalette.of(context).textTertiary,
+                       ),
+                     ],
+                   ),
+@@ -1821,16 +1898,24 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
+               style: TextStyle(fontSize: _kContentFontSize),
+             );
+ 
++      // HJViewer: the icon in the quiet colour, a chevron on a row that opens a dialog; both in
++      // the disabled colour while the settings are locked
++      final p = HjvPalette.of(context);
+       return ListTile(
+-        leading: Icon(icon, color: _accentColor),
++        leading: Icon(icon,
++            size: 20, color: locked ? p.textDisabled : p.textSecondary),
+         title: titleWidget,
+         enabled: !locked,
+         onTap: onTap,
+-        trailing: trailing,
++        trailing: trailing ??
++            (onTap == null
++                ? null
++                : Icon(Icons.chevron_right_rounded,
++                    size: 20, color: locked ? p.textDisabled : p.textTertiary)),
+         shape: RoundedRectangleBorder(
+-          borderRadius: BorderRadius.circular(10),
++          borderRadius: BorderRadius.circular(HjvRadius.md),
+         ),
+-        contentPadding: EdgeInsets.symmetric(horizontal: 16),
++        contentPadding: EdgeInsets.symmetric(horizontal: 10),
+         minLeadingWidth: 0,
+         horizontalTitleGap: 10,
+       );
+@@ -1856,9 +1941,10 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
+ 
+     final outgoingOnly = bind.isOutgoingOnly();
+ 
+-    final divider = const Divider(height: 1, indent: 16, endIndent: 16);
++    final divider = const Divider(height: 1, indent: 36, endIndent: 10);
+     return _Card(
+       title: 'Network',
++      hjvTiles: true,
+       children: [
+         Container(
+           child: Column(
+@@ -1947,7 +2033,7 @@ class _DisplayState extends State<_Display> {
+   @override
+   Widget build(BuildContext context) {
+     final scrollController = ScrollController();
+-    return ListView(controller: scrollController, children: [
++    return ListView(controller: scrollController, padding: _hjvEnd, children: [
+       viewStyle(context),
+       scrollStyle(context),
+       imageQuality(context),
+@@ -2223,10 +2309,11 @@ class _AccountState extends State<_Account> {
+     final scrollController = ScrollController();
+     return ListView(
+       controller: scrollController,
++      padding: _hjvEnd,
+       children: [
+         _Card(
+             title: 'Account',
+-            children: [accountAction(), useInfo(), ...hjvAccountRows()]),
++            children: [_hjvUseInfo(), accountAction(), ...hjvAccountRows()]),
+       ],
+     ).marginOnly(bottom: _kListViewBottomMargin);
+   }
+@@ -2240,7 +2327,54 @@ class _AccountState extends State<_Account> {
+               gFFI.userModel.userName.value.isEmpty
+                   ? loginDialog()
+                   : logOutConfirmDialog()
+-            }));
++            },
++        hjvPrimary: gFFI.userModel.userName.value.isEmpty));
++  }
++
++  // HJViewer: the logged-in user as the card's first row, above the logout button: the avatar
++  // (or a tinted circle with a person), the name and @username. Upstream's useInfo stays as it
++  // is, unused.
++  Widget _hjvUseInfo() {
++    return Obx(() {
++      if (gFFI.userModel.userName.value.isEmpty) return const Offstage();
++      final p = HjvPalette.of(context);
++      final avatar = _buildUserAvatar() ??
++          Container(
++            width: 44,
++            height: 44,
++            decoration:
++                BoxDecoration(color: p.primarySoft, shape: BoxShape.circle),
++            child: Icon(Icons.person_rounded, size: 24, color: p.primary),
++          );
++      return Row(
++        children: [
++          avatar,
++          const SizedBox(width: 12),
++          Expanded(
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Text(
++                  gFFI.userModel.displayNameOrUserName,
++                  maxLines: 1,
++                  overflow: TextOverflow.ellipsis,
++                  style: HjvText.titleMedium.copyWith(color: p.text),
++                ),
++                const SizedBox(height: 2),
++                SelectionArea(
++                  child: Text(
++                    '@${gFFI.userModel.userName.value}',
++                    maxLines: 1,
++                    overflow: TextOverflow.ellipsis,
++                    style: TextStyle(fontSize: 13, color: p.textTertiary),
++                  ),
++                ),
++              ],
++            ),
++          ),
++        ],
++      ).marginOnly(left: _kContentHMargin, top: 8, bottom: 4);
++    });
+   }
+ 
+   Widget useInfo() {
+@@ -2367,7 +2501,7 @@ class __PrinterState extends State<_Printer> {
+   @override
+   Widget build(BuildContext context) {
+     final scrollController = ScrollController();
+-    return ListView(controller: scrollController, children: [
++    return ListView(controller: scrollController, padding: _hjvEnd, children: [
+       outgoing(context),
+       incoming(context),
+     ]).marginOnly(bottom: _kListViewBottomMargin);
+@@ -2381,7 +2515,7 @@ class __PrinterState extends State<_Printer> {
+       return Align(
+         alignment: Alignment.topLeft,
+         child: Text(translate('printer-os-requirement-tip')),
+-      ).marginOnly(left: _kCardLeftMargin);
++      ).marginOnly(left: _kContentHMargin);
+     }
+ 
+     Widget tipClientNotInstalled() {
+@@ -2389,7 +2523,7 @@ class __PrinterState extends State<_Printer> {
+         alignment: Alignment.topLeft,
+         child:
+             Text(translate('printer-requires-installed-{$appName}-client-tip')),
+-      ).marginOnly(left: _kCardLeftMargin);
++      ).marginOnly(left: _kContentHMargin);
+     }
+ 
+     Widget tipPrinterNotInstalled() {
+@@ -2402,6 +2536,8 @@ class __PrinterState extends State<_Printer> {
+           failedMsg.value = evt['msg'] as String;
+         }
+       }, replace: true);
++      // HJViewer: the tips at the content margin, without one of the column's own, which put the
++      // button (_Button has the margin) further in than the tips
+       return Column(children: [
+         Obx(
+           () => failedMsg.value.isNotEmpty
+@@ -2409,7 +2545,7 @@ class __PrinterState extends State<_Printer> {
+               : Align(
+                   alignment: Alignment.topLeft,
+                   child: Text(translate('printer-{$appName}-not-installed-tip'))
+-                      .marginOnly(bottom: 10.0),
++                      .marginOnly(left: _kContentHMargin, bottom: 10.0),
+                 ),
+         ),
+         Obx(
+@@ -2420,21 +2556,21 @@ class __PrinterState extends State<_Printer> {
+                   child: Text(failedMsg.value,
+                           style: DefaultTextStyle.of(context)
+                               .style
+-                              .copyWith(color: Colors.red))
+-                      .marginOnly(bottom: 10.0)),
++                              .copyWith(color: HjvPalette.of(context).danger))
++                      .marginOnly(left: _kContentHMargin, bottom: 10.0)),
+         ),
+         _Button('Install {$appName} Printer', () {
+           failedMsg.value = '';
+           bind.mainSetCommon(key: 'install-printer', value: '');
+         })
+-      ]).marginOnly(left: _kCardLeftMargin, bottom: 2.0);
++      ]).marginOnly(bottom: 2.0);
+     }
+ 
+     Widget tipReady() {
+       return Align(
+         alignment: Alignment.topLeft,
+         child: Text(translate('printer-{$appName}-ready-tip')),
+-      ).marginOnly(left: _kCardLeftMargin);
++      ).marginOnly(left: _kContentHMargin);
+     }
+ 
+     final installed = bind.mainIsInstalled();
+@@ -2491,7 +2627,7 @@ class __PrinterState extends State<_Printer> {
+                 key: kKeyPrinterSelected, value: value);
+             setState(() {});
+           },
+-        ).marginOnly(left: 10),
++        ).marginOnly(left: _kContentHSubMargin, top: 2),
+       _OptionCheckBox(
+         context,
+         'auto-print-tip',
+@@ -2532,16 +2668,18 @@ class _AboutState extends State<_About> {
+       final buildDate = data['buildDate'].toString();
+       final fingerprint = data['fingerprint'].toString();
+       final myId = data['myId'].toString();
+-      const linkStyle = TextStyle(decoration: TextDecoration.underline);
++      final p = HjvPalette.of(context);
++      final linkStyle = TextStyle(color: p.primary);
+       final scrollController = ScrollController();
+       return SingleChildScrollView(
+         controller: scrollController,
++        padding: _hjvEnd,
+         child: _Card(title: translate('About RustDesk'), children: [
+           Column(
+             crossAxisAlignment: CrossAxisAlignment.start,
+             children: [
+               const SizedBox(
+-                height: 8.0,
++                height: 4.0,
+               ),
+               SelectionArea(
+                   child: Text('${translate('Version')}: $version')
+@@ -2558,7 +2696,12 @@ class _AboutState extends State<_About> {
+                       .marginSymmetric(vertical: 4.0)),
+               ...hjvAboutRows(),
+               ...hjvAboutNotice(),
++              // HJViewer: a thin line between the notice and the links (the update block above
++              // has a border of its own)
++              const Divider(height: 17),
++              // HJViewer: the links show the hand cursor only, not a grey box flush with their text
+               InkWell(
++                  hoverColor: Colors.transparent,
+                   onTap: () {
+                     launchUrlString('https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md');
+                   },
+@@ -2567,6 +2710,7 @@ class _AboutState extends State<_About> {
+                     style: linkStyle,
+                   ).marginSymmetric(vertical: 4.0)),
+               InkWell(
++                  hoverColor: Colors.transparent,
+                   onTap: () {
+                     launchUrlString('https://github.com/yonsei-projecttf/hjviewer');
+                   },
+@@ -2575,6 +2719,7 @@ class _AboutState extends State<_About> {
+                     style: linkStyle,
+                   ).marginSymmetric(vertical: 4.0)),
+               InkWell(
++                  hoverColor: Colors.transparent,
+                   onTap: () {
+                     launchUrlString('https://github.com/yonsei-projecttf/hjviewer');
+                   },
+@@ -2582,10 +2727,13 @@ class _AboutState extends State<_About> {
+                     'Source code (GNU AGPL-3.0)',
+                     style: linkStyle,
+                   ).marginSymmetric(vertical: 4.0)),
++              // HJViewer: the notice on a soft tint of the accent instead of a block of blue
+               Container(
+-                decoration: const BoxDecoration(color: Color(0xFF2c8cff)),
++                decoration: BoxDecoration(
++                    color: p.primarySoft,
++                    borderRadius: BorderRadius.circular(HjvRadius.md)),
+                 padding:
+-                    const EdgeInsets.symmetric(vertical: 24, horizontal: 8),
++                    const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
+                 child: SelectionArea(
+                     child: Row(
+                   children: [
+@@ -2595,20 +2743,20 @@ class _AboutState extends State<_About> {
+                         children: [
+                           Text(
+                             'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Tech Pte. Ltd.\nHJViewer modifications © 2026 프로젝트TF, GNU AGPL-3.0\n$license',
+-                            style: const TextStyle(color: Colors.white),
++                            style:
++                                TextStyle(fontSize: 13, color: p.textSecondary),
+                           ),
+                           Text(
+                             translate('Slogan_tip'),
+                             style: TextStyle(
+-                                fontWeight: FontWeight.w800,
+-                                color: Colors.white),
++                                fontWeight: FontWeight.w600, color: p.primary),
+                           )
+                         ],
+                       ),
+                     ),
+                   ],
+                 )),
+-              ).marginSymmetric(vertical: 4.0)
++              ).marginOnly(top: 8, bottom: 8)
+             ],
+           ).marginOnly(left: _kContentHMargin)
+         ]),
+@@ -2625,14 +2773,22 @@ class _AboutState extends State<_About> {
+ Widget _Card(
+     {required String title,
+     required List<Widget> children,
+-    List<Widget>? title_suffix}) {
++    List<Widget>? title_suffix,
++    bool hjvTiles = false}) {
++  // HJViewer: a group of settings as in the app's look (common/hjv_style.dart): its title small
++  // above a card with a thin border, the rows inside with checkboxes and radios 36 px high.
++  // [hjvTiles]: list tiles that span the card with a small inset, so their hover is even.
+   return Row(
+     children: [
+       Flexible(
+         child: SizedBox(
+           width: _kCardFixedWidth,
+-          child: Card(
+-            child: Column(
++          child: Builder(builder: (context) {
++            final p = HjvPalette.of(context);
++            final theme = Theme.of(context);
++            const rowDensity = VisualDensity(horizontal: -2, vertical: -1);
++            return Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
+               children: [
+                 Row(
+                   children: [
+@@ -2640,18 +2796,44 @@ Widget _Card(
+                         child: Text(
+                       translate(title),
+                       textAlign: TextAlign.start,
+-                      style: const TextStyle(
+-                        fontSize: _kTitleFontSize,
++                      style: TextStyle(
++                        fontSize: 13,
++                        fontWeight: FontWeight.w600,
++                        color: p.textTertiary,
+                       ),
+                     )),
+                     ...?title_suffix
+                   ],
+-                ).marginOnly(left: _kContentHMargin, top: 10, bottom: 10),
+-                ...children
+-                    .map((e) => e.marginOnly(top: 4, right: _kContentHMargin)),
++                ).marginOnly(
++                    left: _kContentHMargin, right: _kContentHMargin, bottom: 8),
++                Container(
++                  width: double.infinity,
++                  padding: EdgeInsets.symmetric(vertical: hjvTiles ? 6 : 8),
++                  clipBehavior: Clip.antiAlias,
++                  decoration: hjvCardDecoration(context),
++                  child: Theme(
++                    data: theme.copyWith(
++                      checkboxTheme: theme.checkboxTheme
++                          .copyWith(visualDensity: rowDensity),
++                      radioTheme:
++                          theme.radioTheme.copyWith(visualDensity: rowDensity),
++                    ),
++                    child: Material(
++                      type: MaterialType.transparency,
++                      child: Column(
++                        crossAxisAlignment: CrossAxisAlignment.start,
++                        children: children
++                            .map((e) => hjvTiles
++                                ? e.marginSymmetric(horizontal: 6)
++                                : e.marginOnly(right: _kContentHMargin))
++                            .toList(),
++                      ),
++                    ),
++                  ),
++                ),
+               ],
+-            ).marginOnly(bottom: 10),
+-          ).marginOnly(left: _kCardLeftMargin, top: 15),
++            );
++          }).marginOnly(left: _kHjvPageMargin, top: 20, right: _kHjvPageMargin),
+         ),
+       ),
+     ],
+@@ -2869,9 +3051,10 @@ class _WaylandCardState extends State<WaylandCard> {
+       'Clear Wayland screen selection',
+       showConfirmMsgBox,
+       tip: 'clear_Wayland_screen_selection_tip',
++      // HJViewer: the palette's fill for a danger button with white on it
+       style: ButtonStyle(
+-        backgroundColor: MaterialStateProperty.all<Color>(
+-            Theme.of(context).colorScheme.error.withOpacity(0.75)),
++        backgroundColor:
++            MaterialStateProperty.all<Color>(HjvPalette.of(context).dangerFill),
+       ),
+     );
+   }
+@@ -2905,7 +3088,7 @@ class _WaylandCardState extends State<WaylandCard> {
+                 child: Text(_clearShortcutsInhibitorFailedMsg.value,
+                         style: DefaultTextStyle.of(context)
+                             .style
+-                            .copyWith(color: Colors.red))
++                            .copyWith(color: HjvPalette.of(context).danger))
+                     .marginOnly(bottom: 10.0)),
+       ),
+       _Button(
+@@ -2914,7 +3097,7 @@ class _WaylandCardState extends State<WaylandCard> {
+         tip: 'clear-shortcuts-inhibitor-permission-tip',
+         style: ButtonStyle(
+           backgroundColor: MaterialStateProperty.all<Color>(
+-              Theme.of(context).colorScheme.error.withOpacity(0.75)),
++              HjvPalette.of(context).dangerFill),
+         ),
+       ),
+     ]);
+@@ -2923,14 +3106,23 @@ class _WaylandCardState extends State<WaylandCard> {
+ 
+ // ignore: non_constant_identifier_names
+ Widget _Button(String label, Function() onPressed,
+-    {bool enabled = true, String? tip, ButtonStyle? style}) {
+-  var button = ElevatedButton(
+-    onPressed: enabled ? onPressed : null,
+-    child: Text(
+-      translate(label),
+-    ).marginSymmetric(horizontal: 15),
+-    style: style,
+-  );
++    {bool enabled = true,
++    String? tip,
++    ButtonStyle? style,
++    bool hjvPrimary = false}) {
++  // HJViewer: the theme's quiet outlined button; a filled one for [hjvPrimary] or a [style]
++  final text = Text(translate(label));
++  StatefulWidget button = hjvPrimary || style != null
++      ? ElevatedButton(
++          onPressed: enabled ? onPressed : null,
++          child: text,
++          style: style?.merge(_hjvButtonStyle) ?? _hjvButtonStyle,
++        )
++      : OutlinedButton(
++          onPressed: enabled ? onPressed : null,
++          child: text,
++          style: _hjvButtonStyle,
++        );
+   StatefulWidget child;
+   if (tip == null) {
+     child = button;
+@@ -2939,21 +3131,22 @@ Widget _Button(String label, Function() onPressed,
+   }
+   return Row(children: [
+     child,
+-  ]).marginOnly(left: _kContentHMargin);
++  ]).marginOnly(left: _kContentHMargin, top: 4, bottom: 4);
+ }
+ 
+ // ignore: non_constant_identifier_names
+ Widget _SubButton(String label, Function() onPressed, [bool enabled = true]) {
+   return Row(
+     children: [
+-      ElevatedButton(
++      OutlinedButton(
+         onPressed: enabled ? onPressed : null,
++        style: _hjvButtonStyle,
+         child: Text(
+           translate(label),
+-        ).marginSymmetric(horizontal: 15),
++        ),
+       ),
+     ],
+-  ).marginOnly(left: _kContentHSubMargin);
++  ).marginOnly(left: _kContentHSubMargin, top: 4, bottom: 4);
+ }
+ 
+ // ignore: non_constant_identifier_names
+@@ -2961,16 +3154,20 @@ Widget _SubLabeledWidget(BuildContext context, String label, Widget child,
+     {bool enabled = true}) {
+   return Row(
+     children: [
+-      Text(
+-        '${translate(label)}: ',
+-        style: TextStyle(color: disabledTextColor(context, enabled)),
++      Flexible(
++        child: Text(
++          '${translate(label)}: ',
++          style: TextStyle(
++              color: disabledTextColor(context, enabled) ??
++                  HjvPalette.of(context).textSecondary),
++        ),
+       ),
+       SizedBox(
+         width: 10,
+       ),
+       child,
+     ],
+-  ).marginOnly(left: _kContentHSubMargin);
++  ).marginOnly(left: _kContentHSubMargin, top: 2, bottom: 2);
+ }
+ 
+ Widget _lock(
+@@ -2978,15 +3175,21 @@ Widget _lock(
+   String label,
+   Function() onUnlock,
+ ) {
++  // HJViewer: a filled button 40 px high in the cards' margins, without upstream's grey card
+   return Offstage(
+       offstage: !locked,
+       child: Row(
+         children: [
+           Flexible(
+             child: SizedBox(
+-              width: _kCardFixedWidth,
+-              child: Card(
++              width: _kCardFixedWidth - _kHjvPageMargin,
++              child: Padding(
++                padding: const EdgeInsets.only(right: _kHjvPageMargin),
+                 child: ElevatedButton(
++                  style: const ButtonStyle(
++                    minimumSize: WidgetStatePropertyAll(Size(0, 40)),
++                    visualDensity: VisualDensity.standard,
++                  ),
+                   child: SizedBox(
+                       height: 25,
+                       child: Row(
+@@ -3009,9 +3212,9 @@ Widget _lock(
+                       checkUnlockPinDialog(unlockPin, onUnlock);
+                     }
+                   },
+-                ).marginSymmetric(horizontal: 2, vertical: 4),
+-              ).marginOnly(left: _kCardLeftMargin),
+-            ).marginOnly(top: 10),
++                ),
++              ).marginOnly(left: _kHjvPageMargin),
++            ).marginOnly(top: 20),
+           ),
+         ],
+       ));
+@@ -3107,7 +3310,8 @@ class _CountDownButtonState extends State<_CountDownButton> {
+ 
+   @override
+   Widget build(BuildContext context) {
+-    return ElevatedButton(
++    return OutlinedButton(
++      style: _hjvButtonStyle,
+       onPressed: _isButtonDisabled
+           ? null
+           : () {
+@@ -3194,34 +3398,25 @@ void changeSocks5Proxy() async {
+         child: Column(
+           crossAxisAlignment: CrossAxisAlignment.start,
+           children: [
++            // HJViewer: on the desktop each label above its field (hjvFieldLabel), as in the
++            // other dialogs, instead of a column of labels beside the fields
++            if (!isMobile)
++              Row(
++                children: [
++                  hjvFieldLabel(context, translate('Server')),
++                  Tooltip(
++                    waitDuration: Duration(milliseconds: 0),
++                    message: translate("default_proxy_tip"),
++                    child: Icon(
++                      Icons.help_outline_outlined,
++                      size: 16,
++                      color: HjvPalette.of(context).textTertiary,
++                    ),
++                  ).marginOnly(left: 4, bottom: 6),
++                ],
++              ),
+             Row(
+               children: [
+-                if (!isMobile)
+-                  ConstrainedBox(
+-                    constraints: const BoxConstraints(minWidth: 140),
+-                    child: Align(
+-                        alignment: Alignment.centerRight,
+-                        child: Row(
+-                          children: [
+-                            Text(
+-                              translate('Server'),
+-                            ).marginOnly(right: 4),
+-                            Tooltip(
+-                              waitDuration: Duration(milliseconds: 0),
+-                              message: translate("default_proxy_tip"),
+-                              child: Icon(
+-                                Icons.help_outline_outlined,
+-                                size: 16,
+-                                color: Theme.of(context)
+-                                    .textTheme
+-                                    .titleLarge
+-                                    ?.color
+-                                    ?.withOpacity(0.5),
+-                              ),
+-                            ),
+-                          ],
+-                        )).marginOnly(right: 10),
+-                  ),
+                 Expanded(
+                   child: TextField(
+                     decoration: InputDecoration(
+@@ -3237,16 +3432,10 @@ void changeSocks5Proxy() async {
+                   ).workaroundFreezeLinuxMint(),
+                 ),
+               ],
+-            ).marginOnly(bottom: 8),
++            ).marginOnly(bottom: isMobile ? 8 : 12),
++            if (!isMobile) hjvFieldLabel(context, translate('Username')),
+             Row(
+               children: [
+-                if (!isMobile)
+-                  ConstrainedBox(
+-                      constraints: const BoxConstraints(minWidth: 140),
+-                      child: Text(
+-                        '${translate("Username")}:',
+-                        textAlign: TextAlign.right,
+-                      ).marginOnly(right: 10)),
+                 Expanded(
+                   child: TextField(
+                     controller: userController,
+@@ -3257,16 +3446,10 @@ void changeSocks5Proxy() async {
+                   ).workaroundFreezeLinuxMint(),
+                 ),
+               ],
+-            ).marginOnly(bottom: 8),
++            ).marginOnly(bottom: isMobile ? 8 : 12),
++            if (!isMobile) hjvFieldLabel(context, translate('Password')),
+             Row(
+               children: [
+-                if (!isMobile)
+-                  ConstrainedBox(
+-                      constraints: const BoxConstraints(minWidth: 140),
+-                      child: Text(
+-                        '${translate("Password")}:',
+-                        textAlign: TextAlign.right,
+-                      ).marginOnly(right: 10)),
+                 Expanded(
+                   child: Obx(() => TextField(
+                         obscureText: obscure.value,
+@@ -3274,9 +3457,13 @@ void changeSocks5Proxy() async {
+                             labelText: isMobile ? translate('Password') : null,
+                             suffixIcon: IconButton(
+                                 onPressed: () => obscure.value = !obscure.value,
+-                                icon: Icon(obscure.value
+-                                    ? Icons.visibility_off
+-                                    : Icons.visibility))),
++                                icon: Icon(
++                                    obscure.value
++                                        ? Icons.visibility_off_outlined
++                                        : Icons.visibility_outlined,
++                                    size: 20,
++                                    color:
++                                        HjvPalette.of(context).textTertiary))),
+                         controller: pwdController,
+                         enabled: !isOptFixed,
+                         maxLength: bind.mainMaxEncryptLen(),

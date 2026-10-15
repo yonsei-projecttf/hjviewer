@@ -1,0 +1,1388 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Thu, 15 Oct 2026 20:01:01 +0900
+Subject: [PATCH 51/57] hjviewer: ui: peer-tabs: pill tabs, one search field,
+ calm empty states
+
+The bar above the peer list and the panes under it in the app's look
+(common/hjv_style.dart), on the desktop and the phone:
+
+- Tabs: icon pills, the selected one primary on primarySoft instead of the
+  black underline, the others textSecondary with the hover colour; 20 px
+  icons, tooltips kept. On the phone a tab and a button keep upstream's
+  40 px and 28 px, which _portraitRightActions plans the bar with.
+- Bar buttons (search, refresh, select, view, sort, tags, More, the
+  multi-select bar): 20 px icons in textSecondary on a rounded hover, the
+  tags toggle primary on primarySoft while the panel shows, delete in danger.
+- Search: one field of the bar's height with the icon, the text and the
+  close button inside and the primary ring while focused (the theme's ring
+  used to sit on the inner field).
+- View and sort menus: the heading as a small section title.
+- Empty lists: the tab's icon on a soft tile, the tip's first line as the
+  title and the rest below; a tab that needs a login shows its icon and
+  name above a 40 px login button.
+- Address book and accessible devices panes: side panels as cards, the
+  book name left-aligned, tags as rounded chips that end in an ellipsis
+  inside the panel, the device list as rounded rows with a soft avatar and
+  the selected row primary on primarySoft.
+- Desktop status bar: 36 px, 13 px textSecondary, the dot in the palette's
+  status colours, aligned with the content's 12 px edge.
+
+Upstream's builders stay unused next to the new _hjv ones. Texts,
+translate() keys, callbacks and widget keys are unchanged.
+
+After an independent review (screens in light and dark, the diff, the code rules):
+
+- Side panels: each accessible-devices row gets its own Material and the
+  address book's selector one above the card's fill, so their hover and the
+  phone's ripple show again; per row, so the ink stays clipped when the list
+  scrolls. The devices panel is 200 px like the address book's, so Korean
+  names fit.
+- Banners: on the desktop the network and error banners end 12 px before
+  the edge, where the bar above them ends.
+- Search: the close button hovers in hoverStrong on its own Material instead
+  of the border workaround. Below 720 px of window the tabs take upstream's
+  40 px pitch and the open field upstream's 140 px, so the tabs stay on
+  screen with the search open.
+- Phone More menu: the card colour with a border like the other menus. Tab
+  drag: a transparent proxy, so the dragged tab stays a pill.
+- A search or a filter that matches nothing shows the empty placeholder.
+- The HJViewer comments are one line each.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/address_book.dart  | 107 +++---
+ flutter/lib/common/widgets/my_group.dart      | 181 ++++++++--
+ flutter/lib/common/widgets/peer_tab_page.dart | 331 ++++++++++++++----
+ flutter/lib/common/widgets/peers_view.dart    | 106 ++++--
+ .../lib/desktop/pages/connection_page.dart    |  29 +-
+ 5 files changed, 583 insertions(+), 171 deletions(-)
+
+diff --git a/flutter/lib/common/widgets/address_book.dart b/flutter/lib/common/widgets/address_book.dart
+index 054a166..782f3d2 100644
+--- a/flutter/lib/common/widgets/address_book.dart
++++ b/flutter/lib/common/widgets/address_book.dart
+@@ -11,6 +11,7 @@ import 'package:flutter_hbb/common/widgets/peers_view.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/desktop/widgets/popup_menu.dart';
+ import 'package:flutter_hbb/models/ab_model.dart';
++import 'package:flutter_hbb/models/peer_tab_model.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ import 'package:flutter_hbb/models/state_model.dart';
+ import 'package:url_launcher/url_launcher_string.dart';
+@@ -19,6 +20,7 @@ import 'package:get/get.dart';
+ import 'package:flex_color_picker/flex_color_picker.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import 'dialog.dart';
+ import 'login.dart';
+ 
+@@ -40,9 +42,7 @@ class _AddressBookState extends State<AddressBook> {
+   @override
+   Widget build(BuildContext context) => Obx(() {
+         if (!gFFI.userModel.isLogin) {
+-          return Center(
+-              child: ElevatedButton(
+-                  onPressed: loginDialog, child: Text(translate("Login"))));
++          return hjvLoginPlaceholder(context, PeerTabIndex.ab, loginDialog);
+         } else if (gFFI.userModel.networkError.isNotEmpty) {
+           return netWorkErrorWidget();
+         } else {
+@@ -52,16 +52,19 @@ class _AddressBookState extends State<AddressBook> {
+               if (gFFI.abModel.currentAbLoading.value &&
+                   gFFI.abModel.currentAbEmpty)
+                 const LinearProgressIndicator(),
++              // HJViewer: the banners end where the bar above them ends, 12 px before the edge
+               buildErrorBanner(context,
+-                  loading: gFFI.abModel.currentAbLoading,
+-                  err: gFFI.abModel.abPullError,
+-                  retry: null,
+-                  close: gFFI.abModel.clearPullErrors),
++                      loading: gFFI.abModel.currentAbLoading,
++                      err: gFFI.abModel.abPullError,
++                      retry: null,
++                      close: gFFI.abModel.clearPullErrors)
++                  .paddingOnly(right: stateGlobal.isPortrait.isTrue ? 0 : 12),
+               buildErrorBanner(context,
+-                  loading: gFFI.abModel.currentAbLoading,
+-                  err: gFFI.abModel.currentAbPushError,
+-                  retry: null, // remove retry
+-                  close: () => gFFI.abModel.currentAbPushError.value = ''),
++                      loading: gFFI.abModel.currentAbLoading,
++                      err: gFFI.abModel.currentAbPushError,
++                      retry: null, // remove retry
++                      close: () => gFFI.abModel.currentAbPushError.value = '')
++                  .paddingOnly(right: stateGlobal.isPortrait.isTrue ? 0 : 12),
+               Expanded(
+                 child: Obx(() => stateGlobal.isPortrait.isTrue
+                     ? _buildAddressBookPortrait()
+@@ -78,28 +81,26 @@ class _AddressBookState extends State<AddressBook> {
+         Offstage(
+             offstage: hideAbTagsPanel.value,
+             child: Container(
+-              decoration: BoxDecoration(
+-                  borderRadius: BorderRadius.circular(12),
+-                  border: Border.all(
+-                      color: Theme.of(context).colorScheme.background)),
++              decoration: hjvCardDecoration(context),
+               child: Container(
+                 width: 200,
+                 height: double.infinity,
+                 child: Column(
+                   children: [
+-                    _buildAbDropdown(),
++                    _hjvOnCard(_buildAbDropdown()),
+                     _buildTagHeader().marginOnly(
+-                        left: 8.0,
+-                        right: gFFI.abModel.legacyMode.value ? 8.0 : 0,
+-                        top: gFFI.abModel.legacyMode.value ? 8.0 : 0),
++                        left: 12.0,
++                        right: 6.0,
++                        top: gFFI.abModel.legacyMode.value ? 8.0 : 4.0),
+                     Expanded(
+                       child: Container(
+                         width: double.infinity,
+                         height: double.infinity,
++                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                         child: _buildTags(),
+                       ),
+                     ),
+-                    _buildAbPermission(),
++                    _buildAbPermission().marginOnly(right: 10, bottom: 8),
+                   ],
+                 ),
+               ),
+@@ -116,18 +117,15 @@ class _AddressBookState extends State<AddressBook> {
+         Offstage(
+             offstage: hideAbTagsPanel.value,
+             child: Container(
+-              decoration: BoxDecoration(
+-                  borderRadius: BorderRadius.circular(6),
+-                  border: Border.all(
+-                      color: Theme.of(context).colorScheme.background)),
++              decoration: hjvCardDecoration(context),
+               child: Container(
+                 padding:
+                     const EdgeInsets.fromLTRB(padding, 0, padding, padding),
+                 child: Column(
+                   mainAxisSize: MainAxisSize.min,
+                   children: [
+-                    _buildAbDropdown(),
+-                    _buildTagHeader().marginOnly(left: 8.0, right: 0),
++                    _hjvOnCard(_buildAbDropdown()),
++                    _buildTagHeader().marginOnly(left: 4.0, right: 0, top: 4.0),
+                     Container(
+                       width: double.infinity,
+                       child: _buildTags(),
+@@ -141,6 +139,14 @@ class _AddressBookState extends State<AddressBook> {
+     );
+   }
+ 
++  // HJViewer: a Material above the card's fill for the selector's ink, rounded like the card
++  Widget _hjvOnCard(Widget child) => Material(
++      type: MaterialType.transparency,
++      borderRadius:
++          const BorderRadius.vertical(top: Radius.circular(HjvRadius.lg - 1)),
++      clipBehavior: Clip.antiAlias,
++      child: child);
++
+   Widget _buildAbPermission() {
+     icon(IconData data, String tooltip) {
+       return Tooltip(
+@@ -209,10 +215,10 @@ class _AddressBookState extends State<AddressBook> {
+                 message: gFFI.abModel.translatedName(e),
+                 child: Text(
+                   gFFI.abModel.translatedName(e),
+-                  style: button ? null : TextStyle(fontSize: 14.0),
++                  style:
++                      button ? HjvText.titleSmall : TextStyle(fontSize: 14.0),
+                   maxLines: 1,
+                   overflow: TextOverflow.ellipsis,
+-                  textAlign: button ? TextAlign.center : null,
+                 )),
+           ),
+         ],
+@@ -244,16 +250,20 @@ class _AddressBookState extends State<AddressBook> {
+             },
+       customButton: Obx(() => Container(
+             height: stateGlobal.isPortrait.isFalse ? 48 : 40,
++            padding: stateGlobal.isPortrait.isFalse
++                ? const EdgeInsets.only(left: 12, right: 8)
++                : const EdgeInsets.only(left: 4),
+             child: Row(children: [
+               Expanded(
+                   child:
+                       buildItem(gFFI.abModel.currentName.value, button: true)),
+-              Icon(Icons.arrow_drop_down),
++              Icon(Icons.expand_more_rounded,
++                  size: 20, color: HjvPalette.of(context).textSecondary),
+             ]),
+           )),
+       underline: Container(
+-        height: 0.7,
+-        color: Theme.of(context).dividerColor.withOpacity(0.1),
++        height: 1,
++        color: HjvPalette.of(context).border,
+       ),
+       menuItemStyleData: menuItemStyleData,
+       items: items,
+@@ -302,7 +312,11 @@ class _AddressBookState extends State<AddressBook> {
+     return Row(
+       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+       children: [
+-        Text(translate('Tags')),
++        Text(translate('Tags'),
++            style: TextStyle(
++                fontSize: 12,
++                fontWeight: FontWeight.w600,
++                color: HjvPalette.of(context).textTertiary)),
+         Listener(
+             onPointerDown: (e) {
+               final x = e.position.dx;
+@@ -310,7 +324,7 @@ class _AddressBookState extends State<AddressBook> {
+               menuPos = RelativeRect.fromLTRB(x, y, x, y);
+             },
+             onPointerUp: (_) => _showMenu(menuPos),
+-            child: build_more(context, invert: true)),
++            child: build_more(context)),
+       ],
+     );
+   }
+@@ -340,14 +354,18 @@ class _AddressBookState extends State<AddressBook> {
+             showActionMenu: editPermission);
+       }
+ 
+-      gridView(bool isPortrait) => DynamicGridView.builder(
+-          shrinkWrap: isPortrait,
+-          gridDelegate: SliverGridDelegateWithWrapping(),
+-          itemCount: tags.length,
+-          itemBuilder: (BuildContext context, int index) {
+-            final e = tags[index];
+-            return tagBuilder(e);
+-          });
++      // HJViewer: a tag no wider than the panel, so that a long name ends in an ellipsis
++      gridView(bool isPortrait) => LayoutBuilder(
++          builder: (context, constraints) => DynamicGridView.builder(
++              shrinkWrap: isPortrait,
++              gridDelegate: SliverGridDelegateWithWrapping(),
++              itemCount: tags.length,
++              itemBuilder: (BuildContext context, int index) {
++                final e = tags[index];
++                return ConstrainedBox(
++                    constraints: BoxConstraints(maxWidth: constraints.maxWidth),
++                    child: tagBuilder(e));
++              }));
+       final maxHeight = max(MediaQuery.of(context).size.height / 6, 100.0);
+       return Obx(() => stateGlobal.isPortrait.isFalse
+           ? gridView(false)
+@@ -786,10 +804,10 @@ class AddressBookTag extends StatelessWidget {
+             decoration: BoxDecoration(
+                 color: tags.contains(name)
+                     ? gFFI.abModel.getCurrentAbTagColor(name)
+-                    : Theme.of(context).colorScheme.background,
+-                borderRadius: BorderRadius.circular(4)),
++                    : HjvPalette.of(context).fill,
++                borderRadius: BorderRadius.circular(HjvRadius.sm)),
+             margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 4.0),
+-            padding: const EdgeInsets.symmetric(vertical: 2.0, horizontal: 6.0),
++            padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 8.0),
+             child: IntrinsicWidth(
+               child: Row(
+                 children: [
+@@ -806,6 +824,7 @@ class AddressBookTag extends StatelessWidget {
+                   Expanded(
+                     child: Text(isUnTagged ? translate(name) : name,
+                         style: TextStyle(
++                            fontSize: 13,
+                             overflow: TextOverflow.ellipsis,
+                             color: tags.contains(name) ? Colors.white : null)),
+                   ),
+diff --git a/flutter/lib/common/widgets/my_group.dart b/flutter/lib/common/widgets/my_group.dart
+index 9ea9dbd..b5b153b 100644
+--- a/flutter/lib/common/widgets/my_group.dart
++++ b/flutter/lib/common/widgets/my_group.dart
+@@ -5,10 +5,12 @@ import 'package:flutter_hbb/common/hbbs/hbbs.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/login.dart';
+ import 'package:flutter_hbb/common/widgets/peers_view.dart';
++import 'package:flutter_hbb/models/peer_tab_model.dart';
+ import 'package:flutter_hbb/models/state_model.dart';
+ import 'package:get/get.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ 
+ class MyGroup extends StatefulWidget {
+   final EdgeInsets? menuPadding;
+@@ -32,9 +34,7 @@ class _MyGroupState extends State<MyGroup> {
+   Widget build(BuildContext context) {
+     return Obx(() {
+       if (!gFFI.userModel.isLogin) {
+-        return Center(
+-            child: ElevatedButton(
+-                onPressed: loginDialog, child: Text(translate("Login"))));
++        return hjvLoginPlaceholder(context, PeerTabIndex.group, loginDialog);
+       } else if (gFFI.userModel.networkError.isNotEmpty &&
+           !hjvKeepCachedCards()) {
+         return netWorkErrorWidget();
+@@ -43,14 +43,18 @@ class _MyGroupState extends State<MyGroup> {
+           child: CircularProgressIndicator(),
+         );
+       }
++      // HJViewer: the banners end where the bar above them ends, 12 px before the edge
++      final bannerRight = stateGlobal.isPortrait.isTrue ? 0.0 : 12.0;
+       return Column(
+         children: [
+-          ...hjvNetworkBanner(context),
++          ...hjvNetworkBanner(context)
++              .map((w) => w.paddingOnly(right: bannerRight)),
+           buildErrorBanner(context,
+-              loading: gFFI.groupModel.groupLoading,
+-              err: gFFI.groupModel.groupLoadError,
+-              retry: null,
+-              close: () => gFFI.groupModel.groupLoadError.value = ''),
++                  loading: gFFI.groupModel.groupLoading,
++                  err: gFFI.groupModel.groupLoadError,
++                  retry: null,
++                  close: () => gFFI.groupModel.groupLoadError.value = '')
++              .paddingOnly(right: bannerRight),
+           Expanded(
+               child: Obx(() => stateGlobal.isPortrait.isTrue
+                   ? _buildPortrait()
+@@ -64,12 +68,9 @@ class _MyGroupState extends State<MyGroup> {
+     return Row(
+       children: [
+         Container(
+-          decoration: BoxDecoration(
+-              borderRadius: BorderRadius.circular(12),
+-              border:
+-                  Border.all(color: Theme.of(context).colorScheme.background)),
++          decoration: hjvCardDecoration(context),
+           child: Container(
+-            width: 150,
++            width: 200,
+             height: double.infinity,
+             child: Column(
+               children: [
+@@ -100,10 +101,7 @@ class _MyGroupState extends State<MyGroup> {
+     return Column(
+       children: [
+         Container(
+-          decoration: BoxDecoration(
+-              borderRadius: BorderRadius.circular(6),
+-              border:
+-                  Border.all(color: Theme.of(context).colorScheme.background)),
++          decoration: hjvCardDecoration(context),
+           child: Container(
+             child: Column(
+               mainAxisSize: MainAxisSize.min,
+@@ -129,7 +127,7 @@ class _MyGroupState extends State<MyGroup> {
+   }
+ 
+   Widget _buildLeftHeader() {
+-    final fontSize = 14.0;
++    final fontSize = 13.0;
+     return Row(
+       children: [
+         Expanded(
+@@ -142,19 +140,21 @@ class _MyGroupState extends State<MyGroup> {
+           textAlignVertical: TextAlignVertical.center,
+           style: TextStyle(fontSize: fontSize),
+           decoration: InputDecoration(
+-            filled: false,
+             prefixIcon: Icon(
+               Icons.search_rounded,
+-              color: Theme.of(context).hintColor,
+-            ).paddingOnly(top: 2),
++              size: 18,
++              color: HjvPalette.of(context).textTertiary,
++            ),
++            prefixIconConstraints:
++                const BoxConstraints(minWidth: 32, minHeight: 32),
+             hintText: translate("Search"),
+             hintStyle: TextStyle(fontSize: fontSize),
+-            border: InputBorder.none,
++            contentPadding: const EdgeInsets.fromLTRB(0, 8, 10, 8),
+             isDense: true,
+           ),
+         ).workaroundFreezeLinuxMint()),
+       ],
+-    );
++    ).marginOnly(left: 8, top: 8, right: 8, bottom: 6);
+   }
+ 
+   Widget _buildLeftList() {
+@@ -181,13 +181,17 @@ class _MyGroupState extends State<MyGroup> {
+         }
+         return true;
+       }).toList();
++      // HJViewer: a Material per row, so its ink shows on the card and is clipped with the list
+       listView(bool isPortrait) => ListView.builder(
+           shrinkWrap: isPortrait,
+           itemCount: deviceGroupItems.length + userItems.length,
+-          itemBuilder: (context, index) => index < deviceGroupItems.length
+-              ? _buildDeviceGroupItem(deviceGroupItems[index])
+-              : _buildUserItem(userItems[index - deviceGroupItems.length],
+-                  displayNameCount));
++          itemBuilder: (context, index) => Material(
++              type: MaterialType.transparency,
++              child: index < deviceGroupItems.length
++                  ? _hjvBuildDeviceGroupItem(deviceGroupItems[index])
++                  : _hjvBuildUserItem(
++                      userItems[index - deviceGroupItems.length],
++                      displayNameCount)));
+       var maxHeight = max(MediaQuery.of(context).size.height / 6, 100.0);
+       return Obx(() => stateGlobal.isPortrait.isFalse
+           ? listView(false)
+@@ -309,4 +313,127 @@ class _MyGroupState extends State<MyGroup> {
+       },
+     )).marginSymmetric(horizontal: 12).marginOnly(bottom: 6);
+   }
++
++  // HJViewer: the side list's rows: rounded, no dividers, the selected one on primarySoft
++  Widget _hjvItem(
++      {required bool selected,
++      required Widget leading,
++      required List<Widget> children}) {
++    final p = HjvPalette.of(context);
++    return Container(
++      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
++      decoration: BoxDecoration(
++        color: selected ? p.primarySoft : null,
++        borderRadius: BorderRadius.circular(HjvRadius.sm),
++      ),
++      child: DefaultTextStyle.merge(
++        style: TextStyle(
++            fontSize: 13,
++            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
++            color: selected ? p.primary : p.text),
++        maxLines: 1,
++        overflow: TextOverflow.ellipsis,
++        child: Row(children: [leading.marginOnly(right: 8), ...children]),
++      ),
++    );
++  }
++
++  Widget _hjvBuildUserItem(
++      UserPayload user, Map<String, int> displayNameCount) {
++    final username = user.name;
++    final dn = user.displayNameOrName;
++    final isDuplicate = (displayNameCount[dn] ?? 0) > 1;
++    final displayName = isDuplicate && user.displayName.trim().isNotEmpty
++        ? '${user.displayName} (@$username)'
++        : dn;
++    return InkWell(
++        borderRadius: BorderRadius.circular(HjvRadius.sm),
++        onTap: () {
++          isSelectedDeviceGroup.value = false;
++          if (selectedAccessibleItemName.value != username) {
++            selectedAccessibleItemName.value = username;
++          } else {
++            selectedAccessibleItemName.value = '';
++          }
++        },
++        child: Obx(
++          () {
++            bool selected = !isSelectedDeviceGroup.value &&
++                selectedAccessibleItemName.value == username;
++            final isMe = username == gFFI.userModel.userName.value;
++            final p = HjvPalette.of(context);
++            final (background, foreground) =
++                hjvTint(context, str2color(username));
++            return _hjvItem(
++              selected: selected,
++              leading: Container(
++                width: 22,
++                height: 22,
++                alignment: Alignment.center,
++                decoration:
++                    BoxDecoration(color: background, shape: BoxShape.circle),
++                child: Text(
++                  displayName.characters.first.toUpperCase(),
++                  style: TextStyle(
++                      fontSize: 11,
++                      fontWeight: FontWeight.w600,
++                      color: foreground),
++                ),
++              ),
++              children: [
++                if (isMe) Flexible(child: Text(displayName)),
++                if (isMe)
++                  Container(
++                    margin: const EdgeInsets.only(left: 6),
++                    padding:
++                        const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
++                    decoration: BoxDecoration(
++                      color: selected ? p.card : p.primarySoft,
++                      borderRadius: BorderRadius.circular(4),
++                    ),
++                    child: Text(
++                      translate('Me'),
++                      style: TextStyle(
++                          fontSize: 11,
++                          fontWeight: FontWeight.w600,
++                          color: p.primary),
++                    ),
++                  ),
++                if (!isMe) Expanded(child: Text(displayName)),
++              ],
++            );
++          },
++        )).marginSymmetric(horizontal: 8).marginOnly(bottom: 2);
++  }
++
++  Widget _hjvBuildDeviceGroupItem(DeviceGroupPayload deviceGroup) {
++    final name = deviceGroup.name;
++    return InkWell(
++        borderRadius: BorderRadius.circular(HjvRadius.sm),
++        onTap: () {
++          isSelectedDeviceGroup.value = true;
++          if (selectedAccessibleItemName.value != name) {
++            selectedAccessibleItemName.value = name;
++          } else {
++            selectedAccessibleItemName.value = '';
++          }
++        },
++        child: Obx(
++          () {
++            bool selected = isSelectedDeviceGroup.value &&
++                selectedAccessibleItemName.value == name;
++            final p = HjvPalette.of(context);
++            return _hjvItem(
++              selected: selected,
++              leading: SizedBox(
++                width: 22,
++                height: 22,
++                child: Icon(IconFont.deviceGroupOutline,
++                    color: selected ? p.primary : p.textSecondary, size: 18),
++              ),
++              children: [Expanded(child: Text(name))],
++            );
++          },
++        )).marginSymmetric(horizontal: 8).marginOnly(bottom: 2);
++  }
+ }
+diff --git a/flutter/lib/common/widgets/peer_tab_page.dart b/flutter/lib/common/widgets/peer_tab_page.dart
+index 4849f27..f5060ec 100644
+--- a/flutter/lib/common/widgets/peer_tab_page.dart
++++ b/flutter/lib/common/widgets/peer_tab_page.dart
+@@ -17,12 +17,12 @@ import 'package:flutter_hbb/models/peer_model.dart';
+ 
+ import 'package:flutter_hbb/models/peer_tab_model.dart';
+ import 'package:flutter_hbb/models/state_model.dart';
+-import 'package:flutter_svg/flutter_svg.dart';
+ import 'package:get/get.dart';
+ import 'package:provider/provider.dart';
+ import 'package:pull_down_button/pull_down_button.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../models/platform_model.dart';
+ 
+ class PeerTabPage extends StatefulWidget {
+@@ -120,7 +120,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+                   children: [
+                     Expanded(
+                         child: visibleContextMenuListener(
+-                            _createSwitchBar(context))),
++                            _hjvCreateSwitchBar(context))),
+                     if (stateGlobal.isPortrait.isTrue)
+                       ..._portraitRightActions(context)
+                     else
+@@ -128,7 +128,9 @@ class _PeerTabPageState extends State<PeerTabPage>
+                   ],
+                 )),
+               ),
+-            ).paddingOnly(right: stateGlobal.isPortrait.isTrue ? 0 : 12)),
++            ).paddingOnly(
++                right: stateGlobal.isPortrait.isTrue ? 0 : 12,
++                top: stateGlobal.isPortrait.isTrue ? 0 : 4)),
+         _createPeersView(),
+       ],
+     );
+@@ -185,6 +187,67 @@ class _PeerTabPageState extends State<PeerTabPage>
+         }).toList());
+   }
+ 
++  // HJViewer: under 720 px, upstream's tab pitch and search width keep the tabs on screen
++  bool get _hjvNarrow => MediaQuery.sizeOf(context).width < 720;
++
++  // HJViewer: icon pills; a phone tab stays 40 px, which _portraitRightActions counts on
++  Widget _hjvCreateSwitchBar(BuildContext context) {
++    final model = Provider.of<PeerTabModel>(context);
++    final p = HjvPalette.of(context);
++    final portrait = stateGlobal.isPortrait.isTrue;
++    final narrow = _hjvNarrow;
++    var counter = -1;
++    return ReorderableListView(
++        buildDefaultDragHandles: false,
++        onReorder: model.reorder,
++        scrollDirection: Axis.horizontal,
++        physics: NeverScrollableScrollPhysics(),
++        // the dragged pill without the default proxy's rectangle and shadow
++        proxyDecorator: (child, index, animation) =>
++            Material(type: MaterialType.transparency, child: child),
++        children: model.visibleEnabledOrderedIndexs.map((t) {
++          final selected = model.currentTab == t;
++          final hover = false.obs;
++          counter += 1;
++          return ReorderableDragStartListener(
++              key: ValueKey(t),
++              index: counter,
++              child: Obx(() {
++                final hovered = hover.value;
++                return Tooltip(
++                  preferBelow: false,
++                  message: model.tabTooltip(t),
++                  onTriggered: isMobile ? mobileShowTabVisibilityMenu : null,
++                  child: InkWell(
++                    customBorder: const StadiumBorder(),
++                    hoverColor: Colors.transparent,
++                    child: Container(
++                      width: portrait ? 40 : (narrow ? 36 : 44),
++                      alignment: Alignment.center,
++                      decoration: ShapeDecoration(
++                        shape: const StadiumBorder(),
++                        color: selected
++                            ? p.primarySoft
++                            : (hovered ? p.hover : Colors.transparent),
++                      ),
++                      child: Icon(model.tabIcon(t),
++                          size: 20,
++                          color: selected ? p.primary : p.textSecondary),
++                    ),
++                    onTap: isOptionFixed(kOptionPeerTabIndex)
++                        ? null
++                        : () async {
++                            await handleTabSelection(t);
++                            await bind.setLocalFlutterOption(
++                                k: kOptionPeerTabIndex, v: t.toString());
++                          },
++                    onHover: (value) => hover.value = value,
++                  ),
++                ).marginOnly(right: portrait ? 0 : 4);
++              }));
++        }).toList());
++  }
++
+   Widget _createPeersView() {
+     final model = Provider.of<PeerTabModel>(context);
+     Widget child;
+@@ -211,7 +274,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+   Widget _createRefresh(
+       {required PeerTabIndex index, required RxBool loading}) {
+     final model = Provider.of<PeerTabModel>(context);
+-    final textColor = Theme.of(context).textTheme.titleLarge?.color;
++    final textColor = HjvPalette.of(context).textSecondary;
+     return Offstage(
+       offstage: model.currentTab != index.index,
+       child: Tooltip(
+@@ -226,8 +289,8 @@ class _PeerTabPageState extends State<PeerTabPage>
+             child: RotatedBox(
+                 quarterTurns: 2,
+                 child: Icon(
+-                  Icons.refresh,
+-                  size: 18,
++                  Icons.refresh_rounded,
++                  size: 20,
+                   color: textColor,
+                 ))),
+       ),
+@@ -239,9 +302,8 @@ class _PeerTabPageState extends State<PeerTabPage>
+   }
+ 
+   Widget _createMultiSelection() {
+-    final textColor = Theme.of(context).textTheme.titleLarge?.color;
+     final model = Provider.of<PeerTabModel>(context);
+-    return _hoverAction(
++    return _hjvHoverAction(
+       toolTip: translate('Select'),
+       context: context,
+       onTap: () {
+@@ -250,12 +312,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+           Navigator.pop(context);
+         }
+       },
+-      child: SvgPicture.asset(
+-        "assets/checkbox-outline.svg",
+-        width: 18,
+-        height: 18,
+-        colorFilter: svgColor(textColor),
+-      ),
++      child: Icon(Icons.check_box_outlined),
+     );
+   }
+ 
+@@ -387,7 +444,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+     if (model.currentTab == PeerTabIndex.group.index) {
+       return Offstage();
+     }
+-    return _hoverAction(
++    return _hjvHoverAction(
+         context: context,
+         toolTip: translate('Delete'),
+         onTap: () {
+@@ -426,7 +483,8 @@ class _PeerTabPageState extends State<PeerTabPage>
+ 
+           deleteConfirmDialog(onSubmit, translate('Delete'));
+         },
+-        child: Icon(Icons.delete, color: Colors.red));
++        child: Icon(Icons.delete_outline_rounded,
++            color: HjvPalette.of(context).danger));
+   }
+ 
+   Widget addSelectionToFav() {
+@@ -434,7 +492,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+     return Offstage(
+       offstage:
+           model.currentTab != PeerTabIndex.recent.index, // show based on recent
+-      child: _hoverAction(
++      child: _hjvHoverAction(
+         context: context,
+         toolTip: translate('Add to Favorites'),
+         onTap: () async {
+@@ -450,7 +508,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+           showToast(translate('Successful'));
+         },
+         child: Icon(PeerTabModel.icons[PeerTabIndex.fav.index]),
+-      ).marginOnly(left: !(isDesktop || isWebDesktop) ? 11 : 6),
++      ).marginOnly(left: 4),
+     );
+   }
+ 
+@@ -462,7 +520,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+     }
+     return Offstage(
+       offstage: !gFFI.userModel.isLogin || addressbooks.isEmpty,
+-      child: _hoverAction(
++      child: _hjvHoverAction(
+         context: context,
+         toolTip: translate('Add to address book'),
+         onTap: () {
+@@ -471,7 +529,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+           model.setMultiSelectionMode(false);
+         },
+         child: Icon(PeerTabModel.icons[PeerTabIndex.ab.index]),
+-      ).marginOnly(left: !(isDesktop || isWebDesktop) ? 11 : 6),
++      ).marginOnly(left: 4),
+     );
+   }
+ 
+@@ -481,7 +539,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+       offstage: !gFFI.userModel.isLogin ||
+           model.currentTab != PeerTabIndex.ab.index ||
+           gFFI.abModel.currentAbTags.isEmpty,
+-      child: _hoverAction(
++      child: _hjvHoverAction(
+               context: context,
+               toolTip: translate('Edit Tag'),
+               onTap: () {
+@@ -493,53 +551,59 @@ class _PeerTabPageState extends State<PeerTabPage>
+                   showToast(translate('Successful'));
+                 });
+               },
+-              child: Icon(Icons.tag))
+-          .marginOnly(left: !(isDesktop || isWebDesktop) ? 11 : 6),
++              child: Icon(Icons.tag_rounded))
++          .marginOnly(left: 4),
+     );
+   }
+ 
+   Widget selectionCount(int count) {
++    final p = HjvPalette.of(context);
+     return Align(
+       alignment: Alignment.center,
+-      child: Text('$count ${translate('Selected')}'),
+-    );
++      child: Text('$count ${translate('Selected')}',
++          style: TextStyle(
++              fontSize: 13,
++              fontWeight: FontWeight.w600,
++              color: p.textSecondary,
++              fontFeatures: HjvText.tabular)),
++    ).marginOnly(right: 4);
+   }
+ 
+   Widget selectAll(PeerTabModel model) {
+     return Offstage(
+       offstage:
+           model.selectedPeers.length >= model.currentTabCachedPeers.length,
+-      child: _hoverAction(
++      child: _hjvHoverAction(
+         context: context,
+         toolTip: translate('Select All'),
+         onTap: () {
+           model.selectAll();
+         },
+-        child: Icon(Icons.select_all),
+-      ).marginOnly(left: 6),
++        child: Icon(Icons.select_all_rounded),
++      ).marginOnly(left: 4),
+     );
+   }
+ 
+   Widget closeSelection() {
+     final model = Provider.of<PeerTabModel>(context);
+-    return _hoverAction(
++    return _hjvHoverAction(
+             context: context,
+             toolTip: translate('Close'),
+             onTap: () {
+               model.setMultiSelectionMode(false);
+             },
+-            child: Icon(Icons.clear))
+-        .marginOnly(left: 6);
++            child: Icon(Icons.close_rounded))
++        .marginOnly(left: 4);
+   }
+ 
+   Widget _toggleTags() {
+-    return _hoverAction(
++    return _hjvHoverAction(
+         context: context,
+         toolTip: translate('Toggle Tags'),
+         hoverableWhenfalse: hideAbTagsPanel,
+         child: Icon(
+           Icons.tag_rounded,
+-          size: 18,
++          size: 20,
+         ),
+         onTap: () async {
+           await bind.mainSetLocalOption(
+@@ -552,7 +616,11 @@ class _PeerTabPageState extends State<PeerTabPage>
+   List<Widget> _landscapeRightActions(BuildContext context) {
+     final model = Provider.of<PeerTabModel>(context);
+     return [
+-      const PeerSearchBar().marginOnly(right: 13),
++      ConstrainedBox(
++              constraints:
++                  BoxConstraints(maxWidth: _hjvNarrow ? 140 : double.infinity),
++              child: const PeerSearchBar())
++          .marginOnly(right: 8),
+       _createRefresh(
+           index: PeerTabIndex.ab, loading: gFFI.abModel.currentAbLoading),
+       _createRefresh(
+@@ -585,32 +653,37 @@ class _PeerTabPageState extends State<PeerTabPage>
+ 
+     dropDown(List<Widget> menus) {
+       final padding = 6.0;
+-      final textColor = Theme.of(context).textTheme.titleLarge?.color;
++      final p = HjvPalette.of(context);
++      final radius = BorderRadius.circular(12);
+       return PullDownButton(
+         buttonBuilder:
+             (BuildContext context, Future<void> Function() showMenu) {
+-          return _hoverAction(
++          return _hjvHoverAction(
+             context: context,
+             toolTip: translate('More'),
+-            child: SvgPicture.asset(
+-              "assets/chevron_up_chevron_down.svg",
+-              width: 18,
+-              height: 18,
+-              colorFilter: svgColor(textColor),
+-            ),
++            child: Icon(Icons.unfold_more_rounded),
+             onTap: showMenu,
+           );
+         },
++        // HJViewer: a card with a border like the other menus, drawn on top so the width plan holds
+         routeTheme: PullDownMenuRouteTheme(
+-            width: menus.length * (otherActionWidth + padding * 2) * 1.0),
++            width: menus.length * (otherActionWidth + padding * 2) * 1.0,
++            backgroundColor: p.card,
++            borderRadius: radius),
+         itemBuilder: (context) => [
+           PullDownMenuEntryImpl(
+-            child: Row(
+-              mainAxisSize: MainAxisSize.min,
+-              children: menus
+-                  .map((e) =>
+-                      Material(child: e.paddingSymmetric(horizontal: padding)))
+-                  .toList(),
++            child: DecoratedBox(
++              position: DecorationPosition.foreground,
++              decoration: BoxDecoration(
++                  border: Border.all(color: p.border), borderRadius: radius),
++              child: Row(
++                mainAxisSize: MainAxisSize.min,
++                children: menus
++                    .map((e) => Material(
++                        type: MaterialType.transparency,
++                        child: e.paddingSymmetric(horizontal: padding)))
++                    .toList(),
++              ),
+             ),
+           )
+         ],
+@@ -669,20 +742,103 @@ class _PeerSearchBarState extends State<PeerSearchBar> {
+   @override
+   Widget build(BuildContext context) {
+     return drawer
+-        ? _buildSearchBar()
+-        : _hoverAction(
++        ? _hjvBuildSearchBar()
++        : _hjvHoverAction(
+             context: context,
+             toolTip: translate('Search'),
+-            padding: const EdgeInsets.only(right: 2),
+             onTap: () {
+               setState(() {
+                 drawer = true;
+               });
+             },
+-            child: Icon(
+-              Icons.search_rounded,
+-              color: Theme.of(context).hintColor,
+-            ));
++            child: Icon(Icons.search_rounded));
++  }
++
++  // HJViewer: the open search as one field; the focus ring is the outer box's, not the TextField's
++  Widget _hjvBuildSearchBar() {
++    final p = HjvPalette.of(context);
++    final phone = !(isDesktop || isWebDesktop);
++    RxBool focused = false.obs;
++    FocusNode focusNode = FocusNode();
++    focusNode.addListener(() {
++      focused.value = focusNode.hasFocus;
++      peerSearchTextController.selection = TextSelection(
++          baseOffset: 0,
++          extentOffset: peerSearchTextController.value.text.length);
++    });
++    return Obx(() => Container(
++          width: stateGlobal.isPortrait.isTrue ? 120 : 160,
++          height: 32,
++          decoration: BoxDecoration(
++            color: phone ? p.card : p.fill,
++            borderRadius: BorderRadius.circular(HjvRadius.md),
++            border: Border.all(
++                color: focused.value
++                    ? p.primary
++                    : (phone ? p.border : Colors.transparent),
++                width: focused.value ? 1.5 : 1),
++          ),
++          child: Row(
++            children: [
++              Icon(
++                Icons.search_rounded,
++                size: 18,
++                color: p.textTertiary,
++              ).marginOnly(left: 8, right: 6),
++              Expanded(
++                child: TextField(
++                  autofocus: true,
++                  controller: peerSearchTextController,
++                  onChanged: (searchText) {
++                    peerSearchText.value = searchText;
++                  },
++                  focusNode: focusNode,
++                  textAlign: TextAlign.start,
++                  maxLines: 1,
++                  cursorColor: p.primary,
++                  cursorHeight: 16,
++                  cursorWidth: 1.5,
++                  style: TextStyle(fontSize: 13, color: p.text),
++                  decoration: InputDecoration(
++                    contentPadding: const EdgeInsets.symmetric(vertical: 6),
++                    hintText: focused.value ? null : translate("Search ID"),
++                    hintStyle: TextStyle(fontSize: 13, color: p.textTertiary),
++                    filled: false,
++                    border: InputBorder.none,
++                    enabledBorder: InputBorder.none,
++                    focusedBorder: InputBorder.none,
++                    isDense: true,
++                  ),
++                ).workaroundFreezeLinuxMint(),
++              ),
++              // a Material above the field's fill; radius 12 fits the 24 px of compact density
++              Material(
++                type: MaterialType.transparency,
++                child: IconButton(
++                  padding: EdgeInsets.zero,
++                  constraints:
++                      const BoxConstraints.tightFor(width: 28, height: 28),
++                  splashRadius: 12,
++                  hoverColor: p.hoverStrong,
++                  onPressed: () {
++                    setState(() {
++                      peerSearchTextController.clear();
++                      peerSearchText.value = "";
++                      drawer = false;
++                    });
++                  },
++                  icon: Tooltip(
++                      message: translate('Close'),
++                      child: Icon(
++                        Icons.close_rounded,
++                        size: 16,
++                        color: p.textTertiary,
++                      )),
++                ),
++              ).marginOnly(right: 2),
++            ],
++          ),
++        ));
+   }
+ 
+   Widget _buildSearchBar() {
+@@ -782,9 +938,9 @@ class _PeerViewDropdownState extends State<PeerViewDropdown> {
+       PeerUiType.list
+     ];
+     final style = TextStyle(
+-        color: Theme.of(context).textTheme.titleLarge?.color,
+-        fontSize: MenuConfig.fontSize,
+-        fontWeight: FontWeight.normal);
++        color: HjvPalette.of(context).textTertiary,
++        fontSize: 12,
++        fontWeight: FontWeight.w600);
+     List<PopupMenuEntry> items = List.empty(growable: true);
+     items.add(PopupMenuItem(
+         height: 36,
+@@ -834,7 +990,7 @@ class _PeerViewDropdownState extends State<PeerViewDropdown> {
+     }
+ 
+     var menuPos = RelativeRect.fromLTRB(0, 0, 0, 0);
+-    return _hoverAction(
++    return _hjvHoverAction(
+         context: context,
+         toolTip: translate('Change view'),
+         child: Icon(
+@@ -843,7 +999,7 @@ class _PeerViewDropdownState extends State<PeerViewDropdown> {
+               : peerCardUiType.value == PeerUiType.list
+                   ? Icons.view_list_rounded
+                   : Icons.view_agenda_rounded,
+-          size: 18,
++          size: 20,
+         ),
+         onTapDown: (details) {
+           final x = details.globalPosition.dx;
+@@ -891,7 +1047,11 @@ class _PeerSortDropdownState extends State<PeerSortDropdown> {
+     items.add(PopupMenuItem(
+         height: 36,
+         enabled: false,
+-        child: Text(translate("Sort by"), style: style)));
++        child: Text(translate("Sort by"),
++            style: TextStyle(
++                color: HjvPalette.of(context).textTertiary,
++                fontSize: 12,
++                fontWeight: FontWeight.w600))));
+     for (var e in PeerSortType.values) {
+       items.add(PopupMenuItem(
+           height: 36,
+@@ -914,12 +1074,12 @@ class _PeerSortDropdownState extends State<PeerSortDropdown> {
+     }
+ 
+     var menuPos = RelativeRect.fromLTRB(0, 0, 0, 0);
+-    return _hoverAction(
++    return _hjvHoverAction(
+       context: context,
+       toolTip: translate('Sort by'),
+       child: Icon(
+         Icons.sort_rounded,
+-        size: 18,
++        size: 20,
+       ),
+       onTapDown: (details) {
+         final x = details.globalPosition.dx;
+@@ -966,8 +1126,8 @@ class RefreshWidgetState extends State<RefreshWidget> {
+   @override
+   Widget build(BuildContext context) {
+     final deco = BoxDecoration(
+-      color: Theme.of(context).colorScheme.background,
+-      borderRadius: BorderRadius.circular(6),
++      color: HjvPalette.of(context).hover,
++      borderRadius: BorderRadius.circular(HjvRadius.sm),
+     );
+     return AnimatedRotation(
+         turns: turns,
+@@ -978,7 +1138,7 @@ class RefreshWidgetState extends State<RefreshWidget> {
+           }
+         },
+         child: Container(
+-          padding: EdgeInsets.all(4.0),
++          padding: EdgeInsets.all(stateGlobal.isPortrait.isTrue ? 3.0 : 6.0),
+           margin: EdgeInsets.symmetric(horizontal: 1),
+           decoration: hover ? deco : null,
+           child: InkWell(
+@@ -1027,6 +1187,43 @@ Widget _hoverAction(
+   );
+ }
+ 
++// HJViewer: the bar's icon button; 26 px on the phone, the size _portraitRightActions plans with
++Widget _hjvHoverAction(
++    {required BuildContext context,
++    required Widget child,
++    required Function() onTap,
++    required String toolTip,
++    GestureTapDownCallback? onTapDown,
++    RxBool? hoverableWhenfalse}) {
++  final p = HjvPalette.of(context);
++  final hover = false.obs;
++  final radius = BorderRadius.circular(HjvRadius.sm);
++  return Tooltip(
++    message: toolTip,
++    child: Obx(() {
++      final hovered = hover.value;
++      final on = hoverableWhenfalse?.value == false;
++      final padding = EdgeInsets.all(stateGlobal.isPortrait.isTrue ? 3 : 6);
++      return Container(
++          margin: EdgeInsets.symmetric(horizontal: 1),
++          decoration: BoxDecoration(
++            color: on ? p.primarySoft : (hovered ? p.hover : null),
++            borderRadius: radius,
++          ),
++          child: InkWell(
++              borderRadius: radius,
++              hoverColor: Colors.transparent,
++              onHover: (value) => hover.value = value,
++              onTap: onTap,
++              onTapDown: onTapDown,
++              child: IconTheme.merge(
++                  data: IconThemeData(
++                      size: 20, color: on ? p.primary : p.textSecondary),
++                  child: Container(padding: padding, child: child))));
++    }),
++  );
++}
++
+ class PullDownMenuEntryImpl extends StatelessWidget
+     implements PullDownMenuEntry {
+   final Widget child;
+diff --git a/flutter/lib/common/widgets/peers_view.dart b/flutter/lib/common/widgets/peers_view.dart
+index 5be5af2..936140d 100644
+--- a/flutter/lib/common/widgets/peers_view.dart
++++ b/flutter/lib/common/widgets/peers_view.dart
+@@ -14,6 +14,7 @@ import 'package:visibility_detector/visibility_detector.dart';
+ import 'package:window_manager/window_manager.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../models/peer_model.dart';
+ import '../../models/platform_model.dart';
+ import 'peer_card.dart';
+@@ -187,27 +188,7 @@ class _PeersViewState extends State<_PeersView>
+       child: Consumer<Peers>(builder: (context, peers, child) {
+         if (peers.peers.isEmpty) {
+           gFFI.peerTabModel.setCurrentTabCachedPeers([]);
+-          return Center(
+-            child: Column(
+-              mainAxisAlignment: MainAxisAlignment.center,
+-              children: [
+-                Icon(
+-                  Icons.sentiment_very_dissatisfied_rounded,
+-                  color: Theme.of(context).tabBarTheme.labelColor,
+-                  size: 40,
+-                ).paddingOnly(bottom: 10),
+-                Text(
+-                  translate(
+-                    _emptyMessages[widget.peers.loadEvent] ?? 'Empty',
+-                  ),
+-                  textAlign: TextAlign.center,
+-                  style: TextStyle(
+-                    color: Theme.of(context).tabBarTheme.labelColor,
+-                  ),
+-                ),
+-              ],
+-            ),
+-          );
++          return _hjvBuildEmpty(context);
+         } else {
+           return _buildPeersView(peers);
+         }
+@@ -215,6 +196,24 @@ class _PeersViewState extends State<_PeersView>
+     );
+   }
+ 
++  // HJViewer: the empty tip's first line as the placeholder's title, the rest below it
++  Widget _hjvBuildEmpty(BuildContext context) {
++    final text = translate(_emptyMessages[widget.peers.loadEvent] ?? 'Empty');
++    final i = text.indexOf('\n');
++    return hjvPeersPlaceholder(context,
++        icon: PeerTabModel.icons[widget.peerTabIndex.index],
++        title: i < 0 ? text : text.substring(0, i),
++        subtitle: i < 0 ? null : text.substring(i + 1));
++  }
++
++  // HJViewer: a search or a filter that matches nothing, instead of a blank list
++  Widget _hjvBuildNoMatch(BuildContext context, String searchText) =>
++      hjvPeersPlaceholder(context,
++          icon: searchText.trim().isNotEmpty
++              ? Icons.search_rounded
++              : PeerTabModel.icons[widget.peerTabIndex.index],
++          title: translate('Empty'));
++
+   onVisibilityChanged(VisibilityInfo info) {
+     final peerId = _peerId((info.key as ValueKey).value);
+     if (info.visibleFraction > 0.00001) {
+@@ -296,7 +295,9 @@ class _PeersViewState extends State<_PeersView>
+               _curPeers.addAll(peers.map((e) => e.id));
+               _queryOnlines(true);
+             }
+-            return child;
++            return peers.isEmpty
++                ? _hjvBuildNoMatch(context, filters[0].value)
++                : child;
+           } else {
+             return const Center(
+               child: CircularProgressIndicator(),
+@@ -410,6 +411,67 @@ class _PeersViewState extends State<_PeersView>
+   }
+ }
+ 
++/// HJViewer: the placeholder of an empty list or of a pane that needs a login.
++Widget hjvPeersPlaceholder(BuildContext context,
++    {required IconData icon,
++    required String title,
++    String? subtitle,
++    Widget? action}) {
++  final p = HjvPalette.of(context);
++  final phone = !(isDesktop || isWebDesktop);
++  final sub = subtitle?.trim() ?? '';
++  return Center(
++    child: SingleChildScrollView(
++      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
++      child: ConstrainedBox(
++        constraints: const BoxConstraints(maxWidth: 360),
++        child: Column(
++          mainAxisSize: MainAxisSize.min,
++          children: [
++            Container(
++              width: 52,
++              height: 52,
++              decoration: phone
++                  ? hjvCardDecoration(context)
++                  : BoxDecoration(
++                      color: p.fill,
++                      borderRadius: BorderRadius.circular(HjvRadius.lg)),
++              child: Icon(icon, size: 24, color: p.textTertiary),
++            ),
++            const SizedBox(height: 14),
++            Text(title,
++                textAlign: TextAlign.center,
++                style: HjvText.titleSmall.copyWith(color: p.text)),
++            if (sub.isNotEmpty)
++              Text(sub,
++                      textAlign: TextAlign.center,
++                      style: HjvText.body
++                          .copyWith(fontSize: 13, color: p.textSecondary))
++                  .marginOnly(top: 4),
++            if (action != null) action.marginOnly(top: 16),
++          ],
++        ),
++      ),
++    ),
++  );
++}
++
++/// HJViewer: the placeholder of a tab that needs a login, with the login button.
++Widget hjvLoginPlaceholder(
++    BuildContext context, PeerTabIndex tab, VoidCallback onLogin) {
++  return hjvPeersPlaceholder(context,
++      icon: PeerTabModel.icons[tab.index],
++      title: gFFI.peerTabModel.tabTooltip(tab.index),
++      action: SizedBox(
++        height: 40,
++        child: ElevatedButton(
++            style: ElevatedButton.styleFrom(
++                padding: const EdgeInsets.symmetric(horizontal: 22)),
++            onPressed: onLogin,
++            child: Text(translate("Login"))),
++      ));
++}
++
+ abstract class BasePeersView extends StatelessWidget {
+   final PeerTabIndex peerTabIndex;
+   final PeerFilter? peerFilter;
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 29bda93..792cf59 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -40,7 +40,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+   Timer? _updateTimer;
+ 
+   double get em => 14.0;
+-  double? get height => bind.isIncomingOnly() ? null : em * 3;
++  double? get height => bind.isIncomingOnly() ? null : 36;
+ 
+   void onUsePublicServerGuide() {
+     const url = "https://rustdesk.com/pricing";
+@@ -68,6 +68,8 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+   @override
+   Widget build(BuildContext context) {
+     final isIncomingOnly = bind.isIncomingOnly();
++    // HJViewer: the status row in the palette, aligned with the content's 12 px edge
++    final p = HjvPalette.of(context);
+     startServiceWidget() => Offstage(
+           offstage: !_svcStopped.value,
+           child: InkWell(
+@@ -76,8 +78,10 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+                   },
+                   child: Text(translate("Start service"),
+                       style: TextStyle(
+-                          decoration: TextDecoration.underline, fontSize: em)))
+-              .marginOnly(left: em),
++                          fontSize: 13,
++                          fontWeight: FontWeight.w600,
++                          color: p.primary)))
++              .marginOnly(left: 12),
+         );
+ 
+     setupServerWidget() => Flexible(
+@@ -88,7 +92,8 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+             child: Row(
+               crossAxisAlignment: CrossAxisAlignment.center,
+               children: [
+-                Text(', ', style: TextStyle(fontSize: em)),
++                Text(', ',
++                    style: TextStyle(fontSize: 13, color: p.textSecondary)),
+                 Flexible(
+                   child: InkWell(
+                     onTap: onUsePublicServerGuide,
+@@ -99,7 +104,8 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+                             translate('setup_server_tip'),
+                             style: TextStyle(
+                                 decoration: TextDecoration.underline,
+-                                fontSize: em),
++                                fontSize: 13,
++                                color: p.textSecondary),
+                           ),
+                         ),
+                       ],
+@@ -121,12 +127,12 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+                 borderRadius: BorderRadius.circular(4),
+                 color: _svcStopped.value ||
+                         stateGlobal.svcStatus.value == SvcStatus.connecting
+-                    ? kColorWarn
++                    ? p.warning
+                     : (stateGlobal.svcStatus.value == SvcStatus.ready
+-                        ? Color.fromARGB(255, 50, 190, 166)
+-                        : Color.fromARGB(255, 224, 79, 95)),
++                        ? p.success
++                        : p.danger),
+               ),
+-            ).marginSymmetric(horizontal: em),
++            ).marginOnly(left: 12, right: 8),
+             Container(
+               width: isIncomingOnly ? 226 : null,
+               child: _buildConnStatusMsg(),
+@@ -148,7 +154,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+                 Align(
+                         child: startServiceWidget(),
+                         alignment: Alignment.centerLeft)
+-                    .marginOnly(top: 2.0, left: 22.0),
++                    .marginOnly(top: 2.0, left: 16.0),
+               ],
+             )
+           : basicWidget()),
+@@ -165,7 +171,8 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+               : stateGlobal.svcStatus.value == SvcStatus.notReady
+                   ? translate("not_ready_status")
+                   : translate('Ready'),
+-      style: TextStyle(fontSize: em),
++      style:
++          TextStyle(fontSize: 13, color: HjvPalette.of(context).textSecondary),
+     );
+   }
+ 
