@@ -49,13 +49,16 @@
 //! The super operator's view (overview.rs) adds `operators`: which portal IDs of
 //! HJV_API_OPERATORS have an account, masked unless `--reveal`, each with its account's tag, the
 //! tag that the record's lines of the view carry.
+//!
+//! The staff-only gate (ticket.rs) adds `ticket status`: the ticket key in use and whether hbbs
+//! takes it, the lifetimes, and the counts of tickets since the start, without a person or device.
 
 use crate::{
     backup::{self, BackupInfo, Snapshot},
     check, db, limits,
     oplog::{OpEntry, OpLog},
     pcsync, relay,
-    selfcheck::{CommandKeyCheck, ListKeyCheck},
+    selfcheck::{CommandKeyCheck, ListKeyCheck, TicketKeyCheck},
     state::AppState,
     util::{
         date, datetime, hex, login_key, mask, now, sha256, valid_device_id, valid_portal_id, DAY,
@@ -128,6 +131,9 @@ hjv-api admin [--socket <path>] [--reveal] <command>
   selfcheck                 the service checks that it can reach the SSO and hbbs, and that its
                             list key is the one the apps pin (with the fingerprints); the login
                             mode
+  ticket status             the access tickets hbbs checks: the ticket key in use and whether
+                            hbbs's access.conf takes it (HJV_API_TICKET_PUBKEYS), the lifetimes,
+                            and the tickets handed out and refused since the start, by kind
   backup [--keep-days N] <file>.sqlite3 | <directory>
                             a checked copy of the database (0600) into a directory only you may
                             enter (/var/lib/hjviewer-api/backup); a directory gets a name of the
@@ -146,7 +152,7 @@ hjv-api admin [--socket <path>] [--reveal] <command>
                             approved again); withdraws a code approved ahead
   relay share on|off <relay ID>
                             kept for later: in this version a relay wakes its account's PCs only
-  keygen seal|log-key|list --kid N|command --kid N [--encrypt-to <file> | --out <file>]
+  keygen seal|log-key|list --kid N|command --kid N|ticket --kid N [--encrypt-to <file> | --out <file>]
                             make a secret for a credential (runs here, not in the service)";
 
 #[derive(Serialize, Deserialize)]
@@ -327,7 +333,8 @@ async fn run(
         | ["key", sub @ ("list" | "revoke"), ..]
         | ["passwordless", sub @ ("status" | "on" | "off"), ..]
         | ["strict", sub @ ("on" | "off"), ..]
-        | ["relay", sub @ ("list" | "approve" | "revoke"), ..] => format!("{} {sub}", words[0]),
+        | ["relay", sub @ ("list" | "approve" | "revoke"), ..]
+        | ["ticket", sub @ "status", ..] => format!("{} {sub}", words[0]),
         ["relay", "share", turn @ ("on" | "off"), ..] => format!("relay share {turn}"),
         ["operators", ..] => "operators".to_owned(),
         [one @ ("users" | "devices" | "unlock" | "revoke" | "report" | "selfcheck" | "backup"), ..]
@@ -1433,6 +1440,7 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
         ["relay", "share", turn @ ("on" | "off"), arg] => {
             relay::admin_share(state, arg, *turn == "on").await
         }
+        ["ticket", "status"] => Ok(crate::ticket::status(state)),
         ["selfcheck"] => {
             let held = ListKeyCheck::Held {
                 kid: state.list_key.kid(),
@@ -1445,7 +1453,14 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 },
                 None => CommandKeyCheck::Absent,
             };
-            let (report, ok) = crate::selfcheck::run(&state.config, &held, &command).await;
+            let ticket = match &state.ticket_key {
+                Some(key) => TicketKeyCheck::Held {
+                    kid: key.kid(),
+                    public_key: key.public_key(),
+                },
+                None => TicketKeyCheck::Absent,
+            };
+            let (report, ok) = crate::selfcheck::run(&state.config, &held, &command, &ticket).await;
             if ok {
                 Ok(report)
             } else {

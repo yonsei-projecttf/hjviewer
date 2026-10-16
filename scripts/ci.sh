@@ -617,6 +617,7 @@ api_test_credentials() { # <hjv-api> <unit> <dir> <write...>
       hjviewer-api-log-key) value=$("$api" keygen log-key 2> /dev/null) || fail "hjv-api keygen log-key" ;;
       hjviewer-api-list-key) value=$("$api" keygen list --kid 1 2> /dev/null) || fail "hjv-api keygen list --kid 1" ;;
       hjviewer-api-command-key) value=$("$api" keygen command --kid 1 2> /dev/null) || fail "hjv-api keygen command --kid 1" ;;
+      hjviewer-api-ticket-key) value=$("$api" keygen ticket --kid 1 2> /dev/null) || fail "hjv-api keygen ticket --kid 1" ;;
       *) fail "scripts/ci.sh makes no test value for the credential $name of $(basename "$unit")" ;;
     esac
     printf '%s\n' "$value" | "$@" "$dir/$name" > /dev/null
@@ -859,6 +860,7 @@ for c in $(sed -n 's/^LoadCredentialEncrypted=hjviewer-api-//p' /etc/systemd/sys
     log-key) kind=(log-key) ;;
     list-key) kind=(list --kid 1) ;;
     command-key) kind=(command --kid 1) ;;
+    ticket-key) kind=(ticket --kid 1) ;;
     *) echo "FAIL: no test value for the credential hjviewer-api-$c"; exit 1 ;;
   esac
   "$api" keygen "${kind[@]}" > "$creds/hjviewer-api-$c" 2> /dev/null || { echo "FAIL: hjv-api keygen ${kind[*]}"; exit 1; }

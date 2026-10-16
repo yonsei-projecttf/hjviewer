@@ -18,6 +18,11 @@
 //!   HJV_API_COMMAND_PUBKEYS (relay/PROTOCOL.md §3.2: one text form wherever a command public key
 //!   is written), and `fingerprint: N:<hex SHA-256>`, which the one who made the key compares with
 //!   `hjv-api selfcheck`, the relay build's summary and `hjv-relay version`.
+//! - `keygen ticket --kid N`: an Ed25519 ticket key with the number N, which signs the access
+//!   tickets hbbs checks (docs/access-tickets.md 2-5). Its 32-byte seed goes to the credential
+//!   hjviewer-api-ticket-key; stderr shows the same two lines as for a command key: `N:<base64>`,
+//!   the value of a `KEY=` line of hbbs's access.conf and an entry of hjv-api's
+//!   HJV_API_TICKET_PUBKEYS, and its fingerprint.
 //!
 //! The secret goes, base64 on one line, straight into `systemd-creds encrypt` with
 //! `--encrypt-to <file>` (credential name: the file name), into a new file with `--out <file>`
@@ -104,6 +109,19 @@ pub fn run(kind: &str, kid: Option<u32>, target: Target<'_>) -> Result<(), Strin
             )
         }
         ("command", _) => return Err("keygen command --kid <1-65535>".into()),
+        ("ticket", Some(kid)) if (1..=trust::MAX_KID).contains(&kid) => {
+            // as a command key; its line is what access.conf's KEY= takes
+            let (secret, public) = list_key();
+            (
+                secret,
+                format!(
+                    "{}\nfingerprint: {}\n",
+                    trust::entry(kid, &public),
+                    trust::fingerprint(kid, &public)
+                ),
+            )
+        }
+        ("ticket", _) => return Err("keygen ticket --kid <1-65535>".into()),
         _ => return Err(USAGE.into()),
     };
     match target {
@@ -126,7 +144,7 @@ pub fn run(kind: &str, kid: Option<u32>, target: Target<'_>) -> Result<(), Strin
     Ok(())
 }
 
-pub const USAGE: &str = "keygen seal | keygen log-key | keygen list --kid N | keygen command --kid N  [--encrypt-to <file> | --out <file>]";
+pub const USAGE: &str = "keygen seal | keygen log-key | keygen list --kid N | keygen command --kid N | keygen ticket --kid N  [--encrypt-to <file> | --out <file>]";
 
 fn encrypt(secret: &str, path: &Path) -> Result<(), String> {
     let name = path
@@ -209,6 +227,11 @@ mod tests {
         run("command", Some(2), Target::Out(&path)).unwrap();
         let seed = crate::config::parse_list_key(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(crate::wake::CommandKey::new(2, &seed).kid(), 2);
+        // a ticket key: the seed for the credential, the public key as access.conf's KEY= takes it
+        let path = dir.join("ticket-2.key");
+        run("ticket", Some(2), Target::Out(&path)).unwrap();
+        let seed = crate::config::parse_list_key(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(crate::ticket::TicketKey::new(2, &seed).kid(), 2);
         for (kind, kid) in [
             ("list", None),
             ("list", Some(0)),
@@ -217,6 +240,9 @@ mod tests {
             ("command", None),
             ("command", Some(0)),
             ("command", Some(65_536)),
+            ("ticket", None),
+            ("ticket", Some(0)),
+            ("ticket", Some(65_536)),
         ] {
             assert!(
                 run(kind, kid, Target::Out(&dir.join("x"))).is_err(),

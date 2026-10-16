@@ -18,6 +18,7 @@
 //! | `POST /api/hjv/pc/sync` | a bound PC's sync, signed with its device key, no token (pcsync.rs) |
 //! | `POST /api/hjv/relay/hello`, `POST /api/hjv/relay/poll` | hjv-relay's requests, signed with its own key, no token (relay.rs, relay/PROTOCOL.md) |
 //! | `POST /api/hjv/devices/{id}/wake`, `GET /api/hjv/wake/{job}`, `GET /api/hjv/devices/{id}/wol` | waking a PC of the account through a NAS relay, and how ready it is (wake.rs) |
+//! | `POST /api/hjv/ticket` | `{"ticket","use","exp","server_time"}`: the access ticket of the token's account that hbbs checks, `staff`/`ctl`, or `staff`/`both` for the PC whose device key signed the body (ticket.rs) |
 //! | `GET, HEAD /api/hjv/update/{platform}/{version}`, `POST /api/hjv/update/{platform}/link`, `GET, HEAD /api/hjv/u/{code}`, `GET, HEAD /api/hjv/get/{code}/[file]` | the packages of new app versions: to a login or a bound PC, by a short link, and through door 2 (update.rs) |
 //! | `GET /api/hjv/source` | licence, source and running version (AGPL section 13) |
 //! | `GET /api/login-options`, `GET /api/device-group/accessible` | the static answers nginx gives as well |
@@ -57,7 +58,7 @@ use crate::{
     login::{self, BindStatus, Retry},
     overview, pcsync, proof, relay, review,
     state::AppState,
-    update,
+    ticket, update,
     util::{b64, hex, now, sha256, valid_device_id},
     wake,
 };
@@ -193,6 +194,7 @@ pub fn user_json(portal_id: &str, display_name: &str) -> Value {
 fn allowed_methods(path: &str) -> Option<&'static str> {
     Some(match path {
         "/api/login" | "/api/currentUser" | "/api/logout" | "/api/hjv/this-device/undo" => "POST",
+        ticket::PATH => "POST",
         "/api/users" | "/api/peers" | "/api/hjv/this-device" | overview::PATH => "GET",
         "/api/login-options" | "/api/device-group/accessible" | "/api/hjv/source" => "GET, HEAD",
         p if wake::allowed_methods(p).is_some() => return wake::allowed_methods(p),
@@ -249,6 +251,7 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         ("/api/peers", &Method::GET) => peers(state, &req).await,
         ("/api/hjv/this-device", &Method::GET) => this_device(state, &req).await,
         ("/api/hjv/this-device/undo", &Method::POST) => undo(state, &req).await,
+        (ticket::PATH, &Method::POST) => ticket::handle(state, &req).await,
         (overview::PATH, _) => overview::route(state, &req).await,
         (path, method) if wake::allowed_methods(path) == Some(method.as_str()) => {
             wake::route(state, &req).await

@@ -85,6 +85,12 @@
 //! key that checked this request's signature) and the binding it sent, and lives HJV_API_TRUST_TTL
 //! from its receipt on the PC. The outer `state` is not signed: the PC drops its binding only for
 //! a signed `revoked`, and nothing changes there on an unsigned answer.
+//!
+//! The list of a PC that sent its binding comes with the PC's access ticket while hjv-api has a
+//! ticket key and the PC's account is on the allowlist and not blocked, whatever the account's
+//! password-less switch (ticket.rs): `"access":{"ticket","use":"both","exp","server_time"}`, for
+//! the PC's ID and the key that checked the sync, so that its service registers with hbbs on a
+//! ticket each sync renews. A `revoked` list, a `listed` answer and an error carry none.
 
 use crate::{
     api::{is_json, ApiRequest, BodyError, Reply},
@@ -454,12 +460,23 @@ enum Decided {
     /// bound, without a list
     Listed,
     /// a list to sign: active, disabled or revoked; `cache` when it was built for a bound PC;
-    /// `send_wol` when hjv-api wants the PC's whole wake report next time
+    /// `send_wol` when hjv-api wants the PC's whole wake report next time; `ticket` the login key
+    /// of the account and the PC's key when the answer carries the PC's access ticket
     List {
         list: TrustList,
         cache: Option<CachedList>,
         send_wol: bool,
+        ticket: Option<(String, [u8; 32])>,
     },
+}
+
+/// The login key of a bound PC's account while the account may use HJViewer (on the allowlist,
+/// not blocked), for the PC's access ticket.
+fn ticket_holder(c: &Connection, account_id: i64) -> rusqlite::Result<Option<String>> {
+    Ok(match db::account(c, account_id)? {
+        Some(a) if db::allowed(c, &a.login_key)? => Some(a.login_key),
+        _ => None,
+    })
 }
 
 /// The list of a bound PC whose sync carried its binding: `active` with the account's keys that
@@ -602,6 +619,7 @@ fn decide(
                 list: revoked_list(&tx, &env.id, &b, &pc_pk, at, settings)?,
                 cache: None,
                 send_wol: false,
+                ticket: None,
             },
             _ => Decided::Unbound,
         },
@@ -634,15 +652,18 @@ fn decide(
                     list: revoked_list(&tx, &d.device_id, &b, &pc_pk, at, settings)?,
                     cache: None,
                     send_wol: false,
+                    ticket: None,
                 },
                 (Some(b), false) if mark == "present" => {
                     let serial = db::change_serial(&tx)?;
                     let now = Instant::now();
+                    let ticket = ticket_holder(&tx, d.account_id)?.map(|key| (key, pc_pk));
                     match cached.filter(|l| l.serves(serial, &b, &pc_pk, now)) {
                         Some(again) => Decided::List {
                             list: again.list,
                             cache: None,
                             send_wol,
+                            ticket,
                         },
                         None => {
                             let list = bound_list(&tx, &d, &b, &pc_pk, serial, at, settings)?;
@@ -656,6 +677,7 @@ fn decide(
                                 }),
                                 list,
                                 send_wol,
+                                ticket,
                             }
                         }
                     }
@@ -734,6 +756,7 @@ pub async fn handle(state: &Arc<AppState>, req: ApiRequest) -> Reply {
             mut list,
             cache,
             send_wol,
+            ticket,
         }) => {
             if let Some(cache) = cache {
                 state.lists.put(&id, cache);
@@ -747,13 +770,19 @@ pub async fn handle(state: &Arc<AppState>, req: ApiRequest) -> Reply {
                 }
             };
             let signature = state.list_key.sign(&bytes);
-            Reply::ok(&json!({
+            let mut answer = json!({
                 "server_time": now(),
                 "state": list.state,
                 "refresh": list.refresh,
                 "send_wol": send_wol,
                 "list": { "kid": list.kid, "l": b64(&bytes), "s": b64(&signature) },
-            }))
+            });
+            if let Some((login_key, pc_pk)) = ticket {
+                if let Ok(issued) = crate::ticket::for_bound_pc(state, &login_key, &id, pc_pk, at) {
+                    answer["access"] = issued.json(now());
+                }
+            }
+            Reply::ok(&answer)
         }
         Err(e) => {
             log_err!("pc sync: {e}");

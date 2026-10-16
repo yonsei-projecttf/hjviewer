@@ -28,10 +28,11 @@
 //! counts under HJV_API_LIMIT_NEW_ID until its first login, in list mode it logs in only then. The
 //! account needs no state of its own to be told apart: its key fails the ID rule, which every other
 //! account's passes ([`is_review`]). It never holds a PC (login.rs `check_device`), gets no package
-//! or short link (update.rs), is never a super operator (overview.rs), and its tokens hold only
-//! while the file is active and names it ([`admits`], api.rs `authenticate`): else they are
-//! unknown tokens, and the app logs out. A new HASH ends no session of the old password: `hjv-api
-//! admin user revoke-all` does.
+//! or short link (update.rs), gets an access ticket only for its demo PCs ([`Review::demo_pcs`],
+//! ticket.rs: none until the file takes a `PC=` line), is never a super operator (overview.rs), and
+//! its tokens hold only while the file is active and names it ([`admits`], api.rs
+//! `authenticate`): else they are unknown tokens, and the app logs out. A new HASH ends no session
+//! of the old password: `hjv-api admin user revoke-all` does.
 
 use crate::{
     config::Config,
@@ -61,6 +62,9 @@ pub struct Review {
     salt: Vec<u8>,
     key: [u8; 32],
     until: i64,
+    /// the demo PCs the account's access ticket reaches (docs/access-tickets.md 2-4): the IDs of
+    /// a `PC=` line, which the parser does not take yet, so none
+    pcs: Vec<String>,
 }
 
 impl Review {
@@ -99,7 +103,19 @@ impl Review {
             salt,
             key,
             until: utc_time(until).ok_or("UNTIL is not a time")?,
+            pcs: Vec::new(),
         })
+    }
+
+    /// When the account ends (UTC).
+    pub fn until(&self) -> i64 {
+        self.until
+    }
+
+    /// The demo PCs, in the file's order: the only PCs the account's access ticket reaches
+    /// (ticket.rs). None, and so no ticket, until the parser takes the `PC=` line.
+    pub fn demo_pcs(&self) -> &[String] {
+        &self.pcs
     }
 
     /// Whether `password` is the file's: PBKDF2-HMAC-SHA256 with its salt and iterations,

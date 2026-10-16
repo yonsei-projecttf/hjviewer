@@ -21,6 +21,7 @@ use crate::{
     seal::SealKeys,
     sso::SsoClient,
     tfa::{PendingStore, SecondFactor},
+    ticket::{TicketKey, TicketStats},
     trust::ListKey,
     update::Updates,
     util::DAY,
@@ -81,6 +82,11 @@ pub struct AppState {
     /// the command key that signs wake commands (credential hjviewer-api-command-key, number
     /// HJV_API_COMMAND_KID), when there is one (wake.rs)
     pub command_key: Option<CommandKey>,
+    /// the ticket key that signs the access tickets hbbs checks (credential
+    /// hjviewer-api-ticket-key, number HJV_API_TICKET_KID), when there is one (ticket.rs)
+    pub ticket_key: Option<TicketKey>,
+    /// the tickets handed out and refused since the start, counted by how (ticket.rs)
+    pub tickets: TicketStats,
     /// the relays' held polls and per-relay limits (relay.rs)
     pub relays: RelayHub,
     /// the packages of new app versions: the policy and door 2's file as last read, the short
@@ -119,10 +125,13 @@ impl AppState {
             log_key,
             list_key,
             command_key,
+            ticket_key,
         } = secrets;
         Ok(Arc::new(AppState {
             list_key: ListKey::new(config.list_kid, &list_key),
             command_key: command_key.map(|seed| CommandKey::new(config.command_kid, &seed)),
+            ticket_key: ticket_key.map(|seed| TicketKey::new(config.ticket_kid, &seed)),
+            tickets: TicketStats::new(crate::util::now()),
             relays: RelayHub::default(),
             updates: Updates::new(&config),
             review: ReviewFile::default(),

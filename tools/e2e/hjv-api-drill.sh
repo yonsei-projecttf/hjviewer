@@ -257,6 +257,8 @@ printf '%s' "$SSO_BASIC" | c hjviewer-sso-client-secret
 printf '%s' "$SSO_API_UUID" | c hjviewer-sso-api-uuid
 printf '%s\n' "$LOG_KEY" | c hjviewer-api-log-key
 printf '%s\n' "$LIST_KEY_1" | c hjviewer-api-list-key
+# the ticket key of the access tickets, which the unit loads too (docs/access-tickets.md 2-5)
+/opt/hjviewer/bin/hjv-api keygen ticket --kid 1 2> /dev/null | c hjviewer-api-ticket-key
 # the user's Telegram bot (here the stand-in's): README.md, Monitoring
 printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$TOKEN" -1001234 | c hjviewer-api-telegram
 EOF
@@ -513,6 +515,7 @@ c() { systemd-creds encrypt -q --tpm2-pcrs= --name="$1" - "/etc/credstore.encryp
 printf '%s' "$SSO_BASIC" | c hjviewer-sso-client-secret
 printf '%s' "$SSO_API_UUID" | c hjviewer-sso-api-uuid
 /opt/hjviewer/bin/hjv-api keygen log-key | c hjviewer-api-log-key
+/opt/hjviewer/bin/hjv-api keygen ticket --kid 1 2> /dev/null | c hjviewer-api-ticket-key
 EOF
 cred_from "$B" hjviewer-api-login-key "$offline/hjviewer-seal.key"
 cred_from "$B" hjviewer-api-list-key "$offline/hjviewer-list-2.key"

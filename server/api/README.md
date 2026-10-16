@@ -14,6 +14,10 @@ so that nginx and the web site on the same server never read one (Updates below)
 hbbs/hbbr on the server, behind nginx, as a systemd service that listens only on a Unix socket
 systemd holds. GNU AGPL-3.0-only, like the rest of the repository.
 
+Since 1.8.0 HJViewer is for Yonsei staff (docs/access-tickets.md): hbbs takes a controller's
+request or a PC's registration only with an access ticket, which hjv-api signs with its ticket key
+for the apps logged in to a staff account and for the PCs bound to one (Access tickets, below).
+
 ## Build
 
 ```sh
@@ -164,6 +168,19 @@ gets 503 with `Retry-After: 60`.
 `HJV_API_REVIEW_FILE` (unset) is the file of the App Review account (below), an absolute path such
 as `/etc/hjviewer/review.conf`; unset, there is no such account.
 
+The access tickets (docs/access-tickets.md; Access tickets, below): `HJV_API_TICKET_PUBKEYS` is the
+ticket keys hbbs takes, the values of the `KEY=` lines of its `/etc/hjviewer/access.conf`
+(`1:<base64>,2:<base64>`), and `HJV_API_TICKET_KID` the number of the key in the credential
+`hjviewer-api-ticket-key` (1; 2 after a change of keys). As with the other keys, the journal at
+start and `selfcheck` say so when the key in use is not the one of its number there: hbbs would
+refuse every ticket it signs, and with hbbs's access check on nobody could connect.
+`HJV_API_TICKET_HOURS` (24) is how long the ticket of a logged-in app lives, and
+`HJV_API_PC_TICKET_HOURS` (72) that of a bound PC, which each of its syncs renews: 1 to 168 hours,
+since hbbs refuses a ticket of more than seven days. Without the credential no ticket is signed
+(`POST /api/hjv/ticket` answers 503, the answers carry none); everything else works. A version
+of hjv-api from before these settings does not start with them: take them out before going back
+to one.
+
 ## Credentials
 
 Secrets come only from systemd credentials (`$CREDENTIALS_DIRECTORY`; `--credentials <dir>` for
@@ -177,6 +194,7 @@ tests), never from the environment or the repository:
 | `hjviewer-api-log-key` | base64 of 32+ random bytes: the HMAC key of the tags in logs and records |
 | `hjviewer-api-list-key` | base64 of the 32-byte Ed25519 seed of the list key in use, number `HJV_API_LIST_KID`, which signs the trust lists |
 | `hjviewer-api-command-key` | base64 of the 32-byte Ed25519 seed of the command key in use, number `HJV_API_COMMAND_KID`, which signs the relays' wake commands |
+| `hjviewer-api-ticket-key` | base64 of the 32-byte Ed25519 seed of the ticket key in use, number `HJV_API_TICKET_KID`, which signs the access tickets hbbs checks |
 
 The user makes them on the server, without an agent (v2 §10-3; the steps are
 docs/server-runbook.md 7-4), for example:
@@ -189,6 +207,7 @@ sudo bash -c 'set -o pipefail; hjv-api keygen list --kid 1 | systemd-creds encry
 hjv-api keygen list --kid 2 --out /media/usb/hjviewer-list-2.key     # offline, away from agents
 sudo bash -c 'set -o pipefail; hjv-api keygen command --kid 1 | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-command-key - /etc/credstore.encrypted/hjviewer-api-command-key' || echo 'STOP: no command key 1'
 hjv-api keygen command --kid 2 --out /media/usb/hjviewer-command-2.key   # offline, as list key 2
+sudo bash -c 'set -o pipefail; hjv-api keygen ticket --kid 1 | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-ticket-key - /etc/credstore.encrypted/hjviewer-api-ticket-key' || echo 'STOP: no ticket key 1'
 ```
 
 `--tpm2-pcrs=` with an empty value binds a credential to the TPM, where there is one, but to no
@@ -224,6 +243,17 @@ on the server only, key 2 offline; the relays are built with both. To change key
 from standard input (`systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-command-key - …`), set
 `HJV_API_COMMAND_KID=2`, restart; commands queued before go out as they were signed (the relays
 take both keys), and later relay builds drop key 1.
+
+`keygen ticket --kid N` makes a ticket key the same way and shows the same two lines on stderr:
+`N:<base64>`, exactly the value of a `KEY=` line of hbbs's access.conf and an entry of
+`HJV_API_TICKET_PUBKEYS`, and `fingerprint: N:<hex SHA-256>`, which `selfcheck` and `admin ticket
+status` show too. The unit loads the credential, so the service does not start without it (a test
+or E2E directory may go without: no ticket then). No app pins a ticket key, so a key is changed
+on the server alone (docs/access-tickets.md 6-4): make key 2 and add its `KEY=2:` line to
+access.conf and to `HJV_API_TICKET_PUBKEYS`, put it into the credential with `systemd-creds
+encrypt` from standard input, set `HJV_API_TICKET_KID=2`, restart, and take key 1's line out once
+its last tickets ended (72 hours with the default lifetimes). A key that leaked goes out of
+access.conf at once.
 
 ## Admin
 
@@ -295,7 +325,13 @@ report                    counts, the login mode, the allowlist (who may log in,
                           week by result
 selfcheck                 DNS, TCP and TLS to the SSO and hbbs's console, from inside the sandbox;
                           the fingerprints of the pinned list keys and command keys and whether the
-                          keys in use are the pinned ones; the login mode
+                          keys in use are the pinned ones, the same for the ticket key and the keys
+                          hbbs takes; the login mode
+ticket status             the access tickets: the ticket key in use with its fingerprint and the
+                          KEY= line hbbs's access.conf takes it by, whether it is that key of
+                          HJV_API_TICKET_PUBKEYS, the lifetimes, and the tickets handed out and
+                          refused since the start by kind (login ctl|both, request ctl|both|review,
+                          sync both, refused off|account|request|too-often); no person or device
 backup [--keep-days N] <file>.sqlite3 | <directory>
                           a checked copy of the database into a directory only you may enter
                           (Backup and restore)
@@ -319,7 +355,7 @@ relay revoke <relay ID|code>
                           times, and its key is never approved again; withdraws an approval ahead
 relay share on|off <relay ID>
                           kept for later: in this version a relay wakes its account's PCs only (W2)
-keygen seal|log-key|list|command
+keygen seal|log-key|list|command|ticket
                           as hjv-api keygen (runs locally, not in the service)
 ```
 
@@ -483,7 +519,10 @@ account's passes. It never holds a PC (a login on an installed Windows PC is `no
 and the short links answer it `403 {"error":"이 계정으로는 새 버전을 받을 수 없습니다."}`, it is never a
 super operator (whatever `HJV_API_OPERATORS` says), and its tokens hold only while the file is
 active and names it: otherwise every request of it gets the 401 of an unknown token, and the app
-logs out. Its own account (its keys, an empty device list, logout) is all it reaches. An account
+logs out. Its own account (its keys, an empty device list, logout) is all it reaches. Its access
+ticket (Access tickets, below) is to reach the demo PCs of a `PC=` line of the file only, which
+this version does not read: until it does, the account gets no ticket (`POST /api/hjv/ticket`
+answers 403 `no_ticket`, its login's answer has no `access`). An account
 whose ID is outside the rule from before the rule (2026-10-14) is held the same way; its logins were
 refused already. A letter added to the rule must not begin the ID of an App Review account still
 there: its key would pass the rule, and its tokens would hold without the file (delete it first).
@@ -656,6 +695,9 @@ PC's next sync gets a signed `revoked` (design v3 §4-3). The signed logout from
 deletion of unused accounts (their PCs first), and the upkeep's release of PCs unseen for 180 days
 all go through it; `tests/pcsync.rs` checks that no other SQL deletes a binding.
 
+`POST /api/hjv/ticket` (Access tickets, below) takes the token with its signature as every account
+path; the login's answer and a bound PC's sync carry the same ticket object.
+
 `GET /api/hjv/admin/overview` (Admin overview) takes the token with its signature too, with the
 same 401 and 409 as every account path. For an account that is not a super operator the answer is
 then the 404 of an unknown path, `{"error":"not found"}`, for every method and however often, so
@@ -668,8 +710,8 @@ key list's (the same limit), and 503 when the operator record does not take the 
 The formats the app (client patches 0030-0031), hbbs (server patch 0004) and hjv-api must agree
 on, as design v3 §3-6, §4-1, §4-2 and §5-2 define them. Each is defined in one place in the code; the test
 vectors at the end are checked against the code by `tests/keys.rs`, which also checks that this
-section shows them. Encodings: base64 is RFC 4648 §4 with padding, base64url is §5 without
-padding, NUL is the byte 0x00, times are Unix seconds.
+section shows them (`tests/tickets.rs` for the access tickets'). Encodings: base64 is RFC 4648 §4
+with padding, base64url is §5 without padding, NUL is the byte 0x00, times are Unix seconds.
 
 ### Login: `POST /api/login` (`src/login.rs`, `src/seal.rs`, `src/keys.rs`, `src/devsig.rs`)
 
@@ -705,7 +747,8 @@ padding, NUL is the byte 0x00, times are Unix seconds.
 ```text
 {"type":"access_token","access_token":"hjv_<base64url of 32 bytes>",
  "user":{"name":"<portal ID>","display_name":"<name>","status":1,"hjv_role":"operator"},
- "hjv":{"ks":<the key's serial>,"binding":"<32 hex>","login_at":<time>}}
+ "hjv":{"ks":<the key's serial>,"binding":"<32 hex>","login_at":<time>,
+        "access":{"ticket":"t1.…","use":"both","exp":<time>,"server_time":<time>}}}
 ```
 
   `name` is the person's ID as the SSO names it (its pcode, uppercased: hbbs and the SSO, below).
@@ -715,7 +758,9 @@ padding, NUL is the byte 0x00, times are Unix seconds.
   128 bits, kept while the same account logs in on the PC again) and `login_at` (the server's time
   of this login, also the device row's `login_at`) come only when this login added the device or
   found it already in the account: an installed Windows PC whose `hjv.sig` matches the key hbbs
-  holds for its ID.
+  holds for its ID. `access` is the app's access ticket (Access tickets, below) while hjv-api has
+  a ticket key: `both` for such a PC (in this account or another), `ctl` for any other device;
+  the App Review account's answer has none yet.
 - A seal whose `t` is more than `HJV_API_SEAL_MAX_SKEW` (600 s) off the server's clock: 409
   `{"error":"기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요.","hjv":"clock","server_time":<time>}`.
   Other sealing errors: 400 with the failure text.
@@ -932,8 +977,14 @@ with the PC's device key (the key hbbs held when it was bound):
 
 ```text
 {"server_time":<time>,"state":"active","refresh":120,"send_wol":false,
- "list":{"kid":1,"l":"<base64 of the list bytes>","s":"<base64 signature>"}}
+ "list":{"kid":1,"l":"<base64 of the list bytes>","s":"<base64 signature>"},
+ "access":{"ticket":"t1.…","use":"both","exp":<time>,"server_time":<time>}}
 ```
+
+- `access` is the PC's access ticket (Access tickets, below), which its service registers with
+  hbbs on: in the answer with the list of a sync that carried the PC's binding, while hjv-api has
+  a ticket key and the account is on the allowlist and not blocked (whatever its password-less
+  switch, so a `disabled` list may come with one). A `revoked` list and `listed` carry none.
 
 - The list, its fields in this order (the bytes are what is signed and checked):
   `{"v":1,"typ":"hjv-trust","kid":1,"binding":"<hex>","pc_id":"<ID>","pc_pk":"<base64>","req":"<n>",
@@ -948,6 +999,60 @@ with the PC's device key (the key hbbs held when it was bound):
   takes a list only with a key number it pins, at or above the highest it has taken, its own ID
   and key, the binding and `n` of its request, and `0 < exp − iat ≤ 72 hours`; it counts the
   lifetime from receipt, and drops its binding only for a signed `revoked`.
+
+### Access tickets: `POST /api/hjv/ticket`, and the login's and the PC sync's `access` (`src/ticket.rs`)
+
+docs/access-tickets.md is the contract of the ticket, which hjv-api signs, hbbs (server patch
+0006) checks and the app carries: `t1.<kid>.<base64url payload>.<base64url signature>`, at most
+1024 bytes, the ticket key's Ed25519 signature over `"hjv-ticket-v1" NUL` and the payload bytes,
+the payload `{"v":1,"who","use","sub","id","pk","to","iat","exp"}` in that order. hjv-api never
+signs a payload that hbbs refuses as malformed. This section is the answer's form, which that
+document leaves to this README.
+
+```text
+POST /api/hjv/ticket                         a phone: no body, or {}
+{"id":"<PC ID>","pk":"<base64 of its device key>","sig":"<base64 signature>"}    a Windows app
+"hjv-ticket-pc-v1" NUL id NUL pk NUL base64(SHA-256(token))                      what sig signs
+200 {"ticket":"t1.<kid>.<payload>.<signature>","use":"ctl","exp":<time>,"server_time":<time>}
+```
+
+- The ticket object, the same in the three places: `ticket` the string the app carries as it is
+  and never reads; `use` what it is good for (`ctl`: the punch hole and relay requests; `both`:
+  also the registration, `RegisterPk` field 1001); `exp` when hbbs stops taking it;
+  `server_time` the server's clock at the answer, so that the app counts `exp − server_time` from
+  receipt and renews in time without reading the ticket. Each answer has a ticket of its own.
+- Who gets which ticket:
+
+| where | ticket | lifetime |
+|---|---|---|
+| the login's answer, `hjv.access` | `staff`/`both` for an installed PC whose `hjv.sig` matched the key hbbs holds for its ID; `staff`/`ctl` for every other device | `HJV_API_TICKET_HOURS` |
+| `POST /api/hjv/ticket`, no body or `{}` | `staff`/`ctl` | `HJV_API_TICKET_HOURS` |
+| `POST /api/hjv/ticket` with the PC part | `staff`/`both` for its `id` and `pk` | `HJV_API_TICKET_HOURS` |
+| the App Review account | `review`/`ctl` for the `PC=` IDs of its file, until its UNTIL at the latest, once that line is read; until then none (403 `no_ticket`, no `access` at its login) | |
+| a bound PC's sync with its binding, `access` | `staff`/`both` for its ID and the key that checked the sync, while the account is on the allowlist and not blocked | `HJV_API_PC_TICKET_HOURS` |
+
+  `sub` is the account's tag (log.rs), never its portal ID; `to` is empty but for the App Review
+  account. The access password's tickets (`guest`, `POST /api/hjv/guest`) come with the next step.
+- The PC part: `id`, `pk` and `sig` together or none of them. `id` is a device ID (1 to 64 of
+  `A-Z a-z 0-9 - _`), `pk` exactly the standard base64 of the 32-byte device key, `sig` that key's
+  strict Ed25519 signature of the bytes above, with `pk` as sent and the hash of this request's
+  bearer token, so that a signature goes with one login only. The ID need not be the one the
+  login came from (an app whose ID changed gets the ticket of its new one): the key proves the
+  PC, and hbbs takes the ticket only for a registration of that ID with that key. A phone, which
+  never registers with hbbs, sends no PC part.
+- Refusals, besides the 401 and 409 of every account path and 405 for another method: 400
+  `{"error":"요청을 이해하지 못했습니다.","hjv":"bad_request"}` for a body that is not one of the
+  two (the journal says why once in ten minutes per account, by its tag); 403
+  `{"error":"이 계정으로는 출입증을 받을 수 없습니다.","hjv":"no_ticket"}` for an account that gets no
+  ticket (the App Review account); 429
+  `{"error":"요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"rate_limited"}` past 30 calls a
+  minute of the account key, counted with its key list's; 503
+  `{"error":"지금은 출입증을 받을 수 없습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"unavailable"}`
+  without a ticket key. A blocked account's tokens end (401), and its PCs' syncs carry no ticket.
+  The very same request again within `HJV_API_RETRY_WINDOW` gets the first answer, its ticket
+  too, as every signed request that changes something.
+- Nothing stores or logs a ticket, and no ticket is recorded one by one: `admin ticket status`
+  counts them since the start, by kind.
 
 ### NAS relays: `POST /api/hjv/relay/hello`, `/api/hjv/relay/poll` (`src/relay.rs`)
 
@@ -1258,6 +1363,20 @@ signed (48)      686a762d7570646174652d76310031323334353637383900313739333537373
 X-HJV-Sig        9SMz/B9qthKAtR/xDS6vk+fep97TTkCtFVTJRJ51ypTwmwxZMoH2EUoFrHlIN2LH5c+K5lTUfUoYMAQovYRLDg==
 ```
 
+The access tickets' vectors are `tests/vectors/access-tickets.json` (docs/access-tickets.md 8),
+which `tests/tickets.rs` reads, pinned by its SHA-256, as hbbs's tests read it: hjv-api makes every
+valid ticket of it again byte for byte, and its signer refuses exactly the payloads hbbs refuses as
+malformed. A Windows app's request for a `both` ticket (`src/ticket.rs`), with the vectors' PC key
+(the seed `[2; 32]`) and the token above; the signature is the one OpenSSL makes too:
+
+```text
+device key       gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=
+POST /api/hjv/ticket, {"id":"123456789","pk":<the device key>,"sig":<sig>}
+SHA-256(token)   h6q74v9/1g0Rq8wvBTM5yQIFPZwyCOmhw1Pff+EcZ6g=
+signed (116)     686a762d7469636b65742d70632d7631003132333435363738390067546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d00683671373476392f316730527138777642544d3579514946505a7779434f6d6877315066662b45635a36673d
+sig              nG4V0N+qAT9bPvurXKhwQG3b4vvYwN+nqee9l9iA6qoRUIRsICcBdsYnaj3FWb3L4p/NC1GGMV6awpRVZazoAg==
+```
+
 These keys are public test values: never use them for anything else.
 
 ## Tests
@@ -1309,6 +1428,11 @@ while SSO calls are paused or with a second factor, a wrong password and the ID'
 success limits before the hash, the file missing, past its UNTIL or refused, list mode, no PC, no
 account it did not make, door 1 and short links refused, no super operator, its tokens ending with
 the file, the line at the start);
+`tests/tickets.rs` the access tickets: the shared vectors made again and the signer's rules held
+against them, `POST /api/hjv/ticket` (a phone's ticket, a Windows app's, the refusals, the retry,
+the limit), the tickets of the login's answer and of a bound PC's sync (by the account's state and
+the PC's binding), the App Review account without one, a server without a ticket key, `admin
+ticket status`, selfcheck, and that no ticket reaches the journal or the records;
 `tests/update_stream.rs` how a package goes out, on tokio's paused clock
 with hjv-api on one end of a connection in memory (a slow reader past the minute a request has, a
 reader that stops, the fifth download at once, the hour a download may take, 200 MiB at the rate),

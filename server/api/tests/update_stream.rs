@@ -126,6 +126,7 @@ fn state(dir: &Path, more: &[(&str, &str)]) -> Arc<AppState> {
         log_key: Zeroizing::new(vec![7; 32]),
         list_key: Zeroizing::new([1; 32]),
         command_key: None,
+        ticket_key: None,
     };
     AppState::new(config, secrets, db::open_in_memory().unwrap(), None).unwrap()
 }

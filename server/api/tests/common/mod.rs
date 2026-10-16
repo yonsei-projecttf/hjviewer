@@ -7,7 +7,9 @@
 //! (proof.rs), as the app's request hook does. `sync` is a PC's sync (pcsync.rs), signed with its
 //! device key, and checks the trust list of the answer as the PC does (design v3 §3-6). The list
 //! keys are the shared test vectors' (tests/data/v3-vectors.json): key 1 of seed [1; 32] signs,
-//! key 2 of seed [9; 32] is the other one the apps pin.
+//! key 2 of seed [9; 32] is the other one the apps pin. The ticket keys are those of the access
+//! tickets' vectors (tests/vectors/access-tickets.json): key 1 of seed [0x74; 32] signs, key 2 of
+//! [0x75; 32] is the other one hbbs takes.
 
 #![allow(dead_code)]
 
@@ -87,6 +89,20 @@ pub fn command_pubkeys() -> String {
         "{},{}",
         trust::entry(1, &devsig::public_key(&COMMAND_SEED)),
         trust::entry(2, &devsig::public_key(&NEXT_COMMAND_SEED))
+    )
+}
+
+/// The ticket key hjv-api signs access tickets with (number 1), and the next one hbbs takes
+/// (number 2): the access tickets' vectors' keys `ticket_1` and `ticket_2`.
+pub const TICKET_SEED: [u8; 32] = [0x74; 32];
+pub const NEXT_TICKET_SEED: [u8; 32] = [0x75; 32];
+
+/// HJV_API_TICKET_PUBKEYS, as hbbs's test access.conf has them (its KEY= lines).
+pub fn ticket_pubkeys() -> String {
+    format!(
+        "{},{}",
+        trust::entry(1, &devsig::public_key(&TICKET_SEED)),
+        trust::entry(2, &devsig::public_key(&NEXT_TICKET_SEED))
     )
 }
 
@@ -285,6 +301,8 @@ pub struct Options {
     pub db_file: Option<PathBuf>,
     /// no command key (credential hjviewer-api-command-key): no wake command is signed
     pub no_command_key: bool,
+    /// no ticket key (credential hjviewer-api-ticket-key): no access ticket is signed
+    pub no_ticket_key: bool,
     /// no admin socket, and so no operator record, as when hjv-api cannot open the record
     pub no_admin: bool,
 }
@@ -380,6 +398,7 @@ impl Harness {
             ("HJV_API_LIMIT_SSO_NEW", "100/60".to_owned()),
             ("HJV_API_TRUST_PUBKEYS", trust_pubkeys()),
             ("HJV_API_COMMAND_PUBKEYS", command_pubkeys()),
+            ("HJV_API_TICKET_PUBKEYS", ticket_pubkeys()),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
@@ -398,6 +417,11 @@ impl Harness {
                 None
             } else {
                 Some(Zeroizing::new(COMMAND_SEED))
+            },
+            ticket_key: if opts.no_ticket_key {
+                None
+            } else {
+                Some(Zeroizing::new(TICKET_SEED))
             },
         };
         let dir = temp_dir("harness");

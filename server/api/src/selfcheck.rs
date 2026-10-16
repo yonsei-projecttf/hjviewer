@@ -19,6 +19,13 @@
 //! pin would have every relay refuse every command. Without the credential and the setting, Wake-
 //! on-LAN is simply off.
 //!
+//! The same for the ticket key that signs the access tickets (docs/access-tickets.md 2-5):
+//! the fingerprints of the keys hbbs takes (HJV_API_TICKET_PUBKEYS, the `KEY=` lines of its
+//! access.conf), and whether the key in use (the credential hjviewer-api-ticket-key, number
+//! HJV_API_TICKET_KID) is the one of its number there: otherwise hbbs refuses every ticket, and
+//! with the access check on nobody connects. Without the credential and the setting, no ticket is
+//! signed.
+//!
 //! It also says who may log in (HJV_API_LOGIN, the open login of 2026-10-14): `open` or `list`.
 //!
 //! The unit can run it after each start (`ExecStartPost=-… selfcheck --log-only`, commented out
@@ -62,6 +69,80 @@ pub enum CommandKeyCheck {
     NotRead(String),
     /// no credentials here (a shell outside the unit): not compared
     Unavailable,
+}
+
+/// The ticket key the check compares with the keys hbbs takes.
+pub enum TicketKeyCheck {
+    /// the key in use, with its number
+    Held { kid: u32, public_key: [u8; 32] },
+    /// the credentials hold none
+    Absent,
+    /// it could not be read here: why
+    NotRead(String),
+    /// no credentials here (a shell outside the unit): not compared
+    Unavailable,
+}
+
+/// The ticket key lines of the report; false when one failed.
+fn ticket_keys(config: &Config, held: &TicketKeyCheck, report: &mut String) -> bool {
+    let pinned = &config.ticket_pubkeys;
+    if !pinned.is_empty() {
+        let fingerprints: Vec<String> = pinned
+            .iter()
+            .map(|(kid, key)| trust::fingerprint(*kid, key))
+            .collect();
+        let _ = writeln!(
+            report,
+            "[ OK ] ticket keys hbbs takes (HJV_API_TICKET_PUBKEYS, its access.conf's KEY= lines), SHA-256: {}",
+            fingerprints.join(", ")
+        );
+    }
+    let fail = |report: &mut String, line: String| {
+        let _ = writeln!(report, "[FAIL] {line}");
+        false
+    };
+    match held {
+        TicketKeyCheck::Held { kid, public_key } => {
+            let mine = trust::fingerprint(*kid, public_key);
+            match config.pinned_ticket_key(*kid) {
+                Some(p) if p == *public_key => {
+                    let _ = writeln!(
+                        report,
+                        "[ OK ] ticket key in use (HJV_API_TICKET_KID {kid}): the key {kid} hbbs takes, {mine}"
+                    );
+                    true
+                }
+                Some(_) => fail(report, format!(
+                    "ticket key in use (HJV_API_TICKET_KID {kid}, {mine}) is not the key {kid} of HJV_API_TICKET_PUBKEYS: hbbs refuses every ticket it signs"
+                )),
+                None if pinned.is_empty() => fail(report, format!(
+                    "HJV_API_TICKET_PUBKEYS is not set: the ticket key in use ({mine}) cannot be compared with the KEY= lines of hbbs's access.conf"
+                )),
+                None => fail(report, format!(
+                    "ticket key in use (HJV_API_TICKET_KID {kid}, {mine}): no key of HJV_API_TICKET_PUBKEYS has the number {kid}"
+                )),
+            }
+        }
+        TicketKeyCheck::Absent if pinned.is_empty() => {
+            let _ = writeln!(
+                report,
+                "[ -- ] ticket key: none (no credential hjviewer-api-ticket-key): no access ticket is signed"
+            );
+            true
+        }
+        TicketKeyCheck::Absent => fail(
+            report,
+            "ticket key: no credential hjviewer-api-ticket-key, while HJV_API_TICKET_PUBKEYS names hbbs's keys: no access ticket is signed".to_owned(),
+        ),
+        TicketKeyCheck::NotRead(e) => fail(report, format!("ticket key in use: {e}")),
+        TicketKeyCheck::Unavailable => {
+            let _ = writeln!(
+                report,
+                "[ -- ] ticket key in use: not read here (no credentials directory: give --credentials <dir>, or run hjv-api admin selfcheck)"
+            );
+            true
+        }
+    }
 }
 
 /// The command key lines of the report; false when one failed.
@@ -198,6 +279,7 @@ pub async fn run(
     config: &Config,
     list_key: &ListKeyCheck,
     command_key: &CommandKeyCheck,
+    ticket_key: &TicketKeyCheck,
 ) -> (String, bool) {
     let mut report = String::new();
     let mut ok = true;
@@ -251,6 +333,7 @@ pub async fn run(
     }
     ok &= list_keys(config, list_key, &mut report);
     ok &= command_keys(config, command_key, &mut report);
+    ok &= ticket_keys(config, ticket_key, &mut report);
     let _ = writeln!(
         report,
         "[ OK ] login (HJV_API_LOGIN): {}, {}",

@@ -5,7 +5,7 @@
 //!     hjv-api serve [--db <file>] [--env-file <file>] [--credentials <dir>]
 //!                   [--listen 127.0.0.1:<port>] [--admin-socket <path>] [--operator-log <file>]
 //!     hjv-api admin [--socket <path>] [--reveal] <command>…
-//!     hjv-api keygen seal|log-key|list --kid N|command --kid N [--encrypt-to <credential file> | --out <file>]
+//!     hjv-api keygen seal|log-key|list --kid N|command --kid N|ticket --kid N [--encrypt-to <credential file> | --out <file>]
 //!     hjv-api selfcheck [--env-file <file>] [--credentials <dir>] [--log-only]
 //!     hjv-api check [--api-socket <path>] [--admin-socket <path>] [--findings <file>]
 //!     hjv-api alert <unit>|test [--findings <file>] [--state-dir <dir>]
@@ -14,13 +14,17 @@
 use hjv_api::{
     admin::{self, AdminRequest},
     alert, backup, check,
-    config::{load_command_key, load_list_key, read_env_file, Config, Secrets, ENV_PREFIX},
+    config::{
+        load_command_key, load_list_key, load_ticket_key, read_env_file, Config, Secrets,
+        ENV_PREFIX,
+    },
     db, jobs,
     keygen::{self, Target},
     log_crit, log_err, log_notice, log_warn, oplog, review,
-    selfcheck::{self, CommandKeyCheck, ListKeyCheck},
+    selfcheck::{self, CommandKeyCheck, ListKeyCheck, TicketKeyCheck},
     server::{self, Listener},
     state::AppState,
+    ticket::TicketKey,
     trust,
 };
 use std::{
@@ -42,7 +46,7 @@ const USAGE: &str = "\
 hjv-api serve [--db <file>] [--env-file <file>] [--credentials <dir>]
               [--listen 127.0.0.1:<port>] [--admin-socket <path>] [--operator-log <file>]
 hjv-api admin [--socket <path>] [--reveal] <command> (hjv-api admin help)
-hjv-api keygen seal|log-key|list --kid N|command --kid N [--encrypt-to <credential file> | --out <file>]
+hjv-api keygen seal|log-key|list --kid N|command --kid N|ticket --kid N [--encrypt-to <credential file> | --out <file>]
 hjv-api selfcheck [--env-file <file>] [--credentials <dir>] [--log-only]
 hjv-api check [--api-socket <path>] [--admin-socket <path>] [--findings <file>]
 hjv-api alert <unit>|test [--findings <file>] [--state-dir <dir>]
@@ -268,14 +272,19 @@ async fn serve(
     }
     check_list_key(&state);
     check_command_key(&state);
+    check_ticket_key(&state);
     review::note_at_start(&state);
     tokio::spawn(jobs::run(state.clone(), stopped()));
     log_notice!(
-        "hjv-api {} ready: seal keys {}, list key {}, command key {}, second factor {second_factor}, login {}",
+        "hjv-api {} ready: seal keys {}, list key {}, command key {}, ticket key {}, second factor {second_factor}, login {}",
         env!("CARGO_PKG_VERSION"),
         state.seal.key_ids().join(" "),
         &trust::fingerprint(state.list_key.kid(), &state.list_key.public_key())[..18],
         state.command_key.as_ref().map_or_else(
+            || "none".to_owned(),
+            |k| trust::fingerprint(k.kid(), &k.public_key())[..18].to_owned()
+        ),
+        state.ticket_key.as_ref().map_or_else(
             || "none".to_owned(),
             |k| trust::fingerprint(k.kid(), &k.public_key())[..18].to_owned()
         ),
@@ -374,6 +383,33 @@ fn check_command_key(state: &AppState) {
     }
 }
 
+/// The ticket key in use against the keys hbbs takes (docs/access-tickets.md 2-5): a key its
+/// access.conf does not name gets every ticket refused, which `selfcheck` also reports.
+fn check_ticket_key(state: &AppState) {
+    let config = &state.config;
+    let Some(key) = &state.ticket_key else {
+        if !config.ticket_pubkeys.is_empty() {
+            log_crit!(
+                "no ticket key (credential hjviewer-api-ticket-key) while HJV_API_TICKET_PUBKEYS is set: no access ticket is signed (hjv-api selfcheck)"
+            );
+        }
+        return;
+    };
+    let (kid, mine) = (key.kid(), key.public_key());
+    match config.pinned_ticket_key(kid) {
+        Some(pinned) if pinned == mine => {}
+        Some(_) => log_crit!(
+            "the ticket key (credential hjviewer-api-ticket-key) is not key {kid} of HJV_API_TICKET_PUBKEYS: hbbs refuses every ticket it signs (hjv-api selfcheck)"
+        ),
+        None if config.ticket_pubkeys.is_empty() => log_warn!(
+            "HJV_API_TICKET_PUBKEYS is not set: the ticket key is not compared with the keys of hbbs's access.conf (hjv-api selfcheck)"
+        ),
+        None => log_crit!(
+            "HJV_API_TICKET_KID {kid} is not among HJV_API_TICKET_PUBKEYS: hbbs refuses every ticket (hjv-api selfcheck)"
+        ),
+    }
+}
+
 fn keygen_cli(args: &[String]) -> Result<(), String> {
     let (opts, rest) = options(args, &["--encrypt-to", "--out", "--kid"], &[])?;
     let [kind] = rest.as_slice() else {
@@ -403,8 +439,8 @@ async fn selfcheck_cli(args: &[String]) -> Result<(), String> {
         );
     }
     let config = load_config(opts.get("--env-file"))?;
-    // the list key and the command key in use, where the credentials are: in the unit
-    // (ExecStartPost=) or a test's directory
+    // the list key, the command key and the ticket key in use, where the credentials are: in the
+    // unit (ExecStartPost=) or a test's directory
     let dir = opts
         .get("--credentials")
         .map(PathBuf::from)
@@ -430,7 +466,18 @@ async fn selfcheck_cli(args: &[String]) -> Result<(), String> {
         },
         None => CommandKeyCheck::Unavailable,
     };
-    let (report, ok) = selfcheck::run(&config, &list_key, &command_key).await;
+    let ticket_key = match &dir {
+        Some(dir) => match load_ticket_key(dir) {
+            Ok(Some(seed)) => TicketKeyCheck::Held {
+                kid: config.ticket_kid,
+                public_key: TicketKey::new(config.ticket_kid, &seed).public_key(),
+            },
+            Ok(None) => TicketKeyCheck::Absent,
+            Err(e) => TicketKeyCheck::NotRead(e),
+        },
+        None => TicketKeyCheck::Unavailable,
+    };
+    let (report, ok) = selfcheck::run(&config, &list_key, &command_key, &ticket_key).await;
     if opts.contains_key("--log-only") {
         // after each start (ExecStartPost=-): report through the journal, never fail the unit
         for line in report.lines() {

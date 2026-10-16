@@ -673,3 +673,107 @@ async fn keygen_command_and_selfcheck_of_the_command_key() {
         .contains("[FAIL] command key: no credential hjviewer-api-command-key"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The ticket key (docs/access-tickets.md 2-5): `keygen ticket --kid N` shows the public key as
+/// exactly the line `N:<base64>`, the value of a KEY= line of hbbs's access.conf, then its
+/// fingerprint, and writes the seed only where it is kept; `selfcheck` compares the key in the
+/// credentials with HJV_API_TICKET_PUBKEYS and fails when hbbs would not take it.
+#[tokio::test]
+async fn keygen_ticket_and_selfcheck_of_the_ticket_key() {
+    for bad in [
+        &["keygen", "ticket"][..],
+        &["keygen", "ticket", "--kid", "0"],
+        &["keygen", "ticket", "--kid", "65536"],
+    ] {
+        assert!(
+            !Command::new(BIN)
+                .args(bad)
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "{bad:?}"
+        );
+    }
+    let dir = temp_dir("selfcheck-ticket");
+    let sso = fake_sso::start(
+        TcpListener::bind("127.0.0.1:0").await.unwrap(),
+        Duration::from_secs(3),
+    );
+    let hbbs = FakeHbbs::start().await;
+    let (env, creds, _) = write_setup(&dir, &sso, &hbbs);
+    let selfcheck = |env: PathBuf, creds: PathBuf| {
+        tokio::task::spawn_blocking(move || {
+            Command::new(BIN)
+                .arg("selfcheck")
+                .arg("--env-file")
+                .arg(&env)
+                .arg("--credentials")
+                .arg(&creds)
+                .output()
+                .unwrap()
+        })
+    };
+    // neither the setting nor the credential: no ticket is signed, nothing fails
+    let out = selfcheck(env.clone(), creds.clone()).await.unwrap();
+    let report = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{report}");
+    assert!(report.contains("[ -- ] ticket key: none"), "{report}");
+    // key 1, made with keygen into the credential
+    let out = Command::new(BIN)
+        .args(["keygen", "ticket", "--kid", "1", "--out"])
+        .arg(creds.join("hjviewer-api-ticket-key"))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let note = String::from_utf8_lossy(&out.stderr).into_owned();
+    let seed = hjv_api::config::load_ticket_key(&creds).unwrap().unwrap();
+    let public = hjv_api::devsig::public_key(&seed);
+    assert_eq!(
+        note,
+        format!(
+            "{}\nfingerprint: {}\n",
+            hjv_api::trust::entry(1, &public),
+            hjv_api::trust::fingerprint(1, &public)
+        )
+    );
+    assert!(!note.contains(&util::b64(&*seed)));
+    // hbbs's access.conf takes it, with the next key
+    let pin = note.lines().next().unwrap().to_owned();
+    let next = hjv_api::trust::entry(2, &hjv_api::devsig::public_key(&NEXT_TICKET_SEED));
+    let text = std::fs::read_to_string(&env).unwrap();
+    std::fs::write(&env, format!("{text}HJV_API_TICKET_PUBKEYS={pin},{next}\n")).unwrap();
+    let out = selfcheck(env.clone(), creds.clone()).await.unwrap();
+    let report = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{report}");
+    assert!(
+        report.contains(&format!(
+            "[ OK ] ticket key in use (HJV_API_TICKET_KID 1): the key 1 hbbs takes, {}",
+            hjv_api::trust::fingerprint(1, &public)
+        )),
+        "{report}"
+    );
+    // a key access.conf does not take
+    std::fs::write(
+        creds.join("hjviewer-api-ticket-key"),
+        util::b64(&[0x76u8; 32]),
+    )
+    .unwrap();
+    let out = selfcheck(env.clone(), creds.clone()).await.unwrap();
+    let report = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(!out.status.success());
+    assert!(
+        report.contains(
+            "is not the key 1 of HJV_API_TICKET_PUBKEYS: hbbs refuses every ticket it signs"
+        ),
+        "{report}"
+    );
+    assert!(!report.contains(&util::b64(&[0x76u8; 32])));
+    // a credential that is not one seed: not read, and the service would not start
+    std::fs::write(creds.join("hjviewer-api-ticket-key"), "AAAA").unwrap();
+    let out = selfcheck(env, creds).await.unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout)
+        .contains("[FAIL] ticket key in use: credential hjviewer-api-ticket-key"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

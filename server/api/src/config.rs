@@ -9,7 +9,7 @@
 
 use crate::{
     trust,
-    util::{b64_decode, IpNet, DAY},
+    util::{b64_decode, IpNet, DAY, HOUR},
 };
 use hyper::Uri;
 use std::{
@@ -124,6 +124,16 @@ pub struct Config {
     pub downloads_max: usize,
     /// the App Review account's ID, password hash and end (review.rs); unset, there is none
     pub review_file: Option<PathBuf>,
+    /// the number of the ticket key in use (the credential hjviewer-api-ticket-key), which signs
+    /// the access tickets hbbs checks (docs/access-tickets.md 2-5, ticket.rs)
+    pub ticket_kid: u32,
+    /// the ticket keys hbbs takes, the KEY= lines of its access.conf: selfcheck compares the key
+    /// in use
+    pub ticket_pubkeys: Vec<(u32, [u8; 32])>,
+    /// how long the ticket of a logged-in app and that of a bound PC live, in seconds (at most
+    /// seven days: hbbs refuses a longer ticket)
+    pub ticket_secs: i64,
+    pub pc_ticket_secs: i64,
 }
 
 /// Who may log in (HJV_API_LOGIN). The user's decision of 2026-10-14 replaced D3's allowlist by
@@ -227,6 +237,10 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_LIMIT_UPDATE_FAIL_IP", Some("30/86400")),
     ("HJV_API_DOWNLOADS_MAX", Some("4")),
     ("HJV_API_REVIEW_FILE", Some("")),
+    ("HJV_API_TICKET_KID", Some("1")),
+    ("HJV_API_TICKET_PUBKEYS", Some("")),
+    ("HJV_API_TICKET_HOURS", Some("24")),
+    ("HJV_API_PC_TICKET_HOURS", Some("72")),
 ];
 
 /// The most files (packages and notice files) hjv-api sends at once, whatever
@@ -392,6 +406,22 @@ impl Config {
                 "HJV_API_COMMAND_PUBKEYS (the relays' HJV_COMMAND_PUBKEY, <kid>:<base64>,…): {e}"
             )
             })?;
+        let ticket_kid = u32::try_from(num("HJV_API_TICKET_KID")?)
+            .ok()
+            .filter(|k| *k <= trust::MAX_KID)
+            .ok_or("HJV_API_TICKET_KID is a key number, 1 to 65535")?;
+        let ticket_pubkeys = trust::parse_pubkeys(&get("HJV_API_TICKET_PUBKEYS")?).map_err(|e| {
+            format!("HJV_API_TICKET_PUBKEYS (the KEY= lines of hbbs's access.conf, <kid>:<base64>,…): {e}")
+        })?;
+        let ticket_hours = |name: &str| -> Result<i64, String> {
+            let hours = num(name)?;
+            if hours > crate::ticket::MAX_LIFETIME / HOUR {
+                return Err(format!(
+                    "{name} is at most 168 hours (seven days): hbbs refuses a longer ticket"
+                ));
+            }
+            Ok(hours * HOUR)
+        };
         let config = Config {
             sso: SsoSettings {
                 token_url,
@@ -449,6 +479,10 @@ impl Config {
                 "" => None,
                 _ => Some(path("HJV_API_REVIEW_FILE")?),
             },
+            ticket_kid,
+            ticket_pubkeys,
+            ticket_secs: ticket_hours("HJV_API_TICKET_HOURS")?,
+            pc_ticket_secs: ticket_hours("HJV_API_PC_TICKET_HOURS")?,
         };
         if config.token_idle_secs > config.token_max_secs {
             return Err("HJV_API_TOKEN_IDLE_DAYS cannot exceed HJV_API_TOKEN_MAX_DAYS".into());
@@ -489,6 +523,14 @@ impl Config {
     /// The command key the relays pin under `kid`, if they pin one.
     pub fn pinned_command_key(&self, kid: u32) -> Option<[u8; 32]> {
         self.command_pubkeys
+            .iter()
+            .find(|(k, _)| *k == kid)
+            .map(|(_, key)| *key)
+    }
+
+    /// The ticket key hbbs takes under `kid` (HJV_API_TICKET_PUBKEYS), if it takes one.
+    pub fn pinned_ticket_key(&self, kid: u32) -> Option<[u8; 32]> {
+        self.ticket_pubkeys
             .iter()
             .find(|(k, _)| *k == kid)
             .map(|(_, key)| *key)
@@ -587,6 +629,7 @@ pub const CRED_SEAL_KEY: &str = "hjviewer-api-login-key";
 pub const CRED_LOG_KEY: &str = "hjviewer-api-log-key";
 pub const CRED_LIST_KEY: &str = "hjviewer-api-list-key";
 pub const CRED_COMMAND_KEY: &str = "hjviewer-api-command-key";
+pub const CRED_TICKET_KEY: &str = "hjviewer-api-ticket-key";
 
 /// The secrets, read from credential files.
 pub struct Secrets {
@@ -604,6 +647,9 @@ pub struct Secrets {
     /// the 32-byte Ed25519 seed of the command key that signs wake commands (design v3 §5-3,
     /// phase 2), number HJV_API_COMMAND_KID; without it hjv-api queues no wake command
     pub command_key: Option<Zeroizing<[u8; 32]>>,
+    /// the 32-byte Ed25519 seed of the ticket key that signs the access tickets
+    /// (docs/access-tickets.md 2-5), number HJV_API_TICKET_KID; without it hjv-api signs none
+    pub ticket_key: Option<Zeroizing<[u8; 32]>>,
 }
 
 /// Reads the credential `name` of `dir`: text, trimmed, not empty.
@@ -639,8 +685,25 @@ impl Secrets {
             log_key,
             list_key: load_list_key(dir)?,
             command_key: load_command_key(dir)?,
+            ticket_key: load_ticket_key(dir)?,
         })
     }
+}
+
+/// The ticket key's seed from the credential hjviewer-api-ticket-key of `dir`, when there is one
+/// (the unit loads it; a test or E2E directory may go without, and then no ticket is signed). A
+/// credential that is there but not one seed stops the start.
+pub fn load_ticket_key(dir: &Path) -> Result<Option<Zeroizing<[u8; 32]>>, String> {
+    let missing = matches!(
+        std::fs::metadata(dir.join(CRED_TICKET_KEY)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    );
+    if missing {
+        return Ok(None);
+    }
+    parse_list_key(&read_credential(dir, CRED_TICKET_KEY)?)
+        .map(Some)
+        .map_err(|e| format!("credential {CRED_TICKET_KEY}: {e}"))
 }
 
 /// The command key's seed from the credential hjviewer-api-command-key of `dir`, when there is
@@ -897,6 +960,72 @@ mod tests {
         let err = load_command_key(&dir).unwrap_err();
         assert!(
             err.contains(CRED_COMMAND_KEY) && !err.contains(&seed),
+            "{err}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ticket_settings() {
+        // docs/access-tickets.md 2-4: a day for a logged-in app, three days for a bound PC
+        let c = Config::from_vars(&base()).unwrap();
+        assert_eq!((c.ticket_kid, c.ticket_pubkeys.len()), (1, 0));
+        assert_eq!((c.ticket_secs, c.pc_ticket_secs), (24 * HOUR, 72 * HOUR));
+        let k1 = crate::devsig::public_key(&[0x74; 32]);
+        let k2 = crate::devsig::public_key(&[0x75; 32]);
+        let with = |pairs: &[(&str, &str)]| {
+            let mut vars = base();
+            for (k, v) in pairs {
+                vars.insert((*k).to_owned(), (*v).to_owned());
+            }
+            Config::from_vars(&vars)
+        };
+        let keys = format!("{},{}", trust::entry(1, &k1), trust::entry(2, &k2));
+        let c = with(&[
+            ("HJV_API_TICKET_PUBKEYS", &keys),
+            ("HJV_API_TICKET_KID", "2"),
+            ("HJV_API_TICKET_HOURS", "168"),
+            ("HJV_API_PC_TICKET_HOURS", "1"),
+        ])
+        .unwrap();
+        assert_eq!(c.ticket_pubkeys, vec![(1, k1), (2, k2)]);
+        assert_eq!(
+            (c.ticket_kid, c.pinned_ticket_key(2), c.pinned_ticket_key(3)),
+            (2, Some(k2), None)
+        );
+        assert_eq!((c.ticket_secs, c.pc_ticket_secs), (7 * DAY, HOUR));
+        // hbbs refuses a ticket that lives longer than seven days: hjv-api does not start
+        for (k, v) in [
+            ("HJV_API_TICKET_HOURS", "169"),
+            ("HJV_API_PC_TICKET_HOURS", "169"),
+            ("HJV_API_TICKET_HOURS", "0"),
+            ("HJV_API_PC_TICKET_HOURS", "-1"),
+            ("HJV_API_TICKET_HOURS", "1.5"),
+            ("HJV_API_TICKET_KID", "0"),
+            ("HJV_API_TICKET_KID", "65536"),
+            ("HJV_API_TICKET_PUBKEYS", "1:AAAA"),
+            ("HJV_API_TICKET_PUBKEYS", "x"),
+        ] {
+            assert!(with(&[(k, v)]).is_err(), "{k}={v}");
+        }
+    }
+
+    #[test]
+    fn ticket_key_credential() {
+        let dir = std::env::temp_dir().join(format!("hjv-api-tk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(load_ticket_key(&dir).unwrap().is_none());
+        let seed = crate::util::b64(&[0x74u8; 32]);
+        std::fs::write(
+            dir.join(CRED_TICKET_KEY),
+            format!("# ticket key 1\n{seed}\n"),
+        )
+        .unwrap();
+        assert_eq!(*load_ticket_key(&dir).unwrap().unwrap(), [0x74u8; 32]);
+        std::fs::write(dir.join(CRED_TICKET_KEY), format!("{seed}\n{seed}\n")).unwrap();
+        let err = load_ticket_key(&dir).unwrap_err();
+        assert!(
+            err.contains(CRED_TICKET_KEY) && !err.contains(&seed),
             "{err}"
         );
         std::fs::remove_dir_all(&dir).unwrap();

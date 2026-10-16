@@ -84,7 +84,9 @@
 //! device, and that token's key with it, and an account keeps at most [`MAX_TOKENS`]. The answer
 //! adds `"hjv":{"ks":<the key's serial>}`, and for a PC added by the login or already in the
 //! account also `"binding":"<32 hex>","login_at":<server time>` (design v3 §4-1), from which the
-//! PC's service takes up the binding (§4-4).
+//! PC's service takes up the binding (§4-4). While hjv-api has a ticket key, `hjv.access` is the
+//! app's access ticket (ticket.rs): `both` for an installed PC whose login signature matched the
+//! key hbbs holds for it, `ctl` for any other device, none for the App Review account yet.
 
 use crate::{
     api::{is_json, user_json, ApiRequest, BodyError, Reply},
@@ -1613,6 +1615,7 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
         }
     }
     let check = check_device(state, key, &device, &account_tag).await;
+    let login_key = key.to_owned();
     let token = format!("hjv_{}", b64url(&random_bytes::<32>()));
     let hash = sha256(token.as_bytes());
     let at = now();
@@ -1780,6 +1783,15 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
     {
         hjv["binding"] = json!(hex(&binding_id));
         hjv["login_at"] = json!(login_at);
+    }
+    // the app's access ticket (ticket.rs): `both` for the PC whose login signature matched the
+    // key hbbs holds for it, else `ctl`
+    let pc = match check {
+        DeviceCheck::Verified(pk) => Some((device.id.as_str(), pk)),
+        DeviceCheck::Skip(_) => None,
+    };
+    if let Ok(issued) = crate::ticket::for_account(state, &login_key, pc, "login", at).await {
+        hjv["access"] = issued.json(now());
     }
     LoginAnswer::ok(json!({
         "type": "access_token",
