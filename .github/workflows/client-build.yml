@@ -327,7 +327,8 @@ jobs:
       # hjv_update_test.dart those of the update screens and hjv_update_gate_test.dart their gate's,
       # which needs the bridge (minimum version design 6-4); hjviewer_android_test.dart the
       # controller-only Android app's (Play design 3-3), hjviewer_admin_test.dart and
-      # hjviewer_admin_widgets_test.dart the super operator's view, its widgets with the bridge.
+      # hjviewer_admin_widgets_test.dart the super operator's view, its widgets with the bridge;
+      # hjviewer_access_test.dart the access screens' (docs/access-tickets.md 5-3).
       - name: Run the tests
         run: |
           for t in test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart \
@@ -335,7 +336,8 @@ jobs:
             test/quality_monitor_transport_test.dart test/hjviewer_account_test.dart \
             test/hjviewer_account_widgets_test.dart test/hjv_update_test.dart \
             test/hjv_update_gate_test.dart test/hjviewer_android_test.dart \
-            test/hjviewer_admin_test.dart test/hjviewer_admin_widgets_test.dart; do
+            test/hjviewer_admin_test.dart test/hjviewer_admin_widgets_test.dart \
+            test/hjviewer_access_test.dart; do
             if [ ! -f "$t" ]; then echo "::error::$t is not in the patched tree"; exit 1; fi
           done
           flutter pub get

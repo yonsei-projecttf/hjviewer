@@ -142,6 +142,10 @@ UTF-8 JSON 객체 하나입니다. 아홉 멤버가 이 순서로 모두 있고,
 - **거절 뒤**: 연결 요청이나 중계 요청이 출입 표시(5-1)로 거절되면, 로그인한 앱은 출입증을 한 번 새로 받아 다시 해 보고, 그래도 거절되면 A2를 보입니다. 로그인하지 않은 앱은 A1의 창(5-3)을 엽니다.
 - **묶인 PC**: 동기화 답에 `access`가 오면 그것으로 바꿉니다. `access`가 없는 답(hjv-api에 출입증 키가 없음, 옛 hjv-api로 되돌림, 막힌 계정)은 가진 출입증을 `exp`까지 그대로 둡니다. 서명된 `revoked`와 묶음 풀기만 출입증을 버립니다.
 - 새 출입증을 받지 못하면(hjv-api가 멈춤) 가진 출입증을 `exp`까지 그대로 씁니다.
+- **이용 비밀번호**(3-5): 앱은 이용 비밀번호를 기억하지 않습니다. 넣은 글의 앞뒤 공백을 지우고 봉인해 보낸 뒤 버리고, 받은 출입증은 그 프로세스의 메모리에만 둡니다(파일과 설정에 쓰지 않음).
+  - 컨트롤러의 출입증은 그 대상 ID에 둡니다. 그 프로세스에서 그 대상으로 가는 마지막 세션이 닫히면 버립니다. 그래서 새 연결은 다시 묻고, 같은 세션의 자동 다시 연결과 포트 포워딩의 로컬 연결은 묻지 않습니다.
+  - PC의 출입증은 화면이 받아 IPC 메시지로 등록하는 프로세스(설치한 PC는 서비스가 띄운 서버 프로세스)에 넘깁니다. 그 프로세스가 끝나거나 12시간이 지나면 끝납니다.
+  - 409 `clock`을 받으면 그 답의 `server_time`으로 시계를 맞춰 한 번 다시 보냅니다(로그인과 같음). 그래도 409이면 E5입니다.
 - **등록**(4-4):
   - `NOT_DEPLOYED`를 받은 연결은 hbbs가 곧 끊는다고 봅니다. hbbs는 받아들이지 않은 연결에 하트비트를 보내지 않고, 30초 동안 프레임이 없으면 닫고, 빈 프레임을 받으면 바로 닫습니다. 그런 연결에 빈 프레임을 보내지 않고, 끊기면 다시 연결합니다.
   - 출입증이 오면 30초를 기다리지 않고 그때의 연결에서 출입증을 실은 `RegisterPk`를 보냅니다.
@@ -198,7 +202,7 @@ sig가 서명하는 바이트: "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-25
 
   - `use`는 바깥의 `use`와 같습니다. `id`는 출입증이 닿는 PC입니다: `ctl`이면 바깥의 `to`, `pc`이면 바깥의 `id`. 그래서 봉인 하나는 그 PC 하나의 그 용도에만 씁니다.
   - 용도 칸 `p`가 `guest`가 아닌 봉인은 여기서 받지 않고, `p`가 있는 봉인은 로그인에서 받지 않습니다. 그래서 포탈 비밀번호의 봉인과 이용 비밀번호의 봉인을 서로 바꿔 쓰지 못합니다.
-  - `pw`는 1~256바이트입니다. `t`, `n`, `kid`는 로그인과 같습니다: `t`가 서버 시계와 10분 넘게 다르면 409 `clock`(`server_time`과 함께), 한 번 쓴 `n`은 400, 같은 본문을 30초 안에 다시 보내면 첫 답이 옵니다.
+  - `pw`는 1~256바이트입니다. 앱은 앞뒤 공백을 지우고 보내므로, `deploy/guest-conf.py`는 공백으로 시작하거나 끝나는 비밀번호를 받지 않습니다. `t`, `n`, `kid`는 로그인과 같습니다: `t`가 서버 시계와 10분 넘게 다르면 409 `clock`(`server_time`과 함께), 한 번 쓴 `n`은 400, 같은 본문을 30초 안에 다시 보내면 첫 답이 옵니다.
 - **PC의 서명**: `sig`는 그 PC 기기 키의 Ed25519 서명입니다. 봉인 바이트는 `<봉인>`을 base64url로 푼 바이트입니다(로그인 서명의 `h`와 같음). 그래서 PC의 키가 그 봉인 하나에 묶입니다. hbbs가 그 ID의 키를 알면 같은 키여야 합니다(`hjv-pk`). hjv-api는 PC마다 분당 한 번만 hbbs에 묻고, 그동안은 그 답을 씁니다.
 - **답**: 200은 출입증 객체(3-4)입니다. `ctl`은 `guest`/`ctl`에 `to`가 그 대상 하나, `pc`는 `guest`/`pc`에 그 PC의 ID와 키입니다. 수명은 12시간입니다. 대상이 있는지, 켜져 있는지는 보지 않고 답하지도 않습니다.
 - **확인 순서**: 본문의 모양(400, 세지 않음), 출입증 키(없으면 503) → 주소마다 실패 한도(429) → 봉인(400, 409, 주소의 실패로 셈) → 주소마다 출입증 한도와 모든 시도의 한도(429) → 동시에 해시 2개까지(넘으면 503) → PBKDF2로 비밀번호 확인 → `pc`면 hbbs가 가진 키 → 서명.
@@ -338,7 +342,7 @@ hbbs는 출입증 하나를 아래 순서로 보고, 처음 걸린 것을 이유
 | G1. 설치 화면과 설정의 안내 | 사람이 없을 때도 이 PC에 연결하려면 연세포탈로 로그인해 두세요. 이용 비밀번호는 앱을 켤 때마다 넣어야 합니다. | To reach this PC when nobody is at it, keep it logged in with your Yonsei portal account. The access password has to be entered each time the app starts. |
 | E1. 이용 비밀번호가 틀림(401 `denied`) | 이용 비밀번호가 맞지 않거나, 지금은 서버가 이용 비밀번호를 받지 않습니다. | The access password is wrong, or the server does not take the access password right now. |
 | E2. 시도가 너무 많음(429) | 시도가 너무 많습니다. 잠시 뒤 다시 해 주세요. | Too many tries. Please try again later. |
-| E3. 확인할 수 없음(503, 네트워크) | 지금은 이용 비밀번호를 확인할 수 없습니다. 잠시 뒤 다시 해 주세요. | The access password cannot be checked right now. Please try again in a moment. |
+| E3. 확인할 수 없음(503, 400, 네트워크, 그 밖의 실패) | 지금은 이용 비밀번호를 확인할 수 없습니다. 잠시 뒤 다시 해 주세요. | The access password cannot be checked right now. Please try again in a moment. |
 | E4. PC의 키가 다름(403 `wrong_pc`) | 이 PC의 키가 서버에 있는 것과 달라 이용 비밀번호로 연결받을 수 없습니다. 관리자에게 알려 주세요. | This PC's key differs from the one the server has, so it cannot accept connections with the access password. Please tell your administrator. |
 | E5. 기기의 시계가 맞지 않음(409 `clock`, 한 번 고쳐 다시 보낸 뒤에도) | 기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요. | The device's date and time are wrong. Set them to update automatically and try again. |
 
@@ -348,6 +352,7 @@ hbbs는 출입증 하나를 아래 순서로 보고, 처음 걸린 것을 이유
 - P1은 등록이 거절된 동안(`hjv-access-pc`가 `refused`) PC 홈과 빠른 지원 창에 보입니다. 출입 확인이 꺼진 서버(`MODE=off`)는 거절하지 않으므로 P1이 나오지 않고, 앱은 지금처럼 움직입니다.
 - P2의 출입증은 앱의 메모리(설치한 PC는 서비스의 메모리)에만 있으므로, 앱(설치한 PC는 PC)을 다시 시작하거나 12시간이 지나면 끝나고 등록이 다시 거절되어 P1이 나옵니다.
 - 휴대폰 앱은 PC로 등록하지 않으므로 A1, A2와 E1~E3, E5만 씁니다.
+- 화면은 클라이언트 패치 0061의 `flutter/lib/common/hjviewer_access.dart`에 있고, 글과 고르기는 `hjviewer_access_texts.dart`(시험 `flutter/test/hjviewer_access_test.dart`)에 있습니다. Rust는 A1, A2를 한국어 글로 msgbox에 싣고, Flutter가 그 msgbox(`hjv-access-error`)를 앱의 언어로 된 창으로 바꿉니다.
 
 ## 6. /etc/hjviewer/access.conf
 

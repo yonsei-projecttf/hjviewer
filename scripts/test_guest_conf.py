@@ -149,7 +149,9 @@ class GuestConfTest(unittest.TestCase):
                            (("too short", "too short"), "12 to 256"),
                            (("x" * 257, "x" * 257), "12 to 256"),
                            (("이용 비밀번호를 길게 적었습니다", "이용 비밀번호를 길게 적었습니다"),
-                            "printable ASCII")):
+                            "printable ASCII"),
+                           ((" " + PASSWORD, " " + PASSWORD), "start or end with a space"),
+                           ((PASSWORD + " ", PASSWORD + " "), "start or end with a space")):
             code, out, err = self.run_main(self.args(), answers(*typed))
             self.assertEqual((code, out), (1, ""), why)
             self.assertIn(why, err)

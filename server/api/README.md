@@ -596,10 +596,11 @@ python3 -I deploy/guest-conf.py --until <YYYY-MM-DD> --out ~/guest.conf         
 python3 -I deploy/guest-conf.py --until <YYYY-MM-DD> --out ~/guest.conf --random   # makes one
 ```
 
-It asks for the password twice without showing it (12 to 256 printable ASCII characters), or with
-`--random` makes one of four groups of five letters and digits that cannot be mistaken for one
-another and shows it once, on a terminal only; it refuses a date more than 90 days ahead and writes
-the file (0600, never over another) with 600 000 iterations. `scripts/test_guest_conf.py` tests it
+It asks for the password twice without showing it (12 to 256 printable ASCII characters, not
+starting or ending with a space, which the app drops from what is typed), or with `--random` makes
+one of four groups of five letters and digits that cannot be mistaken for one another and shows it
+once, on a terminal only; it refuses a date more than 90 days ahead and writes the file (0600,
+never over another) with 600 000 iterations. `scripts/test_guest_conf.py` tests it
 (`scripts/ci.sh deploy`). A new file takes the new password from then on; the tickets handed out
 before end within their hours, or at once with `NOT_BEFORE` in hbbs's access.conf
 (docs/access-tickets.md 6-4). Its value goes into the development PC's `build/leak-patterns.txt`,

@@ -67,6 +67,9 @@ def until_of(date, now):
 def check_password(text):
     if not 12 <= len(text) <= 256 or any(not " " <= c <= "~" for c in text):
         raise Refused("the password is 12 to 256 printable ASCII characters")
+    # the app sends what is typed without the spaces around it (docs/access-tickets.md 3-5)
+    if text != text.strip(" "):
+        raise Refused("the password does not start or end with a space")
     return text
 
 
