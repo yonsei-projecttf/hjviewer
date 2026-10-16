@@ -1,0 +1,2095 @@
+{
+  "about": "Shared test vectors of HJViewer's access tickets (docs/access-tickets.md), made by access-tickets.py next to this file: hjv-api signs a ticket, hbbs checks it at the punch hole request, the relay request and the registration, the app only carries it. The private keys are public test values: never use them for anything else.",
+  "use": {
+    "hjv-api": "for every ticket with fields: the payload of 2-3 made from the fields and signed with the key signed_by gives exactly ticket (signed_hex: the bytes signed); sub is Tagger::account of the login key under accounts.log_key_hex",
+    "hbbs": "for every ticket and check: under rule, at now, the reason of 4-1 is expect; for every register_pk: the ticket read from field 1001 of the message and the reason at register_pk with its id and pk; for every access_conf: the rule read from the file, or error",
+    "app": "register_pk 'ticket': a RegisterPk with these id, uuid, pk and hjv_ticket encodes to register_pk_hex"
+  },
+  "encodings": "base64: standard with padding; base64url: URL-safe without padding; hex: lowercase; times: Unix seconds; signed_hex: the exact bytes the signature covers",
+  "domain": "hjv-ticket-v1",
+  "limits": {
+    "ticket_bytes": 1024,
+    "kid": [1, 65535],
+    "skew_seconds": 60,
+    "max_lifetime_seconds": 604800,
+    "max_to": 3,
+    "text_characters": 2000,
+    "access_conf_bytes": 65536
+  },
+  "keys": {
+    "ticket_1": {
+      "kid": 1,
+      "seed_hex": "7474747474747474747474747474747474747474747474747474747474747474",
+      "pk": "VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk="
+    },
+    "ticket_2": {
+      "kid": 2,
+      "seed_hex": "7575757575757575757575757575757575757575757575757575757575757575",
+      "pk": "LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk="
+    },
+    "ticket_3": {
+      "kid": 3,
+      "seed_hex": "7676767676767676767676767676767676767676767676767676767676767676",
+      "pk": "tfkAlTGPPwRM2OQLWEJT2Gd3vmK/ByITNOX9IZnPp/c="
+    },
+    "pc": {
+      "seed_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q="
+    },
+    "other_pc": {
+      "seed_hex": "7777777777777777777777777777777777777777777777777777777777777777",
+      "pk": "yFOtDwzSthmuqSzuxP1Wok1kmdWEznklfkXP2BObYKc="
+    }
+  },
+  "accounts": {
+    "log_key_hex": "6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c",
+    "staff": {"login_key": "zztest0001", "sub": "598891f1a14389ce"},
+    "review": {"login_key": "review-demo", "sub": "81f91a9329af41c4"}
+  },
+  "lifetimes": {"staff": 86400, "bound_pc": 259200, "guest": 43200, "review": 86400},
+  "now": 1760003600,
+  "access_conf": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+  "rule": {
+    "mode": "enforce",
+    "keys": {
+      "1": "VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=",
+      "2": "LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk="
+    },
+    "not_before": 1759968000
+  },
+  "builtin_text": "HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)",
+  "checks": "at: punch_hole (target: PunchHoleRequest.id), request_relay (target: RequestRelay.id) or register_pk (id: RegisterPk.id; pk: the standard base64 of RegisterPk.pk); expect: the reason of 4-1. Under MODE=enforce every reason but ok is refused with the answer of its point; under MODE=count every request goes on and the reason is counted.",
+  "answers": {
+    "punch_hole": "PunchHoleResponse { other_failure: TEXT }",
+    "request_relay": "RelayResponse { refuse_reason: TEXT }",
+    "register_pk": "RegisterPkResponse { result: NOT_DEPLOYED, keep_alive: 30 }"
+  },
+  "reasons": [
+    "ok",
+    "missing",
+    "oversize",
+    "malformed",
+    "unknown_kid",
+    "bad_signature",
+    "wrong_use",
+    "expired",
+    "not_yet_valid",
+    "revoked",
+    "wrong_pc",
+    "wrong_target"
+  ],
+  "tickets": [
+    {
+      "name": "staff-ctl",
+      "why": "a staff phone's ticket (24 h): any target, no registration",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImN0bCIsInN1YiI6IjU5ODg5MWYxYTE0Mzg5Y2UiLCJpZCI6IiIsInBrIjoiIiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.cbn5yVhyXBcrE6g1g0jJPoiBxASgKsV-yyMrfIcowb-lRqSexwkfxcWQwnblXaEaOzbR9_si99fYH14LDn35BA",
+      "bytes": 247,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"ctl\",\"sub\":\"598891f1a14389ce\",\"id\":\"\",\"pk\":\"\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "fields": {
+        "v": 1,
+        "who": "staff",
+        "use": "ctl",
+        "sub": "598891f1a14389ce",
+        "id": "",
+        "pk": "",
+        "to": [],
+        "iat": 1760000000,
+        "exp": 1760086400
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a227374616666222c22757365223a2263746c222c22737562223a2235393838393166316131343338396365222c226964223a22222c22706b223a22222c22746f223a5b5d2c22696174223a313736303030303030302c22657870223a313736303038363430307d",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "ok"},
+        {"at": "punch_hole", "target": "222333444", "expect": "ok"},
+        {"at": "request_relay", "target": "123456789", "expect": "ok"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "wrong_use"
+        }
+      ]
+    },
+    {
+      "name": "staff-ctl-key-2",
+      "why": "the same ticket signed with key 2: both KEY lines are good",
+      "ticket": "t1.2.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImN0bCIsInN1YiI6IjU5ODg5MWYxYTE0Mzg5Y2UiLCJpZCI6IiIsInBrIjoiIiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.40B4zLS7tNsPnFyS-zDD1n90zyF2nov7j4D0zPWA5E1QAb55_rPT5nrA1ljMYx-EGwbnsIilZe-NAkJcc4DaCQ",
+      "bytes": 247,
+      "kid": 2,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"ctl\",\"sub\":\"598891f1a14389ce\",\"id\":\"\",\"pk\":\"\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "fields": {
+        "v": 1,
+        "who": "staff",
+        "use": "ctl",
+        "sub": "598891f1a14389ce",
+        "id": "",
+        "pk": "",
+        "to": [],
+        "iat": 1760000000,
+        "exp": 1760086400
+      },
+      "signed_by": "ticket_2",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a227374616666222c22757365223a2263746c222c22737562223a2235393838393166316131343338396365222c226964223a22222c22706b223a22222c22746f223a5b5d2c22696174223a313736303030303030302c22657870223a313736303038363430307d",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "ok"},
+        {"at": "request_relay", "target": "222333444", "expect": "ok"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "wrong_use"
+        }
+      ]
+    },
+    {
+      "name": "staff-both",
+      "why": "the ticket of a staff member's Windows app (24 h): it connects anywhere and registers only its own ID and device key",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "fields": {
+        "v": 1,
+        "who": "staff",
+        "use": "both",
+        "sub": "598891f1a14389ce",
+        "id": "123456789",
+        "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+        "to": [],
+        "iat": 1760000000,
+        "exp": 1760086400
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a227374616666222c22757365223a22626f7468222c22737562223a2235393838393166316131343338396365222c226964223a22313233343536373839222c22706b223a2267546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d222c22746f223a5b5d2c22696174223a313736303030303030302c22657870223a313736303038363430307d",
+      "checks": [
+        {"at": "punch_hole", "target": "222333444", "expect": "ok"},
+        {"at": "request_relay", "target": "222333444", "expect": "ok"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "ok"
+        },
+        {
+          "at": "register_pk",
+          "id": "222333444",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "wrong_pc"
+        },
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "yFOtDwzSthmuqSzuxP1Wok1kmdWEznklfkXP2BObYKc=",
+          "expect": "wrong_pc"
+        },
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Jsw==",
+          "expect": "wrong_pc"
+        }
+      ]
+    },
+    {
+      "name": "bound-pc",
+      "why": "a bound PC's ticket from its sync (72 h)",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDI1OTIwMH0.f6_kOOQaEgSx4U1D3wLIIeYT0Lu8euKzU6ISJrGfnwl9JMMonISedco0tzOZN_BQPCAuhTMGsgyigVavqExWCw",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760259200}",
+      "fields": {
+        "v": 1,
+        "who": "staff",
+        "use": "both",
+        "sub": "598891f1a14389ce",
+        "id": "123456789",
+        "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+        "to": [],
+        "iat": 1760000000,
+        "exp": 1760259200
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a227374616666222c22757365223a22626f7468222c22737562223a2235393838393166316131343338396365222c226964223a22313233343536373839222c22706b223a2267546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d222c22746f223a5b5d2c22696174223a313736303030303030302c22657870223a313736303235393230307d",
+      "checks": [
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "ok"
+        },
+        {"at": "punch_hole", "target": "222333444", "expect": "ok"},
+        {"at": "request_relay", "target": "123456789", "expect": "ok"}
+      ]
+    },
+    {
+      "name": "staff-pc",
+      "why": "staff with use pc: a form hjv-api does not issue now, valid all the same",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6InBjIiwic3ViIjoiNTk4ODkxZjFhMTQzODljZSIsImlkIjoiMTIzNDU2Nzg5IiwicGsiOiJnVGwzRHFoOUYxOVdvMVJtdzB4K3pNdU5pcEcwN2plaVhmWVBXNC9KczVRPSIsInRvIjpbXSwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAyNTkyMDB9.EAyCUra4LiinrCoKDvlfZkRVxNP1iF_iY8KbRAUDJ_xM0OBRv6WSDGjZtA8cgvY8rLfvBPTywWSA1eAKxTVEBA",
+      "bytes": 316,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"pc\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760259200}",
+      "fields": {
+        "v": 1,
+        "who": "staff",
+        "use": "pc",
+        "sub": "598891f1a14389ce",
+        "id": "123456789",
+        "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+        "to": [],
+        "iat": 1760000000,
+        "exp": 1760259200
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a227374616666222c22757365223a227063222c22737562223a2235393838393166316131343338396365222c226964223a22313233343536373839222c22706b223a2267546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d222c22746f223a5b5d2c22696174223a313736303030303030302c22657870223a313736303235393230307d",
+      "checks": [
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "ok"
+        },
+        {"at": "punch_hole", "target": "123456789", "expect": "wrong_use"},
+        {"at": "request_relay", "target": "123456789", "expect": "wrong_use"}
+      ]
+    },
+    {
+      "name": "guest-ctl",
+      "why": "a controller's ticket for the access password (12 h): one target",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJndWVzdCIsInVzZSI6ImN0bCIsInN1YiI6IiIsImlkIjoiIiwicGsiOiIiLCJ0byI6WyIxMjM0NTY3ODkiXSwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwNDMyMDB9.nCoEodtHSz22LdiFJmKe8K5LWeZ2sclZO2AarD7h7I5308_ID-cz7f1lbhlSH5iZaBYAonhZsTd-M9Ir5QFVBQ",
+      "bytes": 240,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"guest\",\"use\":\"ctl\",\"sub\":\"\",\"id\":\"\",\"pk\":\"\",\"to\":[\"123456789\"],\"iat\":1760000000,\"exp\":1760043200}",
+      "fields": {
+        "v": 1,
+        "who": "guest",
+        "use": "ctl",
+        "sub": "",
+        "id": "",
+        "pk": "",
+        "to": ["123456789"],
+        "iat": 1760000000,
+        "exp": 1760043200
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a226775657374222c22757365223a2263746c222c22737562223a22222c226964223a22222c22706b223a22222c22746f223a5b22313233343536373839225d2c22696174223a313736303030303030302c22657870223a313736303034333230307d",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "ok"},
+        {"at": "punch_hole", "target": "222333444", "expect": "wrong_target"},
+        {"at": "request_relay", "target": "123456789", "expect": "ok"},
+        {"at": "request_relay", "target": "222333444", "expect": "wrong_target"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "wrong_use"
+        }
+      ]
+    },
+    {
+      "name": "guest-ctl-custom-id",
+      "why": "a target is compared byte for byte: a custom ID with - and _, and no case folding",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJndWVzdCIsInVzZSI6ImN0bCIsInN1YiI6IiIsImlkIjoiIiwicGsiOiIiLCJ0byI6WyJPZmZpY2UtUENfNyJdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA0MzIwMH0.H73XyDNrVfO-ZJuHBK0Cf3ng28UklvfX0Mquwya1KgCbjmvVv1c3xxM48atWOm9oUeeZYfhT9zGiK-vADq7ZCg",
+      "bytes": 243,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"guest\",\"use\":\"ctl\",\"sub\":\"\",\"id\":\"\",\"pk\":\"\",\"to\":[\"Office-PC_7\"],\"iat\":1760000000,\"exp\":1760043200}",
+      "fields": {
+        "v": 1,
+        "who": "guest",
+        "use": "ctl",
+        "sub": "",
+        "id": "",
+        "pk": "",
+        "to": ["Office-PC_7"],
+        "iat": 1760000000,
+        "exp": 1760043200
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a226775657374222c22757365223a2263746c222c22737562223a22222c226964223a22222c22706b223a22222c22746f223a5b224f66666963652d50435f37225d2c22696174223a313736303030303030302c22657870223a313736303034333230307d",
+      "checks": [
+        {"at": "punch_hole", "target": "Office-PC_7", "expect": "ok"},
+        {"at": "punch_hole", "target": "office-pc_7", "expect": "wrong_target"},
+        {"at": "request_relay", "target": "OFFICE-PC_7", "expect": "wrong_target"}
+      ]
+    },
+    {
+      "name": "guest-pc",
+      "why": "a PC's ticket for the access password (12 h): its own ID and key",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJndWVzdCIsInVzZSI6InBjIiwic3ViIjoiIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA0MzIwMH0.6mYDY6ZeUsy2Gae1u_xajfCJjTdqbsm3Tlmq94qq6urBA18Q1TImaZUR-EDpXd-TK3vlYEeRHhNu9mL4KrWADw",
+      "bytes": 295,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"guest\",\"use\":\"pc\",\"sub\":\"\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760043200}",
+      "fields": {
+        "v": 1,
+        "who": "guest",
+        "use": "pc",
+        "sub": "",
+        "id": "123456789",
+        "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+        "to": [],
+        "iat": 1760000000,
+        "exp": 1760043200
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a226775657374222c22757365223a227063222c22737562223a22222c226964223a22313233343536373839222c22706b223a2267546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d222c22746f223a5b5d2c22696174223a313736303030303030302c22657870223a313736303034333230307d",
+      "checks": [
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "ok"
+        },
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "yFOtDwzSthmuqSzuxP1Wok1kmdWEznklfkXP2BObYKc=",
+          "expect": "wrong_pc"
+        },
+        {
+          "at": "register_pk",
+          "id": "222333444",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "wrong_pc"
+        },
+        {"at": "punch_hole", "target": "123456789", "expect": "wrong_use"},
+        {"at": "request_relay", "target": "123456789", "expect": "wrong_use"}
+      ]
+    },
+    {
+      "name": "review-ctl",
+      "why": "the App Review account's ticket: only the demo PCs of review.conf",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJyZXZpZXciLCJ1c2UiOiJjdGwiLCJzdWIiOiI4MWY5MWE5MzI5YWY0MWM0IiwiaWQiOiIiLCJwayI6IiIsInRvIjpbIjEwMDIwMDMwMCIsIjEwMDIwMDMwMSJdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.cPEsAqY8ftXEirfNoINHCRoOoAsz9AGxmDp8f17L_nS4xCcIbyexDOJg-lJsPZ5efCxeThsmO9VsDOCqwyKCBA",
+      "bytes": 279,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"review\",\"use\":\"ctl\",\"sub\":\"81f91a9329af41c4\",\"id\":\"\",\"pk\":\"\",\"to\":[\"100200300\",\"100200301\"],\"iat\":1760000000,\"exp\":1760086400}",
+      "fields": {
+        "v": 1,
+        "who": "review",
+        "use": "ctl",
+        "sub": "81f91a9329af41c4",
+        "id": "",
+        "pk": "",
+        "to": ["100200300", "100200301"],
+        "iat": 1760000000,
+        "exp": 1760086400
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a22726576696577222c22757365223a2263746c222c22737562223a2238316639316139333239616634316334222c226964223a22222c22706b223a22222c22746f223a5b22313030323030333030222c22313030323030333031225d2c22696174223a313736303030303030302c22657870223a313736303038363430307d",
+      "checks": [
+        {"at": "punch_hole", "target": "100200300", "expect": "ok"},
+        {"at": "punch_hole", "target": "100200301", "expect": "ok"},
+        {"at": "punch_hole", "target": "123456789", "expect": "wrong_target"},
+        {"at": "request_relay", "target": "100200301", "expect": "ok"},
+        {"at": "request_relay", "target": "123456789", "expect": "wrong_target"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "wrong_use"
+        }
+      ]
+    },
+    {
+      "name": "longest",
+      "why": "the longest ticket the rules allow: three targets of 64 characters",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJyZXZpZXciLCJ1c2UiOiJjdGwiLCJzdWIiOiI4MWY5MWE5MzI5YWY0MWM0IiwiaWQiOiIiLCJwayI6IiIsInRvIjpbIkFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCIiwiQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQyJdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.BEDVFfymHvCL4Ne7OjjmsNjkycR0oQKiBSUBCZ2E7Tuxbql-JP8Oq81p12Mv-WkXpsl43lfWUT5AlWGCQcR2Dw",
+      "bytes": 515,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"review\",\"use\":\"ctl\",\"sub\":\"81f91a9329af41c4\",\"id\":\"\",\"pk\":\"\",\"to\":[\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\"],\"iat\":1760000000,\"exp\":1760086400}",
+      "fields": {
+        "v": 1,
+        "who": "review",
+        "use": "ctl",
+        "sub": "81f91a9329af41c4",
+        "id": "",
+        "pk": "",
+        "to": [
+          "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+        ],
+        "iat": 1760000000,
+        "exp": 1760086400
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a22726576696577222c22757365223a2263746c222c22737562223a2238316639316139333239616634316334222c226964223a22222c22706b223a22222c22746f223a5b2241414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141222c2242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242222c2243434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343225d2c22696174223a313736303030303030302c22657870223a313736303038363430307d",
+      "checks": [
+        {
+          "at": "punch_hole",
+          "target": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "expect": "ok"
+        },
+        {
+          "at": "punch_hole",
+          "target": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+          "expect": "ok"
+        },
+        {"at": "punch_hole", "target": "123456789", "expect": "wrong_target"}
+      ]
+    },
+    {
+      "name": "expires-in-a-second",
+      "why": "exp one second after now: still valid",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDAwMzYwMX0.oSLFdYcTkokhoik7RtcEsP75doV29ixnsIpJKxiK3atwZYJFr_osPSgMRfOtgooSMTpbYgTU6wv2ez5nPsYrCg",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760003601}",
+      "fields": {
+        "v": 1,
+        "who": "staff",
+        "use": "both",
+        "sub": "598891f1a14389ce",
+        "id": "123456789",
+        "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+        "to": [],
+        "iat": 1760000000,
+        "exp": 1760003601
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a227374616666222c22757365223a22626f7468222c22737562223a2235393838393166316131343338396365222c226964223a22313233343536373839222c22706b223a2267546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d222c22746f223a5b5d2c22696174223a313736303030303030302c22657870223a313736303030333630317d",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "ok"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "ok"
+        }
+      ]
+    },
+    {
+      "name": "issued-60-s-ahead",
+      "why": "iat 60 s after now, the skew hbbs allows",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDM2NjAsImV4cCI6MTc2MDA5MDA2MH0.2zqQufRJmBHR8UVhc6FfK5P9XUzk_UkWhuQrj4uhLDQGyTHD3Zp6UEqF4uq3TnxUy2cSBr0PApDGG11StWOvCQ",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760003660,\"exp\":1760090060}",
+      "fields": {
+        "v": 1,
+        "who": "staff",
+        "use": "both",
+        "sub": "598891f1a14389ce",
+        "id": "123456789",
+        "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+        "to": [],
+        "iat": 1760003660,
+        "exp": 1760090060
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a227374616666222c22757365223a22626f7468222c22737562223a2235393838393166316131343338396365222c226964223a22313233343536373839222c22706b223a2267546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d222c22746f223a5b5d2c22696174223a313736303030333636302c22657870223a313736303039303036307d",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "ok"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "ok"
+        }
+      ]
+    },
+    {
+      "name": "issued-at-not-before",
+      "why": "iat exactly NOT_BEFORE: not revoked",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NTk5NjgwMDAsImV4cCI6MTc2MDA1NDQwMH0.yEt9YL1mnUiOYJrxOEKNfLYLp7PnbkmTUPnttL9Cd1JHV6zLBqupsOFY3llh-lHPZ8Qr5LHosiNCR5lCk9qjCw",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1759968000,\"exp\":1760054400}",
+      "fields": {
+        "v": 1,
+        "who": "staff",
+        "use": "both",
+        "sub": "598891f1a14389ce",
+        "id": "123456789",
+        "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+        "to": [],
+        "iat": 1759968000,
+        "exp": 1760054400
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a227374616666222c22757365223a22626f7468222c22737562223a2235393838393166316131343338396365222c226964223a22313233343536373839222c22706b223a2267546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d222c22746f223a5b5d2c22696174223a313735393936383030302c22657870223a313736303035343430307d",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "ok"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "ok"
+        }
+      ]
+    },
+    {
+      "name": "lifetime-7-days",
+      "why": "exp - iat = 604800, the longest lifetime",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImN0bCIsInN1YiI6IjU5ODg5MWYxYTE0Mzg5Y2UiLCJpZCI6IiIsInBrIjoiIiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDYwNDgwMH0.DeQNTI_e_eXYezBHfSeaj5gYIHI06TbSz-t16lUXSdN5kOp5476LkTB_VmactaMOl47W0s79PBifiwUhtDaoBA",
+      "bytes": 247,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"ctl\",\"sub\":\"598891f1a14389ce\",\"id\":\"\",\"pk\":\"\",\"to\":[],\"iat\":1760000000,\"exp\":1760604800}",
+      "fields": {
+        "v": 1,
+        "who": "staff",
+        "use": "ctl",
+        "sub": "598891f1a14389ce",
+        "id": "",
+        "pk": "",
+        "to": [],
+        "iat": 1760000000,
+        "exp": 1760604800
+      },
+      "signed_by": "ticket_1",
+      "signed_hex": "686a762d7469636b65742d7631007b2276223a312c2277686f223a227374616666222c22757365223a2263746c222c22737562223a2235393838393166316131343338396365222c226964223a22222c22706b223a22222c22746f223a5b5d2c22696174223a313736303030303030302c22657870223a313736303630343830307d",
+      "checks": [{"at": "punch_hole", "target": "123456789", "expect": "ok"}]
+    },
+    {
+      "name": "missing",
+      "why": "no ticket (an empty token, no field 1001): every app before 1.8.0",
+      "ticket": "",
+      "bytes": 0,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "missing"},
+        {"at": "request_relay", "target": "123456789", "expect": "missing"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "missing"
+        }
+      ]
+    },
+    {
+      "name": "oversize",
+      "why": "1026 bytes, a good signature: the size comes first",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImN0bCIsInN1YiI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsImlkIjoiIiwicGsiOiIiLCJ0byI6W10sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDg2NDAwfQ.8T-vxJLnFjd1teAsZNS8sEwVYi54DsJsjZVZicn4Zr92aoyryZUe650ZomLnjTSIJJBezu1pv9ChdZAb78EnAA",
+      "bytes": 1026,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"ctl\",\"sub\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"\",\"pk\":\"\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "oversize"},
+        {"at": "request_relay", "target": "123456789", "expect": "oversize"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "oversize"
+        }
+      ]
+    },
+    {
+      "name": "at-the-limit",
+      "why": "exactly 1024 bytes passes the size check; its long sub breaks a rule after the signature",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImN0bCIsInN1YiI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwiaWQiOiIiLCJwayI6IiIsInRvIjpbXSwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwODY0MDB9.qeLQYDhYhgIASPsf-wT4Ir8D0CMU8Dr7eKGtGplr3h2XZab2O6IqydiCnhzb9ujzW4lIf2rUSRyMvS0rwzwOCQ",
+      "bytes": 1024,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"ctl\",\"sub\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"\",\"pk\":\"\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "unknown-kid",
+      "why": "a good signature by key 3, which no KEY line names",
+      "ticket": "t1.3.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImN0bCIsInN1YiI6IjU5ODg5MWYxYTE0Mzg5Y2UiLCJpZCI6IiIsInBrIjoiIiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.wPl7SSTsEOAmaKUKCk0tZ7nxAJvLVJV2B4ubiTE4KG7n3C0IKCB0pw97vsjK0Yvl6U4zBZROw_TisUw6ZA-BBw",
+      "bytes": 247,
+      "kid": 3,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"ctl\",\"sub\":\"598891f1a14389ce\",\"id\":\"\",\"pk\":\"\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "unknown_kid"},
+        {"at": "request_relay", "target": "123456789", "expect": "unknown_kid"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "unknown_kid"
+        }
+      ]
+    },
+    {
+      "name": "bad-signature",
+      "why": "a bit of the signature flipped",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.WtLkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "bad_signature"},
+        {"at": "request_relay", "target": "123456789", "expect": "bad_signature"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "bad_signature"
+        }
+      ]
+    },
+    {
+      "name": "bad-signature-payload-changed",
+      "why": "exp made a day later after signing",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDE3MjgwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760172800}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "bad_signature"},
+        {"at": "request_relay", "target": "123456789", "expect": "bad_signature"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "bad_signature"
+        }
+      ]
+    },
+    {
+      "name": "bad-signature-no-domain",
+      "why": "signed over the payload alone, without \"hjv-ticket-v1\" NUL",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.-NT1qwpUHMwP13ip0WV41guggw7Txde8nO2OVTaKXba-RqaLTRVqtr7X3j2j8Ta_t2EvtgFAtDvwjZx7J6BBDQ",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "bad_signature"},
+        {"at": "request_relay", "target": "123456789", "expect": "bad_signature"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "bad_signature"
+        }
+      ]
+    },
+    {
+      "name": "bad-signature-over-text",
+      "why": "signed over the base64url text instead of the payload bytes",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.V0pE3d67LeRdHayglzJ17Zb5Ws-2wO2SqTUMos4eTxuxgO3C4_njJ0-ldqLtZ60vI59EuZAP7DC8YXwm7COKDQ",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "bad_signature"},
+        {"at": "request_relay", "target": "123456789", "expect": "bad_signature"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "bad_signature"
+        }
+      ]
+    },
+    {
+      "name": "bad-signature-key-2-as-kid-1",
+      "why": "signed with key 2 and named kid 1: hbbs checks only the key that kid names",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.T0cecEDx5o5k-ZNugWWO5-fe0KXv4HjffgxsnFnQDFGACeM4_Wg04NKGCssMulQo4DjRWMfyCcIWRUGUgrT5Cw",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "bad_signature"},
+        {"at": "request_relay", "target": "123456789", "expect": "bad_signature"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "bad_signature"
+        }
+      ]
+    },
+    {
+      "name": "bad-signature-s-not-reduced",
+      "why": "S + L in place of S: refused by libsodium, ed25519-dalek and OpenSSL",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFTWU1omSQcA1GdakkZsgoE3DPaOJ8GD5xgtWvdD7fzFQ",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "bad_signature"},
+        {"at": "request_relay", "target": "123456789", "expect": "bad_signature"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "bad_signature"
+        }
+      ]
+    },
+    {
+      "name": "expired",
+      "why": "exp = now",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NTk5NjgwMDAsImV4cCI6MTc2MDAwMzYwMH0.6GNrm4NutLHMuQCk-U5qwFgh9DVwE43G3_-MxrKhjBQy3Ro8hiwKtp5vCrA4O4-B3AKj6KASw2__3-4MF5HdDA",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1759968000,\"exp\":1760003600}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "expired"},
+        {"at": "request_relay", "target": "123456789", "expect": "expired"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "expired"
+        }
+      ]
+    },
+    {
+      "name": "not-yet-valid",
+      "why": "iat 61 s after now",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDM2NjEsImV4cCI6MTc2MDA5MDA2MX0.G2z13nEbK6oip_zqKCU_X0sAX1HxCz9ukE_z9nPI_7XIU9q4qUyd3YxJFTjVWOA22fekRD8qzsUJQmuVn5T2Dw",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760003661,\"exp\":1760090061}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "not_yet_valid"},
+        {"at": "request_relay", "target": "123456789", "expect": "not_yet_valid"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "not_yet_valid"
+        }
+      ]
+    },
+    {
+      "name": "revoked",
+      "why": "iat one second before NOT_BEFORE",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NTk5Njc5OTksImV4cCI6MTc2MDA1NDM5OX0.iHNNw-3bzWKI2OzuA7--AWVugLykqav0Eg1-yiYEx34ApGDZYRq8j-JXjk9ImipZZKrxaBSyopkA08vt65IoAg",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1759967999,\"exp\":1760054399}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "revoked"},
+        {"at": "request_relay", "target": "123456789", "expect": "revoked"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "revoked"
+        }
+      ]
+    },
+    {
+      "name": "prefix-t2",
+      "why": "another version",
+      "ticket": "t2.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 319,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "prefix-upper-case",
+      "why": "T1",
+      "ticket": "T1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 319,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "three-parts",
+      "why": "no signature part",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0",
+      "bytes": 232,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "five-parts",
+      "why": "a part more",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 406,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "kid-leading-zero",
+      "why": "kid '01'",
+      "ticket": "t1.01.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 320,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "kid-zero",
+      "why": "kid '0'",
+      "ticket": "t1.0.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 319,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "kid-65536",
+      "why": "kid '65536'",
+      "ticket": "t1.65536.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 323,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "kid-letter",
+      "why": "kid 'a'",
+      "ticket": "t1.a.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 319,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "kid-arabic-digit",
+      "why": "kid '١'",
+      "ticket": "t1.١.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 320,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "empty-payload-part",
+      "why": "t1.1..<signature>",
+      "ticket": "t1.1..W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 92,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "payload-padded",
+      "why": "the payload part of staff-ctl with its = padding",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImN0bCIsInN1YiI6IjU5ODg5MWYxYTE0Mzg5Y2UiLCJpZCI6IiIsInBrIjoiIiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0=.cbn5yVhyXBcrE6g1g0jJPoiBxASgKsV-yyMrfIcowb-lRqSexwkfxcWQwnblXaEaOzbR9_si99fYH14LDn35BA",
+      "bytes": 248,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "standard-alphabet",
+      "why": "staff-both with + and / in place of - and _",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t+4+mEpw//XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 319,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "signature-trailing-bits",
+      "why": "the signature's last letter with unused bits set: a lenient decoder reads the same 64 bytes",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBR",
+      "bytes": 319,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "signature-63-bytes",
+      "why": "the signature cut to 63 bytes",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fz",
+      "bytes": 317,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "signature-65-bytes",
+      "why": "a zero byte after the signature",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQA",
+      "bytes": 320,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "trailing-newline",
+      "why": "the ticket and a line feed",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ\n",
+      "bytes": 320,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "leading-space",
+      "why": "a space and the ticket",
+      "ticket": " t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "bytes": 320,
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "payload-not-json",
+      "why": "the payload is text, not JSON",
+      "ticket": "t1.1.aGp2.0gTGKpakVAhRxvfN_dX06NMle6_pTLqJbZQO3ZiHKDkdiGplFFj8odFgk7a77XEzDowY-1cJTfD3VG8E3Fn_Cg",
+      "bytes": 96,
+      "kid": 1,
+      "payload": "hjv",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "payload-not-utf8",
+      "why": "the payload is not UTF-8",
+      "ticket": "t1.1.__57fQ.qXy8rPsn2M96D8PvrXmLTcgzJAMPr4g77oo8hndUg-wxeNmnybWkNzTKA7kBvum5NXIbziYEhA_4Dx71e66YCQ",
+      "bytes": 98,
+      "kid": 1,
+      "payload_hex": "fffe7b7d",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "payload-array",
+      "why": "a JSON array",
+      "ticket": "t1.1.WzFd.jVPVTxS-6eKBkyhQdF2pHbO-PiZywOW3VWY4t01w7zoEuoyQ784SbHDanBoj5hZB6g6aKetdTdC7o5FQ8795Dw",
+      "bytes": 96,
+      "kid": 1,
+      "payload": "[1]",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "v-2",
+      "why": "v is 2",
+      "ticket": "t1.1.eyJ2IjoyLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.mzR81mBx7Bls5dDnxyiAgJSCTzyv97jzyjyNn_eS3LaRF47Qv_w1QPsYADRSO08ymdx2KioeiWE4uh4mptYIDA",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":2,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "v-true",
+      "why": "v is true",
+      "ticket": "t1.1.eyJ2Ijp0cnVlLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.uSzbKdsHiLBa8k15VGUetXQ_xhyoEceiwLjgZ-U78QD2Eveumw-aHldKtMcoserFI407q8s-C3wct1USbmORBw",
+      "bytes": 323,
+      "kid": 1,
+      "payload": "{\"v\":true,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "member-order",
+      "why": "who and use swapped",
+      "ticket": "t1.1.eyJ2IjoxLCJ1c2UiOiJib3RoIiwid2hvIjoic3RhZmYiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.uzllI21RpDheoTtkeIuzYY7m2qtIBk-jB3evsWSBgUJyxpKmrAQ7rWMMKhQhbWVbQSyOAHcLxSLk_8s4iMmLCg",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"use\":\"both\",\"who\":\"staff\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "member-extra",
+      "why": "a tenth member",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMCwieCI6MX0.6zUXG7lOScarNnafZ7ZkM5F0V6NYgiQyLsDPPcGKJuMs3s8iWwUR5AnC1xES3CEdRDtcUGV5KZzm0fmj9YezAg",
+      "bytes": 327,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400,\"x\":1}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "member-missing",
+      "why": "no to",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwODY0MDB9.RflPglJK8oIplS8pwBsKt9SifM0zBQSy6R4N48d_2LSBIbdpbYUu3q8ASssPpIfT-DDv2y0wmARWJfnHr8oeCw",
+      "bytes": 308,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "member-twice",
+      "why": "exp twice, the second a day later",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMCwiZXhwIjoxNzYwMTcyODAwfQ.4Tdr5eQAP3hx_dPY60GGhwlkfgfl2txN1HWnx2ikayRd_tXFRQaEqyL23fp2UDn3rOQtwF0av70a7oz15pVVCA",
+      "bytes": 342,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400,\"exp\":1760172800}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "spaces",
+      "why": "the same members with spaces",
+      "ticket": "t1.1.eyJ2IjogMSwgIndobyI6ICJzdGFmZiIsICJ1c2UiOiAiYm90aCIsICJzdWIiOiAiNTk4ODkxZjFhMTQzODljZSIsICJpZCI6ICIxMjM0NTY3ODkiLCAicGsiOiAiZ1RsM0RxaDlGMTlXbzFSbXcweCt6TXVOaXBHMDdqZWlYZllQVzQvSnM1UT0iLCAidG8iOiBbXSwgImlhdCI6IDE3NjAwMDAwMDAsICJleHAiOiAxNzYwMDg2NDAwfQ.fz9sCAf8IoAXwEr126BiTdB1wHmL4qs3KjgEc9Fo-nJz5o5AxnvAhA2mHEoIOp1mVN5WPwT4beBbf8LpYG3dBw",
+      "bytes": 342,
+      "kid": 1,
+      "payload": "{\"v\": 1, \"who\": \"staff\", \"use\": \"both\", \"sub\": \"598891f1a14389ce\", \"id\": \"123456789\", \"pk\": \"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\", \"to\": [], \"iat\": 1760000000, \"exp\": 1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "escaped-letter",
+      "why": "who written \\u0073taff",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJcdTAwNzN0YWZmIiwidXNlIjoiYm90aCIsInN1YiI6IjU5ODg5MWYxYTE0Mzg5Y2UiLCJpZCI6IjEyMzQ1Njc4OSIsInBrIjoiZ1RsM0RxaDlGMTlXbzFSbXcweCt6TXVOaXBHMDdqZWlYZllQVzQvSnM1UT0iLCJ0byI6W10sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDg2NDAwfQ.juFY6Ld6aY4C2dfsVjXicEj490gguZyQYT-bNGReWiNwpa-HCCMNyTO1bE20N_6k40XTuZT0TaxDLjeFABEhAA",
+      "bytes": 326,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"\\u0073taff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "who-unknown",
+      "why": "who admin",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJhZG1pbiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.mag0X0ogfjiJ_oEg-iNng1SqvzvhQJ2m51OOkNWf5bcjG3PtJX-el_CJBgcK3Zuwld9lIjmZUZnPXDVQ3gTXDQ",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"admin\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "use-unknown",
+      "why": "use all",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImFsbCIsInN1YiI6IjU5ODg5MWYxYTE0Mzg5Y2UiLCJpZCI6IjEyMzQ1Njc4OSIsInBrIjoiZ1RsM0RxaDlGMTlXbzFSbXcweCt6TXVOaXBHMDdqZWlYZllQVzQvSnM1UT0iLCJ0byI6W10sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDg2NDAwfQ.HUzBcDi4Jo6AhWPdaiZl-zuHVLROVIp3C_RVionCX1_B4fHN_0Ni4xMwEAr0T43lO4Wqt0KYerSYI6MkvxkFAg",
+      "bytes": 318,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"all\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "guest-both",
+      "why": "guest with use both",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJndWVzdCIsInVzZSI6ImJvdGgiLCJzdWIiOiIiLCJpZCI6IjEyMzQ1Njc4OSIsInBrIjoiZ1RsM0RxaDlGMTlXbzFSbXcweCt6TXVOaXBHMDdqZWlYZllQVzQvSnM1UT0iLCJ0byI6W10sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDQzMjAwfQ.Vhd1al04mE3LcuXA9384ml0Eo2P2LqyYlaqsi-R-o1i-go4vQ0DA0K7ssQbHTDPZam5XRVAol4m8aXP2davlCw",
+      "bytes": 298,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"guest\",\"use\":\"both\",\"sub\":\"\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760043200}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "review-pc",
+      "why": "review with use pc",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJyZXZpZXciLCJ1c2UiOiJwYyIsInN1YiI6IjgxZjkxYTkzMjlhZjQxYzQiLCJpZCI6IjEyMzQ1Njc4OSIsInBrIjoiZ1RsM0RxaDlGMTlXbzFSbXcweCt6TXVOaXBHMDdqZWlYZllQVzQvSnM1UT0iLCJ0byI6W10sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDg2NDAwfQ.hI4-amv9oJ_5zVCVn4VU0CkTCEWnIoalVeJ7Toh9Ht2lfPQ6PUDPWaRbmqOCuVryA6S3UQzNuD027XbIPrCSDw",
+      "bytes": 318,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"review\",\"use\":\"pc\",\"sub\":\"81f91a9329af41c4\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "guest-ctl-without-to",
+      "why": "a guest controller's ticket for any target",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJndWVzdCIsInVzZSI6ImN0bCIsInN1YiI6IiIsImlkIjoiIiwicGsiOiIiLCJ0byI6W10sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDQzMjAwfQ.1pKB4hC_n67BUkHC3sJu0f787bTU6UjLBkoRZHoXRMHq2KEyb5VHCCxpDiQGrzxvbatVRNbDwEj5__GPnncsBQ",
+      "bytes": 226,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"guest\",\"use\":\"ctl\",\"sub\":\"\",\"id\":\"\",\"pk\":\"\",\"to\":[],\"iat\":1760000000,\"exp\":1760043200}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "staff-with-to",
+      "why": "staff with a target",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImN0bCIsInN1YiI6IjU5ODg5MWYxYTE0Mzg5Y2UiLCJpZCI6IiIsInBrIjoiIiwidG8iOlsiMTIzNDU2Nzg5Il0sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDg2NDAwfQ.9jRkcckXQhpcUYZWhE0IYLFf66WRxV2wISX-zPsfB7IUitzmpvUoG8P26LJTGvdnCKtf1jVOJ8oWnX8Wiw-BCQ",
+      "bytes": 262,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"ctl\",\"sub\":\"598891f1a14389ce\",\"id\":\"\",\"pk\":\"\",\"to\":[\"123456789\"],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "guest-ctl-two-targets",
+      "why": "a guest controller's ticket for two targets",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJndWVzdCIsInVzZSI6ImN0bCIsInN1YiI6IiIsImlkIjoiIiwicGsiOiIiLCJ0byI6WyIxMjM0NTY3ODkiLCIyMjIzMzM0NDQiXSwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwNDMyMDB9.vXERPAn-ZfzIBUoSxyL8Ph4MozVCyD7BwUVWezVnZ60Tt6kx878SUXVV_sHY9jDl5wyMolqUiniDBMG4PCOODw",
+      "bytes": 256,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"guest\",\"use\":\"ctl\",\"sub\":\"\",\"id\":\"\",\"pk\":\"\",\"to\":[\"123456789\",\"222333444\"],\"iat\":1760000000,\"exp\":1760043200}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "review-four-targets",
+      "why": "review with four targets",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJyZXZpZXciLCJ1c2UiOiJjdGwiLCJzdWIiOiI4MWY5MWE5MzI5YWY0MWM0IiwiaWQiOiIiLCJwayI6IiIsInRvIjpbIjEwMDIwMDMwMCIsIjEwMDIwMDMwMSIsIjEyMzQ1Njc4OSIsIjIyMjMzMzQ0NCJdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.H5cPJ_PB74m-P23_mFOP6vw60P3OIQCFT6WWnND-mqSV8n0nmq-QZLTc0Ww1QZ-Jg_FAp91V8zBFIyJNBZ2ECg",
+      "bytes": 311,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"review\",\"use\":\"ctl\",\"sub\":\"81f91a9329af41c4\",\"id\":\"\",\"pk\":\"\",\"to\":[\"100200300\",\"100200301\",\"123456789\",\"222333444\"],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "review-without-to",
+      "why": "review for any target",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJyZXZpZXciLCJ1c2UiOiJjdGwiLCJzdWIiOiI4MWY5MWE5MzI5YWY0MWM0IiwiaWQiOiIiLCJwayI6IiIsInRvIjpbXSwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwODY0MDB9.4TKkO97kjaBK3i7yBEvOgdnzk4tYmrRGD6NkcGHG0xVgFpT43sHEcz7Uls6cwvR-SdZSMdcw5jZlL2c91KfdDw",
+      "bytes": 248,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"review\",\"use\":\"ctl\",\"sub\":\"81f91a9329af41c4\",\"id\":\"\",\"pk\":\"\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "to-twice",
+      "why": "the same target twice",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJyZXZpZXciLCJ1c2UiOiJjdGwiLCJzdWIiOiI4MWY5MWE5MzI5YWY0MWM0IiwiaWQiOiIiLCJwayI6IiIsInRvIjpbIjEwMDIwMDMwMCIsIjEwMDIwMDMwMCJdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.qu6FCjYwqnhNIhy29KLXG5JZBbytYfV-ypC45qAg7yYmRnDZEE7Vf2uR3bFbeRO8EWYd_Hls7glesUbZ-4KrBg",
+      "bytes": 279,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"review\",\"use\":\"ctl\",\"sub\":\"81f91a9329af41c4\",\"id\":\"\",\"pk\":\"\",\"to\":[\"100200300\",\"100200300\"],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "to-empty-entry",
+      "why": "a target that is empty",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJndWVzdCIsInVzZSI6ImN0bCIsInN1YiI6IiIsImlkIjoiIiwicGsiOiIiLCJ0byI6WyIiXSwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwNDMyMDB9.nsMxqSaH89UkF8lFi4Vcgu33UViYYrKHKvrc9UxKDigdQPv985Pyd7jRDrum-PJCi_-NBMNnJ2TV9rU29qZQBw",
+      "bytes": 228,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"guest\",\"use\":\"ctl\",\"sub\":\"\",\"id\":\"\",\"pk\":\"\",\"to\":[\"\"],\"iat\":1760000000,\"exp\":1760043200}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "to-not-array",
+      "why": "to a string",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJndWVzdCIsInVzZSI6ImN0bCIsInN1YiI6IiIsImlkIjoiIiwicGsiOiIiLCJ0byI6IjEyMzQ1Njc4OSIsImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDQzMjAwfQ.LmXGecuBIm0JzsPnHfIR4nqspDR_LTGiuQ-RxO7mNRaPXmRcBj_xr16mr_U7M5KedsesiXyautwK56hcoFblBg",
+      "bytes": 238,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"guest\",\"use\":\"ctl\",\"sub\":\"\",\"id\":\"\",\"pk\":\"\",\"to\":\"123456789\",\"iat\":1760000000,\"exp\":1760043200}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "ctl-with-id",
+      "why": "use ctl with an ID and a key",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImN0bCIsInN1YiI6IjU5ODg5MWYxYTE0Mzg5Y2UiLCJpZCI6IjEyMzQ1Njc4OSIsInBrIjoiZ1RsM0RxaDlGMTlXbzFSbXcweCt6TXVOaXBHMDdqZWlYZllQVzQvSnM1UT0iLCJ0byI6W10sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDg2NDAwfQ.f7sFfGHXxb6LjPpeWmIWtPa7cXQvWtIPk2cKu46l0-0zy7JQSdxkkDa8rZVMg2ahEGTetXr7FbwSVH3qy9npDQ",
+      "bytes": 318,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"ctl\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "both-without-pk",
+      "why": "use both without a key",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6IiIsInRvIjpbXSwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwODY0MDB9.Lkjnt3pB1Xx-yf0ut5IxGAJAZyiHIPrLu0Y5_0TnO2YajKjmypTxwM0hp0DcPYmQ0XUEislQg7f5b76qBbV4Cg",
+      "bytes": 260,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "pk-31-bytes",
+      "why": "a key of 31 bytes",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzdz09IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.aJtJQyfAekDTNXj8ks1qJ-oNJMV5YAzgw9ZghS4o08u1Jh_CRePCIb2Ntc30h2JPK-AIsvp8uSjLbnStQihIDA",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Jsw==\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "pk-url-safe",
+      "why": "the key in base64url letters",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.FkSOd7qELzSw94Dq64VaQt8_FRttQwMxDqZrPtQglIg5LIozTNfvYclb8eMILnnvJUd3H1Hxd6gY5ZLroC21Cw",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "pk-unpadded",
+      "why": "the key without its =",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVEiLCJ0byI6W10sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDg2NDAwfQ.7gM6cCwJ_wrQt6WBFiIeCdaxdEcGCq3W-MThJYacD8FNt5OyjNFzFScaf0b9dEsRBkilCdcMbiVrQHPJaUxCDQ",
+      "bytes": 318,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "id-with-space",
+      "why": "an ID with a space",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjMgNDU2Nzg5IiwicGsiOiJnVGwzRHFoOUYxOVdvMVJtdzB4K3pNdU5pcEcwN2plaVhmWVBXNC9KczVRPSIsInRvIjpbXSwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwODY0MDB9.HSgGc7UN1s86tRkDlRvjlWb1c3WwECUE8PIbM0Gqa2n2U5GJR744oV5TKmrVxKajYuB6sg6LhWc5rFmSHIonDw",
+      "bytes": 320,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123 456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "id-65-characters",
+      "why": "an ID of 65 characters",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsInBrIjoiZ1RsM0RxaDlGMTlXbzFSbXcweCt6TXVOaXBHMDdqZWlYZllQVzQvSnM1UT0iLCJ0byI6W10sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDg2NDAwfQ.AmALNDo5nkFaRrcm6-0JzeyPLktkK8NpKMd57zrFgHNCQTw__Bt5rHiJY936U6otiFHnc7GRdCgvIyUFF9D8DA",
+      "bytes": 394,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"11111111111111111111111111111111111111111111111111111111111111111\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "sub-upper-case",
+      "why": "sub in upper case hex",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFGMUExNDM4OUNFIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.-zYreP-J8JN2ebMEPzGLCn9TIn__zVEqAwaZVXqq8DTrCz1NDRNeAY8FT0zseq33fKzBGAs-dOrkAp80sCdDBQ",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891F1A14389CE\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "sub-15-characters",
+      "why": "sub of 15 hex digits",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWMiLCJpZCI6IjEyMzQ1Njc4OSIsInBrIjoiZ1RsM0RxaDlGMTlXbzFSbXcweCt6TXVOaXBHMDdqZWlYZllQVzQvSnM1UT0iLCJ0byI6W10sImlhdCI6MTc2MDAwMDAwMCwiZXhwIjoxNzYwMDg2NDAwfQ.it67PxuJXZAeqUsDDpYUpyIlU2rwB8-BLEKjLgoVBh7jd8Qez2Q-5X3TamkkS4hk68qTot1TPkWfgCSpQVo_Bw",
+      "bytes": 318,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389c\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "sub-null",
+      "why": "sub null",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOm51bGwsImlkIjoiMTIzNDU2Nzg5IiwicGsiOiJnVGwzRHFoOUYxOVdvMVJtdzB4K3pNdU5pcEcwN2plaVhmWVBXNC9KczVRPSIsInRvIjpbXSwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjE3NjAwODY0MDB9.lnE_vUdhJXcg_DiTBPRaDRzF24Os2C0SvLuS2buoNrdOT86SzpIZGGfN-UrG2dg3ka5D2NAyRKui8Uhw7DHKCQ",
+      "bytes": 300,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":null,\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "iat-equals-exp",
+      "why": "iat = exp",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDAwMDAwMH0.qH0D5b4RHkvxpougzq20TqqPfguPcJIlnqQZXyzO4z6k3o31i7Y_QHZSy8uq2zKB2ZR90vEXPGxMri_gFuw1BA",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760000000}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "iat-negative",
+      "why": "iat -1",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOi0xLCJleHAiOjg2NDAwfQ.2rM0YIyXDFI_TPN6Hdx4eQV4Cz4NpKpgmivf-OAOuXxqmDoBaCo4GzNclIYOqR2I_evDG3OXsYG8nvN3RbQhCg",
+      "bytes": 302,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":-1,\"exp\":86400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "iat-string",
+      "why": "iat a string",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOiIxNzYwMDAwMDAwIiwiZXhwIjoxNzYwMDg2NDAwfQ.5Yu0HfxW88Cf5_D8fnoMEWPL2ppLsYlU9JPffVibLHwaegMePJ6FAJysIqWa4NFc06HuYCtMFMuA-pLncPHaDA",
+      "bytes": 322,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":\"1760000000\",\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "exp-fraction",
+      "why": "exp written with .0",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMC4wfQ.BgYKfGJ6uEaaThztSw7wxWdXL-L_v5uI_dnKZVLBWOHznTKMQ4PaxYdy5GP5BlI6lrxE7IDkxiM1mXZbggodBA",
+      "bytes": 322,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760086400.0}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "exp-exponent",
+      "why": "exp written with an exponent",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MS43NjAwODY0ZTl9.vFD6azQAZUC7Rm52Ul2SnqJNWSVsZf655BKp3yPz4w3jE4p69kmZMOBZGvfU-O5DqvS44z740kcKhfJSpcXvCw",
+      "bytes": 320,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1.7600864e9}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "iat-leading-zero",
+      "why": "iat written with a 0 in front",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjAxNzYwMDAwMDAwLCJleHAiOjE3NjAwODY0MDB9.iIhhXzMlUJGVvDKgS5xI_aLgY4zsnS3Avtzf2z_vKXE99I4i8PKTiY43H9-jZti93rlOF6FDiAVFWqyAdwSuCQ",
+      "bytes": 320,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":01760000000,\"exp\":1760086400}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    },
+    {
+      "name": "lifetime-over-7-days",
+      "why": "exp - iat = 604801",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDYwNDgwMX0.OX7fCr8xw0V22VILf1XHM_bm62Z9vaj0VtDnWqtF7dFBhnYTTHDSBQZ4cxvmNpnXEj7A95FeXcrghE0OHHyDCA",
+      "bytes": 319,
+      "kid": 1,
+      "payload": "{\"v\":1,\"who\":\"staff\",\"use\":\"both\",\"sub\":\"598891f1a14389ce\",\"id\":\"123456789\",\"pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"to\":[],\"iat\":1760000000,\"exp\":1760604801}",
+      "checks": [
+        {"at": "punch_hole", "target": "123456789", "expect": "malformed"},
+        {"at": "request_relay", "target": "123456789", "expect": "malformed"},
+        {
+          "at": "register_pk",
+          "id": "123456789",
+          "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+          "expect": "malformed"
+        }
+      ]
+    }
+  ],
+  "register_pk": [
+    {
+      "name": "ticket",
+      "why": "the RegisterPk of a 1.8.0 PC: the app's generated code writes these bytes",
+      "register_pk_hex": "0a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca3ebf0274312e312e65794a32496a6f784c434a33614738694f694a7a6447466d5a694973496e567a5a534936496d4a76644767694c434a7a645749694f6949314f5467344f54466d4d5745784e444d344f574e6c49697769615751694f6949784d6a4d304e5459334f446b694c434a7761794936496d645562444e4563576735526a453556323878556d31334d486772656b3131546d6c77527a4133616d567057475a5a554663304c30707a4e56453949697769644738694f6c74644c434a70595851694f6a45334e6a41774d4441774d444173496d5634634349364d5463324d4441344e6a51774d48302e57394c6b4b314f755566465977507248497134742d342d6d4570775f5f58625462346376365270696f54466d6856634c6638454a71336f416336593675437676327a50614f4a384744357867745776644437667a4251",
+      "rendezvous_message_hex": "7a82030a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca3ebf0274312e312e65794a32496a6f784c434a33614738694f694a7a6447466d5a694973496e567a5a534936496d4a76644767694c434a7a645749694f6949314f5467344f54466d4d5745784e444d344f574e6c49697769615751694f6949784d6a4d304e5459334f446b694c434a7761794936496d645562444e4563576735526a453556323878556d31334d486772656b3131546d6c77527a4133616d567057475a5a554663304c30707a4e56453949697769644738694f6c74644c434a70595851694f6a45334e6a41774d4441774d444173496d5634634349364d5463324d4441344e6a51774d48302e57394c6b4b314f755566465977507248497134742d342d6d4570775f5f58625462346376365270696f54466d6856634c6638454a71336f416336593675437676327a50614f4a384744357867745776644437667a4251",
+      "id": "123456789",
+      "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "expect": "ok"
+    },
+    {
+      "name": "no-field",
+      "why": "the RegisterPk of an app before 1.8.0",
+      "register_pk_hex": "0a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "rendezvous_message_hex": "7a3f0a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "id": "123456789",
+      "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "ticket": "",
+      "expect": "missing"
+    },
+    {
+      "name": "empty",
+      "why": "field 1001 there and empty: no ticket, as in proto3",
+      "register_pk_hex": "0a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca3e00",
+      "rendezvous_message_hex": "7a420a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca3e00",
+      "id": "123456789",
+      "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "ticket": "",
+      "expect": "missing"
+    },
+    {
+      "name": "twice",
+      "why": "field 1001 twice: the last value counts, as protobuf reads a string",
+      "register_pk_hex": "0a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca3e0874312e302e782e79ca3ebf0274312e312e65794a32496a6f784c434a33614738694f694a7a6447466d5a694973496e567a5a534936496d4a76644767694c434a7a645749694f6949314f5467344f54466d4d5745784e444d344f574e6c49697769615751694f6949784d6a4d304e5459334f446b694c434a7761794936496d645562444e4563576735526a453556323878556d31334d486772656b3131546d6c77527a4133616d567057475a5a554663304c30707a4e56453949697769644738694f6c74644c434a70595851694f6a45334e6a41774d4441774d444173496d5634634349364d5463324d4441344e6a51774d48302e57394c6b4b314f755566465977507248497134742d342d6d4570775f5f58625462346376365270696f54466d6856634c6638454a71336f416336593675437676327a50614f4a384744357867745776644437667a4251",
+      "rendezvous_message_hex": "7a8d030a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca3e0874312e302e782e79ca3ebf0274312e312e65794a32496a6f784c434a33614738694f694a7a6447466d5a694973496e567a5a534936496d4a76644767694c434a7a645749694f6949314f5467344f54466d4d5745784e444d344f574e6c49697769615751694f6949784d6a4d304e5459334f446b694c434a7761794936496d645562444e4563576735526a453556323878556d31334d486772656b3131546d6c77527a4133616d567057475a5a554663304c30707a4e56453949697769644738694f6c74644c434a70595851694f6a45334e6a41774d4441774d444173496d5634634349364d5463324d4441344e6a51774d48302e57394c6b4b314f755566465977507248497134742d342d6d4570775f5f58625462346376365270696f54466d6856634c6638454a71336f416336593675437676327a50614f4a384744357867745776644437667a4251",
+      "id": "123456789",
+      "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "expect": "ok"
+    },
+    {
+      "name": "varint",
+      "why": "field 1001 also as a varint: malformed, whatever else is there",
+      "register_pk_hex": "0a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394c83e01ca3ebf0274312e312e65794a32496a6f784c434a33614738694f694a7a6447466d5a694973496e567a5a534936496d4a76644767694c434a7a645749694f6949314f5467344f54466d4d5745784e444d344f574e6c49697769615751694f6949784d6a4d304e5459334f446b694c434a7761794936496d645562444e4563576735526a453556323878556d31334d486772656b3131546d6c77527a4133616d567057475a5a554663304c30707a4e56453949697769644738694f6c74644c434a70595851694f6a45334e6a41774d4441774d444173496d5634634349364d5463324d4441344e6a51774d48302e57394c6b4b314f755566465977507248497134742d342d6d4570775f5f58625462346376365270696f54466d6856634c6638454a71336f416336593675437676327a50614f4a384744357867745776644437667a4251",
+      "rendezvous_message_hex": "7a85030a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394c83e01ca3ebf0274312e312e65794a32496a6f784c434a33614738694f694a7a6447466d5a694973496e567a5a534936496d4a76644767694c434a7a645749694f6949314f5467344f54466d4d5745784e444d344f574e6c49697769615751694f6949784d6a4d304e5459334f446b694c434a7761794936496d645562444e4563576735526a453556323878556d31334d486772656b3131546d6c77527a4133616d567057475a5a554663304c30707a4e56453949697769644738694f6c74644c434a70595851694f6a45334e6a41774d4441774d444173496d5634634349364d5463324d4441344e6a51774d48302e57394c6b4b314f755566465977507248497134742d342d6d4570775f5f58625462346376365270696f54466d6856634c6638454a71336f416336593675437676327a50614f4a384744357867745776644437667a4251",
+      "id": "123456789",
+      "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "ticket": null,
+      "expect": "malformed"
+    },
+    {
+      "name": "not-utf8",
+      "why": "field 1001 is not text",
+      "register_pk_hex": "0a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca3e02fffe",
+      "rendezvous_message_hex": "7a440a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca3e02fffe",
+      "id": "123456789",
+      "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "ticket": null,
+      "ticket_hex": "fffe",
+      "expect": "malformed"
+    },
+    {
+      "name": "other-pc",
+      "why": "the ticket of 123456789 in the registration of 222333444",
+      "register_pk_hex": "0a093232323333333434341210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca3ebf0274312e312e65794a32496a6f784c434a33614738694f694a7a6447466d5a694973496e567a5a534936496d4a76644767694c434a7a645749694f6949314f5467344f54466d4d5745784e444d344f574e6c49697769615751694f6949784d6a4d304e5459334f446b694c434a7761794936496d645562444e4563576735526a453556323878556d31334d486772656b3131546d6c77527a4133616d567057475a5a554663304c30707a4e56453949697769644738694f6c74644c434a70595851694f6a45334e6a41774d4441774d444173496d5634634349364d5463324d4441344e6a51774d48302e57394c6b4b314f755566465977507248497134742d342d6d4570775f5f58625462346376365270696f54466d6856634c6638454a71336f416336593675437676327a50614f4a384744357867745776644437667a4251",
+      "rendezvous_message_hex": "7a82030a093232323333333434341210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca3ebf0274312e312e65794a32496a6f784c434a33614738694f694a7a6447466d5a694973496e567a5a534936496d4a76644767694c434a7a645749694f6949314f5467344f54466d4d5745784e444d344f574e6c49697769615751694f6949784d6a4d304e5459334f446b694c434a7761794936496d645562444e4563576735526a453556323878556d31334d486772656b3131546d6c77527a4133616d567057475a5a554663304c30707a4e56453949697769644738694f6c74644c434a70595851694f6a45334e6a41774d4441774d444173496d5634634349364d5463324d4441344e6a51774d48302e57394c6b4b314f755566465977507248497134742d342d6d4570775f5f58625462346376365270696f54466d6856634c6638454a71336f416336593675437676327a50614f4a384744357867745776644437667a4251",
+      "id": "222333444",
+      "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "ticket": "t1.1.eyJ2IjoxLCJ3aG8iOiJzdGFmZiIsInVzZSI6ImJvdGgiLCJzdWIiOiI1OTg4OTFmMWExNDM4OWNlIiwiaWQiOiIxMjM0NTY3ODkiLCJwayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwidG8iOltdLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDA4NjQwMH0.W9LkK1OuUfFYwPrHIq4t-4-mEpw__XbTb4cv6RpioTFmhVcLf8EJq3oAc6Y6uCvv2zPaOJ8GD5xgtWvdD7fzBQ",
+      "expect": "wrong_pc"
+    }
+  ],
+  "access_conf_cases": [
+    {
+      "name": "vectors",
+      "why": "the file the ticket cases are judged under",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": {
+        "mode": "enforce",
+        "keys": {
+          "1": "VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=",
+          "2": "LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk="
+        },
+        "not_before": 1759968000,
+        "text": "HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)"
+      }
+    },
+    {"name": "off", "why": "MODE=off alone", "text": "MODE=off\n", "expect": {"mode": "off"}},
+    {
+      "name": "off-other-values-unread",
+      "why": "with MODE=off the values of the other lines are not read",
+      "text": "MODE=off\nKEY=garbage\nNOT_BEFORE=tomorrow\nTEXT=hello\n",
+      "expect": {"mode": "off"}
+    },
+    {
+      "name": "count-one-key",
+      "why": "count with one key, no NOT_BEFORE and no TEXT (the built-in text)",
+      "text": "MODE=count\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nNOT_BEFORE=\n",
+      "expect": {
+        "mode": "count",
+        "keys": {"1": "VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk="},
+        "not_before": null,
+        "text": null
+      }
+    },
+    {
+      "name": "bom-comments-crlf",
+      "why": "a BOM, comments, blank lines, CR LF, spaces around a line and after =",
+      "text": "\ufeff# access\r\n\r\n  MODE= enforce  \r\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\r\n\tNOT_BEFORE=\r\n",
+      "expect": {
+        "mode": "enforce",
+        "keys": {"2": "LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk="},
+        "not_before": null,
+        "text": null
+      }
+    },
+    {
+      "name": "text-2000-characters",
+      "why": "a TEXT of 2000 characters",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (access not allowed)\n",
+      "expect": {
+        "mode": "enforce",
+        "keys": {
+          "1": "VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=",
+          "2": "LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk="
+        },
+        "not_before": 1759968000,
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (access not allowed)"
+      }
+    },
+    {
+      "name": "text-with-url",
+      "why": "a URL with a space after it",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=https://rd.example.com/help 를 보세요. (access not allowed)\n",
+      "expect": {
+        "mode": "enforce",
+        "keys": {
+          "1": "VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=",
+          "2": "LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk="
+        },
+        "not_before": 1759968000,
+        "text": "https://rd.example.com/help 를 보세요. (access not allowed)"
+      }
+    },
+    {"name": "empty", "why": "an empty file", "text": "", "expect": "error"},
+    {
+      "name": "no-line-break-at-the-end",
+      "why": "MODE=off without its line break",
+      "text": "MODE=off",
+      "expect": "error"
+    },
+    {
+      "name": "not-utf8",
+      "why": "a byte that is not UTF-8",
+      "hex": "4d4f44453d6f66660a23ff0a",
+      "expect": "error"
+    },
+    {
+      "name": "no-mode",
+      "why": "no MODE line",
+      "text": "KEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nNOT_BEFORE=\n",
+      "expect": "error"
+    },
+    {"name": "mode-twice", "why": "MODE twice", "text": "MODE=off\nMODE=off\n", "expect": "error"},
+    {
+      "name": "mode-capital",
+      "why": "MODE=Enforce",
+      "text": "MODE=Enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "space-before-equals",
+      "why": "MODE =enforce",
+      "text": "MODE =enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "unknown-line",
+      "why": "a line of another file",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\nMIN=1.8.0\n",
+      "expect": "error"
+    },
+    {
+      "name": "three-keys-even-when-off",
+      "why": "a third KEY line is refused also with MODE=off",
+      "text": "MODE=off\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nKEY=3:tfkAlTGPPwRM2OQLWEJT2Gd3vmK/ByITNOX9IZnPp/c=\n",
+      "expect": "error"
+    },
+    {
+      "name": "enforce-without-key",
+      "why": "no KEY line",
+      "text": "MODE=enforce\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "same-kid-twice",
+      "why": "two keys under kid 1",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=1:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "same-key-twice",
+      "why": "one key under two kids",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "kid-leading-zero",
+      "why": "KEY=01:",
+      "text": "MODE=enforce\nKEY=01:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "key-31-bytes",
+      "why": "a key of 31 bytes",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhg==\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "key-unpadded",
+      "why": "a key without its =",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "key-with-space",
+      "why": "a space after the colon",
+      "text": "MODE=enforce\nKEY=1: VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "comment-after-a-value",
+      "why": "a # after a value is part of the value",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=  # the next key\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "enforce-without-not-before",
+      "why": "no NOT_BEFORE line: a file cut short is never a shorter rule",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "not-before-with-space",
+      "why": "a time with a space",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09 00:00:00\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "not-before-with-offset",
+      "why": "a time with an offset",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T09:00:00+09:00\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "not-before-february-30",
+      "why": "a day that does not exist",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2026-02-30T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-empty",
+      "why": "TEXT= with nothing after it",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-without-mark",
+      "why": "no \"access not allowed\"",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 교직원용입니다.\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-with-version-mark",
+      "why": "\"version not allowed\" too",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=(access not allowed) (Version not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-failed",
+      "why": "starts with Failed",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=Failed (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-tip",
+      "why": "starts with a _tip word",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=login_tip (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-braces",
+      "why": "a brace",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT={x} (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-rustdesk",
+      "why": "names RustDesk",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=RustDesk (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-placeholder",
+      "why": "a %NAME%",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=%MIN% (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-url-without-space",
+      "why": "a URL that runs into the text",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=https://rd.example.com/help(access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-control-character",
+      "why": "a tab inside TEXT",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=a\tb (access not allowed)\n",
+      "expect": "error"
+    },
+    {
+      "name": "text-2001-characters",
+      "why": "a TEXT of 2001 characters",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (access not allowed)\n",
+      "expect": "error"
+    }
+  ]
+}

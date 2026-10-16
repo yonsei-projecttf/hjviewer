@@ -30,3 +30,11 @@ E9mQinCSWZLtVGAH0n9Q2mi6chfvYqw8ynhFKf8QRxw=
 3eO8zsfzpmoRFfRdcg9NwTXDrnxOItyjj9se/WpJX/g=
 d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=
 F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=
+
+# server/api/tests/vectors/access-tickets.json (docs/access-tickets.md 8): the access ticket keys
+# 1, 2 and 3 (seeds of 74, 75 and 76 repeated) and the other PC's device key (seed of 77 repeated);
+# its PC key is the v3 vectors' device key (seed of 02 repeated)
+VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=
+LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=
+tfkAlTGPPwRM2OQLWEJT2Gd3vmK/ByITNOX9IZnPp/c=
+yFOtDwzSthmuqSzuxP1Wok1kmdWEznklfkXP2BObYKc=
