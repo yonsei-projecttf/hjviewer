@@ -104,7 +104,9 @@ pub fn login_key(id: &str) -> String {
 }
 
 /// The first letters of the portal IDs [`staff_id`] takes: Z and Y (the 행정허브 plugin takes Z
-/// and B; B only if the user says so later, as one more letter here).
+/// and B; B only if the user says so later, as one more letter here). Before a letter is added,
+/// an App Review account (review.rs) whose ID begins with it is deleted: its key would pass the
+/// rule, and its tokens would hold without its file.
 const ID_FIRST_LETTERS: &[u8] = b"ZY";
 
 /// HJViewer's ID rule (the user's decision of 2026-10-14), the one place it is written: a portal

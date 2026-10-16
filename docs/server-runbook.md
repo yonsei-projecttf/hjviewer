@@ -544,7 +544,7 @@ HJV_SERVER_KEY=<A: sudo cat /opt/hjviewer/deploy/data/id_ed25519.pub | B: sudo c
 | 14 | 업데이트 공개키 파일(8-1의 3번), 최소 버전 강제 | 사용자 승인 | 7-10 |
 | 15 | NAS 중계기 승인과 켜기 | 사용자, 운영 에이전트(승인 명령) | 7-11 |
 
-그 뒤의 소절은 되돌리기(7-12), 사고 대응(7-13), 감시와 백업(7-14), 일상 운영(7-15), 보고(7-16)입니다.
+그 뒤의 소절은 되돌리기(7-12), 사고 대응(7-13), 감시와 백업(7-14), 일상 운영(7-15), 보고(7-16), App Review 데모 계정(7-17)입니다.
 
 ### 7-0. 이 절의 규칙
 
@@ -1105,7 +1105,7 @@ nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone
    로그인한 앱은 회수할 수 없으므로 로그인 창과 "액세스 가능한 장치" 탭에 오류가 남습니다. hjv-api를 멈추면 PC들의 목록은 24시간 안에 만료되어 저절로 비밀번호로 돌아갑니다. hjv-api를 일부러 멈춰 둘 때는 점검 타이머와 백업 타이머를 먼저 멈춥니다(`sudo systemctl disable --now hjviewer-api-check.timer hjviewer-api-backup.timer`). 그대로 두면 점검과 백업이 실패할 때마다 경보가 납니다. 다시 켤 때 타이머도 켭니다(7-5의 마지막 블록).
 3. **hbbs**: 보관한 옛 실행 파일(`/root/hjv-backup/hbbs-before-<VERSION>`)을 넣고 조용한 시간에 hbbs만 다시 시작합니다. 로그인은 되지만 새 PC 묶기와 켜짐 확인은 안 되고, 0005가 있었다면 최소 버전 거절도 멈춥니다.
 4. **중계기**: `hjv-api admin relay revoke <중계기 ID>`. NAS에서는 사용자가 공유 폴더에 `hjv-relay.stop`을 두고 작업을 끕니다(재부팅 없이, [relay-dsm.md](relay-dsm.md) 10장). 폐기한 중계기의 키는 다시 승인되지 않습니다(`relay approve`가 거절). 잘못 폐기했으면 사용자가 NAS에서 중계기의 상태 폴더를 지워(같은 장의 "제거") 새 키와 새 등록 코드를 만든 뒤 7-11처럼 다시 승인받습니다.
-5. **hjv-api 새 판**: 설치 전에 남긴 스냅숏과 설정 파일을 옛 실행 파일과 함께 되돌립니다(7-14의 업그레이드).
+5. **hjv-api 새 판**: 설치 전에 남긴 스냅숏과 설정 파일을 옛 실행 파일과 함께 되돌립니다(7-14의 업그레이드). App Review 데모 계정(7-17)을 켠 뒤라면 먼저 7-17의 7번대로 그 계정과 설정 줄을 지웁니다.
 6. **앱을 1.5.1로**: 사용자에게 먼저 그 기기에서 로그아웃하라고 안내합니다. 로그인한 채로 1.5.1을 설치하면 설정이 남고, 1.5.1은 저장된 성명(또는 포탈 ID)을 연결하는 PC마다 보냅니다. 최소 버전 강제(7-10)가 켜진 뒤에는 이 길이 닫힙니다.
 7. **최소 버전**: 정책, hbbs 파일, 문 2는 8-6에 있습니다. hbbs의 거절은 `MIN=`으로 10초 안에 멈출 수 있습니다. 정책은 옛 파일로 되돌리거나 지우지 않고, `seq`가 더 높은 새 정책으로만 되돌립니다(앱이 이미 받은 정책은 옛 파일로 풀리지 않음. 예외는 키 도난 때의 8-5 (라) 2번뿐).
 
@@ -1268,6 +1268,73 @@ report: 계정 <n>, 활성 키 <n>, 묶음을 가진 PC <n>, 그중 10분 안에
 바꾼 것: <설치한 파일, 만든 사용자, 고친 설정 파일, 드롭인>
 문제: <있으면>
 ```
+
+### 7-17. App Review 데모 계정 (`/etc/hjviewer/review.conf`)
+
+Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다. 사용자 결정(2026-10-16): ID와 비밀번호는 서버의 이 파일에만 있고, 비밀번호는 해시로만 둡니다. 이 계정은 로그인만 되고 파일의 `UNTIL`에 끝납니다. 연세 SSO를 부르지 않고, PC를 목록에 올리지 못하고, 새 버전을 받지 못하고, 자기가 만들지 않은 계정에는 들어가지 못합니다. 동작은 [server/api/README.md](../server/api/README.md)의 "The App Review account", 심사에 넣는 값은 [distribution.md](distribution.md)의 "iOS: 심사용 데모 계정"에 있습니다.
+
+- 파일은 사용자가 에이전트 세션이 아닌 자기 터미널(Linux, macOS나 WSL)에서 `python3 -I deploy/review-conf.py --until <YYYY-MM-DD> --out ~/review.conf`로 만들어(ID와 비밀번호는 도구가 터미널에서 물음) 운영 에이전트의 홈으로 보냅니다. 형식은 [deploy/review.conf.example](../deploy/review.conf.example)에 있습니다.
+- 운영 에이전트는 이 파일을 출력하지 않고(`cat`, `less` 등), ID를 보고·대화·명령 인자에 옮기지 않습니다. 옮겨도 되는 것은 `UNTIL`과 저널의 꼬리표뿐입니다. 이 계정으로 로그인해 보지 않습니다. 확인은 사용자가 앱으로 합니다(4번).
+- 아래 명령의 `T`는 이 계정의 꼬리표입니다(`T='<꼬리표>'`로 둠). 2번의 read 줄에 처음 나오고, 보고(8번)마다 적습니다. 저널은 30일만 남으므로 그 뒤에는 보고에 적은 값을 씁니다. 저널에 아직 있으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -o cat | grep 'App Review' | grep -o 'acct=[0-9a-f]\{16\}' | tail -1`로도 얻습니다.
+
+1. **넣기**(사용자 승인 뒤). 바꿀 때(새 `UNTIL`, 새 비밀번호)도 같은 블록이고, 다시 시작하지 않습니다.
+   ```bash
+   SRC=/home/<사용자>/review.conf                  # ← 사용자가 보낸 파일
+   [[ $SRC == /home/*/* ]] && sudo test -f "$SRC" && ! sudo test -L "$SRC" || { echo "STOP: $SRC 이(가) 홈의 보통 파일이 아님"; exit 1; }
+   [ "$(sudo grep -cE '^(ID|HASH|UNTIL)=' "$SRC")" = 3 ] && [ "$(sudo grep -c '^HASH=pbkdf2-sha256\$' "$SRC")" = 1 ] || { echo "STOP: $SRC 이(가) review-conf.py가 쓴 파일이 아님"; exit 1; }
+   sudo sed -n 's/^UNTIL=//p' "$SRC"                           # 끝나는 시각(UTC)
+   sudo install -o root -g hjviewer-api -m 0640 "$SRC" /etc/hjviewer/review.conf.new &&
+     sudo mv -f /etc/hjviewer/review.conf.new /etc/hjviewer/review.conf && sudo rm -f "$SRC"
+   ```
+   바꾼 파일은 이 계정의 다음 로그인이나 요청 때 읽힙니다(교직원 로그인으로는 읽히지 않음). 그래서 바꾼 뒤에는 사용자가 앱으로 한 번 로그인해 확인하고(심사 중이면 4번과 달리 계정은 지우지 않음), 운영 에이전트는 그 뒤 저널의 read 줄을 봅니다(2번 블록의 마지막 줄, `--since`만 넓혀서). 새 비밀번호로 바꾼 파일이면(사용자가 알려 줌) 옛 비밀번호로 받은 세션은 파일을 바꿔도 끝나지 않으므로 `sudo /opt/hjviewer/bin/hjv-api admin user revoke-all "tag:$T"`로 끝냅니다.
+2. **새 hjv-api와 설정**(처음 한 번, 사용자 승인 뒤 조용한 시간에). 이 계정은 `HJV_API_REVIEW_FILE`을 아는 hjv-api에서만 됩니다. 2026-10-15부터 운영 중인 hjv-api(3b283b2, 7-14)는 이 이름을 몰라서, 설정 파일에 이 줄이 있으면 `unknown setting HJV_API_REVIEW_FILE`로 시작하지 않고, 그동안 로그인과 PC 동기화가 모두 멈춥니다. 그래서 먼저 이 기능이 든 새 서버 묶음으로 hjv-api만 바꿉니다. 7-14의 "업그레이드"대로 스냅숏, 옛 실행 파일, 설정 파일을 남긴 뒤 6절 "B 경로 업데이트"의 4번을 합니다(hbbs와 hbbr은 다시 시작하지 않음). 그다음 아래 블록으로 설정 줄을 넣고 다시 시작합니다. 첫 줄은 설치된 hjv-api가 이 이름을 아는지 봅니다.
+   ```bash
+   sudo grep -qa HJV_API_REVIEW_FILE /opt/hjviewer/bin/hjv-api || { echo 'STOP: 설치된 hjv-api가 HJV_API_REVIEW_FILE을 모름(먼저 새 묶음으로 바꿈)'; exit 1; }
+   E=/etc/hjviewer/hjviewer-api.env
+   if sudo grep -q '^#\?HJV_API_REVIEW_FILE=' "$E"; then sudo sed -i 's|^#\?HJV_API_REVIEW_FILE=.*|HJV_API_REVIEW_FILE=/etc/hjviewer/review.conf|' "$E"; else echo 'HJV_API_REVIEW_FILE=/etc/hjviewer/review.conf' | sudo tee -a "$E" > /dev/null; fi
+   sudo grep -n '^HJV_API_REVIEW_FILE=' "$E"
+   sudo systemctl restart hjviewer-api
+   sleep 3; systemctl is-active hjviewer-api                   # active
+   sudo journalctl --namespace=hjviewer -u hjviewer-api --since -1min -o cat | grep 'App Review' | tail -2
+   ```
+   - `active`가 아니면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -n 20 -o cat`의 오류 줄을 사용자에게만 보여 주고(7-5), `sudo sed -i '/^HJV_API_REVIEW_FILE=/d' "$E"`로 그 줄을 지운 뒤 다시 시작해 `active`인지 봅니다.
+   - `login: the App Review file (HJV_API_REVIEW_FILE) read: until <UTC> (acct=<꼬리표>)`가 나오고, 그 시각이 지금보다 뒤이고, 그 뒤에 `login: no App Review account (…)` 줄이 없어야 합니다. 이 꼬리표가 `T`입니다.
+   - `… is not used: <이유>`이면 파일이 거부된 것입니다(이유에 ID나 해시는 없음). 그 줄을 보고하고 사용자가 파일을 다시 만듭니다.
+   - `login: no App Review account (…)`만 나오면 파일이 없습니다. read 줄(지난 시각)과 이 줄이 함께 나오면 `UNTIL`이 지났습니다.
+3. **명단**(두 로그인 방식 모두): 그 ID를 명단에 미리 넣습니다. 명단에 없는 ID는 열린 로그인에서도 첫 로그인 전까지 `HJV_API_LIMIT_NEW_ID`(하루 실패 2번)를 받아, 심사자가 비밀번호를 두 번 틀리면 하루 동안 맞는 비밀번호로도 로그인하지 못합니다. 명단에 있으면 다른 ID처럼 `HJV_API_LIMIT_ID`(10분에 3번, 하루 5번)입니다. 명단 방식에서는 넣어야 로그인합니다. ID는 파일에서 바로 넘기므로 화면과 명령줄에 나오지 않습니다.
+   ```bash
+   sudo sed -n 's/^ID=//p' /etc/hjviewer/review.conf | sudo /opt/hjviewer/bin/hjv-api admin allow import /dev/stdin   # allowlist: 1 added, …
+   ```
+4. **확인**(사용자, 처음 제출하기 전): 사용자가 App Store Connect에 넣을 값 그대로 앱으로 한 번 로그인해 보고 로그아웃합니다(distribution.md의 "iOS: 심사용 데모 계정" 2번). 사용자가 확인했다고 하면 운영 에이전트는 계정을 지우고 명단에 다시 넣습니다. 확인한 기기가 심사자의 기기에 "새 기기" 알림으로 뜨지 않게 하려는 것입니다(`user delete`는 명단 항목도 지움).
+   ```bash
+   sudo /opt/hjviewer/bin/hjv-api admin user delete "tag:$T"
+   sudo sed -n 's/^ID=//p' /etc/hjviewer/review.conf | sudo /opt/hjviewer/bin/hjv-api admin allow import /dev/stdin   # allowlist: 1 added, …
+   ```
+   확인 로그인이 실패하고 저널에 `login: the App Review file names the ID of an account that is not the App Review account's (acct=…)`가 있으면, 그 ID의 계정이 이미 있습니다(규칙 전에 만들어진 계정). 이 계정은 그 계정에 들어가지 않으므로, 사용자가 다른 ID로 파일을 다시 만듭니다.
+5. **저널 보기**: 매일 보고에 이 계정의 줄 수만 넣습니다. 틀린 비밀번호가 ID의 실패 한도를 채우면 심사자도 그동안 로그인하지 못합니다. 셋째 줄(`login: ID limit reached (acct=<꼬리표>, …)`)이 0이 아니면 바로 사용자에게 알리고, 사용자 승인 뒤 `sudo /opt/hjviewer/bin/hjv-api admin unlock "tag:$T"`로 풉니다.
+   ```bash
+   J=$(sudo journalctl --namespace=hjviewer -u hjviewer-api --since yesterday -o cat)
+   echo "$J" | grep -c 'login: the App Review account logged in'
+   echo "$J" | grep -c 'login: a wrong password for the App Review account'
+   echo "$J" | grep -c "login: ID limit reached (acct=$T"
+   ```
+6. **끝내기**(심사가 끝났거나 사용자가 정한 때, 사용자 승인 뒤): 파일을 지우면 그 계정의 토큰이 바로 멈추고 앱은 다음 요청에서 로그아웃됩니다. 그다음 `admin user delete`로 계정(키, 토큰, 명단 항목)을 지웁니다. `HJV_API_REVIEW_FILE` 줄은 두어도 됩니다(파일이 없으면 계정도 없음). hjv-api를 이 기능 전의 판으로 되돌릴 때만 지웁니다(7번).
+   ```bash
+   sudo rm /etc/hjviewer/review.conf
+   sudo /opt/hjviewer/bin/hjv-api admin user delete "tag:$T"
+   ```
+7. **되돌리기**(hjv-api를 이 기능 전의 판으로 되돌릴 때, 사용자 승인 뒤): 옛 판은 `HJV_API_REVIEW_FILE`을 몰라 그 줄이 있으면 시작하지 않고, 이 계정을 따로 다루지도 않습니다. 옛 판에서는 이 계정의 토큰이 파일이나 `UNTIL`과 상관없이 보통 토큰처럼 통하고(쓰지 않아도 90일), 새 버전과 짧은 링크도 받습니다. 그래서 새 판이 도는 동안 먼저 계정을 지우고, 설정 줄을 지운 뒤 옛 실행 파일로 바꿉니다.
+   ```bash
+   sudo rm -f /etc/hjviewer/review.conf
+   sudo /opt/hjviewer/bin/hjv-api admin user delete "tag:$T"   # 이미 지웠으면 no such account
+   sudo sed -i '/^HJV_API_REVIEW_FILE=/d' /etc/hjviewer/hjviewer-api.env
+   sudo install -m 755 /root/hjv-backup/hjv-api-before-<VERSION> /opt/hjviewer/bin/hjv-api   # ← 2번 전에 남긴 옛 실행 파일
+   sudo systemctl restart hjviewer-api
+   sleep 3; systemctl is-active hjviewer-api                   # active
+   sudo /opt/hjviewer/bin/hjv-api admin selfcheck
+   ```
+   새 판이 3b283b2에 이 기능만 더한 판이면 DB 스키마가 같아 이 블록으로 끝납니다. 다른 서버 변경도 함께 들어간 판이면 앞의 세 줄 뒤에 7-14의 "업그레이드"대로 옛 실행 파일, 스냅숏, 설정 파일을 함께 되돌립니다.
+8. **보고**: `review.conf <넣음 | 바꿈 | 지움>, UNTIL <UTC>, acct=<꼬리표>, 저널 <read | is not used <이유> | no App Review account>, 어제 로그인 <n>줄, 틀린 비밀번호 <n>줄, ID 한도 <n>줄, user delete <했음 | 안 함>`. ID와 비밀번호는 적지 않습니다.
 
 ## 8. 최소 버전과 업데이트 배포 (1.6.0)
 

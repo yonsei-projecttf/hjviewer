@@ -80,8 +80,17 @@ operator blocks them; the account service puts the portal ID on its list at the 
 operator can also go back to letting in only the IDs put on the list ahead. The account service
 runs on the same server. A login that fails (a wrong password, a blocked account) still leaves a
 login record (tags of the ID typed and of the device, the client's IP address, the result, the
-time; 6 months) and the login limit counters. An ID of another form is refused at once, before
-the SSO: neither it nor the password is sent on, and its record keeps no tag of the ID.
+time; 6 months) and the login limit counters. An ID of another form (but the App Review account's,
+below) is refused at once, before the SSO: neither it nor the password is sent on, and its record
+keeps no tag of the ID.
+
+**The App Review account.** While Apple reviews the iOS app, and only until a time the operator
+sets, one more account can log in: a demo account for Apple's reviewers. Its ID, of another form
+than the portal IDs above, is only in a file on the server, which also holds a hash of its password;
+the password typed is checked against that hash, not by the Yonsei SSO, and is not kept, as no
+password is. The account holds no PC and gets no new app version, and it ends with that file. Its
+logins leave the same records as any other, with the tag of its ID, and the account is kept and
+deleted as any other.
 
 **Logging in.** You type your Yonsei portal ID and password in the app. The app seals the password
 to the server's key, so that only the account service can open it, even on a network that inspects
@@ -321,7 +330,9 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 3. 계정 (1.6.0부터)
 
-로그인한 사람에게만 해당합니다. 학교의 교직원만 로그인할 수 있습니다. 계정 서비스는 교직원의 포탈 ID(형식으로 가림: Z나 Y로 시작하고 ZA로 시작하지 않음)만 받고, 연세 SSO가 알려 준 그 사람의 코드도 같은 규칙으로 확인합니다. 그 사람은 운영자가 막지 않는 한 누구나 HJViewer를 쓸 수 있습니다. 계정 서비스는 처음 로그인할 때 그 포탈 ID를 명단에 올립니다. 운영자는 미리 명단에 올린 ID만 받는 방식으로 되돌릴 수도 있습니다. 계정 서비스는 같은 서버에서 돕니다. 로그인에 실패해도(틀린 비밀번호, 막힌 계정) 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다. 다른 형식의 ID는 SSO에 묻기 전에 바로 거절하며, 그 ID와 비밀번호를 SSO에 보내지 않고 시도 기록에도 그 ID의 꼬리표를 남기지 않습니다.
+로그인한 사람에게만 해당합니다. 학교의 교직원만 로그인할 수 있습니다. 계정 서비스는 교직원의 포탈 ID(형식으로 가림: Z나 Y로 시작하고 ZA로 시작하지 않음)만 받고, 연세 SSO가 알려 준 그 사람의 코드도 같은 규칙으로 확인합니다. 그 사람은 운영자가 막지 않는 한 누구나 HJViewer를 쓸 수 있습니다. 계정 서비스는 처음 로그인할 때 그 포탈 ID를 명단에 올립니다. 운영자는 미리 명단에 올린 ID만 받는 방식으로 되돌릴 수도 있습니다. 계정 서비스는 같은 서버에서 돕니다. 로그인에 실패해도(틀린 비밀번호, 막힌 계정) 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다. 다른 형식의 ID는(아래 App Review 계정의 ID는 빼고) SSO에 묻기 전에 바로 거절하며, 그 ID와 비밀번호를 SSO에 보내지 않고 시도 기록에도 그 ID의 꼬리표를 남기지 않습니다.
+
+**App Review 계정.** Apple이 iOS 앱을 심사하는 동안, 운영자가 정한 때까지만 계정 하나가 더 로그인할 수 있습니다. Apple의 심사자가 쓰는 데모 계정입니다. 그 ID는 위의 포탈 ID와 다른 형식이고 서버의 파일 하나에만 있으며, 그 파일에는 비밀번호의 해시도 있습니다. 입력한 비밀번호는 연세 SSO가 아니라 그 해시로 확인하고, 다른 비밀번호처럼 보관하지 않습니다. 이 계정은 PC를 가지지 못하고 새 버전을 받지 못하며, 그 파일이 없어지면 끝납니다. 이 계정의 로그인도 다른 로그인과 같은 기록(그 ID의 꼬리표 포함)을 남기고, 계정도 다른 계정처럼 보관하고 지웁니다.
 
 **로그인.** 앱에 연세포탈 ID와 비밀번호를 넣습니다. 앱은 비밀번호를 서버의 키로 봉인하므로, 암호화된 통신을 들여다보는 네트워크에서도 계정 서비스만 열 수 있습니다. 계정 서비스는 연세 SSO(학교의 로그인 시스템)에 비밀번호를 확인받은 뒤 바로 버립니다. 비밀번호와 SSO 토큰은 저장하지도 기록하지도 않습니다. SSO에서 받은 것 가운데 그 사람의 코드(포탈 ID)와 성명만 읽고 보관하며, 이메일 주소와 소속은 읽지 않습니다. 로그인할 때마다 그 기기의 **계정 키**도 새로 등록합니다. 서버는 공개키만 보관하고 개인키는 기기에 남으며, 로그인 뒤의 모든 계정 요청에 그 키로 서명합니다.
 

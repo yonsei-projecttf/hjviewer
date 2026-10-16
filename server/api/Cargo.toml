@@ -29,6 +29,8 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "server", "server-graceful", "tokio"] }
+# the ring that rustls already brings: PBKDF2 for the App Review account's file (review.rs)
+ring = "0.17.14"
 rusqlite = { version = "0.40", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"

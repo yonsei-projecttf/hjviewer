@@ -17,6 +17,7 @@ use crate::{
     oplog::OpLog,
     pcsync::{KeyChecks, ListCache},
     relay::RelayHub,
+    review::ReviewFile,
     seal::SealKeys,
     sso::SsoClient,
     tfa::{PendingStore, SecondFactor},
@@ -85,6 +86,8 @@ pub struct AppState {
     /// the packages of new app versions: the policy and door 2's file as last read, the short
     /// links, the download slots (update.rs)
     pub updates: Updates,
+    /// the App Review account's file as last read (review.rs)
+    pub review: ReviewFile,
     /// the operator record and the service's own user ID, from when the admin socket is served
     /// (admin.rs): where update.rs writes what the operator is to see without asking, and
     /// overview.rs each look of a super operator
@@ -122,6 +125,7 @@ impl AppState {
             command_key: command_key.map(|seed| CommandKey::new(config.command_kid, &seed)),
             relays: RelayHub::default(),
             updates: Updates::new(&config),
+            review: ReviewFile::default(),
             operator_record: OnceLock::new(),
             lists: ListCache::default(),
             key_checks: KeyChecks::default(),

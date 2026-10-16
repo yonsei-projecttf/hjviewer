@@ -161,6 +161,9 @@ the right token, signature or code is never refused for its address. `HJV_API_DO
 at most 16) is the files sent at the same time, packages and their notice files alike; one more
 gets 503 with `Retry-After: 60`.
 
+`HJV_API_REVIEW_FILE` (unset) is the file of the App Review account (below), an absolute path such
+as `/etc/hjviewer/review.conf`; unset, there is no such account.
+
 ## Credentials
 
 Secrets come only from systemd credentials (`$CREDENTIALS_DIRECTORY`; `--credentials <dir>` for
@@ -418,6 +421,80 @@ super operator, the one in those lines. To make someone a super operator, or to 
 edits the line in `/etc/hjviewer/hjviewer-api.env` on the server and restarts the service
 (docs/server-runbook.md 7-15).
 
+## The App Review account
+
+Apple's App Review asked for a demo account to sign in to the iOS app with. The user's decision
+(2026-10-16): its ID and password live only in a file on the server, the password as a hash; the
+account can only log in, and it ends (`src/review.rs`; docs/server-runbook.md 7-17,
+docs/distribution.md).
+
+The file, `HJV_API_REVIEW_FILE` (root:hjviewer-api 0640, as door 2's;
+`deploy/review.conf.example`), has each of three lines once, and `#` comments:
+
+```text
+ID=<the login ID>
+HASH=pbkdf2-sha256$<iterations>$<salt, standard base64>$<derived key, standard base64>
+UNTIL=<UTC time, 2026-11-29T15:00:00Z>
+```
+
+HASH is PBKDF2-HMAC-SHA256 of the password, 100 000 to 10 000 000 iterations (bounded, so that a
+file cannot stall logins), a salt of 16 bytes or more and a key of 32, compared in constant time
+(ring's). An ID that passes HJViewer's ID rule (hbbs and the SSO, below) refuses the whole file, so
+that a staff account is never shadowed; anything else that is not as above refuses it too. hjv-api
+reads the file again when it changes, as door 2's: a file missing, unreadable, refused or past its
+UNTIL means there is no such account. The journal says what it read, by the account's tag:
+`login: the App Review file (HJV_API_REVIEW_FILE) read: until <UTC> (acct=<tag>)`, `… is not
+used: <why>` (never the ID or the hash), `… is gone`, and at the start `login: no App Review
+account (…)` when there is none.
+
+The user writes the file in a terminal of their own (Linux, macOS or WSL), not in an agent's
+session, and outside the repository:
+
+```sh
+python3 -I deploy/review-conf.py --until <YYYY-MM-DD> --out ~/review.conf
+```
+
+It asks for the ID, and for the password twice without showing it, on the terminal only (never
+from the command line, which a shell's history and the process list keep, the environment or a
+standard input that is not a terminal; the password 12 to 256 printable ASCII characters), refuses
+an ID of the ID rule (it takes letters, digits, `.`, `_` and `-`) and a date more than 90 days
+ahead, and writes the file (0600, never over another) with 600 000 iterations, 16 random bytes of
+salt and UNTIL at 0:00 KST at the start of the date, in UTC; it prints the file's path and UNTIL
+only. `scripts/test_review_conf.py` tests it (`scripts/ci.sh deploy`).
+
+While the file is active, its ID logs in (compared as the allowlist compares IDs) with every limit
+and answer of any ID and nothing of the SSO's: no SSO call, no pause, no second factor. The success
+limits come first, as before an SSO call; then the hash. A wrong password is the 401 of a wrong
+password the SSO refused, after the same delay, counted for the ID (`admin unlock tag:<tag>` lifts
+it), with the record `review-credentials` and the journal line `login: a wrong password for the App
+Review account (acct=<tag>)`. The operator puts the ID on the allowlist ahead with `allow import`
+in either mode (docs/server-runbook.md 7-17): in open mode an ID not on it counts under
+`HJV_API_LIMIT_NEW_ID` (two failures a day) until its first login, and in list mode it logs in only
+then. The right password then goes as any login, a block keeps it out; its user object is
+`{"name":"<the ID, case-folded>","display_name":"App Review","status":1}`, and the journal says
+`login: the App Review account logged in, without the SSO (acct=<tag>)`. It never goes into an
+account it did not make: when the account of its ID has another name or pcode, or a PC (an account
+of before the rule), the right password fails as a wrong one, with the record `review-existing` and
+the critical journal line `login: the App Review file names the ID of an account that is not the
+App Review account's (acct=<tag>); …`, and nothing of that account changes.
+
+The account is told apart with no state of its own: its key fails the ID rule, which every other
+account's passes. It never holds a PC (a login on an installed Windows PC is `not_eligible`), door 1
+and the short links answer it `403 {"error":"이 계정으로는 새 버전을 받을 수 없습니다."}`, it is never a
+super operator (whatever `HJV_API_OPERATORS` says), and its tokens hold only while the file is
+active and names it: otherwise every request of it gets the 401 of an unknown token, and the app
+logs out. Its own account (its keys, an empty device list, logout) is all it reaches. An account
+whose ID is outside the rule from before the rule (2026-10-14) is held the same way; its logins were
+refused already. A letter added to the rule must not begin the ID of an App Review account still
+there: its key would pass the rule, and its tokens would hold without the file (delete it first).
+
+A new HASH in the file ends no session of the old password: `hjv-api admin user revoke-all
+tag:<tag>` does. To end the account: delete the file (its tokens stop at once), then `hjv-api admin
+user delete tag:<tag>`, with the tag of the journal's line. hjv-api from before this account does
+not know `HJV_API_REVIEW_FILE` and does not start with it, and would let the account's tokens hold
+as any: before going back to it, end the account and remove the setting (docs/server-runbook.md
+7-17).
+
 ## Monitoring
 
 While hjv-api is down, or only the PCs' syncs fail, password-less connections go on for a day on
@@ -645,6 +722,8 @@ padding, NUL is the byte 0x00, times are Unix seconds.
 - A portal ID outside HJViewer's ID rule (hbbs and the SSO, below), at once, before any SSO call
   and counted against the address only: 403
   `{"error":"연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요."}`.
+  The one exception is the App Review account's ID while its file names it (The App Review
+  account, above).
 - While SSO calls are paused: 503 `{"error":"연세 인증 서버에 지금 연결할 수 없습니다. 잠시 뒤 다시 해 주세요."}`
   for every ID.
 - A person HJViewer denies once the SSO accepted the password (the SSO's user call refuses, names
@@ -1017,6 +1096,9 @@ policy from nginx and its `latest` from hjv-api.
     600 s`, and the platform must be the PC's own (the `os` of its binding: a PC's key gets the
     package of the app that PC runs, and no APK). Whatever of this fails, a PC in no account
     included, the answer is the same `403 {"error":"이 기기는 새 버전을 받을 수 없습니다."}`.
+
+  The App Review account's login gets `403 {"error":"이 계정으로는 새 버전을 받을 수 없습니다."}`
+  here and for a short link.
 - **Short links**, `POST /api/hjv/update/{windows,android}/link` with a login and the body
   `{"installed":true}` or `{"installed":false}` (`{}` is false): `200
   {"url":"/api/hjv/u/K7M2-Q9XD","file":"HJViewer-1.6.1-install.exe","expires_in":600}`. The code
@@ -1222,7 +1304,12 @@ versions: door 1 by a login (the right proof, each wrong one and none) and by a 
 three downloads, the same link for a request sent again), door 2 (its page from the policy, its
 names, a closed door), the limits (thirty failures of an address, right requests never refused,
 the HEAD without headers), a package that is not as the policy says, and that the journal and the
-records hold tags only; `tests/update_stream.rs` how a package goes out, on tokio's paused clock
+records hold tags only; `tests/review.rs` the App Review account (its login without the SSO, also
+while SSO calls are paused or with a second factor, a wrong password and the ID's limit, the
+success limits before the hash, the file missing, past its UNTIL or refused, list mode, no PC, no
+account it did not make, door 1 and short links refused, no super operator, its tokens ending with
+the file, the line at the start);
+`tests/update_stream.rs` how a package goes out, on tokio's paused clock
 with hjv-api on one end of a connection in memory (a slow reader past the minute a request has, a
 reader that stops, the fifth download at once, the hour a download may take, 200 MiB at the rate),
 and the program itself sending from a 200 MiB file without holding more memory than for a small
@@ -1290,7 +1377,8 @@ go with it. No password, SSO token, e-mail, department, uuid or user name of a d
 and the journal gets tags and counts only. Short links live in memory, ten minutes, never in the
 database; no code of a short link or of door 2 is stored or logged (the journal shows the first
 eight hex digits of its tag, keyed with the log key), and the policy, the packages and door 2's
-file are the operator's files, which hjv-api only reads.
+file are the operator's files, which hjv-api only reads; so is the App Review file, the one place
+of that account's ID and the hash of its password (the account itself is kept as any other).
 
 ## Wake-on-LAN, where it is
 

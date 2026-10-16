@@ -394,6 +394,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "rcgen",
+ "ring",
  "rusqlite",
  "rustls",
  "rustls-native-certs",

@@ -107,9 +107,10 @@ pub fn parse_active_days(days: i64) -> Result<i64, String> {
     }
 }
 
-/// Whether the account of `login_key` (the case-folded portal ID) is a super operator.
+/// Whether the account of `login_key` (the case-folded portal ID) is a super operator; the App
+/// Review account (review.rs) never is, whatever the setting says.
 pub fn is_operator(state: &AppState, login_key: &str) -> bool {
-    state.config.operators.iter().any(|k| k == login_key)
+    !crate::review::is_review(login_key) && state.config.operators.iter().any(|k| k == login_key)
 }
 
 /// `answer` with `"hjv_role":"operator"` when the account of `login_key` is a super operator.

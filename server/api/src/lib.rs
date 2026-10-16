@@ -43,6 +43,7 @@ pub mod overview;
 pub mod pcsync;
 pub mod proof;
 pub mod relay;
+pub mod review;
 pub mod seal;
 pub mod selfcheck;
 pub mod server;

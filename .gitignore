@@ -6,3 +6,5 @@ target/
 .env
 deploy/data/
 __pycache__/
+# the App Review account's file, should deploy/review-conf.py write one here (runbook 7-17)
+review.conf

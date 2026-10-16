@@ -122,6 +122,8 @@ pub struct Config {
     pub limit_update_fail_ip: Vec<Window>,
     /// files (packages and their notice files) sent at the same time; one more gets 503
     pub downloads_max: usize,
+    /// the App Review account's ID, password hash and end (review.rs); unset, there is none
+    pub review_file: Option<PathBuf>,
 }
 
 /// Who may log in (HJV_API_LOGIN). The user's decision of 2026-10-14 replaced D3's allowlist by
@@ -224,6 +226,7 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_LIMIT_UPDATE", Some("10/86400")),
     ("HJV_API_LIMIT_UPDATE_FAIL_IP", Some("30/86400")),
     ("HJV_API_DOWNLOADS_MAX", Some("4")),
+    ("HJV_API_REVIEW_FILE", Some("")),
 ];
 
 /// The most files (packages and notice files) hjv-api sends at once, whatever
@@ -442,6 +445,10 @@ impl Config {
                 .ok_or(format!(
                     "HJV_API_DOWNLOADS_MAX is 1 to {MAX_DOWNLOADS} downloads at the same time"
                 ))?,
+            review_file: match get("HJV_API_REVIEW_FILE")?.as_str() {
+                "" => None,
+                _ => Some(path("HJV_API_REVIEW_FILE")?),
+            },
         };
         if config.token_idle_secs > config.token_max_secs {
             return Err("HJV_API_TOKEN_IDLE_DAYS cannot exceed HJV_API_TOKEN_MAX_DAYS".into());

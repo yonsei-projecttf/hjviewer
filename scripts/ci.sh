@@ -926,6 +926,9 @@ deploy_stage() {
   step "deploy: the production settings check (scripts/check-api-settings.py), offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_api_settings.py' ||
     fail "deploy: tests of the settings check"
+  step "deploy: the App Review account's file (deploy/review-conf.py), offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_review_conf.py' ||
+    fail "deploy: tests of deploy/review-conf.py"
   # the server's own check of a signed version policy before it is installed (runbook 8-2): its
   # tests, then the shared test vectors of tools/hjv-release that the apps and the tool agree on
   step "deploy: the server's check of a version policy (deploy/hjv-update-verify.sh), offline tests"

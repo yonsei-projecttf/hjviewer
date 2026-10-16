@@ -17,7 +17,7 @@ use hjv_api::{
     config::{load_command_key, load_list_key, read_env_file, Config, Secrets, ENV_PREFIX},
     db, jobs,
     keygen::{self, Target},
-    log_crit, log_err, log_notice, log_warn, oplog,
+    log_crit, log_err, log_notice, log_warn, oplog, review,
     selfcheck::{self, CommandKeyCheck, ListKeyCheck},
     server::{self, Listener},
     state::AppState,
@@ -268,6 +268,7 @@ async fn serve(
     }
     check_list_key(&state);
     check_command_key(&state);
+    review::note_at_start(&state);
     tokio::spawn(jobs::run(state.clone(), stopped()));
     log_notice!(
         "hjv-api {} ready: seal keys {}, list key {}, command key {}, second factor {second_factor}, login {}",

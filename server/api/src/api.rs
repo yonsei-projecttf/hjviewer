@@ -55,7 +55,7 @@ use crate::{
     db::{self, Device, Session},
     envelope, keys,
     login::{self, BindStatus, Retry},
-    overview, pcsync, proof, relay,
+    overview, pcsync, proof, relay, review,
     state::AppState,
     update,
     util::{b64, hex, now, sha256, valid_device_id},
@@ -368,6 +368,10 @@ pub async fn authenticate(
             let Some(s) = db::session(c, &hash, at, idle, max)? else {
                 return Ok(None);
             };
+            // the App Review account's tokens hold only while its file names it (review.rs)
+            if !review::admits(&app, &s.account.login_key, at) {
+                return Ok(None);
+            }
             let check = match &s.key {
                 Some(key) => proof::check(
                     &key.public_key,

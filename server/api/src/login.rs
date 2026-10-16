@@ -18,7 +18,11 @@
 //!    fails it gets 403 [`TEXT_ID_RULE`] at once: no SSO call, none of the SSO calls of step 8
 //!    taken, counted against the address only (a client's failure, as a bad seal is), and the
 //!    record keeps no tag of it. The rule is public, so the answer tells nothing about the
-//!    allowlist or an account. The ID goes on case-folded (the account's key);
+//!    allowlist or an account. The ID goes on case-folded (the account's key). The one ID outside
+//!    the rule that goes on is the App Review account's, while its file names it (review.rs):
+//!    steps 5, 7 and 8 as for any ID, then its file's hash in place of the SSO (no step 6, 9 or
+//!    10), a wrong password failing as one the SSO refused, and the rest, into no account that
+//!    is not its own;
 //! 5. failures per ID, the same for every ID typed; a request signed by a PC already in that
 //!    account (devsig.rs) counts under a limit of its own, one for all the account's PCs, so that
 //!    someone who knows only the ID cannot lock the owner out of their PC. With
@@ -89,6 +93,7 @@ use crate::{
     devmodel, devsig, hbbs,
     keys::{KeyClaim, KeyError, MAX_ACTIVE_KEYS},
     limits::{self, Take, SCOPE_BOUND, SCOPE_ID, SCOPE_IP, SCOPE_OK_ID, SCOPE_OK_IP},
+    review::{self, Review},
     seal::{Opened, SealError},
     sso::{Denial, Failure, SsoError, SsoUser},
     state::AppState,
@@ -107,6 +112,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
+use zeroize::Zeroizing;
 
 /// The one answer to every failed login (design v2 §1-1).
 pub const FAILURE_TEXT: &str =
@@ -897,11 +903,21 @@ async fn sealed_login(
 ) -> LoginAnswer {
     let state = run.state;
     // 4. the portal ID: one outside HJViewer's ID rule goes no further, before its tag is taken,
-    // with an answer of its own
+    // with an answer of its own; but for the App Review account's while its file names it
+    // (review.rs), which goes on without the SSO
     if !claim.device.id.is_empty() {
         run.device_tag = Some(state.tags.device(&claim.device.id));
     }
-    let Some(key) = claim.key.clone() else {
+    let review = if claim.key.is_none() {
+        review::named(state, &claim.username).await
+    } else {
+        None
+    };
+    let Some(key) = claim
+        .key
+        .clone()
+        .or_else(|| review.as_ref().map(|_| login_key(&claim.username)))
+    else {
         let answer =
             LoginAnswer::failed_with(StatusCode::FORBIDDEN, json!({ "error": TEXT_ID_RULE }));
         return run.fail_with(answer, Outcome::Failed, "id-rule").await;
@@ -953,6 +969,9 @@ async fn sealed_login(
                 )
                 .await
         }
+    }
+    if let Some(review) = review {
+        return review_login(run, &key, listing, opened.password, claim.device, review).await;
     }
 
     // 6. the SSO's trouble shows before the allowlist does: the same 503 for every ID
@@ -1153,17 +1172,10 @@ async fn code_login(run: &mut Run<'_>, parsed: LoginBody, challenge: &str) -> Lo
     .await
 }
 
-async fn sso_login(
-    run: &mut Run<'_>,
-    username: &str,
-    key: &str,
-    password: &str,
-    device: DeviceClaim,
-    unlisted: bool,
-) -> LoginAnswer {
+/// 8. successes per account and per address; the answer to send when one is full.
+async fn success_limits(run: &mut Run<'_>) -> Result<(), LoginAnswer> {
     let state = run.state;
     let account_tag = run.account_tag.clone().unwrap_or_default();
-    // 8. successes per account and per address
     for (scope, limit_key, windows, of) in [
         (
             SCOPE_OK_ID,
@@ -1186,20 +1198,37 @@ async fn sso_login(
                         "login: success limit of the {of} reached ({of}={limit_key}); hjv-api admin unlock tag:{limit_key} lifts it"
                     );
                 }
-                return run
+                return Err(run
                     .fail(StatusCode::UNAUTHORIZED, Outcome::Refused, "limited-ok")
-                    .await;
+                    .await);
             }
             Err(()) => {
-                return run
+                return Err(run
                     .fail(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Outcome::Released,
                         "error",
                     )
-                    .await
+                    .await)
             }
         }
+    }
+    Ok(())
+}
+
+async fn sso_login(
+    run: &mut Run<'_>,
+    username: &str,
+    key: &str,
+    password: &str,
+    device: DeviceClaim,
+    unlisted: bool,
+) -> LoginAnswer {
+    let state = run.state;
+    let account_tag = run.account_tag.clone().unwrap_or_default();
+    // 8. successes per account and per address
+    if let Err(answer) = success_limits(run).await {
+        return answer;
     }
     // the SSO calls were paused meanwhile (limits::Breaker)
     if state.sso_breaker.paused() {
@@ -1340,6 +1369,100 @@ async fn sso_login(
             }
         }
     }
+}
+
+/// The App Review account's login (review.rs) after step 5, with nothing of the SSO's (its pause,
+/// the second factor, its calls): steps 7 and 8, its file's hash in place of step 10 (a wrong
+/// password failing as one the SSO refused), then the rest as for anyone, into no account but one
+/// of its own.
+async fn review_login(
+    run: &mut Run<'_>,
+    key: &str,
+    listing: Listing,
+    password: Zeroizing<String>,
+    device: DeviceClaim,
+    review: Arc<Review>,
+) -> LoginAnswer {
+    let state = run.state;
+    let tag = run.account_tag.clone().unwrap_or_default();
+    // 7. in list mode only once the operator imported its ID
+    if listing == Listing::Absent && state.config.login == LoginMode::List {
+        return run
+            .fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "not-allowed")
+            .await;
+    }
+    // 8. before the hash is worked out, as before an SSO call
+    if let Err(answer) = success_limits(run).await {
+        return answer;
+    }
+    match tokio::task::spawn_blocking(move || review.verify(&password)).await {
+        Ok(true) => {}
+        Ok(false) => {
+            log_notice!("login: a wrong password for the App Review account (acct={tag})");
+            return run
+                .fail(
+                    StatusCode::UNAUTHORIZED,
+                    Outcome::Failed,
+                    "review-credentials",
+                )
+                .await;
+        }
+        Err(e) => {
+            log_err!("login: the App Review account's password check: {e}");
+            return run
+                .fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Outcome::Released,
+                    "error",
+                )
+                .await;
+        }
+    }
+    // an account of its ID that this login did not make (another name or pcode, or a PC: one of
+    // before the ID rule) is not its own. Checked outside the transaction: only this login makes
+    // accounts of IDs outside the rule, and it binds no PC
+    let own = {
+        let key = key.to_owned();
+        state
+            .db
+            .call(move |c| match db::account_by_key(c, &key)? {
+                None => Ok(true),
+                Some(a) => Ok(a.portal_id == key
+                    && a.display_name == review::NAME
+                    && db::devices_of(c, a.id)?.is_empty()),
+            })
+            .await
+    };
+    match own {
+        Ok(true) => {}
+        Ok(false) => {
+            log_crit!(
+                "login: the App Review file names the ID of an account that is not the App Review account's (acct={tag}); its logins fail until the file names another ID"
+            );
+            return run
+                .fail(StatusCode::UNAUTHORIZED, Outcome::Failed, "review-existing")
+                .await;
+        }
+        Err(e) => {
+            log_err!("login: {e}");
+            return run
+                .fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Outcome::Released,
+                    "error",
+                )
+                .await;
+        }
+    }
+    let user = SsoUser {
+        pcode: key.to_owned(),
+        name: review::NAME.to_owned(),
+    };
+    let answer = success(run, key, user, device).await;
+    if !answer.failure {
+        log_notice!("login: the App Review account logged in, without the SSO (acct={tag})");
+    }
+    answer
 }
 
 /// Writes the SSO's message to the journal the first time it shows up, with the ID masked
@@ -1489,7 +1612,7 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
                 .await;
         }
     }
-    let check = check_device(state, &device, &account_tag).await;
+    let check = check_device(state, key, &device, &account_tag).await;
     let token = format!("hjv_{}", b64url(&random_bytes::<32>()));
     let hash = sha256(token.as_bytes());
     let at = now();
@@ -1667,17 +1790,22 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
 }
 
 /// Checks the login's device for the list when it qualifies (D9, D10, v2 §5): an installed
-/// device of HJV_API_BIND_OS whose login signature matches the key hbbs holds for its ID.
-/// Writes nothing but the records of what went wrong.
+/// device of HJV_API_BIND_OS whose login signature matches the key hbbs holds for its ID, in an
+/// account other than the App Review account (review.rs), which never holds a PC. Writes nothing
+/// but the records of what went wrong.
 async fn check_device(
     state: &Arc<AppState>,
+    key: &str,
     device: &DeviceClaim,
     account_tag: &str,
 ) -> DeviceCheck {
     if device.id.is_empty() {
         return DeviceCheck::Skip(BindStatus::None);
     }
-    if device.signature.is_none() || !device.installed || !state.config.bind_os.contains(&device.os)
+    if device.signature.is_none()
+        || !device.installed
+        || !state.config.bind_os.contains(&device.os)
+        || review::is_review(key)
     {
         return DeviceCheck::Skip(BindStatus::NotEligible);
     }

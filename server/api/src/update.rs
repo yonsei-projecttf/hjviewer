@@ -45,7 +45,8 @@
 //!   the PC's own (`os` of its binding), so that a PC's key gets the package of the app that PC
 //!   runs and nothing else. Whatever of this fails, the answer is the same 403.
 //!
-//! A short link is made by a login only.
+//! A short link is made by a login only. The App Review account's login (review.rs) gets 403 at
+//! door 1 and for a short link.
 //!
 //! **A short link** is eight symbols of Crockford's base32 (40 random bits), shown as
 //! `XXXX-XXXX`; read without regard to case, `-` and spaces, with `O` for `0` and `I` or `L` for
@@ -91,6 +92,7 @@ use crate::{
     },
     log::Tagger,
     oplog::OpEntry,
+    review,
     state::AppState,
     util::{datetime, day_number, now, random_bytes, valid_device_id, DAY},
 };
@@ -144,6 +146,8 @@ const NOTICE_EVERY: Duration = Duration::from_secs(600);
 
 const TEXT_BAD_REQUEST: &str = "요청을 이해하지 못했습니다.";
 const TEXT_REFUSED: &str = "이 기기는 새 버전을 받을 수 없습니다.";
+/// The answer to the App Review account's login (review.rs), at door 1 and for a short link.
+pub const TEXT_REVIEW: &str = "이 계정으로는 새 버전을 받을 수 없습니다.";
 const TEXT_NO_PACKAGE: &str = "새 버전을 준비하고 있습니다. 잠시 뒤 다시 시도해 주세요.";
 const TEXT_NO_LINK: &str = "링크가 맞지 않거나 사용 기한이 지났습니다.";
 const TEXT_TOO_OFTEN: &str = "요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.";
@@ -225,7 +229,7 @@ fn is_sha256(text: &str) -> bool {
 }
 
 /// `2026-11-22T15:00:00Z`, the one form the policy's tool writes, as Unix seconds.
-fn utc_time(text: &str) -> Option<i64> {
+pub(crate) fn utc_time(text: &str) -> Option<i64> {
     let b = text.as_bytes();
     if b.len() != 20 || b[10] != b'T' || b[13] != b':' || b[16] != b':' || b[19] != b'Z' {
         return None;
@@ -443,14 +447,14 @@ fn code_tag(tags: &Tagger, code: &str) -> String {
 }
 
 /// Whether two byte strings are the same, in a time that does not tell where they differ.
-fn same(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// A small file of the operator's as it was last read. It is read again when another file is in
 /// its place or it was changed (its device, inode, size and time of change, the ctime, which a
 /// new owner or mode sets too: a file that could not be read may be readable now).
-struct Watched<T> {
+pub(crate) struct Watched<T> {
     seen: Option<(u64, u64, u64, i64, i64)>,
     read: Option<Arc<T>>,
 }
@@ -465,8 +469,9 @@ impl<T> Default for Watched<T> {
 }
 
 /// What the file at `path` holds now, by `parse`; `None` without the file, and for a file that is
-/// too large or not what `parse` takes, which the journal hears of once for each such file.
-fn watched<T>(
+/// too large or not what `parse` takes, which the journal hears of once for each such file. The
+/// journal's lines begin with `what`: the caller's prefix and the file's name.
+pub(crate) fn watched<T>(
     kept: &Mutex<Watched<T>>,
     path: &Path,
     max: u64,
@@ -484,7 +489,7 @@ fn watched<T>(
     }
     let read = match meta {
         None => {
-            log_notice!("update: {what} is gone");
+            log_notice!("{what} is gone");
             None
         }
         Some(_) => {
@@ -498,11 +503,11 @@ fn watched<T>(
                 });
             match read {
                 Ok(value) => {
-                    log_notice!("update: {what} read: {}", summary(&value));
+                    log_notice!("{what} read: {}", summary(&value));
                     Some(Arc::new(value))
                 }
                 Err(why) => {
-                    log_err!("update: {what} is not used: {why}");
+                    log_err!("{what} is not used: {why}");
                     None
                 }
             }
@@ -704,7 +709,7 @@ impl Updates {
             &self.policy,
             &config.version_policy,
             MAX_POLICY_FILE,
-            "the version policy (HJV_API_VERSION_POLICY)",
+            "update: the version policy (HJV_API_VERSION_POLICY)",
             Policy::parse,
             |policy| {
                 self.went_back(policy);
@@ -735,7 +740,7 @@ impl Updates {
             &self.door2,
             &config.door2_file,
             MAX_DOOR2_FILE,
-            "door 2's file (HJV_API_DOOR2_FILE)",
+            "update: door 2's file (HJV_API_DOOR2_FILE)",
             Door2::parse,
             |door| door.summary(tags),
         )
@@ -1146,6 +1151,9 @@ async fn package(state: &Arc<AppState>, req: &ApiRequest, platform: &str, versio
         }
     } else {
         match session(state, req).await {
+            Ok(s) if review::is_review(&s.account.login_key) => {
+                return Reply::error(StatusCode::FORBIDDEN, TEXT_REVIEW)
+            }
             Ok(s) => Who::Account(state.tags.account(&s.account.login_key)),
             // the first HEAD of the app's HTTP client carries none of its caller's headers
             Err(reply) if head && !has_token => return reply,
@@ -1377,6 +1385,9 @@ async fn make_link(state: &Arc<AppState>, req: &ApiRequest, platform: &str) -> R
         return bad_request();
     };
     let s = match session(state, req).await {
+        Ok(s) if review::is_review(&s.account.login_key) => {
+            return Reply::error(StatusCode::FORBIDDEN, TEXT_REVIEW)
+        }
         Ok(s) => s,
         Err(reply) if reply.status == StatusCode::UNAUTHORIZED => {
             return failed(state, req, reply, "no login with its proof").await
@@ -2844,7 +2855,10 @@ mod tests {
         }
         // without packages there is nothing to point to: no SOURCE sentence, only TestFlight
         let html = page_html(None, &[]);
-        assert!(!html.contains("소스 코드(") && !html.contains("SOURCE"), "{html}");
+        assert!(
+            !html.contains("소스 코드(") && !html.contains("SOURCE"),
+            "{html}"
+        );
         assert_eq!(html.matches("href=").count(), 1);
         assert_eq!(
             esc("<a href=\"x\">&'</a>"),
