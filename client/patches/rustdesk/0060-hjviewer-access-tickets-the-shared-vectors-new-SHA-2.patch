@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sat, 17 Oct 2026 07:36:37 +0900
+Subject: [PATCH 60/60] hjviewer: access tickets: the shared vectors' new
+ SHA-256
+
+hjviewer's server/api/tests/vectors/access-tickets.json has two
+access.conf cases more (lines without their '='); the registration bytes
+and the request signature these tests take from it are the same.
+
+Claude-Session: https://claude.ai/code/session_01UGRoRVHEhxg8GAbP842qdV
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_access/tests.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/hjviewer_access/tests.rs b/src/hjviewer_access/tests.rs
+index 3fa5e9e..da8500e 100644
+--- a/src/hjviewer_access/tests.rs
++++ b/src/hjviewer_access/tests.rs
+@@ -1,6 +1,6 @@
+ //! The registration's wire format against the shared vectors (hjviewer repository:
+ //! server/api/tests/vectors/access-tickets.json, its `register_pk` "ticket" and "no-field"; SHA-256
+-//! 7b9fa3fda31c72fbfc8fc8d147e32b6d34135fa41c0488d0bd6e529b6063f9eb), and which ticket goes where
++//! ff78a8788f411ad705e43ac501ec284b1ec2d2b067bfab358a877953a85e2377), and which ticket goes where
+ //! and when.
+ 
+ use super::*;

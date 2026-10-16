@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Fri, 16 Oct 2026 22:18:52 +0900
-Subject: [PATCH 58/59] hjviewer: carry access tickets to hbbs (staff-only
+Subject: [PATCH 58/60] hjviewer: carry access tickets to hbbs (staff-only
  gate)
 
 From 1.8.0 on HJViewer is for Yonsei University staff (docs/access-tickets.md

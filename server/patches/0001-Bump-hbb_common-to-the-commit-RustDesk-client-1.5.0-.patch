@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 05:12:40 +0900
-Subject: [PATCH 1/7] Bump hbb_common to the commit RustDesk client 1.5.0 pins
+Subject: [PATCH 1/8] Bump hbb_common to the commit RustDesk client 1.5.0 pins
 
 The client's WebRTC transport needs rendezvous.proto fields (webrtc_sdp_offer,
 webrtc_sdp_answer, IceCandidate) that the server's pinned hbb_common predates.

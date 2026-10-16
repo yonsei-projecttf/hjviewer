@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Fri, 16 Oct 2026 22:08:08 +0900
-Subject: [PATCH 6/7] hbbs: admit only holders of an access ticket (off by
+Subject: [PATCH 6/8] hbbs: admit only holders of an access ticket (off by
  default)
 
 From 1.8.0 HJViewer is for Yonsei University staff. hjv-api signs

@@ -11,7 +11,8 @@
 #                          order: after a fix, the stages that read what it changed (docs/ci.md).
 #   scripts/ci.sh server   a fresh upstream checkout with server/patches and all of its tests in
 #                          release (the library's and binaries' unit tests, the signaling, relay,
-#                          protobuf, hbbs hjv-pk and lowest controller version tests), hjv-probe and
+#                          protobuf, hbbs hjv-pk, lowest controller version and access ticket tests,
+#                          against hjv-api's shared vectors), hjv-probe and
 #                          hjv-load; hjv-api's tests and release build (server/api); hjv-relay's
 #                          tests (relay/); tools/hjv-release's format, lints, tests (its shared test
 #                          vectors among them) and release build
@@ -345,9 +346,17 @@ server_stage() {
       [ "$vector" = "$(hjv_pk_vector "$CI/upstream/rustdesk-server/tests/hjv_pk.rs")" ] ||
       fail "server: the vector of tests/hjv_pk.rs (server/patches/0004) is not hjv-api's (server/api/src/hbbs.rs)"
   fi
-  step "server: hbbs and hbbr's tests (unit, signaling, relay, protobuf, hjv-pk)"
+  # hbbs's access tickets (server/patches/0006, docs/access-tickets.md): required too; its tests read
+  # a copy of hjv-api's shared vectors, which must be that very file (8), and its unit tests read
+  # hjv-api's own through HJV_ACCESS_VECTORS against the SHA-256 they pin
+  local vectors="$ROOT/server/api/tests/vectors/access-tickets.json"
+  [ -f "$CI/upstream/rustdesk-server/tests/access.rs" ] ||
+    fail "server: tests/access.rs is not in the patched tree (server/patches/0006)"
+  cmp -s "$vectors" "$CI/upstream/rustdesk-server/tests/vectors/access-tickets.json" ||
+    fail "server: hbbs's tests/vectors/access-tickets.json (server/patches) is not hjv-api's (server/api/tests/vectors)"
+  step "server: hbbs and hbbr's tests (unit, signaling, relay, protobuf, hjv-pk, access tickets)"
   (cd "$CI/upstream/rustdesk-server" &&
-    CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
+    HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
   step "server: hjv-probe and hjv-load"
   for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
   if [ -d "$ROOT/server/api" ]; then

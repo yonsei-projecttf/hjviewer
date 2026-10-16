@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Fri, 16 Oct 2026 22:36:16 +0000
+Subject: [PATCH 8/8] hbbs: the shared vectors with access.conf lines that lack
+ their =
+
+The copy of hjviewer's server/api/tests/vectors/access-tickets.json is
+the one its generator now makes: there, too, a line that is neither a
+comment nor NAME=value is an error (a bare KEY under MODE=off, a bare
+NOT_BEFORE), as this parser already reads it (docs/access-tickets.md
+6-2), with two cases more for it, 41 access.conf files in all.
+VECTORS_SHA256 follows the file.
+
+Claude-Session: https://claude.ai/code/session_01UGRoRVHEhxg8GAbP842qdV
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjv_access.rs                 | 10 +++++-----
+ tests/vectors/access-tickets.json | 12 ++++++++++++
+ 2 files changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/src/hjv_access.rs b/src/hjv_access.rs
+index d404792..e8721fb 100644
+--- a/src/hjv_access.rs
++++ b/src/hjv_access.rs
+@@ -1026,10 +1026,10 @@ mod tests {
+     };
+     use serde_json::{json, Value};
+ 
+-    /// The SHA-256 of hjviewer's server/api/tests/vectors/access-tickets.json as of the commit
+-    /// that made it (0707e18), which tests/vectors/access-tickets.json is a copy of. Change both,
+-    /// and this, when the format changes.
+-    const VECTORS_SHA256: &str = "7b9fa3fda31c72fbfc8fc8d147e32b6d34135fa41c0488d0bd6e529b6063f9eb";
++    /// The SHA-256 of hjviewer's server/api/tests/vectors/access-tickets.json, which
++    /// tests/vectors/access-tickets.json is a copy of (since its access.conf lines without '=',
++    /// 2026-10-17). Change both, and this, when the format changes.
++    const VECTORS_SHA256: &str = "ff78a8788f411ad705e43ac501ec284b1ec2d2b067bfab358a877953a85e2377";
+ 
+     /// The shared vectors: the copy beside these tests, or the file HJV_ACCESS_VECTORS names
+     /// (hjviewer's own, to see that the copy is still it).
+@@ -1278,7 +1278,7 @@ mod tests {
+     fn the_files_of_the_vectors_are_read_or_refused() {
+         let v = vectors();
+         let cases = v["access_conf_cases"].as_array().unwrap();
+-        assert_eq!(cases.len(), 39);
++        assert_eq!(cases.len(), 41);
+         for case in cases {
+             let name = str_of(case, "name");
+             let bytes = match case.get("hex") {
+diff --git a/tests/vectors/access-tickets.json b/tests/vectors/access-tickets.json
+index e1eae7d..f9ca0de 100644
+--- a/tests/vectors/access-tickets.json
++++ b/tests/vectors/access-tickets.json
+@@ -1941,6 +1941,18 @@
+       "text": "MODE =enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+       "expect": "error"
+     },
++    {
++      "name": "bare-key-under-off",
++      "why": "a KEY line without its = is refused also with MODE=off",
++      "text": "MODE=off\nKEY\n",
++      "expect": "error"
++    },
++    {
++      "name": "bare-not-before",
++      "why": "a NOT_BEFORE line without its = is never NOT_BEFORE= (none)",
++      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
++      "expect": "error"
++    },
+     {
+       "name": "unknown-line",
+       "why": "a line of another file",

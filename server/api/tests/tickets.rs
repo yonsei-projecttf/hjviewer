@@ -25,7 +25,7 @@ use std::{collections::HashMap, path::Path};
 const JSON: &str = include_str!("vectors/access-tickets.json");
 /// The file as access-tickets.py renders it: a new rendering is a change of the contract that
 /// hbbs's tests and the app's see too.
-const JSON_SHA256: &str = "7b9fa3fda31c72fbfc8fc8d147e32b6d34135fa41c0488d0bd6e529b6063f9eb";
+const JSON_SHA256: &str = "ff78a8788f411ad705e43ac501ec284b1ec2d2b067bfab358a877953a85e2377";
 
 fn vectors() -> Value {
     serde_json::from_str(JSON).unwrap()

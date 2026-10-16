@@ -1942,6 +1942,18 @@
       "expect": "error"
     },
     {
+      "name": "bare-key-under-off",
+      "why": "a KEY line without its = is refused also with MODE=off",
+      "text": "MODE=off\nKEY\n",
+      "expect": "error"
+    },
+    {
+      "name": "bare-not-before",
+      "why": "a NOT_BEFORE line without its = is never NOT_BEFORE= (none)",
+      "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\n",
+      "expect": "error"
+    },
+    {
       "name": "unknown-line",
       "why": "a line of another file",
       "text": "MODE=enforce\nKEY=1:VV9GnCIYjpABW92FuIlnjUWfhr349700lxsQubOFhgk=\nKEY=2:LJuaQtV63/1Q5usdpUPek62X022XbSorlzXnFC8/uFk=\nNOT_BEFORE=2025-10-09T00:00:00Z\nTEXT=HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)\nMIN=1.8.0\n",

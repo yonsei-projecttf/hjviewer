@@ -2,6 +2,7 @@
 
 > 2026-10-16 초안입니다. 네 갈래의 읽기 전용 조사(hbbs·hbbr, 앱의 연결 경로, hjv-api, 배포·문서·시험)와 직접 읽은 코드로 썼습니다. 아무것도 빌드하거나 실행하지 않았고 서버에 닿지 않았습니다. `build/` 아래라 저장소에 들어가지 않습니다.
 > 줄 번호의 기준: hbbs·hbbr은 `upstream/rustdesk-server`(서버 패치 0001–0005, HEAD ee2081c), 앱은 `upstream/rustdesk`의 `hjviewer` 가지(클라이언트 패치 0057, HEAD 398fa05), hjv-api는 `server/api`입니다.
+> **이름**: 사용자가 같은 날 "이용 비밀번호"(영어 "access password")로 정했습니다([HANDOFF.md](HANDOFF.md) 1절의 5). 이 요약의 "손님 비밀번호"와 "손님"은 모두 이용 비밀번호와 그것으로 들어온 쪽입니다. 사용자에게 보이는 글에는 "손님 비밀번호"를 쓰지 않고, 형식과 판정은 [계약](../access-tickets.md)이 정합니다.
 
 ## 0. 요약
 

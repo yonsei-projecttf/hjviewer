@@ -1014,8 +1014,9 @@ docs/access-tickets.md is the contract of the ticket, which hjv-api signs, hbbs 
 0006) checks and the app carries: `t1.<kid>.<base64url payload>.<base64url signature>`, at most
 1024 bytes, the ticket key's Ed25519 signature over `"hjv-ticket-v1" NUL` and the payload bytes,
 the payload `{"v":1,"who","use","sub","id","pk","to","iat","exp"}` in that order. hjv-api never
-signs a payload that hbbs refuses as malformed. This section is the answer's form, which that
-document leaves to this README.
+signs a payload that hbbs refuses as malformed. That document is also the contract of the answers
+and of the requests for a ticket (3-4, and 3-5 for the access password's); this section says the
+same from hjv-api's side, and where the two differ, the document is right.
 
 ```text
 POST /api/hjv/ticket                         a phone: no body, or {}

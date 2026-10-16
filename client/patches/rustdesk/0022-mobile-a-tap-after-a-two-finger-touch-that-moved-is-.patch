@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 10:51:17 +0900
-Subject: [PATCH 22/59] mobile: a tap after a two-finger touch that moved is a
+Subject: [PATCH 22/60] mobile: a tap after a two-finger touch that moved is a
  tap again
 
 DoubleFinerTapGestureRecognizer remembers that a first finger landed

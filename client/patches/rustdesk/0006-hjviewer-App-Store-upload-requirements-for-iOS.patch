@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 18:45:01 +0900
-Subject: [PATCH 06/59] hjviewer: App Store upload requirements for iOS
+Subject: [PATCH 06/60] hjviewer: App Store upload requirements for iOS
 
 - Runner/PrivacyInfo.xcprivacy: the Rust core calls stat/fstat/lstat
   (file timestamps, reason C617.1: files in the app container); the

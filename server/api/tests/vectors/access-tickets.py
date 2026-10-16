@@ -541,7 +541,10 @@ def parse_conf(data):
         line = rust_trim(line)
         if not line or line.startswith("#"):
             continue
-        name, _, value = line.partition("=")
+        name, equals, value = line.partition("=")
+        if not equals:
+            # 6-2: every other line is NAME=value; a bare KEY is no KEY= with an empty value
+            return "error", "line %d is not a comment, MODE=, KEY=, NOT_BEFORE= or TEXT=" % n
         if name not in CONF_KEYS:
             if rust_trim(name, start=False) in CONF_KEYS:
                 return "error", "line %d has a space before its =" % n
@@ -970,6 +973,10 @@ class Vectors:
             ("mode-twice", "MODE twice", "MODE=off\nMODE=off\n", "error"),
             ("mode-capital", "MODE=Enforce", self.conf_text(mode="Enforce"), "error"),
             ("space-before-equals", "MODE =enforce", main.replace("MODE=", "MODE ="), "error"),
+            ("bare-key-under-off", "a KEY line without its = is refused also with MODE=off",
+             "MODE=off\nKEY\n", "error"),
+            ("bare-not-before", "a NOT_BEFORE line without its = is never NOT_BEFORE= (none)",
+             main.replace("NOT_BEFORE=%s\n" % NOT_BEFORE_TEXT, "NOT_BEFORE\n"), "error"),
             ("unknown-line", "a line of another file", main + "MIN=1.8.0\n", "error"),
             ("three-keys-even-when-off", "a third KEY line is refused also with MODE=off",
              "MODE=off\nKEY=1:%s\nKEY=2:%s\nKEY=3:%s\n" % (k1, k2, b64(self.pub["ticket_3"])), "error"),

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 05:25:50 +0900
-Subject: [PATCH 2/7] Serve peers that register over TCP/WebSocket, and relay
+Subject: [PATCH 2/8] Serve peers that register over TCP/WebSocket, and relay
  WebRTC signaling
 
 A controlled peer behind a firewall that only lets HTTPS out cannot reach

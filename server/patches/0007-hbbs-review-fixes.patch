@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Fri, 16 Oct 2026 22:59:31 +0900
-Subject: [PATCH 7/7] hbbs: review fixes
+Subject: [PATCH 7/8] hbbs: review fixes
 
 Findings of the review of the access tickets (0006):
 

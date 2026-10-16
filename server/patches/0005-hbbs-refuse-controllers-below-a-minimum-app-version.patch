@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 13 Oct 2026 17:20:40 +0900
-Subject: [PATCH 5/7] hbbs: refuse controllers below a minimum app version
+Subject: [PATCH 5/8] hbbs: refuse controllers below a minimum app version
 
 The apps that are already installed never look for updates, and each of
 them sends its version in the punch hole request that starts a connection
