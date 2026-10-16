@@ -110,6 +110,35 @@ class ReviewConfTest(unittest.TestCase):
         with open(other, encoding="ascii") as f:
             self.assertNotEqual(f.read(), first)
 
+    def test_the_demo_pcs(self):
+        code, out, err = self.run_main(self.args() + ["--pc", "100200301", "--pc", "Office-PC_7"],
+                                       answers(PASSWORD, PASSWORD))
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, f"{self.out}\nUNTIL=2026-11-29T15:00:00Z\nPC=100200301,Office-PC_7\n")
+        with open(self.out, encoding="ascii") as f:
+            lines = [line for line in f.read().splitlines() if not line.startswith("#")]
+        # the line hjv-api reads (server/api/src/review.rs): the IDs in their order
+        self.assertEqual(lines[3], "PC=100200301,Office-PC_7")
+        self.assertEqual(len(lines), 4)
+        for pcs, why in ((["1", "2", "3", "4"], "at most 3"),
+                         (["100200300", "100200300"], "twice"),
+                         (["a.b"], "a PC's ID"),
+                         (["1 2"], "a PC's ID"),
+                         ([""], "a PC's ID"),
+                         (["1" * 65], "a PC's ID")):
+            if os.path.lexists(self.out):
+                os.remove(self.out)
+            ask = answers(PASSWORD, PASSWORD)
+            argv = self.args()
+            for pc in pcs:
+                argv += ["--pc", pc]
+            code, out, err = self.run_main(argv, ask)
+            self.assertEqual((code, out), (1, ""), pcs)
+            self.assertIn(why, err)
+            # refused before anything is asked
+            self.assertEqual((self.id_asked, ask.asked), ([], []))
+            self.assertFalse(os.path.lexists(self.out))
+
     def test_the_hash_is_the_servers(self):
         # server/api/src/review.rs and tests/review.rs check the same line with ring
         self.assertEqual(

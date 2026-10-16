@@ -5,13 +5,18 @@
 # no restart. Delete it to end the account (then hjv-api admin user delete tag:<its tag>).
 #
 # The user writes it in a terminal of their own: python3 -I deploy/review-conf.py --until
-# <YYYY-MM-DD> --out ~/review.conf, which asks for the ID and the password and keeps only the
-# password's hash. Neither the ID nor the password goes into the repository, a chat, a document or a
+# <YYYY-MM-DD> --out ~/review.conf [--pc <demo PC ID>]..., which asks for the ID and the password and
+# keeps only the password's hash. Neither the ID nor the password goes into the repository, a chat, a document or a
 # commit. The file is root:hjviewer-api 0640, as door 2's. Its lines, each once, and # comments:
 #
 #   ID=<the login ID; one of HJViewer's ID rule (Z or Y, not ZA) refuses the whole file>
 #   HASH=pbkdf2-sha256$<100000 to 10000000 iterations>$<salt, base64 of 16+ bytes>$<key, base64 of 32 bytes>
 #   UNTIL=<the UTC time it ends, YYYY-MM-DDTHH:MM:SSZ>
+#   PC=<1 to 3 different PC IDs, comma-separated: the demo PCs; the one line that may be left out>
+#
+# The account's access ticket (docs/access-tickets.md 2-4) reaches the PC= IDs only, until UNTIL:
+# without the line, the account connects to nothing once hbbs checks tickets. An hjv-api from
+# before the access tickets refuses the whole file with the line: put the new hjv-api in first.
 #
 # Made-up values, as review-conf.py writes them for the password "correct horse battery staple"
 # and the date 2026-11-30 (the salt is 00 01 … 0f here; the tool takes 16 random bytes):
@@ -19,6 +24,7 @@
 #   ID=APPREVIEW-TEST
 #   HASH=pbkdf2-sha256$600000$AAECAwQFBgcICQoLDA0ODw==$7xdxRO7JQgy8EJPSqLNEqSvFBtDU7JwCjdGfgyTYweY=
 #   UNTIL=2026-11-29T15:00:00Z
+#   PC=100200300
 #
 # As it is, this file has none of the lines: there is no App Review account (hjv-api logs "ID,
 # HASH or UNTIL is missing").

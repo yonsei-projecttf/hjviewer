@@ -205,7 +205,7 @@ sig가 서명하는 바이트: "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-25
   - 한도가 해시보다 먼저인 것은 hjv-api가 CPU 하나와 blocking 스레드를 모든 DB 작업과 나눠 쓰기 때문입니다.
   - 봉인이 모든 시도의 한도보다 먼저인 것은, 봉인이 틀린 요청이 모두의 한도를 쓰지 못하게 하기 위해서입니다. 그런 요청은 그 주소의 실패로만 셉니다.
 - **같은 401**: 틀린 비밀번호와 이용 비밀번호를 받지 않는 상태(`guest.conf`가 없음, 고장 남, `UNTIL`이 지남)는 같은 401 `denied`를 줍니다. 모든 실패는 로그인처럼 요청이 온 때부터 2초 ± 0.5초 뒤에 나갑니다(`HJV_API_FAILURE_DELAY_MS`, `HJV_API_FAILURE_JITTER_MS`).
-- **그 밖의 거절**: 400 `bad_request`(본문의 모양, 봉인), 409 `clock`, 403 `wrong_pc`(hbbs가 그 ID에 다른 키를 가짐), 429 `rate_limited`(한도), 503 `busy`(해시가 이미 2개 돌고 있음), 503 `unavailable`(출입증 키가 없음, hbbs에 물을 수 없음). 본문은 3-4와 같은 모양입니다. `wrong_pc`와 hbbs의 503은 비밀번호가 맞은 뒤에만 옵니다.
+- **그 밖의 거절**: 400 `bad_request`(본문의 모양, 봉인), 409 `clock`, 403 `wrong_pc`(hbbs가 그 ID에 다른 키를 가짐), 429 `rate_limited`(한도), 503 `busy`(해시가 이미 2개 돌고 있음, 또는 받아 둔 시도가 너무 많음), 503 `unavailable`(출입증 키가 없음, hbbs에 물을 수 없음). 본문은 3-4와 같은 모양입니다. `wrong_pc`와 hbbs의 503은 비밀번호가 맞은 뒤에만 옵니다.
 - **한도**(기본값, 설정으로 바꿈): 주소마다 실패 10분에 5번·하루 20번(`HJV_API_LIMIT_GUEST_IP`), 모든 시도 시간당 60번이고 주소 하나는 그 4분의 1까지(`HJV_API_LIMIT_GUEST_ALL`), 주소마다 출입증 하루 50개(`HJV_API_LIMIT_GUEST_TICKETS`). 주소는 로그인처럼 셉니다(IPv6은 /64).
 - 이용 비밀번호는 hjv-api의 `guest.conf`(`HJV_API_GUEST_FILE`)에 PBKDF2 해시와 `UNTIL`로 있습니다. 파일의 모양과 바꾸는 법은 [server/api/README.md](../server/api/README.md)와 [server-runbook.md](server-runbook.md)에 있습니다.
 

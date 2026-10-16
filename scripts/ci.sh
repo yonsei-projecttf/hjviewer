@@ -793,6 +793,8 @@ echo "relay hello from another IPv4 address on the dual-stack listener: $code"
 [ "$code" != 429 ] || { echo "FAIL: the IPv4 clients of a dual-stack listener share one limit"; exit 1; }
 v4=(127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1 127.0.0.1)
 check "login, one IPv4 address" http://127.0.0.1:18450/api/login '{"error":"잠시 뒤 다시 시도해 주세요"}' "${v4[@]}"
+check "access password, one IPv4 address" http://127.0.0.1:18450/api/hjv/guest '{"error":"잠시 뒤 다시 시도해 주세요"}' \
+  "${v4[@]}"
 EOF
 }
 
@@ -940,6 +942,9 @@ deploy_stage() {
   step "deploy: the App Review account's file (deploy/review-conf.py), offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_review_conf.py' ||
     fail "deploy: tests of deploy/review-conf.py"
+  step "deploy: the access password's file (deploy/guest-conf.py), offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_guest_conf.py' ||
+    fail "deploy: tests of deploy/guest-conf.py"
   # the server's own check of a signed version policy before it is installed (runbook 8-2): its
   # tests, then the shared test vectors of tools/hjv-release that the apps and the tool agree on
   step "deploy: the server's check of a version policy (deploy/hjv-update-verify.sh), offline tests"

@@ -21,6 +21,11 @@
 //!   keys.rs has their format). Inside the seal, a party that intercepts TLS cannot put a key of
 //!   its own there.
 //!
+//! The access password (guest.rs, docs/access-tickets.md 3-5) goes in the same box with two
+//! members more: the purpose `"p":"guest"` and its `"use"` (`ctl` or `pc`), and with the ID of the
+//! PC its ticket reaches in `id`. A login refuses a seal that has a purpose and the access password
+//! one without its own, so that neither seal stands in for the other.
+//!
 //! hjv-api answers 400 to a password that is not sealed, an unknown kid, a payload it cannot open
 //! or read, a kid or device ID that differs from the outer one, and a nonce it has seen before,
 //! except that the very same request body within HJV_API_RETRY_WINDOW (30 s) gets the first answer
@@ -64,6 +69,10 @@ pub struct Opened {
     /// the account key and its proof (keys.rs), as sealed; checked after the SSO
     pub ck: Option<String>,
     pub cp: Option<String>,
+    /// the purpose of a seal that is not a login's (`guest`, the access password's) and its use;
+    /// none in a login's
+    pub purpose: Option<String>,
+    pub use_: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +107,10 @@ struct Payload {
     ck: Option<String>,
     #[serde(default)]
     cp: Option<String>,
+    #[serde(default)]
+    p: Option<String>,
+    #[serde(default, rename = "use")]
+    use_: Option<String>,
 }
 
 impl SealKeys {
@@ -154,6 +167,8 @@ impl SealKeys {
             sealed_hash: sha256(&sealed),
             ck: payload.ck,
             cp: payload.cp,
+            purpose: payload.p,
+            use_: payload.use_,
         })
     }
 }
@@ -189,6 +204,24 @@ pub fn seal_login(
     let payload = serde_json::json!({
         "v": 1, "pw": password, "t": time, "n": nonce, "id": device_id, "kid": kid,
         "ck": ck, "cp": cp,
+    });
+    seal_payload(public_key, &kid, &payload.to_string())
+}
+
+/// What the app does for the access password, for tests and tools: seals `password` for a ticket
+/// of `use_` (`ctl` or `pc`) that reaches the PC `id` (docs/access-tickets.md 3-5).
+pub fn seal_guest(
+    public_key: &[u8; 32],
+    password: &str,
+    time: i64,
+    nonce: &str,
+    use_: &str,
+    id: &str,
+) -> String {
+    let kid = key_id(public_key);
+    let payload = serde_json::json!({
+        "v": 1, "p": "guest", "use": use_, "pw": password, "t": time, "n": nonce, "id": id,
+        "kid": kid,
     });
     seal_payload(public_key, &kid, &payload.to_string())
 }
@@ -234,6 +267,25 @@ mod tests {
         assert_eq!(b64(&opened.sealed_hash), VECTOR_SEALED_HASH);
         // made before the account key: none in it
         assert_eq!((opened.ck, opened.cp), (None, None));
+        // a login's: no purpose
+        assert_eq!((opened.purpose, opened.use_), (None, None));
+    }
+
+    #[test]
+    fn carries_the_access_passwords_purpose() {
+        let sk = [9u8; 32];
+        let keys = SealKeys::new(&[Zeroizing::new(sk)]);
+        let pk = *SecretKey::from_bytes(sk).public_key().as_bytes();
+        let field = seal_guest(&pk, "pw", 5, &b64(&[1u8; 16]), "ctl", "123456789");
+        let opened = keys.open(&field).unwrap();
+        assert_eq!(
+            (opened.purpose.as_deref(), opened.use_.as_deref()),
+            (Some("guest"), Some("ctl"))
+        );
+        assert_eq!(
+            (opened.password.as_str(), opened.device_id.as_str()),
+            ("pw", "123456789")
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@
 App Review account; docs/server-runbook.md 7-17). Run it in a terminal of your own (Linux, macOS or
 WSL), not in an agent's session, with FILE outside the repository:
 
-    python3 -I deploy/review-conf.py --until YYYY-MM-DD --out FILE
+    python3 -I deploy/review-conf.py --until YYYY-MM-DD --out FILE [--pc <demo PC ID>]...
 
 It asks for the ID, and then for the password twice without showing it, on the terminal only:
 neither comes from the command line, which a shell's history and the process list keep, the
@@ -14,6 +14,11 @@ that is there) and prints only its path and UNTIL:
     ID=<the ID as typed>
     HASH=pbkdf2-sha256$600000$<salt, base64>$<key, base64>
     UNTIL=<0:00 KST at the start of the date, in UTC: 2026-11-29T15:00:00Z for 2026-11-30>
+    PC=<the --pc IDs, in their order>
+
+Each --pc names a demo PC, 1 to 3 of them: the only PCs the account's access ticket reaches
+(docs/access-tickets.md 2-4). Without one there is no PC= line, and the account connects to nothing
+once hbbs checks tickets. A PC ID is no secret; it is 1 to 64 letters, digits, '-' and '_'.
 
 HASH is PBKDF2-HMAC-SHA256 with a random salt of 16 bytes and a key of 32. The ID is 1 to 64
 letters, digits, '.', '_' and '-', and must not pass HJViewer's ID rule (Z or Y and then 1 to 59 of
@@ -40,6 +45,9 @@ KST = datetime.timezone(datetime.timedelta(hours=9))
 # HJViewer's ID rule (server/api/src/util.rs staff_id), on the ID uppercased
 STAFF_ID = re.compile(r"[ZY][A-Z0-9_-]{1,59}")
 ID_FORM = re.compile(r"[A-Za-z0-9._-]{1,64}")
+# a PC's ID (server/api/src/util.rs valid_device_id), and the demo PCs at most (ticket.rs MAX_TO)
+PC_FORM = re.compile(r"[A-Za-z0-9_-]{1,64}")
+MAX_PCS = 3
 DATE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})")
 
 
@@ -60,6 +68,18 @@ def check_id(text):
         raise Refused("the ID passes HJViewer's ID rule (Z or Y, not ZA), so it could be a staff "
                       "account's: choose another")
     return text
+
+
+def check_pcs(pcs):
+    """The --pc IDs: 0 to MAX_PCS different PC IDs, in their order."""
+    if len(pcs) > MAX_PCS:
+        raise Refused(f"--pc at most {MAX_PCS} times: the demo PCs of one account")
+    for pc in pcs:
+        if not PC_FORM.fullmatch(pc):
+            raise Refused("a --pc is 1 to 64 letters, digits, '-' or '_': a PC's ID")
+    if len(set(pcs)) != len(pcs):
+        raise Refused("the same --pc twice")
+    return pcs
 
 
 def until_of(date, now):
@@ -120,12 +140,15 @@ def main(argv, stdin=sys.stdin, ask=getpass.getpass, now=None, read=input):
     parser = argparse.ArgumentParser(description="Writes the file of hjv-api's App Review account.")
     parser.add_argument("--until", required=True, help="the day it ends at 0:00 KST, YYYY-MM-DD")
     parser.add_argument("--out", required=True, help="the file to write (it must not be there)")
+    parser.add_argument("--pc", action="append", default=[], metavar="ID",
+                        help="a demo PC the account connects to (1 to 3 times)")
     args = parser.parse_args(argv)
     try:
         # write_new needs O_NOFOLLOW, which Windows' Python lacks: refuse before anything is asked
         if not hasattr(os, "O_NOFOLLOW"):
             raise Refused("run this in a Linux, macOS or WSL terminal")
         until = until_of(args.until, now or datetime.datetime.now(datetime.timezone.utc))
+        pcs = check_pcs(args.pc)
         if os.path.lexists(args.out):
             raise Refused(f"{args.out} is there already: this writes no file over another")
         if not stdin.isatty():
@@ -136,7 +159,8 @@ def main(argv, stdin=sys.stdin, ask=getpass.getpass, now=None, read=input):
         text = (f"# hjv-api's App Review account (HJV_API_REVIEW_FILE), by deploy/review-conf.py\n"
                 f"ID={review_id}\n"
                 f"HASH={hash_of(password, secrets.token_bytes(SALT_BYTES))}\n"
-                f"UNTIL={until}\n")
+                f"UNTIL={until}\n"
+                + (f"PC={','.join(pcs)}\n" if pcs else ""))
         write_new(args.out, text)
     except Refused as e:
         print(f"review-conf.py: {e}", file=sys.stderr)
@@ -146,6 +170,8 @@ def main(argv, stdin=sys.stdin, ask=getpass.getpass, now=None, read=input):
         return 1
     print(os.path.abspath(args.out))
     print(f"UNTIL={until}")
+    if pcs:
+        print(f"PC={','.join(pcs)}")
     return 0
 
 

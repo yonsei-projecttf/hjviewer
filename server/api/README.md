@@ -16,7 +16,9 @@ systemd holds. GNU AGPL-3.0-only, like the rest of the repository.
 
 Since 1.8.0 HJViewer is for Yonsei staff (docs/access-tickets.md): hbbs takes a controller's
 request or a PC's registration only with an access ticket, which hjv-api signs with its ticket key
-for the apps logged in to a staff account and for the PCs bound to one (Access tickets, below).
+for the apps logged in to a staff account and for the PCs bound to one (Access tickets, below), for
+the App Review account's demo PCs, and for whoever types the access password, one PC at a time (The
+access password, below).
 
 ## Build
 
@@ -184,6 +186,15 @@ since hbbs refuses a ticket of more than seven days. Without the credential no t
 of hjv-api from before these settings does not start with them: take them out before going back
 to one.
 
+The access password (The access password, below): `HJV_API_GUEST_FILE` (unset) is its file, an
+absolute path such as `/etc/hjviewer/guest.conf`; unset, nobody gets a ticket with an access
+password. `HJV_API_GUEST_TICKET_HOURS` (12, 1 to 168) is how long its ticket lives.
+`HJV_API_LIMIT_GUEST_IP` (`5/600,20/86400`) is its failed tries per client address,
+`HJV_API_LIMIT_GUEST_ALL` (`60/3600`, one window) the tries of all addresses together, of which
+one address holds a quarter, and `HJV_API_LIMIT_GUEST_TICKETS` (`50/86400`) its tickets per client
+address; they all come before the password's hash. As with the ticket settings, take them out
+before going back to a version of hjv-api from before them.
+
 ## Credentials
 
 Secrets come only from systemd credentials (`$CREDENTIALS_DIRECTORY`; `--credentials <dir>` for
@@ -296,8 +307,9 @@ key list [<id|tag:T>]     account keys: number, account, platform, the server's 
 key revoke <ckid>         revoke an account key with its token
 unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
                           of a tag from a journal warning (an account's or an address's), or of a
-                          client address (an IPv6 address by its /64), and the SSO calls of IDs
-                          not on the allowlist that the ID or address holds
+                          client address (an IPv6 address by its /64; its access password's
+                          tries too), and the SSO calls of IDs not on the allowlist and the access
+                          password's tries of all that the ID or address holds
 user revoke-all <id|tag:T> | --all
                           revoke every token and account key of an account, or of every account
                           (devices log in again; PCs stay in their accounts)
@@ -335,8 +347,11 @@ ticket status             the access tickets: the ticket key in use with its fin
                           KEY= line hbbs's access.conf takes it by, whether it is that key of
                           HJV_API_TICKET_PUBKEYS, the lifetimes, and the tickets handed out and
                           refused since the start by kind (login ctl|both|review, request
-                          ctl|both|review, sync both, refused off|account|request|too-often); no
-                          person or device
+                          ctl|both|review, sync both, guest ctl|pc, refused
+                          off|account|request|too-often, guest refused …); the access password's
+                          file (on until, closed since, off) by the tag of its hash, its tickets'
+                          lifetime and the last day's tries by result; no person, address or
+                          device
 backup [--keep-days N] <file>.sqlite3 | <directory>
                           a checked copy of the database into a directory only you may enter
                           (Backup and restore)
@@ -470,13 +485,20 @@ account can only log in, and it ends (`src/review.rs`; docs/server-runbook.md 7-
 docs/distribution.md).
 
 The file, `HJV_API_REVIEW_FILE` (root:hjviewer-api 0640, as door 2's;
-`deploy/review.conf.example`), has each of three lines once, and `#` comments:
+`deploy/review.conf.example`), has each of three lines once, a fourth at most once, and `#`
+comments:
 
 ```text
 ID=<the login ID>
 HASH=pbkdf2-sha256$<iterations>$<salt, standard base64>$<derived key, standard base64>
 UNTIL=<UTC time, 2026-11-29T15:00:00Z>
+PC=<the demo PC's ID>[,<another>…]
 ```
+
+`PC=` names the demo PCs, 1 to 3 different PC IDs separated by commas: the only PCs the account's
+access ticket reaches (Access tickets, below). It is the one line the file may leave out; without
+it the account gets no ticket, and once hbbs checks tickets it connects to nothing. An hjv-api from
+before the access tickets refuses the whole file with the line: put the new hjv-api in first.
 
 HASH is PBKDF2-HMAC-SHA256 of the password, 100 000 to 10 000 000 iterations (bounded, so that a
 file cannot stall logins), a salt of 16 bytes or more and a key of 32, compared in constant time
@@ -484,7 +506,8 @@ file cannot stall logins), a salt of 16 bytes or more and a key of 32, compared 
 that a staff account is never shadowed; anything else that is not as above refuses it too. hjv-api
 reads the file again when it changes, as door 2's: a file missing, unreadable, refused or past its
 UNTIL means there is no such account. The journal says what it read, by the account's tag:
-`login: the App Review file (HJV_API_REVIEW_FILE) read: until <UTC> (acct=<tag>)`, `… is not
+`login: the App Review file (HJV_API_REVIEW_FILE) read: until <UTC>, <n> demo PC(s) (acct=<tag>)`,
+`… is not
 used: <why>` (never the ID or the hash), `… is gone`, and at the start `login: no App Review
 account (…)` when there is none.
 
@@ -492,7 +515,7 @@ The user writes the file in a terminal of their own (Linux, macOS or WSL), not i
 session, and outside the repository:
 
 ```sh
-python3 -I deploy/review-conf.py --until <YYYY-MM-DD> --out ~/review.conf
+python3 -I deploy/review-conf.py --until <YYYY-MM-DD> --out ~/review.conf [--pc <demo PC ID>]...
 ```
 
 It asks for the ID, and for the password twice without showing it, on the terminal only (never
@@ -500,8 +523,9 @@ from the command line, which a shell's history and the process list keep, the en
 standard input that is not a terminal; the password 12 to 256 printable ASCII characters), refuses
 an ID of the ID rule (it takes letters, digits, `.`, `_` and `-`) and a date more than 90 days
 ahead, and writes the file (0600, never over another) with 600 000 iterations, 16 random bytes of
-salt and UNTIL at 0:00 KST at the start of the date, in UTC; it prints the file's path and UNTIL
-only. `scripts/test_review_conf.py` tests it (`scripts/ci.sh deploy`).
+salt and UNTIL at 0:00 KST at the start of the date, in UTC, and with each `--pc` (1 to 3
+different PC IDs, which are no secret) the `PC=` line; it prints the file's path, UNTIL and the
+`PC=` line only. `scripts/test_review_conf.py` tests it (`scripts/ci.sh deploy`).
 
 While the file is active, its ID logs in (compared as the allowlist compares IDs) with every limit
 and answer of any ID and nothing of the SSO's: no SSO call, no pause, no second factor. The success
@@ -525,9 +549,9 @@ and the short links answer it `403 {"error":"이 계정으로는 새 버전을 �
 super operator (whatever `HJV_API_OPERATORS` says), and its tokens hold only while the file is
 active and names it: otherwise every request of it gets the 401 of an unknown token, and the app
 logs out. Its own account (its keys, an empty device list, logout) is all it reaches. Its access
-ticket (Access tickets, below) is to reach the demo PCs of a `PC=` line of the file only, which
-this version does not read: until it does, the account gets no ticket (`POST /api/hjv/ticket`
-answers 403 `no_ticket`, its login's answer has no `access`). An account
+ticket (Access tickets, below) reaches the demo PCs of the file's `PC=` line only, `review`/`ctl`
+until the earlier of `HJV_API_TICKET_HOURS` and UNTIL; without the line it gets none
+(`POST /api/hjv/ticket` answers 403 `no_ticket`, its login's answer has no `access`). An account
 whose ID is outside the rule from before the rule (2026-10-14) is held the same way; its logins were
 refused already. A letter added to the rule must not begin the ID of an App Review account still
 there: its key would pass the rule, and its tokens would hold without the file (delete it first).
@@ -538,6 +562,61 @@ user delete tag:<tag>`, with the tag of the journal's line. hjv-api from before 
 not know `HJV_API_REVIEW_FILE` and does not start with it, and would let the account's tokens hold
 as any: before going back to it, end the account and remove the setting (docs/server-runbook.md
 7-17).
+
+## The access password
+
+The user's decisions (2026-10-16, docs/access-tickets.md 1): someone who is not logged in uses
+HJViewer only with the access password (이용 비밀번호), one password the operator sets in a file on
+the server, as a hash; the app keeps neither the password nor what it brings. A controller types
+it for each connection, a PC each time its app starts. Each time it is traded for one access ticket
+for one PC (`src/guest.rs`; Formats, below): a controller's for the PC it connects to, a PC's for
+itself, each for `HJV_API_GUEST_TICKET_HOURS`. App Review gets no access password (the App Review
+account, above).
+
+The file, `HJV_API_GUEST_FILE` (root:hjviewer-api 0640, as the App Review account's;
+`deploy/guest.conf.example`), has each of two lines once, and `#` comments:
+
+```text
+HASH=pbkdf2-sha256$<iterations>$<salt, standard base64>$<derived key, standard base64>
+UNTIL=<UTC time, 2026-11-29T15:00:00Z>
+```
+
+HASH is as the App Review account's. hjv-api reads the file again when it changes; a file missing,
+unreadable, refused or past its UNTIL means that no access password is taken, and a try then gets
+the very answer of a wrong password. The journal names the file by a tag of its HASH (the first 4
+bytes of its SHA-256), never the hash: `guest: the access password's file (HJV_API_GUEST_FILE)
+read: until <UTC> (hash <tag>)`, `… is not used: <why>`, `… is gone`, and at the start `guest: no
+access password (…)` when there is none.
+
+The user writes the file in a terminal of their own, outside the repository, as the App Review
+account's:
+
+```sh
+python3 -I deploy/guest-conf.py --until <YYYY-MM-DD> --out ~/guest.conf            # asks for it
+python3 -I deploy/guest-conf.py --until <YYYY-MM-DD> --out ~/guest.conf --random   # makes one
+```
+
+It asks for the password twice without showing it (12 to 256 printable ASCII characters), or with
+`--random` makes one of four groups of five letters and digits that cannot be mistaken for one
+another and shows it once, on a terminal only; it refuses a date more than 90 days ahead and writes
+the file (0600, never over another) with 600 000 iterations. `scripts/test_guest_conf.py` tests it
+(`scripts/ci.sh deploy`). A new file takes the new password from then on; the tickets handed out
+before end within their hours, or at once with `NOT_BEFORE` in hbbs's access.conf
+(docs/access-tickets.md 6-4). Its value goes into the development PC's `build/leak-patterns.txt`,
+never into the repository, a chat, a document or an App Store or Play note.
+
+The limits come before the hash, which runs on a blocking thread, two at a time (hjv-api has one
+CPU and shares its blocking threads with every database call): the failed tries per client address
+(`HJV_API_LIMIT_GUEST_IP`, an IPv6 address by its /64), the address's tickets
+(`HJV_API_LIMIT_GUEST_TICKETS`) and the tries of all addresses together (`HJV_API_LIMIT_GUEST_ALL`,
+in memory, one address holding a quarter); nginx limits the path per address before hjv-api, as it
+does logins (`hjv_guest` in deploy/nginx-hjviewer-api-zones.conf). `admin unlock tag:<the
+address's tag>` clears an address's counters and its tries of all. Every refusal leaves after the
+login's failure delay. Each try leaves a record `guest` with its result (`ok-ctl`, `ok-pc`, `wrong`,
+`closed`, `seal-…`, `pc-signature`, `limited-ip`, `limited-tickets`, `limited-all`, `busy`,
+`wrong-pc`, `hbbs`, `error`) and the address's tag, never the address, an ID, the password or the
+ticket, kept `HJV_API_EVENT_DAYS`; failures at most 20 a minute. `admin ticket status` shows the
+file (on until, closed since, off) with its tag, and the last day's tries by result.
 
 ## Monitoring
 
@@ -701,7 +780,9 @@ deletion of unused accounts (their PCs first), and the upkeep's release of PCs u
 all go through it; `tests/pcsync.rs` checks that no other SQL deletes a binding.
 
 `POST /api/hjv/ticket` (Access tickets, below) takes the token with its signature as every account
-path; the login's answer and a bound PC's sync carry the same ticket object.
+path; the login's answer and a bound PC's sync carry the same ticket object. `POST /api/hjv/guest`
+(the access password, below) takes no token: as a login, its password comes sealed, with the same
+form checks, and every refusal leaves after the failure delay.
 
 `GET /api/hjv/admin/overview` (Admin overview) takes the token with its signature too, with the
 same 401 and 409 as every account path. For an account that is not a super operator the answer is
@@ -1037,11 +1118,12 @@ POST /api/hjv/ticket                         a phone: no body, or {}
 | the login's answer, `hjv.access` | `staff`/`both` for an installed PC whose `hjv.sig` matched the key hbbs holds for its ID; `staff`/`ctl` for every other device | `HJV_API_TICKET_HOURS` |
 | `POST /api/hjv/ticket`, no body or `{}` | `staff`/`ctl` | `HJV_API_TICKET_HOURS` |
 | `POST /api/hjv/ticket` with the PC part | `staff`/`both` for its `id` and `pk` | `HJV_API_TICKET_HOURS` |
-| the App Review account | `review`/`ctl` for the `PC=` IDs of its file, until its UNTIL at the latest, once that line is read; until then none (403 `no_ticket`, no `access` at its login) | |
+| the App Review account, at its login and on request | `review`/`ctl` for the `PC=` IDs of its file in their order, until its UNTIL at the latest; without the line none (403 `no_ticket`, no `access` at its login) | `HJV_API_TICKET_HOURS` |
+| the access password, `POST /api/hjv/guest` (below) | `guest`/`ctl` for the one PC a controller names, or `guest`/`pc` for a PC's own ID and key | `HJV_API_GUEST_TICKET_HOURS` |
 | a bound PC's sync with its binding, `access` | `staff`/`both` for its ID and the key that checked the sync, while the account is on the allowlist and not blocked | `HJV_API_PC_TICKET_HOURS` |
 
-  `sub` is the account's tag (log.rs), never its portal ID; `to` is empty but for the App Review
-  account. The access password's tickets (`guest`, `POST /api/hjv/guest`) come with the next step.
+  `sub` is the account's tag (log.rs), never its portal ID, and empty for the access password;
+  `to` is empty but for the App Review account and the access password's controller.
   A Windows app needs `both` to register with hbbs: whenever what it holds is not `both` (the
   login's `ctl`, a login without `access`), it asks with the PC part, and every renewal of its
   ticket carries the PC part (docs/access-tickets.md 3-3).
@@ -1069,6 +1151,46 @@ POST /api/hjv/ticket                         a phone: no body, or {}
   its ticket too, as every signed request that changes something.
 - Nothing stores or logs a ticket, and no ticket is recorded one by one: `admin ticket status`
   counts them since the start, by kind.
+
+### The access password: `POST /api/hjv/guest` (`src/guest.rs`)
+
+docs/access-tickets.md 3-5 is its contract. No token, JSON, at most 64 KiB, no `Origin`:
+
+```text
+{"use":"ctl","to":"<the PC's ID>","password":"hjv-sealed-v1.<kid>.<sealed>"}            a controller
+{"use":"pc","id":"<its ID>","pk":"<base64 of its device key>","sig":"<base64>","password":…}   a PC
+"hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-256(sealed bytes))                       what sig signs
+sealed: {"v":1,"p":"guest","use":"ctl"|"pc","pw":"<password>","t":<time>,"n":"<nonce>","id":"<to | id>","kid":"<kid>"}
+200 {"ticket":"t1.<kid>.<payload>.<signature>","use":"ctl"|"pc","exp":<time>,"server_time":<time>}
+```
+
+- Exactly the members of its `use`, all strings, each once: a null, an array, another member or a
+  repeated one gets 400 `bad_request`. `to` and `id` are PC IDs (1 to 64 of `A-Z a-z 0-9 - _`),
+  `pk` exactly the standard base64 of the 32-byte device key.
+- The seal is a login's (Login, above: the box, the kid, the time within
+  `HJV_API_SEAL_MAX_SKEW`, a nonce used once, the same body again within `HJV_API_RETRY_WINDOW`
+  answered by the first answer) with the purpose `"p":"guest"`, the request's `use`, and in `id`
+  the PC the ticket reaches (`to` or `id`). A login refuses a seal with a purpose (400, record
+  `seal-purpose`), and this path one without: neither seal stands in for the other.
+- A PC's `sig` is its device key's strict Ed25519 signature of the bytes above, the sealed bytes
+  the base64url-decoded `<sealed>` (the login signature's `h`), so that the key goes with this one
+  request; when hbbs knows the ID (`hjv-pk`), the key must be the one it holds.
+- Refusals, `{"error":"<text>","hjv":"<code>"}` but for the form's 403, 405, 413 and 415: 400
+  `bad_request`; 401 `denied` `{"error":"이용 비밀번호가 맞지 않거나, 지금은 서버가 이용 비밀번호를 받지
+  않습니다.","hjv":"denied"}` for a wrong password and for no file taken alike; 403 `wrong_pc`
+  when hbbs holds another key for the PC; 409 `clock` with `server_time` for a seal's time; 429
+  `rate_limited` past a limit; 503 `busy` while two hashes run (or 32 tries are in hand), 503
+  `unavailable` without a ticket key or when hbbs's console does not answer about a PC.
+
+A PC's request with the vectors' PC key (the seed `[2; 32]`, as above) and the sealed bytes of the
+seal vector of Login (its `h`); the signature is the one OpenSSL makes too:
+
+```text
+device key       gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=
+SHA-256(sealed)  qIDSw48Gkb5KSslffq/QEWRaClx5ihVLTE5+jqOHQ6Q=
+signed (115)     686a762d67756573742d70632d7631003132333435363738390067546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d0071494453773438476b62354b53736c6666712f5145575261436c78356968564c5445352b6a714f485136513d
+sig              LCgw71tbHtZvAgBNOoElzNffv/sjmraHOBM/jvDp1fiGwvACfrVddPgq/FbR25j+KhE5fvd5rf2nT1KFbi0UDg==
+```
 
 ### NAS relays: `POST /api/hjv/relay/hello`, `/api/hjv/relay/poll` (`src/relay.rs`)
 
@@ -1447,9 +1569,14 @@ the file, the line at the start);
 `tests/tickets.rs` the access tickets: the shared vectors made again and the signer's rules held
 against them, `POST /api/hjv/ticket` (a phone's ticket, a Windows app's, the refusals, the retry,
 the limit), the tickets of the login's answer and of a bound PC's sync (by the account's state and
-the PC's binding), the App Review account without one, a server without a ticket key, `admin
-ticket status`, selfcheck (with the vectors' public test keys refused, as outside the harness),
-and that no ticket reaches the journal or the records;
+the PC's binding), the App Review account's for its demo PCs (and none without the `PC=` line), a
+server without a ticket key, `admin ticket status`, selfcheck (with the vectors' public test keys
+refused, as outside the harness), and that no ticket reaches the journal or the records;
+`tests/guest.rs` the access password: a controller's and a PC's ticket, the same 401 for a wrong
+password and a closed file after the failure delay, the seal of this request only (a login's seal
+refused, and the access password's at the login), the retry, the form, the limits before the hash
+and `admin unlock`, a PC that hbbs knows by another key, no ticket key, the README's vector, and
+that nothing of it reaches the journal or the records;
 `tests/update_stream.rs` how a package goes out, on tokio's paused clock
 with hjv-api on one end of a connection in memory (a slow reader past the minute a request has, a
 reader that stops, the fifth download at once, the hour a download may take, 200 MiB at the rate),
@@ -1486,9 +1613,11 @@ password-less use (latest time, count) and per PC, reason and day the counts of 
 the nonces of accepted syncs for 10 minutes; the change serial, the switches and the time of the
 last switch change; login-limit counters under tags, and under tags too the counters of the
 packages of new app versions (an address's failed requests, an account's and a PC's downloads, an
-account's links); login, device and key records (tags, client address, result, time), and the
+account's links); login, device and key records (tags, client address, result, time), the
 records of the packages sent and links made (the account and the PC as tags, the client address as
-its tag only, result, time). Since schema 3 (Wake-on-LAN, design v3 §10-1): per bound PC its wake report
+its tag only, result, time), and since 1.8.0 the access password's counters (an address's failed
+tries and tickets, under its tag) and records (`guest`: the client address as its tag only, result,
+time). Since schema 3 (Wake-on-LAN, design v3 §10-1): per bound PC its wake report
 (its wired cards' MACs, addresses, gateways and their MACs, names, drivers and wake settings, its
 power facts, without its uptime), its summary and the PC's egress address; the NAS relays (ID,
 public key, state, owner account, name, the source of the first hello, versions, interfaces,

@@ -1,0 +1,27 @@
+# /etc/hjviewer/guest.conf: hjv-api's access password (이용 비밀번호), the one password the operator
+# sets for the people who do not log in (server/api/README.md, The access password;
+# docs/access-tickets.md 3-5; docs/server-runbook.md). Whoever types it gets an access ticket for
+# one PC: a controller's for the PC it connects to, a PC's for itself, each for 12 hours. Only this
+# file holds it, as a hash, with when it ends. hjv-api uses it while HJV_API_GUEST_FILE names it and
+# UNTIL has not come, and reads it again when it changes: no restart. Without the file, or past its
+# UNTIL, nobody gets in with an access password, and a try gets the same answer as a wrong one.
+#
+# The user writes it in a terminal of their own: python3 -I deploy/guest-conf.py --until
+# <YYYY-MM-DD> --out ~/guest.conf, which asks for the password (or makes one with --random and
+# shows it once) and keeps only its hash. The password goes into no repository, chat, document,
+# commit, App Store or Play note. The file is root:hjviewer-api 0640, as the App Review account's.
+# Its lines, each once, and # comments:
+#
+#   HASH=pbkdf2-sha256$<100000 to 10000000 iterations>$<salt, base64 of 16+ bytes>$<key, base64 of 32 bytes>
+#   UNTIL=<the UTC time it ends, YYYY-MM-DDTHH:MM:SSZ>
+#
+# Made-up values, as guest-conf.py writes them for the password "correct horse battery staple" and
+# the date 2026-11-30 (the salt is 00 01 … 0f here; the tool takes 16 random bytes):
+#
+#   HASH=pbkdf2-sha256$600000$AAECAwQFBgcICQoLDA0ODw==$7xdxRO7JQgy8EJPSqLNEqSvFBtDU7JwCjdGfgyTYweY=
+#   UNTIL=2026-11-29T15:00:00Z
+#
+# A new file takes the new password from then on; tickets handed out before end within their
+# 12 hours, or at once with NOT_BEFORE in hbbs's /etc/hjviewer/access.conf (docs/access-tickets.md
+# 6-4). As it is, this file has none of the lines: there is no access password (hjv-api logs "HASH
+# or UNTIL is missing").

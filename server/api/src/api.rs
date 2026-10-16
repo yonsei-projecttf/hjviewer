@@ -19,6 +19,7 @@
 //! | `POST /api/hjv/relay/hello`, `POST /api/hjv/relay/poll` | hjv-relay's requests, signed with its own key, no token (relay.rs, relay/PROTOCOL.md) |
 //! | `POST /api/hjv/devices/{id}/wake`, `GET /api/hjv/wake/{job}`, `GET /api/hjv/devices/{id}/wol` | waking a PC of the account through a NAS relay, and how ready it is (wake.rs) |
 //! | `POST /api/hjv/ticket` | `{"ticket","use","exp","server_time"}`: the access ticket of the token's account that hbbs checks, `staff`/`ctl`, or `staff`/`both` for the PC whose device key signed the body (ticket.rs) |
+//! | `POST /api/hjv/guest` | the same object for the access password: a `guest` ticket for one PC, no token (guest.rs) |
 //! | `GET, HEAD /api/hjv/update/{platform}/{version}`, `POST /api/hjv/update/{platform}/link`, `GET, HEAD /api/hjv/u/{code}`, `GET, HEAD /api/hjv/get/{code}/[file]` | the packages of new app versions: to a login or a bound PC, by a short link, and through door 2 (update.rs) |
 //! | `GET /api/hjv/source` | licence, source and running version (AGPL section 13) |
 //! | `GET /api/login-options`, `GET /api/device-group/accessible` | the static answers nginx gives as well |
@@ -54,7 +55,7 @@
 use crate::{
     body::Body,
     db::{self, Device, Session},
-    envelope, keys,
+    envelope, guest, keys,
     login::{self, BindStatus, Retry},
     overview, pcsync, proof, relay, review,
     state::AppState,
@@ -209,6 +210,10 @@ fn allowed_methods(path: &str) -> Option<&'static str> {
 pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
     if req.path == "/api/login" {
         return login::handle(state, req).await;
+    }
+    // the access password: no token, the form checked as a login's
+    if req.path == guest::PATH {
+        return guest::handle(state, req).await;
     }
     // a PC's sync and hjv-relay's requests: no token, the envelope protocols' answers
     if req.path == pcsync::PATH || req.path == relay::HELLO_PATH || req.path == relay::POLL_PATH {

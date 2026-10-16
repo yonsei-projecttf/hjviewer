@@ -51,7 +51,8 @@
 //! tag that the record's lines of the view carry.
 //!
 //! The staff-only gate (ticket.rs) adds `ticket status`: the ticket key in use and whether hbbs
-//! takes it, the lifetimes, and the counts of tickets since the start, without a person or device.
+//! takes it, the lifetimes, and the counts of tickets since the start, without a person or device;
+//! and the access password's file and its last day's tries by result (guest.rs).
 
 use crate::{
     backup::{self, BackupInfo, Snapshot},
@@ -105,8 +106,9 @@ hjv-api admin [--socket <path>] [--reveal] <command>
                             times, and per PC the last password-less use and the uses of 30 days
   key revoke <ckid>         revoke an account key with its token (that device must log in again)
   unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
-                            of the tag from a journal warning, or of a client address, and the SSO
-                            calls of IDs not on the allowlist that the ID or address holds
+                            of the tag from a journal warning, or of a client address (its access
+                            password's tries too), and the SSO calls of IDs not on the allowlist
+                            and the access password's tries of all that the ID or address holds
   user revoke-all <id|tag:T> | --all
                             revoke every token and account key of an account, or of every account
                             (each device must log in again; PCs stay in the accounts)
@@ -133,7 +135,8 @@ hjv-api admin [--socket <path>] [--reveal] <command>
                             mode
   ticket status             the access tickets hbbs checks: the ticket key in use and whether
                             hbbs's access.conf takes it (HJV_API_TICKET_PUBKEYS), the lifetimes,
-                            and the tickets handed out and refused since the start, by kind
+                            and the tickets handed out and refused since the start, by kind;
+                            the access password's file and its last day's tries by result
   backup [--keep-days N] <file>.sqlite3 | <directory>
                             a checked copy of the database (0600) into a directory only you may
                             enter (/var/lib/hjviewer-api/backup); a directory gets a name of the
@@ -1158,16 +1161,22 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
             // and the SSO calls of the IDs not on the allowlist that the ID or the address holds
             // (in memory)
             let forgotten = state.sso_calls_new.forget(&keys);
+            // and the access password's tries the address holds (guest.rs, in memory)
+            let guest = state.guest_calls.forget(&keys);
             let cleared = state
                 .db
                 .call(move |c| limits::clear(c, &keys))
                 .await
                 .map_err(dberr)?;
-            Ok(if forgotten > 0 {
+            let mut out = if forgotten > 0 {
                 format!("cleared {cleared} counted login attempts and {forgotten} SSO calls of IDs not on the allowlist")
             } else {
                 format!("cleared {cleared} counted login attempts")
-            })
+            };
+            if guest > 0 {
+                let _ = write!(out, ", and {guest} tries of the access password");
+            }
+            Ok(out)
         }
         ["user", "revoke-all", "--all"] => {
             let (keys, tokens) = state
@@ -1440,7 +1449,11 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
         ["relay", "share", turn @ ("on" | "off"), arg] => {
             relay::admin_share(state, arg, *turn == "on").await
         }
-        ["ticket", "status"] => Ok(crate::ticket::status(state)),
+        ["ticket", "status"] => Ok(format!(
+            "{}{}",
+            crate::ticket::status(state),
+            crate::guest::status(state).await?
+        )),
         ["selfcheck"] => {
             let held = ListKeyCheck::Held {
                 kid: state.list_key.kid(),

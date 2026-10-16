@@ -8,8 +8,9 @@
 //!    logs in to, which counts under that account's limit of step 5 instead: others behind the
 //!    same address cannot lock the owner out of their PC here (nginx's own limit per address
 //!    comes first and has no such exception: README.md, Run);
-//! 3. the sealed password (seal.rs): 400 unless sealed to a key of this server, from the device
-//!    the request names and with a nonce not seen before; 409 `clock` (with the server's time)
+//! 3. the sealed password (seal.rs): 400 unless sealed to a key of this server, without a purpose
+//!    (an access password's seal is not a login's, guest.rs), from the device the request names
+//!    and with a nonce not seen before; 409 `clock` (with the server's time)
 //!    when its time is more than ten minutes off (design v3 §4-1), so that the app can tell a
 //!    wrong clock from a wrong password; the very same body again within the retry window gets
 //!    the first answer, without a second SSO call;
@@ -86,7 +87,8 @@
 //! account also `"binding":"<32 hex>","login_at":<server time>` (design v3 §4-1), from which the
 //! PC's service takes up the binding (§4-4). While hjv-api has a ticket key, `hjv.access` is the
 //! app's access ticket (ticket.rs): `both` for an installed PC whose login signature matched the
-//! key hbbs holds for it, `ctl` for any other device, none for the App Review account yet.
+//! key hbbs holds for it, `ctl` for any other device, and for the App Review account `review`
+//! for the demo PCs of its file, or none without them.
 
 use crate::{
     api::{is_json, user_json, ApiRequest, BodyError, Reply},
@@ -817,6 +819,10 @@ fn open_seal(state: &AppState, parsed: &LoginBody) -> Result<Opened, &'static st
             SealError::UnknownKey => "seal-unknown-key",
             SealError::Corrupt => "seal-corrupt",
         })?;
+    // the access password's seal (guest.rs) is never a login's
+    if opened.purpose.is_some() || opened.use_.is_some() {
+        return Err("seal-purpose");
+    }
     if parsed.id.as_deref().unwrap_or("") != opened.device_id {
         return Err("seal-device");
     }

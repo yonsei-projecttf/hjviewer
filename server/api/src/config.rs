@@ -137,6 +137,17 @@ pub struct Config {
     /// whether selfcheck lets public test keys pass as ticket keys (ticket.rs `public_test_key`):
     /// only for the tests' harness, which signs with the vectors' keys; no setting makes it true
     pub test_ticket_keys: bool,
+    /// the access password's hash and end (guest.rs, docs/access-tickets.md 3-5); unset, there is
+    /// no access password
+    pub guest_file: Option<PathBuf>,
+    /// how long the access password's tickets live, in seconds (at most seven days)
+    pub guest_ticket_secs: i64,
+    /// the access password's failed tries per client address, the tries of all addresses
+    /// together (one window, of which one address holds a quarter) and the tickets per client
+    /// address (guest.rs)
+    pub limit_guest_ip: Vec<Window>,
+    pub limit_guest_all: Window,
+    pub limit_guest_tickets: Vec<Window>,
 }
 
 /// Who may log in (HJV_API_LOGIN). The user's decision of 2026-10-14 replaced D3's allowlist by
@@ -244,6 +255,11 @@ pub const SETTINGS: &[(&str, Option<&str>)] = &[
     ("HJV_API_TICKET_PUBKEYS", Some("")),
     ("HJV_API_TICKET_HOURS", Some("24")),
     ("HJV_API_PC_TICKET_HOURS", Some("72")),
+    ("HJV_API_GUEST_FILE", Some("")),
+    ("HJV_API_GUEST_TICKET_HOURS", Some("12")),
+    ("HJV_API_LIMIT_GUEST_IP", Some("5/600,20/86400")),
+    ("HJV_API_LIMIT_GUEST_ALL", Some("60/3600")),
+    ("HJV_API_LIMIT_GUEST_TICKETS", Some("50/86400")),
 ];
 
 /// The most files (packages and notice files) hjv-api sends at once, whatever
@@ -416,6 +432,10 @@ impl Config {
         let ticket_pubkeys = trust::parse_pubkeys(&get("HJV_API_TICKET_PUBKEYS")?).map_err(|e| {
             format!("HJV_API_TICKET_PUBKEYS (the KEY= lines of hbbs's access.conf, <kid>:<base64>,…): {e}")
         })?;
+        let limit_guest_all = windows("HJV_API_LIMIT_GUEST_ALL")?;
+        if limit_guest_all.len() != 1 {
+            return Err("HJV_API_LIMIT_GUEST_ALL takes one window, such as 60/3600".into());
+        }
         let ticket_hours = |name: &str| -> Result<i64, String> {
             let hours = num(name)?;
             if hours > crate::ticket::MAX_LIFETIME / HOUR {
@@ -487,6 +507,14 @@ impl Config {
             ticket_secs: ticket_hours("HJV_API_TICKET_HOURS")?,
             pc_ticket_secs: ticket_hours("HJV_API_PC_TICKET_HOURS")?,
             test_ticket_keys: false,
+            guest_file: match get("HJV_API_GUEST_FILE")?.as_str() {
+                "" => None,
+                _ => Some(path("HJV_API_GUEST_FILE")?),
+            },
+            guest_ticket_secs: ticket_hours("HJV_API_GUEST_TICKET_HOURS")?,
+            limit_guest_ip: windows("HJV_API_LIMIT_GUEST_IP")?,
+            limit_guest_all: limit_guest_all[0],
+            limit_guest_tickets: windows("HJV_API_LIMIT_GUEST_TICKETS")?,
         };
         if config.token_idle_secs > config.token_max_secs {
             return Err("HJV_API_TOKEN_IDLE_DAYS cannot exceed HJV_API_TOKEN_MAX_DAYS".into());
@@ -497,8 +525,8 @@ impl Config {
         Ok(config)
     }
 
-    /// The longest window of the limits kept in the database (the logins' and the package
-    /// downloads'): older attempts count nowhere.
+    /// The longest window of the limits kept in the database (the logins', the package
+    /// downloads' and the access password's): older attempts count nowhere.
     pub fn longest_window(&self) -> i64 {
         [
             &self.limit_ip,
@@ -509,6 +537,8 @@ impl Config {
             &self.limit_ok_ip,
             &self.limit_update,
             &self.limit_update_fail_ip,
+            &self.limit_guest_ip,
+            &self.limit_guest_tickets,
         ]
         .iter()
         .flat_map(|windows| windows.iter().map(|w| w.secs))
@@ -1010,6 +1040,75 @@ mod tests {
             ("HJV_API_TICKET_PUBKEYS", "1:AAAA"),
             ("HJV_API_TICKET_PUBKEYS", "x"),
         ] {
+            assert!(with(&[(k, v)]).is_err(), "{k}={v}");
+        }
+    }
+
+    #[test]
+    fn guest_settings() {
+        // docs/access-tickets.md 3-5: no access password without its file; 12 hours; the limits
+        let c = Config::from_vars(&base()).unwrap();
+        assert_eq!(
+            (c.guest_file.as_deref(), c.guest_ticket_secs),
+            (None, 12 * HOUR)
+        );
+        assert_eq!(
+            (
+                c.limit_guest_ip.clone(),
+                c.limit_guest_all,
+                c.limit_guest_tickets.clone()
+            ),
+            (
+                vec![
+                    Window {
+                        count: 5,
+                        secs: 600
+                    },
+                    Window {
+                        count: 20,
+                        secs: DAY
+                    }
+                ],
+                Window {
+                    count: 60,
+                    secs: HOUR
+                },
+                vec![Window {
+                    count: 50,
+                    secs: DAY
+                }]
+            )
+        );
+        assert!(c.longest_window() >= DAY);
+        let with = |pairs: &[(&str, &str)]| {
+            let mut vars = base();
+            for (k, v) in pairs {
+                vars.insert((*k).to_owned(), (*v).to_owned());
+            }
+            Config::from_vars(&vars)
+        };
+        let c = with(&[
+            ("HJV_API_GUEST_FILE", "/etc/hjviewer/guest.conf"),
+            ("HJV_API_GUEST_TICKET_HOURS", "2"),
+        ])
+        .unwrap();
+        assert_eq!(
+            (c.guest_file.unwrap(), c.guest_ticket_secs),
+            (PathBuf::from("/etc/hjviewer/guest.conf"), 2 * HOUR)
+        );
+        for (k, v) in [
+            ("HJV_API_GUEST_FILE", "guest.conf"),
+            ("HJV_API_GUEST_TICKET_HOURS", "169"),
+            ("HJV_API_GUEST_TICKET_HOURS", "0"),
+            ("HJV_API_LIMIT_GUEST_ALL", "60/3600,100/86400"),
+            ("HJV_API_LIMIT_GUEST_IP", "five"),
+            ("HJV_API_LIMIT_GUEST_TICKETS", ""),
+        ] {
+            if v.is_empty() {
+                // empty means the default
+                assert!(with(&[(k, v)]).is_ok(), "{k}={v}");
+                continue;
+            }
             assert!(with(&[(k, v)]).is_err(), "{k}={v}");
         }
     }

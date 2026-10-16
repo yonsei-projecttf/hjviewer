@@ -7,6 +7,7 @@ use crate::{
     check::OnlineSince,
     config::{Config, Secrets},
     db::{self, Db, Record},
+    guest::{GuestFile, KeyLookups},
     keys::CallLimiter,
     limits::{
         Admit, Breaker, GlobalLimiter, Latency, RecordBudget, UserRefusals,
@@ -94,6 +95,17 @@ pub struct AppState {
     pub updates: Updates,
     /// the App Review account's file as last read (review.rs)
     pub review: ReviewFile,
+    /// the access password's file as last read (guest.rs)
+    pub guest: GuestFile,
+    /// the access password's tries of all addresses (HJV_API_LIMIT_GUEST_ALL)
+    pub guest_calls: GlobalLimiter,
+    /// its tries in hand at once, and its PBKDF2 at once (guest.rs IN_FLIGHT, HASHES)
+    pub guest_slots: Arc<Semaphore>,
+    pub guest_hashes: Arc<Semaphore>,
+    /// hbbs's last answer about the key of each PC that asked for the access password's ticket
+    pub guest_keys: KeyLookups,
+    /// its failure records written per minute
+    pub guest_records: RecordBudget,
     /// the operator record and the service's own user ID, from when the admin socket is served
     /// (admin.rs): where update.rs writes what the operator is to see without asking, and
     /// overview.rs each look of a super operator
@@ -135,6 +147,12 @@ impl AppState {
             relays: RelayHub::default(),
             updates: Updates::new(&config),
             review: ReviewFile::default(),
+            guest: GuestFile::default(),
+            guest_calls: GlobalLimiter::new(config.limit_guest_all),
+            guest_slots: Arc::new(Semaphore::new(crate::guest::IN_FLIGHT)),
+            guest_hashes: Arc::new(Semaphore::new(crate::guest::HASHES)),
+            guest_keys: KeyLookups::default(),
+            guest_records: RecordBudget::default(),
             operator_record: OnceLock::new(),
             lists: ListCache::default(),
             key_checks: KeyChecks::default(),

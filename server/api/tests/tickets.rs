@@ -589,34 +589,48 @@ async fn without_a_ticket_key_no_tickets() {
     assert!(report.contains("[ -- ] ticket key: none"), "{report}");
 }
 
-/// The App Review account gets a ticket only for the demo PCs of its file's PC= line, which this
-/// version does not read: none yet, at its login or on request.
+/// The App Review account gets a ticket only for the demo PCs of its file's PC= line, at its login
+/// and on request: `review`/`ctl` for them in the file's order, until the earlier of a day and the
+/// file's UNTIL; without the line, none.
 #[tokio::test]
-async fn the_review_account_gets_none_yet() {
+async fn the_review_account_gets_its_demo_pcs() {
     const HASH: &str =
         "pbkdf2-sha256$100000$AAECAwQFBgcICQoLDA0ODw==$SdScJfWXhGIJ8Nkud3CrZOHHXpS0zmxQkmXuZxddKh4=";
     let dir = temp_dir("ticket-review");
     let file = dir.join("review.conf");
-    std::fs::write(
-        &file,
-        format!(
-            "ID=APPREVIEW-TEST\nHASH={HASH}\nUNTIL={}\n",
-            datetime(now() + DAY)
-        ),
-    )
-    .unwrap();
+    let put = |until: i64, pcs: &str| {
+        let new = file.with_extension("new");
+        std::fs::write(
+            &new,
+            format!(
+                "ID=APPREVIEW-TEST\nHASH={HASH}\nUNTIL={}\n{pcs}",
+                datetime(until)
+            ),
+        )
+        .unwrap();
+        std::fs::rename(&new, &file).unwrap();
+    };
+    put(now() + 2 * DAY, "");
     let h = Harness::with(Options {
         vars: vec![("HJV_API_REVIEW_FILE", file.display().to_string())],
         ..Default::default()
     })
     .await;
-    let a = h
-        .login(
-            &h.login_body("APPREVIEW-TEST", "correct horse battery staple", None),
-            "10.0.61.1",
-        )
-        .await;
-    assert_eq!(a.status, 200, "{}", a.text);
+    let login = |ip: &'static str| {
+        let h = &h;
+        async move {
+            let a = h
+                .login(
+                    &h.login_body("APPREVIEW-TEST", "correct horse battery staple", None),
+                    ip,
+                )
+                .await;
+            assert_eq!(a.status, 200, "{}", a.text);
+            a
+        }
+    };
+    // without the PC= line: no ticket, at the login or on request
+    let a = login("10.0.61.1").await;
     assert!(a.json["hjv"].get("access").is_none(), "{}", a.text);
     let a = ask(&h, &a.token(), None).await;
     assert_eq!(a.status, 403, "{}", a.text);
@@ -624,6 +638,43 @@ async fn the_review_account_gets_none_yet() {
         a.json,
         json!({"error": "이 계정으로는 출입증을 받을 수 없습니다.", "hjv": "no_ticket"})
     );
+    // the demo PCs in the file's order, a day
+    put(now() + 2 * DAY, "PC=100200301,100200300\n");
+    let a = login("10.0.61.2").await;
+    let p = access(&a.json["hjv"]["access"]);
+    assert_eq!(
+        (&p["who"], &p["use"], &p["to"], &p["id"], &p["pk"]),
+        (
+            &json!("review"),
+            &json!("ctl"),
+            &json!(["100200301", "100200300"]),
+            &json!(""),
+            &json!("")
+        )
+    );
+    assert_eq!(lifetime(&p), DAY);
+    let asked = ask(&h, &a.token(), None).await;
+    assert_eq!(asked.status, 200, "{}", asked.text);
+    let q = access(&asked.json);
+    assert_eq!((&q["who"], &q["to"]), (&p["who"], &p["to"]));
+    // never past UNTIL
+    let until = now() + 3600;
+    put(until, "PC=100200300\n");
+    let a = login("10.0.61.3").await;
+    let p = access(&a.json["hjv"]["access"]);
+    assert_eq!(
+        (&p["to"], p["exp"].as_i64()),
+        (&json!(["100200300"]), Some(until))
+    );
+    // a PC= line it cannot take: the whole file goes, and with it the account
+    put(now() + 2 * DAY, "PC=100200300,100200300\n");
+    let a = h
+        .login(
+            &h.login_body("APPREVIEW-TEST", "correct horse battery staple", None),
+            "10.0.61.4",
+        )
+        .await;
+    assert_ne!(a.status, 200, "{}", a.text);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

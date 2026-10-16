@@ -10,7 +10,12 @@
 //! ID=<the login ID>
 //! HASH=pbkdf2-sha256$<iterations>$<salt, standard base64>$<derived key, standard base64>
 //! UNTIL=<UTC time, 2026-11-29T15:00:00Z>
+//! PC=<the demo PC's ID>[,<another>…]
 //! ```
+//!
+//! PC= is the one line a file may leave out: 1 to 3 different PC IDs, separated by commas, the
+//! demo PCs the account's access ticket reaches (docs/access-tickets.md 2-4). Without it the
+//! account gets no ticket, and so connects to nothing once hbbs checks tickets.
 //!
 //! HASH is PBKDF2-HMAC-SHA256 of the password: 100 000 to 10 000 000 iterations (bounded, so that
 //! a file cannot stall logins), a salt of 16 bytes or more, a key of 32. An ID that passes
@@ -29,7 +34,8 @@
 //! account needs no state of its own to be told apart: its key fails the ID rule, which every other
 //! account's passes ([`is_review`]). It never holds a PC (login.rs `check_device`), gets no package
 //! or short link (update.rs), gets an access ticket only for its demo PCs ([`Review::demo_pcs`],
-//! ticket.rs: none until the file takes a `PC=` line), is never a super operator (overview.rs), and
+//! ticket.rs: `review`/`ctl` until the earlier of a day and UNTIL), is never a super operator
+//! (overview.rs), and
 //! its tokens hold only while the file is active and names it ([`admits`], api.rs
 //! `authenticate`): else they are unknown tokens, and the app logs out. A new HASH ends no session
 //! of the old password: `hjv-api admin user revoke-all` does.
@@ -39,7 +45,7 @@ use crate::{
     log::Tagger,
     state::AppState,
     update::{same, utc_time, watched, Watched},
-    util::{b64_decode, datetime, login_key, now, staff_id, valid_portal_id},
+    util::{b64_decode, datetime, login_key, now, staff_id, valid_device_id, valid_portal_id},
 };
 use ring::pbkdf2;
 use std::{
@@ -63,16 +69,16 @@ pub struct Review {
     key: [u8; 32],
     until: i64,
     /// the demo PCs the account's access ticket reaches (docs/access-tickets.md 2-4): the IDs of
-    /// a `PC=` line, which the parser does not take yet, so none
+    /// its `PC=` line in the file's order, none without one
     pcs: Vec<String>,
 }
 
 impl Review {
-    /// Reads the file: `ID=`, `HASH=` and `UNTIL=` once each, and `#` comments. The errors never
-    /// show what the file holds.
+    /// Reads the file: `ID=`, `HASH=` and `UNTIL=` once each, `PC=` at most once, and `#`
+    /// comments. The errors never show what the file holds.
     pub fn parse(file: &[u8]) -> Result<Review, &'static str> {
         let text = std::str::from_utf8(file).map_err(|_| "the file is not text")?;
-        let (mut id, mut hash, mut until) = (None, None, None);
+        let (mut id, mut hash, mut until, mut pcs) = (None, None, None, None);
         for line in text.lines().map(str::trim) {
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -81,10 +87,11 @@ impl Review {
                 Some(("ID", value)) => (&mut id, value),
                 Some(("HASH", value)) => (&mut hash, value),
                 Some(("UNTIL", value)) => (&mut until, value),
-                _ => return Err("a line that is neither ID=, HASH=, UNTIL= nor a # comment"),
+                Some(("PC", value)) => (&mut pcs, value),
+                _ => return Err("a line that is neither ID=, HASH=, UNTIL=, PC= nor a # comment"),
             };
             if field.replace(value.trim()).is_some() {
-                return Err("ID, HASH or UNTIL is there more than once");
+                return Err("ID, HASH, UNTIL or PC is there more than once");
             }
         }
         let (Some(id), Some(hash), Some(until)) = (id, hash, until) else {
@@ -103,7 +110,7 @@ impl Review {
             salt,
             key,
             until: utc_time(until).ok_or("UNTIL is not a time")?,
-            pcs: Vec::new(),
+            pcs: pcs.map(parse_pcs).transpose()?.unwrap_or_default(),
         })
     }
 
@@ -113,7 +120,7 @@ impl Review {
     }
 
     /// The demo PCs, in the file's order: the only PCs the account's access ticket reaches
-    /// (ticket.rs). None, and so no ticket, until the parser takes the `PC=` line.
+    /// (ticket.rs). None, and so no ticket, without a `PC=` line.
     pub fn demo_pcs(&self) -> &[String] {
         &self.pcs
     }
@@ -139,15 +146,34 @@ impl Review {
 
     fn summary(&self, tags: &Tagger) -> String {
         format!(
-            "until {} (acct={})",
+            "until {}, {} demo PC(s) (acct={})",
             datetime(self.until),
+            self.pcs.len(),
             tags.account(&self.id)
         )
     }
 }
 
-/// HASH's parts: `pbkdf2-sha256$<iterations>$<salt>$<key>`.
-fn hash_parts(hash: &str) -> Result<(NonZeroU32, Vec<u8>, [u8; 32]), &'static str> {
+/// The IDs of a `PC=` line: 1 to MAX_TO different PC IDs, separated by commas (blanks around them
+/// taken off), in their order.
+fn parse_pcs(line: &str) -> Result<Vec<String>, &'static str> {
+    const WHY: &str = "PC is 1 to 3 different PC IDs, separated by commas";
+    let mut pcs: Vec<String> = Vec::new();
+    for id in line.split(',').map(str::trim) {
+        if !valid_device_id(id) || pcs.iter().any(|pc| pc == id) {
+            return Err(WHY);
+        }
+        pcs.push(id.to_owned());
+    }
+    if pcs.len() > crate::ticket::MAX_TO {
+        return Err(WHY);
+    }
+    Ok(pcs)
+}
+
+/// HASH's parts: `pbkdf2-sha256$<iterations>$<salt>$<key>`; the access password's file has the
+/// same (guest.rs).
+pub(crate) fn hash_parts(hash: &str) -> Result<(NonZeroU32, Vec<u8>, [u8; 32]), &'static str> {
     let mut parts = hash.split('$');
     let (Some("pbkdf2-sha256"), Some(iterations), Some(salt), Some(key), None) = (
         parts.next(),
@@ -321,8 +347,8 @@ mod tests {
         let salt = "HASH's salt is not base64 of 16 bytes or more";
         let key = "HASH's key is not base64 of 32 bytes";
         let time = "UNTIL is not a time";
-        let twice = "ID, HASH or UNTIL is there more than once";
-        let line = "a line that is neither ID=, HASH=, UNTIL= nor a # comment";
+        let twice = "ID, HASH, UNTIL or PC is there more than once";
+        let line = "a line that is neither ID=, HASH=, UNTIL=, PC= nor a # comment";
         let hashed = |hash: &str| file(ID, hash, until);
         let salt_16 = "AAECAwQFBgcICQoLDA0ODw==";
         let refused = [
@@ -370,6 +396,44 @@ mod tests {
             assert!(!got.contains("AAECAw") && !got.contains("SdScJf"));
         }
         assert!(Review::parse(&[0xff, 0xfe]).is_err());
+    }
+
+    #[test]
+    fn the_demo_pcs_line() {
+        let until = "2026-11-29T15:00:00Z";
+        let with = |line: &str| {
+            Review::parse(format!("{}{line}\n", file(ID, HASH, until)).as_bytes()).map(|r| r.pcs)
+        };
+        // none without the line: then the account gets no access ticket (ticket.rs)
+        let none = Review::parse(file(ID, HASH, until).as_bytes()).unwrap();
+        assert!(none.demo_pcs().is_empty());
+        assert_eq!(with("PC=100200300"), Ok(vec!["100200300".to_owned()]));
+        // in the file's order, blanks around the IDs taken off
+        assert_eq!(
+            with("PC= 100200301 , 100200300,Office-PC_7 "),
+            Ok(vec![
+                "100200301".to_owned(),
+                "100200300".to_owned(),
+                "Office-PC_7".to_owned()
+            ])
+        );
+        let why = Err("PC is 1 to 3 different PC IDs, separated by commas");
+        let long = format!("PC={}", "1".repeat(65));
+        for bad in [
+            "PC=",
+            "PC=1,2,3,4",
+            "PC=100200300,100200300",
+            "PC=100200300,",
+            "PC=1 2",
+            "PC=a.b",
+            long.as_str(),
+        ] {
+            assert_eq!(with(bad), why, "{bad:?}");
+        }
+        assert_eq!(
+            with("PC=1\nPC=2"),
+            Err("ID, HASH, UNTIL or PC is there more than once")
+        );
     }
 
     #[test]
@@ -444,7 +508,7 @@ mod tests {
             .filter(|l| l.starts_with("login: the App Review file (HJV_API_REVIEW_FILE) "))
             .collect();
         let read = format!(
-            "login: the App Review file (HJV_API_REVIEW_FILE) read: until 2026-11-29T15:00:00Z (acct={})",
+            "login: the App Review file (HJV_API_REVIEW_FILE) read: until 2026-11-29T15:00:00Z, 0 demo PC(s) (acct={})",
             tags.account("appreview-test")
         );
         assert!(mine.iter().any(|l| **l == read), "{mine:?}");

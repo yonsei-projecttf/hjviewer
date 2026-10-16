@@ -24,6 +24,8 @@
 //! per client address (HJV_API_LIMIT_UPDATE_FAIL_IP); the downloads that begin, per account for
 //! its logins and per PC for its device key (HJV_API_LIMIT_UPDATE); the short links an account
 //! makes. A request with the right token, signature or code is never refused for its address.
+//! The access password (guest.rs) counts the same way: its failed tries and its tickets, per
+//! client address, each when the try ends.
 //!
 //! In memory: the SSO calls of all accounts together, of which one account may hold a quarter
 //! (step 7); the pause of SSO calls while the SSO refuses this server or keeps failing; the user
@@ -58,6 +60,9 @@ pub const SCOPE_UPDATE_FAIL_IP: &str = "update-fail-ip";
 pub const SCOPE_UPDATE_OK_ACCOUNT: &str = "update-ok-account";
 pub const SCOPE_UPDATE_OK_DEVICE: &str = "update-ok-device";
 pub const SCOPE_UPDATE_LINK: &str = "update-link";
+/// guest.rs: the access password's failed tries and its tickets, per client address
+pub const SCOPE_GUEST_IP: &str = "guest-ip";
+pub const SCOPE_GUEST_TICKETS: &str = "guest-tickets";
 
 /// Reserves an attempt under `scope`/`key` unless a window is full; returns its row id.
 pub fn reserve(

@@ -16,7 +16,7 @@
 //! of relay/PROTOCOL.md), and the app's wake requests with the signed commands ([`wake`]). The
 //! minimum version and forced update add the packages of new app versions ([`update`]), which
 //! hjv-api streams itself ([`body`]). The staff-only gate of 1.8.0 adds the access tickets that
-//! hbbs checks ([`ticket`], docs/access-tickets.md).
+//! hbbs checks ([`ticket`], docs/access-tickets.md) and the access password's ([`guest`]).
 
 #[macro_use]
 pub mod log;
@@ -33,6 +33,7 @@ pub mod devmodel;
 pub mod devsig;
 pub mod envelope;
 pub mod fake_sso;
+pub mod guest;
 pub mod hbbs;
 pub mod jobs;
 pub mod keygen;

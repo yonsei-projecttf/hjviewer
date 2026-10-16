@@ -329,7 +329,7 @@ async fn without_an_active_file_the_id_is_outside_the_rule() {
     let logs = hjv_api::log::captured();
     for why in [
         "HASH's iterations are not 100000 to 10000000",
-        "ID, HASH or UNTIL is there more than once",
+        "ID, HASH, UNTIL or PC is there more than once",
         "ID passes HJViewer's ID rule, so it could be a staff account's",
     ] {
         let line = format!("login: the App Review file (HJV_API_REVIEW_FILE) is not used: {why}");
@@ -595,7 +595,7 @@ async fn the_start_says_whether_there_is_an_account() {
     let (h, file, _dir) = start(vec![]).await;
     let read = |until: i64| {
         format!(
-            "login: the App Review file (HJV_API_REVIEW_FILE) read: until {} (acct={})",
+            "login: the App Review file (HJV_API_REVIEW_FILE) read: until {}, 0 demo PC(s) (acct={})",
             datetime(until),
             h.account_tag(REVIEW.0)
         )

@@ -9,8 +9,8 @@
 //!   the account key's other calls (keys.rs `CallLimiter`, 30 a minute). A body `{}` (or none)
 //!   gets a `staff`/`ctl` ticket, a phone's; `{"id","pk","sig"}` with the device key's signature
 //!   of [`pc_message`] a `staff`/`both` one for that PC, a Windows app's. The App Review account
-//!   gets `review`/`ctl` for the demo PCs of review.conf's `PC=` line (`review_claims`); review.rs
-//!   reads no such line yet, so until it does the account gets 403 `no_ticket`.
+//!   gets `review`/`ctl` for the demo PCs of review.conf's `PC=` line (`review_claims`), and 403
+//!   `no_ticket` without that line.
 //! - the login's answer, `hjv.access` (login.rs): the same ticket, `both` for an installed PC
 //!   whose login signature matched the key hbbs holds for it, else `ctl`: the login carries no
 //!   device key to check otherwise, so a Windows app given `ctl` asks the path above with its PC
@@ -32,10 +32,10 @@
 //! logged, and nothing records them one by one: [`TicketStats`] counts them in memory for `hjv-api
 //! admin ticket status`.
 //!
-//! The access password's `POST /api/hjv/guest` is the next step: it signs [`Claims::guest_ctl`]
-//! (the one PC it connects to) and [`Claims::guest_pc`] through [`issue`]. It checks the IDs a
-//! request names with `valid_device_id` first and answers 400: [`issue`] refuses a bad one as
-//! hjv-api's own fault (a 500).
+//! The access password's `POST /api/hjv/guest` (guest.rs) signs [`Claims::guest_ctl`] (the one PC
+//! it connects to) and [`Claims::guest_pc`] through [`issue`]. It checks the IDs a request names
+//! with `valid_device_id` first and answers 400: [`issue`] refuses a bad one as hjv-api's own
+//! fault (a 500).
 //!
 //! The vectors' ticket keys are public test keys ([`public_test_key`]): selfcheck fails, and the
 //! journal at the start says so, when one of HJV_API_TICKET_PUBKEYS (hbbs's KEY= lines) is one, so
@@ -475,8 +475,8 @@ pub async fn for_account(
 }
 
 /// The App Review account's claims: `review`/`ctl` for the demo PCs of its file's `PC=` line, in
-/// the file's order, until the earlier of HJV_API_TICKET_HOURS and the file's UNTIL. review.rs
-/// reads no `PC=` line yet ([`review::Review::demo_pcs`]): until it does, the account gets none.
+/// the file's order, until the earlier of HJV_API_TICKET_HOURS and the file's UNTIL; none without
+/// the line ([`review::Review::demo_pcs`]).
 async fn review_claims(
     state: &Arc<AppState>,
     login_key: &str,

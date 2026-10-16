@@ -1289,7 +1289,8 @@ report: 계정 <n>, 활성 키 <n>, 묶음을 가진 PC <n>, 그중 10분 안에
 
 Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다. 사용자 결정(2026-10-16): ID와 비밀번호는 서버의 이 파일에만 있고, 비밀번호는 해시로만 둡니다. 이 계정은 로그인만 되고 파일의 `UNTIL`에 끝납니다. 연세 SSO를 부르지 않고, PC를 목록에 올리지 못하고, 새 버전을 받지 못하고, 자기가 만들지 않은 계정에는 들어가지 못합니다. 동작은 [server/api/README.md](../server/api/README.md)의 "The App Review account", 심사에 넣는 값은 [distribution.md](distribution.md)의 "iOS: 심사용 데모 계정"에 있습니다.
 
-- 파일은 사용자가 에이전트 세션이 아닌 자기 터미널(Linux, macOS나 WSL)에서 `python3 -I deploy/review-conf.py --until <YYYY-MM-DD> --out ~/review.conf`로 만들어(ID와 비밀번호는 도구가 터미널에서 물음) 운영 에이전트의 홈으로 보냅니다. 형식은 [deploy/review.conf.example](../deploy/review.conf.example)에 있습니다.
+- 파일은 사용자가 에이전트 세션이 아닌 자기 터미널(Linux, macOS나 WSL)에서 `python3 -I deploy/review-conf.py --until <YYYY-MM-DD> --out ~/review.conf [--pc <데모 PC ID>]...`로 만들어(ID와 비밀번호는 도구가 터미널에서 물음) 운영 에이전트의 홈으로 보냅니다. 형식은 [deploy/review.conf.example](../deploy/review.conf.example)에 있습니다.
+- **데모 PC 줄**(1.8.0, 교직원 전용): 출입 확인을 켠 뒤(`access.conf`의 `MODE=enforce`) 이 계정은 `PC=` 줄의 PC(1~3대)에만 연결합니다. 이 줄이 없으면 아무 PC에도 연결하지 못합니다. `--pc`를 주면 도구가 이 줄을 씁니다. 데모 PC를 둘지, 어느 PC로 할지는 사용자가 정합니다(추천: 운영자 계정에 묶은 전용 PC나 VM. 묶여 있어 재부팅해도 온라인이고, 운영자의 업무 PC는 쓰지 않음). 이 줄은 출입증을 아는 새 hjv-api만 읽습니다. 옛 hjv-api는 이 줄이 있는 파일 전체를 거부해 계정이 없어지므로, 새 hjv-api를 넣은 뒤에 이 줄이 든 파일을 넣습니다.
 - 운영 에이전트는 이 파일을 출력하지 않고(`cat`, `less` 등), ID를 보고·대화·명령 인자에 옮기지 않습니다. 옮겨도 되는 것은 `UNTIL`과 저널의 꼬리표뿐입니다. 이 계정으로 로그인해 보지 않습니다. 확인은 사용자가 앱으로 합니다(4번).
 - 아래 명령의 `T`는 이 계정의 꼬리표입니다(`T='<꼬리표>'`로 둠). 2번의 read 줄에 처음 나오고, 보고(8번)마다 적습니다. 저널은 30일만 남으므로 그 뒤에는 보고에 적은 값을 씁니다. 저널에 아직 있으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -o cat | grep 'App Review' | grep -o 'acct=[0-9a-f]\{16\}' | tail -1`로도 얻습니다.
 
@@ -1299,6 +1300,7 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    [[ $SRC == /home/*/* ]] && sudo test -f "$SRC" && ! sudo test -L "$SRC" || { echo "STOP: $SRC 이(가) 홈의 보통 파일이 아님"; exit 1; }
    [ "$(sudo grep -cE '^(ID|HASH|UNTIL)=' "$SRC")" = 3 ] && [ "$(sudo grep -c '^HASH=pbkdf2-sha256\$' "$SRC")" = 1 ] || { echo "STOP: $SRC 이(가) review-conf.py가 쓴 파일이 아님"; exit 1; }
    sudo sed -n 's/^UNTIL=//p' "$SRC"                           # 끝나는 시각(UTC)
+   sudo sed -n 's/^PC=//p' "$SRC" | tr ',' '\n' | grep -c .    # 데모 PC의 수(0~3, 0이면 줄 없음)
    sudo install -o root -g hjviewer-api -m 0640 "$SRC" /etc/hjviewer/review.conf.new &&
      sudo mv -f /etc/hjviewer/review.conf.new /etc/hjviewer/review.conf && sudo rm -f "$SRC"
    ```
@@ -1314,14 +1316,14 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    sudo journalctl --namespace=hjviewer -u hjviewer-api --since -1min -o cat | grep 'App Review' | tail -2
    ```
    - `active`가 아니면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -n 20 -o cat`의 오류 줄을 사용자에게만 보여 주고(7-5), `sudo sed -i '/^HJV_API_REVIEW_FILE=/d' "$E"`로 그 줄을 지운 뒤 다시 시작해 `active`인지 봅니다.
-   - `login: the App Review file (HJV_API_REVIEW_FILE) read: until <UTC> (acct=<꼬리표>)`가 나오고, 그 시각이 지금보다 뒤이고, 그 뒤에 `login: no App Review account (…)` 줄이 없어야 합니다. 이 꼬리표가 `T`입니다.
+   - `login: the App Review file (HJV_API_REVIEW_FILE) read: until <UTC>, <n> demo PC(s) (acct=<꼬리표>)`가 나오고, 그 시각이 지금보다 뒤이고, 그 뒤에 `login: no App Review account (…)` 줄이 없어야 합니다. 이 꼬리표가 `T`입니다. `<n>`은 `PC=` 줄의 PC 수입니다(1번 블록에서 센 수와 같아야 함).
    - `… is not used: <이유>`이면 파일이 거부된 것입니다(이유에 ID나 해시는 없음). 그 줄을 보고하고 사용자가 파일을 다시 만듭니다.
    - `login: no App Review account (…)`만 나오면 파일이 없습니다. read 줄(지난 시각)과 이 줄이 함께 나오면 `UNTIL`이 지났습니다.
 3. **명단**(두 로그인 방식 모두): 그 ID를 명단에 미리 넣습니다. 명단에 없는 ID는 열린 로그인에서도 첫 로그인 전까지 `HJV_API_LIMIT_NEW_ID`(하루 실패 2번)를 받아, 심사자가 비밀번호를 두 번 틀리면 하루 동안 맞는 비밀번호로도 로그인하지 못합니다. 명단에 있으면 다른 ID처럼 `HJV_API_LIMIT_ID`(10분에 3번, 하루 5번)입니다. 명단 방식에서는 넣어야 로그인합니다. ID는 파일에서 바로 넘기므로 화면과 명령줄에 나오지 않습니다.
    ```bash
    sudo sed -n 's/^ID=//p' /etc/hjviewer/review.conf | sudo /opt/hjviewer/bin/hjv-api admin allow import /dev/stdin   # allowlist: 1 added, …
    ```
-4. **확인**(사용자, 처음 제출하기 전): 사용자가 App Store Connect에 넣을 값 그대로 앱으로 한 번 로그인해 보고 로그아웃합니다(distribution.md의 "iOS: 심사용 데모 계정" 2번). 사용자가 확인했다고 하면 운영 에이전트는 계정을 지우고 명단에 다시 넣습니다. 확인한 기기가 심사자의 기기에 "새 기기" 알림으로 뜨지 않게 하려는 것입니다(`user delete`는 명단 항목도 지움).
+4. **확인**(사용자, 처음 제출하기 전): 사용자가 App Store Connect에 넣을 값 그대로 앱으로 한 번 로그인해 보고 로그아웃합니다(distribution.md의 "iOS: 심사용 데모 계정" 2번). 데모 PC 줄이 있으면 로그인한 채로 데모 PC에 그 PC의 ID와 비밀번호로 연결해 봅니다. 출입 확인이 켜진 서버에서는 다른 PC에 연결하면 거절(A2)되어야 합니다. 사용자가 확인했다고 하면 운영 에이전트는 계정을 지우고 명단에 다시 넣습니다. 확인한 기기가 심사자의 기기에 "새 기기" 알림으로 뜨지 않게 하려는 것입니다(`user delete`는 명단 항목도 지움).
    ```bash
    sudo /opt/hjviewer/bin/hjv-api admin user delete "tag:$T"
    sudo sed -n 's/^ID=//p' /etc/hjviewer/review.conf | sudo /opt/hjviewer/bin/hjv-api admin allow import /dev/stdin   # allowlist: 1 added, …
@@ -1350,7 +1352,7 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    sudo /opt/hjviewer/bin/hjv-api admin selfcheck
    ```
    새 판이 3b283b2에 이 기능만 더한 판이면 DB 스키마가 같아 이 블록으로 끝납니다. 다른 서버 변경도 함께 들어간 판이면 앞의 세 줄 뒤에 7-14의 "업그레이드"대로 옛 실행 파일, 스냅숏, 설정 파일을 함께 되돌립니다.
-8. **보고**: `review.conf <넣음 | 바꿈 | 지움>, UNTIL <UTC>, acct=<꼬리표>, 저널 <read | is not used <이유> | no App Review account>, 어제 로그인 <n>줄, 틀린 비밀번호 <n>줄, ID 한도 <n>줄, user delete <했음 | 안 함>`. ID와 비밀번호는 적지 않습니다.
+8. **보고**: `review.conf <넣음 | 바꿈 | 지움>, UNTIL <UTC>, 데모 PC <n>대, acct=<꼬리표>, 저널 <read | is not used <이유> | no App Review account>, 어제 로그인 <n>줄, 틀린 비밀번호 <n>줄, ID 한도 <n>줄, user delete <했음 | 안 함>`. ID와 비밀번호, 데모 PC의 ID는 적지 않습니다.
 
 ## 8. 최소 버전과 업데이트 배포 (1.6.0)
 
