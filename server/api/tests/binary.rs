@@ -738,9 +738,16 @@ async fn keygen_ticket_and_selfcheck_of_the_ticket_key() {
         )
     );
     assert!(!note.contains(&util::b64(&*seed)));
-    // hbbs's access.conf takes it, with the next key
+    // hbbs's access.conf takes it, with the next key, made as key 2 would be
     let pin = note.lines().next().unwrap().to_owned();
-    let next = hjv_api::trust::entry(2, &hjv_api::devsig::public_key(&NEXT_TICKET_SEED));
+    let out = Command::new(BIN)
+        .args(["keygen", "ticket", "--kid", "2", "--out"])
+        .arg(dir.join("ticket-2.key"))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let next = stderr.lines().next().unwrap().to_owned();
     let text = std::fs::read_to_string(&env).unwrap();
     std::fs::write(&env, format!("{text}HJV_API_TICKET_PUBKEYS={pin},{next}\n")).unwrap();
     let out = selfcheck(env.clone(), creds.clone()).await.unwrap();
@@ -753,6 +760,27 @@ async fn keygen_ticket_and_selfcheck_of_the_ticket_key() {
         )),
         "{report}"
     );
+    // the vectors' key 2 as the next key: a public test key, which anyone can sign with
+    let vector = hjv_api::trust::entry(2, &hjv_api::devsig::public_key(&NEXT_TICKET_SEED));
+    std::fs::write(
+        &env,
+        format!("{text}HJV_API_TICKET_PUBKEYS={pin},{vector}\n"),
+    )
+    .unwrap();
+    let out = selfcheck(env.clone(), creds.clone()).await.unwrap();
+    let report = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(!out.status.success(), "{report}");
+    assert!(
+        report.contains(
+            "[FAIL] ticket key 2 of HJV_API_TICKET_PUBKEYS is a public test key, whose private key is in the repository"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("[ OK ] ticket key in use (HJV_API_TICKET_KID 1)"),
+        "{report}"
+    );
+    std::fs::write(&env, format!("{text}HJV_API_TICKET_PUBKEYS={pin},{next}\n")).unwrap();
     // a key access.conf does not take
     std::fs::write(
         creds.join("hjviewer-api-ticket-key"),

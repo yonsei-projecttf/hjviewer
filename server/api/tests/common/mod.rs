@@ -303,6 +303,9 @@ pub struct Options {
     pub no_command_key: bool,
     /// no ticket key (credential hjviewer-api-ticket-key): no access ticket is signed
     pub no_ticket_key: bool,
+    /// selfcheck refuses the vectors' public ticket keys, which the harness signs with, as it does
+    /// outside the tests (`Config::test_ticket_keys`)
+    pub refuse_test_keys: bool,
     /// no admin socket, and so no operator record, as when hjv-api cannot open the record
     pub no_admin: bool,
 }
@@ -406,7 +409,8 @@ impl Harness {
         for (k, v) in opts.vars {
             vars.insert(k.to_owned(), v);
         }
-        let config = Config::from_vars(&vars).unwrap();
+        let mut config = Config::from_vars(&vars).unwrap();
+        config.test_ticket_keys = !opts.refuse_test_keys;
         let secrets = Secrets {
             sso_basic: Zeroizing::new(fake_sso::BASIC.to_owned()),
             sso_api_uuid: Zeroizing::new(fake_sso::API_UUID.to_owned()),

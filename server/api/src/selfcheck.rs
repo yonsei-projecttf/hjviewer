@@ -23,8 +23,9 @@
 //! the fingerprints of the keys hbbs takes (HJV_API_TICKET_PUBKEYS, the `KEY=` lines of its
 //! access.conf), and whether the key in use (the credential hjviewer-api-ticket-key, number
 //! HJV_API_TICKET_KID) is the one of its number there: otherwise hbbs refuses every ticket, and
-//! with the access check on nobody connects. Without the credential and the setting, no ticket is
-//! signed.
+//! with the access check on nobody connects. A public test key among them fails too (ticket.rs
+//! `public_test_key`): anyone could sign the tickets hbbs takes. Without the credential and the
+//! setting, no ticket is signed.
 //!
 //! It also says who may log in (HJV_API_LOGIN, the open login of 2026-10-14): `open` or `list`.
 //!
@@ -36,7 +37,7 @@ use crate::{
     config::Config,
     hbbs::{self, HbbsError},
     sso::tls_config,
-    trust,
+    ticket, trust,
 };
 use hyper::Uri;
 use rustls::pki_types::ServerName;
@@ -101,7 +102,13 @@ fn ticket_keys(config: &Config, held: &TicketKeyCheck, report: &mut String) -> b
         let _ = writeln!(report, "[FAIL] {line}");
         false
     };
-    match held {
+    let test_keys = ticket::test_keys_pinned(config);
+    for kid in &test_keys {
+        fail(report, format!(
+            "ticket key {kid} of HJV_API_TICKET_PUBKEYS is a public test key, whose private key is in the repository: with it in hbbs's access.conf anyone can sign tickets"
+        ));
+    }
+    let held_ok = match held {
         TicketKeyCheck::Held { kid, public_key } => {
             let mine = trust::fingerprint(*kid, public_key);
             match config.pinned_ticket_key(*kid) {
@@ -142,7 +149,8 @@ fn ticket_keys(config: &Config, held: &TicketKeyCheck, report: &mut String) -> b
             );
             true
         }
-    }
+    };
+    held_ok && test_keys.is_empty()
 }
 
 /// The command key lines of the report; false when one failed.

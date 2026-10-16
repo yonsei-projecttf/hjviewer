@@ -13,7 +13,7 @@ HJV_DRILL_QUICK=1 tools/e2e/hjv-api-drill.sh   # 그 기다림 없이 약 3분
 
 - 개발 PC(WSL2 Ubuntu 24.04)의 Docker 컨테이너입니다. 운영 서버와 같은 Ubuntu 24.04이고, systemd 255가 PID 1로 돕니다. 첫 서버(A)와 다시 세운 서버(B), 두 대를 차례로 띄우고 끝나면 지웁니다. 밖으로 나가는 연결은 없습니다.
 - 설치는 런북 7절의 7-3~7-5를 그대로 따릅니다. 서버 묶음과 같은 배치(`bin/hjv-api`, `systemd/`의 `hjviewer-api*` 유닛·env 예시·`journald@hjviewer.conf`)를 쓰고, 유닛은 `systemd-analyze verify`로 확인하고, 자격 증명은 `systemd-creds encrypt`로 넣고(봉인 키, 목록 키 2번, 명령 키 2번은 "이동식 매체" 파일에서 표준 입력으로), 설정은 `sed`로 고칩니다.
-- 대역(가짜)은 셋입니다. 가짜 SSO(`hjv-fake-sso`), 시험 PC를 켜짐으로 답하는 가짜 hbbs 콘솔, 받은 메시지를 적어 두는 가짜 텔레그램입니다. 경보 유닛만 드롭인으로 가짜 텔레그램을 가리킵니다. 키는 `server/api/tests/common`의 공개된 시험 키입니다. 명령 키 두 개만 연습 때마다 `hjv-api keygen command`로 새로 만듭니다. 앱과 PC의 요청은 `server/api/tests/drill.rs`가 컨테이너 안에서 보냅니다.
+- 대역(가짜)은 셋입니다. 가짜 SSO(`hjv-fake-sso`), 시험 PC를 켜짐으로 답하는 가짜 hbbs 콘솔, 받은 메시지를 적어 두는 가짜 텔레그램입니다. 경보 유닛만 드롭인으로 가짜 텔레그램을 가리킵니다. 키는 `server/api/tests/common`의 공개된 시험 키입니다. 명령 키 두 개와 출입증 키만 연습 때마다 `hjv-api keygen command`, `keygen ticket`으로 새로 만듭니다. 앱과 PC의 요청은 `server/api/tests/drill.rs`가 컨테이너 안에서 보냅니다.
 - NAS 중계기도 그 시험 프로그램이 맡습니다. 시험용 중계기 키로 서명한 hello와 poll을 보내고, 받은 켜기 명령의 서명을 중계기처럼 고정된 명령 공개키로 확인한 뒤 결과(패킷 12개)를 돌려줍니다. 매직 패킷은 나가지 않습니다. 진짜 hjv-relay의 루프는 `cargo test`의 `tests/relay_loop.rs`가 hjv-api에 붙여 돌리고, 진짜 실행 파일과 패킷은 WOL E2E(WP-W5)가 봅니다.
 - 컨테이너 사정 하나: Docker는 `/`를 마운트 전파 없이(private) 띄웁니다. 그러면 systemd가 유닛의 자격 증명을 그 유닛에 넘기지 못합니다. 그래서 컨테이너를 띄운 뒤 `mount --make-rshared /`를 합니다. 운영 서버의 `/`는 이미 shared이므로 이 일은 운영과 상관없습니다.
 
@@ -63,6 +63,14 @@ HJV_DRILL_QUICK=1 tools/e2e/hjv-api-drill.sh   # 그 기다림 없이 약 3분
 - **복원과 중계기**: 복원은 중계기도 백업 때의 상태로 되돌립니다. 백업 뒤에 폐기한 중계기는 다시 활성이 되고, 무엇을 폐기했는지는 운영자 기록에만 있습니다. hjv-api는 복원한 백업에 활성 중계기가 있으면 시작할 때 저널에 그 수를 적습니다. 그런 중계기가 받는 것은 그 계정의 PC를 주인이 켤 때의 켜기 명령뿐이고 PC에 연결할 권한은 없으므로, 계정처럼 자동으로 끄지는 않고 복원 블록에 `relay list` 한 줄을 넣었습니다(아래 1번).
 - **호스트 재구축과 명령 키 2번**: WP-O 때 연습에 없던 것입니다. 중계기 빌드가 명령 키 1번과 2번을 함께 고정하므로, 1번을 잃은 서버는 매체의 2번을 넣고 `HJV_API_COMMAND_KID=2`로 바꾸면 되고 NAS는 건드리지 않습니다. 연습의 B 서버가 그렇게 해서 백업에 있던 중계기에 2번으로 서명한 명령을 보냅니다.
 - **업그레이드 단계의 스키마 번호**: 새 판의 저장 이전을 흉내 내는 번호를 3으로 적어 두었던 것을 "지금 번호 + 1"로 바꿨습니다. 스키마 3은 이제 진짜이기 때문입니다. 진짜 2 → 3 이전은 WP-W2 작업 중에 따로 한 번 봤습니다. WP-O 때의 실행 파일이 만든 스키마 2 DB를 새 실행 파일이 3으로 올려 시작했고, 그 DB를 옛 실행 파일은 `the database has schema 3; this hjv-api knows up to 2`로 거부했습니다.
+
+## 교직원 전용 출입증(1.8.0)을 넣으며 달라진 것
+
+[access-tickets.md](access-tickets.md)의 출입증 키가 생겼습니다. 이 판으로는 아직 연습을 돌리지 않았습니다(위의 결과는 3813e40의 것입니다).
+
+- **출입증 키가 있어야 서비스가 시작합니다.** 유닛에 `LoadCredentialEncrypted=hjviewer-api-ticket-key`가 생겼으므로, 7-4에서 출입증 키 1번을 다른 키와 함께 만들어야 7-5의 시작이 됩니다. 이미 도는 서버를 이 묶음으로 바꿀 때도 그 키를 먼저 만듭니다. 런북 6절 "B 경로 업데이트"의 4번은 새 유닛이 요구하는 자격 증명이 없으면 아무것도 설치하지 않고 멈춥니다. 유닛 밖에서(E2E의 `--credentials <폴더>`) 그 파일 없이 시작한 hjv-api는 `POST /api/hjv/ticket`에 503 `unavailable`로 답하고, 로그인과 동기화의 답에 출입증이 없을 뿐 나머지는 그대로입니다.
+- **A의 출입증 키**: 명령 키 1번처럼 서버에서 `keygen ticket --kid 1`의 비밀을 바로 `systemd-creds`로 넣고, 화면의 `1:<base64>`를 `HJV_API_TICKET_PUBKEYS`에 넣습니다. 연습은 `selfcheck`의 `ticket key in use` 줄에 화면의 지문이 그대로 나오는지 봅니다.
+- **B의 출입증 키**: 앱이 출입증 키를 고정하지 않으므로 오프라인 사본이 없습니다. 다시 세운 B는 새 출입증 키를 만들어 그 값을 `HJV_API_TICKET_PUBKEYS`에 넣고, 연습은 B의 `selfcheck`에 그 지문이 나오는지 봅니다. 운영에서는 hbbs의 `access.conf`의 `KEY=`도 그 값으로 바꾸므로 A가 서명한 출입증은 모두 거절됩니다. 재구축의 `user revoke-all --all` 뒤 다시 로그인한 앱과, 다음 동기화를 한 묶인 PC가 새 출입증을 받습니다([access-tickets.md](access-tickets.md) 6-4).
 
 ## 열린 로그인(2026-10-14)을 넣으며 달라진 것
 

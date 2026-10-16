@@ -24,7 +24,7 @@ use hjv_api::{
     selfcheck::{self, CommandKeyCheck, ListKeyCheck, TicketKeyCheck},
     server::{self, Listener},
     state::AppState,
-    ticket::TicketKey,
+    ticket::{self, TicketKey},
     trust,
 };
 use std::{
@@ -384,9 +384,15 @@ fn check_command_key(state: &AppState) {
 }
 
 /// The ticket key in use against the keys hbbs takes (docs/access-tickets.md 2-5): a key its
-/// access.conf does not name gets every ticket refused, which `selfcheck` also reports.
+/// access.conf does not name gets every ticket refused, and a public test key among them lets
+/// anyone in, which `selfcheck` also reports.
 fn check_ticket_key(state: &AppState) {
     let config = &state.config;
+    for kid in ticket::test_keys_pinned(config) {
+        log_crit!(
+            "ticket key {kid} of HJV_API_TICKET_PUBKEYS is a public test key, whose private key is in the repository: with it in hbbs's access.conf anyone can sign tickets (hjv-api selfcheck)"
+        );
+    }
     let Some(key) = &state.ticket_key else {
         if !config.ticket_pubkeys.is_empty() {
             log_crit!(

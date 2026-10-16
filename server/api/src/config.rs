@@ -134,6 +134,9 @@ pub struct Config {
     /// seven days: hbbs refuses a longer ticket)
     pub ticket_secs: i64,
     pub pc_ticket_secs: i64,
+    /// whether selfcheck lets public test keys pass as ticket keys (ticket.rs `public_test_key`):
+    /// only for the tests' harness, which signs with the vectors' keys; no setting makes it true
+    pub test_ticket_keys: bool,
 }
 
 /// Who may log in (HJV_API_LOGIN). The user's decision of 2026-10-14 replaced D3's allowlist by
@@ -483,6 +486,7 @@ impl Config {
             ticket_pubkeys,
             ticket_secs: ticket_hours("HJV_API_TICKET_HOURS")?,
             pc_ticket_secs: ticket_hours("HJV_API_PC_TICKET_HOURS")?,
+            test_ticket_keys: false,
         };
         if config.token_idle_secs > config.token_max_secs {
             return Err("HJV_API_TOKEN_IDLE_DAYS cannot exceed HJV_API_TOKEN_MAX_DAYS".into());

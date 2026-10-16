@@ -445,6 +445,7 @@ sudo stat -c '%a %U %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519
   4. 1.6.0부터 묶음에는 hjv-api도 들어 있습니다. hjv-api가 설치된 서버에서는 위 명령에 더해, 7-14의 "업그레이드"대로 스냅숏, 설정 파일, 옛 실행 파일을 남긴 뒤 같은 디렉터리에서 다음을 실행합니다. 유닛 파일을 바꾼 뒤 `daemon-reload`를 하지 않으면 systemd는 옛 유닛으로 다시 시작합니다.
      ```bash
      [ -x bin/hjv-api ] || { echo 'STOP: 묶음에 hjv-api가 없음'; exit 1; }
+     for c in $(sed -n 's/^LoadCredentialEncrypted=//p' systemd/hjviewer-api.service); do sudo test -s "/etc/credstore.encrypted/$c" || { echo "STOP: 새 유닛이 요구하는 자격 증명 $c 이(가) 없음"; exit 1; }; done
      diff -q systemd/hjviewer-api.socket /etc/systemd/system/hjviewer-api.socket
      sudo install -m 755 bin/hjv-api /opt/hjviewer/bin/
      for u in systemd/hjviewer-api*.socket systemd/hjviewer-api*.service systemd/hjviewer-api*.timer; do [ -e "$u" ] && sudo install -m 644 "$u" /etc/systemd/system/; done
@@ -452,6 +453,17 @@ sudo stat -c '%a %U %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519
      sudo systemctl restart hjviewer-api
      ```
      `diff` 줄이 `differ`를 보였으면(소켓 유닛이 바뀜) 마지막 줄 대신 `sudo systemctl stop hjviewer-api.service hjviewer-api.socket && sudo systemctl start hjviewer-api.socket hjviewer-api.service`를 합니다. 서비스만 다시 시작하면 systemd가 쥐고 있던 옛 소켓을 그대로 넘겨받습니다.
+
+     `STOP: 새 유닛이 요구하는 자격 증명 …`이면 아무것도 설치하지 않은 채 멈추고 사용자에게 알립니다. 그 자격 증명 없이 새 유닛을 넣으면 hjv-api가 시작하지 않아 로그인, PC 동기화, 문 1, 켜기가 모두 멈춥니다. 교직원 전용 출입증([access-tickets.md](access-tickets.md))이 든 묶음부터 유닛이 출입증 키(`hjviewer-api-ticket-key`)를 요구합니다. 그때는 사용자가 7-4 (나)의 출입증 키 줄을, `/opt/hjviewer/bin/hjv-api` 자리에 이 묶음의 실행 파일 경로(운영 에이전트가 `echo "$PWD/bin/hjv-api"`로 알려 줌)를 넣어 합니다. 설치된 옛 판은 `keygen ticket`을 모릅니다. 사용자가 화면의 첫 줄(`1:<base64>`)을 알려 주면 운영 에이전트는 이 블록을 처음부터 다시 하고, 이어서 그 값을 설정 파일에 넣어 다시 시작한 뒤 `selfcheck`의 출입증 키 두 줄을 봅니다(7-5와 같은 줄). 옛 실행 파일은 이 이름을 몰라 시작하지 않으므로, 이 줄은 새 실행 파일을 넣은 뒤에만 넣습니다.
+     ```bash
+     TICKET='1:<base64>'    # ← 사용자가 알려 준 출입증 키의 공개키
+     E=/etc/hjviewer/hjviewer-api.env
+     if sudo grep -q '^#\?HJV_API_TICKET_PUBKEYS=' "$E"; then sudo sed -i "s|^#\?HJV_API_TICKET_PUBKEYS=.*|HJV_API_TICKET_PUBKEYS=$TICKET|" "$E"; else echo "HJV_API_TICKET_PUBKEYS=$TICKET" | sudo tee -a "$E" > /dev/null; fi
+     sudo grep -c '^HJV_API_TICKET_PUBKEYS=.' "$E"    # 1
+     sudo systemctl restart hjviewer-api
+     sudo /opt/hjviewer/bin/hjv-api admin selfcheck | grep 'ticket key'
+     ```
+     두 줄 모두 `[ OK ]`이고 지문이 사용자가 키를 만들 때 본 것과 같아야 합니다. hbbs의 `access.conf`(서버 패치 0006)의 `KEY=` 값도 이 값입니다([access-tickets.md](access-tickets.md) 6-1).
 
      질문 10의 답이 '안 됨'이어서 hjv-api를 비공개 묶음으로 설치한 서버(7-1의 3번, 7-3 끝)에서는 공개 묶음에 `bin/hjv-api`가 없어 이 블록이 `STOP`으로 멈춥니다. 그때는 사용자가 올린 새 비공개 hjv-api 묶음의 디렉터리에서 이 블록을 실행하고, 그 묶음의 `web/*`도 `/opt/hjviewer/share/web/`에 설치한 뒤(`sudo install -m 644 web/* /opt/hjviewer/share/web/`) 아래의 nginx 비교를 합니다. 그 묶음의 고지는 7-3 끝처럼 `/opt/hjviewer/share/hjv-api/`에 둡니다.
 - **nginx 경로 파일**: 업데이트 뒤에는 묶음의 nginx 파일이 설치된 것과 다른지 봅니다. A 경로는 `/opt/hjviewer/deploy/nginx-hjviewer-locations.conf`와 `/etc/nginx/snippets/hjviewer-locations.conf`를 비교합니다. B 경로는 다음을 실행합니다. 7절의 nginx 전환(7-8)을 한 서버의 경로 파일에는 `location ^~ /api/` 블록 대신 `include snippets/hjviewer-api.conf;`가 있으므로, 묶음 파일에 7-8과 같은 변환을 한 결과와 비교하고 계정 API의 두 파일도 비교합니다. 묶음 파일을 그대로 다시 설치하면 7-8의 전환이 되돌아가 로그인과 PC 동기화가 모두 404가 됩니다.
@@ -846,7 +858,7 @@ sudo grep -E '^#?HJV_API_(BIND_OS|SECOND_FACTOR|TRUST_REFRESH|TRUST_TTL|PASSWORD
    - 첫 줄은 남아 있던 파일을 지우고 이 계정만 읽는 빈 파일을 새로 만듭니다. 출력이 `600:<그 계정 이름>`이 아니면 둘째 줄로 가지 않습니다. `scp`는 이미 있는 파일의 권한을 바꾸지 않고 내용만 씁니다.
    - 어느 줄이든 실패하거나 중간에 끊겼으면 `ssh <서버> 'rm -f /dev/shm/hjv-key'`로 지웁니다.
 
-**(나) 서버에서 바로 만드는 것**: SSO 자격 증명, 기록 키, 목록 키 1번, 명령 키 1번. 사용자가 서버에 SSH로 들어가 합니다.
+**(나) 서버에서 바로 만드는 것**: SSO 자격 증명, 기록 키, 목록 키 1번, 명령 키 1번, 출입증 키 1번. 사용자가 서버에 SSH로 들어가 합니다.
 
 ```bash
 sudo -v
@@ -858,15 +870,16 @@ systemd-ask-password -n "SSO api uuid:" | sudo systemd-creds encrypt --tpm2-pcrs
 sudo bash -c 'set -o pipefail; /opt/hjviewer/bin/hjv-api keygen log-key | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-log-key - /etc/credstore.encrypted/hjviewer-api-log-key' || echo 'STOP: 기록 키를 넣지 못함'
 sudo bash -c 'set -o pipefail; /opt/hjviewer/bin/hjv-api keygen list --kid 1 | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-list-key - /etc/credstore.encrypted/hjviewer-api-list-key' || echo 'STOP: 목록 키 1번을 넣지 못함'           # 화면: 1:<base64>와 지문
 sudo bash -c 'set -o pipefail; /opt/hjviewer/bin/hjv-api keygen command --kid 1 | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-command-key - /etc/credstore.encrypted/hjviewer-api-command-key' || echo 'STOP: 명령 키 1번을 넣지 못함'  # 원격 켜기용. 화면: 1:<base64>와 지문
+sudo bash -c 'set -o pipefail; /opt/hjviewer/bin/hjv-api keygen ticket --kid 1 | systemd-creds encrypt --tpm2-pcrs= --name=hjviewer-api-ticket-key - /etc/credstore.encrypted/hjviewer-api-ticket-key' || echo 'STOP: 출입증 키 1번을 넣지 못함'     # 교직원 전용 출입증용. 화면: 1:<base64>와 지문
 sudo ls -l /etc/credstore.encrypted/
 ```
 
 - SSO client secret은 토큰 요청의 `Authorization: Basic ` 뒤에 오는 값 그대로입니다. `-n`은 끝에 줄바꿈을 붙이지 않습니다.
 - `keygen`의 `--encrypt-to`는 `systemd-creds encrypt`를 `--tpm2-pcrs=` 없이 부르므로 쓰지 않습니다. 비밀은 `keygen`의 표준 출력으로 나가 파이프의 `systemd-creds encrypt`에 바로 들어가고(표준 출력이 터미널이면 `keygen`이 거부함), 화면에는 표준 오류의 공개값만 나옵니다.
-- 키 세 줄은 줄마다 `sudo` 하나로 돌고(두 `sudo`가 한꺼번에 비밀번호를 묻지 않음) `pipefail`을 켜므로, `keygen`과 `systemd-creds` 가운데 어느 쪽이 실패해도 `STOP:` 줄이 나옵니다. `keygen`은 비밀을 파이프에 쓴 뒤 공개값을 내므로 `systemd-creds`가 실패해도 공개키와 지문이 화면에 나오고, `keygen`이 실패하면 `systemd-creds`는 빈 입력으로 자격 증명을 만듭니다. 그래서 `STOP:`이 나오면 그 줄에서 나온 공개키와 지문은 버리고 그 줄만 다시 합니다(다시 하면 새 키이고, 자격 증명 파일도 새것으로 바뀜). 마지막의 `sudo ls -l`에 여섯 파일이 모두 있는지 봅니다.
-- 여섯 자격 증명(SSO 둘, 봉인 키, 기록 키, 목록 키, 명령 키)이 모두 있어야 6단계에서 서비스가 시작합니다. 유닛이 명령 키(`hjviewer-api-command-key`)도 요구합니다.
-- `keygen list`와 `keygen command`는 화면에 공개키(`N:<base64>`)와 지문(`fingerprint: N:<SHA-256 16진수>`)을 냅니다. `keygen command`의 첫 줄은 `N:<base64>`뿐이라 `HJV_COMMAND_PUBKEY`의 항목으로 그대로 씁니다. 지문은 적어 두었다가 6단계의 `selfcheck`, 8단계의 빌드 요약과 대조합니다.
-- 기록 키를 잃으면 새로 만듭니다(옛 기록의 꼬리표와 이어지지 않을 뿐). 목록 키 1번과 명령 키 1번을 잃으면 오프라인의 2번으로 바꿉니다(7-15).
+- 키 네 줄은 줄마다 `sudo` 하나로 돌고(두 `sudo`가 한꺼번에 비밀번호를 묻지 않음) `pipefail`을 켜므로, `keygen`과 `systemd-creds` 가운데 어느 쪽이 실패해도 `STOP:` 줄이 나옵니다. `keygen`은 비밀을 파이프에 쓴 뒤 공개값을 내므로 `systemd-creds`가 실패해도 공개키와 지문이 화면에 나오고, `keygen`이 실패하면 `systemd-creds`는 빈 입력으로 자격 증명을 만듭니다. 그래서 `STOP:`이 나오면 그 줄에서 나온 공개키와 지문은 버리고 그 줄만 다시 합니다(다시 하면 새 키이고, 자격 증명 파일도 새것으로 바뀜). 마지막의 `sudo ls -l`에 일곱 파일이 모두 있는지 봅니다.
+- 일곱 자격 증명(SSO 둘, 봉인 키, 기록 키, 목록 키, 명령 키, 출입증 키)이 모두 있어야 6단계에서 서비스가 시작합니다. 유닛이 명령 키(`hjviewer-api-command-key`)와 출입증 키(`hjviewer-api-ticket-key`)도 요구합니다.
+- `keygen list`와 `keygen command`는 화면에 공개키(`N:<base64>`)와 지문(`fingerprint: N:<SHA-256 16진수>`)을 냅니다. `keygen command`의 첫 줄은 `N:<base64>`뿐이라 `HJV_COMMAND_PUBKEY`의 항목으로 그대로 씁니다. 지문은 적어 두었다가 6단계의 `selfcheck`, 8단계의 빌드 요약과 대조합니다. `keygen ticket`도 같은 두 줄을 내고, 첫 줄이 그대로 `HJV_API_TICKET_PUBKEYS`의 값이자 hbbs의 `/etc/hjviewer/access.conf`의 `KEY=` 값입니다([access-tickets.md](access-tickets.md) 2-5). 앱은 출입증 키를 고정하지 않으므로 그 지문은 6단계의 `selfcheck`와만 대조합니다.
+- 기록 키를 잃으면 새로 만듭니다(옛 기록의 꼬리표와 이어지지 않을 뿐). 목록 키 1번과 명령 키 1번을 잃으면 오프라인의 2번으로 바꿉니다(7-15). 출입증 키는 오프라인 사본을 두지 않습니다. 잃으면 서버에서 새로 만들고 `HJV_API_TICKET_PUBKEYS`와 `access.conf`의 `KEY=`를 함께 바꿉니다. 그때까지 나간 출입증은 모두 거절되고, 로그인한 앱과 묶인 PC가 새로 받습니다([access-tickets.md](access-tickets.md) 6-4).
 - 최소 버전 작업의 업데이트 키(서명 키 1·2, 루트 키 101·102)는 여기서 만들지 않습니다. 앱 빌드가 공개 저장소의 `client/update-keys.env`에서 읽으므로, 사용자가 7-1의 4번(첫 push와 서버 묶음 `server-<버전>`) 뒤에 만들어 공개 줄을 그 파일에 넣고, 출시 빌드 전에 push합니다([distribution.md](distribution.md)의 "순서" 2단계. 루트 키는 그 릴리스 태그로 빌드한 도구로 깨끗한 컴퓨터에서, `tools/hjv-release/README.md` 1장). 서버에는 그 공개 파일만 둡니다(8-1의 3번).
 
 **(다) 알려 줄 것**: 공개값만 운영 에이전트와 개발 PC에 알립니다. 모두 비밀이 아닙니다.
@@ -874,17 +887,20 @@ sudo ls -l /etc/credstore.encrypted/
 - `HJV_LOGIN_SEAL_PUBKEY`: 봉인 키의 공개키(base64 한 개)와 키 ID
 - `HJV_TRUST_PUBKEYS`: `1:<base64>,2:<base64>`와 두 지문
 - `HJV_COMMAND_PUBKEY`: `1:<base64>,2:<base64>`와 두 지문
+- `HJV_API_TICKET_PUBKEYS`: 출입증 키의 `1:<base64>`와 지문. 운영 에이전트에게만 알립니다(앱 빌드에는 넣지 않음)
 
 ### 7-5. 공개키 대조값, 시작, selfcheck, 로그인 방식 (6단계)
 
 ```bash
 TRUST='1:<base64>,2:<base64>'      # ← 사용자가 알려 준 HJV_TRUST_PUBKEYS
 COMMAND='1:<base64>,2:<base64>'    # ← 사용자가 알려 준 HJV_COMMAND_PUBKEY
+TICKET='1:<base64>'                # ← 사용자가 알려 준 HJV_API_TICKET_PUBKEYS(출입증 키)
 E=/etc/hjviewer/hjviewer-api.env
 sudo sed -i -e "s|^#\?HJV_API_TRUST_PUBKEYS=.*|HJV_API_TRUST_PUBKEYS=$TRUST|" \
-  -e "s|^#\?HJV_API_COMMAND_PUBKEYS=.*|HJV_API_COMMAND_PUBKEYS=$COMMAND|" "$E"
-[ "$(sudo grep -cE '^HJV_API_(TRUST|COMMAND)_PUBKEYS=.+' "$E")" = 2 ] || { echo 'STOP: 공개키 대조값 두 줄이 설정 파일에 없음'; exit 1; }
-sudo grep -E '^HJV_API_(TRUST|COMMAND)_PUBKEYS=' "$E"
+  -e "s|^#\?HJV_API_COMMAND_PUBKEYS=.*|HJV_API_COMMAND_PUBKEYS=$COMMAND|" \
+  -e "s|^#\?HJV_API_TICKET_PUBKEYS=.*|HJV_API_TICKET_PUBKEYS=$TICKET|" "$E"
+[ "$(sudo grep -cE '^HJV_API_(TRUST|COMMAND|TICKET)_PUBKEYS=.+' "$E")" = 3 ] || { echo 'STOP: 공개키 대조값 세 줄이 설정 파일에 없음'; exit 1; }
+sudo grep -E '^HJV_API_(TRUST|COMMAND|TICKET)_PUBKEYS=' "$E"
 sudo systemctl enable --now hjviewer-api.socket hjviewer-api.service
 sleep 3; systemctl is-active hjviewer-api.socket hjviewer-api.service      # active active
 sudo stat -c '%a %U:%G %n' /run/hjviewer-api.sock /var/lib/hjviewer-api /var/lib/hjviewer-api/hjv-api.sqlite3 /var/log/hjviewer-api /var/log/hjviewer-api/operator.log
@@ -897,11 +913,11 @@ sudo journalctl --namespace=hjviewer -u hjviewer-api -p warning --since -10min -
 ```
 
 - 소켓은 `660 root:www-data`(또는 7-3에서 바꾼 그룹), 상태 디렉터리와 로그 디렉터리는 `700 hjviewer-api`, DB와 `operator.log`는 `600`이어야 합니다. 로그 디렉터리를 root로 만들거나 나중에 `chown`·`chmod`하지 않습니다. 추가 전용 속성이 걸린 파일 때문에 systemd가 소유자를 고치다 실패해 서비스가 시작하지 않습니다([server/api/README.md](../server/api/README.md)의 "The operator record").
-- `STOP: 공개키 대조값 …`이면 아무것도 시작하지 않은 채 멈춥니다. 설정 파일에 `HJV_API_TRUST_PUBKEYS=`나 `HJV_API_COMMAND_PUBKEYS=` 줄이 없는 것이니 묶음의 env 예시와 비교합니다.
-- `selfcheck`는 SSO 주소의 DNS·TCP·TLS, hbbs 콘솔, 목록 키와 명령 키를 봅니다. 키마다 두 줄입니다: 고정한 공개키의 지문(`list keys the apps pin …`, `command keys the relays pin …`)과 쓰는 키가 고정한 그 번호의 키인지(`list key in use (HJV_API_LIST_KID 1): the pinned key 1, …`, `command key in use (HJV_API_COMMAND_KID 1): the pinned key 1, …`). 7단계 전에는 `hbbs console` 줄 하나만 `[FAIL]`(패치 0004 전)이고 나머지는 `[ OK ]`여야 합니다. 7-6을 먼저 했으면(hjv-api를 시작하기 전에 hbbs를 0004로 바꿈) 그 줄도 `[ OK ] hbbs console: answers hjv-pk (patch 0004)`여야 하고, 7-6에서 건너뛴 확인이 이것입니다.
-- 목록 키나 명령 키 줄이 `[FAIL]`이면 멈춥니다. 고정한 목록 키가 다르면 모든 PC가 모든 목록을 거절하고, 명령 키가 다르면 모든 중계기가 켜기 명령을 거절합니다. `HJV_API_COMMAND_PUBKEYS`가 비어 있어도 쓰는 명령 키를 대조할 수 없어 `[FAIL]`입니다.
-- 지문 줄(공개값)은 사용자가 5단계에서 키를 만들 때 본 지문과 같아야 하고, 8단계의 대조에 쓰므로 목록 키와 명령 키 것을 모두 보고에 옮깁니다.
-- 서비스가 시작하지 않으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -n 20 -o cat`의 오류 줄을 사용자에게만 보여 줍니다. 설정 파일의 모르는 `HJV_API_` 이름, 빠진 SSO 값, 없는 자격 증명(명령 키 포함, 7-4)이 흔한 원인입니다.
+- `STOP: 공개키 대조값 …`이면 아무것도 시작하지 않은 채 멈춥니다. 설정 파일에 `HJV_API_TRUST_PUBKEYS=`, `HJV_API_COMMAND_PUBKEYS=`, `HJV_API_TICKET_PUBKEYS=` 가운데 없는 줄이 있는 것이니 묶음의 env 예시와 비교합니다.
+- `selfcheck`는 SSO 주소의 DNS·TCP·TLS, hbbs 콘솔, 목록 키, 명령 키, 출입증 키를 봅니다. 키마다 두 줄입니다: 고정한 공개키의 지문(`list keys the apps pin …`, `command keys the relays pin …`, `ticket keys hbbs takes …`)과 쓰는 키가 고정한 그 번호의 키인지(`list key in use (HJV_API_LIST_KID 1): the pinned key 1, …`, `command key in use (HJV_API_COMMAND_KID 1): the pinned key 1, …`, `ticket key in use (HJV_API_TICKET_KID 1): the key 1 hbbs takes, …`). 7단계 전에는 `hbbs console` 줄 하나만 `[FAIL]`(패치 0004 전)이고 나머지는 `[ OK ]`여야 합니다. 7-6을 먼저 했으면(hjv-api를 시작하기 전에 hbbs를 0004로 바꿈) 그 줄도 `[ OK ] hbbs console: answers hjv-pk (patch 0004)`여야 하고, 7-6에서 건너뛴 확인이 이것입니다.
+- 목록 키, 명령 키, 출입증 키 줄이 `[FAIL]`이면 멈춥니다. 고정한 목록 키가 다르면 모든 PC가 모든 목록을 거절하고, 명령 키가 다르면 모든 중계기가 켜기 명령을 거절하고, 출입증 키가 다르면 hbbs가 출입 확인을 켠 뒤 모든 연결과 PC 등록을 거절합니다. `HJV_API_COMMAND_PUBKEYS`나 `HJV_API_TICKET_PUBKEYS`가 비어 있어도 쓰는 키를 대조할 수 없어 `[FAIL]`입니다. 출입증 키 가운데 공개된 시험 키가 있어도 `[FAIL]`입니다(`… is a public test key …`).
+- 지문 줄(공개값)은 사용자가 5단계에서 키를 만들 때 본 지문과 같아야 하고, 8단계의 대조에 쓰므로 목록 키와 명령 키 것을 모두 보고에 옮깁니다. 출입증 키의 지문도 보고에 옮깁니다.
+- 서비스가 시작하지 않으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -n 20 -o cat`의 오류 줄을 사용자에게만 보여 줍니다. 설정 파일의 모르는 `HJV_API_` 이름, 빠진 SSO 값, 없는 자격 증명(명령 키와 출입증 키 포함, 7-4)이 흔한 원인입니다.
 
 로그인 방식을 확인합니다. 설정 파일에 `HJV_API_LOGIN` 줄이 없거나 `open`이면(기본값, 2026-10-14 사용자 결정) 연세 SSO를 통과한 교직원은 누구나 로그인하고, 처음 로그인할 때 명단에 저절로 올라갑니다. 교직원만 되는 것은 연세 SSO가 아니라 hjv-api의 ID 규칙 때문입니다. 입력한 ID를 대문자로 바꿔 Z나 Y로 시작하고 ZA로 시작하지 않아야 SSO에 묻고, SSO가 알려 준 그 사람의 pcode도 같은 규칙에 맞아야 합니다(행정허브 플러그인은 Z와 B를 받음). 그래서 명단을 미리 넣을 필요가 없습니다. `selfcheck`의 마지막 줄이 `[ OK ] login (HJV_API_LOGIN): open, …`이고, `report`의 둘째 줄이 `login: open (…)`이어야 합니다.
 
@@ -1203,7 +1219,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
 
   막힌 계정(`allow list`)과 계정별 스위치를 확인하고 사용자 승인을 받아 `passwordless on`과 `sudo systemctl start hjviewer-api-check.timer`. 모두 휴대폰과 PC에서 한 번 다시 로그인합니다. PC의 묶음은 남으므로, 그 PC로 들어오는 연결을 위해 PC에서 다시 로그인할 필요는 없습니다. 백업 뒤에 풀렸던 묶음이 서버에 되살아나도, 허용 표시가 이미 지워진 PC는 증명을 받지 않습니다(`listed`).
 - **업그레이드**: hjv-api의 저장 이전은 한 방향입니다(옛 실행 파일은 새 스키마를 거부). 새 판을 설치하기 전에 `sudo /opt/hjviewer/bin/hjv-api admin backup /var/lib/hjviewer-api/backup/before-<VERSION>.sqlite3`로 스냅숏을 남기고, 옛 실행 파일과 설정 파일도 `/root/hjv-backup/`에 복사합니다(`sudo cp -p /opt/hjviewer/bin/hjv-api /root/hjv-backup/hjv-api-before-<VERSION>`, `sudo cp -p /etc/hjviewer/hjviewer-api.env /root/hjv-backup/hjviewer-api.env-before-<VERSION>`). 되돌릴 때는 옛 실행 파일, 스냅숏, 설정 파일을 함께 되돌립니다. 옛 실행 파일과 설정 파일을 제자리에 넣고(설정 파일은 600을 지키도록 `sudo cp -p /root/hjv-backup/hjviewer-api.env-before-<VERSION> /etc/hjviewer/hjviewer-api.env`), 위의 복원 블록을 `B`=스냅숏으로 합니다. 새 판이 돌지 않아 `backup` 줄이 실패하면, 사용자 승인 뒤 그 줄 대신 지금 DB 파일들을 `/root/hjv-backup/before-restore-<시각>/`(700)로 옮기고 14일 안에 지웁니다. 스냅숏도 복원한 백업이므로 모든 계정이 꺼진 채로 시작하고, 확인과 `user revoke-all --all` 뒤 사용자 승인을 받아 켭니다. 스냅숏은 다른 백업처럼 14일 뒤 지워지므로 되돌리기는 그 안에 정합니다. 기록: 2026-10-15 0시쯤(KST) 이 절차로 hjv-api를 3b283b2로 바꿨습니다(서버 묶음 `server-2026.10.14.3`, Release는 pre-release. `server-2026.10.14.2`와 다른 것은 `bin/hjv-api`와 `SOURCE.txt`뿐). 문 2 페이지가 바깥 사이트를 가리키지 않게 한 판입니다(8-4). hbbs와 hbbr은 다시 시작하지 않았습니다.
-- **호스트 재구축**: 봉인 키는 오프라인 사본에서 되살립니다(7-4의 (가) 3번). 목록 키 1번과 명령 키 1번은 서버에만 있었으므로 오프라인의 2번을 넣고 `HJV_API_LIST_KID=2`, `HJV_API_COMMAND_KID=2`로 바꿉니다(7-15). 앱과 hjv-relay 빌드가 1번과 2번을 함께 고정하므로 앱과 NAS는 건드리지 않습니다. 기록 키는 새로 만듭니다. 백업이 남아 있으면 위의 복원처럼 넣어 꺼진 채로 시작하고, `user revoke-all --all` 뒤 사용자 승인을 받아 켭니다. 백업도 없으면 빈 DB로 시작하므로 막기를 서버 밖에 적어 둔 것으로 다시 하고(꼬리표가 맞지 않으므로 사용자가 쓴 ID 파일로 `allow remove <파일>`, 명단 방식이면 명단도 다시 넣음, 7-5), 모두 PC에서도 다시 로그인하며, 중계기는 다시 등록을 요청해 다시 승인받습니다(7-11). 이 절차들은 시험 서버에서 연습했습니다([hjv-api-drill.md](hjv-api-drill.md)).
+- **호스트 재구축**: 봉인 키는 오프라인 사본에서 되살립니다(7-4의 (가) 3번). 목록 키 1번과 명령 키 1번은 서버에만 있었으므로 오프라인의 2번을 넣고 `HJV_API_LIST_KID=2`, `HJV_API_COMMAND_KID=2`로 바꿉니다(7-15). 앱과 hjv-relay 빌드가 1번과 2번을 함께 고정하므로 앱과 NAS는 건드리지 않습니다. 기록 키는 새로 만듭니다. 출입증 키도 새로 만들고(7-4 (나)), `HJV_API_TICKET_PUBKEYS`와 hbbs의 `access.conf`의 `KEY=`를 그 값으로 바꿉니다. 앱은 출입증 키를 고정하지 않으므로 앱은 건드리지 않습니다. 백업이 남아 있으면 위의 복원처럼 넣어 꺼진 채로 시작하고, `user revoke-all --all` 뒤 사용자 승인을 받아 켭니다. 백업도 없으면 빈 DB로 시작하므로 막기를 서버 밖에 적어 둔 것으로 다시 하고(꼬리표가 맞지 않으므로 사용자가 쓴 ID 파일로 `allow remove <파일>`, 명단 방식이면 명단도 다시 넣음, 7-5), 모두 PC에서도 다시 로그인하며, 중계기는 다시 등록을 요청해 다시 승인받습니다(7-11). 이 절차들은 시험 서버에서 연습했습니다([hjv-api-drill.md](hjv-api-drill.md)).
 
 ### 7-15. 일상 운영
 

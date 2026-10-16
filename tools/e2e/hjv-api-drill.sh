@@ -6,9 +6,9 @@
 # the server package carries (bin/hjv-api; systemd/ with the hjviewer-api* units, the env example
 # and journald@hjviewer.conf), the fake SSO, a fake hbbs console and the test keys of
 # server/api/tests/common. Then, in order:
-#   1. install, keys as credentials (systemd-creds; command key 1 made on the server with keygen,
-#      command key 2 offline), settings, start, the login mode (open: two IDs imported ahead, the
-#      third registered at its first login), timers (7-3 to 7-5)
+#   1. install, keys as credentials (systemd-creds; command key 1 and ticket key 1 made on the
+#      server with keygen, command key 2 offline), settings, start, the login mode (open: two IDs
+#      imported ahead, the third registered at its first login), timers (7-3 to 7-5)
 #   2. a day of use (logins, PCs bound and syncing; server/api/tests/drill.rs), a NAS relay
 #      approved by its code and a PC woken through it (Wake-on-LAN, WP-W2), the check, the daily
 #      backup, the journal namespace and its 30 days
@@ -22,8 +22,8 @@
 #      (the snapshot restored, the restore's steps after it)
 #   6. old backups going after 14 days
 #   7. the host rebuilt: a new server with the seal key from its offline copy, list key 2 and
-#      command key 2 instead of keys 1, a new log key, and the last backup restored; the relay of
-#      the backup takes a wake command signed with command key 2
+#      command key 2 instead of keys 1, a new log key, a new ticket key (no app pins one), and the
+#      last backup restored; the relay of the backup takes a wake command signed with command key 2
 # Nothing calls the real SSO or Telegram, nothing leaves this machine, and the containers go at the
 # end (the image hjv-drill:local stays for the next run). The output is build/drill/drill.log.
 #   tools/e2e/hjv-api-drill.sh
@@ -183,10 +183,10 @@ EOF
 }
 
 # runbook 7-3 and 7-5: the settings of the fake SSO, hbbs's public key, the pinned list keys and
-# command keys, and the numbers of the keys in use
+# command keys, the numbers of the keys in use, and the ticket key hbbs takes (ticket_key_on)
 settings() { # <host> <list kid> <command kid>
   on "$1" "HBBS_PUBKEY=$HBBS_PUBKEY" "TRUST=$TRUST_PUBKEYS" "CLIENT_ID=$SSO_CLIENT_ID" "KID=$2" \
-    "COMMAND=$COMMAND_PUBKEYS" "COMMAND_KID=$3" << 'EOF'
+    "COMMAND=$COMMAND_PUBKEYS" "COMMAND_KID=$3" "TICKET=$TICKET_PUBKEY" << 'EOF'
 set -euo pipefail
 E=/etc/hjviewer/hjviewer-api.env
 sed -i -e "s|^HJV_API_SSO_TOKEN_URL=.*|HJV_API_SSO_TOKEN_URL=http://127.0.0.1:18600/oauth/token.do|" \
@@ -196,9 +196,33 @@ sed -i -e "s|^HJV_API_SSO_TOKEN_URL=.*|HJV_API_SSO_TOKEN_URL=http://127.0.0.1:18
   -e "s|^#\?HJV_API_TRUST_PUBKEYS=.*|HJV_API_TRUST_PUBKEYS=$TRUST|" \
   -e "s|^#\?HJV_API_LIST_KID=.*|HJV_API_LIST_KID=$KID|" \
   -e "s|^#\?HJV_API_COMMAND_PUBKEYS=.*|HJV_API_COMMAND_PUBKEYS=$COMMAND|" \
-  -e "s|^#\?HJV_API_COMMAND_KID=.*|HJV_API_COMMAND_KID=$COMMAND_KID|" "$E"
-grep -cE '^HJV_API_(SSO_TOKEN_URL|SSO_USERINFO_URL|SSO_CLIENT_ID|HBBS_PUBKEY|TRUST_PUBKEYS|LIST_KID|COMMAND_PUBKEYS|COMMAND_KID)=.+' "$E"
+  -e "s|^#\?HJV_API_COMMAND_KID=.*|HJV_API_COMMAND_KID=$COMMAND_KID|" \
+  -e "s|^#\?HJV_API_TICKET_PUBKEYS=.*|HJV_API_TICKET_PUBKEYS=$TICKET|" "$E"
+grep -cE '^HJV_API_(SSO_TOKEN_URL|SSO_USERINFO_URL|SSO_CLIENT_ID|HBBS_PUBKEY|TRUST_PUBKEYS|LIST_KID|COMMAND_PUBKEYS|COMMAND_KID|TICKET_PUBKEYS)=.+' "$E"
 EOF
+}
+
+# runbook 7-4: ticket key 1, made on the host as command key 1 is, its secret from keygen's
+# standard output straight into systemd-creds; its public key (the first line on the screen) is
+# what HJV_API_TICKET_PUBKEYS and hbbs's access.conf KEY= take. Sets TICKET_PUBKEY and
+# TICKET_FINGERPRINT.
+ticket_key_on() { # <host>
+  local screen
+  screen=$(d exec "$1" sh -c '/opt/hjviewer/bin/hjv-api keygen ticket --kid 1 |
+    systemd-creds encrypt -q --tpm2-pcrs= --name=hjviewer-api-ticket-key - /etc/credstore.encrypted/hjviewer-api-ticket-key' 2>&1) ||
+    fail "$1: keygen ticket --kid 1 | systemd-creds encrypt: $screen"
+  TICKET_PUBKEY=$(printf '%s\n' "$screen" | sed -n '/^1:/p')
+  TICKET_FINGERPRINT=$(printf '%s\n' "$screen" | sed -n 's/^fingerprint: //p')
+  case $TICKET_PUBKEY in 1:*) ;; *) fail "$1: keygen ticket --kid 1 showed no public key" ;; esac
+  case $TICKET_FINGERPRINT in 1:*) ;; *) fail "$1: keygen ticket --kid 1 showed no fingerprint" ;; esac
+  echo "HJV_API_TICKET_PUBKEYS=$TICKET_PUBKEY"
+}
+# the fingerprint keygen showed for the host's ticket key is the one selfcheck shows
+ticket_key_shown() { # <host>
+  case $(d exec "$1" /opt/hjviewer/bin/hjv-api admin selfcheck || true) in
+    *"[ OK ] ticket key in use (HJV_API_TICKET_KID 1): the key 1 hbbs takes, $TICKET_FINGERPRINT"*) echo "ticket key: selfcheck shows the fingerprint keygen showed" ;;
+    *) fail "$1: selfcheck does not show the fingerprint keygen showed for the ticket key" ;;
+  esac
 }
 
 # runbook 7-5: start, the files' modes, the switch, selfcheck, the login mode, the timers; two IDs
@@ -257,8 +281,6 @@ printf '%s' "$SSO_BASIC" | c hjviewer-sso-client-secret
 printf '%s' "$SSO_API_UUID" | c hjviewer-sso-api-uuid
 printf '%s\n' "$LOG_KEY" | c hjviewer-api-log-key
 printf '%s\n' "$LIST_KEY_1" | c hjviewer-api-list-key
-# the ticket key of the access tickets, which the unit loads too (docs/access-tickets.md 2-5)
-/opt/hjviewer/bin/hjv-api keygen ticket --kid 1 2> /dev/null | c hjviewer-api-ticket-key
 # the user's Telegram bot (here the stand-in's): README.md, Monitoring
 printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$TOKEN" -1001234 | c hjviewer-api-telegram
 EOF
@@ -276,6 +298,8 @@ case $COMMAND_PUBKEY_1 in 1:*) ;; *) fail "keygen command --kid 1 showed no publ
 case $COMMAND_FINGERPRINT_1 in 1:*) ;; *) fail "keygen command --kid 1 showed no fingerprint" ;; esac
 COMMAND_PUBKEYS="$COMMAND_PUBKEY_1,$COMMAND_PUBKEY_2"
 echo "HJV_API_COMMAND_PUBKEYS=$COMMAND_PUBKEYS"
+# the ticket key of the access tickets, which the unit loads too (docs/access-tickets.md 2-5)
+ticket_key_on "$A"
 d exec "$A" ls /etc/credstore.encrypted
 settings "$A" 1 1
 step "A: runbook 7-5, start"
@@ -286,6 +310,7 @@ case $(d exec "$A" /opt/hjviewer/bin/hjv-api admin selfcheck || true) in
   *"command key in use (HJV_API_COMMAND_KID 1): the pinned key 1, $COMMAND_FINGERPRINT_1"*) echo "command key 1: selfcheck shows the fingerprint keygen showed" ;;
   *) fail "selfcheck does not show the fingerprint keygen showed for command key 1" ;;
 esac
+ticket_key_shown "$A"
 check_now "$A"
 
 step "A: a day of use"
@@ -505,7 +530,7 @@ EOF
 d cp "$A:/var/tmp/hjv-drill/last.sqlite3" "$WORK/last.sqlite3"
 d cp "$A:/var/tmp/hjv-drill/state.json" "$WORK/state.json"
 
-step "host B: the server rebuilt ($B): seal key from the offline copy, list key 2, command key 2, a new log key"
+step "host B: the server rebuilt ($B): seal key from the offline copy, list key 2, command key 2, a new log key and ticket key"
 start_host "$B"
 install_api "$B"
 on "$B" "SSO_BASIC=$SSO_BASIC" "SSO_API_UUID=$SSO_API_UUID" << 'EOF'
@@ -515,8 +540,10 @@ c() { systemd-creds encrypt -q --tpm2-pcrs= --name="$1" - "/etc/credstore.encryp
 printf '%s' "$SSO_BASIC" | c hjviewer-sso-client-secret
 printf '%s' "$SSO_API_UUID" | c hjviewer-sso-api-uuid
 /opt/hjviewer/bin/hjv-api keygen log-key | c hjviewer-api-log-key
-/opt/hjviewer/bin/hjv-api keygen ticket --kid 1 2> /dev/null | c hjviewer-api-ticket-key
 EOF
+# no app pins a ticket key, so it has no offline copy: the new host makes its own, and hbbs's
+# access.conf takes it in place of A's (docs/access-tickets.md 6-4), which ends A's tickets
+ticket_key_on "$B"
 cred_from "$B" hjviewer-api-login-key "$offline/hjviewer-seal.key"
 cred_from "$B" hjviewer-api-list-key "$offline/hjviewer-list-2.key"
 cred_from "$B" hjviewer-api-command-key "$offline/hjviewer-command-2.key"
@@ -534,7 +561,7 @@ sleep 3
 A="/opt/hjviewer/bin/hjv-api admin"
 $A passwordless off
 $A user revoke-all --all
-$A selfcheck | grep -E 'list key|command key' | cut -c1-120
+$A selfcheck | grep -E 'list key|command key|ticket key' | cut -c1-120
 $A passwordless on
 for t in hjviewer-api-check.timer hjviewer-api-backup.timer; do systemctl enable -q --now "$t"; done
 EOF
@@ -543,6 +570,7 @@ case $(d exec "$B" /opt/hjviewer/bin/hjv-api admin selfcheck || true) in
   *"command key in use (HJV_API_COMMAND_KID 2): the pinned key 2, $COMMAND_FINGERPRINT_2"*) echo "command key 2: selfcheck shows the fingerprint keygen showed" ;;
   *) fail "selfcheck does not show the fingerprint keygen showed for command key 2" ;;
 esac
+ticket_key_shown "$B"
 client "$B" drill_rebuilt
 check_now "$B"
 

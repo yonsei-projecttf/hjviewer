@@ -12,7 +12,9 @@
 //!   gets `review`/`ctl` for the demo PCs of review.conf's `PC=` line (`review_claims`); review.rs
 //!   reads no such line yet, so until it does the account gets 403 `no_ticket`.
 //! - the login's answer, `hjv.access` (login.rs): the same ticket, `both` for an installed PC
-//!   whose login signature matched the key hbbs holds for it, else `ctl`.
+//!   whose login signature matched the key hbbs holds for it, else `ctl`: the login carries no
+//!   device key to check otherwise, so a Windows app given `ctl` asks the path above with its PC
+//!   part (docs/access-tickets.md 2-4, 3-3).
 //! - the sync of a bound PC that sent its binding, `access` (pcsync.rs): `staff`/`both` for the
 //!   PC's ID and the key that checked the sync, while its account is on the allowlist and not
 //!   blocked, renewed with each sync.
@@ -31,11 +33,18 @@
 //! admin ticket status`.
 //!
 //! The access password's `POST /api/hjv/guest` is the next step: it signs [`Claims::guest_ctl`]
-//! (the one PC it connects to) and [`Claims::guest_pc`] through [`issue`].
+//! (the one PC it connects to) and [`Claims::guest_pc`] through [`issue`]. It checks the IDs a
+//! request names with `valid_device_id` first and answers 400: [`issue`] refuses a bad one as
+//! hjv-api's own fault (a 500).
+//!
+//! The vectors' ticket keys are public test keys ([`public_test_key`]): selfcheck fails, and the
+//! journal at the start says so, when one of HJV_API_TICKET_PUBKEYS (hbbs's KEY= lines) is one, so
+//! that no server trusts tickets anyone can sign. Only the tests' harness lets them pass
+//! (`Config::test_ticket_keys`).
 
 use crate::{
     api::{session, ApiRequest, Reply},
-    config::CRED_TICKET_KEY,
+    config::{Config, CRED_TICKET_KEY},
     devsig,
     keys::{CALLS_PER_MINUTE, TEXT_TOO_OFTEN},
     review,
@@ -277,6 +286,34 @@ pub fn message(payload: &[u8]) -> Vec<u8> {
     [DOMAIN, &[0u8], payload].concat()
 }
 
+/// Whether `public_key` is a public test key, whose private key anyone can know: made from a seed
+/// of one byte repeated or of 32 consecutive byte values, as the vectors' ticket keys and the
+/// other test keys of this repository are (scripts/public-test-keys.txt; scripts/check-build-keys.py
+/// refuses the same keys in the builds). A ticket key hbbs takes must never be one.
+pub fn public_test_key(public_key: &[u8; 32]) -> bool {
+    (0..=255u8).any(|b| {
+        let repeated = [b; 32];
+        let consecutive: [u8; 32] = std::array::from_fn(|i| b.wrapping_add(i as u8));
+        [repeated, consecutive]
+            .iter()
+            .any(|seed| SigningKey::from_bytes(seed).verifying_key().to_bytes() == *public_key)
+    })
+}
+
+/// The numbers of the keys of HJV_API_TICKET_PUBKEYS, the keys of hbbs's access.conf, that are
+/// public test keys; none in the tests' harness (`Config::test_ticket_keys`).
+pub fn test_keys_pinned(config: &Config) -> Vec<u32> {
+    if config.test_ticket_keys {
+        return Vec::new();
+    }
+    config
+        .ticket_pubkeys
+        .iter()
+        .filter(|(_, key)| public_test_key(key))
+        .map(|(kid, _)| *kid)
+        .collect()
+}
+
 /// The ticket key in use, with its number (credential hjviewer-api-ticket-key, HJV_API_TICKET_KID).
 pub struct TicketKey {
     kid: u32,
@@ -405,7 +442,10 @@ pub fn issue(state: &AppState, claims: &Claims, what: &str) -> Result<Issued, No
             })
         }
         Err(e) => {
-            log_err!("ticket: none signed ({what}): {e}");
+            // once in ten minutes per kind: a value a request chose could reach this again and again
+            if state.first_notice(&format!("ticket-failed:{what}"), Duration::from_secs(600)) {
+                log_err!("ticket: none signed ({what}): {e}");
+            }
             Err(NoTicket::Failed)
         }
     }
@@ -453,13 +493,30 @@ async fn review_claims(
     .ok()
     .flatten();
     let review = found.ok_or(NoTicket::Account)?;
-    let exp = at
-        .saturating_add(state.config.ticket_secs)
-        .min(review.until());
-    if review.demo_pcs().is_empty() || exp <= at {
+    review_ticket(
+        sub,
+        review.demo_pcs(),
+        review.until(),
+        at,
+        state.config.ticket_secs,
+    )
+}
+
+/// The App Review account's claims at `at` for the demo PCs `pcs` of its file, which ends at
+/// `until`: `review`/`ctl` for them in the file's order, until the earlier of `at + lifetime` and
+/// `until`; none without a demo PC or with less than a second left.
+fn review_ticket(
+    sub: &str,
+    pcs: &[String],
+    until: i64,
+    at: i64,
+    lifetime: i64,
+) -> Result<Claims, NoTicket> {
+    let exp = at.saturating_add(lifetime).min(until);
+    if pcs.is_empty() || exp <= at {
         return Err(NoTicket::Account);
     }
-    Ok(Claims::review(sub, review.demo_pcs().to_vec(), at, exp))
+    Ok(Claims::review(sub, pcs.to_vec(), at, exp))
 }
 
 /// The ticket of a bound PC (docs/access-tickets.md 2-4) whose sync carried its binding:
@@ -486,8 +543,9 @@ pub fn pc_message(id: &str, pk: &str, token_hash: &[u8]) -> Vec<u8> {
     [PC_CONTEXT, id.as_bytes(), pk.as_bytes(), token.as_bytes()].join(&0u8)
 }
 
-/// The body of a ticket request.
+/// The body of a ticket request: `{}`, or `{"id","pk","sig"}`, nothing else.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RequestBody {
     id: Option<String>,
     pk: Option<String>,
@@ -501,8 +559,16 @@ fn pc_part(body: &[u8], token_hash: &[u8]) -> Result<Option<(String, [u8; 32])>,
     if body.is_empty() {
         return Ok(None);
     }
-    let body: RequestBody =
-        serde_json::from_slice(body).map_err(|_| "not an object of id, pk and sig")?;
+    // an object of strings first: serde's derive takes a null as no member, and an array as the
+    // members in their order
+    let strings = matches!(
+        serde_json::from_slice::<Value>(body),
+        Ok(Value::Object(members)) if members.values().all(Value::is_string)
+    );
+    let body: RequestBody = strings
+        .then(|| serde_json::from_slice(body).ok())
+        .flatten()
+        .ok_or("not an object of id, pk and sig")?;
     let (id, pk, sig) = match (body.id, body.pk, body.sig) {
         (None, None, None) => return Ok(None),
         (Some(id), Some(pk), Some(sig)) => (id, pk, sig),
@@ -837,6 +903,12 @@ mod tests {
         let other = devsig::sign(&[3u8; 32], &pc_message("123456789", &pk, &token));
         for bad in [
             json!([]),
+            json!(["123456789", pk, sig]),
+            json!([null, null, null]),
+            json!({"x": 1}),
+            json!({"id": null, "pk": null, "sig": null}),
+            json!({"id": "123456789", "pk": pk, "sig": sig, "x": "1"}),
+            json!({"id": "123456789", "pk": pk, "sig": null}),
             json!({"id": "123456789"}),
             json!({"id": "123456789", "pk": pk}),
             json!({"pk": pk, "sig": sig}),
@@ -857,6 +929,47 @@ mod tests {
         )
         .is_err());
         assert!(pc_part(b"not json", &token).is_err());
+        // a member twice, which a JSON value would take as its last
+        let twice = format!(r#"{{"id":"123456789","id":"123456789","pk":"{pk}","sig":"{sig}"}}"#);
+        assert!(pc_part(twice.as_bytes(), &token).is_err());
+    }
+
+    #[test]
+    fn the_review_accounts_ticket_ends_with_its_file() {
+        let pcs = vec!["100200301".to_owned(), "100200300".to_owned()];
+        let claims = |until: i64| review_ticket(SUB, &pcs, until, AT, 86_400);
+        // a day, its demo PCs in the file's order
+        let c = claims(AT + 10 * 86_400).unwrap();
+        assert_eq!(c, Claims::review(SUB, pcs.clone(), AT, AT + 86_400));
+        assert_eq!(c.to, ["100200301", "100200300"]);
+        assert!(payload(&c).is_ok());
+        // never past UNTIL, down to its last second
+        assert_eq!(claims(AT + 3600).unwrap().exp, AT + 3600);
+        let last = claims(AT + 1).unwrap();
+        assert_eq!((last.iat, last.exp), (AT, AT + 1));
+        assert!(payload(&last).is_ok());
+        for until in [AT, AT - 1, 0] {
+            assert_eq!(claims(until), Err(NoTicket::Account), "{until}");
+        }
+        assert_eq!(
+            review_ticket(SUB, &[], AT + 86_400, AT, 86_400),
+            Err(NoTicket::Account)
+        );
+    }
+
+    #[test]
+    fn the_vectors_keys_are_public_test_keys() {
+        // the vectors' ticket keys 1-3 and PC keys, the relay key of relay/PROTOCOL.md (seed 00 01
+        // .. 1f) and a run of byte values that wraps (f0 .. ff 00 .. 0f)
+        let wraps: [u8; 32] = std::array::from_fn(|i| 0xf0u8.wrapping_add(i as u8));
+        let relay: [u8; 32] = std::array::from_fn(|i| i as u8);
+        for seed in [
+            [0x74; 32], [0x75; 32], [0x76; 32], [0x77; 32], [2; 32], relay, wraps,
+        ] {
+            assert!(public_test_key(&devsig::public_key(&seed)), "{seed:?}");
+        }
+        let made = crate::util::sha256(b"a ticket key nobody wrote down");
+        assert!(!public_test_key(&devsig::public_key(&made)));
     }
 
     #[test]

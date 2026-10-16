@@ -363,6 +363,8 @@ pub struct ListSettings {
     pub ttl: i64,
     pub refresh: i64,
     pub kinds: Vec<String>,
+    /// whether hjv-api holds a ticket key, so that a list may come with the PC's access ticket
+    pub tickets: bool,
 }
 
 /// The last list built for a PC (design v3 §5-2: a repeat within RESIGN_WINDOW with the same
@@ -657,7 +659,11 @@ fn decide(
                 (Some(b), false) if mark == "present" => {
                     let serial = db::change_serial(&tx)?;
                     let now = Instant::now();
-                    let ticket = ticket_holder(&tx, d.account_id)?.map(|key| (key, pc_pk));
+                    let ticket = if settings.tickets {
+                        ticket_holder(&tx, d.account_id)?.map(|key| (key, pc_pk))
+                    } else {
+                        None
+                    };
                     match cached.filter(|l| l.serves(serial, &b, &pc_pk, now)) {
                         Some(again) => Decided::List {
                             list: again.list,
@@ -727,6 +733,7 @@ pub async fn handle(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         ttl: state.config.trust_ttl_secs,
         refresh: state.config.trust_refresh_secs,
         kinds: state.config.passwordless_kinds.clone(),
+        tickets: state.ticket_key.is_some(),
     };
     let cached = state.lists.get(&env.id);
     let id = env.id.clone();

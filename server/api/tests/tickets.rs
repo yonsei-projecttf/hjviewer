@@ -470,6 +470,12 @@ async fn the_ticket_path_refuses() {
         json!({"id": pc.id, "pk": good["pk"], "sig": "AAAA"}),
         json!([]),
         json!("text"),
+        // what serde alone would take for no PC part or for one
+        json!({"x": 1}),
+        json!({"id": null, "pk": null, "sig": null}),
+        json!([null, null, null]),
+        json!([pc.id, good["pk"], good["sig"]]),
+        json!({"id": pc.id, "pk": good["pk"], "sig": good["sig"], "x": "1"}),
     ];
     // another token's request signed by the PC
     bodies.push(pc_body(&pc, &other_token));
@@ -815,6 +821,21 @@ async fn ticket_status_and_selfcheck() {
         "{status}"
     );
     assert!(!report.contains(&b64(&TICKET_SEED)) && !status.contains(&b64(&TICKET_SEED)));
+    // outside the harness the vectors' keys are public test keys, which hbbs must never take
+    let h = Harness::with(Options {
+        refuse_test_keys: true,
+        ..Default::default()
+    })
+    .await;
+    let report = h.admin(&["selfcheck"], false, None).await.unwrap_err();
+    for kid in [1, 2] {
+        assert!(
+            report.contains(&format!(
+                "[FAIL] ticket key {kid} of HJV_API_TICKET_PUBKEYS is a public test key, whose private key is in the repository: with it in hbbs's access.conf anyone can sign tickets"
+            )),
+            "{report}"
+        );
+    }
 }
 
 /// No ticket goes to the journal or the records: they are bearer values for their lifetime.
