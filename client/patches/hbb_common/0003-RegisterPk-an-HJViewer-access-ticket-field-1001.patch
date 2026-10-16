@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Fri, 16 Oct 2026 21:52:37 +0900
+Subject: [PATCH 3/3] RegisterPk: an HJViewer access ticket (field 1001)
+
+HJViewer 1.8.0 is for Yonsei University staff, and its hbbs (server patch
+0006) lets a PC go online only with an access ticket that hjv-api signed. The
+PC carries it in RegisterPk's new string field hjv_ticket = 1001, in the
+1000-1099 range HJViewer keeps for its own fields (as Hash.hjv_nonce and
+LoginRequest.hjv_key_proof are). The app does not read the ticket; it sends
+it as hjv-api gave it.
+
+An empty string writes no bytes, so a RegisterPk without a ticket is byte for
+byte what an app before 1.8.0 sends, and servers that do not check tickets
+(upstream, HJViewer's hbbs before 0006 or with the check off) keep field 1001
+as an unknown field and act as before. hbbs 0006 reads it as that unknown
+field without changing its proto (docs/access-tickets.md 3-2).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ protos/rendezvous.proto | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/protos/rendezvous.proto b/protos/rendezvous.proto
+index 3cee04e..2a2b5cf 100644
+--- a/protos/rendezvous.proto
++++ b/protos/rendezvous.proto
+@@ -115,6 +115,9 @@ message RegisterPk {
+   bytes pk = 3;
+   string old_id = 4;
+   bool no_register_device = 5;
++  // HJViewer: field numbers 1000-1099 are HJViewer's; servers built from upstream skip them.
++  // The PC's access ticket, which an HJViewer hbbs checks; empty (no bytes) without one.
++  string hjv_ticket = 1001;
+ }
+ 
+ message RegisterPkResponse {

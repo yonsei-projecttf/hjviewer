@@ -1,0 +1,410 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Fri, 16 Oct 2026 22:59:31 +0900
+Subject: [PATCH 7/7] hbbs: review fixes
+
+Findings of the review of the access tickets (0006):
+
+- A registration without a good ticket counts against an address budget
+  of its own, the IP blocker's "<ip>/noticket". Old apps refused with
+  NOT_DEPLOYED register again every 30 seconds, and upstream blocks an
+  address for a minute once 32 registrations came less than a minute
+  apart: one refused PC blocked its address every 16 minutes, ten behind
+  one NAT about 40% of the time, and a PC with a ticket there got
+  TOO_FREQUENT. Without the option, with MODE=off or count every
+  registration goes online and the budget is the address, as before.
+- A registration without a good ticket stores nothing for an ID that is
+  online through a TCP/WebSocket registration with one. A client with that
+  PC's uuid at its address could replace the key controllers get, which
+  hjv-pk also hands to hjv-api, while the PC kept the channel. The keys of
+  offline and new IDs are stored as before, so a new PC is still bound on
+  its first login.
+- An admitted registration keeps the public key its kid named, and is
+  closed (unknown_kid) once the file puts another key under that number,
+  as for a stolen key replaced in place, not only once the number goes.
+- HJV_ACCESS_FILE or --hjv-access-file set but blank, as a template line
+  left unfilled, is no longer taken for no option: hbbs is closed, with an
+  error that says why every hour.
+
+Tests: refused registrations from one address up to TOO_FREQUENT leave a
+ticketed one from there OK; one with another key leaves hjv-pk's key of
+an admitted PC; refused renewals on an admitted connection (no ticket,
+another PC's) keep it past the heartbeat; a key replaced under its kid
+lapses; a blank option is closed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjv_access.rs        |  71 +++++++++++++++++----
+ src/rendezvous_server.rs |  16 ++++-
+ tests/access.rs          | 129 ++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 200 insertions(+), 16 deletions(-)
+
+diff --git a/src/hjv_access.rs b/src/hjv_access.rs
+index 1c84bf1..d404792 100644
+--- a/src/hjv_access.rs
++++ b/src/hjv_access.rs
+@@ -24,10 +24,11 @@
+ //! - A registration over TCP/WebSocket passes the checks of old and has its key stored as
+ //!   before, which hjv-api needs to bind a new PC. Without a good ticket the answer is
+ //!   NOT_DEPLOYED, and the address, signaling channel and registration time of its ID stay as
+-//!   they were. An admitted registration's connection is closed at a heartbeat once its ticket
+-//!   has run out, NOT_BEFORE has passed it or its key is gone (counted under `reg` with that
+-//!   reason); a newer ticket registered on the same connection extends it. No registration over
+-//!   UDP is taken (counted as `udp.ignored`).
++//!   they were, and an ID online through a registration with a ticket keeps its key. An admitted
++//!   registration's connection is closed at a heartbeat once its ticket has run out, NOT_BEFORE
++//!   has passed it or its key is gone or replaced (counted under `reg` with that reason); a newer
++//!   ticket registered on the same connection extends it. No registration over UDP is taken
++//!   (counted as `udp.ignored`).
+ //!
+ //! MODE=off checks nothing, as without the option; count decides and counts without refusing;
+ //! enforce refuses. hbbs reads the file again every 10 seconds. Unlike the min-controller file,
+@@ -203,6 +204,9 @@ enum At<'a> {
+ #[cfg_attr(test, derive(Debug))]
+ pub(crate) struct Admitted {
+     kid: u16,
++    /// the public key that kid named then: a stolen key replaced under its number closes what it
++    /// let in, as one taken out does
++    key: sign::PublicKey,
+     iat: u64,
+     exp: u64,
+ }
+@@ -376,6 +380,7 @@ fn decide(ticket: &[u8], at: &At, rule: &Rule, now: u64) -> Result<Admitted, Rea
+     }
+     Ok(Admitted {
+         kid,
++        key: *key,
+         iat: p.iat,
+         exp: p.exp,
+     })
+@@ -523,7 +528,7 @@ fn lapse(policy: &Policy, admitted: Option<&Admitted>, now: u64) -> Option<Reaso
+     let Some(admitted) = admitted else {
+         return Some(Reason::Missing);
+     };
+-    if rule.key(admitted.kid).is_none() {
++    if rule.key(admitted.kid) != Some(&admitted.key) {
+         Some(Reason::UnknownKid)
+     } else if now >= admitted.exp {
+         Some(Reason::Expired)
+@@ -715,12 +720,11 @@ impl Access {
+     /// Reads the file the option names and starts reading it again every 10 seconds; without the
+     /// option, a handle that checks nothing. Needs the tokio runtime.
+     pub(crate) fn start() -> Self {
+-        let path = crate::common::get_arg(OPTION);
+-        let path = path.trim();
+-        if path.is_empty() {
++        // set but blank, as a template line left unfilled, is still the option: closed, not off
++        let Some(path) = crate::common::get_arg_opt(OPTION) else {
+             return Self(None);
+-        }
+-        let mut watcher = Watcher::new(PathBuf::from(path));
++        };
++        let mut watcher = Watcher::new(PathBuf::from(path.trim()));
+         let shared = watcher.shared.clone();
+         let seen = read_file(&watcher.path);
+         watcher.look_and_log(seen);
+@@ -950,6 +954,9 @@ impl Watcher {
+             return Some((log::Level::Error, line.clone()));
+         }
+         let found = match &seen {
++            _ if self.path.as_os_str().is_empty() => {
++                Err(format!("--{OPTION} (HJV_ACCESS_FILE) is set but empty"))
++            }
+             // the way to turn the check off is MODE=off, not taking the file away
+             Seen::Missing => Err("no such file".to_owned()),
+             Seen::Unusable(why) => Err(why.clone()),
+@@ -1399,12 +1406,17 @@ mod tests {
+ 
+     #[test]
+     fn an_admitted_registration_lapses_with_its_ticket() {
++        let enforce = rule(&format!("MODE=enforce\n{KEY_1}{KEY_2}NOT_BEFORE=\n"));
++        let Policy::On(in_force) = &enforce else {
++            panic!("a rule");
++        };
++        let (key_1, key_2) = (in_force.keys[0].1, in_force.keys[1].1);
+         let admitted = Admitted {
+             kid: 1,
++            key: key_1,
+             iat: 1000,
+             exp: 2000,
+         };
+-        let enforce = rule(&format!("MODE=enforce\n{KEY_1}{KEY_2}NOT_BEFORE=\n"));
+         assert_eq!(lapse(&enforce, Some(&admitted), 1999), None);
+         assert_eq!(
+             lapse(&enforce, Some(&admitted), 2000),
+@@ -1430,6 +1442,26 @@ mod tests {
+             lapse(&other_key, Some(&admitted), 1500),
+             Some(Reason::UnknownKid)
+         );
++        // or another key put under its number, as for a stolen one replaced in place
++        let replaced = rule(&format!(
++            "MODE=enforce\n{}NOT_BEFORE=\n",
++            KEY_2.replace("KEY=2:", "KEY=1:")
++        ));
++        assert_eq!(
++            lapse(&replaced, Some(&admitted), 1500),
++            Some(Reason::UnknownKid)
++        );
++        // the key goes with its number, not with any line
++        let by_key_2 = Admitted {
++            kid: 2,
++            key: key_2,
++            ..admitted
++        };
++        assert_eq!(lapse(&enforce, Some(&by_key_2), 1500), None);
++        assert_eq!(
++            lapse(&replaced, Some(&by_key_2), 1500),
++            Some(Reason::UnknownKid)
++        );
+         // nothing is closed unless the tickets are enforced
+         let count = rule(&format!("MODE=count\n{KEY_2}NOT_BEFORE=\n"));
+         for policy in [&count, &Policy::Off] {
+@@ -1496,6 +1528,23 @@ mod tests {
+         assert_eq!(*watcher.shared.policy(), Policy::Off);
+     }
+ 
++    #[test]
++    fn a_blank_option_names_no_file_and_is_closed() {
++        let mut watcher = Watcher::new(PathBuf::new());
++        let seen = read_file(&watcher.path);
++        let (level, line) = watcher.look(seen).unwrap();
++        assert_eq!(level, log::Level::Error);
++        assert_eq!(
++            line,
++            "access file : --hjv-access-file (HJV_ACCESS_FILE) is set but empty; access closed: \
++             every request is refused"
++        );
++        assert_eq!(*watcher.shared.policy(), Policy::Closed);
++        // whatever a look finds, it stays closed until hbbs is started with a file
++        assert!(watcher.look(content("MODE=off\n")).is_some());
++        assert_eq!(*watcher.shared.policy(), Policy::Closed);
++    }
++
+     #[test]
+     fn a_file_that_breaks_or_goes_keeps_the_last_good_rule() {
+         let mut watcher = Watcher::new(PathBuf::from("/p/access.conf"));
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 87a3e03..f62c9cd 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -1446,7 +1446,8 @@ impl RendezvousServer {
+     }
+ 
+     /// Validates and stores a peer's public key. `None` for a request without uuid or pk, which
+-    /// gets no reply. Unless `online` (HJViewer: no access ticket), the key is all that is stored.
++    /// gets no reply. Unless `online` (HJViewer: no access ticket), the key is all that is stored,
++    /// and nothing for an ID that is online through a TCP/WebSocket registration with one.
+     async fn handle_register_pk(
+         &mut self,
+         rk: RegisterPk,
+@@ -1458,9 +1459,16 @@ impl RendezvousServer {
+         }
+         let id = rk.id;
+         let ip = addr.ip().to_string();
++        // HJViewer: registrations without a good access ticket have an address budget of their
++        // own, so refused PCs retrying every 30 seconds never lock out those with a ticket there
++        let budget = if online {
++            ip.clone()
++        } else {
++            format!("{ip}/noticket")
++        };
+         if id.len() < 6 {
+             return Some(UUID_MISMATCH);
+-        } else if !self.check_ip_blocker(&ip, &id).await {
++        } else if !self.check_ip_blocker(&budget, &id).await {
+             return Some(TOO_FREQUENT);
+         }
+         let peer = self.pm.get_or(&id).await;
+@@ -1529,7 +1537,9 @@ impl RendezvousServer {
+         }
+         if changed && online {
+             self.pm.update_pk(id, peer, addr, rk.uuid, rk.pk, ip).await;
+-        } else if changed {
++        } else if changed && peer.read().await.tcp_tx.is_none() {
++            // HJViewer: an ID online through a registration with a ticket keeps the key
++            // controllers get for it, and its address
+             self.pm.store_pk(id, peer, rk.uuid, rk.pk, ip).await;
+         }
+         Some(register_pk_response::Result::OK)
+diff --git a/tests/access.rs b/tests/access.rs
+index a7283bb..667f18d 100644
+--- a/tests/access.rs
++++ b/tests/access.rs
+@@ -317,6 +317,20 @@ impl Hbbs {
+         String::from_utf8(out).expect("a UTF-8 answer")
+     }
+ 
++    /// The key controllers get for `id`, from hjv-pk's answer: IdPk {id, pk} signed with
++    /// hbbs's key.
++    async fn stored_pk(&self, id: &str) -> String {
++        let line = self.console(&format!("hjv-pk {id}")).await;
++        let signed = line.split(' ').nth(2).expect("HJVPK1 <id> <signed> <age>");
++        let server_pk = base64::decode(self.key.trim()).expect("hbbs's key in base64");
++        let server_pk = sign::PublicKey::from_slice(&server_pk).expect("hbbs's key");
++        let signed = base64::decode(signed).unwrap_or_else(|_| panic!("a signed key: {line:?}"));
++        let id_pk = sign::verify(&signed, &server_pk).expect("signed with hbbs's key");
++        let id_pk = IdPk::parse_from_bytes(&id_pk).expect("an IdPk");
++        assert_eq!(id_pk.id, id);
++        base64::encode(&id_pk.pk)
++    }
++
+     /// Waits until the console says `mode` (the file is read again every 10 seconds).
+     async fn wait_for_mode(&self, mode: &str) {
+         let until = Instant::now() + PERIOD + SLACK;
+@@ -488,7 +502,17 @@ impl Client {
+ 
+     /// Registers `id` with the PC key and `ticket` in field 1001, as 1.8.0 does; the result.
+     async fn register(&mut self, id: &str, ticket: Option<&str>) -> register_pk_response::Result {
+-        self.send_bytes(register_pk(id, PC_PK, ticket)).await;
++        self.register_key(id, PC_PK, ticket).await
++    }
++
++    /// The same with the key `pk`.
++    async fn register_key(
++        &mut self,
++        id: &str,
++        pk: &str,
++        ticket: Option<&str>,
++    ) -> register_pk_response::Result {
++        self.send_bytes(register_pk(id, pk, ticket)).await;
+         let rendezvous_message::Union::RegisterPkResponse(res) = self.recv().await else {
+             panic!("expected a register pk response");
+         };
+@@ -912,6 +936,12 @@ fn a_registration_without_a_good_ticket_stays_offline_with_its_key_stored() {
+             intruder.register("444555666", None).await,
+             register_pk_response::Result::NOT_DEPLOYED
+         );
++        // nor change the key controllers get for it, with its uuid from its address
++        assert_eq!(
++            intruder.register_key("444555666", OTHER_PK, None).await,
++            register_pk_response::Result::NOT_DEPLOYED
++        );
++        assert_eq!(server.stored_pk("444555666").await, PC_PK);
+         assert_eq!(
+             punch_hole(
+                 &server,
+@@ -925,7 +955,7 @@ fn a_registration_without_a_good_ticket_stays_offline_with_its_key_stored() {
+         intruder.expect_silence().await;
+         assert_eq!(
+             server.console("hjv-access").await,
+-            "HJVACCESS1 mode=enforce ph.ok=3 reg.ok=2 reg.missing=2 reg.wrong_pc=2\n"
++            "HJVACCESS1 mode=enforce ph.ok=3 reg.ok=2 reg.missing=3 reg.wrong_pc=2\n"
+         );
+         let line = server
+             .wait_for_line("access refused reg 203.0.113.11:", Duration::from_secs(5))
+@@ -934,6 +964,42 @@ fn a_registration_without_a_good_ticket_stays_offline_with_its_key_stored() {
+     });
+ }
+ 
++#[test]
++fn refused_registrations_leave_the_address_budget_of_ticket_holders_alone() {
++    let server = Hbbs::start("budget", Told::Env, Some(&enforce()));
++    runtime().block_on(async {
++        // refused PCs behind one address (old apps retry every 30 seconds), until hbbs answers
++        // TOO_FREQUENT as it did before access tickets
++        let mut refused = Client::at(&server, "203.0.113.40").await;
++        let mut n = 0;
++        loop {
++            n += 1;
++            assert!(n <= 40, "no TOO_FREQUENT in {n} registrations");
++            match refused.register(&(100_000_000 + n).to_string(), None).await {
++                register_pk_response::Result::NOT_DEPLOYED => {}
++                register_pk_response::Result::TOO_FREQUENT => break,
++                other => panic!("registration {n}: {other:?}"),
++            }
++        }
++        assert!(n > 30, "TOO_FREQUENT after {n} registrations");
++        // a PC with a ticket at that address still comes online, while they stay held back
++        let mut pc = Client::at(&server, "203.0.113.40").await;
++        assert_eq!(
++            pc.register(PEER_ID, Some(&Ticket::pc(PEER_ID).sign()))
++                .await,
++            register_pk_response::Result::OK
++        );
++        assert_eq!(
++            refused.register("100000099", None).await,
++            register_pk_response::Result::TOO_FREQUENT
++        );
++        assert_eq!(
++            server.console("hjv-access").await,
++            format!("HJVACCESS1 mode=enforce reg.ok=1 reg.missing={}\n", n - 1)
++        );
++    });
++}
++
+ #[test]
+ fn an_admitted_registration_closes_when_its_ticket_runs_out_and_a_newer_one_extends_it() {
+     let server = Hbbs::start("expiry", Told::Env, Some(&enforce()));
+@@ -991,6 +1057,34 @@ fn an_admitted_registration_closes_when_its_ticket_runs_out_and_a_newer_one_exte
+     });
+ }
+ 
++#[test]
++fn a_refused_registration_leaves_its_connection_as_it_was_admitted() {
++    let server = Hbbs::start("renewal", Told::Env, Some(&enforce()));
++    runtime().block_on(async {
++        let mut pc = admitted_pc(&server, PEER_ID, &Ticket::pc(PEER_ID)).await;
++        // renewals that fail: no ticket, another PC's
++        assert_eq!(
++            pc.register(PEER_ID, None).await,
++            register_pk_response::Result::NOT_DEPLOYED
++        );
++        assert_eq!(
++            pc.register(PEER_ID, Some(&Ticket::pc(OTHER_ID).sign()))
++                .await,
++            register_pk_response::Result::NOT_DEPLOYED
++        );
++        // the ticket it came in with still holds at the heartbeat
++        pc.expect_silence_for(PERIOD + Duration::from_secs(1)).await;
++        assert_eq!(
++            punch_hole(&server, &mut pc, PEER_ID, &Ticket::staff_ctl().sign()).await,
++            None
++        );
++        assert_eq!(
++            server.console("hjv-access").await,
++            "HJVACCESS1 mode=enforce ph.ok=1 reg.ok=1 reg.missing=1 reg.wrong_pc=1\n"
++        );
++    });
++}
++
+ #[test]
+ fn a_key_taken_out_closes_what_it_let_in() {
+     let server = Hbbs::start("rotate", Told::Env, Some(&enforce()));
+@@ -1211,6 +1305,37 @@ fn without_a_usable_file_since_the_start_everything_is_refused() {
+     }
+ }
+ 
++#[test]
++fn a_blank_option_refuses_everything_too() {
++    // HJV_ACCESS_FILE= in hjviewer.env, as a template line left unfilled: closed, never off
++    let server = Hbbs::start_with(
++        "blank",
++        Told::No,
++        None,
++        &[("TEST_HBBS", "no"), ("HJV_ACCESS_FILE", "")],
++    );
++    runtime().block_on(async {
++        let line = server
++            .wait_for_line("is set but empty", Duration::from_secs(5))
++            .await;
++        assert!(line.contains("] ERROR ["), "{line}");
++        assert!(
++            line.ends_with("; access closed: every request is refused"),
++            "{line}"
++        );
++        assert_eq!(
++            punch_hole_nobody(&server, &Ticket::staff_ctl().sign())
++                .await
++                .as_deref(),
++            Some(BUILTIN_TEXT)
++        );
++        assert_eq!(
++            server.console("hjv-access").await,
++            "HJVACCESS1 mode=closed ph.closed=1\n"
++        );
++    });
++}
++
+ #[test]
+ fn a_file_that_breaks_or_goes_keeps_the_last_good_rule() {
+     let server = Hbbs::start("keep", Told::Env, Some(&enforce()));

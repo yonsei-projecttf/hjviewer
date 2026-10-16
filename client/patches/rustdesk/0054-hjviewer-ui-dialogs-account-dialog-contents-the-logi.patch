@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Thu, 15 Oct 2026 20:01:01 +0900
-Subject: [PATCH 54/57] hjviewer: ui: dialogs-account: dialog contents, the
+Subject: [PATCH 54/59] hjviewer: ui: dialogs-account: dialog contents, the
  login, the account and update screens
 
 The dialogs' contents follow the look of the home screens (common/hjv_style.dart); the

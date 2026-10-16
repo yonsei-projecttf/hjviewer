@@ -1,0 +1,836 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Fri, 16 Oct 2026 23:23:29 +0900
+Subject: [PATCH 59/59] hjviewer: review fixes
+
+Findings of the review of the access tickets (0058), checked against
+hjv-api's server/api/README.md and docs/access-tickets.md as the staff-api
+branch has them (292b031):
+
+- The shapes hjv-api answers with: the login's ticket is hjv.access (not
+  hjv.ticket), a sync's is its top-level access (not ticket), and the device
+  key signs "hjv-ticket-pc-v1" NUL id NUL pk NUL base64(SHA-256(token)) (not
+  "hjv-ticket-dev-v1"). Before, every desktop app's request got 400, the
+  login's ticket was dropped, and a bound PC dropped its ticket at its first
+  sync.
+- The app keeps a ticket's `use`. A PC registers only with a `pc` or `both`
+  ticket, and a desktop app that the login gave `ctl` (one that runs without
+  installing, a PC hbbs does not know yet) asks POST /api/hjv/ticket with its
+  ID and key at once, as docs/access-tickets.md 3-3 says. What a request
+  brought waits for half its lifetime whatever it is good for, so the App
+  Review account's `ctl` asks no more than before.
+- A sync's list without a ticket (hjv-api without its ticket key, a blocked
+  account) leaves the PC's ticket, which serves until it ends (3-3). Only a
+  signed revoked, the unbind and the report after it drop it.
+- The renewing thread looks again when the screens store the login's token,
+  which they do only after the login's answer, so the request above goes out
+  right after the login. A ticket left without a login goes when they clear
+  the token: at their own logout after a 401, which sends no /api/logout, and
+  after a renewal that ended just after a logout.
+- Pinned builds fix "Allow insecure TLS fallback" off: the ticket rides in
+  the WebSocket to hbbs, which went on past a failed certificate with it on.
+  hjv-api's requests never did.
+- The uninstaller's elevated batch deletes the bound PC's ticket file in the
+  service's config folder, a failed removal at the service's start is
+  logged, and Held's Debug leaves the ticket out.
+
+Tests: the login's answer reaches the access module as hjv.access; a bound
+PC takes the access of its lists and keeps it past a list without one; the
+request's signature is hjv-api's README vector byte for byte; `use` decides
+what registers and when a desktop app asks again. The relay test now says
+that it guards upstream's request_relay and create_relay, which carry the
+ticket as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/client.rs                    |   3 +
+ src/hjviewer.rs                  |   3 +
+ src/hjviewer_access.rs           | 132 +++++++++++++++++++++++--------
+ src/hjviewer_access/tests.rs     |  83 ++++++++++++++-----
+ src/hjviewer_account/api.rs      |  30 ++++++-
+ src/hjviewer_account/pc.rs       |  37 +++++----
+ src/hjviewer_account/pc/tests.rs |  71 ++++++++++++++++-
+ src/ui_interface.rs              |   1 +
+ 8 files changed, 288 insertions(+), 72 deletions(-)
+
+diff --git a/src/client.rs b/src/client.rs
+index 4e67c4a..4dff8ec 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -5991,6 +5991,9 @@ mod kx_tests {
+     }
+ }
+ 
++/// Client::start hands its access ticket to upstream's request_relay and create_relay as the token
++/// they were always given: these pin that the relay request to hbbs carries it and the one to hbbr
++/// none (docs/access-tickets.md 3-1), and that hbbs's refusal there reads as one for access.
+ #[cfg(test)]
+ mod access_ticket_tests {
+     use super::*;
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+index 7f936ed..2cc83d2 100644
+--- a/src/hjviewer.rs
++++ b/src/hjviewer.rs
+@@ -33,6 +33,9 @@ pub fn apply() {
+             // discovery answer tells anyone on the network the ID, host name and user name
+             (keys::OPTION_DIRECT_SERVER, "N".to_owned()),
+             (keys::OPTION_ENABLE_LAN_DISCOVERY, "N".to_owned()),
++            // the ticket rides in the WebSocket to hbbs, which must not go on past a certificate
++            // that failed (hjv-api, which hands tickets out, takes no such connection either)
++            (keys::OPTION_ALLOW_INSECURE_TLS_FALLBACK, "N".to_owned()),
+         ] {
+             settings.insert(k.to_owned(), v);
+         }
+diff --git a/src/hjviewer_access.rs b/src/hjviewer_access.rs
+index a7e4a6b..325b57f 100644
+--- a/src/hjviewer_access.rs
++++ b/src/hjviewer_access.rs
+@@ -17,10 +17,12 @@
+ //!   refusal, and when the one it registered with is past half its lifetime; one that has no
+ //!   ticket left connects again (`registration_tick`). Whether hbbs took the registration is in
+ //!   the option `hjv-access-pc` of the process that registers (the service of an installed PC).
+-//! - The login's ticket comes with the login's answer (`hjv.ticket`) and from
++//! - The login's ticket comes with the login's answer (`hjv.access`) and from
+ //!   `POST /api/hjv/ticket`, which a thread asks again once the ticket is past half its lifetime,
+-//!   and stays in LocalConfig until the logout. The access password's tickets stay in this
+-//!   process's memory only.
++//!   and stays in LocalConfig until the logout. A desktop app asks with its ID and device key, for
++//!   a ticket that registers it too (`both`), and asks so at once for a login's ticket that does
++//!   not, since the login gives `both` only to an installed PC hbbs knows (the doc, 2-4 and 3-3).
++//!   The access password's tickets stay in this process's memory only.
+ //!
+ //! A build that is not an account build carries nothing: its token is what it was and its
+ //! RegisterPk is byte for byte 1.7.0's. So is an app without a ticket, which a server that checks
+@@ -70,11 +72,11 @@ const ACCOUNT_TICKET: &str = "hjv-access-ticket";
+ /// last RegisterPk (RegisterPkResponse OK or NOT_DEPLOYED).
+ const PC_STATE: &str = "hjv-access-pc";
+ /// In the service's config folder, next to the trust list: a bound PC's ticket (`Held` as JSON).
+-const BOUND_FILE: &str = "HJViewer_ticket.json";
++pub(crate) const BOUND_FILE: &str = "HJViewer_ticket.json";
+ 
+ const TICKET_PATH: &str = "/api/hjv/ticket";
+-/// What the device key signs in a desktop app's ticket request.
+-const DEVICE_CONTEXT: &[u8] = b"hjv-ticket-dev-v1";
++/// What the device key signs in a desktop app's ticket request (hjv-api's ticket.rs PC_CONTEXT).
++const DEVICE_CONTEXT: &[u8] = b"hjv-ticket-pc-v1";
+ const SERVER: Option<&str> = option_env!("HJV_SERVER");
+ /// Longer than anything hjv-api makes (hbbs takes 1024 bytes at most), so not kept.
+ const MAX_TICKET: usize = 4096;
+@@ -99,20 +101,38 @@ const IDLE: u64 = 600;
+ const KEEP_STEP: u64 = 3600;
+ 
+ /// A ticket as the app holds it.
+-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
++#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+ struct Held {
+     /// the ticket, as hjv-api gave it
+     t: String,
++    /// what hbbs takes it for, as hjv-api said: "ctl", "pc" or "both" ("" when it did not say)
++    #[serde(rename = "use", default)]
++    use_: String,
+     /// when it ends, by this device's clock
+     until: u64,
+     /// how long it had to live when it came
+     life: u64,
++    /// the login's answer brought it, not a request of this app's
++    #[serde(default)]
++    from_login: bool,
++}
++
++impl std::fmt::Debug for Held {
++    // never the ticket: it opens the service to whoever holds it
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(
++            f,
++            "Held({:?}, until {}, life {}, from_login {})",
++            self.use_, self.until, self.life, self.from_login
++        )
++    }
+ }
+ 
+ impl Held {
+-    /// What an answer of hjv-api carries for a ticket, `{"ticket":"t1.…","exp":<time>,
+-    /// "server_time":<time>}`, received at `now` by this device's clock. None for anything else
+-    /// and for a ticket that has already ended.
++    /// What an answer of hjv-api carries for a ticket, `{"ticket":"t1.…","use":"both",
++    /// "exp":<time>,"server_time":<time>}` (server/api/README.md, Access tickets), received at
++    /// `now` by this device's clock. None for anything else and for a ticket that has already
++    /// ended.
+     fn issued(value: &Value, now: u64) -> Option<Held> {
+         let t = value.get("ticket")?.as_str()?;
+         let exp = value.get("exp")?.as_u64()?;
+@@ -120,11 +140,18 @@ impl Held {
+         if t.is_empty() || t.len() > MAX_TICKET || exp <= server_time {
+             return None;
+         }
++        let use_ = value
++            .get("use")
++            .and_then(Value::as_str)
++            .filter(|use_| matches!(*use_, "ctl" | "pc" | "both"))
++            .unwrap_or_default();
+         let life = (exp - server_time).min(MAX_LIFE);
+         Some(Held {
+             t: t.to_owned(),
++            use_: use_.to_owned(),
+             until: now.saturating_add(life),
+             life,
++            from_login: false,
+         })
+     }
+ 
+@@ -132,18 +159,27 @@ impl Held {
+         now < self.until
+     }
+ 
++    /// Whether hbbs takes it for a registration (the doc, 3-1).
++    fn registers(&self) -> bool {
++        matches!(self.use_.as_str(), "pc" | "both")
++    }
++
+     /// Halfway through its lifetime, when the next one is due.
+     fn half(&self) -> u64 {
+         self.until.saturating_sub(self.life / 2)
+     }
+ 
+-    fn renew_due(&self, now: u64) -> bool {
+-        now >= self.half()
++    /// Whether the next one is due: past half its lifetime; and at once in a desktop app (`pc`)
++    /// for a login's ticket that does not register it, since the request with the app's ID and
++    /// key brings `both` (the doc, 3-3). What a request brought waits for half its lifetime
++    /// whatever it is good for: asking again would bring the same.
++    fn renew_due(&self, now: u64, pc: bool) -> bool {
++        now >= self.half() || (pc && self.from_login && !self.registers())
+     }
+ }
+ 
+ /// What the PC's last RegisterPk carried, and when that ticket is halfway through its lifetime.
+-#[derive(Debug, Clone, PartialEq, Eq)]
++#[derive(Clone, PartialEq, Eq)]
+ struct Sent {
+     t: String,
+     half: u64,
+@@ -219,7 +255,8 @@ fn controller_choice(guest: Option<&Held>, account: Option<&Held>, now: u64) ->
+ }
+ 
+ /// The ticket a PC registers with: a bound PC's, else the access password's, else the login's
+-/// (`account`, only while there is a login: an app that is not installed), the first that holds.
++/// (`account`, only while there is a login: an app that is not installed), the first that holds
++/// and that hbbs takes for a registration.
+ fn pc_choice<'a>(
+     bound: Option<&'a Held>,
+     guest: Option<&'a Held>,
+@@ -229,7 +266,7 @@ fn pc_choice<'a>(
+     [bound, guest, account]
+         .into_iter()
+         .flatten()
+-        .find(|held| held.valid(now))
++        .find(|held| held.registers() && held.valid(now))
+ }
+ 
+ /// What a registered PC does about its registration now (the doc, 4-4).
+@@ -375,17 +412,19 @@ pub(crate) fn registration_answered(taken: bool) {
+     }
+ }
+ 
+-/// The answer to a login with its token (hjviewer_account): its `hjv.ticket` is the login's ticket
++/// The answer to a login with its token (hjviewer_account): its `hjv.access` is the login's ticket
+ /// in place of any earlier one. Without one, the renewing thread or the next connection asks.
+ pub(crate) fn login_answered(issued: Option<&Value>) {
+     if !active() {
+         return;
+     }
+-    keep_account(
+-        issued
+-            .and_then(|value| Held::issued(value, unix_now()))
+-            .as_ref(),
+-    );
++    let held = issued
++        .and_then(|value| Held::issued(value, unix_now()))
++        .map(|held| Held {
++            from_login: true,
++            ..held
++        });
++    keep_account(held.as_ref());
+     kick();
+ }
+ 
+@@ -396,6 +435,21 @@ pub(crate) fn logged_out() {
+     }
+ }
+ 
++/// ui_interface::set_local_option: the screens stored the login's token after the login's answer,
++/// or cleared it, also at their own logout after a 401, which sends no /api/logout. The renewing
++/// thread looks at the new login, and a ticket left without one goes, also one that a renewal
++/// brought just after the logout.
++pub(crate) fn local_option_set(key: &str) {
++    if key != "access_token" || !active() {
++        return;
++    }
++    if logged_in() {
++        kick();
++    } else {
++        keep_account(None);
++    }
++}
++
+ /// The service's start (hjviewer_account::start_pc_sync): the ticket a bound PC kept, so that it
+ /// registers with it before its first sync is answered. A PC that is not bound keeps none.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+@@ -403,12 +457,11 @@ pub(crate) fn restore_bound(bound: bool) {
+     if !active() {
+         return;
+     }
+-    let path = Config::path(BOUND_FILE);
+     if !bound {
+-        std::fs::remove_file(&path).ok();
++        keep_bound_file(None);
+         return;
+     }
+-    let kept = std::fs::read(&path)
++    let kept = std::fs::read(Config::path(BOUND_FILE))
+         .ok()
+         .and_then(|bytes| serde_json::from_slice::<Held>(&bytes).ok());
+     let mut memory = memory();
+@@ -416,14 +469,23 @@ pub(crate) fn restore_bound(bound: bool) {
+     memory.bound = kept;
+ }
+ 
+-/// A sync's answer (hjviewer_account): the ticket of a 200 answer that kept a list of this PC's
+-/// binding, in place of the one the PC has; None when that answer had none or the binding went.
++/// A sync's answer (hjviewer_account): the `access` of a 200 answer that kept a list of this PC's
++/// binding, in place of the one the PC has; None when the binding went. An `access` without a
++/// ticket that holds leaves the one the PC has, which serves until it ends (the doc, 3-3).
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ pub(crate) fn bound_answered(issued: Option<&Value>) {
+     if !active() {
+         return;
+     }
+-    let held = issued.and_then(|value| Held::issued(value, unix_now()));
++    let held = match issued {
++        Some(value) => {
++            let Some(held) = Held::issued(value, unix_now()) else {
++                return;
++            };
++            Some(held)
++        }
++        None => None,
++    };
+     let write = {
+         let mut memory = memory();
+         memory.bound = held.clone();
+@@ -640,14 +702,14 @@ fn device() -> Option<Device> {
+     })
+ }
+ 
+-/// The body of a ticket request. A phone sends `{}` and gets a controller's ticket. A desktop app
+-/// sends its ID and device key, signed by that key together with this login's token, and gets a
+-/// ticket that registers it too (`both`):
++/// The body of a ticket request (server/api/README.md, Access tickets). A phone sends `{}` and gets
++/// a controller's ticket. A desktop app sends its ID and device key, signed by that key together
++/// with this login's token, and gets a ticket that registers it too (`both`):
+ ///
+ /// ```text
+ /// {"id":"<device ID>","pk":"<standard base64 of the device key>","sig":"<standard base64>"}
+ /// sig: the device key's Ed25519 signature over
+-///      "hjv-ticket-dev-v1" NUL id NUL pk NUL base64(SHA-256(token))
++///      "hjv-ticket-pc-v1" NUL id NUL pk NUL base64(SHA-256(token))
+ /// ```
+ fn request_body(token: &str, device: Option<&Device>) -> String {
+     let Some(device) = device else {
+@@ -701,14 +763,15 @@ fn worker() {
+     }
+ }
+ 
+-/// One turn of the renewing thread: the login's next ticket once the one it has is past half its
+-/// lifetime, or when it has none; how long the thread sleeps after it.
++/// One turn of the renewing thread: the login's next ticket once the one it has is due, or when it
++/// has none; how long the thread sleeps after it.
+ fn renew() -> Duration {
+     if !logged_in() {
+         return Duration::from_secs(IDLE);
+     }
+     let now = unix_now();
+-    if let Some(held) = account().filter(|held| !held.renew_due(now)) {
++    let pc = device().is_some();
++    if let Some(held) = account().filter(|held| !held.renew_due(now, pc)) {
+         return Duration::from_secs(held.half().saturating_sub(now).clamp(1, IDLE));
+     }
+     match fetch(FETCH_TIMEOUT) {
+@@ -726,6 +789,7 @@ pub(crate) fn e2e_state() -> String {
+     json!({
+         "login": logged_in(),
+         "ticket": held.as_ref().map(|held| hex::encode(&Sha256::digest(held.t.as_bytes())[..8])),
++        "use": held.as_ref().map_or("", |held| held.use_.as_str()),
+         "valid": held.as_ref().is_some_and(|held| held.valid(now)),
+         "left": held.as_ref().map_or(0, |held| held.until.saturating_sub(now)),
+         "life": held.as_ref().map_or(0, |held| held.life),
+diff --git a/src/hjviewer_access/tests.rs b/src/hjviewer_access/tests.rs
+index 7b1d3f7..3fa5e9e 100644
+--- a/src/hjviewer_access/tests.rs
++++ b/src/hjviewer_access/tests.rs
+@@ -20,6 +20,12 @@ const REGISTER_PK_HEX: &str = "0a093132333435363738391210766563746f722d757569642
+ const NO_FIELD_HEX: &str = "0a093132333435363738391210766563746f722d757569642d303030311a208139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394";
+ /// The vectors' `now`.
+ const NOW: u64 = 1_760_003_600;
++/// server/api/README.md, Test vectors: a Windows app's request for a `both` ticket with the PC key
++/// above and the vectors' token, signed as hjv-api's tests and OpenSSL sign it.
++const REQUEST_TOKEN: &str = "hjv_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
++const REQUEST_SIGNED_HEX: &str = "686a762d7469636b65742d70632d7631003132333435363738390067546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d00683671373476392f316730527138777642544d3579514946505a7779434f6d6877315066662b45635a36673d";
++const REQUEST_SIG: &str =
++    "nG4V0N+qAT9bPvurXKhwQG3b4vvYwN+nqee9l9iA6qoRUIRsICcBdsYnaj3FWb3L4p/NC1GGMV6awpRVZazoAg==";
+ 
+ fn register_pk(ticket: &str) -> RegisterPk {
+     RegisterPk {
+@@ -34,8 +40,10 @@ fn register_pk(ticket: &str) -> RegisterPk {
+ fn held(t: &str, until: u64, life: u64) -> Held {
+     Held {
+         t: t.into(),
++        use_: "both".into(),
+         until,
+         life,
++        from_login: false,
+     }
+ }
+ 
+@@ -96,12 +104,29 @@ fn a_server_without_field_1001_reads_the_registration_and_keeps_the_ticket_unkno
+ #[test]
+ fn a_ticket_is_held_by_this_devices_clock_and_renewed_past_half_its_lifetime() {
+     // hjv-api's clock an hour ahead of this device's
+-    let issued = json!({ "ticket": TICKET, "exp": NOW + 86_400, "server_time": NOW });
++    let issued =
++        json!({ "ticket": TICKET, "use": "both", "exp": NOW + 86_400, "server_time": NOW });
+     let device_now = NOW - 3600;
+     let ticket = Held::issued(&issued, device_now).unwrap();
+     assert_eq!(ticket, held(TICKET, device_now + 86_400, 86_400));
+     assert!(ticket.valid(device_now + 86_399) && !ticket.valid(device_now + 86_400));
+-    assert!(!ticket.renew_due(device_now + 43_199) && ticket.renew_due(device_now + 43_200));
++    for pc in [false, true] {
++        assert!(!ticket.renew_due(device_now + 43_199, pc));
++        assert!(ticket.renew_due(device_now + 43_200, pc));
++    }
++    // what hbbs takes it for, as hjv-api said; "" for anything else
++    for (said, kept) in [
++        ("ctl", "ctl"),
++        ("pc", "pc"),
++        ("both", "both"),
++        ("all", ""),
++        ("", ""),
++    ] {
++        let issued = json!({ "ticket": TICKET, "use": said, "exp": NOW + 60, "server_time": NOW });
++        assert_eq!(Held::issued(&issued, NOW).unwrap().use_, kept);
++    }
++    let unsaid = json!({ "ticket": TICKET, "exp": NOW + 60, "server_time": NOW });
++    assert_eq!(Held::issued(&unsaid, NOW).unwrap().use_, "");
+ 
+     for not_a_ticket in [
+         json!({ "exp": NOW + 60, "server_time": NOW }),
+@@ -137,11 +162,20 @@ fn a_controller_sends_its_targets_access_password_ticket_else_the_logins() {
+ fn a_pc_registers_with_its_bound_ticket_else_the_access_passwords_else_the_logins() {
+     let (bound, guest, login) = (
+         held("bound", NOW + 60, 259_200),
+-        held("guest", NOW + 60, 43_200),
++        Held {
++            use_: "pc".into(),
++            ..held("guest", NOW + 60, 43_200)
++        },
+         held("login", NOW + 60, 86_400),
+     );
+     let ended = held("ended", NOW, 259_200);
++    // hbbs takes no controller's ticket for a registration (the login's `ctl`)
++    let ctl = Held {
++        use_: "ctl".into(),
++        ..held("ctl", NOW + 60, 86_400)
++    };
+     let chosen = |b, g, l| pc_choice(b, g, l, NOW).map(|h: &Held| h.t.clone());
++    assert_eq!(chosen(None, None, Some(&ctl)), None);
+     assert_eq!(
+         chosen(Some(&bound), Some(&guest), Some(&login)).as_deref(),
+         Some("bound")
+@@ -154,6 +188,26 @@ fn a_pc_registers_with_its_bound_ticket_else_the_access_passwords_else_the_login
+     assert_eq!(chosen(Some(&ended), None, None), None);
+ }
+ 
++#[test]
++fn a_desktop_app_asks_at_once_for_a_ticket_in_place_of_the_logins_that_does_not_register_it() {
++    // the login's answer gives `both` only to an installed PC hbbs knows (the doc, 2-4)
++    let ctl = json!({ "ticket": "t1.ctl", "use": "ctl", "exp": NOW + 86_400, "server_time": NOW });
++    let login = Held {
++        from_login: true,
++        ..Held::issued(&ctl, NOW).unwrap()
++    };
++    assert!(login.renew_due(NOW, true));
++    // not a phone, which registers no PC; not what the app's own request brought (the App
++    // Review account's `ctl`), which waits for half its lifetime; not the login's `both`
++    assert!(!login.renew_due(NOW, false));
++    assert!(!Held::issued(&ctl, NOW).unwrap().renew_due(NOW, true));
++    let both = Held {
++        from_login: true,
++        ..held("both", NOW + 86_400, 86_400)
++    };
++    assert!(!both.renew_due(NOW, true));
++}
++
+ #[test]
+ fn a_pc_registers_again_with_a_new_ticket_after_a_refusal_or_past_half_the_old_ones_life() {
+     let sent = |t: &str| Sent {
+@@ -223,28 +277,21 @@ fn a_refusal_for_access_is_told_apart_and_the_session_does_not_reconnect_by_itse
+ }
+ 
+ #[test]
+-fn a_desktop_apps_ticket_request_carries_its_id_and_key_signed_for_this_login() {
++fn a_desktop_apps_ticket_request_carries_its_id_and_key_signed_as_hjv_api_checks_them() {
+     let (pk, sk) = sign::keypair_from_seed(&sign::Seed([2; 32]));
+     let device = Device {
+         id: ID.into(),
+         sk,
+         pk: pk.0.to_vec(),
+     };
+-    let body: Value = serde_json::from_str(&request_body("hjv_token", Some(&device))).unwrap();
+-    assert_eq!(body["id"], ID);
+-    assert_eq!(body["pk"], PK);
+-    let sig = STANDARD.decode(body["sig"].as_str().unwrap()).unwrap();
+-    let mut signed = b"hjv-ticket-dev-v1\0123456789\0".to_vec();
+-    signed.extend_from_slice(PK.as_bytes());
+-    signed.push(0);
+-    signed.extend_from_slice(STANDARD.encode(Sha256::digest(b"hjv_token")).as_bytes());
+-    let sig = sign::Signature::from_bytes(&sig).unwrap();
+-    assert!(sign::verify_detached(&sig, &signed, &pk));
+-    // signed for another login's token, it says nothing
+-    let other = device_message(ID, PK, "hjv_other");
+-    assert!(!sign::verify_detached(&sig, &other, &pk));
++    assert_eq!(
++        hex::encode(device_message(ID, PK, REQUEST_TOKEN)),
++        REQUEST_SIGNED_HEX
++    );
++    let body: Value = serde_json::from_str(&request_body(REQUEST_TOKEN, Some(&device))).unwrap();
++    assert_eq!(body, json!({ "id": ID, "pk": PK, "sig": REQUEST_SIG }));
+     // a phone asks for a controller's ticket
+-    assert_eq!(request_body("hjv_token", None), "{}");
++    assert_eq!(request_body(REQUEST_TOKEN, None), "{}");
+ }
+ 
+ #[test]
+diff --git a/src/hjviewer_account/api.rs b/src/hjviewer_account/api.rs
+index aa4f1de..f0d3f66 100644
+--- a/src/hjviewer_account/api.rs
++++ b/src/hjviewer_account/api.rs
+@@ -200,7 +200,7 @@ trait Env {
+     /// one write of the service's options, `change` applied to what they are now
+     fn write_service_options(&self, change: &dyn Fn(&mut HashMap<String, String>));
+     fn state(&self) -> &Mutex<State>;
+-    /// the access ticket a login's answer carries (`hjv.ticket`), for hjviewer_access
++    /// the access ticket a login's answer carries (`hjv.access`), for hjviewer_access
+     fn login_ticket(&self, _issued: Option<&Value>) {}
+     /// the end of the login, for hjviewer_access
+     fn forget_login_ticket(&self) {}
+@@ -717,7 +717,7 @@ fn login_answered(env: &impl Env, ok: bool, body: &Value) {
+     );
+     env.set_local(RELOGIN, "");
+     learn_role(env, body.get("user").unwrap_or(&Value::Null));
+-    env.login_ticket(hjv.and_then(|h| h.get("ticket")));
++    env.login_ticket(hjv.and_then(|h| h.get("access")));
+     let account = body
+         .get("user")
+         .and_then(|u| u.get("name"))
+@@ -932,6 +932,9 @@ mod tests {
+         service: RefCell<HashMap<String, String>>,
+         writes: Cell<usize>,
+         state: Mutex<State>,
++        /// what reached hjviewer_access: each login's access ticket, and the logins that ended
++        tickets: RefCell<Vec<Option<Value>>>,
++        ended: Cell<usize>,
+     }
+ 
+     impl Fake {
+@@ -945,6 +948,8 @@ mod tests {
+                 service: RefCell::new(HashMap::new()),
+                 writes: Cell::new(0),
+                 state: Mutex::new(State::new()),
++                tickets: RefCell::new(Vec::new()),
++                ended: Cell::new(0),
+             }
+         }
+ 
+@@ -1030,6 +1035,12 @@ mod tests {
+         fn state(&self) -> &Mutex<State> {
+             &self.state
+         }
++        fn login_ticket(&self, issued: Option<&Value>) {
++            self.tickets.borrow_mut().push(issued.cloned());
++        }
++        fn forget_login_ticket(&self) {
++            self.ended.set(self.ended.get() + 1);
++        }
+     }
+ 
+     fn url(target: &str) -> String {
+@@ -1385,6 +1396,21 @@ mod tests {
+         assert_eq!(fake.local(PC_BINDING), "");
+     }
+ 
++    #[test]
++    fn a_logins_access_ticket_reaches_the_access_module_and_goes_with_the_login() {
++        // hjv-api's login answer (server/api/README.md): the ticket object is `hjv.access`
++        let access = json!({
++            "ticket": "t1.1.e30.c2ln", "use": "ctl", "exp": T + 86_400, "server_time": T,
++        });
++        let fake = Fake::new();
++        log_in(&fake, ACCOUNT_ID, json!({ "ks": 4182, "access": access }));
++        log_in(&fake, ACCOUNT_ID, json!({ "ks": 4183 }));
++        assert_eq!(*fake.tickets.borrow(), [Some(access), None]);
++        log_out(&fake);
++        drop_login(&fake);
++        assert_eq!(fake.ended.get(), 2);
++    }
++
+     #[test]
+     fn logout_unbinds_this_pc_first_in_one_write() {
+         let fake = Fake::logged_in();
+diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
+index 353e33e..fb4ef6d 100644
+--- a/src/hjviewer_account/pc.rs
++++ b/src/hjviewer_account/pc.rs
+@@ -300,7 +300,15 @@ fn uninstall_line(enabled: bool) -> String {
+     if !enabled {
+         return String::new();
+     }
+-    format!("\nreg delete \"HKLM\\{ACCOUNT_KEY}\" /f\n")
++    // the bound PC's access ticket, in the service's config folder (Config::path as LocalSystem)
++    let ticket = format!(
++        "%WINDIR%\\ServiceProfiles\\LocalService\\AppData\\Roaming\\{}\\config\\{}",
++        crate::get_app_name(),
++        crate::hjviewer_access::BOUND_FILE
++    );
++    format!(
++        "\nreg delete \"HKLM\\{ACCOUNT_KEY}\" /f\nif exist \"{ticket}\" del /f /q \"{ticket}\"\n"
++    )
+ }
+ 
+ /// `--hjv-e2e-wol-report`: one sync of this PC's binding that carries `report` whole, signed and
+@@ -846,8 +854,9 @@ struct Answer {
+     list: Option<SignedList>,
+     /// hjv-api wants the whole Wake-on-LAN report in the next sync
+     send_wol: bool,
+-    /// the PC's access ticket (hjviewer_access), of any shape, so that it cannot fail the answer
+-    ticket: Option<serde_json::Value>,
++    /// the PC's access ticket object (hjviewer_access), of any shape, so that it cannot fail the
++    /// answer
++    access: Option<serde_json::Value>,
+ }
+ 
+ /// What a sync carries as `binding`, and so what its answer may do.
+@@ -1058,13 +1067,14 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) ->
+     tokio::task::spawn_blocking(f).await.ok()
+ }
+ 
+-/// The access ticket member of a sync's 200 answer, as it came; None for any other outcome.
+-fn sync_ticket(exchanged: &Result<Exchanged, JoinError>) -> Option<Option<serde_json::Value>> {
++/// The access ticket of a sync's 200 answer (`access`), as it came; None without one and for any
++/// other outcome.
++fn sync_ticket(exchanged: &Result<Exchanged, JoinError>) -> Option<serde_json::Value> {
+     match exchanged {
+         Ok(Exchanged {
+             reply: Ok((200, answer, _)),
+             ..
+-        }) => Some(answer.ticket.clone()),
++        }) => answer.access.clone(),
+         _ => None,
+     }
+ }
+@@ -1088,8 +1098,8 @@ trait Service: Clone + Send + Sync + 'static {
+     fn post(&self, body: String) -> Posted;
+     /// This PC's Wake-on-LAN report, collected now (blocking), if there is one.
+     fn wol(&self) -> Option<crate::hjviewer_wol::Report>;
+-    /// The access ticket a bound PC registers with (blocking): an answer's, or None once the
+-    /// binding went.
++    /// The access ticket a bound PC registers with (blocking): an answer's `access`, or None once
++    /// the binding went.
+     fn keep_ticket(&self, _ticket: Option<serde_json::Value>) {}
+ }
+ 
+@@ -1637,19 +1647,18 @@ impl<S: Service> Syncer<S> {
+     }
+ 
+     /// A bound PC registers with the access ticket of its last answer that kept a list of its
+-    /// binding, and with none once the binding went; any other answer leaves the one it has.
++    /// binding, and with none once the binding went. Any other answer leaves the one it has, and
++    /// so does a list without a ticket (hjv-api without its ticket key, a blocked account): the
++    /// ticket serves until it ends (docs/access-tickets.md 3-3).
+     async fn keep_ticket(
+         &self,
+         mode: &Mode,
+         answered: &Answered,
+-        issued: Option<Option<serde_json::Value>>,
++        issued: Option<serde_json::Value>,
+     ) {
+         let ticket = match (mode, answered) {
+             (Mode::Unbound, _) | (_, Answered::Revoked) => None,
+-            (_, Answered::Kept { .. }) => match issued {
+-                Some(ticket) => ticket,
+-                None => return,
+-            },
++            (_, Answered::Kept { .. }) if issued.is_some() => issued,
+             _ => return,
+         };
+         let s = self.service.clone();
+diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
+index 1cd7746..418c119 100644
+--- a/src/hjviewer_account/pc/tests.rs
++++ b/src/hjviewer_account/pc/tests.rs
+@@ -175,7 +175,7 @@ impl Signed {
+                 s: STANDARD.encode(s.to_bytes()),
+             }),
+             send_wol: false,
+-            ticket: None,
++            access: None,
+         }
+     }
+ }
+@@ -979,6 +979,8 @@ struct FakeApi {
+     skew: i64,
+     /// hjv-api asks for the PC's whole Wake-on-LAN report
+     send_wol: bool,
++    /// the PC's access ticket object, which comes with a list of its binding
++    access: Option<serde_json::Value>,
+     /// how long an answer takes
+     delay: Duration,
+     /// each request's payload and `t`
+@@ -1011,7 +1013,7 @@ impl FakeApi {
+                     error: error.to_owned(),
+                     list: None,
+                     send_wol: false,
+-                    ticket: None,
++                    access: None,
+                 },
+             )
+         };
+@@ -1034,6 +1036,7 @@ impl FakeApi {
+                 }
+                 let mut answer = list.answer();
+                 answer.send_wol = self.send_wol;
++                answer.access = self.access.clone();
+                 (200, answer)
+             }
+             Some(_) => plain(200, ""),
+@@ -1052,6 +1055,8 @@ struct Fake {
+     api: Arc<Mutex<FakeApi>>,
+     /// what collecting the Wake-on-LAN report gives
+     wol: Arc<Mutex<Option<crate::hjviewer_wol::Report>>>,
++    /// each access ticket the PC was told to register with (hjviewer_access)
++    tickets: Arc<Mutex<Vec<Option<serde_json::Value>>>>,
+ }
+ 
+ impl Fake {
+@@ -1066,6 +1071,7 @@ impl Fake {
+                 ..FakeApi::default()
+             })),
+             wol: Arc::default(),
++            tickets: Arc::default(),
+         }
+     }
+ 
+@@ -1080,6 +1086,10 @@ impl Fake {
+     fn binding(&self) -> Option<String> {
+         self.pc().binding()
+     }
++
++    fn tickets(&self) -> Vec<Option<serde_json::Value>> {
++        self.tickets.lock().unwrap().clone()
++    }
+ }
+ 
+ impl Service for Fake {
+@@ -1143,6 +1153,10 @@ impl Service for Fake {
+     fn wol(&self) -> Option<crate::hjviewer_wol::Report> {
+         self.wol.lock().unwrap().clone()
+     }
++
++    fn keep_ticket(&self, ticket: Option<serde_json::Value>) {
++        self.tickets.lock().unwrap().push(ticket);
++    }
+ }
+ 
+ /// Waits (on the test runtime's paused clock) until `done`, ten minutes at most, and says how
+@@ -1263,6 +1277,48 @@ async fn a_login_binds_and_a_logout_unbinds_within_the_second_however_slow_hjv_a
+     cleanup(&["loop-bind"]);
+ }
+ 
++/// A bound PC registers with the access ticket of the lists of its binding (`access`,
++/// server/api/README.md); a list without one, as from an hjv-api without its ticket key, leaves
++/// the one it has.
++#[tokio::test(start_paused = true)]
++async fn a_bound_pc_takes_the_access_ticket_of_its_lists_and_keeps_it_past_one_without() {
++    let _ = hbb_common::sodiumoxide::init();
++    let readme: Answer = serde_json::from_str(
++        r#"{"server_time":1,"state":"active","refresh":120,"send_wol":false,
++            "access":{"ticket":"t1.x","use":"both","exp":2,"server_time":1}}"#,
++    )
++    .unwrap();
++    assert_eq!(readme.access.unwrap()["ticket"], "t1.x");
++
++    let pc = Fake::new("loop-access");
++    let login = unix_now() - 5;
++    let ticket = |t: &str| {
++        serde_json::json!({
++            "ticket": t, "use": "both", "exp": login + 259_200, "server_time": login,
++        })
++    };
++    pc.api().bound = Some((ID.to_owned(), login));
++    pc.api().access = Some(ticket("t1.first"));
++    let _asks = Syncer::spawn(pc.clone());
++    pc.set_option(BIND_REQ, &format!("{ID}.{login}"));
++    pc.set_option(KNOCK, "1");
++    until("the first ticket", || !pc.tickets().is_empty()).await;
++    pc.api().access = None;
++    pc.set_option(KNOCK, "2");
++    until("a list without one", || pc.requests() >= 2).await;
++    pc.api().access = Some(ticket("t1.second"));
++    pc.set_option(KNOCK, "3");
++    until("the second ticket", || {
++        pc.tickets().last() == Some(&Some(ticket("t1.second")))
++    })
++    .await;
++    assert_eq!(
++        pc.tickets(),
++        [Some(ticket("t1.first")), Some(ticket("t1.second"))]
++    );
++    cleanup(&["loop-access"]);
++}
++
+ #[tokio::test(start_paused = true)]
+ async fn a_login_and_its_logout_found_together_leave_the_pc_unbound() {
+     let _ = hbb_common::sodiumoxide::init();
+@@ -1701,12 +1757,19 @@ async fn a_report_too_large_for_a_sync_stays_on_the_pc() {
+ }
+ 
+ /// The Start menu's "Uninstall" runs `--uninstall` unelevated: the binding key goes in the
+-/// uninstaller's elevated batch (the release review's privacy-uninstall-hklm-unelevated).
++/// uninstaller's elevated batch (the release review's privacy-uninstall-hklm-unelevated), and so
++/// does the bound PC's access ticket in the service's config folder.
+ #[test]
+ fn the_uninstallers_elevated_batch_deletes_the_binding_key() {
++    let ticket = format!(
++        "%WINDIR%\\ServiceProfiles\\LocalService\\AppData\\Roaming\\{}\\config\\HJViewer_ticket.json",
++        crate::get_app_name()
++    );
+     assert_eq!(
+         uninstall_line(true),
+-        "\nreg delete \"HKLM\\SOFTWARE\\HJViewer\\Account\" /f\n"
++        format!(
++            "\nreg delete \"HKLM\\SOFTWARE\\HJViewer\\Account\" /f\nif exist \"{ticket}\" del /f /q \"{ticket}\"\n"
++        )
+     );
+     assert_eq!(uninstall_line(false), "");
+ }
+diff --git a/src/ui_interface.rs b/src/ui_interface.rs
+index 76ca592..05a09fb 100644
+--- a/src/ui_interface.rs
++++ b/src/ui_interface.rs
+@@ -247,6 +247,7 @@ pub fn get_builtin_option(key: &str) -> String {
+ #[inline]
+ pub fn set_local_option(key: String, value: String) {
+     LocalConfig::set_option(key.clone(), value);
++    crate::hjviewer_access::local_option_set(&key);
+ }
+ 
+ /// Resolve relative avatar path (e.g. "/avatar/xxx") to absolute URL

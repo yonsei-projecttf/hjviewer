@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 11:01:24 +0900
-Subject: [PATCH 29/57] quality monitor: the transport test expects it on every
+Subject: [PATCH 29/59] quality monitor: the transport test expects it on every
  platform
 
 "quality monitor: show the transport on every platform" left upstream's

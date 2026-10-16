@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:11:01 +0900
-Subject: [PATCH 2/2] WebSocket: send small writes at once (TCP_NODELAY)
+Subject: [PATCH 2/3] WebSocket: send small writes at once (TCP_NODELAY)
 
 HJViewer reaches its server only through WebSocket, for signalling and for the
 relay. The WebSocket connect left Nagle's algorithm on, so each small write

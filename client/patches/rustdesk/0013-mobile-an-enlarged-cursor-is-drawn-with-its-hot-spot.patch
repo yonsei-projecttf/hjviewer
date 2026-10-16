@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:11:52 +0900
-Subject: [PATCH 13/57] mobile: an enlarged cursor is drawn with its hot spot
+Subject: [PATCH 13/59] mobile: an enlarged cursor is drawn with its hot spot
  where it clicks
 
 CursorPaint enlarges small cursors at low zoom but scaled the hot spot offset
