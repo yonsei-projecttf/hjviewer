@@ -473,7 +473,9 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   HJV_RELEASE_BIN="$release_bin" HJV_PATCHED_FLUTTER="$app" HJV_RELEASE_SAMPLES="$samples" \
     python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_release_info.py' || fail "client: release record tests"
   step "client: hbb_common WebSocket tests"
-  (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket)
+  # One at a time: the proxy test sets the process's proxy option, and a test running beside it
+  # would connect through that test's one-shot proxy
+  (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket -- --test-threads=1)
   # The apps build with Rust 1.75 (client-build.yml RUST_VERSION); the development machine's
   # stable toolchain would let newer language features through (design v3 6-6)
   step "client: cargo +1.75.0 check --features linux-pkg-config,hjv-e2e"
