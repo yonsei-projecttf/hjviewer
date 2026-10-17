@@ -410,7 +410,7 @@ CLIENT_DART_TESTS="test/soft_keyboard_input_test.dart test/soft_keyboard_log_tes
 # the update screens' (minimum version design 6-4), the controller-only Android app's (Play design
 # 3-3) and the super operator's view's pure tests (2026-10-14)
 CLIENT_DART_TESTS+=" test/hjv_update_test.dart test/hjviewer_android_test.dart test/hjviewer_admin_test.dart"
-# the access screens' (staff-only gate, docs/access-tickets.md 5-3; client patch 0061)
+# the access screens' (staff-only gate, docs/access-tickets.md 5-3; client patches 0061-0062)
 CLIENT_DART_TESTS+=" test/hjviewer_access_test.dart"
 # Pure Dart tests that a work package not in client/patches yet adds: run when the patched tree
 # has them, else skipped with a note. Once the patch is in, move them to CLIENT_DART_TESTS, so that
