@@ -60,6 +60,26 @@ HJViewer를 연세대학교 교직원 전용 서비스로 만듭니다. 연세 S
 
 정한 것: 로그아웃의 "한 번 더 확인"은 두 번째 창이 아니라 같은 확인 창의 경고 줄로 했습니다. 트레이는 안내(툴팁)만 바꾸고 알림은 띄우지 않습니다. G2는 서버 모드와 상관없이 보입니다(`enforce` 전의 예고). P2의 끝나는 시각은 그 창의 메모리에만 둡니다(앱을 다시 켜면 줄은 사라지고, 출입증이 없으면 P1이 나옴).
 
+### 4차 작업: 클라우드에서 마무리 검증 (2026-10-17, 클라우드 세션)
+
+개발 PC의 에이전트를 쓸 수 없어서, 개발 PC에서 하려던 검사 가운데 클라우드에서 할 수 있는 것을 모두 했습니다. 사용자가 chromium.googlesource.com을 허용해 클라이언트 Rust를 처음 컴파일할 수 있었습니다.
+
+| 묶음 | 커밋 | 한 것 | 클라우드에서 돌린 시험 |
+|---|---|---|---|
+| C1 클라이언트 | eb4fcd2 | 0058–0062의 Rust를 처음 컴파일함. `scripts/ci.sh client`가 hbb_common의 WebSocket 시험에서 세 번에 두 번 실패하던 것을 고침. 전부터 있던 문제로, 프록시 시험이 프로세스 전체의 프록시 설정을 바꾸는 동안 옆의 시험이 그 프록시로 붙었음. 그 단계만 시험을 하나씩 돌림 | `scripts/ci.sh client` 통과(건너뜀 1: 1.5.1 실물 산출물의 릴리스 기록 시험. `build/release-1.5.1`은 개발 PC에만 있음). Rust 1.75 check, 공유 벡터, Dart 135 |
+| C2 E2E 출입 제한 단계 | cf0e5ef, fe81e15, 5c1c749(클라이언트 패치 0063), 91d973d, e2c6858 | e2e.md의 A1~A14를 `tools/e2e/firewall-e2e.sh`에, 감지와 하한을 `scripts/ci.sh`에 넣음(`E2E_LEAST_STRICT` 91, `UNIT_LEAST[hjv]` 260). 돌리며 고친 것: 감지가 찾는 이름(릴리스 빌드는 명령 이름을 글자로 남기지 않음), E2E의 화면 명령이 세션 시작의 거절을 앱의 창 A1·A2로 보이게 함(패치 0063, hjv-e2e 기능 안), A4의 기대(PC로 돈 적이 없는 컨트롤러의 출입증은 `ctl`), PASS 줄의 시간 | 아래 관문 |
+| 관문 | e2c6858 | `scripts/ci.sh prepush server e2e`(로그 `build/ci/prepush/20261017-040049-e2c6858`)와 `prepush wol`(`20261017-042156-e2c6858`). root가 아닌 사용자, `HJV_CI_STRICT=1` | server 통과(791, 무시 12, 건너뜀 0: hjv-api 426, hbbs·hbbr 96, hjv-relay 102, 나머지는 hjv-release), e2e 통과(`--lib hjv` 260, 키 없는 `hjviewer_update` 159, strict PASS 91(A1~A14 포함), open PASS 2), wol 통과(PASS 20) |
+| 그 밖 | 마지막 커밋 | 클라이언트 lib 시험 전체(관문의 E2E 빌드가 만든 시험 바이너리, 화면은 Xvfb). 패치 0063 뒤의 `scripts/ci.sh client` | lib 579 통과, 무시 5. TCP 펀치 시험도 통과(WSL이 아닌 리눅스, e2e.md "TCP 펀치 시험"). 패치 0063 뒤의 `scripts/ci.sh client`도 통과(건너뜀 1, 위와 같은 것. Rust 1.75 check, Dart 135) |
+
+클라우드 컨테이너에서 맞춘 것(커밋하지 않음, e2e.md "실행"):
+- E2E는 root로 돌지 않으므로 사용자 `hjvci`(sudo는 비밀번호 없이)로 돌렸습니다.
+- systemd가 없어 두 가지를 데스크톱처럼 맞췄습니다. `/usr/local/bin/getent`가 빈 이름의 질의에 "없음"으로 답하게 하고(없으면 PC가 자기를 로그인 화면으로 보고 S6이 실패), `/var/lib/dbus/machine-id`를 `/etc/machine-id`의 링크로 바꿨습니다(없으면 모든 기기가 한 기기로 보여 S15가 실패).
+- 그 사용자의 환경에는 클라우드 프록시가 있어 `NO_PROXY`에 `hjv.test`를 더했고(없으면 `wol-e2e.sh`의 curl이 시험 도메인을 프록시로 보냄), umask는 022로 했습니다(hjv-relay 시험 하나가 그것을 전제함).
+
+찾았지만 이 PR에서 고치지 않은 것(따로 할 일, 둘 다 전부터 있던 것):
+- `tools/e2e/firewall-e2e.sh`는 네임스페이스마다 `/etc/machine-id`만 따로 줍니다. `/var/lib/dbus/machine-id`가 따로 된 파일인 호스트에서는 앱이 그것을 먼저 읽어 계정 단계가 실패합니다.
+- `relay/tests/cli.rs`의 `status_and_test_wake_write_only_to_a_plain_out_file`은 umask 022를 전제합니다(0002이면 0664가 나와 실패).
+
 ## 3. 남은 일 (순서대로)
 
 ### 3-1. 계약 하나로 맞추기 (먼저)
@@ -112,11 +132,12 @@ architecture.md(출입 제한 절), privacy.md(이용 비밀번호 기록, 티�
 
 ## 5. 개발 PC에서 할 일 (클라우드가 하지 않음)
 
-2차 작업이 남긴 것부터 합니다(PR의 "개발 PC에서 확인할 것"과 같음).
+4차 작업까지로 개발 PC에 남은 것은 다음입니다(PR의 "개발 PC에서 확인할 것"과 같음). 에이전트 없이 손으로 할 수 있습니다.
 
-- 클라이언트 Rust: `scripts/ci.sh client`(Rust 1.75 check, `--lib hjv`에 새 `hjviewer_access::guest` 시험 셋), 그리고 클라이언트 전체 lib 시험과 고정 계정 빌드의 `hjv` 시험. 클라우드는 컴파일하지 못했으므로 처음 컴파일입니다. 특히 `src/hjviewer_access/guest.rs`(3차: `Failure::TooOften(u64)`, 결과의 `until`·`retry_after`, `hjv-guest-pc-end`), `src/ipc.rs`의 `Data::HjvGuestPc`, `src/flutter_ffi.rs`의 `session_closed` 훅, `src/hjviewer_e2e.rs`의 새 명령, 그리고 **Windows에서만 컴파일되는** `src/tray.rs`의 훅과 `src/hjviewer_access.rs`의 `tray_*`(Windows 빌드로 확인).
-- 생성된 bridge가 있는 Flutter 시험 전체(client-build.yml의 Dart tests 잡)와 세 플랫폼 빌드. 화면을 데스크톱과 휴대폰에서 눈으로 봄: A1(펼치기 전과 뒤, 휴대폰에서 키보드가 펼친 뒤에만 올라옴), A2의 [다시 연결], PC 홈의 P1(ID 위)·P2의 줄과 [끝내기]·G2, 상태 줄과 Windows 트레이 안내, 설치했고 로그인하지 않은 Windows PC에서 로그인 창이 한 번만 열림, 연결 화면의 G3(`MODE=enforce`일 때만), 로그아웃과 "내 목록에서 빼기"의 경고(서버 모드마다, 원격 세션 중), 세션 창에서 로그인했을 때 주 창이 알림을 보임.
-- E2E의 출입 제한 단계: e2e.md의 A1~A14를 `tools/e2e/firewall-e2e.sh`에 더하고, `scripts/ci.sh`의 감지와 하한(`E2E_LEAST_STRICT`, `UNIT_LEAST`)을 올린 뒤 돌림.
-- `scripts/ci.sh deploy`(새 `hjviewer.env.example`의 주석 줄, `access.conf.example`), root가 아닌 사용자로 hjv-api 시험(건너뛴 시험 1).
+1. `scripts/fetch-upstream.sh all`로 `upstream/`을 다시 받습니다(패치 0063이 들어 있는 `hjviewer` 브랜치가 됨).
+2. `scripts/ci.sh prepush client deploy leak`. client는 `build/release-1.5.1`의 실물 산출물로 릴리스 기록 시험까지 돌고(클라우드에서는 그것만 건너뜀), deploy는 Docker와 systemd(새 `hjviewer.env.example`의 주석 줄, `access.conf.example`), leak는 개발 PC의 유출 목록입니다. 원하면 `e2e`와 `wol`도 함께 넣습니다(클라우드에서는 위의 컨테이너 맞춤과 함께 통과함).
+3. 비공개 빌드 저장소의 확인 빌드(`check_only`, [ci.md](../ci.md)): 세 플랫폼 빌드, bridge가 있는 Dart 시험 전체(client-build.yml의 Dart tests 잡), **Windows에서만 컴파일되는** `src/tray.rs`의 훅과 `src/hjviewer_access.rs`의 `tray_*`.
+4. 화면을 데스크톱과 휴대폰에서 눈으로 봄: A1(펼치기 전과 뒤, 휴대폰에서 키보드가 펼친 뒤에만 올라옴), A2의 [다시 연결], PC 홈의 P1(ID 위)·P2의 줄과 [끝내기]·G2, 상태 줄과 Windows 트레이 안내, 설치했고 로그인하지 않은 Windows PC에서 로그인 창이 한 번만 열림, 연결 화면의 G3(`MODE=enforce`일 때만), 로그아웃과 "내 목록에서 빼기"의 경고(서버 모드마다, 원격 세션 중), 세션 창에서 로그인했을 때 주 창이 알림을 보임.
+5. 사용자가 정할 것: 데모 PC를 둘지와 어느 PC로 할지, App Store 배포 방식(Unlisted 또는 Custom App), 이용 비밀번호와 그 `UNTIL`, 정책 seq 4의 알림 글, 출시일.
 
-그다음은 1차 작업 때 정한 대로입니다: 유출 검사, `scripts/ci.sh prepush`(server, client, deploy, e2e, wol, leak), 패치가 시험한 트리를 재현하는지 확인, `main`에 병합과 push, 서버 묶음, 허브-운영의 설치(`MODE=off`로 먼저), 사용자의 티켓 키 만들기, 1.8.0 세 플랫폼 빌드와 TestFlight, 출시일 순서(정책 seq 4 → 묶인 PC 업데이트 → seq 5 최소 1.8.0 → hbbs MIN=1.8.0 → `MODE=enforce`).
+그다음은 1차 작업 때 정한 대로입니다: `main`에 병합과 push, 서버 묶음, 허브-운영의 설치(`MODE=off`로 먼저), 사용자의 티켓 키 만들기, 1.8.0 세 플랫폼 빌드와 TestFlight, 출시일 순서(정책 seq 4 → 묶인 PC 업데이트 → seq 5 최소 1.8.0 → hbbs MIN=1.8.0 → `MODE=enforce`).

@@ -1851,6 +1851,7 @@ curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/access"; e
   sleep 12; sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep -E 'access (off|count|enforce|closed)|access file' | tail -2
   ```
 - `NB=now`(비상)는 그때까지 나간 출입증을 모두 거절하고, 들어와 있던 PC를 10초 안에 끊습니다. 로그인한 앱은 다음 연결에서 새 출입증을 받고, 묶인 PC는 다음 동기화(보통 2분) 뒤 다시 들어오고, 이용 비밀번호로 들어온 쪽은 비밀번호를 다시 넣습니다(계약 6-4). 한 번 쓴 `NOT_BEFORE`는 그대로 두어도 됩니다(그 뒤에 만든 출입증은 받음).
+- `enforce`(또는 닫힘)에서 `count`나 `off`로 바꾸면, 거절되었던 PC는 다음 등록 시도에 다시 들어옵니다. 거절된 PC는 30초마다 다시 시도하므로 다시 보이기까지 40초쯤 걸릴 수 있습니다(E2E A14). 새 출입증을 받은 PC(묶인 PC의 다음 동기화, 이용 비밀번호)는 바로 다시 등록합니다.
 - **거절 수**(`enforce`): `sudo journalctl -q -u hjviewer-hbbs --since yesterday -o cat | grep -c 'access refused'`와 `… | grep -c 'access closed'`(개수만. 그 줄에는 주소와 ID가 있음). 10초에 30줄을 넘으면 `access refused or closed N more in the last 10 seconds`로 묶이니 그 N도 더합니다.
 
 ### 9-4. 이용 비밀번호 (`/etc/hjviewer/guest.conf`)

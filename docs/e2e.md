@@ -35,6 +35,7 @@
 - 패치를 적용한 클라이언트를 새로 받아 시험용으로 빌드하고, Caddy를 고정한 SHA-256으로 받고, PC 쪽 클라이언트를 `/usr/local/lib/hjviewer-e2e/rustdesk`에 설치한 뒤 strict와 open을 차례로 돌립니다. 끝나면 설치한 파일을 지웁니다.
 - 패치에 계정 코드가 있으면 [계정 단계](#계정-단계-160)도 돕니다. 클라이언트의 HJViewer 코드 단위 시험(`--lib hjv`), hjv-api와 가짜 SSO 빌드, 태그 `client-1.5.1`로 만드는 1.5.1 비교용 클라이언트(태그와 서버 키가 같으면 한 번만 빌드해 `build/ci/e2e-old/rustdesk`에 둠), Ubuntu의 `libfaketime` 패키지 풀기(`build/ci/faketime`, 설치하지 않음)가 더해집니다.
 - hbbs에 서버 패치 0005가 있으면(`--hjv-min-controller-file`) [최소 버전 단계](#최소-버전-단계-160)의 V1-V4를 돌립니다. `server/patches`에 0005가 있는데 hbbs에 그 옵션이 없으면(전에 빌드한 hbbs) 실패합니다. 패치에 업데이트 코드(`src/hjviewer_update`)가 있으면 클라이언트를 업데이트 시험 키로 빌드하고 단위 시험(`--lib hjv`)도 그 빌드로 돌립니다. 업데이트 코드의 단위 시험(`--lib hjviewer_update`)은 키만 뺀 빌드로 한 번 더 돌립니다. 키 없는 빌드가 1.5.1처럼 아무것도 하지 않는지 보는 시험은 키가 든 빌드에서는 바로 끝나기 때문입니다. 이 저장소에 `tools/hjv-release`가 있으면 그것을 빌드해(`build/ci/target-hjv-release`) 시험 정책에 서명하고 V5-V9를 돌립니다. 셋 중 없는 것은 건너뛴 것으로 셉니다.
+- systemd가 없는 컨테이너(2026-10-17의 클라우드 세션)에서는 두 가지가 데스크톱과 달라 계정 단계가 멈춥니다. 그 세션은 컨테이너 안에서만 다음처럼 맞추고 돌렸습니다(저장소에는 넣지 않음). 첫째, logind가 없어 앱이 지금 사용자의 이름을 빈 값으로 읽고, `getent passwd `(이름 없음)가 모든 계정을 내놓아 PC가 자기를 로그인 화면으로 봅니다(`is_prelogin`). 그러면 서비스가 연결 관리자에 붙지 않아 S6이 실패합니다. `/usr/local/bin/getent`에 인수가 `passwd` 하나뿐일 때만 "없음"(종료 2)으로 답하는 작은 스크립트를 두었습니다. 둘째, `/var/lib/dbus/machine-id`가 `/etc/machine-id`의 링크가 아니라 따로 된 파일이면 앱(`machine-uid`)이 그것을 먼저 읽어, 네임스페이스마다 준 machine-id가 쓰이지 않습니다. 모든 기기가 한 기기로 보여 hjv-api가 앞 키를 `same-device`로 폐기하고 S15가 실패합니다. Ubuntu 데스크톱처럼 링크로 바꾸었습니다. 그 밖에 E2E는 root가 아닌 사용자로 돌리고(sudo는 비밀번호 없이), 서버 단계의 hjv-relay 시험 하나는 umask 022를 전제합니다.
 - 시험용 클라이언트는 LTO 없이, 코드 생성 단위 16개로 빌드합니다. 트리를 새로 받으므로 클라이언트 크레이트는 실행마다 다시 컴파일됩니다(의존성은 `build/ci/target-e2e`에 남음). 릴리스 프로필 그대로면 실행 파일과 단위 시험이 각각 3분 반쯤 걸리고, 이렇게 하면 각각 45초쯤입니다. 제품 빌드의 프로필은 그대로입니다.
 
 손으로 돌릴 때는 다음과 같습니다.
@@ -153,6 +154,7 @@ PASS (strict): transport: relay
 - 펀치 코드와 이 시험은 `scripts/upstream.env`의 upstream 1.5.0 그대로입니다. 그래서 WSL이 아닌 리눅스에서 돌려도 upstream과 같은 코드를 시험하게 됩니다. 두 작업은 따로 도는 작업이고 펀치의 소켓을 건드리지 않습니다.
 - 2026-10-15에 개발 PC(WSL2, 커널 6.18.33.2-microsoft-standard-WSL2, CPU 16개)에서 패치를 적용한 트리(0048까지)로 돌려 보았습니다. 보통의 셸에서도, 루프백만 있는 새 네트워크 네임스페이스(`ip netns`) 안에서도 "no punch met the peer's SYN in 256 rounds"로 실패했습니다(약 30초). 그러니 WSL의 미러 네트워크 탓이 아니라 이 커널과 가상 CPU에서 두 연결이 겹치지 않는 것입니다.
 - WSL이 아닌 리눅스(CPU 2개 이상. 하나뿐이면 이 시험은 아무것도 확인하지 않고 통과함)를 쓸 수 있게 되면, "실행"의 3)과 같은 빌드 환경에서 `cargo test --locked --features linux-pkg-config --lib a_punch_that_meets_the_peers_syn_connects_both_ends`를 돌리고 결과를 여기에 더합니다.
+- 2026-10-17에 클라우드 컨테이너(Firecracker VM, 커널 6.18.44, CPU 4개, WSL이 아님)에서 패치 0063까지 적용한 트리로 돌렸습니다. 클라이언트 lib 시험 전체 안에서 한 번, 이 시험만 세 번, 모두 통과했습니다(각 0.2초). 빌드는 위 명령과 달리 E2E의 것(`hjv-e2e` 기능, 시험 키, LTO 없는 릴리스 프로필)입니다.
 
 ## 계정 단계 (1.6.0)
 
@@ -298,9 +300,9 @@ PASS (strict): transport: relay
 - 기기: PC A는 계정 단계의 PC(`PC_CLIENT`, alice에 묶임)입니다. PC B는 `hjv-pc2` 네트워크에서 도는 `CLIENT`이고(설치하지 않은 실행본, 어디에도 로그인하지 않음), 그동안 X4의 둘째 PC는 멈춥니다. 컨트롤러는 `hjv-ctl` 네트워크의 세 쪽입니다: 로그인하지 않은 `actl`, alice로 로그인한 `staff`, 심사 계정으로 로그인한 `rev`. 그리고 1.5.1 클라이언트(`CLIENT_OLD`, 없으면 A12만 건너뜀). 클라이언트 호출마다 30초 제한은 그대로이고, 출력 기록에서 비밀번호는 `***`로 가립니다.
 - `GET /api/hjv/access`는 `actl` 쪽 네트워크에서 Caddy를 거쳐 토큰 없이 묻습니다.
 
-**시나리오**
+**시나리오와 결과**(2026-10-17, 클라우드 컨테이너의 Ubuntu 24.04(CPU 4개), `scripts/ci.sh e2e`와 `scripts/ci.sh prepush`, 실행 순서대로)
 
-| # | 단계 | 기대 |
+| # | 단계 | 결과 |
 |---|---|---|
 | A1 | `MODE=off`로 띄운 hbbs, PC B를 띄움 | 로그 `access off`, 콘솔 `HJVACCESS1 mode=off`. 출입증이 없는 PC B가 등록함(`--hjv-e2e-option hjv-access-pc`가 `ok`). `actl`이 PC B에 비밀번호로 연결해 화면을 받음(종료 0). `GET /api/hjv/access`가 `{"mode":"off"}`(개수 없음) |
 | A2 | `MODE=count`, 두 PC의 서비스를 다시 시작(그래야 등록이 판정됨) | 로그 `access count: keys 1`. `actl`이 PC B에, alice로 로그인한 `staff`가 PC A에 연결함. 콘솔에 `ph.missing`(actl), `ph.ok`(staff), `reg.ok`(PC A, 묶인 PC의 출입증), `reg.missing`(PC B)이 0이 아님. `access refused` 줄은 0 |
@@ -317,9 +319,19 @@ PASS (strict): transport: relay
 | A13 | 돌고 있는 hbbs의 파일을 고장 난 것(`MODE=on`)으로 바꿈, 그다음 hbbs를 다시 시작 | 처음에는 `access file …: …; access enforce: keys 1, not before … stays in force`(ERROR)이고 `staff`가 그대로 연결함. 다시 시작한 뒤에는 `access closed: every request is refused`, 콘솔 `mode=closed`, `staff`도 거절(종료 5, 핵심의 A2, 콘솔 `ph.closed`), 35초 안에 `GET /api/hjv/access`가 `{"mode":"closed"}` |
 | A14 | `MODE=off`로 고침 | 다시 시작하지 않고 다음 읽기에 `access off`. PC B가 다시 등록하고(`hjv-access-pc` `ok`), `actl`이 비밀번호로 PC B에 연결해 화면을 받음. 끝나면 PC B를 멈춤 |
 
+- 결과: 열네 시나리오 모두 PASS. strict 전체는 PASS 91줄이고 이 단계가 그중 14줄입니다.
+- 걸린 시간: 이 단계는 2분 30초쯤입니다(클라우드 컨테이너). 가장 긴 것은 A14에서 PC B가 다시 등록하기까지(43초쯤)로, 거절된 PC는 30초마다 RegisterPk를 다시 보내기 때문입니다(upstream의 `DEPLOY_RETRY_INTERVAL`). A7과 A9는 hjv-api의 실패 지연으로 각각 3초 남짓입니다. 같은 컨테이너에서 strict 전체는 10분 30초쯤입니다.
+
 **`scripts/ci.sh`가 하는 것**
 - 감지(`e2e_access`): hbbs의 `--help`에 `--hjv-access-file`이 있고, 클라이언트 실행 파일에 `HJV_E2E_ACCESS_PASSWORD`가 있고(릴리스 빌드는 명령 이름을 글자로 남기지 않음), 계정 E2E가 돌면 `HJV_E2E_ACCESS=1`로 이 단계를 켭니다. `server/patches`에 0006이 있는데 hbbs에 옵션이 없거나, `client/patches`에 0061이 있는데 클라이언트에 명령이 없으면 실패합니다. 패치가 없을 때만 건너뛴 것으로 셉니다(최소 버전 단계의 감지와 같은 틀).
 - 하한: `E2E_LEAST_STRICT`에 이 단계의 `PASS` 14줄을 더했습니다.
+
+### 출입 제한 단계로 찾은 것
+
+- **세션 시작의 거절이 앱의 창을 거치지 않음**(클라이언트 패치 0063): E2E의 화면·스트림 명령은 `Client::start`가 돌려준 hbbs의 거절 글을 그대로 찍고 종료 5로 끝나, 앱이 보이는 A1·A2를 확인할 수 없었습니다(포트 포워딩은 이미 `on_establish_connection_error`를 거침). 앱과 같은 길을 타게 고쳤습니다. 바뀐 것은 hjv-e2e 기능 안의 코드뿐입니다.
+- **PC로 돈 적이 없는 컨트롤러의 출입증은 `ctl`**: E2E의 컨트롤러 쪽은 기기 키가 없어 `POST /api/hjv/ticket`을 PC 부분 없이 보내고 `ctl`을 받습니다(계약 3-3대로). A4는 그것을 확인하고, 기기 키를 보내는 데스크톱 앱의 `both`는 hjv-api와 앱의 단위 시험이 봅니다.
+- **릴리스 빌드에는 명령 이름이 글자로 남지 않음**: 짧은 문자열 비교는 컴파일러가 숫자 비교로 바꿉니다. `scripts/ci.sh`의 감지는 `--hjv-e2e-guest-pc` 대신 `std::env::var`로 읽는 `HJV_E2E_ACCESS_PASSWORD`를 찾습니다.
+- hbbs는 시나리오대로였습니다: 모드는 다시 시작하지 않고 10초 안에 바뀌고, 고장 난 파일은 돌고 있는 규칙을 그대로 두며, 그 파일로 시작하면 모든 요청을 거절합니다.
 
 ### 출입 제한 단계가 다루지 않는 것
 
