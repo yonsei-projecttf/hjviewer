@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 00:06:31 +0900
-Subject: [PATCH 08/62] hjviewer: Windows executable named HJViewer.exe, no
+Subject: [PATCH 08/63] hjviewer: Windows executable named HJViewer.exe, no
  "Stop service"
 
 The Windows package now ships the runner as HJViewer.exe (client

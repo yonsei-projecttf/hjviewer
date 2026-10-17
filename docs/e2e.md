@@ -171,7 +171,7 @@ PASS (strict): transport: relay
 - `--hjv-e2e-option <이름> [값 …]`은 실행 중인 서비스의 옵션을 IPC로 읽거나 씁니다(여러 쌍은 한 번의 쓰기). `--hjv-e2e-local-option`은 그 사용자의 LocalConfig, `--hjv-e2e-service-password`는 서비스의 영구 비밀번호, `--hjv-e2e-id`는 기기 ID와 공개키입니다.
 - 화면 세션(`--hjv-e2e-screenshot`, `-stream`, `-forward`)에 비밀번호 `""`를 주면 비밀번호 없는 연결입니다. 비밀번호 창이 뜨면 `hjv-e2e: password required <제목>`을 찍고 **종료 코드 3**, 'error' 창(키 바뀜 경고)이면 `hjv-e2e: error <제목>`을 찍고 **종료 코드 4**로 끝납니다. PC가 증명을 거절했을 때의 창은 제목이 `Could not connect without a password`라서 그냥 비밀번호 창(`Password Required`)과 구분됩니다.
 - 비밀번호 없는 연결의 데이터 경로는 원격 화면(`--hjv-e2e-screenshot <ID> ""`)으로 봅니다. 포트 포워딩은 증명을 보내지 않으므로 S22와 X7에만 씁니다.
-- 1.8.0의 출입증(클라이언트 패치 0058–0061): `--hjv-e2e-ticket [refresh]`는 로그인의 출입증을 해시의 앞 8바이트, `use`, 남은 수명으로 보입니다(refresh는 먼저 `POST /api/hjv/ticket` 한 번, 못 받으면 종료 코드 1). 화면 세션과 포워딩은 hbbs의 출입 거절을 `hjv-e2e: access refused <제목>`과 **종료 코드 5**로 끝냅니다. `HJV_E2E_ACCESS_PASSWORD=<이용 비밀번호>`를 주면 세 명령이 세션 전에 그 대상의 이용 비밀번호 출입증을 받습니다(`hjv-e2e: guest ctl: ok`, 못 받으면 `hjv-e2e: guest ctl: <코드>`와 **종료 코드 6**). `--hjv-e2e-guest-pc <이용 비밀번호>`는 이 PC의 출입증을 받아 IPC로 등록하는 프로세스에 넘깁니다(`hjv-e2e: guest pc: ok`, 못 받으면 종료 코드 6). 이 명령들의 시나리오는 아래 "출입 제한 단계 (1.8.0)"에 있습니다.
+- 1.8.0의 출입증(클라이언트 패치 0058–0061, 0063): `--hjv-e2e-ticket [refresh]`는 로그인의 출입증을 해시의 앞 8바이트, `use`, 남은 수명으로 보입니다(refresh는 먼저 `POST /api/hjv/ticket` 한 번, 못 받으면 종료 코드 1). 화면 세션과 포워딩은 hbbs의 출입 거절을 앱이 보이는 창(핵심의 A1이나 A2, `hjv-e2e: hjv-access-error: <제목>: <글>`)과 `hjv-e2e: access refused <제목>`, **종료 코드 5**로 끝냅니다(hbbs가 보낸 글은 그 앞에 표준 오류로). `HJV_E2E_ACCESS_PASSWORD=<이용 비밀번호>`를 주면 세 명령이 세션 전에 그 대상의 이용 비밀번호 출입증을 받습니다(`hjv-e2e: guest ctl: ok`, 못 받으면 `hjv-e2e: guest ctl: <코드>`와 **종료 코드 6**). `--hjv-e2e-guest-pc <이용 비밀번호>`는 이 PC의 출입증을 받아 IPC로 등록하는 프로세스에 넘깁니다(`hjv-e2e: guest pc: ok`, 못 받으면 종료 코드 6). 이 명령들의 시나리오는 아래 "출입 제한 단계 (1.8.0)"에 있습니다.
 
 **시나리오와 결과**(2026-10-13, WSL2 Ubuntu 24.04, `scripts/ci.sh e2e`, 실행 순서대로. `""`는 비밀번호 없이 연 원격 화면, T0는 같은 실행의 비밀번호 연결 시간, 상한 B = T0 + 2초)
 
@@ -288,7 +288,7 @@ PASS (strict): transport: relay
 
 ## 출입 제한 단계 (1.8.0)
 
-교직원 전용 출입 제한([access-tickets.md](access-tickets.md), [architecture.md](architecture.md) 9절)을 실제 프로그램으로 확인합니다. hbbs(서버 패치 0006–0008)가 출입증을 확인하는지, hjv-api가 교직원, 묶인 PC, 이용 비밀번호, 심사 계정에 맞는 출입증을 주는지, 클라이언트(패치 0058–0062)가 그것을 싣고 거절 뒤에 바르게 움직이는지입니다. strict 모드에서 계정 단계 다음, 최소 버전 단계 앞에 돕니다. 최소 버전 단계의 V7부터는 PC가 E2E의 컨트롤러를 버전으로 거절하기 때문입니다(`tools/e2e/firewall-e2e.sh`의 `access_part`).
+교직원 전용 출입 제한([access-tickets.md](access-tickets.md), [architecture.md](architecture.md) 9절)을 실제 프로그램으로 확인합니다. hbbs(서버 패치 0006–0008)가 출입증을 확인하는지, hjv-api가 교직원, 묶인 PC, 이용 비밀번호, 심사 계정에 맞는 출입증을 주는지, 클라이언트(패치 0058–0063)가 그것을 싣고 거절 뒤에 바르게 움직이는지입니다. strict 모드에서 계정 단계 다음, 최소 버전 단계 앞에 돕니다. 최소 버전 단계의 V7부터는 PC가 E2E의 컨트롤러를 버전으로 거절하기 때문입니다(`tools/e2e/firewall-e2e.sh`의 `access_part`).
 
 **구성**
 - 출입증 키: `scripts/ci.sh`의 `e2e_keys`가 E2E 시험 키 폴더(`HJV_E2E_KEYS`)에 같은 바이트를 32번 되풀이한 seed `e7`로 출입증 키(`ticket.secret`, `ticket.pub`)를 만듭니다. hjv-api는 처음부터 이 값을 자격 증명 `hjviewer-api-ticket-key`로 받고 `HJV_API_TICKET_PUBKEYS=1:<ticket.pub>`로 돕니다. 그래서 계정 단계 내내 로그인 답과 묶인 PC의 동기화에 출입증이 실립니다(그동안 hbbs는 `MODE=off`). 공개된 시험 키라 selfcheck는 실패를 남기지만 서비스는 돕고, 같은 seed 규칙이라 출시 빌드의 확인은 이 키를 거부합니다.

@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Sat, 17 Oct 2026 03:19:49 +0000
+Subject: [PATCH 63/63] hjviewer: E2E: a refusal for access at a session's
+ start shows the app's box
+
+The screen and stream commands printed hbbs's refusal as it came and
+ended with exit code 5, while the app (and the E2E's port forwarding)
+shows its own text in its place through
+Interface::on_establish_connection_error. They now take the same path,
+so the E2E sees the box a user sees: the app's A1 or A2, then
+'access refused' and exit code 5. A build without the account part
+ends as before.
+
+Claude-Session: https://claude.ai/code/session_01UGRoRVHEhxg8GAbP842qdV
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_e2e.rs | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index f412d72..3a6d3bf 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -230,6 +230,10 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+             Ok(res) => res,
+             Err(err) => {
+                 eprintln!("hjv-e2e: {err}");
++                if crate::hjviewer_access::refusal_text(&err.to_string()).is_some() {
++                    // the app's box in place of hbbs's text, as port forwarding shows it (exit 5)
++                    interface.on_establish_connection_error(err.to_string());
++                }
+                 return if crate::hjviewer_access::is_refusal(&err.to_string()) {
+                     5
+                 } else {

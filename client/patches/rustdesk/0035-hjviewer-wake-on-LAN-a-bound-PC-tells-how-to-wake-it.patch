@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 13 Oct 2026 11:46:18 +0900
-Subject: [PATCH 35/62] hjviewer: wake-on-LAN: a bound PC tells how to wake it
+Subject: [PATCH 35/63] hjviewer: wake-on-LAN: a bound PC tells how to wake it
  and stays up after a resume
 
 The service of a bound PC tells hjv-api, in its sync, what a relay on the PC's
