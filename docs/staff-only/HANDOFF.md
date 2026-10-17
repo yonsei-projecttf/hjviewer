@@ -91,6 +91,10 @@ HJViewer를 연세대학교 교직원 전용 서비스로 만듭니다. 연세 S
 - 5cd895a의 e2e는 R3에서 멈췄습니다. 터미널에서 돌리면 sudo의 `use_pty`(Ubuntu 기본)가, R3이 PC 서비스를 멈출 때 스크립트까지 멈추기 때문입니다(e2e.md "계정 단계로 찾은 것"). 322678b에서 `in_ns`가 sudo를 터미널 없이 부르게 고쳤습니다. 이 수정은 `tools/e2e/firewall-e2e.sh`와 `docs/e2e.md`만 바꾸고 server·client·deploy는 그 파일을 읽지 않으므로, 그 세 단계는 5cd895a의 통과를 그대로 씁니다([ci.md](../ci.md)의 "push 전 전체 검사").
 - 이 표 뒤의 커밋은 문서만 바꿉니다(이 결과, README, ci.md에 적힌 E2E 하한 91과 `--lib hjv` 260). ci.md를 읽는 시험(`scripts/test_release_info.py`가 빌드 저장소의 `build.yml` 예시를 읽음)은 클라우드에서 다시 통과했습니다(27, 건너뜀 2). 병합 직전에 마지막 커밋에서 `scripts/ci.sh prepush leak`을 한 번 더 돌려, 그 커밋들도 유출 검사를 받게 합니다(몇 초).
 
+비공개 빌드 저장소의 확인 빌드(2026-10-17, `yonsei-projecttf/hjviewer-private`의 실행 39011635993, `check_only`, 세 플랫폼과 hjv-relay): 모든 잡 통과, 29분. 그 저장소의 `main`은 출시 빌드의 기록이라, 10deac3을 고정한 `build.yml`은 브랜치 `check-1.8.0`에 두고 그 브랜치에서 돌렸습니다(병합 뒤 출시 빌드는 지금처럼 `main`의 `build.yml`을 병합 커밋으로 바꿔 돌리고, 이 브랜치는 지워도 됩니다).
+- Bridge codegen, Dart tests(bridge가 있는 시험 338개 통과, `hjviewer_access_test.dart` 포함), Windows x64(빌드 13분, 설치·업데이트·패커 연기 시험 통과. **Windows에서만 컴파일되는** `src/tray.rs`의 훅과 `src/hjviewer_access.rs`의 `tray_*`가 여기서 처음 컴파일됨), Android arm64(서명한 APK와 Play 번들의 확인), iOS(서명한 IPA), hjv-relay.
+- 올리는 잡(TestFlight, Google Play internal, hjv-relay 초안 Release)은 확인 빌드라 돌지 않았습니다. 산출물은 이름에 `-check`가 붙고 하루 뒤 지워집니다.
+
 ## 3. 남은 일 (순서대로)
 
 ### 3-1. 계약 하나로 맞추기 (먼저)
@@ -143,12 +147,11 @@ architecture.md(출입 제한 절), privacy.md(이용 비밀번호 기록, 티�
 
 ## 5. 개발 PC에서 할 일 (클라우드가 하지 않음)
 
-4차 작업 뒤 개발 PC에서 `upstream/`을 새로 받고 `scripts/ci.sh prepush`의 여섯 단계를 모두 통과했습니다(4차 작업의 "개발 PC에서 손으로 돌린 관문"). 남은 것은 다음입니다(PR의 "개발 PC에서 확인할 것"과 같음).
+4차 작업 뒤 개발 PC에서 `upstream/`을 새로 받고 `scripts/ci.sh prepush`의 여섯 단계를 모두 통과했고, 비공개 빌드 저장소의 확인 빌드도 통과했습니다(4차 작업의 "개발 PC에서 손으로 돌린 관문"과 "비공개 빌드 저장소의 확인 빌드"). 남은 것은 다음입니다(PR의 "남은 일"과 같음).
 
-1. 비공개 빌드 저장소의 확인 빌드(`check_only`, [ci.md](../ci.md)): 세 플랫폼 빌드, bridge가 있는 Dart 시험 전체(client-build.yml의 Dart tests 잡), **Windows에서만 컴파일되는** `src/tray.rs`의 훅과 `src/hjviewer_access.rs`의 `tray_*`.
-2. 화면을 데스크톱과 휴대폰에서 눈으로 봄: A1(펼치기 전과 뒤, 휴대폰에서 키보드가 펼친 뒤에만 올라옴), A2의 [다시 연결], PC 홈의 P1(ID 위)·P2의 줄과 [끝내기]·G2, 상태 줄과 Windows 트레이 안내, 설치했고 로그인하지 않은 Windows PC에서 로그인 창이 한 번만 열림, 연결 화면의 G3(`MODE=enforce`일 때만), 로그아웃과 "내 목록에서 빼기"의 경고(서버 모드마다, 원격 세션 중), 세션 창에서 로그인했을 때 주 창이 알림을 보임.
-3. 사용자가 정할 것: 데모 PC를 둘지와 어느 PC로 할지, App Store 배포 방식(Unlisted 또는 Custom App), 이용 비밀번호와 그 `UNTIL`, 정책 seq 4의 알림 글, 출시일.
-4. 병합 직전: 마지막 커밋에서 `scripts/ci.sh prepush leak`.
+1. 화면을 데스크톱과 휴대폰에서 눈으로 봄: A1(펼치기 전과 뒤, 휴대폰에서 키보드가 펼친 뒤에만 올라옴), A2의 [다시 연결], PC 홈의 P1(ID 위)·P2의 줄과 [끝내기]·G2, 상태 줄과 Windows 트레이 안내, 설치했고 로그인하지 않은 Windows PC에서 로그인 창이 한 번만 열림, 연결 화면의 G3(`MODE=enforce`일 때만), 로그아웃과 "내 목록에서 빼기"의 경고(서버 모드마다, 원격 세션 중), 세션 창에서 로그인했을 때 주 창이 알림을 보임.
+2. 사용자가 정할 것: 데모 PC를 둘지와 어느 PC로 할지, App Store 배포 방식(Unlisted 또는 Custom App), 이용 비밀번호와 그 `UNTIL`, 정책 seq 4의 알림 글, 출시일.
+3. 병합 직전: 마지막 커밋에서 `scripts/ci.sh prepush leak`.
 
 개발 PC에서 알아 둘 것:
 - `scripts/fetch-upstream.sh`는 있는 작업 사본을 덮어쓰지 않습니다(`exists; remove it to fetch again`). 다시 받을 때는 옛 사본을 먼저 옮깁니다(`mkdir -p build/upstream-old && mv upstream/rustdesk-server upstream/rustdesk build/upstream-old/`). `scripts/ci.sh`의 단계는 `build/ci/` 아래에 따로 받으므로 이 사본을 쓰지 않고, prepush 로그의 머리에만 적습니다.
