@@ -286,6 +286,51 @@ PASS (strict): transport: relay
 - 컨트롤러의 정책 받기: 거절을 받으면 바로 확인을 시작하지만, 헤드리스 명령은 그 전에 끝납니다.
 - Windows의 무인 설치와 화면 바꾸기 경로의 거절, 실제 1.5.1 앱의 창: 기기 시험.
 
+## 출입 제한 단계 (1.8.0)
+
+> **개발 PC에서 실행 필요.** 이 단계는 2026-10-17 클라우드 세션에서 시나리오로만 썼습니다. 그 세션에서는 클라이언트를 빌드할 수 없었고(webm의 하위 모듈 호스트가 막힘), sudo와 네트워크 네임스페이스도 없었습니다. 그래서 `tools/e2e/firewall-e2e.sh`에도 `scripts/ci.sh`에도 아직 없습니다. 개발 PC의 세션이 아래 표대로 스크립트에 더하고 돌린 뒤, 결과와 걸린 시간을 이 절에 적고 하한을 올립니다.
+
+교직원 전용 출입 제한([access-tickets.md](access-tickets.md), [architecture.md](architecture.md) 9절)을 실제 프로그램으로 확인합니다. hbbs(서버 패치 0006–0008)가 출입증을 확인하는지, hjv-api가 교직원, 묶인 PC, 이용 비밀번호, 심사 계정에 맞는 출입증을 주는지, 클라이언트(패치 0058–0061)가 그것을 싣고 거절 뒤에 바르게 움직이는지입니다. strict 모드에서 최소 버전 단계 다음에 돕니다.
+
+**구성**(더할 것)
+- 출입증 키: E2E 시험 키 폴더(`HJV_E2E_KEYS`)에 같은 바이트를 32번 되풀이한 seed `e7`로 만든 출입증 키(`ticket.secret`, `ticket.pub`)를 더합니다. hjv-api는 이 값을 자격 증명 `hjviewer-api-ticket-key`로 받고 `HJV_API_TICKET_PUBKEYS=1:<ticket.pub>`로 돕니다(공개된 시험 키라 selfcheck는 실패를 남기지만 서비스는 돕니다). 같은 seed 규칙이라 출시 빌드의 확인이 거부합니다.
+- hbbs: `HJV_ACCESS_FILE=$RUN/access.conf`로 띄웁니다. 처음 파일은 `MODE=off`, `KEY=1:<ticket.pub>`, `NOT_BEFORE=`입니다. 단계마다 운영자처럼 옆에 쓴 뒤 `mv`로 바꾸고, 다음 읽기(10초 안)의 `access …` 줄을 기다립니다. 개수는 루프백 콘솔의 `hjv-access`로 읽습니다(런북 9-5의 한 줄).
+- 이용 비밀번호: `HJV_API_GUEST_FILE=$RUN/guest.conf`. 파일은 `deploy/guest-conf.py`의 해시 함수로 시험 비밀번호의 해시와 내일의 `UNTIL`을 씁니다(도구는 터미널에서만 물으므로 함수만 씀). 한도 시험이 아니므로 `HJV_API_LIMIT_GUEST_IP`는 넉넉히 둡니다(A7이 실패를 한 번만 씀).
+- 심사 계정: `HJV_API_REVIEW_FILE=$RUN/review.conf`에 `PC=<PC A의 ID>`. ID와 비밀번호는 시험 값입니다.
+- 기기: 지금의 PC(`PC_CLIENT`, 계정 단계에서 alice에 묶임, 이하 PC A)와 묶지 않는 둘째 PC(PC B, 설치하지 않은 실행본), 컨트롤러는 로그인하지 않은 쪽(`ctl`)과 alice로 로그인한 쪽(`staff`), 그리고 1.5.1 클라이언트(`CLIENT_OLD`, 없으면 A12만 건너뜀). 클라이언트 호출마다 30초 제한은 그대로입니다.
+
+**시나리오**(아직 돌리지 않음)
+
+| # | 단계 | 기대 |
+|---|---|---|
+| A1 | `MODE=off`인 파일로 hbbs를 띄움 | 로그 `access off`, 콘솔 `HJVACCESS1 mode=off`. `ctl`이 PC B에 비밀번호로 연결해 화면을 받음(종료 0). PC B의 `--hjv-e2e-option hjv-access-pc`는 `ok` |
+| A2 | `MODE=count` | 로그 `access count: keys 1`. A1의 연결이 그대로 됨. 콘솔에 `ph.missing`(ctl), `ph.ok`(staff가 PC A에 연결한 뒤), `reg.ok`(PC A), `reg.missing`(PC B)이 0이 아님. `access refused` 줄은 0 |
+| A3 | `MODE=enforce` | 로그 `access enforce: keys 1`. `ctl`이 PC A에 연결하면 종료 5와 `hjv-e2e: access refused`, 출력은 앱의 A1 글(`… (access not allowed)`). hbbs 로그에 `access refused ph … : missing` 한 줄(다시 하지 않음) |
+| A4 | `staff`가 PC A에 연결 | 화면을 받음(종료 0). `--hjv-e2e-ticket`이 `"use":"both"`이고 `valid` |
+| A5 | PC B(묶이지 않음, 로그인 안 함) | 30초 안에 `hjv-access-pc`가 `refused`. `staff`가 PC B에 연결하면 오프라인(등록되지 않음). PC A는 그대로 온라인(`reg.ok`) |
+| A6 | `ctl`이 `HJV_E2E_ACCESS_PASSWORD=<맞는 비밀번호>`로 PC A에 연결 | `hjv-e2e: guest ctl: ok`, 화면을 받음. 같은 프로세스가 아닌 새 `ctl`이 같은 변수 없이 연결하면 A3처럼 거절(출입증은 그 프로세스의 메모리에만 있음) |
+| A7 | 틀린 비밀번호로 A6 | `guest ctl: denied`, 종료 6, 2초 ± 0.5초 뒤. `hjv-api admin ticket status`의 어제 시도에 `wrong 1` |
+| A8 | PC B에서 `--hjv-e2e-guest-pc <맞는 비밀번호>` | `guest pc: ok`. 10초 안에 `hjv-access-pc`가 `ok`, 콘솔의 `reg.ok`가 늘고, `staff`가 PC B에 연결해 화면을 받음. PC B의 설정 폴더에 출입증 파일이 생기지 않음 |
+| A9 | `guest.conf`를 지움 | 맞는 비밀번호로 A6을 해도 `guest ctl: denied`(A7과 같은 답과 지연). 어제 시도에 `closed 1` |
+| A10 | 심사 계정으로 로그인한 컨트롤러 | `--hjv-e2e-ticket`이 `"use":"ctl"`. PC A에 연결하면 화면을 받고, PC B에 연결하면 출입증을 한 번 새로 받은 뒤에도 거절되어 종료 5(출력은 앱의 A2 글) |
+| A11 | `NOT_BEFORE=<지금>` | 로그 `access enforce: keys 1, not before <UTC>`. 10초 안에 PC A와 PC B의 등록이 끊김(`access closed reg … : revoked`). `staff`의 다음 연결은 첫 시도가 거절된 뒤 새 출입증으로 다시 해서 화면을 받음(종료 0). PC A는 다음 동기화(최대 2분) 뒤 다시 `reg.ok`. PC B는 이용 비밀번호를 다시 넣을 때까지 `refused` |
+| A12 | 1.5.1 클라이언트(`CLIENT_OLD`)로 연결(hbbs의 최소 버전은 꺼 둠) | hbbs의 기본 문구가 그대로 옴(한국어와 영어, `(access not allowed)`로 끝남). hbbs 로그의 거절이 한 줄(자동으로 다시 하지 않음) |
+| A13 | 돌고 있는 hbbs의 파일을 고장 난 것(`MODE=on`)으로 바꿈, 그다음 hbbs를 다시 시작 | 처음에는 `access file …: …; access enforce: keys 1 … stays in force`(ERROR)이고 `staff`가 그대로 연결함. 다시 시작한 뒤에는 `access closed`, `staff`도 거절(종료 5, 콘솔 `ph.closed`) |
+| A14 | `MODE=off`로 고침 | 다음 읽기에 `access off`. `ctl`이 비밀번호로 PC B에 연결해 화면을 받음. PC B는 출입증 없이 다시 등록(`hjv-access-pc` `ok`) |
+
+**`scripts/ci.sh`에 더할 것**
+- 감지: hbbs의 `--help`에 `--hjv-access-file`이 있고 클라이언트 실행 파일에 `--hjv-e2e-guest-pc`가 있으면 이 단계를 켭니다(`HJV_E2E_ACCESS=1`). `server/patches`에 0006이 있는데 hbbs에 옵션이 없거나, `client/patches`에 0061이 있는데 클라이언트에 명령이 없으면 실패합니다. 둘 다 없을 때만 건너뛴 것으로 셉니다(최소 버전 단계의 감지와 같은 틀).
+- 하한: 이 단계가 더하는 `PASS` 줄의 수만큼 `E2E_LEAST_STRICT`를 올립니다(표의 한 줄에 하나면 14). 구현한 날의 전체 실행의 수로 정합니다.
+- 클라이언트 단위 시험: `--lib hjv`에 `hjviewer_access::guest`의 시험 셋이 더해집니다. 그 수로 `UNIT_LEAST`를 올립니다.
+
+### 출입 제한 단계가 다루지 않는 것
+
+- 앱의 화면(A1 창, PC 홈의 P1, P2 창, 설정과 설치 화면의 G1): Dart 시험(`flutter/test/hjviewer_access_test.dart`)과 기기 시험.
+- Windows 서비스로의 IPC: 리눅스의 PC도 같은 코드(`Data::HjvGuestPc`)로 등록하는 프로세스에 넘기지만, Windows의 서비스와 사용자 세션 사이의 경로는 기기 시험입니다.
+- 출입증 수명이 다해 끝나는 것: 수명은 1시간이 가장 짧으므로 E2E는 `NOT_BEFORE`(A11)로 끝냅니다. 수명과 반쯤 지난 때의 갱신은 단위 시험이 봅니다.
+- hbbr: 아무것도 확인하지 않습니다(계약 1절).
+- 이용 비밀번호와 출입증의 한도: hjv-api의 시험(`server/api/tests/guest.rs`)과 deploy 단계의 nginx 한도 시험이 봅니다.
+
 ## 원격 켜기 단계 (1.6.0)
 
 꺼진 PC를 앱에서 켜는 길 전체를 실제 프로그램으로 확인합니다(설계 3판 8-10). 앱의 켜기 요청 → hjv-api가 서명한 명령 → NAS의 hjv-relay → PC 랜카드에 닿는 매직 패킷 → 깨어난 PC의 확인까지입니다. `tools/e2e/wol-e2e.sh`이고 `scripts/ci.sh wol`이 돌립니다(서버와 `hjv-probe`는 `scripts/ci.sh server`로 먼저 빌드).
