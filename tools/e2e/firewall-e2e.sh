@@ -1578,7 +1578,7 @@ guest_tries() { # the access password's tries of the last day, as admin ticket s
 guest_tried() { [[ ", $(guest_tries), " == *", $1, "* ]]; } # <result> <n>, e.g. "wrong 1"
 
 access_part() {
-  local t0 n0 n1 nb before
+  local t0 n0 n1 nb before ms
   mkdir -p "$RUN"/{actl,staff,rev,pcb}/{home,ipc}
   log "A1: MODE=off: hbbs checks nothing (a PC with no ticket registers); the apps read the mode"
   hbbs_has "access off" || fail "A1: hbbs did not log 'access off' (HJV_ACCESS_FILE, server patch 0006)"
@@ -1592,9 +1592,10 @@ access_part() {
   until_ok 40 "A1: PC B online" online "$PCB_ID" ctl
   ascreen actl "$PCB_ID" a1
   screen_ok "A1: the controller without a login, to PC B with its password" a1
+  ms=$MS
   until_ok 10 "A1: PC B's hjv-access-pc ok" pcb_is ok
   until_ok 5 "A1: GET /api/hjv/access" gate_is off
-  pass "A1: MODE=off ('access off', console 'HJVACCESS1 mode=off'): PC B ($PCB_ID), with no ticket, registered (hjv-access-pc ok) and the controller without a login got its screen with the password ($MS ms); GET /api/hjv/access {\"mode\":\"off\"}, without counts"
+  pass "A1: MODE=off ('access off', console 'HJVACCESS1 mode=off'): PC B ($PCB_ID), with no ticket, registered (hjv-access-pc ok) and the controller without a login got its screen with the password ($ms ms); GET /api/hjv/access {\"mode\":\"off\"}, without counts"
 
   log "A2: MODE=count: hbbs judges and counts, and refuses nothing"
   access_conf count
@@ -1634,10 +1635,11 @@ access_part() {
   log "A4: alice's controller connects to the PC with her login's ticket"
   ascreen staff "$PC_ID" a4
   screen_ok "A4: alice's controller to the PC" a4
+  ms=$MS
   arun hjv-ctl staff "$CLIENT" --hjv-e2e-ticket refresh
   [ "$RC" = 0 ] || fail "A4: --hjv-e2e-ticket refresh: exit $RC"
   ahas '"use":"both"' && ahas '"valid":true' || fail "A4: not a valid ticket for both: $(grep '^hjv-e2e: ticket {' <<<"$OUT")"
-  pass "A4: the PC's screen ($MS ms); the login's ticket, asked again with the app's ID and device key, is valid and for both"
+  pass "A4: the PC's screen ($ms ms); the login's ticket, asked again with the app's ID and device key, is valid and for both"
 
   log "A5: PC B, with no ticket, is refused: offline; the PC stays online with its bound PC's ticket"
   until_ok 30 "A5: PC B's hjv-access-pc refused" pcb_is refused
@@ -1710,10 +1712,11 @@ access_part() {
   n1=$(hbbs_count 'access refused ph ')
   ascreen staff "$PC_ID" a11
   screen_ok "A11: alice's controller after NOT_BEFORE" a11
+  ms=$MS
   [ "$(hbbs_count 'access refused ph ')" = $((n1 + 1)) ] ||
     fail "A11: hbbs refused $(($(hbbs_count 'access refused ph ') - n1)) of alice's punch hole requests, not her old ticket's one"
   until_ok 30 "A11: PC B refused again" pcb_is refused
-  pass "A11: hbbs closed both registrations ('access closed reg'); the PC came back with its next sync's ticket; alice's controller was refused once with her old ticket and got the screen with a new one in the same call ($MS ms); PC B stays refused until the access password comes again"
+  pass "A11: hbbs closed both registrations ('access closed reg'); the PC came back with its next sync's ticket; alice's controller was refused once with her old ticket and got the screen with a new one in the same call ($ms ms); PC B stays refused until the access password comes again"
 
   log "A12: a 1.5.1 controller shows hbbs's own text as it came"
   if [ -n "${CLIENT_OLD:-}" ]; then
