@@ -34,6 +34,20 @@ HJViewer를 연세대학교 교직원 전용 서비스로 만듭니다. 연세 S
 
 알아 둘 한계(자세한 것은 wave1-notes.md): upstream의 uuid 신뢰 방식(오프라인 ID의 키를 그 uuid와 마지막 주소를 아는 쪽이 바꿀 수 있음), 티켓은 소지자 증명(복사하면 수명 동안 쓰임), hbbr은 열린 중계기로 남음.
 
+### 2차 작업 (2026-10-17, 클라우드 세션)
+
+3절의 3-1~3-5를 이 브랜치에 커밋하고, `staff-only-gate`에서 `main`으로 가는 초안 PR을 열었습니다. 클라우드에서 돌린 시험과 돌리지 못한 것은 다음과 같습니다.
+
+| 묶음 | 커밋 | 클라우드에서 돌린 시험 |
+|---|---|---|
+| 3-1 계약 | 01c9908 | 벡터 생성기 `--check`, hjv-api `cargo test --locked` 409 통과(무시 10), hbbs 서버 단계 명령 96 통과. 새 SHA-256을 hjv-api, hbbs(0008), 클라이언트(0060)가 고정 |
+| 3-2 hjv-api | 075322d | hjv-api 424 통과(무시 10, root로 돌려 건너뛴 시험 1: "a policy that cannot be read"), `test_guest_conf.py`, `test_review_conf.py`, nginx의 `/api/hjv/guest` 한도 |
+| 3-3 클라이언트 | e52cda5(패치 0061) | Dart 순수 시험 134 통과(새 5), 바꾼 Dart 파일의 정적 분석 오류 0, 패치 61개를 고정 커밋에 다시 적용해 같은 트리(f0a1a15). `guest-conf.py`가 앞뒤 공백의 비밀번호를 거절(앱이 지우므로). **Rust는 컴파일하지 못함**: chromium.googlesource.com이 막혀 webm의 하위 모듈(libwebm)을 받지 못해 cargo가 의존성을 풀지 못함. rustfmt로 문법과 형식만 봄 |
+| 3-4 문서 | 0bfc058 | 문서의 링크와 고리, `deploy/access.conf.example`을 빌드한 hbbs가 `access off`로 읽음, 런북의 콘솔 한 줄(`HJVACCESS1 mode=…`). deploy 단계(Docker, systemd)는 클라우드에 없어 못 돌림 |
+| 3-5 E2E와 버전 | 75cec78, 마지막 커밋 | E2E는 시나리오만(e2e.md "출입 제한 단계", sudo와 네트워크 이름공간과 클라이언트 빌드가 없음). 버전 1.8.0(`client/version.env`) |
+
+정한 것(문서에 적음): 컨트롤러의 이용 비밀번호 출입증은 그 프로세스에서 그 대상으로 가는 마지막 세션이 닫힐 때 버립니다. 연결 문제(400, 503, 네트워크)는 모두 E3입니다. 앱은 입력의 앞뒤 공백을 지우고, `guest-conf.py`는 그런 비밀번호를 만들지 않습니다. 앱 시작과 앞으로 돌아올 때 `hjv-access-refresh`를 보냅니다(1차 노트의 남은 일).
+
 ## 3. 남은 일 (순서대로)
 
 ### 3-1. 계약 하나로 맞추기 (먼저)
@@ -86,4 +100,11 @@ architecture.md(출입 제한 절), privacy.md(이용 비밀번호 기록, 티�
 
 ## 5. 개발 PC에서 할 일 (클라우드가 하지 않음)
 
-PR을 받은 뒤 개발 PC의 세션이 합니다: 유출 검사, `scripts/ci.sh prepush`(server, client, deploy, e2e, wol, leak), 패치가 시험한 트리를 재현하는지 확인, `main`에 병합과 push, 서버 묶음, 허브-운영의 설치(`MODE=off`로 먼저), 사용자의 티켓 키 만들기, 1.8.0 세 플랫폼 빌드와 TestFlight, 출시일 순서(정책 seq 4 → 묶인 PC 업데이트 → seq 5 최소 1.8.0 → hbbs MIN=1.8.0 → `MODE=enforce`).
+2차 작업이 남긴 것부터 합니다(PR의 "개발 PC에서 확인할 것"과 같음).
+
+- 클라이언트 Rust: `scripts/ci.sh client`(Rust 1.75 check, `--lib hjv`에 새 `hjviewer_access::guest` 시험 셋), 그리고 클라이언트 전체 lib 시험과 고정 계정 빌드의 `hjv` 시험. 클라우드는 컴파일하지 못했으므로 처음 컴파일입니다. 특히 `src/hjviewer_access/guest.rs`, `src/ipc.rs`의 `Data::HjvGuestPc`, `src/flutter_ffi.rs`의 `session_closed` 훅, `src/hjviewer_e2e.rs`의 새 명령.
+- 생성된 bridge가 있는 Flutter 시험 전체(client-build.yml의 Dart tests 잡)와 세 플랫폼 빌드. 화면(A1, P1, P2, G1)을 데스크톱과 휴대폰에서 눈으로 봄.
+- E2E의 출입 제한 단계: e2e.md의 A1~A14를 `tools/e2e/firewall-e2e.sh`에 더하고, `scripts/ci.sh`의 감지와 하한(`E2E_LEAST_STRICT`, `UNIT_LEAST`)을 올린 뒤 돌림.
+- `scripts/ci.sh deploy`(새 `hjviewer.env.example`의 주석 줄, `access.conf.example`), root가 아닌 사용자로 hjv-api 시험(건너뛴 시험 1).
+
+그다음은 1차 작업 때 정한 대로입니다: 유출 검사, `scripts/ci.sh prepush`(server, client, deploy, e2e, wol, leak), 패치가 시험한 트리를 재현하는지 확인, `main`에 병합과 push, 서버 묶음, 허브-운영의 설치(`MODE=off`로 먼저), 사용자의 티켓 키 만들기, 1.8.0 세 플랫폼 빌드와 TestFlight, 출시일 순서(정책 seq 4 → 묶인 PC 업데이트 → seq 5 최소 1.8.0 → hbbs MIN=1.8.0 → `MODE=enforce`).
