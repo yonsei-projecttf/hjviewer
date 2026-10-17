@@ -48,6 +48,18 @@ HJViewer를 연세대학교 교직원 전용 서비스로 만듭니다. 연세 S
 
 정한 것(문서에 적음): 컨트롤러의 이용 비밀번호 출입증은 그 프로세스에서 그 대상으로 가는 마지막 세션이 닫힐 때 버립니다. 연결 문제(400, 503, 네트워크)는 모두 E3입니다. 앱은 입력의 앞뒤 공백을 지우고, `guest-conf.py`는 그런 비밀번호를 만들지 않습니다. 앱 시작과 앞으로 돌아올 때 `hjv-access-refresh`를 보냅니다(1차 노트의 남은 일).
 
+### 3차 작업: 사용자 쪽 안내 (2026-10-17, 클라우드 세션)
+
+2차 작업 뒤 사용자 흐름을 코드로 따라가 찾은 14가지를 사용자 결정("모두 진행")으로 고쳤습니다. 같은 PC에 새로 연결할 때마다 이용 비밀번호를 묻는 것(1차의 결정 3)은 정책이라 그대로 둡니다.
+
+| 묶음 | 커밋 | 한 것 | 클라우드에서 돌린 시험 |
+|---|---|---|---|
+| U1 hjv-api | b99d8d2 | `GET /api/hjv/access`(토큰 없음, hbbs 콘솔 `hjv-access`의 모드만, 30초 묶음, 계약 3-6), 이용 비밀번호 429의 `retry_after`(주소의 실패·출입증 한도, 모두의 시도) | hjv-api `cargo test --locked` 426 통과(무시 10), 새 시험: 모드 답·묶음·`unknown`, 429마다 그 한도의 초, `parse_access` |
+| U2 클라이언트 | 277815b(패치 0062) | A1을 "교직원 전용 서버"로, [로그인]을 기본 단추로, 이용 비밀번호는 펼쳐서. 화면 글에서 표시 `(access not allowed)`를 뺌(msgbox의 Rust 글에는 남김). 이용 비밀번호 뒤 토스트. A2에 [다시 연결]. PC 홈의 알림을 ID 위로(P1, P2의 "HH:mm까지"와 [끝내기], G2). 거절된 동안 상태 줄과 Windows 트레이 안내. 설치했고 로그인하지 않은 Windows PC는 로그인 창을 한 번 엶. 연결 화면의 G3, 로그아웃과 "내 목록에서 빼기"의 L1·L2(서버 모드에 따라, 원격으로 보고 있으면 한 줄 더). E2의 "약 N분". 세션 창의 로그인 알림은 주 창에서 | Dart 순수 시험 135 통과, 바꾼 Dart 파일의 정적 분석 오류 0(경고·정보 3은 전부터 있던 것), 패치 62개를 고정 커밋에 다시 적용해 같은 트리(ec94cde), 바꾼 Rust 파일 rustfmt. **Rust는 이번에도 컴파일하지 못함**(2차와 같은 까닭) |
+| U3 문서 | 이 커밋 | 계약 5-3(새 글과 규칙, G2·G3·L1·L2), distribution, architecture 9-2·9-3, 런북 9-3(앱이 보는 모드 확인)과 9-6(정책 seq 4·5의 알림 글), e2e.md(A1·A3·A13에 모드 확인), privacy, README | 문서 링크 검사 |
+
+정한 것: 로그아웃의 "한 번 더 확인"은 두 번째 창이 아니라 같은 확인 창의 경고 줄로 했습니다. 트레이는 안내(툴팁)만 바꾸고 알림은 띄우지 않습니다. G2는 서버 모드와 상관없이 보입니다(`enforce` 전의 예고). P2의 끝나는 시각은 그 창의 메모리에만 둡니다(앱을 다시 켜면 줄은 사라지고, 출입증이 없으면 P1이 나옴).
+
 ## 3. 남은 일 (순서대로)
 
 ### 3-1. 계약 하나로 맞추기 (먼저)
@@ -102,8 +114,8 @@ architecture.md(출입 제한 절), privacy.md(이용 비밀번호 기록, 티�
 
 2차 작업이 남긴 것부터 합니다(PR의 "개발 PC에서 확인할 것"과 같음).
 
-- 클라이언트 Rust: `scripts/ci.sh client`(Rust 1.75 check, `--lib hjv`에 새 `hjviewer_access::guest` 시험 셋), 그리고 클라이언트 전체 lib 시험과 고정 계정 빌드의 `hjv` 시험. 클라우드는 컴파일하지 못했으므로 처음 컴파일입니다. 특히 `src/hjviewer_access/guest.rs`, `src/ipc.rs`의 `Data::HjvGuestPc`, `src/flutter_ffi.rs`의 `session_closed` 훅, `src/hjviewer_e2e.rs`의 새 명령.
-- 생성된 bridge가 있는 Flutter 시험 전체(client-build.yml의 Dart tests 잡)와 세 플랫폼 빌드. 화면(A1, P1, P2, G1)을 데스크톱과 휴대폰에서 눈으로 봄.
+- 클라이언트 Rust: `scripts/ci.sh client`(Rust 1.75 check, `--lib hjv`에 새 `hjviewer_access::guest` 시험 셋), 그리고 클라이언트 전체 lib 시험과 고정 계정 빌드의 `hjv` 시험. 클라우드는 컴파일하지 못했으므로 처음 컴파일입니다. 특히 `src/hjviewer_access/guest.rs`(3차: `Failure::TooOften(u64)`, 결과의 `until`·`retry_after`, `hjv-guest-pc-end`), `src/ipc.rs`의 `Data::HjvGuestPc`, `src/flutter_ffi.rs`의 `session_closed` 훅, `src/hjviewer_e2e.rs`의 새 명령, 그리고 **Windows에서만 컴파일되는** `src/tray.rs`의 훅과 `src/hjviewer_access.rs`의 `tray_*`(Windows 빌드로 확인).
+- 생성된 bridge가 있는 Flutter 시험 전체(client-build.yml의 Dart tests 잡)와 세 플랫폼 빌드. 화면을 데스크톱과 휴대폰에서 눈으로 봄: A1(펼치기 전과 뒤, 휴대폰에서 키보드가 펼친 뒤에만 올라옴), A2의 [다시 연결], PC 홈의 P1(ID 위)·P2의 줄과 [끝내기]·G2, 상태 줄과 Windows 트레이 안내, 설치했고 로그인하지 않은 Windows PC에서 로그인 창이 한 번만 열림, 연결 화면의 G3(`MODE=enforce`일 때만), 로그아웃과 "내 목록에서 빼기"의 경고(서버 모드마다, 원격 세션 중), 세션 창에서 로그인했을 때 주 창이 알림을 보임.
 - E2E의 출입 제한 단계: e2e.md의 A1~A14를 `tools/e2e/firewall-e2e.sh`에 더하고, `scripts/ci.sh`의 감지와 하한(`E2E_LEAST_STRICT`, `UNIT_LEAST`)을 올린 뒤 돌림.
 - `scripts/ci.sh deploy`(새 `hjviewer.env.example`의 주석 줄, `access.conf.example`), root가 아닌 사용자로 hjv-api 시험(건너뛴 시험 1).
 

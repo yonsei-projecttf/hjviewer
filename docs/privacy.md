@@ -67,6 +67,11 @@ someone typed the access password that the operator gives out (section 3, "Acces
   when they come back to the front after an hour, after a login or a refused connection, and every
   6 hours. The policy is a public file, the same for everyone, signed by the operator. The request
   carries no ID, account or device information, and the web server keeps no access log of it.
+- **The server's access check** (from version 1.8.0): apps ask whether the server checks access
+  (`/api/hjv/access`) at start and when they come back to the front (once a minute at most), to
+  choose the login hints and the logout warnings. The answer is one word, the same for everyone.
+  The request carries no ID, account or device information, the account service records nothing
+  of it, and the web server keeps no access log of it.
 - **Updates: downloads** (from version 1.6.0): the account service hands out the installers of new
   versions: to logged-in apps, to the HJViewer service of a PC in an account, and through two kinds
   of links that need no login: the migration link that the operator gives to people still on
@@ -367,6 +372,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 - **시스템 정보와 접속 기록**: 원격 접속을 받는 PC는 upstream RustDesk처럼 서버의 `/api` 주소로 하트비트, 호스트 이름, OS 사용자 이름, OS, CPU, 메모리 정보, 그리고 연결과 파일 전송마다의 기록(상대 기기의 주소·ID·이름, 파일 이름과 크기)을 보내려 합니다. 로그인한 앱도 세션에 남길 수 있는 메모를 그 주소로 보내려 합니다. 이 배포는 그 주소에 요청을 읽지 않고 404로 답하며 아무것도 저장하지 않습니다. 계정 서비스에는 3절의 계정 요청만 갑니다.
 - **STUN 서버**: 두 기기를 직접 연결(P2P)하려고, 앱은 공개 STUN 서버(stun.cloudflare.com, stun.l.google.com, stun.antisip.com, stun.nextcloud.com)에 자신의 공인 IP와 포트를 묻습니다. 이 서버 운영자는 기기의 IP 주소와 시각을 알 수 있지만, 세션 내용은 알 수 없습니다.
 - **업데이트: 버전 정책**(1.6.0부터): 앱은 서버의 버전 정책(`/api/hjv/version`)을 확인합니다. 시작할 때, 마지막 확인이 30분 넘은 뒤 연결하기 직전, 1시간 넘게 뒤에 있다가 앞으로 돌아올 때, 로그인이나 거절된 연결 직후, 그리고 6시간마다입니다. 정책은 운영자가 서명한 공개 파일이고 모두에게 같습니다. 이 요청에는 ID, 계정, 기기 정보가 없고, 웹 서버는 이 요청의 접속 기록을 남기지 않습니다.
+- **서버의 출입 확인**(1.8.0부터): 앱은 켤 때와 앞으로 돌아올 때(1분에 한 번까지) 서버가 출입 확인을 켰는지(`/api/hjv/access`)를 묻고, 그 답으로 로그인 안내와 로그아웃 경고를 고릅니다. 답은 모두에게 같은 모드 한 낱말입니다. 이 요청에는 ID, 계정, 기기 정보가 없고, 계정 서비스는 이 요청을 기록하지 않으며, 웹 서버도 이 요청의 접속 기록을 남기지 않습니다.
 - **업데이트: 내려받기**(1.6.0부터): 계정 서비스가 새 버전의 설치 파일을 내줍니다. 로그인한 앱, 계정에 들어간 PC의 HJViewer 서비스, 그리고 로그인이 필요 없는 링크 두 가지로 받습니다. 하나는 운영자가 아직 1.5.x를 쓰는 사람에게 주는 이행용 링크이고, 하나는 로그인한 앱이 다른 PC를 위해 만드는 짧은 링크입니다(10분 동안 세 번까지 쓰고, 서비스의 메모리에만 있음). 서비스는 내려받기와 짧은 링크 만들기마다 어느 길로 어느 플랫폼의 파일을 받았는지, 시각, 그리고 꼬리표를 기록합니다. 꼬리표는 계정과 PC가 있으면 그 꼬리표, 그리고 접속한 IP 주소의 꼬리표입니다(주소 자체는 없음). 이 기록은 6개월 동안 둡니다. 이행용 링크의 내려받기는 1분에 20개까지만 기록합니다. 링크의 코드는 저장하지 않고, 서비스의 로그에는 코드의 꼬리표 앞 16진수 8자리만 남습니다. 웹 서버는 이 요청의 접속 기록도 남기지 않습니다(오류 로그는 위 '서버 로그').
 
 ### 3. 계정 (1.6.0부터)

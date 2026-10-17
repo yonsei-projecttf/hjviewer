@@ -345,28 +345,48 @@ hbbs는 출입증 하나를 아래 순서로 보고, 처음 걸린 것을 이유
 
 | 때 | 한국어 | English |
 |---|---|---|
-| A1. 로그인하지 않은 컨트롤러가 거절됨(세션 창) | HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요. (access not allowed) | HJViewer is for Yonsei University staff. Log in with your Yonsei portal account, or enter the access password. (access not allowed) |
-| A1의 단추 | [로그인] [이용 비밀번호로 연결] [취소] | [Log in] [Connect with the access password] [Cancel] |
+| A1. 로그인하지 않은 컨트롤러가 거절됨(세션 창)의 제목 | 교직원 전용 서버 | Staff-only server |
+| A1의 글 | 이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하면 연결되고, 다음부터는 묻지 않습니다. | This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect; you will not be asked again. |
+| A1의 단추 | [취소] [로그인]. "이용 비밀번호가 있나요?"를 누르면 입력 칸이 열리고 [취소] [로그인] [연결] | [Cancel] [Log in]. "Have an access password?" opens the field: [Cancel] [Log in] [Connect] |
 | A1의 입력 칸 | 이용 비밀번호. 안내: 관리자가 알려 준 비밀번호입니다. PC의 일회용 비밀번호가 아닙니다. | Access password. Hint: the password your administrator gave you, not the PC's one-time password. |
-| A2. 로그인한 컨트롤러가 출입증을 새로 받아 다시 해도 거절됨 | 서버가 이 연결을 받지 않았습니다. 잠시 뒤 다시 시도하고, 계속되면 관리자에게 알려 주세요. (access not allowed) | The server did not accept this connection. Try again in a moment, and tell your administrator if it keeps happening. (access not allowed) |
+| A1에서 출입증을 받은 뒤(토스트) | 이용 비밀번호를 확인했습니다. PC가 비밀번호를 물으면 그 PC의 비밀번호를 넣으세요. | Access password accepted. If the PC asks for its password, enter that PC's password. |
+| A2. 로그인한 컨트롤러가 출입증을 새로 받아 다시 해도 거절됨 | 서버가 이 연결을 받지 않았습니다. 잠시 뒤 다시 연결해 보고, 계속되면 관리자에게 알려 주세요. | The server did not accept this connection. Try again in a moment, and tell your administrator if it keeps happening. |
+| A2의 단추 | [닫기] [다시 연결]. 포트 포워딩은 [닫기]만 | [Close] [Reconnect]. A port forward: [Close] only |
 | P1. 등록이 `NOT_DEPLOYED`(PC 홈, 빠른 지원 창)의 제목 | 이 PC는 아직 서버에 연결되지 않았습니다 | This PC is not connected to the server yet |
 | P1의 글 | 이 PC를 연결받으려면 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요. | To accept connections on this PC, log in with your Yonsei portal account or enter the access password. |
 | P1의 단추 | [로그인] [이용 비밀번호] | [Log in] [Access password] |
+| P1 동안의 상태 줄 | 서버에 연결되지 않음(로그인 필요) | Not connected to the server (log in) |
+| P1 동안의 트레이 안내(Windows)에 붙는 줄 | 서버에 연결되지 않음: 로그인 필요 | Not connected to the server: log in |
 | P2. PC의 이용 비밀번호 창 | 이용 비밀번호를 넣으면 이 PC가 최대 12시간 동안 연결을 받습니다. 끝나면 다시 넣어야 합니다. | With the access password, this PC accepts connections for up to 12 hours. After that, enter it again. |
+| P2에서 출입증을 받은 뒤(토스트) | 이 PC는 18:30까지 연결을 받습니다. | This PC accepts connections until 18:30. |
+| P2의 홈 줄과 단추 | 이용 비밀번호로 연결받는 중 · 18:30까지 [끝내기] | Accepting connections with the access password until 18:30 [End] |
+| P2를 끝낸 뒤(토스트) | 이용 비밀번호로 연결받기를 끝냈습니다. | This PC no longer accepts connections with the access password. |
 | G1. 설치 화면과 설정의 안내 | 사람이 없을 때도 이 PC에 연결하려면 연세포탈로 로그인해 두세요. 이용 비밀번호는 앱을 켤 때마다 넣어야 합니다. | To reach this PC when nobody is at it, keep it logged in with your Yonsei portal account. The access password has to be entered each time the app starts. |
+| G2. 설치했고 로그인하지 않은 Windows PC의 홈 | G1의 글과 [로그인] | G1's text and [Log in] |
+| G3. 교직원 전용 서버에서 로그인하지 않은 앱의 연결 화면(ID 칸 아래) | 이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연결하려면 연세포탈로 로그인하세요. 이용 비밀번호가 있으면 연결할 때 넣을 수 있습니다. [로그인] | This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect, or enter an access password when you connect. [Log in] |
+| L1. 로그아웃 창, 교직원 전용 서버 | 이 서버는 교직원 전용이라, 로그아웃하면 누군가 이 PC에서 다시 로그인할 때까지 이 PC에 원격으로 연결할 수 없습니다. | This server is for staff only: once you log out, nobody can connect to this PC remotely until someone logs in on it again. |
+| L1, 서버 모드를 모를 때 | 서버가 교직원 전용이면, 로그아웃한 뒤에는 누군가 이 PC에서 다시 로그인할 때까지 이 PC에 원격으로 연결할 수 없습니다. | If the server is for staff only, nobody can connect to this PC remotely after you log out, until someone logs in on it again. |
+| L1에 붙는 줄, 그 PC를 누가 원격으로 보고 있을 때 | 지금 이 PC를 원격으로 쓰고 있다면, 이 세션이 끝난 뒤에는 다시 들어올 수 없습니다. | If you are using this PC remotely now, you cannot get back in once this session ends. |
+| L2. "내 목록에서 빼기", 교직원 전용 서버 | 이 서버는 교직원 전용이라, 빼면 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다. | This server is for staff only: once removed, nobody can connect to that PC remotely until someone logs in on it again. |
+| L2, 서버 모드를 모를 때 | 서버가 교직원 전용이면, 빼고 나서는 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다. | If the server is for staff only, nobody can connect to that PC remotely once it is removed, until someone logs in on it again. |
 | E1. 이용 비밀번호가 틀림(401 `denied`) | 이용 비밀번호가 맞지 않거나, 지금은 서버가 이용 비밀번호를 받지 않습니다. | The access password is wrong, or the server does not take the access password right now. |
-| E2. 시도가 너무 많음(429) | 시도가 너무 많습니다. 잠시 뒤 다시 해 주세요. | Too many tries. Please try again later. |
+| E2. 시도가 너무 많음(429, `retry_after`가 있음) | 시도가 너무 많습니다. 약 10분 뒤 다시 해 주세요. (한 시간이 넘으면 "약 2시간") | Too many tries. Please try again in about 10 minutes. ("about an hour", "about 2 hours") |
+| E2, `retry_after`가 없거나 이틀이 넘을 때 | 시도가 너무 많습니다. 잠시 뒤 다시 해 주세요. | Too many tries. Please try again later. |
 | E3. 확인할 수 없음(503, 400, 네트워크, 그 밖의 실패) | 지금은 이용 비밀번호를 확인할 수 없습니다. 잠시 뒤 다시 해 주세요. | The access password cannot be checked right now. Please try again in a moment. |
 | E4. PC의 키가 다름(403 `wrong_pc`) | 이 PC의 키가 서버에 있는 것과 달라 이용 비밀번호로 연결받을 수 없습니다. 관리자에게 알려 주세요. | This PC's key differs from the one the server has, so it cannot accept connections with the access password. Please tell your administrator. |
 | E5. 기기의 시계가 맞지 않음(409 `clock`, 한 번 고쳐 다시 보낸 뒤에도) | 기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요. | The device's date and time are wrong. Set them to update automatically and try again. |
 
-- A1과 A2는 끝에 표시를 남깁니다. 오류 창으로 가는 글이라, 자동 다시 연결을 멈추기 위해서입니다(버전 거절의 R1, R2와 같음).
-- 로그인한 컨트롤러는 거절을 받으면 먼저 출입증을 한 번 새로 받아 다시 연결하고, 그래도 거절되면 A2를 보입니다.
-- A1에서 이용 비밀번호를 넣으면 앱이 그 대상의 출입증(3-5)을 받고 바로 다시 연결합니다. 새 연결은 다시 묻고, 같은 세션의 자동 다시 연결은 묻지 않습니다. [로그인]은 지금의 로그인 창을 열고, 로그인하면 다시 연결합니다.
-- P1은 등록이 거절된 동안(`hjv-access-pc`가 `refused`) PC 홈과 빠른 지원 창에 보입니다. 출입 확인이 꺼진 서버(`MODE=off`)는 거절하지 않으므로 P1이 나오지 않고, 앱은 지금처럼 움직입니다.
-- P2의 출입증은 앱의 메모리(설치한 PC는 서비스의 메모리)에만 있으므로, 앱(설치한 PC는 PC)을 다시 시작하거나 12시간이 지나면 끝나고 등록이 다시 거절되어 P1이 나옵니다.
-- 휴대폰 앱은 PC로 등록하지 않으므로 A1, A2와 E1~E3, E5만 씁니다.
-- 화면은 클라이언트 패치 0061의 `flutter/lib/common/hjviewer_access.dart`에 있고, 글과 고르기는 `hjviewer_access_texts.dart`(시험 `flutter/test/hjviewer_access_test.dart`)에 있습니다. Rust는 A1, A2를 한국어 글로 msgbox에 싣고, Flutter가 그 msgbox(`hjv-access-error`)를 앱의 언어로 된 창으로 바꿉니다.
+- **표시는 msgbox에만**: Rust는 거절을 msgbox(`hjv-access-error`)로 내고, 그 글은 끝에 표시를 남깁니다. 오류 창으로 가는 글이라 자동 다시 연결을 멈추기 위해서입니다(버전 거절의 R1, R2와 같음). 로그인하지 않은 앱에는 "HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요. (access not allowed)", 로그인한 앱에는 "서버가 이 연결을 받지 않았습니다. 잠시 뒤 다시 시도하고, 계속되면 관리자에게 알려 주세요. (access not allowed)"입니다. Flutter 화면은 그 msgbox를 위의 A1, A2 창으로 바꾸므로 표시를 보이지 않습니다.
+- **A1은 로그인이 먼저**: 거절되는 사람은 대부분 교직원이므로 [로그인]이 기본 단추이고, 이용 비밀번호의 입력 칸은 "이용 비밀번호가 있나요?"를 누를 때 열립니다(휴대폰에서 키보드가 먼저 올라오지 않음). 열면 [연결]이 기본 단추가 됩니다. 로그인을 끈 빌드는 처음부터 열립니다.
+- 로그인한 컨트롤러는 거절을 받으면 먼저 출입증을 한 번 새로 받아 다시 연결하고, 그래도 거절되면 A2를 보입니다. A2의 [다시 연결]도 같은 길로 다시 연결합니다.
+- A1에서 이용 비밀번호를 넣으면 앱이 그 대상의 출입증(3-5)을 받고, 토스트를 보이고 바로 다시 연결합니다. 새 연결은 다시 묻고, 같은 세션의 자동 다시 연결은 묻지 않습니다. [로그인]은 지금의 로그인 창을 열고, 로그인하면 다시 연결합니다. 세션 창에서 로그인하면 "이 PC를 목록에 추가했습니다" 같은 알림은 주 창이 보입니다.
+- **PC 홈의 알림**은 ID 위에 하나만 보입니다. 등록이 거절된 동안(`hjv-access-pc`가 `refused`) P1, 아니면 P2의 출입증이 남아 있는 동안 P2의 홈 줄, 아니면 설치했고 로그인하지 않은 Windows PC에 G2입니다. P1 동안 상태 줄은 "준비됨" 대신 위 글을 경고색으로 보이고, Windows의 트레이 안내에도 한 줄을 붙입니다. 출입 확인이 꺼진 서버(`MODE=off`)는 거절하지 않으므로 P1이 나오지 않고, 앱은 지금처럼 움직입니다.
+- **G2**는 서버 모드와 상관없이 보입니다. `enforce` 전의 예고도 겸합니다. 그런 PC는 홈을 처음 열 때 로그인 창을 한 번 엽니다(설치한 뒤, 그리고 1.8.0으로 업데이트한 뒤에 한 번).
+- P2의 출입증은 앱의 메모리(설치한 PC는 서비스의 메모리)에만 있으므로, 앱(설치한 PC는 PC)을 다시 시작하거나 12시간이 지나면 끝나고 등록이 다시 거절되어 P1이 나옵니다. 끝나는 때는 Rust가 결과의 `until`(그 기기의 시계)로 알려 주고, 앱은 그 창의 메모리에만 둡니다. [끝내기]는 등록하는 프로세스에서 그 출입증을 지웁니다(`hjv-guest-pc-end`).
+- **G3, L1, L2**는 서버 모드(3-6)를 따릅니다. 앱은 켤 때와 앞으로 돌아올 때(1분에 한 번까지) `GET /api/hjv/access`를 묻습니다. `enforce`나 닫힘(`closed`)이면 G3, L1, L2를 보이고, 모르면(`unknown`, 아직 답이 없음) L1, L2를 조건으로 보이고, `off`와 `count`면 보이지 않습니다. L1은 로그아웃하면 등록할 출입증이 없어지는 PC(묶인 PC, 설치하지 않은 앱)에만 보이고, 그 PC를 지금 누가 원격으로 보고 있으면 한 줄을 더 붙입니다.
+- E2의 기다릴 시간은 429의 `retry_after`(3-5)를 분으로 올림한 것이고, 한 시간이 넘으면 시간으로 올림합니다.
+- 휴대폰 앱은 PC로 등록하지 않으므로 A1, A2, G3, L2와 E1~E3, E5만 씁니다.
+- 화면은 클라이언트 패치 0061–0062의 `flutter/lib/common/hjviewer_access.dart`에 있고, 글과 고르기는 `hjviewer_access_texts.dart`(시험 `flutter/test/hjviewer_access_test.dart`)에 있습니다. 트레이의 줄은 `src/hjviewer_access.rs`(`tray_tooltip`)에 있습니다.
 
 ## 6. /etc/hjviewer/access.conf
 

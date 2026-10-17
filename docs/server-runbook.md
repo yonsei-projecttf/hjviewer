@@ -1838,9 +1838,12 @@ sudo install -d -m 700 /root/hjv-backup && sudo cp -p "$F" /root/hjv-backup/acce
 sudo chown root:hjviewer "$F.new" && sudo chmod 0640 "$F.new" && sudo mv -f "$F.new" "$F"
 sleep 12; sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep -E 'access (off|count|enforce|closed)|access file' | tail -2
 timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && cat <&3'
+D=$(sudo sed -n 's/^HJV_DOMAIN=//p' /etc/hjviewer/hjviewer.env); sleep 30
+curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/access"; echo   # 앱이 보는 모드
 ```
 
 - 마지막 저널 줄이 새 규칙이어야 합니다: `access off`, `access count: keys 1`, `access enforce: keys 1`(`NOT_BEFORE`가 있으면 `, not before <UTC>`가 붙음). 콘솔 줄의 `mode=`도 같습니다.
+- 마지막 줄은 앱이 보는 모드입니다(`{"mode":"enforce"}` 등, 계약 3-6). hjv-api는 hbbs에 30초에 한 번만 물으므로 30초를 기다립니다. 콘솔 줄과 같은 모드여야 합니다. `{"mode":"unknown"}`이면 hjv-api가 hbbs 콘솔에 닿지 못한 것입니다. 판정은 그대로이고 앱의 안내만 조건부("서버가 교직원 전용이면")로 바뀌므로, 보고에 적고 `/etc/hjviewer/hjviewer-api.env`의 `HJV_API_HBBS_CONSOLE`(기본 `127.0.0.1:21115`)과 hbbs를 봅니다.
 - `access file …: line N: …; <규칙> stays in force`(ERROR)이면 hbbs가 새 파일을 받지 않고 이전 규칙을 씁니다. 한 시간마다 같은 ERROR가 다시 나오고, 그 파일을 둔 채 hbbs가 다시 시작하면 닫힘(모두 거절)입니다. 바로 남긴 파일로 되돌리고 보고합니다.
   ```bash
   B=/root/hjv-backup/access.conf.before
@@ -1901,10 +1904,11 @@ timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && 
 
 1. **서버 묶음**(사용자 승인 뒤, 조용한 시간): 출입증이 든 서버 묶음을 6절 "B 경로 업데이트"로 넣고, 출입증 키(9-1)를 만들고, `access.conf`를 `MODE=off`로 둡니다(9-2). 앱에는 아무것도 바뀌지 않습니다.
 2. **1.8.0 배포**(개발 PC와 사용자): 1.8.0을 빌드하고 정책 seq 4(최신 1.8.0, 최소 버전은 그대로)를 8-2로 넣습니다. 설치된 Windows PC는 저절로 1.8.0이 되고(무인 설치 시각), 휴대폰은 TestFlight와 Play 스토어로 받습니다. 사용자는 distribution.md의 "사용자에게 보내는 안내 (출입 확인을 켜기 전)"을 보냅니다.
+   - seq 4의 알림 글(`hjv-release policy`의 `--notes`, 모든 플랫폼)에 로그인이 필요해진다는 것을 넣습니다. 앱의 업데이트 화면과 알림이 이 글을 보이므로, 출입 확인을 켜기 전에 앱이 미리 알립니다. 예: `1.8.0부터 HJViewer 서버는 연세대학교 교직원 전용입니다. 업데이트한 뒤 설정 → 계정에서 연세포탈로 로그인해 두세요. 사람이 없을 때도 연결받는 PC는 그 PC에서 로그인해 두어야 합니다.` URL은 넣지 않습니다.
 3. **이용 비밀번호와 데모 PC**: 9-4로 `guest.conf`를 넣고, 심사 계정이 있으면 7-17로 `PC=` 줄이 든 `review.conf`를 넣습니다.
 4. **(선택) 세어 보기**: 9-5로 `MODE=count`를 며칠 둡니다.
 5. **묶인 PC 확인**: `sudo /opt/hjviewer/bin/hjv-api admin binding list`에서 묶인 PC의 버전이 1.8.0인지 봅니다(1.7.x로 남은 PC는 출입증을 싣지 않으므로 7단계 뒤 오프라인이 됨). 남은 PC는 사용자에게 수를 알립니다(PC ID는 보고에 옮기지 않음).
-6. **최소 버전 1.8.0**: 정책 seq 5(최소 1.8.0)를 8-2로 넣고, 사용자가 `hjv-release hbbs-conf`로 만든 `MIN=1.8.0`의 파일을 8-3으로 넣습니다. 1.6.x와 1.7.x 앱은 업데이트 화면을, 1.5.x 앱과 그 밖의 앱은 hbbs의 최소 버전 문구를 봅니다.
+6. **최소 버전 1.8.0**: 정책 seq 5(최소 1.8.0)를 8-2로 넣고, 사용자가 `hjv-release hbbs-conf`로 만든 `MIN=1.8.0`의 파일을 8-3으로 넣습니다. 1.6.x와 1.7.x 앱은 업데이트 화면을, 1.5.x 앱과 그 밖의 앱은 hbbs의 최소 버전 문구를 봅니다. seq 5는 최신 버전이 그대로이므로 `--notes` 없이 만들면 seq 4의 알림 글이 그대로 남습니다(업데이트 화면이 그 글을 보임).
 7. **출입 확인 켜기**: 9-3을 `MODE=enforce`로 합니다. 10분 뒤 거절 수(9-3의 마지막 항목)와 콘솔 줄을 보고합니다. 예상보다 많으면(예: 교직원의 `ph.missing`이 계속 늚, `bad_signature`가 있음) 바로 9-3을 `MODE=off`로 하고 보고합니다.
 
 ### 9-7. 되돌리기와 사고
