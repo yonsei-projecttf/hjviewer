@@ -134,7 +134,7 @@ architecture.md(출입 제한 절), privacy.md(이용 비밀번호 기록, 티�
 
 4차 작업까지로 개발 PC에 남은 것은 다음입니다(PR의 "개발 PC에서 확인할 것"과 같음). 에이전트 없이 손으로 할 수 있습니다.
 
-1. `scripts/fetch-upstream.sh all`로 `upstream/`을 다시 받습니다(패치 0063이 들어 있는 `hjviewer` 브랜치가 됨).
+1. `upstream/`을 새로 받습니다. `scripts/fetch-upstream.sh`는 있는 작업 사본을 덮어쓰지 않으므로(`exists; remove it to fetch again`) 옛 사본을 먼저 옮깁니다: `mkdir -p build/upstream-old && mv upstream/rustdesk-server upstream/rustdesk build/upstream-old/`, 그다음 `scripts/fetch-upstream.sh all`. 새 사본의 `HEAD^{tree}`는 클라우드 CI가 시험한 것과 같아야 합니다: `upstream/rustdesk` 8586e8c0ae5b, 그 `libs/hbb_common` 0a2c097e1d81, `upstream/rustdesk-server` ce6d09e969c7. 옛 사본은 내보내지 않은 커밋이 없는지 본 뒤 지웁니다(1차 작업의 `build/wt/` 작업 트리는 이미 패치에 들어 있음, [wave1-notes.md](wave1-notes.md) 첫머리). `scripts/ci.sh`의 단계는 `build/ci/` 아래에 따로 받으므로, 이 사본은 시험에 쓰이지 않고 prepush 로그의 머리에만 적힙니다.
 2. `scripts/ci.sh prepush client deploy leak`. client는 `build/release-1.5.1`의 실물 산출물로 릴리스 기록 시험까지 돌고(클라우드에서는 그것만 건너뜀), deploy는 Docker와 systemd(새 `hjviewer.env.example`의 주석 줄, `access.conf.example`), leak는 개발 PC의 유출 목록입니다. 원하면 `e2e`와 `wol`도 함께 넣습니다(클라우드에서는 위의 컨테이너 맞춤과 함께 통과함).
 3. 비공개 빌드 저장소의 확인 빌드(`check_only`, [ci.md](../ci.md)): 세 플랫폼 빌드, bridge가 있는 Dart 시험 전체(client-build.yml의 Dart tests 잡), **Windows에서만 컴파일되는** `src/tray.rs`의 훅과 `src/hjviewer_access.rs`의 `tray_*`.
 4. 화면을 데스크톱과 휴대폰에서 눈으로 봄: A1(펼치기 전과 뒤, 휴대폰에서 키보드가 펼친 뒤에만 올라옴), A2의 [다시 연결], PC 홈의 P1(ID 위)·P2의 줄과 [끝내기]·G2, 상태 줄과 Windows 트레이 안내, 설치했고 로그인하지 않은 Windows PC에서 로그인 창이 한 번만 열림, 연결 화면의 G3(`MODE=enforce`일 때만), 로그아웃과 "내 목록에서 빼기"의 경고(서버 모드마다, 원격 세션 중), 세션 창에서 로그인했을 때 주 창이 알림을 보임.
