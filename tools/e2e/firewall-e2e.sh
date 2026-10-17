@@ -241,11 +241,13 @@ setup_ns() {
 
 # <ns> <side> <cmd...>: runs cmd as this user inside the namespace, with the side's own HOME, IPC
 # directory (both sides are the same user, and the app's IPC lives in /tmp/HJViewer-<uid>) and host
-# name (hjv-<side>, so the real one never shows up in output)
+# name (hjv-<side>, so the real one never shows up in output). Without a controlling terminal: from
+# a terminal, sudo's use_pty (Ubuntu's default) stops the process group that called it when its
+# command stops, so R3's stop of the PC's service would stop this script too.
 in_ns() {
   local ns=$1 side=$2
   shift 2
-  sudo ip netns exec "$ns" unshare --uts bash -c '
+  setsid -w sudo ip netns exec "$ns" unshare --uts bash -c '
     hostname "hjv-$7"
     mount --bind "$1" "/tmp/HJViewer-$2" || exit 1
     mkdir -p /tmp/.X11-unix && mount -t tmpfs -o mode=1777 tmpfs /tmp/.X11-unix || exit 1
