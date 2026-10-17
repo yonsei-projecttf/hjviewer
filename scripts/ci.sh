@@ -119,9 +119,9 @@ E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 12))
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 1))
 # strict: and the staff-only gate's A1-A14 (2026-10-17)
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 14))
-# by the filter of build_e2e_client's cargo test --lib <filter>; hjv as the minimum version's E2E
-# counted it (224, 2026-10-14, the series with src/hjviewer_update)
-declare -A UNIT_LEAST=([hjv]=224 [hjviewer_wol]=6)
+# by the filter of build_e2e_client's cargo test --lib <filter>; hjv as the staff-only gate's E2E
+# counted it (260, 2026-10-17, the series with src/hjviewer_access)
+declare -A UNIT_LEAST=([hjv]=260 [hjviewer_wol]=6)
 # and the update code's tests in the e2e stage's build without the update keys (2026-10-14)
 UNIT_LEAST[hjviewer_update-nokeys]=141
 # and the cases of the shared vectors the client core runs in the client stage (tools/hjv-release,
@@ -1370,10 +1370,11 @@ e2e_access() {
     skip "the staff-only gate's A1-A14 (hbbs has no --hjv-access-file: no server patch 0006)"
     return 0
   fi
-  if ! grep -aqF -- '--hjv-e2e-guest-pc' "$E2E_CLIENT"; then
-    grep -q -- 'hjv-e2e-guest-pc' "$ROOT"/client/patches/rustdesk/*.patch &&
-      fail "e2e: the client has no --hjv-e2e-guest-pc, though client/patches has it (patch 0061)"
-    skip "the staff-only gate's A1-A14 (the client has no --hjv-e2e-guest-pc: no client patch 0061)"
+  # (the name of its variable: a release build compares the commands' names without keeping them)
+  if ! grep -aqF HJV_E2E_ACCESS_PASSWORD "$E2E_CLIENT"; then
+    grep -q HJV_E2E_ACCESS_PASSWORD "$ROOT"/client/patches/rustdesk/*.patch &&
+      fail "e2e: the client has no HJV_E2E_ACCESS_PASSWORD, though client/patches has it (patch 0061)"
+    skip "the staff-only gate's A1-A14 (the client has no HJV_E2E_ACCESS_PASSWORD: no client patch 0061)"
     return 0
   fi
   if [ -z "$E2E_ACCOUNT" ] || ! grep -q HJV_E2E_ACCESS "$ROOT/tools/e2e/firewall-e2e.sh"; then

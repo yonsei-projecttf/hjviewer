@@ -318,7 +318,7 @@ PASS (strict): transport: relay
 | A14 | `MODE=off`로 고침 | 다시 시작하지 않고 다음 읽기에 `access off`. PC B가 다시 등록하고(`hjv-access-pc` `ok`), `actl`이 비밀번호로 PC B에 연결해 화면을 받음. 끝나면 PC B를 멈춤 |
 
 **`scripts/ci.sh`가 하는 것**
-- 감지(`e2e_access`): hbbs의 `--help`에 `--hjv-access-file`이 있고, 클라이언트 실행 파일에 `--hjv-e2e-guest-pc`가 있고, 계정 E2E가 돌면 `HJV_E2E_ACCESS=1`로 이 단계를 켭니다. `server/patches`에 0006이 있는데 hbbs에 옵션이 없거나, `client/patches`에 0061이 있는데 클라이언트에 명령이 없으면 실패합니다. 패치가 없을 때만 건너뛴 것으로 셉니다(최소 버전 단계의 감지와 같은 틀).
+- 감지(`e2e_access`): hbbs의 `--help`에 `--hjv-access-file`이 있고, 클라이언트 실행 파일에 `HJV_E2E_ACCESS_PASSWORD`가 있고(릴리스 빌드는 명령 이름을 글자로 남기지 않음), 계정 E2E가 돌면 `HJV_E2E_ACCESS=1`로 이 단계를 켭니다. `server/patches`에 0006이 있는데 hbbs에 옵션이 없거나, `client/patches`에 0061이 있는데 클라이언트에 명령이 없으면 실패합니다. 패치가 없을 때만 건너뛴 것으로 셉니다(최소 버전 단계의 감지와 같은 틀).
 - 하한: `E2E_LEAST_STRICT`에 이 단계의 `PASS` 14줄을 더했습니다.
 
 ### 출입 제한 단계가 다루지 않는 것
