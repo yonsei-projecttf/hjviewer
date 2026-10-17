@@ -7,7 +7,7 @@ Ubuntu 22.04/24.04 서버 한 대에 HJViewer 서버(hbbs·hbbr)를 띄우고 HT
 
 위에서부터 순서대로 실행하고, 마지막에 **보고** 형식으로 결과를 알려 주세요. 배경 설명은 [deploy.md](deploy.md)에 있습니다. 다만 그 문서의 명령은 실행하지 말고, 이 런북의 명령만 실행하세요.
 
-1.6.0의 계정 API(연세포탈 로그인, 내 기기 목록, 같은 계정 기기끼리 비밀번호 없는 연결, 원격 켜기)는 B 경로를 마친 서버에 [7절](#7-계정-api-추가-160)의 순서로 더합니다. 7절에는 그 절만의 규칙과 보고 형식이 있습니다. 최소 버전과 업데이트 배포(서명된 버전 정책, 설치 파일, hbbs의 최소 컨트롤러 버전, 문 2)는 [8절](#8-최소-버전과-업데이트-배포-160)입니다.
+1.6.0의 계정 API(연세포탈 로그인, 내 기기 목록, 같은 계정 기기끼리 비밀번호 없는 연결, 원격 켜기)는 B 경로를 마친 서버에 [7절](#7-계정-api-추가-160)의 순서로 더합니다. 7절에는 그 절만의 규칙과 보고 형식이 있습니다. 최소 버전과 업데이트 배포(서명된 버전 정책, 설치 파일, hbbs의 최소 컨트롤러 버전, 문 2)는 [8절](#8-최소-버전과-업데이트-배포-160), 1.8.0의 교직원 전용 출입 제한(출입증 키, hbbs의 `access.conf`, 이용 비밀번호, 출시일 순서)은 [9절](#9-교직원-전용-출입-제한-180)입니다.
 
 이 런북이 쓰는 것은 모두 개발 PC에서 `scripts/ci.sh`로 시험합니다. 시험 대상은 다음과 같습니다.
 
@@ -442,6 +442,7 @@ sudo stat -c '%a %U %n' /var/lib/hjviewer /var/lib/hjviewer/id_ed25519
      ```bash
      if sudo test -e /etc/hjviewer/min-controller.conf; then sleep 12; sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep min-controller | tail -2; fi
      ```
+     출입 확인을 넣은 서버(`hjviewer.env`에 `HJV_ACCESS_FILE` 줄이 있음, 9절)에서는 같은 때 9-7의 "hbbs를 다시 시작한 뒤" 블록으로 `access` 줄도 봅니다.
   4. 1.6.0부터 묶음에는 hjv-api도 들어 있습니다. hjv-api가 설치된 서버에서는 위 명령에 더해, 7-14의 "업그레이드"대로 스냅숏, 설정 파일, 옛 실행 파일을 남긴 뒤 같은 디렉터리에서 다음을 실행합니다. 유닛 파일을 바꾼 뒤 `daemon-reload`를 하지 않으면 systemd는 옛 유닛으로 다시 시작합니다.
      ```bash
      [ -x bin/hjv-api ] || { echo 'STOP: 묶음에 hjv-api가 없음'; exit 1; }
@@ -1745,6 +1746,194 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
 hbbs: <min-controller 줄 그대로(MIN, FROM) | off>, 어제 거절 <n>줄
 문 2: <열림, UNTIL <UTC>, 저널 code=<8자리> | 닫힘>
 허브-운영 확인: READABLE 줄 <0 | n>, IN A HJVIEWER GROUP 줄 <0 | n>, NOT YET 줄 <0 | n>, auto_block_ips.sh <세는 것>, error_page 404 <있음 | 없음>
+바꾼 것: <설치한 파일, 권한, 설정 파일 줄>
+문제: <있으면>
+```
+
+## 9. 교직원 전용 출입 제한 (1.8.0)
+
+1.8.0부터 서버는 연세대학교 교직원이 쓰는 서비스입니다. hjv-api가 출입증에 서명하고, hbbs가 연결 요청, 중계 요청, PC 등록에서 그것을 확인합니다. 로그인한 앱, 교직원 계정에 묶인 PC, 이용 비밀번호를 넣은 쪽, 심사 계정(데모 PC만)이 출입증을 받습니다. 형식과 판정은 [access-tickets.md](access-tickets.md)(계약), 동작은 [architecture.md](architecture.md) 9절, 사용자 안내는 [distribution.md](distribution.md)의 "1.8.0: 교직원 전용"에 있습니다. 7절의 hjv-api와 8절을 마친 B 경로 nginx 서버가 대상입니다.
+
+| 위치 | 소유자·권한 | 내용 | 읽는 쪽 |
+|---|---|---|---|
+| `/etc/credstore.encrypted/hjviewer-api-ticket-key` | 7-4와 같음 | 출입증 키(비밀키). 사용자가 서버에서 만듦(7-4 (나)) | hjv-api |
+| `/etc/hjviewer/hjviewer-api.env`의 `HJV_API_TICKET_PUBKEYS` | 7-3과 같음 | 출입증 키의 공개키 `<kid>:<base64>`(바꾸는 동안 둘) | hjv-api의 selfcheck |
+| `/etc/hjviewer/access.conf` | root:hjviewer 0640 | `MODE`, `KEY`(공개키), `NOT_BEFORE`, 선택으로 `TEXT`. 형식은 [deploy/access.conf.example](../deploy/access.conf.example) | hbbs(10초마다) |
+| `/etc/hjviewer/hjviewer.env`의 `HJV_ACCESS_FILE` | 4-1과 같음 | 위 파일의 경로. 없으면 hbbs가 확인하지 않음 | hbbs(시작할 때) |
+| `/etc/hjviewer/guest.conf` | root:hjviewer-api 0640 | 이용 비밀번호의 해시와 `UNTIL`. 형식은 [deploy/guest.conf.example](../deploy/guest.conf.example) | hjv-api(바뀔 때) |
+| `/etc/hjviewer/review.conf`의 `PC=` | 7-17 | 심사 계정의 데모 PC | hjv-api |
+
+### 9-0. 이 절의 규칙
+
+- **출입증 키와 이용 비밀번호는 사용자만** 만듭니다. 운영 에이전트는 `keygen ticket`을 실행하지 않고, `guest.conf`를 만들지 않으며, 이용 비밀번호를 묻거나 보거나 옮기지 않습니다. `guest.conf`도 출력하지 않습니다(`cat`, `less` 등). 옮겨도 되는 것은 `UNTIL`과 해시의 꼬리표(`hash <8자리>`)뿐입니다.
+- `access.conf`에는 비밀이 없습니다(공개키와 설정). `TEXT`는 거절된 누구에게나 보이므로, 앱 사용자에게만 줄 링크(문 2 등)를 넣지 않습니다. 보통은 `TEXT` 줄 없이 hbbs의 기본 문구를 씁니다.
+- **`access.conf`를 지우거나 비우지 않습니다.** 출입 통제라서 파일이 없거나 고장 나면 hbbs가 모두 거절합니다(닫힘, 계약 6-3). 끄는 길은 `MODE=off`입니다(9-3). `hjviewer.env`의 `HJV_ACCESS_FILE=`도 빈 값으로 두지 않습니다(빈 값도 닫힘).
+- **공개된 시험 키를 쓰지 않습니다.** `access.conf`의 `KEY=`는 `HJV_API_TICKET_PUBKEYS`에서만 옮기고(9-2, 9-3), 그 값은 `selfcheck`가 공개된 시험 키(`scripts/public-test-keys.txt`)인지 봅니다(`… is a public test key …`이면 `[FAIL]`). `[FAIL]`이면 그 값을 `access.conf`에 넣지 않고 멈춥니다.
+- `MODE`를 바꾸는 것은 운영 서버의 접근 정책을 바꾸는 일입니다. 사용자 승인을 받고 합니다. `enforce`는 출시일 순서(9-6)의 마지막 단계에서만 씁니다.
+- **hbbs를 trace 수준으로 돌리지 않습니다**(`RUST_LOG=trace`). 그 수준에서는 WebSocket 라이브러리가 출입증이 든 프레임까지 남깁니다(8-0과 같음).
+- `enforce`의 거절 줄(`access refused …`, `access closed …`)에는 주소와 기기 ID가 있습니다. 보고와 대화에는 줄 수만 옮깁니다. 콘솔의 `HJVACCESS1` 줄은 개수뿐이라 그대로 옮겨도 됩니다.
+- **Docker로 hbbs를 돌리는 서버**(A 경로, 이 런북 밖): 8-3의 마지막 항목처럼 파일이 아니라 디렉터리를 컨테이너에 넣습니다(`HJV_ACCESS_FILE=/etc/hjviewer-access/access.conf`, 볼륨 `./access:/etc/hjviewer-access:ro`). 파일 하나를 넣으면 `mv`로 바꾼 새 파일을 컨테이너가 보지 못해 `MODE=off`로 바꿔도 거절이 멈추지 않습니다.
+
+### 9-1. 출입증 키 (처음 한 번)
+
+출입증이 든 서버 묶음(hjv-api의 `/api/hjv/ticket`, hbbs의 서버 패치 0006~0008)을 6절 "B 경로 업데이트"로 넣을 때, 그 4번이 출입증 키를 요구하고 사용자가 7-4 (나)의 출입증 키 줄로 만듭니다(화면: `1:<base64>`와 지문). 사용자가 알려 준 첫 줄을 6절의 블록대로 `HJV_API_TICKET_PUBKEYS`에 넣은 뒤 다음을 봅니다.
+
+```bash
+sudo /opt/hjviewer/bin/hjv-api admin selfcheck | grep 'ticket key'      # 두 줄 모두 [ OK ]
+sudo /opt/hjviewer/bin/hjv-api admin ticket status | sed -n '1,3p'
+```
+
+- 첫 줄이 `tickets: on, key 1 (<지문>), the key 1 of HJV_API_TICKET_PUBKEYS`이고, 그 지문이 사용자가 키를 만들 때 본 것과 같아야 합니다. 둘째 줄 `hbbs's access.conf takes it as KEY=1:<base64>`의 값이 9-2에서 `access.conf`에 들어갑니다.
+- `tickets: off (no credential …)`이면 자격 증명이 없습니다(로그인과 동기화는 되지만 출입증이 없음). `NOT the key …`나 `no key of HJV_API_TICKET_PUBKEYS …`이면 `HJV_API_TICKET_PUBKEYS`가 쓰는 키와 다릅니다. 둘 다 멈추고 보고합니다. 그대로 `enforce`로 가면 hbbs가 모든 출입증을 거절합니다.
+- 키를 잃으면 7-4 (나)의 줄로 새로 만들고, `HJV_API_TICKET_PUBKEYS`와 `access.conf`의 `KEY=`를 함께 바꿉니다(9-7). 앱은 출입증 키를 고정하지 않으므로 앱은 다시 빌드하지 않습니다.
+
+### 9-2. hbbs의 출입 파일 (처음 한 번, `MODE=off`)
+
+출입 확인을 꺼 둔 채로(`MODE=off`) 파일과 설정 줄을 넣고 hbbs를 다시 시작합니다. 앱에는 아무것도 바뀌지 않습니다. hbbs를 다시 시작하므로 진행 중인 원격 세션이 끊깁니다. 사용자 승인 뒤 사용이 적은 시간에 합니다. 6절의 업데이트와 같은 날이면 그 재시작에 합칩니다(이 블록의 `restart` 줄 하나로).
+
+```bash
+sudo grep -qa hjv-access-file /opt/hjviewer/bin/hbbs || { echo 'STOP: 설치된 hbbs가 출입 확인(서버 패치 0006)을 모름: 먼저 새 묶음으로 바꿈(6절)'; exit 1; }
+TICKET=$(sudo sed -n 's/^HJV_API_TICKET_PUBKEYS=//p' /etc/hjviewer/hjviewer-api.env)
+[ -n "$TICKET" ] || { echo 'STOP: HJV_API_TICKET_PUBKEYS가 비어 있음(9-1 먼저)'; exit 1; }
+sudo /opt/hjviewer/bin/hjv-api admin selfcheck | grep 'ticket key' | grep -q FAIL && { echo 'STOP: selfcheck의 ticket key 줄이 FAIL'; exit 1; }
+F=/etc/hjviewer/access.conf
+! sudo test -e "$F" || { echo "STOP: $F 이(가) 이미 있음(바꾸기는 9-3)"; exit 1; }
+{ echo 'MODE=off'; printf 'KEY=%s\n' ${TICKET//,/ }; echo 'NOT_BEFORE='; } | sudo tee "$F.new" > /dev/null
+sudo chown root:hjviewer "$F.new" && sudo chmod 0640 "$F.new" && sudo mv -f "$F.new" "$F"
+sudo grep -c '^KEY=' "$F"                                        # HJV_API_TICKET_PUBKEYS의 키 수(보통 1)
+E=/etc/hjviewer/hjviewer.env
+sudo grep -q '^HJV_ACCESS_FILE=' "$E" || echo 'HJV_ACCESS_FILE=/etc/hjviewer/access.conf' | sudo tee -a "$E" > /dev/null
+sudo grep -c '^HJV_ACCESS_FILE=/etc/hjviewer/access.conf$' "$E"  # 1
+sudo systemctl restart hjviewer-hbbs
+sleep 3; systemctl is-active hjviewer-hbbs                       # active
+sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep -E 'access (off|count|enforce|closed)|access file' | tail -2
+timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && cat <&3'   # HJVACCESS1 mode=off
+```
+
+- 저널의 마지막 줄이 `access off`이고 콘솔이 `HJVACCESS1 mode=off`여야 합니다.
+- `access closed`나 `access file /etc/hjviewer/access.conf: …`(ERROR)이면 hbbs가 모두 거절하고 있습니다. 바로 설정 줄을 빼고 다시 시작한 뒤 보고합니다: `sudo sed -i '/^HJV_ACCESS_FILE=/d' /etc/hjviewer/hjviewer.env && sudo systemctl restart hjviewer-hbbs`. 그 ERROR 줄의 까닭(줄 번호와 이유)은 보고에 옮겨도 됩니다(파일 내용은 들어 있지 않음).
+- PC들이 다시 등록하는지는 5절과 같은 방법으로 봅니다. `MODE=off`이므로 1.7.0 전과 같아야 합니다.
+
+### 9-3. `MODE`와 `NOT_BEFORE` 바꾸기
+
+같은 블록으로 `off`, `count`, `enforce` 사이를 오가고, 비상에는 `NOT_BEFORE`를 지금으로 씁니다. `KEY` 줄은 늘 `HJV_API_TICKET_PUBKEYS`에서 다시 쓰고(키 바꾸기도 이 블록, 9-7), `TEXT` 줄은 그대로 옮깁니다. hbbs는 10초 안에 새 규칙을 쓰고, 재시작은 필요 없습니다. 지금 파일은 `/root/hjv-backup/access.conf.before`로 남깁니다.
+
+```bash
+MODE=count      # ← off | count | enforce (사용자가 정한 값)
+NB=keep         # ← keep(지금 값 그대로) | now(비상: 지금까지 나간 출입증을 모두 끝냄)
+F=/etc/hjviewer/access.conf
+sudo test -f "$F" || { echo "STOP: $F 이(가) 없음(9-2 먼저)"; exit 1; }
+case $MODE in off|count|enforce) ;; *) echo 'STOP: MODE는 off, count, enforce 중 하나'; exit 1 ;; esac
+case $NB in
+  keep) NB=$(sudo sed -n 's/^NOT_BEFORE=//p' "$F" | head -1) ;;
+  now) NB=$(date -u +%Y-%m-%dT%H:%M:%SZ) ;;
+  *) echo 'STOP: NB는 keep 또는 now'; exit 1 ;;
+esac
+TICKET=$(sudo sed -n 's/^HJV_API_TICKET_PUBKEYS=//p' /etc/hjviewer/hjviewer-api.env)
+[ -n "$TICKET" ] || { echo 'STOP: HJV_API_TICKET_PUBKEYS가 비어 있음'; exit 1; }
+sudo /opt/hjviewer/bin/hjv-api admin selfcheck | grep 'ticket key' | grep -q FAIL && { echo 'STOP: selfcheck의 ticket key 줄이 FAIL'; exit 1; }
+echo "KEY: $(sudo grep '^KEY=' "$F" | sed 's/^KEY=//; s/:.*//' | paste -sd,) -> $(printf '%s\n' ${TICKET//,/ } | sed 's/:.*//' | paste -sd,)"   # 키 번호: 지금 -> 새 파일
+sudo install -d -m 700 /root/hjv-backup && sudo cp -p "$F" /root/hjv-backup/access.conf.before
+{ echo "MODE=$MODE"; printf 'KEY=%s\n' ${TICKET//,/ }; echo "NOT_BEFORE=$NB"; sudo grep '^TEXT=' "$F"; } | sudo tee "$F.new" > /dev/null
+sudo chown root:hjviewer "$F.new" && sudo chmod 0640 "$F.new" && sudo mv -f "$F.new" "$F"
+sleep 12; sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep -E 'access (off|count|enforce|closed)|access file' | tail -2
+timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && cat <&3'
+```
+
+- 마지막 저널 줄이 새 규칙이어야 합니다: `access off`, `access count: keys 1`, `access enforce: keys 1`(`NOT_BEFORE`가 있으면 `, not before <UTC>`가 붙음). 콘솔 줄의 `mode=`도 같습니다.
+- `access file …: line N: …; <규칙> stays in force`(ERROR)이면 hbbs가 새 파일을 받지 않고 이전 규칙을 씁니다. 한 시간마다 같은 ERROR가 다시 나오고, 그 파일을 둔 채 hbbs가 다시 시작하면 닫힘(모두 거절)입니다. 바로 남긴 파일로 되돌리고 보고합니다.
+  ```bash
+  B=/root/hjv-backup/access.conf.before
+  sudo install -o root -g hjviewer -m 0640 "$B" /etc/hjviewer/access.conf.new && sudo mv -f /etc/hjviewer/access.conf.new /etc/hjviewer/access.conf
+  sleep 12; sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep -E 'access (off|count|enforce|closed)|access file' | tail -2
+  ```
+- `NB=now`(비상)는 그때까지 나간 출입증을 모두 거절하고, 들어와 있던 PC를 10초 안에 끊습니다. 로그인한 앱은 다음 연결에서 새 출입증을 받고, 묶인 PC는 다음 동기화(보통 2분) 뒤 다시 들어오고, 이용 비밀번호로 들어온 쪽은 비밀번호를 다시 넣습니다(계약 6-4). 한 번 쓴 `NOT_BEFORE`는 그대로 두어도 됩니다(그 뒤에 만든 출입증은 받음).
+- **거절 수**(`enforce`): `sudo journalctl -q -u hjviewer-hbbs --since yesterday -o cat | grep -c 'access refused'`와 `… | grep -c 'access closed'`(개수만. 그 줄에는 주소와 ID가 있음). 10초에 30줄을 넘으면 `access refused or closed N more in the last 10 seconds`로 묶이니 그 N도 더합니다.
+
+### 9-4. 이용 비밀번호 (`/etc/hjviewer/guest.conf`)
+
+로그인하지 않는 사람이 쓰는 비밀번호 하나입니다(계약 3-5). 파일에는 해시와 끝나는 때(`UNTIL`)만 있고, hjv-api는 파일이 바뀌면 다시 읽습니다(재시작 없음). 파일이 없거나 `UNTIL`이 지나면 아무도 이용 비밀번호로 들어오지 못하고, 틀린 비밀번호와 같은 401을 받습니다.
+
+- **만들기**(사용자, 에이전트 세션이 아닌 자기 터미널에서. Linux, macOS나 WSL): `python3 -I deploy/guest-conf.py --until <YYYY-MM-DD> --out ~/guest.conf`(비밀번호를 두 번 물음) 또는 `--random`(도구가 만들어 그 터미널에 한 번만 보임). 12~256자의 출력 가능한 ASCII이고, 공백으로 시작하거나 끝나지 않습니다(앱이 앞뒤 공백을 지움). `--until`은 90일까지입니다. 비밀번호는 개발 PC의 `build/leak-patterns.txt`에 넣고, 저장소, 채팅, 문서, 커밋, App Store와 Play의 메모에는 쓰지 않습니다. 필요한 사람에게만 직접 알립니다. 만든 파일은 운영 에이전트의 홈으로 보내고 자기 PC의 사본은 지웁니다.
+1. **넣기**(사용자 승인 뒤). 바꿀 때(새 비밀번호, 새 `UNTIL`)도 같은 블록입니다.
+   ```bash
+   SRC=/home/<사용자>/guest.conf                  # ← 사용자가 보낸 파일
+   [[ $SRC == /home/*/* ]] && sudo test -f "$SRC" && ! sudo test -L "$SRC" || { echo "STOP: $SRC 이(가) 홈의 보통 파일이 아님"; exit 1; }
+   [ "$(sudo grep -cE '^(HASH|UNTIL)=' "$SRC")" = 2 ] && [ "$(sudo grep -c '^HASH=pbkdf2-sha256\$' "$SRC")" = 1 ] || { echo "STOP: $SRC 이(가) guest-conf.py가 쓴 파일이 아님"; exit 1; }
+   sudo sed -n 's/^UNTIL=//p' "$SRC"                           # 끝나는 시각(UTC)
+   sudo install -o root -g hjviewer-api -m 0640 "$SRC" /etc/hjviewer/guest.conf.new &&
+     sudo mv -f /etc/hjviewer/guest.conf.new /etc/hjviewer/guest.conf && sudo rm -f "$SRC"
+   sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep '^access password'
+   ```
+   설정 줄을 넣은 뒤(2번)라면 첫 줄이 `access password: on until <UTC> (hash <8자리>)`이고 그 시각이 위의 `UNTIL`과 같아야 합니다. 바꾼 파일이면 해시의 꼬리표가 달라집니다.
+2. **설정 줄**(처음 한 번, 사용자 승인 뒤). 이용 비밀번호를 아는 hjv-api만 이 이름을 압니다. 옛 판은 이 줄이 있으면 시작하지 않습니다(7-17의 2번과 같음).
+   ```bash
+   sudo grep -qa HJV_API_GUEST_FILE /opt/hjviewer/bin/hjv-api || { echo 'STOP: 설치된 hjv-api가 HJV_API_GUEST_FILE을 모름(먼저 새 묶음으로 바꿈)'; exit 1; }
+   E=/etc/hjviewer/hjviewer-api.env
+   if sudo grep -q '^#\?HJV_API_GUEST_FILE=' "$E"; then sudo sed -i 's|^#\?HJV_API_GUEST_FILE=.*|HJV_API_GUEST_FILE=/etc/hjviewer/guest.conf|' "$E"; else echo 'HJV_API_GUEST_FILE=/etc/hjviewer/guest.conf' | sudo tee -a "$E" > /dev/null; fi
+   sudo grep -n '^HJV_API_GUEST_FILE=' "$E"
+   sudo systemctl restart hjviewer-api
+   sleep 3; systemctl is-active hjviewer-api                   # active
+   sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep '^access password'
+   ```
+   - `active`가 아니면 7-17의 2번처럼 오류 줄을 사용자에게만 보이고, 그 줄을 지운 뒤 다시 시작합니다.
+   - `access password: closed: the file is not there or not used (the journal says why)`이면 `sudo journalctl --namespace=hjviewer -u hjviewer-api --since -5min -o cat | grep 'access password' | tail -2`의 `… is not used: <이유>`를 보고합니다(이유에 해시는 없음). 사용자가 파일을 다시 만듭니다.
+3. **바꾸기**: 1번의 블록에 새 파일을 넣습니다. 새 파일은 그때부터의 시도에 쓰이고, 이미 나간 출입증은 12시간 안에 끝납니다. 퍼진 비밀번호라서 바로 끊어야 하면 이어서 9-3을 `NB=now`로 합니다. 그때는 교직원과 묶인 PC의 출입증도 함께 끝나고, 몇 분 안에 저절로 새로 받습니다.
+4. **끄기**: `sudo rm /etc/hjviewer/guest.conf`. 다음 시도부터 아무도 이용 비밀번호로 들어오지 못합니다(이미 나간 출입증은 12시간 안에 끝남). `UNTIL`이 지나도 같습니다. 설정 줄은 두어도 됩니다.
+5. **보기**: 매일 보고에 `sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep '^access password'`의 세 줄(파일의 상태, 수명, 어제의 결과별 시도 수)을 넣습니다. 한 주소의 실패 한도에 걸린 경고(`guest: … hjv-api admin unlock tag:<꼬리표> lifts the address's`)가 잦으면 사용자에게 알립니다. 풀기는 사용자 승인 뒤 그 줄의 명령입니다.
+
+### 9-5. `MODE=count`로 세어 보기 (선택)
+
+`count`는 거절하지 않고, `enforce`였다면 무엇을 거절했을지만 셉니다. 1.8.0을 나눠 준 뒤 며칠 두면 누가 아직 출입증 없이 쓰는지 개수로 압니다. 9-3을 `MODE=count`로 한 뒤 하루에 한 번 콘솔 줄을 봅니다.
+
+```bash
+timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && cat <&3'
+```
+
+- 줄은 `HJVACCESS1 mode=count` 뒤에 `<자리>.<이유>=<수>`가 이어집니다(hbbs가 시작한 뒤의 수, 0은 빠짐). 자리는 `ph`(연결 요청), `rr`(중계 요청), `reg`(등록), `udp`(UDP 등록)입니다. 이유는 계약 4-1과 7절에 있습니다.
+- `ph.ok`, `rr.ok`, `reg.ok`는 출입증으로 들어온 수입니다. `ph.missing`과 `reg.missing`은 출입증이 없는 앱과 PC입니다(1.7.x 이하, 로그인하지 않은 1.8.0, 묶이지 않은 PC). 출시일(9-6의 7단계) 전에 이 수가 줄어야 합니다. 그 기기들이 누구인지는 개수로는 모르고, 운영 에이전트는 찾지 않습니다. 사용자에게 수를 알리고 안내(distribution.md)를 다시 보낼지 묻습니다.
+- `bad_signature`, `unknown_kid`, `malformed`가 0이 아니면 키가 맞지 않는 것입니다(9-1). `enforce` 전에 멈추고 보고합니다.
+- 끝나면 9-6의 순서를 이어 가거나 9-3으로 `MODE=off`로 되돌립니다.
+
+### 9-6. 출시일 순서
+
+순서가 중요합니다. 출입 확인보다 최소 버전을 먼저 올려야, 출입증이 없는 옛 앱이 "업데이트하세요" 안내를 받습니다. 거꾸로 하면 옛 앱은 hbbs의 기본 문구만 보고, 업데이트 안내를 받지 못합니다.
+
+1. **서버 묶음**(사용자 승인 뒤, 조용한 시간): 출입증이 든 서버 묶음을 6절 "B 경로 업데이트"로 넣고, 출입증 키(9-1)를 만들고, `access.conf`를 `MODE=off`로 둡니다(9-2). 앱에는 아무것도 바뀌지 않습니다.
+2. **1.8.0 배포**(개발 PC와 사용자): 1.8.0을 빌드하고 정책 seq 4(최신 1.8.0, 최소 버전은 그대로)를 8-2로 넣습니다. 설치된 Windows PC는 저절로 1.8.0이 되고(무인 설치 시각), 휴대폰은 TestFlight와 Play 스토어로 받습니다. 사용자는 distribution.md의 "사용자에게 보내는 안내 (출입 확인을 켜기 전)"을 보냅니다.
+3. **이용 비밀번호와 데모 PC**: 9-4로 `guest.conf`를 넣고, 심사 계정이 있으면 7-17로 `PC=` 줄이 든 `review.conf`를 넣습니다.
+4. **(선택) 세어 보기**: 9-5로 `MODE=count`를 며칠 둡니다.
+5. **묶인 PC 확인**: `sudo /opt/hjviewer/bin/hjv-api admin binding list`에서 묶인 PC의 버전이 1.8.0인지 봅니다(1.7.x로 남은 PC는 출입증을 싣지 않으므로 7단계 뒤 오프라인이 됨). 남은 PC는 사용자에게 수를 알립니다(PC ID는 보고에 옮기지 않음).
+6. **최소 버전 1.8.0**: 정책 seq 5(최소 1.8.0)를 8-2로 넣고, 사용자가 `hjv-release hbbs-conf`로 만든 `MIN=1.8.0`의 파일을 8-3으로 넣습니다. 1.6.x와 1.7.x 앱은 업데이트 화면을, 1.5.x 앱과 그 밖의 앱은 hbbs의 최소 버전 문구를 봅니다.
+7. **출입 확인 켜기**: 9-3을 `MODE=enforce`로 합니다. 10분 뒤 거절 수(9-3의 마지막 항목)와 콘솔 줄을 보고합니다. 예상보다 많으면(예: 교직원의 `ph.missing`이 계속 늚, `bad_signature`가 있음) 바로 9-3을 `MODE=off`로 하고 보고합니다.
+
+### 9-7. 되돌리기와 사고
+
+- **끄기**(즉시): 9-3을 `MODE=off`로 합니다. 10초 안에 모두 1.7.0 전처럼 연결합니다. 파일을 지우지 않습니다(9-0).
+- **hbbs를 다시 시작한 뒤**(6절의 B 경로 업데이트, 재부팅): 12초 뒤 규칙 줄을 봅니다. `access closed`나 ERROR면 hbbs가 모두 거절하고 있으므로 바로 보고합니다. 고칠 수 없으면 설정 줄을 빼고 다시 시작합니다(9-2의 둘째 항목).
+  ```bash
+  if sudo grep -q '^HJV_ACCESS_FILE=' /etc/hjviewer/hjviewer.env; then sleep 12; sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep -E 'access (off|count|enforce|closed)|access file' | tail -2; fi
+  ```
+- **hjv-api가 멈춤**: 교직원과 묶인 PC는 가진 출입증으로 끝날 때까지(24시간, 72시간) 연결합니다. 새 로그인과 이용 비밀번호는 안 됩니다. 하루를 넘길 것 같으면 사용자 승인 뒤 `MODE=off`로 둡니다.
+- **이용 비밀번호가 퍼짐**: 사용자가 새 `guest.conf`를 만들고 9-4의 3번(바꾸기와 `NB=now`)을 합니다.
+- **출입증 키 바꾸기**(잃었거나 도난당했을 때, 계약 6-4): hbbs가 새 키를 먼저 받고, hjv-api가 나중에 새 키로 서명합니다. 1~3번은 한 번에 이어서 합니다(1번 뒤 hjv-api가 다시 시작하면 새 자격 증명을 옛 번호로 읽어 hbbs가 모든 출입증을 거절함).
+  1. 사용자가 7-4 (나)의 출입증 키 줄을 다음 번호(`--kid 2`)로 다시 실행해 자격 증명을 바꿉니다. 돌고 있는 hjv-api는 다시 시작할 때까지 옛 키로 서명합니다. 사용자가 새 첫 줄(`2:<base64>`)을 알려 줍니다.
+  2. 운영 에이전트가 설정 파일의 `HJV_API_TICKET_PUBKEYS`를 `<옛 키>,<새 키>`로 바꾸고(hjv-api는 아직 다시 시작하지 않음), 9-3을 지금의 `MODE` 그대로 `NB=keep`으로 합니다. 저널이 `keys 1,2`여야 합니다.
+  3. 설정 파일에 `HJV_API_TICKET_KID=2`를 넣고 hjv-api를 다시 시작한 뒤 9-1의 블록을 봅니다(`tickets: on, key 2 …`, selfcheck 두 줄 `[ OK ]`).
+  4. 잃기만 했으면 3일(가장 긴 수명 72시간) 뒤, 도난이면 바로 옛 키를 `HJV_API_TICKET_PUBKEYS`에서 빼고 hjv-api를 다시 시작한 뒤, 9-3을 `NB=keep`(도난이면 `NB=now`)으로 합니다. 저널이 `keys 2`여야 합니다. 옛 키의 출입증으로 들어와 있던 PC는 끊기고 새 출입증으로 다시 들어옵니다.
+- **hbbs를 출입 확인 전의 판으로 되돌릴 때**: 옛 hbbs는 `HJV_ACCESS_FILE`을 읽지 않으므로 확인 없이 돕니다. 되돌리기 전에 사용자에게 그 뜻(교직원 전용이 아님)을 알립니다.
+
+### 9-8. 보고 (9절)
+
+아래 형식으로 알려 줍니다. 이용 비밀번호, `guest.conf`의 내용, 거절 줄의 주소와 ID는 적지 않습니다.
+
+```
+단계: <9-1 | 9-2 | 9-3 (MODE <off|count|enforce>, NOT_BEFORE <값|없음>) | 9-4 (<넣음|바꿈|지움|설정 줄>) | 9-5 | 9-6 (<n>단계) | 9-7 (<무엇>)>
+hjv-api: ticket status 첫 줄 <그대로>, selfcheck ticket key 두 줄 <OK | FAIL 줄 그대로>
+hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
+이용 비밀번호: <access password: … 줄 그대로>, 어제 시도 <결과별 수>
+거절(enforce): 어제 refused <n>줄, closed <n>줄, more <합>
+묶인 PC(9-6의 5단계): 1.8.0 <n>대, 그 아래 <n>대
 바꾼 것: <설치한 파일, 권한, 설정 파일 줄>
 문제: <있으면>
 ```

@@ -466,7 +466,7 @@ nothing else: no connection to anyone's PC, no command; everyone else's app gets
 unknown path. A user is an account that has logged in and is on the allowlist and not blocked,
 active when one of its account keys or PCs was used within `HJV_API_ACTIVE_DAYS`; the PCs are those
 bound to an account, by a login on them: a PC on which nobody logged in is unknown to hjv-api and
-not in the list (the app's help line says so). The privacy statement (docs/privacy.md, sections 3 and 9)
+not in the list (the app's help line says so). The privacy policy (docs/privacy.md, sections 3 and 9)
 tells the users what the super operators see and that each look is recorded.
 
 Each look writes one line to the operator record before it is answered, under the service's own

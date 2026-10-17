@@ -1,0 +1,36 @@
+# /etc/hjviewer/access.conf: who may use hbbs, by access ticket (docs/access-tickets.md 6;
+# docs/server-runbook.md 9). hjviewer.env's HJV_ACCESS_FILE names it, and hbbs reads it again
+# every 10 seconds: a change needs no restart, and the log says "access off", "access count: keys
+# 1" or "access enforce: keys 1" within about 10 seconds. The runbook writes the real file, its
+# KEY lines from hjv-api's HJV_API_TICKET_PUBKEYS; this one shows the form, and as it is it checks
+# nothing (MODE=off). Nothing in it is secret.
+#
+# MODE=        off, count or enforce, in lowercase. off: no check, as before server patch 0006
+#              (the other lines are not read then). count: nobody is refused; the decisions are
+#              counted by reason (the loopback console's hjv-access). enforce: a request or a
+#              registration without a valid ticket is refused, and a registered PC whose ticket
+#              ended is disconnected.
+# KEY=         <kid>:<public key>, as hjv-api keygen ticket shows it: kid 1 to 65535 without zeros
+#              in front, the key 32 bytes in standard base64 with its padding (44 characters). One
+#              line, or two while keys change. count and enforce need one at least.
+# NOT_BEFORE=  every ticket made before this time is refused: UTC as 2026-11-02T00:00:00Z, no other
+#              form. With count and enforce the line is there, empty for none, so that a file cut
+#              short between lines is never read as a rule without it.
+# TEXT=        optional: what a refused app shows (docs/access-tickets.md 5-2). It reaches anyone,
+#              logged in or not, so it holds no link meant for the app's users. Without the line,
+#              hbbs's own text in Korean and English.
+#
+# Each name once (KEY twice at most), right before its "=" ("MODE =" is no line hbbs reads), even
+# with MODE=off; comments only on whole lines (a "#" after a value is part of the value, and makes
+# the line an error); every line ends with a line break. While hbbs runs, a file it cannot use
+# changes nothing: it keeps the last good rule and logs why, never the TEXT. At its start, and
+# with HJV_ACCESS_FILE= empty, it refuses everyone instead. So never delete this file to turn the
+# check off: write MODE=off. Write a new file beside it and mv it into place.
+#
+# While the keys change (docs/access-tickets.md 6-4), with made-up values:
+#
+#   MODE=enforce
+#   KEY=1:<the public key of key 1>
+#   KEY=2:<the public key of key 2>
+#   NOT_BEFORE=
+MODE=off

@@ -171,6 +171,7 @@ PASS (strict): transport: relay
 - `--hjv-e2e-option <이름> [값 …]`은 실행 중인 서비스의 옵션을 IPC로 읽거나 씁니다(여러 쌍은 한 번의 쓰기). `--hjv-e2e-local-option`은 그 사용자의 LocalConfig, `--hjv-e2e-service-password`는 서비스의 영구 비밀번호, `--hjv-e2e-id`는 기기 ID와 공개키입니다.
 - 화면 세션(`--hjv-e2e-screenshot`, `-stream`, `-forward`)에 비밀번호 `""`를 주면 비밀번호 없는 연결입니다. 비밀번호 창이 뜨면 `hjv-e2e: password required <제목>`을 찍고 **종료 코드 3**, 'error' 창(키 바뀜 경고)이면 `hjv-e2e: error <제목>`을 찍고 **종료 코드 4**로 끝납니다. PC가 증명을 거절했을 때의 창은 제목이 `Could not connect without a password`라서 그냥 비밀번호 창(`Password Required`)과 구분됩니다.
 - 비밀번호 없는 연결의 데이터 경로는 원격 화면(`--hjv-e2e-screenshot <ID> ""`)으로 봅니다. 포트 포워딩은 증명을 보내지 않으므로 S22와 X7에만 씁니다.
+- 1.8.0의 출입증(클라이언트 패치 0058–0061): `--hjv-e2e-ticket [refresh]`는 로그인의 출입증을 해시의 앞 8바이트, `use`, 남은 수명으로 보입니다(refresh는 먼저 `POST /api/hjv/ticket` 한 번, 못 받으면 종료 코드 1). 화면 세션과 포워딩은 hbbs의 출입 거절을 `hjv-e2e: access refused <제목>`과 **종료 코드 5**로 끝냅니다. `HJV_E2E_ACCESS_PASSWORD=<이용 비밀번호>`를 주면 세 명령이 세션 전에 그 대상의 이용 비밀번호 출입증을 받습니다(`hjv-e2e: guest ctl: ok`, 못 받으면 `hjv-e2e: guest ctl: <코드>`와 **종료 코드 6**). `--hjv-e2e-guest-pc <이용 비밀번호>`는 이 PC의 출입증을 받아 IPC로 등록하는 프로세스에 넘깁니다(`hjv-e2e: guest pc: ok`, 못 받으면 종료 코드 6). 이 명령들의 시나리오는 아래 "출입 제한 단계 (1.8.0)"에 있습니다.
 
 **시나리오와 결과**(2026-10-13, WSL2 Ubuntu 24.04, `scripts/ci.sh e2e`, 실행 순서대로. `""`는 비밀번호 없이 연 원격 화면, T0는 같은 실행의 비밀번호 연결 시간, 상한 B = T0 + 2초)
 
