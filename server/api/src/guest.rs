@@ -455,11 +455,11 @@ fn bad_request() -> Reply {
     refusal(StatusCode::BAD_REQUEST, TEXT_BAD_REQUEST, "bad_request")
 }
 
-fn too_often() -> Reply {
-    refusal(
+/// 429 `rate_limited`, with the seconds until a try could come again (`retry_after`).
+fn too_often(retry_after: u64) -> Reply {
+    Reply::json(
         StatusCode::TOO_MANY_REQUESTS,
-        TEXT_TOO_OFTEN,
-        "rate_limited",
+        &json!({ "error": TEXT_TOO_OFTEN, "hjv": "rate_limited", "retry_after": retry_after }),
     )
 }
 
@@ -669,9 +669,30 @@ async fn limited(run: &mut Run<'_>, result: &'static str) -> Reply {
             run.ip_tag
         );
     }
+    let retry_after = retry_after(run, result).await;
     run.end(Outcome::Released, first.then_some(result), false)
         .await;
-    too_often()
+    too_often(retry_after)
+}
+
+/// When a try that the limit `result` refused could come again, in seconds: from the address's
+/// counted tries, or from the tries of everyone in memory.
+async fn retry_after(run: &Run<'_>, result: &'static str) -> u64 {
+    let state = run.state;
+    let (scope, windows) = match result {
+        "limited-ip" => (SCOPE_GUEST_IP, state.config.limit_guest_ip.clone()),
+        "limited-tickets" => (
+            SCOPE_GUEST_TICKETS,
+            state.config.limit_guest_tickets.clone(),
+        ),
+        _ => return state.guest_calls.retry_after(&[run.ip_tag.as_str()]),
+    };
+    let (key, at) = (run.ip_tag.clone(), now());
+    state
+        .db
+        .call(move |c| limits::wait(c, scope, &key, &windows, at))
+        .await
+        .map_or(1, |secs| u64::try_from(secs).unwrap_or(1))
 }
 
 fn window_of(windows: &[crate::config::Window]) -> Duration {

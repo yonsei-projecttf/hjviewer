@@ -7,6 +7,7 @@ use crate::{
     check::OnlineSince,
     config::{Config, Secrets},
     db::{self, Db, Record},
+    gate::GateMode,
     guest::{GuestFile, KeyLookups},
     keys::CallLimiter,
     limits::{
@@ -106,6 +107,8 @@ pub struct AppState {
     pub guest_keys: KeyLookups,
     /// its failure records written per minute
     pub guest_records: RecordBudget,
+    /// hbbs's last word on the access check's mode (gate.rs)
+    pub gate: GateMode,
     /// the operator record and the service's own user ID, from when the admin socket is served
     /// (admin.rs): where update.rs writes what the operator is to see without asking, and
     /// overview.rs each look of a super operator
@@ -153,6 +156,7 @@ impl AppState {
             guest_hashes: Arc::new(Semaphore::new(crate::guest::HASHES)),
             guest_keys: KeyLookups::default(),
             guest_records: RecordBudget::default(),
+            gate: GateMode::default(),
             operator_record: OnceLock::new(),
             lists: ListCache::default(),
             key_checks: KeyChecks::default(),

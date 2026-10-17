@@ -38,6 +38,10 @@
 //! An hbbs without patch 0004 answers unknown commands with nothing; [`HbbsError::Unsupported`]
 //! reports that. [`format_reply`] and [`sign_id_pk`] write the line, for patch 0004's tests and
 //! the fake console in hjv-api's tests.
+//!
+//! Server patch 0006 adds `hjv-access`, answered with one line `HJVACCESS1 mode=<mode>` and the
+//! counts of its decisions (docs/access-tickets.md 7); [`access_mode`] reads the mode only, for
+//! gate.rs.
 
 use crate::util::{b64, b64_decode, valid_device_id};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
@@ -50,11 +54,17 @@ use tokio::{
 
 pub const COMMAND: &str = "hjv-pk";
 pub const REPLY_TAG: &str = "HJVPK1";
+pub const ACCESS_COMMAND: &str = "hjv-access";
+pub const ACCESS_TAG: &str = "HJVACCESS1";
+/// The modes `hjv-access` names (docs/access-tickets.md 4-6, 7).
+pub const ACCESS_MODES: [&str; 4] = ["off", "count", "enforce", "closed"];
 /// The largest `<age>` taken (ten years); anything larger is not from hbbs.
 pub const MAX_AGE: u64 = 10 * 365 * 24 * 3600;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REPLY: u64 = 512;
+/// `hjv-access` also counts its decisions: four points by fourteen reasons at most.
+const MAX_ACCESS_REPLY: u64 = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lookup {
@@ -109,27 +119,54 @@ pub async fn lookup(
     if !valid_device_id(id) {
         return Err(HbbsError::BadId);
     }
+    let reply = ask(console, &format!("{COMMAND} {id}"), MAX_REPLY).await?;
+    parse_reply(id, &reply, server_key)
+}
+
+/// Asks hbbs at `console` for the access check's mode (server patch 0006): one of
+/// [`ACCESS_MODES`]. The counts of its answer are left out.
+pub async fn access_mode(console: SocketAddr) -> Result<&'static str, HbbsError> {
+    let reply = ask(console, ACCESS_COMMAND, MAX_ACCESS_REPLY).await?;
+    parse_access(&reply)
+}
+
+/// Reads hbbs's answer to `hjv-access`: one line, `HJVACCESS1 mode=<mode>` and the counts.
+pub fn parse_access(reply: &str) -> Result<&'static str, HbbsError> {
+    if reply.is_empty() {
+        return Err(HbbsError::Unsupported);
+    }
+    let line = reply.strip_suffix('\n').ok_or(HbbsError::Malformed)?;
+    let mut words = line.split(' ');
+    if words.next() != Some(ACCESS_TAG) {
+        return Err(HbbsError::Malformed);
+    }
+    let mode = words
+        .next()
+        .and_then(|word| word.strip_prefix("mode="))
+        .ok_or(HbbsError::Malformed)?;
+    ACCESS_MODES
+        .into_iter()
+        .find(|known| *known == mode)
+        .ok_or(HbbsError::Malformed)
+}
+
+/// Sends `command` to hbbs's console at `console` and reads its whole answer, `max` bytes at most.
+async fn ask(console: SocketAddr, command: &str, max: u64) -> Result<String, HbbsError> {
     let mut stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(console))
         .await
         .map_err(|_| HbbsError::Unreachable("connect timed out".into()))?
         .map_err(|e| HbbsError::Unreachable(e.kind().to_string()))?;
     let reply = timeout(REPLY_TIMEOUT, async {
         // one write: hbbs reads the command with a single read
-        stream
-            .write_all(format!("{COMMAND} {id}").as_bytes())
-            .await?;
+        stream.write_all(command.as_bytes()).await?;
         let mut reply = Vec::new();
-        (&mut stream)
-            .take(MAX_REPLY)
-            .read_to_end(&mut reply)
-            .await?;
+        (&mut stream).take(max).read_to_end(&mut reply).await?;
         Ok::<_, std::io::Error>(reply)
     })
     .await
     .map_err(|_| HbbsError::Unreachable("no answer in time".into()))?
     .map_err(|e| HbbsError::Unreachable(e.kind().to_string()))?;
-    let reply = String::from_utf8(reply).map_err(|_| HbbsError::Malformed)?;
-    parse_reply(id, &reply, server_key)
+    String::from_utf8(reply).map_err(|_| HbbsError::Malformed)
 }
 
 /// Reads hbbs's answer to `hjv-pk <id>`.
@@ -411,6 +448,32 @@ mod tests {
             b"\x0a",
         ] {
             assert_eq!(decode_id_pk(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn access_replies() {
+        // the mode only; the counts after it stay hbbs's
+        assert_eq!(parse_access("HJVACCESS1 mode=off\n"), Ok("off"));
+        assert_eq!(
+            parse_access("HJVACCESS1 mode=enforce ph.ok=6 reg.missing=2\n"),
+            Ok("enforce")
+        );
+        for mode in ACCESS_MODES {
+            assert_eq!(parse_access(&format!("HJVACCESS1 mode={mode}\n")), Ok(mode));
+        }
+        // an hbbs without patch 0006 answers nothing
+        assert_eq!(parse_access(""), Err(HbbsError::Unsupported));
+        for bad in [
+            "HJVACCESS1 mode=off",
+            "HJVACCESS1 mode=everyone\n",
+            "HJVACCESS1 mode=\n",
+            "HJVACCESS1\n",
+            "HJVACCESS2 mode=off\n",
+            "HJVPK1 1 - -\n",
+            "relay-servers\n",
+        ] {
+            assert_eq!(parse_access(bad), Err(HbbsError::Malformed), "{bad:?}");
         }
     }
 

@@ -114,6 +114,18 @@ pub fn count(
         settle(c, &[id], &[])?;
         return Ok(Ok(()));
     }
+    Ok(Err(wait(c, scope, key, windows, at)?))
+}
+
+/// The seconds until the fullest of `windows` has room again under `scope`/`key`, at least 1:
+/// when a try that [`reserve`] refused could come again.
+pub fn wait(
+    c: &Connection,
+    scope: &str,
+    key: &str,
+    windows: &[Window],
+    at: i64,
+) -> rusqlite::Result<i64> {
     let mut wait = 1;
     for w in windows {
         let (used, first): (u32, Option<i64>) = c.query_row(
@@ -125,7 +137,7 @@ pub fn count(
             wait = wait.max(first.map_or(w.secs, |first| first + w.secs - at));
         }
     }
-    Ok(Err(wait.max(1)))
+    Ok(wait.max(1))
 }
 
 /// Clears the counters under `keys`, in every scope (admin unlock): tags of different kinds never
@@ -232,6 +244,37 @@ impl GlobalLimiter {
         }
         calls.push_back((now, who.iter().map(|w| (*w).to_owned()).collect()));
         Take::Taken
+    }
+
+    /// The seconds until [`GlobalLimiter::try_take`] could take a call for `who` again: until the
+    /// oldest call of the window ends when the window is full, else until the oldest call of the
+    /// first of `who` that holds its share ends; at least 1.
+    pub fn retry_after(&self, who: &[&str]) -> u64 {
+        let now = Instant::now();
+        let span = Duration::from_secs(self.window.secs as u64);
+        let calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+        let live: Vec<&(Instant, Vec<String>)> = calls
+            .iter()
+            .filter(|(t, _)| now.duration_since(*t) < span)
+            .collect();
+        let ends = |t: &Instant| {
+            let left = span.saturating_sub(now.duration_since(*t));
+            (left.as_secs() + u64::from(left.subsec_nanos() > 0)).max(1)
+        };
+        if live.len() >= self.window.count as usize {
+            return live.first().map_or(1, |(t, _)| ends(t));
+        }
+        for w in who {
+            let mine: Vec<&Instant> = live
+                .iter()
+                .filter(|(_, holders)| holders.iter().any(|h| h == w))
+                .map(|(t, _)| t)
+                .collect();
+            if mine.len() >= self.share() {
+                return mine.first().map_or(1, |t| ends(t));
+            }
+        }
+        1
     }
 
     /// Gives back the newest call held by the tags `who`, a call that is not to count after all

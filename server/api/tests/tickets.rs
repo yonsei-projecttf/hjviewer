@@ -929,3 +929,36 @@ async fn no_ticket_is_logged_or_recorded() {
         "{lines:?}"
     );
 }
+
+// ---- the access check's mode ----
+
+async fn access_mode(h: &Harness) -> Value {
+    let a = h.request(Method::GET, "/api/hjv/access", &[], None).await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    a.json
+}
+
+/// `GET /api/hjv/access` names the mode of hbbs's `hjv-access`, without a token and without
+/// hbbs's counts; one answer of hbbs serves for a while. `unknown` from an hbbs that does not
+/// know the command.
+#[tokio::test]
+async fn the_apps_learn_the_access_checks_mode() {
+    let h = Harness::start().await;
+    h.hbbs
+        .answer_access("HJVACCESS1 mode=enforce ph.ok=6 ph.missing=2 reg.missing=1\n");
+    assert_eq!(access_mode(&h).await, json!({"mode": "enforce"}));
+    let asked = h.hbbs.queries.load(std::sync::atomic::Ordering::SeqCst);
+    h.hbbs.answer_access("HJVACCESS1 mode=off\n");
+    assert_eq!(access_mode(&h).await, json!({"mode": "enforce"}));
+    assert_eq!(
+        h.hbbs.queries.load(std::sync::atomic::Ordering::SeqCst),
+        asked
+    );
+    let a = h.request(Method::HEAD, "/api/hjv/access", &[], None).await;
+    assert_eq!((a.status, a.text.as_str()), (200, ""));
+    let a = h.request(Method::POST, "/api/hjv/access", &[], None).await;
+    assert_eq!(a.status, 405, "{}", a.text);
+    // an hbbs without patch 0006
+    let h = Harness::start().await;
+    assert_eq!(access_mode(&h).await, json!({"mode": "unknown"}));
+}

@@ -33,6 +33,7 @@ pub mod devmodel;
 pub mod devsig;
 pub mod envelope;
 pub mod fake_sso;
+pub mod gate;
 pub mod guest;
 pub mod hbbs;
 pub mod jobs;

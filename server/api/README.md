@@ -783,7 +783,9 @@ all go through it; `tests/pcsync.rs` checks that no other SQL deletes a binding.
 `POST /api/hjv/ticket` (Access tickets, below) takes the token with its signature as every account
 path; the login's answer and a bound PC's sync carry the same ticket object. `POST /api/hjv/guest`
 (the access password, below) takes no token: as a login, its password comes sealed, with the same
-form checks, and every refusal leaves after the failure delay.
+form checks, and every refusal leaves after the failure delay. `GET /api/hjv/access` (the access
+check's mode, below) takes none either: it says no more than hbbs's refusals show anyone, whether
+hbbs checks tickets.
 
 `GET /api/hjv/admin/overview` (Admin overview) takes the token with its signature too, with the
 same 401 and 409 as every account path. For an account that is not a super operator the answer is
@@ -1180,8 +1182,9 @@ sealed: {"v":1,"p":"guest","use":"ctl"|"pc","pw":"<password>","t":<time>,"n":"<n
   `bad_request`; 401 `denied` `{"error":"이용 비밀번호가 맞지 않거나, 지금은 서버가 이용 비밀번호를 받지
   않습니다.","hjv":"denied"}` for a wrong password and for no file taken alike; 403 `wrong_pc`
   when hbbs holds another key for the PC; 409 `clock` with `server_time` for a seal's time; 429
-  `rate_limited` past a limit; 503 `busy` while two hashes run (or 32 tries are in hand), 503
-  `unavailable` without a ticket key or when hbbs's console does not answer about a PC.
+  `rate_limited` past a limit, with `retry_after`, the seconds until that limit has room again (at
+  least 1); 503 `busy` while two hashes run (or 32 tries are in hand), 503 `unavailable` without a
+  ticket key or when hbbs's console does not answer about a PC.
 
 A PC's request with the vectors' PC key (the seed `[2; 32]`, as above) and the sealed bytes of the
 seal vector of Login (its `h`); the signature is the one OpenSSL makes too:
@@ -1192,6 +1195,22 @@ SHA-256(sealed)  qIDSw48Gkb5KSslffq/QEWRaClx5ihVLTE5+jqOHQ6Q=
 signed (115)     686a762d67756573742d70632d7631003132333435363738390067546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d0071494453773438476b62354b53736c6666712f5145575261436c78356968564c5445352b6a714f485136513d
 sig              LCgw71tbHtZvAgBNOoElzNffv/sjmraHOBM/jvDp1fiGwvACfrVddPgq/FbR25j+KhE5fvd5rf2nT1KFbi0UDg==
 ```
+
+### The access check's mode: `GET /api/hjv/access` (`src/gate.rs`)
+
+docs/access-tickets.md 3-6 is its contract. No token, no body, always 200:
+
+```text
+200 {"mode":"off"|"count"|"enforce"|"closed"|"unknown"}
+```
+
+- `mode` is the mode of hbbs's answer to `hjv-access` on its console (server patch 0006), without
+  the counts after it; `unknown` when hbbs does not answer or does not know the command. hjv-api
+  asks hbbs at most once every 30 s and gives the same answer in between, so a change of
+  access.conf shows here within hbbs's 10 s and these 30 s.
+- The apps word with it what a logout or taking a PC out of the list does, and tell a controller
+  that is not logged in, ahead of a refusal, that the server lets in only staff. hbbs alone
+  decides; the answer is only a hint.
 
 ### NAS relays: `POST /api/hjv/relay/hello`, `/api/hjv/relay/poll` (`src/relay.rs`)
 
@@ -1572,12 +1591,14 @@ against them, `POST /api/hjv/ticket` (a phone's ticket, a Windows app's, the ref
 the limit), the tickets of the login's answer and of a bound PC's sync (by the account's state and
 the PC's binding), the App Review account's for its demo PCs (and none without the `PC=` line), a
 server without a ticket key, `admin ticket status`, selfcheck (with the vectors' public test keys
-refused, as outside the harness), and that no ticket reaches the journal or the records;
+refused, as outside the harness), that no ticket reaches the journal or the records, and `GET
+/api/hjv/access` (hbbs's mode without its counts, kept a while, `unknown` from an hbbs that does
+not know the command);
 `tests/guest.rs` the access password: a controller's and a PC's ticket, the same 401 for a wrong
 password and a closed file after the failure delay, the seal of this request only (a login's seal
 refused, and the access password's at the login), the retry, the form, the limits before the hash
-and `admin unlock`, a PC that hbbs knows by another key, no ticket key, the README's vector, and
-that nothing of it reaches the journal or the records;
+and `admin unlock` (each 429 with the seconds of its limit), a PC that hbbs knows by another key,
+no ticket key, the README's vector, and that nothing of it reaches the journal or the records;
 `tests/update_stream.rs` how a package goes out, on tokio's paused clock
 with hjv-api on one end of a connection in memory (a slow reader past the minute a request has, a
 reader that stops, the fifth download at once, the hour a download may take, 200 MiB at the rate),

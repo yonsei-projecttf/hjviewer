@@ -55,7 +55,7 @@
 use crate::{
     body::Body,
     db::{self, Device, Session},
-    envelope, guest, keys,
+    envelope, gate, guest, keys,
     login::{self, BindStatus, Retry},
     overview, pcsync, proof, relay, review,
     state::AppState,
@@ -198,6 +198,7 @@ fn allowed_methods(path: &str) -> Option<&'static str> {
         ticket::PATH => "POST",
         "/api/users" | "/api/peers" | "/api/hjv/this-device" | overview::PATH => "GET",
         "/api/login-options" | "/api/device-group/accessible" | "/api/hjv/source" => "GET, HEAD",
+        gate::PATH => "GET, HEAD",
         p if wake::allowed_methods(p).is_some() => return wake::allowed_methods(p),
         p if update::allowed_methods(p).is_some() => return update::allowed_methods(p),
         p if p.starts_with("/api/hjv/devices/") => "DELETE",
@@ -271,6 +272,7 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         (path, method) if path.starts_with("/api/hjv/keys") && allow == method.as_str() => {
             keys::route(state, &req).await
         }
+        (gate::PATH, _) if get => gate::handle(state).await,
         ("/api/hjv/source", _) if get => Reply::ok(&json!({
             "license": "AGPL-3.0-only",
             "source": state.config.source_url,

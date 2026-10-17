@@ -210,8 +210,22 @@ sig가 서명하는 바이트: "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-25
   - 봉인이 모든 시도의 한도보다 먼저인 것은, 봉인이 틀린 요청이 모두의 한도를 쓰지 못하게 하기 위해서입니다. 그런 요청은 그 주소의 실패로만 셉니다.
 - **같은 401**: 틀린 비밀번호와 이용 비밀번호를 받지 않는 상태(`guest.conf`가 없음, 고장 남, `UNTIL`이 지남)는 같은 401 `denied`를 줍니다. 모든 실패는 로그인처럼 요청이 온 때부터 2초 ± 0.5초 뒤에 나갑니다(`HJV_API_FAILURE_DELAY_MS`, `HJV_API_FAILURE_JITTER_MS`).
 - **그 밖의 거절**: 400 `bad_request`(본문의 모양, 봉인), 409 `clock`, 403 `wrong_pc`(hbbs가 그 ID에 다른 키를 가짐), 429 `rate_limited`(한도), 503 `busy`(해시가 이미 2개 돌고 있음, 또는 받아 둔 시도가 너무 많음), 503 `unavailable`(출입증 키가 없음, hbbs에 물을 수 없음). 본문은 3-4와 같은 모양입니다. `wrong_pc`와 hbbs의 503은 비밀번호가 맞은 뒤에만 옵니다.
+- **429의 `retry_after`**: 429의 본문에는 `retry_after`가 더 있습니다. 그 한도에 다시 자리가 나기까지의 초(1 이상)입니다. 앱은 이것으로 "약 N분 뒤 다시 해 주세요"라고 알립니다(5-3 E2).
 - **한도**(기본값, 설정으로 바꿈): 주소마다 실패 10분에 5번·하루 20번(`HJV_API_LIMIT_GUEST_IP`), 모든 시도 시간당 60번이고 주소 하나는 그 4분의 1까지(`HJV_API_LIMIT_GUEST_ALL`), 주소마다 출입증 하루 50개(`HJV_API_LIMIT_GUEST_TICKETS`). 주소는 로그인처럼 셉니다(IPv6은 /64).
 - 이용 비밀번호는 hjv-api의 `guest.conf`(`HJV_API_GUEST_FILE`)에 PBKDF2 해시와 `UNTIL`로 있습니다. 파일의 모양과 바꾸는 법은 [server/api/README.md](../server/api/README.md)와 [server-runbook.md](server-runbook.md)에 있습니다.
+
+### 3-6. 서버가 출입증을 보는지: GET /api/hjv/access
+
+앱은 로그인하기 전에도 이 요청으로 hbbs가 출입증을 보는지 압니다. 토큰도 본문도 없고, 답은 늘 200입니다.
+
+```text
+200 {"mode":"off"|"count"|"enforce"|"closed"|"unknown"}
+```
+
+- `mode`는 hbbs 콘솔 `hjv-access`(7)의 모드입니다. 이유별 개수는 싣지 않습니다. hbbs가 답하지 않거나 그 명령을 모르면(서버 패치 0006 전) `unknown`입니다.
+- hjv-api는 hbbs에 30초에 한 번만 묻고, 그동안은 같은 답을 줍니다. 그래서 `access.conf`를 바꾸고 이 답이 바뀌기까지 hbbs가 파일을 다시 읽는 10초(6-4)와 이 30초가 걸립니다.
+- 앱은 이 답으로 미리 알립니다(5-3): `enforce`나 닫힘(`closed`)이면 로그인하지 않은 컨트롤러에게 교직원 전용 서버라고 알리고, 로그아웃하거나 PC를 내 기기 목록에서 뺄 때 이 PC가 연결을 받지 못하게 된다고 알립니다. `unknown`이면 "서버가 교직원 전용이면"이라고 조건을 붙이고, `off`와 `count`면 알리지 않습니다.
+- 이 답은 안내일 뿐입니다. 판정은 언제나 hbbs가 합니다. 모드는 거절 답으로도 누구에게나 드러나므로, 이 답이 더 알려 주는 것은 없습니다.
 
 ## 4. hbbs의 판정
 

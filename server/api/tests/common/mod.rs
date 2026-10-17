@@ -173,10 +173,13 @@ struct Entry {
 
 type Registry = Arc<Mutex<HashMap<String, Entry>>>;
 
-/// The hbbs loopback console, answering `hjv-pk <id>` as patch 0004 does.
+/// The hbbs loopback console, answering `hjv-pk <id>` as patch 0004 does, and `hjv-access` with
+/// the line a test set (patch 0006).
 pub struct FakeHbbs {
     pub addr: SocketAddr,
     keys: Registry,
+    /// the answer to `hjv-access`; none, as from an hbbs without patch 0006, until a test sets one
+    access: Arc<Mutex<String>>,
     pub unpatched: Arc<AtomicBool>,
     pub queries: Arc<AtomicUsize>,
     /// a test that holds this lock holds every answer until it lets go (hjv-api waits two
@@ -189,11 +192,13 @@ impl FakeHbbs {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let keys: Registry = Default::default();
+        let access: Arc<Mutex<String>> = Default::default();
         let unpatched = Arc::new(AtomicBool::new(false));
         let queries = Arc::new(AtomicUsize::new(0));
         let hold = Arc::new(tokio::sync::Mutex::new(()));
-        let (k, u, q, held) = (
+        let (k, a, u, q, held) = (
             keys.clone(),
+            access.clone(),
             unpatched.clone(),
             queries.clone(),
             hold.clone(),
@@ -203,7 +208,7 @@ impl FakeHbbs {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     continue;
                 };
-                let (k, u, q, held) = (k.clone(), u.clone(), q.clone(), held.clone());
+                let (k, a, u, q, held) = (k.clone(), a.clone(), u.clone(), q.clone(), held.clone());
                 tokio::spawn(async move {
                     let mut buf = [0u8; 1024];
                     let Ok(n) = stream.read(&mut buf).await else {
@@ -221,6 +226,9 @@ impl FakeHbbs {
                                 .map(|e| hbbs::sign_id_pk(&e.signer, id, &e.public_key));
                             hbbs::format_reply(id, signed.as_deref(), entry.and_then(|e| e.age))
                         }
+                        (Some("hjv-access"), None) if !u.load(Ordering::SeqCst) => {
+                            a.lock().unwrap().clone()
+                        }
                         _ => String::new(),
                     };
                     let _ = stream.write_all(reply.as_bytes()).await;
@@ -230,6 +238,7 @@ impl FakeHbbs {
         FakeHbbs {
             addr,
             keys,
+            access,
             unpatched,
             queries,
             hold,
@@ -266,6 +275,11 @@ impl FakeHbbs {
     /// signed with a key pair of its own.
     pub fn forge(&self, id: &str, key: [u8; 32]) {
         self.insert(id, &key, Some(1), [99; 32]);
+    }
+
+    /// What hbbs answers to `hjv-access` from now on: a line, or nothing ("").
+    pub fn answer_access(&self, reply: &str) {
+        *self.access.lock().unwrap() = reply.to_owned();
     }
 
     /// hbbs knows the key but not when the device last registered (as after a restart).

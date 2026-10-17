@@ -428,14 +428,21 @@ async fn the_limits_come_before_the_hash() {
         ..Default::default()
     })
     .await;
-    let too_often = json!({"error": guest::TEXT_TOO_OFTEN, "hjv": "rate_limited"});
+    // 429 with the seconds until the limit's window has room again: about the whole window here
+    let too_often = |a: &Answer, window: u64| {
+        assert_eq!(a.status, 429, "{}", a.text);
+        assert_eq!(a.json["error"], guest::TEXT_TOO_OFTEN, "{}", a.text);
+        assert_eq!(a.json["hjv"], "rate_limited", "{}", a.text);
+        let wait = a.json["retry_after"].as_u64().unwrap_or(0);
+        assert!(window - 60 < wait && wait <= window, "{}", a.text);
+    };
     // two failures, then even the right password waits
     for _ in 0..2 {
         let a = ask(&h, &ctl_body(&h, "wrong horse", TARGET, now()), "10.7.4.1").await;
         assert_eq!(a.status, 401, "{}", a.text);
     }
     let a = ask(&h, &ctl_body(&h, PASSWORD, TARGET, now()), "10.7.4.1").await;
-    assert_eq!((a.status, &a.json), (429, &too_often), "{}", a.text);
+    too_often(&a, 600);
     let tag = format!("tag:{}", h.state.tags.ip("10.7.4.1"));
     let unlocked = h
         .admin(&["unlock", tag.as_str()], false, None)
@@ -457,21 +464,21 @@ async fn the_limits_come_before_the_hash() {
     let a = ask(&h, &ctl_body(&h, PASSWORD, "222333444", now()), "10.7.4.2").await;
     assert_eq!(a.status, 200, "{}", a.text);
     let a = ask(&h, &ctl_body(&h, PASSWORD, TARGET, now()), "10.7.4.2").await;
-    assert_eq!((a.status, &a.json), (429, &too_often), "{}", a.text);
+    too_often(&a, 86400);
     // eight tries of everyone an hour, two of them one address's: 10.7.4.2 holds its two
     let a = ask(&h, &ctl_body(&h, "wrong horse", TARGET, now()), "10.7.4.3").await;
     assert_eq!(a.status, 401, "{}", a.text);
     let a = ask(&h, &ctl_body(&h, PASSWORD, TARGET, now()), "10.7.4.3").await;
     assert_eq!(a.status, 200, "{}", a.text);
     let a = ask(&h, &ctl_body(&h, PASSWORD, TARGET, now()), "10.7.4.3").await;
-    assert_eq!((a.status, &a.json), (429, &too_often), "{}", a.text);
+    too_often(&a, 3600);
     for ip in ["10.7.4.4", "10.7.4.5", "10.7.4.6"] {
         let a = ask(&h, &ctl_body(&h, PASSWORD, TARGET, now()), ip).await;
         assert_eq!(a.status, 200, "{}", a.text);
     }
     // 1 (10.7.4.1's after the unlock forgot its two) + 2 + 2 + 3 = 8: the window is full
     let a = ask(&h, &ctl_body(&h, PASSWORD, TARGET, now()), "10.7.4.7").await;
-    assert_eq!((a.status, &a.json), (429, &too_often), "{}", a.text);
+    too_often(&a, 3600);
     let results: Vec<String> = guest_records(&h)
         .await
         .into_iter()
