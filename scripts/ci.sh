@@ -117,6 +117,8 @@ E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 4))
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 12))
 # strict: and HJViewer's ID rule's S32 (2026-10-14)
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 1))
+# strict: and the staff-only gate's A1-A14 (2026-10-17)
+E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 14))
 # by the filter of build_e2e_client's cargo test --lib <filter>; hjv as the minimum version's E2E
 # counted it (224, 2026-10-14, the series with src/hjviewer_update)
 declare -A UNIT_LEAST=([hjv]=224 [hjviewer_wol]=6)
@@ -1297,7 +1299,9 @@ e2e_keys() { # <dir>
   local dir=$1 name kind byte hex
   mkdir -p "$dir"
   chmod 700 "$dir"
-  for spec in "seal x25519 e2" "list-1 ed25519 e3" "list-2 ed25519 e4" "command-1 ed25519 e5" "log - e6"; do
+  # (ticket: hjv-api's access ticket key, whose public key is hbbs's KEY= line: the access stage)
+  for spec in "seal x25519 e2" "list-1 ed25519 e3" "list-2 ed25519 e4" "command-1 ed25519 e5" "log - e6" \
+    "ticket ed25519 e7"; do
     read -r name kind byte <<< "$spec"
     hex=""
     for _ in $(seq 32); do hex+=$byte; done
@@ -1352,6 +1356,32 @@ e2e_update_keys() {
 # tests run as in a build that takes part; when <filter> picks those tests, they run once more
 # without the keys (e2e_unit_without_update_keys). A client given by hand
 # (E2E_CLIENT, which only the wol stage takes) is used as it is, and that is a skip.
+# The staff-only gate's A1-A14 (docs/e2e.md, the access stage): with hbbs's access file (server
+# patch 0006), the client's access password command (client patch 0061) and the account E2E,
+# whose hjv-api signs the tickets. Like e2e_minimum_version: a patch whose build lacks its part
+# fails, no patch skips.
+e2e_access() {
+  local help
+  E2E_ACCESS=()
+  help=$(cd "$CI" && "$CI/target/release/hbbs" --help 2>&1 || true)
+  if ! grep -q -- '--hjv-access-file' <<< "$help"; then
+    grep -q -- 'hjv-access-file' "$ROOT"/server/patches/*.patch &&
+      fail "e2e: hbbs has no --hjv-access-file, though server/patches has it (patch 0006): scripts/ci.sh server builds it again"
+    skip "the staff-only gate's A1-A14 (hbbs has no --hjv-access-file: no server patch 0006)"
+    return 0
+  fi
+  if ! grep -aqF -- '--hjv-e2e-guest-pc' "$E2E_CLIENT"; then
+    grep -q -- 'hjv-e2e-guest-pc' "$ROOT"/client/patches/rustdesk/*.patch &&
+      fail "e2e: the client has no --hjv-e2e-guest-pc, though client/patches has it (patch 0061)"
+    skip "the staff-only gate's A1-A14 (the client has no --hjv-e2e-guest-pc: no client patch 0061)"
+    return 0
+  fi
+  if [ -z "$E2E_ACCOUNT" ] || ! grep -q HJV_E2E_ACCESS "$ROOT/tools/e2e/firewall-e2e.sh"; then
+    skip "the staff-only gate's A1-A14 (no account E2E, or no HJV_E2E_ACCESS part in tools/e2e/firewall-e2e.sh)"
+    return 0
+  fi
+  E2E_ACCESS=(HJV_E2E_ACCESS=1)
+}
 build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
   local work=$1 unit=${2:-hjviewer_account} src="$CI/upstream-e2e/rustdesk" keys=() update_keys
   local filter=${3:-$unit}
@@ -1565,6 +1595,8 @@ e2e_stage() {
   fi
   e2e_minimum_version
   extra+=("${E2E_MINVER[@]}")
+  e2e_access
+  extra+=("${E2E_ACCESS[@]}")
   for mode in strict open; do
     step "e2e: tools/e2e/firewall-e2e.sh $mode (output also in build/ci/e2e-$mode.log)"
     with_skips "$CI/e2e-$mode.log" env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" \

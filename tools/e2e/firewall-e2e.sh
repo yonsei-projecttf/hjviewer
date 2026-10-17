@@ -50,6 +50,15 @@
 # by the policy it stored, refuses the new one and takes nothing from it. It does the same with a
 # policy of the test key 1 that carries the signature of another one, which only the signature
 # itself gives away. CLIENT_OLD adds the 1.5.1 controller to V3 and V8.
+#
+# The staff-only gate (docs/access-tickets.md; docs/e2e.md, the access stage), in strict mode with
+# the account part, after it and before the minimum version's parts (whose V7 leaves the PC
+# refusing the E2E's controllers by their version): HJV_E2E_ACCESS=1 gives hbbs (server patches
+# 0006-0008) the file $RUN/access.conf, which A1-A14 write as an operator would (MODE off, count
+# and enforce, NOT_BEFORE, a broken file), and hjv-api the ticket key of HJV_E2E_KEYS
+# (ticket.secret, ticket.pub), the access password's file and the App Review account's, whose demo
+# PC is the PC. A second PC, PC B, runs CLIENT (not installed, logged in nowhere) in hjv-pc2's
+# network. CLIENT_OLD adds the 1.5.1 controller to A12.
 set -euo pipefail
 
 MODE=${1:-strict}
@@ -90,6 +99,14 @@ MIN_HBBS="" KEYED="" POLICY=""
 if [ "$MODE" = strict ]; then
   MIN_HBBS=${HJV_E2E_MIN_CONTROLLER:-} KEYED=${HJV_E2E_UPDATE_KEYS:-}
   if [ -n "$KEYED" ] && [ -n "${HJV_RELEASE:-}" ]; then POLICY=1; fi
+fi
+# the staff-only gate's parts run in strict mode only, with hjv-api, which signs the tickets
+ACCESS=""
+if [ "$MODE" = strict ] && [ -n "${HJV_E2E_ACCESS:-}" ]; then
+  [ -n "$ACCOUNT" ] || { echo "HJV_E2E_ACCESS=1 needs HJV_E2E_ACCOUNT=1: hjv-api signs the tickets" >&2; exit 2; }
+  ACCESS=1
+  GUEST_PW="hjv-e2e-guest-$RANDOM$RANDOM" WRONG_GUEST_PW="hjv-e2e-wrong-$RANDOM$RANDOM"
+  REVIEW_ID=E2EREVIEW-TEST REVIEW_PW="hjv-e2e-review-$RANDOM$RANDOM"
 fi
 
 log() { printf '\n== %s\n' "$*"; }
@@ -142,6 +159,26 @@ min_conf() {
     fi
   } >"$RUN/min-controller.conf.new"
   mv -f "$RUN/min-controller.conf.new" "$RUN/min-controller.conf"
+}
+
+# <MODE> [<NOT_BEFORE>]: hbbs's access file (server patch 0006) with the E2E's ticket key 1 and no
+# TEXT line, written next to it and moved over it as an operator does (docs/server-runbook.md 9-3)
+access_conf() {
+  access_file "MODE=$1" "KEY=1:$(cat "$KEYS/ticket.pub")" "NOT_BEFORE=${2:-}"
+}
+access_file() { # <line>...: the access file of these lines
+  printf '%s\n' "# the E2E's access check (docs/access-tickets.md 6), read again every 10 seconds" "$@" \
+    >"$RUN/access.conf.new"
+  mv -f "$RUN/access.conf.new" "$RUN/access.conf"
+}
+# <password>: its HASH= line's value as deploy/guest-conf.py writes it (the tool's function: the
+# tool itself asks in a terminal only)
+pbkdf2_of() {
+  python3 -I -c 'import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("guest_conf", sys.argv[1])
+conf = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(conf)
+print(conf.hash_of(sys.argv[2], os.urandom(16)))' "$ROOT/deploy/guest-conf.py" "$1"
 }
 
 # <-I|-D>: the host forwards UDP between hjv-pc and hjv-ctl (open mode)
@@ -286,6 +323,7 @@ if [ -n "$ACCOUNT" ]; then
   cp "$KEYS/seal.secret" "$RUN/api/creds/hjviewer-api-login-key"
   cp "$KEYS/log.secret" "$RUN/api/creds/hjviewer-api-log-key"
   cp "$KEYS/list-1.secret" "$RUN/api/creds/hjviewer-api-list-key"
+  [ -z "$ACCESS" ] || cp "$KEYS/ticket.secret" "$RUN/api/creds/hjviewer-api-ticket-key"
   chmod 600 "$RUN/api/creds"/*
   cat >"$RUN/api/hjviewer-api.env" <<EOF
 HJV_API_SSO_TOKEN_URL=http://127.0.0.1:$SSO_PORT/oauth/token.do
@@ -302,6 +340,19 @@ HJV_API_LIMIT_OK_ID=200/3600
 HJV_API_LIMIT_OK_IP=200/3600
 HJV_API_LIMIT_SSO=400/60
 EOF
+  if [ -n "$ACCESS" ]; then
+    # the access tickets from the start, while hbbs checks none (MODE=off until A2): the E2E's
+    # ticket key, the access password's file with a day to go, and the App Review account's,
+    # which A10 writes once the PC has its ID; the failures of one address are not what is tried
+    cat >>"$RUN/api/hjviewer-api.env" <<EOF
+HJV_API_TICKET_PUBKEYS=1:$(cat "$KEYS/ticket.pub")
+HJV_API_GUEST_FILE=$RUN/api/guest.conf
+HJV_API_REVIEW_FILE=$RUN/api/review.conf
+HJV_API_LIMIT_GUEST_IP=50/600
+EOF
+    printf 'HASH=%s\nUNTIL=%s\n' "$(pbkdf2_of "$GUEST_PW")" "$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)" \
+      >"$RUN/api/guest.conf"
+  fi
   "$HJV_FAKE_SSO" --listen "127.0.0.1:$SSO_PORT" >"$RUN/fake-sso.log" 2>&1 &
   SERVER_PIDS+=($!)
   start_api
@@ -310,10 +361,17 @@ EOF
 fi
 
 log "server: hbbs + hbbr behind Caddy (deploy/Caddyfile) on :443"
-# (with the minimum version, hbbs reads the lowest controller version from a file, while there is one)
-(cd "$RUN/srv" && exec env -i TEST_HBBS=no RUST_LOG=debug ${MIN_HBBS:+"HJV_MIN_CONTROLLER_FILE=$RUN/min-controller.conf"} \
-  "$HBBS" -p "$HBBS_PORT" -r "$DOMAIN" >"$RUN/hbbs.log" 2>&1) &
-SERVER_PIDS+=($!)
+# (with the minimum version, hbbs reads the lowest controller version from a file, while there is
+# one; with the staff-only gate, its access file, MODE=off at first)
+HBBS_PID=""
+start_hbbs() { # its log appended to $RUN/hbbs.log (A13 starts it again)
+  (cd "$RUN/srv" && exec env -i TEST_HBBS=no RUST_LOG=debug ${MIN_HBBS:+"HJV_MIN_CONTROLLER_FILE=$RUN/min-controller.conf"} \
+    ${ACCESS:+"HJV_ACCESS_FILE=$RUN/access.conf"} "$HBBS" -p "$HBBS_PORT" -r "$DOMAIN" >>"$RUN/hbbs.log" 2>&1) &
+  HBBS_PID=$!
+  SERVER_PIDS+=($!)
+}
+[ -z "$ACCESS" ] || access_conf off
+start_hbbs
 (cd "$RUN/srv" && exec env -i RUST_LOG=info "$HBBR" -p "$HBBR_PORT" -k _ >"$RUN/hbbr.log" 2>&1) &
 SERVER_PIDS+=($!)
 # The version policy, which the server's nginx serves from a file (minimum version design 4-2): a
@@ -1421,6 +1479,294 @@ ctl2_lists() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# The staff-only gate (docs/access-tickets.md; docs/e2e.md, the access stage A1-A14): hbbs's
+# access file in its modes, the tickets of a login, of the bound PC, of the access password and of
+# the App Review account, and the refusals as the apps show them. Its controllers are sides of
+# their own in the controller's network: actl never logs in, staff is alice's, rev the App Review
+# account's. PC B (pcb) runs CLIENT, which Linux does not count as installed, in the second PC's
+# network, logged in nowhere; the second PC of X4 stops for it. Every call of a client ends within
+# 30 s or fails the run.
+# ---------------------------------------------------------------------------------------------
+# the texts of a refusal for access: the app's core's (src/hjviewer_access.rs A1, A2), and hbbs's
+# own (server patch 0006, docs/access-tickets.md 5-3), each with hbbs's mark
+ACC_A1="HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요. (access not allowed)"
+ACC_A2="서버가 이 연결을 받지 않았습니다. 잠시 뒤 다시 시도하고, 계속되면 관리자에게 알려 주세요. (access not allowed)"
+ACC_HBBS="HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)"
+
+# <ns> <side> <client> [NAME=value...] <args...>: as vrun, in the network <ns> and with NAME=value
+# in the client's environment; the passwords are masked in $RUN/<side>.out
+arun() {
+  local ns=$1 side=$2 client=$3 t0 p envs=() line
+  shift 3
+  while [[ ${1:-} =~ ^[A-Z_][A-Z0-9_]*= ]]; do
+    envs+=("$1")
+    shift
+  done
+  line="${envs[*]} $*"
+  for p in "$PASSWORD" "$ALICE_PW" "$GUEST_PW" "$WRONG_GUEST_PW" "$REVIEW_PW"; do line=${line//"$p"/***}; done
+  mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
+  t0=$(date +%s%N)
+  RC=0
+  OUT=$(in_ns "$ns" "$side" timeout -k 5 30 env "${envs[@]}" "$client" "$@" 2>"$RUN/$side.err") || RC=$?
+  MS=$(ms_since "$t0")
+  ERR=$(grep '^hjv-e2e:' "$RUN/$side.err" || true)
+  {
+    echo "== $(basename "$client") $line (exit $RC, $MS ms)"
+    printf '%s\n' "$OUT"
+    cat "$RUN/$side.err"
+  } >>"$RUN/$side.out"
+  case $RC in 124 | 137) fail "$side: '$line' did not end within 30 s" ;; esac
+}
+ahas() { grep -qF -- "$1" <<<"$OUT"$'\n'"$ERR"; } # <text>: in the last call's hjv-e2e lines or output
+# <side> <PC ID> <tag> [NAME=value...]: that PC's remote screen from the controller's network with
+# the PCs' password, into $RUN/<tag>.ppm
+ascreen() { arun hjv-ctl "$1" "$CLIENT" "${@:4}" --hjv-e2e-screenshot "$2" "$PASSWORD" "$RUN/$3.ppm"; }
+# <scenario> <tag>: the last call was refused for access with the core's text <text>: exit 5, no screen
+refused_with() {
+  [ "$RC" = 5 ] || fail "$1: exit $RC, expected 5 (a refusal for access): $(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1)"
+  ahas "hjv-e2e: access refused" || fail "$1: no 'access refused' line"
+  ahas "$3" || fail "$1: not the text '$3': $(grep '^hjv-e2e: hjv-access-error' <<<"$OUT")"
+  if ahas 'logged in to' || [ -e "$RUN/$2.ppm" ]; then fail "$1: a session started"; fi
+}
+screen_ok() { # <scenario> <tag>: the last call got the PC's screen (both PCs show the same desktop)
+  [ "$RC" = 0 ] || fail "$1: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
+  screen_is_pc "$2" || fail "$1: the decoded screen is not the PC's desktop"
+}
+access_console() { # hbbs's answer to hjv-access on its loopback console (server patch 0006)
+  timeout 3 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1" && printf hjv-access >&3 && cat <&3' _ "$((HBBS_PORT - 1))" || true
+}
+console_count() { # <point.reason>: its count in the console's line, 0 without one
+  local n
+  n=$(access_console | tr ' ' '\n' | sed -n "s/^${1//./\\.}=//p")
+  echo "${n:-0}"
+}
+console_has() { # <point.reason>...: each counted at least once
+  local c
+  for c in "$@"; do [ "$(console_count "$c")" -gt 0 ] || return 1; done
+}
+gate_is() { # <mode>: GET /api/hjv/access, without a token, from the controller's network
+  GATE=$(in_ns hjv-ctl actl curl -s --max-time 5 --cacert "$CA_ROOT" "https://$DOMAIN/api/hjv/access" || true)
+  [ "$GATE" = "{\"mode\":\"$1\"}" ]
+}
+hbbs_count() { grep -cF -- "$1" "$RUN/hbbs.log" || true; }
+hbbs_above() { [ "$(hbbs_count "$1")" -gt "$2" ]; } # <text> <count before>
+PCB_STATE="" GATE=""
+pcb_is() { # <state>: PC B's hjv-access-pc, from its service: ok or refused
+  arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-option hjv-access-pc
+  PCB_STATE=$OUT
+  [ "$OUT" = "$1" ]
+}
+start_pcb() { # PC B's desktop on the display :97, and its service
+  in_ns hjv-pc2 pcb bash -c '
+    Xvfb :97 -screen 0 1280x720x24 -nolisten tcp >/dev/null 2>&1 &
+    for _ in $(seq 50); do [ -e /tmp/.X11-unix/X97 ] && break; sleep 0.1; done
+    export DISPLAY=:97
+    display -geometry +0+0 "$1" &
+    exec "$2" --server
+  ' _ "$RUN/pc/desktop.png" "$CLIENT" >>"$RUN/pcb-server.log" 2>&1 &
+}
+restart_pcb_service() { # on the display PC B still has, as start_pc_service
+  local pids
+  pids=$(sudo ip netns pids hjv-pc2 | xargs -r ps -o pid=,args= -p | awk '$0 ~ / --server$/ {print $1}')
+  [ -z "$pids" ] || sudo kill $pids
+  sleep 1
+  in_ns hjv-pc2 pcb env DISPLAY=:97 "$CLIENT" --server >>"$RUN/pcb-server.log" 2>&1 &
+}
+guest_tries() { # the access password's tries of the last day, as admin ticket status counts them
+  admin ticket status | sed -n "s/^access password, the last day's tries: //p"
+}
+guest_tried() { [[ ", $(guest_tries), " == *", $1, "* ]]; } # <result> <n>, e.g. "wrong 1"
+
+access_part() {
+  local t0 n0 n1 nb before
+  mkdir -p "$RUN"/{actl,staff,rev,pcb}/{home,ipc}
+  log "A1: MODE=off: hbbs checks nothing (a PC with no ticket registers); the apps read the mode"
+  hbbs_has "access off" || fail "A1: hbbs did not log 'access off' (HJV_ACCESS_FILE, server patch 0006)"
+  [[ $(access_console) == "HJVACCESS1 mode=off"* ]] || fail "A1: the console's hjv-access: '$(access_console)'"
+  # PC B in the second PC's network, where X4's PC stops
+  sudo ip netns pids hjv-pc2 | xargs -r sudo kill 2>/dev/null || true
+  sleep 0.5
+  PCB_ID=$(in_ns hjv-pc2 pcb "$CLIENT" --hjv-e2e-set-password "$PASSWORD" | tail -1)
+  [[ $PCB_ID =~ ^[0-9]+$ ]] || fail "A1: PC B's ID: '$PCB_ID'"
+  start_pcb
+  until_ok 40 "A1: PC B online" online "$PCB_ID" ctl
+  ascreen actl "$PCB_ID" a1
+  screen_ok "A1: the controller without a login, to PC B with its password" a1
+  until_ok 10 "A1: PC B's hjv-access-pc ok" pcb_is ok
+  until_ok 5 "A1: GET /api/hjv/access" gate_is off
+  pass "A1: MODE=off ('access off', console 'HJVACCESS1 mode=off'): PC B ($PCB_ID), with no ticket, registered (hjv-access-pc ok) and the controller without a login got its screen with the password ($MS ms); GET /api/hjv/access {\"mode\":\"off\"}, without counts"
+
+  log "A2: MODE=count: hbbs judges and counts, and refuses nothing"
+  access_conf count
+  until_ok 13 "A2: hbbs's line 'access count: keys 1'" hbbs_has "access count: keys 1"
+  # the PCs register again, now judged: PC A with its bound PC's ticket, PC B with none
+  stop_pc_service
+  start_pc_service
+  restart_pcb_service
+  until_ok 40 "A2: the PC online again" online "$PC_ID" ctl
+  until_ok 40 "A2: PC B online again" online "$PCB_ID" ctl
+  ascreen actl "$PCB_ID" a2
+  screen_ok "A2: the controller without a login, to PC B" a2
+  arun hjv-ctl staff "$CLIENT" --hjv-e2e-login "$ALICE" "$ALICE_PW"
+  [ "$RC" = 0 ] || fail "A2: alice's login on the controller staff: exit $RC"
+  ascreen staff "$PC_ID" a2s
+  screen_ok "A2: alice's controller to the PC" a2s
+  until_ok 15 "A2: the console's ph.missing, ph.ok, reg.ok and reg.missing" \
+    console_has ph.missing ph.ok reg.ok reg.missing
+  [ "$(hbbs_count 'access refused')" = 0 ] || fail "A2: hbbs refused in count mode: $(grep -m1 -F 'access refused' "$RUN/hbbs.log")"
+  pass "A2: MODE=count: both connections went through; hbbs counted ph.missing (no login), ph.ok (alice's ticket), reg.ok (the PC's bound PC ticket) and reg.missing (PC B), and refused nothing"
+
+  log "A3: MODE=enforce: the controller without a login is refused once, with the app's A1"
+  n0=$(hbbs_count 'access refused ph ')
+  access_conf enforce
+  until_ok 13 "A3: hbbs's line 'access enforce: keys 1'" hbbs_has "access enforce: keys 1"
+  ascreen actl "$PC_ID" a3
+  refused_with A3 a3 "$ACC_A1"
+  until_ok 5 "A3: hbbs's line 'access refused ph … : missing'" hbbs_above 'access refused ph ' "$n0"
+  # a second request of the same attempt would be in by now
+  sleep 2
+  [ "$(hbbs_count 'access refused ph ')" = $((n0 + 1)) ] ||
+    fail "A3: hbbs refused $(($(hbbs_count 'access refused ph ') - n0)) punch hole requests of one attempt"
+  grep -F 'access refused ph ' "$RUN/hbbs.log" | tail -n 1 | grep -q ': missing$' || fail "A3: the refusal is not for a missing ticket"
+  until_ok 35 "A3: GET /api/hjv/access" gate_is enforce
+  pass "A3: exit 5 after $MS ms with the app's A1 ('… (access not allowed)'), one refusal in hbbs's log (missing); GET /api/hjv/access {\"mode\":\"enforce\"} within its 30 s"
+
+  log "A4: alice's controller connects to the PC with her login's ticket"
+  ascreen staff "$PC_ID" a4
+  screen_ok "A4: alice's controller to the PC" a4
+  arun hjv-ctl staff "$CLIENT" --hjv-e2e-ticket refresh
+  [ "$RC" = 0 ] || fail "A4: --hjv-e2e-ticket refresh: exit $RC"
+  ahas '"use":"both"' && ahas '"valid":true' || fail "A4: not a valid ticket for both: $(grep '^hjv-e2e: ticket {' <<<"$OUT")"
+  pass "A4: the PC's screen ($MS ms); the login's ticket, asked again with the app's ID and device key, is valid and for both"
+
+  log "A5: PC B, with no ticket, is refused: offline; the PC stays online with its bound PC's ticket"
+  until_ok 30 "A5: PC B's hjv-access-pc refused" pcb_is refused
+  if online "$PCB_ID" ctl; then fail "A5: hbbs has PC B online"; fi
+  online "$PC_ID" ctl || fail "A5: the PC is not online"
+  pass "A5: PC B's registration refused (hjv-access-pc refused), hbbs has it offline; the PC online (reg.ok $(console_count reg.ok))"
+
+  log "A6: the access password: the controller without a login gets a ticket for the PC and connects"
+  ascreen actl "$PC_ID" a6 HJV_E2E_ACCESS_PASSWORD="$GUEST_PW"
+  ahas "hjv-e2e: guest ctl: ok" || fail "A6: no 'guest ctl: ok' ($(grep '^hjv-e2e: guest' <<<"$OUT"))"
+  screen_ok "A6: with the access password" a6
+  # the ticket was that process's: a new one without the password is refused again
+  ascreen actl "$PC_ID" a6b
+  refused_with "A6: a new process without the access password" a6b "$ACC_A1"
+  pass "A6: 'guest ctl: ok', then the PC's screen; a new process without the password is refused as in A3 (the ticket lived in the first one's memory)"
+
+  log "A7: a wrong access password: denied after the failure delay, no session"
+  ascreen actl "$PC_ID" a7 HJV_E2E_ACCESS_PASSWORD="$WRONG_GUEST_PW"
+  [ "$RC" = 6 ] || fail "A7: exit $RC, expected 6 (no ticket)"
+  ahas "hjv-e2e: guest ctl: denied" || fail "A7: not 'guest ctl: denied' ($(grep '^hjv-e2e: guest' <<<"$OUT"))"
+  [ "$MS" -ge 1500 ] || fail "A7: the refusal came after $MS ms, before hjv-api's failure delay (2 s ± 0.5 s)"
+  [ ! -e "$RUN/a7.ppm" ] || fail "A7: a session started"
+  until_ok 5 "A7: admin ticket status counts 'wrong 1'" guest_tried "wrong 1"
+  pass "A7: exit 6 after $MS ms ('guest ctl: denied'); admin ticket status: $(guest_tries)"
+
+  log "A8: PC B takes the access password: its service registers with the PC's ticket"
+  n0=$(console_count reg.ok)
+  arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-guest-pc "$GUEST_PW"
+  [ "$RC" = 0 ] && ahas "hjv-e2e: guest pc: ok" || fail "A8: exit $RC ($(grep '^hjv-e2e: guest' <<<"$OUT"))"
+  until_ok 10 "A8: PC B's hjv-access-pc ok" pcb_is ok
+  [ "$(console_count reg.ok)" -gt "$n0" ] || fail "A8: the console's reg.ok did not grow"
+  until_ok 20 "A8: PC B online" online "$PCB_ID" ctl
+  ascreen staff "$PCB_ID" a8
+  screen_ok "A8: alice's controller to PC B" a8
+  [ ! -e "$RUN/pcb/home/.config/hjviewer/HJViewer_ticket.json" ] || fail "A8: PC B keeps a ticket file"
+  pass "A8: 'guest pc: ok'; PC B registered within 10 s (hjv-access-pc ok, reg.ok up), alice's controller got its screen; no ticket file in PC B's configuration"
+
+  log "A9: no access password file: the right password gets the wrong one's answer"
+  rm -f "$RUN/api/guest.conf"
+  ascreen actl "$PC_ID" a9 HJV_E2E_ACCESS_PASSWORD="$GUEST_PW"
+  [ "$RC" = 6 ] && ahas "hjv-e2e: guest ctl: denied" || fail "A9: exit $RC ($(grep '^hjv-e2e: guest' <<<"$OUT")), expected 6 and denied"
+  [ "$MS" -ge 1500 ] || fail "A9: the refusal came after $MS ms, before hjv-api's failure delay"
+  until_ok 5 "A9: admin ticket status counts 'closed 1'" guest_tried "closed 1"
+  pass "A9: the file gone, the right password: exit 6 after $MS ms ('guest ctl: denied', as A7); admin ticket status: $(guest_tries)"
+
+  log "A10: the App Review account reaches its demo PC, the PC, and nothing else"
+  printf 'ID=%s\nHASH=%s\nUNTIL=%s\nPC=%s\n' "$REVIEW_ID" "$(pbkdf2_of "$REVIEW_PW")" \
+    "$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)" "$PC_ID" >"$RUN/api/review.conf.new"
+  mv -f "$RUN/api/review.conf.new" "$RUN/api/review.conf"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-login "$REVIEW_ID" "$REVIEW_PW"
+  [ "$RC" = 0 ] || fail "A10: the App Review account's login: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-ticket refresh
+  ahas '"use":"ctl"' && ahas '"valid":true' || fail "A10: not a valid ticket for ctl: $(grep '^hjv-e2e: ticket' <<<"$OUT")"
+  ascreen rev "$PC_ID" a10
+  screen_ok "A10: the App Review account to its demo PC" a10
+  ascreen rev "$PCB_ID" a10b
+  refused_with "A10: the App Review account to PC B" a10b "$ACC_A2"
+  pass "A10: the App Review account's ticket is for ctl; the PC's screen; PC B refused after one new ticket (exit 5, the app's A2)"
+
+  log "A11: NOT_BEFORE=now ends every ticket handed out before: the registrations go, the logins get new ones"
+  nb=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  n0=$(hbbs_count 'access closed reg ')
+  sleep 1
+  access_conf enforce "$nb"
+  until_ok 13 "A11: hbbs's line 'access enforce: keys 1, not before $nb'" hbbs_has "access enforce: keys 1, not before $nb"
+  until_ok 15 "A11: both PCs' registrations closed" hbbs_above 'access closed reg ' $((n0 + 1))
+  # the PC registers again with its next sync's new ticket (a sync every 5 s in the E2E)
+  until_ok 60 "A11: the PC online again" online "$PC_ID" ctl
+  # alice's login ticket is from before: refused once, a new one, then in, in the same call
+  n1=$(hbbs_count 'access refused ph ')
+  ascreen staff "$PC_ID" a11
+  screen_ok "A11: alice's controller after NOT_BEFORE" a11
+  [ "$(hbbs_count 'access refused ph ')" = $((n1 + 1)) ] ||
+    fail "A11: hbbs refused $(($(hbbs_count 'access refused ph ') - n1)) of alice's punch hole requests, not her old ticket's one"
+  until_ok 30 "A11: PC B refused again" pcb_is refused
+  pass "A11: hbbs closed both registrations ('access closed reg'); the PC came back with its next sync's ticket; alice's controller was refused once with her old ticket and got the screen with a new one in the same call ($MS ms); PC B stays refused until the access password comes again"
+
+  log "A12: a 1.5.1 controller shows hbbs's own text as it came"
+  if [ -n "${CLIENT_OLD:-}" ]; then
+    n0=$(hbbs_count 'access refused ph ')
+    vscreen old "$CLIENT_OLD" a12
+    # (the 1.5.1 client's headless commands end with 0 whatever happened)
+    [ "$RC" = 0 ] || fail "A12: exit $RC, expected 0"
+    [ "$ERR" = "hjv-e2e: $ACC_HBBS" ] || fail "A12: not hbbs's text: '$ERR'"
+    if has 'connected over' || [ -e "$RUN/a12.ppm" ]; then fail "A12: a session started"; fi
+    until_ok 5 "A12: hbbs's line of the refusal" hbbs_above 'access refused ph ' "$n0"
+    sleep 2
+    [ "$(hbbs_count 'access refused ph ')" = $((n0 + 1)) ] || fail "A12: hbbs refused the 1.5.1 controller more than once"
+    pass "A12: the 1.5.1 controller shows hbbs's Korean and English text ending with '(access not allowed)', one refusal ($MS ms)"
+  else
+    echo "skipped: A12 (no CLIENT_OLD, a 1.5.1 client built for this server)"
+  fi
+
+  log "A13: a broken file keeps the rule in force; hbbs started again with it refuses everything"
+  before=$(hbbs_count "access file $RUN/access.conf: ")
+  access_file "MODE=on" "KEY=1:$(cat "$KEYS/ticket.pub")" "NOT_BEFORE=$nb"
+  until_ok 13 "A13: hbbs's ERROR line of the file" hbbs_above "access file $RUN/access.conf: " "$before"
+  grep -F "access file $RUN/access.conf: " "$RUN/hbbs.log" | tail -n 1 | grep -q "access enforce: keys 1, not before $nb stays in force" ||
+    fail "A13: not 'stays in force': $(grep -F "access file $RUN/access.conf: " "$RUN/hbbs.log" | tail -n 1)"
+  ascreen staff "$PC_ID" a13
+  screen_ok "A13: alice's controller while the broken file is there" a13
+  n1=$(hbbs_count "; access closed: every request is refused")
+  kill "$HBBS_PID" 2>/dev/null || true
+  wait "$HBBS_PID" 2>/dev/null || true
+  start_hbbs
+  until_ok 15 "A13: hbbs's 'access closed' after its start" hbbs_above "; access closed: every request is refused" "$n1"
+  until_ok 40 "A13: hbbs's console mode=closed" access_console_closed
+  ascreen staff "$PC_ID" a13b
+  refused_with "A13: alice's controller to a closed hbbs" a13b "$ACC_A2"
+  until_ok 5 "A13: the console's ph.closed" console_has ph.closed
+  until_ok 35 "A13: GET /api/hjv/access" gate_is closed
+  pass "A13: the broken file left 'access enforce … stays in force' and alice connected; started again with it, hbbs refuses everything ('access closed'): exit 5 with the app's A2, ph.closed, GET /api/hjv/access {\"mode\":\"closed\"}"
+
+  log "A14: MODE=off put right: hbbs takes it without a restart; PC B registers again"
+  n0=$(hbbs_count "access off")
+  access_conf off
+  until_ok 13 "A14: hbbs's line 'access off'" hbbs_above "access off" "$n0"
+  until_ok 45 "A14: PC B's hjv-access-pc ok" pcb_is ok
+  until_ok 40 "A14: PC B online" online "$PCB_ID" ctl
+  ascreen actl "$PCB_ID" a14
+  screen_ok "A14: the controller without a login, to PC B" a14
+  until_ok 60 "A14: the PC online" online "$PC_ID" ctl
+  pass "A14: 'access off' within 10 s, no restart; PC B registered again (hjv-access-pc ok) and the controller without a login got its screen with the password"
+  sudo ip netns pids hjv-pc2 | xargs -r sudo kill 2>/dev/null || true
+}
+# hbbs's console answers mode=closed
+access_console_closed() { [[ $(access_console) == "HJVACCESS1 mode=closed"* ]]; }
+
+# ---------------------------------------------------------------------------------------------
 # The minimum version (its design 2-2, 2-4, 2-5): hbbs's lowest controller version (V1-V4), and the
 # signed policy by which the PC refuses the login of an old controller (V5-V9). The controllers are
 # sides of their own in the controller's network that never logged in: ver runs CLIENT, old the
@@ -1659,6 +2005,7 @@ policy_part() {
 if [ -n "$ACCOUNT" ]; then
   if [ "$MODE" = strict ]; then account_strict; else account_open; fi
 fi
+if [ -n "$ACCESS" ]; then access_part; fi
 if [ -n "$MIN_HBBS" ]; then min_controller_part; fi
 if [ -n "$POLICY" ]; then
   policy_part
@@ -1671,4 +2018,5 @@ log "what hbbs saw"
 grep -E "update_pk|Punch hole|Tcp connection from 10\.77" "$RUN/hbbs.log" | sed 's/^\[[^]]*\] //' | head -8 || true
 echo
 echo "PASS ($MODE): $(grep -o 'transport: .*' "$RUN/ctl.log" | tail -1)$([ -n "$ACCOUNT" ] && echo ", same-account logins")$(
-  [ -n "$MIN_HBBS" ] && echo ", hbbs's minimum")$([ -n "$POLICY" ] && echo ", the version policy")"
+  [ -n "$ACCESS" ] && echo ", the staff-only gate")$([ -n "$MIN_HBBS" ] && echo ", hbbs's minimum")$(
+  [ -n "$POLICY" ] && echo ", the version policy")"
