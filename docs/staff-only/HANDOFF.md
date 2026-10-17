@@ -80,6 +80,17 @@ HJViewer를 연세대학교 교직원 전용 서비스로 만듭니다. 연세 S
 - `tools/e2e/firewall-e2e.sh`는 네임스페이스마다 `/etc/machine-id`만 따로 줍니다. `/var/lib/dbus/machine-id`가 따로 된 파일인 호스트에서는 앱이 그것을 먼저 읽어 계정 단계가 실패합니다.
 - `relay/tests/cli.rs`의 `status_and_test_wake_write_only_to_a_plain_out_file`은 umask 022를 전제합니다(0002이면 0664가 나와 실패).
 
+개발 PC에서 손으로 돌린 관문(2026-10-17, 사용자, `HJV_CI_STRICT=1`):
+
+| 로그 폴더(`build/ci/prepush/`) | 커밋 | 단계 | 결과 |
+|---|---|---|---|
+| `20261017-145226-5cd895a` | 5cd895a | server, client, deploy | 통과, 건너뜀 0. client는 1.5.1 실물 산출물의 릴리스 기록 시험까지, deploy는 Docker와 systemd까지 |
+| `20261017-153026-322678b` | 322678b | e2e, wol, leak | 통과, 건너뜀 0. e2e는 하한(strict PASS 91, open 2, `--lib hjv` 260) 이상, wol은 PASS 20 이상, leak는 `origin/main..HEAD`의 커밋 모두 |
+
+- 두 실행 모두 새로 받은 `upstream/`의 트리가 클라우드 CI가 시험한 것과 같았습니다(`upstream/rustdesk` 8586e8c0ae5b, `upstream/rustdesk-server` ce6d09e969c7).
+- 5cd895a의 e2e는 R3에서 멈췄습니다. 터미널에서 돌리면 sudo의 `use_pty`(Ubuntu 기본)가, R3이 PC 서비스를 멈출 때 스크립트까지 멈추기 때문입니다(e2e.md "계정 단계로 찾은 것"). 322678b에서 `in_ns`가 sudo를 터미널 없이 부르게 고쳤습니다. 이 수정은 `tools/e2e/firewall-e2e.sh`와 `docs/e2e.md`만 바꾸고 server·client·deploy는 그 파일을 읽지 않으므로, 그 세 단계는 5cd895a의 통과를 그대로 씁니다([ci.md](../ci.md)의 "push 전 전체 검사").
+- 이 표 뒤의 커밋은 문서만 바꿉니다(이 결과, README, ci.md에 적힌 E2E 하한 91과 `--lib hjv` 260). ci.md를 읽는 시험(`scripts/test_release_info.py`가 빌드 저장소의 `build.yml` 예시를 읽음)은 클라우드에서 다시 통과했습니다(27, 건너뜀 2). 병합 직전에 마지막 커밋에서 `scripts/ci.sh prepush leak`을 한 번 더 돌려, 그 커밋들도 유출 검사를 받게 합니다(몇 초).
+
 ## 3. 남은 일 (순서대로)
 
 ### 3-1. 계약 하나로 맞추기 (먼저)
@@ -132,12 +143,15 @@ architecture.md(출입 제한 절), privacy.md(이용 비밀번호 기록, 티�
 
 ## 5. 개발 PC에서 할 일 (클라우드가 하지 않음)
 
-4차 작업까지로 개발 PC에 남은 것은 다음입니다(PR의 "개발 PC에서 확인할 것"과 같음). 에이전트 없이 손으로 할 수 있습니다.
+4차 작업 뒤 개발 PC에서 `upstream/`을 새로 받고 `scripts/ci.sh prepush`의 여섯 단계를 모두 통과했습니다(4차 작업의 "개발 PC에서 손으로 돌린 관문"). 남은 것은 다음입니다(PR의 "개발 PC에서 확인할 것"과 같음).
 
-1. `upstream/`을 새로 받습니다. `scripts/fetch-upstream.sh`는 있는 작업 사본을 덮어쓰지 않으므로(`exists; remove it to fetch again`) 옛 사본을 먼저 옮깁니다: `mkdir -p build/upstream-old && mv upstream/rustdesk-server upstream/rustdesk build/upstream-old/`, 그다음 `scripts/fetch-upstream.sh all`. 새 사본의 `HEAD^{tree}`는 클라우드 CI가 시험한 것과 같아야 합니다: `upstream/rustdesk` 8586e8c0ae5b, 그 `libs/hbb_common` 0a2c097e1d81, `upstream/rustdesk-server` ce6d09e969c7. 옛 사본은 내보내지 않은 커밋이 없는지 본 뒤 지웁니다(1차 작업의 `build/wt/` 작업 트리는 이미 패치에 들어 있음, [wave1-notes.md](wave1-notes.md) 첫머리). `scripts/ci.sh`의 단계는 `build/ci/` 아래에 따로 받으므로, 이 사본은 시험에 쓰이지 않고 prepush 로그의 머리에만 적힙니다.
-2. `scripts/ci.sh prepush client deploy leak`. client는 `build/release-1.5.1`의 실물 산출물로 릴리스 기록 시험까지 돌고(클라우드에서는 그것만 건너뜀), deploy는 Docker와 systemd(새 `hjviewer.env.example`의 주석 줄, `access.conf.example`), leak는 개발 PC의 유출 목록입니다. 원하면 `e2e`와 `wol`도 함께 넣습니다(클라우드에서는 위의 컨테이너 맞춤과 함께 통과함).
-3. 비공개 빌드 저장소의 확인 빌드(`check_only`, [ci.md](../ci.md)): 세 플랫폼 빌드, bridge가 있는 Dart 시험 전체(client-build.yml의 Dart tests 잡), **Windows에서만 컴파일되는** `src/tray.rs`의 훅과 `src/hjviewer_access.rs`의 `tray_*`.
-4. 화면을 데스크톱과 휴대폰에서 눈으로 봄: A1(펼치기 전과 뒤, 휴대폰에서 키보드가 펼친 뒤에만 올라옴), A2의 [다시 연결], PC 홈의 P1(ID 위)·P2의 줄과 [끝내기]·G2, 상태 줄과 Windows 트레이 안내, 설치했고 로그인하지 않은 Windows PC에서 로그인 창이 한 번만 열림, 연결 화면의 G3(`MODE=enforce`일 때만), 로그아웃과 "내 목록에서 빼기"의 경고(서버 모드마다, 원격 세션 중), 세션 창에서 로그인했을 때 주 창이 알림을 보임.
-5. 사용자가 정할 것: 데모 PC를 둘지와 어느 PC로 할지, App Store 배포 방식(Unlisted 또는 Custom App), 이용 비밀번호와 그 `UNTIL`, 정책 seq 4의 알림 글, 출시일.
+1. 비공개 빌드 저장소의 확인 빌드(`check_only`, [ci.md](../ci.md)): 세 플랫폼 빌드, bridge가 있는 Dart 시험 전체(client-build.yml의 Dart tests 잡), **Windows에서만 컴파일되는** `src/tray.rs`의 훅과 `src/hjviewer_access.rs`의 `tray_*`.
+2. 화면을 데스크톱과 휴대폰에서 눈으로 봄: A1(펼치기 전과 뒤, 휴대폰에서 키보드가 펼친 뒤에만 올라옴), A2의 [다시 연결], PC 홈의 P1(ID 위)·P2의 줄과 [끝내기]·G2, 상태 줄과 Windows 트레이 안내, 설치했고 로그인하지 않은 Windows PC에서 로그인 창이 한 번만 열림, 연결 화면의 G3(`MODE=enforce`일 때만), 로그아웃과 "내 목록에서 빼기"의 경고(서버 모드마다, 원격 세션 중), 세션 창에서 로그인했을 때 주 창이 알림을 보임.
+3. 사용자가 정할 것: 데모 PC를 둘지와 어느 PC로 할지, App Store 배포 방식(Unlisted 또는 Custom App), 이용 비밀번호와 그 `UNTIL`, 정책 seq 4의 알림 글, 출시일.
+4. 병합 직전: 마지막 커밋에서 `scripts/ci.sh prepush leak`.
+
+개발 PC에서 알아 둘 것:
+- `scripts/fetch-upstream.sh`는 있는 작업 사본을 덮어쓰지 않습니다(`exists; remove it to fetch again`). 다시 받을 때는 옛 사본을 먼저 옮깁니다(`mkdir -p build/upstream-old && mv upstream/rustdesk-server upstream/rustdesk build/upstream-old/`). `scripts/ci.sh`의 단계는 `build/ci/` 아래에 따로 받으므로 이 사본을 쓰지 않고, prepush 로그의 머리에만 적습니다.
+- `staff-only-gate` 브랜치는 1차 작업의 작업 트리 `build/wt/staff-gate`가 잡고 있습니다. 메인 작업 트리에서는 `git switch --detach origin/staff-only-gate`로 꺼내 시험합니다.
 
 그다음은 1차 작업 때 정한 대로입니다: `main`에 병합과 push, 서버 묶음, 허브-운영의 설치(`MODE=off`로 먼저), 사용자의 티켓 키 만들기, 1.8.0 세 플랫폼 빌드와 TestFlight, 출시일 순서(정책 seq 4 → 묶인 PC 업데이트 → seq 5 최소 1.8.0 → hbbs MIN=1.8.0 → `MODE=enforce`).
