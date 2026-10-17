@@ -1638,8 +1638,9 @@ access_part() {
   ms=$MS
   arun hjv-ctl staff "$CLIENT" --hjv-e2e-ticket refresh
   [ "$RC" = 0 ] || fail "A4: --hjv-e2e-ticket refresh: exit $RC"
-  ahas '"use":"both"' && ahas '"valid":true' || fail "A4: not a valid ticket for both: $(grep '^hjv-e2e: ticket {' <<<"$OUT")"
-  pass "A4: the PC's screen ($ms ms); the login's ticket, asked again with the app's ID and device key, is valid and for both"
+  # a controller's: this side never ran as a PC, so it has no device key to ask for both with
+  ahas '"use":"ctl"' && ahas '"valid":true' || fail "A4: not a valid controller's ticket: $(grep '^hjv-e2e: ticket {' <<<"$OUT")"
+  pass "A4: the PC's screen ($ms ms); the login's ticket, asked again (POST /api/hjv/ticket), is valid and a controller's (ctl: no device key on this side)"
 
   log "A5: PC B, with no ticket, is refused: offline; the PC stays online with its bound PC's ticket"
   until_ok 30 "A5: PC B's hjv-access-pc refused" pcb_is refused

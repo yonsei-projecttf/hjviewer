@@ -305,7 +305,7 @@ PASS (strict): transport: relay
 | A1 | `MODE=off`로 띄운 hbbs, PC B를 띄움 | 로그 `access off`, 콘솔 `HJVACCESS1 mode=off`. 출입증이 없는 PC B가 등록함(`--hjv-e2e-option hjv-access-pc`가 `ok`). `actl`이 PC B에 비밀번호로 연결해 화면을 받음(종료 0). `GET /api/hjv/access`가 `{"mode":"off"}`(개수 없음) |
 | A2 | `MODE=count`, 두 PC의 서비스를 다시 시작(그래야 등록이 판정됨) | 로그 `access count: keys 1`. `actl`이 PC B에, alice로 로그인한 `staff`가 PC A에 연결함. 콘솔에 `ph.missing`(actl), `ph.ok`(staff), `reg.ok`(PC A, 묶인 PC의 출입증), `reg.missing`(PC B)이 0이 아님. `access refused` 줄은 0 |
 | A3 | `MODE=enforce` | 로그 `access enforce: keys 1`. `actl`이 PC A에 연결하면 종료 5와 `hjv-e2e: access refused`, msgbox의 글은 핵심의 A1(`… (access not allowed)`). hbbs 로그에 `access refused ph … : missing` 한 줄(다시 하지 않음). 35초 안에 `GET /api/hjv/access`가 `{"mode":"enforce"}`(hjv-api는 hbbs에 30초에 한 번 물음) |
-| A4 | `staff`가 PC A에 연결 | 화면을 받음(종료 0). `--hjv-e2e-ticket refresh`가 `"use":"both"`, `"valid":true`(앱의 ID와 기기 키로 다시 받은 로그인의 출입증) |
+| A4 | `staff`가 PC A에 연결 | 화면을 받음(종료 0). `--hjv-e2e-ticket refresh`(`POST /api/hjv/ticket` 한 번)가 `"use":"ctl"`, `"valid":true`. 이 쪽은 PC로 돈 적이 없어 보낼 기기 키가 없으므로 컨트롤러의 출입증입니다(기기 키를 보내는 데스크톱 앱의 `both`는 hjv-api와 앱의 단위 시험이 봄) |
 | A5 | PC B(묶이지 않음, 로그인 안 함) | 30초 안에 `hjv-access-pc`가 `refused`, hbbs가 PC B를 오프라인으로 봄(hjv-probe). PC A는 그대로 온라인 |
 | A6 | `actl`이 `HJV_E2E_ACCESS_PASSWORD=<맞는 비밀번호>`로 PC A에 연결 | `hjv-e2e: guest ctl: ok`, 화면을 받음. 그 변수 없이 새 프로세스로 연결하면 A3처럼 거절(출입증은 그 프로세스의 메모리에만 있음) |
 | A7 | 틀린 비밀번호로 A6 | `guest ctl: denied`, 종료 6, 1.5초 넘게 걸림(실패 지연 2초 ± 0.5초). `hjv-api admin ticket status`의 지난 하루 시도에 `wrong 1` |
