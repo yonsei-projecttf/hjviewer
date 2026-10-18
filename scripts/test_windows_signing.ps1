@@ -187,6 +187,24 @@ try {
     Mutate-Byte $selfSigned 64
     Expect-Failure { Assert-PeUnchanged $fixture $selfSigned } 'PE_CONTENT_CHANGED'
 
+    # Exercise the production copy/hash/Replace function on NTFS. Signature
+    # verification is not mocked: this tests only the post-verification file
+    # operation, including the real null backup argument needed by File.Replace.
+    $apply = New-Case
+    $destination = Join-Path $apply.Root 'program.dll'
+    [IO.File]::WriteAllText($destination, 'old image')
+    $hardlink = Join-Path $apply.Root 'old-image-link'
+    $null = New-Item -ItemType HardLink -Path $hardlink -Target $destination
+    $fixtureHash = Get-FileSha $fixture
+    Apply-VerifiedFile $fixture $destination $fixtureHash
+    Assert-Test ((Get-FileSha $destination) -ceq $fixtureHash) 'applied image matches verified bytes'
+    Assert-Test ((Get-FileSha $fixture) -ceq $fixtureHash) 'applying preserves signed input bytes'
+    Assert-Test ([IO.File]::ReadAllText($hardlink) -ceq 'old image') 'replace does not overwrite other hard links'
+    Assert-Test (@(Get-ChildItem -LiteralPath $apply.Root -Filter '*.signed-tmp').Count -eq 0) 'replacement temporary file is cleaned'
+    $script:passed++
+    Expect-Failure { Apply-VerifiedFile $fixture $destination ('0' * 64) } 'SIGNED_CONTENT_CHANGED'
+    Assert-Test ((Get-FileSha $destination) -ceq $fixtureHash) 'hash failure leaves destination unchanged'
+
     # A successful CLI call must clear a previous native-command failure, since
     # GitHub's shell wrapper propagates LASTEXITCODE after the script returns.
     $global:LASTEXITCODE = 19

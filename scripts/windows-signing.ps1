@@ -273,6 +273,24 @@ function Assert-ManifestFiles($State, [string]$Directory) {
     }
 }
 
+function Apply-VerifiedFile([string]$Source, [string]$Destination, [string]$ExpectedSha) {
+    # Called only after the entire batch has passed PE/signature verification.
+    Assert-NoReparse $Source
+    Assert-NoReparse $Destination
+    if ((Get-FileSha $Source) -cne $ExpectedSha) { Stop-Signing 'SIGNED_CONTENT_CHANGED' }
+    $temporary = Join-Path ([IO.Path]::GetDirectoryName($Destination)) ([guid]::NewGuid().ToString() + '.signed-tmp')
+    try {
+        [IO.File]::Copy($Source, $temporary, $false)
+        if ((Get-FileSha $temporary) -cne $ExpectedSha) { Stop-Signing 'COPY_HASH_MISMATCH' }
+        # PowerShell converts $null to an empty string for string parameters.
+        # Replace requires an actual null to omit a backup filename.
+        [IO.File]::Replace($temporary, $Destination, [NullString]::Value)
+        if ((Get-FileSha $Destination) -cne $ExpectedSha) { Stop-Signing 'APPLIED_HASH_MISMATCH' }
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
 function Invoke-WindowsSigning {
     if ($env:OS -ne 'Windows_NT') { Stop-Signing 'WINDOWS_REQUIRED' }
     $rootPath = Get-FullSigningPath $Root
@@ -360,15 +378,7 @@ function Invoke-WindowsSigning {
         foreach ($record in $verified) {
             $source = Get-SafeChild $signedPath $record.StageName
             $destination = Get-SafeChild $rootPath $record.Relative
-            if ((Get-FileSha $source) -cne $record.SHA256) { Stop-Signing 'SIGNED_CONTENT_CHANGED' }
-            $temporary = Join-Path ([IO.Path]::GetDirectoryName($destination)) ([guid]::NewGuid().ToString() + '.signed-tmp')
-            try {
-                [IO.File]::Copy($source, $temporary, $false)
-                if ((Get-FileSha $temporary) -cne $record.SHA256) { Stop-Signing 'COPY_HASH_MISMATCH' }
-                [IO.File]::Replace($temporary, $destination, $null)
-            } finally {
-                if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
-            }
+            Apply-VerifiedFile $source $destination $record.SHA256
         }
         foreach ($record in @($state.Files)) {
             $path = Get-SafeChild $rootPath $record.Relative
