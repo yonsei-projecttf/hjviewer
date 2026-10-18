@@ -386,7 +386,10 @@ function Invoke-WindowsSigning {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    try { Invoke-WindowsSigning }
+    try {
+        Invoke-WindowsSigning
+        $global:LASTEXITCODE = 0
+    }
     catch {
         $code = 'CHECK_FAILED'
         if ($_.Exception.Message -match '^Windows signing check failed: ([A-Z0-9_]+)$') { $code = $Matches[1] }

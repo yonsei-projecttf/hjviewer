@@ -187,6 +187,13 @@ try {
     Mutate-Byte $selfSigned 64
     Expect-Failure { Assert-PeUnchanged $fixture $selfSigned } 'PE_CONTENT_CHANGED'
 
+    # A successful CLI call must clear a previous native-command failure, since
+    # GitHub's shell wrapper propagates LASTEXITCODE after the script returns.
+    $global:LASTEXITCODE = 19
+    $null = & $tool -Mode Audit -Root $onlyVendor.Root
+    Assert-Test ($global:LASTEXITCODE -eq 0) 'successful CLI clears stale native exit code'
+    $script:passed++
+
     # The public CLI emits only a bounded error code, not raw provider messages.
     $engine = (Get-Process -Id $PID).Path
     $savedPreference = $ErrorActionPreference
