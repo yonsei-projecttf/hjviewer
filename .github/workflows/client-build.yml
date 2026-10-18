@@ -135,7 +135,28 @@ jobs:
         working-directory: upstream/rustdesk
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
+      build_apps: ${{ steps.plan.outputs.build_apps }}
     steps:
+      # A relay-only run still resolves one source commit for every downstream job, but it has
+      # no Flutter bridge or Dart consumers. Reject impossible upload requests before building.
+      - name: Plan build targets
+        id: plan
+        working-directory: ${{ github.workspace }}
+        env:
+          PLATFORMS: ${{ github.event_name == 'push' && 'all' || inputs.platforms }}
+          TESTFLIGHT: ${{ inputs.testflight }}
+        run: |
+          case "$PLATFORMS" in
+            windows|android|ios|all) build_apps=true ;;
+            relay) build_apps=false ;;
+            *) echo "::error::platforms must be windows, android, ios, relay or all."; exit 1 ;;
+          esac
+          if [ "$TESTFLIGHT" = true ] && [ "$PLATFORMS" != ios ] && [ "$PLATFORMS" != all ]; then
+            echo "::error::testflight uploads the iOS build: run with platforms ios or all."
+            exit 1
+          fi
+          echo "build_apps=$build_apps" >> "$GITHUB_OUTPUT"
+
       - name: Check server variables
         working-directory: ${{ github.workspace }}
         env:
@@ -198,11 +219,13 @@ jobs:
         run: python3 -I scripts/check-build-keys.py --version-file client/version.env --update-keys client/update-keys.env
 
       - name: Fetch upstream and apply hjviewer patches
+        if: steps.plan.outputs.build_apps == 'true'
         working-directory: ${{ github.workspace }}
         run: bash scripts/fetch-upstream.sh client
 
       # bridge.yml L42-59
       - name: Install prerequisites
+        if: steps.plan.outputs.build_apps == 'true'
         run: |
           sudo apt-get install ca-certificates -y
           sudo apt-get update -y
@@ -223,6 +246,7 @@ jobs:
 
       # bridge.yml L61-70
       - name: Install Rust toolchain
+        if: steps.plan.outputs.build_apps == 'true'
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -230,6 +254,7 @@ jobs:
           components: "rustfmt"
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        if: steps.plan.outputs.build_apps == 'true'
         with:
           prefix-key: bridge-ubuntu-22.04
           workspaces: upstream/rustdesk -> target
@@ -238,6 +263,7 @@ jobs:
 
       # bridge.yml L79-84
       - name: Install flutter
+        if: steps.plan.outputs.build_apps == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: "stable"
@@ -246,6 +272,7 @@ jobs:
 
       # bridge.yml L86-99, Flutter 3.22.3 branch
       - name: Install flutter rust bridge deps
+        if: steps.plan.outputs.build_apps == 'true'
         shell: bash
         run: |
           cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
@@ -256,6 +283,7 @@ jobs:
 
       # bridge.yml L101-104
       - name: Run flutter rust bridge
+        if: steps.plan.outputs.build_apps == 'true'
         run: |
           ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
           cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
@@ -264,6 +292,7 @@ jobs:
       # that "Re-run failed jobs" starts again restores it, and tools/hjv-release takes the
       # packages of a successful run only (docs/ci.md, "릴리스 기록")
       - name: Upload Artifact
+        if: steps.plan.outputs.build_apps == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bridge-artifact
@@ -283,6 +312,7 @@ jobs:
   dart-tests:
     name: Dart tests
     needs: generate-bridge
+    if: needs.generate-bridge.outputs.build_apps == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:

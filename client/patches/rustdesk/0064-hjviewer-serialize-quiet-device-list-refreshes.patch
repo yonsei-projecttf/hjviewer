@@ -1,0 +1,140 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <build@hjviewer.invalid>
+Date: Sun, 18 Oct 2026 20:24:41 +0900
+Subject: [PATCH] hjviewer: serialize quiet device-list refreshes
+
+Keep request-in-flight state separate from the visible loading indicator.
+Foreground and wake completion refresh the device list quietly, so using
+only groupLoading as the guard allowed overlapping HTTP requests for the
+same URLs. Release the guard and complete cache waiters in finally,
+before notifying loading observers that might throw.
+
+Allow cache reads during a quiet refresh, but defer applying them until
+the request completes. Invalidate pending reads when a new list is
+applied, reset, or cleared by access policy. Preserve offline cache
+recovery on failed requests, whether the read starts or finishes before
+or during the request. Keep visible-refresh cache skipping unchanged.
+
+Save cache only when the list revision changes, so a failed refresh
+cannot overwrite the on-disk offline cache with an uninitialized list.
+Keep 401 handling ahead of saving and retain initialized semantics.
+
+Source-body Dart regression scenarios exercise requests, cache races,
+and cache writes. This does not replace Flutter/FFI integration validation.
+---
+ flutter/lib/models/group_model.dart | 56 +++++++++++++++++++----------
+ 1 file changed, 38 insertions(+), 18 deletions(-)
+
+diff --git a/flutter/lib/models/group_model.dart b/flutter/lib/models/group_model.dart
+index d55cff4..d347544 100644
+--- a/flutter/lib/models/group_model.dart
++++ b/flutter/lib/models/group_model.dart
+@@ -6,6 +6,7 @@ import 'package:flutter_hbb/models/model.dart';
+ import 'package:flutter_hbb/models/peer_model.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ import 'package:get/get.dart';
++import 'dart:async';
+ import 'dart:convert';
+ import '../utils/http_service.dart' as http;
+ 
+@@ -22,6 +23,8 @@ class GroupModel {
+   var initialized = false;
+   var _cacheLoadOnceFlag = false;
+   var _statusCode = 200;
++  Future<void>? _pulling;
++  int _cacheRevision = 0;
+ 
+   final Map<String, VoidCallback> _peerIdUpdateListeners = {};
+ 
+@@ -38,26 +41,35 @@ class GroupModel {
+ 
+   Future<void> pull({force = true, quiet = false}) async {
+     if (bind.isDisableGroupPanel()) return;
+-    if (!gFFI.userModel.isLogin || groupLoading.value) return;
++    if (!gFFI.userModel.isLogin || _pulling != null) return;
+     if (gFFI.userModel.networkError.isNotEmpty) return;
+     if (!force && initialized) return;
+-    if (!quiet) {
+-      groupLoading.value = true;
+-      groupLoadError.value = "";
+-    }
++    final cacheRevision = _cacheRevision;
++    final pulling = Completer<void>();
++    _pulling = pulling.future;
+     try {
+-      await _pull();
+-      _tryHandlePullError();
+-    } catch (e) {
+-      print("pull accessibles error: $e");
+-    }
+-    groupLoading.value = false;
+-    initialized = true;
+-    platformFFI.tryHandle({'name': LoadEvent.group});
+-    if (_statusCode == 401) {
+-      gFFI.userModel.reset(resetOther: true);
+-    } else {
+-      _saveCache();
++      if (!quiet) {
++        groupLoading.value = true;
++        groupLoadError.value = "";
++      }
++      try {
++        await _pull();
++        _tryHandlePullError();
++      } catch (e) {
++        print("pull accessibles error: $e");
++      }
++      groupLoading.value = false;
++      initialized = true;
++      platformFFI.tryHandle({'name': LoadEvent.group});
++      if (_statusCode == 401) {
++        gFFI.userModel.reset(resetOther: true);
++      } else if (cacheRevision != _cacheRevision) {
++        _saveCache();
++      }
++    } finally {
++      _pulling = null;
++      pulling.complete();
++      groupLoading.value = false;
+     }
+   }
+ 
+@@ -76,6 +88,7 @@ class GroupModel {
+     if (!await _getPeers(tmpPeers)) {
+       return;
+     }
++    _cacheRevision++;
+     deviceGroups.value = tmpDeviceGroups;
+     // me first
+     var index = tmpUsers
+@@ -314,8 +327,13 @@ class GroupModel {
+       _cacheLoadOnceFlag = true;
+       final access_token = bind.mainGetLocalOption(key: 'access_token');
+       if (access_token.isEmpty) return;
++      final cacheRevision = _cacheRevision;
+       final cache = await bind.mainLoadGroup();
+-      if (groupLoading.value) return;
++      while (_pulling != null) {
++        if (groupLoading.value) return;
++        await _pulling;
++      }
++      if (cacheRevision != _cacheRevision) return;
+       final data = jsonDecode(cache);
+       if (data == null || data['access_token'] != access_token) return;
+       deviceGroups.clear();
+@@ -343,6 +361,7 @@ class GroupModel {
+   }
+ 
+   reset() async {
++    _cacheRevision++;
+     initialized = false;
+     groupLoadError.value = '';
+     deviceGroups.clear();
+@@ -370,6 +389,7 @@ class GroupModel {
+     String errorMessage = groupLoadError.value;
+     // The error message is "Retrieving accessible devices is disabled."
+     if (errorMessage.toLowerCase().contains('disabled')) {
++      _cacheRevision++;
+       users.clear();
+       peers.clear();
+       deviceGroups.clear();

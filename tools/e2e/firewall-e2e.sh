@@ -27,38 +27,37 @@
 #
 # HJV_E2E_ACCOUNT=1 adds the same-account logins (design v3 7-4, docs/e2e.md): hjv-api and the fake
 # Yonsei SSO on the host's loopback behind Caddy's account paths, a second controller (hjv-ctl2)
-# and a second PC (hjv-pc2), and the scenarios S0-S27 and X1-X8 in strict mode (S21 in open
+# and a second PC (hjv-pc2), and the account scenarios in strict mode (S21 in open
 # mode). It also needs:
 #   HJV_API, HJV_FAKE_SSO  hjv-api and hjv-fake-sso (server/api, cargo build --features fake-sso)
 #   HJV_E2E_KEYS  the E2E's keys (scripts/ci.sh e2e_keys: seal.secret, list-1.secret, log.secret,
 #                 trust.pub), the client built with HJV_LOGIN_SEAL_PUBKEY and HJV_TRUST_PUBKEYS
 #                 from them, and PC_CLIENT installed under /usr
-#   CLIENT_OLD    optional: a 1.5.1 client built for this server (X2, X3; skipped without it)
 #   FAKETIME_LIB  optional: libfaketime.so.1 (S27; skipped without it)
 #
 # The minimum version (its design 2-2, 2-4; docs/e2e.md), in strict mode after the parts above:
 # HJV_E2E_MIN_CONTROLLER=1 gives hbbs (server patch 0005) the file $RUN/min-controller.conf, which
-# V1-V4 write as an operator would: a controller below MIN is refused with the file's text and
+# V1, V2 and V4 write as an operator would: a controller below MIN is refused with the file's text and
 # connects again once MIN is emptied. HJV_E2E_UPDATE_KEYS=1 says that CLIENT and PC_CLIENT were
 # built with the update test keys (hjv-release test-keys --env): such an app shows its own text R1
 # for a refusal for its version, and with HJV_RELEASE, tools/hjv-release, which signs the test
 # policies (test-sign, the test key 1), Caddy serves the policy at /api/hjv/version (a site block of
 # that path in the run's Caddyfile; the public deploy/Caddyfile serves none). The PC's service
-# takes it by itself; V5-V8 check that it lets a controller below the minimum in before the
+# takes it by itself; V5-V7 check that it lets a controller below the minimum in before the
 # deadline and refuses its login once the deadline has passed. V9 serves a policy signed with the
 # test key 3, which no E2E build pins, and starts the PC's service again: the PC refuses the login
 # by the policy it stored, refuses the new one and takes nothing from it. It does the same with a
 # policy of the test key 1 that carries the signature of another one, which only the signature
-# itself gives away. CLIENT_OLD adds the 1.5.1 controller to V3 and V8.
+# itself gives away.
 #
 # The staff-only gate (docs/access-tickets.md; docs/e2e.md, the access stage), in strict mode with
 # the account part, after it and before the minimum version's parts (whose V7 leaves the PC
 # refusing the E2E's controllers by their version): HJV_E2E_ACCESS=1 gives hbbs (server patches
-# 0006-0008) the file $RUN/access.conf, which A1-A14 write as an operator would (MODE off, count
+# 0006-0008) the file $RUN/access.conf, which A1-A11 and A13-A14 write as an operator would (MODE off, count
 # and enforce, NOT_BEFORE, a broken file), and hjv-api the ticket key of HJV_E2E_KEYS
 # (ticket.secret, ticket.pub), the access password's file and the App Review account's, whose demo
 # PC is the PC. A second PC, PC B, runs CLIENT (not installed, logged in nowhere) in hjv-pc2's
-# network. CLIENT_OLD adds the 1.5.1 controller to A12.
+# network.
 set -euo pipefail
 
 MODE=${1:-strict}
@@ -542,8 +541,7 @@ fail() {
   echo "FAIL: $*"
   exit 1
 }
-client_of() { case $1 in pc | pc2) echo "${SIDE_CLIENT[$1]:-$PC_CLIENT}" ;; *) echo "${SIDE_CLIENT[$1]:-$CLIENT}" ;; esac }
-declare -A SIDE_CLIENT
+client_of() { case $1 in pc | pc2) echo "$PC_CLIENT" ;; *) echo "$CLIENT" ;; esac }
 
 # <side> [NAME=value...] <args...>: the side's client in its namespace (hjv-<side>). Its standard
 # output is $OUT, its exit code $RC and its run time $MS (ms); both outputs go to $RUN/<side>.out,
@@ -1188,30 +1186,6 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
 
   # The PC's first sync with its new key came before hbbs had that key, so hjv-api found nothing to
   # mark; it asks hbbs again at the PC's first sync a minute later (KEY_CHECK_EVERY). Meanwhile:
-  log "X2, X3: a 1.5.1 PC and a 1.5.1 controller (X2 to S27 run while hjv-api waits to ask hbbs again)"
-  if [ -n "${CLIENT_OLD:-}" ]; then
-    SIDE_CLIENT[pc2]=$CLIENT_OLD
-    run pc2 --hjv-e2e-set-password "$PASSWORD"
-    OLD_ID=$(tail -1 <<<"$OUT")
-    in_ns hjv-pc2 pc2 bash -c 'Xvfb :98 -screen 0 1280x720x24 -nolisten tcp >/dev/null 2>&1 &
-      for _ in $(seq 50); do [ -e /tmp/.X11-unix/X98 ] && break; sleep 0.1; done
-      DISPLAY=:98 exec "$1" --server' _ "$CLIENT_OLD" >>"$RUN/pc2-server.log" 2>&1 &
-    until_ok 40 "X2: the 1.5.1 PC online" online "$OLD_ID" ctl
-    pwless ctl x2 "$OLD_ID"
-    want 3 "X2: alice to a 1.5.1 PC"
-    has 'password required Password Required' || fail "X2: not the password box"
-    [ "$MS" -le "$B" ] || fail "X2: the password box after $MS ms (B = $B ms)"
-    pass "X2: a 1.5.1 PC sends no nonce: the password box at once ($MS ms <= B $B ms)"
-    run pc2 --hjv-e2e-screenshot "$PC_ID" "$PASSWORD" "$RUN/x3.ppm"
-    has 'written to' || fail "X3: the 1.5.1 controller got no screen"
-    screen_is_pc x3 || fail "X3: the decoded screen is not the PC's desktop"
-    pass "X3: a 1.5.1 controller gets in with the PC's password"
-    sudo ip netns pids hjv-pc2 | xargs -r sudo kill 2>/dev/null || true
-    unset 'SIDE_CLIENT[pc2]'
-  else
-    echo "skipped: X2, X3 (no CLIENT_OLD, a 1.5.1 client built for this server)"
-  fi
-
   log "K1, K2: the account key out of reach, and a certificate the device does not trust"
   run ctl HJV_E2E_KEY_LOCKED=1 --hjv-e2e-devices
   want 1 "K1: a request while the account key cannot be read"
@@ -1311,7 +1285,7 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
     pass "S27: a password-less session with the clock 15 minutes ahead"
   fi
 
-  log "X4: a second 1.6.0 PC (alice) connects to the PC"
+  log "X4: a second PC with the current build (alice) connects to the PC"
   in_ns hjv-pc2 pc2 bash -c 'Xvfb :98 -screen 0 1280x720x24 -nolisten tcp >/dev/null 2>&1 &
     for _ in $(seq 50); do [ -e /tmp/.X11-unix/X98 ] && break; sleep 0.1; done
     DISPLAY=:98 exec "$1" --server' _ "$PC_CLIENT" >>"$RUN/pc2-server.log" 2>&1 &
@@ -1481,7 +1455,7 @@ ctl2_lists() {
 }
 
 # ---------------------------------------------------------------------------------------------
-# The staff-only gate (docs/access-tickets.md; docs/e2e.md, the access stage A1-A14): hbbs's
+# The staff-only gate (docs/access-tickets.md; docs/e2e.md, A1-A11 and A13-A14): hbbs's
 # access file in its modes, the tickets of a login, of the bound PC, of the access password and of
 # the App Review account, and the refusals as the apps show them. Its controllers are sides of
 # their own in the controller's network: actl never logs in, staff is alice's, rev the App Review
@@ -1493,7 +1467,6 @@ ctl2_lists() {
 # own (server patch 0006, docs/access-tickets.md 5-3), each with hbbs's mark
 ACC_A1="HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요. (access not allowed)"
 ACC_A2="서버가 이 연결을 받지 않았습니다. 잠시 뒤 다시 시도하고, 계속되면 관리자에게 알려 주세요. (access not allowed)"
-ACC_HBBS="HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결할 수 있습니다. HJViewer is for Yonsei University staff: sign in with a Yonsei portal account or enter the access password to connect. (access not allowed)"
 
 # <ns> <side> <client> [NAME=value...] <args...>: as vrun, in the network <ns> and with NAME=value
 # in the client's environment; the passwords are masked in $RUN/<side>.out
@@ -1721,22 +1694,6 @@ access_part() {
   until_ok 30 "A11: PC B refused again" pcb_is refused
   pass "A11: hbbs closed both registrations ('access closed reg'); the PC came back with its next sync's ticket; alice's controller was refused once with her old ticket and got the screen with a new one in the same call ($ms ms); PC B stays refused until the access password comes again"
 
-  log "A12: a 1.5.1 controller shows hbbs's own text as it came"
-  if [ -n "${CLIENT_OLD:-}" ]; then
-    n0=$(hbbs_count 'access refused ph ')
-    vscreen old "$CLIENT_OLD" a12
-    # (the 1.5.1 client's headless commands end with 0 whatever happened)
-    [ "$RC" = 0 ] || fail "A12: exit $RC, expected 0"
-    [ "$ERR" = "hjv-e2e: $ACC_HBBS" ] || fail "A12: not hbbs's text: '$ERR'"
-    if has 'connected over' || [ -e "$RUN/a12.ppm" ]; then fail "A12: a session started"; fi
-    until_ok 5 "A12: hbbs's line of the refusal" hbbs_above 'access refused ph ' "$n0"
-    sleep 2
-    [ "$(hbbs_count 'access refused ph ')" = $((n0 + 1)) ] || fail "A12: hbbs refused the 1.5.1 controller more than once"
-    pass "A12: the 1.5.1 controller shows hbbs's Korean and English text ending with '(access not allowed)', one refusal ($MS ms)"
-  else
-    echo "skipped: A12 (no CLIENT_OLD, a 1.5.1 client built for this server)"
-  fi
-
   log "A13: a broken file keeps the rule in force; hbbs started again with it refuses everything"
   before=$(hbbs_count "access file $RUN/access.conf: ")
   access_file "MODE=on" "KEY=1:$(cat "$KEYS/ticket.pub")" "NOT_BEFORE=$nb"
@@ -1773,10 +1730,10 @@ access_part() {
 access_console_closed() { [[ $(access_console) == "HJVACCESS1 mode=closed"* ]]; }
 
 # ---------------------------------------------------------------------------------------------
-# The minimum version (its design 2-2, 2-4, 2-5): hbbs's lowest controller version (V1-V4), and the
-# signed policy by which the PC refuses the login of an old controller (V5-V9). The controllers are
-# sides of their own in the controller's network that never logged in: ver runs CLIENT, old the
-# 1.5.1 client. Every call of a client ends within 30 s or fails the run.
+# The minimum version (its design 2-2, 2-4, 2-5): hbbs's lowest controller version (V1, V2, V4),
+# and the signed policy refusing a controller below the minimum (V5-V7, V9). The ver side runs
+# the current CLIENT in its own profile without an account login; the test sets a minimum above
+# that build's version. Every client call ends within 30 s or fails the run.
 # ---------------------------------------------------------------------------------------------
 # the text an app with the update keys shows in place of a refusal for its version
 R1="이 버전으로는 연결할 수 없다는 답을 받았습니다. 업데이트를 확인하고 있습니다. (version not allowed)"
@@ -1813,7 +1770,6 @@ vrun() {
 }
 # <side> <client> <tag>: the PC's remote screen with its password, into $RUN/<tag>.ppm
 vscreen() { vrun "$1" "$2" --hjv-e2e-screenshot "$PC_ID" "$PASSWORD" "$RUN/$3.ppm"; }
-version_of() { env -i HOME="$RUN/version" PATH=/usr/bin:/bin timeout 10 "$1" --version; } # <client>
 hbbs_has() { grep -qF -- "$1" "$RUN/hbbs.log"; }
 # <version>: hbbs's lines of the punch hole requests for the PC that it refused for that version
 hbbs_refusals() { grep -cF -- "for \"$PC_ID\": version \"$1\"" "$RUN/hbbs.log" || true; }
@@ -1842,7 +1798,7 @@ v9_refused() {
 }
 
 min_controller_part() {
-  local conf="$RUN/min-controller.conf" from=2026-01-01T00:00:00Z text n0 t0 ms old_version
+  local conf="$RUN/min-controller.conf" from=2026-01-01T00:00:00Z text n0 t0 ms
   text=${HBBS_TEXT//%MIN%/$NEXT_PATCH}
   log "V1: hbbs takes MIN=$NEXT_PATCH from its file within its 10 s, without a restart"
   hbbs_has "min-controller off: no file $conf" ||
@@ -1869,21 +1825,6 @@ min_controller_part() {
     fail "V2: hbbs refused $(($(hbbs_refusals "$CUR") - n0)) requests of one attempt"
   pass "V2: exit 1 after $MS ms with $([ -n "$KEYED" ] && echo "R1 (no link)" || echo "hbbs's text"), one refusal in hbbs's log (version \"$CUR\"); the text ends with '(version not allowed)', which keeps an app from connecting again by itself"
 
-  log "V3: a 1.5.1 controller shows hbbs's text as it came, with its link"
-  if [ -n "${CLIENT_OLD:-}" ]; then
-    old_version=$(version_of "$CLIENT_OLD") || fail "V3: $CLIENT_OLD --version"
-    n0=$(hbbs_refusals "$old_version")
-    vscreen old "$CLIENT_OLD" v3
-    # (the 1.5.1 client's headless commands end with 0 whatever happened)
-    [ "$RC" = 0 ] || fail "V3: exit $RC, expected 0"
-    [ "$ERR" = "hjv-e2e: $text" ] || fail "V3: not hbbs's text with MIN filled in: '$ERR'"
-    if has 'connected over' || [ -e "$RUN/v3.ppm" ]; then fail "V3: a session started"; fi
-    until_ok 5 "V3: hbbs's line of the refusal" hbbs_refused_more "$old_version" "$n0"
-    pass "V3: the 1.5.1 controller ($old_version) shows hbbs's text with MIN filled in and the link of door 2 ($MS ms)"
-  else
-    echo "skipped: V3 (no CLIENT_OLD, a 1.5.1 client built for this server)"
-  fi
-
   log "V4: MIN emptied: the controller of $CUR gets through hbbs again within its 10 s"
   t0=$(date +%s%N)
   min_conf ""
@@ -1898,7 +1839,7 @@ min_controller_part() {
 }
 
 policy_part() {
-  local t0 cm0="" old_version want deadline line n0 n1 after
+  local t0 cm0="" want deadline line n0 n1 after
   log "V5: the PC's service took the first policy by itself (it asks 30 s after its start)"
   until_ok 60 "V5: the PC's log line 'version policy: now at 1:1'" policy_taken V5 1:1
   pass "V5: the PC holds the policy 1:1 that it fetched from https://$DOMAIN/api/hjv/version and checked against the build's update keys"
@@ -1908,7 +1849,7 @@ policy_part() {
   [ "$RC" = 0 ] || fail "V6: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
   screen_is_pc v6 || fail "V6: the decoded screen is not the PC's desktop"
   if pc_log_has 'version policy: refused the login'; then fail "V6: the PC refused a login before the deadline"; fi
-  pass "V6: the PC's screen ($MS ms): a deadline that has not passed lets the old controller in"
+  pass "V6: the PC's screen ($MS ms): a deadline that has not passed lets the controller below the minimum in"
 
   log "V7: the minimum in force (seq 2, its deadline an hour ago): the PC takes it and refuses the login"
   deadline=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
@@ -1932,19 +1873,6 @@ policy_part() {
     fail "V7: the refused login reached the PC's connection manager"
   fi
   pass "V7: exit 4 after $MS ms: the PC's L1 ('… $NEXT_MINOR 이상 … (지금 버전 $CUR)'), then R1 in a 'Login Error' box, which no app reconnects from by itself$([ -n "$cm0" ] && echo "; the login never reached the PC's connection manager")"
-
-  log "V8: a 1.5.1 controller shows the PC's L1 as it came"
-  if [ -n "${CLIENT_OLD:-}" ]; then
-    old_version=$(version_of "$CLIENT_OLD") || fail "V8: $CLIENT_OLD --version"
-    vscreen old "$CLIENT_OLD" v8
-    want=$(printf '%s\n' "hjv-e2e: login error: $(l1 "$old_version")" "hjv-e2e: error: Login Error: $(l1 "$old_version")")
-    [ "$RC" = 0 ] || fail "V8: exit $RC, expected 0"
-    [ "$(from_login_error)" = "$want" ] || fail "V8: not the PC's L1 in a 'Login Error' box: $(from_login_error)"
-    if has 'logged in to' || [ -e "$RUN/v8.ppm" ]; then fail "V8: the controller got in"; fi
-    pass "V8: the 1.5.1 controller ($old_version) shows the PC's L1 in its 'Login Error' box ($MS ms)"
-  else
-    echo "skipped: V8 (no CLIENT_OLD, a 1.5.1 client built for this server)"
-  fi
 
   # (last: from here on the PC's log has policies that it refused, which policy_taken fails on)
   log "V9: a policy signed with the test key 3, which the build does not pin (seq 3, as 1:2): the PC's service starts again"
@@ -2016,7 +1944,7 @@ if [ -n "$MIN_HBBS" ]; then min_controller_part; fi
 if [ -n "$POLICY" ]; then
   policy_part
 elif [ -n "$KEYED" ]; then
-  echo "skipped: V5-V9, the version policy (no HJV_RELEASE, tools/hjv-release to sign its test policies)"
+  echo "skipped: V5-V7 and V9, the version policy (no HJV_RELEASE, tools/hjv-release to sign its test policies)"
 fi
 
 log "what hbbs saw"

@@ -12,7 +12,7 @@ More tests run when asked for:
                                                        writes, with a `gh` that replays answers
     HJV_RELEASE_SAMPLES=<a directory of artifacts>     real APKs and IPAs are read, the APKs'
                                                        manifests too (a download of a run, such
-                                                       as build/release-1.5.1)
+                                                       as build/release-1.8.0)
     HJV_PATCHED_FLUTTER=<the patched tree's flutter>   the Dart tests that the Dart tests job
                                                        requires are all in that tree
 """
@@ -407,12 +407,6 @@ class RecordTest(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertIn(f"the manifest has permission {install} and provider {provider}, and nothing of the "
                           "controlled side", out)
-        # before 1.6.0 nothing of this is asked
-        tree = Tree(self, version="1.5.1")
-        tree.put("app.apk", apk(name="1.5.1", children=MANIFEST_1_5))
-        code, out, _ = tree.run("--platform", "android", "--file", "app.apk")
-        self.assertEqual(code, 0, out)
-        self.assertNotIn("the manifest has", out)
 
     def test_ios_takes_the_build_number_from_the_ipa(self):
         for fmt in (plistlib.FMT_BINARY, plistlib.FMT_XML):
@@ -685,18 +679,9 @@ class RecordTest(unittest.TestCase):
                 if name.endswith(".apk"):
                     code, version = ri.apk_version(path)
                     self.assertTrue(2000 < code <= 2100000000, path)
-                    # the manifest as Gradle merged it: from 1.6.0 that of a controller with the
-                    # in-app update, before it the controlled side's without
+                    # Supported release samples are controllers with in-app updates.
                     missing, controlled = ri.android_manifest_problems(ri.apk_manifest(path))
-                    if ri.android_rules_apply(version):
-                        self.assertEqual((missing, controlled), ([], []), path)
-                    else:
-                        self.assertEqual(missing, sorted(ri.ANDROID_REQUIRED), path)
-                        for entry in ("accessibility-service " + APP + "InputService",
-                                      "foreground-service-type of service " + APP + "MainService",
-                                      "permission android.permission.FOREGROUND_SERVICE",
-                                      "receiver " + APP + "BootReceiver"):
-                            self.assertIn(entry, controlled, path)
+                    self.assertEqual((missing, controlled), ([], []), path)
                 elif name.endswith(".ipa"):
                     build, version = ri.ipa_version(path)
                     self.assertRegex(build, r"^\d{9}$", path)
@@ -865,6 +850,52 @@ class WorkflowTest(unittest.TestCase):
         "ios": ("upstream/rustdesk/ios-out", ["Upload IPA"]),
     }
     RECORD = "Write release.json and SHA256SUMS"
+
+    def test_build_plan_rejects_unknown_platforms_and_uploads_without_ios(self):
+        step = self.step("generate-bridge", "Plan build targets")
+        self.assertEqual(step["env"], {
+            "PLATFORMS": "${{ github.event_name == 'push' && 'all' || inputs.platforms }}",
+            "TESTFLIGHT": "${{ inputs.testflight }}",
+        })
+        self.assertLess(self.index("generate-bridge", "Plan build targets"),
+                        self.index("generate-bridge", "Fetch upstream and apply hjviewer patches"))
+        triggers = self.wf.get("on", self.wf.get(True))  # PyYAML's YAML 1.1 spelling of `on`
+        for trigger in ("workflow_dispatch", "workflow_call"):
+            self.assertIs(triggers[trigger]["inputs"]["testflight"]["default"], False)
+        for platform in ("windows", "android", "ios", "relay", "all", "", "unknown", "$(touch injected)"):
+            for testflight in ("false", "true"):
+                with self.subTest(platform=platform, testflight=testflight), tempfile.TemporaryDirectory() as tmp:
+                    output = os.path.join(tmp, "outputs")
+                    done = subprocess.run(
+                        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+                        cwd=tmp, env={**os.environ, "PLATFORMS": platform, "TESTFLIGHT": testflight,
+                                      "GITHUB_OUTPUT": output}, capture_output=True, text=True)
+                    valid = platform in ("windows", "android", "ios", "relay", "all") and (
+                        testflight == "false" or platform in ("ios", "all"))
+                    self.assertEqual(done.returncode, 0 if valid else 1, done.stdout + done.stderr)
+                    self.assertFalse(os.path.exists(os.path.join(tmp, "injected")))
+                    if valid:
+                        with open(output) as f:
+                            self.assertEqual(f.read(), "build_apps=" + ("false" if platform == "relay" else "true") + "\n")
+                    else:
+                        self.assertFalse(os.path.exists(output))
+
+    def test_relay_only_skips_app_build_tools_but_keeps_the_source_commit_gate(self):
+        bridge = self.wf["jobs"]["generate-bridge"]
+        self.assertNotIn("if", bridge)  # relay still needs a successful preflight and a source SHA
+        self.assertEqual(bridge["outputs"]["source_sha"], "${{ steps.source.outputs.sha }}")
+        self.assertEqual(bridge["outputs"]["build_apps"], "${{ steps.plan.outputs.build_apps }}")
+        for name in ("Check out hjviewer", "Record the source commit", "Check the pinned public keys"):
+            self.assertNotIn("if", self.step("generate-bridge", name), name)
+        at = self.index("generate-bridge", "Fetch upstream and apply hjviewer patches")
+        for step in self.steps("generate-bridge")[at:]:
+            self.assertEqual(step["if"], "steps.plan.outputs.build_apps == 'true'", step.get("name", step.get("uses")))
+        self.assertEqual(self.wf["jobs"]["dart-tests"]["if"], "needs.generate-bridge.outputs.build_apps == 'true'")
+        self.assertEqual(self.wf["jobs"]["relay"]["needs"], "generate-bridge")
+        self.assertNotIn("bridge-artifact", json.dumps(self.wf["jobs"]["relay"]))
+        for job in ("dart-tests", "windows", "android", "ios", "relay", "play"):
+            self.assertEqual(self.step(job, "Check out hjviewer")["with"]["ref"],
+                             "${{ needs.generate-bridge.outputs.source_sha }}", job)
 
     def test_every_app_job_writes_the_record_between_the_notices_and_the_upload(self):
         for job, (directory, uploads) in self.UPLOADS.items():
