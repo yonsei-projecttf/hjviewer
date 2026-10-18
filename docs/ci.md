@@ -118,7 +118,7 @@ macOS와 Linux 앱은 빌드하지 않습니다.
   - `completed`(기본값): 바로 출시합니다. Play가 처리를 마치면 보통 몇 분 안에 테스터가 받을 수 있게 됩니다. 실제로 설치되는 때는 휴대폰마다 다릅니다. Play 스토어의 자동 업데이트 설정을 따르고, 테스터가 Play 스토어에서 직접 업데이트할 수도 있습니다.
   - `draft`: 초안으로만 올립니다. Play Console에서 직접 출시합니다.
   - `validate`: 번들을 올리고 트랙까지 설정한 뒤 Play의 검증만 받고 버립니다. 아무것도 출시하지 않습니다. 설정을 마친 뒤 첫 실행에 씁니다.
-- **확인 빌드(`check_only`)**: 출시 전에 코드가 세 플랫폼에서 빌드되는지만 봅니다(설계 3판 6-4, 결정 O2: 마지막 push 바로 뒤). 1.6.0의 공개키 필수 검사를 건너뛰므로 키를 만들기 전에도 돌릴 수 있습니다. 산출물 이름에 `-check`가 붙고 하루만 남으며, `testflight`나 `play`를 함께 켜면 실행이 바로 실패합니다. hjv-relay는 서버 값 없는 시험 빌드가 되고 Release를 만들지 않습니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=all -f check_only=true`. 확인 빌드의 산출물은 나눠 주지 않습니다.
+- **확인 빌드(`check_only`)**: 출시 전에 코드가 세 플랫폼에서 빌드되는지만 봅니다(설계 3판 6-4, 결정 O2: 마지막 push 바로 뒤). 1.6.0의 공개키 필수 검사를 건너뛰므로 키를 만들기 전에도 돌릴 수 있습니다. 산출물 이름에 `-check`가 붙고 하루만 남으며, `testflight`나 `play`를 함께 켜면 실행이 바로 실패합니다. Windows는 eSigner를 호출하지 않는 미서명 빌드이며 서명 비용이 들지 않고, `release.json`이 없어 출시에는 쓸 수 없습니다. hjv-relay는 서버 값 없는 시험 빌드가 되고 Release를 만들지 않습니다. 예: `gh workflow run build.yml -R yonsei-projecttf/hjviewer-private -f platforms=all -f check_only=true`. 확인 빌드의 산출물은 나눠 주지 않습니다.
 - **태그**: GitHub CI를 다시 켜면 `v`로 시작하는 태그를 푸시할 때 전체를 빌드합니다(지금은 꺼 둠). 예: `git tag v0.1.0 && git push origin v0.1.0`
 - **결과물**: 실행 페이지 아래의 Artifacts에서 받거나 `gh run download <run-id>`를 씁니다. 보관 기간은 7일(워크플로의 `ARTIFACT_RETENTION_DAYS`)이므로 필요한 파일은 바로 받아 두세요. 이름의 `<이름>`은 태그 빌드면 태그(`v0.1.0`), 수동 실행이면 `<앱 버전>-<커밋 7자리>`(예: `1.5.1-d2fa660`)입니다.
 
@@ -128,7 +128,7 @@ macOS와 Linux 앱은 빌드하지 않습니다.
 |---|---|---|---|
 | Bridge codegen | ubuntu-22.04 | 서버 변수와 고정 공개키를 확인하고(아래 "계정 기능의 공개키") flutter_rust_bridge 코드를 생성합니다. 패치가 `src/flutter_ffi.rs`를 바꾸므로 매번 생성합니다. | 내부용 `bridge-artifact` (다른 아티팩트처럼 7일, 확인 빌드는 1일 보관. 아래 "릴리스 기록") |
 | Dart tests | ubuntu-24.04 | 생성된 bridge로 `flutter/test`의 Dart 테스트를 모두 돌립니다. 앱 패치가 더하거나 고친 테스트(제스처, iPhone 한글 입력, 화질 표시)가 하나라도 없으면 실패합니다. Windows·Android 잡은 이 잡을 기다리지 않습니다. iOS 잡과 Google Play internal 잡은 이 잡이 통과한 뒤에 시작하므로, 테스트가 실패한 빌드는 TestFlight나 Google Play에 올라가지 않습니다. | 없음 |
-| Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 자동 압축 해제 exe (RustDesk의 프린터 드라이버는 소스가 공개되지 않아 넣지 않습니다. 원격 인쇄는 꺼져 있습니다.) | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`, 서명 없음) |
+| Windows x64 | windows-2022 | vcpkg 의존성 → `build.py --flutter --hwcodec --vram`(Rust + Flutter) → 가상 디스플레이 드라이버, 프라이버시 모드용 `WindowInjection.dll` 포함 → 내부 미서명 PE 서명·검사 → 자동 압축 해제 exe 서명·검사. 확인 빌드는 서명을 건너뜁니다. RustDesk의 비공개 프린터 드라이버는 제외합니다. | `HJViewer-<이름>-windows-x86_64` (`HJViewer.exe`와 같은 파일인 `HJViewer-install.exe`). 출시 빌드는 Authenticode 서명, 확인 빌드는 미서명 `-check` |
 | Android arm64 | ubuntu-24.04 | vcpkg(NDK) → `cargo ndk`로 `librustdesk.so` → `flutter build apk --split-per-abi` → 키스토어가 있으면 릴리스 서명. 비공개 저장소의 서명 빌드는 이어서 `flutter build appbundle`로 AAB를 만들어 업로드 키로 서명하고 검사합니다(아래 "Google Play 업로드"). | `…-android-aarch64` 또는 `…-android-aarch64-debugsigned`. 비공개 서명 빌드는 `…-android-aarch64-play`(AAB)도 |
 | Google Play internal | ubuntu-24.04 | `play`를 켰을 때만 돕니다. Android 잡의 AAB를 받아 `scripts/play-upload.py`로 Google Play 내부 테스트 트랙에 올립니다. Play 시크릿은 이 잡에만 들어갑니다. | 없음 |
 | iOS | macos-26 (Xcode 26.6) | vcpkg(arm64-ios) → Rust 정적 라이브러리 → `flutter build ipa` → 인증서가 있으면 서명된 IPA → `testflight`를 켜면 App Store Connect에 업로드 | `…-ios` 또는 `…-ios-unsigned` |
@@ -137,12 +137,12 @@ macOS와 Linux 앱은 빌드하지 않습니다.
 
 Bridge codegen이 끝나면 Dart tests, Windows, Android, hjv-relay 잡이 병렬로 실행되고, iOS 잡은 Dart tests가 통과한 뒤에 시작합니다. Google Play internal 잡은 Android 잡과 Dart tests가 모두 성공한 뒤에, hjv-relay draft release 잡은 hjv-relay 잡이 성공한 뒤에 시작합니다.
 
-Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하면 압축이 풀리고 앱이 뜹니다. 피제어 PC에서는 앱의 설치 버튼으로 서비스로 설치합니다. 서명이 없으므로 SmartScreen 경고나 백신 오탐이 나올 수 있습니다.
+Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하면 압축이 풀리고 앱이 뜹니다. 피제어 PC에서는 앱의 설치 버튼으로 서비스로 설치합니다. 운영 중인 1.8.0은 미서명이고, 다음 새 버전부터 쓸 SSL.com IV/eSigner 서명 경로를 구현했습니다. 인증서와 시크릿 준비, 첫 서명 빌드와 검증은 [windows-signing.md](windows-signing.md)를 따릅니다. 서명만으로 SmartScreen 경고나 Store 승인이 해결된다고 보지는 않습니다.
 
 ### upstream과 다른 점
 
 - **vcpkg 캐시**: upstream은 `VCPKG_BINARY_SOURCES=clear;x-gha,readwrite`를 씁니다. 그런데 vcpkg가 2025년에 x-gha 제공자를 없앴고 지금은 경고만 출력하므로, upstream은 매번 ffmpeg 등 모든 포트를 새로 빌드합니다. 이 워크플로는 vcpkg의 `files` 제공자와 `actions/cache`로 빌드된 포트를 저장하고, 그 실행에서 설치한 패키지만 남깁니다.
-- **서명**: upstream의 비공개 서명 서비스 대신 아래 시크릿으로 선택적으로 서명합니다. Windows는 서명하지 않습니다.
+- **서명**: upstream의 비공개 서명 서비스 대신 플랫폼별 시크릿을 씁니다. Windows 출시 빌드(`check_only=false`)는 비공개 저장소의 SSL.com IV/eSigner 서명이 필수이고, 기존 유효한 드라이버·CAT 서명은 보존합니다. Android·iOS는 아래 시크릿 설정에 따라 서명합니다.
 - **Xcode 고정**: upstream은 `macos-latest`의 기본 Xcode를 씁니다. 이 워크플로는 `macos-26`에서 Xcode 26.6(`XCODE_VERSION`)을 고르고, 26.x가 아니면 실패합니다. App Store Connect는 Xcode 26 이상으로 만든 빌드만 받습니다. 반면 Xcode 27(iOS 27 SDK)로 만들면 UIScene 수명 주기가 없는 Flutter 3.24.5 앱이 실행되지 않습니다.
 - **제외한 것**:
   - macOS·Linux·웹·Sciter 빌드
@@ -458,9 +458,13 @@ NAS의 hjv-relay는 비공개 빌드 저장소의 hjv-relay 잡에서 만듭니�
 - **출력**: 걸린 곳(`파일:줄`, `파일 (in the path)`, `staged 파일:줄`, `commit <해시>: message line 3`, `commit <해시> 파일:줄`, `commit <해시>: 파일 (in the path)`, `commit <해시>: author`)과 목록의 줄 번호만 출력합니다. 값과 그 줄의 내용은 출력하지 않습니다. 경로에 값이 들어 있으면 그 부분을 `<listed value>`로 바꿔 출력합니다.
 - 걸리면 그 내용을 자리표시자(`rd.example.com`, RFC 5737의 `192.0.2.x`, 문서용 MAC `00:00:5e:00:53:xx`, "부서 공유 폴더", 시험 ID)로 바꾸고, 커밋에 들어갔으면 push 전에 그 커밋을 고칩니다.
 
-## 서명 시크릿 (선택)
+## 서명 시크릿
 
-Settings → Secrets and variables → Actions의 **Secrets** 탭에 만듭니다. 시크릿이 없으면 서명 없이 빌드합니다. Android는 디버그 서명으로 빌드합니다.
+Settings → Secrets and variables → Actions의 **Secrets** 탭에 만듭니다. Windows 출시 빌드는 아래 설정이 없으면 실패합니다. Android는 서명 시크릿이 없으면 디버그 서명, iOS는 서명 없는 IPA로 빌드합니다.
+
+### Windows
+
+비공개 빌드 저장소의 Repository secrets에 `SSLCOM_USERNAME`, `SSLCOM_PASSWORD`, `SSLCOM_CREDENTIAL_ID`, `SSLCOM_TOTP_SECRET`, `WINDOWS_SIGNING_CERT_THUMBPRINT`를 넣습니다. 마지막 값은 공개 인증서의 SHA-1 지문(공백·콜론 없는 40자리 16진수)이지만 설정 편의를 위해 secret으로 전달합니다. `check_only=true`에서는 eSigner를 호출하지 않습니다. 발급·신원 확인·요금·설정과 내부 PE부터 바깥 exe까지의 검사는 [windows-signing.md](windows-signing.md)에 있습니다.
 
 ### Android
 

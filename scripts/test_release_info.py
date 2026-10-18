@@ -860,11 +860,52 @@ class WorkflowTest(unittest.TestCase):
 
     # job: (the directory it uploads, its upload steps)
     UPLOADS = {
-        "windows": ("upstream/rustdesk/SignOutput", ["Upload Windows build (unsigned)"]),
+        "windows": ("upstream/rustdesk/SignOutput", ["Upload Windows build"]),
         "android": ("upstream/rustdesk/signed-apk", ["Upload signed APK", "Upload debug-signed APK"]),
         "ios": ("upstream/rustdesk/ios-out", ["Upload IPA"]),
     }
     RECORD = "Write release.json and SHA256SUMS"
+
+    def test_windows_signs_payload_before_packing_and_hashes_only_after_signing(self):
+        # A correctly signed wrapper can still contain unsigned DLLs. The two signing gates
+        # must surround packing; release metadata must describe the final signed bytes.
+        ordered = [
+            "Check Windows signing configuration", "Fetch upstream and apply hjviewer patches",
+            "Build RustDeskTempTopMostWindow", "Set Windows runtime executable name",
+            "Prepare runtime signatures", "Sign runtime PE files", "Verify and apply runtime signatures",
+            "Build self-extracted executable", "Prepare installer signature", "Sign installer",
+            "Verify and apply installer signature", "Copy installer alias", "Audit final Windows signatures",
+            "Add license, source and third-party notices", self.RECORD, "Upload Windows build",
+        ]
+        positions = [self.index("windows", name) for name in ordered]
+        self.assertEqual(positions, sorted(positions))
+        for name in ordered:
+            self.assertFalse(self.step("windows", name).get("continue-on-error", False), name)
+        for name in ("Prepare runtime signatures", "Verify and apply runtime signatures",
+                     "Prepare installer signature", "Verify and apply installer signature",
+                     "Audit final Windows signatures", "Check Windows signing configuration",
+                     "Install pinned CodeSignTool", "Upload Windows signature reports"):
+            self.assertEqual(self.step("windows", name)["if"], "${{ !inputs.check_only }}", name)
+        for name, signing_id, target in (("Sign runtime PE files", "runtime-signing", "runtime"),
+                                         ("Sign installer", "installer-signing", "installer")):
+            step = self.step("windows", name)
+            self.assertEqual(step["if"], "${{ !inputs.check_only && steps." + signing_id + ".outputs.pending_count != '0' }}")
+            self.assertRegex(step["uses"], r"^SSLcom/esigner-codesign@[0-9a-f]{40}$")
+            self.assertEqual(step["with"]["command"], "batch_sign")
+            self.assertEqual(step["with"]["environment_name"], "PROD")
+            self.assertEqual(step["with"]["dir_path"], "${{ runner.temp }}/hjv-sign/" + target + "-input")
+            self.assertEqual(step["with"]["output_path"], "${{ runner.temp }}/hjv-sign/" + target + "-signed")
+            self.assertIn("CODESIGNTOOL_PATH", step["env"])
+            for key, secret in (("username", "SSLCOM_USERNAME"), ("password", "SSLCOM_PASSWORD"),
+                                ("credential_id", "SSLCOM_CREDENTIAL_ID"), ("totp_secret", "SSLCOM_TOTP_SECRET")):
+                self.assertEqual(step["with"][key], "${{ secrets." + secret + " }}")
+        alias = self.step("windows", "Copy installer alias")
+        self.assertNotIn("if", alias)  # check builds still have both names, but no release record
+        self.assertIn("cp ./SignOutput/HJViewer.exe ./SignOutput/HJViewer-install.exe", alias["run"])
+        self.assertNotIn("HJViewer-install.exe", self.step("windows", "Build self-extracted executable")["run"])
+        # Credentials must not leak into arbitrary third-party build steps via a job/global env.
+        for env in (self.wf.get("env", {}), self.wf["jobs"]["windows"].get("env", {})):
+            self.assertFalse(any(k.startswith("SSLCOM_") for k in env))
 
     def test_every_app_job_writes_the_record_between_the_notices_and_the_upload(self):
         for job, (directory, uploads) in self.UPLOADS.items():
@@ -899,7 +940,7 @@ class WorkflowTest(unittest.TestCase):
         """The acceptance of the work package; tools/hjv-release counts on the 7 days."""
         self.assertEqual(self.wf["env"]["ARTIFACT_RETENTION_DAYS"], "${{ inputs.check_only && 1 || 7 }}")
         names = {
-            ("windows", "Upload Windows build (unsigned)"): "${{ env.BUILD_NAME }}-windows-x86_64",
+            ("windows", "Upload Windows build"): "${{ env.BUILD_NAME }}-windows-x86_64",
             ("android", "Upload signed APK"): "${{ env.BUILD_NAME }}-android-aarch64",
             ("android", "Upload debug-signed APK"): "${{ env.BUILD_NAME }}-android-aarch64-debugsigned",
             ("ios", "Upload IPA"): "${{ env.BUILD_NAME }}-ios${{ env.IOS_SIGNING != 'true' && '-unsigned' || '' }}",
@@ -960,7 +1001,7 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual((record["build"], record["file"], record["source_sha"]),
                              ("1.6.0.41", "HJViewer.exe", tree.commit))
             # the hashes cover what is uploaded, and nothing else
-            self.assertEqual(self.uploaded("windows", "Upload Windows build (unsigned)", out, {}),
+            self.assertEqual(self.uploaded("windows", "Upload Windows build", out, {}),
                              sorted(self.listed(out) + ["SHA256SUMS"]))
         # a check build: the same step, no release.json
         os.remove(os.path.join(out, "release.json"))
@@ -1093,7 +1134,7 @@ class WorkflowTest(unittest.TestCase):
                                                            "Packer guard smoke test"))
         self.assertEqual((update, guard), (install + 1, install + 2))
         self.assertEqual(guard, len(names) - 1)
-        self.assertGreater(install, names.index("Upload Windows build (unsigned)"))
+        self.assertGreater(install, names.index("Upload Windows build"))
         self.assertEqual(self.steps("windows")[install]["id"], "install-smoke")
         for at in (install, update, guard):
             step = self.steps("windows")[at]

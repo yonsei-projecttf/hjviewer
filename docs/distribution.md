@@ -15,13 +15,13 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 
 | 플랫폼 | 권장 경로 | 심사 | 필요한 것 |
 |---|---|---|---|
-| Windows | 결과물 exe를 직접 전달 | 없음 | (서명 없음: SmartScreen 경고가 뜰 수 있음). 1.6.0부터 새 버전은 앱이 서버에서 받음 |
+| Windows | 결과물 exe를 직접 전달 | 없음 | 운영 중인 1.8.0은 미서명. 다음 새 버전의 IV/eSigner 서명 준비는 [windows-signing.md](windows-signing.md). 1.6.0부터 새 버전은 앱이 서버에서 받음 |
 | Android | 릴리스 서명 APK를 직접 설치(사이드로드) | 없음 | 업로드 키스토어 하나. 1.6.0부터 새 버전은 앱이 받아 설치 화면을 엶 |
 | iOS | TestFlight **내부** 테스트 | 없음 (App Store Connect 사용자 최대 100명, 빌드는 90일 뒤 만료) | Apple Developer Program, App Store Connect API 키, 앱 레코드, App Store 프로파일 ([ci.md](ci.md)의 "TestFlight 업로드"). 새 버전은 TestFlight 앱이 설치함 |
 | iOS(대안) | **Ad Hoc** 서명 IPA를 등록된 iPhone에 설치 | 없음 | Apple Developer Program, 사용자 iPhone UDID 등록. 앱 안에서 업데이트할 수 없어 새 버전마다 관리자가 새 IPA를 줌 |
 | Android(대안) | Google Play **내부** 테스트 | 업데이트는 없음 (게시 뒤 소급 심사는 가능, 테스터 최대 100명, Play 스토어에서 설치하고 자동 업데이트) | Play 개발자 계정(있음), Play Console의 앱과 첫 AAB 직접 업로드, 서비스 계정 ([ci.md](ci.md)의 "Google Play 업로드") |
 
-실제 서버 값으로 만든 앱은 공개 아티팩트로 올리지 않습니다. 그래서 서명 빌드는 **비공개 빌드 저장소** `yonsei-projecttf/hjviewer-private`의 CI에서 합니다([deploy.md](deploy.md)의 "소규모 비공개 운영"). 이 워크플로는 iOS 서명과 Google Play용 AAB를 비공개 저장소에서만 만듭니다.
+실제 서버 값으로 만든 앱은 공개 아티팩트로 올리지 않습니다. 그래서 서명 빌드는 **비공개 빌드 저장소** `yonsei-projecttf/hjviewer-private`의 CI에서 합니다([deploy.md](deploy.md)의 "소규모 비공개 운영"). Windows 출시 서명, iOS 서명과 Google Play용 AAB는 비공개 저장소에서만 만듭니다.
 
 1.6.0부터 **모든 Android 빌드는 제어 전용**입니다(사이드로드 APK와 Play 빌드 모두, Google Play 작업의 결정 D1). Android 기기는 다른 기기를 제어하기만 하고, 원격으로 제어받지 않습니다. 원격으로 제어받는 기기는 Windows PC입니다.
 
@@ -33,6 +33,11 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 - `HJV_SERVER`, `HJV_SERVER_KEY`: 서버 배포 후 받은 도메인과 공개키([server-runbook.md](server-runbook.md)의 "보고")
 - 1.6.0부터: 계정 API의 공개키 `HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`(앱)와 `HJV_COMMAND_PUBKEY`(NAS 중계기). 사용자가 키를 만든 뒤 공개값만 넣습니다([server-runbook.md](server-runbook.md) 7-4, [ci.md](ci.md)의 "계정 기능의 공개키"). 없으면 앱은 1.5.1처럼 계정 기능 없이 동작합니다.
 - 1.6.0부터: **업데이트 공개키**. 이것은 시크릿이 아닙니다. 공개 저장소 파일 `client/update-keys.env`에 넣고, 빌드는 그 파일에서만 읽습니다. 키는 사용자가 `hjv-release keygen`으로 만들고, 화면에 나온 공개 줄만 이 파일에 옮깁니다([ci.md](ci.md)의 "업데이트 키와 릴리스 기록", [tools/hjv-release/README.md](../tools/hjv-release/README.md)). 키가 없는 빌드는 버전 정책을 확인하지 않습니다. 업데이트 안내도, 최소 버전 강제도 없이 1.5.1처럼 동작합니다.
+
+**Windows (다음 서명 출시부터)**
+
+- 개인용 SSL.com IV 인증서와 eSigner를 사용합니다. 발급·신원 확인·결제와 다섯 Repository secrets 설정은 사용자가 합니다. [windows-signing.md](windows-signing.md)의 준비 절차를 따릅니다.
+- 실제 서명 빌드는 아직 실행하지 않았습니다. 운영 중인 1.8.0 파일은 해시가 고정되어 있으므로 그대로 두고, 첫 서명 출시는 새 버전(예: 1.8.1)으로 냅니다. 최소 버전 1.8.0을 유지할 수 있으며 새 정책 서명과 운영 반영은 별도입니다.
 
 **Android (사이드로드)**
 - `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`: 만드는 방법은 [ci.md](ci.md)에 있습니다. 같은 키로 서명해야 앱 위에 업데이트를 설치할 수 있으므로, **키스토어를 잃어버리면 안 됩니다.** 1.6.0의 앱 안 설치도 받은 APK의 서명 인증서가 설치된 앱과 같은지 봅니다.
@@ -91,7 +96,7 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 
 제어받을 Windows PC는 설치해 두어야 사람이 없어도 접속할 수 있습니다. 제어만 하는 PC는 설치하지 않아도 됩니다.
 
-1. **설치**: `HJViewer-install.exe`를 더블클릭하고 **수락하고 설치**를 누른 뒤 관리자 권한(UAC)을 허용합니다. 이름에 버전이 든 파일(`HJViewer-1.6.1-install.exe`)도 같습니다. 이름이 `install.exe`로 끝나야 설치 화면이 열립니다. `HJViewer.exe`를 실행해 **설치하기**를 눌러도 같습니다. 서명이 없는 exe라서 SmartScreen 경고나 백신 경고가 뜰 수 있습니다.
+1. **설치**: `HJViewer-install.exe`를 더블클릭하고 **수락하고 설치**를 누른 뒤 관리자 권한(UAC)을 허용합니다. 이름에 버전이 든 파일(`HJViewer-1.6.1-install.exe`)도 같습니다. 이름이 `install.exe`로 끝나야 설치 화면이 열립니다. `HJViewer.exe`를 실행해 **설치하기**를 눌러도 같습니다. 운영 중인 1.8.0까지의 exe에는 서명이 없어 SmartScreen 경고나 백신 경고가 뜰 수 있습니다. 다음 서명 출시에서는 안내받은 게시자 이름과 파일 해시를 확인합니다([Windows 서명](windows-signing.md)).
    - 1.5.0 빌드로 설치한 PC는 자동 시작이 고장 나 있습니다(실행 파일 이름 문제). 새 빌드로 다시 설치하면 고쳐집니다. 그 전에 HJViewer 창을 모두 닫고, 작업 관리자 "세부 정보"에 `rustdesk.exe`가 있으면 끝내세요.
 2. **자동 시작**: 설치하면 HJViewer 서비스가 자동 시작으로 등록됩니다.
    - PC를 켜면 Windows 로그인 전부터 실행됩니다. 원격에서 로그인 화면이 보이고, 원격 메뉴의 **Ctrl + Alt + Del 삽입**으로 로그인할 수 있습니다.
@@ -430,6 +435,7 @@ TestFlight 빌드는 올린 지 90일이 지나면 실행되지 않습니다. 1.
 
 ### 업로드 요건과 남은 차단 요소
 
+- **Windows EXE/MSI**: 설치 파일과 내부의 모든 PE가 신뢰하는 CA로 이어지는 코드 서명을 가져야 하고, 제출한 버전별 URL의 파일은 바꾸면 안 됩니다([Microsoft 요건](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msi/app-package-requirements)). IV/eSigner 서명 경로는 구현했지만 실제 서명 빌드와 Store 재제출은 아직 하지 않았습니다. 서명만으로 승인이 보장되지는 않습니다. 기존 서비스·자동 시작·무인 원격 접속과 WHCP/Microsoft 서명 드라이버를 쓰는 기능은 인증 노트에 설명하고, 드라이버·CAT의 기존 서명은 보존합니다. 상세 절차는 [windows-signing.md](windows-signing.md)에 있습니다.
 - **iOS 개인정보 매니페스트**(ITMS-91061, ITMS-91053): 클라이언트 패치 0006(2026-10-10)으로 대응했습니다. 실제 업로드 결과로 확인해야 합니다.
   - 앱 자체 `PrivacyInfo.xcprivacy`를 넣었습니다. Rust 코어가 파일 시각 API(stat/fstat/lstat)를 쓰므로 C617.1(앱 컨테이너 안의 파일)을 신고하고, 서버에 등록하는 기기 ID를 앱 기능용 수집으로 적었습니다.
   - 매니페스트가 없던 Apple 목록 SDK는 Flutter 3.24.5에서 쓸 수 있는 첫 매니페스트 포함 버전으로 올렸습니다: sqflite 2.3.3+1, file_picker 8.0.7, package_info_plus 8.0.2, device_info_plus 10.1.2.

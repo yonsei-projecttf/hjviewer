@@ -376,6 +376,52 @@ jobs:
           git rm -q --cached -r .
           git reset -q --hard
 
+      # Fail before compiling when a distributable Windows build cannot be signed. Check builds
+      # deliberately skip the paid service and carry no release.json. Credentials are step-scoped.
+      - name: Check Windows signing configuration
+        if: ${{ !inputs.check_only }}
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        env:
+          PRIVATE_BUILD: ${{ github.event.repository.private }}
+          SSLCOM_USERNAME: ${{ secrets.SSLCOM_USERNAME }}
+          SSLCOM_PASSWORD: ${{ secrets.SSLCOM_PASSWORD }}
+          SSLCOM_CREDENTIAL_ID: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          SSLCOM_TOTP_SECRET: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          WINDOWS_SIGNING_CERT_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_CERT_THUMBPRINT }}
+        run: |
+          if ($env:PRIVATE_BUILD -ne 'true') {
+            throw 'Windows release signing requires the private build repository. Use check_only for an unsigned check build.'
+          }
+          foreach ($name in @('SSLCOM_USERNAME', 'SSLCOM_PASSWORD', 'SSLCOM_CREDENTIAL_ID', 'SSLCOM_TOTP_SECRET', 'WINDOWS_SIGNING_CERT_THUMBPRINT')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Missing repository secret: $name. See docs/windows-signing.md."
+            }
+          }
+          if ($env:WINDOWS_SIGNING_CERT_THUMBPRINT -notmatch '^[0-9a-fA-F]{40}$') {
+            throw 'WINDOWS_SIGNING_CERT_THUMBPRINT must be the issued certificate SHA-1 thumbprint (40 hex characters, no spaces).'
+          }
+
+      - name: Test Windows signing checks
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/test_windows_signing.ps1
+
+      # Pin both the action and its Java tool; the action otherwise downloads an unchecked ZIP.
+      - name: Install pinned CodeSignTool
+        if: ${{ !inputs.check_only }}
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          $archive = "$env:RUNNER_TEMP/CodeSignTool-v1.3.0-windows.zip"
+          Invoke-WebRequest -Uri 'https://github.com/SSLcom/CodeSignTool/releases/download/v1.3.0/CodeSignTool-v1.3.0-windows.zip' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne 'e22094505decbe622afe5b0c27abc618ed2ba179bd94f3450490352399d5ef2a') {
+            throw 'CodeSignTool archive checksum mismatch.'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath "$env:RUNNER_TEMP/hjv-CodeSignTool-1.3.0"
+          Remove-Item -LiteralPath $archive
+          $null = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/hjv-sign"
+
       # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
       # HJV_UPDATE_ROOT_PUBKEY, HJV_POLICY_FLOOR) come from client/update-keys.env of this checkout
       # and from nowhere else: after the same check as in the Bridge codegen job, the file's
@@ -542,15 +588,11 @@ jobs:
           msbuild "$src\WindowInjection\WindowInjection.vcxproj" -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
           Copy-Item "$src\WindowInjection\x64\Release\WindowInjection.dll" ./rustdesk/
 
-      # L363-373
-      - name: Build self-extracted executable
+      - name: Set Windows runtime executable name
         shell: bash
         run: |
-          sed -i '/dpiAware/d' res/manifest.xml
-          # Not in upstream. The installer registers <app name>.exe for the service, the Startup tray
-          # link, the Start menu and uninstall, but copies files under their own names, so the runner
-          # must carry the app's name: HJViewer when HJV_SERVER is set (src/hjviewer.rs). A build
-          # without it stays RustDesk, which matches rustdesk.exe on Windows' case-blind file system.
+          # The installer registers <app name>.exe as a service and shortcut, so the packaged
+          # runtime must have that name. Do this before recording the signature inventory.
           exe=rustdesk.exe
           if [ -n "$HJV_SERVER" ]; then
             if ! grep -q 'const APP_NAME: &str = "HJViewer";' src/hjviewer.rs; then
@@ -560,15 +602,117 @@ jobs:
             exe=HJViewer.exe
             mv ./rustdesk/rustdesk.exe "./rustdesk/$exe"
           fi
+          echo "PACKER_EXECUTABLE=$exe" >> "$GITHUB_ENV"
+
+      - name: Prepare runtime signatures
+        id: runtime-signing
+        if: ${{ !inputs.check_only }}
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE/scripts/windows-signing.ps1" -Mode Prepare -Root ./rustdesk `
+            -Stage "$env:RUNNER_TEMP/hjv-sign/runtime-input" -Manifest "$env:RUNNER_TEMP/hjv-sign/runtime.json"
+          if ($LASTEXITCODE) { throw 'Runtime signature preparation failed.' }
+
+      - name: Sign runtime PE files
+        if: ${{ !inputs.check_only && steps.runtime-signing.outputs.pending_count != '0' }}
+        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        env:
+          CODESIGNTOOL_PATH: ${{ runner.temp }}/hjv-CodeSignTool-1.3.0
+        with:
+          command: batch_sign
+          username: ${{ secrets.SSLCOM_USERNAME }}
+          password: ${{ secrets.SSLCOM_PASSWORD }}
+          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          dir_path: ${{ runner.temp }}/hjv-sign/runtime-input
+          output_path: ${{ runner.temp }}/hjv-sign/runtime-signed
+          environment_name: PROD
+          malware_block: true
+          signing_method: v2
+
+      - name: Verify and apply runtime signatures
+        if: ${{ !inputs.check_only }}
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_CERT_THUMBPRINT }}
+        run: |
+          & "$env:GITHUB_WORKSPACE/scripts/windows-signing.ps1" -Mode Verify -Root ./rustdesk `
+            -Stage "$env:RUNNER_TEMP/hjv-sign/runtime-input" -Signed "$env:RUNNER_TEMP/hjv-sign/runtime-signed" `
+            -Manifest "$env:RUNNER_TEMP/hjv-sign/runtime.json" `
+            -ExpectedSignerThumbprint $env:WINDOWS_SIGNING_CERT_THUMBPRINT `
+            -Report "$env:RUNNER_TEMP/hjv-sign/runtime-report.json"
+          if ($LASTEXITCODE) { throw 'Runtime signature verification failed.' }
+
+      # L363-373
+      - name: Build self-extracted executable
+        shell: bash
+        run: |
+          sed -i '/dpiAware/d' res/manifest.xml
           pushd ./libs/portable
           pip3 install -r requirements.txt
-          python3 ./generate.py -f ../../rustdesk/ -o . -e "../../rustdesk/$exe"
+          python3 ./generate.py -f ../../rustdesk/ -o . -e "../../rustdesk/$PACKER_EXECUTABLE"
           popd
           mkdir -p ./SignOutput
           # The file users download and run. Its name matters to the packer: a name ending in
           # "install.exe" installs at once and one with "-qs-" starts quick support (libs/portable).
           mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/HJViewer.exe
+
+      - name: Prepare installer signature
+        id: installer-signing
+        if: ${{ !inputs.check_only }}
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE/scripts/windows-signing.ps1" -Mode Prepare -Root ./SignOutput `
+            -Stage "$env:RUNNER_TEMP/hjv-sign/installer-input" -Manifest "$env:RUNNER_TEMP/hjv-sign/installer.json"
+          if ($LASTEXITCODE) { throw 'Installer signature preparation failed.' }
+
+      - name: Sign installer
+        if: ${{ !inputs.check_only && steps.installer-signing.outputs.pending_count != '0' }}
+        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        env:
+          CODESIGNTOOL_PATH: ${{ runner.temp }}/hjv-CodeSignTool-1.3.0
+        with:
+          command: batch_sign
+          username: ${{ secrets.SSLCOM_USERNAME }}
+          password: ${{ secrets.SSLCOM_PASSWORD }}
+          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          dir_path: ${{ runner.temp }}/hjv-sign/installer-input
+          output_path: ${{ runner.temp }}/hjv-sign/installer-signed
+          environment_name: PROD
+          malware_block: true
+          signing_method: v2
+
+      - name: Verify and apply installer signature
+        if: ${{ !inputs.check_only }}
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_CERT_THUMBPRINT }}
+        run: |
+          & "$env:GITHUB_WORKSPACE/scripts/windows-signing.ps1" -Mode Verify -Root ./SignOutput `
+            -Stage "$env:RUNNER_TEMP/hjv-sign/installer-input" -Signed "$env:RUNNER_TEMP/hjv-sign/installer-signed" `
+            -Manifest "$env:RUNNER_TEMP/hjv-sign/installer.json" `
+            -ExpectedSignerThumbprint $env:WINDOWS_SIGNING_CERT_THUMBPRINT `
+            -Report "$env:RUNNER_TEMP/hjv-sign/installer-report.json"
+          if ($LASTEXITCODE) { throw 'Installer signature verification failed.' }
+
+      - name: Copy installer alias
+        shell: bash
+        run: |
+          # Copy only after signing: both download names must have identical signed bytes.
           cp ./SignOutput/HJViewer.exe ./SignOutput/HJViewer-install.exe
+
+      - name: Audit final Windows signatures
+        if: ${{ !inputs.check_only }}
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE/scripts/windows-signing.ps1" -Mode Audit -Root ./rustdesk
+          if ($LASTEXITCODE) { throw 'Final runtime signature audit failed.' }
+          & "$env:GITHUB_WORKSPACE/scripts/windows-signing.ps1" -Mode Audit -Root ./SignOutput
+          if ($LASTEXITCODE) { throw 'Final installer signature audit failed.' }
+          if ((Get-FileHash ./SignOutput/HJViewer.exe).Hash -ne (Get-FileHash ./SignOutput/HJViewer-install.exe).Hash) {
+            throw 'The installer alias differs from the signed executable.'
+          }
 
       - name: Add license, source and third-party notices
         shell: bash
@@ -600,7 +744,7 @@ jobs:
           python3 -I "$GITHUB_WORKSPACE/scripts/release-info.py" --platform windows --dir SignOutput \
             --file HJViewer.exe --also HJViewer-install.exe --build "$build"
 
-      - name: Upload Windows build (unsigned)
+      - name: Upload Windows build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.BUILD_NAME }}-windows-x86_64
@@ -610,6 +754,17 @@ jobs:
             upstream/rustdesk/SignOutput/*.txt
             upstream/rustdesk/SignOutput/release.json
             upstream/rustdesk/SignOutput/SHA256SUMS
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Upload Windows signature reports
+        if: ${{ !inputs.check_only }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.BUILD_NAME }}-windows-signatures
+          path: |
+            ${{ runner.temp }}/hjv-sign/runtime-report.json
+            ${{ runner.temp }}/hjv-sign/installer-report.json
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
