@@ -20,7 +20,7 @@
 #                          check (scripts/test_*.py, the key files also against hjv-release), actionlint
 #                          on the workflows when it is installed, then a fresh upstream checkout with
 #                          client/patches, the release records' tests (scripts/release-info.py, on
-#                          the patched tree and build/release-1.5.1), hbb_common's WebSocket tests,
+#                          the patched tree and build/release-1.8.0), hbb_common's WebSocket tests,
 #                          cargo +1.75.0 check (the app builds' toolchain), the client core's
 #                          agreement with the shared vectors of tools/hjv-release (the trust rules)
 #                          and the client's pure Dart tests, with the Flutter SDK the app builds use
@@ -45,12 +45,11 @@
 #                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; with the
 #                          account code in the patches, also the unit tests of the client's
 #                          HJViewer code (--lib hjv) in that build and the account scenarios
-#                          (docs/e2e.md) against hjv-api and the fake SSO, with a 1.5.1 client
-#                          built once from the tag client-1.5.1 and Ubuntu's libfaketime, unpacked
-#                          under build/ci; with server patch 0005, hbbs's lowest controller
+#                          (docs/e2e.md) against hjv-api and the fake SSO, with Ubuntu's libfaketime
+#                          unpacked under build/ci; with server patch 0005, hbbs's lowest controller
 #                          version, and with the update code in the patches (src/hjviewer_update),
 #                          a client with the update test keys and the signed version policy that
-#                          tools/hjv-release signs for it (the minimum version's V1-V9), and the
+#                          tools/hjv-release signs for it (V1, V2, V4-V7 and V9), and the
 #                          update code's unit tests once more in a build without those keys
 #   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, the Wake-on-LAN E2E (docs/e2e.md), without sudo: in
 #                          this user's own namespaces a PC that sleeps is woken through hjv-api
@@ -102,23 +101,22 @@ E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
 # tests take under a minute each once their dependencies are built, instead of three and a half
 # minutes each with the release profile as it is.
 E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
-# the 1.5.1 client the account E2E compares with (X2, X3)
-E2E_OLD_TAG=client-1.5.1
 # the stages of prepush, in their order
 PREPUSH_STAGES="server client deploy e2e wol leak"
 # The fewest PASS lines of the E2E scripts and the fewest client unit tests that the last full run
 # passed with (2026-10-13). A run that skipped nothing and has fewer lost a scenario or a test (one
 # moved under a condition that does not hold, a test filter that picks nothing), and the stage
 # fails (at_least). Raise them as scenarios and tests come; lower one only with what was taken out.
-E2E_LEAST_STRICT=60 E2E_LEAST_OPEN=2 WOL_LEAST=20
+# The historical-client comparisons X2 and X3 were removed (2026-10-18): 60 - 2.
+E2E_LEAST_STRICT=58 E2E_LEAST_OPEN=2 WOL_LEAST=20
 # strict: and the open login's S28-S31 (2026-10-14)
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 4))
-# strict: and the minimum version's V1-V9 (2026-10-14)
-E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 12))
+# strict: the minimum version's V1, V2, V4-V7 and V9 (12 - V3 - V8, 2026-10-18)
+E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 10))
 # strict: and HJViewer's ID rule's S32 (2026-10-14)
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 1))
-# strict: and the staff-only gate's A1-A14 (2026-10-17)
-E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 14))
+# strict: the staff-only gate's A1-A11 and A13-A14 (14 - A12, 2026-10-18)
+E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 13))
 # by the filter of build_e2e_client's cargo test --lib <filter>; hjv as the staff-only gate's E2E
 # counted it (260, 2026-10-17, the series with src/hjviewer_access)
 declare -A UNIT_LEAST=([hjv]=260 [hjviewer_wol]=6)
@@ -431,7 +429,7 @@ client_stage() {
   local index=https://storage.googleapis.com/flutter_infra_release/releases
   # the server stage's release build of tools/hjv-release, against which the key files and the
   # release records are read too (its tests skip that part without it)
-  local release_bin="$CI/target-hjv-release/release/hjv-release" samples="$ROOT/build/release-1.5.1"
+  local release_bin="$CI/target-hjv-release/release/hjv-release" samples="$ROOT/build/release-1.8.0"
   local vectors="$ROOT/tools/hjv-release/tests/vectors" ran cases
   if [ ! -x "$release_bin" ]; then
     release_bin=""
@@ -468,10 +466,10 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" client
   echo "the patched tree: $(git -C "$CI/upstream/rustdesk" rev-parse 'HEAD^{tree}') (and the overlay files)"
   # release.json, SHA256SUMS and the workflow's minimum-version steps, also on the patched tree (the
-  # Dart tests the workflow requires) and on the 1.5.1 artifacts kept under build/ (the manifest
+  # Dart tests the workflow requires) and on the 1.8.0 artifacts kept under build/ (the manifest
   # gate on a real APK)
   step "client: the release records (scripts/release-info.py, client-build.yml), offline tests"
-  [ -d "$samples" ] || { samples=""; skip "the release records on real artifacts (no build/release-1.5.1)"; }
+  [ -d "$samples" ] || { samples=""; skip "the release records on real artifacts (no build/release-1.8.0)"; }
   HJV_RELEASE_BIN="$release_bin" HJV_PATCHED_FLUTTER="$app" HJV_RELEASE_SAMPLES="$samples" \
     python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_release_info.py' || fail "client: release record tests"
   step "client: hbb_common WebSocket tests"
@@ -1356,7 +1354,7 @@ e2e_update_keys() {
 # tests run as in a build that takes part; when <filter> picks those tests, they run once more
 # without the keys (e2e_unit_without_update_keys). A client given by hand
 # (E2E_CLIENT, which only the wol stage takes) is used as it is, and that is a skip.
-# The staff-only gate's A1-A14 (docs/e2e.md, the access stage): with hbbs's access file (server
+# The staff-only gate's A1-A11 and A13-A14 (docs/e2e.md, the access stage): with hbbs's access file (server
 # patch 0006), the client's access password command (client patch 0061) and the account E2E,
 # whose hjv-api signs the tickets. Like e2e_minimum_version: a patch whose build lacks its part
 # fails, no patch skips.
@@ -1367,18 +1365,18 @@ e2e_access() {
   if ! grep -q -- '--hjv-access-file' <<< "$help"; then
     grep -q -- 'hjv-access-file' "$ROOT"/server/patches/*.patch &&
       fail "e2e: hbbs has no --hjv-access-file, though server/patches has it (patch 0006): scripts/ci.sh server builds it again"
-    skip "the staff-only gate's A1-A14 (hbbs has no --hjv-access-file: no server patch 0006)"
+    skip "the staff-only gate's A1-A11 and A13-A14 (hbbs has no --hjv-access-file: no server patch 0006)"
     return 0
   fi
   # (the name of its variable: a release build compares the commands' names without keeping them)
   if ! grep -aqF HJV_E2E_ACCESS_PASSWORD "$E2E_CLIENT"; then
     grep -q HJV_E2E_ACCESS_PASSWORD "$ROOT"/client/patches/rustdesk/*.patch &&
       fail "e2e: the client has no HJV_E2E_ACCESS_PASSWORD, though client/patches has it (patch 0061)"
-    skip "the staff-only gate's A1-A14 (the client has no HJV_E2E_ACCESS_PASSWORD: no client patch 0061)"
+    skip "the staff-only gate's A1-A11 and A13-A14 (the client has no HJV_E2E_ACCESS_PASSWORD: no client patch 0061)"
     return 0
   fi
   if [ -z "$E2E_ACCOUNT" ] || ! grep -q HJV_E2E_ACCESS "$ROOT/tools/e2e/firewall-e2e.sh"; then
-    skip "the staff-only gate's A1-A14 (no account E2E, or no HJV_E2E_ACCESS part in tools/e2e/firewall-e2e.sh)"
+    skip "the staff-only gate's A1-A11 and A13-A14 (no account E2E, or no HJV_E2E_ACCESS part in tools/e2e/firewall-e2e.sh)"
     return 0
   fi
   E2E_ACCESS=(HJV_E2E_ACCESS=1)
@@ -1469,36 +1467,6 @@ e2e_client_stamp() { # <work dir> <binary>
   echo "run ${HJV_CI_RUN:-none} inputs $inputs binary $(sha256sum < "$2" | cut -d' ' -f1)"
 }
 
-# The 1.5.1 client of the account E2E's X2 and X3 (design v3 7-4): the patches and the upstream
-# pin of the tag client-1.5.1, built for the test server like the client above. Built once for a
-# tag commit and server key, and kept as build/ci/e2e-old/rustdesk; the scenarios are skipped
-# where the repository has no such tag (a shallow checkout).
-build_e2e_client_old() { # <work dir>
-  local work=$1 dir="$CI/e2e-old" stamp
-  E2E_CLIENT_OLD=""
-  if ! git -C "$ROOT" rev-parse -q --verify "refs/tags/$E2E_OLD_TAG^{commit}" > /dev/null; then
-    skip "the 1.5.1 client of X2 and X3 (this repository has no tag $E2E_OLD_TAG)"
-    return 0
-  fi
-  stamp="$(git -C "$ROOT" rev-parse "refs/tags/$E2E_OLD_TAG^{commit}") $(cat "$work/srv/id_ed25519.pub")"
-  if [ ! -x "$dir/rustdesk" ] || [ "$(cat "$dir/stamp" 2> /dev/null)" != "$stamp" ]; then
-    step "e2e: the 1.5.1 client (tag $E2E_OLD_TAG) for the test server, once"
-    rm -rf "$dir" "$CI/target-e2e-old"
-    mkdir -p "$dir/repo"
-    git -C "$ROOT" archive "refs/tags/$E2E_OLD_TAG" scripts client | tar -x -C "$dir/repo"
-    UPSTREAM_DIR="$dir/upstream" "$dir/repo/scripts/fetch-upstream.sh" client
-    pkgconfig
-    (cd "$dir/upstream/rustdesk" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test \
-      HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e-old" \
-      cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the 1.5.1 client build"
-    cp "$CI/target-e2e-old/release/rustdesk" "$dir/rustdesk"
-    echo "$stamp" > "$dir/stamp"
-    # the binary is what is kept
-    rm -rf "$dir/repo" "$dir/upstream" "$CI/target-e2e-old"
-  fi
-  E2E_CLIENT_OLD="$dir/rustdesk"
-}
-
 # libfaketime for the account E2E's S27 (a controller's clock 15 minutes ahead): the system's if
 # it is installed, else Ubuntu's package unpacked under build/ci, as nginx and Apache are for the
 # deploy stage. Without either, S27 is skipped with a line saying so.
@@ -1536,9 +1504,9 @@ cleanup_e2e() {
 }
 
 # The minimum version's parts of the E2E (its design 2-4, 1-7; docs/e2e.md), as values for
-# firewall-e2e.sh in E2E_MINVER: hbbs's lowest controller version (V1-V4) once hbbs has server patch
+# firewall-e2e.sh in E2E_MINVER: hbbs's lowest controller version (V1, V2 and V4) once hbbs has server patch
 # 0005; once server/patches has that patch, an hbbs without it (built by an earlier server stage)
-# fails the stage instead of skipping the part. And the signed version policy (V5-V9) once the
+# fails the stage instead of skipping the part. And the signed version policy (V5-V7 and V9) once the
 # client has the update test keys, with tools/hjv-release, which signs its test policies; without
 # the tool, firewall-e2e.sh says that it skips them.
 e2e_minimum_version() {
@@ -1550,10 +1518,10 @@ e2e_minimum_version() {
   elif grep -q -- 'hjv-min-controller-file' "$ROOT"/server/patches/*.patch; then
     fail "e2e: hbbs has no --hjv-min-controller-file, though server/patches has it (patch 0005): scripts/ci.sh server builds it again"
   else
-    skip "the minimum version's V1-V4 (hbbs has no --hjv-min-controller-file: no server patch 0005)"
+    skip "the minimum version's V1, V2 and V4 (hbbs has no --hjv-min-controller-file: no server patch 0005)"
   fi
   if [ -z "$E2E_KEYED" ]; then
-    skip "the minimum version's V5-V9 (no src/hjviewer_update in the patched tree, or no HJV_E2E_UPDATE_KEYS part in tools/e2e/firewall-e2e.sh): the client is built without the update keys, like 1.5.1"
+    skip "the minimum version's V5-V7 and V9 (no src/hjviewer_update in the patched tree, or no HJV_E2E_UPDATE_KEYS part in tools/e2e/firewall-e2e.sh): the client is built without the update keys, like 1.5.1"
     return 0
   fi
   E2E_MINVER+=(HJV_E2E_UPDATE_KEYS=1)
@@ -1589,10 +1557,9 @@ e2e_stage() {
   sudo install -D -m 755 "$E2E_CLIENT" "$E2E_PC_DIR/rustdesk"
   if [ -n "$E2E_ACCOUNT" ]; then
     build_e2e_api
-    build_e2e_client_old "$work"
     fetch_faketime
     extra=(HJV_E2E_ACCOUNT=1 HJV_API="$E2E_API" HJV_FAKE_SSO="$E2E_FAKE_SSO" HJV_E2E_KEYS="$work/api"
-      CLIENT_OLD="$E2E_CLIENT_OLD" FAKETIME_LIB="$E2E_FAKETIME")
+      FAKETIME_LIB="$E2E_FAKETIME")
   fi
   e2e_minimum_version
   extra+=("${E2E_MINVER[@]}")

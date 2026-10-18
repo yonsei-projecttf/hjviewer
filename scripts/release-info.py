@@ -461,7 +461,12 @@ def main(argv):
         else:
             write(target, text)
             listed.append(RELEASE_JSON)
-        sums = [f"{digest(os.path.join(args.dir, name))[1]}  {name}" for name in listed]
+        # make_record already read the main package in full. Both records must use that
+        # digest; other uploaded files (including installer aliases) are hashed separately.
+        sums = []
+        for name in listed:
+            sha256 = record["sha256"] if name == args.file else digest(os.path.join(args.dir, name))[1]
+            sums.append(f"{sha256}  {name}")
         write(os.path.join(args.dir, SHA256SUMS), "\n".join(sums) + "\n")
     except Problem as e:
         print(("::error::" if actions else "error: ") + str(e), flush=True)

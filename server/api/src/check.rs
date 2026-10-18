@@ -56,7 +56,7 @@ use hyper::{body::Bytes, header::HOST, Request};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -140,8 +140,9 @@ pub struct OnlineSince {
 impl OnlineSince {
     /// Notes the PCs on now (`on`), forgetting the others; returns those on for STEADY_SECS.
     pub fn observe(&self, on: &[String], at: Instant) -> Vec<String> {
+        let online: HashSet<&str> = on.iter().map(String::as_str).collect();
         let mut since = self.since.lock().unwrap_or_else(|e| e.into_inner());
-        since.retain(|id, _| on.contains(id));
+        since.retain(|id, _| online.contains(id.as_str()));
         let mut steady = Vec::new();
         for id in on {
             let first = *since.entry(id.clone()).or_insert(at);
@@ -726,8 +727,14 @@ mod tests {
         assert_eq!(o.observe(&ids(&["a"]), t2), ids(&["a"]));
         let t3 = t2 + Duration::from_secs(300);
         assert_eq!(o.observe(&ids(&["a", "b"]), t3), ids(&["a"]));
+        // Membership checks do not change the input order, or carry an old start time over an
+        // offline check. A newly seen PC must wait while the two steady PCs keep their times.
+        let t4 = t3 + Duration::from_secs(STEADY_SECS);
+        assert_eq!(o.observe(&ids(&["b", "c", "a"]), t4), ids(&["b", "a"]));
+        assert!(o.observe(&[], t4).is_empty());
+        assert!(o.observe(&ids(&["b", "a"]), t4).is_empty());
         o.clear();
-        assert!(o.observe(&ids(&["a"]), t3).is_empty());
+        assert!(o.observe(&ids(&["a"]), t4).is_empty());
     }
 
     #[test]

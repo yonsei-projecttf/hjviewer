@@ -46,8 +46,10 @@ Contents: 1 Transport · 2 Encodings · 3 Keys and identity · 4 Request envelop
   transfer coding (the relay also accepts a body ended by closing the connection). The relay
   refuses response bodies over **262144 bytes** and response heads over 16 KiB. It ignores fields
   it does not know. `1xx` responses before the final one are skipped.
-- The relay gives up on a request **35 seconds** after it started connecting (DNS, connect, TLS,
-  write and the whole long-poll wait included).
+- The relay starts a **35-second** request budget before resolving the server's name. TCP
+  connect, TLS, writes and the whole long-poll wait use the time left in that budget. DNS uses
+  the synchronous system resolver, which this client cannot interrupt: a slow resolver can
+  exceed 35 seconds. After it returns, no connection starts once the budget has expired.
 - nginx in front of hjv-api passes `/api/hjv/` through (deploy/nginx-hjviewer-api.conf:
   `proxy_read_timeout 30s`, which a long-poll answered within `min(wait, 20) + 5` seconds stays
   inside, and `client_max_body_size 64k`, the request limit above), sets `X-Real-IP`, which
@@ -292,8 +294,8 @@ After a 200 the relay polls: at once when active (subject to the 2-second minimu
    - **active**: if commands are queued for this relay, answer at once with them (section 7.4).
      Otherwise hold the request until a command is queued for this relay or `min(wait, 20)`
      seconds have passed, then answer, with the commands if any.
-   The server SHOULD answer within `min(wait, 20) + 5` seconds; the relay abandons the request
-   35 seconds after it began.
+   The server SHOULD answer within `min(wait, 20) + 5` seconds; the relay's network operations
+   stop when its 35-second request budget expires (the system DNS limitation is in section 1).
 4. The time of the last accepted poll is the relay's liveness for relay selection (the design
    notes count a relay online when it polled in the last 60 seconds).
 
@@ -532,7 +534,7 @@ logs a hint to check the NAS's time, and the install guide says how.
 | What | Value |
 |---|---|
 | poll hold by the server | at most `min(wait, 20)` s; the relay sends `wait: 20` (`wait: 0` in its last polls before it exits) |
-| relay request timeout | 35 s from connect to the last byte |
+| relay request timeout | 35 s total budget for network operations; synchronous system DNS can overrun it (section 1) |
 | least time between poll starts | 2 s, except the poll right after packets were sent |
 | poll interval when pending / revoked | `poll_after`, else 30 s / 3600 s (`poll_after` at most 3600) |
 | back-off | 5 → 300 s, doubling, ±20 %; `retry_after` 1–3600 s |

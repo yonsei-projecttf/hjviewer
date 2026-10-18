@@ -41,10 +41,10 @@ apply_patches() { # <dir> <patch dir>
 fetch_server() {
   local dir="$UPSTREAM/rustdesk-server"
   checkout "$RUSTDESK_SERVER_REPO" "$RUSTDESK_SERVER_COMMIT" "$dir"
-  git -C "$dir" submodule update --init --depth 1 -q
   apply_patches "$dir" "$ROOT/server/patches"
-  # the first patch moves the hbb_common pin
-  git -C "$dir" submodule update --init -q
+  # The first patch moves hbb_common's gitlink. Apply it before initializing the submodule so
+  # that only the final pinned commit is fetched, not the upstream pin that it replaces.
+  git -C "$dir" submodule update --init --depth 1 -q
 }
 
 fetch_client() {
