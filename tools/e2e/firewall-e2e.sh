@@ -1808,7 +1808,10 @@ access_part() {
   n0=$(hbbs_count "access off")
   access_conf off
   until_ok 13 "A14: hbbs's line 'access off'" hbbs_above "access off" "$n0"
-  until_ok 45 "A14: PC B's hjv-access-pc ok" pcb_is ok
+  # refused, PC B sends RegisterPk once every 30 s (upstream's DEPLOY_RETRY_INTERVAL), and hbbs,
+  # which gives an unregistered connection no heartbeat, drops one quiet for 30 s; when that drop
+  # meets the send (A13's restart sets the phase), the registration waits a second round
+  until_ok 75 "A14: PC B's hjv-access-pc ok" pcb_is ok
   until_ok 40 "A14: PC B online" online "$PCB_ID" ctl
   ascreen actl "$PCB_ID" a14
   screen_ok "A14: the controller without a login, to PC B" a14
