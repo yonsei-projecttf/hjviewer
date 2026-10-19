@@ -17,19 +17,24 @@
 //!   [`MAX_HELD`] in all (503 `busy`); without a ticket key 503 `unavailable`.
 //! - The code: eight symbols of Crockford's base32 from 40 bits of the operating system's random
 //!   source, shown `XXXX-XXXX`, read as a short link's code is (update.rs `typed_code`, without
-//!   the URL's `%` escapes): without regard to case, `-` and spaces, `O` as `0`, `I` and `L` as
-//!   `1` ([`read`]).
+//!   the URL's `%` escapes): at most 64 bytes, ASCII only, without regard to case, skipping `-`
+//!   and the space U+0020 only, `O` as `0`, `I` and `L` as `1` ([`read`]); anything else (a tab,
+//!   another space, a full-width letter, `%`) makes it a wrong code.
 //! - Trading one is guest.rs's request with `code` in the place of `password`, sealed with the
 //!   purpose [`PURPOSE`]; its checks are the access password's, with [`SupportCodes::find`] where
-//!   the hash is, the maker's account looked at in the database (blocked, deleted or off the
-//!   allowlist: the code is over), and [`SupportCodes::take`] with the ticket, so that of two
-//!   requests with one code only one gets it.
+//!   the hash is, the maker looked at in the database (the account blocked, deleted or off the
+//!   allowlist: `blocked`; the account key that made it ended, by a logout, a revoke, a block or
+//!   a new login of the same device: `revoked`; either ends the code for good), and
+//!   [`SupportCodes::take`] with the ticket, so that of two requests with one code only one gets
+//!   it.
 //! - Kept in memory only ([`SupportCodes`]): under an HMAC-SHA256 of the code with a key made at
-//!   the start, with the maker's account (number and tag), its use and its times; never in the
-//!   database, a file, the journal or a record. A code that was used or whose ten minutes are over
-//!   stays [`ENDED_KEPT_SECS`] more, so that the records tell `used` and `expired` from `wrong`.
-//!   A restart ends them all. The answer that carries a code is kept, as every signed request's
-//!   that changes something, for its retry within HJV_API_RETRY_WINDOW (api.rs `authenticate`).
+//!   the start, with the maker (account number and tag, the account key's ckid), its use and its
+//!   times; never in the database, a file, the journal or a record. A code that was used, ended
+//!   or whose ten minutes are over stays [`ENDED_KEPT_SECS`] more, so that the records tell
+//!   `used`, `revoked` and `expired` from `wrong`. A restart ends them all. The answer that
+//!   carries a code is kept, as every signed request's that changes something, for its retry
+//!   within HJV_API_RETRY_WINDOW (api.rs `authenticate`); a retry gets it as it was, its
+//!   `expires_in` too.
 //! - Records `code` (kept HJV_API_EVENT_DAYS): `made` with the maker's tag; each try to trade one
 //!   with its result, the address's tag and, once the code was found, the maker's tag (guest.rs).
 //!   Never the code or a tag of it.
@@ -78,17 +83,22 @@ pub const ENDED_KEPT_SECS: i64 = 600;
 /// blocked or gone (docs/access-tickets.md 3-7, E6).
 pub const TEXT_DENIED: &str = "지원 코드가 맞지 않거나, 10분이 지났거나, 이미 쓴 코드입니다.";
 pub const TEXT_NO_CODE: &str = "이 계정으로는 지원 코드를 만들 수 없습니다.";
-pub const TEXT_TOO_MANY: &str = "쓰지 않은 지원 코드가 너무 많습니다. 잠시 뒤 다시 해 주세요.";
-pub const TEXT_CANNOT_MAKE: &str = "지금은 지원 코드를 만들 수 없습니다. 잠시 뒤 다시 해 주세요.";
+/// S6 without the minutes (the app words the wait from `retry_after`).
+pub const TEXT_TOO_MANY: &str = "아직 쓰지 않은 지원 코드가 많습니다. 잠시 뒤 다시 시도해 주세요.";
+pub const TEXT_CANNOT_MAKE: &str =
+    "지금은 지원 코드를 만들 수 없습니다. 잠시 뒤 다시 시도해 주세요.";
 /// Trading a code: hbbs or the ticket key is not there (E7).
-pub const TEXT_UNAVAILABLE: &str = "지금은 지원 코드를 확인할 수 없습니다. 잠시 뒤 다시 해 주세요.";
+pub const TEXT_UNAVAILABLE: &str =
+    "지금은 지원 코드를 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.";
 /// Trading a code: hbbs holds another key for the PC (E8).
 pub const TEXT_WRONG_PC: &str =
     "이 PC의 키가 서버에 있는 것과 달라 지원 코드로 연결받을 수 없습니다. 관리자에게 알려 주세요.";
 const TEXT_BAD_REQUEST: &str = "요청을 이해하지 못했습니다.";
 
 /// The eight symbols a person typed, as a short link's code is read but for the URL's `%`
-/// escapes; `None` for what is not eight symbols then.
+/// escapes: at most 64 bytes, ASCII, case, `-` and U+0020 skipped, `O` as `0`, `I` and `L` as
+/// `1`; `None` for anything else, or what is not eight symbols then. The app's own check of the
+/// form (docs/access-tickets.md 3-7) is this function, ported as it is.
 pub fn read(typed: &str) -> Option<String> {
     if typed.contains('%') {
         return None;
@@ -105,12 +115,14 @@ fn new_code() -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CodeKey([u8; 32]);
 
-/// The account that made a code.
+/// The account, and its account key, that made a code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Maker {
     pub account_id: i64,
     /// its tag (log.rs `Tagger::account`)
     pub account_tag: String,
+    /// the account key the request to make it was signed with: the code ends with it
+    pub ckid: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -119,17 +131,21 @@ struct Entry {
     use_: Use,
     expires: i64,
     used: Option<i64>,
+    /// when it was found that its maker's key had ended ([`SupportCodes::end_keys`])
+    revoked: Option<i64>,
 }
 
 impl Entry {
     fn open(&self, at: i64) -> bool {
-        self.used.is_none() && at < self.expires
+        self.used.is_none() && self.revoked.is_none() && at < self.expires
     }
 
-    /// When it was used, or else when its time is over.
+    /// When it was used or ended, or else when its time is over.
     fn ended(&self) -> i64 {
-        self.used
-            .map_or(self.expires, |used| used.min(self.expires))
+        [self.used, self.revoked]
+            .into_iter()
+            .flatten()
+            .fold(self.expires, i64::min)
     }
 
     fn kept(&self, at: i64) -> bool {
@@ -154,6 +170,8 @@ pub enum CodeState {
     Open,
     Expired,
     Used,
+    /// its maker's account key ended
+    Revoked,
 }
 
 /// Why no code was made.
@@ -170,6 +188,7 @@ pub enum Refused {
 pub enum Taken {
     Taken,
     Used,
+    Revoked,
     Expired,
     Gone,
 }
@@ -240,6 +259,7 @@ impl SupportCodes {
                     use_,
                     expires: at.saturating_add(CODE_SECS),
                     used: None,
+                    revoked: None,
                 });
                 return Ok(code);
             }
@@ -258,10 +278,11 @@ impl SupportCodes {
             Some(e) if e.use_ == use_ => Looked::Found {
                 key,
                 maker: e.maker.clone(),
-                state: match (e.used, e.open(at)) {
-                    (Some(_), _) => CodeState::Used,
-                    (None, true) => CodeState::Open,
-                    (None, false) => CodeState::Expired,
+                state: match (e.used, e.revoked, e.open(at)) {
+                    (Some(_), _, _) => CodeState::Used,
+                    (None, Some(_), _) => CodeState::Revoked,
+                    (None, None, true) => CodeState::Open,
+                    (None, None, false) => CodeState::Expired,
                 },
             },
             _ => Looked::Wrong,
@@ -275,6 +296,7 @@ impl SupportCodes {
         match codes.get_mut(&key) {
             None => Taken::Gone,
             Some(e) if e.used.is_some() => Taken::Used,
+            Some(e) if e.revoked.is_some() => Taken::Revoked,
             Some(e) if !e.open(at) => Taken::Expired,
             Some(e) => {
                 e.used = Some(at);
@@ -290,6 +312,32 @@ impl SupportCodes {
         }
     }
 
+    /// The account keys that made the account `account_id`'s codes open at `at`, each once.
+    pub fn open_keys(&self, account_id: i64, at: i64) -> Vec<i64> {
+        let mut ckids: Vec<i64> = self
+            .codes()
+            .values()
+            .filter(|e| e.maker.account_id == account_id && e.open(at))
+            .map(|e| e.maker.ckid)
+            .collect();
+        ckids.sort_unstable();
+        ckids.dedup();
+        ckids
+    }
+
+    /// Ends at `at` the open codes of the account `account_id` made with the account keys
+    /// `ckids`, which have ended: for good, as a used code; how many it ended.
+    pub fn end_keys(&self, account_id: i64, ckids: &[i64], at: i64) -> usize {
+        let mut ended = 0;
+        for e in self.codes().values_mut() {
+            if e.maker.account_id == account_id && ckids.contains(&e.maker.ckid) && e.open(at) {
+                e.revoked = Some(at);
+                ended += 1;
+            }
+        }
+        ended
+    }
+
     /// The codes open at `at`, and those held (open or ended).
     pub fn counts(&self, at: i64) -> (usize, usize) {
         let codes = self.codes();
@@ -303,8 +351,8 @@ impl SupportCodes {
     pub fn age_by(&self, secs: i64) {
         for e in self.codes().values_mut() {
             e.expires -= secs;
-            if let Some(used) = &mut e.used {
-                *used -= secs;
+            for when in [&mut e.used, &mut e.revoked].into_iter().flatten() {
+                *when -= secs;
             }
         }
     }
@@ -385,9 +433,11 @@ pub async fn handle(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
             "unavailable",
         );
     }
+    end_ended_keys(state, s.account.id, own.ckid).await;
     let maker = Maker {
         account_id: s.account.id,
         account_tag: tag.clone(),
+        ckid: own.ckid,
     };
     match state.support.make(maker, use_, now()) {
         Ok(code) => {
@@ -415,6 +465,51 @@ pub async fn handle(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
             }
             refusal(StatusCode::SERVICE_UNAVAILABLE, TEXT_CANNOT_MAKE, "busy")
         }
+    }
+}
+
+/// Before the account `account_id` makes a code with its key `own`: ends its open codes whose
+/// account keys have ended since (a logout, a revoke), so that they hold no place of the
+/// [`OPEN_PER_ACCOUNT`]. A trade would refuse them anyway (guest.rs `find_code`); on a database
+/// error they stay until then.
+async fn end_ended_keys(state: &Arc<AppState>, account_id: i64, own: i64) {
+    let at = now();
+    let others: Vec<i64> = state
+        .support
+        .open_keys(account_id, at)
+        .into_iter()
+        .filter(|ckid| *ckid != own)
+        .collect();
+    if others.is_empty() {
+        return;
+    }
+    let looked = others.clone();
+    let active = state
+        .db
+        .call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT EXISTS (SELECT 1 FROM ctl_keys
+                                WHERE ckid = ?1 AND account_id = ?2 AND revoked_at IS NULL)",
+            )?;
+            looked
+                .iter()
+                .map(|ckid| stmt.query_row([*ckid, account_id], |r| r.get::<_, bool>(0)))
+                .collect::<rusqlite::Result<Vec<bool>>>()
+        })
+        .await;
+    match active {
+        Ok(active) => {
+            let ended: Vec<i64> = others
+                .iter()
+                .zip(active)
+                .filter(|(_, active)| !active)
+                .map(|(ckid, _)| *ckid)
+                .collect();
+            if !ended.is_empty() {
+                state.support.end_keys(account_id, &ended, at);
+            }
+        }
+        Err(e) => log_err!("support code: {e}"),
     }
 }
 
@@ -469,6 +564,7 @@ mod tests {
         Maker {
             account_id: id,
             account_tag: format!("{id:016x}"),
+            ckid: 100 + id,
         }
     }
 
@@ -518,8 +614,12 @@ mod tests {
             "K7M2%2DQ9XD",
             "K7M2_Q9XD",
             "K7M2\tQ9XD",
+            "K7M2\u{a0}Q9XD",
+            "K7M2\u{3000}Q9XD",
             "K７M2Q9XD",
+            "Ｋ7M2Q9XD",
             &"0".repeat(65),
+            &format!("K7M2{}Q9XD", " ".repeat(57)),
         ] {
             assert_eq!(read(typed), None, "{typed:?}");
         }
@@ -578,6 +678,40 @@ mod tests {
             found_state(&codes, &other, AT + CODE_SECS + ENDED_KEPT_SECS),
             None
         );
+    }
+
+    #[test]
+    fn a_code_ends_with_its_makers_key() {
+        let codes = SupportCodes::default();
+        let one = codes.make(maker(1), Use::Pc, AT).unwrap();
+        let mut other_key = maker(1);
+        other_key.ckid = 7;
+        let two = codes.make(other_key, Use::Pc, AT).unwrap();
+        let used = codes.make(maker(1), Use::Pc, AT).unwrap();
+        let Looked::Found { key, .. } = codes.find(&used, Use::Pc, AT) else {
+            panic!("not found");
+        };
+        assert_eq!(codes.take(key, AT + 1), Taken::Taken);
+        let theirs = codes.make(maker(2), Use::Pc, AT).unwrap();
+        assert_eq!(codes.open_keys(1, AT + 2), vec![7, 101]);
+        // the key 101 ended: its open code ends, the used one stays used, the others stay open
+        assert_eq!(codes.end_keys(1, &[101], AT + 2), 1);
+        assert_eq!(codes.end_keys(1, &[101], AT + 3), 0);
+        assert_eq!(found_state(&codes, &one, AT + 3), Some(CodeState::Revoked));
+        assert_eq!(found_state(&codes, &used, AT + 3), Some(CodeState::Used));
+        assert_eq!(found_state(&codes, &two, AT + 3), Some(CodeState::Open));
+        assert_eq!(found_state(&codes, &theirs, AT + 3), Some(CodeState::Open));
+        assert_eq!(codes.open_keys(1, AT + 3), vec![7]);
+        let Looked::Found { key, .. } = codes.find(&one, Use::Pc, AT + 3) else {
+            panic!("not found");
+        };
+        assert_eq!(codes.take(key, AT + 3), Taken::Revoked);
+        // kept ten minutes after it ended, then gone
+        assert_eq!(
+            found_state(&codes, &one, AT + 2 + ENDED_KEPT_SECS - 1),
+            Some(CodeState::Revoked)
+        );
+        assert_eq!(found_state(&codes, &one, AT + 2 + ENDED_KEPT_SECS), None);
     }
 
     #[test]

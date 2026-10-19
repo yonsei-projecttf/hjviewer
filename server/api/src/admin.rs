@@ -1163,7 +1163,8 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
             // and the SSO calls of the IDs not on the allowlist that the ID or the address holds
             // (in memory)
             let forgotten = state.sso_calls_new.forget(&keys);
-            // and the access password's tries the address holds (guest.rs, in memory)
+            // and the tries of the access password and support codes the address holds (guest.rs,
+            // in memory)
             let guest = state.guest_calls.forget(&keys);
             let cleared = state
                 .db
@@ -1176,7 +1177,10 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
                 format!("cleared {cleared} counted login attempts")
             };
             if guest > 0 {
-                let _ = write!(out, ", and {guest} tries of the access password");
+                let _ = write!(
+                    out,
+                    ", and {guest} tries of the access password and support codes"
+                );
             }
             Ok(out)
         }

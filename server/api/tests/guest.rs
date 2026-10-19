@@ -453,7 +453,7 @@ async fn the_limits_come_before_the_hash() {
         "{unlocked}"
     );
     assert!(
-        unlocked.ends_with(", and 2 tries of the access password"),
+        unlocked.ends_with(", and 2 tries of the access password and support codes"),
         "{unlocked}"
     );
     let a = ask(&h, &ctl_body(&h, PASSWORD, TARGET, now()), "10.7.4.1").await;

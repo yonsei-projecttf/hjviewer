@@ -19,11 +19,14 @@
 //! `use`, and in `id` the PC the ticket reaches. The checks, in this order:
 //!
 //! 1. the body (400 `bad_request`, not counted) and the ticket key (503 `unavailable` without);
+//!    the very same body again within HJV_API_RETRY_WINDOW gets the first answer here, before
+//!    any limit, so that the app's resend of a try that issued a ticket (and used a code) gets
+//!    that ticket even when the address's failures fill up meanwhile; a first answer of step 2's
+//!    429 is not kept for it;
 //! 2. the address's failures (HJV_API_LIMIT_GUEST_IP; an IPv6 address by its /64): 429;
 //! 3. the seal and a PC's signature: 400 for a seal that is not the access password's for this
 //!    request, a used nonce or a signature that does not hold, 409 `clock` for a seal's time,
-//!    each counted as the address's failure; the very same body again within
-//!    HJV_API_RETRY_WINDOW gets the first answer;
+//!    each counted as the address's failure;
 //! 4. the address's tickets (HJV_API_LIMIT_GUEST_TICKETS) and the tries of all addresses
 //!    together (HJV_API_LIMIT_GUEST_ALL, in memory; one address holds a quarter of it): 429;
 //! 5. at most [`HASHES`] PBKDF2 at once (503 `busy`), on a blocking thread: hjv-api has one CPU
@@ -58,8 +61,9 @@
 //! of the password: `"code"` for `"password"` in a PC's request (with `use` `ctl`, or with both,
 //! 400 before anything counts), sealed with the purpose `"p":"code"`. The checks are the same, in
 //! the same order, with the code looked up in the place of steps 5 and 6 (no file, no PBKDF2):
-//! a code that is not there, over, used, or whose maker's account is blocked, deleted or off the
-//! allowlist gets the one 401 `denied` of support.rs, counted as the address's failure. The code
+//! a code that is not there, over, used, whose maker's account is blocked, deleted or off the
+//! allowlist, or whose maker's account key has ended (a logout, a revoke) gets the one 401
+//! `denied` of support.rs, counted as the address's failure. The code
 //! is used only with the ticket (step 8), so that of two requests with it only one gets one; the
 //! ticket lives support.rs `TICKET_SECS` (2 h). Its tries leave records `code`, with the maker's
 //! tag once the code was found, in the same counters and within the same budget of failure
@@ -123,6 +127,9 @@ const TEXT_FORBIDDEN: &str = "접근이 차단되었습니다";
 const TEXT_MEDIA_TYPE: &str = "JSON 요청만 받습니다";
 const TEXT_TOO_LARGE: &str = "요청이 너무 큽니다";
 const TEXT_SERVER: &str = "서버 오류입니다. 잠시 뒤 다시 시도해 주세요";
+/// The in-flight gate's 503, before the body says whether a password or a code comes (the app
+/// shows its own E3 or E7).
+const TEXT_BUSY: &str = "지금은 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.";
 
 /// The file, as read.
 pub struct Guest {
@@ -565,9 +572,11 @@ pub async fn handle(state: &Arc<AppState>, req: ApiRequest) -> Reply {
     let started = Instant::now();
     let Ok(permit) = state.guest_slots.clone().try_acquire_owned() else {
         if state.first_notice("guest-slots", Duration::from_secs(60)) {
-            log_warn!("guest: more than {IN_FLIGHT} tries of the access password at once, refused");
+            log_warn!(
+                "guest: more than {IN_FLIGHT} tries of the access password and support codes at once, refused"
+            );
         }
-        let reply = busy();
+        let reply = refusal(StatusCode::SERVICE_UNAVAILABLE, TEXT_BUSY, "busy");
         tokio::time::sleep_until((started + failure_delay(state)).into()).await;
         return reply;
     };
@@ -636,25 +645,65 @@ async fn attempt(state: &Arc<AppState>, req: ApiRequest) -> Reply {
             .note(&format!("{} refused off", kind.record()));
         return kind.unavailable();
     }
+    // the very same body again: the first answer, before any limit (a resend whose first try
+    // issued the ticket and used the code is not refused by failures that came since)
+    let body_hash = sha256(&body);
+    let body_key = format!("guest-body:{}", hex(&body_hash));
+    let tx = match state.request_retries.begin(&body_key, body_hash) {
+        Retry::Again(answer) => return wait_for(answer, unanswered).await,
+        // the key is the body's hash, so another body under it is SHA-256's collision
+        Retry::Reused => return bad_request(),
+        Retry::First(tx) => tx,
+    };
+    let (reply, keep) = steps(state, &req.ip, body_hash, asked, kind, &field).await;
+    if !keep {
+        // a 429 of the address's failures: a resend is looked at afresh
+        state.request_retries.forget(&body_key);
+    }
+    let _ = tx.send(Some(reply.clone()));
+    reply
+}
 
+/// Steps 2 to 8; whether the answer is kept for a resend of the same body (all but step 2's).
+async fn steps(
+    state: &Arc<AppState>,
+    ip: &str,
+    body_hash: [u8; 32],
+    asked: Asked,
+    kind: Kind,
+    field: &str,
+) -> (Reply, bool) {
     // 2. the address's failures
-    let mut run = Run::new(state, kind, &req.ip);
+    let mut run = Run::new(state, kind, ip);
     match run
         .reserve(SCOPE_GUEST_IP, state.config.limit_guest_ip.clone())
         .await
     {
         Ok(Some(id)) => run.failure = Some(id),
-        Ok(None) => return limited(&mut run, "limited-ip").await,
-        Err(()) => return unanswered(),
+        Ok(None) => return (limited(&mut run, "limited-ip").await, false),
+        Err(()) => return (unanswered(), false),
     }
+    (
+        seal_and_exchange(&mut run, body_hash, asked, field).await,
+        true,
+    )
+}
+
+/// Steps 3 to 8, once the address's failure is reserved.
+async fn seal_and_exchange(
+    run: &mut Run<'_>,
+    body_hash: [u8; 32],
+    asked: Asked,
+    field: &str,
+) -> Reply {
+    let (state, kind) = (run.state, run.kind);
 
     // 3. the seal, and a PC's signature
-    let opened = match open_seal(state, &asked, kind, &field) {
+    let opened = match open_seal(state, &asked, kind, field) {
         Ok(opened) => opened,
         Err(result @ "seal-time") => return run.fail(Outcome::Failed, result, clock()).await,
         Err(result) => return run.fail(Outcome::Failed, result, bad_request()).await,
     };
-    let body_hash = sha256(&body);
     match state
         .request_retries
         .begin(&format!("guest:{}", opened.nonce), body_hash)
@@ -677,7 +726,7 @@ async fn attempt(state: &Arc<AppState>, req: ApiRequest) -> Reply {
                 .call(move |c| db::use_nonce(c, &nonce_hash, at, expires))
                 .await;
             let reply = match fresh {
-                Ok(true) => exchange(&mut run, asked, opened).await,
+                Ok(true) => exchange(run, asked, opened).await,
                 Ok(false) => run.fail(Outcome::Failed, "seal-nonce", bad_request()).await,
                 Err(e) => {
                     log_err!("guest: {e}");
@@ -849,6 +898,7 @@ async fn exchange(run: &mut Run<'_>, asked: Asked, opened: Opened) -> Reply {
         let result = match state.support.take(key, now()) {
             Taken::Taken => None,
             Taken::Used => Some("used"),
+            Taken::Revoked => Some("revoked"),
             Taken::Expired => Some("expired"),
             Taken::Gone => Some("wrong"),
         };
@@ -923,9 +973,11 @@ async fn check_password(run: &mut Run<'_>, opened: Opened) -> Result<(), Reply> 
     }
 }
 
-/// Steps 5 and 6 for a support code: the code in memory (support.rs), open, and its maker's
-/// account still on the allowlist and not blocked; wrong, over, used and blocked get the one 401.
-/// The code is not used yet: that is step 8's.
+/// Steps 5 and 6 for a support code: the code in memory (support.rs), open, its maker's account
+/// still on the allowlist and not blocked, and the account key that made it not ended; wrong,
+/// over, used, blocked and revoked get the one 401. A code found blocked or revoked is ended for
+/// good (support.rs `end_keys`): an unblock does not open it again. The code is not used yet:
+/// that is step 8's.
 async fn find_code(
     run: &mut Run<'_>,
     typed: &Zeroizing<String>,
@@ -942,6 +994,7 @@ async fn find_code(
             CodeState::Open => (key, maker, None),
             CodeState::Expired => (key, maker, Some("expired")),
             CodeState::Used => (key, maker, Some("used")),
+            CodeState::Revoked => (key, maker, Some("revoked")),
         },
     };
     run.account_tag = Some(maker.account_tag.clone());
@@ -949,33 +1002,46 @@ async fn find_code(
         state.tickets.note(&format!("code refused {result}"));
         return Err(run.fail(Outcome::Failed, result, Kind::Code.denied()).await);
     }
-    // the maker's account: still there, the same account, on the allowlist and not blocked
-    let id = maker.account_id;
+    // the maker's account: still there, the same account, on the allowlist and not blocked; and
+    // the account key that made the code, not ended (a logout, a revoke, a block)
+    let (id, ckid) = (maker.account_id, maker.ckid);
     let found = state
         .db
         .call(move |c| match db::account(c, id)? {
             Some(account) => {
                 let allowed = db::allowed(c, &account.login_key)?;
-                Ok(Some((account.login_key, allowed)))
+                let key_active: bool = c.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM ctl_keys
+                                    WHERE ckid = ?1 AND account_id = ?2 AND revoked_at IS NULL)",
+                    [ckid, id],
+                    |r| r.get(0),
+                )?;
+                Ok(Some((account.login_key, allowed, key_active)))
             }
             None => Ok(None),
         })
         .await;
-    let holds = match found {
-        Ok(Some((login_key, allowed))) => {
-            allowed && state.tags.account(&login_key) == maker.account_tag
+    let refused = match found {
+        Ok(Some((login_key, allowed, key_active))) => {
+            if !allowed || state.tags.account(&login_key) != maker.account_tag {
+                Some("blocked")
+            } else if !key_active {
+                Some("revoked")
+            } else {
+                None
+            }
         }
-        Ok(None) => false,
+        Ok(None) => Some("blocked"),
         Err(e) => {
             log_err!("guest: {e}");
             return Err(run.fail(Outcome::Released, "error", unanswered()).await);
         }
     };
-    if !holds {
-        state.tickets.note("code refused blocked");
-        return Err(run
-            .fail(Outcome::Failed, "blocked", Kind::Code.denied())
-            .await);
+    if let Some(result) = refused {
+        // over for good: neither an unblock nor a new login of the account opens it again
+        state.support.end_keys(id, &[ckid], now());
+        state.tickets.note(&format!("code refused {result}"));
+        return Err(run.fail(Outcome::Failed, result, Kind::Code.denied()).await);
     }
     Ok(key)
 }

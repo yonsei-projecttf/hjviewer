@@ -279,6 +279,134 @@ async fn wrong_expired_used_and_blocked_get_the_same_answer() {
     assert_eq!(h.counted("guest-ip", h.state.tags.ip("10.8.1.1")).await, 0);
 }
 
+/// A code ends for good with its maker's login: blocked, it stays over once the block is lifted
+/// (the block ended the key that made it); `user revoke-all`, a logout and the account's own
+/// "로그아웃시키기" end it too, and an ended code holds no place of the five.
+#[tokio::test]
+async fn a_code_ends_with_its_makers_login() {
+    let h = Harness::start().await;
+    let pc = TestDevice::windows("300000091");
+    let expect_denied =
+        |a: &Answer| assert_eq!((a.status, &a.json), (401, &denied()), "{}", a.text);
+    // blocked, then unblocked within the code's ten minutes: still over
+    let kim = h.login_ok(KIM, None).await;
+    let code = made(&h, &kim).await;
+    let kim_tag = format!("tag:{}", h.account_tag(KIM.0));
+    h.admin(&["block", &kim_tag], false, None).await.unwrap();
+    expect_denied(&trade(&h, &code_body(&h, &code, &pc), "10.8.9.1").await);
+    h.admin(&["unblock", &kim_tag], false, None).await.unwrap();
+    expect_denied(&trade(&h, &code_body(&h, &code, &pc), "10.8.9.2").await);
+    // blocked and unblocked with no try between: over all the same
+    let kim = h.login_ok(KIM, None).await;
+    let code = made(&h, &kim).await;
+    h.admin(&["block", &kim_tag], false, None).await.unwrap();
+    h.admin(&["unblock", &kim_tag], false, None).await.unwrap();
+    expect_denied(&trade(&h, &code_body(&h, &code, &pc), "10.8.9.3").await);
+    // the operator's revoke-all of the account
+    let kim = h.login_ok(KIM, None).await;
+    let code = made(&h, &kim).await;
+    h.admin(&["user", "revoke-all", &kim_tag], false, None)
+        .await
+        .unwrap();
+    expect_denied(&trade(&h, &code_body(&h, &code, &pc), "10.8.9.4").await);
+    // the maker's logout
+    let hong = h.login_ok(HONG, None).await;
+    let code = made(&h, &hong).await;
+    let out = h.post("/api/logout", &hong, Some(json!({}))).await;
+    assert_eq!(out.status, 200, "{}", out.text);
+    expect_denied(&trade(&h, &code_body(&h, &code, &pc), "10.8.9.5").await);
+    // logged out by the account's other device; the codes of that device's key end, not those of
+    // the device that is still logged in
+    let phone = h.login_ok(HONG, None).await;
+    let other = h.login_ok(HONG, None).await;
+    let theirs = made(&h, &other).await;
+    let mine = made(&h, &phone).await;
+    let pk = devsig::public_key(&h.key_of(&other).unwrap()).to_vec();
+    let other_key = h
+        .state
+        .db
+        .call(move |c| {
+            c.query_row("SELECT ckid FROM ctl_keys WHERE pk = ?1", [pk], |r| {
+                r.get::<_, i64>(0)
+            })
+        })
+        .await
+        .unwrap();
+    let a = h
+        .delete(&format!("/api/hjv/keys/{other_key}"), &phone)
+        .await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    expect_denied(&trade(&h, &code_body(&h, &theirs, &pc), "10.8.9.6").await);
+    let a = trade(&h, &code_body(&h, &mine, &pc), "10.8.9.7").await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    // five codes, a logout, a new login: the five ended hold no place
+    let first = h.login_ok(HONG, None).await;
+    for _ in 0..support::OPEN_PER_ACCOUNT {
+        made(&h, &first).await;
+    }
+    assert_eq!(make(&h, &first, json!({"use": "pc"})).await.status, 429);
+    h.post("/api/logout", &first, Some(json!({}))).await;
+    let again = h.login_ok(HONG, None).await;
+    made(&h, &again).await;
+    let results: Vec<String> = code_records(&h)
+        .await
+        .into_iter()
+        .map(|(r, _, _)| r)
+        .filter(|r| r != "made")
+        .collect();
+    assert_eq!(
+        results,
+        ["blocked", "revoked", "revoked", "revoked", "revoked", "revoked", "ok-pc"]
+    );
+}
+
+/// The app's resend of a trade's very body gets the first answer, the ticket, even when the
+/// address's failures filled up since (the code was used by the first); a resend of a body that
+/// the address's limit refused is looked at afresh.
+#[tokio::test]
+async fn a_resend_gets_the_first_answer_past_the_limit() {
+    let h = Harness::with(Options {
+        vars: vec![("HJV_API_LIMIT_GUEST_IP", "2/600".into())],
+        ..Default::default()
+    })
+    .await;
+    let token = h.login_ok(HONG, None).await;
+    let pc = TestDevice::windows("300000092");
+    let ip = "10.8.10.1";
+    let wrong = |h: &Harness| code_body(h, "ZZZZ-ZZZZ", &pc);
+    assert_eq!(trade(&h, &wrong(&h), ip).await.status, 401);
+    let body = code_body(&h, &made(&h, &token).await, &pc);
+    let first = trade(&h, &body, ip).await;
+    assert_eq!(first.status, 200, "{}", first.text);
+    assert_eq!(trade(&h, &wrong(&h), ip).await.status, 401);
+    // the limit is full now
+    assert_eq!(trade(&h, &wrong(&h), ip).await.status, 429);
+    let again = trade(&h, &body, ip).await;
+    assert_eq!(
+        (again.status, &again.json),
+        (200, &first.json),
+        "{}",
+        again.text
+    );
+    // a body refused by the limit, resent once the address is unlocked: looked at afresh
+    let later = code_body(&h, &made(&h, &token).await, &pc);
+    let refused = trade(&h, &later, ip).await;
+    assert_eq!(refused.status, 429, "{}", refused.text);
+    let tag = format!("tag:{}", h.state.tags.ip(ip));
+    h.admin(&["unlock", tag.as_str()], false, None)
+        .await
+        .unwrap();
+    let a = trade(&h, &later, ip).await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    let results: Vec<String> = code_records(&h)
+        .await
+        .into_iter()
+        .map(|(r, _, _)| r)
+        .filter(|r| r != "made")
+        .collect();
+    assert_eq!(results, ["wrong", "ok-pc", "wrong", "limited-ip", "ok-pc"]);
+}
+
 /// Of two PCs that trade one code at once, one gets the ticket and the other the 401 of a used
 /// code.
 #[tokio::test]
@@ -342,7 +470,7 @@ async fn the_access_passwords_limits() {
         .await
         .unwrap();
     assert!(
-        unlocked.ends_with(", and 2 tries of the access password"),
+        unlocked.ends_with(", and 2 tries of the access password and support codes"),
         "{unlocked}"
     );
     let a = trade(&h, &code_body(&h, &code, &pc), ip).await;

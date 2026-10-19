@@ -464,6 +464,13 @@ impl<A> RetryCache<A> {
         }
     }
 
+    /// Lets a request under `key` be looked at afresh: its answer is not kept for a retry (those
+    /// waiting already get it).
+    pub fn forget(&self, key: &str) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.map.remove(key);
+    }
+
     pub fn purge(&self) {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let window = self.window;

@@ -642,19 +642,26 @@ as before. No nginx change: the new path is under `/api/hjv/`, and the trade goe
   Review account gets 403 `no_code`, and an app without a login has no token. A call counts with
   the account key's other calls (30 a minute).
 - The code: eight symbols of Crockford's base32 from 40 bits of the operating system's random
-  source, shown `XXXX-XXXX` and read as a short link's code is (Updates, below: without regard to
-  case, `-` and spaces, `O` as `0`, `I` and `L` as `1`), but for the `%` escapes of a link's path,
-  which a typed code never has (`support::read`). It works once, within ten minutes, for the
-  PC that trades it first, and ends earlier when its account is blocked, deleted or off the
-  allowlist (looked at when it is traded). Nothing takes a code back: closing the app's window
-  leaves it working until its ten minutes are over.
+  source, shown `XXXX-XXXX` and read as a short link's code is (Updates, below), but for the `%`
+  escapes of a link's path, which a typed code never has (`support::read`): at most 64 bytes,
+  ASCII only, without regard to case, skipping `-` and the space U+0020 only, `O` as `0`, `I` and
+  `L` as `1`; a tab, another space, a full-width letter or `%` makes it a wrong code. The app's
+  own check of the form ports that function as it is. It works once, within ten minutes, for the
+  PC that trades it first, and ends for good, earlier, with the login that made it: when its
+  account is blocked, deleted or off the allowlist (`blocked`), or when the account key that
+  signed the request to make it ends (`revoked`: that device's logout, another device's 로그아웃
+  시키기, `admin revoke` or `user revoke-all`, a new login of the same device). An unblock or a new
+  login does not open it again, since a block ends the account's keys too. Both are looked at when
+  it is traded, and the codes of ended keys hold no place of the account's 5. Nothing else takes a
+  code back: closing the app's window leaves it working until its ten minutes are over.
 - Kept in memory only, never in the database, a file, the journal or a record: under an HMAC-SHA256
-  of the code with a key made at the start and held in memory only, with the account that made it,
-  its use and its times. A code that was used or whose ten minutes are over stays ten minutes more,
-  marked so, for the records to tell `used` and `expired` from `wrong`; the answer is the same. A
-  restart ends them all; the tickets traded stay until their `exp`. The answer that carries a new
-  code is held in memory as every signed request's that changes something, for the retry of that
-  very request within `HJV_API_RETRY_WINDOW`.
+  of the code with a key made at the start and held in memory only, with the account that made it
+  and its account key's ckid, its use and its times. A code that was used, ended or whose ten
+  minutes are over stays ten minutes more, marked so, for the records to tell `used`, `revoked`
+  and `expired` from `wrong`; the answer is the same. A restart ends them all; the tickets traded
+  stay until their `exp`. The answer that carries a new code is held in memory as every signed
+  request's that changes something, for the retry of that very request within
+  `HJV_API_RETRY_WINDOW`; a retry gets it as it was, `expires_in` 600 too.
 - Limits: an account holds at most 5 open codes (made, neither used nor over), past which it gets
   429 `too_many_codes` with `retry_after`; hjv-api holds 1000 in all, the ended ones going first,
   past which 503 `busy`. Trading one counts as a try of the access password does, in the same
@@ -665,13 +672,14 @@ as before. No nginx change: the new path is under `/api/hjv/`, and the trade goe
   with a chance of about 1.3 in a million.
 - The access password's file plays no part: codes work without `HJV_API_GUEST_FILE`, and with its
   file missing, refused or past its UNTIL. Without a ticket key both requests answer 503
-  `unavailable`. hjv-api does not look at hbbs's mode: with `MODE=off` or `count` the other PC
+  `unavailable`. hjv-api does not look at hbbs's mode: with `MODE=off` or `count` the PC
   registers without a ticket and shows no P1, so a code is not needed there, and the app says so
   in the code's window (docs/access-tickets.md 3-7).
 - Records `code`, kept `HJV_API_EVENT_DAYS` as every record: `made` for each code made, with the
   account's tag; for each try to trade one, its result (`ok-pc`, `wrong`, `expired`, `used`,
-  `blocked`, `wrong-pc`, `hbbs`, and the access password's `seal-…`, `pc-signature`, `limited-ip`,
-  `limited-tickets`, `limited-all`, `busy`, `error`), the address's tag and, once the code was
+  `blocked`, `revoked`, `wrong-pc`, `hbbs`, and the access password's `seal-…`, `pc-signature`,
+  `limited-ip`, `limited-tickets`, `limited-all`, `error`; never `busy`, since the 503 of 32 tries
+  in hand comes before the body is read and leaves no record), the address's tag and, once the code was
   found, the tag of the account that made it. Never the code, a tag of it, the address, an ID or
   the ticket; failures at most 20 a minute, together with the access password's. The journal gets
   the limits and the troubles as for the access password, and an account that holds its 5 open
@@ -1243,7 +1251,9 @@ sealed: {"v":1,"p":"guest","use":"ctl"|"pc","pw":"<password>","t":<time>,"n":"<n
   `pk` exactly the standard base64 of the 32-byte device key.
 - The seal is a login's (Login, above: the box, the kid, the time within
   `HJV_API_SEAL_MAX_SKEW`, a nonce used once, the same body again within `HJV_API_RETRY_WINDOW`
-  answered by the first answer) with the purpose `"p":"guest"`, the request's `use`, and in `id`
+  answered by the first answer; here before the address's limit is looked at, so that failures
+  that came since do not refuse the resend of a try that got its ticket, and a first answer of
+  that limit's 429 is not kept) with the purpose `"p":"guest"`, the request's `use`, and in `id`
   the PC the ticket reaches (`to` or `id`). A login refuses a seal with a purpose (400, record
   `seal-purpose`), and this path one without: neither seal stands in for the other.
 - A PC's `sig` is its device key's strict Ed25519 signature of the bytes above, the sealed bytes
@@ -1285,31 +1295,35 @@ sealed: {"v":1,"p":"code","use":"pc","pw":"<what was typed>","t":<time>,"n":"<no
   left. Refusals besides the 401 and 409 of every account path and 405 for another method: 403
   `{"error":"이 계정으로는 지원 코드를 만들 수 없습니다.","hjv":"no_code"}` for the App Review account;
   429 `rate_limited` past 30 calls a minute of the account key; 429
-  `{"error":"쓰지 않은 지원 코드가 너무 많습니다. 잠시 뒤 다시 해 주세요.","hjv":"too_many_codes","retry_after":<s>}`
+  `{"error":"아직 쓰지 않은 지원 코드가 많습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"too_many_codes","retry_after":<s>}`
   while the account holds its 5 open codes, `retry_after` the seconds until the first of them ends
   (at least 1); 503
-  `{"error":"지금은 지원 코드를 만들 수 없습니다. 잠시 뒤 다시 해 주세요.","hjv":"busy"}` while 1000
+  `{"error":"지금은 지원 코드를 만들 수 없습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"busy"}` while 1000
   open codes are held, and the same text with `unavailable` without a ticket key. The very same
-  request again within `HJV_API_RETRY_WINDOW` gets the first answer, its code too, as every signed
-  request that changes something.
+  request again within `HJV_API_RETRY_WINDOW` gets the first answer, its code and its
+  `expires_in` too, as every signed request that changes something.
 - Trading one: the access password's PC request (above) with `code` in the place of `password`.
   Both of them, or `code` with `use` `ctl`, get 400 `bad_request` before anything is counted or
   opened. The seal is the access password's with the purpose `"p":"code"`, which only `code`
   takes (another seal is 400, the address's failure; `password` takes only `"p":"guest"`). `pw` is
   what was typed, the spaces around it dropped (1 to 256 bytes), read as a short link's code.
 - The checks are the access password's in their order, with the code looked up where the hash is:
-  a code that is not there, not of the form, past its ten minutes, used, or whose account is
-  blocked, deleted or off the allowlist gets the one 401
+  a code that is not there, not of the form, past its ten minutes, used, whose account is
+  blocked, deleted or off the allowlist, or whose account key has ended gets the one 401
   `{"error":"지원 코드가 맞지 않거나, 10분이 지났거나, 이미 쓴 코드입니다.","hjv":"denied"}`, counted
   as the address's failure and sent after the failure delay as every refusal. The key hbbs holds
   comes after (403
   `{"error":"이 PC의 키가 서버에 있는 것과 달라 지원 코드로 연결받을 수 없습니다. 관리자에게 알려 주세요.","hjv":"wrong_pc"}`,
-  503 `{"error":"지금은 지원 코드를 확인할 수 없습니다. 잠시 뒤 다시 해 주세요.","hjv":"unavailable"}`,
+  503 `{"error":"지금은 지원 코드를 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"unavailable"}`,
   the same text without a ticket key), and the code is used only with the ticket: what ends
   before (a limit, the seal, `wrong_pc`, hbbs) leaves it as it was, and of two requests with one
   code at once, one gets the ticket and the other the 401 of a used code, at the lookup or, when
   both passed it, where the code is used (`used` in the records). No PBKDF2 runs for a code; the
-  503 `busy` of 32 tries in hand is the same.
+  503 `busy` of 32 tries in hand is the same, with one text for both
+  (`{"error":"지금은 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"busy"}`). The very same
+  body again within `HJV_API_RETRY_WINDOW` gets the first answer before any limit is looked at, so
+  the app's resend of a trade that issued the ticket gets that ticket even when the address's
+  failures filled up since; a first answer of the address's 429 is not kept for it.
 - The ticket: `guest`/`pc`, `sub` empty, the request's `id` and `pk`, `to` empty, `exp` two hours
   after `iat`; nothing in it names the staff member.
 

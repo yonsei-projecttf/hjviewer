@@ -158,7 +158,8 @@ password is, and the account service trades it for a ticket that lets that one P
 connections for 2 hours (the PC signs the request with its device key). The service keeps each
 code in its memory only, under a keyed hash rather than the code itself, with the account that
 made it, for 20 minutes at most (10 while it works, and 10 more to tell a late or a used code from
-a wrong one); a restart of the service ends them. It records each code made (a tag of the account
+a wrong one), and, as every account answer, the answer that showed it, for the app's retry; a
+restart of the service ends them. It records each code made (a tag of the account
 that made it, the time) and each try to use one (the result, the time, a tag of the client's IP
 address and, once the code was found, the tag of the account that made it), and counts the tries
 with the access password's for its limits; it never records the code, the address itself, the PC's
@@ -412,7 +413,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 **이용 비밀번호**(1.8.0부터). 로그인하지 않은 사람은 운영자가 알려 주는 이용 비밀번호를 넣을 수 있습니다. 앱은 로그인의 비밀번호처럼 서버의 키로 봉인해 보내고, 계정 서비스는 서버의 파일에 있는 해시로 확인한 뒤 PC 하나에 12시간 동안 닿는 출입증으로 바꿔 줍니다. 앱이 연결하려는 PC, 또는 비밀번호를 넣은 그 PC입니다(그 PC는 요청에 기기 키로 서명합니다). 앱은 비밀번호를 바로 버리고 출입증은 메모리에만 둡니다. 계정 서비스는 시도마다 결과, 시각, 접속한 IP 주소의 꼬리표를 기록하고, 한도를 위해 주소마다 시도와 출입증의 수를 셉니다. 비밀번호, 주소 자체, PC ID, 출입증은 남기지 않습니다.
 
-**지원 코드**(1.8.2부터). 로그인한 교직원은 이용 비밀번호를 알려 주는 대신, 로그인하지 않은 사람에게 줄 지원 코드를 앱에서 만들 수 있습니다. 8자이고, 10분 안에 한 번, PC에서만 쓰입니다. 그 PC에서 넣은 코드는 이용 비밀번호처럼 봉인해 보내고, 계정 서비스는 그 PC 하나가 2시간 동안 연결을 받는 출입증으로 바꿔 줍니다(그 PC는 요청에 기기 키로 서명합니다). 계정 서비스는 코드를 메모리에만, 코드 자체가 아니라 키를 쓴 해시로 만든 계정과 함께 최대 20분 둡니다(쓸 수 있는 10분, 그리고 늦게 넣거나 이미 쓴 코드를 틀린 코드와 가리기 위한 10분). 서비스를 다시 시작하면 사라집니다. 코드를 만들 때마다(만든 계정의 꼬리표, 시각), 코드를 쓰려는 시도마다(결과, 시각, 접속한 IP 주소의 꼬리표, 코드를 찾았으면 그 코드를 만든 계정의 꼬리표) 기록하고, 한도를 위해 시도를 이용 비밀번호의 시도와 함께 셉니다. 코드, 주소 자체, PC ID, 출입증은 남기지 않습니다. 코드를 만든 앱은 그 창에서만 코드를 보이고, PC는 보낸 뒤 바로 버리며 출입증은 메모리에만 둡니다.
+**지원 코드**(1.8.2부터). 로그인한 교직원은 이용 비밀번호를 알려 주는 대신, 로그인하지 않은 사람에게 줄 지원 코드를 앱에서 만들 수 있습니다. 8자이고, 10분 안에 한 번, PC에서만 쓰입니다. 그 PC에서 넣은 코드는 이용 비밀번호처럼 봉인해 보내고, 계정 서비스는 그 PC 하나가 2시간 동안 연결을 받는 출입증으로 바꿔 줍니다(그 PC는 요청에 기기 키로 서명합니다). 계정 서비스는 코드를 메모리에만, 코드 자체가 아니라 키를 쓴 해시로 만든 계정과 함께 최대 20분 둡니다(쓸 수 있는 10분, 그리고 늦게 넣거나 이미 쓴 코드를 틀린 코드와 가리기 위한 10분). 다른 계정 요청의 답처럼, 그 코드를 보여 준 답도 앱이 다시 보낼 때를 위해 메모리에 둡니다. 서비스를 다시 시작하면 사라집니다. 코드를 만들 때마다(만든 계정의 꼬리표, 시각), 코드를 쓰려는 시도마다(결과, 시각, 접속한 IP 주소의 꼬리표, 코드를 찾았으면 그 코드를 만든 계정의 꼬리표) 기록하고, 한도를 위해 시도를 이용 비밀번호의 시도와 함께 셉니다. 코드, 주소 자체, PC ID, 출입증은 남기지 않습니다. 코드를 만든 앱은 그 창에서만 코드를 보이고, PC는 보낸 뒤 바로 버리며 출입증은 메모리에만 둡니다.
 
 **계정 서비스가 보관하는 것**
 

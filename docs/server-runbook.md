@@ -1752,7 +1752,7 @@ hbbs: <min-controller 줄 그대로(MIN, FROM) | off>, 어제 거절 <n>줄
 
 ## 9. 교직원 전용 출입 제한 (1.8.0)
 
-1.8.0부터 서버는 연세대학교 교직원이 쓰는 서비스입니다. hjv-api가 출입증에 서명하고, hbbs가 연결 요청, 중계 요청, PC 등록에서 그것을 확인합니다. 로그인한 앱, 교직원 계정에 묶인 PC, 이용 비밀번호를 넣은 쪽, 심사 계정(데모 PC만)이 출입증을 받습니다. 형식과 판정은 [access-tickets.md](access-tickets.md)(계약), 동작은 [architecture.md](architecture.md) 9절, 사용자 안내는 [distribution.md](distribution.md)의 "1.8.0: 교직원 전용"에 있습니다. 7절의 hjv-api와 8절을 마친 B 경로 nginx 서버가 대상입니다.
+1.8.0부터 서버는 연세대학교 교직원이 쓰는 서비스입니다. hjv-api가 출입증에 서명하고, hbbs가 연결 요청, 중계 요청, PC 등록에서 그것을 확인합니다. 로그인한 앱, 교직원 계정에 묶인 PC, 이용 비밀번호를 넣은 쪽, 교직원이 만든 지원 코드를 넣은 PC(1.8.2부터, 2시간), 심사 계정(데모 PC만)이 출입증을 받습니다. 형식과 판정은 [access-tickets.md](access-tickets.md)(계약), 동작은 [architecture.md](architecture.md) 9절, 사용자 안내는 [distribution.md](distribution.md)의 "1.8.0: 교직원 전용"에 있습니다. 7절의 hjv-api와 8절을 마친 B 경로 nginx 서버가 대상입니다.
 
 | 위치 | 소유자·권한 | 내용 | 읽는 쪽 |
 |---|---|---|---|
@@ -1884,7 +1884,7 @@ curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/access"; e
    - `active`가 아니면 7-17의 2번처럼 오류 줄을 사용자에게만 보이고, 그 줄을 지운 뒤 다시 시작합니다.
    - `access password: closed: the file is not there or not used (the journal says why)`이면 `sudo journalctl --namespace=hjviewer -u hjviewer-api --since -5min -o cat | grep 'access password' | tail -2`의 `… is not used: <이유>`를 보고합니다(이유에 해시는 없음). 사용자가 파일을 다시 만듭니다.
 3. **바꾸기**: 1번의 블록에 새 파일을 넣습니다. 새 파일은 그때부터의 시도에 쓰이고, 이미 나간 출입증은 12시간 안에 끝납니다. 퍼진 비밀번호라서 바로 끊어야 하면 이어서 9-3을 `NB=now`로 합니다. 그때는 교직원과 묶인 PC의 출입증도 함께 끝나고, 몇 분 안에 저절로 새로 받습니다.
-4. **끄기**: `sudo rm /etc/hjviewer/guest.conf`. 다음 시도부터 아무도 이용 비밀번호로 들어오지 못합니다(이미 나간 출입증은 12시간 안에 끝남). `UNTIL`이 지나도 같습니다. 설정 줄은 두어도 됩니다.
+4. **끄기**: `sudo rm /etc/hjviewer/guest.conf`. 다음 시도부터 아무도 이용 비밀번호로 들어오지 못합니다(이미 나간 출입증은 12시간 안에 끝남). `UNTIL`이 지나도 같습니다. 설정 줄은 두어도 됩니다. 1.8.2의 지원 코드는 이 파일을 보지 않으므로 그대로 됩니다. 지원 코드만 끄는 설정은 없습니다(9-7의 '지원 코드가 잘못 쓰임').
 5. **보기**: 매일 보고에 `sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep -E '^(access password|support codes)'`의 다섯 줄(파일의 상태, 수명, 어제의 결과별 시도 수, 1.8.2부터 지원 코드의 열린 수와 메모리에 둔 수, 어제의 결과별 `code` 기록 수)을 넣습니다. 한 주소의 실패 한도에 걸린 경고(`guest: … hjv-api admin unlock tag:<꼬리표> lifts the address's`)가 잦으면 사용자에게 알립니다. 풀기는 사용자 승인 뒤 그 줄의 명령입니다.
 
 ### 9-5. `MODE=count`로 세어 보기 (선택)
@@ -1924,6 +1924,10 @@ timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && 
   ```
 - **hjv-api가 멈춤**: 교직원과 묶인 PC는 가진 출입증으로 끝날 때까지(24시간, 72시간) 연결합니다. 새 로그인과 이용 비밀번호는 안 됩니다. 하루를 넘길 것 같으면 사용자 승인 뒤 `MODE=off`로 둡니다.
 - **이용 비밀번호가 퍼짐**: 사용자가 새 `guest.conf`를 만들고 9-4의 3번(바꾸기와 `NB=now`)을 합니다.
+- **지원 코드가 잘못 쓰임**(1.8.2, 계약 3-7: 도난당한 기기, 남의 손에 간 코드): 사용자 승인 뒤 차례로 합니다.
+  1. 코드를 만든 계정을 사용자가 알려 준 대로 `sudo /opt/hjviewer/bin/hjv-api admin block tag:<꼬리표>`로 막습니다(꼬리표는 `code` 기록의 것이나 사용자가 알려 준 것). 그 계정의 열린 코드는 다시 열리지 않고, 나중에 `unblock`해도 그대로 끝나 있습니다. 기기 하나만이면 `admin key revoke <ckid>`로 그 기기의 계정 키를 끝내도 그 키로 만든 코드가 끝납니다.
+  2. 그 코드로 이미 받은 출입증(2시간)까지 바로 끊으려면 9-3을 `NB=now`로 합니다(교직원과 묶인 PC의 출입증도 끝나고 몇 분 안에 새로 받음).
+  3. 모든 열린 코드를 한꺼번에 끝내야 하면 hjv-api를 다시 시작합니다(`sudo systemctl restart hjviewer-api`: 코드는 메모리에만 있음). 새 코드를 아예 받지 않게 하려면 hjv-api를 멈추는 수밖에 없고, 그동안 새 로그인과 이용 비밀번호도 안 됩니다(위의 'hjv-api가 멈춤'). 지원 코드만 끄는 설정이 필요하면 사용자에게 알립니다(아직 없음).
 - **출입증 키 바꾸기**(잃었거나 도난당했을 때, 계약 6-4): hbbs가 새 키를 먼저 받고, hjv-api가 나중에 새 키로 서명합니다. 1~3번은 한 번에 이어서 합니다(1번 뒤 hjv-api가 다시 시작하면 새 자격 증명을 옛 번호로 읽어 hbbs가 모든 출입증을 거절함).
   1. 사용자가 7-4 (나)의 출입증 키 줄을 다음 번호(`--kid 2`)로 다시 실행해 자격 증명을 바꿉니다. 돌고 있는 hjv-api는 다시 시작할 때까지 옛 키로 서명합니다. 사용자가 새 첫 줄(`2:<base64>`)을 알려 줍니다.
   2. 운영 에이전트가 설정 파일의 `HJV_API_TICKET_PUBKEYS`를 `<옛 키>,<새 키>`로 바꾸고(hjv-api는 아직 다시 시작하지 않음), 9-3을 지금의 `MODE` 그대로 `NB=keep`으로 합니다. 저널이 `keys 1,2`여야 합니다.
@@ -1940,6 +1944,7 @@ timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && 
 hjv-api: ticket status 첫 줄 <그대로>, selfcheck ticket key 두 줄 <OK | FAIL 줄 그대로>
 hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
 이용 비밀번호: <access password: … 줄 그대로>, 어제 시도 <결과별 수>
+지원 코드(1.8.2): <support codes: … open … 줄 그대로>, 어제 code 기록 <결과별 수>
 거절(enforce): 어제 refused <n>줄, closed <n>줄, more <합>
 묶인 PC(9-6의 5단계): 1.8.0 <n>대, 그 아래 <n>대
 바꾼 것: <설치한 파일, 권한, 설정 파일 줄>
