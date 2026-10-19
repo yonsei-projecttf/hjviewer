@@ -942,14 +942,14 @@ with padding, base64url is §5 without padding, NUL is the byte 0x00, times are 
   user object of `POST /api/currentUser` carries the same `"hjv":{"support_code":true}`, which
   the login answer's user object does not.
 - A seal whose `t` is more than `HJV_API_SEAL_MAX_SKEW` (600 s) off the server's clock: 409
-  `{"error":"기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요.","hjv":"clock","server_time":<time>}`.
+  `{"error":"기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 시도해 주세요.","hjv":"clock","server_time":<time>}`.
   Other sealing errors: 400 with the failure text.
 - A portal ID outside HJViewer's ID rule (hbbs and the SSO, below), at once, before any SSO call
   and counted against the address only: 403
   `{"error":"연세대학교 교직원의 연세포탈 ID로만 로그인할 수 있습니다. 입력한 ID를 확인해 주세요."}`.
   The one exception is the App Review account's ID while its file names it (The App Review
   account, above).
-- While SSO calls are paused: 503 `{"error":"연세 인증 서버에 지금 연결할 수 없습니다. 잠시 뒤 다시 해 주세요."}`
+- While SSO calls are paused: 503 `{"error":"연세 인증 서버에 지금 연결할 수 없습니다. 잠시 뒤 다시 시도해 주세요."}`
   for every ID.
 - A person HJViewer denies once the SSO accepted the password (the SSO's user call refuses, names
   a pcode outside the ID rule, or a pcode or name whose value the contract refuses: hbbs and the

@@ -106,8 +106,8 @@ pub const EXPECTED_ERRORS: &[&str] = &[
 
 const TEXT_ONLINE: &str = "이미 켜져 있습니다.";
 const TEXT_NO_WOL_INFO: &str =
-    "이 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.";
-const TEXT_NO_RELAY: &str = "이 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.";
+    "그 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.";
+const TEXT_NO_RELAY: &str = "그 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.";
 const TEXT_RELAY_OFFLINE: &str = "중계기(NAS)가 연결되어 있지 않습니다.";
 const TEXT_TOO_OFTEN: &str = "잠시 뒤 다시 시도해 주세요.";
 const TEXT_UNAVAILABLE: &str = "지금은 켜기 요청을 보낼 수 없습니다. 잠시 뒤 다시 시도해 주세요.";

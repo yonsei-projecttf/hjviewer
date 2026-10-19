@@ -82,8 +82,8 @@ const TEXT_FORBIDDEN: &str = "접근이 차단되었습니다";
 const TEXT_TOO_LARGE: &str = "요청이 너무 큽니다";
 const TEXT_MEDIA_TYPE: &str = "JSON 요청만 받습니다";
 pub const TEXT_METHOD: &str = "허용되지 않는 요청입니다";
-const TEXT_INCOMPLETE: &str = "요청을 다 받지 못했습니다. 잠시 뒤 다시 시도해 주세요";
-const TEXT_SERVER: &str = "서버 오류입니다. 잠시 뒤 다시 시도해 주세요";
+const TEXT_INCOMPLETE: &str = "요청을 다 받지 못했습니다. 잠시 뒤 다시 시도해 주세요.";
+const TEXT_SERVER: &str = "서버 오류입니다. 잠시 뒤 다시 시도해 주세요.";
 const TEXT_NOT_FOUND: &str = "not found";
 /// The answer to an account request signed in time by a device whose clock is off (design v3 §4-2).
 pub const TEXT_CLOCK: &str =

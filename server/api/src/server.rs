@@ -214,7 +214,7 @@ async fn handle(
             log_err!("a request took longer than {} s", REQUEST_TIMEOUT.as_secs());
             Reply::error(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "HJViewer 서버를 지금 쓸 수 없습니다. 잠시 뒤 다시 시도해 주세요",
+                "HJViewer 서버를 지금 쓸 수 없습니다. 잠시 뒤 다시 시도해 주세요.",
             )
         }
     };

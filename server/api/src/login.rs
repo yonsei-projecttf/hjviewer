@@ -125,9 +125,10 @@ pub const FAILURE_TEXT: &str =
     "로그인할 수 없습니다. ID·비밀번호를 확인하고, 계속 안 되면 잠시 뒤 다시 하거나 관리자에게 문의하세요.";
 /// The answer to a seal whose time is more than ten minutes off (design v3 §4-1).
 pub const TEXT_SEAL_CLOCK: &str =
-    "기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요.";
+    "기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 시도해 주세요.";
 /// The answer of every login while SSO calls are paused (design v3 §1-1, §4-1).
-pub const TEXT_SSO_DOWN: &str = "연세 인증 서버에 지금 연결할 수 없습니다. 잠시 뒤 다시 해 주세요.";
+pub const TEXT_SSO_DOWN: &str =
+    "연세 인증 서버에 지금 연결할 수 없습니다. 잠시 뒤 다시 시도해 주세요.";
 /// The answer to the login of an account the operator blocked, once the SSO accepted its
 /// password (step 12).
 pub const TEXT_BLOCKED: &str =

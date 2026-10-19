@@ -117,16 +117,16 @@ const MAX_FILE: u64 = 4096;
 /// The one answer to a wrong password and to a closed file (docs/access-tickets.md 5-3, E1).
 pub const TEXT_DENIED: &str =
     "이용 비밀번호가 맞지 않거나, 지금은 서버가 이용 비밀번호를 받지 않습니다.";
-pub const TEXT_TOO_OFTEN: &str = "시도가 너무 많습니다. 잠시 뒤 다시 해 주세요.";
+pub const TEXT_TOO_OFTEN: &str = "시도가 너무 많습니다. 잠시 뒤 다시 시도해 주세요.";
 pub const TEXT_UNAVAILABLE: &str =
-    "지금은 이용 비밀번호를 확인할 수 없습니다. 잠시 뒤 다시 해 주세요.";
+    "지금은 이용 비밀번호를 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.";
 pub const TEXT_WRONG_PC: &str =
     "이 PC의 키가 서버에 있는 것과 달라 이용 비밀번호로 연결받을 수 없습니다. 관리자에게 알려 주세요.";
 const TEXT_BAD_REQUEST: &str = "요청을 이해하지 못했습니다.";
 const TEXT_FORBIDDEN: &str = "접근이 차단되었습니다";
 const TEXT_MEDIA_TYPE: &str = "JSON 요청만 받습니다";
 const TEXT_TOO_LARGE: &str = "요청이 너무 큽니다";
-const TEXT_SERVER: &str = "서버 오류입니다. 잠시 뒤 다시 시도해 주세요";
+const TEXT_SERVER: &str = "서버 오류입니다. 잠시 뒤 다시 시도해 주세요.";
 /// The in-flight gate's 503, before the body says whether a password or a code comes (the app
 /// shows its own E3 or E7).
 const TEXT_BUSY: &str = "지금은 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.";

@@ -183,7 +183,7 @@ async fn a_pc_is_woken_through_its_relay() {
         (a.status, a.json.clone()),
         (
             409,
-            json!({"error": "이 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.", "hjv": "no_relay",
+            json!({"error": "그 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.", "hjv": "no_relay",
                    "reason": "no_relays", "any_relay": false})
         )
     );
@@ -1097,7 +1097,7 @@ async fn the_device_list_and_readiness() {
     let a = wake_pc(&h, &other.id, &phone, None).await;
     assert_eq!(
         a.json,
-        json!({"error": "이 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.", "hjv": "no_wol_info"})
+        json!({"error": "그 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.", "hjv": "no_wol_info"})
     );
 }
 
