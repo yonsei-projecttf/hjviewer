@@ -648,9 +648,17 @@ async fn the_device_list_follows_the_pcs() {
     };
     let state = |s: &str, note: &str| (s.to_owned(), note.to_owned());
     // until its first sync the PC has not confirmed its binding
-    assert_eq!(card().await, state("listed", "이 PC에서 로그인 필요"));
+    assert_eq!(card().await, state("listed", "PC에서 로그인 필요"));
+    let synced = || {
+        let h = &h;
+        let phone = phone.clone();
+        async move { h.get("/api/peers", &phone).await.json["data"][0]["hjv"]["synced"].clone() }
+    };
+    assert_eq!(synced().await, Value::Null);
     h.sync(&pc, &payload(&binding)).await.list();
-    assert_eq!(card().await, state("active", "비밀번호 없이 연결"));
+    assert_eq!(card().await, state("active", "비밀번호 없는 연결 켜짐"));
+    // U27: the last sync, for the app's own words
+    assert!((now() - synced().await.as_i64().unwrap()).abs() <= 2);
     // switched off on the PC
     let mut off = payload(&binding);
     off["off"] = json!(true);
@@ -664,22 +672,22 @@ async fn the_device_list_follows_the_pcs() {
         "UPDATE devices SET last_sync_at = last_sync_at - 3 * 86400 - 10",
     )
     .await;
-    assert_eq!(card().await, state("expired", "마지막 확인 3일 전"));
+    assert_eq!(
+        card().await,
+        state("expired", "서버와 동기화 안 됨(마지막 확인 3일 전)")
+    );
     h.sync(&pc, &payload(&binding)).await;
     // the administrator's switch
     h.admin(&["passwordless", "off", "--owner-of", &pc.id], false, None)
         .await
         .unwrap();
-    assert_eq!(
-        card().await,
-        state("disabled", "비밀번호 없는 연결 일시 중지(관리자)")
-    );
+    assert_eq!(card().await, state("disabled", "관리자가 일시 중지함"));
     h.admin(&["passwordless", "on", "--owner-of", &pc.id], false, None)
         .await
         .unwrap();
     // it let its binding go (a logout on it that did not reach the server)
     h.sync(&pc, &payload("")).await;
-    assert_eq!(card().await, state("listed", "이 PC에서 로그인 필요"));
+    assert_eq!(card().await, state("listed", "PC에서 로그인 필요"));
     h.sync(&pc, &payload(&binding)).await;
     assert_eq!(card().await.0, "active");
     // this-device: the PC's own login sees its binding; another device none
@@ -972,7 +980,7 @@ async fn a_changed_key_is_asked_of_hbbs() {
         (&p["hjv"]["pwless"], &p["note"]),
         (
             &json!("needs-relogin"),
-            &json!("이 PC에서 다시 로그인 필요")
+            &json!("PC에서 다시 로그인 필요(보안 키 바뀜)")
         )
     );
     assert!(h.results().await.contains(&"device:key-changed".to_owned()));

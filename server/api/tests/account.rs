@@ -91,11 +91,12 @@ async fn an_installed_windows_pc_is_added_and_listed_on_other_devices() {
         json!({"total": 1, "data": [{
             "id": "123456789", "user_name": "ZZTEST01",
             "info": {"device_name": "PC-123456789", "os": "windows"}, "status": 1,
-            "note": "비밀번호 없는 연결 일시 중지(관리자)",
-            // no NAS relay in the account: nothing could wake it (wake.rs peer_wol)
+            "note": "관리자가 일시 중지함",
+            // no NAS relay in the account: nothing could wake it (wake.rs peer_wol), so no
+            // `wake` words; never synced, no `synced` (U27)
             "hjv": {
                 "pk": hjv_api::util::b64(&pc.public_key()), "pwless": "disabled",
-                "kinds": ["remote", "file", "camera"], "wol": "no",
+                "kinds": ["remote", "file", "camera"], "wol": "no", "wake": "",
             },
         }]})
     );

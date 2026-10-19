@@ -802,13 +802,14 @@ async fn the_device_list_carries_the_password_less_state() {
     let peer = |a: &Answer| a.json["data"][0].clone();
     // off when installed: paused by the administrator
     let p = peer(&h.get("/api/peers", &phone).await);
-    assert_eq!(p["note"], "비밀번호 없는 연결 일시 중지(관리자)");
+    assert_eq!(p["note"], "관리자가 일시 중지함");
     assert_eq!(
         p["hjv"],
         json!({
             "pk": b64(&pc.public_key()), "pwless": "disabled",
-            // no NAS relay in the account: nothing could wake it (tests/wake.rs has the rest)
-            "kinds": ["remote", "file"], "wol": "no",
+            // no NAS relay in the account: nothing could wake it (tests/wake.rs has the rest),
+            // and no `synced` before the PC's first sync (U27)
+            "kinds": ["remote", "file"], "wol": "no", "wake": "",
         })
     );
     // switched on for the owner of the PC: listed until the PC confirms through its sync
@@ -818,7 +819,7 @@ async fn the_device_list_carries_the_password_less_state() {
     let p = peer(&h.get("/api/peers", &phone).await);
     assert_eq!(p["hjv"]["pwless"], "listed");
     assert_eq!(p["note"], pwless_note("listed"));
-    assert_eq!(p["note"], "이 PC에서 로그인 필요");
+    assert_eq!(p["note"], "PC에서 로그인 필요");
     // what the app's card shows stays as it was
     assert_eq!(p["info"]["device_name"], "PC-123456789");
 }

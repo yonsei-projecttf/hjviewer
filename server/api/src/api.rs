@@ -9,7 +9,7 @@
 //! | `POST /api/currentUser` | the user object itself, with `"hjv":{"support_code":true}` for an account that may make support codes (support.rs `may_make`); 401 only for a token that is not valid, never 400 (the app logs out on both) |
 //! | `POST /api/logout` | revokes the token and its key; signed by the key, also takes the PC the login came from out of the list |
 //! | `GET /api/users` | `{"total":1,"data":[<user>]}` |
-//! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol"}}]}`: the account's PCs but the asking device, each with its password-less state (pcsync.rs) and whether it can be woken (wake.rs `peer_wol`) |
+//! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol","wake","synced"}}]}`: the account's PCs but the asking device, each with its password-less state (pcsync.rs), whether it can be woken (wake.rs `peer_wol`) and, from 1.9.0, `wake` and its last sync for the app's own words (U27) |
 //! | `GET /api/hjv/this-device` | what the token's login did with its device, whether it can be undone, and for a PC in the account its `binding`, `pwless` and `activation` |
 //! | `POST /api/hjv/this-device/undo` | takes that device out of the list again |
 //! | `DELETE /api/hjv/devices/{id}` | takes a device out of the list ("내 PC에서 빼기") |
@@ -620,22 +620,35 @@ async fn users(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     }
 }
 
-/// The second line of a PC's card (design v3 §5-2): `note` of a password-less state; `expired`
-/// has [`expired_note`].
+/// The second line of a PC's card (design v3 §5-2, in the words of 1.9.0's apps, UX-W1's U27 and
+/// docs/access-tickets.md 3-8): `note` of a password-less state; `expired` of a PC that synced
+/// once has [`expired_note`]. Apps from 1.9.0 make the line themselves from `hjv` (`pwless`,
+/// `synced`, `wake`) in their own language; the note stays for older apps.
 pub fn pwless_note(state: &str) -> &'static str {
     match state {
-        "active" => "비밀번호 없이 연결",
-        "listed" => "이 PC에서 로그인 필요",
+        "active" => "비밀번호 없는 연결 켜짐",
+        "listed" => "PC에서 로그인 필요",
         "off" => "PC에서 꺼 둠",
-        "disabled" => "비밀번호 없는 연결 일시 중지(관리자)",
-        "needs-relogin" => "이 PC에서 다시 로그인 필요",
+        "disabled" => "관리자가 일시 중지함",
+        "expired" => "서버와 동기화 안 됨",
+        "needs-relogin" => "PC에서 다시 로그인 필요(보안 키 바뀜)",
         _ => "",
     }
 }
 
-/// The note of `expired`: when the PC last synced, "마지막 확인 3일 전".
+/// The note of `expired`: when the PC last synced, "서버와 동기화 안 됨(마지막 확인 3일 전)".
 pub fn expired_note(secs_ago: i64) -> String {
-    format!("마지막 확인 {}", pcsync::ago(secs_ago))
+    format!("서버와 동기화 안 됨(마지막 확인 {})", pcsync::ago(secs_ago))
+}
+
+/// `hjv.wake` of a PC (U27): what the note's tail from wake.rs `peer_wol` says, `ready`
+/// (" · 켜기 가능"), `not_ready` (" · 켜기 준비 안 됨") or "" (nothing).
+fn wake_of(tail: &str) -> &'static str {
+    match tail {
+        "" => "",
+        " · 켜기 가능" => "ready",
+        _ => "not_ready",
+    }
 }
 
 /// The note of a PC's state at `at`.
@@ -650,7 +663,9 @@ fn note_of(pwless: &str, device: &Device, at: i64) -> String {
 /// v3 §5-2, pcsync.rs): `hjv.pk` is the key hbbs held when it was bound, which the app compares
 /// with the key of the PC it reaches (key continuity, §3-4); `wol` is whether it can be woken
 /// (`ok`, `warn`, `no`, `unknown`; wake.rs `peer_wol`), which also ends the note once the account
-/// has a relay (" · 켜기 가능", " · 켜기 준비 안 됨").
+/// has a relay (" · 켜기 가능", " · 켜기 준비 안 됨"). From 1.9.0 (U27) `synced` is the PC's last
+/// sync (Unix seconds, left out when it never synced) and `wake` that tail as `ready`,
+/// `not_ready` or "": an app that finds `wake` words the line itself.
 fn peer_json(
     device: &Device,
     portal_id: &str,
@@ -665,13 +680,22 @@ fn peer_json(
         "info": { "device_name": device.hostname, "os": device.os },
         "status": 1,
         "note": format!("{}{}", note_of(pwless, device, at), wol.1),
-        "hjv": {
-            "pk": b64(&device.public_key),
-            "pwless": pwless,
-            "kinds": kinds,
-            "wol": wol.0,
-        },
+        "hjv": hjv_of(device, pwless, kinds, wol),
     })
+}
+
+fn hjv_of(device: &Device, pwless: &str, kinds: &[String], wol: (&str, &str)) -> Value {
+    let mut hjv = json!({
+        "pk": b64(&device.public_key),
+        "pwless": pwless,
+        "kinds": kinds,
+        "wol": wol.0,
+        "wake": wake_of(wol.1),
+    });
+    if let Some(synced) = device.last_sync_at {
+        hjv["synced"] = json!(synced);
+    }
+    hjv
 }
 
 async fn peers(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
@@ -984,6 +1008,7 @@ mod tests {
             pwless_note("off"),
             pwless_note("disabled"),
             pwless_note("needs-relogin"),
+            pwless_note("expired"),
             &expired_note(3 * crate::util::DAY),
             &expired_note(90),
             status_text(BindStatus::Added),
@@ -995,6 +1020,17 @@ mod tests {
         ] {
             assert!(!text.to_lowercase().contains("disabled"));
         }
-        assert_eq!(expired_note(3 * crate::util::DAY + 5), "마지막 확인 3일 전");
+        assert_eq!(
+            expired_note(3 * crate::util::DAY + 5),
+            "서버와 동기화 안 됨(마지막 확인 3일 전)"
+        );
+        // U27: the note's tail as `hjv.wake`
+        for (tail, wake) in [
+            ("", ""),
+            (" · 켜기 가능", "ready"),
+            (" · 켜기 준비 안 됨", "not_ready"),
+        ] {
+            assert_eq!(wake_of(tail), wake);
+        }
     }
 }

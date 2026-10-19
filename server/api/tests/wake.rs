@@ -992,8 +992,10 @@ async fn the_device_list_and_readiness() {
     let p = peer().await;
     assert_eq!(
         (p["hjv"]["wol"].as_str(), p["note"].as_str()),
-        (Some("no"), Some("비밀번호 없는 연결 일시 중지(관리자)"))
+        (Some("no"), Some("관리자가 일시 중지함"))
     );
+    // U27: the note's tail as `wake`, for the app's own words
+    assert_eq!(p["hjv"]["wake"], "");
     let a = wol().await;
     assert_eq!(a.json["ready"], "ok");
     assert_eq!(a.json["relay"], Value::Null);
@@ -1003,11 +1005,9 @@ async fn the_device_list_and_readiness() {
     let p = peer().await;
     assert_eq!(
         (p["hjv"]["wol"].as_str(), p["note"].as_str()),
-        (
-            Some("ok"),
-            Some("비밀번호 없는 연결 일시 중지(관리자) · 켜기 가능")
-        )
+        (Some("ok"), Some("관리자가 일시 중지함 · 켜기 가능"))
     );
+    assert_eq!(p["hjv"]["wake"], "ready");
     let a = wol().await;
     assert_eq!(
         a.json,
@@ -1063,10 +1063,7 @@ async fn the_device_list_and_readiness() {
         let p = peer().await;
         assert_eq!(
             (p["hjv"]["wol"].as_str(), p["note"].as_str()),
-            (
-                Some("warn"),
-                Some("비밀번호 없는 연결 일시 중지(관리자) · 켜기 가능")
-            )
+            (Some("warn"), Some("관리자가 일시 중지함 · 켜기 가능"))
         );
     }
     // no wired card: it cannot be woken
@@ -1076,11 +1073,9 @@ async fn the_device_list_and_readiness() {
     let p = peer().await;
     assert_eq!(
         (p["hjv"]["wol"].as_str(), p["note"].as_str()),
-        (
-            Some("no"),
-            Some("비밀번호 없는 연결 일시 중지(관리자) · 켜기 준비 안 됨")
-        )
+        (Some("no"), Some("관리자가 일시 중지함 · 켜기 준비 안 됨"))
     );
+    assert_eq!(p["hjv"]["wake"], "not_ready");
     assert_eq!(wol().await.json["ready"], "no");
     // a PC that never reported: unknown
     let other = TestDevice::windows("524000008");
