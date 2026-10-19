@@ -15,7 +15,9 @@
 //! needs-relogin (for the PCs that do not sync; a sync does it at once: design v3 §4-6), and write
 //! a summary of the day's logins to the journal, with counts only. Every hour too: delete the
 //! copies of the database that a backup left when the service stopped in the middle of sending
-//! one (backup.rs). Every five seconds: move the wake jobs along (wake.rs `tick`); every hour also
+//! one (backup.rs). Every five seconds: drop the shown symbols of the support codes that are no
+//! longer open and tell the waiting room of those over (support.rs `SupportCodes::sweep`), and
+//! move the wake jobs along (wake.rs `tick`); every hour also
 //! delete the relays' pending entries past 24 hours, pre-approvals past 7 days, spent relay
 //! nonces, expired commands and wake jobs past six months.
 
@@ -49,6 +51,7 @@ pub async fn run(state: Arc<AppState>, shutdown: impl Future<Output = ()>) {
         tokio::select! {
             () = &mut shutdown => break,
             _ = wake.tick() => {
+                state.support.sweep(now());
                 crate::wake::tick(&state).await;
             }
             _ = purge.tick() => {

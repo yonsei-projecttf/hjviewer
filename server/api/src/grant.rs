@@ -18,7 +18,10 @@
 //!
 //! `pc_id` and `pc_pk` are the trade's (checked with the PC's signature), `ck` and `ctl_id` the
 //! account key that signed the request that made the code (`ctl_keys.pk`, `ctl_keys.ctl_id`),
-//! `iat` and `exp` the ticket's. The bytes are what is signed, so [`Statement`] fixes their
+//! `iat` the ticket's and `exp` the ticket's too, but at most [`MAX_LIFE`] after `iat` ([`exp_for`]):
+//! the apps refuse a longer grant (MAX_GRANT_LIFE), so a ticket made longer than support.rs
+//! `TICKET_SECS`'s two hours leaves the grant, and the staff mark, at two hours until the apps'
+//! bound and the vector file's `max_life` change in a new app release. The bytes are what is signed, so [`Statement`] fixes their
 //! order; the app checks the same bytes in its src/hjviewer_account/grant.rs, and both sides test
 //! against tests/data/support-grant-vectors.json.
 
@@ -28,6 +31,15 @@ use serde_json::{json, Value};
 
 /// The purpose string of a grant's signature (docs/architecture.md 5-2), never the trust list's.
 pub const CONTEXT: &[u8] = b"hjv-support-v1";
+/// The longest a grant may live, `exp − iat`: the apps refuse a longer one (their
+/// src/hjviewer_account/grant.rs MAX_GRANT_LIFE, the vector file's `max_life`).
+pub const MAX_LIFE: i64 = 7200;
+
+/// A grant's `exp` for a ticket of `iat` and `exp`: the ticket's, at most [`MAX_LIFE`] after
+/// `iat`.
+pub fn exp_for(iat: i64, ticket_exp: i64) -> i64 {
+    ticket_exp.min(iat.saturating_add(MAX_LIFE))
+}
 
 /// What a grant says, in the order of its bytes.
 #[derive(Serialize)]
@@ -80,11 +92,12 @@ pub fn message(grant: &[u8]) -> Vec<u8> {
     [CONTEXT, &[0u8], grant].concat()
 }
 
-/// The `staff` member of a support code's trade: the grant signed with `key`; `None` when its
-/// bytes could not be made (the trade then gives the ticket alone).
+/// The `staff` member of a support code's trade: the grant signed with `key` for its own purpose
+/// ([`CONTEXT`], trust.rs `ListKey::sign_with`); `None` when it could not be made (the trade then
+/// gives the ticket alone).
 pub fn staff(key: &ListKey, grant: &Grant<'_>) -> Option<Value> {
     let g = bytes(key.kid(), grant)?;
-    let s = key.sign_message(&message(&g));
+    let s = key.sign_with(CONTEXT, &g)?;
     Some(json!({ "kid": key.kid(), "g": b64(&g), "s": b64(&s) }))
 }
 
@@ -121,5 +134,17 @@ mod tests {
         assert_ne!(message(&g), trust::message(&g));
         assert!(message(&g).starts_with(b"hjv-support-v1\0"));
         assert_eq!(&message(&g)[15..], &g[..]);
+        assert!(crate::devsig::verify(
+            &key.public_key(),
+            &message(&g),
+            staff["s"].as_str().unwrap()
+        ));
+    }
+
+    #[test]
+    fn a_grant_lives_the_tickets_time_at_most_two_hours() {
+        assert_eq!(exp_for(10, 7210), 7210);
+        assert_eq!(exp_for(10, 3610), 3610);
+        assert_eq!(exp_for(10, 10 + 8 * 3600), 7210);
     }
 }

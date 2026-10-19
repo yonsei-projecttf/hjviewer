@@ -700,15 +700,18 @@ error log and goes in with the hjv-api that answers them, never after (docs/serv
 - The support link, the waiting room and the support grant (1.9.0, TV-W6, docs/access-tickets.md
   3-7; Formats, below). The answer that makes a code also has `link`, the path of its support link
   (`/api/hjv/s/<22>`), and `wait`, its waiting number: each 16 random bytes in base64url, apart
-  from each other and from the code, kept with the code (the link under an HMAC with the same key)
-  and ending with it. The link opens a page, in Korean then English, with the code and the policy's
+  from each other and from the code, kept with the code (the link under an HMAC with the same key,
+  the waiting number as it is) and ending with it. For the link's page the code itself is kept too,
+  while the code is open only (ten minutes at most): it is zeroized once the code is used, ended
+  or over, the last at the upkeep's next five-second round at the latest. The link opens a page, in Korean then English, with the code and the policy's
   Windows `latest` to run without installing, three downloads per code, while the code is open
   and its maker stands as for a trade; the staff member's app holds `GET
   /api/hjv/support-code/wait` up to 20 seconds to hear which PC used it, and only the account key
   that made a code sees it there. A PC's trade of a code also gets `staff`, the support grant:
   list key `HJV_API_LIST_KID` signs, with the purpose `hjv-support-v1`, which device made the code
   (its account key and device ID, no name: outsiders' PCs are shown "연세대 교직원(로그인 확인)"
-  only), for that PC and the ticket's two hours. The grant opens nothing; the PC's connection
+  only), for that PC and the ticket's two hours (its `exp` cut to `iat` + 7200 at most, the
+  apps' `MAX_GRANT_LIFE`: grant.rs `MAX_LIFE`). The grant opens nothing; the PC's connection
   window marks that device's connection with it. A link's download is an `update` record
   `support-windows` with the maker's tag; nothing records or logs a link, a waiting number, the
   waiting room, a grant or the PC's ID, and the PC's ID and key that the waiting room tells the
@@ -717,7 +720,10 @@ error log and goes in with the hjv-api that answers them, never after (docs/serv
 - The numbers (the ten minutes, the two hours, 5, 1000, the ten minutes more; from 1.9.0 the
   three downloads, the 20-second hold, two holds per key and 200 in all) are constants of
   `src/support.rs`, not settings. The two hours are the user's to change: two texts of the app say
-  them (docs/access-tickets.md 5-3, S2 and P3). So is the controller's side, which 1.9.0 refuses: a
+  them (docs/access-tickets.md 5-3, S2 and P3). The support grant stays at two hours at most
+  whatever the ticket's life: a longer ticket leaves the PC's staff mark at two hours unless the
+  apps' `MAX_GRANT_LIFE`, the vector file's `max_life` and grant.rs `MAX_LIFE` change with a new
+  app release (apps before it refuse a longer grant). So is the controller's side, which 1.9.0 refuses: a
   `code` with `use` `ctl` gets the 400 of a body not of the form, and the `use` of both requests is
   where it would go.
 
@@ -1925,7 +1931,9 @@ revoked relay keeps only its ID, key and times; a pending relay goes after 24 ho
 ahead after 7 days; wake jobs, the wake record, six months (`HJV_API_EVENT_DAYS`), and an account's
 go with it. No password, SSO token, e-mail, department, uuid or user name of a device is stored,
 and the journal gets tags and counts only. Short links live in memory, ten minutes, never in the
-database, and support codes too, as keyed hashes, twenty minutes at most (Support codes); no code
+database, and support codes too, looked up by keyed hashes, twenty minutes at most, with from
+1.9.0 their waiting numbers and, while a code is open (ten minutes at most), the code itself for
+its support link's page (Support codes); no code
 of a short link or of door 2 is stored or logged (the journal shows the first eight hex digits of
 its tag, keyed with the log key), no support code or tag of one is stored or logged, and the
 policy, the packages and door 2's file are the operator's files, which hjv-api only reads; so is

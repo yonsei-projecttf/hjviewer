@@ -821,18 +821,26 @@ async fn the_pcs_key_and_the_ticket_key() {
 /// PC's ID; nor (TV-W6) a support link, a waiting number, the waiting room's answer or a grant.
 #[tokio::test]
 async fn nothing_of_a_code_is_logged_or_recorded() {
-    let h = Harness::start().await;
+    // with a Windows package, so that one support-link download is journaled
+    let files = Files::new();
+    let h = Harness::with(Options {
+        vars: files.vars(),
+        ..Default::default()
+    })
+    .await;
     let token = h.login_ok(HONG, None).await;
     let (first, link, wait) = made_all(&h, &token).await;
     let codes = [first, made(&h, &token).await];
     // the link's page and file, and the waiting room
-    for path in [
-        link.clone(),
-        format!("{link}/"),
-        format!("{link}/HJViewer-1.9.0.exe"),
+    for (path, status) in [
+        (link.clone(), 307),
+        (format!("{link}/"), 200),
+        (format!("{link}/HJViewer-1.9.0.exe"), 200),
     ] {
-        h.request(Method::GET, &path, &[("x-real-ip", "10.8.8.2")], None)
+        let a = h
+            .request(Method::GET, &path, &[("x-real-ip", "10.8.8.2")], None)
             .await;
+        assert_eq!(a.status, status, "{path}");
     }
     let waited = h.get(&wait_path(None), &token).await;
     assert_eq!(waited.status, 200, "{}", waited.text);
@@ -848,9 +856,13 @@ async fn nothing_of_a_code_is_logged_or_recorded() {
         .to_owned();
     let grant = a.json["staff"].clone();
     let waited = h.get(&wait_path(None), &token).await;
-    assert_eq!(
-        waited.json["codes"][0]["pc"],
-        json!(pc.id),
+    // two codes made in the same second come in either order
+    assert!(
+        waited.json["codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["pc"] == json!(pc.id)),
         "{}",
         waited.text
     );
@@ -868,6 +880,11 @@ async fn nothing_of_a_code_is_logged_or_recorded() {
         make(&h, &token, json!({"use": "pc"})).await;
     }
     let lines = hjv_api::log::captured();
+    // the download's journal line is there, and is checked with the rest
+    assert!(
+        lines.iter().any(|l| l.contains("by a support link (acct=")),
+        "{lines:?}"
+    );
     let records: Vec<String> = h
         .state
         .db
@@ -964,10 +981,10 @@ fn the_grant_is_the_vectors_byte_for_byte() {
     assert_eq!(seed_of(&keys["list_1"]), LIST_SEED);
     assert_eq!(
         (v["context"].as_str().unwrap().as_bytes(), &v["max_life"]),
-        (grant::CONTEXT, &json!(support::TICKET_SECS))
+        (grant::CONTEXT, &json!(grant::MAX_LIFE))
     );
     let list = ListKey::new(1, &LIST_SEED);
-    let sign = |text: &str| b64(&list.sign_message(&grant::message(text.as_bytes())));
+    let sign = |text: &str| b64(&list.sign_with(grant::CONTEXT, text.as_bytes()).unwrap());
     let holds = |text: &str, s: &Value| {
         devsig::verify(
             &list.public_key(),
@@ -1659,6 +1676,32 @@ async fn the_waiting_room() {
 }
 
 /// The App Review account cannot wait for codes it cannot make.
+/// A held waiting-room request is answered when the service stops, not after its WAIT_SECS
+/// (server.rs `serve` calls `SupportCodes::stop`).
+#[tokio::test]
+async fn held_waits_do_not_keep_the_service_from_stopping() {
+    let h = Harness::start().await;
+    let token = h.login_ok(HONG, None).await;
+    let stop = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(h.state.support.held_waits(), 1);
+        h.stop();
+    };
+    let (started, path) = (Instant::now(), wait_path(Some(0)));
+    let (a, ()) = tokio::join!(h.get(&path, &token), stop);
+    assert_eq!(
+        (a.status, &a.json),
+        (200, &json!({"rev": 0, "codes": []})),
+        "{}",
+        a.text
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 #[tokio::test]
 async fn the_review_account_has_no_waiting_room() {
     const HASH: &str =

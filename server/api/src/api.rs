@@ -63,7 +63,7 @@ use crate::{
     state::AppState,
     support, ticket, update,
     util::{b64, hex, now, sha256, valid_device_id},
-    wake,
+    wake::{self, Wake},
 };
 use hyper::{
     body::Bytes,
@@ -641,16 +641,6 @@ pub fn expired_note(secs_ago: i64) -> String {
     format!("서버와 동기화 안 됨(마지막 확인 {})", pcsync::ago(secs_ago))
 }
 
-/// `hjv.wake` of a PC (U27): what the note's tail from wake.rs `peer_wol` says, `ready`
-/// (" · 켜기 가능"), `not_ready` (" · 켜기 준비 안 됨") or "" (nothing).
-fn wake_of(tail: &str) -> &'static str {
-    match tail {
-        "" => "",
-        " · 켜기 가능" => "ready",
-        _ => "not_ready",
-    }
-}
-
 /// The note of a PC's state at `at`.
 fn note_of(pwless: &str, device: &Device, at: i64) -> String {
     match (pwless, device.last_sync_at) {
@@ -662,35 +652,35 @@ fn note_of(pwless: &str, device: &Device, at: i64) -> String {
 /// A PC of the account as the app's PeerPayload reads it, with its password-less state (design
 /// v3 §5-2, pcsync.rs): `hjv.pk` is the key hbbs held when it was bound, which the app compares
 /// with the key of the PC it reaches (key continuity, §3-4); `wol` is whether it can be woken
-/// (`ok`, `warn`, `no`, `unknown`; wake.rs `peer_wol`), which also ends the note once the account
-/// has a relay (" · 켜기 가능", " · 켜기 준비 안 됨"). From 1.9.0 (U27) `synced` is the PC's last
-/// sync (Unix seconds, left out when it never synced) and `wake` that tail as `ready`,
-/// `not_ready` or "": an app that finds `wake` words the line itself.
+/// (`ok`, `warn`, `no`, `unknown`; wake.rs `peer_wol`), whose [`Wake`] also ends the note once
+/// the account has a relay (" · 켜기 가능", " · 켜기 준비 안 됨"). From 1.9.0 (U27) `synced` is the
+/// PC's last sync (Unix seconds, left out when it never synced) and `wake` the same [`Wake`] as
+/// `ready`, `not_ready` or "": an app that finds `wake` words the line itself.
 fn peer_json(
     device: &Device,
     portal_id: &str,
     pwless: &str,
     at: i64,
     kinds: &[String],
-    wol: (&str, &str),
+    wol: (&str, Wake),
 ) -> Value {
     json!({
         "id": device.device_id,
         "user_name": portal_id,
         "info": { "device_name": device.hostname, "os": device.os },
         "status": 1,
-        "note": format!("{}{}", note_of(pwless, device, at), wol.1),
+        "note": format!("{}{}", note_of(pwless, device, at), wol.1.tail()),
         "hjv": hjv_of(device, pwless, kinds, wol),
     })
 }
 
-fn hjv_of(device: &Device, pwless: &str, kinds: &[String], wol: (&str, &str)) -> Value {
+fn hjv_of(device: &Device, pwless: &str, kinds: &[String], wol: (&str, Wake)) -> Value {
     let mut hjv = json!({
         "pk": b64(&device.public_key),
         "pwless": pwless,
         "kinds": kinds,
         "wol": wol.0,
-        "wake": wake_of(wol.1),
+        "wake": wol.1.as_str(),
     });
     if let Some(synced) = device.last_sync_at {
         hjv["synced"] = json!(synced);
@@ -1024,13 +1014,5 @@ mod tests {
             expired_note(3 * crate::util::DAY + 5),
             "서버와 동기화 안 됨(마지막 확인 3일 전)"
         );
-        // U27: the note's tail as `hjv.wake`
-        for (tail, wake) in [
-            ("", ""),
-            (" · 켜기 가능", "ready"),
-            (" · 켜기 준비 안 됨", "not_ready"),
-        ] {
-            assert_eq!(wake_of(tail), wake);
-        }
     }
 }

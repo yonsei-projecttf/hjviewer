@@ -79,13 +79,18 @@ impl ListKey {
 
     /// The signature of a list's bytes.
     pub fn sign(&self, list: &[u8]) -> [u8; 64] {
-        self.sign_message(&message(list))
+        self.key.sign(&message(list)).to_bytes()
     }
 
-    /// The signature of bytes that begin with their own purpose string: a list's ([`message`])
-    /// or, from 1.9.0, a support grant's (grant.rs, `hjv-support-v1`).
-    pub fn sign_message(&self, signed: &[u8]) -> [u8; 64] {
-        self.key.sign(signed).to_bytes()
+    /// The signature of `context` NUL `bytes`, for a purpose other than the trust list's: from
+    /// 1.9.0 a support grant's (grant.rs, `hjv-support-v1`). `None` for the trust list's own
+    /// [`CONTEXT`], or a context that is empty or holds a NUL, so that nothing signed here is
+    /// ever taken for a list.
+    pub fn sign_with(&self, context: &[u8], bytes: &[u8]) -> Option<[u8; 64]> {
+        if context == CONTEXT || context.is_empty() || context.contains(&0) {
+            return None;
+        }
+        Some(self.key.sign(&[context, &[0u8], bytes].concat()).to_bytes())
     }
 }
 
@@ -297,5 +302,21 @@ mod tests {
             b64(&ListKey::new(1, &[1; 32]).sign(b"golden")),
             "HVaqNR32XoAL6O7jrfbYV2eI54M1J3Ou2/Vhka373a0x1AIGEjFHWE6u59vl6YVCO69a+Bi5rA0BNt4WktwsBQ=="
         );
+    }
+
+    /// Another purpose signs its own context, never the trust list's.
+    #[test]
+    fn another_purpose_never_signs_a_list() {
+        let key = ListKey::new(1, &[1; 32]);
+        assert_eq!(key.sign_with(CONTEXT, b"golden"), None);
+        assert_eq!(key.sign_with(b"", b"golden"), None);
+        assert_eq!(key.sign_with(b"hjv-trust-v1\0", b"golden"), None);
+        let other = key.sign_with(b"hjv-support-v1", b"golden").unwrap();
+        assert_ne!(other, key.sign(b"golden"));
+        assert!(crate::devsig::verify(
+            &key.public_key(),
+            b"hjv-support-v1\0golden",
+            &b64(&other)
+        ));
     }
 }

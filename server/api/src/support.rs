@@ -30,9 +30,11 @@
 //!   it.
 //! - Kept in memory only ([`SupportCodes`]): under an HMAC-SHA256 of the code with a key made at
 //!   the start, with the maker (account number and tag, the account key's ckid), its use and its
-//!   times, and from 1.9.0 its support link (by an HMAC too), the code itself for the link's page,
-//!   its waiting number, the downloads left and the PC that used it (ID, key, the ticket's `exp`);
-//!   never in the database, a file, the journal or a record. A code that was used, ended
+//!   times, and from 1.9.0 its support link (by an HMAC too), its waiting number as it is, the
+//!   downloads left, the PC that used it (ID, key, the ticket's `exp`) and, while the code is
+//!   open, the code itself for the link's page: it is dropped (zeroized) once the code is used,
+//!   ended or past its ten minutes, at the latest at the upkeep's next five-second round
+//!   (jobs.rs runs [`SupportCodes::sweep`]); never in the database, a file, the journal or a record. A code that was used, ended
 //!   or whose ten minutes are over stays [`ENDED_KEPT_SECS`] more, so that the records tell
 //!   `used`, `revoked` and `expired` from `wrong`. A restart ends them all. The answer that
 //!   carries a code is kept, as every signed request's that changes something, for its retry
@@ -58,8 +60,11 @@
 //! ```
 //!
 //! The numbers are constants, not settings; the user may change [`TICKET_SECS`], which two texts
-//! of the app say (docs/access-tickets.md 5-3, S2 and P3). The `use` of both requests is where a
-//! controller's code would go; 1.9.0 takes `pc` only.
+//! of the app say (docs/access-tickets.md 5-3, S2 and P3). The support grant lives the ticket's
+//! time but at most two hours (grant.rs `MAX_LIFE`, the apps' MAX_GRANT_LIFE): a longer ticket
+//! leaves the staff mark at two hours unless the apps' bound, the vector file's `max_life` and
+//! `MAX_LIFE` change with a new app release. The `use` of both requests is where a controller's
+//! code would go; 1.9.0 takes `pc` only.
 
 use crate::{
     api::{session, ApiRequest, Reply},
@@ -199,8 +204,10 @@ struct Entry {
     revoked: Option<i64>,
     /// TV-W6: its support link, by the HMAC of the link's value
     link: LinkKey,
-    /// the symbols, for the support link's page
-    symbols: Symbols,
+    /// the symbols, for the support link's page while the code is open: `None` (zeroized) once it
+    /// is used, ended or over ([`Held::sweep`], [`SupportCodes::mark_used`],
+    /// [`SupportCodes::end_keys`])
+    symbols: Option<Symbols>,
     /// the waiting number by which the maker's app knows the code in the waiting room
     wait: String,
     /// the package downloads its support link has left
@@ -364,13 +371,18 @@ impl Held {
     }
 
     /// Forgets the codes past [`ENDED_KEPT_SECS`], and marks those whose ten minutes are over:
-    /// the waiting room hears of both. Whether anything changed.
+    /// the waiting room hears of both. Drops the symbols of every code that is not open but for
+    /// one taken a moment ago whose ticket is not signed yet (it may be given back). Whether
+    /// anything changed.
     fn sweep(&mut self, at: i64) -> bool {
         let mut changed: Vec<i64> = Vec::new();
         self.codes.retain(|_, e| {
             if !e.kept(at) {
                 changed.push(e.maker.ckid);
                 return false;
+            }
+            if e.revoked.is_some() || e.used_by.is_some() || at >= e.expires {
+                e.symbols = None;
             }
             if e.used.is_none() && e.revoked.is_none() && at >= e.expires && !e.over_told {
                 e.over_told = true;
@@ -460,15 +472,33 @@ impl SupportCodes {
     pub fn make(&self, maker: Maker, use_: Use, at: i64) -> Result<Made, Refused> {
         let mut held = self.held();
         let swept = held.sweep(at);
-        let made = self.make_in(&mut held, maker, use_, at);
+        let mut evicted = false;
+        let made = self.make_in(&mut held, maker, use_, at, &mut evicted);
         drop(held);
-        if swept || made.is_ok() {
+        // the waiting room hears of ended codes that made room, a code refused `busy` or not
+        if swept || evicted || made.is_ok() {
             self.changed();
         }
         made
     }
 
-    fn make_in(&self, held: &mut Held, maker: Maker, use_: Use, at: i64) -> Result<Made, Refused> {
+    /// Runs the sweep at `at` (jobs.rs, every five seconds): an over code's symbols go, and the
+    /// waiting room hears of it, without waiting for the next request.
+    pub fn sweep(&self, at: i64) {
+        let swept = self.held().sweep(at);
+        if swept {
+            self.changed();
+        }
+    }
+
+    fn make_in(
+        &self,
+        held: &mut Held,
+        maker: Maker,
+        use_: Use,
+        at: i64,
+        evicted: &mut bool,
+    ) -> Result<Made, Refused> {
         let codes = &mut held.codes;
         let first_end = codes
             .values()
@@ -495,6 +525,7 @@ impl SupportCodes {
                     gone.push(e.maker.ckid);
                 }
             }
+            *evicted = !gone.is_empty();
             if codes.len() >= MAX_HELD {
                 for ckid in gone {
                     held.bump(ckid);
@@ -525,7 +556,7 @@ impl SupportCodes {
                     used: None,
                     revoked: None,
                     link: self.link_key(&link),
-                    symbols: Symbols(Zeroizing::new(code.clone())),
+                    symbols: Some(Symbols(Zeroizing::new(code.clone()))),
                     wait: wait.clone(),
                     downloads_left: LINK_DOWNLOADS,
                     used_by: None,
@@ -595,6 +626,7 @@ impl SupportCodes {
             return;
         }
         e.used_by = Some(by);
+        e.symbols = None;
         let ckid = e.maker.ckid;
         held.bump(ckid);
         drop(held);
@@ -623,6 +655,7 @@ impl SupportCodes {
         for e in held.codes.values_mut() {
             if e.maker.account_id == account_id && ckids.contains(&e.maker.ckid) && e.open(at) {
                 e.revoked = Some(at);
+                e.symbols = None;
                 ended.push(e.maker.ckid);
             }
         }
@@ -652,7 +685,7 @@ impl SupportCodes {
         Some(LinkFound {
             key: *code_key,
             maker: e.maker.clone(),
-            code: shown(&e.symbols.0),
+            code: shown(&e.symbols.as_ref()?.0),
             downloads_left: e.downloads_left,
         })
     }
@@ -1493,6 +1526,60 @@ mod tests {
         codes.give_back(key);
         assert!(codes.find_link(&other.link, AT + 3).is_some());
         assert!(codes.find_link(&other.link, AT + CODE_SECS).is_none());
+    }
+
+    /// The code itself is kept only while it is open: used (its ticket signed), ended or over,
+    /// its symbols are dropped; taken a moment ago and given back, they stay.
+    #[test]
+    fn the_code_itself_goes_once_it_is_not_open() {
+        let codes = SupportCodes::default();
+        let shown_of = |codes: &SupportCodes| -> usize {
+            codes
+                .held()
+                .codes
+                .values()
+                .filter(|e| e.symbols.is_some())
+                .count()
+        };
+        let used = codes.make(maker(1), Use::Pc, AT).unwrap();
+        let given_back = codes.make(maker(1), Use::Pc, AT).unwrap();
+        codes.make(maker(2), Use::Pc, AT).unwrap();
+        let later = codes.make(maker(3), Use::Pc, AT + 300).unwrap();
+        assert_eq!(shown_of(&codes), 4);
+        let key_of = |code: &str| match codes.find(code, Use::Pc, AT + 1) {
+            Looked::Found { key, .. } => key,
+            Looked::Wrong => panic!("not found"),
+        };
+        // taken and given back: still shown
+        let key = key_of(&given_back.code);
+        assert_eq!(codes.take(key, AT + 1), Taken::Taken);
+        codes.sweep(AT + 1);
+        codes.give_back(key);
+        assert_eq!(shown_of(&codes), 4);
+        assert!(codes.find_link(&given_back.link, AT + 1).is_some());
+        // used: gone with the ticket
+        let key = key_of(&used.code);
+        assert_eq!(codes.take(key, AT + 2), Taken::Taken);
+        codes.mark_used(
+            key,
+            UsedBy {
+                pc: "123456789".into(),
+                pk: [7; 32],
+                exp: AT + 2 + TICKET_SECS,
+            },
+        );
+        assert_eq!(shown_of(&codes), 3);
+        // its maker's key ended: gone
+        assert_eq!(codes.end_keys(2, &[maker(2).ckid], AT + 3), 1);
+        assert_eq!(shown_of(&codes), 2);
+        // over at ten minutes: gone at the next sweep, the later code still shown
+        codes.sweep(AT + CODE_SECS);
+        assert_eq!(shown_of(&codes), 1);
+        assert!(codes.find_link(&later.link, AT + CODE_SECS).is_some());
+        codes.sweep(AT + 300 + CODE_SECS);
+        assert_eq!(shown_of(&codes), 0);
+        // the ended entries stay their ten minutes for the records, without the code
+        assert_eq!(codes.counts(AT + 300 + CODE_SECS), (0, 2));
     }
 
     #[test]

@@ -941,7 +941,7 @@ async fn exchange(run: &mut Run<'_>, asked: Asked, opened: Opened) -> Reply {
                     ck: maker_key.pk,
                     ctl_id: &maker_key.ctl_id,
                     iat: claims.iat,
-                    exp: claims.exp,
+                    exp: grant::exp_for(claims.iat, claims.exp),
                 };
                 match grant::staff(&state.list_key, &grant) {
                     Some(staff) => answer["staff"] = staff,

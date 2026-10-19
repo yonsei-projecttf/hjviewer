@@ -165,7 +165,7 @@ who is logged in can make a support code in the app for someone who is not: 8 ch
 once, within 10 minutes, and only on a PC. Typed on that PC, the code is sealed as the access
 password is, and the account service trades it for a ticket that lets that one PC accept
 connections for 2 hours (the PC signs the request with its device key). The service keeps each
-code in its memory only, under a keyed hash rather than the code itself, with the account that
+code in its memory only, looked up by a keyed hash of the code, with the account that
 made it, for 20 minutes at most (10 while it works, and 10 more to tell a late or a used code from
 a wrong one), and, as every account answer, the answer that showed it, for the app's retry; a
 restart of the service ends them. It records each code made (a tag of the account
@@ -176,7 +176,10 @@ ID or the ticket. The app that made the code shows it in its window only; the PC
 is sent and keeps the ticket in memory only.
 From version 1.9.0 the answer that shows a code also brings a support link for the person being
 helped, and a waiting number for the staff member's app; both are random values that live with the
-code, in memory only. The link opens a page of the account service that shows the code and offers
+code, in memory only (the link is looked up by a keyed hash too; the waiting number is kept as it
+is). To show the code on the link's page, the service from 1.9.0 also keeps the code itself with it
+while the code can be used, 10 minutes at most, and drops it once the code is used, ended or past
+its 10 minutes. The link opens a page of the account service that shows the code and offers
 HJViewer for Windows, three downloads at most; each download is recorded as the other downloads are
 (section 2), with the tag of the account that made the code. While the code is open, the app that
 made it asks the service with its waiting number, and its account key, whether a PC has used it;
@@ -208,9 +211,11 @@ nothing by itself, and the person at the PC still accepts or refuses.
 Short-lived: the one-time values of requests (up to 20 minutes), the login, download and access
 password limit counters, under tags (as long as their longest window, at least a day; the support
 codes' tries count in the access password's), the short links, in memory only (10 minutes; a restart
-of the service ends them), and the support codes, in memory only, each as a keyed hash with the
-account that made it, and from 1.9.0 its support link, its waiting number, its downloads left and
-the ID and key of the PC that used it (20 minutes at most; a restart ends them). In memory only,
+of the service ends them), and the support codes, in memory only, each looked up by a keyed hash,
+with the account that made it, and from 1.9.0 its support link (looked up by a keyed hash too), its
+waiting number, its downloads left, the ID and key of the PC that used it (20 minutes at most; a
+restart ends them) and, while it can be used (10 minutes at most), the code itself for its link's
+page. In memory only,
 never on disk: the service's answer to a login or to an account request that changes something, so
 that the same request sent again within 30 seconds gets the same answer; it is cleared at the next
 such request, within the hour at the latest.
@@ -493,7 +498,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 **이용 비밀번호**(1.8.0부터). 로그인하지 않은 사람은 운영자가 알려 주는 이용 비밀번호를 넣을 수 있습니다. 앱은 로그인의 비밀번호처럼 서버의 키로 봉인해 보내고, 계정 서비스는 서버의 파일에 있는 해시로 확인한 뒤 PC 하나에 12시간 동안 닿는 출입증으로 바꿔 줍니다. 앱이 연결하려는 PC, 또는 비밀번호를 넣은 그 PC입니다(그 PC는 요청에 기기 키로 서명합니다). 앱은 비밀번호를 바로 버리고 출입증은 메모리에만 둡니다. 계정 서비스는 시도마다 결과, 시각, 접속한 IP 주소의 꼬리표를 기록하고, 한도를 위해 주소마다 시도와 출입증의 수를 셉니다. 비밀번호, 주소 자체, PC ID, 출입증은 남기지 않습니다.
 
-**지원 코드**(1.9.0부터). 로그인한 교직원은 이용 비밀번호를 알려 주는 대신, 로그인하지 않은 사람에게 줄 지원 코드를 앱에서 만들 수 있습니다. 8자이고, 10분 안에 한 번, PC에서만 쓰입니다. 그 PC에서 넣은 코드는 이용 비밀번호처럼 봉인해 보내고, 계정 서비스는 그 PC 하나가 2시간 동안 연결을 받는 출입증으로 바꿔 줍니다(그 PC는 요청에 기기 키로 서명합니다). 계정 서비스는 코드를 메모리에만, 코드 자체가 아니라 키를 쓴 해시로 만든 계정과 함께 최대 20분 둡니다(쓸 수 있는 10분, 그리고 늦게 넣거나 이미 쓴 코드를 틀린 코드와 가리기 위한 10분). 다른 계정 요청의 답처럼, 그 코드를 보여 준 답도 앱이 다시 보낼 때를 위해 메모리에 둡니다. 서비스를 다시 시작하면 사라집니다. 코드를 만들 때마다(만든 계정의 꼬리표, 시각), 코드를 쓰려는 시도마다(결과, 시각, 접속한 IP 주소의 꼬리표, 코드를 찾았으면 그 코드를 만든 계정의 꼬리표) 기록하고, 한도를 위해 시도를 이용 비밀번호의 시도와 함께 셉니다. 코드, 주소 자체, PC ID, 출입증은 남기지 않습니다. 코드를 만든 앱은 그 창에서만 코드를 보이고, PC는 보낸 뒤 바로 버리며 출입증은 메모리에만 둡니다. 1.9.0부터 코드를 보이는 답에는 도움받을 분에게 줄 지원 링크와 교직원 앱이 쓸 대기 번호도 있습니다. 둘 다 코드와 함께 메모리에만 있는 무작위 값입니다. 링크는 코드를 보이고 Windows용 HJViewer를 내주는 계정 서비스의 페이지를 엽니다(내려받기 세 번까지). 내려받기는 2절의 다른 내려받기처럼, 코드를 만든 계정의 꼬리표와 함께 기록합니다. 코드가 열린 동안 그 코드를 만든 앱은 대기 번호와 그 기기의 계정 키로 어느 PC가 코드를 썼는지 묻고, 서비스는 그 앱에만 그 PC의 ID와 공개키를 알려 줍니다. 이 값은 코드와 함께 메모리에만(최대 20분) 두고 기록하지 않습니다. 서비스는 그 PC의 출입증과 함께, 그 PC에만 쓰이는 "코드를 만든 기기"(그 기기 계정 키의 공개키와 기기 ID. 이름은 없음)를 서명해 줍니다. PC는 이것을 출입증 옆 메모리에만 두고, 그 기기가 연결하면 연결 창에 "연세대 교직원(로그인 확인)"을 보입니다. 이것으로 열리는 것은 없고, 받을지는 PC 앞의 사람이 정합니다.
+**지원 코드**(1.9.0부터). 로그인한 교직원은 이용 비밀번호를 알려 주는 대신, 로그인하지 않은 사람에게 줄 지원 코드를 앱에서 만들 수 있습니다. 8자이고, 10분 안에 한 번, PC에서만 쓰입니다. 그 PC에서 넣은 코드는 이용 비밀번호처럼 봉인해 보내고, 계정 서비스는 그 PC 하나가 2시간 동안 연결을 받는 출입증으로 바꿔 줍니다(그 PC는 요청에 기기 키로 서명합니다). 계정 서비스는 코드를 메모리에만, 키를 쓴 코드의 해시로 찾게 만든 계정과 함께 최대 20분 둡니다(쓸 수 있는 10분, 그리고 늦게 넣거나 이미 쓴 코드를 틀린 코드와 가리기 위한 10분). 다른 계정 요청의 답처럼, 그 코드를 보여 준 답도 앱이 다시 보낼 때를 위해 메모리에 둡니다. 서비스를 다시 시작하면 사라집니다. 코드를 만들 때마다(만든 계정의 꼬리표, 시각), 코드를 쓰려는 시도마다(결과, 시각, 접속한 IP 주소의 꼬리표, 코드를 찾았으면 그 코드를 만든 계정의 꼬리표) 기록하고, 한도를 위해 시도를 이용 비밀번호의 시도와 함께 셉니다. 코드, 주소 자체, PC ID, 출입증은 남기지 않습니다. 코드를 만든 앱은 그 창에서만 코드를 보이고, PC는 보낸 뒤 바로 버리며 출입증은 메모리에만 둡니다. 1.9.0부터 코드를 보이는 답에는 도움받을 분에게 줄 지원 링크와 교직원 앱이 쓸 대기 번호도 있습니다. 둘 다 코드와 함께 메모리에만 있는 무작위 값입니다(링크도 키를 쓴 해시로 찾고, 대기 번호는 그대로 둡니다). 1.9.0부터 서비스는 링크의 페이지에 코드를 보이려고, 코드를 쓸 수 있는 동안(최대 10분) 코드 자체도 함께 두고, 코드를 쓰거나 끝나거나 10분이 지나면 버립니다. 링크는 코드를 보이고 Windows용 HJViewer를 내주는 계정 서비스의 페이지를 엽니다(내려받기 세 번까지). 내려받기는 2절의 다른 내려받기처럼, 코드를 만든 계정의 꼬리표와 함께 기록합니다. 코드가 열린 동안 그 코드를 만든 앱은 대기 번호와 그 기기의 계정 키로 어느 PC가 코드를 썼는지 묻고, 서비스는 그 앱에만 그 PC의 ID와 공개키를 알려 줍니다. 이 값은 코드와 함께 메모리에만(최대 20분) 두고 기록하지 않습니다. 서비스는 그 PC의 출입증과 함께, 그 PC에만 쓰이는 "코드를 만든 기기"(그 기기 계정 키의 공개키와 기기 ID. 이름은 없음)를 서명해 줍니다. PC는 이것을 출입증 옆 메모리에만 두고, 그 기기가 연결하면 연결 창에 "연세대 교직원(로그인 확인)"을 보입니다. 이것으로 열리는 것은 없고, 받을지는 PC 앞의 사람이 정합니다.
 
 **계정 서비스가 보관하는 것**
 
@@ -513,7 +518,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 | DB 백업 | 위 전부의 사본(서버 안, root만 읽음). 매일 하나, 그리고 업그레이드나 복원 전에 하나 | 14일 |
 | 계정 서비스의 로그 | 개수와 꼬리표만(ID, 주소, 비밀값은 없음) | 30일 |
 
-잠깐만 두는 것: 요청의 일회용 값(최대 20분), 꼬리표로 센 로그인, 내려받기, 이용 비밀번호 한도 기록(가장 긴 한도 기간, 최소 하루. 지원 코드의 시도도 여기에 셈), 메모리에만 두는 짧은 링크(10분, 서비스를 다시 시작하면 사라짐)와 지원 코드(키를 쓴 해시와 만든 계정, 1.9.0부터 지원 링크, 대기 번호, 남은 내려받기 수, 코드를 쓴 PC의 ID와 공개키, 최대 20분, 서비스를 다시 시작하면 사라짐). 메모리에만 두고 디스크에는 쓰지 않는 것: 로그인과 무언가를 바꾸는 계정 요청에 한 답. 30초 안에 같은 요청이 다시 오면 같은 답을 주려는 것이고, 다음 그런 요청 때나 늦어도 1시간 안에 지웁니다.
+잠깐만 두는 것: 요청의 일회용 값(최대 20분), 꼬리표로 센 로그인, 내려받기, 이용 비밀번호 한도 기록(가장 긴 한도 기간, 최소 하루. 지원 코드의 시도도 여기에 셈), 메모리에만 두는 짧은 링크(10분, 서비스를 다시 시작하면 사라짐)와 지원 코드(키를 쓴 해시로 찾음, 만든 계정, 1.9.0부터 지원 링크(이것도 키를 쓴 해시로 찾음), 대기 번호, 남은 내려받기 수, 코드를 쓴 PC의 ID와 공개키, 최대 20분, 서비스를 다시 시작하면 사라짐. 쓸 수 있는 동안(최대 10분)은 링크의 페이지를 위한 코드 자체도). 메모리에만 두고 디스크에는 쓰지 않는 것: 로그인과 무언가를 바꾸는 계정 요청에 한 답. 30초 안에 같은 요청이 다시 오면 같은 답을 주려는 것이고, 다음 그런 요청 때나 늦어도 1시간 안에 지웁니다.
 
 **계정 서비스가 보관하지 않는 것**: 비밀번호, 연세 SSO 토큰, 이메일 주소, 소속, 기기 식별값 자체, OS 사용자 이름, CPU·메모리 정보, 하트비트, 기기 정보, 연결이나 파일 전송마다의 기록, 세션 내용, 출입증, 이용 비밀번호, 지원 코드, 짧은 링크와 이행용 링크의 코드.
 

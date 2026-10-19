@@ -713,20 +713,53 @@ async fn job_status(state: &Arc<AppState>, req: &ApiRequest, job_id: &str) -> Re
     }
 }
 
-/// The verdict of a PC for the apps' device list (`hjv.wol`, design v3 §5-2) and the note's tail:
-/// the report's verdict, but `no` while the account has no active relay, since nothing could
-/// wake it; " · 켜기 가능" or " · 켜기 준비 안 됨" once it has one and the PC reported.
-pub fn peer_wol(info: Option<&WolInfo>, has_relay: bool) -> (&'static str, &'static str) {
+/// Whether the device list says a PC can be woken (`hjv.wake`, UX-W1's U27): the one value the
+/// note's tail and the apps' own words are both made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    /// the account has a relay and the PC's report says it can be woken: " · 켜기 가능"
+    Ready,
+    /// the account has a relay and the PC's report says it cannot: " · 켜기 준비 안 됨"
+    NotReady,
+    /// no relay, or no report: nothing is said
+    Unsaid,
+}
+
+impl Wake {
+    /// `hjv.wake`: `ready`, `not_ready` or "".
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Wake::Ready => "ready",
+            Wake::NotReady => "not_ready",
+            Wake::Unsaid => "",
+        }
+    }
+
+    /// The note's tail for apps before 1.9.0.
+    pub fn tail(self) -> &'static str {
+        match self {
+            Wake::Ready => " · 켜기 가능",
+            Wake::NotReady => " · 켜기 준비 안 됨",
+            Wake::Unsaid => "",
+        }
+    }
+}
+
+/// The verdict of a PC for the apps' device list (`hjv.wol`, design v3 §5-2) and whether it can
+/// be woken ([`Wake`]): the report's verdict, but `no` while the account has no active relay,
+/// since nothing could wake it; [`Wake::Ready`] or [`Wake::NotReady`] once it has one and the PC
+/// reported.
+pub fn peer_wol(info: Option<&WolInfo>, has_relay: bool) -> (&'static str, Wake) {
     let (ready, _) = wolinfo::readiness(info.map(|i| &i.report));
     if !has_relay {
-        return (Ready::No.as_str(), "");
+        return (Ready::No.as_str(), Wake::Unsaid);
     }
-    let tail = match ready {
-        Ready::Ok | Ready::Warn => " · 켜기 가능",
-        Ready::No => " · 켜기 준비 안 됨",
-        Ready::Unknown => "",
+    let wake = match ready {
+        Ready::Ok | Ready::Warn => Wake::Ready,
+        Ready::No => Wake::NotReady,
+        Ready::Unknown => Wake::Unsaid,
     };
-    (ready.as_str(), tail)
+    (ready.as_str(), wake)
 }
 
 async fn wol(state: &Arc<AppState>, req: &ApiRequest, device_id: &str) -> Reply {
@@ -1223,17 +1256,22 @@ mod tests {
     #[test]
     fn device_list_verdicts() {
         let ok = info("192.0.2.67/24", "192.0.2.1", "198.51.100.7");
-        assert_eq!(peer_wol(Some(&ok), true), ("ok", " · 켜기 가능"));
-        assert_eq!(peer_wol(Some(&ok), false), ("no", ""));
-        assert_eq!(peer_wol(None, true), ("unknown", ""));
+        assert_eq!(peer_wol(Some(&ok), true), ("ok", Wake::Ready));
+        assert_eq!(peer_wol(Some(&ok), false), ("no", Wake::Unsaid));
+        assert_eq!(peer_wol(None, true), ("unknown", Wake::Unsaid));
         let mut wireless = ok.clone();
         wireless.report.adapters.clear();
-        assert_eq!(
-            peer_wol(Some(&wireless), true),
-            ("no", " · 켜기 준비 안 됨")
-        );
+        assert_eq!(peer_wol(Some(&wireless), true), ("no", Wake::NotReady));
         let mut slow = ok;
         slow.report.power.fast_startup = Some(true);
-        assert_eq!(peer_wol(Some(&slow), true), ("warn", " · 켜기 가능"));
+        assert_eq!(peer_wol(Some(&slow), true), ("warn", Wake::Ready));
+        // the note's tail and `hjv.wake` are made of the one value
+        for (wake, tail, said) in [
+            (Wake::Ready, " · 켜기 가능", "ready"),
+            (Wake::NotReady, " · 켜기 준비 안 됨", "not_ready"),
+            (Wake::Unsaid, "", ""),
+        ] {
+            assert_eq!((wake.tail(), wake.as_str()), (tail, said));
+        }
     }
 }
