@@ -946,10 +946,11 @@ async fn the_apps_learn_the_access_checks_mode() {
     let h = Harness::start().await;
     h.hbbs
         .answer_access("HJVACCESS1 mode=enforce ph.ok=6 ph.missing=2 reg.missing=1\n");
-    assert_eq!(access_mode(&h).await, json!({"mode": "enforce"}));
+    let enforce = json!({"mode": "enforce", "codes": true});
+    assert_eq!(access_mode(&h).await, enforce);
     let asked = h.hbbs.queries.load(std::sync::atomic::Ordering::SeqCst);
     h.hbbs.answer_access("HJVACCESS1 mode=off\n");
-    assert_eq!(access_mode(&h).await, json!({"mode": "enforce"}));
+    assert_eq!(access_mode(&h).await, enforce);
     assert_eq!(
         h.hbbs.queries.load(std::sync::atomic::Ordering::SeqCst),
         asked
@@ -959,6 +960,38 @@ async fn the_apps_learn_the_access_checks_mode() {
     let a = h.request(Method::POST, "/api/hjv/access", &[], None).await;
     assert_eq!(a.status, 405, "{}", a.text);
     // an hbbs without patch 0006
+    let h = Harness::start().await;
+    assert_eq!(access_mode(&h).await, json!({"mode": "unknown"}));
+}
+
+/// `"codes":true` while a support code would be traded now and do something: the mode `count` or
+/// `enforce`, with the ticket key loaded; left out in `off`, `closed`, `unknown`, and in every
+/// mode without the ticket key (docs/access-tickets.md 3-6).
+#[tokio::test]
+async fn the_access_answer_says_whether_support_codes_work() {
+    for (mode, key, codes) in [
+        ("enforce", true, true),
+        ("count", true, true),
+        ("off", true, false),
+        ("closed", true, false),
+        ("enforce", false, false),
+        ("count", false, false),
+        ("off", false, false),
+    ] {
+        let h = Harness::with(Options {
+            no_ticket_key: !key,
+            ..Default::default()
+        })
+        .await;
+        h.hbbs
+            .answer_access(&format!("HJVACCESS1 mode={mode} ph.ok=1\n"));
+        let mut want = json!({ "mode": mode });
+        if codes {
+            want["codes"] = json!(true);
+        }
+        assert_eq!(access_mode(&h).await, want, "{mode}, ticket key {key}");
+    }
+    // an hbbs without patch 0006, with the ticket key
     let h = Harness::start().await;
     assert_eq!(access_mode(&h).await, json!({"mode": "unknown"}));
 }

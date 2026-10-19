@@ -12,7 +12,8 @@
 //! ```
 //!
 //! - Making one ([`handle`]): an account path (api.rs `session`), counted with the account key's
-//!   other calls (keys.rs, 30 a minute); the App Review account gets 403 `no_code`; at most
+//!   other calls (keys.rs, 30 a minute); the App Review account gets 403 `no_code` ([`may_make`],
+//!   which the login answer and currentUser tell the app as `"hjv":{"support_code":true}`); at most
 //!   [`OPEN_PER_ACCOUNT`] open codes per account (429 `too_many_codes` with `retry_after`) and
 //!   [`MAX_HELD`] in all (503 `busy`); without a ticket key 503 `unavailable`.
 //! - The code: eight symbols of Crockford's base32 from 40 bits of the operating system's random
@@ -94,6 +95,13 @@ pub const TEXT_UNAVAILABLE: &str =
 pub const TEXT_WRONG_PC: &str =
     "이 PC의 키가 서버에 있는 것과 달라 지원 코드로 연결받을 수 없습니다. 관리자에게 알려 주세요.";
 const TEXT_BAD_REQUEST: &str = "요청을 이해하지 못했습니다.";
+
+/// Whether a session of the account of `login_key` may make support codes: any staff account's,
+/// never the App Review account's. The login answer and currentUser carry `"support_code":true`
+/// in their `hjv` object for it (login.rs, api.rs), and the app shows S1 only then.
+pub fn may_make(login_key: &str) -> bool {
+    !review::is_review(login_key)
+}
 
 /// The eight symbols a person typed, as a short link's code is read but for the URL's `%`
 /// escapes: at most 64 bytes, ASCII, case, `-` and U+0020 skipped, `O` as `0`, `I` and `L` as
@@ -423,7 +431,7 @@ pub async fn handle(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
             return refusal(StatusCode::BAD_REQUEST, TEXT_BAD_REQUEST, "bad_request");
         }
     };
-    if review::is_review(&s.account.login_key) {
+    if !may_make(&s.account.login_key) {
         return refusal(StatusCode::FORBIDDEN, TEXT_NO_CODE, "no_code");
     }
     if state.ticket_key.is_none() {

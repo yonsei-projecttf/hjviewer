@@ -1519,9 +1519,10 @@ console_has() { # <point.reason>...: each counted at least once
   local c
   for c in "$@"; do [ "$(console_count "$c")" -gt 0 ] || return 1; done
 }
-gate_is() { # <mode>: GET /api/hjv/access, without a token, from the controller's network
+gate_is() { # <mode>: GET /api/hjv/access, without a token, from the controller's network; with
+  # or without "codes":true (access-tickets.md 3-6: count and enforce while hjv-api has its ticket key)
   GATE=$(in_ns hjv-ctl actl curl -s --max-time 5 --cacert "$CA_ROOT" "https://$DOMAIN/api/hjv/access" || true)
-  [ "$GATE" = "{\"mode\":\"$1\"}" ]
+  [ "$GATE" = "{\"mode\":\"$1\"}" ] || [ "$GATE" = "{\"codes\":true,\"mode\":\"$1\"}" ]
 }
 hbbs_count() { grep -cF -- "$1" "$RUN/hbbs.log" || true; }
 hbbs_above() { [ "$(hbbs_count "$1")" -gt "$2" ]; } # <text> <count before>
@@ -1605,7 +1606,7 @@ access_part() {
     fail "A3: hbbs refused $(($(hbbs_count 'access refused ph ') - n0)) punch hole requests of one attempt"
   grep -F 'access refused ph ' "$RUN/hbbs.log" | tail -n 1 | grep -q ': missing$' || fail "A3: the refusal is not for a missing ticket"
   until_ok 35 "A3: GET /api/hjv/access" gate_is enforce
-  pass "A3: exit 5 after $MS ms with the app's A1 ('… (access not allowed)'), one refusal in hbbs's log (missing); GET /api/hjv/access {\"mode\":\"enforce\"} within its 30 s"
+  pass "A3: exit 5 after $MS ms with the app's A1 ('… (access not allowed)'), one refusal in hbbs's log (missing); GET /api/hjv/access $GATE within its 30 s"
 
   log "A4: alice's controller connects to the PC with her login's ticket"
   ascreen staff "$PC_ID" a4

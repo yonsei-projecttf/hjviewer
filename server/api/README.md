@@ -641,6 +641,14 @@ as before. No nginx change: the new path is under `/api/hjv/`, and the trade goe
   every account path, so only a device of an account on the allowlist and not blocked; the App
   Review account gets 403 `no_code`, and an app without a login has no token. A call counts with
   the account key's other calls (30 a minute).
+- What the apps are told (the orchestrator's decision of 2026-10-19, capability flags): a login
+  that may make codes, any staff account's and never the App Review account's
+  (`support::may_make`), has `"support_code":true` in the login answer's `hjv` object and in
+  currentUser's; the app shows its [지원 코드 만들기] (S1) only then, so the App Review account
+  and a server before 1.8.2 never show it. `GET /api/hjv/access` adds `"codes":true` while a
+  code would be traded now for a ticket hbbs uses: the mode `count` or `enforce`, with the ticket
+  key loaded (`gate::codes`); the PC shows P1's [지원 코드] only then. Both members are otherwise
+  left out, never `false`.
 - The code: eight symbols of Crockford's base32 from 40 bits of the operating system's random
   source, shown `XXXX-XXXX` and read as a short link's code is (Updates, below), but for the `%`
   escapes of a link's path, which a typed code never has (`support::read`): at most 64 bytes,
@@ -913,7 +921,8 @@ with padding, base64url is §5 without padding, NUL is the byte 0x00, times are 
 {"type":"access_token","access_token":"hjv_<base64url of 32 bytes>",
  "user":{"name":"<portal ID>","display_name":"<name>","status":1,"hjv_role":"operator"},
  "hjv":{"ks":<the key's serial>,"binding":"<32 hex>","login_at":<time>,
-        "access":{"ticket":"t1.…","use":"both","exp":<time>,"server_time":<time>}}}
+        "access":{"ticket":"t1.…","use":"both","exp":<time>,"server_time":<time>},
+        "support_code":true}}
 ```
 
   `name` is the person's ID as the SSO names it (its pcode, uppercased: hbbs and the SSO, below).
@@ -928,7 +937,10 @@ with padding, base64url is §5 without padding, NUL is the byte 0x00, times are 
   the App Review account's answer has none yet. The login carries no device public key, so that
   this check is the only one a login can make: a Windows app with `ctl` here (one that runs
   without installing, or a PC hbbs does not know yet) asks `POST /api/hjv/ticket` with its PC
-  part right after.
+  part right after. `support_code` (1.8.2) is `true` for a login that may make support codes
+  (Support codes, below: any account but the App Review account's) and missing otherwise; the
+  user object of `POST /api/currentUser` carries the same `"hjv":{"support_code":true}`, which
+  the login answer's user object does not.
 - A seal whose `t` is more than `HJV_API_SEAL_MAX_SKEW` (600 s) off the server's clock: 409
   `{"error":"기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요.","hjv":"clock","server_time":<time>}`.
   Other sealing errors: 400 with the failure text.
@@ -1333,6 +1345,7 @@ docs/access-tickets.md 3-6 is its contract. No token, no body, always 200:
 
 ```text
 200 {"mode":"off"|"count"|"enforce"|"closed"|"unknown"}
+200 {"mode":"count"|"enforce","codes":true}     while hjv-api has its ticket key (1.8.2)
 ```
 
 - `mode` is the mode of hbbs's answer to `hjv-access` on its console (server patch 0006), without
@@ -1342,6 +1355,12 @@ docs/access-tickets.md 3-6 is its contract. No token, no body, always 200:
 - The apps word with it what a logout or taking a PC out of the list does, and tell a controller
   that is not logged in, ahead of a refusal, that the server lets in only staff. hbbs alone
   decides; the answer is only a hint.
+- `codes` (1.8.2, `gate::codes`) is `true` while a support code would be traded now for a ticket
+  hbbs uses: the mode `count` or `enforce` and the ticket key loaded. In `off`, `closed`,
+  `unknown` and without the ticket key the member is left out, as a server before 1.8.2 leaves
+  it out; the PC side shows P1's [지원 코드] only when it is `true`. The trade itself does not
+  look at the mode (Support codes, above). The members' order is not fixed (`{"codes":true,
+  "mode":"enforce"}` as serde_json writes it).
 
 ### NAS relays: `POST /api/hjv/relay/hello`, `/api/hjv/relay/poll` (`src/relay.rs`)
 
@@ -1724,7 +1743,7 @@ the PC's binding), the App Review account's for its demo PCs (and none without t
 server without a ticket key, `admin ticket status`, selfcheck (with the vectors' public test keys
 refused, as outside the harness), that no ticket reaches the journal or the records, and `GET
 /api/hjv/access` (hbbs's mode without its counts, kept a while, `unknown` from an hbbs that does
-not know the command);
+not know the command, `codes` by mode with and without the ticket key);
 `tests/guest.rs` the access password: a controller's and a PC's ticket, the same 401 for a wrong
 password and a closed file after the failure delay, the seal of this request only (a login's seal
 refused, and the access password's at the login), the retry, the form, the limits before the hash

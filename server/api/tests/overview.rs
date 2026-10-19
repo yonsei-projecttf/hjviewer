@@ -463,7 +463,8 @@ async fn the_role_follows_the_setting_at_each_start() {
     let user = b.post("/api/currentUser", &hong, None).await.json;
     assert_eq!(
         user,
-        json!({"name": "ZZTEST01", "display_name": "홍길동", "status": 1, "hjv_role": "operator"})
+        json!({"name": "ZZTEST01", "display_name": "홍길동", "status": 1, "hjv_role": "operator",
+               "hjv": {"support_code": true}})
     );
     assert_eq!(
         b.get("/api/users", &hong).await.json["data"][0]["hjv_role"],

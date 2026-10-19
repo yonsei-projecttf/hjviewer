@@ -610,6 +610,82 @@ async fn who_may_not_make_one() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Whether the app shows S1: a staff login's answer and its currentUser carry
+/// `"hjv":{"support_code":true}`, on a phone and on a PC added to the account; the App Review
+/// account's never do, nor does the ticket a guest's PC trades a code for, and a guest has no
+/// currentUser.
+#[tokio::test]
+async fn the_apps_learn_who_may_make_codes() {
+    const HASH: &str =
+        "pbkdf2-sha256$100000$AAECAwQFBgcICQoLDA0ODw==$SdScJfWXhGIJ8Nkud3CrZOHHXpS0zmxQkmXuZxddKh4=";
+    let dir = temp_dir("support-flag");
+    let file = dir.join("review.conf");
+    std::fs::write(
+        &file,
+        format!(
+            "ID=APPREVIEW-TEST\nHASH={HASH}\nUNTIL={}\nPC=100200300\n",
+            datetime(now() + 2 * DAY)
+        ),
+    )
+    .unwrap();
+    let h = Harness::with(Options {
+        vars: vec![("HJV_API_REVIEW_FILE", file.display().to_string())],
+        ..Default::default()
+    })
+    .await;
+    let flag = json!({"support_code": true});
+    // staff: a phone, and an installed PC the login adds to the account
+    let pc = TestDevice::windows("300000089");
+    h.hbbs.register(&pc, Some(1));
+    for (device, ip) in [(None, "10.8.9.1"), (Some(&pc), "10.8.9.2")] {
+        let a = h.login(&h.login_body(HONG.0, HONG.1, device), ip).await;
+        assert_eq!(a.status, 200, "{}", a.text);
+        assert_eq!(a.json["hjv"]["support_code"], true, "{}", a.text);
+        assert!(a.json["user"].get("hjv").is_none(), "{}", a.text);
+        let token = a.token();
+        let me = h.post("/api/currentUser", &token, Some(json!({}))).await;
+        assert_eq!((me.status, &me.json["hjv"]), (200, &flag), "{}", me.text);
+        assert_eq!(make(&h, &token, json!({"use": "pc"})).await.status, 200);
+    }
+    // the App Review account: neither, and it cannot make one
+    let a = h
+        .login(
+            &h.login_body("APPREVIEW-TEST", "correct horse battery staple", None),
+            "10.8.9.3",
+        )
+        .await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    assert!(a.json["hjv"].get("support_code").is_none(), "{}", a.text);
+    let review = a.token();
+    let me = h.post("/api/currentUser", &review, Some(json!({}))).await;
+    assert_eq!(me.status, 200, "{}", me.text);
+    assert!(me.json.get("hjv").is_none(), "{}", me.text);
+    assert_eq!(make(&h, &review, json!({"use": "pc"})).await.status, 403);
+    // a guest: a PC that came in with a code has no flag and no currentUser
+    let staff = h.login_ok(HONG, None).await;
+    let code = made(&h, &staff).await;
+    let guest_pc = TestDevice::windows("300000090");
+    let traded = trade(&h, &code_body(&h, &code, &guest_pc), "10.8.9.4").await;
+    assert_eq!(traded.status, 200, "{}", traded.text);
+    assert!(traded.json.get("support_code").is_none(), "{}", traded.text);
+    assert!(traded.json.get("hjv").is_none(), "{}", traded.text);
+    let ticket = traded.json["ticket"].as_str().unwrap().to_owned();
+    let auth = format!("Bearer {ticket}");
+    let a = h
+        .request(
+            Method::POST,
+            "/api/currentUser",
+            &[
+                ("authorization", auth.as_str()),
+                ("content-type", "application/json"),
+            ],
+            Some(b"{}".to_vec()),
+        )
+        .await;
+    assert_eq!(a.status, 401, "{}", a.text);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A controller's code is not taken: 400 before anything counts or opens, and the code still
 /// works. Each seal is only its own field's: the access password's seal in `code`, a code's in
 /// `password` and at the login are refused.

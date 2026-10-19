@@ -14,12 +14,13 @@ async fn current_user_users_and_logout() {
     let h = Harness::start().await;
     let token = h.login_ok(HONG, None).await;
     let body = json!({"id": "", "uuid": "dXVpZA=="});
-    // currentUser answers the user object itself
+    // currentUser answers the user object itself, with what the account may do (support.rs)
     let a = h.post("/api/currentUser", &token, Some(body.clone())).await;
     assert_eq!(a.status, 200, "{}", a.text);
     assert_eq!(
         a.json,
-        json!({"name": "ZZTEST01", "display_name": "홍길동", "status": 1})
+        json!({"name": "ZZTEST01", "display_name": "홍길동", "status": 1,
+               "hjv": {"support_code": true}})
     );
     // users: {total, data}, never a bare list
     let a = h

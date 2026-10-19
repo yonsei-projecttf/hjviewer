@@ -3,7 +3,10 @@
 //! The access check's mode, for the apps (docs/access-tickets.md 3-6): `GET /api/hjv/access`
 //! answers `{"mode":"<mode>"}` with the mode hbbs's console names for `hjv-access` (server patch
 //! 0006: `off`, `count`, `enforce` or `closed`), or `unknown` when hbbs cannot be asked or does
-//! not know the command. hbbs's counts stay out. No token: an app asks before any login, to say
+//! not know the command. hbbs's counts stay out. `"codes":true` is added while a support code
+//! would be traded now and do something ([`codes`]: `count` or `enforce`, and the ticket key
+//! loaded); the PC side shows P1's [지원 코드] only then. Otherwise the member is left out, as a
+//! server before 1.8.2 leaves it out. No token: an app asks before any login, to say
 //! ahead of a refusal that the server lets in only staff, and to word what a logout or taking a
 //! PC out of the list does there. hbbs is asked at most once every CACHE_FOR; the answers within
 //! it are the same.
@@ -28,7 +31,19 @@ pub const UNKNOWN: &str = "unknown";
 pub struct GateMode(Mutex<Option<(Instant, &'static str)>>);
 
 pub async fn handle(state: &Arc<AppState>) -> Reply {
-    Reply::ok(&json!({ "mode": mode(state).await }))
+    let mode = mode(state).await;
+    let mut answer = json!({ "mode": mode });
+    if codes(state, mode) {
+        answer["codes"] = json!(true);
+    }
+    Reply::ok(&answer)
+}
+
+/// Whether hjv-api would trade a support code (support.rs) now for a ticket hbbs uses: in the
+/// mode `count` or `enforce`, with the ticket key loaded. Not in `off` (hbbs does not look at
+/// tickets), `closed` (it refuses them all) or `unknown`.
+pub fn codes(state: &AppState, mode: &str) -> bool {
+    matches!(mode, "count" | "enforce") && state.ticket_key.is_some()
 }
 
 /// The mode, asked of hbbs at most once every CACHE_FOR.

@@ -88,7 +88,9 @@
 //! PC's service takes up the binding (§4-4). While hjv-api has a ticket key, `hjv.access` is the
 //! app's access ticket (ticket.rs): `both` for an installed PC whose login signature matched the
 //! key hbbs holds for it, `ctl` for any other device, and for the App Review account `review`
-//! for the demo PCs of its file, or none without them.
+//! for the demo PCs of its file, or none without them. `hjv.support_code` is `true` for a login
+//! that may make support codes (support.rs `may_make`: any but the App Review account's), and
+//! missing otherwise; currentUser says the same.
 
 use crate::{
     api::{is_json, user_json, ApiRequest, BodyError, Reply},
@@ -1805,6 +1807,9 @@ async fn success(run: &mut Run<'_>, key: &str, user: SsoUser, device: DeviceClai
     };
     if let Ok(issued) = crate::ticket::for_account(state, &login_key, pc, "login", at).await {
         hjv["access"] = issued.json(now());
+    }
+    if crate::support::may_make(&login_key) {
+        hjv["support_code"] = json!(true);
     }
     LoginAnswer::ok(json!({
         "type": "access_token",

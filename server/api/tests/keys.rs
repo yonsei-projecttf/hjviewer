@@ -76,10 +76,11 @@ async fn a_login_registers_its_account_key() {
     let a = login_with(&h, HONG, None, KeyChoice::Fresh, "10.3.0.1").await;
     assert_eq!(a.status, 200, "{}", a.text);
     assert_eq!(a.json["hjv"]["ks"], 1);
-    // and the app's access ticket (tests/tickets.rs), no binding
+    // and the app's access ticket (tests/tickets.rs), whether it may make support codes
+    // (tests/support.rs), no binding
     let mut members: Vec<&String> = a.json["hjv"].as_object().unwrap().keys().collect();
     members.sort();
-    assert_eq!(members, ["access", "ks"], "{}", a.text);
+    assert_eq!(members, ["access", "ks", "support_code"], "{}", a.text);
     assert_eq!(serial(&h).await, 1);
     let first = a.token();
     let seed = h.key_of(&first).unwrap();

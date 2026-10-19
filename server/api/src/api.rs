@@ -6,7 +6,7 @@
 //! | path | answer |
 //! |---|---|
 //! | `POST /api/login` | login.rs (every failure that depends on the ID is a 401) |
-//! | `POST /api/currentUser` | the user object itself; 401 only for a token that is not valid, never 400 (the app logs out on both) |
+//! | `POST /api/currentUser` | the user object itself, with `"hjv":{"support_code":true}` for an account that may make support codes (support.rs `may_make`); 401 only for a token that is not valid, never 400 (the app logs out on both) |
 //! | `POST /api/logout` | revokes the token and its key; signed by the key, also takes the PC the login came from out of the list |
 //! | `GET /api/users` | `{"total":1,"data":[<user>]}` |
 //! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol"}}]}`: the account's PCs but the asking device, each with its password-less state (pcsync.rs) and whether it can be woken (wake.rs `peer_wol`) |
@@ -496,7 +496,14 @@ pub async fn session(state: &Arc<AppState>, req: &ApiRequest) -> Result<Session,
 
 async fn current_user(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     match session(state, req).await {
-        Ok(s) => Reply::ok(&overview::user_of(state, &s)),
+        Ok(s) => {
+            let mut user = overview::user_of(state, &s);
+            // as the login's answer says it (login.rs): the app shows S1 only for it
+            if support::may_make(&s.account.login_key) {
+                user["hjv"] = json!({ "support_code": true });
+            }
+            Reply::ok(&user)
+        }
         Err(reply) => reply,
     }
 }
