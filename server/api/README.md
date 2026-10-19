@@ -634,8 +634,10 @@ PC (P1), and the PC trades it, once and within ten minutes, for a `guest`/`pc` t
 that lives two hours (`src/support.rs`, `src/guest.rs`; Formats, below). The ticket is the access
 password's PC ticket but for its times, so hbbs, the ticket's form and the shared vectors do not
 change, and the staff member connects with their own ticket and the PC's password or acceptance,
-as before. No nginx change: the new path is under `/api/hjv/`, and the trade goes through
-`/api/hjv/guest` with its limits.
+as before. The paths to make a code and to wait for it are under `/api/hjv/`, and the trade goes
+through `/api/hjv/guest` with its limits; the support links (1.9.0, below) need nginx's
+`location ^~ /api/hjv/s/` (deploy/nginx-hjviewer-api.conf), which keeps their value out of its
+error log and goes in with the hjv-api that answers them, never after (docs/server-runbook.md 9-9).
 
 - Who makes one: `POST /api/hjv/support-code` takes the token with its account key's proof, as
   every account path, so only a device of an account on the allowlist and not blocked; the App
@@ -695,7 +697,25 @@ as before. No nginx change: the new path is under `/api/hjv/`, and the trade goe
   shows the codes open now and held, and the last day's `code` records by result; its counts since
   the start have the tickets traded (`code pc`) and the refusals (`code refused <result>`) with the
   others.
-- The numbers (the ten minutes, the two hours, 5, 1000, the ten minutes more) are constants of
+- The support link, the waiting room and the support grant (1.9.0, TV-W6, docs/access-tickets.md
+  3-7; Formats, below). The answer that makes a code also has `link`, the path of its support link
+  (`/api/hjv/s/<22>`), and `wait`, its waiting number: each 16 random bytes in base64url, apart
+  from each other and from the code, kept with the code (the link under an HMAC with the same key)
+  and ending with it. The link opens a page, in Korean then English, with the code and the policy's
+  Windows `latest` to run without installing, three downloads per code, while the code is open
+  and its maker stands as for a trade; the staff member's app holds `GET
+  /api/hjv/support-code/wait` up to 20 seconds to hear which PC used it, and only the account key
+  that made a code sees it there. A PC's trade of a code also gets `staff`, the support grant:
+  list key `HJV_API_LIST_KID` signs, with the purpose `hjv-support-v1`, which device made the code
+  (its account key and device ID, no name: outsiders' PCs are shown "연세대 교직원(로그인 확인)"
+  only), for that PC and the ticket's two hours. The grant opens nothing; the PC's connection
+  window marks that device's connection with it. A link's download is an `update` record
+  `support-windows` with the maker's tag; nothing records or logs a link, a waiting number, the
+  waiting room, a grant or the PC's ID, and the PC's ID and key that the waiting room tells the
+  maker stay in memory with the code (20 minutes at most). `admin ticket status` adds the
+  waiting-room requests held and the support links with downloads left.
+- The numbers (the ten minutes, the two hours, 5, 1000, the ten minutes more; from 1.9.0 the
+  three downloads, the 20-second hold, two holds per key and 200 in all) are constants of
   `src/support.rs`, not settings. The two hours are the user's to change: two texts of the app say
   them (docs/access-tickets.md 5-3, S2 and P3). So is the controller's side, which 1.9.0 refuses: a
   `code` with `use` `ctl` gets the 400 of a body not of the form, and the `use` of both requests is
@@ -851,9 +871,10 @@ The packages of new app versions (`src/update.rs`, Formats below) are the one th
 answers that is not JSON. `GET, HEAD /api/hjv/update/{windows,android}/{x.y.z}` (door 1) takes a
 login, the token with its signature as every account path, or without a login the device key of a
 PC in an account, for that PC's own platform; `POST /api/hjv/update/{platform}/link` takes a login
-and answers a short link; `GET, HEAD /api/hjv/u/{code}` (the short link) and `GET, HEAD
-/api/hjv/get/{code}/…` (door 2) take the code in their path, are what a browser opens, and so are
-the only paths that take a request with an `Origin` header.
+and answers a short link; `GET, HEAD /api/hjv/u/{code}` (the short link), `GET, HEAD
+/api/hjv/get/{code}/…` (door 2) and, from 1.9.0, `GET, HEAD /api/hjv/s/{link}/…` (a support code's
+support link) take the code or the link in their path, are what a browser opens, and so are the
+only paths that take a request with an `Origin` header.
 
 A PC leaves its account in one place only, `db::release_binding`: its row goes, its binding ID
 stays 180 days as a tombstone, and the change serial goes up, in one transaction, so that the
@@ -869,7 +890,8 @@ form checks, and every refusal leaves after the failure delay. `GET /api/hjv/acc
 check's mode, below) takes none either: it says no more than hbbs's refusals show anyone, whether
 hbbs checks tickets. `POST /api/hjv/support-code` (Support codes, below) takes the token with its
 signature as every account path, and the code it makes comes to `POST /api/hjv/guest` sealed in
-the place of the password.
+the place of the password. `GET /api/hjv/support-code/wait` (1.9.0, the waiting room) takes the
+token with its signature too; being a GET, it uses no nonce and has no retry answer.
 
 `GET /api/hjv/admin/overview` (Admin overview) takes the token with its signature too, with the
 same 401 and 409 as every account path. For an account that is not a super operator the answer is
@@ -1046,7 +1068,8 @@ a role given or taken away on the server (at its restart) shows without a new lo
 
 ```text
 {"total":n,"data":[{"id":"<PC ID>","user_name":"<portal ID>","info":{"device_name":"<host name>","os":"windows"},"status":1,
-  "note":"<the card's second line>","hjv":{"pk":"<base64 of the PC's key>","pwless":"<state>","kinds":["remote","file","camera"],"wol":"ok"}}]}
+  "note":"<the card's second line>","hjv":{"pk":"<base64 of the PC's key>","pwless":"<state>","kinds":["remote","file","camera"],"wol":"ok",
+  "synced":1760000000,"wake":""}}]}
 ```
 
 `pk` is the key hbbs held when the PC was bound (the app checks the PC it reaches against it),
@@ -1054,18 +1077,25 @@ a role given or taken away on the server (at its restart) shows without a new lo
 
 | `pwless` | when (the first that holds) | `note` |
 |---|---|---|
-| `needs-relogin` | hbbs holds another key for the PC than the one stored (design v3 §4-6) | 이 PC에서 다시 로그인 필요 |
-| `disabled` | the account's switch is off | 비밀번호 없는 연결 일시 중지(관리자) |
-| `listed` | no sync yet, or the last one carried no binding or another one | 이 PC에서 로그인 필요 |
-| `expired` | the last sync is older than a list lives (`HJV_API_TRUST_TTL`) | 마지막 확인 <n>분/시간/일 전 |
+| `needs-relogin` | hbbs holds another key for the PC than the one stored (design v3 §4-6) | PC에서 다시 로그인 필요(보안 키 바뀜) |
+| `disabled` | the account's switch is off | 관리자가 일시 중지함 |
+| `listed` | no sync yet, or the last one carried no binding or another one | PC에서 로그인 필요 |
+| `expired` | the last sync is older than a list lives (`HJV_API_TRUST_TTL`) | 서버와 동기화 안 됨(마지막 확인 <n>분/시간/일 전); without a sync ever, 서버와 동기화 안 됨 |
 | `off` | the PC's users switched it off there | PC에서 꺼 둠 |
-| `active` | the last sync carried its binding | 비밀번호 없이 연결 |
+| `active` | the last sync carried its binding | 비밀번호 없는 연결 켜짐 |
 
 `wol` is whether the PC can be woken (design v3 §5-2, §8-4): the verdict of its wake report
 (`ok`, `warn`, `no`, `unknown` without a report; Waking a PC, below), but `no` while the account
 has no active relay, since nothing could wake it, so that the app offers "켜기" on a sleeping PC
 only when it is not `no`. Once the account has a relay, the note ends with " · 켜기 가능" (`ok`,
 `warn`) or " · 켜기 준비 안 됨" (`no`).
+
+From 1.9.0 (UX-W1's U27, docs/access-tickets.md 3-8) `hjv` also has `synced`, the PC's last sync
+in Unix seconds (left out when it never synced), and `wake`, that tail of the note as `ready`
+(" · 켜기 가능"), `not_ready` (" · 켜기 준비 안 됨") or "" (nothing). A 1.9.0 app that finds `wake`
+makes the card's second line itself, in its own language, from `pwless`, `synced` and `wake`
+(and shows `note` for a `pwless` it does not know); `note` stays, in the same words as the table,
+for older apps.
 
 `GET /api/hjv/this-device` of a login that proved it is a PC of the account also has
 `"binding":"<32 hex>"`, `"pwless":"<state>"` and `"activation":"present|absent|stale"` (what the
@@ -1295,16 +1325,24 @@ docs/access-tickets.md 3-7 is their contract.
 
 ```text
 POST /api/hjv/support-code  {"use":"pc"}                        a staff member's app: token and X-HJV-Proof
-200 {"code":"K7M2-Q9XD","use":"pc","expires_in":600}
+200 {"code":"K7M2-Q9XD","use":"pc","expires_in":600,"link":"/api/hjv/s/<22>","wait":"<22>"}
 POST /api/hjv/guest  {"use":"pc","id":"<its ID>","pk":"<base64 of its device key>","sig":"<base64>","code":"hjv-sealed-v1.<kid>.<sealed>"}
 "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-256(sealed bytes))   what sig signs, as for the access password
 sealed: {"v":1,"p":"code","use":"pc","pw":"<what was typed>","t":<time>,"n":"<nonce>","id":"<id>","kid":"<kid>"}
-200 {"ticket":"t1.<kid>.<payload>.<signature>","use":"pc","exp":<time>,"server_time":<time>}
+200 {"ticket":"t1.<kid>.<payload>.<signature>","use":"pc","exp":<time>,"server_time":<time>,
+     "staff":{"kid":1,"g":"<base64 of the grant bytes>","s":"<base64 of the signature, 88>"}}
+GET /api/hjv/support-code/wait?rev=<n>                           the maker's app: token and X-HJV-Proof
+200 {"rev":18,"codes":[{"wait":"<22>","state":"open","expires_in":431},
+                       {"wait":"<22>","state":"used","pc":"123456789","pk":"<base64 44>","until_in":7190},
+                       {"wait":"<22>","state":"over"}]}
+GET, HEAD /api/hjv/s/<link>   307 to …/<link>/   a browser
+GET, HEAD /api/hjv/s/<link>/  the page            …/<link>/HJViewer-<v>.exe, …/<link>/HJViewer-<v>-<NOTICE>.txt
 ```
 
 - Making one: the body exactly `{"use":"pc"}`, a JSON object of that one string (`ctl` is kept
-  for later), else 400 `bad_request`; 200 with the code as shown, its use and the seconds it has
-  left. Refusals besides the 401 and 409 of every account path and 405 for another method: 403
+  for later), else 400 `bad_request`; 200 with the code as shown, its use, the seconds it has
+  left and, from 1.9.0, its support link's path and its waiting number (`link`, `wait`: 16 random
+  bytes each in base64url without padding, 22 characters; an app before 1.9.0 reads neither). Refusals besides the 401 and 409 of every account path and 405 for another method: 403
   `{"error":"이 계정으로는 지원 코드를 만들 수 없습니다.","hjv":"no_code"}` for the App Review account;
   429 `rate_limited` past 30 calls a minute of the account key; 429
   `{"error":"아직 쓰지 않은 지원 코드가 많습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"too_many_codes","retry_after":<s>}`
@@ -1338,6 +1376,54 @@ sealed: {"v":1,"p":"code","use":"pc","pw":"<what was typed>","t":<time>,"n":"<no
   failures filled up since; a first answer of the address's 429 is not kept for it.
 - The ticket: `guest`/`pc`, `sub` empty, the request's `id` and `pk`, `to` empty, `exp` two hours
   after `iat`; nothing in it names the staff member.
+- The support grant (1.9.0, `src/grant.rs`): the trade's 200 has `staff` besides the ticket (the
+  access password's never has). `g` is the grant bytes, UTF-8 JSON in this order without spaces:
+
+  ```text
+  {"v":1,"typ":"hjv-support","kid":1,"pc_id":"<the trade's id>","pc_pk":"<base64 of the trade's pk>",
+   "ck":"<base64 of the account key that made the code>","ctl_id":"<that login's device ID, or "">",
+   "name":"","iat":<the ticket's iat>,"exp":<the ticket's exp>}
+  ```
+
+  and `s` the list key's Ed25519 signature over `"hjv-support-v1" NUL` and those bytes: another
+  purpose than the trust list's `hjv-trust-v1`, so that neither passes for the other. `ck` and
+  `ctl_id` are `ctl_keys.pk` and `ctl_keys.ctl_id` of the key that signed the request to make the
+  code, looked up with the maker's standing when the code is traded; `name` is always "" (the
+  user's decision for 1.9.0). The PC checks it against the build's `HJV_TRUST_PUBKEYS`, its own ID
+  and key, and only then reads it (docs/access-tickets.md 3-7 "지원 확인"). Should its bytes not
+  be made, the PC gets its ticket without `staff` and the journal a line. The very same body
+  again within the retry window gets the same grant.
+- The waiting room, `GET /api/hjv/support-code/wait?rev=<n>` (1.9.0): the codes the request's
+  account key made that hjv-api holds, in the order made: `open` with `expires_in`, `used` with
+  the PC's `pc` and `pk` (the trade's) and `until_in` (its ticket's seconds left), `over` (ten
+  minutes past, or its maker's key or account ended). A code taken whose ticket is not signed yet
+  is still `open`; a code leaves the list when it leaves memory (ten minutes after its end).
+  `rev` goes up by one at every change of that key's codes (made, traded, a key ended, ten
+  minutes noticed, gone from memory), in memory only (a restart counts from 0; the app looks only
+  whether it is the same). Without `rev`, or with another than the key's now, the answer comes at
+  once; with the key's, hjv-api holds it until a change, until the first of the key's open codes
+  ends, or 20 seconds, whichever is first. At most 2 held per account key and 200 in all; past
+  that, and while hjv-api stops, the answer comes at once. Another key, the same account's other
+  devices among them, sees none of these codes. Refusals: the 401 and 409 of every account path,
+  403 `no_code` for the App Review account, 429 `rate_limited` past 30 calls a minute of the key
+  (with its other calls), 405 for another method. No record, no line in the journal.
+- The support link (1.9.0, `src/update.rs`): `GET, HEAD /api/hjv/s/<link>` is a 307 to
+  `…/<link>/`, the page (Korean then English, docs/access-tickets.md 5-3 SL1–SL8: the title, door
+  2's pilot line, the caution, four steps, the code large, `[HJViewer-<v>.exe 받기]` with the
+  package's size and SHA-256, the notice files; SL8 in place of the download while the policy has
+  no Windows package; no script, no outside resource, no operator contact; door 2's headers,
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`, `Cache-Control:
+  private, no-store`, `X-Robots-Tag`, `Referrer-Policy: no-referrer`). `…/<link>/HJViewer-<v>.exe`
+  is the policy's Windows `latest` under the name of running it without installing (neither
+  `-install` nor `-qs-`), three GETs per code, a HEAD free, within the download slots;
+  `…/<link>/HJViewer-<v>-{LICENSE,NOTICE,SOURCE,THIRD_PARTY_NOTICES}.txt` its notice files,
+  uncounted. All of it only while the code is open (not used, within its ten minutes, its key not
+  ended) and its maker's account is on the allowlist and not blocked (looked at in the database
+  at each request; a block or an ended key ends the code for good); else, and for any other value
+  or name, the short link's 404 `{"error":"링크가 맞지 않거나 사용 기한이 지났습니다."}`, which counts
+  against no address (`HJV_API_LIMIT_UPDATE_FAIL_IP` is shared by everyone behind one address, and
+  128 bits are not guessed). A download is an `update` record `support-windows` with the maker's
+  tag and the address's tag, and a journal line without the link.
 
 ### The access check's mode: `GET /api/hjv/access` (`src/gate.rs`)
 
@@ -1463,7 +1549,7 @@ GET  /api/hjv/devices/{id}/wol
   driver that does not tell), no card armed to wake the PC, fast startup on, on battery, USB cards
   only, modern standby without its magic packet wake.
 
-### Updates: the packages of new app versions, `/api/hjv/update`, `/api/hjv/u`, `/api/hjv/get` (`src/update.rs`, `src/body.rs`)
+### Updates: the packages of new app versions, `/api/hjv/update`, `/api/hjv/u`, `/api/hjv/get`, `/api/hjv/s` (`src/update.rs`, `src/body.rs`)
 
 The design of the minimum version and forced update, §4-6. The operator installs the packages,
 then the signed policy (`hjv-release` makes both; the runbook has the steps); the apps get the
@@ -1540,6 +1626,11 @@ policy from nginx and its `latest` from hjv-api.
   `notices-<v>/` of the package directory. A wrong code, a closed door and any other name are the
   same 404. To close door 2, delete the file (while the hbbs file's text carries door 2's link,
   put its S2 text in first: runbook 8-4); to change the code, replace it.
+- **Support links** (1.9.0), `GET, HEAD /api/hjv/s/{link}/` and `…/{link}/{file}`: the fourth way
+  to the Windows package, for the person a staff member's support code is for (Support codes,
+  above, has the paths, the page and the rules). It hands out `HJViewer-<v>.exe` and the notice
+  files of the policy's Windows `latest` only, three downloads per code, and its 404s count against
+  no address.
 - **Limits.** A request that fails for who asks (no or a wrong token, proof, signature or code)
   counts against its client address; past `HJV_API_LIMIT_UPDATE_FAIL_IP` such a request gets `429
   {"error":…,"hjv":"rate_limited","retry_after":<seconds>}` with `Retry-After` in place of its
@@ -1550,7 +1641,7 @@ policy from nginx and its `latest` from hjv-api.
   its logins) or for the PC (its device key), a link made under 20 a day for its account; the
   downloads of a link are the link's three, and door 2 has the download slots only.
 - **Records.** Every package sent and every link made is a record of kind `update` (`token-…`,
-  `device-…`, `link-made-…`, `link-…`, `door2-…` with the platform) with the account and the PC
+  `device-…`, `link-made-…`, `link-…`, `door2-…` with the platform, and `support-windows`) with the account and the PC
   as tags and the client address as its tag, and a line in the journal; a code shows there as the
   first eight hex digits of its tag, a hash keyed with the log key like the other tags (a plain
   hash of a short link's 40 bits would leave a reader of the journal a few hundred codes to try).
@@ -1615,7 +1706,15 @@ policy from nginx and its `latest` from hjv-api.
 The vectors shared with the client are `tests/data/v3-vectors.json`: the client renders the file
 from its `src/hjviewer_account/vectors.rs` and pins its SHA-256, and `tests/keys.rs` and
 `tests/pcsync.rs` check this code against it (the request proofs, the sealed login's `ck` and `cp`,
-the trust list and the sync envelope). The ones below come from the same account key and nonce
+the trust list and the sync envelope). The support grant's (1.9.0) are
+`tests/data/support-grant-vectors.json`, the client's `support_json()` of the same file, byte for
+byte (SHA-256 `d5c2a45bcd30dfdb2d974ead325cd5b20a9b8fa1eef4d056abec0b658a21d184`, which both
+sides pin): list key 1 (seed `[1; 32]`), the PC's device key (`[2; 32]`), the account key above
+and another (`[4; 32]`); the grant's bytes, signed bytes and `staff` for PC 123456789 made from
+controller 987654321; the connection proof that controller sends the PC; and the refused ones
+(another PC, the bytes altered after signing, a life of 7201 s, an unknown member, another
+account key's proof). `tests/support.rs` makes the grant again from the inputs and gets the same
+bytes and the same signature (Ed25519 signs deterministically). The ones below come from the same account key and nonce
 bytes.
 
 Made with libsodium 1.0.18 (`crypto_sign_seed_keypair`, `crypto_sign_detached`), as the app signs.
@@ -1749,6 +1848,13 @@ password and a closed file after the failure delay, the seal of this request onl
 refused, and the access password's at the login), the retry, the form, the limits before the hash
 and `admin unlock` (each 429 with the seconds of its limit), a PC that hbbs knows by another key,
 no ticket key, the README's vector, and that nothing of it reaches the journal or the records;
+`tests/support.rs` the support codes: made and traded once within ten minutes, the same 401 for
+wrong, over, used and blocked, the maker's login ending its codes, the caps, who may not make one;
+from 1.9.0 the support grant against `tests/data/support-grant-vectors.json` and in a trade (that
+PC only, no name), the support link (its page, three downloads, ending with its code, 404s
+counted against no address) and the waiting room (the hold, `rev`, the maker key's codes only,
+the limits), and nothing of a code, a link, a waiting number or a grant in the journal or the
+records;
 `tests/update_stream.rs` how a package goes out, on tokio's paused clock
 with hjv-api on one end of a connection in memory (a slow reader past the minute a request has, a
 reader that stops, the fifth download at once, the hour a download may take, 200 MiB at the rate),
