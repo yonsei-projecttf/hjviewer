@@ -175,7 +175,7 @@ PASS (strict): transport: relay
 - `--hjv-e2e-option <이름> [값 …]`은 실행 중인 서비스의 옵션을 IPC로 읽거나 씁니다(여러 쌍은 한 번의 쓰기). `--hjv-e2e-local-option`은 그 사용자의 LocalConfig, `--hjv-e2e-service-password`는 서비스의 영구 비밀번호, `--hjv-e2e-id`는 기기 ID와 공개키입니다.
 - 화면 세션(`--hjv-e2e-screenshot`, `-stream`, `-forward`)에 비밀번호 `""`를 주면 비밀번호 없는 연결입니다. 비밀번호 창이 뜨면 `hjv-e2e: password required <제목>`을 찍고 **종료 코드 3**, 'error' 창(키 바뀜 경고)이면 `hjv-e2e: error <제목>`을 찍고 **종료 코드 4**로 끝납니다. PC가 증명을 거절했을 때의 창은 제목이 `Could not connect without a password`라서 그냥 비밀번호 창(`Password Required`)과 구분됩니다.
 - 비밀번호 없는 연결의 데이터 경로는 원격 화면(`--hjv-e2e-screenshot <ID> ""`)으로 봅니다. 포트 포워딩은 증명을 보내지 않으므로 S22와 X7에만 씁니다.
-- 1.8.0의 출입증(클라이언트 패치 0058–0061, 0063): `--hjv-e2e-ticket [refresh]`는 로그인의 출입증을 해시의 앞 8바이트, `use`, 남은 수명으로 보입니다(refresh는 먼저 `POST /api/hjv/ticket` 한 번, 못 받으면 종료 코드 1). 화면 세션과 포워딩은 hbbs의 출입 거절을 앱이 보이는 창(핵심의 A1이나 A2, `hjv-e2e: hjv-access-error: <제목>: <글>`)과 `hjv-e2e: access refused <제목>`, **종료 코드 5**로 끝냅니다(hbbs가 보낸 글은 그 앞에 표준 오류로). `HJV_E2E_ACCESS_PASSWORD=<이용 비밀번호>`를 주면 세 명령이 세션 전에 그 대상의 이용 비밀번호 출입증을 받습니다(`hjv-e2e: guest ctl: ok`, 못 받으면 `hjv-e2e: guest ctl: <코드>`와 **종료 코드 6**). `--hjv-e2e-guest-pc <이용 비밀번호>`는 이 PC의 출입증을 받아 IPC로 등록하는 프로세스에 넘깁니다(`hjv-e2e: guest pc: ok`, 못 받으면 종료 코드 6). 이 명령들의 시나리오는 아래 "출입 제한 단계 (1.8.0)"에 있습니다.
+- 1.8.0의 출입증(클라이언트 패치 0058–0061, 0063): `--hjv-e2e-ticket [refresh]`는 로그인의 출입증을 해시의 앞 8바이트, `use`, 남은 수명으로 보입니다(refresh는 먼저 `POST /api/hjv/ticket` 한 번, 못 받으면 종료 코드 1). 화면 세션과 포워딩은 hbbs의 출입 거절을 앱이 보이는 창(핵심의 A1이나 A2, `hjv-e2e: hjv-access-error: <제목>: <글>`)과 `hjv-e2e: access refused <제목>`, **종료 코드 5**로 끝냅니다(hbbs가 보낸 글은 그 앞에 표준 오류로). `HJV_E2E_ACCESS_PASSWORD=<이용 비밀번호>`를 주면 세 명령이 세션 전에 그 대상의 이용 비밀번호 출입증을 받습니다(`hjv-e2e: guest ctl: ok`, 못 받으면 `hjv-e2e: guest ctl: <코드>`와 **종료 코드 6**). `--hjv-e2e-guest-pc <이용 비밀번호>`는 이 PC의 출입증을 받아 IPC로 등록하는 프로세스에 넘깁니다(`hjv-e2e: guest pc: ok`, 못 받으면 종료 코드 6). 1.8.2의 지원 코드(패치 0082): `--hjv-e2e-support-code`는 로그인한 앱이 코드를 하나 만들어 `hjv-e2e: support code: XXXX-XXXX`로 찍고(못 만들면 `hjv-e2e: support code: <이유>`와 종료 코드 6), `--hjv-e2e-guest-pc-code <코드>`는 `--hjv-e2e-guest-pc`처럼 그 코드로 이 PC의 출입증을 받아 넘깁니다(`hjv-e2e: guest pc code: ok`, 못 받으면 `… <코드>`와 종료 코드 6). 이 명령들의 시나리오는 아래 "출입 제한 단계 (1.8.0)"에 있습니다.
 
 **시나리오와 결과**(2026-10-13, WSL2 Ubuntu 24.04, `scripts/ci.sh e2e`, 실행 순서대로. `""`는 비밀번호 없이 연 원격 화면, T0는 같은 실행의 비밀번호 연결 시간, 상한 B = T0 + 2초)
 
@@ -299,6 +299,7 @@ PASS (strict): transport: relay
 - 심사 계정: `HJV_API_REVIEW_FILE=$RUN/api/review.conf`. A10이 PC A의 ID를 `PC=`로 써 넣습니다(hjv-api는 다시 시작하지 않고 읽음). ID(`E2EREVIEW-TEST`)와 비밀번호는 시험 값입니다.
 - 기기: PC A는 계정 단계의 PC(`PC_CLIENT`, alice에 묶임)입니다. PC B는 `hjv-pc2` 네트워크에서 도는 `CLIENT`이고(설치하지 않은 실행본, 어디에도 로그인하지 않음), 그동안 X4의 둘째 PC는 멈춥니다. 컨트롤러는 `hjv-ctl` 네트워크의 세 쪽입니다: 로그인하지 않은 `actl`, alice로 로그인한 `staff`, 심사 계정으로 로그인한 `rev`. 클라이언트 호출마다 30초 제한은 그대로이고, 출력 기록에서 비밀번호는 `***`로 가립니다.
 - `GET /api/hjv/access`는 `actl` 쪽 네트워크에서 Caddy를 거쳐 토큰 없이 묻습니다.
+- 지원 코드(1.8.2, [access-tickets.md](access-tickets.md) 3-7, C1–C7): 서버에 더 줄 것이 없습니다. 코드는 출입증 키(위의 seed `e7`)와 교직원 로그인(`hjv-fake-sso`의 alice)만 쓰고, `guest.conf`는 읽지 않습니다. 그래서 A9가 그 파일을 지운 뒤, A10 다음, A11(`NOT_BEFORE`) 앞에 돌며, 코드가 그 파일과 상관없다는 것도 함께 보입니다. 한도는 위의 `HJV_API_LIMIT_GUEST_IP=50/600`(코드의 실패도 이용 비밀번호의 실패와 함께 셈)이면 충분하고, 경로가 `/api/hjv/` 아래라 Caddy와 nginx 설정도 그대로입니다. 만들기는 `staff`의 `--hjv-e2e-support-code`(토큰과 `X-HJV-Proof`로 `POST /api/hjv/support-code`), 바꾸기는 PC B의 `--hjv-e2e-guest-pc-code <코드>`(P3이 하듯 봉인해 `POST /api/hjv/guest`로 보내고 받은 출입증을 서비스에 넘김)입니다(클라이언트 패치 0082). 보안 타이머는 줄이지 않습니다(코드의 10분, 출입증의 2시간). 지나서 끝나는 것은 hjv-api의 단위 시험이 봅니다.
 
 **시나리오와 결과**(2026-10-17, 클라우드 컨테이너의 Ubuntu 24.04(CPU 4개), `scripts/ci.sh e2e`와 `scripts/ci.sh prepush`, 실행 순서대로)
 
@@ -314,16 +315,24 @@ PASS (strict): transport: relay
 | A8 | PC B에서 `--hjv-e2e-guest-pc <맞는 비밀번호>` | `guest pc: ok`. 10초 안에 `hjv-access-pc`가 `ok`, 콘솔의 `reg.ok`가 늘고, `staff`가 PC B에 연결해 화면을 받음. PC B의 설정 폴더에 출입증 파일(`HJViewer_ticket.json`)이 생기지 않음 |
 | A9 | `guest.conf`를 지움 | 맞는 비밀번호로 A6을 해도 `guest ctl: denied`(A7과 같은 답과 지연). 지난 하루 시도에 `closed 1` |
 | A10 | `review.conf`에 `PC=<PC A>`, 심사 계정으로 로그인한 `rev` | `--hjv-e2e-ticket refresh`가 `"use":"ctl"`. PC A에 연결하면 화면을 받고, PC B에 연결하면 출입증을 한 번 새로 받은 뒤에도 거절되어 종료 5(msgbox의 글은 핵심의 A2) |
+| C1 | (A10 다음, `MODE=enforce`, 출입증 키 있음) | `GET /api/hjv/access`가 정확히 `{"codes":true,"mode":"enforce"}` |
+| C2 | alice(`staff`)와 심사 계정(`rev`)의 로그인 | alice의 로그인 답에 `hjv.support_code`가 `true`(앱이 LocalConfig의 `hjv-support-code`를 `Y`로 둠), 심사 계정의 것에는 없음(빈 값). 심사 계정의 `--hjv-e2e-support-code`는 403 `no_code`(종료 6). `currentUser`의 같은 값은 그것을 묻는 헤드리스 명령이 없어 hjv-api의 시험(`tests/support.rs`, `tests/account.rs`)이 봅니다 |
+| C3 | `staff`가 `--hjv-e2e-support-code` | 종료 0, `XXXX-XXXX` 꼴(Crockford base32)의 코드. `hjv-api admin ticket status`의 지난 하루 코드 기록에 `made 1` |
+| C4 | PC B의 서비스를 다시 시작(A8의 출입증은 서비스의 메모리에만 있음), 그다음 `--hjv-e2e-guest-pc-code <C3의 코드>` | 다시 시작한 뒤 `hjv-access-pc`가 `refused`이고 hbbs가 PC B를 오프라인으로 봄. 코드를 넣으면 `guest pc code: ok`(`guest.conf`는 A9부터 없음). 10초 안에 `hjv-access-pc`가 `ok`, 콘솔의 `reg.ok`가 늘고, PC B가 온라인. 기록에 `ok-pc 1`, 출입증 파일은 생기지 않음 |
+| C5 | `staff`가 PC B에 연결 | 화면을 받음(종료 0) |
+| C6 | 같은 코드를 PC B에서 다시 | `guest pc code: denied`(401), 종료 6, 1.5초 넘게 걸림(실패 지연). 기록에 `used 1`. PC B는 받은 출입증으로 그대로 `ok` |
+| C7 | 지어낸 코드(꼴은 맞음, C3의 것과 다름) | C6과 같은 답(`denied`, 종료 6, 1.5초 넘게). 기록에만 `wrong 1`로 다르게 남음 |
 | A11 | `NOT_BEFORE=<지금>` | 로그 `access enforce: keys 1, not before <UTC>`. 15초 안에 두 PC의 등록이 끊김(`access closed reg`). PC A는 다음 동기화(E2E는 5초마다)의 새 출입증으로 다시 들어옴. 그 뒤 `staff`의 연결은 옛 출입증으로 한 번 거절된 뒤 같은 호출 안에서 새 출입증으로 화면을 받음(종료 0, 거절 줄이 정확히 하나 늚). PC B는 이용 비밀번호를 다시 넣을 때까지 `refused` |
 | A13 | 돌고 있는 hbbs의 파일을 고장 난 것(`MODE=on`)으로 바꿈, 그다음 hbbs를 다시 시작 | 처음에는 `access file …: …; access enforce: keys 1, not before … stays in force`(ERROR)이고 `staff`가 그대로 연결함. 다시 시작한 뒤에는 `access closed: every request is refused`, 콘솔 `mode=closed`, `staff`도 거절(종료 5, 핵심의 A2, 콘솔 `ph.closed`), 35초 안에 `GET /api/hjv/access`가 `{"mode":"closed"}` |
 | A14 | `MODE=off`로 고침 | 다시 시작하지 않고 다음 읽기에 `access off`. PC B가 다시 등록하고(`hjv-access-pc` `ok`), `actl`이 비밀번호로 PC B에 연결해 화면을 받음. 끝나면 PC B를 멈춤 |
 
-- 당시 결과(2026-10-17): 열네 시나리오 모두 PASS였고, strict 전체는 PASS 91줄이었습니다. 현재는 A12를 퇴역해 이 단계가 13줄이며, X2·X3·V3·V8도 퇴역한 strict 전체 하한은 86줄입니다.
+- 당시 결과(2026-10-17): 열네 시나리오 모두 PASS였고, strict 전체는 PASS 91줄이었습니다. A12를 퇴역해 A 시나리오는 13줄이고, 2026-10-20에 지원 코드의 C1–C7 일곱 줄을 더해 이 단계는 20줄입니다. X2·X3·V3·V8도 퇴역한 strict 전체 하한은 93줄입니다.
+- A11은 C4에서 코드의 출입증으로 등록한 PC B의 등록도 끊습니다(그 출입증도 `NOT_BEFORE` 전에 받은 것). 그래서 A11의 "두 PC의 등록이 끊김"과 "PC B는 `refused`"는 C1–C7이 있어도 그대로입니다.
 - 걸린 시간: 이 단계는 2분 30초쯤입니다(클라우드 컨테이너). 가장 긴 것은 A14에서 PC B가 다시 등록하기까지(43초쯤)로, 거절된 PC는 30초마다 RegisterPk를 다시 보내기 때문입니다(upstream의 `DEPLOY_RETRY_INTERVAL`). A7과 A9는 hjv-api의 실패 지연으로 각각 3초 남짓입니다. 같은 컨테이너에서 strict 전체는 10분 30초쯤입니다.
 
 **`scripts/ci.sh`가 하는 것**
 - 감지(`e2e_access`): hbbs의 `--help`에 `--hjv-access-file`이 있고, 클라이언트 실행 파일에 `HJV_E2E_ACCESS_PASSWORD`가 있고(릴리스 빌드는 명령 이름을 글자로 남기지 않음), 계정 E2E가 돌면 `HJV_E2E_ACCESS=1`로 이 단계를 켭니다. `server/patches`에 0006이 있는데 hbbs에 옵션이 없거나, `client/patches`에 0061이 있는데 클라이언트에 명령이 없으면 실패합니다. 패치가 없을 때만 건너뛴 것으로 셉니다(최소 버전 단계의 감지와 같은 틀).
-- 하한: `E2E_LEAST_STRICT`에 이 단계의 `PASS` 13줄을 더합니다(A12 퇴역 반영).
+- 하한: `E2E_LEAST_STRICT`에 이 단계의 `PASS` 13줄(A12 퇴역 반영)과 지원 코드의 7줄(C1–C7)을 더합니다. C1–C7은 이 단계 안에서 돌므로 따로 감지하지 않습니다(`client/patches`의 0082가 명령을 넣음).
 
 ### 출입 제한 단계로 찾은 것
 
@@ -339,6 +348,7 @@ PASS (strict): transport: relay
 - 출입증 수명이 다해 끝나는 것: 수명은 1시간이 가장 짧으므로 E2E는 `NOT_BEFORE`(A11)로 끝냅니다. 수명과 반쯤 지난 때의 갱신은 단위 시험이 봅니다.
 - hbbr: 아무것도 확인하지 않습니다(계약 1절).
 - 이용 비밀번호와 출입증의 한도: hjv-api의 시험(`server/api/tests/guest.rs`)과 deploy 단계의 nginx 한도 시험이 봅니다.
+- 지원 코드의 나머지(3-7): 10분이 지난 코드, 열린 코드 5개와 모두 1000개의 상한, 만든 계정이 막히거나 로그아웃해 끝난 코드, 동시에 넣은 두 요청, `currentUser`의 `hjv.support_code`는 hjv-api의 시험(`server/api/tests/support.rs`)이 봅니다. 앱의 S1·S2·P3 창과 문구는 Dart 시험과 기기 시험입니다.
 
 ## 원격 켜기 단계 (1.6.0)
 

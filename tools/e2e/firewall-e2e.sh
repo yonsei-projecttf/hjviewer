@@ -57,7 +57,8 @@
 # and enforce, NOT_BEFORE, a broken file), and hjv-api the ticket key of HJV_E2E_KEYS
 # (ticket.secret, ticket.pub), the access password's file and the App Review account's, whose demo
 # PC is the PC. A second PC, PC B, runs CLIENT (not installed, logged in nowhere) in hjv-pc2's
-# network.
+# network. Between A10 and A11, C1-C7 run the support codes (access-tickets.md 3-7): alice makes
+# one, PC B trades it for its ticket and registers, and the code works once.
 set -euo pipefail
 
 MODE=${1:-strict}
@@ -1455,7 +1456,7 @@ ctl2_lists() {
 }
 
 # ---------------------------------------------------------------------------------------------
-# The staff-only gate (docs/access-tickets.md; docs/e2e.md, A1-A11 and A13-A14): hbbs's
+# The staff-only gate (docs/access-tickets.md; docs/e2e.md, A1-A11, C1-C7 and A13-A14): hbbs's
 # access file in its modes, the tickets of a login, of the bound PC, of the access password and of
 # the App Review account, and the refusals as the apps show them. Its controllers are sides of
 # their own in the controller's network: actl never logs in, staff is alice's, rev the App Review
@@ -1552,6 +1553,92 @@ guest_tries() { # the access password's tries of the last day, as admin ticket s
   admin ticket status | sed -n "s/^access password, the last day's tries: //p"
 }
 guest_tried() { [[ ", $(guest_tries), " == *", $1, "* ]]; } # <result> <n>, e.g. "wrong 1"
+
+code_records() { # the support codes' records of the last day, as admin ticket status counts them
+  admin ticket status | sed -n "s/^support codes, the last day's records: //p"
+}
+code_recorded() { [[ ", $(code_records), " == *", $1, "* ]]; } # <result> <n>, e.g. "used 1"
+gate_has_codes() { # <mode>: GET /api/hjv/access says the mode and "codes":true
+  gate_is "$1" && [ "$GATE" = "{\"codes\":true,\"mode\":\"$1\"}" ]
+}
+pcb_offline() { ! online "$PCB_ID" ctl; }
+# the form hjv-api shows a code in: two times four of Crockford base32's symbols
+CODE_FORM='^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$'
+
+# The support codes (docs/access-tickets.md 3-7; docs/e2e.md, C1-C7), in enforce after A10 and
+# before A11: alice's controller (staff) makes a code, PC B, logged in nowhere and started again
+# without the access password's ticket of A8, trades it for its own ticket and registers, and
+# alice connects to it. The access password's file is gone since A9: codes do not read it. No
+# expiry run: the ten minutes and the ticket's two hours stay as they are (hjv-api's tests).
+support_code_part() {
+  local code n0 ms ms2 fake
+  log "C1: MODE=enforce and hjv-api's ticket key: GET /api/hjv/access says \"codes\":true"
+  until_ok 5 "C1: GET /api/hjv/access with \"codes\":true" gate_has_codes enforce
+  pass "C1: GET /api/hjv/access $GATE (count or enforce, with the ticket key; access-tickets.md 3-6)"
+
+  log "C2: alice's login may make support codes; the App Review account's may not"
+  [ "$(local_option staff hjv-support-code)" = Y ] ||
+    fail "C2: alice's login answer did not carry \"support_code\":true (hjv-support-code '$(local_option staff hjv-support-code)')"
+  [ -z "$(local_option rev hjv-support-code)" ] || fail "C2: the App Review account's login answer carried \"support_code\":true"
+  arun hjv-ctl rev "$CLIENT" --hjv-e2e-support-code
+  [ "$RC" = 6 ] && ahas "hjv-e2e: support code: no_code" ||
+    fail "C2: the App Review account's make: exit $RC ($(grep '^hjv-e2e: support code' <<<"$OUT")), expected 6 and no_code"
+  pass "C2: alice's login answer has hjv.support_code true (the app keeps hjv-support-code Y), the App Review account's none, and its make gets 403 no_code (exit 6); currentUser's flag is hjv-api's tests' (tests/support.rs, account.rs): no headless command asks it"
+
+  log "C3: alice makes a support code (POST /api/hjv/support-code, signed)"
+  arun hjv-ctl staff "$CLIENT" --hjv-e2e-support-code
+  [ "$RC" = 0 ] || fail "C3: alice's make: exit $RC ($(grep '^hjv-e2e: support code' <<<"$OUT"))"
+  code=$(sed -n 's/^hjv-e2e: support code: //p' <<<"$OUT" | tail -n 1)
+  [[ $code =~ $CODE_FORM ]] || fail "C3: the code is not of the form XXXX-XXXX: '$code'"
+  until_ok 5 "C3: admin ticket status counts 'made 1'" code_recorded "made 1"
+  pass "C3: exit 0 after $MS ms with a code of the form XXXX-XXXX; admin ticket status: $(admin ticket status | sed -n 's/^support codes: \([0-9]* open\).*/\1/p'), records $(code_records)"
+
+  log "C4: PC B, logged in nowhere and without a ticket, trades the code and registers"
+  # A8's access password ticket lived in PC B's service: started again, it registers with none
+  restart_pcb_service
+  until_ok 45 "C4: PC B's hjv-access-pc refused after its service started again" pcb_is refused
+  until_ok 35 "C4: hbbs has PC B offline before the code" pcb_offline
+  n0=$(console_count reg.ok)
+  arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-guest-pc-code "$code"
+  [ "$RC" = 0 ] && ahas "hjv-e2e: guest pc code: ok" ||
+    fail "C4: exit $RC ($(grep '^hjv-e2e: guest' <<<"$OUT")), expected 0 and 'guest pc code: ok'"
+  ms=$MS
+  until_ok 10 "C4: PC B's hjv-access-pc ok" pcb_is ok
+  [ "$(console_count reg.ok)" -gt "$n0" ] || fail "C4: the console's reg.ok did not grow"
+  until_ok 20 "C4: PC B online" online "$PCB_ID" ctl
+  until_ok 5 "C4: admin ticket status counts 'ok-pc 1'" code_recorded "ok-pc 1"
+  [ ! -e "$RUN/pcb/home/.config/hjviewer/HJViewer_ticket.json" ] || fail "C4: PC B keeps a ticket file"
+  pass "C4: refused without a ticket, then 'guest pc code: ok' ($ms ms, no access password file); within 10 s hjv-access-pc ok, reg.ok up, PC B online; records $(code_records)"
+
+  log "C5: alice's controller connects to PC B"
+  ascreen staff "$PCB_ID" c5
+  screen_ok "C5: alice's controller to PC B" c5
+  pass "C5: the PC's screen ($MS ms) with alice's ticket and PC B's password"
+
+  log "C6: the same code again: the one answer for a code that does not work"
+  arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-guest-pc-code "$code"
+  [ "$RC" = 6 ] && ahas "hjv-e2e: guest pc code: denied" ||
+    fail "C6: exit $RC ($(grep '^hjv-e2e: guest' <<<"$OUT")), expected 6 and denied"
+  [ "$MS" -ge 1500 ] || fail "C6: the refusal came after $MS ms, before hjv-api's failure delay"
+  ms2=$MS
+  until_ok 5 "C6: admin ticket status counts 'used 1'" code_recorded "used 1"
+  pcb_is ok || fail "C6: PC B lost its ticket: hjv-access-pc '$PCB_STATE'"
+  pass "C6: exit 6 after $ms2 ms ('guest pc code: denied', 401); PC B keeps the ticket it has; records $(code_records)"
+
+  log "C7: a made-up code gets the same answer"
+  fake=$code
+  while [ "$fake" = "$code" ]; do
+    fake=$(python3 -I -c 'import secrets
+s = "".join(secrets.choice("0123456789ABCDEFGHJKMNPQRSTVWXYZ") for _ in range(8))
+print(s[:4] + "-" + s[4:])')
+  done
+  arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-guest-pc-code "$fake"
+  [ "$RC" = 6 ] && ahas "hjv-e2e: guest pc code: denied" ||
+    fail "C7: exit $RC ($(grep '^hjv-e2e: guest' <<<"$OUT")), expected 6 and denied"
+  [ "$MS" -ge 1500 ] || fail "C7: the refusal came after $MS ms, before hjv-api's failure delay"
+  until_ok 5 "C7: admin ticket status counts 'wrong 1'" code_recorded "wrong 1"
+  pass "C7: exit 6 after $MS ms ('guest pc code: denied', as C6 after $ms2 ms): the answer does not tell a used code from a made-up one; records $(code_records)"
+}
 
 access_part() {
   local t0 n0 n1 nb before ms
@@ -1675,6 +1762,8 @@ access_part() {
   ascreen rev "$PCB_ID" a10b
   refused_with "A10: the App Review account to PC B" a10b "$ACC_A2"
   pass "A10: the App Review account's ticket is for ctl; the PC's screen; PC B refused after one new ticket (exit 5, the app's A2)"
+
+  support_code_part
 
   log "A11: NOT_BEFORE=now ends every ticket handed out before: the registrations go, the logins get new ones"
   nb=$(date -u +%Y-%m-%dT%H:%M:%SZ)
