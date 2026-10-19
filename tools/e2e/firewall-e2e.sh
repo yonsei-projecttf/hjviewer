@@ -1178,10 +1178,10 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   cm0=$(wc -l <"$RUN/pc-cm.log")
   pwless ctl x7
   want 4 "X7: the controller's first connection to the PC with a new key"
-  has "error Security warning: this PC's key has changed" || fail "X7: not the key warning"
+  has "error Security warning: that PC's key has changed" || fail "X7: not the key warning"
   forward_try ctl "$PASSWORD" 9097
   want 4 "X7: port forwarding to the PC with a new key"
-  has "error Security warning: this PC's key has changed" || fail "X7: port forwarding: not the key warning"
+  has "error Security warning: that PC's key has changed" || fail "X7: port forwarding: not the key warning"
   [ "$(wc -l <"$RUN/pc-cm.log")" = "$cm0" ] || fail "X7: a login reached the PC"
   pass "X7: the key warning (exit 4) for the remote screen and port forwarding; neither a proof nor the password went out"
 
