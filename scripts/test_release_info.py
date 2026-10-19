@@ -399,6 +399,9 @@ class RecordTest(unittest.TestCase):
                                              "permission": "android.permission.DUMP"}),
                             (1, "uses-permission", {"name": "android.permission.CAMERA"}),
                             (1, "uses-permission", {"name": "android.permission.POST_NOTIFICATIONS"})),
+            # the app lock's (1.9.0: local_auth_android and androidx.biometric) are not the controlled side
+            MANIFEST_1_6 + ((1, "uses-permission", {"name": "android.permission.USE_BIOMETRIC"}),
+                            (1, "uses-permission", {"name": "android.permission.USE_FINGERPRINT"})),
         ]
         for children in taken:
             tree = Tree(self)
