@@ -128,7 +128,7 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 
 ## 1.8.0: 교직원 전용
 
-1.8.0부터 HJViewer 서버는 연세대학교 교직원이 쓰는 서비스입니다. 운영자가 서버의 출입 확인을 켜면(런북 9절의 `MODE=enforce`) 로그인한 앱과 PC, 그리고 이용 비밀번호를 넣은 쪽만 서버를 씁니다. 출입 확인을 켜기 전에는 1.8.0도 1.7.0처럼 움직입니다. 동작은 [architecture.md](architecture.md) 9절, 저장하는 정보는 [privacy.md](privacy.md) 3절, 서버에서 하는 일은 [server-runbook.md](server-runbook.md) 9절에 있습니다.
+1.8.0부터 HJViewer 서버는 연세대학교 교직원이 쓰는 서비스입니다. 운영자가 서버의 출입 확인을 켜면(런북 9절의 `MODE=enforce`) 로그인한 앱과 PC, 그리고 이용 비밀번호를 넣은 쪽만 서버를 씁니다. 출입 확인을 켜기 전에는 1.8.0도 1.7.0처럼 움직입니다. 운영 서버는 2026-10-19 16:39(KST)부터 출입 확인을 켜 두었습니다. 동작은 [architecture.md](architecture.md) 9절, 저장하는 정보는 [privacy.md](privacy.md) 3절, 서버에서 하는 일은 [server-runbook.md](server-runbook.md) 9절에 있습니다.
 
 ### 사용자가 할 일
 

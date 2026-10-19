@@ -27,6 +27,7 @@ From version 1.8.0 the operator can keep the server to the university's faculty 
 then connects, and a PC accepts connections, only while it is logged in, or for a while after
 someone typed the access password that the operator gives out (section 3, "Access tickets" and
 "The access password"). While the operator does not turn this check on, apps work as before.
+The university's HJViewer server has had this check on since 2026-10-19.
 
 ### 2. Connecting devices (everyone)
 
@@ -362,7 +363,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 1.6.0부터 운영자는 앱의 최소 버전도 정할 수 있습니다. 앱은 서버의 서명된 버전 정책을 확인하고, 새 버전을 서버에서 받습니다(2절의 "업데이트").
 
-1.8.0부터 운영자는 서버를 학교의 교직원만 쓰게 할 수 있습니다. 그러면 앱은 로그인해 있을 때만, 또는 운영자가 알려 주는 이용 비밀번호를 넣은 뒤 한동안만 연결하고, PC도 그때만 연결을 받습니다(3절의 "출입증"과 "이용 비밀번호"). 운영자가 이 확인을 켜지 않는 동안 앱은 지금처럼 움직입니다.
+1.8.0부터 운영자는 서버를 학교의 교직원만 쓰게 할 수 있습니다. 그러면 앱은 로그인해 있을 때만, 또는 운영자가 알려 주는 이용 비밀번호를 넣은 뒤 한동안만 연결하고, PC도 그때만 연결을 받습니다(3절의 "출입증"과 "이용 비밀번호"). 운영자가 이 확인을 켜지 않는 동안 앱은 지금처럼 움직입니다. 학교의 HJViewer 서버는 2026-10-19부터 이 확인을 켜 두었습니다.
 
 ### 2. 기기 연결 (모든 사용자)
 

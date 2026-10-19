@@ -1851,6 +1851,7 @@ curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/access"; e
   sleep 12; sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep -E 'access (off|count|enforce|closed)|access file' | tail -2
   ```
 - `NB=now`(비상)는 그때까지 나간 출입증을 모두 거절하고, 들어와 있던 PC를 10초 안에 끊습니다. 로그인한 앱은 다음 연결에서 새 출입증을 받고, 묶인 PC는 다음 동기화(보통 2분) 뒤 다시 들어오고, 이용 비밀번호로 들어온 쪽은 비밀번호를 다시 넣습니다(계약 6-4). 한 번 쓴 `NOT_BEFORE`는 그대로 두어도 됩니다(그 뒤에 만든 출입증은 받음).
+- `off`(또는 `count`)에서 `enforce`로 바꾸면, `off`인 동안 들어온 등록에는 hbbs가 기억한 출입증이 없어서 그 PC들이 10초 안에 한 번 끊깁니다(계약 6절). 1.8.0 PC는 곧 출입증을 실어 다시 등록하고, 묶인 PC는 늦어도 다음 동기화 뒤 다시 들어옵니다. 그동안 그 PC는 새 연결을 받지 못하고, 진행 중인 원격 세션도 끊길 수 있습니다. 그래서 켜는 것은 조용한 시간에 합니다. 2026-10-19의 기록: 켠 직후 묶인 PC가 등록을 두 번 거절당한 뒤 1분 안에 출입증을 받아 다시 들어왔습니다(9-6의 7단계).
 - `enforce`(또는 닫힘)에서 `count`나 `off`로 바꾸면, 거절되었던 PC는 다음 등록 시도에 다시 들어옵니다. 거절된 PC는 30초마다 다시 시도하므로 다시 보이기까지 40초쯤 걸릴 수 있습니다(E2E A14). 새 출입증을 받은 PC(묶인 PC의 다음 동기화, 이용 비밀번호)는 바로 다시 등록합니다.
 - **거절 수**(`enforce`): `sudo journalctl -q -u hjviewer-hbbs --since yesterday -o cat | grep -c 'access refused'`와 `… | grep -c 'access closed'`(개수만. 그 줄에는 주소와 ID가 있음). 10초에 30줄을 넘으면 `access refused or closed N more in the last 10 seconds`로 묶이니 그 N도 더합니다.
 
@@ -1911,6 +1912,8 @@ timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && 
 5. **묶인 PC 확인**: `sudo /opt/hjviewer/bin/hjv-api admin binding list`에서 묶인 PC의 버전이 1.8.0인지 봅니다(1.7.x로 남은 PC는 출입증을 싣지 않으므로 7단계 뒤 오프라인이 됨). 남은 PC는 사용자에게 수를 알립니다(PC ID는 보고에 옮기지 않음).
 6. **최소 버전 1.8.0**: 정책 seq 5(최소 1.8.0)를 8-2로 넣고, 사용자가 `hjv-release hbbs-conf`로 만든 `MIN=1.8.0`의 파일을 8-3으로 넣습니다. 1.6.x와 1.7.x 앱은 업데이트 화면을, 1.5.x 앱과 그 밖의 앱은 hbbs의 최소 버전 문구를 봅니다. seq 5는 최신 버전이 그대로이므로 `--notes` 없이 만들면 seq 4의 알림 글이 그대로 남습니다(업데이트 화면이 그 글을 보임).
 7. **출입 확인 켜기**: 9-3을 `MODE=enforce`로 합니다. 10분 뒤 거절 수(9-3의 마지막 항목)와 콘솔 줄을 보고합니다. 예상보다 많으면(예: 교직원의 `ph.missing`이 계속 늚, `bad_signature`가 있음) 바로 9-3을 `MODE=off`로 하고 보고합니다.
+
+기록: 2026-10-19에 1단계(서버 묶음 `server-2026.10.17`, 사용자가 만든 출입증 키 1번, `MODE=off`, 16:28~16:32 KST)와 3단계의 이용 비밀번호(16:38, 2027-01-15 0시 KST까지)를 마치고, 16:39:56(KST)에 `MODE=enforce`로 켰습니다. 2·5·6단계는 2026-10-18에 했습니다(정책 seq 4가 최신과 최소를 함께 1.8.0으로 올림, hbbs `MIN=1.8.0`). 4단계(세어 보기)는 사용자 결정으로 건너뛰었습니다. 10분 보고: 콘솔 `ph.ok=1 reg.ok=1 reg.missing=23`, 거절은 모두 등록의 `missing`(묶인 PC가 켠 직후 1분 동안 2번, 묶이지 않고 로그인하지 않은 기기 1대가 30초마다), 연결·중계 요청의 거절 0, `bad_signature`·`unknown_kid`·`malformed` 0. 데모 PC(`review.conf`의 `PC=`)는 아직 없습니다(사용자 결정, 나중에).
 
 ### 9-7. 되돌리기와 사고
 
