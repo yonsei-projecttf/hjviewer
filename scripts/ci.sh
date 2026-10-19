@@ -412,6 +412,11 @@ CLIENT_DART_TESTS="test/soft_keyboard_input_test.dart test/soft_keyboard_log_tes
 CLIENT_DART_TESTS+=" test/hjv_update_test.dart test/hjviewer_android_test.dart test/hjviewer_admin_test.dart"
 # the access screens' (staff-only gate, docs/access-tickets.md 5-3; client patches 0061-0062)
 CLIENT_DART_TESTS+=" test/hjviewer_access_test.dart"
+# 1.8.2 (ships in 1.9.0): the toast, the ID suggestions, the phone bar and targets, what the
+# settings leave out for what a build pins, the look's contrast and line breaks, and the phone app
+# lock (W13) (client patches 0065-0085)
+CLIENT_DART_TESTS+=" test/hjviewer_toast_test.dart test/hjviewer_suggestions_test.dart test/hjviewer_phone_test.dart"
+CLIENT_DART_TESTS+=" test/hjviewer_pins_test.dart test/hjviewer_style_test.dart test/hjviewer_applock_test.dart"
 # Pure Dart tests that a work package not in client/patches yet adds: run when the patched tree
 # has them, else skipped with a note. Once the patch is in, move them to CLIENT_DART_TESTS, so that
 # a dropped patch fails (the account screens' tests, design v3 7-5, moved with client patch 0033).

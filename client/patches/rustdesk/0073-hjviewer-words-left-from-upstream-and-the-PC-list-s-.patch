@@ -1,0 +1,1503 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 21:58:29 +0900
+Subject: [PATCH 73/85] hjviewer: words left from upstream, and the PC list's
+ name
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U14: the session menu's 'Insert Lock' reads '원격 화면 잠그기' (en
+'Lock remote screen'), 'Insert Ctrl + Alt + Del' 'Ctrl+Alt+Del
+보내기'. 'TCP tunneling' is '포트 포워딩' (en 'Port forwarding') and its
+setting '포트 포워딩 허용', the name the rest of the app uses. The CM
+request card says '이 PC에 연결을 요청하는 중…' (en 'Asking to connect
+to this PC…'), and an incoming request is refused with [거부]
+('Dismiss') as the voice call request is, not [취소].
+
+U17: the account's PC list is '내 PC' (en 'My PCs') everywhere: the
+tab, the notices after a login, logging out, the card menu's '내 PC에서
+빼기' and its toasts, the Settings row, the empty hint, the update
+screen's W line and the changed-key warning. The selected pill shows
+its name beside the icon on a phone and in a desktop window of 720 px
+or more; a phone's bar counts the name's width in its 40 px plan. The
+tab without a login tells what a login brings. The server's bind
+texts (hjv-api) follow in the server lane.
+
+U18: the empty recent and favourite lists say what to do in plain
+words instead of upstream's jokes about peers, and the About page of
+a pinned build drops upstream's slogan.
+
+U19: the texts about a remote PC call it '그 PC' (en 'that PC'), not
+'이 PC', which is the device the app runs on: the wake question (now
+'PC가 꺼져 있습니다. 켤까요?' with [취소]), the peer update card and
+its link button, and ctl.rs's refusal and key warning.
+
+U21: the desktop home calls this computer '이 PC' (en 'This PC'),
+says '다른 기기에서 이 ID와 비밀번호로 이 PC에 연결할 수 있습니다.',
+and the connection box is '원격 PC에 연결' (en 'Connect to a remote
+PC'). 'Restart remote device' is '원격 PC 다시 시작', and the logout
+texts that quote it follow.
+
+U24: an account build no longer shows upstream's group banner with
+the raw request error. The list that did not come says '내 PC 목록을
+불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요.' with [다시 시도],
+and nothing while the server banner shows; the error itself still
+goes to the debug log. The login options' error leads with the app's
+networkFailed text; ko.rs's network_error_tip says [다시 시도].
+
+U30: one button name, '다시 시도' (ko.rs Retry, HjvTexts.retry, and
+the texts that point at it, with ctl.rs's test), and one sentence,
+'다시 시도해 주세요.', for the gate's E2, E3 and E5, the account and
+wake requests and the update screens; ko.rs's 'Please try later' and
+'Please try 1 minute later' read the same way.
+
+U48: no English left on Korean screens: the CM's 'Audio Input', the
+session's 'Stop voice call' for 'End call', the phone's '버전: …',
+'소스 코드(GNU AGPL-3.0)' on both About pages, the install page's
+licence line and '라이선스', '터미널(베타)' and '터미널(관리자 권한,
+베타)', and the security group's '이중 인증' (enter-2fa-title).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_update_model.dart      | 24 +++---
+ flutter/lib/common/hjviewer_access_texts.dart |  8 +-
+ flutter/lib/common/hjviewer_account.dart      | 31 ++++++-
+ .../lib/common/hjviewer_account_texts.dart    | 74 +++++++++++-----
+ flutter/lib/common/widgets/login.dart         |  2 +-
+ flutter/lib/common/widgets/my_group.dart      | 16 ++--
+ flutter/lib/common/widgets/peer_card.dart     |  4 +-
+ flutter/lib/common/widgets/peer_tab_page.dart | 60 +++++++++++--
+ flutter/lib/common/widgets/peers_view.dart    |  4 +-
+ flutter/lib/common/widgets/toolbar.dart       |  2 +-
+ .../lib/desktop/pages/connection_page.dart    |  3 +-
+ .../desktop/pages/desktop_setting_page.dart   | 19 +++--
+ flutter/lib/desktop/pages/install_page.dart   | 10 +--
+ flutter/lib/desktop/pages/server_page.dart    |  6 +-
+ .../lib/desktop/widgets/remote_toolbar.dart   |  2 +-
+ flutter/lib/mobile/pages/settings_page.dart   | 11 +--
+ flutter/test/hjv_update_gate_test.dart        | 24 +++---
+ flutter/test/hjv_update_test.dart             |  6 +-
+ flutter/test/hjviewer_access_test.dart        | 10 +--
+ flutter/test/hjviewer_account_test.dart       | 85 ++++++++++++++-----
+ .../test/hjviewer_account_widgets_test.dart   | 12 +--
+ flutter/test/hjviewer_admin_test.dart         |  2 +-
+ flutter/test/hjviewer_admin_widgets_test.dart |  2 +-
+ src/hjviewer_account/ctl.rs                   | 16 ++--
+ src/lang/en.rs                                | 16 ++--
+ src/lang/ko.rs                                | 32 +++----
+ 26 files changed, 320 insertions(+), 161 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_update_model.dart b/flutter/lib/common/hjv_update_model.dart
+index 8df01e6..8ba89b9 100644
+--- a/flutter/lib/common/hjv_update_model.dart
++++ b/flutter/lib/common/hjv_update_model.dart
+@@ -333,12 +333,12 @@ class HjvUpdateText {
+   // C1a, C1b, U1, U2
+   static String peerRemote(String id) => '원격 PC $id';
+   static String peerNeedsLink(String version, String min) =>
+-      '이 PC의 원격 앱은 업데이트가 필요합니다(지금 $version, 최소 $min). PC의 브라우저로 새 버전을 받아 설치할 수 있습니다.';
++      '그 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min). 그 PC의 브라우저로 새 버전을 받아 설치할 수 있습니다.';
+   static String peerUpdatesItself(String version, String min) =>
+-      '이 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min). PC의 HJViewer 창에서 [지금 업데이트]를 누르면 설치됩니다. 설치하는 동안 연결이 잠시 끊깁니다.';
++      '그 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min). 그 PC의 HJViewer 창에서 [지금 업데이트]를 누르면 설치됩니다. 설치하는 동안 연결이 잠시 끊깁니다.';
+   static String peerRunsNew(String version, String min) =>
+-      '이 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min). PC의 HJViewer 창에서 [업데이트]를 누르면 새 버전을 내려받고, [지금 실행]을 누르면 새 버전이 열립니다. 그때 연결이 잠시 끊깁니다.';
+-  static const linkButton = '이 PC용 설치 링크';
++      '그 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min). 그 PC의 HJViewer 창에서 [업데이트]를 누르면 새 버전을 내려받고, [지금 실행]을 누르면 새 버전이 열립니다. 그때 연결이 잠시 끊깁니다.';
++  static const linkButton = '그 PC용 설치 링크';
+   static const linkAsking = '설치 링크를 만드는 중…';
+   static String linkEnter(int minutes) =>
+       'PC의 브라우저 주소창에 아래 주소를 입력하세요. $minutes분 동안 쓸 수 있습니다.';
+@@ -348,14 +348,14 @@ class HjvUpdateText {
+   static const linkNeedsLogin =
+       '로그인하면 설치 링크를 만들 수 있습니다. 또는 관리자에게 받은 설치 파일을 HJViewer 파일 전송으로 보내세요.';
+   static const linkFailed =
+-      '설치 링크를 만들지 못했습니다. 잠시 뒤 다시 시도하세요. 관리자에게 받은 설치 파일을 HJViewer 파일 전송으로 보내도 됩니다.';
++      '설치 링크를 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요. 관리자에게 받은 설치 파일을 HJViewer 파일 전송으로 보내도 됩니다.';
+ 
+   // W1-W6
+   static const winInstalls = '이 PC는 쓰지 않을 때 새 버전을 자동으로 설치합니다.';
+   static const winNow =
+       '지금 설치하려면 [지금 업데이트]를 누르세요. 설치하는 동안 HJViewer가 잠시 닫히고 원격 연결이 끊깁니다.';
+   static const winUnbound =
+-      '이 PC는 아직 내 기기 목록에 없어 새 버전을 받을 수 없습니다. 이 PC에서 로그인하면 자동으로 업데이트됩니다.';
++      '이 PC는 아직 내 PC 목록에 없어 새 버전을 받을 수 없습니다. 이 PC에서 로그인하면 자동으로 업데이트됩니다.';
+   static String winPortable(String latest) =>
+       "[업데이트]를 누르면 새 버전을 '다운로드' 폴더에 내려받아 확인한 뒤 실행합니다. 이 창은 닫히고 새 버전이 열립니다. 다음부터는 새 파일(HJViewer-$latest.exe)을 실행하세요.";
+   static const updateNow = '지금 업데이트';
+@@ -375,7 +375,7 @@ class HjvUpdateText {
+       '자동 업데이트를 마치지 못했습니다(3번 시도). [다시 시도]를 누르거나 관리자에게 알려 주세요.';
+   static const installFailed = '새 버전을 설치하지 못했습니다. [다시 시도]를 누르거나 관리자에게 알려 주세요.';
+   static const serviceSilent =
+-      'HJViewer 서비스가 응답하지 않아 업데이트를 시작하지 못했습니다. 잠시 뒤 다시 시도하세요.';
++      'HJViewer 서비스가 응답하지 않아 업데이트를 시작하지 못했습니다. 잠시 뒤 다시 시도해 주세요.';
+ 
+   // A1-A4, M1
+   static const androidHint =
+@@ -409,20 +409,20 @@ class HjvUpdateText {
+       'TestFlight 앱에서 HJViewer의 [업데이트]를 누르세요. TestFlight 설정에서 자동 업데이트를 켜 두면 다음부터는 저절로 설치됩니다.';
+   static const iosButton = 'TestFlight 열기';
+   static const iosFailed =
+-      'TestFlight 앱을 열지 못했습니다. App Store에서 TestFlight를 설치한 뒤 다시 시도하세요.';
++      'TestFlight 앱을 열지 못했습니다. App Store에서 TestFlight를 설치한 뒤 다시 시도해 주세요.';
+   static const iosNotTestFlight =
+       '이 iPhone의 HJViewer는 TestFlight로 설치하지 않아 앱에서 업데이트할 수 없습니다. 관리자에게 새 버전을 받으세요.';
+ 
+   // E1-E4, O1
+-  static const errDownload = '새 버전을 내려받지 못했습니다. 인터넷 연결을 확인하고 다시 시도하세요.';
++  static const errDownload = '새 버전을 내려받지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.';
+   static const errVerify = '내려받은 파일이 올바르지 않아 설치하지 않았습니다. 관리자에게 알려 주세요.';
+   static const errTls =
+       '이 네트워크에서는 보안 연결을 확인할 수 없어 새 버전을 받지 못했습니다. 다른 네트워크에서 다시 시도하거나 관리자에게 받으세요.';
+   static const errNotThisApp =
+       '내려받은 파일이 이 앱의 새 버전이 아니어서 설치하지 않았습니다. 관리자에게 알려 주세요.';
+-  static const errBusy = '지금은 새 버전을 받는 요청이 많습니다. 잠시 뒤 다시 시도하세요.';
++  static const errBusy = '지금은 새 버전을 받는 요청이 많습니다. 잠시 뒤 다시 시도해 주세요.';
+   static const errRefused = '이 계정으로는 새 버전을 받을 수 없습니다. 관리자에게 문의하세요.';
+-  static const errFile = '새 버전 파일을 저장하지 못했습니다. 저장 공간을 확인하고 다시 시도하세요.';
++  static const errFile = '새 버전 파일을 저장하지 못했습니다. 저장 공간을 확인하고 다시 시도해 주세요.';
+   static String osTooOld(String need) =>
+       '이 기기의 OS에서는 새 버전을 쓸 수 없습니다(필요: $need 이상). 관리자에게 문의하세요.';
+ 
+@@ -431,7 +431,7 @@ class HjvUpdateText {
+   static const checking = '확인하는 중…';
+   static const upToDate = '최신 버전입니다.';
+   static const noEntry = '이 기기에 맞는 업데이트 정보가 아직 없습니다.';
+-  static const checkFailed = '업데이트를 확인하지 못했습니다. 인터넷 연결을 확인하고 다시 시도하세요.';
++  static const checkFailed = '업데이트를 확인하지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.';
+   static String policy(int epoch, int seq, String issued) =>
+       '업데이트 정책: 세대 $epoch · 순번 $seq · 발행 $issued';
+   static const noPolicy = '업데이트 정책: 아직 받지 못했습니다';
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 1f15b7c..d8f9bb6 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -487,17 +487,17 @@ class HjvAccessTexts {
+             '이용 비밀번호가 맞지 않거나, 지금은 이용 비밀번호를 쓸 수 없습니다. 비밀번호를 확인해 다시 넣거나 연세포탈로 로그인해 주세요.',
+             'The access password is wrong, or it cannot be used right now. Check it and enter it again, or log in with your Yonsei portal account.'),
+         'rate_limited' when wait > 0 && wait <= _maxWait => _t(
+-            '시도가 너무 많습니다. ${_about(wait)} 뒤 다시 해 주세요.',
++            '시도가 너무 많습니다. ${_about(wait)} 뒤 다시 시도해 주세요.',
+             'Too many tries. Please try again in ${_about(wait)}.'),
+-        'rate_limited' => _t('시도가 너무 많습니다. 잠시 뒤 다시 해 주세요.',
++        'rate_limited' => _t('시도가 너무 많습니다. 잠시 뒤 다시 시도해 주세요.',
+             'Too many tries. Please try again later.'),
+         'wrong_pc' => _t(
+             '이 PC의 키가 서버에 있는 것과 달라 이용 비밀번호로 연결을 받을 수 없습니다. 관리자에게 알려 주세요.',
+             "This PC's key differs from the one the server has, so it cannot accept connections with the access password. Please tell your administrator."),
+-        'clock' => _t('기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요.',
++        'clock' => _t('기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 시도해 주세요.',
+             "The device's date and time are wrong. Set them to update automatically and try again."),
+         // busy, unavailable, bad_request, network, config
+-        _ => _t('지금은 이용 비밀번호를 확인할 수 없습니다. 잠시 뒤 다시 해 주세요.',
++        _ => _t('지금은 이용 비밀번호를 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.',
+             'The access password cannot be checked right now. Please try again in a moment.'),
+       };
+ }
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 2c8233f..f1e7e3d 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -137,6 +137,22 @@ Widget _button(String label, VoidCallback? onPressed,
+ 
+ // ---- the hooks ----
+ 
++/// U24 (login.dart): the login options that did not come, in the app's words.
++String hjvNetworkErrorTip() =>
++    _accountBuild ? _t.networkFailed : translate('network_error_tip');
++
++/// U17 (my_group.dart): what a login brings to the tab, under its name.
++String? hjvListLoginHint() => _accountBuild ? _t.listLoginHint : null;
++
++/// U48: the app's own texts where upstream left English (the About links, the install page).
++HjvTexts hjvAppTexts() => _t;
++
++/// U48 (peer_card.dart, connection_page.dart, toolbar.dart): the terminal items in Korean with
++/// the beta mark; other languages keep upstream's words.
++String hjvTerminalBeta({bool admin = false}) =>
++    _t.terminalBeta(admin: admin) ??
++    '${translate(admin ? 'Terminal (Run as administrator)' : 'Terminal')} (beta)';
++
+ /// D1 (login.dart): the login dialog's first field takes the Yonsei portal ID.
+ String hjvUsernameTitle() => _accountBuild
+     ? _t.usernameTitle
+@@ -300,8 +316,13 @@ List<AbstractSettingsTile> hjvAccountTiles() => _accountBuild
+ /// D9 (my_group.dart): while hjv-api fails, the cards the app kept stay on screen (design v3 §1-3).
+ bool hjvKeepCachedCards() => _accountBuild;
+ 
+-/// D9: above the cards, why the server cannot be used, with [재시도], or, when the account has no
+-/// PC yet, how one gets there.
++/// U24 (my_group.dart): an account build says in hjvNetworkBanner that the list did not come, not
++/// upstream's banner with the request's error.
++bool hjvOwnsListError() => _accountBuild;
++
++/// D9: above the cards, why the server cannot be used, with [다시 시도], or that the list did not
++/// come (U24), or, when the account has no PC yet, how one gets there.
++
+ List<Widget> hjvNetworkBanner(BuildContext context) {
+   if (!_accountBuild) return [];
+   final user = gFFI.userModel;
+@@ -318,6 +339,10 @@ List<Widget> hjvNetworkBanner(BuildContext context) {
+           retry: user.refreshCurrentUser)
+     ];
+   }
++  if (hjvShowsListError(
++      networkError: error, loadError: group.groupLoadError.value)) {
++    return [_banner(context, _t.listFailed, retry: group.pull)];
++  }
+   if (hjvShowsEmptyHint(
+       pulled: group.initialized,
+       loading: group.groupLoading.value,
+@@ -364,7 +389,7 @@ Future<bool> hjvOfferWake(BuildContext context, Peer peer, PeerTabIndex tab,
+       title: _nameOf(peer),
+       text: t.wakeAsk,
+       yes: t.wake,
+-      no: t.close,
++      no: t.cancel,
+       onYes: () => close(true),
+       onNo: close));
+   if (wake != true || !await _wake(t, peer)) return true;
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index c8c8402..9f3ea87 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -43,34 +43,34 @@ class HjvTexts {
+   String get install => _t('설치하기', 'Install');
+   String get cancel => _t('취소', 'Cancel');
+   String get close => _t('닫기', 'Close');
+-  String get retry => _t('재시도', 'Retry');
++  String get retry => _t('다시 시도', 'Retry');
+   String get logIn => _t('로그인', 'Log in');
+ 
+   // the desktop home's ID card: its ⋮ and its menu
+   String get more => _t('더 보기', 'More');
+   String get copyId => _t('ID 복사', 'Copy ID');
+ 
+-  String get requestFailed => _t('요청하지 못했습니다. 잠시 뒤 다시 해 주세요.',
++  String get requestFailed => _t('요청하지 못했습니다. 잠시 뒤 다시 시도해 주세요.',
+       'The request failed. Please try again later.');
+ 
+   /// A login answer that is not JSON, so not the account service's: nginx's 404 before the
+   /// service was in place, another proxy's error page, or the web site behind the same name.
+   String serviceNotAnswering(int status) => _t(
+-      '서버의 계정 서비스가 답하지 않았습니다(HTTP $status). 잠시 뒤 다시 해 주세요.',
++      '서버의 계정 서비스가 답하지 않았습니다(HTTP $status). 잠시 뒤 다시 시도해 주세요.',
+       "The server's account service did not answer (HTTP $status). Please try again later.");
+ 
+   /// A login that got no answer at all: no network, a name that does not resolve, a certificate
+   /// that fails (a Wi-Fi login page cannot answer for the server).
+-  String get networkFailed => _t('서버에 연결하지 못했습니다. 네트워크 연결을 확인한 뒤 다시 해 주세요.',
++  String get networkFailed => _t('서버에 연결하지 못했습니다. 네트워크 연결을 확인한 뒤 다시 시도해 주세요.',
+       'Could not reach the server. Check the network connection and try again.');
+ 
+   // after a login on a PC (§1-2)
+   String get addedTitle =>
+-      _t('이 PC를 내 기기 목록에 추가했습니다', 'This PC is now in your device list');
++      _t('이 PC를 내 PC 목록에 추가했습니다', 'This PC is now in My PCs');
+   String get alreadyTitle =>
+-      _t('이 PC는 내 기기 목록에 있습니다', 'This PC is in your device list');
++      _t('이 PC는 내 PC 목록에 있습니다', 'This PC is in My PCs');
+   String get notAddedTitle => _t(
+-      '이 PC를 내 기기 목록에 넣지 않았습니다', 'This PC was not added to your device list');
++      '이 PC를 내 PC 목록에 넣지 않았습니다', 'This PC was not added to My PCs');
+   String get notOnTitle =>
+       _t('비밀번호 없는 연결을 켜지 못했습니다', 'Password-less connections did not turn on');
+   String get canConnect => _t(
+@@ -96,13 +96,13 @@ class HjvTexts {
+   String get removeThisPc => _t('이 PC 빼기', 'Remove this PC');
+   String get otherAccount => _t('다른 계정에 등록된 PC입니다. 관리자에게 문의하세요.',
+       'This PC belongs to another account. Please contact the administrator.');
+-  String get notInstalled => _t('설치하지 않고 실행한 HJViewer라 내 기기 목록에 넣지 않았습니다.',
+-      'HJViewer runs here without being installed, so this PC was not added to your device list.');
++  String get notInstalled => _t('설치하지 않고 실행한 HJViewer라 내 PC 목록에 넣지 않았습니다.',
++      'HJViewer runs here without being installed, so this PC was not added to My PCs.');
+   String get checkFailed => _t(
+       '서버에서 이 PC를 확인하지 못했습니다. 잠시 뒤 로그아웃했다가 다시 로그인해 주세요.',
+       'The server could not confirm this PC. Please log out and log in again in a while.');
+   String get removedThisPc =>
+-      _t('이 PC를 내 기기 목록에서 뺐습니다.', 'This PC is out of your device list.');
++      _t('이 PC를 내 PC 목록에서 뺐습니다.', 'This PC was removed from My PCs.');
+ 
+   // this PC in Settings → Account (§1-2)
+   String get pcPrefix => _t('이 PC: ', 'This PC: ');
+@@ -119,7 +119,7 @@ class HjvTexts {
+   String get keyChanged =>
+       _t('다시 로그인 필요(보안 키가 바뀜)', 'log in again (its security key changed)');
+   String get removedElsewhere =>
+-      _t('다른 기기에서 목록에서 뺌', 'removed from the list on another device');
++      _t('다른 기기에서 내 PC 목록에서 뺌', 'removed from My PCs on another device');
+   String get loginHereAgain =>
+       _t('이 PC에서 다시 로그인 필요', 'log in on this PC again');
+   String get notConfirmed => _t('서버에서 확인하지 못함', 'not confirmed by the server');
+@@ -172,7 +172,7 @@ class HjvTexts {
+   /// What a logout from another device does not do (design v3 U1-d): it ends no connection
+   /// that is open already.
+   String get openSessions => _t(
+-      "이미 열려 있는 연결은 끊기지 않습니다. PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 장치 다시 시작'을 누르거나, PC를 다시 시작하세요.",
++      "이미 열려 있는 연결은 끊기지 않습니다. PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 PC 다시 시작'을 누르거나, PC를 다시 시작하세요.",
+       "Connections already open are not cut. End them in the PC's connection window, or connect to that PC from your own device with its password and use 'Restart remote device', or restart the PC.");
+   String get loggedOutDevice => _t('그 기기를 로그아웃시켰습니다. $openSessions',
+       'The device is logged out. $openSessions');
+@@ -242,33 +242,42 @@ class HjvTexts {
+       'To connect to your PCs without their passwords, log in again.');
+ 
+   // a card's menu (§1-7)
+-  String get removeFromList => _t('내 목록에서 빼기', 'Remove from my list');
++  String get removeFromList => _t('내 PC에서 빼기', 'Remove from My PCs');
+   String get removeAsk => _t(
+       '빼면 그 PC에 비밀번호 없이 연결할 수 없습니다. 다시 넣으려면 그 PC에서 다시 로그인해야 합니다.',
+       'Once removed, that PC takes no password-less connections. To add it again, log in on that PC again.');
+   String get remove => _t('빼기', 'Remove');
+-  String get removed => _t('내 목록에서 뺐습니다.', 'Removed from your list.');
++  String get removed => _t('내 PC 목록에서 뺐습니다.', 'Removed from My PCs.');
+   String get removeFromRecent => _t('최근 목록에서 지우기', 'Remove from Recent');
+   String get notInList =>
+-      _t('이미 내 목록에 없는 PC입니다.', 'This PC is not in your list any more.');
++      _t('이미 내 PC 목록에 없는 PC입니다.', 'This PC is no longer in My PCs.');
+ 
+-  // the accessible devices tab (§1-1, §1-3)
++  // the accessible devices tab, "My PCs" (§1-1, §1-3)
+   String get serverDown => _t(
+       'HJViewer 서버를 지금 쓸 수 없습니다. 비밀번호 없는 연결은 PC가 받아 둔 목록으로 하루 동안 계속됩니다.',
+       'The HJViewer server cannot be used right now. Password-less connections go on for a day with the lists the PCs keep.');
+   String get serverDownGate => _t(
+       'HJViewer 서버를 지금 쓸 수 없습니다. 이 기기는 받아 둔 출입증으로 최대 하루 동안 연결할 수 있고, 그동안 새 로그인과 이용 비밀번호는 쓸 수 없습니다.',
+       'The HJViewer server cannot be used right now. This device can connect for up to a day with the pass it holds; until then, new logins and the access password do not work.');
+-  String get keyLocked => _t('이 기기의 보안 키를 지금 쓸 수 없습니다. 기기 잠금을 풀고 [재시도]를 누르세요.',
++  String get keyLocked => _t('이 기기의 보안 키를 지금 쓸 수 없습니다. 기기 잠금을 풀고 [다시 시도]를 누르세요.',
+       "This device's security key cannot be used right now. Unlock the device and press [Retry].");
+   String get emptyList => _t(
+-      'PC에 HJViewer를 설치하고, 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.',
+-      'Install HJViewer on a PC and log in there with the same Yonsei portal account: the PC then shows up here.');
++      '아직 내 PC가 없습니다. PC에 HJViewer를 설치하고 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.',
++      'No PCs in My PCs yet. Install HJViewer on a PC and log in there with the same Yonsei portal account: the PC then shows up here.');
++
++  /// U17: the tab without a login, under its name.
++  String get listLoginHint => _t(
++      '연세포탈로 로그인하면 같은 계정으로 로그인한 내 PC가 여기에 나오고, 비밀번호 없이 바로 연결할 수 있습니다.',
++      'Log in with your Yonsei portal account: your PCs logged in to the same account show up here, and you can connect to them right away without their passwords.');
++
++  /// U24: the list did not come; the request's own error goes to the log only.
++  String get listFailed => _t('내 PC 목록을 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요.',
++      'Could not load your PC list. Please try again in a moment.');
+ 
+   // waking a PC (§8-5)
+   String get wake => _t('켜기', 'Wake up');
+   String get wakeAsk =>
+-      _t('이 PC는 꺼져 있습니다. 켤까요?', 'This PC is off. Wake it up?');
++      _t('PC가 꺼져 있습니다. 켤까요?', 'The PC is off. Wake it up?');
+   String wakeTitle(String pc) => _t('$pc 켜기', 'Wake up $pc');
+   String get wakeAsking => _t('요청하는 중…', 'Requesting…');
+   String wakeQueued(String relay) =>
+@@ -285,11 +294,11 @@ class HjvTexts {
+       'The NAS relay did not get the request. Please check that the NAS is on and connected.');
+   String get wakeNoIface => _t('NAS에 이 PC의 네트워크로 나가는 랜카드가 없습니다.',
+       "The NAS has no network card on this PC's network.");
+-  String get wakeSendFailed => _t('NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 해 주세요.',
++  String get wakeSendFailed => _t('NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 시도해 주세요.',
+       'The NAS could not send the wake signal. Please try again in a while.');
+   String get wakeLater =>
+       _t('잠시 뒤 다시 시도해 주세요.', 'Please try again in a while.');
+-  String get wakeExpired => _t('요청이 너무 늦게 전달되어 취소됐습니다. 다시 해 주세요.',
++  String get wakeExpired => _t('요청이 너무 늦게 전달되어 취소됐습니다. 다시 시도해 주세요.',
+       'The request reached the NAS too late and was cancelled. Please try again.');
+   String get wakeFailed => _t('NAS 중계기가 켜기 요청을 처리하지 못했습니다.',
+       'The NAS relay could not handle the wake request.');
+@@ -320,6 +329,19 @@ class HjvTexts {
+   String get pilotNotice => _t(
+       '본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.',
+       'This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.');
++
++  // U48: upstream's English left on Korean screens
++  String get sourceCode =>
++      _t('소스 코드(GNU AGPL-3.0)', 'Source code (GNU AGPL-3.0)');
++  String get freeSoftware => _t(
++      'HJViewer는 GNU AGPL-3.0에 따른 자유 소프트웨어이며, 어떠한 보증도 하지 않습니다.',
++      'HJViewer is free software under the GNU AGPL-3.0, with no warranty.');
++  String get license => _t('라이선스', 'License');
++
++  /// The terminal items' beta mark in Korean; null in English, where upstream's words with
++  /// " (beta)" stay.
++  String? terminalBeta({required bool admin}) =>
++      korean ? (admin ? '터미널(관리자 권한, 베타)' : '터미널(베타)') : null;
+ }
+ 
+ /// What Settings → About says of HJViewer: who makes it, and in an account build, whose login
+@@ -825,7 +847,13 @@ bool hjvShowsEmptyHint(
+         required String loadError}) =>
+     pulled && !loading && empty && networkError.isEmpty && loadError.isEmpty;
+ 
+-/// Whether an accessible device's card offers "내 목록에서 빼기": the account's PCs in an account
++/// U24: whether the tab says that the list did not come: the server's banner, when it shows,
++/// says it already.
++bool hjvShowsListError(
++        {required String networkError, required String loadError}) =>
++    networkError.isEmpty && loadError.isNotEmpty;
++
++/// Whether an accessible device's card offers "내 PC에서 빼기": the account's PCs in an account
+ /// build, while logged in.
+ bool hjvShowsDeviceMenu({required bool accountBuild, required bool loggedIn}) =>
+     accountBuild && loggedIn;
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index 80e34ac..e079c7f 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -725,7 +725,7 @@ Widget _hjvLoginOptionsError(BuildContext context, Object error,
+       children: [
+         // NOT use Offstage to wrap LinearProgressIndicator
+         if (inProgress) const LinearProgressIndicator().marginOnly(top: 4),
+-        if (tip) Text(translate('network_error_tip')),
++        if (tip) Text(hjvNetworkErrorTip()),
+         if (!inProgress)
+           SelectableText(
+             error.toString(),
+diff --git a/flutter/lib/common/widgets/my_group.dart b/flutter/lib/common/widgets/my_group.dart
+index 7c226f7..6700d8e 100644
+--- a/flutter/lib/common/widgets/my_group.dart
++++ b/flutter/lib/common/widgets/my_group.dart
+@@ -34,7 +34,8 @@ class _MyGroupState extends State<MyGroup> {
+   Widget build(BuildContext context) {
+     return Obx(() {
+       if (!gFFI.userModel.isLogin) {
+-        return hjvLoginPlaceholder(context, PeerTabIndex.group, loginDialog);
++        return hjvLoginPlaceholder(context, PeerTabIndex.group, loginDialog,
++            subtitle: hjvListLoginHint());
+       } else if (gFFI.userModel.networkError.isNotEmpty &&
+           !hjvKeepCachedCards()) {
+         return netWorkErrorWidget();
+@@ -49,12 +50,13 @@ class _MyGroupState extends State<MyGroup> {
+         children: [
+           ...hjvNetworkBanner(context)
+               .map((w) => w.paddingOnly(right: bannerRight)),
+-          buildErrorBanner(context,
+-                  loading: gFFI.groupModel.groupLoading,
+-                  err: gFFI.groupModel.groupLoadError,
+-                  retry: null,
+-                  close: () => gFFI.groupModel.groupLoadError.value = '')
+-              .paddingOnly(right: bannerRight),
++          if (!hjvOwnsListError())
++            buildErrorBanner(context,
++                    loading: gFFI.groupModel.groupLoading,
++                    err: gFFI.groupModel.groupLoadError,
++                    retry: null,
++                    close: () => gFFI.groupModel.groupLoadError.value = '')
++                .paddingOnly(right: bannerRight),
+           Expanded(
+               child: Obx(() => stateGlobal.isPortrait.isTrue
+                   ? _buildPortrait()
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 9dbde3c..ac04882 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -821,7 +821,7 @@ abstract class BasePeerCard extends StatelessWidget {
+   MenuEntryBase<String> _terminalAction(BuildContext context) {
+     return _connectCommonAction(
+       context,
+-      '${translate('Terminal')} (beta)',
++      hjvTerminalBeta(),
+       isTerminal: true,
+     );
+   }
+@@ -830,7 +830,7 @@ abstract class BasePeerCard extends StatelessWidget {
+   MenuEntryBase<String> _terminalRunAsAdminAction(BuildContext context) {
+     return _connectCommonAction(
+       context,
+-      '${translate('Terminal (Run as administrator)')} (beta)',
++      hjvTerminalBeta(admin: true),
+       isTerminalRunAsAdmin: true,
+     );
+   }
+diff --git a/flutter/lib/common/widgets/peer_tab_page.dart b/flutter/lib/common/widgets/peer_tab_page.dart
+index 1f46d28..7756c0b 100644
+--- a/flutter/lib/common/widgets/peer_tab_page.dart
++++ b/flutter/lib/common/widgets/peer_tab_page.dart
+@@ -192,13 +192,42 @@ class _PeerTabPageState extends State<PeerTabPage>
+   // HJViewer: under 720 px, upstream's tab pitch and search width keep the tabs on screen
+   bool get _hjvNarrow => MediaQuery.sizeOf(context).width < 720;
+ 
++  // HJViewer: the selected pill's name beside its icon (U17), where the bar has the room: a phone
++  // and a desktop window of 720 px or more
++  static const _hjvLabelStyle =
++      TextStyle(fontSize: 13, fontWeight: FontWeight.w600);
++  static const _hjvLabelGap = 6.0;
++
++  bool get _hjvShowsLabel => stateGlobal.isPortrait.isTrue || !_hjvNarrow;
++
++  // HJViewer: what the name adds to the selected pill, which _portraitRightActions counts too
++  double _hjvLabelWidth(PeerTabModel model) {
++    if (!_hjvShowsLabel ||
++        !model.visibleEnabledOrderedIndexs.contains(model.currentTab)) {
++      return 0;
++    }
++    final painter = TextPainter(
++        text: TextSpan(
++            text: model.tabTooltip(model.currentTab),
++            style: DefaultTextStyle.of(context).style.merge(_hjvLabelStyle)),
++        textDirection: TextDirection.ltr,
++        textScaler: MediaQuery.textScalerOf(context),
++        maxLines: 1)
++      ..layout();
++    final width = painter.width.ceilToDouble() + _hjvLabelGap;
++    painter.dispose();
++    return width;
++  }
++
+   // HJViewer: icon pills 32 px high in the bar's height; a phone tab stays 40 px wide
+-  // (kHjvPhoneTabWidth), which _portraitRightActions counts on
++  // (kHjvPhoneTabWidth), which _portraitRightActions counts on, and the selected one is wider by
++  // its name
+   Widget _hjvCreateSwitchBar(BuildContext context) {
+     final model = Provider.of<PeerTabModel>(context);
+     final p = HjvPalette.of(context);
+     final portrait = stateGlobal.isPortrait.isTrue;
+     final narrow = _hjvNarrow;
++    final labelWidth = _hjvLabelWidth(model);
+     var counter = -1;
+     return ReorderableListView(
+         buildDefaultDragHandles: false,
+@@ -225,7 +254,8 @@ class _PeerTabPageState extends State<PeerTabPage>
+                     customBorder: const StadiumBorder(),
+                     hoverColor: Colors.transparent,
+                     child: Container(
+-                      width: portrait ? kHjvPhoneTabWidth : (narrow ? 36 : 44),
++                      width: (portrait ? kHjvPhoneTabWidth : (narrow ? 36 : 44)) +
++                          (selected ? labelWidth : 0),
+                       alignment: Alignment.center,
+                       child: Container(
+                         height: 32,
+@@ -236,9 +266,24 @@ class _PeerTabPageState extends State<PeerTabPage>
+                               ? p.primarySoft
+                               : (hovered ? p.hover : Colors.transparent),
+                         ),
+-                        child: Icon(model.tabIcon(t),
+-                            size: 20,
+-                            color: selected ? p.primary : p.textSecondary),
++                        child: Row(
++                          mainAxisSize: MainAxisSize.min,
++                          children: [
++                            Icon(model.tabIcon(t),
++                                size: 20,
++                                color: selected ? p.primary : p.textSecondary),
++                            if (selected && labelWidth > 0)
++                              Flexible(
++                                child: Text(model.tabTooltip(t),
++                                        maxLines: 1,
++                                        softWrap: false,
++                                        overflow: TextOverflow.clip,
++                                        style: _hjvLabelStyle.copyWith(
++                                            color: p.primary))
++                                    .marginOnly(left: _hjvLabelGap),
++                              ),
++                          ],
++                        ),
+                       ),
+                     ),
+                     onTap: isOptionFixed(kOptionPeerTabIndex)
+@@ -651,7 +696,8 @@ class _PeerTabPageState extends State<PeerTabPage>
+   List<Widget> _portraitRightActions(BuildContext context) {
+     final model = Provider.of<PeerTabModel>(context);
+     final screenWidth = MediaQuery.of(context).size.width;
+-    // HJViewer: 44 px targets, planned by hjvPhoneBarShownActions
++    // HJViewer: 44 px targets, planned by hjvPhoneBarShownActions; the selected pill's name (U17)
++    // takes its width from the bar
+     final otherActionWidth = kHjvPhoneTarget;
+ 
+     dropDown(List<Widget> menus) {
+@@ -710,7 +756,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+       if (model.currentTab == PeerTabIndex.ab.index) _toggleTags()
+     ];
+     final shown = hjvPhoneBarShownActions(
+-        width: screenWidth,
++        width: screenWidth - _hjvLabelWidth(model),
+         tabs: model.visibleEnabledOrderedIndexs.length,
+         actions: dynamicActions.length);
+     actions.addAll(dynamicActions.sublist(0, shown));
+diff --git a/flutter/lib/common/widgets/peers_view.dart b/flutter/lib/common/widgets/peers_view.dart
+index d64b26b..c65797d 100644
+--- a/flutter/lib/common/widgets/peers_view.dart
++++ b/flutter/lib/common/widgets/peers_view.dart
+@@ -473,10 +473,12 @@ Widget hjvPeersPlaceholder(BuildContext context,
+ 
+ /// HJViewer: the placeholder of a tab that needs a login, with the login button.
+ Widget hjvLoginPlaceholder(
+-    BuildContext context, PeerTabIndex tab, VoidCallback onLogin) {
++    BuildContext context, PeerTabIndex tab, VoidCallback onLogin,
++    {String? subtitle}) {
+   return hjvPeersPlaceholder(context,
+       icon: PeerTabModel.icons[tab.index],
+       title: gFFI.peerTabModel.tabTooltip(tab.index),
++      subtitle: subtitle,
+       action: SizedBox(
+         height: 40,
+         // HJViewer: plain while the PC home's notice has the filled [로그인] (one a window)
+diff --git a/flutter/lib/common/widgets/toolbar.dart b/flutter/lib/common/widgets/toolbar.dart
+index e98afaf..b60d6cb 100644
+--- a/flutter/lib/common/widgets/toolbar.dart
++++ b/flutter/lib/common/widgets/toolbar.dart
+@@ -474,7 +474,7 @@ List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
+     );
+     v.add(
+       TTextMenu(
+-          child: Text('${translate('Terminal')} (beta)'),
++          child: Text(hjvTerminalBeta()),
+           onPressed: () => connectWithToken(isTerminal: true)),
+     );
+     v.add(
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 42f57a8..9b4fd7e 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -19,6 +19,7 @@ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+ import '../../common/hjviewer_access.dart';
++import '../../common/hjviewer_account.dart';
+ import '../../common/formatter/id_formatter.dart';
+ import '../../common/widgets/peer_tab_page.dart';
+ import '../../common/widgets/autocomplete.dart';
+@@ -536,7 +537,7 @@ class _ConnectionPageState extends State<ConnectionPage>
+                                       () => onConnect(isViewCamera: true)
+                                     ),
+                                     (
+-                                      '${translate('Terminal')} (beta)',
++                                      hjvTerminalBeta(),
+                                       () => onConnect(isTerminal: true)
+                                     ),
+                                     // `connect` routes this through the
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 4cd68cb..6739888 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -1074,7 +1074,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+               child: Column(children: [
+                 permissions(context),
+                 password(context),
+-                _Card(title: '2FA', children: [tfa()]),
++                _Card(title: 'enter-2fa-title', children: [tfa()]),
+                 if (!isChangeIdDisabled())
+                   _Card(title: 'ID', children: [changeId()]),
+                 more(context),
+@@ -2731,7 +2731,7 @@ class _AboutState extends State<_About> {
+                     launchUrlString('https://github.com/yonsei-projecttf/hjviewer');
+                   },
+                   child: Text(
+-                    'Source code (GNU AGPL-3.0)',
++                    hjvAppTexts().sourceCode,
+                     style: linkStyle,
+                   ).marginSymmetric(vertical: 4.0)),
+               // HJViewer: the notice on a soft tint of the accent instead of a block of blue
+@@ -2753,11 +2753,16 @@ class _AboutState extends State<_About> {
+                             style:
+                                 TextStyle(fontSize: 13, color: p.textSecondary),
+                           ),
+-                          Text(
+-                            translate('Slogan_tip'),
+-                            style: TextStyle(
+-                                fontWeight: FontWeight.w600, color: p.primary),
+-                          )
++                          // HJViewer: upstream's slogan is not the pinned build's to say
++                          if (bind.mainGetBuildinOption(
++                                  key: "hide-powered-by-me") !=
++                              'Y')
++                            Text(
++                              translate('Slogan_tip'),
++                              style: TextStyle(
++                                  fontWeight: FontWeight.w600,
++                                  color: p.primary),
++                            )
+                         ],
+                       ),
+                     ),
+diff --git a/flutter/lib/desktop/pages/install_page.dart b/flutter/lib/desktop/pages/install_page.dart
+index 0b93290..653914a 100644
+--- a/flutter/lib/desktop/pages/install_page.dart
++++ b/flutter/lib/desktop/pages/install_page.dart
+@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ import 'package:flutter_hbb/models/state_model.dart';
+@@ -269,8 +270,7 @@ class _InstallPageBodyState extends State<_InstallPageBody>
+                         child: Column(
+                           crossAxisAlignment: CrossAxisAlignment.start,
+                           children: [
+-                            Text(
+-                                'HJViewer is free software under the GNU AGPL-3.0, with no warranty.',
++                            Text(hjvAppTexts().freeSoftware,
+                                 style: TextStyle(
+                                     fontSize: 13,
+                                     height: 1.5,
+@@ -290,7 +290,7 @@ class _InstallPageBodyState extends State<_InstallPageBody>
+                                           size: 16, color: p.primary),
+                                       const SizedBox(width: 6),
+                                       Text(
+-                                        'License',
++                                        hjvAppTexts().license,
+                                         style: TextStyle(
+                                             fontSize: 13,
+                                             fontWeight: FontWeight.w600,
+@@ -444,7 +444,7 @@ class _InstallPageBodyState extends State<_InstallPageBody>
+                       Column(
+                         crossAxisAlignment: CrossAxisAlignment.start,
+                         children: [
+-                          Text('HJViewer is free software under the GNU AGPL-3.0, with no warranty.')
++                          Text(hjvAppTexts().freeSoftware)
+                               .marginOnly(bottom: em),
+                           InkWell(
+                             hoverColor: Colors.transparent,
+@@ -456,7 +456,7 @@ class _InstallPageBodyState extends State<_InstallPageBody>
+                                 Icon(Icons.launch_outlined, size: 16)
+                                     .marginOnly(right: 5),
+                                 Text(
+-                                  'License',
++                                  hjvAppTexts().license,
+                                   style: const TextStyle(
+                                       decoration: TextDecoration.underline),
+                                 )
+diff --git a/flutter/lib/desktop/pages/server_page.dart b/flutter/lib/desktop/pages/server_page.dart
+index f9967cb..94e66f1 100644
+--- a/flutter/lib/desktop/pages/server_page.dart
++++ b/flutter/lib/desktop/pages/server_page.dart
+@@ -563,7 +563,7 @@ class _CmHeaderState extends State<_CmHeader>
+                           ? client.disconnected
+                               ? translate("Disconnected")
+                               : translate("Connected")
+-                          : "${translate("Request access to your device")}...",
++                          : "${translate("Request access to your device")}…",
+                       style: TextStyle(color: p.textSecondary, fontSize: 13),
+                     ).marginOnly(right: 8.0),
+                     if (client.authorized)
+@@ -985,7 +985,7 @@ class _CmControlPanel extends StatelessWidget {
+                       color: Colors.white,
+                       size: 14,
+                     ),
+-                    text: "Audio input",
++                    text: "Audio Input",
+                     textColor: Colors.white),
+               ),
+               Expanded(
+@@ -1156,7 +1156,7 @@ class _CmControlPanel extends StatelessWidget {
+                 color: p.card,
+                 border: Border.all(color: p.borderStrong),
+                 onClick: handleDisconnect,
+-                text: 'Cancel',
++                text: 'Dismiss',
+                 textColor: null,
+               ),
+             ),
+diff --git a/flutter/lib/desktop/widgets/remote_toolbar.dart b/flutter/lib/desktop/widgets/remote_toolbar.dart
+index a858c06..fc2f544 100644
+--- a/flutter/lib/desktop/widgets/remote_toolbar.dart
++++ b/flutter/lib/desktop/widgets/remote_toolbar.dart
+@@ -3062,7 +3062,7 @@ class _VoiceCallMenu extends StatelessWidget {
+         Divider(),
+         MenuButton(
+           // HJViewer: a danger action
+-          child: Text(translate('End call'),
++          child: Text(translate('Stop voice call'),
+               style: TextStyle(color: HjvPalette.of(context).danger)),
+           onPressed: () => bind.sessionCloseVoiceCall(sessionId: ffi.sessionId),
+           ffi: ffi,
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index 3cbfe89..51e73bb 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -1011,7 +1011,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+             !disabledSettings &&
+             !outgoingOnly &&
+             !hideSecuritySettings)
+-          SettingsSection(title: Text('2FA'), tiles: tfaTiles),
++          SettingsSection(
++              title: Text(translate('enter-2fa-title')), tiles: tfaTiles),
+         if (isAndroid &&
+             !disabledSettings &&
+             !outgoingOnly &&
+@@ -1036,10 +1037,10 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                 onPressed: (context) async {
+                   await launchUrl(Uri.parse(url));
+                 },
+-                title: Text(translate("Version: ") + version),
++                title: Text('${translate('Version')}: $version'),
+                 value: Padding(
+                   padding: EdgeInsets.symmetric(vertical: 8),
+-                  child: Text('Source code (GNU AGPL-3.0)',
++                  child: Text(hjvAppTexts().sourceCode,
+                       style: TextStyle(
+                         decoration: TextDecoration.underline,
+                       )),
+@@ -1185,7 +1186,7 @@ void showAbout(OverlayDialogManager dialogManager) {
+     return CustomAlertDialog(
+       title: Text(translate('About RustDesk')),
+       content: Wrap(direction: Axis.vertical, spacing: 12, children: [
+-        Text('Version: $version'),
++        Text('${translate('Version')}: $version'),
+         InkWell(
+             onTap: () async {
+               const url = 'https://github.com/yonsei-projecttf/hjviewer';
+@@ -1193,7 +1194,7 @@ void showAbout(OverlayDialogManager dialogManager) {
+             },
+             child: Padding(
+               padding: EdgeInsets.symmetric(vertical: 8),
+-              child: Text('Source code (GNU AGPL-3.0)',
++              child: Text(hjvAppTexts().sourceCode,
+                   style: TextStyle(
+                     decoration: TextDecoration.underline,
+                   )),
+diff --git a/flutter/test/hjv_update_gate_test.dart b/flutter/test/hjv_update_gate_test.dart
+index 7c3f30a..c97c223 100644
+--- a/flutter/test/hjv_update_gate_test.dart
++++ b/flutter/test/hjv_update_gate_test.dart
+@@ -969,12 +969,12 @@ void main() {
+       expect(find.text('원격 PC 123 456 789'), findsOneWidget);
+       expect(find.text(HjvUpdateText.peerNeedsLink('1.5.1', '1.6.0')),
+           findsOneWidget);
+-      expect(find.text('이 PC용 설치 링크'), findsOneWidget);
++      expect(find.text('그 PC용 설치 링크'), findsOneWidget);
+       // the session below stays in reach
+       expect(find.text('connection page').hitTestable(), findsOneWidget);
+       await tester.tap(find.text('닫기'));
+       await tester.pump();
+-      expect(find.text('이 PC용 설치 링크'), findsNothing);
++      expect(find.text('그 PC용 설치 링크'), findsNothing);
+ 
+       // a reconnection does not tell it again
+       hjvOnPeerInfo('123456789', old, ConnType.defaultConn);
+@@ -990,7 +990,7 @@ void main() {
+       await tester.pump();
+       expect(find.text(HjvUpdateText.peerUpdatesItself('1.6.0', '1.6.1')),
+           findsOneWidget);
+-      expect(find.text('이 PC용 설치 링크'), findsNothing);
++      expect(find.text('그 PC용 설치 링크'), findsNothing);
+       await tester.tap(find.text('닫기'));
+       await tester.pump();
+     });
+@@ -1025,7 +1025,7 @@ void main() {
+                   HjvLink(url, 'HJViewer-1.6.2-install.exe', 600)),
+               copy: (text) async => copied.add(text),
+               onClose: () => closed++))));
+-      await tester.tap(find.text('이 PC용 설치 링크'));
++      await tester.tap(find.text('그 PC용 설치 링크'));
+       await tester.pump();
+       expect(find.text('PC의 브라우저 주소창에 아래 주소를 입력하세요. 10분 동안 쓸 수 있습니다.'),
+           findsOneWidget);
+@@ -1034,7 +1034,7 @@ void main() {
+       expect(find.text(HjvUpdateText.linkCopied), findsOneWidget);
+       expect(find.text(HjvUpdateText.linkThen), findsOneWidget);
+       expect(copied, [url]);
+-      expect(find.text('이 PC용 설치 링크'), findsNothing);
++      expect(find.text('그 PC용 설치 링크'), findsNothing);
+       // the card leaves with the link
+       await tester.pump(const Duration(seconds: 599));
+       expect(closed, 0);
+@@ -1054,11 +1054,11 @@ void main() {
+               askLink: () => answer.future,
+               copy: (text) async {},
+               onClose: () => closed++))));
+-      await tester.tap(find.text('이 PC용 설치 링크'));
++      await tester.tap(find.text('그 PC용 설치 링크'));
+       await tester.pump();
+       expect(find.text('설치 링크를 만드는 중…'), findsOneWidget);
+       expect(find.byType(LinearProgressIndicator), findsOneWidget);
+-      expect(find.text('이 PC용 설치 링크'), findsNothing);
++      expect(find.text('그 PC용 설치 링크'), findsNothing);
+       expect(tester.takeException(), isNull);
+       // the notice does not leave while the answer is on its way
+       await tester.pump(const Duration(seconds: 61));
+@@ -1076,10 +1076,10 @@ void main() {
+       await tester.pumpWidget(app(page));
+       hjvOnPeerInfo('123456789', old, ConnType.defaultConn);
+       await tester.pump();
+-      expect(find.text('이 PC용 설치 링크'), findsOneWidget);
++      expect(find.text('그 PC용 설치 링크'), findsOneWidget);
+       await tester.pump(const Duration(seconds: 61));
+       await tester.pump();
+-      expect(find.text('이 PC용 설치 링크'), findsNothing);
++      expect(find.text('그 PC용 설치 링크'), findsNothing);
+     });
+ 
+     testWidgets('what a PC sends cannot stop the session', (tester) async {
+@@ -1168,7 +1168,7 @@ void main() {
+                   HjvLink(url, 'HJViewer-1.6.2-install.exe', 600)),
+               copy: (text) async => copied.add(text),
+               onClose: () {}))));
+-      await tester.tap(find.text('이 PC용 설치 링크'));
++      await tester.tap(find.text('그 PC용 설치 링크'));
+       await tester.pump();
+       expect(find.text('K7M2-Q9XD'), findsOneWidget);
+       expect(find.text(HjvUpdateText.linkCopied), findsNothing);
+@@ -1194,7 +1194,7 @@ void main() {
+               copy: (text) async {},
+               onClose: () {})));
+       await tester.pumpWidget(card('login'));
+-      await tester.tap(find.text('이 PC용 설치 링크'));
++      await tester.tap(find.text('그 PC용 설치 링크'));
+       await tester.pump();
+       asked.last.complete(const HjvLinkAnswer.failed('login'));
+       await tester.pump();
+@@ -1202,7 +1202,7 @@ void main() {
+       expect(find.text('다시 시도'), findsNothing);
+ 
+       await tester.pumpWidget(card('network'));
+-      await tester.tap(find.text('이 PC용 설치 링크'));
++      await tester.tap(find.text('그 PC용 설치 링크'));
+       await tester.pump();
+       asked.last.complete(const HjvLinkAnswer.failed('network'));
+       await tester.pump();
+diff --git a/flutter/test/hjv_update_test.dart b/flutter/test/hjv_update_test.dart
+index 3832893..92af847 100644
+--- a/flutter/test/hjv_update_test.dart
++++ b/flutter/test/hjv_update_test.dart
+@@ -698,17 +698,17 @@ void main() {
+       expect(old.offersLink, isTrue);
+       expect(old.installed, isTrue);
+       expect(old.text,
+-          '이 PC의 원격 앱은 업데이트가 필요합니다(지금 1.5.1, 최소 1.6.1). PC의 브라우저로 새 버전을 받아 설치할 수 있습니다.');
++          '그 PC의 HJViewer는 업데이트가 필요합니다(지금 1.5.1, 최소 1.6.1). 그 PC의 브라우저로 새 버전을 받아 설치할 수 있습니다.');
+       final own = notice('1.6.0', additions: {'is_installed': true})!;
+       expect(own.offersLink, isFalse);
+       expect(own.installed, isTrue);
+       expect(own.text,
+-          '이 PC의 HJViewer는 업데이트가 필요합니다(지금 1.6.0, 최소 1.6.1). PC의 HJViewer 창에서 [지금 업데이트]를 누르면 설치됩니다. 설치하는 동안 연결이 잠시 끊깁니다.');
++          '그 PC의 HJViewer는 업데이트가 필요합니다(지금 1.6.0, 최소 1.6.1). 그 PC의 HJViewer 창에서 [지금 업데이트]를 누르면 설치됩니다. 설치하는 동안 연결이 잠시 끊깁니다.');
+       // one that runs without being installed has [업데이트] and [지금 실행] instead
+       final run = notice('1.6.0', additions: {'is_installed': false})!;
+       expect(run.installed, isFalse);
+       expect(run.text,
+-          '이 PC의 HJViewer는 업데이트가 필요합니다(지금 1.6.0, 최소 1.6.1). PC의 HJViewer 창에서 [업데이트]를 누르면 새 버전을 내려받고, [지금 실행]을 누르면 새 버전이 열립니다. 그때 연결이 잠시 끊깁니다.');
++          '그 PC의 HJViewer는 업데이트가 필요합니다(지금 1.6.0, 최소 1.6.1). 그 PC의 HJViewer 창에서 [업데이트]를 누르면 새 버전을 내려받고, [지금 실행]을 누르면 새 버전이 열립니다. 그때 연결이 잠시 끊깁니다.');
+       expect(notice('1.5.9', min: '1.6.0')!.offersLink, isTrue);
+       expect(notice('1.6.0', min: '1.10.0')!.offersLink, isFalse);
+     });
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index 5c86e1c..e8fe742 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -140,20 +140,20 @@ void main() {
+         '이용 비밀번호가 맞지 않거나, 지금은 이용 비밀번호를 쓸 수 없습니다. 비밀번호를 확인해 다시 넣거나 연세포탈로 로그인해 주세요.');
+     expect(ko.failure('wrong_pc'),
+         '이 PC의 키가 서버에 있는 것과 달라 이용 비밀번호로 연결을 받을 수 없습니다. 관리자에게 알려 주세요.');
+-    expect(ko.failure('rate_limited'), '시도가 너무 많습니다. 잠시 뒤 다시 해 주세요.');
++    expect(ko.failure('rate_limited'), '시도가 너무 많습니다. 잠시 뒤 다시 시도해 주세요.');
+     expect(ko.failure('wrong_pc'), startsWith('이 PC의 키가 서버에 있는 것과 달라'));
+     expect(ko.failure('clock'), startsWith('기기의 날짜와 시간이 맞지 않습니다.'));
+     expect(en.failure('clock'),
+         startsWith("The device's date and time are wrong."));
+     // hjv-api's retry_after, rounded up to minutes, past the hour to hours
+     expect(ko.failure('rate_limited', wait: 600),
+-        '시도가 너무 많습니다. 약 10분 뒤 다시 해 주세요.');
++        '시도가 너무 많습니다. 약 10분 뒤 다시 시도해 주세요.');
+     expect(en.failure('rate_limited', wait: 30),
+         'Too many tries. Please try again in about a minute.');
+     expect(en.failure('rate_limited', wait: 3599),
+         'Too many tries. Please try again in about an hour.');
+     expect(ko.failure('rate_limited', wait: 86400),
+-        '시도가 너무 많습니다. 약 24시간 뒤 다시 해 주세요.');
++        '시도가 너무 많습니다. 약 24시간 뒤 다시 시도해 주세요.');
+     // a wait past two days is no number to show
+     expect(ko.failure('rate_limited', wait: 3 * 86400),
+         ko.failure('rate_limited'));
+@@ -166,7 +166,7 @@ void main() {
+       'config',
+       'new'
+     ]) {
+-      expect(ko.failure(code), '지금은 이용 비밀번호를 확인할 수 없습니다. 잠시 뒤 다시 해 주세요.',
++      expect(ko.failure(code), '지금은 이용 비밀번호를 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.',
+           reason: code);
+     }
+   });
+@@ -217,7 +217,7 @@ void main() {
+     expect(hjvAccessCanSend('pw', busy: false, retryAt: retryAt, now: now + 60),
+         isFalse);
+     expect(hjvAccessErrorNow(ko, 'E2', retryAt: retryAt, now: now + 60),
+-        '시도가 너무 많습니다. 약 9분 뒤 다시 해 주세요.');
++        '시도가 너무 많습니다. 약 9분 뒤 다시 시도해 주세요.');
+     expect(hjvAccessCanSend('pw', busy: false, retryAt: retryAt, now: retryAt),
+         isTrue);
+     expect(hjvAccessErrorNow(ko, 'E2', retryAt: retryAt, now: retryAt), isNull);
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 0800256..1fd58c3 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -285,10 +285,10 @@ void main() {
+ 
+   test('a login without the account service\'s answer says which', () {
+     expect(ko.serviceNotAnswering(404),
+-        '서버의 계정 서비스가 답하지 않았습니다(HTTP 404). 잠시 뒤 다시 해 주세요.');
++        '서버의 계정 서비스가 답하지 않았습니다(HTTP 404). 잠시 뒤 다시 시도해 주세요.');
+     expect(en.serviceNotAnswering(502),
+         "The server's account service did not answer (HTTP 502). Please try again later.");
+-    expect(ko.networkFailed, '서버에 연결하지 못했습니다. 네트워크 연결을 확인한 뒤 다시 해 주세요.');
++    expect(ko.networkFailed, '서버에 연결하지 못했습니다. 네트워크 연결을 확인한 뒤 다시 시도해 주세요.');
+     expect(en.networkFailed,
+         'Could not reach the server. Check the network connection and try again.');
+   });
+@@ -314,7 +314,7 @@ void main() {
+       expect(pcLine('needs-relogin', mine),
+           ('이 PC: 다시 로그인 필요(보안 키가 바뀜)', HjvPcAction.logInAgain));
+       expect(pcLine('revoked', mine),
+-          ('이 PC: 다른 기기에서 목록에서 뺌', HjvPcAction.addAgain));
++          ('이 PC: 다른 기기에서 내 PC 목록에서 뺌', HjvPcAction.addAgain));
+       expect(pcLine('listed', mine),
+           ('이 PC: 이 PC에서 다시 로그인 필요', HjvPcAction.addAgain));
+       expect(pcLine('error bind-mismatch 0', mine),
+@@ -389,7 +389,7 @@ void main() {
+   group('after a login on a Windows PC (design v3 §1-2)', () {
+     test('a PC added and turned on', () {
+       final n = notice()!;
+-      expect(n.title, '이 PC를 내 기기 목록에 추가했습니다');
++      expect(n.title, '이 PC를 내 PC 목록에 추가했습니다');
+       expect(
+           n.lines.join(' '),
+           '같은 연세포탈 계정으로 로그인한 내 휴대폰과 PC에서 이 PC에 비밀번호 없이 연결할 수 있습니다. '
+@@ -431,7 +431,7 @@ void main() {
+ 
+     test('a PC already in the list cannot be undone here', () {
+       final n = notice(status: 'already')!;
+-      expect(n.title, '이 PC는 내 기기 목록에 있습니다');
++      expect(n.title, '이 PC는 내 PC 목록에 있습니다');
+       expect(n.undo, isFalse);
+     });
+ 
+@@ -449,7 +449,7 @@ void main() {
+ 
+     test('the other results', () {
+       expect(notice(installed: false)?.lines,
+-          ['설치하지 않고 실행한 HJViewer라 내 기기 목록에 넣지 않았습니다.']);
++          ['설치하지 않고 실행한 HJViewer라 내 PC 목록에 넣지 않았습니다.']);
+       // only HJViewer that is not installed offers [설치하기]
+       expect(notice(installed: false)?.install, isTrue);
+       expect(notice(status: 'other_account')?.install, isFalse);
+@@ -472,7 +472,7 @@ void main() {
+     test('without this-device, the login answer tells whether it bound the PC',
+         () {
+       final n = notice(status: null, undo: false)!;
+-      expect(n.title, '이 PC를 내 기기 목록에 추가했습니다');
++      expect(n.title, '이 PC를 내 PC 목록에 추가했습니다');
+       expect(n.undo, isFalse);
+       expect(notice(status: null, bound: false), isNull);
+       expect(notice(status: 'removed'), isNull);
+@@ -581,7 +581,7 @@ void main() {
+         'a logout from another device says that it cuts no open connection (U1-d)',
+         () {
+       const open =
+-          "이미 열려 있는 연결은 끊기지 않습니다. PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 장치 다시 시작'을 누르거나, PC를 다시 시작하세요.";
++          "이미 열려 있는 연결은 끊기지 않습니다. PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 PC 다시 시작'을 누르거나, PC를 다시 시작하세요.";
+       expect(ko.loggedOutDevice, '그 기기를 로그아웃시켰습니다. $open');
+       expect(ko.loggedOutOthers(2), '다른 기기 2대를 로그아웃시켰습니다. $open');
+       expect(ko.notMineDone, '그 기기를 로그아웃시켰습니다. 연세포탈 비밀번호도 바꿔 주세요. $open');
+@@ -665,7 +665,7 @@ void main() {
+               error:
+                   'Exception: Failed to parse response.\n$kHjvKeyUnavailable',
+               fromServer: false),
+-          '이 기기의 보안 키를 지금 쓸 수 없습니다. 기기 잠금을 풀고 [재시도]를 누르세요.');
++          '이 기기의 보안 키를 지금 쓸 수 없습니다. 기기 잠금을 풀고 [다시 시도]를 누르세요.');
+       expect(
+           hjvServerBanner(ko,
+               error: 'Exception: The HTTP request failed', fromServer: false),
+@@ -706,10 +706,53 @@ void main() {
+       expect(hint(error: 'down'), isFalse);
+       expect(hint(loadError: 'failed'), isFalse);
+       expect(ko.emptyList,
+-          'PC에 HJViewer를 설치하고, 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.');
++          '아직 내 PC가 없습니다. PC에 HJViewer를 설치하고 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.');
+     });
+ 
+-    test('a card offers "내 목록에서 빼기" while logged in to an account build', () {
++    test('a list that did not come says so in words, unless the server banner does', () {
++      final raw = 'pull_group_failed_tip: Exception: Failed to parse response.';
++      expect(hjvShowsListError(networkError: '', loadError: raw), isTrue);
++      expect(hjvShowsListError(networkError: 'down', loadError: raw), isFalse);
++      expect(hjvShowsListError(networkError: '', loadError: ''), isFalse);
++      expect(ko.listFailed, '내 PC 목록을 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
++      expect(en.listFailed, 'Could not load your PC list. Please try again in a moment.');
++      expect(ko.listFailed, isNot(contains('Exception')));
++    });
++
++    test('the list is "내 PC" everywhere (U17)', () {
++      for (final text in [
++        ko.addedTitle,
++        ko.alreadyTitle,
++        ko.notAddedTitle,
++        ko.notInstalled,
++        ko.removedThisPc,
++        ko.logoutUnbinds,
++        ko.removeFromList,
++        ko.removed,
++        ko.notInList,
++        ko.removedElsewhere,
++        ko.emptyList,
++        ko.listLoginHint,
++      ]) {
++        expect(text, contains('내 PC'), reason: text);
++        expect(text, isNot(contains('내 기기')), reason: text);
++      }
++      expect(ko.removeFromList, '내 PC에서 빼기');
++      expect(en.removeFromList, 'Remove from My PCs');
++      expect(ko.retry, '다시 시도');
++    });
++
++    test('no English left on Korean screens (U48)', () {
++      expect(ko.sourceCode, '소스 코드(GNU AGPL-3.0)');
++      expect(en.sourceCode, 'Source code (GNU AGPL-3.0)');
++      expect(ko.license, '라이선스');
++      expect(ko.terminalBeta(admin: false), '터미널(베타)');
++      expect(ko.terminalBeta(admin: true), '터미널(관리자 권한, 베타)');
++      // English keeps upstream's words with " (beta)"
++      expect(en.terminalBeta(admin: true), isNull);
++    });
++
++    test('a card offers "내 PC에서 빼기" while logged in to an account build', () {
+       expect(hjvShowsDeviceMenu(accountBuild: true, loggedIn: true), isTrue);
+       expect(hjvShowsDeviceMenu(accountBuild: true, loggedIn: false), isFalse);
+       expect(hjvShowsDeviceMenu(accountBuild: false, loggedIn: true), isFalse);
+@@ -722,7 +765,7 @@ void main() {
+     test('a request that failed', () {
+       expect(hjvRequestError(ko, {'error': '요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.'}),
+           '요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.');
+-      expect(hjvRequestError(ko, null), '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.');
++      expect(hjvRequestError(ko, null), '요청하지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
+       expect(
+           hjvFailure(
+               ko, Exception('Failed to parse response.\n$kHjvKeyUnavailable')),
+@@ -758,9 +801,9 @@ void main() {
+       expect(offers(online: true), isFalse);
+       expect(offers(loggedIn: false), isFalse);
+       expect(ko.wake, '켜기');
+-      expect(ko.wakeAsk, '이 PC는 꺼져 있습니다. 켤까요?');
++      expect(ko.wakeAsk, 'PC가 꺼져 있습니다. 켤까요?');
+       expect(ko.wakeTitle('연구실-PC'), '연구실-PC 켜기');
+-      expect(ko.close, '닫기');
++      expect(ko.cancel, '취소');
+     });
+ 
+     test('the request is passed on: nothing was sent yet', () {
+@@ -845,11 +888,11 @@ void main() {
+       expect(text(failed('not_active')), silent);
+       expect(text(failed('no_iface')), 'NAS에 이 PC의 네트워크로 나가는 랜카드가 없습니다.');
+       expect(
+-          text(failed('send_failed')), 'NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 해 주세요.');
++          text(failed('send_failed')), 'NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
+       // packets that did not go out at all
+-      expect(text(failed('partial')), 'NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 해 주세요.');
++      expect(text(failed('partial')), 'NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
+       expect(text(failed('rate_limited')), '잠시 뒤 다시 시도해 주세요.');
+-      expect(text(failed('expired')), '요청이 너무 늦게 전달되어 취소됐습니다. 다시 해 주세요.');
++      expect(text(failed('expired')), '요청이 너무 늦게 전달되어 취소됐습니다. 다시 시도해 주세요.');
+       // the relay and hjv-api disagree: the code as it is
+       expect(text(failed('bad_signature')),
+           'NAS 중계기가 켜기 요청을 처리하지 못했습니다(bad_signature).');
+@@ -915,10 +958,10 @@ void main() {
+               409, {'error': clock, 'hjv': 'clock', 'server_time': oct20})),
+           clock);
+       // a PC that left the list since it came, and no answer to read
+-      expect(text(refused(404, {'error': 'not found'})), '이미 내 목록에 없는 PC입니다.');
+-      expect(text(hjvWakeAsked(502, null)), '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.');
++      expect(text(refused(404, {'error': 'not found'})), '이미 내 PC 목록에 없는 PC입니다.');
++      expect(text(hjvWakeAsked(502, null)), '요청하지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
+       expect(text(hjvWakeAsked(202, {'state': 'queued'})),
+-          '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.');
++          '요청하지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
+       for (final wake in [
+         refused(409, noRelay('unconfirmed', true)),
+         refused(503, relayOffline(oct20)),
+@@ -975,7 +1018,7 @@ void main() {
+       // the job is gone, or the login ended
+       final gone = hjvWakePolled(404, {'error': 'not found'}, sent);
+       expect(gone.kind, HjvWakeKind.refused);
+-      expect(text(gone), '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.');
++      expect(text(gone), '요청하지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
+       const login = '로그인이 필요합니다. 다시 로그인해 주세요.';
+       expect(text(hjvWakePolled(401, {'error': login}, sent)), login);
+       // an error only a failed job has
+diff --git a/flutter/test/hjviewer_account_widgets_test.dart b/flutter/test/hjviewer_account_widgets_test.dart
+index c03f9d3..5bca714 100644
+--- a/flutter/test/hjviewer_account_widgets_test.dart
++++ b/flutter/test/hjviewer_account_widgets_test.dart
+@@ -164,7 +164,7 @@ void main() {
+             onOk: () => ok++,
+             onUndo: () => undo++,
+             onSetPassword: () => password++));
+-    expect(find.text('이 PC를 내 기기 목록에 추가했습니다'), findsOneWidget);
++    expect(find.text('이 PC를 내 PC 목록에 추가했습니다'), findsOneWidget);
+     expect(find.text('비밀번호 없는 연결이 안 될 때(서버 점검, 끄기, 로그아웃) 쓸 영구 비밀번호를 정해 두세요.'),
+         findsOneWidget);
+     await tester.tap(find.text('지금 정하기'));
+@@ -252,7 +252,7 @@ void main() {
+     await settle(tester);
+   });
+ 
+-  testWidgets('a PC that is off is offered to be woken: [켜기] or [닫기]',
++  testWidgets('a PC that is off is offered to be woken: [켜기] or [취소]',
+       (tester) async {
+     final answers = <String>[];
+     await show(
+@@ -261,13 +261,13 @@ void main() {
+             title: '연구실-PC',
+             text: ko.wakeAsk,
+             yes: ko.wake,
+-            no: ko.close,
++            no: ko.cancel,
+             onYes: () => answers.add('wake'),
+             onNo: () => answers.add('close')));
+     expect(find.text('연구실-PC'), findsOneWidget);
+-    expect(find.text('이 PC는 꺼져 있습니다. 켤까요?'), findsOneWidget);
+-    expect(find.text('취소'), findsNothing);
+-    await tester.tap(find.text('닫기'));
++    expect(find.text('PC가 꺼져 있습니다. 켤까요?'), findsOneWidget);
++    expect(find.text('닫기'), findsNothing);
++    await tester.tap(find.text('취소'));
+     await tester.tap(find.text('켜기'));
+     expect(answers, ['close', 'wake']);
+     await settle(tester);
+diff --git a/flutter/test/hjviewer_admin_test.dart b/flutter/test/hjviewer_admin_test.dart
+index c0f2873..7f61194 100644
+--- a/flutter/test/hjviewer_admin_test.dart
++++ b/flutter/test/hjviewer_admin_test.dart
+@@ -207,7 +207,7 @@ void main() {
+     expect(hjvAdminFailure(ko, Exception('hjv: account key unavailable')),
+         '이 기기의 보안 키를 지금 쓸 수 없습니다. 기기 잠금을 풀고 새로 고쳐 주세요.');
+     expect(hjvAdminFailure(ko, Exception('Connection refused')),
+-        '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.');
++        '요청하지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
+     final newer = hjvAdminAnswer(ko, 200, {...overviewAnswer(), 'v': 2});
+     expect((newer.closes, newer.overview, newer.error),
+         ('', null, '서버의 답을 읽지 못했습니다. 앱을 업데이트해 주세요.'));
+diff --git a/flutter/test/hjviewer_admin_widgets_test.dart b/flutter/test/hjviewer_admin_widgets_test.dart
+index c6f6abd..cc83389 100644
+--- a/flutter/test/hjviewer_admin_widgets_test.dart
++++ b/flutter/test/hjviewer_admin_widgets_test.dart
+@@ -505,7 +505,7 @@ void main() {
+     final failed = await hjvAdminLoad(
+         ko, (path) async => throw Exception('Connection refused'));
+     expect((failed.closes, failed.overview, failed.error),
+-        ('', null, '요청하지 못했습니다. 잠시 뒤 다시 해 주세요.'));
++        ('', null, '요청하지 못했습니다. 잠시 뒤 다시 시도해 주세요.'));
+   });
+ 
+   testWidgets('a 401 closes the view: no list stays without the login',
+diff --git a/src/hjviewer_account/ctl.rs b/src/hjviewer_account/ctl.rs
+index 54a7969..5d17245 100644
+--- a/src/hjviewer_account/ctl.rs
++++ b/src/hjviewer_account/ctl.rs
+@@ -267,12 +267,12 @@ fn refused(korean: bool) -> (&'static str, &'static str) {
+     if korean {
+         (
+             "비밀번호 없이 연결하지 못했습니다",
+-            "이 PC에서 비밀번호 없는 연결이 꺼져 있거나 아직 준비되지 않았습니다. PC 비밀번호로 연결하려면 [재시도]를 누르세요.",
++            "그 PC에서 비밀번호 없는 연결이 꺼져 있거나 아직 준비되지 않았습니다. PC 비밀번호로 연결하려면 [다시 시도]를 누르세요.",
+         )
+     } else {
+         (
+             "Could not connect without a password",
+-            "Password-less connections are off on this PC or not ready yet. To connect with the PC's password, press [Retry].",
++            "Password-less connections are off on that PC or not ready yet. To connect with the PC's password, press [Retry].",
+         )
+     }
+ }
+@@ -284,13 +284,13 @@ fn refused(korean: bool) -> (&'static str, &'static str) {
+ fn key_changed(korean: bool) -> (&'static str, &'static str) {
+     if korean {
+         (
+-            "보안 경고: 이 PC의 키가 바뀌었습니다",
+-            "그 PC를 다시 설치했거나 초기화했다면, 몇 분 뒤 기기 목록을 새로 고치고 다시 연결하세요. 그때는 PC 비밀번호로 들어갈 수 있습니다. 그런 일이 없었다면 누군가 연결을 가로채고 있을 수 있어 연결을 끊습니다.",
++            "보안 경고: 그 PC의 키가 바뀌었습니다",
++            "그 PC를 다시 설치했거나 초기화했다면, 몇 분 뒤 내 PC 목록을 새로 고치고 다시 연결하세요. 그때는 PC 비밀번호로 들어갈 수 있습니다. 그런 일이 없었다면 누군가 연결을 가로채고 있을 수 있어 연결을 끊습니다.",
+         )
+     } else {
+         (
+-            "Security warning: this PC's key has changed",
+-            "If that PC was reinstalled or reset, refresh the device list in a few minutes and connect again; the PC's password will then let you in. If not, someone may be intercepting the connection, so it is being closed.",
++            "Security warning: that PC's key has changed",
++            "If that PC was reinstalled or reset, refresh My PCs in a few minutes and connect again; the PC's password will then let you in. If not, someone may be intercepting the connection, so it is being closed.",
+         )
+     }
+ }
+@@ -621,8 +621,8 @@ mod tests {
+             for s in [title, text, warning, advice] {
+                 assert!(!s.is_empty() && !s.contains(['{', '}']), "{s}");
+             }
+-            // the refusal names the box's own [Retry] (ko.rs: "재시도")
+-            assert!(text.contains(if korean { "[재시도]" } else { "[Retry]" }));
++            // the refusal names the box's own [Retry] (ko.rs: "다시 시도")
++            assert!(text.contains(if korean { "[다시 시도]" } else { "[Retry]" }));
+         }
+     }
+ }
+diff --git a/src/lang/en.rs b/src/lang/en.rs
+index 7669c94..092ff9c 100644
+--- a/src/lang/en.rs
++++ b/src/lang/en.rs
+@@ -1,7 +1,7 @@
+ lazy_static::lazy_static! {
+ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+     [
+-        ("desk_tip", "Your desktop can be accessed with this ID and password."),
++        ("desk_tip", "Other devices can connect to this PC with this ID and password."),
+         ("connecting_status", "Connecting to the server…"),
+         ("not_ready_status", "Cannot reach the server. Check the network connection."),
+         ("ID/Relay Server", "ID/Relay server"),
+@@ -30,7 +30,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Empty Directory", "Empty directory"),
+         ("Custom Image Quality", "Custom image quality"),
+         ("Adjust Window", "Adjust window"),
+-        ("Insert Lock", "Insert lock"),
++        ("Insert Lock", "Lock remote screen"),
+         ("Set Password", "Set password"),
+         ("OS Password", "OS password"),
+         ("install_tip", "Once installed, HJViewer starts with Windows; once you log in, this PC is listed in My PCs and can be reached even when nobody is at it. Administrator prompts (UAC) can also be handled remotely."),
+@@ -146,8 +146,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("RDP Settings", "RDP settings"),
+         ("New Connection", "New connection"),
+         ("Your Device", "Your device"),
+-        ("empty_recent_tip", "Oops, no recent sessions!\nTime to plan a new one."),
+-        ("empty_favorite_tip", "No favorite peers yet?\nLet's find someone to connect with and add it to your favorites!"),
++        ("empty_recent_tip", "No recent connections yet.\nEnter a PC's ID above to connect."),
++        ("empty_favorite_tip", "No favorite PCs yet.\nIn a PC card's ⋮ menu, press [Add to favorites]."),
+         ("empty_lan_tip", "Oh no, it looks like we haven't discovered any peers yet."),
+         ("empty_address_book_tip", "Oh dear, it appears that there are currently no peers listed in your address book."),
+         ("Empty Username", "Empty username"),
+@@ -219,7 +219,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("enable-bot-desc", "1. Open a chat with @BotFather.\n2. Send the command \"/newbot\". You will receive a token after completing this step.\n3. Start a chat with your newly created bot. Send a message beginning with a forward slash (\"/\") like \"/hello\" to activate it.\n"),
+         ("cancel-2fa-confirm-tip", "Are you sure you want to cancel 2FA?"),
+         ("cancel-bot-confirm-tip", "Are you sure you want to cancel Telegram bot?"),
+-        ("network_error_tip", "Please check your network connection, then click retry."),
++        ("network_error_tip", "Please check your network connection, then press [Retry]."),
+         ("enable-trusted-devices-tip", "Skip 2FA verification on trusted devices"),
+         ("one-way-file-transfer-tip", "One-way file transfer is enabled on the controlled side."),
+         ("web_id_input_tip", "You can input an ID in the same server, direct IP access is not supported in web client.\nIf you want to access a device on another server, please append the server address (<id>@<server_address>?key=<key_value>), for example,\n9123456234@192.168.16.1:21117?key=5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=.\nIf you want to access a device on a public server, please input \"<id>@public\", the key is not needed for public server."),
+@@ -279,5 +279,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("terminal-clipboard-write-tip", "An app in the terminal wants to copy text to this device's clipboard. If granted, this permission applies to terminal apps in all connections until you turn it off in Settings. Manual copy and paste are unaffected."),
+         ("port-forward-mux-tip", "Carry every connection of a port-forward mapping over a single connection to the peer, instead of connecting and logging in again for each one."),
+         ("relay-fallback-delay-tip", "How long a relay connection that is already up waits for the direct WebRTC connection before it is used instead. Raise it to give a slow direct connection more time to win; lower it to settle on the relay sooner on networks where a direct connection cannot be made. Leave empty for the default of 2.5 seconds."),
++        ("Your Desktop", "This PC"),
++        ("Control Remote Desktop", "Connect to a remote PC"),
++        ("TCP tunneling", "Port forwarding"),
++        ("Enable TCP tunneling", "Enable port forwarding"),
++        ("Request access to your device", "Asking to connect to this PC"),
++        ("Accessible devices", "My PCs"),
+     ].iter().cloned().collect();
+ }
+diff --git a/src/lang/ko.rs b/src/lang/ko.rs
+index d9c80b0..ca3c1bc 100644
+--- a/src/lang/ko.rs
++++ b/src/lang/ko.rs
+@@ -2,8 +2,8 @@ lazy_static::lazy_static! {
+ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+     [
+         ("Status", "상태"),
+-        ("Your Desktop", "내 데스크탑"),
+-        ("desk_tip", "이 ID와 비밀번호로 데스크탑에 액세스할 수 있습니다."),
++        ("Your Desktop", "이 PC"),
++        ("desk_tip", "다른 기기에서 이 ID와 비밀번호로 이 PC에 연결할 수 있습니다."),
+         ("Password", "비밀번호"),
+         ("Ready", "준비 완료"),
+         ("Established", "연결됨"),
+@@ -13,20 +13,20 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Service is running", "서비스가 실행 중입니다"),
+         ("Service is not running", "서비스가 실행되지 않았습니다"),
+         ("not_ready_status", "서버에 연결할 수 없습니다. 네트워크 연결을 확인해 주세요."),
+-        ("Control Remote Desktop", "원격 데스크탑 제어"),
++        ("Control Remote Desktop", "원격 PC에 연결"),
+         ("Transfer file", "파일 전송"),
+         ("Connect", "연결"),
+         ("Recent sessions", "최근 세션"),
+         ("Address book", "주소록"),
+         ("Confirmation", "확인"),
+-        ("TCP tunneling", "TCP 터널링"),
++        ("TCP tunneling", "포트 포워딩"),
+         ("Remove", "삭제"),
+         ("Refresh random password", "임의의 비밀번호 새로 고침"),
+         ("Set your own password", "자신만의 비밀번호 설정"),
+         ("Enable keyboard/mouse", "키보드/마우스 허용"),
+         ("Enable clipboard", "클립보드 허용"),
+         ("Enable file transfer", "파일 전송 허용"),
+-        ("Enable TCP tunneling", "TCP 터널링 허용"),
++        ("Enable TCP tunneling", "포트 포워딩 허용"),
+         ("IP Whitelisting", "IP 화이트리스트"),
+         ("ID/Relay Server", "ID/릴레이 서버"),
+         ("Import server config", "서버 구성 가져오기"),
+@@ -66,7 +66,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Cancel", "취소"),
+         ("Skip", "건너뛰기"),
+         ("Close", "닫기"),
+-        ("Retry", "재시도"),
++        ("Retry", "다시 시도"),
+         ("OK", "확인"),
+         ("Password Required", "비밀번호 필요"),
+         ("Please enter your password", "비밀번호를 입력하세요"),
+@@ -78,7 +78,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Reset by the peer", "피어에 의해 초기화"),
+         ("Connecting...", "연결 중..."),
+         ("Connection in progress. Please wait.", "연결이 진행 중입니다. 기다려 주세요."),
+-        ("Please try 1 minute later", "1분 후에 다시 시도하세요"),
++        ("Please try 1 minute later", "1분 뒤 다시 시도해 주세요."),
+         ("Login Error", "로그인 오류"),
+         ("Successful", "성공"),
+         ("Connected, waiting for image...", "연결됨, 화면을 기다리는 중..."),
+@@ -130,12 +130,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Show quality monitor", "품질 모니터 표시"),
+         ("Disable clipboard", "클립보드 사용 안 함"),
+         ("Lock after session end", "세션 종료 후 잠금"),
+-        ("Insert Ctrl + Alt + Del", "Ctrl + Alt + Del 삽입"),
+-        ("Insert Lock", "삽입 잠금"),
++        ("Insert Ctrl + Alt + Del", "Ctrl+Alt+Del 보내기"),
++        ("Insert Lock", "원격 화면 잠그기"),
+         ("Refresh", "새로 고침"),
+         ("ID does not exist", "ID가 존재하지 않습니다"),
+         ("Failed to connect to rendezvous server", "랑데부 서버 연결에 실패했습니다"),
+-        ("Please try later", "나중에 시도해 주세요"),
++        ("Please try later", "잠시 뒤 다시 시도해 주세요."),
+         ("Remote desktop is offline", "원격 데스크탑이 오프라인입니다"),
+         ("Key mismatch", "키가 일치하지 않습니다"),
+         ("Timeout", "시간 초과"),
+@@ -311,7 +311,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Use both passwords", "두 가지 비밀번호 모두 사용"),
+         ("Set permanent password", "영구 비밀번호 설정"),
+         ("Enable remote restart", "원격 재시작 허용"),
+-        ("Restart remote device", "원격 장치 다시 시작"),
++        ("Restart remote device", "원격 PC 다시 시작"),
+         ("Are you sure you want to restart", "다시 시작하시겠습니까"),
+         ("Restarting remote device", "원격 장치를 다시 시작하는 중"),
+         ("remote_restarting_tip", "원격 장치가 다시 시작되고 있습니다. 이 메시지 상자를 닫고 잠시 후 영구 비밀번호로 다시 연결해 주세요"),
+@@ -393,7 +393,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("One-time Password", "일회용 비밀번호"),
+         ("Use one-time password", "일회용 비밀번호 사용"),
+         ("One-time password length", "일회용 비밀번호 길이"),
+-        ("Request access to your device", "장치에 대한 액세스 권한을 요청"),
++        ("Request access to your device", "이 PC에 연결을 요청하는 중"),
+         ("Hide connection management window", "연결 관리 창 숨기기"),
+         ("hide_cm_tip", "비밀번호를 통해 세션을 수락하고 영구 비밀번호를 사용하는 경우에만 숨기기 허용"),
+         ("wayland_experiment_tip", "Wayland 지원은 실험 단계에 있으며, 무인 접근이 필요한 경우 X11을 사용해 주세요."),
+@@ -454,8 +454,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Minimize", "최소화"),
+         ("Maximize", "최대화"),
+         ("Your Device", "내 장치"),
+-        ("empty_recent_tip", "어머나, 최근 세션이 없네요!\n새로운 것을 계획할 시간입니다."),
+-        ("empty_favorite_tip", "아직 즐겨찾는 피어가 없나요?\n연결하고 싶은 피어를 찾아 즐겨찾기에 추가해 보세요!"),
++        ("empty_recent_tip", "최근에 연결한 PC가 없습니다.\n위 칸에 PC의 ID를 넣어 연결해 보세요."),
++        ("empty_favorite_tip", "즐겨찾기한 PC가 없습니다.\nPC 카드의 ⋮ 메뉴에서 [즐겨찾기에 추가]를 누르세요."),
+         ("empty_lan_tip", "오 아니요, 아직 피어를 발견하지 못한 것 같습니다."),
+         ("empty_address_book_tip", "오, 이게 무슨 일인지 주소록에 현재 나열된 피어가 없는 것 같습니다."),
+         ("Empty Username", "사용자 이름이 비어있습니다"),
+@@ -609,7 +609,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("cancel-bot-confirm-tip", "Telegram 봇을 취소하시겠습니까?"),
+         ("About RustDesk", "RustDesk 정보"),
+         ("Send clipboard keystrokes", "클립보드 키 입력 보내기"),
+-        ("network_error_tip", "네트워크 연결을 확인한 다음 재시도를 클릭하세요."),
++        ("network_error_tip", "네트워크 연결을 확인한 뒤 [다시 시도]를 눌러 주세요."),
+         ("Unlock with PIN", "PIN으로 잠금 해제"),
+         ("Requires at least {} characters", "최소 {}자 이상 필요합니다."),
+         ("Wrong PIN", "잘못된 PIN"),
+@@ -633,7 +633,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Update client clipboard", "클라이언트 클립보드 업데이트"),
+         ("Untagged", "태그 없음"),
+         ("new-version-of-{}-tip", "{}의 새 버전을 사용할 수 있습니다"),
+-        ("Accessible devices", "액세스 가능한 장치"),
++        ("Accessible devices", "내 PC"),
+         ("upgrade_remote_rustdesk_client_to_{}_tip", "RustDesk 클라이언트를 원격 버전 {} 이상으로 업그레이드해 주세요!"),
+         ("d3d_render_tip", "D3D 렌더링이 활성화되면 일부 기기에서는 원격 화면이 검은색으로 표시될 수 있습니다."),
+         ("Use D3D rendering", "D3D 렌더링 사용"),

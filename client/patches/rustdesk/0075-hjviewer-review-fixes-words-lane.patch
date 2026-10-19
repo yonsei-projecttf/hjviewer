@@ -1,0 +1,286 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 22:21:23 +0900
+Subject: [PATCH 75/85] hjviewer: review fixes, words lane
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- a checked checkbox has no ring around its fill: the theme's state side resolves the checked
+  states to a clear side (a state side is drawn on checked boxes too)
+- the desktop tab strip shows the selected pill's name only when every pill and the name fit
+  in the width the actions leave
+- the wake texts and the card menu's question call the remote PC "그 PC" / "that PC" (U19)
+- clearer wording: "다른 기기가 내 PC 목록에서 뺌", "You have no PCs here yet."
+- comments: "내 PC에서 빼기", no gap under hjvNetworkBanner's doc comment
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_theme.dart             | 16 +++++++++-----
+ flutter/lib/common/hjviewer_access.dart       |  2 +-
+ flutter/lib/common/hjviewer_access_texts.dart |  2 +-
+ flutter/lib/common/hjviewer_account.dart      |  3 +--
+ .../lib/common/hjviewer_account_texts.dart    | 18 +++++++--------
+ flutter/lib/common/widgets/peer_tab_page.dart | 22 ++++++++++++++++---
+ flutter/test/hjviewer_account_test.dart       | 16 +++++++++-----
+ .../test/hjviewer_account_widgets_test.dart   |  2 +-
+ 8 files changed, 53 insertions(+), 28 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_theme.dart b/flutter/lib/common/hjv_theme.dart
+index ea3c387..c8fb3ce 100644
+--- a/flutter/lib/common/hjv_theme.dart
++++ b/flutter/lib/common/hjv_theme.dart
+@@ -171,12 +171,16 @@ ThemeData hjvRestyle(ThemeData base) {
+                   ? p.textDisabled
+                   : p.primary),
+       checkColor: const WidgetStatePropertyAll(Colors.white),
+-      // a box that cannot change has the faint border, not the one of a box beside it that can
+-      side: WidgetStateBorderSide.resolveWith((states) => BorderSide(
+-          color: states.contains(WidgetState.disabled)
+-              ? p.border
+-              : (dark ? p.textTertiary : p.borderStrong),
+-          width: 1.5)),
++      // a box that cannot change has the faint border, not the one of a box beside it that can;
++      // a checked box keeps no ring around its fill (a state side is drawn when checked too)
++      side: WidgetStateBorderSide.resolveWith((states) =>
++          states.contains(WidgetState.selected)
++              ? const BorderSide(width: 1.5, color: Colors.transparent)
++              : BorderSide(
++                  color: states.contains(WidgetState.disabled)
++                      ? p.border
++                      : (dark ? p.textTertiary : p.borderStrong),
++                  width: 1.5)),
+       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+     ),
+     radioTheme: base.radioTheme.copyWith(
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index de0449f..5004be6 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -305,7 +305,7 @@ Color? hjvAccessReadyColor(HjvPalette p) =>
+       bound: boundHere);
+ }
+ 
+-/// D5 (hjviewer_account.dart, "내 목록에서 빼기"): what taking the PC out of the list does on a
++/// D5 (hjviewer_account.dart, "내 PC에서 빼기"): what taking the PC out of the list does on a
+ /// staff-only server, null for none.
+ String? hjvAccessRemoveNote() =>
+     _accountBuild ? hjvRemoveGateNote(_t, _gateMode.value) : null;
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index d8f9bb6..301783a 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -240,7 +240,7 @@ bool? hjvGateCloses(String mode) => switch (mode) {
+   );
+ }
+ 
+-/// The line about the gate under "내 목록에서 빼기"'s question, null for none: a PC out of the
++/// The line about the gate under "내 PC에서 빼기"'s question, null for none: a PC out of the
+ /// list registers without its ticket.
+ String? hjvRemoveGateNote(HjvAccessTexts t, String mode) {
+   final closes = hjvGateCloses(mode);
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index f1e7e3d..0cbb565 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -251,7 +251,7 @@ CustomAlertDialog? hjvLogoutDialog(
+ }
+ 
+ /// D5 (peer_card.dart, the accessible devices' menu): "켜기" for a PC that is off and can be
+-/// woken, and "내 목록에서 빼기".
++/// woken, and "내 PC에서 빼기".
+ Future<List<MenuEntryBase<String>>> hjvDeviceMenuItems(
+     BuildContext context, Peer peer, EdgeInsets? padding) async {
+   final loggedIn = gFFI.userModel.isLogin;
+@@ -322,7 +322,6 @@ bool hjvOwnsListError() => _accountBuild;
+ 
+ /// D9: above the cards, why the server cannot be used, with [다시 시도], or that the list did not
+ /// come (U24), or, when the account has no PC yet, how one gets there.
+-
+ List<Widget> hjvNetworkBanner(BuildContext context) {
+   if (!_accountBuild) return [];
+   final user = gFFI.userModel;
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 9f3ea87..e15b2b6 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -119,7 +119,7 @@ class HjvTexts {
+   String get keyChanged =>
+       _t('다시 로그인 필요(보안 키가 바뀜)', 'log in again (its security key changed)');
+   String get removedElsewhere =>
+-      _t('다른 기기에서 내 PC 목록에서 뺌', 'removed from My PCs on another device');
++      _t('다른 기기가 내 PC 목록에서 뺌', 'removed from My PCs on another device');
+   String get loginHereAgain =>
+       _t('이 PC에서 다시 로그인 필요', 'log in on this PC again');
+   String get notConfirmed => _t('서버에서 확인하지 못함', 'not confirmed by the server');
+@@ -250,7 +250,7 @@ class HjvTexts {
+   String get removed => _t('내 PC 목록에서 뺐습니다.', 'Removed from My PCs.');
+   String get removeFromRecent => _t('최근 목록에서 지우기', 'Remove from Recent');
+   String get notInList =>
+-      _t('이미 내 PC 목록에 없는 PC입니다.', 'This PC is no longer in My PCs.');
++      _t('이미 내 PC 목록에 없는 PC입니다.', 'That PC is no longer in My PCs.');
+ 
+   // the accessible devices tab, "My PCs" (§1-1, §1-3)
+   String get serverDown => _t(
+@@ -263,7 +263,7 @@ class HjvTexts {
+       "This device's security key cannot be used right now. Unlock the device and press [Retry].");
+   String get emptyList => _t(
+       '아직 내 PC가 없습니다. PC에 HJViewer를 설치하고 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.',
+-      'No PCs in My PCs yet. Install HJViewer on a PC and log in there with the same Yonsei portal account: the PC then shows up here.');
++      'You have no PCs here yet. Install HJViewer on a PC and log in there with the same Yonsei portal account: the PC then shows up here.');
+ 
+   /// U17: the tab without a login, under its name.
+   String get listLoginHint => _t(
+@@ -292,8 +292,8 @@ class HjvTexts {
+   String get wakeRelaySilent => _t(
+       'NAS 중계기가 요청을 받지 못했습니다. NAS가 켜져 있고 연결되어 있는지 확인해 주세요.',
+       'The NAS relay did not get the request. Please check that the NAS is on and connected.');
+-  String get wakeNoIface => _t('NAS에 이 PC의 네트워크로 나가는 랜카드가 없습니다.',
+-      "The NAS has no network card on this PC's network.");
++  String get wakeNoIface => _t('NAS에 그 PC의 네트워크로 나가는 랜카드가 없습니다.',
++      "The NAS has no network card on that PC's network.");
+   String get wakeSendFailed => _t('NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 시도해 주세요.',
+       'The NAS could not send the wake signal. Please try again in a while.');
+   String get wakeLater =>
+@@ -304,8 +304,8 @@ class HjvTexts {
+       'The NAS relay could not handle the wake request.');
+   String wakeFailedFor(String code) => _t('NAS 중계기가 켜기 요청을 처리하지 못했습니다($code).',
+       'The NAS relay could not handle the wake request ($code).');
+-  String get wakeNoRelay => _t('이 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.',
+-      "No relay is on in this PC's network.");
++  String get wakeNoRelay => _t('그 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.',
++      "No relay is on in that PC's network.");
+   String get wakeAnyRelayNote => _t('같은 네트워크인지 확인되지 않아 켜질지 알 수 없습니다.',
+       'A relay is not confirmed to share its network, so the PC may not wake.');
+   String get wakeAnyRelay => _t('모든 중계기로 시도', 'Try all relays');
+@@ -314,8 +314,8 @@ class HjvTexts {
+   String wakeLastSeen(String time) =>
+       _t('마지막 연결: $time', 'Last connected: $time');
+   String get wakeNoInfo => _t(
+-      '이 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.',
+-      'This PC has not told how to wake it yet. Turn the PC on once and check that HJViewer is installed on it.');
++      '그 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.',
++      'That PC has not told how to wake it yet. Turn the PC on once and check that HJViewer is installed on it.');
+   String get wakeAsleep =>
+       _t('PC가 다시 절전에 들어갔습니다.', 'The PC went back to sleep.');
+   String get wakeAgain => _t('다시 켜기', 'Wake up again');
+diff --git a/flutter/lib/common/widgets/peer_tab_page.dart b/flutter/lib/common/widgets/peer_tab_page.dart
+index 7756c0b..2765214 100644
+--- a/flutter/lib/common/widgets/peer_tab_page.dart
++++ b/flutter/lib/common/widgets/peer_tab_page.dart
+@@ -193,7 +193,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+   bool get _hjvNarrow => MediaQuery.sizeOf(context).width < 720;
+ 
+   // HJViewer: the selected pill's name beside its icon (U17), where the bar has the room: a phone
+-  // and a desktop window of 720 px or more
++  // and a desktop window of 720 px or more whose tab strip fits the pills and the name
+   static const _hjvLabelStyle =
+       TextStyle(fontSize: 13, fontWeight: FontWeight.w600);
+   static const _hjvLabelGap = 6.0;
+@@ -221,13 +221,29 @@ class _PeerTabPageState extends State<PeerTabPage>
+ 
+   // HJViewer: icon pills 32 px high in the bar's height; a phone tab stays 40 px wide
+   // (kHjvPhoneTabWidth), which _portraitRightActions counts on, and the selected one is wider by
+-  // its name
++  // its name; on the desktop only when the strip the actions leave holds every pill and the name,
++  // so a narrow window with the search open clips no pill
+   Widget _hjvCreateSwitchBar(BuildContext context) {
++    final portrait = stateGlobal.isPortrait.isTrue;
++    if (portrait) {
++      return _hjvSwitchBar(
++          context, _hjvLabelWidth(Provider.of<PeerTabModel>(context)));
++    }
++    return LayoutBuilder(builder: (context, constraints) {
++      final model = Provider.of<PeerTabModel>(context);
++      final labelWidth = _hjvLabelWidth(model);
++      final pills = model.visibleEnabledOrderedIndexs.length;
++      final fits = constraints.maxWidth >=
++          pills * ((_hjvNarrow ? 36 : 44) + 4) + labelWidth;
++      return _hjvSwitchBar(context, fits ? labelWidth : 0);
++    });
++  }
++
++  Widget _hjvSwitchBar(BuildContext context, double labelWidth) {
+     final model = Provider.of<PeerTabModel>(context);
+     final p = HjvPalette.of(context);
+     final portrait = stateGlobal.isPortrait.isTrue;
+     final narrow = _hjvNarrow;
+-    final labelWidth = _hjvLabelWidth(model);
+     var counter = -1;
+     return ReorderableListView(
+         buildDefaultDragHandles: false,
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 1fd58c3..4491eb6 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -314,7 +314,7 @@ void main() {
+       expect(pcLine('needs-relogin', mine),
+           ('이 PC: 다시 로그인 필요(보안 키가 바뀜)', HjvPcAction.logInAgain));
+       expect(pcLine('revoked', mine),
+-          ('이 PC: 다른 기기에서 내 PC 목록에서 뺌', HjvPcAction.addAgain));
++          ('이 PC: 다른 기기가 내 PC 목록에서 뺌', HjvPcAction.addAgain));
+       expect(pcLine('listed', mine),
+           ('이 PC: 이 PC에서 다시 로그인 필요', HjvPcAction.addAgain));
+       expect(pcLine('error bind-mismatch 0', mine),
+@@ -413,7 +413,7 @@ void main() {
+     test('a refused logged-in PC names the cause its line has', () {
+       HjvPcLine? cause(String state) =>
+           hjvRefusalLine(ko, HjvPcState.parse(state));
+-      expect(cause('revoked')?.text, '이 PC: 다른 기기에서 목록에서 뺌');
++      expect(cause('revoked')?.text, '이 PC: 다른 기기가 내 PC 목록에서 뺌');
+       expect(cause('revoked')?.action, HjvPcAction.addAgain);
+       expect(cause('needs-relogin')?.action, HjvPcAction.logInAgain);
+       for (final state in ['', 'active 3 1', 'off', 'disabled', 'expired 0']) {
+@@ -707,6 +707,7 @@ void main() {
+       expect(hint(loadError: 'failed'), isFalse);
+       expect(ko.emptyList,
+           '아직 내 PC가 없습니다. PC에 HJViewer를 설치하고 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.');
++      expect(en.emptyList, startsWith('You have no PCs here yet. Install HJViewer'));
+     });
+ 
+     test('a list that did not come says so in words, unless the server banner does', () {
+@@ -886,7 +887,12 @@ void main() {
+       const silent = 'NAS 중계기가 요청을 받지 못했습니다. NAS가 켜져 있고 연결되어 있는지 확인해 주세요.';
+       expect(text(failed('no_result')), silent);
+       expect(text(failed('not_active')), silent);
+-      expect(text(failed('no_iface')), 'NAS에 이 PC의 네트워크로 나가는 랜카드가 없습니다.');
++      expect(text(failed('no_iface')), 'NAS에 그 PC의 네트워크로 나가는 랜카드가 없습니다.');
++      // the PC being woken is "그 PC" / "that PC"; "이 PC" is only the device the app runs on (U19)
++      for (final t in [en.wakeNoIface, en.wakeNoRelay, en.wakeNoInfo]) {
++        expect(t.toLowerCase(), contains('that pc'), reason: t);
++        expect(t.toLowerCase(), isNot(contains('this pc')), reason: t);
++      }
+       expect(
+           text(failed('send_failed')), 'NAS가 켜기 신호를 보내지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
+       // packets that did not go out at all
+@@ -911,7 +917,7 @@ void main() {
+     });
+ 
+     test('hjv-api takes no job', () {
+-      const noRelayText = '이 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.';
++      const noRelayText = '그 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.';
+       Map<String, Object?> noRelay(String reason, bool anyRelay) => {
+             'error': noRelayText,
+             'hjv': 'no_relay',
+@@ -939,7 +945,7 @@ void main() {
+       expect(text(refused(503, relayOffline(null))), offline);
+ 
+       expect(text(refused(409, {'error': 'x', 'hjv': 'no_wol_info'})),
+-          '이 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.');
++          '그 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.');
+       const later = '잠시 뒤 다시 시도해 주세요.';
+       expect(
+           text(refused(
+diff --git a/flutter/test/hjviewer_account_widgets_test.dart b/flutter/test/hjviewer_account_widgets_test.dart
+index 5bca714..dc114aa 100644
+--- a/flutter/test/hjviewer_account_widgets_test.dart
++++ b/flutter/test/hjviewer_account_widgets_test.dart
+@@ -330,7 +330,7 @@ void main() {
+     // a relay whose network is not confirmed: [모든 중계기로 시도] with what it may come to
+     await progress(hjvWakeAsked(
+         409, {'error': 'x', 'hjv': 'no_relay', 'any_relay': true}));
+-    expect(find.text('이 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.'), findsOneWidget);
++    expect(find.text('그 PC와 같은 네트워크에 켜져 있는 중계기가 없습니다.'), findsOneWidget);
+     expect(find.text('같은 네트워크인지 확인되지 않아 켜질지 알 수 없습니다.'), findsOneWidget);
+     await tester.tap(find.text('모든 중계기로 시도'));
+     expect(pressed.last, 'any relay');

@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 23:01:11 +0900
+Subject: [PATCH 69/85] hjviewer: review fixes, gate lane
+
+A1's [Cancel] while the access password is checked closes the dialog at
+once and the session only once the answer is back, so that the core
+forgets the ticket it kept (session_closed after keep_guest) and the
+next connection asks again. The PC home's filled [Log in] is not
+counted in an outgoing-only build, which draws no PC notice. HjvToast's
+fallback colours come from the palette. Three English texts read more
+naturally.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_style.dart             |  9 ++++-----
+ flutter/lib/common/hjviewer_access.dart       | 17 +++++++++++++----
+ flutter/lib/common/hjviewer_access_texts.dart |  4 ++--
+ flutter/test/hjviewer_access_test.dart        |  2 +-
+ src/lang/en.rs                                |  2 +-
+ 5 files changed, 21 insertions(+), 13 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_style.dart b/flutter/lib/common/hjv_style.dart
+index a98ea30..f184cfa 100644
+--- a/flutter/lib/common/hjv_style.dart
++++ b/flutter/lib/common/hjv_style.dart
+@@ -218,8 +218,9 @@ class HjvToast extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     final theme = Theme.of(context);
+-    final dark = theme.brightness == Brightness.dark;
+     final bar = theme.snackBarTheme;
++    // without that theme: the palette's inverse (its text on the colour of its surface)
++    final p = HjvPalette.of(context);
+     final media = MediaQuery.maybeOf(context);
+     final insets = media?.viewInsets.bottom ?? 0;
+     final padding = media?.viewPadding ?? EdgeInsets.zero;
+@@ -237,8 +238,7 @@ class HjvToast extends StatelessWidget {
+                 padding:
+                     const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                 decoration: BoxDecoration(
+-                  color: bar.backgroundColor ??
+-                      (dark ? const Color(0xFFE6E9EE) : const Color(0xFF2B313B)),
++                  color: bar.backgroundColor ?? p.text,
+                   borderRadius: BorderRadius.circular(HjvRadius.md),
+                 ),
+                 child: Text(
+@@ -250,8 +250,7 @@ class HjvToast extends StatelessWidget {
+                       fontWeight: FontWeight.w500,
+                       height: 1.4,
+                       decoration: TextDecoration.none,
+-                      color: bar.contentTextStyle?.color ??
+-                          (dark ? const Color(0xFF191F28) : Colors.white)),
++                      color: bar.contentTextStyle?.color ?? p.surface),
+                 ),
+               ),
+             ),
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index bf3416e..05a5b56 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -93,7 +93,10 @@ HjvPcHome _home() => hjvPcHome(
+ 
+ /// Whether the PC home's notice in this window has the filled [로그인] (P1, G2).
+ bool _homeLogsIn() =>
+-    isDesktop && hjvPcHomeLogsIn(_home()) && !bind.isDisableAccount();
++    isDesktop &&
++    !bind.isOutgoingOnly() &&
++    hjvPcHomeLogsIn(_home()) &&
++    !bind.isDisableAccount();
+ 
+ /// A button as dialogButton() draws it, for a text of these screens, which translate() must not
+ /// see (as hjviewer_account.dart's).
+@@ -420,7 +423,9 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+   unawaited(dialogManager.show((setState, close, context) {
+     void cancel() {
+       close();
+-      if (!forward) closeConnection();
++      // while it checks, the session closes once the answer is back (connect), so that the
++      // core forgets the ticket it keeps (session_closed after keep_guest)
++      if (!forward && !busy) closeConnection();
+     }
+ 
+     void logIn() async {
+@@ -451,8 +456,12 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+               key: kHjvGuestCtl, value: hjvGuestCtlValue(peerId, password)),
+           result: () =>
+               bind.mainGetCommonSync(key: hjvGuestResultKey(to: peerId)));
+-      // [취소] while it was checked: the session is closed, the answer goes unused
+-      if (closed) return;
++      // [취소] while it was checked: the session closes now, after the core kept any ticket,
++      // so that it goes with the session (a port forward keeps it, as before)
++      if (closed) {
++        if (!forward) closeConnection();
++        return;
++      }
+       if (failure != null) {
+         setState(() {
+           busy = false;
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 8d222df..1f15b7c 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -364,7 +364,7 @@ class HjvAccessTexts {
+   String get restart => _t('다시 시작', 'Restart');
+   String get restartNotInstalled => _t(
+       '설치하지 않은 HJViewer는 다시 시작한 뒤 저절로 켜지지 않습니다.',
+-      'HJViewer that is not installed does not start by itself after the restart.');
++      'If HJViewer is not installed on that PC, it does not start again by itself after the restart.');
+ 
+   // A2: a logged-in controller refused again with a new ticket
+   String get refusedAgain => _t(
+@@ -390,7 +390,7 @@ class HjvAccessTexts {
+   String get pcLoggedInTitle => _t('로그인했지만 서버가 이 PC를 받지 않고 있습니다',
+       'You are logged in, but the server is not accepting this PC');
+   String get pcCheckAgain => _t('잠시 뒤 다시 확인합니다. 계속되면 관리자에게 알려 주세요.',
+-      'This is checked again shortly. If it keeps happening, tell your administrator.');
++      'HJViewer checks again shortly. If this keeps happening, tell your administrator.');
+   String get pcStatusLoggedIn =>
+       _t('서버에 연결되지 않음', 'Not connected to the server');
+ 
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index b9613c4..5c86e1c 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -419,6 +419,6 @@ void main() {
+         '${ko.restartGate(known: false)}\n${ko.restartNotInstalled}');
+     expect(hjvRestartGateNote(ko, mode: 'off', installed: true), isNull);
+     expect(hjvRestartGateNote(en, mode: 'off', installed: false),
+-        'HJViewer that is not installed does not start by itself after the restart.');
++        'If HJViewer is not installed on that PC, it does not start again by itself after the restart.');
+   });
+ }
+diff --git a/src/lang/en.rs b/src/lang/en.rs
+index 9bc5ecc..7669c94 100644
+--- a/src/lang/en.rs
++++ b/src/lang/en.rs
+@@ -33,7 +33,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Insert Lock", "Insert lock"),
+         ("Set Password", "Set password"),
+         ("OS Password", "OS password"),
+-        ("install_tip", "Once installed, HJViewer starts with Windows; once you log in, this PC is listed in My PCs and can be reached even when nobody is at it. Windows that ask for administrator rights (UAC) can be handled remotely too."),
++        ("install_tip", "Once installed, HJViewer starts with Windows; once you log in, this PC is listed in My PCs and can be reached even when nobody is at it. Administrator prompts (UAC) can also be handled remotely."),
+         ("config_acc", "In order to control your Desktop remotely, you need to grant RustDesk \"Accessibility\" permissions."),
+         ("config_screen", "In order to access your Desktop remotely, you need to grant RustDesk \"Screen Recording\" permissions."),
+         ("Installation Path", "Installation path"),

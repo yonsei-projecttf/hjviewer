@@ -1,0 +1,475 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 00:15:26 +0900
+Subject: [PATCH 84/85] hjviewer: review fixes for the support codes and U68
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- P3: a code that is not of the form clears an earlier 429's wait that
+  is over, which hid E6 (hjvAccessErrorNow).
+- S4 puts the code last ("…10분 안에 이 코드를 넣어 주세요: K7M2-Q9XD"):
+  no particle follows it, whose 를/을 depends on the code's last symbol.
+  S2's text names the button as an action and shows only while a code
+  is made or shown, not above S5 to S7 or the expired line.
+- S2: the expired line is a live region, and the time left counts from
+  the answer on a Stopwatch (hjvCodeLeft takes the elapsed time), which
+  the device's clock does not move.
+- P1 appearing asks GET /api/hjv/access (at most once a minute), so its
+  [지원 코드 넣기] follows the server's answer even when the first ask
+  failed or the answer changed while the window stayed in front.
+- U68 on a phone: hbbs's refusal that finds the login ended shows A1
+  only, with L4's title and why as its first line (hjvLoginEndedLine),
+  in place of L4 stacked over it; A1's [로그인] reconnects.
+- Rust: the ticket request signs again only for a "login" failure
+  (hjv_api_refused, lazy); guest.rs's resend decision is a pure
+  function. Both have tests. The module doc is re-wrapped at 100.
+- Tests: the invalid codes' non-ASCII characters are escapes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart       | 63 +++++++++++++------
+ flutter/lib/common/hjviewer_access_texts.dart | 13 ++--
+ .../lib/common/hjviewer_account_texts.dart    |  5 ++
+ flutter/test/hjviewer_access_test.dart        | 23 +++----
+ flutter/test/hjviewer_account_test.dart       |  5 ++
+ src/hjviewer_access.rs                        | 36 +++++++----
+ src/hjviewer_access/guest.rs                  | 34 ++++++++--
+ src/hjviewer_access/tests.rs                  | 11 ++++
+ 8 files changed, 137 insertions(+), 53 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 2fa8d74..8fc1eac 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -20,6 +20,8 @@ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access_texts.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart'
++    show HjvTexts, hjvLoginEndedLine;
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/common/widgets/login.dart';
+ import 'package:flutter_hbb/consts.dart';
+@@ -215,6 +217,8 @@ void _readPc() {
+     _refusedSince = now;
+     // refused again: the process that registers holds no ticket of P2 any more (it restarted)
+     _guestUntil.value = 0;
++    // P1 comes: whether it offers support codes, as the server says now (at most once a minute)
++    unawaited(_askGateMode());
+   }
+   _refusedLong.value = hjvRefusedLong(_refusedSince, now);
+   if (_guestUntil.value != 0 && _guestUntil.value <= _unixNow()) {
+@@ -235,12 +239,15 @@ bool hjvAccessRefused(
+     ReconnectHandle reconnect) {
+   if (type != kHjvAccessMsgbox) return false;
+   final t = _t;
+-  // a login hjv-api ended at the ticket request ends now: A1, not A2 (U68)
+-  if (bind.mainGetLocalOption(key: 'access_token').isNotEmpty &&
+-      !_ticketEndedLogin()) {
++  // a login hjv-api ended at the ticket request ends now: A1, not A2 (U68). A phone's session
++  // and home share one dialog manager: A1 says why itself, in the place of L4 above it
++  final loggedIn = bind.mainGetLocalOption(key: 'access_token').isNotEmpty;
++  final ended = loggedIn && _ticketEndedLogin(told: isMobile);
++  if (loggedIn && !ended) {
+     _refusedAgainDialog(t, sessionId, title, dialogManager, reconnect);
+   } else {
+-    _refusedDialog(t, sessionId, peerId, dialogManager, reconnect);
++    _refusedDialog(t, sessionId, peerId, dialogManager, reconnect,
++        loginEnded: ended && isMobile);
+   }
+   return true;
+ }
+@@ -421,7 +428,8 @@ Future<bool> hjvAccessMainWindowCloses() async {
+ // ---- a session refused (A1, A2) ----
+ 
+ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+-    OverlayDialogManager dialogManager, ReconnectHandle reconnect) {
++    OverlayDialogManager dialogManager, ReconnectHandle reconnect,
++    {bool loginEnded = false}) {
+   final controller = TextEditingController();
+   String? error;
+   var busy = false;
+@@ -446,7 +454,8 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+     void logIn() async {
+       close();
+       if (await loginDialog() != true) {
+-        _refusedDialog(t, sessionId, peerId, dialogManager, reconnect);
++        _refusedDialog(t, sessionId, peerId, dialogManager, reconnect,
++            loginEnded: loginEnded);
+         return;
+       }
+       // a session window: the main window shows the login too
+@@ -506,6 +515,10 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
++          if (loginEnded)
++            Text(hjvKeepAll(hjvLoginEndedLine(HjvTexts(t.korean))),
++                    style: hjvDialogTextStyle(context))
++                .marginOnly(bottom: 8),
+           Text(hjvKeepAll(t.refused), style: hjvDialogTextStyle(context)),
+           if (open) ...[
+             const SizedBox(height: 8),
+@@ -833,7 +846,11 @@ void _pcCodeDialog(HjvAccessTexts t) {
+       final code = hjvAccessPassword(controller.text);
+       if (!canSend(code)) return;
+       if (hjvReadSupportCode(code) == null) {
+-        setState(() => error = t.codeFailure('denied'));
++        // a wait of an earlier 429 that is over would hide E6 (hjvAccessErrorNow)
++        setState(() {
++          error = t.codeFailure('denied');
++          retryAt = 0;
++        });
+         return;
+       }
+       setState(() {
+@@ -971,7 +988,8 @@ void hjvMakeSupportCode() => _supportCodeDialog(_t);
+ 
+ void _supportCodeDialog(HjvAccessTexts t) {
+   ({String code, int expiresIn})? made;
+-  var madeAt = DateTime.now();
++  // since the code came, on a monotonic clock: changing the device's clock does not move it
++  final madeFor = Stopwatch();
+   String? error;
+   var again = true;
+   var busy = false;
+@@ -1015,7 +1033,9 @@ void _supportCodeDialog(HjvAccessTexts t) {
+       setState(() {
+         busy = false;
+         made = code;
+-        madeAt = DateTime.now();
++        madeFor
++          ..reset()
++          ..start();
+       });
+       timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+         if (closed) {
+@@ -1023,7 +1043,7 @@ void _supportCodeDialog(HjvAccessTexts t) {
+           return;
+         }
+         setState(() {});
+-        if (hjvCodeLeft(code.expiresIn, madeAt, DateTime.now()) == 0) {
++        if (hjvCodeLeft(code.expiresIn, madeFor.elapsed) == 0) {
+           timer.cancel();
+         }
+       });
+@@ -1041,15 +1061,18 @@ void _supportCodeDialog(HjvAccessTexts t) {
+     final p = HjvPalette.of(context);
+     final code = made;
+     final left =
+-        code == null ? 0 : hjvCodeLeft(code.expiresIn, madeAt, DateTime.now());
++        code == null ? 0 : hjvCodeLeft(code.expiresIn, madeFor.elapsed);
+     return CustomAlertDialog(
+       title: HjvDialogTitle(Icons.support_agent_rounded, t.pcCode),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+-          Text(hjvKeepAll(t.madeText), style: hjvDialogTextStyle(context)),
+-          const SizedBox(height: 16),
++          // what to do with the code, while one is made or shown (not above S5 to S7, the end)
++          if (busy || (code != null && left > 0)) ...[
++            Text(hjvKeepAll(t.madeText), style: hjvDialogTextStyle(context)),
++            const SizedBox(height: 16),
++          ],
+           if (busy) _checking(t, label: t.makingLabel, word: t.making),
+           if (error != null)
+             Semantics(
+@@ -1077,8 +1100,11 @@ void _supportCodeDialog(HjvAccessTexts t) {
+                   .marginOnly(top: 16),
+           ],
+           if (code != null && left == 0)
+-            Text(hjvKeepAll(t.codeOver),
+-                style: TextStyle(fontSize: 14, height: 1.45, color: p.text)),
++            Semantics(
++                liveRegion: true,
++                child: Text(hjvKeepAll(t.codeOver),
++                    style:
++                        TextStyle(fontSize: 14, height: 1.45, color: p.text))),
+         ],
+       ),
+       actions: [
+@@ -1167,8 +1193,9 @@ var _endingLogin = false;
+ /// the administrator, an expired login) before any request of the screens did: the login ends as
+ /// an account request's 401 ends it, and the notice of a login that ended (hjviewer_account.dart)
+ /// says why. A desktop session window has the main window, which shows the login, ask
+-/// currentUser, whose 401 ends it there. True when the login ended.
+-bool _ticketEndedLogin() {
++/// currentUser, whose 401 ends it there. `told`: the caller says why itself (A1 on a phone), so
++/// L4 does not open over it. True when the login ended.
++bool _ticketEndedLogin({bool told = false}) {
+   if (!_accountBuild ||
+       _endingLogin ||
+       _commonSync(kHjvAccessLoginEnded) != 'Y') {
+@@ -1180,7 +1207,7 @@ bool _ticketEndedLogin() {
+   }
+   _endingLogin = true;
+   unawaited(gFFI.userModel
+-      .reset(resetOther: true)
++      .reset(resetOther: true, hjvLoggedOut: told)
+       .whenComplete(() => _endingLogin = false));
+   return true;
+ }
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index a482c17..3731f85 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -224,9 +224,10 @@ bool hjvOffersSupportCode(String flag, {required bool loggedIn}) =>
+   return null;
+ }
+ 
+-/// The seconds a code made `made` with `expiresIn` has left at `now`, 0 once over.
+-int hjvCodeLeft(int expiresIn, DateTime made, DateTime now) {
+-  final left = expiresIn - now.difference(made).inSeconds;
++/// The seconds a code with `expiresIn` has left `elapsed` after it came, 0 once over (a monotonic
++/// count, which the device's clock does not move).
++int hjvCodeLeft(int expiresIn, Duration elapsed) {
++  final left = expiresIn - elapsed.inSeconds;
+   return left > 0 ? left : 0;
+ }
+ 
+@@ -644,8 +645,8 @@ class HjvAccessTexts {
+   String get making => _t('만드는 중…', 'Creating…');
+   String get makingLabel => _t('지원 코드를 만드는 중', 'Creating a support code');
+   String get madeText => _t(
+-      '도움받을 분에게 이 코드를 알려 주세요. 그분이 HJViewer의 [지원 코드 넣기]에 넣으면 그 PC가 2시간 동안 연결을 받습니다. 코드는 10분 안에 한 번만 쓸 수 있습니다. 연결은 지금처럼 그 PC의 ID와 PC 비밀번호(또는 상대의 수락)로 합니다.',
+-      "Give this code to the person you are helping. Once they enter it under [Enter support code] in HJViewer, their PC accepts connections for 2 hours. The code works once, within 10 minutes. Connect as before, with that PC's ID and PC password (or their acceptance).");
++      '도움받을 분에게 이 코드를 알려 주세요. 그분이 HJViewer에서 [지원 코드 넣기]를 눌러 이 코드를 넣으면 그 PC가 2시간 동안 연결을 받습니다. 코드는 10분 안에 한 번만 쓸 수 있습니다. 연결은 지금처럼 그 PC의 ID와 PC 비밀번호(또는 상대의 수락)로 합니다.',
++      "Give this code to the person you are helping. Once they click [Enter support code] in HJViewer and enter it, their PC accepts connections for 2 hours. The code works once, within 10 minutes. Connect as before, with that PC's ID and PC password (or their acceptance).");
+ 
+   /// The time a code has left, `m:ss`.
+   String codeLeft(int secs) {
+@@ -663,7 +664,7 @@ class HjvAccessTexts {
+ 
+   /// S4: what [안내문 복사] copies, with the code.
+   String instructions(String code) => _t(
+-      'HJViewer를 실행하고, "$pcTitle" 알림의 [$pcCodeButton]를 눌러 $code를 10분 안에 넣어 주세요.',
++      'HJViewer를 실행하고, "$pcTitle" 알림의 [$pcCodeButton]를 눌러 10분 안에 이 코드를 넣어 주세요: $code',
+       'Run HJViewer, click [$pcCodeButton] on the notice "$pcTitle", and enter $code within 10 minutes.');
+ 
+   /// S8: below the code while the server checks nobody (`off`, `count`).
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 88ee148..ca1ba12 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -627,6 +627,11 @@ String hjvLoginEndedText(HjvTexts t, {required bool? gateCloses}) {
+   return '${t.loginEndedWhy} $now';
+ }
+ 
++/// A1's first line on a phone when hbbs's refusal finds the login ended (U68): L4's title and why,
++/// in the one dialog the phone shows (A1 offers the login itself).
++String hjvLoginEndedLine(HjvTexts t) =>
++    '${t.loginEndedTitle}. ${t.loginEndedWhy}';
++
+ // ---- the logged-in devices (`GET /api/hjv/keys`, design v3 §5-2) ----
+ 
+ class HjvKeyUse {
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index 026eaf0..bcd3f50 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -492,17 +492,18 @@ void main() {
+       'K7M2%2DQ9XD',
+       'K7M2_Q9XD',
+       'K7M2\tQ9XD',
+-      'K7M2 Q9XD',
+-      'K7M2　Q9XD',
+-      'K７M2Q9XD',
+-      'Ｋ7M2Q9XD',
++      'K7M2\u00a0Q9XD',
++      'K7M2\u3000Q9XD',
++      'K\uff17M2Q9XD',
++      '\uff2b7M2Q9XD',
+       '0' * 65,
+       'K7M2${' ' * 57}Q9XD',
+     ]) {
+       expect(hjvReadSupportCode(typed), isNull, reason: typed);
+     }
+     // what goes out: the spaces around it dropped, which hjvReadSupportCode then reads
+-    expect(hjvReadSupportCode(hjvAccessPassword(' K7M2-Q9XD\t')), 'K7M2Q9XD');
++    expect(
++        hjvReadSupportCode(hjvAccessPassword('\u00a0K7M2-Q9XD\t')), 'K7M2Q9XD');
+     // the field shows ASCII letters in capitals, and changes nothing else
+     expect(hjvCodeCapitals('k7m2-q9xd ä'), 'K7M2-Q9XD ä');
+     // E6 for wrong, over or used alike (and for what is not a code's form, never sent)
+@@ -577,11 +578,11 @@ void main() {
+       expect(hjvSupportCodeMade(result), isNull, reason: result);
+     }
+     // counting down from when it came, a second at a time, ending at 0
+-    final made = DateTime(2026, 10, 19, 9);
+-    expect(hjvCodeLeft(600, made, made), 600);
+-    expect(hjvCodeLeft(600, made, made.add(const Duration(seconds: 19))), 581);
+-    expect(hjvCodeLeft(600, made, made.add(const Duration(minutes: 10))), 0);
+-    expect(hjvCodeLeft(600, made, made.add(const Duration(hours: 1))), 0);
++    expect(hjvCodeLeft(600, Duration.zero), 600);
++    expect(
++        hjvCodeLeft(600, const Duration(seconds: 19, milliseconds: 900)), 581);
++    expect(hjvCodeLeft(600, const Duration(minutes: 10)), 0);
++    expect(hjvCodeLeft(600, const Duration(hours: 1)), 0);
+     expect([ko.codeLeft(581), en.codeLeft(581)], ['9:41 남음', '9:41 left']);
+     expect(ko.codeLeft(5), '0:05 남음');
+     expect(ko.codeOver, '이 코드는 10분이 지나 끝났습니다.');
+@@ -591,7 +592,7 @@ void main() {
+         ['코드를 복사했습니다.', '안내문을 복사했습니다.']);
+     // the instructions name P1 and its button as the PC shows them
+     expect(ko.instructions('K7M2-Q9XD'),
+-        'HJViewer를 실행하고, "이 PC는 서버에 연결되지 않았습니다" 알림의 [지원 코드 넣기]를 눌러 K7M2-Q9XD를 10분 안에 넣어 주세요.');
++        'HJViewer를 실행하고, "이 PC는 서버에 연결되지 않았습니다" 알림의 [지원 코드 넣기]를 눌러 10분 안에 이 코드를 넣어 주세요: K7M2-Q9XD');
+     expect(en.instructions('K7M2-Q9XD'),
+         'Run HJViewer, click [Enter support code] on the notice "This PC is not connected to the server", and enter K7M2-Q9XD within 10 minutes.');
+     expect(ko.madeText, contains('[${ko.pcCodeButton}]'));
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 4491eb6..6a0e3ae 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -514,6 +514,11 @@ void main() {
+           endsWith('내 PC에 비밀번호 없이 연결하려면 다시 로그인하세요.'));
+       expect(hjvLoginEndedText(en, gateCloses: true),
+           'Another device or the administrator logged it out, or the login expired. This server is for staff only, so log in again to connect.');
++      // a phone's A1 says it in the place of L4
++      expect(hjvLoginEndedLine(ko),
++          '이 기기의 로그인이 끝났습니다. 다른 기기나 관리자가 로그아웃시켰거나 로그인 기간이 끝났습니다.');
++      expect(hjvLoginEndedLine(en),
++          'Your login on this device ended. Another device or the administrator logged it out, or the login expired.');
+     });
+   });
+ 
+diff --git a/src/hjviewer_access.rs b/src/hjviewer_access.rs
+index 9380fdf..0f8c6f9 100644
+--- a/src/hjviewer_access.rs
++++ b/src/hjviewer_access.rs
+@@ -23,9 +23,10 @@
+ //!   `POST /api/hjv/ticket`, which a thread asks again once the ticket is past half its lifetime,
+ //!   and stays in LocalConfig until the logout. hjv-api's 401 to that request (a logout from
+ //!   another device or by the administrator, an expired login) is noted for the screens
+-//!   (`hjv-access-login-ended`), which end the login as their own account requests' 401 ends it. A desktop app asks with its ID and device key, for
+-//!   a ticket that registers it too (`both`), and asks so at once for a login's ticket that does
+-//!   not, since the login gives `both` only to an installed PC hbbs knows (the doc, 2-4 and 3-3).
++//!   (`hjv-access-login-ended`), which end the login as their own account requests' 401 ends it.
++//!   A desktop app asks with its ID and device key, for a ticket that registers it too (`both`),
++//!   and asks so at once for a login's ticket that does not, since the login gives `both` only to
++//!   an installed PC hbbs knows (the doc, 2-4 and 3-3).
+ //! - The access password's tickets (guest.rs, `POST /api/hjv/guest`) stay in this process's
+ //!   memory only: a controller's for its target until its last session there closes, a PC's in
+ //!   the process that registers, which gets it over the IPC. A PC's ticket for a support code that
+@@ -731,6 +732,14 @@ fn login_refused(refused: Option<&[u8; 32]>, token: &str) -> bool {
+     !token.is_empty() && refused == Some(&token_hash(token))
+ }
+ 
++/// Whether a ticket request's failure `code` is hjv-api's 401: a "login" failure of a request
++/// that could be signed (`signed`, asked only then; door.rs failure_of). A request door never
++/// sent because the key could not be loaded then, though it loads by now, would count too: door
++/// tells no "not sent" apart, a known limit (the login stores the key before the token).
++fn hjv_api_refused(code: &str, signed: impl FnOnce() -> bool) -> bool {
++    code == "login" && signed()
++}
++
+ /// The limits that all requests for the login's ticket share.
+ struct Limiter {
+     last: Option<Instant>,
+@@ -798,16 +807,17 @@ fn request(timeout: Duration) -> Result<(Held, String), &'static str> {
+     let body = request_body(&token, device().as_ref());
+     let response = crate::hjviewer_update::send_by_login(server, true, TICKET_PATH, &body, timeout)
+         .map_err(|failure| {
+-            // "login" for a request that could be signed is hjv-api's 401 (door.rs failure_of)
+-            let signed = token.bytes().all(|b| (0x21..=0x7e).contains(&b))
+-                && crate::hjviewer_account::proof_header(
+-                    "POST",
+-                    TICKET_PATH,
+-                    body.as_bytes(),
+-                    &token,
+-                )
+-                .is_some();
+-            if failure.code() == "login" && signed {
++            let signed = || {
++                token.bytes().all(|b| (0x21..=0x7e).contains(&b))
++                    && crate::hjviewer_account::proof_header(
++                        "POST",
++                        TICKET_PATH,
++                        body.as_bytes(),
++                        &token,
++                    )
++                    .is_some()
++            };
++            if hjv_api_refused(failure.code(), signed) {
+                 *REFUSED_LOGIN.lock().unwrap_or_else(|e| e.into_inner()) = Some(token_hash(&token));
+             }
+             failure.code()
+diff --git a/src/hjviewer_access/guest.rs b/src/hjviewer_access/guest.rs
+index 555b9d6..3d212aa 100644
+--- a/src/hjviewer_access/guest.rs
++++ b/src/hjviewer_access/guest.rs
+@@ -248,6 +248,17 @@ fn pc_body(device: &Device, secret: Secret, sealed: &Sealed) -> String {
+     body.to_string()
+ }
+ 
++/// Whether a request that went out `elapsed` ago with `first` as its result is sent once more,
++/// body for body: a support code's that got no answer, while hjv-api still keeps its first answer
++/// for the same body. Never the access password's, nor after an answer of any kind.
++fn resend(
++    secret: Secret,
++    first: &Result<(u16, String, String), Failure>,
++    elapsed: Duration,
++) -> bool {
++    secret == Secret::Code && matches!(first, Err(Failure::Network)) && elapsed < RESEND_WITHIN
++}
++
+ /// A ticket for `use_` (`ctl` for the PC `id`, `pc` for this PC `device`): the ticket object of
+ /// the 200 answer, or why there is none. One request, and once more after a 409 `clock`, whose
+ /// server time the account module learns as from any account answer; a support code's also once
+@@ -279,12 +290,12 @@ fn exchange(
+             None => ctl_body(id, &sealed),
+         };
+         let sent = Instant::now();
+-        let (status, date, text) = match post(&url, body.clone()) {
++        let first = post(&url, body.clone());
++        let (status, date, text) = if resend(secret, &first, sent.elapsed()) {
+             // the code may be used already: the same body gets that first answer (the doc 3-3)
+-            Err(Failure::Network) if secret == Secret::Code && sent.elapsed() < RESEND_WITHIN => {
+-                post(&url, body)?
+-            }
+-            result => result?,
++            post(&url, body)?
++        } else {
++            first?
+         };
+         crate::hjviewer_account::observe_account_response(
+             &url,
+@@ -759,4 +770,17 @@ mod tests {
+         );
+         assert_eq!(get_common("hjv-access-state"), None);
+     }
++
++    #[test]
++    fn only_a_support_code_without_an_answer_goes_once_more() {
++        let none = Err(Failure::Network);
++        let soon = Duration::from_secs(3);
++        assert!(resend(Secret::Code, &none, soon));
++        // too late for hjv-api's first answer, the access password, or any answer at all
++        assert!(!resend(Secret::Code, &none, RESEND_WITHIN));
++        assert!(!resend(Secret::Password, &none, soon));
++        assert!(!resend(Secret::Code, &Err(Failure::Denied), soon));
++        let answered = Ok((503, String::new(), "{}".to_owned()));
++        assert!(!resend(Secret::Code, &answered, soon));
++    }
+ }
+diff --git a/src/hjviewer_access/tests.rs b/src/hjviewer_access/tests.rs
+index 05eacf1..b94b5a6 100644
+--- a/src/hjviewer_access/tests.rs
++++ b/src/hjviewer_access/tests.rs
+@@ -323,3 +323,14 @@ fn a_ticket_requests_401_ends_only_the_login_it_was_asked_by() {
+     assert!(!login_refused(Some(&refused), ""));
+     assert!(!login_refused(None, "hjv_old"));
+ }
++
++#[test]
++fn only_a_signed_ticket_requests_login_failure_is_hjv_apis_401() {
++    assert!(hjv_api_refused("login", || true));
++    // not signed (no account key, a token that is no header value): door never sent it
++    assert!(!hjv_api_refused("login", || false));
++    // any other failure, without signing anything
++    for code in ["network", "busy", "denied", "config"] {
++        assert!(!hjv_api_refused(code, || unreachable!("signed for {code}")));
++    }
++}

@@ -1,0 +1,1250 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 22:47:25 +0900
+Subject: [PATCH 68/85] hjviewer: fields, keys and names in dialogs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U07: the access password's dialogs (A1 and P2) no longer freeze while
+the password is checked. [Cancel] and Esc work all along; A1 drops a
+late answer, P2 ends a ticket that comes after [Cancel]. The bar says
+"확인하는 중…" beside it and has a screen reader name. [Connect]/[OK]
+stay off until something is typed, and during E2's wait, whose text
+counts the time left down every 30 seconds (hjvRetryAt,
+hjvAccessCanSend, hjvAccessErrorNow, with tests).
+
+U53: DialogTextField gives the field its visible name for screen
+readers (the label above it is excluded, so it is read once). An error
+goes right under the field through InputDecoration.error, with an
+icon, the red border and a live region of its own; the help text
+follows it in textSecondary at 13 px. The desktop remote ID field
+keeps its name while the focus hides its hint.
+
+U54: DialogTextField and PasswordWidget take textInputAction,
+onSubmitted, autofillHints, autocorrect and enableSuggestions. The
+login's ID goes on to the password, whose return logs in; both sit in
+an AutofillGroup that saves only after a password login
+(finishAutofillContext). The A1/P2 field submits on done, as a
+visible-password keyboard without autocorrect or suggestions; a shown
+password is not corrected anywhere. CustomAlertDialog keeps one focus
+scope for its life, Shift+Tab goes back, and Enter submits unless a
+button (or another control) has the focus, in place of the flag that
+stopped Enter after any Tab.
+
+U55: the icon-only buttons named in the review get names, from a new
+HJViewer text file (hjviewer_labels.dart): the phone's session bar,
+the ID's clear button, a card's menu, the login's close, the password
+eye (with its state), the settings' QR and the display page's back,
+the desktop's other ways to connect and a tab's close. The keyboard
+button and a phone card's menu get a semantics label, not a tooltip
+that would take their long press. The phone's connect arrow is left
+to the home lane, which already names it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                       |  56 ++++--
+ flutter/lib/common/hjviewer_access.dart       | 124 ++++++++++---
+ flutter/lib/common/hjviewer_access_texts.dart |  28 +++
+ flutter/lib/common/hjviewer_labels.dart       |  39 ++++
+ flutter/lib/common/widgets/dialog.dart        | 167 +++++++++++++-----
+ flutter/lib/common/widgets/login.dart         | 114 +++++++-----
+ flutter/lib/common/widgets/peer_card.dart     |  28 +--
+ .../lib/desktop/pages/connection_page.dart    |  71 ++++----
+ .../lib/desktop/widgets/tabbar_widget.dart    |  10 +-
+ flutter/lib/mobile/pages/connection_page.dart |   2 +
+ flutter/lib/mobile/pages/remote_page.dart     |  33 +++-
+ flutter/lib/mobile/pages/settings_page.dart   |   3 +
+ flutter/test/hjviewer_access_test.dart        |  37 ++++
+ 13 files changed, 527 insertions(+), 185 deletions(-)
+ create mode 100644 flutter/lib/common/hjviewer_labels.dart
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index dd98e32..54dcc9a 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -1046,7 +1046,9 @@ void showToast(String text,
+ // - Remove argument "contentPadding", no need for it, all should look the same.
+ // - Remove "required" for argument "content". See simple confirm dialog "delete peer", only title and actions are used. No need to "content: SizedBox.shrink()".
+ // - Make dead code alive, transform arguments "onSubmit" and "onCancel" into correspondenting buttons "ConfirmOkButton", "CancelButton".
+-class CustomAlertDialog extends StatelessWidget {
++// HJViewer: a State, so that the dialog keeps one focus scope (its node made once, not on each
++// build, and disposed with it).
++class CustomAlertDialog extends StatefulWidget {
+   const CustomAlertDialog(
+       {Key? key,
+       this.title,
+@@ -1068,14 +1070,38 @@ class CustomAlertDialog extends StatelessWidget {
+   final Function()? onSubmit;
+   final Function()? onCancel;
+ 
++  @override
++  State<CustomAlertDialog> createState() => _CustomAlertDialogState();
++}
++
++class _CustomAlertDialogState extends State<CustomAlertDialog> {
++  final FocusScopeNode scopeNode = FocusScopeNode();
++
++  @override
++  void dispose() {
++    scopeNode.dispose();
++    super.dispose();
++  }
++
++  // HJViewer: whether the focus is on one of the dialog's controls other than a text field (a
++  // button after Tab), which takes Enter itself
++  bool _focusOnControl() {
++    final focus = FocusManager.instance.primaryFocus;
++    final context = focus?.context;
++    if (focus == null || focus == scopeNode || context == null) return false;
++    return context.findAncestorWidgetOfExactType<EditableText>() == null;
++  }
++
+   @override
+   Widget build(BuildContext context) {
++    final title = widget.title;
++    final actions = widget.actions;
++    final onSubmit = widget.onSubmit;
++    final onCancel = widget.onCancel;
+     // request focus
+-    FocusScopeNode scopeNode = FocusScopeNode();
+     Future.delayed(Duration.zero, () {
+-      if (!scopeNode.hasFocus) scopeNode.requestFocus();
++      if (mounted && !scopeNode.hasFocus) scopeNode.requestFocus();
+     });
+-    bool tabTapped = false;
+     if (isAndroid) gFFI.invokeMethod("enable_soft_keyboard", true);
+ 
+     return FocusScope(
+@@ -1087,16 +1113,22 @@ class CustomAlertDialog extends StatelessWidget {
+             onCancel?.call();
+           }
+           return KeyEventResult.handled; // avoid TextField exception on escape
+-        } else if (!tabTapped &&
+-            onSubmit != null &&
++        } else if (onSubmit != null &&
+             (key.logicalKey == LogicalKeyboardKey.enter ||
+                 key.logicalKey == LogicalKeyboardKey.numpadEnter)) {
+-          if (key is RawKeyDownEvent) onSubmit?.call();
++          // HJViewer: Enter submits unless a button (or another control) has the focus, also
++          // after Tab, which only moves the focus
++          if (_focusOnControl()) return KeyEventResult.ignored;
++          if (key is RawKeyDownEvent) onSubmit.call();
+           return KeyEventResult.handled;
+         } else if (key.logicalKey == LogicalKeyboardKey.tab) {
+           if (key is RawKeyDownEvent) {
+-            scopeNode.nextFocus();
+-            tabTapped = true;
++            // HJViewer: Shift+Tab goes back
++            if (key.isShiftPressed) {
++              scopeNode.previousFocus();
++            } else {
++              scopeNode.nextFocus();
++            }
+           }
+           return KeyEventResult.handled;
+         }
+@@ -1106,11 +1138,11 @@ class CustomAlertDialog extends StatelessWidget {
+           scrollable: true,
+           title: title,
+           content: ConstrainedBox(
+-            constraints: contentBoxConstraints,
+-            child: content,
++            constraints: widget.contentBoxConstraints,
++            child: widget.content,
+           ),
+           actions: actions,
+-          titlePadding: titlePadding ?? MyTheme.dialogTitlePadding(),
++          titlePadding: widget.titlePadding ?? MyTheme.dialogTitlePadding(),
+           // HJViewer: a title sits closer to its content
+           contentPadding: title == null
+               ? MyTheme.dialogContentPadding(actions: actions is List)
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index ea3e786..bf3416e 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -119,10 +119,11 @@ Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) {
+ }
+ 
+ /// The access password's field: hidden as typed unless shown, the hint below it, and why the
+-/// last try brought no ticket.
++/// last try brought no ticket; the keyboard's action sends it, and a shown one is not corrected.
+ Widget _passwordField(HjvAccessTexts t, TextEditingController controller,
+         {required bool visible,
+         required VoidCallback onToggle,
++        required VoidCallback onSubmitted,
+         String? error}) =>
+     Builder(
+         builder: (context) => DialogTextField(
+@@ -130,18 +131,54 @@ Widget _passwordField(HjvAccessTexts t, TextEditingController controller,
+               controller: controller,
+               obscureText: !visible,
+               prefixIcon: const Icon(Icons.key_rounded, size: 20),
+-              suffixIcon: IconButton(
+-                  icon: Icon(
+-                      visible
+-                          ? Icons.visibility_outlined
+-                          : Icons.visibility_off_outlined,
+-                      size: 20,
+-                      color: HjvPalette.of(context).textTertiary),
+-                  onPressed: onToggle),
++              suffixIcon: hjvPasswordEye(context,
++                  visible: visible, onPressed: onToggle),
+               helperText: t.passwordHint,
+               errorText: error,
++              keyboardType: TextInputType.visiblePassword,
++              textInputAction: TextInputAction.done,
++              onSubmitted: (_) => onSubmitted(),
++              autocorrect: false,
++              enableSuggestions: false,
+             ));
+ 
++/// While the access password is checked: the bar, named for a screen reader, and its word.
++Widget _checking(HjvAccessTexts t) => Builder(
++    builder: (context) => Row(
++          children: [
++            Expanded(
++                child:
++                    LinearProgressIndicator(semanticsLabel: t.checkingLabel)),
++            ExcludeSemantics(
++                child: Text(t.checking,
++                    style: TextStyle(
++                        fontSize: 13,
++                        color: HjvPalette.of(context).textSecondary))),
++          ],
++        ).marginOnly(top: 8));
++
++/// The dialog's [연결] (A1) or [확인] (P2): off while `canSend` says no for what is typed.
++Widget _sendButton(String label, TextEditingController controller,
++        bool Function(String typed) canSend, VoidCallback onPressed) =>
++    ValueListenableBuilder<TextEditingValue>(
++        valueListenable: controller,
++        builder: (_, value, __) =>
++            _button(label, canSend(value.text) ? onPressed : null));
++
++/// During E2's wait (`retryAt`, hjvRetryAt) the dialog again every 30 seconds until it is over,
++/// for the time it names and its button; nothing once the dialog is `closed`.
++void _untilRetry(int retryAt, StateSetter setState, bool Function() closed) {
++  if (retryAt <= _unixNow()) return;
++  Timer.periodic(const Duration(seconds: 30), (timer) {
++    if (closed()) {
++      timer.cancel();
++      return;
++    }
++    if (_unixNow() >= retryAt) timer.cancel();
++    setState(() {});
++  });
++}
++
+ // ---- the hooks ----
+ 
+ /// main.dart, beside hjvInitAccount: the app's start and each return to the front have Rust look
+@@ -371,13 +408,16 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+   String? error;
+   var busy = false;
+   var visible = false;
++  // E2's wait (hjvRetryAt), and whether the dialog is gone ([취소] works while it checks)
++  var retryAt = 0;
++  var closed = false;
+   final canLogIn = !bind.isDisableAccount();
+   // most of those refused are staff, who log in: the access password's field opens when asked
+   var open = !canLogIn;
+   // a port forward connects again for each local connection, which takes the new ticket
+   final forward = desktopType == DesktopType.portForward;
+   dialogManager.dismissAll();
+-  dialogManager.show((setState, close, context) {
++  unawaited(dialogManager.show((setState, close, context) {
+     void cancel() {
+       close();
+       if (!forward) closeConnection();
+@@ -396,9 +436,12 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+       if (!forward) reconnect(dialogManager, sessionId, false);
+     }
+ 
++    bool canSend(String typed) =>
++        hjvAccessCanSend(typed, busy: busy, retryAt: retryAt, now: _unixNow());
++
+     Future<void> connect() async {
+       final password = hjvAccessPassword(controller.text);
+-      if (busy || password.isEmpty) return;
++      if (!canSend(password)) return;
+       setState(() {
+         busy = true;
+         error = null;
+@@ -408,11 +451,17 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+               key: kHjvGuestCtl, value: hjvGuestCtlValue(peerId, password)),
+           result: () =>
+               bind.mainGetCommonSync(key: hjvGuestResultKey(to: peerId)));
++      // [취소] while it was checked: the session is closed, the answer goes unused
++      if (closed) return;
+       if (failure != null) {
+         setState(() {
+           busy = false;
+           error = failure;
++          retryAt = hjvRetryAt(
++              bind.mainGetCommonSync(key: hjvGuestResultKey(to: peerId)),
++              _unixNow());
+         });
++        _untilRetry(retryAt, setState, () => closed);
+         return;
+       }
+       close();
+@@ -439,8 +488,10 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+             _passwordField(t, controller,
+                 visible: visible,
+                 onToggle: () => setState(() => visible = !visible),
+-                error: error),
+-            if (busy) const LinearProgressIndicator().marginOnly(top: 8),
++                onSubmitted: connect,
++                error: hjvAccessErrorNow(t, error,
++                    retryAt: retryAt, now: _unixNow())),
++            if (busy) _checking(t),
+           ] else
+             TextButton(
+               style: TextButton.styleFrom(
+@@ -453,14 +504,14 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+         ],
+       ),
+       actions: [
+-        _button(t.cancel, busy ? null : cancel, outline: true),
++        _button(t.cancel, cancel, outline: true),
+         if (canLogIn) _button(t.logIn, busy ? null : logIn, outline: open),
+-        if (open) _button(t.connect, busy ? null : connect),
++        if (open) _sendButton(t.connect, controller, canSend, connect),
+       ],
+       onSubmit: open ? connect : logIn,
+-      onCancel: busy ? null : cancel,
++      onCancel: cancel,
+     );
+-  });
++  }).whenComplete(() => closed = true));
+ }
+ 
+ void _refusedAgainDialog(HjvAccessTexts t, SessionID sessionId, String title,
+@@ -643,10 +694,16 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+   String? error;
+   var busy = false;
+   var visible = false;
+-  gFFI.dialogManager.show((setState, close, context) {
++  // E2's wait, and whether the dialog is gone, as A1's
++  var retryAt = 0;
++  var closed = false;
++  final dialog = gFFI.dialogManager.show((setState, close, context) {
++    bool canSend(String typed) =>
++        hjvAccessCanSend(typed, busy: busy, retryAt: retryAt, now: _unixNow());
++
+     Future<void> submit() async {
+       final password = hjvAccessPassword(controller.text);
+-      if (busy || password.isEmpty) return;
++      if (!canSend(password)) return;
+       setState(() {
+         busy = true;
+         error = null;
+@@ -655,11 +712,23 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+           ask: () => bind.mainSetCommon(
+               key: kHjvGuestPc, value: hjvGuestPcValue(password)),
+           result: () => bind.mainGetCommonSync(key: hjvGuestResultKey()));
++      if (closed) {
++        // [취소] while it was checked: a ticket that came all the same ends at once
++        if (failure == null) {
++          unawaited(bind
++              .mainSetCommon(key: kHjvGuestPcEnd, value: '')
++              .catchError((Object e) => debugPrint('hjv: $e')));
++        }
++        return;
++      }
+       if (failure != null) {
+         setState(() {
+           busy = false;
+           error = failure;
++          retryAt = hjvRetryAt(
++              bind.mainGetCommonSync(key: hjvGuestResultKey()), _unixNow());
+         });
++        _untilRetry(retryAt, setState, () => closed);
+         return;
+       }
+       close();
+@@ -682,21 +751,24 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+           _passwordField(t, controller,
+               visible: visible,
+               onToggle: () => setState(() => visible = !visible),
+-              error: error),
+-          if (busy) const LinearProgressIndicator().marginOnly(top: 8),
++              onSubmitted: submit,
++              error: hjvAccessErrorNow(t, error,
++                  retryAt: retryAt, now: _unixNow())),
++          if (busy) _checking(t),
+         ],
+       ),
+       actions: [
+-        _button(t.cancel, busy ? null : close, outline: true),
+-        _button(t.ok, busy ? null : submit),
++        _button(t.cancel, close, outline: true),
++        _sendButton(t.ok, controller, canSend, submit),
+       ],
+       onSubmit: submit,
+-      onCancel: busy ? null : close,
++      onCancel: close,
+     );
+-  }).catchError((Object e) {
++  });
++  unawaited(dialog.whenComplete(() => closed = true).catchError((Object e) {
+     debugPrint('hjv: $e');
+     return null;
+-  });
++  }));
+ }
+ 
+ /// [끝내기]: the process that registers forgets this PC's access password ticket, and the PC
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 351780f..8d222df 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -95,6 +95,30 @@ Future<String?> hjvTradeAccessPassword(HjvAccessTexts t,
+       : t.failure(failure, wait: hjvGuestNumber(noted, 'retry_after'));
+ }
+ 
++/// E2 with hjv-api's wait: when a try may come again (Unix seconds by this device's clock, `now`
++/// the same), 0 for any other result and for a wait it did not say.
++int hjvRetryAt(String result, int now) {
++  if (hjvGuestFailure(result) != 'rate_limited') return 0;
++  final wait = hjvGuestNumber(result, 'retry_after');
++  return wait > 0 && wait <= _maxWait ? now + wait : 0;
++}
++
++/// Whether the access password's dialog (A1, P2) can send what is typed: something, while no
++/// exchange runs, and not before hjv-api takes a try again (`retryAt`, hjvRetryAt).
++bool hjvAccessCanSend(String typed,
++        {required bool busy, required int retryAt, required int now}) =>
++    !busy && hjvAccessPassword(typed).isNotEmpty && now >= retryAt;
++
++/// The error that dialog shows now: during E2's wait the time left, none once it is over, else
++/// the last try's.
++String? hjvAccessErrorNow(HjvAccessTexts t, String? error,
++        {required int retryAt, required int now}) =>
++    retryAt == 0
++        ? error
++        : now < retryAt
++            ? t.failure('rate_limited', wait: retryAt - now)
++            : null;
++
+ /// Whether the PC home shows P1: while hbbs refuses this PC's registration. A server that checks
+ /// nothing (MODE=off) never refuses, so the home stays as it was.
+ bool hjvShowsPcNotice(String state) => state == 'refused';
+@@ -296,6 +320,10 @@ class HjvAccessTexts {
+   String get passwordTitle => _t('이용 비밀번호', 'Access password');
+   String get passwordHint => _t('관리자가 알려 준 비밀번호입니다. PC의 일회용 비밀번호가 아닙니다.',
+       "The password your administrator gave you, not the PC's one-time password.");
++  // while the access password is checked: beside the bar, and the bar's name for a screen reader
++  String get checking => _t('확인하는 중…', 'Checking…');
++  String get checkingLabel =>
++      _t('이용 비밀번호를 확인하는 중', 'Checking the access password');
+   String get passwordAccepted => _t(
+       '이용 비밀번호를 확인했습니다. PC가 비밀번호를 물으면 그 PC의 비밀번호를 넣으세요.',
+       "Access password accepted. If the PC asks for its password, enter that PC's password.");
+diff --git a/flutter/lib/common/hjviewer_labels.dart b/flutter/lib/common/hjviewer_labels.dart
+new file mode 100644
+index 0000000..118d9dd
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_labels.dart
+@@ -0,0 +1,39 @@
++// HJViewer: the names that icon-only buttons and busy bars give screen readers and voice control,
++// and that the buttons' tooltips show, in Korean and English (the app's own texts pick the
++// language as the access screens do: Korean where translate() is Korean, else English).
++
++import 'package:flutter_hbb/common.dart';
++
++class HjvLabels {
++  final bool korean;
++  const HjvLabels(this.korean);
++
++  String _t(String ko, String en) => korean ? ko : en;
++
++  // a field's buttons
++  String get clear => _t('지우기', 'Clear');
++  String get showPassword => _t('비밀번호 보기', 'Show password');
++  String get hidePassword => _t('비밀번호 숨기기', 'Hide password');
++
++  // the phone's session bar
++  String get disconnect => _t('연결 끊기', 'Disconnect');
++  String get displayOptions => _t('화면 옵션', 'Display options');
++  String get keyboard => _t('키보드', 'Keyboard');
++  String get mobileActions => _t('모바일 동작', 'Mobile actions');
++  String get mouseTouch => _t('마우스·터치 모드', 'Mouse and touch mode');
++  String get chat => _t('채팅', 'Chat');
++  String get more => _t('더 보기', 'More');
++  String get hideToolbar => _t('도구 막대 숨기기', 'Hide toolbar');
++
++  // dialogs, pages and tabs
++  String get close => _t('닫기', 'Close');
++  String get back => _t('뒤로', 'Back');
++  String get scanQr => _t('QR 코드 스캔', 'Scan QR code');
++  String get otherWays => _t('다른 방법으로 연결', 'Other ways to connect');
++  String get closeTab => _t('탭 닫기', 'Close tab');
++
++  // the login's busy bar
++  String get loggingIn => _t('로그인하는 중', 'Logging in');
++}
++
++HjvLabels get hjvLabels => HjvLabels(translate('Cancel') == '취소');
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index 383dc4e..b010021 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
++import 'package:flutter_hbb/common/hjviewer_labels.dart';
+ import 'package:flutter_hbb/common/shared_state.dart';
+ import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
+ import 'package:flutter_hbb/consts.dart';
+@@ -610,6 +611,13 @@ class DialogTextField extends StatelessWidget {
+   final TextInputType? keyboardType;
+   final List<TextInputFormatter>? inputFormatters;
+   final int? maxLength;
++  // HJViewer: the keyboard's action and its submit, autofill, and no autocorrection where a
++  // field takes an ID or a password (smart dashes and quotes off with it)
++  final TextInputAction? textInputAction;
++  final ValueChanged<String>? onSubmitted;
++  final Iterable<String>? autofillHints;
++  final bool autocorrect;
++  final bool enableSuggestions;
+ 
+   static const kUsernameTitle = 'Username';
+   static const kUsernameIcon = Icon(Icons.person_outline_rounded, size: 20);
+@@ -628,52 +636,67 @@ class DialogTextField extends StatelessWidget {
+       this.keyboardType,
+       this.inputFormatters,
+       this.maxLength,
++      this.textInputAction,
++      this.onSubmitted,
++      this.autofillHints,
++      this.autocorrect = true,
++      this.enableSuggestions = true,
+       required this.title,
+       required this.controller})
+       : super(key: key);
+ 
+   @override
+   Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final error = errorText?.isNotEmpty == true ? errorText : null;
++    final helperStyle =
++        TextStyle(fontSize: 13, height: 1.45, color: p.textSecondary);
+     return Row(
+       children: [
+         Expanded(
+           child: Column(
+             crossAxisAlignment: CrossAxisAlignment.start,
+             children: [
+-              hjvFieldLabel(context, title),
+-              TextField(
+-                decoration: InputDecoration(
+-                  hintText: hintText,
+-                  prefixIcon: prefixIcon,
+-                  // HJViewer: the icon quiet, in the accent while the field has the focus
+-                  prefixIconColor: WidgetStateColor.resolveWith((states) =>
+-                      states.contains(WidgetState.focused)
+-                          ? HjvPalette.of(context).primary
+-                          : HjvPalette.of(context).textTertiary),
+-                  suffixIcon: suffixIcon,
+-                  helperText: helperText,
+-                  helperMaxLines: 8,
+-                ),
+-                controller: controller,
+-                focusNode: focusNode,
+-                autofocus: true,
+-                obscureText: obscureText,
+-                keyboardType: keyboardType,
+-                inputFormatters: inputFormatters,
+-                maxLength: maxLength,
+-              ),
+-              if (errorText != null)
+-                Align(
+-                  alignment: Alignment.centerLeft,
+-                  child: SelectableText(
+-                    errorText!,
+-                    style: TextStyle(
+-                      color: Theme.of(context).colorScheme.error,
+-                      fontSize: 12,
++              // HJViewer: the name above the field is the field's own name for a screen reader
++              ExcludeSemantics(child: hjvFieldLabel(context, title)),
++              Semantics(
++                  label: title,
++                  child: TextField(
++                    decoration: InputDecoration(
++                      hintText: hintText,
++                      prefixIcon: prefixIcon,
++                      // HJViewer: the icon quiet, in the accent while the field has the focus
++                      prefixIconColor: WidgetStateColor.resolveWith((states) =>
++                          states.contains(WidgetState.focused)
++                              ? HjvPalette.of(context).primary
++                              : HjvPalette.of(context).textTertiary),
++                      suffixIcon: suffixIcon,
++                      // HJViewer: the error right under the field, which it outlines in red,
++                      // with an icon and read out when it comes; the help under it
++                      helperText: error == null ? helperText : null,
++                      helperStyle: helperStyle,
++                      helperMaxLines: 8,
++                      error: error == null
++                          ? null
++                          : _hjvFieldError(p, error, helperText, helperStyle),
+                     ),
+-                    textAlign: TextAlign.left,
+-                  ).paddingOnly(top: 6, left: 2),
+-                ),
++                    controller: controller,
++                    focusNode: focusNode,
++                    autofocus: true,
++                    obscureText: obscureText,
++                    keyboardType: keyboardType,
++                    inputFormatters: inputFormatters,
++                    maxLength: maxLength,
++                    textInputAction: textInputAction,
++                    onSubmitted: onSubmitted,
++                    autofillHints: autofillHints,
++                    autocorrect: autocorrect,
++                    enableSuggestions: enableSuggestions,
++                    smartDashesType:
++                        autocorrect ? null : SmartDashesType.disabled,
++                    smartQuotesType:
++                        autocorrect ? null : SmartQuotesType.disabled,
++                  )),
+             ],
+           ).workaroundFreezeLinuxMint(),
+         ),
+@@ -682,6 +705,49 @@ class DialogTextField extends StatelessWidget {
+   }
+ }
+ 
++// HJViewer: a field's error with its icon, a live region of its own, and the field's help below it.
++Widget _hjvFieldError(HjvPalette p, String error, String? helperText,
++        TextStyle helperStyle) =>
++    Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        Semantics(
++          container: true,
++          liveRegion: true,
++          child: Row(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              Icon(Icons.error_outline_rounded, size: 16, color: p.danger)
++                  .marginOnly(top: 1, right: 4),
++              Expanded(
++                child: Text(error,
++                    style:
++                        TextStyle(fontSize: 13, height: 1.4, color: p.danger)),
++              ),
++            ],
++          ),
++        ),
++        if (helperText != null)
++          Text(helperText, style: helperStyle).marginOnly(top: 4),
++      ],
++    );
++
++// HJViewer: a password field's eye, named for what it does and whether the password shows.
++Widget hjvPasswordEye(BuildContext context,
++        {required bool visible, required VoidCallback onPressed}) =>
++    Semantics(
++      toggled: visible,
++      child: IconButton(
++          tooltip: visible ? hjvLabels.hidePassword : hjvLabels.showPassword,
++          icon: Icon(
++              visible
++                  ? Icons.visibility_outlined
++                  : Icons.visibility_off_outlined,
++              size: 20,
++              color: HjvPalette.of(context).textSecondary),
++          onPressed: onPressed),
++    );
++
+ abstract class ValidationField extends StatelessWidget {
+   ValidationField({Key? key}) : super(key: key);
+ 
+@@ -933,6 +999,9 @@ class PasswordWidget extends StatefulWidget {
+     this.errorText,
+     this.title,
+     this.maxLength,
++    this.textInputAction,
++    this.onSubmitted,
++    this.autofillHints,
+   }) : super(key: key);
+ 
+   final TextEditingController controller;
+@@ -942,6 +1011,10 @@ class PasswordWidget extends StatefulWidget {
+   final String? errorText;
+   final String? title;
+   final int? maxLength;
++  // HJViewer: the keyboard's action and its submit, and autofill (DialogTextField's)
++  final TextInputAction? textInputAction;
++  final ValueChanged<String>? onSubmitted;
++  final Iterable<String>? autofillHints;
+ 
+   @override
+   State<PasswordWidget> createState() => _PasswordWidgetState();
+@@ -989,25 +1062,23 @@ class _PasswordWidgetState extends State<PasswordWidget> {
+       hintText: translate(widget.hintText ?? 'Enter your password'),
+       controller: widget.controller,
+       prefixIcon: DialogTextField.kPasswordIcon,
+-      suffixIcon: IconButton(
+-        icon: Icon(
+-            // Based on passwordVisible state choose the icon
+-            _passwordVisible
+-                ? Icons.visibility_outlined
+-                : Icons.visibility_off_outlined,
+-            size: 20,
+-            color: HjvPalette.of(context).textTertiary),
+-        onPressed: () {
+-          // Update the state i.e. toggle the state of passwordVisible variable
+-          setState(() {
+-            _passwordVisible = !_passwordVisible;
+-          });
+-        },
+-      ),
++      suffixIcon:
++          hjvPasswordEye(context, visible: _passwordVisible, onPressed: () {
++        // Update the state i.e. toggle the state of passwordVisible variable
++        setState(() {
++          _passwordVisible = !_passwordVisible;
++        });
++      }),
+       obscureText: !_passwordVisible,
+       errorText: widget.errorText,
+       focusNode: _focusNode,
+       maxLength: widget.maxLength,
++      // HJViewer: a shown password is not corrected either
++      autocorrect: false,
++      enableSuggestions: false,
++      textInputAction: widget.textInputAction,
++      onSubmitted: widget.onSubmitted,
++      autofillHints: widget.autofillHints,
+     );
+   }
+ }
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index 184308e..80e34ac 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hbbs/hbbs.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
++import 'package:flutter_hbb/common/hjviewer_labels.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ import 'package:flutter_hbb/models/user_model.dart';
+ import 'package:get/get.dart';
+@@ -655,44 +656,57 @@ class LoginWidgetUserPass extends StatelessWidget {
+   Widget build(BuildContext context) {
+     return Padding(
+         padding: EdgeInsets.all(0),
+-        child: Column(
+-          crossAxisAlignment: CrossAxisAlignment.center,
+-          children: [
+-            const SizedBox(height: 8.0),
+-            DialogTextField(
+-                title: hjvUsernameTitle(),
+-                controller: username,
+-                focusNode: userFocusNode,
+-                prefixIcon: DialogTextField.kUsernameIcon,
+-                errorText: usernameMsg),
+-            PasswordWidget(
+-              controller: pass,
+-              title: hjvPasswordTitle(),
+-              autoFocus: false,
+-              reRequestFocus: true,
+-              errorText: passMsg,
+-            ),
+-            // NOT use Offstage to wrap LinearProgressIndicator
+-            if (isInProgress) const LinearProgressIndicator(),
+-            const SizedBox(height: 16.0),
+-            // HJViewer: the login button across the dialog
+-            SizedBox(
+-              width: double.infinity,
+-              height: 44,
+-              child: Obx(() => ElevatedButton(
+-                    child: Text(
+-                      translate('Login'),
+-                      style: TextStyle(fontSize: 15),
+-                    ),
+-                    onPressed: curOP.value.isEmpty && !isInProgress
+-                        ? () {
+-                            onLogin();
+-                          }
+-                        : null,
+-                  )),
+-            ),
+-          ],
+-        ));
++        // HJViewer: the ID and the password for the platform's autofill, which saves them only
++        // after a login (_openLoginDialog), not when the dialog is closed
++        child: AutofillGroup(
++            onDisposeAction: AutofillContextAction.cancel,
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.center,
++              children: [
++                const SizedBox(height: 8.0),
++                // HJViewer: the keyboard's action goes on to the password, whose action logs in
++                DialogTextField(
++                    title: hjvUsernameTitle(),
++                    controller: username,
++                    focusNode: userFocusNode,
++                    prefixIcon: DialogTextField.kUsernameIcon,
++                    errorText: usernameMsg,
++                    textInputAction: TextInputAction.next,
++                    autofillHints: const [AutofillHints.username],
++                    autocorrect: false,
++                    enableSuggestions: false),
++                PasswordWidget(
++                  controller: pass,
++                  title: hjvPasswordTitle(),
++                  autoFocus: false,
++                  reRequestFocus: true,
++                  errorText: passMsg,
++                  textInputAction: TextInputAction.done,
++                  onSubmitted: (_) => onLogin(),
++                  autofillHints: const [AutofillHints.password],
++                ),
++                // NOT use Offstage to wrap LinearProgressIndicator
++                if (isInProgress)
++                  LinearProgressIndicator(semanticsLabel: hjvLabels.loggingIn),
++                const SizedBox(height: 16.0),
++                // HJViewer: the login button across the dialog
++                SizedBox(
++                  width: double.infinity,
++                  height: 44,
++                  child: Obx(() => ElevatedButton(
++                        child: Text(
++                          translate('Login'),
++                          style: TextStyle(fontSize: 15),
++                        ),
++                        onPressed: curOP.value.isEmpty && !isInProgress
++                            ? () {
++                                onLogin();
++                              }
++                            : null,
++                      )),
++                ),
++              ],
++            )));
+   }
+ }
+ 
+@@ -815,6 +829,8 @@ Future<bool?> _openLoginDialog() async {
+                   key: 'access_token', value: resp.access_token!);
+               await bind.mainSetLocalOption(
+                   key: 'user_info', value: jsonEncode(resp.user ?? {}));
++              // HJViewer: the password login worked: autofill may offer to save it
++              TextInput.finishAutofillContext();
+             }
+             if (close != null) {
+               close(true);
+@@ -956,15 +972,19 @@ Future<bool?> _openLoginDialog() async {
+         MouseRegion(
+           onEnter: (_) => setState(() => isCloseHovered = true),
+           onExit: (_) => setState(() => isCloseHovered = false),
+-          child: InkWell(
+-            child: Icon(
+-              Icons.close_rounded,
+-              size: 20,
+-              color: isCloseHovered ? p.text : p.textTertiary,
+-            ).paddingAll(isDesktop ? 6 : 12),
+-            onTap: onDialogCancel,
+-            hoverColor: p.hover,
+-            borderRadius: BorderRadius.circular(HjvRadius.sm),
++          // HJViewer: the button's name (U55)
++          child: Tooltip(
++            message: hjvLabels.close,
++            child: InkWell(
++              child: Icon(
++                Icons.close_rounded,
++                size: 20,
++                color: isCloseHovered ? p.text : p.textTertiary,
++              ).paddingAll(isDesktop ? 6 : 12),
++              onTap: onDialogCancel,
++              hoverColor: p.hover,
++              borderRadius: BorderRadius.circular(HjvRadius.sm),
++            ),
+           ),
+         ),
+       ],
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 7734adc..36ddeeb 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -13,6 +13,7 @@ import 'package:provider/provider.dart';
+ import '../../common.dart';
+ import '../../common/formatter/id_formatter.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjviewer_labels.dart';
+ import '../../models/peer_model.dart';
+ import '../../models/platform_model.dart';
+ import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
+@@ -632,17 +633,22 @@ class _PeerCardState extends State<_PeerCard>
+             : Icon(Icons.check_box_outline_blank),
+       );
+     } else {
+-      return InkWell(
+-          child: const Padding(
+-              padding: EdgeInsets.all(12), child: Icon(Icons.more_vert)),
+-          onTapDown: (e) {
+-            final x = e.globalPosition.dx;
+-            final y = e.globalPosition.dy;
+-            _menuPos = RelativeRect.fromLTRB(x, y, x, y);
+-          },
+-          onTap: () {
+-            _showPeerMenu(peer.id);
+-          });
++      // HJViewer: the button's name, without a tooltip that would take the card's long press
++      return Semantics(
++        button: true,
++        label: hjvLabels.more,
++        child: InkWell(
++            child: const Padding(
++                padding: EdgeInsets.all(12), child: Icon(Icons.more_vert)),
++            onTapDown: (e) {
++              final x = e.globalPosition.dx;
++              final y = e.globalPosition.dy;
++              _menuPos = RelativeRect.fromLTRB(x, y, x, y);
++            },
++            onTap: () {
++              _showPeerMenu(peer.id);
++            }),
++      );
+     }
+   }
+ 
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 944f6fb..687b517 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -16,6 +16,7 @@ import 'package:flutter_hbb/models/peer_model.dart';
+ 
+ import '../../common.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+ import '../../common/hjviewer_access.dart';
+ import '../../common/formatter/id_formatter.dart';
+@@ -423,31 +424,35 @@ class _ConnectionPageState extends State<ConnectionPage>
+                   ) {
+                     updateTextAndPreserveSelection(
+                         fieldTextEditingController, _idController.text);
+-                    return Obx(() => TextField(
+-                          autocorrect: false,
+-                          enableSuggestions: false,
+-                          keyboardType: TextInputType.visiblePassword,
+-                          focusNode: fieldFocusNode,
+-                          style: HjvText.idInput,
+-                          maxLines: 1,
+-                          cursorColor:
+-                              Theme.of(context).textTheme.titleLarge?.color,
+-                          decoration: InputDecoration(
+-                              counterText: '',
+-                              hintText: _idInputFocused.value
+-                                  ? null
+-                                  : translate('Enter Remote ID'),
+-                              contentPadding: const EdgeInsets.symmetric(
+-                                  horizontal: 15, vertical: 13)),
+-                          controller: fieldTextEditingController,
+-                          inputFormatters: [IDTextInputFormatter()],
+-                          onChanged: (v) {
+-                            _idController.id = v;
+-                          },
+-                          onSubmitted: (_) {
+-                            onConnect();
+-                          },
+-                        ).workaroundFreezeLinuxMint());
++                    // HJViewer: the field's name also while it has the focus, which hides the hint
++                    return Obx(() => Semantics(
++                          label: translate('Remote ID'),
++                          child: TextField(
++                            autocorrect: false,
++                            enableSuggestions: false,
++                            keyboardType: TextInputType.visiblePassword,
++                            focusNode: fieldFocusNode,
++                            style: HjvText.idInput,
++                            maxLines: 1,
++                            cursorColor:
++                                Theme.of(context).textTheme.titleLarge?.color,
++                            decoration: InputDecoration(
++                                counterText: '',
++                                hintText: _idInputFocused.value
++                                    ? null
++                                    : translate('Enter Remote ID'),
++                                contentPadding: const EdgeInsets.symmetric(
++                                    horizontal: 15, vertical: 13)),
++                            controller: fieldTextEditingController,
++                            inputFormatters: [IDTextInputFormatter()],
++                            onChanged: (v) {
++                              _idController.id = v;
++                            },
++                            onSubmitted: (_) {
++                              onConnect();
++                            },
++                          ).workaroundFreezeLinuxMint(),
++                        ));
+                   },
+                   onSelected: (option) {
+                     setState(() {
+@@ -548,12 +553,16 @@ class _ConnectionPageState extends State<ConnectionPage>
+                       builder: (context, setState) {
+                         var offset = Offset(0, 0);
+                         return Obx(() => InkWell(
+-                              child: _menuOpen.value
+-                                  ? Transform.rotate(
+-                                      angle: pi,
+-                                      child: Icon(IconFont.more, size: 14),
+-                                    )
+-                                  : Icon(IconFont.more, size: 14),
++                              // HJViewer: the button's name (U55)
++                              child: Tooltip(
++                                message: hjvLabels.otherWays,
++                                child: _menuOpen.value
++                                    ? Transform.rotate(
++                                        angle: pi,
++                                        child: Icon(IconFont.more, size: 14),
++                                      )
++                                    : Icon(IconFont.more, size: 14),
++                              ),
+                               onTapDown: (e) {
+                                 offset = e.globalPosition;
+                               },
+diff --git a/flutter/lib/desktop/widgets/tabbar_widget.dart b/flutter/lib/desktop/widgets/tabbar_widget.dart
+index 4836911..fec9786 100644
+--- a/flutter/lib/desktop/widgets/tabbar_widget.dart
++++ b/flutter/lib/desktop/widgets/tabbar_widget.dart
+@@ -9,6 +9,7 @@ import 'package:flutter/material.dart' hide TabBarTheme;
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
++import 'package:flutter_hbb/common/hjviewer_labels.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/desktop/pages/remote_page.dart';
+ import 'package:flutter_hbb/desktop/pages/view_camera_page.dart';
+@@ -1223,9 +1224,14 @@ class _TabState extends State<_Tab> with RestorationMixin {
+                     children: [
+                       _hjvTabContent(isSelected),
+                       // on the selected tab always, on the others while hovered
++                      // HJViewer: the close button's name, while it shows (U55)
+                       if (widget.closable)
+-                        _hjvCloseButton(hovered || isSelected)
+-                            .marginOnly(left: 4),
++                        Tooltip(
++                          message:
++                              hovered || isSelected ? hjvLabels.closeTab : '',
++                          waitDuration: const Duration(seconds: 1),
++                          child: _hjvCloseButton(hovered || isSelected),
++                        ).marginOnly(left: 4),
+                     ],
+                   ),
+                 ),
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index ca594e8..4cd7fe6 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -12,6 +12,7 @@ import 'package:flutter_hbb/models/peer_model.dart';
+ 
+ import '../../common.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+ import '../../common/hjviewer_access.dart';
+ import '../../common/widgets/peer_tab_page.dart';
+@@ -327,6 +328,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
+               Obx(() => Offstage(
+                     offstage: _idEmpty.value,
+                     child: IconButton(
++                        tooltip: hjvLabels.clear,
+                         onPressed: () {
+                           setState(() {
+                             _idController.clear();
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 1f7bbfe..4ad3202 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -16,6 +16,7 @@ import 'package:provider/provider.dart';
+ 
+ import '../../common.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjviewer_labels.dart';
+ import '../../common/hjviewer_android.dart';
+ import '../../common/widgets/overlay.dart';
+ import '../../common/widgets/dialog.dart';
+@@ -694,6 +695,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+           Row(
+               children: <Widget>[
+                     IconButton(
++                      // HJViewer: each button's name (U55)
++                      tooltip: hjvLabels.disconnect,
+                       color: p.danger,
+                       icon: Icon(Icons.close_rounded),
+                       onPressed: () {
+@@ -701,6 +704,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                       },
+                     ),
+                     IconButton(
++                      tooltip: hjvLabels.displayOptions,
+                       color: iconColor,
+                       icon: Icon(Icons.tv_outlined),
+                       onPressed: () {
+@@ -716,12 +720,17 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                               GestureDetector(
+                                 onLongPress:
+                                     isIOS ? _onKeyboardButtonLongPress : null,
+-                                child: IconButton(
+-                                    color: iconColor,
+-                                    icon: Icon(Icons.keyboard_outlined),
+-                                    onPressed: openKeyboard),
++                                // a name without a tooltip, which would take the long press
++                                child: Semantics(
++                                  label: hjvLabels.keyboard,
++                                  child: IconButton(
++                                      color: iconColor,
++                                      icon: Icon(Icons.keyboard_outlined),
++                                      onPressed: openKeyboard),
++                                ),
+                               ),
+                               IconButton(
++                                tooltip: hjvLabels.mobileActions,
+                                 color: iconColor,
+                                 icon: const Icon(Icons.build_outlined),
+                                 onPressed: () => gFFI.dialogManager
+@@ -732,12 +741,17 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                               GestureDetector(
+                                 onLongPress:
+                                     isIOS ? _onKeyboardButtonLongPress : null,
+-                                child: IconButton(
+-                                    color: iconColor,
+-                                    icon: Icon(Icons.keyboard_outlined),
+-                                    onPressed: openKeyboard),
++                                // a name without a tooltip, which would take the long press
++                                child: Semantics(
++                                  label: hjvLabels.keyboard,
++                                  child: IconButton(
++                                      color: iconColor,
++                                      icon: Icon(Icons.keyboard_outlined),
++                                      onPressed: openKeyboard),
++                                ),
+                               ),
+                               IconButton(
++                                tooltip: hjvLabels.mouseTouch,
+                                 color: iconColor,
+                                 icon: Icon(gFFI.ffiModel.touchMode
+                                     ? Icons.touch_app_outlined
+@@ -753,6 +767,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                               future: gFFI.invokeMethod(
+                                   "get_value", "KEY_IS_SUPPORT_VOICE_CALL"),
+                               hasData: (isSupportVoiceCall) => IconButton(
++                                    tooltip: hjvLabels.chat,
+                                     color: iconColor,
+                                     icon: isAndroid && isSupportVoiceCall
+                                         ? SvgPicture.asset('assets/chat.svg',
+@@ -767,6 +782,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                         ]) +
+                   [
+                     IconButton(
++                      tooltip: hjvLabels.more,
+                       color: iconColor,
+                       icon: Icon(Icons.more_vert_rounded),
+                       onPressed: () {
+@@ -776,6 +792,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                     ),
+                   ]),
+           Obx(() => IconButton(
++                tooltip: hjvLabels.hideToolbar,
+                 color: iconColor,
+                 icon: Icon(Icons.expand_more_rounded),
+                 onPressed: gFFI.ffiModel.waitForFirstImage.isTrue
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index fe9a783..3cbfe89 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -15,6 +15,7 @@ import 'package:url_launcher/url_launcher_string.dart';
+ 
+ import '../../common.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+ import '../../common/hjviewer_account.dart';
+ import '../../common/widgets/dialog.dart';
+@@ -1207,6 +1208,7 @@ class ScanButton extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     return IconButton(
++      tooltip: hjvLabels.scanQr,
+       icon: Icon(Icons.qr_code_scanner),
+       onPressed: () {
+         Navigator.push(
+@@ -1245,6 +1247,7 @@ class __DisplayPageState extends State<_DisplayPage> {
+     return Scaffold(
+       appBar: AppBar(
+         leading: IconButton(
++            tooltip: hjvLabels.back,
+             onPressed: () => Navigator.pop(context),
+             icon: Icon(Icons.arrow_back_ios_new_rounded, size: 20)),
+         title: Text(translate('Display Settings')),
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index bfb2b17..b9613c4 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -18,6 +18,8 @@ List<String> texts(HjvAccessTexts t) => [
+       t.connect,
+       t.passwordTitle,
+       t.passwordHint,
++      t.checking,
++      t.checkingLabel,
+       t.passwordAccepted,
+       t.passwordAcceptedNote,
+       t.pcAskTitle,
+@@ -89,6 +91,10 @@ void main() {
+     expect([en.logIn, en.connect, en.cancel, en.havePassword],
+         ['Log in', 'Connect', 'Cancel', 'Have an access password?']);
+     expect([ko.close, ko.reconnect], ['닫기', '다시 연결']);
++    // while the access password is checked (U07)
++    expect([ko.checking, ko.checkingLabel], ['확인하는 중…', '이용 비밀번호를 확인하는 중']);
++    expect([en.checking, en.checkingLabel],
++        ['Checking…', 'Checking the access password']);
+     expect(ko.pcTitle, '이 PC는 서버에 연결되지 않았습니다');
+     expect(ko.pcText, '다른 기기에서 이 PC에 연결하려면 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요.');
+     // P1's buttons are actions; P2's dialog keeps the name
+@@ -196,6 +202,37 @@ void main() {
+     }
+   });
+ 
++  test(
++      'the access password\'s dialog: [연결] waits for a password and E2\'s wait',
++      () {
++    const now = 1760040000;
++    // something typed, no exchange running
++    expect(hjvAccessCanSend('pw', busy: false, retryAt: 0, now: now), isTrue);
++    expect(hjvAccessCanSend('  ', busy: false, retryAt: 0, now: now), isFalse);
++    expect(hjvAccessCanSend('pw', busy: true, retryAt: 0, now: now), isFalse);
++    // E2 with hjv-api's wait: off until it is over, the error naming the time left
++    final retryAt = hjvRetryAt(
++        '{"error":"rate_limited","ok":false,"retry_after":600}', now);
++    expect(retryAt, now + 600);
++    expect(hjvAccessCanSend('pw', busy: false, retryAt: retryAt, now: now + 60),
++        isFalse);
++    expect(hjvAccessErrorNow(ko, 'E2', retryAt: retryAt, now: now + 60),
++        '시도가 너무 많습니다. 약 9분 뒤 다시 해 주세요.');
++    expect(hjvAccessCanSend('pw', busy: false, retryAt: retryAt, now: retryAt),
++        isTrue);
++    expect(hjvAccessErrorNow(ko, 'E2', retryAt: retryAt, now: retryAt), isNull);
++    // no wait said, past two days, or another failure: no wait, the last error as it came
++    for (final result in [
++      '{"error":"rate_limited","ok":false}',
++      '{"error":"rate_limited","ok":false,"retry_after":${3 * 86400}}',
++      '{"ok":false,"error":"denied"}',
++      '{"ok":true}',
++    ]) {
++      expect(hjvRetryAt(result, now), 0, reason: result);
++    }
++    expect(hjvAccessErrorNow(ko, 'E1', retryAt: 0, now: now), 'E1');
++  });
++
+   test('what the core gets (src/hjviewer_access/guest.rs)', () {
+     expect([kHjvGuestCtl, kHjvGuestPc, kHjvGuestPcEnd],
+         ['hjv-guest-ctl', 'hjv-guest-pc', 'hjv-guest-pc-end']);

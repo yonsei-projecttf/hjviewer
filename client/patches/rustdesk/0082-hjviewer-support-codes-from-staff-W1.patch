@@ -1,0 +1,2014 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 23:41:45 +0900
+Subject: [PATCH 82/85] hjviewer: support codes from staff (W1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The client side of docs/access-tickets.md 3-7 (the hjviewer repo's
+v182/w1-server): a logged-in staff member makes a one-time support code,
+and the PC of someone who is not logged in trades it for its own ticket.
+
+- PC side (P3): P1's notice gets [지원 코드 넣기] while GET
+  /api/hjv/access says "codes":true (1.8.0's server never does), and its
+  text and the ID card's line name the support code then. Its dialog
+  "지원 코드" takes XXXX-XXXX, checks the form as hjv-api's support::read
+  does (E6 at once, nothing sent), and [연결] goes with the busy bar of
+  the access password's dialog (U07), the keyboard's submit, no autofill
+  or suggestions. E2, E5 as the access password's, E6, E7, E8 for the
+  rest. A ticket shows as P2 does, the home line "지원 코드로 연결을 받는
+  중 · …까지" (two hours), [끝내기] and the window's close ask alike.
+- Core: guest.rs trades a code through the access password's seam
+  (set "hjv-guest-pc-code", get "hjv-guest-result:pc-code"): sealed with
+  "p":"code" in the request's "code" member, signed as the PC's request,
+  sent once more as it was when no answer came (hjv-api answers the same
+  body with its first answer), the ticket in the access password's place
+  in the process that registers. read_code ports hjv-api's read.
+  hjv-e2e: --hjv-e2e-guest-pc-code <code> and --hjv-e2e-support-code.
+- Creator (S1, S2): the account module learns "support_code":true from
+  the login answer's and currentUser's hjv (hjv-support-code), and
+  support.rs makes a code with the login's signed request
+  (set "hjv-support-code-make", get "hjv-support-code-result", read
+  once). [지원 코드 만들기] shows only then: Settings → Account on the
+  desktop and the phone, and above the 내 PC tab's list. The dialog shows
+  the code large with the time left counting down, [코드 복사], [안내문
+  복사], S8 on a server that checks nobody, the expired state with [다시
+  만들기], and S5 to S7; a 401 ends the login as the account requests'
+  401 does.
+- Tests: the request bodies, the seal, the code's form (hjv-api's
+  vectors), hjv-api's answers to a maker, the flag (Rust); the texts, the
+  form, the flags' effects, the countdown and the error mapping (Dart).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart       | 353 ++++++++++++++++--
+ flutter/lib/common/hjviewer_access_texts.dart | 218 ++++++++++-
+ flutter/lib/common/hjviewer_account.dart      |  13 +
+ flutter/lib/common/widgets/my_group.dart      |   3 +
+ flutter/test/hjviewer_access_test.dart        | 194 ++++++++++
+ src/hjviewer_access.rs                        |   8 +-
+ src/hjviewer_access/guest.rs                  | 270 ++++++++++++--
+ src/hjviewer_account/api.rs                   |  86 ++++-
+ src/hjviewer_account/mod.rs                   |   3 +
+ src/hjviewer_account/support.rs               | 293 +++++++++++++++
+ src/hjviewer_e2e.rs                           |   8 +
+ 11 files changed, 1378 insertions(+), 71 deletions(-)
+ create mode 100644 src/hjviewer_account/support.rs
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index bb1ec34..fbc0e0d 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -9,11 +9,13 @@
+ // and the choices between them are in hjviewer_access_texts.dart. Outside an account build
+ // every hook leaves its screen as it was, and so does a server that checks nothing (MODE=off),
+ // which refuses nobody (the PC password box's words and the restart's line about a PC where
+-// HJViewer is not installed aside).
++// HJViewer is not installed aside). Since 1.8.2 a PC may take a support code from a staff member
++// in the place of the access password (P3), and a staff member's login makes one (S1, S2).
+ 
+ import 'dart:async';
+ 
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access_texts.dart';
+@@ -45,8 +47,10 @@ String _commonSync(String key) {
+ /// The texts in the language of the app's own, as the account screens pick it.
+ HjvAccessTexts get _t => HjvAccessTexts(translate('Cancel') == '취소');
+ 
+-/// The server's access check (GET /api/hjv/access, the doc 3-6): '' until hjv-api said.
++/// The server's access check (GET /api/hjv/access, the doc 3-6): '' until hjv-api said; and
++/// whether hjv-api trades support codes now (its `codes`).
+ final _gateMode = ''.obs;
++final _gateCodes = false.obs;
+ DateTime? _gateAsked;
+ 
+ /// The option of the process that registers (kHjvAccessPcState), read every second on a
+@@ -58,8 +62,9 @@ final _pcState = ''.obs;
+ final _pcBound = false.obs;
+ 
+ /// When this PC's access password ticket ends (Unix seconds by this device's clock), 0 without
+-/// one: what P2 got, in this window's memory only.
++/// one: what P2 got, in this window's memory only; and whether a support code got it (P3).
+ final _guestUntil = 0.obs;
++final _guestByCode = false.obs;
+ 
+ /// Since when hbbs refuses this PC (Unix seconds), 0 while it takes it; and whether that is long
+ /// enough for a logged-in PC's home to say so.
+@@ -145,15 +150,16 @@ Widget _passwordField(HjvAccessTexts t, TextEditingController controller,
+               enableSuggestions: false,
+             ));
+ 
+-/// While the access password is checked: the bar, named for a screen reader, and its word.
+-Widget _checking(HjvAccessTexts t) => Builder(
++/// While the access password is checked: the bar, named for a screen reader, and its word (a
++/// support code's, or while one is made, with `label` and `word`).
++Widget _checking(HjvAccessTexts t, {String? label, String? word}) => Builder(
+     builder: (context) => Row(
+           children: [
+             Expanded(
+-                child:
+-                    LinearProgressIndicator(semanticsLabel: t.checkingLabel)),
++                child: LinearProgressIndicator(
++                    semanticsLabel: label ?? t.checkingLabel)),
+             ExcludeSemantics(
+-                child: Text(t.checking,
++                child: Text(word ?? t.checking,
+                     style: TextStyle(
+                         fontSize: 13,
+                         color: HjvPalette.of(context).textSecondary))),
+@@ -249,7 +255,7 @@ List<Widget> hjvAccessPcNotice() =>
+ /// while they can, and always outside an account build).
+ Widget hjvAccessPcBlocked(Widget Function(HjvPcBlocked? blocked) builder) =>
+     _accountBuild
+-        ? Obx(() => builder(hjvPcBlocked(_t, _home())))
++        ? Obx(() => builder(hjvPcBlocked(_t, _home(), codes: _gateCodes.value)))
+         : builder(null);
+ 
+ /// peers_view.dart, the [로그인] of a tab that needs a login: `filled`, or a plain one while the
+@@ -385,10 +391,16 @@ Future<bool> hjvAccessMainWindowCloses() async {
+     return true;
+   }
+   final t = _t;
++  final byCode = _guestByCode.value;
+   final answer = await gFFI.dialogManager
+       .show<bool>((setState, close, context) => CustomAlertDialog(
+-            title: HjvDialogTitle(Icons.key_rounded, t.passwordTitle),
+-            content: Text(t.closeWhileGuest(_until(until)),
++            title: byCode
++                ? HjvDialogTitle(Icons.support_agent_rounded, t.pcCode)
++                : HjvDialogTitle(Icons.key_rounded, t.passwordTitle),
++            content: Text(
++                byCode
++                    ? t.closeWhileCode(_until(until))
++                    : t.closeWhileGuest(_until(until)),
+                 style: hjvDialogTextStyle(context)),
+             actions: [
+               _button(t.endAndClose, () => close(true), outline: true),
+@@ -598,18 +610,31 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+                 color: p.warning,
+                 icon: Icons.cloud_off_rounded,
+                 title: t.pcTitle,
+-                text: t.pcText,
++                text: _gateCodes.value ? t.pcTextCodes : t.pcText,
+                 actions: [
+-                  if (!bind.isDisableAccount())
+-                    _button(t.logIn, () => loginDialog()),
+-                  _button(t.pcPasswordButton, () => _pcPasswordDialog(t),
+-                      outline: true),
++                  for (final action in hjvPcActions(
++                      canLogIn: !bind.isDisableAccount(),
++                      codes: _gateCodes.value))
++                    switch (action) {
++                      HjvPcAction.logIn =>
++                        _button(t.logIn, () => loginDialog()),
++                      HjvPcAction.password => _button(
++                          t.pcPasswordButton, () => _pcPasswordDialog(t),
++                          outline: true),
++                      HjvPcAction.code => _button(
++                          t.pcCodeButton, () => _pcCodeDialog(t),
++                          outline: true),
++                    },
+                 ]),
+           HjvPcHome.refusedLoggedIn => _refusedLoggedIn(context, t),
+           HjvPcHome.guest => _card(context,
+               color: p.success,
+-              icon: Icons.key_rounded,
+-              title: t.pcGuestUntil(_until(_guestUntil.value)),
++              icon: _guestByCode.value
++                  ? Icons.support_agent_rounded
++                  : Icons.key_rounded,
++              title: _guestByCode.value
++                  ? t.pcCodeUntil(_until(_guestUntil.value))
++                  : t.pcGuestUntil(_until(_guestUntil.value)),
+               actions: [_button(t.end, () => _endGuest(t), outline: true)]),
+           HjvPcHome.logIn when !bind.isDisableAccount() => _card(context,
+               color: p.textSecondary,
+@@ -752,6 +777,7 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+           bind.mainGetCommonSync(key: hjvGuestResultKey()), 'until');
+       if (until > _unixNow()) {
+         _guestUntil.value = until;
++        _guestByCode.value = false;
+         showToast(t.pcGuestToast(_until(until)));
+       }
+     }
+@@ -788,18 +814,295 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+   }));
+ }
+ 
+-/// [끝내기]: the process that registers forgets this PC's access password ticket, and the PC
+-/// registers without it.
++/// P3: a support code from a staff member in the place of the access password, as P2 takes that;
++/// what is not a code's form is not sent (E6 at once).
++void _pcCodeDialog(HjvAccessTexts t) {
++  final controller = TextEditingController();
++  String? error;
++  var busy = false;
++  var retryAt = 0;
++  var closed = false;
++  final dialog = gFFI.dialogManager.show((setState, close, context) {
++    bool canSend(String typed) =>
++        hjvAccessCanSend(typed, busy: busy, retryAt: retryAt, now: _unixNow());
++
++    Future<void> submit() async {
++      final code = hjvAccessPassword(controller.text);
++      if (!canSend(code)) return;
++      if (hjvReadSupportCode(code) == null) {
++        setState(() => error = t.codeFailure('denied'));
++        return;
++      }
++      setState(() {
++        busy = true;
++        error = null;
++      });
++      String result() =>
++          bind.mainGetCommonSync(key: hjvGuestResultKey(code: true));
++      String? failure;
++      try {
++        await bind.mainSetCommon(
++            key: kHjvGuestPcCode, value: hjvGuestPcCodeValue(code));
++        final noted = hjvGuestFailure(result());
++        if (noted != null) {
++          failure = t.codeFailure(noted,
++              wait: hjvGuestNumber(result(), 'retry_after'));
++        }
++      } catch (e) {
++        failure = t.codeFailure('network');
++      }
++      if (closed) {
++        // [취소] while it was checked: a ticket that came all the same ends at once
++        if (failure == null) {
++          unawaited(bind
++              .mainSetCommon(key: kHjvGuestPcEnd, value: '')
++              .catchError((Object e) => debugPrint('hjv: $e')));
++        }
++        return;
++      }
++      if (failure != null) {
++        setState(() {
++          busy = false;
++          error = failure;
++          retryAt = hjvRetryAt(result(), _unixNow());
++        });
++        _untilRetry(retryAt, setState, () => closed);
++        return;
++      }
++      close();
++      final until = hjvGuestNumber(result(), 'until');
++      if (until > _unixNow()) {
++        _guestUntil.value = until;
++        _guestByCode.value = true;
++        showToast(t.pcGuestToast(_until(until)));
++      }
++    }
++
++    return CustomAlertDialog(
++      title: HjvDialogTitle(Icons.support_agent_rounded, t.pcCode),
++      content: Column(
++        mainAxisSize: MainAxisSize.min,
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(hjvKeepAll(t.pcCodeText), style: hjvDialogTextStyle(context)),
++          const SizedBox(height: 8),
++          DialogTextField(
++            title: t.pcCode,
++            controller: controller,
++            hintText: 'XXXX-XXXX',
++            prefixIcon: const Icon(Icons.support_agent_rounded, size: 20),
++            helperText: hjvKeepAll(t.codeHint),
++            errorText:
++                hjvAccessErrorNow(t, error, retryAt: retryAt, now: _unixNow()),
++            // a one-time value: no autofill, no suggestions, the letters as the code shows them
++            keyboardType: TextInputType.visiblePassword,
++            inputFormatters: [
++              TextInputFormatter.withFunction((_, value) =>
++                  value.copyWith(text: hjvCodeCapitals(value.text)))
++            ],
++            textInputAction: TextInputAction.done,
++            onSubmitted: (_) => submit(),
++            autocorrect: false,
++            enableSuggestions: false,
++          ),
++          if (busy) _checking(t, label: t.codeCheckingLabel),
++        ],
++      ),
++      actions: [
++        _button(t.cancel, close, outline: true),
++        _sendButton(t.connect, controller, canSend, submit),
++      ],
++      onSubmit: submit,
++      onCancel: close,
++    );
++  });
++  unawaited(dialog.whenComplete(() => closed = true).catchError((Object e) {
++    debugPrint('hjv: $e');
++    return null;
++  }));
++}
++
++/// [끝내기]: the process that registers forgets this PC's access password ticket (or support
++/// code's), and the PC registers without it.
+ Future<void> _endGuest(HjvAccessTexts t) async {
+   _guestUntil.value = 0;
+   try {
+     await bind.mainSetCommon(key: kHjvGuestPcEnd, value: '');
+-    showToast(t.pcGuestEnded);
++    showToast(_guestByCode.value ? t.pcCodeEnded : t.pcGuestEnded);
+   } catch (e) {
+     debugPrint('hjv: $e');
+   }
+ }
+ 
++// ---- a support code from staff (S1, S2) ----
++
++/// S1 (hjviewer_account.dart: the desktop's account card, the phone's account section, the 내 PC
++/// tab): whether this login may make support codes, as hjv-api said at the login or in
++/// currentUser (reads the login, for an Obx); false outside an account build.
++bool hjvOffersSupportCodeNow() =>
++    _accountBuild &&
++    hjvOffersSupportCode(_commonSync(kHjvSupportCode),
++        loggedIn: gFFI.userModel.isLogin);
++
++/// S1's [지원 코드 만들기].
++String hjvSupportCodeLabel() => _t.makeCode;
++
++/// S1 on the home (my_group.dart, the 내 PC tab, the account's list): a quiet [지원 코드 만들기]
++/// above the list while the login may make codes.
++List<Widget> hjvSupportCodeEntry() => _accountBuild
++    ? [
++        Obx(() => hjvOffersSupportCodeNow()
++            ? Align(
++                alignment: Alignment.centerRight,
++                child: TextButton.icon(
++                    onPressed: hjvMakeSupportCode,
++                    icon: const Icon(Icons.support_agent_rounded, size: 18),
++                    label: Text(_t.makeCode)))
++            : const SizedBox.shrink())
++      ]
++    : [];
++
++/// S1: a code made at once and shown (S2) with the time it has left, until the window closes;
++/// the code stays in this window's memory only and keeps working until its ten minutes are over.
++void hjvMakeSupportCode() => _supportCodeDialog(_t);
++
++void _supportCodeDialog(HjvAccessTexts t) {
++  ({String code, int expiresIn})? made;
++  var madeAt = DateTime.now();
++  String? error;
++  var again = true;
++  var busy = false;
++  var started = false;
++  var closed = false;
++  Timer? timer;
++  unawaited(_askGateMode());
++  final dialog = gFFI.dialogManager.show((setState, close, context) {
++    Future<void> make() async {
++      timer?.cancel();
++      setState(() {
++        busy = true;
++        error = null;
++        made = null;
++      });
++      var result = '';
++      try {
++        await bind.mainSetCommon(key: kHjvSupportCodeMake, value: '');
++        result = bind.mainGetCommonSync(key: kHjvSupportCodeResult);
++      } catch (e) {
++        debugPrint('hjv: support code: $e');
++      }
++      if (closed) return;
++      final code = hjvSupportCodeMade(result);
++      if (code == null) {
++        final failure = hjvGuestFailure(result) ?? 'network';
++        if (failure == 'login') {
++          // hjv-api ended the login: as an account request's 401 ends it (the notice tells it)
++          close();
++          unawaited(gFFI.userModel.reset(resetOther: true));
++          return;
++        }
++        setState(() {
++          busy = false;
++          again = failure != 'no_code';
++          error = t.makeFailure(failure,
++              wait: hjvGuestNumber(result, 'retry_after'));
++        });
++        return;
++      }
++      setState(() {
++        busy = false;
++        made = code;
++        madeAt = DateTime.now();
++      });
++      timer = Timer.periodic(const Duration(seconds: 1), (timer) {
++        if (closed) {
++          timer.cancel();
++          return;
++        }
++        setState(() {});
++        if (hjvCodeLeft(code.expiresIn, madeAt, DateTime.now()) == 0) {
++          timer.cancel();
++        }
++      });
++    }
++
++    if (!started) {
++      started = true;
++      Future.microtask(make);
++    }
++    void copy(String text, String done) {
++      Clipboard.setData(ClipboardData(text: text));
++      showToast(done);
++    }
++
++    final p = HjvPalette.of(context);
++    final code = made;
++    final left =
++        code == null ? 0 : hjvCodeLeft(code.expiresIn, madeAt, DateTime.now());
++    return CustomAlertDialog(
++      title: HjvDialogTitle(Icons.support_agent_rounded, t.pcCode),
++      content: Column(
++        mainAxisSize: MainAxisSize.min,
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(hjvKeepAll(t.madeText), style: hjvDialogTextStyle(context)),
++          const SizedBox(height: 16),
++          if (busy) _checking(t, label: t.makingLabel, word: t.making),
++          if (error != null)
++            Semantics(
++                liveRegion: true,
++                child: Text(hjvKeepAll(error!),
++                    style: TextStyle(
++                        fontSize: 14, height: 1.45, color: p.dangerText))),
++          if (code != null && left > 0) ...[
++            Center(
++              child: SelectableText(code.code,
++                  style: HjvText.idLarge
++                      .copyWith(fontSize: 32, letterSpacing: 2, color: p.text)),
++            ),
++            Center(
++              child: Text(t.codeLeft(left),
++                  style: HjvText.bodySmall.copyWith(
++                      fontSize: 13,
++                      color: p.textSecondary,
++                      fontFeatures: HjvText.tabular)),
++            ).marginOnly(top: 4),
++            if (hjvGateCloses(_gateMode.value) == false)
++              hjvNoteBlock(context,
++                      icon: Icons.info_outline_rounded,
++                      text: Text(hjvKeepAll(t.serverOpen)))
++                  .marginOnly(top: 16),
++          ],
++          if (code != null && left == 0)
++            Text(hjvKeepAll(t.codeOver),
++                style: TextStyle(fontSize: 14, height: 1.45, color: p.text)),
++        ],
++      ),
++      actions: [
++        _button(t.close, close, outline: true),
++        if (code != null && left > 0) ...[
++          _button(t.copyInstructions,
++              () => copy(t.instructions(code.code), t.instructionsCopied),
++              outline: true),
++          _button(t.copyCode, () => copy(code.code, t.codeCopied)),
++        ] else if (!busy && again)
++          _button(t.makeAnother, make),
++      ],
++      onSubmit: code != null && left > 0
++          ? () => copy(code.code, t.codeCopied)
++          : close,
++      onCancel: close,
++    );
++  });
++  unawaited(dialog.whenComplete(() {
++    closed = true;
++    timer?.cancel();
++  }).catchError((Object e) {
++    debugPrint('hjv: $e');
++    return null;
++  }));
++}
++
+ // ---- before connecting (G3) ----
+ 
+ class _HjvConnectHint extends StatelessWidget {
+@@ -882,8 +1185,12 @@ Future<void> _askGateMode() async {
+   try {
+     final url = Uri.parse('${await bind.mainGetApiServer()}$kHjvAccessPath');
+     final resp = await http.get(url);
+-    final mode = hjvGateModeOf(resp.statusCode, decode_http_response(resp));
+-    if (mode != null) _gateMode.value = mode;
++    final body = decode_http_response(resp);
++    final mode = hjvGateModeOf(resp.statusCode, body);
++    if (mode != null) {
++      _gateMode.value = mode;
++      _gateCodes.value = hjvGateCodesOf(resp.statusCode, body);
++    }
+   } catch (e) {
+     debugPrint('hjv: access mode: $e');
+   }
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 301783a..5773789 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -5,9 +5,10 @@
+ // unattended PC logged in (G1, G2) and to log in before connecting to a staff-only server (G3),
+ // what a logout or taking a PC out of the list does on such a server, and why the access
+ // password brought no ticket (E1 to E5); beside them the words of the PC's own password box, a
+-// PC offline or restarted on such a server, and the main window's close while P2 holds. Plain
+-// Dart without the bridge, so that ci.sh tests it with the web stand-in; hjviewer_access.dart
+-// shows them.
++// PC offline or restarted on such a server, and the main window's close while P2 holds; since
++// 1.8.2 the support codes (the doc 3-7): the PC's (P3, E6 to E8) and the staff member's who makes
++// one (S1 to S8). Plain Dart without the bridge, so that ci.sh tests it with the web stand-in;
++// hjviewer_access.dart shows them.
+ 
+ import 'dart:convert';
+ 
+@@ -27,6 +28,17 @@ const kHjvGuestPc = 'hjv-guest-pc';
+ /// main_set_common: this PC's access password ticket ends now.
+ const kHjvGuestPcEnd = 'hjv-guest-pc-end';
+ 
++/// main_set_common: this PC's ticket for a support code (src/hjviewer_access/guest.rs).
++const kHjvGuestPcCode = 'hjv-guest-pc-code';
++
++/// main_get_common: "Y" while the login may make support codes (src/hjviewer_account/api.rs).
++const kHjvSupportCode = 'hjv-support-code';
++
++/// main_set_common: a support code made now, and main_get_common: its answer, read once
++/// (src/hjviewer_account/support.rs).
++const kHjvSupportCodeMake = 'hjv-support-code-make';
++const kHjvSupportCodeResult = 'hjv-support-code-result';
++
+ /// hjv-api's path that says whether hbbs checks tickets (the doc 3-6).
+ const kHjvAccessPath = '/api/hjv/access';
+ 
+@@ -37,9 +49,16 @@ String hjvGuestCtlValue(String to, String password) =>
+ /// What main_set_common gets for this PC's ticket.
+ String hjvGuestPcValue(String password) => jsonEncode({'password': password});
+ 
+-/// The main_get_common key of the last exchange's result: for the PC `to`, else this PC's.
+-String hjvGuestResultKey({String? to}) =>
+-    to == null ? 'hjv-guest-result:pc' : 'hjv-guest-result:ctl:$to';
++/// What main_set_common gets for this PC's ticket for a support code.
++String hjvGuestPcCodeValue(String code) => jsonEncode({'code': code});
++
++/// The main_get_common key of the last exchange's result: for the PC `to`, else this PC's (for a
++/// support code with `code`).
++String hjvGuestResultKey({String? to, bool code = false}) => to != null
++    ? 'hjv-guest-result:ctl:$to'
++    : code
++        ? 'hjv-guest-result:pc-code'
++        : 'hjv-guest-result:pc';
+ 
+ /// What an exchange's result says: null when a ticket came, else hjv-api's code or the app's
+ /// own ("network" for a result that is none).
+@@ -119,6 +138,94 @@ String? hjvAccessErrorNow(HjvAccessTexts t, String? error,
+             ? t.failure('rate_limited', wait: retryAt - now)
+             : null;
+ 
++/// A support code's symbols (Crockford's base32, hjv-api's update.rs SYMBOLS).
++const _codeSymbols = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
++
++/// A support code as hjv-api reads what was typed (server/api/src/support.rs read, ported as it
++/// is, as src/hjviewer_access/guest.rs read_code): at most 64 bytes, ASCII, without regard to
++/// case, `-` and U+0020 skipped, `O` as `0`, `I` and `L` as `1`; null for anything else (a `%`, a
++/// tab, another space, a full-width letter) and for what is not eight symbols then. `typed` is
++/// what goes out, without the spaces around it (hjvAccessPassword).
++String? hjvReadSupportCode(String typed) {
++  if (typed.length > 64) return null;
++  final code = StringBuffer();
++  for (final unit in typed.codeUnits) {
++    if (unit > 0x7f) return null;
++    final symbol = switch (String.fromCharCode(unit).toUpperCase()) {
++      '-' || ' ' => '',
++      'O' => '0',
++      'I' || 'L' => '1',
++      final other => other,
++    };
++    if (symbol.isEmpty) continue;
++    if (!_codeSymbols.contains(symbol)) return null;
++    code.write(symbol);
++  }
++  return code.length == 8 ? code.toString() : null;
++}
++
++/// The support code's field shows its ASCII letters in capitals as they are typed, as the code is
++/// shown; nothing else changes (hjv-api reads either case).
++String hjvCodeCapitals(String typed) => String.fromCharCodes(
++    typed.codeUnits.map((u) => u >= 0x61 && u <= 0x7a ? u - 0x20 : u));
++
++/// Whether hjv-api trades a support code now (GET /api/hjv/access's `codes`, the doc 3-6): only
++/// `true` of an answer of hjv-api; a server before 1.8.2 never says it.
++bool hjvGateCodesOf(int status, String body) {
++  if (status != 200) return false;
++  try {
++    final value = jsonDecode(body);
++    return value is Map && value['codes'] == true;
++  } catch (e) {
++    return false;
++  }
++}
++
++/// What P1 of a PC without a login offers, in this order.
++enum HjvPcAction { logIn, password, code }
++
++/// P1's buttons: [로그인] where the build has accounts, [이용 비밀번호 넣기], and [지원 코드 넣기]
++/// only while hjv-api trades support codes (`codes`, hjvGateCodesOf).
++List<HjvPcAction> hjvPcActions({required bool canLogIn, required bool codes}) =>
++    [
++      if (canLogIn) HjvPcAction.logIn,
++      HjvPcAction.password,
++      if (codes) HjvPcAction.code,
++    ];
++
++/// Whether the account screens offer [지원 코드 만들기] (S1): with a login that hjv-api lets make
++/// codes (`flag`, kHjvSupportCode), which the App Review account and a server before 1.8.2 never
++/// get.
++bool hjvOffersSupportCode(String flag, {required bool loggedIn}) =>
++    loggedIn && flag == 'Y';
++
++/// A code hjv-api made (the core's result, kHjvSupportCodeResult): as it shows it, `XXXX-XXXX`,
++/// and the seconds it had left then; null for a result that is none.
++({String code, int expiresIn})? hjvSupportCodeMade(String result) {
++  try {
++    final value = jsonDecode(result);
++    if (value is Map && value['ok'] == true) {
++      final code = value['code'];
++      final expiresIn = value['expires_in'];
++      if (code is String &&
++          code.isNotEmpty &&
++          expiresIn is int &&
++          expiresIn > 0) {
++        return (code: code, expiresIn: expiresIn);
++      }
++    }
++  } catch (e) {
++    // no result
++  }
++  return null;
++}
++
++/// The seconds a code made `made` with `expiresIn` has left at `now`, 0 once over.
++int hjvCodeLeft(int expiresIn, DateTime made, DateTime now) {
++  final left = expiresIn - now.difference(made).inSeconds;
++  return left > 0 ? left : 0;
++}
++
+ /// Whether the PC home shows P1: while hbbs refuses this PC's registration. A server that checks
+ /// nothing (MODE=off) never refuses, so the home stays as it was.
+ bool hjvShowsPcNotice(String state) => state == 'refused';
+@@ -190,9 +297,15 @@ bool hjvPcHomeLogsIn(HjvPcHome home) =>
+ /// desk_tip, and `idLine` on the ID's card (none on a logged-in PC, which has nothing to enter).
+ typedef HjvPcBlocked = ({String tip, String? idLine});
+ 
+-/// The PC home's words while P1 shows, null while the ID can be reached.
+-HjvPcBlocked? hjvPcBlocked(HjvAccessTexts t, HjvPcHome home) => switch (home) {
+-      HjvPcHome.refused => (tip: t.pcBlockedTip, idLine: t.pcBlockedId),
++/// The PC home's words while P1 shows, null while the ID can be reached; with `codes`
++/// (hjvGateCodesOf) the ID's line names the support code too.
++HjvPcBlocked? hjvPcBlocked(HjvAccessTexts t, HjvPcHome home,
++        {bool codes = false}) =>
++    switch (home) {
++      HjvPcHome.refused => (
++          tip: t.pcBlockedTip,
++          idLine: codes ? t.pcBlockedIdCodes : t.pcBlockedId
++        ),
+       HjvPcHome.refusedLoggedIn => (tip: t.pcBlockedTip, idLine: null),
+       _ => null,
+     };
+@@ -480,6 +593,93 @@ class HjvAccessTexts {
+         '약 $hours시간', hours == 1 ? 'about an hour' : 'about $hours hours');
+   }
+ 
++  // P1 while hjv-api trades support codes (the doc 3-6 `codes`)
++  String get pcTextCodes => _t(
++      '다른 기기에서 이 PC에 연결하려면 연세포탈로 로그인하거나, 이용 비밀번호나 지원 코드를 넣으세요.',
++      'To connect to this PC from another device, log in with your Yonsei portal account, or enter the access password or a support code.');
++  String get pcBlockedIdCodes => _t(
++      '로그인하거나 이용 비밀번호나 지원 코드를 넣으면 이 ID로 연결을 받을 수 있습니다.',
++      'Once you log in or enter the access password or a support code, this PC accepts connections with this ID.');
++  String get pcCodeButton => _t('지원 코드 넣기', 'Enter support code');
++
++  // P3: the PC's support code, and the home's line while its ticket holds
++  String get pcCode => _t('지원 코드', 'Support code');
++  String get pcCodeText => _t(
++      '교직원에게 받은 지원 코드를 넣으면 이 PC가 최대 2시간 동안 연결을 받습니다. PC를 다시 시작하거나 Windows에서 로그아웃하면 그 전에 끝나고, 끝나면 새 코드를 받아 다시 넣어야 합니다.',
++      'With a support code from a staff member, this PC accepts connections for up to 2 hours. Restarting the PC or signing out of Windows ends that sooner; once it ends, get a new code and enter it.');
++  String get codeHint => _t(
++      '교직원이 알려 준 XXXX-XXXX 꼴의 8자 코드입니다. 이용 비밀번호나 PC의 일회용 비밀번호가 아닙니다.',
++      "The 8-character code (XXXX-XXXX) a staff member gave you, not the access password or the PC's one-time password.");
++  String get codeCheckingLabel =>
++      _t('지원 코드를 확인하는 중', 'Checking the support code');
++  String pcCodeUntil(String until) => _t('지원 코드로 연결을 받는 중 · $until까지',
++      'Accepting connections with a support code until $until');
++  String get pcCodeEnded => _t('이제 지원 코드로는 연결을 받지 않습니다.',
++      'This PC no longer accepts connections with the support code.');
++  String closeWhileCode(String until) => _t(
++      '이 PC는 $until까지 지원 코드로 연결을 받습니다. 창을 닫아도 계속 받습니다.',
++      'This PC accepts connections with the support code until $until. Closing the window does not stop that.');
++
++  /// E2, E5 to E8: why the support code brought no ticket, by hjv-api's code or the app's own
++  /// (`denied` also for what is not a code's form, which is never sent).
++  String codeFailure(String code, {int wait = 0}) => switch (code) {
++        'denied' => _t(
++            '지원 코드가 맞지 않거나, 10분이 지났거나, 이미 쓴 코드입니다. 코드를 만든 분에게 새 코드를 받아 주세요.',
++            'The support code is wrong, more than 10 minutes old, or already used. Please ask the person who made it for a new one.'),
++        'rate_limited' || 'clock' => failure(code, wait: wait),
++        'wrong_pc' => _t(
++            '이 PC의 키가 서버에 있는 것과 달라 지원 코드로 연결을 받을 수 없습니다. 관리자에게 알려 주세요.',
++            "This PC's key differs from the one the server has, so it cannot accept connections with a support code. Please tell your administrator."),
++        // busy, unavailable, bad_request, network, config
++        _ => _t('지금은 지원 코드를 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.',
++            'The support code cannot be checked right now. Please try again in a moment.'),
++      };
++
++  // S1 to S8: a logged-in staff member makes a code for someone who is not logged in
++  String get makeCode => _t('지원 코드 만들기', 'Create support code');
++  String get making => _t('만드는 중…', 'Creating…');
++  String get makingLabel => _t('지원 코드를 만드는 중', 'Creating a support code');
++  String get madeText => _t(
++      '도움받을 분에게 이 코드를 알려 주세요. 그분이 HJViewer의 [지원 코드 넣기]에 넣으면 그 PC가 2시간 동안 연결을 받습니다. 코드는 10분 안에 한 번만 쓸 수 있습니다. 연결은 지금처럼 그 PC의 ID와 PC 비밀번호(또는 상대의 수락)로 합니다.',
++      "Give this code to the person you are helping. Once they enter it under [Enter support code] in HJViewer, their PC accepts connections for 2 hours. The code works once, within 10 minutes. Connect as before, with that PC's ID and PC password (or their acceptance).");
++
++  /// The time a code has left, `m:ss`.
++  String codeLeft(int secs) {
++    final left = '${secs ~/ 60}:${(secs % 60).toString().padLeft(2, '0')}';
++    return _t('$left 남음', '$left left');
++  }
++
++  String get copyCode => _t('코드 복사', 'Copy code');
++  String get copyInstructions => _t('안내문 복사', 'Copy instructions');
++  String get codeOver =>
++      _t('이 코드는 10분이 지나 끝났습니다.', "This code's 10 minutes are over.");
++  String get makeAnother => _t('다시 만들기', 'Create another');
++  String get codeCopied => _t('코드를 복사했습니다.', 'Code copied.');
++  String get instructionsCopied => _t('안내문을 복사했습니다.', 'Instructions copied.');
++
++  /// S4: what [안내문 복사] copies, with the code.
++  String instructions(String code) => _t(
++      'HJViewer를 실행하고, "$pcTitle" 알림의 [$pcCodeButton]를 눌러 $code를 10분 안에 넣어 주세요.',
++      'Run HJViewer, click [$pcCodeButton] on the notice "$pcTitle", and enter $code within 10 minutes.');
++
++  /// S8: below the code while the server checks nobody (`off`, `count`).
++  String get serverOpen => _t('지금은 서버가 출입을 확인하지 않아, 그 PC는 코드 없이도 연결을 받습니다.',
++      'The server does not check access right now, so that PC accepts connections without a code.');
++
++  /// S5 to S7: why no code came; `wait` is hjv-api's seconds until the first open code ends.
++  String makeFailure(String code, {int wait = 0}) => switch (code) {
++        'no_code' => _t('이 계정으로는 지원 코드를 만들 수 없습니다.',
++            'This account cannot create support codes.'),
++        'too_many_codes' when wait > 0 && wait <= _maxWait => _t(
++            '아직 쓰지 않은 지원 코드가 많습니다. ${_about(wait)} 뒤 다시 시도해 주세요.',
++            'Too many of your support codes are still open. Please try again in ${_about(wait)}.'),
++        'too_many_codes' => _t('아직 쓰지 않은 지원 코드가 많습니다. 잠시 뒤 다시 시도해 주세요.',
++            'Too many of your support codes are still open. Please try again later.'),
++        // rate_limited, busy, unavailable, bad_request, network, config
++        _ => _t('지금은 지원 코드를 만들 수 없습니다. 잠시 뒤 다시 시도해 주세요.',
++            'A support code cannot be created right now. Please try again in a moment.'),
++      };
++
+   /// E1 to E5: why the access password brought no ticket, by hjv-api's code or the app's own;
+   /// `wait` is hjv-api's seconds until a try may come again (429), 0 when it did not say.
+   String failure(String code, {int wait = 0}) => switch (code) {
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index ac17d62..f044621 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -312,6 +312,16 @@ List<AbstractSettingsTile> hjvAccountTiles() => _accountBuild
+                   onPressed: (_) => _showLoggedInDevices(),
+                 ))),
+         if (_wakesAny()) const CustomSettingsTile(child: _HjvWakeConnects()),
++        // S1, with a login hjv-api lets make support codes (an empty tile else, as the operator's)
++        CustomSettingsTile(
++            child: Obx(() => hjvOffersSupportCodeNow()
++                ? SettingsTile(
++                    title: Text(hjvSupportCodeLabel(),
++                        style: const TextStyle(fontFamily: kHjvFont)),
++                    leading: const Icon(Icons.support_agent_rounded),
++                    onPressed: (_) => hjvMakeSupportCode(),
++                  )
++                : const SizedBox.shrink())),
+       ]
+     : [];
+ 
+@@ -660,6 +670,9 @@ class _HjvAccountPanelState extends State<_HjvAccountPanel> {
+               offset: const Offset(-6, 0), child: const _HjvWakeConnects()),
+         if (loggedIn)
+           _button(t.loggedInDevices, _showLoggedInDevices, outline: true),
++        // S1: a staff login makes a support code for someone who is not logged in
++        if (loggedIn && hjvOffersSupportCodeNow())
++          _button(hjvSupportCodeLabel(), hjvMakeSupportCode, outline: true),
+         // the operator's entry shows with a login only
+         if (loggedIn) hjvAdminButton(),
+       ];
+diff --git a/flutter/lib/common/widgets/my_group.dart b/flutter/lib/common/widgets/my_group.dart
+index deff1b6..b42ea91 100644
+--- a/flutter/lib/common/widgets/my_group.dart
++++ b/flutter/lib/common/widgets/my_group.dart
+@@ -3,6 +3,7 @@ import 'dart:math';
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common/hbbs/hbbs.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
++import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/widgets/login.dart';
+ import 'package:flutter_hbb/common/widgets/peers_view.dart';
+ import 'package:flutter_hbb/models/peer_tab_model.dart';
+@@ -48,6 +49,8 @@ class _MyGroupState extends State<MyGroup> {
+       final bannerRight = stateGlobal.isPortrait.isTrue ? 0.0 : 12.0;
+       return Column(
+         children: [
++          ...hjvSupportCodeEntry()
++              .map((w) => w.paddingOnly(right: bannerRight)),
+           ...hjvNetworkBanner(context)
+               .map((w) => w.paddingOnly(right: bannerRight)),
+           if (!hjvOwnsListError())
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index e8fe742..06345ef 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -76,6 +76,34 @@ List<String> texts(HjvAccessTexts t) => [
+       ])
+         t.failure(code),
+       t.failure('rate_limited', wait: 600),
++      // the support codes (1.8.2)
++      t.pcTextCodes,
++      t.pcBlockedIdCodes,
++      t.pcCodeButton,
++      t.pcCode,
++      t.pcCodeText,
++      t.codeHint,
++      t.codeCheckingLabel,
++      t.pcCodeUntil('18:30'),
++      t.pcCodeEnded,
++      t.closeWhileCode('18:30'),
++      for (final code in ['denied', 'wrong_pc', 'busy']) t.codeFailure(code),
++      t.makeCode,
++      t.making,
++      t.makingLabel,
++      t.madeText,
++      t.codeLeft(581),
++      t.copyCode,
++      t.copyInstructions,
++      t.codeOver,
++      t.makeAnother,
++      t.codeCopied,
++      t.instructionsCopied,
++      t.instructions('K7M2-Q9XD'),
++      t.serverOpen,
++      for (final code in ['no_code', 'too_many_codes', 'busy'])
++        t.makeFailure(code),
++      t.makeFailure('too_many_codes', wait: 170),
+     ];
+ 
+ void main() {
+@@ -421,4 +449,170 @@ void main() {
+     expect(hjvRestartGateNote(en, mode: 'off', installed: false),
+         'If HJViewer is not installed on that PC, it does not start again by itself after the restart.');
+   });
++
++  test('a support code at the PC (P3): its texts, its form, its errors', () {
++    expect([ko.pcCode, en.pcCode], ['지원 코드', 'Support code']);
++    expect(
++        [ko.pcCodeButton, en.pcCodeButton], ['지원 코드 넣기', 'Enter support code']);
++    expect(ko.pcCodeText,
++        startsWith('교직원에게 받은 지원 코드를 넣으면 이 PC가 최대 2시간 동안 연결을 받습니다.'));
++    expect(
++        en.pcCodeText,
++        startsWith(
++            'With a support code from a staff member, this PC accepts connections for up to 2 hours.'));
++    expect(ko.codeHint,
++        '교직원이 알려 준 XXXX-XXXX 꼴의 8자 코드입니다. 이용 비밀번호나 PC의 일회용 비밀번호가 아닙니다.');
++    expect(ko.pcCodeUntil('18:30'), '지원 코드로 연결을 받는 중 · 18:30까지');
++    expect(ko.pcTextCodes,
++        '다른 기기에서 이 PC에 연결하려면 연세포탈로 로그인하거나, 이용 비밀번호나 지원 코드를 넣으세요.');
++    // the core's keys and what it gets (src/hjviewer_access/guest.rs)
++    expect(kHjvGuestPcCode, 'hjv-guest-pc-code');
++    expect(hjvGuestPcCodeValue('k7m2-q9xd'), '{"code":"k7m2-q9xd"}');
++    expect(hjvGuestResultKey(code: true), 'hjv-guest-result:pc-code');
++    expect(hjvGuestResultKey(), 'hjv-guest-result:pc');
++    // read as hjv-api reads it (server/api/src/support.rs reading_a_typed_code)
++    for (final (typed, readAs) in [
++      ('K7M2-Q9XD', 'K7M2Q9XD'),
++      ('k7m2q9xd', 'K7M2Q9XD'),
++      ('K7M2 Q9XD', 'K7M2Q9XD'),
++      (' k7m2 - q9xd ', 'K7M2Q9XD'),
++      ('--K7M2Q9XD--', 'K7M2Q9XD'),
++      ('OoIi-LlAB', '001111AB'),
++    ]) {
++      expect(hjvReadSupportCode(typed), readAs, reason: typed);
++    }
++    for (final typed in [
++      '',
++      'K7M2-Q9X',
++      'K7M2-Q9XDE',
++      'K7M2-Q9XU',
++      'K7M2-Q9X!',
++      'K7M2%2DQ9XD',
++      'K7M2_Q9XD',
++      'K7M2\tQ9XD',
++      'K7M2 Q9XD',
++      'K7M2　Q9XD',
++      'K７M2Q9XD',
++      'Ｋ7M2Q9XD',
++      '0' * 65,
++      'K7M2${' ' * 57}Q9XD',
++    ]) {
++      expect(hjvReadSupportCode(typed), isNull, reason: typed);
++    }
++    // what goes out: the spaces around it dropped, which hjvReadSupportCode then reads
++    expect(hjvReadSupportCode(hjvAccessPassword(' K7M2-Q9XD\t')), 'K7M2Q9XD');
++    // the field shows ASCII letters in capitals, and changes nothing else
++    expect(hjvCodeCapitals('k7m2-q9xd ä'), 'K7M2-Q9XD ä');
++    // E6 for wrong, over or used alike (and for what is not a code's form, never sent)
++    expect(ko.codeFailure('denied'),
++        '지원 코드가 맞지 않거나, 10분이 지났거나, 이미 쓴 코드입니다. 코드를 만든 분에게 새 코드를 받아 주세요.');
++    expect(en.codeFailure('denied'),
++        'The support code is wrong, more than 10 minutes old, or already used. Please ask the person who made it for a new one.');
++    // E2 and E5 as the access password's
++    expect(ko.codeFailure('rate_limited', wait: 600),
++        ko.failure('rate_limited', wait: 600));
++    expect(ko.codeFailure('clock'), ko.failure('clock'));
++    // E8, and E7 for the rest
++    expect(ko.codeFailure('wrong_pc'),
++        '이 PC의 키가 서버에 있는 것과 달라 지원 코드로 연결을 받을 수 없습니다. 관리자에게 알려 주세요.');
++    for (final code in [
++      'busy',
++      'unavailable',
++      'bad_request',
++      'network',
++      'config',
++      'new'
++    ]) {
++      expect(ko.codeFailure(code), '지금은 지원 코드를 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요.',
++          reason: code);
++    }
++  });
++
++  test('the flags: P1\'s [지원 코드 넣기] and S1 only when hjv-api says so', () {
++    // GET /api/hjv/access's codes: only true of hjv-api's answer; 1.8.0's server never says it
++    expect(hjvGateCodesOf(200, '{"mode":"enforce","codes":true}'), isTrue);
++    expect(hjvGateCodesOf(200, '{"codes":true,"mode":"count"}'), isTrue);
++    for (final (status, body) in [
++      (200, '{"mode":"enforce"}'),
++      (200, '{"mode":"enforce","codes":false}'),
++      (200, '{"mode":"enforce","codes":"true"}'),
++      (200, '<html>'),
++      (404, '{"mode":"enforce","codes":true}'),
++    ]) {
++      expect(hjvGateCodesOf(status, body), isFalse, reason: body);
++    }
++    expect(hjvPcActions(canLogIn: true, codes: false),
++        [HjvPcAction.logIn, HjvPcAction.password]);
++    expect(hjvPcActions(canLogIn: true, codes: true),
++        [HjvPcAction.logIn, HjvPcAction.password, HjvPcAction.code]);
++    expect(hjvPcActions(canLogIn: false, codes: true),
++        [HjvPcAction.password, HjvPcAction.code]);
++    expect(hjvPcBlocked(ko, HjvPcHome.refused, codes: true)?.idLine,
++        '로그인하거나 이용 비밀번호나 지원 코드를 넣으면 이 ID로 연결을 받을 수 있습니다.');
++    expect(hjvPcBlocked(ko, HjvPcHome.refused)?.idLine, ko.pcBlockedId);
++    // S1: a login that hjv-api lets make codes (never the App Review account's, never 1.8.0's)
++    expect(kHjvSupportCode, 'hjv-support-code');
++    expect(hjvOffersSupportCode('Y', loggedIn: true), isTrue);
++    expect(hjvOffersSupportCode('', loggedIn: true), isFalse);
++    expect(hjvOffersSupportCode('Y', loggedIn: false), isFalse);
++  });
++
++  test(
++      'a support code made (S2): the code, its countdown, its texts, its errors',
++      () {
++    expect([kHjvSupportCodeMake, kHjvSupportCodeResult],
++        ['hjv-support-code-make', 'hjv-support-code-result']);
++    expect(
++        hjvSupportCodeMade('{"ok":true,"code":"K7M2-Q9XD","expires_in":600}'),
++        (code: 'K7M2-Q9XD', expiresIn: 600));
++    for (final result in [
++      '',
++      '<html>',
++      '{"ok":false,"error":"no_code"}',
++      '{"ok":true,"code":"","expires_in":600}',
++      '{"ok":true,"code":"K7M2-Q9XD"}',
++    ]) {
++      expect(hjvSupportCodeMade(result), isNull, reason: result);
++    }
++    // counting down from when it came, a second at a time, ending at 0
++    final made = DateTime(2026, 10, 19, 9);
++    expect(hjvCodeLeft(600, made, made), 600);
++    expect(hjvCodeLeft(600, made, made.add(const Duration(seconds: 19))), 581);
++    expect(hjvCodeLeft(600, made, made.add(const Duration(minutes: 10))), 0);
++    expect(hjvCodeLeft(600, made, made.add(const Duration(hours: 1))), 0);
++    expect([ko.codeLeft(581), en.codeLeft(581)], ['9:41 남음', '9:41 left']);
++    expect(ko.codeLeft(5), '0:05 남음');
++    expect(ko.codeOver, '이 코드는 10분이 지나 끝났습니다.');
++    expect([ko.makeCode, ko.copyCode, ko.copyInstructions, ko.makeAnother],
++        ['지원 코드 만들기', '코드 복사', '안내문 복사', '다시 만들기']);
++    expect([ko.codeCopied, ko.instructionsCopied],
++        ['코드를 복사했습니다.', '안내문을 복사했습니다.']);
++    // the instructions name P1 and its button as the PC shows them
++    expect(ko.instructions('K7M2-Q9XD'),
++        'HJViewer를 실행하고, "이 PC는 서버에 연결되지 않았습니다" 알림의 [지원 코드 넣기]를 눌러 K7M2-Q9XD를 10분 안에 넣어 주세요.');
++    expect(en.instructions('K7M2-Q9XD'),
++        'Run HJViewer, click [Enter support code] on the notice "This PC is not connected to the server", and enter K7M2-Q9XD within 10 minutes.');
++    expect(ko.madeText, contains('[${ko.pcCodeButton}]'));
++    expect(ko.madeText, contains('2시간'));
++    expect(ko.serverOpen, '지금은 서버가 출입을 확인하지 않아, 그 PC는 코드 없이도 연결을 받습니다.');
++    // S5 to S7
++    expect(ko.makeFailure('no_code'), '이 계정으로는 지원 코드를 만들 수 없습니다.');
++    expect(ko.makeFailure('too_many_codes', wait: 170),
++        '아직 쓰지 않은 지원 코드가 많습니다. 약 3분 뒤 다시 시도해 주세요.');
++    expect(ko.makeFailure('too_many_codes'),
++        '아직 쓰지 않은 지원 코드가 많습니다. 잠시 뒤 다시 시도해 주세요.');
++    for (final code in [
++      'rate_limited',
++      'busy',
++      'unavailable',
++      'bad_request',
++      'network',
++      'config'
++    ]) {
++      expect(ko.makeFailure(code), '지금은 지원 코드를 만들 수 없습니다. 잠시 뒤 다시 시도해 주세요.',
++          reason: code);
++    }
++    expect(en.makeFailure('busy'),
++        'A support code cannot be created right now. Please try again in a moment.');
++  });
+ }
+diff --git a/src/hjviewer_access.rs b/src/hjviewer_access.rs
+index 36d6fb7..4f370eb 100644
+--- a/src/hjviewer_access.rs
++++ b/src/hjviewer_access.rs
+@@ -26,7 +26,8 @@
+ //!   not, since the login gives `both` only to an installed PC hbbs knows (the doc, 2-4 and 3-3).
+ //! - The access password's tickets (guest.rs, `POST /api/hjv/guest`) stay in this process's
+ //!   memory only: a controller's for its target until its last session there closes, a PC's in
+-//!   the process that registers, which gets it over the IPC.
++//!   the process that registers, which gets it over the IPC. A PC's ticket for a support code that
++//!   a staff member made (1.8.2) goes the same way and takes the same place.
+ //!
+ //! A build that is not an account build carries nothing: its token is what it was and its
+ //! RegisterPk is byte for byte 1.7.0's. So is an app without a ticket, which a server that checks
+@@ -60,7 +61,10 @@ mod guest;
+ mod tests;
+ 
+ #[cfg(feature = "hjv-e2e")]
+-pub(crate) use guest::{e2e_controller as e2e_guest_controller, e2e_pc as e2e_guest_pc};
++pub(crate) use guest::{
++    e2e_controller as e2e_guest_controller, e2e_pc as e2e_guest_pc,
++    e2e_pc_code as e2e_guest_pc_code,
++};
+ 
+ /// How hbbs marks a refusal for access (the doc, 5-1). Its "not allowed" also keeps an app of any
+ /// version from connecting again by itself (check_if_retry).
+diff --git a/src/hjviewer_access/guest.rs b/src/hjviewer_access/guest.rs
+index 597f82b..555b9d6 100644
+--- a/src/hjviewer_access/guest.rs
++++ b/src/hjviewer_access/guest.rs
+@@ -8,12 +8,19 @@
+ //! with main_get_common:
+ //!   set "hjv-guest-ctl"  {"to":"<PC ID>","password":"…"}     the ticket for that PC
+ //!   set "hjv-guest-pc"   {"password":"…"}                     the ticket of this PC
++//!   set "hjv-guest-pc-code" {"code":"…"}                       the same for a support code
+ //!   set "hjv-guest-pc-end"                                      this PC's ends now
+-//!   get "hjv-guest-result:ctl:<PC ID>" | "hjv-guest-result:pc"
++//!   get "hjv-guest-result:ctl:<PC ID>" | "hjv-guest-result:pc" | "hjv-guest-result:pc-code"
+ //!       {"ok":true} or {"ok":false,"error":"denied"|"rate_limited"|"busy"|"unavailable"|
+ //!       "wrong_pc"|"clock"|"bad_request"|"network"|"config"}; this PC's {"ok":true} also has
+ //!       "until" (when its ticket ends, Unix seconds by this device's clock), and a rate_limited
+ //!       one "retry_after" (hjv-api's seconds until a try may come again) when hjv-api said
++//!
++//! Since 1.8.2 a PC may bring a support code (지원 코드, the doc 3-7) that a logged-in staff
++//! member made, in the place of the password: sealed with a purpose of its own, checked for its
++//! form first (`read_code`, hjv-api's support::read), and sent once more as it was when no answer
++//! came, since hjv-api answers the very same body with its first answer while the code is used
++//! only once. Its ticket takes the access password's place in the process that registers.
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ use super::{device, Held};
+@@ -35,23 +42,83 @@ use hbb_common::{
+ use serde_derive::{Deserialize, Serialize};
+ use serde_json::{json, Value};
+ use sha2::{Digest, Sha256};
+-use std::{collections::BTreeMap, io::Read, sync::Mutex, time::Duration};
++use std::{
++    collections::BTreeMap,
++    io::Read,
++    sync::Mutex,
++    time::{Duration, Instant},
++};
+ 
+ const GUEST_PATH: &str = "/api/hjv/guest";
+ /// What a PC's device key signs with its request (server/api/src/guest.rs PC_CONTEXT).
+ const PC_CONTEXT: &[u8] = b"hjv-guest-pc-v1";
+ const SEALED_PREFIX: &str = "hjv-sealed-v1.";
+-/// The seal's purpose: a login never takes such a seal, nor this path a login's.
+-const PURPOSE: &str = "guest";
+ /// hjv-api holds every refusal for about two seconds; a slow network gets the rest.
+ const TIMEOUT: Duration = Duration::from_secs(20);
+ /// hjv-api's limit (seal.rs).
+ const MAX_PASSWORD: usize = 256;
++/// hjv-api answers the same body again with its first answer within HJV_API_RETRY_WINDOW (30
++/// seconds): a support code's request without an answer goes once more as it was before that.
++const RESEND_WITHIN: Duration = Duration::from_secs(25);
++/// A support code's symbols (Crockford's base32, hjv-api's update.rs SYMBOLS).
++const CODE_SYMBOLS: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
++
++/// What a PC trades for its ticket: the access password, or a support code.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Secret {
++    Password,
++    Code,
++}
++
++impl Secret {
++    /// The seal's purpose (`p`): a login never takes such a seal, nor this path a login's, and
++    /// neither field takes the other's (the doc 3-5).
++    fn purpose(self) -> &'static str {
++        match self {
++            Secret::Password => "guest",
++            Secret::Code => "code",
++        }
++    }
++
++    /// The request's member that carries the seal.
++    fn field(self) -> &'static str {
++        match self {
++            Secret::Password => "password",
++            Secret::Code => "code",
++        }
++    }
++}
++
++/// A support code as hjv-api reads what was typed (server/api/src/support.rs `read`, ported as it
++/// is): at most 64 bytes, ASCII, without regard to case, `-` and U+0020 skipped, `O` as `0`, `I`
++/// and `L` as `1`; None for anything else (a `%`, a tab, another space, a full-width letter) and
++/// for what is not eight symbols then. What fails here is never sent, so that it does not count
++/// as the address's failure there.
++pub(super) fn read_code(typed: &str) -> Option<String> {
++    if typed.len() > 64 {
++        return None;
++    }
++    let mut code = String::with_capacity(8);
++    for b in typed.bytes() {
++        let symbol = match b.to_ascii_uppercase() {
++            b'-' | b' ' => continue,
++            b'O' => b'0',
++            b'I' | b'L' => b'1',
++            other => other,
++        };
++        if !CODE_SYMBOLS.contains(&symbol) {
++            return None;
++        }
++        code.push(char::from(symbol));
++    }
++    (code.len() == 8).then_some(code)
++}
+ 
+ /// Why no ticket came: hjv-api's code (the doc 3-5), or the app's own.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(super) enum Failure {
+-    /// 401: a wrong password, or none taken now
++    /// 401: a wrong password, or none taken now; a support code that is wrong, over or used,
++    /// also one whose form the app did not send
+     Denied,
+     /// 429, with hjv-api's seconds until a try may come again (0 when it did not say)
+     TooOften(u64),
+@@ -115,21 +182,29 @@ struct Payload<'a> {
+     kid: &'a str,
+ }
+ 
+-/// The `password` field of a request, and the SHA-256 of its sealed bytes.
++/// The sealed field of a request (`password` or `code`), and the SHA-256 of its sealed bytes.
+ struct Sealed {
+     field: String,
+     hash: [u8; 32],
+ }
+ 
+-/// Seals `password` for a ticket of `use_` that reaches the PC `id`, at `t` by the server's
+-/// clock, with the nonce `n`.
+-fn seal(seal_pk: &[u8; 32], password: &str, use_: &str, id: &str, t: u64, n: &[u8]) -> Sealed {
++/// Seals `password` (a support code as typed for `Secret::Code`) for a ticket of `use_` that
++/// reaches the PC `id`, at `t` by the server's clock, with the nonce `n`.
++fn seal(
++    seal_pk: &[u8; 32],
++    secret: Secret,
++    password: &str,
++    use_: &str,
++    id: &str,
++    t: u64,
++    n: &[u8],
++) -> Sealed {
+     let kid = crate::hjviewer_account::seal_kid(seal_pk);
+     let n = STANDARD.encode(n);
+     // strings and numbers always serialize
+     let mut payload = serde_json::to_vec(&Payload {
+         v: 1,
+-        p: PURPOSE,
++        p: secret.purpose(),
+         use_,
+         pw: password,
+         t,
+@@ -158,28 +233,31 @@ fn ctl_body(to: &str, sealed: &Sealed) -> String {
+     json!({ "use": "ctl", "to": to, "password": sealed.field }).to_string()
+ }
+ 
+-/// The body of this PC's request, signed by its device key over the seal.
+-fn pc_body(device: &Device, sealed: &Sealed) -> String {
++/// The body of this PC's request, signed by its device key over the seal, which goes in the
++/// member of what it seals (`password` or, for a support code, `code`).
++fn pc_body(device: &Device, secret: Secret, sealed: &Sealed) -> String {
+     let pk = STANDARD.encode(&device.pk);
+     let sig = sign::sign_detached(&pc_message(&device.id, &pk, &sealed.hash), &device.sk);
+-    json!({
++    let mut body = json!({
+         "use": "pc",
+         "id": device.id,
+         "pk": pk,
+         "sig": STANDARD.encode(sig.to_bytes()),
+-        "password": sealed.field,
+-    })
+-    .to_string()
++    });
++    body[secret.field()] = sealed.field.clone().into();
++    body.to_string()
+ }
+ 
+ /// A ticket for `use_` (`ctl` for the PC `id`, `pc` for this PC `device`): the ticket object of
+ /// the 200 answer, or why there is none. One request, and once more after a 409 `clock`, whose
+-/// server time the account module learns as from any account answer. It blocks.
++/// server time the account module learns as from any account answer; a support code's also once
++/// more as it was when no answer came. It blocks.
+ fn exchange(
+     use_: &str,
+     id: &str,
+     password: &str,
+     device: Option<&Device>,
++    secret: Secret,
+ ) -> Result<Value, Failure> {
+     let server = SERVER
+         .filter(|server| !server.is_empty())
+@@ -195,12 +273,19 @@ fn exchange(
+         let mut n = [0u8; 16];
+         randombytes::randombytes_into(&mut n);
+         let t = crate::hjviewer_account::server_time();
+-        let sealed = seal(&seal_pk, password, use_, id, t, &n);
++        let sealed = seal(&seal_pk, secret, password, use_, id, t, &n);
+         let body = match device {
+-            Some(device) => pc_body(device, &sealed),
++            Some(device) => pc_body(device, secret, &sealed),
+             None => ctl_body(id, &sealed),
+         };
+-        let (status, date, text) = post(&url, body)?;
++        let sent = Instant::now();
++        let (status, date, text) = match post(&url, body.clone()) {
++            // the code may be used already: the same body gets that first answer (the doc 3-3)
++            Err(Failure::Network) if secret == Secret::Code && sent.elapsed() < RESEND_WITHIN => {
++                post(&url, body)?
++            }
++            result => result?,
++        };
+         crate::hjviewer_account::observe_account_response(
+             &url,
+             &json!({ "status_code": status, "headers": { "date": date }, "body": text })
+@@ -261,7 +346,7 @@ fn post(url: &str, body: String) -> Result<(u16, String, String), Failure> {
+     Ok((status, date, String::from_utf8_lossy(&text).into_owned()))
+ }
+ 
+-/// The last result of each exchange, for the screens: "ctl:<PC ID>" and "pc".
++/// The last result of each exchange, for the screens: "ctl:<PC ID>", "pc" and "pc-code".
+ static RESULTS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+ 
+ /// `result` is when this PC's ticket ends, 0 for a controller's.
+@@ -291,6 +376,11 @@ struct PcAsk {
+     password: String,
+ }
+ 
++#[derive(Deserialize)]
++struct CodeAsk {
++    code: String,
++}
++
+ /// main_set_common: `hjv-guest-ctl` and `hjv-guest-pc`, each when its exchange is over; false
+ /// for any other key.
+ pub(super) fn set_common(key: &str, value: &str) -> bool {
+@@ -314,6 +404,15 @@ pub(super) fn set_common(key: &str, value: &str) -> bool {
+             note("pc".to_owned(), result);
+             true
+         }
++        "hjv-guest-pc-code" => {
++            let Ok(CodeAsk { code }) = serde_json::from_str::<CodeAsk>(value) else {
++                return true;
++            };
++            let result = for_this_pc_code(&code);
++            memzero(&mut code.into_bytes());
++            note("pc-code".to_owned(), result);
++            true
++        }
+         "hjv-guest-pc-end" => {
+             end_this_pc();
+             true
+@@ -331,7 +430,7 @@ pub(super) fn get_common(key: &str) -> Option<String> {
+ 
+ /// The ticket of a controller for the PC `to`, kept for it in this process's memory.
+ pub(super) fn for_controller(to: &str, password: &str) -> Result<(), Failure> {
+-    let answer = exchange("ctl", to, password, None)?;
++    let answer = exchange("ctl", to, password, None, Secret::Password)?;
+     if keep_guest(to, &answer) {
+         Ok(())
+     } else {
+@@ -343,8 +442,23 @@ pub(super) fn for_controller(to: &str, password: &str) -> Result<(), Failure> {
+ /// installed): over the IPC, never through a file. Ok with when it ends.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ pub(super) fn for_this_pc(password: &str) -> Result<u64, Failure> {
++    this_pc(password, Secret::Password)
++}
++
++/// The ticket of this PC for a support code, which goes as for the access password: Ok with
++/// when it ends (hjv-api gives it two hours). A code whose form is not a code is not sent.
++pub(super) fn for_this_pc_code(typed: &str) -> Result<u64, Failure> {
++    let typed = typed.trim();
++    if read_code(typed).is_none() {
++        return Err(Failure::Denied);
++    }
++    this_pc(typed, Secret::Code)
++}
++
++#[cfg(not(any(target_os = "android", target_os = "ios")))]
++fn this_pc(password: &str, secret: Secret) -> Result<u64, Failure> {
+     let device = device().ok_or(Failure::Config)?;
+-    let answer = exchange("pc", &device.id, password, Some(&device))?;
++    let answer = exchange("pc", &device.id, password, Some(&device), secret)?;
+     let Some(held) = Held::issued(&answer, super::unix_now()).filter(Held::registers) else {
+         return Err(Failure::BadRequest);
+     };
+@@ -367,6 +481,11 @@ pub(super) fn for_this_pc(_password: &str) -> Result<u64, Failure> {
+     Err(Failure::Config)
+ }
+ 
++#[cfg(any(target_os = "android", target_os = "ios"))]
++fn this_pc(_password: &str, _secret: Secret) -> Result<u64, Failure> {
++    Err(Failure::Config)
++}
++
+ /// The end of this PC's ticket, asked on the PC's home: the process that registers forgets it
+ /// (an empty value over the IPC), and the PC registers without it.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+@@ -439,6 +558,22 @@ pub(crate) fn e2e_pc(password: &str) -> i32 {
+     }
+ }
+ 
++/// `--hjv-e2e-guest-pc-code <support code>`: this PC's ticket for a support code, handed to the
++/// service as P3 hands it. 0, or 6.
++#[cfg(feature = "hjv-e2e")]
++pub(crate) fn e2e_pc_code(code: &str) -> i32 {
++    match for_this_pc_code(code) {
++        Ok(_) => {
++            println!("hjv-e2e: guest pc code: ok");
++            0
++        }
++        Err(failure) => {
++            println!("hjv-e2e: guest pc code: {}", failure.code());
++            6
++        }
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -475,12 +610,20 @@ mod tests {
+             field: "hjv-sealed-v1.k.s".into(),
+             hash: hash.try_into().unwrap(),
+         };
+-        let body: Value = serde_json::from_str(&pc_body(&device, &sealed)).unwrap();
++        let body: Value =
++            serde_json::from_str(&pc_body(&device, Secret::Password, &sealed)).unwrap();
+         assert_eq!(
+             body,
+             json!({"use": "pc", "id": "123456789", "pk": PK, "sig": SIG,
+                    "password": "hjv-sealed-v1.k.s"})
+         );
++        // a support code's: the same signature over its seal, in `code` (the doc 3-7)
++        let body: Value = serde_json::from_str(&pc_body(&device, Secret::Code, &sealed)).unwrap();
++        assert_eq!(
++            body,
++            json!({"use": "pc", "id": "123456789", "pk": PK, "sig": SIG,
++                   "code": "hjv-sealed-v1.k.s"})
++        );
+         let body: Value = serde_json::from_str(&ctl_body("222333444", &sealed)).unwrap();
+         assert_eq!(
+             body,
+@@ -492,28 +635,82 @@ mod tests {
+     fn the_seal_opens_to_the_access_passwords_payload() {
+         let _ = hbb_common::sodiumoxide::init();
+         let (pk, sk) = box_::gen_keypair();
++        let kid = crate::hjviewer_account::seal_kid(&pk.0);
++        let opened = |sealed: Sealed| {
++            let rest = sealed
++                .field
++                .strip_prefix(&format!("{SEALED_PREFIX}{kid}."))
++                .unwrap();
++            let bytes = URL_SAFE_NO_PAD.decode(rest).unwrap();
++            assert_eq!(<[u8; 32]>::from(Sha256::digest(&bytes)), sealed.hash);
++            let opened = sealedbox::open(&bytes, &pk, &sk).unwrap();
++            serde_json::from_slice::<Value>(&opened).unwrap()
++        };
+         let sealed = seal(
+             &pk.0,
++            Secret::Password,
+             "pass word",
+             "ctl",
+             "222333444",
+             1_760_000_000,
+             &[1; 16],
+         );
+-        let kid = crate::hjviewer_account::seal_kid(&pk.0);
+-        let rest = sealed
+-            .field
+-            .strip_prefix(&format!("{SEALED_PREFIX}{kid}."))
+-            .unwrap();
+-        let bytes = URL_SAFE_NO_PAD.decode(rest).unwrap();
+-        assert_eq!(<[u8; 32]>::from(Sha256::digest(&bytes)), sealed.hash);
+-        let opened = sealedbox::open(&bytes, &pk, &sk).unwrap();
+-        let payload: Value = serde_json::from_slice(&opened).unwrap();
+         assert_eq!(
+-            payload,
++            opened(sealed),
+             json!({"v": 1, "p": "guest", "use": "ctl", "pw": "pass word", "t": 1_760_000_000u64,
+                    "n": STANDARD.encode([1u8; 16]), "id": "222333444", "kid": kid})
+         );
++        // a support code: its own purpose, and what was typed as it was (hjv-api reads it)
++        let sealed = seal(
++            &pk.0,
++            Secret::Code,
++            "k7m2-q9xd",
++            "pc",
++            "123456789",
++            1_760_000_000,
++            &[2; 16],
++        );
++        assert_eq!(
++            opened(sealed),
++            json!({"v": 1, "p": "code", "use": "pc", "pw": "k7m2-q9xd", "t": 1_760_000_000u64,
++                   "n": STANDARD.encode([2u8; 16]), "id": "123456789", "kid": kid})
++        );
++    }
++
++    #[test]
++    fn a_support_code_is_read_as_hjv_api_reads_it() {
++        // server/api/src/support.rs reading_a_typed_code
++        for (typed, read_as) in [
++            ("K7M2-Q9XD", "K7M2Q9XD"),
++            ("k7m2q9xd", "K7M2Q9XD"),
++            ("K7M2 Q9XD", "K7M2Q9XD"),
++            (" k7m2 - q9xd ", "K7M2Q9XD"),
++            ("--K7M2Q9XD--", "K7M2Q9XD"),
++            ("OoIi-LlAB", "001111AB"),
++        ] {
++            assert_eq!(read_code(typed).as_deref(), Some(read_as), "{typed:?}");
++        }
++        for typed in [
++            "",
++            "K7M2-Q9X",
++            "K7M2-Q9XDE",
++            "K7M2-Q9XU",
++            "K7M2-Q9X!",
++            "K7M2%2DQ9XD",
++            "K7M2_Q9XD",
++            "K7M2\tQ9XD",
++            "K7M2\u{a0}Q9XD",
++            "K7M2\u{3000}Q9XD",
++            "K\u{ff17}M2Q9XD",
++            "\u{ff2b}7M2Q9XD",
++            &"0".repeat(65),
++            &format!("K7M2{}Q9XD", " ".repeat(57)),
++        ] {
++            assert_eq!(read_code(typed), None, "{typed:?}");
++        }
++        // what is not a code's form never goes out: E6 at once, no try counted at hjv-api
++        assert_eq!(for_this_pc_code(" K7M2-Q9X "), Err(Failure::Denied));
++        assert_eq!(for_this_pc_code("K7M2\tQ9XD"), Err(Failure::Denied));
+     }
+ 
+     #[test]
+@@ -555,6 +752,11 @@ mod tests {
+             get_common("hjv-guest-result:ctl:2").as_deref(),
+             Some(r#"{"error":"rate_limited","ok":false}"#)
+         );
++        note("pc-code".into(), Err(Failure::Denied));
++        assert_eq!(
++            get_common("hjv-guest-result:pc-code").as_deref(),
++            Some(r#"{"error":"denied","ok":false}"#)
++        );
+         assert_eq!(get_common("hjv-access-state"), None);
+     }
+ }
+diff --git a/src/hjviewer_account/api.rs b/src/hjviewer_account/api.rs
+index b9d1490..3584775 100644
+--- a/src/hjviewer_account/api.rs
++++ b/src/hjviewer_account/api.rs
+@@ -54,6 +54,10 @@ const RELOGIN: &str = "hjv-relogin";
+ /// answer's `user.hjv_role`, the key list's `hjv_role`). It only picks what the screens offer:
+ /// hjv-api checks the role on each request of the operator's view.
+ const ROLE: &str = "hjv-role";
++/// LocalConfig: "Y" while hjv-api lets the login make support codes (the login answer's and
++/// currentUser's `hjv.support_code`, docs/access-tickets.md 3-7). It only picks what the screens
++/// offer: hjv-api decides on each request.
++const SUPPORT_CODE: &str = "hjv-support-code";
+ 
+ const PROOF_HEADER: &str = "X-HJV-Proof";
+ const SEALED_PREFIX: &str = "hjv-sealed-v1.";
+@@ -576,6 +580,7 @@ fn log_out(env: &impl Env) {
+         env.set_local(key, "");
+     }
+     env.set_local(ROLE, "");
++    env.set_local(SUPPORT_CODE, "");
+     env.forget_login_ticket();
+     unbind_this_pc(env);
+ }
+@@ -604,6 +609,7 @@ fn drop_login(env: &impl Env) {
+         env.set_local(key, value);
+     }
+     env.set_local(ROLE, "");
++    env.set_local(SUPPORT_CODE, "");
+     env.forget_login_ticket();
+     log::warn!("account: no account key for the login, logged out");
+ }
+@@ -652,6 +658,10 @@ fn observe(env: &impl Env, url: &str, response: &str) {
+             unbind_this_pc(env)
+         }
+         "/api/hjv/keys" if ok => learn_role(env, &body),
++        // the user object, which carries the login's `hjv` too
++        "/api/currentUser" if ok && body.get("name").is_some() => {
++            learn_support_code(env, body.get("hjv"))
++        }
+         // hjv-api answers an account that is no operator (any more) as it answers an unknown path
+         "/api/hjv/admin/overview" if answer.status_code == 404 => env.set_local(ROLE, ""),
+         _ => {}
+@@ -665,6 +675,12 @@ fn learn_role(env: &impl Env, holder: &Value) {
+     env.set_local(ROLE, if operator { "operator" } else { "" });
+ }
+ 
++/// Whether hjv-api lets the login make support codes: `"support_code":true` in its `hjv`.
++fn learn_support_code(env: &impl Env, hjv: Option<&Value>) {
++    let may = hjv.and_then(|h| h.get("support_code")) == Some(&Value::Bool(true));
++    env.set_local(SUPPORT_CODE, if may { "Y" } else { "" });
++}
++
+ /// §4-2: the server's clock, from the `server_time` of a 409 `clock` answer or else from the
+ /// `Date` header, minus this device's. Kept for the next signature and seal, and in LocalConfig
+ /// when it moved by more than CLOCK_KEEP_STEP, for the next process.
+@@ -723,6 +739,7 @@ fn login_answered(env: &impl Env, ok: bool, body: &Value) {
+     );
+     env.set_local(RELOGIN, "");
+     learn_role(env, body.get("user").unwrap_or(&Value::Null));
++    learn_support_code(env, hjv);
+     env.login_ticket(hjv.and_then(|h| h.get("access")));
+     let account = body
+         .get("user")
+@@ -847,12 +864,14 @@ pub(super) fn key_serial() -> u64 {
+ /// - `hjv-role`: "operator" while hjv-api names the login's account its operator (the login
+ ///   answer, the key list), else "";
+ /// - `hjv-wol:<PC ID>`: whether that PC of the account can be woken, as the last device list said
+-///   (`hjv.wol`), "" for a PC that is not in it.
++///   (`hjv.wol`), "" for a PC that is not in it;
++/// - `hjv-support-code`: "Y" while the login may make support codes, and the codes' own keys
++///   (support.rs).
+ pub(crate) fn get_common(key: &str) -> Option<String> {
+     if !enabled() {
+         return None;
+     }
+-    common_value(&App, key)
++    super::support::get_common(key).or_else(|| common_value(&App, key))
+ }
+ 
+ fn common_value(env: &impl Env, key: &str) -> Option<String> {
+@@ -862,6 +881,9 @@ fn common_value(env: &impl Env, key: &str) -> Option<String> {
+         RELOGIN => yes(env.local(RELOGIN) == "Y"),
+         "hjv-pc-bound" => yes(!env.local(PC_BINDING).is_empty()),
+         ROLE => env.local(ROLE),
++        SUPPORT_CODE => {
++            yes(!env.local("access_token").is_empty() && env.local(SUPPORT_CODE) == "Y")
++        }
+         _ => {
+             let pc = key.strip_prefix("hjv-wol:")?;
+             let mut list: MyDevices =
+@@ -877,7 +899,7 @@ pub(crate) fn set_common(key: &str, value: &str) -> bool {
+     if !enabled() {
+         return false;
+     }
+-    set_common_value(&App, key, value)
++    super::support::set_common(key) || set_common_value(&App, key, value)
+ }
+ 
+ fn set_common_value(env: &impl Env, key: &str, value: &str) -> bool {
+@@ -1890,4 +1912,62 @@ mod tests {
+         assert_eq!(role(&restored), "");
+         assert_eq!(restored.local(RELOGIN), "Y");
+     }
++
++    #[test]
++    fn support_codes_are_offered_as_hjv_api_says() {
++        let fake = Fake::new();
++        let offered = |fake: &Fake| common_value(fake, SUPPORT_CODE).unwrap_or_default();
++        // a staff login (docs/access-tickets.md 3-7), and one of a server before 1.8.2 or the App
++        // Review account, which does not say so
++        log_in(&fake, ACCOUNT_ID, json!({ "ks": 1, "support_code": true }));
++        fake.set_local("access_token", REQ_TOKEN);
++        assert_eq!(offered(&fake), "Y");
++        log_in(&fake, ACCOUNT_ID, json!({ "ks": 2 }));
++        assert_eq!(offered(&fake), "");
++        log_in(
++            &fake,
++            ACCOUNT_ID,
++            json!({ "ks": 3, "support_code": "true" }),
++        );
++        assert_eq!(offered(&fake), "");
++        // currentUser's user object says it again; a failed request leaves it
++        let user = |hjv: Value| json!({ "name": ACCOUNT_ID, "status": 1, "hjv": hjv });
++        let current = url("/api/currentUser");
++        observe(
++            &fake,
++            &current,
++            &answer(200, &user(json!({ "support_code": true }))),
++        );
++        assert_eq!(offered(&fake), "Y");
++        observe(&fake, &current, &answer(500, &json!({ "error": "x" })));
++        observe(
++            &fake,
++            &current,
++            &answer(401, &json!({ "error": "invalid token" })),
++        );
++        assert_eq!(offered(&fake), "Y");
++        observe(&fake, &current, &answer(200, &user(json!({}))));
++        assert_eq!(offered(&fake), "");
++        // no login, no offer; a logout forgets it
++        observe(
++            &fake,
++            &current,
++            &answer(200, &user(json!({ "support_code": true }))),
++        );
++        fake.set_local("access_token", "");
++        assert_eq!(offered(&fake), "");
++        let pc = Fake::logged_in();
++        pc.set_local(SUPPORT_CODE, "Y");
++        assert_eq!(offered(&pc), "Y");
++        let logout = Some(API_LOGOUT_BODY.to_owned());
++        prepare(
++            &pc,
++            &url("/api/logout"),
++            "post",
++            logout,
++            token_header(REQ_TOKEN),
++        )
++        .unwrap();
++        assert_eq!(pc.local(SUPPORT_CODE), "");
++    }
+ }
+diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
+index 370e5f0..04f4890 100644
+--- a/src/hjviewer_account/mod.rs
++++ b/src/hjviewer_account/mod.rs
+@@ -30,6 +30,7 @@ mod ctl;
+ mod keystore;
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ mod pc;
++mod support;
+ #[cfg(test)]
+ pub(crate) mod vectors;
+ 
+@@ -50,6 +51,8 @@ pub(crate) use pc::uninstall_command;
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ pub(crate) use pc::write_private;
+ pub(crate) use pc::{key_login, pc_capable, start_pc_sync};
++#[cfg(feature = "hjv-e2e")]
++pub(crate) use support::e2e_make as e2e_support_code;
+ 
+ const SEAL_PUBKEY: Option<&str> = option_env!("HJV_LOGIN_SEAL_PUBKEY");
+ const TRUST_PUBKEYS: Option<&str> = option_env!("HJV_TRUST_PUBKEYS");
+diff --git a/src/hjviewer_account/support.rs b/src/hjviewer_account/support.rs
+new file mode 100644
+index 0000000..12c9379
+--- /dev/null
++++ b/src/hjviewer_account/support.rs
+@@ -0,0 +1,293 @@
++//! Support codes (지원 코드, docs/access-tickets.md 3-7, 1.8.2): a logged-in staff member's app
++//! makes one with `POST /api/hjv/support-code` for someone who is not logged in, whose PC trades
++//! it for a ticket of its own (hjviewer_access/guest.rs). The request goes by the login, its token
++//! signed by the account key (X-HJV-Proof), as every account request.
++//!
++//! The screens ask through main_set_common, which waits for the answer, and read it once with
++//! main_get_common, so that the code stays in no setting, file or log:
++//!   set "hjv-support-code-make"
++//!   get "hjv-support-code-result"
++//!       {"ok":true,"code":"K7M2-Q9XD","expires_in":600} or {"ok":false,"error":"no_code"|
++//!       "too_many_codes"|"rate_limited"|"busy"|"unavailable"|"bad_request"|"login"|"network"|
++//!       "config"}, `too_many_codes` and `rate_limited` with "retry_after" when hjv-api said it;
++//!       "" once read. `login` is hjv-api's 401 to the login that still is the app's: the screens
++//!       end it as their own 401 ends it.
++//! Whether this login may make codes at all (`hjv-support-code`) is the login answer's and
++//! currentUser's `hjv.support_code` (api.rs).
++
++use hbb_common::config::LocalConfig;
++use serde_json::{json, Value};
++use std::{io::Read, sync::Mutex, time::Duration};
++
++const PATH: &str = "/api/hjv/support-code";
++/// The one body hjv-api takes (`use` is where a controller's code would go; 1.8.2 makes `pc`).
++const BODY: &str = r#"{"use":"pc"}"#;
++const SERVER: Option<&str> = option_env!("HJV_SERVER");
++const TIMEOUT: Duration = Duration::from_secs(20);
++const MAX_ANSWER: u64 = 8192;
++/// hjv-api's codes live ten minutes; an `expires_in` beyond an hour is no code's.
++const MAX_EXPIRES: u64 = 3600;
++
++/// The last answer, until the screen read it.
++static RESULT: Mutex<String> = Mutex::new(String::new());
++
++/// main_set_common: true when the key was this module's.
++pub(super) fn set_common(key: &str) -> bool {
++    if key != "hjv-support-code-make" {
++        return false;
++    }
++    let result = make().to_string();
++    *RESULT.lock().unwrap_or_else(|e| e.into_inner()) = result;
++    true
++}
++
++/// main_get_common: the last answer, taken.
++pub(super) fn get_common(key: &str) -> Option<String> {
++    (key == "hjv-support-code-result")
++        .then(|| std::mem::take(&mut *RESULT.lock().unwrap_or_else(|e| e.into_inner())))
++}
++
++/// One request for a code, and once more after a 409 `clock`, whose server time the account
++/// module learns from the answer as from any account answer. It blocks.
++fn make() -> Value {
++    let Some(server) = SERVER.filter(|server| !server.is_empty()) else {
++        return failed("config", 0);
++    };
++    let token = LocalConfig::get_option("access_token");
++    if token.is_empty() {
++        return failed("login", 0);
++    }
++    let url = format!("https://{server}{PATH}");
++    let mut again = true;
++    loop {
++        // no proof: no account key that can be used now (a locked iPhone, a restored one)
++        let Some(proof) = super::proof_header("POST", PATH, BODY.as_bytes(), &token) else {
++            return failed("config", 0);
++        };
++        let Some((status, date, text)) = post(&url, &token, &proof) else {
++            return failed("network", 0);
++        };
++        super::observe_account_response(
++            &url,
++            &json!({ "status_code": status, "headers": { "date": date }, "body": text })
++                .to_string(),
++        );
++        let answer = outcome(status, &text);
++        if again && answer.get("error").and_then(Value::as_str) == Some("clock") {
++            again = false;
++            continue;
++        }
++        // a 401 to a login that another login or a logout replaced meanwhile ends nothing
++        if answer.get("error").and_then(Value::as_str) == Some("login")
++            && LocalConfig::get_option("access_token") != token
++        {
++            return failed("network", 0);
++        }
++        return answer;
++    }
++}
++
++/// POSTs the body by the login with the certificate checked: the status, the Date header and at
++/// most MAX_ANSWER bytes of the answer; None without an answer of the asked address.
++fn post(url: &str, token: &str, proof: &str) -> Option<(u16, String, String)> {
++    let client = crate::hbbs_http::create_http_client_with_url_strict(url).ok()?;
++    let response = client
++        .post(url)
++        .header(reqwest::header::CONTENT_TYPE, "application/json")
++        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
++        .header("X-HJV-Proof", proof)
++        .body(BODY)
++        .timeout(TIMEOUT)
++        .send()
++        .ok()?;
++    // the client follows redirections: an answer from elsewhere is not hjv-api's
++    if url::Url::parse(url).ok().as_ref() != Some(response.url()) {
++        return None;
++    }
++    let status = response.status().as_u16();
++    let date = response
++        .headers()
++        .get(reqwest::header::DATE)
++        .and_then(|date| date.to_str().ok())
++        .unwrap_or_default()
++        .to_owned();
++    let mut text = Vec::new();
++    response.take(MAX_ANSWER).read_to_end(&mut text).ok()?;
++    Some((status, date, String::from_utf8_lossy(&text).into_owned()))
++}
++
++fn failed(error: &str, retry_after: u64) -> Value {
++    if retry_after > 0 {
++        json!({ "ok": false, "error": error, "retry_after": retry_after })
++    } else {
++        json!({ "ok": false, "error": error })
++    }
++}
++
++/// What the screens get for hjv-api's answer of `status` with the body `text` (the doc 3-7):
++/// the code of a 200 answer as hjv-api shows it, or why none came (`clock` for the one more try).
++fn outcome(status: u16, text: &str) -> Value {
++    let answer = serde_json::from_str::<Value>(text).unwrap_or_default();
++    let hjv = answer
++        .get("hjv")
++        .and_then(Value::as_str)
++        .unwrap_or_default();
++    let retry_after = answer
++        .get("retry_after")
++        .and_then(Value::as_u64)
++        .unwrap_or_default();
++    match (status, hjv) {
++        (200, _) => {
++            let code = answer.get("code").and_then(Value::as_str);
++            let expires_in = answer.get("expires_in").and_then(Value::as_u64);
++            match (code, expires_in) {
++                (Some(code), Some(expires_in))
++                    if shown_code(code) && (1..=MAX_EXPIRES).contains(&expires_in) =>
++                {
++                    json!({ "ok": true, "code": code, "expires_in": expires_in })
++                }
++                _ => failed("bad_request", 0),
++            }
++        }
++        (401, _) => failed("login", 0),
++        (403, "no_code") => failed("no_code", 0),
++        (409, "clock") => failed("clock", 0),
++        (429, "too_many_codes") => failed("too_many_codes", retry_after),
++        (429, _) => failed("rate_limited", retry_after),
++        (503, "busy") => failed("busy", 0),
++        (502..=504, _) => failed("unavailable", 0),
++        (400, _) => failed("bad_request", 0),
++        _ => failed("network", 0),
++    }
++}
++
++/// A code as hjv-api shows it: `XXXX-XXXX` of Crockford's base32 (update.rs `shown`).
++fn shown_code(code: &str) -> bool {
++    const SYMBOLS: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
++    let bytes = code.as_bytes();
++    bytes.len() == 9
++        && bytes[4] == b'-'
++        && bytes
++            .iter()
++            .enumerate()
++            .all(|(i, b)| i == 4 || SYMBOLS.contains(b))
++}
++
++/// `--hjv-e2e-support-code`: a code made by the login, printed for the E2E's PC to trade
++/// (`--hjv-e2e-guest-pc-code`). 0, or 6 without one.
++#[cfg(feature = "hjv-e2e")]
++pub(crate) fn e2e_make() -> i32 {
++    let answer = make();
++    match answer.get("code").and_then(Value::as_str) {
++        Some(code) => {
++            println!("hjv-e2e: support code: {code}");
++            0
++        }
++        None => {
++            let error = answer.get("error").and_then(Value::as_str);
++            println!("hjv-e2e: support code: {}", error.unwrap_or("network"));
++            6
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn outcome_of(status: u16, body: Value) -> Value {
++        outcome(status, &body.to_string())
++    }
++
++    #[test]
++    fn what_hjv_api_answers_a_request_for_a_code() {
++        // the one body hjv-api takes
++        assert_eq!(
++            serde_json::from_str::<Value>(BODY).unwrap(),
++            json!({ "use": "pc" })
++        );
++        assert_eq!(
++            outcome_of(
++                200,
++                json!({"code": "K7M2-Q9XD", "use": "pc", "expires_in": 600})
++            ),
++            json!({"ok": true, "code": "K7M2-Q9XD", "expires_in": 600})
++        );
++        // a 200 answer that is not a code's
++        for body in [
++            json!({"code": "K7M2Q9XD", "expires_in": 600}),
++            json!({"code": "K7M2-Q9XU", "expires_in": 600}),
++            json!({"code": "k7m2-q9xd", "expires_in": 600}),
++            json!({"code": "K7M2-Q9XD", "expires_in": 0}),
++            json!({"code": "K7M2-Q9XD", "expires_in": 7200}),
++            json!({"code": "K7M2-Q9XD"}),
++            json!({"error": "x"}),
++        ] {
++            assert_eq!(
++                outcome_of(200, body.clone()),
++                json!({"ok": false, "error": "bad_request"}),
++                "{body}"
++            );
++        }
++        assert_eq!(
++            outcome(200, "<html>"),
++            json!({"ok": false, "error": "bad_request"})
++        );
++        // the refusals (server/api/src/support.rs), S5 to S7
++        let refused = |status: u16, body: Value| outcome_of(status, body);
++        assert_eq!(
++            refused(
++                403,
++                json!({"error": "이 계정으로는 지원 코드를 만들 수 없습니다.", "hjv": "no_code"})
++            ),
++            json!({"ok": false, "error": "no_code"})
++        );
++        assert_eq!(
++            refused(
++                429,
++                json!({"error": "…", "hjv": "too_many_codes", "retry_after": 170})
++            ),
++            json!({"ok": false, "error": "too_many_codes", "retry_after": 170})
++        );
++        assert_eq!(
++            refused(429, json!({"error": "…", "hjv": "rate_limited"})),
++            json!({"ok": false, "error": "rate_limited"})
++        );
++        assert_eq!(
++            refused(503, json!({"error": "…", "hjv": "busy"})),
++            json!({"ok": false, "error": "busy"})
++        );
++        assert_eq!(
++            refused(503, json!({"error": "…", "hjv": "unavailable"})),
++            json!({"ok": false, "error": "unavailable"})
++        );
++        assert_eq!(
++            refused(409, json!({"error": "…", "hjv": "clock", "server_time": 1})),
++            json!({"ok": false, "error": "clock"})
++        );
++        assert_eq!(
++            refused(401, json!({"error": "invalid token"})),
++            json!({"ok": false, "error": "login"})
++        );
++        assert_eq!(
++            refused(400, json!({"error": "…", "hjv": "bad_request"})),
++            json!({"ok": false, "error": "bad_request"})
++        );
++        for status in [403, 404, 500] {
++            assert_eq!(
++                refused(status, json!({})),
++                json!({"ok": false, "error": "network"}),
++                "{status}"
++            );
++        }
++        // what the screens read, once
++        *RESULT.lock().unwrap() = failed("busy", 0).to_string();
++        assert_eq!(
++            get_common("hjv-support-code-result").as_deref(),
++            Some(r#"{"error":"busy","ok":false}"#)
++        );
++        assert_eq!(get_common("hjv-support-code-result").as_deref(), Some(""));
++        assert_eq!(get_common("hjv-support-code"), None);
++        assert!(!set_common("hjv-support-code-result"));
++    }
++}
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index 3a6d3bf..0c613ac 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -139,6 +139,10 @@ fn exit_with(code: i32) {
+ ///     <app> --hjv-e2e-cm             (a connection manager printing the logins it is told of)
+ ///     <app> --hjv-e2e-guest-pc <access password>          (this PC's ticket, to the process that
+ ///                                                         registers; exit code 6 without one)
++///     <app> --hjv-e2e-guest-pc-code <support code>        (the same for a support code)
++///     <app> --hjv-e2e-support-code                        (a logged-in staff app makes a support
++///                                                         code and prints it; exit code 6
++///                                                         without one)
+ fn account_command(args: &[String]) -> Option<i32> {
+     Some(match args {
+         [cmd] if cmd == "--hjv-e2e-id" => {
+@@ -199,6 +203,10 @@ fn account_command(args: &[String]) -> Option<i32> {
+         [cmd, password] if cmd == "--hjv-e2e-guest-pc" => {
+             crate::hjviewer_access::e2e_guest_pc(password)
+         }
++        [cmd, code] if cmd == "--hjv-e2e-guest-pc-code" => {
++            crate::hjviewer_access::e2e_guest_pc_code(code)
++        }
++        [cmd] if cmd == "--hjv-e2e-support-code" => crate::hjviewer_account::e2e_support_code(),
+         _ => return None,
+     })
+ }

@@ -1,0 +1,621 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 21:52:59 +0900
+Subject: [PATCH 70/85] hjviewer: the desktop home's menus and the ID
+ suggestions
+
+U12: the ID suggestions under the remote ID field (desktop and phone)
+are drawn like the app's menus: a card with the thin border, radius 12
+and the theme's menu shadow, as wide as the field. Each suggestion is a
+small PC row: the cards' 32 px soft tile, the name in 14/600 with the
+online dot, user@host in 12 px secondary text and, beside an alias, the
+ID spaced by formatID in tabular digits at the row's end; rows hover in
+the palette's hover colour. The new panel lives in hjv_autocomplete.dart
+(its sizes and texts in hjv_suggestions.dart, plain Dart with a test)
+and the connection pages switch to it; AutocompletePeerTile stays.
+
+U22: the title bar's settings button is a gear (settings_outlined), as
+it opens the settings and no menu. The ID card's more button opens a
+small menu at the pointer: Copy ID, Change ID (to Security, when the
+settings and the ID change are not disabled) and Settings; its tooltip
+is "More". A right-click on a desktop PC card opens the card's menu at
+the pointer, as its more button does; a right-click on that button
+still opens its menu only once.
+---
+ flutter/lib/common/hjv_suggestions.dart       |  31 ++++
+ .../lib/common/hjviewer_account_texts.dart    |   5 +
+ .../lib/common/widgets/hjv_autocomplete.dart  | 171 ++++++++++++++++++
+ flutter/lib/common/widgets/peer_card.dart     |  12 +-
+ .../lib/desktop/pages/connection_page.dart    |  64 +------
+ .../lib/desktop/pages/desktop_home_page.dart  |  53 +++++-
+ .../lib/desktop/pages/desktop_tab_page.dart   |   4 +-
+ flutter/lib/mobile/pages/connection_page.dart |  67 ++-----
+ flutter/test/hjviewer_suggestions_test.dart   |  39 ++++
+ 9 files changed, 331 insertions(+), 115 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_suggestions.dart
+ create mode 100644 flutter/lib/common/widgets/hjv_autocomplete.dart
+ create mode 100644 flutter/test/hjviewer_suggestions_test.dart
+
+diff --git a/flutter/lib/common/hjv_suggestions.dart b/flutter/lib/common/hjv_suggestions.dart
+new file mode 100644
+index 0000000..c1c0aff
+--- /dev/null
++++ b/flutter/lib/common/hjv_suggestions.dart
+@@ -0,0 +1,31 @@
++// HJViewer: the sizes and texts of the ID suggestions under the remote ID field
++// (widgets/hjv_autocomplete.dart draws them). Plain Dart without the bridge, so that ci.sh tests
++// it with the web stand-in.
++
++import 'package:flutter_hbb/common/formatter/id_formatter.dart';
++
++/// The height of one suggestion and the panel's inner padding.
++const double kHjvSuggestionHeight = 48;
++const double kHjvSuggestionPadding = 4;
++
++/// The panel's height for `count` suggestions: up to four in full, more scroll under a half row.
++double hjvSuggestionsHeight(int count) {
++  if (count <= 0) return 0;
++  final rows = count > 4 ? 4.5 : count.toDouble();
++  return rows * kHjvSuggestionHeight + kHjvSuggestionPadding * 2;
++}
++
++/// A suggestion's texts: the title (the alias, else the ID with its spaces), the line under it
++/// (user@host, may be empty) and, beside an alias, the ID with its spaces at the row's end.
++({String title, String sub, String? id}) hjvSuggestionTexts(
++    {required String id,
++    required String alias,
++    required String username,
++    required String hostname}) {
++  final sub =
++      '$username${username.isNotEmpty && hostname.isNotEmpty ? '@' : ''}$hostname';
++  final spaced = formatID(id);
++  return alias.isEmpty
++      ? (title: spaced, sub: sub, id: null)
++      : (title: alias, sub: sub, id: spaced);
++}
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 6b645a5..c8c8402 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -45,6 +45,11 @@ class HjvTexts {
+   String get close => _t('닫기', 'Close');
+   String get retry => _t('재시도', 'Retry');
+   String get logIn => _t('로그인', 'Log in');
++
++  // the desktop home's ID card: its ⋮ and its menu
++  String get more => _t('더 보기', 'More');
++  String get copyId => _t('ID 복사', 'Copy ID');
++
+   String get requestFailed => _t('요청하지 못했습니다. 잠시 뒤 다시 해 주세요.',
+       'The request failed. Please try again later.');
+ 
+diff --git a/flutter/lib/common/widgets/hjv_autocomplete.dart b/flutter/lib/common/widgets/hjv_autocomplete.dart
+new file mode 100644
+index 0000000..15750d3
+--- /dev/null
++++ b/flutter/lib/common/widgets/hjv_autocomplete.dart
+@@ -0,0 +1,171 @@
++// HJViewer: the ID suggestions under the remote ID field (desktop and phone) in the app's look,
++// drawn like its menus: a card with a thin border, the large menu radius and the theme's menu
++// shadow, and each suggestion a small PC row with the cards' soft tile. AutocompletePeerTile and
++// the upstream panel stay as they are; the connection pages switch to this.
++
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjv_suggestions.dart';
++import 'package:flutter_hbb/common/widgets/peer_card.dart';
++import 'package:flutter_hbb/models/peer_model.dart';
++
++/// The panel the connection pages' optionsViewBuilder returns, as wide as the field.
++class HjvAutocompleteOptions extends StatelessWidget {
++  final Iterable<Peer> options;
++  final AutocompleteOnSelected<Peer> onSelected;
++  final bool loading;
++  final double width;
++
++  const HjvAutocompleteOptions({
++    Key? key,
++    required this.options,
++    required this.onSelected,
++    required this.loading,
++    required this.width,
++  }) : super(key: key);
++
++  @override
++  Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final menu = Theme.of(context).popupMenuTheme;
++    final peers = options.toList(growable: false);
++    return Align(
++      alignment: Alignment.topLeft,
++      child: Padding(
++        padding: const EdgeInsets.only(top: 4),
++        child: Material(
++          color: p.card,
++          elevation: menu.elevation ?? 8,
++          shadowColor: menu.shadowColor,
++          surfaceTintColor: Colors.transparent,
++          shape: RoundedRectangleBorder(
++            borderRadius: BorderRadius.circular(12),
++            side: BorderSide(color: p.border),
++          ),
++          clipBehavior: Clip.antiAlias,
++          child: SizedBox(
++            width: width,
++            height: loading ? 80 : hjvSuggestionsHeight(peers.length),
++            child: loading
++                ? const Center(
++                    child: SizedBox(
++                        width: 20,
++                        height: 20,
++                        child: CircularProgressIndicator(strokeWidth: 2)))
++                : ListView(
++                    padding: const EdgeInsets.all(kHjvSuggestionPadding),
++                    children: peers
++                        .map((peer) => HjvSuggestionRow(
++                            peer: peer, onSelect: () => onSelected(peer)))
++                        .toList(),
++                  ),
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++/// One suggestion: the soft tile, the name with the online dot, user@host, the ID at the end.
++class HjvSuggestionRow extends StatelessWidget {
++  final Peer peer;
++  final VoidCallback onSelect;
++
++  const HjvSuggestionRow({Key? key, required this.peer, required this.onSelect})
++      : super(key: key);
++
++  @override
++  Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final texts = hjvSuggestionTexts(
++        id: peer.id,
++        alias: peer.alias,
++        username: peer.username,
++        hostname: peer.hostname);
++    final (background, foreground) =
++        hjvTint(context, str2color('${peer.id}${peer.platform}'));
++    const tile = 32.0;
++    final colors = peer.tags
++        .take(25)
++        .map((e) => gFFI.abModel.getCurrentAbTagColor(e))
++        .toList();
++    final row = InkWell(
++      onTap: onSelect,
++      borderRadius: BorderRadius.circular(HjvRadius.sm),
++      hoverColor: p.hover,
++      child: Container(
++        height: kHjvSuggestionHeight,
++        padding: const EdgeInsets.symmetric(horizontal: 8),
++        child: Row(
++          children: [
++            Container(
++              width: tile,
++              height: tile,
++              alignment: Alignment.center,
++              decoration: BoxDecoration(
++                  color: background,
++                  borderRadius: BorderRadius.circular(tile * 0.28)),
++              child: hjvPlatformIcon(peer.platform, tile * 0.55, foreground),
++            ),
++            const SizedBox(width: 10),
++            Expanded(
++              child: Column(
++                mainAxisAlignment: MainAxisAlignment.center,
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  Row(children: [
++                    getOnline(6, peer.online),
++                    Expanded(
++                      child: Text(
++                        texts.title,
++                        maxLines: 1,
++                        overflow: TextOverflow.ellipsis,
++                        style: HjvText.titleSmall.copyWith(
++                            color: p.text,
++                            fontFeatures:
++                                texts.id == null ? HjvText.tabular : null),
++                      ),
++                    ),
++                  ]),
++                  if (texts.sub.isNotEmpty)
++                    Text(
++                      texts.sub,
++                      maxLines: 1,
++                      overflow: TextOverflow.ellipsis,
++                      style:
++                          HjvText.bodySmall.copyWith(color: p.textSecondary),
++                    ),
++                ],
++              ),
++            ),
++            if (texts.id != null)
++              Padding(
++                padding: const EdgeInsets.only(left: 8),
++                child: Text(
++                  texts.id!,
++                  maxLines: 1,
++                  style: HjvText.bodySmall.copyWith(
++                      color: p.textSecondary, fontFeatures: HjvText.tabular),
++                ),
++              ),
++          ],
++        ),
++      ),
++    );
++    return Tooltip(
++      message: !(isDesktop || isWebDesktop) || peer.tags.isEmpty
++          ? ''
++          : '${translate('Tags')}: ${peer.tags.join(', ')}',
++      child: Stack(children: [
++        row,
++        if (colors.isNotEmpty)
++          Positioned(
++            top: 6,
++            right: 8,
++            child: CustomPaint(painter: TagPainter(radius: 3, colors: colors)),
++          ),
++      ]),
++    );
++  }
++}
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 36ddeeb..e0bd759 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -81,6 +81,15 @@ class _PeerCardState extends State<_PeerCard>
+           }
+         },
+         onLongPress: () => peerTabModel.select(peer),
++        // HJViewer: a right-click opens the card's menu at the pointer, as its ⋮ does
++        onSecondaryTapDown: isDesktop && !peerTabModel.multiSelectionMode
++            ? (e) {
++                final x = e.globalPosition.dx;
++                final y = e.globalPosition.dy;
++                _menuPos = RelativeRect.fromLTRB(x, y, x, y);
++                _showPeerMenu(peer.id);
++              }
++            : null,
+         child: child);
+   }
+ 
+@@ -686,7 +695,8 @@ class _PeerCardState extends State<_PeerCard>
+         _menuPos = RelativeRect.fromLTRB(x, y, x, y);
+       },
+       onPointerUp: (_) => _showPeerMenu(peer.id),
+-      child: build_more(context));
++      // HJViewer: a right-click on the ⋮ opens its menu once, not the card's as well
++      child: GestureDetector(onSecondaryTap: () {}, child: build_more(context)));
+ 
+   bool _shouldBuildPasswordIcon(Peer peer) {
+     if (gFFI.peerTabModel.currentTab != PeerTabIndex.ab.index) return false;
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 687b517..42f57a8 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -22,6 +22,7 @@ import '../../common/hjviewer_access.dart';
+ import '../../common/formatter/id_formatter.dart';
+ import '../../common/widgets/peer_tab_page.dart';
+ import '../../common/widgets/autocomplete.dart';
++import '../../common/widgets/hjv_autocomplete.dart';
+ import '../../models/platform_model.dart';
+ import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
+ 
+@@ -463,62 +464,13 @@ class _ConnectionPageState extends State<ConnectionPage>
+                   optionsViewBuilder: (BuildContext context,
+                       AutocompleteOnSelected<Peer> onSelected,
+                       Iterable<Peer> options) {
+-                    options = _autocompleteOpts;
+-                    double maxHeight = options.length * 50;
+-                    if (options.length == 1) {
+-                      maxHeight = 52;
+-                    } else if (options.length == 3) {
+-                      maxHeight = 146;
+-                    } else if (options.length == 4) {
+-                      maxHeight = 193;
+-                    }
+-                    maxHeight = maxHeight.clamp(0, 200);
+-
+-                    return Align(
+-                      alignment: Alignment.topLeft,
+-                      child: Container(
+-                          decoration: BoxDecoration(
+-                            boxShadow: [
+-                              BoxShadow(
+-                                color: Colors.black.withOpacity(0.3),
+-                                blurRadius: 5,
+-                                spreadRadius: 1,
+-                              ),
+-                            ],
+-                          ),
+-                          child: ClipRRect(
+-                              borderRadius: BorderRadius.circular(5),
+-                              child: Material(
+-                                elevation: 4,
+-                                child: ConstrainedBox(
+-                                  constraints: BoxConstraints(
+-                                    maxHeight: maxHeight,
+-                                    maxWidth: 319,
+-                                  ),
+-                                  child: _allPeersLoader.peers.isEmpty &&
+-                                          !_allPeersLoader.isPeersLoaded
+-                                      ? Container(
+-                                          height: 80,
+-                                          child: Center(
+-                                            child: CircularProgressIndicator(
+-                                              strokeWidth: 2,
+-                                            ),
+-                                          ))
+-                                      : Padding(
+-                                          padding:
+-                                              const EdgeInsets.only(top: 5),
+-                                          child: ListView(
+-                                            children: options
+-                                                .map((peer) =>
+-                                                    AutocompletePeerTile(
+-                                                        onSelect: () =>
+-                                                            onSelected(peer),
+-                                                        peer: peer))
+-                                                .toList(),
+-                                          ),
+-                                        ),
+-                                ),
+-                              ))),
++                    // HJViewer: the suggestions in the app's look, as wide as the field
++                    return HjvAutocompleteOptions(
++                      options: _autocompleteOpts,
++                      onSelected: onSelected,
++                      loading: _allPeersLoader.peers.isEmpty &&
++                          !_allPeersLoader.isPeersLoaded,
++                      width: 320,
+                     );
+                   },
+                 )),
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index b96f75c..1d6c0b2 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -10,6 +10,7 @@ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_access_texts.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/common/widgets/animated_rotation_widget.dart';
+ import 'package:flutter_hbb/common/widgets/custom_password.dart';
+@@ -17,6 +18,9 @@ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/desktop/pages/connection_page.dart';
+ import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
+ import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
++import 'package:flutter_hbb/desktop/widgets/material_mod_popup_menu.dart'
++    as mod_menu;
++import 'package:flutter_hbb/desktop/widgets/popup_menu.dart';
+ import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ import 'package:flutter_hbb/models/server_model.dart';
+@@ -270,11 +274,14 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+     RxBool hover = false.obs;
+     // HJViewer: a quiet round button on the ID card, a disc only on hover
+     final hjv = HjvPalette.of(context);
++    // HJViewer: a menu at the pointer (ID copy, ID change, settings), as the PC cards' ⋮
++    var menuAt = Offset.zero;
+     return InkWell(
+-      onTap: DesktopTabPage.onAddSetting,
++      onTapDown: (e) => menuAt = e.globalPosition,
++      onTap: () => _hjvShowIdMenu(context, menuAt),
+       customBorder: const CircleBorder(),
+       child: Tooltip(
+-        message: translate('Settings'),
++        message: HjvTexts(translate('Cancel') == '취소').more,
+         child: Obx(
+           () => CircleAvatar(
+             radius: 14,
+@@ -292,6 +299,48 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+     );
+   }
+ 
++  void _hjvShowIdMenu(BuildContext context, Offset at) {
++    final t = HjvTexts(translate('Cancel') == '취소');
++    final settings = !bind.isDisableSettings();
++    final items = <(String, VoidCallback)>[
++      (
++        t.copyId,
++        () {
++          Clipboard.setData(
++              ClipboardData(text: gFFI.serverModel.serverId.text));
++          showToast(translate('Copied'));
++        }
++      ),
++      if (settings && !isChangeIdDisabled())
++        (
++          translate('Change ID'),
++          () => DesktopSettingPage.switch2page(SettingsTabKey.safety)
++        ),
++      if (settings) (translate('Settings'), () => DesktopTabPage.onAddSetting()),
++    ];
++    mod_menu.showMenu(
++      context: context,
++      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
++      items: items
++          .map((e) => MenuEntryButton<String>(
++                childBuilder: (TextStyle? style) => Text(e.$1, style: style),
++                proc: e.$2,
++                padding:
++                    EdgeInsets.symmetric(horizontal: kDesktopMenuPadding.left),
++                dismissOnClicked: true,
++              ))
++          .map((e) => e.build(
++              context,
++              const MenuConfig(
++                  commonColor: CustomPopupMenuTheme.commonColor,
++                  height: CustomPopupMenuTheme.height,
++                  dividerHeight: CustomPopupMenuTheme.dividerHeight)))
++          .expand((i) => i)
++          .toList(),
++      elevation: 8,
++    );
++  }
++
+   buildPasswordBoard(BuildContext context) {
+     return ChangeNotifierProvider.value(
+         value: gFFI.serverModel,
+diff --git a/flutter/lib/desktop/pages/desktop_tab_page.dart b/flutter/lib/desktop/pages/desktop_tab_page.dart
+index ac32b27..a09033c 100644
+--- a/flutter/lib/desktop/pages/desktop_tab_page.dart
++++ b/flutter/lib/desktop/pages/desktop_tab_page.dart
+@@ -100,7 +100,9 @@ class _DesktopTabPageState extends State<DesktopTabPage> {
+                 offstage: bind.isIncomingOnly() || bind.isDisableSettings(),
+                 child: ActionIcon(
+                   message: 'Settings',
+-                  icon: IconFont.menu,
++                  // HJViewer: a gear, since it opens the settings and no menu
++                  icon: Icons.settings_outlined,
++                  iconSize: 16,
+                   onTap: DesktopTabPage.onAddSetting,
+                   isClose: false,
+                 ),
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index 4cd7fe6..970e2b6 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -17,6 +17,7 @@ import '../../common/hjv_update.dart';
+ import '../../common/hjviewer_access.dart';
+ import '../../common/widgets/peer_tab_page.dart';
+ import '../../common/widgets/autocomplete.dart';
++import '../../common/widgets/hjv_autocomplete.dart';
+ import '../../consts.dart';
+ import '../../models/model.dart';
+ import '../../models/platform_model.dart';
+@@ -164,7 +165,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
+               Expanded(
+                 child: Container(
+                   padding: const EdgeInsets.only(left: 16, right: 16),
+-                  child: RawAutocomplete<Peer>(
++                  // HJViewer: the field's width for the suggestions under it
++                  child: LayoutBuilder(builder: (_, field) => RawAutocomplete<Peer>(
+                     optionsBuilder: (TextEditingValue textEditingValue) {
+                       if (textEditingValue.text == '') {
+                         _autocompleteOpts = const Iterable<Peer>.empty();
+@@ -268,61 +270,16 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                     optionsViewBuilder: (BuildContext context,
+                         AutocompleteOnSelected<Peer> onSelected,
+                         Iterable<Peer> options) {
+-                      options = _autocompleteOpts;
+-                      double maxHeight = options.length * 50;
+-                      if (options.length == 1) {
+-                        maxHeight = 52;
+-                      } else if (options.length == 3) {
+-                        maxHeight = 146;
+-                      } else if (options.length == 4) {
+-                        maxHeight = 193;
+-                      }
+-                      maxHeight = maxHeight.clamp(0, 200);
+-                      return Align(
+-                          alignment: Alignment.topLeft,
+-                          child: Container(
+-                              decoration: BoxDecoration(
+-                                boxShadow: [
+-                                  BoxShadow(
+-                                    color: Colors.black.withOpacity(0.3),
+-                                    blurRadius: 5,
+-                                    spreadRadius: 1,
+-                                  ),
+-                                ],
+-                              ),
+-                              child: ClipRRect(
+-                                  borderRadius: BorderRadius.circular(5),
+-                                  child: Material(
+-                                      elevation: 4,
+-                                      child: ConstrainedBox(
+-                                          constraints: BoxConstraints(
+-                                            maxHeight: maxHeight,
+-                                            maxWidth: 320,
+-                                          ),
+-                                          child: _allPeersLoader
+-                                                      .peers.isEmpty &&
+-                                                  !_allPeersLoader.isPeersLoaded
+-                                              ? Container(
+-                                                  height: 80,
+-                                                  child: Center(
+-                                                      child:
+-                                                          CircularProgressIndicator(
+-                                                    strokeWidth: 2,
+-                                                  )))
+-                                              : ListView(
+-                                                  padding:
+-                                                      EdgeInsets.only(top: 5),
+-                                                  children: options
+-                                                      .map((peer) =>
+-                                                          AutocompletePeerTile(
+-                                                              onSelect: () =>
+-                                                                  onSelected(
+-                                                                      peer),
+-                                                              peer: peer))
+-                                                      .toList(),
+-                                                ))))));
++                      // HJViewer: the suggestions in the app's look, as wide as the field
++                      return HjvAutocompleteOptions(
++                        options: _autocompleteOpts,
++                        onSelected: onSelected,
++                        loading: _allPeersLoader.peers.isEmpty &&
++                            !_allPeersLoader.isPeersLoaded,
++                        width: field.maxWidth,
++                      );
+                     },
+-                  ),
++                  )),
+                 ),
+               ),
+               Obx(() => Offstage(
+diff --git a/flutter/test/hjviewer_suggestions_test.dart b/flutter/test/hjviewer_suggestions_test.dart
+new file mode 100644
+index 0000000..338b906
+--- /dev/null
++++ b/flutter/test/hjviewer_suggestions_test.dart
+@@ -0,0 +1,39 @@
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
++import 'package:flutter_hbb/common/hjv_suggestions.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++void main() {
++  test('a suggestion with an alias shows the spaced ID at its end', () {
++    final t = hjvSuggestionTexts(
++        id: '123456789', alias: 'Lab PC', username: 'user', hostname: 'LAB-PC');
++    expect(t.title, 'Lab PC');
++    expect(t.sub, 'user@LAB-PC');
++    expect(t.id, '123 456 789');
++  });
++
++  test('a suggestion without an alias is titled by the spaced ID only', () {
++    final t = hjvSuggestionTexts(
++        id: '123456789', alias: '', username: '', hostname: '');
++    expect(t.title, '123 456 789');
++    expect(t.sub, '');
++    expect(t.id, isNull);
++  });
++
++  test('the panel fits up to four suggestions and scrolls more', () {
++    expect(hjvSuggestionsHeight(0), 0);
++    expect(hjvSuggestionsHeight(1),
++        kHjvSuggestionHeight + kHjvSuggestionPadding * 2);
++    expect(hjvSuggestionsHeight(4),
++        4 * kHjvSuggestionHeight + kHjvSuggestionPadding * 2);
++    expect(hjvSuggestionsHeight(9), hjvSuggestionsHeight(5));
++    expect(hjvSuggestionsHeight(5), greaterThan(hjvSuggestionsHeight(4)));
++    expect(hjvSuggestionsHeight(5), lessThan(5 * kHjvSuggestionHeight));
++  });
++
++  test("the ID card's menu reads in both languages", () {
++    expect(const HjvTexts(true).copyId, 'ID 복사');
++    expect(const HjvTexts(false).copyId, 'Copy ID');
++    expect(const HjvTexts(true).more, '더 보기');
++    expect(const HjvTexts(false).more, 'More');
++  });
++}

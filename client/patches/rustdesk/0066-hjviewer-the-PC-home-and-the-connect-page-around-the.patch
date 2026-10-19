@@ -1,0 +1,756 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 22:14:42 +0900
+Subject: [PATCH 66/85] hjviewer: the PC home and the connect page around the
+ gate
+
+U16: the desktop home's left pane scrolls. Its scroll view is bounded
+(Expanded) instead of sitting over an empty Expanded, so a pane taller
+than the window, such as P1 over the install card of a PC that is not
+installed, scrolls with the theme's thin bar and [Install] stays
+reachable; _childKey and the incoming-only sizing are unchanged. The
+main window cannot be made smaller than 720x520 (not the incoming-only
+window).
+
+U05: the PC home's notices fit the 200 px pane. A title over a text
+takes one line with an ellipsis and the whole title in a tooltip; the
+buttons are stacked at full width, 34 px high. G2 is a neutral outlined
+box instead of a blue one that read as one with the ID's card. While P1
+shows, the ID's card is a plain card, the ID and the one-time password
+are dimmed, desk_tip says this PC cannot accept connections now, and a
+PC without a login gets a line on the ID's card that logging in or the
+access password makes the ID work. The text stays 12 px: P1's text
+never fits two lines in the pane, so the 13 px variant would not show.
+
+U04: one filled [Log in] per window. While P1 of a PC without a login or
+G2 shows its filled [Log in], G3 keeps its text without a button and
+the placeholder of a tab that needs a login shows a plain [Log in];
+otherwise G3's [Log in] is plain and the placeholder's filled. G3 is one
+line, "Staff-only server - Login required", with the whole hint in its
+tooltip (a tap on phones). No side placement and no remembered
+collapse, as decided for 1.8.2.
+
+U08: on a phone, G3 is a card with a border, since the fill it had does
+not show on the home's light canvas; the desktop keeps the fill on its
+white pane.
+
+U41: the card of a Windows PC that runs without being installed takes
+the app's look, an info notice with one primary [Install], instead of
+upstream's gradient card, and install_tip says why to install: it
+starts with Windows, a login puts the PC in My PCs for unattended
+connections, and UAC windows can be handled remotely. The notice after
+a login there offers [Install] next to [OK].
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart       | 129 +++++++++++++-----
+ flutter/lib/common/hjviewer_access_texts.dart |  24 ++++
+ flutter/lib/common/hjviewer_account.dart      |  13 +-
+ .../lib/common/hjviewer_account_texts.dart    |  10 +-
+ flutter/lib/common/widgets/peers_view.dart    |  13 +-
+ .../lib/desktop/pages/desktop_home_page.dart  | 107 +++++++++++----
+ flutter/lib/main.dart                         |   4 +
+ flutter/test/hjviewer_access_test.dart        |  19 +++
+ flutter/test/hjviewer_account_test.dart       |   3 +
+ .../test/hjviewer_account_widgets_test.dart   |  21 +++
+ src/lang/en.rs                                |   2 +-
+ src/lang/ko.rs                                |   2 +-
+ 12 files changed, 281 insertions(+), 66 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 663d462..d6741e7 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -77,6 +77,19 @@ bool _loggedIn() =>
+     gFFI.userModel.userName.value.isNotEmpty ||
+     bind.mainGetLocalOption(key: 'access_token').isNotEmpty;
+ 
++/// What the PC home shows above its ID now (reads the observables, for an Obx).
++HjvPcHome _home() => hjvPcHome(
++    state: _pcState.value,
++    guestUntil: _guestUntil.value,
++    now: _unixNow(),
++    installedWindows: isWindows && bind.mainIsInstalled(),
++    loggedIn: _loggedIn(),
++    refusedLong: _refusedLong.value);
++
++/// Whether the PC home's notice in this window has the filled [로그인] (P1, G2).
++bool _homeLogsIn() =>
++    isDesktop && hjvPcHomeLogsIn(_home()) && !bind.isDisableAccount();
++
+ /// A button as dialogButton() draws it, for a text of these screens, which translate() must not
+ /// see (as hjviewer_account.dart's).
+ Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) {
+@@ -185,6 +198,23 @@ bool hjvAccessRefused(
+ List<Widget> hjvAccessPcNotice() =>
+     _accountBuild ? [const _HjvAccessPcHome()] : [];
+ 
++/// desktop_home_page.dart, the ID's and the one-time password's cards and desk_tip: `builder`
++/// again as P1 comes and goes, with the words for while nobody can connect with the ID (null
++/// while they can, and always outside an account build).
++Widget hjvAccessPcBlocked(Widget Function(HjvPcBlocked? blocked) builder) =>
++    _accountBuild
++        ? Obx(() => builder(hjvPcBlocked(_t, _home())))
++        : builder(null);
++
++/// peers_view.dart, the [로그인] of a tab that needs a login: `filled`, or a plain one while the
++/// PC home's notice in the same window has the filled [로그인] (one a window).
++Widget hjvAccessLogInButton(VoidCallback onLogin, {required Widget filled}) =>
++    _accountBuild && isDesktop
++        ? Obx(() => _homeLogsIn()
++            ? TextButton(onPressed: onLogin, child: Text(_t.logIn))
++            : filled)
++        : filled;
++
+ /// G1 (desktop settings, the account card; the install page): an unattended PC needs the login,
+ /// since the access password lasts only as long as the app runs.
+ List<Widget> hjvAccessKeepLoggedIn({EdgeInsets margin = EdgeInsets.zero}) =>
+@@ -200,7 +230,8 @@ List<Widget> hjvAccessKeepLoggedIn({EdgeInsets margin = EdgeInsets.zero}) =>
+         : [];
+ 
+ /// G3 (the connection pages, under the ID field): to an app without a login, ahead of any
+-/// refusal, that the server lets in only staff, with [로그인].
++/// refusal, one line that the server lets in only staff (the rest in its tooltip), with a plain
++/// [로그인] unless P1 or G2 above has the filled one.
+ List<Widget> hjvAccessConnectHint() =>
+     _accountBuild ? [const _HjvConnectHint()] : [];
+ 
+@@ -473,13 +504,7 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+ 
+   @override
+   Widget build(BuildContext context) => Obx(() {
+-        final home = hjvPcHome(
+-            state: _pcState.value,
+-            guestUntil: _guestUntil.value,
+-            now: _unixNow(),
+-            installedWindows: _installedWindows(),
+-            loggedIn: _loggedIn(),
+-            refusedLong: _refusedLong.value);
++        final home = _home();
+         final t = _t;
+         final p = HjvPalette.of(context);
+         return switch (home) {
+@@ -501,7 +526,8 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+               title: t.pcGuestUntil(_until(_guestUntil.value)),
+               actions: [_button(t.end, () => _endGuest(t), outline: true)]),
+           HjvPcHome.logIn when !bind.isDisableAccount() => _card(context,
+-              color: p.primary,
++              color: p.textSecondary,
++              neutral: true,
+               icon: Icons.info_outline_rounded,
+               text: t.keepLoggedIn,
+               actions: [_button(t.logIn, () => loginDialog())]),
+@@ -523,22 +549,35 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+         ]);
+   }
+ 
+-  // HJViewer: a card as the ID's and the password's, on the tint of its state; above the ID, so
+-  // that the ID does not look usable while hbbs refuses this PC
++  // HJViewer: a card as the ID's and the password's, on the tint of its state (G2 only outlined,
++  // so that it does not read as one with the ID's blue card below); above the ID, which P1 dims.
++  // Shaped for the 200 px pane: a title of one line (whole in its tooltip), the buttons stacked
++  // at full width.
+   Widget _card(BuildContext context,
+       {required Color color,
++      bool neutral = false,
+       required IconData icon,
+       String? title,
+       String? text,
+       required List<Widget> actions}) {
+     final p = HjvPalette.of(context);
+-    final (back, fore) = hjvTint(context, color);
++    final (back, fore) =
++        neutral ? (Colors.transparent, color) : hjvTint(context, color);
++    final heading = title ?? text ?? '';
++    final style = title == null
++        ? TextStyle(fontSize: 12, height: 1.45, color: p.textSecondary)
++        : TextStyle(
++            fontSize: 13,
++            fontWeight: FontWeight.w700,
++            height: 1.35,
++            color: p.text);
+     return Container(
+       margin: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+       padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+       decoration: BoxDecoration(
+         color: back,
+         borderRadius: BorderRadius.circular(HjvRadius.lg),
++        border: neutral ? Border.all(color: p.borderStrong) : null,
+       ),
+       child: Column(
+         crossAxisAlignment: CrossAxisAlignment.start,
+@@ -548,15 +587,17 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+             children: [
+               Icon(icon, size: 16, color: fore).marginOnly(top: 1, right: 6),
+               Expanded(
+-                child: Text(title ?? text ?? '',
+-                    style: title == null
+-                        ? TextStyle(
+-                            fontSize: 12, height: 1.45, color: p.textSecondary)
+-                        : TextStyle(
+-                            fontSize: 13,
+-                            fontWeight: FontWeight.w700,
+-                            height: 1.35,
+-                            color: p.text)),
++                // a title over a text takes one line; a notice of one line (P2, G2) shows whole
++                child: title != null && text != null
++                    ? Tooltip(
++                        message: title,
++                        // the text reads whole to a screen reader all the same
++                        excludeFromSemantics: true,
++                        child: Text(title,
++                            maxLines: 1,
++                            overflow: TextOverflow.ellipsis,
++                            style: style))
++                    : Text(heading, style: style),
+               ),
+             ],
+           ),
+@@ -566,10 +607,9 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+                 style: TextStyle(
+                     fontSize: 12, height: 1.45, color: p.textSecondary)),
+           ],
+-          if (actions.isNotEmpty) ...[
+-            const SizedBox(height: 8),
+-            Wrap(spacing: 6, runSpacing: 6, children: actions),
+-          ],
++          for (var i = 0; i < actions.length; i++)
++            SizedBox(width: double.infinity, height: 34, child: actions[i])
++                .marginOnly(top: i == 0 ? 8 : 6),
+         ],
+       ),
+     );
+@@ -663,13 +703,38 @@ class _HjvConnectHint extends StatelessWidget {
+           return const SizedBox.shrink();
+         }
+         final t = _t;
+-        final hint = hjvNoteBlock(context,
+-            icon: Icons.lock_outline_rounded,
+-            text: Text(t.connectHint),
+-            action: bind.isDisableAccount()
+-                ? null
+-                : TextButton(
+-                    onPressed: () => loginDialog(), child: Text(t.logIn)));
++        final p = HjvPalette.of(context);
++        final logIn = !bind.isDisableAccount() && !_homeLogsIn();
++        final hint = Container(
++          padding: logIn
++              ? const EdgeInsets.fromLTRB(12, 2, 4, 2)
++              : const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
++          // a phone's home is the canvas, on which the fill does not show: a card there
++          decoration: isDesktop
++              ? BoxDecoration(
++                  color: p.fill,
++                  borderRadius: BorderRadius.circular(HjvRadius.md))
++              : hjvCardDecoration(context),
++          child: Row(
++            children: [
++              Icon(Icons.lock_outline_rounded, size: 18, color: p.textSecondary)
++                  .marginOnly(right: 8),
++              Expanded(
++                child: Tooltip(
++                  message: t.connectHint,
++                  triggerMode: isDesktop ? null : TooltipTriggerMode.tap,
++                  showDuration: const Duration(seconds: 8),
++                  child: Text(t.connectHintShort,
++                      style: TextStyle(
++                          fontSize: 13, height: 1.45, color: p.textSecondary)),
++                ),
++              ),
++              if (logIn)
++                TextButton(
++                    onPressed: () => loginDialog(), child: Text(t.logIn)),
++            ],
++          ),
++        );
+         // the desktop's ID field is a card of its own width
+         return isDesktop
+             ? Align(
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index efbb0f0..a05f7c1 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -145,6 +145,23 @@ HjvPcHome hjvPcHome(
+   return HjvPcHome.none;
+ }
+ 
++/// Whether the PC home's notice carries the filled [로그인] (P1 of a PC without a login, G2): the
++/// window's other login buttons (G3, the placeholder of a tab that needs a login) are then plain
++/// or none, so that a window has one filled [로그인].
++bool hjvPcHomeLogsIn(HjvPcHome home) =>
++    home == HjvPcHome.refused || home == HjvPcHome.logIn;
++
++/// What the PC home says while P1 shows and nobody can connect with its ID: `tip` in place of
++/// desk_tip, and `idLine` on the ID's card (none on a logged-in PC, which has nothing to enter).
++typedef HjvPcBlocked = ({String tip, String? idLine});
++
++/// The PC home's words while P1 shows, null while the ID can be reached.
++HjvPcBlocked? hjvPcBlocked(HjvAccessTexts t, HjvPcHome home) => switch (home) {
++      HjvPcHome.refused => (tip: t.pcBlockedTip, idLine: t.pcBlockedId),
++      HjvPcHome.refusedLoggedIn => (tip: t.pcBlockedTip, idLine: null),
++      _ => null,
++    };
++
+ /// The mode of an answer of GET /api/hjv/access (the doc 3-6); null for an answer of another
+ /// form, which leaves the mode the app knew.
+ String? hjvGateModeOf(int status, String body) {
+@@ -305,6 +322,10 @@ class HjvAccessTexts {
+   String get pcPasswordButton => _t('이용 비밀번호 넣기', 'Enter access password');
+   String get pcStatus =>
+       _t('서버에 연결되지 않음(로그인 필요)', 'Not connected to the server (log in)');
++  String get pcBlockedTip => _t('이 PC는 지금 연결을 받을 수 없습니다.',
++      'This PC cannot accept connections right now.');
++  String get pcBlockedId => _t('로그인하거나 이용 비밀번호를 넣으면 이 ID로 연결을 받을 수 있습니다.',
++      'Once you log in or enter the access password, this PC accepts connections with this ID.');
+ 
+   // P1 of a logged-in PC: the account's cause, or none
+   String get pcLoggedInTitle => _t('로그인했지만 서버가 이 PC를 받지 않고 있습니다',
+@@ -342,6 +363,9 @@ class HjvAccessTexts {
+   String get connectHint => _t(
+       '이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연결하려면 연세포탈로 로그인하세요. 이용 비밀번호가 있으면 연결할 때 넣을 수 있습니다.',
+       'This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect, or enter an access password when you connect.');
++  // its one line; connectHint is its tooltip
++  String get connectHintShort =>
++      _t('교직원 전용 서버 · 로그인이 필요합니다', 'Staff-only server · Login required');
+ 
+   // a logout, and taking a PC out of the list, on a staff-only server (the doc 3-6)
+   String logoutGate({required bool known}) => known
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 559a4f1..e6a9410 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -451,6 +451,13 @@ Future<void> _announceThisPc() async {
+               close();
+               _setPcPassword();
+             }
++          : null,
++      onInstall: notice.install && !bind.isDisableInstallation()
++          ? () async {
++              close();
++              await rustDeskWinManager.closeAllSubWindows();
++              bind.mainGotoInstall();
++            }
+           : null));
+ }
+ 
+@@ -723,7 +730,8 @@ CustomAlertDialog hjvLoginNoticeDialog(HjvTexts t, HjvLoginNotice notice,
+         {bool gateOpen = true,
+         required VoidCallback onOk,
+         VoidCallback? onUndo,
+-        VoidCallback? onSetPassword}) =>
++        VoidCallback? onSetPassword,
++        VoidCallback? onInstall}) =>
+     CustomAlertDialog(
+       title: Text(notice.title),
+       content: Column(
+@@ -744,7 +752,8 @@ CustomAlertDialog hjvLoginNoticeDialog(HjvTexts t, HjvLoginNotice notice,
+       ),
+       actions: [
+         if (onUndo != null) _button(t.removeThisPc, onUndo, outline: true),
+-        _button(t.ok, onOk),
++        _button(t.ok, onOk, outline: onInstall != null),
++        if (onInstall != null) _button(t.install, onInstall),
+       ],
+       onSubmit: onOk,
+       onCancel: onOk,
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 57324c8..1cf4c0a 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -40,6 +40,7 @@ class HjvTexts {
+   String get passwordMissed =>
+       _t('연세포탈 비밀번호를 넣어 주세요.', 'Enter your Yonsei portal password.');
+   String get ok => _t('확인', 'OK');
++  String get install => _t('설치하기', 'Install');
+   String get cancel => _t('취소', 'Cancel');
+   String get close => _t('닫기', 'Close');
+   String get retry => _t('재시도', 'Retry');
+@@ -513,8 +514,11 @@ class HjvLoginNotice {
+ 
+   /// The PC has no permanent password: a line with [지금 정하기].
+   final bool askPassword;
++
++  /// HJViewer runs without being installed: [설치하기], after which a login adds the PC.
++  final bool install;
+   const HjvLoginNotice(this.title, this.lines,
+-      {this.undo = false, this.askPassword = false});
++      {this.undo = false, this.askPassword = false, this.install = false});
+ }
+ 
+ /// The notice after a login on a Windows PC, or null for none. `status` and `undo` are
+@@ -530,7 +534,9 @@ HjvLoginNotice? hjvLoginNotice(HjvTexts t,
+     required HjvPcState state,
+     required bool passwordSet,
+     bool gateOpen = true}) {
+-  if (!installed) return HjvLoginNotice(t.notAddedTitle, [t.notInstalled]);
++  if (!installed) {
++    return HjvLoginNotice(t.notAddedTitle, [t.notInstalled], install: true);
++  }
+   switch (status) {
+     case 'other_account':
+       return HjvLoginNotice(t.notAddedTitle, [t.otherAccount]);
+diff --git a/flutter/lib/common/widgets/peers_view.dart b/flutter/lib/common/widgets/peers_view.dart
+index 936140d..d0e0b35 100644
+--- a/flutter/lib/common/widgets/peers_view.dart
++++ b/flutter/lib/common/widgets/peers_view.dart
+@@ -15,6 +15,7 @@ import 'package:window_manager/window_manager.dart';
+ 
+ import '../../common.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjviewer_access.dart';
+ import '../../models/peer_model.dart';
+ import '../../models/platform_model.dart';
+ import 'peer_card.dart';
+@@ -464,11 +465,13 @@ Widget hjvLoginPlaceholder(
+       title: gFFI.peerTabModel.tabTooltip(tab.index),
+       action: SizedBox(
+         height: 40,
+-        child: ElevatedButton(
+-            style: ElevatedButton.styleFrom(
+-                padding: const EdgeInsets.symmetric(horizontal: 22)),
+-            onPressed: onLogin,
+-            child: Text(translate("Login"))),
++        // HJViewer: plain while the PC home's notice has the filled [로그인] (one a window)
++        child: hjvAccessLogInButton(onLogin,
++            filled: ElevatedButton(
++                style: ElevatedButton.styleFrom(
++                    padding: const EdgeInsets.symmetric(horizontal: 22)),
++                onPressed: onLogin,
++                child: Text(translate("Login")))),
+       ));
+ }
+ 
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 55b21fd..b96f75c 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
++import 'package:flutter_hbb/common/hjviewer_access_texts.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/common/widgets/animated_rotation_widget.dart';
+@@ -93,10 +94,13 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+         alignment: Alignment.center,
+         child: loadLogo(),
+       ),
+-      buildTip(context),
++      hjvAccessPcBlocked((blocked) => buildTip(context, blocked?.tip)),
+       if (!isOutgoingOnly) ...hjvAccessPcNotice(),
+-      if (!isOutgoingOnly) _hjvIDBoard(context),
+-      if (!isOutgoingOnly) _hjvPasswordBoard(context),
++      if (!isOutgoingOnly)
++        hjvAccessPcBlocked((blocked) => _hjvIDBoard(context, blocked)),
++      if (!isOutgoingOnly)
++        hjvAccessPcBlocked(
++            (blocked) => _hjvPasswordBoard(context, dim: blocked != null)),
+       FutureBuilder<Widget>(
+         future: Future.value(
+             Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
+@@ -140,14 +144,17 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+           children: [
+             Column(
+               children: [
+-                SingleChildScrollView(
+-                  controller: _leftPaneScrollController,
+-                  child: Column(
+-                    key: _childKey,
+-                    children: children,
++                // HJViewer: bounded, so that the pane scrolls once its notices and cards are
++                // taller than the window
++                Expanded(
++                  child: SingleChildScrollView(
++                    controller: _leftPaneScrollController,
++                    child: Column(
++                      key: _childKey,
++                      children: children,
++                    ),
+                   ),
+                 ),
+-                Expanded(child: Container())
+               ],
+             ),
+             if (isOutgoingOnly)
+@@ -394,17 +401,21 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+   }
+ 
+   // HJViewer: the ID and the password as cards (common/hjv_style.dart); upstream's buildIDBoard
+-  // and buildPasswordBoard stay as they are, unused.
+-  Widget _hjvIDBoard(BuildContext context) {
++  // and buildPasswordBoard stay as they are, unused. While P1 shows (`blocked`), nobody can
++  // connect with them: the ID's card loses its blue, their values are dimmed, and the ID's card
++  // says what makes it work.
++  Widget _hjvIDBoard(BuildContext context, HjvPcBlocked? blocked) {
+     final model = gFFI.serverModel;
+     final p = HjvPalette.of(context);
+     return Container(
+       margin: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+       padding: const EdgeInsets.fromLTRB(12, 8, 4, 10),
+-      decoration: BoxDecoration(
+-        color: p.primarySoft,
+-        borderRadius: BorderRadius.circular(HjvRadius.lg),
+-      ),
++      decoration: blocked != null
++          ? hjvCardDecoration(context)
++          : BoxDecoration(
++              color: p.primarySoft,
++              borderRadius: BorderRadius.circular(HjvRadius.lg),
++            ),
+       child: Column(
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+@@ -415,7 +426,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                     style: TextStyle(
+                         fontSize: 12,
+                         fontWeight: FontWeight.w600,
+-                        color: p.primary)),
++                        color: blocked != null ? p.textTertiary : p.primary)),
+               ),
+               buildPopupMenu(context),
+             ],
+@@ -436,15 +447,22 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                 focusedBorder: InputBorder.none,
+                 contentPadding: EdgeInsets.only(top: 2, bottom: 2),
+               ),
+-              style: HjvText.idLarge.copyWith(fontSize: 24, color: p.text),
++              style: HjvText.idLarge.copyWith(
++                  fontSize: 24,
++                  color: blocked != null ? p.textTertiary : p.text),
+             ).workaroundFreezeLinuxMint(),
+           ),
++          if (blocked?.idLine != null)
++            Text(blocked!.idLine!,
++                    style: TextStyle(
++                        fontSize: 12, height: 1.45, color: p.textSecondary))
++                .marginOnly(top: 2, right: 8),
+         ],
+       ),
+     );
+   }
+ 
+-  Widget _hjvPasswordBoard(BuildContext context) {
++  Widget _hjvPasswordBoard(BuildContext context, {bool dim = false}) {
+     return ChangeNotifierProvider.value(
+         value: gFFI.serverModel,
+         child: Consumer<ServerModel>(
+@@ -498,7 +516,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                                 fontSize: 17,
+                                 fontWeight: FontWeight.w600,
+                                 letterSpacing: 1,
+-                                color: p.text,
++                                color: dim ? p.textTertiary : p.text,
+                                 fontFeatures: HjvText.tabular),
+                           ).workaroundFreezeLinuxMint(),
+                         ),
+@@ -535,7 +553,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+         ));
+   }
+ 
+-  buildTip(BuildContext context) {
++  // HJViewer: `hjvTip` in place of desk_tip while nobody can connect to this PC (P1)
++  buildTip(BuildContext context, [String? hjvTip]) {
+     final isOutgoingOnly = bind.isOutgoingOnly();
+     return Padding(
+       padding:
+@@ -561,7 +580,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+           ),
+           if (!isOutgoingOnly)
+             Text(
+-              translate("desk_tip"),
++              hjvTip ?? translate("desk_tip"),
+               overflow: TextOverflow.clip,
+               style: Theme.of(context).textTheme.bodySmall,
+             ),
+@@ -609,8 +628,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+ 
+     if (isWindows && !bind.isDisableInstallation()) {
+       if (!bind.mainIsInstalled()) {
+-        return buildInstallCard(
+-            "", bind.isOutgoingOnly() ? "" : "install_tip", "Install",
++        // HJViewer: in the app's look
++        return _hjvInstallCard(bind.isOutgoingOnly() ? "" : "install_tip",
+             () async {
+           await rustDeskWinManager.closeAllSubWindows();
+           bind.mainGotoInstall();
+@@ -724,6 +743,48 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+     return Container();
+   }
+ 
++  // HJViewer: the card of a PC that runs without being installed in the app's look, an info
++  // notice with one primary button, in place of upstream's gradient card
++  Widget _hjvInstallCard(String content, GestureTapCallback onPressed) {
++    if (bind.mainGetBuildinOption(key: kOptionHideHelpCards) == 'Y') {
++      return const SizedBox();
++    }
++    final p = HjvPalette.of(context);
++    return Container(
++      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
++      padding: const EdgeInsets.all(12),
++      decoration: BoxDecoration(
++        color: p.primarySoft,
++        borderRadius: BorderRadius.circular(HjvRadius.lg),
++      ),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.stretch,
++        children: [
++          if (content.isNotEmpty)
++            Row(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Icon(Icons.install_desktop_rounded, size: 16, color: p.primary)
++                    .marginOnly(top: 1, right: 6),
++                Expanded(
++                  child: Text(translate(content),
++                      style: TextStyle(
++                          fontSize: 12, height: 1.45, color: p.textSecondary)),
++                ),
++              ],
++            ).marginOnly(bottom: 10),
++          SizedBox(
++            height: 34,
++            child: ElevatedButton(
++                style: ElevatedButton.styleFrom(elevation: 0),
++                onPressed: onPressed,
++                child: Text(translate('Install'))),
++          ),
++        ],
++      ),
++    );
++  }
++
+   Widget buildInstallCard(String title, String content, String btnText,
+       GestureTapCallback onPressed,
+       {double marginTop = 20.0,
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index 67da85a..35babf4 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -176,6 +176,10 @@ void runMainApp(bool startService) async {
+     windowManager.setTitle(getWindowName());
+     // Do not use `windowManager.setResizable()` here.
+     setResizable(!bind.isIncomingOnly());
++    // HJViewer: room for the home's left pane and the connect box
++    if (!bind.isIncomingOnly()) {
++      windowManager.setMinimumSize(const Size(720, 520));
++    }
+   });
+ }
+ 
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index bbab6ae..f83943e 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -38,6 +38,8 @@ List<String> texts(HjvAccessTexts t) => [
+       t.pcPassword,
+       t.pcPasswordButton,
+       t.pcStatus,
++      t.pcBlockedTip,
++      t.pcBlockedId,
+       t.pcLoggedInTitle,
+       t.pcCheckAgain,
+       t.pcStatusLoggedIn,
+@@ -51,6 +53,7 @@ List<String> texts(HjvAccessTexts t) => [
+       t.endAndClose,
+       t.keepAccepting,
+       t.connectHint,
++      t.connectHintShort,
+       t.logoutGate(known: true),
+       t.logoutGate(known: false),
+       t.logoutRemoteNow,
+@@ -235,6 +238,22 @@ void main() {
+       expect(
+           home('ok', installed: installed, loggedIn: loggedIn), HjvPcHome.none);
+     }
++    // one filled [로그인] a window: P1 of a PC without a login and G2 carry it
++    expect(HjvPcHome.values.where(hjvPcHomeLogsIn),
++        [HjvPcHome.refused, HjvPcHome.logIn]);
++    // while P1 shows, the home says nobody can connect with its ID, and what to do where there is
++    // something to do
++    expect(hjvPcBlocked(ko, HjvPcHome.refused), (
++      tip: '이 PC는 지금 연결을 받을 수 없습니다.',
++      idLine: '로그인하거나 이용 비밀번호를 넣으면 이 ID로 연결을 받을 수 있습니다.'
++    ));
++    expect(hjvPcBlocked(en, HjvPcHome.refusedLoggedIn),
++        (tip: 'This PC cannot accept connections right now.', idLine: null));
++    for (final home in [HjvPcHome.none, HjvPcHome.guest, HjvPcHome.logIn]) {
++      expect(hjvPcBlocked(ko, home), isNull, reason: '$home');
++    }
++    // G3's one line, the whole text in its tooltip
++    expect(ko.connectHintShort, '교직원 전용 서버 · 로그인이 필요합니다');
+     // the ticket's end, with the day when it is not today's
+     final now = DateTime(2026, 10, 17, 9, 5);
+     expect(hjvUntilText(DateTime(2026, 10, 17, 18, 30), now), '18:30');
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index eacab48..b4eea40 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -450,6 +450,9 @@ void main() {
+     test('the other results', () {
+       expect(notice(installed: false)?.lines,
+           ['설치하지 않고 실행한 HJViewer라 내 기기 목록에 넣지 않았습니다.']);
++      // only HJViewer that is not installed offers [설치하기]
++      expect(notice(installed: false)?.install, isTrue);
++      expect(notice(status: 'other_account')?.install, isFalse);
+       expect(notice(status: 'other_account')?.lines,
+           ['다른 계정에 등록된 PC입니다. 관리자에게 문의하세요.']);
+       for (final status in ['check_failed', 'not_eligible']) {
+diff --git a/flutter/test/hjviewer_account_widgets_test.dart b/flutter/test/hjviewer_account_widgets_test.dart
+index 8e4b206..c03f9d3 100644
+--- a/flutter/test/hjviewer_account_widgets_test.dart
++++ b/flutter/test/hjviewer_account_widgets_test.dart
+@@ -175,6 +175,27 @@ void main() {
+     await show(tester, hjvLoginNoticeDialog(ko, notice, onOk: () => ok++));
+     expect(find.text('이 PC 빼기'), findsNothing);
+     expect(find.text('지금 정하기'), findsNothing);
++    expect(find.text('설치하기'), findsNothing);
++    await settle(tester);
++  });
++
++  testWidgets('the notice of HJViewer that is not installed offers [설치하기]',
++      (tester) async {
++    var ok = 0, install = 0;
++    final notice = hjvLoginNotice(ko,
++        installed: false,
++        status: null,
++        undo: false,
++        boundByLogin: false,
++        state: HjvPcState.parse(''),
++        passwordSet: true)!;
++    await show(
++        tester,
++        hjvLoginNoticeDialog(ko, notice,
++            onOk: () => ok++, onInstall: () => install++));
++    await tester.tap(find.text('설치하기'));
++    await tester.tap(find.text('확인'));
++    expect((ok, install), (1, 1));
+     await settle(tester);
+   });
+ 
+diff --git a/src/lang/en.rs b/src/lang/en.rs
+index b7e5830..9bc5ecc 100644
+--- a/src/lang/en.rs
++++ b/src/lang/en.rs
+@@ -33,7 +33,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Insert Lock", "Insert lock"),
+         ("Set Password", "Set password"),
+         ("OS Password", "OS password"),
+-        ("install_tip", "Due to UAC, RustDesk can not work properly as the remote side in some cases. To avoid UAC, please click the button below to install RustDesk to the system."),
++        ("install_tip", "Once installed, HJViewer starts with Windows; once you log in, this PC is listed in My PCs and can be reached even when nobody is at it. Windows that ask for administrator rights (UAC) can be handled remotely too."),
+         ("config_acc", "In order to control your Desktop remotely, you need to grant RustDesk \"Accessibility\" permissions."),
+         ("config_screen", "In order to access your Desktop remotely, you need to grant RustDesk \"Screen Recording\" permissions."),
+         ("Installation Path", "Installation path"),
+diff --git a/src/lang/ko.rs b/src/lang/ko.rs
+index 87e538b..d9c80b0 100644
+--- a/src/lang/ko.rs
++++ b/src/lang/ko.rs
+@@ -145,7 +145,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Failed to make direct connection to remote desktop", "원격 데스크탑 직접 연결에 실패했습니다"),
+         ("Set Password", "비밀번호 설정"),
+         ("OS Password", "OS 비밀번호"),
+-        ("install_tip", "UAC로 인해 경우에 따라 RustDesk가 원격 쪽에서 제대로 작동하지 않을 수 있습니다. UAC를 피하려면 아래 버튼을 클릭하여 시스템에 RustDesk를 설치하세요."),
++        ("install_tip", "설치하면 Windows와 함께 시작되고, 로그인하면 내 PC 목록에 올라 사람이 없을 때도 연결할 수 있습니다. 관리자 권한 창(UAC)도 원격으로 다룰 수 있습니다."),
+         ("Click to upgrade", "업그레이드"),
+         ("Configure", "구성"),
+         ("config_acc", "데스크탑을 원격으로 제어하려면 RustDesk에 \"접근성\" 권한을 부여해야 합니다."),

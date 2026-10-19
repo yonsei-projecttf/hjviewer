@@ -1,0 +1,1142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 21:59:00 +0900
+Subject: [PATCH 76/85] hjviewer: tokens that pass contrast, Korean line breaks
+
+U23: the peer cards, rows and the ID field's suggestions draw the
+online state with hjvOnlineDot (hjv_style.dart): a filled dot in the
+palette's success colour when online, a hollow ring in textTertiary
+when offline, in place of Material's green and the orange kColorWarn,
+which told them apart by colour alone. Each card gives a screen reader
+one label (name, online state, platform, user@host, note) in place of
+its pieces and their tooltips; the menu button keeps its own node.
+
+U46: the palette keeps its hierarchy with new values: textTertiary
+New tokens dangerText (#C8321F light, #F97066 dark) for danger as
+text, and primaryFill/primaryFillHover (#1E6FD9/#1659BE light,
+theme's elevated buttons, the FAB, the CM's buttons, the phone's
+connect button and locked keycaps. Hover and press darken a fill
+instead of lightening it. Text on primarySoft or fill (the settings
+side bar, the ID's name, the side list, the note block's and the
+update callout's buttons) is primaryStrong. colorScheme.error is
+dangerText, error lines are 13 px, the menus' delete, remove and log
+out texts use dangerText. Check boxes get a textTertiary border and
+switches a textSecondary thumb when off in both themes, the password
+fields' eye icon is textSecondary, and under high contrast (iOS
+Increase Contrast, Windows high contrast) fields get a thin border.
+
+U47: hjvKeepAll (hjv_style.dart) puts U+2060 WORD JOINER between the
+characters of each word with Hangul, so Korean lines break only at
+spaces (CSS word-break: keep-all); other words stay as they are. It
+is applied on the widget side only (not in _t, so tests and the texts
+sent to Rust are unchanged): A1, A2 and P2's bodies and hint, the
+P1/P2/G2 card, G1, G3 and the other note blocks' texts.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                       |   4 +-
+ flutter/lib/common/hjv_style.dart             |  75 +++++++++-
+ flutter/lib/common/hjv_theme.dart             |  43 ++++--
+ flutter/lib/common/hjv_update.dart            |   6 +-
+ flutter/lib/common/hjviewer_access.dart       |  18 +--
+ flutter/lib/common/hjviewer_account.dart      |  13 +-
+ flutter/lib/common/widgets/dialog.dart        |  24 ++--
+ flutter/lib/common/widgets/login.dart         |   2 +-
+ flutter/lib/common/widgets/my_group.dart      |   4 +-
+ flutter/lib/common/widgets/peer_card.dart     | 103 ++++++++-----
+ .../lib/desktop/pages/desktop_home_page.dart  |   2 +-
+ .../desktop/pages/desktop_setting_page.dart   |  10 +-
+ flutter/lib/desktop/pages/server_page.dart    |  25 ++--
+ flutter/lib/main.dart                         |   7 +
+ flutter/lib/mobile/pages/connection_page.dart |   2 +-
+ flutter/lib/mobile/pages/remote_page.dart     |   8 +-
+ flutter/lib/mobile/widgets/gesture_help.dart  |   2 +-
+ flutter/test/hjviewer_style_test.dart         | 136 ++++++++++++++++++
+ 18 files changed, 383 insertions(+), 101 deletions(-)
+ create mode 100644 flutter/test/hjviewer_style_test.dart
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index 6c9aa24..7e7da60 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -258,7 +258,7 @@ class MyTheme {
+   static const Color canvasColor = Color(0xFF212121);
+   static const Color border = Color(0xFFD1D6DD);
+   static const Color idColor = Color(0xFF1E6FD9);
+-  static const Color darkGray = Color(0xFF8B95A1);
++  static const Color darkGray = Color(0xFF647080);
+   static const Color cmIdColor = Color(0xFF21790B);
+   static const Color dark = Colors.black87;
+   static const Color button = Color(0xFF1E6FD9);
+@@ -4091,7 +4091,7 @@ Widget netWorkErrorWidget() {
+           builder: (context) => SelectableText(
+               gFFI.userModel.networkError.value,
+               style: TextStyle(
+-                  fontSize: 12, color: HjvPalette.of(context).danger))),
++                  fontSize: 13, color: HjvPalette.of(context).dangerText))),
+     ],
+   ));
+ }
+diff --git a/flutter/lib/common/hjv_style.dart b/flutter/lib/common/hjv_style.dart
+index f184cfa..140251a 100644
+--- a/flutter/lib/common/hjv_style.dart
++++ b/flutter/lib/common/hjv_style.dart
+@@ -11,13 +11,19 @@ import 'package:flutter/semantics.dart';
+ /// The typeface every text uses, bundled in assets/fonts (Regular 400, SemiBold 600, Bold 700).
+ const String kHjvFont = 'Pretendard';
+ 
+-/// One theme's colours.
++/// One theme's colours. Small text in text, textSecondary, textTertiary, primaryStrong and
++/// dangerText reaches 4.5:1 on surface, card, canvas and fill (WCAG AA), white on primaryFill too.
+ class HjvPalette {
+-  /// the app icon's blue, and its darker and its faint tint
++  /// the app icon's blue, and its darker and its faint tint; primaryStrong is also the text on a
++  /// faint background (primarySoft, fill), where primary does not reach 4.5:1
+   final Color primary;
+   final Color primaryStrong;
+   final Color primarySoft;
+ 
++  /// a filled button with white on it, and its hover and press (all at least 4.5:1 with white)
++  final Color primaryFill;
++  final Color primaryFillHover;
++
+   /// the frame around the content (title and tab bars, side panels: colorScheme.background), the
+   /// content (scaffoldBackgroundColor), a card on the content, and the fill of fields
+   final Color canvas;
+@@ -37,7 +43,10 @@ class HjvPalette {
+ 
+   final Color success;
+   final Color warning;
++
++  /// danger for icons, dots and faint backgrounds; dangerText for text (4.5:1 on card and fill)
+   final Color danger;
++  final Color dangerText;
+ 
+   /// the hover of a row or an icon button; hoverStrong where the background is canvas or fill
+   final Color hover;
+@@ -50,6 +59,8 @@ class HjvPalette {
+     required this.primary,
+     required this.primaryStrong,
+     required this.primarySoft,
++    required this.primaryFill,
++    required this.primaryFillHover,
+     required this.canvas,
+     required this.surface,
+     required this.card,
+@@ -63,6 +74,7 @@ class HjvPalette {
+     required this.success,
+     required this.warning,
+     required this.danger,
++    required this.dangerText,
+     required this.hover,
+     required this.hoverStrong,
+     required this.dangerFill,
+@@ -72,6 +84,8 @@ class HjvPalette {
+     primary: Color(0xFF1E6FD9),
+     primaryStrong: Color(0xFF1659BE),
+     primarySoft: Color(0xFFEAF2FE),
++    primaryFill: Color(0xFF1E6FD9),
++    primaryFillHover: Color(0xFF1659BE),
+     canvas: Color(0xFFF3F5F8),
+     surface: Color(0xFFFFFFFF),
+     card: Color(0xFFFFFFFF),
+@@ -80,11 +94,12 @@ class HjvPalette {
+     borderStrong: Color(0xFFD1D6DD),
+     text: Color(0xFF191F28),
+     textSecondary: Color(0xFF4E5968),
+-    textTertiary: Color(0xFF8B95A1),
++    textTertiary: Color(0xFF647080),
+     textDisabled: Color(0xFFB0B8C1),
+     success: Color(0xFF12B76A),
+     warning: Color(0xFFF79009),
+     danger: Color(0xFFF04438),
++    dangerText: Color(0xFFC8321F),
+     hover: Color(0xFFEEF1F5),
+     hoverStrong: Color(0xFFE4E8ED),
+     dangerFill: Color(0xFFD92D20),
+@@ -94,6 +109,8 @@ class HjvPalette {
+     primary: Color(0xFF4C8DF0),
+     primaryStrong: Color(0xFF6CA2F4),
+     primarySoft: Color(0xFF1A2639),
++    primaryFill: Color(0xFF2B6BD3),
++    primaryFillHover: Color(0xFF2566C8),
+     canvas: Color(0xFF1A1D23),
+     surface: Color(0xFF121418),
+     card: Color(0xFF1A1D23),
+@@ -102,11 +119,12 @@ class HjvPalette {
+     borderStrong: Color(0xFF3A404B),
+     text: Color(0xFFECEFF3),
+     textSecondary: Color(0xFFB4BCC6),
+-    textTertiary: Color(0xFF7E8794),
++    textTertiary: Color(0xFF8A93A0),
+     textDisabled: Color(0xFF555D69),
+     success: Color(0xFF32D583),
+     warning: Color(0xFFFDB022),
+     danger: Color(0xFFF97066),
++    dangerText: Color(0xFFF97066),
+     hover: Color(0xFF242832),
+     hoverStrong: Color(0xFF2C313B),
+     dangerFill: Color(0xFFD92D20),
+@@ -281,3 +299,52 @@ void hjvShowToast(OverlayState overlay, String text,
+     _toast = null;
+   });
+ }
++
++/// U+2060 WORD JOINER: no line break on either side of it, and nothing drawn.
++const String kHjvWordJoiner = '\u2060';
++
++final _hangul = RegExp(r'[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7A3]');
++
++/// Korean text that breaks lines only at spaces, as CSS's word-break: keep-all: Flutter breaks
++/// Hangul between any two syllables ('연세포/탈로'), so each word with Hangul in it gets a word
++/// joiner between its characters. Words without Hangul (URLs, IDs, English) and the spaces and
++/// line breaks stay as they are; a word longer than the line still breaks where it must. For
++/// shown text only: not for text that is compared, copied or sent on.
++String hjvKeepAll(String s) {
++  if (!_hangul.hasMatch(s)) return s;
++  return s.splitMapJoin(RegExp(r'\S+'),
++      onMatch: (m) {
++        final word = m[0]!;
++        return _hangul.hasMatch(word)
++            ? word.characters.join(kHjvWordJoiner)
++            : word;
++      },
++      onNonMatch: (space) => space);
++}
++
++/// A peer's online state as a dot that does not rest on colour alone: a filled dot in the
++/// success colour when online, a hollow ring in the tertiary text colour when offline.
++Widget hjvOnlineDot(BuildContext context, bool online, {double size = 6}) {
++  final p = HjvPalette.of(context);
++  return Container(
++    width: size,
++    height: size,
++    decoration: BoxDecoration(
++      shape: BoxShape.circle,
++      color: online ? p.success : null,
++      border: online ? null : Border.all(color: p.textTertiary, width: 1.2),
++    ),
++  );
++}
++
++/// What a screen reader says for a peer's card, in one go: its name, whether it is online, the
++/// platform, user@host and the note, the empty ones left out.
++String hjvPeerSemanticsLabel(
++        {required String title,
++        required String state,
++        String platform = '',
++        String name = '',
++        String note = ''}) =>
++    [title, state, platform, name, note]
++        .where((e) => e.trim().isNotEmpty)
++        .join(', ');
+diff --git a/flutter/lib/common/hjv_theme.dart b/flutter/lib/common/hjv_theme.dart
+index c8fb3ce..8673fe0 100644
+--- a/flutter/lib/common/hjv_theme.dart
++++ b/flutter/lib/common/hjv_theme.dart
+@@ -61,7 +61,8 @@ ThemeData hjvRestyle(ThemeData base) {
+       surfaceContainerHighest: p.fill,
+       onSurfaceVariant: p.textSecondary,
+       outline: p.border,
+-      error: p.danger,
++      // the error's text (fields, the login); the error border keeps danger
++      error: p.dangerText,
+     ),
+     appBarTheme: AppBarTheme(
+       backgroundColor: p.surface,
+@@ -125,7 +126,7 @@ ThemeData hjvRestyle(ThemeData base) {
+     ),
+     elevatedButtonTheme: ElevatedButtonThemeData(
+       style: ElevatedButton.styleFrom(
+-        backgroundColor: p.primary,
++        backgroundColor: p.primaryFill,
+         foregroundColor: Colors.white,
+         disabledBackgroundColor: p.fill,
+         disabledForegroundColor: p.textDisabled,
+@@ -135,7 +136,17 @@ ThemeData hjvRestyle(ThemeData base) {
+             fontFamily: kHjvFont, fontWeight: FontWeight.w600),
+         shape: RoundedRectangleBorder(borderRadius: radius),
+         splashFactory: desktop ? NoSplash.splashFactory : null,
+-      ),
++      ).copyWith(
++          // hover and press darken the fill, so that the white text keeps 4.5:1 (a white overlay
++          // would lighten it below that)
++          overlayColor: WidgetStateProperty.resolveWith((states) =>
++              states.contains(WidgetState.pressed)
++                  ? Colors.black.withOpacity(0.16)
++                  : states.contains(WidgetState.focused)
++                      ? Colors.black.withOpacity(0.12)
++                      : states.contains(WidgetState.hovered)
++                          ? Colors.black.withOpacity(0.08)
++                          : null)),
+     ),
+     outlinedButtonTheme: OutlinedButtonThemeData(
+       style: OutlinedButton.styleFrom(
+@@ -179,7 +190,7 @@ ThemeData hjvRestyle(ThemeData base) {
+               : BorderSide(
+                   color: states.contains(WidgetState.disabled)
+                       ? p.border
+-                      : (dark ? p.textTertiary : p.borderStrong),
++                      : p.textTertiary,
+                   width: 1.5)),
+       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+     ),
+@@ -198,7 +209,7 @@ ThemeData hjvRestyle(ThemeData base) {
+               ? Colors.white
+               : states.contains(WidgetState.disabled)
+                   ? p.textDisabled
+-                  : (dark ? p.textSecondary : Colors.white)),
++                  : p.textSecondary),
+       trackColor: WidgetStateProperty.resolveWith((states) =>
+           states.contains(WidgetState.disabled)
+               ? (states.contains(WidgetState.selected)
+@@ -295,10 +306,10 @@ ThemeData hjvRestyle(ThemeData base) {
+     ),
+     progressIndicatorTheme: ProgressIndicatorThemeData(color: p.primary),
+     floatingActionButtonTheme: FloatingActionButtonThemeData(
+-      backgroundColor: p.primary,
++      backgroundColor: p.primaryFill,
+       foregroundColor: Colors.white,
+-      hoverColor: p.primaryStrong,
+-      focusColor: p.primaryStrong,
++      hoverColor: p.primaryFillHover,
++      focusColor: p.primaryFillHover,
+       elevation: 2,
+       hoverElevation: 4,
+       highlightElevation: 4,
+@@ -344,3 +355,19 @@ ThemeData hjvRestyle(ThemeData base) {
+     ],
+   );
+ }
++
++/// MaterialApp's highContrastTheme and highContrastDarkTheme (main.dart): the theme with a thin
++/// border in the tertiary text colour around the fields, for iOS's Increase Contrast and
++/// Windows's high contrast, where the fill alone hardly sets a field off its background.
++ThemeData hjvHighContrast(ThemeData theme) {
++  final p = theme.brightness == Brightness.dark
++      ? HjvPalette.dark
++      : HjvPalette.light;
++  final border = OutlineInputBorder(
++    borderRadius: BorderRadius.circular(HjvRadius.md),
++    borderSide: BorderSide(color: p.textTertiary),
++  );
++  return theme.copyWith(
++      inputDecorationTheme: theme.inputDecorationTheme
++          .copyWith(border: border, enabledBorder: border));
++}
+diff --git a/flutter/lib/common/hjv_update.dart b/flutter/lib/common/hjv_update.dart
+index 4a734cd..e442fae 100644
+--- a/flutter/lib/common/hjv_update.dart
++++ b/flutter/lib/common/hjv_update.dart
+@@ -877,7 +877,11 @@ class _HjvStrip extends StatelessWidget {
+                 child: Text(text,
+                     style:
+                         TextStyle(fontSize: 13, height: 1.4, color: p.text)))),
+-        TextButton(onPressed: onAction, child: Text(action)),
++        TextButton(
++            // the accent's darker shade, which keeps 4.5:1 on the soft tint
++            style: TextButton.styleFrom(foregroundColor: p.primaryStrong),
++            onPressed: onAction,
++            child: Text(action)),
+         IconButton(
+             tooltip: HjvUpdateText.close,
+             icon: Icon(Icons.close, size: 18, color: p.textTertiary),
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 5004be6..bb1ec34 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -136,7 +136,7 @@ Widget _passwordField(HjvAccessTexts t, TextEditingController controller,
+               prefixIcon: const Icon(Icons.key_rounded, size: 20),
+               suffixIcon: hjvPasswordEye(context,
+                   visible: visible, onPressed: onToggle),
+-              helperText: t.passwordHint,
++              helperText: hjvKeepAll(t.passwordHint),
+               errorText: error,
+               keyboardType: TextInputType.visiblePassword,
+               textInputAction: TextInputAction.done,
+@@ -271,7 +271,7 @@ List<Widget> hjvAccessKeepLoggedIn({EdgeInsets margin = EdgeInsets.zero}) =>
+                 child: Builder(
+                     builder: (context) => hjvNoteBlock(context,
+                         icon: Icons.info_outline_rounded,
+-                        text: Text(_t.keepLoggedIn))))
++                        text: Text(hjvKeepAll(_t.keepLoggedIn)))))
+           ]
+         : [];
+ 
+@@ -491,7 +491,7 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+-          Text(t.refused, style: hjvDialogTextStyle(context)),
++          Text(hjvKeepAll(t.refused), style: hjvDialogTextStyle(context)),
+           if (open) ...[
+             const SizedBox(height: 8),
+             _passwordField(t, controller,
+@@ -547,7 +547,8 @@ void _refusedAgainDialog(HjvAccessTexts t, SessionID sessionId, String title,
+     return CustomAlertDialog(
+       title: HjvDialogTitle(Icons.error_outline_rounded, translate(title),
+           danger: true),
+-      content: Text(t.refusedAgain, style: hjvDialogTextStyle(context)),
++      content:
++          Text(hjvKeepAll(t.refusedAgain), style: hjvDialogTextStyle(context)),
+       actions: [
+         _button(t.close, cancel, outline: !forward),
+         if (!forward) _button(t.reconnect, again),
+@@ -682,13 +683,13 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+                             maxLines: 1,
+                             overflow: TextOverflow.ellipsis,
+                             style: style))
+-                    : Text(heading, style: style),
++                    : Text(hjvKeepAll(heading), style: style),
+               ),
+             ],
+           ),
+           if (title != null && text != null) ...[
+             const SizedBox(height: 4),
+-            Text(text,
++            Text(hjvKeepAll(text),
+                 style: TextStyle(
+                     fontSize: 12, height: 1.45, color: p.textSecondary)),
+           ],
+@@ -761,7 +762,8 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+-          Text(t.pcPasswordText, style: hjvDialogTextStyle(context)),
++          Text(hjvKeepAll(t.pcPasswordText),
++              style: hjvDialogTextStyle(context)),
+           const SizedBox(height: 8),
+           _passwordField(t, controller,
+               visible: visible,
+@@ -830,7 +832,7 @@ class _HjvConnectHint extends StatelessWidget {
+                   message: t.connectHint,
+                   triggerMode: isDesktop ? null : TooltipTriggerMode.tap,
+                   showDuration: const Duration(seconds: 8),
+-                  child: Text(t.connectHintShort,
++                  child: Text(hjvKeepAll(t.connectHintShort),
+                       style: TextStyle(
+                           fontSize: 13, height: 1.45, color: p.textSecondary)),
+                 ),
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 0cbb565..39ff821 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -196,7 +196,8 @@ List<Widget> hjvLoginPilot() => _accountBuild
+         // HJViewer: a quiet notice block of the app's look
+         Builder(
+             builder: (context) => hjvNoteBlock(context,
+-                icon: Icons.info_outline_rounded, text: Text(_t.pilotNotice)))
++                icon: Icons.info_outline_rounded,
++                text: Text(hjvKeepAll(_t.pilotNotice))))
+       ]
+     : [];
+ 
+@@ -273,7 +274,7 @@ Future<List<MenuEntryBase<String>>> hjvDeviceMenuItems(
+     MenuEntryDivider(),
+     MenuEntryButton<String>(
+       childBuilder: (TextStyle? style) => Text(t.removeFromList,
+-          style: style?.copyWith(color: HjvPalette.of(context).danger)),
++          style: style?.copyWith(color: HjvPalette.of(context).dangerText)),
+       proc: () => _removeFromList(t, peer),
+       padding: padding,
+       dismissOnClicked: true,
+@@ -813,7 +814,7 @@ CustomAlertDialog hjvLoginNoticeDialog(HjvTexts t, HjvLoginNotice notice,
+             Builder(
+                 builder: (context) => hjvNoteBlock(context,
+                     icon: Icons.key_rounded,
+-                    text: Text(hjvSetPasswordHint(t, gateOpen: gateOpen)),
++                    text: Text(hjvKeepAll(hjvSetPasswordHint(t, gateOpen: gateOpen))),
+                     action: TextButton(
+                         onPressed: onSetPassword,
+                         child: Text(t.setPasswordNow)))).marginOnly(top: 16),
+@@ -894,7 +895,7 @@ class HjvKeysList extends StatelessWidget {
+                       line,
+                       TextButton(
+                           style: TextButton.styleFrom(
+-                              foregroundColor: p.danger,
++                              foregroundColor: p.dangerText,
+                               padding:
+                                   const EdgeInsets.symmetric(horizontal: 6),
+                               minimumSize: const Size(0, 32)),
+@@ -908,7 +909,7 @@ class HjvKeysList extends StatelessWidget {
+             ? null
+             : TextButton(
+                 style: TextButton.styleFrom(
+-                    foregroundColor: p.danger,
++                    foregroundColor: p.dangerText,
+                     padding: const EdgeInsets.symmetric(horizontal: 10),
+                     minimumSize: const Size(0, 36)),
+                 onPressed: () => onLogOut(k),
+@@ -1351,7 +1352,7 @@ class _HjvWakeHintsState extends State<_HjvWakeHints> {
+           crossAxisAlignment: CrossAxisAlignment.start,
+           children: [
+             for (final (i, h) in widget.hints.indexed)
+-              Text('· $h').marginOnly(top: i == 0 ? 0 : 8),
++              Text(hjvKeepAll('· $h')).marginOnly(top: i == 0 ? 0 : 8),
+           ],
+         )).marginOnly(top: 12);
+   }
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index b010021..7ec12c2 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -524,8 +524,9 @@ TextStyle hjvDialogTextStyle(BuildContext context) => TextStyle(
+     fontSize: 14, height: 1.5, color: HjvPalette.of(context).textSecondary);
+ 
+ // HJViewer: a quiet note in a dialog: a block of the fields' grey with an icon, the text in the
+-// secondary colour and an action at its right, the same in every dialog; a `warning` on the
+-// warning tint, its icon in the warning colour and its text in the text colour.
++// secondary colour and an action at its right in primaryStrong (4.5:1 on the grey), the same in
++// every dialog; a `warning` on the warning tint, its icon in the warning colour and its text in
++// the text colour. A Korean text goes in through hjvKeepAll, so that it breaks only at spaces.
+ Widget hjvNoteBlock(BuildContext context,
+     {IconData? icon,
+     required Widget text,
+@@ -561,7 +562,14 @@ Widget hjvNoteBlock(BuildContext context,
+           ],
+         ).marginOnly(right: action == null ? 0 : 8),
+         if (action != null)
+-          Align(alignment: Alignment.centerRight, child: action),
++          Align(
++              alignment: Alignment.centerRight,
++              child: TextButtonTheme(
++                  data: TextButtonThemeData(
++                      style: TextButton.styleFrom(
++                              foregroundColor: p.primaryStrong)
++                          .merge(Theme.of(context).textButtonTheme.style)),
++                  child: action)),
+       ],
+     ),
+   );
+@@ -1431,7 +1439,7 @@ void showRequestElevationDialog(
+   Widget UacNote = Builder(
+       builder: (context) => hjvNoteBlock(context,
+           icon: Icons.info_outline_rounded,
+-          text: Text(translate('still_click_uac_tip'))));
++          text: Text(hjvKeepAll(translate('still_click_uac_tip')))));
+ 
+   var content = Obx(
+     () => Column(
+@@ -2210,7 +2218,7 @@ void deleteConfirmDialog(Function onSubmit, String title) async {
+                     WidgetStatePropertyAll(HjvPalette.of(context).dangerFill)),
+             style: isDesktop
+                 ? null
+-                : TextStyle(color: HjvPalette.of(context).danger),
++                : TextStyle(color: HjvPalette.of(context).dangerText),
+           ),
+         ],
+         onSubmit: submit,
+@@ -2426,7 +2434,7 @@ void changeBot({Function()? callback}) async {
+           if (errorText != '')
+             Text(errorText,
+                     style: TextStyle(
+-                        fontSize: 13, color: HjvPalette.of(context).danger))
++                        fontSize: 13, color: HjvPalette.of(context).dangerText))
+                 .marginOnly(top: 8),
+         ],
+       ),
+@@ -2793,7 +2801,7 @@ void setSharedAbPasswordDialog(String abName, Peer peer) {
+                           ? Icons.visibility_outlined
+                           : Icons.visibility_off_outlined,
+                       size: 20,
+-                      color: HjvPalette.of(context).textTertiary),
++                      color: HjvPalette.of(context).textSecondary),
+                   onPressed: () {
+                     setState(() {
+                       passwordVisible = !passwordVisible;
+@@ -2836,7 +2844,7 @@ void setSharedAbPasswordDialog(String abName, Peer peer) {
+                     WidgetStatePropertyAll(HjvPalette.of(context).dangerFill)),
+             style: isDesktop
+                 ? null
+-                : TextStyle(color: HjvPalette.of(context).danger),
++                : TextStyle(color: HjvPalette.of(context).dangerText),
+           ),
+         Obx(() => dialogButton(
+               "OK",
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index e079c7f..4ac76bb 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -725,7 +725,7 @@ Widget _hjvLoginOptionsError(BuildContext context, Object error,
+       children: [
+         // NOT use Offstage to wrap LinearProgressIndicator
+         if (inProgress) const LinearProgressIndicator().marginOnly(top: 4),
+-        if (tip) Text(hjvNetworkErrorTip()),
++        if (tip) Text(hjvKeepAll(hjvNetworkErrorTip())),
+         if (!inProgress)
+           SelectableText(
+             error.toString(),
+diff --git a/flutter/lib/common/widgets/my_group.dart b/flutter/lib/common/widgets/my_group.dart
+index 6700d8e..deff1b6 100644
+--- a/flutter/lib/common/widgets/my_group.dart
++++ b/flutter/lib/common/widgets/my_group.dart
+@@ -336,7 +336,7 @@ class _MyGroupState extends State<MyGroup> {
+         style: TextStyle(
+             fontSize: 13,
+             fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+-            color: selected ? p.primary : p.text),
++            color: selected ? p.primaryStrong : p.text),
+         maxLines: 1,
+         overflow: TextOverflow.ellipsis,
+         child: Row(children: [leading.marginOnly(right: 8), ...children]),
+@@ -402,7 +402,7 @@ class _MyGroupState extends State<MyGroup> {
+                       style: TextStyle(
+                           fontSize: 11,
+                           fontWeight: FontWeight.w600,
+-                          color: p.primary),
++                          color: p.primaryStrong),
+                     ),
+                   ),
+                 if (!isMe) Expanded(child: Text(displayName)),
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index ac04882..19a5b1d 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -444,6 +444,19 @@ class _PeerCardState extends State<_PeerCard>
+       ? peer.hostname
+       : '${peer.username}${peer.username.isNotEmpty && peer.hostname.isNotEmpty ? '@' : ''}${peer.hostname}';
+ 
++  // HJViewer: one label for a screen reader (hjv_style.dart) in place of the card's pieces and
++  // their tooltips; the menu button beside them keeps its own
++  Widget _hjvLabelled(Peer peer, String title, String name, Widget child) =>
++      Semantics(
++          label: hjvPeerSemanticsLabel(
++              title: title,
++              state: translate(peer.online ? 'Online' : 'Offline'),
++              platform: peer.platform,
++              name: name,
++              note: _showNote(peer) ? peer.note : ''),
++          excludeSemantics: true,
++          child: child);
++
+   Widget _hjvAvatar(Peer peer, double size) {
+     final (background, foreground) =
+         hjvTint(context, str2color('${peer.id}${peer.platform}'));
+@@ -474,7 +487,7 @@ class _PeerCardState extends State<_PeerCard>
+         ]),
+         SizedBox(width: isPortrait ? 12 : 10),
+         Expanded(
+-          child: Column(
++          child: _hjvLabelled(peer, title, name, Column(
+             mainAxisAlignment: MainAxisAlignment.center,
+             crossAxisAlignment: CrossAxisAlignment.start,
+             children: [
+@@ -516,7 +529,7 @@ class _PeerCardState extends State<_PeerCard>
+                   ),
+               ]),
+             ],
+-          ),
++          )),
+         ),
+         isPortrait
+             ? checkBoxOrActionMorePortrait(peer)
+@@ -558,40 +571,53 @@ class _PeerCardState extends State<_PeerCard>
+               ],
+             ),
+             const Spacer(),
+-            Text(
+-              title,
+-              maxLines: 1,
+-              overflow: TextOverflow.ellipsis,
+-              style: TextStyle(
+-                  fontSize: 15,
+-                  fontWeight: FontWeight.w600,
+-                  color: p.text,
+-                  height: 1.3,
+-                  fontFeatures: peer.alias.isEmpty ? HjvText.tabular : null),
+-            ).marginOnly(right: 10),
+-            const SizedBox(height: 2),
+-            Row(children: [
+-              getOnline(5, peer.online),
+-              Expanded(
+-                child: Tooltip(
+-                  message: name,
+-                  waitDuration: const Duration(seconds: 1),
+-                  child: Text(name,
++            _hjvLabelled(
++                peer,
++                title,
++                name,
++                Column(
++                  mainAxisSize: MainAxisSize.min,
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    Text(
++                      title,
+                       maxLines: 1,
+                       overflow: TextOverflow.ellipsis,
+-                      style: TextStyle(fontSize: 12, color: p.textTertiary)),
+-                ),
+-              ),
+-            ]).marginOnly(right: 10),
+-            if (_showNote(peer))
+-              Tooltip(
+-                message: peer.note,
+-                waitDuration: const Duration(seconds: 1),
+-                child: Text(peer.note,
+-                    maxLines: 1,
+-                    overflow: TextOverflow.ellipsis,
+-                    style: TextStyle(fontSize: 11, color: p.textTertiary)),
+-              ).marginOnly(right: 10),
++                      style: TextStyle(
++                          fontSize: 15,
++                          fontWeight: FontWeight.w600,
++                          color: p.text,
++                          height: 1.3,
++                          fontFeatures:
++                              peer.alias.isEmpty ? HjvText.tabular : null),
++                    ).marginOnly(right: 10),
++                    const SizedBox(height: 2),
++                    Row(children: [
++                      getOnline(5, peer.online),
++                      Expanded(
++                        child: Tooltip(
++                          message: name,
++                          waitDuration: const Duration(seconds: 1),
++                          child: Text(name,
++                              maxLines: 1,
++                              overflow: TextOverflow.ellipsis,
++                              style: TextStyle(
++                                  fontSize: 12, color: p.textTertiary)),
++                        ),
++                      ),
++                    ]).marginOnly(right: 10),
++                    if (_showNote(peer))
++                      Tooltip(
++                        message: peer.note,
++                        waitDuration: const Duration(seconds: 1),
++                        child: Text(peer.note,
++                            maxLines: 1,
++                            overflow: TextOverflow.ellipsis,
++                            style:
++                                TextStyle(fontSize: 11, color: p.textTertiary)),
++                      ).marginOnly(right: 10),
++                  ],
++                )),
+           ],
+         ),
+       ),
+@@ -1006,8 +1032,8 @@ abstract class BasePeerCard extends StatelessWidget {
+                   Text(
+                     // HJViewer: a recent card's says what goes (hjviewer_account.dart)
+                     hjvDeleteLabel(tab),
+-                    style:
+-                        style?.copyWith(color: HjvPalette.of(context).danger),
++                    style: style?.copyWith(
++                        color: HjvPalette.of(context).dangerText),
+                   ),
+                   Expanded(
+                       child: Align(
+@@ -1708,8 +1734,9 @@ Widget getOnline(double rightPadding, bool online) {
+       waitDuration: const Duration(seconds: 1),
+       child: Padding(
+           padding: EdgeInsets.fromLTRB(0, 4, rightPadding, 4),
+-          child: CircleAvatar(
+-              radius: 3, backgroundColor: online ? Colors.green : kColorWarn)));
++          // HJViewer: a filled dot in the palette's success colour or a hollow ring
++          // (hjv_style.dart), in place of a green or orange dot that tells them apart by colour
++          child: Builder(builder: (context) => hjvOnlineDot(context, online))));
+ }
+ 
+ Widget build_more(BuildContext context, {bool invert = false}) {
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 839193c..3a22bd4 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -492,7 +492,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                     style: TextStyle(
+                         fontSize: 12,
+                         fontWeight: FontWeight.w600,
+-                        color: blocked != null ? p.textTertiary : p.primary)),
++                        color: blocked != null ? p.textTertiary : p.primaryStrong)),
+               ),
+               buildPopupMenu(context),
+             ],
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 0110cac..232a3c6 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -446,7 +446,7 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
+                     maxLines: 1,
+                     overflow: TextOverflow.ellipsis,
+                     style: TextStyle(
+-                        color: selected ? p.primary : p.textSecondary,
++                        color: selected ? p.primaryStrong : p.textSecondary,
+                         fontWeight:
+                             selected ? FontWeight.w600 : FontWeight.w400,
+                         fontSize: _kContentFontSize),
+@@ -2576,7 +2576,7 @@ class __PrinterState extends State<_Printer> {
+                   child: Text(failedMsg.value,
+                           style: DefaultTextStyle.of(context)
+                               .style
+-                              .copyWith(color: HjvPalette.of(context).danger))
++                              .copyWith(color: HjvPalette.of(context).dangerText))
+                       .marginOnly(left: _kContentHMargin, bottom: 10.0)),
+         ),
+         _Button('Install {$appName} Printer', () {
+@@ -2774,7 +2774,7 @@ class _AboutState extends State<_About> {
+                               translate('Slogan_tip'),
+                               style: TextStyle(
+                                   fontWeight: FontWeight.w600,
+-                                  color: p.primary),
++                                  color: p.primaryStrong),
+                             )
+                         ],
+                       ),
+@@ -3129,7 +3129,7 @@ class _WaylandCardState extends State<WaylandCard> {
+                 child: Text(_clearShortcutsInhibitorFailedMsg.value,
+                         style: DefaultTextStyle.of(context)
+                             .style
+-                            .copyWith(color: HjvPalette.of(context).danger))
++                            .copyWith(color: HjvPalette.of(context).dangerText))
+                     .marginOnly(bottom: 10.0)),
+       ),
+       _Button(
+@@ -3504,7 +3504,7 @@ void changeSocks5Proxy() async {
+                                         : Icons.visibility_outlined,
+                                     size: 20,
+                                     color:
+-                                        HjvPalette.of(context).textTertiary))),
++                                        HjvPalette.of(context).textSecondary))),
+                         controller: pwdController,
+                         enabled: !isOptFixed,
+                         maxLength: bind.mainMaxEncryptLen(),
+diff --git a/flutter/lib/desktop/pages/server_page.dart b/flutter/lib/desktop/pages/server_page.dart
+index 94e66f1..e4986d1 100644
+--- a/flutter/lib/desktop/pages/server_page.dart
++++ b/flutter/lib/desktop/pages/server_page.dart
+@@ -482,8 +482,8 @@ class _CmHeaderState extends State<_CmHeader>
+     super.build(context);
+     // HJViewer: the peer on a tinted card like the home screen's ID (common/hjv_style.dart).
+     final p = HjvPalette.of(context);
+-    final typeStyle =
+-        TextStyle(color: p.primary, fontSize: 12, fontWeight: FontWeight.w600);
++    final typeStyle = TextStyle(
++        color: p.primaryStrong, fontSize: 12, fontWeight: FontWeight.w600);
+     return Container(
+       decoration: BoxDecoration(
+         borderRadius: BorderRadius.circular(HjvRadius.lg),
+@@ -925,7 +925,7 @@ class _CmControlPanel extends StatelessWidget {
+             children: [
+               Expanded(
+                 child: buildButton(context,
+-                    color: p.primary,
++                    color: p.primaryFill,
+                     onClick: null, onTapDown: (details) async {
+                   final devicesInfo =
+                       await AudioInput.getDevicesInfo(true, true);
+@@ -1011,7 +1011,7 @@ class _CmControlPanel extends StatelessWidget {
+             children: [
+               Expanded(
+                 child: buildButton(context,
+-                    color: p.primary,
++                    color: p.primaryFill,
+                     onClick: () => handleVoiceCall(true),
+                     icon: Icon(
+                       Icons.call_rounded,
+@@ -1041,7 +1041,7 @@ class _CmControlPanel extends StatelessWidget {
+         Offstage(
+           offstage: !client.fromSwitch,
+           child: buildButton(context,
+-              color: p.primary,
++              color: p.primaryFill,
+               onClick: () => handleSwitchBack(context),
+               icon: Icon(Icons.reply, color: Colors.white, size: 14),
+               text: "Switch Sides",
+@@ -1051,7 +1051,7 @@ class _CmControlPanel extends StatelessWidget {
+           offstage: !showElevation,
+           child: buildButton(
+             context,
+-            color: p.primary,
++            color: p.primaryFill,
+             onClick: () {
+               handleElevate(context);
+               windowManager.minimize();
+@@ -1092,7 +1092,7 @@ class _CmControlPanel extends StatelessWidget {
+       children: [
+         Expanded(
+             child: buildButton(context,
+-                color: p.primary,
++                color: p.primaryFill,
+                 onClick: handleClose,
+                 text: 'Close',
+                 textColor: Colors.white)),
+@@ -1116,7 +1116,7 @@ class _CmControlPanel extends StatelessWidget {
+       children: [
+         Offstage(
+           offstage: !showElevation || !showAccept,
+-          child: buildButton(context, color: p.primary, onClick: () {
++          child: buildButton(context, color: p.primaryFill, onClick: () {
+             handleAccept(context);
+             handleElevate(context);
+             windowManager.minimize();
+@@ -1139,7 +1139,7 @@ class _CmControlPanel extends StatelessWidget {
+                   children: [
+                     buildButton(
+                       context,
+-                      color: p.primary,
++                      color: p.primaryFill,
+                       onClick: () {
+                         handleAccept(context);
+                         windowManager.minimize();
+@@ -1197,6 +1197,9 @@ class _CmControlPanel extends StatelessWidget {
+       );
+     }
+     final borderRadius = BorderRadius.circular(HjvRadius.md);
++    // white text on a fill: hover and press darken it, so that the text keeps 4.5:1
++    final overlay =
++        textColor == Colors.white ? Colors.black : textColor ?? p.text;
+     final btn = Container(
+       height: 36,
+       decoration: BoxDecoration(
+@@ -1205,8 +1208,8 @@ class _CmControlPanel extends StatelessWidget {
+         type: MaterialType.transparency,
+         child: InkWell(
+           borderRadius: borderRadius,
+-          hoverColor: (textColor ?? p.text).withOpacity(0.1),
+-          highlightColor: (textColor ?? p.text).withOpacity(0.16),
++          hoverColor: overlay.withOpacity(0.1),
++          highlightColor: overlay.withOpacity(0.16),
+           splashFactory: NoSplash.splashFactory,
+           onTap: () {
+             if (onClick == null) return;
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index 35babf4..b902d79 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -6,6 +6,7 @@ import 'package:bot_toast/bot_toast.dart';
+ import 'package:desktop_multi_window/desktop_multi_window.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjv_theme.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+@@ -377,6 +378,9 @@ void _runApp(
+       title: title,
+       theme: MyTheme.lightTheme,
+       darkTheme: MyTheme.darkTheme,
++      // HJViewer: the fields with a border under high contrast (hjv_theme.dart)
++      highContrastTheme: hjvHighContrast(MyTheme.lightTheme),
++      highContrastDarkTheme: hjvHighContrast(MyTheme.darkTheme),
+       themeMode: themeMode,
+       home: home,
+       localizationsDelegates: const [
+@@ -514,6 +518,9 @@ class _AppState extends State<App> with WidgetsBindingObserver {
+               : bind.mainGetAppNameSync(),
+           theme: MyTheme.lightTheme,
+           darkTheme: MyTheme.darkTheme,
++          // HJViewer: the fields with a border under high contrast (hjv_theme.dart)
++          highContrastTheme: hjvHighContrast(MyTheme.lightTheme),
++          highContrastDarkTheme: hjvHighContrast(MyTheme.darkTheme),
+           themeMode: MyTheme.currentThemeMode(),
+           home: isDesktop
+               ? const DesktopTabPage()
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index 4d7fb6c..ea39557 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -307,7 +307,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                         width: 44,
+                         height: 44,
+                         child: Material(
+-                          color: HjvPalette.of(context).primary,
++                          color: HjvPalette.of(context).primaryFill,
+                           shape: const CircleBorder(),
+                           clipBehavior: Clip.antiAlias,
+                           // HJViewer: a labelled button for screen readers
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index cdbc223..3e199b8 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -1007,7 +1007,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                 colorFilter: ColorFilter.mode(p.danger, BlendMode.srcIn),
+               ),
+               onPressEndVoiceCall,
+-              labelStyle: TextStyle(color: p.danger))
++              labelStyle: TextStyle(color: p.dangerText))
+           : makeTextMenu(
+               'Voice call',
+               SvgPicture.asset(
+@@ -1152,7 +1152,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+     final Color fg = locked == true
+         ? Colors.white
+         : on
+-            ? p.primary
++            ? p.primaryStrong
+             : p.text;
+     return TextButton(
+         style: TextButton.styleFrom(
+@@ -1166,7 +1166,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+             borderRadius: BorderRadius.circular(HjvRadius.sm),
+           ),
+           backgroundColor: locked == true
+-              ? p.primary
++              ? p.primaryFill
+               : on
+                   ? p.primarySoft
+                   : (dark ? p.fill : p.card),
+@@ -1493,7 +1493,7 @@ void showOptions(
+               child: Center(
+                   child: Text((i + 1).toString(),
+                       style: TextStyle(
+-                          color: i == cur ? p.primary : p.textSecondary,
++                          color: i == cur ? p.primaryStrong : p.textSecondary,
+                           fontWeight: FontWeight.bold,
+                           fontFeatures: HjvText.tabular))))));
+     }
+diff --git a/flutter/lib/mobile/widgets/gesture_help.dart b/flutter/lib/mobile/widgets/gesture_help.dart
+index 3c1e430..5686b2a 100644
+--- a/flutter/lib/mobile/widgets/gesture_help.dart
++++ b/flutter/lib/mobile/widgets/gesture_help.dart
+@@ -100,7 +100,7 @@ class _GestureHelpState extends State<GestureHelp> {
+                         initialLabelIndex: _selectedIndex,
+                         // HJViewer: a segmented control in the palette, the mode in use
+                         // primarySoft/primary
+-                        activeFgColor: p.primary,
++                        activeFgColor: p.primaryStrong,
+                         inactiveFgColor: p.textSecondary,
+                         activeBgColor: [p.primarySoft],
+                         inactiveBgColor: p.card,
+diff --git a/flutter/test/hjviewer_style_test.dart b/flutter/test/hjviewer_style_test.dart
+new file mode 100644
+index 0000000..e5c881e
+--- /dev/null
++++ b/flutter/test/hjviewer_style_test.dart
+@@ -0,0 +1,136 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The app's look (common/hjv_style.dart): the palettes' contrast, Korean line breaks at spaces
++// only, and the peer cards' online dot and screen reader label. Plain Flutter, no bridge.
++
++double contrast(Color a, Color b) {
++  final la = a.computeLuminance();
++  final lb = b.computeLuminance();
++  final hi = la > lb ? la : lb;
++  final lo = la > lb ? lb : la;
++  return (hi + 0.05) / (lo + 0.05);
++}
++
++const wj = kHjvWordJoiner;
++
++void main() {
++  for (final (name, p) in [
++    ('light', HjvPalette.light),
++    ('dark', HjvPalette.dark),
++  ]) {
++    test('$name: small text reaches 4.5:1 (WCAG AA) where it is drawn', () {
++      final grounds = {
++        'surface': p.surface,
++        'card': p.card,
++        'canvas': p.canvas,
++        'fill': p.fill,
++      };
++      final texts = {
++        'text': p.text,
++        'textSecondary': p.textSecondary,
++        'textTertiary': p.textTertiary,
++        'primaryStrong': p.primaryStrong,
++        'dangerText': p.dangerText,
++      };
++      for (final t in texts.entries) {
++        for (final g in grounds.entries) {
++          expect(contrast(t.value, g.value), greaterThanOrEqualTo(4.5),
++              reason: '${t.key} on ${g.key}');
++        }
++      }
++      // the text on the accent's soft tint (the selected side bar row, the ID's name)
++      expect(contrast(p.primaryStrong, p.primarySoft), greaterThanOrEqualTo(4.5));
++    });
++
++    test('$name: white on a filled button reaches 4.5:1, at rest and hovered', () {
++      expect(contrast(Colors.white, p.primaryFill), greaterThanOrEqualTo(4.5));
++      expect(contrast(Colors.white, p.primaryFillHover),
++          greaterThanOrEqualTo(4.5));
++      expect(contrast(Colors.white, p.dangerFill), greaterThanOrEqualTo(4.5));
++    });
++
++    test('$name: the hierarchy of the greys stays as it was', () {
++      expect(contrast(p.textSecondary, p.surface),
++          greaterThan(contrast(p.textTertiary, p.surface)));
++      expect(contrast(p.textTertiary, p.surface),
++          greaterThan(contrast(p.textDisabled, p.surface)));
++    });
++  }
++
++  group('hjvKeepAll', () {
++    test('joins the characters of each Korean word, the spaces stay breaks', () {
++      expect(hjvKeepAll('연세포탈로 로그인'),
++          '연$wj세$wj포$wj탈$wj로 로$wj그$wj인');
++      expect(hjvKeepAll('[아님]을 누르세요.'),
++          '[$wj아$wj님$wj]$wj을 누$wj르$wj세$wj요$wj.');
++    });
++
++    test('leaves words without Hangul, and text without it, as they are', () {
++      expect(hjvKeepAll('Log in with your Yonsei Portal account.'),
++          'Log in with your Yonsei Portal account.');
++      expect(hjvKeepAll('ID 123 456 789 확인'), 'ID 123 456 789 확$wj인');
++      expect(hjvKeepAll('https://example.com 에서'), 'https://example.com 에$wj서');
++      expect(hjvKeepAll(''), '');
++    });
++
++    test('keeps the spaces and line breaks, and takes nothing away', () {
++      const s = '이 PC를 연결받으려면\n연세포탈로  로그인하세요. (1.8.2)';
++      final out = hjvKeepAll(s);
++      expect(out.replaceAll(wj, ''), s);
++      expect(out.split('\n').length, 2);
++      expect(out.contains('  '), isTrue);
++      // a syllable of decomposed jamo stays one character
++      expect(hjvKeepAll('\u1112\u1161\u11AB글'), '\u1112\u1161\u11AB$wj글');
++    });
++  });
++
++  test('a peer card\'s screen reader label: the parts in order, the empty ones left out', () {
++    expect(
++        hjvPeerSemanticsLabel(
++            title: '연구실 PC',
++            state: '오프라인',
++            platform: 'Windows',
++            name: 'user@LAB-PC'),
++        '연구실 PC, 오프라인, Windows, user@LAB-PC');
++    expect(
++        hjvPeerSemanticsLabel(
++            title: '123 456 789',
++            state: 'Online',
++            platform: '',
++            name: ' ',
++            note: 'the printer room'),
++        '123 456 789, Online, the printer room');
++  });
++
++  testWidgets('the online dot: filled when online, a hollow ring when offline',
++      (tester) async {
++    BoxDecoration dot() => tester
++        .widget<Container>(find.descendant(
++            of: find.byType(Center), matching: find.byType(Container)))
++        .decoration as BoxDecoration;
++
++    for (final brightness in Brightness.values) {
++      final p = brightness == Brightness.dark ? HjvPalette.dark : HjvPalette.light;
++      for (final online in [true, false]) {
++        await tester.pumpWidget(MaterialApp(
++            theme: ThemeData(brightness: brightness),
++            home: Builder(
++                builder: (context) =>
++                    Center(child: hjvOnlineDot(context, online)))));
++        // MaterialApp animates from the last theme to the new one
++        await tester.pumpAndSettle();
++        final d = dot();
++        expect(d.shape, BoxShape.circle);
++        if (online) {
++          expect(d.color, p.success);
++          expect(d.border, isNull);
++        } else {
++          expect(d.color, isNull);
++          expect((d.border as Border).top.color, p.textTertiary);
++        }
++      }
++    }
++  });
++}

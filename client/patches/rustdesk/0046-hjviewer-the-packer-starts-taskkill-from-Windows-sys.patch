@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Wed, 14 Oct 2026 16:14:21 +0900
-Subject: [PATCH 46/63] hjviewer: the packer starts taskkill from Windows'
+Subject: [PATCH 46/85] hjviewer: the packer starts taskkill from Windows'
  system folder
 
 Upstream's packer starts `taskkill` by its bare name before it copies the

@@ -1,0 +1,235 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 23:24:27 +0900
+Subject: [PATCH 81/85] hjviewer: integration fixes for 1.8.2
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- danger as text is dangerText (tokens lane): the phone look of
+  hjvDangerButton, the U68 confirms' action, now reads as
+  deleteConfirmDialog's [OK] does, and a field's error line under it is
+  dangerText as colorScheme.error is; the icons keep danger
+- the selected pill's name (words lane) is primaryStrong on primarySoft
+- the gate's note blocks go in through hjvKeepAll as the others do: the
+  U68 confirms' warning and the note over the remote PC's password
+  dialog (U01)
+- one "더 보기": the desktop home's ID card ⋮ uses hjvLabels.more (gate
+  lane) and HjvTexts.more (home lane) goes
+- the account texts outside hjviewer_account.dart come from
+  hjvAppTexts() instead of a new HjvTexts with its own language check
+  (the peer card's online state, the desktop home's ID menu, the login
+  request's errors)
+- hjviewer_account_widgets_test finds the login notice's password hint
+  as hjvKeepAll draws it
+- hjviewer_suggestions_test no longer checks HjvTexts.more
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart         | 5 +++--
+ flutter/lib/common/hjviewer_account_texts.dart   | 3 +--
+ flutter/lib/common/widgets/dialog.dart           | 9 +++++----
+ flutter/lib/common/widgets/peer_card.dart        | 3 +--
+ flutter/lib/common/widgets/peer_tab_page.dart    | 3 ++-
+ flutter/lib/desktop/pages/desktop_home_page.dart | 6 +++---
+ flutter/lib/models/user_model.dart               | 5 ++---
+ flutter/test/hjviewer_account_widgets_test.dart  | 6 +++++-
+ flutter/test/hjviewer_suggestions_test.dart      | 3 +--
+ 9 files changed, 23 insertions(+), 20 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 39ff821..ac17d62 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -144,7 +144,8 @@ String hjvNetworkErrorTip() =>
+ /// U17 (my_group.dart): what a login brings to the tab, under its name.
+ String? hjvListLoginHint() => _accountBuild ? _t.listLoginHint : null;
+ 
+-/// U48: the app's own texts where upstream left English (the About links, the install page).
++/// The app's own texts in the UI's language, for the call sites in other files (U48: where
++/// upstream left English, the About links, the install page).
+ HjvTexts hjvAppTexts() => _t;
+ 
+ /// U48 (peer_card.dart, connection_page.dart, toolbar.dart): the terminal items in Korean with
+@@ -783,7 +784,7 @@ CustomAlertDialog hjvConfirmDialog(HjvTexts t,
+             Builder(
+                 builder: (context) => hjvNoteBlock(context,
+                     icon: Icons.warning_amber_rounded,
+-                    text: Text(warning),
++                    text: Text(hjvKeepAll(warning)),
+                     warning: true)).marginOnly(top: text.isEmpty ? 0 : 8),
+         ],
+       ),
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 9a03a10..88ee148 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -48,8 +48,7 @@ class HjvTexts {
+   String get offline => _t('오프라인', 'Offline');
+   String get logIn => _t('로그인', 'Log in');
+ 
+-  // the desktop home's ID card: its ⋮ and its menu
+-  String get more => _t('더 보기', 'More');
++  // the desktop home's ID card's menu (its ⋮ is hjvLabels.more)
+   String get copyId => _t('ID 복사', 'Copy ID');
+ 
+   String get requestFailed => _t('요청하지 못했습니다. 잠시 뒤 다시 시도해 주세요.',
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index 7ec12c2..65be101 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -589,7 +589,7 @@ Widget hjvDangerButton(String label, VoidCallback? onPressed) => Builder(
+             child: Text(label))
+         : TextButton(
+             style: TextButton.styleFrom(
+-                foregroundColor: HjvPalette.of(context).danger,
++                foregroundColor: HjvPalette.of(context).dangerText,
+                 textStyle: const TextStyle(
+                     fontFamily: kHjvFont, fontWeight: FontWeight.w700)),
+             onPressed: onPressed,
+@@ -729,8 +729,8 @@ Widget _hjvFieldError(HjvPalette p, String error, String? helperText,
+                   .marginOnly(top: 1, right: 4),
+               Expanded(
+                 child: Text(error,
+-                    style:
+-                        TextStyle(fontSize: 13, height: 1.4, color: p.danger)),
++                    style: TextStyle(
++                        fontSize: 13, height: 1.4, color: p.dangerText)),
+               ),
+             ],
+           ),
+@@ -1290,7 +1290,8 @@ _connectDialog(
+           else ...[
+             if (hjvAsk.note != null)
+               hjvNoteBlock(context,
+-                      icon: Icons.key_rounded, text: Text(hjvAsk.note!))
++                      icon: Icons.key_rounded,
++                      text: Text(hjvKeepAll(hjvAsk.note!)))
+                   .marginOnly(bottom: 12),
+             Align(
+               alignment: Alignment.centerLeft,
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 1045b4d..0f06246 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -2,7 +2,6 @@ import 'package:bot_toast/bot_toast.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+-import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/models/peer_tab_model.dart';
+@@ -1730,7 +1729,7 @@ Widget hjvPlatformIcon(String platform, double size, Color color) {
+ }
+ 
+ String _hjvOnlineText(bool online) {
+-  final t = HjvTexts(translate('Cancel') == '취소');
++  final t = hjvAppTexts();
+   return online ? t.online : t.offline;
+ }
+ 
+diff --git a/flutter/lib/common/widgets/peer_tab_page.dart b/flutter/lib/common/widgets/peer_tab_page.dart
+index 2765214..e282319 100644
+--- a/flutter/lib/common/widgets/peer_tab_page.dart
++++ b/flutter/lib/common/widgets/peer_tab_page.dart
+@@ -294,8 +294,9 @@ class _PeerTabPageState extends State<PeerTabPage>
+                                         maxLines: 1,
+                                         softWrap: false,
+                                         overflow: TextOverflow.clip,
++                                        // text on primarySoft: primaryStrong
+                                         style: _hjvLabelStyle.copyWith(
+-                                            color: p.primary))
++                                            color: p.primaryStrong))
+                                     .marginOnly(left: _hjvLabelGap),
+                               ),
+                           ],
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 3a22bd4..9ed8c0f 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -10,7 +10,7 @@ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_access_texts.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+-import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
++import 'package:flutter_hbb/common/hjviewer_labels.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/common/widgets/animated_rotation_widget.dart';
+ import 'package:flutter_hbb/common/widgets/custom_password.dart';
+@@ -293,7 +293,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+         },
+         customBorder: const CircleBorder(),
+         child: Tooltip(
+-          message: HjvTexts(translate('Cancel') == '취소').more,
++          message: hjvLabels.more,
+           child: Obx(
+             () => CircleAvatar(
+               radius: 14,
+@@ -314,7 +314,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+   }
+ 
+   void _hjvShowIdMenu(BuildContext context, Offset at) {
+-    final t = HjvTexts(translate('Cancel') == '취소');
++    final t = hjvAppTexts();
+     final settings = !bind.isDisableSettings();
+     final items = <(String, VoidCallback)>[
+       (
+diff --git a/flutter/lib/models/user_model.dart b/flutter/lib/models/user_model.dart
+index 8ed2a41..2f7f246 100644
+--- a/flutter/lib/models/user_model.dart
++++ b/flutter/lib/models/user_model.dart
+@@ -7,8 +7,7 @@ import 'package:flutter_hbb/models/ab_model.dart';
+ import 'package:get/get.dart';
+ 
+ import '../common.dart';
+-import '../common/hjviewer_account.dart' show hjvLoginEnded;
+-import '../common/hjviewer_account_texts.dart';
++import '../common/hjviewer_account.dart' show hjvAppTexts, hjvLoginEnded;
+ import 'package:http/http.dart' as hjv_http show Response;
+ import '../utils/http_service.dart' as http;
+ import 'model.dart';
+@@ -197,7 +196,7 @@ class UserModel {
+   /// throw [RequestException]
+   Future<LoginResponse> login(LoginRequest loginRequest) async {
+     final url = await bind.mainGetApiServer();
+-    final hjvTexts = HjvTexts(translate('Cancel') == '취소');
++    final hjvTexts = hjvAppTexts();
+     final hjv_http.Response resp;
+     try {
+       resp = await http.post(Uri.parse('$url/api/login'),
+diff --git a/flutter/test/hjviewer_account_widgets_test.dart b/flutter/test/hjviewer_account_widgets_test.dart
+index dc114aa..8127b51 100644
+--- a/flutter/test/hjviewer_account_widgets_test.dart
++++ b/flutter/test/hjviewer_account_widgets_test.dart
+@@ -1,4 +1,5 @@
+ import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+ import 'package:flutter_test/flutter_test.dart';
+@@ -165,7 +166,10 @@ void main() {
+             onUndo: () => undo++,
+             onSetPassword: () => password++));
+     expect(find.text('이 PC를 내 PC 목록에 추가했습니다'), findsOneWidget);
+-    expect(find.text('비밀번호 없는 연결이 안 될 때(서버 점검, 끄기, 로그아웃) 쓸 영구 비밀번호를 정해 두세요.'),
++    // the note block's text goes in through hjvKeepAll
++    expect(
++        find.text(hjvKeepAll(
++            '비밀번호 없는 연결이 안 될 때(서버 점검, 끄기, 로그아웃) 쓸 영구 비밀번호를 정해 두세요.')),
+         findsOneWidget);
+     await tester.tap(find.text('지금 정하기'));
+     await tester.tap(find.text('이 PC 빼기'));
+diff --git a/flutter/test/hjviewer_suggestions_test.dart b/flutter/test/hjviewer_suggestions_test.dart
+index 338b906..2ecf0ad 100644
+--- a/flutter/test/hjviewer_suggestions_test.dart
++++ b/flutter/test/hjviewer_suggestions_test.dart
+@@ -33,7 +33,6 @@ void main() {
+   test("the ID card's menu reads in both languages", () {
+     expect(const HjvTexts(true).copyId, 'ID 복사');
+     expect(const HjvTexts(false).copyId, 'Copy ID');
+-    expect(const HjvTexts(true).more, '더 보기');
+-    expect(const HjvTexts(false).more, 'More');
++    // the ⋮'s name is hjvLabels.more (hjviewer_labels.dart, which needs the bridge)
+   });
+ }

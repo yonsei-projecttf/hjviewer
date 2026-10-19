@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Thu, 15 Oct 2026 20:01:01 +0900
-Subject: [PATCH 52/63] hjviewer: ui: desktop-settings: grouped cards, a pill
+Subject: [PATCH 52/85] hjviewer: ui: desktop-settings: grouped cards, a pill
  sidebar, even rows
 
 Settings kept upstream's grey cards with a shadow and a 20 px title inside, a sidebar

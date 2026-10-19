@@ -358,7 +358,11 @@ jobs:
       # which needs the bridge (minimum version design 6-4); hjviewer_android_test.dart the
       # controller-only Android app's (Play design 3-3), hjviewer_admin_test.dart and
       # hjviewer_admin_widgets_test.dart the super operator's view, its widgets with the bridge;
-      # hjviewer_access_test.dart the access screens' (docs/access-tickets.md 5-3).
+      # hjviewer_access_test.dart the access screens' (docs/access-tickets.md 5-3); 1.8.2's
+      # hjviewer_toast_test.dart the app's toast, hjviewer_suggestions_test.dart the ID suggestions',
+      # hjviewer_phone_test.dart the phone targets and bars', hjviewer_pins_test.dart what the settings
+      # leave out for what a build pins, hjviewer_style_test.dart the look's contrast and line breaks,
+      # hjviewer_applock_test.dart the phone app lock's (W13).
       - name: Run the tests
         run: |
           for t in test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart \
@@ -367,7 +371,10 @@ jobs:
             test/hjviewer_account_widgets_test.dart test/hjv_update_test.dart \
             test/hjv_update_gate_test.dart test/hjviewer_android_test.dart \
             test/hjviewer_admin_test.dart test/hjviewer_admin_widgets_test.dart \
-            test/hjviewer_access_test.dart; do
+            test/hjviewer_access_test.dart test/hjviewer_toast_test.dart \
+            test/hjviewer_suggestions_test.dart test/hjviewer_phone_test.dart \
+            test/hjviewer_pins_test.dart test/hjviewer_style_test.dart \
+            test/hjviewer_applock_test.dart; do
             if [ ! -f "$t" ]; then echo "::error::$t is not in the patched tree"; exit 1; fi
           done
           flutter pub get

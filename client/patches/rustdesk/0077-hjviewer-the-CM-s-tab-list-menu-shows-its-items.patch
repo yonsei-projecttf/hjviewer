@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 22:00:30 +0900
+Subject: [PATCH 77/85] hjviewer: the CM's tab list menu shows its items
+
+U13: the tab list menu (the title bar's down arrow) of the connection
+manager window opened as an empty grey box. Each menu row's Obx read
+menuHover only after checking tabInfo?.onTabCloseButton, so for tabs
+without a close callback (the CM's, port forwarding's) it read no
+observable; GetX rejects such an Obx and release builds draw a grey
+error box. The condition now reads menuHover.value first, so every
+row's Obx reads an observable and the menu lists the tabs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/desktop/widgets/tabbar_widget.dart | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/lib/desktop/widgets/tabbar_widget.dart b/flutter/lib/desktop/widgets/tabbar_widget.dart
+index 70ed806..9972cb4 100644
+--- a/flutter/lib/desktop/widgets/tabbar_widget.dart
++++ b/flutter/lib/desktop/widgets/tabbar_widget.dart
+@@ -1671,8 +1671,11 @@ class _TabDropDownButtonState extends State<_TabDropDownButton> {
+                     ),
+                     Obx(
+                       () {
+-                        if (tabInfo?.onTabCloseButton != null &&
+-                            menuHover.value) {
++                        // HJViewer: menuHover first, so that the Obx reads an observable for a
++                        // tab without a close callback too (the CM's, port forwarding's): GetX
++                        // fails an Obx that reads none, and the menu showed an error box
++                        if (menuHover.value &&
++                            tabInfo?.onTabCloseButton != null) {
+                           return InkWell(
+                               onTap: () {
+                                 tabInfo?.onTabCloseButton?.call();

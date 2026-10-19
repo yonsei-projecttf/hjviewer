@@ -1,0 +1,412 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 22:08:20 +0900
+Subject: [PATCH 78/85] hjviewer: review fixes, tokens lane
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U23: the peer card's screen reader label and the online dot's tooltip
+took their state from translate('Online'/'Offline'), keys src/lang does
+not have, so a Korean UI read the English word. They now come from
+HjvTexts.online/offline (온라인/오프라인, Online/Offline).
+
+U46: MyTheme.darkGray is a const for both themes; at #647080 its texts
+in dark mode dropped below 4.5:1. The texts drawn in both themes (the
+phone's service and audio tips, the phone's and desktop's file manager
+lines, the desktop file manager's dark-only branches) use the palette's
+textTertiary instead; darkGray keeps the light value for the remaining
+icon and unused helper style. The check box's border and the switch's
+off thumb are textDisabled when disabled. hjvHighContrast moves to
+hjv_style.dart, which needs no bridge, makes each theme once instead of
+on every build, and hjviewer_style_test covers its borders.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_style.dart             | 23 ++++++++++
+ flutter/lib/common/hjv_theme.dart             | 23 ++--------
+ .../lib/common/hjviewer_account_texts.dart    |  2 +
+ flutter/lib/common/widgets/peer_card.dart     | 11 ++++-
+ .../lib/desktop/pages/file_manager_page.dart  | 17 +++----
+ flutter/lib/main.dart                         |  6 +--
+ .../lib/mobile/pages/file_manager_page.dart   |  7 +--
+ flutter/lib/mobile/pages/server_page.dart     |  5 +-
+ flutter/test/hjviewer_style_test.dart         | 46 +++++++++++++++++++
+ 9 files changed, 103 insertions(+), 37 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_style.dart b/flutter/lib/common/hjv_style.dart
+index 140251a..5ceb113 100644
+--- a/flutter/lib/common/hjv_style.dart
++++ b/flutter/lib/common/hjv_style.dart
+@@ -348,3 +348,26 @@ String hjvPeerSemanticsLabel(
+     [title, state, platform, name, note]
+         .where((e) => e.trim().isNotEmpty)
+         .join(', ');
++
++/// MaterialApp's highContrastTheme and highContrastDarkTheme (main.dart): the theme with a thin
++/// border in the tertiary text colour around the fields, for iOS's Increase Contrast and
++/// Windows's high contrast, where the fill alone hardly sets a field off its background. Made once
++/// per theme, since MaterialApp's builds call it again; here and not in hjv_theme.dart, so that it
++/// is tested without the bridge.
++ThemeData hjvHighContrast(ThemeData theme) =>
++    _hjvHighContrast[theme] ??= _hjvMakeHighContrast(theme);
++
++final _hjvHighContrast = Expando<ThemeData>('hjvHighContrast');
++
++ThemeData _hjvMakeHighContrast(ThemeData theme) {
++  final p = theme.brightness == Brightness.dark
++      ? HjvPalette.dark
++      : HjvPalette.light;
++  final border = OutlineInputBorder(
++    borderRadius: BorderRadius.circular(HjvRadius.md),
++    borderSide: BorderSide(color: p.textTertiary),
++  );
++  return theme.copyWith(
++      inputDecorationTheme: theme.inputDecorationTheme
++          .copyWith(border: border, enabledBorder: border));
++}
+diff --git a/flutter/lib/common/hjv_theme.dart b/flutter/lib/common/hjv_theme.dart
+index 8673fe0..6583cb3 100644
+--- a/flutter/lib/common/hjv_theme.dart
++++ b/flutter/lib/common/hjv_theme.dart
+@@ -182,14 +182,15 @@ ThemeData hjvRestyle(ThemeData base) {
+                   ? p.textDisabled
+                   : p.primary),
+       checkColor: const WidgetStatePropertyAll(Colors.white),
+-      // a box that cannot change has the faint border, not the one of a box beside it that can;
+-      // a checked box keeps no ring around its fill (a state side is drawn when checked too)
++      // unchecked: a border that is quieter when disabled, not the one of a box beside it that
++      // can change; checked: the fill alone, with no ring around it (a state side is drawn when
++      // checked too)
+       side: WidgetStateBorderSide.resolveWith((states) =>
+           states.contains(WidgetState.selected)
+               ? const BorderSide(width: 1.5, color: Colors.transparent)
+               : BorderSide(
+                   color: states.contains(WidgetState.disabled)
+-                      ? p.border
++                      ? p.textDisabled
+                       : p.textTertiary,
+                   width: 1.5)),
+       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+@@ -355,19 +356,3 @@ ThemeData hjvRestyle(ThemeData base) {
+     ],
+   );
+ }
+-
+-/// MaterialApp's highContrastTheme and highContrastDarkTheme (main.dart): the theme with a thin
+-/// border in the tertiary text colour around the fields, for iOS's Increase Contrast and
+-/// Windows's high contrast, where the fill alone hardly sets a field off its background.
+-ThemeData hjvHighContrast(ThemeData theme) {
+-  final p = theme.brightness == Brightness.dark
+-      ? HjvPalette.dark
+-      : HjvPalette.light;
+-  final border = OutlineInputBorder(
+-    borderRadius: BorderRadius.circular(HjvRadius.md),
+-    borderSide: BorderSide(color: p.textTertiary),
+-  );
+-  return theme.copyWith(
+-      inputDecorationTheme: theme.inputDecorationTheme
+-          .copyWith(border: border, enabledBorder: border));
+-}
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index e15b2b6..9a03a10 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -44,6 +44,8 @@ class HjvTexts {
+   String get cancel => _t('취소', 'Cancel');
+   String get close => _t('닫기', 'Close');
+   String get retry => _t('다시 시도', 'Retry');
++  String get online => _t('온라인', 'Online');
++  String get offline => _t('오프라인', 'Offline');
+   String get logIn => _t('로그인', 'Log in');
+ 
+   // the desktop home's ID card: its ⋮ and its menu
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 19a5b1d..1045b4d 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -2,6 +2,7 @@ import 'package:bot_toast/bot_toast.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/models/peer_tab_model.dart';
+@@ -450,7 +451,7 @@ class _PeerCardState extends State<_PeerCard>
+       Semantics(
+           label: hjvPeerSemanticsLabel(
+               title: title,
+-              state: translate(peer.online ? 'Online' : 'Offline'),
++              state: _hjvOnlineText(peer.online),
+               platform: peer.platform,
+               name: name,
+               note: _showNote(peer) ? peer.note : ''),
+@@ -1728,9 +1729,15 @@ Widget hjvPlatformIcon(String platform, double size, Color color) {
+       colorFilter: ColorFilter.mode(color, BlendMode.srcIn));
+ }
+ 
++String _hjvOnlineText(bool online) {
++  final t = HjvTexts(translate('Cancel') == '취소');
++  return online ? t.online : t.offline;
++}
++
+ Widget getOnline(double rightPadding, bool online) {
+   return Tooltip(
+-      message: translate(online ? 'Online' : 'Offline'),
++      // HJViewer: the state in Korean too (src/lang has no Online/Offline)
++      message: _hjvOnlineText(online),
+       waitDuration: const Duration(seconds: 1),
+       child: Padding(
+           padding: EdgeInsets.fromLTRB(0, 4, rightPadding, 4),
+diff --git a/flutter/lib/desktop/pages/file_manager_page.dart b/flutter/lib/desktop/pages/file_manager_page.dart
+index 17674c2..2b6627e 100644
+--- a/flutter/lib/desktop/pages/file_manager_page.dart
++++ b/flutter/lib/desktop/pages/file_manager_page.dart
+@@ -23,6 +23,7 @@ import 'package:flutter_hbb/web/dummy.dart'
+ import '../../consts.dart';
+ import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../models/model.dart';
+ import '../../models/platform_model.dart';
+ import '../widgets/popup_menu.dart';
+@@ -270,7 +271,7 @@ class _FileManagerPageState extends State<FileManagerPage>
+                                 child: Text(status,
+                                     style: TextStyle(
+                                       fontSize: 12,
+-                                      color: MyTheme.darkGray,
++                                      color: HjvPalette.of(context).textTertiary,
+                                     )).marginOnly(top: 6),
+                               ),
+                               Offstage(
+@@ -302,7 +303,7 @@ class _FileManagerPageState extends State<FileManagerPage>
+                                                   style: TextStyle(
+                                                     fontSize: 12,
+                                                     fontWeight: FontWeight.w300,
+-                                                    color: MyTheme.darkGray,
++                                                    color: HjvPalette.of(context).textTertiary,
+                                                   ),
+                                                 ),
+                                             ],
+@@ -955,7 +956,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                   ? Theme.of(context).brightness ==
+                                           Brightness.light
+                                       ? MyTheme.grayBg
+-                                      : MyTheme.darkGray
++                                      : HjvPalette.of(context).textTertiary
+                                   : Colors.white,
+                             ),
+                           )
+@@ -970,7 +971,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                           ? Theme.of(context).brightness ==
+                                                   Brightness.light
+                                               ? MyTheme.grayBg
+-                                              : MyTheme.darkGray
++                                              : HjvPalette.of(context).textTertiary
+                                           : Colors.white),
+                                   alignment: Alignment.bottomRight,
+                                 ),
+@@ -982,7 +983,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                 ? Theme.of(context).brightness ==
+                                         Brightness.light
+                                     ? MyTheme.grayBg
+-                                    : MyTheme.darkGray
++                                    : HjvPalette.of(context).textTertiary
+                                 : Colors.white),
+                           )
+                         : Text(
+@@ -992,7 +993,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                   ? Theme.of(context).brightness ==
+                                           Brightness.light
+                                       ? MyTheme.grayBg
+-                                      : MyTheme.darkGray
++                                      : HjvPalette.of(context).textTertiary
+                                   : Colors.white,
+                             ),
+                           ),
+@@ -1267,7 +1268,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                           color: selectedItems.items
+                                                   .contains(entry)
+                                               ? Colors.white70
+-                                              : MyTheme.darkGray,
++                                              : HjvPalette.of(context).textTertiary,
+                                         ),
+                                       )),
+                                 ),
+@@ -1294,7 +1295,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                         color:
+                                             selectedItems.items.contains(entry)
+                                                 ? Colors.white70
+-                                                : MyTheme.darkGray),
++                                                : HjvPalette.of(context).textTertiary),
+                                   ),
+                                 ),
+                                 onTap: onTap,
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index b902d79..5c5dca9 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -6,7 +6,7 @@ import 'package:bot_toast/bot_toast.dart';
+ import 'package:desktop_multi_window/desktop_multi_window.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+-import 'package:flutter_hbb/common/hjv_theme.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+@@ -378,7 +378,7 @@ void _runApp(
+       title: title,
+       theme: MyTheme.lightTheme,
+       darkTheme: MyTheme.darkTheme,
+-      // HJViewer: the fields with a border under high contrast (hjv_theme.dart)
++      // HJViewer: the fields with a border under high contrast (hjv_style.dart)
+       highContrastTheme: hjvHighContrast(MyTheme.lightTheme),
+       highContrastDarkTheme: hjvHighContrast(MyTheme.darkTheme),
+       themeMode: themeMode,
+@@ -518,7 +518,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
+               : bind.mainGetAppNameSync(),
+           theme: MyTheme.lightTheme,
+           darkTheme: MyTheme.darkTheme,
+-          // HJViewer: the fields with a border under high contrast (hjv_theme.dart)
++          // HJViewer: the fields with a border under high contrast (hjv_style.dart)
+           highContrastTheme: hjvHighContrast(MyTheme.lightTheme),
+           highContrastDarkTheme: hjvHighContrast(MyTheme.darkTheme),
+           themeMode: MyTheme.currentThemeMode(),
+diff --git a/flutter/lib/mobile/pages/file_manager_page.dart b/flutter/lib/mobile/pages/file_manager_page.dart
+index e389bdf..d6f877a 100644
+--- a/flutter/lib/mobile/pages/file_manager_page.dart
++++ b/flutter/lib/mobile/pages/file_manager_page.dart
+@@ -8,6 +8,7 @@ import 'package:get/get.dart';
+ import 'package:toggle_switch/toggle_switch.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../consts.dart';
+ 
+@@ -726,7 +727,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                     ? null
+                     : Text(
+                         "${entries[index].lastModified().toString().replaceAll(".000", "")}   $sizeStr",
+-                        style: TextStyle(fontSize: 12, color: MyTheme.darkGray),
++                        style: TextStyle(fontSize: 12, color: HjvPalette.of(context).textTertiary),
+                       ),
+                 trailing: entries[index].isDrive
+                     ? null
+@@ -901,14 +902,14 @@ class _FileManagerViewState extends State<FileManagerView> {
+               padding: EdgeInsets.fromLTRB(30, 5, 30, 0),
+               child: Text(
+                 controller.directory.value.path,
+-                style: TextStyle(color: MyTheme.darkGray),
++                style: TextStyle(color: HjvPalette.of(context).textTertiary),
+               ),
+             ),
+             Padding(
+               padding: EdgeInsets.all(2),
+               child: Text(
+                 "${translate("Total")}: ${controller.directory.value.entries.length} ${translate("items")}",
+-                style: TextStyle(color: MyTheme.darkGray),
++                style: TextStyle(color: HjvPalette.of(context).textTertiary),
+               ),
+             )
+           ],
+diff --git a/flutter/lib/mobile/pages/server_page.dart b/flutter/lib/mobile/pages/server_page.dart
+index d61cf70..665854c 100644
+--- a/flutter/lib/mobile/pages/server_page.dart
++++ b/flutter/lib/mobile/pages/server_page.dart
+@@ -9,6 +9,7 @@ import 'package:get/get.dart';
+ import 'package:provider/provider.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_style.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../consts.dart';
+ import '../../models/platform_model.dart';
+@@ -243,7 +244,7 @@ class ServiceNotRunningNotification extends StatelessWidget {
+           children: [
+             Text(translate("android_start_service_tip"),
+                     style:
+-                        const TextStyle(fontSize: 12, color: MyTheme.darkGray))
++                        TextStyle(fontSize: 12, color: HjvPalette.of(context).textTertiary))
+                 .marginOnly(bottom: 8),
+             ElevatedButton.icon(
+                 icon: const Icon(Icons.play_arrow),
+@@ -629,7 +630,7 @@ class _PermissionCheckerState extends State<PermissionChecker> {
+                   Expanded(
+                       child: Text(
+                     translate("android_version_audio_tip"),
+-                    style: const TextStyle(color: MyTheme.darkGray),
++                    style: TextStyle(color: HjvPalette.of(context).textTertiary),
+                   ))
+                 ]),
+           PermissionRow(
+diff --git a/flutter/test/hjviewer_style_test.dart b/flutter/test/hjviewer_style_test.dart
+index e5c881e..a6424c8 100644
+--- a/flutter/test/hjviewer_style_test.dart
++++ b/flutter/test/hjviewer_style_test.dart
+@@ -1,5 +1,6 @@
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+ // The app's look (common/hjv_style.dart): the palettes' contrast, Korean line breaks at spaces
+@@ -104,6 +105,20 @@ void main() {
+         '123 456 789, Online, the printer room');
+   });
+ 
++  test('the online state in the label and the dot\'s tooltip: Korean on a Korean UI', () {
++    const ko = HjvTexts(true);
++    const en = HjvTexts(false);
++    expect((ko.online, ko.offline), ('온라인', '오프라인'));
++    expect((en.online, en.offline), ('Online', 'Offline'));
++    expect(
++        hjvPeerSemanticsLabel(
++            title: '연구실 PC',
++            state: ko.offline,
++            platform: 'Windows',
++            name: 'user@LAB-PC'),
++        '연구실 PC, 오프라인, Windows, user@LAB-PC');
++  });
++
+   testWidgets('the online dot: filled when online, a hollow ring when offline',
+       (tester) async {
+     BoxDecoration dot() => tester
+@@ -133,4 +148,35 @@ void main() {
+       }
+     }
+   });
++
++  for (final (name, brightness, p) in [
++    ('light', Brightness.light, HjvPalette.light),
++    ('dark', Brightness.dark, HjvPalette.dark),
++  ]) {
++    final focused = OutlineInputBorder(borderSide: BorderSide(color: p.primary, width: 2));
++    final error = OutlineInputBorder(borderSide: BorderSide(color: p.danger));
++    final theme = ThemeData(
++        brightness: brightness,
++        inputDecorationTheme: InputDecorationTheme(
++            border: InputBorder.none,
++            enabledBorder: InputBorder.none,
++            focusedBorder: focused,
++            errorBorder: error,
++            focusedErrorBorder: focused));
++
++    test('$name high contrast: the fields get a thin textTertiary border, focus and error stay', () {
++      final hc = hjvHighContrast(theme);
++      for (final b in [hc.inputDecorationTheme.border, hc.inputDecorationTheme.enabledBorder]) {
++        expect(b, isA<OutlineInputBorder>());
++        final side = (b as OutlineInputBorder).borderSide;
++        expect((side.color, side.width), (p.textTertiary, 1.0));
++        expect(b.borderRadius, BorderRadius.circular(HjvRadius.md));
++      }
++      expect(hc.inputDecorationTheme.focusedBorder, same(focused));
++      expect(hc.inputDecorationTheme.errorBorder, same(error));
++      expect(hc.inputDecorationTheme.focusedErrorBorder, same(focused));
++      expect(hc.brightness, brightness);
++      expect(identical(hjvHighContrast(theme), hc), isTrue, reason: 'made once per theme');
++    });
++  }
+ }

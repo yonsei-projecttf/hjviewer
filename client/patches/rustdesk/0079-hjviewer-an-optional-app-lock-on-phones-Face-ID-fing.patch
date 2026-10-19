@@ -1,0 +1,1072 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 22:02:38 +0900
+Subject: [PATCH 79/85] hjviewer: an optional app lock on phones (Face ID,
+ fingerprint or passcode)
+
+W13 (TV40): Settings on the phone and tablet app get a Security section
+with an "App lock" switch (off by default) and, while it is on, how long
+the app may stay in the background before it asks again (immediately,
+1 minute by default, 5 minutes). Turning the switch on or off takes one
+successful authentication; a device with neither biometrics nor a
+passcode cannot turn it on and is told why.
+
+While on, the app asks at a cold start and when it comes back after at
+least the chosen time. The cover sits above the navigator in the app's
+builder, so routes, dialogs and toasts stay under it; a remote session
+keeps running, but no pointer, key, focus, semantics or back button
+reaches it while locked. It asks once by itself when it comes up and
+again with [Unlock]. A device that lost its passcode is not kept out:
+the lock turns off with a notice.
+
+Authentication is local_auth's (biometrics with the device passcode as
+the fallback). The app takes local_auth 2.3.0's Android and iOS
+packages and its platform interface rather than the app-facing package,
+which would also build local_auth_windows (NuGet at build time) into
+the Windows app. Only the switch and the time are stored, as local
+options; desktops have no app lock.
+
+Android: MainActivity extends FlutterFragmentActivity, which the
+biometric prompt needs (activity/context references become this), and
+NormalTheme is an AppCompat theme for Android 8 and below. iOS:
+NSFaceIDUsageDescription in Info.plist.
+
+The decisions are plain Dart (hjviewer_applock_rules.dart) with tests.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../com/carriez/flutter_hbb/MainActivity.kt   |  17 +-
+ .../app/src/main/res/values-night/styles.xml  |   3 +-
+ .../app/src/main/res/values/styles.xml        |   4 +-
+ flutter/ios/Runner/Info.plist                 |   2 +
+ flutter/lib/common/hjviewer_applock.dart      | 366 ++++++++++++++++++
+ .../lib/common/hjviewer_applock_rules.dart    | 207 ++++++++++
+ flutter/lib/main.dart                         |   7 +-
+ flutter/lib/mobile/pages/settings_page.dart   |   4 +
+ flutter/pubspec.lock                          |  24 ++
+ flutter/pubspec.yaml                          |   6 +
+ flutter/test/hjviewer_applock_test.dart       | 197 ++++++++++
+ 11 files changed, 825 insertions(+), 12 deletions(-)
+ create mode 100644 flutter/lib/common/hjviewer_applock.dart
+ create mode 100644 flutter/lib/common/hjviewer_applock_rules.dart
+ create mode 100644 flutter/test/hjviewer_applock_test.dart
+
+diff --git a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
+index 0230161..acf661e 100644
+--- a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
++++ b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
+@@ -34,7 +34,7 @@ import androidx.annotation.RequiresApi
+ import org.json.JSONArray
+ import org.json.JSONObject
+ import com.hjq.permissions.XXPermissions
+-import io.flutter.embedding.android.FlutterActivity
++import io.flutter.embedding.android.FlutterFragmentActivity
+ import io.flutter.embedding.engine.FlutterEngine
+ import io.flutter.plugin.common.MethodChannel
+ import kotlin.concurrent.thread
+@@ -43,7 +43,8 @@ import java.io.FileInputStream
+ import java.io.FileOutputStream
+ 
+ 
+-class MainActivity : FlutterActivity() {
++// HJViewer: a FragmentActivity, which local_auth's biometric prompt needs (the app lock)
++class MainActivity : FlutterFragmentActivity() {
+     companion object {
+         var flutterMethodChannel: MethodChannel? = null
+         private var _rdClipboardManager: RdClipboardManager? = null
+@@ -78,7 +79,7 @@ class MainActivity : FlutterActivity() {
+     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+         super.configureFlutterEngine(flutterEngine)
+         if (MainService.isReady) {
+-            Intent(activity, MainService::class.java).also {
++            Intent(this@MainActivity, MainService::class.java).also {
+                 bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)
+             }
+         }
+@@ -99,7 +100,7 @@ class MainActivity : FlutterActivity() {
+     override fun onResume() {
+         super.onResume()
+         val inputPer = InputService.isOpen
+-        activity.runOnUiThread {
++        runOnUiThread {
+             flutterMethodChannel?.invokeMethod(
+                 "on_state_changed",
+                 mapOf("name" to "input", "value" to inputPer.toString())
+@@ -267,7 +268,7 @@ class MainActivity : FlutterActivity() {
+             // make sure result will be invoked, otherwise flutter will await forever
+             when (call.method) {
+                 "init_service" -> {
+-                    Intent(activity, MainService::class.java).also {
++                    Intent(this@MainActivity, MainService::class.java).also {
+                         bindService(it, serviceConnection, Context.BIND_AUTO_CREATE)
+                     }
+                     if (MainService.isReady) {
+@@ -295,14 +296,14 @@ class MainActivity : FlutterActivity() {
+                 }
+                 "check_permission" -> {
+                     if (call.arguments is String) {
+-                        result.success(XXPermissions.isGranted(context, call.arguments as String))
++                        result.success(XXPermissions.isGranted(this@MainActivity, call.arguments as String))
+                     } else {
+                         result.success(false)
+                     }
+                 }
+                 "request_permission" -> {
+                     if (call.arguments is String) {
+-                        requestPermission(context, call.arguments as String)
++                        requestPermission(this@MainActivity, call.arguments as String)
+                         result.success(true)
+                     } else {
+                         result.success(false)
+@@ -310,7 +311,7 @@ class MainActivity : FlutterActivity() {
+                 }
+                 START_ACTION -> {
+                     if (call.arguments is String) {
+-                        startAction(context, call.arguments as String)
++                        startAction(this@MainActivity, call.arguments as String)
+                         result.success(true)
+                     } else {
+                         result.success(false)
+diff --git a/flutter/android/app/src/main/res/values-night/styles.xml b/flutter/android/app/src/main/res/values-night/styles.xml
+index eef3dc9..3452ecb 100644
+--- a/flutter/android/app/src/main/res/values-night/styles.xml
++++ b/flutter/android/app/src/main/res/values-night/styles.xml
+@@ -12,7 +12,8 @@
+          running.
+          
+          This Theme is only used starting with V2 of Flutter's Android embedding. -->
+-    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
++    <!-- HJViewer: an AppCompat theme for local_auth's biometric prompt (values/styles.xml) -->
++    <style name="NormalTheme" parent="Theme.AppCompat.NoActionBar">
+         <item name="android:windowBackground">@color/hjv_splash_background</item>
+     </style>
+ </resources>
+diff --git a/flutter/android/app/src/main/res/values/styles.xml b/flutter/android/app/src/main/res/values/styles.xml
+index 9ee0a84..4752bbe 100644
+--- a/flutter/android/app/src/main/res/values/styles.xml
++++ b/flutter/android/app/src/main/res/values/styles.xml
+@@ -12,7 +12,9 @@
+          running.
+          
+          This Theme is only used starting with V2 of Flutter's Android embedding. -->
+-    <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
++    <!-- HJViewer: an AppCompat theme, which local_auth's biometric prompt needs on Android 8 and
++         below (the app lock); it is the activity's theme once the app has started -->
++    <style name="NormalTheme" parent="Theme.AppCompat.Light.NoActionBar">
+         <item name="android:windowBackground">@color/hjv_splash_background</item>
+     </style>
+     <style name="Transparent" parent="Theme.AppCompat.NoActionBar">
+diff --git a/flutter/ios/Runner/Info.plist b/flutter/ios/Runner/Info.plist
+index cbd184b..f5943c1 100644
+--- a/flutter/ios/Runner/Info.plist
++++ b/flutter/ios/Runner/Info.plist
+@@ -74,6 +74,8 @@
+   <string>This app needs camera access to scan QR codes</string>
+   <key>NSPhotoLibraryUsageDescription</key>
+   <string>This app needs photo library access to get QR codes from image</string>
++  <key>NSFaceIDUsageDescription</key>
++  <string>HJViewer uses Face ID to unlock the app.</string>
+ 	<key>CADisableMinimumFrameDurationOnPhone</key>
+ 	<true/>
+ 	<key>UIApplicationSupportsIndirectInputEvents</key>
+diff --git a/flutter/lib/common/hjviewer_applock.dart b/flutter/lib/common/hjviewer_applock.dart
+new file mode 100644
+index 0000000..c2af5a5
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_applock.dart
+@@ -0,0 +1,366 @@
++// The optional app lock of the phone and tablet app (W13): a cover over the whole app, an open
++// remote session included, that Face ID, Touch ID, a fingerprint or the device passcode takes
++// away (local_auth, with the passcode as the fallback), and its switch in the phone's settings.
++// The decisions and texts are in hjviewer_applock_rules.dart. The app keeps only the switch and
++// the time as local options; the biometrics stay with the system. Desktops have no app lock.
++
++import 'dart:async';
++
++import 'package:back_button_interceptor/back_button_interceptor.dart';
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_applock_rules.dart';
++import 'package:flutter_hbb/models/platform_model.dart';
++import 'package:local_auth_android/local_auth_android.dart';
++import 'package:local_auth_darwin/local_auth_darwin.dart';
++import 'package:local_auth_platform_interface/local_auth_platform_interface.dart';
++import 'package:settings_ui/settings_ui.dart';
++
++/// The phone and tablet app only.
++final bool _supported = isAndroid || isIOS;
++
++HjvAppLockPolicy? _policy;
++
++/// Whether the cover is up, for the gate.
++final _locked = ValueNotifier<bool>(false);
++
++/// The caption's biometrics, once the device was asked.
++HjvBiometricKind? _kind;
++
++/// As the other HJViewer texts: Korean when translate() gives its Korean words.
++HjvAppLockTexts get _t => HjvAppLockTexts(translate('Cancel') == '취소');
++
++void _sync() => _locked.value = _policy?.locked ?? false;
++
++/// main.dart, the phone app before runApp: reads the switch and the time and, while the lock is
++/// on, starts locked.
++void hjvInitAppLock() {
++  if (!_supported) return;
++  _policy = HjvAppLockPolicy(
++      enabled: bind.getLocalFlutterOption(k: kHjvAppLock) == 'Y',
++      after: hjvAppLockAfter(bind.getLocalFlutterOption(k: kHjvAppLockAfter)));
++  _policy!.start();
++  _sync();
++}
++
++/// main.dart, the app's builder: the gate around everything the app shows, its routes, dialogs
++/// and toasts. Desktops keep their builder as it is.
++TransitionBuilder hjvAppLockBuilder(TransitionBuilder builder) {
++  if (!_supported) return builder;
++  return (context, child) => _HjvAppLockGate(child: builder(context, child));
++}
++
++Future<HjvAuthOutcome> _authenticate(String reason, String title) async {
++  final t = _t;
++  try {
++    final ok = await LocalAuthPlatform.instance.authenticate(
++        localizedReason: reason,
++        authMessages: [
++          AndroidAuthMessages(
++              signInTitle: title, biometricHint: '', cancelButton: t.cancel),
++          IOSAuthMessages(
++              localizedFallbackTitle: t.passcode, cancelButton: t.cancel),
++        ],
++        options: const AuthenticationOptions(
++            biometricOnly: false, stickyAuth: false, useErrorDialogs: false));
++    return ok ? HjvAuthOutcome.success : HjvAuthOutcome.failed;
++  } on PlatformException catch (e) {
++    debugPrint('hjv: app lock: ${e.code}');
++    return hjvAuthOutcomeOf(e.code);
++  } catch (e) {
++    debugPrint('hjv: app lock: $e');
++    return HjvAuthOutcome.failed;
++  }
++}
++
++Future<bool> _deviceSupported() async {
++  try {
++    return await LocalAuthPlatform.instance.isDeviceSupported();
++  } catch (e) {
++    debugPrint('hjv: app lock: $e');
++    return false;
++  }
++}
++
++Future<void> _saveEnabled(bool on) =>
++    bind.setLocalFlutterOption(k: kHjvAppLock, v: on ? 'Y' : '');
++
++void _notice(String title, String text) {
++  gFFI.dialogManager
++      .show<void>((setState, close, context) => CustomAlertDialog(
++            title: Text(title),
++            content: Text(text),
++            actions: [
++              TextButton(
++                  style: TextButton.styleFrom(
++                      textStyle: const TextStyle(
++                          fontFamily: kHjvFont, fontWeight: FontWeight.w700)),
++                  onPressed: close,
++                  child: Text(_t.ok)),
++            ],
++          ))
++      .catchError((Object e) => debugPrint('hjv: $e'));
++}
++
++/// The lock screen's prompt: asked by itself when the cover comes up, and by [잠금 해제].
++Future<void> _unlock() async {
++  final p = _policy;
++  if (p == null || !p.locked || !p.beginAuth()) return;
++  final t = _t;
++  final end = p.endUnlock(await _authenticate(t.unlockReason, t.unlockTitle));
++  if (end == HjvAuthEnd.turnedOff) {
++    await _saveEnabled(false);
++    _notice(t.turnedOffTitle, t.turnedOff);
++  }
++  _sync();
++}
++
++class _HjvAppLockGate extends StatefulWidget {
++  final Widget child;
++  const _HjvAppLockGate({required this.child});
++
++  @override
++  State<_HjvAppLockGate> createState() => _HjvAppLockGateState();
++}
++
++class _HjvAppLockGateState extends State<_HjvAppLockGate>
++    with WidgetsBindingObserver {
++  static const _backName = 'hjv-app-lock';
++
++  /// The cold start's prompt waits for the app to be in the foreground.
++  bool _askOnResume = false;
++
++  /// What had the keyboard's focus before the cover came up; a text field is left alone, so that
++  /// the soft keyboard does not open again by itself.
++  FocusNode? _focusBefore;
++
++  @override
++  void initState() {
++    super.initState();
++    WidgetsBinding.instance.addObserver(this);
++    _locked.addListener(_changed);
++    if (_locked.value) {
++      _holdBack();
++      WidgetsBinding.instance.addPostFrameCallback((_) {
++        final state = WidgetsBinding.instance.lifecycleState;
++        if (state == null || state == AppLifecycleState.resumed) {
++          _unlock();
++        } else {
++          _askOnResume = true;
++        }
++      });
++    }
++  }
++
++  @override
++  void dispose() {
++    WidgetsBinding.instance.removeObserver(this);
++    _locked.removeListener(_changed);
++    BackButtonInterceptor.removeByName(_backName);
++    super.dispose();
++  }
++
++  /// While locked the back button does nothing: the default (a route's pop, which a remote
++  /// session takes as its own back) does not run.
++  void _holdBack() => BackButtonInterceptor.add((stop, info) => true,
++      name: _backName, zIndex: 1 << 30);
++
++  void _changed() {
++    if (!mounted) return;
++    BackButtonInterceptor.removeByName(_backName);
++    if (_locked.value) {
++      _holdBack();
++      final focus = FocusManager.instance.primaryFocus;
++      _focusBefore =
++          focus?.context?.findAncestorStateOfType<EditableTextState>() == null
++              ? focus
++              : null;
++    } else {
++      final before = _focusBefore;
++      _focusBefore = null;
++      WidgetsBinding.instance.addPostFrameCallback((_) {
++        if (before?.context != null) before!.requestFocus();
++      });
++    }
++    setState(() {});
++  }
++
++  @override
++  void didChangeAppLifecycleState(AppLifecycleState state) {
++    final p = _policy;
++    if (p == null) return;
++    switch (state) {
++      case AppLifecycleState.hidden:
++      case AppLifecycleState.paused:
++        p.background(DateTime.now());
++        break;
++      case AppLifecycleState.resumed:
++        final ask = p.foreground(DateTime.now()) || (_askOnResume && p.locked);
++        _askOnResume = false;
++        _sync();
++        if (ask) _unlock();
++        break;
++      default:
++        break;
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final locked = _locked.value;
++    return Stack(
++      fit: StackFit.expand,
++      children: [
++        // the app keeps running underneath; nothing reaches it while locked
++        ExcludeSemantics(
++          excluding: locked,
++          child: IgnorePointer(
++            ignoring: locked,
++            child: ExcludeFocus(excluding: locked, child: widget.child),
++          ),
++        ),
++        if (locked)
++          const Positioned.fill(child: BlockSemantics(child: _HjvLockScreen())),
++      ],
++    );
++  }
++}
++
++/// The cover: the app icon, '앱이 잠겨 있습니다' and [잠금 해제], in the 1.7.0 look.
++class _HjvLockScreen extends StatelessWidget {
++  const _HjvLockScreen();
++
++  @override
++  Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final t = _t;
++    return Material(
++      color: p.surface,
++      child: SafeArea(
++        child: Center(
++          child: Padding(
++            padding: const EdgeInsets.symmetric(horizontal: 24),
++            child: Column(
++              mainAxisSize: MainAxisSize.min,
++              children: [
++                ClipRRect(
++                    borderRadius: BorderRadius.circular(HjvRadius.xl),
++                    child: loadIcon(72)),
++                const SizedBox(height: 20),
++                Text(t.locked,
++                    textAlign: TextAlign.center,
++                    style: HjvText.titleMedium
++                        .copyWith(fontFamily: kHjvFont, color: p.text)),
++                const SizedBox(height: 24),
++                ElevatedButton(
++                  onPressed: _unlock,
++                  child: Text(t.unlock,
++                      style: const TextStyle(fontFamily: kHjvFont)),
++                ),
++              ],
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++// ---- the phone's settings ----
++
++Future<void> _probeKind(VoidCallback refresh) async {
++  var kind = HjvBiometricKind.generic;
++  if (isIOS) {
++    try {
++      final enrolled = await LocalAuthPlatform.instance.getEnrolledBiometrics();
++      if (enrolled.contains(BiometricType.fingerprint)) {
++        kind = HjvBiometricKind.touchId;
++      }
++    } catch (e) {
++      debugPrint('hjv: app lock: $e');
++    }
++  }
++  _kind = kind;
++  if (kind != HjvBiometricKind.generic) refresh();
++}
++
++Future<void> _toggle(bool on, VoidCallback refresh) async {
++  final p = _policy;
++  if (p == null) return;
++  final t = _t;
++  if (on && !await _deviceSupported()) {
++    _notice(t.unavailableTitle, t.unavailable);
++    return;
++  }
++  if (!p.beginAuth()) return;
++  final outcome =
++      await _authenticate(on ? t.turnOnReason : t.turnOffReason, t.title);
++  if (p.endSwitch(outcome, on: on)) {
++    await _saveEnabled(on);
++  } else if (on && outcome == HjvAuthOutcome.unavailable) {
++    _notice(t.unavailableTitle, t.unavailable);
++  }
++  _sync();
++  refresh();
++}
++
++void _pickAfter(VoidCallback refresh) {
++  final p = _policy;
++  if (p == null) return;
++  final t = _t;
++  gFFI.dialogManager.show<void>((setState, close, context) {
++    return CustomAlertDialog(
++      title: Text(t.afterTitle),
++      content: Column(
++        mainAxisSize: MainAxisSize.min,
++        children: [
++          for (final d in kHjvAppLockChoices)
++            getRadio<Duration>(Text(t.afterLabel(d)), d, p.after, (value) {
++              if (value == null) return;
++              p.after = value;
++              bind.setLocalFlutterOption(
++                  k: kHjvAppLockAfter, v: value.inSeconds.toString());
++              close();
++              refresh();
++            }),
++        ],
++      ),
++    );
++  }, backDismiss: true, clickMaskDismiss: true).catchError(
++      (Object e) => debugPrint('hjv: $e'));
++}
++
++/// The phone's settings, after the account section: '앱 잠금' and, while it is on, how long the
++/// app may stay in the background. `refresh` rebuilds the settings page.
++List<AbstractSettingsSection> hjvAppLockSections(VoidCallback refresh) {
++  final p = _policy;
++  if (!_supported || p == null) return [];
++  if (_kind == null) {
++    _kind = HjvBiometricKind.generic;
++    _probeKind(refresh);
++  }
++  final t = _t;
++  return [
++    SettingsSection(
++      title: Text(t.section),
++      tiles: [
++        SettingsTile.switchTile(
++          title: Text(t.title),
++          description: Text(t.caption(_kind!)),
++          leading: const Icon(Icons.lock_outline_rounded),
++          initialValue: p.enabled,
++          onToggle: (on) => _toggle(on, refresh),
++        ),
++        if (p.enabled)
++          SettingsTile.navigation(
++            title: Text(t.afterTitle),
++            leading: const Icon(Icons.timer_outlined),
++            value: Text(t.afterLabel(p.after)),
++            onPressed: (_) => _pickAfter(refresh),
++          ),
++      ],
++    ),
++  ];
++}
+diff --git a/flutter/lib/common/hjviewer_applock_rules.dart b/flutter/lib/common/hjviewer_applock_rules.dart
+new file mode 100644
+index 0000000..63d30ef
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_applock_rules.dart
+@@ -0,0 +1,207 @@
++// The optional app lock of the phone and tablet app (W13): when it asks for Face ID, Touch ID, a
++// fingerprint or the device passcode, what an answer does, and its texts in Korean and English.
++// Plain Dart without the bridge or the plugin, so that ci.sh tests it with the web stand-in;
++// hjviewer_applock.dart wires it to the app, local_auth and the settings.
++
++/// Local options (this device only): 'Y' while the lock is on, and the seconds in the background
++/// after which coming back asks again.
++const kHjvAppLock = 'hjv-app-lock';
++const kHjvAppLockAfter = 'hjv-app-lock-after';
++
++/// The choices of how long the app may stay in the background before it asks again: 바로, 1분,
++/// 5분; 1분 by default.
++const kHjvAppLockChoices = [Duration.zero, Duration(minutes: 1), Duration(minutes: 5)];
++const kHjvAppLockDefault = Duration(minutes: 1);
++
++/// The stored seconds as one of the choices; anything else is the default.
++Duration hjvAppLockAfter(String stored) {
++  final seconds = int.tryParse(stored);
++  for (final d in kHjvAppLockChoices) {
++    if (d.inSeconds == seconds) return d;
++  }
++  return kHjvAppLockDefault;
++}
++
++/// What an authentication came to. A wrong face or finger the user gave up on, a cancel, a prompt
++/// that the system closed, and any error are all [failed]: the app stays as it was and can ask
++/// again. [unavailable]: the device has neither biometrics nor a passcode (any more).
++enum HjvAuthOutcome { success, failed, unavailable }
++
++/// The outcome of local_auth's PlatformException code (local_auth's error_codes.dart and the
++/// platform packages' codes). 'no_fragment_activity' means an Android build whose activity cannot
++/// show the prompt: no device of that build could unlock, so it counts as unavailable rather than
++/// keeping everyone out.
++HjvAuthOutcome hjvAuthOutcomeOf(String code) => switch (code) {
++      'NotAvailable' ||
++      'PasscodeNotSet' ||
++      'NotEnrolled' ||
++      'no_fragment_activity' =>
++        HjvAuthOutcome.unavailable,
++      _ => HjvAuthOutcome.failed,
++    };
++
++/// What the app does after an authentication ended.
++enum HjvAuthEnd {
++  /// nothing changes (another prompt was still going, or a turn-on/off that failed)
++  none,
++
++  /// the lock screen goes
++  unlocked,
++
++  /// the device can no longer authenticate: the lock goes and the switch is turned off, with a
++  /// notice; the device's own lock is gone, so the app lock had nothing to stand on
++  turnedOff,
++}
++
++/// When the app asks. The lock is up at a cold start and when the app comes back to the
++/// foreground after at least [after] in the background; while it is up, every return to the
++/// foreground asks again. An app that went to the background while a prompt was showing (Android
++/// shows the device passcode in another activity) is not locked by that.
++class HjvAppLockPolicy {
++  bool _enabled;
++  Duration after;
++
++  HjvAppLockPolicy({required bool enabled, this.after = kHjvAppLockDefault})
++      : _enabled = enabled;
++
++  bool _locked = false;
++  bool _authenticating = false;
++  bool _leftDuringAuth = false;
++  DateTime? _backgroundSince;
++
++  bool get enabled => _enabled;
++  bool get locked => _locked;
++  bool get authenticating => _authenticating;
++
++  /// The switch changed (after its own successful authentication). Off takes the lock away.
++  set enabled(bool on) {
++    _enabled = on;
++    if (!on) {
++      _locked = false;
++      _backgroundSince = null;
++    }
++  }
++
++  /// A cold start: true when the app asks now.
++  bool start() {
++    _locked = _enabled;
++    _backgroundSince = null;
++    return _locked;
++  }
++
++  /// The app went to the background (paused or hidden, not inactive: Face ID's own prompt makes
++  /// an iPhone app inactive).
++  void background(DateTime now) {
++    if (!_enabled) return;
++    if (_authenticating) {
++      _leftDuringAuth = true;
++      return;
++    }
++    _backgroundSince ??= now;
++  }
++
++  /// The app is in the foreground again: true when it asks now. A clock that went back counts as
++  /// the full time. The return from a background that began during a prompt does not ask, whether
++  /// it comes before the prompt's answer or after it.
++  bool foreground(DateTime now) {
++    final since = _backgroundSince;
++    _backgroundSince = null;
++    if (!_enabled) return false;
++    if (_authenticating || _leftDuringAuth) {
++      _leftDuringAuth = false;
++      return false;
++    }
++    if (since == null) return false;
++    final away = now.difference(since);
++    if (away.isNegative || away >= after) _locked = true;
++    return _locked;
++  }
++
++  /// A prompt starts: false while another one is showing.
++  bool beginAuth() {
++    if (_authenticating) return false;
++    _authenticating = true;
++    _leftDuringAuth = false;
++    return true;
++  }
++
++  /// The lock screen's prompt ended.
++  HjvAuthEnd endUnlock(HjvAuthOutcome outcome) {
++    _authenticating = false;
++    if (!_locked) return HjvAuthEnd.none;
++    switch (outcome) {
++      case HjvAuthOutcome.success:
++        _locked = false;
++        _backgroundSince = null;
++        return HjvAuthEnd.unlocked;
++      case HjvAuthOutcome.unavailable:
++        enabled = false;
++        return HjvAuthEnd.turnedOff;
++      case HjvAuthOutcome.failed:
++        return HjvAuthEnd.none;
++    }
++  }
++
++  /// The switch's prompt ended: true when the switch takes the new value. A device without
++  /// biometrics or a passcode cannot turn the lock on; turning it off on such a device needs no
++  /// prompt it cannot give.
++  bool endSwitch(HjvAuthOutcome outcome, {required bool on}) {
++    _authenticating = false;
++    final takes = outcome == HjvAuthOutcome.success ||
++        (!on && outcome == HjvAuthOutcome.unavailable);
++    if (takes) enabled = on;
++    return takes;
++  }
++}
++
++/// Which biometrics the switch's caption names: Touch ID only on an iPhone or iPad that has it.
++enum HjvBiometricKind { generic, touchId }
++
++class HjvAppLockTexts {
++  final bool korean;
++  const HjvAppLockTexts(this.korean);
++
++  String _t(String ko, String en) => korean ? ko : en;
++
++  String get section => _t('보안', 'Security');
++  String get title => _t('앱 잠금', 'App lock');
++  String caption(HjvBiometricKind kind) => kind == HjvBiometricKind.touchId
++      ? _t('Touch ID 또는 기기 암호로 앱을 엽니다.',
++          'Opens the app with Touch ID or the device passcode.')
++      : _t('Face ID, 지문 또는 기기 암호로 앱을 엽니다.',
++          'Opens the app with Face ID, fingerprint or the device passcode.');
++  String get afterTitle => _t('앱을 나간 뒤 잠그기', 'Lock after leaving the app');
++  String afterLabel(Duration d) => d == Duration.zero
++      ? _t('바로', 'Immediately')
++      : d.inMinutes == 1
++          ? _t('1분', '1 minute')
++          : _t('${d.inMinutes}분', '${d.inMinutes} minutes');
++  String get locked => _t('앱이 잠겨 있습니다', 'HJViewer is locked');
++  String get unlock => _t('잠금 해제', 'Unlock');
++
++  /// The prompt's reason (Touch ID's and the passcode screen's text, Android's description).
++  String get unlockReason =>
++      _t('HJViewer를 열려면 본인임을 확인하세요.', 'Confirm it is you to open HJViewer.');
++  String get turnOnReason =>
++      _t('앱 잠금을 켜려면 본인임을 확인하세요.', 'Confirm it is you to turn on the app lock.');
++  String get turnOffReason =>
++      _t('앱 잠금을 끄려면 본인임을 확인하세요.', 'Confirm it is you to turn off the app lock.');
++
++  /// Android's prompt title.
++  String get unlockTitle => _t('HJViewer 잠금 해제', 'Unlock HJViewer');
++  String get passcode => _t('암호 입력', 'Enter Passcode');
++  String get cancel => _t('취소', 'Cancel');
++  String get ok => _t('확인', 'OK');
++
++  String get unavailableTitle =>
++      _t('앱 잠금을 켤 수 없습니다', 'The app lock cannot be turned on');
++  String get unavailable => _t(
++      '이 기기에 Face ID, 지문 또는 기기 암호가 설정되어 있지 않습니다. 기기 설정에서 먼저 설정하세요.',
++      'This device has no Face ID, fingerprint or passcode set up. Set one up in the device '
++          'settings first.');
++  String get turnedOffTitle => _t('앱 잠금을 껐습니다', 'The app lock is off');
++  String get turnedOff => _t(
++      '이 기기에 Face ID, 지문 또는 기기 암호가 더 이상 설정되어 있지 않아 앱 잠금을 껐습니다. 다시 쓰려면 기기에서 설정한 뒤 설정 탭에서 켜세요.',
++      'This device no longer has Face ID, fingerprint or a passcode set up, so the app lock was '
++          'turned off. To use it again, set one up on the device, then turn it on in Settings.');
++}
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index 5c5dca9..b40aeb5 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -10,6 +10,7 @@ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
++import 'package:flutter_hbb/common/hjviewer_applock.dart';
+ import 'package:flutter_hbb/common/widgets/overlay.dart';
+ import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
+ import 'package:flutter_hbb/desktop/pages/install_page.dart';
+@@ -195,6 +196,7 @@ void runMobileApp() async {
+   hjvInitAccount();
+   hjvInitAccess();
+   hjvInitUpdate();
++  hjvInitAppLock();
+   runApp(App());
+   await initUniLinks();
+ }
+@@ -537,7 +539,8 @@ class _AppState extends State<App> with WidgetsBindingObserver {
+             // FirebaseAnalyticsObserver(analytics: analytics),
+             BotToastNavigatorObserver(),
+           ],
+-          builder: isAndroid
++          // HJViewer: the phone app's optional app lock covers all of it
++          builder: hjvAppLockBuilder(isAndroid
+               ? (context, child) => AccessibilityListener(
+                     child: MediaQuery(
+                       data: MediaQuery.of(context).copyWith(
+@@ -558,7 +561,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
+                   } else {
+                     return workaroundWindowBorder(context, child);
+                   }
+-                },
++                }),
+         ),
+       );
+     });
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index 1483e49..3769c80 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -18,6 +18,7 @@ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+ import '../../common/hjviewer_account.dart';
++import '../../common/hjviewer_applock.dart';
+ import '../../common/hjviewer_pins.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../common/widgets/login.dart';
+@@ -761,6 +762,9 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+               ...hjvAccountTiles(),
+             ],
+           ),
++        ...hjvAppLockSections(() {
++          if (mounted) setState(() {});
++        }),
+         SettingsSection(title: Text(translate("Settings")), tiles: [
+           if (!disabledSettings && !_hideNetwork && !_hideServer)
+             SettingsTile(
+diff --git a/flutter/pubspec.lock b/flutter/pubspec.lock
+index 1a5c787..6e4f832 100644
+--- a/flutter/pubspec.lock
++++ b/flutter/pubspec.lock
+@@ -850,6 +850,30 @@ packages:
+       url: "https://pub.dev"
+     source: hosted
+     version: "2.1.1"
++  local_auth_android:
++    dependency: "direct main"
++    description:
++      name: local_auth_android
++      sha256: "8bba79f4f0f7bc812fce2ca20915d15618c37721246ba6c3ef2aa7a763a90cf2"
++      url: "https://pub.dev"
++    source: hosted
++    version: "1.0.47"
++  local_auth_darwin:
++    dependency: "direct main"
++    description:
++      name: local_auth_darwin
++      sha256: "630996cd7b7f28f5ab92432c4b35d055dd03a747bc319e5ffbb3c4806a3e50d2"
++      url: "https://pub.dev"
++    source: hosted
++    version: "1.4.3"
++  local_auth_platform_interface:
++    dependency: "direct main"
++    description:
++      name: local_auth_platform_interface
++      sha256: "1b842ff177a7068442eae093b64abe3592f816afd2a533c0ebcdbe40f9d2075a"
++      url: "https://pub.dev"
++    source: hosted
++    version: "1.0.10"
+   logging:
+     dependency: transitive
+     description:
+diff --git a/flutter/pubspec.yaml b/flutter/pubspec.yaml
+index 744e9b5..e12d555 100644
+--- a/flutter/pubspec.yaml
++++ b/flutter/pubspec.yaml
+@@ -115,6 +115,12 @@ dependencies:
+   sqflite: 2.3.3+1
+   google_fonts: ^6.2.1
+   vector_math: ^2.1.4
++  # HJViewer: the optional app lock on phones (hjviewer_applock.dart): local_auth 2.3.0's
++  # Android and iOS packages without the app-facing one, which would build local_auth_windows
++  # (NuGet at build time) into the Windows app
++  local_auth_android: 1.0.47
++  local_auth_darwin: 1.4.3
++  local_auth_platform_interface: 1.0.10
+ 
+ dev_dependencies:
+   icons_launcher: ^2.0.4
+diff --git a/flutter/test/hjviewer_applock_test.dart b/flutter/test/hjviewer_applock_test.dart
+new file mode 100644
+index 0000000..2caa863
+--- /dev/null
++++ b/flutter/test/hjviewer_applock_test.dart
+@@ -0,0 +1,197 @@
++import 'package:flutter_hbb/common/hjviewer_applock_rules.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The optional app lock (W13): when it asks and what an answer does, without the bridge or the
++// plugin.
++
++final t0 = DateTime(2026, 10, 19, 9);
++DateTime at(int seconds) => t0.add(Duration(seconds: seconds));
++
++HjvAppLockPolicy on([Duration after = kHjvAppLockDefault]) =>
++    HjvAppLockPolicy(enabled: true, after: after);
++
++/// Locked, then unlocked with a successful prompt.
++HjvAppLockPolicy unlocked([Duration after = kHjvAppLockDefault]) {
++  final p = on(after)..start();
++  p.beginAuth();
++  p.endUnlock(HjvAuthOutcome.success);
++  return p;
++}
++
++void main() {
++  test('a cold start asks while the lock is on, and not while it is off', () {
++    final p = on();
++    expect(p.start(), isTrue);
++    expect(p.locked, isTrue);
++
++    final off = HjvAppLockPolicy(enabled: false);
++    expect(off.start(), isFalse);
++    expect(off.locked, isFalse);
++    off.background(at(0));
++    expect(off.foreground(at(3600)), isFalse);
++    expect(off.locked, isFalse);
++  });
++
++  test('a successful prompt unlocks; a failed or cancelled one keeps the lock', () {
++    final p = on()..start();
++    expect(p.beginAuth(), isTrue);
++    expect(p.beginAuth(), isFalse, reason: 'one prompt at a time');
++    expect(p.endUnlock(HjvAuthOutcome.failed), HjvAuthEnd.none);
++    expect(p.locked, isTrue);
++
++    expect(p.beginAuth(), isTrue);
++    expect(p.endUnlock(HjvAuthOutcome.success), HjvAuthEnd.unlocked);
++    expect(p.locked, isFalse);
++  });
++
++  test('a background shorter than the time does not ask; as long or longer does', () {
++    final p = unlocked();
++    p.background(at(0));
++    expect(p.foreground(at(59)), isFalse);
++    expect(p.locked, isFalse);
++
++    p.background(at(100));
++    expect(p.foreground(at(160)), isTrue);
++    expect(p.locked, isTrue);
++  });
++
++  test('바로 asks after any background; 5분 waits five minutes', () {
++    final now = unlocked(Duration.zero);
++    now.background(at(0));
++    expect(now.foreground(at(0)), isTrue);
++
++    final five = unlocked(const Duration(minutes: 5));
++    five.background(at(0));
++    expect(five.foreground(at(299)), isFalse);
++    five.background(at(400));
++    expect(five.foreground(at(700)), isTrue);
++  });
++
++  test('the background starts when the app left, and a clock that went back locks', () {
++    final p = unlocked();
++    p.background(at(0));
++    p.background(at(50)); // hidden, then paused
++    expect(p.foreground(at(61)), isTrue);
++
++    final q = unlocked();
++    q.background(at(100));
++    expect(q.foreground(at(10)), isTrue);
++  });
++
++  test('a return without a background (inactive only, e.g. Face ID) does not ask', () {
++    final p = unlocked(Duration.zero);
++    expect(p.foreground(at(10)), isFalse);
++    expect(p.locked, isFalse);
++  });
++
++  test('while locked, every return to the foreground asks again', () {
++    final p = on()..start();
++    p.background(at(0));
++    expect(p.foreground(at(1)), isTrue);
++  });
++
++  test('leaving for the prompt itself (the Android passcode screen) neither locks nor asks', () {
++    // the return comes after the answer
++    final p = unlocked(Duration.zero);
++    p.background(at(0));
++    expect(p.foreground(at(1)), isTrue);
++    p.beginAuth();
++    p.background(at(2));
++    expect(p.endUnlock(HjvAuthOutcome.failed), HjvAuthEnd.none);
++    expect(p.foreground(at(3)), isFalse, reason: 'no prompt loop after a cancel');
++    expect(p.locked, isTrue);
++
++    // the return comes before the answer; a later real background counts again
++    final q = unlocked(Duration.zero);
++    q.background(at(0));
++    q.foreground(at(1));
++    q.beginAuth();
++    q.background(at(2));
++    expect(q.foreground(at(3)), isFalse);
++    expect(q.endUnlock(HjvAuthOutcome.success), HjvAuthEnd.unlocked);
++    q.background(at(10));
++    expect(q.foreground(at(11)), isTrue);
++  });
++
++  test('a device without biometrics or a passcode cannot turn the lock on', () {
++    expect(hjvAuthOutcomeOf('NotAvailable'), HjvAuthOutcome.unavailable);
++    expect(hjvAuthOutcomeOf('PasscodeNotSet'), HjvAuthOutcome.unavailable);
++    expect(hjvAuthOutcomeOf('NotEnrolled'), HjvAuthOutcome.unavailable);
++    expect(hjvAuthOutcomeOf('no_fragment_activity'), HjvAuthOutcome.unavailable);
++    expect(hjvAuthOutcomeOf('LockedOut'), HjvAuthOutcome.failed);
++    expect(hjvAuthOutcomeOf('auth_in_progress'), HjvAuthOutcome.failed);
++
++    final p = HjvAppLockPolicy(enabled: false)..start();
++    expect(p.beginAuth(), isTrue);
++    expect(p.endSwitch(HjvAuthOutcome.unavailable, on: true), isFalse);
++    expect(p.enabled, isFalse);
++  });
++
++  test('turning the lock on or off takes one successful prompt', () {
++    final p = HjvAppLockPolicy(enabled: false)..start();
++    p.beginAuth();
++    expect(p.endSwitch(HjvAuthOutcome.failed, on: true), isFalse);
++    expect(p.enabled, isFalse);
++    p.beginAuth();
++    expect(p.endSwitch(HjvAuthOutcome.success, on: true), isTrue);
++    expect(p.enabled, isTrue);
++    expect(p.locked, isFalse, reason: 'turning it on does not lock the app');
++
++    p.beginAuth();
++    expect(p.endSwitch(HjvAuthOutcome.failed, on: false), isFalse);
++    expect(p.enabled, isTrue);
++    p.beginAuth();
++    expect(p.endSwitch(HjvAuthOutcome.success, on: false), isTrue);
++    expect(p.enabled, isFalse);
++    p.background(at(0));
++    expect(p.foreground(at(3600)), isFalse);
++  });
++
++  test('a device that lost its passcode is not kept out: the lock turns off', () {
++    final p = on()..start();
++    p.beginAuth();
++    expect(p.endUnlock(HjvAuthOutcome.unavailable), HjvAuthEnd.turnedOff);
++    expect(p.locked, isFalse);
++    expect(p.enabled, isFalse);
++  });
++
++  test('the stored time is one of the choices, else 1분', () {
++    expect(hjvAppLockAfter('0'), Duration.zero);
++    expect(hjvAppLockAfter('60'), const Duration(minutes: 1));
++    expect(hjvAppLockAfter('300'), const Duration(minutes: 5));
++    expect(hjvAppLockAfter(''), kHjvAppLockDefault);
++    expect(hjvAppLockAfter('42'), kHjvAppLockDefault);
++    expect(kHjvAppLockDefault, const Duration(minutes: 1));
++  });
++
++  test('the texts', () {
++    const ko = HjvAppLockTexts(true);
++    const en = HjvAppLockTexts(false);
++    expect(ko.title, '앱 잠금');
++    expect(en.title, 'App lock');
++    expect(ko.caption(HjvBiometricKind.generic), 'Face ID, 지문 또는 기기 암호로 앱을 엽니다.');
++    expect(en.caption(HjvBiometricKind.generic),
++        'Opens the app with Face ID, fingerprint or the device passcode.');
++    expect(ko.caption(HjvBiometricKind.touchId), contains('Touch ID'));
++    expect(en.caption(HjvBiometricKind.touchId), contains('Touch ID'));
++    expect([for (final d in kHjvAppLockChoices) ko.afterLabel(d)], ['바로', '1분', '5분']);
++    expect([for (final d in kHjvAppLockChoices) en.afterLabel(d)],
++        ['Immediately', '1 minute', '5 minutes']);
++    expect(ko.locked, '앱이 잠겨 있습니다');
++    expect(en.locked, 'HJViewer is locked');
++    expect(ko.unlock, '잠금 해제');
++    expect(en.unlock, 'Unlock');
++    for (final t in [ko, en]) {
++      for (final s in [
++        t.unlockReason,
++        t.turnOnReason,
++        t.turnOffReason,
++        t.unavailable,
++        t.turnedOff,
++      ]) {
++        expect(s, isNotEmpty);
++        expect(s.contains('{') || s.contains('}'), isFalse);
++      }
++    }
++  });
++}

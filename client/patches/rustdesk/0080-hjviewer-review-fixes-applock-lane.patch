@@ -1,0 +1,531 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 22:16:50 +0900
+Subject: [PATCH 80/85] hjviewer: review fixes, applock lane
+
+W13 app lock:
+- A cancelled or failed prompt no longer turns the lock off. local_auth's
+  error codes are not read any more (local_auth_darwin reports a cancel
+  and a wrong Face ID or passcode as NotAvailable, Android a busy sensor);
+  after any non-success the app asks isDeviceSupported() again, and only
+  a device that can no longer authenticate turns the lock off (unlock) or
+  lets the switch go off without a success. A failing question keeps the
+  lock; no_fragment_activity no longer opens it.
+- While the lock is on, a plain cover is up whenever the app is inactive
+  or in the background, so the app switcher and Recents show no remote
+  screen; on return it becomes the lock screen or goes.
+- A background that begins during the switch's prompt counts again, after
+  the chosen time plus 30 seconds; the no-count rule stays for the lock
+  screen's own prompt (the Android passcode activity).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_applock.dart      |  97 ++++++++++------
+ .../lib/common/hjviewer_applock_rules.dart    |  82 ++++++++++----
+ flutter/test/hjviewer_applock_test.dart       | 106 ++++++++++++++++--
+ 3 files changed, 217 insertions(+), 68 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_applock.dart b/flutter/lib/common/hjviewer_applock.dart
+index c2af5a5..bb1a486 100644
+--- a/flutter/lib/common/hjviewer_applock.dart
++++ b/flutter/lib/common/hjviewer_applock.dart
+@@ -23,8 +23,8 @@ final bool _supported = isAndroid || isIOS;
+ 
+ HjvAppLockPolicy? _policy;
+ 
+-/// Whether the cover is up, for the gate.
+-final _locked = ValueNotifier<bool>(false);
++/// What covers the app, for the gate.
++final _cover = ValueNotifier<HjvAppLockCover>(HjvAppLockCover.none);
+ 
+ /// The caption's biometrics, once the device was asked.
+ HjvBiometricKind? _kind;
+@@ -32,7 +32,7 @@ HjvBiometricKind? _kind;
+ /// As the other HJViewer texts: Korean when translate() gives its Korean words.
+ HjvAppLockTexts get _t => HjvAppLockTexts(translate('Cancel') == '취소');
+ 
+-void _sync() => _locked.value = _policy?.locked ?? false;
++void _sync() => _cover.value = _policy?.cover ?? HjvAppLockCover.none;
+ 
+ /// main.dart, the phone app before runApp: reads the switch and the time and, while the lock is
+ /// on, starts locked.
+@@ -52,10 +52,13 @@ TransitionBuilder hjvAppLockBuilder(TransitionBuilder builder) {
+   return (context, child) => _HjvAppLockGate(child: builder(context, child));
+ }
+ 
++/// Anything but a successful prompt asks the device again whether it can authenticate at all
++/// (hjvAuthOutcome says why the error codes are not used).
+ Future<HjvAuthOutcome> _authenticate(String reason, String title) async {
+   final t = _t;
++  var ok = false;
+   try {
+-    final ok = await LocalAuthPlatform.instance.authenticate(
++    ok = await LocalAuthPlatform.instance.authenticate(
+         localizedReason: reason,
+         authMessages: [
+           AndroidAuthMessages(
+@@ -65,22 +68,22 @@ Future<HjvAuthOutcome> _authenticate(String reason, String title) async {
+         ],
+         options: const AuthenticationOptions(
+             biometricOnly: false, stickyAuth: false, useErrorDialogs: false));
+-    return ok ? HjvAuthOutcome.success : HjvAuthOutcome.failed;
+   } on PlatformException catch (e) {
+     debugPrint('hjv: app lock: ${e.code}');
+-    return hjvAuthOutcomeOf(e.code);
+   } catch (e) {
+     debugPrint('hjv: app lock: $e');
+-    return HjvAuthOutcome.failed;
+   }
++  return hjvAuthOutcome(
++      success: ok, deviceSupported: ok || await _deviceSupported(onError: true));
+ }
+ 
+-Future<bool> _deviceSupported() async {
++/// `onError`: the answer when the question itself fails (after a failed prompt the lock stays).
++Future<bool> _deviceSupported({bool onError = false}) async {
+   try {
+     return await LocalAuthPlatform.instance.isDeviceSupported();
+   } catch (e) {
+     debugPrint('hjv: app lock: $e');
+-    return false;
++    return onError;
+   }
+ }
+ 
+@@ -132,6 +135,9 @@ class _HjvAppLockGateState extends State<_HjvAppLockGate>
+   /// The cold start's prompt waits for the app to be in the foreground.
+   bool _askOnResume = false;
+ 
++  /// The cover that [_changed] last saw.
++  HjvAppLockCover _shown = HjvAppLockCover.none;
++
+   /// What had the keyboard's focus before the cover came up; a text field is left alone, so that
+   /// the soft keyboard does not open again by itself.
+   FocusNode? _focusBefore;
+@@ -140,8 +146,9 @@ class _HjvAppLockGateState extends State<_HjvAppLockGate>
+   void initState() {
+     super.initState();
+     WidgetsBinding.instance.addObserver(this);
+-    _locked.addListener(_changed);
+-    if (_locked.value) {
++    _cover.addListener(_changed);
++    _shown = _cover.value;
++    if (_shown == HjvAppLockCover.lock) {
+       _holdBack();
+       WidgetsBinding.instance.addPostFrameCallback((_) {
+         final state = WidgetsBinding.instance.lifecycleState;
+@@ -157,27 +164,30 @@ class _HjvAppLockGateState extends State<_HjvAppLockGate>
+   @override
+   void dispose() {
+     WidgetsBinding.instance.removeObserver(this);
+-    _locked.removeListener(_changed);
++    _cover.removeListener(_changed);
+     BackButtonInterceptor.removeByName(_backName);
+     super.dispose();
+   }
+ 
+   /// While locked the back button does nothing: the default (a route's pop, which a remote
+-  /// session takes as its own back) does not run.
++  /// session takes as its own back) does not run. The other interceptors still run (a dialog
++  /// that a back press closes may close under the cover; a known limit).
+   void _holdBack() => BackButtonInterceptor.add((stop, info) => true,
+       name: _backName, zIndex: 1 << 30);
+ 
+   void _changed() {
+     if (!mounted) return;
++    final was = _shown;
++    _shown = _cover.value;
+     BackButtonInterceptor.removeByName(_backName);
+-    if (_locked.value) {
+-      _holdBack();
++    if (_shown == HjvAppLockCover.lock) _holdBack();
++    if (was == HjvAppLockCover.none && _shown != HjvAppLockCover.none) {
+       final focus = FocusManager.instance.primaryFocus;
+       _focusBefore =
+           focus?.context?.findAncestorStateOfType<EditableTextState>() == null
+               ? focus
+               : null;
+-    } else {
++    } else if (was != HjvAppLockCover.none && _shown == HjvAppLockCover.none) {
+       final before = _focusBefore;
+       _focusBefore = null;
+       WidgetsBinding.instance.addPostFrameCallback((_) {
+@@ -192,9 +202,14 @@ class _HjvAppLockGateState extends State<_HjvAppLockGate>
+     final p = _policy;
+     if (p == null) return;
+     switch (state) {
++      case AppLifecycleState.inactive:
++        p.inactive();
++        _sync();
++        break;
+       case AppLifecycleState.hidden:
+       case AppLifecycleState.paused:
+         p.background(DateTime.now());
++        _sync();
+         break;
+       case AppLifecycleState.resumed:
+         final ask = p.foreground(DateTime.now()) || (_askOnResume && p.locked);
+@@ -209,28 +224,34 @@ class _HjvAppLockGateState extends State<_HjvAppLockGate>
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final locked = _locked.value;
++    final cover = _cover.value;
++    final covered = cover != HjvAppLockCover.none;
+     return Stack(
+       fit: StackFit.expand,
+       children: [
+-        // the app keeps running underneath; nothing reaches it while locked
++        // the app keeps running underneath; nothing reaches it while covered
+         ExcludeSemantics(
+-          excluding: locked,
++          excluding: covered,
+           child: IgnorePointer(
+-            ignoring: locked,
+-            child: ExcludeFocus(excluding: locked, child: widget.child),
++            ignoring: covered,
++            child: ExcludeFocus(excluding: covered, child: widget.child),
+           ),
+         ),
+-        if (locked)
+-          const Positioned.fill(child: BlockSemantics(child: _HjvLockScreen())),
++        if (covered)
++          Positioned.fill(
++              child: BlockSemantics(
++                  child: _HjvLockScreen(
++                      plain: cover == HjvAppLockCover.shade))),
+       ],
+     );
+   }
+ }
+ 
+-/// The cover: the app icon, '앱이 잠겨 있습니다' and [잠금 해제], in the 1.7.0 look.
++/// The cover: the app icon, '앱이 잠겨 있습니다' and [잠금 해제], in the 1.7.0 look; `plain`, the
++/// shade while the app is not in the foreground, shows the icon only.
+ class _HjvLockScreen extends StatelessWidget {
+-  const _HjvLockScreen();
++  final bool plain;
++  const _HjvLockScreen({required this.plain});
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -248,17 +269,19 @@ class _HjvLockScreen extends StatelessWidget {
+                 ClipRRect(
+                     borderRadius: BorderRadius.circular(HjvRadius.xl),
+                     child: loadIcon(72)),
+-                const SizedBox(height: 20),
+-                Text(t.locked,
+-                    textAlign: TextAlign.center,
+-                    style: HjvText.titleMedium
+-                        .copyWith(fontFamily: kHjvFont, color: p.text)),
+-                const SizedBox(height: 24),
+-                ElevatedButton(
+-                  onPressed: _unlock,
+-                  child: Text(t.unlock,
+-                      style: const TextStyle(fontFamily: kHjvFont)),
+-                ),
++                if (!plain) ...[
++                  const SizedBox(height: 20),
++                  Text(t.locked,
++                      textAlign: TextAlign.center,
++                      style: HjvText.titleMedium
++                          .copyWith(fontFamily: kHjvFont, color: p.text)),
++                  const SizedBox(height: 24),
++                  ElevatedButton(
++                    onPressed: _unlock,
++                    child: Text(t.unlock,
++                        style: const TextStyle(fontFamily: kHjvFont)),
++                  ),
++                ],
+               ],
+             ),
+           ),
+@@ -294,7 +317,7 @@ Future<void> _toggle(bool on, VoidCallback refresh) async {
+     _notice(t.unavailableTitle, t.unavailable);
+     return;
+   }
+-  if (!p.beginAuth()) return;
++  if (!p.beginAuth(forSwitch: true)) return;
+   final outcome =
+       await _authenticate(on ? t.turnOnReason : t.turnOffReason, t.title);
+   if (p.endSwitch(outcome, on: on)) {
+diff --git a/flutter/lib/common/hjviewer_applock_rules.dart b/flutter/lib/common/hjviewer_applock_rules.dart
+index 63d30ef..5c64c2e 100644
+--- a/flutter/lib/common/hjviewer_applock_rules.dart
++++ b/flutter/lib/common/hjviewer_applock_rules.dart
+@@ -27,18 +27,27 @@ Duration hjvAppLockAfter(String stored) {
+ /// again. [unavailable]: the device has neither biometrics nor a passcode (any more).
+ enum HjvAuthOutcome { success, failed, unavailable }
+ 
+-/// The outcome of local_auth's PlatformException code (local_auth's error_codes.dart and the
+-/// platform packages' codes). 'no_fragment_activity' means an Android build whose activity cannot
+-/// show the prompt: no device of that build could unlock, so it counts as unavailable rather than
+-/// keeping everyone out.
+-HjvAuthOutcome hjvAuthOutcomeOf(String code) => switch (code) {
+-      'NotAvailable' ||
+-      'PasscodeNotSet' ||
+-      'NotEnrolled' ||
+-      'no_fragment_activity' =>
+-        HjvAuthOutcome.unavailable,
+-      _ => HjvAuthOutcome.failed,
+-    };
++/// The outcome of a prompt: `success` is authenticate()'s true; `deviceSupported` is
++/// isDeviceSupported(), asked again after anything else (and true when that question fails).
++/// authenticate()'s error codes never decide it: local_auth_darwin reports a cancel and a wrong
++/// face or passcode as 'NotAvailable' too, and Android a busy sensor, so a code would let anyone
++/// who holds the phone open the app by cancelling. Only a device that has neither biometrics nor
++/// a passcode any more is [HjvAuthOutcome.unavailable].
++HjvAuthOutcome hjvAuthOutcome(
++        {required bool success, required bool deviceSupported}) =>
++    success
++        ? HjvAuthOutcome.success
++        : deviceSupported
++            ? HjvAuthOutcome.failed
++            : HjvAuthOutcome.unavailable;
++
++/// A background that began while the switch's prompt was showing (Android shows the device
++/// passcode in another activity) counts only when it lasts this much longer than the chosen time.
++const kHjvAppLockSwitchGrace = Duration(seconds: 30);
++
++/// What covers the app: nothing, a plain screen while the app is not in the foreground (so the
++/// app switcher's picture shows no remote screen), or the lock screen that asks.
++enum HjvAppLockCover { none, shade, lock }
+ 
+ /// What the app does after an authentication ended.
+ enum HjvAuthEnd {
+@@ -55,8 +64,11 @@ enum HjvAuthEnd {
+ 
+ /// When the app asks. The lock is up at a cold start and when the app comes back to the
+ /// foreground after at least [after] in the background; while it is up, every return to the
+-/// foreground asks again. An app that went to the background while a prompt was showing (Android
+-/// shows the device passcode in another activity) is not locked by that.
++/// foreground asks again. An app that went to the background while the lock screen's prompt was
++/// showing (Android shows the device passcode in another activity) is not locked by that, so that
++/// a cancel does not ask again at once; for the switch's prompt it counts after
++/// [kHjvAppLockSwitchGrace] more. While the lock is on, the app is shaded whenever it is not in
++/// the foreground.
+ class HjvAppLockPolicy {
+   bool _enabled;
+   Duration after;
+@@ -66,18 +78,28 @@ class HjvAppLockPolicy {
+ 
+   bool _locked = false;
+   bool _authenticating = false;
++  bool _authForSwitch = false;
+   bool _leftDuringAuth = false;
++  bool _shaded = false;
+   DateTime? _backgroundSince;
++  bool _backgroundInSwitch = false;
+ 
+   bool get enabled => _enabled;
+   bool get locked => _locked;
+   bool get authenticating => _authenticating;
+ 
++  HjvAppLockCover get cover => _locked
++      ? HjvAppLockCover.lock
++      : _shaded
++          ? HjvAppLockCover.shade
++          : HjvAppLockCover.none;
++
+   /// The switch changed (after its own successful authentication). Off takes the lock away.
+   set enabled(bool on) {
+     _enabled = on;
+     if (!on) {
+       _locked = false;
++      _shaded = false;
+       _backgroundSince = null;
+     }
+   }
+@@ -89,38 +111,54 @@ class HjvAppLockPolicy {
+     return _locked;
+   }
+ 
++  /// The app is inactive (it is leaving, or the system shows something over it): the shade goes
++  /// up, but not for a prompt of the app's own (Face ID's sheet makes an iPhone app inactive).
++  void inactive() {
++    if (_enabled && !_authenticating) _shaded = true;
++  }
++
+   /// The app went to the background (paused or hidden, not inactive: Face ID's own prompt makes
+   /// an iPhone app inactive).
+   void background(DateTime now) {
+     if (!_enabled) return;
+-    if (_authenticating) {
++    _shaded = true;
++    if (_authenticating && !_authForSwitch) {
+       _leftDuringAuth = true;
+       return;
+     }
+-    _backgroundSince ??= now;
++    if (_backgroundSince == null) {
++      _backgroundSince = now;
++      _backgroundInSwitch = _authenticating;
++    }
+   }
+ 
+   /// The app is in the foreground again: true when it asks now. A clock that went back counts as
+-  /// the full time. The return from a background that began during a prompt does not ask, whether
+-  /// it comes before the prompt's answer or after it.
++  /// the full time. The return from a background that began during the lock screen's prompt does
++  /// not ask, whether it comes before the prompt's answer or after it.
+   bool foreground(DateTime now) {
+     final since = _backgroundSince;
++    final inSwitch = _backgroundInSwitch;
+     _backgroundSince = null;
++    _backgroundInSwitch = false;
++    _shaded = false;
+     if (!_enabled) return false;
+-    if (_authenticating || _leftDuringAuth) {
++    if ((_authenticating && !_authForSwitch) || _leftDuringAuth) {
+       _leftDuringAuth = false;
+       return false;
+     }
+     if (since == null) return false;
+     final away = now.difference(since);
+-    if (away.isNegative || away >= after) _locked = true;
++    final needed = inSwitch ? after + kHjvAppLockSwitchGrace : after;
++    if (away.isNegative || away >= needed) _locked = true;
+     return _locked;
+   }
+ 
+-  /// A prompt starts: false while another one is showing.
+-  bool beginAuth() {
++  /// A prompt starts, the lock screen's or (`forSwitch`) the switch's: false while another one is
++  /// showing.
++  bool beginAuth({bool forSwitch = false}) {
+     if (_authenticating) return false;
+     _authenticating = true;
++    _authForSwitch = forSwitch;
+     _leftDuringAuth = false;
+     return true;
+   }
+diff --git a/flutter/test/hjviewer_applock_test.dart b/flutter/test/hjviewer_applock_test.dart
+index 2caa863..31c9dad 100644
+--- a/flutter/test/hjviewer_applock_test.dart
++++ b/flutter/test/hjviewer_applock_test.dart
+@@ -113,20 +113,107 @@ void main() {
+     expect(q.foreground(at(11)), isTrue);
+   });
+ 
+-  test('a device without biometrics or a passcode cannot turn the lock on', () {
+-    expect(hjvAuthOutcomeOf('NotAvailable'), HjvAuthOutcome.unavailable);
+-    expect(hjvAuthOutcomeOf('PasscodeNotSet'), HjvAuthOutcome.unavailable);
+-    expect(hjvAuthOutcomeOf('NotEnrolled'), HjvAuthOutcome.unavailable);
+-    expect(hjvAuthOutcomeOf('no_fragment_activity'), HjvAuthOutcome.unavailable);
+-    expect(hjvAuthOutcomeOf('LockedOut'), HjvAuthOutcome.failed);
+-    expect(hjvAuthOutcomeOf('auth_in_progress'), HjvAuthOutcome.failed);
++  test('only a device that can no longer authenticate is unavailable, never an error code', () {
++    expect(hjvAuthOutcome(success: true, deviceSupported: true), HjvAuthOutcome.success);
++    // a cancel, a wrong face or passcode (iOS reports them as 'NotAvailable'), a busy sensor, a
++    // broken activity: the device can still authenticate
++    expect(hjvAuthOutcome(success: false, deviceSupported: true), HjvAuthOutcome.failed);
++    expect(hjvAuthOutcome(success: false, deviceSupported: false),
++        HjvAuthOutcome.unavailable);
++  });
++
++  test('a cancelled or failed prompt on a device that can authenticate keeps the lock', () {
++    final p = on()..start();
++    p.beginAuth();
++    expect(p.endUnlock(hjvAuthOutcome(success: false, deviceSupported: true)),
++        HjvAuthEnd.none);
++    expect(p.locked, isTrue);
++    expect(p.enabled, isTrue);
++  });
+ 
++  test('a cancelled turn-off keeps the switch on; a cancelled turn-on shows no notice', () {
++    final p = unlocked();
++    expect(p.beginAuth(forSwitch: true), isTrue);
++    expect(p.endSwitch(hjvAuthOutcome(success: false, deviceSupported: true), on: false),
++        isFalse);
++    expect(p.enabled, isTrue);
++
++    final q = HjvAppLockPolicy(enabled: false)..start();
++    q.beginAuth(forSwitch: true);
++    final outcome = hjvAuthOutcome(success: false, deviceSupported: true);
++    expect(q.endSwitch(outcome, on: true), isFalse);
++    expect(outcome, isNot(HjvAuthOutcome.unavailable),
++        reason: "the 'no Face ID or passcode' notice is for unavailable only");
++  });
++
++  test('a device without biometrics or a passcode cannot turn the lock on', () {
+     final p = HjvAppLockPolicy(enabled: false)..start();
+-    expect(p.beginAuth(), isTrue);
++    expect(p.beginAuth(forSwitch: true), isTrue);
+     expect(p.endSwitch(HjvAuthOutcome.unavailable, on: true), isFalse);
+     expect(p.enabled, isFalse);
+   });
+ 
++  test('a device that lost its passcode can turn the lock off without a prompt it cannot give',
++      () {
++    final p = unlocked();
++    p.beginAuth(forSwitch: true);
++    expect(p.endSwitch(HjvAuthOutcome.unavailable, on: false), isTrue);
++    expect(p.enabled, isFalse);
++  });
++
++  test("leaving during the switch's prompt still counts, after the time and a grace", () {
++    final p = unlocked();
++    p.beginAuth(forSwitch: true);
++    p.background(at(0));
++    expect(p.endSwitch(HjvAuthOutcome.failed, on: false), isFalse);
++    expect(p.foreground(at(3600)), isTrue, reason: 'an hour away locks');
++
++    // the Android passcode screen of the switch's prompt does not lock right away with 바로
++    final q = unlocked(Duration.zero);
++    q.beginAuth(forSwitch: true);
++    q.background(at(0));
++    expect(q.foreground(at(10)), isFalse);
++    expect(q.endSwitch(HjvAuthOutcome.failed, on: false), isFalse);
++    expect(q.locked, isFalse);
++
++    // the return can come before the answer
++    final r = unlocked();
++    r.beginAuth(forSwitch: true);
++    r.background(at(0));
++    expect(r.foreground(at(60 + kHjvAppLockSwitchGrace.inSeconds)), isTrue);
++    expect(r.endSwitch(HjvAuthOutcome.success, on: false), isTrue);
++    expect(r.locked, isFalse, reason: 'turned off');
++  });
++
++  test('while the lock is on, the app is shaded whenever it is not in the foreground', () {
++    final p = unlocked();
++    expect(p.cover, HjvAppLockCover.none);
++    p.inactive();
++    expect(p.cover, HjvAppLockCover.shade);
++    expect(p.foreground(at(1)), isFalse);
++    expect(p.cover, HjvAppLockCover.none, reason: 'back without a background');
++
++    p.background(at(10));
++    expect(p.cover, HjvAppLockCover.shade);
++    expect(p.foreground(at(20)), isFalse);
++    expect(p.cover, HjvAppLockCover.none);
++
++    p.background(at(100));
++    expect(p.foreground(at(200)), isTrue);
++    expect(p.cover, HjvAppLockCover.lock);
++
++    // the app's own prompt (Face ID's sheet) does not shade the settings
++    final q = unlocked();
++    q.beginAuth(forSwitch: true);
++    q.inactive();
++    expect(q.cover, HjvAppLockCover.none);
++
++    final off = HjvAppLockPolicy(enabled: false)..start();
++    off.inactive();
++    off.background(at(0));
++    expect(off.cover, HjvAppLockCover.none);
++  });
++
+   test('turning the lock on or off takes one successful prompt', () {
+     final p = HjvAppLockPolicy(enabled: false)..start();
+     p.beginAuth();
+@@ -150,7 +237,8 @@ void main() {
+   test('a device that lost its passcode is not kept out: the lock turns off', () {
+     final p = on()..start();
+     p.beginAuth();
+-    expect(p.endUnlock(HjvAuthOutcome.unavailable), HjvAuthEnd.turnedOff);
++    expect(p.endUnlock(hjvAuthOutcome(success: false, deviceSupported: false)),
++        HjvAuthEnd.turnedOff);
+     expect(p.locked, isFalse);
+     expect(p.enabled, isFalse);
+   });

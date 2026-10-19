@@ -1,0 +1,187 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 22:16:53 +0900
+Subject: [PATCH 72/85] hjviewer: review fixes, home lane
+
+U22: a PC card opens its menu on a right-click's release (onSecondaryTapUp)
+instead of its press. Tap-down fires after 100 ms even for a recognizer
+that later loses, so a right-click held on the card's more button opened
+the card's menu and the button's; tap-up fires only for the winner, the
+button's own detector. The ID card's more button, activated from the
+keyboard, opens its menu under the button instead of the window's corner,
+and its Change ID entry needs the settings' Security tab, as
+switch2page does nothing without it.
+
+U57: on a phone the empty My PCs list and a search that matches nothing
+scroll inside the refresh indicator, so pulling them down refreshes the
+list; on a 360 dp phone the bar's refresh is under "more". The connect
+button next to the ID field is a labelled button for screen readers.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/peer_card.dart     |  4 +-
+ flutter/lib/common/widgets/peers_view.dart    | 22 ++++++--
+ .../lib/desktop/pages/desktop_home_page.dart  | 53 ++++++++++++-------
+ flutter/lib/mobile/pages/connection_page.dart | 13 +++--
+ 4 files changed, 64 insertions(+), 28 deletions(-)
+
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index e0bd759..9dbde3c 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -82,8 +82,8 @@ class _PeerCardState extends State<_PeerCard>
+         },
+         onLongPress: () => peerTabModel.select(peer),
+         // HJViewer: a right-click opens the card's menu at the pointer, as its ⋮ does
+-        onSecondaryTapDown: isDesktop && !peerTabModel.multiSelectionMode
+-            ? (e) {
++        onSecondaryTapUp: isDesktop && !peerTabModel.multiSelectionMode
++            ? (TapUpDetails e) {
+                 final x = e.globalPosition.dx;
+                 final y = e.globalPosition.dy;
+                 _menuPos = RelativeRect.fromLTRB(x, y, x, y);
+diff --git a/flutter/lib/common/widgets/peers_view.dart b/flutter/lib/common/widgets/peers_view.dart
+index d0e0b35..d64b26b 100644
+--- a/flutter/lib/common/widgets/peers_view.dart
++++ b/flutter/lib/common/widgets/peers_view.dart
+@@ -201,19 +201,33 @@ class _PeersViewState extends State<_PeersView>
+   Widget _hjvBuildEmpty(BuildContext context) {
+     final text = translate(_emptyMessages[widget.peers.loadEvent] ?? 'Empty');
+     final i = text.indexOf('\n');
+-    return hjvPeersPlaceholder(context,
++    return _hjvPullable(hjvPeersPlaceholder(context,
+         icon: PeerTabModel.icons[widget.peerTabIndex.index],
+         title: i < 0 ? text : text.substring(0, i),
+-        subtitle: i < 0 ? null : text.substring(i + 1));
++        subtitle: i < 0 ? null : text.substring(i + 1)));
+   }
+ 
+   // HJViewer: a search or a filter that matches nothing, instead of a blank list
+   Widget _hjvBuildNoMatch(BuildContext context, String searchText) =>
+-      hjvPeersPlaceholder(context,
++      _hjvPullable(hjvPeersPlaceholder(context,
+           icon: searchText.trim().isNotEmpty
+               ? Icons.search_rounded
+               : PeerTabModel.icons[widget.peerTabIndex.index],
+-          title: translate('Empty'));
++          title: translate('Empty')));
++
++  // HJViewer: on a phone the empty My PCs list scrolls, so its pull-to-refresh fires (U57)
++  Widget _hjvPullable(Widget placeholder) {
++    if (widget.peerTabIndex != PeerTabIndex.group ||
++        stateGlobal.isPortrait.isFalse) {
++      return placeholder;
++    }
++    return LayoutBuilder(
++        builder: (context, c) => SingleChildScrollView(
++            physics: const AlwaysScrollableScrollPhysics(),
++            child: ConstrainedBox(
++                constraints: BoxConstraints(minHeight: c.maxHeight),
++                child: placeholder)));
++  }
+ 
+   onVisibilityChanged(VisibilityInfo info) {
+     final peerId = _peerId((info.key as ValueKey).value);
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 1d6c0b2..839193c 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -276,26 +276,40 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+     final hjv = HjvPalette.of(context);
+     // HJViewer: a menu at the pointer (ID copy, ID change, settings), as the PC cards' ⋮
+     var menuAt = Offset.zero;
+-    return InkWell(
+-      onTapDown: (e) => menuAt = e.globalPosition,
+-      onTap: () => _hjvShowIdMenu(context, menuAt),
+-      customBorder: const CircleBorder(),
+-      child: Tooltip(
+-        message: HjvTexts(translate('Cancel') == '취소').more,
+-        child: Obx(
+-          () => CircleAvatar(
+-            radius: 14,
+-            backgroundColor:
+-                hover.value ? hjv.surface.withOpacity(0.7) : Colors.transparent,
+-            child: Icon(
+-              Icons.more_vert_rounded,
+-              size: 18,
+-              color: hover.value ? hjv.text : hjv.textSecondary,
++    return Builder(
++      builder: (button) => InkWell(
++        onTapDown: (e) => menuAt = e.globalPosition,
++        onTap: () {
++          var at = menuAt;
++          menuAt = Offset.zero;
++          // HJViewer: opened from the keyboard, the menu sits under the button
++          if (at == Offset.zero) {
++            final box = button.findRenderObject() as RenderBox?;
++            if (box != null) {
++              at = box.localToGlobal(box.size.bottomLeft(Offset.zero));
++            }
++          }
++          _hjvShowIdMenu(context, at);
++        },
++        customBorder: const CircleBorder(),
++        child: Tooltip(
++          message: HjvTexts(translate('Cancel') == '취소').more,
++          child: Obx(
++            () => CircleAvatar(
++              radius: 14,
++              backgroundColor: hover.value
++                  ? hjv.surface.withOpacity(0.7)
++                  : Colors.transparent,
++              child: Icon(
++                Icons.more_vert_rounded,
++                size: 18,
++                color: hover.value ? hjv.text : hjv.textSecondary,
++              ),
+             ),
+           ),
+         ),
++        onHover: (value) => hover.value = value,
+       ),
+-      onHover: (value) => hover.value = value,
+     );
+   }
+ 
+@@ -311,12 +325,15 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+           showToast(translate('Copied'));
+         }
+       ),
+-      if (settings && !isChangeIdDisabled())
++      if (settings &&
++          !isChangeIdDisabled() &&
++          DesktopSettingPage.tabKeys.contains(SettingsTabKey.safety))
+         (
+           translate('Change ID'),
+           () => DesktopSettingPage.switch2page(SettingsTabKey.safety)
+         ),
+-      if (settings) (translate('Settings'), () => DesktopTabPage.onAddSetting()),
++      if (settings)
++        (translate('Settings'), () => DesktopTabPage.onAddSetting()),
+     ];
+     mod_menu.showMenu(
+       context: context,
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index 49ce246..4d7fb6c 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -310,10 +310,15 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                           color: HjvPalette.of(context).primary,
+                           shape: const CircleBorder(),
+                           clipBehavior: Clip.antiAlias,
+-                          child: InkWell(
+-                            onTap: onConnect,
+-                            child: const Icon(Icons.arrow_forward_rounded,
+-                                color: Colors.white, size: 24),
++                          // HJViewer: a labelled button for screen readers
++                          child: Semantics(
++                            button: true,
++                            label: translate('Connect'),
++                            child: InkWell(
++                              onTap: onConnect,
++                              child: const Icon(Icons.arrow_forward_rounded,
++                                  color: Colors.white, size: 24),
++                            ),
+                           ),
+                         ),
+                       ),

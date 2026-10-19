@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 23:43:16 +0900
+Subject: [PATCH 83/85] hjviewer: a ticket request's 401 ends the login (U68)
+
+Rust's POST /api/hjv/ticket goes by the login without the screens: its
+401 (a logout from another device or by the administrator, an expired
+login) only counted as a failure, so a long-running app kept the login
+and its next connection ended in A2 ("tell your administrator") instead
+of a login.
+
+- src/hjviewer_access.rs notes the token whose signed ticket request got
+  hjv-api's 401 (a "login" failure of a request that could be signed),
+  in memory, and answers main_get_common "hjv-access-login-ended" with
+  "Y" while that token is still the login's (another login since, or the
+  logout, clears it by itself). No new FFI.
+- hjviewer_access.dart reads it where the screens already poll: the
+  desktop's every-second read of this PC's state, the app's start and
+  return to the front, and hbbs's refusal of a session. The login then
+  ends as an account request's 401 ends it (UserModel.reset with
+  resetOther), so the notice of an ended login (L4) says why, and a
+  refused session shows A1 in place of A2. A desktop session window has
+  the main window ask currentUser, whose 401 ends it there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart       | 30 +++++++++++++-
+ flutter/lib/common/hjviewer_access_texts.dart |  4 ++
+ flutter/test/hjviewer_access_test.dart        |  2 +
+ src/hjviewer_access.rs                        | 41 ++++++++++++++++++-
+ src/hjviewer_access/tests.rs                  | 10 +++++
+ 5 files changed, 84 insertions(+), 3 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index fbc0e0d..2fa8d74 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -205,6 +205,7 @@ void hjvInitAccess() {
+ }
+ 
+ void _readPc() {
++  _ticketEndedLogin();
+   _pcState.value = bind.mainGetOptionSync(key: kHjvAccessPcState);
+   _pcBound.value = hjvPcBound(bind.mainGetOptionSync(key: 'hjv-pwless-state'));
+   final now = _unixNow();
+@@ -234,7 +235,9 @@ bool hjvAccessRefused(
+     ReconnectHandle reconnect) {
+   if (type != kHjvAccessMsgbox) return false;
+   final t = _t;
+-  if (bind.mainGetLocalOption(key: 'access_token').isNotEmpty) {
++  // a login hjv-api ended at the ticket request ends now: A1, not A2 (U68)
++  if (bind.mainGetLocalOption(key: 'access_token').isNotEmpty &&
++      !_ticketEndedLogin()) {
+     _refusedAgainDialog(t, sessionId, title, dialogManager, reconnect);
+   } else {
+     _refusedDialog(t, sessionId, peerId, dialogManager, reconnect);
+@@ -1158,8 +1161,33 @@ class _HjvConnectHint extends StatelessWidget {
+ 
+ // ---- the login's ticket, and the server's mode ----
+ 
++var _endingLogin = false;
++
++/// U68: hjv-api answered the core's ticket request with 401 (a logout from another device or by
++/// the administrator, an expired login) before any request of the screens did: the login ends as
++/// an account request's 401 ends it, and the notice of a login that ended (hjviewer_account.dart)
++/// says why. A desktop session window has the main window, which shows the login, ask
++/// currentUser, whose 401 ends it there. True when the login ended.
++bool _ticketEndedLogin() {
++  if (!_accountBuild ||
++      _endingLogin ||
++      _commonSync(kHjvAccessLoginEnded) != 'Y') {
++    return false;
++  }
++  if (isDesktop && desktopType != DesktopType.main) {
++    rustDeskWinManager.call(WindowType.Main, kWindowRefreshCurrentUser, '');
++    return true;
++  }
++  _endingLogin = true;
++  unawaited(gFFI.userModel
++      .reset(resetOther: true)
++      .whenComplete(() => _endingLogin = false));
++  return true;
++}
++
+ class _HjvAccessRefresh with WidgetsBindingObserver {
+   void now() {
++    _ticketEndedLogin();
+     unawaited(bind
+         .mainSetCommon(key: 'hjv-access-refresh', value: '')
+         .catchError((Object e) => debugPrint('hjv: $e')));
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 5773789..a482c17 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -31,6 +31,10 @@ const kHjvGuestPcEnd = 'hjv-guest-pc-end';
+ /// main_set_common: this PC's ticket for a support code (src/hjviewer_access/guest.rs).
+ const kHjvGuestPcCode = 'hjv-guest-pc-code';
+ 
++/// main_get_common: "Y" while hjv-api refused the core's ticket request with 401 and that login
++/// is still the app's (src/hjviewer_access.rs LOGIN_ENDED, U68).
++const kHjvAccessLoginEnded = 'hjv-access-login-ended';
++
+ /// main_get_common: "Y" while the login may make support codes (src/hjviewer_account/api.rs).
+ const kHjvSupportCode = 'hjv-support-code';
+ 
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index 06345ef..026eaf0 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -467,6 +467,8 @@ void main() {
+         '다른 기기에서 이 PC에 연결하려면 연세포탈로 로그인하거나, 이용 비밀번호나 지원 코드를 넣으세요.');
+     // the core's keys and what it gets (src/hjviewer_access/guest.rs)
+     expect(kHjvGuestPcCode, 'hjv-guest-pc-code');
++    // U68: the core's note that hjv-api ended the login at its ticket request
++    expect(kHjvAccessLoginEnded, 'hjv-access-login-ended');
+     expect(hjvGuestPcCodeValue('k7m2-q9xd'), '{"code":"k7m2-q9xd"}');
+     expect(hjvGuestResultKey(code: true), 'hjv-guest-result:pc-code');
+     expect(hjvGuestResultKey(), 'hjv-guest-result:pc');
+diff --git a/src/hjviewer_access.rs b/src/hjviewer_access.rs
+index 4f370eb..9380fdf 100644
+--- a/src/hjviewer_access.rs
++++ b/src/hjviewer_access.rs
+@@ -21,7 +21,9 @@
+ //!   runs without its window.
+ //! - The login's ticket comes with the login's answer (`hjv.access`) and from
+ //!   `POST /api/hjv/ticket`, which a thread asks again once the ticket is past half its lifetime,
+-//!   and stays in LocalConfig until the logout. A desktop app asks with its ID and device key, for
++//!   and stays in LocalConfig until the logout. hjv-api's 401 to that request (a logout from
++//!   another device or by the administrator, an expired login) is noted for the screens
++//!   (`hjv-access-login-ended`), which end the login as their own account requests' 401 ends it. A desktop app asks with its ID and device key, for
+ //!   a ticket that registers it too (`both`), and asks so at once for a login's ticket that does
+ //!   not, since the login gives `both` only to an installed PC hbbs knows (the doc, 2-4 and 3-3).
+ //! - The access password's tickets (guest.rs, `POST /api/hjv/guest`) stay in this process's
+@@ -664,6 +666,11 @@ pub(crate) fn get_common(key: &str) -> Option<String> {
+     if !active() {
+         return None;
+     }
++    if key == LOGIN_ENDED {
++        let refused = *REFUSED_LOGIN.lock().unwrap_or_else(|e| e.into_inner());
++        let ended = login_refused(refused.as_ref(), &LocalConfig::get_option("access_token"));
++        return Some(if ended { "Y" } else { "" }.to_owned());
++    }
+     if key != "hjv-access-state" {
+         return guest::get_common(key);
+     }
+@@ -708,6 +715,22 @@ async fn off_thread<T: Send + 'static>(
+     tokio::time::timeout(limit, rx).await.ok()?.ok()
+ }
+ 
++/// main_get_common: "Y" while hjv-api refused the login's ticket request with 401 and that login
++/// is still the app's (U68).
++const LOGIN_ENDED: &str = "hjv-access-login-ended";
++
++/// The SHA-256 of the token whose ticket request hjv-api answered with 401.
++static REFUSED_LOGIN: Mutex<Option<[u8; 32]>> = Mutex::new(None);
++
++fn token_hash(token: &str) -> [u8; 32] {
++    Sha256::digest(token.as_bytes()).into()
++}
++
++/// Whether the login of `token` is the one hjv-api refused (`refused`, its token's hash).
++fn login_refused(refused: Option<&[u8; 32]>, token: &str) -> bool {
++    !token.is_empty() && refused == Some(&token_hash(token))
++}
++
+ /// The limits that all requests for the login's ticket share.
+ struct Limiter {
+     last: Option<Instant>,
+@@ -774,7 +797,21 @@ fn request(timeout: Duration) -> Result<(Held, String), &'static str> {
+     }
+     let body = request_body(&token, device().as_ref());
+     let response = crate::hjviewer_update::send_by_login(server, true, TICKET_PATH, &body, timeout)
+-        .map_err(|failure| failure.code())?;
++        .map_err(|failure| {
++            // "login" for a request that could be signed is hjv-api's 401 (door.rs failure_of)
++            let signed = token.bytes().all(|b| (0x21..=0x7e).contains(&b))
++                && crate::hjviewer_account::proof_header(
++                    "POST",
++                    TICKET_PATH,
++                    body.as_bytes(),
++                    &token,
++                )
++                .is_some();
++            if failure.code() == "login" && signed {
++                *REFUSED_LOGIN.lock().unwrap_or_else(|e| e.into_inner()) = Some(token_hash(&token));
++            }
++            failure.code()
++        })?;
+     let mut answer = Vec::new();
+     response
+         .take(MAX_ANSWER)
+diff --git a/src/hjviewer_access/tests.rs b/src/hjviewer_access/tests.rs
+index f893722..05eacf1 100644
+--- a/src/hjviewer_access/tests.rs
++++ b/src/hjviewer_access/tests.rs
+@@ -313,3 +313,13 @@ fn the_trays_word_while_refused_tells_only_a_pc_without_a_login_to_log_in() {
+     assert_eq!(tray_state(false, false), "Not connected to the server (log in)");
+     assert_eq!(tray_state(false, true), "Not connected to the server");
+ }
++
++#[test]
++fn a_ticket_requests_401_ends_only_the_login_it_was_asked_by() {
++    let refused = token_hash("hjv_old");
++    assert!(login_refused(Some(&refused), "hjv_old"));
++    // another login since, a logout, nothing refused
++    assert!(!login_refused(Some(&refused), "hjv_new"));
++    assert!(!login_refused(Some(&refused), ""));
++    assert!(!login_refused(None, "hjv_old"));
++}

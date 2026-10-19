@@ -1,0 +1,1770 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 01:24:36 +0900
+Subject: [PATCH 85/85] hjviewer: fixes from the 1.8.2 screen review
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The PC home: P1's title is short enough for the 200 px pane ("서버에 연결되지
+않음", two lines at most), its buttons grow with an English label of two lines
+and sit 8 px apart, P2's and P3's home lines are a title of one line with
+until when below it, and the home follows a ticket taken or ended at once
+(a hint of the state the registering process notes next, at most 30 s). G3
+is as high with its [로그인] as without; the left pane shows its scrollbar
+while it scrolls; the ID menu opens beside the card and its tooltip above.
+
+Confirms: the logout of all other devices has its title, the gate's line is
+a second paragraph 8 px down and no longer repeats the question, a phone's
+logout on a staff-only server is a danger confirm, and a recent card's
+removal says what goes with it and ends in [지우기]. A form error in P3 says
+the code's form instead of E6; the offline text names the support code while
+the server trades them; S2 keeps one width and draws its error and its end
+as P3's. Korean breaks at spaces in the confirms, the field errors, the
+pane's texts, the 내 PC placeholder and the About notes.
+
+Smaller: the device name without a doubled platform, [로그아웃] without the
+name, "Log in"/"Log out" in English, the About update lines in English and
+in line on a phone, the phone ID label in the theme's tertiary text, the
+phone settings' off switches on a visible track, a lighter off knob on the
+desktop, the 내 PC note beside a short host name, [지원 코드 만들기] in the
+desktop tab bar, the ID suggestions say that Enter connects, the right-
+clicked card keeps its border while its menu is open, ko.rs "… 사용".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_theme.dart             |   5 +-
+ flutter/lib/common/hjv_update.dart            |  39 ++--
+ flutter/lib/common/hjv_update_model.dart      |  41 ++--
+ flutter/lib/common/hjviewer_access.dart       | 187 +++++++++++++-----
+ flutter/lib/common/hjviewer_access_texts.dart | 109 ++++++----
+ flutter/lib/common/hjviewer_account.dart      | 101 ++++++++--
+ .../lib/common/hjviewer_account_texts.dart    |  20 +-
+ flutter/lib/common/hjviewer_labels.dart       |   4 +
+ .../common/widgets/connection_page_title.dart |  43 ++--
+ flutter/lib/common/widgets/dialog.dart        |   7 +-
+ .../lib/common/widgets/hjv_autocomplete.dart  |  52 +++--
+ flutter/lib/common/widgets/login.dart         |   1 +
+ flutter/lib/common/widgets/my_group.dart      |   4 +-
+ flutter/lib/common/widgets/peer_card.dart     |  78 +++++---
+ flutter/lib/common/widgets/peer_tab_page.dart |   4 +
+ flutter/lib/common/widgets/peers_view.dart    |   2 +-
+ .../lib/desktop/pages/connection_page.dart    |   1 +
+ .../lib/desktop/pages/desktop_home_page.dart  |  40 ++--
+ .../desktop/pages/desktop_setting_page.dart   |   9 +-
+ flutter/lib/mobile/pages/connection_page.dart |  13 +-
+ flutter/lib/mobile/pages/settings_page.dart   |  21 +-
+ flutter/test/hjv_update_test.dart             |  12 ++
+ flutter/test/hjviewer_access_test.dart        |  41 +++-
+ flutter/test/hjviewer_account_test.dart       |   5 +
+ src/lang/ko.rs                                |   4 +-
+ 25 files changed, 597 insertions(+), 246 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_theme.dart b/flutter/lib/common/hjv_theme.dart
+index 6583cb3..759c8df 100644
+--- a/flutter/lib/common/hjv_theme.dart
++++ b/flutter/lib/common/hjv_theme.dart
+@@ -203,14 +203,15 @@ ThemeData hjvRestyle(ThemeData base) {
+                   ? p.primary
+                   : p.textTertiary),
+     ),
+-    // a switch that cannot change: a faint track and knob when off, the disabled colour when on
++    // a switch that cannot change: a faint track and knob when off, the disabled colour when on;
++    // an off knob in the tertiary text colour, lighter than an on look
+     switchTheme: base.switchTheme.copyWith(
+       thumbColor: WidgetStateProperty.resolveWith((states) =>
+           states.contains(WidgetState.selected)
+               ? Colors.white
+               : states.contains(WidgetState.disabled)
+                   ? p.textDisabled
+-                  : p.textSecondary),
++                  : p.textTertiary),
+       trackColor: WidgetStateProperty.resolveWith((states) =>
+           states.contains(WidgetState.disabled)
+               ? (states.contains(WidgetState.selected)
+diff --git a/flutter/lib/common/hjv_update.dart b/flutter/lib/common/hjv_update.dart
+index e442fae..5e6e98b 100644
+--- a/flutter/lib/common/hjv_update.dart
++++ b/flutter/lib/common/hjv_update.dart
+@@ -305,6 +305,8 @@ Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) {
+ /// app comes back to the front after an hour and right after a login.
+ void hjvInitUpdate() {
+   if (!hjvEnabled()) return;
++  // Settings → About's lines in the UI's language
++  HjvUpdateText.korean = () => translate('Cancel') == '취소';
+   // the app starts whatever happens here
+   try {
+     _refresh();
+@@ -435,20 +437,33 @@ List<Widget> hjvAboutRows() => hjvEnabled() ? [const HjvAbout()] : [];
+ /// Settings → About on a phone.
+ List<AbstractSettingsTile> hjvAboutTiles() => hjvEnabled()
+     ? [
+-        // the lines as the description: an iPhone's tile has its value in the title's row
++        // the lines under the title, in line with it on the card (settings_ui draws a custom
++        // tile's description below the card, under the icons' column)
+         // HJViewer: the texts in the app's typeface, which settings_ui does not give a custom tile
+         CustomSettingsTile(
+-            child: Obx(() => SettingsTile(
+-                  title: Text(
+-                      hjvUpdate.value.checking
+-                          ? HjvUpdateText.checking
+-                          : HjvUpdateText.check,
+-                      style: const TextStyle(fontFamily: kHjvFont)),
+-                  description: Text(hjvAboutLines(hjvUpdate.value).join('\n'),
+-                      style: const TextStyle(fontFamily: kHjvFont)),
+-                  leading: const Icon(Icons.system_update_alt_rounded),
+-                  onPressed: (_) => hjvCheckByHand(),
+-                ))),
++            child: Builder(
++                builder: (context) => Obx(() => SettingsTile(
++                      title: Column(
++                        crossAxisAlignment: CrossAxisAlignment.start,
++                        children: [
++                          Text(
++                              hjvUpdate.value.checking
++                                  ? HjvUpdateText.checking
++                                  : HjvUpdateText.check,
++                              style: const TextStyle(fontFamily: kHjvFont)),
++                          Text(hjvAboutLines(hjvUpdate.value).join('\n'),
++                                  style: TextStyle(
++                                      fontFamily: kHjvFont,
++                                      fontSize: 13,
++                                      height: 1.4,
++                                      color:
++                                          HjvPalette.of(context).textSecondary))
++                              .marginOnly(top: 2),
++                        ],
++                      ),
++                      leading: const Icon(Icons.system_update_alt_rounded),
++                      onPressed: (_) => hjvCheckByHand(),
++                    )))),
+       ]
+     : [];
+ 
+diff --git a/flutter/lib/common/hjv_update_model.dart b/flutter/lib/common/hjv_update_model.dart
+index 8ba89b9..c218f10 100644
+--- a/flutter/lib/common/hjv_update_model.dart
++++ b/flutter/lib/common/hjv_update_model.dart
+@@ -296,15 +296,20 @@ class HjvSteps {
+ 
+ /// The Korean texts (design 2-5). Variables never carry a particle whose form depends on them.
+ class HjvUpdateText {
++  /// Whether the UI is Korean, for the texts of Settings → About below, which have an English
++  /// side (hjv_update.dart sets it from translate()); the update screens are Korean only.
++  static bool Function() korean = () => true;
++  static String _t(String ko, String en) => korean() ? ko : en;
++
+   // P1-P7
+   static const title = '업데이트가 필요합니다';
+   static String body(String min) =>
+       '지금 버전으로는 다른 기기에 연결할 수 없습니다. ${updateTo(min)}';
+   static String updateTo(String min) => 'HJViewer를 $min 이상으로 업데이트하세요.';
+   static String versions(HjvUpdateInfo i) => [
+-        '현재 ${i.current}',
+-        if (i.min.isNotEmpty) '최소 ${i.min}',
+-        if (i.latest.isNotEmpty) '최신 ${i.latest}',
++        _t('현재 ${i.current}', 'Current ${i.current}'),
++        if (i.min.isNotEmpty) _t('최소 ${i.min}', 'Minimum ${i.min}'),
++        if (i.latest.isNotEmpty) _t('최신 ${i.latest}', 'Latest ${i.latest}'),
+       ].join(' · ');
+   static const incomingStillWorks =
+       '업데이트 전에도 다른 기기에서 이 기기로 들어오는 연결은 받을 수 있습니다.';
+@@ -427,18 +432,24 @@ class HjvUpdateText {
+       '이 기기의 OS에서는 새 버전을 쓸 수 없습니다(필요: $need 이상). 관리자에게 문의하세요.';
+ 
+   // Settings → About, and the source of an update that comes without its notice files (AGPL)
+-  static const check = '업데이트 확인';
+-  static const checking = '확인하는 중…';
+-  static const upToDate = '최신 버전입니다.';
+-  static const noEntry = '이 기기에 맞는 업데이트 정보가 아직 없습니다.';
+-  static const checkFailed = '업데이트를 확인하지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.';
+-  static String policy(int epoch, int seq, String issued) =>
+-      '업데이트 정책: 세대 $epoch · 순번 $seq · 발행 $issued';
+-  static const noPolicy = '업데이트 정책: 아직 받지 못했습니다';
+-  static String checked(String at) => '마지막 확인: $at';
+-  static const neverChecked = '마지막 확인: 없음';
+-  static String source(String tag) =>
+-      '소스 코드(GNU AGPL-3.0): $kHjvSourceRepo 저장소의 태그 $tag';
++  static String get check => _t('업데이트 확인', 'Check for updates');
++  static String get checking => _t('확인하는 중…', 'Checking…');
++  static String get upToDate => _t('최신 버전입니다.', 'Up to date.');
++  static String get noEntry => _t('이 기기에 맞는 업데이트 정보가 아직 없습니다.',
++      'There is no update information for this device yet.');
++  static String get checkFailed => _t(
++      '업데이트를 확인하지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.',
++      'Could not check for updates. Check the internet connection and try again.');
++  static String policy(int epoch, int seq, String issued) => _t(
++      '업데이트 정책: 세대 $epoch · 순번 $seq · 발행 $issued',
++      'Update policy: generation $epoch · sequence $seq · issued $issued');
++  static String get noPolicy =>
++      _t('업데이트 정책: 아직 받지 못했습니다', 'Update policy: not received yet');
++  static String checked(String at) => _t('마지막 확인: $at', 'Last checked: $at');
++  static String get neverChecked => _t('마지막 확인: 없음', 'Last checked: never');
++  static String source(String tag) => _t(
++      '소스 코드(GNU AGPL-3.0): $kHjvSourceRepo 저장소의 태그 $tag',
++      'Source code (GNU AGPL-3.0): tag $tag of the $kHjvSourceRepo repository');
+ 
+   /// Why a download, a link or the service's install did not get through (the core's codes).
+   static String failure(String code) => switch (code) {
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 8fc1eac..966ccf9 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -59,6 +59,17 @@ DateTime? _gateAsked;
+ /// desktop that takes connections.
+ final _pcState = ''.obs;
+ 
++/// What this window just did to this PC's ticket (P2 or P3 took one, [끝내기] ended it): the
++/// state the process that registers notes at its next registration, which the home shows until
++/// then (at most _kHintSecs), so that it agrees with the toast at once.
++({String state, int until})? _pcStateHint;
++const _kHintSecs = 30;
++
++void _hintPcState(String state) {
++  _pcStateHint = (state: state, until: _unixNow() + _kHintSecs);
++  _pcState.value = state;
++}
++
+ /// Whether the account's state of this PC (hjv-pwless-state) shows a binding (hjvPcBound), read
+ /// with _pcState: a bound PC logged out from another device still takes connections, no G2.
+ final _pcBound = false.obs;
+@@ -109,12 +120,15 @@ bool _homeLogsIn() =>
+ /// see (as hjviewer_account.dart's).
+ Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) {
+   if (isDesktop || isWebDesktop) {
++    // centred, also on the two lines of a narrow button (P1's in the 200 px pane)
+     return outline
+-        ? OutlinedButton(onPressed: onPressed, child: Text(label))
++        ? OutlinedButton(
++            onPressed: onPressed,
++            child: Text(label, textAlign: TextAlign.center))
+         : ElevatedButton(
+             style: ElevatedButton.styleFrom(elevation: 0),
+             onPressed: onPressed,
+-            child: Text(label));
++            child: Text(label, textAlign: TextAlign.center));
+   }
+   return Builder(
+       builder: (context) => TextButton(
+@@ -160,6 +174,7 @@ Widget _checking(HjvAccessTexts t, {String? label, String? word}) => Builder(
+             Expanded(
+                 child: LinearProgressIndicator(
+                     semanticsLabel: label ?? t.checkingLabel)),
++            const SizedBox(width: 8),
+             ExcludeSemantics(
+                 child: Text(word ?? t.checking,
+                     style: TextStyle(
+@@ -208,10 +223,16 @@ void hjvInitAccess() {
+ 
+ void _readPc() {
+   _ticketEndedLogin();
+-  _pcState.value = bind.mainGetOptionSync(key: kHjvAccessPcState);
+-  _pcBound.value = hjvPcBound(bind.mainGetOptionSync(key: 'hjv-pwless-state'));
++  final state = bind.mainGetOptionSync(key: kHjvAccessPcState);
+   final now = _unixNow();
+-  if (!hjvShowsPcNotice(_pcState.value)) {
++  final hint = _pcStateHint;
++  if (hint != null && (hint.state == state || now >= hint.until)) {
++    _pcStateHint = null;
++  }
++  _pcState.value = _pcStateHint?.state ?? state;
++  _pcBound.value = hjvPcBound(bind.mainGetOptionSync(key: 'hjv-pwless-state'));
++  // the core's own state, not the hint's: a ticket taken here is not dropped while it waits
++  if (!hjvShowsPcNotice(state)) {
+     _refusedSince = 0;
+   } else if (_refusedSince == 0) {
+     _refusedSince = now;
+@@ -282,12 +303,15 @@ Widget hjvAccessLogInButton(VoidCallback onLogin, {required Widget filled}) =>
+ List<Widget> hjvAccessKeepLoggedIn({EdgeInsets margin = EdgeInsets.zero}) =>
+     _accountBuild && isDesktop && !bind.isOutgoingOnly()
+         ? [
+-            Padding(
+-                padding: margin,
+-                child: Builder(
+-                    builder: (context) => hjvNoteBlock(context,
+-                        icon: Icons.info_outline_rounded,
+-                        text: Text(hjvKeepAll(_t.keepLoggedIn)))))
++            // not to the one who is logged in already
++            Builder(
++                builder: (context) => Obx(() => _loggedIn()
++                    ? const SizedBox.shrink()
++                    : Padding(
++                        padding: margin,
++                        child: hjvNoteBlock(context,
++                            icon: Icons.info_outline_rounded,
++                            text: Text(hjvKeepAll(_t.keepLoggedIn))))))
+           ]
+         : [];
+ 
+@@ -321,6 +345,10 @@ Color? hjvAccessReadyColor(HjvPalette p) =>
+       bound: boundHere);
+ }
+ 
++/// D3 of a device whose login is its only way in (a phone, a PC that registers without it): what
++/// the logout does to it on a staff-only server (hjviewer_account.dart asks hjvAccessGateCloses).
++String hjvAccessLogoutSelfNote() => _t.logoutSelfGate;
++
+ /// D5 (hjviewer_account.dart, "내 PC에서 빼기"): what taking the PC out of the list does on a
+ /// staff-only server, null for none.
+ String? hjvAccessRemoveNote() =>
+@@ -369,11 +397,12 @@ String hjvAccessMsgboxText(SessionID sessionId, String text) {
+   if (!_accountBuild || text != 'Remote desktop is offline') return text;
+   unawaited(_askGateMode());
+   final session = sessionId.toString();
+-  return hjvOfflineGateText(_t,
+-          mode: _gateMode.value,
+-          passed: _passedA1.contains(session),
+-          restarted: _restarted.contains(session)) ??
+-      text;
++  final own = hjvOfflineGateText(_t,
++      mode: _gateMode.value,
++      passed: _passedA1.contains(session),
++      restarted: _restarted.contains(session),
++      codes: _gateCodes.value);
++  return own == null ? text : hjvKeepAll(own);
+ }
+ 
+ /// showRestartRemoteDevice (dialog.dart): the confirm's line about the gate and a PC where
+@@ -648,9 +677,8 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+               icon: _guestByCode.value
+                   ? Icons.support_agent_rounded
+                   : Icons.key_rounded,
+-              title: _guestByCode.value
+-                  ? t.pcCodeUntil(_until(_guestUntil.value))
+-                  : t.pcGuestUntil(_until(_guestUntil.value)),
++              title: _guestByCode.value ? t.pcCodeOn : t.pcGuestOn,
++              text: t.pcAcceptsUntil(_until(_guestUntil.value)),
+               actions: [_button(t.end, () => _endGuest(t), outline: true)]),
+           HjvPcHome.logIn when !bind.isDisableAccount() => _card(context,
+               color: p.textSecondary,
+@@ -678,8 +706,8 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+ 
+   // HJViewer: a card as the ID's and the password's, on the tint of its state (G2 only outlined,
+   // so that it does not read as one with the ID's blue card below); above the ID, which P1 dims.
+-  // Shaped for the 200 px pane: a title of one line (whole in its tooltip), the buttons stacked
+-  // at full width.
++  // Shaped for the 200 px pane: a short title (two lines at most, whole in its tooltip), the
++  // buttons stacked at full width, as high as their text (an English label may take two lines).
+   Widget _card(BuildContext context,
+       {required Color color,
+       bool neutral = false,
+@@ -720,8 +748,8 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+                         message: title,
+                         // the text reads whole to a screen reader all the same
+                         excludeFromSemantics: true,
+-                        child: Text(title,
+-                            maxLines: 1,
++                        child: Text(hjvKeepAll(title),
++                            maxLines: 2,
+                             overflow: TextOverflow.ellipsis,
+                             style: style))
+                     : Text(hjvKeepAll(heading), style: style),
+@@ -735,14 +763,34 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+                     fontSize: 12, height: 1.45, color: p.textSecondary)),
+           ],
+           for (var i = 0; i < actions.length; i++)
+-            SizedBox(width: double.infinity, height: 34, child: actions[i])
+-                .marginOnly(top: i == 0 ? 8 : 6),
++            ConstrainedBox(
++                    constraints: const BoxConstraints(
++                        minWidth: double.infinity, minHeight: 34),
++                    child: Theme(
++                        data: Theme.of(context).copyWith(
++                            outlinedButtonTheme: OutlinedButtonThemeData(
++                                style: _kPaneButton.merge(Theme.of(context)
++                                    .outlinedButtonTheme
++                                    .style)),
++                            elevatedButtonTheme: ElevatedButtonThemeData(
++                                style: _kPaneButton.merge(Theme.of(context)
++                                    .elevatedButtonTheme
++                                    .style))),
++                        child: actions[i]))
++                .marginOnly(top: 8),
+         ],
+       ),
+     );
+   }
+ }
+ 
++/// The pane's buttons: at least 34 px high, growing with a label of two lines.
++const _kPaneButton = ButtonStyle(
++  minimumSize: WidgetStatePropertyAll(Size(0, 34)),
++  padding:
++      WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8, vertical: 6)),
++);
++
+ String _until(int until) => hjvUntilText(
+     DateTime.fromMillisecondsSinceEpoch(until * 1000), DateTime.now());
+ 
+@@ -794,6 +842,7 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+       if (until > _unixNow()) {
+         _guestUntil.value = until;
+         _guestByCode.value = false;
++        _hintPcState('ok');
+         showToast(t.pcGuestToast(_until(until)));
+       }
+     }
+@@ -831,7 +880,7 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+ }
+ 
+ /// P3: a support code from a staff member in the place of the access password, as P2 takes that;
+-/// what is not a code's form is not sent (E6 at once).
++/// what is not a code's form is not sent (said at once, codeForm).
+ void _pcCodeDialog(HjvAccessTexts t) {
+   final controller = TextEditingController();
+   String? error;
+@@ -848,7 +897,7 @@ void _pcCodeDialog(HjvAccessTexts t) {
+       if (hjvReadSupportCode(code) == null) {
+         // a wait of an earlier 429 that is over would hide E6 (hjvAccessErrorNow)
+         setState(() {
+-          error = t.codeFailure('denied');
++          error = t.codeForm;
+           retryAt = 0;
+         });
+         return;
+@@ -894,12 +943,13 @@ void _pcCodeDialog(HjvAccessTexts t) {
+       if (until > _unixNow()) {
+         _guestUntil.value = until;
+         _guestByCode.value = true;
++        _hintPcState('ok');
+         showToast(t.pcGuestToast(_until(until)));
+       }
+     }
+ 
+     return CustomAlertDialog(
+-      title: HjvDialogTitle(Icons.support_agent_rounded, t.pcCode),
++      title: HjvDialogTitle(Icons.support_agent_rounded, t.pcCodeTitle),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+@@ -946,6 +996,8 @@ void _pcCodeDialog(HjvAccessTexts t) {
+ /// code's), and the PC registers without it.
+ Future<void> _endGuest(HjvAccessTexts t) async {
+   _guestUntil.value = 0;
++  // the ticket stood in for a login (P1 offered it): without one the PC is refused again
++  if (!_loggedIn()) _hintPcState('refused');
+   try {
+     await bind.mainSetCommon(key: kHjvGuestPcEnd, value: '');
+     showToast(_guestByCode.value ? t.pcCodeEnded : t.pcGuestEnded);
+@@ -967,20 +1019,37 @@ bool hjvOffersSupportCodeNow() =>
+ /// S1's [지원 코드 만들기].
+ String hjvSupportCodeLabel() => _t.makeCode;
+ 
+-/// S1 on the home (my_group.dart, the 내 PC tab, the account's list): a quiet [지원 코드 만들기]
+-/// above the list while the login may make codes.
+-List<Widget> hjvSupportCodeEntry() => _accountBuild
+-    ? [
+-        Obx(() => hjvOffersSupportCodeNow()
+-            ? Align(
+-                alignment: Alignment.centerRight,
+-                child: TextButton.icon(
++/// S1 on the home's 내 PC tab while the login may make codes: a quiet [지원 코드 만들기] above
++/// the list in portrait (my_group.dart), else among the tab bar's tools (peer_tab_page.dart,
++/// `bar`; only its icon where the bar is `narrow`).
++List<Widget> hjvSupportCodeEntry({bool bar = false, bool narrow = false}) =>
++    _accountBuild
++        ? [
++            Obx(() {
++              if (!hjvOffersSupportCodeNow()) return const SizedBox.shrink();
++              const icon = Icon(Icons.support_agent_rounded, size: 18);
++              if (bar && narrow) {
++                return IconButton(
++                    tooltip: _t.makeCode,
+                     onPressed: hjvMakeSupportCode,
+-                    icon: const Icon(Icons.support_agent_rounded, size: 18),
+-                    label: Text(_t.makeCode)))
+-            : const SizedBox.shrink())
+-      ]
+-    : [];
++                    icon: icon);
++              }
++              final button = TextButton.icon(
++                  style: TextButton.styleFrom(
++                      minimumSize: const Size(0, 36),
++                      padding: const EdgeInsets.symmetric(horizontal: 8),
++                      tapTargetSize: bar
++                          ? MaterialTapTargetSize.shrinkWrap
++                          : MaterialTapTargetSize.padded),
++                  onPressed: hjvMakeSupportCode,
++                  icon: icon,
++                  label: Text(_t.makeCode));
++              return bar
++                  ? button.marginOnly(right: 4)
++                  : Align(alignment: Alignment.centerRight, child: button);
++            })
++          ]
++        : [];
+ 
+ /// S1: a code made at once and shown (S2) with the time it has left, until the window closes;
+ /// the code stays in this window's memory only and keeps working until its ten minutes are over.
+@@ -1063,7 +1132,11 @@ void _supportCodeDialog(HjvAccessTexts t) {
+     final left =
+         code == null ? 0 : hjvCodeLeft(code.expiresIn, madeFor.elapsed);
+     return CustomAlertDialog(
+-      title: HjvDialogTitle(Icons.support_agent_rounded, t.pcCode),
++      title: HjvDialogTitle(Icons.support_agent_rounded, t.makeCode),
++      // one width for all its states, so that [다시 만들기] does not make it jump
++      contentBoxConstraints: isDesktop || isWebDesktop
++          ? const BoxConstraints(minWidth: 480, maxWidth: 480)
++          : const BoxConstraints(maxWidth: 500),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+@@ -1077,9 +1150,19 @@ void _supportCodeDialog(HjvAccessTexts t) {
+           if (error != null)
+             Semantics(
+                 liveRegion: true,
+-                child: Text(hjvKeepAll(error!),
+-                    style: TextStyle(
+-                        fontSize: 14, height: 1.45, color: p.dangerText))),
++                child: Row(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    Icon(Icons.error_outline_rounded, size: 18, color: p.danger)
++                        .marginOnly(top: 1, right: 6),
++                    Expanded(
++                        child: Text(hjvKeepAll(error!),
++                            style: TextStyle(
++                                fontSize: 14,
++                                height: 1.45,
++                                color: p.dangerText))),
++                  ],
++                )),
+           if (code != null && left > 0) ...[
+             Center(
+               child: SelectableText(code.code,
+@@ -1102,9 +1185,9 @@ void _supportCodeDialog(HjvAccessTexts t) {
+           if (code != null && left == 0)
+             Semantics(
+                 liveRegion: true,
+-                child: Text(hjvKeepAll(t.codeOver),
+-                    style:
+-                        TextStyle(fontSize: 14, height: 1.45, color: p.text))),
++                child: hjvNoteBlock(context,
++                    icon: Icons.timer_off_outlined,
++                    text: Text(hjvKeepAll(t.codeOver)))),
+         ],
+       ),
+       actions: [
+@@ -1148,7 +1231,11 @@ class _HjvConnectHint extends StatelessWidget {
+         final hint = Container(
+           padding: logIn
+               ? const EdgeInsets.fromLTRB(12, 2, 4, 2)
+-              : const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
++              : EdgeInsets.symmetric(
++                  horizontal: 12, vertical: isDesktop ? 2 : 10),
++          // the desktop's as high with its [로그인] as without (P1's has none), so that what is
++          // below it does not move as P1 comes and goes
++          constraints: isDesktop ? const BoxConstraints(minHeight: 40) : null,
+           // a phone's home is the canvas, on which the fill does not show: a card there
+           decoration: isDesktop
+               ? BoxDecoration(
+@@ -1181,7 +1268,7 @@ class _HjvConnectHint extends StatelessWidget {
+                 alignment: Alignment.centerLeft,
+                 child: SizedBox(width: 360, child: hint),
+               ).marginOnly(top: 12)
+-            : hint.marginOnly(top: 8);
++            : hint.marginOnly(top: 8, bottom: 8);
+       });
+ }
+ 
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 3731f85..fe9d1e6 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -380,13 +380,19 @@ String? hjvLogOutDeviceGateNote(HjvAccessTexts t, String mode,
+ /// The session's text for "Remote desktop is offline" (handleMsgBox), null to keep upstream's: on
+ /// a staff-only server (`mode`) a PC nobody logged in on is offline too, said for sure or as a
+ /// condition; to a controller that just got the access password for that PC (`passed`) since its
+-/// own PC is the one missing; with a line for a PC this session restarted (`restarted`).
++/// own PC is the one missing; with a line for a PC this session restarted (`restarted`); naming
++/// the support code with the access password while hjv-api trades them (`codes`).
+ String? hjvOfflineGateText(HjvAccessTexts t,
+-    {required String mode, bool passed = false, bool restarted = false}) {
++    {required String mode,
++    bool passed = false,
++    bool restarted = false,
++    bool codes = false}) {
+   final closes = hjvGateCloses(mode);
+   if (!passed && closes == false) return null;
+-  final text = passed ? t.offlinePassed : t.offline(known: closes == true);
+-  return restarted ? '$text\n${t.offlineRestarted}' : text;
++  final text = passed
++      ? t.offlinePassedFor(codes: codes)
++      : t.offline(known: closes == true, codes: codes);
++  return restarted ? '$text\n${t.offlineRestartedFor(codes: codes)}' : text;
+ }
+ 
+ /// The remote restart's confirm (dialog.dart), null for no line: what a restart does on a
+@@ -456,20 +462,28 @@ class HjvAccessTexts {
+   String get pcAskField => _t('PC 비밀번호', 'PC password');
+   String get pcAskWrong => _t('PC 비밀번호가 맞지 않습니다', 'Wrong PC password');
+ 
++  /// What a PC without a login takes in the place of one: the access password, and a support
++  /// code too while hjv-api trades them (`codes`, hjvGateCodesOf), as P1 offers them.
++  String _ways(bool codes) => codes
++      ? _t('이용 비밀번호나 지원 코드를', 'the access password or a support code')
++      : _t('이용 비밀번호를', 'the access password');
++
+   // "Remote desktop is offline" on a staff-only server
+-  String offline({required bool known}) => known
++  String offline({required bool known, bool codes = false}) => known
+       ? _t(
+-          'PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. PC가 켜져 있다면 그 PC의 HJViewer에서 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결을 받습니다.',
+-          'The PC is off or not connected to the server. If it is on, someone has to log in with a Yonsei portal account or enter the access password in HJViewer on that PC before it accepts connections.')
++          'PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. PC가 켜져 있다면 그 PC의 HJViewer에서 연세포탈로 로그인하거나 ${_ways(codes)} 넣어야 연결을 받습니다.',
++          'The PC is off or not connected to the server. If it is on, someone has to log in with a Yonsei portal account or enter ${_ways(codes)} in HJViewer on that PC before it accepts connections.')
+       : _t(
+-          'PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. 서버가 교직원 전용이면, PC가 켜져 있어도 그 PC의 HJViewer에서 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결을 받습니다.',
+-          'The PC is off or not connected to the server. If the server is for staff only, someone has to log in with a Yonsei portal account or enter the access password in HJViewer on that PC before it accepts connections, even when it is on.');
+-  String get offlinePassed => _t(
+-      '이용 비밀번호는 확인했습니다. 그런데 그 PC가 서버에 연결되어 있지 않습니다. 그 PC가 켜져 있다면 그 PC의 HJViewer에서도 로그인하거나 이용 비밀번호를 넣어야 합니다.',
+-      'The access password was accepted, but that PC is not connected to the server. If it is on, someone has to log in or enter the access password in HJViewer on that PC too.');
+-  String get offlineRestarted => _t(
+-      '방금 다시 시작한 PC라면, 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣어야 다시 연결을 받습니다. 로그인해 둔 PC는 저절로 돌아옵니다.',
+-      'If the PC was just restarted, someone has to log in or enter the access password on it before it accepts connections again. A PC that stays logged in comes back by itself.');
++          'PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. 서버가 교직원 전용이면, PC가 켜져 있어도 그 PC의 HJViewer에서 연세포탈로 로그인하거나 ${_ways(codes)} 넣어야 연결을 받습니다.',
++          'The PC is off or not connected to the server. If the server is for staff only, someone has to log in with a Yonsei portal account or enter ${_ways(codes)} in HJViewer on that PC before it accepts connections, even when it is on.');
++  String offlinePassedFor({bool codes = false}) => _t(
++      '이용 비밀번호는 확인했습니다. 그런데 그 PC가 서버에 연결되어 있지 않습니다. 그 PC가 켜져 있다면 그 PC의 HJViewer에서도 로그인하거나 ${_ways(codes)} 넣어야 합니다.',
++      'The access password was accepted, but that PC is not connected to the server. If it is on, someone has to log in or enter ${_ways(codes)} in HJViewer on that PC too.');
++  String get offlinePassed => offlinePassedFor();
++  String offlineRestartedFor({bool codes = false}) => _t(
++      '방금 다시 시작한 PC라면, 그 PC에서 누군가 로그인하거나 ${_ways(codes)} 넣어야 다시 연결을 받습니다. 로그인해 둔 PC는 저절로 돌아옵니다.',
++      'If the PC was just restarted, someone has to log in or enter ${_ways(codes)} on it before it accepts connections again. A PC that stays logged in comes back by itself.');
++  String get offlineRestarted => offlineRestartedFor();
+ 
+   // the remote restart's confirm
+   String restartGate({required bool known}) => known
+@@ -491,12 +505,12 @@ class HjvAccessTexts {
+   String get reconnect => _t('다시 연결', 'Reconnect');
+ 
+   // P1: this PC's registration refused; the status line says so too
+-  String get pcTitle =>
+-      _t('이 PC는 서버에 연결되지 않았습니다', 'This PC is not connected to the server');
++  // the title fits the 200 px pane's one line (U05): the pane's heading already says 이 PC
++  String get pcTitle => _t('서버에 연결되지 않음', 'Not connected');
+   String get pcText => _t('다른 기기에서 이 PC에 연결하려면 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요.',
+       'To connect to this PC from another device, log in with your Yonsei portal account or enter the access password.');
+   String get pcPassword => _t('이용 비밀번호', 'Access password');
+-  String get pcPasswordButton => _t('이용 비밀번호 넣기', 'Enter access password');
++  String get pcPasswordButton => _t('이용 비밀번호 넣기', 'Access password');
+   String get pcStatus =>
+       _t('서버에 연결되지 않음(로그인 필요)', 'Not connected to the server (log in)');
+   String get pcBlockedTip => _t('이 PC는 지금 연결을 받을 수 없습니다.',
+@@ -518,8 +532,10 @@ class HjvAccessTexts {
+       'With the access password, this PC accepts connections for up to 12 hours. Restarting the PC or signing out of Windows ends that sooner; once it ends, enter it again.');
+   String pcGuestToast(String until) => _t(
+       '이 PC는 $until까지 연결을 받습니다.', 'This PC accepts connections until $until.');
+-  String pcGuestUntil(String until) => _t('이용 비밀번호로 연결을 받는 중 · $until까지',
+-      'Accepting connections with the access password until $until');
++  // the home's line while the ticket holds: a title of one line, until when below it
++  String get pcGuestOn => _t('이용 비밀번호 사용 중', 'Access password in use');
++  String pcAcceptsUntil(String until) =>
++      _t('$until까지 연결을 받습니다.', 'Accepts connections until $until.');
+   String get end => _t('끝내기', 'End');
+   String get pcGuestEnded => _t('이제 이용 비밀번호로는 연결을 받지 않습니다.',
+       'This PC no longer accepts connections with the access password.');
+@@ -563,29 +579,38 @@ class HjvAccessTexts {
+   String get logoutRemoteNow => _t(
+       '지금 이 PC를 원격으로 쓰고 있다면, 이 세션이 끝난 뒤에는 다시 들어올 수 없습니다.',
+       'If you are using this PC remotely now, you cannot get back in once this session ends.');
++  // the second paragraph under removeAsk, which already says what removing does (U29)
+   String removeGate({required bool known}) => known
+-      ? _t('이 서버는 교직원 전용이라, 빼면 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다.',
+-          'This server is for staff only: once removed, nobody can connect to that PC remotely until someone logs in on it again.')
+-      : _t('서버가 교직원 전용이면, 빼고 나서는 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다.',
+-          'If the server is for staff only, nobody can connect to that PC remotely once it is removed, until someone logs in on it again.');
+-
+-  // logging out other devices (the logged-in devices, the new device's [아님])
++      ? _t('이 서버는 교직원 전용이라 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다.',
++          'This server is for staff only, so nobody can connect to that PC remotely until someone logs in on it again.')
++      : _t('서버가 교직원 전용이면 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다.',
++          'If the server is for staff only, nobody can connect to that PC remotely until someone logs in on it again.');
++
++  // logging out other devices (the logged-in devices, the new device's [아님]): the second
++  // paragraph under the question, which already says that password-less connections end, so
++  // this one says what the gate adds (a PC password is not enough either)
+   String logOutDeviceGate({required bool known, bool several = false}) =>
+       switch ((known, several)) {
+         (true, false) => _t(
+-            '이 서버는 교직원 전용이라, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 어느 PC에도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다.',
+-            'This server is for staff only: until that device logs in again, it cannot connect to any PC without an access password. If it is a PC running HJViewer without installing it, that PC stops accepting connections too.'),
++            '이 서버는 교직원 전용이라, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다.',
++            'This server is for staff only: until that device logs in again, not even a PC password lets it connect without an access password. If it is a PC running HJViewer without installing it, that PC stops accepting connections too.'),
+         (false, false) => _t(
+-            '서버가 교직원 전용이면, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 어느 PC에도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다.',
+-            'If the server is for staff only, that device cannot connect to any PC without an access password until it logs in again. If it is a PC running HJViewer without installing it, that PC stops accepting connections too.'),
++            '서버가 교직원 전용이면, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다.',
++            'If the server is for staff only, not even a PC password lets that device connect without an access password until it logs in again. If it is a PC running HJViewer without installing it, that PC stops accepting connections too.'),
+         (true, true) => _t(
+-            '이 서버는 교직원 전용이라, 그 기기들은 다시 로그인할 때까지 이용 비밀번호 없이는 어느 PC에도 연결할 수 없습니다. 그 가운데 설치하지 않고 실행한 HJViewer가 있으면 그 PC도 연결을 받지 못합니다.',
+-            'This server is for staff only: until those devices log in again, they cannot connect to any PC without an access password. Any of them that is a PC running HJViewer without installing it stops accepting connections too.'),
++            '이 서버는 교직원 전용이라, 그 기기들은 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 그 가운데 설치하지 않고 실행한 HJViewer가 있으면 그 PC도 연결을 받지 못합니다.',
++            'This server is for staff only: until those devices log in again, not even a PC password lets them connect without an access password. Any of them that is a PC running HJViewer without installing it stops accepting connections too.'),
+         (false, true) => _t(
+-            '서버가 교직원 전용이면, 그 기기들은 다시 로그인할 때까지 이용 비밀번호 없이는 어느 PC에도 연결할 수 없습니다. 그 가운데 설치하지 않고 실행한 HJViewer가 있으면 그 PC도 연결을 받지 못합니다.',
+-            'If the server is for staff only, those devices cannot connect to any PC without an access password until they log in again. Any of them that is a PC running HJViewer without installing it stops accepting connections too.'),
++            '서버가 교직원 전용이면, 그 기기들은 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 그 가운데 설치하지 않고 실행한 HJViewer가 있으면 그 PC도 연결을 받지 못합니다.',
++            'If the server is for staff only, not even a PC password lets those devices connect without an access password until they log in again. Any of them that is a PC running HJViewer without installing it stops accepting connections too.'),
+       };
+ 
++  // the logout of an app whose login is its only way in on a staff-only server (a phone, a PC
++  // whose registration does not go with the login)
++  String get logoutSelfGate => _t(
++      '이 서버는 교직원 전용이라, 로그아웃하면 다시 로그인할 때까지 이 기기로는 이용 비밀번호 없이 PC에 연결할 수 없습니다.',
++      'This server is for staff only: once you log out, this device cannot connect to PCs without an access password until you log in again.');
++
+   /// About how long `secs` seconds are, rounded up: minutes below an hour, else hours.
+   String _about(int secs) {
+     final minutes = (secs + 59) ~/ 60;
+@@ -605,10 +630,12 @@ class HjvAccessTexts {
+   String get pcBlockedIdCodes => _t(
+       '로그인하거나 이용 비밀번호나 지원 코드를 넣으면 이 ID로 연결을 받을 수 있습니다.',
+       'Once you log in or enter the access password or a support code, this PC accepts connections with this ID.');
+-  String get pcCodeButton => _t('지원 코드 넣기', 'Enter support code');
++  String get pcCodeButton => _t('지원 코드 넣기', 'Support code');
+ 
+   // P3: the PC's support code, and the home's line while its ticket holds
+   String get pcCode => _t('지원 코드', 'Support code');
++  // P3's title, named as the button that opens it (S2's is makeCode)
++  String get pcCodeTitle => _t('지원 코드 넣기', 'Enter support code');
+   String get pcCodeText => _t(
+       '교직원에게 받은 지원 코드를 넣으면 이 PC가 최대 2시간 동안 연결을 받습니다. PC를 다시 시작하거나 Windows에서 로그아웃하면 그 전에 끝나고, 끝나면 새 코드를 받아 다시 넣어야 합니다.',
+       'With a support code from a staff member, this PC accepts connections for up to 2 hours. Restarting the PC or signing out of Windows ends that sooner; once it ends, get a new code and enter it.');
+@@ -617,16 +644,18 @@ class HjvAccessTexts {
+       "The 8-character code (XXXX-XXXX) a staff member gave you, not the access password or the PC's one-time password.");
+   String get codeCheckingLabel =>
+       _t('지원 코드를 확인하는 중', 'Checking the support code');
+-  String pcCodeUntil(String until) => _t('지원 코드로 연결을 받는 중 · $until까지',
+-      'Accepting connections with a support code until $until');
++  String get pcCodeOn => _t('지원 코드 사용 중', 'Support code in use');
+   String get pcCodeEnded => _t('이제 지원 코드로는 연결을 받지 않습니다.',
+       'This PC no longer accepts connections with the support code.');
+   String closeWhileCode(String until) => _t(
+       '이 PC는 $until까지 지원 코드로 연결을 받습니다. 창을 닫아도 계속 받습니다.',
+       'This PC accepts connections with the support code until $until. Closing the window does not stop that.');
+ 
+-  /// E2, E5 to E8: why the support code brought no ticket, by hjv-api's code or the app's own
+-  /// (`denied` also for what is not a code's form, which is never sent).
++  /// What is typed is not a code's form: said at once, without sending it.
++  String get codeForm => _t('지원 코드는 XXXX-XXXX 꼴의 8자입니다. 받은 코드를 그대로 넣어 주세요.',
++      'A support code has 8 characters, XXXX-XXXX. Please enter it as you got it.');
++
++  /// E2, E5 to E8: why the support code brought no ticket, by hjv-api's code or the app's own.
+   String codeFailure(String code, {int wait = 0}) => switch (code) {
+         'denied' => _t(
+             '지원 코드가 맞지 않거나, 10분이 지났거나, 이미 쓴 코드입니다. 코드를 만든 분에게 새 코드를 받아 주세요.',
+@@ -646,7 +675,7 @@ class HjvAccessTexts {
+   String get makingLabel => _t('지원 코드를 만드는 중', 'Creating a support code');
+   String get madeText => _t(
+       '도움받을 분에게 이 코드를 알려 주세요. 그분이 HJViewer에서 [지원 코드 넣기]를 눌러 이 코드를 넣으면 그 PC가 2시간 동안 연결을 받습니다. 코드는 10분 안에 한 번만 쓸 수 있습니다. 연결은 지금처럼 그 PC의 ID와 PC 비밀번호(또는 상대의 수락)로 합니다.',
+-      "Give this code to the person you are helping. Once they click [Enter support code] in HJViewer and enter it, their PC accepts connections for 2 hours. The code works once, within 10 minutes. Connect as before, with that PC's ID and PC password (or their acceptance).");
++      "Give this code to the person you are helping. Once they click [Support code] in HJViewer and enter it, their PC accepts connections for 2 hours. The code works once, within 10 minutes. Connect as before, with that PC's ID and PC password (or their acceptance).");
+ 
+   /// The time a code has left, `m:ss`.
+   String codeLeft(int secs) {
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index f044621..fc94354 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -162,6 +162,10 @@ String hjvUsernameTitle() => _accountBuild
+ /// D1: its second field takes the Yonsei portal password; null keeps upstream's name.
+ String? hjvPasswordTitle() => _accountBuild ? _t.passwordTitle : null;
+ 
++/// D1: no hint in the password's field, as the ID's has none (their names say it); null keeps
++/// upstream's.
++String? hjvPasswordHint() => _accountBuild ? '' : null;
++
+ /// D1: what an empty field says, by the field's name.
+ String hjvUsernameMissed() =>
+     _accountBuild ? _t.usernameMissed : translate('Username missed');
+@@ -209,7 +213,7 @@ List<Widget> hjvAboutNotice() => [
+         // HJViewer: the notice below the maker's line in the secondary text colour
+         SelectionArea(
+             child: Builder(
+-                builder: (context) => Text(line,
++                builder: (context) => Text(hjvKeepAll(line),
+                         style: i == 0
+                             ? null
+                             : TextStyle(
+@@ -224,8 +228,10 @@ List<AbstractSettingsTile> hjvAboutNoticeTiles() {
+   final lines = hjvAboutNoticeLines(_t, accountBuild: _accountBuild);
+   return [
+     SettingsTile(
+-      title: Text(lines.first),
+-      description: lines.length > 1 ? Text(lines.skip(1).join('\n')) : null,
++      title: Text(hjvKeepAll(lines.first)),
++      description: lines.length > 1
++          ? Text(hjvKeepAll(lines.skip(1).join('\n')))
++          : null,
+       leading: const Icon(Icons.info_outline),
+     ),
+   ];
+@@ -241,12 +247,19 @@ CustomAlertDialog? hjvLogoutDialog(
+   final t = _t;
+   final boundHere = _commonSync('hjv-pc-bound') == 'Y';
+   final gate = hjvAccessLogoutNote(boundHere: boundHere);
++  // a phone, or a PC that registers without the login: on a staff-only server the login is
++  // still this device's way in (U29)
++  final self = gate == null && !boundHere && hjvAccessGateCloses() == true
++      ? hjvAccessLogoutSelfNote()
++      : null;
+   return hjvConfirmDialog(t,
+       title: t.logoutTitle,
+-      text: hjvLogoutText(t, boundHere: boundHere, gate: gate?.text) ?? '',
++      text: self ??
++          hjvLogoutText(t, boundHere: boundHere, gate: gate?.text) ??
++          '',
+       warning: gate?.warning,
+       yes: t.logOut,
+-      danger: boundHere || gate != null,
++      danger: boundHere || gate != null || self != null,
+       icon: Icons.logout_rounded,
+       onYes: onYes,
+       onNo: onNo);
+@@ -274,8 +287,19 @@ Future<List<MenuEntryBase<String>>> hjvDeviceMenuItems(
+       ),
+     MenuEntryDivider(),
+     MenuEntryButton<String>(
+-      childBuilder: (TextStyle? style) => Text(t.removeFromList,
+-          style: style?.copyWith(color: HjvPalette.of(context).dangerText)),
++      // the danger item as the cards' other menus draw theirs: its icon at the end
++      childBuilder: (TextStyle? style) => Row(children: [
++        Text(t.removeFromList,
++            style: style?.copyWith(color: HjvPalette.of(context).dangerText)),
++        Expanded(
++            child: Align(
++          alignment: Alignment.centerRight,
++          child: Transform.scale(
++              scale: 0.8,
++              child: Icon(Icons.remove_circle_outline_rounded,
++                  color: HjvPalette.of(context).danger)),
++        ).marginOnly(right: 4)),
++      ]),
+       proc: () => _removeFromList(t, peer),
+       padding: padding,
+       dismissOnClicked: true,
+@@ -290,6 +314,32 @@ String hjvDeleteLabel(PeerTabIndex tab) =>
+         ? _t.removeFromRecent
+         : translate('Delete');
+ 
++/// peer_card.dart, a recent card's [최근 목록에서 지우기]: its confirm in the words of the menu,
++/// with what goes with it and [지우기]; false outside an account build, which keeps upstream's.
++bool hjvConfirmRemoveRecent(PeerTabIndex tab, Peer peer, Future<void> Function() onSubmit) {
++  if (!_accountBuild || tab != PeerTabIndex.recent) return false;
++  final t = _t;
++  _show<void>((setState, close, context) => hjvConfirmDialog(t,
++          title: _nameOf(peer),
++          text: t.removeRecentAsk,
++          yes: t.removeRecent,
++          danger: true,
++          icon: Icons.delete_outline_rounded, onYes: () async {
++        close();
++        await onSubmit();
++      }, onNo: close));
++  return true;
++}
++
++/// peer_card.dart, the cards' menus: "연결" alone in an account build, as the 내 PC menu says it
++/// (upstream adds the ID, without its spaces, beside an alias).
++bool hjvPlainConnectItem() => _accountBuild;
++
++/// The account rows' login and logout (desktop and phone settings): the verbs of the app's other
++/// screens ("Log in", not upstream's "Login"); null outside an account build.
++String? hjvLogInLabel() => _accountBuild ? _t.logIn : null;
++String? hjvLogOutLabel() => _accountBuild ? _t.logOut : null;
++
+ /// D6 (toolbar.dart, the settings): hjv-api keeps no notes of sessions.
+ bool hjvHidesNotes() => _accountBuild;
+ 
+@@ -668,13 +718,17 @@ class _HjvAccountPanelState extends State<_HjvAccountPanel> {
+         if (loggedIn && _wakesAny())
+           Transform.translate(
+               offset: const Offset(-6, 0), child: const _HjvWakeConnects()),
++        // the buttons side by side, 8 px apart, wrapping when the card is narrow
+         if (loggedIn)
+-          _button(t.loggedInDevices, _showLoggedInDevices, outline: true),
+-        // S1: a staff login makes a support code for someone who is not logged in
+-        if (loggedIn && hjvOffersSupportCodeNow())
+-          _button(hjvSupportCodeLabel(), hjvMakeSupportCode, outline: true),
+-        // the operator's entry shows with a login only
+-        if (loggedIn) hjvAdminButton(),
++          Wrap(spacing: 8, runSpacing: 8, children: [
++            _button(t.loggedInDevices, _showLoggedInDevices, outline: true),
++            // S1: a staff login makes a support code for someone who is not logged in
++            if (hjvOffersSupportCodeNow())
++              _button(hjvSupportCodeLabel(), hjvMakeSupportCode,
++                  outline: true),
++            // the operator's entry shows with a login only
++            hjvAdminButton(),
++          ]).marginOnly(top: 4),
+       ];
+       // HJViewer: no room taken when there is nothing to show; else at the settings' content
+       // margin, the buttons as high as the settings' own
+@@ -764,11 +818,12 @@ class HjvPcLines extends StatelessWidget {
+ 
+ /// A question with [취소] (or `no`) and `yes`. `danger` for an action that is hard to undo or can
+ /// lock a PC out: the title with `icon` in the danger colour, and `yes` in the danger look (as
+-/// dialog.dart's deleteConfirmDialog). `warning` goes below the text as a warning note; an empty
+-/// `text` shows none.
++/// dialog.dart's deleteConfirmDialog). `more` is a second paragraph 8 px below the text (the
++/// gate's line), `warning` goes below them as a warning note; an empty `text` shows none.
+ CustomAlertDialog hjvConfirmDialog(HjvTexts t,
+         {String? title,
+         required String text,
++        String? more,
+         String? warning,
+         required String yes,
+         String? no,
+@@ -790,15 +845,18 @@ CustomAlertDialog hjvConfirmDialog(HjvTexts t,
+           if (text.isNotEmpty)
+             title == null
+                 ? Builder(
+-                    builder: (context) => Text(text,
++                    builder: (context) => Text(hjvKeepAll(text),
+                         style: TextStyle(color: HjvPalette.of(context).text)))
+-                : Text(text),
++                : Text(hjvKeepAll(text)),
++          if (more != null)
++            Text(hjvKeepAll(more)).marginOnly(top: text.isEmpty ? 0 : 8),
+           if (warning != null)
+             Builder(
+                 builder: (context) => hjvNoteBlock(context,
+                     icon: Icons.warning_amber_rounded,
+                     text: Text(hjvKeepAll(warning)),
+-                    warning: true)).marginOnly(top: text.isEmpty ? 0 : 8),
++                    warning: true))
++                .marginOnly(top: text.isEmpty && more == null ? 0 : 8),
+         ],
+       ),
+       actions: [
+@@ -1086,7 +1144,8 @@ class _HjvKeysPanelState extends State<_HjvKeysPanel> {
+       required Future<void> Function() action}) {
+     _show<void>((setState, close, context) => hjvConfirmDialog(widget.t,
+             title: title,
+-            text: gate == null ? text : '$text\n$gate',
++            text: text,
++            more: gate,
+             yes: yes,
+             danger: true, onYes: () async {
+           close();
+@@ -1125,6 +1184,7 @@ class _HjvKeysPanelState extends State<_HjvKeysPanel> {
+           _button(
+                   t.logOutOthers,
+                   () => _ask(
++                      title: t.logOutOthersTitle,
+                       text: t.logOutOthersAsk,
+                       gate: hjvAccessLogOutDeviceNote(several: true),
+                       yes: t.logOutOthers,
+@@ -1152,7 +1212,8 @@ void _removeFromList(HjvTexts t, Peer peer) {
+   final gate = hjvAccessRemoveNote();
+   _show<void>((setState, close, context) => hjvConfirmDialog(t,
+           title: _nameOf(peer),
+-          text: gate == null ? t.removeAsk : '${t.removeAsk}\n$gate',
++          text: t.removeAsk,
++          more: gate,
+           yes: t.remove,
+           danger: true, onYes: () async {
+         close();
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index ca1ba12..ce8df3f 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -166,9 +166,12 @@ class HjvTexts {
+   String get logOutDeviceAsk => _t(
+       '로그아웃시키면 다시 로그인하기 전까지 그 기기로 내 PC에 비밀번호 없이 새로 연결할 수 없습니다. 이미 열려 있는 연결은 끊기지 않습니다.',
+       'Once logged out, that device cannot open new connections to your PCs without their passwords until it logs in again. Connections already open are not cut.');
++  // the question is the dialog's title; the text below it says what it does
++  String get logOutOthersTitle =>
++      _t('다른 기기를 모두 로그아웃할까요?', 'Log out all other devices?');
+   String get logOutOthersAsk => _t(
+-      '지금 쓰는 이 기기 말고 다른 기기를 모두 로그아웃시킬까요? 다시 로그인하기 전까지 그 기기들로는 내 PC에 비밀번호 없이 새로 연결할 수 없습니다. 이미 열려 있는 연결은 끊기지 않습니다.',
+-      'Log out every device but the one you are using? Until they log in again, they cannot open new connections to your PCs without their passwords. Connections already open are not cut.');
++      '지금 쓰는 이 기기는 로그인한 채로 둡니다. 다시 로그인하기 전까지 그 기기들로는 내 PC에 비밀번호 없이 새로 연결할 수 없습니다. 이미 열려 있는 연결은 끊기지 않습니다.',
++      'This device stays logged in. Until they log in again, the other devices cannot open new connections to your PCs without their passwords. Connections already open are not cut.');
+ 
+   /// What a logout from another device does not do (design v3 U1-d): it ends no connection
+   /// that is open already.
+@@ -250,6 +253,12 @@ class HjvTexts {
+   String get remove => _t('빼기', 'Remove');
+   String get removed => _t('내 PC 목록에서 뺐습니다.', 'Removed from My PCs.');
+   String get removeFromRecent => _t('최근 목록에서 지우기', 'Remove from Recent');
++  // its confirm: the PC's name as the title; what goes with it (PeerConfig::remove takes the
++  // saved password and the name, and a favourite needs that config to be listed)
++  String get removeRecentAsk => _t(
++      '최근 목록에서 지울까요? 이 기기에 저장해 둔 그 PC의 비밀번호와 이름도 함께 지워지고, 즐겨찾기에서도 빠집니다. 내 PC 목록은 바뀌지 않습니다.',
++      'Remove it from Recent? The password and name saved for it on this device go too, and it leaves Favorites. My PCs does not change.');
++  String get removeRecent => _t('지우기', 'Remove');
+   String get notInList =>
+       _t('이미 내 PC 목록에 없는 PC입니다.', 'That PC is no longer in My PCs.');
+ 
+@@ -740,10 +749,13 @@ List<HjvKey> hjvEndedKeys(Object? body) {
+ }
+ 
+ /// The server's name of a device and, in parentheses, the name the device gave itself (§1-1);
+-/// an iPhone's is its model code, the server's name already says it.
++/// an iPhone's is its model code, the server's name already says it, as does a name that has it
++/// in it already.
+ String hjvDeviceName(HjvKey k) {
+   final name = k.name.isEmpty ? k.appName : k.name;
+-  return k.appName.isNotEmpty && k.appName != name && k.platform != 'ios'
++  return k.appName.isNotEmpty &&
++          !name.contains(k.appName) &&
++          k.platform != 'ios'
+       ? '$name (${k.appName})'
+       : name;
+ }
+diff --git a/flutter/lib/common/hjviewer_labels.dart b/flutter/lib/common/hjviewer_labels.dart
+index 118d9dd..65534f5 100644
+--- a/flutter/lib/common/hjviewer_labels.dart
++++ b/flutter/lib/common/hjviewer_labels.dart
+@@ -34,6 +34,10 @@ class HjvLabels {
+ 
+   // the login's busy bar
+   String get loggingIn => _t('로그인하는 중', 'Logging in');
++
++  // the desktop's ID suggestions, which cover [연결] while they show
++  String get enterConnects =>
++      _t('Enter 키: 입력한 ID로 연결', 'Enter: connect to the ID typed');
+ }
+ 
+ HjvLabels get hjvLabels => HjvLabels(translate('Cancel') == '취소');
+diff --git a/flutter/lib/common/widgets/connection_page_title.dart b/flutter/lib/common/widgets/connection_page_title.dart
+index 6062b35..095af4b 100644
+--- a/flutter/lib/common/widgets/connection_page_title.dart
++++ b/flutter/lib/common/widgets/connection_page_title.dart
+@@ -1,5 +1,6 @@
+ import 'package:auto_size_text/auto_size_text.dart';
+ import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:get/get.dart';
+ 
+ import '../../common.dart';
+@@ -7,6 +8,12 @@ import '../../consts.dart';
+ import '../hjviewer_pins.dart';
+ 
+ Widget getConnectionPageTitle(BuildContext context, bool isWeb) {
++  // HJViewer: upstream's tip starts with direct IPs, which a pinned build fixes off
++  final hjvTip = hjvPinnedOff(
++          fixed: isOptionFixed(kOptionDirectServer),
++          on: mainGetBoolOptionSync(kOptionDirectServer))
++      ? HjvPinTexts(translate('Cancel') == '취소').idInputTip
++      : translate(isWeb ? "web_id_input_tip" : "id_input_tip");
+   return Row(
+     children: [
+       Expanded(
+@@ -22,20 +29,28 @@ Widget getConnectionPageTitle(BuildContext context, bool isWeb) {
+           ).marginOnly(right: 4),
+           Tooltip(
+             waitDuration: Duration(milliseconds: 300),
+-            // HJViewer: upstream's tip starts with direct IPs, which a pinned build fixes off
+-            message: hjvPinnedOff(
+-                    fixed: isOptionFixed(kOptionDirectServer),
+-                    on: mainGetBoolOptionSync(kOptionDirectServer))
+-                ? HjvPinTexts(translate('Cancel') == '취소').idInputTip
+-                : translate(isWeb ? "web_id_input_tip" : "id_input_tip"),
+-            child: Icon(
+-              Icons.help_outline_outlined,
+-              size: 16,
+-              color: Theme.of(context)
+-                  .textTheme
+-                  .titleLarge
+-                  ?.color
+-                  ?.withOpacity(0.5),
++            // HJViewer: above the mark and at most 280 wide, so that it stays over the connect
++            // box and leaves the ID field below it in view; the mark itself carries the text for
++            // a screen reader, which reads no text in a widget span
++            preferBelow: false,
++            excludeFromSemantics: true,
++            richMessage: WidgetSpan(
++                child: ConstrainedBox(
++              constraints: const BoxConstraints(maxWidth: 280),
++              child: Text(hjvKeepAll(hjvTip),
++                  style: Theme.of(context).tooltipTheme.textStyle),
++            )),
++            child: Semantics(
++              tooltip: hjvTip,
++              child: Icon(
++                Icons.help_outline_outlined,
++                size: 16,
++                color: Theme.of(context)
++                    .textTheme
++                    .titleLarge
++                    ?.color
++                    ?.withOpacity(0.5),
++              ),
+             ),
+           ),
+         ],
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index 65be101..763fa63 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -728,7 +728,7 @@ Widget _hjvFieldError(HjvPalette p, String error, String? helperText,
+               Icon(Icons.error_outline_rounded, size: 16, color: p.danger)
+                   .marginOnly(top: 1, right: 4),
+               Expanded(
+-                child: Text(error,
++                child: Text(hjvKeepAll(error),
+                     style: TextStyle(
+                         fontSize: 13, height: 1.4, color: p.dangerText)),
+               ),
+@@ -1067,7 +1067,10 @@ class _PasswordWidgetState extends State<PasswordWidget> {
+   Widget build(BuildContext context) {
+     return DialogTextField(
+       title: translate(widget.title ?? DialogTextField.kPasswordTitle),
+-      hintText: translate(widget.hintText ?? 'Enter your password'),
++      // HJViewer: '' for none (the login's portal password, whose name says it)
++      hintText: widget.hintText == ''
++          ? null
++          : translate(widget.hintText ?? 'Enter your password'),
+       controller: widget.controller,
+       prefixIcon: DialogTextField.kPasswordIcon,
+       suffixIcon:
+diff --git a/flutter/lib/common/widgets/hjv_autocomplete.dart b/flutter/lib/common/widgets/hjv_autocomplete.dart
+index 15750d3..0bca1c4 100644
+--- a/flutter/lib/common/widgets/hjv_autocomplete.dart
++++ b/flutter/lib/common/widgets/hjv_autocomplete.dart
+@@ -17,12 +17,17 @@ class HjvAutocompleteOptions extends StatelessWidget {
+   final bool loading;
+   final double width;
+ 
++  /// A quiet line under the suggestions (the desktop's: Enter connects to what is typed, since
++  /// the panel covers [연결]).
++  final String? footer;
++
+   const HjvAutocompleteOptions({
+     Key? key,
+     required this.options,
+     required this.onSelected,
+     required this.loading,
+     required this.width,
++    this.footer,
+   }) : super(key: key);
+ 
+   @override
+@@ -44,23 +49,36 @@ class HjvAutocompleteOptions extends StatelessWidget {
+             side: BorderSide(color: p.border),
+           ),
+           clipBehavior: Clip.antiAlias,
+-          child: SizedBox(
+-            width: width,
+-            height: loading ? 80 : hjvSuggestionsHeight(peers.length),
+-            child: loading
+-                ? const Center(
+-                    child: SizedBox(
+-                        width: 20,
+-                        height: 20,
+-                        child: CircularProgressIndicator(strokeWidth: 2)))
+-                : ListView(
+-                    padding: const EdgeInsets.all(kHjvSuggestionPadding),
+-                    children: peers
+-                        .map((peer) => HjvSuggestionRow(
+-                            peer: peer, onSelect: () => onSelected(peer)))
+-                        .toList(),
+-                  ),
+-          ),
++          child: Column(mainAxisSize: MainAxisSize.min, children: [
++            SizedBox(
++              width: width,
++              height: loading ? 80 : hjvSuggestionsHeight(peers.length),
++              child: loading
++                  ? const Center(
++                      child: SizedBox(
++                          width: 20,
++                          height: 20,
++                          child: CircularProgressIndicator(strokeWidth: 2)))
++                  : ListView(
++                      padding: const EdgeInsets.all(kHjvSuggestionPadding),
++                      children: peers
++                          .map((peer) => HjvSuggestionRow(
++                              peer: peer, onSelect: () => onSelected(peer)))
++                          .toList(),
++                    ),
++            ),
++            if (footer != null && !loading)
++              Container(
++                width: width,
++                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
++                decoration: BoxDecoration(
++                    border: Border(top: BorderSide(color: p.border))),
++                child: Text(footer!,
++                    maxLines: 1,
++                    overflow: TextOverflow.ellipsis,
++                    style: HjvText.bodySmall.copyWith(color: p.textTertiary)),
++              ),
++          ]),
+         ),
+       ),
+     );
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index 4ac76bb..56afefd 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -678,6 +678,7 @@ class LoginWidgetUserPass extends StatelessWidget {
+                 PasswordWidget(
+                   controller: pass,
+                   title: hjvPasswordTitle(),
++                  hintText: hjvPasswordHint(),
+                   autoFocus: false,
+                   reRequestFocus: true,
+                   errorText: passMsg,
+diff --git a/flutter/lib/common/widgets/my_group.dart b/flutter/lib/common/widgets/my_group.dart
+index b42ea91..af56171 100644
+--- a/flutter/lib/common/widgets/my_group.dart
++++ b/flutter/lib/common/widgets/my_group.dart
+@@ -49,8 +49,8 @@ class _MyGroupState extends State<MyGroup> {
+       final bannerRight = stateGlobal.isPortrait.isTrue ? 0.0 : 12.0;
+       return Column(
+         children: [
+-          ...hjvSupportCodeEntry()
+-              .map((w) => w.paddingOnly(right: bannerRight)),
++          // S1 above the list in portrait; landscape has it in the tab bar (peer_tab_page.dart)
++          if (stateGlobal.isPortrait.isTrue) ...hjvSupportCodeEntry(),
+           ...hjvNetworkBanner(context)
+               .map((w) => w.paddingOnly(right: bannerRight)),
+           if (!hjvOwnsListError())
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 0f06246..55a8382 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -51,6 +51,9 @@ class _PeerCard extends StatefulWidget {
+ class _PeerCardState extends State<_PeerCard>
+     with AutomaticKeepAliveClientMixin {
+   var _menuPos = RelativeRect.fill;
++  // HJViewer: while the card's menu is open, the card keeps its hover border (the menu's barrier
++  // takes the pointer), so that it shows whose menu it is
++  var _hjvMenuOpen = false;
+   final double _cardRadius = 16;
+   final double _tileRadius = 10;
+   final double _borderWidth = 2;
+@@ -126,6 +129,7 @@ class _PeerCardState extends State<_PeerCard>
+         );
+       },
+       onExit: (evt) {
++        if (_hjvMenuOpen) return;
+         deco.value = BoxDecoration(
+           border: Border.all(color: Colors.transparent, width: _borderWidth),
+           borderRadius: BorderRadius.circular(
+@@ -503,31 +507,49 @@ class _PeerCardState extends State<_PeerCard>
+                     fontFeatures:
+                         peer.alias.isEmpty ? HjvText.tabular : null),
+               ),
+-              Row(children: [
+-                getOnline(5, peer.online),
+-                Flexible(
+-                  child: Tooltip(
+-                    message: name,
+-                    waitDuration: const Duration(seconds: 1),
+-                    child: Text(name,
+-                        maxLines: 1,
+-                        overflow: TextOverflow.ellipsis,
+-                        style: sub),
+-                  ),
+-                ),
+-                if (_showNote(peer))
+-                  Expanded(
+-                    child: Tooltip(
+-                      message: peer.note,
+-                      waitDuration: const Duration(seconds: 1),
+-                      child: Text(peer.note,
+-                              maxLines: 1,
+-                              overflow: TextOverflow.ellipsis,
+-                              style: sub)
+-                          .marginOnly(left: 8),
++              // HJViewer: with a note, the name takes its own width (at most 60 % of the row) and
++              // the note the rest, not half the row each
++              LayoutBuilder(
++                builder: (context, row) => Row(children: [
++                  getOnline(5, peer.online),
++                  if (_showNote(peer))
++                    ConstrainedBox(
++                      constraints:
++                          BoxConstraints(maxWidth: row.maxWidth * 0.6),
++                      child: Tooltip(
++                        message: name,
++                        waitDuration: const Duration(seconds: 1),
++                        child: Text(name,
++                            maxLines: 1,
++                            overflow: TextOverflow.ellipsis,
++                            style: sub),
++                      ),
++                    )
++                  else
++                    Flexible(
++                      child: Tooltip(
++                        message: name,
++                        waitDuration: const Duration(seconds: 1),
++                        child: Text(name,
++                            maxLines: 1,
++                            overflow: TextOverflow.ellipsis,
++                            style: sub),
++                      ),
+                     ),
+-                  ),
+-              ]),
++                  if (_showNote(peer))
++                    Expanded(
++                      child: Tooltip(
++                        message: peer.note,
++                        waitDuration: const Duration(seconds: 1),
++                        child: Text(peer.note,
++                                maxLines: 1,
++                                overflow: TextOverflow.ellipsis,
++                                style: sub)
++                            .marginOnly(left: 8),
++                      ),
++                    ),
++                ]),
++              ),
+             ],
+           )),
+         ),
+@@ -733,12 +755,16 @@ class _PeerCardState extends State<_PeerCard>
+   /// Show the peer menu and handle user's choice.
+   /// User might remove the peer or send a file to the peer.
+   void _showPeerMenu(String id) async {
++    _hjvMenuOpen = true;
+     await mod_menu.showMenu(
+       context: context,
+       position: _menuPos,
+       items: await super.widget.popupMenuEntryBuilder(context),
+       elevation: 8,
+     );
++    // HJViewer: the border goes with the menu; the pointer's next entry brings it back
++    _hjvMenuOpen = false;
++    if (mounted) setState(() {});
+   }
+ 
+   @override
+@@ -819,7 +845,7 @@ abstract class BasePeerCard extends StatelessWidget {
+   MenuEntryBase<String> _connectAction(BuildContext context) {
+     return _connectCommonAction(
+       context,
+-      (peer.alias.isEmpty
++      (peer.alias.isEmpty || hjvPlainConnectItem()
+           ? translate('Connect')
+           : '${translate('Connect')} ${peer.id}'),
+     );
+@@ -1075,6 +1101,8 @@ abstract class BasePeerCard extends StatelessWidget {
+           }
+         }
+ 
++        // HJViewer: a recent card's confirm in the menu's words (hjviewer_account.dart)
++        if (hjvConfirmRemoveRecent(tab, peer, onSubmit)) return;
+         deleteConfirmDialog(onSubmit,
+             '${translate('Delete')} "${peer.alias.isEmpty ? formatID(peer.id) : peer.alias}"?');
+       },
+diff --git a/flutter/lib/common/widgets/peer_tab_page.dart b/flutter/lib/common/widgets/peer_tab_page.dart
+index e282319..02ed1d7 100644
+--- a/flutter/lib/common/widgets/peer_tab_page.dart
++++ b/flutter/lib/common/widgets/peer_tab_page.dart
+@@ -24,6 +24,7 @@ import 'package:pull_down_button/pull_down_button.dart';
+ import '../../common.dart';
+ import '../../common/hjv_phone.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjviewer_access.dart';
+ import '../../models/platform_model.dart';
+ 
+ class PeerTabPage extends StatefulWidget {
+@@ -685,6 +686,9 @@ class _PeerTabPageState extends State<PeerTabPage>
+   List<Widget> _landscapeRightActions(BuildContext context) {
+     final model = Provider.of<PeerTabModel>(context);
+     return [
++      // HJViewer: S1's [지원 코드 만들기] before the tools of the 내 PC tab
++      if (model.currentTab == PeerTabIndex.group.index)
++        ...hjvSupportCodeEntry(bar: true, narrow: _hjvNarrow),
+       ConstrainedBox(
+               constraints:
+                   BoxConstraints(maxWidth: _hjvNarrow ? 140 : double.infinity),
+diff --git a/flutter/lib/common/widgets/peers_view.dart b/flutter/lib/common/widgets/peers_view.dart
+index c65797d..8e7129a 100644
+--- a/flutter/lib/common/widgets/peers_view.dart
++++ b/flutter/lib/common/widgets/peers_view.dart
+@@ -458,7 +458,7 @@ Widget hjvPeersPlaceholder(BuildContext context,
+                 textAlign: TextAlign.center,
+                 style: HjvText.titleSmall.copyWith(color: p.text)),
+             if (sub.isNotEmpty)
+-              Text(sub,
++              Text(hjvKeepAll(sub),
+                       textAlign: TextAlign.center,
+                       style: HjvText.body
+                           .copyWith(fontSize: 13, color: p.textSecondary))
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 9b4fd7e..41895e7 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -472,6 +472,7 @@ class _ConnectionPageState extends State<ConnectionPage>
+                       loading: _allPeersLoader.peers.isEmpty &&
+                           !_allPeersLoader.isPeersLoaded,
+                       width: 320,
++                      footer: hjvLabels.enterConnects,
+                     );
+                   },
+                 )),
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 9ed8c0f..b1ec2a5 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -149,13 +149,21 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+             Column(
+               children: [
+                 // HJViewer: bounded, so that the pane scrolls once its notices and cards are
+-                // taller than the window
++                // taller than the window, with the theme's thin bar shown while it does
+                 Expanded(
+-                  child: SingleChildScrollView(
++                  child: Scrollbar(
+                     controller: _leftPaneScrollController,
+-                    child: Column(
+-                      key: _childKey,
+-                      children: children,
++                    thumbVisibility: true,
++                    child: ScrollConfiguration(
++                      behavior: ScrollConfiguration.of(context)
++                          .copyWith(scrollbars: false),
++                      child: SingleChildScrollView(
++                        controller: _leftPaneScrollController,
++                        child: Column(
++                          key: _childKey,
++                          children: children,
++                        ),
++                      ),
+                     ),
+                   ),
+                 ),
+@@ -274,25 +282,21 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+     RxBool hover = false.obs;
+     // HJViewer: a quiet round button on the ID card, a disc only on hover
+     final hjv = HjvPalette.of(context);
+-    // HJViewer: a menu at the pointer (ID copy, ID change, settings), as the PC cards' ⋮
+-    var menuAt = Offset.zero;
++    // HJViewer: a menu (ID copy, ID change, settings) beside the card, to the right of the button,
++    // so that it covers neither the ID nor the button; the tooltip above the button, off the ID
+     return Builder(
+       builder: (button) => InkWell(
+-        onTapDown: (e) => menuAt = e.globalPosition,
+         onTap: () {
+-          var at = menuAt;
+-          menuAt = Offset.zero;
+-          // HJViewer: opened from the keyboard, the menu sits under the button
+-          if (at == Offset.zero) {
+-            final box = button.findRenderObject() as RenderBox?;
+-            if (box != null) {
+-              at = box.localToGlobal(box.size.bottomLeft(Offset.zero));
+-            }
++          var at = Offset.zero;
++          final box = button.findRenderObject() as RenderBox?;
++          if (box != null) {
++            at = box.localToGlobal(box.size.topRight(const Offset(8, 0)));
+           }
+           _hjvShowIdMenu(context, at);
+         },
+         customBorder: const CircleBorder(),
+         child: Tooltip(
++          preferBelow: false,
+           message: hjvLabels.more,
+           child: Obx(
+             () => CircleAvatar(
+@@ -519,7 +523,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+             ).workaroundFreezeLinuxMint(),
+           ),
+           if (blocked?.idLine != null)
+-            Text(blocked!.idLine!,
++            Text(hjvKeepAll(blocked!.idLine!),
+                     style: TextStyle(
+                         fontSize: 12, height: 1.45, color: p.textSecondary))
+                 .marginOnly(top: 2, right: 8),
+@@ -646,7 +650,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+           ),
+           if (!isOutgoingOnly)
+             Text(
+-              hjvTip ?? translate("desk_tip"),
++              hjvKeepAll(hjvTip ?? translate("desk_tip")),
+               overflow: TextOverflow.clip,
+               style: Theme.of(context).textTheme.bodySmall,
+             ),
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 232a3c6..aebcb5b 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -2340,9 +2340,11 @@ class _AccountState extends State<_Account> {
+ 
+   Widget accountAction() {
+     return Obx(() => _Button(
++        // HJViewer: the app's verbs; the card's first row already shows who is logged in
+         gFFI.userModel.userName.value.isEmpty
+-            ? 'Login'
+-            : '${translate('Logout')} (${gFFI.userModel.accountLabelWithHandle})',
++            ? hjvLogInLabel() ?? 'Login'
++            : hjvLogOutLabel() ??
++                '${translate('Logout')} (${gFFI.userModel.accountLabelWithHandle})',
+         () => {
+               gFFI.userModel.userName.value.isEmpty
+                   ? loginDialog()
+@@ -2762,7 +2764,8 @@ class _AboutState extends State<_About> {
+                         crossAxisAlignment: CrossAxisAlignment.start,
+                         children: [
+                           Text(
+-                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Tech Pte. Ltd.\nHJViewer modifications © 2026 프로젝트TF, GNU AGPL-3.0\n$license',
++                            // HJViewer: no empty line for a license the build does not have
++                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Tech Pte. Ltd.\nHJViewer modifications © 2026 프로젝트TF, GNU AGPL-3.0${license.isEmpty ? '' : '\n$license'}',
+                             style:
+                                 TextStyle(fontSize: 13, color: p.textSecondary),
+                           ),
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index ea39557..c0e6be8 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -243,16 +243,18 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                           // hintText: 'Enter your remote ID',
+                           filled: false,
+                           border: InputBorder.none,
+-                          helperStyle: const TextStyle(
++                          // HJViewer: the theme's tertiary text, which reads on the dark card
++                          // too (the const darkGray is 3.4:1 there)
++                          helperStyle: TextStyle(
+                             fontWeight: FontWeight.bold,
+                             fontSize: 16,
+-                            color: MyTheme.darkGray,
++                            color: HjvPalette.of(context).textTertiary,
+                           ),
+-                          labelStyle: const TextStyle(
++                          labelStyle: TextStyle(
+                             fontWeight: FontWeight.w600,
+                             fontSize: 16,
+                             letterSpacing: 0.2,
+-                            color: MyTheme.darkGray,
++                            color: HjvPalette.of(context).textTertiary,
+                           ),
+                         ),
+                         inputFormatters: [IDTextInputFormatter()],
+@@ -291,7 +293,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                             _idController.clear();
+                           });
+                         },
+-                        icon: Icon(Icons.clear, color: MyTheme.darkGray)),
++                        icon: Icon(Icons.clear,
++                            color: HjvPalette.of(context).textTertiary)),
+                   )),
+               // HJViewer: the 44 px circle in a 48 px target, in the place it had (U57)
+               Padding(
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index 3769c80..8dd1f55 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -3,7 +3,7 @@ import 'dart:convert';
+ import 'dart:math' show max;
+ import 'dart:typed_data';
+ 
+-import 'package:flutter/cupertino.dart' show CupertinoTheme;
++import 'package:flutter/cupertino.dart' show CupertinoSwitch, CupertinoTheme;
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
+ import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
+@@ -737,9 +737,13 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+             title: Text(translate('Account')),
+             tiles: [
+               SettingsTile(
++                // HJViewer: the app's verbs, the account after a dot (no parentheses in
++                // parentheses)
+                 title: Obx(() => Text(gFFI.userModel.userName.value.isEmpty
+-                    ? translate('Login')
+-                    : '${translate('Logout')} (${gFFI.userModel.accountLabelWithHandle})')),
++                    ? hjvLogInLabel() ?? translate('Login')
++                    : hjvLogOutLabel() != null
++                        ? '${hjvLogOutLabel()} · ${gFFI.userModel.accountLabelWithHandle}'
++                        : '${translate('Logout')} (${gFFI.userModel.accountLabelWithHandle})')),
+                 leading: Obx(() {
+                   final avatar = bind.mainResolveAvatarUrl(
+                       avatar: gFFI.userModel.avatar.value);
+@@ -1635,7 +1639,16 @@ AbstractSettingsTile _hjvTile(BuildContext context, AbstractSettingsTile tile,
+         onToggle: onToggle,
+         activeSwitchColor: tile.activeSwitchColor,
+         leading: leading,
+-        trailing: tile.trailing,
++        // settings_ui's own switch has an off track (secondarySystemFill) that hardly shows on
++        // the white card: the same switch on the palette's track
++        trailing: tile.trailing ??
++            CupertinoSwitch(
++              value: on,
++              onChanged: onToggle,
++              activeColor:
++                  tile.enabled ? tile.activeSwitchColor : p.textDisabled,
++              trackColor: p.textDisabled,
++            ),
+         title: title,
+         enabled: tile.enabled,
+         onPressed: tile.onPressed ??
+diff --git a/flutter/test/hjv_update_test.dart b/flutter/test/hjv_update_test.dart
+index 92af847..1370d5c 100644
+--- a/flutter/test/hjv_update_test.dart
++++ b/flutter/test/hjv_update_test.dart
+@@ -497,6 +497,18 @@ void main() {
+           hjvAboutLines(
+               HjvUpdateInfo.fromMap({'state': 'unknown', 'current': '1.6.0'})),
+           ['현재 1.6.0', '업데이트 정책: 아직 받지 못했습니다', '마지막 확인: 없음']);
++      // an English UI reads them in English (the 1.8.2 screen review)
++      HjvUpdateText.korean = () => false;
++      addTearDown(() => HjvUpdateText.korean = () => true);
++      expect(
++          hjvAboutLines(
++              HjvUpdateInfo.fromMap({'state': 'unknown', 'current': '1.6.0'})),
++          [
++            'Current 1.6.0',
++            'Update policy: not received yet',
++            'Last checked: never'
++          ]);
++      expect(HjvUpdateText.check, 'Check for updates');
+     });
+ 
+     test('a check by hand says what it found', () {
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index bcd3f50..c673b23 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -48,7 +48,8 @@ List<String> texts(HjvAccessTexts t) => [
+       t.pcStatusLoggedIn,
+       t.pcPasswordText,
+       t.pcGuestToast('18:30'),
+-      t.pcGuestUntil('18:30'),
++      t.pcGuestOn,
++      t.pcAcceptsUntil('18:30'),
+       t.end,
+       t.pcGuestEnded,
+       t.keepLoggedIn,
+@@ -84,7 +85,13 @@ List<String> texts(HjvAccessTexts t) => [
+       t.pcCodeText,
+       t.codeHint,
+       t.codeCheckingLabel,
+-      t.pcCodeUntil('18:30'),
++      t.pcCodeTitle,
++      t.pcCodeOn,
++      t.codeForm,
++      t.logoutSelfGate,
++      t.offline(known: true, codes: true),
++      t.offlinePassedFor(codes: true),
++      t.offlineRestartedFor(codes: true),
+       t.pcCodeEnded,
+       t.closeWhileCode('18:30'),
+       for (final code in ['denied', 'wrong_pc', 'busy']) t.codeFailure(code),
+@@ -123,14 +130,17 @@ void main() {
+     expect([ko.checking, ko.checkingLabel], ['확인하는 중…', '이용 비밀번호를 확인하는 중']);
+     expect([en.checking, en.checkingLabel],
+         ['Checking…', 'Checking the access password']);
+-    expect(ko.pcTitle, '이 PC는 서버에 연결되지 않았습니다');
++    // P1's title fits the pane's one line (the 1.8.2 screen review)
++    expect([ko.pcTitle, en.pcTitle], ['서버에 연결되지 않음', 'Not connected']);
+     expect(ko.pcText, '다른 기기에서 이 PC에 연결하려면 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요.');
+     // P1's buttons are actions; P2's dialog keeps the name
+     expect([ko.logIn, ko.pcPasswordButton], ['로그인', '이용 비밀번호 넣기']);
+     expect([ko.pcPassword, en.pcPassword], ['이용 비밀번호', 'Access password']);
+     expect(ko.pcStatus, '서버에 연결되지 않음(로그인 필요)');
+     expect(ko.pcStatusLoggedIn, '서버에 연결되지 않음');
+-    expect(ko.pcGuestUntil('18:30'), '이용 비밀번호로 연결을 받는 중 · 18:30까지');
++    // P2's home line: a title of one line, until when below it
++    expect(ko.pcGuestOn, '이용 비밀번호 사용 중');
++    expect(ko.pcAcceptsUntil('18:30'), '18:30까지 연결을 받습니다.');
+     expect(ko.pcGuestEnded, '이제 이용 비밀번호로는 연결을 받지 않습니다.');
+     // the access password's ends besides the 12 hours (P2, G1, G2)
+     for (final text in [ko.pcPasswordText, ko.keepLoggedIn]) {
+@@ -411,8 +421,9 @@ void main() {
+   });
+ 
+   test('a logout of other devices on a staff-only server (U68)', () {
++    // the second paragraph says what the gate adds to the question above it
+     expect(hjvLogOutDeviceGateNote(ko, 'enforce'),
+-        '이 서버는 교직원 전용이라, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 어느 PC에도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다.');
++        '이 서버는 교직원 전용이라, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다.');
+     expect(hjvLogOutDeviceGateNote(ko, 'closed', several: true),
+         ko.logOutDeviceGate(known: true, several: true));
+     expect(ko.logOutDeviceGate(known: true, several: true), contains('그 기기들은'));
+@@ -438,6 +449,11 @@ void main() {
+     expect(hjvOfflineGateText(ko, mode: 'unknown', passed: true),
+         ko.offlinePassed);
+     expect(ko.offlinePassed, startsWith('이용 비밀번호는 확인했습니다. 그런데 그 PC가'));
++    // while hjv-api trades support codes, the three ways P1 offers
++    expect(hjvOfflineGateText(ko, mode: 'unknown', passed: true, codes: true),
++        endsWith('로그인하거나 이용 비밀번호나 지원 코드를 넣어야 합니다.'));
++    expect(hjvOfflineGateText(ko, mode: 'enforce', codes: true),
++        contains('이용 비밀번호나 지원 코드를 넣어야 연결을 받습니다.'));
+     expect(hjvOfflineGateText(ko, mode: 'closed', restarted: true),
+         '${ko.offline(known: true)}\n${ko.offlineRestarted}');
+     // the restart's confirm
+@@ -452,8 +468,10 @@ void main() {
+ 
+   test('a support code at the PC (P3): its texts, its form, its errors', () {
+     expect([ko.pcCode, en.pcCode], ['지원 코드', 'Support code']);
++    expect([ko.pcCodeButton, en.pcCodeButton], ['지원 코드 넣기', 'Support code']);
++    // the dialog named as the button that opens it
+     expect(
+-        [ko.pcCodeButton, en.pcCodeButton], ['지원 코드 넣기', 'Enter support code']);
++        [ko.pcCodeTitle, en.pcCodeTitle], ['지원 코드 넣기', 'Enter support code']);
+     expect(ko.pcCodeText,
+         startsWith('교직원에게 받은 지원 코드를 넣으면 이 PC가 최대 2시간 동안 연결을 받습니다.'));
+     expect(
+@@ -462,7 +480,7 @@ void main() {
+             'With a support code from a staff member, this PC accepts connections for up to 2 hours.'));
+     expect(ko.codeHint,
+         '교직원이 알려 준 XXXX-XXXX 꼴의 8자 코드입니다. 이용 비밀번호나 PC의 일회용 비밀번호가 아닙니다.');
+-    expect(ko.pcCodeUntil('18:30'), '지원 코드로 연결을 받는 중 · 18:30까지');
++    expect(ko.pcCodeOn, '지원 코드 사용 중');
+     expect(ko.pcTextCodes,
+         '다른 기기에서 이 PC에 연결하려면 연세포탈로 로그인하거나, 이용 비밀번호나 지원 코드를 넣으세요.');
+     // the core's keys and what it gets (src/hjviewer_access/guest.rs)
+@@ -506,7 +524,9 @@ void main() {
+         hjvReadSupportCode(hjvAccessPassword('\u00a0K7M2-Q9XD\t')), 'K7M2Q9XD');
+     // the field shows ASCII letters in capitals, and changes nothing else
+     expect(hjvCodeCapitals('k7m2-q9xd ä'), 'K7M2-Q9XD ä');
+-    // E6 for wrong, over or used alike (and for what is not a code's form, never sent)
++    // what is not a code's form says so, not E6 (it was never sent)
++    expect(ko.codeForm, startsWith('지원 코드는 XXXX-XXXX 꼴의 8자입니다.'));
++    // E6 for wrong, over or used alike
+     expect(ko.codeFailure('denied'),
+         '지원 코드가 맞지 않거나, 10분이 지났거나, 이미 쓴 코드입니다. 코드를 만든 분에게 새 코드를 받아 주세요.');
+     expect(en.codeFailure('denied'),
+@@ -592,9 +612,10 @@ void main() {
+         ['코드를 복사했습니다.', '안내문을 복사했습니다.']);
+     // the instructions name P1 and its button as the PC shows them
+     expect(ko.instructions('K7M2-Q9XD'),
+-        'HJViewer를 실행하고, "이 PC는 서버에 연결되지 않았습니다" 알림의 [지원 코드 넣기]를 눌러 10분 안에 이 코드를 넣어 주세요: K7M2-Q9XD');
++        'HJViewer를 실행하고, "서버에 연결되지 않음" 알림의 [지원 코드 넣기]를 눌러 10분 안에 이 코드를 넣어 주세요: K7M2-Q9XD');
+     expect(en.instructions('K7M2-Q9XD'),
+-        'Run HJViewer, click [Enter support code] on the notice "This PC is not connected to the server", and enter K7M2-Q9XD within 10 minutes.');
++        'Run HJViewer, click [Support code] on the notice "Not connected", and enter K7M2-Q9XD within 10 minutes.');
++    expect(en.madeText, contains('[${en.pcCodeButton}]'));
+     expect(ko.madeText, contains('[${ko.pcCodeButton}]'));
+     expect(ko.madeText, contains('2시간'));
+     expect(ko.serverOpen, '지금은 서버가 출입을 확인하지 않아, 그 PC는 코드 없이도 연결을 받습니다.');
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 6a0e3ae..3e4eca3 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -530,6 +530,11 @@ void main() {
+       expect(hjvKeyTitle(ko, keys[0]), 'Windows PC (연구실-PC)');
+       expect(hjvKeyTitle(ko, keys[1]), 'iPhone 14 Pro');
+       expect(hjvKeyTitle(ko, keys[2]), 'Galaxy (SM-S918N) · 이 기기');
++      // a server's name that has the device's own in it already gets it once
++      expect(
++          hjvDeviceName(const HjvKey(
++              ckid: 1, name: '연구실 Windows PC', appName: 'Windows')),
++          '연구실 Windows PC');
+       expect(hjvKeyLine(ko, keys[1], local: utc),
+           '로그인 10/20 14:03(학외) · 1.6.0 · 마지막 비밀번호 없는 연결 10/21 연구실-PC');
+       expect(
+diff --git a/src/lang/ko.rs b/src/lang/ko.rs
+index ca3c1bc..a01e090 100644
+--- a/src/lang/ko.rs
++++ b/src/lang/ko.rs
+@@ -770,8 +770,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Enable", "활성화"),
+         ("Reuse one connection for port forwarding", "포트 포워딩을 위해 하나의 연결을 재사용"),
+         ("port-forward-mux-tip", "각 연결마다 다시 연결하고 로그인할 필요 없이, 포트 포워딩 매핑의 모든 연결을 피어에 대한 단일 연결로 전달합니다."),
+-        ("Enable WebRTC P2P connection", "WebRTC P2P 연결 사용함"),
+-        ("Enable TCP hole punching", "TCP 홀 펀칭 사용함"),
++        ("Enable WebRTC P2P connection", "WebRTC P2P 연결 사용"),
++        ("Enable TCP hole punching", "TCP 홀 펀칭 사용"),
+         ("The screen sharing request was declined on the remote device", "원격 장치에서 화면 공유 요청이 거부되었습니다"),
+         ("The screen sharing request timed out on the remote device", "원격 장치에서 화면 공유 요청이 시간 초과되었습니다"),
+         ("RustDesk cannot reach the desktop session on the remote device, check that a desktop session is running and that RustDesk can use it", "RustDesk가 원격 장치의 데스크톱 세션에 접근할 수 없습니다. 세션이 실행 중이고 RustDesk가 사용할 수 있는지 확인하세요"),

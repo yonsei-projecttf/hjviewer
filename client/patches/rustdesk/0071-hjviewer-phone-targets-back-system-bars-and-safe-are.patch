@@ -1,0 +1,746 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 22:06:05 +0900
+Subject: [PATCH 71/85] hjviewer: phone targets, back, system bars and safe
+ areas
+
+U57: on a phone the most used controls keep their look and get larger
+targets. The peer bar is 44 px high with the 32 px pills in it; its
+search, refresh, select, sort and more icons are 44 x 44 targets around
+their 26 px boxes, and the open search's close is a 36 x 44 target over
+the field's right end. hjvPhoneBarShownActions (hjv_phone.dart, plain
+Dart with a test) plans the bar's right side with these sizes and keeps
+the room of the open search field; where the bar is short (a 360 dp
+phone with four tabs) the refresh goes under "more" with the others.
+The list of PCs refreshes when pulled down (RefreshIndicator.adaptive,
+the same pull as the refresh button). A1's "have an access password?"
+link is a 48 px target on a phone, menu rows are 48 px on a phone, the
+connect button's 44 px circle sits in a 48 px target in the place it
+had, and the session's keys are at least 40 x 40, 6 px apart. On a
+desktop the session tab's close is a 24 px wide target as high as the
+pill, its 16 px hover square unchanged.
+
+U60: MainActivity sets android:enableOnBackInvokedCallback="false", so
+on Android 16 back reaches the home's WillPopScope and the dialogs'
+back handling as on older versions instead of leaving the app; U63
+replaces it with PopScope later. A test pins the attribute; it still
+needs a check on an Android 16 device.
+
+U61: the AppBar's system overlay style is hjvSystemUiOverlayStyle per
+theme instead of Flutter's dark and light presets, which also paint the
+navigation bar black with light icons: a transparent status bar, the
+icons' brightness of the theme, the surface colour under the navigation
+bar with the border as its divider, and no enforced contrast scrim.
+
+U62: the phone home puts each tab's body in a SafeArea without top and
+bottom, so in landscape the ID field, G3, the cards and the settings
+stay clear of the notch, the camera hole and the rounded corners.
+---
+ .../android/app/src/main/AndroidManifest.xml  |   4 +
+ flutter/lib/common/hjv_phone.dart             |  54 +++++
+ flutter/lib/common/hjv_theme.dart             |   5 +-
+ flutter/lib/common/hjviewer_access.dart       |  14 +-
+ flutter/lib/common/widgets/my_group.dart      |  14 +-
+ flutter/lib/common/widgets/peer_tab_page.dart | 191 +++++++++++-------
+ .../widgets/material_mod_popup_menu.dart      |   4 +-
+ .../lib/desktop/widgets/tabbar_widget.dart    |  37 ++--
+ flutter/lib/mobile/pages/connection_page.dart |  35 ++--
+ flutter/lib/mobile/pages/home_page.dart       |   6 +-
+ flutter/lib/mobile/pages/remote_page.dart     |   5 +-
+ flutter/test/hjviewer_android_test.dart       |   9 +
+ flutter/test/hjviewer_phone_test.dart         |  48 +++++
+ 13 files changed, 317 insertions(+), 109 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_phone.dart
+ create mode 100644 flutter/test/hjviewer_phone_test.dart
+
+diff --git a/flutter/android/app/src/main/AndroidManifest.xml b/flutter/android/app/src/main/AndroidManifest.xml
+index 355574f..94e3f90 100644
+--- a/flutter/android/app/src/main/AndroidManifest.xml
++++ b/flutter/android/app/src/main/AndroidManifest.xml
+@@ -34,11 +34,15 @@
+         <activity
+             android:name=".MainActivity"
+             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode|navigation"
++            android:enableOnBackInvokedCallback="false"
+             android:exported="true"
+             android:hardwareAccelerated="true"
+             android:launchMode="singleTop"
+             android:theme="@style/LaunchTheme"
+             android:windowSoftInputMode="adjustResize">
++            <!-- back keeps the key's behaviour on Android 16 (predictive back off): the home's
++                 WillPopScope and the dialogs' back handling see it; U63 replaces this with
++                 PopScope. To be checked on an Android 16 device. -->
+             <!-- after the splash, the window behind the Flutter UI is a plain colour -->
+             <meta-data
+                 android:name="io.flutter.embedding.android.NormalTheme"
+diff --git a/flutter/lib/common/hjv_phone.dart b/flutter/lib/common/hjv_phone.dart
+new file mode 100644
+index 0000000..3572a25
+--- /dev/null
++++ b/flutter/lib/common/hjv_phone.dart
+@@ -0,0 +1,54 @@
++// HJViewer: what the phone screens share: the size of a tap target and the plan of the peer
++// bar's right side (U57), and the system bars' style of each theme (U61). Plain Flutter without
++// the bridge.
++
++import 'dart:math';
++
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++
++import 'hjv_style.dart';
++
++/// The smallest tap target on a phone: iOS's 44 pt. What looks smaller (a 26 px icon box, a
++/// 32 px pill) keeps its look and gets a target of this size around it.
++const double kHjvPhoneTarget = 44;
++
++/// The peer bar on a phone: a tab's width (its pill is 40 x 32 in a target 44 high) and the
++/// width of the open search field.
++const double kHjvPhoneTabWidth = 40;
++const double kHjvPhoneSearchWidth = 120;
++
++/// How many of the peer bar's [actions] (refresh, select, sort, ...) show beside the search on a
++/// phone [width] wide with [tabs] tabs, each a [kHjvPhoneTarget] wide; the rest go under one
++/// "more" button. The plan keeps the room of the open search field, so opening it moves nothing.
++int hjvPhoneBarShownActions(
++    {required double width, required int tabs, required int actions}) {
++  // the page's 10 px margins and the bar's 2 px paddings
++  final room = width -
++      10 * 2 -
++      2 * 2 -
++      tabs * kHjvPhoneTabWidth -
++      kHjvPhoneSearchWidth;
++  final slots = room < 0 ? 0 : room ~/ kHjvPhoneTarget;
++  if (actions <= 1 || actions <= slots) return actions;
++  // one slot is the "more" button
++  return max(0, slots - 1);
++}
++
++/// The status and navigation bars of [dark] or light: the app's surface under the navigation bar
++/// with icons that read on it, a transparent status bar. Flutter's SystemUiOverlayStyle.dark and
++/// .light presets also paint the navigation bar black with light icons.
++SystemUiOverlayStyle hjvSystemUiOverlayStyle(bool dark) {
++  final p = dark ? HjvPalette.dark : HjvPalette.light;
++  final icons = dark ? Brightness.light : Brightness.dark;
++  return SystemUiOverlayStyle(
++    statusBarColor: Colors.transparent,
++    // Android reads the icons' brightness, iOS the bar's
++    statusBarIconBrightness: icons,
++    statusBarBrightness: dark ? Brightness.dark : Brightness.light,
++    systemNavigationBarColor: p.surface,
++    systemNavigationBarIconBrightness: icons,
++    systemNavigationBarDividerColor: p.border,
++    systemNavigationBarContrastEnforced: false,
++  );
++}
+diff --git a/flutter/lib/common/hjv_theme.dart b/flutter/lib/common/hjv_theme.dart
+index 1661712..04617ca 100644
+--- a/flutter/lib/common/hjv_theme.dart
++++ b/flutter/lib/common/hjv_theme.dart
+@@ -6,10 +6,10 @@
+ // content, cardColor a quiet grey block.
+ 
+ import 'package:flutter/material.dart';
+-import 'package:flutter/services.dart';
+ 
+ import '../common.dart';
+ import '../desktop/widgets/tabbar_widget.dart';
++import 'hjv_phone.dart';
+ import 'hjv_style.dart';
+ 
+ ThemeData hjvRestyle(ThemeData base) {
+@@ -78,8 +78,7 @@ ThemeData hjvRestyle(ThemeData base) {
+           fontWeight: FontWeight.w700,
+           color: p.text),
+       shape: Border(bottom: BorderSide(color: p.border)),
+-      systemOverlayStyle:
+-          dark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
++      systemOverlayStyle: hjvSystemUiOverlayStyle(dark),
+     ),
+     dialogTheme: DialogTheme(
+       backgroundColor: p.card,
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 05a5b56..de0449f 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -503,10 +503,16 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+             if (busy) _checking(t),
+           ] else
+             TextButton(
+-              style: TextButton.styleFrom(
+-                  padding: EdgeInsets.zero,
+-                  minimumSize: const Size(0, 36),
+-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
++              // on a phone the way to the access password is a 48 px target (U57)
++              style: isDesktop || isWebDesktop
++                  ? TextButton.styleFrom(
++                      padding: EdgeInsets.zero,
++                      minimumSize: const Size(0, 36),
++                      tapTargetSize: MaterialTapTargetSize.shrinkWrap)
++                  : TextButton.styleFrom(
++                      padding: const EdgeInsets.symmetric(horizontal: 12),
++                      minimumSize: const Size(48, 48),
++                      tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+               onPressed: () => setState(() => open = true),
+               child: Text(t.havePassword),
+             ).marginOnly(top: 4),
+diff --git a/flutter/lib/common/widgets/my_group.dart b/flutter/lib/common/widgets/my_group.dart
+index b5b153b..7c226f7 100644
+--- a/flutter/lib/common/widgets/my_group.dart
++++ b/flutter/lib/common/widgets/my_group.dart
+@@ -116,11 +116,15 @@ class _MyGroupState extends State<MyGroup> {
+           ),
+         ).marginOnly(bottom: 12.0),
+         Expanded(
+-          child: Align(
+-              alignment: Alignment.topLeft,
+-              child: MyGroupPeerView(
+-                menuPadding: widget.menuPadding,
+-              )),
++          // HJViewer: pulled down, the list refreshes as the bar's refresh button does (U57)
++          child: RefreshIndicator.adaptive(
++            onRefresh: () => gFFI.groupModel.pull(),
++            child: Align(
++                alignment: Alignment.topLeft,
++                child: MyGroupPeerView(
++                  menuPadding: widget.menuPadding,
++                )),
++          ),
+         )
+       ],
+     );
+diff --git a/flutter/lib/common/widgets/peer_tab_page.dart b/flutter/lib/common/widgets/peer_tab_page.dart
+index f5060ec..1f46d28 100644
+--- a/flutter/lib/common/widgets/peer_tab_page.dart
++++ b/flutter/lib/common/widgets/peer_tab_page.dart
+@@ -22,6 +22,7 @@ import 'package:provider/provider.dart';
+ import 'package:pull_down_button/pull_down_button.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_phone.dart';
+ import '../../common/hjv_style.dart';
+ import '../../models/platform_model.dart';
+ 
+@@ -110,7 +111,8 @@ class _PeerTabPageState extends State<PeerTabPage>
+       crossAxisAlignment: CrossAxisAlignment.start,
+       children: [
+         Obx(() => SizedBox(
+-              height: 32,
++              // HJViewer: on a phone a 44 px target around the 32 px pills and icons
++              height: (isDesktop || isWebDesktop) ? 32 : kHjvPhoneTarget,
+               child: Container(
+                 padding: stateGlobal.isPortrait.isTrue
+                     ? EdgeInsets.symmetric(horizontal: 2)
+@@ -190,7 +192,8 @@ class _PeerTabPageState extends State<PeerTabPage>
+   // HJViewer: under 720 px, upstream's tab pitch and search width keep the tabs on screen
+   bool get _hjvNarrow => MediaQuery.sizeOf(context).width < 720;
+ 
+-  // HJViewer: icon pills; a phone tab stays 40 px, which _portraitRightActions counts on
++  // HJViewer: icon pills 32 px high in the bar's height; a phone tab stays 40 px wide
++  // (kHjvPhoneTabWidth), which _portraitRightActions counts on
+   Widget _hjvCreateSwitchBar(BuildContext context) {
+     final model = Provider.of<PeerTabModel>(context);
+     final p = HjvPalette.of(context);
+@@ -222,17 +225,21 @@ class _PeerTabPageState extends State<PeerTabPage>
+                     customBorder: const StadiumBorder(),
+                     hoverColor: Colors.transparent,
+                     child: Container(
+-                      width: portrait ? 40 : (narrow ? 36 : 44),
++                      width: portrait ? kHjvPhoneTabWidth : (narrow ? 36 : 44),
+                       alignment: Alignment.center,
+-                      decoration: ShapeDecoration(
+-                        shape: const StadiumBorder(),
+-                        color: selected
+-                            ? p.primarySoft
+-                            : (hovered ? p.hover : Colors.transparent),
++                      child: Container(
++                        height: 32,
++                        alignment: Alignment.center,
++                        decoration: ShapeDecoration(
++                          shape: const StadiumBorder(),
++                          color: selected
++                              ? p.primarySoft
++                              : (hovered ? p.hover : Colors.transparent),
++                        ),
++                        child: Icon(model.tabIcon(t),
++                            size: 20,
++                            color: selected ? p.primary : p.textSecondary),
+                       ),
+-                      child: Icon(model.tabIcon(t),
+-                          size: 20,
+-                          color: selected ? p.primary : p.textSecondary),
+                     ),
+                     onTap: isOptionFixed(kOptionPeerTabIndex)
+                         ? null
+@@ -644,12 +651,8 @@ class _PeerTabPageState extends State<PeerTabPage>
+   List<Widget> _portraitRightActions(BuildContext context) {
+     final model = Provider.of<PeerTabModel>(context);
+     final screenWidth = MediaQuery.of(context).size.width;
+-    final leftIconSize = Theme.of(context).iconTheme.size ?? 24;
+-    final leftActionsSize =
+-        (leftIconSize + (4 + 4) * 2) * model.visibleEnabledOrderedIndexs.length;
+-    final availableWidth = screenWidth - 10 * 2 - leftActionsSize - 2 * 2;
+-    final searchWidth = 120;
+-    final otherActionWidth = 18 + 10;
++    // HJViewer: 44 px targets, planned by hjvPhoneBarShownActions
++    final otherActionWidth = kHjvPhoneTarget;
+ 
+     dropDown(List<Widget> menus) {
+       final padding = 6.0;
+@@ -690,40 +693,29 @@ class _PeerTabPageState extends State<PeerTabPage>
+       );
+     }
+ 
+-    // Always show search, refresh
++    // Always show search; HJViewer: the refresh goes under "more" too where the bar is short
++    // (the list of PCs also refreshes when pulled down)
+     List<Widget> actions = [
+       const PeerSearchBar(),
++    ];
++    final List<Widget> dynamicActions = [
+       if (model.currentTab == PeerTabIndex.ab.index)
+         _createRefresh(
+             index: PeerTabIndex.ab, loading: gFFI.abModel.currentAbLoading),
+       if (model.currentTab == PeerTabIndex.group.index)
+         _createRefresh(
+             index: PeerTabIndex.group, loading: gFFI.groupModel.groupLoading),
+-    ];
+-    final List<Widget> dynamicActions = [
+       if (model.currentTabCachedPeers.isNotEmpty) _createMultiSelection(),
+       if (model.currentTab != PeerTabIndex.recent.index) PeerSortDropdown(),
+       if (model.currentTab == PeerTabIndex.ab.index) _toggleTags()
+     ];
+-    final rightWidth = availableWidth -
+-        searchWidth -
+-        (actions.length == 2 ? otherActionWidth : 0);
+-    final availablePositions = rightWidth ~/ otherActionWidth;
+-
+-    if (availablePositions < dynamicActions.length &&
+-        dynamicActions.length > 1) {
+-      if (availablePositions < 2) {
+-        actions.addAll([
+-          dropDown(dynamicActions),
+-        ]);
+-      } else {
+-        actions.addAll([
+-          ...dynamicActions.sublist(0, availablePositions - 1),
+-          dropDown(dynamicActions.sublist(availablePositions - 1)),
+-        ]);
+-      }
+-    } else {
+-      actions.addAll(dynamicActions);
++    final shown = hjvPhoneBarShownActions(
++        width: screenWidth,
++        tabs: model.visibleEnabledOrderedIndexs.length,
++        actions: dynamicActions.length);
++    actions.addAll(dynamicActions.sublist(0, shown));
++    if (shown < dynamicActions.length) {
++      actions.add(dropDown(dynamicActions.sublist(shown)));
+     }
+     return actions;
+   }
+@@ -766,8 +758,36 @@ class _PeerSearchBarState extends State<PeerSearchBar> {
+           baseOffset: 0,
+           extentOffset: peerSearchTextController.value.text.length);
+     });
+-    return Obx(() => Container(
+-          width: stateGlobal.isPortrait.isTrue ? 120 : 160,
++    // a Material above the field's fill; radius 12 fits the 24 px of compact density. On a
++    // phone it is a 36 x 44 target over the field's right end (U57).
++    Widget close(double width, double height) => Material(
++          type: MaterialType.transparency,
++          child: IconButton(
++            padding: EdgeInsets.zero,
++            constraints: BoxConstraints.tightFor(width: width, height: height),
++            splashRadius: 12,
++            hoverColor: p.hoverStrong,
++            onPressed: () {
++              setState(() {
++                peerSearchTextController.clear();
++                peerSearchText.value = "";
++                drawer = false;
++              });
++            },
++            icon: Tooltip(
++                message: translate('Close'),
++                child: Icon(
++                  Icons.close_rounded,
++                  size: 16,
++                  color: p.textTertiary,
++                )),
++          ),
++        );
++    return Obx(() {
++      final width =
++          stateGlobal.isPortrait.isTrue ? kHjvPhoneSearchWidth : 160.0;
++      final field = Container(
++          width: width,
+           height: 32,
+           decoration: BoxDecoration(
+             color: phone ? p.card : p.fill,
+@@ -811,34 +831,27 @@ class _PeerSearchBarState extends State<PeerSearchBar> {
+                   ),
+                 ).workaroundFreezeLinuxMint(),
+               ),
+-              // a Material above the field's fill; radius 12 fits the 24 px of compact density
+-              Material(
+-                type: MaterialType.transparency,
+-                child: IconButton(
+-                  padding: EdgeInsets.zero,
+-                  constraints:
+-                      const BoxConstraints.tightFor(width: 28, height: 28),
+-                  splashRadius: 12,
+-                  hoverColor: p.hoverStrong,
+-                  onPressed: () {
+-                    setState(() {
+-                      peerSearchTextController.clear();
+-                      peerSearchText.value = "";
+-                      drawer = false;
+-                    });
+-                  },
+-                  icon: Tooltip(
+-                      message: translate('Close'),
+-                      child: Icon(
+-                        Icons.close_rounded,
+-                        size: 16,
+-                        color: p.textTertiary,
+-                      )),
+-                ),
+-              ).marginOnly(right: 2),
++              if (phone)
++                const SizedBox(width: 34)
++              else
++                close(28, 28).marginOnly(right: 2),
+             ],
+           ),
+-        ));
++        );
++      if (!phone) return field;
++      return SizedBox(
++        width: width,
++        height: kHjvPhoneTarget,
++        child: Stack(
++          alignment: Alignment.center,
++          children: [
++            field,
++            Positioned(
++                top: 0, right: 0, bottom: 0, child: close(36, kHjvPhoneTarget)),
++          ],
++        ),
++      );
++    });
+   }
+ 
+   Widget _buildSearchBar() {
+@@ -1129,6 +1142,27 @@ class RefreshWidgetState extends State<RefreshWidget> {
+       color: HjvPalette.of(context).hover,
+       borderRadius: BorderRadius.circular(HjvRadius.sm),
+     );
++    // HJViewer: on a phone the turning icon in a 44 x 44 target (U57)
++    if (!(isDesktop || isWebDesktop)) {
++      return InkWell(
++          borderRadius: BorderRadius.circular(HjvRadius.sm),
++          onTap: () {
++            if (mounted) setState(() => turns += 1.0);
++            widget.onPressed();
++          },
++          child: SizedBox.square(
++              dimension: kHjvPhoneTarget,
++              child: Center(
++                  child: AnimatedRotation(
++                      turns: turns,
++                      duration: const Duration(milliseconds: 200),
++                      onEnd: () {
++                        if (widget.spinning?.value == true && mounted) {
++                          setState(() => turns += 1.0);
++                        }
++                      },
++                      child: widget.child))));
++    }
+     return AnimatedRotation(
+         turns: turns,
+         duration: const Duration(milliseconds: 200),
+@@ -1187,7 +1221,8 @@ Widget _hoverAction(
+   );
+ }
+ 
+-// HJViewer: the bar's icon button; 26 px on the phone, the size _portraitRightActions plans with
++// HJViewer: the bar's icon button; on a phone a 26 px box in a 44 x 44 target (kHjvPhoneTarget),
++// the size _portraitRightActions plans with
+ Widget _hjvHoverAction(
+     {required BuildContext context,
+     required Widget child,
+@@ -1204,6 +1239,26 @@ Widget _hjvHoverAction(
+       final hovered = hover.value;
+       final on = hoverableWhenfalse?.value == false;
+       final padding = EdgeInsets.all(stateGlobal.isPortrait.isTrue ? 3 : 6);
++      if (!(isDesktop || isWebDesktop)) {
++        return InkWell(
++            borderRadius: radius,
++            onTap: onTap,
++            onTapDown: onTapDown,
++            child: SizedBox.square(
++                dimension: kHjvPhoneTarget,
++                child: Center(
++                    child: Container(
++                        decoration: BoxDecoration(
++                          color: on ? p.primarySoft : null,
++                          borderRadius: radius,
++                        ),
++                        child: IconTheme.merge(
++                            data: IconThemeData(
++                                size: 20,
++                                color: on ? p.primary : p.textSecondary),
++                            child:
++                                Container(padding: padding, child: child))))));
++      }
+       return Container(
+           margin: EdgeInsets.symmetric(horizontal: 1),
+           decoration: BoxDecoration(
+diff --git a/flutter/lib/desktop/widgets/material_mod_popup_menu.dart b/flutter/lib/desktop/widgets/material_mod_popup_menu.dart
+index c459e88..32d4469 100644
+--- a/flutter/lib/desktop/widgets/material_mod_popup_menu.dart
++++ b/flutter/lib/desktop/widgets/material_mod_popup_menu.dart
+@@ -51,7 +51,7 @@ enum PopupMenuPosition {
+ }
+ 
+ // HJViewer: a menu row in the app's look (common/hjv_style.dart): inset from the menu's edges by
+-// [hjvMenuRowInset], rounded, the palette's hover, 32 px tall on a desktop and 40 on a phone.
++// [hjvMenuRowInset], rounded, the palette's hover, 32 px tall on a desktop and 48 on a phone.
+ const double hjvMenuRowInset = 6.0;
+ 
+ ButtonStyle hjvMenuRowStyle(BuildContext context) {
+@@ -64,7 +64,7 @@ ButtonStyle hjvMenuRowStyle(BuildContext context) {
+     textStyle: const TextStyle(
+         fontFamily: kHjvFont, fontSize: 14, fontWeight: FontWeight.w400),
+     padding: EdgeInsets.zero,
+-    minimumSize: Size(0, isDesktop || isWebDesktop ? 32 : 40),
++    minimumSize: Size(0, isDesktop || isWebDesktop ? 32 : 48),
+     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+     visualDensity: VisualDensity.standard,
+     alignment: AlignmentDirectional.centerStart,
+diff --git a/flutter/lib/desktop/widgets/tabbar_widget.dart b/flutter/lib/desktop/widgets/tabbar_widget.dart
+index fec9786..70ed806 100644
+--- a/flutter/lib/desktop/widgets/tabbar_widget.dart
++++ b/flutter/lib/desktop/widgets/tabbar_widget.dart
+@@ -1218,7 +1218,7 @@ class _TabState extends State<_Tab> with RestorationMixin {
+                 onTap: () => widget.onTap(),
+                 child: Padding(
+                   padding: EdgeInsets.only(
+-                      left: 10, right: widget.closable ? 3 : 10),
++                      left: 10, right: widget.closable ? 1 : 10),
+                   child: Row(
+                     mainAxisSize: MainAxisSize.min,
+                     children: [
+@@ -1305,28 +1305,41 @@ class _TabState extends State<_Tab> with RestorationMixin {
+     );
+   }
+ 
+-  /// The close button keeps its place, so the label does not move when it shows on hover.
++  /// The close button keeps its place, so the label does not move when it shows on hover. Its
++  /// target is 24 px wide and as high as the pill (U57).
+   Widget _hjvCloseButton(bool visible) {
+     final p = HjvPalette.of(context);
+     final hover = false.obs;
+     return SizedBox(
+-      width: 16,
+-      height: 16,
++      width: 24,
++      height: _kHjvTabHeight,
+       child: visible
+           ? Material(
+               type: MaterialType.transparency,
+               child: InkWell(
+-                borderRadius: BorderRadius.circular(4),
+-                hoverColor: p.text.withOpacity(0.08),
+-                highlightColor: p.text.withOpacity(0.12),
++                hoverColor: Colors.transparent,
++                highlightColor: Colors.transparent,
+                 splashFactory: NoSplash.splashFactory,
+                 onHover: (value) => hover.value = value,
+                 onTap: () => widget.onClose(),
+-                child: Obx(() => Icon(
+-                      Icons.close_rounded,
+-                      size: 13,
+-                      color: hover.value ? p.text : p.textTertiary,
+-                    )),
++                // the 16 px hover square stays
++                child: Center(
++                  child: Obx(() => Container(
++                        width: 16,
++                        height: 16,
++                        decoration: BoxDecoration(
++                          color: hover.value
++                              ? p.text.withOpacity(0.08)
++                              : Colors.transparent,
++                          borderRadius: BorderRadius.circular(4),
++                        ),
++                        child: Icon(
++                          Icons.close_rounded,
++                          size: 13,
++                          color: hover.value ? p.text : p.textTertiary,
++                        ),
++                      )),
++                ),
+               ),
+             )
+           : null,
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index 970e2b6..49ce246 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -293,19 +293,30 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                         },
+                         icon: Icon(Icons.clear, color: MyTheme.darkGray)),
+                   )),
++              // HJViewer: the 44 px circle in a 48 px target, in the place it had (U57)
+               Padding(
+-                padding: const EdgeInsets.only(right: 12, left: 4),
+-                child: SizedBox(
+-                  width: 44,
+-                  height: 44,
+-                  child: Material(
+-                    color: HjvPalette.of(context).primary,
+-                    shape: const CircleBorder(),
+-                    clipBehavior: Clip.antiAlias,
+-                    child: InkWell(
+-                      onTap: onConnect,
+-                      child: const Icon(Icons.arrow_forward_rounded,
+-                          color: Colors.white, size: 24),
++                padding: const EdgeInsets.only(right: 10, left: 2),
++                child: GestureDetector(
++                  behavior: HitTestBehavior.opaque,
++                  excludeFromSemantics: true,
++                  onTap: onConnect,
++                  child: SizedBox.square(
++                    dimension: 48,
++                    child: Center(
++                      child: SizedBox(
++                        width: 44,
++                        height: 44,
++                        child: Material(
++                          color: HjvPalette.of(context).primary,
++                          shape: const CircleBorder(),
++                          clipBehavior: Clip.antiAlias,
++                          child: InkWell(
++                            onTap: onConnect,
++                            child: const Icon(Icons.arrow_forward_rounded,
++                                color: Colors.white, size: 24),
++                          ),
++                        ),
++                      ),
+                     ),
+                   ),
+                 ),
+diff --git a/flutter/lib/mobile/pages/home_page.dart b/flutter/lib/mobile/pages/home_page.dart
+index 4cbb5bb..0d05487 100644
+--- a/flutter/lib/mobile/pages/home_page.dart
++++ b/flutter/lib/mobile/pages/home_page.dart
+@@ -112,7 +112,11 @@ class HomePageState extends State<HomePage> {
+               }
+             }),
+           )),
+-          body: _pages.elementAt(_selectedIndex),
++          // HJViewer: in landscape the tabs stay clear of the notch and the rounded corners (U62)
++          body: SafeArea(
++              top: false,
++              bottom: false,
++              child: _pages.elementAt(_selectedIndex)),
+         ));
+   }
+ 
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 4ad3202..cdbc223 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -1156,7 +1156,8 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+             : p.text;
+     return TextButton(
+         style: TextButton.styleFrom(
+-          minimumSize: Size(0, 0),
++          // HJViewer: keys of at least 40 x 40 (U57)
++          minimumSize: Size(40, 40),
+           padding: EdgeInsets.symmetric(vertical: 10, horizontal: 9.75),
+           //adds padding inside the button
+           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+@@ -1348,7 +1349,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
+         sendPrompt(isMac, 'VK_S');
+       }),
+     ];
+-    final space = size.width > 320 ? 4.0 : 2.0;
++    final space = size.width > 320 ? 6.0 : 2.0;
+     // 500 ms is long enough for this widget to be built!
+     Future.delayed(Duration(milliseconds: 500), () {
+       _updateRect();
+diff --git a/flutter/test/hjviewer_android_test.dart b/flutter/test/hjviewer_android_test.dart
+index 3954b69..cb31300 100644
+--- a/flutter/test/hjviewer_android_test.dart
++++ b/flutter/test/hjviewer_android_test.dart
+@@ -53,4 +53,13 @@ void main() {
+     // a voice call from the phone records with it
+     expect(manifest, contains('android.permission.RECORD_AUDIO'));
+   });
++
++  test('back reaches the app on Android 16 (predictive back off)', () {
++    final manifest =
++        File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
++    final activity = RegExp(r'<activity\s[^>]*android:name="\.MainActivity"[^>]*>')
++        .firstMatch(manifest)!
++        .group(0)!;
++    expect(activity, contains('android:enableOnBackInvokedCallback="false"'));
++  });
+ }
+diff --git a/flutter/test/hjviewer_phone_test.dart b/flutter/test/hjviewer_phone_test.dart
+new file mode 100644
+index 0000000..362f130
+--- /dev/null
++++ b/flutter/test/hjviewer_phone_test.dart
+@@ -0,0 +1,48 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common/hjv_phone.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// HJViewer's phone targets and system bars, without the bridge.
++
++/// The width the peer bar's right side takes with the search field open.
++double openRight(int shown, int actions) =>
++    kHjvPhoneSearchWidth +
++    (shown + (shown < actions ? 1 : 0)) * kHjvPhoneTarget;
++
++void main() {
++  test('the peer bar fits its 44 px actions beside the open search', () {
++    // a 360 dp phone with four tabs: refresh, select and sort under "more"
++    expect(hjvPhoneBarShownActions(width: 360, tabs: 4, actions: 3), 0);
++    // a 393 dp phone: the refresh beside it
++    expect(hjvPhoneBarShownActions(width: 393, tabs: 4, actions: 3), 1);
++    // with three tabs all three fit at 412 dp; a lone action never folds
++    expect(hjvPhoneBarShownActions(width: 412, tabs: 3, actions: 3), 3);
++    expect(hjvPhoneBarShownActions(width: 320, tabs: 5, actions: 1), 1);
++    for (final width in [360.0, 375.0, 393.0, 412.0, 430.0]) {
++      for (var tabs = 1; tabs <= 4; tabs++) {
++        for (var actions = 0; actions <= 4; actions++) {
++          final shown = hjvPhoneBarShownActions(
++              width: width, tabs: tabs, actions: actions);
++          final room = width - 24 - tabs * kHjvPhoneTabWidth;
++          expect(openRight(shown, actions), lessThanOrEqualTo(room),
++              reason: '$width dp, $tabs tabs, $actions actions');
++        }
++      }
++    }
++  });
++
++  test('the navigation bar takes the surface and icons that read on it', () {
++    final light = hjvSystemUiOverlayStyle(false);
++    expect(light.systemNavigationBarColor, HjvPalette.light.surface);
++    expect(light.systemNavigationBarIconBrightness, Brightness.dark);
++    expect(light.statusBarIconBrightness, Brightness.dark);
++    expect(light.statusBarColor, Colors.transparent);
++    expect(light.systemNavigationBarContrastEnforced, isFalse);
++    final dark = hjvSystemUiOverlayStyle(true);
++    expect(dark.systemNavigationBarColor, HjvPalette.dark.surface);
++    expect(dark.systemNavigationBarIconBrightness, Brightness.light);
++    expect(dark.statusBarIconBrightness, Brightness.light);
++    expect(dark.systemNavigationBarDividerColor, HjvPalette.dark.border);
++  });
++}

@@ -1,0 +1,1469 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 19 Oct 2026 22:02:13 +0900
+Subject: [PATCH 65/85] hjviewer: the gate's words after the first day
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U01: one name per password. The PC's own password box says "원격 PC
+비밀번호" (Remote PC password), says whose password it takes and that
+it is not the access or the portal password, names its field "PC
+비밀번호", and a wrong one is "PC 비밀번호가 맞지 않습니다". After A1
+took the access password, that box shows once on top that the access
+password is done; the toast stays for a port forward only. A1 says the
+PC asks for its own password, and its title and field carry the key
+icon, as P2 does. The login names its second field "연세포탈 비밀번호"
+and its empty fields by their names. Settings and the login notice say
+"영구 비밀번호" for this PC's own password; the password card's pencil
+and the set-password dialog say "Set permanent password".
+
+U02: "Remote desktop is offline" from a staff-only server says the PC
+may be up but nobody logged in or entered the access password on it,
+as a condition while the mode is unknown; after A1 it says the access
+password was fine and that PC is the one missing. Only the shown text
+changes, so the 30-second retry still sees the key. A desktop session
+window now asks the server's mode too.
+
+U03: while the server may be staff-only, the login notice no longer
+offers a logout to turn password-less connections off, and its
+permanent password hint says a logout locks the PC out. The empty
+device list drops "1.6.0 or later". On a staff-only server the outage
+banner says new logins and the access password stop too. G1 and G2
+name the 12-hour limit and the restart and Windows sign-out ends. The
+main window's close asks once per access password ticket whether to
+end it: [끝내고 닫기] [계속 받기]; dismissing it keeps the window.
+
+U06: a logged-in PC that hbbs refuses shows nothing for about a
+minute, then "로그인했지만 서버가 이 PC를 받지 않고 있습니다" with the
+account card's cause and button ([다시 추가], [다시 로그인]), or that it
+is checked again. Its status line and tray drop "(로그인 필요)"; the
+tray takes a non-empty hjv-pwless-state for a login.
+
+U09: P1's title loses "아직" and its text says what the login is for;
+its second button is the action "이용 비밀번호 넣기" while P2's dialog
+keeps its name. "연결받다" becomes "연결을 받다" in P2's line, its end
+toast and E4. E1 says what to do next.
+
+U20: the status line says "서버에 연결하는 중…" and "서버에 연결할 수
+없습니다. 네트워크 연결을 확인해 주세요." (ko.rs and en.rs). While
+refused, the tray puts the state in place of "Ready" or "Service is
+running" instead of adding a line that contradicts it.
+
+U67: the remote restart's confirm says, by the server's mode, that a
+PC nobody logged in on cannot be reached after the restart until
+someone logs in or enters the access password there, and that HJViewer
+that is not installed does not start again. A session that asked for
+the restart adds that to its offline text. P2's dialog names the
+restart and Windows sign-out ends, and a refusal that starts again
+clears P2's end time, so a dead P2 line does not come back.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart       | 171 ++++++++++++++++--
+ flutter/lib/common/hjviewer_access_texts.dart | 142 ++++++++++++---
+ flutter/lib/common/hjviewer_account.dart      |  40 +++-
+ .../lib/common/hjviewer_account_texts.dart    |  62 +++++--
+ flutter/lib/common/widgets/dialog.dart        |  33 +++-
+ flutter/lib/common/widgets/login.dart         |   5 +-
+ .../lib/desktop/pages/desktop_home_page.dart  |   5 +-
+ .../lib/desktop/widgets/tabbar_widget.dart    |   3 +
+ flutter/lib/main.dart                         |   1 +
+ flutter/lib/models/model.dart                 |   3 +-
+ flutter/test/hjviewer_access_test.dart        |  92 +++++++++-
+ flutter/test/hjviewer_account_test.dart       |  60 +++++-
+ .../test/hjviewer_account_widgets_test.dart   |   8 +-
+ src/hjviewer_access.rs                        |  51 ++++--
+ src/hjviewer_access/tests.rs                  |   8 +
+ src/lang/en.rs                                |   4 +-
+ src/lang/ko.rs                                |   4 +-
+ src/tray.rs                                   |   4 +-
+ 18 files changed, 593 insertions(+), 103 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index daf2040..663d462 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -2,11 +2,14 @@
+ // after hbbs refused a session for access, the PC home's notice while hbbs refuses this PC's
+ // registration and the status line's word for it, the PC's access password and its line on the
+ // home, the hints to keep an unattended PC logged in and to log in before connecting to a
+-// staff-only server, and what a logout or taking a PC out of the list does there. The access
+-// password goes to Rust (src/hjviewer_access/guest.rs), which trades it for one PC's ticket and
+-// forgets it; the texts and the choices between them are in hjviewer_access_texts.dart. Outside
+-// an account build every hook leaves its screen as it was, and so does a server that checks
+-// nothing (MODE=off), which refuses nobody.
++// staff-only server, and what a logout or taking a PC out of the list does there; and the gate's
++// words in the PC's password box, in "offline", in the remote restart's confirm and on the main
++// window's close while the access password holds. The access password goes to Rust
++// (src/hjviewer_access/guest.rs), which trades it for one PC's ticket and forgets it; the texts
++// and the choices between them are in hjviewer_access_texts.dart. Outside an account build
++// every hook leaves its screen as it was, and so does a server that checks nothing (MODE=off),
++// which refuses nobody (the PC password box's words and the restart's line about a PC where
++// HJViewer is not installed aside).
+ 
+ import 'dart:async';
+ 
+@@ -14,6 +17,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access_texts.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/common/widgets/login.dart';
+ import 'package:flutter_hbb/consts.dart';
+@@ -53,6 +57,20 @@ final _pcState = ''.obs;
+ /// one: what P2 got, in this window's memory only.
+ final _guestUntil = 0.obs;
+ 
++/// Since when hbbs refuses this PC (Unix seconds), 0 while it takes it; and whether that is long
++/// enough for a logged-in PC's home to say so.
++var _refusedSince = 0;
++final _refusedLong = false.obs;
++
++/// The sessions (their IDs as strings) whose A1 took the access password, and those of them
++/// whose PC password box has not shown that yet; the sessions that asked for a remote restart.
++final _passedA1 = <String>{};
++final _noteOnce = <String>{};
++final _restarted = <String>{};
++
++/// The access password ticket (its `_guestUntil`) the main window's close asked about.
++var _closeAsked = 0;
++
+ int _unixNow() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+ 
+ bool _loggedIn() =>
+@@ -93,7 +111,7 @@ Widget _passwordField(HjvAccessTexts t, TextEditingController controller,
+               title: t.passwordTitle,
+               controller: controller,
+               obscureText: !visible,
+-              prefixIcon: DialogTextField.kPasswordIcon,
++              prefixIcon: const Icon(Icons.key_rounded, size: 20),
+               suffixIcon: IconButton(
+                   icon: Icon(
+                       visible
+@@ -124,6 +142,15 @@ void hjvInitAccess() {
+ 
+ void _readPc() {
+   _pcState.value = bind.mainGetOptionSync(key: kHjvAccessPcState);
++  final now = _unixNow();
++  if (!hjvShowsPcNotice(_pcState.value)) {
++    _refusedSince = 0;
++  } else if (_refusedSince == 0) {
++    _refusedSince = now;
++    // refused again: the process that registers holds no ticket of P2 any more (it restarted)
++    _guestUntil.value = 0;
++  }
++  _refusedLong.value = hjvRefusedLong(_refusedSince, now);
+   if (_guestUntil.value != 0 && _guestUntil.value <= _unixNow()) {
+     _guestUntil.value = 0;
+   }
+@@ -151,7 +178,8 @@ bool hjvAccessRefused(
+ }
+ 
+ /// P1, P2's line and G2 (desktop_home_page.dart, the left pane above the ID, which is also the
+-/// quick support window): while hbbs refuses this PC, why, with [로그인] and [이용 비밀번호];
++/// quick support window): while hbbs refuses this PC, why, with [로그인] and [이용 비밀번호 넣기]
++/// (a logged-in PC, after a while, the account's cause);
+ /// while the access password's ticket holds, until when, with [끝내기]; on an installed Windows
+ /// PC without a login, that an unattended PC needs one, with [로그인] (opened once by itself).
+ List<Widget> hjvAccessPcNotice() =>
+@@ -178,8 +206,9 @@ List<Widget> hjvAccessConnectHint() =>
+ 
+ /// connection_page.dart, the status line once the service is ready: while hbbs refuses this PC,
+ /// that it is not connected to the server, in place of "Ready" (P1 says why).
+-String? hjvAccessReadyText() =>
+-    hjvShowsPcNotice(_pcState.value) ? _t.pcStatus : null;
++String? hjvAccessReadyText() => hjvShowsPcNotice(_pcState.value)
++    ? (_loggedIn() ? _t.pcStatusLoggedIn : _t.pcStatus)
++    : null;
+ 
+ /// The status line's dot then: the warning's colour, as P1's.
+ Color? hjvAccessReadyColor(HjvPalette p) =>
+@@ -201,6 +230,90 @@ String? hjvAccessLogoutNote({required bool boundHere}) {
+ String? hjvAccessRemoveNote() =>
+     _accountBuild ? hjvRemoveGateNote(_t, _gateMode.value) : null;
+ 
++/// The login notice and the device list's banner (hjviewer_account.dart): whether the server is
++/// staff-only as this window knows it (hjvGateCloses); false outside an account build.
++bool? hjvAccessGateCloses() =>
++    _accountBuild ? hjvGateCloses(_gateMode.value) : false;
++
++/// main.dart, a desktop session window, which has no hjvInitAccess: it asks the server's mode
++/// too, for the offline text and the remote restart's line.
++void hjvInitAccessSession() {
++  if (_accountBuild) unawaited(_askGateMode());
++}
++
++/// _connectDialog (dialog.dart), the PC's own password box: its title, text and field's name in
++/// the gate's words, and, once after A1 took the access password for this session, a note that
++/// the PC's password comes now. Null outside an account build.
++({String title, String text, String field, String? note})? hjvPcPasswordAsk(
++    SessionID sessionId) {
++  if (!_accountBuild) return null;
++  final t = _t;
++  return (
++    title: t.pcAskTitle,
++    text: t.pcAskText,
++    field: t.pcAskField,
++    note: _noteOnce.remove(sessionId.toString()) ? t.passwordAcceptedNote : null
++  );
++}
++
++/// wrongPasswordDialog (dialog.dart): the PC password's "Wrong Password" in the gate's words.
++String hjvPcPasswordWrongTitle(String title) =>
++    _accountBuild && title == 'Wrong Password' ? _t.pcAskWrong : title;
++
++/// handleMsgBox (model.dart), a msgbox's text: "Remote desktop is offline" on a staff-only server
++/// says that a PC nobody logged in on is offline too (hjvOfflineGateText); any other as it came.
++/// The key stays for shouldAutoRetryOnOffline, which compares it before.
++String hjvAccessMsgboxText(SessionID sessionId, String text) {
++  if (!_accountBuild || text != 'Remote desktop is offline') return text;
++  unawaited(_askGateMode());
++  final session = sessionId.toString();
++  return hjvOfflineGateText(_t,
++          mode: _gateMode.value,
++          passed: _passedA1.contains(session),
++          restarted: _restarted.contains(session)) ??
++      text;
++}
++
++/// showRestartRemoteDevice (dialog.dart): the confirm's line about the gate and a PC where
++/// HJViewer is not installed (`installed`, PeerInfo.isInstalled), null for none.
++String? hjvAccessRestartNote({required bool installed}) {
++  if (!_accountBuild) return null;
++  unawaited(_askGateMode());
++  return hjvRestartGateNote(_t, mode: _gateMode.value, installed: installed);
++}
++
++/// showRestartRemoteDevice: this session asked for the restart, for its offline text after it.
++void hjvAccessRestarting(SessionID sessionId) {
++  if (_accountBuild) _restarted.add(sessionId.toString());
++}
++
++/// tabbar_widget.dart, the main window's close, which only hides it: while this PC's access
++/// password ticket holds, it asks once whether to end that first ([끝내고 닫기] [계속 받기]).
++/// False keeps the window open (the question dismissed).
++Future<bool> hjvAccessMainWindowCloses() async {
++  final until = _guestUntil.value;
++  if (!_accountBuild || until <= _unixNow() || _closeAsked == until) {
++    return true;
++  }
++  final t = _t;
++  final answer = await gFFI.dialogManager
++      .show<bool>((setState, close, context) => CustomAlertDialog(
++            title: HjvDialogTitle(Icons.key_rounded, t.passwordTitle),
++            content: Text(t.closeWhileGuest(_until(until)),
++                style: hjvDialogTextStyle(context)),
++            actions: [
++              _button(t.endAndClose, () => close(true), outline: true),
++              _button(t.keepAccepting, () => close(false)),
++            ],
++            onSubmit: () => close(false),
++            onCancel: close,
++          ));
++  if (answer == null) return false;
++  _closeAsked = until;
++  if (answer) await _endGuest(t);
++  return true;
++}
++
+ // ---- a session refused (A1, A2) ----
+ 
+ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+@@ -254,13 +367,19 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+         return;
+       }
+       close();
+-      // the PC asks for its own password next: this one is done
+-      showToast(t.passwordAccepted);
+-      if (!forward) reconnect(dialogManager, sessionId, false);
++      // the PC asks for its own password next, its box says this one is done; a port forward
++      // shows none until a local connection comes
++      if (forward) {
++        showToast(t.passwordAccepted);
++      } else {
++        _passedA1.add(sessionId.toString());
++        _noteOnce.add(sessionId.toString());
++        reconnect(dialogManager, sessionId, false);
++      }
+     }
+ 
+     return CustomAlertDialog(
+-      title: HjvDialogTitle(Icons.lock_outline_rounded, t.refusedTitle),
++      title: HjvDialogTitle(Icons.key_rounded, t.refusedTitle),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+@@ -359,7 +478,8 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+             guestUntil: _guestUntil.value,
+             now: _unixNow(),
+             installedWindows: _installedWindows(),
+-            loggedIn: _loggedIn());
++            loggedIn: _loggedIn(),
++            refusedLong: _refusedLong.value);
+         final t = _t;
+         final p = HjvPalette.of(context);
+         return switch (home) {
+@@ -371,9 +491,10 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+                 actions: [
+                   if (!bind.isDisableAccount())
+                     _button(t.logIn, () => loginDialog()),
+-                  _button(t.pcPassword, () => _pcPasswordDialog(t),
++                  _button(t.pcPasswordButton, () => _pcPasswordDialog(t),
+                       outline: true),
+                 ]),
++          HjvPcHome.refusedLoggedIn => _refusedLoggedIn(context, t),
+           HjvPcHome.guest => _card(context,
+               color: p.success,
+               icon: Icons.key_rounded,
+@@ -388,6 +509,20 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+         };
+       });
+ 
++  /// P1 of a logged-in PC: the cause and its button from this PC's line in Settings → Account
++  /// (a binding gone or to make again), else that it is checked again.
++  Widget _refusedLoggedIn(BuildContext context, HjvAccessTexts t) {
++    final cause = hjvPcRefusalCause();
++    return _card(context,
++        color: HjvPalette.of(context).warning,
++        icon: Icons.cloud_off_rounded,
++        title: t.pcLoggedInTitle,
++        text: cause?.$1 ?? t.pcCheckAgain,
++        actions: [
++          if (cause != null) _button(cause.$2, cause.$3, outline: true),
++        ]);
++  }
++
+   // HJViewer: a card as the ID's and the password's, on the tint of its state; above the ID, so
+   // that the ID does not look usable while hbbs refuses this PC
+   Widget _card(BuildContext context,
+@@ -431,8 +566,10 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+                 style: TextStyle(
+                     fontSize: 12, height: 1.45, color: p.textSecondary)),
+           ],
+-          const SizedBox(height: 8),
+-          Wrap(spacing: 6, runSpacing: 6, children: actions),
++          if (actions.isNotEmpty) ...[
++            const SizedBox(height: 8),
++            Wrap(spacing: 6, runSpacing: 6, children: actions),
++          ],
+         ],
+       ),
+     );
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index c230e46..efbb0f0 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -4,8 +4,10 @@
+ // PC's access password and its line on the home while it holds (P2), the hints to keep an
+ // unattended PC logged in (G1, G2) and to log in before connecting to a staff-only server (G3),
+ // what a logout or taking a PC out of the list does on such a server, and why the access
+-// password brought no ticket (E1 to E5). Plain Dart without the bridge, so that ci.sh tests it
+-// with the web stand-in; hjviewer_access.dart shows them.
++// password brought no ticket (E1 to E5); beside them the words of the PC's own password box, a
++// PC offline or restarted on such a server, and the main window's close while P2 holds. Plain
++// Dart without the bridge, so that ci.sh tests it with the web stand-in; hjviewer_access.dart
++// shows them.
+ 
+ import 'dart:convert';
+ 
+@@ -97,6 +99,15 @@ Future<String?> hjvTradeAccessPassword(HjvAccessTexts t,
+ /// nothing (MODE=off) never refuses, so the home stays as it was.
+ bool hjvShowsPcNotice(String state) => state == 'refused';
+ 
++/// How long hbbs refuses a logged-in PC before its home says so (seconds): a bound PC's ticket
++/// that comes late is refused for a moment.
++const kHjvRefusedWait = 60;
++
++/// Whether hbbs has refused this PC for long enough: since `since` (Unix seconds, 0 while it
++/// takes it) until `now`.
++bool hjvRefusedLong(int since, int now) =>
++    since > 0 && now - since >= kHjvRefusedWait;
++
+ /// What the PC home shows above its ID.
+ enum HjvPcHome {
+   none,
+@@ -104,6 +115,9 @@ enum HjvPcHome {
+   /// P1: hbbs refuses this PC
+   refused,
+ 
++  /// P1 of a logged-in PC, once hbbs has refused it for a while: the account's cause
++  refusedLoggedIn,
++
+   /// P2's line: this PC takes connections with the access password until its ticket ends
+   guest,
+ 
+@@ -111,16 +125,21 @@ enum HjvPcHome {
+   logIn,
+ }
+ 
+-/// The PC home's notice: P1 while hbbs refuses this PC (`state`), else P2's line while the access
+-/// password's ticket holds (`guestUntil`, Unix seconds; `now` the same), else G2 on an installed
+-/// Windows PC without a login.
++/// The PC home's notice: P1 while hbbs refuses this PC (`state`; on a logged-in PC only once it
++/// has for a while, `refusedLong`), else P2's line while the access password's ticket holds
++/// (`guestUntil`, Unix seconds; `now` the same), else G2 on an installed Windows PC without a
++/// login.
+ HjvPcHome hjvPcHome(
+     {required String state,
+     required int guestUntil,
+     required int now,
+     required bool installedWindows,
+-    required bool loggedIn}) {
+-  if (hjvShowsPcNotice(state)) return HjvPcHome.refused;
++    required bool loggedIn,
++    bool refusedLong = false}) {
++  if (hjvShowsPcNotice(state)) {
++    if (!loggedIn) return HjvPcHome.refused;
++    return refusedLong ? HjvPcHome.refusedLoggedIn : HjvPcHome.none;
++  }
+   if (guestUntil > now) return HjvPcHome.guest;
+   if (installedWindows && !loggedIn) return HjvPcHome.logIn;
+   return HjvPcHome.none;
+@@ -169,6 +188,31 @@ String? hjvRemoveGateNote(HjvAccessTexts t, String mode) {
+   return closes == false ? null : t.removeGate(known: closes == true);
+ }
+ 
++/// The session's text for "Remote desktop is offline" (handleMsgBox), null to keep upstream's: on
++/// a staff-only server (`mode`) a PC nobody logged in on is offline too, said for sure or as a
++/// condition; to a controller that just got the access password for that PC (`passed`) since its
++/// own PC is the one missing; with a line for a PC this session restarted (`restarted`).
++String? hjvOfflineGateText(HjvAccessTexts t,
++    {required String mode, bool passed = false, bool restarted = false}) {
++  final closes = hjvGateCloses(mode);
++  if (!passed && closes == false) return null;
++  final text = passed ? t.offlinePassed : t.offline(known: closes == true);
++  return restarted ? '$text\n${t.offlineRestarted}' : text;
++}
++
++/// The remote restart's confirm (dialog.dart), null for no line: what a restart does on a
++/// staff-only server (`mode`) to a PC nobody logged in on, and that HJViewer that is not
++/// installed there (`installed`) does not start again.
++String? hjvRestartGateNote(HjvAccessTexts t,
++    {required String mode, required bool installed}) {
++  final closes = hjvGateCloses(mode);
++  final lines = [
++    if (closes != false) t.restartGate(known: closes == true),
++    if (!installed) t.restartNotInstalled,
++  ];
++  return lines.isEmpty ? null : lines.join('\n');
++}
++
+ /// When this PC's ticket ends, as the home and the toast say it: the time, with the day when it
+ /// is not today's.
+ String hjvUntilText(DateTime until, DateTime now) {
+@@ -198,8 +242,8 @@ class HjvAccessTexts {
+   // (src/hjviewer_access.rs A1), which keeps the app from connecting again by itself.
+   String get refusedTitle => _t('교직원 전용 서버', 'Staff-only server');
+   String get refused => _t(
+-      '이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하면 연결되고, 다음부터는 묻지 않습니다.',
+-      'This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect; you will not be asked again.');
++      '이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하면 바로 연결되고, 다음부터는 이 창이 나오지 않습니다. 그 PC의 비밀번호는 PC가 따로 묻습니다.',
++      'This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect right away; this window will not appear again. The PC asks for its own password separately.');
+   String get havePassword => _t('이용 비밀번호가 있나요?', 'Have an access password?');
+   String get connect => _t('연결', 'Connect');
+   String get passwordTitle => _t('이용 비밀번호', 'Access password');
+@@ -208,6 +252,43 @@ class HjvAccessTexts {
+   String get passwordAccepted => _t(
+       '이용 비밀번호를 확인했습니다. PC가 비밀번호를 물으면 그 PC의 비밀번호를 넣으세요.',
+       "Access password accepted. If the PC asks for its password, enter that PC's password.");
++  String get passwordAcceptedNote => _t('이용 비밀번호는 확인했습니다. 이제 그 PC의 비밀번호를 넣으세요.',
++      "Access password accepted. Now enter that PC's password.");
++
++  // the PC's own password (dialog.dart's password box)
++  String get pcAskTitle => _t('원격 PC 비밀번호', 'Remote PC password');
++  String get pcAskText => _t(
++      '그 PC의 HJViewer 화면에 있는 일회용 비밀번호나, 그 PC에 정해 둔 영구 비밀번호를 넣으세요. 이용 비밀번호나 연세포탈 비밀번호가 아닙니다.',
++      'Enter the one-time password shown in HJViewer on that PC, or the permanent password set on it. This is not the access password or your Yonsei portal password.');
++  String get pcAskField => _t('PC 비밀번호', 'PC password');
++  String get pcAskWrong => _t('PC 비밀번호가 맞지 않습니다', 'Wrong PC password');
++
++  // "Remote desktop is offline" on a staff-only server
++  String offline({required bool known}) => known
++      ? _t(
++          'PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. PC가 켜져 있다면 그 PC의 HJViewer에서 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결을 받습니다.',
++          'The PC is off or not connected to the server. If it is on, someone has to log in with a Yonsei portal account or enter the access password in HJViewer on that PC before it accepts connections.')
++      : _t(
++          'PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. 서버가 교직원 전용이면, PC가 켜져 있어도 그 PC의 HJViewer에서 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결을 받습니다.',
++          'The PC is off or not connected to the server. If the server is for staff only, someone has to log in with a Yonsei portal account or enter the access password in HJViewer on that PC before it accepts connections, even when it is on.');
++  String get offlinePassed => _t(
++      '이용 비밀번호는 확인했습니다. 그런데 그 PC가 서버에 연결되어 있지 않습니다. 그 PC가 켜져 있다면 그 PC의 HJViewer에서도 로그인하거나 이용 비밀번호를 넣어야 합니다.',
++      'The access password was accepted, but that PC is not connected to the server. If it is on, someone has to log in or enter the access password in HJViewer on that PC too.');
++  String get offlineRestarted => _t(
++      '방금 다시 시작한 PC라면, 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣어야 다시 연결을 받습니다. 로그인해 둔 PC는 저절로 돌아옵니다.',
++      'If the PC was just restarted, someone has to log in or enter the access password on it before it accepts connections again. A PC that stays logged in comes back by itself.');
++
++  // the remote restart's confirm
++  String restartGate({required bool known}) => known
++      ? _t(
++          '이 서버는 교직원 전용이라, 그 PC에 누가 로그인해 두지 않았다면 다시 시작한 뒤에는 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣을 때까지 연결할 수 없습니다.',
++          'This server is for staff only: unless someone stays logged in on that PC, nobody can connect to it after the restart until someone logs in or enters the access password on it.')
++      : _t(
++          '서버가 교직원 전용이면, 그 PC에 누가 로그인해 두지 않았다면 다시 시작한 뒤에는 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣을 때까지 연결할 수 없습니다.',
++          'If the server is for staff only and nobody stays logged in on that PC, nobody can connect to it after the restart until someone logs in or enters the access password on it.');
++  String get restartNotInstalled => _t(
++      '설치하지 않은 HJViewer는 다시 시작한 뒤 저절로 켜지지 않습니다.',
++      'HJViewer that is not installed does not start by itself after the restart.');
+ 
+   // A2: a logged-in controller refused again with a new ticket
+   String get refusedAgain => _t(
+@@ -216,30 +297,46 @@ class HjvAccessTexts {
+   String get reconnect => _t('다시 연결', 'Reconnect');
+ 
+   // P1: this PC's registration refused; the status line says so too
+-  String get pcTitle => _t(
+-      '이 PC는 아직 서버에 연결되지 않았습니다', 'This PC is not connected to the server yet');
+-  String get pcText => _t('이 PC를 연결받으려면 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요.',
+-      'To accept connections on this PC, log in with your Yonsei portal account or enter the access password.');
++  String get pcTitle =>
++      _t('이 PC는 서버에 연결되지 않았습니다', 'This PC is not connected to the server');
++  String get pcText => _t('다른 기기에서 이 PC에 연결하려면 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요.',
++      'To connect to this PC from another device, log in with your Yonsei portal account or enter the access password.');
+   String get pcPassword => _t('이용 비밀번호', 'Access password');
++  String get pcPasswordButton => _t('이용 비밀번호 넣기', 'Enter access password');
+   String get pcStatus =>
+       _t('서버에 연결되지 않음(로그인 필요)', 'Not connected to the server (log in)');
+ 
++  // P1 of a logged-in PC: the account's cause, or none
++  String get pcLoggedInTitle => _t('로그인했지만 서버가 이 PC를 받지 않고 있습니다',
++      'You are logged in, but the server is not accepting this PC');
++  String get pcCheckAgain => _t('잠시 뒤 다시 확인합니다. 계속되면 관리자에게 알려 주세요.',
++      'This is checked again shortly. If it keeps happening, tell your administrator.');
++  String get pcStatusLoggedIn =>
++      _t('서버에 연결되지 않음', 'Not connected to the server');
++
+   // P2: the PC's access password, and the home's line while its ticket holds
+   String get pcPasswordText => _t(
+-      '이용 비밀번호를 넣으면 이 PC가 최대 12시간 동안 연결을 받습니다. 끝나면 다시 넣어야 합니다.',
+-      'With the access password, this PC accepts connections for up to 12 hours. After that, enter it again.');
++      '이용 비밀번호를 넣으면 이 PC가 최대 12시간 동안 연결을 받습니다. PC를 다시 시작하거나 Windows에서 로그아웃하면 그 전에 끝나고, 끝나면 다시 넣어야 합니다.',
++      'With the access password, this PC accepts connections for up to 12 hours. Restarting the PC or signing out of Windows ends that sooner; once it ends, enter it again.');
+   String pcGuestToast(String until) => _t(
+       '이 PC는 $until까지 연결을 받습니다.', 'This PC accepts connections until $until.');
+-  String pcGuestUntil(String until) => _t('이용 비밀번호로 연결받는 중 · $until까지',
++  String pcGuestUntil(String until) => _t('이용 비밀번호로 연결을 받는 중 · $until까지',
+       'Accepting connections with the access password until $until');
+   String get end => _t('끝내기', 'End');
+-  String get pcGuestEnded => _t('이용 비밀번호로 연결받기를 끝냈습니다.',
++  String get pcGuestEnded => _t('이제 이용 비밀번호로는 연결을 받지 않습니다.',
+       'This PC no longer accepts connections with the access password.');
+ 
+   // G1: the install page and the settings; G2: the home of an installed PC without a login
+   String get keepLoggedIn => _t(
+-      '사람이 없을 때도 이 PC에 연결하려면 연세포탈로 로그인해 두세요. 이용 비밀번호는 앱을 켤 때마다 넣어야 합니다.',
+-      'To reach this PC when nobody is at it, keep it logged in with your Yonsei portal account. The access password has to be entered each time the app starts.');
++      '사람이 없을 때도 이 PC에 연결하려면 연세포탈로 로그인해 두세요. 이용 비밀번호는 최대 12시간만 쓰고, 앱을 다시 켜거나 PC를 다시 시작하거나 Windows에서 로그아웃하면 다시 넣어야 합니다.',
++      'To reach this PC when nobody is at it, keep it logged in with your Yonsei portal account. The access password lasts at most 12 hours and has to be entered again after the app or the PC restarts, or after signing out of Windows.');
++
++  // closing the main window while P2's ticket holds (the window only hides)
++  String closeWhileGuest(String until) => _t(
++      '이 PC는 $until까지 이용 비밀번호로 연결을 받습니다. 창을 닫아도 계속 받습니다.',
++      'This PC accepts connections with the access password until $until. Closing the window does not stop that.');
++  String get endAndClose => _t('끝내고 닫기', 'End and close');
++  String get keepAccepting => _t('계속 받기', 'Keep accepting');
+ 
+   // G3: the connection page of an app without a login, while the server is staff-only
+   String get connectHint => _t(
+@@ -278,15 +375,16 @@ class HjvAccessTexts {
+   /// E1 to E5: why the access password brought no ticket, by hjv-api's code or the app's own;
+   /// `wait` is hjv-api's seconds until a try may come again (429), 0 when it did not say.
+   String failure(String code, {int wait = 0}) => switch (code) {
+-        'denied' => _t('이용 비밀번호가 맞지 않거나, 지금은 서버가 이용 비밀번호를 받지 않습니다.',
+-            'The access password is wrong, or the server does not take the access password right now.'),
++        'denied' => _t(
++            '이용 비밀번호가 맞지 않거나, 지금은 이용 비밀번호를 쓸 수 없습니다. 비밀번호를 확인해 다시 넣거나 연세포탈로 로그인해 주세요.',
++            'The access password is wrong, or it cannot be used right now. Check it and enter it again, or log in with your Yonsei portal account.'),
+         'rate_limited' when wait > 0 && wait <= _maxWait => _t(
+             '시도가 너무 많습니다. ${_about(wait)} 뒤 다시 해 주세요.',
+             'Too many tries. Please try again in ${_about(wait)}.'),
+         'rate_limited' => _t('시도가 너무 많습니다. 잠시 뒤 다시 해 주세요.',
+             'Too many tries. Please try again later.'),
+         'wrong_pc' => _t(
+-            '이 PC의 키가 서버에 있는 것과 달라 이용 비밀번호로 연결받을 수 없습니다. 관리자에게 알려 주세요.',
++            '이 PC의 키가 서버에 있는 것과 달라 이용 비밀번호로 연결을 받을 수 없습니다. 관리자에게 알려 주세요.',
+             "This PC's key differs from the one the server has, so it cannot accept connections with the access password. Please tell your administrator."),
+         'clock' => _t('기기의 날짜와 시간이 맞지 않습니다. 날짜와 시간을 자동으로 맞추게 한 뒤 다시 해 주세요.',
+             "The device's date and time are wrong. Set them to update automatically and try again."),
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 9db70ab..559a4f1 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -140,6 +140,15 @@ String hjvUsernameTitle() => _accountBuild
+     ? _t.usernameTitle
+     : translate(DialogTextField.kUsernameTitle);
+ 
++/// D1: its second field takes the Yonsei portal password; null keeps upstream's name.
++String? hjvPasswordTitle() => _accountBuild ? _t.passwordTitle : null;
++
++/// D1: what an empty field says, by the field's name.
++String hjvUsernameMissed() =>
++    _accountBuild ? _t.usernameMissed : translate('Username missed');
++String hjvPasswordMissed() =>
++    _accountBuild ? _t.passwordMissed : translate('Password missed');
++
+ /// D2 (login.dart, after the login dialog closed): after a login, the first one takes the app to
+ /// the accessible devices tab, and a Windows PC tells what the login did with it (design v3 §1-1,
+ /// §1-2). Returns at once; the notice comes when the service has taken the login. A session
+@@ -282,7 +291,9 @@ List<Widget> hjvNetworkBanner(BuildContext context) {
+       _banner(
+           context,
+           hjvServerBanner(_t,
+-              error: error, fromServer: user.networkErrorFromServer.value),
++              error: error,
++              fromServer: user.networkErrorFromServer.value,
++              gateCloses: hjvAccessGateCloses()),
+           retry: user.refreshCurrentUser)
+     ];
+   }
+@@ -416,15 +427,18 @@ Future<void> _announceThisPc() async {
+     }
+   }
+   final canSet = installed && !isChangePermanentPasswordDisabled();
++  final gateOpen = hjvAccessGateCloses() == false;
+   final notice = hjvLoginNotice(t,
+       installed: installed,
+       status: status,
+       undo: undo,
+       boundByLogin: bound,
+       state: state,
+-      passwordSet: !canSet || await _permanentPasswordSet());
++      passwordSet: !canSet || await _permanentPasswordSet(),
++      gateOpen: gateOpen);
+   if (notice == null) return;
+   _show<void>((setState, close, context) => hjvLoginNoticeDialog(t, notice,
++      gateOpen: gateOpen,
+       onOk: close,
+       onUndo: notice.undo
+           ? () {
+@@ -478,6 +492,23 @@ void _setPcPassword({VoidCallback? done}) {
+ 
+ // ---- this PC in the settings ----
+ 
++/// P1 of a logged-in PC (hjviewer_access.dart): this PC's line in Settings → Account when it
++/// names why the server does not take the PC, with its button's label and what it does; null
++/// when it names none.
++(String, String, VoidCallback)? hjvPcRefusalCause() {
++  if (!_accountBuild || !isDesktop || !bind.mainIsInstalled()) return null;
++  final t = _t;
++  final line = hjvRefusalLine(
++      t, HjvPcState.parse(bind.mainGetOptionSync(key: _kPcState)));
++  return line == null
++      ? null
++      : (
++          line.text,
++          hjvActionLabel(t, line.action),
++          () => _pcAction(t, line.action)
++        );
++}
++
+ Future<void> _pcAction(HjvTexts t, HjvPcAction action) async {
+   switch (action) {
+     case HjvPcAction.turnOff:
+@@ -689,7 +720,8 @@ CustomAlertDialog hjvConfirmDialog(HjvTexts t,
+ 
+ /// The notice after a login on a Windows PC (design v3 §1-2).
+ CustomAlertDialog hjvLoginNoticeDialog(HjvTexts t, HjvLoginNotice notice,
+-        {required VoidCallback onOk,
++        {bool gateOpen = true,
++        required VoidCallback onOk,
+         VoidCallback? onUndo,
+         VoidCallback? onSetPassword}) =>
+     CustomAlertDialog(
+@@ -704,7 +736,7 @@ CustomAlertDialog hjvLoginNoticeDialog(HjvTexts t, HjvLoginNotice notice,
+             Builder(
+                 builder: (context) => hjvNoteBlock(context,
+                     icon: Icons.key_rounded,
+-                    text: Text(t.setPasswordHint),
++                    text: Text(hjvSetPasswordHint(t, gateOpen: gateOpen)),
+                     action: TextButton(
+                         onPressed: onSetPassword,
+                         child: Text(t.setPasswordNow)))).marginOnly(top: 16),
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 6dffb13..57324c8 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -34,6 +34,11 @@ class HjvTexts {
+   String _t(String ko, String en) => korean ? ko : en;
+ 
+   String get usernameTitle => _t('연세포탈 ID', 'Yonsei portal ID');
++  String get passwordTitle => _t('연세포탈 비밀번호', 'Yonsei portal password');
++  String get usernameMissed =>
++      _t('연세포탈 ID를 넣어 주세요.', 'Enter your Yonsei portal ID.');
++  String get passwordMissed =>
++      _t('연세포탈 비밀번호를 넣어 주세요.', 'Enter your Yonsei portal password.');
+   String get ok => _t('확인', 'OK');
+   String get cancel => _t('취소', 'Cancel');
+   String get close => _t('닫기', 'Close');
+@@ -72,8 +77,15 @@ class HjvTexts {
+   String get howToTurnOff => _t('끄려면 설정 → 계정에서 [끄기]를 누르거나 이 PC에서 로그아웃하세요.',
+       'To turn them off, press [Turn off] in Settings → Account or log out on this PC.');
+   String get setPasswordHint => _t(
+-      '비밀번호 없는 연결이 안 될 때(서버 점검, 끄기, 로그아웃) 쓸 PC 비밀번호를 정해 두세요.',
+-      'Set a PC password for the times password-less connections do not work (server maintenance, turned off, logged out).');
++      '비밀번호 없는 연결이 안 될 때(서버 점검, 끄기, 로그아웃) 쓸 영구 비밀번호를 정해 두세요.',
++      'Set a permanent password for the times password-less connections do not work (server maintenance, turned off, logged out).');
++
++  // the same two while the server may be staff-only, where a logout leaves the PC unreachable
++  String get howToTurnOffGate => _t('끄려면 설정 → 계정에서 [끄기]를 누르세요.',
++      'To turn them off, press [Turn off] in Settings → Account.');
++  String get setPasswordHintGate => _t(
++      '비밀번호 없는 연결을 꺼 둔 동안이나 서버 점검 중에 쓸 영구 비밀번호를 정해 두세요. 로그아웃하면 이 비밀번호로도 연결할 수 없습니다.',
++      'Set a permanent password for while password-less connections are off or the server is under maintenance. After a logout, this password does not let anyone connect either.');
+   String get setPasswordNow => _t('지금 정하기', 'Set it now');
+   String get removeThisPc => _t('이 PC 빼기', 'Remove this PC');
+   String get otherAccount => _t('다른 계정에 등록된 PC입니다. 관리자에게 문의하세요.',
+@@ -114,8 +126,8 @@ class HjvTexts {
+       'Turn off password-less connections on this PC? To turn them on again, log in on this PC with the account it belongs to.');
+   String get turnedOff => _t('이 PC에서 비밀번호 없는 연결을 껐습니다.',
+       'Password-less connections are off on this PC.');
+-  String get passwordSet => _t('PC 비밀번호: 정해 둠', 'PC password: set');
+-  String get passwordNone => _t('PC 비밀번호: 없음', 'PC password: none');
++  String get passwordSet => _t('영구 비밀번호: 정해 둠', 'Permanent password: set');
++  String get passwordNone => _t('영구 비밀번호: 없음', 'Permanent password: none');
+   String get setPassword => _t('정하기', 'Set');
+ 
+   // logging out (§1-7)
+@@ -223,11 +235,14 @@ class HjvTexts {
+   String get serverDown => _t(
+       'HJViewer 서버를 지금 쓸 수 없습니다. 비밀번호 없는 연결은 PC가 받아 둔 목록으로 하루 동안 계속됩니다.',
+       'The HJViewer server cannot be used right now. Password-less connections go on for a day with the lists the PCs keep.');
++  String get serverDownGate => _t(
++      'HJViewer 서버를 지금 쓸 수 없습니다. 이 기기는 받아 둔 출입증으로 최대 하루 동안 연결할 수 있고, 그동안 새 로그인과 이용 비밀번호는 쓸 수 없습니다.',
++      'The HJViewer server cannot be used right now. This device can connect for up to a day with the pass it holds; until then, new logins and the access password do not work.');
+   String get keyLocked => _t('이 기기의 보안 키를 지금 쓸 수 없습니다. 기기 잠금을 풀고 [재시도]를 누르세요.',
+       "This device's security key cannot be used right now. Unlock the device and press [Retry].");
+   String get emptyList => _t(
+-      'PC에 HJViewer 1.6.0 이상을 설치하고, 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.',
+-      'Install HJViewer 1.6.0 or later on a PC and log in there with the same Yonsei portal account: the PC then shows up here.');
++      'PC에 HJViewer를 설치하고, 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.',
++      'Install HJViewer on a PC and log in there with the same Yonsei portal account: the PC then shows up here.');
+ 
+   // waking a PC (§8-5)
+   String get wake => _t('켜기', 'Wake up');
+@@ -466,6 +481,22 @@ HjvPcLine? hjvPcLine(HjvTexts t, HjvPcState state, HjvOwner owner,
+ String hjvPasswordLine(HjvTexts t, bool set) =>
+     set ? t.passwordSet : t.passwordNone;
+ 
++/// P1 of a logged-in PC (the access screens): this PC's line when it names why the server does
++/// not take the PC, a binding gone or one to make again, with its button; null for none.
++HjvPcLine? hjvRefusalLine(HjvTexts t, HjvPcState state) {
++  final line = hjvPcLine(t, state, HjvOwner.unknown);
++  return line != null &&
++          (line.action == HjvPcAction.addAgain ||
++              line.action == HjvPcAction.logInAgain)
++      ? line
++      : null;
++}
++
++/// The login notice's hint to set a permanent password: on a server that may be staff-only
++/// (`gateOpen` false) without the logout, after which that password no longer helps.
++String hjvSetPasswordHint(HjvTexts t, {required bool gateOpen}) =>
++    gateOpen ? t.setPasswordHint : t.setPasswordHintGate;
++
+ // ---- after a login (design v3 §1-2, §4-4) ----
+ 
+ /// What the service shows once it took a login's bind request: on, or paused by the
+@@ -488,14 +519,17 @@ class HjvLoginNotice {
+ 
+ /// The notice after a login on a Windows PC, or null for none. `status` and `undo` are
+ /// `GET /api/hjv/this-device`'s (status null when it could not be asked), `boundByLogin` whether
+-/// the login's answer bound this PC (`hjv-pc-bound`), `state` the service's state after the wait.
++/// the login's answer bound this PC (`hjv-pc-bound`), `state` the service's state after the wait,
++/// `gateOpen` whether the server lets in whoever brings no ticket (else a logout locks the PC
++/// out, and the notice does not offer one).
+ HjvLoginNotice? hjvLoginNotice(HjvTexts t,
+     {required bool installed,
+     required String? status,
+     required bool undo,
+     required bool boundByLogin,
+     required HjvPcState state,
+-    required bool passwordSet}) {
++    required bool passwordSet,
++    bool gateOpen = true}) {
+   if (!installed) return HjvLoginNotice(t.notAddedTitle, [t.notInstalled]);
+   switch (status) {
+     case 'other_account':
+@@ -515,9 +549,10 @@ HjvLoginNotice? hjvLoginNotice(HjvTexts t,
+   if (state.kind == HjvPcKind.bindFailed) {
+     return HjvLoginNotice(t.notOnTitle, [t.checkFailed]);
+   }
++  final turnOff = gateOpen ? t.howToTurnOff : t.howToTurnOffGate;
+   final lines = switch (state.kind) {
+-    HjvPcKind.active => [t.canConnect, t.howToTurnOff],
+-    HjvPcKind.disabled => [t.adminTurnsOn, t.howToTurnOff],
++    HjvPcKind.active => [t.canConnect, turnOff],
++    HjvPcKind.disabled => [t.adminTurnsOn, turnOff],
+     _ => [t.onShortly],
+   };
+   return HjvLoginNotice(
+@@ -729,12 +764,13 @@ String hjvNewDeviceText(HjvTexts t, HjvKey k, {HjvClock local = hjvLocal}) {
+ // ---- the accessible devices tab (design v3 §1-1, §1-3) ----
+ 
+ /// The banner over the kept cards while the server fails: the server's own text when it gave one
+-/// (a clock off by more than ten minutes), else what a failed request means.
++/// (a clock off by more than ten minutes), else what a failed request means; on a staff-only
++/// server (`gateCloses`) what that does to tickets.
+ String hjvServerBanner(HjvTexts t,
+-    {required String error, required bool fromServer}) {
++    {required String error, required bool fromServer, bool? gateCloses}) {
+   if (fromServer && error.isNotEmpty) return error;
+   if (error.contains(kHjvKeyUnavailable)) return t.keyLocked;
+-  return t.serverDown;
++  return gateCloses == true ? t.serverDownGate : t.serverDown;
+ }
+ 
+ /// Whether the empty tab tells how a PC gets there: the list came (`pulled`: a fetch since the
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index c6163b7..def5171 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -5,6 +5,7 @@ import 'package:bot_toast/bot_toast.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/shared_state.dart';
+ import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
+ import 'package:flutter_hbb/consts.dart';
+@@ -999,7 +1000,7 @@ void wrongPasswordDialog(SessionID sessionId,
+ 
+     return CustomAlertDialog(
+         title: null,
+-        content: msgboxContent(type, title, text),
++        content: msgboxContent(type, hjvPcPasswordWrongTitle(title), text),
+         onSubmit: submit,
+         onCancel: cancel,
+         actions: [
+@@ -1069,6 +1070,9 @@ _connectDialog(
+       }
+     });
+   }
++  // HJViewer: the PC's password in the gate's words
++  final hjvAsk =
++      passwordController == null ? null : hjvPcPasswordAsk(sessionId);
+ 
+   dialogManager.dismissAll();
+   dialogManager.show((setState, close, context) {
+@@ -1175,9 +1179,21 @@ _connectDialog(
+       }
+       return Column(
+         children: [
+-          descWidget(translate('verify_rustdesk_password_tip')),
++          if (hjvAsk == null)
++            descWidget(translate('verify_rustdesk_password_tip'))
++          else ...[
++            if (hjvAsk.note != null)
++              hjvNoteBlock(context,
++                      icon: Icons.key_rounded, text: Text(hjvAsk.note!))
++                  .marginOnly(bottom: 12),
++            Align(
++              alignment: Alignment.centerLeft,
++              child: Text(hjvAsk.text, style: hjvDialogTextStyle(context)),
++            ).marginOnly(bottom: 8),
++          ],
+           PasswordWidget(
+             controller: passwordController,
++            title: hjvAsk?.field,
+             autoFocus: osUsernameController == null,
+           ),
+           rememberWidget(
+@@ -1194,8 +1210,8 @@ _connectDialog(
+     }
+ 
+     return CustomAlertDialog(
+-      title: HjvDialogTitle(
+-          Icons.password_rounded, translate('Password Required')),
++      title: HjvDialogTitle(Icons.password_rounded,
++          hjvAsk?.title ?? translate('Password Required')),
+       content: Column(mainAxisSize: MainAxisSize.min, children: [
+         osAccountWidget(),
+         osUsernameController == null || passwordController == null
+@@ -1469,13 +1485,15 @@ void showWaitAcceptDialog(SessionID sessionId, String type, String title,
+ 
+ void showRestartRemoteDevice(PeerInfo pi, String id, SessionID sessionId,
+     OverlayDialogManager dialogManager) async {
++  // HJViewer: what the restart does on a staff-only server
++  final hjvNote = hjvAccessRestartNote(installed: pi.isInstalled);
+   final res = await dialogManager
+       .show<bool>((setState, close, context) => CustomAlertDialog(
+             title: HjvDialogTitle(
+                 Icons.warning_amber_rounded, translate("Restart remote device"),
+                 danger: true),
+             content: Text(
+-                "${translate('Are you sure you want to restart')} \n${pi.username}@${pi.hostname}($id) ?"),
++                "${translate('Are you sure you want to restart')} \n${pi.username}@${pi.hostname}($id) ?${hjvNote == null ? '' : '\n\n$hjvNote'}"),
+             actions: [
+               dialogButton(
+                 "Cancel",
+@@ -1492,7 +1510,10 @@ void showRestartRemoteDevice(PeerInfo pi, String id, SessionID sessionId,
+             onCancel: close,
+             onSubmit: () => close(true),
+           ));
+-  if (res == true) bind.sessionRestartRemoteDevice(sessionId: sessionId);
++  if (res == true) {
++    hjvAccessRestarting(sessionId);
++    bind.sessionRestartRemoteDevice(sessionId: sessionId);
++  }
+ }
+ 
+ showSetOSPassword(
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index 196f6c9..8a2b5fd 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -667,6 +667,7 @@ class LoginWidgetUserPass extends StatelessWidget {
+                 errorText: usernameMsg),
+             PasswordWidget(
+               controller: pass,
++              title: hjvPasswordTitle(),
+               autoFocus: false,
+               reRequestFocus: true,
+               errorText: passMsg,
+@@ -863,11 +864,11 @@ Future<bool?> _openLoginDialog() async {
+       }
+       // validate
+       if (username.text.isEmpty) {
+-        setState(() => usernameMsg = translate('Username missed'));
++        setState(() => usernameMsg = hjvUsernameMissed());
+         return;
+       }
+       if (password.text.isEmpty) {
+-        setState(() => passwordMsg = translate('Password missed'));
++        setState(() => passwordMsg = hjvPasswordMissed());
+         return;
+       }
+       curOP.value = 'rustdesk';
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 7dc8227..55b21fd 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -518,7 +518,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                         InkWell(
+                           borderRadius: BorderRadius.circular(HjvRadius.sm),
+                           child: Tooltip(
+-                            message: translate('Change Password'),
++                            message: translate('Set permanent password'),
+                             child: action(Icons.edit_outlined, editHover)
+                                 .marginAll(4),
+                           ),
+@@ -1109,7 +1109,8 @@ void setPasswordDialog({VoidCallback? notEmptyCallback}) async {
+     }
+ 
+     return CustomAlertDialog(
+-      title: HjvDialogTitle(Icons.key_rounded, translate("Set Password")),
++      title: HjvDialogTitle(
++          Icons.key_rounded, translate("Set permanent password")),
+       content: ConstrainedBox(
+         constraints: const BoxConstraints(minWidth: 500),
+         child: Column(
+diff --git a/flutter/lib/desktop/widgets/tabbar_widget.dart b/flutter/lib/desktop/widgets/tabbar_widget.dart
+index 8476124..4836911 100644
+--- a/flutter/lib/desktop/widgets/tabbar_widget.dart
++++ b/flutter/lib/desktop/widgets/tabbar_widget.dart
+@@ -8,6 +8,7 @@ import 'package:flutter/gestures.dart';
+ import 'package:flutter/material.dart' hide TabBarTheme;
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/desktop/pages/remote_page.dart';
+ import 'package:flutter_hbb/desktop/pages/view_camera_page.dart';
+@@ -484,6 +485,8 @@ class _DesktopTabState extends State<DesktopTab>
+ 
+     // hide window on close
+     if (isMainWindow) {
++      // HJViewer: the access password goes on after the close; asked once
++      if (!await hjvAccessMainWindowCloses()) return;
+       if (rustDeskWinManager.getActiveWindows().contains(kMainWindowId)) {
+         await rustDeskWinManager.unregisterActiveWindow(kMainWindowId);
+       }
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index 4c8e89a..67da85a 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -199,6 +199,7 @@ void runMultiWindow(
+   String appType,
+ ) async {
+   await initEnv(appType);
++  hjvInitAccessSession();
+   final title = getWindowName();
+   // set prevent close to true, we handle close event manually
+   WindowController.fromWindowId(kWindowId!).setPreventClose(true);
+diff --git a/flutter/lib/models/model.dart b/flutter/lib/models/model.dart
+index 2a4337d..67917b7 100644
+--- a/flutter/lib/models/model.dart
++++ b/flutter/lib/models/model.dart
+@@ -971,7 +971,8 @@ class FfiModel with ChangeNotifier {
+       if (!hasRetry) {
+         hasRetry = shouldAutoRetryOnOffline(type, title, text);
+       }
+-      showMsgBox(sessionId, type, title, text, link, hasRetry, dialogManager);
++      showMsgBox(sessionId, type, title, hjvAccessMsgboxText(sessionId, text),
++          link, hasRetry, dialogManager);
+     }
+   }
+ 
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index 7d694f9..bbab6ae 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -19,18 +19,37 @@ List<String> texts(HjvAccessTexts t) => [
+       t.passwordTitle,
+       t.passwordHint,
+       t.passwordAccepted,
++      t.passwordAcceptedNote,
++      t.pcAskTitle,
++      t.pcAskText,
++      t.pcAskField,
++      t.pcAskWrong,
++      t.offline(known: true),
++      t.offline(known: false),
++      t.offlinePassed,
++      t.offlineRestarted,
++      t.restartGate(known: true),
++      t.restartGate(known: false),
++      t.restartNotInstalled,
+       t.refusedAgain,
+       t.reconnect,
+       t.pcTitle,
+       t.pcText,
+       t.pcPassword,
++      t.pcPasswordButton,
+       t.pcStatus,
++      t.pcLoggedInTitle,
++      t.pcCheckAgain,
++      t.pcStatusLoggedIn,
+       t.pcPasswordText,
+       t.pcGuestToast('18:30'),
+       t.pcGuestUntil('18:30'),
+       t.end,
+       t.pcGuestEnded,
+       t.keepLoggedIn,
++      t.closeWhileGuest('18:30'),
++      t.endAndClose,
++      t.keepAccepting,
+       t.connectHint,
+       t.logoutGate(known: true),
+       t.logoutGate(known: false),
+@@ -53,19 +72,36 @@ void main() {
+     expect(
+         [ko.refusedTitle, en.refusedTitle], ['교직원 전용 서버', 'Staff-only server']);
+     expect(ko.refused,
+-        '이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하면 연결되고, 다음부터는 묻지 않습니다.');
++        '이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하면 바로 연결되고, 다음부터는 이 창이 나오지 않습니다. 그 PC의 비밀번호는 PC가 따로 묻습니다.');
+     expect(en.refused,
+-        'This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect; you will not be asked again.');
++        'This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect right away; this window will not appear again. The PC asks for its own password separately.');
+     expect([ko.logIn, ko.connect, ko.cancel, ko.havePassword],
+         ['로그인', '연결', '취소', '이용 비밀번호가 있나요?']);
+     expect([en.logIn, en.connect, en.cancel, en.havePassword],
+         ['Log in', 'Connect', 'Cancel', 'Have an access password?']);
+     expect([ko.close, ko.reconnect], ['닫기', '다시 연결']);
+-    expect(ko.pcTitle, '이 PC는 아직 서버에 연결되지 않았습니다');
+-    expect([ko.logIn, ko.pcPassword], ['로그인', '이용 비밀번호']);
+-    expect(en.pcPassword, 'Access password');
++    expect(ko.pcTitle, '이 PC는 서버에 연결되지 않았습니다');
++    expect(ko.pcText, '다른 기기에서 이 PC에 연결하려면 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요.');
++    // P1's buttons are actions; P2's dialog keeps the name
++    expect([ko.logIn, ko.pcPasswordButton], ['로그인', '이용 비밀번호 넣기']);
++    expect([ko.pcPassword, en.pcPassword], ['이용 비밀번호', 'Access password']);
+     expect(ko.pcStatus, '서버에 연결되지 않음(로그인 필요)');
+-    expect(ko.pcGuestUntil('18:30'), '이용 비밀번호로 연결받는 중 · 18:30까지');
++    expect(ko.pcStatusLoggedIn, '서버에 연결되지 않음');
++    expect(ko.pcGuestUntil('18:30'), '이용 비밀번호로 연결을 받는 중 · 18:30까지');
++    expect(ko.pcGuestEnded, '이제 이용 비밀번호로는 연결을 받지 않습니다.');
++    // the access password's ends besides the 12 hours (P2, G1, G2)
++    for (final text in [ko.pcPasswordText, ko.keepLoggedIn]) {
++      expect(text, contains('최대 12시간'));
++      expect(text, contains('PC를 다시 시작하거나 Windows에서 로그아웃하면'));
++    }
++    // the PC's own password box names whose password it takes
++    expect([ko.pcAskTitle, ko.pcAskField, ko.pcAskWrong],
++        ['원격 PC 비밀번호', 'PC 비밀번호', 'PC 비밀번호가 맞지 않습니다']);
++    expect(ko.pcAskText, endsWith('이용 비밀번호나 연세포탈 비밀번호가 아닙니다.'));
++    expect(ko.passwordAcceptedNote, '이용 비밀번호는 확인했습니다. 이제 그 PC의 비밀번호를 넣으세요.');
++    expect(ko.closeWhileGuest('18:30'),
++        '이 PC는 18:30까지 이용 비밀번호로 연결을 받습니다. 창을 닫아도 계속 받습니다.');
++    expect([ko.endAndClose, ko.keepAccepting], ['끝내고 닫기', '계속 받기']);
+     expect(ko.pcGuestToast('18:30'), '이 PC는 18:30까지 연결을 받습니다.');
+     // hbbs's mark stays in the core's text (src/hjviewer_access.rs A1, A2), not on these screens
+     for (final t in [ko, en]) {
+@@ -85,7 +121,10 @@ void main() {
+   });
+ 
+   test('why the access password brought no ticket', () {
+-    expect(ko.failure('denied'), '이용 비밀번호가 맞지 않거나, 지금은 서버가 이용 비밀번호를 받지 않습니다.');
++    expect(ko.failure('denied'),
++        '이용 비밀번호가 맞지 않거나, 지금은 이용 비밀번호를 쓸 수 없습니다. 비밀번호를 확인해 다시 넣거나 연세포탈로 로그인해 주세요.');
++    expect(ko.failure('wrong_pc'),
++        '이 PC의 키가 서버에 있는 것과 달라 이용 비밀번호로 연결을 받을 수 없습니다. 관리자에게 알려 주세요.');
+     expect(ko.failure('rate_limited'), '시도가 너무 많습니다. 잠시 뒤 다시 해 주세요.');
+     expect(ko.failure('wrong_pc'), startsWith('이 PC의 키가 서버에 있는 것과 달라'));
+     expect(ko.failure('clock'), startsWith('기기의 날짜와 시간이 맞지 않습니다.'));
+@@ -171,14 +210,24 @@ void main() {
+     HjvPcHome home(String state,
+             {int guestUntil = 0,
+             bool installed = true,
+-            bool loggedIn = false}) =>
++            bool loggedIn = false,
++            bool refusedLong = false}) =>
+         hjvPcHome(
+             state: state,
+             guestUntil: guestUntil,
+             now: 1000,
+             installedWindows: installed,
+-            loggedIn: loggedIn);
++            loggedIn: loggedIn,
++            refusedLong: refusedLong);
+     expect(home('refused', guestUntil: 2000), HjvPcHome.refused);
++    // a logged-in PC: nothing while a late ticket may still come, then the account's cause
++    expect(home('refused', loggedIn: true), HjvPcHome.none);
++    expect(home('refused', loggedIn: true, refusedLong: true),
++        HjvPcHome.refusedLoggedIn);
++    expect(home('refused', refusedLong: true), HjvPcHome.refused);
++    expect(hjvRefusedLong(0, 1000), isFalse);
++    expect(hjvRefusedLong(941, 1000), isFalse);
++    expect(hjvRefusedLong(940, 1000), isTrue);
+     expect(home('ok', guestUntil: 2000), HjvPcHome.guest);
+     expect(home('ok', guestUntil: 1000), HjvPcHome.logIn);
+     expect(home(''), HjvPcHome.logIn);
+@@ -233,4 +282,29 @@ void main() {
+     expect(hjvRemoveGateNote(ko, 'unknown'), ko.removeGate(known: false));
+     expect(hjvRemoveGateNote(ko, 'off'), isNull);
+   });
++
++  test('"offline" and the remote restart on a staff-only server', () {
++    expect(hjvOfflineGateText(ko, mode: 'enforce'), ko.offline(known: true));
++    expect(hjvOfflineGateText(ko, mode: ''), ko.offline(known: false));
++    expect(ko.offline(known: true),
++        startsWith('PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. PC가 켜져 있다면'));
++    expect(ko.offline(known: false), contains('서버가 교직원 전용이면'));
++    // a server that lets everyone in keeps upstream's text
++    expect(hjvOfflineGateText(ko, mode: 'off'), isNull);
++    expect(hjvOfflineGateText(ko, mode: 'count', restarted: true), isNull);
++    // the controller that just passed A1: its own access password is not what is missing
++    expect(hjvOfflineGateText(ko, mode: 'unknown', passed: true),
++        ko.offlinePassed);
++    expect(ko.offlinePassed, startsWith('이용 비밀번호는 확인했습니다. 그런데 그 PC가'));
++    expect(hjvOfflineGateText(ko, mode: 'closed', restarted: true),
++        '${ko.offline(known: true)}\n${ko.offlineRestarted}');
++    // the restart's confirm
++    expect(hjvRestartGateNote(ko, mode: 'enforce', installed: true),
++        ko.restartGate(known: true));
++    expect(hjvRestartGateNote(ko, mode: '', installed: false),
++        '${ko.restartGate(known: false)}\n${ko.restartNotInstalled}');
++    expect(hjvRestartGateNote(ko, mode: 'off', installed: true), isNull);
++    expect(hjvRestartGateNote(en, mode: 'off', installed: false),
++        'HJViewer that is not installed does not start by itself after the restart.');
++  });
+ }
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 31ce2e2..eacab48 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -25,14 +25,16 @@ HjvLoginNotice? notice(
+         bool undo = true,
+         bool bound = true,
+         String state = 'active 3 1',
+-        bool passwordSet = true}) =>
++        bool passwordSet = true,
++        bool gateOpen = true}) =>
+     hjvLoginNotice(ko,
+         installed: installed,
+         status: status,
+         undo: undo,
+         boundByLogin: bound,
+         state: HjvPcState.parse(state),
+-        passwordSet: passwordSet);
++        passwordSet: passwordSet,
++        gateOpen: gateOpen);
+ 
+ /// `GET /api/hjv/keys` as hjv-api answers it (server/api/src/keys.rs key_json).
+ Map<String, Object?> keysAnswer() => {
+@@ -357,8 +359,8 @@ void main() {
+       expect(hjvActionLabel(ko, HjvPcAction.turnOn), '다시 켜기');
+       expect(hjvActionLabel(ko, HjvPcAction.addAgain), '다시 추가');
+       expect(hjvActionLabel(ko, HjvPcAction.logInAgain), '다시 로그인');
+-      expect(hjvPasswordLine(ko, true), 'PC 비밀번호: 정해 둠');
+-      expect(hjvPasswordLine(ko, false), 'PC 비밀번호: 없음');
++      expect(hjvPasswordLine(ko, true), '영구 비밀번호: 정해 둠');
++      expect(hjvPasswordLine(ko, false), '영구 비밀번호: 없음');
+     });
+ 
+     test('in English', () {
+@@ -398,6 +400,35 @@ void main() {
+       expect(notice(undo: false)!.undo, isFalse);
+     });
+ 
++    test('a server that may be staff-only: no logout to turn them off', () {
++      expect(notice(gateOpen: false)!.lines.last, '끄려면 설정 → 계정에서 [끄기]를 누르세요.');
++      expect(notice(state: 'disabled', gateOpen: false)!.lines.last,
++          '끄려면 설정 → 계정에서 [끄기]를 누르세요.');
++      expect(hjvSetPasswordHint(ko, gateOpen: true),
++          '비밀번호 없는 연결이 안 될 때(서버 점검, 끄기, 로그아웃) 쓸 영구 비밀번호를 정해 두세요.');
++      expect(hjvSetPasswordHint(ko, gateOpen: false),
++          '비밀번호 없는 연결을 꺼 둔 동안이나 서버 점검 중에 쓸 영구 비밀번호를 정해 두세요. 로그아웃하면 이 비밀번호로도 연결할 수 없습니다.');
++    });
++
++    test('a refused logged-in PC names the cause its line has', () {
++      HjvPcLine? cause(String state) =>
++          hjvRefusalLine(ko, HjvPcState.parse(state));
++      expect(cause('revoked')?.text, '이 PC: 다른 기기에서 목록에서 뺌');
++      expect(cause('revoked')?.action, HjvPcAction.addAgain);
++      expect(cause('needs-relogin')?.action, HjvPcAction.logInAgain);
++      for (final state in ['', 'active 3 1', 'off', 'disabled', 'expired 0']) {
++        expect(cause(state), isNull, reason: state);
++      }
++    });
++
++    test('the login field names and empty-field errors', () {
++      expect([ko.usernameTitle, ko.passwordTitle], ['연세포탈 ID', '연세포탈 비밀번호']);
++      expect([ko.usernameMissed, ko.passwordMissed],
++          ['연세포탈 ID를 넣어 주세요.', '연세포탈 비밀번호를 넣어 주세요.']);
++      expect([en.passwordTitle, en.passwordMissed],
++          ['Yonsei portal password', 'Enter your Yonsei portal password.']);
++    });
++
+     test('a PC already in the list cannot be undone here', () {
+       final n = notice(status: 'already')!;
+       expect(n.title, '이 PC는 내 기기 목록에 있습니다');
+@@ -606,6 +637,19 @@ void main() {
+           hjvServerBanner(ko,
+               error: 'Exception: The HTTP request failed', fromServer: false),
+           'HJViewer 서버를 지금 쓸 수 없습니다. 비밀번호 없는 연결은 PC가 받아 둔 목록으로 하루 동안 계속됩니다.');
++      // a staff-only server: new logins and the access password stop too
++      expect(
++          hjvServerBanner(ko,
++              error: 'Exception: The HTTP request failed',
++              fromServer: false,
++              gateCloses: true),
++          'HJViewer 서버를 지금 쓸 수 없습니다. 이 기기는 받아 둔 출입증으로 최대 하루 동안 연결할 수 있고, 그동안 새 로그인과 이용 비밀번호는 쓸 수 없습니다.');
++      expect(
++          hjvServerBanner(ko,
++              error: 'Exception: The HTTP request failed',
++              fromServer: false,
++              gateCloses: null),
++          ko.serverDown);
+     });
+ 
+     test('an empty list says how a PC gets there', () {
+@@ -629,7 +673,7 @@ void main() {
+       expect(hint(error: 'down'), isFalse);
+       expect(hint(loadError: 'failed'), isFalse);
+       expect(ko.emptyList,
+-          'PC에 HJViewer 1.6.0 이상을 설치하고, 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.');
++          'PC에 HJViewer를 설치하고, 그 PC에서 같은 연세포탈 계정으로 로그인하면 여기에 나옵니다.');
+     });
+ 
+     test('a card offers "내 목록에서 빼기" while logged in to an account build', () {
+@@ -1293,6 +1337,9 @@ void main() {
+         t.maker,
+         t.pilotNotice,
+         t.usernameTitle,
++        t.passwordTitle,
++        t.usernameMissed,
++        t.passwordMissed,
+         t.ok,
+         t.cancel,
+         t.close,
+@@ -1310,6 +1357,8 @@ void main() {
+         t.onShortly,
+         t.howToTurnOff,
+         t.setPasswordHint,
++        t.howToTurnOffGate,
++        t.setPasswordHintGate,
+         t.setPasswordNow,
+         t.removeThisPc,
+         t.otherAccount,
+@@ -1385,6 +1434,7 @@ void main() {
+         t.removed,
+         t.notInList,
+         t.serverDown,
++        t.serverDownGate,
+         t.keyLocked,
+         t.emptyList,
+         t.wake,
+diff --git a/flutter/test/hjviewer_account_widgets_test.dart b/flutter/test/hjviewer_account_widgets_test.dart
+index 462fd6e..8e4b206 100644
+--- a/flutter/test/hjviewer_account_widgets_test.dart
++++ b/flutter/test/hjviewer_account_widgets_test.dart
+@@ -125,7 +125,7 @@ void main() {
+     expect(find.text('이 PC: 내 기기 · 이 PC에서 꺼 둠'), findsOneWidget);
+     await tester.tap(find.text('다시 켜기'));
+     expect(actions, [HjvPcAction.turnOn]);
+-    expect(find.text('PC 비밀번호: 없음'), findsOneWidget);
++    expect(find.text('영구 비밀번호: 없음'), findsOneWidget);
+     await tester.tap(find.text('정하기'));
+     expect(setPassword, 1);
+ 
+@@ -134,7 +134,7 @@ void main() {
+     expect(find.text('다시 켜기'), findsNothing);
+     await tester.tap(find.text('끄기'));
+     expect(actions, [HjvPcAction.turnOn, HjvPcAction.turnOff]);
+-    expect(find.text('PC 비밀번호: 정해 둠'), findsOneWidget);
++    expect(find.text('영구 비밀번호: 정해 둠'), findsOneWidget);
+     expect(find.text('정하기'), findsNothing);
+ 
+     await show(tester, lines('disabled', passwordSet: false, canSet: false));
+@@ -143,7 +143,7 @@ void main() {
+ 
+     // while the PC password is being asked, no line for it
+     await show(tester, lines('revoked'));
+-    expect(find.text('PC 비밀번호: 없음'), findsNothing);
++    expect(find.text('영구 비밀번호: 없음'), findsNothing);
+     await tester.tap(find.text('다시 추가'));
+     expect(actions.last, HjvPcAction.addAgain);
+   });
+@@ -165,7 +165,7 @@ void main() {
+             onUndo: () => undo++,
+             onSetPassword: () => password++));
+     expect(find.text('이 PC를 내 기기 목록에 추가했습니다'), findsOneWidget);
+-    expect(find.text('비밀번호 없는 연결이 안 될 때(서버 점검, 끄기, 로그아웃) 쓸 PC 비밀번호를 정해 두세요.'),
++    expect(find.text('비밀번호 없는 연결이 안 될 때(서버 점검, 끄기, 로그아웃) 쓸 영구 비밀번호를 정해 두세요.'),
+         findsOneWidget);
+     await tester.tap(find.text('지금 정하기'));
+     await tester.tap(find.text('이 PC 빼기'));
+diff --git a/src/hjviewer_access.rs b/src/hjviewer_access.rs
+index 0513ef1..36d6fb7 100644
+--- a/src/hjviewer_access.rs
++++ b/src/hjviewer_access.rs
+@@ -427,35 +427,60 @@ pub(crate) fn tray_watches() -> bool {
+     active()
+ }
+ 
+-/// The tray: the options of the process that registers. True when whether hbbs refuses this PC
+-/// changed, so that the tooltip is drawn again.
++/// The tray: the options of the process that registers. True when whether hbbs refuses this PC,
++/// or whether a login bound it (the account's hjv-pwless-state), changed, so that the tooltip is
++/// drawn again.
+ #[cfg(windows)]
+ pub(crate) fn tray_options(options: &std::collections::HashMap<String, String>) -> bool {
++    use std::sync::atomic::Ordering::Relaxed;
+     let refused = active()
+         && options
+             .get(PC_STATE)
+             .is_some_and(|state| state == "refused");
+-    TRAY_REFUSED.swap(refused, std::sync::atomic::Ordering::Relaxed) != refused
++    let bound = options
++        .get("hjv-pwless-state")
++        .is_some_and(|state| !state.is_empty());
++    let was_refused = TRAY_REFUSED.swap(refused, Relaxed);
++    let was_bound = TRAY_BOUND.swap(bound, Relaxed);
++    was_refused != refused || (refused && was_bound != bound)
+ }
+ 
+-/// The tray's tooltip `tip`, and while hbbs refuses this PC that it is not connected to the
+-/// server (the home's notice says why).
++/// The tray's tooltip while hbbs refuses this PC, None otherwise: that it is not connected to the
++/// server (the home's notice says why) in place of "Ready" or "Service is running", and the
++/// sessions' line when there are `count`.
+ #[cfg(windows)]
+-pub(crate) fn tray_tooltip(tip: String) -> String {
+-    if !TRAY_REFUSED.load(std::sync::atomic::Ordering::Relaxed) {
+-        return tip;
++pub(crate) fn tray_tooltip(count: usize) -> Option<String> {
++    use std::sync::atomic::Ordering::Relaxed;
++    if !TRAY_REFUSED.load(Relaxed) {
++        return None;
+     }
+     let korean = crate::client::translate("Cancel".to_owned()) == "취소";
+-    format!("{tip}\n{}", if korean { TRAY_KO } else { TRAY_EN })
++    let state = tray_state(korean, TRAY_BOUND.load(Relaxed));
++    let app = crate::get_app_name();
++    Some(if count == 0 {
++        format!("{app} - {state}")
++    } else {
++        let sessions = crate::client::translate(format!("{{{count}}} sessions"));
++        format!("{app} - {state}\n{sessions}")
++    })
++}
++
++/// The tray's word while hbbs refuses this PC (the doc, 5-3), as the status line has it: a PC a
++/// login bound (`bound`) is not told to log in.
++#[cfg(any(windows, test))]
++fn tray_state(korean: bool, bound: bool) -> &'static str {
++    match (korean, bound) {
++        (true, false) => "서버에 연결되지 않음(로그인 필요)",
++        (true, true) => "서버에 연결되지 않음",
++        (false, false) => "Not connected to the server (log in)",
++        (false, true) => "Not connected to the server",
++    }
+ }
+ 
+ #[cfg(windows)]
+ static TRAY_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+-/// The tray's line while hbbs refuses this PC (the doc, 5-3).
+-#[cfg(windows)]
+-const TRAY_KO: &str = "서버에 연결되지 않음: 로그인 필요";
+ #[cfg(windows)]
+-const TRAY_EN: &str = "Not connected to the server: log in";
++static TRAY_BOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+ 
+ /// The answer to a login with its token (hjviewer_account): its `hjv.access` is the login's ticket
+ /// in place of any earlier one. Without one, the renewing thread or the next connection asks.
+diff --git a/src/hjviewer_access/tests.rs b/src/hjviewer_access/tests.rs
+index da8500e..f893722 100644
+--- a/src/hjviewer_access/tests.rs
++++ b/src/hjviewer_access/tests.rs
+@@ -305,3 +305,11 @@ fn an_access_password_ticket_stays_in_memory_for_its_target_only() {
+     forget_guest("guest-target-1");
+     assert_eq!(ticket("guest-target-1"), None);
+ }
++
++#[test]
++fn the_trays_word_while_refused_tells_only_a_pc_without_a_login_to_log_in() {
++    assert_eq!(tray_state(true, false), "서버에 연결되지 않음(로그인 필요)");
++    assert_eq!(tray_state(true, true), "서버에 연결되지 않음");
++    assert_eq!(tray_state(false, false), "Not connected to the server (log in)");
++    assert_eq!(tray_state(false, true), "Not connected to the server");
++}
+diff --git a/src/lang/en.rs b/src/lang/en.rs
+index ca61f35..b7e5830 100644
+--- a/src/lang/en.rs
++++ b/src/lang/en.rs
+@@ -2,8 +2,8 @@ lazy_static::lazy_static! {
+ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+     [
+         ("desk_tip", "Your desktop can be accessed with this ID and password."),
+-        ("connecting_status", "Connecting to the RustDesk network..."),
+-        ("not_ready_status", "Not ready. Please check your connection"),
++        ("connecting_status", "Connecting to the server…"),
++        ("not_ready_status", "Cannot reach the server. Check the network connection."),
+         ("ID/Relay Server", "ID/Relay server"),
+         ("id_change_tip", "Only a-z, A-Z, 0-9, - (dash) and _ (underscore) characters allowed. The first letter must be a-z, A-Z. Length between 6 and 16."),
+         ("Slogan_tip", "Made with heart in this chaotic world!"),
+diff --git a/src/lang/ko.rs b/src/lang/ko.rs
+index f9f3435..87e538b 100644
+--- a/src/lang/ko.rs
++++ b/src/lang/ko.rs
+@@ -7,12 +7,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Password", "비밀번호"),
+         ("Ready", "준비 완료"),
+         ("Established", "연결됨"),
+-        ("connecting_status", "RustDesk 네트워크에 연결 중..."),
++        ("connecting_status", "서버에 연결하는 중…"),
+         ("Enable service", "서비스 활성화"),
+         ("Start service", "서비스 시작"),
+         ("Service is running", "서비스가 실행 중입니다"),
+         ("Service is not running", "서비스가 실행되지 않았습니다"),
+-        ("not_ready_status", "준비되지 않았습니다. 연결을 확인해 주세요"),
++        ("not_ready_status", "서버에 연결할 수 없습니다. 네트워크 연결을 확인해 주세요."),
+         ("Control Remote Desktop", "원격 데스크탑 제어"),
+         ("Transfer file", "파일 전송"),
+         ("Connect", "연결"),
+diff --git a/src/tray.rs b/src/tray.rs
+index fb8fbfd..08fedb4 100644
+--- a/src/tray.rs
++++ b/src/tray.rs
+@@ -98,7 +98,9 @@ fn make_tray() -> hbb_common::ResultType<()> {
+     };
+     // HJViewer: while hbbs refuses this PC, the tooltip says so
+     #[cfg(windows)]
+-    let tooltip = move |count: usize| crate::hjviewer_access::tray_tooltip(tooltip(count));
++    let tooltip = move |count: usize| {
++        crate::hjviewer_access::tray_tooltip(count).unwrap_or_else(|| tooltip(count))
++    };
+     let mut _tray_icon: Arc<Mutex<Option<TrayIcon>>> = Default::default();
+ 
+     let menu_channel = MenuEvent::receiver();
