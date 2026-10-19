@@ -1,0 +1,90 @@
+{
+  "about": "Shared test vectors of HJViewer's support grant (docs/access-tickets.md 3-7, TV-W6), rendered by the client's src/hjviewer_account/vectors.rs. The private keys are public test values: never use them for anything else.",
+  "conn_proof": {
+    "ctl_id": "987654321",
+    "ctl_pk": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+    "kind": 0,
+    "nonce_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "pc_id": "123456789",
+    "pc_pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+    "signature": "3OvvOFoyKwgFvySqMnMHMK9g3iwU5uP7S8icnxwwHSOyliI1DPW00sX15eAAEamemNIc39LjQbDOxcPgROzEBQ==",
+    "transcript_hex": "686a762d636f6e6e2d763100093132333435363738398139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f0939383736353433323100ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"
+  },
+  "context": "hjv-support-v1",
+  "encodings": "base64: standard with padding; hex: lowercase; *_hex of signed bytes: the exact bytes a signature covers; times: Unix seconds",
+  "grant": {
+    "bytes": "{\"v\":1,\"typ\":\"hjv-support\",\"kid\":1,\"pc_id\":\"123456789\",\"pc_pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"ck\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"ctl_id\":\"987654321\",\"name\":\"\",\"iat\":1760000000,\"exp\":1760007200}",
+    "ck": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+    "ctl_id": "987654321",
+    "exp": 1760007200,
+    "iat": 1760000000,
+    "pc_id": "123456789",
+    "pc_pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+    "signed_hex": "686a762d737570706f72742d7631007b2276223a312c22747970223a22686a762d737570706f7274222c226b6964223a312c2270635f6964223a22313233343536373839222c2270635f706b223a2267546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d222c22636b223a2237556b6f78696a527773627136514d346b466d5659536c5a4a7a7063592f6b324e734647464b79484e39453d222c2263746c5f6964223a22393837363534333231222c226e616d65223a22222c22696174223a313736303030303030302c22657870223a313736303030373230307d",
+    "staff": {
+      "g": "eyJ2IjoxLCJ0eXAiOiJoanYtc3VwcG9ydCIsImtpZCI6MSwicGNfaWQiOiIxMjM0NTY3ODkiLCJwY19wayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwiY2siOiI3VWtveGlqUndzYnE2UU00a0ZtVllTbFpKenBjWS9rMk5zRkdGS3lITjlFPSIsImN0bF9pZCI6Ijk4NzY1NDMyMSIsIm5hbWUiOiIiLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDAwNzIwMH0=",
+      "kid": 1,
+      "s": "2abG3Tf+2mlBxmaHn/x7Cx4Oa+ywrtuyaqbTihZgbeEt863Wn2eebQ4MEfp6lqcebR4T1GzqUrZtRUXihiIfAA=="
+    }
+  },
+  "keys": {
+    "HJV_TRUST_PUBKEYS": "1:iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=,2:/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=",
+    "account": {
+      "pk": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "seed_hex": "0303030303030303030303030303030303030303030303030303030303030303"
+    },
+    "list_1": {
+      "kid": 1,
+      "pk": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "seed_hex": "0101010101010101010101010101010101010101010101010101010101010101"
+    },
+    "other_account": {
+      "pk": "ypOsFwUYcHHWe4PH/w7+gQjo7EUwV113JoeTM9vavnw=",
+      "seed_hex": "0404040404040404040404040404040404040404040404040404040404040404"
+    },
+    "pc_device": {
+      "pk": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "seed_hex": "0202020202020202020202020202020202020202020202020202020202020202"
+    }
+  },
+  "max_life": 7200,
+  "refused": {
+    "altered_bytes": {
+      "grant": "{\"v\":1,\"typ\":\"hjv-support\",\"kid\":1,\"pc_id\":\"123456789\",\"pc_pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"ck\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"ctl_id\":\"111111111\",\"name\":\"\",\"iat\":1760000000,\"exp\":1760007200}",
+      "staff": {
+        "g": "eyJ2IjoxLCJ0eXAiOiJoanYtc3VwcG9ydCIsImtpZCI6MSwicGNfaWQiOiIxMjM0NTY3ODkiLCJwY19wayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwiY2siOiI3VWtveGlqUndzYnE2UU00a0ZtVllTbFpKenBjWS9rMk5zRkdGS3lITjlFPSIsImN0bF9pZCI6IjExMTExMTExMSIsIm5hbWUiOiIiLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDAwNzIwMH0=",
+        "kid": 1,
+        "s": "2abG3Tf+2mlBxmaHn/x7Cx4Oa+ywrtuyaqbTihZgbeEt863Wn2eebQ4MEfp6lqcebR4T1GzqUrZtRUXihiIfAA=="
+      }
+    },
+    "life_7201": {
+      "grant": "{\"v\":1,\"typ\":\"hjv-support\",\"kid\":1,\"pc_id\":\"123456789\",\"pc_pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"ck\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"ctl_id\":\"987654321\",\"name\":\"\",\"iat\":1760000000,\"exp\":1760007201}",
+      "staff": {
+        "g": "eyJ2IjoxLCJ0eXAiOiJoanYtc3VwcG9ydCIsImtpZCI6MSwicGNfaWQiOiIxMjM0NTY3ODkiLCJwY19wayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwiY2siOiI3VWtveGlqUndzYnE2UU00a0ZtVllTbFpKenBjWS9rMk5zRkdGS3lITjlFPSIsImN0bF9pZCI6Ijk4NzY1NDMyMSIsIm5hbWUiOiIiLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDAwNzIwMX0=",
+        "kid": 1,
+        "s": "jBXLXA5KOpMOA6+C8ssi9vZjV3yYawWOAln4gypwCX3NPtB1i6Pa7AZT7lUMTVuTWvAeRDE+7uySRTAOU64VCQ=="
+      }
+    },
+    "other_key_proof": {
+      "ctl_pk": "ypOsFwUYcHHWe4PH/w7+gQjo7EUwV113JoeTM9vavnw=",
+      "signature": "NfX1pzNo/JFbUbuTBi5vOv/dlfMLLIZWBAj9u9DR4LfWaiMKLg9CFOzXz9kK9OdYd2j3fquQ7/sHqsGxhIkEAQ==",
+      "transcript_hex": "686a762d636f6e6e2d763100093132333435363738398139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f0939383736353433323100ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+    },
+    "other_pc": {
+      "grant": "{\"v\":1,\"typ\":\"hjv-support\",\"kid\":1,\"pc_id\":\"111222333\",\"pc_pk\":\"bnoc3Smwt4/ROvTFWY/v9O8qlxZuPKby5Pv8zYBQW/E=\",\"ck\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"ctl_id\":\"987654321\",\"name\":\"\",\"iat\":1760000000,\"exp\":1760007200}",
+      "staff": {
+        "g": "eyJ2IjoxLCJ0eXAiOiJoanYtc3VwcG9ydCIsImtpZCI6MSwicGNfaWQiOiIxMTEyMjIzMzMiLCJwY19wayI6ImJub2MzU213dDQvUk92VEZXWS92OU84cWx4WnVQS2J5NVB2OHpZQlFXL0U9IiwiY2siOiI3VWtveGlqUndzYnE2UU00a0ZtVllTbFpKenBjWS9rMk5zRkdGS3lITjlFPSIsImN0bF9pZCI6Ijk4NzY1NDMyMSIsIm5hbWUiOiIiLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDAwNzIwMH0=",
+        "kid": 1,
+        "s": "SCTChEFoSr55ZtlY9CYE4/c2R3umS4CiTpdU9YCILCjW385CH1Rg57yx5nPRZJ3C8bmc6aVicga1ujq/xghQAQ=="
+      }
+    },
+    "unknown_member": {
+      "grant": "{\"v\":1,\"typ\":\"hjv-support\",\"kid\":1,\"pc_id\":\"123456789\",\"pc_pk\":\"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=\",\"ck\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=\",\"ctl_id\":\"987654321\",\"name\":\"\",\"iat\":1760000000,\"exp\":1760007200,\"role\":\"admin\"}",
+      "staff": {
+        "g": "eyJ2IjoxLCJ0eXAiOiJoanYtc3VwcG9ydCIsImtpZCI6MSwicGNfaWQiOiIxMjM0NTY3ODkiLCJwY19wayI6ImdUbDNEcWg5RjE5V28xUm13MHgrek11TmlwRzA3amVpWGZZUFc0L0pzNVE9IiwiY2siOiI3VWtveGlqUndzYnE2UU00a0ZtVllTbFpKenBjWS9rMk5zRkdGS3lITjlFPSIsImN0bF9pZCI6Ijk4NzY1NDMyMSIsIm5hbWUiOiIiLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDAwNzIwMCwicm9sZSI6ImFkbWluIn0=",
+        "kid": 1,
+        "s": "BDj7xwMMe9ijyzOBDLtNk7S38xLXPy011htN6XEQqJnPgUG4GkK9b+712Ee9sScj+6AjdsOEXd/QZQu+By7YBA=="
+      }
+    }
+  }
+}

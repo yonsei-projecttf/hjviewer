@@ -30,7 +30,9 @@
 //!   it.
 //! - Kept in memory only ([`SupportCodes`]): under an HMAC-SHA256 of the code with a key made at
 //!   the start, with the maker (account number and tag, the account key's ckid), its use and its
-//!   times; never in the database, a file, the journal or a record. A code that was used, ended
+//!   times, and from 1.9.0 its support link (by an HMAC too), the code itself for the link's page,
+//!   its waiting number, the downloads left and the PC that used it (ID, key, the ticket's `exp`);
+//!   never in the database, a file, the journal or a record. A code that was used, ended
 //!   or whose ten minutes are over stays [`ENDED_KEPT_SECS`] more, so that the records tell
 //!   `used`, `revoked` and `expired` from `wrong`. A restart ends them all. The answer that
 //!   carries a code is kept, as every signed request's that changes something, for its retry
@@ -38,20 +40,36 @@
 //!   `expires_in` too.
 //! - Records `code` (kept HJV_API_EVENT_DAYS): `made` with the maker's tag; each try to trade one
 //!   with its result, the address's tag and, once the code was found, the maker's tag (guest.rs).
-//!   Never the code or a tag of it.
+//!   Never the code or a tag of it, nor a link, a waiting number, a grant or the PC's ID; a
+//!   support link's package download is an `update` record (update.rs, `support-windows`).
+//!
+//! - TV-W6 (1.9.0): the answer that makes a code also brings its support link's path
+//!   (`/api/hjv/s/<22>`, a 128-bit value apart from the code: update.rs shows the code and hands
+//!   out HJViewer through it while the code is open, [`LINK_DOWNLOADS`] package downloads) and its
+//!   waiting number (`wait`, 128 bits too), both kept with the code under the same HMAC key. The
+//!   app that made it holds [`WAIT_PATH`] ([`wait_handle`], at most [`WAIT_SECS`]) to hear of the
+//!   PC that used it; only the account key that made a code sees it there. Trading a code also
+//!   signs the support grant (grant.rs) for that PC with the list key.
+//!
+//! ```text
+//! 200 {"code":"K7M2-Q9XD","use":"pc","expires_in":600,"link":"/api/hjv/s/<22>","wait":"<22>"}
+//! GET /api/hjv/support-code/wait?rev=<n>                          the maker's app: token and X-HJV-Proof
+//! 200 {"rev":18,"codes":[{"wait","state":"open","expires_in"},{"wait","state":"used","pc","pk","until_in"},{"wait","state":"over"}]}
+//! ```
 //!
 //! The numbers are constants, not settings; the user may change [`TICKET_SECS`], which two texts
 //! of the app say (docs/access-tickets.md 5-3, S2 and P3). The `use` of both requests is where a
-//! controller's code would go; 1.8.2 takes `pc` only.
+//! controller's code would go; 1.9.0 takes `pc` only.
 
 use crate::{
     api::{session, ApiRequest, Reply},
+    db,
     keys::{CALLS_PER_MINUTE, TEXT_TOO_OFTEN},
     review,
     state::AppState,
     ticket::Use,
     update::{code_of, shown, typed_code},
-    util::{now, random_bytes, DAY, HOUR},
+    util::{b64, b64url, now, random_bytes, DAY, HOUR},
 };
 use hmac::{Hmac, Mac};
 use hyper::StatusCode;
@@ -61,9 +79,13 @@ use sha2::Sha256;
 use std::{
     collections::HashMap,
     fmt::Write as _,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
     time::Duration,
 };
+use tokio::sync::Notify;
 use zeroize::Zeroizing;
 
 pub const PATH: &str = "/api/hjv/support-code";
@@ -79,6 +101,15 @@ pub const OPEN_PER_ACCOUNT: usize = 5;
 pub const MAX_HELD: usize = 1000;
 /// How long a used or expired code stays, marked so, for the records.
 pub const ENDED_KEPT_SECS: i64 = 600;
+/// The waiting room (TV-W6): the path, the longest hold, the holds of one account key at once
+/// and of all.
+pub const WAIT_PATH: &str = "/api/hjv/support-code/wait";
+pub const WAIT_SECS: u64 = 20;
+pub const HOLDS_PER_KEY: usize = 2;
+pub const MAX_WAITS: usize = 200;
+/// Where a support link lives (update.rs), and its package downloads.
+pub const LINK_PATH: &str = "/api/hjv/s/";
+pub const LINK_DOWNLOADS: u8 = 3;
 
 /// The one answer to a code that is not there, not of the form, over, used, or whose account is
 /// blocked or gone (docs/access-tickets.md 3-7, E6).
@@ -123,6 +154,20 @@ fn new_code() -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CodeKey([u8; 32]);
 
+/// A support link's value as hjv-api looks it up: its HMAC under the same key, apart from codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct LinkKey([u8; 32]);
+
+/// A code's eight symbols, kept for its support link's page only; never in a `Debug`.
+#[derive(Clone)]
+struct Symbols(Zeroizing<String>);
+
+impl std::fmt::Debug for Symbols {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Symbols(..)")
+    }
+}
+
 /// The account, and its account key, that made a code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Maker {
@@ -133,6 +178,17 @@ pub struct Maker {
     pub ckid: i64,
 }
 
+/// The PC that traded a code, once its ticket was signed (TV-W6): what the waiting room tells
+/// the maker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsedBy {
+    /// the trade's `id` and `pk`, which the PC's signature held for
+    pub pc: String,
+    pub pk: [u8; 32],
+    /// the ticket's `exp`
+    pub exp: i64,
+}
+
 #[derive(Debug, Clone)]
 struct Entry {
     maker: Maker,
@@ -141,6 +197,18 @@ struct Entry {
     used: Option<i64>,
     /// when it was found that its maker's key had ended ([`SupportCodes::end_keys`])
     revoked: Option<i64>,
+    /// TV-W6: its support link, by the HMAC of the link's value
+    link: LinkKey,
+    /// the symbols, for the support link's page
+    symbols: Symbols,
+    /// the waiting number by which the maker's app knows the code in the waiting room
+    wait: String,
+    /// the package downloads its support link has left
+    downloads_left: u8,
+    /// set with the ticket, after [`SupportCodes::take`]
+    used_by: Option<UsedBy>,
+    /// whether the waiting room heard that its ten minutes are over
+    over_told: bool,
 }
 
 impl Entry {
@@ -158,6 +226,26 @@ impl Entry {
 
     fn kept(&self, at: i64) -> bool {
         self.open(at) || at < self.ended().saturating_add(ENDED_KEPT_SECS)
+    }
+
+    /// What the waiting room says of it at `at`. A code taken whose ticket is not signed yet is
+    /// still `open` there: it may be given back.
+    fn waiting(&self, at: i64) -> Value {
+        match &self.used_by {
+            Some(by) => json!({
+                "wait": self.wait,
+                "state": "used",
+                "pc": by.pc,
+                "pk": b64(&by.pk),
+                "until_in": (by.exp - at).max(0),
+            }),
+            None if self.revoked.is_none() && at < self.expires => json!({
+                "wait": self.wait,
+                "state": "open",
+                "expires_in": self.expires - at,
+            }),
+            None => json!({ "wait": self.wait, "state": "over" }),
+        }
     }
 }
 
@@ -201,37 +289,187 @@ pub enum Taken {
     Gone,
 }
 
-/// The support codes, in memory only, under an HMAC with a key made at the start.
+/// A code made: its symbols, its support link's value and its waiting number (each 16 random
+/// bytes in base64url without padding, 22 characters).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Made {
+    pub code: String,
+    pub link: String,
+    pub wait: String,
+}
+
+impl std::fmt::Debug for Made {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Made(..)")
+    }
+}
+
+/// An open code's support link, found by its value.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LinkFound {
+    pub key: CodeKey,
+    pub maker: Maker,
+    /// the code as shown, `XXXX-XXXX`
+    pub code: String,
+    pub downloads_left: u8,
+}
+
+impl std::fmt::Debug for LinkFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LinkFound({:?}, {} left)",
+            self.maker, self.downloads_left
+        )
+    }
+}
+
+/// The waiting room's answer for an account key at a moment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Waiting {
+    pub rev: u64,
+    pub codes: Vec<Value>,
+    /// when the first of its open codes ends: a hold lasts no longer
+    pub first_end: Option<i64>,
+}
+
+/// A waiting-room request held; the counts go down when it is dropped.
+pub struct WaitHold<'a> {
+    codes: &'a SupportCodes,
+    ckid: i64,
+}
+
+impl Drop for WaitHold<'_> {
+    fn drop(&mut self) {
+        let mut holds = self.codes.holds();
+        if let Some(n) = holds.get_mut(&self.ckid) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                holds.remove(&self.ckid);
+            }
+        }
+    }
+}
+
+/// The codes and the revision of each account key's (the waiting room's `rev`), under one lock.
+#[derive(Default)]
+struct Held {
+    codes: HashMap<CodeKey, Entry>,
+    revs: HashMap<i64, u64>,
+}
+
+impl Held {
+    fn bump(&mut self, ckid: i64) {
+        *self.revs.entry(ckid).or_insert(0) += 1;
+    }
+
+    /// Forgets the codes past [`ENDED_KEPT_SECS`], and marks those whose ten minutes are over:
+    /// the waiting room hears of both. Whether anything changed.
+    fn sweep(&mut self, at: i64) -> bool {
+        let mut changed: Vec<i64> = Vec::new();
+        self.codes.retain(|_, e| {
+            if !e.kept(at) {
+                changed.push(e.maker.ckid);
+                return false;
+            }
+            if e.used.is_none() && e.revoked.is_none() && at >= e.expires && !e.over_told {
+                e.over_told = true;
+                changed.push(e.maker.ckid);
+            }
+            true
+        });
+        for ckid in &changed {
+            self.bump(*ckid);
+        }
+        !changed.is_empty()
+    }
+}
+
+/// The support codes, in memory only, under an HMAC with a key made at the start; and the
+/// waiting room's signal and holds (TV-W6).
 pub struct SupportCodes {
     key: Zeroizing<[u8; 32]>,
-    codes: Mutex<HashMap<CodeKey, Entry>>,
+    held: Mutex<Held>,
+    /// wakes the held waiting-room requests: a code made, used or ended
+    changed: Notify,
+    /// the waiting-room requests held, per account key
+    holds: Mutex<HashMap<i64, usize>>,
+    /// the service is stopping: no waiting-room request is held any more
+    stopping: AtomicBool,
 }
 
 impl Default for SupportCodes {
     fn default() -> Self {
         SupportCodes {
             key: Zeroizing::new(random_bytes::<32>()),
-            codes: Mutex::default(),
+            held: Mutex::default(),
+            changed: Notify::new(),
+            holds: Mutex::default(),
+            stopping: AtomicBool::new(false),
         }
     }
 }
 
+/// A support link's value or a waiting number: 16 random bytes, 22 characters.
+fn new_value() -> String {
+    b64url(&random_bytes::<16>())
+}
+
+/// Whether `text` has the form of a support link's value.
+fn is_value(text: &str) -> bool {
+    text.len() == 22
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 impl SupportCodes {
-    fn codes(&self) -> MutexGuard<'_, HashMap<CodeKey, Entry>> {
-        self.codes.lock().unwrap_or_else(|e| e.into_inner())
+    fn held(&self) -> MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn holds(&self) -> MutexGuard<'_, HashMap<i64, usize>> {
+        self.holds.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn mac(&self, parts: &[&[u8]]) -> [u8; 32] {
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&*self.key).expect("HMAC takes keys of any length");
+        for part in parts {
+            mac.update(part);
+        }
+        mac.finalize().into_bytes().into()
     }
 
     fn key_of(&self, code: &str) -> CodeKey {
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(&*self.key).expect("HMAC takes keys of any length");
-        mac.update(code.as_bytes());
-        CodeKey(mac.finalize().into_bytes().into())
+        CodeKey(self.mac(&[code.as_bytes()]))
     }
 
-    /// Makes a code for the account `maker` and `use_` at `at`: its eight symbols.
-    pub fn make(&self, maker: Maker, use_: Use, at: i64) -> Result<String, Refused> {
-        let mut codes = self.codes();
-        codes.retain(|_, e| e.kept(at));
+    /// A support link's key: apart from the codes', whose eight symbols are never 22.
+    fn link_key(&self, link: &str) -> LinkKey {
+        LinkKey(self.mac(&[b"link\0", link.as_bytes()]))
+    }
+
+    /// The waiting room looks again.
+    fn changed(&self) {
+        self.changed.notify_waiters();
+    }
+
+    /// Makes a code for the account `maker` and `use_` at `at`: its eight symbols, its support
+    /// link and its waiting number.
+    pub fn make(&self, maker: Maker, use_: Use, at: i64) -> Result<Made, Refused> {
+        let mut held = self.held();
+        let swept = held.sweep(at);
+        let made = self.make_in(&mut held, maker, use_, at);
+        drop(held);
+        if swept || made.is_ok() {
+            self.changed();
+        }
+        made
+    }
+
+    fn make_in(&self, held: &mut Held, maker: Maker, use_: Use, at: i64) -> Result<Made, Refused> {
+        let codes = &mut held.codes;
         let first_end = codes
             .values()
             .filter(|e| e.maker.account_id == maker.account_id && e.open(at))
@@ -251,13 +489,31 @@ impl SupportCodes {
                 .collect();
             ended.sort_unstable_by_key(|(when, _)| *when);
             let excess = codes.len() + 1 - MAX_HELD;
+            let mut gone = Vec::new();
             for (_, k) in ended.into_iter().take(excess) {
-                codes.remove(&k);
+                if let Some(e) = codes.remove(&k) {
+                    gone.push(e.maker.ckid);
+                }
             }
             if codes.len() >= MAX_HELD {
+                for ckid in gone {
+                    held.bump(ckid);
+                }
                 return Err(Refused::Busy);
             }
+            for ckid in gone {
+                held.bump(ckid);
+            }
         }
+        let codes = &mut held.codes;
+        let (link, wait) = loop {
+            let (link, wait) = (new_value(), new_value());
+            let key = self.link_key(&link);
+            if link != wait && !codes.values().any(|e| e.link == key || e.wait == wait) {
+                break (link, wait);
+            }
+        };
+        let ckid = maker.ckid;
         loop {
             let code = new_code();
             let key = self.key_of(&code);
@@ -268,8 +524,15 @@ impl SupportCodes {
                     expires: at.saturating_add(CODE_SECS),
                     used: None,
                     revoked: None,
+                    link: self.link_key(&link),
+                    symbols: Symbols(Zeroizing::new(code.clone())),
+                    wait: wait.clone(),
+                    downloads_left: LINK_DOWNLOADS,
+                    used_by: None,
+                    over_told: false,
                 });
-                return Ok(code);
+                held.bump(ckid);
+                return Ok(Made { code, link, wait });
             }
         }
     }
@@ -280,9 +543,11 @@ impl SupportCodes {
             return Looked::Wrong;
         };
         let key = self.key_of(&code);
-        let mut codes = self.codes();
-        codes.retain(|_, e| e.kept(at));
-        match codes.get(&key) {
+        let mut held = self.held();
+        if held.sweep(at) {
+            self.changed();
+        }
+        match held.codes.get(&key) {
             Some(e) if e.use_ == use_ => Looked::Found {
                 key,
                 maker: e.maker.clone(),
@@ -298,10 +563,10 @@ impl SupportCodes {
     }
 
     /// Uses the code of `key` at `at`, if it is still open: one call of all that come at once
-    /// gets [`Taken::Taken`].
+    /// gets [`Taken::Taken`]. The waiting room hears of it with [`SupportCodes::mark_used`].
     pub fn take(&self, key: CodeKey, at: i64) -> Taken {
-        let mut codes = self.codes();
-        match codes.get_mut(&key) {
+        let mut held = self.held();
+        match held.codes.get_mut(&key) {
             None => Taken::Gone,
             Some(e) if e.used.is_some() => Taken::Used,
             Some(e) if e.revoked.is_some() => Taken::Revoked,
@@ -315,15 +580,32 @@ impl SupportCodes {
 
     /// Opens a code taken a moment ago again, when no ticket could be signed for it.
     pub fn give_back(&self, key: CodeKey) {
-        if let Some(e) = self.codes().get_mut(&key) {
+        if let Some(e) = self.held().codes.get_mut(&key) {
             e.used = None;
         }
+    }
+
+    /// The ticket of a code taken is signed: the waiting room tells its maker which PC it was.
+    pub fn mark_used(&self, key: CodeKey, by: UsedBy) {
+        let mut held = self.held();
+        let Some(e) = held.codes.get_mut(&key) else {
+            return;
+        };
+        if e.used.is_none() {
+            return;
+        }
+        e.used_by = Some(by);
+        let ckid = e.maker.ckid;
+        held.bump(ckid);
+        drop(held);
+        self.changed();
     }
 
     /// The account keys that made the account `account_id`'s codes open at `at`, each once.
     pub fn open_keys(&self, account_id: i64, at: i64) -> Vec<i64> {
         let mut ckids: Vec<i64> = self
-            .codes()
+            .held()
+            .codes
             .values()
             .filter(|e| e.maker.account_id == account_id && e.open(at))
             .map(|e| e.maker.ckid)
@@ -336,31 +618,146 @@ impl SupportCodes {
     /// Ends at `at` the open codes of the account `account_id` made with the account keys
     /// `ckids`, which have ended: for good, as a used code; how many it ended.
     pub fn end_keys(&self, account_id: i64, ckids: &[i64], at: i64) -> usize {
-        let mut ended = 0;
-        for e in self.codes().values_mut() {
+        let mut held = self.held();
+        let mut ended = Vec::new();
+        for e in held.codes.values_mut() {
             if e.maker.account_id == account_id && ckids.contains(&e.maker.ckid) && e.open(at) {
                 e.revoked = Some(at);
-                ended += 1;
+                ended.push(e.maker.ckid);
             }
         }
-        ended
+        for ckid in &ended {
+            held.bump(*ckid);
+        }
+        drop(held);
+        if !ended.is_empty() {
+            self.changed();
+        }
+        ended.len()
+    }
+
+    /// The open code of the support link `link` at `at` (TV-W6): not used, not ended, within its
+    /// ten minutes. `None` for any other value, of the form or not.
+    pub fn find_link(&self, link: &str, at: i64) -> Option<LinkFound> {
+        if !is_value(link) {
+            return None;
+        }
+        let key = self.link_key(link);
+        let held = self.held();
+        // at most MAX_HELD, compared by their HMAC: the time says nothing of the value
+        let (code_key, e) = held
+            .codes
+            .iter()
+            .find(|(_, e)| e.link == key && e.open(at))?;
+        Some(LinkFound {
+            key: *code_key,
+            maker: e.maker.clone(),
+            code: shown(&e.symbols.0),
+            downloads_left: e.downloads_left,
+        })
+    }
+
+    /// Takes one package download of the open code of `key`'s link: how many it has left then,
+    /// `None` when the code is not open or the link has none left.
+    pub fn take_download(&self, key: CodeKey, at: i64) -> Option<u8> {
+        let mut held = self.held();
+        let e = held
+            .codes
+            .get_mut(&key)
+            .filter(|e| e.open(at) && e.downloads_left > 0)?;
+        e.downloads_left -= 1;
+        Some(e.downloads_left)
+    }
+
+    /// The waiting room of the account key `ckid` at `at`: its revision and the codes it made
+    /// that are held, in the order they were made.
+    pub fn waiting(&self, ckid: i64, at: i64) -> Waiting {
+        let mut held = self.held();
+        let swept = held.sweep(at);
+        let mut mine: Vec<&Entry> = held
+            .codes
+            .values()
+            .filter(|e| e.maker.ckid == ckid)
+            .collect();
+        mine.sort_by(|a, b| (a.expires, &a.wait).cmp(&(b.expires, &b.wait)));
+        let first_end = mine
+            .iter()
+            .filter(|e| e.used_by.is_none() && e.revoked.is_none() && at < e.expires)
+            .map(|e| e.expires)
+            .min();
+        let waiting = Waiting {
+            rev: held.revs.get(&ckid).copied().unwrap_or(0),
+            codes: mine.iter().map(|e| e.waiting(at)).collect(),
+            first_end,
+        };
+        drop(held);
+        if swept {
+            self.changed();
+        }
+        waiting
+    }
+
+    /// Holds a waiting-room request of `ckid`, unless [`HOLDS_PER_KEY`] of it or [`MAX_WAITS`] in
+    /// all are held already, or the service is stopping.
+    pub fn hold(&self, ckid: i64) -> Option<WaitHold<'_>> {
+        if self.stopping() {
+            return None;
+        }
+        let mut holds = self.holds();
+        let all: usize = holds.values().sum();
+        let n = holds.entry(ckid).or_insert(0);
+        if *n >= HOLDS_PER_KEY || all >= MAX_WAITS {
+            if *n == 0 {
+                holds.remove(&ckid);
+            }
+            return None;
+        }
+        *n += 1;
+        Some(WaitHold { codes: self, ckid })
+    }
+
+    /// The waiting-room requests held now.
+    pub fn held_waits(&self) -> usize {
+        self.holds().values().sum()
+    }
+
+    /// The service stops: the held waiting-room requests are answered now.
+    pub fn stop(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        self.changed();
+    }
+
+    fn stopping(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
     }
 
     /// The codes open at `at`, and those held (open or ended).
     pub fn counts(&self, at: i64) -> (usize, usize) {
-        let codes = self.codes();
-        let held = codes.values().filter(|e| e.kept(at)).count();
-        let open = codes.values().filter(|e| e.open(at)).count();
-        (open, held)
+        let held = self.held();
+        let kept = held.codes.values().filter(|e| e.kept(at)).count();
+        let open = held.codes.values().filter(|e| e.open(at)).count();
+        (open, kept)
+    }
+
+    /// The support links of the codes open at `at` that have downloads left.
+    pub fn links_left(&self, at: i64) -> usize {
+        self.held()
+            .codes
+            .values()
+            .filter(|e| e.open(at) && e.downloads_left > 0)
+            .count()
     }
 
     /// Moves every code's times `secs` into the past (tests: a code's ten minutes without the
     /// wait).
     pub fn age_by(&self, secs: i64) {
-        for e in self.codes().values_mut() {
+        for e in self.held().codes.values_mut() {
             e.expires -= secs;
             for when in [&mut e.used, &mut e.revoked].into_iter().flatten() {
                 *when -= secs;
+            }
+            if let Some(by) = &mut e.used_by {
+                by.exp -= secs;
             }
         }
     }
@@ -448,12 +845,14 @@ pub async fn handle(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         ckid: own.ckid,
     };
     match state.support.make(maker, use_, now()) {
-        Ok(code) => {
+        Ok(made) => {
             state.record("code", Some(tag), None, None, "made").await;
             Reply::ok(&json!({
-                "code": shown(&code),
+                "code": shown(&made.code),
                 "use": use_.as_str(),
                 "expires_in": CODE_SECS,
+                "link": format!("{LINK_PATH}{}", made.link),
+                "wait": made.wait,
             }))
         }
         Err(Refused::TooMany { retry_after }) => {
@@ -521,8 +920,143 @@ async fn end_ended_keys(state: &Arc<AppState>, account_id: i64, own: i64) {
     }
 }
 
-/// The lines `admin ticket status` adds: the codes open now and held, and the last day's `code`
-/// records by result; no person, address or code.
+/// The account key that made a code, as the database has it now: its public key and the device
+/// its login came from, which the support grant names (grant.rs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MakerKey {
+    pub pk: [u8; 32],
+    pub ctl_id: String,
+}
+
+/// Whether a code's maker still stands: its account there, the same account, on the allowlist
+/// and not blocked, and the account key that made it not ended (a logout, a revoke, a block).
+/// `Err` with the result to record (`blocked`, `revoked`) ends the maker key's open codes for
+/// good: neither an unblock nor a new login of the account opens them again. The outer `Err` is a
+/// database error.
+pub async fn standing(
+    state: &Arc<AppState>,
+    maker: &Maker,
+) -> Result<Result<MakerKey, &'static str>, String> {
+    let (id, ckid) = (maker.account_id, maker.ckid);
+    let found = state
+        .db
+        .call(move |c| match db::account(c, id)? {
+            Some(account) => {
+                let allowed = db::allowed(c, &account.login_key)?;
+                let key: Option<(Vec<u8>, String)> = {
+                    let mut stmt = c.prepare(
+                        "SELECT pk, ctl_id FROM ctl_keys
+                         WHERE ckid = ?1 AND account_id = ?2 AND revoked_at IS NULL",
+                    )?;
+                    let mut rows = stmt.query([ckid, id])?;
+                    match rows.next()? {
+                        Some(row) => Some((row.get(0)?, row.get(1)?)),
+                        None => None,
+                    }
+                };
+                Ok(Some((account.login_key, allowed, key)))
+            }
+            None => Ok(None),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let standing = match found {
+        Some((login_key, allowed, key)) => {
+            if !allowed || state.tags.account(&login_key) != maker.account_tag {
+                Err("blocked")
+            } else {
+                match key.and_then(|(pk, ctl_id)| Some((<[u8; 32]>::try_from(pk).ok()?, ctl_id))) {
+                    Some((pk, ctl_id)) => Ok(MakerKey { pk, ctl_id }),
+                    None => Err("revoked"),
+                }
+            }
+        }
+        None => Err("blocked"),
+    };
+    if standing.is_err() {
+        state.support.end_keys(id, &[ckid], now());
+    }
+    Ok(standing)
+}
+
+/// `rev` of the waiting room's query, when it is there as a number.
+fn asked_rev(query: &str) -> Option<u64> {
+    form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "rev")
+        .and_then(|(_, value)| value.parse().ok())
+}
+
+fn waiting_reply(waiting: &Waiting) -> Reply {
+    Reply::ok(&json!({ "rev": waiting.rev, "codes": waiting.codes }))
+}
+
+/// Handles `GET /api/hjv/support-code/wait?rev=<n>` (the caller checked the method): the codes
+/// of the request's account key held in memory, at once when `rev` is not theirs now, else when
+/// they change, at most [`WAIT_SECS`] and no later than the first of them ends. No record, no
+/// nonce used (a GET), counted with the key's other calls.
+pub async fn wait_handle(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
+    let s = match session(state, req).await {
+        Ok(s) => s,
+        Err(reply) => return reply,
+    };
+    let Some(own) = s.key else {
+        return Reply::server_error();
+    };
+    if !may_make(&s.account.login_key) {
+        return refusal(StatusCode::FORBIDDEN, TEXT_NO_CODE, "no_code");
+    }
+    if !state.key_calls.try_take(own.ckid) {
+        if state.first_notice(&format!("keys-calls:{}", own.ckid), Duration::from_secs(60)) {
+            log_warn!(
+                "support code: more than {CALLS_PER_MINUTE} calls a minute from one key (acct={}, ckid={})",
+                state.tags.account(&s.account.login_key),
+                own.ckid
+            );
+        }
+        return refusal(
+            StatusCode::TOO_MANY_REQUESTS,
+            TEXT_TOO_OFTEN,
+            "rate_limited",
+        );
+    }
+    let asked = asked_rev(&req.query);
+    // armed before the codes are looked at, so that a change in between is not missed
+    let notified = state.support.changed.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    let at = now();
+    let waiting = state.support.waiting(own.ckid, at);
+    if asked != Some(waiting.rev) {
+        return waiting_reply(&waiting);
+    }
+    let Some(_held) = state.support.hold(own.ckid) else {
+        return waiting_reply(&waiting);
+    };
+    let secs = waiting.first_end.map_or(WAIT_SECS, |end| {
+        u64::try_from(end - at).unwrap_or(0).min(WAIT_SECS)
+    });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        tokio::select! {
+            () = &mut notified => {}
+            () = tokio::time::sleep_until(deadline) => break,
+        }
+        if state.support.stopping() {
+            break;
+        }
+        notified.set(state.support.changed.notified());
+        notified.as_mut().enable();
+        let now_waiting = state.support.waiting(own.ckid, now());
+        if now_waiting.rev != waiting.rev {
+            return waiting_reply(&now_waiting);
+        }
+    }
+    waiting_reply(&state.support.waiting(own.ckid, now()))
+}
+
+/// The lines `admin ticket status` adds: the codes open now and held, the waiting-room requests
+/// held and the support links with downloads left, and the last day's `code` records by result;
+/// no person, address, code or link.
 pub async fn status(state: &Arc<AppState>) -> Result<String, String> {
     let at = now();
     let (open, held) = state.support.counts(at);
@@ -532,6 +1066,12 @@ pub async fn status(state: &Arc<AppState>) -> Result<String, String> {
         "support codes: {open} open, {held} held in memory (at most {OPEN_PER_ACCOUNT} open per account and {MAX_HELD} held; {} min, one use; tickets {} h)",
         CODE_SECS / 60,
         TICKET_SECS / HOUR
+    );
+    let _ = writeln!(
+        out,
+        "support codes' waiting room: {} held (at most {HOLDS_PER_KEY} per key and {MAX_WAITS} in all, {WAIT_SECS} s); support links with downloads left: {}",
+        state.support.held_waits(),
+        state.support.links_left(at)
     );
     let since = at - DAY;
     let results = state
@@ -636,7 +1176,7 @@ mod tests {
     #[test]
     fn a_code_works_once_within_its_ten_minutes() {
         let codes = SupportCodes::default();
-        let code = codes.make(maker(1), Use::Pc, AT).unwrap();
+        let code = codes.make(maker(1), Use::Pc, AT).unwrap().code;
         let Looked::Found {
             key,
             maker: who,
@@ -668,7 +1208,7 @@ mod tests {
         assert_eq!(codes.take(key, AT + 4), Taken::Taken);
         // another use's code is a wrong code; so is one never made
         assert_eq!(codes.find(&code, Use::Ctl, AT + 5), Looked::Wrong);
-        let other = codes.make(maker(1), Use::Pc, AT).unwrap();
+        let other = codes.make(maker(1), Use::Pc, AT).unwrap().code;
         assert_ne!(other, code);
         assert_eq!(codes.find("ZZZZ-ZZZZ", Use::Pc, AT), Looked::Wrong);
         // kept ten minutes after it ended, then gone: wrong
@@ -691,16 +1231,16 @@ mod tests {
     #[test]
     fn a_code_ends_with_its_makers_key() {
         let codes = SupportCodes::default();
-        let one = codes.make(maker(1), Use::Pc, AT).unwrap();
+        let one = codes.make(maker(1), Use::Pc, AT).unwrap().code;
         let mut other_key = maker(1);
         other_key.ckid = 7;
-        let two = codes.make(other_key, Use::Pc, AT).unwrap();
-        let used = codes.make(maker(1), Use::Pc, AT).unwrap();
+        let two = codes.make(other_key, Use::Pc, AT).unwrap().code;
+        let used = codes.make(maker(1), Use::Pc, AT).unwrap().code;
         let Looked::Found { key, .. } = codes.find(&used, Use::Pc, AT) else {
             panic!("not found");
         };
         assert_eq!(codes.take(key, AT + 1), Taken::Taken);
-        let theirs = codes.make(maker(2), Use::Pc, AT).unwrap();
+        let theirs = codes.make(maker(2), Use::Pc, AT).unwrap().code;
         assert_eq!(codes.open_keys(1, AT + 2), vec![7, 101]);
         // the key 101 ended: its open code ends, the used one stays used, the others stay open
         assert_eq!(codes.end_keys(1, &[101], AT + 2), 1);
@@ -725,7 +1265,7 @@ mod tests {
     #[test]
     fn one_of_many_at_once_takes_a_code() {
         let codes = Arc::new(SupportCodes::default());
-        let code = codes.make(maker(1), Use::Pc, AT).unwrap();
+        let code = codes.make(maker(1), Use::Pc, AT).unwrap().code;
         let Looked::Found { key, .. } = codes.find(&code, Use::Pc, AT) else {
             panic!("not found");
         };
@@ -759,7 +1299,7 @@ mod tests {
         );
         assert!(codes.make(maker(2), Use::Pc, AT + 100).is_ok());
         // one used: room again; at the last second, at least 1
-        let first = codes.make(maker(3), Use::Pc, AT).unwrap();
+        let first = codes.make(maker(3), Use::Pc, AT).unwrap().code;
         for _ in 1..OPEN_PER_ACCOUNT {
             codes.make(maker(3), Use::Pc, AT + 30).unwrap();
         }
@@ -777,8 +1317,8 @@ mod tests {
 
         // 1000 held in all: the ended ones go first, oldest first; 1000 open ones, no more
         let codes = SupportCodes::default();
-        let old = codes.make(maker(0), Use::Pc, AT).unwrap();
-        let newer = codes.make(maker(0), Use::Pc, AT + 60).unwrap();
+        let old = codes.make(maker(0), Use::Pc, AT).unwrap().code;
+        let newer = codes.make(maker(0), Use::Pc, AT + 60).unwrap().code;
         // both over, both held
         let t = AT + CODE_SECS + 60;
         let mut id = 1;
@@ -806,9 +1346,153 @@ mod tests {
         let (a, b) = (SupportCodes::default(), SupportCodes::default());
         assert_ne!(a.key_of("K7M2Q9XD"), b.key_of("K7M2Q9XD"));
         assert_eq!(a.key_of("K7M2Q9XD"), a.key_of("K7M2Q9XD"));
-        let code = a.make(maker(1), Use::Pc, AT).unwrap();
+        let code = a.make(maker(1), Use::Pc, AT).unwrap().code;
         assert_eq!(b.find(&code, Use::Pc, AT), Looked::Wrong);
-        assert!(!format!("{:?}", a.codes().keys().collect::<Vec<_>>()).contains(&code));
+        assert!(!format!("{:?}", a.held().codes).contains(&code));
+    }
+
+    #[test]
+    fn the_waiting_room_hears_of_every_change() {
+        let codes = SupportCodes::default();
+        let me = maker(1);
+        assert_eq!(
+            codes.waiting(me.ckid, AT),
+            Waiting {
+                rev: 0,
+                codes: vec![],
+                first_end: None
+            }
+        );
+        let made = codes.make(me.clone(), Use::Pc, AT).unwrap();
+        let w = codes.waiting(me.ckid, AT + 1);
+        assert_eq!((w.rev, w.first_end), (1, Some(AT + CODE_SECS)));
+        assert_eq!(
+            w.codes,
+            vec![json!({"wait": made.wait, "state": "open", "expires_in": CODE_SECS - 1})]
+        );
+        // another key, of the same account or not, sees nothing of it
+        let mut other = maker(1);
+        other.ckid = 7;
+        assert_eq!(codes.waiting(other.ckid, AT).codes, Vec::<Value>::new());
+        assert_eq!(codes.waiting(maker(2).ckid, AT).rev, 0);
+        // taken: still open until its ticket is signed, given back unseen
+        let Looked::Found { key, .. } = codes.find(&made.code, Use::Pc, AT + 2) else {
+            panic!("not found");
+        };
+        assert_eq!(codes.take(key, AT + 2), Taken::Taken);
+        let w = codes.waiting(me.ckid, AT + 2);
+        assert_eq!((w.rev, &w.codes[0]["state"]), (1, &json!("open")));
+        codes.give_back(key);
+        assert_eq!(codes.take(key, AT + 3), Taken::Taken);
+        let by = UsedBy {
+            pc: "123456789".into(),
+            pk: [2; 32],
+            exp: AT + 3 + TICKET_SECS,
+        };
+        codes.mark_used(key, by);
+        let w = codes.waiting(me.ckid, AT + 10);
+        assert_eq!(w.rev, 2);
+        assert_eq!(
+            w.codes,
+            vec![
+                json!({"wait": made.wait, "state": "used", "pc": "123456789",
+                        "pk": b64(&[2; 32]), "until_in": TICKET_SECS - 7})
+            ]
+        );
+        assert_eq!(w.first_end, None);
+        // ended with its key: over
+        let ended = codes.make(me.clone(), Use::Pc, AT + 20).unwrap();
+        assert_eq!(codes.end_keys(1, &[me.ckid], AT + 21), 1);
+        let w = codes.waiting(me.ckid, AT + 21);
+        assert_eq!(w.rev, 4);
+        assert_eq!(w.codes[1], json!({"wait": ended.wait, "state": "over"}));
+        // its ten minutes over: noticed once
+        let late = codes.make(me.clone(), Use::Pc, AT + 30).unwrap();
+        assert_eq!(
+            codes.waiting(me.ckid, AT + 31).first_end,
+            Some(AT + 30 + CODE_SECS)
+        );
+        // gone from memory ten minutes after its end, out of the list: a change too
+        let w = codes.waiting(me.ckid, AT + 3 + ENDED_KEPT_SECS);
+        assert_eq!((w.rev, w.codes.len()), (6, 2));
+        // the ended one gone, and the late one over: two more
+        let w = codes.waiting(me.ckid, AT + 30 + CODE_SECS);
+        assert_eq!(w.rev, 8);
+        assert_eq!(w.codes, vec![json!({"wait": late.wait, "state": "over"})]);
+        assert_eq!(codes.waiting(me.ckid, AT + 31 + CODE_SECS).rev, 8);
+        let w = codes.waiting(me.ckid, AT + 30 + CODE_SECS + ENDED_KEPT_SECS);
+        assert_eq!((w.rev, w.codes.len()), (9, 0));
+        assert_eq!(codes.waiting(other.ckid, AT + 3 + ENDED_KEPT_SECS).rev, 0);
+    }
+
+    #[test]
+    fn the_holds() {
+        let codes = SupportCodes::default();
+        let one = codes.hold(1).unwrap();
+        let two = codes.hold(1).unwrap();
+        assert!(codes.hold(1).is_none());
+        drop(one);
+        let three = codes.hold(1).unwrap();
+        assert_eq!(codes.held_waits(), HOLDS_PER_KEY);
+        let mut others: Vec<WaitHold<'_>> = (0..MAX_WAITS as i64 - 2)
+            .map(|k| codes.hold(100 + k).unwrap())
+            .collect();
+        assert_eq!(codes.held_waits(), MAX_WAITS);
+        assert!(codes.hold(5000).is_none());
+        others.pop();
+        assert!(codes.hold(5000).is_some());
+        drop((two, three, others));
+        assert_eq!(codes.held_waits(), 0);
+        codes.stop();
+        assert!(codes.hold(1).is_none());
+    }
+
+    #[test]
+    fn a_link_is_its_codes_while_the_code_is_open() {
+        let codes = SupportCodes::default();
+        let made = codes.make(maker(1), Use::Pc, AT).unwrap();
+        let other = codes.make(maker(1), Use::Pc, AT).unwrap();
+        for value in [&made.link, &made.wait] {
+            assert_eq!(value.len(), 22);
+            assert_eq!(crate::util::b64url_decode(value).map(|b| b.len()), Some(16));
+        }
+        assert!(made.link != made.wait && made.link != other.link && made.wait != other.wait);
+        let found = codes.find_link(&made.link, AT + 1).unwrap();
+        assert_eq!(
+            (&found.code, &found.maker, found.downloads_left),
+            (&shown(&made.code), &maker(1), LINK_DOWNLOADS)
+        );
+        assert!(!format!("{found:?} {made:?}").contains(&made.code));
+        // nor its waiting number, another value or the code
+        for wrong in [
+            made.wait.as_str(),
+            "AAAAAAAAAAAAAAAAAAAAAA",
+            &made.code,
+            "",
+            "%",
+        ] {
+            assert!(codes.find_link(wrong, AT + 1).is_none(), "{wrong}");
+        }
+        // three downloads
+        for left in (0..LINK_DOWNLOADS).rev() {
+            assert_eq!(codes.take_download(found.key, AT + 2), Some(left));
+        }
+        assert_eq!(codes.take_download(found.key, AT + 2), None);
+        assert_eq!(codes.links_left(AT + 2), 1);
+        assert_eq!(
+            codes.find_link(&made.link, AT + 2).unwrap().downloads_left,
+            0
+        );
+        // taken, the link ends; given back, it is there again; over at ten minutes
+        let Looked::Found { key, .. } = codes.find(&other.code, Use::Pc, AT + 3) else {
+            panic!("not found");
+        };
+        assert_eq!(codes.take(key, AT + 3), Taken::Taken);
+        assert!(codes.find_link(&other.link, AT + 3).is_none());
+        assert_eq!(codes.take_download(key, AT + 3), None);
+        codes.give_back(key);
+        assert!(codes.find_link(&other.link, AT + 3).is_some());
+        assert!(codes.find_link(&other.link, AT + CODE_SECS).is_none());
     }
 
     #[test]

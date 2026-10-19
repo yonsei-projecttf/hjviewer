@@ -67,13 +67,15 @@
 //! is used only with the ticket (step 8), so that of two requests with it only one gets one; the
 //! ticket lives support.rs `TICKET_SECS` (2 h). Its tries leave records `code`, with the maker's
 //! tag once the code was found, in the same counters and within the same budget of failure
-//! records.
+//! records. From 1.9.0 (TV-W6) the answer of a code also carries `staff`, the support grant
+//! (grant.rs) that names the maker's account key for this PC only, and the maker's app hears of
+//! the PC in the waiting room (support.rs `mark_used`); the access password's answer has neither.
 
 use crate::{
     api::{is_json, ApiRequest, BodyError, Reply},
     config::Config,
     db::{self, Record},
-    devsig,
+    devsig, grant,
     hbbs::{self, Lookup},
     limits::{self, Admit, Take, SCOPE_GUEST_IP, SCOPE_GUEST_TICKETS},
     login::{fresh, wait_for, Retry, TEXT_SEAL_CLOCK},
@@ -894,7 +896,8 @@ async fn exchange(run: &mut Run<'_>, asked: Asked, opened: Opened) -> Reply {
         }
     };
     // 8. the code is used with the ticket, and the ticket
-    if let Some(key) = code {
+    if let Some((key, _)) = &code {
+        let key = *key;
         let result = match state.support.take(key, now()) {
             Taken::Taken => None,
             Taken::Used => Some("used"),
@@ -910,8 +913,8 @@ async fn exchange(run: &mut Run<'_>, asked: Asked, opened: Opened) -> Reply {
     }
     let issued = ticket::issue(state, &claims, what);
     if issued.is_err() {
-        if let Some(key) = code {
-            state.support.give_back(key);
+        if let Some((key, _)) = &code {
+            state.support.give_back(*key);
         }
     }
     match issued {
@@ -921,8 +924,34 @@ async fn exchange(run: &mut Run<'_>, asked: Asked, opened: Opened) -> Reply {
             } else {
                 "ok-pc"
             };
+            let mut answer = issued.json(now());
+            // TV-W6: the maker hears of the PC in the waiting room, and the PC gets the grant
+            if let (Some((key, maker_key)), Asked::Pc { id, pk, .. }) = (&code, &asked) {
+                state.support.mark_used(
+                    *key,
+                    support::UsedBy {
+                        pc: id.clone(),
+                        pk: *pk,
+                        exp: claims.exp,
+                    },
+                );
+                let grant = grant::Grant {
+                    pc_id: id,
+                    pc_pk: *pk,
+                    ck: maker_key.pk,
+                    ctl_id: &maker_key.ctl_id,
+                    iat: claims.iat,
+                    exp: claims.exp,
+                };
+                match grant::staff(&state.list_key, &grant) {
+                    Some(staff) => answer["staff"] = staff,
+                    None => log_err!(
+                        "guest: the support grant of a support code was not signed; the PC got its ticket without it"
+                    ),
+                }
+            }
             run.end(Outcome::Passed, Some(result), true).await;
-            Reply::ok(&issued.json(now()))
+            Reply::ok(&answer)
         }
         Err(NoTicket::Off) => {
             let reply = run.kind.unavailable();
@@ -976,12 +1005,12 @@ async fn check_password(run: &mut Run<'_>, opened: Opened) -> Result<(), Reply> 
 /// Steps 5 and 6 for a support code: the code in memory (support.rs), open, its maker's account
 /// still on the allowlist and not blocked, and the account key that made it not ended; wrong,
 /// over, used, blocked and revoked get the one 401. A code found blocked or revoked is ended for
-/// good (support.rs `end_keys`): an unblock does not open it again. The code is not used yet:
-/// that is step 8's.
+/// good (support.rs `standing`): an unblock does not open it again. The code is not used yet:
+/// that is step 8's. With it, the maker's account key that the support grant names (TV-W6).
 async fn find_code(
     run: &mut Run<'_>,
     typed: &Zeroizing<String>,
-) -> Result<support::CodeKey, Reply> {
+) -> Result<(support::CodeKey, support::MakerKey), Reply> {
     let state = run.state;
     let (key, maker, refused) = match state.support.find(typed, Use::Pc, now()) {
         Looked::Wrong => {
@@ -1002,48 +1031,17 @@ async fn find_code(
         state.tickets.note(&format!("code refused {result}"));
         return Err(run.fail(Outcome::Failed, result, Kind::Code.denied()).await);
     }
-    // the maker's account: still there, the same account, on the allowlist and not blocked; and
-    // the account key that made the code, not ended (a logout, a revoke, a block)
-    let (id, ckid) = (maker.account_id, maker.ckid);
-    let found = state
-        .db
-        .call(move |c| match db::account(c, id)? {
-            Some(account) => {
-                let allowed = db::allowed(c, &account.login_key)?;
-                let key_active: bool = c.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM ctl_keys
-                                    WHERE ckid = ?1 AND account_id = ?2 AND revoked_at IS NULL)",
-                    [ckid, id],
-                    |r| r.get(0),
-                )?;
-                Ok(Some((account.login_key, allowed, key_active)))
-            }
-            None => Ok(None),
-        })
-        .await;
-    let refused = match found {
-        Ok(Some((login_key, allowed, key_active))) => {
-            if !allowed || state.tags.account(&login_key) != maker.account_tag {
-                Some("blocked")
-            } else if !key_active {
-                Some("revoked")
-            } else {
-                None
-            }
+    match support::standing(state, &maker).await {
+        Ok(Ok(maker_key)) => Ok((key, maker_key)),
+        Ok(Err(result)) => {
+            state.tickets.note(&format!("code refused {result}"));
+            Err(run.fail(Outcome::Failed, result, Kind::Code.denied()).await)
         }
-        Ok(None) => Some("blocked"),
         Err(e) => {
             log_err!("guest: {e}");
-            return Err(run.fail(Outcome::Released, "error", unanswered()).await);
+            Err(run.fail(Outcome::Released, "error", unanswered()).await)
         }
-    };
-    if let Some(result) = refused {
-        // over for good: neither an unblock nor a new login of the account opens it again
-        state.support.end_keys(id, &[ckid], now());
-        state.tickets.note(&format!("code refused {result}"));
-        return Err(run.fail(Outcome::Failed, result, Kind::Code.denied()).await);
     }
-    Ok(key)
 }
 
 /// The key hbbs holds for the PC `id`: its last answer while that serves, else hbbs's now.

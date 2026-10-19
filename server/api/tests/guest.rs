@@ -174,6 +174,8 @@ async fn a_controller_and_a_pc_get_their_tickets() {
     for device in [&pc, &fresh] {
         let a = ask(&h, &pc_body(&h, PASSWORD, device, now()), "10.7.0.2").await;
         assert_eq!(a.status, 200, "{}", a.text);
+        // a support code's answer only has the support grant (TV-W6, tests/support.rs)
+        assert!(a.json.get("staff").is_none(), "{}", a.text);
         let p = payload_of(&a.json);
         assert_eq!(
             (&p["who"], &p["use"], &p["id"], &p["pk"], &p["to"]),

@@ -79,7 +79,13 @@ impl ListKey {
 
     /// The signature of a list's bytes.
     pub fn sign(&self, list: &[u8]) -> [u8; 64] {
-        self.key.sign(&message(list)).to_bytes()
+        self.sign_message(&message(list))
+    }
+
+    /// The signature of bytes that begin with their own purpose string: a list's ([`message`])
+    /// or, from 1.9.0, a support grant's (grant.rs, `hjv-support-v1`).
+    pub fn sign_message(&self, signed: &[u8]) -> [u8; 64] {
+        self.key.sign(signed).to_bytes()
     }
 }
 

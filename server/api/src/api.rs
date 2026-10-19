@@ -20,8 +20,9 @@
 //! | `POST /api/hjv/devices/{id}/wake`, `GET /api/hjv/wake/{job}`, `GET /api/hjv/devices/{id}/wol` | waking a PC of the account through a NAS relay, and how ready it is (wake.rs) |
 //! | `POST /api/hjv/ticket` | `{"ticket","use","exp","server_time"}`: the access ticket of the token's account that hbbs checks, `staff`/`ctl`, or `staff`/`both` for the PC whose device key signed the body (ticket.rs) |
 //! | `POST /api/hjv/guest` | the same object for the access password: a `guest` ticket for one PC, no token (guest.rs); or for a PC's support code (`code`), `guest`/`pc` |
-//! | `POST /api/hjv/support-code` | `{"code","use","expires_in"}`: a support code the token's staff account makes for a PC, once within ten minutes (support.rs) |
-//! | `GET, HEAD /api/hjv/update/{platform}/{version}`, `POST /api/hjv/update/{platform}/link`, `GET, HEAD /api/hjv/u/{code}`, `GET, HEAD /api/hjv/get/{code}/[file]` | the packages of new app versions: to a login or a bound PC, by a short link, and through door 2 (update.rs) |
+//! | `POST /api/hjv/support-code` | `{"code","use","expires_in","link","wait"}`: a support code the token's staff account makes for a PC, once within ten minutes, with its support link and waiting number (support.rs) |
+//! | `GET /api/hjv/support-code/wait?rev=` | `{"rev","codes":[…]}`: the waiting room of the codes the request's account key made, held up to 20 seconds (support.rs) |
+//! | `GET, HEAD /api/hjv/update/{platform}/{version}`, `POST /api/hjv/update/{platform}/link`, `GET, HEAD /api/hjv/u/{code}`, `GET, HEAD /api/hjv/get/{code}/[file]`, `GET, HEAD /api/hjv/s/{link}/[file]` | the packages of new app versions: to a login or a bound PC, by a short link, through door 2, and by a support code's support link (update.rs) |
 //! | `GET /api/hjv/source` | licence, source and running version (AGPL section 13) |
 //! | `GET /api/login-options`, `GET /api/device-group/accessible` | the static answers nginx gives as well |
 //!
@@ -43,10 +44,10 @@
 //! `Origin` header is refused (the app sends none, so a web page cannot use a visitor's browser);
 //! a request with a body must be `application/json` (parameters such as charset allowed); there is
 //! no CORS. Error texts never contain the word "disabled", which makes the app empty its list.
-//! The two exceptions are update.rs's: a package, a notice file or door 2's page is sent in place
-//! of the JSON (a [`Reply`]'s `sent`, with headers of its own), and the paths a browser opens,
-//! `/api/hjv/u/` and `/api/hjv/get/`, take a request with an `Origin` too: the code in the path
-//! is their key, which no other web page has.
+//! The two exceptions are update.rs's: a package, a notice file, door 2's page or a support link's
+//! is sent in place of the JSON (a [`Reply`]'s `sent`, with headers of its own), and the paths a
+//! browser opens, `/api/hjv/u/`, `/api/hjv/get/` and `/api/hjv/s/`, take a request with an
+//! `Origin` too: the code or link in the path is their key, which no other web page has.
 //!
 //! The PC sync and the relays' requests answer in the envelope protocols' form
 //! (`{"error":"<code>","server_time":…}`, envelope.rs) rather than with these texts. Wake-on-LAN's
@@ -197,6 +198,7 @@ fn allowed_methods(path: &str) -> Option<&'static str> {
     Some(match path {
         "/api/login" | "/api/currentUser" | "/api/logout" | "/api/hjv/this-device/undo" => "POST",
         ticket::PATH | support::PATH => "POST",
+        support::WAIT_PATH => "GET",
         "/api/users" | "/api/peers" | "/api/hjv/this-device" | overview::PATH => "GET",
         "/api/login-options" | "/api/device-group/accessible" | "/api/hjv/source" => "GET, HEAD",
         gate::PATH => "GET, HEAD",
@@ -260,6 +262,7 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         ("/api/hjv/this-device/undo", &Method::POST) => undo(state, &req).await,
         (ticket::PATH, &Method::POST) => ticket::handle(state, &req).await,
         (support::PATH, &Method::POST) => support::handle(state, &req).await,
+        (support::WAIT_PATH, &Method::GET) => support::wait_handle(state, &req).await,
         (overview::PATH, _) => overview::route(state, &req).await,
         (path, method) if wake::allowed_methods(path) == Some(method.as_str()) => {
             wake::route(state, &req).await

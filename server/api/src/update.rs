@@ -11,6 +11,7 @@
 //! | `POST /api/hjv/update/{windows,android}/link` | body `{"installed":true}` or `{"installed":false}`: `{"url":"/api/hjv/u/K7M2-Q9XD","file":"HJViewer-1.6.1-install.exe","expires_in":600}`, a short link for the browser of a remote device |
 //! | `GET, HEAD /api/hjv/u/{code}` | the short link: the package it was made for, under the name it was made with |
 //! | `GET, HEAD /api/hjv/get/{code}/` and `…/{code}/{file}` | door 2, while 1.5.1 is being replaced: a page made from the policy, the packages and their notice files |
+//! | `GET, HEAD /api/hjv/s/{link}/` and `…/{link}/{file}` | a support code's support link (1.9.0, TV-W6): a page with the code, the Windows package to run without installing (`HJViewer-<v>.exe`, three downloads) and its notice files, while the code is open |
 //!
 //! **What is sent.** The policy is the file nginx hands to the apps (HJV_API_VERSION_POLICY, read
 //! again when it changes; its signature is the apps' to check, not hjv-api's, which reads a file
@@ -64,6 +65,15 @@
 //! `notices-<v>/` of the package directory. A wrong code, a closed door and a name that is none
 //! of these are 404.
 //!
+//! **A support link** (support.rs, docs/access-tickets.md 3-7) is a 128-bit value that comes with
+//! a support code and ends with it: ten minutes, or once a PC traded the code, or when its maker's
+//! account is blocked or its account key ended. `…/{link}/` is a page in Korean and English
+//! (SL1–SL8) with the code; the files are `HJViewer-<v>.exe` of the policy's Windows `latest`,
+//! three GETs per code (HEAD is free), and its notice files. Anything else is a short link's 404,
+//! which counts against no address (no one guesses 128 bits, and an address's failures are shared
+//! by everyone behind it). A download is an `update` record `support-windows` with the maker's
+//! tag; the link itself is in no line and no record.
+//!
 //! **Limits** (limits.rs): a request that fails for who asks (no or a wrong token, proof,
 //! signature or code) counts against its client address, 30 a day (HJV_API_LIMIT_UPDATE_FAIL_IP);
 //! past that, such a request gets 429 instead of its 401, 403 or 404. A request with the right
@@ -94,6 +104,7 @@ use crate::{
     oplog::OpEntry,
     review,
     state::AppState,
+    support,
     util::{datetime, day_number, now, random_bytes, valid_device_id, DAY},
 };
 use hyper::{
@@ -975,6 +986,17 @@ enum Asked<'a> {
     Short(&'a str),
     /// door 2: the code and, after its `/`, the file ("" for the page)
     Door2(&'a str, Option<&'a str>),
+    /// a support code's support link (support.rs): its value and, after its `/`, the file
+    Support(&'a str, Option<&'a str>),
+}
+
+/// A code or a link, and after its `/` a file ("" for the page; none without the `/`).
+fn split(rest: &str) -> Option<(&str, Option<&str>)> {
+    let (key, file) = match rest.split_once('/') {
+        Some((key, file)) => (key, Some(file)),
+        None => (rest, None),
+    };
+    (!key.is_empty() && !file.is_some_and(|f| f.contains('/'))).then_some((key, file))
 }
 
 fn asked(path: &str) -> Option<Asked<'_>> {
@@ -989,19 +1011,19 @@ fn asked(path: &str) -> Option<Asked<'_>> {
     if let Some(code) = path.strip_prefix("/api/hjv/u/") {
         return one(code).then_some(Asked::Short(code));
     }
-    let rest = path.strip_prefix("/api/hjv/get/")?;
-    let (code, file) = match rest.split_once('/') {
-        Some((code, file)) => (code, Some(file)),
-        None => (rest, None),
-    };
-    (one(code) && file.is_none_or(|f| !f.contains('/'))).then_some(Asked::Door2(code, file))
+    if let Some(rest) = path.strip_prefix(support::LINK_PATH) {
+        let (link, file) = split(rest)?;
+        return Some(Asked::Support(link, file));
+    }
+    let (code, file) = split(path.strip_prefix("/api/hjv/get/")?)?;
+    Some(Asked::Door2(code, file))
 }
 
 /// The methods of the paths this module answers, for 405 answers; `None` for others.
 pub fn allowed_methods(path: &str) -> Option<&'static str> {
     Some(match asked(path)? {
         Asked::Link(_) => "POST",
-        Asked::Package(..) | Asked::Short(_) | Asked::Door2(..) => "GET, HEAD",
+        Asked::Package(..) | Asked::Short(_) | Asked::Door2(..) | Asked::Support(..) => "GET, HEAD",
     })
 }
 
@@ -1010,10 +1032,13 @@ pub fn takes(path: &str, method: &Method) -> bool {
     allowed_methods(path).is_some_and(|allowed| allowed.split(", ").any(|m| m == method.as_str()))
 }
 
-/// The paths a browser opens, whose key is the code in the path: a request with an `Origin` is
-/// taken there too (api.rs `route`).
+/// The paths a browser opens, whose key is the code or the support link in the path: a request
+/// with an `Origin` is taken there too (api.rs `route`).
 pub fn browser_path(path: &str) -> bool {
-    matches!(asked(path), Some(Asked::Short(_) | Asked::Door2(..)))
+    matches!(
+        asked(path),
+        Some(Asked::Short(_) | Asked::Door2(..) | Asked::Support(..))
+    )
 }
 
 /// Dispatches the paths of [`allowed_methods`] (the caller checked the method).
@@ -1023,6 +1048,7 @@ pub async fn route(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
         Some(Asked::Link(platform)) => make_link(state, req, platform).await,
         Some(Asked::Short(code)) => browser(short_link(state, req, code).await),
         Some(Asked::Door2(code, file)) => browser(door2(state, req, code, file).await),
+        Some(Asked::Support(link, file)) => browser(support_link(state, req, link, file).await),
         None => Reply::not_found(),
     }
 }
@@ -1832,9 +1858,14 @@ async fn page(state: &Arc<AppState>) -> Reply {
         })
         .await
     };
-    let Some(html) = html else {
-        return Reply::server_error();
-    };
+    match html {
+        Some(html) => html_reply(html),
+        None => Reply::server_error(),
+    }
+}
+
+/// A page of this module as the answer: no script, no outside resource.
+fn html_reply(html: String) -> Reply {
     let mut headers = private_headers();
     headers.extend([
         (
@@ -1854,6 +1885,317 @@ async fn page(state: &Arc<AppState>) -> Reply {
         }),
         ..Reply::ok(&json!({}))
     }
+}
+
+// ---- support links (TV-W6) ----
+
+/// `GET, HEAD /api/hjv/s/{link}`, `…/{link}/` and `…/{link}/{file}` (docs/access-tickets.md 3-7
+/// "지원 링크"): while the support code of `link` is open and its maker stands (support.rs
+/// `standing`), the page that shows the code and offers the policy's Windows `latest` to run
+/// without installing, that package (support.rs `LINK_DOWNLOADS` GETs; a HEAD is free) and its
+/// notice files. Anything else is a short link's 404, which counts against no address: a 128-bit
+/// value is not guessed, and the update failures of an address are shared by everyone behind it.
+/// A download is an `update` record `support-windows` with the maker's tag; nothing logs or
+/// records the link, the code or the page.
+async fn support_link(
+    state: &Arc<AppState>,
+    req: &ApiRequest,
+    link: &str,
+    file: Option<&str>,
+) -> Reply {
+    let Some(found) = state.support.find_link(link, now()) else {
+        return no_link();
+    };
+    match support::standing(state, &found.maker).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => return no_link(),
+        Err(e) => {
+            log_err!("update: {e}");
+            return Reply::server_error();
+        }
+    }
+    let name = match file {
+        // the page's links are relative: it lives at the address that ends in /
+        None => {
+            let to = HeaderValue::from_str(&format!("{}{link}/", support::LINK_PATH));
+            return match to {
+                Ok(to) => with_headers(
+                    Reply::error(StatusCode::TEMPORARY_REDIRECT, TEXT_MOVED),
+                    vec![(LOCATION, to)],
+                ),
+                Err(_) => no_link(),
+            };
+        }
+        Some("") => return support_page(state, &found.code).await,
+        Some(name) => name.to_owned(),
+    };
+    let opened = {
+        let (state, name) = (state.clone(), name.clone());
+        off_thread(move || support_file(&state, &name))
+            .await
+            .flatten()
+    };
+    let head = req.method == Method::HEAD;
+    match opened {
+        None => no_link(),
+        Some(Door2File::Notice(file, size)) if head => file_reply(file, size, None, &name, false),
+        Some(Door2File::Notice(file, size)) => match state.updates.slots.take() {
+            Some(slot) => file_reply(file, size, Some(slot), &name, false),
+            None => busy(),
+        },
+        Some(Door2File::Package(..)) if found.downloads_left == 0 => no_link(),
+        Some(Door2File::Package(_, opened)) if head => {
+            file_reply(opened.file, opened.size, None, &name, true)
+        }
+        Some(Door2File::Package(platform, opened)) => {
+            let Some(slot) = state.updates.slots.take() else {
+                return busy();
+            };
+            let Some(left) = state.support.take_download(found.key, now()) else {
+                return no_link();
+            };
+            let ip_tag = state.tags.ip(&req.ip);
+            log_info!(
+                "update: {} {} by a support link (acct={}, ip={ip_tag}, {left} left)",
+                platform.name(),
+                opened.version,
+                found.maker.account_tag
+            );
+            state
+                .record(
+                    "update",
+                    Some(found.maker.account_tag),
+                    None,
+                    Some(ip_tag),
+                    "support-windows",
+                )
+                .await;
+            file_reply(opened.file, opened.size, Some(slot), &name, true)
+        }
+    }
+}
+
+/// The Windows `latest` of the policy and its package, with the notice files that are there.
+type Windows = (Entry, Package, Vec<&'static str>);
+
+fn support_windows(state: &AppState) -> Option<Windows> {
+    let policy = state.updates.policy(&state.config)?;
+    let (entry, package) = policy.package(Platform::Windows)?;
+    let notices = NOTICES
+        .into_iter()
+        .filter(|n| open_notice(&state.config.package_dir, &entry.latest, n).is_some())
+        .collect();
+    Some((entry.clone(), package.clone(), notices))
+}
+
+/// The file a support link hands out under `name`, opened: the Windows package under the name of
+/// running it without installing (`HJViewer-<v>.exe`; neither `-install` nor `-qs-`), or one of
+/// its notice files (it reads files: not for an async thread).
+fn support_file(state: &AppState, name: &str) -> Option<Door2File> {
+    let policy = state.updates.policy(&state.config)?;
+    let (entry, package) = policy.package(Platform::Windows)?;
+    let version = &entry.latest;
+    let dir = &state.config.package_dir;
+    if windows_names(version)[1] == name {
+        return match open_plain(&dir.join(&package.file), Some(package.size)) {
+            Ok((file, size)) => Some(Door2File::Package(
+                Platform::Windows,
+                Opened {
+                    file,
+                    size,
+                    version: version.clone(),
+                    stored: package.file.clone(),
+                },
+            )),
+            Err(why) => {
+                complain(state, Platform::Windows, why);
+                None
+            }
+        };
+    }
+    let notice = NOTICES.iter().find(|n| notice_name(version, n) == name)?;
+    open_notice(dir, version, notice).map(|(file, size)| Door2File::Notice(file, size))
+}
+
+/// A support link's page as the answer.
+async fn support_page(state: &Arc<AppState>, code: &str) -> Reply {
+    let windows = {
+        let state = state.clone();
+        off_thread(move || support_windows(&state)).await
+    };
+    match windows {
+        Some(windows) => html_reply(support_page_html(code, windows.as_ref())),
+        None => Reply::server_error(),
+    }
+}
+
+const SUPPORT_HEAD: &str = r#"<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>HJViewer 원격 지원 · HJViewer remote support</title>
+<style>
+body { font-family: sans-serif; line-height: 1.6; max-width: 44em; margin: 1.5em auto; padding: 0 1em; background: #fff; color: #111; }
+h1 { font-size: 1.4em; }
+section { margin-top: 2.5em; border-top: 1px solid #ccc; }
+code { word-break: break-all; }
+li { margin-bottom: 0.6em; }
+.facts { font-size: 0.9em; color: #444; }
+.pilot { border-left: 4px solid #c90; padding-left: 0.8em; }
+.caution { border-left: 4px solid #c33; padding-left: 0.8em; font-weight: bold; }
+.code { font-family: monospace; font-size: 2em; font-weight: bold; letter-spacing: 0.12em; margin: 0.3em 0; }
+.button { display: inline-block; padding: 0.3em 0.8em; border-radius: 6px; background: #0b57d0; color: #fff; text-decoration: none; }
+a { color: #0b57d0; }
+@media (prefers-color-scheme: dark) {
+  body { background: #121212; color: #eee; }
+  section { border-top-color: #444; }
+  .facts { color: #bbb; }
+  a { color: #8ab4f8; }
+  .button { background: #8ab4f8; color: #121212; }
+}
+</style>
+</head>
+<body>
+"#;
+
+/// The words of a support link's page in one language (docs/access-tickets.md 5-3, SL1–SL8).
+struct SupportWords {
+    lang: &'static str,
+    /// SL1
+    title: &'static str,
+    /// door 2's pilot line
+    pilot: &'static str,
+    /// SL2
+    caution: &'static str,
+    /// SL3, around the button's words
+    download: [&'static str; 2],
+    button: [&'static str; 2],
+    /// SL8, in SL3's place without a Windows package
+    preparing: &'static str,
+    /// SL4
+    smartscreen: &'static str,
+    /// SL5, before and after the code
+    enter: [&'static str; 2],
+    /// SL6
+    accept: &'static str,
+    /// SL7
+    last: &'static str,
+    /// the size and SHA-256 of the package (door 2's facts)
+    facts: fn(&Package) -> String,
+    /// "the notice files of HJViewer {v}: …"
+    notices: fn(&str, &str) -> String,
+}
+
+const SUPPORT_KO: SupportWords = SupportWords {
+    lang: "ko",
+    title: "HJViewer 원격 지원",
+    pilot: "본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.",
+    caution: "연세대학교 교직원이 이 PC를 원격으로 도우려고 합니다. 직접 도움을 부탁한 경우에만 아래를 따라 주세요. 모르는 사람이 보낸 링크라면 이 페이지를 닫으세요. Windows PC에서 여세요.",
+    download: ["[", "]를 눌러 받은 파일을 실행하세요. 설치하지 않고 바로 실행됩니다. 브라우저가 이 파일은 흔히 받는 파일이 아니라고 하면 [⋯] → [유지]를 누르세요."],
+    button: ["", " 받기"],
+    preparing: "HJViewer를 준비하고 있습니다. 잠시 뒤 이 페이지를 다시 열어 주세요. 이미 받은 HJViewer에 [지원 코드 넣기]가 보이면 그것을 실행해 3단계부터 하세요.",
+    smartscreen: "\"Windows의 PC 보호\" 창이 뜨면 [추가 정보] → [실행]을 누르세요. 서명이 없는 프로그램이라 뜹니다. 아래 SHA-256으로 파일을 확인할 수 있습니다.",
+    enter: ["HJViewer의 \"서버에 연결되지 않음\" 알림에서 [지원 코드 넣기]를 누르고 이 코드를 넣으세요.", "10분 안에 한 번만 쓸 수 있습니다."],
+    accept: "교직원이 연결하면 연결 창에 방패 표시와 함께 \"연세대 교직원(로그인 확인)\" 줄이 보입니다. 확인한 뒤 [수락]을 누르세요. 그 창에서 언제든 연결을 끊을 수 있습니다. 이 표시가 없는 연결 요청은 받지 마세요.",
+    last: "이 페이지의 주소와 코드는 다른 사람에게 알리지 마세요. 링크는 10분이 지나거나 코드를 넣으면 끝납니다. HJViewer는 GNU AGPL-3.0 라이선스로 배포합니다. 소스 코드를 받는 곳은 아래 알림 파일의 SOURCE에 있습니다.",
+    facts,
+    notices: |version, links| format!("HJViewer {version}의 알림 파일: {links}"),
+};
+
+const SUPPORT_EN: SupportWords = SupportWords {
+    lang: "en",
+    title: "HJViewer remote support",
+    pilot: "This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.",
+    caution: "A Yonsei University faculty or staff member is about to help this PC remotely. Follow the steps below only if you asked for this help yourself. If someone you do not know sent you this link, close this page. Open it on a Windows PC.",
+    download: ["Click [", "] and run the file. It runs without being installed. If the browser says the file is not commonly downloaded, choose […] → [Keep]."],
+    button: ["Download ", ""],
+    preparing: "HJViewer is being prepared. Please open this page again in a moment. If the HJViewer you already have shows [Support code], run it and start from step 3.",
+    smartscreen: "If \"Windows protected your PC\" appears, click [More info] → [Run anyway]. It appears because the program is not signed. You can check the file against the SHA-256 below.",
+    enter: ["In HJViewer, click [Support code] on the notice \"Not connected\" and enter this code.", "It works once, within 10 minutes."],
+    accept: "When the faculty or staff member connects, the connection window shows a shield with the line \"Yonsei faculty or staff (verified login)\". Check it, then press [Accept]. You can end the connection in that window at any time. Do not accept a request without this mark.",
+    last: "Do not share this page's address or the code. The link ends after 10 minutes or once the code is entered. HJViewer is distributed under the GNU AGPL-3.0. Where to get the source is in the SOURCE notice file below.",
+    facts: |package| {
+        format!(
+            "Size {} bytes (about {} MB) · SHA-256 <code>{}</code>",
+            grouped(package.size),
+            package.size.div_ceil(1024 * 1024),
+            esc(&package.sha256)
+        )
+    },
+    notices: |version, links| format!("Notice files of HJViewer {version}: {links}"),
+};
+
+/// A support link's page (SL1–SL8), Korean then English: the code as shown, and the policy's
+/// Windows `latest` with its notice files when there is one. Every value is escaped; there is no
+/// script and no operator contact (anyone with the link sees the page).
+fn support_page_html(code: &str, windows: Option<&Windows>) -> String {
+    let mut html = String::from(SUPPORT_HEAD);
+    for (i, words) in [SUPPORT_KO, SUPPORT_EN].iter().enumerate() {
+        if i == 0 {
+            html.push_str("<main>\n");
+        } else {
+            html.push_str(&format!("<section lang=\"{}\">\n", words.lang));
+        }
+        html.push_str(&format!("<h1>{}</h1>\n", words.title));
+        html.push_str(&format!("<p class=\"pilot\">{}</p>\n", esc(words.pilot)));
+        html.push_str(&format!(
+            "<p class=\"caution\">{}</p>\n<ol>\n",
+            esc(words.caution)
+        ));
+        match windows {
+            Some((entry, _, _)) => {
+                let run = &windows_names(&entry.latest)[1];
+                html.push_str(&format!(
+                    "<li>{}<a class=\"button\" href=\"{}\">{}{}{}</a>{}</li>\n",
+                    esc(words.download[0]),
+                    esc(run),
+                    esc(words.button[0]),
+                    esc(run),
+                    esc(words.button[1]),
+                    esc(words.download[1]),
+                ));
+            }
+            None => html.push_str(&format!("<li>{}</li>\n", esc(words.preparing))),
+        }
+        html.push_str(&format!("<li>{}</li>\n", esc(words.smartscreen)));
+        html.push_str(&format!(
+            "<li>{}<div class=\"code\">{}</div>{}</li>\n",
+            esc(words.enter[0]),
+            esc(code),
+            esc(words.enter[1]),
+        ));
+        html.push_str(&format!("<li>{}</li>\n</ol>\n", esc(words.accept)));
+        if let Some((_, package, _)) = windows {
+            html.push_str(&format!(
+                "<p class=\"facts\">{}</p>\n",
+                (words.facts)(package)
+            ));
+        }
+        html.push_str(&format!("<p>{}</p>\n", esc(words.last)));
+        if let Some((entry, _, notices)) = windows.filter(|(_, _, n)| !n.is_empty()) {
+            let links: Vec<String> = notices
+                .iter()
+                .map(|notice| {
+                    format!(
+                        "<a href=\"{}\">{}</a>",
+                        esc(&notice_name(&entry.latest, notice)),
+                        esc(notice)
+                    )
+                })
+                .collect();
+            html.push_str(&format!(
+                "<p>{}</p>\n",
+                (words.notices)(&esc(&entry.latest), &links.join(" · "))
+            ));
+        }
+        html.push_str(if i == 0 { "</main>\n" } else { "</section>\n" });
+    }
+    html.push_str("</body>\n</html>\n");
+    html
 }
 
 #[cfg(test)]

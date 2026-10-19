@@ -4,18 +4,27 @@
 //! app makes a code, a PC trades it once within ten minutes for a two-hour `guest`/`pc` ticket;
 //! wrong, expired, used and blocked codes get one 401 after the failure delay; one of two trades
 //! at once; the access password's limits; the caps; who may not make one; nothing of a code in
-//! the journal or the records.
+//! the journal or the records. TV-W6 (1.9.0): the support link (its page, three downloads, the
+//! link dying with its code), the waiting room (the hold, `rev`, the maker key's codes only, the
+//! limits) and the support grant (its bytes against tests/data/support-grant-vectors.json, only
+//! for a traded code and its PC, no name).
 
 mod common;
 
 use common::*;
 use hjv_api::{
-    devsig, guest, seal, support, ticket,
-    util::{b64, b64url_decode, datetime, now, random_bytes, sha256, DAY, HOUR},
+    devsig, grant, guest,
+    limits::SCOPE_UPDATE_FAIL_IP,
+    seal, support, ticket,
+    trust::ListKey,
+    util::{b64, b64_decode, b64url_decode, datetime, hex, now, random_bytes, sha256, DAY, HOUR},
 };
 use hyper::Method;
 use serde_json::{json, Value};
-use std::sync::atomic::Ordering;
+use std::{
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
 
 fn nonce() -> String {
     b64(&random_bytes::<16>())
@@ -87,7 +96,13 @@ async fn code_records(h: &Harness) -> Vec<(String, String, String)> {
 
 /// The payload of a ticket object's ticket, once the harness's ticket key's signature holds.
 fn payload_of(object: &Value) -> Value {
-    assert_eq!(object.as_object().unwrap().len(), 4, "{object}");
+    // a code's answer has the support grant besides (TV-W6)
+    let members = object.as_object().unwrap();
+    assert_eq!(
+        members.keys().filter(|k| *k != "staff").count(),
+        4,
+        "{object}"
+    );
     let parts: Vec<&str> = object["ticket"].as_str().unwrap().split('.').collect();
     assert_eq!((parts.len(), parts[0], parts[1]), (4, "t1", "1"));
     let payload = b64url_decode(parts[2]).unwrap();
@@ -113,7 +128,7 @@ async fn a_staff_member_makes_a_code_and_a_pc_trades_it() {
     let token = h.login_ok(HONG, None).await;
     let a = make(&h, &token, json!({"use": "pc"})).await;
     assert_eq!(a.status, 200, "{}", a.text);
-    assert_eq!(a.json.as_object().unwrap().len(), 3, "{}", a.text);
+    assert_eq!(a.json.as_object().unwrap().len(), 5, "{}", a.text);
     assert_eq!(
         (&a.json["use"], &a.json["expires_in"]),
         (&json!("pc"), &json!(600))
@@ -803,12 +818,24 @@ async fn the_pcs_key_and_the_ticket_key() {
 }
 
 /// No code, in any form, goes to the journal or the records; nor the ticket, the address or the
-/// PC's ID.
+/// PC's ID; nor (TV-W6) a support link, a waiting number, the waiting room's answer or a grant.
 #[tokio::test]
 async fn nothing_of_a_code_is_logged_or_recorded() {
     let h = Harness::start().await;
     let token = h.login_ok(HONG, None).await;
-    let codes = [made(&h, &token).await, made(&h, &token).await];
+    let (first, link, wait) = made_all(&h, &token).await;
+    let codes = [first, made(&h, &token).await];
+    // the link's page and file, and the waiting room
+    for path in [
+        link.clone(),
+        format!("{link}/"),
+        format!("{link}/HJViewer-1.9.0.exe"),
+    ] {
+        h.request(Method::GET, &path, &[("x-real-ip", "10.8.8.2")], None)
+            .await;
+    }
+    let waited = h.get(&wait_path(None), &token).await;
+    assert_eq!(waited.status, 200, "{}", waited.text);
     let pc = TestDevice::windows("300000090");
     let a = trade(&h, &code_body(&h, &codes[0], &pc), "10.8.8.1").await;
     assert_eq!(a.status, 200, "{}", a.text);
@@ -819,7 +846,22 @@ async fn nothing_of_a_code_is_logged_or_recorded() {
         .nth(2)
         .unwrap()
         .to_owned();
-    // used, wrong, and the caps' journal line
+    let grant = a.json["staff"].clone();
+    let waited = h.get(&wait_path(None), &token).await;
+    assert_eq!(
+        waited.json["codes"][0]["pc"],
+        json!(pc.id),
+        "{}",
+        waited.text
+    );
+    // the used link, used, wrong, and the caps' journal line
+    h.request(
+        Method::GET,
+        &format!("{link}/"),
+        &[("x-real-ip", "10.8.8.2")],
+        None,
+    )
+    .await;
     trade(&h, &code_body(&h, &codes[0], &pc), "10.8.8.1").await;
     trade(&h, &code_body(&h, "ZZZZ-ZZZZ", &pc), "10.8.8.1").await;
     for _ in 0..support::OPEN_PER_ACCOUNT {
@@ -840,7 +882,18 @@ async fn nothing_of_a_code_is_logged_or_recorded() {
         })
         .await
         .unwrap();
-    let mut secrets = vec![payload, "10.8.8.1".to_owned(), pc.id.clone()];
+    let value = link.strip_prefix(support::LINK_PATH).unwrap().to_owned();
+    let mut secrets = vec![
+        payload,
+        "10.8.8.1".to_owned(),
+        "10.8.8.2".to_owned(),
+        pc.id.clone(),
+        b64(&pc.public_key()),
+        value,
+        wait,
+        text_of(&grant, "g").to_owned(),
+        text_of(&grant, "s").to_owned(),
+    ];
     for code in &codes {
         secrets.push(code.clone());
         secrets.push(code.replace('-', ""));
@@ -850,4 +903,799 @@ async fn nothing_of_a_code_is_logged_or_recorded() {
             assert!(!line.contains(secret.as_str()), "{line}");
         }
     }
+}
+
+// ---- TV-W6: the support grant, the support link, the waiting room ----
+
+/// The shared vectors of the support grant, which the client renders from its
+/// src/hjviewer_account/vectors.rs (`support_json()`) and checks there with libsodium.
+const VECTORS: &str = include_str!("data/support-grant-vectors.json");
+/// The client's vectors.rs SUPPORT_JSON_SHA256: the file is its rendering, byte for byte.
+const VECTORS_SHA256: &str = "d5c2a45bcd30dfdb2d974ead325cd5b20a9b8fa1eef4d056abec0b658a21d184";
+
+fn unhex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+fn key32(text: &Value) -> [u8; 32] {
+    b64_decode(text.as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap()
+}
+
+fn seed_of(key: &Value) -> [u8; 32] {
+    unhex(key["seed_hex"].as_str().unwrap()).try_into().unwrap()
+}
+
+/// What hjv-api signs for the grant bytes `text` (another PC, another life): the same bytes.
+fn grant_of(text: &str) -> (Value, String, [u8; 32], [u8; 32], String, i64, i64) {
+    let g: Value = serde_json::from_str(text).unwrap();
+    (
+        g.clone(),
+        g["pc_id"].as_str().unwrap().to_owned(),
+        key32(&g["pc_pk"]),
+        key32(&g["ck"]),
+        g["ctl_id"].as_str().unwrap().to_owned(),
+        g["iat"].as_i64().unwrap(),
+        g["exp"].as_i64().unwrap(),
+    )
+}
+
+/// The grant hjv-api makes of the vectors' inputs is the vectors' grant, byte for byte, and so is
+/// its signature (Ed25519 signs deterministically); the refused ones are signed as the client
+/// expects, and the altered bytes do not hold. The vector's list key is the one the harness signs
+/// with.
+#[test]
+fn the_grant_is_the_vectors_byte_for_byte() {
+    assert_eq!(hex(&sha256(VECTORS.as_bytes())), VECTORS_SHA256);
+    let v: Value = serde_json::from_str(VECTORS).unwrap();
+    let keys = &v["keys"];
+    for name in ["list_1", "pc_device", "account", "other_account"] {
+        assert_eq!(
+            b64(&devsig::public_key(&seed_of(&keys[name]))),
+            keys[name]["pk"].as_str().unwrap(),
+            "{name}"
+        );
+    }
+    assert_eq!(seed_of(&keys["list_1"]), LIST_SEED);
+    assert_eq!(
+        (v["context"].as_str().unwrap().as_bytes(), &v["max_life"]),
+        (grant::CONTEXT, &json!(support::TICKET_SECS))
+    );
+    let list = ListKey::new(1, &LIST_SEED);
+    let sign = |text: &str| b64(&list.sign_message(&grant::message(text.as_bytes())));
+    let holds = |text: &str, s: &Value| {
+        devsig::verify(
+            &list.public_key(),
+            &grant::message(text.as_bytes()),
+            s.as_str().unwrap(),
+        )
+    };
+    // the grant: from its inputs, the bytes, the signed bytes and the staff member
+    let g = &v["grant"];
+    let made = grant::Grant {
+        pc_id: g["pc_id"].as_str().unwrap(),
+        pc_pk: key32(&g["pc_pk"]),
+        ck: key32(&g["ck"]),
+        ctl_id: g["ctl_id"].as_str().unwrap(),
+        iat: g["iat"].as_i64().unwrap(),
+        exp: g["exp"].as_i64().unwrap(),
+    };
+    let bytes = grant::bytes(1, &made).unwrap();
+    assert_eq!(String::from_utf8(bytes.clone()).unwrap(), g["bytes"]);
+    assert_eq!(hex(&grant::message(&bytes)), g["signed_hex"]);
+    assert_eq!(grant::staff(&list, &made).unwrap(), g["staff"]);
+    assert!(holds(g["bytes"].as_str().unwrap(), &g["staff"]["s"]));
+    assert_eq!(made.ck, key32(&keys["account"]["pk"]));
+    assert_eq!(made.pc_pk, key32(&keys["pc_device"]["pk"]));
+    // the trust list's purpose does not sign it
+    assert!(!devsig::verify(
+        &list.public_key(),
+        &hjv_api::trust::message(&bytes),
+        g["staff"]["s"].as_str().unwrap()
+    ));
+    // no name, ever
+    let parsed: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(parsed["name"], "");
+    assert_eq!(parsed.as_object().unwrap().len(), 10);
+    // another PC and a life of 7201 s: what hjv-api would sign for those inputs
+    for name in ["other_pc", "life_7201"] {
+        let r = &v["refused"][name];
+        let text = r["grant"].as_str().unwrap();
+        let (_, pc_id, pc_pk, ck, ctl_id, iat, exp) = grant_of(text);
+        let grant = grant::Grant {
+            pc_id: &pc_id,
+            pc_pk,
+            ck,
+            ctl_id: &ctl_id,
+            iat,
+            exp,
+        };
+        assert_eq!(grant::bytes(1, &grant).unwrap(), text.as_bytes(), "{name}");
+        assert_eq!(grant::staff(&list, &grant).unwrap(), r["staff"], "{name}");
+    }
+    // a member the format does not have: signed with list key 1 all the same
+    let r = &v["refused"]["unknown_member"];
+    assert_eq!(sign(r["grant"].as_str().unwrap()), r["staff"]["s"]);
+    assert_eq!(
+        r["staff"]["g"].as_str().unwrap(),
+        b64(r["grant"].as_str().unwrap().as_bytes())
+    );
+    // bytes changed after signing: the grant's signature does not hold for them
+    let r = &v["refused"]["altered_bytes"];
+    assert_eq!(r["staff"]["s"], g["staff"]["s"]);
+    assert!(!holds(r["grant"].as_str().unwrap(), &r["staff"]["s"]));
+    // the maker's proof to the PC, and another account key's valid proof (the PC's mark refuses
+    // that one for its key)
+    let proof = &v["conn_proof"];
+    for p in [proof, &v["refused"]["other_key_proof"]] {
+        assert!(devsig::verify(
+            &key32(&p["ctl_pk"]),
+            &unhex(p["transcript_hex"].as_str().unwrap()),
+            p["signature"].as_str().unwrap()
+        ));
+    }
+    assert_eq!(proof["ctl_pk"], g["ck"]);
+    assert_ne!(v["refused"]["other_key_proof"]["ctl_pk"], g["ck"]);
+}
+
+/// The member `name` of an answer as text.
+fn text_of<'a>(a: &'a Value, name: &str) -> &'a str {
+    a[name]
+        .as_str()
+        .unwrap_or_else(|| panic!("no {name} in {a}"))
+}
+
+/// A code made by the account of `token`, with its link and waiting number.
+async fn made_all(h: &Harness, token: &str) -> (String, String, String) {
+    let a = make(h, token, json!({"use": "pc"})).await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    (
+        text_of(&a.json, "code").to_owned(),
+        text_of(&a.json, "link").to_owned(),
+        text_of(&a.json, "wait").to_owned(),
+    )
+}
+
+fn is_value(text: &str) -> bool {
+    text.len() == 22
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && b64url_decode(text).is_some_and(|b| b.len() == 16)
+}
+
+/// A trade of a code made by a staff member's phone carries the support grant: list key 1's
+/// signature with its own purpose over the bytes in their order, naming that PC (the trade's ID
+/// and key), the account key that made the code and the phone's ID, the ticket's times, and no
+/// name. A resend gets the same; the used code, a wrong one, another PC get no grant.
+#[tokio::test]
+async fn a_traded_code_carries_the_grant_for_its_pc_only() {
+    let h = Harness::start().await;
+    let phone = TestDevice::phone("987650001");
+    let token = h.login_ok(HONG, Some(&phone)).await;
+    let ck = devsig::public_key(&h.key_of(&token).unwrap());
+    let (code, link, wait) = made_all(&h, &token).await;
+    let value = link.strip_prefix(support::LINK_PATH).unwrap();
+    assert!(
+        is_value(value) && is_value(&wait) && value != wait,
+        "{link} {wait}"
+    );
+    let pc = TestDevice::windows("300000101");
+    h.hbbs.register(&pc, Some(1));
+    let body = code_body(&h, &code, &pc);
+    let a = trade(&h, &body, "10.8.10.1").await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    let p = payload_of(&a.json);
+    let staff = &a.json["staff"];
+    assert_eq!(staff.as_object().unwrap().len(), 3, "{staff}");
+    assert_eq!((&staff["kid"], text_of(staff, "s").len()), (&json!(1), 88));
+    let g = b64_decode(text_of(staff, "g")).unwrap();
+    let list = devsig::public_key(&LIST_SEED);
+    assert!(devsig::verify(
+        &list,
+        &grant::message(&g),
+        text_of(staff, "s")
+    ));
+    assert!(!devsig::verify(
+        &list,
+        &hjv_api::trust::message(&g),
+        text_of(staff, "s")
+    ));
+    assert_eq!(
+        String::from_utf8(g).unwrap(),
+        format!(
+            r#"{{"v":1,"typ":"hjv-support","kid":1,"pc_id":"{}","pc_pk":"{}","ck":"{}","ctl_id":"{}","name":"","iat":{},"exp":{}}}"#,
+            pc.id,
+            b64(&pc.public_key()),
+            b64(&ck),
+            phone.id,
+            p["iat"],
+            p["exp"]
+        )
+    );
+    // the very same body again within the retry window: the first answer, the same grant
+    let again = trade(&h, &body, "10.8.10.1").await;
+    assert_eq!(
+        (again.status, &again.json),
+        (200, &a.json),
+        "{}",
+        again.text
+    );
+    // the code is used: another PC, and the same PC with a new seal, get the one 401, no grant
+    let other = TestDevice::windows("300000102");
+    for (device, ip) in [(&other, "10.8.10.2"), (&pc, "10.8.10.3")] {
+        let b = trade(&h, &code_body(&h, &code, device), ip).await;
+        assert_eq!((b.status, &b.json), (401, &denied()), "{}", b.text);
+    }
+    // a code made without a device ID names none
+    let bare = h.login_ok(KIM, None).await;
+    let code = made(&h, &bare).await;
+    let a = trade(&h, &code_body(&h, &code, &other), "10.8.10.4").await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    let g: Value =
+        serde_json::from_slice(&b64_decode(text_of(&a.json["staff"], "g")).unwrap()).unwrap();
+    assert_eq!(
+        (&g["pc_id"], &g["ctl_id"], &g["name"]),
+        (&json!(other.id), &json!(""), &json!(""))
+    );
+    assert_eq!(
+        g["ck"],
+        json!(b64(&devsig::public_key(&h.key_of(&bare).unwrap())))
+    );
+}
+
+/// The operator's files of a test: a policy with Windows 1.9.0, its package and two notices.
+struct Files {
+    dir: std::path::PathBuf,
+    exe: Vec<u8>,
+}
+
+const EXE: &str = "HJViewer-1.9.0-windows-x86_64.exe";
+
+impl Files {
+    fn new() -> Files {
+        let dir = temp_dir("support-link");
+        let pkg = dir.join("pkg");
+        std::fs::create_dir_all(pkg.join("notices-1.9.0")).unwrap();
+        // text, so that the harness reads the download as it reads every answer
+        let exe: Vec<u8> = (0..70_001u32).map(|i| b'a' + (i * 7 % 26) as u8).collect();
+        std::fs::write(pkg.join(EXE), &exe).unwrap();
+        std::fs::write(pkg.join("notices-1.9.0/LICENSE.txt"), "AGPL-3.0").unwrap();
+        std::fs::write(pkg.join("notices-1.9.0/SOURCE.txt"), "client-1.9.0").unwrap();
+        let files = Files { dir, exe };
+        files.policy(true);
+        files
+    }
+
+    /// The policy, with the Windows package or without.
+    fn policy(&self, windows: bool) {
+        let entry = json!({"min": "1.9.0", "latest": "1.9.0", "source": "client-1.9.0",
+                           "package": {"file": EXE, "size": self.exe.len(),
+                                       "sha256": hex(&sha256(&self.exe)), "build": "1.9.0.1"}});
+        let platforms = if windows {
+            json!({ "windows": entry })
+        } else {
+            json!({ "android": {"min": "1.9.0", "latest": "1.9.0"} })
+        };
+        let text = json!({"v": 1, "epoch": 1, "seq": if windows { 5 } else { 6 },
+                          "issued": "2026-10-20T03:00:00Z", "server": "rd.example.com",
+                          "platforms": platforms});
+        let envelope = json!({"v": 1, "k": 1, "p": text.to_string(), "s": "AAAA"});
+        let new = self.dir.join("version-policy.json.new");
+        std::fs::write(&new, format!("{envelope}\n")).unwrap();
+        std::fs::rename(new, self.dir.join("version-policy.json")).unwrap();
+    }
+
+    fn vars(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "HJV_API_VERSION_POLICY",
+                self.dir.join("version-policy.json").display().to_string(),
+            ),
+            (
+                "HJV_API_PACKAGE_DIR",
+                self.dir.join("pkg").display().to_string(),
+            ),
+        ]
+    }
+}
+
+impl Drop for Files {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A browser's request of a support link's path.
+async fn browse(h: &Harness, method: Method, path: &str, ip: &str) -> Answer {
+    h.request(method, path, &[("x-real-ip", ip)], None).await
+}
+
+fn no_link() -> Value {
+    json!({"error": "링크가 맞지 않거나 사용 기한이 지났습니다."})
+}
+
+/// The `update` records: result, account tag, address tag.
+async fn update_records(h: &Harness) -> Vec<(String, String, String)> {
+    h.state
+        .db
+        .call(|c| {
+            let mut stmt = c.prepare(
+                "SELECT result, COALESCE(account_tag, ''), COALESCE(ip, '') FROM events
+                 WHERE kind = 'update' ORDER BY id",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            rows.collect()
+        })
+        .await
+        .unwrap()
+}
+
+/// A support link while its code is open: 307 to the page; the page in Korean and English with
+/// the code, HJViewer-1.9.0.exe and its facts, door 2's headers, no script; the package three
+/// times (HEAD free) and then 404, the notice files uncounted, no installer's name; each download
+/// an `update` record with the maker's tag; other values 404 without counting against the
+/// address; without a Windows package SL8 and the code.
+#[tokio::test]
+async fn the_support_link_and_its_three_downloads() {
+    let files = Files::new();
+    let h = Harness::with(Options {
+        vars: files.vars(),
+        ..Default::default()
+    })
+    .await;
+    let token = h.login_ok(HONG, None).await;
+    let (code, link, _) = made_all(&h, &token).await;
+    let ip = "10.8.11.1";
+    let a = browse(&h, Method::GET, &link, ip).await;
+    assert_eq!(a.status, 307, "{}", a.text);
+    assert_eq!(a.headers["location"], format!("{link}/"));
+    let page = format!("{link}/");
+    let a = browse(&h, Method::GET, &page, ip).await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    assert_eq!(a.headers["content-type"], "text/html; charset=utf-8");
+    assert_eq!(
+        a.headers["content-security-policy"],
+        "default-src 'none'; style-src 'unsafe-inline'"
+    );
+    assert_eq!(a.headers["cache-control"], "private, no-store");
+    assert_eq!(a.headers["referrer-policy"], "no-referrer");
+    assert!(a.headers["x-robots-tag"]
+        .to_str()
+        .unwrap()
+        .contains("noindex"));
+    for words in [
+        code.as_str(),
+        "<h1>HJViewer 원격 지원</h1>",
+        "<h1>HJViewer remote support</h1>",
+        "href=\"HJViewer-1.9.0.exe\"",
+        "HJViewer-1.9.0.exe 받기",
+        "Download HJViewer-1.9.0.exe",
+        "연세대 교직원(로그인 확인)",
+        "Yonsei faculty or staff (verified login)",
+        &hex(&sha256(&files.exe)),
+        "href=\"HJViewer-1.9.0-LICENSE.txt\"",
+        "href=\"HJViewer-1.9.0-SOURCE.txt\"",
+        "시범 구현",
+        "pilot implementation",
+    ] {
+        assert!(a.text.contains(words), "{words}: {}", a.text);
+    }
+    for absent in [
+        "<script",
+        "-install.exe",
+        "-qs-",
+        "관리자:",
+        "http://",
+        "https://",
+    ] {
+        assert!(!a.text.contains(absent), "{absent}");
+    }
+    assert!(a.text.find("원격 지원").unwrap() < a.text.find("remote support").unwrap());
+    // a browser's Origin is taken here
+    let a = h
+        .request(
+            Method::GET,
+            &page,
+            &[("origin", "https://example.org"), ("x-real-ip", ip)],
+            None,
+        )
+        .await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    // the package: HEAD is free, three GETs, then 404 (HEAD too); the notices still go out
+    let exe = format!("{link}/HJViewer-1.9.0.exe");
+    for _ in 0..2 {
+        let a = browse(&h, Method::HEAD, &exe, ip).await;
+        assert_eq!(a.status, 200, "{}", a.text);
+        assert_eq!(
+            a.headers["content-length"],
+            files.exe.len().to_string().as_str()
+        );
+    }
+    for _ in 0..support::LINK_DOWNLOADS {
+        let a = h
+            .request(Method::GET, &exe, &[("x-real-ip", ip)], None)
+            .await;
+        assert_eq!(a.status, 200);
+        assert_eq!(
+            a.headers["content-disposition"],
+            "attachment; filename=\"HJViewer-1.9.0.exe\""
+        );
+        assert_eq!(a.text.len(), files.exe.len());
+    }
+    let status = h.admin(&["ticket", "status"], false, None).await.unwrap();
+    assert!(
+        status.contains("support links with downloads left: 0"),
+        "{status}"
+    );
+    for method in [Method::GET, Method::HEAD] {
+        let a = browse(&h, method, &exe, ip).await;
+        assert_eq!(a.status, 404, "{}", a.text);
+    }
+    let a = browse(
+        &h,
+        Method::GET,
+        &format!("{link}/HJViewer-1.9.0-LICENSE.txt"),
+        ip,
+    )
+    .await;
+    assert_eq!((a.status, a.text.as_str()), (200, "AGPL-3.0"));
+    assert_eq!(browse(&h, Method::GET, &page, ip).await.status, 200);
+    let tag = h.account_tag(HONG.0);
+    assert_eq!(
+        update_records(&h).await,
+        vec![("support-windows".to_owned(), tag, h.state.tags.ip(ip)); 3]
+    );
+    // a fresh code's link: no installer's name, no other file, no deeper path
+    let (_, fresh, _) = made_all(&h, &token).await;
+    let status = h.admin(&["ticket", "status"], false, None).await.unwrap();
+    assert!(
+        status.contains("support links with downloads left: 1"),
+        "{status}"
+    );
+    for name in [
+        "HJViewer-1.9.0-install.exe",
+        "HJViewer-1.9.0-windows-x86_64.exe",
+        "HJViewer-1.9.0-NOTICE.txt",
+    ] {
+        let a = browse(&h, Method::GET, &format!("{fresh}/{name}"), ip).await;
+        assert_eq!((a.status, &a.json), (404, &no_link()), "{name}");
+    }
+    // a deeper path is none of hjv-api's
+    let a = browse(
+        &h,
+        Method::GET,
+        &format!("{fresh}/x/HJViewer-1.9.0.exe"),
+        ip,
+    )
+    .await;
+    assert_eq!(a.status, 404, "{}", a.text);
+    // any other value: the same 404, never counted against the address
+    let other = "10.8.11.2";
+    let unknown = format!(
+        "{}{}",
+        support::LINK_PATH,
+        hjv_api::util::b64url(&random_bytes::<16>())
+    );
+    for path in [
+        unknown.clone(),
+        format!("{unknown}/"),
+        format!("{unknown}/HJViewer-1.9.0.exe"),
+        format!("{}AAAA/", support::LINK_PATH),
+        format!("{}{}/", support::LINK_PATH, "%".repeat(22)),
+        format!("{}{}/", support::LINK_PATH, code),
+    ] {
+        let a = browse(&h, Method::GET, &path, other).await;
+        assert_eq!((a.status, &a.json), (404, &no_link()), "{path}");
+        assert_eq!(a.headers["cache-control"], "private, no-store");
+    }
+    assert_eq!(
+        h.counted(SCOPE_UPDATE_FAIL_IP, h.state.tags.ip(other))
+            .await,
+        0
+    );
+    let a = h.request(Method::POST, &page, &[], None).await;
+    assert_eq!(a.status, 405, "{}", a.text);
+    // no Windows package in the policy: SL8 in SL3's place, the code still there
+    files.policy(false);
+    let (code, link, _) = made_all(&h, &token).await;
+    let a = browse(&h, Method::GET, &format!("{link}/"), ip).await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    assert!(a.text.contains(&code));
+    assert!(
+        a.text.contains("HJViewer를 준비하고 있습니다."),
+        "{}",
+        a.text
+    );
+    assert!(a.text.contains("HJViewer is being prepared."), "{}", a.text);
+    assert!(!a.text.contains(".exe"), "{}", a.text);
+}
+
+/// A support link ends with its code: traded, over, its maker blocked, its maker's key logged out.
+#[tokio::test]
+async fn the_link_dies_with_its_code() {
+    let files = Files::new();
+    let h = Harness::with(Options {
+        vars: files.vars(),
+        ..Default::default()
+    })
+    .await;
+    let ip = "10.8.12.1";
+    let alive = |a: &Answer| a.status == 200;
+    let paths = |link: &str| [format!("{link}/"), format!("{link}/HJViewer-1.9.0.exe")];
+    let token = h.login_ok(HONG, None).await;
+    // traded
+    let (code, link, _) = made_all(&h, &token).await;
+    for path in paths(&link) {
+        assert!(alive(&browse(&h, Method::HEAD, &path, ip).await), "{path}");
+    }
+    let pc = TestDevice::windows("300000103");
+    assert_eq!(
+        trade(&h, &code_body(&h, &code, &pc), "10.8.12.2")
+            .await
+            .status,
+        200
+    );
+    for path in paths(&link) {
+        let a = browse(&h, Method::GET, &path, ip).await;
+        assert_eq!((a.status, &a.json), (404, &no_link()), "{path}");
+    }
+    // ten minutes over
+    let (_, link, _) = made_all(&h, &token).await;
+    h.state.support.age_by(support::CODE_SECS);
+    for path in paths(&link) {
+        assert_eq!(
+            browse(&h, Method::GET, &path, ip).await.status,
+            404,
+            "{path}"
+        );
+    }
+    // the maker blocked (and unblocked: still over)
+    let kim = h.login_ok(KIM, None).await;
+    let (_, link, _) = made_all(&h, &kim).await;
+    let kim_tag = format!("tag:{}", h.account_tag(KIM.0));
+    h.admin(&["block", &kim_tag], false, None).await.unwrap();
+    assert_eq!(
+        browse(&h, Method::GET, &format!("{link}/"), ip)
+            .await
+            .status,
+        404
+    );
+    h.admin(&["unblock", &kim_tag], false, None).await.unwrap();
+    assert_eq!(
+        browse(&h, Method::GET, &format!("{link}/"), ip)
+            .await
+            .status,
+        404
+    );
+    // the maker's key logged out
+    let (_, link, _) = made_all(&h, &token).await;
+    assert!(alive(
+        &browse(&h, Method::GET, &format!("{link}/"), ip).await
+    ));
+    let out = h.post("/api/logout", &token, Some(json!({}))).await;
+    assert_eq!(out.status, 200, "{}", out.text);
+    assert_eq!(
+        browse(&h, Method::GET, &format!("{link}/"), ip)
+            .await
+            .status,
+        404
+    );
+    assert!(update_records(&h).await.is_empty());
+}
+
+fn wait_path(rev: Option<u64>) -> String {
+    match rev {
+        Some(rev) => format!("{}?rev={rev}", support::WAIT_PATH),
+        None => support::WAIT_PATH.to_owned(),
+    }
+}
+
+/// The waiting room: at once without `rev` or with another; with its own, held until the PC
+/// trades the code (then `used` with the PC's ID, key and the ticket's time left), until the
+/// first open code ends (`over`), or for WAIT_SECS; only the codes of the request's account key;
+/// two holds per key; the key's calls a minute; the App Review account's 403.
+#[tokio::test]
+async fn the_waiting_room() {
+    let h = std::sync::Arc::new(Harness::start().await);
+    // a key with no code: held the full WAIT_SECS, twice at once; a third at once
+    let idle = h.login_ok(KIM, None).await;
+    let first = h.get(&wait_path(None), &idle).await;
+    assert_eq!(
+        (first.status, &first.json),
+        (200, &json!({"rev": 0, "codes": []})),
+        "{}",
+        first.text
+    );
+    let holds: Vec<_> = (0..support::HOLDS_PER_KEY)
+        .map(|_| {
+            let (h, idle) = (h.clone(), idle.clone());
+            tokio::spawn(async move { h.get(&wait_path(Some(0)), &idle).await })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(h.state.support.held_waits(), support::HOLDS_PER_KEY);
+    let third = h.get(&wait_path(Some(0)), &idle).await;
+    assert_eq!(third.status, 200, "{}", third.text);
+    assert!(
+        third.elapsed < Duration::from_secs(2),
+        "{:?}",
+        third.elapsed
+    );
+    let status = h.admin(&["ticket", "status"], false, None).await.unwrap();
+    assert!(
+        status.contains("support codes' waiting room: 2 held"),
+        "{status}"
+    );
+
+    let started = Instant::now();
+    let token = h.login_ok(HONG, None).await;
+    let a = h.get(&wait_path(None), &token).await;
+    assert_eq!(a.json, json!({"rev": 0, "codes": []}), "{}", a.text);
+    let (code, _, wait) = made_all(&h, &token).await;
+    let a = h.get(&wait_path(Some(0)), &token).await;
+    assert!(a.elapsed < Duration::from_secs(2));
+    assert_eq!(a.json["rev"], 1, "{}", a.text);
+    let codes = a.json["codes"].as_array().unwrap();
+    assert_eq!(codes.len(), 1, "{}", a.text);
+    assert_eq!(
+        (&codes[0]["wait"], &codes[0]["state"]),
+        (&json!(wait), &json!("open"))
+    );
+    assert!((598..=600).contains(&codes[0]["expires_in"].as_i64().unwrap()));
+    // the account's other key and another account see none of it
+    let other_key = h.login_ok(HONG, None).await;
+    let lee = h.login_ok(LEE, None).await;
+    for t in [&other_key, &lee] {
+        let a = h.get(&wait_path(None), t).await;
+        assert_eq!(a.json, json!({"rev": 0, "codes": []}), "{}", a.text);
+    }
+    // held with its rev until the PC trades the code
+    let pc = TestDevice::windows("300000104");
+    let held = {
+        let (h, token) = (h.clone(), token.clone());
+        tokio::spawn(async move { h.get(&wait_path(Some(1)), &token).await })
+    };
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let traded_at = Instant::now();
+    let a = trade(&h, &code_body(&h, &code, &pc), "10.8.13.1").await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    let a = held.await.unwrap();
+    assert!(a.elapsed >= Duration::from_millis(600), "{:?}", a.elapsed);
+    assert!(traded_at.elapsed() < Duration::from_secs(2));
+    assert_eq!(a.json["rev"], 2, "{}", a.text);
+    let used = &a.json["codes"][0];
+    assert_eq!(
+        (&used["wait"], &used["state"], &used["pc"], &used["pk"]),
+        (
+            &json!(wait),
+            &json!("used"),
+            &json!(pc.id),
+            &json!(b64(&pc.public_key()))
+        ),
+        "{}",
+        a.text
+    );
+    assert!(
+        (7190..=7200).contains(&used["until_in"].as_i64().unwrap()),
+        "{used}"
+    );
+    assert_eq!(used.as_object().unwrap().len(), 5);
+    // held no longer than the first open code: its end wakes it, `over`
+    let (_, _, second) = made_all(&h, &token).await;
+    h.state.support.age_by(support::CODE_SECS - 2);
+    let rev = h.get(&wait_path(None), &token).await.json["rev"]
+        .as_u64()
+        .unwrap();
+    let a = h.get(&wait_path(Some(rev)), &token).await;
+    assert!(
+        a.elapsed >= Duration::from_millis(900) && a.elapsed < Duration::from_secs(5),
+        "{:?}",
+        a.elapsed
+    );
+    assert!(a.json["rev"].as_u64().unwrap() > rev, "{}", a.text);
+    let over = a.json["codes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["wait"] == json!(second))
+        .unwrap();
+    assert_eq!(over, &json!({"wait": second, "state": "over"}));
+    // a rev that is not the key's: at once
+    let a = h.get(&wait_path(Some(999)), &token).await;
+    assert!(a.elapsed < Duration::from_secs(2));
+    let a = h
+        .get(&format!("{}?rev=x", support::WAIT_PATH), &token)
+        .await;
+    assert!(a.elapsed < Duration::from_secs(2));
+    // only GET; a token without its proof, 401
+    let a = h.post(support::WAIT_PATH, &token, Some(json!({}))).await;
+    assert_eq!(a.status, 405, "{}", a.text);
+    assert_eq!(a.headers["allow"], "GET");
+    let auth = format!("Bearer {token}");
+    let a = h
+        .request(
+            Method::GET,
+            support::WAIT_PATH,
+            &[("authorization", auth.as_str())],
+            None,
+        )
+        .await;
+    assert_eq!(a.status, 401, "{}", a.text);
+    // the key's calls a minute, with its other calls (the holds and the codes made counted)
+    let mut answers = Vec::new();
+    for _ in 0..40 {
+        answers.push(h.get(&wait_path(None), &other_key).await);
+    }
+    let taken = answers.iter().filter(|a| a.status == 200).count();
+    assert!(taken <= 30 && taken > 20, "{taken}");
+    let last = answers.last().unwrap();
+    assert_eq!(
+        (last.status, &last.json["hjv"]),
+        (429, &json!("rate_limited"))
+    );
+    // the first two holds: the full WAIT_SECS, the same rev, no code
+    for hold in holds {
+        let a = hold.await.unwrap();
+        assert_eq!(
+            (a.status, &a.json),
+            (200, &json!({"rev": 0, "codes": []})),
+            "{}",
+            a.text
+        );
+        assert!(
+            a.elapsed >= Duration::from_secs(support::WAIT_SECS) - Duration::from_millis(300),
+            "{:?}",
+            a.elapsed
+        );
+    }
+    assert!(started.elapsed() < Duration::from_secs(support::WAIT_SECS + 5));
+    assert_eq!(h.state.support.held_waits(), 0);
+}
+
+/// The App Review account cannot wait for codes it cannot make.
+#[tokio::test]
+async fn the_review_account_has_no_waiting_room() {
+    const HASH: &str =
+        "pbkdf2-sha256$100000$AAECAwQFBgcICQoLDA0ODw==$SdScJfWXhGIJ8Nkud3CrZOHHXpS0zmxQkmXuZxddKh4=";
+    let dir = temp_dir("support-review");
+    let file = dir.join("review.conf");
+    std::fs::write(
+        &file,
+        format!(
+            "ID=APPREVIEW-TEST\nHASH={HASH}\nUNTIL={}\nPC=100200300\n",
+            datetime(now() + 2 * DAY)
+        ),
+    )
+    .unwrap();
+    let h = Harness::with(Options {
+        vars: vec![("HJV_API_REVIEW_FILE", file.display().to_string())],
+        ..Default::default()
+    })
+    .await;
+    let a = h
+        .login(
+            &h.login_body("APPREVIEW-TEST", "correct horse battery staple", None),
+            "10.8.14.1",
+        )
+        .await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    let review = a.token();
+    let a = h.get(&wait_path(Some(0)), &review).await;
+    assert_eq!(
+        (a.status, &a.json),
+        (
+            403,
+            &json!({"error": support::TEXT_NO_CODE, "hjv": "no_code"})
+        ),
+        "{}",
+        a.text
+    );
+    assert!(a.elapsed < Duration::from_secs(2));
+    let _ = std::fs::remove_dir_all(&dir);
 }
