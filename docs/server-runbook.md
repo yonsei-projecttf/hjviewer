@@ -1119,7 +1119,7 @@ nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone
    echo "peers    $(c /api/peers)"           # 404(본문 없음): 계정 API가 꺼짐
    ```
 
-   로그인한 앱은 회수할 수 없으므로 로그인 창과 "액세스 가능한 장치" 탭에 오류가 남습니다. hjv-api를 멈추면 PC들의 목록은 24시간 안에 만료되어 저절로 비밀번호로 돌아갑니다. hjv-api를 일부러 멈춰 둘 때는 점검 타이머와 백업 타이머를 먼저 멈춥니다(`sudo systemctl disable --now hjviewer-api-check.timer hjviewer-api-backup.timer`). 그대로 두면 점검과 백업이 실패할 때마다 경보가 납니다. 다시 켤 때 타이머도 켭니다(7-5의 마지막 블록).
+   로그인한 앱은 회수할 수 없으므로 로그인 창과 "내 PC" 탭에 오류가 남습니다. 1.9.0부터 이 탭의 오류는 "내 PC 목록을 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요."이고 원문 오류는 보이지 않습니다. hjv-api를 멈추면 PC들의 목록은 24시간 안에 만료되어 저절로 비밀번호로 돌아갑니다. hjv-api를 일부러 멈춰 둘 때는 점검 타이머와 백업 타이머를 먼저 멈춥니다(`sudo systemctl disable --now hjviewer-api-check.timer hjviewer-api-backup.timer`). 그대로 두면 점검과 백업이 실패할 때마다 경보가 납니다. 다시 켤 때 타이머도 켭니다(7-5의 마지막 블록).
 3. **hbbs**: 보관한 옛 실행 파일(`/root/hjv-backup/hbbs-before-<VERSION>`)을 넣고 조용한 시간에 hbbs만 다시 시작합니다. 로그인은 되지만 새 PC 묶기와 켜짐 확인은 안 되고, 0005가 있었다면 최소 버전 거절도 멈춥니다.
 4. **중계기**: `hjv-api admin relay revoke <중계기 ID>`. NAS에서는 사용자가 공유 폴더에 `hjv-relay.stop`을 두고 작업을 끕니다(재부팅 없이, [relay-dsm.md](relay-dsm.md) 10장). 폐기한 중계기의 키는 다시 승인되지 않습니다(`relay approve`가 거절). 잘못 폐기했으면 사용자가 NAS에서 중계기의 상태 폴더를 지워(같은 장의 "제거") 새 키와 새 등록 코드를 만든 뒤 7-11처럼 다시 승인받습니다.
 5. **hjv-api 새 판**: 설치 전에 남긴 스냅숏과 설정 파일을 옛 실행 파일과 함께 되돌립니다(7-14의 업그레이드). App Review 데모 계정(7-17)을 켠 뒤라면 먼저 7-17의 7번대로 그 계정과 설정 줄을 지웁니다.
@@ -1752,7 +1752,7 @@ hbbs: <min-controller 줄 그대로(MIN, FROM) | off>, 어제 거절 <n>줄
 
 ## 9. 교직원 전용 출입 제한 (1.8.0)
 
-1.8.0부터 서버는 연세대학교 교직원이 쓰는 서비스입니다. hjv-api가 출입증에 서명하고, hbbs가 연결 요청, 중계 요청, PC 등록에서 그것을 확인합니다. 로그인한 앱, 교직원 계정에 묶인 PC, 이용 비밀번호를 넣은 쪽, 교직원이 만든 지원 코드를 넣은 PC(1.8.2부터, 2시간), 심사 계정(데모 PC만)이 출입증을 받습니다. 형식과 판정은 [access-tickets.md](access-tickets.md)(계약), 동작은 [architecture.md](architecture.md) 9절, 사용자 안내는 [distribution.md](distribution.md)의 "1.8.0: 교직원 전용"에 있습니다. 7절의 hjv-api와 8절을 마친 B 경로 nginx 서버가 대상입니다.
+1.8.0부터 서버는 연세대학교 교직원이 쓰는 서비스입니다. hjv-api가 출입증에 서명하고, hbbs가 연결 요청, 중계 요청, PC 등록에서 그것을 확인합니다. 로그인한 앱, 교직원 계정에 묶인 PC, 이용 비밀번호를 넣은 쪽, 교직원이 만든 지원 코드를 넣은 PC(1.9.0부터, 2시간. 그 hjv-api는 9-9), 심사 계정(데모 PC만)이 출입증을 받습니다. 형식과 판정은 [access-tickets.md](access-tickets.md)(계약), 동작은 [architecture.md](architecture.md) 9절, 사용자 안내는 [distribution.md](distribution.md)의 "1.8.0: 교직원 전용"에 있습니다. 7절의 hjv-api와 8절을 마친 B 경로 nginx 서버가 대상입니다.
 
 | 위치 | 소유자·권한 | 내용 | 읽는 쪽 |
 |---|---|---|---|
@@ -1884,8 +1884,8 @@ curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/access"; e
    - `active`가 아니면 7-17의 2번처럼 오류 줄을 사용자에게만 보이고, 그 줄을 지운 뒤 다시 시작합니다.
    - `access password: closed: the file is not there or not used (the journal says why)`이면 `sudo journalctl --namespace=hjviewer -u hjviewer-api --since -5min -o cat | grep 'access password' | tail -2`의 `… is not used: <이유>`를 보고합니다(이유에 해시는 없음). 사용자가 파일을 다시 만듭니다.
 3. **바꾸기**: 1번의 블록에 새 파일을 넣습니다. 새 파일은 그때부터의 시도에 쓰이고, 이미 나간 출입증은 12시간 안에 끝납니다. 퍼진 비밀번호라서 바로 끊어야 하면 이어서 9-3을 `NB=now`로 합니다. 그때는 교직원과 묶인 PC의 출입증도 함께 끝나고, 몇 분 안에 저절로 새로 받습니다.
-4. **끄기**: `sudo rm /etc/hjviewer/guest.conf`. 다음 시도부터 아무도 이용 비밀번호로 들어오지 못합니다(이미 나간 출입증은 12시간 안에 끝남). `UNTIL`이 지나도 같습니다. 설정 줄은 두어도 됩니다. 1.8.2의 지원 코드는 이 파일을 보지 않으므로 그대로 됩니다. 지원 코드만 끄는 설정은 없습니다(9-7의 '지원 코드가 잘못 쓰임').
-5. **보기**: 매일 보고에 `sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep -E '^(access password|support codes)'`의 다섯 줄(파일의 상태, 수명, 어제의 결과별 시도 수, 1.8.2부터 지원 코드의 열린 수와 메모리에 둔 수, 어제의 결과별 `code` 기록 수)을 넣습니다. 한 주소의 실패 한도에 걸린 경고(`guest: … hjv-api admin unlock tag:<꼬리표> lifts the address's`)가 잦으면 사용자에게 알립니다. 풀기는 사용자 승인 뒤 그 줄의 명령입니다.
+4. **끄기**: `sudo rm /etc/hjviewer/guest.conf`. 다음 시도부터 아무도 이용 비밀번호로 들어오지 못합니다(이미 나간 출입증은 12시간 안에 끝남). `UNTIL`이 지나도 같습니다. 설정 줄은 두어도 됩니다. 1.9.0의 지원 코드는 이 파일을 보지 않으므로 그대로 됩니다. 지원 코드만 끄는 설정은 없습니다(9-7의 '지원 코드가 잘못 쓰임').
+5. **보기**: 매일 보고에 `sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep -E '^(access password|support codes)'`의 다섯 줄(파일의 상태, 수명, 어제의 결과별 시도 수, 1.9.0의 hjv-api(9-9)부터 지원 코드의 열린 수와 메모리에 둔 수, 어제의 결과별 `code` 기록 수)을 넣습니다. 한 주소의 실패 한도에 걸린 경고(`guest: … hjv-api admin unlock tag:<꼬리표> lifts the address's`)가 잦으면 사용자에게 알립니다. 풀기는 사용자 승인 뒤 그 줄의 명령입니다.
 
 ### 9-5. `MODE=count`로 세어 보기 (선택)
 
@@ -1924,7 +1924,7 @@ timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && 
   ```
 - **hjv-api가 멈춤**: 교직원과 묶인 PC는 가진 출입증으로 끝날 때까지(24시간, 72시간) 연결합니다. 새 로그인과 이용 비밀번호는 안 됩니다. 하루를 넘길 것 같으면 사용자 승인 뒤 `MODE=off`로 둡니다.
 - **이용 비밀번호가 퍼짐**: 사용자가 새 `guest.conf`를 만들고 9-4의 3번(바꾸기와 `NB=now`)을 합니다.
-- **지원 코드가 잘못 쓰임**(1.8.2, 계약 3-7: 도난당한 기기, 남의 손에 간 코드): 사용자 승인 뒤 차례로 합니다.
+- **지원 코드가 잘못 쓰임**(1.9.0, 계약 3-7: 도난당한 기기, 남의 손에 간 코드): 사용자 승인 뒤 차례로 합니다.
   1. 코드를 만든 계정을 사용자가 알려 준 대로 `sudo /opt/hjviewer/bin/hjv-api admin block tag:<꼬리표>`로 막습니다(꼬리표는 `code` 기록의 것이나 사용자가 알려 준 것). 그 계정의 열린 코드는 다시 열리지 않고, 나중에 `unblock`해도 그대로 끝나 있습니다. 기기 하나만이면 `admin key revoke <ckid>`로 그 기기의 계정 키를 끝내도 그 키로 만든 코드가 끝납니다.
   2. 그 코드로 이미 받은 출입증(2시간)까지 바로 끊으려면 9-3을 `NB=now`로 합니다(교직원과 묶인 PC의 출입증도 끝나고 몇 분 안에 새로 받음).
   3. 모든 열린 코드를 한꺼번에 끝내야 하면 hjv-api를 다시 시작합니다(`sudo systemctl restart hjviewer-api`: 코드는 메모리에만 있음). 새 코드를 아예 받지 않게 하려면 hjv-api를 멈추는 수밖에 없고, 그동안 새 로그인과 이용 비밀번호도 안 됩니다(위의 'hjv-api가 멈춤'). 지원 코드만 끄는 설정이 필요하면 사용자에게 알립니다(아직 없음).
@@ -1940,13 +1940,40 @@ timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && 
 아래 형식으로 알려 줍니다. 이용 비밀번호, `guest.conf`의 내용, 거절 줄의 주소와 ID는 적지 않습니다.
 
 ```
-단계: <9-1 | 9-2 | 9-3 (MODE <off|count|enforce>, NOT_BEFORE <값|없음>) | 9-4 (<넣음|바꿈|지움|설정 줄>) | 9-5 | 9-6 (<n>단계) | 9-7 (<무엇>)>
+단계: <9-1 | 9-2 | 9-3 (MODE <off|count|enforce>, NOT_BEFORE <값|없음>) | 9-4 (<넣음|바꿈|지움|설정 줄>) | 9-5 | 9-6 (<n>단계) | 9-7 (<무엇>) | 9-9>
 hjv-api: ticket status 첫 줄 <그대로>, selfcheck ticket key 두 줄 <OK | FAIL 줄 그대로>
 hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
 이용 비밀번호: <access password: … 줄 그대로>, 어제 시도 <결과별 수>
-지원 코드(1.8.2): <support codes: … open … 줄 그대로>, 어제 code 기록 <결과별 수>
+지원 코드(1.9.0, 9-9): <support codes: … open … 줄 그대로>, 저널의 support code 줄 <종류별 수>, 어제 code 기록 <결과별 수>
 거절(enforce): 어제 refused <n>줄, closed <n>줄, more <합>
 묶인 PC(9-6의 5단계): 1.8.0 <n>대, 그 아래 <n>대
 바꾼 것: <설치한 파일, 권한, 설정 파일 줄>
 문제: <있으면>
 ```
+
+### 9-9. 지원 코드가 든 hjv-api (1.9.0과 함께)
+
+1.9.0 앱과 함께 내는 hjv-api는 교직원이 만드는 지원 코드(계약 3-7)를 더합니다. hbbs, hbbr, nginx, `access.conf`, `guest.conf`는 그대로이고, **새 파일, 설정 줄, 자격 증명, DB 이전이 없습니다.** 지원 코드는 출입증 키(9-1)로 출입증을 만들므로 출입증 키만 있으면 됩니다.
+
+- **들어 있는 것**: `POST /api/hjv/support-code`(로그인한 교직원의 앱이 코드를 만듦. 계정 요청이라 토큰과 계정 키의 서명이 필요), `POST /api/hjv/guest`의 `code`(로그인하지 않은 PC가 코드를 그 PC의 2시간짜리 `guest`/`pc` 출입증으로 바꿈. 이용 비밀번호와 같은 길, 한도, 실패 지연, nginx 위치), 그리고 앱에 알리는 두 표시입니다. 로그인 답과 `currentUser` 답의 `hjv`에 `"support_code":true`(심사 계정이 아닌 교직원의 로그인), `GET /api/hjv/access`의 답에 `"codes":true`(`MODE`가 `count`나 `enforce`이고 출입증 키가 있을 때)입니다. 앱에 그대로 보이는 hjv-api의 글 몇 줄도 1.9.0 앱의 말로 바뀝니다("…다시 시도해 주세요.", "내 PC 목록", "그 PC").
+- **앱의 단추는 이 hjv-api 뒤에만**: 1.9.0 앱은 두 표시가 있을 때만 [지원 코드 만들기](교직원 쪽, S1)와 P1의 [지원 코드 넣기](PC 쪽)를 보입니다. 이 hjv-api를 넣기 전에는 1.9.0 앱도 두 단추를 보이지 않고, 나머지는 그대로 됩니다. 1.8.0 앱은 두 표시를 모르고 지나갑니다. 그래서 앱과 서버의 순서는 상관없지만, 사용자 안내([distribution.md](distribution.md)의 "사용자에게 보내는 안내 (1.9.0)")의 지원 코드 줄은 이 hjv-api를 넣은 뒤에 보냅니다.
+- **넣기**(사용자 승인 뒤, 조용한 시간): 7-14의 "업그레이드"대로 스냅숏, 옛 실행 파일, 설정 파일을 남긴 뒤 6절 "B 경로 업데이트"의 4번(hjv-api만)을 합니다. hbbs와 hbbr은 다시 시작하지 않으므로 원격 세션은 끊기지 않습니다. hjv-api가 다시 시작하는 몇 초 동안은 로그인, 동기화, 이용 비밀번호가 멈춥니다(가진 출입증은 그대로).
+- **확인**:
+  ```bash
+  sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep -E '^(tickets|support codes)'
+  D=$(sudo sed -n 's/^HJV_DOMAIN=//p' /etc/hjviewer/hjviewer.env)
+  curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/access"; echo   # enforce: {"codes":true,"mode":"enforce"}
+  ```
+  - 첫 줄이 `tickets: on, key …`이고, `support codes: 0 open, 0 held in memory (…)`와 `support codes, the last day's records: …` 두 줄이 있어야 합니다. `support codes` 줄이 없으면 옛 hjv-api가 돌고 있습니다.
+  - 마지막 줄은 앱이 보는 답입니다. `MODE=enforce`(또는 `count`)인데 `codes`가 없으면 출입증 키가 없거나(`tickets: off`) 옛 hjv-api입니다. 그동안 PC는 [지원 코드 넣기]를 보이지 않습니다. 멈추고 보고합니다. `off`, 닫힘, `unknown`에서는 `codes`가 없는 것이 맞습니다(계약 3-6).
+- **저널의 줄**: 코드와 그 꼬리표는 어느 줄에도 없습니다. 지원 코드에 관한 줄은 다음뿐이고, 주소와 계정은 꼬리표로만 나옵니다.
+  - `support code: an account holds its 5 open codes (acct=<꼬리표>); the next ten minutes are not logged`: 한 계정이 쓰지 않은 코드 5개를 채웠습니다(그 계정에 10분에 한 줄). 잦으면 사용자에게 알립니다.
+  - `support code: 1000 open codes are held, no more made`: 열린 코드가 모두 합쳐 1000개라 새 코드를 만들지 않습니다(503 `busy`). 바로 보고합니다.
+  - `support code: more than 30 calls a minute from one key (acct=<꼬리표>, ckid=<n>)`, `support code: a request not of the form (…)`: 한 기기의 지나친 요청, 모양이 틀린 요청입니다.
+  - `guest: <결과>, a support code (ip=<꼬리표>); hjv-api admin unlock tag:<꼬리표> lifts the address's`: 한 주소가 코드 시도로 한도(`limited-ip` 등)에 걸렸습니다. 이용 비밀번호와 같은 한도이므로 9-4의 5번처럼 다룹니다(풀기는 사용자 승인 뒤 그 명령).
+  - `guest: more than 20 failed tries of the access password and support codes this minute; the rest are not recorded`: 실패가 몰려 기록을 줄였습니다.
+  ```bash
+  sudo journalctl --namespace=hjviewer -u hjviewer-api --since yesterday -o cat | grep -E '^(support code|guest: .*a support code)' | sed 's/(acct=[^)]*)//; s/(ip=[^)]*);.*//' | sort | uniq -c
+  ```
+  줄 수와 종류만 보고에 옮깁니다(꼬리표는 사용자가 물을 때만). 만든 코드와 시도의 결과별 수는 저널이 아니라 `admin ticket status`의 `support codes, the last day's records` 줄(9-4의 5번)에서 봅니다.
+- **되돌리기**: 7-14의 "업그레이드"대로 옛 실행 파일로 돌아가면 두 표시가 없어지고, 앱은 다음 물음부터 두 단추를 감춥니다. 이미 바꾼 출입증은 2시간 안에 끝납니다. 잘못 쓰인 코드는 9-7의 '지원 코드가 잘못 쓰임'입니다.

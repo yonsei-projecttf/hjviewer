@@ -18,7 +18,7 @@ Since 1.8.0 HJViewer is for Yonsei staff (docs/access-tickets.md): hbbs takes a 
 request or a PC's registration only with an access ticket, which hjv-api signs with its ticket key
 for the apps logged in to a staff account and for the PCs bound to one (Access tickets, below), for
 the App Review account's demo PCs, for whoever types the access password, one PC at a time (The
-access password, below), and since 1.8.2 for a PC whose user types a support code that a logged-in
+access password, below), and since 1.9.0 for a PC whose user types a support code that a logged-in
 staff member made (Support codes, below).
 
 ## Build
@@ -621,13 +621,13 @@ login's failure delay. Each try leaves a record `guest` with its result (`ok-ctl
 `closed`, `seal-…`, `pc-signature`, `limited-ip`, `limited-tickets`, `limited-all`, `busy`,
 `wrong-pc`, `hbbs`, `error`) and the address's tag, never the address, an ID, the password or the
 ticket, kept `HJV_API_EVENT_DAYS`; failures at most 20 a minute. `admin ticket status` shows the
-file (on until, closed since, off) with its tag, and the last day's tries by result. Since 1.8.2 a
+file (on until, closed since, off) with its tag, and the last day's tries by result. Since 1.9.0 a
 PC may bring a support code in the place of the password, through the same path, limits and
 failure delay; such a try leaves a record `code`, not `guest` (Support codes, below).
 
 ## Support codes
 
-The decision for 1.8.2 (2026-10-19, docs/access-tickets.md 3-7): instead of handing out the access
+The decision for 1.9.0 (2026-10-19, docs/access-tickets.md 3-7): instead of handing out the access
 password, a staff member who is logged in makes a support code (지원 코드) in the app and gives it to
 someone who is not. That person types it on their PC under the notice that the server refuses the
 PC (P1), and the PC trades it, once and within ten minutes, for a `guest`/`pc` ticket of its own
@@ -645,9 +645,9 @@ as before. No nginx change: the new path is under `/api/hjv/`, and the trade goe
   that may make codes, any staff account's and never the App Review account's
   (`support::may_make`), has `"support_code":true` in the login answer's `hjv` object and in
   currentUser's; the app shows its [지원 코드 만들기] (S1) only then, so the App Review account
-  and a server before 1.8.2 never show it. `GET /api/hjv/access` adds `"codes":true` while a
+  and a server before 1.9.0 never show it. `GET /api/hjv/access` adds `"codes":true` while a
   code would be traded now for a ticket hbbs uses: the mode `count` or `enforce`, with the ticket
-  key loaded (`gate::codes`); the PC shows P1's [지원 코드] only then. Both members are otherwise
+  key loaded (`gate::codes`); the PC shows P1's [지원 코드 넣기] only then. Both members are otherwise
   left out, never `false`.
 - The code: eight symbols of Crockford's base32 from 40 bits of the operating system's random
   source, shown `XXXX-XXXX` and read as a short link's code is (Updates, below), but for the `%`
@@ -697,7 +697,7 @@ as before. No nginx change: the new path is under `/api/hjv/`, and the trade goe
   others.
 - The numbers (the ten minutes, the two hours, 5, 1000, the ten minutes more) are constants of
   `src/support.rs`, not settings. The two hours are the user's to change: two texts of the app say
-  them (docs/access-tickets.md 5-3, S2 and P3). So is the controller's side, which 1.8.2 refuses: a
+  them (docs/access-tickets.md 5-3, S2 and P3). So is the controller's side, which 1.9.0 refuses: a
   `code` with `use` `ctl` gets the 400 of a body not of the form, and the `use` of both requests is
   where it would go.
 
@@ -937,7 +937,7 @@ with padding, base64url is §5 without padding, NUL is the byte 0x00, times are 
   the App Review account's answer has none yet. The login carries no device public key, so that
   this check is the only one a login can make: a Windows app with `ctl` here (one that runs
   without installing, or a PC hbbs does not know yet) asks `POST /api/hjv/ticket` with its PC
-  part right after. `support_code` (1.8.2) is `true` for a login that may make support codes
+  part right after. `support_code` (1.9.0) is `true` for a login that may make support codes
   (Support codes, below: any account but the App Review account's) and missing otherwise; the
   user object of `POST /api/currentUser` carries the same `"hjv":{"support_code":true}`, which
   the login answer's user object does not.
@@ -1345,7 +1345,7 @@ docs/access-tickets.md 3-6 is its contract. No token, no body, always 200:
 
 ```text
 200 {"mode":"off"|"count"|"enforce"|"closed"|"unknown"}
-200 {"mode":"count"|"enforce","codes":true}     while hjv-api has its ticket key (1.8.2)
+200 {"mode":"count"|"enforce","codes":true}     while hjv-api has its ticket key (1.9.0)
 ```
 
 - `mode` is the mode of hbbs's answer to `hjv-access` on its console (server patch 0006), without
@@ -1355,10 +1355,10 @@ docs/access-tickets.md 3-6 is its contract. No token, no body, always 200:
 - The apps word with it what a logout or taking a PC out of the list does, and tell a controller
   that is not logged in, ahead of a refusal, that the server lets in only staff. hbbs alone
   decides; the answer is only a hint.
-- `codes` (1.8.2, `gate::codes`) is `true` while a support code would be traded now for a ticket
+- `codes` (1.9.0, `gate::codes`) is `true` while a support code would be traded now for a ticket
   hbbs uses: the mode `count` or `enforce` and the ticket key loaded. In `off`, `closed`,
-  `unknown` and without the ticket key the member is left out, as a server before 1.8.2 leaves
-  it out; the PC side shows P1's [지원 코드] only when it is `true`. The trade itself does not
+  `unknown` and without the ticket key the member is left out, as a server before 1.9.0 leaves
+  it out; the PC side shows P1's [지원 코드 넣기] only when it is `true`. The trade itself does not
   look at the mode (Support codes, above). The members' order is not fixed (`{"codes":true,
   "mode":"enforce"}` as serde_json writes it).
 
@@ -1789,7 +1789,7 @@ account's links); login, device and key records (tags, client address, result, t
 records of the packages sent and links made (the account and the PC as tags, the client address as
 its tag only, result, time), and since 1.8.0 the access password's counters (an address's failed
 tries and tickets, under its tag) and records (`guest`: the client address as its tag only, result,
-time), and since 1.8.2 the support codes' records (`code`: the tag of the account that made the
+time), and since 1.9.0 the support codes' records (`code`: the tag of the account that made the
 code, the client address of a try as its tag only, result, time), their tries counted in the
 access password's counters. Since schema 3 (Wake-on-LAN, design v3 §10-1): per bound PC its wake report
 (its wired cards' MACs, addresses, gateways and their MACs, names, drivers and wake settings, its

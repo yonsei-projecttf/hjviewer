@@ -6,7 +6,7 @@
 
 모바일 앱(iOS/Android)에서 Windows PC를 원격으로 보고 제어하는 서비스입니다. 프로젝트TF가 만듭니다. **방화벽·NAT 뒤에서도 HTTPS(443)만으로 연결**되는 것이 핵심입니다.
 [RustDesk](https://github.com/rustdesk/rustdesk) 클라이언트와 [rustdesk-server](https://github.com/rustdesk/rustdesk-server)를 포크해서 만듭니다.
-1.6.0부터는 연세포탈 ID로 로그인하면 앱에 내 Windows PC 목록이 나오고, 같은 계정으로 로그인한 내 기기끼리는 PC 비밀번호 없이 연결하며, 꺼진 PC를 같은 네트워크의 NAS 중계기로 켭니다. 로그인은 연세 SSO를 거치고, 연세 SSO는 연세대학교 교직원 계정만 받습니다. 그 SSO를 통과한 사람은 처음 로그인할 때 저절로 등록되고, 운영자는 계정을 막을 수 있습니다(`hjv-api admin block`). 서버에서 `HJV_API_LOGIN=list`로 바꾸면 운영자가 미리 명단에 올린 ID만 로그인합니다. 운영자가 정한 최소 버전보다 낮은 앱은 연결이 거절되고, 새 버전은 앱 안에서 받습니다(서명된 버전 정책). 1.8.0부터 서버는 교직원 전용으로 둘 수 있습니다: 운영자가 출입 확인을 켜면 로그인한 앱과 계정에 묶인 PC, 그리고 운영자가 정한 이용 비밀번호를 넣은 쪽만 서버를 씁니다(출입증).
+1.6.0부터는 연세포탈 ID로 로그인하면 앱에 내 Windows PC 목록이 나오고, 같은 계정으로 로그인한 내 기기끼리는 PC 비밀번호 없이 연결하며, 꺼진 PC를 같은 네트워크의 NAS 중계기로 켭니다. 로그인은 연세 SSO를 거치고, 연세 SSO는 연세대학교 교직원 계정만 받습니다. 그 SSO를 통과한 사람은 처음 로그인할 때 저절로 등록되고, 운영자는 계정을 막을 수 있습니다(`hjv-api admin block`). 서버에서 `HJV_API_LOGIN=list`로 바꾸면 운영자가 미리 명단에 올린 ID만 로그인합니다. 운영자가 정한 최소 버전보다 낮은 앱은 연결이 거절되고, 새 버전은 앱 안에서 받습니다(서명된 버전 정책). 1.8.0부터 서버는 교직원 전용으로 둘 수 있습니다: 운영자가 출입 확인을 켜면 로그인한 앱과 계정에 묶인 PC, 그리고 운영자가 정한 이용 비밀번호를 넣은 쪽만 서버를 씁니다(출입증). 1.9.0부터는 로그인한 교직원이 앱에서 만든 일회용 지원 코드로 로그인하지 않은 PC 하나가 2시간 동안 연결을 받고, 휴대폰 앱은 Face ID·지문·기기 암호로 여는 앱 잠금을 고를 수 있습니다(기본은 꺼짐).
 
 - 설계와 동작 원리: [docs/architecture.md](docs/architecture.md)
 - 서버 배포: [docs/deploy.md](docs/deploy.md)
@@ -15,7 +15,7 @@
 - 앱 배포와 업데이트(현재 세 플랫폼 최소 1.8.0, 유예 없음), 스토어 자동화에 필요한 것: [docs/distribution.md](docs/distribution.md)
 - 서명된 버전 정책을 만들고 확인하는 운영자 도구(hjv-release): [tools/hjv-release/README.md](tools/hjv-release/README.md)
 - 서버에서 작업할 사람·에이전트용 배포 절차: [docs/server-runbook.md](docs/server-runbook.md) (1.6.0의 계정 API는 7절, 1.8.0의 교직원 전용 출입 제한은 9절)
-- 교직원 전용 출입 제한의 형식(출입증, hbbs의 access.conf, 이용 비밀번호): [docs/access-tickets.md](docs/access-tickets.md)
+- 교직원 전용 출입 제한의 형식(출입증, hbbs의 access.conf, 이용 비밀번호, 지원 코드)과 앱이 보이는 글: [docs/access-tickets.md](docs/access-tickets.md)
 - 개인정보 처리방침: [docs/privacy.md](docs/privacy.md)
 - 계정 API(hjv-api)의 설정, 관리 명령, 형식: [server/api/README.md](server/api/README.md)
 - 원격 켜기 중계기(hjv-relay)의 NAS 설치와 규약: [docs/relay-dsm.md](docs/relay-dsm.md), [relay/PROTOCOL.md](relay/PROTOCOL.md)
@@ -51,10 +51,10 @@
    ```
    계정 기능(1.6.0)은 서버에 계정 API를 더하고([docs/server-runbook.md](docs/server-runbook.md) 7절) 그 공개키 `HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`를 빌드 변수로 넣은 앱에만 있습니다([docs/ci.md](docs/ci.md)의 "계정 기능의 공개키"). 넣지 않으면 1.5.1처럼 ID와 비밀번호로만 연결합니다. 로그인은 연세 SSO를 쓰므로 연세대 배포에서만 됩니다.
 3. **설치**
-   - **PC(Windows)**: 아티팩트 `HJViewer-…-windows-x86_64`(zip) 안의 `HJViewer.exe`를 실행하면 화면에 ID와 비밀번호가 표시됩니다. 상시 접속이 필요한 PC는 `HJViewer-install.exe`로 설치합니다. 설치하면 PC를 켤 때 Windows 로그인 전부터 자동으로 실행됩니다. 사람 없이 접속하려면 영구 비밀번호를 정하세요([docs/distribution.md](docs/distribution.md)의 "Windows 피제어 PC 설치"). 서명이 없어서 SmartScreen 경고가 뜰 수 있습니다. 1.6.0 계정 빌드에서는 설치한 PC에서 연세포탈 ID로 로그인하면 그 PC가 내 기기 목록에 오르고, 같은 계정의 내 기기가 비밀번호 없이 연결할 수 있게 됩니다.
+   - **PC(Windows)**: 아티팩트 `HJViewer-…-windows-x86_64`(zip) 안의 `HJViewer.exe`를 실행하면 화면에 ID와 비밀번호가 표시됩니다. 상시 접속이 필요한 PC는 `HJViewer-install.exe`로 설치합니다. 설치하면 PC를 켤 때 Windows 로그인 전부터 자동으로 실행됩니다. 사람 없이 접속하려면 영구 비밀번호를 정하세요([docs/distribution.md](docs/distribution.md)의 "Windows 피제어 PC 설치"). 서명이 없어서 SmartScreen 경고가 뜰 수 있습니다. 1.6.0 계정 빌드에서는 설치한 PC에서 연세포탈 ID로 로그인하면 그 PC가 내 PC 목록에 오르고, 같은 계정으로 로그인한 내 휴대폰과 PC가 비밀번호 없이 연결할 수 있게 됩니다.
    - **Android**: `…-android-aarch64*.apk`를 설치합니다. 1.6.0부터 Android 앱은 다른 기기를 제어하기만 합니다.
    - **iOS**: 서명 시크릿을 넣고 빌드한 IPA를 TestFlight나 기기에 설치합니다. 서명 없는 IPA는 설치할 수 없습니다.
-4. **연결**: 앱에서 PC의 ID를 입력하고 비밀번호로 접속합니다. 1.6.0 계정 빌드에서 같은 계정으로 로그인했다면 "액세스 가능한 장치" 탭의 내 PC를 눌러 비밀번호 없이 연결합니다. 출입 확인을 켠 서버(1.8.0)에서는 로그인해 두거나, 거절 창에서 이용 비밀번호를 넣습니다([docs/distribution.md](docs/distribution.md)의 "1.8.0: 교직원 전용").
+4. **연결**: 앱에서 PC의 ID를 입력하고 비밀번호로 접속합니다. 1.6.0 계정 빌드에서 같은 계정으로 로그인했다면 "내 PC" 탭의 PC를 눌러 비밀번호 없이 연결합니다. 출입 확인을 켠 서버(1.8.0)에서는 로그인해 두거나, 거절 창에서 이용 비밀번호를 넣습니다. 로그인하지 않은 PC는 이용 비밀번호나, 1.9.0부터는 교직원에게 받은 지원 코드를 넣어야 연결을 받습니다([docs/distribution.md](docs/distribution.md)의 "1.8.0: 교직원 전용").
 5. **방화벽 점검**: 고객사 네트워크에서 `tools/hjv-probe`로 서버까지의 경로를 확인합니다.
 
 ## 저장소 구조
@@ -76,14 +76,15 @@ scripts/package-relay.sh     NAS 중계기 hjv-relay의 묶음(정적 실행 파
 scripts/package-notices.sh   앱·서버 결과물에 넣는 고지 파일 (LICENSE, NOTICE, SOURCE, THIRD_PARTY_NOTICES)
 scripts/set-client-version.sh 빌드 전에 client/version.env의 앱 버전을 Cargo.toml·Cargo.lock·pubspec.yaml에 적기
 scripts/make-icons.sh        client/icons의 SVG 원본으로 client/overlay의 아이콘·스플래시 파일을 다시 만들기
-server/api/                  hjv-api: 계정 API (연세포탈 로그인, 내 기기 목록, 계정 키, PC 동기화와 신뢰 목록, 켜기 명령)
+server/api/                  hjv-api: 계정 API (연세포탈 로그인, 내 PC 목록, 계정 키, PC 동기화와 신뢰 목록, 켜기 명령)
 relay/                       hjv-relay: NAS에서 도는 원격 켜기 중계기와 서버와의 규약(PROTOCOL.md)
 server/patches/              hbbs/hbbr 패치 (TCP/WS 등록, WebRTC 시그널링 중계, 중계 짝 맺기 경쟁 상태 수정,
                              계정 API용 hjv-pk 콘솔 명령과 중계 요청 정리, 최소 컨트롤러 버전, 출입증 확인)
 client/patches/rustdesk/     앱 패치 (서버 고정, WebSocket+WebRTC 기본, 브랜딩, E2E용 헤드리스 명령, 보안 강화,
                              Windows 실행 파일 이름, 마우스·터치·키보드 입력과 한글 입력 개선,
                              1.6.0의 연세포탈 로그인과 같은 계정 기기끼리 비밀번호 없는 연결, 최소 버전과 업데이트,
-                             Android 제어 전용, 최고운영자 화면, 스플래시, 1.8.0의 출입증과 이용 비밀번호 화면)
+                             Android 제어 전용, 최고운영자 화면, 스플래시, 1.8.0의 출입증과 이용 비밀번호 화면,
+                             1.9.0의 지원 코드 화면, 휴대폰 앱 잠금, UI/UX 검토의 다듬기)
 client/patches/hbb_common/   공용 라이브러리 패치 (WebSocket 연결의 HTTP/SOCKS5 프록시 지원, TCP_NODELAY, RegisterPk의 출입증 필드)
 client/overlay/rustdesk/     패치 대신 통째로 덮어쓰는 파일 (아이콘·스플래시 이미지, scripts/make-icons.sh로 생성)
 client/icons/                아이콘·스플래시 SVG 원본 (스플래시 글자는 scripts/make-splash-text.py로 만듦)
