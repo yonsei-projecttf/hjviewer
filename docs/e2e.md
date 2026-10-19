@@ -229,6 +229,33 @@ PASS (strict): transport: relay
 
 **고침을 되돌렸을 때 실패하는지**: 다섯 군데를 되돌린 클라이언트로 같은 스크립트를 돌려, 해당 시나리오만 실패하는 것을 확인했습니다(커밋하지 않은 확인용 빌드). H21의 이름 훅을 빼면 S9, 로그아웃이 거둔 묶기 요청의 확인을 버리는 처리를 빼면 R3(로그아웃한 PC가 묶이고 `""`가 들어감), 포트 포워딩의 키 비교 순서를 되돌리면 X7(비밀번호가 나가 포워딩이 붙음), 계정 요청의 엄격 TLS(H15)를 빼면 K2, 로그아웃 뒤 목록 확인을 빼면 D1이 실패했습니다.
 
+**1.9.0에서 더하는 시나리오**(번호와 목적만입니다. 통합 때 돌린 뒤 결과를 적고 위 표의 바뀐 줄을 고칩니다. `E2E_LEAST_STRICT`는 그때 실제로 더한 `PASS` 줄 수만큼 한 번에 올립니다. 가짜 CM의 줄은 `hjv-e2e: cm login from {id} named {name:?}, authorized {true|false}, mark {kind|none}({who})`와 `hjv-e2e: cm recording {true|false}`입니다)
+
+| # | 목적 |
+|---|---|
+| S6′ | (S4–S6의 바뀜, TV-W2) 2FA 없는 PC에 alice의 비밀번호 없는 연결: CM 이름이 `Linux PC`(이름에 `same account` 없음)이고 표시가 `mark same-account(홍*동)`. 받아들인 증명의 기록이 로그온 응답보다 먼저인 것을 고정함 |
+| S5′ | (S4–S6의 바뀜, TV-W2) 같은 세션의 5초 스트림을 `record`로: CM에 `cm recording true`, 그다음 `cm recording false`, PC 로그 `hjv: peer recording true` |
+| S9′ | (S7–S10의 바뀜, TV-W2) bob의 PC 비밀번호 세션의 표시는 `mark none()` |
+| X1′ | (X1의 바뀜, TV-W2) 클릭 승인 PC의 수락 요청의 표시는 `mark none()`(클릭 승인 갈래에는 같은 계정 표시가 없음) |
+| H-hide | (TV-W2) 서비스에 `allow-hide-cm Y`를 써도 고정 E2E 빌드는 `N`을 읽음 |
+| EL1 | (TV-W3) 같은 계정 원격 화면, PC에 `HJV_E2E_LOGON=1`: 닫은 뒤 PC 로그 `hjv: end lock: auto, locked at start true` |
+| EL2 | EL1을 `HJV_E2E_LOGON` 없이: 잠금 줄 없음 |
+| EL3 | 컨트롤러가 그 PC의 PeerConfig에 `hjv-end-lock=never`를 둔 뒤 EL1: 잠금 줄 없음 |
+| EL4 | 증명 없는 비밀번호 세션, `HJV_E2E_LOGON=1`: 잠금 줄 없음(upstream 기본) |
+| EL5 | 1.8.x 컨트롤러 바이너리로 EL1: 자동 잠금 줄 있음(D-9) |
+| EL6 | 터미널 로그인에 `OptionMessage`의 필드 1001이 실려도 `Session scope violation`이 없음 |
+| S33 | (TV-W5) `""` 스트림 중 같은 계정의 다른 기기가 그 컨트롤러의 키를 폐기: 15초 안에 종료 6과 `hjv-e2e: closed: … (login ended, not allowed)`, PC 로그 `… ended: its key is no longer listed` |
+| S34 | PC 비밀번호로 연 스트림은 그 계정 키를 폐기해도 끝까지 감 |
+| S35 | `""` 스트림 중 hjv-api를 멈춰 목록 수명을 넘김: 끊기지 않음(24시간 규칙) |
+| S36 | `""` 스트림 중 `admin binding revoke`: 종료 6과 `(password-less ended, not allowed)` |
+| S37 | `""` 스트림 중 `admin passwordless off`(D-5): 종료 6, PC 로그 `ended: password-less logins are paused (disabled)` |
+| S38 | `""` 스트림 중 그 PC에서 로그아웃(D-6): 3초 안에 종료 6. 그 PC의 [끄기]는 끊지 않음 |
+| I1 | (TV-W9) T0 뒤 `--hjv-e2e-incoming`: 줄 하나, 종류 `remote`, 방법 `permanent`, 확인 없음, 끝 `peer` |
+| I2 | S6′ 뒤: alice의 줄의 확인 `same-account`, 기기 이름 `Linux PC`, 가린 주인 `홍*동`, 방법 `account`(2FA 없는 같은 계정 세션) |
+| I3 | S7–S10 뒤: bob의 성공 줄 하나. 틀린 비밀번호와 증명 없는 거절은 줄이 없음 |
+| I4 | S22 뒤: 거절이라 줄 없음. 비밀번호로 연 포워딩은 종류 `forward` |
+| I5 | 세션이 열린 채 PC 서비스를 다시 시작(S15): 그 줄이 `unknown`, 새 세션은 새 줄 |
+
 ### 계정 단계로 찾은 것
 
 - **터미널에서 돌리면 R3에서 모두 멈춤**(2026-10-17): Ubuntu의 sudo는 기본이 `use_pty`라서, 터미널에서 부르면 명령을 가상 터미널에서 돌립니다. 그 명령이 멈추면 sudo는 자기를 부른 프로세스 그룹까지 함께 멈춥니다(`^Z`를 누른 것처럼). 그래서 개발 PC의 터미널에서 손으로 돌린 `scripts/ci.sh prepush`는 R3이 PC 서비스를 멈춘 순간 스크립트, `ci.sh`, hjv-api까지 함께 멈췄습니다. 그전의 E2E는 터미널 없이(에이전트, 클라우드) 돌아 이 일이 없었습니다. `in_ns`가 sudo를 `setsid -w`로 터미널 없이 부르게 고쳤습니다.
@@ -329,6 +356,20 @@ PASS (strict): transport: relay
 - 당시 결과(2026-10-17): 열네 시나리오 모두 PASS였고, strict 전체는 PASS 91줄이었습니다. A12를 퇴역해 A 시나리오는 13줄이고, 2026-10-20에 지원 코드의 C1–C7 일곱 줄을 더해 이 단계는 20줄입니다. X2·X3·V3·V8도 퇴역한 strict 전체 하한은 93줄입니다.
 - A11은 C4에서 코드의 출입증으로 등록한 PC B의 등록도 끊습니다(그 출입증도 `NOT_BEFORE` 전에 받은 것). 그래서 A11의 "두 PC의 등록이 끊김"과 "PC B는 `refused`"는 C1–C7이 있어도 그대로입니다.
 - 걸린 시간: 이 단계는 2분 30초쯤입니다(클라우드 컨테이너). 가장 긴 것은 A14에서 PC B가 다시 등록하기까지(43초쯤)로, 거절된 PC는 30초마다 RegisterPk를 다시 보내기 때문입니다(upstream의 `DEPLOY_RETRY_INTERVAL`). hbbs는 등록되지 않은 연결에 하트비트를 보내지 않고 30초 동안 조용한 연결을 끊으므로, 그 끊김이 보내는 때와 겹치면 한 번 더 기다립니다. 그래서 A14는 75초까지 기다립니다. A7과 A9는 hjv-api의 실패 지연으로 각각 3초 남짓입니다. 같은 컨테이너에서 strict 전체는 10분 30초쯤입니다.
+
+**1.9.0에서 더하는 시나리오**(번호와 목적만입니다. 결과는 통합 때 돌린 뒤 적습니다. 지원 링크·대기실·지원 확인은 TV-W6의 hjv-api와 클라이언트가 함께 있어야 돕니다)
+
+| # | 목적 |
+|---|---|
+| A6′ | (A6의 바뀜, UX-G1) 세션 전에 `hjv-e2e: guest held: Y`(`hjv-guest-held:<PC A>`), 세션이 닫힌 뒤 `guest held: -`. A0이 묻지 않을 조건을 고정함 |
+| W6-E1 | `staff`가 `--hjv-e2e-support-code`: 코드, `link`(`/api/hjv/s/`와 22자), `slot`을 찍음 |
+| W6-E2 | PC B 쪽 네트워크에서 `curl`로 링크: 307, 페이지 200에 그 코드, 패키지 GET 3번 200과 4번째 404, 틀린 링크 404. 최소 버전 단계의 시험 정책과 패키지 폴더를 쓰고, 없으면 `PARTIAL`이며 strict에서 실패함 |
+| W6-E3 | `staff`가 `--hjv-e2e-support-wait 30`을 건 동안 PC B가 `--hjv-e2e-guest-pc-code <코드>`: PC B `guest pc code: ok`, `staff`가 5초 안에 PC B의 ID를 찍음, 그 뒤 링크는 404 |
+| W6-E4 | PC B의 가짜 CM(수락하지 않음), `staff`가 비밀번호 없이 연결: `named "<컨트롤러 ID, 띄어 씀>", authorized false, mark staff()`, 컨트롤러는 `No Password Access`(수락 기다림). `actl`의 이용 비밀번호 연결은 `mark none()` |
+| W6-E4b | 같은 것을 '비밀번호만' PC B에: 컨트롤러는 `Empty Password`(보통의 비밀번호 창), CM은 `mark staff()`와 `authorized false` |
+| W6-E5 | 수락 전 입력: `HJV_E2E_CM_ACCEPT_AFTER=10`인 CM, `staff`가 `--hjv-e2e-input-probe <PC B> 20`: 수락 전에는 `hjv_e2e_dropped_input`이 20 이상 늘고 포인터는 그대로, 수락 뒤에는 포인터가 움직임 |
+| W6-E6 | 같은 계정의 다른 컨트롤러 프로필(코드를 만들지 않은 기기)이 PC B에 연결: `mark none()` |
+| W6-E7 | PC B가 `--hjv-e2e-guest-pc-end` 뒤 이용 비밀번호로 다시 들어오고 `staff`가 연결: `mark none()`(지원 확인이 출입증과 함께 끝남) |
 
 **`scripts/ci.sh`가 하는 것**
 - 감지(`e2e_access`): hbbs의 `--help`에 `--hjv-access-file`이 있고, 클라이언트 실행 파일에 `HJV_E2E_ACCESS_PASSWORD`가 있고(릴리스 빌드는 명령 이름을 글자로 남기지 않음), 계정 E2E가 돌면 `HJV_E2E_ACCESS=1`로 이 단계를 켭니다. `server/patches`에 0006이 있는데 hbbs에 옵션이 없거나, `client/patches`에 0061이 있는데 클라이언트에 명령이 없으면 실패합니다. 패치가 없을 때만 건너뛴 것으로 셉니다(최소 버전 단계의 감지와 같은 틀).

@@ -1953,11 +1953,14 @@ hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
 
 ### 9-9. 지원 코드가 든 hjv-api (1.9.0과 함께)
 
-1.9.0 앱과 함께 내는 hjv-api는 교직원이 만드는 지원 코드(계약 3-7)를 더합니다. hbbs, hbbr, nginx, `access.conf`, `guest.conf`는 그대로이고, **새 파일, 설정 줄, 자격 증명, DB 이전이 없습니다.** 지원 코드는 출입증 키(9-1)로 출입증을 만들므로 출입증 키만 있으면 됩니다.
+1.9.0 앱과 함께 내는 hjv-api는 교직원이 만드는 지원 코드(계약 3-7)와 그 지원 링크·대기실·지원 확인(TV-W6, 계약 3-7), 내 PC 목록의 `synced`·`wake`(계약 3-8)를 더합니다. 이 셋은 hjv-api 릴리스 하나로 함께 넣습니다(D-3). hbbs, hbbr, `access.conf`, `guest.conf`는 그대로이고, **새 파일, 설정 줄, 자격 증명, DB 이전이 없습니다.** 지원 코드는 출입증 키(9-1)로 출입증을 만들고, 지원 확인은 이미 있는 목록 키 1번(7-4)으로 서명하므로 두 키만 있으면 됩니다. nginx에는 **지원 링크의 경로 한 줄**(`location ^~ /api/hjv/s/`, 묶음의 `nginx-hjviewer-api.conf`)이 더해집니다. 이 줄은 새 hjv-api와 같은 작업에서 **hjv-api보다 먼저** 넣고, 그 뒤로 미루지 않습니다(아래 '넣기').
 
-- **들어 있는 것**: `POST /api/hjv/support-code`(로그인한 교직원의 앱이 코드를 만듦. 계정 요청이라 토큰과 계정 키의 서명이 필요), `POST /api/hjv/guest`의 `code`(로그인하지 않은 PC가 코드를 그 PC의 2시간짜리 `guest`/`pc` 출입증으로 바꿈. 이용 비밀번호와 같은 길, 한도, 실패 지연, nginx 위치), 그리고 앱에 알리는 두 표시입니다. 로그인 답과 `currentUser` 답의 `hjv`에 `"support_code":true`(심사 계정이 아닌 교직원의 로그인), `GET /api/hjv/access`의 답에 `"codes":true`(`MODE`가 `count`나 `enforce`이고 출입증 키가 있을 때)입니다. 앱에 그대로 보이는 hjv-api의 글 몇 줄도 1.9.0 앱의 말로 바뀝니다("…다시 시도해 주세요.", "내 PC 목록", "그 PC").
+- **들어 있는 것**: `POST /api/hjv/support-code`(로그인한 교직원의 앱이 코드를 만듦. 계정 요청이라 토큰과 계정 키의 서명이 필요), `POST /api/hjv/guest`의 `code`(로그인하지 않은 PC가 코드를 그 PC의 2시간짜리 `guest`/`pc` 출입증으로 바꿈. 이용 비밀번호와 같은 길, 한도, 실패 지연, nginx 위치), 1.9.0의 TV-W6 부분인 `GET /api/hjv/support-code/wait`(코드를 만든 기기의 대기실. 답을 20초까지 잡아 두며 nginx의 `proxy_read_timeout 30s` 안), `GET /api/hjv/s/<link>/`(지원 링크 페이지와 그 코드가 열린 동안 세 번까지의 HJViewer.exe), 코드로 바꾼 답의 지원 확인(`staff`), 그리고 앱에 알리는 두 표시입니다. 로그인 답과 `currentUser` 답의 `hjv`에 `"support_code":true`(심사 계정이 아닌 교직원의 로그인), `GET /api/hjv/access`의 답에 `"codes":true`(`MODE`가 `count`나 `enforce`이고 출입증 키가 있을 때)입니다. 앱에 그대로 보이는 hjv-api의 글 몇 줄도 1.9.0 앱의 말로 바뀝니다("…다시 시도해 주세요.", "내 PC 목록", "그 PC").
 - **앱의 단추는 이 hjv-api 뒤에만**: 1.9.0 앱은 두 표시가 있을 때만 [지원 코드 만들기](교직원 쪽, S1)와 P1의 [지원 코드 넣기](PC 쪽)를 보입니다. 이 hjv-api를 넣기 전에는 1.9.0 앱도 두 단추를 보이지 않고, 나머지는 그대로 됩니다. 1.8.0 앱은 두 표시를 모르고 지나갑니다. 그래서 앱과 서버의 순서는 상관없지만, 사용자 안내([distribution.md](distribution.md)의 "사용자에게 보내는 안내 (1.9.0)")의 지원 코드 줄은 이 hjv-api를 넣은 뒤에 보냅니다.
-- **넣기**(사용자 승인 뒤, 조용한 시간): 7-14의 "업그레이드"대로 스냅숏, 옛 실행 파일, 설정 파일을 남긴 뒤 6절 "B 경로 업데이트"의 4번(hjv-api만)을 합니다. hbbs와 hbbr은 다시 시작하지 않으므로 원격 세션은 끊기지 않습니다. hjv-api가 다시 시작하는 몇 초 동안은 로그인, 동기화, 이용 비밀번호가 멈춥니다(가진 출입증은 그대로).
+- **넣기**(사용자 승인 뒤 허브-운영이, 조용한 저녁에. cron의 nginx 재적재 시각은 피함): 한 작업에서 이 순서로 합니다.
+  1. **nginx 줄 먼저**: 새 묶음을 4-1처럼 내려받아 체크섬을 확인한 뒤, 그 디렉터리에서 `sudo install -m 644 web/* /opt/hjviewer/share/web/`만 하고(hbbs는 다시 시작하지 않음) 6절 "B 경로 업데이트"의 "nginx 경로 파일" 블록으로 설치된 nginx 파일과 비교합니다. `nginx-hjviewer-api.conf`만 `differ`여야 하고, `sudo diff -u /etc/nginx/snippets/hjviewer-api.conf /opt/hjviewer/share/web/nginx-hjviewer-api.conf`의 차이는 `location ^~ /api/hjv/s/ { error_log /dev/null crit; proxy_pass …; }` 한 블록과 그 주석뿐이어야 합니다. 다른 차이가 있으면 멈추고 보고합니다. 그 블록 아래의 1–3번(백업, 설치, `nginx -t`와 reload, 5절의 확인)으로 넣습니다. 옛 hjv-api는 이 경로에 404 JSON으로 답하므로 이 순서에서 깨지는 것은 없습니다. `nginx -t`가 실패하면 되돌리고, 2번도 하지 않고 멈춥니다.
+  2. **그다음 hjv-api**: 7-14의 "업그레이드"대로 스냅숏, 옛 실행 파일, 설정 파일을 남긴 뒤 같은 디렉터리에서 6절 "B 경로 업데이트"의 4번(hjv-api만)을 합니다. hbbs와 hbbr은 다시 시작하지 않으므로 원격 세션은 끊기지 않습니다.
+  - 순서를 거꾸로 하면(새 hjv-api가 돌고 nginx 줄이 아직 없음) 지원 링크의 요청이 오류로 끝날 때(hjv-api가 다시 시작하는 몇 초, 끊긴 내려받기) nginx 오류 로그에 링크 값이 든 경로가 남고, 같은 서버의 웹 사이트 사용자가 그 로그를 읽을 수 있습니다. 그래서 nginx 줄을 hjv-api 뒤로 미루지 않습니다(짧은 링크와 문 2의 `location`과 같은 까닭). hjv-api가 다시 시작하는 몇 초 동안은 로그인, 동기화, 이용 비밀번호가 멈춥니다(가진 출입증은 그대로).
 - **확인**:
   ```bash
   sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep -E '^(tickets|support codes)'
@@ -1966,6 +1969,7 @@ hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
   ```
   - 첫 줄이 `tickets: on, key …`이고, `support codes: 0 open, 0 held in memory (…)`와 `support codes, the last day's records: …` 두 줄이 있어야 합니다. `support codes` 줄이 없으면 옛 hjv-api가 돌고 있습니다.
   - 마지막 줄은 앱이 보는 답입니다. `MODE=enforce`(또는 `count`)인데 `codes`가 없으면 출입증 키가 없거나(`tickets: off`) 옛 hjv-api입니다. 그동안 PC는 [지원 코드 넣기]를 보이지 않습니다. 멈추고 보고합니다. `off`, 닫힘, `unknown`에서는 `codes`가 없는 것이 맞습니다(계약 3-6).
+  - 지원 링크(1.9.0, TV-W6): `curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/s/AAAAAAAAAAAAAAAAAAAAAA/"`가 `404`이고, 그 뒤 nginx 오류 로그(7-14의 '경보 경로'처럼 그 server 블록의 `error_log` 파일)에 `/api/hjv/s/` 줄이 없어야 합니다(`sudo grep -c '/api/hjv/s/' <그 파일>`이 0). `admin ticket status`의 `support codes` 줄에 잡아 둔 대기실 요청의 수와 내려받기가 남은 지원 링크의 수가 보여야 합니다. 없으면 TV-W6 전의 hjv-api입니다. 멈추고 보고합니다.
 - **저널의 줄**: 코드와 그 꼬리표는 어느 줄에도 없습니다. 지원 코드에 관한 줄은 다음뿐이고, 주소와 계정은 꼬리표로만 나옵니다.
   - `support code: an account holds its 5 open codes (acct=<꼬리표>); the next ten minutes are not logged`: 한 계정이 쓰지 않은 코드 5개를 채웠습니다(그 계정에 10분에 한 줄). 잦으면 사용자에게 알립니다.
   - `support code: 1000 open codes are held, no more made`: 열린 코드가 모두 합쳐 1000개라 새 코드를 만들지 않습니다(503 `busy`). 바로 보고합니다.

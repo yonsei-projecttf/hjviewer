@@ -21,11 +21,24 @@
 - 코드는 10분 동안 한 번, PC 하나에만 쓰입니다. 틀린 코드, 지난 코드, 이미 쓴 코드는 같은 답을 받습니다. 코드는 hjv-api의 메모리에만 있고, 기록에는 만든 계정과 코드를 넣은 주소의 꼬리표, 시각, 결과만 남고 코드는 남지 않습니다.
 - 사용자가 다시 정할 수 있게 둔 것 둘(3-7의 끝): 코드로 받은 출입증의 수명 2시간(상수 하나), 그리고 지금은 PC 쪽만 받고 컨트롤러가 코드로 연결하는 것(`guest`/`ctl`)은 받지 않는 것.
 
+**1.9.0에서 더 정한 것**(2026-10-20, 외부인 지원 흐름 TV-W6, 연결하기 전의 A0, 링크의 LK1, 3-3, 3-7, 5-3)
+
+- 지원 코드를 만들면 hjv-api가 코드와 함께 **지원 링크**와 대기 번호를 줍니다. 링크는 코드와 다른 128비트 값이고, 그 페이지가 HJViewer를 내주고 코드를 보입니다(10분, 내려받기 3번, 코드를 쓰면 끝남).
+- 코드를 만든 기기의 앱은 **대기실** 요청(최대 20초 동안 답을 잡아 두는 요청)으로 그 코드를 넣은 PC의 ID와 공개키를 받습니다. 그 기기의 계정 키에만 답합니다.
+- 코드를 출입증으로 바꿀 때 hjv-api는 그 PC 하나에만 쓰이는 **지원 확인**도 줍니다. 목록 키로 서명한(`hjv-support-v1`), "이 코드를 만든 교직원 기기의 계정 공개키"입니다. 그 기기가 연결하면 PC의 연결 창이 표시 줄에 방패와 "연세대 교직원(로그인 확인)"을 보입니다(5-3의 P4). 지원 확인은 아무것도 열지 않고, PC 안으로 들어가는 것은 지금처럼 그 PC의 비밀번호나 [수락]입니다.
+- 출입증의 형식(2절), hbbs(4절), 출입증의 시험 벡터(8절)는 바뀌지 않습니다. 지원 확인의 벡터는 새 파일 `server/api/tests/data/support-grant-vectors.json`입니다(3-7).
+- A0: 교직원 전용 서버에서 로그인하지 않은 앱은 세션을 열기 전에 이용 비밀번호를 묻습니다(5-3의 A0, 3-3의 `hjv-guest-held`).
+- 링크(TV-C6): 고정 서버 빌드는 `hjviewer://`와 `rustdesk://`(1.9.0만, 다음 판에서 뺌) 링크만 받고, 링크에 든 비밀번호(`?password=`, `--password`)는 쓰지 않으며, 링크로 여는 연결은 한 번 묻습니다(5-3의 LK1).
+- 휴대폰 세션 바꾸기(TV-W7)는 출입증을 붙잡지 않습니다(새 연결처럼 이용 비밀번호를 다시 물음, 3-3).
+- 로그인한 설치 PC의 홈은 원격 준비의 꼭 필요한 줄이 남는 동안 G4를 보입니다(5-3, [architecture.md](architecture.md) 5-12).
+- PC의 수락 창, P2, P3에는 사칭 주의 줄과 관리자 연락처가 붙습니다. 연락처는 서명된 버전 정책의 `contact_ko`입니다(5-3, architecture.md 5-10, 8-2).
+- 같은 hjv-api 릴리스는 내 PC 목록의 답에 `synced`와 `wake`를 더합니다(3-8, UX-W1의 U27).
+
 **따로 정하지 않는 동안의 기본값**: 출입증 수명은 교직원 24시간, 묶인 PC 72시간, 이용 비밀번호 12시간이고, 지원 코드로 받은 출입증은 2시간(설정이 아닌 상수, 3-7)입니다. hjv-api가 멈춰도 교직원은 받아 둔 출입증이 남은 동안 연결합니다. 1.8.0은 직접 IP 접속, LAN 검색, 안전하지 않은 TLS 대체를 끈 채로 고정합니다(3-3). hbbr은 아무것도 확인하지 않습니다.
 
 | 쪽 | 하는 일 | 가진 것 |
 |---|---|---|
-| hjv-api | 로그인한 기기, 묶인 PC, 이용 비밀번호를 맞힌 기기, 지원 코드를 넣은 PC에 출입증을 만들어 서명. 로그인한 교직원에게 지원 코드를 만들어 줌 | 출입증 키(Ed25519, 자격 증명 `hjviewer-api-ticket-key`), 이용 비밀번호의 해시(`guest.conf`), 열린 지원 코드(메모리에만) |
+| hjv-api | 로그인한 기기, 묶인 PC, 이용 비밀번호를 맞힌 기기, 지원 코드를 넣은 PC에 출입증을 만들어 서명. 로그인한 교직원에게 지원 코드를 만들어 주고, 그 코드를 넣은 PC에 지원 확인을 서명해 줌(1.9.0, 3-7) | 출입증 키(Ed25519, 자격 증명 `hjviewer-api-ticket-key`), 목록 키(지원 확인, [architecture.md](architecture.md) 5-2), 이용 비밀번호의 해시(`guest.conf`), 열린 지원 코드와 그 지원 링크·대기 번호(메모리에만) |
 | hbbs | 연결 요청, 중계 요청, 등록에서 출입증을 확인 | `access.conf`의 공개키 한두 개뿐. 비밀은 없음 |
 | 앱 | 받은 출입증을 그대로 실어 보냄 | 출입증 문자열. 키가 없고, 출입증을 읽지 않음 |
 
@@ -149,15 +162,17 @@ UTF-8 JSON 객체 하나입니다. 아홉 멤버가 이 순서로 모두 있고,
 - **거절 뒤**: 연결 요청이나 중계 요청이 출입 표시(5-1)로 거절되면, 로그인한 앱은 출입증을 한 번 새로 받아 다시 해 보고, 그래도 거절되면 A2를 보입니다. 로그인하지 않은 앱은 A1의 창(5-3)을 엽니다.
 - **묶인 PC**: 동기화 답에 `access`가 오면 그것으로 바꿉니다. `access`가 없는 답(hjv-api에 출입증 키가 없음, 옛 hjv-api로 되돌림, 막힌 계정)은 가진 출입증을 `exp`까지 그대로 둡니다. 서명된 `revoked`와 묶음 풀기만 출입증을 버립니다.
 - 새 출입증을 받지 못하면(hjv-api가 멈춤) 가진 출입증을 `exp`까지 그대로 씁니다.
-- **출입증 요청의 401**(U68, 1.9.0): `POST /api/hjv/ticket`이 401을 받으면(다른 기기나 관리자가 로그아웃시킴, 로그인 기간이 끝남) 앱은 그 토큰을 메모리에 적어 두고, 그 로그인이 아직 앱의 것인 동안 화면에 알립니다(`main_get_common`의 `hjv-access-login-ended`). 화면은 이미 묻는 자리(데스크톱이 1초마다 이 PC의 상태를 읽을 때, 앱을 켜고 앞으로 돌아올 때, 연결이 출입 거절을 받았을 때)에서 이것을 읽고, 계정 요청의 401처럼 로그인을 끝냅니다(L4를 한 번 보임). 그래서 거절된 연결은 A2 대신 A1을 보입니다. 휴대폰에서는 세션과 홈이 한 대화상자 자리를 쓰므로, 연결이 출입 거절을 받아 로그인이 끝날 때는 L4를 띄우지 않고 A1의 첫 줄에 "이 기기의 로그인이 끝났습니다. 다른 기기나 관리자가 로그아웃시켰거나 로그인 기간이 끝났습니다."를 보입니다(A1의 [로그인]은 다시 연결까지 합니다). 데스크톱의 세션 창은 주 창에 `currentUser`를 묻게 하고, 그 401이 주 창의 로그인을 끝냅니다.
+- **출입증 요청의 401**(U68, 1.9.0): `POST /api/hjv/ticket`이 401을 받으면(다른 기기나 관리자가 로그아웃시킴, 로그인 기간이 끝남) 앱은 그 토큰을 메모리에 적어 두고, 그 로그인이 아직 앱의 것인 동안 화면에 알립니다(`main_get_common`의 `hjv-access-login-ended`). 화면은 이미 묻는 자리(데스크톱이 1초마다 이 PC의 상태를 읽을 때, 앱을 켜고 앞으로 돌아올 때, 연결이 출입 거절을 받았을 때)에서 이것을 읽고, 계정 요청의 401처럼 로그인을 끝냅니다(L4를 한 번 보임). 그래서 거절된 연결은 A2 대신 A1을 보입니다. 휴대폰에서는 세션과 홈이 한 대화상자 자리를 쓰므로, 연결이 출입 거절을 받아 로그인이 끝날 때는 L4를 띄우지 않고 A1의 첫 줄에 "이 기기의 로그인이 끝났습니다. 다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다."를 보입니다(A1의 [로그인]은 다시 연결까지 합니다). 데스크톱의 세션 창은 주 창에 `currentUser`를 묻게 하고, 그 401이 주 창의 로그인을 끝냅니다.
 - **이용 비밀번호**(3-5): 앱은 이용 비밀번호를 기억하지 않습니다. 넣은 글의 앞뒤 공백을 지우고 봉인해 보낸 뒤 버리고, 받은 출입증은 그 프로세스의 메모리에만 둡니다(파일과 설정에 쓰지 않음).
-  - 컨트롤러의 출입증은 그 대상 ID에 둡니다. 그 프로세스에서 그 대상으로 가는 마지막 세션이 닫히면 버립니다. 그래서 새 연결은 다시 묻고, 같은 세션의 자동 다시 연결과 포트 포워딩의 로컬 연결은 묻지 않습니다.
+  - 컨트롤러의 출입증은 그 대상 ID에 둡니다. 세션을 열기 전(A0, 5-3)에도, 거절된 세션의 A1에서도 받습니다. 그 프로세스에서 그 대상으로 가는 마지막 세션이 닫히면 버리고, A0에서 받은 뒤 세션이 열리지 않으면 프로세스와 함께 끝납니다. 그래서 새 연결은 다시 묻고, 같은 세션의 자동 다시 연결, 같은 대상으로 함께 연 다른 세션, 포트 포워딩의 로컬 연결은 묻지 않습니다. 화면은 `main_get_common("hjv-guest-held:<PC ID>")`(`Y`나 빈 값)로 그 대상의 출입증이 있는지만 봅니다. 출입증 자체는 화면으로 오지 않습니다.
+  - 1.9.0의 휴대폰 세션 바꾸기(원격 화면과 같은 PC의 파일 전송 사이)는 세션을 닫은 뒤 새 연결을 엽니다. 출입증을 붙잡지 않으므로 이용 비밀번호로 들어온 앱은 바꿀 때마다 다시 넣습니다(바꾸기 확인 창이 그렇게 알림). 로그인한 앱은 로그인의 출입증으로 열립니다.
   - PC의 출입증은 화면이 받아 IPC 메시지로 등록하는 프로세스(설치한 PC는 서비스가 띄운 서버 프로세스)에 넘깁니다. 그 프로세스가 끝나거나 12시간이 지나면 끝납니다. 설치한 PC는 PC를 다시 시작할 때, 그리고 서비스가 서버 프로세스를 새로 띄울 때(Windows 로그아웃·사용자 전환, 업데이트)도 끝납니다.
   - 409 `clock`을 받으면 그 답의 `server_time`으로 시계를 맞춰 한 번 다시 보냅니다(로그인과 같음). 그래도 409이면 E5입니다.
 - **지원 코드**(3-7):
   - **만드는 쪽**: 로그인한 앱(데스크톱과 휴대폰)은 로그인 답이나 `currentUser` 답의 `hjv`에 `"support_code":true`가 있을 때만 S1을 보입니다(3-7). S1에서 만들기를 보내고, 받은 코드는 S2 창의 메모리에만 둡니다(설정, 파일, 로그에 쓰지 않음). 남은 시간은 받은 때부터 `expires_in`을 세어 보이고, 0이 되면 코드를 감추고 끝났다고 보입니다. 서버 모드(3-6)가 `off`나 `count`이면 S8을 붙입니다.
   - **PC 쪽**: P1의 [지원 코드 넣기]는 `GET /api/hjv/access`의 답에 `"codes":true`가 있을 때만 보이고(3-6), P3 창을 엽니다. 넣은 글의 앞뒤 공백을 지우고 3-7의 규칙으로 읽어 8자가 아니면 보내지 않고 꼴의 안내(5-3, E6이 아님)를 보입니다. 8자이면 넣은 글을 봉인해(`p`는 `code`) 보낸 뒤 버립니다.
   - 받은 출입증은 이용 비밀번호의 PC 출입증과 같은 자리(화면이 IPC로 넘긴 등록 프로세스의 메모리)에 두고, 나중에 받은 것이 앞의 것을 바꿉니다. 끝나는 때, [끝내기], 다시 시작하면 끝나는 것도 같고, 수명만 2시간입니다. 앱은 어느 길로 받았는지를 함께 두어 홈 줄(P2, P3)을 고릅니다.
+  - **지원 확인**(1.9.0, TV-W6): PC는 코드로 바꾼 답의 `staff`를 3-7의 "지원 확인"대로 확인해 출입증 옆에 두고, 새 출입증이 오거나 [끝내기], 프로세스가 끝나면 함께 바꾸거나 버립니다. 만든 쪽 앱은 대기 번호를 Rust의 메모리에만 두고 화면에 넘기지 않으며, 대기실이 알려 준 PC의 ID와 공개키(지원 PC 표)는 그 로그인 동안 그 출입증이 끝날 때까지 메모리에만 둡니다.
   - 코드는 한 번만 쓰이므로, 답을 받지 못한 요청(연결이 끊김, 시간 초과)은 새로 봉인하지 않고 같은 본문을 첫 요청부터 25초 안에 한 번 더 보냅니다(hjv-api가 첫 답을 두는 30초 안). hjv-api는 같은 본문에 첫 답을 줍니다(3-5). 그래도 답이 없으면 E7입니다. 409 `clock`은 이용 비밀번호처럼 시계를 맞춰 새 봉인으로 한 번 다시 보냅니다(409인 요청은 코드를 쓰지 않음). 그래도 409이면 E5입니다.
 - **등록**(4-4):
   - `NOT_DEPLOYED`를 받은 연결은 hbbs가 곧 끊는다고 봅니다. hbbs는 받아들이지 않은 연결에 하트비트를 보내지 않고, 30초 동안 프레임이 없으면 닫고, 빈 프레임을 받으면 바로 닫습니다. 그런 연결에 빈 프레임을 보내지 않고, 끊기면 다시 연결합니다.
@@ -251,11 +266,13 @@ sig가 서명하는 바이트: "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-25
 
 ```text
 만들기: POST /api/hjv/support-code   {"use":"pc"}            로그인한 앱: 토큰과 X-HJV-Proof
-200     {"code":"K7M2-Q9XD","use":"pc","expires_in":600}
+200     {"code":"K7M2-Q9XD","use":"pc","expires_in":600,"link":"/api/hjv/s/<22자>","wait":"<22자>"}
+대기실: GET /api/hjv/support-code/wait?rev=<n>                  만든 기기: 토큰과 X-HJV-Proof (1.9.0, TV-W6)
+링크:   GET /api/hjv/s/<link>/                                  도움받을 사람의 브라우저 (1.9.0, TV-W6)
 바꾸기: POST /api/hjv/guest          {"use":"pc","id":"<PC ID>","pk":"<기기 공개키, 표준 base64>","sig":"<표준 base64>","code":"hjv-sealed-v1.<kid>.<봉인>"}
 봉인:   {"v":1,"p":"code","use":"pc","pw":"<넣은 글>","t":1760000000,"n":"<16~64바이트의 표준 base64>","id":"<PC ID>","kid":"<kid>"}
 sig가 서명하는 바이트: "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-256(봉인 바이트))   3-5와 같음
-200     출입증 객체(3-4): guest/pc, 그 PC의 ID와 키, 2시간
+200     출입증 객체(3-4): guest/pc, 그 PC의 ID와 키, 2시간. 그리고 지원 확인 "staff"(1.9.0, TV-W6)
 ```
 
 **코드**
@@ -264,16 +281,16 @@ sig가 서명하는 바이트: "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-25
 - 읽는 규칙(server/api/src/support.rs의 `read`)은 이것뿐입니다. 앞뒤 공백을 지운 글(봉인의 `pw`)이 64바이트 이하이고 ASCII 글자만이어야 합니다. 대소문자를 가리지 않고, `-`와 공백 U+0020만 건너뛰고, `O`는 `0`, `I`와 `L`은 `1`로 읽습니다. 그렇게 읽어 8자가 아니면 틀린 코드입니다. 탭, U+00A0, U+3000 같은 다른 공백, 전각 글자, `%`(짧은 링크의 주소와 달리 `%` 이스케이프는 읽지 않음)가 하나라도 있으면 틀린 코드입니다.
 - 앱이 보내기 전에 꼴을 보는 것(P3의 꼴 안내, 5-3)은 이 함수를 그대로 옮겨야 합니다. 앱이 받아 보낸 글을 서버가 틀린 코드로 읽으면, 보낼 때마다 그 주소의 실패(10분에 5번)로 세어 곧 E2가 됩니다.
 - 만든 때부터 10분 동안 한 번, PC 하나에만 쓰입니다. 넣는 순간 그 PC(요청의 `id`와 `pk`)의 출입증이 되고, 코드는 끝납니다.
-- 코드는 그것을 만든 기기의 로그인(만들기 요청에 서명한 계정 키)과 함께 끝납니다. 만든 계정이 막히거나(`admin block`, `allow remove`) 지워지면(`user delete`), 또는 그 계정 키가 끝나면(그 기기의 로그아웃, 다른 기기의 '로그아웃시키기'와 '다른 기기 모두 로그아웃', 관리자의 `revoke`와 `user revoke-all`, 같은 기기의 새 로그인) 그 키로 만든 열린 코드는 다시 열리지 않습니다. 막힌 계정을 `unblock`해도, 다시 로그인해도 그 코드는 끝난 채입니다(막을 때 계정 키도 끝나기 때문). hjv-api는 바꿀 때 이것을 DB에서 확인하고, 그렇게 끝난 코드는 메모리에서도 끝남으로 표시합니다. 같은 계정의 다른 기기에서 만든 코드는 그 기기의 키가 남아 있는 동안 그대로입니다.
+- 코드는 그것을 만든 기기의 로그인(만들기 요청에 서명한 계정 키)과 함께 끝납니다. 만든 계정이 막히거나(`admin block`, `allow remove`) 지워지면(`user delete`), 또는 그 계정 키가 끝나면(그 기기의 로그아웃, 다른 기기에서의 [로그아웃]과 [다른 기기 모두 로그아웃], 관리자의 `revoke`와 `user revoke-all`, 같은 기기의 새 로그인) 그 키로 만든 열린 코드는 다시 열리지 않습니다. 막힌 계정을 `unblock`해도, 다시 로그인해도 그 코드는 끝난 채입니다(막을 때 계정 키도 끝나기 때문). hjv-api는 바꿀 때 이것을 DB에서 확인하고, 그렇게 끝난 코드는 메모리에서도 끝남으로 표시합니다. 같은 계정의 다른 기기에서 만든 코드는 그 기기의 키가 남아 있는 동안 그대로입니다.
 - 무기명 값입니다. 코드를 아는 사람은 누구든 10분 안에 먼저 넣은 PC 하나에 씁니다. 그래서 짧게, 한 번만, PC 하나에만 쓰게 하고, 맞히기는 이용 비밀번호의 한도로 막습니다. 모든 주소의 시도가 합쳐서 시간당 60번까지이므로(3-5), 열린 코드가 상한인 1000개라도 하루 동안 하나라도 맞힐 확률은 약 100만분의 1.3입니다.
-- 만든 코드를 지우는 요청은 없습니다(1.9.0). 코드는 10분 뒤 저절로 끝나고, 만든 창을 닫아도 그때까지 쓰입니다. 바로 끝내려면 만든 기기에서 로그아웃하거나 다른 기기에서 그 기기를 '로그아웃시키기' 합니다(위). 그 코드로 이미 받은 출입증까지 바로 끊으려면 6-4의 `NOT_BEFORE`입니다.
+- 만든 코드를 지우는 요청은 없습니다(1.9.0). 코드는 10분 뒤 저절로 끝나고, 만든 창을 닫아도 그때까지 쓰입니다. 바로 끝내려면 만든 기기에서 로그아웃하거나 다른 기기에서 그 기기를 로그아웃합니다(위). 그 코드로 이미 받은 출입증까지 바로 끊으려면 6-4의 `NOT_BEFORE`입니다.
 
 **만들기: POST /api/hjv/support-code**
 
 - 로그인한 앱이 토큰과 `X-HJV-Proof`로 보냅니다(계정 요청. 3-4의 `POST /api/hjv/ticket`과 같음). 그래서 명단에 있고 막히지 않은 교직원 계정의 기기만 만듭니다. 심사 계정은 403 `no_code`를 받고, 로그인하지 않은 앱(이용 비밀번호나 지원 코드로 들어온 쪽)은 토큰이 없어 보낼 수 없습니다.
 - **만들 수 있는지**(1.9.0, 2026-10-19에 정함): 만들 수 있는 로그인, 곧 심사 계정이 아닌 교직원 계정의 로그인에는 로그인 답의 `hjv`와 `POST /api/currentUser` 답(사용자 객체)의 `hjv`에 `"support_code":true`가 있습니다(server/api/src/support.rs의 `may_make`). 심사 계정의 로그인과 로그인하지 않은 앱(이용 비밀번호나 지원 코드로 받은 출입증)은 이것을 받지 않고, `false`는 보내지 않습니다. 앱은 이것이 `true`일 때만 S1을 보이므로(5-3), 심사 계정도, 1.9.0 전의 hjv-api에 붙은 앱도 S1을 보지 않습니다. 출입증 키가 없는 서버도 이것은 보내고, 만들기는 503 `unavailable`(S7)입니다.
 - **본문**: `{"use":"pc"}` 하나입니다. 다른 값, 다른 멤버, 같은 멤버 두 번, `null`, 빈 본문은 400 `bad_request`입니다. `use`는 나중에 컨트롤러의 코드를 더할 자리입니다(아래 '바꿀 수 있게 둔 것').
-- **답**: 200의 `code`는 `XXXX-XXXX` 꼴의 코드, `use`는 요청의 것, `expires_in`은 남은 초(600)입니다. 앱은 받은 때부터 세어 남은 시간을 보입니다(S2). 같은 요청을 다시 보내 받은 첫 답도 `expires_in`이 600 그대로이므로, 다시 보내기까지 걸린 시간(30초 안)만큼 S2의 남은 시간이 서버의 끝보다 늦을 수 있습니다.
+- **답**: 200의 `code`는 `XXXX-XXXX` 꼴의 코드, `use`는 요청의 것, `expires_in`은 남은 초(600)입니다. TV-W6의 hjv-api부터 `link`(지원 링크의 경로, `/api/hjv/s/<22자>`)와 `wait`(대기 번호, 22자)가 늘 함께 더 있습니다. 둘 다 16바이트 무작위 값의 base64url(패딩 없음)이고, 서로 다르고, 코드와 함께 메모리에만 있습니다. 앱은 `wait`를 Rust의 메모리에만 두고(화면에 넘기지 않음), `link`는 서버 주소를 붙인 전체 주소로 S2 창에만 넘깁니다. 두 멤버가 없는 답(그 전의 hjv-api)이면 S2는 링크와 대기실 없이 S4의 안내문을 씁니다(5-3). 1.8.0 앱은 지원 코드를 만들지 않으므로 이 멤버를 보지 않습니다. 앱은 받은 때부터 세어 남은 시간을 보입니다(S2). 같은 요청을 다시 보내 받은 첫 답도 `expires_in`이 600 그대로이므로(`link`와 `wait`도 같음), 다시 보내기까지 걸린 시간(30초 안)만큼 S2의 남은 시간이 서버의 끝보다 늦을 수 있습니다.
 - **한도**: 계정 키의 다른 요청과 함께 분당 30번까지입니다(429 `rate_limited`). 한 계정의 열린 코드(만들었고 아직 쓰지도 끝나지도 않은 것. 만든 계정 키가 끝난 코드는 세지 않음)는 5개까지이고, 넘으면 429 `too_many_codes`에 그 계정의 열린 코드 가운데 가장 먼저 끝나는 것이 끝나기까지의 초(1 이상)를 `retry_after`로 줍니다. hjv-api가 메모리에 두는 코드는 모두 합쳐 1000개까지입니다(아래 '메모리').
 - **그 밖의 거절**: 503 `busy`(열린 코드만으로 1000개), 503 `unavailable`(출입증 키가 없음: 코드를 출입증으로 바꿀 수 없으므로 만들지도 않음). 계정 요청의 401과 409도 그대로입니다. 본문은 3-4와 같은 모양이고(`too_many_codes`에는 `retry_after`가 더 있음), 같은 요청을 `HJV_API_RETRY_WINDOW`(30초) 안에 다시 보내면 첫 답(같은 코드)이 옵니다.
 
@@ -284,7 +301,27 @@ sig가 서명하는 바이트: "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-25
 - **봉인**: 3-5와 같은 sealed box에 용도 칸 `p`가 `code`입니다. `pw`에는 넣은 글을 앞뒤 공백만 지워 그대로 담고(1~256바이트), hjv-api가 위의 규칙으로 읽습니다. `use`는 `pc`, `id`는 바깥의 `id`입니다. `code`에는 `p`가 `code`인 봉인만 받습니다(다른 봉인은 400, 주소의 실패로 셈). `t`, `n`, `kid`, 409 `clock`, 같은 본문을 30초 안에 다시 보내면 첫 답이 오는 것은 3-5와 같습니다.
 - **PC의 서명**: 3-5와 같은 바이트입니다. 봉인 바이트가 요청마다 다르므로 서명 하나는 그 요청 하나에만 씁니다. hbbs가 그 ID의 키를 알면 같은 키여야 합니다(`hjv-pk`).
 - **답**: 200은 출입증 객체(3-4)이고, 출입증은 2-4의 '지원 코드, PC' 그대로입니다: `guest`/`pc`, `sub`는 빈 문자열, `id`와 `pk`는 요청의 것, `to`는 `[]`, `exp`는 `iat`에서 2시간 뒤. 출입증에는 코드를 만든 교직원이 들어가지 않습니다.
-- **확인 순서**: 본문의 모양(400, 세지 않음), 출입증 키(없으면 503) → 같은 본문을 30초 안에 다시 보낸 것이면 첫 답(3-5) → 주소마다 실패 한도(429) → 봉인과 PC의 서명(400, 409, 주소의 실패로 셈) → 주소마다 출입증 한도와 모든 시도의 한도(429) → 코드 찾기와 만든 계정, 계정 키 확인(401, 주소의 실패로 셈) → hbbs가 가진 키(403, 503) → 코드를 쓰고 서명.
+- **지원 확인**(1.9.0, TV-W6): 코드로 바꾼 200 답에는 `staff`가 더 있습니다. 이용 비밀번호의 답에는 없습니다. 1.8.0 앱은 지원 코드를 넣지 않으므로 이 멤버를 보지 않습니다.
+
+  ```text
+  "staff":{"kid":1,"g":"<지원 확인 바이트의 표준 base64>","s":"<서명 64바이트의 표준 base64, 88자>"}
+  서명하는 바이트: "hjv-support-v1" NUL <지원 확인 바이트>          키: 목록 키(kid번, architecture.md 5-2)
+  지원 확인 바이트(UTF-8 JSON, 이 순서, 공백 없음):
+  {"v":1,"typ":"hjv-support","kid":1,"pc_id":"<PC ID>","pc_pk":"<PC 기기 공개키, 표준 base64 44자>",
+   "ck":"<코드를 만든 기기의 계정 공개키, 표준 base64 44자>","ctl_id":"<그 기기의 ID, 없으면 빈 문자열>",
+   "name":"","iat":<출입증의 iat>,"exp":<출입증의 exp>}
+  ```
+
+  - `pc_id`와 `pc_pk`는 이 요청의 `id`와 `pk`(hjv-api가 기기 서명으로 확인한 값), `ck`와 `ctl_id`는 코드를 만든 요청에 서명한 계정 키(`ctl_keys`의 `pk`, `ctl_id`)입니다. `iat`와 `exp`는 함께 준 출입증과 같습니다(2시간).
+  - `name`은 늘 빈 문자열입니다. 외부인의 PC에는 교직원의 이름을 보이지 않습니다.
+  - 시험 벡터: `server/api/tests/data/support-grant-vectors.json`(앱의 `src/hjviewer_account/vectors.rs`가 같은 값을 갖고 그 SHA-256을 확인함). 그 벡터의 지원 확인 바이트(PC 123456789, 시험 키의 계정 공개키, 컨트롤러 987654321)는 이렇습니다.
+
+    ```json
+    {"v":1,"typ":"hjv-support","kid":1,"pc_id":"123456789","pc_pk":"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=","ck":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","ctl_id":"987654321","name":"","iat":1760000000,"exp":1760007200}
+    ```
+
+  - PC가 지킬 것은 아래 "지원 확인"입니다.
+- **확인 순서**: 본문의 모양(400, 세지 않음), 출입증 키(없으면 503) → 같은 본문을 30초 안에 다시 보낸 것이면 첫 답(3-5) → 주소마다 실패 한도(429) → 봉인과 PC의 서명(400, 409, 주소의 실패로 셈) → 주소마다 출입증 한도와 모든 시도의 한도(429) → 코드 찾기와 만든 계정, 계정 키 확인(401, 주소의 실패로 셈) → hbbs가 가진 키(403, 503) → 코드를 쓰고 서명. TV-W6의 hjv-api는 이때 목록 키로 지원 확인도 서명합니다. 그 서명이 실패하면 출입증만 주고(`staff` 없이) 저널에 한 줄 남깁니다.
   - 3-5의 해시 두 단계 자리에 코드 찾기가 옵니다. 받아 둔 시도가 너무 많을 때의 503 `busy`는 같습니다(본문을 읽기 전이라 글은 이용 비밀번호와 지원 코드에 같은 "지금은 확인할 수 없습니다. 잠시 뒤 다시 시도해 주세요."이고, 앱은 E7을 보입니다).
   - 코드를 써서 출입증을 준 요청의 답이 앱에 닿지 못해도, 앱이 같은 본문을 30초 안에 다시 보내면 그 사이에 주소의 실패 한도가 찼더라도 그 출입증을 받습니다. 새로 봉인해 보내면 이미 쓴 코드의 401(E6)입니다.
   - 코드는 출입증을 줄 때 쓰입니다. 그 앞에서 끝난 시도(한도, 봉인, `wrong_pc`, hbbs의 503)는 코드를 쓰지 않습니다. 같은 코드로 동시에 온 두 요청 가운데 하나만 출입증을 받고, 다른 하나는 이미 쓴 코드의 401입니다. 다른 요청이 먼저 썼으면 코드 찾기에서, 둘 다 코드 찾기를 지났으면 코드를 쓰는 자리에서 받습니다(기록은 둘 다 `used`).
@@ -296,9 +333,51 @@ sig가 서명하는 바이트: "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-25
 **메모리**
 
 - 코드는 hjv-api의 메모리에만 있습니다. DB, 파일, 저널, 기록에 쓰지 않습니다. hjv-api가 다시 시작하면 열린 코드가 모두 없어집니다(10분짜리라 괜찮음). 그 코드로 이미 받은 출입증은 그대로입니다.
-- 표의 열쇠는 코드 자체가 아니라, hjv-api가 시작할 때 만들어 메모리에만 두는 무작위 키로 계산한 코드의 HMAC-SHA256입니다. 그래서 찾는 시간이 넣은 글에 따라 달라도 코드에 대해 알려 주는 것이 없습니다. 코드마다 만든 계정(계정 번호와 꼬리표)과 계정 키의 번호(`ckid`), `use`, 만든 시각과 끝나는 시각, 썼는지, 만든 키가 끝나 끝났는지만 둡니다.
+- 표의 열쇠는 코드 자체가 아니라, hjv-api가 시작할 때 만들어 메모리에만 두는 무작위 키로 계산한 코드의 HMAC-SHA256입니다. 그래서 찾는 시간이 넣은 글에 따라 달라도 코드에 대해 알려 주는 것이 없습니다. 코드마다 만든 계정(계정 번호와 꼬리표)과 계정 키의 번호(`ckid`), `use`, 만든 시각과 끝나는 시각, 썼는지, 만든 키가 끝나 끝났는지만 둡니다. TV-W6의 hjv-api는 지원 링크와 대기 번호(각각 같은 키로 계산한 HMAC으로 찾음), 남은 내려받기 수, 코드를 쓴 PC의 ID와 공개키와 그 출입증의 `exp`도 같은 자리에 같은 시간 둡니다.
 - 다만 만들기의 200 답(코드가 든 글)은 무언가를 바꾸는 다른 계정 요청의 답처럼, 같은 요청을 `HJV_API_RETRY_WINDOW`(30초) 안에 다시 보낼 때 같은 답을 주려고 메모리에 둡니다(3-4, [privacy.md](privacy.md) 3절의 '메모리에만 두고 디스크에는 쓰지 않는 것'). 디스크에는 쓰지 않습니다.
 - 쓴 코드, 만든 키가 끝난 코드, 10분이 지난 코드는 10분 더 '끝남'으로 두었다가 지웁니다. 그 사이의 시도를 기록에서 `used`, `revoked`, `expired`로 가리기 위해서입니다(답은 같음). 1000개에 이르면 끝난 코드를 오래된 것부터 지우고, 열린 코드만으로 1000개이면 새 코드를 만들지 않습니다(503 `busy`).
+
+**지원 링크: GET /api/hjv/s/<link>/**(1.9.0, TV-W6)
+
+- 만들기 답의 `link`입니다. 브라우저로 여는 경로이고, 토큰도 서명도 없습니다. `…/<link>`는 `…/<link>/`로 307(문 2와 같은 까닭: 페이지 안의 링크가 상대 주소), `…/<link>/`는 페이지, `…/<link>/<파일>`은 정책의 Windows `latest` 패키지(`HJViewer-<버전>.exe` 한 이름. 설치하지 않고 실행하는 이름이고 `-install`이나 `-qs-`가 붙은 이름은 내주지 않음)와 그 버전의 알림 파일입니다. GET과 HEAD만 받습니다.
+- 그 코드가 열려 있고(쓰이지 않음, 10분 안, 만든 키가 끝나지 않음) 만든 계정이 명단에 있고 막히지 않았을 때만 답합니다. 아니면 짧은 링크와 같은 404 "링크가 맞지 않거나 사용 기한이 지났습니다."이고, 링크가 없음, 지남, 이미 씀, 막힘이 같은 답입니다. 128비트 값은 맞힐 수 없으므로 이 404는 주소마다의 업데이트 실패(`HJV_API_LIMIT_UPDATE_FAIL_IP`)로 세지 않습니다. 그 한도는 짧은 링크와 문 2가 같은 주소(학내 NAT) 뒤의 모두와 함께 쓰기 때문입니다.
+- 페이지는 한국어 다음 영어로 제목, 시범 서비스 안내(문 2와 같은 줄), 사칭 주의, 네 단계, 코드(크게, `XXXX-XXXX`), 내려받기 단추, 파일의 크기와 SHA-256, 고지 파일의 링크를 보입니다(5-3의 SL1–SL8). 정책에 Windows 패키지가 없으면 내려받기 대신 SL8을 보이고 코드는 그대로 보입니다. 운영자의 연락처는 넣지 않습니다(링크를 가진 누구나 봄). 스크립트가 없고, 머리글은 문 2의 페이지와 같습니다(`Cache-Control: private, no-store`, `X-Robots-Tag`, `Referrer-Policy: no-referrer`, CSP `default-src 'none'; style-src 'unsafe-inline'`). 휴대폰으로 열어도 같은 페이지입니다(SL2가 Windows PC에서 열라고 말함. 브라우저를 가리지 않음).
+- 패키지의 GET은 코드마다 3번까지이고(HEAD는 세지 않음), 4번째부터와 코드가 쓰인 뒤에는 404입니다. 문 1·짧은 링크와 같은 동시 내려받기 수(`HJV_API_DOWNLOADS_MAX`)를 씁니다. 알림 파일은 세지 않습니다.
+- 링크는 코드와 함께 끝납니다. 따로 끝내는 요청은 없습니다. 경로에 링크 값이 있으므로 nginx는 이 경로를 오류 로그에도 남기지 않습니다(`location ^~ /api/hjv/s/`, [server-runbook.md](server-runbook.md) 9-9).
+
+**대기실: GET /api/hjv/support-code/wait**(1.9.0, TV-W6)
+
+- 로그인한 앱이 토큰과 `X-HJV-Proof`로 보냅니다. 그 요청에 서명한 계정 키(`ckid`)가 만든 코드 가운데 hjv-api가 아직 메모리에 둔 것을 모두 답합니다. 다른 키(같은 계정의 다른 기기 포함)가 만든 코드는 보이지 않습니다.
+
+  ```text
+  GET /api/hjv/support-code/wait?rev=<n>          rev는 없어도 됨
+  200 {"rev":18,"codes":[{"wait":"<22자>","state":"open","expires_in":431},
+                          {"wait":"<22자>","state":"used","pc":"123456789","pk":"<표준 base64 44자>","until_in":7190},
+                          {"wait":"<22자>","state":"over"}]}
+  ```
+
+  - `state`: `open`(쓸 수 있음), `used`(PC가 이 코드로 출입증을 받음), `over`(10분이 지남, 만든 키나 계정이 끝남). 끝난 코드는 메모리에서 지워질 때(끝나고 10분 뒤, 위의 "메모리") 목록에서 빠집니다.
+  - `used`의 `pc`와 `pk`는 그 바꾸기 요청의 `id`와 `pk`, `until_in`은 그 출입증의 남은 초입니다.
+  - `rev`는 그 계정 키의 코드 상태가 바뀔 때마다 하나씩 느는 수(hjv-api 메모리)입니다. 요청의 `rev`가 지금 값과 같으면 hjv-api는 바뀔 때까지, 길어야 20초(그 키의 열린 코드 가운데 가장 이른 끝을 넘지 않음) 잡았다가 답합니다. 다르거나 없으면 바로 답합니다. 만들기, 코드를 씀, 만든 키가 끝남, 코드가 10분을 넘긴 것을 알아챔이 `rev`를 올리고 기다리는 요청을 깨웁니다. hjv-api를 다시 시작하면 처음부터 셉니다(앱은 같은지만 봄).
+  - 한꺼번에 잡아 두는 요청은 계정 키마다 2개, 모두 합쳐 200개까지이고, 넘으면 바로 답합니다. hjv-api가 멈추는 중이면 잡지 않고 바로 답합니다. 계정 키의 다른 요청과 함께 분당 30번까지입니다(429 `rate_limited`). 바꾸는 요청이 아니므로 일회용 값의 재사용 검사와 30초 다시 보내기의 첫 답은 없습니다.
+  - 거절은 계정 요청의 401, 409, 그리고 심사 계정의 403 `no_code`입니다. 기록을 남기지 않습니다.
+- **앱이 지킬 것**: 기기마다 이 요청 하나만 겁니다. 열린 코드가 있는 동안만 걸고, 답의 `rev`로 다음 요청을 겁니다. 실패하면 3초부터 두 배씩 30초까지 기다리고, 앱이 앞으로 돌아오면 바로 다시 겁니다. 답은 8 KiB까지 읽습니다. `used`의 PC ID와 공개키는 그 로그인 동안 `until_in`까지 메모리에만 두고(지원 PC 표), 로그아웃하거나 로그인 토큰이 바뀌면 버립니다. 그 표는 지원 확인의 증명(아래)과 다시 시작 경고(5-3의 S14, S15)에만 씁니다.
+
+**지원 확인**(1.9.0, TV-W6)
+
+- **PC가 받을 때**: 코드로 바꾼 답의 `staff`를 출입증과 같은 자리(등록하는 프로세스의 메모리, 3-3)에 둡니다. 다음을 이 순서로 보고 하나라도 어긋나면 `staff`만 버리고 로그 한 줄을 남깁니다(출입증은 그대로).
+  1. `s`가 88자, `g`가 4096바이트 이하이고, `kid`가 빌드에 고정한 목록 키(`HJV_TRUST_PUBKEYS`)에 있음. 묶이지 않은 PC에는 키 번호의 바닥이 없습니다.
+  2. 그 키로 `"hjv-support-v1" NUL` + `g`를 푼 바이트의 서명이 맞음. 그 뒤에야 바이트를 읽음.
+  3. JSON의 멤버가 위의 열 개뿐이고, `v`가 1, `typ`가 `hjv-support`, `kid`가 바깥의 것과 같음.
+  4. `pc_id`가 이 PC의 ID, `pc_pk`가 이 PC의 기기 공개키.
+  5. `ck`가 32바이트, `0 < exp − iat ≤ 7200`.
+  - 수명은 신뢰 목록처럼 받은 때부터 `exp − iat`를 셉니다(시계가 300초 넘게 뒤로 가면 끝남). 새 출입증(이용 비밀번호든 코드든)이 오면 바뀌거나 지워지고, [끝내기](`hjv-guest-pc-end`)와 프로세스가 끝나면 함께 끝납니다. 파일과 설정에 쓰지 않습니다.
+- **지원 확인을 가진 PC**는 `Hash.hjv_nonce`(필드 1001)에 32바이트 일회용 값을 넣습니다(설치하지 않은 실행본도). 없는 PC는 지금처럼 비웁니다.
+- **컨트롤러**: 지원 PC 표에 있는 PC에, 이 채널이 암호화됐고 이 채널에서 확인한 PC 키가 표의 `pk`와 같고 연결 종류가 원격 화면, 파일 전송, 카메라, 터미널일 때만 `LoginRequest.hjv_key_proof`에 1.6.0의 연결 증명(architecture.md 5-6의 4, `hjv-conn-v1`)을 싣습니다. 키가 다르면 증명 없이 지금처럼 연결합니다(같은 계정의 키 경고 창은 띄우지 않음). 기억한 비밀번호는 싣지 않습니다(빈 비밀번호로 로그인). 마지막으로 성공한 계정 요청이 2분보다 오래됐으면 먼저 대기실 요청을 한 번 보내고, 그것이 401이면 로그인을 끝내고 증명 없이 연결합니다. 폐기된 교직원 기기(잃어버린 기기)가 외부인 PC에 표시를 내지 못하게 하기 위해서입니다. 포트 포워딩과 RDP에는 보내지 않습니다.
+- **PC의 판정**: `LoginRequest`를 받으면 승인 갈래보다 먼저, 지원 확인이 수명 안이고, 채널이 암호화됐고, 일회용 값이 32바이트이고, 종류가 원격 화면·파일 전송·카메라·터미널이고, 증명의 버전이 1이고, 증명의 `pk`가 `ck`와 같고, PC가 자기 ID와 키와 일회용 값으로 다시 만든 `hjv-conn-v1` 바이트에 서명이 맞고, `ctl_id`가 비었거나 `LoginRequest.my_id`와 같은지 이 순서로 봅니다. 모두 맞으면 그 연결은 **지원 확인됨**이고, 연결 창에는 상대가 보낸 이름 대신 컨트롤러 ID(`123 456 789` 꼴)와 표시 `staff`가 갑니다(architecture.md 5-10). 지원 확인됨은 연결 창의 표시(5-3의 P4, P5)만 바꾸고, 인증(수락, 비밀번호, 2FA)은 바꾸지 않습니다. 어긋나면 표시 없이 지금처럼 판정하고, 까닭을 1분에 한 줄 로그에 남깁니다(`hjv: support mark refused: …`).
+- **비밀번호 없는 로그인의 답**: 지원 확인된 로그인에 비밀번호가 없고 PC의 승인 방식이 '비밀번호만'이 아니면(클릭만, 또는 '둘 다'. 쓸 수 있는 비밀번호가 있어도), PC는 수락 단추가 있는 연결 창을 띄우고 `No Password Access`를 보냅니다(컨트롤러는 수락을 기다림). 비밀번호 실패로 세지 않습니다. '비밀번호만'이면 지금처럼 `Empty Password`이고, 컨트롤러는 지원의 증명에 이 답이 오면 보통의 비밀번호 창을 엽니다(같은 계정의 "비밀번호 없이 연결하지 못했습니다" 창이 아님).
+- **수락 전 입력**: 수락하기 전(인증 전)의 마우스·키보드·터치·클립보드 메시지는 지금처럼 버려집니다. E2E 빌드는 그 수를 셉니다(e2e.md의 W6-E5).
+- 지원 확인은 코드 하나, PC 하나, 만든 기기의 계정 키 하나에만 묶입니다. 같은 계정의 다른 기기, 다른 PC, 다시 시작한 PC에는 쓰이지 않습니다.
 
 **기록**(7절, [privacy.md](privacy.md) 3절)
 
@@ -306,8 +385,9 @@ sig가 서명하는 바이트: "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-25
   - 만들 때마다 하나: 결과 `made`, 만든 계정의 꼬리표, 시각. 만든 쪽의 주소는 남기지 않습니다.
   - 바꾸는 시도마다 하나: 결과, 시각, 시도한 주소의 꼬리표, 그리고 코드를 찾았으면 그 코드를 만든 계정의 꼬리표. 결과는 `ok-pc`, `wrong`(그런 코드가 없음), `expired`, `used`, `blocked`(만든 계정이 막혔거나 명단에서 빠졌거나 지워짐), `revoked`(만든 계정 키가 끝남, 또는 `blocked`나 `revoked`로 이미 끝난 코드), `wrong-pc`, `hbbs`와, 3-5와 같은 `seal-…`, `pc-signature`, `limited-ip`, `limited-tickets`, `limited-all`, `error`입니다. 3-5의 `busy`(해시가 이미 2개)는 코드에는 없고, 받아 둔 시도가 너무 많을 때의 503 `busy`는 본문을 읽기 전이라 기록을 남기지 않습니다. 다시 보낸 본문이 첫 답을 받으면 기록은 첫 요청의 것 하나입니다.
 - 코드, 코드의 꼬리표, 주소 그대로, PC ID, 출입증은 남기지 않습니다. 실패의 기록은 이용 비밀번호의 실패와 합쳐 분당 20개까지입니다.
+- 지원 링크의 패키지 내려받기(1.9.0, TV-W6)는 업데이트의 내려받기처럼 `update` 기록(결과 `support-windows`, 만든 계정의 꼬리표, 받은 주소의 꼬리표)으로 남깁니다([architecture.md](architecture.md) 8-5). 링크 값, 대기 번호, 대기실의 요청, 지원 확인, PC ID는 기록하지 않습니다.
 - 저널에는 3-5처럼 한도에 걸린 것과 문제만 남기고, 한 계정이 열린 코드의 한도에 걸리면 10분에 한 번 그 계정의 꼬리표로 남깁니다. 코드와 그 꼬리표는 어느 줄에도 쓰지 않습니다.
-- `hjv-api admin ticket status`는 지금 열린 코드와 메모리에 둔 코드의 수, 지난 하루의 `code` 기록을 결과별로 보입니다(사람, 주소, 코드는 없음).
+- `hjv-api admin ticket status`는 지금 열린 코드와 메모리에 둔 코드의 수, 지난 하루의 `code` 기록을 결과별로 보입니다(사람, 주소, 코드는 없음). TV-W6의 hjv-api는 잡아 둔 대기실 요청의 수와, 내려받기가 남은 지원 링크의 수도 보입니다.
 
 **서버 모드**(4-6, 3-6)
 
@@ -323,6 +403,19 @@ sig가 서명하는 바이트: "hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-25
 - **출입증의 수명**: 2시간은 hjv-api의 상수 하나입니다(설정이 아님). 바꾸면 앱의 글 둘(S2와 P3의 '2시간')도 함께 바꿉니다. 7일을 넘지 못합니다(2-3).
 - **컨트롤러 쪽**: 만들기와 바꾸기의 `use`가 그 자리입니다. 코드는 만들 때의 `use`로만 바뀌고, 다른 `use`로 넣은 코드는 틀린 코드와 같은 401입니다. 더하면 바꾸기의 첫 단계가 `ctl`의 `code`를 받고, 출입증은 3-5의 컨트롤러처럼 `guest`/`ctl`에 `to`가 대상 하나입니다. 대상을 만들 때 정할지(`{"use":"ctl","to":"<PC ID>"}`), 넣을 때 정할지는 그때 정합니다.
 - 10분, 열린 코드 5개, 모두 1000개, 끝난 코드를 두는 10분도 hjv-api의 상수입니다.
+
+### 3-8. 내 PC 목록의 `synced`와 `wake` (1.9.0, UX-W1의 U27)
+
+출입증과 상관없지만 같은 hjv-api 릴리스(지원 코드와 TV-W6)에 들어가므로 여기에 적습니다. 형식 전체는 [server/api/README.md](../server/api/README.md)의 "Device list: `GET /api/peers`"입니다.
+
+- `GET /api/peers`의 PC마다의 `hjv`에 두 멤버가 더 있습니다. `synced`는 그 PC의 마지막 동기화(유닉스 초, 정수)이고, 한 번도 동기화하지 않았으면 넣지 않습니다. `wake`는 `ready`(카드의 `note`가 " · 켜기 가능"으로 끝남), `not_ready`(" · 켜기 준비 안 됨"으로 끝남), `""`(붙는 것 없음)입니다.
+
+  ```text
+  "hjv":{"pk":"<PC 공개키>","pwless":"<state>","kinds":["remote","file","camera"],"wol":"ok","synced":1760000000,"wake":""}
+  ```
+
+- `note`는 그보다 오래된 앱을 위해 그대로 두고, 그 글은 1.9.0 앱의 말로 바뀝니다: `active` "비밀번호 없는 연결 켜짐", `listed` "PC에서 로그인 필요", `off` "PC에서 꺼 둠", `disabled` "관리자가 일시 중지함", `expired` "서버와 동기화 안 됨(마지막 확인 3일 전)"(한 번도 동기화하지 않았으면 "서버와 동기화 안 됨"), `needs-relogin` "PC에서 다시 로그인 필요(보안 키 바뀜)".
+- 1.9.0 앱은 `hjv`에 `wake` 멤버가 있을 때만, 그 답과 함께 온 `note` 대신 `pwless`, `synced`, `wake`로 그 앱의 언어로 카드의 둘째 줄을 만듭니다. 모르는 `pwless`(나중 hjv-api의 것)이면 `note`를 그대로 보이고, `synced`는 양의 정수일 때만 씁니다.
 
 ## 4. hbbs의 판정
 
@@ -442,9 +535,13 @@ hbbs는 출입증 하나를 아래 순서로 보고, 처음 걸린 것을 이유
 
 | 때 | 한국어 | English |
 |---|---|---|
-| A1. 로그인하지 않은 컨트롤러가 거절됨(세션 창)의 제목(제목 아이콘은 열쇠) | 교직원 전용 서버 | Staff-only server |
-| A1의 글 | 이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하면 바로 연결되고, 다음부터는 이 창이 나오지 않습니다. 그 PC의 비밀번호는 PC가 따로 묻습니다. | This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect right away; this window will not appear again. The PC asks for its own password separately. |
-| A1의 첫 줄, 휴대폰에서 연결이 출입 거절을 받아 로그인이 끝났을 때(3-3의 '출입증 요청의 401', L4 대신) | 이 기기의 로그인이 끝났습니다. 다른 기기나 관리자가 로그아웃시켰거나 로그인 기간이 끝났습니다. | Your login on this device ended. Another device or the administrator logged it out, or the login expired. |
+| A0. 교직원 전용 서버(3-6의 `enforce`나 `closed`)에서 로그인하지 않은 컨트롤러가 연결을 시작함(세션을 열기 전)의 제목 | 교직원 전용 서버 | Faculty and staff only |
+| A0의 글 | 이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하거나, 이용 비밀번호가 있으면 넣고 연결하세요. 그 PC의 비밀번호는 PC가 따로 묻습니다. | This server is only for Yonsei University faculty and staff. Log in with your Yonsei portal account, or enter an access password if you have one, to connect. The PC asks for its own password separately. |
+| A0의 단추와 입력 칸 | 데스크톱: 입력 칸이 열린 채 [취소] [로그인] [연결]. 휴대폰: A1처럼 "이용 비밀번호가 있나요?"를 누르면 칸이 열림. 칸, 안내, E1~E5는 A1과 같음 | Desktop: the field open, [Cancel] [Log in] [Connect]. Phone: as A1, "Have an access password?" opens the field. The field, its hint and E1–E5 as A1 |
+| A0에서 출입증을 받은 뒤 | 창이 닫히고 세션이 열립니다. PC가 묻는 비밀번호 창의 맨 위에 A1과 같은 note | The window closes and the session opens; the PC password box has A1's note on top |
+| A1. 로그인하지 않은 컨트롤러가 거절됨(세션 창)의 제목(제목 아이콘은 열쇠) | 교직원 전용 서버 | Faculty and staff only |
+| A1의 글 | 이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하면 바로 연결되고, 다음부터는 이 창이 나오지 않습니다. 그 PC의 비밀번호는 PC가 따로 묻습니다. | This server is only for Yonsei University faculty and staff. Log in with your Yonsei portal account to connect right away; this window will not appear again. The PC asks for its own password separately. |
+| A1의 첫 줄, 휴대폰에서 연결이 출입 거절을 받아 로그인이 끝났을 때(3-3의 '출입증 요청의 401', L4 대신) | 이 기기의 로그인이 끝났습니다. 다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다. | Your login on this device ended. Another device or the administrator logged it out, or the login expired. |
 | A1의 단추 | [취소] [로그인]. "이용 비밀번호가 있나요?"를 누르면 입력 칸이 열리고 [취소] [로그인] [연결] | [Cancel] [Log in]. "Have an access password?" opens the field: [Cancel] [Log in] [Connect] |
 | A1의 입력 칸(앞 아이콘은 열쇠: 이용 비밀번호는 A1, P2 어디서나 열쇠) | 이용 비밀번호. 안내: 관리자가 알려 준 비밀번호입니다. PC의 일회용 비밀번호가 아닙니다. | Access password. Hint: the password your administrator gave you, not the PC's one-time password. |
 | A1과 P2에서 이용 비밀번호를 확인하는 동안(진행 막대 옆; 막대의 화면 낭독기 이름은 둘째 글) | 확인하는 중… / 이용 비밀번호를 확인하는 중 | Checking… / Checking the access password |
@@ -457,12 +554,12 @@ hbbs는 출입증 하나를 아래 순서로 보고, 처음 걸린 것을 이유
 | 로그인 창의 둘째 칸 | 연세포탈 비밀번호 | Yonsei portal password |
 | 로그인 창의 빈 칸 | 연세포탈 ID를 넣어 주세요. / 연세포탈 비밀번호를 넣어 주세요. | Enter your Yonsei portal ID. / Enter your Yonsei portal password. |
 | 오프라인. 연결 오류 "원격 데스크탑이 오프라인입니다"를 교직원 전용 서버에서 받음(세션 창, 같은 창과 단추) | PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. PC가 켜져 있다면 그 PC의 HJViewer에서 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결을 받습니다. | The PC is off or not connected to the server. If it is on, someone has to log in with a Yonsei portal account or enter the access password in HJViewer on that PC before it accepts connections. |
-| 오프라인, 서버 모드를 모를 때 | PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. 서버가 교직원 전용이면, PC가 켜져 있어도 그 PC의 HJViewer에서 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결을 받습니다. | The PC is off or not connected to the server. If the server is for staff only, someone has to log in with a Yonsei portal account or enter the access password in HJViewer on that PC before it accepts connections, even when it is on. |
+| 오프라인, 서버 모드를 모를 때 | PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. 서버가 교직원 전용이면, PC가 켜져 있어도 그 PC의 HJViewer에서 연세포탈로 로그인하거나 이용 비밀번호를 넣어야 연결을 받습니다. | The PC is off or not connected to the server. If the server is for faculty and staff only, someone has to log in with a Yonsei portal account or enter the access password in HJViewer on that PC before it accepts connections, even when it is on. |
 | 오프라인, 그 세션이 A1에서 그 대상의 출입증을 받은 뒤(서버 모드와 상관없이) | 이용 비밀번호는 확인했습니다. 그런데 그 PC가 서버에 연결되어 있지 않습니다. 그 PC가 켜져 있다면 그 PC의 HJViewer에서도 로그인하거나 이용 비밀번호를 넣어야 합니다. | The access password was accepted, but that PC is not connected to the server. If it is on, someone has to log in or enter the access password in HJViewer on that PC too. |
 | 오프라인에 붙는 줄, 그 세션이 원격 다시 시작을 요청한 뒤 | 방금 다시 시작한 PC라면, 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣어야 다시 연결을 받습니다. 로그인해 둔 PC는 저절로 돌아옵니다. | If the PC was just restarted, someone has to log in or enter the access password on it before it accepts connections again. A PC that stays logged in comes back by itself. |
 | 오프라인의 네 글, 3-6의 `codes`가 `true`일 때(P1이 그때 세 길을 안내하므로) | 위 글의 "이용 비밀번호를"이 "이용 비밀번호나 지원 코드를"이 됨 | "the access password" becomes "the access password or a support code" |
-| R1. 원격 다시 시작의 확인 창에 붙는 줄, 교직원 전용 서버 | 이 서버는 교직원 전용이라, 그 PC에 누가 로그인해 두지 않았다면 다시 시작한 뒤에는 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣을 때까지 연결할 수 없습니다. | This server is for staff only: unless someone stays logged in on that PC, nobody can connect to it after the restart until someone logs in or enters the access password on it. |
-| R1, 서버 모드를 모를 때 | 서버가 교직원 전용이면, 그 PC에 누가 로그인해 두지 않았다면 다시 시작한 뒤에는 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣을 때까지 연결할 수 없습니다. | If the server is for staff only and nobody stays logged in on that PC, nobody can connect to it after the restart until someone logs in or enters the access password on it. |
+| R1. 원격 다시 시작의 확인 창에 붙는 줄, 교직원 전용 서버 | 이 서버는 교직원 전용이라, 그 PC에 누가 로그인해 두지 않았다면 다시 시작한 뒤에는 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣을 때까지 연결할 수 없습니다. | This server is for faculty and staff only: unless someone stays logged in on that PC, nobody can connect to it after the restart until someone logs in or enters the access password on it. |
+| R1, 서버 모드를 모를 때 | 서버가 교직원 전용이면, 그 PC에 누가 로그인해 두지 않았다면 다시 시작한 뒤에는 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣을 때까지 연결할 수 없습니다. | If the server is for faculty and staff only and nobody stays logged in on that PC, nobody can connect to it after the restart until someone logs in or enters the access password on it. |
 | R1에 붙는 줄, 원격 PC에 HJViewer가 설치되지 않았을 때(서버 모드와 상관없이) | 설치하지 않은 HJViewer는 다시 시작한 뒤 저절로 켜지지 않습니다. | If HJViewer is not installed on that PC, it does not start again by itself after the restart. |
 | A2. 로그인한 컨트롤러가 출입증을 새로 받아 다시 해도 거절됨 | 서버가 이 연결을 받지 않았습니다. 잠시 뒤 다시 연결해 보고, 계속되면 관리자에게 알려 주세요. | The server did not accept this connection. Try again in a moment, and tell your administrator if it keeps happening. |
 | A2의 단추 | [닫기] [다시 연결]. 포트 포워딩은 [닫기]만 | [Close] [Reconnect]. A port forward: [Close] only |
@@ -472,6 +569,10 @@ hbbs는 출입증 하나를 아래 순서로 보고, 처음 걸린 것을 이유
 | P1의 단추(`[지원 코드 넣기]`는 3-6의 `codes`가 `true`일 때만. 칸의 폭으로 세로로 쌓고, 글에 맞춰 높아지며 가운데 정렬, 사이 8 px) | [로그인] [이용 비밀번호 넣기] [지원 코드 넣기] | [Log in] [Access password] [Support code] |
 | P1 동안의 상태 줄 | 서버에 연결되지 않음(로그인 필요) | Not connected to the server (log in) |
 | P1 동안의 트레이 안내(Windows) | "HJViewer - 서버에 연결되지 않음(로그인 필요)", 세션이 있으면 다음 줄에 "1 세션"("준비 완료"와 "서비스가 실행 중입니다"의 자리) | "HJViewer - Not connected to the server (log in)", with "1 sessions" on the next line while there are sessions |
+| TR1. P1 동안의 트레이 아이콘(Windows, 1.9.0) | 앱 아이콘 오른쪽 아래에 주황 점 | The app icon with an orange dot at its lower right |
+| TR2. P1 동안의 트레이 메뉴(묶이지 않은 PC, 로그인을 끈 빌드가 아닐 때) | [열기] [로그인…] [이용 비밀번호 넣기…] | [Open] [Log in…] [Enter access password…] |
+| TR3. 거절이 60초 이어질 때의 Windows 알림(트레이가 켜진 뒤 처음 한 번, 그 뒤에는 연결을 받다가 거절로 바뀔 때마다, 12시간에 한 번까지) | HJViewer: 이 PC는 지금 연결을 받지 않습니다. 로그인하거나 이용 비밀번호를 넣으세요. | HJViewer: This PC is not accepting connections right now. Log in or enter the access password. |
+| TR3, 묶인 PC | HJViewer: 로그인했지만 서버가 이 PC를 받지 않고 있습니다. HJViewer를 열어 까닭을 확인하세요. | HJViewer: You are logged in, but the server is not accepting this PC. Open HJViewer to see why. |
 | P1, 로그인한 PC(거절이 약 60초 이어진 뒤)의 제목 | 로그인했지만 서버가 이 PC를 받지 않고 있습니다 | You are logged in, but the server is not accepting this PC |
 | P1, 로그인한 PC의 글과 단추 | 설정 → 계정의 이 PC 줄이 까닭을 말하면 그 줄과 단추(예: "이 PC: 다른 기기에서 목록에서 뺌" [다시 추가], "이 PC: 다시 로그인 필요(보안 키가 바뀜)" [다시 로그인]), 아니면 "잠시 뒤 다시 확인합니다. 계속되면 관리자에게 알려 주세요."(단추 없음) | the account card's line and button ("This PC: removed from the list on another device" [Add again], "This PC: log in again (its security key changed)" [Log in again]), else "HJViewer checks again shortly. If this keeps happening, tell your administrator." (no button) |
 | P1 동안의 상태 줄과 트레이, 로그인한 PC | 서버에 연결되지 않음 | Not connected to the server |
@@ -479,57 +580,88 @@ hbbs는 출입증 하나를 아래 순서로 보고, 처음 걸린 것을 이유
 | P1 동안 ID 카드에 붙는 줄(로그인하지 않은 PC만) | 로그인하거나 이용 비밀번호를 넣으면 이 ID로 연결을 받을 수 있습니다. | Once you log in or enter the access password, this PC accepts connections with this ID. |
 | P1 동안 ID 카드에 붙는 줄, `codes`가 `true`일 때 | 로그인하거나 이용 비밀번호나 지원 코드를 넣으면 이 ID로 연결을 받을 수 있습니다. | Once you log in or enter the access password or a support code, this PC accepts connections with this ID. |
 | P2. PC의 이용 비밀번호 창(제목 "이용 비밀번호", 영어 "Access password") | 이용 비밀번호를 넣으면 이 PC가 최대 12시간 동안 연결을 받습니다. PC를 다시 시작하거나 Windows에서 로그아웃하면 그 전에 끝나고, 끝나면 다시 넣어야 합니다. | With the access password, this PC accepts connections for up to 12 hours. Restarting the PC or signing out of Windows ends that sooner; once it ends, enter it again. |
+| P2의 주의 줄(설명 아래, 입력 칸 위. 1.9.0) | 모르는 사람이 전화나 문자로 이 비밀번호를 넣으라고 했다면 넣지 마세요. 학교를 사칭한 연락이면 끊고 관리자에게 알려 주세요. | If someone you do not know asked you by phone or message to enter this password, do not. If they claimed to be the university, hang up and tell the administrator. |
+| P2의 주의 줄, 관리자 연락처가 없을 때 | 모르는 사람이 전화나 문자로 이 비밀번호를 넣으라고 했다면 넣지 마세요. | If someone you do not know asked you by phone or message to enter this password, do not. |
 | P2에서 출입증을 받은 뒤(토스트) | 이 PC는 18:30까지 연결을 받습니다. | This PC accepts connections until 18:30. |
 | P2의 홈 줄과 단추 | 제목 "이용 비밀번호 사용 중", 그 아래 "18:30까지 연결을 받습니다." [끝내기] | title "Access password in use", below it "Accepts connections until 18:30." [End] |
 | P2를 끝낸 뒤(토스트) | 이제 이용 비밀번호로는 연결을 받지 않습니다. | This PC no longer accepts connections with the access password. |
 | P2의 출입증이 남은 동안 주 창을 닫음(창은 숨을 뿐), 그 출입증마다 한 번(제목 "이용 비밀번호") | 이 PC는 18:30까지 이용 비밀번호로 연결을 받습니다. 창을 닫아도 계속 받습니다. [끝내고 닫기] [계속 받기] | This PC accepts connections with the access password until 18:30. Closing the window does not stop that. [End and close] [Keep accepting] |
-| P3. PC의 지원 코드 창(제목 "지원 코드 넣기", 영어 "Enter support code") | 교직원에게 받은 지원 코드를 넣으면 이 PC가 최대 2시간 동안 연결을 받습니다. PC를 다시 시작하거나 Windows에서 로그아웃하면 그 전에 끝나고, 끝나면 새 코드를 받아 다시 넣어야 합니다. | With a support code from a staff member, this PC accepts connections for up to 2 hours. Restarting the PC or signing out of Windows ends that sooner; once it ends, get a new code and enter it. |
-| P3의 입력 칸(자리 표시 "XXXX-XXXX", 치는 대로 ASCII 글자를 대문자로 보임, 자동 완성과 제안 없음, 키보드의 완료 키가 [연결]) | 지원 코드. 안내: 교직원이 알려 준 XXXX-XXXX 꼴의 8자 코드입니다. 이용 비밀번호나 PC의 일회용 비밀번호가 아닙니다. | Support code. Hint: the 8-character code (XXXX-XXXX) a staff member gave you, not the access password or the PC's one-time password. |
+| P3. PC의 지원 코드 창(제목 "지원 코드 넣기", 영어 "Enter support code") | 교직원에게 받은 지원 코드를 넣으면 이 PC가 최대 2시간 동안 연결을 받습니다. PC를 다시 시작하거나 Windows에서 로그아웃하면 그 전에 끝나고, 끝나면 새 코드를 받아 다시 넣어야 합니다. | With a support code from a faculty or staff member, this PC accepts connections for up to 2 hours. Restarting the PC or signing out of Windows ends that sooner; once it ends, get a new code and enter it. |
+| P3의 입력 칸(자리 표시 "XXXX-XXXX", 치는 대로 ASCII 글자를 대문자로 보임, 자동 완성과 제안 없음, 키보드의 완료 키가 [연결]) | 지원 코드. 안내: 교직원이 알려 준 XXXX-XXXX 꼴의 8자 코드입니다. 이용 비밀번호나 PC의 일회용 비밀번호가 아닙니다. | Support code. Hint: the 8-character code (XXXX-XXXX) a faculty or staff member gave you, not the access password or the PC's one-time password. |
+| P3의 주의 줄(1.9.0) | 직접 도움을 부탁하지 않았는데 이 코드를 넣으라는 연락을 받았다면 넣지 마세요. 학교를 사칭한 연락이면 끊고 관리자에게 알려 주세요. | If you did not ask for help yourself and someone contacted you to enter this code, do not. If they claimed to be the university, hang up and tell the administrator. |
+| P3의 주의 줄, 관리자 연락처가 없을 때 | 직접 도움을 부탁하지 않았는데 이 코드를 넣으라는 연락을 받았다면 넣지 마세요. | If you did not ask for help yourself and someone contacted you to enter this code, do not. |
+| P2와 P3의 주의 줄 아래(연락처가 있을 때. PC 연결 창의 주의 줄 아래도 같음) | HJViewer 관리자: <버전 정책의 `contact_ko`> | HJViewer administrator: <the version policy's `contact_ko`> |
 | P3의 단추 | [취소] [연결] | [Cancel] [Connect] |
 | P3에서 코드를 확인하는 동안(진행 막대 옆; 막대의 화면 낭독기 이름은 둘째 글) | 확인하는 중… / 지원 코드를 확인하는 중 | Checking… / Checking the support code |
-| P3에서 출입증을 받은 뒤(토스트) | P2와 같음: 이 PC는 18:30까지 연결을 받습니다. | As P2: This PC accepts connections until 18:30. |
+| P6. P3에서 출입증을 받은 뒤(토스트. P2의 토스트 대신, 1.9.0) | 이 PC는 18:30까지 연결을 받습니다. 교직원이 연결하면 연결 창에 방패 표시와 함께 "연세대 교직원(로그인 확인)" 줄이 보입니다. 확인한 뒤 [수락]을 누르세요. | This PC accepts connections until 18:30. When the faculty or staff member connects, the connection window shows a shield with the line "Yonsei faculty or staff (verified login)". Check it, then press [Accept]. |
 | P3의 홈 줄과 단추 | 제목 "지원 코드 사용 중", 그 아래 "18:30까지 연결을 받습니다." [끝내기] | title "Support code in use", below it "Accepts connections until 18:30." [End] |
 | P3을 끝낸 뒤(토스트) | 이제 지원 코드로는 연결을 받지 않습니다. | This PC no longer accepts connections with the support code. |
 | P3의 출입증이 남은 동안 주 창을 닫음(제목 "지원 코드", P2의 물음과 같음) | 이 PC는 18:30까지 지원 코드로 연결을 받습니다. 창을 닫아도 계속 받습니다. [끝내고 닫기] [계속 받기] | This PC accepts connections with the support code until 18:30. Closing the window does not stop that. [End and close] [Keep accepting] |
+| P4. PC 연결 창의 표시 줄(이름 줄 아래), 지원 확인된 연결(3-7. 이름 줄에는 상대가 적은 이름 대신 컨트롤러 ID를 `123 456 789` 꼴로) | 방패 아이콘과 "연세대 교직원(로그인 확인)" | A shield icon and "Yonsei faculty or staff (verified login)" |
+| P5. P4가 붙은 연결 창의 수락 단추 위(주의 줄 대신, 수락 단추가 있을 때) | 이 PC에 지원 코드를 만들어 준 교직원의 기기입니다. 도움을 부탁한 분이 맞으면 [수락]을 누르세요. 언제든 이 창에서 연결을 끊을 수 있습니다. | This is the device of the faculty or staff member who made this PC's support code. If this is who you asked for help, press [Accept]. You can end the connection in this window at any time. |
+| PC 연결 창의 수락 카드의 주의 줄(1.9.0, 표시가 `same-account`도 `staff`도 아닐 때, 권한 판과 단추 사이) | 모르는 사람의 연결은 받지 마세요. 학교를 사칭한 연락을 받고 이 창이 떴다면 [거부]를 누르고 관리자에게 알려 주세요. | Do not accept connections from people you do not know. If someone claiming to be the university asked you for this, click [Dismiss] and tell the administrator. |
+| 같은 줄, 관리자 연락처가 없을 때 | 모르는 사람의 연결은 받지 마세요. 학교를 사칭한 연락을 받고 이 창이 떴다면 [거부]를 누르세요. | Do not accept connections from people you do not know. If someone claiming to be the university asked you for this, click [Dismiss]. |
 | G1. 설치 화면과 설정의 안내 | 사람이 없을 때도 이 PC에 연결하려면 연세포탈로 로그인해 두세요. 이용 비밀번호는 최대 12시간만 쓰고, 앱을 다시 켜거나 PC를 다시 시작하거나 Windows에서 로그아웃하면 다시 넣어야 합니다. | To reach this PC when nobody is at it, keep it logged in with your Yonsei portal account. The access password lasts at most 12 hours and has to be entered again after the app or the PC restarts, or after signing out of Windows. |
-| G2. 설치했고 로그인하지 않은 Windows PC의 홈 | G1의 글과 [로그인]. 테두리만 있는 중립 상자(아래 ID 카드의 파랑과 붙어 보이지 않게) | G1's text and [Log in], in a neutral outlined box (so that it does not merge with the ID's blue card below) |
+| G2. 설치했고 로그인하지 않은 Windows PC의 홈 | G1의 글과 [로그인], 그 아래 글자 단추 [원격 준비 점검](1.9.0). 테두리만 있는 중립 상자(아래 ID 카드의 파랑과 붙어 보이지 않게) | G1's text and [Log in], with the text button [Check remote readiness] below (1.9.0), in a neutral outlined box (so that it does not merge with the ID's blue card below) |
+| G4. 로그인한 설치 PC의 홈(1.9.0), 원격 준비의 꼭 필요한 줄이 남을 때 | 원격 준비: {n}가지가 남았습니다 [점검] | Remote readiness: {n} left [Check] |
 | 설치하지 않고 실행한 Windows PC의 홈, 비밀번호 카드 아래(설치 카드) | 설치하면 Windows와 함께 시작되고, 로그인하면 내 PC 목록에 올라 사람이 없을 때도 연결할 수 있습니다. 관리자 권한 창(UAC)도 원격으로 다룰 수 있습니다. [설치하기] | Once installed, HJViewer starts with Windows; once you log in, this PC is listed in My PCs and can be reached even when nobody is at it. Administrator prompts (UAC) can also be handled remotely. [Install] |
 | 설치하지 않고 실행한 Windows PC에서 로그인한 뒤의 알림 | 이 PC를 내 PC 목록에 넣지 않았습니다 / 설치하지 않고 실행한 HJViewer라 내 PC 목록에 넣지 않았습니다. [확인] [설치하기] | This PC was not added to My PCs / HJViewer runs here without being installed, so this PC was not added to My PCs. [OK] [Install] |
-| G3. 교직원 전용 서버에서 로그인하지 않은 앱의 연결 화면(ID 칸 아래) | 한 줄: 교직원 전용 서버 · 로그인이 필요합니다 [로그인]. 그 위에 머무르면(휴대폰은 누르면) 툴팁에 "이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연결하려면 연세포탈로 로그인하세요. 이용 비밀번호가 있으면 연결할 때 넣을 수 있습니다." | One line: Staff-only server · Login required [Log in]. Hovering it (on a phone, tapping it) shows the tooltip "This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect, or enter an access password when you connect." |
+| G3. 교직원 전용 서버에서 로그인하지 않은 앱의 연결 화면(ID 칸 아래) | 한 줄: 교직원 전용 서버 · 로그인이 필요합니다 [로그인]. 그 위에 머무르면(휴대폰은 누르면) 툴팁에 "이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연결하려면 연세포탈로 로그인하세요. 이용 비밀번호가 있으면 연결할 때 넣을 수 있습니다." | One line: Faculty and staff only · Login required [Log in]. Hovering it (on a phone, tapping it) shows the tooltip "This server is only for Yonsei University faculty and staff. Log in with your Yonsei portal account to connect, or enter an access password when you connect." |
 | L1. 로그아웃 창의 제목과 단추 | 로그아웃할까요? [취소] [로그아웃] | Log out? [Cancel] [Log out] |
-| L1, 이 로그인이 묶은 PC, 교직원 전용 서버 | 로그아웃하면 이 PC가 내 PC 목록에서 빠지고, 이 서버는 교직원 전용이라 누군가 이 PC에서 다시 로그인할 때까지 다른 기기에서 이 PC에 연결할 수 없습니다. | Logging out takes this PC out of My PCs, and as this server is for staff only, no other device can connect to it until someone logs in on it again. |
-| L1, 이 로그인이 묶은 PC, 서버 모드를 모를 때 | 로그아웃하면 이 PC가 내 PC 목록에서 빠지고, 서버가 교직원 전용이면 누군가 이 PC에서 다시 로그인할 때까지 다른 기기에서 이 PC에 연결할 수 없습니다. | Logging out takes this PC out of My PCs, and if the server is for staff only, no other device can connect to it until someone logs in on it again. |
+| L1, 이 로그인이 묶은 PC, 교직원 전용 서버 | 로그아웃하면 이 PC가 내 PC 목록에서 빠지고, 이 서버는 교직원 전용이라 누군가 이 PC에서 다시 로그인할 때까지 다른 기기에서 이 PC에 연결할 수 없습니다. | Logging out takes this PC out of My PCs, and as this server is for faculty and staff only, no other device can connect to it until someone logs in on it again. |
+| L1, 이 로그인이 묶은 PC, 서버 모드를 모를 때 | 로그아웃하면 이 PC가 내 PC 목록에서 빠지고, 서버가 교직원 전용이면 누군가 이 PC에서 다시 로그인할 때까지 다른 기기에서 이 PC에 연결할 수 없습니다. | Logging out takes this PC out of My PCs, and if the server is for faculty and staff only, no other device can connect to it until someone logs in on it again. |
 | L1, 이 로그인이 묶은 PC, `off`·`count` | 로그아웃하면 이 PC가 내 PC 목록에서 빠지고, 비밀번호 없이 연결할 수 없게 됩니다. | Logging out takes this PC out of My PCs, and it no longer takes password-less connections. |
-| L1. 로그아웃 창, 교직원 전용 서버, 설치하지 않은 앱 | 이 서버는 교직원 전용이라, 로그아웃하면 누군가 이 PC에서 다시 로그인할 때까지 이 PC에 원격으로 연결할 수 없습니다. | This server is for staff only: once you log out, nobody can connect to this PC remotely until someone logs in on it again. |
-| L1, 서버 모드를 모를 때, 설치하지 않은 앱 | 서버가 교직원 전용이면, 로그아웃한 뒤에는 누군가 이 PC에서 다시 로그인할 때까지 이 PC에 원격으로 연결할 수 없습니다. | If the server is for staff only, nobody can connect to this PC remotely after you log out, until someone logs in on it again. |
-| L1의 경고 알림(글 아래, 경고 톤의 상자), 그 PC를 누가 원격으로 보고 있을 때 | 지금 이 PC를 원격으로 쓰고 있다면, 이 세션이 끝난 뒤에는 다시 들어올 수 없습니다. | If you are using this PC remotely now, you cannot get back in once this session ends. |
-| L1, 로그인이 이 기기의 유일한 길일 때(휴대폰, 로그인 없이 등록하는 PC), 교직원 전용 서버(위험 아이콘, 휴대폰은 [로그아웃]이 위험 색) | 이 서버는 교직원 전용이라, 로그아웃하면 다시 로그인할 때까지 이 기기로는 이용 비밀번호 없이 PC에 연결할 수 없습니다. | This server is for staff only: once you log out, this device cannot connect to PCs without an access password until you log in again. |
+| L1. 로그아웃 창, 교직원 전용 서버, 설치하지 않은 앱 | 이 서버는 교직원 전용이라, 로그아웃하면 누군가 이 PC에서 다시 로그인할 때까지 이 PC에 원격으로 연결할 수 없습니다. | This server is for faculty and staff only: once you log out, nobody can connect to this PC remotely until someone logs in on it again. |
+| L1, 서버 모드를 모를 때, 설치하지 않은 앱 | 서버가 교직원 전용이면, 로그아웃한 뒤에는 누군가 이 PC에서 다시 로그인할 때까지 이 PC에 원격으로 연결할 수 없습니다. | If the server is for faculty and staff only, nobody can connect to this PC remotely after you log out, until someone logs in on it again. |
+| L1의 경고 알림(글 아래, 경고 톤의 상자), 그 PC를 누가 원격으로 보고 있을 때 | 지금 이 PC를 원격으로 쓰고 있다면, 로그아웃할 때 비밀번호 없는 연결은 끊기고, 다른 연결도 끝난 뒤에는 다시 들어올 수 없습니다. | If you are using this PC remotely now, logging out also ends a password-less connection, and no connection can come back in once it ends. |
+| L1, 로그인이 이 기기의 유일한 길일 때(휴대폰, 로그인 없이 등록하는 PC), 교직원 전용 서버(위험 아이콘, 휴대폰은 [로그아웃]이 위험 색) | 이 서버는 교직원 전용이라, 로그아웃하면 다시 로그인할 때까지 이 기기로는 이용 비밀번호 없이 PC에 연결할 수 없습니다. | This server is for faculty and staff only: once you log out, this device cannot connect to PCs without an access password until you log in again. |
 | L2. "내 PC에서 빼기"의 확인 창(제목은 그 PC의 이름, [취소] [빼기]) | 빼면 그 PC에 비밀번호 없이 연결할 수 없습니다. 다시 넣으려면 그 PC에서 다시 로그인해야 합니다. | Once removed, that PC takes no password-less connections. To add it again, log in on that PC again. |
-| L2, 교직원 전용 서버(L2의 글 아래 8 px 띄운 둘째 문단) | 이 서버는 교직원 전용이라 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다. | This server is for staff only, so nobody can connect to that PC remotely until someone logs in on it again. |
-| L2, 서버 모드를 모를 때 | 서버가 교직원 전용이면 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다. | If the server is for staff only, nobody can connect to that PC remotely until someone logs in on it again. |
-| L3. 다른 기기 로그아웃(로그인한 기기의 [로그아웃시키기], 새 기기 알림의 [아님: 로그아웃시키기]), 교직원 전용 서버(확인 창의 질문 아래 8 px 띄운 둘째 문단) | 이 서버는 교직원 전용이라, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다. | This server is for staff only: until that device logs in again, not even a PC password lets it connect without an access password. If it is a PC running HJViewer without installing it, that PC stops accepting connections too. |
-| L3, 서버 모드를 모를 때 | 서버가 교직원 전용이면, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다. | If the server is for staff only, not even a PC password lets that device connect without an access password until it logs in again. If it is a PC running HJViewer without installing it, that PC stops accepting connections too. |
-| L3, [다른 기기 모두 로그아웃]의 제목과 글(게이트 줄 위, 위험 아이콘, [취소] [다른 기기 모두 로그아웃]) | 다른 기기를 모두 로그아웃할까요? / 지금 쓰는 이 기기는 로그인한 채로 둡니다. 다시 로그인하기 전까지 그 기기들로는 내 PC에 비밀번호 없이 새로 연결할 수 없습니다. 이미 열려 있는 연결은 끊기지 않습니다. | Log out all other devices? / This device stays logged in. Until they log in again, the other devices cannot open new connections to your PCs without their passwords. Connections already open are not cut. |
-| L3, [다른 기기 모두 로그아웃], 교직원 전용 서버 | 이 서버는 교직원 전용이라, 그 기기들은 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 그 가운데 설치하지 않고 실행한 HJViewer가 있으면 그 PC도 연결을 받지 못합니다. | This server is for staff only: until those devices log in again, not even a PC password lets them connect without an access password. Any of them that is a PC running HJViewer without installing it stops accepting connections too. |
-| L3, [다른 기기 모두 로그아웃], 서버 모드를 모를 때 | 서버가 교직원 전용이면, 그 기기들은 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 그 가운데 설치하지 않고 실행한 HJViewer가 있으면 그 PC도 연결을 받지 못합니다. | If the server is for staff only, not even a PC password lets those devices connect without an access password until they log in again. Any of them that is a PC running HJViewer without installing it stops accepting connections too. |
+| L2, 교직원 전용 서버(L2의 글 아래 8 px 띄운 둘째 문단) | 이 서버는 교직원 전용이라 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다. | This server is for faculty and staff only, so nobody can connect to that PC remotely until someone logs in on it again. |
+| L2, 서버 모드를 모를 때 | 서버가 교직원 전용이면 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다. | If the server is for faculty and staff only, nobody can connect to that PC remotely until someone logs in on it again. |
+| L3. 다른 기기 로그아웃(로그인한 기기의 [로그아웃], 새 기기 알림의 [내가 아님]), 교직원 전용 서버(확인 창의 질문 아래 8 px 띄운 둘째 문단) | 이 서버는 교직원 전용이라, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다. | This server is for faculty and staff only: until that device logs in again, not even a PC password lets it connect without an access password. If it is a PC running HJViewer without installing it, that PC stops accepting connections too. |
+| L3, 서버 모드를 모를 때 | 서버가 교직원 전용이면, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다. | If the server is for faculty and staff only, not even a PC password lets that device connect without an access password until it logs in again. If it is a PC running HJViewer without installing it, that PC stops accepting connections too. |
+| L3, [다른 기기 모두 로그아웃]의 제목과 글(게이트 줄 위, 위험 아이콘, [취소] [다른 기기 모두 로그아웃]) | 다른 기기를 모두 로그아웃할까요? / 지금 쓰는 이 기기는 로그인한 채로 둡니다. 다시 로그인하기 전까지 그 기기들로는 내 PC에 비밀번호 없이 연결할 수 없고, 열려 있는 비밀번호 없는 연결도 몇 분 안에 끊깁니다. | Log out all other devices? / This device stays logged in. Until they log in again, the other devices cannot connect to your PCs without their passwords, and their open password-less connections end within a few minutes. |
+| L3, [다른 기기 모두 로그아웃], 교직원 전용 서버 | 이 서버는 교직원 전용이라, 그 기기들은 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 그 가운데 설치하지 않고 실행한 HJViewer가 있으면 그 PC도 연결을 받지 못합니다. | This server is for faculty and staff only: until those devices log in again, not even a PC password lets them connect without an access password. Any of them that is a PC running HJViewer without installing it stops accepting connections too. |
+| L3, [다른 기기 모두 로그아웃], 서버 모드를 모를 때 | 서버가 교직원 전용이면, 그 기기들은 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 그 가운데 설치하지 않고 실행한 HJViewer가 있으면 그 PC도 연결을 받지 못합니다. | If the server is for faculty and staff only, not even a PC password lets those devices connect without an access password until they log in again. Any of them that is a PC running HJViewer without installing it stops accepting connections too. |
 | L4. 로그인이 끝남(hjv-api가 401로 끝낸 로그인, 이 기기의 로그아웃이 아닐 때)의 제목과 단추 | 이 기기의 로그인이 끝났습니다 [닫기] [로그인] | Your login on this device ended [Close] [Log in] |
-| L4의 글, 교직원 전용 서버 | 다른 기기나 관리자가 로그아웃시켰거나 로그인 기간이 끝났습니다. 이 서버는 교직원 전용이라 다시 로그인해야 연결할 수 있습니다. | Another device or the administrator logged it out, or the login expired. This server is for staff only, so log in again to connect. |
-| L4, 서버 모드를 모를 때 | 다른 기기나 관리자가 로그아웃시켰거나 로그인 기간이 끝났습니다. 교직원 전용 서버에서는 다시 로그인해야 연결할 수 있습니다. | Another device or the administrator logged it out, or the login expired. On a staff-only server, you need to log in again to connect. |
-| L4, `off`·`count` | 다른 기기나 관리자가 로그아웃시켰거나 로그인 기간이 끝났습니다. 내 PC에 비밀번호 없이 연결하려면 다시 로그인하세요. | Another device or the administrator logged it out, or the login expired. To connect to your PCs without their passwords, log in again. |
+| L4의 글, 교직원 전용 서버 | 다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다. 이 서버는 교직원 전용이라 다시 로그인해야 연결할 수 있습니다. | Another device or the administrator logged it out, or the login expired. This server is for faculty and staff only, so log in again to connect. |
+| L4, 서버 모드를 모를 때 | 다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다. 교직원 전용 서버에서는 다시 로그인해야 연결할 수 있습니다. | Another device or the administrator logged it out, or the login expired. On a faculty-and-staff-only server, you need to log in again to connect. |
+| L4, `off`·`count` | 다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다. 내 PC에 비밀번호 없이 연결하려면 다시 로그인하세요. | Another device or the administrator logged it out, or the login expired. To connect to your PCs without their passwords, log in again. |
+| LK1. 링크로 연결할 때(고정 서버 빌드)의 제목 | 링크로 연결 | Connect from a link |
+| LK1의 첫 줄(굵게, PC ID는 한 줄로 붙여 씀) | PC {ID}에 연결할까요? | Connect to PC {ID}? |
+| LK1의 글과 단추 | 링크로 열었습니다. 모르는 곳에서 받은 링크라면 [취소]를 누르세요. [취소] [연결] | This was opened from a link. If you got the link from someone you do not know, press [Cancel]. [Cancel] [Connect] |
+| LK1 대신 A0이 나올 때(휴대폰) A0에 붙는 줄 | PC {ID}에 연결하는 링크로 열었습니다. 모르는 곳에서 받은 링크라면 [취소]를 누르세요. | This was opened from a link to PC {ID}. If you got the link from someone you do not know, press [Cancel]. |
 | S1. 지원 코드를 만드는 단추(로그인한 앱의 `hjv.support_code`가 `true`일 때만, 3-7. 데스크톱은 설정 → 계정 카드의 로그인한 기기 단추 아래, 휴대폰은 설정 → 계정 칸의 타일, 그리고 홈의 내 PC 탭 목록 위 오른쪽의 글자 단추. 홈에 따로 계정 칸이 없으므로 내 PC 탭이 그 자리) | [지원 코드 만들기] | [Create support code] |
 | S2. 만든 코드의 창: 제목 | 지원 코드 만들기 | Create support code |
-| S2의 글(만드는 동안과 코드가 보이는 동안만. S5~S7과 끝난 줄 위에는 없음) | 도움받을 분에게 이 코드를 알려 주세요. 그분이 HJViewer에서 [지원 코드 넣기]를 눌러 이 코드를 넣으면 그 PC가 2시간 동안 연결을 받습니다. 코드는 10분 안에 한 번만 쓸 수 있습니다. 연결은 지금처럼 그 PC의 ID와 PC 비밀번호(또는 상대의 수락)로 합니다. | Give this code to the person you are helping. Once they click [Support code] in HJViewer and enter it, their PC accepts connections for 2 hours. The code works once, within 10 minutes. Connect as before, with that PC's ID and PC password (or their acceptance). |
+| S2의 글(1.9.0, 답에 `link`가 있을 때. 만드는 동안과 코드가 보이는 동안만. S5~S7과 끝난 줄 위에는 없음) | 도움받을 분에게 [안내문 복사]로 코드와 링크를 보내 주세요. 그분이 링크에서 HJViewer를 받아 [지원 코드 넣기]에 코드를 넣으면, 그 PC가 2시간 동안 연결을 받고 여기에 알려 드립니다. 코드와 링크는 10분 안에 한 번만 쓸 수 있습니다. | Send the code and the link with [Copy instructions]. Once the person gets HJViewer from the link and enters the code under [Support code], their PC accepts connections for 2 hours and you are told here. The code and the link work once, within 10 minutes. |
+| S2의 글, 1.9.0의 hjv-api 전(답에 `link`가 없음. 만드는 동안과 코드가 보이는 동안만. S5~S7과 끝난 줄 위에는 없음) | 도움받을 분에게 이 코드를 알려 주세요. 그분이 HJViewer에서 [지원 코드 넣기]를 눌러 이 코드를 넣으면 그 PC가 2시간 동안 연결을 받습니다. 코드는 10분 안에 한 번만 쓸 수 있습니다. 연결은 지금처럼 그 PC의 ID와 PC 비밀번호(또는 상대의 수락)로 합니다. | Give this code to the person you are helping. Once they click [Support code] in HJViewer and enter it, their PC accepts connections for 2 hours. The code works once, within 10 minutes. Connect as before, with that PC's ID and PC password (or their acceptance). |
 | S2, 만드는 동안(누르면 바로 보냄) | 막대와 "만드는 중…", 화면 낭독기에는 "지원 코드를 만드는 중", 단추는 [닫기] | the bar and "Creating…", "Creating a support code" for a screen reader, [Close] |
 | S2의 코드와 남은 시간 | K7M2-Q9XD를 크게, 그 아래 "9:41 남음" | K7M2-Q9XD in large type, below it "9:41 left" |
-| S2의 단추(기본 단추가 끝. [코드 복사]가 기본 단추이고 Enter도 코드를 복사함) | [닫기] [안내문 복사] [코드 복사] | [Close] [Copy instructions] [Copy code] |
+| S2의 단추(기본 단추가 끝. 1.9.0의 hjv-api(답에 `link`가 있음)면 [안내문 복사]가 기본 단추이고 Enter도 안내문을 복사함. 휴대폰 폭(360)에서 넘치면 [코드 복사]와 [링크 복사]는 내용 칸 안의 글자 단추 줄로 내려감) | [닫기] [코드 복사] [링크 복사] [안내문 복사] | [Close] [Copy code] [Copy link] [Copy instructions] |
+| S2의 단추, 답에 `link`가 없을 때([코드 복사]가 기본 단추이고 Enter도 코드를 복사함) | [닫기] [안내문 복사] [코드 복사] | [Close] [Copy instructions] [Copy code] |
 | S2, 10분이 지난 뒤(코드, 남은 시간, S2의 글 대신. 화면 낭독기가 바로 읽음. 10분은 답이 온 때부터 기기의 시계와 상관없이 셈) | 이 코드는 10분이 지나 끝났습니다. [닫기] [다시 만들기] | This code's 10 minutes are over. [Close] [Create another] |
 | S2, 만들지 못했을 때(S5~S7) | 코드 자리에 그 글(위험 색), [닫기]와 [다시 만들기](S5는 [닫기]만) | that text in its place (danger colour), [Close] and [Create another] ([Close] only for S5) |
 | S3. [코드 복사], [안내문 복사] 뒤(토스트) | 코드를 복사했습니다. / 안내문을 복사했습니다. | Code copied. / Instructions copied. |
-| S4. 안내문(복사되는 글, 그 코드를 채움. P1의 제목과 단추를 앱의 글 그대로 부르고, 코드의 끝 글자에 따라 조사가 달라지지 않게 코드를 끝에 둠) | HJViewer를 실행하고, "서버에 연결되지 않음" 알림의 [지원 코드 넣기]를 눌러 10분 안에 이 코드를 넣어 주세요: K7M2-Q9XD | Run HJViewer, click [Support code] on the notice "Not connected", and enter K7M2-Q9XD within 10 minutes. |
+| S4. 안내문, 답에 `link`가 없을 때(복사되는 글, 그 코드를 채움. P1의 제목과 단추를 앱의 글 그대로 부르고, 코드의 끝 글자에 따라 조사가 달라지지 않게 코드를 끝에 둠) | HJViewer를 실행하고, "서버에 연결되지 않음" 알림의 [지원 코드 넣기]를 눌러 10분 안에 이 코드를 넣어 주세요: K7M2-Q9XD | Run HJViewer, click [Support code] on the notice "Not connected", and enter K7M2-Q9XD within 10 minutes. |
 | S5. 이 계정으로는 만들 수 없음(403 `no_code`, 심사 계정) | 이 계정으로는 지원 코드를 만들 수 없습니다. | This account cannot create support codes. |
 | S6. 쓰지 않은 코드가 많음(429 `too_many_codes`, `retry_after`가 있음) | 아직 쓰지 않은 지원 코드가 많습니다. 약 3분 뒤 다시 시도해 주세요. | Too many of your support codes are still open. Please try again in about 3 minutes. |
 | S7. 만들 수 없음(429 `rate_limited`, 503, 400, 네트워크, 그 밖의 실패) | 지금은 지원 코드를 만들 수 없습니다. 잠시 뒤 다시 시도해 주세요. | A support code cannot be created right now. Please try again in a moment. |
 | S8. S2에 붙는 줄, 서버가 출입을 확인하지 않을 때(3-6의 `off`, `count`) | 지금은 서버가 출입을 확인하지 않아, 그 PC는 코드 없이도 연결을 받습니다. | The server does not check access right now, so that PC accepts connections without a code. |
+| S9. [링크 복사]와 그 뒤의 토스트(1.9.0) | [링크 복사] / 링크를 복사했습니다. | [Copy link] / Link copied. |
+| S10. 안내문, 답에 `link`가 있을 때(S4 대신 복사되는 세 줄. 코드와 링크를 채움. 코드는 S4처럼 첫 줄 끝에, 링크는 셋째 줄) | Windows PC에서 아래 링크로 HJViewer를 받아 실행하고, "서버에 연결되지 않음" 알림의 [지원 코드 넣기]를 눌러 10분 안에 이 코드를 넣어 주세요: K7M2-Q9XD / 제가 연결하면 연결 창에 방패 표시와 함께 "연세대 교직원(로그인 확인)" 줄이 보입니다. 확인한 뒤 [수락]을 눌러 주세요. / https://<서버>/api/hjv/s/<link>/ | On a Windows PC, get HJViewer from the link below and run it, click [Support code] on the notice "Not connected", and enter K7M2-Q9XD within 10 minutes. / When I connect, the connection window shows a shield with the line "Yonsei faculty or staff (verified login)". Check it, then press [Accept]. / https://<server>/api/hjv/s/<link>/ |
+| S11. S2의 기다림 줄(코드와 남은 시간 아래, 작은 진행 표시와 함께) | 그분의 PC가 코드를 넣으면 여기에 알려 드립니다. 이 창을 닫아도 앱이 켜져 있는 동안 알려 드립니다. | You are told here when their PC enters the code, also after you close this window, while the app is running. |
+| S12. S2, PC가 코드를 넣은 뒤(코드와 남은 시간 대신) | PC {ID}가 지원 코드를 넣었습니다. / 이 기기에서 연결하면 그 PC의 연결 창에 "연세대 교직원(로그인 확인)"이 보입니다. 도움받을 분에게 이 ID가 맞는지 확인하세요. [닫기] [연결] | PC {ID} entered the support code. / When you connect from this device, that PC's connection window shows "Yonsei faculty or staff (verified login)". Check this ID with the person you are helping. [Close] [Connect] |
+| S13. S2를 닫은 뒤 PC가 코드를 넣을 때의 창(제목 "지원 코드", 영어 "Support code") | PC {ID}가 지원 코드를 넣었습니다. 지금 연결할까요? [나중에] [연결] | PC {ID} entered the support code. Connect now? [Later] [Connect] |
+| S14. 원격 다시 시작의 확인 창, 그 PC가 지원 PC 표에 있을 때(R1과 R1에 붙는 줄 대신) | 이 PC는 지원 코드로 연결을 받고 있습니다. 다시 시작하면 그분이 HJViewer를 다시 실행하고 새 지원 코드를 넣어야 다시 연결할 수 있습니다. 다시 시작하기 전에 새 코드를 만들어 알려 두세요. | This PC accepts connections with a support code. After a restart, the person there has to run HJViewer again and enter a new support code before you can connect. Make a new code and give it to them before you restart. |
+| S15. 다시 시작한 지원 PC가 오프라인일 때 붙는 줄("오프라인에 붙는 줄, 그 세션이 원격 다시 시작을 요청한 뒤" 대신) | 방금 다시 시작한 PC라면, 그분이 HJViewer를 다시 실행하고 새 지원 코드를 넣어야 다시 연결을 받습니다. | If the PC was just restarted, the person there has to run HJViewer again and enter a new support code before it accepts connections. |
+| SL1. 지원 링크 페이지(hjv-api가 보임, 3-7의 "지원 링크". 한 페이지에 한국어 다음 영어)의 제목(`<title>`과 `<h1>`) | HJViewer 원격 지원 | HJViewer remote support |
+| SL2. 페이지의 첫 글(사칭 주의) | 연세대학교 교직원이 이 PC를 원격으로 도우려고 합니다. 직접 도움을 부탁한 경우에만 아래를 따라 주세요. 모르는 사람이 보낸 링크라면 이 페이지를 닫으세요. Windows PC에서 여세요. | A Yonsei University faculty or staff member is about to help this PC remotely. Follow the steps below only if you asked for this help yourself. If someone you do not know sent you this link, close this page. Open it on a Windows PC. |
+| SL3. 1단계 | [HJViewer-1.9.0.exe 받기]를 눌러 받은 파일을 실행하세요. 설치하지 않고 바로 실행됩니다. 브라우저가 이 파일은 흔히 받는 파일이 아니라고 하면 [⋯] → [유지]를 누르세요. | Click [Download HJViewer-1.9.0.exe] and run the file. It runs without being installed. If the browser says the file is not commonly downloaded, choose […] → [Keep]. |
+| SL4. 2단계 | "Windows의 PC 보호" 창이 뜨면 [추가 정보] → [실행]을 누르세요. 서명이 없는 프로그램이라 뜹니다. 아래 SHA-256으로 파일을 확인할 수 있습니다. | If "Windows protected your PC" appears, click [More info] → [Run anyway]. It appears because the program is not signed. You can check the file against the SHA-256 below. |
+| SL5. 3단계와 코드 | HJViewer의 "서버에 연결되지 않음" 알림에서 [지원 코드 넣기]를 누르고 이 코드를 넣으세요. K7M2-Q9XD(크게) 10분 안에 한 번만 쓸 수 있습니다. | In HJViewer, click [Support code] on the notice "Not connected" and enter this code. K7M2-Q9XD (large) It works once, within 10 minutes. |
+| SL6. 4단계 | 교직원이 연결하면 연결 창에 방패 표시와 함께 "연세대 교직원(로그인 확인)" 줄이 보입니다. 확인한 뒤 [수락]을 누르세요. 그 창에서 언제든 연결을 끊을 수 있습니다. 이 표시가 없는 연결 요청은 받지 마세요. | When the faculty or staff member connects, the connection window shows a shield with the line "Yonsei faculty or staff (verified login)". Check it, then press [Accept]. You can end the connection in that window at any time. Do not accept a request without this mark. |
+| SL7. 끝의 줄 | 이 페이지의 주소와 코드는 다른 사람에게 알리지 마세요. 링크는 10분이 지나거나 코드를 넣으면 끝납니다. HJViewer는 GNU AGPL-3.0 라이선스로 배포합니다. 소스 코드를 받는 곳은 아래 알림 파일의 SOURCE에 있습니다. | Do not share this page's address or the code. The link ends after 10 minutes or once the code is entered. HJViewer is distributed under the GNU AGPL-3.0. Where to get the source is in the SOURCE notice file below. |
+| SL8. 정책에 Windows 패키지가 없을 때(SL3 대신) | HJViewer를 준비하고 있습니다. 잠시 뒤 이 페이지를 다시 열어 주세요. 이미 받은 HJViewer에 [지원 코드 넣기]가 보이면 그것을 실행해 3단계부터 하세요. | HJViewer is being prepared. Please open this page again in a moment. If the HJViewer you already have shows [Support code], run it and start from step 3. |
 | E1. 이용 비밀번호가 틀림(401 `denied`) | 이용 비밀번호가 맞지 않거나, 지금은 이용 비밀번호를 쓸 수 없습니다. 비밀번호를 확인해 다시 넣거나 연세포탈로 로그인해 주세요. | The access password is wrong, or it cannot be used right now. Check it and enter it again, or log in with your Yonsei portal account. |
 | E2. 시도가 너무 많음(429, `retry_after`가 있음) | 시도가 너무 많습니다. 약 10분 뒤 다시 시도해 주세요. (한 시간이 넘으면 "약 2시간". 기다리는 동안 남은 시간으로 바뀜: "약 9분") | Too many tries. Please try again in about 10 minutes. ("about an hour", "about 2 hours"; while it waits, the time left: "about 9 minutes") |
 | E2, `retry_after`가 없거나 이틀이 넘을 때 | 시도가 너무 많습니다. 잠시 뒤 다시 시도해 주세요. | Too many tries. Please try again later. |
@@ -541,30 +673,36 @@ hbbs는 출입증 하나를 아래 순서로 보고, 처음 걸린 것을 이유
 | E8. PC의 키가 다름(403 `wrong_pc`), 지원 코드 | 이 PC의 키가 서버에 있는 것과 달라 지원 코드로 연결을 받을 수 없습니다. 관리자에게 알려 주세요. | This PC's key differs from the one the server has, so it cannot accept connections with a support code. Please tell your administrator. |
 | P3, 넣은 글이 코드의 꼴이 아님(보내지 않음) | 지원 코드는 XXXX-XXXX 꼴의 8자입니다. 받은 코드를 그대로 넣어 주세요. | A support code has 8 characters, XXXX-XXXX. Please enter it as you got it. |
 
+- **주의 줄**(1.9.0): P2와 P3는 창을 열 때마다 위의 주의 줄을 보입니다. 관리자 연락처는 서명된 버전 정책의 `contact_ko`([architecture.md](architecture.md) 8-2)이고, 앱은 `main_get_common`의 `hjv-admin-contact`로 읽습니다. 정책이 없거나 그 글이 비었으면 연락처 없는 글을 씁니다. 연결 창의 수락 카드에도 같은 틀의 줄이 있습니다(위 표, architecture.md 5-10). 표시가 `staff`인 수락 카드는 주의 줄 대신 P5를 보입니다.
 - **표시는 msgbox에만**: Rust는 거절을 msgbox(`hjv-access-error`)로 내고, 그 글은 끝에 표시를 남깁니다. 오류 창으로 가는 글이라 자동 다시 연결을 멈추기 위해서입니다(버전 거절의 R1, R2와 같음). 로그인하지 않은 앱에는 "HJViewer는 연세대학교 교직원용입니다. 연세포탈로 로그인하거나 이용 비밀번호를 넣으세요. (access not allowed)", 로그인한 앱에는 "서버가 이 연결을 받지 않았습니다. 잠시 뒤 다시 시도하고, 계속되면 관리자에게 알려 주세요. (access not allowed)"입니다. Flutter 화면은 그 msgbox를 위의 A1, A2 창으로 바꾸므로 표시를 보이지 않습니다.
 - **A1은 로그인이 먼저**: 거절되는 사람은 대부분 교직원이므로 [로그인]이 기본 단추이고, 이용 비밀번호의 입력 칸은 "이용 비밀번호가 있나요?"를 누를 때 열립니다(휴대폰에서 키보드가 먼저 올라오지 않음). 열면 [연결]이 기본 단추가 됩니다. 로그인을 끈 빌드는 처음부터 열립니다.
+- **A0은 연결 전에 묻습니다**: 서버 모드가 `enforce`나 `closed`로 알려져 있고(3-6), 로그인하지 않았고, 그 대상의 이용 비밀번호 출입증을 이 프로세스가 갖고 있지 않으면(3-3의 `hjv-guest-held`), 앱은 세션을 열기 전에 A0을 보입니다. 원격 화면, 파일 전송, 카메라, 터미널, 포트 포워딩 모두 같습니다. [연결]은 그 대상의 출입증(3-5)을 받은 뒤 세션을 열고, [로그인]은 로그인 창을 열어 로그인하면 세션을 엽니다. [취소]는 세션을 열지 않습니다. 모드를 모르면(`unknown`, 아직 답이 없음) 또는 `off`, `count`이면 A0 없이 지금처럼 열고, 거절되면 A1입니다. A0 뒤에도 거절되면(그 사이 모드가 바뀜, 출입증이 끝남) A1이 나옵니다. 열린 세션 창에서 새 연결을 시작하면 A0 없이 거절 뒤의 A1입니다. 데스크톱에서 링크(`hjviewer://<ID>`)나 명령줄로 연 연결도 `connect()`를 지나지 않으므로 A0 없이 열고(고정 서버 빌드는 그 전에 LK1), 거절되면 A1입니다(X-17). 휴대폰의 링크는 `connect()`를 지나므로, A0이 나올 상황이면 LK1 대신 LK1의 줄을 붙인 A0이 나옵니다. 데스크톱은 칸을 연 채로, 휴대폰은 A1처럼 링크 뒤에 칸을 둡니다(키보드가 먼저 올라오지 않게). Enter는 칸에 글이 있으면 [연결], 비었으면 [로그인]입니다. A0이나 LK1이 기다리는 동안 '터미널(관리자로 실행)'의 표시는 내려 두었다가 연결할 때만 다시 세우므로, [취소]한 뒤 여는 보통 터미널이 관리자 터미널이 되지 않습니다.
+- **LK1은 링크로 열 때 한 번 묻습니다**: 고정 서버 빌드(`allow-deep-link-password`가 `N`으로 고정됨, architecture.md 4절)는 링크(`hjviewer://<ID>`, `hjviewer://connect/<ID>` 같은 꼴, 데스크톱은 `--connect <ID>` 같은 명령줄도)로 연결을 열기 전에 LK1을 보입니다. [연결]이면 그 링크를 그대로 처리하고, [취소]면 아무것도 열지 않습니다. 링크에 든 비밀번호는 버리므로 PC가 비밀번호를 묻습니다. `hjviewer`와 `rustdesk`가 아닌 스킴의 링크는 받지 않습니다. `config`·`password` 링크는 고정 빌드에서 늘 거절됩니다. 휴대폰에서 A0이 나올 상황이면 LK1 없이 A0에 LK1의 줄(위 표)을 붙입니다(X-17). 그사이 서버 모드가 바뀌어 연결할 때 A0이 나오지 않게 되면 그 자리에서 LK1을 묻고, [연결]일 때만 엽니다. 어느 경우에도 링크로 여는 연결은 LK1이나 LK1의 줄을 붙인 A0 가운데 하나를 꼭 지납니다. 데스크톱의 링크는 A0을 지나지 않으므로 늘 LK1이고, 주 창이 숨어 있었으면 LK1과 함께 주 창이 뜹니다. 앱 안에서 여는 연결(카드, 최근 세션, ID 칸, 대기실의 [연결])은 묻지 않습니다. 원격 쪽이 먼저 청한 '방향 바꾸기'도 `--connect`로 오므로 LK1이 나옵니다.
+- **`hjviewer://hjv-gate/…`**: 링크를 읽기 전에 따로 걸러, `hjv-gate` 링크는 어느 것도 연결로 읽지 않습니다. Windows의 주 창만 `/login`(로그인 창)과 `/password`(P1이 보이는 동안만 P2)를 엽니다. 질의 문자열, 조각, 다른 경로가 붙으면 아무것도 열지 않습니다. 휴대폰은 아무 웹 페이지나 이 링크를 넘길 수 있으므로 아무것도 열지 않습니다(X-18). 트레이 메뉴가 이 링크를 쓰는 것은 아래 "트레이"의 규칙(TR1–TR3)입니다.
 - **A1, P2, P3의 입력 칸과 단추**: [연결](A1, P3)과 [확인](P2)은 무언가 칠 때까지, 확인하는 동안, E2의 기다릴 시간 동안 꺼져 있습니다. 확인하는 동안 진행 막대 옆에 "확인하는 중…"이 보이고, [취소]와 Esc는 그때도 듣습니다. A1의 [취소]는 창을 바로 닫고, 확인하는 동안이면 답이 온 뒤에 세션을 닫습니다. 그래서 취소한 A1은 출입증을 남기지 않고(세션과 함께 사라짐, 다음 연결은 다시 물음), 포트 포워딩은 예전처럼 그것을 둡니다. P2와 P3의 [취소] 뒤에 출입증이 오면 앱이 그것을 바로 끝냅니다(`hjv-guest-pc-end`, 홈 줄도 토스트도 없음). 휴대폰 키보드의 완료 키와 데스크톱의 Enter가 [연결]이나 [확인]을 누릅니다(데스크톱에서 Tab으로 단추에 초점을 옮겼으면 Enter는 그 단추를 누름, Shift+Tab은 뒤로). 칸은 보이게 해도 자동 수정, 제안, 스마트 문장 부호를 쓰지 않습니다. 오류(E1~E8과 P3의 꼴 안내)는 칸 바로 아래에 아이콘과 함께 빨간 테두리로 보이고 화면 낭독기가 읽으며, 안내는 그 아래입니다.
 - 로그인한 컨트롤러는 거절을 받으면 먼저 출입증을 한 번 새로 받아 다시 연결하고, 그래도 거절되면 A2를 보입니다. A2의 [다시 연결]도 같은 길로 다시 연결합니다.
-- A1에서 이용 비밀번호를 넣으면 앱이 그 대상의 출입증(3-5)을 받고 바로 다시 연결합니다. 그 PC가 묻는 비밀번호 창(PC 비밀번호 창)의 맨 위에 "이용 비밀번호는 확인했습니다…"가 한 번 나옵니다. 포트 포워딩은 로컬 연결이 올 때까지 창이 없으므로 토스트로 알립니다. 새 연결은 다시 묻고, 같은 세션의 자동 다시 연결은 묻지 않습니다. [로그인]은 지금의 로그인 창을 열고, 로그인하면 다시 연결합니다. 세션 창에서 로그인하면 "이 PC를 내 PC 목록에 추가했습니다" 같은 알림은 주 창이 보입니다.
-- **PC 홈의 알림**은 ID 위에 하나만 보입니다. 홈의 200 px 왼쪽 칸에 맞춰, 제목은 두 줄까지 감기고(넘치면 줄임표, 전체는 툴팁) 단추는 칸의 폭으로 세로로 쌓습니다(높이는 34 px부터 글에 맞춰). 왼쪽 칸은 창보다 길면 스크롤되고, 주 창은 720x520보다 작아지지 않습니다. 등록이 거절된 동안(`hjv-access-pc`가 `refused`) P1, 아니면 이용 비밀번호나 지원 코드의 출입증이 남아 있는 동안 받은 길에 따라 P2나 P3의 홈 줄, 아니면 설치했고 로그인하지 않은 Windows PC에 G2입니다. P2나 P3에서 출입증을 받거나 [끝내기]를 누르면 홈은 등록하는 프로세스가 다음 등록의 결과를 적기를 기다리지 않고 바로 바뀝니다(받으면 홈 줄, 끝내면 로그인하지 않은 PC는 P1). 그 결과가 30초 안에 오지 않으면 홈은 다시 그 결과를 따릅니다. 로그인한 PC는 거절이 약 60초 이어질 때까지 P1을 보이지 않고(묶인 PC의 출입증이 늦게 오면 잠깐 거절됨), 그 뒤에는 로그인한 PC의 P1(설정 → 계정의 이 PC 줄의 까닭과 단추)을 보입니다. P1 동안 상태 줄은 "준비 완료" 대신 위 글을 경고색으로 보이고(로그인한 PC는 "(로그인 필요)" 없이), Windows의 트레이 안내는 "준비 완료"나 "서비스가 실행 중입니다"의 자리에 같은 글을 둡니다. 트레이는 서비스의 `hjv-pwless-state`가 비어 있지 않으면(로그인이 이 PC를 묶음) 로그인한 PC로 봅니다. 출입 확인이 꺼진 서버(`MODE=off`)는 거절하지 않으므로 P1이 나오지 않고, 앱은 지금처럼 움직입니다.
+- A1에서 이용 비밀번호를 넣으면 앱이 그 대상의 출입증(3-5)을 받고 바로 다시 연결합니다. 그 PC가 묻는 비밀번호 창(PC 비밀번호 창)의 맨 위에 "이용 비밀번호는 확인했습니다…"가 한 번 나옵니다. 포트 포워딩은 로컬 연결이 올 때까지 창이 없으므로 토스트로 알립니다. 새 연결은 다시 묻고, 같은 세션의 자동 다시 연결은 묻지 않습니다. [로그인]은 지금의 로그인 창을 열고, 로그인하면 다시 연결합니다. 세션 창에서 로그인하면 "이 PC를 내 PC 목록에 추가했습니다" 같은 알림은 주 창이 보이고(주 창을 앞으로 가져오지 않음), Windows의 세션 창은 토스트 "로그인했습니다. 이 PC에 대한 안내는 HJViewer 주 창에 있습니다."(Logged in. HJViewer's main window has a note about this PC.)를 보입니다. 설치한 Windows PC의 로그인 창은 "설치된 이 PC에서 로그인하면 이 PC가 내 PC 목록에 추가됩니다."(Logging in on this installed PC adds it to My PCs.)를 한 줄 보입니다.
+- **PC 홈의 알림**은 ID 위에 하나만 보입니다. 홈의 200 px 왼쪽 칸에 맞춰, 제목은 두 줄까지 감기고(넘치면 줄임표, 전체는 툴팁) 단추는 칸의 폭으로 세로로 쌓습니다(높이는 34 px부터 글에 맞춰). 왼쪽 칸은 창보다 길면 스크롤되고, 주 창은 720x520보다 작아지지 않습니다. 등록이 거절된 동안(`hjv-access-pc`가 `refused`) P1, 아니면 이용 비밀번호나 지원 코드의 출입증이 남아 있는 동안 받은 길에 따라 P2나 P3의 홈 줄, 아니면 설치했고 로그인하지 않은 Windows PC에 G2, 아니면 로그인한 설치 PC에서 원격 준비([architecture.md](architecture.md) 5-12)의 꼭 필요한 줄이 남았을 때 G4입니다. G4는 그 줄이 모두 ✔가 되면 사라지고, [점검]은 설정 → 계정의 카드를 엽니다. P2나 P3에서 출입증을 받거나 [끝내기]를 누르면 홈은 등록하는 프로세스가 다음 등록의 결과를 적기를 기다리지 않고 바로 바뀝니다(받으면 홈 줄, 끝내면 로그인하지 않은 PC는 P1). 그 결과가 30초 안에 오지 않으면 홈은 다시 그 결과를 따릅니다. 로그인한 PC는 거절이 약 60초 이어질 때까지 P1을 보이지 않고(묶인 PC의 출입증이 늦게 오면 잠깐 거절됨), 그 뒤에는 로그인한 PC의 P1(설정 → 계정의 이 PC 줄의 까닭과 단추)을 보입니다. P1 동안 상태 줄은 "준비 완료" 대신 위 글을 경고색으로 보이고(로그인한 PC는 "(로그인 필요)" 없이), Windows의 트레이 안내는 "준비 완료"나 "서비스가 실행 중입니다"의 자리에 같은 글을 둡니다. 트레이는 서비스의 `hjv-pwless-state`가 비어 있지 않으면(로그인이 이 PC를 묶음) 로그인한 PC로 봅니다. 출입 확인이 꺼진 서버(`MODE=off`)는 거절하지 않으므로 P1이 나오지 않고, 앱은 지금처럼 움직입니다.
+- **트레이**(Windows, TR1–TR3, 1.9.0): 트레이 프로세스는 등록하는 프로세스의 옵션(`hjv-access-pc`, `hjv-pwless-state`)을 1초마다 받아(툴팁과 같은 길) 아이콘, 메뉴, 알림을 정합니다. 알림의 60초는 로그인한 PC의 출입증이 늦게 오는 동안의 짧은 거절을 넘기기 위한 것이고, 12시간에 한 번까지입니다. 알림을 누르거나 [열기]를 고르면 주 창이 열립니다. [로그인…]과 [이용 비밀번호 넣기…]는 `hjviewer://hjv-gate/login`, `hjviewer://hjv-gate/password` 링크로 주 창을 열고 그 창(로그인 창, P2)을 엽니다. 링크는 창을 열 뿐 아무 값도 받지 않고, `password`는 P1이 보이는 동안만 엽니다. 메뉴의 글은 `translate`를 거치지 않고 위 표 그대로입니다.
 - **로그인 단추는 창마다 하나**: 채운 [로그인]은 한 창에 하나만 둡니다. P1(로그인하지 않은 PC)이나 G2가 [로그인]을 보이는 동안 G3는 단추 없이 글만 보이고, 로그인이 필요한 탭의 자리 표시는 [로그인]을 글자 단추로 보입니다. 그 밖에는 G3의 [로그인]이 글자 단추이고 자리 표시의 [로그인]이 채운 단추입니다.
 - **P1 동안의 ID**: P1(로그인한 PC의 P1도)이 보이는 동안 ID 카드는 파랑 대신 흰 카드가 되고, ID와 일회용 비밀번호의 값은 흐린 글자색(`textTertiary`)이 되며, "이 ID와 비밀번호로…" 자리에 "이 PC는 지금 연결을 받을 수 없습니다."를 보입니다. 로그인하지 않은 PC는 ID 카드에 "로그인하거나 이용 비밀번호를 넣으면 이 ID로 연결을 받을 수 있습니다."(`codes`가 `true`이면 "…이용 비밀번호나 지원 코드를…")를 더합니다. 두 번 눌러 복사하기는 그대로입니다.
 - **G3의 모양**: 한 줄이고, 긴 설명은 툴팁입니다(휴대폰은 그 줄을 누르면 몇 초 동안 보임). 데스크톱(흰 바탕)은 회색 채움, 휴대폰 홈(밝은 모양의 바탕이 회색)은 테두리가 있는 카드입니다.
 - **G2**는 서버 모드와 상관없이 보입니다. 다만 로그인이 없어도 서비스가 이 PC의 묶음을 보이면(`hjv-pwless-state`가 `active`, `off`, `disabled`, `expired`, `listed`; 다른 기기에서 로그아웃시킨 묶인 PC는 계속 출입증을 받음) 보이지 않습니다. `enforce` 전의 예고도 겸합니다. 그런 PC는 홈을 처음 열 때 로그인 창을 한 번 엽니다(설치한 뒤, 그리고 1.8.0으로 업데이트한 뒤에 한 번).
 - P2의 출입증은 앱의 메모리(설치한 PC는 서비스가 띄운 서버 프로세스의 메모리)에만 있으므로, 앱(설치한 PC는 PC)을 다시 시작하거나, 설치한 PC에서 서비스가 서버 프로세스를 새로 띄우거나(Windows 로그아웃·사용자 전환, 업데이트), 12시간이 지나면 끝나고 등록이 다시 거절되어 P1이 나옵니다. 끝나는 때는 Rust가 결과의 `until`(그 기기의 시계)로 알려 주고, 앱은 그 창의 메모리에만 둡니다. 등록이 다시 거절되면 그 값을 지웁니다(서버 프로세스만 다시 떠 끝난 P2의 홈 줄이 그 시각까지 되살아나지 않게). [끝내기]는 등록하는 프로세스에서 그 출입증을 지웁니다(`hjv-guest-pc-end`). P2가 남은 동안 주 창을 닫으면(창은 숨을 뿐) 그 출입증마다 한 번 [끝내고 닫기] [계속 받기]를 묻고, 그 물음을 닫으면 창도 닫지 않습니다. P3의 출입증도 같은 자리에 있어 다시 시작할 때와 [끝내기]로 같이 끝나고, 주 창을 닫을 때 같은 물음("지원 코드")을 받으며, 12시간 대신 2시간이 지나면 끝납니다.
 - **지원 코드**(3-7): S1은 로그인 답이나 `currentUser` 답의 `hjv`에 `"support_code":true`가 있는 로그인한 앱에만, 서버 모드와 상관없이 보입니다. 심사 계정의 로그인과 1.9.0 전의 서버는 이것을 보내지 않으므로 S1이 나오지 않습니다(그래도 403 `no_code`가 오면 S5). 누르면 바로 만들기를 보내고 S2를 엽니다. S2의 남은 시간은 1초마다 줄고, 0이 되면 코드와 복사 단추를 감추고 끝난 줄을 보입니다. [안내문 복사]는 S4에 그 코드를 채워 복사합니다. 창을 닫아도 코드는 끝나지 않고, 닫은 창은 다시 열지 못합니다(새로 만듦). S2에서 hjv-api가 401을 주면 계정 요청의 401처럼 로그인을 끝냅니다(L4). P1의 [지원 코드 넣기]는 `GET /api/hjv/access`의 답에 `"codes":true`가 있을 때만 보이고(3-6. 없으면 P1의 단추는 [로그인] [이용 비밀번호 넣기]이고 글과 ID 카드의 줄도 지원 코드를 말하지 않음), P3를 열고, 출입증을 받으면 P2처럼 토스트를 보이고 바로 다시 등록합니다. P3은 넣은 글의 앞뒤 공백을 지워 3-7의 규칙으로 먼저 읽고, 8자가 아니면 보내지 않고 바로 "지원 코드는 XXXX-XXXX 꼴의 8자입니다. 받은 코드를 그대로 넣어 주세요."를 보입니다(E6이 아님: 보내지 않았으므로 10분이 지났거나 이미 썼다고 말하지 않음. 앞선 429의 기다림이 끝났으면 그것을 지우고). 앱의 `hjvReadSupportCode`와 Rust의 `read_code`가 hjv-api의 `support::read`를 그대로 옮깁니다. 답이 오지 않은 요청은 같은 본문으로 한 번 더 보냅니다(3-3). P3은 E2와 E5를 그대로 쓰고, E1, E3, E4 대신 E6, E7, E8을 씁니다.
+- **지원 링크와 대기실, 교직원 표시**(1.9.0, TV-W6, 3-7): hjv-api의 답에 `link`가 있으면 S2는 코드와 남은 시간 아래에 S11을 보이고, 단추는 [닫기] [코드 복사] [링크 복사] [안내문 복사]이며, [안내문 복사]는 S10을 복사합니다. 대기실이 그 코드의 `used`를 알려 오면 S2의 코드와 남은 시간이 S12로 바뀌고 단추는 [닫기] [연결](기본)입니다. S2를 닫은 뒤에 오면 앱이 S13을 한 번 띄웁니다(데스크톱은 주 창, 원격 세션 창이 앞에 있어도. 휴대폰은 지금 화면 위). [연결]은 그 ID로 보통의 `connect()`를 부르고(원격 화면, LK1도 A0도 없음), 그 연결에는 3-7의 증명이 저절로 실립니다. 쓰이지 않고 10분이 지나면 지금처럼 끝난 줄과 [다시 만들기]이고, 닫힌 S2의 코드가 끝나면 아무것도 띄우지 않습니다. 원격 다시 시작의 확인 창은 그 PC가 지원 PC 표에 있으면(`main_get_common("hjv-support-pc:<ID>")`가 `Y`) R1과 그 덧줄 대신 S14 하나를 붙이고, 다시 시작한 뒤의 오프라인에는 "오프라인에 붙는 줄" 대신 S15를 붙입니다. 표의 항목은 다시 시작해도 출입증이 끝날 때까지 남고, 새 코드의 `used`가 같은 ID의 항목을 바꿉니다. 답에 `link`가 없으면(그 전의 hjv-api) S2는 링크 단추와 S11 없이 S4를 씁니다. PC 쪽: P3에서 출입증을 받으면 P2의 토스트 대신 P6을 보입니다. 연결 창은 표시가 `staff`인 연결의 이름 줄에 상대가 적은 이름 대신 컨트롤러 ID(`123 456 789` 꼴)를, 그 아래 표시 줄에 P4를, 수락 단추 위에 주의 줄 대신 P5를 보입니다([architecture.md](architecture.md) 5-10).
 - **G3, L1, L2, L3, L4, 오프라인, R1**은 서버 모드(3-6)를 따릅니다. 앱은 켤 때와 앞으로 돌아올 때, 데스크톱에 P1이 나타날 때, 데스크톱의 세션 창은 열릴 때와 오프라인이나 R1을 보일 때(모두 1분에 한 번까지) `GET /api/hjv/access`를 묻습니다. 그래서 첫 물음이 실패했거나 창이 앞에 있는 동안 서버의 답이 바뀌었어도, P1의 [지원 코드 넣기]와 그 글은 P1이 나타날 때의 답을 따릅니다. `enforce`나 닫힘(`closed`)이면 G3, L1, L2, L3, 오프라인, R1을 보이고, 모르면(`unknown`, 아직 답이 없음) L1, L2, L3, 오프라인, R1을 조건으로 보이고, `off`와 `count`면 보이지 않습니다(오프라인은 upstream 글 그대로). L1은 로그아웃하면 등록할 출입증이 없어지는 PC(묶인 PC, 설치하지 않은 앱)에만 보이고, 그 PC를 지금 누가 원격으로 보고 있으면 경고 알림을 더합니다. 오프라인은 글만 바꾸고 키 "Remote desktop is offline"은 그대로 둡니다(약 30초의 자동 다시 연결이 키를 보므로).
 - **L1**은 제목 "로그아웃할까요?"와 [로그아웃]으로 묻고, 글은 한 문장입니다. 이 로그인이 묶은 PC에서 게이트 줄이 붙으면 묶음이 풀린다는 말과 게이트 줄을 한 문장으로 합치고(위 표), 원격으로 쓰는 중이라는 줄은 그 아래 경고 톤의 상자로 둡니다. 묶은 PC도 아니고 게이트 줄도 없을 때, 교직원 전용 서버(`enforce`, 닫힘)이면 로그인이 이 기기의 유일한 길이라는 줄(휴대폰, 로그인 없이 등록하는 PC)을 보이고, 그 밖(열린 서버, 모를 때)에는 제목과 단추만 보입니다.
-- **L3**은 다른 기기를 로그아웃시키는 세 확인(로그인한 기기의 [로그아웃시키기], [다른 기기 모두 로그아웃], 새 기기 알림의 [아님: 로그아웃시키기])에 L2와 같은 방식(서버 모드를 따름)으로, 질문 아래 둘째 문단으로 붙습니다. 질문이 이미 비밀번호 없는 연결이 끝난다고 말하므로, 게이트 줄은 PC 비밀번호로도 연결할 수 없다는 것을 더합니다. 새 기기 알림은 아직 로그인한 기기일 때만 붙입니다.
+- **L3**은 다른 기기를 로그아웃하는 세 확인(로그인한 기기의 [로그아웃], [다른 기기 모두 로그아웃], 새 기기 알림의 [내가 아님])에 L2와 같은 방식(서버 모드를 따름)으로, 질문 아래 둘째 문단으로 붙습니다. 질문이 이미 비밀번호 없는 연결이 끝난다고 말하므로, 게이트 줄은 PC 비밀번호로도 연결할 수 없다는 것을 더합니다. 새 기기 알림은 아직 로그인한 기기일 때만 붙입니다.
 - **L4**는 hjv-api가 요청에 401로 답해 앱이 로그인을 지울 때(이 기기의 로그아웃이 아닐 때) 한 번 보입니다. 백업에서 복원한 아이폰의 "로그인이 풀렸습니다"가 먼저입니다. 글의 둘째 문장은 서버 모드를 따릅니다. Rust의 출입증 요청(`POST /api/hjv/ticket`)이 받은 401도 같은 길로 로그인을 끝내므로(3-3), 오래 켜 둔 앱도 A2 대신 L4와 A1을 봅니다(휴대폰에서 연결의 거절로 알게 되면 L4 없이, A1의 첫 줄이 그 까닭을 말함).
-- **되돌리기 어려운 확인의 모양**: L1(묶은 PC이거나 게이트 줄이 붙을 때, 로그인이 유일한 길일 때), L2, L3, 비밀번호 없는 연결 끄기, 원격 다시 시작, 최근 목록에서 지우기는 위험 모양입니다. 제목이 있으면 경고 아이콘을 위험 색으로, 동작 단추는 데스크톱에서 위험 채움, 휴대폰에서 위험 색 글자입니다. 단추는 동작의 이름입니다([로그아웃], [빼기], [로그아웃시키기], [다른 기기 모두 로그아웃], [끄기], [다시 시작], [지우기]). A2의 제목 아이콘도 위험 색입니다.
+- **되돌리기 어려운 확인의 모양**: L1(묶은 PC이거나 게이트 줄이 붙을 때, 로그인이 유일한 길일 때), L2, L3, 비밀번호 없는 연결 끄기, 원격 다시 시작, 최근 목록에서 지우기는 위험 모양입니다. 제목이 있으면 경고 아이콘을 위험 색으로, 동작 단추는 데스크톱에서 위험 채움, 휴대폰에서 위험 색 글자입니다. 단추는 동작의 이름입니다([로그아웃], [빼기], [내가 아님], [다른 기기 모두 로그아웃], [끄기], [다시 시작], [지우기]). A2의 제목 아이콘도 위험 색입니다.
 - 최근 목록의 [최근 목록에서 지우기]는 PC의 이름을 제목으로 "최근 목록에서 지울까요? 이 기기에 저장해 둔 그 PC의 비밀번호와 이름도 함께 지워지고, 즐겨찾기에서도 빠집니다. 내 PC 목록은 바뀌지 않습니다."와 [취소] [지우기](위험)를 묻습니다. English: "Remove it from Recent? The password and name saved for it on this device go too, and it leaves Favorites. My PCs does not change." [Cancel] [Remove]. upstream의 `PeerConfig::remove`가 그 PC의 설정 파일을 지우고, 즐겨찾기 탭은 설정 파일이 있는 PC만 보이기 때문입니다.
 - **토스트**: 앱의 토스트(A1 뒤 포트 포워딩, P2와 P3 뒤와 끝낸 뒤, S3, 계정의 토스트, "복사되었습니다")는 테마의 스낵바 모양(불투명한 반전 바탕, Pretendard 14, 반지름 10, 최대 폭 480, 키보드와 시스템 막대 위)입니다. 3초에 글자당 약 70 ms를 더해 8초까지 보이고(A1 뒤의 것은 약 6초), 화면 낭독기가 읽으며, 새 토스트가 앞의 것을 바꿉니다. core의 BotToast는 아직 그대로입니다.
 - **말(1.9.0, U17, U19, U30)**: 계정의 PC 목록은 어디서나 "내 PC"(en "My PCs")입니다. "이 PC"는 앱이 도는 기기만, 원격 PC는 "그 PC"입니다. 단추는 "다시 시도", 문장은 "…다시 시도해 주세요."로 씁니다. 한국어 글은 낱말 사이에서만 줄을 바꿉니다(`hjvKeepAll`, 화면에 보이는 글에만).
 - E2와 S6의 기다릴 시간은 429의 `retry_after`(3-5, 3-7)를 분으로 올림한 것이고, 한 시간이 넘으면 시간으로 올림합니다. E2를 보이는 동안 창은 30초마다 남은 시간으로 글을 고치고, 다 기다리면 글을 지우고 [연결]/[확인]을 켭니다. `retry_after`가 없거나 이틀이 넘으면 기다리지 않습니다.
-- 휴대폰 앱은 PC로 등록하지 않으므로 A1, A2, G3, L1, L2, L3, L4, PC 비밀번호 창, 오프라인, R1과 E1~E3, E5, 그리고 지원 코드를 만드는 쪽(S1~S8)만 씁니다.
+- 휴대폰 앱은 PC로 등록하지 않으므로 A0, A1, A2, G3, L1, L2, L3, L4, LK1, PC 비밀번호 창, 오프라인, R1과 E1~E3, E5, 그리고 지원 코드를 만드는 쪽(S1~S15)만 씁니다.
 - 휴대폰의 앱 잠금(1.9.0, W13, 켠 경우)은 이 창들 위에 덮입니다. 잠긴 동안 A1, A2와 토스트는 그 아래에 뜨고, 잠금을 푼 뒤에 보입니다. 잠긴 동안에는 뒤로 가기도 창에 닿지 않습니다(RustDesk 창의 뒤로 가기 처리는 그대로 불리므로, 뒤로 가기로 닫히는 창은 닫힐 수 있습니다). 잠금은 출입증이나 로그인에 손대지 않습니다.
-- 화면은 클라이언트 패치 0061–0062, 0065–0069와 0081–0085의 `flutter/lib/common/hjviewer_access.dart`에 있고, 글과 고르기는 `hjviewer_access_texts.dart`(시험 `flutter/test/hjviewer_access_test.dart`)에 있습니다. PC 비밀번호 창과 R1은 `common/widgets/dialog.dart`, 오프라인은 `models/model.dart`의 `handleMsgBox`, 주 창 닫기는 `desktop/widgets/tabbar_widget.dart`, P1 동안의 ID와 설치 카드는 `desktop/pages/desktop_home_page.dart`, 자리 표시의 [로그인]은 `common/widgets/peers_view.dart`(`hjvLoginPlaceholder`)에서 그 파일의 갈래를 부릅니다. 입력 칸의 이름, 오류, 키보드 동작은 `common/widgets/dialog.dart`의 `DialogTextField`와 `hjvPasswordEye`, 창의 Tab·Enter는 `common.dart`의 `CustomAlertDialog`에 있습니다. L1, L2, L3, L4는 `hjviewer_account.dart`(글 `hjviewer_account_texts.dart`, 시험 `flutter/test/hjviewer_account_test.dart`)가 보이고, 토스트는 `common/hjv_style.dart`의 `HjvToast`(시험 `flutter/test/hjviewer_toast_test.dart`)입니다. 지원 코드의 화면(P3, S1의 [지원 코드 만들기], S2)도 `hjviewer_access.dart`에 있고, S1은 `hjviewer_account.dart`(설정 → 계정)와 `common/widgets/my_group.dart`(내 PC 탭)가 그 파일의 갈래를 부릅니다. Rust 쪽은 트레이의 글이 `src/hjviewer_access.rs`(`tray_tooltip`, `tray_state`), PC의 교환이 `src/hjviewer_access/guest.rs`(`hjv-guest-pc-code`, `hjv-guest-result:pc-code`), 만들기가 `src/hjviewer_account/support.rs`(`hjv-support-code-make`, `hjv-support-code-result`), 만들 수 있는지가 `src/hjviewer_account/api.rs`(`hjv-support-code`, 로그인 답과 `currentUser`의 `hjv.support_code`)입니다.
+- 화면은 클라이언트 패치 0061–0062, 0065–0069와 0081–0085의 `flutter/lib/common/hjviewer_access.dart`에 있고, 글과 고르기는 `hjviewer_access_texts.dart`(시험 `flutter/test/hjviewer_access_test.dart`)에 있습니다. PC 비밀번호 창과 R1은 `common/widgets/dialog.dart`, 오프라인은 `models/model.dart`의 `handleMsgBox`, 주 창 닫기는 `desktop/widgets/tabbar_widget.dart`, P1 동안의 ID와 설치 카드는 `desktop/pages/desktop_home_page.dart`, 자리 표시의 [로그인]은 `common/widgets/peers_view.dart`(`hjvLoginPlaceholder`)에서 그 파일의 갈래를 부릅니다. 입력 칸의 이름, 오류, 키보드 동작은 `common/widgets/dialog.dart`의 `DialogTextField`와 `hjvPasswordEye`, 창의 Tab·Enter는 `common.dart`의 `CustomAlertDialog`에 있습니다. L1, L2, L3, L4는 `hjviewer_account.dart`(글 `hjviewer_account_texts.dart`, 시험 `flutter/test/hjviewer_account_test.dart`)가 보이고, 토스트는 `common/hjv_style.dart`의 `HjvToast`(시험 `flutter/test/hjviewer_toast_test.dart`)입니다. 지원 코드의 화면(P3, S1의 [지원 코드 만들기], S2)도 `hjviewer_access.dart`에 있고, S1은 `hjviewer_account.dart`(설정 → 계정)와 `common/widgets/my_group.dart`(내 PC 탭)가 그 파일의 갈래를 부릅니다. Rust 쪽은 트레이의 글이 `src/hjviewer_access.rs`(`tray_tooltip`, `tray_state`), PC의 교환이 `src/hjviewer_access/guest.rs`(`hjv-guest-pc-code`, `hjv-guest-result:pc-code`), 만들기가 `src/hjviewer_account/support.rs`(`hjv-support-code-make`, `hjv-support-code-result`), 만들 수 있는지가 `src/hjviewer_account/api.rs`(`hjv-support-code`, 로그인 답과 `currentUser`의 `hjv.support_code`)입니다. A0은 `common.dart`의 `connect()`(`hjvAccessAskBeforeConnect`), PC 비밀번호 창의 note는 `models/model.dart`의 `handleMsgBox`(`hjvAccessBeforePcPassword`)에서 그 파일의 갈래를 부릅니다. LK1과 `hjv-gate` 링크 거르기는 `common.dart`의 `handleUriLink`·`urlLinkToCmdArgs`가 `hjviewer_access.dart`의 `hjvLinkAsk`·`hjvHandleGateLink`를 부릅니다. 트레이의 아이콘·메뉴·알림(TR1–TR3)은 `src/tray.rs`에서 `src/hjviewer_access.rs`(`tray_tooltip`, `tray_menu`, `tray_notice`)를 부릅니다. 1.9.0의 대기실은 `src/hjviewer_account/support.rs`(`hjv-support-wait:<slot>`, `hjv-support-arrived`, `hjv-support-pc:<ID>`), 지원 확인은 `src/hjviewer_account/grant.rs`와 `src/hjviewer_access.rs`의 출입증 옆 메모리, 연결 창의 표시는 `src/hjviewer_cm.rs`와 `flutter/lib/common/hjviewer_cm_texts.dart`에 있습니다.
 
 ## 6. /etc/hjviewer/access.conf
 
@@ -649,7 +787,7 @@ TEXT=<거절 문구>
 - 출입증 키는 자격 증명에만 있습니다. 출입증 값을 저장하지도 기록하지도 않고, 교직원, 묶인 PC, 심사 계정의 발급을 하나하나 기록하지 않습니다. `hjv-api admin ticket status`는 시작한 뒤 종류별로 센 수만 보입니다(메모리).
 - 이용 비밀번호의 시도: 시도마다 결과, 시각, 주소의 꼬리표를 `guest` 기록으로 6개월(`HJV_API_EVENT_DAYS`, 183일) 둡니다. 주소 그대로, 대상 ID, PC ID, 비밀번호, 출입증은 남기지 않습니다. 틀린 비밀번호와 받지 않는 상태(파일이 없거나 기한이 지남)에 같은 답을 줍니다(3-5).
 - 이용 비밀번호는 봉인해서 받습니다. 로그인의 봉인에 용도 칸 `p`(`guest`)를 더해, 포탈 비밀번호의 봉인과 서로 바꿔 쓰지 못하게 합니다(3-5).
-- 지원 코드(3-7): 코드는 메모리에만, 코드 자체가 아니라 시작할 때 만든 키의 HMAC을 열쇠로 두고, 쓰거나 10분이 지난 뒤 10분 더 두었다가 지웁니다. 봉인은 용도 칸 `p`가 `code`입니다. 만들기와 바꾸는 시도마다 `code` 기록을 6개월 둡니다: 결과, 시각, 만든 계정의 꼬리표(만들 때, 그리고 바꿀 때 코드를 찾았으면), 바꾸는 쪽 주소의 꼬리표. 코드와 그 꼬리표, 주소 그대로, PC ID, 출입증은 남기지 않습니다. 틀린 코드, 지난 코드, 이미 쓴 코드에 같은 답을 줍니다.
+- 지원 코드(3-7): 코드는 메모리에만, 코드 자체가 아니라 시작할 때 만든 키의 HMAC을 열쇠로 두고, 쓰거나 10분이 지난 뒤 10분 더 두었다가 지웁니다. 봉인은 용도 칸 `p`가 `code`입니다. 만들기와 바꾸는 시도마다 `code` 기록을 6개월 둡니다: 결과, 시각, 만든 계정의 꼬리표(만들 때, 그리고 바꿀 때 코드를 찾았으면), 바꾸는 쪽 주소의 꼬리표. 코드와 그 꼬리표, 주소 그대로, PC ID, 출입증은 남기지 않습니다. 틀린 코드, 지난 코드, 이미 쓴 코드에 같은 답을 줍니다. 1.9.0(TV-W6)부터 코드마다 지원 링크와 대기 번호(각각 키를 쓴 해시로 찾음), 남은 내려받기 수, 코드를 쓴 PC의 ID와 공개키를 같은 메모리에 같은 시간(최대 20분) 둡니다. PC의 ID와 공개키는 대기실의 답으로 만든 기기에만 주고, 기록과 저널에 쓰지 않습니다. 지원 확인에는 목록 키로 서명하고, 지원 확인도 저장하거나 기록하지 않습니다.
 - hjv-api는 `HJV_API_TICKET_PUBKEYS`(곧 `access.conf`의 `KEY=`)에 공개된 시험 키가 있으면 selfcheck를 실패로 하고 시작할 때 저널에 남깁니다(8절).
 
 **앱**
@@ -662,6 +800,7 @@ TEXT=<거절 문구>
 - 출입증 요청의 401(3-3): 그 요청에 쓴 토큰을 메모리에만 적어 두고(`hjv-access-login-ended`), 화면이 로그인을 끝내면 버립니다. 파일과 설정에는 쓰지 않습니다.
 - 이용 비밀번호: 어디에도 저장하지 않고, 출입증으로 바꾼 뒤 바로 버립니다.
 - 지원 코드: 만든 쪽은 S2 창의 메모리에만 둡니다. [코드 복사]와 [안내문 복사]는 운영체제의 클립보드에 넣고, 앱이 지우지는 않습니다(코드는 10분 뒤 쓸모가 없음). PC 쪽은 넣은 글을 봉인해 보낸 뒤 버리고, 받은 출입증은 이용 비밀번호의 PC 출입증처럼 메모리에만 둡니다.
+  1.9.0(TV-W6): 만든 기기는 대기 번호를 Rust의 메모리에만 두고(화면에는 넘기지 않음), 지원 링크는 S2 창의 메모리에만 둡니다([링크 복사]와 [안내문 복사]는 클립보드에 넣음). 대기실이 알려 준 PC의 ID와 공개키(지원 PC 표)는 그 로그인 동안 그 출입증이 끝날 때까지 메모리에만 둡니다. PC는 지원 확인을 출입증 옆 메모리에만 둡니다.
 
 ## 8. 시험 벡터
 
@@ -687,3 +826,4 @@ TEXT=<거절 문구>
 - **스크립트가 확인하는 것**: 사례 표에 손으로 적은 기대 이유를 스크립트가 이 문서대로 다시 판정해서 맞춰 보고, 하나라도 다르면 멈춥니다. 이 파일을 처음 만들 때 따로 확인한 것도 있습니다. 모든 서명 판정이 엄격한 Ed25519 구현(`tools/hjv-release`의 생성 스크립트에 있는 것)과 같고, 맞는 출입증 14개는 그 구현으로 다시 서명해도 같은 바이트입니다. `register_pk`는 rust-protobuf 3.7.2와 같고(3-2), 본문의 정규형 판정은 serde_json과 같습니다(2-3).
 - 형식을 바꾸면 스크립트의 표와 이 문서를 함께 고치고 파일을 다시 만듭니다. hjv-api와 hbbs의 시험은 이 파일을 그대로 읽습니다.
 - 지원 코드(3-7)는 출입증의 형식을 바꾸지 않습니다. 코드로 받은 출입증은 벡터 `guest-pc`와 수명(`exp − iat`, 12시간 대신 2시간)만 다른 같은 종류이므로, 이 파일, 스크립트, 사본과 고정은 그대로입니다.
+- 지원 확인(3-7, 1.9.0)은 출입증이 아니므로 이 파일에 없습니다. 그 벡터는 [server/api/tests/data/support-grant-vectors.json](../server/api/tests/data/support-grant-vectors.json)입니다: 목록 키(seed 0x01), PC 기기 키(0x02, 위와 같음), 코드를 만든 기기의 계정 키(0x03)와 다른 계정 키(0x04)로 만든 지원 확인의 바이트·서명, 그 PC에 보낸 연결 증명의 바이트·서명, 그리고 받지 않아야 하는 다섯 가지(다른 PC, 다른 키의 증명, 바뀐 바이트, 수명 7201초, 모르는 멤버)입니다. hjv-api의 시험이 이 파일을 읽고, 앱의 시험(`src/hjviewer_account/vectors.rs`)은 값을 코드에 옮겨 두고 파일의 SHA-256을 확인합니다. 파일을 다시 만들면 두 곳을 함께 고칩니다.
