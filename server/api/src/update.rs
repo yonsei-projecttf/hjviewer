@@ -617,16 +617,16 @@ pub fn content_type(name: &str) -> &'static str {
 /// Crockford's base32: no I, L, O or U.
 const SYMBOLS: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/// The eight symbols of 40 bits.
-fn code_of(bits: [u8; 5]) -> String {
+/// The eight symbols of 40 bits (also support.rs's codes).
+pub(crate) fn code_of(bits: [u8; 5]) -> String {
     let n = bits.iter().fold(0u64, |n, b| n << 8 | u64::from(*b));
     (0..8)
         .map(|i| char::from(SYMBOLS[(n >> (35 - 5 * i) & 31) as usize]))
         .collect()
 }
 
-/// A code as a link shows it: `XXXX-XXXX`.
-fn shown(code: &str) -> String {
+/// A code as a link shows it: `XXXX-XXXX` (also support.rs's codes).
+pub(crate) fn shown(code: &str) -> String {
     format!("{}-{}", &code[..4], &code[4..])
 }
 

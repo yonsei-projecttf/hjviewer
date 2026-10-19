@@ -52,7 +52,8 @@
 //!
 //! The staff-only gate (ticket.rs) adds `ticket status`: the ticket key in use and whether hbbs
 //! takes it, the lifetimes, and the counts of tickets since the start, without a person or device;
-//! and the access password's file and its last day's tries by result (guest.rs).
+//! and the access password's file and its last day's tries by result (guest.rs); the support codes
+//! open now and held, and the last day's code records by result (support.rs).
 
 use crate::{
     backup::{self, BackupInfo, Snapshot},
@@ -136,7 +137,8 @@ hjv-api admin [--socket <path>] [--reveal] <command>
   ticket status             the access tickets hbbs checks: the ticket key in use and whether
                             hbbs's access.conf takes it (HJV_API_TICKET_PUBKEYS), the lifetimes,
                             and the tickets handed out and refused since the start, by kind;
-                            the access password's file and its last day's tries by result
+                            the access password's file and its last day's tries by result;
+                            the support codes open and held, the last day's code records
   backup [--keep-days N] <file>.sqlite3 | <directory>
                             a checked copy of the database (0600) into a directory only you may
                             enter (/var/lib/hjviewer-api/backup); a directory gets a name of the
@@ -1450,9 +1452,10 @@ async fn execute(state: &Arc<AppState>, req: &AdminRequest) -> Result<String, St
             relay::admin_share(state, arg, *turn == "on").await
         }
         ["ticket", "status"] => Ok(format!(
-            "{}{}",
+            "{}{}{}",
             crate::ticket::status(state),
-            crate::guest::status(state).await?
+            crate::guest::status(state).await?,
+            crate::support::status(state).await?
         )),
         ["selfcheck"] => {
             let held = ListKeyCheck::Held {

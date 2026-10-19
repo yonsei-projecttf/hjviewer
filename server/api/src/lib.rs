@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! hjv-api, the HJViewer account API (design v2 §9): Yonsei portal login through the university's
-//! SSO, the per-account list of Windows PCs that the apps show as "accessible devices", and the
+//! SSO, the per-account list of Windows PCs that the apps show as "My PCs" (내 PC), and the
 //! admin commands. nginx hands it the account paths only (deploy/nginx-hjviewer-api.conf), over a
 //! Unix socket that systemd holds (deploy/systemd/hjviewer-api.socket).
 //!
@@ -16,7 +16,8 @@
 //! of relay/PROTOCOL.md), and the app's wake requests with the signed commands ([`wake`]). The
 //! minimum version and forced update add the packages of new app versions ([`update`]), which
 //! hjv-api streams itself ([`body`]). The staff-only gate of 1.8.0 adds the access tickets that
-//! hbbs checks ([`ticket`], docs/access-tickets.md) and the access password's ([`guest`]).
+//! hbbs checks ([`ticket`], docs/access-tickets.md) and the access password's ([`guest`]); 1.8.2
+//! the support codes that staff members make for a PC ([`support`]).
 
 #[macro_use]
 pub mod log;
@@ -52,6 +53,7 @@ pub mod selfcheck;
 pub mod server;
 pub mod sso;
 pub mod state;
+pub mod support;
 pub mod tfa;
 pub mod ticket;
 pub mod trust;

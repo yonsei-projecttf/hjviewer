@@ -53,6 +53,17 @@
 //! It is read again when it changes (update.rs `watched`); the journal and `admin ticket status`
 //! tell files apart by a tag of the HASH line. A new password ends no ticket handed out before:
 //! NOT_BEFORE in hbbs's access.conf does (docs/access-tickets.md 6-4).
+//!
+//! Since 1.8.2 a PC may bring a support code (support.rs, docs/access-tickets.md 3-7) in the place
+//! of the password: `"code"` for `"password"` in a PC's request (with `use` `ctl`, or with both,
+//! 400 before anything counts), sealed with the purpose `"p":"code"`. The checks are the same, in
+//! the same order, with the code looked up in the place of steps 5 and 6 (no file, no PBKDF2):
+//! a code that is not there, over, used, or whose maker's account is blocked, deleted or off the
+//! allowlist gets the one 401 `denied` of support.rs, counted as the address's failure. The code
+//! is used only with the ticket (step 8), so that of two requests with it only one gets one; the
+//! ticket lives support.rs `TICKET_SECS` (2 h). Its tries leave records `code`, with the maker's
+//! tag once the code was found, in the same counters and within the same budget of failure
+//! records.
 
 use crate::{
     api::{is_json, ApiRequest, BodyError, Reply},
@@ -65,7 +76,8 @@ use crate::{
     review::hash_parts,
     seal::{Opened, SealError},
     state::AppState,
-    ticket::{self, Claims, NoTicket},
+    support::{self, CodeState, Looked, Taken},
+    ticket::{self, Claims, NoTicket, Use},
     update::{utc_time, watched, Watched},
     util::{b64, b64_decode, datetime, hex, now, random_below, sha256, valid_device_id, DAY},
 };
@@ -240,6 +252,62 @@ pub fn pc_message(id: &str, pk: &str, sealed_hash: &[u8]) -> Vec<u8> {
     [PC_CONTEXT, id.as_bytes(), pk.as_bytes(), hash.as_bytes()].join(&0u8)
 }
 
+/// What a request brings: the access password, or a support code (support.rs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Password,
+    Code,
+}
+
+impl Kind {
+    /// The purpose its seal must have.
+    fn purpose(self) -> &'static str {
+        match self {
+            Kind::Password => PURPOSE,
+            Kind::Code => support::PURPOSE,
+        }
+    }
+
+    /// The kind of its records, and the word of its counts in `admin ticket status`.
+    fn record(self) -> &'static str {
+        match self {
+            Kind::Password => "guest",
+            Kind::Code => "code",
+        }
+    }
+
+    /// What the journal calls it.
+    fn named(self) -> &'static str {
+        match self {
+            Kind::Password => "the access password",
+            Kind::Code => "a support code",
+        }
+    }
+
+    fn denied(self) -> Reply {
+        match self {
+            Kind::Password => refusal(StatusCode::UNAUTHORIZED, TEXT_DENIED, "denied"),
+            Kind::Code => refusal(StatusCode::UNAUTHORIZED, support::TEXT_DENIED, "denied"),
+        }
+    }
+
+    fn unavailable(self) -> Reply {
+        let text = match self {
+            Kind::Password => TEXT_UNAVAILABLE,
+            Kind::Code => support::TEXT_UNAVAILABLE,
+        };
+        refusal(StatusCode::SERVICE_UNAVAILABLE, text, "unavailable")
+    }
+
+    fn wrong_pc(self) -> Reply {
+        let text = match self {
+            Kind::Password => TEXT_WRONG_PC,
+            Kind::Code => support::TEXT_WRONG_PC,
+        };
+        refusal(StatusCode::FORBIDDEN, text, "wrong_pc")
+    }
+}
+
 /// What a request asks for.
 enum Asked {
     /// a controller's ticket for the PC `to`
@@ -280,12 +348,14 @@ struct Body {
     id: Option<String>,
     pk: Option<String>,
     sig: Option<String>,
-    password: String,
+    password: Option<String>,
+    code: Option<String>,
 }
 
-/// What a request asks for and its sealed password; `Err` with why for anything but the members
-/// of a `ctl` or a `pc` request.
-fn parse_body(body: &[u8]) -> Result<(Asked, String), &'static str> {
+/// What a request asks for, what it brings and its sealed field; `Err` with why for anything but
+/// the members of a `ctl` or a `pc` request with the access password, or of a `pc` request with a
+/// support code.
+fn parse_body(body: &[u8]) -> Result<(Asked, Kind, String), &'static str> {
     // an object of strings first: serde's derive takes a null as no member, and an array as the
     // members in their order
     let strings = matches!(
@@ -320,7 +390,12 @@ fn parse_body(body: &[u8]) -> Result<(Asked, String), &'static str> {
         }
         _ => return Err("not the members of a ctl or pc request"),
     };
-    Ok((asked, body.password))
+    match (body.password, body.code, &asked) {
+        (Some(password), None, _) => Ok((asked, Kind::Password, password)),
+        (None, Some(code), Asked::Pc { .. }) => Ok((asked, Kind::Code, code)),
+        (None, Some(_), Asked::Ctl { .. }) => Err("a support code for a controller"),
+        _ => Err("neither the password nor a code, or both"),
+    }
 }
 
 /// How a try ended, for its limit counters.
@@ -339,8 +414,11 @@ enum Outcome {
 /// One try's reserved limit counters and its record.
 struct Run<'a> {
     state: &'a Arc<AppState>,
+    kind: Kind,
     /// the client's address's tag (an IPv6 address by its /64)
     ip_tag: String,
+    /// a support code's maker's tag, once the code was found
+    account_tag: Option<String>,
     failure: Option<i64>,
     ticket: Option<i64>,
     /// holds a call of HJV_API_LIMIT_GUEST_ALL
@@ -348,10 +426,12 @@ struct Run<'a> {
 }
 
 impl<'a> Run<'a> {
-    fn new(state: &'a Arc<AppState>, ip: &str) -> Run<'a> {
+    fn new(state: &'a Arc<AppState>, kind: Kind, ip: &str) -> Run<'a> {
         Run {
             state,
+            kind,
             ip_tag: state.tags.ip(ip),
+            account_tag: None,
             failure: None,
             ticket: None,
             call: false,
@@ -400,8 +480,8 @@ impl<'a> Run<'a> {
             .filter(|_| issued || self.admit_record())
             .map(|result| Record {
                 at: now(),
-                kind: "guest",
-                account_tag: None,
+                kind: self.kind.record(),
+                account_tag: self.account_tag.clone(),
                 device_tag: None,
                 ip: Some(self.ip_tag.clone()),
                 result,
@@ -432,7 +512,7 @@ impl<'a> Run<'a> {
             Admit::Skip { first } => {
                 if first {
                     log_warn!(
-                        "guest: more than {} failed tries of the access password this minute; the rest are not recorded",
+                        "guest: more than {} failed tries of the access password and support codes this minute; the rest are not recorded",
                         limits::FAILURE_RECORDS_PER_MINUTE
                     );
                 }
@@ -463,20 +543,8 @@ fn too_often(retry_after: u64) -> Reply {
     )
 }
 
-fn unavailable() -> Reply {
-    refusal(
-        StatusCode::SERVICE_UNAVAILABLE,
-        TEXT_UNAVAILABLE,
-        "unavailable",
-    )
-}
-
 fn busy() -> Reply {
     refusal(StatusCode::SERVICE_UNAVAILABLE, TEXT_UNAVAILABLE, "busy")
-}
-
-fn denied() -> Reply {
-    refusal(StatusCode::UNAUTHORIZED, TEXT_DENIED, "denied")
 }
 
 fn clock() -> Reply {
@@ -552,7 +620,7 @@ async fn attempt(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         }
         Err(BodyError::Unreadable) => return bad_request(),
     };
-    let (asked, password) = match parse_body(&body) {
+    let (asked, kind, field) = match parse_body(&body) {
         Ok(parsed) => parsed,
         Err(why) => {
             let tag = state.tags.ip(&req.ip);
@@ -563,12 +631,14 @@ async fn attempt(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         }
     };
     if state.ticket_key.is_none() {
-        state.tickets.note("guest refused off");
-        return unavailable();
+        state
+            .tickets
+            .note(&format!("{} refused off", kind.record()));
+        return kind.unavailable();
     }
 
     // 2. the address's failures
-    let mut run = Run::new(state, &req.ip);
+    let mut run = Run::new(state, kind, &req.ip);
     match run
         .reserve(SCOPE_GUEST_IP, state.config.limit_guest_ip.clone())
         .await
@@ -579,7 +649,7 @@ async fn attempt(state: &Arc<AppState>, req: ApiRequest) -> Reply {
     }
 
     // 3. the seal, and a PC's signature
-    let opened = match open_seal(state, &asked, &password) {
+    let opened = match open_seal(state, &asked, kind, &field) {
         Ok(opened) => opened,
         Err(result @ "seal-time") => return run.fail(Outcome::Failed, result, clock()).await,
         Err(result) => return run.fail(Outcome::Failed, result, bad_request()).await,
@@ -620,15 +690,20 @@ async fn attempt(state: &Arc<AppState>, req: ApiRequest) -> Reply {
     }
 }
 
-/// Opens the sealed password and checks it against the request and the clock, and a PC's
-/// signature against the seal (step 3, but the nonce); on failure, the record's result.
-fn open_seal(state: &AppState, asked: &Asked, field: &str) -> Result<Opened, &'static str> {
+/// Opens the sealed password or code and checks it against the request, its kind and the clock,
+/// and a PC's signature against the seal (step 3, but the nonce); on failure, the record's result.
+fn open_seal(
+    state: &AppState,
+    asked: &Asked,
+    kind: Kind,
+    field: &str,
+) -> Result<Opened, &'static str> {
     let opened = state.seal.open(field).map_err(|e| match e {
         SealError::NotSealed => "seal-missing",
         SealError::UnknownKey => "seal-unknown-key",
         SealError::Corrupt => "seal-corrupt",
     })?;
-    if opened.purpose.as_deref() != Some(PURPOSE) {
+    if opened.purpose.as_deref() != Some(kind.purpose()) {
         return Err("seal-purpose");
     }
     if opened.use_.as_deref() != Some(asked.use_()) || opened.device_id != asked.pc() {
@@ -660,11 +735,13 @@ async fn limited(run: &mut Run<'_>, result: &'static str) -> Reply {
         "limited-tickets" => window_of(&state.config.limit_guest_tickets),
         _ => Duration::from_secs(state.config.limit_guest_all.secs as u64),
     };
-    state.tickets.note(&format!("guest refused {result}"));
-    let first = state.first_notice(&format!("guest:{result}:{}", run.ip_tag), window);
+    let kind = run.kind.record();
+    state.tickets.note(&format!("{kind} refused {result}"));
+    let first = state.first_notice(&format!("{kind}:{result}:{}", run.ip_tag), window);
     if first {
         log_warn!(
-            "guest: {result} (ip={}); hjv-api admin unlock tag:{} lifts the address's",
+            "guest: {result}, {} (ip={}); hjv-api admin unlock tag:{} lifts the address's",
+            run.kind.named(),
             run.ip_tag,
             run.ip_tag
         );
@@ -718,13 +795,104 @@ async fn exchange(run: &mut Run<'_>, asked: Asked, opened: Opened) -> Reply {
         Take::Taken => run.call = true,
         Take::Full | Take::Share(_) => return limited(run, "limited-all").await,
     }
+    // 5 and 6: the password, or the code
+    let code = match run.kind {
+        Kind::Password => {
+            if let Err(reply) = check_password(run, opened).await {
+                return reply;
+            }
+            None
+        }
+        Kind::Code => match find_code(run, &opened.password).await {
+            Ok(key) => Some(key),
+            Err(reply) => return reply,
+        },
+    };
+    let kind = run.kind.record();
+    // 7. a PC's key, as hbbs holds it
+    let at = now();
+    let (claims, what) = match &asked {
+        Asked::Ctl { to } => (
+            Claims::guest_ctl(to, at, state.config.guest_ticket_secs),
+            "guest ctl",
+        ),
+        Asked::Pc { id, pk, .. } => {
+            match known_key(state, id).await {
+                Ok(Lookup::Known { public_key, .. }) if public_key != *pk => {
+                    state.tickets.note(&format!("{kind} refused wrong-pc"));
+                    let reply = run.kind.wrong_pc();
+                    return run.fail(Outcome::Passed, "wrong-pc", reply).await;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    if state.first_notice("guest-hbbs", Duration::from_secs(600)) {
+                        log_warn!("guest: the key hbbs holds for a PC is not known: {e}");
+                    }
+                    let reply = run.kind.unavailable();
+                    return run.fail(Outcome::Released, "hbbs", reply).await;
+                }
+            }
+            match run.kind {
+                Kind::Password => (
+                    Claims::guest_pc(id, *pk, at, state.config.guest_ticket_secs),
+                    "guest pc",
+                ),
+                Kind::Code => (
+                    Claims::guest_pc(id, *pk, at, support::TICKET_SECS),
+                    "code pc",
+                ),
+            }
+        }
+    };
+    // 8. the code is used with the ticket, and the ticket
+    if let Some(key) = code {
+        let result = match state.support.take(key, now()) {
+            Taken::Taken => None,
+            Taken::Used => Some("used"),
+            Taken::Expired => Some("expired"),
+            Taken::Gone => Some("wrong"),
+        };
+        if let Some(result) = result {
+            state.tickets.note(&format!("code refused {result}"));
+            let reply = run.kind.denied();
+            return run.fail(Outcome::Failed, result, reply).await;
+        }
+    }
+    let issued = ticket::issue(state, &claims, what);
+    if issued.is_err() {
+        if let Some(key) = code {
+            state.support.give_back(key);
+        }
+    }
+    match issued {
+        Ok(issued) => {
+            let result = if claims.use_ == Use::Ctl {
+                "ok-ctl"
+            } else {
+                "ok-pc"
+            };
+            run.end(Outcome::Passed, Some(result), true).await;
+            Reply::ok(&issued.json(now()))
+        }
+        Err(NoTicket::Off) => {
+            let reply = run.kind.unavailable();
+            run.fail(Outcome::Released, "error", reply).await
+        }
+        Err(_) => run.fail(Outcome::Released, "error", unanswered()).await,
+    }
+}
+
+/// Steps 5 and 6 for the access password: at most [`HASHES`] PBKDF2 at once, on a blocking
+/// thread, against the file while it takes the password.
+async fn check_password(run: &mut Run<'_>, opened: Opened) -> Result<(), Reply> {
+    let state = run.state;
     // 5. the hash, on a blocking thread, two at a time
     let Ok(hash) = state.guest_hashes.clone().try_acquire_owned() else {
         state.tickets.note("guest refused busy");
         if state.first_notice("guest-hashes", Duration::from_secs(60)) {
             log_warn!("guest: {HASHES} access passwords are being checked already, refused");
         }
-        return run.fail(Outcome::Released, "busy", busy()).await;
+        return Err(run.fail(Outcome::Released, "busy", busy()).await);
     };
     // 6. the file and the password
     let (app, password, at) = (state.clone(), opened.password, now());
@@ -741,58 +909,75 @@ async fn exchange(run: &mut Run<'_>, asked: Asked, opened: Opened) -> Reply {
     .await
     .unwrap_or("error");
     match verdict {
-        "ok" => {}
+        "ok" => Ok(()),
         "closed" | "wrong" => {
             state.tickets.note(&format!("guest refused {verdict}"));
-            return run.fail(Outcome::Failed, verdict, denied()).await;
+            Err(run
+                .fail(Outcome::Failed, verdict, Kind::Password.denied())
+                .await)
         }
         _ => {
             log_err!("guest: the check of the password failed");
-            return run.fail(Outcome::Released, "error", unanswered()).await;
+            Err(run.fail(Outcome::Released, "error", unanswered()).await)
         }
     }
-    // 7. a PC's key, as hbbs holds it
-    let at = now();
-    let secs = state.config.guest_ticket_secs;
-    let (claims, what) = match &asked {
-        Asked::Ctl { to } => (Claims::guest_ctl(to, at, secs), "guest ctl"),
-        Asked::Pc { id, pk, .. } => {
-            match known_key(state, id).await {
-                Ok(Lookup::Known { public_key, .. }) if public_key != *pk => {
-                    state.tickets.note("guest refused wrong-pc");
-                    return run
-                        .fail(
-                            Outcome::Passed,
-                            "wrong-pc",
-                            refusal(StatusCode::FORBIDDEN, TEXT_WRONG_PC, "wrong_pc"),
-                        )
-                        .await;
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    if state.first_notice("guest-hbbs", Duration::from_secs(600)) {
-                        log_warn!("guest: the key hbbs holds for a PC is not known: {e}");
-                    }
-                    return run.fail(Outcome::Released, "hbbs", unavailable()).await;
-                }
+}
+
+/// Steps 5 and 6 for a support code: the code in memory (support.rs), open, and its maker's
+/// account still on the allowlist and not blocked; wrong, over, used and blocked get the one 401.
+/// The code is not used yet: that is step 8's.
+async fn find_code(
+    run: &mut Run<'_>,
+    typed: &Zeroizing<String>,
+) -> Result<support::CodeKey, Reply> {
+    let state = run.state;
+    let (key, maker, refused) = match state.support.find(typed, Use::Pc, now()) {
+        Looked::Wrong => {
+            state.tickets.note("code refused wrong");
+            return Err(run
+                .fail(Outcome::Failed, "wrong", Kind::Code.denied())
+                .await);
+        }
+        Looked::Found { key, maker, state } => match state {
+            CodeState::Open => (key, maker, None),
+            CodeState::Expired => (key, maker, Some("expired")),
+            CodeState::Used => (key, maker, Some("used")),
+        },
+    };
+    run.account_tag = Some(maker.account_tag.clone());
+    if let Some(result) = refused {
+        state.tickets.note(&format!("code refused {result}"));
+        return Err(run.fail(Outcome::Failed, result, Kind::Code.denied()).await);
+    }
+    // the maker's account: still there, the same account, on the allowlist and not blocked
+    let id = maker.account_id;
+    let found = state
+        .db
+        .call(move |c| match db::account(c, id)? {
+            Some(account) => {
+                let allowed = db::allowed(c, &account.login_key)?;
+                Ok(Some((account.login_key, allowed)))
             }
-            (Claims::guest_pc(id, *pk, at, secs), "guest pc")
+            None => Ok(None),
+        })
+        .await;
+    let holds = match found {
+        Ok(Some((login_key, allowed))) => {
+            allowed && state.tags.account(&login_key) == maker.account_tag
+        }
+        Ok(None) => false,
+        Err(e) => {
+            log_err!("guest: {e}");
+            return Err(run.fail(Outcome::Released, "error", unanswered()).await);
         }
     };
-    // 8. the ticket
-    match ticket::issue(state, &claims, what) {
-        Ok(issued) => {
-            let result = if what == "guest ctl" {
-                "ok-ctl"
-            } else {
-                "ok-pc"
-            };
-            run.end(Outcome::Passed, Some(result), true).await;
-            Reply::ok(&issued.json(now()))
-        }
-        Err(NoTicket::Off) => run.fail(Outcome::Released, "error", unavailable()).await,
-        Err(_) => run.fail(Outcome::Released, "error", unanswered()).await,
+    if !holds {
+        state.tickets.note("code refused blocked");
+        return Err(run
+            .fail(Outcome::Failed, "blocked", Kind::Code.denied())
+            .await);
     }
+    Ok(key)
 }
 
 /// The key hbbs holds for the PC `id`: its last answer while that serves, else hbbs's now.
@@ -943,15 +1128,26 @@ mod tests {
     fn the_bodies_of_the_two_requests() {
         let pk = b64(&devsig::public_key(&[2; 32]));
         let ctl = json!({"use": "ctl", "to": "123456789", "password": "x"}).to_string();
-        let (asked, password) = parse_body(ctl.as_bytes()).unwrap();
+        let (asked, kind, password) = parse_body(ctl.as_bytes()).unwrap();
         assert_eq!(
-            (asked.use_(), asked.pc(), password.as_str()),
-            ("ctl", "123456789", "x")
+            (asked.use_(), asked.pc(), kind, password.as_str()),
+            ("ctl", "123456789", Kind::Password, "x")
         );
         let pc = json!({"use": "pc", "id": "Office-PC_7", "pk": pk, "sig": "s", "password": "x"})
             .to_string();
-        let (asked, _) = parse_body(pc.as_bytes()).unwrap();
-        assert_eq!((asked.use_(), asked.pc()), ("pc", "Office-PC_7"));
+        let (asked, kind, _) = parse_body(pc.as_bytes()).unwrap();
+        assert_eq!(
+            (asked.use_(), asked.pc(), kind),
+            ("pc", "Office-PC_7", Kind::Password)
+        );
+        // a PC's support code in the place of the password
+        let code = json!({"use": "pc", "id": "Office-PC_7", "pk": pk, "sig": "s", "code": "c"})
+            .to_string();
+        let (asked, kind, field) = parse_body(code.as_bytes()).unwrap();
+        assert_eq!(
+            (asked.use_(), asked.pc(), kind, field.as_str()),
+            ("pc", "Office-PC_7", Kind::Code, "c")
+        );
         let bad = [
             json!({}).to_string(),
             json!([]).to_string(),
@@ -969,6 +1165,13 @@ mod tests {
                 .to_string(),
             json!({"use": "ctl", "to": "1", "password": 7}).to_string(),
             r#"{"use":"ctl","to":"1","to":"2","password":"x"}"#.to_owned(),
+            // a support code: a PC's only, in the place of the password, once
+            json!({"use": "ctl", "to": "123456789", "code": "c"}).to_string(),
+            json!({"use": "pc", "id": "1", "pk": pk, "sig": "s", "password": "x", "code": "c"})
+                .to_string(),
+            json!({"use": "pc", "id": "1", "pk": pk, "sig": "s"}).to_string(),
+            json!({"use": "pc", "id": "1", "pk": pk, "sig": "s", "code": null}).to_string(),
+            format!(r#"{{"use":"pc","id":"1","pk":"{pk}","sig":"s","code":"c","code":"c"}}"#),
         ];
         for body in bad {
             assert!(parse_body(body.as_bytes()).is_err(), "{body}");

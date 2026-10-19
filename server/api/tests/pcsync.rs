@@ -772,7 +772,7 @@ async fn every_way_out_leaves_a_tombstone() {
     let a = h.post("/api/hjv/this-device/undo", &token, None).await;
     assert_eq!(a.json["status"], "removed", "{}", a.text);
     released(&h, &pc, &binding, before, "undo").await;
-    // 3. "내 목록에서 빼기" from another device
+    // 3. "내 PC에서 빼기" from another device
     let pc = TestDevice::windows("550000003");
     let (binding, _) = bound(&h, &pc).await;
     let before = h.change_serial().await;

@@ -22,6 +22,7 @@ use crate::{
     review::ReviewFile,
     seal::SealKeys,
     sso::SsoClient,
+    support::SupportCodes,
     tfa::{PendingStore, SecondFactor},
     ticket::{TicketKey, TicketStats},
     trust::ListKey,
@@ -105,8 +106,10 @@ pub struct AppState {
     pub guest_hashes: Arc<Semaphore>,
     /// hbbs's last answer about the key of each PC that asked for the access password's ticket
     pub guest_keys: KeyLookups,
-    /// its failure records written per minute
+    /// its failure records written per minute, and the support codes' (guest.rs)
     pub guest_records: RecordBudget,
+    /// the support codes, in memory only (support.rs)
+    pub support: SupportCodes,
     /// hbbs's last word on the access check's mode (gate.rs)
     pub gate: GateMode,
     /// the operator record and the service's own user ID, from when the admin socket is served
@@ -156,6 +159,7 @@ impl AppState {
             guest_hashes: Arc::new(Semaphore::new(crate::guest::HASHES)),
             guest_keys: KeyLookups::default(),
             guest_records: RecordBudget::default(),
+            support: SupportCodes::default(),
             gate: GateMode::default(),
             operator_record: OnceLock::new(),
             lists: ListCache::default(),

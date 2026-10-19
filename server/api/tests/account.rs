@@ -69,7 +69,7 @@ async fn an_installed_windows_pc_is_added_and_listed_on_other_devices() {
     assert_eq!(a.json["status"], "added");
     assert_eq!(a.json["undo"], true);
     assert_eq!(a.json["id"], "123456789");
-    assert_eq!(a.json["message"], "이 PC를 내 기기 목록에 추가했습니다.");
+    assert_eq!(a.json["message"], "이 PC를 내 PC 목록에 추가했습니다.");
     // the PC does not list itself; the phone lists it, as the app's PeerPayload reads it
     let a = h
         .get(
@@ -299,7 +299,7 @@ async fn undo_remove_and_logout_take_the_pc_out() {
         (a.json["status"].clone(), a.json["undo"].clone()),
         (json!("removed"), json!(false))
     );
-    // "내 목록에서 빼기" from another device
+    // "내 PC에서 빼기" from another device
     let a = h.delete("/api/hjv/devices/400000002", &phone).await;
     assert_eq!(a.json, json!({"id": "400000002", "removed": true}));
     assert_eq!(

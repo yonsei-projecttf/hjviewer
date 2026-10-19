@@ -1,7 +1,7 @@
 # hjv-api
 
 The HJViewer account API: login with a Yonsei portal ID through the university's SSO, and the
-per-account list of Windows PCs that the apps show as "accessible devices" (design v2 §9). Since
+per-account list of Windows PCs that the apps show as "My PCs" (내 PC; design v2 §9). Since
 design v3 every login also registers an account key of its device, which signs every account
 request after it, and each bound PC's service syncs with hjv-api for its trust list: the account
 keys that may open it without its password, signed with hjv-api's list key. Its phase 2 wakes a
@@ -643,7 +643,8 @@ as before. No nginx change: the new path is under `/api/hjv/`, and the trade goe
   the account key's other calls (30 a minute).
 - The code: eight symbols of Crockford's base32 from 40 bits of the operating system's random
   source, shown `XXXX-XXXX` and read as a short link's code is (Updates, below: without regard to
-  case, `-` and spaces, `O` as `0`, `I` and `L` as `1`). It works once, within ten minutes, for the
+  case, `-` and spaces, `O` as `0`, `I` and `L` as `1`), but for the `%` escapes of a link's path,
+  which a typed code never has (`support::read`). It works once, within ten minutes, for the
   PC that trades it first, and ends earlier when its account is blocked, deleted or off the
   allowlist (looked at when it is traded). Nothing takes a code back: closing the app's window
   leaves it working until its ten minutes are over.
@@ -651,7 +652,9 @@ as before. No nginx change: the new path is under `/api/hjv/`, and the trade goe
   of the code with a key made at the start and held in memory only, with the account that made it,
   its use and its times. A code that was used or whose ten minutes are over stays ten minutes more,
   marked so, for the records to tell `used` and `expired` from `wrong`; the answer is the same. A
-  restart ends them all; the tickets traded stay until their `exp`.
+  restart ends them all; the tickets traded stay until their `exp`. The answer that carries a new
+  code is held in memory as every signed request's that changes something, for the retry of that
+  very request within `HJV_API_RETRY_WINDOW`.
 - Limits: an account holds at most 5 open codes (made, neither used nor over), past which it gets
   429 `too_many_codes` with `retry_after`; hjv-api holds 1000 in all, the ended ones going first,
   past which 503 `busy`. Trading one counts as a try of the access password does, in the same
@@ -673,7 +676,9 @@ as before. No nginx change: the new path is under `/api/hjv/`, and the trade goe
   the ticket; failures at most 20 a minute, together with the access password's. The journal gets
   the limits and the troubles as for the access password, and an account that holds its 5 open
   codes by its tag once in ten minutes; no line holds a code or a tag of one. `admin ticket status`
-  shows the codes open now and held, and the last day's `code` records by result.
+  shows the codes open now and held, and the last day's `code` records by result; its counts since
+  the start have the tickets traded (`code pc`) and the refusals (`code refused <result>`) with the
+  others.
 - The numbers (the ten minutes, the two hours, 5, 1000, the ten minutes more) are constants of
   `src/support.rs`, not settings. The two hours are the user's to change: two texts of the app say
   them (docs/access-tickets.md 5-3, S2 and P3). So is the controller's side, which 1.8.2 refuses: a
@@ -1297,10 +1302,14 @@ sealed: {"v":1,"p":"code","use":"pc","pw":"<what was typed>","t":<time>,"n":"<no
   blocked, deleted or off the allowlist gets the one 401
   `{"error":"지원 코드가 맞지 않거나, 10분이 지났거나, 이미 쓴 코드입니다.","hjv":"denied"}`, counted
   as the address's failure and sent after the failure delay as every refusal. The key hbbs holds
-  comes after (403 `wrong_pc`, 503 `unavailable`), and the code is used only with the ticket:
-  what ends before (a limit, the seal, `wrong_pc`, hbbs) leaves it as it was, and of two requests
-  with one code at once, one gets the ticket and the other the 401. No PBKDF2 runs for a code;
-  the 503 `busy` of 32 tries in hand is the same.
+  comes after (403
+  `{"error":"이 PC의 키가 서버에 있는 것과 달라 지원 코드로 연결받을 수 없습니다. 관리자에게 알려 주세요.","hjv":"wrong_pc"}`,
+  503 `{"error":"지금은 지원 코드를 확인할 수 없습니다. 잠시 뒤 다시 해 주세요.","hjv":"unavailable"}`,
+  the same text without a ticket key), and the code is used only with the ticket: what ends
+  before (a limit, the seal, `wrong_pc`, hbbs) leaves it as it was, and of two requests with one
+  code at once, one gets the ticket and the other the 401 of a used code, at the lookup or, when
+  both passed it, where the code is used (`used` in the records). No PBKDF2 runs for a code; the
+  503 `busy` of 32 tries in hand is the same.
 - The ticket: `guest`/`pc`, `sub` empty, the request's `id` and `pk`, `to` empty, `exp` two hours
   after `iat`; nothing in it names the staff member.
 

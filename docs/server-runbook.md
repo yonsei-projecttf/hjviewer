@@ -1885,7 +1885,7 @@ curl -s --max-time 5 --resolve "$D:443:127.0.0.1" "https://$D/api/hjv/access"; e
    - `access password: closed: the file is not there or not used (the journal says why)`이면 `sudo journalctl --namespace=hjviewer -u hjviewer-api --since -5min -o cat | grep 'access password' | tail -2`의 `… is not used: <이유>`를 보고합니다(이유에 해시는 없음). 사용자가 파일을 다시 만듭니다.
 3. **바꾸기**: 1번의 블록에 새 파일을 넣습니다. 새 파일은 그때부터의 시도에 쓰이고, 이미 나간 출입증은 12시간 안에 끝납니다. 퍼진 비밀번호라서 바로 끊어야 하면 이어서 9-3을 `NB=now`로 합니다. 그때는 교직원과 묶인 PC의 출입증도 함께 끝나고, 몇 분 안에 저절로 새로 받습니다.
 4. **끄기**: `sudo rm /etc/hjviewer/guest.conf`. 다음 시도부터 아무도 이용 비밀번호로 들어오지 못합니다(이미 나간 출입증은 12시간 안에 끝남). `UNTIL`이 지나도 같습니다. 설정 줄은 두어도 됩니다.
-5. **보기**: 매일 보고에 `sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep '^access password'`의 세 줄(파일의 상태, 수명, 어제의 결과별 시도 수)을 넣습니다. 한 주소의 실패 한도에 걸린 경고(`guest: … hjv-api admin unlock tag:<꼬리표> lifts the address's`)가 잦으면 사용자에게 알립니다. 풀기는 사용자 승인 뒤 그 줄의 명령입니다.
+5. **보기**: 매일 보고에 `sudo /opt/hjviewer/bin/hjv-api admin ticket status | grep -E '^(access password|support codes)'`의 다섯 줄(파일의 상태, 수명, 어제의 결과별 시도 수, 1.8.2부터 지원 코드의 열린 수와 메모리에 둔 수, 어제의 결과별 `code` 기록 수)을 넣습니다. 한 주소의 실패 한도에 걸린 경고(`guest: … hjv-api admin unlock tag:<꼬리표> lifts the address's`)가 잦으면 사용자에게 알립니다. 풀기는 사용자 승인 뒤 그 줄의 명령입니다.
 
 ### 9-5. `MODE=count`로 세어 보기 (선택)
 

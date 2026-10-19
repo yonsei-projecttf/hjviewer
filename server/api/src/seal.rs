@@ -23,8 +23,9 @@
 //!
 //! The access password (guest.rs, docs/access-tickets.md 3-5) goes in the same box with two
 //! members more: the purpose `"p":"guest"` and its `"use"` (`ctl` or `pc`), and with the ID of the
-//! PC its ticket reaches in `id`. A login refuses a seal that has a purpose and the access password
-//! one without its own, so that neither seal stands in for the other.
+//! PC its ticket reaches in `id`; a support code (support.rs, 3-7) the same with `"p":"code"` and
+//! `"use":"pc"`. A login refuses a seal that has a purpose, and the access password and a support
+//! code one without their own, so that no seal stands in for another.
 //!
 //! hjv-api answers 400 to a password that is not sealed, an unknown kid, a payload it cannot open
 //! or read, a kid or device ID that differs from the outer one, and a nonce it has seen before,
@@ -221,6 +222,17 @@ pub fn seal_guest(
     let kid = key_id(public_key);
     let payload = serde_json::json!({
         "v": 1, "p": "guest", "use": use_, "pw": password, "t": time, "n": nonce, "id": id,
+        "kid": kid,
+    });
+    seal_payload(public_key, &kid, &payload.to_string())
+}
+
+/// What the app does for a support code at a PC, for tests and tools: seals what was typed for
+/// the `pc` ticket of the PC `id` (docs/access-tickets.md 3-7).
+pub fn seal_code(public_key: &[u8; 32], typed: &str, time: i64, nonce: &str, id: &str) -> String {
+    let kid = key_id(public_key);
+    let payload = serde_json::json!({
+        "v": 1, "p": "code", "use": "pc", "pw": typed, "t": time, "n": nonce, "id": id,
         "kid": kid,
     });
     seal_payload(public_key, &kid, &payload.to_string())
