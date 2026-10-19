@@ -25,8 +25,9 @@ version policy, and new versions come from the server (section 2, "Updates").
 
 From version 1.8.0 the operator can keep the server to the university's faculty and staff: an app
 then connects, and a PC accepts connections, only while it is logged in, or for a while after
-someone typed the access password that the operator gives out (section 3, "Access tickets" and
-"The access password"). While the operator does not turn this check on, apps work as before.
+someone typed the access password that the operator gives out, or, for a PC from version 1.8.2, a
+support code that a logged-in staff member made (section 3, "Access tickets", "The access
+password" and "Support codes"). While the operator does not turn this check on, apps work as before.
 The university's HJViewer server has had this check on since 2026-10-19.
 
 ### 2. Connecting devices (everyone)
@@ -132,8 +133,9 @@ service signs short-lived access tickets, and the server's connection broker che
 sets up a connection or takes a PC's registration. A logged-in app gets one with its login and again
 about halfway through its life (it lives 24 hours); a PC in your account gets one with each sync (72
 hours); the App Review account gets one that reaches only its demo PCs. A ticket holds the kind of
-holder (staff, App Review, access password), what it is good for, a tag of the account (never the
-portal ID; none for the access password), the PC's ID and public key when it lets that PC register,
+holder (staff, App Review, the access password or a support code), what it is good for, a tag of the
+account (never the portal ID; none for the access password or a support code), the PC's ID and
+public key when it lets that PC register,
 the PCs it reaches when it is limited to some, and when it was made and when it ends. It is signed,
 not encrypted: whoever holds it can read it and use it until it ends, so the app sends it only over
 its encrypted connection to the server and never logs it. The account service does not keep tickets
@@ -149,6 +151,20 @@ ticket in memory only. The account service records each try (the result, the tim
 client's IP address) and counts tries and tickets per address for its limits; it never keeps the
 password, the address itself, the PC's ID or the ticket.
 
+**Support codes** (from version 1.8.2). Instead of giving out the access password, a staff member
+who is logged in can make a support code in the app for someone who is not: 8 characters that work
+once, within 10 minutes, and only on a PC. Typed on that PC, the code is sealed as the access
+password is, and the account service trades it for a ticket that lets that one PC accept
+connections for 2 hours (the PC signs the request with its device key). The service keeps each
+code in its memory only, under a keyed hash rather than the code itself, with the account that
+made it, for 20 minutes at most (10 while it works, and 10 more to tell a late or a used code from
+a wrong one); a restart of the service ends them. It records each code made (a tag of the account
+that made it, the time) and each try to use one (the result, the time, a tag of the client's IP
+address and, once the code was found, the tag of the account that made it), and counts the tries
+with the access password's for its limits; it never records the code, the address itself, the PC's
+ID or the ticket. The app that made the code shows it in its window only; the PC forgets it once it
+is sent and keeps the ticket in memory only.
+
 **What the account service keeps**
 
 | What | Content | Kept |
@@ -161,22 +177,25 @@ password, the address itself, the PC's ID or the ticket.
 | Connections without the PC's password | per account key, PC and day: the time of the last one and their number, as the PC reported them. There is no record per connection | 30 days; deleted with the key or the PC |
 | Records of logins, devices and keys | tags of the account and the device (not your ID), the client's IP address, the result, the time | 6 months |
 | Access password tries (from 1.8.0) | the result, the time, a tag of the client's IP address (not the address, the PC's ID, the password or the ticket) | 6 months |
+| Support codes (from 1.8.2) | for each code made, a tag of the account that made it and the time; for each try to use one, the result, the time, a tag of the client's IP address and, once the code was found, the tag of the account that made it (not the code, the address, the PC's ID or the ticket) | 6 months |
 | Downloads of new app versions (section 2) | which way (a login, a PC's key, a short link made or used, the migration link), the platform, the time; tags of the account and the PC when there are any, and a tag of the client's IP address (not the address) | 6 months |
 | Operator record | which administration command ran when, its targets as tags; as tags of the PC and of the address, when a PC's key downloads a new version from an address that PC never used before; each look of a super operator at the users and PCs (below), with that super operator as a tag and how many users and PCs it showed | at least a year |
 | Database backups | a copy of all of the above, on the server, readable by root only: one a day, and one before an upgrade or a restore | 14 days |
 | The service's log | counts and tags, never IDs, addresses or secrets | 30 days |
 
 Short-lived: the one-time values of requests (up to 20 minutes), the login, download and access
-password limit counters, under tags (as long as their longest window, at least a day), and the short links, in
-memory only (10 minutes; a restart of the service ends them). In memory only, never on disk: the
-service's answer to a login or to an account request that changes something, so that the same
-request sent again within 30 seconds gets the same answer; it is cleared at the next such request,
-within the hour at the latest.
+password limit counters, under tags (as long as their longest window, at least a day; the support
+codes' tries count in the access password's), the short links, in memory only (10 minutes; a
+restart of the service ends them), and the support codes, in memory only, each as a keyed hash
+with the account that made it (20 minutes at most; a restart ends them). In memory only, never on
+disk: the service's answer to a login or to an account request that changes something, so that the
+same request sent again within 30 seconds gets the same answer; it is cleared at the next such
+request, within the hour at the latest.
 
 **Not kept** by the account service: passwords, Yonsei SSO tokens, e-mail addresses, affiliation,
 the machine identifier itself, OS user names, CPU and memory details, heartbeats, device
 information, a record of each connection or file transfer, session contents, access tickets, the
-access password, and the codes of short links and of the migration link.
+access password, support codes, and the codes of short links and of the migration link.
 
 **What your other devices show.** When a device logs in to your account, your other devices show
 it with the time and whether it was on the university's network, which the server saw, and the app
@@ -234,9 +253,11 @@ operator (as a tag), when, and how many users and PCs it showed.
 - **Access tickets** (from version 1.8.0): a logged-in app keeps its ticket in its settings and
   deletes it at logout; a PC in an account keeps its latest ticket in a file in its service's
   folder, next to the signed list, so that it can register after a restart while the server cannot
-  be reached (uninstalling deletes it); the access password's tickets stay in memory and end with
-  the app (on an installed PC, with its service). The process that registers a PC notes in its
-  settings whether the server took its last registration.
+  be reached (uninstalling deletes it); the tickets of the access password and of a support code
+  stay in memory and end with the app (on an installed PC, with its service). The process that
+  registers a PC notes in its settings whether the server took its last registration. A support
+  code goes into no file or setting: the app that made it shows it in its window only (a copied
+  code stays in the device's clipboard), and the PC it is typed on forgets it once it is sent.
 - **Updates** (from version 1.6.0): every app keeps the last version policy it verified, when it
   last checked and the difference between its clock and the server's. A PC that refuses an older
   app logs that app's platform and version, at most a line a minute. An installed Windows PC's
@@ -298,10 +319,11 @@ The account data is used to log you in and keep you logged in, to show your PCs 
 to let your own devices connect to your PCs without the PC's password, to let you notice and stop
 logins and connections you did not make, to switch your PCs on, to protect the service (login
 limits, records, backups), to keep the server to faculty and staff and to the people the operator
-lets in with the access password (access tickets, section 3), and to let the super operators see
-who uses it and on which PCs (section 3). The basis is the service you ask for by logging in or by
-typing the access password (Personal Information Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shared beyond section
-9.
+lets in with the access password or a staff member with a support code (access tickets, section
+3), and to let the super operators see who uses it and on which PCs (section 3). The basis is the
+service you ask for by logging in or by typing the access password or a support code (Personal
+Information Protection Act, Article 15(1)4). Nothing is used for anything else, sold or shared
+beyond section 9.
 
 ### 8. Deleting your data, and your rights
 
@@ -363,7 +385,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 1.6.0부터 운영자는 앱의 최소 버전도 정할 수 있습니다. 앱은 서버의 서명된 버전 정책을 확인하고, 새 버전을 서버에서 받습니다(2절의 "업데이트").
 
-1.8.0부터 운영자는 서버를 학교의 교직원만 쓰게 할 수 있습니다. 그러면 앱은 로그인해 있을 때만, 또는 운영자가 알려 주는 이용 비밀번호를 넣은 뒤 한동안만 연결하고, PC도 그때만 연결을 받습니다(3절의 "출입증"과 "이용 비밀번호"). 운영자가 이 확인을 켜지 않는 동안 앱은 지금처럼 움직입니다. 학교의 HJViewer 서버는 2026-10-19부터 이 확인을 켜 두었습니다.
+1.8.0부터 운영자는 서버를 학교의 교직원만 쓰게 할 수 있습니다. 그러면 앱은 로그인해 있을 때만, 또는 운영자가 알려 주는 이용 비밀번호를 넣은 뒤 한동안만 연결하고, PC도 그때만, 또는 로그인한 교직원이 만든 지원 코드를 넣은 뒤 한동안만(1.8.2부터) 연결을 받습니다(3절의 "출입증", "이용 비밀번호", "지원 코드"). 운영자가 이 확인을 켜지 않는 동안 앱은 지금처럼 움직입니다. 학교의 HJViewer 서버는 2026-10-19부터 이 확인을 켜 두었습니다.
 
 ### 2. 기기 연결 (모든 사용자)
 
@@ -386,9 +408,11 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 **내 PC.** HJViewer를 설치한 Windows PC에서 HJViewer에 로그인하면 그 PC가 내 계정에 들어갑니다. 그때부터 로그인한 다른 내 기기는 그 PC에 PC 비밀번호 없이 원격 화면, 파일 전송, 카메라로 연결할 수 있습니다. 터미널과 포트 포워딩은 지금처럼 PC 비밀번호를 묻습니다. 그 PC의 HJViewer 서비스는 보통 2분마다, 서버에 닿는 동안에는 늦어도 5분마다 PC의 기기 키로 서명한 짧은 요청을 서버에 보내고, 서명된 내 계정의 키 목록을 받습니다(닿지 못하면 30초 뒤부터 간격을 늘려 가며 최대 10분마다 다시 해 봅니다). 이때 PC는 앱 버전, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 계정 키마다 오늘과 어제 받아들인 비밀번호 없는 연결의 마지막 시각과 횟수, 거절한 시도의 이유별 개수(개수만)를 함께 알립니다.
 
-**출입증**(1.8.0부터). 서버를 교직원만 쓰게 하려고, 계정 서비스는 수명이 짧은 출입증에 서명하고, 서버의 연결 중개(hbbs)는 연결을 잇거나 PC의 등록을 받기 전에 그것을 확인합니다. 로그인한 앱은 로그인할 때와 수명이 반쯤 지날 때 받고(24시간), 계정에 들어간 PC는 동기화마다 받으며(72시간), App Review 계정은 데모 PC에만 닿는 것을 받습니다. 출입증에는 가진 쪽의 종류(교직원, App Review, 이용 비밀번호), 쓸 수 있는 자리, 계정의 꼬리표(포탈 ID가 아님. 이용 비밀번호에는 없음), PC를 등록하게 하는 것이면 그 PC의 ID와 공개키, 몇몇 PC에만 닿는 것이면 그 PC들, 만든 시각과 끝나는 시각이 들어 있습니다. 서명했을 뿐 암호화하지 않았으므로 가진 사람은 끝날 때까지 읽고 쓸 수 있습니다. 그래서 앱은 서버와의 암호화된 연결로만 보내고 로그에 쓰지 않습니다. 계정 서비스는 출입증을 저장하지도 하나하나 기록하지도 않고, 종류별로 센 수만 메모리에 둡니다. 연결 중개는 출입증으로 등록한 PC가 연결해 있는 동안 그 출입증의 키 번호와 시각을 메모리에 둡니다.
+**출입증**(1.8.0부터). 서버를 교직원만 쓰게 하려고, 계정 서비스는 수명이 짧은 출입증에 서명하고, 서버의 연결 중개(hbbs)는 연결을 잇거나 PC의 등록을 받기 전에 그것을 확인합니다. 로그인한 앱은 로그인할 때와 수명이 반쯤 지날 때 받고(24시간), 계정에 들어간 PC는 동기화마다 받으며(72시간), App Review 계정은 데모 PC에만 닿는 것을 받습니다. 출입증에는 가진 쪽의 종류(교직원, App Review, 이용 비밀번호나 지원 코드), 쓸 수 있는 자리, 계정의 꼬리표(포탈 ID가 아님. 이용 비밀번호와 지원 코드에는 없음), PC를 등록하게 하는 것이면 그 PC의 ID와 공개키, 몇몇 PC에만 닿는 것이면 그 PC들, 만든 시각과 끝나는 시각이 들어 있습니다. 서명했을 뿐 암호화하지 않았으므로 가진 사람은 끝날 때까지 읽고 쓸 수 있습니다. 그래서 앱은 서버와의 암호화된 연결로만 보내고 로그에 쓰지 않습니다. 계정 서비스는 출입증을 저장하지도 하나하나 기록하지도 않고, 종류별로 센 수만 메모리에 둡니다. 연결 중개는 출입증으로 등록한 PC가 연결해 있는 동안 그 출입증의 키 번호와 시각을 메모리에 둡니다.
 
 **이용 비밀번호**(1.8.0부터). 로그인하지 않은 사람은 운영자가 알려 주는 이용 비밀번호를 넣을 수 있습니다. 앱은 로그인의 비밀번호처럼 서버의 키로 봉인해 보내고, 계정 서비스는 서버의 파일에 있는 해시로 확인한 뒤 PC 하나에 12시간 동안 닿는 출입증으로 바꿔 줍니다. 앱이 연결하려는 PC, 또는 비밀번호를 넣은 그 PC입니다(그 PC는 요청에 기기 키로 서명합니다). 앱은 비밀번호를 바로 버리고 출입증은 메모리에만 둡니다. 계정 서비스는 시도마다 결과, 시각, 접속한 IP 주소의 꼬리표를 기록하고, 한도를 위해 주소마다 시도와 출입증의 수를 셉니다. 비밀번호, 주소 자체, PC ID, 출입증은 남기지 않습니다.
+
+**지원 코드**(1.8.2부터). 로그인한 교직원은 이용 비밀번호를 알려 주는 대신, 로그인하지 않은 사람에게 줄 지원 코드를 앱에서 만들 수 있습니다. 8자이고, 10분 안에 한 번, PC에서만 쓰입니다. 그 PC에서 넣은 코드는 이용 비밀번호처럼 봉인해 보내고, 계정 서비스는 그 PC 하나가 2시간 동안 연결을 받는 출입증으로 바꿔 줍니다(그 PC는 요청에 기기 키로 서명합니다). 계정 서비스는 코드를 메모리에만, 코드 자체가 아니라 키를 쓴 해시로 만든 계정과 함께 최대 20분 둡니다(쓸 수 있는 10분, 그리고 늦게 넣거나 이미 쓴 코드를 틀린 코드와 가리기 위한 10분). 서비스를 다시 시작하면 사라집니다. 코드를 만들 때마다(만든 계정의 꼬리표, 시각), 코드를 쓰려는 시도마다(결과, 시각, 접속한 IP 주소의 꼬리표, 코드를 찾았으면 그 코드를 만든 계정의 꼬리표) 기록하고, 한도를 위해 시도를 이용 비밀번호의 시도와 함께 셉니다. 코드, 주소 자체, PC ID, 출입증은 남기지 않습니다. 코드를 만든 앱은 그 창에서만 코드를 보이고, PC는 보낸 뒤 바로 버리며 출입증은 메모리에만 둡니다.
 
 **계정 서비스가 보관하는 것**
 
@@ -402,14 +426,15 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 | 비밀번호 없는 연결 | 계정 키·PC·날짜마다 마지막 연결 시각과 횟수(PC가 알린 값). 연결마다의 기록은 없음 | 30일. 그 키나 PC와 함께 삭제 |
 | 로그인·기기·키 기록 | 계정과 기기의 꼬리표(ID가 아님), 접속한 IP 주소, 결과, 시각 | 6개월 |
 | 이용 비밀번호 시도(1.8.0부터) | 결과, 시각, 접속한 IP 주소의 꼬리표(주소, PC ID, 비밀번호, 출입증은 없음) | 6개월 |
+| 지원 코드(1.8.2부터) | 만들 때: 만든 계정의 꼬리표, 시각. 쓰려 할 때: 결과, 시각, 접속한 IP 주소의 꼬리표, 코드를 찾았으면 만든 계정의 꼬리표(코드, 주소, PC ID, 출입증은 없음) | 6개월 |
 | 새 버전 내려받기(2절) | 어느 길(로그인, PC의 키, 짧은 링크를 만들거나 씀, 이행용 링크), 플랫폼, 시각. 계정과 PC가 있으면 그 꼬리표, 그리고 접속한 IP 주소의 꼬리표(주소는 없음) | 6개월 |
 | 운영자 기록 | 어떤 관리 명령을 언제 실행했는지, 대상은 꼬리표로. PC의 키가 그 PC가 쓴 적 없는 주소에서 새 버전을 받았을 때 그 PC와 주소의 꼬리표. 최고운영자가 사용자와 PC 목록(아래)을 볼 때마다 그 최고운영자(꼬리표)와 보인 사용자·PC의 수 | 1년 이상 |
 | DB 백업 | 위 전부의 사본(서버 안, root만 읽음). 매일 하나, 그리고 업그레이드나 복원 전에 하나 | 14일 |
 | 계정 서비스의 로그 | 개수와 꼬리표만(ID, 주소, 비밀값은 없음) | 30일 |
 
-잠깐만 두는 것: 요청의 일회용 값(최대 20분), 꼬리표로 센 로그인, 내려받기, 이용 비밀번호 한도 기록(가장 긴 한도 기간, 최소 하루), 메모리에만 두는 짧은 링크(10분, 서비스를 다시 시작하면 사라짐). 메모리에만 두고 디스크에는 쓰지 않는 것: 로그인과 무언가를 바꾸는 계정 요청에 한 답. 30초 안에 같은 요청이 다시 오면 같은 답을 주려는 것이고, 다음 그런 요청 때나 늦어도 1시간 안에 지웁니다.
+잠깐만 두는 것: 요청의 일회용 값(최대 20분), 꼬리표로 센 로그인, 내려받기, 이용 비밀번호 한도 기록(가장 긴 한도 기간, 최소 하루. 지원 코드의 시도도 여기에 셈), 메모리에만 두는 짧은 링크(10분, 서비스를 다시 시작하면 사라짐)와 지원 코드(키를 쓴 해시와 만든 계정, 최대 20분, 서비스를 다시 시작하면 사라짐). 메모리에만 두고 디스크에는 쓰지 않는 것: 로그인과 무언가를 바꾸는 계정 요청에 한 답. 30초 안에 같은 요청이 다시 오면 같은 답을 주려는 것이고, 다음 그런 요청 때나 늦어도 1시간 안에 지웁니다.
 
-**계정 서비스가 보관하지 않는 것**: 비밀번호, 연세 SSO 토큰, 이메일 주소, 소속, 기기 식별값 자체, OS 사용자 이름, CPU·메모리 정보, 하트비트, 기기 정보, 연결이나 파일 전송마다의 기록, 세션 내용, 출입증, 이용 비밀번호, 짧은 링크와 이행용 링크의 코드.
+**계정 서비스가 보관하지 않는 것**: 비밀번호, 연세 SSO 토큰, 이메일 주소, 소속, 기기 식별값 자체, OS 사용자 이름, CPU·메모리 정보, 하트비트, 기기 정보, 연결이나 파일 전송마다의 기록, 세션 내용, 출입증, 이용 비밀번호, 지원 코드, 짧은 링크와 이행용 링크의 코드.
 
 **다른 내 기기에 보이는 것.** 어떤 기기가 내 계정에 로그인하면 다른 내 기기에 알림이 뜹니다. 서버가 본 시각과 학내 네트워크인지, 그리고 그 기기가 스스로 알린(아무도 확인하지 않는) 앱 버전과 기기 모델이 나오므로, 내가 하지 않은 로그인을 알아챌 수 있습니다. 알림은 내 기기 하나에서 [내 기기 맞음]이나 [아님]으로 답할 때까지 기한 없이 남습니다. 지금 쓰는 기기보다 먼저 로그인한 기기에도, 아무도 답하기 전에 로그인이 끝난 기기에도 알림이 뜨고, 끝난 기기는 어떻게 끝났는지도 나옵니다. '로그인한 기기' 목록에는 내 PC마다 그 기기가 마지막으로 비밀번호 없이 연결한 시각과 30일 동안의 횟수가 나오고, 로그인이 끝난 기기도 30일 동안 따로 나옵니다. 플랫폼과 이름, 로그인 시각, 마지막 사용, 어떻게 끝났는지(스스로 로그아웃, 다른 내 기기 중 어느 것에서 로그아웃시킴, 기간 만료, 같은 기기의 새 로그인으로 바뀜, 관리자가 로그아웃시킴)가 나옵니다.
 
@@ -422,7 +447,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 - **모든 앱**: 설정, 기기 ID와 키 쌍, 접속했던 기기 ID.
 - **로그인한 앱**은 계정 키의 개인키도 보관합니다. 아이폰은 Keychain에 이 기기 전용, 잠금이 풀렸을 때만 쓰도록 두므로 백업에 들어가지 않습니다. 안드로이드는 앱 데이터에 두며, 클라우드 백업과 기기 간 이전에서 뺍니다. Windows는 `%LOCALAPPDATA%\HJViewer-account\`에 Windows DPAPI로 그 Windows 사용자만 풀 수 있게 암호화해 두고, 로밍하지 않습니다. 그 밖에 로그인 토큰, 서버가 보낸 성명과 포탈 ID, 내 PC 목록(PC ID, 공개키, 상태), 서버와의 시계 차이를 보관합니다. 계정 키가 없는 토큰으로는 아무것도 할 수 없습니다.
 - **계정에 들어간 PC**는 Windows 레지스트리(`HKLM\SOFTWARE\HJViewer\Account`)에 묶음 ID, 가린 내 이름, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 풀린 묶음의 기록, 계정 키마다 오늘과 어제의 비밀번호 없는 연결의 마지막 시각과 횟수를 둡니다. 서비스 폴더에는 서명된 목록(내 기기들의 이름·ID·공개키와 가린 내 이름)을, HJViewer 로그에는 비밀번호 없이 받아들인 연결마다 한 줄(그 기기의 ID와 이름, 시각)을 둡니다. HJViewer 로그는 약 90일치를 둡니다. 그 PC를 쓰는 다른 사람은 가린 이름을 볼 수 있고, 마음먹으면 그 목록도 볼 수 있습니다. HJViewer를 제거하면 레지스트리 키가 지워지고, Windows 사용자마다의 설정과 `%LOCALAPPDATA%\HJViewer-account\`, 서비스의 설정·목록 파일·로그는 남습니다.
-- **출입증**(1.8.0부터): 로그인한 앱은 출입증을 설정에 두고 로그아웃할 때 지웁니다. 계정에 들어간 PC는 마지막 출입증을 서비스 폴더의 서명된 목록 옆 파일에 둡니다. 서버에 닿지 못하는 동안 다시 시작해도 등록하기 위해서이고, 제거하면 지워집니다. 이용 비밀번호의 출입증은 메모리에만 있고 앱(설치한 PC는 서비스)이 끝나면 사라집니다. PC를 등록하는 프로세스는 서버가 마지막 등록을 받았는지를 설정에 적어 둡니다.
+- **출입증**(1.8.0부터): 로그인한 앱은 출입증을 설정에 두고 로그아웃할 때 지웁니다. 계정에 들어간 PC는 마지막 출입증을 서비스 폴더의 서명된 목록 옆 파일에 둡니다. 서버에 닿지 못하는 동안 다시 시작해도 등록하기 위해서이고, 제거하면 지워집니다. 이용 비밀번호와 지원 코드의 출입증은 메모리에만 있고 앱(설치한 PC는 서비스)이 끝나면 사라집니다. PC를 등록하는 프로세스는 서버가 마지막 등록을 받았는지를 설정에 적어 둡니다. 지원 코드는 파일이나 설정에 쓰지 않습니다. 만든 앱은 그 창에서만 보이고(복사하면 기기의 클립보드에 남음), 코드를 넣은 PC는 보낸 뒤 바로 버립니다.
 - **업데이트**(1.6.0부터): 모든 앱은 마지막으로 확인한 버전 정책, 마지막 확인 시각, 서버와의 시계 차이를 둡니다. 오래된 앱을 거절한 PC는 그 앱의 플랫폼과 버전을 로그에 남깁니다(1분에 한 줄까지). 설치된 Windows PC의 HJViewer 서비스는 업데이트 시도 기록(버전, 파일의 해시, 시각)을 두고, 설치하기 전까지는 내려받은 설치 파일을 Windows의 시스템 계정과 관리자만 열 수 있는 폴더에 둡니다. 설치하지 않고 쓰는 앱은 새 버전을 사용자의 '다운로드' 폴더에 둡니다. Android 앱은 어느 스토어에서 설치됐는지 읽습니다. 파일로 설치한 앱은 내려받은 업데이트를 다음에 시작할 때까지 자기 캐시에 두고, 그 패키지 이름과 서명 인증서를 확인합니다. 둘 다 휴대폰 안에서만 하고, 서버에 보내지 않습니다.
 
 ### 5. 꺼진 PC 켜기 (Wake-on-LAN)
@@ -440,7 +465,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 7. 처리 목적과 근거
 
-계정 정보는 로그인과 로그인 유지, 내 PC와 그 상태 보이기, 내 기기끼리 PC 비밀번호 없이 연결하기, 내가 하지 않은 로그인과 연결을 알아채고 막기, 내 PC 켜기, 서비스 보호(로그인 한도, 기록, 백업), 서버를 교직원과 운영자가 이용 비밀번호로 들인 사람만 쓰게 하기(출입증, 3절), 최고운영자가 누가 어느 PC에서 서비스를 쓰는지 보기(3절)에 씁니다. 처리 근거는 로그인이나 이용 비밀번호로 요청한 서비스의 제공입니다(개인정보 보호법 제15조 제1항 제4호). 다른 목적으로 쓰거나 팔지 않고, 9절 밖으로 넘기지 않습니다.
+계정 정보는 로그인과 로그인 유지, 내 PC와 그 상태 보이기, 내 기기끼리 PC 비밀번호 없이 연결하기, 내가 하지 않은 로그인과 연결을 알아채고 막기, 내 PC 켜기, 서비스 보호(로그인 한도, 기록, 백업), 서버를 교직원과, 운영자가 이용 비밀번호로 또는 교직원이 지원 코드로 들인 사람만 쓰게 하기(출입증, 3절), 최고운영자가 누가 어느 PC에서 서비스를 쓰는지 보기(3절)에 씁니다. 처리 근거는 로그인이나 이용 비밀번호, 지원 코드로 요청한 서비스의 제공입니다(개인정보 보호법 제15조 제1항 제4호). 다른 목적으로 쓰거나 팔지 않고, 9절 밖으로 넘기지 않습니다.
 
 ### 8. 삭제와 권리 행사
 

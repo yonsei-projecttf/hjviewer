@@ -17,8 +17,9 @@ systemd holds. GNU AGPL-3.0-only, like the rest of the repository.
 Since 1.8.0 HJViewer is for Yonsei staff (docs/access-tickets.md): hbbs takes a controller's
 request or a PC's registration only with an access ticket, which hjv-api signs with its ticket key
 for the apps logged in to a staff account and for the PCs bound to one (Access tickets, below), for
-the App Review account's demo PCs, and for whoever types the access password, one PC at a time (The
-access password, below).
+the App Review account's demo PCs, for whoever types the access password, one PC at a time (The
+access password, below), and since 1.8.2 for a PC whose user types a support code that a logged-in
+staff member made (Support codes, below).
 
 ## Build
 
@@ -193,7 +194,8 @@ password. `HJV_API_GUEST_TICKET_HOURS` (12, 1 to 168) is how long its ticket liv
 `HJV_API_LIMIT_GUEST_ALL` (`60/3600`, one window) the tries of all addresses together, of which
 one address holds a quarter, and `HJV_API_LIMIT_GUEST_TICKETS` (`50/86400`) its tickets per client
 address; they all come before the password's hash. As with the ticket settings, take them out
-before going back to a version of hjv-api from before them.
+before going back to a version of hjv-api from before them. Support codes (below) count against
+the same three limits and need neither the file nor its hours; they have no settings of their own.
 
 ## Credentials
 
@@ -308,8 +310,9 @@ key revoke <ckid>         revoke an account key with its token
 unlock <id|tag:T|ip:A>    clear the login counters of a portal ID (with its PCs' and successes'),
                           of a tag from a journal warning (an account's or an address's), or of a
                           client address (an IPv6 address by its /64; its access password's
-                          tries too), and the SSO calls of IDs not on the allowlist and the access
-                          password's tries of all that the ID or address holds
+                          and support codes' tries too), and the SSO calls of IDs not on the
+                          allowlist and the access password's tries of all that the ID or
+                          address holds
 user revoke-all <id|tag:T> | --all
                           revoke every token and account key of an account, or of every account
                           (devices log in again; PCs stay in their accounts)
@@ -350,8 +353,9 @@ ticket status             the access tickets: the ticket key in use with its fin
                           ctl|both|review, sync both, guest ctl|pc, refused
                           off|account|request|too-often, guest refused …); the access password's
                           file (on until, closed since, off) by the tag of its hash, its tickets'
-                          lifetime and the last day's tries by result; no person, address or
-                          device
+                          lifetime and the last day's tries by result; the support codes open
+                          now and held in memory, and the last day's code records by result;
+                          no person, address, device or code
 backup [--keep-days N] <file>.sqlite3 | <directory>
                           a checked copy of the database into a directory only you may enter
                           (Backup and restore)
@@ -617,7 +621,64 @@ login's failure delay. Each try leaves a record `guest` with its result (`ok-ctl
 `closed`, `seal-…`, `pc-signature`, `limited-ip`, `limited-tickets`, `limited-all`, `busy`,
 `wrong-pc`, `hbbs`, `error`) and the address's tag, never the address, an ID, the password or the
 ticket, kept `HJV_API_EVENT_DAYS`; failures at most 20 a minute. `admin ticket status` shows the
-file (on until, closed since, off) with its tag, and the last day's tries by result.
+file (on until, closed since, off) with its tag, and the last day's tries by result. Since 1.8.2 a
+PC may bring a support code in the place of the password, through the same path, limits and
+failure delay; such a try leaves a record `code`, not `guest` (Support codes, below).
+
+## Support codes
+
+The decision for 1.8.2 (2026-10-19, docs/access-tickets.md 3-7): instead of handing out the access
+password, a staff member who is logged in makes a support code (지원 코드) in the app and gives it to
+someone who is not. That person types it on their PC under the notice that the server refuses the
+PC (P1), and the PC trades it, once and within ten minutes, for a `guest`/`pc` ticket of its own
+that lives two hours (`src/support.rs`, `src/guest.rs`; Formats, below). The ticket is the access
+password's PC ticket but for its times, so hbbs, the ticket's form and the shared vectors do not
+change, and the staff member connects with their own ticket and the PC's password or acceptance,
+as before. No nginx change: the new path is under `/api/hjv/`, and the trade goes through
+`/api/hjv/guest` with its limits.
+
+- Who makes one: `POST /api/hjv/support-code` takes the token with its account key's proof, as
+  every account path, so only a device of an account on the allowlist and not blocked; the App
+  Review account gets 403 `no_code`, and an app without a login has no token. A call counts with
+  the account key's other calls (30 a minute).
+- The code: eight symbols of Crockford's base32 from 40 bits of the operating system's random
+  source, shown `XXXX-XXXX` and read as a short link's code is (Updates, below: without regard to
+  case, `-` and spaces, `O` as `0`, `I` and `L` as `1`). It works once, within ten minutes, for the
+  PC that trades it first, and ends earlier when its account is blocked, deleted or off the
+  allowlist (looked at when it is traded). Nothing takes a code back: closing the app's window
+  leaves it working until its ten minutes are over.
+- Kept in memory only, never in the database, a file, the journal or a record: under an HMAC-SHA256
+  of the code with a key made at the start and held in memory only, with the account that made it,
+  its use and its times. A code that was used or whose ten minutes are over stays ten minutes more,
+  marked so, for the records to tell `used` and `expired` from `wrong`; the answer is the same. A
+  restart ends them all; the tickets traded stay until their `exp`.
+- Limits: an account holds at most 5 open codes (made, neither used nor over), past which it gets
+  429 `too_many_codes` with `retry_after`; hjv-api holds 1000 in all, the ended ones going first,
+  past which 503 `busy`. Trading one counts as a try of the access password does, in the same
+  counters: the address's failures (`HJV_API_LIMIT_GUEST_IP`), its tickets
+  (`HJV_API_LIMIT_GUEST_TICKETS`) and the tries of all addresses (`HJV_API_LIMIT_GUEST_ALL`), behind
+  nginx's limit of `/api/hjv/guest`; `admin unlock tag:<the address's tag>` clears them for both.
+  With all addresses' tries at 60 an hour and 1000 open codes at most, a day of guessing finds one
+  with a chance of about 1.3 in a million.
+- The access password's file plays no part: codes work without `HJV_API_GUEST_FILE`, and with its
+  file missing, refused or past its UNTIL. Without a ticket key both requests answer 503
+  `unavailable`. hjv-api does not look at hbbs's mode: with `MODE=off` or `count` the other PC
+  registers without a ticket and shows no P1, so a code is not needed there, and the app says so
+  in the code's window (docs/access-tickets.md 3-7).
+- Records `code`, kept `HJV_API_EVENT_DAYS` as every record: `made` for each code made, with the
+  account's tag; for each try to trade one, its result (`ok-pc`, `wrong`, `expired`, `used`,
+  `blocked`, `wrong-pc`, `hbbs`, and the access password's `seal-…`, `pc-signature`, `limited-ip`,
+  `limited-tickets`, `limited-all`, `busy`, `error`), the address's tag and, once the code was
+  found, the tag of the account that made it. Never the code, a tag of it, the address, an ID or
+  the ticket; failures at most 20 a minute, together with the access password's. The journal gets
+  the limits and the troubles as for the access password, and an account that holds its 5 open
+  codes by its tag once in ten minutes; no line holds a code or a tag of one. `admin ticket status`
+  shows the codes open now and held, and the last day's `code` records by result.
+- The numbers (the ten minutes, the two hours, 5, 1000, the ten minutes more) are constants of
+  `src/support.rs`, not settings. The two hours are the user's to change: two texts of the app say
+  them (docs/access-tickets.md 5-3, S2 and P3). So is the controller's side, which 1.8.2 refuses: a
+  `code` with `use` `ctl` gets the 400 of a body not of the form, and the `use` of both requests is
+  where it would go.
 
 ## Monitoring
 
@@ -785,7 +846,9 @@ path; the login's answer and a bound PC's sync carry the same ticket object. `PO
 (the access password, below) takes no token: as a login, its password comes sealed, with the same
 form checks, and every refusal leaves after the failure delay. `GET /api/hjv/access` (the access
 check's mode, below) takes none either: it says no more than hbbs's refusals show anyone, whether
-hbbs checks tickets.
+hbbs checks tickets. `POST /api/hjv/support-code` (Support codes, below) takes the token with its
+signature as every account path, and the code it makes comes to `POST /api/hjv/guest` sealed in
+the place of the password.
 
 `GET /api/hjv/admin/overview` (Admin overview) takes the token with its signature too, with the
 same 401 and 409 as every account path. For an account that is not a super operator the answer is
@@ -1123,9 +1186,11 @@ POST /api/hjv/ticket                         a phone: no body, or {}
 | `POST /api/hjv/ticket` with the PC part | `staff`/`both` for its `id` and `pk` | `HJV_API_TICKET_HOURS` |
 | the App Review account, at its login and on request | `review`/`ctl` for the `PC=` IDs of its file in their order, until its UNTIL at the latest; without the line none (403 `no_ticket`, no `access` at its login) | `HJV_API_TICKET_HOURS` |
 | the access password, `POST /api/hjv/guest` (below) | `guest`/`ctl` for the one PC a controller names, or `guest`/`pc` for a PC's own ID and key | `HJV_API_GUEST_TICKET_HOURS` |
+| a support code, `POST /api/hjv/guest` with `code` (Support codes, below) | `guest`/`pc` for a PC's own ID and key | two hours, a constant |
 | a bound PC's sync with its binding, `access` | `staff`/`both` for its ID and the key that checked the sync, while the account is on the allowlist and not blocked | `HJV_API_PC_TICKET_HOURS` |
 
-  `sub` is the account's tag (log.rs), never its portal ID, and empty for the access password;
+  `sub` is the account's tag (log.rs), never its portal ID, and empty for the access password and
+  a support code;
   `to` is empty but for the App Review account and the access password's controller.
   A Windows app needs `both` to register with hbbs: whenever what it holds is not `both` (the
   login's `ctl`, a login without `access`), it asks with the PC part, and every renewal of its
@@ -1168,7 +1233,8 @@ sealed: {"v":1,"p":"guest","use":"ctl"|"pc","pw":"<password>","t":<time>,"n":"<n
 ```
 
 - Exactly the members of its `use`, all strings, each once: a null, an array, another member or a
-  repeated one gets 400 `bad_request`. `to` and `id` are PC IDs (1 to 64 of `A-Z a-z 0-9 - _`),
+  repeated one gets 400 `bad_request` (a PC's `code` in the place of `password`: Support codes,
+  below). `to` and `id` are PC IDs (1 to 64 of `A-Z a-z 0-9 - _`),
   `pk` exactly the standard base64 of the 32-byte device key.
 - The seal is a login's (Login, above: the box, the kid, the time within
   `HJV_API_SEAL_MAX_SKEW`, a nonce used once, the same body again within `HJV_API_RETRY_WINDOW`
@@ -1195,6 +1261,48 @@ SHA-256(sealed)  qIDSw48Gkb5KSslffq/QEWRaClx5ihVLTE5+jqOHQ6Q=
 signed (115)     686a762d67756573742d70632d7631003132333435363738390067546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d0071494453773438476b62354b53736c6666712f5145575261436c78356968564c5445352b6a714f485136513d
 sig              LCgw71tbHtZvAgBNOoElzNffv/sjmraHOBM/jvDp1fiGwvACfrVddPgq/FbR25j+KhE5fvd5rf2nT1KFbi0UDg==
 ```
+
+### Support codes: `POST /api/hjv/support-code`, and `code` at `POST /api/hjv/guest` (`src/support.rs`, `src/guest.rs`)
+
+docs/access-tickets.md 3-7 is their contract.
+
+```text
+POST /api/hjv/support-code  {"use":"pc"}                        a staff member's app: token and X-HJV-Proof
+200 {"code":"K7M2-Q9XD","use":"pc","expires_in":600}
+POST /api/hjv/guest  {"use":"pc","id":"<its ID>","pk":"<base64 of its device key>","sig":"<base64>","code":"hjv-sealed-v1.<kid>.<sealed>"}
+"hjv-guest-pc-v1" NUL id NUL pk NUL base64(SHA-256(sealed bytes))   what sig signs, as for the access password
+sealed: {"v":1,"p":"code","use":"pc","pw":"<what was typed>","t":<time>,"n":"<nonce>","id":"<id>","kid":"<kid>"}
+200 {"ticket":"t1.<kid>.<payload>.<signature>","use":"pc","exp":<time>,"server_time":<time>}
+```
+
+- Making one: the body exactly `{"use":"pc"}`, a JSON object of that one string (`ctl` is kept
+  for later), else 400 `bad_request`; 200 with the code as shown, its use and the seconds it has
+  left. Refusals besides the 401 and 409 of every account path and 405 for another method: 403
+  `{"error":"이 계정으로는 지원 코드를 만들 수 없습니다.","hjv":"no_code"}` for the App Review account;
+  429 `rate_limited` past 30 calls a minute of the account key; 429
+  `{"error":"쓰지 않은 지원 코드가 너무 많습니다. 잠시 뒤 다시 해 주세요.","hjv":"too_many_codes","retry_after":<s>}`
+  while the account holds its 5 open codes, `retry_after` the seconds until the first of them ends
+  (at least 1); 503
+  `{"error":"지금은 지원 코드를 만들 수 없습니다. 잠시 뒤 다시 해 주세요.","hjv":"busy"}` while 1000
+  open codes are held, and the same text with `unavailable` without a ticket key. The very same
+  request again within `HJV_API_RETRY_WINDOW` gets the first answer, its code too, as every signed
+  request that changes something.
+- Trading one: the access password's PC request (above) with `code` in the place of `password`.
+  Both of them, or `code` with `use` `ctl`, get 400 `bad_request` before anything is counted or
+  opened. The seal is the access password's with the purpose `"p":"code"`, which only `code`
+  takes (another seal is 400, the address's failure; `password` takes only `"p":"guest"`). `pw` is
+  what was typed, the spaces around it dropped (1 to 256 bytes), read as a short link's code.
+- The checks are the access password's in their order, with the code looked up where the hash is:
+  a code that is not there, not of the form, past its ten minutes, used, or whose account is
+  blocked, deleted or off the allowlist gets the one 401
+  `{"error":"지원 코드가 맞지 않거나, 10분이 지났거나, 이미 쓴 코드입니다.","hjv":"denied"}`, counted
+  as the address's failure and sent after the failure delay as every refusal. The key hbbs holds
+  comes after (403 `wrong_pc`, 503 `unavailable`), and the code is used only with the ticket:
+  what ends before (a limit, the seal, `wrong_pc`, hbbs) leaves it as it was, and of two requests
+  with one code at once, one gets the ticket and the other the 401. No PBKDF2 runs for a code;
+  the 503 `busy` of 32 tries in hand is the same.
+- The ticket: `guest`/`pc`, `sub` empty, the request's `id` and `pk`, `to` empty, `exp` two hours
+  after `iat`; nothing in it names the staff member.
 
 ### The access check's mode: `GET /api/hjv/access` (`src/gate.rs`)
 
@@ -1639,7 +1747,9 @@ account's links); login, device and key records (tags, client address, result, t
 records of the packages sent and links made (the account and the PC as tags, the client address as
 its tag only, result, time), and since 1.8.0 the access password's counters (an address's failed
 tries and tickets, under its tag) and records (`guest`: the client address as its tag only, result,
-time). Since schema 3 (Wake-on-LAN, design v3 §10-1): per bound PC its wake report
+time), and since 1.8.2 the support codes' records (`code`: the tag of the account that made the
+code, the client address of a try as its tag only, result, time), their tries counted in the
+access password's counters. Since schema 3 (Wake-on-LAN, design v3 §10-1): per bound PC its wake report
 (its wired cards' MACs, addresses, gateways and their MACs, names, drivers and wake settings, its
 power facts, without its uptime), its summary and the PC's egress address; the NAS relays (ID,
 public key, state, owner account, name, the source of the first hello, versions, interfaces,
@@ -1667,10 +1777,12 @@ revoked relay keeps only its ID, key and times; a pending relay goes after 24 ho
 ahead after 7 days; wake jobs, the wake record, six months (`HJV_API_EVENT_DAYS`), and an account's
 go with it. No password, SSO token, e-mail, department, uuid or user name of a device is stored,
 and the journal gets tags and counts only. Short links live in memory, ten minutes, never in the
-database; no code of a short link or of door 2 is stored or logged (the journal shows the first
-eight hex digits of its tag, keyed with the log key), and the policy, the packages and door 2's
-file are the operator's files, which hjv-api only reads; so is the App Review file, the one place
-of that account's ID and the hash of its password (the account itself is kept as any other).
+database, and support codes too, as keyed hashes, twenty minutes at most (Support codes); no code
+of a short link or of door 2 is stored or logged (the journal shows the first eight hex digits of
+its tag, keyed with the log key), no support code or tag of one is stored or logged, and the
+policy, the packages and door 2's file are the operator's files, which hjv-api only reads; so is
+the App Review file, the one place of that account's ID and the hash of its password (the account
+itself is kept as any other).
 
 ## Wake-on-LAN, where it is
 
