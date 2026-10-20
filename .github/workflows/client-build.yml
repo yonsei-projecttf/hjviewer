@@ -279,6 +279,9 @@ jobs:
           cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
           # Default Flutter 3.22.3: extended_text 14 needs a newer Dart, so downgrade for resolution.
           sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          # HJViewer: the app lock's local_auth_android 1.0.44 and later need Dart 3.5 too. This job
+          # only resolves the packages for the codegen; the platform jobs build with 1.0.47.
+          sed -i -e 's/local_auth_android: 1.0.47/local_auth_android: 1.0.43/g' flutter/pubspec.yaml
           pushd flutter && flutter pub get && popd
 
       # bridge.yml L101-104

@@ -152,6 +152,7 @@ Windows exe 하나로 피제어 PC와 제어 측을 모두 씁니다. 실행하�
   - Windows arm64, Android armv7/x86_64/universal APK
   - MSI, SBOM, GitHub Release 업로드
 - **Windows 보조 DLL**: `WindowInjection.dll`(RustDeskTempTopMostWindow)은 별도 잡 대신 Windows 잡 안에서 빌드합니다.
+- **Bridge codegen의 패키지 해석**: 이 잡은 upstream처럼 Flutter 3.22.3(Dart 3.4)으로 돌고, 코드 생성에 쓸 패키지만 받습니다. upstream이 `extended_text`를 14.0.0에서 13.0.0으로 낮춰 받듯, 1.9.0부터 앱 잠금의 `local_auth_android`도 이 잡에서만 1.0.47에서 1.0.43으로 낮춰 받습니다. 1.0.44부터 Dart 3.5가 필요하기 때문입니다. 플랫폼 잡은 Flutter 3.24.5와 `pubspec.yaml`의 버전 그대로 빌드합니다. 1.9.0의 첫 배포용 빌드(실행 39363651119)는 이 줄이 없어 이 잡에서 멈췄습니다.
 - **Dart 테스트**: upstream CI에는 없는 잡입니다. 앱 패치가 고친 제스처와 키보드 동작을 Dart 테스트로 확인합니다. 순수 Dart 테스트는 개발 PC의 `scripts/ci.sh client`에서도 돕니다.
 - **앱 버전**: 각 플랫폼 잡이 빌드 전에 `scripts/set-client-version.sh`로 `client/version.env`의 버전을 적습니다(아래 "앱 버전").
 - **Windows 실행 파일 이름**: 서버 값이 있는 빌드는 앱 이름이 HJViewer입니다. 그런데 설치 프로그램은 `<앱 이름>.exe`를 서비스·시작프로그램·시작 메뉴·앱 제거에 등록하면서 파일은 원래 이름대로 복사합니다. 그래서 패키지 안의 실행 파일을 `HJViewer.exe`로 바꿔 묶습니다. 1.5.0까지는 `rustdesk.exe`라서 설치해도 자동 시작이 되지 않았습니다.
