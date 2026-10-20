@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Thu, 15 Oct 2026 20:01:01 +0900
-Subject: [PATCH 55/85] hjviewer: ui: desktop-chrome: pill tabs, window
+Subject: [PATCH 055/147] hjviewer: ui: desktop-chrome: pill tabs, window
  buttons, menus, install page and CM
 
 The window chrome and the shared desktop menus in the new look (common/hjv_style.dart):

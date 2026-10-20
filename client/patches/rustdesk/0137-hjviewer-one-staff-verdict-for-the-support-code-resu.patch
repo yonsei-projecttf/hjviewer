@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 05:46:00 +0900
+Subject: [PATCH 137/147] hjviewer: one staff verdict for the support code
+ result
+
+- TV-W6 P6 (cmui's and core3's open point): the core's pc-code result now
+  always says "staff" (guest.rs holds_staff, the one check, verify_grant
+  with the pinned list keys, this PC's ID and key and the time, as
+  keep_guest_pc does), so hjvCodeTicketStaff reads a result without the
+  field, or no result, as P2's toast instead of P6. Only "staff": true
+  promises the shield.
+- The merge of the W6 wire fixes onto wave 3 kept 120b728's note_code and
+  holds_staff and dropped core3's keeps_grant; one test (the screens'
+  results) owns the "pc-code" result key, so the two guest.rs tests no
+  longer write it at once.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access_texts.dart | 10 ++++------
+ flutter/test/hjviewer_support_test.dart       |  6 +++---
+ 2 files changed, 7 insertions(+), 9 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 7c3b4a1..04fdc3c 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -133,17 +133,15 @@ Future<String?> hjvTradeAccessPassword(HjvAccessTexts t,
+ }
+ 
+ /// P6 (TV-W6): whether the support code's ticket says the staff member's connection will carry
+-/// the mark: not when the core's pc-code result says `"staff": false` (the PC kept no support
+-/// grant), so that the toast then promises nothing (P2's words). A result without the field (a
+-/// core before it) keeps P6 as it was; the mark itself never shows without the grant.
++/// the mark: only when the core's pc-code result says `"staff": true` (the PC holds the support
++/// grant). Without it, or with `false`, the toast promises nothing (P2's words).
+ bool hjvCodeTicketStaff(String result) {
+   try {
+     final value = jsonDecode(result);
+-    if (value is Map && value['staff'] == false) return false;
++    return value is Map && value['staff'] == true;
+   } catch (e) {
+-    // no result
++    return false;
+   }
+-  return true;
+ }
+ 
+ /// E2 with hjv-api's wait: when a try may come again (Unix seconds by this device's clock, `now`
+diff --git a/flutter/test/hjviewer_support_test.dart b/flutter/test/hjviewer_support_test.dart
+index e146bf8..c14b13f 100644
+--- a/flutter/test/hjviewer_support_test.dart
++++ b/flutter/test/hjviewer_support_test.dart
+@@ -171,8 +171,8 @@ void main() {
+   test('P6 only where the PC kept the support grant', () {
+     expect(hjvCodeTicketStaff('{"ok":true,"until":1760000000,"staff":true}'), isTrue);
+     expect(hjvCodeTicketStaff('{"ok":true,"until":1760000000,"staff":false}'), isFalse);
+-    // a core before the field: P6 as before (the mark never shows without the grant)
+-    expect(hjvCodeTicketStaff('{"ok":true,"until":1760000000}'), isTrue);
+-    expect(hjvCodeTicketStaff(''), isTrue);
++    // the core always says it: a result without the field promises no mark (P2's toast)
++    expect(hjvCodeTicketStaff('{"ok":true,"until":1760000000}'), isFalse);
++    expect(hjvCodeTicketStaff(''), isFalse);
+   });
+ }

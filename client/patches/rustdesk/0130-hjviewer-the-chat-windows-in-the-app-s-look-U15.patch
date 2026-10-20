@@ -1,0 +1,247 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 05:16:51 +0900
+Subject: [PATCH 130/147] hjviewer: the chat windows in the app's look (U15)
+
+U15 (UX-S5), the desktop part, second commit. chat_page.dart serves
+the session window's chat, the PC's connection window (CM) and
+Android's main chat page; all three change together (U15-D8).
+
+- Bubbles through hjvChatBubbleColors: one's own on primaryFill with
+  white text and time, the other side's on fill in the text colour
+  with a textSecondary time; MessageOptions gets the same colours for
+  the default builders. Text 14/1.4, time 12 px with digits of one
+  width (was 8 px white), the large radius with a 4 px tail.
+- The input field takes the theme's look (fill, no border, the focus
+  ring); the send icon and Android's chat list arrows in primary, the
+  online dot in success.
+- overlay.dart: the floating chat window (desktop, Android and iOS's
+  IOSDraggable) keeps a clear frame over the remote screen: a
+  borderStrong border and the card's shadow (review R3, instead of the
+  lighter border). The phone's chat head (was a blue bar with white
+  20 px WorkSans) is drawn in place in _buildMobileAppBar (review R5,
+  no unused upstream copy): the canvas grey with a bottom border, so
+  the head to drag stands off the chat, 'Chat' 17/700, the icons 24 px
+  textSecondary. The desktop head stays as it was.
+
+No text changes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/chat_page.dart | 55 ++++++++++++-----------
+ flutter/lib/common/widgets/overlay.dart   | 37 ++++++++-------
+ 2 files changed, 51 insertions(+), 41 deletions(-)
+
+diff --git a/flutter/lib/common/widgets/chat_page.dart b/flutter/lib/common/widgets/chat_page.dart
+index 4b0954d..62a5663 100644
+--- a/flutter/lib/common/widgets/chat_page.dart
++++ b/flutter/lib/common/widgets/chat_page.dart
+@@ -6,6 +6,8 @@ import 'package:get/get.dart';
+ import 'package:provider/provider.dart';
+ 
+ import '../../mobile/pages/home_page.dart';
++import '../hjv_session_look.dart';
++import '../hjv_style.dart';
+ 
+ enum ChatPageType {
+   mobileMain,
+@@ -49,7 +51,7 @@ class ChatPage extends StatelessWidget implements PageShape {
+                           key.isOut
+                               ? Icons.call_made_rounded
+                               : Icons.call_received_rounded,
+-                          color: MyTheme.accent)
++                          color: HjvPalette.of(context).primary)
+                       .marginOnly(right: 6),
+                   Text("${user.firstName}   ${user.id}"),
+                   if (connected)
+@@ -58,7 +60,7 @@ class ChatPage extends StatelessWidget implements PageShape {
+                       height: 10,
+                       decoration: BoxDecoration(
+                           shape: BoxShape.circle,
+-                          color: Color.fromARGB(255, 46, 205, 139)),
++                          color: HjvPalette.of(context).success),
+                     ).marginSymmetric(horizontal: 2),
+                   if (client != null)
+                     unreadMessageCountBuilder(client.unreadChatMessageCount)
+@@ -107,50 +109,51 @@ class ChatPage extends StatelessWidget implements PageShape {
+                       focusNode: chatModel.inputNode,
+                       textController: chatModel.textController,
+                       inputTextStyle: TextStyle(
+-                          fontSize: 14,
+-                          color: Theme.of(context).textTheme.titleLarge?.color),
++                          fontSize: 14, color: HjvPalette.of(context).text),
+                       inputDecoration: InputDecoration(
+                         isDense: true,
+                         hintText: translate('Write a message'),
+-                        filled: true,
+-                        fillColor: Theme.of(context).colorScheme.background,
+-                        contentPadding: EdgeInsets.all(10),
+-                        border: OutlineInputBorder(
+-                          borderRadius: BorderRadius.circular(10.0),
+-                          borderSide: const BorderSide(
+-                            width: 1,
+-                            style: BorderStyle.solid,
+-                          ),
+-                        ),
+                       ),
+                       sendButtonBuilder: defaultSendButton(
+                         padding:
+                             EdgeInsets.symmetric(horizontal: 6, vertical: 0),
+-                        color: MyTheme.accent,
++                        color: HjvPalette.of(context).primary,
+                         icon: Icons.send_rounded,
+                       ),
+                     ),
+                     messageOptions: MessageOptions(
+                       showOtherUsersAvatar: false,
+                       showOtherUsersName: false,
+-                      textColor: Colors.white,
++                      textColor: hjvChatBubbleColors(context, own: false).text,
++                      currentUserTextColor:
++                          hjvChatBubbleColors(context, own: true).text,
++                      containerColor:
++                          hjvChatBubbleColors(context, own: false).bg,
++                      currentUserContainerColor:
++                          hjvChatBubbleColors(context, own: true).bg,
+                       maxWidth: constraints.maxWidth * 0.7,
+                       messageTextBuilder: (message, _, __) {
+                         final isOwnMessage = message.user.id.isBlank!;
++                        final look =
++                            hjvChatBubbleColors(context, own: isOwnMessage);
+                         return Column(
+                           crossAxisAlignment: isOwnMessage
+                               ? CrossAxisAlignment.end
+                               : CrossAxisAlignment.start,
+                           children: <Widget>[
+                             Text(message.text,
+-                                style: TextStyle(color: Colors.white)),
++                                style: TextStyle(
++                                    color: look.text,
++                                    fontSize: 14,
++                                    height: 1.4)),
+                             Text(
+                               "${message.createdAt.hour}:${message.createdAt.minute.toString().padLeft(2, '0')}",
+                               style: TextStyle(
+-                                color: Colors.white,
+-                                fontSize: 8,
++                                color: look.time,
++                                fontSize: 12,
++                                fontFeatures: HjvText.tabular,
+                               ),
+-                            ).marginOnly(top: 3),
++                            ).marginOnly(top: 2),
+                           ],
+                         );
+                       },
+@@ -158,12 +161,12 @@ class ChatPage extends StatelessWidget implements PageShape {
+                           (message, previousMessage, nextMessage) {
+                         final isOwnMessage = message.user.id.isBlank!;
+                         return defaultMessageDecoration(
+-                          color:
+-                              isOwnMessage ? MyTheme.accent : Colors.blueGrey,
+-                          borderTopLeft: 8,
+-                          borderTopRight: 8,
+-                          borderBottomRight: isOwnMessage ? 2 : 8,
+-                          borderBottomLeft: isOwnMessage ? 8 : 2,
++                          color: hjvChatBubbleColors(context, own: isOwnMessage)
++                              .bg,
++                          borderTopLeft: HjvRadius.lg,
++                          borderTopRight: HjvRadius.lg,
++                          borderBottomRight: isOwnMessage ? 4 : HjvRadius.lg,
++                          borderBottomLeft: isOwnMessage ? HjvRadius.lg : 4,
+                         );
+                       },
+                     ),
+diff --git a/flutter/lib/common/widgets/overlay.dart b/flutter/lib/common/widgets/overlay.dart
+index fc21ef8..eb8d94c 100644
+--- a/flutter/lib/common/widgets/overlay.dart
++++ b/flutter/lib/common/widgets/overlay.dart
+@@ -10,6 +10,7 @@ import '../../consts.dart';
+ import '../../desktop/widgets/tabbar_widget.dart';
+ import '../../models/chat_model.dart';
+ import '../../models/model.dart';
++import '../hjv_style.dart';
+ import 'chat_page.dart';
+ 
+ class DraggableChatWindow extends StatelessWidget {
+@@ -67,15 +68,17 @@ class DraggableChatWindow extends StatelessWidget {
+                 body: ChatPage(chatModel: chatModel),
+               );
+               return Container(
+-                  decoration:
+-                      BoxDecoration(border: Border.all(color: MyTheme.border)),
+-                  child: child);
++                  decoration: _hjvChatWindowDecoration(context), child: child);
+             });
+   }
+ 
++  // HJViewer (U15): the app bar's look on the canvas grey, so that the head to drag stands off
++  // the chat below it
+   Widget _buildMobileAppBar(BuildContext context) {
++    final p = HjvPalette.of(context);
+     return Container(
+-      color: Theme.of(context).colorScheme.primary,
++      decoration: BoxDecoration(
++          color: p.canvas, border: Border(bottom: BorderSide(color: p.border))),
+       height: 50,
+       child: Row(
+         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+@@ -84,11 +87,8 @@ class DraggableChatWindow extends StatelessWidget {
+               padding: const EdgeInsets.symmetric(horizontal: 15),
+               child: Text(
+                 translate("Chat"),
+-                style: const TextStyle(
+-                    color: Colors.white,
+-                    fontFamily: 'WorkSans',
+-                    fontWeight: FontWeight.bold,
+-                    fontSize: 20),
++                style: TextStyle(
++                    color: p.text, fontWeight: FontWeight.w700, fontSize: 17),
+               )),
+           Row(
+             crossAxisAlignment: CrossAxisAlignment.center,
+@@ -97,18 +97,20 @@ class DraggableChatWindow extends StatelessWidget {
+                   onPressed: () {
+                     chatModel.hideChatWindowOverlay();
+                   },
+-                  icon: const Icon(
++                  icon: Icon(
+                     Icons.keyboard_arrow_down,
+-                    color: Colors.white,
++                    size: 24,
++                    color: p.textSecondary,
+                   )),
+               IconButton(
+                   onPressed: () {
+                     chatModel.hideChatWindowOverlay();
+                     chatModel.hideChatIconOverlay();
+                   },
+-                  icon: const Icon(
++                  icon: Icon(
+                     Icons.close,
+-                    color: Colors.white,
++                    size: 24,
++                    color: p.textSecondary,
+                   ))
+             ],
+           )
+@@ -546,8 +548,7 @@ class IOSDraggableState extends State<IOSDraggable> {
+               child: Container(
+                 width: _width,
+                 height: _height,
+-                decoration:
+-                    BoxDecoration(border: Border.all(color: MyTheme.border)),
++                decoration: _hjvChatWindowDecoration(context),
+                 child: widget.builder(context),
+               ),
+             ),
+@@ -675,3 +676,9 @@ class BlockableOverlay extends StatelessWidget {
+     return Overlay(key: state.key, initialEntries: initialEntries);
+   }
+ }
++
++// HJViewer (U15): the floating chat window over the remote screen: the strong border and the
++// card's shadow, so that it stands off a light and a dark remote screen alike
++BoxDecoration _hjvChatWindowDecoration(BuildContext context) => BoxDecoration(
++    border: Border.all(color: HjvPalette.of(context).borderStrong),
++    boxShadow: hjvCardDecoration(context, radius: 0, shadow: true).boxShadow);

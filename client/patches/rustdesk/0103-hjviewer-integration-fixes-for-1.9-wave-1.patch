@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:52:06 +0900
+Subject: [PATCH 103/147] hjviewer: integration fixes for 1.9 wave 1
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+UX-M2 x UX-G1 / TV-C6 (critic 4-2: hjviewer_access.dart takes H's onBack after G1): A0
+(_askDialog) and LK1 (_linkDialog) came in after phone1's M2 API, so a back press on a phone
+was swallowed while they were up. They now pass their [취소] as onBack, hoisted as A1 and A2
+do; a press while A0 checks the password is [취소] too, as its button.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index f8a26d4..355d6b5 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -1342,8 +1342,11 @@ Future<bool> _askDialog(HjvAccessTexts t, String target, {String? link}) async {
+   // that the keyboard does not come up first
+   var open = isDesktop || isWebDesktop || !canLogIn;
+   var logIn = false;
++  // a back press is [취소] (U63)
++  VoidCallback? back;
+   final shown = gFFI.dialogManager.show<bool>((setState, close, context) {
+     void cancel() => close(false);
++    back = cancel;
+ 
+     void toLogIn() {
+       logIn = true;
+@@ -1434,7 +1437,7 @@ Future<bool> _askDialog(HjvAccessTexts t, String target, {String? link}) async {
+       onSubmit: submit,
+       onCancel: cancel,
+     );
+-  });
++  }, onBack: () => back?.call());
+   final opens =
+       await shown.whenComplete(() => closed = true).catchError((Object e) {
+     // no A0 to show: the session opens as before, and a refusal brings A1
+@@ -1550,9 +1553,12 @@ Future<T?> _whenOverlay<T>(Future<T?> Function() show, String what) async {
+ /// first; on a cold start the overlay may not be there yet. Nothing shown, nothing opens.
+ Future<bool> _linkDialog(HjvAccessTexts t, String shown) async {
+   await windowOnTop(null);
++  // a back press is [취소] (U63)
++  VoidCallback? back;
+   final yes = await _whenOverlay(
+       () => gFFI.dialogManager.show<bool>((setState, close, context) {
+             void cancel() => close(false);
++            back = cancel;
+             // the PC's ID in the wrapping text: a one-line title cuts it on a phone
+             return CustomAlertDialog(
+               title: HjvDialogTitle(Icons.link_rounded, t.linkAskTitle),
+@@ -1575,7 +1581,7 @@ Future<bool> _linkDialog(HjvAccessTexts t, String shown) async {
+               ],
+               onCancel: cancel,
+             );
+-          }),
++          }, onBack: () => back?.call()),
+       'LK1');
+   return yes == true;
+ }

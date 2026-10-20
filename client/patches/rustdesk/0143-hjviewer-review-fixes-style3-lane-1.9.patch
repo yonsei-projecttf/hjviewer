@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 06:32:19 +0900
+Subject: [PATCH 143/147] hjviewer: review fixes, style3 lane (1.9)
+
+UX-K3: the phone's camera view (mobile/pages/view_camera_page.dart) wraps its build in
+hjvFixedTextScale as the remote screen does, so the camera's picture and its bottom bar stay at
+100 % text (design T5: the remote screens at 1.0).
+
+UX-S3: HJViewer lines outside the hjv_*/hjviewer_* files take the type scale's roles in place of
+raw sizes: hjvPeersPlaceholder's second line is HjvText.caption, the desktop left pane's
+blocked-ID line and install card text are HjvText.bodySmall. The peer search field keeps its raw
+13 (an input's text against a fixed cursor height).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/peers_view.dart       | 3 +--
+ flutter/lib/desktop/pages/desktop_home_page.dart | 7 +++----
+ flutter/lib/mobile/pages/view_camera_page.dart   | 7 +++++--
+ 3 files changed, 9 insertions(+), 8 deletions(-)
+
+diff --git a/flutter/lib/common/widgets/peers_view.dart b/flutter/lib/common/widgets/peers_view.dart
+index 8ae684b..c150521 100644
+--- a/flutter/lib/common/widgets/peers_view.dart
++++ b/flutter/lib/common/widgets/peers_view.dart
+@@ -485,8 +485,7 @@ Widget hjvPeersPlaceholder(BuildContext context,
+             if (sub.isNotEmpty)
+               Text(hjvKeepAll(sub),
+                       textAlign: TextAlign.center,
+-                      style: HjvText.body
+-                          .copyWith(fontSize: 13, color: p.textSecondary))
++                      style: HjvText.caption.copyWith(color: p.textSecondary))
+                   .marginOnly(top: 4),
+             if (action != null) action.marginOnly(top: 16),
+           ],
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 2688c8a..ca56d14 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -526,8 +526,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+           ),
+           if (blocked?.idLine != null)
+             Text(hjvKeepAll(blocked!.idLine!),
+-                    style: TextStyle(
+-                        fontSize: 12, height: 1.45, color: p.textSecondary))
++                    style: HjvText.bodySmall.copyWith(color: p.textSecondary))
+                 .marginOnly(top: 2, right: 8),
+         ],
+       ),
+@@ -840,8 +839,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                     .marginOnly(top: 1, right: 6),
+                 Expanded(
+                   child: Text(hjvKeepAll(translate(content)),
+-                      style: TextStyle(
+-                          fontSize: 12, height: 1.45, color: p.textSecondary)),
++                      style:
++                          HjvText.bodySmall.copyWith(color: p.textSecondary)),
+                 ),
+               ],
+             ).marginOnly(bottom: 10),
+diff --git a/flutter/lib/mobile/pages/view_camera_page.dart b/flutter/lib/mobile/pages/view_camera_page.dart
+index 441db17..a9fccc3 100644
+--- a/flutter/lib/mobile/pages/view_camera_page.dart
++++ b/flutter/lib/mobile/pages/view_camera_page.dart
+@@ -13,6 +13,7 @@ import 'package:get/get.dart';
+ import 'package:provider/provider.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_text_scale.dart';
+ import '../../common/hjviewer_android.dart';
+ import '../../common/widgets/overlay.dart';
+ import '../../common/widgets/dialog.dart';
+@@ -191,7 +192,9 @@ class _ViewCameraPageState extends State<ViewCameraPage>
+         keyboardVisibilityController.isVisible && _showEdit;
+     final showActionButton = !_showBar || keyboardIsVisible || _showGestureHelp;
+ 
+-    return WillPopScope(
++    // HJViewer UX-K3: the camera's picture and its bar at 100 % text, as the remote screen
++    return hjvFixedTextScale(
++        child: WillPopScope(
+       onWillPop: () async {
+         clientClose(sessionId, gFFI);
+         return false;
+@@ -275,7 +278,7 @@ class _ViewCameraPageState extends State<ViewCameraPage>
+               ],
+             )),
+           )),
+-    );
++    ));
+   }
+ 
+   Widget getRawPointerAndKeyBody(Widget child) {

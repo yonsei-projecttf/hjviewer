@@ -1,0 +1,517 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 05:04:24 +0900
+Subject: [PATCH 126/147] hjviewer: review fixes, ready lane (1.9)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- policy keys: the sleep and hibernate policy is looked up under the bare
+  GUID that Group Policy's power.admx writes, and under the braced form;
+  policy_keys() builds both and has a test.
+- the card draws its rows once the core facts and the password state are
+  in; the relay row stays "checking" until hjv-api answers, which now has
+  an 8 s limit before it reads as unreachable (D19).
+- [절전 안 함] that fails after its first write keeps the stored values,
+  so [되돌리기] can undo what was written (D13); a Fake case covers it.
+- the fix result is reported once, to the card's next read; a refusal
+  without a policy key keeps [절전 안 함] and adds the policy's
+  [방법 보기] instead of the T4-44 policy row.
+- the header says "Could not check." instead of "All set." when a row of
+  taking connections is unread and none is missing.
+- the card's dialogs drop quietly when the overlay is not ready, as the
+  account file's do.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_ready.dart       | 140 ++++++++++++-------
+ flutter/lib/common/hjviewer_ready_texts.dart |  22 ++-
+ flutter/test/hjviewer_ready_test.dart        |  19 ++-
+ src/hjviewer_ready.rs                        |  56 ++++++--
+ src/hjviewer_ready/tests.rs                  |  43 +++++-
+ 5 files changed, 207 insertions(+), 73 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_ready.dart b/flutter/lib/common/hjviewer_ready.dart
+index 517aff2..716d731 100644
+--- a/flutter/lib/common/hjviewer_ready.dart
++++ b/flutter/lib/common/hjviewer_ready.dart
+@@ -48,10 +48,15 @@ HjvReadyWol? _wol;
+ DateTime? _wolAt;
+ const _kWolAge = Duration(minutes: 10);
+ 
++/// How long the card and the home wait for hjv-api before the relay row says it could not ask
++/// (a blocked network, D19).
++const _kWolWait = Duration(seconds: 8);
++
+ Future<HjvReadyWol> _askWol() async {
+   try {
+     final id = await bind.mainGetMyId();
+-    final (code, body) = await hjvAccountGet('/api/hjv/devices/$id/wol');
++    final (code, body) =
++        await hjvAccountGet('/api/hjv/devices/$id/wol').timeout(_kWolWait);
+     _wol = HjvReadyWol.of(code, body);
+   } catch (e) {
+     debugPrint('hjv: readiness: $e');
+@@ -141,6 +146,10 @@ class _HjvReadyCardState extends State<HjvReadyCard>
+     with WidgetsBindingObserver {
+   HjvReadiness? _r;
+   bool? _passwordSetNow;
++
++  /// this read's relay answer, null (R7 ○ checking) until hjv-api answered
++  HjvReadyWol? _wolNow;
++  int _wolRead = 0;
+   bool _loading = true;
+   DateTime? _checkedAt;
+   StreamSubscription<String>? _user;
+@@ -178,26 +187,37 @@ class _HjvReadyCardState extends State<HjvReadyCard>
+     final installed = bind.mainIsInstalled();
+     final facts = installed ? await _facts(wake: true) : null;
+     final passwordSet = installed ? await _passwordSet() : null;
+-    if (installed && gFFI.userModel.isLogin) {
+-      await _askWol();
+-    }
+     if (!mounted) return;
++    // the rows of this PC first; the relay row follows when hjv-api answers
++    final askWol = installed && gFFI.userModel.isLogin;
++    final read = ++_wolRead;
+     setState(() {
+       _r = facts;
+       _passwordSetNow = passwordSet;
++      _wolNow = null;
+       _loading = false;
+       _checkedAt = DateTime.now();
+     });
+-    hjvReadyHomeMissing.value =
+-        gFFI.userModel.isLogin ? hjvReadyMissing(_rows(), home: true) : 0;
++    if (!askWol) {
++      _countForHome();
++      return;
++    }
++    unawaited(_askWol().then((wol) {
++      if (!mounted || read != _wolRead) return;
++      setState(() => _wolNow = wol);
++      _countForHome();
++    }));
+   }
+ 
++  void _countForHome() => hjvReadyHomeMissing.value =
++      gFFI.userModel.isLogin ? hjvReadyMissing(_rows(), home: true) : 0;
++
+   List<HjvReadyRow> _rows() => hjvReadyRows(
+       _t,
+       _r,
+       _context(
+           passwordSet: _passwordSetNow,
+-          wol: gFFI.userModel.isLogin ? _wol : null));
++          wol: gFFI.userModel.isLogin ? _wolNow : null));
+ 
+   void _act(HjvReadyAction action) {
+     final t = _t;
+@@ -223,16 +243,14 @@ class _HjvReadyCardState extends State<HjvReadyCard>
+           kOptionAutoDisconnectTimeout: '$kHjvReadyIdleMinutes',
+         });
+       case HjvReadyAction.sleepNever:
+-        gFFI.dialogManager.show<void>(
+-            (setState, close, context) => hjvConfirmDialog(hjvAppTexts(),
+-                    title: t.sleepAskTitle,
+-                    text: t.sleepAsk,
+-                    yes: t.change,
+-                    no: t.cancel, onYes: () {
+-                  close();
+-                  _sleep('sleep-never', t.sleepChanged);
+-                }, onNo: close),
+-            backDismiss: true);
++        _show((setState, close, context) => hjvConfirmDialog(hjvAppTexts(),
++                title: t.sleepAskTitle,
++                text: t.sleepAsk,
++                yes: t.change,
++                no: t.cancel, onYes: () {
++              close();
++              _sleep('sleep-never', t.sleepChanged);
++            }, onNo: close));
+       case HjvReadyAction.sleepUndo:
+         _sleep('sleep-undo', t.sleepUndone);
+       case HjvReadyAction.howReinstall:
+@@ -271,7 +289,13 @@ class _HjvReadyCardState extends State<HjvReadyCard>
+     final missing = hjvReadyMissing(rows);
+     final at = _checkedAt;
+     String two(int n) => n.toString().padLeft(2, '0');
+-    final header = missing == 0 ? t.allSet : t.toCheck(missing);
++    // no ✗ but a ○ among taking connections: not 'All set.' for what was not read
++    final unchecked = missing == 0 && hjvReadyUnchecked(rows);
++    final header = unchecked
++        ? t.notChecked
++        : missing == 0
++            ? t.allSet
++            : t.toCheck(missing);
+     Widget group(HjvReadyGroup g, String label) {
+       final of = rows.where((r) => r.group == g).toList();
+       if (of.isEmpty) return const SizedBox.shrink();
+@@ -310,11 +334,17 @@ class _HjvReadyCardState extends State<HjvReadyCard>
+           else
+             Row(children: [
+               Icon(
+-                  missing == 0
+-                      ? Icons.check_circle_rounded
+-                      : Icons.warning_amber_rounded,
++                  unchecked
++                      ? Icons.radio_button_unchecked
++                      : missing == 0
++                          ? Icons.check_circle_rounded
++                          : Icons.warning_amber_rounded,
+                   size: 18,
+-                  color: missing == 0 ? p.successText : p.warningText),
++                  color: unchecked
++                      ? p.textTertiary
++                      : missing == 0
++                          ? p.successText
++                          : p.warningText),
+               const SizedBox(width: 6),
+               Expanded(
+                   child: Text(header,
+@@ -406,34 +436,40 @@ class _HjvReadyCardState extends State<HjvReadyCard>
+ void _howDialog(HjvReadyTexts t, HjvReadyHow how, {String card = ''}) {
+   final (title, steps) = t.how(how, card: card, contact: hjvAdminContact());
+   final section = hjvReadyHowSection(how);
+-  gFFI.dialogManager.show<void>(
+-      (setState, close, context) => CustomAlertDialog(
+-            title: Text(title),
+-            contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+-            content: Column(
+-              mainAxisSize: MainAxisSize.min,
+-              crossAxisAlignment: CrossAxisAlignment.start,
+-              children: [
+-                for (final step in steps)
+-                  Text(hjvKeepAll(step)).marginOnly(bottom: 6),
+-              ],
+-            ),
+-            actions: [
+-              if (section != null)
+-                hjvButton(t.more, () {
+-                  launchUrl(
+-                      Uri(
+-                          scheme: 'https',
+-                          host: kHjvSourceRepo.split('/').first,
+-                          path:
+-                              '/${kHjvSourceRepo.split('/').skip(1).join('/')}/blob/main/docs/wol-pc-setup.md',
+-                          fragment: section),
+-                      mode: LaunchMode.externalApplication);
+-                }, tone: HjvButtonTone.quiet),
+-              hjvButton(t.close, close),
+-            ],
+-            onSubmit: close,
+-            onCancel: close,
+-          ),
+-      backDismiss: true);
++  _show((setState, close, context) => CustomAlertDialog(
++        title: Text(title),
++        contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
++        content: Column(
++          mainAxisSize: MainAxisSize.min,
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            for (final step in steps)
++              Text(hjvKeepAll(step)).marginOnly(bottom: 6),
++          ],
++        ),
++        actions: [
++          if (section != null)
++            hjvButton(t.more, () {
++              launchUrl(
++                  Uri(
++                      scheme: 'https',
++                      host: kHjvSourceRepo.split('/').first,
++                      path:
++                          '/${kHjvSourceRepo.split('/').skip(1).join('/')}/blob/main/docs/wol-pc-setup.md',
++                      fragment: section),
++                  mode: LaunchMode.externalApplication);
++            }, tone: HjvButtonTone.quiet),
++          hjvButton(t.close, close),
++        ],
++        onSubmit: close,
++        onCancel: close,
++      ));
+ }
++
++/// A dialog of the card; one that cannot be shown (no overlay yet) is left out, as
++/// hjviewer_account.dart's are.
++void _show(DialogBuilder builder) => gFFI.dialogManager
++        .show<void>(builder, backDismiss: true)
++        .catchError((Object e) {
++      debugPrint('hjv: readiness: $e');
++    });
+diff --git a/flutter/lib/common/hjviewer_ready_texts.dart b/flutter/lib/common/hjviewer_ready_texts.dart
+index 31f00bf..61b74b4 100644
+--- a/flutter/lib/common/hjviewer_ready_texts.dart
++++ b/flutter/lib/common/hjviewer_ready_texts.dart
+@@ -300,6 +300,11 @@ int hjvReadyMissing(List<HjvReadyRow> rows, {bool home = false}) => rows
+         !(home && r.item == HjvReadyItem.logIn))
+     .length;
+ 
++/// Whether a row of taking connections could not be read (○): the card's header then does not
++/// say 'All set.' while it has no ✗.
++bool hjvReadyUnchecked(List<HjvReadyRow> rows) => rows.any(
++    (r) => r.group == HjvReadyGroup.take && r.level == HjvReadyLevel.unknown);
++
+ HjvReadyRow _install(HjvReadyTexts t, HjvReadiness? r, HjvReadyContext c) {
+   HjvReadyRow row(HjvReadyLevel level, String text,
+           [List<HjvReadyAction> actions = const []]) =>
+@@ -368,7 +373,10 @@ HjvReadyRow _sleep(HjvReadyTexts t, HjvReadiness? r, HjvReadyContext c) {
+         HjvReadyLevel.unknown, t.notChecked);
+   }
+   final minutes = r.sleepMinutes;
+-  final policy = r.policy || r.fix == 'denied' || r.fix == 'policy';
++  // a refused change (the read right after it) keeps [절전 안 함] and adds the policy's
++  // [방법 보기], for whoever manages the PC; only a policy key makes it T4-44
++  final policy = r.policy || r.fix == 'policy';
++  final denied = r.fix == 'denied';
+   final undo = [if (r.was) HjvReadyAction.sleepUndo];
+   final battery = r.onAc == false;
+   final lid = switch (r.lid == true ? r.acLid : null) {
+@@ -391,12 +399,20 @@ HjvReadyRow _sleep(HjvReadyTexts t, HjvReadiness? r, HjvReadyContext c) {
+               ? (
+                   HjvReadyLevel.warn,
+                   t.sleepsButWakes(minutes),
+-                  [HjvReadyAction.sleepNever, ...undo]
++                  [
++                    HjvReadyAction.sleepNever,
++                    if (denied) HjvReadyAction.howPolicy,
++                    ...undo
++                  ]
+                 )
+               : (
+                   HjvReadyLevel.no,
+                   t.sleeps(minutes),
+-                  [HjvReadyAction.sleepNever, ...undo]
++                  [
++                    HjvReadyAction.sleepNever,
++                    if (denied) HjvReadyAction.howPolicy,
++                    ...undo
++                  ]
+                 );
+   return HjvReadyRow(HjvReadyItem.sleep, HjvReadyGroup.take, level, text,
+       notes: [
+diff --git a/flutter/test/hjviewer_ready_test.dart b/flutter/test/hjviewer_ready_test.dart
+index ed18a60..b5f357e 100644
+--- a/flutter/test/hjviewer_ready_test.dart
++++ b/flutter/test/hjviewer_ready_test.dart
+@@ -200,12 +200,20 @@ void main() {
+       ko.sleepPolicy,
+       [HjvReadyAction.howPolicy]
+     ]);
+-    // a refused change reads as the policy's, as the toast said
++    // a refused change without a policy key keeps [절전 안 함] and offers the policy's steps
+     final denied = row(
+         HjvReadyItem.sleep,
+         facts((j) => sleeping(j).replaceFirst('"fix":null', '"fix":"denied"')),
+-        ctx());
+-    expect(denied.actions.contains(HjvReadyAction.sleepNever), isFalse);
++        ctx(wol: HjvReadyWol.unreachable));
++    expect([
++      denied.level,
++      denied.text,
++      denied.actions
++    ], [
++      HjvReadyLevel.no,
++      ko.sleeps(30),
++      [HjvReadyAction.sleepNever, HjvReadyAction.howPolicy]
++    ]);
+   });
+ 
+   test('[되돌리기] only with values kept, and the lid and battery lines', () {
+@@ -316,6 +324,11 @@ void main() {
+         ctx(passwordSet: false, idleAllow: '', wol: HjvReadyWol.unreachable));
+     expect(hjvReadyMissing(rows), 2);
+     expect(ko.toCheck(2), '확인할 것이 2가지 있습니다.');
++    expect(hjvReadyUnchecked(rows), isFalse);
++    // no ✗ but a row of taking connections not read: the header does not say 'All set.'
++    final unread = hjvReadyRows(ko, facts(), ctx(passwordSet: null));
++    expect((hjvReadyMissing(unread), hjvReadyUnchecked(unread)), (0, true));
++    expect(hjvReadyUnchecked(hjvReadyRows(ko, facts(), ctx())), isFalse);
+     expect(en.toCheck(1), '1 thing to check.');
+   });
+ 
+diff --git a/src/hjviewer_ready.rs b/src/hjviewer_ready.rs
+index 990c868..790d66d 100644
+--- a/src/hjviewer_ready.rs
++++ b/src/hjviewer_ready.rs
+@@ -9,8 +9,8 @@
+ //! - `hjv-ready`: this PC's facts as one line of JSON (slow: the network cards; the app asks with
+ //!   the async call), `{"v":1,"windows":false}` elsewhere;
+ //! - `hjv-ready-home`: the same without `wake`, which the home reads at most once a minute;
+-//! - `hjv-ready-fix` (set): `sleep-never` or `sleep-undo`; the result is the next read's
+-//!   `sleep.fix` ("ok", "denied", "policy" or "failed").
++//! - `hjv-ready-fix` (set): `sleep-never` or `sleep-undo`; the result is the next `hjv-ready`
++//!   read's `sleep.fix` ("ok", "denied", "policy" or "failed"), once: later reads give null.
+ #![cfg_attr(not(windows), allow(dead_code))]
+ 
+ use hbb_common::log;
+@@ -24,8 +24,26 @@ const FIX: &str = "hjv-ready-fix";
+ /// "<plan GUID as 32 hex digits> <standby s> <hibernate s>".
+ const SLEEP_WAS: &str = "hjv-ready-sleep-was";
+ const ACCESS_DENIED: u32 = 5;
++/// winnt.h's GUID_STANDBY_TIMEOUT and GUID_HIBERNATE_TIMEOUT
++const STANDBY_TIMEOUT: u128 = 0x29f6c1db_86da_48c5_9fdb_f2b67b1f44da;
++const HIBERNATE_TIMEOUT: u128 = 0x9d7815a6_7ee4_497e_8888_515a05f02364;
++const POLICY: &str = r"SOFTWARE\Policies\Microsoft\Power\PowerSettings";
+ 
+-/// The last [절전 안 함] or [되돌리기] of this process.
++/// The HKLM keys whose `ACSettingIndex` means a group policy sets this power setting: the bare
++/// GUID, which Group Policy's power.admx writes, and the braced form as well.
++fn policy_keys(setting: u128) -> [String; 2] {
++    let guid = format!(
++        "{:08X}-{:04X}-{:04X}-{:04X}-{:012X}",
++        setting >> 96,
++        (setting >> 80) & 0xffff,
++        (setting >> 64) & 0xffff,
++        (setting >> 48) & 0xffff,
++        setting & 0xffff_ffff_ffff
++    );
++    [format!(r"{POLICY}\{guid}"), format!(r"{POLICY}\{{{guid}}}")]
++}
++
++/// The last [절전 안 함] or [되돌리기] of this process, until the card's next read.
+ static LAST_FIX: Mutex<Option<&'static str>> = Mutex::new(None);
+ 
+ pub(crate) fn get_common(key: &str) -> Option<String> {
+@@ -36,7 +54,12 @@ pub(crate) fn get_common(key: &str) -> Option<String> {
+     };
+     #[cfg(windows)]
+     {
+-        let fix = *LAST_FIX.lock().unwrap();
++        // the card reads right after its set; the home's read leaves the result to it
++        let fix = if wake {
++            LAST_FIX.lock().unwrap().take()
++        } else {
++            None
++        };
+         Some(facts(&os::Windows, wake, fix))
+     }
+     #[cfg(not(windows))]
+@@ -181,7 +204,11 @@ fn fix(env: &impl Env, what: &str) -> &'static str {
+                     "ok"
+                 }
+                 Err(code) => {
+-                    env.set_local(SLEEP_WAS, &before);
++                    // keep the values for [되돌리기] unless the plan still has them: the first
++                    // write may have gone through before the second or the activation failed
++                    if env.sleep(plan) == Ok((standby, hibernate)) {
++                        env.set_local(SLEEP_WAS, &before);
++                    }
+                     log::warn!("hjv: readiness: could not set sleep on mains power: {code}");
+                     failure(code)
+                 }
+@@ -231,11 +258,10 @@ mod os {
+     // winnt.h's power setting GUIDs (Win32_System_SystemServices is not among the crate's
+     // features)
+     const SLEEP_SUBGROUP: GUID = GUID::from_u128(0x238c9fa8_0aad_41ed_83f4_97be242c8f20);
+-    const STANDBY_TIMEOUT: GUID = GUID::from_u128(0x29f6c1db_86da_48c5_9fdb_f2b67b1f44da);
+-    const HIBERNATE_TIMEOUT: GUID = GUID::from_u128(0x9d7815a6_7ee4_497e_8888_515a05f02364);
++    const STANDBY_TIMEOUT: GUID = GUID::from_u128(super::STANDBY_TIMEOUT);
++    const HIBERNATE_TIMEOUT: GUID = GUID::from_u128(super::HIBERNATE_TIMEOUT);
+     const BUTTON_SUBGROUP: GUID = GUID::from_u128(0x4f971e89_eebd_4455_a8de_9e59040e7347);
+     const LIDCLOSE_ACTION: GUID = GUID::from_u128(0x5ca83367_6e45_459f_a27b_476b1d01c936);
+-    const POLICY: &str = r"SOFTWARE\Policies\Microsoft\Power\PowerSettings";
+ 
+     pub(super) struct Windows;
+ 
+@@ -331,12 +357,14 @@ mod os {
+ 
+         fn policy(&self) -> bool {
+             let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+-            [STANDBY_TIMEOUT, HIBERNATE_TIMEOUT].iter().any(|setting| {
+-                let path = format!(r"{POLICY}\{{{setting:?}}}");
+-                hklm.open_subkey_with_flags(path, KEY_READ)
+-                    .and_then(|key| key.get_value::<u32, _>("ACSettingIndex"))
+-                    .is_ok()
+-            })
++            [super::STANDBY_TIMEOUT, super::HIBERNATE_TIMEOUT]
++                .into_iter()
++                .flat_map(super::policy_keys)
++                .any(|path| {
++                    hklm.open_subkey_with_flags(path, KEY_READ)
++                        .and_then(|key| key.get_value::<u32, _>("ACSettingIndex"))
++                        .is_ok()
++                })
+         }
+ 
+         fn lid(&self, plan: Option<u128>) -> (Option<bool>, Option<u32>) {
+diff --git a/src/hjviewer_ready/tests.rs b/src/hjviewer_ready/tests.rs
+index 0f8641e..d662890 100644
+--- a/src/hjviewer_ready/tests.rs
++++ b/src/hjviewer_ready/tests.rs
+@@ -1,7 +1,10 @@
+ //! The readiness facts and the sleep fix against a PC in memory.
+ 
+ use super::*;
+-use std::{cell::RefCell, collections::HashMap};
++use std::{
++    cell::{Cell, RefCell},
++    collections::HashMap,
++};
+ 
+ const PLAN: u128 = 0x381b4222_f694_41f0_9685_ff5bb260df2e;
+ const OTHER_PLAN: u128 = 0x8c5e7fda_e8bf_4a96_9a85_a6e23a8c635c;
+@@ -12,6 +15,8 @@ struct Fake {
+     policy: bool,
+     /// the error setting the times gives
+     refuse: Option<u32>,
++    /// the error the second write (hibernate) gives, after the first went through
++    refuse_hibernate: Cell<Option<u32>>,
+     local: RefCell<HashMap<String, String>>,
+ }
+ 
+@@ -22,6 +27,7 @@ impl Fake {
+             times: RefCell::new(HashMap::from([(PLAN, (standby, hibernate))])),
+             policy: false,
+             refuse: None,
++            refuse_hibernate: Cell::new(None),
+             local: RefCell::default(),
+         }
+     }
+@@ -48,6 +54,11 @@ impl Env for Fake {
+         if let Some(code) = self.refuse {
+             return Err(code);
+         }
++        if let Some(code) = self.refuse_hibernate.get() {
++            let old = self.times.borrow()[&plan].1;
++            self.times.borrow_mut().insert(plan, (standby, old));
++            return Err(code);
++        }
+         self.times.borrow_mut().insert(plan, (standby, hibernate));
+         Ok(())
+     }
+@@ -149,3 +160,33 @@ fn a_policy_or_a_refusal_changes_nothing() {
+     assert_eq!(fix(&env, "sleep-never"), "failed");
+     assert_eq!(fix(&env, "something-else"), "failed");
+ }
++
++#[test]
++fn a_change_that_fails_halfway_keeps_undo() {
++    let env = Fake::new(1800, 3600);
++    env.refuse_hibernate.set(Some(87));
++    assert_eq!(fix(&env, "sleep-never"), "failed");
++    // the standby time is 0 now: [되돌리기] stays, with the times from before
++    assert_eq!(env.times(), (0, 3600));
++    assert_eq!(read(&env, false, None)["sleep"]["was"], true);
++    env.refuse_hibernate.set(None);
++    assert_eq!(fix(&env, "sleep-undo"), "ok");
++    assert_eq!(env.times(), (1800, 3600));
++    assert_eq!(read(&env, false, None)["sleep"]["was"], false);
++}
++
++#[test]
++fn the_policy_keys_are_the_bare_guid_that_group_policy_writes_and_the_braced_one() {
++    let base = r"SOFTWARE\Policies\Microsoft\Power\PowerSettings";
++    assert_eq!(
++        policy_keys(STANDBY_TIMEOUT),
++        [
++            format!(r"{base}\29F6C1DB-86DA-48C5-9FDB-F2B67B1F44DA"),
++            format!(r"{base}\{{29F6C1DB-86DA-48C5-9FDB-F2B67B1F44DA}}"),
++        ]
++    );
++    assert_eq!(
++        policy_keys(HIBERNATE_TIMEOUT)[0],
++        format!(r"{base}\9D7815A6-7EE4-497E-8888-515A05F02364")
++    );
++}

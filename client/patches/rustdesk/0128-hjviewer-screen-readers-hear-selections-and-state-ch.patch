@@ -1,0 +1,675 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 05:03:42 +0900
+Subject: [PATCH 128/147] hjviewer: screen readers hear selections and state
+ changes (UX-K2)
+
+UX-K2 (U59, the part M2 does not do; M2 keeps the dialogs' reading
+range):
+- The PC list's tabs and the desktop settings' side bar rows are one
+  node each, a button that says whether it is the selected one. The
+  selected tab's name beside its icon no longer reads twice with its
+  tooltip.
+- The settings groups' titles are headings: the desktop settings'
+  cards and the phone settings' sections.
+- The selected PC list tab shows without its colour: the others take
+  the outlined twin of their icon (recent, favourites, discovered,
+  accessible devices); the address book's icon has none, so its
+  selected pill draws a 2 px line under the icon.
+- Live regions: the desktop's status line (Ready / not connected to
+  the server), the notices above this PC's ID (P1, the P2 and P3
+  ticket lines, G2) by their title or text, and G3. HjvCallout gains
+  liveRegion (default off, which leaves its tree as it was). A live
+  region is read again only when its text changes.
+- The menus' current rows: the PC list's view and sort menus
+  (RadioListTile) and the session toolbar's radio menus
+  (RadioMenuButton) read as checked already; popup_menu.dart's
+  check-mark radio rows, which the design named, have no user in the
+  tree and stay as they are.
+
+Test: flutter/test/hjviewer_semantics_test.dart (pure, no bridge).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_semantics.dart         |  50 +++++++
+ flutter/lib/common/hjv_style.dart             |  33 +++--
+ flutter/lib/common/hjviewer_access.dart       |   6 +-
+ flutter/lib/common/widgets/peer_tab_page.dart | 134 ++++++++++--------
+ .../lib/desktop/pages/connection_page.dart    |   6 +-
+ .../desktop/pages/desktop_setting_page.dart   |  86 +++++------
+ flutter/lib/mobile/pages/settings_page.dart   |   4 +-
+ flutter/test/hjviewer_semantics_test.dart     | 127 +++++++++++++++++
+ 8 files changed, 338 insertions(+), 108 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_semantics.dart
+ create mode 100644 flutter/test/hjviewer_semantics_test.dart
+
+diff --git a/flutter/lib/common/hjv_semantics.dart b/flutter/lib/common/hjv_semantics.dart
+new file mode 100644
+index 0000000..4b6fd24
+--- /dev/null
++++ b/flutter/lib/common/hjv_semantics.dart
+@@ -0,0 +1,50 @@
++// HJViewer UX-K2 (U59): what a screen reader (Narrator, TalkBack, VoiceOver) hears of a choice
++// and of a change: which tab or side bar row is selected, where a group of settings starts, and a
++// status or notice that changes while nobody looks at it.
++// The dialogs' reading range is M2's (common.dart, OverlayDialogManager.show). Plain Flutter
++// without the bridge, so that ci.sh tests it with the web stand-in (test/hjviewer_semantics_test.dart).
++
++import 'package:flutter/material.dart';
++
++/// A tab or a side bar row that selects a page: one node that is a button and says whether it is
++/// the selected one ("selected" / "선택됨"). Its label, its tooltip and its tap come from `child`.
++Widget hjvSelectedSemantics({required bool selected, required Widget child}) =>
++    Semantics(container: true, button: true, selected: selected, child: child);
++
++/// The title of a group of settings (a heading, which screen readers jump between).
++Widget hjvHeaderSemantics(Widget child) =>
++    Semantics(container: true, header: true, child: child);
++
++/// A text that a screen reader reads again when it changes (a live region), without the user
++/// going to it: the PC's status line, the notice above the PC's ID. Flutter reports a live region
++/// only when its text changes, so writing the same text again every second reads nothing.
++Widget hjvLiveRegion(Widget child) =>
++    Semantics(container: true, liveRegion: true, child: child);
++
++/// The device group font's outlined twin of upstream's filled 'Accessible devices' icon
++/// (common.dart IconFont.deviceGroupOutline / deviceGroupFill, kept here without the bridge).
++const IconData _kDeviceGroupFill = IconData(0xe748, fontFamily: 'DeviceGroup');
++const IconData _kDeviceGroupOutline =
++    IconData(0xe623, fontFamily: 'DeviceGroup');
++
++/// A PC list tab's icon (peer_tab_model.dart's filled ones): the filled icon on the selected tab,
++/// its outlined twin on the others, so that the choice shows without its colour, as the settings
++/// side bar's. `underline`: the selected tab's icon has no twin (the address book's), and its
++/// pill draws a 2 px line under the icon instead.
++({IconData icon, bool underline}) hjvPeerTabIcon(IconData filled,
++    {required bool selected}) {
++  final IconData? outlined;
++  if (filled == Icons.access_time_filled) {
++    outlined = Icons.access_time;
++  } else if (filled == Icons.star) {
++    outlined = Icons.star_border;
++  } else if (filled == Icons.explore) {
++    outlined = Icons.explore_outlined;
++  } else if (filled == _kDeviceGroupFill) {
++    outlined = _kDeviceGroupOutline;
++  } else {
++    outlined = null;
++  }
++  if (selected) return (icon: filled, underline: outlined == null);
++  return (icon: outlined ?? filled, underline: false);
++}
+diff --git a/flutter/lib/common/hjv_style.dart b/flutter/lib/common/hjv_style.dart
+index 31716e9..f767f1a 100644
+--- a/flutter/lib/common/hjv_style.dart
++++ b/flutter/lib/common/hjv_style.dart
+@@ -10,6 +10,8 @@ import 'dart:math' as math;
+ import 'package:flutter/material.dart';
+ import 'package:flutter/rendering.dart';
+ 
++import 'hjv_semantics.dart';
++
+ /// The typeface every text uses, bundled in assets/fonts (Regular 400, SemiBold 600, Bold 700).
+ const String kHjvFont = 'Pretendard';
+ 
+@@ -285,6 +287,8 @@ const _kHjvStackedButton = ButtonStyle(
+ /// home's 200 px pane), any button kind. The background: the tone's soft one, neutral's the
+ /// fields' grey; `onCanvas` (on the canvas, where the grey does not show): a card with a border.
+ /// High contrast adds a border. hjvNoteBlock (dialog.dart) is its neutral and warning tones.
++/// `liveRegion` (UX-K2): a screen reader reads the title (the text when there is none) as the
++/// notice comes or changes, for a notice that a state brings (the PC's P1, P2, G2; G3).
+ class HjvCallout extends StatelessWidget {
+   final String text;
+   final Widget? _body;
+@@ -296,6 +300,7 @@ class HjvCallout extends StatelessWidget {
+   final bool stacked;
+   final bool onCanvas;
+   final bool titleOneLine;
++  final bool liveRegion;
+ 
+   /// the close x's tooltip (default: the platform's "Close")
+   final String? closeTooltip;
+@@ -311,6 +316,7 @@ class HjvCallout extends StatelessWidget {
+       this.stacked = false,
+       this.onCanvas = false,
+       this.titleOneLine = false,
++      this.liveRegion = false,
+       this.closeTooltip})
+       : _body = null;
+ 
+@@ -327,6 +333,7 @@ class HjvCallout extends StatelessWidget {
+       this.stacked = false,
+       this.onCanvas = false,
+       this.titleOneLine = false,
++      this.liveRegion = false,
+       this.closeTooltip})
+       : text = '',
+         _body = body;
+@@ -364,16 +371,23 @@ class HjvCallout extends StatelessWidget {
+             crossAxisAlignment: CrossAxisAlignment.start,
+             children: [
+               if (heading != null)
+-                titleOneLine
+-                    // the title reads whole to a screen reader all the same
+-                    ? Tooltip(
+-                        message: title, excludeFromSemantics: true, child: heading)
+-                    : heading,
++                _live(
++                    liveRegion,
++                    titleOneLine
++                        // the title reads whole to a screen reader all the same
++                        ? Tooltip(
++                            message: title,
++                            excludeFromSemantics: true,
++                            child: heading)
++                        : heading),
+               if (heading != null && hasText) const SizedBox(height: 2),
+               if (hasText)
+-                DefaultTextStyle.merge(
+-                    style: TextStyle(fontSize: 13, height: 1.45, color: c.text),
+-                    child: _body ?? Text(hjvKeepAll(text))),
++                _live(
++                    liveRegion && heading == null,
++                    DefaultTextStyle.merge(
++                        style: TextStyle(
++                            fontSize: 13, height: 1.45, color: c.text),
++                        child: _body ?? Text(hjvKeepAll(text)))),
+             ],
+           ),
+         ),
+@@ -467,6 +481,9 @@ class HjvCallout extends StatelessWidget {
+   }
+ }
+ 
++/// `child` as a live region when `on` (HjvCallout's `liveRegion`), else as it is.
++Widget _live(bool on, Widget child) => on ? hjvLiveRegion(child) : child;
++
+ /// HjvCallout's row: the icon and the text (`children` first), then its actions (`hasActions`)
+ /// and its close x (`hasClose`). The actions and the x stay on the text's line, centred on it,
+ /// while the whole text fits on one line beside them; otherwise the actions go below the text at
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 36a15ca..9d53be4 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -783,7 +783,9 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+             actions: actions,
+             stacked: true,
+             onCanvas: tone == HjvTone.neutral,
+-            titleOneLine: tone == HjvTone.warning),
++            titleOneLine: tone == HjvTone.warning,
++            // UX-K2: a screen reader hears the notice come and change (P1, P2, P3, G2)
++            liveRegion: true),
+       );
+ }
+ 
+@@ -1432,6 +1434,8 @@ class _HjvConnectHint extends StatelessWidget {
+         final hint = HjvCallout.rich(
+           icon: Icons.lock_outline_rounded,
+           onCanvas: !isDesktop,
++          // UX-K2: a screen reader hears the hint come
++          liveRegion: true,
+           body: Tooltip(
+             message: t.connectHint,
+             triggerMode: isDesktop ? null : TooltipTriggerMode.tap,
+diff --git a/flutter/lib/common/widgets/peer_tab_page.dart b/flutter/lib/common/widgets/peer_tab_page.dart
+index 8883602..9c8d37c 100644
+--- a/flutter/lib/common/widgets/peer_tab_page.dart
++++ b/flutter/lib/common/widgets/peer_tab_page.dart
+@@ -24,6 +24,7 @@ import 'package:pull_down_button/pull_down_button.dart';
+ import '../../common.dart';
+ import '../../common/hjv_keys.dart';
+ import '../../common/hjv_phone.dart';
++import '../../common/hjv_semantics.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_access.dart';
+ import '../../models/platform_model.dart';
+@@ -264,65 +265,86 @@ class _PeerTabPageState extends State<PeerTabPage>
+               index: counter,
+               child: Obx(() {
+                 final hovered = hover.value;
+-                return Tooltip(
+-                  preferBelow: false,
+-                  message: model.tabTooltip(t),
+-                  onTriggered: isMobile ? mobileShowTabVisibilityMenu : null,
+-                  // HJViewer UX-K1: the ring, and the icon's name on the keyboard's focus too
+-                  child: HjvFocusRing(
+-                    radius: BorderRadius.circular(16),
+-                    tooltip: true,
+-                    child: InkWell(
+-                      customBorder: const StadiumBorder(),
+-                      hoverColor: Colors.transparent,
+-                      child: Container(
+-                        width: (portrait
+-                                ? kHjvPhoneTabWidth
+-                                : (narrow ? 36 : 44)) +
+-                            (selected ? labelWidth : 0),
+-                        alignment: Alignment.center,
+-                        child: Container(
+-                          height: 32,
+-                          alignment: Alignment.center,
+-                          decoration: ShapeDecoration(
+-                            shape: const StadiumBorder(),
+-                            color: selected
+-                                ? p.primarySoft
+-                                : (hovered ? p.hover : Colors.transparent),
+-                          ),
+-                          child: Row(
+-                            mainAxisSize: MainAxisSize.min,
+-                            children: [
+-                              Icon(model.tabIcon(t),
+-                                  size: 20,
+-                                  color:
+-                                      selected ? p.primary : p.textSecondary),
+-                              if (selected && labelWidth > 0)
+-                                Flexible(
+-                                  child: Text(model.tabTooltip(t),
+-                                          maxLines: 1,
+-                                          softWrap: false,
+-                                          overflow: TextOverflow.clip,
+-                                          // text on primarySoft: primaryStrong
+-                                          style: _hjvLabelStyle.copyWith(
+-                                              color: p.primaryStrong))
+-                                      .marginOnly(left: _hjvLabelGap),
+-                                ),
+-                            ],
++                // HJViewer UX-K2: the outlined icon on the others (or a line under the selected
++                // one's), so that the choice shows without its colour
++                final icon =
++                    hjvPeerTabIcon(model.tabIcon(t), selected: selected);
++                final named = selected && labelWidth > 0;
++                // HJViewer UX-K2: a screen reader hears which tab is the selected one
++                return hjvSelectedSemantics(
++                    selected: selected,
++                    child: Tooltip(
++                      preferBelow: false,
++                      message: model.tabTooltip(t),
++                      // the name beside the icon says it already
++                      excludeFromSemantics: named,
++                      onTriggered:
++                          isMobile ? mobileShowTabVisibilityMenu : null,
++                      // HJViewer UX-K1: the ring, and the icon's name on the keyboard's focus too
++                      child: HjvFocusRing(
++                        radius: BorderRadius.circular(16),
++                        tooltip: true,
++                        child: InkWell(
++                          customBorder: const StadiumBorder(),
++                          hoverColor: Colors.transparent,
++                          child: Container(
++                            width: (portrait
++                                    ? kHjvPhoneTabWidth
++                                    : (narrow ? 36 : 44)) +
++                                (selected ? labelWidth : 0),
++                            alignment: Alignment.center,
++                            child: Container(
++                              height: 32,
++                              alignment: Alignment.center,
++                              decoration: ShapeDecoration(
++                                shape: const StadiumBorder(),
++                                color: selected
++                                    ? p.primarySoft
++                                    : (hovered ? p.hover : Colors.transparent),
++                              ),
++                              child: Row(
++                                mainAxisSize: MainAxisSize.min,
++                                children: [
++                                  Container(
++                                    decoration: icon.underline
++                                        ? BoxDecoration(
++                                            border: Border(
++                                                bottom: BorderSide(
++                                                    width: 2,
++                                                    color: p.primary)))
++                                        : null,
++                                    child: Icon(icon.icon,
++                                        size: 20,
++                                        color: selected
++                                            ? p.primary
++                                            : p.textSecondary),
++                                  ),
++                                  if (named)
++                                    Flexible(
++                                      child: Text(model.tabTooltip(t),
++                                              maxLines: 1,
++                                              softWrap: false,
++                                              overflow: TextOverflow.clip,
++                                              // text on primarySoft: primaryStrong
++                                              style: _hjvLabelStyle.copyWith(
++                                                  color: p.primaryStrong))
++                                          .marginOnly(left: _hjvLabelGap),
++                                    ),
++                                ],
++                              ),
++                            ),
+                           ),
++                          onTap: isOptionFixed(kOptionPeerTabIndex)
++                              ? null
++                              : () async {
++                                  await handleTabSelection(t);
++                                  await bind.setLocalFlutterOption(
++                                      k: kOptionPeerTabIndex, v: t.toString());
++                                },
++                          onHover: (value) => hover.value = value,
+                         ),
+                       ),
+-                      onTap: isOptionFixed(kOptionPeerTabIndex)
+-                          ? null
+-                          : () async {
+-                              await handleTabSelection(t);
+-                              await bind.setLocalFlutterOption(
+-                                  k: kOptionPeerTabIndex, v: t.toString());
+-                            },
+-                      onHover: (value) => hover.value = value,
+-                    ),
+-                  ),
+-                ).marginOnly(right: portrait ? 0 : 4);
++                    )).marginOnly(right: portrait ? 0 : 4);
+               }));
+         }).toList());
+   }
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 070f402..f4415ca 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -18,6 +18,7 @@ import 'package:flutter_hbb/models/peer_model.dart';
+ 
+ import '../../common.dart';
+ import '../../common/hjv_keys.dart';
++import '../../common/hjv_semantics.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+@@ -170,7 +171,8 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+ 
+   _buildConnStatusMsg() {
+     widget.onSvcStatusChanged?.call();
+-    return Text(
++    // HJViewer UX-K2: a screen reader reads the status again when it changes
++    return hjvLiveRegion(Text(
+       _svcStopped.value
+           ? translate("Service is not running")
+           : stateGlobal.svcStatus.value == SvcStatus.connecting
+@@ -180,7 +182,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+                   : hjvAccessReadyText() ?? translate('Ready'),
+       style:
+           TextStyle(fontSize: 13, color: HjvPalette.of(context).textSecondary),
+-    );
++    ));
+   }
+ 
+   updateStatus() async {
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 19f8e3d..e67594b 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/formatter/id_formatter.dart';
+ import 'package:flutter_hbb/common/hjv_keys.dart';
++import 'package:flutter_hbb/common/hjv_semantics.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+@@ -421,47 +422,51 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
+       final radius = BorderRadius.circular(HjvRadius.md);
+       return Padding(
+         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+-        // HJViewer UX-K1: the keyboard's focus ring
+-        child: HjvFocusRing(
+-          radius: radius,
+-          child: Material(
+-            color: selected ? p.primarySoft : Colors.transparent,
+-            borderRadius: radius,
+-            child: InkWell(
++        // HJViewer UX-K2: a screen reader hears which page is the selected one
++        child: hjvSelectedSemantics(
++          selected: selected,
++          // HJViewer UX-K1: the keyboard's focus ring
++          child: HjvFocusRing(
++            radius: radius,
++            child: Material(
++              color: selected ? p.primarySoft : Colors.transparent,
+               borderRadius: radius,
+-              // not transparent: a hover that turns transparent paints black
+-              hoverColor: selected ? p.primarySoft : p.hoverStrong,
+-              onTap: () {
+-                if (selectedTab.value != tab.key) {
+-                  int index = DesktopSettingPage.tabKeys.indexOf(tab.key);
+-                  if (index == -1) {
+-                    return;
++              child: InkWell(
++                borderRadius: radius,
++                // not transparent: a hover that turns transparent paints black
++                hoverColor: selected ? p.primarySoft : p.hoverStrong,
++                onTap: () {
++                  if (selectedTab.value != tab.key) {
++                    int index = DesktopSettingPage.tabKeys.indexOf(tab.key);
++                    if (index == -1) {
++                      return;
++                    }
++                    controller.jumpToPage(index);
+                   }
+-                  controller.jumpToPage(index);
+-                }
+-                selectedTab.value = tab.key;
+-              },
+-              child: SizedBox(
+-                height: _kTabHeight,
+-                child: Row(children: [
+-                  Icon(
+-                    selected ? tab.selected : tab.unselected,
+-                    color: selected ? p.primary : p.textSecondary,
+-                    size: 20,
+-                  ).marginOnly(left: 12, right: 12),
+-                  Expanded(
+-                    child: Text(
+-                      translate(tab.label),
+-                      maxLines: 1,
+-                      overflow: TextOverflow.ellipsis,
+-                      style: TextStyle(
+-                          color: selected ? p.primaryStrong : p.textSecondary,
+-                          fontWeight:
+-                              selected ? FontWeight.w600 : FontWeight.w400,
+-                          fontSize: _kContentFontSize),
++                  selectedTab.value = tab.key;
++                },
++                child: SizedBox(
++                  height: _kTabHeight,
++                  child: Row(children: [
++                    Icon(
++                      selected ? tab.selected : tab.unselected,
++                      color: selected ? p.primary : p.textSecondary,
++                      size: 20,
++                    ).marginOnly(left: 12, right: 12),
++                    Expanded(
++                      child: Text(
++                        translate(tab.label),
++                        maxLines: 1,
++                        overflow: TextOverflow.ellipsis,
++                        style: TextStyle(
++                            color: selected ? p.primaryStrong : p.textSecondary,
++                            fontWeight:
++                                selected ? FontWeight.w600 : FontWeight.w400,
++                            fontSize: _kContentFontSize),
++                      ),
+                     ),
+-                  ),
+-                ]),
++                  ]),
++                ),
+               ),
+             ),
+           ),
+@@ -2838,7 +2843,8 @@ Widget _Card(
+                 Row(
+                   children: [
+                     Expanded(
+-                        child: Text(
++                        // HJViewer UX-K2: the group's title is a heading
++                        child: hjvHeaderSemantics(Text(
+                       translate(title),
+                       textAlign: TextAlign.start,
+                       style: TextStyle(
+@@ -2846,7 +2852,7 @@ Widget _Card(
+                         fontWeight: FontWeight.w600,
+                         color: p.textTertiary,
+                       ),
+-                    )),
++                    ))),
+                     ...?title_suffix
+                   ],
+                 ).marginOnly(
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index 7448e5c..60aca98 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -16,6 +16,7 @@ import 'package:url_launcher/url_launcher_string.dart';
+ import '../../common.dart';
+ import '../../common/formatter/id_formatter.dart';
+ import '../../common/hjv_phone.dart';
++import '../../common/hjv_semantics.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+@@ -1633,7 +1634,8 @@ class _HjvSettingsSection extends AbstractSettingsSection {
+                     fontSize: 13,
+                     fontWeight: FontWeight.w600,
+                     color: p.textTertiary),
+-                child: title,
++                // HJViewer UX-K2: the group's title is a heading
++                child: hjvHeaderSemantics(title),
+               ),
+             ),
+           if (section.tiles.isNotEmpty)
+diff --git a/flutter/test/hjviewer_semantics_test.dart b/flutter/test/hjviewer_semantics_test.dart
+new file mode 100644
+index 0000000..57cfada
+--- /dev/null
++++ b/flutter/test/hjviewer_semantics_test.dart
+@@ -0,0 +1,127 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common/hjv_semantics.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// UX-K2 (U59), what a screen reader hears (common/hjv_semantics.dart): the selected tab and side
++// bar row, a settings group's heading, the live notices (HjvCallout's liveRegion), and the PC
++// list tabs' filled and outlined icons. Plain Flutter, no bridge.
++
++Widget app(Widget child) =>
++    MaterialApp(home: Scaffold(body: Center(child: child)));
++
++void main() {
++  testWidgets('a tab says it is the selected one, the others that they are not',
++      (tester) async {
++    final semantics = tester.ensureSemantics();
++    Widget tab(String name, bool selected) => hjvSelectedSemantics(
++        selected: selected,
++        child: Tooltip(
++            message: name,
++            child: InkWell(onTap: () {}, child: const Icon(Icons.star))));
++    await tester.pumpWidget(app(Row(mainAxisSize: MainAxisSize.min, children: [
++      tab('Favorites', true),
++      tab('Recent sessions', false),
++    ])));
++    expect(
++        tester.getSemantics(find.byTooltip('Favorites')),
++        containsSemantics(
++            tooltip: 'Favorites',
++            isButton: true,
++            isSelected: true,
++            hasTapAction: true));
++    expect(
++        tester.getSemantics(find.byTooltip('Recent sessions')),
++        containsSemantics(
++            tooltip: 'Recent sessions',
++            isButton: true,
++            isSelected: false,
++            hasTapAction: true));
++    semantics.dispose();
++  });
++
++  testWidgets('a settings group title is a heading', (tester) async {
++    final semantics = tester.ensureSemantics();
++    await tester.pumpWidget(app(ListView(children: [
++      hjvHeaderSemantics(const Text('Security')),
++      const ListTile(title: Text('Row')),
++    ])));
++    expect(tester.getSemantics(find.text('Security')),
++        containsSemantics(label: 'Security', isHeader: true));
++    expect(tester.getSemantics(find.text('Row')),
++        containsSemantics(isHeader: false));
++    semantics.dispose();
++  });
++
++  testWidgets(
++      'a live notice reads its title, or its text without one; others are not live',
++      (tester) async {
++    final semantics = tester.ensureSemantics();
++    await tester
++        .pumpWidget(app(const Column(mainAxisSize: MainAxisSize.min, children: [
++      HjvCallout(
++          title: 'Not connected to the server',
++          text: 'Why',
++          titleOneLine: true,
++          tone: HjvTone.warning,
++          liveRegion: true),
++      HjvCallout(text: 'Stay logged in', liveRegion: true),
++    ])));
++    expect(
++        tester.getSemantics(find.text('Not connected to the server')),
++        containsSemantics(
++            label: 'Not connected to the server', isLiveRegion: true));
++    expect(tester.getSemantics(find.text('Why')),
++        containsSemantics(isLiveRegion: false));
++    expect(tester.getSemantics(find.text('Stay logged in')),
++        containsSemantics(label: 'Stay logged in', isLiveRegion: true));
++
++    await tester
++        .pumpWidget(app(const HjvCallout(title: 'Title', text: 'Text')));
++    expect(
++        find.byWidgetPredicate(
++            (w) => w is Semantics && w.properties.liveRegion == true),
++        findsNothing);
++    semantics.dispose();
++  });
++
++  testWidgets('a live status line reads its new text as one node',
++      (tester) async {
++    final semantics = tester.ensureSemantics();
++    final text = ValueNotifier('Connecting');
++    await tester.pumpWidget(app(ValueListenableBuilder<String>(
++        valueListenable: text,
++        builder: (_, value, __) =>
++            Row(mainAxisSize: MainAxisSize.min, children: [
++              const SizedBox(width: 8, height: 8),
++              hjvLiveRegion(Text(value)),
++            ]))));
++    text.value = 'Ready';
++    await tester.pump();
++    expect(tester.getSemantics(find.text('Ready')),
++        containsSemantics(label: 'Ready', isLiveRegion: true));
++    semantics.dispose();
++  });
++
++  test('the PC list tabs: filled when selected, outlined otherwise', () {
++    const deviceGroupFill = IconData(0xe748, fontFamily: 'DeviceGroup');
++    const deviceGroupOutline = IconData(0xe623, fontFamily: 'DeviceGroup');
++    const addressBook = IconData(0xe602, fontFamily: 'AddressBook');
++    for (final (filled, outlined) in [
++      (Icons.access_time_filled, Icons.access_time),
++      (Icons.star, Icons.star_border),
++      (Icons.explore, Icons.explore_outlined),
++      (deviceGroupFill, deviceGroupOutline),
++    ]) {
++      expect(hjvPeerTabIcon(filled, selected: true),
++          (icon: filled, underline: false));
++      expect(hjvPeerTabIcon(filled, selected: false),
++          (icon: outlined, underline: false));
++    }
++    // no outlined twin: the selected pill underlines its icon
++    expect(hjvPeerTabIcon(addressBook, selected: true),
++        (icon: addressBook, underline: true));
++    expect(hjvPeerTabIcon(addressBook, selected: false),
++        (icon: addressBook, underline: false));
++  });
++}

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:15:57 +0900
-Subject: [PATCH 21/85] desktop: a mouse release passes cursor protection
+Subject: [PATCH 021/147] desktop: a mouse release passes cursor protection
  (rustdesk c8532719)
 
 The desktop mouse path dropped a button-up while peer control protection was

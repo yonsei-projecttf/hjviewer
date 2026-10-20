@@ -1,0 +1,288 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:28:43 +0900
+Subject: [PATCH 093/147] hjviewer: review fixes, words lane (1.9)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U34: the administrator's wording ("HJViewer 관리자: <contact>") lives once, in
+hjvAdminContactText; HjvTexts.adminContact and HjvUpdateText.contact call it.
+The About screen's reading path moves to lane C's hjv-admin-contact reader
+when that lands (critic X-13; integration checklist I-1).
+
+U31: the pilot notice keeps the user's own wording; its rewording was not
+decided (p2 D2) and is left to the user.
+
+D-6/S-01: the logout dialog's remote line in English says that logging out
+ends a password-less connection; the Korean cell is a release-blocking
+checklist item for its owner, together with lane A's D-6.
+
+U27: a pwless state this app does not know shows the server's note as it
+came, so a later hjv-api does not blank the cards.
+
+U28: the restart question gets "?" in a language whose text has none.
+
+U35: the update screens' language is HjvHost.korean, which the gate test's
+host pins to Korean.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_update.dart            | 22 +++++++++----------
+ flutter/lib/common/hjv_update_model.dart      |  8 ++++---
+ flutter/lib/common/hjviewer_access_texts.dart |  2 +-
+ .../lib/common/hjviewer_account_texts.dart    | 21 +++++++++++++-----
+ flutter/lib/common/widgets/dialog.dart        |  7 ++++--
+ flutter/test/hjv_update_gate_test.dart        |  4 ++++
+ flutter/test/hjv_update_test.dart             |  4 ++++
+ flutter/test/hjviewer_account_test.dart       | 11 +++++-----
+ 8 files changed, 51 insertions(+), 28 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_update.dart b/flutter/lib/common/hjv_update.dart
+index 9f529fd..eafd292 100644
+--- a/flutter/lib/common/hjv_update.dart
++++ b/flutter/lib/common/hjv_update.dart
+@@ -88,6 +88,16 @@ class HjvHost {
+ 
+   int now() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+ 
++  /// Whether the UI is Korean (U35): Korean, else English; Korean while translate() cannot be
++  /// asked.
++  bool get korean {
++    try {
++      return translate('Cancel') == '취소';
++    } catch (_) {
++      return true;
++    }
++  }
++
+   Future<void> pause(Duration time) => Future.delayed(time);
+ 
+   OverlayDialogManager get dialogs => gFFI.dialogManager;
+@@ -210,23 +220,13 @@ bool hjvEnabled() {
+   if (known != null) return known;
+   try {
+     _takesPart = hjvHost.get(_kState).isNotEmpty;
+-    if (_takesPart!) HjvUpdateText.korean = _uiKorean;
++    if (_takesPart!) HjvUpdateText.korean = () => hjvHost.korean;
+     return _takesPart!;
+   } catch (_) {
+     return false;
+   }
+ }
+ 
+-/// The update screens in the UI's language (U35): Korean, else English; Korean while
+-/// translate() cannot be asked.
+-bool _uiKorean() {
+-  try {
+-    return translate('Cancel') == '취소';
+-  } catch (_) {
+-    return true;
+-  }
+-}
+-
+ /// For a test: another host, and nothing remembered of the one before.
+ void hjvUseHost(HjvHost host) {
+   hjvHost = host;
+diff --git a/flutter/lib/common/hjv_update_model.dart b/flutter/lib/common/hjv_update_model.dart
+index d7ebccd..63b4d63 100644
+--- a/flutter/lib/common/hjv_update_model.dart
++++ b/flutter/lib/common/hjv_update_model.dart
+@@ -2,12 +2,14 @@
+ // fetches the signed version policy, judges this app by it and reports the JSON read here
+ // (main_get_common "hjv-update-state", event "hjv-update"); this file turns that into what each
+ // platform shows and offers. Plain Dart without the bridge, so that ci.sh tests it with the web
+-// stand-in; hjv_update.dart holds the widgets and the calls. The texts are Korean only, as the
+-// refusals of hbbs and of the PCs are, and never pass through translate().
++// stand-in; hjv_update.dart holds the widgets and the calls. The texts are in the UI's language
++// (Korean, else English; U35) and never pass through translate().
+ 
+ import 'dart:convert';
+ import 'dart:math';
+ 
++import 'hjviewer_account_texts.dart' show hjvAdminContactText;
++
+ /// The core's verdict on this app. `disabled` is a build that takes no part (an empty answer):
+ /// its screens stay as they were in 1.5.1.
+ enum HjvState { disabled, unknown, ok, available, grace, required }
+@@ -333,7 +335,7 @@ class HjvUpdateText {
+ 
+   /// Who "관리자" is: the contact of the signed policy (`contact_ko`) as it wrote it (D-1).
+   static String contact(String contact) =>
+-      _t('HJViewer 관리자: $contact', 'HJViewer administrator: $contact');
++      hjvAdminContactText(contact, korean: korean());
+   static String askAdmin(String contact) => [
+         _t('새 버전은 관리자에게 받을 수도 있습니다.',
+             'You can also get the new version from the administrator.'),
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 378bd86..8b29222 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -578,7 +578,7 @@ class HjvAccessTexts {
+           'Logging out takes this PC out of My PCs, and if the server is for faculty and staff only, no other device can connect to it until someone logs in on it again.');
+   String get logoutRemoteNow => _t(
+       '지금 이 PC를 원격으로 쓰고 있다면, 이 세션이 끝난 뒤에는 다시 들어올 수 없습니다.',
+-      'If you are using this PC remotely now, you cannot get back in once this session ends.');
++      'If you are using this PC remotely now, logging out also ends a password-less connection, and no connection can come back in once it ends.');
+   // the second paragraph under removeAsk, which already says what removing does (U29)
+   String removeGate({required bool known}) => known
+       ? _t('이 서버는 교직원 전용이라 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다.',
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 99b8678..f00d304 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -345,14 +345,15 @@ class HjvTexts {
+ 
+   // Settings → About (decisions of 2026-10-14; U31, U34)
+   String get maker => _t('만든 곳: 프로젝트TF', 'Made by ProjectTF');
++  // the user's own pilot text (README.md:3), as it was: its rewording is the user's to decide
+   String get pilotNotice => _t(
+-      '이 서비스는 시범 운영 중이며, 예고 없이 바뀔 수 있습니다. 현재 연세대학교 교직원만 쓸 수 있습니다.',
+-      'This service is a pilot and may change without notice. It is currently available only to Yonsei University faculty and staff.');
++      '본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.',
++      'This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.');
+ 
+   /// U34 (D-17): who "관리자" in the app's texts is: the contact of the signed version policy
+   /// (`contact_ko`), as the policy wrote it; without one, the maker.
+-  String adminContact(String contact) => _t('HJViewer 관리자: $contact',
+-      'HJViewer administrator: $contact');
++  String adminContact(String contact) =>
++      hjvAdminContactText(contact, korean: korean);
+   String get makerName => _t('프로젝트TF', 'ProjectTF');
+ 
+   /// U31: the login dialog's block, which password goes in.
+@@ -404,6 +405,12 @@ class HjvTexts {
+       korean ? (admin ? '터미널(관리자 권한, 베타)' : '터미널(베타)') : null;
+ }
+ 
++/// "HJViewer 관리자: <contact>", the one wording of who "관리자" is (D-1, U34): the About screen,
++/// the update screens (hjv_update_model.dart) and the PC's accept window use it.
++String hjvAdminContactText(String contact, {required bool korean}) => korean
++    ? 'HJViewer 관리자: $contact'
++    : 'HJViewer administrator: $contact';
++
+ /// What Settings → About says of HJViewer: who makes it, and in an account build who "관리자" is
+ /// (the policy's `contact`, else the maker; U34) and that the service is a pilot (U31).
+ List<String> hjvAboutNoticeLines(HjvTexts t,
+@@ -417,7 +424,8 @@ List<String> hjvAboutNoticeLines(HjvTexts t,
+ 
+ /// U27: a card's second line in the app's language, from the `hjv` of hjv-api's device list:
+ /// with its `wake` (hjv-api 1.9 on), the words of `pwless`, `synced` (Unix seconds of the PC's
+-/// last sync) and `wake`; else `note`, the server's own text, as it came.
++/// last sync) and `wake`; else, and for a `pwless` this app does not know (a later hjv-api's),
++/// `note`, the server's own text, as it came.
+ String hjvPeerNoteText(HjvTexts t, Map hjv,
+     {required String note, required int now}) {
+   if (!hjv.containsKey('wake')) return note;
+@@ -431,8 +439,9 @@ String hjvPeerNoteText(HjvTexts t, Map hjv,
+         : t.noteUnsynced,
+     'listed' => t.noteListed,
+     'needs-relogin' => t.noteRelogin,
+-    _ => '',
++    _ => null,
+   };
++  if (state == null) return note;
+   final wake = switch (hjv['wake']) {
+     'ready' => t.noteCanWake,
+     'not_ready' => t.noteCannotWake,
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index 9d353c3..685c8ac 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -1564,14 +1564,17 @@ void showRestartRemoteDevice(PeerInfo pi, String id, SessionID sessionId,
+     OverlayDialogManager dialogManager) async {
+   // HJViewer: what the restart does on a staff-only server
+   final hjvNote = hjvAccessRestartNote(installed: pi.isInstalled);
++  // HJViewer: the question ends in its own mark (ko, en); a language without one gets it here
++  var hjvAsk = translate('Are you sure you want to restart');
++  if (!hjvAsk.endsWith('?') && !hjvAsk.endsWith('？')) hjvAsk += '?';
+   final res = await dialogManager
+       .show<bool>((setState, close, context) => CustomAlertDialog(
+             title: HjvDialogTitle(
+                 Icons.warning_amber_rounded, translate("Restart remote device"),
+                 danger: true),
+             content: Text(
+-                // HJViewer: the question ends in its own mark, the ID as everywhere else (U28)
+-                "${translate('Are you sure you want to restart')}\n${pi.username}@${pi.hostname}(${formatID(id)})${hjvNote == null ? '' : '\n\n$hjvNote'}"),
++                // HJViewer: the question with its mark, the ID as everywhere else (U28)
++                "$hjvAsk\n${pi.username}@${pi.hostname}(${formatID(id)})${hjvNote == null ? '' : '\n\n$hjvNote'}"),
+             actions: [
+               dialogButton(
+                 "Cancel",
+diff --git a/flutter/test/hjv_update_gate_test.dart b/flutter/test/hjv_update_gate_test.dart
+index ccc7797..c856156 100644
+--- a/flutter/test/hjv_update_gate_test.dart
++++ b/flutter/test/hjv_update_gate_test.dart
+@@ -70,6 +70,10 @@ class FakeHost extends HjvHost {
+   bool main;
+   int clock = checkedAt + 60;
+ 
++  /// The screens' language: Korean, whatever translate() answers where the test runs.
++  @override
++  bool get korean => true;
++
+   /// What the core was asked, in order, as "key=value".
+   final asked = <String>[];
+ 
+diff --git a/flutter/test/hjv_update_test.dart b/flutter/test/hjv_update_test.dart
+index 0f3fab5..98b3209 100644
+--- a/flutter/test/hjv_update_test.dart
++++ b/flutter/test/hjv_update_test.dart
+@@ -1,6 +1,7 @@
+ import 'dart:convert';
+ 
+ import 'package:flutter_hbb/common/hjv_update_model.dart';
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart' show HjvTexts;
+ import 'package:flutter_test/flutter_test.dart';
+ 
+ // The minimum app version as the screens show it: plain Dart, which ci.sh runs with the bridge's
+@@ -1058,6 +1059,9 @@ void main() {
+           [
+             'You can also get the new version from the administrator. HJViewer administrator: 조교'
+           ]);
++      // one wording of who the administrator is, as the About screen has it (U34)
++      expect(HjvUpdateText.contact('조교'),
++          const HjvTexts(false).adminContact('조교'));
+     });
+   });
+ }
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 4bbb816..36948f7 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -1448,12 +1448,12 @@ void main() {
+     expect(hjvAboutNoticeLines(ko, accountBuild: true), [
+       '만든 곳: 프로젝트TF',
+       'HJViewer 관리자: 프로젝트TF',
+-      '이 서비스는 시범 운영 중이며, 예고 없이 바뀔 수 있습니다. 현재 연세대학교 교직원만 쓸 수 있습니다.',
++      '본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.',
+     ]);
+     expect(hjvAboutNoticeLines(en, accountBuild: true), [
+       'Made by ProjectTF',
+       'HJViewer administrator: ProjectTF',
+-      'This service is a pilot and may change without notice. It is currently available only to Yonsei University faculty and staff.',
++      'This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.',
+     ]);
+     // the signed policy's contact, as the policy wrote it, in both languages
+     expect(
+@@ -1507,8 +1507,10 @@ void main() {
+         expect(note({'pwless': state, 'wake': ''}), k, reason: state);
+         expect(note({'pwless': state, 'wake': ''}, t: en), e, reason: state);
+       }
+-      // a state this app does not know: nothing of its own, whatever the server wrote
+-      expect(note({'pwless': 'frozen', 'wake': ''}), '');
++      // a state this app does not know (a later hjv-api's): the server's own note, as it came
++      expect(note({'pwless': 'frozen', 'wake': ''}), 'server note');
++      expect(note({'pwless': 'frozen', 'wake': 'ready'}), 'server note');
++      expect(note({'wake': ''}), 'server note');
+     });
+ 
+     test('an expired PC says when it last synced', () {
+@@ -1527,7 +1529,6 @@ void main() {
+           '비밀번호 없는 연결 켜짐 · 켜기 가능');
+       expect(note({'pwless': 'off', 'wake': 'not_ready'}, t: en),
+           'Turned off on the PC · Not ready to wake');
+-      expect(note({'pwless': '', 'wake': 'ready'}), '켜기 가능');
+       expect(note({'pwless': 'active', 'wake': 'later'}), '비밀번호 없는 연결 켜짐');
+     });
+ 

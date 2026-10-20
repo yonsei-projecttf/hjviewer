@@ -1,0 +1,184 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 05:32:58 +0900
+Subject: [PATCH 132/147] hjviewer: review fixes, keys lane (1.9)
+
+UX-K1 (main window keys): Ctrl+F and Ctrl+W act only on the bare tab.
+The CallbackShortcuts sit above the navigator and the dialogs' overlay,
+and CustomAlertDialog lets every key but Esc, Enter and Tab through, so
+Ctrl+F moved the focus into the search field behind an open dialog and
+Ctrl+W closed the settings tab under one. Both now return early while
+the primary focus is inside a CustomAlertDialog or the main navigator
+can pop.
+
+UX-K1 (ID suggestions): the first arrow press after typing starts from
+the top. RawAutocomplete keeps its highlight index across edits and Down
+adds one before any row shows, so the first Down marked the second
+suggestion (or a stale row) and Enter connected to it. The field now
+takes RawAutocomplete's highlight notifier from the options view and,
+on the first press while nothing is marked, sets it so that Down marks
+the first row and Up the last.
+
+UX-K1 (focus ring tooltip): a ring dismisses tooltips on losing the
+focus only when it opened its own, so a tooltip the mouse shows
+elsewhere is not closed by a focus move that never showed one.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_keys.dart              | 10 ++++-
+ .../lib/desktop/pages/connection_page.dart    | 21 +++++++++-
+ .../lib/desktop/pages/desktop_tab_page.dart   | 11 ++++++
+ flutter/test/hjviewer_keys_test.dart          | 38 +++++++++++++++++++
+ 4 files changed, 77 insertions(+), 3 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_keys.dart b/flutter/lib/common/hjv_keys.dart
+index 2714da0..0a6b98e 100644
+--- a/flutter/lib/common/hjv_keys.dart
++++ b/flutter/lib/common/hjv_keys.dart
+@@ -73,6 +73,8 @@ class HjvFocusRing extends StatefulWidget {
+ 
+ class _HjvFocusRingState extends State<HjvFocusRing> {
+   var _ring = false;
++  // the tooltip this ring opened (TooltipState has no public hide of one tooltip)
++  var _opened = false;
+ 
+   void _onFocusChange(bool focused) {
+     final ring = focused && hjvShowsFocusRing();
+@@ -80,8 +82,12 @@ class _HjvFocusRingState extends State<HjvFocusRing> {
+     setState(() => _ring = ring);
+     if (!widget.tooltip) return;
+     if (ring) {
+-      context.findAncestorStateOfType<TooltipState>()?.ensureTooltipVisible();
+-    } else {
++      _opened = context
++              .findAncestorStateOfType<TooltipState>()
++              ?.ensureTooltipVisible() ??
++          false;
++    } else if (_opened) {
++      _opened = false;
+       Tooltip.dismissAllToolTips();
+     }
+   }
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index f4415ca..a1ede81 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -237,6 +237,8 @@ class _ConnectionPageState extends State<ConnectionPage>
+   // HJViewer UX-K1: ↑ or ↓ chose a suggestion, which Enter then connects to; where a key opens ▾'s
+   // menu
+   final _hjvPicked = ValueNotifier<bool>(false);
++  // HJViewer UX-K1: RawAutocomplete's highlighted row, from its suggestions' view (not ours)
++  ValueNotifier<int>? _hjvHighlight;
+   final _hjvOtherWays = HjvMenuAnchor();
+ 
+   @override
+@@ -489,6 +491,11 @@ class _ConnectionPageState extends State<ConnectionPage>
+                   optionsViewBuilder: (BuildContext context,
+                       AutocompleteOnSelected<Peer> onSelected,
+                       Iterable<Peer> options) {
++                    // HJViewer UX-K1: RawAutocomplete's highlight, which the first ↑ or ↓ resets
++                    _hjvHighlight = context
++                        .getInheritedWidgetOfExactType<
++                            AutocompleteHighlightedOption>()
++                        ?.notifier;
+                     // HJViewer: the suggestions in the app's look, as wide as the field
+                     return HjvAutocompleteOptions(
+                       options: _autocompleteOpts,
+@@ -631,8 +638,20 @@ class _ConnectionPageState extends State<ConnectionPage>
+           if (event is! KeyUpEvent &&
+               arrow &&
+               _autocompleteOpts.isNotEmpty &&
+-              !loading) {
++              !loading &&
++              !_hjvPicked.value) {
++            // The first press after typing starts from the top: RawAutocomplete keeps its index
++            // across edits and ↓ adds one before any row shows, so ↓ marks the first row (-1
++            // then +1) and ↑ the last (0 then -1).
+             _hjvPicked.value = true;
++            final down = event.logicalKey == LogicalKeyboardKey.arrowDown;
++            final highlight = _hjvHighlight;
++            if (highlight == null) {
++              // the suggestions never showed, so the index is still 0: ↓ only marks it
++              if (down) return KeyEventResult.handled;
++            } else {
++              highlight.value = down ? -1 : 0;
++            }
+           }
+           return KeyEventResult.ignored;
+         },
+diff --git a/flutter/lib/desktop/pages/desktop_tab_page.dart b/flutter/lib/desktop/pages/desktop_tab_page.dart
+index 693edc6..1d96ab0 100644
+--- a/flutter/lib/desktop/pages/desktop_tab_page.dart
++++ b/flutter/lib/desktop/pages/desktop_tab_page.dart
+@@ -52,13 +52,24 @@ Map<ShortcutActivator, VoidCallback> hjvMainWindowShortcuts() {
+         : null;
+   }
+ 
++  // The bindings sit above the navigator and the dialogs' overlay, and CustomAlertDialog lets
++  // every key but Esc, Enter and Tab through: the keys act only on the bare tab, never behind a
++  // dialog, a menu or a pushed route.
++  bool covered() =>
++      FocusManager.instance.primaryFocus?.context
++              ?.findAncestorWidgetOfExactType<CustomAlertDialog>() !=
++          null ||
++      globalKey.currentState?.canPop() == true;
++
+   return {
+     SingleActivator(LogicalKeyboardKey.keyF, control: !isMacOS, meta: isMacOS):
+         () {
++      if (covered()) return;
+       if (shown() == kTabLabelHomePage) hjvPeerSearchRequest.value++;
+     },
+     SingleActivator(LogicalKeyboardKey.keyW, control: !isMacOS, meta: isMacOS):
+         () {
++      if (covered()) return;
+       if (shown() == kTabLabelSettingPage) {
+         Get.find<DesktopTabController>().closeBy(kTabLabelSettingPage);
+       }
+diff --git a/flutter/test/hjviewer_keys_test.dart b/flutter/test/hjviewer_keys_test.dart
+index 42c1aee..036a1ff 100644
+--- a/flutter/test/hjviewer_keys_test.dart
++++ b/flutter/test/hjviewer_keys_test.dart
+@@ -194,4 +194,42 @@ void main() {
+     await tester.sendKeyEvent(LogicalKeyboardKey.space);
+     expect(opened, 2);
+   });
++
++  testWidgets(
++      'a ring\'s tooltip shows on the focus and goes with it; others stay',
++      (tester) async {
++    final other = GlobalKey<TooltipState>();
++    Widget ring(String name, {bool visible = true}) => TooltipVisibility(
++        visible: visible,
++        child: Tooltip(
++            message: name,
++            child: HjvFocusRing(
++                tooltip: true,
++                child: InkWell(
++                    onTap: () {},
++                    child: const SizedBox(width: 28, height: 28)))));
++    await tester
++        .pumpWidget(app(Column(mainAxisSize: MainAxisSize.min, children: [
++      ring('ring'),
++      ring('silent', visible: false),
++      Tooltip(
++          key: other,
++          message: 'other',
++          child: const SizedBox(width: 28, height: 28)),
++    ])));
++    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
++    await tester.pump(const Duration(seconds: 1));
++    expect(find.text('ring'), findsOneWidget);
++    // the ring's focus goes, and its tooltip with it
++    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
++    await tester.pump(const Duration(seconds: 1));
++    expect(find.text('ring'), findsNothing);
++    // a tooltip the ring did not open (the mouse's) stays when the focus leaves it
++    other.currentState!.ensureTooltipVisible();
++    await tester.pump(const Duration(seconds: 1));
++    expect(find.text('other'), findsOneWidget);
++    FocusManager.instance.primaryFocus?.unfocus();
++    await tester.pump(const Duration(seconds: 1));
++    expect(find.text('other'), findsOneWidget);
++  });
+ }

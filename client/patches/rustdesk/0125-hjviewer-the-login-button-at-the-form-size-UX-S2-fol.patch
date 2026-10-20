@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 04:49:50 +0900
+Subject: [PATCH 125/147] hjviewer: the login button at the form size (UX-S2
+ follow-up)
+
+UX-S2 (style2's open point for lane G2's files): the login dialog's button takes
+HjvButtonSize.form.style (44 at least) instead of a fixed 44 px SizedBox height; same look.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/widgets/login.dart | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index 69d1d6b..6c86119 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -690,11 +690,11 @@ class LoginWidgetUserPass extends StatelessWidget {
+                 if (isInProgress)
+                   LinearProgressIndicator(semanticsLabel: hjvLabels.loggingIn),
+                 const SizedBox(height: 16.0),
+-                // HJViewer: the login button across the dialog
++                // HJViewer: the login button across the dialog, a form's submit (UX-S2)
+                 SizedBox(
+                   width: double.infinity,
+-                  height: 44,
+                   child: Obx(() => ElevatedButton(
++                        style: HjvButtonSize.form.style,
+                         child: Text(
+                           translate('Login'),
+                           style: TextStyle(fontSize: 15),

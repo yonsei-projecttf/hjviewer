@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:15:55 +0900
+Subject: [PATCH 117/147] hjviewer: review fixes, home lane (1.9)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+UX-H1 (U26): the home's logged-out account line, which may take two
+lines, breaks between words only (hjvKeepAll), so that '로그인하지 않음'
+never splits inside a word in the narrow desktop pane.
+
+UX-H1 (U26): the account line tells a screen reader what a press does
+('설정 → 계정을 엽니다' / 'Opens Settings → Account', a new HJViewer text).
+
+D16: a device row's trailing [로그아웃시키기] is 28 px high and shrink-wrapped,
+so that its label sits near the title's line under the top alignment
+(it was 36 px, its label about 8 px below the title); to be confirmed
+in the preview.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart       | 8 ++++++--
+ flutter/lib/common/hjviewer_account_texts.dart | 2 ++
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index efcf79e..2d61b83 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -275,6 +275,7 @@ class _HjvAccountLine extends StatelessWidget {
+               Expanded(
+                 child: Semantics(
+                   button: true,
++                  hint: t.accountLineOpens,
+                   child: InkWell(
+                     borderRadius: BorderRadius.circular(HjvRadius.sm),
+                     onTap: onOpen,
+@@ -288,7 +289,8 @@ class _HjvAccountLine extends StatelessWidget {
+                                   size: 20, color: p.textTertiary),
+                           const SizedBox(width: 8),
+                           Expanded(
+-                            child: Text(text,
++                            // the two-line logged-out text breaks between words only
++                            child: Text(loggedIn ? text : hjvKeepAll(text),
+                                 maxLines: loggedIn ? 1 : 2,
+                                 overflow: TextOverflow.ellipsis,
+                                 style: TextStyle(
+@@ -1139,7 +1141,9 @@ class HjvKeysList extends StatelessWidget {
+                 style: TextButton.styleFrom(
+                     foregroundColor: p.dangerText,
+                     padding: const EdgeInsets.symmetric(horizontal: 10),
+-                    minimumSize: const Size(0, 36)),
++                    // as high as the title's line, so that its label sits on it
++                    minimumSize: const Size(0, 28),
++                    tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                 onPressed: () => onLogOut(k),
+                 child: Text(t.logOutDevice)),
+         expandedCrossAxisAlignment: CrossAxisAlignment.start,
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 510be82..10016a5 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -409,6 +409,8 @@ class HjvTexts {
+       ? _t('로그인됨', 'Logged in')
+       : _t('로그인됨 · $name', 'Logged in · $name');
+   String get accountNotLoggedIn => _t('로그인하지 않음', 'Not logged in');
++  // a screen reader's hint of the line, which opens the account settings
++  String get accountLineOpens => _t('설정 → 계정을 엽니다', 'Opens Settings → Account');
+ 
+   // U33: a session window's login, whose notice about this PC the main window shows
+   String get loggedInSeeMain => _t('로그인했습니다. 이 PC에 대한 안내는 HJViewer 주 창에 있습니다.',

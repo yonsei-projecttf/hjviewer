@@ -1,0 +1,533 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:07:05 +0900
+Subject: [PATCH 118/147] hjviewer: phones and tablets choose their layout by
+ size (UX-M3)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U64: the Android and iOS app keep the portrait (touch) layout in any
+orientation and window (hjvPortraitLayout in main.dart's
+_updateOrientation; the web keeps choosing by aspect), so a phone held
+landscape, an iPad or a split screen never gets the desktop's 220x140
+cards, hover border and 28 px menu. A phone (display shortest side
+under 600) holds its home in portrait: HjvOrientationObserver counts
+the pages on the app's navigator and asks portraitUp while the home is
+the only page, every declared orientation under a page above it (the
+remote screen, file transfer, terminal, camera, settings sub-screens);
+dialogs and popup menus are not pages. Tablets are not held. Where the
+system ignores the hold (Android split screen and free windows), a
+window 500 high or lower gets a 44 px app bar. G3 is already one line
+(U04); the sliver peer list of the item's first proposal is not done
+(design T7 chose the portrait hold instead).
+
+U65: on a tablet the connection page (ID field, G3, tab bar, list) is
+one column in the middle, at most 810 wide like the settings; the ID
+field follows the column instead of the 600 kMobilePageConstraints
+(the web keeps 600). A tablet's peer list from 700 wide shows the touch
+cards in two columns (hjvPeerColumns), in the same ListView.builder, a
+row per item; a phone's list stays one card per row. My PCs and the
+other tabs share this through peers_view.dart.
+
+G20 (1.8.2 screen review carry-over): on a phone, S1's [지원 코드 만들기]
+sits at the right of the My PCs panel's search row instead of a row of
+its own above the panel, which made the tab about 48 px taller.
+
+Tests: hjviewer_phone_test.dart, the size rules, the two columns, the
+low app bar, and the observer with dialogs and pages on a phone and a
+tablet.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_phone.dart             | 118 +++++++++++++++++-
+ flutter/lib/common/widgets/my_group.dart      |   9 +-
+ flutter/lib/common/widgets/peers_view.dart    |  39 ++++--
+ flutter/lib/main.dart                         |  13 +-
+ flutter/lib/mobile/pages/connection_page.dart |  20 ++-
+ flutter/lib/mobile/pages/home_page.dart       |   3 +
+ flutter/test/hjviewer_phone_test.dart         | 105 +++++++++++++++-
+ 7 files changed, 286 insertions(+), 21 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_phone.dart b/flutter/lib/common/hjv_phone.dart
+index 146e285..2431f72 100644
+--- a/flutter/lib/common/hjv_phone.dart
++++ b/flutter/lib/common/hjv_phone.dart
+@@ -1,11 +1,13 @@
+ // HJViewer: what the phone screens share: the size of a tap target and the plan of the peer
+ // bar's right side (U57), the system bars' style of each theme (U61), and the rows of the
+-// settings' "Network (advanced)" screen (U40), and an overlay dialog's back press and screen
+-// reader scope (U63, U59). Plain Flutter without the bridge.
++// settings' "Network (advanced)" screen (U40), an overlay dialog's back press and screen
++// reader scope (U63, U59), and the layout phones and tablets choose by their size (U64, U65).
++// Plain Flutter without the bridge.
+ 
+ import 'dart:math';
+ 
+ import 'package:back_button_interceptor/back_button_interceptor.dart';
++import 'package:flutter/foundation.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ 
+@@ -129,6 +131,118 @@ void hjvAddDialogBack(String tag,
+ Widget hjvDialogScope(Widget dialog) => BlockSemantics(
+     child: Semantics(scopesRoute: true, explicitChildNodes: true, child: dialog));
+ 
++// ---- the layout by size (U64, U65) ----
++
++/// A screen whose shortest side is at least this (dp, iOS pt) is a tablet's; below it, a phone's.
++const double kHjvTabletSide = 600;
++
++/// The connection page's column on a tablet: as wide as the settings' list (settings_ui's 810).
++const double kHjvPageColumn = 810;
++
++/// A peer list at least this wide shows its cards in two columns.
++const double kHjvTwoColumns = 700;
++
++/// The home's app bar on a window this low or lower (a phone held landscape where the system
++/// ignores the portrait lock, as in Android's split screen and free windows) is [kHjvLowAppBar].
++const double kHjvLowWindow = 500;
++const double kHjvLowAppBar = 44;
++
++/// stateGlobal.isPortrait (main.dart): the Android and iOS app keep the portrait layout in any
++/// orientation and window (a phone held landscape, an iPad, a split screen), so that the touch
++/// screens never get the desktop's cards, hover and 28 px ⋮; the web keeps choosing by [aspect]
++/// (width / height), as upstream does.
++bool hjvPortraitLayout({required bool mobileApp, required double aspect}) =>
++    mobileApp || aspect <= 1;
++
++/// Whether the phone's home (its tabs, their popups and dialogs) holds the portrait orientation:
++/// on a phone, not on a tablet, whose multitasking does not let an app hold one.
++bool hjvLocksPortrait(double shortestSide) => shortestSide < kHjvTabletSide;
++
++/// The orientations the app asks for: portrait up while a phone's home is the top page, every
++/// one the app declares (an empty list) under a page above it (the remote screen, file transfer,
++/// the terminal, the camera, and the settings' sub-screens) and on a tablet.
++List<DeviceOrientation> hjvHomeOrientations(
++        {required double shortestSide, required bool homeOnTop}) =>
++    homeOnTop && hjvLocksPortrait(shortestSide)
++        ? const [DeviceOrientation.portraitUp]
++        : const [];
++
++/// How many columns of the portrait cards a peer list [width] wide shows, in a window whose
++/// shortest side is [shortestSide]: a phone's list is one card per row, a tablet's two from
++/// [kHjvTwoColumns] (the page column keeps it below three).
++int hjvPeerColumns({required double width, required double shortestSide}) =>
++    shortestSide >= kHjvTabletSide && width >= kHjvTwoColumns ? 2 : 1;
++
++/// The home's app bar height in a window [height] high: [kHjvLowAppBar] in a low window, else
++/// the theme's (null).
++double? hjvAppBarHeight(double height) =>
++    height <= kHjvLowWindow ? kHjvLowAppBar : null;
++
++/// The shortest side of the device's display (not of the app's window), in logical pixels: a
++/// phone in a split screen is still a phone.
++double hjvDisplayShortestSide() {
++  final views = WidgetsBinding.instance.platformDispatcher.views;
++  if (views.isEmpty) return 0;
++  final display = views.first.display;
++  return display.size.shortestSide / display.devicePixelRatio;
++}
++
++/// Holds a phone's home in portrait (hjvHomeOrientations): counts the pages on the app's
++/// navigator (a popup menu or a dialog route is not a page) and asks the system again as the
++/// count crosses one. [apply] again when the display may have changed (a foldable opened).
++class HjvOrientationObserver extends NavigatorObserver {
++  final double Function() shortestSide;
++  final Future<void> Function(List<DeviceOrientation>) setOrientations;
++  HjvOrientationObserver(
++      {double Function()? shortestSide,
++      Future<void> Function(List<DeviceOrientation>)? setOrientations})
++      : shortestSide = shortestSide ?? hjvDisplayShortestSide,
++        setOrientations =
++            setOrientations ?? SystemChrome.setPreferredOrientations;
++
++  int _pages = 0;
++  List<DeviceOrientation>? _asked;
++
++  /// The pages on the navigator, the home included.
++  int get pages => _pages;
++
++  void apply() {
++    final want = hjvHomeOrientations(
++        shortestSide: shortestSide(), homeOnTop: _pages <= 1);
++    if (_asked != null && listEquals(_asked, want)) return;
++    _asked = want;
++    setOrientations(want).catchError((Object e) => debugPrint('hjv: $e'));
++  }
++
++  void _count(Route<dynamic>? route, int by) {
++    if (route is PageRoute) {
++      _pages = max(0, _pages + by);
++      apply();
++    }
++  }
++
++  @override
++  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) =>
++      _count(route, 1);
++
++  @override
++  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) =>
++      _count(route, -1);
++
++  @override
++  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) =>
++      _count(route, -1);
++
++  @override
++  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
++    _count(oldRoute, -1);
++    _count(newRoute, 1);
++  }
++}
++
++/// The phone app's one observer (main.dart's navigatorObservers and its metrics).
++final hjvOrientationObserver = HjvOrientationObserver();
++
+ /// The phone screens' own texts, Korean where translate() is Korean (hjviewer_labels.dart).
+ class HjvPhoneTexts {
+   final bool korean;
+diff --git a/flutter/lib/common/widgets/my_group.dart b/flutter/lib/common/widgets/my_group.dart
+index af56171..30ada2f 100644
+--- a/flutter/lib/common/widgets/my_group.dart
++++ b/flutter/lib/common/widgets/my_group.dart
+@@ -49,8 +49,6 @@ class _MyGroupState extends State<MyGroup> {
+       final bannerRight = stateGlobal.isPortrait.isTrue ? 0.0 : 12.0;
+       return Column(
+         children: [
+-          // S1 above the list in portrait; landscape has it in the tab bar (peer_tab_page.dart)
+-          if (stateGlobal.isPortrait.isTrue) ...hjvSupportCodeEntry(),
+           ...hjvNetworkBanner(context)
+               .map((w) => w.paddingOnly(right: bannerRight)),
+           if (!hjvOwnsListError())
+@@ -111,7 +109,9 @@ class _MyGroupState extends State<MyGroup> {
+             child: Column(
+               mainAxisSize: MainAxisSize.min,
+               children: [
+-                _buildLeftHeader(),
++                // S1 in portrait at the right of the panel's search, not in a row of its own
++                // (G20); landscape has it in the tab bar (peer_tab_page.dart)
++                _buildLeftHeader(support: true),
+                 Container(
+                   width: double.infinity,
+                   child: _buildLeftList(),
+@@ -135,7 +135,7 @@ class _MyGroupState extends State<MyGroup> {
+     );
+   }
+ 
+-  Widget _buildLeftHeader() {
++  Widget _buildLeftHeader({bool support = false}) {
+     final fontSize = 13.0;
+     return Row(
+       children: [
+@@ -162,6 +162,7 @@ class _MyGroupState extends State<MyGroup> {
+             isDense: true,
+           ),
+         ).workaroundFreezeLinuxMint()),
++        if (support) ...hjvSupportCodeEntry(),
+       ],
+     ).marginOnly(left: 8, top: 8, right: 8, bottom: 6);
+   }
+diff --git a/flutter/lib/common/widgets/peers_view.dart b/flutter/lib/common/widgets/peers_view.dart
+index 8e7129a..8ae684b 100644
+--- a/flutter/lib/common/widgets/peers_view.dart
++++ b/flutter/lib/common/widgets/peers_view.dart
+@@ -14,6 +14,7 @@ import 'package:visibility_detector/visibility_detector.dart';
+ import 'package:window_manager/window_manager.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_phone.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_access.dart';
+ import '../../models/peer_model.dart';
+@@ -278,13 +279,7 @@ class _PeersViewState extends State<_PeersView>
+             // Continious rebuilds of `ListView.builder` will cause memory leak.
+             // Simple demo can reproduce this issue.
+             final Widget child = Obx(() => stateGlobal.isPortrait.isTrue
+-                ? ListView.builder(
+-                    itemCount: peers.length,
+-                    itemBuilder: (BuildContext context, int index) {
+-                      return buildOnePeer(peers[index], true).marginOnly(
+-                          top: index == 0 ? 0 : space / 2, bottom: space / 2);
+-                    },
+-                  )
++                ? _hjvPortraitList(peers, buildOnePeer)
+                 : peerCardUiType.value == PeerUiType.list
+                     ? ListView.builder(
+                         controller: _scrollController,
+@@ -326,6 +321,36 @@ class _PeersViewState extends State<_PeersView>
+     return body;
+   }
+ 
++  // HJViewer: the touch cards one per row on a phone, in two columns on a tablet's wide list
++  // (U64, U65); still one ListView.builder (see the rebuild note above), a row per item
++  Widget _hjvPortraitList(
++          List<Peer> peers, Widget Function(Peer, bool) buildOnePeer) =>
++      LayoutBuilder(builder: (context, c) {
++        final cols = hjvPeerColumns(
++            width: c.maxWidth,
++            shortestSide: MediaQuery.sizeOf(context).shortestSide);
++        return ListView.builder(
++          itemCount: (peers.length + cols - 1) ~/ cols,
++          itemBuilder: (BuildContext context, int index) {
++            final Widget row = cols == 1
++                ? buildOnePeer(peers[index], true)
++                : Row(
++                    crossAxisAlignment: CrossAxisAlignment.start,
++                    children: [
++                        for (var i = 0; i < cols; i++) ...[
++                          if (i > 0) SizedBox(width: space),
++                          Expanded(
++                              child: index * cols + i < peers.length
++                                  ? buildOnePeer(peers[index * cols + i], true)
++                                  : const SizedBox.shrink()),
++                        ]
++                      ]);
++            return row.marginOnly(
++                top: index == 0 ? 0 : space / 2, bottom: space / 2);
++          },
++        );
++      });
++
+   var _queryInterval = const Duration(seconds: 20);
+ 
+   void _startCheckOnlines() {
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index b40aeb5..5464609 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -6,6 +6,7 @@ import 'package:bot_toast/bot_toast.dart';
+ import 'package:desktop_multi_window/desktop_multi_window.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjv_phone.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+@@ -491,10 +492,12 @@ class _AppState extends State<App> with WidgetsBindingObserver {
+     // stateGlobal.isPortrait.value =
+     //     MediaQuery.of(context).orientation == Orientation.portrait;
+ 
+-    final orientation = View.of(context).physicalSize.aspectRatio > 1
+-        ? Orientation.landscape
+-        : Orientation.portrait;
+-    stateGlobal.isPortrait.value = orientation == Orientation.portrait;
++    // HJViewer: the Android and iOS app keep the portrait layout in any orientation, a phone's
++    // home holds portrait, and a foldable that opens becomes a tablet (U64)
++    stateGlobal.isPortrait.value = hjvPortraitLayout(
++        mobileApp: isMobile,
++        aspect: View.of(context).physicalSize.aspectRatio);
++    if (isMobile) hjvOrientationObserver.apply();
+   }
+ 
+   @override
+@@ -538,6 +541,8 @@ class _AppState extends State<App> with WidgetsBindingObserver {
+           navigatorObservers: [
+             // FirebaseAnalyticsObserver(analytics: analytics),
+             BotToastNavigatorObserver(),
++            // HJViewer: a phone's home in portrait, the pages above it in any orientation (U64)
++            if (isMobile) hjvOrientationObserver,
+           ],
+           // HJViewer: the phone app's optional app lock covers all of it
+           builder: hjvAppLockBuilder(isAndroid
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index 64ce15d..25eae17 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
+ import 'package:flutter_hbb/models/peer_model.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_phone.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+@@ -86,7 +87,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
+   @override
+   Widget build(BuildContext context) {
+     Provider.of<FfiModel>(context);
+-    return hjvGate(CustomScrollView(
++    final page = CustomScrollView(
+       slivers: [
+         SliverList(
+             delegate: SliverChildListDelegate([
+@@ -101,7 +102,17 @@ class _ConnectionPageState extends State<ConnectionPage> {
+           child: PeerTabPage(),
+         )
+       ],
+-    ).marginOnly(top: 2, left: 10, right: 10));
++    );
++    // HJViewer: on a tablet the ID field, G3, the tab bar and the list are one column in the
++    // middle, as wide as the settings' (U65); a phone is narrower than it
++    return hjvGate((isMobile
++            ? Align(
++                alignment: Alignment.topCenter,
++                child: ConstrainedBox(
++                    constraints: const BoxConstraints(maxWidth: kHjvPageColumn),
++                    child: page))
++            : page)
++        .marginOnly(top: 2, left: 10, right: 10));
+   }
+ 
+   /// Callback for the connect button.
+@@ -342,9 +353,12 @@ class _ConnectionPageState extends State<ConnectionPage> {
+             .marginOnly(bottom: 10, top: 15, left: 12),
+       w
+     ]);
++    // HJViewer: the app's ID field is as wide as the page's column (U65); the web's keeps 600
+     return Align(
+         alignment: Alignment.topCenter,
+-        child: Container(constraints: kMobilePageConstraints, child: child));
++        child: Container(
++            constraints: isMobile ? null : kMobilePageConstraints,
++            child: child));
+   }
+ 
+   @override
+diff --git a/flutter/lib/mobile/pages/home_page.dart b/flutter/lib/mobile/pages/home_page.dart
+index eb779ae..15e9ed2 100644
+--- a/flutter/lib/mobile/pages/home_page.dart
++++ b/flutter/lib/mobile/pages/home_page.dart
+@@ -4,6 +4,7 @@ import 'package:flutter_hbb/mobile/pages/settings_page.dart';
+ import 'package:flutter_hbb/web/settings_page.dart';
+ import 'package:get/get.dart';
+ import '../../common.dart';
++import '../../common/hjv_phone.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/widgets/chat_page.dart';
+ import '../../models/platform_model.dart';
+@@ -75,6 +76,8 @@ class HomePageState extends State<HomePage> {
+               : HjvPalette.light.canvas,
+           appBar: AppBar(
+             centerTitle: true,
++            // HJViewer: lower in a low window, where the system does not hold portrait (U64)
++            toolbarHeight: hjvAppBarHeight(MediaQuery.sizeOf(context).height),
+             title: appTitle(),
+             actions: _pages.elementAt(_selectedIndex).appBarActions,
+           ),
+diff --git a/flutter/test/hjviewer_phone_test.dart b/flutter/test/hjviewer_phone_test.dart
+index d8c53e3..cc5c248 100644
+--- a/flutter/test/hjviewer_phone_test.dart
++++ b/flutter/test/hjviewer_phone_test.dart
+@@ -2,11 +2,13 @@ import 'dart:io';
+ 
+ import 'package:back_button_interceptor/back_button_interceptor.dart';
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hjv_phone.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+-// HJViewer's phone targets, system bars and settings rows, without the bridge.
++// HJViewer's phone targets, system bars, settings rows, dialogs' back press and the layout by
++// size, without the bridge.
+ 
+ /// The width the peer bar's right side takes with the search field open.
+ double openRight(int shown, int actions) =>
+@@ -242,4 +244,105 @@ void main() {
+     expect(read(), contains('home'));
+     semantics.dispose();
+   });
++
++  test('phones and tablets choose their layout by size, not by aspect (U64)',
++      () {
++    // the app keeps the touch layout held landscape, on an iPad, in a split screen
++    for (final aspect in [0.46, 1.0, 1.33, 2.17]) {
++      expect(hjvPortraitLayout(mobileApp: true, aspect: aspect), isTrue,
++          reason: '$aspect');
++    }
++    // the web chooses by aspect as upstream does
++    expect(hjvPortraitLayout(mobileApp: false, aspect: 0.6), isTrue);
++    expect(hjvPortraitLayout(mobileApp: false, aspect: 1.0), isTrue);
++    expect(hjvPortraitLayout(mobileApp: false, aspect: 1.6), isFalse);
++
++    // iPhone SE, 15, 15 Pro Max, an Android phone hold portrait; iPad mini, Air, 13" do not
++    for (final side in [320.0, 375.0, 393.0, 412.0, 430.0, 599.0]) {
++      expect(hjvLocksPortrait(side), isTrue, reason: '$side');
++    }
++    for (final side in [600.0, 744.0, 820.0, 1024.0]) {
++      expect(hjvLocksPortrait(side), isFalse, reason: '$side');
++    }
++    expect(hjvHomeOrientations(shortestSide: 393, homeOnTop: true),
++        [DeviceOrientation.portraitUp]);
++    expect(hjvHomeOrientations(shortestSide: 393, homeOnTop: false), isEmpty);
++    expect(hjvHomeOrientations(shortestSide: 820, homeOnTop: true), isEmpty);
++  });
++
++  test('a tablet list from 700 wide has two columns, a phone one (U64, U65)',
++      () {
++    // a phone held landscape where the lock does not hold: still one card per row
++    expect(hjvPeerColumns(width: 912, shortestSide: 430), 1);
++    // iPad 11" either way (the 810 column less the page's margins), iPad mini portrait
++    expect(hjvPeerColumns(width: 790, shortestSide: 834), 2);
++    expect(hjvPeerColumns(width: 724, shortestSide: 744), 2);
++    expect(hjvPeerColumns(width: kHjvTwoColumns, shortestSide: 800), 2);
++    // narrower: an Android tablet's 600 dp, an iPad's split view
++    expect(hjvPeerColumns(width: 699, shortestSide: 800), 1);
++    expect(hjvPeerColumns(width: 580, shortestSide: 600), 1);
++    expect(hjvPeerColumns(width: 300, shortestSide: 320), 1);
++    // the page column (the settings' 810) keeps two columns of cards far above the item's 160
++    expect(hjvPeerColumns(width: kHjvPageColumn, shortestSide: 1024), 2);
++    expect(kHjvPageColumn / 2, greaterThanOrEqualTo(160));
++  });
++
++  test('the home app bar is lower in a low window (U64)', () {
++    expect(hjvAppBarHeight(393), kHjvLowAppBar);
++    expect(hjvAppBarHeight(kHjvLowWindow), kHjvLowAppBar);
++    expect(hjvAppBarHeight(kHjvLowWindow + 1), isNull);
++    expect(hjvAppBarHeight(852), isNull);
++  });
++
++  testWidgets('a phone home holds portrait, the pages above it rotate (U64)',
++      (tester) async {
++    for (final side in [393.0, 820.0]) {
++      final asked = <List<DeviceOrientation>>[];
++      final observer = HjvOrientationObserver(
++          shortestSide: () => side,
++          setOrientations: (o) async => asked.add(o));
++      final nav = GlobalKey<NavigatorState>();
++      await tester.pumpWidget(MaterialApp(
++          key: ValueKey(side),
++          navigatorKey: nav,
++          navigatorObservers: [observer],
++          home: const Scaffold(body: Text('home'))));
++      expect(observer.pages, 1);
++      final phone = side < kHjvTabletSide;
++      expect(asked, [if (phone) [DeviceOrientation.portraitUp] else []],
++          reason: '$side');
++
++      // a dialog or a popup menu over the home is not a page: the home keeps portrait
++      showDialog(
++          context: nav.currentContext!, builder: (_) => const Text('dialog'));
++      await tester.pumpAndSettle();
++      expect(observer.pages, 1);
++      nav.currentState!.pop();
++      await tester.pumpAndSettle();
++
++      // the remote screen (a page) rotates; back home, portrait again; asked once each
++      nav.currentState!.push(MaterialPageRoute(
++          builder: (_) => const Scaffold(body: Text('remote'))));
++      await tester.pumpAndSettle();
++      nav.currentState!.push(MaterialPageRoute(
++          builder: (_) => const Scaffold(body: Text('file transfer'))));
++      await tester.pumpAndSettle();
++      expect(observer.pages, 3);
++      nav.currentState!.pop();
++      await tester.pumpAndSettle();
++      nav.currentState!.pop();
++      await tester.pumpAndSettle();
++      expect(observer.pages, 1);
++      expect(
++          asked,
++          phone
++              ? [
++                  [DeviceOrientation.portraitUp],
++                  <DeviceOrientation>[],
++                  [DeviceOrientation.portraitUp],
++                ]
++              : [<DeviceOrientation>[]],
++          reason: '$side');
++    }
++  });
+ }

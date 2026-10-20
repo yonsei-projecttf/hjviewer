@@ -1,0 +1,244 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:06:26 +0900
+Subject: [PATCH 099/147] hjviewer: a dialog takes the back press with its own
+ cancel, screen readers stay inside it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+UX-M2, the API (critic 4-2: in early, so that other lanes' new dialogs pass it):
+- U63: OverlayDialogManager.show takes onBack, which an HJViewer dialog sets to its [취소] or
+  [닫기]; without it a backDismiss dialog closes and an upstream dialog swallows the press, as
+  before. The interceptor (hjvAddDialogBack, hjv_phone.dart) is added with ifNotYetIntercepted:
+  the dialog added last takes the press and the ones below it do not, so one back press closes
+  one dialog; while the app lock (W13) holds back presses, which runs first by its zIndex, no
+  dialog under the cover takes one.
+- U59 (the overlay part): the dialog's overlay entry is wrapped in BlockSemantics and a Semantics
+  that scopes a route (hjvDialogScope), so TalkBack, VoiceOver and Narrator do not move to the
+  home behind an open dialog. The mask is a plain colour without semantics, so it needs no
+  ExcludeSemantics.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart               | 20 +++---
+ flutter/lib/common/hjv_phone.dart     | 30 ++++++++-
+ flutter/test/hjviewer_phone_test.dart | 92 +++++++++++++++++++++++++++
+ 3 files changed, 132 insertions(+), 10 deletions(-)
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index e9ec069..9756ffb 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -29,6 +29,7 @@ import 'package:window_manager/window_manager.dart';
+ import 'package:window_size/window_size.dart' as window_size;
+ 
+ import '../consts.dart';
++import 'common/hjv_phone.dart';
+ import 'common/hjv_update.dart';
+ import 'common/hjv_style.dart';
+ import 'common/hjv_theme.dart';
+@@ -833,12 +834,15 @@ class OverlayDialogManager {
+     BackButtonInterceptor.removeByName(tag);
+   }
+ 
++  /// HJViewer: [onBack] is what a back press does while this dialog is the top one (U63,
++  /// hjvAddDialogBack): an HJViewer dialog passes its [취소] or [닫기].
+   Future<T?> show<T>(DialogBuilder builder,
+       {bool clickMaskDismiss = false,
+       bool backDismiss = false,
+       String? tag,
+       bool useAnimation = true,
+-      bool forceGlobal = false}) {
++      bool forceGlobal = false,
++      VoidCallback? onBack}) {
+     final overlayState =
+         forceGlobal ? globalKey.currentState?.overlay : _overlayKeyState.state;
+ 
+@@ -870,7 +874,8 @@ class OverlayDialogManager {
+ 
+     dialog.entry = OverlayEntry(builder: (context) {
+       bool innerClicked = false;
+-      return Listener(
++      // HJViewer: a screen reader stays in the dialog (U59)
++      return hjvDialogScope(Listener(
+           onPointerUp: (_) {
+             if (!innerClicked && clickMaskDismiss) {
+               close();
+@@ -886,15 +891,12 @@ class OverlayDialogManager {
+                   onPointerUp: (_) => innerClicked = true,
+                   child: builder(setState, close, overlayState.context),
+                 );
+-              })));
++              }))));
+     });
+     overlayState.insert(dialog.entry!);
+-    BackButtonInterceptor.add((stopDefaultButtonEvent, routeInfo) {
+-      if (backDismiss) {
+-        close();
+-      }
+-      return true;
+-    }, name: dialogTag);
++    // HJViewer: the top dialog alone takes a back press, [onBack] first (U63)
++    hjvAddDialogBack(dialogTag,
++        onBack: onBack, backDismiss: backDismiss, close: close);
+     return dialog.completer.future;
+   }
+ 
+diff --git a/flutter/lib/common/hjv_phone.dart b/flutter/lib/common/hjv_phone.dart
+index 79aef78..146e285 100644
+--- a/flutter/lib/common/hjv_phone.dart
++++ b/flutter/lib/common/hjv_phone.dart
+@@ -1,9 +1,11 @@
+ // HJViewer: what the phone screens share: the size of a tap target and the plan of the peer
+ // bar's right side (U57), the system bars' style of each theme (U61), and the rows of the
+-// settings' "Network (advanced)" screen (U40). Plain Flutter without the bridge.
++// settings' "Network (advanced)" screen (U40), and an overlay dialog's back press and screen
++// reader scope (U63, U59). Plain Flutter without the bridge.
+ 
+ import 'dart:math';
+ 
++import 'package:back_button_interceptor/back_button_interceptor.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ 
+@@ -101,6 +103,32 @@ List<HjvNetworkRow> hjvPhoneNetworkRows({
+       ],
+     ];
+ 
++/// U63: a back press while a dialog of OverlayDialogManager.show is up (common.dart), under the
++/// dialog's tag. [onBack] is the dialog's own [취소] or [닫기], which an HJViewer dialog passes
++/// (also while it checks, as the button); without it a [backDismiss] dialog closes, and an
++/// upstream dialog does nothing, as before. Either way the press goes no further. Only the top
++/// dialog takes it: the interceptor added last runs first, and once one has taken the press the
++/// ones below are skipped; so is every dialog while the app lock holds back presses
++/// (hjviewer_applock.dart, which runs before them by its zIndex).
++void hjvAddDialogBack(String tag,
++        {VoidCallback? onBack,
++        bool backDismiss = false,
++        required VoidCallback close}) =>
++    BackButtonInterceptor.add((stopDefaultButtonEvent, routeInfo) {
++      if (onBack != null) {
++        onBack();
++      } else if (backDismiss) {
++        close();
++      }
++      return true;
++    }, name: tag, ifNotYetIntercepted: true);
++
++/// U59: an overlay dialog as a screen of its own for TalkBack, VoiceOver and Narrator: what is
++/// behind it leaves the semantics tree while it is up, as behind a dialog route. The mask is a
++/// plain colour, which has no semantics to exclude.
++Widget hjvDialogScope(Widget dialog) => BlockSemantics(
++    child: Semantics(scopesRoute: true, explicitChildNodes: true, child: dialog));
++
+ /// The phone screens' own texts, Korean where translate() is Korean (hjviewer_labels.dart).
+ class HjvPhoneTexts {
+   final bool korean;
+diff --git a/flutter/test/hjviewer_phone_test.dart b/flutter/test/hjviewer_phone_test.dart
+index 76d9f39..d8c53e3 100644
+--- a/flutter/test/hjviewer_phone_test.dart
++++ b/flutter/test/hjviewer_phone_test.dart
+@@ -1,5 +1,6 @@
+ import 'dart:io';
+ 
++import 'package:back_button_interceptor/back_button_interceptor.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common/hjv_phone.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+@@ -150,4 +151,95 @@ void main() {
+       expect(build, isNot(contains("translate('$row')")), reason: row);
+     }
+   });
++
++  testWidgets('a back press goes to the top dialog alone, its onBack first',
++      (tester) async {
++    var routePops = 0;
++    final routePop = BackButtonInterceptor.handlePopRouteFunction;
++    BackButtonInterceptor.handlePopRouteFunction = () async => routePops++;
++    addTearDown(() {
++      BackButtonInterceptor.removeAll();
++      BackButtonInterceptor.handlePopRouteFunction = routePop;
++    });
++    final did = <String>[];
++    // as OverlayDialogManager.show adds them: an upstream dialog, one that a back press closes,
++    // and an HJViewer dialog on top that passes its [취소]
++    hjvAddDialogBack('upstream', close: () => did.add('upstream closed'));
++    hjvAddDialogBack('below',
++        backDismiss: true, close: () => did.add('below closed'));
++    hjvAddDialogBack('top',
++        onBack: () => did.add('top cancelled'),
++        backDismiss: true,
++        close: () => did.add('top closed'));
++
++    await BackButtonInterceptor.popRoute();
++    expect(did, ['top cancelled']);
++    // the dialog's close takes its interceptor out (common.dart)
++    BackButtonInterceptor.removeByName('top');
++    await BackButtonInterceptor.popRoute();
++    expect(did, ['top cancelled', 'below closed']);
++    BackButtonInterceptor.removeByName('below');
++    // the upstream dialog does not close, and the route under it does not pop
++    await BackButtonInterceptor.popRoute();
++    expect(did, ['top cancelled', 'below closed']);
++    expect(routePops, 0);
++
++    // while the app lock holds back presses (hjviewer_applock.dart), no dialog takes one, also
++    // one shown after the lock came up
++    BackButtonInterceptor.add((stop, info) => true,
++        name: 'hjv-app-lock', zIndex: 1 << 30);
++    hjvAddDialogBack('later',
++        onBack: () => did.add('later cancelled'), close: () {});
++    await BackButtonInterceptor.popRoute();
++    expect(did, ['top cancelled', 'below closed']);
++    BackButtonInterceptor.removeByName('hjv-app-lock');
++    await BackButtonInterceptor.popRoute();
++    expect(did.last, 'later cancelled');
++
++    BackButtonInterceptor.removeAll();
++    await BackButtonInterceptor.popRoute();
++    expect(routePops, 1);
++  });
++
++  testWidgets('a screen reader stays inside an overlay dialog', (tester) async {
++    final semantics = tester.ensureSemantics();
++    final overlay = GlobalKey<OverlayState>();
++    await tester.pumpWidget(MaterialApp(
++        home: Overlay(key: overlay, initialEntries: [
++      OverlayEntry(
++          builder: (_) => Scaffold(
++              body: TextButton(onPressed: () {}, child: const Text('home')))),
++    ])));
++    List<String> read() => tester.semantics
++        .simulatedAccessibilityTraversal()
++        .map((node) => node.label)
++        .where((label) => label.isNotEmpty)
++        .toList();
++    expect(read(), contains('home'));
++
++    Widget dialog() => Container(
++        color: Colors.black12,
++        child: Center(
++            child: TextButton(onPressed: () {}, child: const Text('cancel'))));
++    // without the scope the home stays reachable behind the dialog
++    final plain = OverlayEntry(builder: (_) => dialog());
++    overlay.currentState!.insert(plain);
++    await tester.pump();
++    expect(read(), containsAll(['home', 'cancel']));
++    plain.remove();
++
++    final scoped = OverlayEntry(builder: (_) => hjvDialogScope(dialog()));
++    overlay.currentState!.insert(scoped);
++    await tester.pump();
++    expect(read(), contains('cancel'));
++    expect(read(), isNot(contains('home')));
++    expect(
++        tester.getSemantics(find.text('cancel')).getSemanticsData().label,
++        'cancel');
++
++    scoped.remove();
++    await tester.pump();
++    expect(read(), contains('home'));
++    semantics.dispose();
++  });
+ }

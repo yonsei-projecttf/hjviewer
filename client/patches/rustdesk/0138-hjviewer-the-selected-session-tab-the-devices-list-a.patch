@@ -1,0 +1,498 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 06:47:42 +0900
+Subject: [PATCH 138/147] hjviewer: the selected session tab, the devices list
+ arrow on the title line (UX-K2, D16)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+UX-K2 (U59) follow-up, the wave-3 keys lane's open point: the tab pills of the session and main windows
+(tabbar_widget.dart _TabState._hjvBuild) are one node inside hjvSelectedSemantics, a button
+that a screen reader reads as selected or not. Its close button stays a node of its own,
+which is not selected. The PC list tabs and the settings side bar rows already had it around
+their HjvFocusRing (UX-K2); a test now covers the ring inside it: the row stays one selected
+node that the keyboard focuses.
+
+MenuEntryRadios and MenuEntrySubRadios have no user in this tree, so popup_menu.dart is not
+changed (keys-uxk2-docs.md says how to wrap them if one comes).
+
+Tests (hjviewer_semantics_test.dart): a tab with the focus ring stays one selected node,
+focused by the keyboard; a session tab is selected, its close button a node of its own that
+is not.
+
+D16 (1.8.2 screen review carry-over): on a row of two or three lines the arrow and
+[로그아웃시키기] sat by their own heights at the title's top, not on its line: the 24 px
+arrow, a 17-20 px title line and a 20 px (desktop, compact density) or 28 px button. The row
+is now hjvTitleLineTile in the new pure common/hjv_title_line.dart: every title line is 24 px
+(a forced strut, the text in its middle, whatever the font's line height), the arrow is 24 px
+under any icon theme and the button hjvTitleLineButton is 24 px in every density. With
+ListTileTitleAlignment.top and the least height 48 that already put every row's title at the
+top padding, the arrow, the title's first line and the button share one middle on rows of one,
+two or three lines alike. The texts, the colours, the paddings and what the row does stay.
+
+Tests (hjviewer_title_line_test.dart): desktop and phone: the arrow and the button sit on the
+title line of every row; a font with a taller line keeps the title line; a long title wraps
+with the arrow on its first line.
+
+Lane snap commits c052714 and 85aa44d, squashed on merge.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_title_line.dart        |  73 ++++++++++
+ flutter/lib/common/hjviewer_account.dart      |  90 +++++-------
+ .../lib/desktop/widgets/tabbar_widget.dart    |   7 +-
+ flutter/test/hjviewer_semantics_test.dart     |  75 ++++++++++
+ flutter/test/hjviewer_title_line_test.dart    | 132 ++++++++++++++++++
+ 5 files changed, 321 insertions(+), 56 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_title_line.dart
+ create mode 100644 flutter/test/hjviewer_title_line_test.dart
+
+diff --git a/flutter/lib/common/hjv_title_line.dart b/flutter/lib/common/hjv_title_line.dart
+new file mode 100644
+index 0000000..8825644
+--- /dev/null
++++ b/flutter/lib/common/hjv_title_line.dart
+@@ -0,0 +1,73 @@
++// HJViewer D16 (the 1.8.2 screen review): a list row that opens (the logged-in devices list's), with
++// its arrow and its button on the middle of the title's first line, on a row of one line under the
++// title as on one of two or three. Plain Flutter without the bridge, so that ci.sh tests it with the
++// web stand-in (test/hjviewer_title_line_test.dart).
++
++import 'package:flutter/material.dart';
++
++/// The title's line: as high as the arrow (an Icon's 24 px) and the row's button.
++const double kHjvTitleLine = 24;
++
++/// Every line of a title kHjvTitleLine high with the text in its middle, whatever the font's own
++/// line height. ListTileTitleAlignment.top puts the arrow and the button at the title's top, so
++/// that they then sit on the middle of its first line.
++StrutStyle hjvTitleLineStrut(double fontSize) => StrutStyle(
++      fontSize: fontSize,
++      height: kHjvTitleLine / fontSize,
++      leadingDistribution: TextLeadingDistribution.even,
++      forceStrutHeight: true,
++    );
++
++/// A text button on the title's line (the row's trailing): kHjvTitleLine high in every visual
++/// density (a desktop's compact one takes 8 px off a minimum size), its label on the line's middle.
++ButtonStyle hjvTitleLineButton(Color foreground) => TextButton.styleFrom(
++      foregroundColor: foreground,
++      padding: const EdgeInsets.symmetric(horizontal: 10),
++      minimumSize: const Size(0, kHjvTitleLine),
++      visualDensity: VisualDensity.standard,
++      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
++    );
++
++/// The row: the arrow before the title, `subtitle` under it, `trailing` (hjvTitleLineButton) at
++/// the end of the title's line, and `children` when opened. The low least height (48) puts every
++/// row's title at the top padding, where ListTileTitleAlignment.top puts the arrow and `trailing`;
++/// with a taller one a row of one line under the title would centre its title lower.
++Widget hjvTitleLineTile({
++  required String title,
++  required TextStyle titleStyle,
++  required Widget subtitle,
++  Widget? trailing,
++  required List<Widget> children,
++  Color? iconColor,
++  Color? collapsedIconColor,
++}) =>
++    IconTheme.merge(
++      // the arrow as high as the title's line, also under a theme with other icon sizes
++      data: const IconThemeData(size: kHjvTitleLine),
++      child: ListTileTheme.merge(
++        // the arrow close to the text, so that a phone's narrow dialog keeps room for the lines
++        horizontalTitleGap: 8,
++        minLeadingWidth: kHjvTitleLine,
++        minVerticalPadding: 4,
++        titleAlignment: ListTileTitleAlignment.top,
++        child: ExpansionTile(
++          minTileHeight: 48,
++          controlAffinity: ListTileControlAffinity.leading,
++          tilePadding: const EdgeInsets.only(left: 10, right: 4),
++          shape: const Border(),
++          collapsedShape: const Border(),
++          iconColor: iconColor,
++          collapsedIconColor: collapsedIconColor,
++          title: Text(title,
++              style: titleStyle,
++              strutStyle: hjvTitleLineStrut(titleStyle.fontSize ?? 14)),
++          subtitle: subtitle,
++          trailing: trailing,
++          expandedCrossAxisAlignment: CrossAxisAlignment.start,
++          // under the title: the padding, the arrow and the gap
++          childrenPadding: const EdgeInsets.only(
++              left: 10 + kHjvTitleLine + 8, right: 12, bottom: 12),
++          children: children,
++        ),
++      ),
++    );
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index f51326d..c2a0bb9 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -13,6 +13,7 @@ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/formatter/id_formatter.dart';
+ import 'package:flutter_hbb/common/hjv_admin_contact.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjv_title_line.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+@@ -1114,60 +1115,41 @@ class HjvKeysList extends StatelessWidget {
+     // on a phone [로그아웃시키기] below the line, so that the narrow dialog keeps the row's
+     // width for the texts
+     final below = !isDesktop && !k.current && loggedIn;
+-    // the arrow close to the text, so that a phone's narrow dialog keeps room for the lines;
+-    // D16: the arrow and [로그아웃시키기] at the title's line, also on a row of two or three lines
+-    // (a low least height keeps every row's title at the top padding, where `top` puts them)
+-    return ListTileTheme.merge(
+-      horizontalTitleGap: 8,
+-      minLeadingWidth: 24,
+-      titleAlignment: ListTileTitleAlignment.top,
+-      child: ExpansionTile(
+-        minTileHeight: 48,
+-        controlAffinity: ListTileControlAffinity.leading,
+-        tilePadding: const EdgeInsets.only(left: 10, right: 4),
+-        shape: const Border(),
+-        collapsedShape: const Border(),
+-        iconColor: p.textSecondary,
+-        collapsedIconColor: p.textTertiary,
+-        title: Text(hjvKeyTitle(t, k),
+-            style: TextStyle(
+-                fontSize: 14, fontWeight: FontWeight.w600, color: p.text)),
+-        subtitle: (below
+-                ? Column(
+-                    crossAxisAlignment: CrossAxisAlignment.start,
+-                    children: [
+-                      line,
+-                      TextButton(
+-                          style: TextButton.styleFrom(
+-                              foregroundColor: p.dangerText,
+-                              padding:
+-                                  const EdgeInsets.symmetric(horizontal: 6),
+-                              minimumSize: const Size(0, 32)),
+-                          onPressed: () => onLogOut(k),
+-                          child: Text(t.logOutDevice)),
+-                    ],
+-                  )
+-                : line)
+-            .marginOnly(top: 2),
+-        trailing: k.current || !loggedIn || below
+-            ? null
+-            : TextButton(
+-                style: TextButton.styleFrom(
+-                    foregroundColor: p.dangerText,
+-                    padding: const EdgeInsets.symmetric(horizontal: 10),
+-                    // as high as the title's line, so that its label sits on it
+-                    minimumSize: const Size(0, 28),
+-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+-                onPressed: () => onLogOut(k),
+-                child: Text(t.logOutDevice)),
+-        expandedCrossAxisAlignment: CrossAxisAlignment.start,
+-        childrenPadding: const EdgeInsets.only(left: 42, right: 12, bottom: 12),
+-        children: k.uses.isEmpty
+-            ? [Text(t.noUse, style: small)]
+-            : k.uses
+-                .map((u) => Text(hjvUseLine(t, u, local: local), style: small))
+-                .toList(),
+-      ),
++    // D16: the arrow and [로그아웃시키기] on the middle of the title's first line, also on a row
++    // of two or three lines (hjv_title_line.dart)
++    return hjvTitleLineTile(
++      title: hjvKeyTitle(t, k),
++      titleStyle:
++          TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: p.text),
++      iconColor: p.textSecondary,
++      collapsedIconColor: p.textTertiary,
++      subtitle: (below
++              ? Column(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    line,
++                    TextButton(
++                        style: TextButton.styleFrom(
++                            foregroundColor: p.dangerText,
++                            padding: const EdgeInsets.symmetric(horizontal: 6),
++                            minimumSize: const Size(0, 32)),
++                        onPressed: () => onLogOut(k),
++                        child: Text(t.logOutDevice)),
++                  ],
++                )
++              : line)
++          .marginOnly(top: 2),
++      trailing: k.current || !loggedIn || below
++          ? null
++          : TextButton(
++              style: hjvTitleLineButton(p.dangerText),
++              onPressed: () => onLogOut(k),
++              child: Text(t.logOutDevice)),
++      children: k.uses.isEmpty
++          ? [Text(t.noUse, style: small)]
++          : k.uses
++              .map((u) => Text(hjvUseLine(t, u, local: local), style: small))
++              .toList(),
+     );
+   }
+ 
+diff --git a/flutter/lib/desktop/widgets/tabbar_widget.dart b/flutter/lib/desktop/widgets/tabbar_widget.dart
+index 67b1893..be5d7b8 100644
+--- a/flutter/lib/desktop/widgets/tabbar_widget.dart
++++ b/flutter/lib/desktop/widgets/tabbar_widget.dart
+@@ -8,6 +8,7 @@ import 'package:flutter/gestures.dart';
+ import 'package:flutter/material.dart' hide TabBarTheme;
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_keys.dart';
++import 'package:flutter_hbb/common/hjv_semantics.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_labels.dart';
+@@ -1194,7 +1195,9 @@ class _TabState extends State<_Tab> with RestorationMixin {
+       child: Center(
+         child: Obx(() {
+           final hovered = hover.value;
+-          return Container(
++          // HJViewer UX-K2: a screen reader hears which tab is the selected one; the close
++          // button inside stays a button of its own
++          return hjvSelectedSemantics(selected: isSelected, child: Container(
+             height: _kHjvTabHeight,
+             margin: const EdgeInsets.symmetric(horizontal: 2),
+             decoration: BoxDecoration(
+@@ -1248,7 +1251,7 @@ class _TabState extends State<_Tab> with RestorationMixin {
+                 ),
+               ),
+             ),
+-          );
++          ));
+         }),
+       ),
+     );
+diff --git a/flutter/test/hjviewer_semantics_test.dart b/flutter/test/hjviewer_semantics_test.dart
+index 57cfada..91a23ff 100644
+--- a/flutter/test/hjviewer_semantics_test.dart
++++ b/flutter/test/hjviewer_semantics_test.dart
+@@ -1,4 +1,6 @@
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjv_keys.dart';
+ import 'package:flutter_hbb/common/hjv_semantics.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_test/flutter_test.dart';
+@@ -40,6 +42,79 @@ void main() {
+     semantics.dispose();
+   });
+ 
++  testWidgets(
++      'a tab with the focus ring stays one selected node, focused by the keyboard',
++      (tester) async {
++    final semantics = tester.ensureSemantics();
++    // peer_tab_page.dart's pill and desktop_setting_page.dart's side bar row: the ring between
++    // the selection and the InkWell
++    Widget tab(String name, bool selected) => hjvSelectedSemantics(
++        selected: selected,
++        child: HjvFocusRing(
++            child: InkWell(onTap: () {}, child: Text(name))));
++    await tester.pumpWidget(app(Column(mainAxisSize: MainAxisSize.min, children: [
++      tab('Display', true),
++      tab('Security', false),
++    ])));
++    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
++    await tester.pump();
++    expect(
++        tester.getSemantics(find.text('Display')),
++        matchesSemantics(
++            label: 'Display',
++            isButton: true,
++            isSelected: true,
++            isFocusable: true,
++            isFocused: true,
++            hasTapAction: true,
++            hasFocusAction: true));
++    expect(
++        tester.getSemantics(find.text('Security')),
++        containsSemantics(
++            label: 'Security',
++            isSelected: false,
++            isFocusable: true,
++            isFocused: false));
++    semantics.dispose();
++  });
++
++  testWidgets(
++      'a session tab is selected, its close button a node of its own that is not',
++      (tester) async {
++    final semantics = tester.ensureSemantics();
++    // tabbar_widget.dart's pill: the tab's InkWell with the close button's InkWell inside
++    Widget tab(String name, bool selected) => hjvSelectedSemantics(
++        selected: selected,
++        child: InkWell(
++            onTap: () {},
++            child: Row(mainAxisSize: MainAxisSize.min, children: [
++              Text(name),
++              Tooltip(
++                  message: 'Close $name',
++                  child: InkWell(
++                      onTap: () {}, child: const Icon(Icons.close_rounded))),
++            ])));
++    await tester.pumpWidget(app(Row(mainAxisSize: MainAxisSize.min, children: [
++      tab('123 456 789', true),
++      tab('987 654 321', false),
++    ])));
++    expect(
++        tester.getSemantics(find.text('123 456 789')),
++        containsSemantics(
++            label: '123 456 789',
++            isButton: true,
++            isSelected: true,
++            hasTapAction: true));
++    expect(tester.getSemantics(find.text('987 654 321')),
++        containsSemantics(isSelected: false, hasTapAction: true));
++    final close = tester.getSemantics(find.byIcon(Icons.close_rounded).first);
++    expect(close,
++        containsSemantics(tooltip: 'Close 123 456 789', hasTapAction: true));
++    expect(close, isNot(containsSemantics(isSelected: true)));
++    expect(close.label, isNot(contains('123 456 789')));
++    semantics.dispose();
++  });
++
+   testWidgets('a settings group title is a heading', (tester) async {
+     final semantics = tester.ensureSemantics();
+     await tester.pumpWidget(app(ListView(children: [
+diff --git a/flutter/test/hjviewer_title_line_test.dart b/flutter/test/hjviewer_title_line_test.dart
+new file mode 100644
+index 0000000..92878a6
+--- /dev/null
++++ b/flutter/test/hjviewer_title_line_test.dart
+@@ -0,0 +1,132 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common/hjv_title_line.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// D16 (the 1.8.2 screen review), the logged-in devices list's rows (common/hjv_title_line.dart):
++// the arrow and [로그아웃시키기] on the middle of the title's first line, on a row of one, two or
++// three lines alike, in a desktop's and a phone's density. Plain Flutter, no bridge.
++
++const _title = TextStyle(fontSize: 14, fontWeight: FontWeight.w600);
++
++Widget _rows(VisualDensity density, {TextStyle title = _title}) => MaterialApp(
++      // the app's theme is Material 2 (common.dart MyTheme)
++      theme: ThemeData(useMaterial3: false, visualDensity: density),
++      home: Scaffold(
++        body: Align(
++          alignment: Alignment.topLeft,
++          child: SizedBox(
++            width: 360,
++            child: Column(children: [
++              hjvTitleLineTile(
++                title: 'One',
++                titleStyle: title,
++                subtitle: const Text('Windows · logged in today'),
++                trailing: TextButton(
++                    style: hjvTitleLineButton(Colors.red),
++                    onPressed: () {},
++                    child: const Text('Log out')),
++                children: const [],
++              ),
++              hjvTitleLineTile(
++                title: 'Two',
++                titleStyle: title,
++                subtitle: const Text('Windows · logged in today\nlast used now'),
++                trailing: TextButton(
++                    style: hjvTitleLineButton(Colors.red),
++                    onPressed: () {},
++                    child: const Text('Log out 2')),
++                children: const [],
++              ),
++              // a phone's row: [로그아웃시키기] below the line
++              hjvTitleLineTile(
++                title: 'Three',
++                titleStyle: title,
++                subtitle: Column(
++                    crossAxisAlignment: CrossAxisAlignment.start,
++                    children: [
++                      const Text('Android · logged in today'),
++                      TextButton(
++                          onPressed: () {}, child: const Text('Log out 3')),
++                    ]),
++                children: const [],
++              ),
++            ]),
++          ),
++        ),
++      ),
++    );
++
++void main() {
++  for (final (name, density) in [
++    ('desktop', VisualDensity.compact),
++    ('phone', VisualDensity.standard),
++  ]) {
++    testWidgets(
++        '$name: the arrow and the button sit on the title line of every row',
++        (tester) async {
++      await tester.pumpWidget(_rows(density));
++      final arrows = find.byIcon(Icons.expand_more);
++      expect(arrows, findsNWidgets(3));
++      final rows = find.byType(ExpansionTile);
++      final offsets = <double>[];
++      for (final (i, title) in ['One', 'Two', 'Three'].indexed) {
++        final row = tester.getRect(rows.at(i));
++        final text = tester.getRect(find.text(title));
++        final arrow = tester.getRect(arrows.at(i));
++        expect(text.height, kHjvTitleLine, reason: title);
++        expect(arrow.height, kHjvTitleLine, reason: title);
++        expect(arrow.center.dy, text.center.dy, reason: title);
++        offsets.add(arrow.center.dy - row.top);
++      }
++      // the rows of two and three lines are taller, but their title line is where the one-line
++      // row's is
++      for (final i in [1, 2]) {
++        expect(tester.getRect(rows.at(i)).height,
++            greaterThan(tester.getRect(rows.at(0)).height));
++      }
++      expect(offsets.toSet(), hasLength(1));
++      for (final (title, label) in [('One', 'Log out'), ('Two', 'Log out 2')]) {
++        final button =
++            tester.getRect(find.widgetWithText(TextButton, label));
++        expect(button.height, kHjvTitleLine, reason: label);
++        expect(button.center.dy, tester.getRect(find.text(title)).center.dy,
++            reason: label);
++      }
++    });
++  }
++
++  testWidgets('a font with a taller line keeps the title line', (tester) async {
++    await tester.pumpWidget(_rows(VisualDensity.compact,
++        title: _title.copyWith(height: 1.7)));
++    final text = tester.getRect(find.text('One'));
++    expect(text.height, kHjvTitleLine);
++    expect(tester.getRect(find.byIcon(Icons.expand_more).first).center.dy,
++        text.center.dy);
++  });
++
++  testWidgets('a long title wraps with the arrow on its first line',
++      (tester) async {
++    await tester.pumpWidget(MaterialApp(
++      theme: ThemeData(useMaterial3: false),
++      home: Scaffold(
++        body: Align(
++          alignment: Alignment.topLeft,
++          child: SizedBox(
++            width: 200,
++            child: hjvTitleLineTile(
++              title: 'A device name long enough for two lines',
++              titleStyle: _title,
++              subtitle: const Text('Windows'),
++              children: const [],
++            ),
++          ),
++        ),
++      ),
++    ));
++    final text =
++        tester.getRect(find.text('A device name long enough for two lines'));
++    expect(text.height, greaterThanOrEqualTo(2 * kHjvTitleLine));
++    expect(tester.getRect(find.byIcon(Icons.expand_more)).center.dy,
++        text.top + kHjvTitleLine / 2);
++  });
++}

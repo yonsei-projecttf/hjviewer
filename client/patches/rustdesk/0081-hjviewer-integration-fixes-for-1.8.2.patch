@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 23:24:27 +0900
-Subject: [PATCH 81/85] hjviewer: integration fixes for 1.8.2
+Subject: [PATCH 081/147] hjviewer: integration fixes for 1.8.2
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

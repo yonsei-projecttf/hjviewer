@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:07:05 +0900
+Subject: [PATCH 111/147] hjviewer: no Telegram bot row in pinned builds (TV-C1
+ Dart)
+
+TV-C1: Settings -> Security's Telegram bot row (desktop tfa()) and the
+phone settings' bot switch are not drawn when isOptionFixed('bot'), which
+pinned builds set (src/hjviewer.rs fixes bot to ""). TOTP and trusted
+devices stay.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/desktop/pages/desktop_setting_page.dart | 3 ++-
+ flutter/lib/mobile/pages/settings_page.dart         | 3 ++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index a7daad1..30db0d1 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -1197,7 +1197,8 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+       ).marginOnly(left: 30);
+ 
+       return Column(
+-        children: [tfa, bot, trust],
++        // HJViewer (TV-C1): pinned builds send no codes to a Telegram bot
++        children: [tfa, if (!isOptionFixed('bot')) bot, trust],
+       );
+     }
+ 
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index d087f7f..7448e5c 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -338,7 +338,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+           }
+         },
+       ),
+-      if (enable2fa)
++      // HJViewer (TV-C1): pinned builds send no codes to a Telegram bot
++      if (enable2fa && !isOptionFixed('bot'))
+         SettingsTile.switchTile(
+           title: Text(translate('Telegram bot')),
+           initialValue: bind.mainHasValidBotSync(),

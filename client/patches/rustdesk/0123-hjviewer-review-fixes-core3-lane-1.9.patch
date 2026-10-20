@@ -1,0 +1,1421 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 05:34:42 +0900
+Subject: [PATCH 123/147] hjviewer: review fixes, core3 lane (1.9)
+
+TV-W9 (incoming connections), after the review of the w9rs and w9dart lanes:
+
+- Compaction on a timer (security, privacy.md 4): one writer thread, started by
+  start_pc_sync as the service starts, compacts the list at once and then every
+  24 h whether or not connections come (design 3-3 step 3); it still also
+  compacts after 4,000 lines or when the clock went back.
+- Blocking I/O off the connection's task: started() and ended() keep the number
+  assignment and hand the line over a std channel to that writer (AGENTS.md's
+  Tokio rules); fold() does not depend on the line order.
+- A damaged byte costs only its line: the list is read with fs::read and
+  from_utf8_lossy, and read errors other than NotFound are logged (throttled).
+- W9-D2's usual reconnect: a start with the same id, sid and kind while the
+  lost connection was still open (before its Timeout end) continues its row;
+  the row ends as the connection that ended last.
+- W9-D3's bound with reconnects: a row takes at most 100 reconnects and the kept
+  rows at most 4,000 connections.
+- Tests for the write side: start_line (a staff row keeps no name, an unknown
+  mark is "", device and owner kept, the kinds), auth_of's order, the writer's
+  schedule in a temp folder, a damaged byte, the overlapping reconnect, the
+  bound.
+- Uninstall (security, privacy.md 8): the elevated batch also deletes the .tmp
+  copies write_private leaves for the ticket and the list.
+- E2E I1: the headless controller sends Misc.close_reason("") before its normal
+  returns, as an app's close does, so the PC records `peer`.
+- The list (Dart): its body moves to hjviewer_incoming_list.dart (no bridge),
+  with a fixed height in place of maxHeight + shrinkWrap (no intrinsic-size
+  assert in CustomAlertDialog), a scrollbar, focusable rows with a focus ring
+  (Tab and the arrows walk them into view, PageUp/PageDown/Home/End scroll),
+  the unverified-name tip shown on a focused row and given as its hint, and
+  a name for the loading bar (K1).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_incoming.dart     | 115 +------
+ .../lib/common/hjviewer_incoming_list.dart    | 261 +++++++++++++++
+ .../lib/common/hjviewer_incoming_rules.dart   |   2 +
+ flutter/test/hjviewer_incoming_test.dart      | 106 +++++-
+ src/hjviewer_account/pc.rs                    |  13 +-
+ src/hjviewer_account/pc/tests.rs              |   4 +-
+ src/hjviewer_e2e.rs                           |  13 +
+ src/hjviewer_incoming.rs                      | 301 ++++++++++++++----
+ src/hjviewer_incoming/tests.rs                | 249 +++++++++++++++
+ src/server/connection/hjv_account.rs          |  23 +-
+ 10 files changed, 889 insertions(+), 198 deletions(-)
+ create mode 100644 flutter/lib/common/hjviewer_incoming_list.dart
+
+diff --git a/flutter/lib/common/hjviewer_incoming.dart b/flutter/lib/common/hjviewer_incoming.dart
+index a043f34..236e945 100644
+--- a/flutter/lib/common/hjviewer_incoming.dart
++++ b/flutter/lib/common/hjviewer_incoming.dart
+@@ -1,11 +1,12 @@
+ // TV-W9 in Settings → Security (D-16): the card '들어온 연결' inside the security settings' unlock
+ // and its list '이 PC에 들어온 연결', read from the service with main_get_common("hjv-incoming")
+-// when the list opens and on [새로 고침]. The rows and texts are in hjviewer_incoming_rules.dart;
+-// desktop_setting_page.dart places the card.
++// when the list opens and on [새로 고침]. The rows and texts are in hjviewer_incoming_rules.dart,
++// the list's body in hjviewer_incoming_list.dart; desktop_setting_page.dart places the card.
+ 
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_incoming_list.dart';
+ import 'package:flutter_hbb/common/hjviewer_incoming_rules.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+@@ -75,7 +76,7 @@ void hjvShowIncoming() {
+     return CustomAlertDialog(
+       title: Text(t.title),
+       contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.lg),
+-      content: Obx(() => _HjvIncomingList(t: t, list: list.value)),
++      content: Obx(() => HjvIncomingListView(t: t, list: list.value)),
+       actions: [
+         hjvButton(t.refresh, load, tone: HjvButtonTone.quiet),
+         hjvButton(t.close, close),
+@@ -86,111 +87,3 @@ void hjvShowIncoming() {
+     debugPrint('hjv: $e');
+   });
+ }
+-
+-class _HjvIncomingList extends StatelessWidget {
+-  final HjvIncomingTexts t;
+-
+-  /// null while it is read
+-  final HjvIncomingList? list;
+-  const _HjvIncomingList({required this.t, required this.list});
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    final p = HjvPalette.of(context);
+-    final small = TextStyle(fontSize: 12, height: 1.4, color: p.textTertiary);
+-    final list = this.list;
+-    final Widget body;
+-    if (list == null) {
+-      body = const LinearProgressIndicator();
+-    } else if (list.state == HjvIncomingState.error) {
+-      body = HjvCallout(text: t.readFailed, tone: HjvTone.danger);
+-    } else if (list.state == HjvIncomingState.off) {
+-      body = HjvCallout(text: t.off);
+-    } else if (list.rows.isEmpty) {
+-      body = Text(t.empty, style: TextStyle(color: p.textSecondary));
+-    } else {
+-      final now = DateTime.now();
+-      final items = <Widget>[
+-        for (final (day, rows) in hjvIncomingDays(list.rows)) ...[
+-          Semantics(
+-            header: true,
+-            child: Text(t.day(day, now),
+-                style: TextStyle(
+-                    fontSize: 13,
+-                    fontWeight: FontWeight.w600,
+-                    color: p.textTertiary)),
+-          ).marginOnly(top: 12, bottom: 4),
+-          for (final row in rows) _HjvIncomingTile(t: t, row: row, now: now),
+-        ]
+-      ];
+-      body = ConstrainedBox(
+-        constraints: const BoxConstraints(maxHeight: 420),
+-        child: ListView.builder(
+-            shrinkWrap: true,
+-            itemCount: items.length,
+-            itemBuilder: (_, i) => items[i]),
+-      );
+-    }
+-    return Column(
+-      mainAxisSize: MainAxisSize.min,
+-      crossAxisAlignment: CrossAxisAlignment.start,
+-      children: [
+-        body,
+-        if (list?.state == HjvIncomingState.ok)
+-          Text(t.footer, style: small).marginOnly(top: 12),
+-      ],
+-    );
+-  }
+-}
+-
+-class _HjvIncomingTile extends StatelessWidget {
+-  final HjvIncomingTexts t;
+-  final HjvIncomingRow row;
+-  final DateTime now;
+-  const _HjvIncomingTile(
+-      {required this.t, required this.row, required this.now});
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    final p = HjvPalette.of(context);
+-    final second = TextStyle(fontSize: 13, height: 1.4, color: p.textSecondary);
+-    final verified = row.verified;
+-    Widget third = Row(
+-      crossAxisAlignment: CrossAxisAlignment.start,
+-      children: [
+-        if (verified)
+-          Icon(Icons.verified_user_rounded, size: 15, color: p.primary)
+-              .marginOnly(top: 1, right: 4),
+-        Expanded(child: Text(t.line3(row), style: second)),
+-      ],
+-    );
+-    if (!verified && row.name.isNotEmpty) {
+-      third = Tooltip(message: t.unverifiedTip, child: third);
+-    }
+-    return MergeSemantics(
+-      child: Semantics(
+-        label: t.spoken(row, now),
+-        excludeSemantics: true,
+-        child: Container(
+-          width: double.infinity,
+-          padding: const EdgeInsets.symmetric(vertical: 8),
+-          decoration: BoxDecoration(
+-              border: Border(bottom: BorderSide(color: p.border))),
+-          child: Column(
+-            crossAxisAlignment: CrossAxisAlignment.start,
+-            children: [
+-              Text(t.line1(row),
+-                  style: TextStyle(
+-                      fontSize: 14,
+-                      fontWeight: FontWeight.w600,
+-                      color: p.text)),
+-              if (t.line2(row).isNotEmpty)
+-                Text(t.line2(row), style: second).marginOnly(top: 2),
+-              third.marginOnly(top: 2),
+-            ],
+-          ),
+-        ),
+-      ),
+-    );
+-  }
+-}
+diff --git a/flutter/lib/common/hjviewer_incoming_list.dart b/flutter/lib/common/hjviewer_incoming_list.dart
+new file mode 100644
+index 0000000..c520d04
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_incoming_list.dart
+@@ -0,0 +1,261 @@
++// TV-W9: the body of the list '이 PC에 들어온 연결' (hjviewer_incoming.dart opens it in a dialog).
++// Plain Flutter without the bridge, so that its layout and keyboard can be tested.
++//
++// The list has a fixed height (an AlertDialog(scrollable: true) asks its content for its
++// intrinsic size, which a shrink-wrapping list cannot give). Each row takes the focus: Tab and the
++// arrows walk the rows and scroll the focused one into view, PageUp, PageDown, Home and End
++// scroll the list, and a focused row with a name the PC did not check shows the tip its tooltip
++// gives the mouse.
++
++import 'dart:math' as math;
++
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_incoming_rules.dart';
++
++/// The list's height at most; a shorter list is as high as its rows are estimated to be.
++const double kHjvIncomingListMax = 420;
++
++/// The estimated heights of a day's header and of a row (three lines), for a list shorter than
++/// kHjvIncomingListMax; a row that turns out taller only makes the list scroll.
++const double _kHeader = 34;
++const double _kRow = 80;
++
++/// The list's body: a bar while it is read (null), the error, the PC that does not record, no rows
++/// yet, or the rows under their days with the footer.
++class HjvIncomingListView extends StatelessWidget {
++  final HjvIncomingTexts t;
++
++  /// null while it is read
++  final HjvIncomingList? list;
++
++  /// the clock the days are told by (tests set it)
++  final DateTime? now;
++  const HjvIncomingListView(
++      {super.key, required this.t, required this.list, this.now});
++
++  @override
++  Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final small = TextStyle(fontSize: 12, height: 1.4, color: p.textTertiary);
++    final list = this.list;
++    final Widget body;
++    if (list == null) {
++      body = LinearProgressIndicator(semanticsLabel: t.loading);
++    } else if (list.state == HjvIncomingState.error) {
++      body = HjvCallout(text: t.readFailed, tone: HjvTone.danger);
++    } else if (list.state == HjvIncomingState.off) {
++      body = HjvCallout(text: t.off);
++    } else if (list.rows.isEmpty) {
++      body = Text(t.empty, style: TextStyle(color: p.textSecondary));
++    } else {
++      final now = this.now ?? DateTime.now();
++      final items = <Widget>[];
++      var headers = 0;
++      for (final (day, rows) in hjvIncomingDays(list.rows)) {
++        headers++;
++        items.add(Padding(
++          padding: const EdgeInsets.only(top: 12, bottom: 4),
++          child: Semantics(
++            header: true,
++            child: Text(t.day(day, now),
++                style: TextStyle(
++                    fontSize: 13,
++                    fontWeight: FontWeight.w600,
++                    color: p.textTertiary)),
++          ),
++        ));
++        for (final row in rows) {
++          items.add(HjvIncomingTile(t: t, row: row, now: now));
++        }
++      }
++      final height = math.min(
++          kHjvIncomingListMax, headers * _kHeader + list.rows.length * _kRow);
++      body = SizedBox(height: height, child: _HjvIncomingScroll(items: items));
++    }
++    return Column(
++      mainAxisSize: MainAxisSize.min,
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        body,
++        if (list?.state == HjvIncomingState.ok)
++          Padding(
++            padding: const EdgeInsets.only(top: 12),
++            child: Text(t.footer, style: small),
++          ),
++      ],
++    );
++  }
++}
++
++/// The rows with a scrollbar; while a row has the focus the arrows walk the rows and PageUp,
++/// PageDown, Home and End scroll the list.
++class _HjvIncomingScroll extends StatefulWidget {
++  final List<Widget> items;
++  const _HjvIncomingScroll({required this.items});
++
++  @override
++  State<_HjvIncomingScroll> createState() => _HjvIncomingScrollState();
++}
++
++class _HjvIncomingScrollState extends State<_HjvIncomingScroll> {
++  final _controller = ScrollController();
++
++  @override
++  void dispose() {
++    _controller.dispose();
++    super.dispose();
++  }
++
++  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
++    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
++      return KeyEventResult.ignored;
++    }
++    if (!_controller.hasClients) return KeyEventResult.ignored;
++    final position = _controller.position;
++    final page = position.viewportDimension * 0.9;
++    final double to;
++    final key = event.logicalKey;
++    // the arrows walk the rows as Tab does, which scrolls the focused one into view
++    if (key == LogicalKeyboardKey.arrowDown) {
++      FocusManager.instance.primaryFocus?.nextFocus();
++      return KeyEventResult.handled;
++    }
++    if (key == LogicalKeyboardKey.arrowUp) {
++      FocusManager.instance.primaryFocus?.previousFocus();
++      return KeyEventResult.handled;
++    }
++    if (key == LogicalKeyboardKey.pageDown) {
++      to = position.pixels + page;
++    } else if (key == LogicalKeyboardKey.pageUp) {
++      to = position.pixels - page;
++    } else if (key == LogicalKeyboardKey.home) {
++      to = position.minScrollExtent;
++    } else if (key == LogicalKeyboardKey.end) {
++      to = position.maxScrollExtent;
++    } else {
++      return KeyEventResult.ignored;
++    }
++    _controller
++        .jumpTo(to.clamp(position.minScrollExtent, position.maxScrollExtent));
++    return KeyEventResult.handled;
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Focus(
++      canRequestFocus: false,
++      skipTraversal: true,
++      onKeyEvent: _onKey,
++      child: Scrollbar(
++        controller: _controller,
++        thumbVisibility: true,
++        child: ListView.builder(
++          controller: _controller,
++          // room for the scrollbar
++          padding: const EdgeInsets.only(right: 12),
++          itemCount: widget.items.length,
++          itemBuilder: (_, i) => widget.items[i],
++        ),
++      ),
++    );
++  }
++}
++
++/// One row: its three lines, spoken as one sentence; it takes the focus (a ring in the accent),
++/// and a focused row with a name the PC did not check shows the tip.
++class HjvIncomingTile extends StatefulWidget {
++  final HjvIncomingTexts t;
++  final HjvIncomingRow row;
++  final DateTime now;
++  const HjvIncomingTile(
++      {super.key, required this.t, required this.row, required this.now});
++
++  @override
++  State<HjvIncomingTile> createState() => _HjvIncomingTileState();
++}
++
++class _HjvIncomingTileState extends State<HjvIncomingTile>
++    with AutomaticKeepAliveClientMixin {
++  bool _focused = false;
++
++  /// A focused row stays built when PageDown or End scrolls it away, so that the keys still
++  /// reach the list.
++  @override
++  bool get wantKeepAlive => _focused;
++
++  void _onFocus(bool focused) {
++    setState(() => _focused = focused);
++    updateKeepAlive();
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    super.build(context);
++    final t = widget.t;
++    final row = widget.row;
++    final p = HjvPalette.of(context);
++    final second = TextStyle(fontSize: 13, height: 1.4, color: p.textSecondary);
++    final verified = row.verified;
++    final tip = !verified && row.name.isNotEmpty ? t.unverifiedTip : null;
++    Widget third = Row(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        if (verified)
++          Padding(
++            padding: const EdgeInsets.only(top: 1, right: 4),
++            child:
++                Icon(Icons.verified_user_rounded, size: 15, color: p.primary),
++          ),
++        Expanded(child: Text(t.line3(row), style: second)),
++      ],
++    );
++    if (tip != null) third = Tooltip(message: tip, child: third);
++    final line2 = t.line2(row);
++    return MergeSemantics(
++      child: Focus(
++        onFocusChange: _onFocus,
++        child: Semantics(
++          label: t.spoken(row, widget.now),
++          hint: tip,
++          excludeSemantics: true,
++          child: Container(
++            width: double.infinity,
++            padding:
++                EdgeInsets.symmetric(vertical: 8, horizontal: _focused ? 6 : 0),
++            decoration: _focused
++                ? BoxDecoration(
++                    border: Border.all(color: p.primary, width: 2),
++                    borderRadius: BorderRadius.circular(6))
++                : BoxDecoration(
++                    border: Border(bottom: BorderSide(color: p.border))),
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Text(t.line1(row),
++                    style: TextStyle(
++                        fontSize: 14,
++                        fontWeight: FontWeight.w600,
++                        color: p.text)),
++                if (line2.isNotEmpty)
++                  Padding(
++                    padding: const EdgeInsets.only(top: 2),
++                    child: Text(line2, style: second),
++                  ),
++                Padding(padding: const EdgeInsets.only(top: 2), child: third),
++                if (_focused && tip != null)
++                  Padding(
++                    padding: const EdgeInsets.only(top: 2),
++                    child: Text(tip,
++                        style: TextStyle(
++                            fontSize: 12, height: 1.4, color: p.textTertiary)),
++                  ),
++              ],
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++}
+diff --git a/flutter/lib/common/hjviewer_incoming_rules.dart b/flutter/lib/common/hjviewer_incoming_rules.dart
+index 6717ea6..b543584 100644
+--- a/flutter/lib/common/hjviewer_incoming_rules.dart
++++ b/flutter/lib/common/hjviewer_incoming_rules.dart
+@@ -186,6 +186,8 @@ class HjvIncomingTexts {
+   // the list
+   String get title => _t('이 PC에 들어온 연결', 'Connections to this PC');
+   String get empty => _t('아직 기록된 연결이 없습니다.', 'No connections recorded yet.');
++  /// the bar's name while the list is read
++  String get loading => _t('목록을 읽는 중', 'Reading the list');
+   String get readFailed => _t('목록을 읽지 못했습니다. 잠시 뒤 [새로 고침]을 눌러 주세요.',
+       'Could not read the list. Try [Refresh] in a moment.');
+   String get off => _t('이 PC는 들어온 연결을 기록하지 않습니다. HJViewer를 설치한 PC만 기록합니다.',
+diff --git a/flutter/test/hjviewer_incoming_test.dart b/flutter/test/hjviewer_incoming_test.dart
+index 8030922..3bd6ffb 100644
+--- a/flutter/test/hjviewer_incoming_test.dart
++++ b/flutter/test/hjviewer_incoming_test.dart
+@@ -1,10 +1,15 @@
+ import 'dart:convert';
+ 
++import 'package:flutter/foundation.dart';
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjviewer_incoming_list.dart';
+ import 'package:flutter_hbb/common/hjviewer_incoming_rules.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+ // TV-W9's incoming connections list (hjviewer_incoming_rules.dart): the service's answer, the
+-// rows' lines and every text, without the bridge.
++// rows' lines and every text; and its body (hjviewer_incoming_list.dart) in a dialog that asks
++// for its intrinsic size, with the keyboard. Without the bridge.
+ 
+ const ko = HjvIncomingTexts(true);
+ const en = HjvIncomingTexts(false);
+@@ -197,4 +202,103 @@ void main() {
+       expect(en.mark(row), 'Unverified name');
+     });
+   });
++
++  group('the list', () {
++    final now = DateTime(2026, 10, 20, 15);
++    HjvIncomingList rows(int n) => parse({
++          'on': true,
++          'rows': [
++            for (var i = 0; i < n; i++)
++              {
++                't0': secs(now) - 600 * (i + 1),
++                't1': secs(now) - 600 * i - 60,
++                'id': '${100000000 + i}',
++                'name': 'pc$i',
++                'auth': 'permanent',
++                'kind': 'remote',
++                'end': 'peer',
++              }
++          ],
++        });
++
++    // as CustomAlertDialog draws it: AlertDialog(scrollable: true) at a fixed width
++    Widget dialog(HjvIncomingList? list) => MaterialApp(
++          home: Scaffold(
++            body: AlertDialog(
++              scrollable: true,
++              content: ConstrainedBox(
++                constraints: const BoxConstraints.tightFor(width: 560),
++                child: HjvIncomingListView(t: ko, list: list, now: now),
++              ),
++              actions: [TextButton(onPressed: () {}, child: const Text('닫기'))],
++            ),
++          ),
++        );
++
++    ScrollPosition position(WidgetTester tester) => tester
++        .state<ScrollableState>(find.descendant(
++            of: find.byType(HjvIncomingListView),
++            matching: find.byType(Scrollable)))
++        .position;
++
++    testWidgets('a long and a short list lay out in a scrollable dialog',
++        (tester) async {
++      await tester.pumpWidget(dialog(rows(40)));
++      expect(tester.takeException(), isNull);
++      expect(tester.getSize(find.byType(HjvIncomingListView)).height,
++          greaterThan(kHjvIncomingListMax));
++      expect(position(tester).maxScrollExtent, greaterThan(0));
++      await tester.pumpWidget(dialog(rows(2)));
++      expect(tester.takeException(), isNull);
++      expect(find.byType(HjvIncomingTile), findsNWidgets(2));
++    });
++
++    testWidgets('the keyboard walks and scrolls the rows (K1)', (tester) async {
++      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
++      try {
++        await tester.pumpWidget(dialog(rows(40)));
++        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
++        await tester.pumpAndSettle();
++        // the first row has the focus and shows the tip of a name the PC did not check
++        expect(find.text(ko.unverifiedTip), findsOneWidget);
++        await tester.sendKeyEvent(LogicalKeyboardKey.pageDown);
++        await tester.pumpAndSettle();
++        final paged = position(tester).pixels;
++        expect(paged, greaterThan(0));
++        await tester.sendKeyEvent(LogicalKeyboardKey.end);
++        await tester.pumpAndSettle();
++        expect(position(tester).pixels, position(tester).maxScrollExtent);
++        await tester.sendKeyEvent(LogicalKeyboardKey.home);
++        await tester.pumpAndSettle();
++        expect(position(tester).pixels, 0);
++        // Tab walks the rows and keeps the focused one in view
++        for (var i = 0; i < 12; i++) {
++          await tester.sendKeyEvent(LogicalKeyboardKey.tab);
++          await tester.pumpAndSettle();
++        }
++        expect(position(tester).pixels, greaterThan(0));
++        expect(find.text(ko.unverifiedTip), findsOneWidget);
++        String? focused() => FocusManager.instance.primaryFocus?.context
++            ?.findAncestorWidgetOfExactType<HjvIncomingTile>()
++            ?.row
++            .id;
++        expect(focused(), '100000012');
++        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
++        await tester.pumpAndSettle();
++        expect(focused(), '100000013');
++        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
++        await tester.pumpAndSettle();
++        expect(focused(), '100000012');
++      } finally {
++        debugDefaultTargetPlatformOverride = null;
++      }
++    });
++
++    testWidgets('the bar has a name while the list is read', (tester) async {
++      final handle = tester.ensureSemantics();
++      await tester.pumpWidget(dialog(null));
++      expect(find.bySemanticsLabel(ko.loading), findsOneWidget);
++      handle.dispose();
++    });
++  });
+ }
+diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
+index 95e1445..7a512e5 100644
+--- a/src/hjviewer_account/pc.rs
++++ b/src/hjviewer_account/pc.rs
+@@ -123,6 +123,8 @@ pub(crate) fn start_pc_sync() {
+         crate::hjviewer_access::restore_bound(Pc::platform().binding().is_some());
+         *ASKS.lock().unwrap() = Some(Syncer::spawn(ThisPc::new()));
+         log::info!("hjv: same-account logins: sync task started");
++        // TV-W9: the incoming connections' writer, which compacts the list now and every day
++        crate::hjviewer_incoming::start();
+     });
+ }
+ 
+@@ -324,9 +326,14 @@ fn uninstall_line(enabled: bool) -> String {
+         crate::get_app_name(),
+         crate::hjviewer_incoming::FILE
+     );
+-    format!(
+-        "\nreg delete \"HKLM\\{ACCOUNT_KEY}\" /f\nif exist \"{ticket}\" del /f /q \"{ticket}\"\nif exist \"{incoming}\" del /f /q \"{incoming}\"\n"
+-    )
++    // and what write_private leaves when the service stops between writing and renaming
++    let mut line = format!("\nreg delete \"HKLM\\{ACCOUNT_KEY}\" /f\n");
++    for file in [ticket, incoming] {
++        line.push_str(&format!(
++            "if exist \"{file}\" del /f /q \"{file}\"\nif exist \"{file}.tmp\" del /f /q \"{file}.tmp\"\n"
++        ));
++    }
++    line
+ }
+ 
+ /// `--hjv-e2e-wol-report`: one sync of this PC's binding that carries `report` whole, signed and
+diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
+index 53b397b..22ec6ff 100644
+--- a/src/hjviewer_account/pc/tests.rs
++++ b/src/hjviewer_account/pc/tests.rs
+@@ -1981,7 +1981,7 @@ async fn the_pcs_logout_ends_its_sessions_and_its_off_switch_does_not() {
+ /// The Start menu's "Uninstall" runs `--uninstall` unelevated: the binding key goes in the
+ /// uninstaller's elevated batch (the release review's privacy-uninstall-hklm-unelevated), and so
+ /// does the bound PC's access ticket in the service's config folder, and the incoming connections
+-/// beside it (TV-W9).
++/// beside it (TV-W9), each with the `.tmp` copy write_private leaves when stopped mid-write.
+ #[test]
+ fn the_uninstallers_elevated_batch_deletes_the_binding_key() {
+     let ticket = format!(
+@@ -1995,7 +1995,7 @@ fn the_uninstallers_elevated_batch_deletes_the_binding_key() {
+     assert_eq!(
+         uninstall_line(true),
+         format!(
+-            "\nreg delete \"HKLM\\SOFTWARE\\HJViewer\\Account\" /f\nif exist \"{ticket}\" del /f /q \"{ticket}\"\nif exist \"{incoming}\" del /f /q \"{incoming}\"\n"
++            "\nreg delete \"HKLM\\SOFTWARE\\HJViewer\\Account\" /f\nif exist \"{ticket}\" del /f /q \"{ticket}\"\nif exist \"{ticket}.tmp\" del /f /q \"{ticket}.tmp\"\nif exist \"{incoming}\" del /f /q \"{incoming}\"\nif exist \"{incoming}.tmp\" del /f /q \"{incoming}.tmp\"\n"
+         )
+     );
+     assert_eq!(uninstall_line(false), "");
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index 05b1892..e74554b 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -416,6 +416,7 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+                     video_bytes as f64 * 8.0 / 1e6 / elapsed,
+                     frames as f64 / elapsed
+                 );
++                close(&mut stream).await;
+                 return 0;
+             }
+         }
+@@ -453,6 +454,7 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+                         println!("hjv-e2e: input probe: {n} moves after accept");
+                         // the PC takes them before the session ends
+                         tokio::time::sleep(Duration::from_secs(2)).await;
++                        close(&mut stream).await;
+                         return 0;
+                     }
+                     let mut misc = Misc::new();
+@@ -485,6 +487,7 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+                 let mut pixelbuffer = true;
+                 let mut chroma = None;
+                 if let Ok(true) = handler.handle_frame(vf, &mut pixelbuffer, &mut chroma) {
++                    close(&mut stream).await;
+                     return match write_ppm(&handler.rgb, out) {
+                         Ok(()) => {
+                             println!(
+@@ -508,6 +511,16 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+     }
+ }
+ 
++/// Ends the session as an app's close does (io_loop.rs send_close_reason): the PC then records
++/// it as ended by the other device (`peer`, TV-W9's I1), not as a lost link.
++async fn close(stream: &mut Stream) {
++    let mut misc = Misc::new();
++    misc.set_close_reason(String::new());
++    let mut msg = Message::new();
++    msg.set_misc(misc);
++    stream.send(&msg).await.ok();
++}
++
+ /// `n` mouse moves along a line from (`from`, `from`), 20 ms apart.
+ async fn send_moves(stream: &mut Stream, n: u32, from: i32) {
+     for i in 0..n as i32 {
+diff --git a/src/hjviewer_incoming.rs b/src/hjviewer_incoming.rs
+index 1f053a0..7588f64 100644
+--- a/src/hjviewer_incoming.rs
++++ b/src/hjviewer_incoming.rs
+@@ -6,10 +6,13 @@
+ //! ("hjv-incoming"), behind the unlock of the security settings.
+ //!
+ //! One line of JSON is written when a connection is let in (`"e":"s"`) and one when it closes
+-//! (`"e":"e"`); reading folds them. A connection's lines share its process's run and its number in
++//! (`"e":"e"`), by one writer thread (the connection's task only hands the line over); reading
++//! folds them. The writer also rewrites the file without what is past keeping when the service
++//! starts and then every day, whether or not connections come (design w7-w9 3-3 step 3). A connection's lines share its process's run and its number in
+ //! that run, so a start without an end is `open` in the process that wrote it and `unknown` (the PC
+ //! was off or restarted) in any later one. A reconnect of the same session (the same peer ID,
+-//! session number and kind within MERGE_SECS of a line that ended `lost`) continues that line.
++//! session number and kind, begun while a connection that ended `lost` was still open or within
++//! MERGE_SECS of its end) continues that line, up to MAX_RE reconnects.
+ //!
+ //! What is kept: when, the peer's ID and the name it sent (none for a `staff` row, S-05), the
+ //! signed list's device name and masked owner for a same-account row, the connection manager's
+@@ -29,10 +32,12 @@ use serde_derive::{Deserialize, Serialize};
+ use serde_json::{json, Value};
+ use std::{
+     collections::{HashMap, HashSet},
++    path::{Path, PathBuf},
+     sync::{
+         atomic::{AtomicU64, Ordering},
+-        Mutex,
++        mpsc, Mutex,
+     },
++    time::Duration,
+ };
+ 
+ /// The list's file, in the service's config folder (Config::path).
+@@ -41,11 +46,19 @@ pub(crate) const FILE: &str = "hjv-incoming.jsonl";
+ pub(crate) const KEY: &str = "hjv-incoming";
+ const KEEP_SECS: u64 = 90 * 86_400;
+ const KEEP_ROWS: usize = 2_000;
++/// The connections the kept rows may hold together, so that rows that reconnect often do not
++/// carry the file past W9-D3's bound.
++const KEEP_KEYS: usize = 2 * KEEP_ROWS;
+ const MERGE_SECS: u64 = 120;
+-/// The file is rewritten without what is past keeping at the first write and then once a day,
++/// A row continues at most this many reconnects; the next one starts a row of its own.
++const MAX_RE: u32 = 100;
++/// The file is rewritten without what is past keeping when the writer starts and then once a day,
+ /// or sooner after this many lines.
+ const COMPACT_SECS: u64 = 86_400;
+ const COMPACT_LINES: usize = 2 * KEEP_ROWS;
++/// The writer looks at the wall clock at least this often, so that a sleep or a clock change
++/// does not put a compaction off.
++const WAKE_SECS: u64 = 3_600;
+ /// The name a peer sent, and its ID, are cut to this many characters.
+ const MAX_NAME: usize = 64;
+ const MAX_ID: usize = 32;
+@@ -105,20 +118,57 @@ fn run() -> &'static str {
+ 
+ static NEXT: AtomicU64 = AtomicU64::new(1);
+ 
+-/// A connection was let in (after its logon response's audit line): writes its start.
++/// Starts the writer in the process that records (start_pc_sync, as the service starts), so that
++/// the file is compacted then and every day after; nothing elsewhere.
++pub(crate) fn start() {
++    if enabled() {
++        queue();
++    }
++}
++
++/// How a connection got in, in hjv_incoming_started's order: the account's proof, then the
++/// session's memory of its one-time password, then the audit line's primary auth (`otp`,
++/// `permanent`, `click`, `switch` or "").
++pub(crate) fn auth_of(account: bool, recent: bool, primary: &'static str) -> &'static str {
++    if account {
++        "account"
++    } else if recent {
++        "recent"
++    } else {
++        primary
++    }
++}
++
++/// A connection was let in (after its logon response's audit line): hands its start to the
++/// writer.
+ pub(crate) fn started(row: &mut Row, start: Start) {
+     if row.key.is_some() || !enabled() {
+         return;
+     }
+     let n = NEXT.fetch_add(1, Ordering::Relaxed);
+     row.key = Some(n);
++    write(start_line(&start, run(), n, unix_now()));
++}
++
++/// The connection closed (on_close, once): hands its end to the writer. Nothing for a connection
++/// that was never let in.
++pub(crate) fn ended(row: &mut Row, reason: &str) {
++    let Some(n) = row.key.take() else {
++        return;
++    };
++    write(end_line(run(), n, unix_now(), reason));
++}
++
++/// What a start line keeps: the peer's name only when the row is not `staff` (S-05), a mark the
++/// list knows, the kind by its name.
++fn start_line(start: &Start, run: &str, n: u64, t: u64) -> Line {
+     let staff = start.mark == crate::hjviewer_cm::STAFF;
+-    let line = Line {
++    Line {
+         v: VERSION,
+         e: "s".to_owned(),
+-        r: run().to_owned(),
++        r: run.to_owned(),
+         n,
+-        t: unix_now(),
++        t,
+         id: clean(start.peer_id, MAX_ID),
+         name: if staff {
+             String::new()
+@@ -132,26 +182,19 @@ pub(crate) fn started(row: &mut Row, start: Start) {
+         kind: kind_name(start.kind).to_owned(),
+         sid: start.session_id,
+         end: String::new(),
+-    };
+-    append(&line);
++    }
+ }
+ 
+-/// The connection closed (on_close, once): writes its end. Nothing for a connection that was never
+-/// let in.
+-pub(crate) fn ended(row: &mut Row, reason: &str) {
+-    let Some(n) = row.key.take() else {
+-        return;
+-    };
+-    let line = Line {
++fn end_line(run: &str, n: u64, t: u64, reason: &str) -> Line {
++    Line {
+         v: VERSION,
+         e: "e".to_owned(),
+-        r: run().to_owned(),
++        r: run.to_owned(),
+         n,
+-        t: unix_now(),
++        t,
+         end: end_of(reason).to_owned(),
+         ..Default::default()
+-    };
+-    append(&line);
++    }
+ }
+ 
+ /// The IPC's answer (ipc.rs `Data::Config` "hjv-incoming"), in the process that records.
+@@ -159,7 +202,7 @@ pub(crate) fn list_json() -> String {
+     if !enabled() {
+         return json!({ "on": false, "rows": [] }).to_string();
+     }
+-    let text = std::fs::read_to_string(Config::path(FILE)).unwrap_or_default();
++    let text = read_list(&Config::path(FILE));
+     let rows: Vec<Value> = fold(&text, run(), unix_now())
+         .iter()
+         .map(Entry::to_json)
+@@ -330,16 +373,36 @@ impl Entry {
+         })
+     }
+ 
+-    /// Whether `next` is a reconnect of this row's session (W9-D2).
++    /// Whether `next` is a reconnect of this row's session (W9-D2): begun while the connection
++    /// that ended `lost` was still open (a controller whose link died reconnects while the PC
++    /// waits out its Timeout, connection.rs session_reconnected) or within MERGE_SECS of its end.
+     fn continued_by(&self, next: &Entry) -> bool {
+         self.sid != 0
+             && self.end == "lost"
++            && self.re < MAX_RE
+             && self.id == next.id
+             && self.sid == next.sid
+             && self.kind == next.kind
++            && next.t0 >= self.t0
+             && self
+                 .t1
+-                .is_some_and(|t1| next.t0 >= t1 && next.t0 - t1 <= MERGE_SECS)
++                .is_some_and(|t1| next.t0 <= t1.saturating_add(MERGE_SECS))
++    }
++
++    /// Takes in a reconnect: the row ends as the connection that ended last (an open or
++    /// unrecorded one last of all).
++    fn absorb(&mut self, next: Entry) {
++        let later = match (self.t1, next.t1) {
++            (Some(t1), Some(next_t1)) => next_t1 >= t1,
++            (_, None) => true,
++            (None, Some(_)) => false,
++        };
++        if later {
++            self.t1 = next.t1;
++            self.end = next.end;
++        }
++        self.re += 1;
++        self.keys.extend(next.keys);
+     }
+ 
+     /// Still listed at `now`: open, or ended (begun, without an end) within KEEP_SECS.
+@@ -393,12 +456,7 @@ fn fold(text: &str, run: &str, now: u64) -> Vec<Entry> {
+         };
+         let same = (entry.id.clone(), entry.sid, entry.kind.clone());
+         match last.get(&same).map(|&i| &mut rows[i]) {
+-            Some(row) if row.continued_by(&entry) => {
+-                row.t1 = entry.t1;
+-                row.end = entry.end;
+-                row.re += 1;
+-                row.keys.extend(entry.keys);
+-            }
++            Some(row) if row.continued_by(&entry) => row.absorb(entry),
+             _ => {
+                 last.insert(same, rows.len());
+                 rows.push(entry);
+@@ -408,6 +466,16 @@ fn fold(text: &str, run: &str, now: u64) -> Vec<Entry> {
+     rows.retain(|row| row.kept_at(now));
+     rows.reverse();
+     rows.truncate(KEEP_ROWS);
++    // and no more connections than KEEP_KEYS in them (the newest row stays: MAX_RE bounds it)
++    let mut keys = 0;
++    let cut = rows
++        .iter()
++        .position(|row| {
++            keys += row.keys.len();
++            keys > KEEP_KEYS
++        })
++        .unwrap_or(rows.len());
++    rows.truncate(cut.max(1));
+     rows
+ }
+ 
+@@ -433,58 +501,153 @@ fn compact(text: &str, run: &str, now: u64) -> String {
+     out
+ }
+ 
+-/// When the file was last compacted by this process, and the lines it wrote since.
++/// The file's text; empty when there is none or it cannot be read (logged). A byte that is not
++/// UTF-8 costs only its line, which parse() then leaves out.
++fn read_list(path: &Path) -> String {
++    match std::fs::read(path) {
++        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
++        Err(err) => {
++            if err.kind() != std::io::ErrorKind::NotFound {
++                hbb_common::throttled_log!(
++                    Duration::from_secs(3600),
++                    warn,
++                    "hjv: incoming connections: could not read the list: {err}"
++                );
++            }
++            String::new()
++        }
++    }
++}
++
++/// The writer's file, when it last compacted it, and the lines it wrote since.
+ struct Writer {
++    path: PathBuf,
+     compacted: Option<u64>,
+     lines: usize,
+ }
+ 
+-static WRITER: Mutex<Writer> = Mutex::new(Writer {
+-    compacted: None,
+-    lines: 0,
+-});
++impl Writer {
++    fn new(path: PathBuf) -> Writer {
++        Writer {
++            path,
++            compacted: None,
++            lines: 0,
++        }
++    }
+ 
+-/// Adds a line to the file, after a compaction when one is due. A failure is logged and the
+-/// connection goes on.
+-fn append(line: &Line) {
+-    let Ok(mut text) = serde_json::to_string(line) else {
+-        return;
+-    };
+-    text.push('\n');
+-    let path = Config::path(FILE);
+-    let mut writer = WRITER.lock().unwrap_or_else(|e| e.into_inner());
+-    let now = unix_now();
+-    let due = writer
+-        .compacted
+-        .map_or(true, |at| now.saturating_sub(at) >= COMPACT_SECS || now < at)
+-        || writer.lines >= COMPACT_LINES;
+-    if due {
+-        let old = std::fs::read_to_string(&path).unwrap_or_default();
++    /// Whether a compaction is due at `now`: none yet, a day since the last one (or the clock
++    /// went back), or COMPACT_LINES lines since.
++    fn due(&self, now: u64) -> bool {
++        self.compacted.map_or(true, |at| {
++            now.saturating_sub(at) >= COMPACT_SECS || now < at
++        }) || self.lines >= COMPACT_LINES
++    }
++
++    /// How long the writer may wait for a line at `now` before it looks again.
++    fn wait(&self, now: u64) -> Duration {
++        let secs = match self.compacted {
++            Some(at) if now >= at => (at + COMPACT_SECS).saturating_sub(now),
++            _ => 0,
++        };
++        Duration::from_secs(secs.clamp(1, WAKE_SECS))
++    }
++
++    /// Rewrites the file without what fold() no longer lists, when that is due. A failure is
++    /// logged and tried again the next day.
++    fn tidy(&mut self, run: &str, now: u64) {
++        if !self.due(now) {
++            return;
++        }
++        let old = read_list(&self.path);
+         if !old.is_empty() {
+-            if let Err(err) = replace(&path, compact(&old, run(), now).as_bytes()) {
+-                hbb_common::throttled_log!(
+-                    std::time::Duration::from_secs(3600),
+-                    warn,
+-                    "hjv: incoming connections: could not rewrite the list: {err}"
+-                );
++            let new = compact(&old, run, now);
++            if new != old {
++                if let Err(err) = replace(&self.path, new.as_bytes()) {
++                    hbb_common::throttled_log!(
++                        Duration::from_secs(3600),
++                        warn,
++                        "hjv: incoming connections: could not rewrite the list: {err}"
++                    );
++                }
+             }
+         }
+-        writer.compacted = Some(now);
+-        writer.lines = 0;
++        self.compacted = Some(now);
++        self.lines = 0;
++    }
++
++    /// Adds a line, after a compaction when one is due. A failure is logged; the connection
++    /// never waits for it.
++    fn append(&mut self, line: &Line, run: &str, now: u64) {
++        self.tidy(run, now);
++        let Ok(mut text) = serde_json::to_string(line) else {
++            return;
++        };
++        text.push('\n');
++        match add(&self.path, text.as_bytes()) {
++            Ok(()) => self.lines += 1,
++            Err(err) => hbb_common::throttled_log!(
++                Duration::from_secs(3600),
++                warn,
++                "hjv: incoming connections: could not write the list: {err}"
++            ),
++        }
++    }
++}
++
++/// The writer thread's queue, made by the first start() or line.
++static QUEUE: Mutex<Option<mpsc::Sender<Line>>> = Mutex::new(None);
++
++/// The queue, with its writer thread started on first use; None when the thread cannot start
++/// (logged; the next line tries again).
++fn queue() -> Option<mpsc::Sender<Line>> {
++    let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
++    if queue.is_none() {
++        let (tx, rx) = mpsc::channel();
++        let writer = Writer::new(Config::path(FILE));
++        match std::thread::Builder::new()
++            .name("hjv-incoming".to_owned())
++            .spawn(move || write_loop(rx, writer))
++        {
++            Ok(_) => *queue = Some(tx),
++            Err(err) => hbb_common::throttled_log!(
++                Duration::from_secs(3600),
++                warn,
++                "hjv: incoming connections: could not start the writer: {err}"
++            ),
++        }
++    }
++    queue.clone()
++}
++
++/// Hands a line to the writer; the connection's task does no file I/O (AGENTS.md's Tokio rules).
++fn write(line: Line) {
++    if let Some(queue) = queue() {
++        if let Err(err) = queue.send(line) {
++            hbb_common::throttled_log!(
++                Duration::from_secs(3600),
++                warn,
++                "hjv: incoming connections: the writer stopped: {err}"
++            );
++        }
+     }
+-    match add(&path, text.as_bytes()) {
+-        Ok(()) => writer.lines += 1,
+-        Err(err) => hbb_common::throttled_log!(
+-            std::time::Duration::from_secs(3600),
+-            warn,
+-            "hjv: incoming connections: could not write the list: {err}"
+-        ),
++}
++
++/// The writer: compacts at once and then whenever due, and writes the lines in the order they
++/// came.
++fn write_loop(rx: mpsc::Receiver<Line>, mut writer: Writer) {
++    loop {
++        writer.tidy(run(), unix_now());
++        match rx.recv_timeout(writer.wait(unix_now())) {
++            Ok(line) => writer.append(&line, run(), unix_now()),
++            Err(mpsc::RecvTimeoutError::Timeout) => {}
++            Err(mpsc::RecvTimeoutError::Disconnected) => return,
++        }
+     }
+ }
+ 
+ /// Appends to the file, made with the owner's access only on Unix (the service's config folder
+ /// keeps other users out on Windows).
+-fn add(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
++fn add(path: &Path, data: &[u8]) -> std::io::Result<()> {
+     use std::io::Write;
+     if let Some(dir) = path.parent() {
+         std::fs::create_dir_all(dir)?;
+@@ -497,12 +660,12 @@ fn add(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+ }
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+-fn replace(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
++fn replace(path: &Path, data: &[u8]) -> std::io::Result<()> {
+     crate::hjviewer_account::write_private(path, data)
+ }
+ 
+ #[cfg(any(target_os = "android", target_os = "ios"))]
+-fn replace(_path: &std::path::Path, _data: &[u8]) -> std::io::Result<()> {
++fn replace(_path: &Path, _data: &[u8]) -> std::io::Result<()> {
+     // phones take no connections that record (enabled() is false there)
+     Ok(())
+ }
+diff --git a/src/hjviewer_incoming/tests.rs b/src/hjviewer_incoming/tests.rs
+index 097b431..d54ca6e 100644
+--- a/src/hjviewer_incoming/tests.rs
++++ b/src/hjviewer_incoming/tests.rs
+@@ -235,3 +235,252 @@ fn writing_fails_quietly_and_the_file_is_private() {
+     assert!(add(&dir, b"x\n").is_err());
+     std::fs::remove_dir_all(&dir).ok();
+ }
++
++/// W9-D2's usual reconnect: the controller's link died and it came back while the PC still waited
++/// out the old connection's Timeout, so the new start is before the old row's `lost` end. One row,
++/// ending as the connection that ended last.
++#[test]
++fn a_reconnect_before_the_lost_end_continues_its_row() {
++    let fold_with = |extra: Vec<String>| {
++        let mut lines = vec![
++            start(RUN, 1, NOW - 1000, "111", 7, "remote"),
++            end(RUN, 1, NOW - 900, "lost"),
++        ];
++        lines.extend(extra);
++        fold(&text(&lines), RUN, NOW)
++    };
++    // 10 s before the old row's Timeout end
++    let rows = fold_with(vec![
++        start(RUN, 2, NOW - 910, "111", 7, "remote"),
++        end(RUN, 2, NOW - 700, "peer"),
++    ]);
++    assert_eq!(rows.len(), 1);
++    assert_eq!(
++        (rows[0].t0, rows[0].t1, rows[0].end.as_str(), rows[0].re),
++        (NOW - 1000, Some(NOW - 700), "peer", 1)
++    );
++    // the new one ended first: the row keeps the old one's later end
++    let rows = fold_with(vec![
++        start(RUN, 2, NOW - 950, "111", 7, "remote"),
++        end(RUN, 2, NOW - 920, "pc"),
++    ]);
++    assert_eq!(rows.len(), 1);
++    assert_eq!(
++        (rows[0].t1, rows[0].end.as_str(), rows[0].re),
++        (Some(NOW - 900), "lost", 1)
++    );
++    // still open: the row is open
++    let rows = fold_with(vec![start(RUN, 2, NOW - 910, "111", 7, "remote")]);
++    assert_eq!(rows.len(), 1);
++    assert_eq!((rows[0].t1, rows[0].end.as_str()), (None, "open"));
++    // another session's start in that time is a row of its own
++    assert_eq!(
++        fold_with(vec![start(RUN, 2, NOW - 910, "111", 8, "remote")]).len(),
++        2
++    );
++}
++
++/// W9-D3's bound holds for rows that reconnect often: a row takes at most MAX_RE reconnects, and
++/// the kept rows at most KEEP_KEYS connections, so the compacted file stays bounded too.
++#[test]
++fn rows_that_reconnect_often_do_not_carry_the_file_past_its_bound() {
++    let mut lines = Vec::new();
++    let mut n = 0;
++    let rows_made = 50u64;
++    for row in 0..rows_made {
++        let t = NOW - 5_000_000 + row * 50_000;
++        // MAX_RE + 1 connections of one session, each lost and back within a second
++        for i in 0..=u64::from(MAX_RE) {
++            n += 1;
++            lines.push(start(RUN, n, t + i * 2, "111", 1 + row, "remote"));
++            lines.push(end(RUN, n, t + i * 2 + 1, "lost"));
++        }
++    }
++    let all = text(&lines);
++    let rows = fold(&all, RUN, NOW);
++    assert!(rows.iter().all(|r| r.re <= MAX_RE));
++    let keys: usize = rows.iter().map(|r| r.keys.len()).sum();
++    assert!(keys <= KEEP_KEYS, "{keys}");
++    assert_eq!(rows.len(), KEEP_KEYS / (MAX_RE as usize + 1));
++    // the newest first
++    assert_eq!(rows[0].sid, rows_made);
++    assert_eq!(compact(&all, RUN, NOW).lines().count(), 2 * keys);
++    // one more reconnect than MAX_RE starts a row of its own
++    let mut lines = Vec::new();
++    for i in 0..=u64::from(MAX_RE) + 1 {
++        lines.push(start(RUN, 1 + i, NOW - 10_000 + i * 2, "111", 7, "remote"));
++        lines.push(end(RUN, 1 + i, NOW - 10_000 + i * 2 + 1, "lost"));
++    }
++    let rows = fold(&text(&lines), RUN, NOW);
++    assert_eq!(rows.iter().map(|r| r.re).collect::<Vec<_>>(), [0, MAX_RE]);
++}
++
++fn a_start<'a>(mark: &'a str, kind: u8) -> Start<'a> {
++    Start {
++        peer_id: "123456789",
++        name: "kim's laptop",
++        device: "Office PC",
++        owner: "홍*동",
++        mark,
++        auth: "permanent",
++        kind,
++        session_id: 42,
++    }
++}
++
++/// What a start line keeps (design 6-1): a staff row keeps no name (S-05), a mark the list does
++/// not know is "", the device and the owner stay, and audit types 0-4 are the kinds by name.
++#[test]
++fn a_start_line_keeps_what_the_list_shows() {
++    let line = start_line(&a_start(crate::hjviewer_cm::STAFF, 0), RUN, 3, NOW);
++    assert_eq!(
++        (line.e.as_str(), line.r.as_str(), line.n, line.t),
++        ("s", RUN, 3, NOW)
++    );
++    assert_eq!((line.name.as_str(), line.ver.as_str()), ("", "staff"));
++    assert_eq!(line.sid, 42);
++    let line = start_line(&a_start(crate::hjviewer_cm::SAME_ACCOUNT, 0), RUN, 3, NOW);
++    assert_eq!(
++        (
++            line.name.as_str(),
++            line.dev.as_str(),
++            line.own.as_str(),
++            line.ver.as_str(),
++            line.auth.as_str()
++        ),
++        (
++            "kim's laptop",
++            "Office PC",
++            "홍*동",
++            "same-account",
++            "permanent"
++        )
++    );
++    let line = start_line(&a_start("something else", 0), RUN, 3, NOW);
++    assert_eq!(
++        (line.name.as_str(), line.ver.as_str()),
++        ("kim's laptop", "")
++    );
++    assert_eq!(
++        start_line(
++            &a_start(crate::hjviewer_cm::UNVERIFIED_NAME, 0),
++            RUN,
++            3,
++            NOW
++        )
++        .ver,
++        "unverified-name"
++    );
++    for (kind, name) in [
++        (0, "remote"),
++        (1, "file"),
++        (2, "forward"),
++        (3, "camera"),
++        (4, "terminal"),
++        (9, "remote"),
++    ] {
++        assert_eq!(start_line(&a_start("", kind), RUN, 3, NOW).kind, name);
++    }
++    let line = end_line(RUN, 3, NOW, "connection manager");
++    assert_eq!(
++        (line.e.as_str(), line.end.as_str(), line.id.as_str()),
++        ("e", "pc", "")
++    );
++}
++
++/// hjv_incoming_started's order: the account's proof, then the session's remembered one-time
++/// password, then the audit line's primary auth.
++#[test]
++fn how_it_got_in_takes_the_account_first() {
++    assert_eq!(auth_of(true, true, "otp"), "account");
++    assert_eq!(auth_of(false, true, "otp"), "recent");
++    assert_eq!(auth_of(false, false, "click"), "click");
++    assert_eq!(auth_of(false, false, ""), "");
++}
++
++fn temp_list(name: &str) -> PathBuf {
++    let dir = std::env::temp_dir().join(format!("hjv-incoming-{name}-{}", std::process::id()));
++    std::fs::remove_dir_all(&dir).ok();
++    std::fs::create_dir_all(&dir).unwrap();
++    dir.join(FILE)
++}
++
++fn ids(path: &Path) -> Vec<String> {
++    let mut ids: Vec<_> = read_list(path)
++        .lines()
++        .filter_map(parse)
++        .filter(|l| l.e == "s")
++        .map(|l| l.id)
++        .collect();
++    ids.sort();
++    ids
++}
++
++/// The writer's schedule (design 3-3 step 3): it compacts when it starts, whether or not a line
++/// comes, then a day later or after COMPACT_LINES lines, or when the clock went back; between
++/// those it only appends.
++#[test]
++fn the_writer_compacts_at_its_start_and_then_daily() {
++    let path = temp_list("schedule");
++    let old = |id: &str| start(OLD, 9, NOW - KEEP_SECS - 86_400, id, 1, "remote") + "\n";
++    add(&path, old("old").as_bytes()).unwrap();
++    add(
++        &path,
++        (start(OLD, 1, NOW - 100, "new", 1, "remote") + "\n").as_bytes(),
++    )
++    .unwrap();
++    let mut writer = Writer::new(path.clone());
++    assert!(writer.due(NOW));
++    assert_eq!(writer.wait(NOW), Duration::from_secs(1));
++    // at the start, without a connection
++    writer.tidy(RUN, NOW);
++    assert_eq!(ids(&path), ["new"]);
++    assert!(!writer.due(NOW + 10));
++    assert_eq!(writer.wait(NOW), Duration::from_secs(WAKE_SECS));
++    assert_eq!(
++        writer.wait(NOW + COMPACT_SECS - 10),
++        Duration::from_secs(10)
++    );
++    // a line between: appended, nothing compacted
++    add(&path, old("old2").as_bytes()).unwrap();
++    let line = start_line(&a_start("", 0), RUN, 1, NOW + 10);
++    writer.append(&line, RUN, NOW + 10);
++    assert_eq!(ids(&path), ["123456789", "new", "old2"]);
++    assert_eq!(writer.lines, 1);
++    // a day later
++    assert!(writer.due(NOW + COMPACT_SECS));
++    writer.tidy(RUN, NOW + COMPACT_SECS);
++    assert_eq!(ids(&path), ["123456789", "new"]);
++    assert_eq!(writer.lines, 0);
++    // after COMPACT_LINES lines, and when the clock went back
++    writer.lines = COMPACT_LINES;
++    assert!(writer.due(NOW + COMPACT_SECS + 1));
++    writer.lines = 0;
++    assert!(writer.due(NOW));
++    std::fs::remove_dir_all(path.parent().unwrap()).ok();
++}
++
++/// One byte that is not UTF-8 costs only its line: the list still shows the others and the
++/// writer still compacts. A missing file is an empty list.
++#[test]
++fn a_damaged_byte_costs_only_its_line() {
++    let path = temp_list("damaged");
++    assert_eq!(read_list(&path), "");
++    let mut bytes = (start(OLD, 1, NOW - 100, "kept", 1, "remote") + "\n").into_bytes();
++    bytes
++        .extend_from_slice(b"{\"v\":1,\"e\":\"s\",\"r\":\"x\",\"n\":2,\"t\":1,\"name\":\"\xea\xb0");
++    bytes.push(b'\n');
++    bytes.extend_from_slice(
++        (start(OLD, 9, NOW - KEEP_SECS - 86_400, "old", 1, "remote") + "\n").as_bytes(),
++    );
++    std::fs::write(&path, &bytes).unwrap();
++    let rows = fold(&read_list(&path), RUN, NOW);
++    assert_eq!(
++        rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
++        ["kept"]
++    );
++    let mut writer = Writer::new(path.clone());
++    writer.tidy(RUN, NOW);
++    assert_eq!(ids(&path), ["kept"]);
++    std::fs::remove_dir_all(path.parent().unwrap()).ok();
++}
+diff --git a/src/server/connection/hjv_account.rs b/src/server/connection/hjv_account.rs
+index dc1c3b9..cce8da5 100644
+--- a/src/server/connection/hjv_account.rs
++++ b/src/server/connection/hjv_account.rs
+@@ -168,19 +168,18 @@ impl Connection {
+             Some(proven) => (proven.name.as_str(), proven.who.as_str()),
+             None => ("", ""),
+         };
+-        let auth = if self.hjv_proven.is_some() {
+-            "account"
+-        } else if self.hjv_incoming.recent() {
+-            "recent"
+-        } else {
+-            match self.conn_audit_primary_auth {
+-                ConnAuditPrimaryAuth::TemporaryPassword => "otp",
+-                ConnAuditPrimaryAuth::PermanentPassword => "permanent",
+-                ConnAuditPrimaryAuth::Click => "click",
+-                ConnAuditPrimaryAuth::SwitchSides => "switch",
+-                ConnAuditPrimaryAuth::None => "",
+-            }
++        let primary = match self.conn_audit_primary_auth {
++            ConnAuditPrimaryAuth::TemporaryPassword => "otp",
++            ConnAuditPrimaryAuth::PermanentPassword => "permanent",
++            ConnAuditPrimaryAuth::Click => "click",
++            ConnAuditPrimaryAuth::SwitchSides => "switch",
++            ConnAuditPrimaryAuth::None => "",
+         };
++        let auth = crate::hjviewer_incoming::auth_of(
++            self.hjv_proven.is_some(),
++            self.hjv_incoming.recent(),
++            primary,
++        );
+         let start = crate::hjviewer_incoming::Start {
+             peer_id: &self.lr.my_id,
+             name: &self.lr.my_name,

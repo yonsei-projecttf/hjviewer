@@ -1,0 +1,448 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 05:17:05 +0900
+Subject: [PATCH 136/147] hjviewer: the support codes' wire as hjv-api speaks
+ it (1.9)
+
+- A support code's pc-code result says "staff": whether hjv-api's answer
+  brought a support grant this PC holds (the doc 3-7 check). Without
+  `staff`, or with one this PC refuses, the PC shows P2's toast instead of
+  P6, which promises a shield.
+- A 401 from the waiting room (S-02's check, or the waiting thread) ends
+  the login through hjv-access-login-ended, also when none of its codes is
+  still open.
+- The support link is the page's own address, with the trailing '/'
+  (S10; no 307 on the first open).
+- A used code's until_in above 7200 keeps the support PC for 2 hours
+  instead of reading as over.
+- S10, S11 (English) and P6 use 5-3's words, as hjv-api's SL6 does.
+---
+ flutter/lib/common/hjviewer_access_texts.dart | 10 +--
+ flutter/test/hjviewer_support_test.dart       | 12 +--
+ src/hjviewer_access.rs                        | 10 ++-
+ src/hjviewer_access/guest.rs                  | 80 +++++++++++++------
+ src/hjviewer_access/tests.rs                  |  9 +++
+ src/hjviewer_account/support.rs               | 80 +++++++++++++++++--
+ 6 files changed, 158 insertions(+), 43 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index d4aa6de..7c3b4a1 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -879,13 +879,13 @@ class HjvAccessTexts {
+   /// ends its sentence, so that no particle depends on its last letter; the link has a line of
+   /// its own, which a messenger makes a link of.
+   String instructionsLink(String code, String link) => _t(
+-      'Windows PC에서 아래 링크를 열어 HJViewer를 받아 실행하고, "$pcTitle" 알림의 [$pcCodeButton]를 눌러 10분 안에 이 코드를 넣어 주세요: $code\n제가 연결하면 연결 창에 방패 표시와 함께 "$_staff" 줄이 보입니다. 그 줄을 확인한 뒤 [수락]을 눌러 주세요.\n$link',
+-      'On a Windows PC, open the link below, get HJViewer and run it, click [$pcCodeButton] on the notice "$pcTitle", and enter this code within 10 minutes: $code\nWhen I connect, the connection window shows a shield with the line "$_staff". Check that line, then press [Accept].\n$link');
++      'Windows PC에서 아래 링크로 HJViewer를 받아 실행하고, "$pcTitle" 알림의 [$pcCodeButton]를 눌러 10분 안에 이 코드를 넣어 주세요: $code\n제가 연결하면 연결 창에 방패 표시와 함께 "$_staff" 줄이 보입니다. 확인한 뒤 [수락]을 눌러 주세요.\n$link',
++      'On a Windows PC, get HJViewer from the link below and run it, click [$pcCodeButton] on the notice "$pcTitle", and enter $code within 10 minutes.\nWhen I connect, the connection window shows a shield with the line "$_staff". Check it, then press [Accept].\n$link');
+ 
+   // S11 (critic M-17: an iPhone app in the background asks nothing)
+   String get waiting => _t(
+       '그분의 PC가 코드를 넣으면 여기에 알려 드립니다. 이 창을 닫아도 앱이 켜져 있는 동안 알려 드립니다.',
+-      'You are told here when their PC enters the code, and also after you close this window, while the app is open.');
++      'You are told here when their PC enters the code, also after you close this window, while the app is running.');
+   String get waitingLabel => _t('그분의 PC를 기다리는 중', 'Waiting for their PC');
+ 
+   // S12 and S13 (critic S-08: the ID to check, in both, since S13 connects with one click). As
+@@ -914,8 +914,8 @@ class HjvAccessTexts {
+ 
+   /// P6: P3's toast once the support code brought the ticket.
+   String pcCodeToast(String until) => _t(
+-      '이 PC는 $until까지 연결을 받습니다. 교직원이 연결하면 연결 창에 방패 표시와 함께 "$_staff" 줄이 보입니다. 그 줄을 확인한 뒤 [수락]을 누르세요.',
+-      'This PC accepts connections until $until. When the faculty or staff member connects, the connection window shows a shield with the line "$_staff". Check that line, then press [Accept].');
++      '이 PC는 $until까지 연결을 받습니다. 교직원이 연결하면 연결 창에 방패 표시와 함께 "$_staff" 줄이 보입니다. 확인한 뒤 [수락]을 누르세요.',
++      'This PC accepts connections until $until. When the faculty or staff member connects, the connection window shows a shield with the line "$_staff". Check it, then press [Accept].');
+ 
+   // TV-W4: G2's text button and G4, which open Settings → Account's remote readiness card
+   String get checkReadiness => _t('원격 준비 점검', 'Check remote readiness');
+diff --git a/flutter/test/hjviewer_support_test.dart b/flutter/test/hjviewer_support_test.dart
+index 9b7f73a..e146bf8 100644
+--- a/flutter/test/hjviewer_support_test.dart
++++ b/flutter/test/hjviewer_support_test.dart
+@@ -8,7 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
+ 
+ const ko = HjvAccessTexts(true);
+ const en = HjvAccessTexts(false);
+-const link = 'https://hjv.example/api/hjv/s/AAECAwQFBgcICQoLDA0ODw';
++const link = 'https://hjv.example/api/hjv/s/AAECAwQFBgcICQoLDA0ODw/';
+ 
+ void main() {
+   test('a 1.9 server brings a link and a slot, an older one neither', () {
+@@ -89,10 +89,10 @@ void main() {
+     expect([en.copyLink, en.linkCopied], ['Copy link', 'Link copied.']);
+     final s10 = ko.instructionsLink('K7M2-Q9XD', link);
+     expect(s10,
+-        'Windows PC에서 아래 링크를 열어 HJViewer를 받아 실행하고, "서버에 연결되지 않음" 알림의 [지원 코드 넣기]를 눌러 10분 안에 이 코드를 넣어 주세요: K7M2-Q9XD\n제가 연결하면 연결 창에 방패 표시와 함께 "연세대 교직원(로그인 확인)" 줄이 보입니다. 그 줄을 확인한 뒤 [수락]을 눌러 주세요.\n$link');
++        'Windows PC에서 아래 링크로 HJViewer를 받아 실행하고, "서버에 연결되지 않음" 알림의 [지원 코드 넣기]를 눌러 10분 안에 이 코드를 넣어 주세요: K7M2-Q9XD\n제가 연결하면 연결 창에 방패 표시와 함께 "연세대 교직원(로그인 확인)" 줄이 보입니다. 확인한 뒤 [수락]을 눌러 주세요.\n$link');
+     final s10en = en.instructionsLink('K7M2-Q9XD', link);
+     expect(s10en,
+-        'On a Windows PC, open the link below, get HJViewer and run it, click [Support code] on the notice "Not connected", and enter this code within 10 minutes: K7M2-Q9XD\nWhen I connect, the connection window shows a shield with the line "Yonsei faculty or staff (verified login)". Check that line, then press [Accept].\n$link');
++        'On a Windows PC, get HJViewer from the link below and run it, click [Support code] on the notice "Not connected", and enter K7M2-Q9XD within 10 minutes.\nWhen I connect, the connection window shows a shield with the line "Yonsei faculty or staff (verified login)". Check it, then press [Accept].\n$link');
+     // the mark's words are the connection window's own (P4)
+     for (final t in [ko, en]) {
+       final staff = HjvCmTexts(t.korean).staff;
+@@ -111,6 +111,8 @@ void main() {
+   test('the waiting room and the PC that came (S11 to S13)', () {
+     expect(ko.waiting,
+         '그분의 PC가 코드를 넣으면 여기에 알려 드립니다. 이 창을 닫아도 앱이 켜져 있는 동안 알려 드립니다.');
++    expect(en.waiting,
++        'You are told here when their PC enters the code, also after you close this window, while the app is running.');
+     expect(ko.arrived('123456789'), 'PC 123 456 789에서 지원 코드를 넣었습니다.');
+     expect(en.arrived('123456789'), 'PC 123 456 789 entered the support code.');
+     expect(ko.arrivedText,
+@@ -161,9 +163,9 @@ void main() {
+ 
+   test('P6 names the shield and the line', () {
+     expect(ko.pcCodeToast('18:30'),
+-        '이 PC는 18:30까지 연결을 받습니다. 교직원이 연결하면 연결 창에 방패 표시와 함께 "연세대 교직원(로그인 확인)" 줄이 보입니다. 그 줄을 확인한 뒤 [수락]을 누르세요.');
++        '이 PC는 18:30까지 연결을 받습니다. 교직원이 연결하면 연결 창에 방패 표시와 함께 "연세대 교직원(로그인 확인)" 줄이 보입니다. 확인한 뒤 [수락]을 누르세요.');
+     expect(en.pcCodeToast('18:30'),
+-        'This PC accepts connections until 18:30. When the faculty or staff member connects, the connection window shows a shield with the line "Yonsei faculty or staff (verified login)". Check that line, then press [Accept].');
++        'This PC accepts connections until 18:30. When the faculty or staff member connects, the connection window shows a shield with the line "Yonsei faculty or staff (verified login)". Check it, then press [Accept].');
+   });
+ 
+   test('P6 only where the PC kept the support grant', () {
+diff --git a/src/hjviewer_access.rs b/src/hjviewer_access.rs
+index 19985f5..17ffa9f 100644
+--- a/src/hjviewer_access.rs
++++ b/src/hjviewer_access.rs
+@@ -906,13 +906,19 @@ async fn off_thread<T: Send + 'static>(
+     tokio::time::timeout(limit, rx).await.ok()?.ok()
+ }
+ 
+-/// main_get_common: "Y" while hjv-api refused the login's ticket request with 401 and that login
+-/// is still the app's (U68).
++/// main_get_common: "Y" while hjv-api refused the login's ticket request (or, 1.9, a waiting room
++/// request) with 401 and that login is still the app's (U68).
+ const LOGIN_ENDED: &str = "hjv-access-login-ended";
+ 
+ /// The SHA-256 of the token whose ticket request hjv-api answered with 401.
+ static REFUSED_LOGIN: Mutex<Option<[u8; 32]>> = Mutex::new(None);
+ 
++/// The waiting room's 401 to the login of `token` (support.rs): the screens end it as the ticket
++/// request's 401 (U68), also when none of its codes is open any more (the doc 3-7, S-02).
++pub(crate) fn note_login_refused(token: &str) {
++    *REFUSED_LOGIN.lock().unwrap_or_else(|e| e.into_inner()) = Some(token_hash(token));
++}
++
+ fn token_hash(token: &str) -> [u8; 32] {
+     Sha256::digest(token.as_bytes()).into()
+ }
+diff --git a/src/hjviewer_access/guest.rs b/src/hjviewer_access/guest.rs
+index 2b46546..cfa4a43 100644
+--- a/src/hjviewer_access/guest.rs
++++ b/src/hjviewer_access/guest.rs
+@@ -13,10 +13,10 @@
+ //!   get "hjv-guest-result:ctl:<PC ID>" | "hjv-guest-result:pc" | "hjv-guest-result:pc-code"
+ //!       {"ok":true} or {"ok":false,"error":"denied"|"rate_limited"|"busy"|"unavailable"|
+ //!       "wrong_pc"|"clock"|"bad_request"|"network"|"config"}; this PC's {"ok":true} also has
+-//!       "until" (when its ticket ends, Unix seconds by this device's clock), and a rate_limited
+-//!       one "retry_after" (hjv-api's seconds until a try may come again) when hjv-api said;
+-//!       every "pc-code" result has "staff": whether the answer's support grant checks out for
+-//!       this PC, as the process that registers checks it (TV-W6, P6)
++//!       "until" (when its ticket ends, Unix seconds by this device's clock), a support code's
++//!       "staff" too (whether its answer brought a support grant this PC holds, checked as the
++//!       process that registers checks it: P6, else P2's toast), and a rate_limited one
++//!       "retry_after" (hjv-api's seconds until a try may come again) when hjv-api said
+ //!   get "hjv-guest-held:<PC ID>"  "Y" while this process keeps a ticket for that PC that holds,
+ //!       else "" (A0 asks before connecting without one); never the ticket itself
+ //!
+@@ -380,29 +380,20 @@ fn note(key: String, result: Result<u64, Failure>) {
+         .insert(key, value.to_string());
+ }
+ 
+-/// The support code's result: as note() has it, with `"staff"`.
++/// A support code's result: as `note`'s, with whether the PC holds the grant (`staff`).
+ fn note_code(result: Result<(u64, bool), Failure>) {
+-    let staff = matches!(result, Ok((_, true)));
+-    note("pc-code".to_owned(), result.map(|(until, _)| until));
+-    let mut results = RESULTS.lock().unwrap_or_else(|e| e.into_inner());
+-    if let Some(value) = results.get_mut("pc-code") {
+-        if let Ok(Value::Object(mut noted)) = serde_json::from_str::<Value>(value) {
+-            noted.insert("staff".to_owned(), json!(staff));
+-            *value = Value::Object(noted).to_string();
++    match result {
++        Ok((until, staff)) => {
++            let value = json!({ "ok": true, "until": until, "staff": staff });
++            RESULTS
++                .lock()
++                .unwrap_or_else(|e| e.into_inner())
++                .insert("pc-code".to_owned(), value.to_string());
+         }
++        Err(failure) => note("pc-code".to_owned(), Err(failure)),
+     }
+ }
+ 
+-/// Whether an exchange's answer brings a support grant for this PC that the process that
+-/// registers keeps (hjviewer_access::keep_guest_pc checks it the same way).
+-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+-fn keeps_grant(answer: &Value, id: &str, pk: &[u8], now: u64) -> bool {
+-    answer.get("staff").is_some_and(|staff| {
+-        let pinned = crate::hjviewer_account::trust_pubkeys();
+-        crate::hjviewer_account::verify_grant(&pinned, staff, id, pk, now).is_ok()
+-    })
+-}
+-
+ #[derive(Deserialize)]
+ struct CtlAsk {
+     to: String,
+@@ -498,7 +489,7 @@ pub(super) fn for_this_pc(password: &str) -> Result<u64, Failure> {
+ }
+ 
+ /// The ticket of this PC for a support code, which goes as for the access password: Ok with
+-/// when it ends (hjv-api gives it two hours) and whether it brought a support grant the PC keeps.
++/// when it ends (hjv-api gives it two hours) and whether this PC holds the answer's support grant.
+ /// A code whose form is not a code is not sent.
+ pub(super) fn for_this_pc_code(typed: &str) -> Result<(u64, bool), Failure> {
+     let typed = typed.trim();
+@@ -508,6 +499,16 @@ pub(super) fn for_this_pc_code(typed: &str) -> Result<(u64, bool), Failure> {
+     this_pc(typed, Secret::Code)
+ }
+ 
++/// Whether a support code's answer brings a `staff` this PC holds (the doc 3-7 지원 확인, as the
++/// process that registers checks it in keep_guest_pc): none, or one refused there, gives P2's
++/// toast, not P6.
++#[cfg(not(any(target_os = "android", target_os = "ios")))]
++fn holds_staff(answer: &Value, pinned: &[(u32, [u8; 32])], device: &Device, now: u64) -> bool {
++    answer.get("staff").is_some_and(|staff| {
++        crate::hjviewer_account::verify_grant(pinned, staff, &device.id, &device.pk, now).is_ok()
++    })
++}
++
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ fn this_pc(password: &str, secret: Secret) -> Result<(u64, bool), Failure> {
+     let device = device().ok_or(Failure::Config)?;
+@@ -516,7 +517,13 @@ fn this_pc(password: &str, secret: Secret) -> Result<(u64, bool), Failure> {
+     let Some(held) = Held::issued(&answer, now).filter(Held::registers) else {
+         return Err(Failure::BadRequest);
+     };
+-    let staff = keeps_grant(&answer, &device.id, &device.pk, now);
++    let staff = secret == Secret::Code
++        && holds_staff(
++            &answer,
++            &crate::hjviewer_account::trust_pubkeys(),
++            &device,
++            now,
++        );
+     let value = answer.to_string();
+     // the IPC call starts a runtime of its own, so it runs off this thread, which may be on one
+     let sent = std::thread::spawn(move || send(value))
+@@ -826,11 +833,34 @@ mod tests {
+         note_code(Err(Failure::Denied));
+         assert_eq!(
+             get_common("hjv-guest-result:pc-code").as_deref(),
+-            Some(r#"{"error":"denied","ok":false,"staff":false}"#)
++            Some(r#"{"error":"denied","ok":false}"#)
+         );
+         assert_eq!(get_common("hjv-access-state"), None);
+     }
+ 
++    #[test]
++    fn p6_only_for_a_grant_this_pc_holds() {
++        use crate::hjviewer_account::{parse_trust_pubkeys, vectors as v};
++        let device = device();
++        let pinned = parse_trust_pubkeys(v::HJV_TRUST_PUBKEYS).unwrap();
++        let staff = |g: &str, s: &str| json!({"kid": 1, "g": STANDARD.encode(g), "s": s});
++        // hjv-api's answer: the ticket's members, plus `staff` when it could sign it
++        let answer = |staff: Option<Value>| {
++            let mut answer = json!({"ticket": "t", "exp": v::T + 7200});
++            if let Some(staff) = staff {
++                answer["staff"] = staff;
++            }
++            answer
++        };
++        let held = answer(Some(staff(v::SUPPORT_GRANT, v::SUPPORT_GRANT_SIG)));
++        assert!(holds_staff(&held, &pinned, &device, v::T));
++        // no `staff`, one for another PC, and one of a list key this build does not pin
++        assert!(!holds_staff(&answer(None), &pinned, &device, v::T));
++        let other = answer(Some(staff(v::SUPPORT_OTHER_PC, v::SUPPORT_OTHER_PC_SIG)));
++        assert!(!holds_staff(&other, &pinned, &device, v::T));
++        assert!(!holds_staff(&held, &[], &device, v::T));
++    }
++
+     #[test]
+     fn only_a_support_code_without_an_answer_goes_once_more() {
+         let none = Err(Failure::Network);
+diff --git a/src/hjviewer_access/tests.rs b/src/hjviewer_access/tests.rs
+index 66ae474..d25c765 100644
+--- a/src/hjviewer_access/tests.rs
++++ b/src/hjviewer_access/tests.rs
+@@ -435,6 +435,15 @@ fn a_ticket_requests_401_ends_only_the_login_it_was_asked_by() {
+     assert!(!login_refused(None, "hjv_old"));
+ }
+ 
++#[test]
++fn a_waiting_room_401_ends_the_login_as_the_ticket_requests_does() {
++    // support.rs's token for its 401 (the same, so that the two tests never race)
++    note_login_refused("hjv-test-token");
++    let refused = *REFUSED_LOGIN.lock().unwrap();
++    assert!(login_refused(refused.as_ref(), "hjv-test-token"));
++    assert!(!login_refused(refused.as_ref(), "hjv_new"));
++}
++
+ #[test]
+ fn only_a_signed_ticket_requests_login_failure_is_hjv_apis_401() {
+     assert!(hjv_api_refused("login", || true));
+diff --git a/src/hjviewer_account/support.rs b/src/hjviewer_account/support.rs
+index 8be72df..50dfbc7 100644
+--- a/src/hjviewer_account/support.rs
++++ b/src/hjviewer_account/support.rs
+@@ -24,7 +24,9 @@
+ //! (the support PCs: the controller's proof, ctl.rs, and the remote restart's warning):
+ //!   get "hjv-support-wait:<slot>"  {"state":"open"|"used"|"over"|"login"|"off","pc":"<ID>"};
+ //!       `login` is hjv-api's 401 to the login that still is the app's, `off` a server without the
+-//!       waiting room; "" for a slot this process does not know (any more)
++//!       waiting room; "" for a slot this process does not know (any more). That 401 also ends
++//!       the login through `hjv-access-login-ended` (hjviewer_access.rs), with or without an open
++//!       code
+ //!   get "hjv-support-arrived"      {"slot":1,"pc":"<ID>"} for a code a PC used, once; "" for none
+ //!   get "hjv-support-pc:<ID>"      "Y" while that PC is a support PC of this login, else ""
+ //!   set "hjv-support-wait-kick"    the waiting room is asked again now (the app came back)
+@@ -72,7 +74,8 @@ const QUICK: Duration = Duration::from_secs(1);
+ const GRACE: Duration = Duration::from_secs(60);
+ /// How long a code that ended stays readable for its S2 (hjv-api keeps it as long).
+ const KEEP_ENDED: Duration = Duration::from_secs(600);
+-/// A support code's ticket lives 2 hours.
++/// A support code's ticket lives 2 hours; a longer `until_in` keeps the support PC this long (its
++/// grant lives MAX_GRANT_LIFE at most anyway).
+ const MAX_UNTIL: u64 = 7200;
+ /// S-02 (critic): how recent hjv-api's last answer to the login must be for a support proof.
+ const FRESH: Duration = Duration::from_secs(120);
+@@ -428,7 +431,8 @@ impl Room {
+         };
+         self.last_slot += 1;
+         let slot = self.last_slot;
+-        made.insert("link".to_owned(), json!(format!("https://{server}{link}")));
++        // the page's own address (the doc 3-7, S10): `…/<link>` is a 307 to `…/<link>/`
++        made.insert("link".to_owned(), json!(format!("https://{server}{link}/")));
+         made.insert("slot".to_owned(), json!(slot));
+         self.codes.push(Code {
+             slot,
+@@ -585,7 +589,8 @@ fn used(code: &Value) -> Option<Seen> {
+     let until_in = code
+         .get("until_in")?
+         .as_u64()
+-        .filter(|until_in| (1..=MAX_UNTIL).contains(until_in))?;
++        .filter(|until_in| *until_in >= 1)?
++        .min(MAX_UNTIL);
+     Some(Seen::Used {
+         pc: pc.to_owned(),
+         pk,
+@@ -674,6 +679,7 @@ fn wait_loop(server: &str) {
+         if LocalConfig::get_option("access_token") != token {
+             continue;
+         }
++        refused(reply.as_ref(), &token);
+         let step = room.take_reply(
+             &login,
+             rev,
+@@ -720,6 +726,17 @@ fn ask(server: &str, token: &str, rev: Option<u64>, timeout: Duration) -> Option
+     Some((status, text))
+ }
+ 
++/// Whether `reply` is hjv-api's 401 to the login of `token`, which is still the app's: it ends the
++/// login as any account request's 401 does (L4, A1 on phones), by the ticket request's way (U68),
++/// also when none of its codes is open any more and no screen asks the waiting room.
++fn refused(reply: Option<&(u16, String)>, token: &str) -> bool {
++    let refused = matches!(reply, Some((401, _)));
++    if refused {
++        crate::hjviewer_access::note_login_refused(token);
++    }
++    refused
++}
++
+ /// ctl.rs: the key the waiting room gave for `pc_id` while it is a support PC of this login.
+ pub(super) fn support_pc(pc_id: &str) -> Option<[u8; 32]> {
+     let login = login_of(&LocalConfig::get_option("access_token"));
+@@ -753,6 +770,7 @@ pub(super) fn login_still_taken() -> bool {
+     if LocalConfig::get_option("access_token") != token {
+         return false;
+     }
++    refused(reply.as_ref(), &token);
+     let mut failures = 0;
+     room.take_reply(
+         &login,
+@@ -953,7 +971,7 @@ mod tests {
+         assert_eq!(
+             answer,
+             json!({"ok": true, "code": "K7M2-Q9XD", "expires_in": 600,
+-                   "link": format!("https://hjv.example{LINK}"), "slot": 1})
++                   "link": format!("https://hjv.example{LINK}/"), "slot": 1})
+         );
+         assert!(room.open());
+         assert_eq!(room.codes[0].wait, WAIT);
+@@ -997,7 +1015,7 @@ mod tests {
+         let odd = json!({"rev": 1, "codes": [
+             {"wait": WAIT, "state": "used", "pc": "123 456", "pk": PK, "until_in": 60},
+             {"wait": WAIT_2, "state": "used", "pc": "123456789", "pk": "AAAA", "until_in": 60},
+-            {"wait": "AAECAwQFBgcICQoLDA0ODw", "state": "used", "pc": "1", "pk": PK, "until_in": 7201},
++            {"wait": "AAECAwQFBgcICQoLDA0ODw", "state": "used", "pc": "1", "pk": PK, "until_in": 0},
+             {"wait": "MDEyMzQ1Njc4OWFiY2RlZg", "state": "later"},
+             {"wait": "short", "state": "open"},
+         ]})
+@@ -1005,6 +1023,16 @@ mod tests {
+         let (_, seen) = read_wait(&odd).unwrap();
+         assert_eq!(seen.len(), 3);
+         assert!(seen.values().all(|s| *s == Seen::Over));
++        // a ticket longer than 2 hours (TICKET_SECS raised): the support PC still, for 2 hours
++        let long = json!({"rev": 2, "codes": [used(WAIT, "123456789", 14_400)]}).to_string();
++        let (_, seen) = read_wait(&long).unwrap();
++        assert!(matches!(
++            seen[WAIT],
++            Seen::Used {
++                until_in: MAX_UNTIL,
++                ..
++            }
++        ));
+         // not an answer: no rev, no list, not JSON, cut at MAX_ANSWER
+         for bad in [
+             json!({"codes": []}).to_string(),
+@@ -1118,6 +1146,46 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn a_401_ends_the_login_also_when_no_code_is_open() {
++        // the usual S-02: the code was used, and the staff member connects minutes later
++        let now = Instant::now();
++        let (mut room, _) = room_with_code(now);
++        let mut failures = 0;
++        let came = json!({"rev": 4, "codes": [used(WAIT, "123456789", 7190)]}).to_string();
++        room.take_reply(
++            &login(),
++            None,
++            Some((200, came.as_str())),
++            QUICK,
++            &mut failures,
++            now,
++        );
++        assert!(!room.open());
++        // hjv-api's 401, as api::session() writes it: no proof, and the login ends
++        let body = json!({"error": "로그인이 필요합니다. 다시 로그인해 주세요."}).to_string();
++        let reply = (401, body);
++        let step = room.take_reply(
++            &login(),
++            None,
++            Some((reply.0, reply.1.as_str())),
++            QUICK,
++            &mut failures,
++            now,
++        );
++        assert_eq!(step, Step::Stop);
++        assert!(room.pcs.is_empty() && room.fresh.is_none());
++        assert!(refused(Some(&reply), "hjv-test-token"));
++        // anything else ends no login
++        for other in [
++            None,
++            Some((200, "{}".to_owned())),
++            Some((403, String::new())),
++        ] {
++            assert!(!refused(other.as_ref(), "hjv-test-token"));
++        }
++    }
++
+     #[test]
+     fn an_ended_code_and_a_failing_waiting_room() {
+         let now = Instant::now();

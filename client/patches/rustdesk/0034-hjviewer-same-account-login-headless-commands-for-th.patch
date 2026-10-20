@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 13 Oct 2026 15:11:41 +0900
-Subject: [PATCH 34/85] hjviewer: same-account login: headless commands for the
- account E2E
+Subject: [PATCH 034/147] hjviewer: same-account login: headless commands for
+ the account E2E
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

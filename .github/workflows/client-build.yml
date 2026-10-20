@@ -361,8 +361,24 @@ jobs:
       # hjviewer_access_test.dart the access screens' (docs/access-tickets.md 5-3); 1.8.2's
       # hjviewer_toast_test.dart the app's toast, hjviewer_suggestions_test.dart the ID suggestions',
       # hjviewer_phone_test.dart the phone targets and bars', hjviewer_pins_test.dart what the settings
-      # leave out for what a build pins, hjviewer_style_test.dart the look's contrast and line breaks,
-      # hjviewer_applock_test.dart the phone app lock's (W13).
+      # leave out for what a build pins, hjviewer_style_test.dart the look's contrast, line breaks,
+      # notice box, buttons, dialog widths and the admin view's pill tabs,
+      # hjviewer_applock_test.dart the phone app lock's (W13); 1.9.0's hjviewer_dialog_frame_test.dart
+      # the app's themes' desktop buttons and the session's message box, with the bridge;
+      # hjviewer_cm_test.dart the PC connection window's marks, cautions and recording rule (TV-W2);
+      # hjviewer_support_test.dart the staff member's support link, waiting room and restart lines
+      # (TV-W6); hjviewer_cm_fit_test.dart that the connection window's card fits 300 x 490 with
+      # Pretendard (the overlay's fonts); hjviewer_end_lock_test.dart the session end's lock rule
+      # (TV-W3); hjviewer_ready_test.dart the remote readiness texts (TV-W4);
+      # hjviewer_session_test.dart the phone session's gesture guide and switch (TV-W7);
+      # hjviewer_incoming_test.dart the incoming connections list's answer, texts and keyboard
+      # (TV-W9); hjviewer_home_test.dart the home's account line (UX-H1);
+      # hjviewer_keys_test.dart the desktop's keyboard (UX-K1): the PC cards' keys, the focus ring;
+      # hjviewer_semantics_test.dart what screen readers hear (UX-K2): selected, headings, live regions;
+      # hjviewer_session_look_test.dart the session windows' colours (U15): file rows, chat bubbles;
+      # hjviewer_title_line_test.dart the logged-in devices list's arrow on the title's line (D16);
+      # hjv_caption_test.dart the Windows 11 maximise button's box and its off option (U44);
+      # hjviewer_text_scale_test.dart the phone's text size up to 130 % (UX-K3).
       - name: Run the tests
         run: |
           for t in test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart \
@@ -374,7 +390,14 @@ jobs:
             test/hjviewer_access_test.dart test/hjviewer_toast_test.dart \
             test/hjviewer_suggestions_test.dart test/hjviewer_phone_test.dart \
             test/hjviewer_pins_test.dart test/hjviewer_style_test.dart \
-            test/hjviewer_applock_test.dart; do
+            test/hjviewer_applock_test.dart test/hjviewer_dialog_frame_test.dart \
+            test/hjviewer_cm_test.dart test/hjviewer_support_test.dart \
+            test/hjviewer_cm_fit_test.dart test/hjviewer_end_lock_test.dart \
+            test/hjviewer_ready_test.dart test/hjviewer_session_test.dart \
+            test/hjviewer_incoming_test.dart test/hjviewer_home_test.dart \
+            test/hjviewer_keys_test.dart test/hjviewer_semantics_test.dart \
+            test/hjviewer_session_look_test.dart test/hjviewer_title_line_test.dart \
+            test/hjv_caption_test.dart test/hjviewer_text_scale_test.dart; do
             if [ ! -f "$t" ]; then echo "::error::$t is not in the patched tree"; exit 1; fi
           done
           flutter pub get

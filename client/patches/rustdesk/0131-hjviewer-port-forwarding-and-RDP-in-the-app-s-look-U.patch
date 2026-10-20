@@ -1,0 +1,246 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 05:16:51 +0900
+Subject: [PATCH 131/147] hjviewer: port forwarding and RDP in the app's look
+ (U15)
+
+U15 (UX-S5), the desktop part, third commit (the one to leave out
+first if 1.9.0 runs late, u15.md review).
+
+- The 'Listening ...' bar (was a solid green 45 px bar) is an
+  HjvCallout in the success tone with the tip as its text.
+- The table in a card (hjvCardDecoration, clipped to its radius); the
+  heads 36 high in hjvFileHeadStyle with a bottom border; the add row
+  and the RDP row without a background, their arrows
+  arrow_forward_rounded 18 px textTertiary; the tunnel rows 48 high
+  without zebra stripes, a top border, body text (ports with digits of
+  one width), the remove x 18 px textSecondary with the existing
+  'Delete' tooltip. The RDP row's text in body size.
+
+No text changes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../lib/desktop/pages/port_forward_page.dart  | 109 ++++++++++--------
+ 1 file changed, 58 insertions(+), 51 deletions(-)
+
+diff --git a/flutter/lib/desktop/pages/port_forward_page.dart b/flutter/lib/desktop/pages/port_forward_page.dart
+index 13dca0e..aaadcd2 100644
+--- a/flutter/lib/desktop/pages/port_forward_page.dart
++++ b/flutter/lib/desktop/pages/port_forward_page.dart
+@@ -3,6 +3,8 @@ import 'dart:convert';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_session_look.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
+ import 'package:flutter_hbb/models/model.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+@@ -12,6 +14,9 @@ const double _kColumn1Width = 30;
+ const double _kColumn4Width = 100;
+ const double _kRowHeight = 60;
+ const double _kTextLeftMargin = 20;
++// HJViewer (U15): a tunnel's row and the table's head in the app's look
++const double _kHjvDataRowHeight = 48;
++const double _kHjvHeadHeight = 36;
+ 
+ class _PortForward {
+   int localPort;
+@@ -111,11 +116,13 @@ class _PortForwardPageState extends State<PortForwardPage>
+                 buildPrompt(context),
+                 Flexible(
+                   child: Container(
+-                    decoration: BoxDecoration(
+-                        color: Theme.of(context).colorScheme.background,
+-                        border: Border.all(width: 1, color: MyTheme.border)),
+-                    child:
+-                        widget.isRDP ? buildRdp(context) : buildTunnel(context),
++                    decoration: hjvCardDecoration(context),
++                    child: ClipRRect(
++                      borderRadius: BorderRadius.circular(HjvRadius.lg),
++                      child: widget.isRDP
++                          ? buildRdp(context)
++                          : buildTunnel(context),
++                    ),
+                   ),
+                 ),
+               ],
+@@ -130,28 +137,19 @@ class _PortForwardPageState extends State<PortForwardPage>
+   buildPrompt(BuildContext context) {
+     return Obx(() => Offstage(
+           offstage: pfs.isEmpty && !widget.isRDP,
+-          child: Container(
+-              height: 45,
+-              color: const Color(0xFF007F00),
+-              child: Column(
+-                  mainAxisAlignment: MainAxisAlignment.center,
+-                  children: [
+-                    Text(
+-                      translate('Listening ...'),
+-                      style: const TextStyle(fontSize: 16, color: Colors.white),
+-                    ),
+-                    Text(
+-                      translate('not_close_tcp_tip'),
+-                      style: const TextStyle(
+-                          fontSize: 10, color: Color(0xFFDDDDDD), height: 1.2),
+-                    )
+-                  ])).marginOnly(bottom: 8),
++          child: HjvCallout(
++                  tone: HjvTone.success,
++                  icon: Icons.sensors_rounded,
++                  title: translate('Listening ...'),
++                  text: translate('not_close_tcp_tip'))
++              .marginOnly(bottom: 12),
+         ));
+   }
+ 
+   buildTunnel(BuildContext context) {
+     text(String label) => Expanded(
+-        child: Text(translate(label)).marginOnly(left: _kTextLeftMargin));
++        child: Text(translate(label), style: hjvFileHeadStyle(context))
++            .marginOnly(left: _kTextLeftMargin));
+ 
+     return Theme(
+       data: Theme.of(context).copyWith(
+@@ -163,15 +161,20 @@ class _PortForwardPageState extends State<PortForwardPage>
+           itemBuilder: ((context, index) {
+             if (index == 0) {
+               return Container(
+-                height: 25,
+-                color: Theme.of(context).scaffoldBackgroundColor,
++                height: _kHjvHeadHeight,
++                decoration: BoxDecoration(
++                    border: Border(
++                        bottom:
++                            BorderSide(color: HjvPalette.of(context).border))),
+                 child: Row(children: [
+                   text('Local Port'),
+                   const SizedBox(width: _kColumn1Width),
+                   text('Remote Host'),
+                   text('Remote Port'),
+                   SizedBox(
+-                      width: _kColumn4Width, child: Text(translate('Action')))
++                      width: _kColumn4Width,
++                      child: Text(translate('Action'),
++                          style: hjvFileHeadStyle(context)))
+                 ]),
+               );
+             } else if (index == 1) {
+@@ -189,16 +192,16 @@ class _PortForwardPageState extends State<PortForwardPage>
+           r'^([0-9]|[1-9]\d|[1-9]\d{2}|[1-9]\d{3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$'))
+     ];
+ 
+-    return Container(
++    return SizedBox(
+       height: _kRowHeight,
+-      decoration:
+-          BoxDecoration(color: Theme.of(context).colorScheme.background),
+       child: Row(children: [
+         buildTunnelInputCell(context,
+             controller: localPortController,
+             inputFormatters: portInputFormatter),
+-        const SizedBox(
+-            width: _kColumn1Width, child: Icon(Icons.arrow_forward_sharp)),
++        SizedBox(
++            width: _kColumn1Width,
++            child: Icon(Icons.arrow_forward_rounded,
++                size: 18, color: HjvPalette.of(context).textTertiary)),
+         buildTunnelInputCell(context,
+             controller: remoteHostController, hint: 'localhost'),
+         buildTunnelInputCell(context,
+@@ -250,27 +253,27 @@ class _PortForwardPageState extends State<PortForwardPage>
+   }
+ 
+   Widget buildTunnelDataRow(BuildContext context, _PortForward pf, int index) {
+-    text(String label) => Expanded(
+-        child: Text(label, style: const TextStyle(fontSize: 20))
++    final p = HjvPalette.of(context);
++    text(String label, {bool port = false}) => Expanded(
++        child: Text(label,
++                style: HjvText.body.copyWith(
++                    color: p.text, fontFeatures: port ? HjvText.tabular : null))
+             .marginOnly(left: _kTextLeftMargin));
+ 
+     return Container(
+-      height: _kRowHeight,
+-      decoration: BoxDecoration(
+-          color: index % 2 == 0
+-              ? MyTheme.currentThemeMode() == ThemeMode.dark
+-                  ? const Color(0xFF202020)
+-                  : const Color(0xFFF4F5F6)
+-              : Theme.of(context).colorScheme.background),
++      height: _kHjvDataRowHeight,
++      decoration:
++          BoxDecoration(border: Border(top: BorderSide(color: p.border))),
+       child: Row(children: [
+-        text(pf.localPort.toString()),
++        text(pf.localPort.toString(), port: true),
+         const SizedBox(width: _kColumn1Width),
+         text(pf.remoteHost),
+-        text(pf.remotePort.toString()),
++        text(pf.remotePort.toString(), port: true),
+         SizedBox(
+           width: _kColumn4Width,
+           child: IconButton(
+-            icon: const Icon(Icons.close),
++            tooltip: translate('Delete'),
++            icon: Icon(Icons.close_rounded, size: 18, color: p.textSecondary),
+             onPressed: () async {
+               await bind.sessionRemovePortForward(
+                   sessionId: _ffi.sessionId, localPort: pf.localPort);
+@@ -295,11 +298,12 @@ class _PortForwardPageState extends State<PortForwardPage>
+ 
+   buildRdp(BuildContext context) {
+     text1(String label) => Expanded(
+-        child: Text(translate(label)).marginOnly(left: _kTextLeftMargin));
++        child: Text(translate(label), style: hjvFileHeadStyle(context))
++            .marginOnly(left: _kTextLeftMargin));
+     text2(String label) => Expanded(
+             child: Text(
+           label,
+-          style: const TextStyle(fontSize: 20),
++          style: HjvText.body.copyWith(color: HjvPalette.of(context).text),
+         ).marginOnly(left: _kTextLeftMargin));
+     return Theme(
+       data: Theme.of(context)
+@@ -310,8 +314,11 @@ class _PortForwardPageState extends State<PortForwardPage>
+           itemBuilder: ((context, index) {
+             if (index == 0) {
+               return Container(
+-                height: 25,
+-                color: Theme.of(context).scaffoldBackgroundColor,
++                height: _kHjvHeadHeight,
++                decoration: BoxDecoration(
++                    border: Border(
++                        bottom:
++                            BorderSide(color: HjvPalette.of(context).border))),
+                 child: Row(children: [
+                   text1('Local Port'),
+                   const SizedBox(width: _kColumn1Width),
+@@ -320,10 +327,8 @@ class _PortForwardPageState extends State<PortForwardPage>
+                 ]),
+               );
+             } else {
+-              return Container(
++              return SizedBox(
+                 height: _kRowHeight,
+-                decoration: BoxDecoration(
+-                    color: Theme.of(context).colorScheme.background),
+                 child: Row(children: [
+                   Expanded(
+                     child: Align(
+@@ -340,9 +345,11 @@ class _PortForwardPageState extends State<PortForwardPage>
+                       ).marginOnly(left: 20),
+                     ),
+                   ),
+-                  const SizedBox(
++                  SizedBox(
+                       width: _kColumn1Width,
+-                      child: Icon(Icons.arrow_forward_sharp)),
++                      child: Icon(Icons.arrow_forward_rounded,
++                          size: 18,
++                          color: HjvPalette.of(context).textTertiary)),
+                   text2('localhost'),
+                   text2('RDP'),
+                 ]),

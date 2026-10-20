@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 10:52:13 +0900
-Subject: [PATCH 23/85] mobile: a new stroke right after a pinch starts at once
+Subject: [PATCH 023/147] mobile: a new stroke right after a pinch starts at
+ once
 
 ScaleGestureRecognizer calls onEnd for a lifted finger only while its gesture
 is started, that is when a finger moved since the last finger came or went.

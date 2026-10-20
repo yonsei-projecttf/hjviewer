@@ -1,0 +1,426 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:08:05 +0900
+Subject: [PATCH 116/147] hjviewer: the home says who is logged in, a session
+ window's login points at the main window (UX-H1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U26: the desktop home has an account line under the password's card, the phone's under the
+remote ID field: "로그인됨 · name" (the display name only, never the portal ID) or
+"로그인하지 않음" with a plain [로그인] when the window has no other (not while P1 or G2 has the
+filled one or G3 shows). A press opens Settings -> Account (a phone's settings tab). In an
+account build the desktop settings start with the account tab and open on it.
+
+U33: a login in a Windows session window shows a toast that the main window has the note about
+this PC (the main window does not come to the front). On an installed Windows PC the login
+dialog says under its fields that a login there adds the PC to My PCs.
+
+D16 (1.8.2 screen review carry-over): the logged-in devices list puts its arrow and
+[로그아웃시키기] at the title's line on rows of two or three lines too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart       |   8 ++
+ flutter/lib/common/hjviewer_account.dart      | 122 +++++++++++++++++-
+ .../lib/common/hjviewer_account_texts.dart    |  46 +++++++
+ flutter/lib/common/widgets/login.dart         |   1 +
+ .../lib/desktop/pages/desktop_home_page.dart  |   2 +
+ .../desktop/pages/desktop_setting_page.dart   |  10 +-
+ flutter/lib/mobile/pages/connection_page.dart |   2 +
+ flutter/test/hjviewer_home_test.dart          |  76 +++++++++++
+ 8 files changed, 264 insertions(+), 3 deletions(-)
+ create mode 100644 flutter/test/hjviewer_home_test.dart
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 4bf259c..d998f4b 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -285,6 +285,14 @@ Widget hjvAccessLogInButton(VoidCallback onLogin, {required Widget filled}) =>
+             : filled)
+         : filled;
+ 
++/// U26 (the home's account line, inside its Obx): whether the PC home's notice in this window has
++/// the filled [로그인] (P1, G2).
++bool hjvAccessHomeLogsIn() => _accountBuild && _homeLogsIn();
++
++/// U26: whether G3 shows, with its own [로그인], in this window (the connection page).
++bool hjvAccessConnectHintShown() =>
++    _accountBuild && hjvGateCloses(_gateMode.value) == true && !_loggedIn();
++
+ /// G1 (desktop settings, the account card; the install page): an unattended PC needs the login,
+ /// since the access password lasts only as long as the app runs.
+ List<Widget> hjvAccessKeepLoggedIn({EdgeInsets margin = EdgeInsets.zero}) =>
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 436c38e..efcf79e 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -170,6 +170,8 @@ String hjvPasswordMissed() =>
+ void hjvAfterLogin(bool? res) {
+   if (!_accountBuild || res != true || !gFFI.userModel.isLogin) return;
+   if (isDesktop && desktopType != DesktopType.main) {
++    // U33: the notice about this PC is the main window's, which does not come to the front
++    if (isWindows) showToast(_t.loggedInSeeMain);
+     rustDeskWinManager.call(WindowType.Main, kHjvWindowLoggedIn, '');
+     return;
+   }
+@@ -198,6 +200,120 @@ List<Widget> hjvLoginPilot() => _accountBuild
+       ]
+     : [];
+ 
++/// U33 (login.dart, under the fields): on an installed Windows PC, that the login adds it to My
++/// PCs.
++List<Widget> hjvLoginAddsThisPc() => _accountBuild &&
++        isWindows &&
++        bind.mainIsInstalled()
++    ? [
++        Builder(
++            builder: (context) => Align(
++                alignment: Alignment.centerLeft,
++                child: Text(hjvKeepAll(_t.loginAddsThisPc),
++                        style: TextStyle(
++                            fontSize: 13,
++                            height: 1.45,
++                            color: HjvPalette.of(context).textTertiary))
++                    .marginOnly(top: 8)))
++      ]
++    : [];
++
++/// U26 (desktop_setting_page.dart): an account build's settings start with the account.
++bool hjvAccountTabFirst() => _accountBuild;
++
++/// U26: the desktop settings' tabs, the account's first in an account build.
++List<T> hjvSettingsTabs<T>(List<T> keys, T account) =>
++    hjvAccountFirst(keys, account, first: _accountBuild);
++
++/// U26 (the desktop home under the password's card, the phone's under the ID field): who is
++/// logged in, by name only (the portal ID stays in Settings → Account, since anyone at the PC
++/// sees the home); without a login, its plain [로그인] unless the window has another. A press
++/// opens Settings → Account (`onOpen`; a phone's goes to its settings tab).
++List<Widget> hjvAccountLine({VoidCallback? onOpen}) =>
++    _accountBuild && !bind.isDisableAccount()
++        ? [_HjvAccountLine(onOpen: onOpen ?? _openSettingsTab)]
++        : [];
++
++void _openSettingsTab() {
++  final bar = navigationBarKey.currentWidget;
++  if (bar is BottomNavigationBar && bar.items.isNotEmpty) {
++    bar.onTap?.call(bar.items.length - 1);
++  }
++}
++
++class _HjvAccountLine extends StatelessWidget {
++  final VoidCallback onOpen;
++  const _HjvAccountLine({required this.onOpen});
++
++  @override
++  Widget build(BuildContext context) => Obx(() {
++        final t = _t;
++        final p = HjvPalette.of(context);
++        final user = gFFI.userModel;
++        final loggedIn = user.isLogin;
++        final text = hjvAccountLineText(t,
++            loggedIn: loggedIn,
++            displayName: user.displayName.value,
++            portalId: user.userName.value);
++        final logIn = hjvAccountLineLogIn(
++            loggedIn: loggedIn,
++            homeLogsIn: hjvAccessHomeLogsIn(),
++            connectHintShown: hjvAccessConnectHintShown());
++        final avatar = loggedIn
++            ? buildAvatarWidget(
++                avatar:
++                    bind.mainResolveAvatarUrl(avatar: user.avatar.value),
++                size: 20)
++            : null;
++        // a phone's line as high as a touch target; the name on one line, cut with an ellipsis
++        return Padding(
++          padding: isDesktop
++              ? const EdgeInsets.fromLTRB(12, 0, 12, 8)
++              : const EdgeInsets.only(top: 4, bottom: 4),
++          child: Row(
++            children: [
++              Expanded(
++                child: Semantics(
++                  button: true,
++                  child: InkWell(
++                    borderRadius: BorderRadius.circular(HjvRadius.sm),
++                    onTap: onOpen,
++                    child: ConstrainedBox(
++                      constraints:
++                          BoxConstraints(minHeight: isDesktop ? 32 : 44),
++                      child: Row(
++                        children: [
++                          avatar ??
++                              Icon(Icons.person_outline_rounded,
++                                  size: 20, color: p.textTertiary),
++                          const SizedBox(width: 8),
++                          Expanded(
++                            child: Text(text,
++                                maxLines: loggedIn ? 1 : 2,
++                                overflow: TextOverflow.ellipsis,
++                                style: TextStyle(
++                                    fontSize: 13, color: p.textSecondary)),
++                          ),
++                        ],
++                      ).paddingSymmetric(horizontal: 6),
++                    ),
++                  ),
++                ),
++              ),
++              if (logIn)
++                TextButton(
++                    style: TextButton.styleFrom(
++                        padding: const EdgeInsets.symmetric(horizontal: 8),
++                        minimumSize: Size(0, isDesktop ? 32 : 44),
++                        tapTargetSize: MaterialTapTargetSize.shrinkWrap),
++                    onPressed: () => loginDialog(),
++                    child: Text(t.logIn)),
++            ],
++          ),
++        );
++      });
++}
++
+ /// The About screen's notice: with the contact of the policy this app trusts (U34), the one the
+ /// accept window and P2/P3 show (hjv_admin_contact.dart).
+ List<String> _aboutLines() {
+@@ -982,11 +1098,15 @@ class HjvKeysList extends StatelessWidget {
+     // on a phone [로그아웃시키기] below the line, so that the narrow dialog keeps the row's
+     // width for the texts
+     final below = !isDesktop && !k.current && loggedIn;
+-    // the arrow close to the text, so that a phone's narrow dialog keeps room for the lines
++    // the arrow close to the text, so that a phone's narrow dialog keeps room for the lines;
++    // D16: the arrow and [로그아웃시키기] at the title's line, also on a row of two or three lines
++    // (a low least height keeps every row's title at the top padding, where `top` puts them)
+     return ListTileTheme.merge(
+       horizontalTitleGap: 8,
+       minLeadingWidth: 24,
++      titleAlignment: ListTileTitleAlignment.top,
+       child: ExpansionTile(
++        minTileHeight: 48,
+         controlAffinity: ListTileControlAffinity.leading,
+         tilePadding: const EdgeInsets.only(left: 10, right: 4),
+         shape: const Border(),
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index f00d304..510be82 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -403,8 +403,54 @@ class HjvTexts {
+   /// " (beta)" stay.
+   String? terminalBeta({required bool admin}) =>
+       korean ? (admin ? '터미널(관리자 권한, 베타)' : '터미널(베타)') : null;
++
++  // U26: the home's account line ("로그인됨 · name", so that no particle follows the name)
++  String accountLoggedIn(String name) => name.isEmpty
++      ? _t('로그인됨', 'Logged in')
++      : _t('로그인됨 · $name', 'Logged in · $name');
++  String get accountNotLoggedIn => _t('로그인하지 않음', 'Not logged in');
++
++  // U33: a session window's login, whose notice about this PC the main window shows
++  String get loggedInSeeMain => _t('로그인했습니다. 이 PC에 대한 안내는 HJViewer 주 창에 있습니다.',
++      "Logged in. HJViewer's main window has a note about this PC.");
++  String get loginAddsThisPc => _t('설치된 이 PC에서 로그인하면 이 PC가 내 PC 목록에 추가됩니다.',
++      'Logging in on this installed PC adds it to My PCs.');
++}
++
++// ---- the home's account line (U26) ----
++
++/// The name the home's account line shows: the display name only, never the portal ID
++/// (hjv-api's `name`); empty when there is no other.
++String hjvAccountLineName(String displayName, String portalId) {
++  final name = displayName.trim();
++  return name == portalId.trim() ? '' : name;
+ }
+ 
++/// The home's account line: "로그인됨 · name" or "로그인하지 않음".
++String hjvAccountLineText(HjvTexts t,
++        {required bool loggedIn,
++        required String displayName,
++        required String portalId}) =>
++    loggedIn
++        ? t.accountLoggedIn(hjvAccountLineName(displayName, portalId))
++        : t.accountNotLoggedIn;
++
++/// Whether the account line carries its plain [로그인]: without a login, when the window has no
++/// other (one [로그인] a window, 1.8.2): not while the PC home's notice has the filled one (P1, G2,
++/// `homeLogsIn`, hjvPcHomeLogsIn) or G3 shows its own (`connectHintShown`).
++bool hjvAccountLineLogIn(
++        {required bool loggedIn,
++        required bool homeLogsIn,
++        required bool connectHintShown}) =>
++    !loggedIn && !homeLogsIn && !connectHintShown;
++
++/// U26: the desktop settings' tabs with the account's first (`first`, an account build), so that
++/// the settings open on it, as a phone's do.
++List<T> hjvAccountFirst<T>(List<T> keys, T account, {required bool first}) =>
++    first && keys.contains(account)
++        ? [account, ...keys.where((k) => k != account)]
++        : keys;
++
+ /// "HJViewer 관리자: <contact>", the one wording of who "관리자" is (D-1, U34): the About screen,
+ /// the update screens (hjv_update_model.dart) and the PC's accept window use it.
+ String hjvAdminContactText(String contact, {required bool korean}) => korean
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index 3728f43..69d1d6b 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -1020,6 +1020,7 @@ Future<bool?> _openLoginDialog() async {
+             onLogin: onLogin,
+             userFocusNode: userFocusNode,
+           ),
++          ...hjvLoginAddsThisPc(),
+           thirdAuthWidget(),
+         ],
+       ),
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index b1ec2a5..0f2d4ae 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -105,6 +105,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+       if (!isOutgoingOnly)
+         hjvAccessPcBlocked(
+             (blocked) => _hjvPasswordBoard(context, dim: blocked != null)),
++      ...hjvAccountLine(
++          onOpen: () => DesktopSettingPage.switch2page(SettingsTabKey.account)),
+       FutureBuilder<Widget>(
+         future: Future.value(
+             Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 30db0d1..9303e14 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -72,7 +72,8 @@ enum SettingsTabKey {
+ 
+ class DesktopSettingPage extends StatefulWidget {
+   final SettingsTabKey initialTabkey;
+-  static final List<SettingsTabKey> tabKeys = [
++  // HJViewer: an account build's start with the account (U26)
++  static final List<SettingsTabKey> tabKeys = hjvSettingsTabs([
+     if (bind.mainGetBuildinOption(key: kOptionHideGeneralSetting) != 'Y')
+       SettingsTabKey.general,
+     if (!isWeb &&
+@@ -91,7 +92,7 @@ class DesktopSettingPage extends StatefulWidget {
+         _hjvOffersPrinter())
+       SettingsTabKey.printer,
+     SettingsTabKey.about,
+-  ];
++  ], SettingsTabKey.account);
+ 
+   DesktopSettingPage({Key? key, required this.initialTabkey}) : super(key: key);
+ 
+@@ -139,6 +140,11 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
+   Timer? _videoConnTimer;
+ 
+   _DesktopSettingPageState(SettingsTabKey initialTabkey) {
++    // HJViewer: the settings opened without a tab (onAddSetting's general) start with the first,
++    // the account in an account build (U26)
++    if (initialTabkey == SettingsTabKey.general && hjvAccountTabFirst()) {
++      initialTabkey = DesktopSettingPage.tabKeys.first;
++    }
+     var initialIndex = DesktopSettingPage.tabKeys.indexOf(initialTabkey);
+     if (initialIndex == -1) {
+       initialIndex = 0;
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index c0e6be8..64ce15d 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -15,6 +15,7 @@ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+ import '../../common/hjviewer_access.dart';
++import '../../common/hjviewer_account.dart';
+ import '../../common/widgets/peer_tab_page.dart';
+ import '../../common/widgets/autocomplete.dart';
+ import '../../common/widgets/hjv_autocomplete.dart';
+@@ -92,6 +93,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
+           if (!bind.isCustomClient() && !isIOS)
+             Obx(() => _buildUpdateUI(stateGlobal.updateUrl.value)),
+           _buildRemoteIDTextField(),
++          ...hjvAccountLine(),
+           ...hjvAccessConnectHint(),
+         ])),
+         SliverFillRemaining(
+diff --git a/flutter/test/hjviewer_home_test.dart b/flutter/test/hjviewer_home_test.dart
+new file mode 100644
+index 0000000..b6c0e9a
+--- /dev/null
++++ b/flutter/test/hjviewer_home_test.dart
+@@ -0,0 +1,76 @@
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// UX-H1 (U26, U33): the home's account line, the settings' tab order and the session window's
++// login texts (common/hjviewer_account_texts.dart), plain Dart without the bridge.
++
++void main() {
++  const ko = HjvTexts(true);
++  const en = HjvTexts(false);
++
++  test('the account line shows the name only, never the portal ID', () {
++    expect(
++        hjvAccountLineText(ko,
++            loggedIn: true, displayName: '홍길동', portalId: 'portal-id'),
++        '로그인됨 · 홍길동');
++    expect(
++        hjvAccountLineText(en,
++            loggedIn: true, displayName: ' 홍길동 ', portalId: 'portal-id'),
++        'Logged in · 홍길동');
++    // hjv-api's display name missing or the same as the ID: no name at all
++    for (final name in ['', 'portal-id']) {
++      expect(
++          hjvAccountLineText(ko,
++              loggedIn: true, displayName: name, portalId: 'portal-id'),
++          '로그인됨');
++    }
++    expect(
++        hjvAccountLineText(ko,
++            loggedIn: false, displayName: '', portalId: ''),
++        '로그인하지 않음');
++    expect(
++        hjvAccountLineText(en,
++            loggedIn: false, displayName: '', portalId: ''),
++        'Not logged in');
++  });
++
++  test('the account line has its [로그인] only when the window has no other', () {
++    expect(
++        hjvAccountLineLogIn(
++            loggedIn: false, homeLogsIn: false, connectHintShown: false),
++        isTrue);
++    // P1 or G2 above has the filled one, or G3 its own
++    expect(
++        hjvAccountLineLogIn(
++            loggedIn: false, homeLogsIn: true, connectHintShown: false),
++        isFalse);
++    expect(
++        hjvAccountLineLogIn(
++            loggedIn: false, homeLogsIn: false, connectHintShown: true),
++        isFalse);
++    expect(
++        hjvAccountLineLogIn(
++            loggedIn: true, homeLogsIn: false, connectHintShown: false),
++        isFalse);
++  });
++
++  test('an account build\'s settings start with the account', () {
++    const keys = ['general', 'safety', 'network', 'display', 'account', 'about'];
++    expect(hjvAccountFirst(keys, 'account', first: true),
++        ['account', 'general', 'safety', 'network', 'display', 'about']);
++    expect(hjvAccountFirst(keys, 'account', first: false), keys);
++    // no account tab (accounts disabled): as it was
++    expect(
++        hjvAccountFirst(['general', 'about'], 'account', first: true),
++        ['general', 'about']);
++  });
++
++  test('a session window\'s login points at the main window', () {
++    expect(ko.loggedInSeeMain, '로그인했습니다. 이 PC에 대한 안내는 HJViewer 주 창에 있습니다.');
++    expect(en.loggedInSeeMain,
++        "Logged in. HJViewer's main window has a note about this PC.");
++    expect(ko.loginAddsThisPc, '설치된 이 PC에서 로그인하면 이 PC가 내 PC 목록에 추가됩니다.');
++    expect(en.loginAddsThisPc,
++        'Logging in on this installed PC adds it to My PCs.');
++  });
++}

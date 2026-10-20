@@ -1,0 +1,222 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:16:55 +0900
+Subject: [PATCH 092/147] hjviewer: the controller says why a PC ended its
+ password-less connection (TV-W5)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TV-W5 (design w5.md 3-2, 5-4; critic 2-5): a 1.9.0 PC that ends a
+password-less connection sends a Korean close reason with a mark, "(login
+ended, not allowed)" or "(password-less ended, not allowed)". The controller
+shows, in place of the whole text, "이 기기의 로그인이 끝나 연결을 끊었습니다." /
+"This device's login has ended, so the connection was closed." or "이 PC가
+비밀번호 없는 연결을 더 받지 않아 연결을 끊었습니다." / "This PC no longer takes
+password-less connections, so the connection was closed." (hjvSessionCutText,
+hooked in handleMsgBox around hjvAccessMsgboxText through
+hjvAccountMsgboxText). The core decides the reconnect on the text as it came,
+so the "not allowed" still stops it; a text without a mark shows as before.
+
+U1-d made honest: logging another device out says that its open
+password-less connections end within a few minutes (the logout questions),
+and the results say where they stay: "열려 있던 비밀번호 없는 연결은 PC가 서버에
+닿으면 5분 안에 끊깁니다. PC가 서버에 닿지 못하거나 HJViewer 1.9.0 전 버전이면
+남으니, …" (openSessions, w5.md 3-2; the verb is U32's "로그아웃하면"). The
+"log out all other devices" question keeps its title as the question, so its
+text keeps "지금 쓰는 이 기기는 로그인한 채로 둡니다." and takes W5's ending.
+
+Tests: hjviewer_account_test.dart, the two marks in both languages, a mark in
+another text, texts without one; the logout questions and results.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart      | 10 ++++-
+ .../lib/common/hjviewer_account_texts.dart    | 38 ++++++++++++++----
+ flutter/lib/models/model.dart                 |  6 ++-
+ flutter/test/hjviewer_account_test.dart       | 40 +++++++++++++++++--
+ 4 files changed, 79 insertions(+), 15 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index ebb394b..e795588 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -272,6 +272,12 @@ String hjvPeerNote(Peer peer) {
+       note: peer.note, now: DateTime.now().millisecondsSinceEpoch ~/ 1000);
+ }
+ 
++/// TV-W5 (handleMsgBox in model.dart, around hjvAccessMsgboxText): a PC's close reason of a
++/// password-less connection it ended, in this app's words (hjvSessionCutText); any other text
++/// as it came. Whether the session reconnects was settled by the core on the text as it came.
++String hjvAccountMsgboxText(String text) =>
++    _accountBuild ? (hjvSessionCutText(_t, text) ?? text) : text;
++
+ /// D3 (login.dart): the logout dialog of an account build, null outside one: "로그아웃할까요?",
+ /// what the logout does to this PC's connections (on a staff-only server in one sentence with
+ /// the binding's end), the warning for a PC someone uses from afar now, and [로그아웃], in the
+@@ -1090,8 +1096,8 @@ Future<(List<HjvKey>, List<HjvKey>)> _getKeys() => _keysInFlight ??= () async {
+       }
+     }();
+ 
+-/// What a request about a logged-in device did, in a dialog: the text says what a logout does
+-/// not end (U1-d) and is too long for a toast.
++/// What a request about a logged-in device did, in a dialog: the text says what a logout ends
++/// and where it does not (TV-W5) and is too long for a toast.
+ void _tell(HjvTexts t, String text) =>
+     unawaited(_show<void>((setState, close, context) => CustomAlertDialog(
+           // HJViewer: the dialog's only text in the text colour
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 9f5a003..99b8678 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -165,20 +165,27 @@ class HjvTexts {
+   String get logOutDevice => _t('로그아웃', 'Log out');
+   String get logOutOthers => _t('다른 기기 모두 로그아웃', 'Log out all other devices');
+   String get logOutDeviceAsk => _t(
+-      '그 기기를 로그아웃하면 다시 로그인하기 전까지 그 기기로 내 PC에 비밀번호 없이 새로 연결할 수 없습니다. 이미 열려 있는 연결은 끊기지 않습니다.',
+-      'Once logged out, that device cannot open new connections to your PCs without their passwords until it logs in again. Connections already open are not cut.');
++      '그 기기를 로그아웃하면 다시 로그인하기 전까지 그 기기로 내 PC에 비밀번호 없이 연결할 수 없습니다. 그 기기로 열려 있는 비밀번호 없는 연결도 몇 분 안에 끊깁니다.',
++      'Once logged out, that device cannot connect to your PCs without their passwords until it logs in again. Its open password-less connections also end within a few minutes.');
+   // the question is the dialog's title; the text below it says what it does
+   String get logOutOthersTitle =>
+       _t('다른 기기를 모두 로그아웃할까요?', 'Log out all other devices?');
+   String get logOutOthersAsk => _t(
+-      '지금 쓰는 이 기기는 로그인한 채로 둡니다. 다시 로그인하기 전까지 그 기기들로는 내 PC에 비밀번호 없이 새로 연결할 수 없습니다. 이미 열려 있는 연결은 끊기지 않습니다.',
+-      'This device stays logged in. Until they log in again, the other devices cannot open new connections to your PCs without their passwords. Connections already open are not cut.');
++      '지금 쓰는 이 기기는 로그인한 채로 둡니다. 다시 로그인하기 전까지 그 기기들로는 내 PC에 비밀번호 없이 연결할 수 없고, 열려 있는 비밀번호 없는 연결도 몇 분 안에 끊깁니다.',
++      'This device stays logged in. Until they log in again, the other devices cannot connect to your PCs without their passwords, and their open password-less connections end within a few minutes.');
+ 
+-  /// What a logout from another device does not do (design v3 U1-d): it ends no connection
+-  /// that is open already.
++  /// What a logout from another device does to open connections (W5, 1.9.0) and where it does
++  /// not.
+   String get openSessions => _t(
+-      "이미 열려 있는 연결은 끊기지 않습니다. PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 PC 다시 시작'을 누르거나, PC를 다시 시작하세요.",
+-      "Connections already open are not cut. End them in the PC's connection window, or connect to that PC from your own device with its password and use 'Restart remote device', or restart the PC.");
++      "열려 있던 비밀번호 없는 연결은 PC가 서버에 닿으면 5분 안에 끊깁니다. PC가 서버에 닿지 못하거나 HJViewer 1.9.0 전 버전이면 남으니, 그때는 PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 PC 다시 시작'을 누르거나, PC를 다시 시작하세요.",
++      "Open password-less connections end within 5 minutes once the PC reaches the server. On a PC that cannot reach the server or runs HJViewer older than 1.9.0 they stay: end them in the PC's connection window, or connect to that PC from your own device with its password and use 'Restart remote device', or restart the PC.");
++
++  // TV-W5: why a PC closed a password-less connection, in place of the text it sent
++  // (hjvSessionCutText); the dialog's title stays "Connection Error"
++  String get sessionCutLogin => _t('이 기기의 로그인이 끝나 연결을 끊었습니다.',
++      "This device's login has ended, so the connection was closed.");
++  String get sessionCutPc => _t('이 PC가 비밀번호 없는 연결을 더 받지 않아 연결을 끊었습니다.',
++      'This PC no longer takes password-less connections, so the connection was closed.');
+   String get loggedOutDevice => _t('그 기기를 로그아웃했습니다. $openSessions',
+       'The device is logged out. $openSessions');
+   String get alreadyOut =>
+@@ -716,6 +723,21 @@ String hjvLoginEndedText(HjvTexts t, {required bool? gateCloses}) {
+ String hjvLoginEndedLine(HjvTexts t) =>
+     '${t.loginEndedTitle}. ${t.loginEndedWhy}';
+ 
++/// The marks a 1.9.0 PC puts in the close reason of a password-less connection it ended (TV-W5,
++/// src/hjviewer_account/pc/sessions.rs): the device's login ended, or the PC takes no more
++/// password-less connections. "not allowed" also stops the reconnect of any controller.
++const hjvCutMarkLogin = 'login ended, not allowed';
++const hjvCutMarkPc = 'password-less ended, not allowed';
++
++/// A session's message box text (handleMsgBox): a close reason with a TV-W5 mark becomes this
++/// app's own words for it, the whole of it, so that a PC cannot show anything else with the
++/// mark; null for any other text, which shows as it came.
++String? hjvSessionCutText(HjvTexts t, String text) {
++  if (text.contains(hjvCutMarkPc)) return t.sessionCutPc;
++  if (text.contains(hjvCutMarkLogin)) return t.sessionCutLogin;
++  return null;
++}
++
+ // ---- the logged-in devices (`GET /api/hjv/keys`, design v3 §5-2) ----
+ 
+ class HjvKeyUse {
+diff --git a/flutter/lib/models/model.dart b/flutter/lib/models/model.dart
+index 67917b7..f862160 100644
+--- a/flutter/lib/models/model.dart
++++ b/flutter/lib/models/model.dart
+@@ -40,6 +40,7 @@ import 'package:vector_math/vector_math.dart' show Vector2;
+ import '../common.dart';
+ import '../common/hjv_update.dart';
+ import '../common/hjviewer_access.dart';
++import '../common/hjviewer_account.dart';
+ import '../utils/image.dart' as img;
+ import '../common/widgets/dialog.dart';
+ import 'input_model.dart';
+@@ -971,8 +972,9 @@ class FfiModel with ChangeNotifier {
+       if (!hasRetry) {
+         hasRetry = shouldAutoRetryOnOffline(type, title, text);
+       }
+-      showMsgBox(sessionId, type, title, hjvAccessMsgboxText(sessionId, text),
+-          link, hasRetry, dialogManager);
++      // HJViewer: a password-less connection a PC ended, in this app's words (TV-W5)
++      final shown = hjvAccountMsgboxText(hjvAccessMsgboxText(sessionId, text));
++      showMsgBox(sessionId, type, title, shown, link, hasRetry, dialogManager);
+     }
+   }
+ 
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 15710dd..4bbb816 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -588,20 +588,52 @@ void main() {
+     });
+ 
+     test(
+-        'a logout from another device says that it cuts no open connection (U1-d)',
++        'a logout from another device says that its open connections end (TV-W5)',
+         () {
+       const open =
+-          "이미 열려 있는 연결은 끊기지 않습니다. PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 PC 다시 시작'을 누르거나, PC를 다시 시작하세요.";
++          "열려 있던 비밀번호 없는 연결은 PC가 서버에 닿으면 5분 안에 끊깁니다. PC가 서버에 닿지 못하거나 HJViewer 1.9.0 전 버전이면 남으니, 그때는 PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 PC 다시 시작'을 누르거나, PC를 다시 시작하세요.";
++      expect(ko.openSessions, open);
+       expect(ko.loggedOutDevice, '그 기기를 로그아웃했습니다. $open');
+       expect(ko.loggedOutOthers(2), '다른 기기 2대를 로그아웃했습니다. $open');
+       expect(ko.notMineDone, '그 기기를 로그아웃했습니다. 연세포탈 비밀번호도 바꿔 주세요. $open');
+       expect(
+           ko.notMineEndedDone, '그 기기는 이미 로그아웃되었습니다. 연세포탈 비밀번호를 바꿔 주세요. $open');
+       for (final ask in [ko.logOutDeviceAsk, ko.logOutOthersAsk]) {
+-        expect(ask, endsWith('이미 열려 있는 연결은 끊기지 않습니다.'));
++        expect(ask, endsWith('몇 분 안에 끊깁니다.'));
++        expect(ask, isNot(contains('끊기지 않습니다')));
++      }
++      for (final ask in [en.logOutDeviceAsk, en.logOutOthersAsk]) {
++        expect(ask, endsWith('end within a few minutes.'));
+       }
+       expect(en.loggedOutDevice,
+           endsWith("use 'Restart remote device', or restart the PC."));
++      expect(en.openSessions, startsWith('Open password-less connections end within 5 minutes'));
++    });
++
++    test('a connection a PC ended reads in this app\'s words (TV-W5)', () {
++      const login =
++          '이 기기의 로그인이 끝나 연결을 끊었습니다. (login ended, not allowed)';
++      const pc =
++          '이 PC가 비밀번호 없는 연결을 더 받지 않아 연결을 끊었습니다. (password-less ended, not allowed)';
++      expect(hjvSessionCutText(ko, login), '이 기기의 로그인이 끝나 연결을 끊었습니다.');
++      expect(hjvSessionCutText(en, login),
++          "This device's login has ended, so the connection was closed.");
++      expect(hjvSessionCutText(ko, pc), '이 PC가 비밀번호 없는 연결을 더 받지 않아 연결을 끊었습니다.');
++      expect(hjvSessionCutText(en, pc),
++          'This PC no longer takes password-less connections, so the connection was closed.');
++      // the mark decides, whatever else the PC wrote: nothing of it shows
++      expect(hjvSessionCutText(en, 'see example.org ($hjvCutMarkLogin)'),
++          en.sessionCutLogin);
++      expect(hjvSessionCutText(ko, hjvCutMarkPc), ko.sessionCutPc);
++      // any other text shows as it came
++      for (final other in [
++        'Remote desktop is offline',
++        'login ended',
++        'version not allowed',
++        '',
++      ]) {
++        expect(hjvSessionCutText(ko, other), isNull, reason: other);
++      }
+     });
+   });
+ 
+@@ -1637,6 +1669,8 @@ void main() {
+         t.alreadyOut,
+         t.loggedOutOthers(2),
+         t.openSessions,
++        t.sessionCutLogin,
++        t.sessionCutPc,
+         t.endedDevices,
+         for (final left in [
+           'logout',

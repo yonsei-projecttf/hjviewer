@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Thu, 15 Oct 2026 20:01:01 +0900
-Subject: [PATCH 50/85] hjviewer: a new look, its theme and the home screens
+Subject: [PATCH 050/147] hjviewer: a new look, its theme and the home screens
 
 The app kept RustDesk's look of 2022: Material 2 with a saturated blue, grey panels, square
 fields, peer tiles in loud colours and, on Windows, Malgun Gothic. Now:

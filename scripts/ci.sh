@@ -407,7 +407,8 @@ server_stage() {
 
 FLUTTER_VERSION=3.24.5 # client-build.yml FLUTTER_VERSION
 # The pure Dart tests of the client patches, which run with the bridge's web stand-in. The gesture
-# and quality monitor tests need the generated bridge and run in client-build.yml.
+# and quality monitor tests, and the other tests that need the generated bridge (the account, admin
+# and update gate widgets, 1.9's dialog frame), run in client-build.yml.
 CLIENT_DART_TESTS="test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart test/hjviewer_account_test.dart"
 # the update screens' (minimum version design 6-4), the controller-only Android app's (Play design
 # 3-3) and the super operator's view's pure tests (2026-10-14)
@@ -419,6 +420,19 @@ CLIENT_DART_TESTS+=" test/hjviewer_access_test.dart"
 # lock (W13) (client patches 0065-0085)
 CLIENT_DART_TESTS+=" test/hjviewer_toast_test.dart test/hjviewer_suggestions_test.dart test/hjviewer_phone_test.dart"
 CLIENT_DART_TESTS+=" test/hjviewer_pins_test.dart test/hjviewer_style_test.dart test/hjviewer_applock_test.dart"
+# 1.9.0: the PC connection window's marks, cautions and recording rule and its card's fit with
+# Pretendard (TV-W2), the staff member's support link and waiting room (TV-W6), the session end's
+# lock rule (TV-W3), the remote readiness texts (TV-W4), the phone session's gesture guide and switch
+# (TV-W7), the incoming connections list (TV-W9), the home's account line (UX-H1), the desktop's
+# keyboard and what screen readers hear (UX-K1, UX-K2), the session windows' colours (U15), the
+# devices list's title line (D16), the Windows 11 maximise button (U44) and the phones' text size
+# up to 130 % (UX-K3) (client patches 0086-0147)
+CLIENT_DART_TESTS+=" test/hjviewer_cm_test.dart test/hjviewer_support_test.dart test/hjviewer_cm_fit_test.dart"
+CLIENT_DART_TESTS+=" test/hjviewer_end_lock_test.dart test/hjviewer_ready_test.dart test/hjviewer_session_test.dart"
+CLIENT_DART_TESTS+=" test/hjviewer_incoming_test.dart test/hjviewer_home_test.dart"
+CLIENT_DART_TESTS+=" test/hjviewer_keys_test.dart test/hjviewer_semantics_test.dart"
+CLIENT_DART_TESTS+=" test/hjviewer_session_look_test.dart test/hjviewer_title_line_test.dart"
+CLIENT_DART_TESTS+=" test/hjv_caption_test.dart test/hjviewer_text_scale_test.dart"
 # Pure Dart tests that a work package not in client/patches yet adds: run when the patched tree
 # has them, else skipped with a note. Once the patch is in, move them to CLIENT_DART_TESTS, so that
 # a dropped patch fails (the account screens' tests, design v3 7-5, moved with client patch 0033).
@@ -472,6 +486,11 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   rm -rf "$CI/upstream/rustdesk"
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" client
   echo "the patched tree: $(git -C "$CI/upstream/rustdesk" rev-parse 'HEAD^{tree}') (and the overlay files)"
+  # U52: a new raw font size in the app's own Dart files is told, not failed (the baseline holds
+  # the deliberate ones); only the check's own test can fail the stage
+  step "client: raw font sizes in hjv_*.dart and hjviewer_*.dart against scripts/hjv-fontsize-baseline.txt (warns only)"
+  "$ROOT/scripts/hjv-fontsize-check.sh" --self-test || fail "client: the font size check's self-test"
+  "$ROOT/scripts/hjv-fontsize-check.sh" "$app/lib" "$ROOT/scripts/hjv-fontsize-baseline.txt"
   # release.json, SHA256SUMS and the workflow's minimum-version steps, also on the patched tree (the
   # Dart tests the workflow requires) and on the 1.8.0 artifacts kept under build/ (the manifest
   # gate on a real APK)

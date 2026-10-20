@@ -1,0 +1,749 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 04:19:40 +0900
+Subject: [PATCH 107/147] hjviewer: review fixes, core2 lane (1.9)
+
+TV-W3 (view-only Yes): the PC still ignores the upstream No that every
+view-only switch sends, but takes the Yes sent on leaving view-only with
+"lock after session end" on as "always", for same-account and other
+sessions, as upstream and 1.8.x PCs lock.
+
+TV-W3 (D4, reconnect): "another remote screen session" leaves out older
+connections of the same session key that a reconnect replaced; the last
+connection of a session does the locking, as upstream's.
+
+TV-W3 (X-19 gap): the phone's switch to file transfer now sends
+HJV_END_LOCK_SWITCH (proto value 4, additive) with upstream No. The PC does
+not lock on that close and keeps the lock the mode would have made on the
+session key's line, also past the 10 minutes. A remote screen that comes
+back drops it and judges at its own end; otherwise the PC locks 30 s after
+the session's last connection ended with none of it left (an automatic
+lock is dropped while another controller's remote screen is open).
+
+TV-W5: a cut forces the end lock only for an authorized connection; a
+proven connection still waiting for its 2FA code is only cut.
+
+hjv-e2e: a close reason from the PC ends a desktop session with exit code
+7; 6 keeps "no ticket came" and "denied".
+
+TV-W3 (controller): an own PC without a kept mode shows "always" when
+upstream's switch is on, as the PC applies it; the kept mode is read once
+per session (its PeerInfo), not once per process. The 'hide the screen when
+connecting' switch can be turned off when the PC does not allow privacy
+mode. The switch's own successful attempt no longer opens upstream's
+"Enter privacy mode" box at every connection.
+
+Tests: the uninstaller test has its doc comment back.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_end_lock.dart    |  22 +-
+ flutter/lib/common/hjviewer_end_lock_ui.dart |  59 +++--
+ flutter/test/hjviewer_end_lock_test.dart     |  27 ++-
+ libs/base/protos/message.proto               |   3 +
+ src/client/hjv_end_lock.rs                   |  11 +-
+ src/hjviewer_account/pc/tests.rs             |   6 +-
+ src/hjviewer_e2e.rs                          |   7 +-
+ src/server/connection/hjv_account.rs         |   7 +-
+ src/server/connection/hjv_end_lock.rs        | 238 ++++++++++++++++++-
+ 9 files changed, 330 insertions(+), 50 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_end_lock.dart b/flutter/lib/common/hjviewer_end_lock.dart
+index 6011e45..ed8b298 100644
+--- a/flutter/lib/common/hjviewer_end_lock.dart
++++ b/flutter/lib/common/hjviewer_end_lock.dart
+@@ -33,15 +33,16 @@ bool hjvStartLocked(Map<String, dynamic> platformAdditions) {
+   return v is Map && v['locked'] == true;
+ }
+ 
+-/// The mode in force: an own PC's kept value (empty or unknown = automatic); any other PC (or a
+-/// PC older than 1.9) has upstream's switch only, which is always or never.
++/// The mode in force: an own PC's kept value; without one (empty or unknown) the login sends only
++/// upstream's switch, which the PC reads as always when it is on, else automatic. Any other PC (or
++/// a PC older than 1.9) has upstream's switch only, which is always or never.
+ HjvEndLockMode hjvEndLockMode(String stored,
+     {required bool own, required bool upstream}) {
+   if (!own) return upstream ? HjvEndLockMode.always : HjvEndLockMode.never;
+   for (final m in HjvEndLockMode.values) {
+     if (m.name == stored) return m;
+   }
+-  return HjvEndLockMode.auto;
++  return upstream ? HjvEndLockMode.always : HjvEndLockMode.auto;
+ }
+ 
+ /// Whether the close button carries the lock (design w3 D10): only when the PC will lock for
+@@ -74,6 +75,21 @@ bool hjvHideFailQuiet(
+       text.startsWith('Failed to turn off'));
+ }
+ 
++/// upstream's 'Enter privacy mode' box (it waits for OK) after the switch's own attempt worked,
++/// under the same conditions: it would open at every connection to that PC, so it does not show;
++/// the switch's own text says what it does (review of design w3 D9).
++bool hjvHideSuccessQuiet(
++    {required String type,
++    required String text,
++    required bool own,
++    required bool hideOnConnect,
++    required Duration sinceByHand}) =>
++    type == 'custom-nocancel' &&
++    text == 'Enter privacy mode' &&
++    own &&
++    hideOnConnect &&
++    sinceByHand >= const Duration(seconds: 10);
++
+ class HjvEndLockTexts {
+   final bool korean;
+   const HjvEndLockTexts(this.korean);
+diff --git a/flutter/lib/common/hjviewer_end_lock_ui.dart b/flutter/lib/common/hjviewer_end_lock_ui.dart
+index 6a61f6c..3bab269 100644
+--- a/flutter/lib/common/hjviewer_end_lock_ui.dart
++++ b/flutter/lib/common/hjviewer_end_lock_ui.dart
+@@ -18,10 +18,9 @@ HjvEndLockTexts get hjvEndLockTexts =>
+ // A change of a lock choice in this app, so that the close buttons draw the mark again.
+ final _changes = 0.obs;
+ 
+-// The kept mode per session and PC (the phone's sessions share one session ID).
+-final _stored = <String, String>{};
+-
+-String _key(FFI ffi, String id) => '${ffi.sessionId} $id';
++// The kept mode of this session's PC, read once per session: the session's PeerInfo goes with
++// it (the phone's sessions share one session ID and one FFI).
++final _stored = Expando<String>();
+ 
+ /// For an Obx around a close button: it draws again when a lock choice changes.
+ void hjvEndLockWatch() => _changes.value;
+@@ -35,14 +34,14 @@ bool _ownSession(FFI ffi) =>
+     hjvIsOwnSession(ffi.ffiModel.pi.platformAdditions);
+ 
+ HjvEndLockMode _mode(FFI ffi, String id) {
+-  final own = hjvIsOwnSession(ffi.ffiModel.pi.platformAdditions);
++  final pi = ffi.ffiModel.pi;
++  final own = hjvIsOwnSession(pi.platformAdditions);
+   final stored = own
+-      ? _stored.putIfAbsent(_key(ffi, id),
+-          () => bind.mainGetPeerOptionSync(id: id, key: kHjvEndLockOption))
++      ? (_stored[pi] ??=
++          bind.mainGetPeerOptionSync(id: id, key: kHjvEndLockOption))
+       : '';
+-  final upstream = !own &&
+-      bind.sessionGetToggleOptionSync(
+-          sessionId: ffi.sessionId, arg: kHjvUpstreamEndLockOption);
++  final upstream = bind.sessionGetToggleOptionSync(
++      sessionId: ffi.sessionId, arg: kHjvUpstreamEndLockOption);
+   return hjvEndLockMode(stored, own: own, upstream: upstream);
+ }
+ 
+@@ -69,7 +68,7 @@ List<TRadioMenu<String>> hjvEndLockRadios(FFI ffi, String id) {
+     if (v == null) return;
+     final mode = HjvEndLockMode.values.firstWhere((e) => e.name == v,
+         orElse: () => HjvEndLockMode.auto);
+-    _stored[_key(ffi, id)] = mode.name;
++    _stored[ffi.ffiModel.pi] = mode.name;
+     await bind.sessionToggleOption(
+         sessionId: ffi.sessionId, value: hjvEndLockToggle(mode));
+     hjvEndLockChanged();
+@@ -86,8 +85,8 @@ List<TRadioMenu<String>> hjvEndLockRadios(FFI ffi, String id) {
+ }
+ 
+ /// T3-7 for an own PC whose privacy mode menu shows: kept per PC, it does not change this
+-/// session (the privacy mode switch next to it does). Greyed with T3-10 when the PC does not
+-/// allow privacy mode.
++/// session (the privacy mode switch next to it does). When the PC does not allow privacy mode it
++/// can only be turned off, with T3-10 while it is off.
+ TToggleMenu? hjvHideOnConnectToggle(FFI ffi, String id) {
+   final m = ffi.ffiModel;
+   if (!_ownSession(ffi) || !m.pi.features.privacyMode || !m.keyboard) {
+@@ -95,10 +94,11 @@ TToggleMenu? hjvHideOnConnectToggle(FFI ffi, String id) {
+   }
+   final t = hjvEndLockTexts;
+   final allowed = m.permissions['privacy_mode'] != false;
++  final on =
++      bind.mainGetPeerOptionSync(id: id, key: kHjvHideOnConnectOption) == 'Y';
+   return TToggleMenu(
+-      value: bind.mainGetPeerOptionSync(id: id, key: kHjvHideOnConnectOption) ==
+-          'Y',
+-      onChanged: allowed
++      value: on,
++      onChanged: allowed || on
+           ? (v) {
+               if (v == null) return;
+               bind.sessionPeerOption(
+@@ -108,7 +108,8 @@ TToggleMenu? hjvHideOnConnectToggle(FFI ffi, String id) {
+             }
+           : null,
+       child: Tooltip(
+-          message: allowed ? t.hideTip : t.hideDenied, child: Text(t.hide)));
++          message: allowed || on ? t.hideTip : t.hideDenied,
++          child: Text(t.hide)));
+ }
+ 
+ /// The lock drawn on the close icon's lower right: 10 px, the button's red, a ring in the
+@@ -138,18 +139,30 @@ String hjvEndLockCloseText(FFI ffi, String text) {
+ final _toasted = Expando<bool>();
+ 
+ /// model.dart's handleMsgBox, before its 'Privacy mode' box: true when the box is not shown,
+-/// because the switch's own attempt failed (T3-9 once per session instead, design w3 D9).
++/// because the switch's own attempt failed (T3-9 once per session instead, design w3 D9) or
++/// worked (upstream's 'Enter privacy mode' box would open at every connection; nothing shows).
+ bool hjvEndLockQuiet(FFI? ffi, String peerId, String type, String text) {
+   if (ffi == null) return false;
+   final pi = ffi.ffiModel.pi;
++  final own = _ownSession(ffi);
++  final hide =
++      bind.mainGetPeerOptionSync(id: peerId, key: kHjvHideOnConnectOption) ==
++          'Y';
++  final since = DateTime.now().difference(togglePrivacyModeTime);
++  if (hjvHideSuccessQuiet(
++      type: type,
++      text: text,
++      own: own,
++      hideOnConnect: hide,
++      sinceByHand: since)) {
++    return true;
++  }
+   if (!hjvHideFailQuiet(
+       type: type,
+       text: text,
+-      own: _ownSession(ffi),
+-      hideOnConnect:
+-          bind.mainGetPeerOptionSync(id: peerId, key: kHjvHideOnConnectOption) ==
+-              'Y',
+-      sinceByHand: DateTime.now().difference(togglePrivacyModeTime))) {
++      own: own,
++      hideOnConnect: hide,
++      sinceByHand: since)) {
+     return false;
+   }
+   if (_toasted[pi] != true) {
+diff --git a/flutter/test/hjviewer_end_lock_test.dart b/flutter/test/hjviewer_end_lock_test.dart
+index 8e8dcc5..6ca9bd3 100644
+--- a/flutter/test/hjviewer_end_lock_test.dart
++++ b/flutter/test/hjviewer_end_lock_test.dart
+@@ -29,7 +29,11 @@ void main() {
+     expect(m('always'), HjvEndLockMode.always);
+     expect(m('never'), HjvEndLockMode.never);
+     expect(m('later'), HjvEndLockMode.auto);
+-    expect(m('', upstream: true), HjvEndLockMode.auto);
++    // no kept mode: the login sends only upstream's switch, which the PC reads as always
++    expect(m('', upstream: true), HjvEndLockMode.always);
++    expect(m('later', upstream: true), HjvEndLockMode.always);
++    expect(m('auto', upstream: true), HjvEndLockMode.auto);
++    expect(m('never', upstream: true), HjvEndLockMode.never);
+     expect(m('always', own: false), HjvEndLockMode.never);
+     expect(m('', own: false, upstream: true), HjvEndLockMode.always);
+     expect(hjvEndLockToggle(HjvEndLockMode.never), 'hjv-end-lock:never');
+@@ -74,6 +78,27 @@ void main() {
+     expect(quiet('Failed', byHand: 3), isFalse);
+   });
+ 
++  test("the switch attempt's success box is quiet too", () {
++    bool quiet(
++            {String type = 'custom-nocancel',
++            String text = 'Enter privacy mode',
++            bool own = true,
++            bool hide = true,
++            int byHand = 60}) =>
++        hjvHideSuccessQuiet(
++            type: type,
++            text: text,
++            own: own,
++            hideOnConnect: hide,
++            sinceByHand: Duration(seconds: byHand));
++    expect(quiet(), isTrue);
++    expect(quiet(own: false), isFalse);
++    expect(quiet(hide: false), isFalse);
++    expect(quiet(byHand: 3), isFalse);
++    expect(quiet(type: 'custom-error'), isFalse);
++    expect(quiet(text: 'Failed'), isFalse);
++  });
++
+   test('the texts come in Korean and English', () {
+     const ko = HjvEndLockTexts(true);
+     const en = HjvEndLockTexts(false);
+diff --git a/libs/base/protos/message.proto b/libs/base/protos/message.proto
+index 88caffb..133d576 100644
+--- a/libs/base/protos/message.proto
++++ b/libs/base/protos/message.proto
+@@ -714,6 +714,9 @@ message OptionMessage {
+     HJV_END_LOCK_AUTO = 1;
+     HJV_END_LOCK_ALWAYS = 2;
+     HJV_END_LOCK_NEVER = 3;
++    // This close leaves for another session of the same controller (the phone's switch to file
++    // transfer): it does not lock, and a lock it would have made waits for the session's end.
++    HJV_END_LOCK_SWITCH = 4;
+   }
+   HjvEndLock hjv_end_lock = 1001;
+ }
+diff --git a/src/client/hjv_end_lock.rs b/src/client/hjv_end_lock.rs
+index fc55f48..f04f826 100644
+--- a/src/client/hjv_end_lock.rs
++++ b/src/client/hjv_end_lock.rs
+@@ -16,8 +16,9 @@ pub(super) const OPTION: &str = "hjv-end-lock";
+ pub(super) const HIDE: &str = "hjv-hide-on-connect";
+ /// `sessionToggleOption` value prefix: choose and keep a mode (`hjv-end-lock:<mode>`).
+ const CHOOSE: &str = "hjv-end-lock:";
+-/// `sessionToggleOption` value: "do not lock on this close", sent but not kept (critic X-19, the
+-/// phone's switch to the same PC's file transfer).
++/// `sessionToggleOption` value: "this close is the phone's switch to the same PC's file
++/// transfer", sent but not kept (critic X-19). A 1.9 PC does not lock on this close and keeps
++/// the lock it owes for the session's end; an older PC reads the upstream `No`.
+ const ONCE_NEVER: &str = "hjv-end-lock-once:never";
+ /// upstream's switch, for a PC that does not know the automatic lock
+ const UPSTREAM: &str = "lock-after-session-end";
+@@ -50,7 +51,7 @@ pub(super) fn toggle(name: &str, config: &mut PeerConfig, option: &mut OptionMes
+         return false;
+     }
+     if name == ONCE_NEVER {
+-        option.hjv_end_lock = HjvEndLock::HJV_END_LOCK_NEVER.into();
++        option.hjv_end_lock = HjvEndLock::HJV_END_LOCK_SWITCH.into();
+         option.lock_after_session_end = BoolOption::No.into();
+         return true;
+     }
+@@ -163,14 +164,14 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn the_switch_close_sends_never_and_keeps_nothing() {
++    fn the_switch_close_sends_switch_and_keeps_nothing() {
+         let mut c = PeerConfig::default();
+         run("hjv-end-lock:always", &mut c);
+         let (h, o) = run("hjv-end-lock-once:never", &mut c);
+         assert!(h);
+         assert_eq!(
+             sent(&o),
+-            (Ok(HjvEndLock::HJV_END_LOCK_NEVER), Ok(BoolOption::No))
++            (Ok(HjvEndLock::HJV_END_LOCK_SWITCH), Ok(BoolOption::No))
+         );
+         assert_eq!(c.options.get(OPTION).map(|s| s.as_str()), Some("always"));
+         assert!(c.lock_after_session_end.v);
+diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
+index c2861ce..cd8c9da 100644
+--- a/src/hjviewer_account/pc/tests.rs
++++ b/src/hjviewer_account/pc/tests.rs
+@@ -1794,9 +1794,6 @@ async fn a_report_too_large_for_a_sync_stays_on_the_pc() {
+     cleanup(&["loop-wol-large"]);
+ }
+ 
+-/// The Start menu's "Uninstall" runs `--uninstall` unelevated: the binding key goes in the
+-/// uninstaller's elevated batch (the release review's privacy-uninstall-hklm-unelevated), and so
+-/// does the bound PC's access ticket in the service's config folder.
+ /// TV-W5 (T7): a signed list without a session's key marks it as the list lands; an expired
+ /// list, failed syncs, a 401, an unsigned answer and a forged list mark nothing.
+ #[tokio::test(start_paused = true)]
+@@ -1981,6 +1978,9 @@ async fn the_pcs_logout_ends_its_sessions_and_its_off_switch_does_not() {
+     cleanup(&["w5-logout"]);
+ }
+ 
++/// The Start menu's "Uninstall" runs `--uninstall` unelevated: the binding key goes in the
++/// uninstaller's elevated batch (the release review's privacy-uninstall-hklm-unelevated), and so
++/// does the bound PC's access ticket in the service's config folder.
+ #[test]
+ fn the_uninstallers_elevated_batch_deletes_the_binding_key() {
+     let ticket = format!(
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index 71c4d98..06a2918 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -11,7 +11,8 @@
+ //!     <app> --hjv-e2e-wol-report <mac> <ipv4/prefix> <gateway>  (one sync with that wake report)
+ //!
+ //! With `HJV_E2E_ACCESS_PASSWORD`, the connect commands first trade that access password for the
+-//! target's ticket, as the app's session dialog does; exit code 6 when none came.
++//! target's ticket, as the app's session dialog does; exit code 6 when none came. A close reason
++//! the PC sends ends a desktop session with exit code 7.
+ 
+ use crate::client::{
+     handle_hash, handle_login_error, handle_login_from_ui, handle_test_delay, Client, Data,
+@@ -133,7 +134,7 @@ fn exit_with(code: i32) {
+ /// empty password is a password-less connection: a password box ends `--hjv-e2e-screenshot`,
+ /// `-stream` and `-forward` with exit code 3, an 'error' box with exit code 4, and hbbs's refusal
+ /// for access, after the one try again with a new ticket, with exit code 5; a close reason from
+-/// the PC ends a session with exit code 6, after `hjv-e2e: closed: <reason>`.)
++/// the PC ends a session with exit code 7, after `hjv-e2e: closed: <reason>`.)
+ ///
+ ///     <app> --hjv-e2e-id                                  (this device's ID and public key)
+ ///     <app> --hjv-e2e-login <portal ID> <password>
+@@ -340,7 +341,7 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+                 ..
+             })) => {
+                 println!("hjv-e2e: closed: {reason}");
+-                return 6;
++                return 7;
+             }
+             Some(message::Union::VideoFrame(_)) if matches!(watch, Watch::Stream(..)) => {
+                 first_frame.get_or_insert_with(std::time::Instant::now);
+diff --git a/src/server/connection/hjv_account.rs b/src/server/connection/hjv_account.rs
+index 1752e11..cee5608 100644
+--- a/src/server/connection/hjv_account.rs
++++ b/src/server/connection/hjv_account.rs
+@@ -144,13 +144,16 @@ impl Connection {
+ 
+     /// TV-W5, from the one-second timer: the sync task found that the latest signed list no
+     /// longer lets this password-less session in. Tells the controller why (a close reason that
+-    /// stops its reconnect), locks the PC after a remote screen (D6) and closes; true then.
++    /// stops its reconnect), locks the PC after a remote screen that got in (D6; a proven
++    /// connection still waiting for its 2FA code is only cut) and closes; true then.
+     pub(super) async fn hjv_account_cut(&mut self) -> bool {
+         let Some(cut) = self.hjv_proven.as_ref().and_then(|p| p.session.cut()) else {
+             return false;
+         };
+         self.send_close_reason_no_retry(cut.wire_text()).await;
+-        self.hjv_end.force();
++        if self.authorized {
++            self.hjv_end.force();
++        }
+         self.on_close("hjv: account key no longer trusted", true)
+             .await;
+         true
+diff --git a/src/server/connection/hjv_end_lock.rs b/src/server/connection/hjv_end_lock.rs
+index 291ac76..e73158c 100644
+--- a/src/server/connection/hjv_end_lock.rs
++++ b/src/server/connection/hjv_end_lock.rs
+@@ -3,6 +3,9 @@
+ //! or at the login screen when the session was let in, and no other remote screen session is left.
+ //! The controller may ask for automatic, always or never (`OptionMessage.hjv_end_lock`); without
+ //! it the upstream field counts. A build not pinned to the hjviewer server locks as upstream does.
++//! The phone's switch to the same PC's file transfer closes the remote screen without locking; a
++//! lock that close would have made waits on the session key's line and comes when the session's
++//! last connection is gone (`HJV_END_LOCK_SWITCH`, critic X-19).
+ 
+ use super::*;
+ use base::message_proto::option_message::HjvEndLock;
+@@ -12,6 +15,11 @@ use std::time::Instant as StdInstant;
+ /// for a reconnect of that session (design w3 D5).
+ const START_LIFE: Duration = Duration::from_secs(10 * 60);
+ 
++/// How long after a switch close, or after the end of a connection of a session that owes a lock,
++/// the PC waits for the session's next connection before it locks: the phone's switch limit (10 s)
++/// and a slow relay's login.
++const SWITCH_GRACE: Duration = Duration::from_secs(30);
++
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub(super) enum Mode {
+     Auto,
+@@ -28,6 +36,8 @@ pub(super) struct EndLock {
+     upstream: Option<bool>,
+     /// TV-W5 ended the session: lock as "always"
+     forced: bool,
++    /// the controller said this close is its switch to another session of the same key
++    switching: bool,
+     /// this remote screen session's line in the book, taken when it was let in
+     hold: Option<Hold>,
+ }
+@@ -38,11 +48,16 @@ impl EndLock {
+             Ok(HjvEndLock::HJV_END_LOCK_AUTO) => self.mode = Some(Mode::Auto),
+             Ok(HjvEndLock::HJV_END_LOCK_ALWAYS) => self.mode = Some(Mode::Always),
+             Ok(HjvEndLock::HJV_END_LOCK_NEVER) => self.mode = Some(Mode::Never),
++            Ok(HjvEndLock::HJV_END_LOCK_SWITCH) => self.switching = true,
+             _ => {}
+         }
+-        // Every controller's view-only switch sends the upstream field as `No` (and back as its
+-        // stored value) with `disable_keyboard`; that is no choice about the lock.
++        // Every controller's view-only switch sends the upstream field with `disable_keyboard`:
++        // `No` on entering view-only, which is no choice about the lock, and its stored value on
++        // leaving it, whose `Yes` is upstream's "lock after session end" being on.
+         if o.disable_keyboard.enum_value() != Ok(BoolOption::NotSet) {
++            if o.lock_after_session_end.enum_value() == Ok(BoolOption::Yes) {
++                self.upstream = Some(true);
++            }
+             return;
+         }
+         match o.lock_after_session_end.enum_value() {
+@@ -106,6 +121,9 @@ struct Line {
+     locked: bool,
+     holders: u32,
+     free_since: Option<StdInstant>,
++    /// a switch close did not lock as its mode said (the log word); paid when the session's
++    /// last connection is gone, dropped when its remote screen comes back
++    owed: Option<&'static str>,
+ }
+ 
+ /// "Locked at the start" per session key (controller ID, session ID), in the server process's
+@@ -124,6 +142,8 @@ impl Book {
+             line.locked |= locked_now;
+             line.holders += 1;
+             line.free_since = None;
++            // the remote screen came back: its own end judges the lock
++            line.owed = None;
+             return line.locked;
+         }
+         self.lines.push(Line {
+@@ -131,10 +151,39 @@ impl Book {
+             locked: locked_now,
+             holders: 1,
+             free_since: None,
++            owed: None,
+         });
+         locked_now
+     }
+ 
++    /// A switch close that would have locked (`why`): the line keeps the lock for the session.
++    fn owe(&mut self, key: &Key, why: &'static str, now: StdInstant) {
++        if let Some(line) = self.lines.iter_mut().find(|l| &l.key == key) {
++            line.owed = Some(why);
++        }
++        self.release(key, false, now);
++    }
++
++    fn owes(&self, key: &Key) -> bool {
++        self.lines.iter().any(|l| &l.key == key && l.owed.is_some())
++    }
++
++    /// SWITCH_GRACE after a switch close or a later end of the session: the lock owed, once, when
++    /// no connection of the session is left (`present`). An automatic lock is dropped when another
++    /// controller's remote screen session is open (`others`), as at a session's own end. Gives
++    /// the log word and the session's "locked at the start".
++    fn pay(&mut self, key: &Key, present: bool, others: bool) -> Option<(&'static str, bool)> {
++        let i = self.lines.iter().position(|l| &l.key == key)?;
++        let line = &self.lines[i];
++        let why = line.owed?;
++        if present || line.holders > 0 {
++            return None;
++        }
++        let locked = line.locked;
++        self.lines.remove(i);
++        (why != "auto" || !others).then_some((why, locked))
++    }
++
+     /// `forget`: the end locked the PC, so its line goes with the last holder. Any other end keeps
+     /// it for START_LIFE: the phone's switch to file transfer and back closes the remote screen
+     /// with "never" once (critic X-19), and the screen it comes back to keeps the start.
+@@ -157,6 +206,7 @@ impl Book {
+     fn prune(&mut self, now: StdInstant) {
+         self.lines.retain(|l| {
+             l.holders > 0
++                || l.owed.is_some()
+                 || l.free_since
+                     .map_or(true, |t| now.saturating_duration_since(t) < START_LIFE)
+         });
+@@ -194,6 +244,50 @@ impl Hold {
+                 .release(&self.key, forget, StdInstant::now());
+         }
+     }
++
++    fn owe(&mut self, why: &'static str) {
++        if !self.released {
++            self.released = true;
++            BOOK.lock().unwrap().owe(&self.key, why, StdInstant::now());
++        }
++    }
++}
++
++/// D4's "another remote screen session": an older connection of this session that a reconnect
++/// replaced does not count (it is "reconnected" and does not lock itself); the last connection
++/// of a session does the locking, as upstream's.
++fn another_remote(c: &AuthedConn, id: i32, session: &SessionKey) -> bool {
++    c.conn_type == AuthConnType::Remote && c.conn_id != id && &c.session_key != session
++}
++
++fn of_key(c: &AuthedConn, key: &Key) -> bool {
++    c.session_key.peer_id == key.0 && c.session_key.session_id == key.1
++}
++
++/// After SWITCH_GRACE: locks the PC for a session that owes it and has no connection left.
++#[cfg(not(any(target_os = "android", target_os = "ios")))]
++fn pay_later(key: Key) {
++    tokio::spawn(async move {
++        time::sleep(SWITCH_GRACE).await;
++        let (present, others) = {
++            let conns = AUTHED_CONNS.lock().unwrap();
++            (
++                conns.iter().any(|c| of_key(c, &key)),
++                conns
++                    .iter()
++                    .any(|c| c.conn_type == AuthConnType::Remote && !of_key(c, &key)),
++            )
++        };
++        let Some((why, locked0)) = BOOK.lock().unwrap().pay(&key, present, others) else {
++            return;
++        };
++        log::info!("hjv: end lock: {why} after a switch, locked at start {locked0}");
++        #[cfg(feature = "hjv-e2e")]
++        if e2e_logon() {
++            return;
++        }
++        lock_screen().await;
++    });
+ }
+ 
+ impl Drop for Hold {
+@@ -250,15 +344,17 @@ impl Connection {
+         self.hjv_end.hold = Some(hold);
+     }
+ 
+-    /// From `on_close`: whether to lock the PC now. Gives the session's line back.
++    /// From `on_close`: whether to lock the PC now. Gives the session's line back, and after a
++    /// switch close or any end of a session that owes a lock, checks again SWITCH_GRACE later.
+     pub(super) fn hjv_end_should_lock(&mut self, lock: bool, reconnected: bool) -> bool {
+         let id = self.inner.id();
++        let session = self.session_key();
+         let others = || {
+             AUTHED_CONNS
+                 .lock()
+                 .unwrap()
+                 .iter()
+-                .any(|c| c.conn_type == AuthConnType::Remote && c.conn_id != id)
++                .any(|c| another_remote(c, id, &session))
+         };
+         let locked0 = self.hjv_end.hold.as_ref().map_or(false, |h| h.locked0);
+         let pinned = crate::hjviewer::pinned();
+@@ -275,8 +371,31 @@ impl Connection {
+             others: pinned && others(),
+         };
+         let why = decide(&facts);
++        // the switch's own close never locks (critic X-19); what it would have locked is owed
++        let switch = pinned && self.hjv_end.switching && !self.hjv_end.forced;
++        let owed = why.filter(|_| switch && self.hjv_end.hold.is_some());
++        let key = (self.lr.my_id.clone(), self.lr.session_id);
++        let mut check = false;
+         if let Some(hold) = self.hjv_end.hold.as_mut() {
+-            hold.release(why.is_some());
++            match owed {
++                Some(w) => {
++                    hold.owe(w);
++                    check = true;
++                }
++                None => hold.release(why.is_some()),
++            }
++        }
++        if let Some(w) = owed {
++            log::info!("hjv: end lock: {w} owed to a switch, locked at start {locked0}");
++        }
++        #[cfg(not(any(target_os = "android", target_os = "ios")))]
++        if pinned && (check || BOOK.lock().unwrap().owes(&key)) {
++            pay_later(key);
++        }
++        #[cfg(any(target_os = "android", target_os = "ios"))]
++        let _ = (key, check);
++        if switch {
++            return false;
+         }
+         let Some(why) = why else {
+             return false;
+@@ -426,15 +545,82 @@ mod tests {
+         assert_eq!(e.mode(true), Some(Mode::Always));
+     }
+ 
++    fn view_only(on: bool, upstream: BoolOption) -> OptionMessage {
++        let mut o = option(HjvEndLock::HJV_END_LOCK_UNSET, upstream);
++        o.disable_keyboard = if on { BoolOption::Yes } else { BoolOption::No }.into();
++        o
++    }
++
+     #[test]
+-    fn a_view_only_switch_is_no_lock_choice() {
++    fn a_view_only_switch_counts_only_its_yes() {
++        // entering view-only sends No, leaving it the stored No: no choice, automatic stays for
++        // a same-account session and nothing for another
+         let mut e = EndLock::default();
+-        for keyboard in [BoolOption::Yes, BoolOption::No] {
+-            let mut o = option(HjvEndLock::HJV_END_LOCK_UNSET, BoolOption::No);
+-            o.disable_keyboard = keyboard.into();
+-            e.option(&o);
++        for on in [true, false] {
++            e.option(&view_only(on, BoolOption::No));
+             assert_eq!(e.mode(true), Some(Mode::Auto));
++            assert_eq!(e.mode(false), None);
+         }
++        // leaving view-only with upstream's "lock after session end" on: always, as upstream
++        // and a 1.8.x PC lock, for both kinds of session
++        e.option(&view_only(false, BoolOption::Yes));
++        assert_eq!(e.mode(true), Some(Mode::Always));
++        assert_eq!(e.mode(false), Some(Mode::Always));
++        // entering view-only again does not undo it
++        e.option(&view_only(true, BoolOption::No));
++        assert_eq!(e.mode(false), Some(Mode::Always));
++        // the new field still goes first
++        e.option(&option(HjvEndLock::HJV_END_LOCK_AUTO, BoolOption::No));
++        e.option(&view_only(false, BoolOption::Yes));
++        assert_eq!(e.mode(true), Some(Mode::Auto));
++    }
++
++    #[test]
++    fn the_switch_value_marks_the_close_and_keeps_the_mode() {
++        let mut e = EndLock::default();
++        e.option(&option(HjvEndLock::HJV_END_LOCK_ALWAYS, BoolOption::Yes));
++        assert!(!e.switching);
++        e.option(&option(HjvEndLock::HJV_END_LOCK_SWITCH, BoolOption::No));
++        assert!(e.switching);
++        assert_eq!(e.mode(true), Some(Mode::Always));
++    }
++
++    #[test]
++    fn a_switch_close_owes_its_lock_to_the_sessions_end() {
++        let t0 = StdInstant::now();
++        let key = || ("123456789".to_owned(), 7u64);
++        let mut b = Book::default();
++        assert!(b.hold(key(), true, t0));
++        b.owe(&key(), "auto", t0);
++        assert!(b.owes(&key()));
++        // the file transfer of the session is still open: nothing yet
++        assert_eq!(b.pay(&key(), true, false), None);
++        // the debt outlives START_LIFE while the file transfer runs
++        b.prune(t0 + Duration::from_secs(60 * 60));
++        assert!(b.owes(&key()));
++        // its end with nothing of the session left pays it once, and the line goes
++        assert_eq!(b.pay(&key(), false, false), Some(("auto", true)));
++        assert_eq!(b.pay(&key(), false, false), None);
++        assert!(b.lines.is_empty());
++
++        // the remote screen comes back: it judges the lock at its own end
++        assert!(b.hold(key(), true, t0));
++        b.owe(&key(), "auto", t0);
++        assert!(b.hold(key(), false, t0));
++        assert!(!b.owes(&key()));
++        assert_eq!(b.pay(&key(), false, false), None);
++        b.release(&key(), false, t0);
++
++        // another controller's remote screen drops an automatic lock, not an "always"
++        b.owe(&key(), "auto", t0);
++        assert_eq!(b.pay(&key(), false, true), None);
++        assert!(b.hold(key(), true, t0));
++        b.owe(&key(), "always", t0);
++        assert_eq!(b.pay(&key(), false, true), Some(("always", true)));
++        // a line nobody owes pays nothing
++        assert!(!b.hold(("123456789".to_owned(), 8), false, t0));
++        b.release(&("123456789".to_owned(), 8), false, t0);
++        assert_eq!(b.pay(&("123456789".to_owned(), 8), false, false), None);
+     }
+ 
+     #[test]
+@@ -463,6 +649,38 @@ mod tests {
+         assert_eq!(b.lines.len(), 2);
+     }
+ 
++    #[test]
++    fn an_older_connection_of_the_same_session_is_no_other_session() {
++        let key = |session_id, peer: &str| SessionKey {
++            peer_id: peer.to_owned(),
++            name: "".to_owned(),
++            session_id,
++        };
++        let conn = |conn_id, conn_type, session_key| AuthedConn {
++            conn_id,
++            conn_type,
++            session_key,
++            sender: mpsc::unbounded_channel().0,
++            printer: false,
++        };
++        let mine = key(7, "peer");
++        let remote = AuthConnType::Remote;
++        // the connection a reconnect replaced, and this one itself
++        assert!(!another_remote(&conn(1, remote, mine.clone()), 2, &mine));
++        assert!(!another_remote(&conn(2, remote, key(8, "other")), 2, &mine));
++        // another session of this controller, another controller
++        assert!(another_remote(&conn(3, remote, key(8, "peer")), 2, &mine));
++        assert!(another_remote(&conn(3, remote, key(7, "other")), 2, &mine));
++        // a file transfer is no screen
++        assert!(!another_remote(
++            &conn(3, AuthConnType::FileTransfer, key(8, "other")),
++            2,
++            &mine
++        ));
++        assert!(of_key(&conn(3, AuthConnType::FileTransfer, mine.clone()), &("peer".to_owned(), 7)));
++        assert!(!of_key(&conn(3, remote, key(8, "peer")), &("peer".to_owned(), 7)));
++    }
++
+     #[test]
+     fn the_new_field_is_classified_as_remote_screen_only() {
+         let o = option(HjvEndLock::HJV_END_LOCK_AUTO, BoolOption::NotSet);

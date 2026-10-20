@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:11:21 +0900
-Subject: [PATCH 10/85] mobile: a one-finger pan starts at the tap slop, not 36
- px
+Subject: [PATCH 010/147] mobile: a one-finger pan starts at the tap slop, not
+ 36 px
 
 HoldTapMoveGestureRecognizer stayed in the arena of a first touch that moved,
 so the pan recognizer waited for its own 36 px pan slop: the cursor (mouse mode)

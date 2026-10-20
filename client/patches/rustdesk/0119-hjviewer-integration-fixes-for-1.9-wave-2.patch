@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 04:25:42 +0900
+Subject: [PATCH 119/147] hjviewer: integration fixes for 1.9 wave 2
+
+UX-S2 (U50, style2's hand-off to lane C): P2 (_pcPasswordDialog) and P3
+(_pcCodeDialog) take HjvDialogWidth.md like the other gate dialogs; S2
+(_supportCodeDialog) uses md on desktop in place of its own 480, and keeps
+500 at most on phones.
+
+UX-M3 (phone3's hand-off): hjvSupportCodeEntry's doc comment names S1's
+new place in portrait, at the right of the group panel's search.
+
+UX-M2 (wave 1 open point): the app lock's back-press comment no longer
+calls a dialog closing under the cover a known limit; hjvAddDialogBack
+skips a press the lock took.
+
+TV-W2 (cmui's open point): hjviewer_cm_fit_test.dart drops the
+unnecessary dart:typed_data import (analyzer info).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart  | 11 +++++++----
+ flutter/lib/common/hjviewer_applock.dart |  5 +++--
+ flutter/test/hjviewer_cm_fit_test.dart   |  1 -
+ 3 files changed, 10 insertions(+), 7 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index d998f4b..0f2753d 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -808,6 +808,7 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+ 
+     return CustomAlertDialog(
+       title: HjvDialogTitle(Icons.key_rounded, t.pcPassword),
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+@@ -919,6 +920,7 @@ void _pcCodeDialog(HjvAccessTexts t) {
+ 
+     return CustomAlertDialog(
+       title: HjvDialogTitle(Icons.support_agent_rounded, t.pcCodeTitle),
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+@@ -994,8 +996,9 @@ bool hjvOffersSupportCodeNow() =>
+ /// S1's [지원 코드 만들기].
+ String hjvSupportCodeLabel() => _t.makeCode;
+ 
+-/// S1 on the home's 내 PC tab while the login may make codes: a quiet [지원 코드 만들기] above
+-/// the list in portrait (my_group.dart), else among the tab bar's tools (peer_tab_page.dart,
++/// S1 on the home's 내 PC tab while the login may make codes: a quiet [지원 코드 만들기] at the
++/// right of the group panel's search in portrait (my_group.dart), else among the tab bar's tools
++/// (peer_tab_page.dart,
+ /// `bar`; only its icon where the bar is `narrow`).
+ List<Widget> hjvSupportCodeEntry({bool bar = false, bool narrow = false}) =>
+     _accountBuild
+@@ -1236,9 +1239,9 @@ void _supportCodeDialog(HjvAccessTexts t) {
+ 
+     return CustomAlertDialog(
+       title: HjvDialogTitle(Icons.support_agent_rounded, t.makeCode),
+-      // one width for all its states, so that [다시 만들기] does not make it jump
++      // one width for all its states, so that [다시 만들기] does not make it jump (U50's md)
+       contentBoxConstraints: wide
+-          ? const BoxConstraints(minWidth: 480, maxWidth: 480)
++          ? HjvDialogWidth.box(HjvDialogWidth.md)
+           : const BoxConstraints(maxWidth: 500),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+diff --git a/flutter/lib/common/hjviewer_applock.dart b/flutter/lib/common/hjviewer_applock.dart
+index bb1a486..5852730 100644
+--- a/flutter/lib/common/hjviewer_applock.dart
++++ b/flutter/lib/common/hjviewer_applock.dart
+@@ -170,8 +170,9 @@ class _HjvAppLockGateState extends State<_HjvAppLockGate>
+   }
+ 
+   /// While locked the back button does nothing: the default (a route's pop, which a remote
+-  /// session takes as its own back) does not run. The other interceptors still run (a dialog
+-  /// that a back press closes may close under the cover; a known limit).
++  /// session takes as its own back) does not run. The dialogs' interceptors skip a press this one
++  /// took (hjvAddDialogBack in hjv_phone.dart), so no dialog closes under the cover; other
++  /// interceptors still run.
+   void _holdBack() => BackButtonInterceptor.add((stop, info) => true,
+       name: _backName, zIndex: 1 << 30);
+ 
+diff --git a/flutter/test/hjviewer_cm_fit_test.dart b/flutter/test/hjviewer_cm_fit_test.dart
+index a0413dc..ded1938 100644
+--- a/flutter/test/hjviewer_cm_fit_test.dart
++++ b/flutter/test/hjviewer_cm_fit_test.dart
+@@ -1,5 +1,4 @@
+ import 'dart:io';
+-import 'dart:typed_data';
+ 
+ import 'package:flutter/material.dart';
+ import 'package:flutter/rendering.dart';

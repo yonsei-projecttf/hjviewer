@@ -1,0 +1,865 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 05:16:51 +0900
+Subject: [PATCH 129/147] hjviewer: the file transfer windows in the app's look
+ (U15)
+
+U15 (UX-S5), the desktop part, first of three commits so that each
+window can be left out alone (u15.md, review). New HJViewer file
+flutter/lib/common/hjv_session_look.dart maps the colours upstream
+passes to the palette, as the session toolbar's
+_hjvToolbarButtonColors does; the chat and port forwarding commits
+use it too.
+
+- MenuButton (desktop/widgets/menu_button.dart): its background and
+  hover through hjvMenuButtonColors: the theme's cardColor (the head's
+  tools) on fill with hoverStrong, the accent (a transfer card's resume
+  and cancel) clear with hover, the theme's disabledColor (the close x
+  while the path is typed) on fill; a button that cannot be pressed
+  dims its icon to 40 % (review: it looked pressable).
+- File list rows: a selected row on primarySoft with a 1 px primary
+  border at 35 % (review R6: a range shows on a dull screen), its name
+  in primaryStrong and its icon in primary; the right-clicked row's
+  1 px primary border; borders in foregroundDecoration so the row's
+  content does not shift. Date 13 px, size 12 px, textSecondary,
+  digits of one width. Column heads 12/600 textTertiary, the sort
+  arrow 16 px.
+- Head: the platform tile 40x40 on primaryFill (white logo; the
+  loading circle white, since primary does not show on primaryFill),
+  'Local / Remote computer' 14/600, the tools' icons textSecondary,
+  the path field's radius md. The new folder dialog's title is
+  HjvDialogTitle. [Send] and [Receive] take the theme's filled and
+  disabled colours; their label and arrow are white only while the
+  selection is valid (as onPressed), else textDisabled. The web
+  upload button is left as it is.
+- Transfer list: cards with hjvCardDecoration, 20 px job icons and
+  status text in textSecondary, the progress bar on primaryFill
+  (review R4: white percent text reaches 4.5:1 also in the dark
+  theme) over fill with the small radius, quiet resume/cancel icons;
+  the empty state 32 px textTertiary icon and body text.
+- The overwrite dialog (models/file_model.dart showFileConfirmDialog):
+  HjvDialogTitle in the danger tone, HjvDialogWidth.md, the question
+  at w600, the identical-file note as an info HjvCallout, [OK] as
+  hjvDangerButton(translate('OK')) as the delete confirm has it;
+  order, Enter and Esc as before.
+
+No text changes. Test: flutter/test/hjviewer_session_look_test.dart
+(pure, no bridge; the helper compares with the palette, not with
+common.dart's MyTheme, so that it stays free of the bridge).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_session_look.dart      |  70 ++++++
+ .../lib/desktop/pages/file_manager_page.dart  | 218 ++++++++----------
+ flutter/lib/desktop/widgets/menu_button.dart  |  12 +-
+ flutter/lib/models/file_model.dart            |  32 ++-
+ flutter/test/hjviewer_session_look_test.dart  | 119 ++++++++++
+ 5 files changed, 307 insertions(+), 144 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_session_look.dart
+ create mode 100644 flutter/test/hjviewer_session_look_test.dart
+
+diff --git a/flutter/lib/common/hjv_session_look.dart b/flutter/lib/common/hjv_session_look.dart
+new file mode 100644
+index 0000000..ef40dee
+--- /dev/null
++++ b/flutter/lib/common/hjv_session_look.dart
+@@ -0,0 +1,70 @@
++// HJViewer (U15): the session windows (file transfer, port forwarding, chat) in the app's look:
++// the colours upstream passes, mapped to the palette as the session toolbar's
++// _hjvToolbarButtonColors does (remote_toolbar.dart). Plain Flutter without the bridge.
++
++import 'package:flutter/material.dart';
++
++import 'hjv_style.dart';
++
++/// A file transfer MenuButton's background and hover from the colour upstream passes: the
++/// theme's cardColor (the head's tools) on the fields' grey with the stronger hover (the plain
++/// one does not show on it), the accent (a transfer card's resume and cancel) clear on the card,
++/// the theme's disabledColor (the close x while the path is typed) without a hover; any other
++/// colour as it is.
++({Color bg, Color hover}) hjvMenuButtonColors(
++    BuildContext context, Color color, Color hoverColor) {
++  final p = HjvPalette.of(context);
++  final theme = Theme.of(context);
++  if (color == theme.cardColor) return (bg: p.fill, hover: p.hoverStrong);
++  // MyTheme.accent and MyTheme.button (common.dart) are the light palette's primary in both
++  // themes; comparing with it keeps this file free of common.dart and the bridge
++  if (color == HjvPalette.light.primary) {
++    return (bg: Colors.transparent, hover: p.hover);
++  }
++  if (color == theme.disabledColor) return (bg: p.fill, hover: p.fill);
++  return (bg: color, hover: hoverColor);
++}
++
++/// A row of the desktop file list, and of the phone's: a selected row on the accent's faint tint
++/// with a thin accent border (so that a range shows also on a dull screen), its name in
++/// primaryStrong (primary does not reach 4.5:1 on the tint) and its icon in primary; an
++/// unselected row clear, its name in the text colour. The date and size in textSecondary.
++({Color bg, Color? border, Color name, Color icon, Color meta})
++    hjvFileRowColors(BuildContext context, {required bool selected}) {
++  final p = HjvPalette.of(context);
++  return selected
++      ? (
++          bg: p.primarySoft,
++          border: p.primary.withOpacity(0.35),
++          name: p.primaryStrong,
++          icon: p.primary,
++          meta: p.textSecondary
++        )
++      : (
++          bg: Colors.transparent,
++          border: null,
++          name: p.text,
++          icon: p.textSecondary,
++          meta: p.textSecondary
++        );
++}
++
++/// A chat bubble: one's own on primaryFill with white text and time (any dimmed white falls below
++/// 4.5:1 there), the other side's on the fields' grey in the text colour, its time secondary.
++({Color bg, Color text, Color time}) hjvChatBubbleColors(BuildContext context,
++    {required bool own}) {
++  final p = HjvPalette.of(context);
++  return own
++      ? (bg: p.primaryFill, text: Colors.white, time: Colors.white)
++      : (bg: p.fill, text: p.text, time: p.textSecondary);
++}
++
++/// The file list's and the port forwarding table's column heads: 12/600 in textTertiary.
++TextStyle hjvFileHeadStyle(BuildContext context) => TextStyle(
++    fontSize: 12,
++    fontWeight: FontWeight.w600,
++    color: HjvPalette.of(context).textTertiary);
++
++/// A row's date (13) and size (12): `color`, digits of one width.
++TextStyle hjvFileMetaStyle(Color color, {required double size}) =>
++    TextStyle(fontSize: size, color: color, fontFeatures: HjvText.tabular);
+diff --git a/flutter/lib/desktop/pages/file_manager_page.dart b/flutter/lib/desktop/pages/file_manager_page.dart
+index 2b6627e..3457449 100644
+--- a/flutter/lib/desktop/pages/file_manager_page.dart
++++ b/flutter/lib/desktop/pages/file_manager_page.dart
+@@ -23,6 +23,7 @@ import 'package:flutter_hbb/web/dummy.dart'
+ import '../../consts.dart';
+ import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
+ import '../../common.dart';
++import '../../common/hjv_session_look.dart';
+ import '../../common/hjv_style.dart';
+ import '../../models/model.dart';
+ import '../../models/platform_model.dart';
+@@ -199,12 +200,7 @@ class _FileManagerPageState extends State<FileManagerPage>
+ 
+   Widget generateCard(Widget child) {
+     return Container(
+-      decoration: BoxDecoration(
+-        color: Theme.of(context).cardColor,
+-        borderRadius: BorderRadius.all(
+-          Radius.circular(15.0),
+-        ),
+-      ),
++      decoration: hjvCardDecoration(context),
+       child: child,
+     );
+   }
+@@ -213,11 +209,11 @@ class _FileManagerPageState extends State<FileManagerPage>
+   /// watch transfer status
+   Widget statusList() {
+     Widget getIcon(JobProgress job) {
+-      final color = Theme.of(context).tabBarTheme.labelColor;
++      final color = HjvPalette.of(context).textSecondary;
+       switch (job.type) {
+         case JobType.deleteDir:
+         case JobType.deleteFile:
+-          return Icon(Icons.delete_outline, color: color);
++          return Icon(Icons.delete_outline, size: 20, color: color);
+         default:
+           return Transform.rotate(
+             angle: isWeb
+@@ -227,7 +223,7 @@ class _FileManagerPageState extends State<FileManagerPage>
+                 : job.isRemoteToLocal
+                     ? pi
+                     : 0,
+-            child: Icon(Icons.arrow_forward_ios, color: color),
++            child: Icon(Icons.arrow_forward_ios, size: 20, color: color),
+           );
+       }
+     }
+@@ -271,7 +267,8 @@ class _FileManagerPageState extends State<FileManagerPage>
+                                 child: Text(status,
+                                     style: TextStyle(
+                                       fontSize: 12,
+-                                      color: HjvPalette.of(context).textTertiary,
++                                      color:
++                                          HjvPalette.of(context).textSecondary,
+                                     )).marginOnly(top: 6),
+                               ),
+                               Offstage(
+@@ -302,8 +299,10 @@ class _FileManagerPageState extends State<FileManagerPage>
+                                                       ' ${readableFileSize(item.speed)}/s',
+                                                   style: TextStyle(
+                                                     fontSize: 12,
+-                                                    fontWeight: FontWeight.w300,
+-                                                    color: HjvPalette.of(context).textTertiary,
++                                                    fontWeight: FontWeight.w400,
++                                                    color:
++                                                        HjvPalette.of(context)
++                                                            .textSecondary,
+                                                   ),
+                                                 ),
+                                             ],
+@@ -312,10 +311,11 @@ class _FileManagerPageState extends State<FileManagerPage>
+                                       ),
+                                     ),
+                                   ),
+-                                  barRadius: Radius.circular(15),
++                                  barRadius: Radius.circular(HjvRadius.sm),
+                                   percent: item.percent,
+-                                  progressColor: MyTheme.accent,
+-                                  backgroundColor: Theme.of(context).hoverColor,
++                                  progressColor:
++                                      HjvPalette.of(context).primaryFill,
++                                  backgroundColor: HjvPalette.of(context).fill,
+                                   lineHeight: kDesktopFileTransferRowHeight,
+                                 ).paddingSymmetric(vertical: 8),
+                               ),
+@@ -334,7 +334,8 @@ class _FileManagerPageState extends State<FileManagerPage>
+                                 },
+                                 child: SvgPicture.asset(
+                                   "assets/refresh.svg",
+-                                  colorFilter: svgColor(Colors.white),
++                                  colorFilter: svgColor(
++                                      HjvPalette.of(context).textSecondary),
+                                 ),
+                                 color: MyTheme.accent,
+                                 hoverColor: MyTheme.accent80,
+@@ -344,7 +345,8 @@ class _FileManagerPageState extends State<FileManagerPage>
+                               tooltip: translate("Delete"),
+                               child: SvgPicture.asset(
+                                 "assets/close.svg",
+-                                colorFilter: svgColor(Colors.white),
++                                colorFilter: svgColor(
++                                    HjvPalette.of(context).textSecondary),
+                               ),
+                               onPressed: () {
+                                 jobController.jobTable.removeAt(index);
+@@ -379,17 +381,15 @@ class _FileManagerPageState extends State<FileManagerPage>
+                         children: [
+                           SvgPicture.asset(
+                             "assets/transfer.svg",
+-                            colorFilter: svgColor(
+-                                Theme.of(context).tabBarTheme.labelColor),
+-                            height: 40,
++                            colorFilter:
++                                svgColor(HjvPalette.of(context).textTertiary),
++                            height: 32,
+                           ).paddingOnly(bottom: 10),
+                           Text(
+                             translate("No transfers in progress"),
+                             textAlign: TextAlign.center,
+-                            textScaler: TextScaler.linear(1.20),
+-                            style: TextStyle(
+-                                color:
+-                                    Theme.of(context).tabBarTheme.labelColor),
++                            style: HjvText.body.copyWith(
++                                color: HjvPalette.of(context).textSecondary),
+                           ),
+                         ],
+                       ),
+@@ -554,11 +554,12 @@ class _FileManagerViewState extends State<FileManagerView> {
+                     crossAxisAlignment: CrossAxisAlignment.center,
+                     children: [
+                       Container(
+-                          width: 50,
+-                          height: 50,
++                          width: 40,
++                          height: 40,
+                           decoration: BoxDecoration(
+-                            borderRadius: BorderRadius.all(Radius.circular(8)),
+-                            color: MyTheme.accent,
++                            borderRadius:
++                                BorderRadius.all(Radius.circular(HjvRadius.md)),
++                            color: HjvPalette.of(context).primaryFill,
+                           ),
+                           padding: EdgeInsets.all(8.0),
+                           child: FutureBuilder<String>(
+@@ -571,15 +572,16 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                   return getPlatformImage('${snapshot.data}');
+                                 } else {
+                                   return CircularProgressIndicator(
+-                                    color: Theme.of(context)
+-                                        .tabBarTheme
+-                                        .labelColor,
++                                    color: Colors.white,
+                                   );
+                                 }
+                               })),
+-                      Text(isLocal
+-                              ? translate("Local Computer")
+-                              : translate("Remote Computer"))
++                      Text(
++                              isLocal
++                                  ? translate("Local Computer")
++                                  : translate("Remote Computer"),
++                              style: HjvText.titleSmall
++                                  .copyWith(color: HjvPalette.of(context).text))
+                           .marginOnly(left: 8.0)
+                     ],
+                   ),
+@@ -600,7 +602,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                       child: SvgPicture.asset(
+                         "assets/arrow.svg",
+                         colorFilter:
+-                            svgColor(Theme.of(context).tabBarTheme.labelColor),
++                            svgColor(HjvPalette.of(context).textSecondary),
+                       ),
+                     ),
+                     color: Theme.of(context).cardColor,
+@@ -617,7 +619,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                       child: SvgPicture.asset(
+                         "assets/arrow.svg",
+                         colorFilter:
+-                            svgColor(Theme.of(context).tabBarTheme.labelColor),
++                            svgColor(HjvPalette.of(context).textSecondary),
+                       ),
+                     ),
+                     color: Theme.of(context).cardColor,
+@@ -636,7 +638,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                     decoration: BoxDecoration(
+                       color: Theme.of(context).cardColor,
+                       borderRadius: BorderRadius.all(
+-                        Radius.circular(8.0),
++                        Radius.circular(HjvRadius.md),
+                       ),
+                     ),
+                     child: Padding(
+@@ -685,7 +687,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                       child: SvgPicture.asset(
+                         "assets/search.svg",
+                         colorFilter:
+-                            svgColor(Theme.of(context).tabBarTheme.labelColor),
++                            svgColor(HjvPalette.of(context).textSecondary),
+                       ),
+                       color: Theme.of(context).cardColor,
+                       hoverColor: Theme.of(context).hoverColor,
+@@ -696,7 +698,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                       child: SvgPicture.asset(
+                         "assets/close.svg",
+                         colorFilter:
+-                            svgColor(Theme.of(context).tabBarTheme.labelColor),
++                            svgColor(HjvPalette.of(context).textSecondary),
+                       ),
+                       color: Theme.of(context).disabledColor,
+                       hoverColor: Theme.of(context).hoverColor,
+@@ -711,7 +713,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                       child: SvgPicture.asset(
+                         "assets/close.svg",
+                         colorFilter:
+-                            svgColor(Theme.of(context).tabBarTheme.labelColor),
++                            svgColor(HjvPalette.of(context).textSecondary),
+                       ),
+                       color: Theme.of(context).cardColor,
+                       hoverColor: Theme.of(context).hoverColor,
+@@ -728,8 +730,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                 },
+                 child: SvgPicture.asset(
+                   "assets/refresh.svg",
+-                  colorFilter:
+-                      svgColor(Theme.of(context).tabBarTheme.labelColor),
++                  colorFilter: svgColor(HjvPalette.of(context).textSecondary),
+                 ),
+                 color: Theme.of(context).cardColor,
+                 hoverColor: Theme.of(context).hoverColor,
+@@ -755,7 +756,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                       child: SvgPicture.asset(
+                         "assets/home.svg",
+                         colorFilter:
+-                            svgColor(Theme.of(context).tabBarTheme.labelColor),
++                            svgColor(HjvPalette.of(context).textSecondary),
+                       ),
+                       color: Theme.of(context).cardColor,
+                       hoverColor: Theme.of(context).hoverColor,
+@@ -793,18 +794,9 @@ class _FileManagerViewState extends State<FileManagerView> {
+ 
+                           cancel() => close(false);
+                           return CustomAlertDialog(
+-                            title: Row(
+-                              mainAxisAlignment: MainAxisAlignment.center,
+-                              children: [
+-                                SvgPicture.asset("assets/folder_new.svg",
+-                                    colorFilter: svgColor(MyTheme.accent)),
+-                                Text(
+-                                  translate("Create Folder"),
+-                                ).paddingOnly(
+-                                  left: 10,
+-                                ),
+-                              ],
+-                            ),
++                            title: HjvDialogTitle(
++                                Icons.create_new_folder_outlined,
++                                translate("Create Folder")),
+                             content: Column(
+                               mainAxisSize: MainAxisSize.min,
+                               children: [
+@@ -841,7 +833,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                       child: SvgPicture.asset(
+                         "assets/folder_new.svg",
+                         colorFilter:
+-                            svgColor(Theme.of(context).tabBarTheme.labelColor),
++                            svgColor(HjvPalette.of(context).textSecondary),
+                       ),
+                       color: Theme.of(context).cardColor,
+                       hoverColor: Theme.of(context).hoverColor,
+@@ -857,8 +849,8 @@ class _FileManagerViewState extends State<FileManagerView> {
+                               : null,
+                           child: SvgPicture.asset(
+                             "assets/trash.svg",
+-                            colorFilter: svgColor(
+-                                Theme.of(context).tabBarTheme.labelColor),
++                            colorFilter:
++                                svgColor(HjvPalette.of(context).textSecondary),
+                           ),
+                           color: Theme.of(context).cardColor,
+                           hoverColor: Theme.of(context).hoverColor,
+@@ -933,11 +925,6 @@ class _FileManagerViewState extends State<FileManagerView> {
+                           isLocal
+                               ? EdgeInsets.only(left: 10)
+                               : EdgeInsets.only(right: 10)),
+-                      backgroundColor: MaterialStateProperty.all(
+-                        selectedItems.items.isEmpty
+-                            ? MyTheme.accent80
+-                            : MyTheme.accent,
+-                      ),
+                     ),
+                     onPressed: SelectedItems.valid(selectedItems.items)
+                         ? () {
+@@ -952,12 +939,9 @@ class _FileManagerViewState extends State<FileManagerView> {
+                             translate('Send'),
+                             textAlign: TextAlign.right,
+                             style: TextStyle(
+-                              color: selectedItems.items.isEmpty
+-                                  ? Theme.of(context).brightness ==
+-                                          Brightness.light
+-                                      ? MyTheme.grayBg
+-                                      : HjvPalette.of(context).textTertiary
+-                                  : Colors.white,
++                              color: SelectedItems.valid(selectedItems.items)
++                                  ? Colors.white
++                                  : HjvPalette.of(context).textDisabled,
+                             ),
+                           )
+                         : isWeb
+@@ -967,34 +951,27 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                 child: SvgPicture.asset(
+                                   "assets/arrow.svg",
+                                   colorFilter: svgColor(
+-                                      selectedItems.items.isEmpty
+-                                          ? Theme.of(context).brightness ==
+-                                                  Brightness.light
+-                                              ? MyTheme.grayBg
+-                                              : HjvPalette.of(context).textTertiary
+-                                          : Colors.white),
++                                      SelectedItems.valid(selectedItems.items)
++                                          ? Colors.white
++                                          : HjvPalette.of(context)
++                                              .textDisabled),
+                                   alignment: Alignment.bottomRight,
+                                 ),
+                               ),
+                     label: isLocal
+                         ? SvgPicture.asset(
+                             "assets/arrow.svg",
+-                            colorFilter: svgColor(selectedItems.items.isEmpty
+-                                ? Theme.of(context).brightness ==
+-                                        Brightness.light
+-                                    ? MyTheme.grayBg
+-                                    : HjvPalette.of(context).textTertiary
+-                                : Colors.white),
++                            colorFilter: svgColor(
++                                SelectedItems.valid(selectedItems.items)
++                                    ? Colors.white
++                                    : HjvPalette.of(context).textDisabled),
+                           )
+                         : Text(
+                             translate(isWeb ? 'Download' : 'Receive'),
+                             style: TextStyle(
+-                              color: selectedItems.items.isEmpty
+-                                  ? Theme.of(context).brightness ==
+-                                          Brightness.light
+-                                      ? MyTheme.grayBg
+-                                      : HjvPalette.of(context).textTertiary
+-                                  : Colors.white,
++                              color: SelectedItems.valid(selectedItems.items)
++                                  ? Colors.white
++                                  : HjvPalette.of(context).textDisabled,
+                             ),
+                           ),
+                   )),
+@@ -1062,7 +1039,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+         ),
+         child: SvgPicture.asset(
+           "assets/dots.svg",
+-          colorFilter: svgColor(Theme.of(context).tabBarTheme.labelColor),
++          colorFilter: svgColor(HjvPalette.of(context).textSecondary),
+         ),
+         color: Theme.of(context).cardColor,
+         hoverColor: Theme.of(context).hoverColor,
+@@ -1184,21 +1161,27 @@ class _FileManagerViewState extends State<FileManagerView> {
+ 
+           return Padding(
+             padding: EdgeInsets.symmetric(vertical: 1),
+-            child: Obx(() => Container(
++            child: Obx(() {
++              final look = hjvFileRowColors(context,
++                  selected: selectedItems.items.contains(entry));
++              final border = rightClickEntry.value == entry
++                  ? HjvPalette.of(context).primary
++                  : look.border;
++              return Container(
+                 decoration: BoxDecoration(
+-                  color: selectedItems.items.contains(entry)
+-                      ? MyTheme.button
+-                      : Theme.of(context).cardColor,
++                  color: look.bg,
+                   borderRadius: BorderRadius.all(
+-                    Radius.circular(5.0),
++                    Radius.circular(HjvRadius.md),
+                   ),
+-                  border: rightClickEntry.value == entry
+-                      ? Border.all(
+-                          color: MyTheme.button,
+-                          width: 1.0,
+-                        )
+-                      : null,
+                 ),
++                foregroundDecoration: border == null
++                    ? null
++                    : BoxDecoration(
++                        borderRadius: BorderRadius.all(
++                          Radius.circular(HjvRadius.md),
++                        ),
++                        border: Border.all(color: border, width: 1.0),
++                      ),
+                 key: ValueKey(entry.name),
+                 height: kDesktopFileTransferRowHeight,
+                 child: Column(
+@@ -1229,18 +1212,14 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                                 entry.isFile
+                                                     ? "assets/file.svg"
+                                                     : "assets/folder.svg",
+-                                                colorFilter: svgColor(
+-                                                    Theme.of(context)
+-                                                        .tabBarTheme
+-                                                        .labelColor),
++                                                colorFilter:
++                                                    svgColor(look.icon),
+                                               ),
+                                         Expanded(
+                                             child: Text(entry.name.nonBreaking,
+                                                 style: TextStyle(
+-                                                    color: selectedItems.items
+-                                                            .contains(entry)
+-                                                        ? Colors.white
+-                                                        : null),
++                                                    fontSize: 14,
++                                                    color: look.name),
+                                                 overflow:
+                                                     TextOverflow.ellipsis))
+                                       ]),
+@@ -1263,13 +1242,8 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                       child: Text(
+                                         lastModifiedStr,
+                                         overflow: TextOverflow.ellipsis,
+-                                        style: TextStyle(
+-                                          fontSize: 12,
+-                                          color: selectedItems.items
+-                                                  .contains(entry)
+-                                              ? Colors.white70
+-                                              : HjvPalette.of(context).textTertiary,
+-                                        ),
++                                        style: hjvFileMetaStyle(look.meta,
++                                            size: 13),
+                                       )),
+                                 ),
+                               ),
+@@ -1290,12 +1264,8 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                   child: Text(
+                                     sizeStr,
+                                     overflow: TextOverflow.ellipsis,
+-                                    style: TextStyle(
+-                                        fontSize: 10,
+-                                        color:
+-                                            selectedItems.items.contains(entry)
+-                                                ? Colors.white70
+-                                                : HjvPalette.of(context).textTertiary),
++                                    style: hjvFileMetaStyle(look.meta,
++                                        size: 12),
+                                   ),
+                                 ),
+                                 onTap: onTap,
+@@ -1308,7 +1278,8 @@ class _FileManagerViewState extends State<FileManagerView> {
+                       ),
+                     ),
+                   ],
+-                ))),
++                ));
++            }),
+           );
+         });
+ 
+@@ -1460,8 +1431,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+   }
+ 
+   Widget headerItemFunc(double? width, SortBy sortBy, String name) {
+-    final headerTextStyle =
+-        Theme.of(context).dataTableTheme.headingTextStyle ?? TextStyle();
++    final headerTextStyle = hjvFileHeadStyle(context);
+     return ObxValue<Rx<bool?>>(
+         (ascending) => InkWell(
+               onTap: () {
+@@ -1490,6 +1460,8 @@ class _FileManagerViewState extends State<FileManagerView> {
+                             ascending.value!
+                                 ? Icons.keyboard_arrow_up_rounded
+                                 : Icons.keyboard_arrow_down_rounded,
++                            size: 16,
++                            color: HjvPalette.of(context).textTertiary,
+                           )
+                         : SizedBox()
+                   ],
+diff --git a/flutter/lib/desktop/widgets/menu_button.dart b/flutter/lib/desktop/widgets/menu_button.dart
+index 8fc90de..5200d59 100644
+--- a/flutter/lib/desktop/widgets/menu_button.dart
++++ b/flutter/lib/desktop/widgets/menu_button.dart
+@@ -1,5 +1,7 @@
+ import 'package:flutter/material.dart';
+ 
++import '../../common/hjv_session_look.dart';
++
+ class MenuButton extends StatefulWidget {
+   final GestureTapCallback? onPressed;
+   final Color color;
+@@ -31,6 +33,8 @@ class _MenuButtonState extends State<MenuButton> {
+ 
+   @override
+   Widget build(BuildContext context) {
++    // HJViewer (U15): the palette's colours; a button that cannot be pressed dims
++    final c = hjvMenuButtonColors(context, widget.color, widget.hoverColor);
+     return Padding(
+       padding: widget.padding,
+       child: Tooltip(
+@@ -41,10 +45,10 @@ class _MenuButtonState extends State<MenuButton> {
+           child: Container(
+             decoration: BoxDecoration(
+               borderRadius: BorderRadius.circular(_borderRadius),
+-              color: _isHover ? widget.hoverColor : widget.color,
++              color: _isHover ? c.hover : c.bg,
+             ),
+             child: InkWell(
+-              hoverColor: widget.hoverColor,
++              hoverColor: c.hover,
+               onHover: (val) {
+                 setState(() {
+                   _isHover = val;
+@@ -54,7 +58,9 @@ class _MenuButtonState extends State<MenuButton> {
+               splashColor: widget.splashColor,
+               enableFeedback: widget.enableFeedback,
+               onTap: widget.onPressed,
+-              child: widget.child,
++              child: widget.onPressed == null
++                  ? Opacity(opacity: 0.4, child: widget.child)
++                  : widget.child,
+             ),
+           ),
+         ),
+diff --git a/flutter/lib/models/file_model.dart b/flutter/lib/models/file_model.dart
+index 26396bc..363ea4e 100644
+--- a/flutter/lib/models/file_model.dart
++++ b/flutter/lib/models/file_model.dart
+@@ -3,6 +3,7 @@ import 'dart:convert';
+ 
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/utils/event_loop.dart';
+ import 'package:get/get.dart';
+@@ -221,22 +222,19 @@ class FileModel {
+       cancel() => close(false);
+       submit() => close(true);
+       return CustomAlertDialog(
+-        title: Row(
+-          children: [
+-            const Icon(Icons.warning_rounded, color: Colors.red),
+-            Text(title).paddingOnly(
+-              left: 10,
+-            ),
+-          ],
+-        ),
+-        contentBoxConstraints:
+-            BoxConstraints(minHeight: 100, minWidth: 400, maxWidth: 400),
++        title: HjvDialogTitle(Icons.warning_amber_rounded, title, danger: true),
++        contentBoxConstraints: BoxConstraints(
++            minHeight: 100,
++            minWidth: HjvDialogWidth.md,
++            maxWidth: HjvDialogWidth.md),
+         content: Column(
+             crossAxisAlignment: CrossAxisAlignment.start,
+             mainAxisSize: MainAxisSize.min,
+             children: [
+               Text(translate("This file exists, skip or overwrite this file?"),
+-                  style: const TextStyle(fontWeight: FontWeight.bold)),
++                  style: TextStyle(
++                      fontWeight: FontWeight.w600,
++                      color: HjvPalette.of(context).text)),
+               const SizedBox(height: 5),
+               Text(content),
+               Offstage(
+@@ -245,8 +243,10 @@ class FileModel {
+                   mainAxisSize: MainAxisSize.min,
+                   children: [
+                     const SizedBox(height: 12),
+-                    Text(translate("identical_file_tip"),
+-                        style: const TextStyle(fontWeight: FontWeight.w500))
++                    HjvCallout(
++                        tone: HjvTone.info,
++                        icon: Icons.info_outline_rounded,
++                        text: translate("identical_file_tip"))
+                   ],
+                 ),
+               ),
+@@ -279,11 +279,7 @@ class FileModel {
+             onPressed: () => close(null),
+             isOutline: true,
+           ),
+-          dialogButton(
+-            "OK",
+-            icon: Icon(Icons.done_rounded),
+-            onPressed: submit,
+-          ),
++          hjvDangerButton(translate("OK"), submit),
+         ],
+         onSubmit: submit,
+         onCancel: cancel,
+diff --git a/flutter/test/hjviewer_session_look_test.dart b/flutter/test/hjviewer_session_look_test.dart
+new file mode 100644
+index 0000000..b9cad81
+--- /dev/null
++++ b/flutter/test/hjviewer_session_look_test.dart
+@@ -0,0 +1,119 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common/hjv_session_look.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/desktop/widgets/menu_button.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// U15, the session windows in the app's look (common/hjv_session_look.dart): the colours
++// upstream passes to the file transfer's MenuButton, a file row's and a chat bubble's colours and
++// their contrast, and a MenuButton that cannot be pressed. Plain Flutter, no bridge: the themes
++// carry the colours hjvRestyle (hjv_theme.dart) gives cardColor and hoverColor, and the accent
++// upstream passes is MyTheme.accent's value, the light palette's primary (common.dart).
++
++double contrast(Color a, Color b) {
++  final la = a.computeLuminance();
++  final lb = b.computeLuminance();
++  final hi = la > lb ? la : lb;
++  final lo = la > lb ? lb : la;
++  return (hi + 0.05) / (lo + 0.05);
++}
++
++Future<BuildContext> themed(WidgetTester tester, ThemeData theme) async {
++  late BuildContext ctx;
++  await tester.pumpWidget(Theme(
++      data: theme,
++      child: Builder(builder: (context) {
++        ctx = context;
++        return const SizedBox();
++      })));
++  return ctx;
++}
++
++void main() {
++  ThemeData app(Brightness brightness, HjvPalette p) =>
++      ThemeData(brightness: brightness, cardColor: p.fill, hoverColor: p.hover);
++  final themes = [
++    ('light', app(Brightness.light, HjvPalette.light), HjvPalette.light),
++    ('dark', app(Brightness.dark, HjvPalette.dark), HjvPalette.dark),
++  ];
++  const accent = Color(0xFF1E6FD9);
++  const accent80 = Color(0xAA1E6FD9);
++
++  testWidgets(
++      'a MenuButton\'s colours from what upstream passes, in both themes',
++      (tester) async {
++    for (final (name, theme, p) in themes) {
++      final context = await themed(tester, theme);
++      expect(hjvMenuButtonColors(context, theme.cardColor, theme.hoverColor),
++          (bg: p.fill, hover: p.hoverStrong),
++          reason: '$name head tool');
++      expect(hjvMenuButtonColors(context, accent, accent80),
++          (bg: Colors.transparent, hover: p.hover),
++          reason: '$name transfer card');
++      expect(
++          hjvMenuButtonColors(context, theme.disabledColor, theme.hoverColor),
++          (bg: p.fill, hover: p.fill),
++          reason: '$name path being typed');
++      expect(hjvMenuButtonColors(context, Colors.purple, Colors.pink),
++          (bg: Colors.purple, hover: Colors.pink),
++          reason: '$name other colours');
++    }
++  });
++
++  testWidgets('a selected file row reads on its tint, in both themes',
++      (tester) async {
++    for (final (name, theme, p) in themes) {
++      final context = await themed(tester, theme);
++      final on = hjvFileRowColors(context, selected: true);
++      expect((
++        on.bg,
++        on.name,
++        on.icon
++      ), (
++        p.primarySoft,
++        p.primaryStrong,
++        p.primary
++      ), reason: name);
++      expect(on.border, isNotNull, reason: name);
++      expect(contrast(on.name, on.bg), greaterThanOrEqualTo(4.5), reason: name);
++      expect(contrast(on.meta, on.bg), greaterThanOrEqualTo(4.5), reason: name);
++      final off = hjvFileRowColors(context, selected: false);
++      expect((off.bg, off.name, off.border), (Colors.transparent, p.text, null),
++          reason: name);
++    }
++  });
++
++  testWidgets('chat bubbles: text and time reach 4.5:1, in both themes',
++      (tester) async {
++    for (final (name, theme, p) in themes) {
++      final context = await themed(tester, theme);
++      final own = hjvChatBubbleColors(context, own: true);
++      final other = hjvChatBubbleColors(context, own: false);
++      expect(own.bg, p.primaryFill, reason: name);
++      expect(other.bg, p.fill, reason: name);
++      for (final b in [own, other]) {
++        expect(contrast(b.text, b.bg), greaterThanOrEqualTo(4.5), reason: name);
++        expect(contrast(b.time, b.bg), greaterThanOrEqualTo(4.5), reason: name);
++      }
++    }
++  });
++
++  testWidgets('a MenuButton that cannot be pressed is dimmed', (tester) async {
++    Future<Iterable<Opacity>> pump(VoidCallback? onPressed) async {
++      await tester.pumpWidget(MaterialApp(
++          theme: themes.first.$2,
++          home: Scaffold(
++              body: MenuButton(
++                  onPressed: onPressed,
++                  color: themes.first.$2.cardColor,
++                  hoverColor: themes.first.$2.hoverColor,
++                  child: const Icon(Icons.delete_outline)))));
++      return tester.widgetList<Opacity>(find.ancestor(
++          of: find.byIcon(Icons.delete_outline),
++          matching: find.byType(Opacity)));
++    }
++
++    expect((await pump(null)).map((o) => o.opacity), [0.4]);
++    expect(await pump(() {}), isEmpty);
++  });
++}

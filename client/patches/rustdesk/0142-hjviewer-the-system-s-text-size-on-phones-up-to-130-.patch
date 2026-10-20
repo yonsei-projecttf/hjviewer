@@ -1,0 +1,581 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 06:20:14 +0900
+Subject: [PATCH 142/147] hjviewer: the system's text size on phones, up to 130
+ % (UX-K3)
+
+UX-K3 (U58): a phone or tablet follows the system's text size from 100 %
+to 130 % (MediaQuery's scaler clamped, so a larger or non-linear size
+stops at 130 % of each font size); a desktop stays at 100 % (T5). The
+new common/hjv_text_scale.dart holds the bounds and the builders:
+main.dart's Android builder and its iOS branch take
+hjvTextScaleBuilder; the desktop branch keeps _keepScaleBuilder. The
+phone's remote screen (with its key bar and gesture guide) and its
+terminal stay at 100 % (hjvFixedTextScale); the dialogs they open are
+above them, in the app's scale.
+
+Room for the larger text first: the phone ID field is at least 84 high
+instead of 84, and its AutoSizeTextField, which scaled the ID once in
+its fit and once more in its TextField, sits at 1.0 with its sizes
+scaled once; the peer bar's pills and search field are at least 32
+high; a phone's menu rows (popup_menu.dart) grow past the menu's row
+height, a desktop's keep it; the settings side bar's tabs are at least
+40 high; HjvDialogTitle and a callout's one-line title take two lines
+on a phone (one on a desktop).
+
+Tests: test/hjviewer_text_scale_test.dart (the bounds on a phone and a
+desktop, a non-linear size, the app's builder and the 100 % wrapper,
+the menu row's box, a card's title at 130 % on a 320 px phone).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_style.dart             |   4 +-
+ flutter/lib/common/hjv_text_scale.dart        |  54 +++++++
+ flutter/lib/common/widgets/dialog.dart        |   8 +-
+ flutter/lib/common/widgets/peer_tab_page.dart |  11 +-
+ .../desktop/pages/desktop_setting_page.dart   |   5 +-
+ flutter/lib/desktop/widgets/popup_menu.dart   |  20 ++-
+ flutter/lib/main.dart                         |  14 +-
+ flutter/lib/mobile/pages/connection_page.dart |  22 +--
+ flutter/lib/mobile/pages/remote_page.dart     |   7 +-
+ flutter/lib/mobile/pages/terminal_page.dart   |   7 +-
+ flutter/test/hjviewer_text_scale_test.dart    | 134 ++++++++++++++++++
+ 11 files changed, 253 insertions(+), 33 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_text_scale.dart
+ create mode 100644 flutter/test/hjviewer_text_scale_test.dart
+
+diff --git a/flutter/lib/common/hjv_style.dart b/flutter/lib/common/hjv_style.dart
+index 5a69f76..5c67c03 100644
+--- a/flutter/lib/common/hjv_style.dart
++++ b/flutter/lib/common/hjv_style.dart
+@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter/rendering.dart';
+ 
+ import 'hjv_semantics.dart';
++import 'hjv_text_scale.dart';
+ 
+ /// The typeface every text uses, bundled in assets/fonts (Regular 400, SemiBold 600, Bold 700).
+ const String kHjvFont = 'Pretendard';
+@@ -363,7 +364,8 @@ class HjvCallout extends StatelessWidget {
+     final heading = title == null
+         ? null
+         : Text(hjvKeepAll(title!),
+-            maxLines: titleOneLine ? 1 : null,
++            // UX-K3: two lines on a phone, whose text can be 130 %
++            maxLines: titleOneLine ? hjvTitleMaxLines(phone: phone) : null,
+             overflow: titleOneLine ? TextOverflow.ellipsis : null,
+             style: HjvText.captionStrong.copyWith(color: p.text));
+     final lead = Row(
+diff --git a/flutter/lib/common/hjv_text_scale.dart b/flutter/lib/common/hjv_text_scale.dart
+new file mode 100644
+index 0000000..c9c0b0d
+--- /dev/null
++++ b/flutter/lib/common/hjv_text_scale.dart
+@@ -0,0 +1,54 @@
++// HJViewer UX-K3 (U58): the system's text size, within bounds. A phone or tablet follows it from
++// 100 % up to 130 % (a larger or non-linear choice stops at 130 %, a smaller one stays at 100 %);
++// a desktop stays at 100 %, as it has the screen's scale already and fixed panes. The remote
++// screen, its key bar and the gesture guide, and the terminal stay at 100 % on a phone too: what
++// they draw follows the remote side's pixels, not the phone's text.
++// Plain Flutter without the bridge.
++
++import 'package:flutter/widgets.dart';
++
++/// The smallest text scale the app takes: the system's smaller text is not followed.
++const double kHjvTextScaleMin = 1.0;
++
++/// The largest on a phone or tablet.
++const double kHjvPhoneTextScaleMax = 1.3;
++
++/// The largest on a desktop (Windows): 1.0, the system's text size is not followed (T5).
++const double kHjvDesktopTextScaleMax = 1.0;
++
++/// The largest text scale on a phone ([phone]) or a desktop.
++double hjvTextScaleMax({required bool phone}) =>
++    phone ? kHjvPhoneTextScaleMax : kHjvDesktopTextScaleMax;
++
++/// The system's [scaler] within the app's bounds. On a desktop it is the linear 1.0.
++TextScaler hjvClampTextScaler(TextScaler scaler, {required bool phone}) =>
++    scaler.clamp(
++        minScaleFactor: kHjvTextScaleMin,
++        maxScaleFactor: hjvTextScaleMax(phone: phone));
++
++/// The app's builder (MaterialApp.builder): [child] under the system's text scale within the
++/// app's bounds (hjvClampTextScaler).
++Widget hjvTextScaleBuilder(BuildContext context, Widget? child,
++    {required bool phone}) {
++  final data = MediaQuery.of(context);
++  return MediaQuery(
++    data: data.copyWith(
++        textScaler: hjvClampTextScaler(data.textScaler, phone: phone)),
++    child: child ?? const SizedBox.shrink(),
++  );
++}
++
++/// [child] at the text scale 1.0: the phone's remote screen with its key bar and gesture guide,
++/// and its terminal. A dialog that such a screen opens is above it, in the app's scale.
++Widget hjvFixedTextScale({required Widget child}) =>
++    MediaQuery.withNoTextScaling(child: child);
++
++/// How many lines a title that is one line on a desktop may take on a phone, where the text
++/// can be 130 % (a dialog's title, a notice card's title).
++int hjvTitleMaxLines({required bool phone}) => phone ? 2 : 1;
++
++/// A menu row's box (desktop/widgets/popup_menu.dart): [height] on a desktop; on a phone at least
++/// [height], higher for a larger text.
++BoxConstraints hjvMenuRowConstraints(double height, {required bool phone}) =>
++    BoxConstraints(
++        minHeight: height, maxHeight: phone ? double.infinity : height);
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index 29a21af..6d49320 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -5,6 +5,7 @@ import 'package:bot_toast/bot_toast.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjv_text_scale.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_end_lock_ui.dart';
+ import 'package:flutter_hbb/common/hjviewer_labels.dart';
+@@ -532,11 +533,16 @@ class HjvDialogTitle extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     final p = HjvPalette.of(context);
++    // UX-K3: one line on a desktop; two on a phone, whose text can be 130 %
++    final phone = !(isDesktop || isWebDesktop);
+     return Row(
+       children: [
+         Icon(icon, size: 22, color: danger ? p.danger : p.primary),
+         const SizedBox(width: 10),
+-        Flexible(child: Text(text, overflow: TextOverflow.ellipsis)),
++        Flexible(
++            child: Text(phone ? hjvKeepAll(text) : text,
++                maxLines: hjvTitleMaxLines(phone: phone),
++                overflow: TextOverflow.ellipsis)),
+       ],
+     );
+   }
+diff --git a/flutter/lib/common/widgets/peer_tab_page.dart b/flutter/lib/common/widgets/peer_tab_page.dart
+index 9c8d37c..5c963ae 100644
+--- a/flutter/lib/common/widgets/peer_tab_page.dart
++++ b/flutter/lib/common/widgets/peer_tab_page.dart
+@@ -294,8 +294,10 @@ class _PeerTabPageState extends State<PeerTabPage>
+                                 (selected ? labelWidth : 0),
+                             alignment: Alignment.center,
+                             child: Container(
+-                              height: 32,
+-                              alignment: Alignment.center,
++                              // UX-K3: higher for the phone's larger text; the row
++                              // centres what an Align would (that one would take the bar's
++                              // whole height)
++                              constraints: const BoxConstraints(minHeight: 32),
+                               decoration: ShapeDecoration(
+                                 shape: const StadiumBorder(),
+                                 color: selected
+@@ -303,7 +305,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+                                     : (hovered ? p.hover : Colors.transparent),
+                               ),
+                               child: Row(
+-                                mainAxisSize: MainAxisSize.min,
++                                mainAxisAlignment: MainAxisAlignment.center,
+                                 children: [
+                                   Container(
+                                     decoration: icon.underline
+@@ -915,7 +917,8 @@ class _PeerSearchBarState extends State<PeerSearchBar> {
+           stateGlobal.isPortrait.isTrue ? kHjvPhoneSearchWidth : 160.0;
+       final field = Container(
+           width: width,
+-          height: 32,
++          // HJViewer UX-K3: higher for the phone's larger text
++          constraints: const BoxConstraints(minHeight: 32),
+           decoration: BoxDecoration(
+             color: phone ? p.card : p.fill,
+             borderRadius: BorderRadius.circular(HjvRadius.md),
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index e67594b..a021210 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -445,8 +445,9 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
+                   }
+                   selectedTab.value = tab.key;
+                 },
+-                child: SizedBox(
+-                  height: _kTabHeight,
++                // UX-K3: at least the tab's height, higher for a larger text
++                child: ConstrainedBox(
++                  constraints: const BoxConstraints(minHeight: _kTabHeight),
+                   child: Row(children: [
+                     Icon(
+                       selected ? tab.selected : tab.unselected,
+diff --git a/flutter/lib/desktop/widgets/popup_menu.dart b/flutter/lib/desktop/widgets/popup_menu.dart
+index 5926de0..ba6218d 100644
+--- a/flutter/lib/desktop/widgets/popup_menu.dart
++++ b/flutter/lib/desktop/widgets/popup_menu.dart
+@@ -5,6 +5,7 @@ import 'package:get/get.dart';
+ 
+ import '../../common.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjv_text_scale.dart';
+ import './material_mod_popup_menu.dart' as mod_menu;
+ 
+ // https://stackoverflow.com/questions/68318314/flutter-popup-menu-inside-popup-menu
+@@ -116,6 +117,9 @@ EdgeInsets _hjvRowPadding(EdgeInsets? padding) =>
+     padding ??
+     EdgeInsets.symmetric(horizontal: isDesktop || isWebDesktop ? 12 : 16);
+ 
++// HJViewer UX-K3: a phone's menu (the rows _hjvRowPadding pads)
++bool get _hjvPhoneRow => !(isDesktop || isWebDesktop);
++
+ abstract class MenuEntryBase<T> {
+   bool dismissOnClicked;
+   DismissCallback? dismissCallback;
+@@ -234,8 +238,8 @@ class MenuEntryRadios<T> extends MenuEntryBase<T> {
+     final child = Container(
+       padding: _hjvRowPadding(padding),
+       alignment: AlignmentDirectional.centerStart,
+-      constraints:
+-          BoxConstraints(minHeight: conf.height, maxHeight: conf.height),
++      // HJViewer UX-K3: a phone's row higher for a larger text
++      constraints: hjvMenuRowConstraints(conf.height, phone: _hjvPhoneRow),
+       child: Row(
+         children: [
+           getTextChild(),
+@@ -350,8 +354,9 @@ class MenuEntrySubRadios<T> extends MenuEntryBase<T> {
+             child: Container(
+               padding: _hjvRowPadding(padding),
+               alignment: AlignmentDirectional.centerStart,
+-              constraints: BoxConstraints(
+-                  minHeight: conf.height, maxHeight: conf.height),
++              // HJViewer UX-K3: a phone's row higher for a larger text
++              constraints:
++                  hjvMenuRowConstraints(conf.height, phone: _hjvPhoneRow),
+               child: Row(
+                 children: [
+                   Text(
+@@ -488,7 +493,9 @@ abstract class MenuEntrySwitchBase<T> extends MenuEntryBase<T> {
+               child: Container(
+                   padding: _hjvRowPadding(padding),
+                   alignment: AlignmentDirectional.centerStart,
+-                  height: conf.height,
++                  // HJViewer UX-K3: a phone's row higher for a larger text
++                  constraints:
++                      hjvMenuRowConstraints(conf.height, phone: _hjvPhoneRow),
+                   child: Row(children: [
+                     Obx(() => Text(
+                           text,
+@@ -742,8 +749,9 @@ class MenuEntryButton<T> extends MenuEntryBase<T> {
+           child: Container(
+             padding: _hjvRowPadding(padding),
+             alignment: AlignmentDirectional.centerStart,
++            // HJViewer UX-K3: a phone's row higher for a larger text
+             constraints:
+-                BoxConstraints(minHeight: conf.height, maxHeight: conf.height),
++                hjvMenuRowConstraints(conf.height, phone: _hjvPhoneRow),
+             child: childBuilder(super.enabled!.value
+                 ? enabledStyle(context)
+                 : disabledStyle(context)),
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index edf6170..72c0377 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hjv_phone.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjv_text_scale.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+@@ -546,16 +547,15 @@ class _AppState extends State<App> with WidgetsBindingObserver {
+           ],
+           // HJViewer: the phone app's optional app lock covers all of it
+           builder: hjvAppLockBuilder(isAndroid
++              // HJViewer UX-K3: the system's text size up to 130 % (hjv_text_scale.dart)
+               ? (context, child) => AccessibilityListener(
+-                    child: MediaQuery(
+-                      data: MediaQuery.of(context).copyWith(
+-                        textScaler: TextScaler.linear(1.0),
+-                      ),
+-                      child: child ?? Container(),
+-                    ),
++                    child: hjvTextScaleBuilder(context, child, phone: true),
+                   )
+               : (context, child) {
+-                  child = _keepScaleBuilder(context, child);
++                  // HJViewer UX-K3: an iPhone's and iPad's up to 130 %, a desktop's 100 %
++                  child = isMobile
++                      ? hjvTextScaleBuilder(context, child, phone: true)
++                      : _keepScaleBuilder(context, child);
+                   child = botToastBuilder(context, child);
+                   if ((isDesktop && desktopType == DesktopType.main) ||
+                       isWebDesktop) {
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index 25eae17..155d2f3 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -167,8 +167,9 @@ class _ConnectionPageState extends State<ConnectionPage> {
+   /// UI for the remote ID TextField.
+   /// Search for a peer and connect to it if the id exists.
+   Widget _buildRemoteIDTextField() {
+-    final w = SizedBox(
+-      height: 84,
++    // HJViewer UX-K3: at least 84 high, higher for the system's larger text
++    final w = ConstrainedBox(
++      constraints: const BoxConstraints(minHeight: 84),
+       child: Padding(
+         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
+         child: Ink(
+@@ -236,10 +237,15 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                         VoidCallback onFieldSubmitted) {
+                       updateTextAndPreserveSelection(
+                           fieldTextEditingController, _idController.text);
+-                      return AutoSizeTextField(
++                      // HJViewer UX-K3: AutoSizeTextField sizes the text with the text scale and
++                      // its TextField scales it once more; so the field is at 1.0 and gets the
++                      // sizes scaled once
++                      final scale = MediaQuery.textScalerOf(context);
++                      return MediaQuery.withNoTextScaling(
++                          child: AutoSizeTextField(
+                         controller: fieldTextEditingController,
+                         focusNode: fieldFocusNode,
+-                        minFontSize: 18,
++                        minFontSize: scale.scale(18).floorToDouble(),
+                         autocorrect: false,
+                         enableSuggestions: false,
+                         keyboardType: TextInputType.visiblePassword,
+@@ -248,7 +254,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                           _idController.id = text;
+                         },
+                         style: HjvText.idInput.copyWith(
+-                            fontSize: 24,
++                            fontSize: scale.scale(24),
+                             fontWeight: FontWeight.w700,
+                             color: HjvPalette.of(context).text),
+                         decoration: InputDecoration(
+@@ -260,12 +266,12 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                           // too (the const darkGray is 3.4:1 there)
+                           helperStyle: TextStyle(
+                             fontWeight: FontWeight.bold,
+-                            fontSize: 16,
++                            fontSize: scale.scale(16),
+                             color: HjvPalette.of(context).textTertiary,
+                           ),
+                           labelStyle: TextStyle(
+                             fontWeight: FontWeight.w600,
+-                            fontSize: 16,
++                            fontSize: scale.scale(16),
+                             letterSpacing: 0.2,
+                             color: HjvPalette.of(context).textTertiary,
+                           ),
+@@ -274,7 +280,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
+                         onSubmitted: (_) {
+                           onConnect();
+                         },
+-                      );
++                      ));
+                     },
+                     onSelected: (option) {
+                       setState(() {
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 76e42f2..753bb96 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -17,6 +17,7 @@ import 'package:provider/provider.dart';
+ 
+ import '../../common.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjv_text_scale.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../common/hjviewer_android.dart';
+ import '../../common/hjviewer_end_lock_ui.dart';
+@@ -626,7 +627,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+         keyboardVisibilityController.isVisible && _showEdit;
+     final showActionButton = !_showBar || keyboardIsVisible || _showGestureHelp;
+ 
+-    return WillPopScope(
++    // HJViewer UX-K3: the remote screen, its key bar and the gesture guide at 100 % text
++    return hjvFixedTextScale(
++        child: WillPopScope(
+       onWillPop: () async {
+         clientClose(sessionId, gFFI);
+         return false;
+@@ -711,7 +714,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+               ],
+             )),
+           )),
+-    );
++    ));
+   }
+ 
+   Widget getRawPointerAndKeyBody(Widget child) {
+diff --git a/flutter/lib/mobile/pages/terminal_page.dart b/flutter/lib/mobile/pages/terminal_page.dart
+index ac2ca42..34e5049 100644
+--- a/flutter/lib/mobile/pages/terminal_page.dart
++++ b/flutter/lib/mobile/pages/terminal_page.dart
+@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_text_scale.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/models/input_modifier_utils.dart';
+ import 'package:flutter_hbb/models/model.dart';
+@@ -411,13 +412,15 @@ class _TerminalPageState extends State<TerminalPage>
+   @override
+   Widget build(BuildContext context) {
+     super.build(context);
+-    return WillPopScope(
++    // HJViewer UX-K3: the terminal and its key bar at 100 % text
++    return hjvFixedTextScale(
++        child: WillPopScope(
+       onWillPop: () async {
+         clientClose(sessionId, _ffi);
+         return false; // Prevent default back behavior
+       },
+       child: buildBody(),
+-    );
++    ));
+   }
+ 
+   Widget buildBody() {
+diff --git a/flutter/test/hjviewer_text_scale_test.dart b/flutter/test/hjviewer_text_scale_test.dart
+new file mode 100644
+index 0000000..4ccb82c
+--- /dev/null
++++ b/flutter/test/hjviewer_text_scale_test.dart
+@@ -0,0 +1,134 @@
++// HJViewer UX-K3 (U58): the system's text size within the app's bounds (hjv_text_scale.dart).
++// Plain Flutter without the bridge.
++
++import 'package:flutter/material.dart';
++import 'package:flutter/rendering.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjv_text_scale.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// Android 14's non-linear font size: small text grows more than large text
++class _NonLinear extends TextScaler {
++  const _NonLinear();
++
++  @override
++  double scale(double fontSize) => fontSize < 20 ? fontSize * 2 : fontSize * 1.5;
++
++  @override
++  double get textScaleFactor => 2;
++}
++
++// the text scale a widget under the app's builder sees, for a system's [system]
++Future<TextScaler> _scalerUnder(WidgetTester tester, TextScaler system,
++    {required bool phone, bool fixed = false}) async {
++  late TextScaler seen;
++  final probe = Builder(builder: (context) {
++    seen = MediaQuery.textScalerOf(context);
++    return const SizedBox.shrink();
++  });
++  await tester.pumpWidget(MediaQuery(
++    data: MediaQueryData(textScaler: system),
++    child: Builder(
++        builder: (context) => hjvTextScaleBuilder(
++            context, fixed ? hjvFixedTextScale(child: probe) : probe,
++            phone: phone)),
++  ));
++  return seen;
++}
++
++void main() {
++  group('the system text size', () {
++    test('a phone follows it from 100 % to 130 %', () {
++      double at(double factor) =>
++          hjvClampTextScaler(TextScaler.linear(factor), phone: true).scale(10);
++      expect(at(1.15), closeTo(11.5, 1e-9));
++      expect(at(2.0), closeTo(13, 1e-9));
++      expect(at(0.85), 10);
++    });
++
++    test('a phone stops a non-linear size at 130 % of each size', () {
++      final scaler = hjvClampTextScaler(const _NonLinear(), phone: true);
++      expect(scaler.scale(14), closeTo(18.2, 1e-9));
++      expect(scaler.scale(24), closeTo(31.2, 1e-9));
++    });
++
++    test('a desktop stays at 100 %', () {
++      expect(hjvClampTextScaler(TextScaler.linear(1.5), phone: false).scale(14),
++          14);
++      expect(hjvClampTextScaler(const _NonLinear(), phone: false).scale(14), 14);
++    });
++
++    testWidgets('the app\'s builder gives a phone\'s screens 130 % of a system\'s 200 %',
++        (tester) async {
++      final phone =
++          await _scalerUnder(tester, TextScaler.linear(2), phone: true);
++      expect(phone.scale(14), closeTo(18.2, 1e-9));
++      final desktop =
++          await _scalerUnder(tester, TextScaler.linear(2), phone: false);
++      expect(desktop.scale(14), 14);
++    });
++
++    testWidgets('the remote screen\'s and the terminal\'s wrapper keeps 100 %',
++        (tester) async {
++      final fixed = await _scalerUnder(tester, TextScaler.linear(2),
++          phone: true, fixed: true);
++      expect(fixed.scale(14), 14);
++    });
++  });
++
++  group('room for the larger text', () {
++    test('a phone\'s menu row grows past its height, a desktop\'s does not', () {
++      expect(hjvMenuRowConstraints(20, phone: true),
++          const BoxConstraints(minHeight: 20));
++      expect(hjvMenuRowConstraints(20, phone: false),
++          const BoxConstraints(minHeight: 20, maxHeight: 20));
++    });
++
++    // a 320 px phone at the system's 200 %, through the app's builder as main.dart has it
++    Widget card(TargetPlatform platform) => MediaQuery(
++          data: const MediaQueryData(
++              size: Size(320, 640), textScaler: TextScaler.linear(2)),
++          child: MaterialApp(
++            theme: ThemeData(platform: platform),
++            builder: (context, child) => hjvTextScaleBuilder(context, child,
++                phone: platform != TargetPlatform.windows),
++            home: const Scaffold(
++              body: SizedBox(
++                width: 320,
++                child: HjvCallout(
++                  tone: HjvTone.warning,
++                  icon: Icons.info_outline_rounded,
++                  title: '로그인했지만 서버가 이 PC를 아직 받지 않고 있습니다',
++                  text: '잠시 뒤에 다시 확인합니다.',
++                  titleOneLine: true,
++                ),
++              ),
++            ),
++          ),
++        );
++
++    int titleLines(WidgetTester tester) {
++      final title = tester.renderObjectList<RenderParagraph>(find.byWidgetPredicate(
++              (w) => w is RichText && w.maxLines != null))
++          .first;
++      return title.getBoxesForSelection(TextSelection(
++              baseOffset: 0, extentOffset: title.text.toPlainText().length))
++          .map((b) => b.top)
++          .toSet()
++          .length;
++    }
++
++    testWidgets('a card\'s one-line title takes two lines at 130 % on a phone, no overflow',
++        (tester) async {
++      await tester.pumpWidget(card(TargetPlatform.android));
++      expect(tester.takeException(), isNull);
++      expect(titleLines(tester), 2);
++    });
++
++    testWidgets('and stays one line on a desktop', (tester) async {
++      await tester.pumpWidget(card(TargetPlatform.windows));
++      expect(tester.takeException(), isNull);
++      expect(titleLines(tester), 1);
++    });
++  });
++}

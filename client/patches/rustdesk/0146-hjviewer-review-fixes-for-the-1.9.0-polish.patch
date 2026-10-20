@@ -1,0 +1,109 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 09:21:52 +0900
+Subject: [PATCH 146/147] hjviewer: review fixes for the 1.9.0 polish
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+S2 with S8 offers [닫기] [코드 복사] (Enter copies the code): [안내문 복사]
+copied S4, which asks for that PC's [지원 코드 넣기], which it does not show.
+
+A1/A2 that waited for this window's question about the mode is not shown
+for a session closed meanwhile (a phone's home shares its dialog manager),
+as the offline box; a session whose FFI is gone counts as closed for both.
+
+A question about the mode that ends clears only itself, not a newer one.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart | 24 ++++++++++++++++++------
+ flutter/lib/models/model.dart           |  5 +++--
+ 2 files changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 67ce148..6c53dcc 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -257,7 +257,8 @@ bool hjvAccessRefused(
+     String type,
+     String title,
+     OverlayDialogManager dialogManager,
+-    ReconnectHandle reconnect) {
++    ReconnectHandle reconnect,
++    {required bool Function() closed}) {
+   if (type != kHjvAccessMsgbox) return false;
+   final t = _t;
+   // a login hjv-api ended at the ticket request ends now: A1, not A2 (U68). A phone's session
+@@ -279,7 +280,10 @@ bool hjvAccessRefused(
+   if (soon == null) {
+     show();
+   } else {
+-    unawaited(soon.then((_) => show()).catchError((Object e) {
++    // not for a session closed meanwhile (a phone's home shares its dialog manager)
++    unawaited(soon.then((_) {
++      if (!closed()) show();
++    }).catchError((Object e) {
+       debugPrint('hjv: $e');
+     }));
+   }
+@@ -1310,8 +1314,8 @@ void _supportCodeDialog(HjvAccessTexts t) {
+     final view = hjvSupportView(wait: wait.state, left: left);
+     final open = code != null && view == HjvSupportView.open;
+     final arrived = code != null && view == HjvSupportView.arrived;
+-    // S8: the PC takes connections without a code, so S2 is S4's (no link to send for it, no
+-    // waiting for a [지원 코드 넣기] that PC does not show)
++    // S8: the PC takes connections without a code, so S2 has no text, link, instructions or
++    // waiting for a [지원 코드 넣기] that PC does not show: the code, its time, S8 and [코드 복사]
+     final noCodeNeeded = hjvGateCloses(_gateMode.value) == false;
+     final link = noCodeNeeded ? null : room?.link;
+     final waits =
+@@ -1437,7 +1441,10 @@ void _supportCodeDialog(HjvAccessTexts t) {
+       ),
+       actions: [
+         _button(t.close, close, outline: true),
+-        if (open && link == null) ...[
++        // with S8 no instructions: S4's ask for that PC's [지원 코드 넣기], which it does not show
++        if (open && noCodeNeeded)
++          _button(t.copyCode, copyCode)
++        else if (open && link == null) ...[
+           _button(t.copyInstructions, copyInstructions, outline: true),
+           _button(t.copyCode, copyCode),
+         ] else if (open) ...[
+@@ -1564,7 +1571,12 @@ Future<void> _askGateMode() {
+     return _gateAsking ?? Future.value();
+   }
+   _gateAsked = DateTime.now();
+-  return _gateAsking = _askGateModeNow().whenComplete(() => _gateAsking = null);
++  // a hung question's end clears only its own
++  late final Future<void> asking;
++  asking = _askGateModeNow().whenComplete(() {
++    if (identical(_gateAsking, asking)) _gateAsking = null;
++  });
++  return _gateAsking = asking;
+ }
+ 
+ /// A desktop session window asks the mode as it opens (hjvInitAccessSession), and hbbs's answer
+diff --git a/flutter/lib/models/model.dart b/flutter/lib/models/model.dart
+index abfb61f..2722138 100644
+--- a/flutter/lib/models/model.dart
++++ b/flutter/lib/models/model.dart
+@@ -913,7 +913,8 @@ class FfiModel with ChangeNotifier {
+     }
+ 
+     if (hjvAccessRefused(
+-        sessionId, peerId, type, title, dialogManager, reconnect)) {
++        sessionId, peerId, type, title, dialogManager, reconnect,
++        closed: () => parent.target?.closed != false)) {
+       return;
+     }
+     if (type == 're-input-password') {
+@@ -991,7 +992,7 @@ class FfiModel with ChangeNotifier {
+         show();
+       } else {
+         unawaited(soon.then((_) {
+-          if (parent.target?.closed != true) show();
++          if (parent.target?.closed == false) show();
+         }));
+       }
+     }

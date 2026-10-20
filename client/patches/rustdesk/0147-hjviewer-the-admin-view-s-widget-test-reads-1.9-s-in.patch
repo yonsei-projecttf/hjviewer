@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 09:28:56 +0900
+Subject: [PATCH 147/147] hjviewer: the admin view's widget test reads 1.9's
+ intro and user lines
+
+The screen review fixes (9917490) keep the admin intro's Korean words whole
+(hjvKeepAll) and give a user's counts a line of their own on a phone; the
+bridge-needing widget test still looked for the 1.8 strings, so the release
+build's Dart tests job would fail. Its pure twin, hjviewer_admin_test.dart,
+already expects the two lines.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/test/hjviewer_admin_widgets_test.dart | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/flutter/test/hjviewer_admin_widgets_test.dart b/flutter/test/hjviewer_admin_widgets_test.dart
+index a33de90..844bfa3 100644
+--- a/flutter/test/hjviewer_admin_widgets_test.dart
++++ b/flutter/test/hjviewer_admin_widgets_test.dart
+@@ -217,9 +217,10 @@ void main() {
+     await settle(tester);
+     expect(loads, 1);
+     expect(
+-        find.text('계정에 로그인한 PC만 보입니다. 아무도 로그인하지 않은 PC는 서버가 알지 못합니다. '
++        // the intro keeps Korean words whole (hjvKeepAll)
++        find.text(hjvKeepAll('계정에 로그인한 PC만 보입니다. 아무도 로그인하지 않은 PC는 서버가 알지 못합니다. '
+             'IP는 PC가 마지막으로 서버와 동기화할 때 서버가 본 주소입니다. '
+-            '이 화면을 열거나 새로 고칠 때마다 관리자 기록에 남습니다.'),
++            '이 화면을 열거나 새로 고칠 때마다 관리자 기록에 남습니다.')),
+         findsOneWidget);
+     expect(find.text('사용자 3명 · 활성 2명(최근 30일 사용) · PC 3대 · 10/14 09:30 기준'),
+         findsOneWidget);
+@@ -294,7 +295,8 @@ void main() {
+     expect(find.text(title), findsOneWidget);
+     expect(find.text('상태'), findsNothing);
+     expect(find.text('홍길동 (2026000001)'), findsOneWidget);
+-    expect(find.text('활성 · 마지막 사용 10/13 18:20 · 로그인한 기기 2대 · PC 2대'),
++    // the counts take a line of their own
++    expect(find.text('활성 · 마지막 사용 10/13 18:20\n로그인한 기기 2대 · PC 2대'),
+         findsOneWidget);
+     await tester.tap(find.text('PC 3'));
+     await settle(tester);
+@@ -398,7 +400,7 @@ void main() {
+         findsOneWidget);
+     // a name that is the portal ID is said once
+     expect(find.text('2026000001'), findsOneWidget);
+-    expect(find.text('비활성 · 마지막 사용 5/31 12:00 · 로그인한 기기 0대 · PC 0대'),
++    expect(find.text('비활성 · 마지막 사용 5/31 12:00\n로그인한 기기 0대 · PC 0대'),
+         findsOneWidget);
+     await tester.tap(find.text('PC 0'));
+     await settle(tester);

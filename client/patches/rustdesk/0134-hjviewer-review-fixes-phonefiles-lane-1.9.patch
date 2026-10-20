@@ -1,0 +1,171 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 04:43:22 +0900
+Subject: [PATCH 134/147] hjviewer: review fixes, phonefiles lane (1.9)
+
+U15 (major): the phone file transfer's 'Local / Remote' switch keeps
+upstream's minWidth 100. In toggle_switch each segment's 10 px padding on
+both sides is inside minWidth, so 88 left 45 px for the label and English
+"Remote" in the AppBar's bold title style (about 51 px at 14 px) ended in
+an ellipsis. 100 leaves 57 px; the FittedBox(scaleDown) still shrinks the
+switch on phones narrower than its 203 px.
+
+U15 (nit): the switch moves into _hjvSideSwitch() with one HjvPalette
+lookup instead of eight.
+
+U15 (nit): BottomSheetBody's IconTheme subtree re-indented as dart format
+writes it. No behaviour change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../lib/mobile/pages/file_manager_page.dart   | 118 +++++++++---------
+ 1 file changed, 61 insertions(+), 57 deletions(-)
+
+diff --git a/flutter/lib/mobile/pages/file_manager_page.dart b/flutter/lib/mobile/pages/file_manager_page.dart
+index 4a16536..2afff68 100644
+--- a/flutter/lib/mobile/pages/file_manager_page.dart
++++ b/flutter/lib/mobile/pages/file_manager_page.dart
+@@ -291,6 +291,39 @@ class _FileManagerPageState extends State<FileManagerPage> {
+                 JobState.paused
+               ].contains(j.state))));
+ 
++  // HJViewer (U15): the palette's segmented control (as in gesture_help.dart). minWidth stays
++  // upstream's 100: each segment's 20 px padding is inside it, and English "Remote" in the AppBar's
++  // bold title style needs about 51 of the 57 px left. Phones too narrow for 2 x 100 scale it down.
++  Widget _hjvSideSwitch() {
++    final p = HjvPalette.of(context);
++    return FittedBox(
++        fit: BoxFit.scaleDown,
++        child: ToggleSwitch(
++          initialLabelIndex: showLocal ? 0 : 1,
++          activeFgColor: p.primaryStrong,
++          inactiveFgColor: p.textSecondary,
++          activeBgColor: [p.primarySoft],
++          inactiveBgColor: p.card,
++          borderColor: [p.border],
++          borderWidth: 1,
++          dividerColor: p.border,
++          cornerRadius: HjvRadius.md,
++          totalSwitches: 2,
++          minWidth: 100,
++          minHeight: 36,
++          fontSize: 14,
++          iconSize: 18,
++          labels: [translate("Local"), translate("Remote")],
++          icons: [Icons.phone_android_rounded, Icons.screen_share_outlined],
++          onToggle: (index) {
++            final current = showLocal ? 0 : 1;
++            if (index != current) {
++              setState(() => showLocal = !showLocal);
++            }
++          },
++        ));
++  }
++
+   @override
+   Widget build(BuildContext context) => WillPopScope(
+       onWillPop: () async {
+@@ -313,37 +346,7 @@ class _FileManagerPageState extends State<FileManagerPage> {
+             _hjvToRemoteButton(),
+           ]),
+           centerTitle: true,
+-          // HJViewer (U15): the palette's segmented control (as in gesture_help.dart), scaled
+-          // down on phones too narrow for it
+-          title: FittedBox(
+-              fit: BoxFit.scaleDown,
+-              child: ToggleSwitch(
+-                initialLabelIndex: showLocal ? 0 : 1,
+-                activeFgColor: HjvPalette.of(context).primaryStrong,
+-                inactiveFgColor: HjvPalette.of(context).textSecondary,
+-                activeBgColor: [HjvPalette.of(context).primarySoft],
+-                inactiveBgColor: HjvPalette.of(context).card,
+-                borderColor: [HjvPalette.of(context).border],
+-                borderWidth: 1,
+-                dividerColor: HjvPalette.of(context).border,
+-                cornerRadius: HjvRadius.md,
+-                totalSwitches: 2,
+-                minWidth: 88,
+-                minHeight: 36,
+-                fontSize: 14,
+-                iconSize: 18,
+-                labels: [translate("Local"), translate("Remote")],
+-                icons: [
+-                  Icons.phone_android_rounded,
+-                  Icons.screen_share_outlined
+-                ],
+-                onToggle: (index) {
+-                  final current = showLocal ? 0 : 1;
+-                  if (index != current) {
+-                    setState(() => showLocal = !showLocal);
+-                  }
+-                },
+-              )),
++          title: _hjvSideSwitch(),
+           actions: [
+             PopupMenuButton<String>(
+                 tooltip: "",
+@@ -1023,37 +1026,38 @@ class BottomSheetBody extends StatelessWidget {
+             child: IconTheme(
+                 data: IconThemeData(color: p.textSecondary, size: 22),
+                 child: Padding(
+-              padding: EdgeInsets.symmetric(horizontal: 15),
+-              child: Row(
+-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+-                children: [
+-                  Row(
++                  padding: EdgeInsets.symmetric(horizontal: 15),
++                  child: Row(
++                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                     children: [
+-                      leading,
+-                      SizedBox(width: 16),
+-                      Column(
+-                        mainAxisAlignment: MainAxisAlignment.center,
+-                        crossAxisAlignment: CrossAxisAlignment.start,
++                      Row(
+                         children: [
+-                          Text(title,
+-                              style: HjvText.titleSmall.copyWith(color: p.text)),
+-                          Text(text,
+-                              style: TextStyle(
+-                                  fontSize: 13, color: p.textSecondary))
++                          leading,
++                          SizedBox(width: 16),
++                          Column(
++                            mainAxisAlignment: MainAxisAlignment.center,
++                            crossAxisAlignment: CrossAxisAlignment.start,
++                            children: [
++                              Text(title,
++                                  style: HjvText.titleSmall
++                                      .copyWith(color: p.text)),
++                              Text(text,
++                                  style: TextStyle(
++                                      fontSize: 13, color: p.textSecondary))
++                            ],
++                          )
+                         ],
+-                      )
++                      ),
++                      Row(children: () {
++                        _actions.add(IconButton(
++                          icon: Icon(Icons.cancel_outlined),
++                          onPressed: onCanceled,
++                        ));
++                        return _actions;
++                      }())
+                     ],
+                   ),
+-                  Row(children: () {
+-                    _actions.add(IconButton(
+-                      icon: Icon(Icons.cancel_outlined),
+-                      onPressed: onCanceled,
+-                    ));
+-                    return _actions;
+-                  }())
+-                ],
+-              ),
+-            )));
++                )));
+       },
+       onClosing: () {},
+       // backgroundColor: MyTheme.grayBg,

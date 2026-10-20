@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 22:00:30 +0900
-Subject: [PATCH 77/85] hjviewer: the CM's tab list menu shows its items
+Subject: [PATCH 077/147] hjviewer: the CM's tab list menu shows its items
 
 U13: the tab list menu (the title bar's down arrow) of the connection
 manager window opened as an empty grey box. Each menu row's Obx read

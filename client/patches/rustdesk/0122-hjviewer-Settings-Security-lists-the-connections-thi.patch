@@ -1,0 +1,803 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 04:56:04 +0900
+Subject: [PATCH 122/147] hjviewer: Settings -> Security lists the connections
+ this PC let in (TV-W9 Dart)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TV-W9 (design w7-w9 3-3 and 5-4, D-16, critic 2-5): an installed Windows PC of an account build
+gets the card '들어온 연결' / 'Incoming connections' in Settings -> Security, inside the
+security settings' unlock (the card sits in the locked column, [목록 보기] greyed and blocked
+until the administrator check or the unlock PIN). [목록 보기] opens '이 PC에 들어온 연결' (the
+wide dialog frame, [새로 고침] and [닫기], back closes it), read with
+main_get_common("hjv-incoming") when it opens and on [새로 고침] only. Rows newest first under
+오늘 / 어제 / the date; per row the times, length and kind, the name and the spaced ID, and the
+mark in the connection window's words (shield for same-account and staff; a staff row shows no
+name, S-05; an unknown mark is never drawn as verified), how it got in, how it ended and the
+reconnects. {"error":"ipc"} or a broken answer says the list could not be read; "on":false says
+only an installed PC records. Names and IDs are cleaned of control and bidi characters again
+before they are drawn. A screen reader hears each row as one sentence.
+hjviewer_incoming_rules.dart holds the parsing and all texts (pure Dart, tested by
+hjviewer_incoming_test.dart); hjviewer_incoming.dart draws them; desktop_setting_page.dart gets
+the import and one card in the security tab.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_incoming.dart     | 196 +++++++++++
+ .../lib/common/hjviewer_incoming_rules.dart   | 329 ++++++++++++++++++
+ .../desktop/pages/desktop_setting_page.dart   |   6 +
+ flutter/test/hjviewer_incoming_test.dart      | 200 +++++++++++
+ 4 files changed, 731 insertions(+)
+ create mode 100644 flutter/lib/common/hjviewer_incoming.dart
+ create mode 100644 flutter/lib/common/hjviewer_incoming_rules.dart
+ create mode 100644 flutter/test/hjviewer_incoming_test.dart
+
+diff --git a/flutter/lib/common/hjviewer_incoming.dart b/flutter/lib/common/hjviewer_incoming.dart
+new file mode 100644
+index 0000000..a043f34
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_incoming.dart
+@@ -0,0 +1,196 @@
++// TV-W9 in Settings → Security (D-16): the card '들어온 연결' inside the security settings' unlock
++// and its list '이 PC에 들어온 연결', read from the service with main_get_common("hjv-incoming")
++// when the list opens and on [새로 고침]. The rows and texts are in hjviewer_incoming_rules.dart;
++// desktop_setting_page.dart places the card.
++
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_incoming_rules.dart';
++import 'package:flutter_hbb/common/widgets/dialog.dart';
++import 'package:flutter_hbb/models/platform_model.dart';
++import 'package:get/get.dart';
++
++HjvIncomingTexts get _t => HjvIncomingTexts(translate('Cancel') == '취소');
++
++bool _accountBuild() {
++  try {
++    return bind.mainGetCommonSync(key: 'hjv-account') == 'Y';
++  } catch (_) {
++    return false;
++  }
++}
++
++/// Whether Settings → Security has the card: an installed Windows PC of an account build, the
++/// only one whose service records (D-16, S-05).
++bool hjvIncomingShown() =>
++    isWindows && bind.mainIsInstalled() && _accountBuild();
++
++/// The card's title.
++String hjvIncomingTitle() => _t.cardTitle;
++
++/// The card's row: what the list is and [목록 보기], greyed while the settings are locked.
++Widget hjvIncomingRow(BuildContext context, {required bool enabled}) {
++  final t = _t;
++  return Padding(
++    padding: const EdgeInsets.only(left: 16, top: 4, bottom: 4),
++    child: Row(
++      children: [
++        Expanded(
++            child: Text(t.cardText,
++                style: TextStyle(
++                    fontSize: 13,
++                    height: 1.45,
++                    color: HjvPalette.of(context).textSecondary))),
++        const SizedBox(width: 12),
++        hjvButton(t.showList, enabled ? hjvShowIncoming : null,
++            tone: HjvButtonTone.quiet),
++      ],
++    ),
++  );
++}
++
++/// The list: newest first under their days, read when it opens and on [새로 고침].
++void hjvShowIncoming() {
++  final t = _t;
++  final list = Rxn<HjvIncomingList>();
++  var reads = 0;
++  Future<void> load() async {
++    final n = ++reads;
++    list.value = null;
++    HjvIncomingList read;
++    try {
++      read = hjvParseIncoming(await bind.mainGetCommon(key: kHjvIncomingKey));
++    } catch (e) {
++      debugPrint('hjv: $e');
++      read = const HjvIncomingList(HjvIncomingState.error);
++    }
++    if (n == reads) list.value = read;
++  }
++
++  load();
++  VoidCallback? back;
++  gFFI.dialogManager.show<void>((setState, close, context) {
++    back = close;
++    return CustomAlertDialog(
++      title: Text(t.title),
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.lg),
++      content: Obx(() => _HjvIncomingList(t: t, list: list.value)),
++      actions: [
++        hjvButton(t.refresh, load, tone: HjvButtonTone.quiet),
++        hjvButton(t.close, close),
++      ],
++      onCancel: close,
++    );
++  }, backDismiss: true, onBack: () => back?.call()).catchError((Object e) {
++    debugPrint('hjv: $e');
++  });
++}
++
++class _HjvIncomingList extends StatelessWidget {
++  final HjvIncomingTexts t;
++
++  /// null while it is read
++  final HjvIncomingList? list;
++  const _HjvIncomingList({required this.t, required this.list});
++
++  @override
++  Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final small = TextStyle(fontSize: 12, height: 1.4, color: p.textTertiary);
++    final list = this.list;
++    final Widget body;
++    if (list == null) {
++      body = const LinearProgressIndicator();
++    } else if (list.state == HjvIncomingState.error) {
++      body = HjvCallout(text: t.readFailed, tone: HjvTone.danger);
++    } else if (list.state == HjvIncomingState.off) {
++      body = HjvCallout(text: t.off);
++    } else if (list.rows.isEmpty) {
++      body = Text(t.empty, style: TextStyle(color: p.textSecondary));
++    } else {
++      final now = DateTime.now();
++      final items = <Widget>[
++        for (final (day, rows) in hjvIncomingDays(list.rows)) ...[
++          Semantics(
++            header: true,
++            child: Text(t.day(day, now),
++                style: TextStyle(
++                    fontSize: 13,
++                    fontWeight: FontWeight.w600,
++                    color: p.textTertiary)),
++          ).marginOnly(top: 12, bottom: 4),
++          for (final row in rows) _HjvIncomingTile(t: t, row: row, now: now),
++        ]
++      ];
++      body = ConstrainedBox(
++        constraints: const BoxConstraints(maxHeight: 420),
++        child: ListView.builder(
++            shrinkWrap: true,
++            itemCount: items.length,
++            itemBuilder: (_, i) => items[i]),
++      );
++    }
++    return Column(
++      mainAxisSize: MainAxisSize.min,
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        body,
++        if (list?.state == HjvIncomingState.ok)
++          Text(t.footer, style: small).marginOnly(top: 12),
++      ],
++    );
++  }
++}
++
++class _HjvIncomingTile extends StatelessWidget {
++  final HjvIncomingTexts t;
++  final HjvIncomingRow row;
++  final DateTime now;
++  const _HjvIncomingTile(
++      {required this.t, required this.row, required this.now});
++
++  @override
++  Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final second = TextStyle(fontSize: 13, height: 1.4, color: p.textSecondary);
++    final verified = row.verified;
++    Widget third = Row(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        if (verified)
++          Icon(Icons.verified_user_rounded, size: 15, color: p.primary)
++              .marginOnly(top: 1, right: 4),
++        Expanded(child: Text(t.line3(row), style: second)),
++      ],
++    );
++    if (!verified && row.name.isNotEmpty) {
++      third = Tooltip(message: t.unverifiedTip, child: third);
++    }
++    return MergeSemantics(
++      child: Semantics(
++        label: t.spoken(row, now),
++        excludeSemantics: true,
++        child: Container(
++          width: double.infinity,
++          padding: const EdgeInsets.symmetric(vertical: 8),
++          decoration: BoxDecoration(
++              border: Border(bottom: BorderSide(color: p.border))),
++          child: Column(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              Text(t.line1(row),
++                  style: TextStyle(
++                      fontSize: 14,
++                      fontWeight: FontWeight.w600,
++                      color: p.text)),
++              if (t.line2(row).isNotEmpty)
++                Text(t.line2(row), style: second).marginOnly(top: 2),
++              third.marginOnly(top: 2),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
+diff --git a/flutter/lib/common/hjviewer_incoming_rules.dart b/flutter/lib/common/hjviewer_incoming_rules.dart
+new file mode 100644
+index 0000000..6717ea6
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_incoming_rules.dart
+@@ -0,0 +1,329 @@
++// TV-W9, the incoming connections (들어온 연결) a Windows PC with HJViewer installed keeps for 90
++// days (src/hjviewer_incoming.rs; the hjviewer repository's docs/privacy.md section 4): the
++// service's answer read into rows, how a row is written (its day, its three lines, what a screen
++// reader hears) and every text of the card and the list in Korean and English. The marks use the
++// connection window's words (hjviewer_cm_texts.dart, critic 2-5): a `staff` row has no name
++// (S-05). Plain Dart without the bridge, so that ci.sh tests it with the web stand-in;
++// hjviewer_incoming.dart draws it in Settings → Security, behind its unlock (D-16).
++
++import 'dart:convert';
++
++import 'package:flutter_hbb/common/formatter/id_formatter.dart';
++import 'package:flutter_hbb/common/hjviewer_cm_texts.dart';
++
++/// main_get_common's key: the service's list over the IPC.
++const kHjvIncomingKey = 'hjv-incoming';
++
++/// A peer's name and ID are drawn at most this long (the PC already cuts them so).
++const kHjvIncomingMaxName = 64;
++const kHjvIncomingMaxId = 32;
++
++/// What came back from the service.
++enum HjvIncomingState {
++  /// the rows (maybe none)
++  ok,
++
++  /// this PC does not record (`"on":false`: not installed, or not an account build)
++  off,
++
++  /// no answer from the service (`{"error":"ipc"}`), or one this app cannot read
++  error,
++}
++
++/// One row as the service gives it (`{"t0","t1","id","name","dev","own","ver","auth","kind",
++/// "end","re"}`), newest first. A value this app does not know is kept and written as unknown.
++class HjvIncomingRow {
++  /// Unix seconds by this PC's clock; t1 is null while open or when the end was not recorded
++  final int t0;
++  final int? t1;
++  final String id;
++
++  /// the name the peer sent (none on a staff row)
++  final String name;
++
++  /// a same-account row's device name and masked owner from the signed list
++  final String dev;
++  final String own;
++
++  /// the connection window's mark: same-account, staff, unverified-name or ""
++  final String ver;
++  final String auth;
++  final String kind;
++  final String end;
++
++  /// reconnects of the same session folded into this row
++  final int re;
++
++  const HjvIncomingRow(
++      {required this.t0,
++      this.t1,
++      this.id = '',
++      this.name = '',
++      this.dev = '',
++      this.own = '',
++      this.ver = '',
++      this.auth = '',
++      this.kind = '',
++      this.end = '',
++      this.re = 0});
++
++  /// The PC checked who it was (the shield): a same-account proof or a staff mark, never the
++  /// name the peer sent.
++  bool get verified => ver == kHjvMarkSameAccount || ver == kHjvMarkStaff;
++
++  static String _s(Object? v, int max) =>
++      v is String ? hjvIncomingClean(v, max) : '';
++
++  /// A row of the answer; null when it is not one (no start time).
++  static HjvIncomingRow? fromJson(Object? json) {
++    if (json is! Map) return null;
++    final t0 = json['t0'];
++    if (t0 is! int) return null;
++    final t1 = json['t1'];
++    final re = json['re'];
++    return HjvIncomingRow(
++        t0: t0,
++        t1: t1 is int ? t1 : null,
++        id: _s(json['id'], kHjvIncomingMaxId),
++        name: _s(json['name'], kHjvIncomingMaxName),
++        dev: _s(json['dev'], kHjvIncomingMaxName),
++        own: _s(json['own'], kHjvIncomingMaxName),
++        ver: _s(json['ver'], 32),
++        auth: _s(json['auth'], 32),
++        kind: _s(json['kind'], 32),
++        end: _s(json['end'], 32),
++        re: re is int && re > 0 ? re : 0);
++  }
++}
++
++/// The service's answer.
++class HjvIncomingList {
++  final HjvIncomingState state;
++  final List<HjvIncomingRow> rows;
++  const HjvIncomingList(this.state, [this.rows = const []]);
++}
++
++/// main_get_common("hjv-incoming") read: `{"on":true,"rows":[…]}`, `{"on":false,…}`, or an
++/// error (`{"error":"ipc"}`, an empty or broken answer). Rows that are not rows are left out.
++HjvIncomingList hjvParseIncoming(String answer) {
++  Object? json;
++  try {
++    json = jsonDecode(answer);
++  } catch (_) {
++    return const HjvIncomingList(HjvIncomingState.error);
++  }
++  if (json is! Map || json.containsKey('error')) {
++    return const HjvIncomingList(HjvIncomingState.error);
++  }
++  final on = json['on'];
++  if (on == false) return const HjvIncomingList(HjvIncomingState.off);
++  final rows = json['rows'];
++  if (on != true || rows is! List) {
++    return const HjvIncomingList(HjvIncomingState.error);
++  }
++  return HjvIncomingList(HjvIncomingState.ok,
++      rows.map(HjvIncomingRow.fromJson).whereType<HjvIncomingRow>().toList());
++}
++
++/// Without control, format (zero-width, bidi) and line or paragraph separator characters, at
++/// most `max` characters: what the other device sent cannot break or reorder the list's lines
++/// (src/hjviewer_incoming.rs cleans the same before it writes).
++String hjvIncomingClean(String s, int max) {
++  final out = StringBuffer();
++  var n = 0;
++  for (final c in s.runes) {
++    if (n >= max) break;
++    final drop = c < 0x20 ||
++        (c >= 0x7F && c <= 0x9F) ||
++        (c >= 0x200B && c <= 0x200F) ||
++        (c >= 0x2028 && c <= 0x202E) ||
++        (c >= 0x2060 && c <= 0x2069) ||
++        c == 0xFEFF ||
++        c == 0x180E ||
++        c == 0x061C;
++    if (drop) continue;
++    out.writeCharCode(c);
++    n++;
++  }
++  return out.toString();
++}
++
++/// A Unix time as this PC's local time (W9-D6: the PC's clock, its time zone).
++DateTime hjvIncomingLocal(int unixSecs) =>
++    DateTime.fromMillisecondsSinceEpoch(unixSecs * 1000);
++
++/// The rows under their day's header, in the rows' order (newest first): (the day, its rows).
++List<(DateTime, List<HjvIncomingRow>)> hjvIncomingDays(
++    List<HjvIncomingRow> rows) {
++  final days = <(DateTime, List<HjvIncomingRow>)>[];
++  for (final row in rows) {
++    final t = hjvIncomingLocal(row.t0);
++    final day = DateTime(t.year, t.month, t.day);
++    if (days.isEmpty || days.last.$1 != day) {
++      days.add((day, [row]));
++    } else {
++      days.last.$2.add(row);
++    }
++  }
++  return days;
++}
++
++class HjvIncomingTexts {
++  final bool korean;
++  const HjvIncomingTexts(this.korean);
++
++  String _t(String ko, String en) => korean ? ko : en;
++
++  /// the marks, as the connection window writes them
++  HjvCmTexts get cm => HjvCmTexts(korean);
++
++  // Settings → Security (design w7-w9 3-3)
++  String get cardTitle => _t('들어온 연결', 'Incoming connections');
++  String get cardText => _t('이 PC에 들어온 연결을 90일 동안 이 PC에만 기록합니다. 서버로 보내지 않습니다.',
++      'This PC records the connections it let in for 90 days, on this PC only. Nothing is sent to the server.');
++  String get showList => _t('목록 보기', 'Show list');
++
++  // the list
++  String get title => _t('이 PC에 들어온 연결', 'Connections to this PC');
++  String get empty => _t('아직 기록된 연결이 없습니다.', 'No connections recorded yet.');
++  String get readFailed => _t('목록을 읽지 못했습니다. 잠시 뒤 [새로 고침]을 눌러 주세요.',
++      'Could not read the list. Try [Refresh] in a moment.');
++  String get off => _t('이 PC는 들어온 연결을 기록하지 않습니다. HJViewer를 설치한 PC만 기록합니다.',
++      'This PC does not record incoming connections; only a PC where HJViewer is installed does.');
++  String get footer => _t(
++      '시각은 이 PC의 시계입니다. 이 PC를 쓰는 다른 사람도 이 목록을 볼 수 있고, HJViewer를 제거하면 지워집니다.',
++      "Times are this PC's clock. Other people who use this PC can see this list too; uninstalling HJViewer deletes it.");
++  String get refresh => _t('새로 고침', 'Refresh');
++  String get close => _t('닫기', 'Close');
++  String get unverifiedTip =>
++      _t('상대 기기가 스스로 보낸 이름입니다.', 'The name the other device sent itself.');
++
++  /// how it got in (conn_audit_primary_auth and the proof)
++  String auth(String value) => switch (value) {
++        'account' => _t('같은 계정(비밀번호 없이)', 'Same account (no password)'),
++        'recent' => _t('같은 세션의 다시 연결', 'Reconnect of the same session'),
++        'otp' => _t('일회용 비밀번호', 'One-time password'),
++        'permanent' => _t('영구 비밀번호', 'Permanent password'),
++        'click' => _t('이 PC에서 수락', 'Accepted on this PC'),
++        'switch' => _t('역할 바꾸기', 'Switched sides'),
++        _ => unknown,
++      };
++
++  String kind(String value) => switch (value) {
++        'remote' => _t('원격 화면', 'Remote screen'),
++        'file' => _t('파일 전송', 'File transfer'),
++        'camera' => _t('카메라', 'Camera'),
++        'terminal' => _t('터미널', 'Terminal'),
++        'forward' => _t('포트 포워딩', 'Port forwarding'),
++        _ => unknown,
++      };
++
++  /// how it ended (on_close's reason as the PC stored it)
++  String end(String value) => switch (value) {
++        'peer' => _t('상대가 끊음', 'Ended by the other device'),
++        'pc' => _t('이 PC에서 끊음', 'Ended on this PC'),
++        'idle' => _t('조작이 없어 끊김', 'Ended for inactivity'),
++        'service' =>
++          _t('이 PC의 HJViewer 서비스가 멈춤', "HJViewer's service stopped on this PC"),
++        'switch' => _t('역할을 바꿈', 'Switched sides'),
++        'scope' => _t('허용되지 않은 동작으로 끊김', 'Ended for an action not allowed'),
++        'revoked' => _t('계정에서 로그아웃한 기기라 끊음',
++            'Ended: the device was logged out of the account'),
++        'lost' => _t('연결이 끊어짐', 'Connection lost'),
++        'other' => _t('끝남', 'Ended'),
++        'unknown' => _t('끝을 기록하지 못함(PC가 꺼졌거나 다시 시작됨)',
++            'End not recorded (the PC was off or restarted)'),
++        'open' => _t('지금 연결 중', 'Connected now'),
++        _ => unknown,
++      };
++
++  String get unknown => _t('알 수 없음', 'Unknown');
++
++  String reconnected(int n) =>
++      _t('다시 연결 $n번', n == 1 ? 'Reconnected once' : 'Reconnected $n times');
++
++  /// A length: under a minute, minutes, hours and minutes, days and hours.
++  String duration(int secs) {
++    if (secs < 60) return _t('1분 미만', 'Under 1 min');
++    final mins = secs ~/ 60;
++    if (mins < 60) return _t('$mins분', '$mins min');
++    final hours = mins ~/ 60;
++    if (hours < 24) {
++      final m = mins % 60;
++      return m == 0
++          ? _t('$hours시간', '$hours h')
++          : _t('$hours시간 $m분', '$hours h $m min');
++    }
++    final days = hours ~/ 24;
++    final h = hours % 24;
++    return h == 0 ? _t('$days일', '$days d') : _t('$days일 $h시간', '$days d $h h');
++  }
++
++  static const _koDays = ['월', '화', '수', '목', '금', '토', '일'];
++  static const _enDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
++  static const _enMonths = [
++    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
++    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
++  ];
++
++  /// A day's header: 오늘, 어제, else the date with its weekday (and its year when not this one's).
++  String day(DateTime day, DateTime now) {
++    bool same(DateTime a, DateTime b) =>
++        a.year == b.year && a.month == b.month && a.day == b.day;
++    if (same(day, now)) return _t('오늘', 'Today');
++    if (same(day, DateTime(now.year, now.month, now.day - 1))) {
++      return _t('어제', 'Yesterday');
++    }
++    final w = day.weekday - 1;
++    final thisYear = day.year == now.year;
++    return korean
++        ? '${thisYear ? '' : '${day.year}년 '}${day.month}월 ${day.day}일 (${_koDays[w]})'
++        : '${_enDays[w]}, ${_enMonths[day.month - 1]} ${day.day}${thisYear ? '' : ', ${day.year}'}';
++  }
++
++  static String _clock(DateTime t) =>
++      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
++
++  /// Line 1: 14:03–14:41 · 38분 · 원격 화면 (an open or unrecorded end: 14:03 · 원격 화면).
++  String line1(HjvIncomingRow row) {
++    final start = _clock(hjvIncomingLocal(row.t0));
++    final t1 = row.t1;
++    if (t1 == null) return '$start · ${kind(row.kind)}';
++    final length = t1 > row.t0 ? t1 - row.t0 : 0;
++    return '$start–${_clock(hjvIncomingLocal(t1))} · ${duration(length)} · ${kind(row.kind)}';
++  }
++
++  /// Line 2: the name and the ID as the ID field spaces it (123 456 789). A same-account row's
++  /// name is the signed list's device name; a staff row has none (S-05).
++  String line2(HjvIncomingRow row) {
++    final name = switch (row.ver) {
++      kHjvMarkStaff => '',
++      kHjvMarkSameAccount => row.dev.isNotEmpty ? row.dev : row.name,
++      _ => row.name,
++    };
++    final id = formatID(row.id);
++    return [if (name.isNotEmpty) name, if (id.isNotEmpty) id].join(' · ');
++  }
++
++  /// The mark of line 3: the connection window's words, or 확인되지 않은 이름 when the row has a
++  /// name the PC did not check; null when it has neither.
++  String? mark(HjvIncomingRow row) => switch (row.ver) {
++        kHjvMarkSameAccount => cm.sameAccount(row.own.trim()),
++        kHjvMarkStaff => cm.staff,
++        _ => row.name.isEmpty ? null : cm.unverifiedName,
++      };
++
++  /// Line 3: the mark · how it got in · how it ended (· 다시 연결 n번).
++  String line3(HjvIncomingRow row) => [
++        if (mark(row) case final m?) m,
++        auth(row.auth),
++        end(row.end),
++        if (row.re > 0) reconnected(row.re),
++      ].join(' · ');
++
++  /// What a screen reader hears for a row: its day and its three lines as one sentence.
++  String spoken(HjvIncomingRow row, DateTime now) {
++    final t = hjvIncomingLocal(row.t0);
++    return '${day(DateTime(t.year, t.month, t.day), now)} ${line1(row)}, ${line2(row)}, ${line3(row)}';
++  }
++}
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 9303e14..dc21e2d 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -11,6 +11,7 @@ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
++import 'package:flutter_hbb/common/hjviewer_incoming.dart';
+ import 'package:flutter_hbb/common/hjviewer_pins.dart';
+ import 'package:flutter_hbb/common/widgets/audio_input.dart';
+ import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
+@@ -1084,6 +1085,11 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+                 if (!isChangeIdDisabled())
+                   _Card(title: 'ID', children: [changeId()]),
+                 more(context),
++                // HJViewer: TV-W9's incoming connections, inside the unlock (D-16)
++                if (hjvIncomingShown())
++                  _Card(
++                      title: hjvIncomingTitle(),
++                      children: [hjvIncomingRow(context, enabled: !locked)]),
+               ]),
+             ),
+           ],
+diff --git a/flutter/test/hjviewer_incoming_test.dart b/flutter/test/hjviewer_incoming_test.dart
+new file mode 100644
+index 0000000..8030922
+--- /dev/null
++++ b/flutter/test/hjviewer_incoming_test.dart
+@@ -0,0 +1,200 @@
++import 'dart:convert';
++
++import 'package:flutter_hbb/common/hjviewer_incoming_rules.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// TV-W9's incoming connections list (hjviewer_incoming_rules.dart): the service's answer, the
++// rows' lines and every text, without the bridge.
++
++const ko = HjvIncomingTexts(true);
++const en = HjvIncomingTexts(false);
++
++int secs(DateTime t) => t.millisecondsSinceEpoch ~/ 1000;
++
++HjvIncomingList parse(Object json) => hjvParseIncoming(jsonEncode(json));
++
++void main() {
++  group('the answer', () {
++    test('reads rows, newest first as given, and leaves out what is not a row',
++        () {
++      final list = parse({
++        'on': true,
++        'rows': [
++          {'t0': 200, 't1': 260, 'id': '123456789', 'kind': 'remote', 're': 2},
++          {'t1': 5},
++          'x',
++          {'t0': 100, 't1': null, 'end': 'open'},
++        ],
++      });
++      expect(list.state, HjvIncomingState.ok);
++      expect(list.rows.map((r) => r.t0), [200, 100]);
++      expect(list.rows.first.re, 2);
++      expect(list.rows.last.t1, isNull);
++    });
++
++    test('an IPC failure or a broken answer reads as an error', () {
++      expect(parse({'error': 'ipc'}).state, HjvIncomingState.error);
++      expect(hjvParseIncoming('').state, HjvIncomingState.error);
++      expect(
++          hjvParseIncoming('{"on":true,"rows":').state, HjvIncomingState.error);
++      expect(parse([1, 2]).state, HjvIncomingState.error);
++      expect(parse({'on': true}).state, HjvIncomingState.error);
++    });
++
++    test('a PC that does not record says so', () {
++      expect(parse({'on': false, 'rows': []}).state, HjvIncomingState.off);
++      expect(ko.off, contains('설치한 PC만'));
++    });
++
++    test('a name with control and bidi characters is not drawn as sent', () {
++      final row = parse({
++        'on': true,
++        'rows': [
++          {'t0': 1, 'name': 'Bob\n\u202Egnp.exe\u200B\u0007', 'id': '12\r3'},
++        ],
++      }).rows.single;
++      expect(row.name, 'Bobgnp.exe');
++      expect(row.id, '123');
++      expect(hjvIncomingClean('가' * 70, kHjvIncomingMaxName).length, 64);
++    });
++  });
++
++  group('the texts', () {
++    test(
++        'every stored value has its Korean and English words, an unknown one is unknown',
++        () {
++      const ends = [
++        'peer', 'pc', 'idle', 'service', 'switch', 'scope', 'revoked', //
++        'lost', 'other', 'unknown', 'open'
++      ];
++      const auths = [
++        'account',
++        'recent',
++        'otp',
++        'permanent',
++        'click',
++        'switch'
++      ];
++      const kinds = ['remote', 'file', 'camera', 'terminal', 'forward'];
++      for (final t in [ko, en]) {
++        for (final v in ends) {
++          expect(t.end(v), isNot(t.unknown), reason: v);
++        }
++        for (final v in auths) {
++          expect(t.auth(v), isNot(t.unknown), reason: v);
++        }
++        for (final v in kinds) {
++          expect(t.kind(v), isNot(t.unknown), reason: v);
++        }
++        expect(t.end('later'), t.unknown);
++        expect(t.auth(''), t.unknown);
++        expect(t.kind('x'), t.unknown);
++      }
++      expect(ko.end('pc'), '이 PC에서 끊음');
++      expect(
++          en.end('revoked'), 'Ended: the device was logged out of the account');
++      expect(ko.auth('click'), '이 PC에서 수락');
++      expect(en.kind('forward'), 'Port forwarding');
++    });
++
++    test('lengths', () {
++      expect(ko.duration(59), '1분 미만');
++      expect(en.duration(59), 'Under 1 min');
++      expect(ko.duration(60), '1분');
++      expect(en.duration(38 * 60), '38 min');
++      expect(ko.duration(65 * 60), '1시간 5분');
++      expect(en.duration(65 * 60), '1 h 5 min');
++      expect(ko.duration(2 * 86400 + 3 * 3600 + 59), '2일 3시간');
++      expect(en.duration(2 * 86400 + 3 * 3600), '2 d 3 h');
++    });
++
++    test('day headers: today, yesterday across midnight, then the date', () {
++      final now = DateTime(2026, 10, 20, 0, 0, 30);
++      expect(ko.day(DateTime(2026, 10, 20), now), '오늘');
++      expect(en.day(DateTime(2026, 10, 19), now), 'Yesterday');
++      expect(ko.day(DateTime(2026, 10, 17), now), '10월 17일 (토)');
++      expect(en.day(DateTime(2026, 10, 16), now), 'Fri, Oct 16');
++      expect(ko.day(DateTime(2025, 12, 30), now), '2025년 12월 30일 (화)');
++      expect(en.day(DateTime(2025, 12, 30), now), 'Tue, Dec 30, 2025');
++      final rows = [
++        HjvIncomingRow(t0: secs(DateTime(2026, 10, 20, 0, 0, 5))),
++        HjvIncomingRow(t0: secs(DateTime(2026, 10, 19, 23, 59, 59))),
++        HjvIncomingRow(t0: secs(DateTime(2026, 10, 19, 8))),
++      ];
++      final days = hjvIncomingDays(rows);
++      expect(days.map((d) => d.$1),
++          [DateTime(2026, 10, 20), DateTime(2026, 10, 19)]);
++      expect(days.last.$2.length, 2);
++    });
++  });
++
++  group('a row', () {
++    final t0 = secs(DateTime(2026, 10, 20, 14, 3));
++    final t1 = secs(DateTime(2026, 10, 20, 14, 41));
++
++    test('a password row: the times, the name the peer sent, unverified', () {
++      final row = HjvIncomingRow(
++          t0: t0,
++          t1: t1,
++          id: '123456789',
++          name: 'kim-pc',
++          auth: 'permanent',
++          kind: 'remote',
++          end: 'peer',
++          re: 1);
++      expect(ko.line1(row), '14:03–14:41 · 38분 · 원격 화면');
++      expect(en.line1(row), '14:03–14:41 · 38 min · Remote screen');
++      expect(ko.line2(row), 'kim-pc · 123 456 789');
++      expect(row.verified, isFalse);
++      expect(ko.line3(row), '확인되지 않은 이름 · 영구 비밀번호 · 상대가 끊음 · 다시 연결 1번');
++      expect(en.line3(row),
++          'Unverified name · Permanent password · Ended by the other device · Reconnected once');
++      expect(ko.spoken(row, DateTime(2026, 10, 20, 15)),
++          '오늘 ${ko.line1(row)}, ${ko.line2(row)}, ${ko.line3(row)}');
++    });
++
++    test(
++        'a same-account row: the signed device name and the mark with the masked owner',
++        () {
++      final row = HjvIncomingRow(
++          t0: t0,
++          id: '987654321',
++          name: 'typed name',
++          dev: 'iPhone 15',
++          own: '홍*동',
++          ver: 'same-account',
++          auth: 'account',
++          kind: 'file',
++          end: 'open');
++      expect(row.verified, isTrue);
++      expect(ko.line1(row), '14:03 · 파일 전송');
++      expect(ko.line2(row), 'iPhone 15 · 987 654 321');
++      expect(ko.line3(row), '같은 계정 확인됨 · 홍*동 · 같은 계정(비밀번호 없이) · 지금 연결 중');
++      expect(en.line3(row),
++          'Same account, verified · 홍*동 · Same account (no password) · Connected now');
++    });
++
++    test('a staff row has no name, only the ID and the staff mark', () {
++      final row = HjvIncomingRow(
++          t0: t0,
++          t1: t1,
++          id: '111222333',
++          name: 'should not show',
++          ver: 'staff',
++          auth: 'click',
++          kind: 'remote',
++          end: 'pc');
++      expect(row.verified, isTrue);
++      expect(ko.line2(row), '111 222 333');
++      expect(ko.line3(row), '연세대 교직원(로그인 확인) · 이 PC에서 수락 · 이 PC에서 끊음');
++      expect(en.line3(row),
++          'Yonsei faculty or staff (verified login) · Accepted on this PC · Ended on this PC');
++    });
++
++    test('an unknown mark is never drawn as verified', () {
++      const row = HjvIncomingRow(t0: 1, ver: 'admin', name: 'x');
++      expect(row.verified, isFalse);
++      expect(en.mark(row), 'Unverified name');
++    });
++  });
++}

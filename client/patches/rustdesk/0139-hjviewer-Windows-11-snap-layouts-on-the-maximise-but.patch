@@ -1,0 +1,1163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 06:48:03 +0900
+Subject: [PATCH 139/147] hjviewer: Windows 11 snap layouts on the maximise
+ button and the title bar's window menu (UX-K4)
+
+UX-K4 (U44, design build/v19/design/u44.md with its review):
+- runner: new hjv_caption.cpp/.h. HjvCaptionAttach(controller) is called after SetChildContent
+  for the main window and in DesktopMultiWindowSetWindowCreatedCallback for each session window
+  (no plugin fork). It registers a top-level window delegate
+  (FlutterDesktopPluginRegistrarRegisterTopLevelWindowProcDelegate) and the "hjv/caption"
+  channel; the Flutter view is subclassed only when Dart first sends the maximise button's box on
+  Windows 11 (RtlGetVersion build >= 22000), so Windows 10 and the off option leave it alone.
+  Over the box the view answers HTTRANSPARENT and the top-level window HTMAXBUTTON, unless the
+  window lacks WS_CAPTION (full screen), WS_THICKFRAME (window_manager would answer HTNOWHERE
+  first) or WS_MAXIMIZEBOX. Hover via TrackMouseEvent(TME_LEAVE | TME_NONCLIENT), DefWindowProc
+  still called for WM_NCMOUSEMOVE; the click is armed on WM_NCLBUTTONDOWN/DBLCLK over the button,
+  cleared on any WM_NCLBUTTONUP and on WM_NCMOUSELEAVE or another WM_NCMOUSEMOVE only while the
+  left button is up, and a WM_NCLBUTTONUP on the button while armed is a click, as with Windows'
+  own button. A new or removed box resets the look and the armed click. The state is a window
+  property on both windows, freed (and the view's procedure put back) on the view's WM_NCDESTROY.
+  showWindowMenu answers first, then shows the window's system menu at the cursor with its items
+  set from IsZoomed and the style, and posts the chosen WM_SYSCOMMAND.
+- Dart: new desktop/widgets/hjv_caption.dart (the box in physical pixels: localToGlobal x
+  devicePixelRatio, edges rounded up, minus the top resize band measured from the view's top;
+  re-sent on metrics changes; null on dispose or when the button cannot be clicked; the native
+  hover and pressed states; the click runs the button's own onTap). tabbar_widget.dart: the
+  maximise button is wrapped when the option allows, the bar's right-click opens the window
+  menu, a right-click on a tab stays the tab's. Neither on the connection (cm) window nor on the
+  install window (the install window is known by its process, see below).
+- The local option hjv-snap-layouts ('N' off, 'Y' on, else kHjvSnapLayoutsDefault = true) is
+  read in Dart once per window; the Windows gate (decisions.md) ships it off by flipping the
+  default.
+- Tests: flutter/test/hjv_caption_test.dart (pure).
+
+UX-K4 (U44), review fixes: the install window:
+- The install window got the bar's window menu and, on Windows 11, Windows' snap layouts on its
+  maximise button: _hjvCaptionWindow tested DesktopTabType.install, but InstallPage builds its
+  tabs as DesktopTabType.main and no page uses DesktopTabType.install. The window is now known by
+  its process: the --install process is the only one that sets no desktopType (main.dart).
+  New pure hjvCaptionWindow(desktopType?.name, cmTabs:) in hjv_caption.dart; tabbar_widget.dart
+  calls it. InstallPage keeps DesktopTabType.main (its tab label and _saveFrame stay as they are).
+
+UX-K4 (U44), review fixes: the window menu's own switch:
+- New kHjvWindowMenuDefault (hjv_caption.dart), read where the bar's right-click opens the
+  window menu: at the Windows gate either half (snap layouts, window menu) is one constant.
+
+UX-K4 (U44), review fixes: the runner's hover tracking:
+- SetMaxButton clears the TrackMouseEvent flag when the box goes: TopLevelProc skips messages
+  while there is no box, so a WM_NCMOUSELEAVE then left the flag set and the next box's hover
+  could stay grey after the pointer left.
+
+Review-fix tests: hjv_caption_test.dart, three more (the window menu's switch, the connection and install
+windows left out, the DesktopType names and the install branch read from the sources).
+
+Lane snap commits ebdfcf0 and b3d6067, squashed on merge.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/desktop/widgets/hjv_caption.dart  | 216 ++++++++++
+ .../lib/desktop/widgets/tabbar_widget.dart    |  73 +++-
+ flutter/test/hjv_caption_test.dart            | 279 +++++++++++++
+ flutter/windows/runner/CMakeLists.txt         |   1 +
+ flutter/windows/runner/flutter_window.cpp     |   3 +
+ flutter/windows/runner/hjv_caption.cpp        | 374 ++++++++++++++++++
+ flutter/windows/runner/hjv_caption.h          |  16 +
+ 7 files changed, 948 insertions(+), 14 deletions(-)
+ create mode 100644 flutter/lib/desktop/widgets/hjv_caption.dart
+ create mode 100644 flutter/test/hjv_caption_test.dart
+ create mode 100644 flutter/windows/runner/hjv_caption.cpp
+ create mode 100644 flutter/windows/runner/hjv_caption.h
+
+diff --git a/flutter/lib/desktop/widgets/hjv_caption.dart b/flutter/lib/desktop/widgets/hjv_caption.dart
+new file mode 100644
+index 0000000..cf72a29
+--- /dev/null
++++ b/flutter/lib/desktop/widgets/hjv_caption.dart
+@@ -0,0 +1,216 @@
++// HJViewer (U44): on Windows 11, Windows' snap layouts over the maximise button the title bar
++// draws, and Windows' window menu on a right-click of the bar. The native half is
++// flutter/windows/runner/hjv_caption.cpp; each window (the main one, each session window) is its
++// own engine with its own channel and its own copy of this file's state.
++import 'dart:math' as math;
++
++import 'package:flutter/foundation.dart';
++import 'package:flutter/scheduler.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter/widgets.dart';
++
++/// A local option: 'N' leaves the maximise button to Flutter, as before 1.9; 'Y' gives it to
++/// Windows; anything else takes [kHjvSnapLayoutsDefault].
++const kHjvOptionSnapLayouts = 'hjv-snap-layouts';
++
++/// The Windows gate (decisions.md): a failed device check ships U44's snap half off by making
++/// this false. The window menu does not depend on it.
++const kHjvSnapLayoutsDefault = true;
++
++/// Whether Windows owns the maximise button, from the local option's value.
++bool hjvSnapLayoutsOn(String option) =>
++    option == 'Y' || (option != 'N' && kHjvSnapLayoutsDefault);
++
++/// The Windows gate (decisions.md) for the other half: a failed device check ships the window
++/// menu on a right-click of the title bar off by making this false. The snap layouts do not
++/// depend on it.
++const kHjvWindowMenuDefault = true;
++
++/// Whether a window's title bar may get Windows' window menu and its snap layouts (each half
++/// also behind its own switch above). [process] is the name of the process's DesktopType
++/// (common.dart's desktopType); it is null only in the --install process, whose InstallPage
++/// builds its tabs as DesktopTabType.main. [cmTabs]: the tab bar is the connection window's.
++/// Neither the connection window (fixed size, and a close that would skip its own question) nor
++/// the install window gets them.
++bool hjvCaptionWindow(String? process, {required bool cmTabs}) =>
++    process != null && process != 'cm' && !cmTabs;
++
++/// What Windows says about the pointer over the button while Windows owns it.
++const kHjvMaxNone = 0;
++const kHjvMaxHover = 1;
++const kHjvMaxPressed = 2;
++
++/// The box Windows hit-tests, in the view's physical pixels ([left, top, right, bottom]): [box]
++/// (logical, from the view's top-left) less the band from the view's top down to [topBand] where
++/// the window resizes; null when nothing is left. The edges round up: a physical pixel x is inside
++/// the logical box [l, r) exactly when ceil(l * ratio) <= x < ceil(r * ratio), so the button and
++/// its neighbours never share a pixel.
++List<int>? hjvSnapRect(Rect box, double devicePixelRatio, double topBand) {
++  if (!box.isFinite || devicePixelRatio <= 0 || topBand.isNaN) return null;
++  final top = math.max(box.top, topBand);
++  // less a hair, so that float noise above a whole pixel does not move an edge by one
++  int edge(double v) => (v * devicePixelRatio - 1e-6).ceil();
++  final edges = [edge(box.left), edge(top), edge(box.right), edge(box.bottom)];
++  return edges[0] < edges[2] && edges[1] < edges[3] ? edges : null;
++}
++
++class HjvCaption {
++  HjvCaption([MethodChannel? channel])
++      : _channel = channel ?? const MethodChannel('hjv/caption');
++
++  static final instance = HjvCaption();
++
++  final MethodChannel _channel;
++
++  /// [kHjvMaxNone], [kHjvMaxHover] or [kHjvMaxPressed].
++  final state = ValueNotifier<int>(kHjvMaxNone);
++
++  Object? _owner;
++  VoidCallback? _onClick;
++  List<int>? _sent;
++  bool _listening = false;
++  // Windows 10, or no native half: the button stays Flutter's.
++  bool _off = false;
++
++  /// The button [owner] is at [rect] ([hjvSnapRect]); Windows' click on it runs [onClick]. A null
++  /// [rect] or [onClick] (a button that cannot be clicked) gives the button back to Flutter.
++  void update(Object owner, List<int>? rect, VoidCallback? onClick) {
++    if (rect == null || onClick == null) {
++      release(owner);
++      return;
++    }
++    _owner = owner;
++    _onClick = onClick;
++    _send(rect);
++  }
++
++  /// [owner] is gone or cannot be clicked: the button is Flutter's again.
++  void release(Object owner) {
++    if (!identical(owner, _owner)) return;
++    _owner = null;
++    _onClick = null;
++    state.value = kHjvMaxNone;
++    _send(null);
++  }
++
++  Future<void> showWindowMenu() async {
++    try {
++      await _channel.invokeMethod<void>('showWindowMenu');
++    } catch (e) {
++      debugPrint('hjv caption: menu: $e');
++    }
++  }
++
++  Future<void> _send(List<int>? rect) async {
++    if (_off || listEquals(rect, _sent)) return;
++    _listen();
++    _sent = rect;
++    try {
++      final taken = await _channel.invokeMethod<bool>('setMaxButton', rect);
++      if (rect != null && taken != true) _off = true;
++    } on MissingPluginException {
++      _off = true;
++    } catch (e) {
++      debugPrint('hjv caption: $e');
++    }
++  }
++
++  void _listen() {
++    if (_listening) return;
++    _listening = true;
++    _channel.setMethodCallHandler((call) async {
++      if (call.method == 'maxButton') {
++        final value = call.arguments;
++        state.value = _owner != null && value is int ? value : kHjvMaxNone;
++      } else if (call.method == 'maxButtonClick') {
++        _onClick?.call();
++      }
++      return null;
++    });
++  }
++}
++
++/// Wraps the title bar's maximise button: after each layout it tells Windows where the button
++/// is, and [builder] gets what Windows says about the pointer while Windows owns it.
++class HjvSnapMaxButton extends StatefulWidget {
++  const HjvSnapMaxButton({
++    super.key,
++    required this.onTap,
++    required this.topBand,
++    required this.builder,
++    this.caption,
++  });
++
++  /// The button's own tap; null (a button that cannot be clicked) leaves it to Flutter.
++  final VoidCallback? onTap;
++
++  /// The height of the window's top resize band, read at each report.
++  final double Function() topBand;
++
++  final Widget Function(BuildContext context, int windows) builder;
++
++  /// For tests; [HjvCaption.instance] otherwise.
++  final HjvCaption? caption;
++
++  @override
++  State<HjvSnapMaxButton> createState() => _HjvSnapMaxButtonState();
++}
++
++class _HjvSnapMaxButtonState extends State<HjvSnapMaxButton>
++    with WidgetsBindingObserver {
++  final _box = GlobalKey();
++  var _scheduled = false;
++
++  HjvCaption get _caption => widget.caption ?? HjvCaption.instance;
++
++  @override
++  void initState() {
++    super.initState();
++    WidgetsBinding.instance.addObserver(this);
++  }
++
++  @override
++  void didChangeMetrics() => _schedule();
++
++  @override
++  void dispose() {
++    WidgetsBinding.instance.removeObserver(this);
++    _caption.release(this);
++    super.dispose();
++  }
++
++  void _schedule() {
++    if (_scheduled) return;
++    _scheduled = true;
++    SchedulerBinding.instance.addPostFrameCallback((_) {
++      _scheduled = false;
++      _report();
++    });
++  }
++
++  void _report() {
++    if (!mounted) return;
++    final box = _box.currentContext?.findRenderObject();
++    if (box is! RenderBox || !box.attached || !box.hasSize) {
++      _caption.release(this);
++      return;
++    }
++    final rect = box.localToGlobal(Offset.zero) & box.size;
++    _caption.update(
++        this,
++        hjvSnapRect(rect, View.of(context).devicePixelRatio, widget.topBand()),
++        widget.onTap);
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    _schedule();
++    return KeyedSubtree(
++      key: _box,
++      child: ValueListenableBuilder<int>(
++        valueListenable: _caption.state,
++        builder: (context, windows, _) => widget.builder(context, windows),
++      ),
++    );
++  }
++}
+diff --git a/flutter/lib/desktop/widgets/tabbar_widget.dart b/flutter/lib/desktop/widgets/tabbar_widget.dart
+index be5d7b8..42c3850 100644
+--- a/flutter/lib/desktop/widgets/tabbar_widget.dart
++++ b/flutter/lib/desktop/widgets/tabbar_widget.dart
+@@ -15,6 +15,7 @@ import 'package:flutter_hbb/common/hjviewer_labels.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/desktop/pages/remote_page.dart';
+ import 'package:flutter_hbb/desktop/pages/view_camera_page.dart';
++import 'package:flutter_hbb/desktop/widgets/hjv_caption.dart';
+ import 'package:flutter_hbb/main.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ import 'package:flutter_hbb/models/state_model.dart';
+@@ -37,6 +38,20 @@ const double _kHjvTabHeight = 22;
+ const double _kHjvTabIconSize = 16;
+ const double _kHjvCaptionButtonWidth = 40;
+ 
++// HJViewer (U44): Windows 11 owns the maximise button's pointer for its snap layouts unless the
++// local option says no (hjv_caption.dart). Read once in each window (each is its own isolate).
++final bool _hjvSnapLayouts = isWindows &&
++    !kUseCompatibleUiMode &&
++    hjvSnapLayoutsOn(bind.mainGetLocalOption(key: kHjvOptionSnapLayouts));
++
++/// HJViewer (U44): the connection window and the install window get neither Windows' window menu
++/// nor its snap layouts (hjvCaptionWindow). The install window is known by its process, which sets
++/// no desktopType (main.dart): its InstallPage builds its tabs as DesktopTabType.main.
++bool _hjvCaptionWindow(DesktopTabType type) =>
++    isWindows &&
++    !kUseCompatibleUiMode &&
++    hjvCaptionWindow(desktopType?.name, cmTabs: type == DesktopTabType.cm);
++
+ /// HJViewer: room at the end of a window's tab list for the list's ▾ (_TabDropDownButton), which
+ /// narrows the list when it appears: the last pill would be cut under it otherwise (upstream's
+ /// tabs kept their close button's room there). The main window never shows the ▾.
+@@ -633,6 +648,13 @@ class _DesktopTabState extends State<DesktopTab>
+                       }
+                     : (isIncomingHomePage ? () {} : null), // Keep tap recognizer for Windows touch.
+                 onPanStart: (_) => startDragging(isMainWindow),
++                // HJViewer (U44): Windows' window menu on a right-click of the bar; a tab keeps
++                // its own (_hjvBuild).
++                onSecondaryTapUp: kHjvWindowMenuDefault &&
++                        showMaximize &&
++                        _hjvCaptionWindow(tabType)
++                    ? (_) => HjvCaption.instance.showWindowMenu()
++                    : null,
+                 onPanCancel: () {
+                   // We want to disable dragging of the tab area in the tab bar.
+                   // Disable dragging is needed because macOS handles dragging by default.
+@@ -815,6 +837,8 @@ class WindowActionPanelState extends State<WindowActionPanel> {
+                           ? null
+                           : _toggleMaximize,
+                       isClose: false,
++                      snap: _hjvSnapLayouts &&
++                          _hjvCaptionWindow(widget.tabController.tabType),
+                     )),
+               if (widget.showClose && !isMacOS)
+                 _HjvCaptionButton(
+@@ -1187,7 +1211,7 @@ class _TabState extends State<_Tab> with RestorationMixin {
+     final isSelected = widget.index == widget.selected;
+     final radius = BorderRadius.circular(HjvRadius.sm);
+     RxBool hover = restoreHover.value.obs;
+-    return SizedBox(
++    final tab = SizedBox(
+       // _kTabBarHeight also displays normally
+       height: _showTabBarBottomDivider(widget.tabType)
+           ? _kTabBarHeight - 1
+@@ -1255,6 +1279,9 @@ class _TabState extends State<_Tab> with RestorationMixin {
+         }),
+       ),
+     );
++    // HJViewer (U44): a right-click on a tab is the tab's (its menu, _hjvTabContent), not the
++    // bar's window menu: the inner recognizer wins the arena.
++    return isWindows ? GestureDetector(onSecondaryTap: () {}, child: tab) : tab;
+   }
+ 
+   Widget _hjvTabContent(bool isSelected) {
+@@ -1580,12 +1607,15 @@ class _HjvCaptionButton extends StatefulWidget {
+   final IconData icon;
+   final GestureTapCallback? onTap;
+   final bool isClose;
++  // HJViewer (U44): the maximise button, which Windows 11 owns for its snap layouts
++  final bool snap;
+ 
+   const _HjvCaptionButton({
+     required this.message,
+     required this.icon,
+     required this.onTap,
+     required this.isClose,
++    this.snap = false,
+   });
+ 
+   @override
+@@ -1597,7 +1627,34 @@ class _HjvCaptionButtonState extends State<_HjvCaptionButton> {
+ 
+   @override
+   Widget build(BuildContext context) {
++    if (!widget.snap) return _button(context, kHjvMaxNone);
++    return HjvSnapMaxButton(
++      onTap: widget.onTap,
++      topBand: () => stateGlobal.resizeEdgeSize.value,
++      builder: _button,
++    );
++  }
++
++  // [windows]: what Windows says about the pointer while it owns the button (hjv_caption.dart),
++  // drawn in the InkWell's own hover and highlight colours.
++  Widget _button(BuildContext context, int windows) {
+     final p = HjvPalette.of(context);
++    final fill = windows == kHjvMaxPressed
++        ? p.borderStrong
++        : (windows == kHjvMaxHover ? p.hoverStrong : null);
++    final box = SizedBox(
++      height: _kTabBarHeight - 1,
++      width: _kHjvCaptionButtonWidth,
++      child: Obx(() => Icon(
++            widget.icon,
++            size: _kActionIconSize,
++            color: widget.onTap == null
++                ? p.textDisabled
++                : (hover.value || windows != kHjvMaxNone
++                    ? (widget.isClose ? Colors.white : p.text)
++                    : p.textSecondary),
++          )),
++    );
+     return Tooltip(
+       message: translate(widget.message),
+       waitDuration: const Duration(seconds: 1),
+@@ -1611,19 +1668,7 @@ class _HjvCaptionButtonState extends State<_HjvCaptionButton> {
+           splashFactory: NoSplash.splashFactory,
+           onHover: (value) => hover.value = value,
+           onTap: widget.onTap,
+-          child: SizedBox(
+-            height: _kTabBarHeight - 1,
+-            width: _kHjvCaptionButtonWidth,
+-            child: Obx(() => Icon(
+-                  widget.icon,
+-                  size: _kActionIconSize,
+-                  color: widget.onTap == null
+-                      ? p.textDisabled
+-                      : (hover.value
+-                          ? (widget.isClose ? Colors.white : p.text)
+-                          : p.textSecondary),
+-                )),
+-          ),
++          child: fill == null ? box : ColoredBox(color: fill, child: box),
+         ),
+       ),
+     );
+diff --git a/flutter/test/hjv_caption_test.dart b/flutter/test/hjv_caption_test.dart
+new file mode 100644
+index 0000000..b903aad
+--- /dev/null
++++ b/flutter/test/hjv_caption_test.dart
+@@ -0,0 +1,279 @@
++// HJViewer (U44): the box the title bar's maximise button tells Windows 11 about, the option that
++// turns the snap layouts off, and the channel to the runner (flutter/windows/runner/hjv_caption.cpp).
++// Pure: no bridge.
++import 'dart:io';
++
++import 'package:flutter/services.dart';
++import 'package:flutter/widgets.dart';
++import 'package:flutter_hbb/desktop/widgets/hjv_caption.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++const _name = 'hjv/caption-test';
++
++/// The calls the runner got; [answer] is what setMaxButton returns, null for no runner at all.
++class _Runner {
++  _Runner() {
++    _messenger.setMockMethodCallHandler(channel, (call) async {
++      calls.add(call);
++      if (answer == null) throw MissingPluginException();
++      return call.method == 'setMaxButton' ? answer : null;
++    });
++  }
++
++  static TestDefaultBinaryMessenger get _messenger =>
++      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
++
++  final channel = const MethodChannel(_name);
++  final calls = <MethodCall>[];
++  bool? answer = true;
++
++  List<Object?> boxes() => calls
++      .where((c) => c.method == 'setMaxButton')
++      .map((c) => c.arguments)
++      .toList();
++
++  /// The runner tells Dart something, as hjv_caption.cpp's Send does.
++  Future<void> tell(String method, [Object? arguments]) async {
++    await _messenger.handlePlatformMessage(
++        _name,
++        const StandardMethodCodec()
++            .encodeMethodCall(MethodCall(method, arguments)),
++        (_) {});
++  }
++
++  void dispose() => _messenger.setMockMethodCallHandler(channel, null);
++}
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++
++  group('hjvSnapRect', () {
++    final box = Rect.fromLTWH(760, 0, 40, 27);
++
++    test('is the box in physical pixels, less the top resize band', () {
++      expect(hjvSnapRect(box, 1.0, 5), [760, 5, 800, 27]);
++      expect(hjvSnapRect(box, 1.25, 5), [950, 7, 1000, 34]);
++      expect(hjvSnapRect(box, 1.5, 5), [1140, 8, 1200, 41]);
++      expect(hjvSnapRect(box, 2.0, 5), [1520, 10, 1600, 54]);
++    });
++
++    test('reaches the top when the window has no band (maximised)', () {
++      expect(hjvSnapRect(box, 1.0, 0), [760, 0, 800, 27]);
++    });
++
++    test('measures the band from the view top, not from the button', () {
++      expect(hjvSnapRect(Rect.fromLTWH(760, 1, 40, 26), 1.0, 5),
++          [760, 5, 800, 27]);
++    });
++
++    test('rounds edges up, ignoring float noise above a whole pixel', () {
++      // 10 * 1.1 is 11.000000000000002
++      expect(
++          hjvSnapRect(Rect.fromLTWH(10, 0, 20, 10), 1.1, 0), [11, 0, 33, 11]);
++      expect(
++          hjvSnapRect(Rect.fromLTWH(10.5, 0, 20, 10), 1.0, 0), [11, 0, 31, 10]);
++    });
++
++    test('is null when nothing can be hit', () {
++      expect(hjvSnapRect(box, 1.0, 27), isNull);
++      expect(hjvSnapRect(box, 1.0, 40), isNull);
++      expect(hjvSnapRect(Rect.fromLTWH(760, 0, 0, 27), 1.0, 5), isNull);
++      expect(hjvSnapRect(box, 0, 5), isNull);
++      expect(
++          hjvSnapRect(const Rect.fromLTRB(0, 0, double.infinity, 27), 1.0, 5),
++          isNull);
++    });
++  });
++
++  test('the local option turns the snap layouts off, the default otherwise',
++      () {
++    expect(hjvSnapLayoutsOn('N'), isFalse);
++    expect(hjvSnapLayoutsOn('Y'), isTrue);
++    expect(hjvSnapLayoutsOn(''), kHjvSnapLayoutsDefault);
++    expect(hjvSnapLayoutsOn('n'), kHjvSnapLayoutsDefault);
++    expect(kHjvOptionSnapLayouts, 'hjv-snap-layouts');
++  });
++
++  test('the window menu has its own switch at the gate', () {
++    expect(kHjvWindowMenuDefault, isTrue);
++  });
++
++  test(
++      'neither the connection window nor the install window gets the menu or the snap layouts',
++      () {
++    // common.dart's DesktopType names, as desktopType?.name gives them
++    for (final process in [
++      'main',
++      'remote',
++      'fileTransfer',
++      'viewCamera',
++      'terminal',
++      'portForward'
++    ]) {
++      expect(hjvCaptionWindow(process, cmTabs: false), isTrue, reason: process);
++      expect(hjvCaptionWindow(process, cmTabs: true), isFalse, reason: process);
++    }
++    expect(hjvCaptionWindow('cm', cmTabs: true), isFalse);
++    expect(hjvCaptionWindow('cm', cmTabs: false), isFalse);
++    // the --install process sets no desktopType, and its InstallPage's tabs are DesktopTabType.main
++    expect(hjvCaptionWindow(null, cmTabs: false), isFalse);
++  });
++
++  test('the names hjvCaptionWindow reads are the ones main.dart sets', () {
++    final common = File('lib/common.dart').readAsStringSync();
++    final names = RegExp(r'enum DesktopType \{([^}]*)\}')
++        .firstMatch(common)!
++        .group(1)!
++        .split(',')
++        .map((n) => n.trim())
++        .where((n) => n.isNotEmpty)
++        .toSet();
++    expect(names, contains('cm'));
++    final main = File('lib/main.dart').readAsStringSync();
++    expect(main, contains('desktopType = DesktopType.cm;'));
++    // the install branch starts the install page without naming a desktopType
++    expect(
++        RegExp(r"args\.contains\('--install'\)\) \{\s*runInstallPage\(\);\s*\}")
++            .hasMatch(main),
++        isTrue);
++    expect(File('lib/desktop/pages/install_page.dart').readAsStringSync(),
++        isNot(contains('desktopType =')));
++  });
++
++  group('HjvCaption', () {
++    late _Runner runner;
++    late HjvCaption caption;
++    final owner = Object();
++
++    setUp(() {
++      runner = _Runner();
++      caption = HjvCaption(runner.channel);
++    });
++    tearDown(() => runner.dispose());
++
++    test('sends a box once, and null when its owner lets go', () async {
++      caption.update(owner, [760, 5, 800, 27], () {});
++      caption.update(owner, [760, 5, 800, 27], () {});
++      await pumpEventQueue();
++      expect(runner.boxes(), [
++        [760, 5, 800, 27]
++      ]);
++      caption.release(Object());
++      await pumpEventQueue();
++      expect(runner.boxes(), hasLength(1));
++      caption.release(owner);
++      await pumpEventQueue();
++      expect(runner.boxes(), [
++        [760, 5, 800, 27],
++        null
++      ]);
++    });
++
++    test('a button that cannot be clicked is not sent', () async {
++      caption.update(owner, [760, 5, 800, 27], () {});
++      caption.update(owner, [760, 5, 800, 27], null);
++      caption.update(owner, null, () {});
++      await pumpEventQueue();
++      expect(runner.boxes(), [
++        [760, 5, 800, 27],
++        null
++      ]);
++    });
++
++    test('stops when the runner refuses (Windows 10)', () async {
++      runner.answer = false;
++      caption.update(owner, [760, 5, 800, 27], () {});
++      await pumpEventQueue();
++      caption.update(owner, [740, 5, 780, 27], () {});
++      caption.release(owner);
++      await pumpEventQueue();
++      expect(runner.boxes(), hasLength(1));
++    });
++
++    test('stops when there is no runner half', () async {
++      runner.answer = null;
++      caption.update(owner, [760, 5, 800, 27], () {});
++      await pumpEventQueue();
++      caption.update(owner, [740, 5, 780, 27], () {});
++      await pumpEventQueue();
++      expect(runner.boxes(), hasLength(1));
++    });
++
++    test('follows what Windows says and runs the click', () async {
++      var clicks = 0;
++      caption.update(owner, [760, 5, 800, 27], () => clicks++);
++      await pumpEventQueue();
++      await runner.tell('maxButton', kHjvMaxHover);
++      expect(caption.state.value, kHjvMaxHover);
++      await runner.tell('maxButton', kHjvMaxPressed);
++      expect(caption.state.value, kHjvMaxPressed);
++      await runner.tell('maxButtonClick');
++      expect(clicks, 1);
++      await runner.tell('maxButton', kHjvMaxNone);
++      expect(caption.state.value, kHjvMaxNone);
++
++      caption.release(owner);
++      await pumpEventQueue();
++      await runner.tell('maxButton', kHjvMaxHover);
++      expect(caption.state.value, kHjvMaxNone);
++      await runner.tell('maxButtonClick');
++      expect(clicks, 1);
++    });
++
++    test('asks for the window menu, and does not throw without a runner',
++        () async {
++      await caption.showWindowMenu();
++      expect(runner.calls.map((c) => c.method), ['showWindowMenu']);
++      runner.answer = null;
++      await caption.showWindowMenu();
++    });
++  });
++
++  testWidgets('the button reports its box after layout and on resize',
++      (tester) async {
++    final runner = _Runner();
++    addTearDown(runner.dispose);
++    addTearDown(tester.view.reset);
++    final caption = HjvCaption(runner.channel);
++    tester.view.physicalSize = const Size(1600, 1200);
++    tester.view.devicePixelRatio = 2.0;
++    final seen = <int>[];
++    Widget app(VoidCallback? onTap) => Align(
++          alignment: Alignment.topRight,
++          child: HjvSnapMaxButton(
++            caption: caption,
++            onTap: onTap,
++            topBand: () => 5,
++            builder: (context, windows) {
++              seen.add(windows);
++              return const SizedBox(width: 40, height: 27);
++            },
++          ),
++        );
++
++    await tester.pumpWidget(app(() {}));
++    await tester.pump();
++    expect(runner.boxes().last, [1520, 10, 1600, 54]);
++
++    tester.view.physicalSize = const Size(1400, 1200);
++    await tester.pump();
++    await tester.pump();
++    expect(runner.boxes().last, [1320, 10, 1400, 54]);
++
++    await runner.tell('maxButton', kHjvMaxHover);
++    await tester.pump();
++    expect(seen.last, kHjvMaxHover);
++
++    await tester.pumpWidget(app(null));
++    await tester.pump();
++    expect(runner.boxes().last, isNull);
++
++    await tester.pumpWidget(app(() {}));
++    await tester.pump();
++    expect(runner.boxes().last, [1320, 10, 1400, 54]);
++
++    await tester.pumpWidget(const SizedBox());
++    await tester.pump();
++    expect(runner.boxes().last, isNull);
++  });
++}
+diff --git a/flutter/windows/runner/CMakeLists.txt b/flutter/windows/runner/CMakeLists.txt
+index 2dbf0a9..49fa0e9 100644
+--- a/flutter/windows/runner/CMakeLists.txt
++++ b/flutter/windows/runner/CMakeLists.txt
+@@ -8,6 +8,7 @@ project(runner LANGUAGES CXX)
+ # Any new source files that you add to the application should be added here.
+ add_executable(${BINARY_NAME} WIN32
+   "flutter_window.cpp"
++  "hjv_caption.cpp"
+   "main.cpp"
+   "utils.cpp"
+   "win32_desktop.cpp"
+diff --git a/flutter/windows/runner/flutter_window.cpp b/flutter/windows/runner/flutter_window.cpp
+index e6617f3..3cfcd4a 100644
+--- a/flutter/windows/runner/flutter_window.cpp
++++ b/flutter/windows/runner/flutter_window.cpp
+@@ -18,6 +18,7 @@
+ #include <memory>
+ 
+ #include "win32_desktop.h"
++#include "hjv_caption.h"
+ 
+ namespace {
+ 
+@@ -153,8 +154,10 @@ bool FlutterWindow::OnCreate() {
+         registry->GetRegistrarForPlugin("TextureRgbaRendererPlugin"));
+     FlutterGpuTextureRendererPluginCApiRegisterWithRegistrar(
+         registry->GetRegistrarForPlugin("FlutterGpuTextureRendererPluginCApi"));
++    HjvCaptionAttach(flutter_view_controller);
+   });
+   SetChildContent(flutter_controller_->view()->GetNativeWindow());
++  HjvCaptionAttach(flutter_controller_.get());
+ 
+   // See the comment on kForceRedrawTimerId above.
+   flutter_controller_->engine()->SetNextFrameCallback(
+diff --git a/flutter/windows/runner/hjv_caption.cpp b/flutter/windows/runner/hjv_caption.cpp
+new file mode 100644
+index 0000000..88c8a37
+--- /dev/null
++++ b/flutter/windows/runner/hjv_caption.cpp
+@@ -0,0 +1,374 @@
++// HJViewer (U44). The Flutter view, a child window over the whole client area, answers
++// HTTRANSPARENT over the maximise button that Dart draws, so Windows asks the top-level window,
++// which answers HTMAXBUTTON: Windows 11 then shows its snap layouts there. Windows sends the
++// button's mouse messages to the top-level window as non-client ones; they are handled here and
++// told to Dart (hover, pressed, click), which keeps the look and runs its own maximise/restore.
++// The state lives in a window property on both windows and goes with the view (WM_NCDESTROY),
++// which Flutter destroys before its engine.
++#include "hjv_caption.h"
++
++#include <flutter/encodable_value.h>
++#include <flutter/method_channel.h>
++#include <flutter/standard_method_codec.h>
++#include <flutter_windows.h>
++#include <windows.h>
++
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <utility>
++#include <variant>
++
++namespace {
++
++constexpr char kChannel[] = "hjv/caption";
++constexpr wchar_t kProp[] = L"HJViewer.Caption";
++
++// What Dart draws (hjv_caption.dart: kHjvMaxNone, kHjvMaxHover, kHjvMaxPressed).
++constexpr int kStateNone = 0;
++constexpr int kStateHover = 1;
++constexpr int kStatePressed = 2;
++
++struct Caption {
++  HWND top = nullptr;
++  HWND view = nullptr;
++  WNDPROC view_proc = nullptr;
++  flutter::BinaryMessenger* messenger = nullptr;  // the engine's; it outlives the view
++  bool has_max = false;
++  RECT max = {0, 0, 0, 0};  // physical pixels, in the view's client coordinates
++  int state = kStateNone;
++  // Pressed on the button and not released yet: a release on the button is a click, as with
++  // Windows' own button, even after the pointer left it and came back while held.
++  bool armed = false;
++  bool tracking = false;
++};
++
++Caption* GetCaption(HWND hwnd) {
++  return static_cast<Caption*>(GetPropW(hwnd, kProp));
++}
++
++// Windows 11 is 10.0 with build 22000 or later. RtlGetVersion does not depend on the manifest.
++using RtlGetVersionFn = LONG __stdcall(OSVERSIONINFOW* info);
++
++bool IsWindows11() {
++  static int cached = -1;
++  if (cached < 0) {
++    cached = 0;
++    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
++    auto rtl_get_version =
++        ntdll != nullptr
++            ? reinterpret_cast<RtlGetVersionFn*>(GetProcAddress(ntdll, "RtlGetVersion"))
++            : nullptr;
++    OSVERSIONINFOW info = {};
++    info.dwOSVersionInfoSize = static_cast<DWORD>(sizeof(info));
++    if (rtl_get_version != nullptr && rtl_get_version(&info) == 0 &&
++        (info.dwMajorVersion > 10 ||
++         (info.dwMajorVersion == 10 && info.dwBuildNumber >= 22000))) {
++      cached = 1;
++    }
++  }
++  return cached == 1;
++}
++
++void Send(const Caption* caption, const char* method, flutter::EncodableValue value) {
++  if (caption->messenger == nullptr) {
++    return;
++  }
++  flutter::MethodChannel<> channel(caption->messenger, kChannel,
++                                   &flutter::StandardMethodCodec::GetInstance());
++  channel.InvokeMethod(method, std::make_unique<flutter::EncodableValue>(std::move(value)));
++}
++
++void SetState(Caption* caption, int state) {
++  if (caption->state == state) {
++    return;
++  }
++  caption->state = state;
++  Send(caption, "maxButton", flutter::EncodableValue(state));
++}
++
++// The thread's own (logical) state of the primary button, as of the message being handled.
++bool LeftButtonDown() {
++  return GetKeyState(VK_LBUTTON) < 0;
++}
++
++// GET_X_LPARAM/GET_Y_LPARAM of <windowsx.h>, written out: signed, for monitors left of or above
++// the primary one.
++POINT ScreenPoint(LPARAM lparam) {
++  POINT point;
++  point.x = static_cast<short>(LOWORD(lparam));
++  point.y = static_cast<short>(HIWORD(lparam));
++  return point;
++}
++
++bool OverMax(const Caption* caption, LPARAM lparam) {
++  if (!caption->has_max) {
++    return false;
++  }
++  // Full screen takes the caption style away (window_manager and desktop_multi_window alike).
++  // Without WS_THICKFRAME window_manager answers HTNOWHERE before this delegate, and without
++  // WS_MAXIMIZEBOX there is nothing to snap: the button stays Flutter's then.
++  const LONG_PTR style = GetWindowLongPtrW(caption->top, GWL_STYLE);
++  if ((style & WS_CAPTION) != WS_CAPTION || (style & WS_THICKFRAME) == 0 ||
++      (style & WS_MAXIMIZEBOX) == 0) {
++    return false;
++  }
++  POINT point = ScreenPoint(lparam);
++  if (!ScreenToClient(caption->view, &point)) {
++    return false;
++  }
++  return PtInRect(&caption->max, point) != FALSE;
++}
++
++void Forget(Caption* caption) {
++  RemovePropW(caption->top, kProp);
++  RemovePropW(caption->view, kProp);
++  delete caption;
++}
++
++LRESULT CALLBACK ViewProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
++  Caption* caption = GetCaption(hwnd);
++  if (caption == nullptr || caption->view_proc == nullptr) {
++    // Not reached: the property lives until WM_NCDESTROY, where the view's own procedure is put
++    // back. A Flutter view's own procedure is its class's.
++    return CallWindowProcW(reinterpret_cast<WNDPROC>(GetClassLongPtrW(hwnd, GCLP_WNDPROC)),
++                           hwnd, message, wparam, lparam);
++  }
++  const WNDPROC next = caption->view_proc;
++  if (message == WM_NCHITTEST && OverMax(caption, lparam)) {
++    return HTTRANSPARENT;  // Windows asks the top-level window next (TopLevelProc).
++  }
++  if (message == WM_NCDESTROY) {
++    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(next));
++    Forget(caption);
++  }
++  return CallWindowProcW(next, hwnd, message, wparam, lparam);
++}
++
++// FlutterDesktopWindowProcCallback, for the top-level window of the view's engine.
++bool TopLevelProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam,
++                  void* /* user_data */, LRESULT* out) {
++  if (message != WM_NCHITTEST && message != WM_NCMOUSEMOVE && message != WM_NCMOUSELEAVE &&
++      message != WM_NCLBUTTONDOWN && message != WM_NCLBUTTONDBLCLK &&
++      message != WM_NCLBUTTONUP) {
++    return false;
++  }
++  Caption* caption = GetCaption(hwnd);
++  if (caption == nullptr || !caption->has_max) {
++    return false;
++  }
++  const bool on_max = wparam == HTMAXBUTTON;
++  switch (message) {
++    case WM_NCHITTEST:
++      if (OverMax(caption, lparam)) {
++        *out = HTMAXBUTTON;
++        return true;
++      }
++      return false;
++    case WM_NCMOUSEMOVE:
++      if (caption->armed && !LeftButtonDown()) {
++        caption->armed = false;  // released where this window did not see it
++      }
++      if (on_max) {
++        if (!caption->tracking) {
++          TRACKMOUSEEVENT track = {};
++          track.cbSize = static_cast<DWORD>(sizeof(track));
++          track.dwFlags = TME_LEAVE | TME_NONCLIENT;
++          track.hwndTrack = hwnd;
++          caption->tracking = TrackMouseEvent(&track) != FALSE;
++        }
++        SetState(caption, caption->armed ? kStatePressed : kStateHover);
++      } else {
++        SetState(caption, kStateNone);
++      }
++      return false;  // DefWindowProc goes on: the snap layouts start there.
++    case WM_NCMOUSELEAVE:
++      caption->tracking = false;
++      if (caption->armed && !LeftButtonDown()) {
++        caption->armed = false;
++      }
++      SetState(caption, kStateNone);
++      return false;
++    case WM_NCLBUTTONDOWN:
++    case WM_NCLBUTTONDBLCLK:
++      if (!on_max) {
++        return false;
++      }
++      caption->armed = true;
++      SetState(caption, kStatePressed);
++      *out = 0;
++      return true;  // Not DefWindowProc: it would draw and track an old-style button.
++    case WM_NCLBUTTONUP: {
++      const bool armed = caption->armed;
++      caption->armed = false;
++      if (!on_max) {
++        return false;
++      }
++      SetState(caption, kStateHover);
++      if (armed) {
++        Send(caption, "maxButtonClick", flutter::EncodableValue());
++      }
++      *out = 0;
++      return true;
++    }
++    default:
++      return false;
++  }
++}
++
++// The box from Dart: [left, top, right, bottom], four ints, not empty.
++bool ParseBox(const flutter::EncodableValue* args, RECT* box) {
++  if (args == nullptr || !std::holds_alternative<flutter::EncodableList>(*args)) {
++    return false;
++  }
++  const flutter::EncodableList& list = std::get<flutter::EncodableList>(*args);
++  if (list.size() != 4) {
++    return false;
++  }
++  LONG edges[4] = {0, 0, 0, 0};
++  for (size_t i = 0; i < 4; ++i) {
++    if (!std::holds_alternative<int32_t>(list[i])) {
++      return false;
++    }
++    edges[i] = std::get<int32_t>(list[i]);
++  }
++  if (edges[0] >= edges[2] || edges[1] >= edges[3]) {
++    return false;
++  }
++  box->left = edges[0];
++  box->top = edges[1];
++  box->right = edges[2];
++  box->bottom = edges[3];
++  return true;
++}
++
++// The first box on Windows 11: the state goes on both windows and the view is subclassed.
++Caption* Install(HWND top, HWND view, flutter::BinaryMessenger* messenger) {
++  if (!IsWindow(view) || GetAncestor(view, GA_ROOT) != top) {
++    return nullptr;
++  }
++  Caption* caption = new Caption();
++  caption->top = top;
++  caption->view = view;
++  caption->messenger = messenger;
++  if (!SetPropW(top, kProp, caption) || !SetPropW(view, kProp, caption)) {
++    Forget(caption);
++    return nullptr;
++  }
++  caption->view_proc = reinterpret_cast<WNDPROC>(
++      SetWindowLongPtrW(view, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&ViewProc)));
++  if (caption->view_proc == nullptr) {
++    Forget(caption);
++    return nullptr;
++  }
++  return caption;
++}
++
++void SetMaxButton(HWND top, HWND view, flutter::BinaryMessenger* messenger,
++                  const flutter::EncodableValue* args) {
++  RECT box = {0, 0, 0, 0};
++  const bool valid = IsWindows11() && ParseBox(args, &box);
++  Caption* caption = GetCaption(top);
++  if (caption == nullptr) {
++    if (!valid) {
++      return;
++    }
++    caption = Install(top, view, messenger);
++    if (caption == nullptr) {
++      return;
++    }
++  }
++  const bool same = valid && caption->has_max && caption->max.left == box.left &&
++                    caption->max.top == box.top && caption->max.right == box.right &&
++                    caption->max.bottom == box.bottom;
++  caption->has_max = valid;
++  caption->max = box;
++  if (!valid) {
++    // TopLevelProc skips messages while there is no box, a WM_NCMOUSELEAVE among them: the next
++    // box's first hover asks for one again (a repeated TrackMouseEvent is harmless).
++    caption->tracking = false;
++  }
++  if (!same) {
++    // The button moved (maximised, restored) or went: the pointer is no longer known to be on it.
++    caption->armed = false;
++    SetState(caption, kStateNone);
++  }
++}
++
++void EnableItem(HMENU menu, UINT item, bool enabled) {
++  EnableMenuItem(menu, item,
++                 static_cast<UINT>(MF_BYCOMMAND | (enabled ? MF_ENABLED : MF_GRAYED)));
++}
++
++// The window menu at the cursor, its items as Windows' own caption would set them.
++void ShowWindowMenu(HWND top) {
++  if (!IsWindow(top)) {
++    return;
++  }
++  HMENU menu = GetSystemMenu(top, FALSE);
++  if (menu == nullptr) {
++    return;
++  }
++  const LONG_PTR style = GetWindowLongPtrW(top, GWL_STYLE);
++  const bool zoomed = IsZoomed(top) != FALSE;
++  EnableItem(menu, SC_RESTORE, zoomed);
++  EnableItem(menu, SC_MOVE, !zoomed);
++  EnableItem(menu, SC_SIZE, !zoomed && (style & WS_THICKFRAME) != 0);
++  EnableItem(menu, SC_MINIMIZE, (style & WS_MINIMIZEBOX) != 0);
++  EnableItem(menu, SC_MAXIMIZE, !zoomed && (style & WS_MAXIMIZEBOX) != 0);
++  EnableItem(menu, SC_CLOSE, true);
++  SetMenuDefaultItem(menu, SC_CLOSE, FALSE);
++  POINT point = {0, 0};
++  if (!GetCursorPos(&point)) {
++    return;
++  }
++  const UINT align =
++      static_cast<UINT>(GetSystemMetrics(SM_MENUDROPALIGNMENT) != 0 ? TPM_RIGHTALIGN
++                                                                     : TPM_LEFTALIGN);
++  const BOOL command =
++      TrackPopupMenu(menu, static_cast<UINT>(align | TPM_RETURNCMD | TPM_RIGHTBUTTON),
++                     static_cast<int>(point.x), static_cast<int>(point.y), 0, top, nullptr);
++  if (command != 0) {
++    PostMessageW(top, WM_SYSCOMMAND, static_cast<WPARAM>(command), 0);
++  }
++}
++
++}  // namespace
++
++void HjvCaptionAttach(flutter::FlutterViewController* controller) {
++  if (controller == nullptr || controller->engine() == nullptr ||
++      controller->view() == nullptr) {
++    return;
++  }
++  HWND view = controller->view()->GetNativeWindow();
++  HWND top = view != nullptr ? GetAncestor(view, GA_ROOT) : nullptr;
++  flutter::BinaryMessenger* messenger = controller->engine()->messenger();
++  if (top == nullptr || top == view || messenger == nullptr) {
++    return;
++  }
++  // Each engine has its own delegate list, so every window registers the same function. It does
++  // nothing until a window has a Caption (GetCaption).
++  FlutterDesktopPluginRegistrarRegisterTopLevelWindowProcDelegate(
++      controller->engine()->GetRegistrarForPlugin("HjvCaption"), &TopLevelProc, nullptr);
++  // Like "bumpMouse" in flutter_window.cpp: the messenger keeps the handler after the channel
++  // object goes. The handler runs only while the engine (and so its view) lives.
++  flutter::MethodChannel<> channel(messenger, kChannel,
++                                   &flutter::StandardMethodCodec::GetInstance());
++  channel.SetMethodCallHandler(
++      [top, view, messenger](const flutter::MethodCall<>& call,
++                             std::unique_ptr<flutter::MethodResult<>> result) {
++        const std::string& method = call.method_name();
++        if (method == "setMaxButton") {
++          SetMaxButton(top, view, messenger, call.arguments());
++          const Caption* caption = GetCaption(top);
++          result->Success(flutter::EncodableValue(caption != nullptr && caption->has_max));
++        } else if (method == "showWindowMenu") {
++          // Answer first: TrackPopupMenu runs its own message loop, in which the engine's tasks
++          // go on, so Dart does not wait for the menu.
++          result->Success();
++          ShowWindowMenu(top);
++        } else {
++          result->NotImplemented();
++        }
++      });
++}
+diff --git a/flutter/windows/runner/hjv_caption.h b/flutter/windows/runner/hjv_caption.h
+new file mode 100644
+index 0000000..064e85e
+--- /dev/null
++++ b/flutter/windows/runner/hjv_caption.h
+@@ -0,0 +1,16 @@
++#ifndef RUNNER_HJV_CAPTION_H_
++#define RUNNER_HJV_CAPTION_H_
++
++#include <flutter/flutter_view_controller.h>
++
++// HJViewer (U44): Windows 11's snap layouts over the maximise button that Dart draws, and the
++// window menu on a right-click of the drawn title bar (Dart side:
++// flutter/lib/desktop/widgets/hjv_caption.dart). Call once for each Flutter window after its view
++// is a child of the top-level window: the main window (FlutterWindow::OnCreate, after
++// SetChildContent) and each desktop_multi_window window (its created callback). It only registers
++// a top-level window delegate and the "hjv/caption" channel; the view is subclassed when Dart
++// first sends the button's box on Windows 11, so Windows 10 and the option that turns U44 off
++// leave the view's own procedure alone.
++void HjvCaptionAttach(flutter::FlutterViewController* controller);
++
++#endif  // RUNNER_HJV_CAPTION_H_

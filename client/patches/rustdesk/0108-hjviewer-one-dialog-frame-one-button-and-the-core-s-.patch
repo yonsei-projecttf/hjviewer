@@ -1,0 +1,1373 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:14:03 +0900
+Subject: [PATCH 108/147] hjviewer: one dialog frame, one button and the core's
+ toasts (UX-S2)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U51: hjvButton (dialog.dart) over hjv_style.dart's pure hjvButtonFor and
+hjvButtonLook, with the tones primary, quiet, alt and danger and the sizes
+normal, screen (40) and form (44). dialogButton, hjvDangerButton and the
+_button copies of the access, account and update screens call it, their
+signatures kept. The desktop theme's Elevated, Outlined and Text buttons are
+at least 36 high, 16 at the sides, at the standard density
+(kHjvDesktopButton); the settings' two local 36 px styles point at it.
+HjvCallout's actions keep the theme's density, so the notices keep their
+heights.
+
+U10: on a phone, another way (alt) is a text button in the accent's colour
+at 600: A1's and A0's [로그인] with the field open, the login notice's
+[이 PC 빼기]. [취소] stays grey, [연결] bold.
+
+U50: the two frames (alert, form) are written down in dialog.dart.
+HjvDialogWidth sm 360 / md 440 / lg 560 goes to contentBoxConstraints: md
+for A1, A2, A0, LK1, the PC home's close question, the PC password dialog,
+the session's message boxes, the account's dialogs; lg for the update
+screen and the login notice; sm for delete and rename. msgboxContent puts
+a 22 px icon on the title's line and the text below it at the full width
+in 14/1.5. The update dialog is an alert: the texts at the left, [닫기]
+then the other buttons and the main one last at the right.
+
+U45 (the rest): the core's text toasts (FfiModel.handleToast) go through
+showToast; an error gets an error icon in the inverse theme's danger text
+colour (HjvToast's danger).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                       |  95 ++++-----
+ flutter/lib/common/hjv_style.dart             | 190 ++++++++++++++++--
+ flutter/lib/common/hjv_theme.dart             |   9 +-
+ flutter/lib/common/hjv_update.dart            | 137 ++++++++++---
+ flutter/lib/common/hjviewer_access.dart       |  46 ++---
+ flutter/lib/common/hjviewer_account.dart      |  52 ++---
+ flutter/lib/common/widgets/dialog.dart        |  58 ++++--
+ .../desktop/pages/desktop_setting_page.dart   |  16 +-
+ flutter/lib/models/model.dart                 |  20 +-
+ flutter/test/hjviewer_style_test.dart         | 182 ++++++++++++++++-
+ 10 files changed, 592 insertions(+), 213 deletions(-)
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index 9756ffb..b8a82f5 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -1043,12 +1043,14 @@ makeMobileActionsOverlayEntry(VoidCallback? onHide, {FFI? ffi}) {
+ 
+ void showToast(String text,
+     {Duration timeout = const Duration(seconds: 3),
+-    Alignment alignment = const Alignment(0.0, 0.8)}) {
++    Alignment alignment = const Alignment(0.0, 0.8),
++    bool error = false}) {
+   final overlayState = globalKey.currentState?.overlay;
+   if (overlayState == null) return;
+   // HJViewer: the theme's snack bar look in the app's typeface, at least `timeout` and longer for
+-  // a long text, read out to a screen reader (common/hjv_style.dart)
+-  hjvShowToast(overlayState, text, least: timeout, alignment: alignment);
++  // a long text, read out to a screen reader (common/hjv_style.dart); an `error` with its icon
++  hjvShowToast(overlayState, text,
++      least: timeout, alignment: alignment, danger: error);
+ }
+ 
+ // TODO
+@@ -1163,15 +1165,16 @@ class _CustomAlertDialogState extends State<CustomAlertDialog> {
+   }
+ }
+ 
+-Widget createDialogContent(String text) {
++// HJViewer: `style` for msgboxContent's text (the dialogs' 14/1.5)
++Widget createDialogContent(String text,
++    {TextStyle style = const TextStyle(fontSize: 15, height: 1.5)}) {
+   final RegExp linkRegExp = RegExp(r'(https?://[^\s]+)');
+   bool hasLink = linkRegExp.hasMatch(text);
+   if (hjvLinksOff()) hasLink = false;
+ 
+   // Early return: no link, use default theme color
+   if (!hasLink) {
+-    return SelectableText(text,
+-        style: const TextStyle(fontSize: 15, height: 1.5));
++    return SelectableText(text, style: style);
+   }
+ 
+   final List<TextSpan> spans = [];
+@@ -1203,7 +1206,7 @@ Widget createDialogContent(String text) {
+ 
+   return SelectableText.rich(
+     TextSpan(
+-      style: const TextStyle(fontSize: 15, height: 1.5),
++      style: style,
+       children: spans,
+     ),
+   );
+@@ -1242,6 +1245,7 @@ void msgBox(SessionID sessionId, String type, String title, String text,
+     dialogManager.show(
+       (setState, close, context) => CustomAlertDialog(
+         title: null,
++        contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+         content: SelectionArea(child: msgboxContent(type, title, text)),
+         actions: [
+           dialogButton(
+@@ -1336,6 +1340,7 @@ void msgBox(SessionID sessionId, String type, String title, String text,
+   dialogManager.show(
+     (setState, close, context) => CustomAlertDialog(
+       title: null,
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       content: SelectionArea(child: msgboxContent(type, title, text)),
+       actions: buttons,
+       onSubmit: hasOk ? submit : null,
+@@ -1374,11 +1379,11 @@ Widget msgboxIcon(String type) {
+     iconData = Icons.info_outline_rounded;
+   }
+   if (iconData != null) {
+-    // HJViewer: a quiet icon beside the title, in the palette's colour
++    // HJViewer: on the title's line, as HjvDialogTitle's (dialog.dart), in the palette's colour
+     return Builder(
+         builder: (context) => Icon(iconData,
+-                size: 28, color: _msgboxColor(type, HjvPalette.of(context)))
+-            .marginOnly(right: 12));
++                size: 22, color: _msgboxColor(type, HjvPalette.of(context)))
++            .marginOnly(right: 10, top: 1.5));
+   }
+ 
+   return Offstage();
+@@ -1406,16 +1411,19 @@ Widget msgboxContent(String type, String title, String text) {
+     return text;
+   }
+ 
+-  // HJViewer: the title as the dialogs' titles (18, w700), the icon at its height
+-  return Row(
++  // HJViewer: the alert frame (dialog.dart, U50): the icon and the title (18, w700) on one line,
++  // the text below it at the full width in the dialogs' text style (14/1.5, the secondary colour
++  // of the dialog's text)
++  return Column(
++    mainAxisSize: MainAxisSize.min,
+     crossAxisAlignment: CrossAxisAlignment.start,
+     children: [
+-      msgboxIcon(type),
+-      Expanded(
+-        child: Column(
+-          crossAxisAlignment: CrossAxisAlignment.start,
+-          children: [
+-            Builder(
++      Row(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          msgboxIcon(type),
++          Expanded(
++            child: Builder(
+                 builder: (context) => Text(
+                       translate(title),
+                       style: TextStyle(
+@@ -1423,11 +1431,12 @@ Widget msgboxContent(String type, String title, String text) {
+                           fontWeight: FontWeight.w700,
+                           height: 1.4,
+                           color: HjvPalette.of(context).text),
+-                    )).marginOnly(bottom: 6),
+-            createDialogContent(translateText(text)),
+-          ],
+-        ),
+-      ),
++                    )),
++          ),
++        ],
++      ).marginOnly(bottom: 6),
++      createDialogContent(translateText(text),
++          style: const TextStyle(fontSize: 14, height: 1.5)),
+     ],
+   ).marginOnly(bottom: 8);
+ }
+@@ -3032,38 +3041,14 @@ Widget dialogButton(String text,
+     Widget? icon,
+     TextStyle? style,
+     ButtonStyle? buttonStyle}) {
+-  // HJViewer: the buttons carry their text only (`icon` is left out); on a phone the quiet
+-  // button ([Cancel] and the like) in the secondary text colour, the action in bold
+-  if (isDesktop || isWebDesktop) {
+-    if (isOutline) {
+-      return OutlinedButton(
+-        onPressed: onPressed,
+-        child: Text(translate(text), style: style),
+-      );
+-    } else {
+-      return ElevatedButton(
+-        style: ElevatedButton.styleFrom(elevation: 0).merge(buttonStyle),
+-        onPressed: onPressed,
+-        child: Text(translate(text), style: style),
+-      );
+-    }
+-  } else {
+-    return Builder(
+-        builder: (context) => TextButton(
+-              style: TextButton.styleFrom(
+-                  foregroundColor:
+-                      isOutline ? HjvPalette.of(context).textSecondary : null,
+-                  textStyle: TextStyle(
+-                      fontFamily: kHjvFont,
+-                      fontWeight:
+-                          isOutline ? FontWeight.w600 : FontWeight.w700)),
+-              onPressed: onPressed,
+-              child: Text(
+-                translate(text),
+-                style: style,
+-              ),
+-            ));
+-  }
++  // HJViewer: the app's one button (dialog.dart's hjvButton, U51): the text only (`icon` is
++  // left out), `isOutline` its quiet tone; as before, `buttonStyle` only for a desktop's filled one
++  final desktop = isDesktop || isWebDesktop;
++  return hjvButtonFor(translate(text), onPressed,
++      tone: isOutline ? HjvButtonTone.quiet : HjvButtonTone.primary,
++      desktop: desktop,
++      style: style,
++      buttonStyle: desktop && !isOutline ? buttonStyle : null);
+ }
+ 
+ int versionCmp(String v1, String v2) {
+diff --git a/flutter/lib/common/hjv_style.dart b/flutter/lib/common/hjv_style.dart
+index faae15c..b625cc5 100644
+--- a/flutter/lib/common/hjv_style.dart
++++ b/flutter/lib/common/hjv_style.dart
+@@ -391,6 +391,9 @@ class HjvCallout extends StatelessWidget {
+             iconSize: 18,
+             icon: Icon(Icons.close_rounded, color: p.textTertiary));
+     final scale = MediaQuery.textScalerOf(context).scale(13);
++    // at the theme's density too, as the inline actions
++    final stackedButton =
++        _kHjvStackedButton.copyWith(visualDensity: theme.visualDensity);
+     final body = _HjvCalloutBody(
+       firstLine: scale * (heading != null ? 1.35 : 1.45),
+       padBottom: stacked && actions.isNotEmpty ? 0 : 12,
+@@ -405,6 +408,9 @@ class HjvCallout extends StatelessWidget {
+                           foregroundColor: c.action,
+                           minimumSize: const Size(0, 32),
+                           padding: const EdgeInsets.symmetric(horizontal: 10),
++                          // the theme's density, not the desktop buttons' standard one
++                          // (kHjvDesktopButton): the box keeps its height
++                          visualDensity: theme.visualDensity,
+                           tapTargetSize: phone
+                               ? MaterialTapTargetSize.padded
+                               : MaterialTapTargetSize.shrinkWrap)
+@@ -442,13 +448,13 @@ class HjvCallout extends StatelessWidget {
+                   child: Theme(
+                       data: theme.copyWith(
+                           outlinedButtonTheme: OutlinedButtonThemeData(
+-                              style: _kHjvStackedButton
++                              style: stackedButton
+                                   .merge(theme.outlinedButtonTheme.style)),
+                           elevatedButtonTheme: ElevatedButtonThemeData(
+-                              style: _kHjvStackedButton
++                              style: stackedButton
+                                   .merge(theme.elevatedButtonTheme.style)),
+                           textButtonTheme: TextButtonThemeData(
+-                              style: _kHjvStackedButton
++                              style: stackedButton
+                                   .merge(theme.textButtonTheme.style))),
+                       child: action),
+                 ),
+@@ -626,6 +632,125 @@ class _RenderHjvCalloutBody extends RenderBox
+       defaultHitTestChildren(result, position: position);
+ }
+ 
++/// A button's part in its dialog or screen (U51, U10): the main action, a quiet one ([취소],
++/// [닫기]), another way ([로그인] beside [연결] in A1 with the field open, [이 PC 빼기] in the login
++/// notice), and an action that deletes or can lock a PC out.
++enum HjvButtonTone { primary, quiet, alt, danger }
++
++/// A button's height: the theme's (36 on a desktop), a screen's action (40: connecting, the
++/// [로그인] that stands in for the account) and a form's submit (44: the login, the update screen).
++enum HjvButtonSize {
++  normal(null),
++  screen(40),
++  form(44);
++
++  const HjvButtonSize(this.height);
++  final double? height;
++
++  /// The height as a ButtonStyle (null for the theme's).
++  ButtonStyle? get style => height == null
++      ? null
++      : ButtonStyle(
++          minimumSize: WidgetStatePropertyAll(Size(0, height!)),
++          visualDensity: VisualDensity.standard);
++}
++
++/// The desktop theme's buttons (hjv_theme.dart; Elevated, Outlined, Text): at least 36 high, 16
++/// at the sides, at the standard density (the platform's compact one drew them 28 high, below the
++/// fields beside them).
++const ButtonStyle kHjvDesktopButton = ButtonStyle(
++  minimumSize: WidgetStatePropertyAll(Size(0, 36)),
++  padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 16)),
++  visualDensity: VisualDensity.standard,
++);
++
++enum HjvButtonKind { elevated, outlined, text }
++
++/// What a button of `tone` is: on a desktop a filled button for the main action (danger's on the
++/// danger fill) and a bordered one for the quiet and the other way; on a phone a text button, the
++/// main action in the accent's colour and bold, the quiet one in the secondary text colour, the
++/// other way in the accent's colour at 600 (so that it does not read as [취소]), danger's in the
++/// danger text colour and bold. A null colour or weight is the theme's.
++({HjvButtonKind kind, Color? fill, Color? color, FontWeight? weight})
++    hjvButtonLook(HjvPalette p, HjvButtonTone tone, {required bool desktop}) {
++  if (desktop) {
++    return switch (tone) {
++      HjvButtonTone.primary =>
++        (kind: HjvButtonKind.elevated, fill: null, color: null, weight: null),
++      HjvButtonTone.quiet ||
++      HjvButtonTone.alt =>
++        (kind: HjvButtonKind.outlined, fill: null, color: null, weight: null),
++      HjvButtonTone.danger => (
++          kind: HjvButtonKind.elevated,
++          fill: p.dangerFill,
++          color: Colors.white,
++          weight: null
++        ),
++    };
++  }
++  final (color, weight) = switch (tone) {
++    HjvButtonTone.primary => (p.primary, FontWeight.w700),
++    HjvButtonTone.quiet => (p.textSecondary, FontWeight.w600),
++    HjvButtonTone.alt => (p.primary, FontWeight.w600),
++    HjvButtonTone.danger => (p.dangerText, FontWeight.w700),
++  };
++  return (kind: HjvButtonKind.text, fill: null, color: color, weight: weight);
++}
++
++/// The app's one button (dialog.dart's hjvButton, common.dart's dialogButton): `label` as it is,
++/// centred also on two lines, in hjvButtonLook's form for `desktop`, `size` high at least.
++/// `style` is the label's, `buttonStyle` is merged last.
++Widget hjvButtonFor(String label, VoidCallback? onPressed,
++        {HjvButtonTone tone = HjvButtonTone.primary,
++        HjvButtonSize size = HjvButtonSize.normal,
++        required bool desktop,
++        TextStyle? style,
++        ButtonStyle? buttonStyle}) =>
++    Builder(builder: (context) {
++      final look = hjvButtonLook(HjvPalette.of(context), tone, desktop: desktop);
++      final child = Text(label, textAlign: TextAlign.center, style: style);
++      switch (look.kind) {
++        case HjvButtonKind.elevated:
++          return ElevatedButton(
++              style: ElevatedButton.styleFrom(
++                      elevation: 0,
++                      backgroundColor: look.fill,
++                      foregroundColor: look.color)
++                  .merge(size.style)
++                  .merge(buttonStyle),
++              onPressed: onPressed,
++              child: child);
++        case HjvButtonKind.outlined:
++          return OutlinedButton(
++              style: size.style?.merge(buttonStyle) ?? buttonStyle,
++              onPressed: onPressed,
++              child: child);
++        case HjvButtonKind.text:
++          return TextButton(
++              style: TextButton.styleFrom(
++                      foregroundColor: look.color,
++                      textStyle: TextStyle(
++                          fontFamily: kHjvFont, fontWeight: look.weight))
++                  .merge(size.style)
++                  .merge(buttonStyle),
++              onPressed: onPressed,
++              child: child);
++      }
++    });
++
++/// The dialogs' widths (U50), for CustomAlertDialog's contentBoxConstraints: sm for a short
++/// confirm (delete, rename, turn off), md for the gate's, the account's and a session's dialogs,
++/// lg for the update screen and the login notice. Where the screen is narrower, the dialog's own
++/// bounds make it the screen's width. Upstream's dialogs keep their 500 at most.
++class HjvDialogWidth {
++  static const double sm = 360;
++  static const double md = 440;
++  static const double lg = 560;
++
++  static BoxConstraints box(double width) =>
++      BoxConstraints(minWidth: width, maxWidth: width);
++}
++
+ /// How long a toast stays: `least` (3 seconds) and about 70 ms a character more, at most 8 seconds
+ /// (or `least` when that is longer), so that a sentence of the gate can be read to its end.
+ Duration hjvToastTime(String text,
+@@ -637,12 +762,17 @@ Duration hjvToastTime(String text,
+ 
+ /// A toast in the theme's snack bar look (hjv_theme.dart's snackBarTheme): opaque, the inverse
+ /// colours, the app's typeface at 14, the medium radius, at most 480 wide, kept above the
+-/// keyboard and the system bars. It takes no taps.
++/// keyboard and the system bars. It takes no taps. `danger` (an error the core sends, U45): an
++/// error icon before the text, in the danger text colour of the inverse theme, which reads on the
++/// toast's inverse background.
+ class HjvToast extends StatelessWidget {
+   final String text;
+   final Alignment alignment;
++  final bool danger;
+   const HjvToast(this.text,
+-      {super.key, this.alignment = const Alignment(0.0, 0.8)});
++      {super.key,
++      this.alignment = const Alignment(0.0, 0.8),
++      this.danger = false});
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -653,6 +783,17 @@ class HjvToast extends StatelessWidget {
+     final media = MediaQuery.maybeOf(context);
+     final insets = media?.viewInsets.bottom ?? 0;
+     final padding = media?.viewPadding ?? EdgeInsets.zero;
++    final label = Text(
++      text,
++      textAlign: danger ? TextAlign.start : TextAlign.center,
++      style: TextStyle(
++          fontFamily: kHjvFont,
++          fontSize: 14,
++          fontWeight: FontWeight.w500,
++          height: 1.4,
++          decoration: TextDecoration.none,
++          color: bar.contentTextStyle?.color ?? p.surface),
++    );
+     return IgnorePointer(
+       child: Padding(
+         padding: EdgeInsets.fromLTRB(16, padding.top, 16,
+@@ -670,17 +811,7 @@ class HjvToast extends StatelessWidget {
+                   color: bar.backgroundColor ?? p.text,
+                   borderRadius: BorderRadius.circular(HjvRadius.md),
+                 ),
+-                child: Text(
+-                  text,
+-                  textAlign: TextAlign.center,
+-                  style: TextStyle(
+-                      fontFamily: kHjvFont,
+-                      fontSize: 14,
+-                      fontWeight: FontWeight.w500,
+-                      height: 1.4,
+-                      decoration: TextDecoration.none,
+-                      color: bar.contentTextStyle?.color ?? p.surface),
+-                ),
++                child: danger ? _withIcon(context, label) : label,
+               ),
+             ),
+           ),
+@@ -690,16 +821,37 @@ class HjvToast extends StatelessWidget {
+   }
+ }
+ 
++/// The error icon's colour on a toast: the inverse theme's danger text colour.
++Color hjvToastDangerColor(Brightness brightness) =>
++    (brightness == Brightness.dark ? HjvPalette.light : HjvPalette.dark)
++        .dangerText;
++
++Widget _withIcon(BuildContext context, Widget label) => Row(
++      mainAxisSize: MainAxisSize.min,
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        Padding(
++          padding: const EdgeInsets.only(top: 0.5, right: 8),
++          child: Icon(Icons.error_outline_rounded,
++              size: 18,
++              color: hjvToastDangerColor(Theme.of(context).brightness)),
++        ),
++        Flexible(child: label),
++      ],
++    );
++
+ OverlayEntry? _toast;
+ 
+ /// common.dart's showToast: `text` as an HjvToast on `overlay` for hjvToastTime, read out to a
+-/// screen reader; a new toast takes the place of the one before.
++/// screen reader; a new toast takes the place of the one before. `danger`: HjvToast's.
+ void hjvShowToast(OverlayState overlay, String text,
+     {Duration least = const Duration(seconds: 3),
+-    Alignment alignment = const Alignment(0.0, 0.8)}) {
++    Alignment alignment = const Alignment(0.0, 0.8),
++    bool danger = false}) {
+   _toast?.remove();
+   final entry = OverlayEntry(
+-      builder: (context) => HjvToast(text, alignment: alignment));
++      builder: (context) =>
++          HjvToast(text, alignment: alignment, danger: danger));
+   _toast = entry;
+   overlay.insert(entry);
+   SemanticsService.announce(
+diff --git a/flutter/lib/common/hjv_theme.dart b/flutter/lib/common/hjv_theme.dart
+index 759c8df..483b3aa 100644
+--- a/flutter/lib/common/hjv_theme.dart
++++ b/flutter/lib/common/hjv_theme.dart
+@@ -28,6 +28,8 @@ ThemeData hjvRestyle(ThemeData base) {
+     bodyMedium: colored(font.bodyMedium, p.text),
+     bodySmall: colored(font.bodySmall, p.textSecondary),
+   );
++  // U51: a desktop's buttons at least 36 high, 16 at the sides, at the standard density
++  final buttons = desktop ? kHjvDesktopButton : null;
+   final noBorder = OutlineInputBorder(
+     borderRadius: radius,
+     borderSide: const BorderSide(color: Colors.transparent, width: 0),
+@@ -146,7 +148,8 @@ ThemeData hjvRestyle(ThemeData base) {
+                       ? Colors.black.withOpacity(0.12)
+                       : states.contains(WidgetState.hovered)
+                           ? Colors.black.withOpacity(0.08)
+-                          : null)),
++                          : null))
++          .merge(buttons),
+     ),
+     outlinedButtonTheme: OutlinedButtonThemeData(
+       style: OutlinedButton.styleFrom(
+@@ -158,7 +161,7 @@ ThemeData hjvRestyle(ThemeData base) {
+             fontFamily: kHjvFont, fontWeight: FontWeight.w600),
+         shape: RoundedRectangleBorder(borderRadius: radius),
+         splashFactory: desktop ? NoSplash.splashFactory : null,
+-      ),
++      ).merge(buttons),
+     ),
+     textButtonTheme: TextButtonThemeData(
+       style: TextButton.styleFrom(
+@@ -172,7 +175,7 @@ ThemeData hjvRestyle(ThemeData base) {
+                 horizontal: MyTheme.mobileTextButtonPaddingLR),
+         shape: RoundedRectangleBorder(borderRadius: radius),
+         splashFactory: desktop ? NoSplash.splashFactory : null,
+-      ),
++      ).merge(buttons),
+     ),
+     checkboxTheme: base.checkboxTheme.copyWith(
+       fillColor: WidgetStateProperty.resolveWith((states) =>
+diff --git a/flutter/lib/common/hjv_update.dart b/flutter/lib/common/hjv_update.dart
+index 62a742b..89bf449 100644
+--- a/flutter/lib/common/hjv_update.dart
++++ b/flutter/lib/common/hjv_update.dart
+@@ -286,29 +286,12 @@ Future<T?> _show<T>(DialogBuilder builder, {String? tag}) async {
+   }
+ }
+ 
+-/// A button as dialogButton() draws it, for a text of these screens, which translate() must not
+-/// see.
+-Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) {
+-  if (isDesktop || isWebDesktop) {
+-    return outline
+-        ? OutlinedButton(onPressed: onPressed, child: Text(label))
+-        : ElevatedButton(
+-            style: ElevatedButton.styleFrom(elevation: 0),
+-            onPressed: onPressed,
+-            child: Text(label));
+-  }
+-  // HJViewer: as dialogButton() on a phone: the quiet one in the secondary colour, the action bold
+-  return Builder(
+-      builder: (context) => TextButton(
+-          style: TextButton.styleFrom(
+-              foregroundColor:
+-                  outline ? HjvPalette.of(context).textSecondary : null,
+-              textStyle: TextStyle(
+-                  fontFamily: kHjvFont,
+-                  fontWeight: outline ? FontWeight.w600 : FontWeight.w700)),
+-          onPressed: onPressed,
+-          child: Text(label)));
+-}
++/// The app's button (hjv_style.dart's hjvButtonFor, as dialog.dart's hjvButton; U51) for a text
++/// of these screens, which translate() must not see: `outline` the quiet one.
++Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) =>
++    hjvButtonFor(label, onPressed,
++        tone: outline ? HjvButtonTone.quiet : HjvButtonTone.primary,
++        desktop: isDesktop || isWebDesktop);
+ 
+ // ---- the hooks ----
+ 
+@@ -583,16 +566,22 @@ Future<void> hjvCheckByHand({bool opens = true}) async {
+ // ---- the update screen ----
+ 
+ /// The update screen as a dialog, where the connection page is not replaced by it: from the
+-/// banner, from Settings → About and from a connection that was held back.
++/// banner, from Settings → About and from a connection that was held back. U50: the alert frame
++/// (dialog.dart), the texts at the left and the buttons at the right, [닫기] first and the main
++/// action last.
+ void hjvShowUpdate() {
+   _refresh();
++  HjvPanelModel model() =>
++      hjvPanelModel(hjvUpdate.value, hjvHost.device, steps: hjvSteps.value);
+   _show<void>(
+       (setState, close, context) => CustomAlertDialog(
++            contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.lg),
+             content: Obx(() => HjvUpdateBody(
+-                model: hjvPanelModel(hjvUpdate.value, hjvHost.device,
+-                    steps: hjvSteps.value),
+-                onAction: hjvRunAction)),
+-            actions: [_button(HjvUpdateText.close, close, outline: true)],
++                model: model(), onAction: hjvRunAction, alert: true)),
++            actions: [
++              Obx(() => _HjvUpdateActions(
++                  model: model(), onAction: hjvRunAction, onClose: close))
++            ],
+             onCancel: close,
+           ),
+       tag: _kPanelTag);
+@@ -602,6 +591,7 @@ void hjvShowUpdate() {
+ CustomAlertDialog hjvBlockedDialog(HjvUpdateInfo info,
+         {required VoidCallback onClose, required VoidCallback onUpdate}) =>
+     CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: Text(HjvUpdateText.blockedTitle),
+       content: Text(HjvUpdateText.blockedBody(info.min)),
+       actions: [
+@@ -641,6 +631,7 @@ void _closeMove() {
+ void _showMoveToPlay() {
+   final contact = hjvUpdate.value.contact;
+   _show<void>((setState, close, context) => CustomAlertDialog(
++        contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+         title: Text(HjvUpdateText.moveTitle),
+         content: Text([
+           HjvUpdateText.moveSteps,
+@@ -696,6 +687,7 @@ Future<void> hjvRunAction(HjvAction action) async {
+ void _confirmUpdateNow() {
+   _show<void>(
+       (setState, close, context) => CustomAlertDialog(
++            contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+             title: Text(HjvUpdateText.updateNow),
+             content: Text(HjvUpdateText.closesNow),
+             actions: [
+@@ -766,11 +758,17 @@ Future<HjvLinkAnswer> hjvAskLink(String platform, bool installed) async {
+ 
+ // ---- widgets ----
+ 
+-/// The update screen's texts and buttons, top to bottom.
++/// The update screen's texts and buttons, top to bottom. `alert`: in the update dialog's alert
++/// frame (U50), the texts at the left, its buttons in the dialog's (_HjvUpdateActions).
+ class HjvUpdateBody extends StatelessWidget {
+   final HjvPanelModel model;
+   final void Function(HjvAction) onAction;
+-  const HjvUpdateBody({Key? key, required this.model, required this.onAction})
++  final bool alert;
++  const HjvUpdateBody(
++      {Key? key,
++      required this.model,
++      required this.onAction,
++      this.alert = false})
+       : super(key: key);
+ 
+   // HJViewer: centred as the app's notices are, the title large, the texts in the secondary
+@@ -780,6 +778,7 @@ class HjvUpdateBody extends StatelessWidget {
+     final p = HjvPalette.of(context);
+     final text = TextStyle(fontSize: 14, height: 1.5, color: p.textSecondary);
+     final small = TextStyle(fontSize: 12, height: 1.45, color: p.textTertiary);
++    if (alert) return _alert(p, text, small);
+     Widget tall(Widget child) => SizedBox(height: 44, child: child);
+     return Column(
+       mainAxisSize: MainAxisSize.min,
+@@ -839,6 +838,84 @@ class HjvUpdateBody extends StatelessWidget {
+       ],
+     );
+   }
++
++  // the alert frame: the title as the dialogs' (18, w700), the paragraphs at the left, and
++  // [다시 확인] as a text button below them; the other buttons are the dialog's
++  Widget _alert(HjvPalette p, TextStyle text, TextStyle small) => Column(
++        mainAxisSize: MainAxisSize.min,
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(model.title,
++              style: TextStyle(
++                  fontSize: 18,
++                  fontWeight: FontWeight.w700,
++                  height: 1.4,
++                  color: p.text)),
++          const SizedBox(height: 8),
++          for (final line in model.body) Text(line, style: text),
++          const SizedBox(height: 6),
++          Text(model.versions,
++              style: small.copyWith(fontFeatures: HjvText.tabular)),
++          for (final hint in model.hints) ...[
++            const SizedBox(height: 12),
++            Text(hint, style: text),
++          ],
++          if (model.status.isNotEmpty) ...[
++            const SizedBox(height: 16),
++            Text(model.status,
++                style: TextStyle(
++                    fontSize: 14, fontWeight: FontWeight.w600, color: p.text)),
++          ],
++          if (model.busy) ...[
++            const SizedBox(height: 10),
++            ClipRRect(
++              borderRadius: BorderRadius.circular(3),
++              child: LinearProgressIndicator(
++                  value: model.progress, minHeight: 6, backgroundColor: p.fill),
++            ),
++          ],
++          const SizedBox(height: 8),
++          Transform.translate(
++            // the text button's label in line with the paragraphs
++            offset: const Offset(-8, 0),
++            child: TextButton(
++                onPressed:
++                    model.checking ? null : () => onAction(HjvAction.recheck),
++                child: Text(model.checking
++                    ? HjvUpdateText.checking
++                    : HjvUpdateText.recheck)),
++          ),
++          for (final note in model.notes) ...[
++            const SizedBox(height: 8),
++            Text(note, style: small),
++          ],
++        ],
++      );
++}
++
++/// The update dialog's buttons at its right (U50): [닫기] (quiet), the screen's other buttons
++/// (quiet) and its main one last.
++class _HjvUpdateActions extends StatelessWidget {
++  final HjvPanelModel model;
++  final void Function(HjvAction) onAction;
++  final VoidCallback onClose;
++  const _HjvUpdateActions(
++      {required this.model, required this.onAction, required this.onClose});
++
++  @override
++  Widget build(BuildContext context) => Wrap(
++        alignment: WrapAlignment.end,
++        spacing: 8,
++        runSpacing: 8,
++        children: [
++          _button(HjvUpdateText.close, onClose, outline: true),
++          for (final button in model.buttons.skip(1))
++            _button(button.label, () => onAction(button.action), outline: true),
++          if (model.buttons.isNotEmpty)
++            _button(model.buttons.first.label,
++                () => onAction(model.buttons.first.action)),
++        ],
++      );
+ }
+ 
+ /// The update screen in the place of the connection page.
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 355d6b5..81b810e 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -118,31 +118,12 @@ bool _homeLogsIn() =>
+     hjvPcHomeLogsIn(_home()) &&
+     !bind.isDisableAccount();
+ 
+-/// A button as dialogButton() draws it, for a text of these screens, which translate() must not
+-/// see (as hjviewer_account.dart's).
+-Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) {
+-  if (isDesktop || isWebDesktop) {
+-    // centred, also on the two lines of a narrow button (P1's in the 200 px pane)
+-    return outline
+-        ? OutlinedButton(
+-            onPressed: onPressed,
+-            child: Text(label, textAlign: TextAlign.center))
+-        : ElevatedButton(
+-            style: ElevatedButton.styleFrom(elevation: 0),
+-            onPressed: onPressed,
+-            child: Text(label, textAlign: TextAlign.center));
+-  }
+-  return Builder(
+-      builder: (context) => TextButton(
+-          style: TextButton.styleFrom(
+-              foregroundColor:
+-                  outline ? HjvPalette.of(context).textSecondary : null,
+-              textStyle: TextStyle(
+-                  fontFamily: kHjvFont,
+-                  fontWeight: outline ? FontWeight.w600 : FontWeight.w700)),
+-          onPressed: onPressed,
+-          child: Text(label)));
+-}
++/// The app's button (dialog.dart's hjvButton, U51) for a text of these screens, which
++/// translate() must not see: `outline` the quiet one. Its label is centred, also on the two
++/// lines of a narrow button (P1's in the 200 px pane).
++Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) =>
++    hjvButton(label, onPressed,
++        tone: outline ? HjvButtonTone.quiet : HjvButtonTone.primary);
+ 
+ /// The access password's field: hidden as typed unless shown, the hint below it, and why the
+ /// last try brought no ticket; the keyboard's action sends it, and a shown one is not corrected.
+@@ -435,6 +416,7 @@ Future<bool> hjvAccessMainWindowCloses() async {
+   final byCode = _guestByCode.value;
+   final answer = await gFFI.dialogManager
+       .show<bool>((setState, close, context) => CustomAlertDialog(
++            contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+             title: byCode
+                 ? HjvDialogTitle(Icons.support_agent_rounded, t.pcCode)
+                 : HjvDialogTitle(Icons.key_rounded, t.passwordTitle),
+@@ -546,6 +528,7 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+     }
+ 
+     return CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: HjvDialogTitle(Icons.key_rounded, t.refusedTitle),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+@@ -584,7 +567,10 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+       ),
+       actions: [
+         _button(t.cancel, cancel, outline: true),
+-        if (canLogIn) _button(t.logIn, busy ? null : logIn, outline: open),
++        // U10: with the field open, another way beside [연결], not a second [취소]
++        if (canLogIn)
++          hjvButton(t.logIn, busy ? null : logIn,
++              tone: open ? HjvButtonTone.alt : HjvButtonTone.primary),
+         if (open) _sendButton(t.connect, controller, canSend, connect),
+       ],
+       onSubmit: open ? connect : logIn,
+@@ -614,6 +600,7 @@ void _refusedAgainDialog(HjvAccessTexts t, SessionID sessionId, String title,
+     }
+ 
+     return CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: HjvDialogTitle(Icons.error_outline_rounded, translate(title),
+           danger: true),
+       content:
+@@ -1398,6 +1385,7 @@ Future<bool> _askDialog(HjvAccessTexts t, String target, {String? link}) async {
+     }
+ 
+     return CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: HjvDialogTitle(Icons.lock_outline_rounded, t.askTitle),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+@@ -1431,7 +1419,10 @@ Future<bool> _askDialog(HjvAccessTexts t, String target, {String? link}) async {
+       ),
+       actions: [
+         _button(t.cancel, cancel, outline: true),
+-        if (canLogIn) _button(t.logIn, busy ? null : toLogIn, outline: open),
++        // U10: with the field open, another way beside [연결], not a second [취소]
++        if (canLogIn)
++          hjvButton(t.logIn, busy ? null : toLogIn,
++              tone: open ? HjvButtonTone.alt : HjvButtonTone.primary),
+         if (open) _sendButton(t.connect, controller, canSend, connect),
+       ],
+       onSubmit: submit,
+@@ -1561,6 +1552,7 @@ Future<bool> _linkDialog(HjvAccessTexts t, String shown) async {
+             back = cancel;
+             // the PC's ID in the wrapping text: a one-line title cuts it on a phone
+             return CustomAlertDialog(
++              contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+               title: HjvDialogTitle(Icons.link_rounded, t.linkAskTitle),
+               content: Column(
+                 mainAxisSize: MainAxisSize.min,
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 365c142..0d41a15 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -113,31 +113,17 @@ Future<T?> _show<T>(DialogBuilder builder, {bool back = true}) =>
+       return null;
+     });
+ 
+-/// A button as dialogButton() draws it, for a text of these screens, which translate() must not
+-/// see; `danger` for an action that can lock a PC out (dialog.dart's hjvDangerButton).
++/// The app's button (dialog.dart's hjvButton, U51) for a text of these screens, which
++/// translate() must not see: `outline` the quiet one, `danger` for an action that can lock a PC
++/// out.
+ Widget _button(String label, VoidCallback? onPressed,
+-    {bool outline = false, bool danger = false}) {
+-  if (danger) return hjvDangerButton(label, onPressed);
+-  if (isDesktop || isWebDesktop) {
+-    return outline
+-        ? OutlinedButton(onPressed: onPressed, child: Text(label))
+-        : ElevatedButton(
+-            style: ElevatedButton.styleFrom(elevation: 0),
+-            onPressed: onPressed,
+-            child: Text(label));
+-  }
+-  // HJViewer: as dialogButton() on a phone: the quiet one in the secondary colour, the action bold
+-  return Builder(
+-      builder: (context) => TextButton(
+-          style: TextButton.styleFrom(
+-              foregroundColor:
+-                  outline ? HjvPalette.of(context).textSecondary : null,
+-              textStyle: TextStyle(
+-                  fontFamily: kHjvFont,
+-                  fontWeight: outline ? FontWeight.w600 : FontWeight.w700)),
+-          onPressed: onPressed,
+-          child: Text(label)));
+-}
++        {bool outline = false, bool danger = false}) =>
++    hjvButton(label, onPressed,
++        tone: danger
++            ? HjvButtonTone.danger
++            : outline
++                ? HjvButtonTone.quiet
++                : HjvButtonTone.primary);
+ 
+ // ---- the hooks ----
+ 
+@@ -794,12 +780,8 @@ class _HjvAccountPanelState extends State<_HjvAccountPanel> {
+   }
+ }
+ 
+-/// The desktop settings' buttons (desktop_setting_page.dart's _hjvButtonStyle): 36 px high.
+-const _kSettingsButton = ButtonStyle(
+-  minimumSize: WidgetStatePropertyAll(Size(0, 36)),
+-  padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 16)),
+-  visualDensity: VisualDensity.standard,
+-);
++/// The desktop settings' buttons: the desktop theme's (hjv_style.dart's kHjvDesktopButton).
++const _kSettingsButton = kHjvDesktopButton;
+ 
+ /// This PC's line and its PC password's in Settings → Account (design v3 §1-2).
+ class HjvPcLines extends StatelessWidget {
+@@ -876,6 +858,7 @@ CustomAlertDialog hjvConfirmDialog(HjvTexts t,
+         required VoidCallback onYes,
+         required VoidCallback onNo}) =>
+     CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: title == null
+           ? null
+           : danger
+@@ -919,6 +902,7 @@ CustomAlertDialog hjvLoginNoticeDialog(HjvTexts t, HjvLoginNotice notice,
+         VoidCallback? onSetPassword,
+         VoidCallback? onInstall}) =>
+     CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.lg),
+       title: Text(notice.title),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+@@ -937,7 +921,9 @@ CustomAlertDialog hjvLoginNoticeDialog(HjvTexts t, HjvLoginNotice notice,
+         ],
+       ),
+       actions: [
+-        if (onUndo != null) _button(t.removeThisPc, onUndo, outline: true),
++        // U10: another way, not a second quiet button beside [확인]
++        if (onUndo != null)
++          hjvButton(t.removeThisPc, onUndo, tone: HjvButtonTone.alt),
+         _button(t.ok, onOk, outline: onInstall != null),
+         if (onInstall != null) _button(t.install, onInstall),
+       ],
+@@ -955,6 +941,7 @@ CustomAlertDialog hjvNewDeviceDialog(HjvTexts t, HjvKey key,
+         String? gate,
+         HjvClock local = hjvLocal}) =>
+     CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: Text(hjvNewDeviceTitle(t, key, beforeThis: beforeThis)),
+       content: Text(hjvNewDeviceText(t, key, local: local, gate: gate)),
+       actions: [
+@@ -1103,6 +1090,7 @@ Future<(List<HjvKey>, List<HjvKey>)> _getKeys() => _keysInFlight ??= () async {
+ /// and where it does not (TV-W5) and is too long for a toast.
+ void _tell(HjvTexts t, String text) =>
+     unawaited(_show<void>((setState, close, context) => CustomAlertDialog(
++          contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+           // HJViewer: the dialog's only text in the text colour
+           content:
+               Text(text, style: TextStyle(color: HjvPalette.of(context).text)),
+@@ -1391,6 +1379,7 @@ CustomAlertDialog hjvWakeDialog(HjvTexts t, String pc, HjvWakeView view,
+         required VoidCallback onAgain,
+         required VoidCallback onAnyRelay}) =>
+     CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: Text(t.wakeTitle(pc)),
+       content: Column(
+         mainAxisSize: MainAxisSize.min,
+@@ -1528,6 +1517,7 @@ void _announceRelogin() {
+   final t = _t;
+   gFFI.dialogManager
+       .show<void>((setState, close, context) => CustomAlertDialog(
++            contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+             title: Text(restored ? t.reloginTitle : t.loginEndedTitle),
+             content: Text(restored
+                 ? t.reloginBody
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index a087bfd..d3c615b 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -25,8 +25,10 @@ import '../../models/model.dart';
+ import '../../models/platform_model.dart';
+ import 'address_book.dart';
+ 
+-// HJViewer: the app's one notice box, next to hjvNoteBlock below (U49)
+-export 'package:flutter_hbb/common/hjv_style.dart' show HjvCallout, HjvTone;
++// HJViewer: the app's one notice box, next to hjvNoteBlock below (U49), and its one button
++// and dialog widths, next to hjvButton below (U50, U51)
++export 'package:flutter_hbb/common/hjv_style.dart'
++    show HjvCallout, HjvTone, HjvButtonTone, HjvButtonSize, HjvDialogWidth;
+ 
+ void clientClose(SessionID sessionId, FFI ffi) async {
+   if (allowAskForNoteAtEndOfConnection(ffi, true)) {
+@@ -507,6 +509,16 @@ Future<String> changeAutoDisconnectTimeout(String old) async {
+   return controller.text;
+ }
+ 
++// HJViewer: the app's two dialog frames (U50), in CustomAlertDialog (common.dart):
++// - the alert: an optional icon with the title (HjvDialogTitle, or msgboxContent's 22 px icon on
++//   the title's line in a session's message), the text below at the full width
++//   (hjvDialogTextStyle), and the buttons at the right: [quiet] then [primary] or [danger]
++//   (hjvButton), the main action last;
++// - the form: the title, the fields each under its name (hjvFieldLabel), and the submit at the
++//   full width, 44 high (hjvButton's HjvButtonSize.form; the login).
++// Each is one of HjvDialogWidth's widths (contentBoxConstraints: HjvDialogWidth.box(...)): sm for
++// a short confirm, md for the gate's, the account's and a session's, lg for the update screen and
++// the login notice. Upstream's other dialogs keep their 500 at most.
+ // HJViewer: a dialog's title with an icon, as the dialogs of the app's look show it
+ // (common/hjv_style.dart): on the left, the icon in the accent colour (the danger colour for a
+ // destructive action), the text cut with an ellipsis.
+@@ -536,8 +548,8 @@ TextStyle hjvDialogTextStyle(BuildContext context) => TextStyle(
+ 
+ // HJViewer: a quiet note in a dialog: HjvCallout (common/hjv_style.dart) in the neutral tone,
+ // a block of the fields' grey with an icon, the text in the secondary colour and an action at
+-// its right in primaryStrong; a `warning` in the warning tone, its text in the text colour. A
+-// Korean text goes in through hjvKeepAll, so that it breaks only at spaces.
++// its right in primaryStrong; a `warning` in the warning tone (its text, like neutral's, in the
++// secondary colour). A Korean text goes in through hjvKeepAll, so that it breaks only at spaces.
+ Widget hjvNoteBlock(BuildContext context,
+         {IconData? icon,
+         required Widget text,
+@@ -552,22 +564,20 @@ Widget hjvNoteBlock(BuildContext context,
+ // HJViewer: the action of a confirm that deletes, or that can lock a PC out, as
+ // deleteConfirmDialog's [OK] draws it: on the danger fill, on a phone in the danger colour.
+ // `label` shows as it is (translate() does not see it).
+-Widget hjvDangerButton(String label, VoidCallback? onPressed) => Builder(
+-    builder: (context) => isDesktop || isWebDesktop
+-        ? ElevatedButton(
+-            style: ElevatedButton.styleFrom(
+-                elevation: 0,
+-                backgroundColor: HjvPalette.of(context).dangerFill,
+-                foregroundColor: Colors.white),
+-            onPressed: onPressed,
+-            child: Text(label))
+-        : TextButton(
+-            style: TextButton.styleFrom(
+-                foregroundColor: HjvPalette.of(context).dangerText,
+-                textStyle: const TextStyle(
+-                    fontFamily: kHjvFont, fontWeight: FontWeight.w700)),
+-            onPressed: onPressed,
+-            child: Text(label)));
++Widget hjvDangerButton(String label, VoidCallback? onPressed) =>
++    hjvButton(label, onPressed, tone: HjvButtonTone.danger);
++
++// HJViewer: the app's one button (U51, U10; common/hjv_style.dart's hjvButtonFor): on a desktop
++// filled for the main action (danger's on the danger fill) and bordered for a quiet one and
++// another way, at the theme's 36 px or `size`; on a phone a text button: the main action bold in
++// the accent's colour, the quiet one in the secondary text colour, another way in the accent's
++// colour at 600, danger's in the danger colour. `label` shows as it is (translate() does not see
++// it; dialogButton translates).
++Widget hjvButton(String label, VoidCallback? onPressed,
++        {HjvButtonTone tone = HjvButtonTone.primary,
++        HjvButtonSize size = HjvButtonSize.normal}) =>
++    hjvButtonFor(label, onPressed,
++        tone: tone, size: size, desktop: isDesktop || isWebDesktop);
+ 
+ // HJViewer: a field's label above the field, as the forms of the app's look show it.
+ Widget hjvFieldLabel(BuildContext context, String text) => Padding(
+@@ -1082,6 +1092,7 @@ void wrongPasswordDialog(SessionID sessionId,
+     }
+ 
+     return CustomAlertDialog(
++        contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+         title: null,
+         content: msgboxContent(type, hjvPcPasswordWrongTitle(title), text),
+         onSubmit: submit,
+@@ -1294,6 +1305,7 @@ _connectDialog(
+     }
+ 
+     return CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: HjvDialogTitle(Icons.password_rounded,
+           hjvAsk?.title ?? translate('Password Required')),
+       content: Column(mainAxisSize: MainAxisSize.min, children: [
+@@ -1328,6 +1340,7 @@ void showWaitUacDialog(
+   dialogManager.show(
+       tag: '$sessionId-wait-uac',
+       (setState, close, context) => CustomAlertDialog(
++            contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+             title: null,
+             content: msgboxContent(type, 'Wait', 'wait_accept_uac_tip'),
+             actions: [
+@@ -1512,6 +1525,7 @@ void showOnBlockDialog(
+     }
+ 
+     return CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: null,
+       content: msgboxContent(type, title,
+           "${translate(text)}${type.contains('uac') ? '\n' : '\n\n'}${translate('request_elevation_tip')}"),
+@@ -1534,6 +1548,7 @@ void showElevationError(SessionID sessionId, String type, String title,
+     }
+ 
+     return CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: null,
+       content: msgboxContent(type, title, text),
+       actions: [
+@@ -1557,6 +1572,7 @@ void showWaitAcceptDialog(SessionID sessionId, String type, String title,
+     }
+ 
+     return CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
+       title: null,
+       content: msgboxContent(type, title, text),
+       actions: [
+@@ -2180,6 +2196,7 @@ void deleteConfirmDialog(Function onSubmit, String title) async {
+       }
+ 
+       return CustomAlertDialog(
++        contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.sm),
+         title:
+             HjvDialogTitle(Icons.delete_outline_rounded, title, danger: true),
+         content: SizedBox.shrink(),
+@@ -2330,6 +2347,7 @@ void renameDialog(
+     }
+ 
+     return CustomAlertDialog(
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.sm),
+       title: HjvDialogTitle(Icons.edit_outlined, translate('Rename')),
+       content: Column(
+         crossAxisAlignment: CrossAxisAlignment.start,
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 7213357..a7daad1 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -43,15 +43,12 @@ const double _kTitleFontSize = 20;
+ const double _kContentFontSize = 14;
+ const Color _accentColor = MyTheme.accent;
+ // HJViewer: the margin around the pages' cards and below the last one (the pages scroll to the
+-// window's edge), and the settings' buttons: 36 px high, the colours and the shape from the
+-// theme (common/hjv_theme.dart)
++// window's edge), and the settings' buttons: the desktop theme's (hjv_style.dart's
++// kHjvDesktopButton, 36 px high), the colours and the shape from the theme
++// (common/hjv_theme.dart)
+ const double _kHjvPageMargin = 24;
+ const EdgeInsets _hjvEnd = EdgeInsets.only(bottom: _kHjvPageMargin);
+-const ButtonStyle _hjvButtonStyle = ButtonStyle(
+-  minimumSize: WidgetStatePropertyAll(Size(0, 36)),
+-  padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 16)),
+-  visualDensity: VisualDensity.standard,
+-);
++const ButtonStyle _hjvButtonStyle = kHjvDesktopButton;
+ const String _kSettingPageControllerTag = 'settingPageController';
+ const String _kSettingPageTabKeyTag = 'settingPageTabKey';
+ 
+@@ -3232,10 +3229,7 @@ Widget _lock(
+               child: Padding(
+                 padding: const EdgeInsets.only(right: _kHjvPageMargin),
+                 child: ElevatedButton(
+-                  style: const ButtonStyle(
+-                    minimumSize: WidgetStatePropertyAll(Size(0, 40)),
+-                    visualDensity: VisualDensity.standard,
+-                  ),
++                  style: HjvButtonSize.screen.style,
+                   child: SizedBox(
+                       height: 25,
+                       child: Row(
+diff --git a/flutter/lib/models/model.dart b/flutter/lib/models/model.dart
+index 6644d9f..357da4e 100644
+--- a/flutter/lib/models/model.dart
++++ b/flutter/lib/models/model.dart
+@@ -1049,22 +1049,10 @@ class FfiModel with ChangeNotifier {
+         allowClick: true,
+       );
+     } else {
+-      if (type.contains('error')) {
+-        BotToast.showText(
+-          contentColor: Colors.red,
+-          text: translate(text),
+-          duration: duration,
+-          clickClose: true,
+-          onlyOne: true,
+-        );
+-      } else {
+-        BotToast.showText(
+-          text: translate(text),
+-          duration: duration,
+-          clickClose: true,
+-          onlyOne: true,
+-        );
+-      }
++      // HJViewer: the core's toasts in the app's toast (common.dart's showToast, U45), an error
++      // with its icon
++      showToast(translate(text),
++          timeout: duration, error: type.contains('error'));
+     }
+   }
+ 
+diff --git a/flutter/test/hjviewer_style_test.dart b/flutter/test/hjviewer_style_test.dart
+index 280e62c..3fa6c9c 100644
+--- a/flutter/test/hjviewer_style_test.dart
++++ b/flutter/test/hjviewer_style_test.dart
+@@ -4,7 +4,8 @@ import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+ // The app's look (common/hjv_style.dart): the palettes' contrast, Korean line breaks at spaces
+-// only, the peer cards' online dot and screen reader label, and the notice box HjvCallout (U49).
++// only, the peer cards' online dot and screen reader label, the notice box HjvCallout (U49), the
++// one button and the dialogs' widths (U50, U51, U10) and the core's error toast (U45).
+ // Plain Flutter, no bridge.
+ 
+ double contrast(Color a, Color b) {
+@@ -419,4 +420,183 @@ void main() {
+           moreOrLessEquals(tester.getRect(find.text('Text')).center.dy, epsilon: 0.5));
+     });
+   });
++
++  group('hjvButton', () {
++    test('its look per tone: a desktop\'s filled and bordered, a phone\'s text buttons', () {
++      for (final p in [HjvPalette.light, HjvPalette.dark]) {
++        Object look(HjvButtonTone tone, bool desktop) {
++          final l = hjvButtonLook(p, tone, desktop: desktop);
++          return (l.kind, l.fill, l.color, l.weight);
++        }
++
++        expect(look(HjvButtonTone.primary, true),
++            (HjvButtonKind.elevated, null, null, null));
++        expect(look(HjvButtonTone.quiet, true),
++            (HjvButtonKind.outlined, null, null, null));
++        expect(look(HjvButtonTone.alt, true),
++            (HjvButtonKind.outlined, null, null, null));
++        expect(look(HjvButtonTone.danger, true),
++            (HjvButtonKind.elevated, p.dangerFill, Colors.white, null));
++        expect(look(HjvButtonTone.primary, false),
++            (HjvButtonKind.text, null, p.primary, FontWeight.w700));
++        expect(look(HjvButtonTone.quiet, false),
++            (HjvButtonKind.text, null, p.textSecondary, FontWeight.w600));
++        // U10: A1's [로그인] beside [취소] and [연결] is neither of them
++        expect(look(HjvButtonTone.alt, false),
++            (HjvButtonKind.text, null, p.primary, FontWeight.w600));
++        expect(look(HjvButtonTone.danger, false),
++            (HjvButtonKind.text, null, p.dangerText, FontWeight.w700));
++      }
++    });
++
++    // a desktop theme as hjv_theme.dart makes it: the platform's compact density, the buttons'
++    // themes with kHjvDesktopButton
++    final desktopTheme = ThemeData(
++        platform: TargetPlatform.windows,
++        visualDensity: VisualDensity.compact,
++        elevatedButtonTheme:
++            const ElevatedButtonThemeData(style: kHjvDesktopButton),
++        outlinedButtonTheme:
++            const OutlinedButtonThemeData(style: kHjvDesktopButton),
++        textButtonTheme: const TextButtonThemeData(style: kHjvDesktopButton));
++
++    Future<void> pump(WidgetTester tester, Widget child, {ThemeData? theme}) =>
++        tester.pumpWidget(MaterialApp(
++            theme: theme ?? desktopTheme,
++            home: Scaffold(
++                body: Align(alignment: Alignment.topLeft, child: child))));
++
++    testWidgets('a desktop\'s buttons are 36 high, a screen\'s action 40 and a form\'s 44',
++        (tester) async {
++      for (final (tone, kind) in [
++        (HjvButtonTone.primary, ElevatedButton),
++        (HjvButtonTone.quiet, OutlinedButton),
++        (HjvButtonTone.alt, OutlinedButton),
++        (HjvButtonTone.danger, ElevatedButton),
++      ]) {
++        for (final (size, high) in [
++          (HjvButtonSize.normal, 36.0),
++          (HjvButtonSize.screen, 40.0),
++          (HjvButtonSize.form, 44.0),
++        ]) {
++          await pump(
++              tester,
++              hjvButtonFor('OK', () {},
++                  tone: tone, size: size, desktop: true));
++          expect(find.byType(kind), findsOneWidget, reason: '$tone');
++          expect(tester.getSize(find.byType(kind)).height, high,
++              reason: '$tone $size');
++        }
++      }
++      // a text button of the theme too (upstream's dialogs): no longer the compact 28
++      await pump(tester, TextButton(onPressed: () {}, child: const Text('OK')));
++      expect(tester.getSize(find.byType(TextButton)).height, 36);
++    });
++
++    testWidgets('on a phone, another way is in the accent\'s colour, not [취소]\'s grey',
++        (tester) async {
++      final p = HjvPalette.light;
++      (Color?, FontWeight?) look(WidgetTester tester) {
++        final style = tester.widget<TextButton>(find.byType(TextButton)).style!;
++        return (
++          style.foregroundColor?.resolve({}),
++          style.textStyle?.resolve({})?.fontWeight
++        );
++      }
++
++      await pump(
++          tester,
++          hjvButtonFor('로그인', () {},
++              tone: HjvButtonTone.alt, desktop: false),
++          theme: ThemeData(platform: TargetPlatform.android));
++      expect(look(tester), (p.primary, FontWeight.w600));
++      await pump(
++          tester,
++          hjvButtonFor('취소', () {},
++              tone: HjvButtonTone.quiet, desktop: false),
++          theme: ThemeData(platform: TargetPlatform.android));
++      expect(look(tester), (p.textSecondary, FontWeight.w600));
++      // a disabled one keeps the theme's disabled colour
++      await pump(
++          tester,
++          hjvButtonFor('로그인', null, tone: HjvButtonTone.alt, desktop: false),
++          theme: ThemeData(platform: TargetPlatform.android));
++      expect(
++          tester
++              .widget<TextButton>(find.byType(TextButton))
++              .style!
++              .foregroundColor
++              ?.resolve({WidgetState.disabled}),
++          isNull);
++    });
++
++    testWidgets('a callout\'s action keeps its height under the desktop buttons\' theme',
++        (tester) async {
++      Widget callout() => SizedBox(
++          width: 400,
++          child: HjvCallout(
++              text: 'Short',
++              icon: Icons.lock_outline_rounded,
++              actions: [
++                TextButton(onPressed: () {}, child: const Text('Log in'))
++              ]));
++      await pump(tester, callout(),
++          theme: ThemeData(
++              platform: TargetPlatform.windows,
++              visualDensity: VisualDensity.compact));
++      final before = tester.getSize(find.byType(HjvCallout)).height;
++      await pump(tester, callout());
++      expect(tester.getSize(find.byType(HjvCallout)).height, before);
++    });
++  });
++
++  testWidgets('a dialog\'s width: sm, md or lg, the screen\'s where it is narrower',
++      (tester) async {
++    expect((HjvDialogWidth.sm, HjvDialogWidth.md, HjvDialogWidth.lg),
++        (360.0, 440.0, 560.0));
++    final key = GlobalKey();
++    Future<double> width(double screen) async {
++      tester.view.physicalSize = Size(screen, 800);
++      tester.view.devicePixelRatio = 1;
++      await tester.pumpWidget(MaterialApp(
++          home: AlertDialog(
++              scrollable: true,
++              content: ConstrainedBox(
++                  constraints: HjvDialogWidth.box(HjvDialogWidth.md),
++                  child: Text('Text', key: key)),
++              actions: [TextButton(onPressed: () {}, child: const Text('OK'))])));
++      return tester.getSize(find.byKey(key)).width;
++    }
++
++    addTearDown(tester.view.reset);
++    expect(await width(1200), HjvDialogWidth.md);
++    final narrow = await width(360);
++    expect(narrow, lessThan(360));
++    expect(tester.takeException(), isNull);
++  });
++
++  testWidgets('the core\'s error toast: an error icon that reads on the toast', (tester) async {
++    for (final brightness in Brightness.values) {
++      await tester.pumpWidget(MaterialApp(
++          theme: ThemeData(brightness: brightness),
++          home: const Scaffold(body: HjvToast('Failed', danger: true))));
++      // the theme's change animates
++      await tester.pumpAndSettle();
++      final icon = tester.widget<Icon>(find.byIcon(Icons.error_outline_rounded));
++      // the toast's background without the app's snack bar theme: the palette's text colour
++      final p = brightness == Brightness.dark ? HjvPalette.dark : HjvPalette.light;
++      expect(icon.color, hjvToastDangerColor(brightness));
++      expect(contrast(icon.color!, p.text), greaterThanOrEqualTo(3),
++          reason: '$brightness');
++      // and on hjv_theme.dart's snack bar colours
++      final bar = brightness == Brightness.dark
++          ? const Color(0xFFE6E9EE)
++          : const Color(0xFF2B313B);
++      expect(contrast(icon.color!, bar), greaterThanOrEqualTo(3),
++          reason: '$brightness');
++    }
++    await tester.pumpWidget(const MaterialApp(
++        home: Scaffold(body: HjvToast('Copied'))));
++    expect(find.byIcon(Icons.error_outline_rounded), findsNothing);
++  });
+ }

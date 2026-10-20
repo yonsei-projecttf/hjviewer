@@ -1,0 +1,455 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 06:08:34 +0900
+Subject: [PATCH 141/147] hjviewer: the admin view in the app's look (UX-S4)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U36: the operator's view (hjviewer_admin.dart) leaves default Material for
+the 1.7.0 look. Its two tabs are the new HjvPillTabs
+(common/widgets/hjv_pill_tabs.dart): pills of text as the PC list's tab bar
+draws them, the selected one on primarySoft in primaryStrong at 600, the
+others in textSecondary at 400, a screen reader hearing which is selected and
+the keyboard's focus ring; they drive the DefaultTabController, so the
+TabBarView under them pages as before. On a phone each user and each PC is a
+card (hjvCardDecoration, medium radius) 8 apart instead of a divided list,
+with the outlined person and desktop icons; whether a user is active stays
+the first word of the second line, not the icon. The wide table sits in one
+card with border-coloured lines, its header at 12/600 in textTertiary. An
+empty list (and a search that finds nothing) is hjvPeersPlaceholder, a failed
+request an HjvCallout in the danger tone, the dialog's [닫기] hjvButton. The
+texts are W1's (D-17: '관리자' in app texts only), unchanged here.
+
+Tests: hjviewer_style_test.dart checks the pills' colours, weights, height,
+semantics and paging. The bridge-needing hjviewer_admin_widgets_test.dart
+reads the error through hjvKeepAll (HjvCallout keeps Korean words whole) and
+gains a test that an empty list shows the placeholder and a search that finds
+nothing its own.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_admin.dart        | 100 ++++++++++++------
+ flutter/lib/common/widgets/hjv_pill_tabs.dart |  96 +++++++++++++++++
+ flutter/test/hjviewer_admin_widgets_test.dart |  38 ++++++-
+ flutter/test/hjviewer_style_test.dart         |  49 ++++++++-
+ 4 files changed, 245 insertions(+), 38 deletions(-)
+ create mode 100644 flutter/lib/common/widgets/hjv_pill_tabs.dart
+
+diff --git a/flutter/lib/common/hjviewer_admin.dart b/flutter/lib/common/hjviewer_admin.dart
+index 3fef05a..acf8117 100644
+--- a/flutter/lib/common/hjviewer_admin.dart
++++ b/flutter/lib/common/hjviewer_admin.dart
+@@ -9,6 +9,9 @@ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/hjviewer_admin_texts.dart';
++import 'package:flutter_hbb/common/widgets/dialog.dart';
++import 'package:flutter_hbb/common/widgets/hjv_pill_tabs.dart';
++import 'package:flutter_hbb/common/widgets/peers_view.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ import 'package:get/get.dart';
+ import 'package:settings_ui/settings_ui.dart';
+@@ -176,12 +179,7 @@ CustomAlertDialog hjvAdminDialog(HjvAdminTexts t,
+                   onGone: onGone,
+                   login: login,
+                   local: local))),
+-      actions: [
+-        ElevatedButton(
+-            style: ElevatedButton.styleFrom(elevation: 0),
+-            onPressed: onClose,
+-            child: Text(t.account.close)),
+-      ],
++      actions: [hjvButton(t.account.close, onClose)],
+       onCancel: onClose,
+     );
+ 
+@@ -246,6 +244,10 @@ const _kPcFlex = [3, 3, 3, 2, 3, 2];
+ /// on its side with the keyboard up, a big font) scrolls in it, and the lists keep the rest.
+ const _kHead = 0.6;
+ 
++/// A user's and a PC's icon, on their cards and on an empty list.
++const _kUserIcon = Icons.person_outline_rounded;
++const _kPcIcon = Icons.desktop_windows_outlined;
++
+ class _HjvAdminViewState extends State<HjvAdminView> {
+   HjvAdminOverview? _overview;
+   var _error = '';
+@@ -361,19 +363,18 @@ class _HjvAdminViewState extends State<HjvAdminView> {
+                     if (_loading)
+                       const LinearProgressIndicator().marginOnly(top: 4),
+                     if (_error.isNotEmpty)
+-                      Text(_error,
+-                              style: TextStyle(
+-                                  color: Theme.of(context).colorScheme.error))
++                      HjvCallout(
++                              text: _error,
++                              tone: HjvTone.danger,
++                              icon: Icons.error_outline_rounded)
+                           .marginOnly(top: 8),
+                     if (overview != null) ...[
+                       Text(hjvAdminSummary(t, overview,
+                               now: now, local: widget.local))
+                           .marginOnly(top: 8),
+-                      TabBar(tabs: [
+-                        Tab(
+-                            text: t.usersTab(
+-                                users.length, overview.users.length)),
+-                        Tab(text: t.pcsTab(pcs.length, overview.pcs.length)),
++                      HjvPillTabs(labels: [
++                        t.usersTab(users.length, overview.users.length),
++                        t.pcsTab(pcs.length, overview.pcs.length),
+                       ]),
+                     ],
+                   ],
+@@ -391,49 +392,75 @@ class _HjvAdminViewState extends State<HjvAdminView> {
+   Widget _lists(HjvAdminTexts t, HjvAdminOverview o, List<HjvAdminUser> users,
+       List<HjvAdminPc> pcs, DateTime now) {
+     final local = widget.local;
+-    Widget user(HjvAdminUser u) => ListTile(
+-        contentPadding: EdgeInsets.zero,
+-        leading: Icon(u.active ? Icons.person : Icons.person_outline),
+-        title: Text(hjvAdminUserTitle(u)),
+-        subtitle: Text(hjvAdminUserLine(t, u, now: now, local: local)));
+-    Widget pc(HjvAdminPc p) => ListTile(
+-        contentPadding: EdgeInsets.zero,
+-        leading: const Icon(Icons.computer),
+-        title: Text(hjvAdminPcTitle(p)),
+-        subtitle:
+-            Text(hjvAdminPcLines(t, p, now: now, local: local).join('\n')));
++    // a card each; whether a user is active is the second line's first word, not the icon
++    Widget card(IconData icon, String title, String lines) => Container(
++        decoration: hjvCardDecoration(context, radius: HjvRadius.md),
++        child: ListTile(
++            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
++            leading: Icon(icon, color: HjvPalette.of(context).textSecondary),
++            title: Text(title),
++            subtitle: Text(lines)));
++    Widget user(HjvAdminUser u) => card(_kUserIcon, hjvAdminUserTitle(u),
++        hjvAdminUserLine(t, u, now: now, local: local));
++    Widget pc(HjvAdminPc p) => card(_kPcIcon, hjvAdminPcTitle(p),
++        hjvAdminPcLines(t, p, now: now, local: local).join('\n'));
+     return LayoutBuilder(builder: (context, size) {
+       final wide = size.maxWidth >= _kWide;
+       return SelectionArea(
+         child: TabBarView(children: [
+           _list(
+               o.users.isEmpty ? t.noUsers : t.noMatch,
++              o.users.isEmpty ? _kUserIcon : Icons.search_off_rounded,
+               wide
+                   ? _table(_kUserFlex, t.userColumns, [
+                       for (final u in users)
+                         hjvAdminUserCells(t, u, now: now, local: local)
+                     ])
+-                  : users.map(user).toList()),
++                  : users.map(user).toList(),
++              table: wide),
+           _list(
+               o.pcs.isEmpty ? t.noPcs : t.noMatch,
++              o.pcs.isEmpty ? _kPcIcon : Icons.search_off_rounded,
+               wide
+                   ? _table(_kPcFlex, t.pcColumns, [
+                       for (final p in pcs)
+                         hjvAdminPcCells(t, p, now: now, local: local)
+                     ])
+-                  : pcs.map(pc).toList()),
++                  : pcs.map(pc).toList(),
++              table: wide),
+         ]),
+       );
+     });
+   }
+ 
+-  /// The rows of a list, or what an empty one says.
+-  Widget _list(String empty, List<Widget> rows) {
+-    if (rows.isEmpty) return Center(child: Text(empty));
+-    return ListView.separated(
+-      itemCount: rows.length,
+-      itemBuilder: (context, i) => rows[i],
+-      separatorBuilder: (context, i) => const Divider(height: 1),
++  /// The rows of a list, or what an empty one says as the PC list's placeholder does: the cards
++  /// 8 apart, or the table's rows in one card, as high as they are, with lines between them.
++  Widget _list(String empty, IconData icon, List<Widget> rows,
++      {required bool table}) {
++    if (rows.isEmpty) {
++      return hjvPeersPlaceholder(context, icon: icon, title: empty);
++    }
++    if (!table) {
++      return ListView.separated(
++        padding: const EdgeInsets.only(bottom: 8),
++        itemCount: rows.length,
++        itemBuilder: (context, i) => rows[i],
++        separatorBuilder: (context, i) => const SizedBox(height: 8),
++      );
++    }
++    return Align(
++      alignment: Alignment.topCenter,
++      child: DecoratedBox(
++        decoration: hjvCardDecoration(context, radius: HjvRadius.md),
++        child: ListView.separated(
++          shrinkWrap: true,
++          padding: const EdgeInsets.symmetric(horizontal: 12),
++          itemCount: rows.length,
++          itemBuilder: (context, i) => rows[i],
++          separatorBuilder: (context, i) =>
++              Divider(height: 1, color: HjvPalette.of(context).border),
++        ),
++      ),
+     );
+   }
+ 
+@@ -455,8 +482,11 @@ class _HjvAdminViewState extends State<HjvAdminView> {
+             Expanded(
+                 flex: i < flex.length ? flex[i] : 1,
+                 child: Text(cells[i],
++                        // the header: 12/600 in the tertiary text colour
+                         style: bold
+-                            ? const TextStyle(fontWeight: FontWeight.bold)
++                            ? HjvText.bodySmall.copyWith(
++                                fontWeight: FontWeight.w600,
++                                color: HjvPalette.of(context).textTertiary)
+                             : null)
+                     .marginOnly(right: 8)),
+         ],
+diff --git a/flutter/lib/common/widgets/hjv_pill_tabs.dart b/flutter/lib/common/widgets/hjv_pill_tabs.dart
+new file mode 100644
+index 0000000..cf4cc93
+--- /dev/null
++++ b/flutter/lib/common/widgets/hjv_pill_tabs.dart
+@@ -0,0 +1,96 @@
++// HJViewer UX-S4 (U36): tabs of text as the PC list's tab bar draws its pills (peer_tab_page.dart):
++// the selected one on the accent's faint tint in its strong text, the others in the secondary text
++// colour. They drive a TabController (the DefaultTabController's when none is given), so that a
++// TabBarView under them pages as under a TabBar. Plain Flutter without the bridge, so that ci.sh
++// tests it with the web stand-in (test/hjviewer_style_test.dart).
++
++import 'package:flutter/material.dart';
++
++import '../hjv_keys.dart';
++import '../hjv_semantics.dart';
++import '../hjv_style.dart';
++
++class HjvPillTabs extends StatelessWidget {
++  final List<String> labels;
++  final TabController? controller;
++  const HjvPillTabs({super.key, required this.labels, this.controller});
++
++  @override
++  Widget build(BuildContext context) {
++    final tabs = controller ?? DefaultTabController.of(context);
++    return AnimatedBuilder(
++      animation: tabs,
++      builder: (context, _) => Padding(
++        padding: const EdgeInsets.symmetric(vertical: 8),
++        child: Row(
++          children: [
++            for (var i = 0; i < labels.length; i++)
++              Flexible(
++                child: Padding(
++                  padding:
++                      EdgeInsets.only(right: i == labels.length - 1 ? 0 : 6),
++                  child: _HjvPill(
++                      label: labels[i],
++                      selected: tabs.index == i,
++                      onTap: () => tabs.animateTo(i)),
++                ),
++              ),
++          ],
++        ),
++      ),
++    );
++  }
++}
++
++class _HjvPill extends StatelessWidget {
++  final String label;
++  final bool selected;
++  final VoidCallback onTap;
++  const _HjvPill(
++      {required this.label, required this.selected, required this.onTap});
++
++  @override
++  Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    // the weight too, so that the choice does not rest on the colour alone (UX-K2)
++    final style = selected
++        ? HjvText.captionStrong.copyWith(color: p.primaryStrong)
++        : HjvText.caption.copyWith(height: 1.35, color: p.textSecondary);
++    return hjvSelectedSemantics(
++      selected: selected,
++      child: HjvFocusRing(
++        radius: BorderRadius.circular(16),
++        child: Material(
++          type: MaterialType.transparency,
++          child: InkWell(
++            customBorder: const StadiumBorder(),
++            hoverColor: p.hover,
++            onTap: onTap,
++            child: Ink(
++              decoration: ShapeDecoration(
++                  shape: const StadiumBorder(),
++                  color: selected ? p.primarySoft : Colors.transparent),
++              // 32 high as the PC list's pills, higher with a big font
++              child: ConstrainedBox(
++                constraints: const BoxConstraints(minHeight: 32),
++                child: Center(
++                  widthFactor: 1,
++                  heightFactor: 1,
++                  child: Padding(
++                    padding:
++                        const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
++                    child: Text(label,
++                        maxLines: 1,
++                        softWrap: false,
++                        overflow: TextOverflow.ellipsis,
++                        style: style),
++                  ),
++                ),
++              ),
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++}
+diff --git a/flutter/test/hjviewer_admin_widgets_test.dart b/flutter/test/hjviewer_admin_widgets_test.dart
+index 496ef45..a33de90 100644
+--- a/flutter/test/hjviewer_admin_widgets_test.dart
++++ b/flutter/test/hjviewer_admin_widgets_test.dart
+@@ -2,6 +2,7 @@ import 'dart:async';
+ 
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_admin.dart';
+ import 'package:flutter_hbb/common/hjviewer_admin_texts.dart';
+ import 'package:flutter_test/flutter_test.dart';
+@@ -351,7 +352,8 @@ void main() {
+         hjvAdminAnswer(ko, 429, {'error': '요청이 너무 많습니다. 잠시 뒤 다시 해 주세요.'}));
+     await tester.pump();
+     await tester.pump();
+-    expect(find.text('요청이 너무 많습니다. 잠시 뒤 다시 해 주세요.'), findsOneWidget);
++    expect(
++        find.text(hjvKeepAll('요청이 너무 많습니다. 잠시 뒤 다시 해 주세요.')), findsOneWidget);
+     expect(find.byType(LinearProgressIndicator), findsNothing);
+     // what was shown stays, in the tab it was in
+     expect(find.text('PC 1/3'), findsOneWidget);
+@@ -363,7 +365,7 @@ void main() {
+     answers[2].complete(hjvAdminAnswer(ko, 200, overviewAnswer()));
+     await tester.pump();
+     await tester.pump();
+-    expect(find.text('요청이 너무 많습니다. 잠시 뒤 다시 해 주세요.'), findsNothing);
++    expect(find.text(hjvKeepAll('요청이 너무 많습니다. 잠시 뒤 다시 해 주세요.')), findsNothing);
+     expect(find.byType(LinearProgressIndicator), findsNothing);
+     expect(find.text('연구실-PC\n123 456 789'), findsOneWidget);
+   });
+@@ -416,6 +418,38 @@ void main() {
+     expect(find.text('로그인한 사용자가 없습니다.'), findsOneWidget);
+   });
+ 
++  testWidgets(
++      'an empty list shows the PC list\'s placeholder, a search that finds nothing its own',
++      (tester) async {
++    screen(tester, const Size(400, 800));
++    await show(
++        tester,
++        HjvAdminView(
++            t: ko,
++            load: () async => hjvAdminAnswer(ko, 200, {
++                  'v': 1,
++                  'users': overviewAnswer()['users'],
++                  'pcs': [],
++                }),
++            onGone: (_) {},
++            local: kst));
++    await settle(tester);
++    // the users as cards with the outlined person, whether active or not
++    expect(find.byIcon(Icons.person_outline_rounded), findsNWidgets(3));
++    expect(find.byType(Divider), findsNothing);
++    await tester.tap(find.text('PC 0'));
++    await settle(tester);
++    expect(find.text('계정에 로그인한 PC가 없습니다.'), findsOneWidget);
++    expect(find.byIcon(Icons.desktop_windows_outlined), findsOneWidget);
++    await tester.tap(find.text('사용자 3'));
++    await settle(tester);
++    await tester.enterText(find.byType(TextField), 'nobody');
++    await tester.pump();
++    expect(find.text('찾는 항목이 없습니다.'), findsOneWidget);
++    expect(find.byIcon(Icons.search_off_rounded), findsOneWidget);
++    expect(find.byIcon(Icons.person_outline_rounded), findsNothing);
++  });
++
+   testWidgets(
+       'on a phone on its side with the keyboard up, or with a big font, the lists keep their room',
+       (tester) async {
+diff --git a/flutter/test/hjviewer_style_test.dart b/flutter/test/hjviewer_style_test.dart
+index 5207161..849e171 100644
+--- a/flutter/test/hjviewer_style_test.dart
++++ b/flutter/test/hjviewer_style_test.dart
+@@ -2,12 +2,13 @@ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
++import 'package:flutter_hbb/common/widgets/hjv_pill_tabs.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+ // The app's look (common/hjv_style.dart): the palettes' contrast, Korean line breaks at spaces
+ // only, the peer cards' online dot and screen reader label, the notice box HjvCallout (U49), the
+ // one button, the dialogs' widths and the alert frame (U50, U51, U10), the core's error toast
+-// (U45) and the type scale's roles (U52).
++// (U45), the type scale's roles (U52) and the admin view's pill tabs (U36).
+ // Plain Flutter, no bridge.
+ 
+ double contrast(Color a, Color b) {
+@@ -695,4 +696,50 @@ void main() {
+     // let the last toast's timer run
+     await tester.pump(const Duration(seconds: 9));
+   });
++
++  testWidgets('the pill tabs: the selected one on the faint accent, a tap pages the view under them',
++      (tester) async {
++    await tester.pumpWidget(MaterialApp(
++        home: Scaffold(
++            body: DefaultTabController(
++                length: 2,
++                child: Column(children: [
++                  const HjvPillTabs(labels: ['사용자 3', 'PC 3']),
++                  const Expanded(
++                      child: TabBarView(
++                          children: [Text('users page'), Text('pcs page')])),
++                ])))));
++    Color? back(String label) => (tester
++            .widget<Ink>(
++                find.ancestor(of: find.text(label), matching: find.byType(Ink)))
++            .decoration as ShapeDecoration)
++        .color;
++    TextStyle style(String label) =>
++        tester.widget<Text>(find.text(label)).style!;
++    final p = HjvPalette.light;
++    expect(back('사용자 3'), p.primarySoft);
++    expect(style('사용자 3').color, p.primaryStrong);
++    expect(back('PC 3'), Colors.transparent);
++    expect(style('PC 3').color, p.textSecondary);
++    // the choice shows in the weight too, not by colour alone
++    expect(style('사용자 3').fontWeight, FontWeight.w600);
++    expect(style('PC 3').fontWeight, FontWeight.w400);
++    expect(tester.getSize(find.byType(HjvPillTabs)).height, 32 + 16);
++    expect(find.text('users page'), findsOneWidget);
++    final semantics = tester.ensureSemantics();
++    expect(
++        tester.getSemantics(find.text('사용자 3')),
++        containsSemantics(
++            label: '사용자 3',
++            isButton: true,
++            isSelected: true,
++            hasTapAction: true));
++    semantics.dispose();
++
++    await tester.tap(find.text('PC 3'));
++    await tester.pumpAndSettle();
++    expect(find.text('pcs page'), findsOneWidget);
++    expect(back('PC 3'), p.primarySoft);
++    expect(back('사용자 3'), Colors.transparent);
++  });
+ }

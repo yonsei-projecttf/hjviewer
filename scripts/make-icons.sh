@@ -14,6 +14,8 @@
 #                    Android splash branding vector; iOS draws the line as a label
 #   small.svg        optional redraw on the 16 px grid for the 16 and 32 px ICO entries
 #   small-24.svg     optional redraw on the 24 px grid for the 24 px ICO entries
+#   tray-warn-dot.svg the orange dot (HjvPalette.light.warning, white ring) that the Windows tray
+#                    puts on its icon while the server refuses the PC (res/tray-icon-warn.ico)
 # The PNGs keep the formats the overlay has always had (16-bit RGBA; iOS 16-bit RGB without alpha;
 # 8-bit gray+alpha for single-colour glyphs) and carry no timestamp, so unchanged masters give
 # byte-identical files. The iOS launch image is 8-bit RGBA without ancillary chunks (untagged sRGB):
@@ -33,7 +35,7 @@ if [[ $version != "Version: ImageMagick 6."* ]]; then
   echo "error: needs ImageMagick 6 (convert)" >&2
   exit 1
 fi
-masters=(icon.svg icon-square.svg glyph.svg)
+masters=(icon.svg icon-square.svg glyph.svg tray-warn-dot.svg)
 for f in small.svg small-24.svg; do
   if [ -f "$SRC/$f" ]; then masters+=("$f"); fi
 done
@@ -137,6 +139,18 @@ ico() { # <out> <size>...: one entry per size, ascending; ImageMagick stores 256
   for s in "$@"; do
     src "$(master_for "$s")" "$s"
     all+=(\( "${args[@]}" \))
+  done
+  convert -respect-parentheses "${all[@]}" "$OUT/$out"
+  count=$((count + 1))
+}
+
+ico_dot() { # <out> <size>...: as ico, with tray-warn-dot.svg over each entry
+  local out=$1 s all=()
+  shift
+  for s in "$@"; do
+    src "$(master_for "$s")" "$s"
+    all+=(\( "${args[@]}" \( -background none -density 96 "msvg:$SRC/tray-warn-dot.svg" \
+      -resize "${s}x$s" \) -compose Over -composite \))
   done
   convert -respect-parentheses "${all[@]}" "$OUT/$out"
   count=$((count + 1))
@@ -264,6 +278,7 @@ rgba icon.svg 256 res/128x128@2x.png
 ico res/icon.ico 16 32 48 64 128
 ico flutter/windows/runner/resources/app_icon.ico 16 24 32 48 64 128 256
 ico res/tray-icon.ico 16 24 32
+ico_dot res/tray-icon-warn.ico 16 24 32
 glyph 60 res/mac-tray-dark-x2.png trim # macOS uses it as a template: only its alpha counts
 glyph 48 res/mac-tray-light-x2.png trim
 for f in res/scalable.svg res/logo.svg flutter/assets/icon.svg; do copy icon.svg "$f"; done

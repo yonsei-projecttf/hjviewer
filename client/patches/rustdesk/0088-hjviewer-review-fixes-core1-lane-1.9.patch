@@ -1,0 +1,262 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:46:59 +0900
+Subject: [PATCH 088/147] hjviewer: review fixes, core1 lane (1.9)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TV-W2: the unverified-name check also drops the Hangul fillers
+(U+115F, U+1160, U+3164, U+FFA0, which NFKC leaves as U+1160 or U+115F
+and which show as a blank), so "같은ㅤ계정" and "Sameﾠaccount"
+are marked; the shown name loses them too, plus U+061C, U+180E and
+U+2060-2064.
+
+TV-C6: the deep-link pins use the keys.rs constants; the pin test keeps
+only the assertions that fail without the pins.
+
+TV-W6: the support mark is logged once per connection, when it first
+holds it, instead of on every LoginRequest the peer sends; the support
+grant's test is appended at the end of hjviewer_access/tests.rs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer.rs                      | 10 +++---
+ src/hjviewer_access/tests.rs         | 50 ++++++++++++++--------------
+ src/hjviewer_account/grant.rs        |  9 ++---
+ src/hjviewer_cm.rs                   | 27 ++++++++++++---
+ src/server/connection/hjv_account.rs |  9 +++--
+ 5 files changed, 61 insertions(+), 44 deletions(-)
+
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+index 506162d..73d40b2 100644
+--- a/src/hjviewer.rs
++++ b/src/hjviewer.rs
+@@ -92,8 +92,8 @@ pub fn apply() {
+ /// the permanent password nor imports server settings (TV-C6).
+ const PINNED_OVERWRITES: [(&str, &str); 2] = [("allow-hide-cm", "N"), ("bot", "")];
+ const PINNED_BUILTINS: [(&str, &str); 2] = [
+-    ("allow-deep-link-password", "N"),
+-    ("allow-deep-link-server-settings", "N"),
++    (keys::OPTION_ALLOW_DEEP_LINK_PASSWORD, "N"),
++    (keys::OPTION_ALLOW_DEEP_LINK_SERVER_SETTINGS, "N"),
+ ];
+ 
+ fn pin_safety_options() {
+@@ -205,8 +205,6 @@ mod tests {
+     fn pinned_builds_hide_no_session_and_send_no_codes() {
+         pin_safety_options();
+         let hide_cm_option = config::Config::get_option("allow-hide-cm");
+-        let hide_cm = hbb_common::password_security::hide_cm();
+-        let bot = crate::auth_2fa::TelegramBot::get();
+         let links = PINNED_BUILTINS.map(|(k, _)| crate::get_builtin_option(k));
+         // the settings screens leave out the Telegram bot's row for a fixed key
+         let bot_fixed = crate::ui_interface::is_option_fixed("bot");
+@@ -216,9 +214,9 @@ mod tests {
+         for (k, _) in PINNED_BUILTINS {
+             config::BUILTIN_SETTINGS.write().unwrap().remove(k);
+         }
++        // hide_cm() and TelegramBot::get() follow these options; the test config would give
++        // false and Ok(None) without the pins, so they are not asserted here
+         assert_eq!(hide_cm_option, "N");
+-        assert!(!hide_cm);
+-        assert!(matches!(bot, Ok(None)));
+         assert_eq!(links, ["N", "N"]);
+         assert!(bot_fixed);
+     }
+diff --git a/src/hjviewer_access/tests.rs b/src/hjviewer_access/tests.rs
+index a0f08d7..4e84ad8 100644
+--- a/src/hjviewer_access/tests.rs
++++ b/src/hjviewer_access/tests.rs
+@@ -306,31 +306,6 @@ fn an_access_password_ticket_stays_in_memory_for_its_target_only() {
+     assert_eq!(ticket("guest-target-1"), None);
+ }
+ 
+-#[test]
+-fn a_support_grant_stays_beside_this_pcs_ticket_and_goes_with_it() {
+-    let grant = crate::hjviewer_account::Grant {
+-        ck: [7; 32],
+-        ctl_id: "987654321".into(),
+-        life: 7200,
+-        received: NOW,
+-    };
+-    let code = json!({ "ticket": "t1.code", "use": "pc", "exp": NOW + 7200, "server_time": NOW });
+-    assert!(keep_guest_pc_with(&code, Some(grant.clone()), NOW));
+-    assert_eq!(held_grant(NOW + 60), Some(grant.clone()));
+-    assert_eq!(held_grant(NOW + 7200), None);
+-    // the access password's ticket brings none and ends it
+-    let password =
+-        json!({ "ticket": "t1.password", "use": "pc", "exp": NOW + 43_200, "server_time": NOW });
+-    assert!(keep_guest_pc_with(&password, None, NOW));
+-    assert_eq!(held_grant(NOW + 60), None);
+-    // and so does the end of this PC's ticket (hjv-guest-pc-end)
+-    assert!(keep_guest_pc_with(&code, Some(grant), NOW));
+-    forget_guest_pc();
+-    assert_eq!(held_grant(NOW + 60), None);
+-    // a build that is not an account build holds none
+-    assert!(!holds_support_grant());
+-}
+-
+ #[test]
+ fn the_trays_word_while_refused_tells_only_a_pc_without_a_login_to_log_in() {
+     assert_eq!(tray_state(true, false), "서버에 연결되지 않음(로그인 필요)");
+@@ -359,3 +334,28 @@ fn only_a_signed_ticket_requests_login_failure_is_hjv_apis_401() {
+         assert!(!hjv_api_refused(code, || unreachable!("signed for {code}")));
+     }
+ }
++
++#[test]
++fn a_support_grant_stays_beside_this_pcs_ticket_and_goes_with_it() {
++    let grant = crate::hjviewer_account::Grant {
++        ck: [7; 32],
++        ctl_id: "987654321".into(),
++        life: 7200,
++        received: NOW,
++    };
++    let code = json!({ "ticket": "t1.code", "use": "pc", "exp": NOW + 7200, "server_time": NOW });
++    assert!(keep_guest_pc_with(&code, Some(grant.clone()), NOW));
++    assert_eq!(held_grant(NOW + 60), Some(grant.clone()));
++    assert_eq!(held_grant(NOW + 7200), None);
++    // the access password's ticket brings none and ends it
++    let password =
++        json!({ "ticket": "t1.password", "use": "pc", "exp": NOW + 43_200, "server_time": NOW });
++    assert!(keep_guest_pc_with(&password, None, NOW));
++    assert_eq!(held_grant(NOW + 60), None);
++    // and so does the end of this PC's ticket (hjv-guest-pc-end)
++    assert!(keep_guest_pc_with(&code, Some(grant), NOW));
++    forget_guest_pc();
++    assert_eq!(held_grant(NOW + 60), None);
++    // a build that is not an account build holds none
++    assert!(!holds_support_grant());
++}
+diff --git a/src/hjviewer_account/grant.rs b/src/hjviewer_account/grant.rs
+index ccce17c..31bab87 100644
+--- a/src/hjviewer_account/grant.rs
++++ b/src/hjviewer_account/grant.rs
+@@ -17,7 +17,6 @@ use super::{conn_transcript, KeyLogin, Refusal, BACKWARD_SKEW, KIND_TERMINAL, SU
+ use hbb_common::{
+     base64::{engine::general_purpose::STANDARD, Engine as _},
+     config::Config,
+-    log,
+     sodiumoxide::crypto::sign,
+ };
+ use serde_derive::Deserialize;
+@@ -192,7 +191,8 @@ pub(crate) fn support_mark(
+ }
+ 
+ /// PC (server/connection): whether a LoginRequest's proof is by the device that made this PC's
+-/// support code. False without a grant or a proof; a refusal is logged once a minute.
++/// support code. False without a grant or a proof; a refusal is logged once a minute (the
++/// connection logs a mark once, when it first holds one).
+ pub(crate) fn staff_login(
+     secured: bool,
+     nonce: &[u8],
+@@ -218,10 +218,7 @@ pub(crate) fn staff_login(
+         .duration_since(UNIX_EPOCH)
+         .map_or(0, |d| d.as_secs());
+     match support_mark(Some(&grant), &login, now) {
+-        Ok(()) => {
+-            log::info!("hjv: support mark for {my_id}");
+-            true
+-        }
++        Ok(()) => true,
+         Err(refusal) => {
+             hbb_common::throttled_log!(
+                 Duration::from_secs(60),
+diff --git a/src/hjviewer_cm.rs b/src/hjviewer_cm.rs
+index a742ac9..c2d3b8e 100644
+--- a/src/hjviewer_cm.rs
++++ b/src/hjviewer_cm.rs
+@@ -90,27 +90,39 @@ fn unproven_in(pinned: bool, name: &str) -> (String, HjvMark) {
+ 
+ /// Whether a name holds one of the marks' words once NFKC-normalized, lowercased and left with
+ /// its letters and digits only (no white space, punctuation, symbols, format or control
+-/// characters): "Same-Account", full-width "ｓａｍｅ" and "같\u{200B}은 계정" all do. Look-alike
+-/// letters of other scripts (a Cyrillic "а") do not.
++/// characters, and no Hangul fillers, letters that show as a blank: NFKC turns U+3164 and U+FFA0
++/// into U+1160): "Same-Account", full-width "ｓａｍｅ", "같\u{200B}은 계정" and "같은\u{3164}계정"
++/// all do. Look-alike letters of other scripts (a Cyrillic "а") do not.
+ fn imitates_mark(name: &str) -> bool {
+     let folded: String = name
+         .nfkc()
+         .flat_map(char::to_lowercase)
+-        .filter(|c| c.is_alphanumeric())
++        .filter(|&c| c.is_alphanumeric() && !matches!(c, '\u{115F}' | '\u{1160}'))
+         .collect();
+     MARK_WORDS.iter().any(|word| folded.contains(word))
+ }
+ 
+ /// The name without control characters (Cc), zero-width characters and marks (U+200B-200F,
+-/// U+FEFF) and bidi embeddings, overrides and isolates (U+202A-202E, U+2066-2069).
++/// U+2060-2064, U+FEFF, U+180E, U+061C), bidi embeddings, overrides and isolates (U+202A-202E,
++/// U+2066-2069) and the Hangul fillers that show as a blank (U+115F, U+1160, U+3164, U+FFA0).
+ fn shown_name(name: &str) -> String {
+     name.chars()
+         .filter(|&c| {
+             !(c.is_control()
+                 || ('\u{200B}'..='\u{200F}').contains(&c)
++                || ('\u{2060}'..='\u{2064}').contains(&c)
+                 || ('\u{202A}'..='\u{202E}').contains(&c)
+                 || ('\u{2066}'..='\u{2069}').contains(&c)
+-                || c == '\u{FEFF}')
++                || matches!(
++                    c,
++                    '\u{FEFF}'
++                        | '\u{180E}'
++                        | '\u{061C}'
++                        | '\u{115F}'
++                        | '\u{1160}'
++                        | '\u{3164}'
++                        | '\u{FFA0}'
++                ))
+         })
+         .collect()
+ }
+@@ -137,6 +149,9 @@ mod tests {
+             "Yonsei Staff",
+             "연세대 교직원(로그인 확인)",
+             "로그인 확인",
++            "같은\u{3164}계정",
++            "Same\u{FFA0}account",
++            "로그인\u{115F}확인",
+         ] {
+             assert!(imitates_mark(name), "{name}");
+         }
+@@ -150,6 +165,8 @@ mod tests {
+     fn the_shown_name_loses_invisible_characters() {
+         assert_eq!(shown_name("\u{202E}abc\u{200B}d\u{7}"), "abcd");
+         assert_eq!(shown_name("a\u{2066}b\u{2069}\u{FEFF}c\u{200F}\n"), "abc");
++        assert_eq!(shown_name("\u{061C}a\u{2060}b\u{180E}c\u{2064}"), "abc");
++        assert_eq!(shown_name("같은\u{3164}계정\u{FFA0}\u{115F}\u{1160}"), "같은계정");
+         assert_eq!(shown_name("홍길동의 PC 😀"), "홍길동의 PC 😀");
+     }
+ 
+diff --git a/src/server/connection/hjv_account.rs b/src/server/connection/hjv_account.rs
+index b175118..1e19cf5 100644
+--- a/src/server/connection/hjv_account.rs
++++ b/src/server/connection/hjv_account.rs
+@@ -96,9 +96,10 @@ impl Connection {
+     }
+ 
+     /// Whether the LoginRequest's proof is by the device that made this PC's support code
+-    /// (TV-W6), decided before the approval branches. It only marks the connection.
++    /// (TV-W6), decided before the approval branches. It only marks the connection, and logs
++    /// the mark once per connection (the peer sets how often LoginRequests come).
+     pub(super) fn hjv_staff_login(&self) -> bool {
+-        match self.lr.hjv_key_proof.as_ref() {
++        let staff = match self.lr.hjv_key_proof.as_ref() {
+             Some(proof) if !self.hash.hjv_nonce.is_empty() => hjviewer_account::staff_login(
+                 self.stream.is_secured(),
+                 &self.hash.hjv_nonce,
+@@ -107,7 +108,11 @@ impl Connection {
+                 hjviewer_account::kind_of_union(&self.lr.union),
+             ),
+             _ => false,
++        };
++        if staff && !self.hjv_staff {
++            log::info!("hjv: support mark for {}", self.lr.my_id);
+         }
++        staff
+     }
+ 
+     /// A staff-marked login without a password at a PC that takes clicks (TV-W6, the doc 3-7):

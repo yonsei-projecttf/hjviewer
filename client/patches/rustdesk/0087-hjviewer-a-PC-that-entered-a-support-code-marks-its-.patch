@@ -1,0 +1,1166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:21:43 +0900
+Subject: [PATCH 087/147] hjviewer: a PC that entered a support code marks its
+ maker's login as staff
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TV-W6, the PC's side (design w6-c6 3-5, 4-3, 4-4 "지원 확인", 5-4-4,
+5-4-5; critic 2-2, 2-3): the answer that trades a support code for this
+PC's ticket brings hjv-api's support grant ("staff"), signed with a list
+key under "hjv-support-v1". The process that registers checks it as a
+trust list is checked (src/hjviewer_account/grant.rs: a pinned list key,
+the signature before the bytes, the ten members only, this PC's ID and
+device key, a 32-byte account key, 1..=7200 s of life counted from
+receipt), keeps it beside the ticket in memory only, and drops it with the
+ticket: a new PC ticket replaces or clears it, hjv-guest-pc-end and the
+process's end clear it. A grant refused leaves the ticket as it was.
+
+While it holds a grant the PC sends Hash.hjv_nonce, also when it is not
+installed. Right after a LoginRequest is latched, before every approval
+branch, the connection sets self.hjv_staff when the request's
+hjv-conn-v1 proof is by the grant's account key and fits this PC, this
+nonce, the kind (remote, file, camera, terminal) and the grant's ctl_id.
+try_start_cm then sends the controller's ID spaced as "123 456 789" in
+place of the name the peer typed, with the mark {kind: "staff", who: ""}
+(an accepted same-account proof still comes first). No new accept path:
+self.authorized is never touched, upstream's click approval stays, and
+input before [수락] is dropped as before. Design D11: a staff-marked login
+without a password at a PC that takes clicks gets the unaccepted window
+and No Password Access, also in 'both' mode with a valid password; at a
+'password only' PC it goes on as any proof the PC does not take.
+
+Test vectors for hjv-api's support-grant-vectors.json (design 6-1) were
+computed with Python's cryptography from the byte layouts: the grant, the
+proof (the v3 vectors' conn proof) and five refusals (another PC, bytes
+changed after signing, 7201 s of life, an unknown member, another
+account key's proof); support_json() renders the JSON copy.
+
+hjv-e2e builds: the PC counts input dropped before authorization
+(option hjv_e2e_dropped_input), the fake CM presses [수락] after
+HJV_E2E_CM_ACCEPT_AFTER seconds, and --hjv-e2e-guest-pc-end ends this
+PC's ticket and grant.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_access.rs               |  57 +++-
+ src/hjviewer_access/tests.rs         |  25 ++
+ src/hjviewer_account/grant.rs        | 423 +++++++++++++++++++++++++++
+ src/hjviewer_account/mod.rs          |   9 +-
+ src/hjviewer_account/vectors.rs      | 191 ++++++++++++
+ src/hjviewer_cm.rs                   |  40 +++
+ src/hjviewer_e2e.rs                  |  47 ++-
+ src/server/connection.rs             |   6 +
+ src/server/connection/hjv_account.rs |  71 ++++-
+ 9 files changed, 858 insertions(+), 11 deletions(-)
+ create mode 100644 src/hjviewer_account/grant.rs
+
+diff --git a/src/hjviewer_access.rs b/src/hjviewer_access.rs
+index 0f8c6f9..e7e49e7 100644
+--- a/src/hjviewer_access.rs
++++ b/src/hjviewer_access.rs
+@@ -30,7 +30,8 @@
+ //! - The access password's tickets (guest.rs, `POST /api/hjv/guest`) stay in this process's
+ //!   memory only: a controller's for its target until its last session there closes, a PC's in
+ //!   the process that registers, which gets it over the IPC. A PC's ticket for a support code that
+-//!   a staff member made (1.8.2) goes the same way and takes the same place.
++//!   a staff member made (1.8.2) goes the same way and takes the same place, and from 1.9.0 the
++//!   support grant hjv-api signs with it (TV-W6) stays beside it while both live.
+ //!
+ //! A build that is not an account build carries nothing: its token is what it was and its
+ //! RegisterPk is byte for byte 1.7.0's. So is an app without a ticket, which a server that checks
+@@ -206,6 +207,8 @@ struct Memory {
+     guests: BTreeMap<String, Held>,
+     /// the access password's ticket for this PC
+     guest_pc: Option<Held>,
++    /// the support grant that came with that ticket for a support code (TV-W6)
++    support: Option<crate::hjviewer_account::Grant>,
+     /// a bound PC's ticket (the service), with a copy in BOUND_FILE
+     bound: Option<Held>,
+     /// when the file copy ends (0: no copy)
+@@ -216,6 +219,7 @@ struct Memory {
+ static MEMORY: Mutex<Memory> = Mutex::new(Memory {
+     guests: BTreeMap::new(),
+     guest_pc: None,
++    support: None,
+     bound: None,
+     bound_kept: 0,
+     sent: None,
+@@ -621,17 +625,60 @@ fn forget_guest(target: &str) {
+ }
+ 
+ /// The access password's ticket for this PC (from `POST /api/hjv/guest`, over the IPC in the
+-/// service of an installed PC), in memory only: it ends with the process or its lifetime.
++/// service of an installed PC), in memory only: it ends with the process or its lifetime. A
++/// support code's answer brings a support grant too (`staff`), kept beside it once it checks out;
++/// any other answer ends the grant the PC had.
+ fn keep_guest_pc(issued: &Value) -> bool {
+-    let Some(held) = Held::issued(issued, unix_now()) else {
++    let now = unix_now();
++    let grant = issued.get("staff").and_then(|staff| {
++        let (id, pk) = (Config::get_id(), Config::get_key_pair().1);
++        let pinned = crate::hjviewer_account::trust_pubkeys();
++        crate::hjviewer_account::verify_grant(&pinned, staff, &id, &pk, now)
++            .map_err(|refusal| log::warn!("access tickets: a support grant refused: {refusal:?}"))
++            .ok()
++    });
++    keep_guest_pc_with(issued, grant, now)
++}
++
++fn keep_guest_pc_with(
++    issued: &Value,
++    grant: Option<crate::hjviewer_account::Grant>,
++    now: u64,
++) -> bool {
++    let Some(held) = Held::issued(issued, now) else {
+         return false;
+     };
+-    memory().guest_pc = Some(held);
++    let mut memory = memory();
++    memory.guest_pc = Some(held);
++    memory.support = grant;
+     true
+ }
+ 
+ fn forget_guest_pc() {
+-    memory().guest_pc = None;
++    let mut memory = memory();
++    memory.guest_pc = None;
++    memory.support = None;
++}
++
++/// The support grant this PC holds while it lives (TV-W6), for the connection manager's staff
++/// mark; None in a build that is not an account build.
++pub(crate) fn support_grant() -> Option<crate::hjviewer_account::Grant> {
++    if !active() {
++        return None;
++    }
++    held_grant(unix_now())
++}
++
++fn held_grant(now: u64) -> Option<crate::hjviewer_account::Grant> {
++    memory()
++        .support
++        .clone()
++        .filter(|grant| crate::hjviewer_account::grant_valid_at(grant, now))
++}
++
++/// Whether this PC holds a support grant, so that its Hash carries a nonce.
++pub(crate) fn holds_support_grant() -> bool {
++    support_grant().is_some()
+ }
+ 
+ /// ipc.rs (`Data::HjvGuestPc`), in the process that registers: the access password's ticket of
+diff --git a/src/hjviewer_access/tests.rs b/src/hjviewer_access/tests.rs
+index b94b5a6..a0f08d7 100644
+--- a/src/hjviewer_access/tests.rs
++++ b/src/hjviewer_access/tests.rs
+@@ -306,6 +306,31 @@ fn an_access_password_ticket_stays_in_memory_for_its_target_only() {
+     assert_eq!(ticket("guest-target-1"), None);
+ }
+ 
++#[test]
++fn a_support_grant_stays_beside_this_pcs_ticket_and_goes_with_it() {
++    let grant = crate::hjviewer_account::Grant {
++        ck: [7; 32],
++        ctl_id: "987654321".into(),
++        life: 7200,
++        received: NOW,
++    };
++    let code = json!({ "ticket": "t1.code", "use": "pc", "exp": NOW + 7200, "server_time": NOW });
++    assert!(keep_guest_pc_with(&code, Some(grant.clone()), NOW));
++    assert_eq!(held_grant(NOW + 60), Some(grant.clone()));
++    assert_eq!(held_grant(NOW + 7200), None);
++    // the access password's ticket brings none and ends it
++    let password =
++        json!({ "ticket": "t1.password", "use": "pc", "exp": NOW + 43_200, "server_time": NOW });
++    assert!(keep_guest_pc_with(&password, None, NOW));
++    assert_eq!(held_grant(NOW + 60), None);
++    // and so does the end of this PC's ticket (hjv-guest-pc-end)
++    assert!(keep_guest_pc_with(&code, Some(grant), NOW));
++    forget_guest_pc();
++    assert_eq!(held_grant(NOW + 60), None);
++    // a build that is not an account build holds none
++    assert!(!holds_support_grant());
++}
++
+ #[test]
+ fn the_trays_word_while_refused_tells_only_a_pc_without_a_login_to_log_in() {
+     assert_eq!(tray_state(true, false), "서버에 연결되지 않음(로그인 필요)");
+diff --git a/src/hjviewer_account/grant.rs b/src/hjviewer_account/grant.rs
+new file mode 100644
+index 0000000..ccce17c
+--- /dev/null
++++ b/src/hjviewer_account/grant.rs
+@@ -0,0 +1,423 @@
++//! The support grant (지원 확인, TV-W6; docs/access-tickets.md 3-7 "지원 확인"): with the ticket
++//! a PC gets for a staff member's support code, hjv-api signs with its list key which device made
++//! the code, for that PC only. The PC keeps it next to the ticket, in memory only (hjviewer_access)
++//! and, while it holds one, sends a nonce in its Hash, also when not installed. A connection whose
++//! same-account proof (`hjv-conn-v1`) is by that device's account key gets the connection
++//! manager's staff mark. The mark opens nothing: the click approval, the password and 2FA decide
++//! as they did.
++//!
++//! ```text
++//! "staff":{"kid":1,"g":"<standard base64 of the grant bytes>","s":"<standard base64, 88>"}
++//! signed: "hjv-support-v1" NUL <grant bytes>         key: list key `kid` (HJV_TRUST_PUBKEYS)
++//! grant bytes: {"v":1,"typ":"hjv-support","kid":1,"pc_id":"…","pc_pk":"…","ck":"…",
++//!               "ctl_id":"…","name":"","iat":…,"exp":…}
++//! ```
++
++use super::{conn_transcript, KeyLogin, Refusal, BACKWARD_SKEW, KIND_TERMINAL, SUPPORT_CONTEXT};
++use hbb_common::{
++    base64::{engine::general_purpose::STANDARD, Engine as _},
++    config::Config,
++    log,
++    sodiumoxide::crypto::sign,
++};
++use serde_derive::Deserialize;
++use std::time::{Duration, SystemTime, UNIX_EPOCH};
++
++/// The longest a grant may live (`exp - iat`): the support code's ticket, two hours.
++pub(crate) const MAX_GRANT_LIFE: u64 = 7200;
++/// The grant bytes hjv-api may send, at most.
++const MAX_GRANT_BYTES: usize = 4096;
++/// A 64-byte signature in standard base64.
++const SIG_B64_LEN: usize = 88;
++
++/// `staff` of the support code's answer.
++#[derive(Deserialize)]
++struct Signed {
++    kid: u32,
++    g: String,
++    s: String,
++}
++
++/// The grant bytes, read only after their signature held, and only with these ten members.
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct Statement {
++    v: u32,
++    typ: String,
++    kid: u32,
++    pc_id: String,
++    pc_pk: String,
++    ck: String,
++    ctl_id: String,
++    /// always "" (decisions: outsiders' PCs show no name); read, never shown
++    #[allow(dead_code)]
++    name: String,
++    iat: u64,
++    exp: u64,
++}
++
++/// A grant this PC accepted.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct Grant {
++    /// the account key of the device that made the code
++    pub ck: [u8; 32],
++    /// that device's ID, or "" when hjv-api did not know it
++    pub ctl_id: String,
++    /// `exp - iat`
++    pub life: u64,
++    /// when it came, by this PC's clock
++    pub received: u64,
++}
++
++/// What the list key signs: `"hjv-support-v1" NUL` and the grant bytes as hjv-api sent them.
++pub(crate) fn support_message(grant: &[u8]) -> Vec<u8> {
++    let mut m = SUPPORT_CONTEXT.to_vec();
++    m.push(0);
++    m.extend_from_slice(grant);
++    m
++}
++
++/// Checks the `staff` of a support code's answer, received at `received` by this PC's clock: a
++/// pinned list key (no key floor: such a PC is not bound), the signature over the bytes as
++/// received and only then their contents, this PC's ID and device key, a 32-byte account key and
++/// a lifetime of 1 to MAX_GRANT_LIFE seconds.
++pub(crate) fn verify_grant(
++    pinned: &[(u32, [u8; 32])],
++    staff: &serde_json::Value,
++    own_id: &str,
++    own_pk: &[u8],
++    received: u64,
++) -> Result<Grant, Refusal> {
++    let signed: Signed = serde_json::from_value(staff.clone()).map_err(|_| Refusal::BadEncoding)?;
++    if signed.s.len() != SIG_B64_LEN || signed.g.len() > MAX_GRANT_BYTES.div_ceil(3) * 4 {
++        return Err(Refusal::BadEncoding);
++    }
++    let bytes = STANDARD
++        .decode(&signed.g)
++        .map_err(|_| Refusal::BadEncoding)?;
++    let sig = STANDARD
++        .decode(&signed.s)
++        .map_err(|_| Refusal::BadEncoding)?;
++    if bytes.len() > MAX_GRANT_BYTES {
++        return Err(Refusal::BadEncoding);
++    }
++    let pk = pinned
++        .iter()
++        .find(|(k, _)| *k == signed.kid)
++        .map(|(_, pk)| sign::PublicKey(*pk))
++        .ok_or(Refusal::UnknownKid)?;
++    let sig = sign::Signature::from_bytes(&sig).map_err(|_| Refusal::BadEncoding)?;
++    if !sign::verify_detached(&sig, &support_message(&bytes), &pk) {
++        return Err(Refusal::BadListSignature);
++    }
++    let grant: Statement = serde_json::from_slice(&bytes).map_err(|_| Refusal::BadEncoding)?;
++    if grant.v != 1 || grant.typ != "hjv-support" || grant.kid != signed.kid {
++        return Err(Refusal::BadEncoding);
++    }
++    let pc_pk = STANDARD
++        .decode(&grant.pc_pk)
++        .map_err(|_| Refusal::BadEncoding)?;
++    if grant.pc_id != own_id || pc_pk != own_pk {
++        return Err(Refusal::WrongPc);
++    }
++    let ck: [u8; 32] = STANDARD
++        .decode(&grant.ck)
++        .ok()
++        .and_then(|ck| ck.try_into().ok())
++        .ok_or(Refusal::BadEncoding)?;
++    if grant.exp <= grant.iat || grant.exp - grant.iat > MAX_GRANT_LIFE {
++        return Err(Refusal::BadLifetime);
++    }
++    Ok(Grant {
++        ck,
++        ctl_id: grant.ctl_id,
++        life: grant.exp - grant.iat,
++        received,
++    })
++}
++
++/// A grant lives for its lifetime from its receipt by the PC's clock, as a trust list does; a PC
++/// clock set back by more than BACKWARD_SKEW ends it.
++pub(crate) fn grant_valid_at(grant: &Grant, now: u64) -> bool {
++    now.saturating_add(BACKWARD_SKEW) >= grant.received
++        && now < grant.received.saturating_add(grant.life)
++}
++
++/// The PC's check of a proof against the support grant, in this order: a grant that holds, the
++/// channel, the nonce, the kind, the proof's version, its key being the grant's `ck`, the
++/// signature over the transcript this PC rebuilds from its own ID, key and nonce, and the grant's
++/// `ctl_id` being empty or the login's ID. Ok marks the connection; nothing else changes.
++pub(crate) fn support_mark(
++    grant: Option<&Grant>,
++    login: &KeyLogin,
++    now: u64,
++) -> Result<(), Refusal> {
++    let grant = grant.ok_or(Refusal::NoList)?;
++    if !grant_valid_at(grant, now) {
++        return Err(Refusal::Expired);
++    }
++    if !login.secured {
++        return Err(Refusal::NotSecured);
++    }
++    if login.nonce.len() != 32 {
++        return Err(Refusal::NoNonce);
++    }
++    if login.kind > KIND_TERMINAL {
++        return Err(Refusal::KindNotByProof);
++    }
++    let proof = login.proof;
++    if proof.version != 1 {
++        return Err(Refusal::BadEncoding);
++    }
++    if proof.pk[..] != grant.ck[..] {
++        return Err(Refusal::UnknownKey);
++    }
++    let sig = sign::Signature::from_bytes(&proof.signature).map_err(|_| Refusal::BadEncoding)?;
++    let transcript = conn_transcript(
++        login.pc_id,
++        login.pc_pk,
++        login.nonce,
++        login.my_id,
++        login.kind,
++        &proof.pk,
++    )
++    .ok_or(Refusal::BadEncoding)?;
++    if !sign::verify_detached(&sig, &transcript, &sign::PublicKey(grant.ck)) {
++        return Err(Refusal::BadProofSignature);
++    }
++    if !grant.ctl_id.is_empty() && grant.ctl_id != login.my_id {
++        return Err(Refusal::IdMismatch);
++    }
++    Ok(())
++}
++
++/// PC (server/connection): whether a LoginRequest's proof is by the device that made this PC's
++/// support code. False without a grant or a proof; a refusal is logged once a minute.
++pub(crate) fn staff_login(
++    secured: bool,
++    nonce: &[u8],
++    proof: &base::message_proto::HjvKeyProof,
++    my_id: &str,
++    kind: u8,
++) -> bool {
++    let Some(grant) = crate::hjviewer_access::support_grant() else {
++        return false;
++    };
++    let pc_id = Config::get_id();
++    let pc_pk = Config::get_key_pair().1;
++    let login = KeyLogin {
++        pc_id: &pc_id,
++        pc_pk: &pc_pk,
++        secured,
++        nonce,
++        proof,
++        my_id,
++        kind,
++    };
++    let now = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map_or(0, |d| d.as_secs());
++    match support_mark(Some(&grant), &login, now) {
++        Ok(()) => {
++            log::info!("hjv: support mark for {my_id}");
++            true
++        }
++        Err(refusal) => {
++            hbb_common::throttled_log!(
++                Duration::from_secs(60),
++                info,
++                "hjv: support mark refused: {refusal:?}"
++            );
++            false
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::hjviewer_account::{
++        conn_proof, parse_trust_pubkeys, vectors::*, AccountKey, KIND_FILE, KIND_PORT_FORWARD,
++    };
++    use base::message_proto::HjvKeyProof;
++    use hbb_common::bytes::Bytes;
++    use serde_json::json;
++
++    fn staff(g: &str, s: &str) -> serde_json::Value {
++        json!({ "kid": 1, "g": STANDARD.encode(g), "s": s })
++    }
++
++    fn grant() -> Grant {
++        let pinned = parse_trust_pubkeys(HJV_TRUST_PUBKEYS).unwrap();
++        verify_grant(
++            &pinned,
++            &staff(SUPPORT_GRANT, SUPPORT_GRANT_SIG),
++            PC_ID,
++            &pk_bytes(PC_PK),
++            T,
++        )
++        .unwrap()
++    }
++
++    fn vector_proof() -> HjvKeyProof {
++        HjvKeyProof {
++            version: 1,
++            pk: Bytes::from(pk_bytes(ACCOUNT_PK)),
++            signature: Bytes::from(pk_bytes(CONN_SIG)),
++            key_serial: CONN_KEY_SERIAL,
++            ..Default::default()
++        }
++    }
++
++    fn login<'a>(pc_pk: &'a [u8], proof: &'a HjvKeyProof) -> KeyLogin<'a> {
++        KeyLogin {
++            pc_id: PC_ID,
++            pc_pk,
++            secured: true,
++            nonce: &CONN_NONCE,
++            proof,
++            my_id: CTL_ID,
++            kind: CONN_KIND,
++        }
++    }
++
++    #[test]
++    fn a_grant_lives_from_its_receipt_and_ends_with_the_clock_set_back() {
++        let grant = grant();
++        assert_eq!(grant.life, MAX_GRANT_LIFE);
++        assert!(grant_valid_at(&grant, T));
++        assert!(grant_valid_at(&grant, T + MAX_GRANT_LIFE - 1));
++        assert!(!grant_valid_at(&grant, T + MAX_GRANT_LIFE));
++        assert!(grant_valid_at(&grant, T - BACKWARD_SKEW));
++        assert!(!grant_valid_at(&grant, T - BACKWARD_SKEW - 1));
++    }
++
++    #[test]
++    fn a_grant_is_refused_for_its_form_before_its_bytes_are_read() {
++        let _ = hbb_common::sodiumoxide::init();
++        let pinned = parse_trust_pubkeys(HJV_TRUST_PUBKEYS).unwrap();
++        let pc_pk = pk_bytes(PC_PK);
++        let check = |staff: serde_json::Value| verify_grant(&pinned, &staff, PC_ID, &pc_pk, T);
++        // a key number the build does not pin
++        let mut other_kid = staff(SUPPORT_GRANT, SUPPORT_GRANT_SIG);
++        other_kid["kid"] = json!(3);
++        assert_eq!(check(other_kid), Err(Refusal::UnknownKid));
++        // list key 2 did not sign it
++        let mut kid_2 = staff(SUPPORT_GRANT, SUPPORT_GRANT_SIG);
++        kid_2["kid"] = json!(2);
++        assert_eq!(check(kid_2), Err(Refusal::BadListSignature));
++        // the signature's length, a missing member, too many bytes
++        assert_eq!(
++            check(staff(SUPPORT_GRANT, &SUPPORT_GRANT_SIG[..86])),
++            Err(Refusal::BadEncoding)
++        );
++        assert_eq!(
++            check(json!({ "kid": 1, "g": STANDARD.encode(SUPPORT_GRANT) })),
++            Err(Refusal::BadEncoding)
++        );
++        let long = "x".repeat(MAX_GRANT_BYTES + 1);
++        assert_eq!(
++            check(staff(&long, SUPPORT_GRANT_SIG)),
++            Err(Refusal::BadEncoding)
++        );
++        // the trust list's signature over the same bytes is not a grant's: another context
++        let sig = sign::sign_detached(
++            &crate::hjviewer_account::trust_message(SUPPORT_GRANT.as_bytes()),
++            &device_key(&LIST_1_SEED),
++        );
++        assert_eq!(
++            check(staff(SUPPORT_GRANT, &STANDARD.encode(sig.to_bytes()))),
++            Err(Refusal::BadListSignature)
++        );
++    }
++
++    #[test]
++    fn the_device_that_made_the_code_gets_the_mark() {
++        let _ = hbb_common::sodiumoxide::init();
++        let (grant, pc_pk, proof) = (grant(), pk_bytes(PC_PK), vector_proof());
++        assert_eq!(
++            support_mark(Some(&grant), &login(&pc_pk, &proof), T + 60),
++            Ok(())
++        );
++        // also as a file transfer, by a proof made for it
++        let account = AccountKey::from_seed(&ACCOUNT_SEED).unwrap();
++        let file = conn_proof(&account, PC_ID, &pc_pk, &CONN_NONCE, CTL_ID, KIND_FILE, 0).unwrap();
++        let file_login = KeyLogin {
++            kind: KIND_FILE,
++            ..login(&pc_pk, &file)
++        };
++        assert_eq!(support_mark(Some(&grant), &file_login, T + 60), Ok(()));
++    }
++
++    #[test]
++    fn every_other_login_goes_without_the_mark() {
++        let _ = hbb_common::sodiumoxide::init();
++        let (grant, pc_pk, proof) = (grant(), pk_bytes(PC_PK), vector_proof());
++        let mark = |login: &KeyLogin, now: u64| support_mark(Some(&grant), login, now);
++        let now = T + 60;
++        assert_eq!(
++            support_mark(None, &login(&pc_pk, &proof), now),
++            Err(Refusal::NoList)
++        );
++        assert_eq!(
++            mark(&login(&pc_pk, &proof), T + MAX_GRANT_LIFE),
++            Err(Refusal::Expired)
++        );
++        let plain = KeyLogin {
++            secured: false,
++            ..login(&pc_pk, &proof)
++        };
++        assert_eq!(mark(&plain, now), Err(Refusal::NotSecured));
++        let no_nonce = KeyLogin {
++            nonce: &[],
++            ..login(&pc_pk, &proof)
++        };
++        assert_eq!(mark(&no_nonce, now), Err(Refusal::NoNonce));
++        let forward = KeyLogin {
++            kind: KIND_PORT_FORWARD,
++            ..login(&pc_pk, &proof)
++        };
++        assert_eq!(mark(&forward, now), Err(Refusal::KindNotByProof));
++        let v2 = HjvKeyProof {
++            version: 2,
++            ..vector_proof()
++        };
++        assert_eq!(mark(&login(&pc_pk, &v2), now), Err(Refusal::BadEncoding));
++        // another account key's valid proof: the vectors' other_key_proof
++        let other = HjvKeyProof {
++            pk: Bytes::from(pk_bytes(SUPPORT_OTHER_KEY_PK)),
++            signature: Bytes::from(pk_bytes(SUPPORT_OTHER_KEY_SIG)),
++            ..vector_proof()
++        };
++        assert_eq!(mark(&login(&pc_pk, &other), now), Err(Refusal::UnknownKey));
++        // the maker's key, but signed for another nonce (a replay from another connection)
++        let replay = KeyLogin {
++            nonce: &[0x41; 32],
++            ..login(&pc_pk, &proof)
++        };
++        assert_eq!(mark(&replay, now), Err(Refusal::BadProofSignature));
++        // the maker's key signing for another controller ID than the grant's
++        let account = AccountKey::from_seed(&ACCOUNT_SEED).unwrap();
++        let elsewhere = conn_proof(
++            &account,
++            PC_ID,
++            &pc_pk,
++            &CONN_NONCE,
++            "111111111",
++            CONN_KIND,
++            0,
++        )
++        .unwrap();
++        let elsewhere_login = KeyLogin {
++            my_id: "111111111",
++            ..login(&pc_pk, &elsewhere)
++        };
++        assert_eq!(mark(&elsewhere_login, now), Err(Refusal::IdMismatch));
++        // a grant without ctl_id takes any controller ID the proof signed
++        let any_id = Grant {
++            ctl_id: String::new(),
++            ..grant.clone()
++        };
++        assert_eq!(support_mark(Some(&any_id), &elsewhere_login, now), Ok(()));
++    }
++}
+diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
+index dc66d11..da51029 100644
+--- a/src/hjviewer_account/mod.rs
++++ b/src/hjviewer_account/mod.rs
+@@ -27,6 +27,7 @@ use std::time::Duration;
+ 
+ mod api;
+ mod ctl;
++mod grant;
+ mod keystore;
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ mod pc;
+@@ -39,6 +40,7 @@ pub(crate) use api::{
+     proof_header, server_time, set_common,
+ };
+ pub(crate) use ctl::{key_proof, note_peer_key, take_proof_sent, LoginContext, ProofDecision};
++pub(crate) use grant::{grant_valid_at, staff_login, verify_grant, Grant};
+ #[cfg(windows)]
+ pub(crate) use pc::forget_pc_binding;
+ #[cfg(all(
+@@ -67,6 +69,8 @@ pub(crate) const CONN_CONTEXT: &[u8] = b"hjv-conn-v1";
+ pub(crate) const PC_CONTEXT: &[u8] = b"hjv-pc-v1";
+ /// hjv-api's list key over a trust list.
+ pub(crate) const TRUST_CONTEXT: &[u8] = b"hjv-trust-v1";
++/// hjv-api's list key over a support grant (TV-W6).
++pub(crate) const SUPPORT_CONTEXT: &[u8] = b"hjv-support-v1";
+ 
+ /// The longest a trust list may live (`exp - iat`), whatever the server signs.
+ pub(crate) const MAX_LIST_TTL: u64 = 72 * 3600;
+@@ -395,9 +399,10 @@ pub(crate) fn pc_sync_envelope(
+ }
+ 
+ /// The `hjv_nonce` of this PC's Hash: 32 random bytes where this process takes same-account
+-/// logins, else empty, which leaves the Hash byte-identical to 1.5.1's.
++/// logins or holds a support grant (also not installed), else empty, which leaves the Hash
++/// byte-identical to 1.5.1's.
+ pub(crate) fn hash_nonce() -> Bytes {
+-    nonce_if(pc_capable())
++    nonce_if(pc_capable() || crate::hjviewer_access::holds_support_grant())
+ }
+ 
+ fn nonce_if(capable: bool) -> Bytes {
+diff --git a/src/hjviewer_account/vectors.rs b/src/hjviewer_account/vectors.rs
+index 7e663c6..3addbe8 100644
+--- a/src/hjviewer_account/vectors.rs
++++ b/src/hjviewer_account/vectors.rs
+@@ -57,6 +57,39 @@ pub(crate) const CONN_SIG: &str =
+ /// HjvKeyProof{version 1, pk, signature, key_serial} on the wire.
+ pub(crate) const CONN_PROOF_PROTO_HEX: &str = "08011220ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d11a40dcebef385a322b0805bf24aa32730730af60de2c14e6e3fb4bc89c9f1c301d23b29622350cf5b4d2c5f5e5e00011a99e98d21cdfd2e341b0cec5c3e044ecc40520d420";
+ 
++/// TV-W6's support grant (docs/access-tickets.md 3-7 "지원 확인"), signed with list key 1 for the
++/// vector PC: the account key above made the code from the device CTL_ID, and CONN_SIG is the
++/// proof that device sends the PC. Computed with Python's `cryptography` (OpenSSL Ed25519) from the
++/// byte layouts alone; `support_json()` is the JSON copy for hjv-api's tests (hjviewer repository:
++/// server/api/tests/data/support-grant-vectors.json), whose SHA-256 is SUPPORT_JSON_SHA256.
++pub(crate) const SUPPORT_GRANT: &str = r#"{"v":1,"typ":"hjv-support","kid":1,"pc_id":"123456789","pc_pk":"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=","ck":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","ctl_id":"987654321","name":"","iat":1760000000,"exp":1760007200}"#;
++pub(crate) const SUPPORT_GRANT_SIGNED_HEX: &str = "686a762d737570706f72742d7631007b2276223a312c22747970223a22686a762d737570706f7274222c226b6964223a312c2270635f6964223a22313233343536373839222c2270635f706b223a2267546c3344716839463139576f31526d7730782b7a4d754e69704730376a65695866595057342f4a7335513d222c22636b223a2237556b6f78696a527773627136514d346b466d5659536c5a4a7a7063592f6b324e734647464b79484e39453d222c2263746c5f6964223a22393837363534333231222c226e616d65223a22222c22696174223a313736303030303030302c22657870223a313736303030373230307d";
++pub(crate) const SUPPORT_GRANT_SIG: &str =
++    "2abG3Tf+2mlBxmaHn/x7Cx4Oa+ywrtuyaqbTihZgbeEt863Wn2eebQ4MEfp6lqcebR4T1GzqUrZtRUXihiIfAA==";
++/// Refused grants, each signed with list key 1 but the altered one: for another PC (ID 111222333,
++/// the device key of seed 0x05 repeated), the bytes changed after signing (ctl_id), a lifetime of
++/// 7201 s, and a member the format does not have.
++pub(crate) const SUPPORT_OTHER_PC: &str = r#"{"v":1,"typ":"hjv-support","kid":1,"pc_id":"111222333","pc_pk":"bnoc3Smwt4/ROvTFWY/v9O8qlxZuPKby5Pv8zYBQW/E=","ck":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","ctl_id":"987654321","name":"","iat":1760000000,"exp":1760007200}"#;
++pub(crate) const SUPPORT_OTHER_PC_SIG: &str =
++    "SCTChEFoSr55ZtlY9CYE4/c2R3umS4CiTpdU9YCILCjW385CH1Rg57yx5nPRZJ3C8bmc6aVicga1ujq/xghQAQ==";
++pub(crate) const SUPPORT_ALTERED: &str = r#"{"v":1,"typ":"hjv-support","kid":1,"pc_id":"123456789","pc_pk":"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=","ck":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","ctl_id":"111111111","name":"","iat":1760000000,"exp":1760007200}"#;
++pub(crate) const SUPPORT_LIFE_7201: &str = r#"{"v":1,"typ":"hjv-support","kid":1,"pc_id":"123456789","pc_pk":"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=","ck":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","ctl_id":"987654321","name":"","iat":1760000000,"exp":1760007201}"#;
++pub(crate) const SUPPORT_LIFE_7201_SIG: &str =
++    "jBXLXA5KOpMOA6+C8ssi9vZjV3yYawWOAln4gypwCX3NPtB1i6Pa7AZT7lUMTVuTWvAeRDE+7uySRTAOU64VCQ==";
++pub(crate) const SUPPORT_UNKNOWN_MEMBER: &str = r#"{"v":1,"typ":"hjv-support","kid":1,"pc_id":"123456789","pc_pk":"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=","ck":"7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=","ctl_id":"987654321","name":"","iat":1760000000,"exp":1760007200,"role":"admin"}"#;
++pub(crate) const SUPPORT_UNKNOWN_MEMBER_SIG: &str =
++    "BDj7xwMMe9ijyzOBDLtNk7S38xLXPy011htN6XEQqJnPgUG4GkK9b+712Ee9sScj+6AjdsOEXd/QZQu+By7YBA==";
++/// The fifth refusal is the PC's mark, not the grant: a valid proof for the vector PC, nonce and
++/// controller ID by another account key (seed 0x04 repeated).
++pub(crate) const SUPPORT_OTHER_KEY_SEED: [u8; 32] = [4; 32];
++pub(crate) const SUPPORT_OTHER_KEY_PK: &str = "ypOsFwUYcHHWe4PH/w7+gQjo7EUwV113JoeTM9vavnw=";
++pub(crate) const SUPPORT_OTHER_KEY_TRANSCRIPT_HEX: &str = "686a762d636f6e6e2d763100093132333435363738398139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f0939383736353433323100ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c";
++pub(crate) const SUPPORT_OTHER_KEY_SIG: &str =
++    "NfX1pzNo/JFbUbuTBi5vOv/dlfMLLIZWBAj9u9DR4LfWaiMKLg9CFOzXz9kK9OdYd2j3fquQ7/sHqsGxhIkEAQ==";
++/// SHA-256 (hex) of `support_json()`.
++pub(crate) const SUPPORT_JSON_SHA256: &str =
++    "d5c2a45bcd30dfdb2d974ead325cd5b20a9b8fa1eef4d056abec0b658a21d184";
++
+ /// An account request signed with the account key.
+ pub(crate) struct Request {
+     pub method: &'static str,
+@@ -425,3 +458,161 @@ fn write_json_copy() {
+     let path = std::env::var("HJV_VECTORS_JSON").expect("HJV_VECTORS_JSON");
+     std::fs::write(path, json()).unwrap();
+ }
++
++/// The JSON copy of the support grant vectors for hjv-api's tests (TV-W6), in the form of `json()`.
++pub(crate) fn support_json() -> String {
++    let signed = |g: &str, s: &str| {
++        serde_json::json!({
++            "grant": g,
++            "staff": {"kid": 1, "g": STANDARD.encode(g), "s": s},
++        })
++    };
++    let v = serde_json::json!({
++        "about": "Shared test vectors of HJViewer's support grant (docs/access-tickets.md 3-7, TV-W6), rendered by the client's src/hjviewer_account/vectors.rs. The private keys are public test values: never use them for anything else.",
++        "encodings": "base64: standard with padding; hex: lowercase; *_hex of signed bytes: the exact bytes a signature covers; times: Unix seconds",
++        "keys": {
++            "list_1": {"kid": 1, "seed_hex": hex::encode(LIST_1_SEED), "pk": LIST_1_PK},
++            "pc_device": {"seed_hex": hex::encode(PC_SEED), "pk": PC_PK},
++            "account": {"seed_hex": hex::encode(ACCOUNT_SEED), "pk": ACCOUNT_PK},
++            "other_account": {"seed_hex": hex::encode(SUPPORT_OTHER_KEY_SEED), "pk": SUPPORT_OTHER_KEY_PK},
++            "HJV_TRUST_PUBKEYS": HJV_TRUST_PUBKEYS,
++        },
++        "context": "hjv-support-v1",
++        "max_life": crate::hjviewer_account::grant::MAX_GRANT_LIFE,
++        "grant": {
++            "pc_id": PC_ID,
++            "pc_pk": PC_PK,
++            "ck": ACCOUNT_PK,
++            "ctl_id": CTL_ID,
++            "iat": T,
++            "exp": T + 7200,
++            "bytes": SUPPORT_GRANT,
++            "signed_hex": SUPPORT_GRANT_SIGNED_HEX,
++            "staff": {"kid": 1, "g": STANDARD.encode(SUPPORT_GRANT), "s": SUPPORT_GRANT_SIG},
++        },
++        "conn_proof": {
++            "pc_id": PC_ID,
++            "pc_pk": PC_PK,
++            "nonce_hex": hex::encode(CONN_NONCE),
++            "ctl_id": CTL_ID,
++            "kind": CONN_KIND,
++            "ctl_pk": ACCOUNT_PK,
++            "transcript_hex": CONN_TRANSCRIPT_HEX,
++            "signature": CONN_SIG,
++        },
++        "refused": {
++            "other_pc": signed(SUPPORT_OTHER_PC, SUPPORT_OTHER_PC_SIG),
++            "altered_bytes": signed(SUPPORT_ALTERED, SUPPORT_GRANT_SIG),
++            "life_7201": signed(SUPPORT_LIFE_7201, SUPPORT_LIFE_7201_SIG),
++            "unknown_member": signed(SUPPORT_UNKNOWN_MEMBER, SUPPORT_UNKNOWN_MEMBER_SIG),
++            "other_key_proof": {
++                "ctl_pk": SUPPORT_OTHER_KEY_PK,
++                "transcript_hex": SUPPORT_OTHER_KEY_TRANSCRIPT_HEX,
++                "signature": SUPPORT_OTHER_KEY_SIG,
++            },
++        },
++    });
++    serde_json::to_string_pretty(&v).unwrap() + "\n"
++}
++
++#[test]
++fn support_grant() {
++    use crate::hjviewer_account::grant::{support_mark, support_message, verify_grant};
++    let _ = hbb_common::sodiumoxide::init();
++    let pinned = parse_trust_pubkeys(HJV_TRUST_PUBKEYS).unwrap();
++    let pc_pk = pk_bytes(PC_PK);
++    let staff = |g: &str, s: &str| serde_json::json!({"kid": 1, "g": STANDARD.encode(g), "s": s});
++    let check = |g: &str, s: &str| verify_grant(&pinned, &staff(g, s), PC_ID, &pc_pk, T);
++    // libsodium signs what the vectors say
++    let signed = support_message(SUPPORT_GRANT.as_bytes());
++    assert_eq!(hex::encode(&signed), SUPPORT_GRANT_SIGNED_HEX);
++    for (g, s) in [
++        (SUPPORT_GRANT, SUPPORT_GRANT_SIG),
++        (SUPPORT_OTHER_PC, SUPPORT_OTHER_PC_SIG),
++        (SUPPORT_LIFE_7201, SUPPORT_LIFE_7201_SIG),
++        (SUPPORT_UNKNOWN_MEMBER, SUPPORT_UNKNOWN_MEMBER_SIG),
++    ] {
++        let sig = sign::sign_detached(&support_message(g.as_bytes()), &device_key(&LIST_1_SEED));
++        assert_eq!(STANDARD.encode(sig.to_bytes()), s);
++    }
++    let grant = check(SUPPORT_GRANT, SUPPORT_GRANT_SIG).unwrap();
++    assert_eq!(
++        (
++            grant.ck.to_vec(),
++            grant.ctl_id.as_str(),
++            grant.life,
++            grant.received
++        ),
++        (pk_bytes(ACCOUNT_PK), CTL_ID, 7200, T)
++    );
++    // the five refusals, each for its own reason
++    assert_eq!(
++        check(SUPPORT_OTHER_PC, SUPPORT_OTHER_PC_SIG),
++        Err(Refusal::WrongPc)
++    );
++    assert_eq!(
++        check(SUPPORT_ALTERED, SUPPORT_GRANT_SIG),
++        Err(Refusal::BadListSignature)
++    );
++    assert_eq!(
++        check(SUPPORT_LIFE_7201, SUPPORT_LIFE_7201_SIG),
++        Err(Refusal::BadLifetime)
++    );
++    assert_eq!(
++        check(SUPPORT_UNKNOWN_MEMBER, SUPPORT_UNKNOWN_MEMBER_SIG),
++        Err(Refusal::BadEncoding)
++    );
++    let other_pk = pk_bytes(SUPPORT_OTHER_KEY_PK);
++    let transcript =
++        conn_transcript(PC_ID, &pc_pk, &CONN_NONCE, CTL_ID, CONN_KIND, &other_pk).unwrap();
++    assert_eq!(hex::encode(&transcript), SUPPORT_OTHER_KEY_TRANSCRIPT_HEX);
++    let other = AccountKey::from_seed(&SUPPORT_OTHER_KEY_SEED).unwrap();
++    assert_eq!(
++        STANDARD.encode(other.sign(&transcript)),
++        SUPPORT_OTHER_KEY_SIG
++    );
++    let proof = |pk: &str, sig: &str| HjvKeyProof {
++        version: 1,
++        pk: Bytes::from(pk_bytes(pk)),
++        signature: Bytes::from(pk_bytes(sig)),
++        ..Default::default()
++    };
++    fn login<'a>(pc_pk: &'a [u8], proof: &'a HjvKeyProof) -> KeyLogin<'a> {
++        KeyLogin {
++            pc_id: PC_ID,
++            pc_pk,
++            secured: true,
++            nonce: &CONN_NONCE,
++            proof,
++            my_id: CTL_ID,
++            kind: CONN_KIND,
++        }
++    }
++    let maker = proof(ACCOUNT_PK, CONN_SIG);
++    assert_eq!(
++        support_mark(Some(&grant), &login(&pc_pk, &maker), T + 60),
++        Ok(())
++    );
++    let other = proof(SUPPORT_OTHER_KEY_PK, SUPPORT_OTHER_KEY_SIG);
++    assert_eq!(
++        support_mark(Some(&grant), &login(&pc_pk, &other), T + 60),
++        Err(Refusal::UnknownKey)
++    );
++}
++
++#[test]
++fn support_json_copy_is_these_vectors() {
++    assert_eq!(
++        hex::encode(Sha256::digest(support_json().as_bytes())),
++        SUPPORT_JSON_SHA256,
++        "vectors changed: update SUPPORT_JSON_SHA256 and rewrite the JSON copy (write_support_json_copy)"
++    );
++}
++
++/// HJV_VECTORS_JSON=<path> cargo test --lib hjviewer_account::vectors::write_support_json_copy -- --ignored
++#[test]
++#[ignore]
++fn write_support_json_copy() {
++    let path = std::env::var("HJV_VECTORS_JSON").expect("HJV_VECTORS_JSON");
++    std::fs::write(path, support_json()).unwrap();
++}
+diff --git a/src/hjviewer_cm.rs b/src/hjviewer_cm.rs
+index 1e7bc12..a742ac9 100644
+--- a/src/hjviewer_cm.rs
++++ b/src/hjviewer_cm.rs
+@@ -18,6 +18,7 @@ pub struct HjvMark {
+ }
+ 
+ pub const SAME_ACCOUNT: &str = "same-account";
++pub const STAFF: &str = "staff";
+ pub const UNVERIFIED_NAME: &str = "unverified-name";
+ 
+ impl HjvMark {
+@@ -29,6 +30,35 @@ impl HjvMark {
+     }
+ }
+ 
++/// For a login by the device that made this PC's support code (TV-W6, hjviewer_account::grant):
++/// the controller's ID spaced as the app shows IDs ("123 456 789") in place of the name it sent,
++/// which shows no name of the staff member's (decisions: outsiders' PCs show none), and the mark
++/// `staff`.
++pub fn staff(id: &str) -> (String, HjvMark) {
++    let mark = HjvMark {
++        kind: STAFF.to_owned(),
++        who: String::new(),
++    };
++    (spaced_id(&shown_name(id)), mark)
++}
++
++/// flutter's formatID: digits in groups of three, the first group the remainder.
++fn spaced_id(id: &str) -> String {
++    if id.len() <= 3 || !id.bytes().all(|b| b.is_ascii_digit()) {
++        return id.to_owned();
++    }
++    let first = match id.len() % 3 {
++        0 => 3,
++        n => n,
++    };
++    let mut spaced = id[..first].to_owned();
++    for group in id.as_bytes()[first..].chunks(3) {
++        spaced.push(' ');
++        spaced.push_str(&String::from_utf8_lossy(group));
++    }
++    spaced
++}
++
+ /// The words of the marks the window draws, as `imitates_mark` folds them.
+ const MARK_WORDS: [&str; 7] = [
+     "같은계정",
+@@ -139,6 +169,16 @@ mod tests {
+         assert_eq!(unproven(odd), unproven_in(crate::hjviewer::pinned(), odd));
+     }
+ 
++    #[test]
++    fn a_staff_login_shows_its_spaced_id_and_no_name() {
++        let (name, mark) = staff("123456789");
++        assert_eq!(name, "123 456 789");
++        assert_eq!((mark.kind.as_str(), mark.who.as_str()), (STAFF, ""));
++        assert_eq!(staff("1234567890").0, "1 234 567 890");
++        assert_eq!(staff("12").0, "12");
++        assert_eq!(staff("\u{202E}id-x").0, "id-x");
++    }
++
+     #[test]
+     fn marks_read_from_json() {
+         let mark: HjvMark = serde_json::from_str("{}").unwrap();
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index b6d934c..1011598 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -151,6 +151,8 @@ fn exit_with(code: i32) {
+ ///     <app> --hjv-e2e-guest-pc <access password>          (this PC's ticket, to the process that
+ ///                                                         registers; exit code 6 without one)
+ ///     <app> --hjv-e2e-guest-pc-code <support code>        (the same for a support code)
++///     <app> --hjv-e2e-guest-pc-end                        (ends this PC's ticket and its support
++///                                                         grant in the process that registers)
+ ///     <app> --hjv-e2e-support-code                        (a logged-in staff app makes a support
+ ///                                                         code and prints it; exit code 6
+ ///                                                         without one)
+@@ -217,6 +219,14 @@ fn account_command(args: &[String]) -> Option<i32> {
+         [cmd, code] if cmd == "--hjv-e2e-guest-pc-code" => {
+             crate::hjviewer_access::e2e_guest_pc_code(code)
+         }
++        [cmd] if cmd == "--hjv-e2e-guest-pc-end" => {
++            if crate::hjviewer_access::set_common("hjv-guest-pc-end", "") {
++                println!("hjv-e2e: guest pc end");
++                0
++            } else {
++                6
++            }
++        }
+         [cmd] if cmd == "--hjv-e2e-support-code" => crate::hjviewer_account::e2e_support_code(),
+         _ => return None,
+     })
+@@ -771,9 +781,14 @@ fn access_ticket(refresh: bool) -> i32 {
+ 
+ /// Stands in for the connection manager the service starts for each session (`--cm`), and prints
+ /// the peer, the name and the mark the service shows for each login, and the controller's
+-/// recording reports.
++/// recording reports. With `HJV_E2E_CM_ACCEPT_AFTER=<seconds>` it presses [수락] that long after
++/// a connection's first unaccepted login (TV-W6).
+ #[tokio::main(flavor = "current_thread")]
+ async fn connection_manager() -> i32 {
++    let accept_after = std::env::var("HJV_E2E_CM_ACCEPT_AFTER")
++        .ok()
++        .and_then(|secs| secs.parse().ok())
++        .map(Duration::from_secs);
+     let mut incoming = match crate::ipc::new_listener("_cm").await {
+         Ok(incoming) => incoming,
+         Err(err) => {
+@@ -788,7 +803,23 @@ async fn connection_manager() -> i32 {
+         };
+         tokio::spawn(async move {
+             let mut conn = crate::ipc::Connection::new(stream);
+-            while let Ok(data) = conn.next().await {
++            let (mut accept_at, mut armed) = (None, false);
++            loop {
++                let data = tokio::select! {
++                    data = conn.next() => Some(data),
++                    _ = until(accept_at) => None,
++                };
++                let Some(data) = data else {
++                    accept_at = None;
++                    println!("hjv-e2e: cm accepts");
++                    if conn.send(&crate::ipc::Data::Authorize).await.is_err() {
++                        break;
++                    }
++                    continue;
++                };
++                let Ok(data) = data else {
++                    break;
++                };
+                 match data {
+                     Some(crate::ipc::Data::Login {
+                         peer_id,
+@@ -806,6 +837,10 @@ async fn connection_manager() -> i32 {
+                             "hjv-e2e: cm login from {peer_id} named {name:?}, authorized {authorized}, mark {kind}({})",
+                             hjv_mark.who
+                         );
++                        if let (false, false, Some(after)) = (authorized, armed, accept_after) {
++                            armed = true;
++                            accept_at = Some(tokio::time::Instant::now() + after);
++                        }
+                     }
+                     Some(crate::ipc::Data::HjvPeerRecording(on)) => {
+                         println!("hjv-e2e: cm recording {on}");
+@@ -817,3 +852,11 @@ async fn connection_manager() -> i32 {
+     }
+     0
+ }
++
++/// Waits until `at`, or for ever without one.
++async fn until(at: Option<tokio::time::Instant>) {
++    match at {
++        Some(at) => tokio::time::sleep_until(at).await,
++        None => std::future::pending().await,
++    }
++}
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index a43093a..f4ee89f 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -464,6 +464,8 @@ pub struct Connection {
+     terminal_generic_service: Option<Box<GenericService>>,
+     // the same-account proof this connection accepted (docs/architecture.md 5-6, 5-10)
+     hjv_proven: Option<hjv_account::HjvProven>,
++    // the login's proof is by the device that made this PC's support code (TV-W6): a mark only
++    hjv_staff: bool,
+     // the controller's last ClientRecordStatus, as the connection manager was told
+     hjv_peer_recording: bool,
+ }
+@@ -664,6 +666,7 @@ impl Connection {
+             conn_audit_primary_auth: ConnAuditPrimaryAuth::None,
+             conn_audit_two_factor: ConnAuditTwoFactor::None,
+             hjv_proven: None,
++            hjv_staff: false,
+             hjv_peer_recording: false,
+         };
+         let addr = hbb_common::try_into_v4(addr);
+@@ -2854,6 +2857,8 @@ impl Connection {
+     }
+ 
+     async fn on_message(&mut self, msg: Message) -> bool {
++        #[cfg(feature = "hjv-e2e")]
++        hjv_account::e2e_dropped_input(self.authorized, &msg);
+         if let Some(message::Union::Misc(misc)) = &msg.union {
+             // Move the CloseReason forward, as this message needs to be received when unauthorized, especially for kcp.
+             if let Some(misc::Union::CloseReason(s)) = &misc.union {
+@@ -2881,6 +2886,7 @@ impl Connection {
+             if self.authorized {
+                 return true;
+             }
++            self.hjv_staff = self.hjv_staff_login();
+             self.reset_session_scope_for_login();
+             if !self.check_id_whitelist().await {
+                 return false;
+diff --git a/src/server/connection/hjv_account.rs b/src/server/connection/hjv_account.rs
+index 7afd139..b175118 100644
+--- a/src/server/connection/hjv_account.rs
++++ b/src/server/connection/hjv_account.rs
+@@ -33,6 +33,9 @@ impl Connection {
+         &mut self,
+         allow_logon_screen_password: bool,
+     ) -> Option<bool> {
++        if let Some(keep_alive) = self.hjv_staff_without_password().await {
++            return Some(keep_alive);
++        }
+         if self.hash.hjv_nonce.is_empty() {
+             return None;
+         }
+@@ -79,18 +82,57 @@ impl Connection {
+     }
+ 
+     /// The name and mark the connection manager shows (docs/architecture.md 5-10): an accepted
+-    /// proof's device name and owner, else the name the peer sent, checked by
+-    /// `hjviewer_cm::unproven`.
++    /// proof's device name and owner, else the staff mark of the support grant's device (TV-W6),
++    /// else the name the peer sent, checked by `hjviewer_cm::unproven`.
+     pub(super) fn hjv_cm_name(&self, name: &str) -> (String, hjviewer_cm::HjvMark) {
+         match &self.hjv_proven {
+             Some(proven) => (
+                 proven.name.clone(),
+                 hjviewer_cm::HjvMark::same_account(&proven.who),
+             ),
++            None if self.hjv_staff => hjviewer_cm::staff(&self.lr.my_id),
+             None => hjviewer_cm::unproven(name),
+         }
+     }
+ 
++    /// Whether the LoginRequest's proof is by the device that made this PC's support code
++    /// (TV-W6), decided before the approval branches. It only marks the connection.
++    pub(super) fn hjv_staff_login(&self) -> bool {
++        match self.lr.hjv_key_proof.as_ref() {
++            Some(proof) if !self.hash.hjv_nonce.is_empty() => hjviewer_account::staff_login(
++                self.stream.is_secured(),
++                &self.hash.hjv_nonce,
++                proof,
++                &self.lr.my_id,
++                hjviewer_account::kind_of_union(&self.lr.union),
++            ),
++            _ => false,
++        }
++    }
++
++    /// A staff-marked login without a password at a PC that takes clicks (TV-W6, the doc 3-7):
++    /// the connection manager shows it unaccepted and the controller waits for [수락], as the
++    /// click-approval branch does; Some(keep_alive) then. A PC that takes only passwords answers
++    /// as it does any proof it does not take.
++    async fn hjv_staff_without_password(&mut self) -> Option<bool> {
++        if !self.hjv_staff
++            || password::approve_mode() == ApproveMode::Password
++            || !self.lr.password.is_empty()
++        {
++            return None;
++        }
++        #[cfg(not(any(target_os = "android", target_os = "ios")))]
++        if should_use_terminal_os_login_scope(self.terminal, &self.lr.os_login.username) {
++            if let Some(keep_alive) = self.prepare_terminal_login_for_authorization().await {
++                return Some(keep_alive);
++            }
++        }
++        self.try_start_cm(self.lr.my_id.clone(), self.lr.my_name.clone(), false);
++        self.send_login_error(crate::client::LOGIN_MSG_NO_PASSWORD_ACCESS)
++            .await;
++        Some(true)
++    }
++
+     /// Tells the connection manager when the controller starts or stops recording, which it
+     /// reports with every change (Misc.client_record_status); only changes go on.
+     pub(super) fn hjv_peer_recording_to_cm(&mut self, recording: bool) {
+@@ -106,3 +148,28 @@ impl Connection {
+         self.send_to_cm(ipc::Data::HjvPeerRecording(recording));
+     }
+ }
++
++/// hjv-e2e builds: counts the input that reaches the PC before the connection is authorized, which
++/// on_message drops (TV-W6, "no input before [수락]"), in the option `hjv_e2e_dropped_input` that
++/// `--hjv-e2e-option` reads.
++#[cfg(feature = "hjv-e2e")]
++pub(super) fn e2e_dropped_input(authorized: bool, msg: &Message) {
++    use std::sync::atomic::AtomicU64;
++    static DROPPED: AtomicU64 = AtomicU64::new(0);
++    if authorized
++        || !matches!(
++            msg.union,
++            Some(
++                message::Union::MouseEvent(_)
++                    | message::Union::KeyEvent(_)
++                    | message::Union::PointerDeviceEvent(_)
++                    | message::Union::Clipboard(_)
++                    | message::Union::MultiClipboards(_)
++            )
++        )
++    {
++        return;
++    }
++    let n = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
++    Config::set_option("hjv_e2e_dropped_input".to_owned(), n.to_string());
++}

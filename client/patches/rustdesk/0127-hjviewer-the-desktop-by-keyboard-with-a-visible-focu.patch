@@ -1,0 +1,2098 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 04:54:29 +0900
+Subject: [PATCH 127/147] hjviewer: the desktop by keyboard, with a visible
+ focus ring (UX-K1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+UX-K1 (U25):
+- PC cards are Tab stops (common/hjv_keys.dart's HjvPeerCardKeys): Enter
+  connects, the menu key and Shift+F10 open the card's menu at its top
+  right, F2 and Delete do the card menu's rename and remove where that
+  menu offers them, Space chooses while several are being chosen. The
+  focused card draws the hover's 2 px border. The mouse is unchanged.
+- The card's ⋮ (desktop and phone), the connect box's ▾, the PC list's
+  view and sort buttons and the session tab list open their menus under
+  the button when a key presses them (HjvMenuAnchor), not at the
+  screen's corner.
+- One focus ring: the theme's Elevated, Outlined and Text buttons get a
+  2 px border while focused (the accent; the text colour on a filled
+  button), and the app's own widgets draw the same ring (HjvFocusRing):
+  tab pills, their close buttons, window and tab bar buttons, the
+  settings side bar, the PC list's pills and icon buttons. Icon-only
+  pills and buttons show their tooltip on the keyboard's focus too.
+- The main window: Ctrl+F (Cmd+F) opens and focuses the PC list's
+  search on the home tab, Ctrl+W (Cmd+W) closes the settings tab;
+  main.dart's key listener is never a Tab stop. The connect box and
+  the PC list are focus traversal groups.
+- Desktop tooltips wait 500 ms. The radio menus' decorative checks
+  are not Tab stops.
+- The ID suggestions: Up and Down mark the chosen row on the accent's
+  soft tint, Enter then connects to that PC, and the footer says so
+  ('Enter 키: 고른 PC에 연결').
+
+D4 (1.8.2 screen review carry-over): [연결] and ▾ sit beside the
+remote ID field, as high as it, so that the suggestions under the field
+cover neither.
+
+UX-S2 open point (style2): the desktop connect button is hjvButton with
+HjvButtonSize.screen.
+
+Test: flutter/test/hjviewer_keys_test.dart (pure, no bridge).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_keys.dart              | 258 ++++++++++++++++
+ flutter/lib/common/hjv_theme.dart             |  14 +-
+ flutter/lib/common/hjviewer_labels.dart       |   5 +-
+ .../lib/common/widgets/hjv_autocomplete.dart  |  56 +++-
+ flutter/lib/common/widgets/peer_card.dart     | 150 +++++++---
+ flutter/lib/common/widgets/peer_tab_page.dart | 162 ++++++----
+ .../lib/desktop/pages/connection_page.dart    | 282 ++++++++++--------
+ .../desktop/pages/desktop_setting_page.dart   |  75 ++---
+ .../lib/desktop/pages/desktop_tab_page.dart   |  29 ++
+ flutter/lib/desktop/widgets/popup_menu.dart   |  46 +--
+ .../lib/desktop/widgets/tabbar_widget.dart    | 210 +++++++------
+ flutter/lib/main.dart                         |   7 +-
+ flutter/test/hjviewer_keys_test.dart          | 197 ++++++++++++
+ 13 files changed, 1130 insertions(+), 361 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_keys.dart
+ create mode 100644 flutter/test/hjviewer_keys_test.dart
+
+diff --git a/flutter/lib/common/hjv_keys.dart b/flutter/lib/common/hjv_keys.dart
+new file mode 100644
+index 0000000..2714da0
+--- /dev/null
++++ b/flutter/lib/common/hjv_keys.dart
+@@ -0,0 +1,258 @@
++// HJViewer UX-K1 (U25): the desktop by keyboard. The focus ring that the app's own widgets and the
++// theme's buttons draw, where a menu opens when a key opens it, the keys of a focused PC card and
++// the main window's request to search the PC list. Plain Flutter without the bridge, so that
++// ci.sh tests it with the web stand-in (test/hjviewer_keys_test.dart).
++
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++
++import 'hjv_style.dart';
++
++/// The focus ring's width: the PC cards' hover border, which the ring matches.
++const double kHjvFocusRingWidth = 2;
++
++/// The ring's colour: the accent (4.4 to 5.6:1 on the page, the cards and the fields in both
++/// themes); on a filled accent or danger button the text colour, since the accent would vanish
++/// into the fill.
++Color hjvFocusRingColor(HjvPalette p, {bool filled = false}) =>
++    filled ? p.text : p.primary;
++
++/// The theme buttons' border (hjv_theme.dart): the ring while the button has the keyboard's focus,
++/// else `rest` (null: the shape's own, none).
++WidgetStateProperty<BorderSide?> hjvFocusSide(HjvPalette p,
++        {bool filled = false, BorderSide? rest}) =>
++    WidgetStateProperty.resolveWith((states) =>
++        states.contains(WidgetState.focused) &&
++                !states.contains(WidgetState.disabled)
++            ? BorderSide(
++                color: hjvFocusRingColor(p, filled: filled),
++                width: kHjvFocusRingWidth)
++            : rest);
++
++/// The ring drawn over a widget (a foregroundDecoration).
++BoxDecoration hjvFocusRing(BuildContext context,
++        {BorderRadius? radius, bool circle = false}) =>
++    BoxDecoration(
++      border: Border.all(
++          color: hjvFocusRingColor(HjvPalette.of(context)),
++          width: kHjvFocusRingWidth),
++      borderRadius: circle ? null : radius,
++      shape: circle ? BoxShape.circle : BoxShape.rectangle,
++    );
++
++/// No ring, in the ring's place: a Container keeps a foregroundDecoration also when the ring is
++/// off, since one that gains or loses it rebuilds its child, which drops the focus.
++const BoxDecoration kHjvNoFocusRing = BoxDecoration();
++
++/// Whether a focus that just came should show its ring: on a keyboard's (and a mouse's)
++/// interaction, not after a touch.
++bool hjvShowsFocusRing() =>
++    FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
++
++/// The ring over a focusable widget the app draws itself (an InkWell's tab pill, window button,
++/// side bar row): it shows while `child` or a widget in it has the keyboard's focus. With
++/// `tooltip`, the Tooltip around it shows on that focus too (for an icon without a label), and
++/// goes with it.
++class HjvFocusRing extends StatefulWidget {
++  final Widget child;
++  final BorderRadius? radius;
++  final bool circle;
++  final bool tooltip;
++
++  const HjvFocusRing(
++      {Key? key,
++      required this.child,
++      this.radius,
++      this.circle = false,
++      this.tooltip = false})
++      : super(key: key);
++
++  @override
++  State<HjvFocusRing> createState() => _HjvFocusRingState();
++}
++
++class _HjvFocusRingState extends State<HjvFocusRing> {
++  var _ring = false;
++
++  void _onFocusChange(bool focused) {
++    final ring = focused && hjvShowsFocusRing();
++    if (ring == _ring) return;
++    setState(() => _ring = ring);
++    if (!widget.tooltip) return;
++    if (ring) {
++      context.findAncestorStateOfType<TooltipState>()?.ensureTooltipVisible();
++    } else {
++      Tooltip.dismissAllToolTips();
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) => Focus(
++        canRequestFocus: false,
++        skipTraversal: true,
++        onFocusChange: _onFocusChange,
++        child: Container(
++          foregroundDecoration: _ring
++              ? hjvFocusRing(context,
++                  radius: widget.radius, circle: widget.circle)
++              : kHjvNoFocusRing,
++          child: widget.child,
++        ),
++      );
++}
++
++/// Where a menu opens: upstream's showMenu calls take RelativeRect.fromLTRB(x, y, x, y) of a point.
++RelativeRect hjvMenuRect(Offset point) =>
++    RelativeRect.fromLTRB(point.dx, point.dy, point.dx, point.dy);
++
++/// The point of a menu that a key opened from `anchor` (a widget's rect on the screen): under a
++/// button's left edge, or at a card's top right corner.
++Offset hjvMenuPoint(Rect anchor, {bool topRight = false}) =>
++    topRight ? anchor.topRight : anchor.bottomLeft;
++
++/// `box`'s rect on the screen.
++Rect hjvGlobalRect(RenderBox box) => box.localToGlobal(Offset.zero) & box.size;
++
++/// The menu's place for a key that opened it from the widget `box` draws.
++RelativeRect hjvMenuRectFrom(RenderBox box, {bool topRight = false}) =>
++    hjvMenuRect(hjvMenuPoint(hjvGlobalRect(box), topRight: topRight));
++
++/// For a button that opens its menu where it was pressed (onTapDown keeps the point): an InkWell
++/// calls onTap without onTapDown when a key presses it, and the menu then opened at the screen's
++/// corner. `down` keeps the pointer's point, `take` gives it, or, without one, the point under
++/// the button `context` draws.
++class HjvMenuAnchor {
++  Offset? _pointer;
++
++  void down(Offset global) => _pointer = global;
++
++  Offset take(BuildContext context, {bool topRight = false}) {
++    final pointer = _pointer;
++    _pointer = null;
++    if (pointer != null) return pointer;
++    final box = context.findRenderObject();
++    if (box is RenderBox && box.hasSize) {
++      return hjvMenuPoint(hjvGlobalRect(box), topRight: topRight);
++    }
++    return Offset.zero;
++  }
++}
++
++/// What a key does on a focused PC card.
++enum HjvCardKey { connect, menu, select, rename, remove }
++
++/// A focused PC card's keys: Enter connects, the menu key and Shift+F10 open its menu, F2 renames
++/// and Delete removes it; while several are being chosen, Space chooses it and nothing else
++/// applies (the card has no menu then). Null for any other key or with Ctrl, Alt or the meta key.
++HjvCardKey? hjvCardKey(LogicalKeyboardKey key,
++    {bool shift = false, bool ctrlAltMeta = false, bool multiSelect = false}) {
++  if (ctrlAltMeta) return null;
++  if (multiSelect) {
++    return key == LogicalKeyboardKey.space ? HjvCardKey.select : null;
++  }
++  if (key == LogicalKeyboardKey.contextMenu ||
++      (shift && key == LogicalKeyboardKey.f10)) {
++    return HjvCardKey.menu;
++  }
++  if (shift) return null;
++  if (key == LogicalKeyboardKey.enter ||
++      key == LogicalKeyboardKey.numpadEnter) {
++    return HjvCardKey.connect;
++  }
++  if (key == LogicalKeyboardKey.f2) return HjvCardKey.rename;
++  if (key == LogicalKeyboardKey.delete) return HjvCardKey.remove;
++  return null;
++}
++
++/// A PC card's keyboard part (peer_card.dart draws the card in it): a stop of the Tab order whose
++/// keys (hjvCardKey) go to `onKey` while the card itself has the focus (a key on its ⋮ inside is
++/// the ⋮'s). `onRing` says whether the card's ring should show. The mouse's gestures stay the
++/// card's.
++class HjvPeerCardKeys extends StatefulWidget {
++  final bool multiSelect;
++  final ValueChanged<HjvCardKey> onKey;
++  final ValueChanged<bool>? onRing;
++  final Widget child;
++
++  const HjvPeerCardKeys(
++      {Key? key,
++      required this.onKey,
++      required this.child,
++      this.multiSelect = false,
++      this.onRing})
++      : super(key: key);
++
++  @override
++  State<HjvPeerCardKeys> createState() => _HjvPeerCardKeysState();
++}
++
++class _HjvPeerCardKeysState extends State<HjvPeerCardKeys> {
++  final _node = FocusNode(debugLabel: 'hjv-peer-card');
++  var _ring = false;
++
++  @override
++  void initState() {
++    super.initState();
++    _node.addListener(_onFocus);
++  }
++
++  @override
++  void dispose() {
++    _node.removeListener(_onFocus);
++    _node.dispose();
++    super.dispose();
++  }
++
++  void _onFocus() {
++    final ring = _node.hasPrimaryFocus && hjvShowsFocusRing();
++    if (ring == _ring) return;
++    _ring = ring;
++    widget.onRing?.call(ring);
++  }
++
++  KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
++    if (!node.hasPrimaryFocus || event is! KeyDownEvent) {
++      return KeyEventResult.ignored;
++    }
++    final keys = HardwareKeyboard.instance;
++    final key = hjvCardKey(event.logicalKey,
++        shift: keys.isShiftPressed,
++        ctrlAltMeta:
++            keys.isControlPressed || keys.isAltPressed || keys.isMetaPressed,
++        multiSelect: widget.multiSelect);
++    if (key == null) return KeyEventResult.ignored;
++    widget.onKey(key);
++    return KeyEventResult.handled;
++  }
++
++  @override
++  Widget build(BuildContext context) =>
++      Focus(focusNode: _node, onKeyEvent: _onKeyEvent, child: widget.child);
++}
++
++/// A button that opens a menu by a key as well: Enter or Space while it has the focus calls
++/// `onKey` with its context (for HjvMenuAnchor or hjvMenuRectFrom), and the ring shows. The mouse
++/// keeps `child`'s own handling (the PC card's ⋮ opens on the pointer's release).
++Widget hjvKeyMenuButton(
++        {required Widget child,
++        required ValueChanged<BuildContext> onKey,
++        bool circle = false,
++        BorderRadius? radius}) =>
++    Builder(
++        builder: (context) => HjvFocusRing(
++              circle: circle,
++              radius: radius,
++              child: FocusableActionDetector(
++                actions: <Type, Action<Intent>>{
++                  ActivateIntent: CallbackAction<ActivateIntent>(
++                      onInvoke: (_) => onKey(context)),
++                  ButtonActivateIntent: CallbackAction<ButtonActivateIntent>(
++                      onInvoke: (_) => onKey(context)),
++                },
++                child: ExcludeFocus(child: child),
++              ),
++            ));
++
++/// The main window's Ctrl+F (⌘F on a Mac): the PC list's search field opens and takes the focus
++/// (peer_tab_page.dart's search bar listens).
++final hjvPeerSearchRequest = ValueNotifier<int>(0);
+diff --git a/flutter/lib/common/hjv_theme.dart b/flutter/lib/common/hjv_theme.dart
+index 483b3aa..4d49e32 100644
+--- a/flutter/lib/common/hjv_theme.dart
++++ b/flutter/lib/common/hjv_theme.dart
+@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
+ 
+ import '../common.dart';
+ import '../desktop/widgets/tabbar_widget.dart';
++import 'hjv_keys.dart';
+ import 'hjv_phone.dart';
+ import 'hjv_style.dart';
+ 
+@@ -148,7 +149,9 @@ ThemeData hjvRestyle(ThemeData base) {
+                       ? Colors.black.withOpacity(0.12)
+                       : states.contains(WidgetState.hovered)
+                           ? Colors.black.withOpacity(0.08)
+-                          : null))
++                          : null),
++          // UX-K1: the keyboard's focus ring
++          side: hjvFocusSide(p, filled: true))
+           .merge(buttons),
+     ),
+     outlinedButtonTheme: OutlinedButtonThemeData(
+@@ -161,7 +164,10 @@ ThemeData hjvRestyle(ThemeData base) {
+             fontFamily: kHjvFont, fontWeight: FontWeight.w600),
+         shape: RoundedRectangleBorder(borderRadius: radius),
+         splashFactory: desktop ? NoSplash.splashFactory : null,
+-      ).merge(buttons),
++      )
++          .copyWith(
++              side: hjvFocusSide(p, rest: BorderSide(color: p.borderStrong)))
++          .merge(buttons),
+     ),
+     textButtonTheme: TextButtonThemeData(
+       style: TextButton.styleFrom(
+@@ -175,7 +181,7 @@ ThemeData hjvRestyle(ThemeData base) {
+                 horizontal: MyTheme.mobileTextButtonPaddingLR),
+         shape: RoundedRectangleBorder(borderRadius: radius),
+         splashFactory: desktop ? NoSplash.splashFactory : null,
+-      ).merge(buttons),
++      ).copyWith(side: hjvFocusSide(p)).merge(buttons),
+     ),
+     checkboxTheme: base.checkboxTheme.copyWith(
+       fillColor: WidgetStateProperty.resolveWith((states) =>
+@@ -254,6 +260,8 @@ ThemeData hjvRestyle(ThemeData base) {
+       style: MenuStyle(backgroundColor: WidgetStatePropertyAll(p.card)),
+     ),
+     tooltipTheme: base.tooltipTheme.copyWith(
++      // UX-K1: half a second on a desktop (a tooltip that sets its own keeps it)
++      waitDuration: desktop ? const Duration(milliseconds: 500) : null,
+       decoration: BoxDecoration(
+         color: dark ? const Color(0xFFE6E9EE) : const Color(0xFF2B313B),
+         borderRadius: BorderRadius.circular(HjvRadius.sm),
+diff --git a/flutter/lib/common/hjviewer_labels.dart b/flutter/lib/common/hjviewer_labels.dart
+index 65534f5..31ef9b4 100644
+--- a/flutter/lib/common/hjviewer_labels.dart
++++ b/flutter/lib/common/hjviewer_labels.dart
+@@ -35,9 +35,12 @@ class HjvLabels {
+   // the login's busy bar
+   String get loggingIn => _t('로그인하는 중', 'Logging in');
+ 
+-  // the desktop's ID suggestions, which cover [연결] while they show
++  // the desktop's ID suggestions: what Enter connects to, the ID typed or (UX-K1) the PC that
++  // ↑ or ↓ chose
+   String get enterConnects =>
+       _t('Enter 키: 입력한 ID로 연결', 'Enter: connect to the ID typed');
++  String get enterConnectsPicked =>
++      _t('Enter 키: 고른 PC에 연결', 'Enter: connect to the chosen PC');
+ }
+ 
+ HjvLabels get hjvLabels => HjvLabels(translate('Cancel') == '취소');
+diff --git a/flutter/lib/common/widgets/hjv_autocomplete.dart b/flutter/lib/common/widgets/hjv_autocomplete.dart
+index 0bca1c4..d9cbf79 100644
+--- a/flutter/lib/common/widgets/hjv_autocomplete.dart
++++ b/flutter/lib/common/widgets/hjv_autocomplete.dart
+@@ -3,7 +3,9 @@
+ // shadow, and each suggestion a small PC row with the cards' soft tile. AutocompletePeerTile and
+ // the upstream panel stay as they are; the connection pages switch to this.
+ 
++import 'package:flutter/foundation.dart';
+ import 'package:flutter/material.dart';
++import 'package:flutter/scheduler.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_suggestions.dart';
+@@ -17,10 +19,15 @@ class HjvAutocompleteOptions extends StatelessWidget {
+   final bool loading;
+   final double width;
+ 
+-  /// A quiet line under the suggestions (the desktop's: Enter connects to what is typed, since
+-  /// the panel covers [연결]).
++  /// A quiet line under the suggestions (the desktop's: what Enter connects to).
+   final String? footer;
+ 
++  /// UX-K1: true once ↑ or ↓ chose a suggestion (the desktop's field then connects to it on
++  /// Enter): that row shows on the accent's soft tint and `pickedFooter` replaces `footer`.
++  /// Null where the keys do not choose (the phone).
++  final ValueListenable<bool>? picked;
++  final String? pickedFooter;
++
+   const HjvAutocompleteOptions({
+     Key? key,
+     required this.options,
+@@ -28,13 +35,25 @@ class HjvAutocompleteOptions extends StatelessWidget {
+     required this.loading,
+     required this.width,
+     this.footer,
++    this.picked,
++    this.pickedFooter,
+   }) : super(key: key);
+ 
+   @override
+   Widget build(BuildContext context) {
++    final picked = this.picked;
++    if (picked == null) return _build(context, false);
++    return ValueListenableBuilder<bool>(
++        valueListenable: picked,
++        builder: (context, value, _) => _build(context, value));
++  }
++
++  Widget _build(BuildContext context, bool picked) {
+     final p = HjvPalette.of(context);
+     final menu = Theme.of(context).popupMenuTheme;
+     final peers = options.toList(growable: false);
++    final highlighted = picked ? AutocompleteHighlightedOption.of(context) : -1;
++    final footer = picked ? (pickedFooter ?? this.footer) : this.footer;
+     return Align(
+       alignment: Alignment.topLeft,
+       child: Padding(
+@@ -61,10 +80,13 @@ class HjvAutocompleteOptions extends StatelessWidget {
+                           child: CircularProgressIndicator(strokeWidth: 2)))
+                   : ListView(
+                       padding: const EdgeInsets.all(kHjvSuggestionPadding),
+-                      children: peers
+-                          .map((peer) => HjvSuggestionRow(
+-                              peer: peer, onSelect: () => onSelected(peer)))
+-                          .toList(),
++                      children: [
++                        for (var i = 0; i < peers.length; i++)
++                          HjvSuggestionRow(
++                              peer: peers[i],
++                              highlighted: i == highlighted,
++                              onSelect: () => onSelected(peers[i])),
++                      ],
+                     ),
+             ),
+             if (footer != null && !loading)
+@@ -73,7 +95,7 @@ class HjvAutocompleteOptions extends StatelessWidget {
+                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                 decoration: BoxDecoration(
+                     border: Border(top: BorderSide(color: p.border))),
+-                child: Text(footer!,
++                child: Text(footer,
+                     maxLines: 1,
+                     overflow: TextOverflow.ellipsis,
+                     style: HjvText.bodySmall.copyWith(color: p.textTertiary)),
+@@ -90,12 +112,25 @@ class HjvSuggestionRow extends StatelessWidget {
+   final Peer peer;
+   final VoidCallback onSelect;
+ 
+-  const HjvSuggestionRow({Key? key, required this.peer, required this.onSelect})
++  /// UX-K1: the row ↑ or ↓ chose
++  final bool highlighted;
++
++  const HjvSuggestionRow(
++      {Key? key,
++      required this.peer,
++      required this.onSelect,
++      this.highlighted = false})
+       : super(key: key);
+ 
+   @override
+   Widget build(BuildContext context) {
+     final p = HjvPalette.of(context);
++    if (highlighted) {
++      // the chosen row stays in view while the keys move through a longer list
++      SchedulerBinding.instance.addPostFrameCallback((_) {
++        if (context.mounted) Scrollable.ensureVisible(context, alignment: 0.5);
++      });
++    }
+     final texts = hjvSuggestionTexts(
+         id: peer.id,
+         alias: peer.alias,
+@@ -115,6 +150,11 @@ class HjvSuggestionRow extends StatelessWidget {
+       child: Container(
+         height: kHjvSuggestionHeight,
+         padding: const EdgeInsets.symmetric(horizontal: 8),
++        decoration: highlighted
++            ? BoxDecoration(
++                color: p.primarySoft,
++                borderRadius: BorderRadius.circular(HjvRadius.sm))
++            : null,
+         child: Row(
+           children: [
+             Container(
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 4a4bb8a..4ca3027 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -12,6 +12,7 @@ import 'package:provider/provider.dart';
+ 
+ import '../../common.dart';
+ import '../../common/formatter/id_formatter.dart';
++import '../../common/hjv_keys.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../models/peer_model.dart';
+@@ -29,17 +30,23 @@ final peerCardUiType = PeerUiType.grid.obs;
+ 
+ bool? hideUsernameOnCard;
+ 
++// HJViewer UX-K1: the menu entries that F2 and Delete stand for
++final _hjvKeyEntries = Expando<HjvCardKey>('hjvKeyEntries');
++
+ class _PeerCard extends StatefulWidget {
+   final Peer peer;
+   final PeerTabIndex tab;
+   final Function(BuildContext, String) connect;
+   final PopupMenuEntryBuilder popupMenuEntryBuilder;
++  // HJViewer UX-K1: F2 and Delete on the focused card
++  final void Function(BuildContext, HjvCardKey)? hjvKeyAction;
+ 
+   const _PeerCard(
+       {required this.peer,
+       required this.tab,
+       required this.connect,
+       required this.popupMenuEntryBuilder,
++      this.hjvKeyAction,
+       Key? key})
+       : super(key: key);
+ 
+@@ -54,6 +61,10 @@ class _PeerCardState extends State<_PeerCard>
+   // HJViewer: while the card's menu is open, the card keeps its hover border (the menu's barrier
+   // takes the pointer), so that it shows whose menu it is
+   var _hjvMenuOpen = false;
++  // HJViewer UX-K1: the pointer over the card and the keyboard's focus on it draw the same border
++  var _hjvHovered = false;
++  var _hjvFocused = false;
++  final _hjvMoreAnchor = HjvMenuAnchor();
+   final double _cardRadius = 16;
+   final double _tileRadius = 10;
+   final double _borderWidth = 2;
+@@ -65,6 +76,41 @@ class _PeerCardState extends State<_PeerCard>
+         stateGlobal.isPortrait.isTrue ? _hjvBuildPortrait() : _buildLandscape());
+   }
+ 
++  // HJViewer UX-K1: the border of the hover, the focus and the open menu
++  BoxDecoration _hjvBorder() => BoxDecoration(
++        border: Border.all(
++            color: _hjvHovered || _hjvFocused || _hjvMenuOpen
++                ? Theme.of(context).colorScheme.primary
++                : Colors.transparent,
++            width: _borderWidth),
++        borderRadius: BorderRadius.circular(
++          peerCardUiType.value == PeerUiType.grid ? _cardRadius : _tileRadius,
++        ),
++      );
++
++  // HJViewer UX-K1: a focused card's keys (hjv_keys.dart's hjvCardKey)
++  void _hjvOnKey(HjvCardKey key, Peer peer, PeerTabModel peerTabModel) {
++    switch (key) {
++      case HjvCardKey.connect:
++        widget.connect(context, peer.id);
++        break;
++      case HjvCardKey.select:
++        peerTabModel.select(peer);
++        break;
++      case HjvCardKey.menu:
++        final box = context.findRenderObject();
++        if (box is RenderBox && box.hasSize) {
++          _menuPos = hjvMenuRectFrom(box, topRight: true);
++        }
++        _showPeerMenu(peer.id);
++        break;
++      case HjvCardKey.rename:
++      case HjvCardKey.remove:
++        widget.hjvKeyAction?.call(context, key);
++        break;
++    }
++  }
++
+   Widget gestureDetector({required Widget child}) {
+     final PeerTabModel peerTabModel = Provider.of(context);
+     final peer = super.widget.peer;
+@@ -93,7 +139,14 @@ class _PeerCardState extends State<_PeerCard>
+                 _showPeerMenu(peer.id);
+               }
+             : null,
+-        child: child);
++        // HJViewer UX-K1: the card as a stop of the Tab order, with its keys
++        child: HjvPeerCardKeys(
++            multiSelect: peerTabModel.multiSelectionMode,
++            onKey: (key) => _hjvOnKey(key, peer, peerTabModel),
++            onRing: (ring) {
++              if (mounted) setState(() => _hjvFocused = ring);
++            },
++            child: child));
+   }
+ 
+   Widget _buildPortrait() {
+@@ -109,33 +162,15 @@ class _PeerCardState extends State<_PeerCard>
+ 
+   Widget _buildLandscape() {
+     final peer = super.widget.peer;
+-    var deco = Rx<BoxDecoration?>(
+-      BoxDecoration(
+-        border: Border.all(color: Colors.transparent, width: _borderWidth),
+-        borderRadius: BorderRadius.circular(
+-          peerCardUiType.value == PeerUiType.grid ? _cardRadius : _tileRadius,
+-        ),
+-      ),
+-    );
++    var deco = Rx<BoxDecoration?>(_hjvBorder());
+     return MouseRegion(
+       onEnter: (evt) {
+-        deco.value = BoxDecoration(
+-          border: Border.all(
+-              color: Theme.of(context).colorScheme.primary,
+-              width: _borderWidth),
+-          borderRadius: BorderRadius.circular(
+-            peerCardUiType.value == PeerUiType.grid ? _cardRadius : _tileRadius,
+-          ),
+-        );
++        _hjvHovered = true;
++        deco.value = _hjvBorder();
+       },
+       onExit: (evt) {
+-        if (_hjvMenuOpen) return;
+-        deco.value = BoxDecoration(
+-          border: Border.all(color: Colors.transparent, width: _borderWidth),
+-          borderRadius: BorderRadius.circular(
+-            peerCardUiType.value == PeerUiType.grid ? _cardRadius : _tileRadius,
+-          ),
+-        );
++        _hjvHovered = false;
++        deco.value = _hjvBorder();
+       },
+       child: gestureDetector(
+           child: Obx(() => peerCardUiType.value == PeerUiType.grid
+@@ -435,6 +470,10 @@ class _PeerCardState extends State<_PeerCard>
+     final peer = super.widget.peer;
+     return Container(
+       decoration: hjvCardDecoration(context),
++      // HJViewer UX-K1: the focus ring (a tablet's keyboard)
++      foregroundDecoration: _hjvFocused
++          ? hjvFocusRing(context, radius: BorderRadius.circular(HjvRadius.lg))
++          : kHjvNoFocusRing,
+       child: gestureDetector(
+         child: Container(
+             color: Colors.transparent,
+@@ -694,17 +733,17 @@ class _PeerCardState extends State<_PeerCard>
+       return Semantics(
+         button: true,
+         label: hjvLabels.more,
+-        child: InkWell(
+-            child: const Padding(
+-                padding: EdgeInsets.all(12), child: Icon(Icons.more_vert)),
+-            onTapDown: (e) {
+-              final x = e.globalPosition.dx;
+-              final y = e.globalPosition.dy;
+-              _menuPos = RelativeRect.fromLTRB(x, y, x, y);
+-            },
+-            onTap: () {
+-              _showPeerMenu(peer.id);
+-            }),
++        // HJViewer UX-K1: a key opens the menu under the button, not at the screen's corner
++        child: Builder(
++          builder: (context) => InkWell(
++              child: const Padding(
++                  padding: EdgeInsets.all(12), child: Icon(Icons.more_vert)),
++              onTapDown: (e) => _hjvMoreAnchor.down(e.globalPosition),
++              onTap: () {
++                _menuPos = hjvMenuRect(_hjvMoreAnchor.take(context));
++                _showPeerMenu(peer.id);
++              }),
++        ),
+       );
+     }
+   }
+@@ -744,7 +783,19 @@ class _PeerCardState extends State<_PeerCard>
+       },
+       onPointerUp: (_) => _showPeerMenu(peer.id),
+       // HJViewer: a right-click on the ⋮ opens its menu once, not the card's as well
+-      child: GestureDetector(onSecondaryTap: () {}, child: build_more(context)));
++      child: GestureDetector(
++          onSecondaryTap: () {},
++          // HJViewer UX-K1: Enter or Space on the focused ⋮ opens the menu under it
++          child: hjvKeyMenuButton(
++              circle: true,
++              onKey: (context) {
++                final box = context.findRenderObject();
++                if (box is RenderBox && box.hasSize) {
++                  _menuPos = hjvMenuRectFrom(box);
++                }
++                _showPeerMenu(peer.id);
++              },
++              child: build_more(context))));
+ 
+   bool _shouldBuildPasswordIcon(Peer peer) {
+     if (gFFI.peerTabModel.currentTab != PeerTabIndex.ab.index) return false;
+@@ -756,6 +807,8 @@ class _PeerCardState extends State<_PeerCard>
+   /// User might remove the peer or send a file to the peer.
+   void _showPeerMenu(String id) async {
+     _hjvMenuOpen = true;
++    // HJViewer UX-K1: the menu a key opened keeps the border too
++    if (mounted) setState(() {});
+     await mod_menu.showMenu(
+       context: context,
+       position: _menuPos,
+@@ -788,9 +841,22 @@ abstract class BasePeerCard extends StatelessWidget {
+       connect: (BuildContext context, String id) =>
+           connectInPeerTab(context, peer, tab),
+       popupMenuEntryBuilder: _buildPopupMenuEntry,
++      hjvKeyAction: _hjvKeyAction,
+     );
+   }
+ 
++  // HJViewer UX-K1: F2 and Delete do what this card's menu offers as rename and remove, where
++  // it offers them (the tab, the address book's rights)
++  Future<void> _hjvKeyAction(BuildContext context, HjvCardKey key) async {
++    for (final entry in await _buildMenuItems(context)) {
++      if (_hjvKeyEntries[entry] == key && entry is MenuEntryButton<String>) {
++        if (entry.enabled?.value == false) return;
++        entry.proc();
++        return;
++      }
++    }
++  }
++
+   Future<List<mod_menu.PopupMenuEntry<String>>> _buildPopupMenuEntry(
+           BuildContext context) async =>
+       (await _buildMenuItems(context))
+@@ -1022,6 +1088,12 @@ abstract class BasePeerCard extends StatelessWidget {
+ 
+   @protected
+   MenuEntryBase<String> _renameAction(String id) {
++    final entry = _hjvRenameAction(id);
++    _hjvKeyEntries[entry] = HjvCardKey.rename;
++    return entry;
++  }
++
++  MenuEntryBase<String> _hjvRenameAction(String id) {
+     return MenuEntryButton<String>(
+       childBuilder: (TextStyle? style) => Text(
+         translate('Rename'),
+@@ -1051,6 +1123,12 @@ abstract class BasePeerCard extends StatelessWidget {
+ 
+   @protected
+   MenuEntryBase<String> _removeAction(String id) {
++    final entry = _hjvRemoveAction(id);
++    _hjvKeyEntries[entry] = HjvCardKey.remove;
++    return entry;
++  }
++
++  MenuEntryBase<String> _hjvRemoveAction(String id) {
+     return MenuEntryButton<String>(
+       childBuilder: (TextStyle? style) => Builder(
+           builder: (context) => Row(
+diff --git a/flutter/lib/common/widgets/peer_tab_page.dart b/flutter/lib/common/widgets/peer_tab_page.dart
+index 02ed1d7..8883602 100644
+--- a/flutter/lib/common/widgets/peer_tab_page.dart
++++ b/flutter/lib/common/widgets/peer_tab_page.dart
+@@ -22,6 +22,7 @@ import 'package:provider/provider.dart';
+ import 'package:pull_down_button/pull_down_button.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_keys.dart';
+ import '../../common/hjv_phone.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_access.dart';
+@@ -267,51 +268,59 @@ class _PeerTabPageState extends State<PeerTabPage>
+                   preferBelow: false,
+                   message: model.tabTooltip(t),
+                   onTriggered: isMobile ? mobileShowTabVisibilityMenu : null,
+-                  child: InkWell(
+-                    customBorder: const StadiumBorder(),
+-                    hoverColor: Colors.transparent,
+-                    child: Container(
+-                      width: (portrait ? kHjvPhoneTabWidth : (narrow ? 36 : 44)) +
+-                          (selected ? labelWidth : 0),
+-                      alignment: Alignment.center,
++                  // HJViewer UX-K1: the ring, and the icon's name on the keyboard's focus too
++                  child: HjvFocusRing(
++                    radius: BorderRadius.circular(16),
++                    tooltip: true,
++                    child: InkWell(
++                      customBorder: const StadiumBorder(),
++                      hoverColor: Colors.transparent,
+                       child: Container(
+-                        height: 32,
++                        width: (portrait
++                                ? kHjvPhoneTabWidth
++                                : (narrow ? 36 : 44)) +
++                            (selected ? labelWidth : 0),
+                         alignment: Alignment.center,
+-                        decoration: ShapeDecoration(
+-                          shape: const StadiumBorder(),
+-                          color: selected
+-                              ? p.primarySoft
+-                              : (hovered ? p.hover : Colors.transparent),
+-                        ),
+-                        child: Row(
+-                          mainAxisSize: MainAxisSize.min,
+-                          children: [
+-                            Icon(model.tabIcon(t),
+-                                size: 20,
+-                                color: selected ? p.primary : p.textSecondary),
+-                            if (selected && labelWidth > 0)
+-                              Flexible(
+-                                child: Text(model.tabTooltip(t),
+-                                        maxLines: 1,
+-                                        softWrap: false,
+-                                        overflow: TextOverflow.clip,
+-                                        // text on primarySoft: primaryStrong
+-                                        style: _hjvLabelStyle.copyWith(
+-                                            color: p.primaryStrong))
+-                                    .marginOnly(left: _hjvLabelGap),
+-                              ),
+-                          ],
++                        child: Container(
++                          height: 32,
++                          alignment: Alignment.center,
++                          decoration: ShapeDecoration(
++                            shape: const StadiumBorder(),
++                            color: selected
++                                ? p.primarySoft
++                                : (hovered ? p.hover : Colors.transparent),
++                          ),
++                          child: Row(
++                            mainAxisSize: MainAxisSize.min,
++                            children: [
++                              Icon(model.tabIcon(t),
++                                  size: 20,
++                                  color:
++                                      selected ? p.primary : p.textSecondary),
++                              if (selected && labelWidth > 0)
++                                Flexible(
++                                  child: Text(model.tabTooltip(t),
++                                          maxLines: 1,
++                                          softWrap: false,
++                                          overflow: TextOverflow.clip,
++                                          // text on primarySoft: primaryStrong
++                                          style: _hjvLabelStyle.copyWith(
++                                              color: p.primaryStrong))
++                                      .marginOnly(left: _hjvLabelGap),
++                                ),
++                            ],
++                          ),
+                         ),
+                       ),
++                      onTap: isOptionFixed(kOptionPeerTabIndex)
++                          ? null
++                          : () async {
++                              await handleTabSelection(t);
++                              await bind.setLocalFlutterOption(
++                                  k: kOptionPeerTabIndex, v: t.toString());
++                            },
++                      onHover: (value) => hover.value = value,
+                     ),
+-                    onTap: isOptionFixed(kOptionPeerTabIndex)
+-                        ? null
+-                        : () async {
+-                            await handleTabSelection(t);
+-                            await bind.setLocalFlutterOption(
+-                                k: kOptionPeerTabIndex, v: t.toString());
+-                          },
+-                    onHover: (value) => hover.value = value,
+                   ),
+                 ).marginOnly(right: portrait ? 0 : 4);
+               }));
+@@ -797,6 +806,41 @@ class PeerSearchBar extends StatefulWidget {
+ 
+ class _PeerSearchBarState extends State<PeerSearchBar> {
+   var drawer = false;
++  // HJViewer UX-K1: one focus node for the field, so that Ctrl+F can give it the focus
++  final _hjvFocusNode = FocusNode();
++  final _hjvFocused = false.obs;
++
++  @override
++  void initState() {
++    super.initState();
++    _hjvFocusNode.addListener(_hjvOnFocus);
++    hjvPeerSearchRequest.addListener(_hjvOnSearchRequest);
++  }
++
++  @override
++  void dispose() {
++    hjvPeerSearchRequest.removeListener(_hjvOnSearchRequest);
++    _hjvFocusNode.removeListener(_hjvOnFocus);
++    _hjvFocusNode.dispose();
++    super.dispose();
++  }
++
++  void _hjvOnFocus() {
++    _hjvFocused.value = _hjvFocusNode.hasFocus;
++    peerSearchTextController.selection = TextSelection(
++        baseOffset: 0,
++        extentOffset: peerSearchTextController.value.text.length);
++  }
++
++  // the open field takes the focus; a closed one opens and takes it (autofocus)
++  void _hjvOnSearchRequest() {
++    if (!mounted) return;
++    if (drawer) {
++      _hjvFocusNode.requestFocus();
++    } else {
++      setState(() => drawer = true);
++    }
++  }
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -817,14 +861,8 @@ class _PeerSearchBarState extends State<PeerSearchBar> {
+   Widget _hjvBuildSearchBar() {
+     final p = HjvPalette.of(context);
+     final phone = !(isDesktop || isWebDesktop);
+-    RxBool focused = false.obs;
+-    FocusNode focusNode = FocusNode();
+-    focusNode.addListener(() {
+-      focused.value = focusNode.hasFocus;
+-      peerSearchTextController.selection = TextSelection(
+-          baseOffset: 0,
+-          extentOffset: peerSearchTextController.value.text.length);
+-    });
++    final focused = _hjvFocused;
++    final focusNode = _hjvFocusNode;
+     // a Material above the field's fill; radius 12 fits the 24 px of compact density. On a
+     // phone it is a 36 x 44 target over the field's right end (U57).
+     Widget close(double width, double height) => Material(
+@@ -1300,6 +1338,26 @@ Widget _hjvHoverAction(
+   final p = HjvPalette.of(context);
+   final hover = false.obs;
+   final radius = BorderRadius.circular(HjvRadius.sm);
++  // HJViewer UX-K1: a key that opens a menu here opens it under the button; the focus ring
++  final anchor = HjvMenuAnchor();
++  Widget keys(Widget Function(GestureTapDownCallback?, VoidCallback) button) =>
++      HjvFocusRing(
++          radius: radius,
++          tooltip: true,
++          child: Builder(
++              builder: (context) => button(
++                      onTapDown == null
++                          ? null
++                          : (d) {
++                              anchor.down(d.globalPosition);
++                              onTapDown(d);
++                            }, () {
++                    if (onTapDown != null) {
++                      onTapDown(
++                          TapDownDetails(globalPosition: anchor.take(context)));
++                    }
++                    onTap();
++                  })));
+   return Tooltip(
+     message: toolTip,
+     child: Obx(() {
+@@ -1307,7 +1365,7 @@ Widget _hjvHoverAction(
+       final on = hoverableWhenfalse?.value == false;
+       final padding = EdgeInsets.all(stateGlobal.isPortrait.isTrue ? 3 : 6);
+       if (!(isDesktop || isWebDesktop)) {
+-        return InkWell(
++        return keys((onTapDown, onTap) => InkWell(
+             borderRadius: radius,
+             onTap: onTap,
+             onTapDown: onTapDown,
+@@ -1324,7 +1382,7 @@ Widget _hjvHoverAction(
+                                 size: 20,
+                                 color: on ? p.primary : p.textSecondary),
+                             child:
+-                                Container(padding: padding, child: child))))));
++                                Container(padding: padding, child: child)))))));
+       }
+       return Container(
+           margin: EdgeInsets.symmetric(horizontal: 1),
+@@ -1332,7 +1390,7 @@ Widget _hjvHoverAction(
+             color: on ? p.primarySoft : (hovered ? p.hover : null),
+             borderRadius: radius,
+           ),
+-          child: InkWell(
++          child: keys((onTapDown, onTap) => InkWell(
+               borderRadius: radius,
+               hoverColor: Colors.transparent,
+               onHover: (value) => hover.value = value,
+@@ -1341,7 +1399,7 @@ Widget _hjvHoverAction(
+               child: IconTheme.merge(
+                   data: IconThemeData(
+                       size: 20, color: on ? p.primary : p.textSecondary),
+-                  child: Container(padding: padding, child: child))));
++                  child: Container(padding: padding, child: child)))));
+     }),
+   );
+ }
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 41895e7..070f402 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -5,7 +5,9 @@ import 'dart:convert';
+ import 'dart:math';
+ 
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/widgets/connection_page_title.dart';
++import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/desktop/widgets/popup_menu.dart';
+ import 'package:flutter_hbb/models/state_model.dart';
+@@ -15,6 +17,7 @@ import 'package:window_manager/window_manager.dart';
+ import 'package:flutter_hbb/models/peer_model.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_keys.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+@@ -229,6 +232,11 @@ class _ConnectionPageState extends State<ConnectionPage>
+ 
+   final _menuOpen = false.obs;
+ 
++  // HJViewer UX-K1: ↑ or ↓ chose a suggestion, which Enter then connects to; where a key opens ▾'s
++  // menu
++  final _hjvPicked = ValueNotifier<bool>(false);
++  final _hjvOtherWays = HjvMenuAnchor();
++
+   @override
+   void initState() {
+     super.initState();
+@@ -257,6 +265,7 @@ class _ConnectionPageState extends State<ConnectionPage>
+     _idFocusNode.removeListener(onFocusChanged);
+     _idFocusNode.dispose();
+     _idEditingController.dispose();
++    _hjvPicked.dispose();
+     if (Get.isRegistered<IDTextEditingController>()) {
+       Get.delete<IDTextEditingController>();
+     }
+@@ -302,6 +311,7 @@ class _ConnectionPageState extends State<ConnectionPage>
+ 
+   void onFocusChanged() {
+     _idInputFocused.value = _idFocusNode.hasFocus;
++    if (!_idFocusNode.hasFocus) _hjvPicked.value = false;
+     if (_idFocusNode.hasFocus) {
+       if (_allPeersLoader.needLoad) {
+         _allPeersLoader.getAllPeers();
+@@ -322,15 +332,18 @@ class _ConnectionPageState extends State<ConnectionPage>
+         Expanded(
+             child: hjvGate(Column(
+           children: [
+-            Row(
+-              children: [
+-                Flexible(child: _buildRemoteIDTextField(context)),
+-              ],
++            // HJViewer UX-K1: Tab goes through the connect box, then through the PC list
++            FocusTraversalGroup(
++              child: Row(
++                children: [
++                  Flexible(child: _buildRemoteIDTextField(context)),
++                ],
++              ),
+             ).marginOnly(top: 22),
+             ...hjvAccessConnectHint(),
+             SizedBox(height: 12),
+             Divider().paddingOnly(right: 12),
+-            Expanded(child: PeerTabPage()),
++            Expanded(child: FocusTraversalGroup(child: PeerTabPage())),
+           ],
+         ).paddingOnly(left: 12.0))),
+         if (!isOutgoingOnly) const Divider(height: 1),
+@@ -365,7 +378,9 @@ class _ConnectionPageState extends State<ConnectionPage>
+         child: Column(
+           children: [
+             getConnectionPageTitle(context, false).marginOnly(bottom: 15),
+-            Row(
++            // HJViewer UX-K1 (D4): [연결] and ▾ beside the field, so that the suggestions under the
++            // field cover neither
++            _hjvBesideField(
+               children: [
+                 Expanded(
+                     child: RawAutocomplete<Peer>(
+@@ -427,7 +442,8 @@ class _ConnectionPageState extends State<ConnectionPage>
+                     updateTextAndPreserveSelection(
+                         fieldTextEditingController, _idController.text);
+                     // HJViewer: the field's name also while it has the focus, which hides the hint
+-                    return Obx(() => Semantics(
++                    // HJViewer UX-K1: ↑ and ↓ choose a suggestion, which Enter connects to
++                    return _hjvArrowKeys(Obx(() => Semantics(
+                           label: translate('Remote ID'),
+                           child: TextField(
+                             autocorrect: false,
+@@ -448,13 +464,19 @@ class _ConnectionPageState extends State<ConnectionPage>
+                             controller: fieldTextEditingController,
+                             inputFormatters: [IDTextInputFormatter()],
+                             onChanged: (v) {
++                              _hjvPicked.value = false;
+                               _idController.id = v;
+                             },
+                             onSubmitted: (_) {
++                              // HJViewer UX-K1: the chosen suggestion's ID first
++                              if (_hjvPicked.value) {
++                                _hjvPicked.value = false;
++                                onFieldSubmitted();
++                              }
+                               onConnect();
+                             },
+                           ).workaroundFreezeLinuxMint(),
+-                        ));
++                        )));
+                   },
+                   onSelected: (option) {
+                     setState(() {
+@@ -473,119 +495,113 @@ class _ConnectionPageState extends State<ConnectionPage>
+                           !_allPeersLoader.isPeersLoaded,
+                       width: 320,
+                       footer: hjvLabels.enterConnects,
++                      picked: _hjvPicked,
++                      pickedFooter: hjvLabels.enterConnectsPicked,
+                     );
+                   },
+                 )),
+-              ],
+-            ),
+-            Padding(
+-              padding: const EdgeInsets.only(top: 13.0),
+-              child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+-                SizedBox(
+-                  height: 40.0,
+-                  child: ElevatedButton(
+-                    style: ElevatedButton.styleFrom(
+-                        padding: const EdgeInsets.symmetric(horizontal: 22)),
+-                    onPressed: () {
+-                      onConnect();
+-                    },
+-                    child: Text(translate("Connect")),
+-                  ),
+-                ),
+                 const SizedBox(width: 8),
+-                Container(
+-                  height: 40.0,
+-                  width: 40.0,
+-                  decoration: BoxDecoration(
+-                    color: HjvPalette.of(context).card,
+-                    border:
+-                        Border.all(color: HjvPalette.of(context).borderStrong),
+-                    borderRadius: BorderRadius.circular(HjvRadius.md),
+-                  ),
+-                  child: Center(
+-                    child: StatefulBuilder(
+-                      builder: (context, setState) {
+-                        var offset = Offset(0, 0);
+-                        return Obx(() => InkWell(
+-                              // HJViewer: the button's name (U55)
+-                              child: Tooltip(
+-                                message: hjvLabels.otherWays,
+-                                child: _menuOpen.value
+-                                    ? Transform.rotate(
+-                                        angle: pi,
+-                                        child: Icon(IconFont.more, size: 14),
+-                                      )
+-                                    : Icon(IconFont.more, size: 14),
+-                              ),
+-                              onTapDown: (e) {
+-                                offset = e.globalPosition;
+-                              },
+-                              onTap: () async {
+-                                _menuOpen.value = true;
+-                                final x = offset.dx;
+-                                final y = offset.dy;
+-                                await mod_menu
+-                                    .showMenu(
+-                                  context: context,
+-                                  position: RelativeRect.fromLTRB(x, y, x, y),
+-                                  items: [
+-                                    (
+-                                      'Transfer file',
+-                                      () => onConnect(isFileTransfer: true)
+-                                    ),
+-                                    (
+-                                      'View camera',
+-                                      () => onConnect(isViewCamera: true)
+-                                    ),
+-                                    (
+-                                      hjvTerminalBeta(),
+-                                      () => onConnect(isTerminal: true)
+-                                    ),
+-                                    // `connect` routes this through the
+-                                    // desktop path only; the peer card gates
+-                                    // it the same way.
+-                                    if (isDesktop)
+-                                      (
+-                                        'TCP tunneling',
+-                                        () => onConnect(isTcpTunneling: true)
+-                                      ),
+-                                  ]
+-                                      .map((e) => MenuEntryButton<String>(
+-                                            childBuilder: (TextStyle? style) =>
+-                                                Text(
+-                                              translate(e.$1),
+-                                              style: style,
+-                                            ),
+-                                            proc: () => e.$2(),
+-                                            padding: EdgeInsets.symmetric(
+-                                                horizontal:
+-                                                    kDesktopMenuPadding.left),
+-                                            dismissOnClicked: true,
+-                                          ))
+-                                      .map((e) => e.build(
+-                                          context,
+-                                          const MenuConfig(
+-                                              commonColor: CustomPopupMenuTheme
+-                                                  .commonColor,
+-                                              height:
+-                                                  CustomPopupMenuTheme.height,
+-                                              dividerHeight:
+-                                                  CustomPopupMenuTheme
+-                                                      .dividerHeight)))
+-                                      .expand((i) => i)
+-                                      .toList(),
+-                                  elevation: 8,
+-                                )
+-                                    .then((_) {
+-                                  _menuOpen.value = false;
+-                                });
+-                              },
+-                            ));
+-                      },
+-                    ),
+-                  ),
+-                ),
+-              ]),
++                // HJViewer: the screen action's button (UX-S2, 40 at least)
++                hjvButton(translate('Connect'), onConnect,
++                    size: HjvButtonSize.screen),
++                const SizedBox(width: 8),
++                // HJViewer UX-K1: the keyboard's focus ring; a key opens the menu under the box
++                _hjvOtherWaysBox((box) => Container(
++                      width: 40.0,
++                      decoration: BoxDecoration(
++                        color: HjvPalette.of(context).card,
++                        border: Border.all(
++                            color: HjvPalette.of(context).borderStrong),
++                        borderRadius: BorderRadius.circular(HjvRadius.md),
++                      ),
++                      child: Center(
++                        child: StatefulBuilder(
++                          builder: (context, setState) {
++                            return Obx(() => InkWell(
++                                  // HJViewer: the button's name (U55)
++                                  child: Tooltip(
++                                    message: hjvLabels.otherWays,
++                                    child: _menuOpen.value
++                                        ? Transform.rotate(
++                                            angle: pi,
++                                            child:
++                                                Icon(IconFont.more, size: 14),
++                                          )
++                                        : Icon(IconFont.more, size: 14),
++                                  ),
++                                  onTapDown: (e) =>
++                                      _hjvOtherWays.down(e.globalPosition),
++                                  onTap: () async {
++                                    _menuOpen.value = true;
++                                    final offset = _hjvOtherWays.take(box);
++                                    final x = offset.dx;
++                                    final y = offset.dy;
++                                    await mod_menu
++                                        .showMenu(
++                                      context: context,
++                                      position:
++                                          RelativeRect.fromLTRB(x, y, x, y),
++                                      items: [
++                                        (
++                                          'Transfer file',
++                                          () => onConnect(isFileTransfer: true)
++                                        ),
++                                        (
++                                          'View camera',
++                                          () => onConnect(isViewCamera: true)
++                                        ),
++                                        (
++                                          hjvTerminalBeta(),
++                                          () => onConnect(isTerminal: true)
++                                        ),
++                                        // `connect` routes this through the
++                                        // desktop path only; the peer card gates
++                                        // it the same way.
++                                        if (isDesktop)
++                                          (
++                                            'TCP tunneling',
++                                            () =>
++                                                onConnect(isTcpTunneling: true)
++                                          ),
++                                      ]
++                                          .map((e) => MenuEntryButton<String>(
++                                                childBuilder:
++                                                    (TextStyle? style) => Text(
++                                                  translate(e.$1),
++                                                  style: style,
++                                                ),
++                                                proc: () => e.$2(),
++                                                padding: EdgeInsets.symmetric(
++                                                    horizontal:
++                                                        kDesktopMenuPadding
++                                                            .left),
++                                                dismissOnClicked: true,
++                                              ))
++                                          .map((e) => e.build(
++                                              context,
++                                              const MenuConfig(
++                                                  commonColor:
++                                                      CustomPopupMenuTheme
++                                                          .commonColor,
++                                                  height: CustomPopupMenuTheme
++                                                      .height,
++                                                  dividerHeight:
++                                                      CustomPopupMenuTheme
++                                                          .dividerHeight)))
++                                          .expand((i) => i)
++                                          .toList(),
++                                      elevation: 8,
++                                    )
++                                        .then((_) {
++                                      _menuOpen.value = false;
++                                    });
++                                  },
++                                ));
++                          },
++                        ),
++                      ),
++                    )),
++              ],
+             ),
+           ],
+         ),
+@@ -594,4 +610,36 @@ class _ConnectionPageState extends State<ConnectionPage>
+     return Container(
+         constraints: const BoxConstraints(maxWidth: 600), child: w);
+   }
++
++  // HJViewer UX-K1 (D4): the field and its buttons in one row, the buttons as high as the field
++  Widget _hjvBesideField({required List<Widget> children}) => IntrinsicHeight(
++      child: Row(
++          crossAxisAlignment: CrossAxisAlignment.stretch, children: children));
++
++  // HJViewer UX-K1: notes ↑ and ↓ in the field while the suggestions can show (RawAutocomplete
++  // moves its highlight on them; the loading row is not one)
++  Widget _hjvArrowKeys(Widget field) => Focus(
++        canRequestFocus: false,
++        skipTraversal: true,
++        onKeyEvent: (node, event) {
++          final arrow = event.logicalKey == LogicalKeyboardKey.arrowDown ||
++              event.logicalKey == LogicalKeyboardKey.arrowUp;
++          final loading =
++              _allPeersLoader.peers.isEmpty && !_allPeersLoader.isPeersLoaded;
++          if (event is! KeyUpEvent &&
++              arrow &&
++              _autocompleteOpts.isNotEmpty &&
++              !loading) {
++            _hjvPicked.value = true;
++          }
++          return KeyEventResult.ignored;
++        },
++        child: field,
++      );
++
++  // HJViewer UX-K1: ▾'s box with the keyboard's focus ring; `box` is its context, under which a
++  // key opens the menu
++  Widget _hjvOtherWaysBox(Widget Function(BuildContext box) build) => Builder(
++      builder: (box) => HjvFocusRing(
++          radius: BorderRadius.circular(HjvRadius.md), child: build(box)));
+ }
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index dc21e2d..19f8e3d 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/formatter/id_formatter.dart';
++import 'package:flutter_hbb/common/hjv_keys.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+@@ -420,44 +421,48 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
+       final radius = BorderRadius.circular(HjvRadius.md);
+       return Padding(
+         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+-        child: Material(
+-          color: selected ? p.primarySoft : Colors.transparent,
+-          borderRadius: radius,
+-          child: InkWell(
++        // HJViewer UX-K1: the keyboard's focus ring
++        child: HjvFocusRing(
++          radius: radius,
++          child: Material(
++            color: selected ? p.primarySoft : Colors.transparent,
+             borderRadius: radius,
+-            // not transparent: a hover that turns transparent paints black
+-            hoverColor: selected ? p.primarySoft : p.hoverStrong,
+-            onTap: () {
+-              if (selectedTab.value != tab.key) {
+-                int index = DesktopSettingPage.tabKeys.indexOf(tab.key);
+-                if (index == -1) {
+-                  return;
++            child: InkWell(
++              borderRadius: radius,
++              // not transparent: a hover that turns transparent paints black
++              hoverColor: selected ? p.primarySoft : p.hoverStrong,
++              onTap: () {
++                if (selectedTab.value != tab.key) {
++                  int index = DesktopSettingPage.tabKeys.indexOf(tab.key);
++                  if (index == -1) {
++                    return;
++                  }
++                  controller.jumpToPage(index);
+                 }
+-                controller.jumpToPage(index);
+-              }
+-              selectedTab.value = tab.key;
+-            },
+-            child: SizedBox(
+-              height: _kTabHeight,
+-              child: Row(children: [
+-                Icon(
+-                  selected ? tab.selected : tab.unselected,
+-                  color: selected ? p.primary : p.textSecondary,
+-                  size: 20,
+-                ).marginOnly(left: 12, right: 12),
+-                Expanded(
+-                  child: Text(
+-                    translate(tab.label),
+-                    maxLines: 1,
+-                    overflow: TextOverflow.ellipsis,
+-                    style: TextStyle(
+-                        color: selected ? p.primaryStrong : p.textSecondary,
+-                        fontWeight:
+-                            selected ? FontWeight.w600 : FontWeight.w400,
+-                        fontSize: _kContentFontSize),
++                selectedTab.value = tab.key;
++              },
++              child: SizedBox(
++                height: _kTabHeight,
++                child: Row(children: [
++                  Icon(
++                    selected ? tab.selected : tab.unselected,
++                    color: selected ? p.primary : p.textSecondary,
++                    size: 20,
++                  ).marginOnly(left: 12, right: 12),
++                  Expanded(
++                    child: Text(
++                      translate(tab.label),
++                      maxLines: 1,
++                      overflow: TextOverflow.ellipsis,
++                      style: TextStyle(
++                          color: selected ? p.primaryStrong : p.textSecondary,
++                          fontWeight:
++                              selected ? FontWeight.w600 : FontWeight.w400,
++                          fontSize: _kContentFontSize),
++                    ),
+                   ),
+-                ),
+-              ]),
++                ]),
++              ),
+             ),
+           ),
+         ),
+diff --git a/flutter/lib/desktop/pages/desktop_tab_page.dart b/flutter/lib/desktop/pages/desktop_tab_page.dart
+index a09033c..693edc6 100644
+--- a/flutter/lib/desktop/pages/desktop_tab_page.dart
++++ b/flutter/lib/desktop/pages/desktop_tab_page.dart
+@@ -1,5 +1,7 @@
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_keys.dart';
+ import 'package:flutter_hbb/consts.dart';
+ import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
+ import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
+@@ -37,6 +39,33 @@ class DesktopTabPage extends StatefulWidget {
+   }
+ }
+ 
++/// HJViewer UX-K1: the main window's keys (main.dart's keyListenerBuilder binds them around the
++/// window): Ctrl+F (⌘F on a Mac) opens the PC list's search on the home tab, Ctrl+W (⌘W)
++/// closes the settings tab while it is the one shown.
++Map<ShortcutActivator, VoidCallback> hjvMainWindowShortcuts() {
++  if (!isDesktop) return const {};
++  String? shown() {
++    if (!Get.isRegistered<DesktopTabController>()) return null;
++    final state = Get.find<DesktopTabController>().state.value;
++    return state.selected < state.tabs.length
++        ? state.tabs[state.selected].key
++        : null;
++  }
++
++  return {
++    SingleActivator(LogicalKeyboardKey.keyF, control: !isMacOS, meta: isMacOS):
++        () {
++      if (shown() == kTabLabelHomePage) hjvPeerSearchRequest.value++;
++    },
++    SingleActivator(LogicalKeyboardKey.keyW, control: !isMacOS, meta: isMacOS):
++        () {
++      if (shown() == kTabLabelSettingPage) {
++        Get.find<DesktopTabController>().closeBy(kTabLabelSettingPage);
++      }
++    },
++  };
++}
++
+ class _DesktopTabPageState extends State<DesktopTabPage> {
+   final tabController = DesktopTabController(tabType: DesktopTabType.main);
+ 
+diff --git a/flutter/lib/desktop/widgets/popup_menu.dart b/flutter/lib/desktop/widgets/popup_menu.dart
+index 3397c81..5926de0 100644
+--- a/flutter/lib/desktop/widgets/popup_menu.dart
++++ b/flutter/lib/desktop/widgets/popup_menu.dart
+@@ -244,19 +244,21 @@ class MenuEntryRadios<T> extends MenuEntryBase<T> {
+                   alignment: Alignment.centerRight,
+                   child: Transform.scale(
+                     scale: MenuConfig.iconScale,
++                    // HJViewer UX-K1: the check is the row's mark, not a stop of the Tab order
+                     child: Obx(() => opt.value == curOption.value
+-                        ? IconButton(
+-                            padding:
+-                                const EdgeInsets.fromLTRB(8.0, 0.0, 8.0, 0.0),
+-                            hoverColor: Colors.transparent,
+-                            focusColor: Colors.transparent,
+-                            onPressed: () {},
+-                            icon: Icon(
+-                              Icons.check,
+-                              color: (opt.enabled ?? true.obs).isTrue
+-                                  ? conf.commonColor
+-                                  : Colors.grey,
+-                            ))
++                        ? ExcludeFocus(
++                            child: IconButton(
++                                padding: const EdgeInsets.fromLTRB(
++                                    8.0, 0.0, 8.0, 0.0),
++                                hoverColor: Colors.transparent,
++                                focusColor: Colors.transparent,
++                                onPressed: () {},
++                                icon: Icon(
++                                  Icons.check,
++                                  color: (opt.enabled ?? true.obs).isTrue
++                                      ? conf.commonColor
++                                      : Colors.grey,
++                                )))
+                         : const SizedBox.shrink()),
+                   ))),
+         ],
+@@ -364,16 +366,18 @@ class MenuEntrySubRadios<T> extends MenuEntryBase<T> {
+                     alignment: Alignment.centerRight,
+                     child: Transform.scale(
+                         scale: MenuConfig.iconScale,
++                        // HJViewer UX-K1: the row's mark, not a stop of the Tab order
+                         child: Obx(() => opt.value == curOption.value
+-                            ? IconButton(
+-                                padding: EdgeInsets.zero,
+-                                hoverColor: Colors.transparent,
+-                                focusColor: Colors.transparent,
+-                                onPressed: () {},
+-                                icon: Icon(
+-                                  Icons.check,
+-                                  color: conf.commonColor,
+-                                ))
++                            ? ExcludeFocus(
++                                child: IconButton(
++                                    padding: EdgeInsets.zero,
++                                    hoverColor: Colors.transparent,
++                                    focusColor: Colors.transparent,
++                                    onPressed: () {},
++                                    icon: Icon(
++                                      Icons.check,
++                                      color: conf.commonColor,
++                                    )))
+                             : const SizedBox.shrink())),
+                   )),
+                 ],
+diff --git a/flutter/lib/desktop/widgets/tabbar_widget.dart b/flutter/lib/desktop/widgets/tabbar_widget.dart
+index 9972cb4..67b1893 100644
+--- a/flutter/lib/desktop/widgets/tabbar_widget.dart
++++ b/flutter/lib/desktop/widgets/tabbar_widget.dart
+@@ -7,6 +7,7 @@ import 'package:desktop_multi_window/desktop_multi_window.dart';
+ import 'package:flutter/gestures.dart';
+ import 'package:flutter/material.dart' hide TabBarTheme;
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_keys.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_labels.dart';
+@@ -1097,6 +1098,8 @@ class _Tab extends StatefulWidget {
+ 
+ class _TabState extends State<_Tab> with RestorationMixin {
+   final RestorableBool restoreHover = RestorableBool(false);
++  // HJViewer UX-K1: the pill's own keyboard focus (not its close button's)
++  var _hjvFocused = false;
+ 
+   Widget _buildTabContent() {
+     bool showIcon =
+@@ -1204,6 +1207,10 @@ class _TabState extends State<_Tab> with RestorationMixin {
+               border:
+                   Border.all(color: isSelected ? p.border : Colors.transparent),
+             ),
++            // HJViewer UX-K1: the keyboard's focus ring
++            foregroundDecoration: _hjvFocused
++                ? hjvFocusRing(context, radius: radius)
++                : kHjvNoFocusRing,
+             child: Material(
+               type: MaterialType.transparency,
+               child: InkWell(
+@@ -1215,6 +1222,10 @@ class _TabState extends State<_Tab> with RestorationMixin {
+                   hover.value = value;
+                   restoreHover.value = value;
+                 },
++                onFocusChange: (value) {
++                  final ring = value && hjvShowsFocusRing();
++                  if (ring != _hjvFocused) setState(() => _hjvFocused = ring);
++                },
+                 onTap: () => widget.onTap(),
+                 child: Padding(
+                   padding: EdgeInsets.only(
+@@ -1314,34 +1325,37 @@ class _TabState extends State<_Tab> with RestorationMixin {
+       width: 24,
+       height: _kHjvTabHeight,
+       child: visible
+-          ? Material(
+-              type: MaterialType.transparency,
+-              child: InkWell(
+-                hoverColor: Colors.transparent,
+-                highlightColor: Colors.transparent,
+-                splashFactory: NoSplash.splashFactory,
+-                onHover: (value) => hover.value = value,
+-                onTap: () => widget.onClose(),
+-                // the 16 px hover square stays
+-                child: Center(
+-                  child: Obx(() => Container(
+-                        width: 16,
+-                        height: 16,
+-                        decoration: BoxDecoration(
+-                          color: hover.value
+-                              ? p.text.withOpacity(0.08)
+-                              : Colors.transparent,
+-                          borderRadius: BorderRadius.circular(4),
+-                        ),
+-                        child: Icon(
+-                          Icons.close_rounded,
+-                          size: 13,
+-                          color: hover.value ? p.text : p.textTertiary,
+-                        ),
+-                      )),
++          // HJViewer UX-K1: the keyboard's focus ring
++          ? HjvFocusRing(
++              radius: BorderRadius.circular(4),
++              child: Material(
++                type: MaterialType.transparency,
++                child: InkWell(
++                  hoverColor: Colors.transparent,
++                  highlightColor: Colors.transparent,
++                  splashFactory: NoSplash.splashFactory,
++                  onHover: (value) => hover.value = value,
++                  onTap: () => widget.onClose(),
++                  // the 16 px hover square stays
++                  child: Center(
++                    child: Obx(() => Container(
++                          width: 16,
++                          height: 16,
++                          decoration: BoxDecoration(
++                            color: hover.value
++                                ? p.text.withOpacity(0.08)
++                                : Colors.transparent,
++                            borderRadius: BorderRadius.circular(4),
++                          ),
++                          child: Icon(
++                            Icons.close_rounded,
++                            size: 13,
++                            color: hover.value ? p.text : p.textTertiary,
++                          ),
++                        )),
++                  ),
+                 ),
+-              ),
+-            )
++              ))
+           : null,
+     );
+   }
+@@ -1480,6 +1494,8 @@ class ActionIcon extends StatefulWidget {
+ class _ActionIconState extends State<ActionIcon> {
+   final hover = false.obs;
+   final pressed = false.obs;
++  // HJViewer UX-K1: a key that presses a button with onTapDown (a menu's) gives the point under it
++  final _anchor = HjvMenuAnchor();
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -1487,49 +1503,67 @@ class _ActionIconState extends State<ActionIcon> {
+     // in it, in the palette's colours, a close button in danger.
+     final p = HjvPalette.of(context);
+     final radius = BorderRadius.circular(HjvRadius.sm);
++    final onTapDown = widget.onTapDown;
++    final onTap = widget.onTap;
+     return Tooltip(
+       message: widget.message != null ? translate(widget.message!) : "",
+       waitDuration: const Duration(seconds: 1),
+-      child: InkWell(
+-        hoverColor: Colors.transparent,
+-        highlightColor: Colors.transparent,
+-        splashFactory: NoSplash.splashFactory,
+-        onHover: (value) => hover.value = value,
+-        onHighlightChanged: (value) => pressed.value = value,
+-        onTap: widget.onTap,
+-        onTapDown: widget.onTapDown,
+-        child: SizedBox(
+-          height: widget.boxSize,
+-          width: widget.boxSize,
+-          child: widget.onTap == null
+-              ? Icon(
+-                  widget.icon,
+-                  color: p.textDisabled,
+-                  size: widget.iconSize,
+-                )
+-              : Obx(() {
+-                  final active = hover.value || pressed.value;
+-                  return Container(
+-                    margin: const EdgeInsets.all(2),
+-                    decoration: BoxDecoration(
+-                      color: !active
+-                          ? null
+-                          : widget.isClose
+-                              ? p.dangerFill
+-                              : (pressed.value
+-                                  ? p.borderStrong
+-                                  : p.hoverStrong),
+-                      borderRadius: radius,
+-                    ),
+-                    child: Icon(
+-                      widget.icon,
+-                      color: active
+-                          ? (widget.isClose ? Colors.white : p.text)
+-                          : p.textSecondary,
+-                      size: widget.iconSize,
+-                    ),
+-                  );
+-                }),
++      // HJViewer UX-K1: the keyboard's focus ring and its tooltip
++      child: HjvFocusRing(
++        radius: radius,
++        tooltip: true,
++        child: InkWell(
++          hoverColor: Colors.transparent,
++          highlightColor: Colors.transparent,
++          splashFactory: NoSplash.splashFactory,
++          onHover: (value) => hover.value = value,
++          onHighlightChanged: (value) => pressed.value = value,
++          onTap: onTap == null || onTapDown == null
++              ? onTap
++              : () {
++                  onTapDown(
++                      TapDownDetails(globalPosition: _anchor.take(context)));
++                  onTap();
++                },
++          onTapDown: onTapDown == null
++              ? null
++              : (details) {
++                  _anchor.down(details.globalPosition);
++                  onTapDown(details);
++                },
++          child: SizedBox(
++            height: widget.boxSize,
++            width: widget.boxSize,
++            child: widget.onTap == null
++                ? Icon(
++                    widget.icon,
++                    color: p.textDisabled,
++                    size: widget.iconSize,
++                  )
++                : Obx(() {
++                    final active = hover.value || pressed.value;
++                    return Container(
++                      margin: const EdgeInsets.all(2),
++                      decoration: BoxDecoration(
++                        color: !active
++                            ? null
++                            : widget.isClose
++                                ? p.dangerFill
++                                : (pressed.value
++                                    ? p.borderStrong
++                                    : p.hoverStrong),
++                        borderRadius: radius,
++                      ),
++                      child: Icon(
++                        widget.icon,
++                        color: active
++                            ? (widget.isClose ? Colors.white : p.text)
++                            : p.textSecondary,
++                        size: widget.iconSize,
++                      ),
++                    );
++                  }),
++          ),
+         ),
+       ),
+     );
+@@ -1564,25 +1598,29 @@ class _HjvCaptionButtonState extends State<_HjvCaptionButton> {
+     return Tooltip(
+       message: translate(widget.message),
+       waitDuration: const Duration(seconds: 1),
+-      child: InkWell(
+-        hoverColor: widget.isClose ? p.dangerFill : p.hoverStrong,
+-        highlightColor:
+-            widget.isClose ? p.dangerFill.withOpacity(0.85) : p.borderStrong,
+-        splashFactory: NoSplash.splashFactory,
+-        onHover: (value) => hover.value = value,
+-        onTap: widget.onTap,
+-        child: SizedBox(
+-          height: _kTabBarHeight - 1,
+-          width: _kHjvCaptionButtonWidth,
+-          child: Obx(() => Icon(
+-                widget.icon,
+-                size: _kActionIconSize,
+-                color: widget.onTap == null
+-                    ? p.textDisabled
+-                    : (hover.value
+-                        ? (widget.isClose ? Colors.white : p.text)
+-                        : p.textSecondary),
+-              )),
++      // HJViewer UX-K1: the keyboard's focus ring and its tooltip
++      child: HjvFocusRing(
++        tooltip: true,
++        child: InkWell(
++          hoverColor: widget.isClose ? p.dangerFill : p.hoverStrong,
++          highlightColor:
++              widget.isClose ? p.dangerFill.withOpacity(0.85) : p.borderStrong,
++          splashFactory: NoSplash.splashFactory,
++          onHover: (value) => hover.value = value,
++          onTap: widget.onTap,
++          child: SizedBox(
++            height: _kTabBarHeight - 1,
++            width: _kHjvCaptionButtonWidth,
++            child: Obx(() => Icon(
++                  widget.icon,
++                  size: _kActionIconSize,
++                  color: widget.onTap == null
++                      ? p.textDisabled
++                      : (hover.value
++                          ? (widget.isClose ? Colors.white : p.text)
++                          : p.textSecondary),
++                )),
++          ),
+         ),
+       ),
+     );
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index 5464609..edf6170 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -607,8 +607,11 @@ _registerEventHandler() {
+ Widget keyListenerBuilder(BuildContext context, Widget? child) {
+   return RawKeyboardListener(
+     // `skipTraversal: isWeb` is to fix "Bad state: RenderBox was not laid out: minified:aeL#c19e4"
+-    focusNode: FocusNode(skipTraversal: isWeb),
+-    child: child ?? Container(),
++    // HJViewer UX-K1: never a stop of the Tab order (an invisible first stop otherwise)
++    focusNode: FocusNode(skipTraversal: true),
++    // HJViewer UX-K1: the main window's Ctrl+F and Ctrl+W (desktop_tab_page.dart)
++    child: CallbackShortcuts(
++        bindings: hjvMainWindowShortcuts(), child: child ?? Container()),
+     onKey: (RawKeyEvent event) {
+       if (event.logicalKey == LogicalKeyboardKey.shiftLeft) {
+         if (event is RawKeyDownEvent) {
+diff --git a/flutter/test/hjviewer_keys_test.dart b/flutter/test/hjviewer_keys_test.dart
+new file mode 100644
+index 0000000..42c1aee
+--- /dev/null
++++ b/flutter/test/hjviewer_keys_test.dart
+@@ -0,0 +1,197 @@
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjv_keys.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// UX-K1 (U25), the desktop by keyboard (common/hjv_keys.dart): a focused PC card's keys, the
++// focus ring's colour and the theme buttons' ring, where a menu opens when a key opens it.
++// Plain Flutter, no bridge.
++
++double contrast(Color a, Color b) {
++  final la = a.computeLuminance();
++  final lb = b.computeLuminance();
++  final hi = la > lb ? la : lb;
++  final lo = la > lb ? lb : la;
++  return (hi + 0.05) / (lo + 0.05);
++}
++
++Widget app(Widget child) =>
++    MaterialApp(home: Scaffold(body: Center(child: child)));
++
++void main() {
++  setUp(() => FocusManager.instance.highlightStrategy =
++      FocusHighlightStrategy.alwaysTraditional);
++  tearDown(() => FocusManager.instance.highlightStrategy =
++      FocusHighlightStrategy.automatic);
++
++  test(
++      'a focused card: Enter connects, the menu key and Shift+F10 open the menu',
++      () {
++    expect(hjvCardKey(LogicalKeyboardKey.enter), HjvCardKey.connect);
++    expect(hjvCardKey(LogicalKeyboardKey.numpadEnter), HjvCardKey.connect);
++    expect(hjvCardKey(LogicalKeyboardKey.contextMenu), HjvCardKey.menu);
++    expect(hjvCardKey(LogicalKeyboardKey.f10, shift: true), HjvCardKey.menu);
++    expect(hjvCardKey(LogicalKeyboardKey.f10), isNull);
++    expect(hjvCardKey(LogicalKeyboardKey.f2), HjvCardKey.rename);
++    expect(hjvCardKey(LogicalKeyboardKey.delete), HjvCardKey.remove);
++    expect(hjvCardKey(LogicalKeyboardKey.enter, ctrlAltMeta: true), isNull);
++    expect(hjvCardKey(LogicalKeyboardKey.space), isNull);
++  });
++
++  test('while several are chosen, Space chooses and nothing else applies', () {
++    expect(hjvCardKey(LogicalKeyboardKey.space, multiSelect: true),
++        HjvCardKey.select);
++    for (final key in [
++      LogicalKeyboardKey.enter,
++      LogicalKeyboardKey.contextMenu,
++      LogicalKeyboardKey.f2,
++      LogicalKeyboardKey.delete,
++    ]) {
++      expect(hjvCardKey(key, multiSelect: true), isNull, reason: '$key');
++    }
++  });
++
++  for (final (name, p) in [
++    ('light', HjvPalette.light),
++    ('dark', HjvPalette.dark),
++  ]) {
++    test('$name: the focus ring reaches 3:1 where it is drawn', () {
++      for (final ground in [
++        p.surface,
++        p.card,
++        p.canvas,
++        p.fill,
++        p.primarySoft,
++      ]) {
++        expect(
++            contrast(hjvFocusRingColor(p), ground), greaterThanOrEqualTo(3.0),
++            reason: '$ground');
++      }
++      // a filled button's ring: against its fill and the page around it
++      for (final ground in [p.primaryFill, p.dangerFill, p.surface, p.card]) {
++        expect(contrast(hjvFocusRingColor(p, filled: true), ground),
++            greaterThanOrEqualTo(3.0),
++            reason: '$ground');
++      }
++    });
++
++    test('$name: a theme button draws the ring only while it has the focus',
++        () {
++      final rest = BorderSide(color: p.borderStrong);
++      final side = hjvFocusSide(p, rest: rest);
++      final focused = side.resolve({WidgetState.focused});
++      expect(focused?.color, p.primary);
++      expect(focused?.width, kHjvFocusRingWidth);
++      expect(side.resolve({}), rest);
++      expect(side.resolve({WidgetState.hovered}), rest);
++      expect(side.resolve({WidgetState.focused, WidgetState.disabled}), rest);
++      expect(hjvFocusSide(p).resolve({}), isNull);
++      expect(
++          hjvFocusSide(p, filled: true).resolve({WidgetState.focused})?.color,
++          p.text);
++    });
++  }
++
++  test('a menu that a key opened: under a button, at a card\'s top right', () {
++    const rect = Rect.fromLTWH(100, 50, 40, 30);
++    expect(hjvMenuPoint(rect), const Offset(100, 80));
++    expect(hjvMenuPoint(rect, topRight: true), const Offset(140, 50));
++    expect(hjvMenuRect(const Offset(100, 80)),
++        const RelativeRect.fromLTRB(100, 80, 100, 80));
++  });
++
++  testWidgets(
++      'a pressed menu button keeps the pointer, a key gives the point under it',
++      (tester) async {
++    final anchor = HjvMenuAnchor();
++    late BuildContext box;
++    await tester.pumpWidget(app(Builder(builder: (context) {
++      box = context;
++      return const SizedBox(width: 40, height: 30);
++    })));
++    final rect = tester.getRect(find.byType(SizedBox).last);
++    expect(anchor.take(box), rect.bottomLeft);
++    anchor.down(const Offset(7, 9));
++    expect(anchor.take(box), const Offset(7, 9));
++    expect(anchor.take(box), rect.bottomLeft);
++  });
++
++  testWidgets(
++      'a focused card gets its keys and its ring; a key on its ⋮ stays the ⋮\'s',
++      (tester) async {
++    final keys = <HjvCardKey>[];
++    final rings = <bool>[];
++    final more = FocusNode();
++    addTearDown(more.dispose);
++    await tester.pumpWidget(app(HjvPeerCardKeys(
++      onKey: keys.add,
++      onRing: rings.add,
++      child: SizedBox(
++          width: 200,
++          height: 100,
++          child: Align(
++              alignment: Alignment.topRight,
++              child: Focus(focusNode: more, child: const SizedBox(width: 20)))),
++    )));
++    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
++    await tester.pump();
++    expect(rings, [true]);
++    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
++    await tester.sendKeyEvent(LogicalKeyboardKey.f2);
++    await tester.sendKeyEvent(LogicalKeyboardKey.delete);
++    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
++    await tester.sendKeyEvent(LogicalKeyboardKey.f10);
++    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
++    expect(keys, [
++      HjvCardKey.connect,
++      HjvCardKey.rename,
++      HjvCardKey.remove,
++      HjvCardKey.menu,
++    ]);
++    more.requestFocus();
++    await tester.pump();
++    expect(rings, [true, false]);
++    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
++    expect(keys.length, 4);
++  });
++
++  testWidgets('while several are chosen, Space chooses the focused card',
++      (tester) async {
++    final keys = <HjvCardKey>[];
++    await tester.pumpWidget(app(HjvPeerCardKeys(
++        multiSelect: true,
++        onKey: keys.add,
++        child: const SizedBox(width: 200, height: 100))));
++    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
++    await tester.pump();
++    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
++    await tester.sendKeyEvent(LogicalKeyboardKey.space);
++    expect(keys, [HjvCardKey.select]);
++  });
++
++  testWidgets(
++      'a menu button opens by Enter, with the ring while it has the focus',
++      (tester) async {
++    var opened = 0;
++    await tester.pumpWidget(app(hjvKeyMenuButton(
++        circle: true,
++        onKey: (_) => opened++,
++        child: InkWell(
++            onTap: () {}, child: const SizedBox(width: 28, height: 28)))));
++    BoxDecoration? ring() => tester
++        .widgetList<Container>(find.byType(Container))
++        .map((c) => c.foregroundDecoration)
++        .whereType<BoxDecoration>()
++        .where((d) => d.border != null)
++        .firstOrNull;
++    expect(ring(), isNull);
++    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
++    await tester.pump();
++    expect(ring()?.shape, BoxShape.circle);
++    // the ring's rebuild keeps the focus where it was
++    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
++    await tester.sendKeyEvent(LogicalKeyboardKey.space);
++    expect(opened, 2);
++  });
++}

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Wed, 14 Oct 2026 10:44:03 +0900
-Subject: [PATCH 45/85] hjviewer: a splash screen in the app's colours, with
+Subject: [PATCH 045/147] hjviewer: a splash screen in the app's colours, with
  the organisation line
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

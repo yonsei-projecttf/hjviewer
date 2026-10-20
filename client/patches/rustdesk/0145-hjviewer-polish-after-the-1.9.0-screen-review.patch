@@ -1,0 +1,190 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 09:14:58 +0900
+Subject: [PATCH 145/147] hjviewer: polish after the 1.9.0 screen review
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+S2 with S8 (the server checks no access now) drops S2's text, which promised
+a [지원 코드 넣기] that PC does not show; the code, its time and S8 stay.
+
+The logout confirm (L1) is a short confirm at sm, as the remove confirms
+(UX-S2); its longest form (the bound PC's gate sentence and the remote
+warning) is no longer than the 내 PC remove confirm's two paragraphs at sm.
+
+A desktop session window asks GET /api/hjv/access as it opens, and hbbs's
+refusal or "offline" can come in the same second: while the mode is not
+known and that question is out, the A1/A2 choice and the offline text wait
+for its answer (at most 2 s, then as before), so a closed server gets A2 and
+the offline text is the mode's. A logged-in app's A2 does not wait; the
+offline box is not shown for a session closed meanwhile.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart  | 57 +++++++++++++++++++-----
+ flutter/lib/common/hjviewer_account.dart |  2 +
+ flutter/lib/models/model.dart            | 21 +++++++--
+ 3 files changed, 66 insertions(+), 14 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index cead573..67ce148 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -59,6 +59,8 @@ HjvAccessTexts get _t => HjvAccessTexts(translate('Cancel') == '취소');
+ final _gateMode = ''.obs;
+ final _gateCodes = false.obs;
+ DateTime? _gateAsked;
++// the question while it is out, so that a refusal in the same second can wait for its answer
++Future<void>? _gateAsking;
+ 
+ /// The option of the process that registers (kHjvAccessPcState), read every second on a
+ /// desktop that takes connections.
+@@ -262,12 +264,24 @@ bool hjvAccessRefused(
+   // and home share one dialog manager: A1 says why itself, in the place of L4 above it
+   final loggedIn = bind.mainGetLocalOption(key: 'access_token').isNotEmpty;
+   final ended = loggedIn && _ticketEndedLogin(told: isMobile);
+-  // a server known to be closed refuses everyone: neither a login nor the access password helps
+-  if ((loggedIn && !ended) || _gateMode.value == 'closed') {
+-    _refusedAgainDialog(t, sessionId, title, dialogManager, reconnect);
++  void show() {
++    // a server known to be closed refuses everyone: neither a login nor the access password helps
++    if ((loggedIn && !ended) || _gateMode.value == 'closed') {
++      _refusedAgainDialog(t, sessionId, title, dialogManager, reconnect);
++    } else {
++      _refusedDialog(t, sessionId, peerId, dialogManager, reconnect,
++          loginEnded: ended && isMobile);
++    }
++  }
++
++  // A1 or A2 by the mode: this window's own question first, when it is still out
++  final soon = loggedIn && !ended ? null : _gateModeSoon();
++  if (soon == null) {
++    show();
+   } else {
+-    _refusedDialog(t, sessionId, peerId, dialogManager, reconnect,
+-        loginEnded: ended && isMobile);
++    unawaited(soon.then((_) => show()).catchError((Object e) {
++      debugPrint('hjv: $e');
++    }));
+   }
+   return true;
+ }
+@@ -401,6 +415,7 @@ String hjvPcPasswordWrongTitle(String title) =>
+ /// says that a PC nobody logged in on is offline too (hjvOfflineGateText); any other as it came.
+ /// The key stays for shouldAutoRetryOnOffline, which compares it before. A ticket for `peerId`
+ /// that A0 took in the main window counts as A1's (the session window sees it through the core).
++/// Call it after hjvAccessMsgboxSoon's wait.
+ String hjvAccessMsgboxText(SessionID sessionId, String text,
+     {String peerId = ''}) {
+   if (!_accountBuild || text != 'Remote desktop is offline') return text;
+@@ -416,6 +431,14 @@ String hjvAccessMsgboxText(SessionID sessionId, String text,
+   return own == null ? text : hjvKeepAll(own);
+ }
+ 
++/// handleMsgBox (model.dart), before hjvAccessMsgboxText: for "Remote desktop is offline" while
++/// this window's question about the mode is still out, its answer (at most 2 seconds), so that
++/// the text is the mode's; null to show it now.
++Future<void>? hjvAccessMsgboxSoon(String text) =>
++    _accountBuild && text == 'Remote desktop is offline'
++        ? _gateModeSoon()
++        : null;
++
+ /// showRestartRemoteDevice (dialog.dart): the confirm's line about the gate and a PC where
+ /// HJViewer is not installed (`installed`, PeerInfo.isInstalled), null for none; for a PC that
+ /// used a support code of this login (`id`, the waiting room's support PCs) S14 alone (TV-W6).
+@@ -1318,8 +1341,9 @@ void _supportCodeDialog(HjvAccessTexts t) {
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+           // what to do with the code once one is shown (not while it is made, when the answer has
+-          // not said yet whether there is a link; not above S5 to S7, the end)
+-          if (open) ...[
++          // not said yet whether there is a link; not above S5 to S7, the end; not with S8, as that
++          // PC shows no [지원 코드 넣기] and needs no code)
++          if (open && !noCodeNeeded) ...[
+             Text(hjvKeepAll(link == null ? t.madeText : t.madeTextLink),
+                 style: hjvDialogTextStyle(context)),
+             const SizedBox(height: 16),
+@@ -1381,7 +1405,7 @@ void _supportCodeDialog(HjvAccessTexts t) {
+                   ],
+                 ),
+               ).marginOnly(top: 16),
+-            if (hjvGateCloses(_gateMode.value) == false)
++            if (noCodeNeeded)
+               hjvNoteBlock(context,
+                       icon: Icons.info_outline_rounded,
+                       text: Text(hjvKeepAll(t.serverOpen)))
+@@ -1533,13 +1557,26 @@ class _HjvAccessRefresh with WidgetsBindingObserver {
+ final _refresh = _HjvAccessRefresh();
+ 
+ /// GET /api/hjv/access, at most once a minute: hjv-api asks hbbs at most every 30 seconds.
+-Future<void> _askGateMode() async {
++Future<void> _askGateMode() {
+   final asked = _gateAsked;
+   if (asked != null &&
+       DateTime.now().difference(asked) < const Duration(minutes: 1)) {
+-    return;
++    return _gateAsking ?? Future.value();
+   }
+   _gateAsked = DateTime.now();
++  return _gateAsking = _askGateModeNow().whenComplete(() => _gateAsking = null);
++}
++
++/// A desktop session window asks the mode as it opens (hjvInitAccessSession), and hbbs's answer
++/// can come in the same second: while the mode is not known and that question is out, its
++/// answer, at most 2 seconds; null when there is nothing to wait for.
++Future<void>? _gateModeSoon() {
++  final asking = _gateAsking;
++  if (_gateMode.value.isNotEmpty || asking == null) return null;
++  return asking.timeout(const Duration(seconds: 2), onTimeout: () {});
++}
++
++Future<void> _askGateModeNow() async {
+   try {
+     final url = Uri.parse('${await bind.mainGetApiServer()}$kHjvAccessPath');
+     final resp = await http.get(url);
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index d2cbf91..a5698ff 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -425,6 +425,8 @@ CustomAlertDialog? hjvLogoutDialog(
+       warning: gate?.warning,
+       yes: t.logOut,
+       danger: boundHere || gate != null || self != null,
++      // a short confirm, as the remove confirms (UX-S2)
++      width: HjvDialogWidth.sm,
+       onYes: onYes,
+       onNo: onNo);
+ }
+diff --git a/flutter/lib/models/model.dart b/flutter/lib/models/model.dart
+index 0107b8b..abfb61f 100644
+--- a/flutter/lib/models/model.dart
++++ b/flutter/lib/models/model.dart
+@@ -977,10 +977,23 @@ class FfiModel with ChangeNotifier {
+       if (!hasRetry) {
+         hasRetry = shouldAutoRetryOnOffline(type, title, text);
+       }
+-      // HJViewer: a password-less connection a PC ended, in this app's words (TV-W5)
+-      final shown = hjvAccountMsgboxText(
+-          hjvAccessMsgboxText(sessionId, text, peerId: peerId));
+-      showMsgBox(sessionId, type, title, shown, link, hasRetry, dialogManager);
++      // HJViewer: a password-less connection a PC ended, in this app's words (TV-W5); the
++      // offline text once this window knows the server's mode (at most 2 s)
++      void show() {
++        final shown = hjvAccountMsgboxText(
++            hjvAccessMsgboxText(sessionId, text, peerId: peerId));
++        showMsgBox(
++            sessionId, type, title, shown, link, hasRetry, dialogManager);
++      }
++
++      final soon = hjvAccessMsgboxSoon(text);
++      if (soon == null) {
++        show();
++      } else {
++        unawaited(soon.then((_) {
++          if (parent.target?.closed != true) show();
++        }));
++      }
+     }
+   }
+ 

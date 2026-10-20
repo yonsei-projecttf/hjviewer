@@ -1,0 +1,988 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 04:45:09 +0900
+Subject: [PATCH 120/147] hjviewer: an installed PC keeps the incoming
+ connections for 90 days (TV-W9)
+
+TV-W9 (design w7-w9 3-3 and 5-3, D-16, critic 2-3): src/hjviewer_incoming.rs writes one line
+when a connection is let in and one when it closes, in hjv-incoming.jsonl in the config folder
+of an installed PC's service (an account build's service process, as for same-account logins;
+nothing elsewhere), and folds them when read: the time, the peer's ID and the name it sent
+(none for a staff row, S-05), the signed list's device name and masked owner for a same-account
+row, verified or not as the connection manager's mark says (the one proof record, else the
+staff mark), how it got in, the kind, the length and how it ended (on_close's reason). A start
+without an end is "open" in the process that wrote it and "unknown" later; a reconnect of the
+same session within two minutes of a lost connection continues its row. 90 days and 2,000 rows,
+compacted at the first write and then daily. Refused attempts, addresses, passwords and the
+session number never reach the answer.
+The settings read it with main_get_common("hjv-incoming") (hjviewer_account::get_common, before
+the account keys), which asks the service over the IPC (Data::Config "hjv-incoming", beside
+trusted-devices) and gives {"error":"ipc"} without an answer. connection.rs gets one field and
+three one-line hooks (after the audit line, the recent-session branch, on_close); the
+uninstaller's elevated batch deletes the file beside the bound PC's ticket.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_account/mod.rs          |   7 +-
+ src/hjviewer_account/pc.rs           |   8 +-
+ src/hjviewer_account/pc/tests.rs     |   9 +-
+ src/hjviewer_incoming.rs             | 511 +++++++++++++++++++++++++++
+ src/hjviewer_incoming/tests.rs       | 237 +++++++++++++
+ src/ipc.rs                           |   2 +
+ src/lib.rs                           |   1 +
+ src/server/connection.rs             |   6 +
+ src/server/connection/hjv_account.rs |  35 ++
+ 9 files changed, 812 insertions(+), 4 deletions(-)
+ create mode 100644 src/hjviewer_incoming.rs
+ create mode 100644 src/hjviewer_incoming/tests.rs
+
+diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
+index b66369b..824e04e 100644
+--- a/src/hjviewer_account/mod.rs
++++ b/src/hjviewer_account/mod.rs
+@@ -36,7 +36,7 @@ mod support;
+ pub(crate) mod vectors;
+ 
+ pub(crate) use api::{
+-    account_tls, get_common, hide_account_name, observe_account_response, prepare_account_request,
++    account_tls, hide_account_name, observe_account_response, prepare_account_request,
+     proof_header, server_time, set_common,
+ };
+ pub(crate) use ctl::{key_proof, note_peer_key, take_proof_sent, LoginContext, ProofDecision};
+@@ -56,6 +56,11 @@ pub(crate) use pc::{key_login, pc_capable, start_pc_sync};
+ #[cfg(feature = "hjv-e2e")]
+ pub(crate) use support::e2e_make as e2e_support_code;
+ 
++/// main_get_common: the account's keys (api.rs) and the PC's incoming connections (TV-W9).
++pub(crate) fn get_common(key: &str) -> Option<String> {
++    crate::hjviewer_incoming::get_common(key).or_else(|| api::get_common(key))
++}
++
+ const SEAL_PUBKEY: Option<&str> = option_env!("HJV_LOGIN_SEAL_PUBKEY");
+ const TRUST_PUBKEYS: Option<&str> = option_env!("HJV_TRUST_PUBKEYS");
+ 
+diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
+index 63ca7ea..95e1445 100644
+--- a/src/hjviewer_account/pc.rs
++++ b/src/hjviewer_account/pc.rs
+@@ -318,8 +318,14 @@ fn uninstall_line(enabled: bool) -> String {
+         crate::get_app_name(),
+         crate::hjviewer_access::BOUND_FILE
+     );
++    // the incoming connections (TV-W9), beside it
++    let incoming = format!(
++        "%WINDIR%\\ServiceProfiles\\LocalService\\AppData\\Roaming\\{}\\config\\{}",
++        crate::get_app_name(),
++        crate::hjviewer_incoming::FILE
++    );
+     format!(
+-        "\nreg delete \"HKLM\\{ACCOUNT_KEY}\" /f\nif exist \"{ticket}\" del /f /q \"{ticket}\"\n"
++        "\nreg delete \"HKLM\\{ACCOUNT_KEY}\" /f\nif exist \"{ticket}\" del /f /q \"{ticket}\"\nif exist \"{incoming}\" del /f /q \"{incoming}\"\n"
+     )
+ }
+ 
+diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
+index cd8c9da..53b397b 100644
+--- a/src/hjviewer_account/pc/tests.rs
++++ b/src/hjviewer_account/pc/tests.rs
+@@ -1980,17 +1980,22 @@ async fn the_pcs_logout_ends_its_sessions_and_its_off_switch_does_not() {
+ 
+ /// The Start menu's "Uninstall" runs `--uninstall` unelevated: the binding key goes in the
+ /// uninstaller's elevated batch (the release review's privacy-uninstall-hklm-unelevated), and so
+-/// does the bound PC's access ticket in the service's config folder.
++/// does the bound PC's access ticket in the service's config folder, and the incoming connections
++/// beside it (TV-W9).
+ #[test]
+ fn the_uninstallers_elevated_batch_deletes_the_binding_key() {
+     let ticket = format!(
+         "%WINDIR%\\ServiceProfiles\\LocalService\\AppData\\Roaming\\{}\\config\\HJViewer_ticket.json",
+         crate::get_app_name()
+     );
++    let incoming = format!(
++        "%WINDIR%\\ServiceProfiles\\LocalService\\AppData\\Roaming\\{}\\config\\hjv-incoming.jsonl",
++        crate::get_app_name()
++    );
+     assert_eq!(
+         uninstall_line(true),
+         format!(
+-            "\nreg delete \"HKLM\\SOFTWARE\\HJViewer\\Account\" /f\nif exist \"{ticket}\" del /f /q \"{ticket}\"\n"
++            "\nreg delete \"HKLM\\SOFTWARE\\HJViewer\\Account\" /f\nif exist \"{ticket}\" del /f /q \"{ticket}\"\nif exist \"{incoming}\" del /f /q \"{incoming}\"\n"
+         )
+     );
+     assert_eq!(uninstall_line(false), "");
+diff --git a/src/hjviewer_incoming.rs b/src/hjviewer_incoming.rs
+new file mode 100644
+index 0000000..1f053a0
+--- /dev/null
++++ b/src/hjviewer_incoming.rs
+@@ -0,0 +1,511 @@
++//! TV-W9, the incoming connections (들어온 연결): the sessions this PC let in, for 90 days and
++//! 2,000 at most, in FILE in the config folder of the process that takes connections. Only an
++//! installed PC records (D-16: an account build's service process, as for same-account logins).
++//! Nothing here is sent anywhere: the settings read the list over the IPC (`Data::Config`
++//! "hjv-incoming", the way they read the trusted devices) through main_get_common
++//! ("hjv-incoming"), behind the unlock of the security settings.
++//!
++//! One line of JSON is written when a connection is let in (`"e":"s"`) and one when it closes
++//! (`"e":"e"`); reading folds them. A connection's lines share its process's run and its number in
++//! that run, so a start without an end is `open` in the process that wrote it and `unknown` (the PC
++//! was off or restarted) in any later one. A reconnect of the same session (the same peer ID,
++//! session number and kind within MERGE_SECS of a line that ended `lost`) continues that line.
++//!
++//! What is kept: when, the peer's ID and the name it sent (none for a `staff` row, S-05), the
++//! signed list's device name and masked owner for a same-account row, the connection manager's
++//! mark (`same-account`, `staff`, `unverified-name` or none), how it got in, the kind, how it
++//! ended, and the session number (only to fold reconnects; never in the answer). No addresses, no
++//! passwords or their hashes, no file names, no contents; refused attempts are not written.
++//!
++//! The answer, newest first: `{"on":true,"rows":[{"t0":<Unix s>,"t1":<Unix s>|null,"id":"…",
++//! "name":"…","dev":"…","own":"…","ver":"same-account"|"staff"|"unverified-name"|"","auth":
++//! "account"|"recent"|"otp"|"permanent"|"click"|"switch"|"","kind":"remote"|"file"|"camera"|
++//! "terminal"|"forward","end":"peer"|"pc"|"idle"|"service"|"switch"|"scope"|"revoked"|"lost"|
++//! "other"|"unknown"|"open","re":<reconnects>}]}`; `"on":false` (and no rows) where this process
++//! does not record. The screens get `{"error":"ipc"}` when the service did not answer.
++
++use hbb_common::config::Config;
++use serde_derive::{Deserialize, Serialize};
++use serde_json::{json, Value};
++use std::{
++    collections::{HashMap, HashSet},
++    sync::{
++        atomic::{AtomicU64, Ordering},
++        Mutex,
++    },
++};
++
++/// The list's file, in the service's config folder (Config::path).
++pub(crate) const FILE: &str = "hjv-incoming.jsonl";
++/// main_get_common's key, and the IPC's `Data::Config` name.
++pub(crate) const KEY: &str = "hjv-incoming";
++const KEEP_SECS: u64 = 90 * 86_400;
++const KEEP_ROWS: usize = 2_000;
++const MERGE_SECS: u64 = 120;
++/// The file is rewritten without what is past keeping at the first write and then once a day,
++/// or sooner after this many lines.
++const COMPACT_SECS: u64 = 86_400;
++const COMPACT_LINES: usize = 2 * KEEP_ROWS;
++/// The name a peer sent, and its ID, are cut to this many characters.
++const MAX_NAME: usize = 64;
++const MAX_ID: usize = 32;
++/// A line longer than this is none of ours.
++const MAX_LINE: usize = 4096;
++const VERSION: u32 = 1;
++
++/// A connection's handle on its row: empty until the connection is let in, and again once its end
++/// is written.
++#[derive(Debug, Default)]
++pub(crate) struct Row {
++    key: Option<u64>,
++    /// let in by the session's memory of its one-time password (`is_recent_session`)
++    recent: bool,
++}
++
++impl Row {
++    /// The connection got in as a reconnect of the same session (connection.rs).
++    pub(crate) fn set_recent(&mut self) {
++        self.recent = true;
++    }
++
++    pub(crate) fn recent(&self) -> bool {
++        self.recent
++    }
++}
++
++/// What a connection that was let in tells (connection/hjv_account.rs fills it from the one proof
++/// record and the connection manager's mark).
++pub(crate) struct Start<'a> {
++    pub peer_id: &'a str,
++    /// the name the peer sent; not kept for a `staff` row
++    pub name: &'a str,
++    /// the signed list's device name and masked owner, for a same-account row
++    pub device: &'a str,
++    pub owner: &'a str,
++    /// the connection manager's mark (hjviewer_cm), "" for none
++    pub mark: &'a str,
++    pub auth: &'static str,
++    /// connection.rs's audit type: 0 remote, 1 file transfer, 2 port forward, 3 camera, 4 terminal
++    pub kind: u8,
++    pub session_id: u64,
++}
++
++/// Whether this process records: an installed PC's service, in an account build (D-16).
++pub(crate) fn enabled() -> bool {
++    crate::hjviewer_account::pc_capable()
++}
++
++/// This process's run, which tells its open rows from those an earlier process left.
++fn run() -> &'static str {
++    lazy_static::lazy_static! {
++        static ref RUN: String = format!("{:016x}", hbb_common::rand::random::<u64>());
++    }
++    &RUN
++}
++
++static NEXT: AtomicU64 = AtomicU64::new(1);
++
++/// A connection was let in (after its logon response's audit line): writes its start.
++pub(crate) fn started(row: &mut Row, start: Start) {
++    if row.key.is_some() || !enabled() {
++        return;
++    }
++    let n = NEXT.fetch_add(1, Ordering::Relaxed);
++    row.key = Some(n);
++    let staff = start.mark == crate::hjviewer_cm::STAFF;
++    let line = Line {
++        v: VERSION,
++        e: "s".to_owned(),
++        r: run().to_owned(),
++        n,
++        t: unix_now(),
++        id: clean(start.peer_id, MAX_ID),
++        name: if staff {
++            String::new()
++        } else {
++            clean(start.name, MAX_NAME)
++        },
++        dev: clean(start.device, MAX_NAME),
++        own: clean(start.owner, MAX_NAME),
++        ver: known(start.mark, &MARKS),
++        auth: start.auth.to_owned(),
++        kind: kind_name(start.kind).to_owned(),
++        sid: start.session_id,
++        end: String::new(),
++    };
++    append(&line);
++}
++
++/// The connection closed (on_close, once): writes its end. Nothing for a connection that was never
++/// let in.
++pub(crate) fn ended(row: &mut Row, reason: &str) {
++    let Some(n) = row.key.take() else {
++        return;
++    };
++    let line = Line {
++        v: VERSION,
++        e: "e".to_owned(),
++        r: run().to_owned(),
++        n,
++        t: unix_now(),
++        end: end_of(reason).to_owned(),
++        ..Default::default()
++    };
++    append(&line);
++}
++
++/// The IPC's answer (ipc.rs `Data::Config` "hjv-incoming"), in the process that records.
++pub(crate) fn list_json() -> String {
++    if !enabled() {
++        return json!({ "on": false, "rows": [] }).to_string();
++    }
++    let text = std::fs::read_to_string(Config::path(FILE)).unwrap_or_default();
++    let rows: Vec<Value> = fold(&text, run(), unix_now())
++        .iter()
++        .map(Entry::to_json)
++        .collect();
++    json!({ "on": true, "rows": rows }).to_string()
++}
++
++/// main_get_common "hjv-incoming": the service's list over the IPC, `{"error":"ipc"}` when it did
++/// not answer; None for any other key, on phones and in a build that is not an account build.
++pub(crate) fn get_common(key: &str) -> Option<String> {
++    if key != KEY || !crate::hjviewer_account::enabled() {
++        return None;
++    }
++    #[cfg(any(target_os = "android", target_os = "ios"))]
++    return None;
++    #[cfg(not(any(target_os = "android", target_os = "ios")))]
++    {
++        // the IPC call starts a runtime of its own, so it runs off the caller's thread
++        let answer = std::thread::spawn(|| crate::ipc::get_config(KEY))
++            .join()
++            .ok()
++            .and_then(Result::ok)
++            .flatten();
++        Some(answer.unwrap_or_else(|| json!({ "error": "ipc" }).to_string()))
++    }
++}
++
++/// How on_close's reason ended the session (design w7-w9 3-3).
++fn end_of(reason: &str) -> &'static str {
++    match reason {
++        "" | "End" | "web console" => "other",
++        "Peer close" => "peer",
++        "connection manager" | "connection manager window closed" => "pc",
++        "auto disconnect" => "idle",
++        "stop service" => "service",
++        "switch sides" => "switch",
++        "Session scope violation" => "scope",
++        "hjv: account key no longer trusted" => "revoked",
++        _ if reason.starts_with("connection manager error") => "other",
++        // Timeout, Reset by the peer and the stream's errors
++        _ => "lost",
++    }
++}
++
++fn kind_name(kind: u8) -> &'static str {
++    match kind {
++        1 => "file",
++        2 => "forward",
++        3 => "camera",
++        4 => "terminal",
++        _ => "remote",
++    }
++}
++
++const MARKS: [&str; 3] = [
++    crate::hjviewer_cm::SAME_ACCOUNT,
++    crate::hjviewer_cm::STAFF,
++    crate::hjviewer_cm::UNVERIFIED_NAME,
++];
++
++/// `value` if it is one of `known`, else "".
++fn known(value: &str, known: &[&str]) -> String {
++    if known.contains(&value) {
++        value.to_owned()
++    } else {
++        String::new()
++    }
++}
++
++/// Without control, format (zero-width, bidi) and line or paragraph separator characters, at most
++/// `max` characters.
++fn clean(s: &str, max: usize) -> String {
++    s.chars()
++        .filter(|&c| {
++            !(c.is_control()
++                || ('\u{200B}'..='\u{200F}').contains(&c)
++                || ('\u{2028}'..='\u{202E}').contains(&c)
++                || ('\u{2060}'..='\u{2069}').contains(&c)
++                || matches!(c, '\u{FEFF}' | '\u{180E}' | '\u{061C}'))
++        })
++        .take(max)
++        .collect()
++}
++
++fn unix_now() -> u64 {
++    std::time::SystemTime::now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .map(|d| d.as_secs())
++        .unwrap_or(0)
++}
++
++/// One line of the file.
++#[derive(Debug, Default, Clone, Serialize, Deserialize)]
++struct Line {
++    v: u32,
++    /// "s" a start, "e" an end
++    e: String,
++    /// the writing process's run, and the connection's number in it
++    r: String,
++    n: u64,
++    t: u64,
++    #[serde(default, skip_serializing_if = "String::is_empty")]
++    id: String,
++    #[serde(default, skip_serializing_if = "String::is_empty")]
++    name: String,
++    #[serde(default, skip_serializing_if = "String::is_empty")]
++    dev: String,
++    #[serde(default, skip_serializing_if = "String::is_empty")]
++    own: String,
++    #[serde(default, skip_serializing_if = "String::is_empty")]
++    ver: String,
++    #[serde(default, skip_serializing_if = "String::is_empty")]
++    auth: String,
++    #[serde(default, skip_serializing_if = "String::is_empty")]
++    kind: String,
++    #[serde(default, skip_serializing_if = "is_zero")]
++    sid: u64,
++    #[serde(default, skip_serializing_if = "String::is_empty")]
++    end: String,
++}
++
++fn is_zero(n: &u64) -> bool {
++    *n == 0
++}
++
++fn parse(line: &str) -> Option<Line> {
++    if line.len() > MAX_LINE {
++        return None;
++    }
++    let line: Line = serde_json::from_str(line).ok()?;
++    (line.v == VERSION && matches!(line.e.as_str(), "s" | "e")).then_some(line)
++}
++
++/// A row as the screens get it: one connection, or a session's connections that reconnected.
++#[derive(Debug, Clone, PartialEq)]
++struct Entry {
++    t0: u64,
++    t1: Option<u64>,
++    id: String,
++    name: String,
++    dev: String,
++    own: String,
++    ver: String,
++    auth: String,
++    kind: String,
++    sid: u64,
++    end: String,
++    re: u32,
++    /// the connections in it, by (run, number)
++    keys: Vec<(String, u64)>,
++}
++
++impl Entry {
++    /// The fields the screens get; never `sid` or the keys.
++    fn to_json(&self) -> Value {
++        json!({
++            "t0": self.t0,
++            "t1": self.t1,
++            "id": self.id,
++            "name": self.name,
++            "dev": self.dev,
++            "own": self.own,
++            "ver": self.ver,
++            "auth": self.auth,
++            "kind": self.kind,
++            "end": self.end,
++            "re": self.re,
++        })
++    }
++
++    /// Whether `next` is a reconnect of this row's session (W9-D2).
++    fn continued_by(&self, next: &Entry) -> bool {
++        self.sid != 0
++            && self.end == "lost"
++            && self.id == next.id
++            && self.sid == next.sid
++            && self.kind == next.kind
++            && self
++                .t1
++                .is_some_and(|t1| next.t0 >= t1 && next.t0 - t1 <= MERGE_SECS)
++    }
++
++    /// Still listed at `now`: open, or ended (begun, without an end) within KEEP_SECS.
++    fn kept_at(&self, now: u64) -> bool {
++        self.end == "open" || self.t1.unwrap_or(self.t0).saturating_add(KEEP_SECS) >= now
++    }
++}
++
++/// The file's lines as rows, newest first, at most KEEP_ROWS and none past KEEP_SECS; `run` is
++/// this process's. Lines that do not parse are left out.
++fn fold(text: &str, run: &str, now: u64) -> Vec<Entry> {
++    let mut starts = Vec::new();
++    let mut ends: HashMap<(String, u64), (u64, String)> = HashMap::new();
++    let mut seen = HashSet::new();
++    for line in text.lines().filter_map(parse) {
++        let key = (line.r.clone(), line.n);
++        if line.e == "s" {
++            // a key starts once
++            if seen.insert(key) {
++                starts.push(line);
++            }
++        } else {
++            ends.entry(key).or_insert((line.t, line.end));
++        }
++    }
++    starts.sort_by_key(|line| line.t);
++    let mut rows: Vec<Entry> = Vec::new();
++    // the newest row of each (id, sid, kind), by its index in rows
++    let mut last: HashMap<(String, u64, String), usize> = HashMap::new();
++    for line in starts {
++        let key = (line.r, line.n);
++        let (t1, end) = match ends.remove(&key) {
++            Some((t, end)) => (Some(t), known(&end, &ENDS)),
++            None if key.0 == run => (None, "open".to_owned()),
++            None => (None, "unknown".to_owned()),
++        };
++        let entry = Entry {
++            t0: line.t,
++            t1,
++            id: line.id,
++            name: line.name,
++            dev: line.dev,
++            own: line.own,
++            ver: known(&line.ver, &MARKS),
++            auth: known(&line.auth, &AUTHS),
++            kind: known(&line.kind, &KINDS),
++            sid: line.sid,
++            end: if end.is_empty() { "other".to_owned() } else { end },
++            re: 0,
++            keys: vec![key],
++        };
++        let same = (entry.id.clone(), entry.sid, entry.kind.clone());
++        match last.get(&same).map(|&i| &mut rows[i]) {
++            Some(row) if row.continued_by(&entry) => {
++                row.t1 = entry.t1;
++                row.end = entry.end;
++                row.re += 1;
++                row.keys.extend(entry.keys);
++            }
++            _ => {
++                last.insert(same, rows.len());
++                rows.push(entry);
++            }
++        }
++    }
++    rows.retain(|row| row.kept_at(now));
++    rows.reverse();
++    rows.truncate(KEEP_ROWS);
++    rows
++}
++
++const ENDS: [&str; 9] = [
++    "peer", "pc", "idle", "service", "switch", "scope", "revoked", "lost", "other",
++];
++const AUTHS: [&str; 6] = ["account", "recent", "otp", "permanent", "click", "switch"];
++const KINDS: [&str; 5] = ["remote", "file", "camera", "terminal", "forward"];
++
++/// The file without what fold() no longer lists: the lines of the rows it keeps, in their order.
++fn compact(text: &str, run: &str, now: u64) -> String {
++    let kept: HashSet<(String, u64)> = fold(text, run, now)
++        .into_iter()
++        .flat_map(|row| row.keys)
++        .collect();
++    let mut out = String::new();
++    for line in text.lines() {
++        if parse(line).is_some_and(|l| kept.contains(&(l.r, l.n))) {
++            out.push_str(line);
++            out.push('\n');
++        }
++    }
++    out
++}
++
++/// When the file was last compacted by this process, and the lines it wrote since.
++struct Writer {
++    compacted: Option<u64>,
++    lines: usize,
++}
++
++static WRITER: Mutex<Writer> = Mutex::new(Writer {
++    compacted: None,
++    lines: 0,
++});
++
++/// Adds a line to the file, after a compaction when one is due. A failure is logged and the
++/// connection goes on.
++fn append(line: &Line) {
++    let Ok(mut text) = serde_json::to_string(line) else {
++        return;
++    };
++    text.push('\n');
++    let path = Config::path(FILE);
++    let mut writer = WRITER.lock().unwrap_or_else(|e| e.into_inner());
++    let now = unix_now();
++    let due = writer
++        .compacted
++        .map_or(true, |at| now.saturating_sub(at) >= COMPACT_SECS || now < at)
++        || writer.lines >= COMPACT_LINES;
++    if due {
++        let old = std::fs::read_to_string(&path).unwrap_or_default();
++        if !old.is_empty() {
++            if let Err(err) = replace(&path, compact(&old, run(), now).as_bytes()) {
++                hbb_common::throttled_log!(
++                    std::time::Duration::from_secs(3600),
++                    warn,
++                    "hjv: incoming connections: could not rewrite the list: {err}"
++                );
++            }
++        }
++        writer.compacted = Some(now);
++        writer.lines = 0;
++    }
++    match add(&path, text.as_bytes()) {
++        Ok(()) => writer.lines += 1,
++        Err(err) => hbb_common::throttled_log!(
++            std::time::Duration::from_secs(3600),
++            warn,
++            "hjv: incoming connections: could not write the list: {err}"
++        ),
++    }
++}
++
++/// Appends to the file, made with the owner's access only on Unix (the service's config folder
++/// keeps other users out on Windows).
++fn add(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
++    use std::io::Write;
++    if let Some(dir) = path.parent() {
++        std::fs::create_dir_all(dir)?;
++    }
++    let mut options = std::fs::OpenOptions::new();
++    options.append(true).create(true);
++    #[cfg(unix)]
++    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
++    options.open(path)?.write_all(data)
++}
++
++#[cfg(not(any(target_os = "android", target_os = "ios")))]
++fn replace(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
++    crate::hjviewer_account::write_private(path, data)
++}
++
++#[cfg(any(target_os = "android", target_os = "ios"))]
++fn replace(_path: &std::path::Path, _data: &[u8]) -> std::io::Result<()> {
++    // phones take no connections that record (enabled() is false there)
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/src/hjviewer_incoming/tests.rs b/src/hjviewer_incoming/tests.rs
+new file mode 100644
+index 0000000..097b431
+--- /dev/null
++++ b/src/hjviewer_incoming/tests.rs
+@@ -0,0 +1,237 @@
++use super::*;
++
++const RUN: &str = "00000000000000aa";
++const OLD: &str = "00000000000000bb";
++const NOW: u64 = 1_800_000_000;
++
++fn start(r: &str, n: u64, t: u64, id: &str, sid: u64, kind: &str) -> String {
++    serde_json::to_string(&Line {
++        v: 1,
++        e: "s".into(),
++        r: r.into(),
++        n,
++        t,
++        id: id.into(),
++        name: "kim".into(),
++        auth: "permanent".into(),
++        kind: kind.into(),
++        sid,
++        ..Default::default()
++    })
++    .unwrap()
++}
++
++fn end(r: &str, n: u64, t: u64, end: &str) -> String {
++    serde_json::to_string(&Line {
++        v: 1,
++        e: "e".into(),
++        r: r.into(),
++        n,
++        t,
++        end: end.into(),
++        ..Default::default()
++    })
++    .unwrap()
++}
++
++fn text(lines: &[String]) -> String {
++    lines.join("\n") + "\n"
++}
++
++/// Design w7-w9 3-3: every reason on_close is called with, and what it does not know.
++#[test]
++fn how_a_session_ended_follows_on_closes_reason() {
++    for (reason, value) in [
++        ("Peer close", "peer"),
++        ("connection manager", "pc"),
++        ("connection manager window closed", "pc"),
++        ("auto disconnect", "idle"),
++        ("stop service", "service"),
++        ("switch sides", "switch"),
++        ("Session scope violation", "scope"),
++        ("hjv: account key no longer trusted", "revoked"),
++        ("Timeout", "lost"),
++        ("Reset by the peer", "lost"),
++        ("Connection reset by peer (os error 104)", "lost"),
++        ("End", "other"),
++        ("web console", "other"),
++        ("connection manager error: broken pipe", "other"),
++        ("", "other"),
++    ] {
++        assert_eq!(end_of(reason), value, "{reason}");
++    }
++}
++
++/// A start and its end make one row; a start without an end is open in the process that wrote
++/// it and unknown in a later one; lines that are not ours are left out; the newest comes first.
++#[test]
++fn the_lines_fold_into_rows_newest_first() {
++    let lines = text(&[
++        start(OLD, 1, NOW - 600, "111", 7, "remote"),
++        "not json".into(),
++        r#"{"v":2,"e":"s","r":"x","n":1,"t":1}"#.into(),
++        start(RUN, 1, NOW - 300, "222", 8, "file"),
++        end(RUN, 1, NOW - 60, "peer"),
++        start(RUN, 2, NOW - 10, "333", 9, "remote"),
++    ]);
++    let rows = fold(&lines, RUN, NOW);
++    let got: Vec<_> = rows
++        .iter()
++        .map(|r| (r.id.as_str(), r.end.as_str(), r.t1))
++        .collect();
++    assert_eq!(
++        got,
++        [
++            ("333", "open", None),
++            ("222", "peer", Some(NOW - 60)),
++            ("111", "unknown", None)
++        ]
++    );
++}
++
++/// W9-D2: a reconnect of the same session within two minutes of a lost connection continues its
++/// row; later, of another kind or session, or after another end, it is a row of its own.
++#[test]
++fn a_reconnect_of_the_same_session_continues_its_row() {
++    let lost = |extra: Vec<String>| {
++        let mut lines = vec![
++            start(RUN, 1, NOW - 1000, "111", 7, "remote"),
++            end(RUN, 1, NOW - 900, "lost"),
++        ];
++        lines.extend(extra);
++        fold(&text(&lines), RUN, NOW)
++    };
++    let rows = lost(vec![
++        start(RUN, 2, NOW - 780, "111", 7, "remote"),
++        end(RUN, 2, NOW - 700, "peer"),
++    ]);
++    assert_eq!(rows.len(), 1);
++    assert_eq!(
++        (rows[0].t0, rows[0].t1, rows[0].end.as_str(), rows[0].re),
++        (NOW - 1000, Some(NOW - 700), "peer", 1)
++    );
++    for (n, t, id, sid, kind) in [
++        (2, NOW - 779, "111", 7, "remote"),
++        (2, NOW - 800, "111", 7, "file"),
++        (2, NOW - 800, "111", 8, "remote"),
++        (2, NOW - 800, "999", 7, "remote"),
++    ] {
++        assert_eq!(lost(vec![start(RUN, n, t, id, sid, kind)]).len(), 2);
++    }
++    let rows = fold(
++        &text(&[
++            start(RUN, 1, NOW - 1000, "111", 7, "remote"),
++            end(RUN, 1, NOW - 900, "peer"),
++            start(RUN, 2, NOW - 850, "111", 7, "remote"),
++        ]),
++        RUN,
++        NOW,
++    );
++    assert_eq!(rows.len(), 2);
++}
++
++/// W9-D3: 90 days and 2,000 rows; an open row stays whatever its age, and the compacted file
++/// keeps exactly the lines of the rows still listed.
++#[test]
++fn the_list_keeps_90_days_and_2000_rows() {
++    let mut lines = vec![
++        start(OLD, 1, NOW - KEEP_SECS - 86_400, "old", 1, "remote"),
++        end(OLD, 1, NOW - KEEP_SECS - 86_400 + 60, "peer"),
++        start(RUN, 1, NOW - KEEP_SECS - 86_400, "open", 2, "remote"),
++    ];
++    for n in 0..(KEEP_ROWS as u64 + 5) {
++        lines.push(start(RUN, 10 + n, NOW - 50_000 + n, "x", 0, "remote"));
++    }
++    let all = text(&lines);
++    let rows = fold(&all, RUN, NOW);
++    assert_eq!(rows.len(), KEEP_ROWS);
++    assert!(rows.iter().all(|r| r.id != "old"));
++    // the 2,000 newest
++    assert_eq!(rows.last().unwrap().t0, NOW - 50_000 + 5);
++    let compacted = compact(&all, RUN, NOW);
++    assert_eq!(compacted.lines().count(), KEEP_ROWS);
++    assert_eq!(fold(&compacted, RUN, NOW), rows);
++    // with fewer rows the open one stays
++    let few = text(&lines[..4]);
++    let rows = fold(&few, RUN, NOW);
++    assert_eq!(
++        rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
++        ["x", "open"]
++    );
++    assert_eq!(compact(&few, RUN, NOW).lines().count(), 2);
++}
++
++/// W9-D5: what a peer sent is cut and left without control or format characters.
++#[test]
++fn a_peers_name_and_id_are_cleaned_and_cut() {
++    assert_eq!(clean("a\nb\u{202E}c\u{200B}d\te", 64), "abcde");
++    assert_eq!(clean(&"가".repeat(70), MAX_NAME).chars().count(), 64);
++    assert_eq!(clean(&"1".repeat(40), MAX_ID).len(), 32);
++}
++
++/// The answer the screens get carries these fields and no others: never the session number,
++/// the run or an address.
++#[test]
++fn the_answer_has_a_fixed_set_of_fields() {
++    let rows = fold(
++        &text(&[
++            start(RUN, 1, NOW - 100, "123456789", 42, "remote"),
++            end(RUN, 1, NOW - 50, "pc"),
++        ]),
++        RUN,
++        NOW,
++    );
++    let row = rows[0].to_json();
++    let mut keys: Vec<_> = row.as_object().unwrap().keys().cloned().collect();
++    keys.sort();
++    assert_eq!(
++        keys,
++        ["auth", "dev", "end", "id", "kind", "name", "own", "re", "t0", "t1", "ver"]
++    );
++    assert!(!row.to_string().contains("42"));
++}
++
++/// D-16: only an installed PC's service records; a start and an end elsewhere write nothing and
++/// leave the row empty, and the answer says the PC does not record.
++#[test]
++fn a_process_that_does_not_record_writes_nothing() {
++    let mut row = Row::default();
++    started(
++        &mut row,
++        Start {
++            peer_id: "123456789",
++            name: "kim",
++            device: "",
++            owner: "",
++            mark: "",
++            auth: "permanent",
++            kind: 0,
++            session_id: 1,
++        },
++    );
++    assert!(row.key.is_none());
++    ended(&mut row, "Peer close");
++    assert_eq!(
++        serde_json::from_str::<Value>(&list_json()).unwrap(),
++        json!({ "on": false, "rows": [] })
++    );
++}
++
++/// A file that cannot be written does not stop the connection, and on Unix a new file is the
++/// owner's alone.
++#[test]
++fn writing_fails_quietly_and_the_file_is_private() {
++    let dir = std::env::temp_dir().join(format!("hjv-incoming-{}", std::process::id()));
++    std::fs::create_dir_all(&dir).unwrap();
++    let path = dir.join(FILE);
++    add(&path, b"x\n").unwrap();
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt;
++        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
++        assert_eq!(mode & 0o777, 0o600);
++    }
++    // a directory where the file should be
++    assert!(add(&dir, b"x\n").is_err());
++    std::fs::remove_dir_all(&dir).ok();
++}
+diff --git a/src/ipc.rs b/src/ipc.rs
+index 026a05a..a03541b 100644
+--- a/src/ipc.rs
++++ b/src/ipc.rs
+@@ -996,6 +996,8 @@ async fn handle(data: Data, stream: &mut Connection) {
+                     value = Some(Config::get_unlock_pin());
+                 } else if name == "trusted-devices" {
+                     value = Some(Config::get_trusted_devices_json());
++                } else if name == crate::hjviewer_incoming::KEY {
++                    value = Some(crate::hjviewer_incoming::list_json());
+                 } else {
+                     value = None;
+                 }
+diff --git a/src/lib.rs b/src/lib.rs
+index c17f5ee..28fb21a 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -48,6 +48,7 @@ mod hjviewer;
+ mod hjviewer_access;
+ mod hjviewer_account;
+ mod hjviewer_cm;
++mod hjviewer_incoming;
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ mod hjviewer_wol;
+ #[cfg(feature = "hjv-e2e")]
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index 5a8a0e8..f1ec2dc 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -473,6 +473,8 @@ pub struct Connection {
+     hjv_peer_recording: bool,
+     // TV-W3: the end-of-session lock (docs/architecture.md 5-11)
+     hjv_end: hjv_end_lock::EndLock,
++    // TV-W9: this connection's row in the incoming connections
++    hjv_incoming: crate::hjviewer_incoming::Row,
+ }
+ 
+ impl ConnInner {
+@@ -674,6 +676,7 @@ impl Connection {
+             hjv_staff: false,
+             hjv_peer_recording: false,
+             hjv_end: Default::default(),
++            hjv_incoming: Default::default(),
+         };
+         let addr = hbb_common::try_into_v4(addr);
+         if !conn.on_open(addr).await {
+@@ -1948,6 +1951,7 @@ impl Connection {
+             audit["two_factor"] = json!(self.conn_audit_two_factor.as_i64());
+         }
+         self.post_conn_audit(audit);
++        self.hjv_incoming_started(conn_type);
+         #[allow(unused_mut)]
+         let mut username = crate::platform::get_active_username();
+         let mut res = LoginResponse::new();
+@@ -3051,6 +3055,7 @@ impl Connection {
+                     return false;
+                 }
+             } else if self.is_recent_session(false) {
++                self.hjv_incoming.set_recent();
+                 if !self.send_logon_response_and_keep_alive().await {
+                     return false;
+                 }
+@@ -5286,6 +5291,7 @@ impl Connection {
+             return;
+         }
+         self.closed = true;
++        crate::hjviewer_incoming::ended(&mut self.hjv_incoming, reason);
+         // If voice A,B -> C, and A,B has voice call
+         // B disconnects, C will reset the voice call input.
+         //
+diff --git a/src/server/connection/hjv_account.rs b/src/server/connection/hjv_account.rs
+index cee5608..dc1c3b9 100644
+--- a/src/server/connection/hjv_account.rs
++++ b/src/server/connection/hjv_account.rs
+@@ -159,6 +159,41 @@ impl Connection {
+         true
+     }
+ 
++    /// TV-W9, once the connection is let in: its row in the incoming connections, verified as the
++    /// connection manager's mark says (the one proof record, else the staff mark, critic 2-3).
++    /// `conn_type` is the audit line's.
++    pub(super) fn hjv_incoming_started(&mut self, conn_type: u8) {
++        let (_, mark) = self.hjv_cm_name(&self.lr.my_name);
++        let (device, owner) = match &self.hjv_proven {
++            Some(proven) => (proven.name.as_str(), proven.who.as_str()),
++            None => ("", ""),
++        };
++        let auth = if self.hjv_proven.is_some() {
++            "account"
++        } else if self.hjv_incoming.recent() {
++            "recent"
++        } else {
++            match self.conn_audit_primary_auth {
++                ConnAuditPrimaryAuth::TemporaryPassword => "otp",
++                ConnAuditPrimaryAuth::PermanentPassword => "permanent",
++                ConnAuditPrimaryAuth::Click => "click",
++                ConnAuditPrimaryAuth::SwitchSides => "switch",
++                ConnAuditPrimaryAuth::None => "",
++            }
++        };
++        let start = crate::hjviewer_incoming::Start {
++            peer_id: &self.lr.my_id,
++            name: &self.lr.my_name,
++            device,
++            owner,
++            mark: &mark.kind,
++            auth,
++            kind: conn_type,
++            session_id: self.lr.session_id,
++        };
++        crate::hjviewer_incoming::started(&mut self.hjv_incoming, start);
++    }
++
+     /// Tells the connection manager when the controller starts or stops recording, which it
+     /// reports with every change (Misc.client_record_status); only changes go on.
+     pub(super) fn hjv_peer_recording_to_cm(&mut self, recording: bool) {

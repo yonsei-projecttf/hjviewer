@@ -1,0 +1,370 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:26:58 +0900
+Subject: [PATCH 109/147] hjviewer: review fixes, style2 lane (1.9)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U50, U51 (tests): the new hjviewer_dialog_frame_test.dart, which needs the
+generated bridge, checks the real themes: MyTheme.lightTheme and darkTheme
+(hjvRestyle) give a desktop's Elevated, Outlined and Text buttons a height of
+36 and 16 at the sides at the platform's compact density, so that a padding
+or minimumSize in hjv_theme.dart's styleFrom calls can no longer beat
+kHjvDesktopButton unseen; and msgboxIcon's 22 px icon sits in one row with
+the title, the text below at the full width. For that, msgboxContent's frame
+is hjv_style.dart's HjvAlertContent (the same layout; msgboxContent gives it
+the translated words), which hjviewer_style_test.dart also tests without the
+bridge. hjviewer_style_test.dart checks too that a stacked HjvCallout with an
+Elevated and an Outlined action is as high under the compact theme as under
+kHjvDesktopButton's.
+
+U45 (nit): the core's error toast is read out after the word for an error
+(translate('Error'), 오류), so that a screen reader does not hear it as a
+notice: hjvShowToast's dangerWord.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                      | 43 ++++-------
+ flutter/lib/common/hjv_style.dart            | 53 ++++++++++++-
+ flutter/test/hjviewer_dialog_frame_test.dart | 79 +++++++++++++++++++
+ flutter/test/hjviewer_style_test.dart        | 81 +++++++++++++++++++-
+ 4 files changed, 222 insertions(+), 34 deletions(-)
+ create mode 100644 flutter/test/hjviewer_dialog_frame_test.dart
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index b8a82f5..d98babd 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -1048,9 +1048,13 @@ void showToast(String text,
+   final overlayState = globalKey.currentState?.overlay;
+   if (overlayState == null) return;
+   // HJViewer: the theme's snack bar look in the app's typeface, at least `timeout` and longer for
+-  // a long text, read out to a screen reader (common/hjv_style.dart); an `error` with its icon
++  // a long text, read out to a screen reader (common/hjv_style.dart); an `error` with its icon,
++  // read out after the word "Error"
+   hjvShowToast(overlayState, text,
+-      least: timeout, alignment: alignment, danger: error);
++      least: timeout,
++      alignment: alignment,
++      danger: error,
++      dangerWord: error ? translate('Error') : null);
+ }
+ 
+ // TODO
+@@ -1411,34 +1415,13 @@ Widget msgboxContent(String type, String title, String text) {
+     return text;
+   }
+ 
+-  // HJViewer: the alert frame (dialog.dart, U50): the icon and the title (18, w700) on one line,
+-  // the text below it at the full width in the dialogs' text style (14/1.5, the secondary colour
+-  // of the dialog's text)
+-  return Column(
+-    mainAxisSize: MainAxisSize.min,
+-    crossAxisAlignment: CrossAxisAlignment.start,
+-    children: [
+-      Row(
+-        crossAxisAlignment: CrossAxisAlignment.start,
+-        children: [
+-          msgboxIcon(type),
+-          Expanded(
+-            child: Builder(
+-                builder: (context) => Text(
+-                      translate(title),
+-                      style: TextStyle(
+-                          fontSize: 18,
+-                          fontWeight: FontWeight.w700,
+-                          height: 1.4,
+-                          color: HjvPalette.of(context).text),
+-                    )),
+-          ),
+-        ],
+-      ).marginOnly(bottom: 6),
+-      createDialogContent(translateText(text),
+-          style: const TextStyle(fontSize: 14, height: 1.5)),
+-    ],
+-  ).marginOnly(bottom: 8);
++  // HJViewer: the alert frame (dialog.dart, U50; hjv_style.dart's HjvAlertContent), the text in
++  // the dialogs' text style (14/1.5)
++  return HjvAlertContent(
++      icon: msgboxIcon(type),
++      title: translate(title),
++      text: createDialogContent(translateText(text),
++          style: const TextStyle(fontSize: 14, height: 1.5)));
+ }
+ 
+ void msgBoxCommon(OverlayDialogManager dialogManager, String title,
+diff --git a/flutter/lib/common/hjv_style.dart b/flutter/lib/common/hjv_style.dart
+index b625cc5..31716e9 100644
+--- a/flutter/lib/common/hjv_style.dart
++++ b/flutter/lib/common/hjv_style.dart
+@@ -751,6 +751,48 @@ class HjvDialogWidth {
+       BoxConstraints(minWidth: width, maxWidth: width);
+ }
+ 
++/// The alert frame's content (U50; common.dart's msgboxContent gives it the translated words):
++/// `icon` (msgboxIcon's 22 px one) and `title` (18, w700) on one line, `text` below them at the
++/// full width.
++class HjvAlertContent extends StatelessWidget {
++  final Widget icon;
++  final String title;
++  final Widget text;
++  const HjvAlertContent(
++      {super.key, required this.icon, required this.title, required this.text});
++
++  @override
++  Widget build(BuildContext context) => Padding(
++        padding: const EdgeInsets.only(bottom: 8),
++        child: Column(
++          mainAxisSize: MainAxisSize.min,
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            Padding(
++              padding: const EdgeInsets.only(bottom: 6),
++              child: Row(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  icon,
++                  Expanded(
++                    child: Text(
++                      title,
++                      style: TextStyle(
++                          fontSize: 18,
++                          fontWeight: FontWeight.w700,
++                          height: 1.4,
++                          color: HjvPalette.of(context).text),
++                    ),
++                  ),
++                ],
++              ),
++            ),
++            text,
++          ],
++        ),
++      );
++}
++
+ /// How long a toast stays: `least` (3 seconds) and about 70 ms a character more, at most 8 seconds
+ /// (or `least` when that is longer), so that a sentence of the gate can be read to its end.
+ Duration hjvToastTime(String text,
+@@ -843,11 +885,13 @@ Widget _withIcon(BuildContext context, Widget label) => Row(
+ OverlayEntry? _toast;
+ 
+ /// common.dart's showToast: `text` as an HjvToast on `overlay` for hjvToastTime, read out to a
+-/// screen reader; a new toast takes the place of the one before. `danger`: HjvToast's.
++/// screen reader; a new toast takes the place of the one before. `danger`: HjvToast's, read out
++/// after `dangerWord` (the UI's word for an error), so that it is not heard as a notice.
+ void hjvShowToast(OverlayState overlay, String text,
+     {Duration least = const Duration(seconds: 3),
+     Alignment alignment = const Alignment(0.0, 0.8),
+-    bool danger = false}) {
++    bool danger = false,
++    String? dangerWord}) {
+   _toast?.remove();
+   final entry = OverlayEntry(
+       builder: (context) =>
+@@ -855,7 +899,10 @@ void hjvShowToast(OverlayState overlay, String text,
+   _toast = entry;
+   overlay.insert(entry);
+   SemanticsService.announce(
+-      text, Directionality.maybeOf(overlay.context) ?? TextDirection.ltr);
++      danger && dangerWord != null && dangerWord.isNotEmpty
++          ? '$dangerWord: $text'
++          : text,
++      Directionality.maybeOf(overlay.context) ?? TextDirection.ltr);
+   Future.delayed(hjvToastTime(text, least: least), () {
+     if (_toast != entry) return;
+     entry.remove();
+diff --git a/flutter/test/hjviewer_dialog_frame_test.dart b/flutter/test/hjviewer_dialog_frame_test.dart
+new file mode 100644
+index 0000000..5ed4167
+--- /dev/null
++++ b/flutter/test/hjviewer_dialog_frame_test.dart
+@@ -0,0 +1,79 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The app's own themes and the session's message box as common.dart builds them (U50, U51): a
++// desktop's buttons under MyTheme.lightTheme and darkTheme (hjv_theme.dart's hjvRestyle), and
++// msgboxIcon in the alert frame. These tests import common.dart, so they need the generated
++// bridge, which client-build.yml makes before its Dart tests; the pure parts are in
++// hjviewer_style_test.dart.
++
++void main() {
++  // the themes are built on first use, so the platform's density (Windows: compact) is the one
++  // a desktop's app starts with
++  testWidgets(
++      'a desktop\'s Elevated, Outlined and Text buttons are 36 high in both themes',
++      (tester) async {
++    expect(isDesktop, isTrue, reason: 'the tests run on a desktop host');
++    for (final (name, theme) in [
++      ('light', MyTheme.lightTheme),
++      ('dark', MyTheme.darkTheme),
++    ]) {
++      await tester.pumpWidget(MaterialApp(
++          theme: theme,
++          home: Scaffold(
++              body: Column(
++                  mainAxisSize: MainAxisSize.min,
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                ElevatedButton(onPressed: () {}, child: const Text('OK')),
++                OutlinedButton(onPressed: () {}, child: const Text('OK')),
++                TextButton(onPressed: () {}, child: const Text('OK')),
++              ]))));
++      for (final kind in [ElevatedButton, OutlinedButton, TextButton]) {
++        expect(tester.getSize(find.byType(kind)).height, 36,
++            reason: '$name $kind');
++      }
++      // the theme's own fields do not beat the 16 at the sides
++      for (final style in [
++        theme.elevatedButtonTheme.style,
++        theme.outlinedButtonTheme.style,
++        theme.textButtonTheme.style,
++      ]) {
++        expect(style?.padding?.resolve({}),
++            const EdgeInsets.symmetric(horizontal: 16),
++            reason: name);
++      }
++    }
++  }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
++
++  testWidgets(
++      'a message box: its 22 px icon on the title\'s line, the text below at the full width',
++      (tester) async {
++    const long =
++        'The remote PC did not answer in time. Check that it is on and online, '
++        'then connect again.';
++    await tester.pumpWidget(MaterialApp(
++        home: Scaffold(
++            body: Align(
++                alignment: Alignment.topLeft,
++                child: SizedBox(
++                    width: 360,
++                    child: HjvAlertContent(
++                        icon: msgboxIcon('error'),
++                        title: 'Connection error',
++                        text: const Text(long)))))));
++    final icon = find.byIcon(Icons.error_outline_rounded);
++    expect(tester.widget<Icon>(icon).size, 22);
++    final row = find.ancestor(of: icon, matching: find.byType(Row));
++    expect(
++        find.descendant(of: row.first, matching: find.text('Connection error')),
++        findsOneWidget);
++    final frame = tester.getRect(find.byType(HjvAlertContent));
++    final text = tester.getRect(find.text(long));
++    expect(text.top, greaterThanOrEqualTo(tester.getRect(row.first).bottom));
++    expect(text.left, frame.left);
++    expect(text.width, greaterThan(frame.width - 22));
++  });
++}
+diff --git a/flutter/test/hjviewer_style_test.dart b/flutter/test/hjviewer_style_test.dart
+index 3fa6c9c..7b89d0f 100644
+--- a/flutter/test/hjviewer_style_test.dart
++++ b/flutter/test/hjviewer_style_test.dart
+@@ -1,11 +1,13 @@
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+ // The app's look (common/hjv_style.dart): the palettes' contrast, Korean line breaks at spaces
+ // only, the peer cards' online dot and screen reader label, the notice box HjvCallout (U49), the
+-// one button and the dialogs' widths (U50, U51, U10) and the core's error toast (U45).
++// one button, the dialogs' widths and the alert frame (U50, U51, U10) and the core's error toast
++// (U45).
+ // Plain Flutter, no bridge.
+ 
+ double contrast(Color a, Color b) {
+@@ -548,6 +550,61 @@ void main() {
+       await pump(tester, callout());
+       expect(tester.getSize(find.byType(HjvCallout)).height, before);
+     });
++
++    testWidgets('a stacked callout keeps its height under the desktop buttons\' theme',
++        (tester) async {
++      Widget callout() => SizedBox(
++          width: 240,
++          child: HjvCallout(
++              tone: HjvTone.warning,
++              title: 'Title',
++              text: 'Text',
++              stacked: true,
++              actions: [
++                ElevatedButton(onPressed: () {}, child: const Text('Log in')),
++                OutlinedButton(onPressed: () {}, child: const Text('Password')),
++              ]));
++      await pump(tester, callout(),
++          theme: ThemeData(
++              platform: TargetPlatform.windows,
++              visualDensity: VisualDensity.compact));
++      final before = tester.getSize(find.byType(HjvCallout)).height;
++      await pump(tester, callout());
++      expect(tester.getSize(find.byType(HjvCallout)).height, before);
++    });
++  });
++
++  testWidgets('the alert frame: the icon and the title on one line, the text below at the full width',
++      (tester) async {
++    const long = 'A text long enough to take more than one line in the dialog, '
++        'so that its width is the frame\'s and not the width of its words.';
++    await tester.pumpWidget(MaterialApp(
++        home: Scaffold(
++            body: Align(
++                alignment: Alignment.topLeft,
++                child: SizedBox(
++                    width: 300,
++                    child: HjvAlertContent(
++                        icon: const Padding(
++                            padding: EdgeInsets.only(right: 10),
++                            child: Icon(Icons.error_outline_rounded, size: 22)),
++                        title: 'Title',
++                        text: const Text(long)))))));
++    final frame = tester.getRect(find.byType(HjvAlertContent));
++    final icon = tester.getRect(find.byIcon(Icons.error_outline_rounded));
++    final title = tester.getRect(find.text('Title'));
++    final text = tester.getRect(find.text(long));
++    // one line: side by side, the title after the icon and its margin
++    expect(title.left, icon.right + 10);
++    expect(icon.top, lessThan(title.bottom));
++    expect(title.top, lessThan(icon.bottom));
++    // the text below both, from the frame's left edge to its right
++    expect(text.top, greaterThanOrEqualTo(title.bottom));
++    expect(text.top, greaterThanOrEqualTo(icon.bottom));
++    expect(text.left, frame.left);
++    expect(text.width, greaterThan(frame.width - 22));
++    final style = tester.widget<Text>(find.text('Title')).style!;
++    expect((style.fontSize, style.fontWeight), (18.0, FontWeight.w700));
+   });
+ 
+   testWidgets('a dialog\'s width: sm, md or lg, the screen\'s where it is narrower',
+@@ -599,4 +656,26 @@ void main() {
+         home: Scaffold(body: HjvToast('Copied'))));
+     expect(find.byIcon(Icons.error_outline_rounded), findsNothing);
+   });
++
++  testWidgets('the core\'s error toast is read out after the word for an error', (tester) async {
++    final heard = <String>[];
++    tester.binding.defaultBinaryMessenger.setMockDecodedMessageHandler<dynamic>(
++        SystemChannels.accessibility, (message) async {
++      final data = (message as Map)['data'] as Map;
++      if (data['message'] is String) heard.add(data['message'] as String);
++      return null;
++    });
++    addTearDown(() => tester.binding.defaultBinaryMessenger
++        .setMockDecodedMessageHandler<dynamic>(SystemChannels.accessibility, null));
++    final key = GlobalKey<NavigatorState>();
++    await tester.pumpWidget(MaterialApp(
++        navigatorKey: key, home: const Scaffold(body: SizedBox())));
++    final overlay = key.currentState!.overlay!;
++    hjvShowToast(overlay, '연결하지 못했습니다', danger: true, dangerWord: '오류');
++    hjvShowToast(overlay, '복사했습니다', dangerWord: '오류');
++    await tester.pump();
++    expect(heard, ['오류: 연결하지 못했습니다', '복사했습니다']);
++    // let the last toast's timer run
++    await tester.pump(const Duration(seconds: 9));
++  });
+ }

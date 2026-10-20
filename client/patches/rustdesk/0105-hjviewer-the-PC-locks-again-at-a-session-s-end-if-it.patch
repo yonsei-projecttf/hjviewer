@@ -1,0 +1,704 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:22:41 +0900
+Subject: [PATCH 105/147] hjviewer: the PC locks again at a session's end if it
+ was locked at its start (TV-W3)
+
+TV-W3, PC side and proto (design build/v19/design/w3-w4.md 3-1, 5-1,
+5-2; decisions D-9 and D-10; critic 2-3). New child module
+src/server/connection/hjv_end_lock.rs; connection.rs gets thin hooks
+only (a field, the logon response's platform_additions, update_options,
+the on_close condition, the option classification).
+
+- Proto: OptionMessage.hjv_end_lock = 1001 (HjvEndLock: UNSET, AUTO,
+  ALWAYS, NEVER), additive. Classified as remote-screen only: a camera
+  or terminal login drops it, an open session of another kind treats it
+  as out of scope, and it is no part of the decoding-only no-op.
+- Mode: the new field once sent, else the upstream field's explicit
+  Yes (always) / No (never), else automatic for a same-account session,
+  1.8.x controllers too (D-9). The upstream value a view-only switch
+  sends with disable_keyboard is no lock choice (it would turn the
+  automatic lock into never).
+- Start: when the logon response of a pinned build's remote screen
+  session is built (after the one proof record, critic 2-3), the PC
+  reads is_prelogin || is_locked || is_logon_ui and keeps it per session
+  key in memory, while a connection of the session holds it and ten
+  minutes after; a reconnect inherits it (either locked = locked), a
+  judged end forgets it.
+- End: upstream's conditions stay (lock end, keyboard, not replaced by a
+  reconnect); forced (TV-W5's cut, now EndLock::force) and always lock,
+  never does not, automatic locks only if locked at the start and no
+  other remote screen session is left. One log line per lock, no IDs.
+  Unpinned builds lock exactly as upstream.
+- Lock mark: a same-account session's PeerInfo.platform_additions gets
+  hjv_end_lock {"v":1,"locked":...}; the controller shows the own-PC
+  menu, the per-PC hide switch (D-10) and the close button's lock from
+  it (controller step).
+- hjv-e2e: HJV_E2E_LOGON=1 on the PC reads every start as locked and
+  logs the lock instead of locking.
+
+Tests: the decision table with upstream's conditions, unpinned and
+non-remote sessions as upstream, the mode order, the view-only switch,
+the start book (inherit, ten minutes, forget), the field's
+classification.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/base/protos/message.proto        |   9 +
+ src/server/connection.rs              |  25 +-
+ src/server/connection/hjv_account.rs  |   4 +-
+ src/server/connection/hjv_end_lock.rs | 511 ++++++++++++++++++++++++++
+ 4 files changed, 539 insertions(+), 10 deletions(-)
+ create mode 100644 src/server/connection/hjv_end_lock.rs
+
+diff --git a/libs/base/protos/message.proto b/libs/base/protos/message.proto
+index 330224a..88caffb 100644
+--- a/libs/base/protos/message.proto
++++ b/libs/base/protos/message.proto
+@@ -707,6 +707,15 @@ message OptionMessage {
+   BoolOption disable_camera = 17;
+   BoolOption terminal_persistent = 18;
+   BoolOption show_my_cursor = 19;
++  // HJViewer (1.9): the end-of-session lock a controller asks for, docs/architecture.md 5-11.
++  // Only a remote screen session takes it; an older PC drops the unknown field.
++  enum HjvEndLock {
++    HJV_END_LOCK_UNSET = 0;
++    HJV_END_LOCK_AUTO = 1;
++    HJV_END_LOCK_ALWAYS = 2;
++    HJV_END_LOCK_NEVER = 3;
++  }
++  HjvEndLock hjv_end_lock = 1001;
+ }
+ 
+ message TestDelay {
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index a216d0f..5a8a0e8 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -48,7 +48,10 @@ use hbb_common::{
+ use base::{
+     config::keys,
+     fs::{self, can_enable_overwrite_detection, JobType},
+-    message_proto::{option_message::BoolOption, permission_info::Permission},
++    message_proto::{
++        option_message::{BoolOption, HjvEndLock},
++        permission_info::Permission,
++    },
+ };
+ #[cfg(any(target_os = "android", target_os = "ios"))]
+ use scrap::android::{call_main_service_key_event, call_main_service_pointer_input};
+@@ -468,6 +471,8 @@ pub struct Connection {
+     hjv_staff: bool,
+     // the controller's last ClientRecordStatus, as the connection manager was told
+     hjv_peer_recording: bool,
++    // TV-W3: the end-of-session lock (docs/architecture.md 5-11)
++    hjv_end: hjv_end_lock::EndLock,
+ }
+ 
+ impl ConnInner {
+@@ -668,6 +673,7 @@ impl Connection {
+             hjv_proven: None,
+             hjv_staff: false,
+             hjv_peer_recording: false,
++            hjv_end: Default::default(),
+         };
+         let addr = hbb_common::try_into_v4(addr);
+         if !conn.on_open(addr).await {
+@@ -2019,6 +2025,8 @@ impl Connection {
+         {
+             platform_additions.insert("support_view_camera".into(), json!(true));
+         }
++        #[cfg(any(target_os = "windows", target_os = "linux"))]
++        self.hjv_end_additions(&mut platform_additions);
+ 
+         #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+         if !platform_additions.is_empty() {
+@@ -4928,6 +4936,7 @@ impl Connection {
+                 self.lock_after_session_end = q == BoolOption::Yes;
+             }
+         }
++        self.hjv_end.option(o);
+         #[cfg(not(any(target_os = "android", target_os = "ios")))]
+         if let Ok(q) = o.show_remote_cursor.enum_value() {
+             if q != BoolOption::NotSet {
+@@ -5288,11 +5297,9 @@ impl Connection {
+         // But it's not necessary now and we have to consider two audio services(client, server).
+         crate::audio_service::set_voice_call_input_device(None, true);
+         log::info!("#{} Connection closed: {}", self.inner.id(), reason);
+-        if lock
+-            && self.lock_after_session_end
+-            && self.keyboard
+-            && !raii::AuthedConnID::session_reconnected(self.inner.id(), &self.session_key())
+-        {
++        let reconnected =
++            raii::AuthedConnID::session_reconnected(self.inner.id(), &self.session_key());
++        if self.hjv_end_should_lock(lock, reconnected) {
+             #[cfg(not(any(target_os = "android", target_os = "ios")))]
+             lock_screen().await;
+         }
+@@ -5953,6 +5960,7 @@ impl Connection {
+             && Self::is_bool_option_not_set(option.disable_camera)
+             && Self::is_bool_option_not_set(option.terminal_persistent)
+             && Self::is_bool_option_not_set(option.show_my_cursor)
++            && option.hjv_end_lock.enum_value() == Ok(HjvEndLock::HJV_END_LOCK_UNSET)
+     }
+ 
+     fn is_connection_housekeeping_message(msg: &Message) -> bool {
+@@ -6094,7 +6102,8 @@ impl Connection {
+             && Self::is_bool_option_not_set(option.follow_remote_window)
+             && Self::is_bool_option_not_set(option.disable_camera)
+             && Self::is_bool_option_not_set(option.terminal_persistent)
+-            && Self::is_bool_option_not_set(option.show_my_cursor))
++            && Self::is_bool_option_not_set(option.show_my_cursor)
++            && option.hjv_end_lock.enum_value() == Ok(HjvEndLock::HJV_END_LOCK_UNSET))
+     }
+ 
+     fn option_has_non_terminal_login_field(option: &OptionMessage) -> bool {
+@@ -6114,6 +6123,7 @@ impl Connection {
+             || !Self::is_bool_option_not_set(option.follow_remote_window)
+             || !Self::is_bool_option_not_set(option.disable_camera)
+             || !Self::is_bool_option_not_set(option.show_my_cursor)
++            || option.hjv_end_lock.enum_value() != Ok(HjvEndLock::HJV_END_LOCK_UNSET)
+     }
+ 
+     fn option_has_any_field(option: &OptionMessage) -> bool {
+@@ -6833,6 +6843,7 @@ pub struct AuthedConn {
+ }
+ 
+ mod hjv_account;
++mod hjv_end_lock;
+ 
+ mod raii {
+     // ALIVE_CONNS: all connections, including unauthorized connections
+diff --git a/src/server/connection/hjv_account.rs b/src/server/connection/hjv_account.rs
+index a28cdb5..1752e11 100644
+--- a/src/server/connection/hjv_account.rs
++++ b/src/server/connection/hjv_account.rs
+@@ -150,9 +150,7 @@ impl Connection {
+             return false;
+         };
+         self.send_close_reason_no_retry(cut.wire_text()).await;
+-        if self.file_transfer.is_none() && !self.view_camera && !self.terminal {
+-            self.lock_after_session_end = true;
+-        }
++        self.hjv_end.force();
+         self.on_close("hjv: account key no longer trusted", true)
+             .await;
+         true
+diff --git a/src/server/connection/hjv_end_lock.rs b/src/server/connection/hjv_end_lock.rs
+new file mode 100644
+index 0000000..c919512
+--- /dev/null
++++ b/src/server/connection/hjv_end_lock.rs
+@@ -0,0 +1,511 @@
++//! TV-W3 at the PC (docs/architecture.md 5-11): whether a remote screen session locks the PC when
++//! it ends. A same-account session's default is "automatic": lock again only if the PC was locked
++//! or at the login screen when the session was let in, and no other remote screen session is left.
++//! The controller may ask for automatic, always or never (`OptionMessage.hjv_end_lock`); without
++//! it the upstream field counts. A build not pinned to the hjviewer server locks as upstream does.
++
++use super::*;
++use base::message_proto::option_message::HjvEndLock;
++use std::time::Instant as StdInstant;
++
++/// How long the PC keeps a session key's "locked at the start" after its last connection left,
++/// for a reconnect of that session (design w3 D5).
++const START_LIFE: Duration = Duration::from_secs(10 * 60);
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum Mode {
++    Auto,
++    Always,
++    Never,
++}
++
++/// The end-of-session lock state of one connection.
++#[derive(Default)]
++pub(super) struct EndLock {
++    /// the controller's `hjv_end_lock`; the last one it sent stays
++    mode: Option<Mode>,
++    /// the upstream field's last explicit value outside a view-only change
++    upstream: Option<bool>,
++    /// TV-W5 ended the session: lock as "always"
++    forced: bool,
++    /// this remote screen session's line in the book, taken when it was let in
++    hold: Option<Hold>,
++}
++
++impl EndLock {
++    pub(super) fn option(&mut self, o: &OptionMessage) {
++        match o.hjv_end_lock.enum_value() {
++            Ok(HjvEndLock::HJV_END_LOCK_AUTO) => self.mode = Some(Mode::Auto),
++            Ok(HjvEndLock::HJV_END_LOCK_ALWAYS) => self.mode = Some(Mode::Always),
++            Ok(HjvEndLock::HJV_END_LOCK_NEVER) => self.mode = Some(Mode::Never),
++            _ => {}
++        }
++        // Every controller's view-only switch sends the upstream field as `No` (and back as its
++        // stored value) with `disable_keyboard`; that is no choice about the lock.
++        if o.disable_keyboard.enum_value() != Ok(BoolOption::NotSet) {
++            return;
++        }
++        match o.lock_after_session_end.enum_value() {
++            Ok(BoolOption::Yes) => self.upstream = Some(true),
++            Ok(BoolOption::No) => self.upstream = Some(false),
++            _ => {}
++        }
++    }
++
++    pub(super) fn force(&mut self) {
++        self.forced = true;
++    }
++
++    /// The mode that counts (design w3 D3): `hjv_end_lock`, else the upstream field's explicit
++    /// value, else automatic for a same-account session (1.8.x controllers too, decision D-9).
++    pub(super) fn mode(&self, same: bool) -> Option<Mode> {
++        self.mode
++            .or(self.upstream.map(|yes| if yes { Mode::Always } else { Mode::Never }))
++            .or(same.then_some(Mode::Auto))
++    }
++}
++
++/// What a session's end knows. `flag` is upstream's `lock_after_session_end`.
++pub(super) struct Facts {
++    pub pinned: bool,
++    pub remote: bool,
++    pub lock: bool,
++    pub flag: bool,
++    pub mode: Option<Mode>,
++    pub forced: bool,
++    pub keyboard: bool,
++    pub reconnected: bool,
++    pub locked0: bool,
++    pub others: bool,
++}
++
++/// Whether to lock, and the word the log gives for it. The upstream conditions stay: only an end
++/// with `lock` (not an error), only with keyboard permission, not when a newer connection of the
++/// same session took over.
++pub(super) fn decide(f: &Facts) -> Option<&'static str> {
++    if !f.lock || !f.keyboard || f.reconnected {
++        return None;
++    }
++    if !f.pinned || !f.remote {
++        return (f.flag || (f.forced && f.remote)).then_some("upstream");
++    }
++    if f.forced {
++        return Some("forced");
++    }
++    match f.mode? {
++        Mode::Always => Some("always"),
++        Mode::Never => None,
++        Mode::Auto => (f.locked0 && !f.others).then_some("auto"),
++    }
++}
++
++type Key = (String, u64);
++
++struct Line {
++    key: Key,
++    locked: bool,
++    holders: u32,
++    free_since: Option<StdInstant>,
++}
++
++/// "Locked at the start" per session key (controller ID, session ID), in the server process's
++/// memory only. A line lives while a connection of the session holds it and START_LIFE after.
++#[derive(Default)]
++struct Book {
++    lines: Vec<Line>,
++}
++
++impl Book {
++    /// A connection of the session was let in; `locked_now` is the PC's state now. Returns the
++    /// session's "locked at the start": either the first connection's or this one's.
++    fn hold(&mut self, key: Key, locked_now: bool, now: StdInstant) -> bool {
++        self.prune(now);
++        if let Some(line) = self.lines.iter_mut().find(|l| l.key == key) {
++            line.locked |= locked_now;
++            line.holders += 1;
++            line.free_since = None;
++            return line.locked;
++        }
++        self.lines.push(Line {
++            key,
++            locked: locked_now,
++            holders: 1,
++            free_since: None,
++        });
++        locked_now
++    }
++
++    /// `forget`: the session ended for good (the end was judged), so its line goes with the
++    /// last holder.
++    fn release(&mut self, key: &Key, forget: bool, now: StdInstant) {
++        let Some(i) = self.lines.iter().position(|l| &l.key == key) else {
++            return;
++        };
++        let line = &mut self.lines[i];
++        line.holders = line.holders.saturating_sub(1);
++        if line.holders > 0 {
++            return;
++        }
++        if forget {
++            self.lines.remove(i);
++        } else {
++            line.free_since = Some(now);
++        }
++    }
++
++    fn prune(&mut self, now: StdInstant) {
++        self.lines.retain(|l| {
++            l.holders > 0
++                || l.free_since
++                    .map_or(true, |t| now.saturating_duration_since(t) < START_LIFE)
++        });
++    }
++}
++
++static BOOK: Mutex<Book> = Mutex::new(Book { lines: Vec::new() });
++
++/// One connection's hold on its session's line; dropped with the connection.
++pub(super) struct Hold {
++    key: Key,
++    locked0: bool,
++    released: bool,
++}
++
++impl Hold {
++    #[cfg(any(target_os = "windows", target_os = "linux"))]
++    fn take(key: Key, locked_now: bool) -> Self {
++        let locked0 = BOOK
++            .lock()
++            .unwrap()
++            .hold(key.clone(), locked_now, StdInstant::now());
++        Hold {
++            key,
++            locked0,
++            released: false,
++        }
++    }
++
++    fn release(&mut self, forget: bool) {
++        if !self.released {
++            self.released = true;
++            BOOK.lock()
++                .unwrap()
++                .release(&self.key, forget, StdInstant::now());
++        }
++    }
++}
++
++impl Drop for Hold {
++    fn drop(&mut self) {
++        self.release(false);
++    }
++}
++
++/// Whether the PC is locked or at the login screen now: the `is_logon` of the login branch.
++#[cfg(any(target_os = "windows", target_os = "linux"))]
++fn locked_now() -> bool {
++    #[cfg(feature = "hjv-e2e")]
++    if e2e_logon() {
++        return true;
++    }
++    #[cfg(target_os = "windows")]
++    {
++        crate::platform::is_prelogin()
++            || crate::platform::is_locked()
++            || crate::platform::is_logon_ui().unwrap_or_else(|e| {
++                log::error!("Failed to detect logon UI: {:?}", e);
++                false
++            })
++    }
++    #[cfg(not(target_os = "windows"))]
++    {
++        crate::platform::is_prelogin() || crate::platform::is_locked()
++    }
++}
++
++/// hjv-e2e builds: `HJV_E2E_LOGON=1` on the PC reads every start as locked and logs the lock
++/// instead of locking (Linux's lock is a key press nobody can see).
++#[cfg(feature = "hjv-e2e")]
++fn e2e_logon() -> bool {
++    std::env::var("HJV_E2E_LOGON").map_or(false, |v| v == "1")
++}
++
++impl Connection {
++    /// At the logon response of a pinned build's remote screen session: takes the session's line
++    /// in the book and, for a same-account session, tells the controller this PC knows the
++    /// automatic lock and whether it was locked at the start (the close button's lock mark).
++    #[cfg(any(target_os = "windows", target_os = "linux"))]
++    pub(super) fn hjv_end_additions(&mut self, additions: &mut serde_json::Map<String, Value>) {
++        if !crate::hjviewer::pinned() || !self.is_remote() || self.hjv_end.hold.is_some() {
++            return;
++        }
++        let hold = Hold::take((self.lr.my_id.clone(), self.lr.session_id), locked_now());
++        if self.hjv_proven.is_some() {
++            additions.insert(
++                "hjv_end_lock".into(),
++                json!({"v": 1, "locked": hold.locked0}),
++            );
++        }
++        self.hjv_end.hold = Some(hold);
++    }
++
++    /// From `on_close`: whether to lock the PC now. Gives the session's line back.
++    pub(super) fn hjv_end_should_lock(&mut self, lock: bool, reconnected: bool) -> bool {
++        let id = self.inner.id();
++        let others = || {
++            AUTHED_CONNS
++                .lock()
++                .unwrap()
++                .iter()
++                .any(|c| c.conn_type == AuthConnType::Remote && c.conn_id != id)
++        };
++        let locked0 = self.hjv_end.hold.as_ref().map_or(false, |h| h.locked0);
++        let pinned = crate::hjviewer::pinned();
++        let facts = Facts {
++            pinned,
++            remote: self.is_remote(),
++            lock,
++            flag: self.lock_after_session_end,
++            mode: self.hjv_end.mode(self.hjv_proven.is_some()),
++            forced: self.hjv_end.forced,
++            keyboard: self.keyboard,
++            reconnected,
++            locked0,
++            others: pinned && others(),
++        };
++        let why = decide(&facts);
++        if let Some(hold) = self.hjv_end.hold.as_mut() {
++            hold.release(lock && !reconnected);
++        }
++        let Some(why) = why else {
++            return false;
++        };
++        if pinned {
++            log::info!("hjv: end lock: {why}, locked at start {locked0}");
++        }
++        #[cfg(feature = "hjv-e2e")]
++        if e2e_logon() {
++            return false;
++        }
++        true
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn facts() -> Facts {
++        Facts {
++            pinned: true,
++            remote: true,
++            lock: true,
++            flag: false,
++            mode: Some(Mode::Auto),
++            forced: false,
++            keyboard: true,
++            reconnected: false,
++            locked0: true,
++            others: false,
++        }
++    }
++
++    #[test]
++    fn decide_follows_the_table() {
++        let modes = [None, Some(Mode::Auto), Some(Mode::Always), Some(Mode::Never)];
++        for mode in modes {
++            for locked0 in [false, true] {
++                for others in [false, true] {
++                    for forced in [false, true] {
++                        let f = Facts {
++                            mode,
++                            locked0,
++                            others,
++                            forced,
++                            ..facts()
++                        };
++                        let want = if forced {
++                            Some("forced")
++                        } else {
++                            match mode {
++                                Some(Mode::Always) => Some("always"),
++                                Some(Mode::Auto) if locked0 && !others => Some("auto"),
++                                _ => None,
++                            }
++                        };
++                        assert_eq!(decide(&f), want, "{mode:?} {locked0} {others} {forced}");
++                        // the upstream conditions win over every mode
++                        for (lock, keyboard, reconnected) in
++                            [(false, true, false), (true, false, false), (true, true, true)]
++                        {
++                            let f = Facts {
++                                lock,
++                                keyboard,
++                                reconnected,
++                                mode,
++                                locked0,
++                                others,
++                                forced,
++                                ..facts()
++                            };
++                            assert_eq!(decide(&f), None);
++                        }
++                    }
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn unpinned_builds_and_other_sessions_lock_as_upstream() {
++        for (pinned, remote) in [(false, true), (true, false), (false, false)] {
++            for flag in [false, true] {
++                for mode in [None, Some(Mode::Auto), Some(Mode::Never)] {
++                    let f = Facts {
++                        pinned,
++                        remote,
++                        flag,
++                        mode,
++                        ..facts()
++                    };
++                    assert_eq!(decide(&f), flag.then_some("upstream"));
++                }
++            }
++        }
++        // TV-W5's cut of a remote screen locks in any build, and only a remote screen
++        let f = Facts {
++            pinned: false,
++            forced: true,
++            ..facts()
++        };
++        assert_eq!(decide(&f), Some("upstream"));
++        let f = Facts {
++            remote: false,
++            forced: true,
++            ..facts()
++        };
++        assert_eq!(decide(&f), None);
++    }
++
++    fn option(end: HjvEndLock, upstream: BoolOption) -> OptionMessage {
++        let mut o = OptionMessage::new();
++        o.hjv_end_lock = end.into();
++        o.lock_after_session_end = upstream.into();
++        o
++    }
++
++    #[test]
++    fn the_mode_comes_from_the_new_field_then_upstream_then_the_proof() {
++        // nothing sent (a 1.8.x controller): automatic only for a same-account session (D-9)
++        let e = EndLock::default();
++        assert_eq!(e.mode(true), Some(Mode::Auto));
++        assert_eq!(e.mode(false), None);
++        // upstream Yes is always, an explicit No is never
++        let mut e = EndLock::default();
++        e.option(&option(HjvEndLock::HJV_END_LOCK_UNSET, BoolOption::Yes));
++        assert_eq!(e.mode(true), Some(Mode::Always));
++        e.option(&option(HjvEndLock::HJV_END_LOCK_UNSET, BoolOption::No));
++        assert_eq!(e.mode(true), Some(Mode::Never));
++        assert_eq!(e.mode(false), Some(Mode::Never));
++        // the new field goes before upstream, and stays
++        let mut e = EndLock::default();
++        e.option(&option(HjvEndLock::HJV_END_LOCK_AUTO, BoolOption::No));
++        assert_eq!(e.mode(true), Some(Mode::Auto));
++        assert_eq!(e.mode(false), Some(Mode::Auto));
++        e.option(&option(HjvEndLock::HJV_END_LOCK_UNSET, BoolOption::Yes));
++        assert_eq!(e.mode(true), Some(Mode::Auto));
++        e.option(&option(HjvEndLock::HJV_END_LOCK_NEVER, BoolOption::No));
++        assert_eq!(e.mode(true), Some(Mode::Never));
++        e.option(&option(HjvEndLock::HJV_END_LOCK_ALWAYS, BoolOption::Yes));
++        assert_eq!(e.mode(true), Some(Mode::Always));
++        // a value of a newer controller changes nothing
++        let mut o = option(HjvEndLock::HJV_END_LOCK_UNSET, BoolOption::NotSet);
++        o.hjv_end_lock = hbb_common::protobuf::EnumOrUnknown::from_i32(9);
++        e.option(&o);
++        assert_eq!(e.mode(true), Some(Mode::Always));
++    }
++
++    #[test]
++    fn a_view_only_switch_is_no_lock_choice() {
++        let mut e = EndLock::default();
++        for keyboard in [BoolOption::Yes, BoolOption::No] {
++            let mut o = option(HjvEndLock::HJV_END_LOCK_UNSET, BoolOption::No);
++            o.disable_keyboard = keyboard.into();
++            e.option(&o);
++            assert_eq!(e.mode(true), Some(Mode::Auto));
++        }
++    }
++
++    #[test]
++    fn the_book_keeps_a_start_for_reconnects_and_forgets_it() {
++        let t0 = StdInstant::now();
++        let key = || ("123456789".to_owned(), 7u64);
++        let mut b = Book::default();
++        assert!(b.hold(key(), true, t0));
++        // a reconnect while the first connection still runs: unlocked now, locked at the start
++        assert!(b.hold(key(), false, t0));
++        b.release(&key(), false, t0);
++        b.release(&key(), false, t0);
++        // within ten minutes after the last one left, a reconnect still gets it
++        assert!(b.hold(key(), false, t0 + Duration::from_secs(9 * 60)));
++        // a judged end forgets it
++        b.release(&key(), true, t0 + Duration::from_secs(9 * 60));
++        assert!(!b.hold(key(), false, t0 + Duration::from_secs(9 * 60)));
++        // a later lock at the start of another connection counts
++        assert!(b.hold(key(), true, t0 + Duration::from_secs(9 * 60)));
++        b.release(&key(), false, t0 + Duration::from_secs(10 * 60));
++        b.release(&key(), false, t0 + Duration::from_secs(10 * 60));
++        // ten minutes after the last connection left, it is gone
++        assert!(!b.hold(key(), false, t0 + Duration::from_secs(20 * 60)));
++        // another session key is apart
++        assert!(!b.hold(("123456789".to_owned(), 8), false, t0));
++        assert_eq!(b.lines.len(), 2);
++    }
++
++    #[test]
++    fn the_new_field_is_classified_as_remote_screen_only() {
++        let o = option(HjvEndLock::HJV_END_LOCK_AUTO, BoolOption::NotSet);
++        // a remote screen session takes it as it came
++        let (scoped, violation) = Connection::scoped_login_option(AuthConnType::Remote, &o);
++        assert_eq!(
++            scoped.map(|s| s.hjv_end_lock.enum_value()),
++            Some(Ok(HjvEndLock::HJV_END_LOCK_AUTO))
++        );
++        assert_eq!(violation, None);
++        // a camera or terminal login drops it (filtered, the session goes on)
++        for conn_type in [AuthConnType::ViewCamera, AuthConnType::Terminal] {
++            let (scoped, violation) = Connection::scoped_login_option(conn_type, &o);
++            assert!(scoped.map_or(true, |s| s.hjv_end_lock.enum_value()
++                == Ok(HjvEndLock::HJV_END_LOCK_UNSET)));
++            assert_eq!(violation, Some("login.option"));
++        }
++        // in an open session of another kind it is out of scope
++        let mut misc = Misc::new();
++        misc.set_option(o.clone());
++        let mut msg = Message::new();
++        msg.set_misc(misc);
++        for conn_type in [
++            AuthConnType::FileTransfer,
++            AuthConnType::PortForward,
++            AuthConnType::ViewCamera,
++            AuthConnType::Terminal,
++        ] {
++            assert_eq!(
++                Connection::authorized_message_scope_violation(conn_type, &msg),
++                Some("misc.option"),
++                "{}",
++                conn_type.as_str()
++            );
++        }
++        assert_eq!(
++            Connection::authorized_message_scope_violation(AuthConnType::Remote, &msg),
++            None
++        );
++        // a decoding-only option with it is no longer the render no-op
++        let mut o = OptionMessage::new();
++        o.supported_decoding = Some(SupportedDecoding::new()).into();
++        assert!(Connection::is_supported_decoding_only_option(&o));
++        o.hjv_end_lock = HjvEndLock::HJV_END_LOCK_NEVER.into();
++        assert!(!Connection::is_supported_decoding_only_option(&o));
++    }
++}

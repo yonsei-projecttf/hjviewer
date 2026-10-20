@@ -1,0 +1,541 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 04:45:20 +0900
+Subject: [PATCH 121/147] hjviewer: lane A's follow-ups from 1.9 waves 1-2
+ (pc-code staff, E2E hooks, refused PC retry)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TV-W6 P6 (cmui's open point): every "hjv-guest-result:pc-code" result carries "staff", whether
+the answer's support grant checks out for this PC as the process that registers checks it, so
+the toast can promise the mark only when the PC keeps the grant.
+
+E2E hooks the wave notes ask of lane A's files (src/hjviewer_e2e.rs):
+- TV-W6 W6-E3: --hjv-e2e-support-wait <secs> makes a support code and reads the waiting room
+  in the same process, "support arrived: <PC ID>" or "none" (exit 7). It reads
+  hjviewer_account::get_common("hjv-support-arrived"), which is already crate-wide, so
+  support.rs and the mod.rs exports stay as they are.
+- TV-W6 W6-E5: --hjv-e2e-input-probe <id> <n>, a desktop session without a password that sends n
+  mouse moves while the PC waits for [수락] and n more once it is in.
+- TV-W3 W3-3: --hjv-e2e-peer-option <id> <name> [<value>] writes this device's option for a peer.
+- TV-W9 I1-I5: --hjv-e2e-incoming prints the service's list.
+- UX-G1 A6': with HJV_E2E_ACCESS_PASSWORD the connect commands print "guest held: Y|-" after the
+  ticket came and again after a screenshot, stream or probe session closed, whose end lets the
+  ticket go as session_closed does (hjviewer_access::e2e_session_closed).
+
+carryover (1.8.2 checkpoint): a PC that hbbs refused registers again after 20 s with whatever it
+has (reregister, REFUSED_RETRY), before hbbs drops a connection that did not register (30 s), so
+it comes back about 20 s after hbbs lets it in rather than up to a minute later.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_access.rs       |  28 +++++-
+ src/hjviewer_access/guest.rs |  62 +++++++++++--
+ src/hjviewer_access/tests.rs |  19 ++++
+ src/hjviewer_e2e.rs          | 167 ++++++++++++++++++++++++++++++++---
+ 4 files changed, 251 insertions(+), 25 deletions(-)
+
+diff --git a/src/hjviewer_access.rs b/src/hjviewer_access.rs
+index 6464d5a..19985f5 100644
+--- a/src/hjviewer_access.rs
++++ b/src/hjviewer_access.rs
+@@ -194,13 +194,20 @@ impl Held {
+     }
+ }
+ 
+-/// What the PC's last RegisterPk carried, and when that ticket is halfway through its lifetime.
++/// What the PC's last RegisterPk carried, when that ticket is halfway through its lifetime, and
++/// when it went.
+ #[derive(Clone, PartialEq, Eq)]
+ struct Sent {
+     t: String,
+     half: u64,
++    at: u64,
+ }
+ 
++/// A refused PC registers again this often (rendezvous_mediator's own wait is 30 s, as long as
++/// hbbs keeps a connection that did not register, so the PC could take a minute to come back
++/// once hbbs lets it in).
++const REFUSED_RETRY: u64 = 20;
++
+ /// This process's tickets besides the login's.
+ struct Memory {
+     /// the access password's controller tickets, by target ID
+@@ -300,9 +307,10 @@ enum Next {
+ 
+ /// `Register` when the PC has another ticket than the one it registered with, and hbbs refused
+ /// that one, or it carried none, or it is past half its lifetime (hbbs keeps a registration it
+-/// took only until its ticket ends). `Restart` when the PC registered with a ticket and has none
+-/// left (a logout, the binding gone, the ticket over): a RegisterPk without one would not end the
+-/// registration hbbs took.
++/// took only until its ticket ends), and REFUSED_RETRY after hbbs refused the last one whatever
++/// it carried. `Restart` when the PC registered with a ticket and has none left (a logout, the
++/// binding gone, the ticket over): a RegisterPk without one would not end the registration hbbs
++/// took.
+ fn reregister(sent: Option<&Sent>, next: Option<&Held>, refused: bool, now: u64) -> Next {
+     let Some(sent) = sent else {
+         return Next::Wait;
+@@ -312,6 +320,7 @@ fn reregister(sent: Option<&Sent>, next: Option<&Held>, refused: bool, now: u64)
+         Some(next) if next.t != sent.t && (refused || sent.t.is_empty() || now >= sent.half) => {
+             Next::Register
+         }
++        _ if refused && now >= sent.at.saturating_add(REFUSED_RETRY) => Next::Register,
+         _ => Next::Wait,
+     }
+ }
+@@ -380,10 +389,12 @@ pub(crate) fn registration_ticket() -> String {
+         Some(held) => Sent {
+             t: held.t.clone(),
+             half: held.half(),
++            at: now,
+         },
+         None => Sent {
+             t: String::new(),
+             half: 0,
++            at: now,
+         },
+     };
+     let t = sent.t.clone();
+@@ -1126,6 +1137,15 @@ pub(crate) fn e2e_state() -> String {
+     .to_string()
+ }
+ 
++/// The headless E2E session's end (UX-G1's A6′): its target's access password ticket goes as
++/// session_closed lets it go with an app's last session to that target.
++#[cfg(feature = "hjv-e2e")]
++pub(crate) fn e2e_session_closed(target: &str) {
++    if active() {
++        forget_guest(target);
++    }
++}
++
+ /// `--hjv-e2e-ticket refresh`: one request for the login's ticket now, past the limits.
+ #[cfg(feature = "hjv-e2e")]
+ pub(crate) fn e2e_fetch() -> Result<(), &'static str> {
+diff --git a/src/hjviewer_access/guest.rs b/src/hjviewer_access/guest.rs
+index 75fd01a..2b46546 100644
+--- a/src/hjviewer_access/guest.rs
++++ b/src/hjviewer_access/guest.rs
+@@ -14,7 +14,9 @@
+ //!       {"ok":true} or {"ok":false,"error":"denied"|"rate_limited"|"busy"|"unavailable"|
+ //!       "wrong_pc"|"clock"|"bad_request"|"network"|"config"}; this PC's {"ok":true} also has
+ //!       "until" (when its ticket ends, Unix seconds by this device's clock), and a rate_limited
+-//!       one "retry_after" (hjv-api's seconds until a try may come again) when hjv-api said
++//!       one "retry_after" (hjv-api's seconds until a try may come again) when hjv-api said;
++//!       every "pc-code" result has "staff": whether the answer's support grant checks out for
++//!       this PC, as the process that registers checks it (TV-W6, P6)
+ //!   get "hjv-guest-held:<PC ID>"  "Y" while this process keeps a ticket for that PC that holds,
+ //!       else "" (A0 asks before connecting without one); never the ticket itself
+ //!
+@@ -378,6 +380,29 @@ fn note(key: String, result: Result<u64, Failure>) {
+         .insert(key, value.to_string());
+ }
+ 
++/// The support code's result: as note() has it, with `"staff"`.
++fn note_code(result: Result<(u64, bool), Failure>) {
++    let staff = matches!(result, Ok((_, true)));
++    note("pc-code".to_owned(), result.map(|(until, _)| until));
++    let mut results = RESULTS.lock().unwrap_or_else(|e| e.into_inner());
++    if let Some(value) = results.get_mut("pc-code") {
++        if let Ok(Value::Object(mut noted)) = serde_json::from_str::<Value>(value) {
++            noted.insert("staff".to_owned(), json!(staff));
++            *value = Value::Object(noted).to_string();
++        }
++    }
++}
++
++/// Whether an exchange's answer brings a support grant for this PC that the process that
++/// registers keeps (hjviewer_access::keep_guest_pc checks it the same way).
++#[cfg(not(any(target_os = "android", target_os = "ios")))]
++fn keeps_grant(answer: &Value, id: &str, pk: &[u8], now: u64) -> bool {
++    answer.get("staff").is_some_and(|staff| {
++        let pinned = crate::hjviewer_account::trust_pubkeys();
++        crate::hjviewer_account::verify_grant(&pinned, staff, id, pk, now).is_ok()
++    })
++}
++
+ #[derive(Deserialize)]
+ struct CtlAsk {
+     to: String,
+@@ -423,7 +448,7 @@ pub(super) fn set_common(key: &str, value: &str) -> bool {
+             };
+             let result = for_this_pc_code(&code);
+             memzero(&mut code.into_bytes());
+-            note("pc-code".to_owned(), result);
++            note_code(result);
+             true
+         }
+         "hjv-guest-pc-end" => {
+@@ -469,12 +494,13 @@ pub(super) fn for_controller(to: &str, password: &str) -> Result<(), Failure> {
+ /// installed): over the IPC, never through a file. Ok with when it ends.
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ pub(super) fn for_this_pc(password: &str) -> Result<u64, Failure> {
+-    this_pc(password, Secret::Password)
++    this_pc(password, Secret::Password).map(|(until, _)| until)
+ }
+ 
+ /// The ticket of this PC for a support code, which goes as for the access password: Ok with
+-/// when it ends (hjv-api gives it two hours). A code whose form is not a code is not sent.
+-pub(super) fn for_this_pc_code(typed: &str) -> Result<u64, Failure> {
++/// when it ends (hjv-api gives it two hours) and whether it brought a support grant the PC keeps.
++/// A code whose form is not a code is not sent.
++pub(super) fn for_this_pc_code(typed: &str) -> Result<(u64, bool), Failure> {
+     let typed = typed.trim();
+     if read_code(typed).is_none() {
+         return Err(Failure::Denied);
+@@ -483,19 +509,21 @@ pub(super) fn for_this_pc_code(typed: &str) -> Result<u64, Failure> {
+ }
+ 
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+-fn this_pc(password: &str, secret: Secret) -> Result<u64, Failure> {
++fn this_pc(password: &str, secret: Secret) -> Result<(u64, bool), Failure> {
+     let device = device().ok_or(Failure::Config)?;
+     let answer = exchange("pc", &device.id, password, Some(&device), secret)?;
+-    let Some(held) = Held::issued(&answer, super::unix_now()).filter(Held::registers) else {
++    let now = super::unix_now();
++    let Some(held) = Held::issued(&answer, now).filter(Held::registers) else {
+         return Err(Failure::BadRequest);
+     };
++    let staff = keeps_grant(&answer, &device.id, &device.pk, now);
+     let value = answer.to_string();
+     // the IPC call starts a runtime of its own, so it runs off this thread, which may be on one
+     let sent = std::thread::spawn(move || send(value))
+         .join()
+         .unwrap_or(false);
+     if sent {
+-        Ok(held.until)
++        Ok((held.until, staff))
+     } else {
+         log::warn!("access tickets: the access password's PC ticket did not reach the service");
+         Err(Failure::Network)
+@@ -509,7 +537,7 @@ pub(super) fn for_this_pc(_password: &str) -> Result<u64, Failure> {
+ }
+ 
+ #[cfg(any(target_os = "android", target_os = "ios"))]
+-fn this_pc(_password: &str, _secret: Secret) -> Result<u64, Failure> {
++fn this_pc(_password: &str, _secret: Secret) -> Result<(u64, bool), Failure> {
+     Err(Failure::Config)
+ }
+ 
+@@ -784,6 +812,22 @@ mod tests {
+             get_common("hjv-guest-result:pc-code").as_deref(),
+             Some(r#"{"error":"denied","ok":false}"#)
+         );
++        // the support code's results say whether the PC keeps a support grant (P6)
++        note_code(Ok((1760043200, true)));
++        assert_eq!(
++            get_common("hjv-guest-result:pc-code").as_deref(),
++            Some(r#"{"ok":true,"staff":true,"until":1760043200}"#)
++        );
++        note_code(Ok((1760043200, false)));
++        assert_eq!(
++            get_common("hjv-guest-result:pc-code").as_deref(),
++            Some(r#"{"ok":true,"staff":false,"until":1760043200}"#)
++        );
++        note_code(Err(Failure::Denied));
++        assert_eq!(
++            get_common("hjv-guest-result:pc-code").as_deref(),
++            Some(r#"{"error":"denied","ok":false,"staff":false}"#)
++        );
+         assert_eq!(get_common("hjv-access-state"), None);
+     }
+ 
+diff --git a/src/hjviewer_access/tests.rs b/src/hjviewer_access/tests.rs
+index 9a8a738..66ae474 100644
+--- a/src/hjviewer_access/tests.rs
++++ b/src/hjviewer_access/tests.rs
+@@ -213,6 +213,7 @@ fn a_pc_registers_again_with_a_new_ticket_after_a_refusal_or_past_half_the_old_o
+     let sent = |t: &str| Sent {
+         t: t.into(),
+         half: NOW + 100,
++        at: NOW,
+     };
+     let next = held("next", NOW + 259_200, 259_200);
+     // before the first registration the mediator registers by itself
+@@ -250,6 +251,24 @@ fn a_pc_registers_again_with_a_new_ticket_after_a_refusal_or_past_half_the_old_o
+     }
+ }
+ 
++/// carryover.md (1.8.2 checkpoint): a refused PC asks again after 20 s, with the same ticket or
++/// none, before hbbs drops its connection (30 s), so that it is back soon after hbbs lets it in.
++#[test]
++fn a_refused_pc_registers_again_after_20_seconds() {
++    let sent = |t: &str| Sent {
++        t: t.into(),
++        half: NOW + 100_000,
++        at: NOW,
++    };
++    let same = held("same", NOW + 259_200, 259_200);
++    for (sent, next) in [(sent("same"), Some(&same)), (sent(""), None)] {
++        assert_eq!(reregister(Some(&sent), next, true, NOW + 19), Next::Wait);
++        assert_eq!(reregister(Some(&sent), next, true, NOW + 20), Next::Register);
++        // a registration hbbs took waits as before
++        assert_eq!(reregister(Some(&sent), next, false, NOW + 20), Next::Wait);
++    }
++}
++
+ #[test]
+ fn a_refusal_for_access_is_told_apart_and_the_session_does_not_reconnect_by_itself() {
+     // hbbs's built-in TEXT, at the punch hole and in the relay request's error
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index 06a2918..05b1892 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -9,10 +9,16 @@
+ //!     <app> --hjv-e2e-stream <id> <password> <seconds> [record]   (video bitrate of a desktop
+ //!                       session; record: reports a recording from 1 s in until 1 s before the end)
+ //!     <app> --hjv-e2e-wol-report <mac> <ipv4/prefix> <gateway>  (one sync with that wake report)
++//!     <app> --hjv-e2e-input-probe <id> <n>   (a desktop session without a password that sends n
++//!                       mouse moves while the PC waits for [수락], and n more once it is in; TV-W6)
++//!     <app> --hjv-e2e-peer-option <id> <name> [<value>]   (this device's option for the peer `id`,
++//!                       as a session's menu keeps it; an empty value removes it; TV-W3)
+ //!
+ //! With `HJV_E2E_ACCESS_PASSWORD`, the connect commands first trade that access password for the
+-//! target's ticket, as the app's session dialog does; exit code 6 when none came. A close reason
+-//! the PC sends ends a desktop session with exit code 7.
++//! target's ticket, as the app's session dialog does; exit code 6 when none came. They then print
++//! `hjv-e2e: guest held: Y` (or `-`), what A0 reads (`hjv-guest-held:<id>`), and the screenshot,
++//! stream and probe commands print it once more after their session closed (UX-G1's A6′). A close
++//! reason the PC sends ends a desktop session with exit code 7.
+ 
+ use crate::client::{
+     handle_hash, handle_login_error, handle_login_from_ui, handle_test_delay, Client, Data,
+@@ -20,10 +26,11 @@ use crate::client::{
+ };
+ use async_trait::async_trait;
+ use base::message_proto::{
+-    login_response, message, misc, Hash, Message, Misc, PeerInfo, TestDelay, WindowsSession,
++    login_response, message, misc, Hash, Message, Misc, MouseEvent, PeerInfo, TestDelay,
++    WindowsSession,
+ };
+ use hbb_common::{
+-    config::{Config, LocalConfig},
++    config::{Config, LocalConfig, PeerConfig},
+     protobuf::Message as _,
+     rendezvous_proto::ConnType,
+     timeout,
+@@ -71,11 +78,41 @@ pub fn handle_args(args: &[String]) -> bool {
+         }
+         [cmd, id, password, out] if cmd == "--hjv-e2e-screenshot" => {
+             exit_with(guest_ticket(id));
+-            exit_with(desktop(
++            let code = desktop(
+                 id.to_owned(),
+                 password.to_owned(),
+                 Watch::Screenshot(out.to_owned()),
+-            ));
++            );
++            guest_closed(id);
++            exit_with(code);
++            true
++        }
++        [cmd, id, n] if cmd == "--hjv-e2e-input-probe" => {
++            exit_with(guest_ticket(id));
++            match n.parse() {
++                Ok(n) => {
++                    let code = desktop(id.to_owned(), String::new(), Watch::Probe(n));
++                    guest_closed(id);
++                    exit_with(code);
++                }
++                Err(_) => eprintln!("hjv-e2e: n must be a number"),
++            }
++            true
++        }
++        [cmd, id, name, value @ ..] if cmd == "--hjv-e2e-peer-option" && value.len() <= 1 => {
++            let mut config = PeerConfig::load(id);
++            match value.first().filter(|v| !v.is_empty()) {
++                Some(value) => config.options.insert(name.to_owned(), value.to_owned()),
++                None => config.options.remove(name),
++            };
++            config.store(id);
++            println!(
++                "hjv-e2e: peer option {name}: {}",
++                PeerConfig::load(id)
++                    .options
++                    .get(name)
++                    .map_or("", String::as_str)
++            );
+             true
+         }
+         [cmd, id, password, secs, more @ ..]
+@@ -91,11 +128,15 @@ pub fn handle_args(args: &[String]) -> bool {
+             };
+             exit_with(guest_ticket(id));
+             match secs.parse() {
+-                Ok(secs) => exit_with(desktop(
+-                    id.to_owned(),
+-                    password.to_owned(),
+-                    Watch::Stream(secs, record),
+-                )),
++                Ok(secs) => {
++                    let code = desktop(
++                        id.to_owned(),
++                        password.to_owned(),
++                        Watch::Stream(secs, record),
++                    );
++                    guest_closed(id);
++                    exit_with(code);
++                }
+                 Err(_) => eprintln!("hjv-e2e: seconds must be a number"),
+             }
+             true
+@@ -115,12 +156,32 @@ pub fn handle_args(args: &[String]) -> bool {
+ fn guest_ticket(id: &str) -> i32 {
+     match std::env::var("HJV_E2E_ACCESS_PASSWORD") {
+         Ok(password) if !password.is_empty() => {
+-            crate::hjviewer_access::e2e_guest_controller(id, &password)
++            let code = crate::hjviewer_access::e2e_guest_controller(id, &password);
++            if code == 0 {
++                print_guest_held(id);
++            }
++            code
+         }
+         _ => 0,
+     }
+ }
+ 
++/// After a session that `guest_ticket` gave a ticket: its end lets the ticket go as the app's last
++/// session to `id` does, and what A0 would read then.
++fn guest_closed(id: &str) {
++    if std::env::var("HJV_E2E_ACCESS_PASSWORD").is_ok_and(|p| !p.is_empty()) {
++        crate::hjviewer_access::e2e_session_closed(id);
++        print_guest_held(id);
++    }
++}
++
++/// `hjv-guest-held:<id>`, as A0 reads it before connecting (UX-G1).
++fn print_guest_held(id: &str) {
++    let held = crate::hjviewer_access::get_common(&format!("hjv-guest-held:{id}"));
++    let held = if held.as_deref() == Some("Y") { "Y" } else { "-" };
++    println!("hjv-e2e: guest held: {held}");
++}
++
+ /// Ends the process with `code` unless it is 0.
+ fn exit_with(code: i32) {
+     if code != 0 {
+@@ -158,6 +219,12 @@ fn exit_with(code: i32) {
+ ///     <app> --hjv-e2e-support-code                        (a logged-in staff app makes a support
+ ///                                                         code and prints it; exit code 6
+ ///                                                         without one)
++///     <app> --hjv-e2e-support-wait <secs>                 (the same, then the waiting room: the
++///                                                         PC that used it, or exit code 7 when
++///                                                         none did within secs; TV-W6)
++///     <app> --hjv-e2e-incoming                            (the service's incoming connections,
++///                                                         TV-W9, as JSON; exit code 1 without an
++///                                                         answer)
+ fn account_command(args: &[String]) -> Option<i32> {
+     Some(match args {
+         [cmd] if cmd == "--hjv-e2e-id" => {
+@@ -230,10 +297,55 @@ fn account_command(args: &[String]) -> Option<i32> {
+             }
+         }
+         [cmd] if cmd == "--hjv-e2e-support-code" => crate::hjviewer_account::e2e_support_code(),
++        [cmd, secs] if cmd == "--hjv-e2e-support-wait" => match secs.parse() {
++            Ok(secs) => support_wait(secs),
++            Err(_) => {
++                eprintln!("hjv-e2e: seconds must be a number");
++                1
++            }
++        },
++        [cmd] if cmd == "--hjv-e2e-incoming" => {
++            match crate::ipc::get_config(crate::hjviewer_incoming::KEY) {
++                Ok(Some(list)) => {
++                    println!("{list}");
++                    0
++                }
++                _ => {
++                    eprintln!("hjv-e2e: the service did not answer");
++                    1
++                }
++            }
++        }
+         _ => return None,
+     })
+ }
+ 
++/// `--hjv-e2e-support-wait <secs>`: a support code as `--hjv-e2e-support-code` makes it, then
++/// what S2 reads from the waiting room each second in this process, whose memory holds it:
++/// `hjv-e2e: support arrived: <PC ID>` (0), or `none` after `secs` (7).
++fn support_wait(secs: u64) -> i32 {
++    let made = crate::hjviewer_account::e2e_support_code();
++    if made != 0 {
++        return made;
++    }
++    let until = Instant::now() + Duration::from_secs(secs);
++    loop {
++        let arrived = crate::hjviewer_account::get_common("hjv-support-arrived").unwrap_or_default();
++        let pc = serde_json::from_str::<Value>(&arrived)
++            .ok()
++            .and_then(|a| a.get("pc").and_then(Value::as_str).map(str::to_owned));
++        if let Some(pc) = pc {
++            println!("hjv-e2e: support arrived: {pc}");
++            return 0;
++        }
++        if Instant::now() >= until {
++            println!("hjv-e2e: support arrived: none");
++            return 7;
++        }
++        std::thread::sleep(Duration::from_secs(1));
++    }
++}
++
+ fn session(id: &str, conn_type: ConnType) -> (Headless, mpsc::UnboundedReceiver<Data>) {
+     let lc = Arc::new(RwLock::new(LoginConfigHandler::default()));
+     lc.write()
+@@ -249,6 +361,8 @@ enum Watch {
+     /// count the video the session receives for this many seconds; true: report a recording
+     /// (Misc.client_record_status) from 1 s in until 1 s before the end
+     Stream(u64, bool),
++    /// send this many mouse moves while the PC waits for [수락], and as many once it is in
++    Probe(u32),
+ }
+ 
+ /// Logs in for a remote desktop session and watches its video. 0 when it saw the video, 6 when the
+@@ -323,10 +437,24 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+             Some(message::Union::LoginResponse(res)) => match res.union {
+                 Some(login_response::Union::Error(err)) => {
+                     interface.handle_login_error(&err);
++                    if let Watch::Probe(n) = watch {
++                        if err == crate::client::LOGIN_MSG_NO_PASSWORD_ACCESS {
++                            send_moves(&mut stream, n, 100).await;
++                            println!("hjv-e2e: input probe: {n} moves before accept");
++                            continue;
++                        }
++                    }
+                     return 1;
+                 }
+                 Some(login_response::Union::PeerInfo(pi)) => {
+                     interface.handle_peer_info(pi);
++                    if let Watch::Probe(n) = watch {
++                        send_moves(&mut stream, n, 400).await;
++                        println!("hjv-e2e: input probe: {n} moves after accept");
++                        // the PC takes them before the session ends
++                        tokio::time::sleep(Duration::from_secs(2)).await;
++                        return 0;
++                    }
+                     let mut misc = Misc::new();
+                     misc.set_refresh_video(true);
+                     let mut msg = Message::new();
+@@ -380,6 +508,21 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+     }
+ }
+ 
++/// `n` mouse moves along a line from (`from`, `from`), 20 ms apart.
++async fn send_moves(stream: &mut Stream, n: u32, from: i32) {
++    for i in 0..n as i32 {
++        let mut msg = Message::new();
++        msg.set_mouse_event(MouseEvent {
++            mask: crate::common::input::MOUSE_TYPE_MOVE,
++            x: from + 10 * i,
++            y: from + 5 * i,
++            ..Default::default()
++        });
++        stream.send(&msg).await.ok();
++        tokio::time::sleep(Duration::from_millis(20)).await;
++    }
++}
++
+ fn write_ppm(rgb: &ImageRgb, path: &str) -> std::io::Result<()> {
+     let (w, h) = (rgb.w, rgb.h);
+     let stride = if h > 0 { rgb.raw.len() / h } else { 0 };

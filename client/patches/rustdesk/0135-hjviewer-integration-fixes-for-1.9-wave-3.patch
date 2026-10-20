@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 05:39:32 +0900
+Subject: [PATCH 135/147] hjviewer: integration fixes for 1.9 wave 3
+
+U15: lanes keys and phonefiles both wrote hjvFileRowColors. Keep lane
+keys' common/hjv_session_look.dart (same values, plus the desktop row's
+border, which the phone row does not read), point the phone file page
+at it, and drop hjv_phone_files_look.dart and its test;
+hjviewer_session_look_test.dart covers the function in both themes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_phone_files_look.dart  | 26 ------------
+ .../lib/mobile/pages/file_manager_page.dart   |  2 +-
+ flutter/test/hjviewer_phone_files_test.dart   | 42 -------------------
+ 3 files changed, 1 insertion(+), 69 deletions(-)
+ delete mode 100644 flutter/lib/common/hjv_phone_files_look.dart
+ delete mode 100644 flutter/test/hjviewer_phone_files_test.dart
+
+diff --git a/flutter/lib/common/hjv_phone_files_look.dart b/flutter/lib/common/hjv_phone_files_look.dart
+deleted file mode 100644
+index 0ac9522..0000000
+--- a/flutter/lib/common/hjv_phone_files_look.dart
++++ /dev/null
+@@ -1,26 +0,0 @@
+-// HJViewer (U15): the phone's file transfer rows in the app's look. The same function as the
+-// shared session look's hjvFileRowColors (common/hjv_session_look.dart); the merge keeps one.
+-
+-import 'package:flutter/material.dart';
+-
+-import 'hjv_style.dart';
+-
+-/// A row of the desktop file list, and of the phone's.
+-({Color bg, Color name, Color icon, Color meta}) hjvFileRowColors(
+-    BuildContext context,
+-    {required bool selected}) {
+-  final p = HjvPalette.of(context);
+-  return selected
+-      ? (
+-          bg: p.primarySoft,
+-          name: p.primaryStrong,
+-          icon: p.primary,
+-          meta: p.textSecondary
+-        )
+-      : (
+-          bg: Colors.transparent,
+-          name: p.text,
+-          icon: p.textSecondary,
+-          meta: p.textSecondary
+-        );
+-}
+diff --git a/flutter/lib/mobile/pages/file_manager_page.dart b/flutter/lib/mobile/pages/file_manager_page.dart
+index 2afff68..088a789 100644
+--- a/flutter/lib/mobile/pages/file_manager_page.dart
++++ b/flutter/lib/mobile/pages/file_manager_page.dart
+@@ -8,7 +8,7 @@ import 'package:get/get.dart';
+ import 'package:toggle_switch/toggle_switch.dart';
+ 
+ import '../../common.dart';
+-import '../../common/hjv_phone_files_look.dart';
++import '../../common/hjv_session_look.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_session_rules.dart';
+ import '../../common/hjviewer_session_switch.dart';
+diff --git a/flutter/test/hjviewer_phone_files_test.dart b/flutter/test/hjviewer_phone_files_test.dart
+deleted file mode 100644
+index 07a322f..0000000
+--- a/flutter/test/hjviewer_phone_files_test.dart
++++ /dev/null
+@@ -1,42 +0,0 @@
+-import 'package:flutter/material.dart';
+-import 'package:flutter_hbb/common/hjv_phone_files_look.dart';
+-import 'package:flutter_hbb/common/hjv_style.dart';
+-import 'package:flutter_test/flutter_test.dart';
+-
+-// The phone's file transfer rows (U15, common/hjv_phone_files_look.dart): the chosen row reads in
+-// both themes. Plain Flutter, no bridge.
+-
+-double contrast(Color a, Color b) {
+-  final la = a.computeLuminance();
+-  final lb = b.computeLuminance();
+-  final hi = la > lb ? la : lb;
+-  final lo = la > lb ? lb : la;
+-  return (hi + 0.05) / (lo + 0.05);
+-}
+-
+-void main() {
+-  for (final (brightness, p) in [
+-    (Brightness.light, HjvPalette.light),
+-    (Brightness.dark, HjvPalette.dark),
+-  ]) {
+-    testWidgets('$brightness: a chosen row is faint blue with readable text',
+-        (tester) async {
+-      late BuildContext ctx;
+-      await tester.pumpWidget(Theme(
+-          data: ThemeData(brightness: brightness),
+-          child: Builder(builder: (c) {
+-            ctx = c;
+-            return const SizedBox();
+-          })));
+-      final chosen = hjvFileRowColors(ctx, selected: true);
+-      final plain = hjvFileRowColors(ctx, selected: false);
+-      expect(chosen.bg, p.primarySoft);
+-      expect(chosen.name, p.primaryStrong);
+-      expect(plain.bg, Colors.transparent);
+-      expect(plain.name, p.text);
+-      expect(contrast(chosen.name, chosen.bg), greaterThanOrEqualTo(4.5));
+-      expect(contrast(chosen.meta, chosen.bg), greaterThanOrEqualTo(4.5));
+-      expect(contrast(plain.meta, p.surface), greaterThanOrEqualTo(4.5));
+-    });
+-  }
+-}

@@ -1,0 +1,325 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 04:36:38 +0900
+Subject: [PATCH 133/147] hjviewer: the phone's file transfer in the app's look
+ (U15)
+
+U15 (UX-S5, phone file screen, design u15.md 3-6 with its review):
+- The Local / Remote switch is the palette's segmented control in the
+  1.7.0 form of mobile/widgets/gesture_help.dart: inactive card with a
+  border and divider in border, active primarySoft with primaryStrong
+  (review R1: primarySoft against fill alone was 1.01:1). 88 x 36, 14 px,
+  rounded icons that do not repeat W7's desktop icon. The app bar title
+  is in FittedBox(fit: BoxFit.scaleDown), so 320-360 dp phones scale it
+  down instead of clipping 'Remote' (review R2). W7's [to remote screen]
+  button and leadingWidth 96 stay.
+- File rows: a flat card, faint blue (primarySoft) when chosen with
+  primaryStrong text, 28 px rounded icons in textSecondary (primary when
+  chosen), the date and size line 12 px textSecondary with digits of one
+  width. Colours from hjvFileRowColors in common/hjv_phone_files_look.dart,
+  the same function and values as the shared hjv_session_look.dart that
+  lane keys adds in this wave (not on this base); the merge keeps one.
+- The bottom bar (selected, paste here?, waiting, successful, error) is a
+  card with a top border instead of the see-through blue: title 14/600 in
+  text, line 13 px textSecondary, icons textSecondary 22 px. Waiting shows
+  a 22 px spinner, success check_circle_outline in successText (review
+  R7: success is 2.62:1 on card), error error_outline in danger.
+- Delete in the bottom bar takes danger through IconButton.color, so it
+  greys out when nothing is chosen (review R8).
+No text, behaviour or layout order changes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_phone_files_look.dart  |  26 ++++
+ .../lib/mobile/pages/file_manager_page.dart   | 112 ++++++++++++------
+ flutter/test/hjviewer_phone_files_test.dart   |  42 +++++++
+ 3 files changed, 144 insertions(+), 36 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_phone_files_look.dart
+ create mode 100644 flutter/test/hjviewer_phone_files_test.dart
+
+diff --git a/flutter/lib/common/hjv_phone_files_look.dart b/flutter/lib/common/hjv_phone_files_look.dart
+new file mode 100644
+index 0000000..0ac9522
+--- /dev/null
++++ b/flutter/lib/common/hjv_phone_files_look.dart
+@@ -0,0 +1,26 @@
++// HJViewer (U15): the phone's file transfer rows in the app's look. The same function as the
++// shared session look's hjvFileRowColors (common/hjv_session_look.dart); the merge keeps one.
++
++import 'package:flutter/material.dart';
++
++import 'hjv_style.dart';
++
++/// A row of the desktop file list, and of the phone's.
++({Color bg, Color name, Color icon, Color meta}) hjvFileRowColors(
++    BuildContext context,
++    {required bool selected}) {
++  final p = HjvPalette.of(context);
++  return selected
++      ? (
++          bg: p.primarySoft,
++          name: p.primaryStrong,
++          icon: p.primary,
++          meta: p.textSecondary
++        )
++      : (
++          bg: Colors.transparent,
++          name: p.text,
++          icon: p.textSecondary,
++          meta: p.textSecondary
++        );
++}
+diff --git a/flutter/lib/mobile/pages/file_manager_page.dart b/flutter/lib/mobile/pages/file_manager_page.dart
+index 84bc4b7..4a16536 100644
+--- a/flutter/lib/mobile/pages/file_manager_page.dart
++++ b/flutter/lib/mobile/pages/file_manager_page.dart
+@@ -8,6 +8,7 @@ import 'package:get/get.dart';
+ import 'package:toggle_switch/toggle_switch.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_phone_files_look.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_session_rules.dart';
+ import '../../common/hjviewer_session_switch.dart';
+@@ -312,28 +313,37 @@ class _FileManagerPageState extends State<FileManagerPage> {
+             _hjvToRemoteButton(),
+           ]),
+           centerTitle: true,
+-          title: ToggleSwitch(
+-            initialLabelIndex: showLocal ? 0 : 1,
+-            activeBgColor: [MyTheme.idColor],
+-            inactiveBgColor: Theme.of(context).brightness == Brightness.light
+-                ? MyTheme.grayBg
+-                : null,
+-            inactiveFgColor: Theme.of(context).brightness == Brightness.light
+-                ? Colors.black54
+-                : null,
+-            totalSwitches: 2,
+-            minWidth: 100,
+-            fontSize: 15,
+-            iconSize: 18,
+-            labels: [translate("Local"), translate("Remote")],
+-            icons: [Icons.phone_android_sharp, Icons.screen_share],
+-            onToggle: (index) {
+-              final current = showLocal ? 0 : 1;
+-              if (index != current) {
+-                setState(() => showLocal = !showLocal);
+-              }
+-            },
+-          ),
++          // HJViewer (U15): the palette's segmented control (as in gesture_help.dart), scaled
++          // down on phones too narrow for it
++          title: FittedBox(
++              fit: BoxFit.scaleDown,
++              child: ToggleSwitch(
++                initialLabelIndex: showLocal ? 0 : 1,
++                activeFgColor: HjvPalette.of(context).primaryStrong,
++                inactiveFgColor: HjvPalette.of(context).textSecondary,
++                activeBgColor: [HjvPalette.of(context).primarySoft],
++                inactiveBgColor: HjvPalette.of(context).card,
++                borderColor: [HjvPalette.of(context).border],
++                borderWidth: 1,
++                dividerColor: HjvPalette.of(context).border,
++                cornerRadius: HjvRadius.md,
++                totalSwitches: 2,
++                minWidth: 88,
++                minHeight: 36,
++                fontSize: 14,
++                iconSize: 18,
++                labels: [translate("Local"), translate("Remote")],
++                icons: [
++                  Icons.phone_android_rounded,
++                  Icons.screen_share_outlined
++                ],
++                onToggle: (index) {
++                  final current = showLocal ? 0 : 1;
++                  if (index != current) {
++                    setState(() => showLocal = !showLocal);
++                  }
++                },
++              )),
+           actions: [
+             PopupMenuButton<String>(
+                 tooltip: "",
+@@ -560,6 +570,7 @@ class _FileManagerPageState extends State<FileManagerPage> {
+                   onPressed: () => setState(() => showLocal = !showLocal),
+                 ),
+                 IconButton(
++                  color: HjvPalette.of(context).danger,
+                   icon: Icon(Icons.delete_forever),
+                   onPressed: selectedItems != null
+                       ? () async {
+@@ -619,7 +630,10 @@ class _FileManagerPageState extends State<FileManagerPage> {
+       switch (activeJob.state) {
+         case JobState.inProgress:
+           return BottomSheetBody(
+-            leading: CircularProgressIndicator(),
++            leading: SizedBox(
++                width: 22,
++                height: 22,
++                child: CircularProgressIndicator(strokeWidth: 2.5)),
+             title: translate("Waiting"),
+             text: "${readableFileSize(activeJob.speed)}/s",
+             onCanceled: () {
+@@ -629,14 +643,16 @@ class _FileManagerPageState extends State<FileManagerPage> {
+           );
+         case JobState.done:
+           return BottomSheetBody(
+-            leading: Icon(Icons.check),
++            leading: Icon(Icons.check_circle_outline_rounded,
++                color: HjvPalette.of(context).successText),
+             title: "${translate("Successful")}!",
+             text: activeJob.display(),
+             onCanceled: () => jobTable.clear(),
+           );
+         case JobState.error:
+           return BottomSheetBody(
+-            leading: Icon(Icons.error),
++            leading: Icon(Icons.error_outline_rounded,
++                color: HjvPalette.of(context).danger),
+             title: "${translate("Error")}!",
+             text: "",
+             onCanceled: () => jobTable.clear(),
+@@ -726,8 +742,18 @@ class _FileManagerViewState extends State<FileManagerView> {
+               return widget.selectMode.value != SelectMode.none &&
+                   widget.selectMode.value.eq(controller.selectedItems.isLocal);
+             }();
++            // HJViewer (U15): the row in the palette, the chosen one in the faint blue
++            final look = hjvFileRowColors(context, selected: selected);
+             return Card(
++              elevation: 0,
++              color: look.bg,
++              margin: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
++              shape: RoundedRectangleBorder(
++                  borderRadius: BorderRadius.circular(HjvRadius.md)),
+               child: ListTile(
++                selectedColor: look.name,
++                textColor: look.name,
++                iconColor: look.icon,
+                 leading: entries[index].isDrive
+                     ? Padding(
+                         padding: EdgeInsets.symmetric(vertical: 8),
+@@ -740,16 +766,20 @@ class _FileManagerViewState extends State<FileManagerView> {
+                                 ?.withOpacity(0.7)))
+                     : Icon(
+                         entries[index].isFile
+-                            ? Icons.feed_outlined
+-                            : Icons.folder,
+-                        size: 40),
++                            ? Icons.description_outlined
++                            : Icons.folder_rounded,
++                        size: 28,
++                        color: look.icon),
+                 title: Text(entries[index].name),
+                 selected: selected,
+                 subtitle: entries[index].isDrive
+                     ? null
+                     : Text(
+                         "${entries[index].lastModified().toString().replaceAll(".000", "")}   $sizeStr",
+-                        style: TextStyle(fontSize: 12, color: HjvPalette.of(context).textTertiary),
++                        style: TextStyle(
++                            fontSize: 12,
++                            color: look.meta,
++                            fontFeatures: HjvText.tabular),
+                       ),
+                 trailing: entries[index].isDrive
+                     ? null
+@@ -976,15 +1006,23 @@ class BottomSheetBody extends StatelessWidget {
+   BottomSheet build(BuildContext context) {
+     // ignore: no_leading_underscores_for_local_identifiers
+     final _actions = actions ?? [];
++    // HJViewer (U15): a card in the palette instead of the see-through blue
++    final p = HjvPalette.of(context);
+     return BottomSheet(
++      backgroundColor: Colors.transparent,
++      elevation: 0,
+       builder: (BuildContext context) {
+         return Container(
+-            height: 65,
++            height: 64,
+             alignment: Alignment.centerLeft,
+             decoration: BoxDecoration(
+-                color: MyTheme.accent50,
+-                borderRadius: BorderRadius.vertical(top: Radius.circular(10))),
+-            child: Padding(
++                color: p.card,
++                border: Border(top: BorderSide(color: p.border)),
++                borderRadius:
++                    BorderRadius.vertical(top: Radius.circular(HjvRadius.lg))),
++            child: IconTheme(
++                data: IconThemeData(color: p.textSecondary, size: 22),
++                child: Padding(
+               padding: EdgeInsets.symmetric(horizontal: 15),
+               child: Row(
+                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
+@@ -997,9 +1035,11 @@ class BottomSheetBody extends StatelessWidget {
+                         mainAxisAlignment: MainAxisAlignment.center,
+                         crossAxisAlignment: CrossAxisAlignment.start,
+                         children: [
+-                          Text(title, style: TextStyle(fontSize: 18)),
++                          Text(title,
++                              style: HjvText.titleSmall.copyWith(color: p.text)),
+                           Text(text,
+-                              style: TextStyle(fontSize: 14)) // TODO color
++                              style: TextStyle(
++                                  fontSize: 13, color: p.textSecondary))
+                         ],
+                       )
+                     ],
+@@ -1013,7 +1053,7 @@ class BottomSheetBody extends StatelessWidget {
+                   }())
+                 ],
+               ),
+-            ));
++            )));
+       },
+       onClosing: () {},
+       // backgroundColor: MyTheme.grayBg,
+diff --git a/flutter/test/hjviewer_phone_files_test.dart b/flutter/test/hjviewer_phone_files_test.dart
+new file mode 100644
+index 0000000..07a322f
+--- /dev/null
++++ b/flutter/test/hjviewer_phone_files_test.dart
+@@ -0,0 +1,42 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common/hjv_phone_files_look.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The phone's file transfer rows (U15, common/hjv_phone_files_look.dart): the chosen row reads in
++// both themes. Plain Flutter, no bridge.
++
++double contrast(Color a, Color b) {
++  final la = a.computeLuminance();
++  final lb = b.computeLuminance();
++  final hi = la > lb ? la : lb;
++  final lo = la > lb ? lb : la;
++  return (hi + 0.05) / (lo + 0.05);
++}
++
++void main() {
++  for (final (brightness, p) in [
++    (Brightness.light, HjvPalette.light),
++    (Brightness.dark, HjvPalette.dark),
++  ]) {
++    testWidgets('$brightness: a chosen row is faint blue with readable text',
++        (tester) async {
++      late BuildContext ctx;
++      await tester.pumpWidget(Theme(
++          data: ThemeData(brightness: brightness),
++          child: Builder(builder: (c) {
++            ctx = c;
++            return const SizedBox();
++          })));
++      final chosen = hjvFileRowColors(ctx, selected: true);
++      final plain = hjvFileRowColors(ctx, selected: false);
++      expect(chosen.bg, p.primarySoft);
++      expect(chosen.name, p.primaryStrong);
++      expect(plain.bg, Colors.transparent);
++      expect(plain.name, p.text);
++      expect(contrast(chosen.name, chosen.bg), greaterThanOrEqualTo(4.5));
++      expect(contrast(chosen.meta, chosen.bg), greaterThanOrEqualTo(4.5));
++      expect(contrast(plain.meta, p.surface), greaterThanOrEqualTo(4.5));
++    });
++  }
++}

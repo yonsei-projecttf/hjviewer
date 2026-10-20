@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:07:05 +0900
+Subject: [PATCH 112/147] hjviewer: the About screen reads the administrator's
+ contact from hjv-admin-contact (I-1)
+
+Words lane I-1 (critic X-13): _aboutLines() takes the contact from
+hjvAdminContact(), the same main_get_common key the accept window, P2 and
+P3 read. It still reads the update model inside the Obx so that a new
+policy redraws the line.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 0d41a15..436c38e 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -11,6 +11,7 @@ import 'dart:convert';
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/formatter/id_formatter.dart';
++import 'package:flutter_hbb/common/hjv_admin_contact.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+@@ -197,10 +198,14 @@ List<Widget> hjvLoginPilot() => _accountBuild
+       ]
+     : [];
+ 
+-/// The About screen's notice: with the contact of the policy this app trusts (U34), which the
+-/// update model has from the core (hjv_update.dart); read inside an Obx, it follows a new policy.
+-List<String> _aboutLines() => hjvAboutNoticeLines(_t,
+-    accountBuild: _accountBuild, contact: hjvUpdate.value.contact);
++/// The About screen's notice: with the contact of the policy this app trusts (U34), the one the
++/// accept window and P2/P3 show (hjv_admin_contact.dart).
++List<String> _aboutLines() {
++  // read inside an Obx: the update model (hjv_update.dart) redraws it for a new policy
++  hjvUpdate.value;
++  return hjvAboutNoticeLines(_t,
++      accountBuild: _accountBuild, contact: hjvAdminContact());
++}
+ 
+ /// D13 (desktop settings, About): who makes HJViewer and, in an account build, who the
+ /// administrator is and the pilot notice.

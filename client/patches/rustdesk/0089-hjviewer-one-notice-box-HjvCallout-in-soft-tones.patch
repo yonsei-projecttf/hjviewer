@@ -1,0 +1,1424 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:03:51 +0900
+Subject: [PATCH 089/147] hjviewer: one notice box, HjvCallout, in soft tones
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+UX-S1 (U49): the app's notices are one widget. HjvCallout(text, tone,
+icon, title, actions, onClose, stacked, onCanvas, titleOneLine) in
+common/hjv_style.dart, exported by common/widgets/dialog.dart next to
+hjvNoteBlock, which is now its neutral tone (its warning one with
+`warning`), with the same signature. The look: radius md, 12 inside, an
+18 px icon 8 before the text, the title 13/600, the text 13/1.45 in the
+secondary colour (danger's in the text colour), the actions at the right
+of a text of one line and below it otherwise, an 18 px close x with a 32 px
+target on a desktop and 48 on a phone. `stacked` puts the actions at the
+box's width, each at least 34 high (the 200 px pane); `onCanvas` draws a
+card with a border; high contrast adds a border. HjvCallout.rich takes a
+widget in the text's place (a tooltip, a selectable text).
+
+HjvPalette has the soft tones and their text colours (successSoft/Text,
+warningSoft/Text, dangerSoft with dangerText, infoSoft/infoText as the
+accent's), 4.5:1 for every text on them; the icons and actions take the
+tone's text colour. hjvTint stays for the peer tiles and avatars.
+
+Moved onto it: P1 (warning, stacked, its title on one line), P2 and P3's
+home line (success, stacked), G2 (neutral card, stacked, U05's pane form),
+G1 (info), G3 (neutral, a card on a phone, as high with its [로그인] as
+without), the device list's banner (danger with [다시 시도], or neutral),
+buildErrorBanner (danger, its translated text in a Text of three lines at
+most and whole in its tooltip, [다시 시도], the close x), the update strip
+(info, one action and the close x). The install page puts G1 first and the
+licence below as a caption of one line with its link; its buttons have no
+icons, [수락하고 설치] last.
+
+Tests: hjviewer_style_test.dart, the tones' contrast in both themes and
+the callout's widget tests.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                     |  71 +---
+ flutter/lib/common/hjv_style.dart           | 413 +++++++++++++++++++-
+ flutter/lib/common/hjv_update.dart          |  40 +-
+ flutter/lib/common/hjviewer_access.dart     | 193 +++------
+ flutter/lib/common/hjviewer_account.dart    |  37 +-
+ flutter/lib/common/widgets/dialog.dart      |  66 +---
+ flutter/lib/desktop/pages/install_page.dart |  95 ++---
+ flutter/test/hjviewer_style_test.dart       | 242 +++++++++++-
+ 8 files changed, 797 insertions(+), 360 deletions(-)
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index 7e7da60..d2dbbd4 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -3281,60 +3281,25 @@ Widget buildErrorBanner(BuildContext context,
+     required Function close}) {
+   return Obx(() => Offstage(
+         offstage: !(!loading.value && err.value.isNotEmpty),
+-        child: Center(
+-            child: Container(
+-          // HJViewer: a rounded callout in the danger tint (common/hjv_style.dart)
+-          decoration: BoxDecoration(
+-            color: hjvTint(context, HjvPalette.of(context).danger).$1,
+-            borderRadius: BorderRadius.circular(HjvRadius.md),
++        // HJViewer: an HjvCallout in the danger tone (common/hjv_style.dart, U49): the translated
++        // text (an error's details whole in its tooltip), [다시 시도], the close x
++        child: HjvCallout.rich(
++          tone: HjvTone.danger,
++          icon: Icons.error_outline_rounded,
++          body: Tooltip(
++            message: translate(err.value),
++            child: Text(hjvKeepAll(translate(err.value)),
++                maxLines: 3, overflow: TextOverflow.ellipsis),
+           ),
+-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+-          child: Row(
+-            mainAxisAlignment: MainAxisAlignment.center,
+-            crossAxisAlignment: CrossAxisAlignment.center,
+-            children: [
+-              FittedBox(
+-                child: Icon(
+-                  Icons.error_outline_rounded,
+-                  size: 18,
+-                  color: HjvPalette.of(context).danger,
+-                ),
+-              ).marginAll(4),
+-              Flexible(
+-                child: Align(
+-                    alignment: Alignment.centerLeft,
+-                    child: Tooltip(
+-                      message: translate(err.value),
+-                      child: SelectableText(
+-                        translate(err.value),
+-                      ),
+-                    )).marginSymmetric(vertical: 2),
+-              ),
+-              if (retry != null)
+-                InkWell(
+-                    onTap: () {
+-                      retry.call();
+-                    },
+-                    child: Text(
+-                      translate("Retry"),
+-                      style: TextStyle(
+-                          color: HjvPalette.of(context).primary,
+-                          fontWeight: FontWeight.w600),
+-                    )).marginSymmetric(horizontal: 5),
+-              FittedBox(
+-                child: InkWell(
+-                  onTap: () {
+-                    close.call();
+-                  },
+-                  child: Icon(Icons.close_rounded,
+-                          size: 18,
+-                          color: HjvPalette.of(context).textSecondary)
+-                      .marginSymmetric(horizontal: 5),
+-                ),
+-              ).marginAll(4)
+-            ],
+-          ),
+-        )).marginOnly(bottom: 14),
++          actions: [
++            if (retry != null)
++              TextButton(
++                  onPressed: () => retry.call(),
++                  child: Text(translate("Retry"))),
++          ],
++          onClose: () => close.call(),
++          closeTooltip: translate('Close'),
++        ).marginOnly(bottom: 14),
+       ));
+ }
+ 
+diff --git a/flutter/lib/common/hjv_style.dart b/flutter/lib/common/hjv_style.dart
+index 5ceb113..faae15c 100644
+--- a/flutter/lib/common/hjv_style.dart
++++ b/flutter/lib/common/hjv_style.dart
+@@ -5,8 +5,10 @@
+ // typeface (SIL Open Font License 1.1, assets/fonts) on every platform, so Windows, Android and
+ // iOS read alike. Plain Flutter without the bridge.
+ 
++import 'dart:math' as math;
++
+ import 'package:flutter/material.dart';
+-import 'package:flutter/semantics.dart';
++import 'package:flutter/rendering.dart';
+ 
+ /// The typeface every text uses, bundled in assets/fonts (Regular 400, SemiBold 600, Bold 700).
+ const String kHjvFont = 'Pretendard';
+@@ -48,6 +50,16 @@ class HjvPalette {
+   final Color danger;
+   final Color dangerText;
+ 
++  /// the soft backgrounds of HjvCallout's tones and the text on them (4.5:1 on its soft, on card
++  /// and on fill); danger's text is dangerText, and info is the accent's soft tint and strong text
++  final Color successSoft;
++  final Color successText;
++  final Color warningSoft;
++  final Color warningText;
++  final Color dangerSoft;
++  Color get infoSoft => primarySoft;
++  Color get infoText => primaryStrong;
++
+   /// the hover of a row or an icon button; hoverStrong where the background is canvas or fill
+   final Color hover;
+   final Color hoverStrong;
+@@ -75,6 +87,11 @@ class HjvPalette {
+     required this.warning,
+     required this.danger,
+     required this.dangerText,
++    required this.successSoft,
++    required this.successText,
++    required this.warningSoft,
++    required this.warningText,
++    required this.dangerSoft,
+     required this.hover,
+     required this.hoverStrong,
+     required this.dangerFill,
+@@ -100,6 +117,11 @@ class HjvPalette {
+     warning: Color(0xFFF79009),
+     danger: Color(0xFFF04438),
+     dangerText: Color(0xFFC8321F),
++    successSoft: Color(0xFFE8F6EE),
++    successText: Color(0xFF17703F),
++    warningSoft: Color(0xFFFFF4E0),
++    warningText: Color(0xFF8A5300),
++    dangerSoft: Color(0xFFFDEDED),
+     hover: Color(0xFFEEF1F5),
+     hoverStrong: Color(0xFFE4E8ED),
+     dangerFill: Color(0xFFD92D20),
+@@ -125,6 +147,11 @@ class HjvPalette {
+     warning: Color(0xFFFDB022),
+     danger: Color(0xFFF97066),
+     dangerText: Color(0xFFF97066),
++    successSoft: Color(0xFF14271D),
++    successText: Color(0xFF7FD8A6),
++    warningSoft: Color(0xFF2D2310),
++    warningText: Color(0xFFF0B764),
++    dangerSoft: Color(0xFF311A1C),
+     hover: Color(0xFF242832),
+     hoverStrong: Color(0xFF2C313B),
+     dangerFill: Color(0xFFD92D20),
+@@ -215,6 +242,390 @@ BoxDecoration hjvCardDecoration(BuildContext context,
+   );
+ }
+ 
++/// The tone of an HjvCallout: info (the accent), success, warning, danger, and neutral (the
++/// fields' grey, hjvNoteBlock's).
++enum HjvTone { info, success, warning, danger, neutral }
++
++/// An HjvCallout's colours in `tone`: its background (on the canvas a card, which the border sets
++/// off), its icon, its text and its actions' text. The icon and the actions take the tone's text
++/// colour, as the tone's own colour does not reach 3:1 on its soft background in the light theme.
++({Color back, Color icon, Color text, Color action}) hjvToneColors(
++    HjvPalette p, HjvTone tone,
++    {bool onCanvas = false}) {
++  final (soft, strong) = switch (tone) {
++    HjvTone.info => (p.infoSoft, p.infoText),
++    HjvTone.success => (p.successSoft, p.successText),
++    HjvTone.warning => (p.warningSoft, p.warningText),
++    HjvTone.danger => (p.dangerSoft, p.dangerText),
++    HjvTone.neutral => (p.fill, p.primaryStrong),
++  };
++  return (
++    back: onCanvas ? p.card : soft,
++    icon: tone == HjvTone.neutral ? p.textSecondary : strong,
++    text: tone == HjvTone.danger ? p.text : p.textSecondary,
++    action: strong,
++  );
++}
++
++/// The buttons that HjvCallout stacks (`stacked`), as P1 had them in the home's 200 px pane: at
++/// least 34 high, growing with a label of two lines.
++const _kHjvStackedButton = ButtonStyle(
++  minimumSize: WidgetStatePropertyAll(Size(0, 34)),
++  padding:
++      WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8, vertical: 6)),
++);
++
++/// A notice in a box, the one look of the app's (U49): the medium radius, 12 inside, an optional
++/// 18 px icon in the tone's colour 8 before the text, an optional title (13/600 in the text
++/// colour; `titleOneLine`: one line, whole in its tooltip), the text (13/1.45 in the secondary
++/// colour, danger's in the text colour; Korean breaks at spaces), the actions (TextButtons) at
++/// the right of the text while it fits on one line beside them, else below it at the right, and
++/// an optional close x (18 px, textTertiary, a 32 px target on a desktop, 48 on a phone).
++/// `stacked`: the actions below at the box's width instead, each at least 34 high (the desktop
++/// home's 200 px pane), any button kind. The background: the tone's soft one, neutral's the
++/// fields' grey; `onCanvas` (on the canvas, where the grey does not show): a card with a border.
++/// High contrast adds a border. hjvNoteBlock (dialog.dart) is its neutral and warning tones.
++class HjvCallout extends StatelessWidget {
++  final String text;
++  final Widget? _body;
++  final HjvTone tone;
++  final IconData? icon;
++  final String? title;
++  final List<Widget> actions;
++  final VoidCallback? onClose;
++  final bool stacked;
++  final bool onCanvas;
++  final bool titleOneLine;
++
++  /// the close x's tooltip (default: the platform's "Close")
++  final String? closeTooltip;
++
++  const HjvCallout(
++      {super.key,
++      required this.text,
++      this.tone = HjvTone.neutral,
++      this.icon,
++      this.title,
++      this.actions = const [],
++      this.onClose,
++      this.stacked = false,
++      this.onCanvas = false,
++      this.titleOneLine = false,
++      this.closeTooltip})
++      : _body = null;
++
++  /// A widget of its own in the text's place, drawn in the text's style (hjvNoteBlock's text, a
++  /// text with a tooltip, a selectable one).
++  const HjvCallout.rich(
++      {super.key,
++      required Widget body,
++      this.tone = HjvTone.neutral,
++      this.icon,
++      this.title,
++      this.actions = const [],
++      this.onClose,
++      this.stacked = false,
++      this.onCanvas = false,
++      this.titleOneLine = false,
++      this.closeTooltip})
++      : text = '',
++        _body = body;
++
++  @override
++  Widget build(BuildContext context) {
++    final theme = Theme.of(context);
++    final p = HjvPalette.of(context);
++    final c = hjvToneColors(p, tone, onCanvas: onCanvas);
++    final phone = theme.platform == TargetPlatform.android ||
++        theme.platform == TargetPlatform.iOS;
++    final highContrast = MediaQuery.maybeHighContrastOf(context) ?? false;
++    final hasText = _body != null || text.isNotEmpty;
++    final inline = actions.isNotEmpty && !stacked;
++    final heading = title == null
++        ? null
++        : Text(hjvKeepAll(title!),
++            maxLines: titleOneLine ? 1 : null,
++            overflow: titleOneLine ? TextOverflow.ellipsis : null,
++            style: TextStyle(
++                fontSize: 13,
++                fontWeight: FontWeight.w600,
++                height: 1.35,
++                color: p.text));
++    final lead = Row(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        if (icon != null)
++          Padding(
++              padding: const EdgeInsets.only(right: 8),
++              child: Icon(icon, size: 18, color: c.icon)),
++        Expanded(
++          child: Column(
++            mainAxisSize: MainAxisSize.min,
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              if (heading != null)
++                titleOneLine
++                    // the title reads whole to a screen reader all the same
++                    ? Tooltip(
++                        message: title, excludeFromSemantics: true, child: heading)
++                    : heading,
++              if (heading != null && hasText) const SizedBox(height: 2),
++              if (hasText)
++                DefaultTextStyle.merge(
++                    style: TextStyle(fontSize: 13, height: 1.45, color: c.text),
++                    child: _body ?? Text(hjvKeepAll(text))),
++            ],
++          ),
++        ),
++      ],
++    );
++    final close = onClose == null
++        ? null
++        : IconButton(
++            onPressed: onClose,
++            tooltip: closeTooltip ??
++                MaterialLocalizations.of(context).closeButtonTooltip,
++            padding: EdgeInsets.zero,
++            constraints: BoxConstraints.tightFor(
++                width: phone ? 48 : 32, height: phone ? 48 : 32),
++            iconSize: 18,
++            icon: Icon(Icons.close_rounded, color: p.textTertiary));
++    final scale = MediaQuery.textScalerOf(context).scale(13);
++    final body = _HjvCalloutBody(
++      firstLine: scale * (heading != null ? 1.35 : 1.45),
++      padBottom: stacked && actions.isNotEmpty ? 0 : 12,
++      hasActions: inline,
++      hasClose: close != null,
++      children: [
++        lead,
++        if (inline)
++          TextButtonTheme(
++              data: TextButtonThemeData(
++                  style: TextButton.styleFrom(
++                          foregroundColor: c.action,
++                          minimumSize: const Size(0, 32),
++                          padding: const EdgeInsets.symmetric(horizontal: 10),
++                          tapTargetSize: phone
++                              ? MaterialTapTargetSize.padded
++                              : MaterialTapTargetSize.shrinkWrap)
++                      .merge(theme.textButtonTheme.style)),
++              child: Wrap(
++                  alignment: WrapAlignment.end,
++                  crossAxisAlignment: WrapCrossAlignment.center,
++                  spacing: 4,
++                  children: actions)),
++        if (close != null) close,
++      ],
++    );
++    return Container(
++      padding:
++          EdgeInsets.only(left: 12, right: inline || close != null ? 4 : 12),
++      decoration: BoxDecoration(
++        color: c.back,
++        borderRadius: BorderRadius.circular(HjvRadius.md),
++        border: onCanvas || highContrast
++            ? Border.all(color: highContrast ? p.textTertiary : p.border)
++            : null,
++      ),
++      child: Column(
++        mainAxisSize: MainAxisSize.min,
++        crossAxisAlignment: CrossAxisAlignment.stretch,
++        children: [
++          body,
++          if (stacked && actions.isNotEmpty) ...[
++            for (final action in actions)
++              Padding(
++                padding: EdgeInsets.only(
++                    top: 8, right: inline || close != null ? 8 : 0),
++                child: ConstrainedBox(
++                  constraints: const BoxConstraints(minHeight: 34),
++                  child: Theme(
++                      data: theme.copyWith(
++                          outlinedButtonTheme: OutlinedButtonThemeData(
++                              style: _kHjvStackedButton
++                                  .merge(theme.outlinedButtonTheme.style)),
++                          elevatedButtonTheme: ElevatedButtonThemeData(
++                              style: _kHjvStackedButton
++                                  .merge(theme.elevatedButtonTheme.style)),
++                          textButtonTheme: TextButtonThemeData(
++                              style: _kHjvStackedButton
++                                  .merge(theme.textButtonTheme.style))),
++                      child: action),
++                ),
++              ),
++            const SizedBox(height: 12),
++          ],
++        ],
++      ),
++    );
++  }
++}
++
++/// HjvCallout's row: the icon and the text (`children` first), then its actions (`hasActions`)
++/// and its close x (`hasClose`). The actions and the x stay on the text's line, centred on it,
++/// while the whole text fits on one line beside them; otherwise the actions go below the text at
++/// the right and the x stays centred on the first line (`firstLine` high). 12 above the text and
++/// `padBottom` below; a target higher than the line reaches into those.
++class _HjvCalloutBody extends MultiChildRenderObjectWidget {
++  final double firstLine;
++  final double padBottom;
++  final bool hasActions;
++  final bool hasClose;
++  const _HjvCalloutBody(
++      {required this.firstLine,
++      required this.padBottom,
++      required this.hasActions,
++      required this.hasClose,
++      required super.children});
++
++  @override
++  RenderObject createRenderObject(BuildContext context) =>
++      _RenderHjvCalloutBody()..take(this);
++
++  @override
++  void updateRenderObject(
++          BuildContext context, _RenderHjvCalloutBody renderObject) =>
++      renderObject.take(this);
++}
++
++class _HjvCalloutBodyData extends ContainerBoxParentData<RenderBox> {}
++
++class _RenderHjvCalloutBody extends RenderBox
++    with
++        ContainerRenderObjectMixin<RenderBox, _HjvCalloutBodyData>,
++        RenderBoxContainerDefaultsMixin<RenderBox, _HjvCalloutBodyData> {
++  static const _padTop = 12.0;
++  static const _gap = 8.0;
++  double _line = 19;
++  double _padBottom = 12;
++  bool _hasActions = false;
++  bool _hasClose = false;
++
++  void take(_HjvCalloutBody w) {
++    if (w.firstLine == _line &&
++        w.padBottom == _padBottom &&
++        w.hasActions == _hasActions &&
++        w.hasClose == _hasClose) {
++      return;
++    }
++    _line = w.firstLine;
++    _padBottom = w.padBottom;
++    _hasActions = w.hasActions;
++    _hasClose = w.hasClose;
++    markNeedsLayout();
++  }
++
++  @override
++  void setupParentData(RenderBox child) {
++    if (child.parentData is! _HjvCalloutBodyData) {
++      child.parentData = _HjvCalloutBodyData();
++    }
++  }
++
++  (RenderBox, RenderBox?, RenderBox?) get _parts {
++    final lead = firstChild!;
++    return (
++      lead,
++      _hasActions ? childAfter(lead) : null,
++      _hasClose ? lastChild : null
++    );
++  }
++
++  /// The size and the offsets of the text, the actions and the x.
++  (Size, List<Offset>) _place(BoxConstraints constraints, ChildLayouter layout) {
++    final (lead, actions, close) = _parts;
++    final cs = close == null ? Size.zero : layout(close, const BoxConstraints());
++    final leadWide = lead.getMaxIntrinsicWidth(double.infinity);
++    var w = constraints.maxWidth;
++    final as = actions == null
++        ? Size.zero
++        : layout(actions,
++            BoxConstraints(maxWidth: w.isFinite ? math.max(0, w - cs.width) : w));
++    final ahead = actions == null ? 0.0 : as.width + _gap;
++    if (!w.isFinite) w = leadWide + ahead + cs.width;
++    final inline = actions == null || leadWide + ahead + cs.width <= w;
++    // the text's room: beside the actions, or 8 before the box's right where the actions'
++    // padding (4) is all there is
++    final room = w -
++        cs.width -
++        (inline ? ahead : (close == null ? _gap : 0));
++    final ls = layout(lead, BoxConstraints(maxWidth: math.max(0, room)));
++    final centre = _padTop + (inline ? ls.height : _line) / 2;
++    var leadY = _padTop;
++    var closeY = centre - cs.height / 2;
++    var actionsY = inline ? centre - as.height / 2 : _padTop + ls.height + 4;
++    final shift = -[0.0, closeY, if (actions != null) actionsY].reduce(math.min);
++    leadY += shift;
++    closeY += shift;
++    actionsY += shift;
++    final height = [
++      leadY + ls.height + _padBottom,
++      if (close != null) closeY + cs.height,
++      if (actions != null)
++        actionsY + as.height + (inline ? 0 : math.max(0, _padBottom - 8)),
++    ].reduce(math.max);
++    return (
++      constraints.constrain(Size(w, height)),
++      [
++        Offset(0, leadY),
++        if (actions != null) Offset(w - cs.width - as.width, actionsY),
++        if (close != null) Offset(w - cs.width, closeY),
++      ]
++    );
++  }
++
++  @override
++  void performLayout() {
++    final (size, offsets) = _place(constraints, ChildLayoutHelper.layoutChild);
++    this.size = size;
++    var child = firstChild;
++    for (final offset in offsets) {
++      (child!.parentData as _HjvCalloutBodyData).offset = offset;
++      child = childAfter(child);
++    }
++  }
++
++  @override
++  Size computeDryLayout(covariant BoxConstraints constraints) =>
++      _place(constraints, ChildLayoutHelper.dryLayoutChild).$1;
++
++  @override
++  double computeMinIntrinsicWidth(double height) {
++    final (lead, actions, close) = _parts;
++    return math.max(lead.getMinIntrinsicWidth(height),
++            actions?.getMinIntrinsicWidth(height) ?? 0) +
++        (close?.getMinIntrinsicWidth(height) ?? 0);
++  }
++
++  @override
++  double computeMaxIntrinsicWidth(double height) {
++    final (lead, actions, close) = _parts;
++    return lead.getMaxIntrinsicWidth(height) +
++        (actions == null ? 0 : _gap + actions.getMaxIntrinsicWidth(height)) +
++        (close?.getMaxIntrinsicWidth(height) ?? 0);
++  }
++
++  @override
++  double computeMinIntrinsicHeight(double width) =>
++      computeDryLayout(BoxConstraints(maxWidth: width)).height;
++
++  @override
++  double computeMaxIntrinsicHeight(double width) =>
++      computeDryLayout(BoxConstraints(maxWidth: width)).height;
++
++  @override
++  double? computeDistanceToActualBaseline(TextBaseline baseline) =>
++      defaultComputeDistanceToFirstActualBaseline(baseline);
++
++  @override
++  void paint(PaintingContext context, Offset offset) =>
++      defaultPaint(context, offset);
++
++  @override
++  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) =>
++      defaultHitTestChildren(result, position: position);
++}
++
+ /// How long a toast stays: `least` (3 seconds) and about 70 ms a character more, at most 8 seconds
+ /// (or `least` when that is longer), so that a sentence of the gate can be read to its end.
+ Duration hjvToastTime(String text,
+diff --git a/flutter/lib/common/hjv_update.dart b/flutter/lib/common/hjv_update.dart
+index 5e6e98b..ec3ece8 100644
+--- a/flutter/lib/common/hjv_update.dart
++++ b/flutter/lib/common/hjv_update.dart
+@@ -872,38 +872,16 @@ class _HjvStrip extends StatelessWidget {
+       required this.onAction,
+       required this.onClose});
+ 
+-  // HJViewer: a rounded callout in the accent's soft tint, in line with the page's cards
++  // HJViewer: an HjvCallout in the info tone (U49), in line with the page's cards
+   @override
+-  Widget build(BuildContext context) {
+-    final p = HjvPalette.of(context);
+-    return Container(
+-      decoration: BoxDecoration(
+-        color: p.primarySoft,
+-        borderRadius: BorderRadius.circular(HjvRadius.md),
+-      ),
+-      padding: const EdgeInsets.only(left: 12, right: 2),
+-      margin: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+-      child: Row(children: [
+-        Icon(Icons.system_update_alt_rounded, size: 20, color: p.primary),
+-        const SizedBox(width: 10),
+-        Expanded(
+-            child: Padding(
+-                padding: const EdgeInsets.symmetric(vertical: 10),
+-                child: Text(text,
+-                    style:
+-                        TextStyle(fontSize: 13, height: 1.4, color: p.text)))),
+-        TextButton(
+-            // the accent's darker shade, which keeps 4.5:1 on the soft tint
+-            style: TextButton.styleFrom(foregroundColor: p.primaryStrong),
+-            onPressed: onAction,
+-            child: Text(action)),
+-        IconButton(
+-            tooltip: HjvUpdateText.close,
+-            icon: Icon(Icons.close, size: 18, color: p.textTertiary),
+-            onPressed: onClose),
+-      ]),
+-    );
+-  }
++  Widget build(BuildContext context) => HjvCallout(
++        tone: HjvTone.info,
++        icon: Icons.system_update_alt_rounded,
++        text: text,
++        actions: [TextButton(onPressed: onAction, child: Text(action))],
++        onClose: onClose,
++        closeTooltip: HjvUpdateText.close,
++      ).marginOnly(left: 12, top: 10, right: 12, bottom: 2);
+ }
+ 
+ /// Settings → About on the desktop.
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 966ccf9..f71f44a 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -304,14 +304,14 @@ List<Widget> hjvAccessKeepLoggedIn({EdgeInsets margin = EdgeInsets.zero}) =>
+     _accountBuild && isDesktop && !bind.isOutgoingOnly()
+         ? [
+             // not to the one who is logged in already
+-            Builder(
+-                builder: (context) => Obx(() => _loggedIn()
+-                    ? const SizedBox.shrink()
+-                    : Padding(
+-                        padding: margin,
+-                        child: hjvNoteBlock(context,
+-                            icon: Icons.info_outline_rounded,
+-                            text: Text(hjvKeepAll(_t.keepLoggedIn))))))
++            Obx(() => _loggedIn()
++                ? const SizedBox.shrink()
++                : Padding(
++                    padding: margin,
++                    child: HjvCallout(
++                        tone: HjvTone.info,
++                        icon: Icons.info_outline_rounded,
++                        text: _t.keepLoggedIn)))
+           ]
+         : [];
+ 
+@@ -649,10 +649,9 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+   Widget build(BuildContext context) => Obx(() {
+         final home = _home();
+         final t = _t;
+-        final p = HjvPalette.of(context);
+         return switch (home) {
+-          HjvPcHome.refused => _card(context,
+-                color: p.warning,
++          HjvPcHome.refused => _card(
++                tone: HjvTone.warning,
+                 icon: Icons.cloud_off_rounded,
+                 title: t.pcTitle,
+                 text: _gateCodes.value ? t.pcTextCodes : t.pcText,
+@@ -671,18 +670,17 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+                           outline: true),
+                     },
+                 ]),
+-          HjvPcHome.refusedLoggedIn => _refusedLoggedIn(context, t),
+-          HjvPcHome.guest => _card(context,
+-              color: p.success,
++          HjvPcHome.refusedLoggedIn => _refusedLoggedIn(t),
++          HjvPcHome.guest => _card(
++              tone: HjvTone.success,
+               icon: _guestByCode.value
+                   ? Icons.support_agent_rounded
+                   : Icons.key_rounded,
+               title: _guestByCode.value ? t.pcCodeOn : t.pcGuestOn,
+               text: t.pcAcceptsUntil(_until(_guestUntil.value)),
+               actions: [_button(t.end, () => _endGuest(t), outline: true)]),
+-          HjvPcHome.logIn when !bind.isDisableAccount() => _card(context,
+-              color: p.textSecondary,
+-              neutral: true,
++          HjvPcHome.logIn when !bind.isDisableAccount() => _card(
++              tone: HjvTone.neutral,
+               icon: Icons.info_outline_rounded,
+               text: t.keepLoggedIn,
+               actions: [_button(t.logIn, () => loginDialog())]),
+@@ -692,10 +690,10 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+ 
+   /// P1 of a logged-in PC: the cause and its button from this PC's line in Settings → Account
+   /// (a binding gone or to make again), else that it is checked again.
+-  Widget _refusedLoggedIn(BuildContext context, HjvAccessTexts t) {
++  Widget _refusedLoggedIn(HjvAccessTexts t) {
+     final cause = hjvPcRefusalCause();
+-    return _card(context,
+-        color: HjvPalette.of(context).warning,
++    return _card(
++        tone: HjvTone.warning,
+         icon: Icons.cloud_off_rounded,
+         title: t.pcLoggedInTitle,
+         text: cause?.$1 ?? t.pcCheckAgain,
+@@ -704,93 +702,30 @@ class _HjvAccessPcHomeState extends State<_HjvAccessPcHome> {
+         ]);
+   }
+ 
+-  // HJViewer: a card as the ID's and the password's, on the tint of its state (G2 only outlined,
+-  // so that it does not read as one with the ID's blue card below); above the ID, which P1 dims.
+-  // Shaped for the 200 px pane: a short title (two lines at most, whole in its tooltip), the
+-  // buttons stacked at full width, as high as their text (an English label may take two lines).
+-  Widget _card(BuildContext context,
+-      {required Color color,
+-      bool neutral = false,
+-      required IconData icon,
+-      String? title,
+-      String? text,
+-      required List<Widget> actions}) {
+-    final p = HjvPalette.of(context);
+-    final (back, fore) =
+-        neutral ? (Colors.transparent, color) : hjvTint(context, color);
+-    final heading = title ?? text ?? '';
+-    final style = title == null
+-        ? TextStyle(fontSize: 12, height: 1.45, color: p.textSecondary)
+-        : TextStyle(
+-            fontSize: 13,
+-            fontWeight: FontWeight.w700,
+-            height: 1.35,
+-            color: p.text);
+-    return Container(
+-      margin: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+-      decoration: BoxDecoration(
+-        color: back,
+-        borderRadius: BorderRadius.circular(HjvRadius.lg),
+-        border: neutral ? Border.all(color: p.borderStrong) : null,
+-      ),
+-      child: Column(
+-        crossAxisAlignment: CrossAxisAlignment.start,
+-        children: [
+-          Row(
+-            crossAxisAlignment: CrossAxisAlignment.start,
+-            children: [
+-              Icon(icon, size: 16, color: fore).marginOnly(top: 1, right: 6),
+-              Expanded(
+-                // a title over a text takes one line; a notice of one line (P2, G2) shows whole
+-                child: title != null && text != null
+-                    ? Tooltip(
+-                        message: title,
+-                        // the text reads whole to a screen reader all the same
+-                        excludeFromSemantics: true,
+-                        child: Text(hjvKeepAll(title),
+-                            maxLines: 2,
+-                            overflow: TextOverflow.ellipsis,
+-                            style: style))
+-                    : Text(hjvKeepAll(heading), style: style),
+-              ),
+-            ],
+-          ),
+-          if (title != null && text != null) ...[
+-            const SizedBox(height: 4),
+-            Text(hjvKeepAll(text),
+-                style: TextStyle(
+-                    fontSize: 12, height: 1.45, color: p.textSecondary)),
+-          ],
+-          for (var i = 0; i < actions.length; i++)
+-            ConstrainedBox(
+-                    constraints: const BoxConstraints(
+-                        minWidth: double.infinity, minHeight: 34),
+-                    child: Theme(
+-                        data: Theme.of(context).copyWith(
+-                            outlinedButtonTheme: OutlinedButtonThemeData(
+-                                style: _kPaneButton.merge(Theme.of(context)
+-                                    .outlinedButtonTheme
+-                                    .style)),
+-                            elevatedButtonTheme: ElevatedButtonThemeData(
+-                                style: _kPaneButton.merge(Theme.of(context)
+-                                    .elevatedButtonTheme
+-                                    .style))),
+-                        child: actions[i]))
+-                .marginOnly(top: 8),
+-        ],
+-      ),
+-    );
+-  }
++  // HJViewer: an HjvCallout above the ID, which P1 dims, shaped for the 200 px pane (U05): the
++  // buttons stacked at full width, as high as their text (an English label may take two lines),
++  // P1's title on one line (whole in its tooltip); G2 neutral as a card with a border, so that
++  // it does not read as one with the ID's blue card below.
++  Widget _card(
++          {required HjvTone tone,
++          required IconData icon,
++          String? title,
++          required String text,
++          required List<Widget> actions}) =>
++      Padding(
++        padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
++        child: HjvCallout(
++            tone: tone,
++            icon: icon,
++            title: title,
++            text: text,
++            actions: actions,
++            stacked: true,
++            onCanvas: tone == HjvTone.neutral,
++            titleOneLine: tone == HjvTone.warning),
++      );
+ }
+ 
+-/// The pane's buttons: at least 34 px high, growing with a label of two lines.
+-const _kPaneButton = ButtonStyle(
+-  minimumSize: WidgetStatePropertyAll(Size(0, 34)),
+-  padding:
+-      WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8, vertical: 6)),
+-);
+-
+ String _until(int until) => hjvUntilText(
+     DateTime.fromMillisecondsSinceEpoch(until * 1000), DateTime.now());
+ 
+@@ -1226,41 +1161,23 @@ class _HjvConnectHint extends StatelessWidget {
+           return const SizedBox.shrink();
+         }
+         final t = _t;
+-        final p = HjvPalette.of(context);
+         final logIn = !bind.isDisableAccount() && !_homeLogsIn();
+-        final hint = Container(
+-          padding: logIn
+-              ? const EdgeInsets.fromLTRB(12, 2, 4, 2)
+-              : EdgeInsets.symmetric(
+-                  horizontal: 12, vertical: isDesktop ? 2 : 10),
+-          // the desktop's as high with its [로그인] as without (P1's has none), so that what is
+-          // below it does not move as P1 comes and goes
+-          constraints: isDesktop ? const BoxConstraints(minHeight: 40) : null,
+-          // a phone's home is the canvas, on which the fill does not show: a card there
+-          decoration: isDesktop
+-              ? BoxDecoration(
+-                  color: p.fill,
+-                  borderRadius: BorderRadius.circular(HjvRadius.md))
+-              : hjvCardDecoration(context),
+-          child: Row(
+-            children: [
+-              Icon(Icons.lock_outline_rounded, size: 18, color: p.textSecondary)
+-                  .marginOnly(right: 8),
+-              Expanded(
+-                child: Tooltip(
+-                  message: t.connectHint,
+-                  triggerMode: isDesktop ? null : TooltipTriggerMode.tap,
+-                  showDuration: const Duration(seconds: 8),
+-                  child: Text(hjvKeepAll(t.connectHintShort),
+-                      style: TextStyle(
+-                          fontSize: 13, height: 1.45, color: p.textSecondary)),
+-                ),
+-              ),
+-              if (logIn)
+-                TextButton(
+-                    onPressed: () => loginDialog(), child: Text(t.logIn)),
+-            ],
++        // as high with its [로그인] as without (P1's has none), so that what is below it does
++        // not move as P1 comes and goes; a phone's home is the canvas, on which the fill does not
++        // show: a card there
++        final hint = HjvCallout.rich(
++          icon: Icons.lock_outline_rounded,
++          onCanvas: !isDesktop,
++          body: Tooltip(
++            message: t.connectHint,
++            triggerMode: isDesktop ? null : TooltipTriggerMode.tap,
++            showDuration: const Duration(seconds: 8),
++            child: Text(hjvKeepAll(t.connectHintShort)),
+           ),
++          actions: [
++            if (logIn)
++              TextButton(onPressed: () => loginDialog(), child: Text(t.logIn)),
++          ],
+         );
+         // the desktop's ID field is a card of its own width
+         return isDesktop
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index fc94354..26e377c 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -1232,35 +1232,18 @@ void _removeFromList(HjvTexts t, Peer peer) {
+       }, onNo: close));
+ }
+ 
+-// HJViewer: a rounded callout as buildErrorBanner (common.dart) draws one below it: the server's
+-// trouble on a soft red, a hint on the grey of the fields
++// HJViewer: an HjvCallout as buildErrorBanner (common.dart) draws one below it: the server's
++// trouble in the danger tone with [다시 시도], a hint in the neutral one
+ Widget _banner(BuildContext context, String text, {VoidCallback? retry}) {
+   final error = retry != null;
+-  final p = HjvPalette.of(context);
+-  return Container(
+-    padding: EdgeInsets.fromLTRB(10, 6, error ? 6 : 10, 6),
+-    decoration: BoxDecoration(
+-      color: error ? hjvTint(context, p.danger).$1 : p.fill,
+-      borderRadius: BorderRadius.circular(HjvRadius.md),
+-    ),
+-    child: Row(
+-      children: [
+-        Icon(error ? Icons.error_outline_rounded : Icons.info_outline_rounded,
+-                color: error ? p.danger : p.textSecondary, size: 18)
+-            .marginOnly(right: 8),
+-        Expanded(
+-            child: SelectableText(text,
+-                style: TextStyle(
+-                    height: 1.4, color: error ? p.text : p.textSecondary))),
+-        if (retry != null)
+-          TextButton(
+-              style: TextButton.styleFrom(
+-                  minimumSize: const Size(0, 28),
+-                  padding: const EdgeInsets.symmetric(horizontal: 8)),
+-              onPressed: retry,
+-              child: Text(_t.retry)),
+-      ],
+-    ),
++  return HjvCallout.rich(
++    tone: error ? HjvTone.danger : HjvTone.neutral,
++    icon: error ? Icons.error_outline_rounded : Icons.info_outline_rounded,
++    // selectable for a report, so without hjvKeepAll's joiners
++    body: SelectableText(text),
++    actions: [
++      if (retry != null) TextButton(onPressed: retry, child: Text(_t.retry)),
++    ],
+   ).marginOnly(bottom: 14);
+ }
+ 
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index 763fa63..0c6074c 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -23,6 +23,9 @@ import '../../models/model.dart';
+ import '../../models/platform_model.dart';
+ import 'address_book.dart';
+ 
++// HJViewer: the app's one notice box, next to hjvNoteBlock below (U49)
++export 'package:flutter_hbb/common/hjv_style.dart' show HjvCallout, HjvTone;
++
+ void clientClose(SessionID sessionId, FFI ffi) async {
+   if (allowAskForNoteAtEndOfConnection(ffi, true)) {
+     if (await showConnEndAuditDialogCloseCanceled(ffi: ffi)) {
+@@ -523,57 +526,20 @@ class HjvDialogTitle extends StatelessWidget {
+ TextStyle hjvDialogTextStyle(BuildContext context) => TextStyle(
+     fontSize: 14, height: 1.5, color: HjvPalette.of(context).textSecondary);
+ 
+-// HJViewer: a quiet note in a dialog: a block of the fields' grey with an icon, the text in the
+-// secondary colour and an action at its right in primaryStrong (4.5:1 on the grey), the same in
+-// every dialog; a `warning` on the warning tint, its icon in the warning colour and its text in
+-// the text colour. A Korean text goes in through hjvKeepAll, so that it breaks only at spaces.
++// HJViewer: a quiet note in a dialog: HjvCallout (common/hjv_style.dart) in the neutral tone,
++// a block of the fields' grey with an icon, the text in the secondary colour and an action at
++// its right in primaryStrong; a `warning` in the warning tone, its text in the text colour. A
++// Korean text goes in through hjvKeepAll, so that it breaks only at spaces.
+ Widget hjvNoteBlock(BuildContext context,
+-    {IconData? icon,
+-    required Widget text,
+-    Widget? action,
+-    bool warning = false}) {
+-  final p = HjvPalette.of(context);
+-  return Container(
+-    padding: action == null
+-        ? const EdgeInsets.all(12)
+-        : const EdgeInsets.fromLTRB(12, 12, 4, 4),
+-    decoration: BoxDecoration(
+-      color: warning ? hjvTint(context, p.warning).$1 : p.fill,
+-      borderRadius: BorderRadius.circular(HjvRadius.md),
+-    ),
+-    child: Column(
+-      mainAxisSize: MainAxisSize.min,
+-      crossAxisAlignment: CrossAxisAlignment.stretch,
+-      children: [
+-        Row(
+-          crossAxisAlignment: CrossAxisAlignment.start,
+-          children: [
+-            if (icon != null)
+-              Icon(icon, size: 18, color: warning ? p.warning : p.textSecondary)
+-                  .marginOnly(right: 8),
+-            Expanded(
+-              child: DefaultTextStyle.merge(
+-                  style: TextStyle(
+-                      fontSize: 13,
+-                      height: 1.45,
+-                      color: warning ? p.text : p.textSecondary),
+-                  child: text),
+-            ),
+-          ],
+-        ).marginOnly(right: action == null ? 0 : 8),
+-        if (action != null)
+-          Align(
+-              alignment: Alignment.centerRight,
+-              child: TextButtonTheme(
+-                  data: TextButtonThemeData(
+-                      style: TextButton.styleFrom(
+-                              foregroundColor: p.primaryStrong)
+-                          .merge(Theme.of(context).textButtonTheme.style)),
+-                  child: action)),
+-      ],
+-    ),
+-  );
+-}
++        {IconData? icon,
++        required Widget text,
++        Widget? action,
++        bool warning = false}) =>
++    HjvCallout.rich(
++        body: text,
++        icon: icon,
++        tone: warning ? HjvTone.warning : HjvTone.neutral,
++        actions: [if (action != null) action]);
+ 
+ // HJViewer: the action of a confirm that deletes, or that can lock a PC out, as
+ // deleteConfirmDialog's [OK] draws it: on the danger fill, on a phone in the danger colour.
+diff --git a/flutter/lib/desktop/pages/install_page.dart b/flutter/lib/desktop/pages/install_page.dart
+index 653914a..594df00 100644
+--- a/flutter/lib/desktop/pages/install_page.dart
++++ b/flutter/lib/desktop/pages/install_page.dart
+@@ -253,60 +253,39 @@ class _InstallPageBodyState extends State<_InstallPageBody>
+                     ],
+                   ),
+                 ),
++                // HJViewer: G1, the one with something to do, first in the info tone (U49);
++                // the licence below as a caption of one line with its link
++                ...hjvAccessKeepLoggedIn(
++                    margin: const EdgeInsets.only(top: 16)),
+                 const SizedBox(height: 16),
+-                Container(
+-                  padding: const EdgeInsets.fromLTRB(14, 12, 16, 12),
+-                  decoration: BoxDecoration(
+-                    color: p.fill,
+-                    borderRadius: BorderRadius.circular(HjvRadius.lg),
+-                  ),
+-                  child: Row(
+-                    crossAxisAlignment: CrossAxisAlignment.start,
+-                    children: [
+-                      Icon(Icons.info_outline_rounded,
+-                          size: 20, color: p.textTertiary),
+-                      const SizedBox(width: 12),
+-                      Expanded(
+-                        child: Column(
+-                          crossAxisAlignment: CrossAxisAlignment.start,
+-                          children: [
+-                            Text(hjvAppTexts().freeSoftware,
+-                                style: TextStyle(
+-                                    fontSize: 13,
+-                                    height: 1.5,
+-                                    color: p.textSecondary)),
+-                            const SizedBox(height: 6),
+-                            InkWell(
+-                              hoverColor: Colors.transparent,
+-                              onTap: () => launchUrlString(
+-                                  'https://github.com/yonsei-projecttf/hjviewer/blob/main/LICENSE'),
+-                              child: Tooltip(
+-                                message:
+-                                    'https://github.com/yonsei-projecttf/hjviewer/blob/main/LICENSE',
+-                                child: Row(
+-                                    mainAxisSize: MainAxisSize.min,
+-                                    children: [
+-                                      Icon(Icons.launch_rounded,
+-                                          size: 16, color: p.primary),
+-                                      const SizedBox(width: 6),
+-                                      Text(
+-                                        hjvAppTexts().license,
+-                                        style: TextStyle(
+-                                            fontSize: 13,
+-                                            fontWeight: FontWeight.w600,
+-                                            color: p.primary),
+-                                      )
+-                                    ]),
+-                              ),
+-                            ),
+-                          ],
++                Wrap(
++                  crossAxisAlignment: WrapCrossAlignment.center,
++                  spacing: 6,
++                  children: [
++                    Text(hjvAppTexts().freeSoftware,
++                        style: TextStyle(
++                            fontSize: 13,
++                            height: 1.45,
++                            color: p.textTertiary)),
++                    InkWell(
++                      hoverColor: Colors.transparent,
++                      onTap: () => launchUrlString(
++                          'https://github.com/yonsei-projecttf/hjviewer/blob/main/LICENSE'),
++                      child: Tooltip(
++                        message:
++                            'https://github.com/yonsei-projecttf/hjviewer/blob/main/LICENSE',
++                        child: Text(
++                          hjvAppTexts().license,
++                          style: TextStyle(
++                              fontSize: 13,
++                              height: 1.45,
++                              fontWeight: FontWeight.w600,
++                              color: p.primaryStrong),
+                         ),
+                       ),
+-                    ],
+-                  ),
++                    ),
++                  ],
+                 ),
+-                ...hjvAccessKeepLoggedIn(
+-                    margin: const EdgeInsets.only(top: 16)),
+                 const SizedBox(height: 24),
+                 Row(
+                   children: [
+@@ -324,32 +303,30 @@ class _InstallPageBodyState extends State<_InstallPageBody>
+                     Offstage(
+                       offstage: bind.installShowRunWithoutInstall(),
+                       child: Obx(
+-                        () => OutlinedButton.icon(
+-                          icon: const Icon(Icons.screen_share_outlined),
+-                          label: Text(translate('Run without install')),
++                        // HJViewer: the buttons without icons (U49)
++                        () => OutlinedButton(
+                           onPressed: btnEnabled.value
+                               ? () => bind.installRunWithoutInstall()
+                               : null,
+                           style: style,
++                          child: Text(translate('Run without install')),
+                         ).marginOnly(right: 8),
+                       ),
+                     ),
+                     Obx(
+-                      () => OutlinedButton.icon(
+-                        icon: const Icon(Icons.close_rounded),
+-                        label: Text(translate('Cancel')),
++                      () => OutlinedButton(
+                         onPressed: cancelEnabled.value
+                             ? () => windowManager.close()
+                             : null,
+                         style: style,
++                        child: Text(translate('Cancel')),
+                       ).marginOnly(right: 8),
+                     ),
+                     Obx(
+-                      () => ElevatedButton.icon(
+-                        icon: const Icon(Icons.done_rounded),
+-                        label: Text(translate('Accept and Install')),
++                      () => ElevatedButton(
+                         onPressed: btnEnabled.value ? install : null,
+                         style: style,
++                        child: Text(translate('Accept and Install')),
+                       ),
+                     ),
+                   ],
+diff --git a/flutter/test/hjviewer_style_test.dart b/flutter/test/hjviewer_style_test.dart
+index a6424c8..280e62c 100644
+--- a/flutter/test/hjviewer_style_test.dart
++++ b/flutter/test/hjviewer_style_test.dart
+@@ -4,7 +4,8 @@ import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+ // The app's look (common/hjv_style.dart): the palettes' contrast, Korean line breaks at spaces
+-// only, and the peer cards' online dot and screen reader label. Plain Flutter, no bridge.
++// only, the peer cards' online dot and screen reader label, and the notice box HjvCallout (U49).
++// Plain Flutter, no bridge.
+ 
+ double contrast(Color a, Color b) {
+   final la = a.computeLuminance();
+@@ -179,4 +180,243 @@ void main() {
+       expect(identical(hjvHighContrast(theme), hc), isTrue, reason: 'made once per theme');
+     });
+   }
++
++  for (final (name, p) in [
++    ('light', HjvPalette.light),
++    ('dark', HjvPalette.dark),
++  ]) {
++    test('$name: a callout\'s text reaches 4.5:1 and its icon 3:1 in every tone', () {
++      expect(p.infoSoft, p.primarySoft);
++      expect(p.infoText, p.primaryStrong);
++      for (final tone in HjvTone.values) {
++        for (final onCanvas in [false, true]) {
++          final c = hjvToneColors(p, tone, onCanvas: onCanvas);
++          final where = '$tone${onCanvas ? ' on the canvas' : ''}';
++          if (onCanvas) expect(c.back, p.card, reason: where);
++          for (final (what, color) in [
++            ('title', p.text),
++            ('text', c.text),
++            ('action', c.action),
++          ]) {
++            expect(contrast(color, c.back), greaterThanOrEqualTo(4.5),
++                reason: '$what of $where');
++          }
++          expect(contrast(c.icon, c.back), greaterThanOrEqualTo(3),
++              reason: 'icon of $where');
++        }
++      }
++      expect(hjvToneColors(p, HjvTone.neutral).back, p.fill);
++      expect(hjvToneColors(p, HjvTone.success).back, p.successSoft);
++      expect(hjvToneColors(p, HjvTone.warning).back, p.warningSoft);
++      expect(hjvToneColors(p, HjvTone.danger).back, p.dangerSoft);
++      expect(hjvToneColors(p, HjvTone.info).back, p.primarySoft);
++      // danger's text in the text colour, the others' in the secondary one
++      expect(hjvToneColors(p, HjvTone.danger).text, p.text);
++      expect(hjvToneColors(p, HjvTone.warning).text, p.textSecondary);
++      // the tones' text colours read on a card and on the fields' grey too
++      for (final t in [p.successText, p.warningText]) {
++        expect(contrast(t, p.card), greaterThanOrEqualTo(4.5));
++        expect(contrast(t, p.fill), greaterThanOrEqualTo(4.5));
++      }
++    });
++  }
++
++  group('HjvCallout', () {
++    Future<void> pump(WidgetTester tester, Widget callout,
++        {double width = 400,
++        Brightness brightness = Brightness.light,
++        TargetPlatform platform = TargetPlatform.windows,
++        bool highContrast = false}) async {
++      await tester.pumpWidget(MaterialApp(
++          theme: ThemeData(brightness: brightness, platform: platform),
++          home: MediaQuery(
++            data: MediaQueryData(highContrast: highContrast),
++            child: Scaffold(
++                body: Align(
++                    alignment: Alignment.topLeft,
++                    child: SizedBox(width: width, child: callout))),
++          )));
++      await tester.pumpAndSettle();
++    }
++
++    BoxDecoration box(WidgetTester tester) => tester
++        .widget<Container>(find
++            .descendant(of: find.byType(HjvCallout), matching: find.byType(Container))
++            .first)
++        .decoration as BoxDecoration;
++
++    testWidgets('title, text, an action and the close x', (tester) async {
++      var acted = 0, closed = 0;
++      await pump(
++          tester,
++          HjvCallout(
++              tone: HjvTone.danger,
++              icon: Icons.error_outline_rounded,
++              title: 'Title',
++              text: 'Text',
++              actions: [
++                TextButton(onPressed: () => acted++, child: const Text('Retry'))
++              ],
++              onClose: () => closed++));
++      expect(find.text('Title'), findsOneWidget);
++      expect(find.text('Text'), findsOneWidget);
++      expect(find.byIcon(Icons.error_outline_rounded), findsOneWidget);
++      await tester.tap(find.text('Retry'));
++      await tester.tap(find.byTooltip('Close'));
++      expect((acted, closed), (1, 1));
++      final p = HjvPalette.light;
++      final d = box(tester);
++      expect(d.color, p.dangerSoft);
++      expect(d.borderRadius, BorderRadius.circular(HjvRadius.md));
++      expect(d.border, isNull);
++      expect(tester.widget<Icon>(find.byIcon(Icons.error_outline_rounded)).size, 18);
++      expect(tester.widget<Icon>(find.byIcon(Icons.error_outline_rounded)).color,
++          p.dangerText);
++      // the close x: 18 px in textTertiary, a 32 px target on a desktop
++      final x = tester.widget<Icon>(find.byIcon(Icons.close_rounded));
++      expect(x.color, p.textTertiary);
++      expect(tester.getSize(find.byType(IconButton)), const Size(32, 32));
++      expect(tester.widget<IconButton>(find.byType(IconButton)).iconSize, 18);
++    });
++
++    testWidgets('the close x is a 48 px target on a phone, and takes the tooltip given',
++        (tester) async {
++      await pump(
++          tester,
++          HjvCallout(text: 'Text', onClose: () {}, closeTooltip: '닫기'),
++          platform: TargetPlatform.android);
++      expect(find.byTooltip('닫기'), findsOneWidget);
++      expect(tester.getSize(find.byType(IconButton)), const Size(48, 48));
++    });
++
++    testWidgets('the actions stay beside a text of one line, else go below it at the right',
++        (tester) async {
++      Widget callout(String text) => HjvCallout(
++          text: text,
++          actions: [TextButton(onPressed: () {}, child: const Text('Go'))]);
++      await pump(tester, callout('Short'));
++      final text = tester.getRect(find.text('Short'));
++      final go = tester.getRect(find.byType(TextButton));
++      expect(go.center.dy, moreOrLessEquals(text.center.dy, epsilon: 0.5));
++      expect(go.left, greaterThan(text.right));
++      // at the box's right: 4 for the button's own padding
++      expect(go.right,
++          moreOrLessEquals(tester.getRect(find.byType(HjvCallout)).right - 4));
++
++      final long = List.filled(30, 'word').join(' ');
++      await pump(tester, callout(long));
++      final lines = tester.getRect(find.text(long));
++      final below = tester.getRect(find.byType(TextButton));
++      expect(below.top, greaterThanOrEqualTo(lines.bottom));
++      expect(below.right,
++          moreOrLessEquals(tester.getRect(find.byType(HjvCallout)).right - 4));
++    });
++
++    testWidgets('as high with one action as without, on one line', (tester) async {
++      await pump(tester, const HjvCallout(text: 'Short', icon: Icons.lock_outline_rounded));
++      final bare = tester.getSize(find.byType(HjvCallout)).height;
++      await pump(
++          tester,
++          HjvCallout(
++              text: 'Short',
++              icon: Icons.lock_outline_rounded,
++              actions: [TextButton(onPressed: () {}, child: const Text('Log in'))]));
++      expect(tester.getSize(find.byType(HjvCallout)).height, bare);
++    });
++
++    testWidgets('stacked: the actions at the box\'s width, at least 34 high', (tester) async {
++      await pump(
++          tester,
++          HjvCallout(
++              tone: HjvTone.warning,
++              title: 'A long title that does not fit on one line in the pane',
++              titleOneLine: true,
++              text: 'Text',
++              stacked: true,
++              actions: [
++                ElevatedButton(onPressed: () {}, child: const Text('Log in')),
++                OutlinedButton(onPressed: () {}, child: const Text('Password')),
++              ]),
++          width: 200);
++      final callout = tester.getRect(find.byType(HjvCallout));
++      for (final f in [find.byType(ElevatedButton), find.byType(OutlinedButton)]) {
++        final r = tester.getRect(f);
++        expect(r.height, greaterThanOrEqualTo(34));
++        expect(r.left, callout.left + 12);
++        expect(r.right, callout.right - 12);
++        expect(r.top, greaterThan(tester.getRect(find.text('Text')).bottom));
++      }
++      expect(tester.getRect(find.byType(OutlinedButton)).top,
++          greaterThan(tester.getRect(find.byType(ElevatedButton)).bottom));
++      // titleOneLine: one line, whole in its tooltip
++      final title = tester.widget<Text>(
++          find.text('A long title that does not fit on one line in the pane'));
++      expect((title.maxLines, title.overflow), (1, TextOverflow.ellipsis));
++      expect(find.byTooltip('A long title that does not fit on one line in the pane'),
++          findsOneWidget);
++      expect(box(tester).color, HjvPalette.light.warningSoft);
++    });
++
++    testWidgets('neutral on the fields\' grey; on the canvas a card with a border; high contrast adds one',
++        (tester) async {
++      for (final brightness in Brightness.values) {
++        final p = brightness == Brightness.dark ? HjvPalette.dark : HjvPalette.light;
++        await pump(tester, const HjvCallout(text: 'Text'), brightness: brightness);
++        expect((box(tester).color, box(tester).border), (p.fill, null));
++        await pump(tester, const HjvCallout(text: 'Text', onCanvas: true),
++            brightness: brightness);
++        expect(box(tester).color, p.card);
++        expect((box(tester).border as Border).top.color, p.border);
++        await pump(tester, const HjvCallout(text: 'Text', tone: HjvTone.info),
++            brightness: brightness, highContrast: true);
++        expect(box(tester).color, p.primarySoft);
++        expect((box(tester).border as Border).top.color, p.textTertiary);
++      }
++    });
++
++    testWidgets('rich: its own widget in the text\'s style, danger\'s in the text colour',
++        (tester) async {
++      await pump(
++          tester,
++          const HjvCallout.rich(
++              tone: HjvTone.danger, body: SelectableText('Server error')));
++      final style = DefaultTextStyle.of(
++              tester.element(find.byType(SelectableText)))
++          .style;
++      expect((style.fontSize, style.height, style.color),
++          (13, 1.45, HjvPalette.light.text));
++      await pump(tester, const HjvCallout(text: '연세포탈 비밀번호'));
++      // Korean breaks at spaces only
++      expect(find.text(hjvKeepAll('연세포탈 비밀번호')), findsOneWidget);
++      final plain = DefaultTextStyle.of(
++              tester.element(find.text(hjvKeepAll('연세포탈 비밀번호'))))
++          .style;
++      expect(plain.color, HjvPalette.light.textSecondary);
++    });
++
++    testWidgets('lays out where its intrinsic size is asked', (tester) async {
++      await pump(
++          tester,
++          IntrinsicHeight(
++              child: Row(children: [
++            Expanded(
++                child: HjvCallout(
++                    text: 'Text',
++                    actions: [TextButton(onPressed: () {}, child: const Text('Go'))],
++                    onClose: () {})),
++          ])));
++      expect(tester.takeException(), isNull);
++      expect(tester.getSize(find.byType(HjvCallout)).height, greaterThan(24));
++      await pump(
++          tester,
++          IntrinsicWidth(
++              child: HjvCallout(
++                  text: 'Text',
++                  actions: [TextButton(onPressed: () {}, child: const Text('Go'))])));
++      expect(tester.takeException(), isNull);
++      // as wide as the text and its action on one line
++      expect(tester.getRect(find.byType(TextButton)).center.dy,
++          moreOrLessEquals(tester.getRect(find.text('Text')).center.dy, epsilon: 0.5));
++    });
++  });
+ }

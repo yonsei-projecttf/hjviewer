@@ -1,0 +1,516 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:09:25 +0900
+Subject: [PATCH 095/147] hjviewer: ask once before a link connects, without
+ its password (TV-C6)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TV-C6 (Dart; D-13, critic 2-7, X-17, X-18): a pinned server build,
+known by allow-deep-link-password pinned to N (no new core key, no
+bridge change), takes links only as hjviewer:// or rustdesk:// (both in
+1.9.0), drops a link's password (?password= and --password), so that
+the PC asks, and asks LK1 "PC {ID}에 연결할까요?" [취소] [연결] once
+before a link opens a connection: on a desktop in handleUriLink, which
+brings the main window up for it, for links and --connect alike; on a
+phone in urlLinkToCmdArgs. A phone where A0 comes anyway skips LK1 and
+A0 carries LK1's line with the PC's ID instead. [연결] handles the same
+link once more, unasked; [취소] or no overlay within five seconds opens
+nothing. Builds that are not pinned keep upstream's links.
+
+handleUriLink first hands all three of its inputs to hjvHandleGateLink:
+any hjviewer://hjv-gate link is taken before the scheme filter, and only
+/login and /password without a query open something, on Windows only
+(the login, or P2 while P1 shows), for the tray's items (UX-G2). A phone,
+which any web page can hand such a link, opens nothing.
+
+A QR code read from an image is a link with either scheme.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                       |  24 ++-
+ flutter/lib/common/hjviewer_access.dart       | 175 ++++++++++++++++--
+ flutter/lib/common/hjviewer_access_texts.dart |  56 +++++-
+ flutter/lib/mobile/pages/scan_page.dart       |   3 +-
+ flutter/test/hjviewer_access_test.dart        |  73 ++++++++
+ 5 files changed, 311 insertions(+), 20 deletions(-)
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index c4f38ca..e9ec069 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -32,7 +32,13 @@ import '../consts.dart';
+ import 'common/hjv_update.dart';
+ import 'common/hjv_style.dart';
+ import 'common/hjv_theme.dart';
+-import 'common/hjviewer_access.dart' show hjvAccessAskBeforeConnect;
++import 'common/hjviewer_access.dart'
++    show
++        hjvAccessAskBeforeConnect,
++        hjvHandleGateLink,
++        hjvLinkAsk,
++        hjvLinkPassword,
++        hjvLinkSchemeOk;
+ import 'common/widgets/overlay.dart';
+ import 'mobile/pages/file_manager_page.dart';
+ import 'mobile/pages/remote_page.dart';
+@@ -2287,6 +2293,9 @@ setEnvTerminalAdmin() {
+ 
+ // uri link handler
+ bool handleUriLink({List<String>? cmdArgs, Uri? uri, String? uriString}) {
++  if (hjvHandleGateLink(cmdArgs: cmdArgs, uri: uri, uriString: uriString)) {
++    return true;
++  }
+   List<String>? args;
+   if (cmdArgs != null && cmdArgs.isNotEmpty) {
+     args = cmdArgs;
+@@ -2359,7 +2368,7 @@ bool handleUriLink({List<String>? cmdArgs, Uri? uri, String? uriString}) {
+         i++;
+         break;
+       case '--password':
+-        password = args[i + 1];
++        password = hjvLinkPassword(args[i + 1]);
+         i++;
+         break;
+       case '--switch_uuid':
+@@ -2374,6 +2383,11 @@ bool handleUriLink({List<String>? cmdArgs, Uri? uri, String? uriString}) {
+     }
+   }
+   if (type != null && id != null) {
++    // HJViewer: a pinned build asks LK1 first, then handles the link again
++    if (hjvLinkAsk(id,
++        () => handleUriLink(cmdArgs: cmdArgs, uri: uri, uriString: uriString))) {
++      return true;
++    }
+     switch (type) {
+       case UriLinkType.remoteDesktop:
+         Future.delayed(Duration.zero, () {
+@@ -2422,6 +2436,7 @@ bool handleUriLink({List<String>? cmdArgs, Uri? uri, String? uriString}) {
+ }
+ 
+ List<String>? urlLinkToCmdArgs(Uri uri) {
++  if (!hjvLinkSchemeOk(uri)) return null;
+   String? command;
+   String? id;
+   final options = [
+@@ -2515,8 +2530,9 @@ List<String>? urlLinkToCmdArgs(Uri uri) {
+   }
+ 
+   if (isMobile && id != null) {
++    if (hjvLinkAsk(id, () => urlLinkToCmdArgs(uri))) return null;
+     final forceRelay = queryParameters["relay"] != null;
+-    final password = queryParameters["password"];
++    final password = hjvLinkPassword(queryParameters["password"]);
+ 
+     // Determine connection type based on command
+     if (command == '--file-transfer') {
+@@ -2544,7 +2560,7 @@ List<String>? urlLinkToCmdArgs(Uri uri) {
+     args.add(command);
+     args.add(id);
+     var param = queryParameters;
+-    String? password = param["password"];
++    String? password = hjvLinkPassword(param["password"]);
+     if (password != null) args.addAll(['--password', password]);
+     String? switch_uuid = param["switch_uuid"];
+     if (switch_uuid != null) args.addAll(['--switch_uuid', switch_uuid]);
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 375019a..5c786a1 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -11,6 +11,8 @@
+ // which refuses nobody (the PC password box's words and the restart's line about a PC where
+ // HJViewer is not installed aside). Since 1.8.2 a PC may take a support code from a staff member
+ // in the place of the access password (P3), and a staff member's login makes one (S1, S2).
++// Since 1.9 A0 asks before a connection opens, a pinned build asks once before a link opens one
++// (LK1, TV-C6), and the tray's hjviewer://hjv-gate links open the login or P2 on Windows only.
+ 
+ import 'dart:async';
+ 
+@@ -1263,20 +1265,26 @@ Future<void> _askGateMode() async {
+ /// session is to open ([취소]). A mode not known yet, and a session window's new connection (the
+ /// main window opens it at once), open the session as before: a refusal brings A1.
+ Future<bool> hjvAccessAskBeforeConnect(String id) async {
++  final target = await _askTarget(id);
++  if (target == null) return false;
++  return !await _askDialog(_t, target, link: _linkNoteFor(target));
++}
++
++/// The session's ID (as the core keeps the ticket by it, guest.rs set_common) when connect() is
++/// to ask A0 for `id`, else null.
++Future<String?> _askTarget(String id) async {
+   if (!_accountBuild || (isDesktop && desktopType != DesktopType.main)) {
+-    return false;
++    return null;
+   }
+   unawaited(_askGateMode());
+-  // the session's ID, as the core keeps the ticket by it (guest.rs set_common)
+   final target = await bind.mainHandleRelayId(id: id.replaceAll(' ', ''));
+-  if (!hjvAsksBeforeConnect(
+-      accountBuild: _accountBuild,
+-      mode: _gateMode.value,
+-      loggedIn: _loggedIn(),
+-      held: _commonSync(hjvGuestHeldKey(target)) == 'Y')) {
+-    return false;
+-  }
+-  return !await _askDialog(_t, target);
++  return hjvAsksBeforeConnect(
++          accountBuild: _accountBuild,
++          mode: _gateMode.value,
++          loggedIn: _loggedIn(),
++          held: _commonSync(hjvGuestHeldKey(target)) == 'Y')
++      ? target
++      : null;
+ }
+ 
+ /// handleMsgBox (model.dart), before the PC's own password box: once a session, the note that
+@@ -1293,8 +1301,9 @@ void hjvAccessBeforePcPassword(SessionID sessionId, String peerId) {
+ /// The sessions whose PC password box looked at the ticket A0 took.
+ final _heldNoted = <String>{};
+ 
+-/// A0: true to open the session (a ticket came, or the login), false for [취소].
+-Future<bool> _askDialog(HjvAccessTexts t, String target) async {
++/// A0: true to open the session (a ticket came, or the login), false for [취소]. `link`: the PC
++/// a phone's link opened it for (X-17: A0 in the place of LK1, with LK1's line).
++Future<bool> _askDialog(HjvAccessTexts t, String target, {String? link}) async {
+   final controller = TextEditingController();
+   String? error;
+   var busy = false;
+@@ -1361,6 +1370,10 @@ Future<bool> _askDialog(HjvAccessTexts t, String target) async {
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+           Text(hjvKeepAll(t.askText), style: hjvDialogTextStyle(context)),
++          if (link != null)
++            Text(hjvKeepAll(t.linkNote(link)),
++                    style: hjvDialogTextStyle(context))
++                .marginOnly(top: 8),
+           if (open) ...[
+             const SizedBox(height: 8),
+             _passwordField(t, controller,
+@@ -1400,5 +1413,141 @@ Future<bool> _askDialog(HjvAccessTexts t, String target) async {
+   if (opens == true) return true;
+   if (!logIn) return false;
+   if (await loginDialog() == true) return true;
+-  return _askDialog(t, target);
++  return _askDialog(t, target, link: link);
++}
++
++// ---- links (TV-C6, LK1) ----
++
++/// A pinned server build: src/hjviewer.rs pins allow-deep-link-password to N (critic 2-7); any
++/// other build reads "" and keeps upstream's links.
++final bool _pinned = !isWeb &&
++    bind.mainGetBuildinOption(key: kOptionAllowDeepLinkPassword) == 'N';
++
++/// urlLinkToCmdArgs (common.dart): whether a pinned build takes a link of this scheme at all.
++bool hjvLinkSchemeOk(Uri uri) => hjvLinkTakesScheme(uri.scheme, pinned: _pinned);
++
++/// handleUriLink and urlLinkToCmdArgs: a link's password, which a pinned build drops.
++String? hjvLinkPassword(String? password) =>
++    hjvLinkPasswordOf(password, pinned: _pinned);
++
++/// Set while `again` runs after LK1's [연결]: the link goes on without asking again.
++var _linkPass = false;
++
++/// The PC a phone's link is opening while A0 asks in the place of LK1 (X-17): the session's ID,
++/// as LK1 would show it, and since when.
++String? _linkTarget;
++String? _linkShown;
++DateTime? _linkAt;
++
++/// handleUriLink (a desktop) and urlLinkToCmdArgs (a phone), once the link names a PC `id`: in a
++/// pinned build, true, and LK1 asks before `again` handles the same link once more; a phone that
++/// is to ask A0 anyway goes on at once, A0 then with LK1's line. Connections the app makes itself
++/// (cards, recent sessions, the waiting room's [연결]) call connect() and are not asked.
++bool hjvLinkAsk(String id, void Function() again) {
++  if (_linkPass) {
++    _linkPass = false;
++    return false;
++  }
++  if (!_pinned) return false;
++  unawaited(_linkAsk(id, again));
++  return true;
++}
++
++Future<void> _linkAsk(String id, void Function() again) async {
++  final shown = hjvLinkShownId(id);
++  if (isMobile) {
++    final target = await _askTarget(id);
++    if (target != null) {
++      _linkTarget = target;
++      _linkShown = shown;
++      _linkAt = DateTime.now();
++      _linkAgain(again);
++      return;
++    }
++  }
++  if (await _linkDialog(_t, shown)) _linkAgain(again);
++}
++
++void _linkAgain(void Function() again) {
++  _linkPass = true;
++  try {
++    again();
++  } catch (e) {
++    debugPrint('hjv: link: $e');
++  } finally {
++    _linkPass = false;
++  }
++}
++
++/// A0's link line for `target`, once, while the link that is opening it is fresh.
++String? _linkNoteFor(String target) {
++  final linked = _linkTarget, shown = _linkShown, at = _linkAt;
++  _linkTarget = _linkShown = _linkAt = null;
++  if (linked != target || at == null) return null;
++  if (DateTime.now().difference(at) > const Duration(seconds: 30)) return null;
++  return shown;
++}
++
++/// LK1: true for [연결]. A desktop link keeps the main window hidden (main.dart), so it comes up
++/// first; on a cold start the overlay may not be there yet. Nothing shown, nothing opens.
++Future<bool> _linkDialog(HjvAccessTexts t, String shown) async {
++  await windowOnTop(null);
++  for (var tries = 0;; tries++) {
++    try {
++      final yes = await gFFI.dialogManager.show<bool>((setState, close, context) {
++        void cancel() => close(false);
++        return CustomAlertDialog(
++          title: HjvDialogTitle(Icons.link_rounded, t.linkAskTitle(shown)),
++          content: Text(hjvKeepAll(t.linkAskText),
++              style: hjvDialogTextStyle(context)),
++          actions: [
++            _button(t.cancel, cancel, outline: true),
++            _button(t.connect, () => close(true)),
++          ],
++          onCancel: cancel,
++        );
++      });
++      return yes == true;
++    } catch (e) {
++      if (tries >= 20) {
++        debugPrint('hjv: LK1: $e');
++        return false;
++      }
++      await Future.delayed(const Duration(milliseconds: 250));
++    }
++  }
++}
++
++/// handleUriLink (common.dart), before anything else reads the link, from any of its three
++/// inputs (X-18): true for hjviewer://hjv-gate/login and …/password (the tray's items, UX-G2) and
++/// any other hjv-gate link. Only Windows opens something: its main window with the login, or P2
++/// while P1 shows; a phone, which any web page may hand the link, opens nothing.
++bool hjvHandleGateLink({List<String>? cmdArgs, Uri? uri, String? uriString}) {
++  final link = cmdArgs != null && cmdArgs.isNotEmpty
++      ? Uri.tryParse(cmdArgs[0])
++      : uri ?? (uriString == null ? null : Uri.tryParse(uriString));
++  final action = hjvGateLinkAction(link);
++  if (action == HjvGateLink.notGate) return false;
++  if (isWindows && _accountBuild && desktopType == DesktopType.main) {
++    unawaited(_gateLinkOpen(action));
++  }
++  return true;
++}
++
++Future<void> _gateLinkOpen(HjvGateLink action) async {
++  await windowOnTop(null);
++  // a cold start: the overlay and the PC's state (read every second) come a moment later
++  await Future.delayed(const Duration(seconds: 1));
++  switch (action) {
++    case HjvGateLink.logIn:
++      if (!bind.isDisableAccount()) await loginDialog();
++    case HjvGateLink.password:
++      for (var tries = 0; tries < 4 && _home() != HjvPcHome.refused; tries++) {
++        await Future.delayed(const Duration(milliseconds: 500));
++      }
++      if (_home() == HjvPcHome.refused) _pcPasswordDialog(_t);
++    case HjvGateLink.notGate:
++    case HjvGateLink.nothing:
++      break;
++  }
+ }
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 7107dca..085a15d 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -7,11 +7,14 @@
+ // password brought no ticket (E1 to E5); beside them the words of the PC's own password box, a
+ // PC offline or restarted on such a server, and the main window's close while P2 holds; since
+ // 1.8.2 the support codes (the doc 3-7): the PC's (P3, E6 to E8) and the staff member's who makes
+-// one (S1 to S8). Plain Dart without the bridge, so that ci.sh tests it with the web stand-in;
+-// hjviewer_access.dart shows them.
++// one (S1 to S8); since 1.9 A0 and a link's confirm (LK1) with the rules for links. Plain Dart
++// without the bridge, so that ci.sh tests it with the web stand-in; hjviewer_access.dart shows
++// them.
+ 
+ import 'dart:convert';
+ 
++import 'package:flutter_hbb/common/formatter/id_formatter.dart' show formatID;
++
+ /// The msgbox type of a refusal for access (src/hjviewer_access.rs MSGBOX_TYPE).
+ const kHjvAccessMsgbox = 'hjv-access-error';
+ 
+@@ -741,6 +744,15 @@ class HjvAccessTexts {
+   String get askText => _t(
+       '이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하거나, 이용 비밀번호가 있으면 넣고 연결하세요. 그 PC의 비밀번호는 PC가 따로 묻습니다.',
+       'This server is only for Yonsei University faculty and staff. Log in with your Yonsei portal account, or enter an access password if you have one, to connect. The PC asks for its own password separately.');
++
++  // LK1 (TV-C6): a link (hjviewer://<ID>, rustdesk://<ID>) opens a connection in a pinned build:
++  // asked once, [취소] [연결]; on a phone where A0 comes anyway, A0 carries linkNote instead
++  String linkAskTitle(String id) => _t('PC $id에 연결할까요?', 'Connect to PC $id?');
++  String get linkAskText => _t('링크로 열었습니다. 모르는 곳에서 받은 링크라면 [취소]를 누르세요.',
++      'This was opened from a link. If you got the link from someone you do not know, press [Cancel].');
++  String linkNote(String id) => _t(
++      'PC $id에 연결하는 링크로 열었습니다. 모르는 곳에서 받은 링크라면 [취소]를 누르세요.',
++      'This was opened from a link to PC $id. If you got the link from someone you do not know, press [Cancel].');
+ }
+ 
+ // ---- before connecting (A0) ----
+@@ -760,3 +772,43 @@ bool hjvAsksBeforeConnect(
+         required bool loggedIn,
+         required bool held}) =>
+     accountBuild && hjvGateCloses(mode) == true && !loggedIn && !held;
++
++// ---- links (TV-C6) ----
++
++/// The schemes a pinned server build takes links in (D-13: rustdesk:// only in 1.9.0); any other
++/// build takes what upstream does.
++bool hjvLinkTakesScheme(String scheme, {required bool pinned}) =>
++    !pinned || scheme == 'hjviewer' || scheme == 'rustdesk';
++
++/// A QR code that is a link for the app (scan_page.dart): either scheme, or the build's own prefix.
++bool hjvIsAppLink(String text, {required String prefix}) =>
++    text.startsWith(prefix) ||
++    text.startsWith('hjviewer://') ||
++    text.startsWith('rustdesk://');
++
++/// A link's password (?password=, --password): a pinned build drops it, so that the PC asks.
++String? hjvLinkPasswordOf(String? password, {required bool pinned}) =>
++    pinned ? null : password;
++
++/// The PC in LK1: the link's ID without its key (?key=), spaced as the ID field spaces it.
++String hjvLinkShownId(String id) => formatID(id.split('?').first);
++
++/// What a link hjviewer://hjv-gate/<what> (the tray's items, UX-G2) asks for: `notGate` for any
++/// other link, `nothing` for a gate link with another path, a query or a fragment.
++enum HjvGateLink { notGate, nothing, logIn, password }
++
++HjvGateLink hjvGateLinkAction(Uri? uri) {
++  if (uri == null ||
++      !hjvLinkTakesScheme(uri.scheme, pinned: true) ||
++      uri.host != 'hjv-gate') {
++    return HjvGateLink.notGate;
++  }
++  if (uri.hasQuery || uri.hasFragment || uri.userInfo.isNotEmpty || uri.hasPort) {
++    return HjvGateLink.nothing;
++  }
++  return switch (uri.path) {
++    '/login' => HjvGateLink.logIn,
++    '/password' => HjvGateLink.password,
++    _ => HjvGateLink.nothing,
++  };
++}
+diff --git a/flutter/lib/mobile/pages/scan_page.dart b/flutter/lib/mobile/pages/scan_page.dart
+index 5bc0335..df8d3ff 100644
+--- a/flutter/lib/mobile/pages/scan_page.dart
++++ b/flutter/lib/mobile/pages/scan_page.dart
+@@ -8,6 +8,7 @@ import 'package:qr_code_scanner/qr_code_scanner.dart';
+ import 'package:zxing2/qrcode.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjviewer_access_texts.dart' show hjvIsAppLink;
+ import '../../models/platform_model.dart';
+ import '../widgets/dialog.dart';
+ 
+@@ -97,7 +98,7 @@ class _ScanPageState extends State<ScanPage> {
+ 
+         var reader = QRCodeReader();
+         var result = reader.decode(bitmap);
+-        if (result.text.startsWith(bind.mainUriPrefixSync())) {
++        if (hjvIsAppLink(result.text, prefix: bind.mainUriPrefixSync())) {
+           handleUriLink(uriString: result.text);
+         } else {
+           showServerSettingFromQr(result.text);
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index 576d19a..609fbe5 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -669,4 +669,77 @@ void main() {
+       }
+     }
+   });
++
++  test('LK1: a link to a PC asks once in a pinned build, without its password (TV-C6)',
++      () {
++    expect([ko.linkAskTitle('123 456 789'), en.linkAskTitle('123 456 789')],
++        ['PC 123 456 789에 연결할까요?', 'Connect to PC 123 456 789?']);
++    expect(ko.linkAskText, '링크로 열었습니다. 모르는 곳에서 받은 링크라면 [취소]를 누르세요.');
++    expect(en.linkAskText,
++        'This was opened from a link. If you got the link from someone you do not know, press [Cancel].');
++    expect(ko.linkNote('123 456 789'),
++        'PC 123 456 789에 연결하는 링크로 열었습니다. 모르는 곳에서 받은 링크라면 [취소]를 누르세요.');
++    expect(en.linkNote('123 456 789'),
++        'This was opened from a link to PC 123 456 789. If you got the link from someone you do not know, press [Cancel].');
++    for (final s in [en.linkAskText, en.linkAskTitle('1'), en.linkNote('1')]) {
++      expect(s, isNot(matches(RegExp('[가-힣]'))));
++    }
++
++    // D-13: both schemes in 1.9.0; https:// and any other scheme only in a build not pinned
++    for (final scheme in ['hjviewer', 'rustdesk']) {
++      expect(hjvLinkTakesScheme(scheme, pinned: true), isTrue, reason: scheme);
++      expect(hjvLinkTakesScheme(Uri.parse('$scheme://123456789').scheme, pinned: true),
++          isTrue);
++    }
++    for (final scheme in ['https', 'http', 'file', 'intent', 'hjviewerx', '']) {
++      expect(hjvLinkTakesScheme(scheme, pinned: true), isFalse, reason: scheme);
++      expect(hjvLinkTakesScheme(scheme, pinned: false), isTrue, reason: scheme);
++    }
++    expect(hjvLinkTakesScheme(Uri.parse('HJViewer://123').scheme, pinned: true), isTrue);
++
++    expect(hjvLinkPasswordOf('secret', pinned: true), isNull);
++    expect(hjvLinkPasswordOf('secret', pinned: false), 'secret');
++    expect(hjvLinkPasswordOf(null, pinned: false), isNull);
++
++    expect(hjvLinkShownId('123456789'), '123 456 789');
++    expect(hjvLinkShownId('123456789?key=abc'), '123 456 789');
++    expect(hjvLinkShownId('123456789/r'), '123 456 789/r');
++    expect(hjvLinkShownId('my-pc'), 'my-pc');
++
++    for (final text in ['hjviewer://123', 'rustdesk://123', 'own://123']) {
++      expect(hjvIsAppLink(text, prefix: 'own://'), isTrue, reason: text);
++    }
++    for (final text in ['https://example.org/123', '123456789', 'config=abc']) {
++      expect(hjvIsAppLink(text, prefix: 'hjviewer://'), isFalse, reason: text);
++    }
++  });
++
++  test('hjv-gate links: only /login and /password, nothing else (UX-G2, X-18)', () {
++    HjvGateLink of(String s) => hjvGateLinkAction(Uri.tryParse(s));
++    expect(of('hjviewer://hjv-gate/login'), HjvGateLink.logIn);
++    expect(of('hjviewer://hjv-gate/password'), HjvGateLink.password);
++    expect(of('rustdesk://hjv-gate/login'), HjvGateLink.logIn);
++    for (final s in [
++      'hjviewer://hjv-gate/login?password=x',
++      'hjviewer://hjv-gate/password#x',
++      'hjviewer://hjv-gate/login/',
++      'hjviewer://hjv-gate/logout',
++      'hjviewer://hjv-gate',
++      'hjviewer://hjv-gate/',
++      'hjviewer://x@hjv-gate/login',
++      'hjviewer://hjv-gate:80/login',
++    ]) {
++      expect(of(s), HjvGateLink.nothing, reason: s);
++    }
++    for (final s in [
++      'https://hjv-gate/login',
++      'hjviewer://123456789',
++      'hjviewer://connect/123456789',
++      'hjviewer://hjv-gatex/login',
++      '--connect',
++    ]) {
++      expect(of(s), HjvGateLink.notGate, reason: s);
++    }
++    expect(hjvGateLinkAction(null), HjvGateLink.notGate);
++  });
+ }

@@ -1,0 +1,1337 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:02:56 +0900
+Subject: [PATCH 090/147] hjviewer: the same words everywhere (UX-W1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U27: one table for the password-less states. The feature is "비밀번호 없는
+연결" everywhere; Settings → Account says "내 계정에 등록됨", "비밀번호 없는
+연결 켜짐(로그인한 기기 3대)", "서버와 동기화 안 됨", "다시 로그인 필요(보안 키
+바뀜)", and the admin view the same words. A card of My PCs builds its second
+line from hjv-api's `hjv` in the app's language (hjvPeerNote, kept per PC ID
+from the device list in group_model.dart) once hjv-api sends `wake`; until
+then, and for any note the server did not send with that `hjv`, the server's
+note shows as it came.
+
+U28: the About ID on the desktop and the phone, and the remote restart's
+question, show the ID as "123 456 789"; the question is "다시 시작할까요?" /
+"Restart this device?"; the account handle has no space before its
+parenthesis; ko.rs "연결하는 중…", "로그인하는 중…". (The card menu's "연결
+<ID>" is plain "연결" in an account build since 1.8.2.)
+
+U31: the login dialog's block says which password goes in: "연세포탈 ID와
+연세포탈 비밀번호로 로그인합니다. 이용 비밀번호는 여기에 넣지 않습니다." The
+pilot notice is on the About screen only, reworded for a service that is for
+faculty and staff as a whole.
+
+U32: one verb for logging another device out: [로그아웃], [내가 아님], "…
+로그아웃했습니다", "…에서 로그아웃함"; the quoted button name holds a no-break
+space so that a phone does not break it.
+
+U34 (D-17): About says who "관리자" is: "HJViewer 관리자: <contact>", the
+contact of the signed version policy (contact_ko) as the update model holds
+it, else the maker; never a contact in the app. The admin view says "관리자
+화면", "관리자 기록"; English "Made by ProjectTF".
+
+U35: English says "faculty and staff" (A1, G3, L1-L4, the offline and
+restart lines, the logout of other devices) and "a faculty or staff
+member" (P3); "not synced with the server", "has not reported how to wake
+it". The Korean stays.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access_texts.dart |  42 ++--
+ flutter/lib/common/hjviewer_account.dart      |  53 ++++-
+ .../lib/common/hjviewer_account_texts.dart    | 145 ++++++++++---
+ flutter/lib/common/hjviewer_admin_texts.dart  |  19 +-
+ flutter/lib/common/widgets/dialog.dart        |   4 +-
+ flutter/lib/common/widgets/peer_card.dart     |  18 +-
+ .../desktop/pages/desktop_setting_page.dart   |   4 +-
+ flutter/lib/mobile/pages/settings_page.dart   |   4 +-
+ flutter/lib/models/group_model.dart           |   3 +
+ flutter/lib/models/user_model.dart            |   3 +-
+ flutter/test/hjviewer_access_test.dart        |   6 +-
+ flutter/test/hjviewer_account_test.dart       | 203 +++++++++++++++---
+ .../test/hjviewer_account_widgets_test.dart   |  24 +--
+ flutter/test/hjviewer_admin_test.dart         |  16 +-
+ flutter/test/hjviewer_admin_widgets_test.dart |  10 +-
+ src/lang/en.rs                                |   1 +
+ src/lang/ko.rs                                |   6 +-
+ 17 files changed, 410 insertions(+), 151 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index fe9d1e6..378bd86 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -366,7 +366,7 @@ String? hjvRemoveGateNote(HjvAccessTexts t, String mode) {
+ }
+ 
+ /// The line about the gate under a logout of other devices (the logged-in devices' row and
+-/// [다른 기기 모두 로그아웃], the new device's [아님: 로그아웃시키기]), null for none: a device
++/// [다른 기기 모두 로그아웃], the new device's [내가 아님]), null for none: a device
+ /// logged out needs the access password again, and one that is HJViewer run without installing
+ /// it registers without a ticket. `several` for all other devices.
+ String? hjvLogOutDeviceGateNote(HjvAccessTexts t, String mode,
+@@ -435,10 +435,10 @@ class HjvAccessTexts {
+ 
+   // A1: a controller without a login that hbbs refused. hbbs's mark stays in the core's text
+   // (src/hjviewer_access.rs A1), which keeps the app from connecting again by itself.
+-  String get refusedTitle => _t('교직원 전용 서버', 'Staff-only server');
++  String get refusedTitle => _t('교직원 전용 서버', 'Faculty and staff only');
+   String get refused => _t(
+       '이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하면 바로 연결되고, 다음부터는 이 창이 나오지 않습니다. 그 PC의 비밀번호는 PC가 따로 묻습니다.',
+-      'This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect right away; this window will not appear again. The PC asks for its own password separately.');
++      'This server is only for Yonsei University faculty and staff. Log in with your Yonsei portal account to connect right away; this window will not appear again. The PC asks for its own password separately.');
+   String get havePassword => _t('이용 비밀번호가 있나요?', 'Have an access password?');
+   String get connect => _t('연결', 'Connect');
+   String get passwordTitle => _t('이용 비밀번호', 'Access password');
+@@ -475,7 +475,7 @@ class HjvAccessTexts {
+           'The PC is off or not connected to the server. If it is on, someone has to log in with a Yonsei portal account or enter ${_ways(codes)} in HJViewer on that PC before it accepts connections.')
+       : _t(
+           'PC가 꺼져 있거나 서버에 연결되어 있지 않습니다. 서버가 교직원 전용이면, PC가 켜져 있어도 그 PC의 HJViewer에서 연세포탈로 로그인하거나 ${_ways(codes)} 넣어야 연결을 받습니다.',
+-          'The PC is off or not connected to the server. If the server is for staff only, someone has to log in with a Yonsei portal account or enter ${_ways(codes)} in HJViewer on that PC before it accepts connections, even when it is on.');
++          'The PC is off or not connected to the server. If the server is for faculty and staff only, someone has to log in with a Yonsei portal account or enter ${_ways(codes)} in HJViewer on that PC before it accepts connections, even when it is on.');
+   String offlinePassedFor({bool codes = false}) => _t(
+       '이용 비밀번호는 확인했습니다. 그런데 그 PC가 서버에 연결되어 있지 않습니다. 그 PC가 켜져 있다면 그 PC의 HJViewer에서도 로그인하거나 ${_ways(codes)} 넣어야 합니다.',
+       'The access password was accepted, but that PC is not connected to the server. If it is on, someone has to log in or enter ${_ways(codes)} in HJViewer on that PC too.');
+@@ -489,10 +489,10 @@ class HjvAccessTexts {
+   String restartGate({required bool known}) => known
+       ? _t(
+           '이 서버는 교직원 전용이라, 그 PC에 누가 로그인해 두지 않았다면 다시 시작한 뒤에는 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣을 때까지 연결할 수 없습니다.',
+-          'This server is for staff only: unless someone stays logged in on that PC, nobody can connect to it after the restart until someone logs in or enters the access password on it.')
++          'This server is for faculty and staff only: unless someone stays logged in on that PC, nobody can connect to it after the restart until someone logs in or enters the access password on it.')
+       : _t(
+           '서버가 교직원 전용이면, 그 PC에 누가 로그인해 두지 않았다면 다시 시작한 뒤에는 그 PC에서 누군가 로그인하거나 이용 비밀번호를 넣을 때까지 연결할 수 없습니다.',
+-          'If the server is for staff only and nobody stays logged in on that PC, nobody can connect to it after the restart until someone logs in or enters the access password on it.');
++          'If the server is for faculty and staff only and nobody stays logged in on that PC, nobody can connect to it after the restart until someone logs in or enters the access password on it.');
+   String get restart => _t('다시 시작', 'Restart');
+   String get restartNotInstalled => _t(
+       '설치하지 않은 HJViewer는 다시 시작한 뒤 저절로 켜지지 않습니다.',
+@@ -555,36 +555,36 @@ class HjvAccessTexts {
+   // G3: the connection page of an app without a login, while the server is staff-only
+   String get connectHint => _t(
+       '이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연결하려면 연세포탈로 로그인하세요. 이용 비밀번호가 있으면 연결할 때 넣을 수 있습니다.',
+-      'This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect, or enter an access password when you connect.');
++      'This server is only for Yonsei University faculty and staff. Log in with your Yonsei portal account to connect, or enter an access password when you connect.');
+   // its one line; connectHint is its tooltip
+   String get connectHintShort =>
+-      _t('교직원 전용 서버 · 로그인이 필요합니다', 'Staff-only server · Login required');
++      _t('교직원 전용 서버 · 로그인이 필요합니다', 'Faculty and staff only · Login required');
+ 
+   // a logout, and taking a PC out of the list, on a staff-only server (the doc 3-6)
+   String logoutGate({required bool known}) => known
+       ? _t(
+           '이 서버는 교직원 전용이라, 로그아웃하면 누군가 이 PC에서 다시 로그인할 때까지 이 PC에 원격으로 연결할 수 없습니다.',
+-          'This server is for staff only: once you log out, nobody can connect to this PC remotely until someone logs in on it again.')
++          'This server is for faculty and staff only: once you log out, nobody can connect to this PC remotely until someone logs in on it again.')
+       : _t(
+           '서버가 교직원 전용이면, 로그아웃한 뒤에는 누군가 이 PC에서 다시 로그인할 때까지 이 PC에 원격으로 연결할 수 없습니다.',
+-          'If the server is for staff only, nobody can connect to this PC remotely after you log out, until someone logs in on it again.');
++          'If the server is for faculty and staff only, nobody can connect to this PC remotely after you log out, until someone logs in on it again.');
+   // L1 on a PC this login bound: the binding's end and the gate in one sentence
+   String logoutGateBound({required bool known}) => known
+       ? _t(
+           '로그아웃하면 이 PC가 내 PC 목록에서 빠지고, 이 서버는 교직원 전용이라 누군가 이 PC에서 다시 로그인할 때까지 다른 기기에서 이 PC에 연결할 수 없습니다.',
+-          'Logging out takes this PC out of My PCs, and as this server is for staff only, no other device can connect to it until someone logs in on it again.')
++          'Logging out takes this PC out of My PCs, and as this server is for faculty and staff only, no other device can connect to it until someone logs in on it again.')
+       : _t(
+           '로그아웃하면 이 PC가 내 PC 목록에서 빠지고, 서버가 교직원 전용이면 누군가 이 PC에서 다시 로그인할 때까지 다른 기기에서 이 PC에 연결할 수 없습니다.',
+-          'Logging out takes this PC out of My PCs, and if the server is for staff only, no other device can connect to it until someone logs in on it again.');
++          'Logging out takes this PC out of My PCs, and if the server is for faculty and staff only, no other device can connect to it until someone logs in on it again.');
+   String get logoutRemoteNow => _t(
+       '지금 이 PC를 원격으로 쓰고 있다면, 이 세션이 끝난 뒤에는 다시 들어올 수 없습니다.',
+       'If you are using this PC remotely now, you cannot get back in once this session ends.');
+   // the second paragraph under removeAsk, which already says what removing does (U29)
+   String removeGate({required bool known}) => known
+       ? _t('이 서버는 교직원 전용이라 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다.',
+-          'This server is for staff only, so nobody can connect to that PC remotely until someone logs in on it again.')
++          'This server is for faculty and staff only, so nobody can connect to that PC remotely until someone logs in on it again.')
+       : _t('서버가 교직원 전용이면 누군가 그 PC에서 다시 로그인할 때까지 그 PC에 원격으로 연결할 수 없습니다.',
+-          'If the server is for staff only, nobody can connect to that PC remotely until someone logs in on it again.');
++          'If the server is for faculty and staff only, nobody can connect to that PC remotely until someone logs in on it again.');
+ 
+   // logging out other devices (the logged-in devices, the new device's [아님]): the second
+   // paragraph under the question, which already says that password-less connections end, so
+@@ -593,23 +593,23 @@ class HjvAccessTexts {
+       switch ((known, several)) {
+         (true, false) => _t(
+             '이 서버는 교직원 전용이라, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다.',
+-            'This server is for staff only: until that device logs in again, not even a PC password lets it connect without an access password. If it is a PC running HJViewer without installing it, that PC stops accepting connections too.'),
++            'This server is for faculty and staff only: until that device logs in again, not even a PC password lets it connect without an access password. If it is a PC running HJViewer without installing it, that PC stops accepting connections too.'),
+         (false, false) => _t(
+             '서버가 교직원 전용이면, 그 기기는 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 설치하지 않고 실행한 HJViewer라면 그 PC도 연결을 받지 못합니다.',
+-            'If the server is for staff only, not even a PC password lets that device connect without an access password until it logs in again. If it is a PC running HJViewer without installing it, that PC stops accepting connections too.'),
++            'If the server is for faculty and staff only, not even a PC password lets that device connect without an access password until it logs in again. If it is a PC running HJViewer without installing it, that PC stops accepting connections too.'),
+         (true, true) => _t(
+             '이 서버는 교직원 전용이라, 그 기기들은 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 그 가운데 설치하지 않고 실행한 HJViewer가 있으면 그 PC도 연결을 받지 못합니다.',
+-            'This server is for staff only: until those devices log in again, not even a PC password lets them connect without an access password. Any of them that is a PC running HJViewer without installing it stops accepting connections too.'),
++            'This server is for faculty and staff only: until those devices log in again, not even a PC password lets them connect without an access password. Any of them that is a PC running HJViewer without installing it stops accepting connections too.'),
+         (false, true) => _t(
+             '서버가 교직원 전용이면, 그 기기들은 다시 로그인할 때까지 이용 비밀번호 없이는 PC 비밀번호로도 연결할 수 없습니다. 그 가운데 설치하지 않고 실행한 HJViewer가 있으면 그 PC도 연결을 받지 못합니다.',
+-            'If the server is for staff only, not even a PC password lets those devices connect without an access password until they log in again. Any of them that is a PC running HJViewer without installing it stops accepting connections too.'),
++            'If the server is for faculty and staff only, not even a PC password lets those devices connect without an access password until they log in again. Any of them that is a PC running HJViewer without installing it stops accepting connections too.'),
+       };
+ 
+   // the logout of an app whose login is its only way in on a staff-only server (a phone, a PC
+   // whose registration does not go with the login)
+   String get logoutSelfGate => _t(
+       '이 서버는 교직원 전용이라, 로그아웃하면 다시 로그인할 때까지 이 기기로는 이용 비밀번호 없이 PC에 연결할 수 없습니다.',
+-      'This server is for staff only: once you log out, this device cannot connect to PCs without an access password until you log in again.');
++      'This server is for faculty and staff only: once you log out, this device cannot connect to PCs without an access password until you log in again.');
+ 
+   /// About how long `secs` seconds are, rounded up: minutes below an hour, else hours.
+   String _about(int secs) {
+@@ -638,10 +638,10 @@ class HjvAccessTexts {
+   String get pcCodeTitle => _t('지원 코드 넣기', 'Enter support code');
+   String get pcCodeText => _t(
+       '교직원에게 받은 지원 코드를 넣으면 이 PC가 최대 2시간 동안 연결을 받습니다. PC를 다시 시작하거나 Windows에서 로그아웃하면 그 전에 끝나고, 끝나면 새 코드를 받아 다시 넣어야 합니다.',
+-      'With a support code from a staff member, this PC accepts connections for up to 2 hours. Restarting the PC or signing out of Windows ends that sooner; once it ends, get a new code and enter it.');
++      'With a support code from a faculty or staff member, this PC accepts connections for up to 2 hours. Restarting the PC or signing out of Windows ends that sooner; once it ends, get a new code and enter it.');
+   String get codeHint => _t(
+       '교직원이 알려 준 XXXX-XXXX 꼴의 8자 코드입니다. 이용 비밀번호나 PC의 일회용 비밀번호가 아닙니다.',
+-      "The 8-character code (XXXX-XXXX) a staff member gave you, not the access password or the PC's one-time password.");
++      "The 8-character code (XXXX-XXXX) a faculty or staff member gave you, not the access password or the PC's one-time password.");
+   String get codeCheckingLabel =>
+       _t('지원 코드를 확인하는 중', 'Checking the support code');
+   String get pcCodeOn => _t('지원 코드 사용 중', 'Support code in use');
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 26e377c..ebb394b 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/formatter/id_formatter.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_account_texts.dart';
+ import 'package:flutter_hbb/common/hjviewer_admin.dart';
+@@ -195,48 +196,82 @@ void hjvLoggedInElsewhere() {
+   if (isWindows) unawaited(_announceThisPc());
+ }
+ 
+-/// D12 (login.dart): under the login dialog's title, that the service is a pilot.
++/// D12 (login.dart): under the login dialog's title, which password goes in (U31; the pilot
++/// notice is on the About screen only).
+ List<Widget> hjvLoginPilot() => _accountBuild
+     ? [
+         // HJViewer: a quiet notice block of the app's look
+         Builder(
+             builder: (context) => hjvNoteBlock(context,
+                 icon: Icons.info_outline_rounded,
+-                text: Text(hjvKeepAll(_t.pilotNotice))))
++                text: Text(hjvKeepAll(_t.loginWhich))))
+       ]
+     : [];
+ 
+-/// D13 (desktop settings, About): who makes HJViewer and, in an account build, the pilot notice.
++/// The About screen's notice: with the contact of the policy this app trusts (U34), which the
++/// update model has from the core (hjv_update.dart); read inside an Obx, it follows a new policy.
++List<String> _aboutLines() => hjvAboutNoticeLines(_t,
++    accountBuild: _accountBuild, contact: hjvUpdate.value.contact);
++
++/// D13 (desktop settings, About): who makes HJViewer and, in an account build, who the
++/// administrator is and the pilot notice.
+ List<Widget> hjvAboutNotice() => [
+-      for (final (i, line)
+-          in hjvAboutNoticeLines(_t, accountBuild: _accountBuild).indexed)
++      for (var i = 0; i < _aboutLines().length; i++)
+         // HJViewer: the notice below the maker's line in the secondary text colour
+         SelectionArea(
+             child: Builder(
+-                builder: (context) => Text(hjvKeepAll(line),
++                builder: (context) => Obx(() => Text(
++                        hjvKeepAll(_aboutLines()[i]),
+                         style: i == 0
+                             ? null
+                             : TextStyle(
+                                 fontSize: 13,
+                                 height: 1.45,
+-                                color: HjvPalette.of(context).textSecondary))
++                                color: HjvPalette.of(context).textSecondary)))
+                     .marginSymmetric(vertical: 4.0))),
+     ];
+ 
+ /// D14 (mobile settings, About): the same, as a tile.
+ List<AbstractSettingsTile> hjvAboutNoticeTiles() {
+-  final lines = hjvAboutNoticeLines(_t, accountBuild: _accountBuild);
++  final lines = _aboutLines();
+   return [
+     SettingsTile(
+       title: Text(hjvKeepAll(lines.first)),
+       description: lines.length > 1
+-          ? Text(hjvKeepAll(lines.skip(1).join('\n')))
++          ? Obx(() => Text(hjvKeepAll(_aboutLines().skip(1).join('\n'))))
+           : null,
+       leading: const Icon(Icons.info_outline),
+     ),
+   ];
+ }
+ 
++/// U27: the `hjv` of each entry of hjv-api's device list, with the note it came with, by PC ID.
++final _peerHjv = <String, (String, Map)>{};
++
++/// U27 (models/group_model.dart, before an entry of the device list becomes a peer): keeps its
++/// `hjv` for hjvPeerNote.
++void hjvKeepPeerHjv(Object? json) {
++  if (json is! Map) return;
++  final id = json['id'];
++  if (id is! String) return;
++  final hjv = json['hjv'];
++  final note = json['note'];
++  if (hjv is Map) {
++    _peerHjv[id] = (note is String ? note : '', hjv);
++  } else {
++    _peerHjv.remove(id);
++  }
++}
++
++/// U27 (peer_card.dart): what a card shows as its note: for an entry of the device list, its
++/// second line in the app's language (hjvPeerNoteText); any other note as it is.
++String hjvPeerNote(Peer peer) {
++  final kept = _peerHjv[peer.id];
++  if (kept == null || kept.$1 != peer.note) return peer.note;
++  return hjvPeerNoteText(_t, kept.$2,
++      note: peer.note, now: DateTime.now().millisecondsSinceEpoch ~/ 1000);
++}
++
+ /// D3 (login.dart): the logout dialog of an account build, null outside one: "로그아웃할까요?",
+ /// what the logout does to this PC's connections (on a staff-only server in one sentence with
+ /// the binding's end), the warning for a PC someone uses from afar now, and [로그아웃], in the
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index ce8df3f..9f5a003 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -107,18 +107,19 @@ class HjvTexts {
+ 
+   // this PC in Settings → Account (§1-2)
+   String get pcPrefix => _t('이 PC: ', 'This PC: ');
+-  String get mine => _t('내 기기', 'my device');
++  String get mine => _t('내 계정에 등록됨', 'registered to your account');
+   String get otherOwner => _t('다른 계정에 등록됨', 'in another account');
+-  String get pwlessOn => _t('비밀번호 없이 연결 켜짐', 'password-less connections on');
+-  String onWithKeys(int keys) => _t('비밀번호 없이 연결 켜짐(내 기기 $keys대)',
+-      'password-less connections on (my devices: $keys)');
++  String get pwlessOn =>
++      _t('비밀번호 없는 연결 켜짐', 'password-less connections on');
++  String onWithKeys(int keys) => _t('비밀번호 없는 연결 켜짐(로그인한 기기 $keys대)',
++      'password-less connections on (${keys == 1 ? '1 device' : '$keys devices'} logged in)');
+   String get offHere => _t('이 PC에서 꺼 둠', 'turned off on this PC');
+   String get paused => _t('관리자가 일시 중지함', 'paused by the administrator');
+-  String get unsynced => _t('서버와 맞추지 못함', 'not in step with the server');
+-  String unsyncedSince(String time) => _t('서버와 맞추지 못함(마지막 확인 $time)',
+-      'not in step with the server (last checked $time)');
++  String get unsynced => _t('서버와 동기화 안 됨', 'not synced with the server');
++  String unsyncedSince(String time) => _t('서버와 동기화 안 됨(마지막 확인 $time)',
++      'not synced with the server (last checked $time)');
+   String get keyChanged =>
+-      _t('다시 로그인 필요(보안 키가 바뀜)', 'log in again (its security key changed)');
++      _t('다시 로그인 필요(보안 키 바뀜)', 'log in again (security key changed)');
+   String get removedElsewhere =>
+       _t('다른 기기가 내 PC 목록에서 뺌', 'removed from My PCs on another device');
+   String get loginHereAgain =>
+@@ -161,10 +162,10 @@ class HjvTexts {
+       '$pc · last $time · $n30 times in 30 days');
+   String get noUse => _t('최근 30일 동안 비밀번호 없이 연결한 PC가 없습니다.',
+       'No password-less connections in the last 30 days.');
+-  String get logOutDevice => _t('로그아웃시키기', 'Log out');
++  String get logOutDevice => _t('로그아웃', 'Log out');
+   String get logOutOthers => _t('다른 기기 모두 로그아웃', 'Log out all other devices');
+   String get logOutDeviceAsk => _t(
+-      '로그아웃시키면 다시 로그인하기 전까지 그 기기로 내 PC에 비밀번호 없이 새로 연결할 수 없습니다. 이미 열려 있는 연결은 끊기지 않습니다.',
++      '그 기기를 로그아웃하면 다시 로그인하기 전까지 그 기기로 내 PC에 비밀번호 없이 새로 연결할 수 없습니다. 이미 열려 있는 연결은 끊기지 않습니다.',
+       'Once logged out, that device cannot open new connections to your PCs without their passwords until it logs in again. Connections already open are not cut.');
+   // the question is the dialog's title; the text below it says what it does
+   String get logOutOthersTitle =>
+@@ -178,11 +179,11 @@ class HjvTexts {
+   String get openSessions => _t(
+       "이미 열려 있는 연결은 끊기지 않습니다. PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 PC 다시 시작'을 누르거나, PC를 다시 시작하세요.",
+       "Connections already open are not cut. End them in the PC's connection window, or connect to that PC from your own device with its password and use 'Restart remote device', or restart the PC.");
+-  String get loggedOutDevice => _t('그 기기를 로그아웃시켰습니다. $openSessions',
++  String get loggedOutDevice => _t('그 기기를 로그아웃했습니다. $openSessions',
+       'The device is logged out. $openSessions');
+   String get alreadyOut =>
+       _t('이미 로그아웃된 기기입니다.', 'The device is already logged out.');
+-  String loggedOutOthers(int n) => _t('다른 기기 $n대를 로그아웃시켰습니다. $openSessions',
++  String loggedOutOthers(int n) => _t('다른 기기 $n대를 로그아웃했습니다. $openSessions',
+       'Logged out $n other device(s). $openSessions');
+ 
+   // the devices that ended in the last 30 days (U1-b)
+@@ -193,14 +194,14 @@ class HjvTexts {
+   String leftAt(String left, String time, String by) => switch (left) {
+         'logout' => _t('$time 스스로 로그아웃', 'logged out by itself $time'),
+         'removed' => by.isEmpty
+-            ? _t('$time 다른 기기에서 로그아웃시킴', 'logged out from another device $time')
+-            : _t('$time $by에서 로그아웃시킴', 'logged out from $by $time'),
++            ? _t('$time 다른 기기에서 로그아웃함', 'logged out from another device $time')
++            : _t('$time $by에서 로그아웃함', 'logged out from $by $time'),
+         'expired' => _t('$time 로그인 기간이 끝남', 'login expired $time'),
+         'replaced' => _t('$time 같은 기기의 새 로그인으로 바뀜',
+             'replaced by a new login of the device $time'),
+         'evicted' => _t('$time 이 계정의 기기가 20대를 넘어 로그아웃됨',
+             'logged out $time: the account reached 20 devices'),
+-        _ => _t('$time 관리자가 로그아웃시킴', 'logged out by the administrator $time'),
++        _ => _t('$time 관리자가 로그아웃함', 'logged out by the administrator $time'),
+       };
+ 
+   // a new device of the account (§1-1, U1-a, U1-c)
+@@ -209,19 +210,20 @@ class HjvTexts {
+       'Please check a device logged in to your account');
+   String get endedDeviceTitle =>
+       _t('로그인했던 기기를 확인해 주세요', 'Please check a device that was logged in');
++  // U32: the button's name in the text holds a no-break space, so that a phone does not break it
+   String get newDeviceNote => _t(
+-      '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.',
+-      'It can connect to your PCs without their passwords. If it was not you, press [Not me].');
++      '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [내가\u00A0아님]을 누르세요. 그 기기는 바로 로그아웃됩니다.',
++      'It can connect to your PCs without their passwords. If it was not you who logged in, press [Not\u00A0me]: that device is logged out at once.');
+   String get endedDeviceNote => _t(
+-      '지금은 로그아웃되었지만, 그때까지 이 기기로 내 PC에 비밀번호 없이 연결할 수 있었습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.',
+-      'It is logged out now, but until then it could connect to your PCs without their passwords. If it was not you, press [Not me].');
++      '지금은 로그아웃되었지만, 그때까지 이 기기로 내 PC에 비밀번호 없이 연결할 수 있었습니다. 내가 로그인한 것이 아니면 [내가\u00A0아님]을 누르세요.',
++      'It is logged out now, but until then it could connect to your PCs without their passwords. If it was not you, press [Not\u00A0me].');
+   String get onCampusNet => _t('학내 네트워크', 'campus network');
+   String get offCampusNet => _t('학외 네트워크', 'off-campus network');
+   String get itsMine => _t('내 기기 맞음', 'It is mine');
+-  String get notMine => _t('아님: 로그아웃시키기', 'Not me: log it out');
+-  String get notMineEnded => _t('아님', 'Not me');
++  String get notMine => _t('내가 아님', 'Not me');
++  String get notMineEnded => _t('내가 아님', 'Not me');
+   String get notMineDone => _t(
+-      '그 기기를 로그아웃시켰습니다. 연세포탈 비밀번호도 바꿔 주세요. $openSessions',
++      '그 기기를 로그아웃했습니다. 연세포탈 비밀번호도 바꿔 주세요. $openSessions',
+       'The device is logged out. Please change your Yonsei portal password too. $openSessions');
+   String get notMineEndedDone => _t(
+       '그 기기는 이미 로그아웃되었습니다. 연세포탈 비밀번호를 바꿔 주세요. $openSessions',
+@@ -236,12 +238,12 @@ class HjvTexts {
+   // a login that hjv-api ended (a 401: logged out from elsewhere, expired)
+   String get loginEndedTitle =>
+       _t('이 기기의 로그인이 끝났습니다', 'Your login on this device ended');
+-  String get loginEndedWhy => _t('다른 기기나 관리자가 로그아웃시켰거나 로그인 기간이 끝났습니다.',
++  String get loginEndedWhy => _t('다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다.',
+       'Another device or the administrator logged it out, or the login expired.');
+   String get loginEndedGate => _t('이 서버는 교직원 전용이라 다시 로그인해야 연결할 수 있습니다.',
+-      'This server is for staff only, so log in again to connect.');
++      'This server is for faculty and staff only, so log in again to connect.');
+   String get loginEndedMaybeGate => _t('교직원 전용 서버에서는 다시 로그인해야 연결할 수 있습니다.',
+-      'On a staff-only server, you need to log in again to connect.');
++      'On a faculty-and-staff-only server, you need to log in again to connect.');
+   String get loginEndedOpen => _t('내 PC에 비밀번호 없이 연결하려면 다시 로그인하세요.',
+       'To connect to your PCs without their passwords, log in again.');
+ 
+@@ -325,7 +327,7 @@ class HjvTexts {
+       _t('마지막 연결: $time', 'Last connected: $time');
+   String get wakeNoInfo => _t(
+       '그 PC가 아직 켜기 정보를 보내지 않았습니다. PC를 한 번 켜고 HJViewer가 설치되어 있는지 확인하세요.',
+-      'That PC has not told how to wake it yet. Turn the PC on once and check that HJViewer is installed on it.');
++      'That PC has not reported how to wake it yet. Turn it on once and check that HJViewer is installed on it.');
+   String get wakeAsleep =>
+       _t('PC가 다시 절전에 들어갔습니다.', 'The PC went back to sleep.');
+   String get wakeAgain => _t('다시 켜기', 'Wake up again');
+@@ -334,11 +336,52 @@ class HjvTexts {
+   String get wakeConnects =>
+       _t('PC를 켠 뒤 바로 연결', 'Connect right after waking a PC');
+ 
+-  // Settings → About and the login dialog (decisions of 2026-10-14)
+-  String get maker => _t('만든 곳: 프로젝트TF', 'Made by 프로젝트TF');
++  // Settings → About (decisions of 2026-10-14; U31, U34)
++  String get maker => _t('만든 곳: 프로젝트TF', 'Made by ProjectTF');
+   String get pilotNotice => _t(
+-      '본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.',
+-      'This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.');
++      '이 서비스는 시범 운영 중이며, 예고 없이 바뀔 수 있습니다. 현재 연세대학교 교직원만 쓸 수 있습니다.',
++      'This service is a pilot and may change without notice. It is currently available only to Yonsei University faculty and staff.');
++
++  /// U34 (D-17): who "관리자" in the app's texts is: the contact of the signed version policy
++  /// (`contact_ko`), as the policy wrote it; without one, the maker.
++  String adminContact(String contact) => _t('HJViewer 관리자: $contact',
++      'HJViewer administrator: $contact');
++  String get makerName => _t('프로젝트TF', 'ProjectTF');
++
++  /// U31: the login dialog's block, which password goes in.
++  String get loginWhich => _t(
++      '연세포탈 ID와 연세포탈 비밀번호로 로그인합니다. 이용 비밀번호는 여기에 넣지 않습니다.',
++      'Log in with your Yonsei portal ID and Yonsei portal password. The access password does not go here.');
++
++  // U27: a card of My PCs, its second line by hjv-api's `hjv` (the server's `note` for an app
++  // without these)
++  String get noteActive =>
++      _t('비밀번호 없는 연결 켜짐', 'Password-less connections on');
++  String get noteOff => _t('PC에서 꺼 둠', 'Turned off on the PC');
++  String get notePaused => _t('관리자가 일시 중지함', 'Paused by the administrator');
++  String get noteUnsynced => _t('서버와 동기화 안 됨', 'Not synced with the server');
++  String noteUnsyncedSince(String ago) => _t('서버와 동기화 안 됨(마지막 확인 $ago)',
++      'Not synced with the server (last checked $ago)');
++  String get noteListed => _t('PC에서 로그인 필요', 'Log in on the PC');
++  String get noteRelogin => _t('PC에서 다시 로그인 필요(보안 키 바뀜)',
++      'Log in again on the PC (security key changed)');
++  String get noteCanWake => _t('켜기 가능', 'Can be woken');
++  String get noteCannotWake => _t('켜기 준비 안 됨', 'Not ready to wake');
++
++  /// "3일 전", as hjv-api's pcsync::ago counts it.
++  String ago(int secs) {
++    final s = secs < 0 ? 0 : secs;
++    if (s < 3600) {
++      final m = s ~/ 60 < 1 ? 1 : s ~/ 60;
++      return _t('$m분 전', m == 1 ? '1 minute ago' : '$m minutes ago');
++    }
++    if (s < 86400) {
++      final h = s ~/ 3600;
++      return _t('$h시간 전', h == 1 ? '1 hour ago' : '$h hours ago');
++    }
++    final d = s ~/ 86400;
++    return _t('$d일 전', d == 1 ? '1 day ago' : '$d days ago');
++  }
+ 
+   // U48: upstream's English left on Korean screens
+   String get sourceCode =>
+@@ -354,10 +397,42 @@ class HjvTexts {
+       korean ? (admin ? '터미널(관리자 권한, 베타)' : '터미널(베타)') : null;
+ }
+ 
+-/// What Settings → About says of HJViewer: who makes it, and in an account build, whose login
+-/// goes to the service, that the service is a pilot.
+-List<String> hjvAboutNoticeLines(HjvTexts t, {required bool accountBuild}) =>
+-    [t.maker, if (accountBuild) t.pilotNotice];
++/// What Settings → About says of HJViewer: who makes it, and in an account build who "관리자" is
++/// (the policy's `contact`, else the maker; U34) and that the service is a pilot (U31).
++List<String> hjvAboutNoticeLines(HjvTexts t,
++        {required bool accountBuild, String contact = ''}) =>
++    [
++      t.maker,
++      if (accountBuild)
++        t.adminContact(contact.trim().isEmpty ? t.makerName : contact.trim()),
++      if (accountBuild) t.pilotNotice,
++    ];
++
++/// U27: a card's second line in the app's language, from the `hjv` of hjv-api's device list:
++/// with its `wake` (hjv-api 1.9 on), the words of `pwless`, `synced` (Unix seconds of the PC's
++/// last sync) and `wake`; else `note`, the server's own text, as it came.
++String hjvPeerNoteText(HjvTexts t, Map hjv,
++    {required String note, required int now}) {
++  if (!hjv.containsKey('wake')) return note;
++  final synced = hjv['synced'];
++  final state = switch (hjv['pwless']) {
++    'active' => t.noteActive,
++    'off' => t.noteOff,
++    'disabled' => t.notePaused,
++    'expired' => synced is int && synced > 0
++        ? t.noteUnsyncedSince(t.ago(now - synced))
++        : t.noteUnsynced,
++    'listed' => t.noteListed,
++    'needs-relogin' => t.noteRelogin,
++    _ => '',
++  };
++  final wake = switch (hjv['wake']) {
++    'ready' => t.noteCanWake,
++    'not_ready' => t.noteCannotWake,
++    _ => '',
++  };
++  return [state, wake].where((s) => s.isNotEmpty).join(' · ');
++}
+ 
+ /// The request that `http_request` refuses while the account key cannot be used (H13): its
+ /// answer reads this instead of a response.
+@@ -829,7 +904,7 @@ String hjvNewDeviceText(HjvTexts t, HjvKey k,
+     if (net.isNotEmpty) net,
+     if (k.appVer.isNotEmpty) 'HJViewer ${k.appVer}',
+   ].join(' · ');
+-  // [아님] logs a device out that is still logged in: what that does on a staff-only server
++  // [내가 아님] logs a device out that is still logged in: what that does on a staff-only server
+   if (k.ended == null) {
+     return gate == null
+         ? '$seen. ${t.newDeviceNote}'
+diff --git a/flutter/lib/common/hjviewer_admin_texts.dart b/flutter/lib/common/hjviewer_admin_texts.dart
+index a504efb..ef20c71 100644
+--- a/flutter/lib/common/hjviewer_admin_texts.dart
++++ b/flutter/lib/common/hjviewer_admin_texts.dart
+@@ -40,14 +40,15 @@ class HjvAdminTexts {
+   /// The account screens' texts in the same language (닫기, the request errors).
+   HjvTexts get account => HjvTexts(korean);
+ 
+-  String get title => _t('최고운영자: 사용자와 PC', 'Super operator: users and PCs');
++  // D-17: '관리자' in the app's texts; the server's role, commands and logs keep "operator"
++  String get title => _t('관리자 화면: 사용자와 PC', 'Admin view: users and PCs');
+   String get onlyLoggedIn => _t(
+       '계정에 로그인한 PC만 보입니다. 아무도 로그인하지 않은 PC는 서버가 알지 못합니다.',
+       'Only PCs logged in to an account are listed: the server does not know a PC nobody logged in on.');
+   String get ipNote => _t('IP는 PC가 마지막으로 서버와 동기화할 때 서버가 본 주소입니다.',
+       "A PC's IP is the address the server saw at its last sync.");
+-  String get recorded => _t('이 화면을 열거나 새로 고칠 때마다 운영자 기록에 남습니다.',
+-      'Each opening and refresh of this screen goes into the operator record.');
++  String get recorded => _t('이 화면을 열거나 새로 고칠 때마다 관리자 기록에 남습니다.',
++      'Each opening and refresh of this screen goes into the admin record.');
+   String get search => _t('검색: 이름, ID, PC, IP', 'Search: name, ID, PC, IP');
+   String get refresh => _t('새로 고침', 'Refresh');
+   String usersTab(int shown, int all) => shown == all
+@@ -77,16 +78,16 @@ class HjvAdminTexts {
+   String get pwlessOn => _t('켜짐', 'on');
+   String get pwlessOff => _t('PC에서 꺼 둠', 'turned off on the PC');
+   String get pwlessPaused => _t('관리자가 일시 중지함', 'paused by the administrator');
+-  String get pwlessExpired => _t('서버와 맞추지 못함', 'not in step with the server');
+-  String get pwlessListed =>
+-      _t('PC가 아직 확인하지 않음', 'not confirmed by the PC yet');
+-  String get pwlessRelogin => _t('다시 로그인 필요', 'needs a new login');
++  String get pwlessExpired => _t('서버와 동기화 안 됨', 'not synced with the server');
++  String get pwlessListed => _t('PC에서 로그인 필요', 'log in on the PC');
++  String get pwlessRelogin =>
++      _t('PC에서 다시 로그인 필요', 'log in again on the PC');
+   String get noUsers => _t('로그인한 사용자가 없습니다.', 'Nobody has logged in yet.');
+   String get noPcs =>
+       _t('계정에 로그인한 PC가 없습니다.', 'No PC is logged in to an account.');
+   String get noMatch => _t('찾는 항목이 없습니다.', 'Nothing matches.');
+-  String get gone => _t('이 계정은 최고운영자가 아니어서 화면을 닫았습니다.',
+-      'This account is not a super operator, so the screen closed.');
++  String get gone => _t('이 계정은 관리자 화면을 쓸 수 없어 화면을 닫았습니다.',
++      'This account cannot use the admin view, so it closed.');
+   String get ended =>
+       _t('로그인이 풀려서 화면을 닫았습니다.', 'You were logged out, so the screen closed.');
+   String get unreadable => _t('서버의 답을 읽지 못했습니다. 앱을 업데이트해 주세요.',
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index 0c6074c..9d353c3 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -19,6 +19,7 @@ import 'package:qr_flutter/qr_flutter.dart';
+ import 'package:flutter_hbb/utils/http_service.dart' as http;
+ 
+ import '../../common.dart';
++import '../../common/formatter/id_formatter.dart';
+ import '../../models/model.dart';
+ import '../../models/platform_model.dart';
+ import 'address_book.dart';
+@@ -1569,7 +1570,8 @@ void showRestartRemoteDevice(PeerInfo pi, String id, SessionID sessionId,
+                 Icons.warning_amber_rounded, translate("Restart remote device"),
+                 danger: true),
+             content: Text(
+-                "${translate('Are you sure you want to restart')} \n${pi.username}@${pi.hostname}($id) ?${hjvNote == null ? '' : '\n\n$hjvNote'}"),
++                // HJViewer: the question ends in its own mark, the ID as everywhere else (U28)
++                "${translate('Are you sure you want to restart')}\n${pi.username}@${pi.hostname}(${formatID(id)})${hjvNote == null ? '' : '\n\n$hjvNote'}"),
+             actions: [
+               dialogButton(
+                 "Cancel",
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 55a8382..4a4bb8a 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -228,12 +228,12 @@ class _PeerCardState extends State<_PeerCard>
+                           if (showNote)
+                             Expanded(
+                               child: Tooltip(
+-                                message: peer.note,
++                                message: hjvPeerNote(peer),
+                                 waitDuration: const Duration(seconds: 1),
+                                 child: Align(
+                                   alignment: Alignment.centerLeft,
+                                   child: Text(
+-                                    peer.note,
++                                    hjvPeerNote(peer),
+                                     style: isPortrait ? null : greyStyle,
+                                     textAlign: TextAlign.start,
+                                     overflow: TextOverflow.ellipsis,
+@@ -355,10 +355,10 @@ class _PeerCardState extends State<_PeerCard>
+                                   children: [
+                                     Expanded(
+                                         child: Tooltip(
+-                                      message: peer.note,
++                                      message: hjvPeerNote(peer),
+                                       waitDuration: const Duration(seconds: 1),
+                                       child: Text(
+-                                        peer.note,
++                                        hjvPeerNote(peer),
+                                         style: const TextStyle(
+                                             color: Colors.white38,
+                                             fontSize: 10),
+@@ -457,7 +457,7 @@ class _PeerCardState extends State<_PeerCard>
+               state: _hjvOnlineText(peer.online),
+               platform: peer.platform,
+               name: name,
+-              note: _showNote(peer) ? peer.note : ''),
++              note: _showNote(peer) ? hjvPeerNote(peer) : ''),
+           excludeSemantics: true,
+           child: child);
+ 
+@@ -539,9 +539,9 @@ class _PeerCardState extends State<_PeerCard>
+                   if (_showNote(peer))
+                     Expanded(
+                       child: Tooltip(
+-                        message: peer.note,
++                        message: hjvPeerNote(peer),
+                         waitDuration: const Duration(seconds: 1),
+-                        child: Text(peer.note,
++                        child: Text(hjvPeerNote(peer),
+                                 maxLines: 1,
+                                 overflow: TextOverflow.ellipsis,
+                                 style: sub)
+@@ -630,9 +630,9 @@ class _PeerCardState extends State<_PeerCard>
+                     ]).marginOnly(right: 10),
+                     if (_showNote(peer))
+                       Tooltip(
+-                        message: peer.note,
++                        message: hjvPeerNote(peer),
+                         waitDuration: const Duration(seconds: 1),
+-                        child: Text(peer.note,
++                        child: Text(hjvPeerNote(peer),
+                             maxLines: 1,
+                             overflow: TextOverflow.ellipsis,
+                             style:
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index aebcb5b..7213357 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/formatter/id_formatter.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+@@ -2714,7 +2715,8 @@ class _AboutState extends State<_About> {
+                     child: Text('${translate('Fingerprint')}: $fingerprint')
+                         .marginSymmetric(vertical: 4.0)),
+               SelectionArea(
+-                  child: Text('${translate('ID')}: $myId')
++                  // HJViewer: the ID as everywhere else, "123 456 789" (U28)
++                  child: Text('${translate('ID')}: ${formatID(myId)}')
+                       .marginSymmetric(vertical: 4.0)),
+               ...hjvAboutRows(),
+               ...hjvAboutNotice(),
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index 8dd1f55..b916125 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -14,6 +14,7 @@ import 'package:url_launcher/url_launcher.dart';
+ import 'package:url_launcher/url_launcher_string.dart';
+ 
+ import '../../common.dart';
++import '../../common/formatter/id_formatter.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../common/hjv_update.dart';
+@@ -1084,7 +1085,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                 title: Text(translate("ID")),
+                 value: Padding(
+                   padding: EdgeInsets.symmetric(vertical: 8),
+-                  child: Text(_myId),
++                  // HJViewer: the ID as everywhere else; the copy is without its spaces (U28)
++                  child: Text(formatID(_myId)),
+                 ),
+                 leading: Icon(Icons.perm_identity)),
+             ...hjvAboutTiles(),
+diff --git a/flutter/lib/models/group_model.dart b/flutter/lib/models/group_model.dart
+index d347544..f1aea26 100644
+--- a/flutter/lib/models/group_model.dart
++++ b/flutter/lib/models/group_model.dart
+@@ -1,6 +1,7 @@
+ import 'package:flutter/widgets.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hbbs/hbbs.dart';
++import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/widgets/peers_view.dart';
+ import 'package:flutter_hbb/models/model.dart';
+ import 'package:flutter_hbb/models/peer_model.dart';
+@@ -272,6 +273,8 @@ class GroupModel {
+             final data = json['data'];
+             if (data is List) {
+               for (final p in data) {
++                // HJViewer: the entry's `hjv`, for the card's second line (U27)
++                hjvKeepPeerHjv(p);
+                 final peerPayload = PeerPayload.fromJson(p);
+                 final peer = PeerPayload.toPeer(peerPayload);
+                 int index = tmpPeers.indexWhere((e) => e.id == peer.id);
+diff --git a/flutter/lib/models/user_model.dart b/flutter/lib/models/user_model.dart
+index 2f7f246..0c2170d 100644
+--- a/flutter/lib/models/user_model.dart
++++ b/flutter/lib/models/user_model.dart
+@@ -36,7 +36,8 @@ class UserModel {
+     if (preferred.isEmpty || preferred == username) {
+       return username;
+     }
+-    return '$preferred (@$username)';
++    // HJViewer: no space before the parenthesis (U28)
++    return '$preferred(@$username)';
+   }
+ 
+   WeakReference<FFI> parent;
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index c673b23..767b1e3 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -116,11 +116,11 @@ List<String> texts(HjvAccessTexts t) => [
+ void main() {
+   test('the texts are the contract\'s, in the app\'s language', () {
+     expect(
+-        [ko.refusedTitle, en.refusedTitle], ['교직원 전용 서버', 'Staff-only server']);
++        [ko.refusedTitle, en.refusedTitle], ['교직원 전용 서버', 'Faculty and staff only']);
+     expect(ko.refused,
+         '이 서버는 연세대학교 교직원만 쓸 수 있습니다. 연세포탈로 로그인하면 바로 연결되고, 다음부터는 이 창이 나오지 않습니다. 그 PC의 비밀번호는 PC가 따로 묻습니다.');
+     expect(en.refused,
+-        'This server is for Yonsei University staff only. Log in with your Yonsei portal account to connect right away; this window will not appear again. The PC asks for its own password separately.');
++        'This server is only for Yonsei University faculty and staff. Log in with your Yonsei portal account to connect right away; this window will not appear again. The PC asks for its own password separately.');
+     expect([ko.logIn, ko.connect, ko.cancel, ko.havePassword],
+         ['로그인', '연결', '취소', '이용 비밀번호가 있나요?']);
+     expect([en.logIn, en.connect, en.cancel, en.havePassword],
+@@ -477,7 +477,7 @@ void main() {
+     expect(
+         en.pcCodeText,
+         startsWith(
+-            'With a support code from a staff member, this PC accepts connections for up to 2 hours.'));
++            'With a support code from a faculty or staff member, this PC accepts connections for up to 2 hours.'));
+     expect(ko.codeHint,
+         '교직원이 알려 준 XXXX-XXXX 꼴의 8자 코드입니다. 이용 비밀번호나 PC의 일회용 비밀번호가 아닙니다.');
+     expect(ko.pcCodeOn, '지원 코드 사용 중');
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 3e4eca3..15710dd 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -297,22 +297,22 @@ void main() {
+     test('every state of the service has its line', () {
+       const mine = HjvOwner.mine;
+       expect(pcLine('active 3 $oct20', mine),
+-          ('이 PC: 내 기기 · 비밀번호 없이 연결 켜짐(내 기기 3대)', HjvPcAction.turnOff));
++          ('이 PC: 내 계정에 등록됨 · 비밀번호 없는 연결 켜짐(로그인한 기기 3대)', HjvPcAction.turnOff));
+       expect(
+-          pcLine('off', mine), ('이 PC: 내 기기 · 이 PC에서 꺼 둠', HjvPcAction.turnOn));
++          pcLine('off', mine), ('이 PC: 내 계정에 등록됨 · 이 PC에서 꺼 둠', HjvPcAction.turnOn));
+       expect(pcLine('disabled', mine),
+-          ('이 PC: 내 기기 · 관리자가 일시 중지함', HjvPcAction.none));
++          ('이 PC: 내 계정에 등록됨 · 관리자가 일시 중지함', HjvPcAction.none));
+       expect(pcLine('error network $oct20', mine),
+-          ('이 PC: 서버와 맞추지 못함(마지막 확인 10/20 14:03)', HjvPcAction.turnOff));
++          ('이 PC: 서버와 동기화 안 됨(마지막 확인 10/20 14:03)', HjvPcAction.turnOff));
+       expect(pcLine('error clock 0', mine),
+-          ('이 PC: 서버와 맞추지 못함', HjvPcAction.turnOff));
++          ('이 PC: 서버와 동기화 안 됨', HjvPcAction.turnOff));
+       expect(
+-          pcLine('expired', mine), ('이 PC: 서버와 맞추지 못함', HjvPcAction.turnOff));
++          pcLine('expired', mine), ('이 PC: 서버와 동기화 안 됨', HjvPcAction.turnOff));
+       // the list outlived its time: when the last one came
+       expect(pcLine('expired $oct20', mine),
+-          ('이 PC: 서버와 맞추지 못함(마지막 확인 10/20 14:03)', HjvPcAction.turnOff));
++          ('이 PC: 서버와 동기화 안 됨(마지막 확인 10/20 14:03)', HjvPcAction.turnOff));
+       expect(pcLine('needs-relogin', mine),
+-          ('이 PC: 다시 로그인 필요(보안 키가 바뀜)', HjvPcAction.logInAgain));
++          ('이 PC: 다시 로그인 필요(보안 키 바뀜)', HjvPcAction.logInAgain));
+       expect(pcLine('revoked', mine),
+           ('이 PC: 다른 기기가 내 PC 목록에서 뺌', HjvPcAction.addAgain));
+       expect(pcLine('listed', mine),
+@@ -332,9 +332,9 @@ void main() {
+     test('anyone at the PC can switch it off; it comes on only with a login',
+         () {
+       expect(pcLine('active 3 $oct20', HjvOwner.other),
+-          ('이 PC: 다른 계정에 등록됨 · 비밀번호 없이 연결 켜짐', HjvPcAction.turnOff));
++          ('이 PC: 다른 계정에 등록됨 · 비밀번호 없는 연결 켜짐', HjvPcAction.turnOff));
+       expect(pcLine('active 3 $oct20', HjvOwner.unknown),
+-          ('이 PC: 비밀번호 없이 연결 켜짐', HjvPcAction.turnOff));
++          ('이 PC: 비밀번호 없는 연결 켜짐', HjvPcAction.turnOff));
+       // [다시 켜기] opens the login dialog, whoever looks (design v3 §7-6)
+       for (final owner in HjvOwner.values) {
+         expect(pcLine('off', owner)?.$2, HjvPcAction.turnOn);
+@@ -365,9 +365,9 @@ void main() {
+ 
+     test('in English', () {
+       expect(pcLine('active 3 1', HjvOwner.mine, t: en)?.$1,
+-          'This PC: my device · password-less connections on (my devices: 3)');
++          'This PC: registered to your account · password-less connections on (3 devices logged in)');
+       expect(pcLine('off', HjvOwner.mine, t: en)?.$1,
+-          'This PC: my device · turned off on this PC');
++          'This PC: registered to your account · turned off on this PC');
+       expect(hjvActionLabel(en, HjvPcAction.turnOn), 'Turn on again');
+     });
+ 
+@@ -507,16 +507,16 @@ void main() {
+       expect([ko.loginEndedTitle, en.loginEndedTitle],
+           ['이 기기의 로그인이 끝났습니다', 'Your login on this device ended']);
+       expect(hjvLoginEndedText(ko, gateCloses: true),
+-          '다른 기기나 관리자가 로그아웃시켰거나 로그인 기간이 끝났습니다. 이 서버는 교직원 전용이라 다시 로그인해야 연결할 수 있습니다.');
++          '다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다. 이 서버는 교직원 전용이라 다시 로그인해야 연결할 수 있습니다.');
+       expect(hjvLoginEndedText(ko, gateCloses: null),
+-          '다른 기기나 관리자가 로그아웃시켰거나 로그인 기간이 끝났습니다. 교직원 전용 서버에서는 다시 로그인해야 연결할 수 있습니다.');
++          '다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다. 교직원 전용 서버에서는 다시 로그인해야 연결할 수 있습니다.');
+       expect(hjvLoginEndedText(ko, gateCloses: false),
+           endsWith('내 PC에 비밀번호 없이 연결하려면 다시 로그인하세요.'));
+       expect(hjvLoginEndedText(en, gateCloses: true),
+-          'Another device or the administrator logged it out, or the login expired. This server is for staff only, so log in again to connect.');
++          'Another device or the administrator logged it out, or the login expired. This server is for faculty and staff only, so log in again to connect.');
+       // a phone's A1 says it in the place of L4
+       expect(hjvLoginEndedLine(ko),
+-          '이 기기의 로그인이 끝났습니다. 다른 기기나 관리자가 로그아웃시켰거나 로그인 기간이 끝났습니다.');
++          '이 기기의 로그인이 끝났습니다. 다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다.');
+       expect(hjvLoginEndedLine(en),
+           'Your login on this device ended. Another device or the administrator logged it out, or the login expired.');
+     });
+@@ -570,7 +570,7 @@ void main() {
+       expect(hjvKeyLine(ko, ended[0], local: utc),
+           '로그인 10/20 14:03(학외) · 1.6.0 · 마지막 비밀번호 없는 연결 10/21 연구실-PC · 10/21 15:03 스스로 로그아웃');
+       expect(hjvKeyLine(ko, ended[1], local: utc),
+-          '로그인 10/20 14:03(학내) · 1.6.0 · 10/21 14:03 Galaxy (SM-S918N)에서 로그아웃시킴');
++          '로그인 10/20 14:03(학내) · 1.6.0 · 10/21 14:03 Galaxy (SM-S918N)에서 로그아웃함');
+       expect(hjvKeyLine(en, ended[1], local: utc),
+           'logged in 10/20 14:03 (on campus) · 1.6.0 · logged out from Galaxy (SM-S918N) 10/21 14:03');
+       final at = hjvTime(utc(oct21));
+@@ -581,8 +581,8 @@ void main() {
+             '10/21 14:03 로그인 기간이 끝남',
+             '10/21 14:03 같은 기기의 새 로그인으로 바뀜',
+             '10/21 14:03 이 계정의 기기가 20대를 넘어 로그아웃됨',
+-            '10/21 14:03 관리자가 로그아웃시킴',
+-            '10/21 14:03 다른 기기에서 로그아웃시킴',
++            '10/21 14:03 관리자가 로그아웃함',
++            '10/21 14:03 다른 기기에서 로그아웃함',
+           ]);
+       expect(ko.endedDevices, '최근 30일 동안 로그아웃된 기기');
+     });
+@@ -592,9 +592,9 @@ void main() {
+         () {
+       const open =
+           "이미 열려 있는 연결은 끊기지 않습니다. PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 PC 다시 시작'을 누르거나, PC를 다시 시작하세요.";
+-      expect(ko.loggedOutDevice, '그 기기를 로그아웃시켰습니다. $open');
+-      expect(ko.loggedOutOthers(2), '다른 기기 2대를 로그아웃시켰습니다. $open');
+-      expect(ko.notMineDone, '그 기기를 로그아웃시켰습니다. 연세포탈 비밀번호도 바꿔 주세요. $open');
++      expect(ko.loggedOutDevice, '그 기기를 로그아웃했습니다. $open');
++      expect(ko.loggedOutOthers(2), '다른 기기 2대를 로그아웃했습니다. $open');
++      expect(ko.notMineDone, '그 기기를 로그아웃했습니다. 연세포탈 비밀번호도 바꿔 주세요. $open');
+       expect(
+           ko.notMineEndedDone, '그 기기는 이미 로그아웃되었습니다. 연세포탈 비밀번호를 바꿔 주세요. $open');
+       for (final ask in [ko.logOutDeviceAsk, ko.logOutOthersAsk]) {
+@@ -635,30 +635,30 @@ void main() {
+           hjvNewDeviceText(ko, ended[0], local: utc),
+           'iPhone · 10/20 14:03 · 학외 네트워크 · HJViewer 1.6.0. '
+           '10/21 15:03 스스로 로그아웃 · 마지막 비밀번호 없는 연결 10/21 연구실-PC. '
+-          '지금은 로그아웃되었지만, 그때까지 이 기기로 내 PC에 비밀번호 없이 연결할 수 있었습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.');
+-      expect(ko.notMineEnded, '아님');
++          '지금은 로그아웃되었지만, 그때까지 이 기기로 내 PC에 비밀번호 없이 연결할 수 있었습니다. 내가 로그인한 것이 아니면 [내가\u00A0아님]을 누르세요.');
++      expect(ko.notMineEnded, '내가 아님');
+     });
+ 
+     test('tells what the server saw', () {
+       expect(
+           hjvNewDeviceText(ko, keys[1], local: utc),
+           'iPhone 14 Pro · 10/20 14:03 · 학외 네트워크 · HJViewer 1.6.0. '
+-          '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.');
++          '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [내가\u00A0아님]을 누르세요. 그 기기는 바로 로그아웃됩니다.');
+       expect(
+           hjvNewDeviceText(ko, keys[0], local: utc),
+           'Windows PC (연구실-PC) · 10/21 14:03 · 학내 네트워크 · HJViewer 1.6.0. '
+-          '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.');
++          '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [내가\u00A0아님]을 누르세요. 그 기기는 바로 로그아웃됩니다.');
+       expect(ko.itsMine, '내 기기 맞음');
+-      expect(ko.notMine, '아님: 로그아웃시키기');
++      expect(ko.notMine, '내가 아님');
+     });
+ 
+     test(
+-        'on a staff-only server, what [아님] does to a device still logged in (U68)',
++        'on a staff-only server, what [내가 아님] does to a device still logged in (U68)',
+         () {
+       final ended = hjvEndedKeys(keysAnswer());
+       expect(
+           hjvNewDeviceText(ko, keys[1], local: utc, gate: '그 기기는 연결할 수 없습니다.'),
+-          endsWith('[아님]을 누르세요.\n그 기기는 연결할 수 없습니다.'));
++          endsWith('[내가\u00A0아님]을 누르세요. 그 기기는 바로 로그아웃됩니다.\n그 기기는 연결할 수 없습니다.'));
+       // a device logged out already: [아님] logs nothing out
+       expect(
+           hjvNewDeviceText(ko, ended[0], local: utc, gate: '그 기기는 연결할 수 없습니다.'),
+@@ -1411,18 +1411,144 @@ void main() {
+   });
+ 
+   test(
+-      'About and the login dialog say who makes HJViewer and that it is a pilot',
++      'About says who makes HJViewer, who the administrator is and that it is a pilot (U31, U34)',
+       () {
+     expect(hjvAboutNoticeLines(ko, accountBuild: true), [
+       '만든 곳: 프로젝트TF',
+-      '본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.',
++      'HJViewer 관리자: 프로젝트TF',
++      '이 서비스는 시범 운영 중이며, 예고 없이 바뀔 수 있습니다. 현재 연세대학교 교직원만 쓸 수 있습니다.',
+     ]);
+     expect(hjvAboutNoticeLines(en, accountBuild: true), [
+-      'Made by 프로젝트TF',
+-      'This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.',
++      'Made by ProjectTF',
++      'HJViewer administrator: ProjectTF',
++      'This service is a pilot and may change without notice. It is currently available only to Yonsei University faculty and staff.',
+     ]);
++    // the signed policy's contact, as the policy wrote it, in both languages
++    expect(
++        hjvAboutNoticeLines(ko,
++            accountBuild: true, contact: ' hjv-admin@example.org '),
++        contains('HJViewer 관리자: hjv-admin@example.org'));
++    expect(
++        hjvAboutNoticeLines(en,
++            accountBuild: true, contact: 'hjv-admin@example.org'),
++        contains('HJViewer administrator: hjv-admin@example.org'));
+     // a build without the account keys has no login to the service
+     expect(hjvAboutNoticeLines(ko, accountBuild: false), ['만든 곳: 프로젝트TF']);
++    expect(
++        hjvAboutNoticeLines(ko,
++            accountBuild: false, contact: 'hjv-admin@example.org'),
++        ['만든 곳: 프로젝트TF']);
++  });
++
++  test('the login dialog says which password goes in, not that it is a pilot (U31)',
++      () {
++    expect(ko.loginWhich,
++        '연세포탈 ID와 연세포탈 비밀번호로 로그인합니다. 이용 비밀번호는 여기에 넣지 않습니다.');
++    expect(en.loginWhich,
++        'Log in with your Yonsei portal ID and Yonsei portal password. The access password does not go here.');
++  });
++
++  group('a card\'s second line in the app\'s language (U27)', () {
++    const now = 1760000000;
++    String note(Map hjv, {HjvTexts t = ko, String server = 'server note'}) =>
++        hjvPeerNoteText(t, hjv, note: server, now: now);
++
++    test('an hjv-api without `wake` keeps its own note', () {
++      expect(note({'pwless': 'active', 'kinds': [], 'wol': 'ok'}),
++          'server note');
++      expect(note({}, server: ''), '');
++    });
++
++    test('each state, in Korean and English', () {
++      final states = {
++        'active': ('비밀번호 없는 연결 켜짐', 'Password-less connections on'),
++        'off': ('PC에서 꺼 둠', 'Turned off on the PC'),
++        'disabled': ('관리자가 일시 중지함', 'Paused by the administrator'),
++        'expired': ('서버와 동기화 안 됨', 'Not synced with the server'),
++        'listed': ('PC에서 로그인 필요', 'Log in on the PC'),
++        'needs-relogin': (
++          'PC에서 다시 로그인 필요(보안 키 바뀜)',
++          'Log in again on the PC (security key changed)'
++        ),
++      };
++      for (final MapEntry(key: state, value: (k, e)) in states.entries) {
++        expect(note({'pwless': state, 'wake': ''}), k, reason: state);
++        expect(note({'pwless': state, 'wake': ''}, t: en), e, reason: state);
++      }
++      // a state this app does not know: nothing of its own, whatever the server wrote
++      expect(note({'pwless': 'frozen', 'wake': ''}), '');
++    });
++
++    test('an expired PC says when it last synced', () {
++      final hjv = {'pwless': 'expired', 'synced': now - 3 * 86400, 'wake': ''};
++      expect(note(hjv), '서버와 동기화 안 됨(마지막 확인 3일 전)');
++      expect(note(hjv, t: en),
++          'Not synced with the server (last checked 3 days ago)');
++      // without a sync, or with one of another type, no time
++      expect(note({'pwless': 'expired', 'wake': ''}), '서버와 동기화 안 됨');
++      expect(note({'pwless': 'expired', 'synced': '1', 'wake': ''}),
++          '서버와 동기화 안 됨');
++    });
++
++    test('whether it can be woken comes after a dot', () {
++      expect(note({'pwless': 'active', 'wake': 'ready'}),
++          '비밀번호 없는 연결 켜짐 · 켜기 가능');
++      expect(note({'pwless': 'off', 'wake': 'not_ready'}, t: en),
++          'Turned off on the PC · Not ready to wake');
++      expect(note({'pwless': '', 'wake': 'ready'}), '켜기 가능');
++      expect(note({'pwless': 'active', 'wake': 'later'}), '비밀번호 없는 연결 켜짐');
++    });
++
++    test('the time ago, as hjv-api counts it', () {
++      expect([for (final s in [-5, 0, 59, 60, 3599]) ko.ago(s)],
++          ['1분 전', '1분 전', '1분 전', '1분 전', '59분 전']);
++      expect([for (final s in [3600, 86399, 86400, 172800]) ko.ago(s)],
++          ['1시간 전', '23시간 전', '1일 전', '2일 전']);
++      expect([for (final s in [60, 120, 3600, 7200, 86400, 172800]) en.ago(s)], [
++        '1 minute ago',
++        '2 minutes ago',
++        '1 hour ago',
++        '2 hours ago',
++        '1 day ago',
++        '2 days ago'
++      ]);
++    });
++  });
++
++  test('U32: one verb for logging another device out, and [내가 아님] in one piece', () {
++    expect([ko.logOutDevice, en.logOutDevice], ['로그아웃', 'Log out']);
++    expect([ko.notMine, ko.notMineEnded, en.notMine, en.notMineEnded],
++        ['내가 아님', '내가 아님', 'Not me', 'Not me']);
++    for (final t in [ko, en]) {
++      final quote = t.korean ? '[내가\u00A0아님]' : '[Not\u00A0me]';
++      expect(t.newDeviceNote, contains(quote));
++      expect(t.endedDeviceNote, contains(quote));
++    }
++    for (final text in [
++      ko.logOutDeviceAsk,
++      ko.loggedOutDevice,
++      ko.loggedOutOthers(2),
++      ko.notMineDone,
++      ko.loginEndedWhy,
++      for (final left in ['removed', 'admin']) ko.leftAt(left, '10/21', ''),
++      ko.leftAt('removed', '10/21', 'PC'),
++    ]) {
++      expect(text, isNot(contains('시키')), reason: text);
++      expect(text, isNot(contains('시켰')), reason: text);
++    }
++  });
++
++  test('U35: "faculty and staff" in English, and the English that read oddly', () {
++    expect(en.loginEndedGate,
++        'This server is for faculty and staff only, so log in again to connect.');
++    expect(en.loginEndedMaybeGate,
++        'On a faculty-and-staff-only server, you need to log in again to connect.');
++    expect(en.wakeNoInfo,
++        'That PC has not reported how to wake it yet. Turn it on once and check that HJViewer is installed on it.');
++    expect(en.maker, 'Made by ProjectTF');
++    expect(en.unsynced, 'not synced with the server');
++    // the Korean stays
++    expect(ko.loginEndedGate, '이 서버는 교직원 전용이라 다시 로그인해야 연결할 수 있습니다.');
+   });
+ 
+   test('no text holds braces, which translate() takes for placeholders', () {
+@@ -1430,6 +1556,17 @@ void main() {
+       final texts = [
+         t.maker,
+         t.pilotNotice,
++        t.adminContact(t.makerName),
++        t.loginWhich,
++        t.noteActive,
++        t.noteOff,
++        t.notePaused,
++        t.noteUnsynced,
++        t.noteUnsyncedSince(t.ago(3 * 86400)),
++        t.noteListed,
++        t.noteRelogin,
++        t.noteCanWake,
++        t.noteCannotWake,
+         t.usernameTitle,
+         t.passwordTitle,
+         t.usernameMissed,
+diff --git a/flutter/test/hjviewer_account_widgets_test.dart b/flutter/test/hjviewer_account_widgets_test.dart
+index 8127b51..eadfa2b 100644
+--- a/flutter/test/hjviewer_account_widgets_test.dart
++++ b/flutter/test/hjviewer_account_widgets_test.dart
+@@ -63,8 +63,8 @@ void main() {
+         find.text('로그인 10/20 14:03(학외) · 1.6.0 · 마지막 비밀번호 없는 연결 10/21 연구실-PC'),
+         findsOneWidget);
+     expect(find.text('Windows PC (연구실-PC) · 이 기기'), findsOneWidget);
+-    // the device in use has no [로그아웃시키기]
+-    expect(find.text('로그아웃시키기'), findsOneWidget);
++    // the device in use has no [로그아웃]
++    expect(find.text('로그아웃'), findsOneWidget);
+     expect(find.text('연구실-PC · 마지막 10/21 14:03 · 30일 동안 12번'), findsNothing);
+ 
+     await tester.tap(find.text('iPhone 14 Pro'));
+@@ -75,13 +75,13 @@ void main() {
+     await tester.pumpAndSettle();
+     expect(find.text('최근 30일 동안 비밀번호 없이 연결한 PC가 없습니다.'), findsOneWidget);
+ 
+-    await tester.tap(find.text('로그아웃시키기'));
++    await tester.tap(find.text('로그아웃'));
+     await tester.pump();
+     expect(out, [12]);
+   });
+ 
+   testWidgets(
+-      'the devices whose login ended stay listed for 30 days, without [로그아웃시키기] (U1-b)',
++      'the devices whose login ended stay listed for 30 days, without [로그아웃] (U1-b)',
+       (tester) async {
+     final keys = [
+       HjvKey(ckid: 11, name: 'Windows PC', lastLogin: oct20, current: true),
+@@ -101,9 +101,9 @@ void main() {
+         HjvKeysList(
+             t: ko, keys: keys, ended: ended, onLogOut: (_) {}, local: utc));
+     expect(find.text('최근 30일 동안 로그아웃된 기기'), findsOneWidget);
+-    expect(find.text('로그인 10/20 14:03 · 10/21 14:03 Windows PC에서 로그아웃시킴'),
++    expect(find.text('로그인 10/20 14:03 · 10/21 14:03 Windows PC에서 로그아웃함'),
+         findsOneWidget);
+-    expect(find.text('로그아웃시키기'), findsNothing);
++    expect(find.text('로그아웃'), findsNothing);
+   });
+ 
+   testWidgets(
+@@ -123,7 +123,7 @@ void main() {
+             onSetPassword: () => setPassword++);
+ 
+     await show(tester, lines('off', passwordSet: false));
+-    expect(find.text('이 PC: 내 기기 · 이 PC에서 꺼 둠'), findsOneWidget);
++    expect(find.text('이 PC: 내 계정에 등록됨 · 이 PC에서 꺼 둠'), findsOneWidget);
+     await tester.tap(find.text('다시 켜기'));
+     expect(actions, [HjvPcAction.turnOn]);
+     expect(find.text('영구 비밀번호: 없음'), findsOneWidget);
+@@ -131,7 +131,7 @@ void main() {
+     expect(setPassword, 1);
+ 
+     await show(tester, lines('active 3 $oct20', passwordSet: true));
+-    expect(find.text('이 PC: 내 기기 · 비밀번호 없이 연결 켜짐(내 기기 3대)'), findsOneWidget);
++    expect(find.text('이 PC: 내 계정에 등록됨 · 비밀번호 없는 연결 켜짐(로그인한 기기 3대)'), findsOneWidget);
+     expect(find.text('다시 켜기'), findsNothing);
+     await tester.tap(find.text('끄기'));
+     expect(actions, [HjvPcAction.turnOn, HjvPcAction.turnOff]);
+@@ -139,7 +139,7 @@ void main() {
+     expect(find.text('정하기'), findsNothing);
+ 
+     await show(tester, lines('disabled', passwordSet: false, canSet: false));
+-    expect(find.text('이 PC: 내 기기 · 관리자가 일시 중지함'), findsOneWidget);
++    expect(find.text('이 PC: 내 계정에 등록됨 · 관리자가 일시 중지함'), findsOneWidget);
+     expect(find.byType(OutlinedButton), findsNothing);
+ 
+     // while the PC password is being asked, no line for it
+@@ -224,9 +224,9 @@ void main() {
+     expect(find.text('새 기기에서 로그인했습니다'), findsOneWidget);
+     expect(
+         find.text('iPhone 14 Pro · 10/20 14:03 · 학외 네트워크 · HJViewer 1.6.0. '
+-            '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [아님]을 누르세요.'),
++            '이 기기로 내 PC에 비밀번호 없이 연결할 수 있습니다. 내가 로그인한 것이 아니면 [내가\u00A0아님]을 누르세요. 그 기기는 바로 로그아웃됩니다.'),
+         findsOneWidget);
+-    await tester.tap(find.text('아님: 로그아웃시키기'));
++    await tester.tap(find.text('내가 아님'));
+     await tester.tap(find.text('내 기기 맞음'));
+     expect(answers, ['not mine', 'mine']);
+     await settle(tester);
+@@ -251,7 +251,7 @@ void main() {
+             onNotMine: () => answers.add('not mine'),
+             local: utc));
+     expect(find.text('로그인했던 기기를 확인해 주세요'), findsOneWidget);
+-    await tester.tap(find.text('아님'));
++    await tester.tap(find.text('내가 아님'));
+     expect(answers, ['not mine']);
+     await settle(tester);
+   });
+diff --git a/flutter/test/hjviewer_admin_test.dart b/flutter/test/hjviewer_admin_test.dart
+index 7f61194..1611b27 100644
+--- a/flutter/test/hjviewer_admin_test.dart
++++ b/flutter/test/hjviewer_admin_test.dart
+@@ -188,7 +188,7 @@ void main() {
+       () {
+     final gone = hjvAdminAnswer(ko, 404, {'error': 'not found'});
+     expect((gone.closes, gone.overview, gone.error),
+-        ('이 계정은 최고운영자가 아니어서 화면을 닫았습니다.', null, ''));
++        ('이 계정은 관리자 화면을 쓸 수 없어 화면을 닫았습니다.', null, ''));
+     final ended = hjvAdminAnswer(ko, 401, {'error': 'invalid token'});
+     expect((ended.closes, ended.overview, ended.error),
+         ('로그인이 풀려서 화면을 닫았습니다.', null, ''));
+@@ -415,7 +415,7 @@ void main() {
+       '계정 홍길동 (2026000001)',
+       'OS 모름 · 버전 모름',
+       '동기화 기록 없음 · IP 모름',
+-      '비밀번호 없는 연결: PC가 아직 확인하지 않음',
++      '비밀번호 없는 연결: PC에서 로그인 필요',
+     ]);
+ 
+     // the wide table's cells
+@@ -437,7 +437,7 @@ void main() {
+       'OS 모름 · 버전 모름',
+       '동기화 기록 없음',
+       'IP 모름',
+-      'PC가 아직 확인하지 않음',
++      'PC에서 로그인 필요',
+     ]);
+     expect(hjvAdminPcCells(en, office, now: now, local: kst), [
+       'lab-pc2\n987 654 321',
+@@ -467,16 +467,16 @@ void main() {
+       '켜짐',
+       'PC에서 꺼 둠',
+       '관리자가 일시 중지함',
+-      '서버와 맞추지 못함',
+-      'PC가 아직 확인하지 않음',
+-      '다시 로그인 필요',
++      '서버와 동기화 안 됨',
++      'PC에서 로그인 필요',
++      'PC에서 다시 로그인 필요',
+       'frozen',
+     ]);
+   });
+ 
+   test('the entry\'s name, and the systems hjv-api names by their words', () {
+-    expect(ko.title, '최고운영자: 사용자와 PC');
+-    expect(en.title, 'Super operator: users and PCs');
++    expect(ko.title, '관리자 화면: 사용자와 PC');
++    expect(en.title, 'Admin view: users and PCs');
+     expect(
+         ['windows', 'macos', 'linux', 'android', 'ios', 'freebsd', 'Windows 11']
+             .map(hjvAdminOsName),
+diff --git a/flutter/test/hjviewer_admin_widgets_test.dart b/flutter/test/hjviewer_admin_widgets_test.dart
+index cc83389..496ef45 100644
+--- a/flutter/test/hjviewer_admin_widgets_test.dart
++++ b/flutter/test/hjviewer_admin_widgets_test.dart
+@@ -13,7 +13,7 @@ import 'package:settings_ui/settings_ui.dart';
+ // Dart tests. The portal IDs, names, hosts and addresses are test values.
+ 
+ const ko = HjvAdminTexts(true);
+-const title = '최고운영자: 사용자와 PC';
++const title = '관리자 화면: 사용자와 PC';
+ const ended = '로그인이 풀려서 화면을 닫았습니다.';
+ 
+ /// The times as a device in Korea shows them, whatever the zone of the machine the tests run on.
+@@ -218,7 +218,7 @@ void main() {
+     expect(
+         find.text('계정에 로그인한 PC만 보입니다. 아무도 로그인하지 않은 PC는 서버가 알지 못합니다. '
+             'IP는 PC가 마지막으로 서버와 동기화할 때 서버가 본 주소입니다. '
+-            '이 화면을 열거나 새로 고칠 때마다 운영자 기록에 남습니다.'),
++            '이 화면을 열거나 새로 고칠 때마다 관리자 기록에 남습니다.'),
+         findsOneWidget);
+     expect(find.text('사용자 3명 · 활성 2명(최근 30일 사용) · PC 3대 · 10/14 09:30 기준'),
+         findsOneWidget);
+@@ -261,7 +261,7 @@ void main() {
+       'OS 모름 · 버전 모름',
+       '동기화 기록 없음',
+       'IP 모름',
+-      'PC가 아직 확인하지 않음',
++      'PC에서 로그인 필요',
+       'lab-pc2\n987 654 321',
+       '198.51.100.7\n198.51.100.7/24',
+       'PC에서 꺼 둠',
+@@ -471,7 +471,7 @@ void main() {
+                   })),
+         ]));
+     await tester.pump();
+-    expect(gone, ['이 계정은 최고운영자가 아니어서 화면을 닫았습니다.']);
++    expect(gone, ['이 계정은 관리자 화면을 쓸 수 없어 화면을 닫았습니다.']);
+     expect(find.text(title), findsNothing);
+     expect(find.text('사용자 3'), findsNothing);
+   });
+@@ -498,7 +498,7 @@ void main() {
+       return (404, {'error': 'not found'});
+     });
+     expect(asked, ['/api/hjv/admin/overview']);
+-    expect(answer.closes, '이 계정은 최고운영자가 아니어서 화면을 닫았습니다.');
++    expect(answer.closes, '이 계정은 관리자 화면을 쓸 수 없어 화면을 닫았습니다.');
+     await tester.pump();
+     expect(find.text(title), findsNothing);
+     // a request that got no answer says why
+diff --git a/src/lang/en.rs b/src/lang/en.rs
+index 092ff9c..9a64b56 100644
+--- a/src/lang/en.rs
++++ b/src/lang/en.rs
+@@ -285,5 +285,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Enable TCP tunneling", "Enable port forwarding"),
+         ("Request access to your device", "Asking to connect to this PC"),
+         ("Accessible devices", "My PCs"),
++        ("Are you sure you want to restart", "Restart this device?"),
+     ].iter().cloned().collect();
+ }
+diff --git a/src/lang/ko.rs b/src/lang/ko.rs
+index a01e090..279223a 100644
+--- a/src/lang/ko.rs
++++ b/src/lang/ko.rs
+@@ -76,7 +76,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Connection Error", "연결 오류"),
+         ("Error", "오류"),
+         ("Reset by the peer", "피어에 의해 초기화"),
+-        ("Connecting...", "연결 중..."),
++        ("Connecting...", "연결하는 중…"),
+         ("Connection in progress. Please wait.", "연결이 진행 중입니다. 기다려 주세요."),
+         ("Please try 1 minute later", "1분 뒤 다시 시도해 주세요."),
+         ("Login Error", "로그인 오류"),
+@@ -185,7 +185,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Relayed and unencrypted connection", "릴레이 및 암호화되지 않은 연결"),
+         ("Enter Remote ID", "원격 ID 입력"),
+         ("Enter your password", "비밀번호 입력"),
+-        ("Logging in...", "로그인 중..."),
++        ("Logging in...", "로그인하는 중…"),
+         ("Enable RDP session sharing", "RDP 세션 공유 허용"),
+         ("Auto Login", "자동 로그인"),
+         ("Enable direct IP access", "직접 IP 액세스 허용"),
+@@ -312,7 +312,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Set permanent password", "영구 비밀번호 설정"),
+         ("Enable remote restart", "원격 재시작 허용"),
+         ("Restart remote device", "원격 PC 다시 시작"),
+-        ("Are you sure you want to restart", "다시 시작하시겠습니까"),
++        ("Are you sure you want to restart", "다시 시작할까요?"),
+         ("Restarting remote device", "원격 장치를 다시 시작하는 중"),
+         ("remote_restarting_tip", "원격 장치가 다시 시작되고 있습니다. 이 메시지 상자를 닫고 잠시 후 영구 비밀번호로 다시 연결해 주세요"),
+         ("Copied", "복사되었습니다"),

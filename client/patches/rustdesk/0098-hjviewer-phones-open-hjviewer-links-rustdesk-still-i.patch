@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 01:59:54 +0900
+Subject: [PATCH 098/147] hjviewer: phones open hjviewer:// links, rustdesk://
+ still in 1.9
+
+TV-C6 (platform files, D-13): the iOS URL type names the app's bundle ID and lists hjviewer
+before rustdesk; the Android deep-link intent filter takes hjviewer next to rustdesk. rustdesk://,
+which the upstream RustDesk app also claims, goes in the next release. Windows already registers
+hjviewer://; the link handling (password dropped, ask once) is the Dart part.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../android/app/src/main/AndroidManifest.xml  |  4 +++-
+ flutter/ios/Runner/Info.plist                 |  3 ++-
+ flutter/test/hjviewer_android_test.dart       | 20 +++++++++++++++++++
+ 3 files changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/android/app/src/main/AndroidManifest.xml b/flutter/android/app/src/main/AndroidManifest.xml
+index 94e3f90..0d8d692 100644
+--- a/flutter/android/app/src/main/AndroidManifest.xml
++++ b/flutter/android/app/src/main/AndroidManifest.xml
+@@ -53,11 +53,13 @@
+                 <category android:name="android.intent.category.LAUNCHER" />
+             </intent-filter>
+ 
+-            <!-- Intent for deep linking-->
++            <!-- Intent for deep linking; HJViewer: hjviewer:// is the app's own, rustdesk:// (shared
++                 with upstream RustDesk) is kept in 1.9 and goes in the next release (C6) -->
+             <intent-filter>
+                 <action android:name="android.intent.action.VIEW" />
+                 <category android:name="android.intent.category.DEFAULT" />
+                 <category android:name="android.intent.category.BROWSABLE" />
++                <data android:scheme="hjviewer" />
+                 <data android:scheme="rustdesk" />
+             </intent-filter>
+         </activity>
+diff --git a/flutter/ios/Runner/Info.plist b/flutter/ios/Runner/Info.plist
+index ead1864..d22a5da 100644
+--- a/flutter/ios/Runner/Info.plist
++++ b/flutter/ios/Runner/Info.plist
+@@ -37,9 +37,10 @@
+ 			<key>CFBundleURLIconFile</key>
+ 			<string></string>
+ 			<key>CFBundleURLName</key>
+-			<string>com.carriez.rustdesk</string>
++			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+ 			<key>CFBundleURLSchemes</key>
+ 			<array>
++				<string>hjviewer</string>
+ 				<string>rustdesk</string>
+ 			</array>
+ 		</dict>
+diff --git a/flutter/test/hjviewer_android_test.dart b/flutter/test/hjviewer_android_test.dart
+index daefd97..7b30f9e 100644
+--- a/flutter/test/hjviewer_android_test.dart
++++ b/flutter/test/hjviewer_android_test.dart
+@@ -137,4 +137,24 @@ void main() {
+       }
+     }
+   });
++
++  test('phones open hjviewer:// links, and rustdesk:// in 1.9 (C6)', () {
++    final manifest =
++        File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
++    final filter = RegExp(r'<intent-filter>(?:(?!</intent-filter>)[\s\S])*'
++            r'android\.intent\.action\.VIEW[\s\S]*?</intent-filter>')
++        .firstMatch(manifest)!
++        .group(0)!;
++    expect(filter, contains('<data android:scheme="hjviewer" />'));
++    expect(filter, contains('<data android:scheme="rustdesk" />'));
++    expect(filter, contains('android.intent.category.BROWSABLE'));
++    final plist = File('ios/Runner/Info.plist').readAsStringSync();
++    expect(
++        RegExp(r'<key>CFBundleURLSchemes</key>\s*<array>\s*'
++                r'<string>hjviewer</string>\s*<string>rustdesk</string>\s*'
++                r'</array>')
++            .hasMatch(plist),
++        isTrue);
++    expect(plist, isNot(contains('com.carriez.rustdesk')));
++  });
+ }

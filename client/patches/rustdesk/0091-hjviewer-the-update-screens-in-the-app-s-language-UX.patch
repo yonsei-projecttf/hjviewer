@@ -1,0 +1,868 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:16:43 +0900
+Subject: [PATCH 091/147] hjviewer: the update screens in the app's language
+ (UX-W2)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+U35 (D3 (a), decided): every text of the update screens (P1-P7, B1, N1-N2,
+C1a-U2, W1-W6, A1-A4, M1, I1-I3, E1-E4, O1) has an English side; an English
+UI shows them in English, a Korean UI as before. The policy's own texts (its
+notes and contact) show as the policy wrote them. The language follows the
+window that asks: hjvEnabled() points HjvUpdateText at translate(), so a
+session window's card for a PC below the minimum follows its UI too, and a
+test without the core stays Korean. The deadline reads "November 23, 00:00"
+in English. HjvUpdateText keeps its static switch (set from translate since
+1.8.2 for About) rather than becoming an instance as the design sketched: the
+same texts with no change at the call sites beyond dropping const.
+
+D-1: where an update screen shows the policy's contact (whom to ask, the OS
+that is too old, the move to Play), it reads "HJViewer 관리자: <contact>" /
+"HJViewer administrator: <contact>", as About does; never a contact in the
+app.
+
+U43: a Windows PC that runs HJViewer without installing it hears, after
+"다음부터는 새 파일(HJViewer-<latest>.exe)을 실행하세요.", "자주 쓰는 PC라면 새
+버전에서 [설치하기]를 누르세요. 설치하면 다음부터는 저절로 업데이트됩니다." /
+"If you use this PC often, press [Install] in the new version: once
+installed, it updates by itself."
+
+Tests: hjv_update_test.dart runs every screen, step and failure it knows on an
+English UI (no Hangul, no braces, no link) and checks the English of the main
+lines, U43 and the contact line; the gate test's contact line follows D-1.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_update.dart       |  41 ++-
+ flutter/lib/common/hjv_update_model.dart | 353 ++++++++++++++---------
+ flutter/test/hjv_update_gate_test.dart   |   4 +-
+ flutter/test/hjv_update_test.dart        | 160 +++++++++-
+ 4 files changed, 399 insertions(+), 159 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_update.dart b/flutter/lib/common/hjv_update.dart
+index ec3ece8..9f529fd 100644
+--- a/flutter/lib/common/hjv_update.dart
++++ b/flutter/lib/common/hjv_update.dart
+@@ -203,17 +203,30 @@ final _peersTold = <String>{};
+ OverlayEntry? _peerCard;
+ 
+ /// Whether this build takes part: a build pinned to a server, with its update keys. False
+-/// while the core cannot be asked yet.
++/// while the core cannot be asked yet. Each window that asks has the texts in its UI's
++/// language from then on (U35; a session window runs no hjvInitUpdate).
+ bool hjvEnabled() {
+   final known = _takesPart;
+   if (known != null) return known;
+   try {
+-    return _takesPart = hjvHost.get(_kState).isNotEmpty;
++    _takesPart = hjvHost.get(_kState).isNotEmpty;
++    if (_takesPart!) HjvUpdateText.korean = _uiKorean;
++    return _takesPart!;
+   } catch (_) {
+     return false;
+   }
+ }
+ 
++/// The update screens in the UI's language (U35): Korean, else English; Korean while
++/// translate() cannot be asked.
++bool _uiKorean() {
++  try {
++    return translate('Cancel') == '취소';
++  } catch (_) {
++    return true;
++  }
++}
++
+ /// For a test: another host, and nothing remembered of the one before.
+ void hjvUseHost(HjvHost host) {
+   hjvHost = host;
+@@ -305,8 +318,6 @@ Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) {
+ /// app comes back to the front after an hour and right after a login.
+ void hjvInitUpdate() {
+   if (!hjvEnabled()) return;
+-  // Settings → About's lines in the UI's language
+-  HjvUpdateText.korean = () => translate('Cancel') == '취소';
+   // the app starts whatever happens here
+   try {
+     _refresh();
+@@ -591,7 +602,7 @@ void hjvShowUpdate() {
+ CustomAlertDialog hjvBlockedDialog(HjvUpdateInfo info,
+         {required VoidCallback onClose, required VoidCallback onUpdate}) =>
+     CustomAlertDialog(
+-      title: const Text(HjvUpdateText.blockedTitle),
++      title: Text(HjvUpdateText.blockedTitle),
+       content: Text(HjvUpdateText.blockedBody(info.min)),
+       actions: [
+         _button(HjvUpdateText.close, onClose, outline: true),
+@@ -630,10 +641,10 @@ void _closeMove() {
+ void _showMoveToPlay() {
+   final contact = hjvUpdate.value.contact;
+   _show<void>((setState, close, context) => CustomAlertDialog(
+-        title: const Text(HjvUpdateText.moveTitle),
++        title: Text(HjvUpdateText.moveTitle),
+         content: Text([
+           HjvUpdateText.moveSteps,
+-          if (contact.isNotEmpty) contact,
++          if (contact.isNotEmpty) HjvUpdateText.contact(contact),
+         ].join('\n\n')),
+         actions: [_button(HjvUpdateText.close, close)],
+         onCancel: close,
+@@ -685,8 +696,8 @@ Future<void> hjvRunAction(HjvAction action) async {
+ void _confirmUpdateNow() {
+   _show<void>(
+       (setState, close, context) => CustomAlertDialog(
+-            title: const Text(HjvUpdateText.updateNow),
+-            content: const Text(HjvUpdateText.closesNow),
++            title: Text(HjvUpdateText.updateNow),
++            content: Text(HjvUpdateText.closesNow),
+             actions: [
+               _button(HjvUpdateText.close, close, outline: true),
+               _button(HjvUpdateText.updateNow, () {
+@@ -934,7 +945,7 @@ class HjvAbout extends StatelessWidget {
+                         padding: const EdgeInsets.symmetric(horizontal: 16),
+                         visualDensity: VisualDensity.standard),
+                     onPressed: hjvShowUpdate,
+-                    child: const Text(HjvUpdateText.update)),
++                    child: Text(HjvUpdateText.update)),
+               ],
+             ]),
+           ]),
+@@ -1082,7 +1093,7 @@ class _HjvPeerCardState extends State<HjvPeerCard> {
+         Text(widget.notice.text),
+         if (_asking) ...[
+           gap,
+-          const Text(HjvUpdateText.linkAsking),
++          Text(HjvUpdateText.linkAsking),
+           gap,
+           const LinearProgressIndicator(),
+         ],
+@@ -1111,14 +1122,12 @@ class _HjvPeerCardState extends State<HjvPeerCard> {
+               Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                 if (widget.notice.offersLink && answer == null && !_asking)
+                   TextButton(
+-                      onPressed: _ask,
+-                      child: const Text(HjvUpdateText.linkButton)),
++                      onPressed: _ask, child: Text(HjvUpdateText.linkButton)),
+                 if (again)
+-                  TextButton(
+-                      onPressed: _ask, child: const Text(HjvUpdateText.retry)),
++                  TextButton(onPressed: _ask, child: Text(HjvUpdateText.retry)),
+                 TextButton(
+                     onPressed: widget.onClose,
+-                    child: const Text(HjvUpdateText.close)),
++                    child: Text(HjvUpdateText.close)),
+               ]),
+             ],
+           ),
+diff --git a/flutter/lib/common/hjv_update_model.dart b/flutter/lib/common/hjv_update_model.dart
+index c218f10..d7ebccd 100644
+--- a/flutter/lib/common/hjv_update_model.dart
++++ b/flutter/lib/common/hjv_update_model.dart
+@@ -59,9 +59,15 @@ DateTime hjvLocalTime(int unix) =>
+ 
+ String _two(int n) => n.toString().padLeft(2, '0');
+ 
+-/// "11월 23일 0시", with the minutes only when there are some.
+-String hjvDeadline(DateTime t) =>
+-    '${t.month}월 ${t.day}일 ${t.hour}시${t.minute == 0 ? '' : ' ${t.minute}분'}';
++/// "11월 23일 0시", with the minutes only when there are some; "November 23, 00:00" in English.
++String hjvDeadline(DateTime t) => HjvUpdateText.korean()
++    ? '${t.month}월 ${t.day}일 ${t.hour}시${t.minute == 0 ? '' : ' ${t.minute}분'}'
++    : '${_months[t.month - 1]} ${t.day}, ${hjvClockTime(t)}';
++
++const _months = [
++  'January', 'February', 'March', 'April', 'May', 'June', //
++  'July', 'August', 'September', 'October', 'November', 'December'
++];
+ 
+ /// "02:10"
+ String hjvClockTime(DateTime t) => '${_two(t.hour)}:${_two(t.minute)}';
+@@ -294,142 +300,215 @@ class HjvSteps {
+   });
+ }
+ 
+-/// The Korean texts (design 2-5). Variables never carry a particle whose form depends on them.
++/// The texts of the update screens (design 2-5), in the UI's language (U35): Korean, else
++/// English. The policy's own texts (its notes and contact) show as the policy wrote them.
++/// Variables never carry a particle whose form depends on them.
+ class HjvUpdateText {
+-  /// Whether the UI is Korean, for the texts of Settings → About below, which have an English
+-  /// side (hjv_update.dart sets it from translate()); the update screens are Korean only.
++  /// Whether the UI is Korean (hjv_update.dart sets it from translate()).
+   static bool Function() korean = () => true;
+   static String _t(String ko, String en) => korean() ? ko : en;
+ 
+   // P1-P7
+-  static const title = '업데이트가 필요합니다';
+-  static String body(String min) =>
+-      '지금 버전으로는 다른 기기에 연결할 수 없습니다. ${updateTo(min)}';
+-  static String updateTo(String min) => 'HJViewer를 $min 이상으로 업데이트하세요.';
++  static String get title => _t('업데이트가 필요합니다', 'Update required');
++  static String body(String min) => _t(
++      '지금 버전으로는 다른 기기에 연결할 수 없습니다. ${updateTo(min)}',
++      'This version cannot connect to other devices. ${updateTo(min)}');
++  static String updateTo(String min) =>
++      _t('HJViewer를 $min 이상으로 업데이트하세요.', 'Update HJViewer to $min or later.');
+   static String versions(HjvUpdateInfo i) => [
+         _t('현재 ${i.current}', 'Current ${i.current}'),
+         if (i.min.isNotEmpty) _t('최소 ${i.min}', 'Minimum ${i.min}'),
+         if (i.latest.isNotEmpty) _t('최신 ${i.latest}', 'Latest ${i.latest}'),
+       ].join(' · ');
+-  static const incomingStillWorks =
+-      '업데이트 전에도 다른 기기에서 이 기기로 들어오는 연결은 받을 수 있습니다.';
+-  static const preparing = '새 버전을 준비하고 있습니다. 잠시 뒤 [다시 확인]을 누르세요.';
+-  static const update = '업데이트';
+-  static const recheck = '다시 확인';
+-  static const retry = '다시 시도';
+-  static const close = '닫기';
+-  static const logIn = '로그인';
+-  static String askAdmin(String contact) =>
+-      ['새 버전은 관리자에게 받을 수도 있습니다.', if (contact.isNotEmpty) contact].join(' ');
++  static String get incomingStillWorks => _t(
++      '업데이트 전에도 다른 기기에서 이 기기로 들어오는 연결은 받을 수 있습니다.',
++      'Until you update, this device still takes connections from other devices.');
++  static String get preparing => _t('새 버전을 준비하고 있습니다. 잠시 뒤 [다시 확인]을 누르세요.',
++      'The new version is being prepared. Press [Check again] in a moment.');
++  static String get update => _t('업데이트', 'Update');
++  static String get recheck => _t('다시 확인', 'Check again');
++  static String get retry => _t('다시 시도', 'Retry');
++  static String get close => _t('닫기', 'Close');
++  static String get logIn => _t('로그인', 'Log in');
++
++  /// Who "관리자" is: the contact of the signed policy (`contact_ko`) as it wrote it (D-1).
++  static String contact(String contact) =>
++      _t('HJViewer 관리자: $contact', 'HJViewer administrator: $contact');
++  static String askAdmin(String contact) => [
++        _t('새 버전은 관리자에게 받을 수도 있습니다.',
++            'You can also get the new version from the administrator.'),
++        if (contact.isNotEmpty) HjvUpdateText.contact(contact)
++      ].join(' ');
+ 
+   // B1
+-  static const blockedTitle = '업데이트 필요';
+-  static String blockedBody(String min) =>
+-      'HJViewer를 $min 이상으로 업데이트한 뒤 연결할 수 있습니다.';
++  static String get blockedTitle => _t('업데이트 필요', 'Update required');
++  static String blockedBody(String min) => _t(
++      'HJViewer를 $min 이상으로 업데이트한 뒤 연결할 수 있습니다.',
++      'You can connect once HJViewer is updated to $min or later.');
+ 
+   // N1, N2
+-  static const newerTitle = '새 버전이 나왔습니다';
+-  static String newerBody(String latest) =>
+-      'HJViewer를 새 버전($latest)으로 업데이트할 수 있습니다.';
+-  static String newer(String latest) => '$newerTitle($latest).';
+-  static String graceLine(String date) => '$date부터는 업데이트해야 연결할 수 있습니다.';
+-  static const installsItself = '쓰지 않을 때 자동으로 설치됩니다.';
++  static String get newerTitle => _t('새 버전이 나왔습니다', 'A new version is out');
++  static String newerBody(String latest) => _t(
++      'HJViewer를 새 버전($latest)으로 업데이트할 수 있습니다.',
++      'You can update HJViewer to the new version ($latest).');
++  static String newer(String latest) =>
++      _t('$newerTitle($latest).', '$newerTitle ($latest).');
++  static String graceLine(String date) => _t('$date부터는 업데이트해야 연결할 수 있습니다.',
++      'From $date, you need to update to connect.');
++  static String get installsItself =>
++      _t('쓰지 않을 때 자동으로 설치됩니다.', 'It installs by itself while not in use.');
+ 
+   // C1a, C1b, U1, U2
+-  static String peerRemote(String id) => '원격 PC $id';
++  static String peerRemote(String id) => _t('원격 PC $id', 'Remote PC $id');
++  static String _peerNeeds(String version, String min) => _t(
++      '그 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min).',
++      "That PC's HJViewer needs an update (now $version, minimum $min).");
+   static String peerNeedsLink(String version, String min) =>
+-      '그 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min). 그 PC의 브라우저로 새 버전을 받아 설치할 수 있습니다.';
++      '${_peerNeeds(version, min)} ${_t('그 PC의 브라우저로 새 버전을 받아 설치할 수 있습니다.', "You can get the new version with that PC's browser and install it.")}';
+   static String peerUpdatesItself(String version, String min) =>
+-      '그 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min). 그 PC의 HJViewer 창에서 [지금 업데이트]를 누르면 설치됩니다. 설치하는 동안 연결이 잠시 끊깁니다.';
++      '${_peerNeeds(version, min)} ${_t('그 PC의 HJViewer 창에서 [지금 업데이트]를 누르면 설치됩니다. 설치하는 동안 연결이 잠시 끊깁니다.', "Pressing [Update now] in that PC's HJViewer window installs it. The connection drops for a moment while it installs.")}';
+   static String peerRunsNew(String version, String min) =>
+-      '그 PC의 HJViewer는 업데이트가 필요합니다(지금 $version, 최소 $min). 그 PC의 HJViewer 창에서 [업데이트]를 누르면 새 버전을 내려받고, [지금 실행]을 누르면 새 버전이 열립니다. 그때 연결이 잠시 끊깁니다.';
+-  static const linkButton = '그 PC용 설치 링크';
+-  static const linkAsking = '설치 링크를 만드는 중…';
+-  static String linkEnter(int minutes) =>
+-      'PC의 브라우저 주소창에 아래 주소를 입력하세요. $minutes분 동안 쓸 수 있습니다.';
+-  static const linkCopied = '주소를 복사했습니다. 원격 PC의 주소창에 붙여 넣어도 됩니다.';
+-  static const linkThen =
+-      '내려받은 파일을 실행하고 Windows 확인 창에서 [예]를 누르세요. 설치하는 동안 연결이 잠시 끊깁니다. HJViewer 파일 전송으로 설치 파일을 보내도 됩니다.';
+-  static const linkNeedsLogin =
+-      '로그인하면 설치 링크를 만들 수 있습니다. 또는 관리자에게 받은 설치 파일을 HJViewer 파일 전송으로 보내세요.';
+-  static const linkFailed =
+-      '설치 링크를 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요. 관리자에게 받은 설치 파일을 HJViewer 파일 전송으로 보내도 됩니다.';
++      '${_peerNeeds(version, min)} ${_t('그 PC의 HJViewer 창에서 [업데이트]를 누르면 새 버전을 내려받고, [지금 실행]을 누르면 새 버전이 열립니다. 그때 연결이 잠시 끊깁니다.', "In that PC's HJViewer window, [Update] downloads the new version and [Run now] opens it. The connection drops for a moment then.")}';
++  static String get linkButton => _t('그 PC용 설치 링크', 'Install link for that PC');
++  static String get linkAsking =>
++      _t('설치 링크를 만드는 중…', 'Making the install link…');
++  static String linkEnter(int minutes) => _t(
++      'PC의 브라우저 주소창에 아래 주소를 입력하세요. $minutes분 동안 쓸 수 있습니다.',
++      "Type the address below into the PC's browser address bar. It works for $minutes minutes.");
++  static String get linkCopied => _t('주소를 복사했습니다. 원격 PC의 주소창에 붙여 넣어도 됩니다.',
++      "Address copied. You can also paste it into the remote PC's address bar.");
++  static String get linkThen => _t(
++      '내려받은 파일을 실행하고 Windows 확인 창에서 [예]를 누르세요. 설치하는 동안 연결이 잠시 끊깁니다. HJViewer 파일 전송으로 설치 파일을 보내도 됩니다.',
++      "Run the downloaded file and press [Yes] in the Windows prompt. The connection drops for a moment while it installs. You can also send the installer with HJViewer's file transfer.");
++  static String get linkNeedsLogin => _t(
++      '로그인하면 설치 링크를 만들 수 있습니다. 또는 관리자에게 받은 설치 파일을 HJViewer 파일 전송으로 보내세요.',
++      "Log in to make an install link. Or send the installer you got from the administrator with HJViewer's file transfer.");
++  static String get linkFailed => _t(
++      '설치 링크를 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요. 관리자에게 받은 설치 파일을 HJViewer 파일 전송으로 보내도 됩니다.',
++      "Could not make the install link. Please try again later. You can also send the installer you got from the administrator with HJViewer's file transfer.");
+ 
+   // W1-W6
+-  static const winInstalls = '이 PC는 쓰지 않을 때 새 버전을 자동으로 설치합니다.';
+-  static const winNow =
+-      '지금 설치하려면 [지금 업데이트]를 누르세요. 설치하는 동안 HJViewer가 잠시 닫히고 원격 연결이 끊깁니다.';
+-  static const winUnbound =
+-      '이 PC는 아직 내 PC 목록에 없어 새 버전을 받을 수 없습니다. 이 PC에서 로그인하면 자동으로 업데이트됩니다.';
+-  static String winPortable(String latest) =>
+-      "[업데이트]를 누르면 새 버전을 '다운로드' 폴더에 내려받아 확인한 뒤 실행합니다. 이 창은 닫히고 새 버전이 열립니다. 다음부터는 새 파일(HJViewer-$latest.exe)을 실행하세요.";
+-  static const updateNow = '지금 업데이트';
+-  static const runNow = '지금 실행';
+-  static const waiting = '업데이트를 준비하는 중…';
++  static String get winInstalls => _t('이 PC는 쓰지 않을 때 새 버전을 자동으로 설치합니다.',
++      'This PC installs new versions by itself while it is not in use.');
++  static String get winNow => _t(
++      '지금 설치하려면 [지금 업데이트]를 누르세요. 설치하는 동안 HJViewer가 잠시 닫히고 원격 연결이 끊깁니다.',
++      'To install now, press [Update now]. HJViewer closes for a moment while it installs, and remote connections end.');
++  static String get winUnbound => _t(
++      '이 PC는 아직 내 PC 목록에 없어 새 버전을 받을 수 없습니다. 이 PC에서 로그인하면 자동으로 업데이트됩니다.',
++      'This PC is not in My PCs yet, so it cannot get the new version. Log in on this PC and it updates by itself.');
++
++  /// U43: a PC that runs HJViewer without installing it hears that installing makes updates
++  /// come by themselves.
++  static String winPortable(String latest) => _t(
++      "[업데이트]를 누르면 새 버전을 '다운로드' 폴더에 내려받아 확인한 뒤 실행합니다. 이 창은 닫히고 새 버전이 열립니다. 다음부터는 새 파일(HJViewer-$latest.exe)을 실행하세요. 자주 쓰는 PC라면 새 버전에서 [설치하기]를 누르세요. 설치하면 다음부터는 저절로 업데이트됩니다.",
++      'Press [Update] to download the new version to your Downloads folder, check it and run it. This window closes and the new version opens. From now on, run the new file (HJViewer-$latest.exe). If you use this PC often, press [Install] in the new version: once installed, it updates by itself.');
++  static String get updateNow => _t('지금 업데이트', 'Update now');
++  static String get runNow => _t('지금 실행', 'Run now');
++  static String get waiting => _t('업데이트를 준비하는 중…', 'Getting the update ready…');
+   static String downloading(double? progress) => progress == null
+-      ? '새 버전을 내려받는 중…'
+-      : '새 버전을 내려받는 중… ${(progress * 100).floor()}%';
+-  static const verifying = '내려받은 파일을 확인하는 중…';
+-  static const installing = '설치하는 중…';
+-  static const closesNow =
+-      'HJViewer가 지금 닫히고 새 버전을 설치합니다. 진행 중인 원격 연결은 모두 끊기고, 설치가 끝나면 다시 연결할 수 있습니다.';
+-  static String closesAt(String time) =>
+-      'HJViewer가 $time에 닫히고 새 버전을 설치합니다. 진행 중인 원격 연결은 모두 끊기고, 설치가 끝나면 다시 연결할 수 있습니다.';
+-  static const opensNow = 'HJViewer가 지금 닫히고 새 버전이 열립니다. 진행 중인 원격 연결은 모두 끊깁니다.';
+-  static const attempts =
+-      '자동 업데이트를 마치지 못했습니다(3번 시도). [다시 시도]를 누르거나 관리자에게 알려 주세요.';
+-  static const installFailed = '새 버전을 설치하지 못했습니다. [다시 시도]를 누르거나 관리자에게 알려 주세요.';
+-  static const serviceSilent =
+-      'HJViewer 서비스가 응답하지 않아 업데이트를 시작하지 못했습니다. 잠시 뒤 다시 시도해 주세요.';
++      ? _t('새 버전을 내려받는 중…', 'Downloading the new version…')
++      : _t('새 버전을 내려받는 중… ${(progress * 100).floor()}%',
++          'Downloading the new version… ${(progress * 100).floor()}%');
++  static String get verifying =>
++      _t('내려받은 파일을 확인하는 중…', 'Checking the downloaded file…');
++  static String get installing => _t('설치하는 중…', 'Installing…');
++  static String get closesNow => _t(
++      'HJViewer가 지금 닫히고 새 버전을 설치합니다. 진행 중인 원격 연결은 모두 끊기고, 설치가 끝나면 다시 연결할 수 있습니다.',
++      'HJViewer closes now and installs the new version. All remote connections end; you can connect again once it is installed.');
++  static String closesAt(String time) => _t(
++      'HJViewer가 $time에 닫히고 새 버전을 설치합니다. 진행 중인 원격 연결은 모두 끊기고, 설치가 끝나면 다시 연결할 수 있습니다.',
++      'HJViewer closes at $time and installs the new version. All remote connections end; you can connect again once it is installed.');
++  static String get opensNow => _t(
++      'HJViewer가 지금 닫히고 새 버전이 열립니다. 진행 중인 원격 연결은 모두 끊깁니다.',
++      'HJViewer closes now and the new version opens. All remote connections end.');
++  static String get attempts => _t(
++      '자동 업데이트를 마치지 못했습니다(3번 시도). [다시 시도]를 누르거나 관리자에게 알려 주세요.',
++      'The automatic update did not finish (3 tries). Press [Retry] or tell the administrator.');
++  static String get installFailed => _t(
++      '새 버전을 설치하지 못했습니다. [다시 시도]를 누르거나 관리자에게 알려 주세요.',
++      'Could not install the new version. Press [Retry] or tell the administrator.');
++  static String get serviceSilent => _t(
++      'HJViewer 서비스가 응답하지 않아 업데이트를 시작하지 못했습니다. 잠시 뒤 다시 시도해 주세요.',
++      'The HJViewer service did not answer, so the update did not start. Please try again later.');
+ 
+   // A1-A4, M1
+-  static const androidHint =
+-      '[새 버전 내려받기]를 누르면 새 버전을 내려받아 확인한 뒤 설치 화면을 엽니다. [업데이트]를 누르세요.';
+-  static const androidBrowserHint =
+-      "[새 버전 내려받기]를 누르면 브라우저가 설치 파일(APK)을 내려받습니다. 다 받으면 알림을 눌러 설치하세요. 처음에는 '이 출처 허용'을 켜야 할 수 있습니다.";
+-  static const androidButton = '새 버전 내려받기';
+-  static const androidInstaller = '설치 화면에서 [업데이트]를 누르세요.';
+-  static const openInstaller = '설치 화면 열기';
+-  static const installerFailed = '설치 화면을 열지 못했습니다. 다시 시도하거나 관리자에게 새 버전을 받으세요.';
+-  static const browserFailed = '브라우저를 열지 못했습니다. 관리자에게 새 버전을 받으세요.';
+-  static const playHint = 'Play 스토어에서 HJViewer를 업데이트하세요.';
+-  static const playButton = 'Play 스토어 열기';
+-  static const playFailed =
+-      'Play 스토어를 열지 못했습니다. Play 스토어 앱에서 HJViewer를 찾아 업데이트하세요.';
+-  static const needsLogin = '새 버전을 받으려면 로그인하세요.';
+-  static const allowSource =
+-      "새 버전을 설치하려면 HJViewer에 '이 출처 허용'이 필요합니다. 설정에서 켠 뒤 돌아오세요.";
+-  static const openSettings = '설정 열기';
+-  static const moveToPlay =
+-      'Play 스토어의 HJViewer로 옮길 수 있습니다. 옮기면 이 앱을 지우고 Play에서 설치한 뒤 다시 로그인합니다. 기기 ID와 설정은 새로 생깁니다.';
+-  static const moveHow = '방법 보기';
+-  static const moveTitle = 'Play 스토어로 옮기기';
+-  static const moveSteps = '1. 관리자에게 Play 스토어 내부 테스트 초대를 받습니다.\n'
+-      '2. 이 앱을 지웁니다.\n'
+-      '3. 초대받은 Google 계정으로 Play 스토어에서 HJViewer를 설치합니다.\n'
+-      '4. 다시 로그인합니다. 기기 ID와 설정은 새로 생깁니다.';
++  static String get androidHint => _t(
++      '[새 버전 내려받기]를 누르면 새 버전을 내려받아 확인한 뒤 설치 화면을 엽니다. [업데이트]를 누르세요.',
++      'Press [Download new version] to download the new version, check it and open the installer. Then press [Update].');
++  static String get androidBrowserHint => _t(
++      "[새 버전 내려받기]를 누르면 브라우저가 설치 파일(APK)을 내려받습니다. 다 받으면 알림을 눌러 설치하세요. 처음에는 '이 출처 허용'을 켜야 할 수 있습니다.",
++      "Press [Download new version] and the browser downloads the installer (APK). When it is done, tap the notification to install it. The first time, you may need to turn on 'Allow from this source'.");
++  static String get androidButton => _t('새 버전 내려받기', 'Download new version');
++  static String get androidInstaller =>
++      _t('설치 화면에서 [업데이트]를 누르세요.', 'Press [Update] in the installer.');
++  static String get openInstaller => _t('설치 화면 열기', 'Open the installer');
++  static String get installerFailed => _t(
++      '설치 화면을 열지 못했습니다. 다시 시도하거나 관리자에게 새 버전을 받으세요.',
++      'Could not open the installer. Try again, or get the new version from the administrator.');
++  static String get browserFailed => _t('브라우저를 열지 못했습니다. 관리자에게 새 버전을 받으세요.',
++      'Could not open the browser. Get the new version from the administrator.');
++  static String get playHint =>
++      _t('Play 스토어에서 HJViewer를 업데이트하세요.', 'Update HJViewer in the Play Store.');
++  static String get playButton => _t('Play 스토어 열기', 'Open the Play Store');
++  static String get playFailed => _t(
++      'Play 스토어를 열지 못했습니다. Play 스토어 앱에서 HJViewer를 찾아 업데이트하세요.',
++      'Could not open the Play Store. Find HJViewer in the Play Store app and update it.');
++  static String get needsLogin =>
++      _t('새 버전을 받으려면 로그인하세요.', 'Log in to get the new version.');
++  static String get allowSource => _t(
++      "새 버전을 설치하려면 HJViewer에 '이 출처 허용'이 필요합니다. 설정에서 켠 뒤 돌아오세요.",
++      "To install the new version, HJViewer needs 'Allow from this source'. Turn it on in Settings, then come back.");
++  static String get openSettings => _t('설정 열기', 'Open Settings');
++  static String get moveToPlay => _t(
++      'Play 스토어의 HJViewer로 옮길 수 있습니다. 옮기면 이 앱을 지우고 Play에서 설치한 뒤 다시 로그인합니다. 기기 ID와 설정은 새로 생깁니다.',
++      'You can move to HJViewer from the Play Store: delete this app, install it from Play and log in again. The device ID and settings start anew.');
++  static String get moveHow => _t('방법 보기', 'See how');
++  static String get moveTitle => _t('Play 스토어로 옮기기', 'Move to the Play Store');
++  static String get moveSteps => _t(
++      '1. 관리자에게 Play 스토어 내부 테스트 초대를 받습니다.\n'
++          '2. 이 앱을 지웁니다.\n'
++          '3. 초대받은 Google 계정으로 Play 스토어에서 HJViewer를 설치합니다.\n'
++          '4. 다시 로그인합니다. 기기 ID와 설정은 새로 생깁니다.',
++      '1. Get an invitation to the Play Store internal test from the administrator.\n'
++          '2. Delete this app.\n'
++          '3. Install HJViewer from the Play Store with the invited Google account.\n'
++          '4. Log in again. The device ID and settings start anew.');
+ 
+   // I1-I3
+-  static const iosHint =
+-      'TestFlight 앱에서 HJViewer의 [업데이트]를 누르세요. TestFlight 설정에서 자동 업데이트를 켜 두면 다음부터는 저절로 설치됩니다.';
+-  static const iosButton = 'TestFlight 열기';
+-  static const iosFailed =
+-      'TestFlight 앱을 열지 못했습니다. App Store에서 TestFlight를 설치한 뒤 다시 시도해 주세요.';
+-  static const iosNotTestFlight =
+-      '이 iPhone의 HJViewer는 TestFlight로 설치하지 않아 앱에서 업데이트할 수 없습니다. 관리자에게 새 버전을 받으세요.';
++  static String get iosHint => _t(
++      'TestFlight 앱에서 HJViewer의 [업데이트]를 누르세요. TestFlight 설정에서 자동 업데이트를 켜 두면 다음부터는 저절로 설치됩니다.',
++      "Press [Update] for HJViewer in the TestFlight app. With automatic updates on in TestFlight's settings, new versions install by themselves from then on.");
++  static String get iosButton => _t('TestFlight 열기', 'Open TestFlight');
++  static String get iosFailed => _t(
++      'TestFlight 앱을 열지 못했습니다. App Store에서 TestFlight를 설치한 뒤 다시 시도해 주세요.',
++      'Could not open the TestFlight app. Install TestFlight from the App Store and try again.');
++  static String get iosNotTestFlight => _t(
++      '이 iPhone의 HJViewer는 TestFlight로 설치하지 않아 앱에서 업데이트할 수 없습니다. 관리자에게 새 버전을 받으세요.',
++      'HJViewer on this iPhone was not installed with TestFlight, so it cannot update from the app. Get the new version from the administrator.');
+ 
+   // E1-E4, O1
+-  static const errDownload = '새 버전을 내려받지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.';
+-  static const errVerify = '내려받은 파일이 올바르지 않아 설치하지 않았습니다. 관리자에게 알려 주세요.';
+-  static const errTls =
+-      '이 네트워크에서는 보안 연결을 확인할 수 없어 새 버전을 받지 못했습니다. 다른 네트워크에서 다시 시도하거나 관리자에게 받으세요.';
+-  static const errNotThisApp =
+-      '내려받은 파일이 이 앱의 새 버전이 아니어서 설치하지 않았습니다. 관리자에게 알려 주세요.';
+-  static const errBusy = '지금은 새 버전을 받는 요청이 많습니다. 잠시 뒤 다시 시도해 주세요.';
+-  static const errRefused = '이 계정으로는 새 버전을 받을 수 없습니다. 관리자에게 문의하세요.';
+-  static const errFile = '새 버전 파일을 저장하지 못했습니다. 저장 공간을 확인하고 다시 시도해 주세요.';
+-  static String osTooOld(String need) =>
+-      '이 기기의 OS에서는 새 버전을 쓸 수 없습니다(필요: $need 이상). 관리자에게 문의하세요.';
++  static String get errDownload => _t(
++      '새 버전을 내려받지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.',
++      'Could not download the new version. Check the internet connection and try again.');
++  static String get errVerify => _t(
++      '내려받은 파일이 올바르지 않아 설치하지 않았습니다. 관리자에게 알려 주세요.',
++      'The downloaded file is not valid, so it was not installed. Please tell the administrator.');
++  static String get errTls => _t(
++      '이 네트워크에서는 보안 연결을 확인할 수 없어 새 버전을 받지 못했습니다. 다른 네트워크에서 다시 시도하거나 관리자에게 받으세요.',
++      'The secure connection cannot be checked on this network, so the new version did not come. Try again on another network, or get it from the administrator.');
++  static String get errNotThisApp => _t(
++      '내려받은 파일이 이 앱의 새 버전이 아니어서 설치하지 않았습니다. 관리자에게 알려 주세요.',
++      'The downloaded file is not a new version of this app, so it was not installed. Please tell the administrator.');
++  static String get errBusy => _t('지금은 새 버전을 받는 요청이 많습니다. 잠시 뒤 다시 시도해 주세요.',
++      'Many devices are asking for the new version right now. Please try again in a moment.');
++  static String get errRefused => _t('이 계정으로는 새 버전을 받을 수 없습니다. 관리자에게 문의하세요.',
++      'This account cannot get the new version. Please contact the administrator.');
++  static String get errFile => _t(
++      '새 버전 파일을 저장하지 못했습니다. 저장 공간을 확인하고 다시 시도해 주세요.',
++      'Could not save the new version. Check the storage space and try again.');
++  static String osTooOld(String need) => _t(
++      '이 기기의 OS에서는 새 버전을 쓸 수 없습니다(필요: $need 이상). 관리자에게 문의하세요.',
++      "The new version does not run on this device's system (needs $need or later). Please contact the administrator.");
+ 
+   // Settings → About, and the source of an update that comes without its notice files (AGPL)
+   static String get check => _t('업데이트 확인', 'Check for updates');
+@@ -614,13 +693,13 @@ HjvPanelModel hjvPanelModel(HjvUpdateInfo i, HjvDevice d,
+           if (askAdmin)
+             HjvUpdateText.askAdmin(i.contact)
+           else if (i.osTooOld && i.contact.isNotEmpty)
+-            i.contact,
++            HjvUpdateText.contact(i.contact),
+           if (i.notes.isNotEmpty) i.notes,
+           if (i.source.isNotEmpty) HjvUpdateText.source(i.source),
+         ],
+       );
+ 
+-  const logIn = HjvButton(HjvUpdateText.logIn, HjvAction.logIn);
++  final logIn = HjvButton(HjvUpdateText.logIn, HjvAction.logIn);
+   HjvPanelModel needsLogin(List<HjvButton> more) => make(
+       hints: [HjvUpdateText.needsLogin],
+       buttons: [logIn, ...more],
+@@ -657,34 +736,32 @@ HjvPanelModel hjvPanelModel(HjvUpdateInfo i, HjvDevice d,
+       return d.testFlight
+           ? make(hints: [
+               HjvUpdateText.iosHint
+-            ], buttons: const [
++            ], buttons: [
+               HjvButton(HjvUpdateText.iosButton, HjvAction.openTestFlight)
+             ])
+           : make(hints: [HjvUpdateText.iosNotTestFlight], askAdmin: true);
+     case HjvPlatform.android:
+       if (i.fromPlay) {
+-        return make(hints: [
+-          HjvUpdateText.playHint
+-        ], buttons: const [
+-          HjvButton(HjvUpdateText.playButton, HjvAction.openPlay)
+-        ]);
++        return make(
++            hints: [HjvUpdateText.playHint],
++            buttons: [HjvButton(HjvUpdateText.playButton, HjvAction.openPlay)]);
+       }
+       if (!i.hasPackage) return make(hints: [HjvUpdateText.preparing]);
+       if (i.credential == 'none') return needsLogin(const []);
+       if (d.browserInstall) {
+-        const hints = [HjvUpdateText.androidBrowserHint];
++        final hints = [HjvUpdateText.androidBrowserHint];
+         if (steps.linking) {
+           return make(
+               hints: hints, status: HjvUpdateText.linkAsking, busy: true);
+         }
+         return steps.linkError.isEmpty
+-            ? make(hints: hints, buttons: const [
++            ? make(hints: hints, buttons: [
+                 HjvButton(HjvUpdateText.androidButton, HjvAction.browser)
+               ])
+             : failed(steps.linkError, HjvAction.browser, hints);
+       }
+-      const hints = [HjvUpdateText.androidHint];
+-      const download =
++      final hints = [HjvUpdateText.androidHint];
++      final download =
+           HjvButton(HjvUpdateText.androidButton, HjvAction.download);
+       switch (i.phase) {
+         case HjvPhase.downloading:
+@@ -694,14 +771,14 @@ HjvPanelModel hjvPanelModel(HjvUpdateInfo i, HjvDevice d,
+               busy: true,
+               progress: i.progress);
+         case HjvPhase.ready:
+-          const open =
++          final open =
+               HjvButton(HjvUpdateText.openInstaller, HjvAction.install);
+           switch (steps.install) {
+             case HjvInstall.permission:
+               return make(
+                   hints: hints,
+                   status: HjvUpdateText.allowSource,
+-                  buttons: const [
++                  buttons: [
+                     HjvButton(
+                         HjvUpdateText.openSettings, HjvAction.installSettings),
+                     open
+@@ -710,28 +787,26 @@ HjvPanelModel hjvPanelModel(HjvUpdateInfo i, HjvDevice d,
+               return make(
+                   hints: hints,
+                   status: HjvUpdateText.errNotThisApp,
+-                  buttons: const [
++                  buttons: [
+                     HjvButton(HjvUpdateText.retry, HjvAction.download)
+                   ]);
+             case HjvInstall.failed:
+               return make(
+                   hints: hints,
+                   status: HjvUpdateText.installerFailed,
+-                  buttons: const [
+-                    HjvButton(HjvUpdateText.retry, HjvAction.install)
+-                  ],
++                  buttons: [HjvButton(HjvUpdateText.retry, HjvAction.install)],
+                   askAdmin: true);
+             case HjvInstall.none:
+             case HjvInstall.opened:
+               return make(
+                   hints: hints,
+                   status: HjvUpdateText.androidInstaller,
+-                  buttons: const [open]);
++                  buttons: [open]);
+           }
+         case HjvPhase.error:
+           return failed(i.error, HjvAction.download, hints);
+         default:
+-          return make(hints: hints, buttons: const [download]);
++          return make(hints: hints, buttons: [download]);
+       }
+     case HjvPlatform.windows:
+       if (!i.hasPackage) return make(hints: [HjvUpdateText.preparing]);
+@@ -739,14 +814,14 @@ HjvPanelModel hjvPanelModel(HjvUpdateInfo i, HjvDevice d,
+         if (i.credential == 'unbound') {
+           return make(
+               hints: [HjvUpdateText.winUnbound],
+-              buttons: const [logIn],
++              buttons: [logIn],
+               askAdmin: true);
+         }
+         final hints = [
+           if (i.required || i.autoInstall) HjvUpdateText.winInstalls,
+           HjvUpdateText.winNow,
+         ];
+-        const now = HjvButton(HjvUpdateText.updateNow, HjvAction.updateNow);
++        final now = HjvButton(HjvUpdateText.updateNow, HjvAction.updateNow);
+         switch (i.phase) {
+           case HjvPhase.waiting:
+             return make(
+@@ -766,11 +841,11 @@ HjvPanelModel hjvPanelModel(HjvUpdateInfo i, HjvDevice d,
+             return make(
+                 hints: hints,
+                 status: HjvUpdateText.closesAt(hjvClockTime(local(i.until))),
+-                buttons: const [now]);
++                buttons: [now]);
+           case HjvPhase.error:
+             return failed(i.error, HjvAction.updateNow, hints);
+           default:
+-            return make(hints: hints, buttons: const [now]);
++            return make(hints: hints, buttons: [now]);
+         }
+       }
+       if (i.credential == 'none') return needsLogin(const []);
+@@ -786,13 +861,13 @@ HjvPanelModel hjvPanelModel(HjvUpdateInfo i, HjvDevice d,
+           return make(
+               hints: hints,
+               status: HjvUpdateText.opensNow,
+-              buttons: const [HjvButton(HjvUpdateText.runNow, HjvAction.run)]);
++              buttons: [HjvButton(HjvUpdateText.runNow, HjvAction.run)]);
+         case HjvPhase.error:
+           return failed(i.error, HjvAction.download, hints);
+         default:
+-          return make(hints: hints, buttons: const [
+-            HjvButton(HjvUpdateText.update, HjvAction.download)
+-          ]);
++          return make(
++              hints: hints,
++              buttons: [HjvButton(HjvUpdateText.update, HjvAction.download)]);
+       }
+     case HjvPlatform.other:
+       return make(askAdmin: true);
+diff --git a/flutter/test/hjv_update_gate_test.dart b/flutter/test/hjv_update_gate_test.dart
+index c97c223..ccc7797 100644
+--- a/flutter/test/hjv_update_gate_test.dart
++++ b/flutter/test/hjv_update_gate_test.dart
+@@ -328,8 +328,8 @@ void main() {
+       host.push();
+       await tester.pump();
+       expect(find.text('새 버전을 받으려면 로그인하세요.'), findsOneWidget);
+-      expect(
+-          find.text('새 버전은 관리자에게 받을 수도 있습니다. 조교 02-000-0000'), findsOneWidget);
++      expect(find.text('새 버전은 관리자에게 받을 수도 있습니다. HJViewer 관리자: 조교 02-000-0000'),
++          findsOneWidget);
+       await tester.tap(find.widgetWithText(ElevatedButton, '로그인'));
+       await tester.pump();
+       expect(host.logins, 1);
+diff --git a/flutter/test/hjv_update_test.dart b/flutter/test/hjv_update_test.dart
+index 1370d5c..0f3fab5 100644
+--- a/flutter/test/hjv_update_test.dart
++++ b/flutter/test/hjv_update_test.dart
+@@ -192,7 +192,9 @@ void main() {
+             other);
+         expect(adHoc.hints, [HjvUpdateText.iosNotTestFlight]);
+         expect(adHoc.buttons, isEmpty);
+-        expect(adHoc.notes, ['새 버전은 관리자에게 받을 수도 있습니다. 조교 02-000-0000']);
++        // the policy's contact as it wrote it, after whom it is (D-1)
++        expect(adHoc.notes,
++            ['새 버전은 관리자에게 받을 수도 있습니다. HJViewer 관리자: 조교 02-000-0000']);
+       }
+     });
+ 
+@@ -364,6 +366,9 @@ void main() {
+           panel(state('required', more: more, job: job), windowsPc);
+ 
+       expect(of().hints.first, contains('새 파일(HJViewer-1.6.2.exe)을 실행하세요.'));
++      // U43: installing makes the updates come by themselves
++      expect(of().hints.first,
++          endsWith('자주 쓰는 PC라면 새 버전에서 [설치하기]를 누르세요. 설치하면 다음부터는 저절로 업데이트됩니다.'));
+       expect(of().buttons, [const HjvButton('업데이트', HjvAction.download)]);
+       expect(of(more: {'credential': 'none'}).primary, HjvAction.logIn);
+       expect(
+@@ -425,7 +430,7 @@ void main() {
+       expect(m.hints,
+           ['이 기기의 OS에서는 새 버전을 쓸 수 없습니다(필요: Android 7.0 이상). 관리자에게 문의하세요.']);
+       expect(m.buttons, isEmpty);
+-      expect(m.notes, ['조교']);
++      expect(m.notes, ['HJViewer 관리자: 조교']);
+       expect(hjvOsNeed(HjvPlatform.android, '22'), 'Android 5.1');
+       expect(hjvOsNeed(HjvPlatform.android, '99'), 'Android API 99');
+       expect(hjvOsNeed(HjvPlatform.ios, '15.0'), 'iOS 15.0');
+@@ -904,4 +909,155 @@ void main() {
+       expect(text, isNot(contains('RustDesk')), reason: text);
+     }
+   });
++
++  group('on an English UI (U35)', () {
++    setUp(() => HjvUpdateText.korean = () => false);
++    tearDown(() => HjvUpdateText.korean = () => true);
++
++    final hangul = RegExp('[ㄱ-ㆎ가-힣]');
++
++    List<String> textsOf(HjvPanelModel m) => [
++          m.title,
++          ...m.body,
++          ...m.hints,
++          m.status,
++          ...m.notes,
++          for (final b in m.buttons) b.label,
++        ];
++
++    /// Every screen these tests know of, with every step and failure.
++    List<String> screens() {
++      final infos = [
++        for (final s in ['required', 'grace', 'available', 'ok'])
++          for (final more in <Map<String, Object?>>[
++            {},
++            {'credential': 'none'},
++            {'installed': true, 'credential': 'device'},
++            {'installed': true, 'credential': 'device', 'auto_install': true},
++            {'installed': true, 'credential': 'unbound'},
++            {'package': null},
++            {'os_min': '24', 'os_too_old': true, 'contact': 'c'},
++            {'contact': 'c'},
++          ])
++            for (final job in <Map<String, Object?>>[
++              {},
++              {'phase': 'waiting'},
++              {'phase': 'downloading', 'done': 50, 'total': 200},
++              {'phase': 'downloading'},
++              {'phase': 'verifying'},
++              {'phase': 'installing'},
++              {'phase': 'notice', 'until': 1795014600},
++              {'phase': 'ready', 'file': '/c/u/a.apk'},
++              for (final code in [
++                'login', 'network', 'tls', 'refused', 'missing', 'busy', //
++                'http', 'verify', 'version', 'file', 'install', 'attempts',
++                'service'
++              ])
++                {'phase': 'error', 'error': code},
++            ])
++              for (final channel in [
++                'windows',
++                'android',
++                'android_play',
++                'ios'
++              ])
++                state(s, channel: channel, more: more, job: job),
++      ];
++      return [
++        for (final i in infos)
++          for (final d in [
++            windowsPc,
++            android,
++            oldAndroid,
++            iphone,
++            adHocIphone,
++            const HjvDevice()
++          ])
++            for (final steps in [
++              const HjvSteps(),
++              const HjvSteps(linking: true),
++              const HjvSteps(linkError: 'busy'),
++            ])
++              ...textsOf(panel(i, d, steps: steps)),
++        for (final i in infos) ...[
++          hjvBannerText(i, local: kst),
++          ...hjvAboutLines(i, local: kst),
++          hjvCheckResult(i, checked),
++        ],
++        HjvUpdateText.blockedTitle,
++        HjvUpdateText.blockedBody('1.6.1'),
++        HjvUpdateText.peerRemote('123 456 789'),
++        HjvUpdateText.peerNeedsLink('1.5.1', '1.6.0'),
++        HjvUpdateText.peerUpdatesItself('1.6.0', '1.6.1'),
++        HjvUpdateText.peerRunsNew('1.6.0', '1.6.1'),
++        HjvUpdateText.linkButton,
++        HjvUpdateText.linkAsking,
++        HjvUpdateText.linkEnter(10),
++        HjvUpdateText.linkCopied,
++        HjvUpdateText.linkThen,
++        HjvUpdateText.linkNeedsLogin,
++        HjvUpdateText.linkFailed,
++        HjvUpdateText.moveToPlay,
++        HjvUpdateText.moveHow,
++        HjvUpdateText.moveTitle,
++        HjvUpdateText.moveSteps,
++        HjvUpdateText.updateNow,
++        HjvUpdateText.closesNow,
++        HjvUpdateText.close,
++        HjvUpdateText.update,
++        HjvUpdateText.recheck,
++        HjvUpdateText.check,
++        HjvUpdateText.checking,
++        HjvUpdateText.iosFailed,
++        HjvUpdateText.playFailed,
++        HjvUpdateText.browserFailed,
++        HjvUpdateText.contact('c'),
++        hjvDeadline(DateTime(2026, 11, 23, 9, 30)),
++      ];
++    }
++
++    test('every text is English, and none is empty', () {
++      final texts = screens();
++      expect(texts.length, greaterThan(1000));
++      for (final text in texts) {
++        expect(text, isNot(contains(hangul)), reason: text);
++        expect(text, isNot(contains('{')), reason: text);
++        expect(text, isNot(contains('://')), reason: text);
++      }
++      // the status line is the one text a screen may leave out
++      expect(
++          texts.where((t) => t.trim().isEmpty).toSet(), anyOf(isEmpty, {''}));
++      for (final t in [
++        HjvUpdateText.title,
++        HjvUpdateText.blockedTitle,
++        HjvUpdateText.newerTitle,
++        HjvUpdateText.update,
++      ]) {
++        expect(t.trim(), isNotEmpty);
++      }
++    });
++
++    test('says the same as the Korean', () {
++      expect(panel(state('required'), windowsPc).title, 'Update required');
++      expect(panel(state('required'), windowsPc).body, [
++        'This version cannot connect to other devices. Update HJViewer to 1.6.1 or later.'
++      ]);
++      expect(panel(state('required'), windowsPc).buttons,
++          [const HjvButton('Update', HjvAction.download)]);
++      expect(hjvBannerText(state('grace'), local: kst),
++          'A new version is out (1.6.2). From November 23, 00:00, you need to update to connect.');
++      expect(hjvDeadline(DateTime(2026, 11, 23, 9, 30)), 'November 23, 09:30');
++      // U43, on a PC that runs HJViewer without installing it
++      expect(HjvUpdateText.winPortable('1.6.2'),
++          'Press [Update] to download the new version to your Downloads folder, check it and run it. This window closes and the new version opens. From now on, run the new file (HJViewer-1.6.2.exe). If you use this PC often, press [Install] in the new version: once installed, it updates by itself.');
++      // the policy's own texts as it wrote them, after whom they are (D-1)
++      expect(
++          panel(state('required', channel: 'ios', more: {'contact': '조교'}),
++                  adHocIphone)
++              .notes,
++          [
++            'You can also get the new version from the administrator. HJViewer administrator: 조교'
++          ]);
++    });
++  });
+ }

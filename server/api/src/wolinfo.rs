@@ -483,6 +483,8 @@ pub const HINT_MODERN_STANDBY: Hint = Hint {
 };
 
 /// The verdict and its hints for a PC's report (design v3 §8-4); `None`: no report, unknown.
+/// The PC's own readiness card applies the same card rules locally (the client's
+/// flutter/lib/common/hjviewer_ready_texts.dart, R5): change both together.
 pub fn readiness(report: Option<&Report>) -> (Ready, Vec<Hint>) {
     let Some(report) = report else {
         return (Ready::Unknown, Vec::new());

@@ -1,0 +1,780 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:07:05 +0900
+Subject: [PATCH 110/147] hjviewer: the PC's connection window shows the mark,
+ a caution and recording (TV-W2 Dart)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TV-W2: Client.fromJson reads hjv_mark only when it is a map of strings,
+and hjv_recording only when it is true (hjvReadMark, hjvReadRecording), so
+a 1.8.x core reads as no mark. add_connection copies the mark and the
+recording state onto a card it sends again. The CM header draws the mark
+line under the name in the kind's fixed icon and colour (same-account: the
+shield; unverified-name: the warning sign; nothing for "" or an unknown
+kind). The accept card shows the caution box while !authorized and the kind
+is neither same-account nor staff (D-7), with 'HJViewer 관리자: <contact>'
+from main_get_common("hjv-admin-contact"); P2 and P3 show it every time
+(P3 in critic 2-5's words). A connected card shows the 'Recording' chip
+and the line on how to stop it. When recording starts, the 3 s minimize is
+cancelled and skipped while a peer records, and a minimized window comes
+up on that card at most once a minute per connection (D-8).
+New files: hjviewer_cm_texts.dart (texts and the pure rules),
+hjv_admin_contact.dart (hjvAdminContact, HjvCautionBox) and
+test/hjviewer_cm_test.dart; cm_demo.dart's guests carry the new values.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_admin_contact.dart  |  78 ++++++++++
+ flutter/lib/common/hjviewer_access.dart    |  14 ++
+ flutter/lib/common/hjviewer_cm_texts.dart  | 163 +++++++++++++++++++++
+ flutter/lib/desktop/pages/server_page.dart | 106 +++++++++++++-
+ flutter/lib/models/server_model.dart       |  49 ++++++-
+ flutter/test/cm_demo.dart                  |  11 +-
+ flutter/test/cm_test.dart                  |   6 +
+ flutter/test/hjviewer_cm_test.dart         | 125 ++++++++++++++++
+ 8 files changed, 548 insertions(+), 4 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_admin_contact.dart
+ create mode 100644 flutter/lib/common/hjviewer_cm_texts.dart
+ create mode 100644 flutter/test/hjviewer_cm_test.dart
+
+diff --git a/flutter/lib/common/hjv_admin_contact.dart b/flutter/lib/common/hjv_admin_contact.dart
+new file mode 100644
+index 0000000..ceeed7f
+--- /dev/null
++++ b/flutter/lib/common/hjv_admin_contact.dart
+@@ -0,0 +1,78 @@
++// Who "HJViewer 관리자" is, as the signed version policy names it (its `contact_ko`; the
++// hjviewer repository's docs/architecture.md 8-2), and the caution box that tells it (TV-W2, 5-10):
++// the connection window's accept card, the PC's access password (P2) and support code (P3). The
++// contact is never in the app: the core's main_get_common("hjv-admin-contact") gives the policy
++// this process trusts, or "" (src/hjviewer_update/mod.rs). The texts are hjviewer_cm_texts.dart.
++
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_cm_texts.dart';
++import 'package:flutter_hbb/models/platform_model.dart';
++
++/// The HJViewer administrator's contact line of the policy this process trusts; "" without one
++/// (or without a core that knows the key).
++String hjvAdminContact() {
++  try {
++    return bind.mainGetCommonSync(key: 'hjv-admin-contact').trim();
++  } catch (e) {
++    return '';
++  }
++}
++
++/// The connection window's texts in the language of the app's own, as the access screens pick it.
++HjvCmTexts hjvCmTexts() => HjvCmTexts(translate('Cancel') == '취소');
++
++/// A caution in the warning tone (HjvCallout): `text`, then, with a contact, "HJViewer 관리자:
++/// <contact>" in two lines at most, whole in its tooltip, copied on a long press; never a link.
++class HjvCautionBox extends StatelessWidget {
++  final HjvCmTexts t;
++  final HjvCautionPlace place;
++  final String contact;
++
++  const HjvCautionBox(
++      {super.key, required this.t, required this.place, required this.contact});
++
++  @override
++  Widget build(BuildContext context) {
++    final text = hjvCautionText(t, place: place, contact: contact);
++    final line = hjvContactLine(t, contact);
++    return Semantics(
++      container: true,
++      label: line == null ? text : '$text\n$line',
++      excludeSemantics: true,
++      child: HjvCallout.rich(
++        tone: HjvTone.warning,
++        icon: Icons.report_gmailerrorred_rounded,
++        body: Column(
++          mainAxisSize: MainAxisSize.min,
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            Text(hjvKeepAll(text), style: const TextStyle(fontSize: 12)),
++            if (line != null)
++              Padding(
++                padding: const EdgeInsets.only(top: 4),
++                child: Tooltip(
++                  message: line,
++                  child: GestureDetector(
++                    onLongPress: () {
++                      Clipboard.setData(ClipboardData(text: contact.trim()));
++                      showToast(t.contactCopied);
++                    },
++                    child: Text(line,
++                        maxLines: 2,
++                        overflow: TextOverflow.ellipsis,
++                        style: TextStyle(
++                            fontSize: 12,
++                            fontWeight: FontWeight.w600,
++                            color: HjvPalette.of(context).text)),
++                  ),
++                ),
++              ),
++          ],
++        ),
++      ),
++    );
++  }
++}
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 81b810e..ce5b0f3 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -19,11 +19,13 @@ import 'dart:async';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_admin_contact.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access_texts.dart';
+ import 'package:flutter_hbb/common/hjviewer_account.dart';
+ import 'package:flutter_hbb/common/hjviewer_account_texts.dart'
+     show HjvTexts, hjvLoginEndedLine;
++import 'package:flutter_hbb/common/hjviewer_cm_texts.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/common/widgets/login.dart';
+ import 'package:flutter_hbb/consts.dart';
+@@ -790,6 +792,12 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+           Text(hjvKeepAll(t.pcPasswordText),
+               style: hjvDialogTextStyle(context)),
+           const SizedBox(height: 8),
++          // TV-W2: a caution against callers who ask for it, every time
++          HjvCautionBox(
++              t: HjvCmTexts(t.korean),
++              place: HjvCautionPlace.pcPassword,
++              contact: hjvAdminContact()),
++          const SizedBox(height: 8),
+           _passwordField(t, controller,
+               visible: visible,
+               onToggle: () => setState(() => visible = !visible),
+@@ -890,6 +898,12 @@ void _pcCodeDialog(HjvAccessTexts t) {
+         children: [
+           Text(hjvKeepAll(t.pcCodeText), style: hjvDialogTextStyle(context)),
+           const SizedBox(height: 8),
++          // TV-W2: a caution against callers who ask for it, every time
++          HjvCautionBox(
++              t: HjvCmTexts(t.korean),
++              place: HjvCautionPlace.pcCode,
++              contact: hjvAdminContact()),
++          const SizedBox(height: 8),
+           DialogTextField(
+             title: t.pcCode,
+             controller: controller,
+diff --git a/flutter/lib/common/hjviewer_cm_texts.dart b/flutter/lib/common/hjviewer_cm_texts.dart
+new file mode 100644
+index 0000000..5a28c3e
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_cm_texts.dart
+@@ -0,0 +1,163 @@
++// The PC connection window's (CM's) HJViewer texts, in Korean and English, and the choices
++// between them (the hjviewer repository's docs/architecture.md 5-10, TV-W2): the mark line under
++// a peer's name, which the process that took the connection decides (IPC Login.hjv_mark) and
++// never the name the peer typed; the caution box on the accept card and in the PC's access
++// password (P2) and support code (P3) dialogs, with the HJViewer administrator's contact from the
++// signed version policy; and "Recording" while the peer's app reports that it records, with the
++// rule that brings the minimized window up. Plain Dart without the bridge, so that ci.sh tests it
++// with the web stand-in; hjv_admin_contact.dart, server_page.dart and hjviewer_access.dart show
++// them.
++
++import 'package:flutter_hbb/common/hjviewer_account_texts.dart'
++    show hjvAdminContactText;
++
++/// hjv_mark.kind: an accepted same-account proof (`who` is the signed list's masked owner).
++const kHjvMarkSameAccount = 'same-account';
++
++/// hjv_mark.kind: the PC that entered a support code checked its maker's login (TV-W6).
++const kHjvMarkStaff = 'staff';
++
++/// hjv_mark.kind: no proof, and the name imitates a mark (src/hjviewer_cm.rs).
++const kHjvMarkUnverifiedName = 'unverified-name';
++
++/// The longest the connection window stays down after it last came up for a connection's
++/// recording (D-8): a peer that switches recording on and off cannot keep raising it.
++const kHjvRaiseEveryMs = 60 * 1000;
++
++/// IPC Login.hjv_mark as the add_connection JSON carries it (`{"kind", "who"}`): read only from a
++/// map of strings; a 1.8.x core sends none and anything else reads as no mark.
++({String kind, String who}) hjvReadMark(Object? json) {
++  if (json is! Map) return (kind: '', who: '');
++  final kind = json['kind'];
++  final who = json['who'];
++  return (kind: kind is String ? kind : '', who: who is String ? who : '');
++}
++
++/// The add_connection JSON's `hjv_recording`: true only when it says so.
++bool hjvReadRecording(Object? json) => json == true;
++
++/// Where a caution box stands.
++enum HjvCautionPlace {
++  /// the connection window's accept card
++  accept,
++
++  /// P2, the PC's access password
++  pcPassword,
++
++  /// P3, the PC's support code
++  pcCode,
++}
++
++/// The mark line: its words, its tooltip and whether it warns (the icon and colour are fixed by
++/// the kind, in server_page.dart).
++class HjvMarkView {
++  final String text;
++  final String tooltip;
++  final bool warning;
++  const HjvMarkView(this.text, this.tooltip, {this.warning = false});
++}
++
++class HjvCmTexts {
++  final bool korean;
++  const HjvCmTexts(this.korean);
++
++  String _t(String ko, String en) => korean ? ko : en;
++
++  // the mark line (critic 2-5)
++  String sameAccount(String who) => who.isEmpty
++      ? _t('같은 계정 확인됨', 'Same account, verified')
++      : _t('같은 계정 확인됨 · $who', 'Same account, verified · $who');
++  String get sameAccountTip => _t(
++      '이 기기가 이 PC에 로그인한 계정의 기기임을 서명으로 증명했습니다. 이름은 서버가 서명한 목록의 것입니다.',
++      'This device proved with a signature that it belongs to the account logged in on this PC. Its name comes from the list the server signed.');
++  String get unverifiedName => _t('확인되지 않은 이름', 'Unverified name');
++  String get unverifiedNameTip => _t(
++      "상대가 스스로 적은 이름입니다. '같은 계정' 같은 말이 들어 있어도 HJViewer가 확인한 것이 아닙니다.",
++      'The other side typed this name itself. Words such as "same account" in it were not checked by HJViewer.');
++
++  // the caution box (W2 3-2; P3's per critic 2-5, X-09)
++  String get cautionAccept => _t(
++      '모르는 사람의 연결은 받지 마세요. 학교를 사칭한 연락을 받고 이 창이 떴다면 [거부]를 누르고 관리자에게 알려 주세요.',
++      'Do not accept connections from people you do not know. If someone claiming to be the university asked you for this, click [Dismiss] and tell the administrator.');
++  String get cautionAcceptNoContact => _t(
++      '모르는 사람의 연결은 받지 마세요. 학교를 사칭한 연락을 받고 이 창이 떴다면 [거부]를 누르세요.',
++      'Do not accept connections from people you do not know. If someone claiming to be the university asked you for this, click [Dismiss].');
++  String get cautionPcPassword => _t(
++      '모르는 사람이 전화나 문자로 이 비밀번호를 넣으라고 했다면 넣지 마세요. 학교를 사칭한 연락이면 끊고 관리자에게 알려 주세요.',
++      'If someone you do not know asked you by phone or message to enter this password, do not. If they claimed to be the university, hang up and tell the administrator.');
++  String get cautionPcPasswordNoContact => _t(
++      '모르는 사람이 전화나 문자로 이 비밀번호를 넣으라고 했다면 넣지 마세요.',
++      'If someone you do not know asked you by phone or message to enter this password, do not.');
++  String get cautionPcCode => _t(
++      '직접 도움을 부탁하지 않았는데 이 코드를 넣으라는 연락을 받았다면 넣지 마세요. 학교를 사칭한 연락이면 끊고 관리자에게 알려 주세요.',
++      'If you did not ask for help yourself and someone contacted you to enter this code, do not. If they claimed to be the university, hang up and tell the administrator.');
++  String get cautionPcCodeNoContact => _t(
++      '직접 도움을 부탁하지 않았는데 이 코드를 넣으라는 연락을 받았다면 넣지 마세요.',
++      'If you did not ask for help yourself and someone contacted you to enter this code, do not.');
++  String get contactCopied => _t('연락처를 복사했습니다.', 'Contact copied.');
++
++  // recording (W2 3-3)
++  String get recording => _t('녹화 중', 'Recording');
++  String get recordingTip => _t(
++      '상대 앱이 알려 준 상태입니다. 상대가 다른 프로그램으로 녹화하면 여기에 보이지 않습니다.',
++      "This is what the other side's app reports. Recording with another program does not show here.");
++  String recordingLine({required bool canChange}) => canChange
++      ? _t("상대가 이 연결의 화면을 녹화하고 있습니다. 멈추게 하려면 권한에서 '세션 녹화 허용'을 끄세요.",
++          "The other side is recording this connection's screen. To stop it, turn off \"Enable recording session\" under Permissions.")
++      : _t('상대가 이 연결의 화면을 녹화하고 있습니다.',
++          "The other side is recording this connection's screen.");
++}
++
++/// The mark line for hjv_mark's kind and who; null (no line) for "" and for a kind this window
++/// does not draw, so that a newer service never draws a mark here by mistake. `staff` is drawn
++/// with TV-W6's words (P4).
++HjvMarkView? hjvMarkView(String kind, String who, HjvCmTexts t) =>
++    switch (kind) {
++      kHjvMarkSameAccount =>
++        HjvMarkView(t.sameAccount(who.trim()), t.sameAccountTip),
++      kHjvMarkUnverifiedName =>
++        HjvMarkView(t.unverifiedName, t.unverifiedNameTip, warning: true),
++      _ => null,
++    };
++
++/// The accept card's caution box (D5, D-7): while a connection waits for [수락] and nothing
++/// proved who it is; never on a connected or ended card.
++bool hjvShowCaution(
++        {required bool authorized,
++        required bool disconnected,
++        required String kind}) =>
++    !authorized &&
++    !disconnected &&
++    kind != kHjvMarkSameAccount &&
++    kind != kHjvMarkStaff;
++
++/// The caution box's text in `place`, with or without a contact to tell.
++String hjvCautionText(HjvCmTexts t,
++    {required HjvCautionPlace place, required String contact}) {
++  final has = contact.trim().isNotEmpty;
++  return switch (place) {
++    HjvCautionPlace.accept => has ? t.cautionAccept : t.cautionAcceptNoContact,
++    HjvCautionPlace.pcPassword =>
++      has ? t.cautionPcPassword : t.cautionPcPasswordNoContact,
++    HjvCautionPlace.pcCode => has ? t.cautionPcCode : t.cautionPcCodeNoContact,
++  };
++}
++
++/// The caution box's second line, "HJViewer 관리자: <contact>" (the About screen's words); null
++/// without a contact.
++String? hjvContactLine(HjvCmTexts t, String contact) {
++  final c = contact.trim();
++  return c.isEmpty ? null : hjvAdminContactText(c, korean: t.korean);
++}
++
++/// D-8: whether the minimized connection window comes up for a connection whose recording state
++/// went from `was` to `now`: only when recording starts, and once a minute per connection at
++/// most (`lastRaisedMs`: when it last came up for this connection, null if never).
++bool hjvShouldRaise(
++        {required bool was,
++        required bool now,
++        required int? lastRaisedMs,
++        required int nowMs}) =>
++    !was &&
++    now &&
++    (lastRaisedMs == null || nowMs - lastRaisedMs >= kHjvRaiseEveryMs);
+diff --git a/flutter/lib/desktop/pages/server_page.dart b/flutter/lib/desktop/pages/server_page.dart
+index e4986d1..6a3d8cd 100644
+--- a/flutter/lib/desktop/pages/server_page.dart
++++ b/flutter/lib/desktop/pages/server_page.dart
+@@ -17,7 +17,9 @@ import 'package:window_manager/window_manager.dart';
+ import 'package:flutter_svg/flutter_svg.dart';
+ 
+ import '../../common.dart';
++import '../../common/hjv_admin_contact.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjviewer_cm_texts.dart';
+ import '../../common/widgets/chat_page.dart';
+ import '../../models/file_model.dart';
+ import '../../models/platform_model.dart';
+@@ -372,6 +374,13 @@ Widget buildConnectionCard(Client client) {
+                 client.disconnected
+             ? Offstage()
+             : _PrivilegeBoard(client: client),
++        // HJViewer (TV-W2): while the peer records this screen or camera
++        if (client.hjvRecording &&
++            client.authorized &&
++            !client.disconnected &&
++            (client.type_() == ClientType.remote ||
++                client.type_() == ClientType.camera))
++          _hjvRecordingLine(context),
+         Expanded(
+           child: Align(
+             alignment: Alignment.bottomCenter,
+@@ -517,6 +526,8 @@ class _CmHeaderState extends State<_CmHeader>
+                   ),
+                   maxLines: 1,
+                 )),
++                // HJViewer (TV-W2): the mark, never read from the name
++                _hjvMarkLine(context, client),
+                 FittedBox(
+                   child: Text(
+                     "(${client.peerId})",
+@@ -578,7 +589,12 @@ class _CmHeaderState extends State<_CmHeader>
+                               fontWeight: FontWeight.w600,
+                               fontFeatures: HjvText.tabular),
+                         ),
+-                      )
++                      ),
++                    // HJViewer (TV-W2)
++                    if (client.hjvRecording &&
++                        client.authorized &&
++                        !client.disconnected)
++                      _hjvRecordingChip(context).marginOnly(left: 8.0),
+                   ],
+                 ))
+               ],
+@@ -1114,6 +1130,16 @@ class _CmControlPanel extends StatelessWidget {
+     return Column(
+       mainAxisAlignment: MainAxisAlignment.end,
+       children: [
++        // HJViewer (TV-W2, D-7): unless a proof said who connects
++        if (hjvShowCaution(
++            authorized: client.authorized,
++            disconnected: client.disconnected,
++            kind: client.hjvMarkKind))
++          HjvCautionBox(
++                  t: hjvCmTexts(),
++                  place: HjvCautionPlace.accept,
++                  contact: hjvAdminContact())
++              .marginOnly(bottom: 8.0),
+         Offstage(
+           offstage: !showElevation || !showAccept,
+           child: buildButton(context, color: p.primaryFill, onClick: () {
+@@ -1507,3 +1533,81 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
+     );
+   }
+ }
++
++// HJViewer (TV-W2): the mark line under the name in the kind's fixed icon and colour (nothing for
++// no mark or a kind this window does not know), "Recording" beside the time and the card's line
++// on how to stop it (hjviewer_cm_texts.dart).
++
++Widget _hjvMarkLine(BuildContext context, Client client) {
++  final view = hjvMarkView(client.hjvMarkKind, client.hjvMarkWho, hjvCmTexts());
++  if (view == null) return const SizedBox.shrink();
++  final p = HjvPalette.of(context);
++  final color = view.warning ? p.warningText : p.primaryStrong;
++  return Semantics(
++    label: view.text,
++    excludeSemantics: true,
++    child: Tooltip(
++      message: view.tooltip,
++      child: Row(
++        mainAxisSize: MainAxisSize.min,
++        children: [
++          Icon(
++              view.warning
++                  ? Icons.warning_amber_rounded
++                  : Icons.verified_user_rounded,
++              size: 14,
++              color: view.warning ? p.warningText : p.primary),
++          const SizedBox(width: 4),
++          Flexible(
++            child: Text(view.text,
++                maxLines: 1,
++                overflow: TextOverflow.ellipsis,
++                style: TextStyle(
++                    color: color, fontSize: 12, fontWeight: FontWeight.w600)),
++          ),
++        ],
++      ),
++    ),
++  ).marginOnly(bottom: 2);
++}
++
++Widget _hjvRecordingChip(BuildContext context) {
++  final t = hjvCmTexts();
++  final p = HjvPalette.of(context);
++  return Tooltip(
++    message: t.recordingTip,
++    child: Container(
++      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
++      decoration: BoxDecoration(
++          color: p.dangerSoft,
++          borderRadius: BorderRadius.circular(HjvRadius.sm)),
++      child: Row(
++        mainAxisSize: MainAxisSize.min,
++        children: [
++          Container(
++              width: 7,
++              height: 7,
++              decoration:
++                  BoxDecoration(color: p.danger, shape: BoxShape.circle)),
++          const SizedBox(width: 4),
++          Text(t.recording,
++              style: TextStyle(
++                  color: p.dangerText,
++                  fontSize: 12,
++                  fontWeight: FontWeight.w600)),
++        ],
++      ),
++    ),
++  );
++}
++
++Widget _hjvRecordingLine(BuildContext context) {
++  final canChange =
++      bind.mainGetBuildinOption(key: kOptionEnablePermChangeInAcceptWindow) !=
++          'N';
++  return HjvCallout(
++    text: hjvCmTexts().recordingLine(canChange: canChange),
++    tone: HjvTone.danger,
++    icon: Icons.fiber_manual_record_rounded,
++  ).marginOnly(left: 4.0, right: 4.0, top: 8.0);
++}
+diff --git a/flutter/lib/models/server_model.dart b/flutter/lib/models/server_model.dart
+index 031a625..afbbf90 100644
+--- a/flutter/lib/models/server_model.dart
++++ b/flutter/lib/models/server_model.dart
+@@ -12,6 +12,7 @@ import 'package:window_manager/window_manager.dart';
+ 
+ import '../common.dart';
+ import '../common/formatter/id_formatter.dart';
++import '../common/hjviewer_cm_texts.dart';
+ import '../desktop/pages/server_page.dart' as desktop;
+ import '../desktop/widgets/tabbar_widget.dart';
+ import '../mobile/pages/server_page.dart';
+@@ -50,6 +51,9 @@ class ServerModel with ChangeNotifier {
+ 
+   Timer? cmHiddenTimer;
+ 
++  /// HJViewer (TV-W2, D-8): when the window last came up for each connection's recording.
++  final Map<int, int> _hjvRaisedAt = {};
++
+   final _wakelockKey = UniqueKey();
+ 
+   bool get isStart => _isStart;
+@@ -533,16 +537,19 @@ class ServerModel with ChangeNotifier {
+         } else {
+           if (_clients[index].authorized) {
+             _clients[index].privacyMode = client.privacyMode;
++            _hjvUpdate(_clients[index], client);
+             notifyListeners();
+             return;
+           }
+           _clients[index].authorized = true;
+           _clients[index].privacyMode = client.privacyMode;
++          _hjvUpdate(_clients[index], client);
+         }
+       } else {
+         final index = _clients.indexWhere((c) => c.id == client.id);
+         if (index >= 0) {
+           _clients[index].privacyMode = client.privacyMode;
++          _hjvUpdate(_clients[index], client);
+           notifyListeners();
+           return;
+         }
+@@ -581,7 +588,10 @@ class ServerModel with ChangeNotifier {
+     // Only do the hidden task when on Desktop.
+     if (client.authorized && isDesktop) {
+       cmHiddenTimer = Timer(const Duration(seconds: 3), () {
+-        if (!hideCm) windowManager.minimize();
++        // HJViewer (TV-W2): not while a peer records, so that the card shows it
++        if (!hideCm && !_clients.any((c) => c.hjvRecording && !c.disconnected)) {
++          windowManager.minimize();
++        }
+         cmHiddenTimer = null;
+       });
+     }
+@@ -589,6 +599,33 @@ class ServerModel with ChangeNotifier {
+         .updateConnIdOfKey(MessageKey(client.peerId, client.id));
+   }
+ 
++  /// HJViewer (TV-W2): the mark and the recording state of a card that add_connection sent again;
++  /// when recording starts, the window stays up, and a minimized one comes up on that card once a
++  /// minute per connection at most (D-8).
++  void _hjvUpdate(Client card, Client sent) {
++    final was = card.hjvRecording;
++    card.hjvMarkKind = sent.hjvMarkKind;
++    card.hjvMarkWho = sent.hjvMarkWho;
++    card.hjvRecording = sent.hjvRecording;
++    if (was || !sent.hjvRecording) return;
++    if (desktopType != DesktopType.cm || hideCm) return;
++    cmHiddenTimer?.cancel();
++    cmHiddenTimer = null;
++    final nowMs = DateTime.now().millisecondsSinceEpoch;
++    if (!hjvShouldRaise(
++        was: was,
++        now: true,
++        lastRaisedMs: _hjvRaisedAt[card.id],
++        nowMs: nowMs)) return;
++    Future(() async {
++      if (!await windowManager.isMinimized()) return;
++      _hjvRaisedAt[card.id] = nowMs;
++      await windowManager.restore();
++      await windowOnTop(null);
++      if (_clients.contains(card)) jumpTo(card.id);
++    });
++  }
++
+   void showLoginDialog(Client client) {
+     showClientDialog(
+       client,
+@@ -818,6 +855,10 @@ class Client {
+   bool fromSwitch = false;
+   bool inVoiceCall = false;
+   bool incomingVoiceCall = false;
++  // HJViewer (TV-W2): IPC Login.hjv_mark, and whether the peer's app reports that it records
++  String hjvMarkKind = '';
++  String hjvMarkWho = '';
++  bool hjvRecording = false;
+ 
+   RxInt unreadChatMessageCount = 0.obs;
+ 
+@@ -847,6 +888,10 @@ class Client {
+     fromSwitch = json['from_switch'];
+     inVoiceCall = json['in_voice_call'];
+     incomingVoiceCall = json['incoming_voice_call'];
++    final hjvMark = hjvReadMark(json['hjv_mark']);
++    hjvMarkKind = hjvMark.kind;
++    hjvMarkWho = hjvMark.who;
++    hjvRecording = hjvReadRecording(json['hjv_recording']);
+   }
+ 
+   Map<String, dynamic> toJson() {
+@@ -872,6 +917,8 @@ class Client {
+     data['from_switch'] = fromSwitch;
+     data['in_voice_call'] = inVoiceCall;
+     data['incoming_voice_call'] = incomingVoiceCall;
++    data['hjv_mark'] = {'kind': hjvMarkKind, 'who': hjvMarkWho};
++    data['hjv_recording'] = hjvRecording;
+     return data;
+   }
+ 
+diff --git a/flutter/test/cm_demo.dart b/flutter/test/cm_demo.dart
+index 7784183..682820f 100644
+--- a/flutter/test/cm_demo.dart
++++ b/flutter/test/cm_demo.dart
+@@ -9,12 +9,19 @@ import 'package:flutter_localizations/flutter_localizations.dart';
+ import 'package:get/get.dart';
+ import 'package:window_manager/window_manager.dart';
+ 
++// HJViewer (TV-W2): the second is a proven same-account device, the third's name imitates a
++// mark, the fourth is connected and its peer records.
+ final testClients = [
+   Client(0, false, false, false, "UserAAAAAA", "123123123", true, false, false),
+-  Client(1, false, false, false, "UserBBBBB", "221123123", true, false, false),
+-  Client(2, false, false, false, "UserC", "331123123", true, false, false),
++  Client(1, false, false, false, "UserBBBBB", "221123123", true, false, false)
++    ..hjvMarkKind = 'same-account'
++    ..hjvMarkWho = '홍*동',
++  Client(2, false, false, false, "UserC", "331123123", true, false, false)
++    ..hjvMarkKind = 'unverified-name',
+   Client(3, false, false, false, "UserDDDDDDDDDDDd", "441123123", true, false,
+       false)
++    ..authorized = true
++    ..hjvRecording = true
+ ];
+ 
+ /// flutter run -d {platform} -t test/cm_demo.dart to test cm
+diff --git a/flutter/test/cm_test.dart b/flutter/test/cm_test.dart
+index 4766e3c..cc25094 100644
+--- a/flutter/test/cm_test.dart
++++ b/flutter/test/cm_test.dart
+@@ -16,5 +16,11 @@ void main() {
+           (client) => client.keyboard && !client.clipboard && !client.audio),
+       isTrue,
+     );
++    // HJViewer (TV-W2)
++    expect(cm_demo.testClients.map((client) => client.hjvMarkKind),
++        ['', 'same-account', 'unverified-name', '']);
++    expect(cm_demo.testClients[1].hjvMarkWho, '홍*동');
++    expect(cm_demo.testClients.map((client) => client.hjvRecording),
++        [false, false, false, true]);
+   });
+ }
+diff --git a/flutter/test/hjviewer_cm_test.dart b/flutter/test/hjviewer_cm_test.dart
+new file mode 100644
+index 0000000..e826c13
+--- /dev/null
++++ b/flutter/test/hjviewer_cm_test.dart
+@@ -0,0 +1,125 @@
++import 'package:flutter_hbb/common/hjviewer_cm_texts.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The PC connection window's marks, cautions and recording rule (the hjviewer repository's
++// docs/architecture.md 5-10, access-tickets.md 5-3), without the bridge. The caution texts are
++// the contract's words, letter for letter.
++
++const ko = HjvCmTexts(true);
++const en = HjvCmTexts(false);
++
++void main() {
++  test('the mark line comes from the kind, never from the name', () {
++    expect(hjvMarkView('same-account', '홍*동', ko)?.text, '같은 계정 확인됨 · 홍*동');
++    expect(hjvMarkView('same-account', '', ko)?.text, '같은 계정 확인됨');
++    expect(hjvMarkView('same-account', '홍*동', en)?.text,
++        'Same account, verified · 홍*동');
++    expect(hjvMarkView('same-account', '', en)?.text, 'Same account, verified');
++    expect(hjvMarkView('same-account', '', ko)?.warning, isFalse);
++    expect(hjvMarkView('unverified-name', '', ko)?.text, '확인되지 않은 이름');
++    expect(hjvMarkView('unverified-name', '', en)?.text, 'Unverified name');
++    expect(hjvMarkView('unverified-name', '', ko)?.warning, isTrue);
++    for (final kind in ['', 'same account', 'Same-Account', 'admin']) {
++      expect(hjvMarkView(kind, '홍*동', ko), isNull, reason: kind);
++    }
++  });
++
++  test('the caution box only on an accept card nothing proved', () {
++    for (final kind in ['', 'unverified-name', 'something-new']) {
++      expect(hjvShowCaution(authorized: false, disconnected: false, kind: kind),
++          isTrue,
++          reason: kind);
++    }
++    for (final kind in ['same-account', 'staff']) {
++      expect(hjvShowCaution(authorized: false, disconnected: false, kind: kind),
++          isFalse,
++          reason: kind);
++    }
++    expect(hjvShowCaution(authorized: true, disconnected: false, kind: ''),
++        isFalse);
++    expect(hjvShowCaution(authorized: false, disconnected: true, kind: ''),
++        isFalse);
++  });
++
++  test('the caution texts are the contract words', () {
++    String text(HjvCmTexts t, HjvCautionPlace place, String contact) =>
++        hjvCautionText(t, place: place, contact: contact);
++    const c = 'help@example.org';
++    expect(text(ko, HjvCautionPlace.accept, c),
++        '모르는 사람의 연결은 받지 마세요. 학교를 사칭한 연락을 받고 이 창이 떴다면 [거부]를 누르고 관리자에게 알려 주세요.');
++    expect(text(ko, HjvCautionPlace.accept, ' '),
++        '모르는 사람의 연결은 받지 마세요. 학교를 사칭한 연락을 받고 이 창이 떴다면 [거부]를 누르세요.');
++    expect(text(en, HjvCautionPlace.accept, c),
++        'Do not accept connections from people you do not know. If someone claiming to be the university asked you for this, click [Dismiss] and tell the administrator.');
++    expect(text(en, HjvCautionPlace.accept, ''),
++        'Do not accept connections from people you do not know. If someone claiming to be the university asked you for this, click [Dismiss].');
++    expect(text(ko, HjvCautionPlace.pcPassword, c),
++        '모르는 사람이 전화나 문자로 이 비밀번호를 넣으라고 했다면 넣지 마세요. 학교를 사칭한 연락이면 끊고 관리자에게 알려 주세요.');
++    expect(text(ko, HjvCautionPlace.pcPassword, ''),
++        '모르는 사람이 전화나 문자로 이 비밀번호를 넣으라고 했다면 넣지 마세요.');
++    expect(text(en, HjvCautionPlace.pcPassword, c),
++        'If someone you do not know asked you by phone or message to enter this password, do not. If they claimed to be the university, hang up and tell the administrator.');
++    expect(text(en, HjvCautionPlace.pcPassword, ''),
++        'If someone you do not know asked you by phone or message to enter this password, do not.');
++    expect(text(ko, HjvCautionPlace.pcCode, c),
++        '직접 도움을 부탁하지 않았는데 이 코드를 넣으라는 연락을 받았다면 넣지 마세요. 학교를 사칭한 연락이면 끊고 관리자에게 알려 주세요.');
++    expect(text(ko, HjvCautionPlace.pcCode, ''),
++        '직접 도움을 부탁하지 않았는데 이 코드를 넣으라는 연락을 받았다면 넣지 마세요.');
++    expect(text(en, HjvCautionPlace.pcCode, c),
++        'If you did not ask for help yourself and someone contacted you to enter this code, do not. If they claimed to be the university, hang up and tell the administrator.');
++    expect(text(en, HjvCautionPlace.pcCode, ''),
++        'If you did not ask for help yourself and someone contacted you to enter this code, do not.');
++  });
++
++  test('the contact line', () {
++    expect(hjvContactLine(ko, '  help@example.org '),
++        'HJViewer 관리자: help@example.org');
++    expect(hjvContactLine(en, 'help@example.org'),
++        'HJViewer administrator: help@example.org');
++    expect(hjvContactLine(ko, ''), isNull);
++    expect(hjvContactLine(ko, '  '), isNull);
++  });
++
++  test('the window comes up when recording starts, once a minute', () {
++    const t0 = 1000000;
++    expect(hjvShouldRaise(was: false, now: true, lastRaisedMs: null, nowMs: t0),
++        isTrue);
++    expect(hjvShouldRaise(was: true, now: true, lastRaisedMs: null, nowMs: t0),
++        isFalse);
++    expect(hjvShouldRaise(was: true, now: false, lastRaisedMs: null, nowMs: t0),
++        isFalse);
++    expect(
++        hjvShouldRaise(
++            was: false, now: true, lastRaisedMs: t0, nowMs: t0 + 59999),
++        isFalse);
++    expect(
++        hjvShouldRaise(
++            was: false, now: true, lastRaisedMs: t0, nowMs: t0 + 60000),
++        isTrue);
++  });
++
++  test('a core without the fields reads as no mark and no recording', () {
++    for (final json in [null, 'same-account', 3, [], <String, dynamic>{}]) {
++      final m = hjvReadMark(json);
++      expect((m.kind, m.who), ('', ''), reason: '$json');
++    }
++    final m = hjvReadMark({'kind': 'same-account', 'who': '홍*동'});
++    expect((m.kind, m.who), ('same-account', '홍*동'));
++    final odd = hjvReadMark({'kind': 1, 'who': null});
++    expect((odd.kind, odd.who), ('', ''));
++    expect(hjvReadRecording(true), isTrue);
++    for (final v in [null, false, 'true', 1]) {
++      expect(hjvReadRecording(v), isFalse, reason: '$v');
++    }
++  });
++
++  test('the recording texts', () {
++    expect(ko.recording, '녹화 중');
++    expect(en.recording, 'Recording');
++    expect(ko.recordingLine(canChange: true),
++        "상대가 이 연결의 화면을 녹화하고 있습니다. 멈추게 하려면 권한에서 '세션 녹화 허용'을 끄세요.");
++    expect(ko.recordingLine(canChange: false), '상대가 이 연결의 화면을 녹화하고 있습니다.');
++    expect(en.recordingLine(canChange: true),
++        'The other side is recording this connection\'s screen. To stop it, turn off "Enable recording session" under Permissions.');
++  });
++}

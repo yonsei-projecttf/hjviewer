@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Thu, 15 Oct 2026 20:01:01 +0900
-Subject: [PATCH 57/85] hjviewer: ui: the shared parts the areas asked for
+Subject: [PATCH 057/147] hjviewer: ui: the shared parts the areas asked for
 
 What the six areas asked of the shared files, after their work and after an independent
 review of each:

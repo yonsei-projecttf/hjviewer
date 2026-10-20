@@ -1,0 +1,838 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 04:09:45 +0900
+Subject: [PATCH 114/147] hjviewer: review fixes, cmui lane (1.9)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TV-W2/TV-W6 connection window fit (major): the 1.8.2 card filled the
+300 x 490 window to the pixel, so the caution box with a contact, P5 and
+the recording line pushed [수락]/[거부] below the window on a PC without
+HJViewer installed ([수락 및 권한 상승] shows). The card's column is now
+hjv_cm_layout.dart's HjvCmCardColumn: the header on top, the buttons and
+the notes above them whole at the bottom, and the permissions board
+between them giving up height (its grid scrolls), with the recording line
+whole under it. Letting the notes scroll instead would have squeezed the
+caution to nothing where it matters. test/hjviewer_cm_fit_test.dart
+measures the card at its real size with Pretendard, Korean and English,
+elevate shown. cm_demo.dart opens at the real size.
+
+TV-W6 P4 mark line (minor): two lines at most (English P4 needs about
+205 px of 174), so the words S10 and P6 quote are never cut. The mark
+line and the caution box's look moved to hjv_cm_layout.dart unchanged
+otherwise, so the pure test measures the app's own widgets.
+
+TV-W6 S13 (minor, security, critic S-08): S13 connects with one click, so
+it now also says "도움받을 분에게 이 ID가 맞는지 확인하세요." /
+"Check with the person you are helping that this is their ID."
+
+TV-W6 S12/S13 (nit): "PC {ID}에서 지원 코드를 넣었습니다." instead of a
+particle that depends on the ID's last digit.
+
+TV-W6 hjv_account.rs (nit): the "no support proof" line is throttled
+(one per minute); the peer decides how many Hash messages come.
+
+TV-W6 support.rs (nit): a 200 to the code-making request of the current
+login counts as fresh for S-02; the stored rev belongs to the login it
+answered, and a new waiting thread's first request goes without one.
+
+TV-W6 S-02 401 (nit): kept as an accepted deviation (no proof, no mark;
+the login ends with the next account request's 401), recorded in the
+docs note.
+
+TV-W6 P6 (nit): the toast says P2's words when the core's pc-code result
+says "staff": false; lane A's guest.rs follow-up writes that field.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_admin_contact.dart     |  52 +---
+ flutter/lib/common/hjv_cm_layout.dart         | 157 ++++++++++++
+ flutter/lib/common/hjviewer_access.dart       |   7 +-
+ flutter/lib/common/hjviewer_access_texts.dart |  29 ++-
+ flutter/lib/desktop/pages/server_page.dart    |  66 +++--
+ flutter/test/cm_demo.dart                     |   2 +-
+ flutter/test/hjviewer_cm_fit_test.dart        | 232 ++++++++++++++++++
+ flutter/test/hjviewer_support_test.dart       |  21 +-
+ src/client/hjv_account.rs                     |   6 +-
+ src/hjviewer_account/support.rs               |  16 +-
+ 10 files changed, 490 insertions(+), 98 deletions(-)
+ create mode 100644 flutter/lib/common/hjv_cm_layout.dart
+ create mode 100644 flutter/test/hjviewer_cm_fit_test.dart
+
+diff --git a/flutter/lib/common/hjv_admin_contact.dart b/flutter/lib/common/hjv_admin_contact.dart
+index ceeed7f..b657337 100644
+--- a/flutter/lib/common/hjv_admin_contact.dart
++++ b/flutter/lib/common/hjv_admin_contact.dart
+@@ -5,9 +5,8 @@
+ // this process trusts, or "" (src/hjviewer_update/mod.rs). The texts are hjviewer_cm_texts.dart.
+ 
+ import 'package:flutter/material.dart';
+-import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
+-import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjv_cm_layout.dart';
+ import 'package:flutter_hbb/common/hjviewer_cm_texts.dart';
+ import 'package:flutter_hbb/models/platform_model.dart';
+ 
+@@ -24,8 +23,8 @@ String hjvAdminContact() {
+ /// The connection window's texts in the language of the app's own, as the access screens pick it.
+ HjvCmTexts hjvCmTexts() => HjvCmTexts(translate('Cancel') == '취소');
+ 
+-/// A caution in the warning tone (HjvCallout): `text`, then, with a contact, "HJViewer 관리자:
+-/// <contact>" in two lines at most, whole in its tooltip, copied on a long press; never a link.
++/// A caution in the warning tone: `place`'s text, then, with a contact, "HJViewer 관리자:
++/// <contact>" (HjvCautionView, hjv_cm_layout.dart).
+ class HjvCautionBox extends StatelessWidget {
+   final HjvCmTexts t;
+   final HjvCautionPlace place;
+@@ -35,44 +34,9 @@ class HjvCautionBox extends StatelessWidget {
+       {super.key, required this.t, required this.place, required this.contact});
+ 
+   @override
+-  Widget build(BuildContext context) {
+-    final text = hjvCautionText(t, place: place, contact: contact);
+-    final line = hjvContactLine(t, contact);
+-    return Semantics(
+-      container: true,
+-      label: line == null ? text : '$text\n$line',
+-      excludeSemantics: true,
+-      child: HjvCallout.rich(
+-        tone: HjvTone.warning,
+-        icon: Icons.report_gmailerrorred_rounded,
+-        body: Column(
+-          mainAxisSize: MainAxisSize.min,
+-          crossAxisAlignment: CrossAxisAlignment.start,
+-          children: [
+-            Text(hjvKeepAll(text), style: const TextStyle(fontSize: 12)),
+-            if (line != null)
+-              Padding(
+-                padding: const EdgeInsets.only(top: 4),
+-                child: Tooltip(
+-                  message: line,
+-                  child: GestureDetector(
+-                    onLongPress: () {
+-                      Clipboard.setData(ClipboardData(text: contact.trim()));
+-                      showToast(t.contactCopied);
+-                    },
+-                    child: Text(line,
+-                        maxLines: 2,
+-                        overflow: TextOverflow.ellipsis,
+-                        style: TextStyle(
+-                            fontSize: 12,
+-                            fontWeight: FontWeight.w600,
+-                            color: HjvPalette.of(context).text)),
+-                  ),
+-                ),
+-              ),
+-          ],
+-        ),
+-      ),
+-    );
+-  }
++  Widget build(BuildContext context) => HjvCautionView(
++      text: hjvCautionText(t, place: place, contact: contact),
++      line: hjvContactLine(t, contact),
++      contact: contact,
++      onCopied: () => showToast(t.contactCopied));
+ }
+diff --git a/flutter/lib/common/hjv_cm_layout.dart b/flutter/lib/common/hjv_cm_layout.dart
+new file mode 100644
+index 0000000..b78c168
+--- /dev/null
++++ b/flutter/lib/common/hjv_cm_layout.dart
+@@ -0,0 +1,157 @@
++// The PC connection window's (CM's) HJViewer parts that decide what fits in its 300 x 490 window
++// (TV-W2, TV-W6; review fix of 1.9): the card's column, the mark line under the peer's name and
++// the caution box's look. Plain Flutter without the bridge, so that a pure Dart test measures them
++// with Pretendard (test/hjviewer_cm_fit_test.dart); server_page.dart and hjv_admin_contact.dart
++// show them.
++
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_cm_texts.dart';
++
++/// The connection card: `header` on top, `panel` (the notes above the buttons: the caution box,
++/// P5, and the buttons) whole at the bottom, and between them `board` (the permissions), which
++/// gives up height when the notes need it (its grid scrolls), with `note` (the recording line)
++/// whole under it. 1.8.2 filled the window to the pixel, so the notes the 1.9 card adds (the caution
++/// with a contact, P5, the recording line) would push [수락]/[거부] below the window's edge, or,
++/// if they scrolled, show nothing of the caution where it matters.
++class HjvCmCardColumn extends StatelessWidget {
++  final Widget header;
++  final Widget board;
++  final Widget? note;
++  final Widget panel;
++
++  const HjvCmCardColumn(
++      {super.key,
++      required this.header,
++      required this.board,
++      this.note,
++      required this.panel});
++
++  @override
++  Widget build(BuildContext context) => Column(
++        mainAxisAlignment: MainAxisAlignment.start,
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          header,
++          Expanded(
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Flexible(child: board),
++                if (note != null) note!,
++              ],
++            ),
++          ),
++          panel,
++        ],
++      );
++}
++
++/// The mark line under the peer's name in the kind's fixed icon and colour: two lines at most, so
++/// that the words S10 and P6 tell the person to look for are never cut (English P4 needs about
++/// 205 px; the accept card's header leaves 174, a connected card's about 130).
++class HjvMarkLine extends StatelessWidget {
++  final HjvMarkView view;
++
++  const HjvMarkLine({super.key, required this.view});
++
++  @override
++  Widget build(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final color = view.warning ? p.warningText : p.primaryStrong;
++    return Padding(
++      padding: const EdgeInsets.only(bottom: 2),
++      child: Semantics(
++        label: view.text,
++        excludeSemantics: true,
++        child: Tooltip(
++          message: view.tooltip,
++          child: Row(
++            mainAxisSize: MainAxisSize.min,
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              Padding(
++                padding: const EdgeInsets.only(top: 1),
++                child: Icon(
++                    view.warning
++                        ? Icons.warning_amber_rounded
++                        : Icons.verified_user_rounded,
++                    size: 14,
++                    color: view.warning ? p.warningText : p.primary),
++              ),
++              const SizedBox(width: 4),
++              Flexible(
++                child: Text(hjvKeepAll(view.text),
++                    maxLines: 2,
++                    overflow: TextOverflow.ellipsis,
++                    style: TextStyle(
++                        color: color,
++                        fontSize: 12,
++                        fontWeight: FontWeight.w600)),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++/// A caution in the warning tone (HjvCallout): `text`, then `line` ("HJViewer 관리자: <contact>")
++/// in two lines at most, whole in its tooltip; a long press copies `contact` and calls `onCopied`.
++/// Never a link.
++class HjvCautionView extends StatelessWidget {
++  final String text;
++  final String? line;
++  final String contact;
++  final VoidCallback? onCopied;
++
++  const HjvCautionView(
++      {super.key,
++      required this.text,
++      required this.line,
++      required this.contact,
++      this.onCopied});
++
++  @override
++  Widget build(BuildContext context) {
++    final line = this.line;
++    return Semantics(
++      container: true,
++      label: line == null ? text : '$text\n$line',
++      excludeSemantics: true,
++      child: HjvCallout.rich(
++        tone: HjvTone.warning,
++        icon: Icons.report_gmailerrorred_rounded,
++        body: Column(
++          mainAxisSize: MainAxisSize.min,
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            Text(hjvKeepAll(text), style: const TextStyle(fontSize: 12)),
++            if (line != null)
++              Padding(
++                padding: const EdgeInsets.only(top: 4),
++                child: Tooltip(
++                  message: line,
++                  child: GestureDetector(
++                    onLongPress: () {
++                      Clipboard.setData(ClipboardData(text: contact.trim()));
++                      onCopied?.call();
++                    },
++                    child: Text(line,
++                        maxLines: 2,
++                        overflow: TextOverflow.ellipsis,
++                        style: TextStyle(
++                            fontSize: 12,
++                            fontWeight: FontWeight.w600,
++                            color: HjvPalette.of(context).text)),
++                  ),
++                ),
++              ),
++          ],
++        ),
++      ),
++    );
++  }
++}
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index a39d8d7..4bf259c 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -901,8 +901,11 @@ void _pcCodeDialog(HjvAccessTexts t) {
+         _guestUntil.value = until;
+         _guestByCode.value = true;
+         _hintPcState('ok');
+-        // P6 (TV-W6): what the staff member's connection shows here
+-        showToast(t.pcCodeToast(_until(until)));
++        // P6 (TV-W6): what the staff member's connection shows here, unless the PC kept no
++        // support grant (then P2's words, which promise no mark)
++        showToast(hjvCodeTicketStaff(result())
++            ? t.pcCodeToast(_until(until))
++            : t.pcGuestToast(_until(until)));
+       }
+     }
+ 
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 3cc1d65..83c0e35 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -132,6 +132,20 @@ Future<String?> hjvTradeAccessPassword(HjvAccessTexts t,
+       : t.failure(failure, wait: hjvGuestNumber(noted, 'retry_after'));
+ }
+ 
++/// P6 (TV-W6): whether the support code's ticket says the staff member's connection will carry
++/// the mark: not when the core's pc-code result says `"staff": false` (the PC kept no support
++/// grant), so that the toast then promises nothing (P2's words). A result without the field (a
++/// core before it) keeps P6 as it was; the mark itself never shows without the grant.
++bool hjvCodeTicketStaff(String result) {
++  try {
++    final value = jsonDecode(result);
++    if (value is Map && value['staff'] == false) return false;
++  } catch (e) {
++    // no result
++  }
++  return true;
++}
++
+ /// E2 with hjv-api's wait: when a try may come again (Unix seconds by this device's clock, `now`
+ /// the same), 0 for any other result and for a wait it did not say.
+ int hjvRetryAt(String result, int now) {
+@@ -867,16 +881,19 @@ class HjvAccessTexts {
+       'You are told here when their PC enters the code, and also after you close this window, while the app is open.');
+   String get waitingLabel => _t('그분의 PC를 기다리는 중', 'Waiting for their PC');
+ 
+-  // S12 (critic S-08: the ID to check), S13
+-  String arrived(String id) => _t('PC ${_nb(formatID(id))}가 지원 코드를 넣었습니다.',
++  // S12 and S13 (critic S-08: the ID to check, in both, since S13 connects with one click). As
++  // in S4 no particle follows the ID ("에서", never "가"/"이" by its last digit).
++  String arrived(String id) => _t('PC ${_nb(formatID(id))}에서 지원 코드를 넣었습니다.',
+       'PC ${_nb(formatID(id))} entered the support code.');
++  String get arrivedCheck => _t('도움받을 분에게 이 ID가 맞는지 확인하세요.',
++      'Check with the person you are helping that this is their ID.');
+   String get arrivedText => _t(
+-      '이 기기에서 연결하면 그 PC의 연결 창에 "$_staff"이 보입니다. 도움받을 분에게 이 ID가 맞는지 확인하세요.',
+-      'When you connect from this device, that PC\'s connection window shows "$_staff". Check with the person you are helping that this is their ID.');
++      '이 기기에서 연결하면 그 PC의 연결 창에 "$_staff"이 보입니다. $arrivedCheck',
++      'When you connect from this device, that PC\'s connection window shows "$_staff". $arrivedCheck');
+   String get arrivedTitle => _t('지원 코드', 'Support code');
+   String arrivedAsk(String id) => _t(
+-      'PC ${_nb(formatID(id))}가 지원 코드를 넣었습니다. 지금 연결할까요?',
+-      'PC ${_nb(formatID(id))} entered the support code. Connect now?');
++      '${arrived(id)} $arrivedCheck 지금 연결할까요?',
++      '${arrived(id)} $arrivedCheck Connect now?');
+   String get later => _t('나중에', 'Later');
+ 
+   // S14: the remote restart's confirm for a support PC, in the place of R1 and its line
+diff --git a/flutter/lib/desktop/pages/server_page.dart b/flutter/lib/desktop/pages/server_page.dart
+index 67f8e11..160e82b 100644
+--- a/flutter/lib/desktop/pages/server_page.dart
++++ b/flutter/lib/desktop/pages/server_page.dart
+@@ -18,6 +18,7 @@ import 'package:flutter_svg/flutter_svg.dart';
+ 
+ import '../../common.dart';
+ import '../../common/hjv_admin_contact.dart';
++import '../../common/hjv_cm_layout.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_cm_texts.dart';
+ import '../../common/widgets/chat_page.dart';
+@@ -361,6 +362,34 @@ class ConnectionManagerState extends State<ConnectionManager>
+ }
+ 
+ Widget buildConnectionCard(Client client) {
++  // HJViewer (TV-W2, TV-W6): the buttons and the notes above them stay whole in the 300 x 490
++  // window; the permissions give up height instead (hjv_cm_layout.dart). Upstream's column is
++  // the one below, unused.
++  return Consumer<ServerModel>(
++    builder: (context, value, child) => HjvCmCardColumn(
++      key: ValueKey(client.id),
++      header: _CmHeader(client: client),
++      board: client.type_() == ClientType.file ||
++              client.type_() == ClientType.portForward ||
++              client.type_() == ClientType.terminal ||
++              client.disconnected
++          ? Offstage()
++          : _PrivilegeBoard(client: client),
++      // while the peer records this screen or camera
++      note: client.hjvRecording &&
++              client.authorized &&
++              !client.disconnected &&
++              (client.type_() == ClientType.remote ||
++                  client.type_() == ClientType.camera)
++          ? _hjvRecordingLine(context)
++          : null,
++      panel: _CmControlPanel(client: client),
++    ).paddingSymmetric(vertical: 4.0, horizontal: 8.0),
++  );
++}
++
++// ignore: unused_element
++Widget _buildConnectionCardUpstream(Client client) {
+   return Consumer<ServerModel>(
+     builder: (context, value, child) => Column(
+       mainAxisAlignment: MainAxisAlignment.start,
+@@ -374,13 +403,6 @@ Widget buildConnectionCard(Client client) {
+                 client.disconnected
+             ? Offstage()
+             : _PrivilegeBoard(client: client),
+-        // HJViewer (TV-W2): while the peer records this screen or camera
+-        if (client.hjvRecording &&
+-            client.authorized &&
+-            !client.disconnected &&
+-            (client.type_() == ClientType.remote ||
+-                client.type_() == ClientType.camera))
+-          _hjvRecordingLine(context),
+         Expanded(
+           child: Align(
+             alignment: Alignment.bottomCenter,
+@@ -1551,35 +1573,7 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
+ 
+ Widget _hjvMarkLine(BuildContext context, Client client) {
+   final view = hjvMarkView(client.hjvMarkKind, client.hjvMarkWho, hjvCmTexts());
+-  if (view == null) return const SizedBox.shrink();
+-  final p = HjvPalette.of(context);
+-  final color = view.warning ? p.warningText : p.primaryStrong;
+-  return Semantics(
+-    label: view.text,
+-    excludeSemantics: true,
+-    child: Tooltip(
+-      message: view.tooltip,
+-      child: Row(
+-        mainAxisSize: MainAxisSize.min,
+-        children: [
+-          Icon(
+-              view.warning
+-                  ? Icons.warning_amber_rounded
+-                  : Icons.verified_user_rounded,
+-              size: 14,
+-              color: view.warning ? p.warningText : p.primary),
+-          const SizedBox(width: 4),
+-          Flexible(
+-            child: Text(view.text,
+-                maxLines: 1,
+-                overflow: TextOverflow.ellipsis,
+-                style: TextStyle(
+-                    color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+-          ),
+-        ],
+-      ),
+-    ),
+-  ).marginOnly(bottom: 2);
++  return view == null ? const SizedBox.shrink() : HjvMarkLine(view: view);
+ }
+ 
+ Widget _hjvRecordingChip(BuildContext context) {
+diff --git a/flutter/test/cm_demo.dart b/flutter/test/cm_demo.dart
+index d35a676..1c3c1c2 100644
+--- a/flutter/test/cm_demo.dart
++++ b/flutter/test/cm_demo.dart
+@@ -32,7 +32,7 @@ void main() async {
+   isTest = true;
+   WidgetsFlutterBinding.ensureInitialized();
+   await windowManager.ensureInitialized();
+-  await windowManager.setSize(const Size(400, 600));
++  await windowManager.setSize(kConnectionManagerWindowSizeClosedChat);
+   await windowManager.setAlignment(Alignment.topRight);
+   await initEnv(kAppTypeMain);
+   for (var client in testClients) {
+diff --git a/flutter/test/hjviewer_cm_fit_test.dart b/flutter/test/hjviewer_cm_fit_test.dart
+new file mode 100644
+index 0000000..a0413dc
+--- /dev/null
++++ b/flutter/test/hjviewer_cm_fit_test.dart
+@@ -0,0 +1,232 @@
++import 'dart:io';
++import 'dart:typed_data';
++
++import 'package:flutter/material.dart';
++import 'package:flutter/rendering.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_hbb/common/hjv_cm_layout.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_cm_texts.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The connection window's card in its real size (300 x 490, 462 below the 28 px tab bar) with
++// Pretendard: the 1.9 notes (the caution with a contact, P5, the recording line) and the mark line
++// never push [수락]/[거부] or themselves out of the window (review of 1.9, TV-W2/TV-W6). The
++// header, the permissions and the buttons are server_page.dart's sizes; the card's column, the
++// mark line, the caution box and the callouts are the app's own widgets.
++
++const _window = Size(300, 462);
++// a contact long enough for the box's two lines (the real one comes from the signed policy)
++const _contact = 'HJViewer 지원 담당 helpdesk@example.ac.kr, 02-0000-0000';
++
++Future<void> _loadPretendard() async {
++  final loader = FontLoader(kHjvFont);
++  for (final weight in ['Regular', 'SemiBold', 'Bold']) {
++    final bytes = File('assets/fonts/Pretendard-$weight.otf').readAsBytesSync();
++    loader.addFont(Future.value(ByteData.view(bytes.buffer)));
++  }
++  await loader.load();
++}
++
++Widget _button(String text) => Padding(
++      padding: const EdgeInsets.all(4),
++      child: SizedBox(
++        key: Key('button $text'),
++        height: 36,
++        child: Center(
++            child: Text(text,
++                style: const TextStyle(
++                    fontSize: 13, fontWeight: FontWeight.w600))),
++      ),
++    );
++
++Widget _header(String name, HjvMarkView? mark, String status,
++        {required bool connected}) =>
++    Container(
++      margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 8.0),
++      padding: const EdgeInsets.only(top: 12, bottom: 12, left: 12, right: 4),
++      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
++        const Padding(
++            padding: EdgeInsets.only(right: 12),
++            child: SizedBox(width: 56, height: 56)),
++        Expanded(
++          child:
++              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
++            FittedBox(
++                child: Text(name,
++                    maxLines: 1,
++                    style: const TextStyle(
++                        fontWeight: FontWeight.w700,
++                        fontSize: 18,
++                        height: 1.3))),
++            if (mark != null) HjvMarkLine(view: mark),
++            const FittedBox(
++                child: Text('(123456789)', style: TextStyle(fontSize: 13))),
++            const SizedBox(height: 8),
++            FittedBox(
++                child: Text(status, style: const TextStyle(fontSize: 13))),
++          ]),
++        ),
++        // the chat button of a connected card
++        if (connected) const SizedBox(width: 48, height: 48),
++      ]),
++    );
++
++Widget _board() => Container(
++      key: const Key('board'),
++      width: double.infinity,
++      height: 160,
++      margin: const EdgeInsets.symmetric(horizontal: 4.0),
++      padding: const EdgeInsets.fromLTRB(0, 10, 0, 2),
++      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
++        const Padding(
++            padding: EdgeInsets.only(left: 12, bottom: 6),
++            child: Text('Permissions', style: TextStyle(fontSize: 12))),
++        Expanded(
++          child: GridView.count(
++            crossAxisCount: 4,
++            padding: const EdgeInsets.symmetric(horizontal: 10),
++            mainAxisSpacing: 10,
++            crossAxisSpacing: 10,
++            children: List.generate(8, (_) => const Icon(Icons.keyboard)),
++          ),
++        ),
++      ]),
++    );
++
++class _Case {
++  final String name;
++  final HjvCmTexts t;
++  final HjvMarkView? mark;
++  final bool connected;
++  final Widget? note;
++  final List<String> buttons;
++  const _Case(this.name, this.t,
++      {this.mark, this.connected = false, this.note, required this.buttons});
++}
++
++List<_Case> _cases() {
++  final cases = <_Case>[];
++  for (final t in [const HjvCmTexts(true), const HjvCmTexts(false)]) {
++    final ko = t.korean;
++    final accept = ko ? '수락' : 'Accept';
++    final dismiss = ko ? '거부' : 'Dismiss';
++    final elevate = ko ? '수락 및 권한 상승' : 'Accept and Elevate';
++    final caution = HjvCautionView(
++        key: const Key('note'),
++        text:
++            hjvCautionText(t, place: HjvCautionPlace.accept, contact: _contact),
++        line: hjvContactLine(t, _contact),
++        contact: _contact);
++    final lang = ko ? 'ko' : 'en';
++    // an outsider's PC from the support link: not installed, so [수락 및 권한 상승] shows
++    cases.add(_Case('$lang caution, elevate', t,
++        note: caution, buttons: [elevate, accept, dismiss]));
++    cases.add(_Case('$lang unverified name, caution, elevate', t,
++        mark: hjvMarkView(kHjvMarkUnverifiedName, '', t),
++        note: caution,
++        buttons: [elevate, accept, dismiss]));
++    cases.add(_Case('$lang staff, P5, elevate', t,
++        mark: hjvMarkView(kHjvMarkStaff, '', t),
++        note: HjvCallout(
++            key: const Key('note'),
++            text: t.staffAccept,
++            tone: HjvTone.info,
++            icon: Icons.verified_user_rounded),
++        buttons: [elevate, accept, dismiss]));
++    cases.add(_Case('$lang same account, recording, elevate', t,
++        mark: hjvMarkView(kHjvMarkSameAccount, '홍*동', t),
++        connected: true,
++        note: Padding(
++          padding: const EdgeInsets.only(left: 4, right: 4, top: 8),
++          child: HjvCallout(
++              key: const Key('note'),
++              text: t.recordingLine(canChange: true),
++              tone: HjvTone.danger,
++              icon: Icons.fiber_manual_record_rounded),
++        ),
++        buttons: [ko ? '권한 상승' : 'Elevate', ko ? '연결 해제' : 'Disconnect']));
++  }
++  return cases;
++}
++
++Widget _card(_Case c) {
++  final rows = c.buttons.length == 3
++      ? [
++          _button(c.buttons[0]),
++          Row(children: [
++            Expanded(child: _button(c.buttons[1])),
++            Expanded(child: _button(c.buttons[2])),
++          ]),
++        ]
++      : [
++          for (final b in c.buttons)
++            Row(children: [Expanded(child: _button(b))])
++        ];
++  return Padding(
++    padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 8.0),
++    child: HjvCmCardColumn(
++      header: _header('DESKTOP-7Q2', c.mark,
++          c.connected ? (c.t.korean ? '연결됨 00:12' : 'Connected 00:12') : '…',
++          connected: c.connected),
++      board: _board(),
++      note: c.connected ? c.note : null,
++      panel: Padding(
++        padding: const EdgeInsets.only(bottom: 8),
++        child: Column(mainAxisAlignment: MainAxisAlignment.end, children: [
++          if (!c.connected)
++            Padding(padding: const EdgeInsets.only(bottom: 8), child: c.note),
++          ...rows,
++        ]),
++      ),
++    ),
++  );
++}
++
++void main() {
++  setUpAll(_loadPretendard);
++
++  for (final c in _cases()) {
++    testWidgets('the card fits: ${c.name}', (tester) async {
++      tester.view.physicalSize = _window;
++      tester.view.devicePixelRatio = 1;
++      addTearDown(tester.view.reset);
++      await tester.pumpWidget(MaterialApp(
++          theme: ThemeData(fontFamily: kHjvFont),
++          home: Material(
++              child: Align(
++                  alignment: Alignment.topLeft,
++                  child: SizedBox.fromSize(size: _window, child: _card(c))))));
++      // an overflow would have failed the pump
++      expect(tester.takeException(), isNull);
++      final window = Offset.zero & _window;
++      for (final b in c.buttons) {
++        final r = tester.getRect(find.byKey(Key('button $b')));
++        expect(
++            window.contains(r.topLeft) &&
++                window.contains(r.bottomRight - const Offset(0.01, 0.01)),
++            isTrue,
++            reason: '[$b] at $r');
++      }
++      final note = tester.getRect(find.byKey(const Key('note')));
++      expect(note.bottom <= _window.height && note.top >= 0, isTrue,
++          reason: 'the note at $note');
++      // the permissions keep at least a row's part (their grid scrolls)
++      expect(tester.getSize(find.byKey(const Key('board'))).height,
++          greaterThanOrEqualTo(48),
++          reason: 'the board');
++      if (c.mark != null) {
++        // the line's text, after its icon's glyph
++        final mark = tester.renderObject<RenderParagraph>(find
++            .descendant(
++                of: find.byType(HjvMarkLine), matching: find.byType(RichText))
++            .last);
++        expect(mark.didExceedMaxLines, isFalse, reason: 'the mark line is cut');
++      }
++      // ignore: avoid_print
++      print('CMFIT ${c.name}: board '
++          '${tester.getSize(find.byKey(const Key('board'))).height.toStringAsFixed(1)} px, '
++          'note ${note.height.toStringAsFixed(1)} px');
++    });
++  }
++}
+diff --git a/flutter/test/hjviewer_support_test.dart b/flutter/test/hjviewer_support_test.dart
+index 61a3e7c..9b7f73a 100644
+--- a/flutter/test/hjviewer_support_test.dart
++++ b/flutter/test/hjviewer_support_test.dart
+@@ -111,12 +111,19 @@ void main() {
+   test('the waiting room and the PC that came (S11 to S13)', () {
+     expect(ko.waiting,
+         '그분의 PC가 코드를 넣으면 여기에 알려 드립니다. 이 창을 닫아도 앱이 켜져 있는 동안 알려 드립니다.');
+-    expect(ko.arrived('123456789'), 'PC 123 456 789가 지원 코드를 넣었습니다.');
++    expect(ko.arrived('123456789'), 'PC 123 456 789에서 지원 코드를 넣었습니다.');
+     expect(en.arrived('123456789'), 'PC 123 456 789 entered the support code.');
+     expect(ko.arrivedText,
+         '이 기기에서 연결하면 그 PC의 연결 창에 "연세대 교직원(로그인 확인)"이 보입니다. 도움받을 분에게 이 ID가 맞는지 확인하세요.');
+-    expect(
+-        ko.arrivedAsk('123456789'), 'PC 123 456 789가 지원 코드를 넣었습니다. 지금 연결할까요?');
++    // S13 connects with one click: the check of the ID too (critic S-08)
++    expect(ko.arrivedAsk('123456789'),
++        'PC 123 456 789에서 지원 코드를 넣었습니다. 도움받을 분에게 이 ID가 맞는지 확인하세요. 지금 연결할까요?');
++    expect(en.arrivedAsk('123456789'),
++        'PC 123 456 789 entered the support code. Check with the person you are helping that this is their ID. Connect now?');
++    // no particle that depends on the ID's last digit (S4's rule)
++    for (final id in ['123456780', '123456781', '123456783', '123456786']) {
++      expect(ko.arrived(id), endsWith('에서 지원 코드를 넣었습니다.'));
++    }
+     expect([ko.arrivedTitle, ko.later, ko.connect], ['지원 코드', '나중에', '연결']);
+     expect([en.arrivedTitle, en.later, en.connect],
+         ['Support code', 'Later', 'Connect']);
+@@ -158,4 +165,12 @@ void main() {
+     expect(en.pcCodeToast('18:30'),
+         'This PC accepts connections until 18:30. When the faculty or staff member connects, the connection window shows a shield with the line "Yonsei faculty or staff (verified login)". Check that line, then press [Accept].');
+   });
++
++  test('P6 only where the PC kept the support grant', () {
++    expect(hjvCodeTicketStaff('{"ok":true,"until":1760000000,"staff":true}'), isTrue);
++    expect(hjvCodeTicketStaff('{"ok":true,"until":1760000000,"staff":false}'), isFalse);
++    // a core before the field: P6 as before (the mark never shows without the grant)
++    expect(hjvCodeTicketStaff('{"ok":true,"until":1760000000}'), isTrue);
++    expect(hjvCodeTicketStaff(''), isTrue);
++  });
+ }
+diff --git a/src/client/hjv_account.rs b/src/client/hjv_account.rs
+index d4c0199..e378980 100644
+--- a/src/client/hjv_account.rs
++++ b/src/client/hjv_account.rs
+@@ -138,7 +138,11 @@ async fn login_with<F: Future<Output = bool>>(
+         }
+         ProofDecision::SendSupport(proof) => {
+             if !confirm_support().await {
+-                log::info!("no support proof: hjv-api did not confirm the login just now");
++                hbb_common::throttled_log!(
++                    std::time::Duration::from_secs(60),
++                    info,
++                    "no support proof: hjv-api did not confirm the login just now"
++                );
+                 return None;
+             }
+             lr.hjv_key_proof = MessageField::some(proof);
+diff --git a/src/hjviewer_account/support.rs b/src/hjviewer_account/support.rs
+index 2763730..8be72df 100644
+--- a/src/hjviewer_account/support.rs
++++ b/src/hjviewer_account/support.rs
+@@ -150,6 +150,10 @@ fn make() -> Value {
+             .and_then(|made| made.remove("wait"))
+             .filter(|_| current);
+         let mut room = room();
++        // hjv-api took the login just now (S-02)
++        if status == 200 && current {
++            room.fresh = Some((login_of(&token), Instant::now()));
++        }
+         room.made(
+             &mut answer,
+             wait,
+@@ -378,8 +382,8 @@ enum Seen {
+ struct Room {
+     last_slot: u64,
+     codes: Vec<Code>,
+-    /// hjv-api's `rev` of the last answer
+-    rev: Option<u64>,
++    /// hjv-api's `rev` of the last answer, and the login it answered
++    rev: Option<([u8; 32], u64)>,
+     /// codes a PC used, (slot, PC ID), until the screens read them
+     arrived: VecDeque<(u64, String)>,
+     pcs: HashMap<String, SupportPc>,
+@@ -465,7 +469,7 @@ impl Room {
+ 
+     /// hjv-api's 200 to `login`.
+     fn answered(&mut self, login: &[u8; 32], rev: u64, seen: &HashMap<String, Seen>, now: Instant) {
+-        self.rev = Some(rev);
++        self.rev = Some((*login, rev));
+         self.fresh = Some((*login, now));
+         for c in self
+             .codes
+@@ -638,6 +642,8 @@ fn start_waiting(room: &mut Room) {
+     let Some(server) = server() else {
+         return;
+     };
++    // a new thread's first request goes without a rev
++    room.rev = None;
+     room.waiting = std::thread::Builder::new()
+         .name("hjv-support-wait".to_owned())
+         .spawn(move || wait_loop(&server))
+@@ -659,7 +665,7 @@ fn wait_loop(server: &str) {
+                 return;
+             }
+             room.kicked = false;
+-            room.rev
++            room.rev.filter(|(of, _)| of == &login).map(|(_, rev)| rev)
+         };
+         let sent = Instant::now();
+         let reply = ask(server, &token, rev, WAIT_TIMEOUT);
+@@ -1036,7 +1042,7 @@ mod tests {
+             now,
+         );
+         assert_eq!(step, Step::Now);
+-        assert_eq!(room.rev, Some(3));
++        assert_eq!(room.rev.map(|(_, rev)| rev), Some(3));
+         // the same rev back at once: hjv-api did not hold it, so a pause
+         let step = room.take_reply(
+             &login(),

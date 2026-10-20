@@ -1,0 +1,256 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:07:19 +0900
+Subject: [PATCH 100/147] hjviewer: back closes HJViewer's dialogs as their
+ cancel does, and goes home from a phone tab
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+UX-M2, the call sites:
+- U63: A1 and A2 (a refused session) pass their [취소] and [닫기] as onBack, so a back press
+  also closes the session as the button does, and while A1 checks the access password. P2, P3,
+  S2, the main window's close question (back keeps the window open), the account screens'
+  dialogs, the relogin notice and the update screens close on back, as their only cancel is the
+  dialog's close; the new-device notice, which waits for an answer, keeps swallowing it. The
+  login dialog passes its close (onDialogCancel). Upstream dialogs are unchanged.
+- The phone home's WillPopScope becomes a PopScope: back on another tab goes to the first tab,
+  on it the app goes back, as before. The manifest keeps predictive back off (U60, 1.8.2) until
+  an Android 16 device passes every back path.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../android/app/src/main/AndroidManifest.xml  |  5 +++--
+ flutter/lib/common/hjv_update.dart            |  4 ++--
+ flutter/lib/common/hjviewer_access.dart       | 22 ++++++++++++++-----
+ flutter/lib/common/hjviewer_account.dart      | 15 ++++++++-----
+ flutter/lib/common/widgets/login.dart         |  6 ++++-
+ flutter/lib/mobile/pages/home_page.dart       | 15 +++++--------
+ 6 files changed, 41 insertions(+), 26 deletions(-)
+
+diff --git a/flutter/android/app/src/main/AndroidManifest.xml b/flutter/android/app/src/main/AndroidManifest.xml
+index 0d8d692..c448729 100644
+--- a/flutter/android/app/src/main/AndroidManifest.xml
++++ b/flutter/android/app/src/main/AndroidManifest.xml
+@@ -41,8 +41,9 @@
+             android:theme="@style/LaunchTheme"
+             android:windowSoftInputMode="adjustResize">
+             <!-- back keeps the key's behaviour on Android 16 (predictive back off): the home's
+-                 WillPopScope and the dialogs' back handling see it; U63 replaces this with
+-                 PopScope. To be checked on an Android 16 device. -->
++                 PopScope and the dialogs' back handling (U63) and the app lock see it. It goes
++                 only once an Android 16 device passes every back path: the home's tabs, the
++                 dialogs, the remote screen and the app lock. -->
+             <!-- after the splash, the window behind the Flutter UI is a plain colour -->
+             <meta-data
+                 android:name="io.flutter.embedding.android.NormalTheme"
+diff --git a/flutter/lib/common/hjv_update.dart b/flutter/lib/common/hjv_update.dart
+index eafd292..62a742b 100644
+--- a/flutter/lib/common/hjv_update.dart
++++ b/flutter/lib/common/hjv_update.dart
+@@ -274,12 +274,12 @@ void _ask(String key, String value) {
+ }
+ 
+ /// Shows a dialog, in place of an earlier one of the same tag; a dialog that cannot be shown
+-/// yet (no overlay) is left out.
++/// yet (no overlay) is left out. A back press closes it, as its [닫기] does (U63).
+ Future<T?> _show<T>(DialogBuilder builder, {String? tag}) async {
+   try {
+     final dialogs = hjvHost.dialogs;
+     if (tag != null) dialogs.dismissByTag(tag);
+-    return await dialogs.show<T>(builder, tag: tag);
++    return await dialogs.show<T>(builder, tag: tag, backDismiss: true);
+   } catch (e) {
+     debugPrint('hjv update: $e');
+     return null;
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index 09b6213..f8a26d4 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -449,7 +449,8 @@ Future<bool> hjvAccessMainWindowCloses() async {
+             ],
+             onSubmit: () => close(false),
+             onCancel: close,
+-          ));
++          ),
++          backDismiss: true);
+   if (answer == null) return false;
+   _closeAsked = until;
+   if (answer) await _endGuest(t);
+@@ -473,6 +474,8 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+   var open = !canLogIn;
+   // a port forward connects again for each local connection, which takes the new ticket
+   final forward = desktopType == DesktopType.portForward;
++  // a back press is [취소], also while it checks (U63)
++  VoidCallback? back;
+   dialogManager.dismissAll();
+   unawaited(dialogManager.show((setState, close, context) {
+     void cancel() {
+@@ -482,6 +485,8 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+       if (!forward && !busy) closeConnection();
+     }
+ 
++    back = cancel;
++
+     void logIn() async {
+       close();
+       if (await loginDialog() != true) {
+@@ -585,12 +590,15 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+       onSubmit: open ? connect : logIn,
+       onCancel: cancel,
+     );
+-  }).whenComplete(() => closed = true));
++  }, onBack: () => back?.call())
++      .whenComplete(() => closed = true));
+ }
+ 
+ void _refusedAgainDialog(HjvAccessTexts t, SessionID sessionId, String title,
+     OverlayDialogManager dialogManager, ReconnectHandle reconnect) {
+   final forward = desktopType == DesktopType.portForward;
++  // a back press is [닫기] (U63)
++  VoidCallback? back;
+   dialogManager.dismissAll();
+   dialogManager.show((setState, close, context) {
+     void cancel() {
+@@ -598,6 +606,8 @@ void _refusedAgainDialog(HjvAccessTexts t, SessionID sessionId, String title,
+       if (!forward) closeConnection();
+     }
+ 
++    back = cancel;
++
+     void again() {
+       close();
+       reconnect(dialogManager, sessionId, false);
+@@ -615,7 +625,7 @@ void _refusedAgainDialog(HjvAccessTexts t, SessionID sessionId, String title,
+       onSubmit: forward ? cancel : again,
+       onCancel: cancel,
+     );
+-  });
++  }, onBack: () => back?.call());
+ }
+ 
+ // ---- this PC (P1, P2, G2) ----
+@@ -809,7 +819,7 @@ void _pcPasswordDialog(HjvAccessTexts t) {
+       onSubmit: submit,
+       onCancel: close,
+     );
+-  });
++  }, backDismiss: true);
+   unawaited(dialog.whenComplete(() => closed = true).catchError((Object e) {
+     debugPrint('hjv: $e');
+     return null;
+@@ -922,7 +932,7 @@ void _pcCodeDialog(HjvAccessTexts t) {
+       onSubmit: submit,
+       onCancel: close,
+     );
+-  });
++  }, backDismiss: true);
+   unawaited(dialog.whenComplete(() => closed = true).catchError((Object e) {
+     debugPrint('hjv: $e');
+     return null;
+@@ -1142,7 +1152,7 @@ void _supportCodeDialog(HjvAccessTexts t) {
+           : close,
+       onCancel: close,
+     );
+-  });
++  }, backDismiss: true);
+   unawaited(dialog.whenComplete(() {
+     closed = true;
+     timer?.cancel();
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index e795588..365c142 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -103,9 +103,12 @@ Future<(int, Object?)> _request(String method, String path,
+ /// The operator's view's request (hjviewer_admin.dart), as this file's own go.
+ Future<(int, Object?)> hjvAccountGet(String path) => _request('GET', path);
+ 
+-/// Shows a dialog; a dialog that cannot be shown yet (no overlay) is left out.
+-Future<T?> _show<T>(DialogBuilder builder) =>
+-    gFFI.dialogManager.show<T>(builder).catchError((Object e) {
++/// Shows a dialog; a dialog that cannot be shown yet (no overlay) is left out. A back press
++/// closes it, as its [취소] or [닫기] does (U63), unless it waits for an answer (`back` false).
++Future<T?> _show<T>(DialogBuilder builder, {bool back = true}) =>
++    gFFI.dialogManager
++        .show<T>(builder, backDismiss: back)
++        .catchError((Object e) {
+       debugPrint('hjv: $e');
+       return null;
+     });
+@@ -1537,7 +1540,8 @@ void _announceRelogin() {
+               }),
+             ],
+             onCancel: close,
+-          ))
++          ),
++          backDismiss: true)
+       .then((_) => bind.mainSetCommon(key: 'hjv-relogin', value: ''))
+       .catchError((Object e) => debugPrint('hjv: $e'))
+       .whenComplete(() => _reloginShown = false);
+@@ -1567,7 +1571,8 @@ Future<void> _announceNewDevices() async {
+                 done: (body) => body is Map && body['revoked'] == false
+                     ? t.notMineEndedDone
+                     : t.notMineDone);
+-          }));
++          }),
++          back: false);
+     }
+   } catch (e) {
+     debugPrint('hjv: new devices: $e');
+diff --git a/flutter/lib/common/widgets/login.dart b/flutter/lib/common/widgets/login.dart
+index 56afefd..3728f43 100644
+--- a/flutter/lib/common/widgets/login.dart
++++ b/flutter/lib/common/widgets/login.dart
+@@ -802,6 +802,8 @@ Future<bool?> _openLoginDialog() async {
+ 
+   Future.delayed(Duration.zero, fetchLoginOptions);
+ 
++  // HJViewer: a back press is the dialog's close (U63)
++  VoidCallback? hjvBack;
+   final res = await gFFI.dialogManager.show<bool>((setState, close, context) {
+     username.addListener(() {
+       if (usernameMsg != null) {
+@@ -820,6 +822,8 @@ Future<bool?> _openLoginDialog() async {
+       close(false);
+     }
+ 
++    hjvBack = onDialogCancel;
++
+     handleLoginResponse(LoginResponse resp, bool storeIfAccessToken,
+         void Function([dynamic])? close) async {
+       switch (resp.type) {
+@@ -1022,7 +1026,7 @@ Future<bool?> _openLoginDialog() async {
+       onCancel: onDialogCancel,
+       onSubmit: onLogin,
+     );
+-  }).whenComplete(oidcAuth.close);
++  }, onBack: () => hjvBack?.call()).whenComplete(oidcAuth.close);
+ 
+   if (res != null) {
+     await UserModel.updateOtherModels();
+diff --git a/flutter/lib/mobile/pages/home_page.dart b/flutter/lib/mobile/pages/home_page.dart
+index 0d05487..eb779ae 100644
+--- a/flutter/lib/mobile/pages/home_page.dart
++++ b/flutter/lib/mobile/pages/home_page.dart
+@@ -62,16 +62,11 @@ class HomePageState extends State<HomePage> {
+ 
+   @override
+   Widget build(BuildContext context) {
+-    return WillPopScope(
+-        onWillPop: () async {
+-          if (_selectedIndex != 0) {
+-            setState(() {
+-              _selectedIndex = 0;
+-            });
+-          } else {
+-            return true;
+-          }
+-          return false;
++    // HJViewer: back on another tab goes to the first one, on it the app goes back (U63)
++    return PopScope(
++        canPop: _selectedIndex == 0,
++        onPopInvokedWithResult: (didPop, _) {
++          if (!didPop) setState(() => _selectedIndex = 0);
+         },
+         child: Scaffold(
+           // backgroundColor: MyTheme.grayBg,

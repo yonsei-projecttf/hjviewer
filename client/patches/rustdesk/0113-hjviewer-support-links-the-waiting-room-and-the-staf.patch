@@ -1,0 +1,2811 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:31:53 +0900
+Subject: [PATCH 113/147] hjviewer: support links, the waiting room and the
+ staff mark's screens (TV-W6 controller)
+
+TV-W6 S2, S9, S10: from a 1.9 hjv-api, whose support-code answer also
+carries a sound `link` and `wait`, the core hands S2 the whole link and a
+slot and keeps the waiting number in memory only. S2 then offers [Close]
+[Copy code] [Copy link] [Copy instructions] (the last the default; on
+phones the two copies move into the content), and the instructions carry
+the code at a sentence end and the link on a line of its own. Without
+both members S2 stays as in 1.8.2.
+
+TV-W6 S11 to S13: one thread per process long-polls GET
+/api/hjv/support-code/wait (rev, 30 s, 3-30 s backoff, a kick when the
+app comes back) while a code of the login is open. A used code's PC ID
+and key go into the support PCs table (memory only, tied to the login's
+token, until the ticket ends). S2 shows the S11 line while it waits and
+turns into S12 with [Connect]; once S2 was closed, S13 asks in the main
+window. 401 ends the login as an account request's does; 403 or 404 is
+a server without the waiting room and shows nothing.
+
+TV-W6 controller proof (design 3-4, critic C-02, S-02): a PC outside
+the account's list that is a support PC, over a secured channel under
+the waiting room's key, gets 1.6.0's connection proof without any
+password, once hjv-api answered the login within two minutes or answers
+a waiting room request now. Another key sends no proof and no warning.
+A support proof's refusal goes upstream's way (wait for Accept, or the
+password box), not 1.6.0's "could not connect without a password".
+
+TV-W6 S14, S15: the remote restart's confirm shows S14 alone for a
+support PC of this login, and the offline text after that restart S15.
+
+TV-W6 P4 to P6 (critic X-02, 2-5): the connection window draws kind
+'staff' as the shield and 'Yonsei faculty or staff (verified login)' on
+the mark line, P5 in the caution's place above [Accept] where the PC
+shows that button, and P3's toast names the shield and the line.
+
+New pure Dart test: test/hjviewer_support_test.dart.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_access.dart       |  254 ++++-
+ flutter/lib/common/hjviewer_access_texts.dart |  147 ++-
+ flutter/lib/common/hjviewer_cm_texts.dart     |   26 +-
+ flutter/lib/common/widgets/dialog.dart        |    4 +-
+ flutter/lib/desktop/pages/server_page.dart    |   11 +
+ flutter/test/cm_demo.dart                     |    7 +-
+ flutter/test/cm_test.dart                     |    9 +-
+ flutter/test/hjviewer_cm_test.dart            |   33 +
+ flutter/test/hjviewer_support_test.dart       |  161 +++
+ src/client/hjv_account.rs                     |  182 ++-
+ src/hjviewer_account/ctl.rs                   |  250 +++-
+ src/hjviewer_account/support.rs               | 1007 ++++++++++++++++-
+ 12 files changed, 1976 insertions(+), 115 deletions(-)
+ create mode 100644 flutter/test/hjviewer_support_test.dart
+
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index ce5b0f3..a39d8d7 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -89,10 +89,12 @@ var _refusedSince = 0;
+ final _refusedLong = false.obs;
+ 
+ /// The sessions (their IDs as strings) whose A1 took the access password, and those of them
+-/// whose PC password box has not shown that yet; the sessions that asked for a remote restart.
++/// whose PC password box has not shown that yet; the sessions that asked for a remote restart,
++/// and those of them whose PC was a support PC of this login then (TV-W6, S15).
+ final _passedA1 = <String>{};
+ final _noteOnce = <String>{};
+ final _restarted = <String>{};
++final _restartedSupport = <String>{};
+ 
+ /// The access password ticket (its `_guestUntil`) the main window's close asked about.
+ var _closeAsked = 0;
+@@ -386,24 +388,37 @@ String hjvAccessMsgboxText(SessionID sessionId, String text) {
+       mode: _gateMode.value,
+       passed: _passedA1.contains(session),
+       restarted: _restarted.contains(session),
++      support: _restartedSupport.contains(session),
+       codes: _gateCodes.value);
+   return own == null ? text : hjvKeepAll(own);
+ }
+ 
+ /// showRestartRemoteDevice (dialog.dart): the confirm's line about the gate and a PC where
+-/// HJViewer is not installed (`installed`, PeerInfo.isInstalled), null for none.
+-String? hjvAccessRestartNote({required bool installed}) {
++/// HJViewer is not installed (`installed`, PeerInfo.isInstalled), null for none; for a PC that
++/// used a support code of this login (`id`, the waiting room's support PCs) S14 alone (TV-W6).
++String? hjvAccessRestartNote({required bool installed, String? id}) {
+   if (!_accountBuild) return null;
+   unawaited(_askGateMode());
+-  return hjvRestartGateNote(_t, mode: _gateMode.value, installed: installed);
++  return hjvRestartGateNote(_t,
++      mode: _gateMode.value,
++      installed: installed,
++      support: id != null && _isSupportPc(id));
+ }
+ 
++/// Whether `id` used a support code of this login and its ticket still holds (support.rs).
++bool _isSupportPc(String id) => _commonSync(hjvSupportPcKey(id)) == 'Y';
++
+ /// showRestartRemoteDevice: the confirm's action, [다시 시작].
+ String hjvAccessRestartLabel() => _t.restart;
+ 
+-/// showRestartRemoteDevice: this session asked for the restart, for its offline text after it.
+-void hjvAccessRestarting(SessionID sessionId) {
+-  if (_accountBuild) _restarted.add(sessionId.toString());
++/// showRestartRemoteDevice: this session asked for the restart, for its offline text after it
++/// (S15 when `id` was a support PC then).
++void hjvAccessRestarting(SessionID sessionId, {String? id}) {
++  if (!_accountBuild) return;
++  _restarted.add(sessionId.toString());
++  if (id != null && _isSupportPc(id)) {
++    _restartedSupport.add(sessionId.toString());
++  }
+ }
+ 
+ /// tabbar_widget.dart, the main window's close, which only hides it: while this PC's access
+@@ -886,7 +901,8 @@ void _pcCodeDialog(HjvAccessTexts t) {
+         _guestUntil.value = until;
+         _guestByCode.value = true;
+         _hintPcState('ok');
+-        showToast(t.pcGuestToast(_until(until)));
++        // P6 (TV-W6): what the staff member's connection shows here
++        showToast(t.pcCodeToast(_until(until)));
+       }
+     }
+ 
+@@ -1001,10 +1017,92 @@ List<Widget> hjvSupportCodeEntry({bool bar = false, bool narrow = false}) =>
+ 
+ /// S1: a code made at once and shown (S2) with the time it has left, until the window closes;
+ /// the code stays in this window's memory only and keeps working until its ten minutes are over.
++/// From a 1.9 server S2 also holds the support link (S9, S10) and is the waiting room (S11): the
++/// core waits for the code (src/hjviewer_account/support.rs), and once a PC enters it S2 turns into
++/// S12 with [연결]; closed, the app tells it with S13 (TV-W6).
+ void hjvMakeSupportCode() => _supportCodeDialog(_t);
+ 
++/// The waiting room's codes of this window: those whose S2 is open, and all it still waits for.
++final _slotsShown = <int>{};
++final _slotsWaited = <int>{};
++Timer? _arrivals;
++DateTime? _arrivalsTick;
++
++/// S2's [연결], S12's and S13's: a connection as any made in the app (no LK1), whose login carries
++/// the support proof by itself.
++void _connectSupportPc(String id) {
++  final context = globalKey.currentContext;
++  if (context != null) connect(context, id);
++}
++
++/// While a code of this window is waited for: once a second, a PC that entered a code whose S2 is
++/// closed brings S13 up (on the desktop in the main window, which also comes to the front). After
++/// a pause of the app (an iPhone in the background) the core is asked to ask again at once.
++void _watchArrivals() {
++  if (_arrivals != null) return;
++  _arrivalsTick = DateTime.now();
++  _arrivals = Timer.periodic(const Duration(seconds: 1), (timer) {
++    final now = DateTime.now();
++    final last = _arrivalsTick;
++    _arrivalsTick = now;
++    if (last != null && now.difference(last) > const Duration(seconds: 3)) {
++      unawaited(bind
++          .mainSetCommon(key: kHjvSupportWaitKick, value: '')
++          .catchError((Object e) => debugPrint('hjv: $e')));
++    }
++    final arrival = hjvSupportArrival(_commonSync(kHjvSupportArrived));
++    if (arrival != null &&
++        _slotsWaited.remove(arrival.slot) &&
++        !_slotsShown.contains(arrival.slot)) {
++      _arrivedDialog(_t, arrival.pc);
++    }
++    for (final slot in _slotsWaited.toList()) {
++      final wait = hjvSupportWait(_commonSync(hjvSupportWaitKey(slot))).state;
++      if (wait == 'login' && !_slotsShown.contains(slot)) {
++        // hjv-api ended the login: as an account request's 401 ends it (the notice tells it)
++        _slotsWaited.clear();
++        unawaited(gFFI.userModel.reset(resetOther: true));
++        break;
++      }
++      // used is left for the arrival above; the rest is over
++      if (wait != 'open' && wait != 'used') _slotsWaited.remove(slot);
++    }
++    if (_slotsWaited.isEmpty) {
++      timer.cancel();
++      _arrivals = null;
++    }
++  });
++}
++
++/// S13: a PC entered a code whose S2 was closed.
++void _arrivedDialog(HjvAccessTexts t, String id) {
++  if (isDesktop) unawaited(windowOnTop(null));
++  gFFI.dialogManager.show((setState, close, context) {
++    void connectNow() {
++      close();
++      _connectSupportPc(id);
++    }
++
++    return CustomAlertDialog(
++      title: HjvDialogTitle(Icons.support_agent_rounded, t.arrivedTitle),
++      content: Text(hjvKeepAll(t.arrivedAsk(id)),
++          style: hjvDialogTextStyle(context)),
++      actions: [
++        _button(t.later, close, outline: true),
++        _button(t.connect, connectNow),
++      ],
++      onSubmit: connectNow,
++      onCancel: close,
++    );
++  }, backDismiss: true);
++}
++
+ void _supportCodeDialog(HjvAccessTexts t) {
+   ({String code, int expiresIn})? made;
++  // a 1.9 server's support link and waiting room slot (null from an older one), and what the
++  // waiting room said of the code: '' until it said, kept once a PC used it or it ended
++  ({String link, int slot})? room;
++  var wait = (state: '', pc: '');
+   // since the code came, on a monotonic clock: changing the device's clock does not move it
+   final madeFor = Stopwatch();
+   String? error;
+@@ -1015,12 +1113,22 @@ void _supportCodeDialog(HjvAccessTexts t) {
+   Timer? timer;
+   unawaited(_askGateMode());
+   final dialog = gFFI.dialogManager.show((setState, close, context) {
++    void loginEnded() {
++      // hjv-api ended the login: as an account request's 401 ends it (the notice tells it)
++      close();
++      unawaited(gFFI.userModel.reset(resetOther: true));
++    }
++
+     Future<void> make() async {
+       timer?.cancel();
++      final before = room;
++      if (before != null) _slotsShown.remove(before.slot);
+       setState(() {
+         busy = true;
+         error = null;
+         made = null;
++        room = null;
++        wait = (state: '', pc: '');
+       });
+       var result = '';
+       try {
+@@ -1029,14 +1137,19 @@ void _supportCodeDialog(HjvAccessTexts t) {
+       } catch (e) {
+         debugPrint('hjv: support code: $e');
+       }
+-      if (closed) return;
+       final code = hjvSupportCodeMade(result);
++      final slot = hjvSupportCodeRoom(result);
++      if (slot != null) {
++        // the waiting room tells of it even when this window is gone by now (S13)
++        _slotsWaited.add(slot.slot);
++        if (!closed) _slotsShown.add(slot.slot);
++        _watchArrivals();
++      }
++      if (closed) return;
+       if (code == null) {
+         final failure = hjvGuestFailure(result) ?? 'network';
+         if (failure == 'login') {
+-          // hjv-api ended the login: as an account request's 401 ends it (the notice tells it)
+-          close();
+-          unawaited(gFFI.userModel.reset(resetOther: true));
++          loginEnded();
+           return;
+         }
+         setState(() {
+@@ -1050,6 +1163,7 @@ void _supportCodeDialog(HjvAccessTexts t) {
+       setState(() {
+         busy = false;
+         made = code;
++        room = slot;
+         madeFor
+           ..reset()
+           ..start();
+@@ -1059,8 +1173,19 @@ void _supportCodeDialog(HjvAccessTexts t) {
+           timer.cancel();
+           return;
+         }
++        if (slot != null && wait.state != 'used' && wait.state != 'over') {
++          final now = hjvSupportWait(_commonSync(hjvSupportWaitKey(slot.slot)));
++          if (now.state == 'login') {
++            timer.cancel();
++            loginEnded();
++            return;
++          }
++          if (now.state.isNotEmpty) wait = now;
++        }
+         setState(() {});
+-        if (hjvCodeLeft(code.expiresIn, madeFor.elapsed) == 0) {
++        final left = hjvCodeLeft(code.expiresIn, madeFor.elapsed);
++        if (hjvSupportView(wait: wait.state, left: left) !=
++            HjvSupportView.open) {
+           timer.cancel();
+         }
+       });
+@@ -1077,12 +1202,31 @@ void _supportCodeDialog(HjvAccessTexts t) {
+ 
+     final p = HjvPalette.of(context);
+     final code = made;
++    final link = room?.link;
+     final left =
+         code == null ? 0 : hjvCodeLeft(code.expiresIn, madeFor.elapsed);
++    final view = hjvSupportView(wait: wait.state, left: left);
++    final open = code != null && view == HjvSupportView.open;
++    final arrived = code != null && view == HjvSupportView.arrived;
++    final waits = open && room != null && wait.state != 'off';
++    // a phone's width (360) has no room for four buttons: the two copies go into the content
++    final wide = isDesktop || isWebDesktop;
++    void copyInstructions() => copy(
++        link == null
++            ? t.instructions(code!.code)
++            : t.instructionsLink(code!.code, link),
++        t.instructionsCopied);
++    void copyCode() => copy(code!.code, t.codeCopied);
++    void copyLink() => copy(link!, t.linkCopied);
++    void connectNow() {
++      close();
++      _connectSupportPc(wait.pc);
++    }
++
+     return CustomAlertDialog(
+       title: HjvDialogTitle(Icons.support_agent_rounded, t.makeCode),
+       // one width for all its states, so that [다시 만들기] does not make it jump
+-      contentBoxConstraints: isDesktop || isWebDesktop
++      contentBoxConstraints: wide
+           ? const BoxConstraints(minWidth: 480, maxWidth: 480)
+           : const BoxConstraints(maxWidth: 500),
+       content: Column(
+@@ -1090,8 +1234,9 @@ void _supportCodeDialog(HjvAccessTexts t) {
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+           // what to do with the code, while one is made or shown (not above S5 to S7, the end)
+-          if (busy || (code != null && left > 0)) ...[
+-            Text(hjvKeepAll(t.madeText), style: hjvDialogTextStyle(context)),
++          if (busy || open) ...[
++            Text(hjvKeepAll(link == null ? t.madeText : t.madeTextLink),
++                style: hjvDialogTextStyle(context)),
+             const SizedBox(height: 16),
+           ],
+           if (busy) _checking(t, label: t.makingLabel, word: t.making),
+@@ -1111,7 +1256,7 @@ void _supportCodeDialog(HjvAccessTexts t) {
+                                 color: p.dangerText))),
+                   ],
+                 )),
+-          if (code != null && left > 0) ...[
++          if (open) ...[
+             Center(
+               child: SelectableText(code.code,
+                   style: HjvText.idLarge
+@@ -1124,13 +1269,60 @@ void _supportCodeDialog(HjvAccessTexts t) {
+                       color: p.textSecondary,
+                       fontFeatures: HjvText.tabular)),
+             ).marginOnly(top: 4),
++            if (!wide && link != null)
++              Wrap(
++                alignment: WrapAlignment.center,
++                spacing: 8,
++                children: [
++                  TextButton(onPressed: copyCode, child: Text(t.copyCode)),
++                  TextButton(onPressed: copyLink, child: Text(t.copyLink)),
++                ],
++              ).marginOnly(top: 8),
++            // S11: the waiting room's line, with a quiet bar
++            if (waits)
++              Semantics(
++                label: t.waitingLabel,
++                child: Row(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    SizedBox(
++                      width: 14,
++                      height: 14,
++                      child: CircularProgressIndicator(
++                          strokeWidth: 2, color: p.textSecondary),
++                    ).marginOnly(top: 2, right: 8),
++                    Expanded(
++                        child: Text(hjvKeepAll(t.waiting),
++                            style: TextStyle(
++                                fontSize: 13,
++                                height: 1.45,
++                                color: p.textSecondary))),
++                  ],
++                ),
++              ).marginOnly(top: 16),
+             if (hjvGateCloses(_gateMode.value) == false)
+               hjvNoteBlock(context,
+                       icon: Icons.info_outline_rounded,
+                       text: Text(hjvKeepAll(t.serverOpen)))
+                   .marginOnly(top: 16),
+           ],
+-          if (code != null && left == 0)
++          // S12: the PC that entered the code, for [연결]
++          if (arrived)
++            Semantics(
++              liveRegion: true,
++              child: Column(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  Text(hjvKeepAll(t.arrived(wait.pc)),
++                      style: hjvDialogTextStyle(context)
++                          .copyWith(fontWeight: FontWeight.w600)),
++                  const SizedBox(height: 8),
++                  Text(hjvKeepAll(t.arrivedText),
++                      style: hjvDialogTextStyle(context)),
++                ],
++              ),
++            ),
++          if (code != null && view == HjvSupportView.over)
+             Semantics(
+                 liveRegion: true,
+                 child: hjvNoteBlock(context,
+@@ -1140,23 +1332,31 @@ void _supportCodeDialog(HjvAccessTexts t) {
+       ),
+       actions: [
+         _button(t.close, close, outline: true),
+-        if (code != null && left > 0) ...[
+-          _button(t.copyInstructions,
+-              () => copy(t.instructions(code.code), t.instructionsCopied),
+-              outline: true),
+-          _button(t.copyCode, () => copy(code.code, t.codeCopied)),
+-        ] else if (!busy && again)
++        if (open && link == null) ...[
++          _button(t.copyInstructions, copyInstructions, outline: true),
++          _button(t.copyCode, copyCode),
++        ] else if (open) ...[
++          if (wide) _button(t.copyCode, copyCode, outline: true),
++          if (wide) _button(t.copyLink, copyLink, outline: true),
++          _button(t.copyInstructions, copyInstructions),
++        ] else if (arrived)
++          _button(t.connect, connectNow)
++        else if (!busy && again)
+           _button(t.makeAnother, make),
+       ],
+-      onSubmit: code != null && left > 0
+-          ? () => copy(code.code, t.codeCopied)
+-          : close,
++      onSubmit: open
++          ? (link == null ? copyCode : copyInstructions)
++          : arrived
++              ? connectNow
++              : close,
+       onCancel: close,
+     );
+   }, backDismiss: true);
+   unawaited(dialog.whenComplete(() {
+     closed = true;
+     timer?.cancel();
++    final shown = room;
++    if (shown != null) _slotsShown.remove(shown.slot);
+   }).catchError((Object e) {
+     debugPrint('hjv: $e');
+     return null;
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index ee2057e..3cc1d65 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -7,13 +7,16 @@
+ // password brought no ticket (E1 to E5); beside them the words of the PC's own password box, a
+ // PC offline or restarted on such a server, and the main window's close while P2 holds; since
+ // 1.8.2 the support codes (the doc 3-7): the PC's (P3, E6 to E8) and the staff member's who makes
+-// one (S1 to S8); since 1.9 A0 and a link's confirm (LK1) with the rules for links. Plain Dart
++// one (S1 to S8); since 1.9 A0 and a link's confirm (LK1) with the rules for links, and the
++// support link and waiting room of S2 (S9 to S13), the restart of a support PC (S14, S15) and
++// P3's toast that names the staff mark (P6, TV-W6). Plain Dart
+ // without the bridge, so that ci.sh tests it with the web stand-in; hjviewer_access.dart shows
+ // them.
+ 
+ import 'dart:convert';
+ 
+ import 'package:flutter_hbb/common/formatter/id_formatter.dart' show formatID;
++import 'package:flutter_hbb/common/hjviewer_cm_texts.dart' show HjvCmTexts;
+ 
+ /// The msgbox type of a refusal for access (src/hjviewer_access.rs MSGBOX_TYPE).
+ const kHjvAccessMsgbox = 'hjv-access-error';
+@@ -46,6 +49,14 @@ const kHjvSupportCode = 'hjv-support-code';
+ const kHjvSupportCodeMake = 'hjv-support-code-make';
+ const kHjvSupportCodeResult = 'hjv-support-code-result';
+ 
++/// The waiting room (src/hjviewer_account/support.rs, TV-W6): the state of S2's code by its slot,
++/// a code a PC used (once), whether a PC is a support PC of this login, and the knock that asks
++/// again now.
++String hjvSupportWaitKey(int slot) => 'hjv-support-wait:$slot';
++const kHjvSupportArrived = 'hjv-support-arrived';
++String hjvSupportPcKey(String id) => 'hjv-support-pc:${id.replaceAll(' ', '')}';
++const kHjvSupportWaitKick = 'hjv-support-wait-kick';
++
+ /// hjv-api's path that says whether hbbs checks tickets (the doc 3-6).
+ const kHjvAccessPath = '/api/hjv/access';
+ 
+@@ -227,6 +238,76 @@ bool hjvOffersSupportCode(String flag, {required bool loggedIn}) =>
+   return null;
+ }
+ 
++/// From a 1.9 server (TV-W6), the made code's support link (`https://…`) and its slot in the
++/// waiting room; null from an older one, which gives neither (S2 stays as in 1.8.2).
++({String link, int slot})? hjvSupportCodeRoom(String result) {
++  try {
++    final value = jsonDecode(result);
++    if (value is Map && value['ok'] == true) {
++      final link = value['link'];
++      final slot = value['slot'];
++      if (link is String &&
++          link.startsWith('https://') &&
++          slot is int &&
++          slot > 0) {
++        return (link: link, slot: slot);
++      }
++    }
++  } catch (e) {
++    // no result
++  }
++  return null;
++}
++
++/// What the waiting room says of S2's code (hjvSupportWaitKey): `open`, `used` with the PC's ID,
++/// `over`, `login` (hjv-api's 401) or `off` (no waiting room); '' while the core knows nothing.
++({String state, String pc}) hjvSupportWait(String value) {
++  try {
++    final v = jsonDecode(value);
++    if (v is Map) {
++      final state = v['state'];
++      final pc = v['pc'];
++      if (state is String &&
++          const {'open', 'used', 'over', 'login', 'off'}.contains(state)) {
++        if (state != 'used') return (state: state, pc: '');
++        if (pc is String && pc.isNotEmpty) return (state: state, pc: pc);
++      }
++    }
++  } catch (e) {
++    // none
++  }
++  return (state: '', pc: '');
++}
++
++/// A code a PC used (kHjvSupportArrived): its slot and the PC's ID; null for none.
++({int slot, String pc})? hjvSupportArrival(String value) {
++  try {
++    final v = jsonDecode(value);
++    if (v is Map) {
++      final slot = v['slot'];
++      final pc = v['pc'];
++      if (slot is int && pc is String && pc.isNotEmpty) {
++        return (slot: slot, pc: pc);
++      }
++    }
++  } catch (e) {
++    // none
++  }
++  return null;
++}
++
++/// What S2 shows for its code: the code and the time it has left (`open`), the PC that entered
++/// it (S12, `arrived`), or its end (`over`). A waiting room state wins over the count once said;
++/// `login` ends the login (the screens), `off` and '' leave the count alone.
++enum HjvSupportView { open, arrived, over }
++
++HjvSupportView hjvSupportView({required String wait, required int left}) =>
++    switch (wait) {
++      'used' => HjvSupportView.arrived,
++      'over' => HjvSupportView.over,
++      _ => left > 0 ? HjvSupportView.open : HjvSupportView.over,
++    };
++
+ /// The seconds a code with `expiresIn` has left `elapsed` after it came, 0 once over (a monotonic
+ /// count, which the device's clock does not move).
+ int hjvCodeLeft(int expiresIn, Duration elapsed) {
+@@ -383,26 +464,31 @@ String? hjvLogOutDeviceGateNote(HjvAccessTexts t, String mode,
+ /// The session's text for "Remote desktop is offline" (handleMsgBox), null to keep upstream's: on
+ /// a staff-only server (`mode`) a PC nobody logged in on is offline too, said for sure or as a
+ /// condition; to a controller that just got the access password for that PC (`passed`) since its
+-/// own PC is the one missing; with a line for a PC this session restarted (`restarted`); naming
+-/// the support code with the access password while hjv-api trades them (`codes`).
++/// own PC is the one missing; with a line for a PC this session restarted (`restarted`), S15 for
++/// a support PC of this login (`support`, TV-W6); naming the support code with the access
++/// password while hjv-api trades them (`codes`).
+ String? hjvOfflineGateText(HjvAccessTexts t,
+     {required String mode,
+     bool passed = false,
+     bool restarted = false,
++    bool support = false,
+     bool codes = false}) {
+   final closes = hjvGateCloses(mode);
+   if (!passed && closes == false) return null;
+   final text = passed
+       ? t.offlinePassedFor(codes: codes)
+       : t.offline(known: closes == true, codes: codes);
+-  return restarted ? '$text\n${t.offlineRestartedFor(codes: codes)}' : text;
++  if (!restarted) return text;
++  return '$text\n${support ? t.offlineRestartedSupport : t.offlineRestartedFor(codes: codes)}';
+ }
+ 
+ /// The remote restart's confirm (dialog.dart), null for no line: what a restart does on a
+ /// staff-only server (`mode`) to a PC nobody logged in on, and that HJViewer that is not
+-/// installed there (`installed`) does not start again.
++/// installed there (`installed`) does not start again; for a support PC of this login
++/// (`support`, TV-W6) S14 alone in the place of both.
+ String? hjvRestartGateNote(HjvAccessTexts t,
+-    {required String mode, required bool installed}) {
++    {required String mode, required bool installed, bool support = false}) {
++  if (support) return t.restartSupport;
+   final closes = hjvGateCloses(mode);
+   final lines = [
+     if (closes != false) t.restartGate(known: closes == true),
+@@ -758,6 +844,55 @@ class HjvAccessTexts {
+       'PC ${_nb(id)}에 연결하는 링크로 열었습니다. 모르는 곳에서 받은 링크라면 [취소]를 누르세요.',
+       'This was opened from a link to PC ${_nb(id)}. If you got the link from someone you do not know, press [Cancel].');
+ 
++  // TV-W6: S2 from a 1.9 server, which gives a support link and a waiting room; the staff mark
++  // in the words of the PC's connection window (P4)
++  String get _staff => HjvCmTexts(korean).staff;
++  String get madeTextLink => _t(
++      '도움받을 분에게 [$copyInstructions]로 코드와 링크를 보내 주세요. 그분이 링크에서 HJViewer를 받아 [$pcCodeButton]에 코드를 넣으면, 그 PC가 2시간 동안 연결을 받고 여기에 알려 드립니다. 코드와 링크는 10분 안에 한 번만 쓸 수 있습니다.',
++      'Send the code and the link with [$copyInstructions]. Once the person gets HJViewer from the link and enters the code under [$pcCodeButton], their PC accepts connections for 2 hours and you are told here. The code and the link work once, within 10 minutes.');
++  // S9
++  String get copyLink => _t('링크 복사', 'Copy link');
++  String get linkCopied => _t('링크를 복사했습니다.', 'Link copied.');
++
++  /// S10: what [안내문 복사] copies with a support link (S4 without one). As in S4 the code
++  /// ends its sentence, so that no particle depends on its last letter; the link has a line of
++  /// its own, which a messenger makes a link of.
++  String instructionsLink(String code, String link) => _t(
++      'Windows PC에서 아래 링크를 열어 HJViewer를 받아 실행하고, "$pcTitle" 알림의 [$pcCodeButton]를 눌러 10분 안에 이 코드를 넣어 주세요: $code\n제가 연결하면 연결 창에 방패 표시와 함께 "$_staff" 줄이 보입니다. 그 줄을 확인한 뒤 [수락]을 눌러 주세요.\n$link',
++      'On a Windows PC, open the link below, get HJViewer and run it, click [$pcCodeButton] on the notice "$pcTitle", and enter this code within 10 minutes: $code\nWhen I connect, the connection window shows a shield with the line "$_staff". Check that line, then press [Accept].\n$link');
++
++  // S11 (critic M-17: an iPhone app in the background asks nothing)
++  String get waiting => _t(
++      '그분의 PC가 코드를 넣으면 여기에 알려 드립니다. 이 창을 닫아도 앱이 켜져 있는 동안 알려 드립니다.',
++      'You are told here when their PC enters the code, and also after you close this window, while the app is open.');
++  String get waitingLabel => _t('그분의 PC를 기다리는 중', 'Waiting for their PC');
++
++  // S12 (critic S-08: the ID to check), S13
++  String arrived(String id) => _t('PC ${_nb(formatID(id))}가 지원 코드를 넣었습니다.',
++      'PC ${_nb(formatID(id))} entered the support code.');
++  String get arrivedText => _t(
++      '이 기기에서 연결하면 그 PC의 연결 창에 "$_staff"이 보입니다. 도움받을 분에게 이 ID가 맞는지 확인하세요.',
++      'When you connect from this device, that PC\'s connection window shows "$_staff". Check with the person you are helping that this is their ID.');
++  String get arrivedTitle => _t('지원 코드', 'Support code');
++  String arrivedAsk(String id) => _t(
++      'PC ${_nb(formatID(id))}가 지원 코드를 넣었습니다. 지금 연결할까요?',
++      'PC ${_nb(formatID(id))} entered the support code. Connect now?');
++  String get later => _t('나중에', 'Later');
++
++  // S14: the remote restart's confirm for a support PC, in the place of R1 and its line
++  String get restartSupport => _t(
++      '이 PC는 지원 코드로 연결을 받고 있습니다. 다시 시작하면 그분이 HJViewer를 다시 실행하고 새 지원 코드를 넣어야 다시 연결할 수 있습니다. 다시 시작하기 전에 새 코드를 만들어 알려 두세요.',
++      'This PC accepts connections with a support code. After a restart, the person there has to run HJViewer again and enter a new support code before you can connect. Make a new code and give it to them before you restart.');
++  // S15: the offline text's line after restarting a support PC
++  String get offlineRestartedSupport => _t(
++      '방금 다시 시작한 PC라면, 그분이 HJViewer를 다시 실행하고 새 지원 코드를 넣어야 다시 연결을 받습니다.',
++      'If the PC was just restarted, the person there has to run HJViewer again and enter a new support code before it accepts connections.');
++
++  /// P6: P3's toast once the support code brought the ticket.
++  String pcCodeToast(String until) => _t(
++      '이 PC는 $until까지 연결을 받습니다. 교직원이 연결하면 연결 창에 방패 표시와 함께 "$_staff" 줄이 보입니다. 그 줄을 확인한 뒤 [수락]을 누르세요.',
++      'This PC accepts connections until $until. When the faculty or staff member connects, the connection window shows a shield with the line "$_staff". Check that line, then press [Accept].');
++
+   static String _nb(String id) => id.replaceAll(' ', '\u00a0');
+ }
+ 
+diff --git a/flutter/lib/common/hjviewer_cm_texts.dart b/flutter/lib/common/hjviewer_cm_texts.dart
+index 5a28c3e..dbcf9ff 100644
+--- a/flutter/lib/common/hjviewer_cm_texts.dart
++++ b/flutter/lib/common/hjviewer_cm_texts.dart
+@@ -4,7 +4,8 @@
+ // never the name the peer typed; the caution box on the accept card and in the PC's access
+ // password (P2) and support code (P3) dialogs, with the HJViewer administrator's contact from the
+ // signed version policy; and "Recording" while the peer's app reports that it records, with the
+-// rule that brings the minimized window up. Plain Dart without the bridge, so that ci.sh tests it
++// rule that brings the minimized window up; for a PC that entered a support code, the staff mark
++// (TV-W6: P4 on the mark line, never a name, and P5 above [수락]). Plain Dart without the bridge, so that ci.sh tests it
+ // with the web stand-in; hjv_admin_contact.dart, server_page.dart and hjviewer_access.dart show
+ // them.
+ 
+@@ -70,6 +71,17 @@ class HjvCmTexts {
+   String get sameAccountTip => _t(
+       '이 기기가 이 PC에 로그인한 계정의 기기임을 서명으로 증명했습니다. 이름은 서버가 서명한 목록의 것입니다.',
+       'This device proved with a signature that it belongs to the account logged in on this PC. Its name comes from the list the server signed.');
++  // TV-W6 P4 (critic 2-5, U1 = A): no name, no masked name; also the words the instructions,
++  // S12 and P6 quote
++  String get staff =>
++      _t('연세대 교직원(로그인 확인)', 'Yonsei faculty or staff (verified login)');
++  String get staffTip => _t(
++      '이 PC에 지원 코드를 만들어 준 교직원의 기기임을 서버가 서명으로 확인했습니다. 교직원의 이름은 보이지 않습니다.',
++      "The server's signature confirms that this is the device of the faculty or staff member who made this PC's support code. Their name is not shown.");
++  // P5: above [수락] while such a connection waits for it
++  String get staffAccept => _t(
++      '이 PC에 지원 코드를 만들어 준 교직원의 기기입니다. 도움을 부탁한 분이 맞으면 [수락]을 누르세요. 언제든 이 창에서 연결을 끊을 수 있습니다.',
++      "This is the device of the faculty or staff member who made this PC's support code. If this is who you asked for help, press [Accept]. You can end the connection in this window at any time.");
+   String get unverifiedName => _t('확인되지 않은 이름', 'Unverified name');
+   String get unverifiedNameTip => _t(
+       "상대가 스스로 적은 이름입니다. '같은 계정' 같은 말이 들어 있어도 HJViewer가 확인한 것이 아닙니다.",
+@@ -110,11 +122,12 @@ class HjvCmTexts {
+ 
+ /// The mark line for hjv_mark's kind and who; null (no line) for "" and for a kind this window
+ /// does not draw, so that a newer service never draws a mark here by mistake. `staff` is drawn
+-/// with TV-W6's words (P4).
++/// with TV-W6's words (P4) and never a `who`.
+ HjvMarkView? hjvMarkView(String kind, String who, HjvCmTexts t) =>
+     switch (kind) {
+       kHjvMarkSameAccount =>
+         HjvMarkView(t.sameAccount(who.trim()), t.sameAccountTip),
++      kHjvMarkStaff => HjvMarkView(t.staff, t.staffTip),
+       kHjvMarkUnverifiedName =>
+         HjvMarkView(t.unverifiedName, t.unverifiedNameTip, warning: true),
+       _ => null,
+@@ -131,6 +144,15 @@ bool hjvShowCaution(
+     kind != kHjvMarkSameAccount &&
+     kind != kHjvMarkStaff;
+ 
++/// P5 (TV-W6): in the caution box's place while a staff-marked connection waits for [수락], at a
++/// PC whose approve mode shows that button (`showAccept`; one that takes passwords only has none).
++bool hjvShowStaffNote(
++        {required bool authorized,
++        required bool disconnected,
++        required String kind,
++        required bool showAccept}) =>
++    !authorized && !disconnected && showAccept && kind == kHjvMarkStaff;
++
+ /// The caution box's text in `place`, with or without a contact to tell.
+ String hjvCautionText(HjvCmTexts t,
+     {required HjvCautionPlace place, required String contact}) {
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index d3c615b..8a39f59 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -1586,7 +1586,7 @@ void showWaitAcceptDialog(SessionID sessionId, String type, String title,
+ void showRestartRemoteDevice(PeerInfo pi, String id, SessionID sessionId,
+     OverlayDialogManager dialogManager) async {
+   // HJViewer: what the restart does on a staff-only server
+-  final hjvNote = hjvAccessRestartNote(installed: pi.isInstalled);
++  final hjvNote = hjvAccessRestartNote(installed: pi.isInstalled, id: id);
+   // HJViewer: the question ends in its own mark (ko, en); a language without one gets it here
+   var hjvAsk = translate('Are you sure you want to restart');
+   if (!hjvAsk.endsWith('?') && !hjvAsk.endsWith('？')) hjvAsk += '?';
+@@ -1612,7 +1612,7 @@ void showRestartRemoteDevice(PeerInfo pi, String id, SessionID sessionId,
+             onSubmit: () => close(true),
+           ));
+   if (res == true) {
+-    hjvAccessRestarting(sessionId);
++    hjvAccessRestarting(sessionId, id: id);
+     bind.sessionRestartRemoteDevice(sessionId: sessionId);
+   }
+ }
+diff --git a/flutter/lib/desktop/pages/server_page.dart b/flutter/lib/desktop/pages/server_page.dart
+index 6a3d8cd..67f8e11 100644
+--- a/flutter/lib/desktop/pages/server_page.dart
++++ b/flutter/lib/desktop/pages/server_page.dart
+@@ -1140,6 +1140,17 @@ class _CmControlPanel extends StatelessWidget {
+                   place: HjvCautionPlace.accept,
+                   contact: hjvAdminContact())
+               .marginOnly(bottom: 8.0),
++        // HJViewer (TV-W6, P5): the staff mark's connection, in the caution's place
++        if (hjvShowStaffNote(
++            authorized: client.authorized,
++            disconnected: client.disconnected,
++            kind: client.hjvMarkKind,
++            showAccept: showAccept))
++          HjvCallout(
++                  text: hjvCmTexts().staffAccept,
++                  tone: HjvTone.info,
++                  icon: Icons.verified_user_rounded)
++              .marginOnly(bottom: 8.0),
+         Offstage(
+           offstage: !showElevation || !showAccept,
+           child: buildButton(context, color: p.primaryFill, onClick: () {
+diff --git a/flutter/test/cm_demo.dart b/flutter/test/cm_demo.dart
+index 682820f..d35a676 100644
+--- a/flutter/test/cm_demo.dart
++++ b/flutter/test/cm_demo.dart
+@@ -10,7 +10,8 @@ import 'package:get/get.dart';
+ import 'package:window_manager/window_manager.dart';
+ 
+ // HJViewer (TV-W2): the second is a proven same-account device, the third's name imitates a
+-// mark, the fourth is connected and its peer records.
++// mark, the fourth is connected and its peer records; TV-W6: the fifth is the staff device that
++// made this PC's support code (its ID spaced in the name's place, as the core sends it).
+ final testClients = [
+   Client(0, false, false, false, "UserAAAAAA", "123123123", true, false, false),
+   Client(1, false, false, false, "UserBBBBB", "221123123", true, false, false)
+@@ -21,7 +22,9 @@ final testClients = [
+   Client(3, false, false, false, "UserDDDDDDDDDDDd", "441123123", true, false,
+       false)
+     ..authorized = true
+-    ..hjvRecording = true
++    ..hjvRecording = true,
++  Client(4, false, false, false, "987 654 321", "987654321", true, false, false)
++    ..hjvMarkKind = 'staff',
+ ];
+ 
+ /// flutter run -d {platform} -t test/cm_demo.dart to test cm
+diff --git a/flutter/test/cm_test.dart b/flutter/test/cm_test.dart
+index cc25094..08f4129 100644
+--- a/flutter/test/cm_test.dart
++++ b/flutter/test/cm_test.dart
+@@ -4,23 +4,24 @@ import 'cm_demo.dart' as cm_demo;
+ 
+ void main() {
+   test('connection manager demo clients match the current Client API', () {
+-    expect(cm_demo.testClients, hasLength(4));
++    expect(cm_demo.testClients, hasLength(5));
+     expect(cm_demo.testClients.map((client) => client.name), [
+       'UserAAAAAA',
+       'UserBBBBB',
+       'UserC',
+       'UserDDDDDDDDDDDd',
++      '987 654 321',
+     ]);
+     expect(
+       cm_demo.testClients.every(
+           (client) => client.keyboard && !client.clipboard && !client.audio),
+       isTrue,
+     );
+-    // HJViewer (TV-W2)
++    // HJViewer (TV-W2, TV-W6)
+     expect(cm_demo.testClients.map((client) => client.hjvMarkKind),
+-        ['', 'same-account', 'unverified-name', '']);
++        ['', 'same-account', 'unverified-name', '', 'staff']);
+     expect(cm_demo.testClients[1].hjvMarkWho, '홍*동');
+     expect(cm_demo.testClients.map((client) => client.hjvRecording),
+-        [false, false, false, true]);
++        [false, false, false, true, false]);
+   });
+ }
+diff --git a/flutter/test/hjviewer_cm_test.dart b/flutter/test/hjviewer_cm_test.dart
+index e826c13..6401074 100644
+--- a/flutter/test/hjviewer_cm_test.dart
++++ b/flutter/test/hjviewer_cm_test.dart
+@@ -24,6 +24,39 @@ void main() {
+     }
+   });
+ 
++  test('TV-W6: the staff mark says who without a name, P5 only where [수락] is',
++      () {
++    expect(hjvMarkView('staff', '', ko)?.text, '연세대 교직원(로그인 확인)');
++    expect(hjvMarkView('staff', '', en)?.text,
++        'Yonsei faculty or staff (verified login)');
++    expect(hjvMarkView('staff', '', ko)?.warning, isFalse);
++    // a `who` a newer service might send is never drawn for staff
++    expect(hjvMarkView('staff', '홍*동', ko)?.text, '연세대 교직원(로그인 확인)');
++    expect(ko.staffTip, isNot(contains('홍')));
++    expect(ko.staffAccept,
++        '이 PC에 지원 코드를 만들어 준 교직원의 기기입니다. 도움을 부탁한 분이 맞으면 [수락]을 누르세요. 언제든 이 창에서 연결을 끊을 수 있습니다.');
++    expect(en.staffAccept,
++        "This is the device of the faculty or staff member who made this PC's support code. If this is who you asked for help, press [Accept]. You can end the connection in this window at any time.");
++    bool note(
++            {bool authorized = false,
++            bool disconnected = false,
++            String kind = 'staff',
++            bool showAccept = true}) =>
++        hjvShowStaffNote(
++            authorized: authorized,
++            disconnected: disconnected,
++            kind: kind,
++            showAccept: showAccept);
++    expect(note(), isTrue);
++    expect(note(authorized: true), isFalse);
++    expect(note(disconnected: true), isFalse);
++    // a PC that takes passwords only shows no [수락] to point at
++    expect(note(showAccept: false), isFalse);
++    for (final kind in ['', 'same-account', 'unverified-name', 'Staff']) {
++      expect(note(kind: kind), isFalse, reason: kind);
++    }
++  });
++
+   test('the caution box only on an accept card nothing proved', () {
+     for (final kind in ['', 'unverified-name', 'something-new']) {
+       expect(hjvShowCaution(authorized: false, disconnected: false, kind: kind),
+diff --git a/flutter/test/hjviewer_support_test.dart b/flutter/test/hjviewer_support_test.dart
+new file mode 100644
+index 0000000..61a3e7c
+--- /dev/null
++++ b/flutter/test/hjviewer_support_test.dart
+@@ -0,0 +1,161 @@
++import 'package:flutter_hbb/common/hjviewer_access_texts.dart';
++import 'package:flutter_hbb/common/hjviewer_cm_texts.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// TV-W6, the staff member's side of a support code (the hjviewer repository's
++// docs/access-tickets.md 3-7 and 5-3: S2, S9 to S15, P6): the support link and the waiting room
++// as the core hands them over, what S2 shows for them, and the words, without the bridge.
++
++const ko = HjvAccessTexts(true);
++const en = HjvAccessTexts(false);
++const link = 'https://hjv.example/api/hjv/s/AAECAwQFBgcICQoLDA0ODw';
++
++void main() {
++  test('a 1.9 server brings a link and a slot, an older one neither', () {
++    expect(
++        hjvSupportCodeRoom(
++            '{"ok":true,"code":"K7M2-Q9XD","expires_in":600,"link":"$link","slot":2}'),
++        (link: link, slot: 2));
++    // the code is still S2's in every case
++    expect(
++        hjvSupportCodeMade(
++            '{"ok":true,"code":"K7M2-Q9XD","expires_in":600,"link":"$link","slot":2}'),
++        (code: 'K7M2-Q9XD', expiresIn: 600));
++    for (final result in [
++      '{"ok":true,"code":"K7M2-Q9XD","expires_in":600}',
++      '{"ok":true,"code":"K7M2-Q9XD","expires_in":600,"link":"$link"}',
++      '{"ok":true,"code":"K7M2-Q9XD","expires_in":600,"slot":2}',
++      '{"ok":true,"code":"K7M2-Q9XD","expires_in":600,"link":"/api/hjv/s/x","slot":2}',
++      '{"ok":true,"code":"K7M2-Q9XD","expires_in":600,"link":"$link","slot":0}',
++      '{"ok":false,"error":"busy","link":"$link","slot":2}',
++      '',
++      '<html>',
++    ]) {
++      expect(hjvSupportCodeRoom(result), isNull, reason: result);
++    }
++  });
++
++  test('the waiting room as the core says it', () {
++    expect(hjvSupportWaitKey(3), 'hjv-support-wait:3');
++    expect(kHjvSupportArrived, 'hjv-support-arrived');
++    expect(kHjvSupportWaitKick, 'hjv-support-wait-kick');
++    expect(hjvSupportPcKey('123 456 789'), 'hjv-support-pc:123456789');
++    expect(hjvSupportWait('{"state":"open"}'), (state: 'open', pc: ''));
++    expect(hjvSupportWait('{"pc":"123456789","state":"used"}'),
++        (state: 'used', pc: '123456789'));
++    for (final state in ['over', 'login', 'off']) {
++      expect(hjvSupportWait('{"state":"$state"}'), (state: state, pc: ''));
++    }
++    for (final value in [
++      '',
++      '{}',
++      '{"state":"used"}',
++      '{"state":"used","pc":""}',
++      '{"state":"later"}',
++      '[]',
++    ]) {
++      expect(hjvSupportWait(value), (state: '', pc: ''), reason: value);
++    }
++    expect(hjvSupportArrival('{"pc":"123456789","slot":1}'),
++        (slot: 1, pc: '123456789'));
++    for (final value in [
++      '',
++      '{"slot":1}',
++      '{"pc":"1"}',
++      '{"slot":"1","pc":"1"}'
++    ]) {
++      expect(hjvSupportArrival(value), isNull, reason: value);
++    }
++  });
++
++  test('S2 shows the code, the PC that came, or the end', () {
++    expect(hjvSupportView(wait: '', left: 431), HjvSupportView.open);
++    expect(hjvSupportView(wait: 'open', left: 431), HjvSupportView.open);
++    expect(hjvSupportView(wait: 'off', left: 431), HjvSupportView.open);
++    expect(hjvSupportView(wait: 'used', left: 431), HjvSupportView.arrived);
++    // a PC that came after this device's count ran out still came
++    expect(hjvSupportView(wait: 'used', left: 0), HjvSupportView.arrived);
++    expect(hjvSupportView(wait: 'over', left: 431), HjvSupportView.over);
++    expect(hjvSupportView(wait: '', left: 0), HjvSupportView.over);
++    expect(hjvSupportView(wait: 'open', left: 0), HjvSupportView.over);
++  });
++
++  test('the words of S2 and the instructions with the link', () {
++    expect(ko.madeTextLink,
++        '도움받을 분에게 [안내문 복사]로 코드와 링크를 보내 주세요. 그분이 링크에서 HJViewer를 받아 [지원 코드 넣기]에 코드를 넣으면, 그 PC가 2시간 동안 연결을 받고 여기에 알려 드립니다. 코드와 링크는 10분 안에 한 번만 쓸 수 있습니다.');
++    expect(en.madeTextLink,
++        'Send the code and the link with [Copy instructions]. Once the person gets HJViewer from the link and enters the code under [Support code], their PC accepts connections for 2 hours and you are told here. The code and the link work once, within 10 minutes.');
++    expect([ko.copyLink, ko.linkCopied], ['링크 복사', '링크를 복사했습니다.']);
++    expect([en.copyLink, en.linkCopied], ['Copy link', 'Link copied.']);
++    final s10 = ko.instructionsLink('K7M2-Q9XD', link);
++    expect(s10,
++        'Windows PC에서 아래 링크를 열어 HJViewer를 받아 실행하고, "서버에 연결되지 않음" 알림의 [지원 코드 넣기]를 눌러 10분 안에 이 코드를 넣어 주세요: K7M2-Q9XD\n제가 연결하면 연결 창에 방패 표시와 함께 "연세대 교직원(로그인 확인)" 줄이 보입니다. 그 줄을 확인한 뒤 [수락]을 눌러 주세요.\n$link');
++    final s10en = en.instructionsLink('K7M2-Q9XD', link);
++    expect(s10en,
++        'On a Windows PC, open the link below, get HJViewer and run it, click [Support code] on the notice "Not connected", and enter this code within 10 minutes: K7M2-Q9XD\nWhen I connect, the connection window shows a shield with the line "Yonsei faculty or staff (verified login)". Check that line, then press [Accept].\n$link');
++    // the mark's words are the connection window's own (P4)
++    for (final t in [ko, en]) {
++      final staff = HjvCmTexts(t.korean).staff;
++      for (final text in [
++        t.instructionsLink('K7M2-Q9XD', link),
++        t.arrivedText,
++        t.pcCodeToast('18:30'),
++      ]) {
++        expect(text, contains(staff));
++      }
++    }
++    // 1.8.2's instructions stay for a server without the link
++    expect(ko.instructions('K7M2-Q9XD'), isNot(contains('https://')));
++  });
++
++  test('the waiting room and the PC that came (S11 to S13)', () {
++    expect(ko.waiting,
++        '그분의 PC가 코드를 넣으면 여기에 알려 드립니다. 이 창을 닫아도 앱이 켜져 있는 동안 알려 드립니다.');
++    expect(ko.arrived('123456789'), 'PC 123 456 789가 지원 코드를 넣었습니다.');
++    expect(en.arrived('123456789'), 'PC 123 456 789 entered the support code.');
++    expect(ko.arrivedText,
++        '이 기기에서 연결하면 그 PC의 연결 창에 "연세대 교직원(로그인 확인)"이 보입니다. 도움받을 분에게 이 ID가 맞는지 확인하세요.');
++    expect(
++        ko.arrivedAsk('123456789'), 'PC 123 456 789가 지원 코드를 넣었습니다. 지금 연결할까요?');
++    expect([ko.arrivedTitle, ko.later, ko.connect], ['지원 코드', '나중에', '연결']);
++    expect([en.arrivedTitle, en.later, en.connect],
++        ['Support code', 'Later', 'Connect']);
++  });
++
++  test('a support PC\'s restart says S14 alone, and S15 after it', () {
++    for (final mode in ['enforce', '', 'off']) {
++      for (final installed in [true, false]) {
++        expect(
++            hjvRestartGateNote(ko,
++                mode: mode, installed: installed, support: true),
++            ko.restartSupport,
++            reason: '$mode $installed');
++      }
++    }
++    expect(ko.restartSupport,
++        '이 PC는 지원 코드로 연결을 받고 있습니다. 다시 시작하면 그분이 HJViewer를 다시 실행하고 새 지원 코드를 넣어야 다시 연결할 수 있습니다. 다시 시작하기 전에 새 코드를 만들어 알려 두세요.');
++    expect(en.restartSupport,
++        'This PC accepts connections with a support code. After a restart, the person there has to run HJViewer again and enter a new support code before you can connect. Make a new code and give it to them before you restart.');
++    // the other PCs as before
++    expect(hjvRestartGateNote(ko, mode: '', installed: false),
++        '${ko.restartGate(known: false)}\n${ko.restartNotInstalled}');
++    expect(
++        hjvOfflineGateText(ko,
++            mode: 'enforce', restarted: true, support: true, codes: true),
++        '${ko.offline(known: true, codes: true)}\n${ko.offlineRestartedSupport}');
++    expect(ko.offlineRestartedSupport,
++        '방금 다시 시작한 PC라면, 그분이 HJViewer를 다시 실행하고 새 지원 코드를 넣어야 다시 연결을 받습니다.');
++    // without a restart, and on a server that checks nobody, nothing changes
++    expect(hjvOfflineGateText(ko, mode: 'enforce', support: true),
++        ko.offline(known: true));
++    expect(hjvOfflineGateText(ko, mode: 'off', restarted: true, support: true),
++        isNull);
++  });
++
++  test('P6 names the shield and the line', () {
++    expect(ko.pcCodeToast('18:30'),
++        '이 PC는 18:30까지 연결을 받습니다. 교직원이 연결하면 연결 창에 방패 표시와 함께 "연세대 교직원(로그인 확인)" 줄이 보입니다. 그 줄을 확인한 뒤 [수락]을 누르세요.');
++    expect(en.pcCodeToast('18:30'),
++        'This PC accepts connections until 18:30. When the faculty or staff member connects, the connection window shows a shield with the line "Yonsei faculty or staff (verified login)". Check that line, then press [Accept].');
++  });
++}
+diff --git a/src/client/hjv_account.rs b/src/client/hjv_account.rs
+index 5823efd..d4c0199 100644
+--- a/src/client/hjv_account.rs
++++ b/src/client/hjv_account.rs
+@@ -1,7 +1,8 @@
+-//! The controller's hooks in client.rs for same-account logins (design v3 3-1, 3-4, 3-9). A child
+-//! module of `client`, so that it builds the login with the private `create_login_msg` and reads
+-//! LoginConfigHandler's fields. The decisions are `hjviewer_account`'s; in a build without the
+-//! feature every hook does nothing.
++//! The controller's hooks in client.rs for same-account logins (design v3 3-1, 3-4, 3-9), and from
++//! 1.9 for a support PC's login (TV-W6, the staff mark). A child module of `client`, so that it
++//! builds the login with the private `create_login_msg` and reads LoginConfigHandler's fields.
++//! The decisions are `hjviewer_account`'s; in a build without the feature every hook does
++//! nothing.
+ 
+ use crate::{
+     client::{Interface, LoginConfigHandler, LOGIN_MSG_PASSWORD_EMPTY},
+@@ -17,7 +18,10 @@ use hbb_common::{
+     sha2::{Digest, Sha256},
+     Stream,
+ };
+-use std::sync::{Arc, RwLock};
++use std::{
++    future::Future,
++    sync::{Arc, RwLock},
++};
+ 
+ /// H10, Client::start: the PC key this connection's channel was checked against.
+ pub(super) fn note_peer_key(interface: &impl Interface, stream: &Stream, pk: Option<&[u8]>) {
+@@ -53,9 +57,12 @@ fn refused(lc: &Arc<RwLock<LoginConfigHandler>>, err: &str, interface: &impl Int
+ }
+ 
+ /// H12, handle_hash, with the remembered password (salted) as handle_hash found it. Some(true):
+-/// the login went out with an account key proof and that password, without a password box first.
+-/// Some(false): the PC's key is not the one the account bound to it; the warning is up, nothing
+-/// was sent, and the connection ends. None: handle_hash goes on as before.
++/// the login went out with an account key proof and that password, without a password box first;
++/// to a support PC with the proof and no password (critic C-02), so that the PC asks its user to
++/// accept or, at a PC that takes passwords only, the password box comes after its "Empty
++/// Password". Some(false): the PC's key is not the one the account bound to it; the warning is up,
++/// nothing was sent, and the connection ends. None: handle_hash goes on as before (also for a
++/// support PC when hjv-api no longer takes the login, S-02: no mark then).
+ pub(super) async fn key_login(
+     lc: &Arc<RwLock<LoginConfigHandler>>,
+     hash: &Hash,
+@@ -66,16 +73,26 @@ pub(super) async fn key_login(
+     if !enabled() {
+         return None;
+     }
+-    login_with(lc, hash, password, interface, peer, key_proof).await
++    login_with(
++        lc,
++        hash,
++        password,
++        interface,
++        peer,
++        key_proof,
++        ProofDecision::support_confirmed,
++    )
++    .await
+ }
+ 
+-async fn login_with(
++async fn login_with<F: Future<Output = bool>>(
+     lc: &Arc<RwLock<LoginConfigHandler>>,
+     hash: &Hash,
+     password: &[u8],
+     interface: &impl Interface,
+     peer: &mut Stream,
+     decide: impl FnOnce(&LoginContext) -> ProofDecision,
++    confirm_support: impl FnOnce() -> F,
+ ) -> Option<bool> {
+     let password = if password.is_empty() {
+         Vec::new()
+@@ -119,6 +136,17 @@ async fn login_with(
+             lc.write().unwrap().hash = hash.clone();
+             Some(true)
+         }
++        ProofDecision::SendSupport(proof) => {
++            if !confirm_support().await {
++                log::info!("no support proof: hjv-api did not confirm the login just now");
++                return None;
++            }
++            lr.hjv_key_proof = MessageField::some(proof);
++            lr.password = Default::default();
++            allow_err!(peer.send(&msg).await);
++            lc.write().unwrap().hash = hash.clone();
++            Some(true)
++        }
+     }
+ }
+ 
+@@ -132,8 +160,10 @@ async fn login_with(
+ mod tests {
+     use super::*;
+     use crate::{
+-        client::{handle_hash, handle_login_error, Client, Data},
+-        hjviewer_account::{check_key_login, kind_of_union, vectors::*, Cached, KeyLogin},
++        client::{handle_hash, handle_login_error, Client, Data, LOGIN_MSG_NO_PASSWORD_ACCESS},
++        hjviewer_account::{
++            check_key_login, conn_transcript, kind_of_union, vectors::*, Cached, KeyLogin,
++        },
+     };
+     use async_trait::async_trait;
+     use base::message_proto::{
+@@ -230,13 +260,26 @@ mod tests {
+         nonce: Option<[u8; 32]>,
+         /// the trust list it checks proofs against, holding this device's account key
+         list: bool,
++        /// a support PC (TV-W6): no list, a support grant for this device's account key, and its
++        /// approve mode takes clicks (else passwords only)
++        support: Option<bool>,
+     }
+ 
+     const PC: Pc = Pc {
+         nonce: Some(CONN_NONCE),
+         list: true,
++        support: None,
+     };
+ 
++    /// A PC that used a support code this device made (TV-W6), clicks taken or not.
++    fn support_pc(clicks: bool) -> Pc {
++        Pc {
++            list: false,
++            support: Some(clicks),
++            ..PC
++        }
++    }
++
+     /// The PC's answer to a login: a proof it takes, else its password; an empty password without
+     /// a proof waits for its user to accept, and gets no answer.
+     fn answer(pc: &Pc, lr: &LoginRequest) -> Option<login_response::Union> {
+@@ -266,6 +309,37 @@ mod tests {
+             &sha256(PC_PASSWORD.as_bytes(), SALT.as_bytes()),
+             CHALLENGE.as_bytes(),
+         );
++        // design D11: a support grant's key proven for this connection marks it and opens
++        // nothing; without a password it waits for [수락] where clicks are taken
++        if let Some(clicks) = pc.support {
++            let marked = lr
++                .hjv_key_proof
++                .as_ref()
++                .zip(pc.nonce)
++                .is_some_and(|(proof, nonce)| {
++                    let kind = kind_of_union(&lr.union);
++                    let signed = conn_transcript(PC_ID, &pc_pk, &nonce, &lr.my_id, kind, &proof.pk);
++                    let ck = pk_bytes(ACCOUNT_PK);
++                    proof.pk[..] == ck[..]
++                        && signed.is_some_and(|signed| {
++                            let pk = sign::PublicKey::from_slice(&ck).unwrap();
++                            sign::Signature::from_bytes(&proof.signature)
++                                .is_ok_and(|sig| sign::verify_detached(&sig, &signed, &pk))
++                        })
++                });
++            return match lr.password.is_empty() {
++                true if marked && clicks => Some(login_response::Union::Error(
++                    LOGIN_MSG_NO_PASSWORD_ACCESS.to_owned(),
++                )),
++                true => Some(login_response::Union::Error(
++                    LOGIN_MSG_PASSWORD_EMPTY.to_owned(),
++                )),
++                false if lr.password[..] == password[..] => {
++                    Some(login_response::Union::PeerInfo(Default::default()))
++                }
++                false => Some(login_response::Union::Error("Wrong Password".to_owned())),
++            };
++        }
+         match proof {
+             Some(true) => Some(login_response::Union::PeerInfo(Default::default())),
+             _ if lr.password.is_empty() => {
+@@ -367,6 +441,19 @@ mod tests {
+     /// One connection to `pc` by a device logged in to the account with its key, `my_devices` its
+     /// `hjv-my-devices`; `remembered`: the PC's password is remembered.
+     async fn connect(conn_type: ConnType, pc: Pc, my_devices: &str, remembered: bool) -> Outcome {
++        connect_with(conn_type, pc, my_devices, None, true, remembered).await
++    }
++
++    /// connect, with `support` the key the waiting room gave for the PC and `confirmed` whether
++    /// hjv-api still takes the login (S-02).
++    async fn connect_with(
++        conn_type: ConnType,
++        pc: Pc,
++        my_devices: &str,
++        support: Option<[u8; 32]>,
++        confirmed: bool,
++        remembered: bool,
++    ) -> Outcome {
+         let _ = hbb_common::sodiumoxide::init();
+         let ui = Ui::new(conn_type);
+         let session_id = ui.lc.read().unwrap().session_id;
+@@ -382,9 +469,15 @@ mod tests {
+             ui.lc.write().unwrap().password = sha256(PC_PASSWORD.as_bytes(), hash.salt.as_bytes());
+         }
+         let password = ui.lc.read().unwrap().password.clone();
+-        let kept = match login_with(&ui.lc, &hash, &password, &ui, &mut peer, |login| {
+-            login.decide_for_test(my_devices, ACCOUNT_SEED)
+-        })
++        let kept = match login_with(
++            &ui.lc,
++            &hash,
++            &password,
++            &ui,
++            &mut peer,
++            |login| login.decide_for_test(my_devices, support, ACCOUNT_SEED),
++            || std::future::ready(confirmed),
++        )
+         .await
+         {
+             Some(kept) => kept,
+@@ -569,6 +662,65 @@ mod tests {
+         }
+     }
+ 
++    /// TV-W6, design D11 and 3-4: a support PC gets the proof without the remembered password,
++    /// and the controller waits for [수락] where the PC takes clicks; at a PC that takes passwords
++    /// only, the password box comes (not 1.6.0's "could not connect without a password"); and
++    /// the PC under another key, or a login hjv-api did not confirm, gets 1.5.1's login.
++    #[tokio::test]
++    async fn a_support_pc_asks_its_user_to_accept() {
++        let not_mine = r#"{"acct":"2026000001","at":1760000000,"pcs":{}}"#;
++        let pk: [u8; 32] = pk_bytes(PC_PK).try_into().unwrap();
++        let wait_box = vec![("wait-remote-accept-nook".to_owned(), "Prompt".to_owned())];
++        for remembered in [false, true] {
++            let o = connect_with(
++                ConnType::DEFAULT_CONN,
++                support_pc(true),
++                not_mine,
++                Some(pk),
++                true,
++                remembered,
++            )
++            .await;
++            assert!(o.kept && !o.logged_in, "{remembered}");
++            assert_eq!(o.boxes, wait_box, "{remembered}");
++            let lr = o.at_pc.unwrap();
++            assert!(lr.hjv_key_proof.is_some() && lr.password.is_empty());
++        }
++        // a PC that takes passwords only: its "Empty Password" opens the password box
++        let o = connect_with(
++            ConnType::DEFAULT_CONN,
++            support_pc(false),
++            not_mine,
++            Some(pk),
++            true,
++            false,
++        )
++        .await;
++        assert!(o.at_pc.unwrap().hjv_key_proof.is_some());
++        assert_eq!(o.boxes, password_box());
++        // under another key than the waiting room's, or with the login not confirmed: no proof
++        for (support, confirmed) in [(Some([7u8; 32]), true), (Some(pk), false), (None, true)] {
++            let o = connect_with(
++                ConnType::DEFAULT_CONN,
++                support_pc(true),
++                not_mine,
++                support,
++                confirmed,
++                false,
++            )
++            .await;
++            assert!(o.kept && !o.logged_in);
++            let lr = o.at_pc.unwrap();
++            assert!(lr.hjv_key_proof.is_none(), "{confirmed}");
++            assert!(
++                o.boxes
++                    .contains(&("input-password".to_owned(), "Password Required".to_owned())),
++                "{:?}",
++                o.boxes
++            );
++        }
++    }
++
+     /// A build without the feature (this test build has no HJV_* variables): the hooks leave the
+     /// password box and the login as 1.5.1 has them, whatever the PC's Hash carries.
+     #[tokio::test]
+diff --git a/src/hjviewer_account/ctl.rs b/src/hjviewer_account/ctl.rs
+index 5d17245..80df949 100644
+--- a/src/hjviewer_account/ctl.rs
++++ b/src/hjviewer_account/ctl.rs
+@@ -1,6 +1,9 @@
+ //! The controller: the PC keys each session's channels were checked against, whether a login
+ //! carries a proof (design v3 3-4) and the proof itself, and the two boxes the controller shows
+-//! when a same-account login does not go through (1-6), in Korean and English.
++//! when a same-account login does not go through (1-6), in Korean and English. From 1.9
++//! (TV-W6) the same proof also goes to a PC that used a support code this device made (a
++//! support PC, support.rs), whose connection window then shows the staff mark; it opens nothing
++//! there, and nothing about the password changes but that none is sent with it.
+ 
+ use super::{
+     api::{self, MyDevices},
+@@ -41,6 +44,20 @@ pub(crate) enum ProofDecision {
+     },
+     /// send this proof, with the remembered password if there is one
+     Send(HjvKeyProof),
++    /// a support PC's (TV-W6): send this proof without a password, once support_confirmed says
++    /// hjv-api still takes the login
++    SendSupport(HjvKeyProof),
++}
++
++impl ProofDecision {
++    /// client/hjv_account.rs, before a SendSupport goes (S-02): whether hjv-api answered this
++    /// login in the last two minutes, or does now (one waiting room request, off this runtime). A
++    /// lost device whose login the account ended sends no support proof.
++    pub(crate) async fn support_confirmed() -> bool {
++        hbb_common::tokio::task::spawn_blocking(super::support::login_still_taken)
++            .await
++            .unwrap_or(false)
++    }
+ }
+ 
+ /// hjv-api saw this PC's key change on hbbs: the password path, without the key warning.
+@@ -56,19 +73,31 @@ struct Account {
+     devices: MyDevices,
+     key_serial: u64,
+     korean: bool,
++    /// the key the waiting room gave for the login's PC while it is a support PC of this login
++    support: Option<[u8; 32]>,
+ }
+ 
+ impl Account {
+-    fn current() -> Account {
++    fn current(pc_id: &str) -> Account {
+         Account {
+             logged_in: api::logged_in(),
+             devices: api::my_devices(),
+             key_serial: api::key_serial(),
+             korean: korean(),
++            support: super::support::support_pc(pc_id),
+         }
+     }
+ }
+ 
++/// Which proof the last login of a session carried.
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++enum Sent {
++    #[default]
++    None,
++    SameAccount,
++    Support,
++}
++
+ /// A session's notes. The connections of a session share its ID and can run at once (on desktop
+ /// the file transfer, camera, terminal and port forwarding opened from a session's toolbar), so a
+ /// session keeps the key of every secured channel of the last SEEN_FOR: a login carries a proof
+@@ -76,8 +105,8 @@ impl Account {
+ #[derive(Default)]
+ struct Session {
+     keys: Vec<([u8; 32], Instant)>,
+-    /// the last login this session built from a Hash carried a proof
+-    proof_sent: bool,
++    /// the proof the last login this session built from a Hash carried
++    proof_sent: Sent,
+ }
+ 
+ lazy_static::lazy_static! {
+@@ -97,14 +126,16 @@ pub(crate) fn key_proof(login: &LoginContext) -> ProofDecision {
+     if !enabled() {
+         return ProofDecision::No;
+     }
+-    proof_for(login, &Account::current(), load_key)
++    proof_for(login, &Account::current(login.pc_id), load_key)
+ }
+ 
+-/// handle_login_error: when this session's last login carried a proof, the title and text of the
+-/// box for a PC that refused it ('re-input-password'), and None otherwise. Either way the proof
+-/// is forgotten.
++/// handle_login_error: when this session's last login carried a same-account proof, the title
++/// and text of the box for a PC that refused it ('re-input-password'), and None otherwise. Either
++/// way the proof is forgotten. After a support proof the login error goes upstream's way (design
++/// D11): the wait for [수락] after "No Password Access", the password box after "Empty Password"
++/// from a PC that takes passwords only.
+ pub(crate) fn take_proof_sent(session_id: u64) -> Option<(&'static str, &'static str)> {
+-    take_sent(session_id).then(|| refused(korean()))
++    (take_sent(session_id) == Sent::SameAccount).then(|| refused(korean()))
+ }
+ 
+ fn proof_for(
+@@ -137,9 +168,17 @@ fn proof_for(
+             "{}: not the key the account's list has for the PC; closed without a proof or a password",
+             login.pc_id
+         ),
++        ProofDecision::SendSupport(_) => {
++            hbb_common::throttled_log!(LOG_INTERVAL, info, "support proof for {}", login.pc_id)
++        }
+         ProofDecision::No => {}
+     }
+-    mark_proof_sent(login.session_id, matches!(decision, ProofDecision::Send(_)));
++    let sent = match decision {
++        ProofDecision::Send(_) => Sent::SameAccount,
++        ProofDecision::SendSupport(_) => Sent::Support,
++        _ => Sent::None,
++    };
++    mark_proof_sent(login.session_id, sent);
+     decision
+ }
+ 
+@@ -159,7 +198,7 @@ fn decide(
+         return Err("");
+     }
+     let Some(pc) = account.devices.pcs.get(login.pc_id) else {
+-        return Err("");
++        return support(login, seen, account, key);
+     };
+     if pc.pwless == NEEDS_RELOGIN {
+         return Err("the PC needs its owner to log in on it again");
+@@ -204,6 +243,46 @@ fn decide(
+     .ok_or("an ID too long for a proof")
+ }
+ 
++/// Design 3-4's support conditions, for a PC that is not the account's: the waiting room gave
++/// its key to this login, the channel is secured and every key of the session is that one, the
++/// kind goes by proof, the PC sent a nonce, and the account key can be used. A session to another
++/// key gets no proof and no warning: that PC is not the user's, and the safe way to fail is no
++/// mark.
++fn support(
++    login: &LoginContext,
++    seen: &[[u8; 32]],
++    account: &Account,
++    key: impl FnOnce() -> Result<AccountKey, &'static str>,
++) -> Result<ProofDecision, &'static str> {
++    let Some(bound) = account.support else {
++        return Err("");
++    };
++    if !login.secured || seen.is_empty() {
++        return Err("the channel to the support PC is not secured");
++    }
++    if seen.iter().any(|pk| *pk != bound) {
++        return Err("not the key the waiting room gave for the support PC");
++    }
++    if login.kind > KIND_TERMINAL {
++        return Err("port forwarding and RDP carry no support proof");
++    }
++    if login.nonce.len() != 32 {
++        return Err("the support PC sent no nonce");
++    }
++    let key = key()?;
++    conn_proof(
++        &key,
++        login.pc_id,
++        &bound,
++        login.nonce,
++        login.ctl_id,
++        login.kind,
++        account.key_serial,
++    )
++    .map(ProofDecision::SendSupport)
++    .ok_or("an ID too long for a proof")
++}
++
+ fn load_key() -> Result<AccountKey, &'static str> {
+     match keystore::load() {
+         Ok(Some(key)) => Ok(key),
+@@ -244,18 +323,19 @@ fn seen_keys(session_id: u64) -> Vec<[u8; 32]> {
+         .unwrap_or_default()
+ }
+ 
+-fn mark_proof_sent(session_id: u64, sent: bool) {
++fn mark_proof_sent(session_id: u64, sent: Sent) {
+     if let Some(s) = SESSIONS.lock().unwrap().get_mut(&session_id) {
+         s.proof_sent = sent;
+     }
+ }
+ 
+-fn take_sent(session_id: u64) -> bool {
++fn take_sent(session_id: u64) -> Sent {
+     SESSIONS
+         .lock()
+         .unwrap()
+         .get_mut(&session_id)
+-        .is_some_and(|s| std::mem::take(&mut s.proof_sent))
++        .map(|s| std::mem::take(&mut s.proof_sent))
++        .unwrap_or_default()
+ }
+ 
+ // The UI's translate() shows these as they are: they are not keys of its tables, and they hold no
+@@ -305,14 +385,20 @@ impl LoginContext<'_> {
+         note(session_id, secured, pk);
+     }
+ 
+-    /// key_proof with this device's account given: logged in, `hjv-my-devices` and the account
+-    /// key's seed.
+-    pub(crate) fn decide_for_test(&self, my_devices: &str, seed: [u8; 32]) -> ProofDecision {
++    /// key_proof with this device's account given: logged in, `hjv-my-devices`, the key the
++    /// waiting room gave for the PC if it is a support PC (TV-W6), and the account key's seed.
++    pub(crate) fn decide_for_test(
++        &self,
++        my_devices: &str,
++        support: Option<[u8; 32]>,
++        seed: [u8; 32],
++    ) -> ProofDecision {
+         let account = Account {
+             logged_in: true,
+             devices: serde_json::from_str(my_devices).unwrap(),
+             key_serial: super::vectors::CONN_KEY_SERIAL,
+             korean: false,
++            support,
+         };
+         proof_for(self, &account, || {
+             AccountKey::from_seed(&seed).ok_or("no account key")
+@@ -349,6 +435,15 @@ mod tests {
+             devices,
+             key_serial: CONN_KEY_SERIAL,
+             korean: false,
++            support: None,
++        }
++    }
++
++    /// Not the account's PC, which the waiting room named a support PC under `pk`.
++    fn supporting(pk: [u8; 32]) -> Account {
++        Account {
++            support: Some(pk),
++            ..account(MyDevices::default())
+         }
+     }
+ 
+@@ -375,6 +470,7 @@ mod tests {
+     fn outcome(decision: Result<ProofDecision, &str>) -> &'static str {
+         match decision {
+             Ok(ProofDecision::Send(_)) => "proof",
++            Ok(ProofDecision::SendSupport(_)) => "support proof",
+             Ok(ProofDecision::KeyChanged { .. }) => "key changed",
+             Ok(ProofDecision::No) | Err(_) => "password",
+         }
+@@ -559,6 +655,106 @@ mod tests {
+         );
+     }
+ 
++    /// Design 3-4, 6-2: the support conditions (TV-W6).
++    #[test]
++    fn a_support_pc_gets_the_proof_under_the_waiting_rooms_key_only() {
++        let _ = hbb_common::sodiumoxide::init();
++        let pk = pc_pk();
++        let support = || supporting(pk);
++        assert_eq!(
++            decide_with(&login(&CONN_NONCE), &[pk], &support()),
++            "support proof"
++        );
++        // the same bytes as a same-account proof: the PC checks it against its grant's key
++        let Ok(ProofDecision::SendSupport(proof)) =
++            decide(&login(&CONN_NONCE), &[pk], &support(), the_key)
++        else {
++            panic!("no support proof");
++        };
++        assert_eq!(
++            hex::encode(proof.write_to_bytes().unwrap()),
++            CONN_PROOF_PROTO_HEX
++        );
++        // no support PC, logged out, an id@server connection
++        let none = account(MyDevices::default());
++        assert_eq!(decide_with(&login(&CONN_NONCE), &[pk], &none), "password");
++        let logged_out = Account {
++            logged_in: false,
++            ..support()
++        };
++        assert_eq!(
++            decide_with(&login(&CONN_NONCE), &[pk], &logged_out),
++            "password"
++        );
++        let other_server = LoginContext {
++            other_server: true,
++            ..login(&CONN_NONCE)
++        };
++        assert_eq!(decide_with(&other_server, &[pk], &support()), "password");
++        // another key on any channel of the session: no proof and no warning
++        for seen in [[[7; 32]].to_vec(), [pk, [7; 32]].to_vec()] {
++            let decision = decide(&login(&CONN_NONCE), &seen, &support(), || {
++                panic!("the account key is not needed")
++            });
++            assert_eq!(
++                decision.err(),
++                Some("not the key the waiting room gave for the support PC")
++            );
++        }
++        // unsecured, no key noted, no nonce
++        let unsecured = LoginContext {
++            secured: false,
++            ..login(&CONN_NONCE)
++        };
++        assert_eq!(decide_with(&unsecured, &[pk], &support()), "password");
++        assert_eq!(
++            decide_with(&login(&CONN_NONCE), &[], &support()),
++            "password"
++        );
++        assert_eq!(decide_with(&login(&[1; 16]), &[pk], &support()), "password");
++        // the kinds: screen, files, camera and terminal, never port forwarding or RDP
++        for (kind, sent) in [
++            (KIND_FILE, "support proof"),
++            (KIND_CAMERA, "support proof"),
++            (KIND_TERMINAL, "support proof"),
++            (KIND_PORT_FORWARD, "password"),
++        ] {
++            let l = LoginContext {
++                kind,
++                ..login(&CONN_NONCE)
++            };
++            assert_eq!(decide_with(&l, &[pk], &support()), sent, "{kind}");
++        }
++        // no account key now
++        let decision = decide(&login(&CONN_NONCE), &[pk], &support(), || {
++            Err("no account key")
++        });
++        assert_eq!(decision.err(), Some("no account key"));
++        // the account's own PC goes the same-account way, whatever the waiting room said
++        let mine = Account {
++            support: Some(pk),
++            ..account(devices("active", PC_PK, &["remote"]))
++        };
++        assert_eq!(decide_with(&login(&CONN_NONCE), &[pk], &mine), "proof");
++        // a support proof's refusal shows no box of its own
++        let id = SESSION + 7;
++        note(id, true, Some(&pk));
++        let l = LoginContext {
++            session_id: id,
++            ..login(&CONN_NONCE)
++        };
++        assert!(matches!(
++            proof_for(&l, &support(), the_key),
++            ProofDecision::SendSupport(_)
++        ));
++        assert_eq!(take_proof_sent(id), None);
++        assert!(matches!(
++            proof_for(&l, &account(devices("active", PC_PK, &["remote"])), the_key),
++            ProofDecision::Send(_)
++        ));
++        assert!(take_proof_sent(id).is_some());
++    }
++
+     #[test]
+     fn the_device_list_as_kept() {
+         let json = r#"{"acct":"2026000001","at":1760000000,"pcs":{"123456789":{"pk":"gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=","pwless":"expired","kinds":["remote","file","camera"],"wol":"ok"}}}"#;
+@@ -590,13 +786,15 @@ mod tests {
+         assert_eq!(seen_keys(id), [pk, [7; 32]]);
+         assert!(seen_keys(id + 1).is_empty());
+         // the proof is taken once, and only after a login that carried one
+-        assert!(!take_sent(id));
+-        mark_proof_sent(id, true);
+-        assert!(take_sent(id));
+-        assert!(!take_sent(id));
+-        mark_proof_sent(id, true);
+-        mark_proof_sent(id, false);
+-        assert!(!take_sent(id));
++        assert_eq!(take_sent(id), Sent::None);
++        mark_proof_sent(id, Sent::SameAccount);
++        assert_eq!(take_sent(id), Sent::SameAccount);
++        assert_eq!(take_sent(id), Sent::None);
++        mark_proof_sent(id, Sent::SameAccount);
++        mark_proof_sent(id, Sent::None);
++        assert_eq!(take_sent(id), Sent::None);
++        mark_proof_sent(id, Sent::Support);
++        assert_eq!(take_sent(id), Sent::Support);
+         // a key counts for a day, so a channel held open before its login does not outlast its
+         // key's note (unless the machine has not been up that long)
+         if let Some(earlier) = Instant::now().checked_sub(Duration::from_secs(3600)) {
+@@ -606,10 +804,10 @@ mod tests {
+         if let Some(then) = Instant::now().checked_sub(SEEN_FOR) {
+             SESSIONS.lock().unwrap().get_mut(&id).unwrap().keys[0].1 = then;
+             assert_eq!(seen_keys(id), [[7; 32]]);
+-            mark_proof_sent(id, true);
++            mark_proof_sent(id, Sent::SameAccount);
+             SESSIONS.lock().unwrap().get_mut(&id).unwrap().keys[0].1 = then;
+             assert!(seen_keys(id).is_empty());
+-            assert!(!take_sent(id));
++            assert_eq!(take_sent(id), Sent::None);
+         }
+     }
+ 
+diff --git a/src/hjviewer_account/support.rs b/src/hjviewer_account/support.rs
+index 12c9379..2763730 100644
+--- a/src/hjviewer_account/support.rs
++++ b/src/hjviewer_account/support.rs
+@@ -14,12 +14,43 @@
+ //!       end it as their own 401 ends it.
+ //! Whether this login may make codes at all (`hjv-support-code`) is the login answer's and
+ //! currentUser's `hjv.support_code` (api.rs).
++//!
++//! From 1.9 (TV-W6) hjv-api's answer brings a support link (`link`) and a waiting number
++//! (`wait`) too. With both, the result carries the link as the whole address and the code's
++//! number in this process (`"link":"https://<server>/api/hjv/s/…","slot":1`); the waiting number
++//! stays here. While a code of this login is open, one thread asks the waiting room
++//! (`GET /api/hjv/support-code/wait`, which hjv-api holds up to 20 s) which of them a PC used,
++//! and keeps that PC's ID and key, in memory only, until its ticket ends or the login changes
++//! (the support PCs: the controller's proof, ctl.rs, and the remote restart's warning):
++//!   get "hjv-support-wait:<slot>"  {"state":"open"|"used"|"over"|"login"|"off","pc":"<ID>"};
++//!       `login` is hjv-api's 401 to the login that still is the app's, `off` a server without the
++//!       waiting room; "" for a slot this process does not know (any more)
++//!   get "hjv-support-arrived"      {"slot":1,"pc":"<ID>"} for a code a PC used, once; "" for none
++//!   get "hjv-support-pc:<ID>"      "Y" while that PC is a support PC of this login, else ""
++//!   set "hjv-support-wait-kick"    the waiting room is asked again now (the app came back)
++//! A server before 1.9 gives neither member: no link, no slot, no waiting.
+ 
+-use hbb_common::config::LocalConfig;
++use hbb_common::{
++    base64::{
++        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
++        Engine as _,
++    },
++    config::LocalConfig,
++};
+ use serde_json::{json, Value};
+-use std::{io::Read, sync::Mutex, time::Duration};
++use sha2::{Digest, Sha256};
++use std::{
++    collections::{HashMap, VecDeque},
++    io::Read,
++    sync::{Condvar, Mutex, MutexGuard},
++    time::{Duration, Instant},
++};
+ 
+ const PATH: &str = "/api/hjv/support-code";
++/// The waiting room (1.9).
++const WAIT_PATH: &str = "/api/hjv/support-code/wait";
++/// A support link's path: this, then its value (1.9).
++const LINK_PATH: &str = "/api/hjv/s/";
+ /// The one body hjv-api takes (`use` is where a controller's code would go; 1.8.2 makes `pc`).
+ const BODY: &str = r#"{"use":"pc"}"#;
+ const SERVER: Option<&str> = option_env!("HJV_SERVER");
+@@ -27,30 +58,65 @@ const TIMEOUT: Duration = Duration::from_secs(20);
+ const MAX_ANSWER: u64 = 8192;
+ /// hjv-api's codes live ten minutes; an `expires_in` beyond an hour is no code's.
+ const MAX_EXPIRES: u64 = 3600;
++/// hjv-api holds a waiting room request 20 s at most; nginx reads 30 s.
++const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
++/// The one waiting room request before a support proof (S-02), which hjv-api answers at once.
++const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
++/// After a failed waiting room request: 3 s, doubled up to 30 s.
++const RETRY_MIN: Duration = Duration::from_secs(3);
++const RETRY_MAX: Duration = Duration::from_secs(30);
++/// An answer back this soon with nothing new (hjv-api did not hold it) waits RETRY_MIN.
++const QUICK: Duration = Duration::from_secs(1);
++/// How long past its ten minutes, by this device's count, a code still counts as open here:
++/// hjv-api's word ends it.
++const GRACE: Duration = Duration::from_secs(60);
++/// How long a code that ended stays readable for its S2 (hjv-api keeps it as long).
++const KEEP_ENDED: Duration = Duration::from_secs(600);
++/// A support code's ticket lives 2 hours.
++const MAX_UNTIL: u64 = 7200;
++/// S-02 (critic): how recent hjv-api's last answer to the login must be for a support proof.
++const FRESH: Duration = Duration::from_secs(120);
+ 
+ /// The last answer, until the screen read it.
+ static RESULT: Mutex<String> = Mutex::new(String::new());
+ 
+ /// main_set_common: true when the key was this module's.
+ pub(super) fn set_common(key: &str) -> bool {
+-    if key != "hjv-support-code-make" {
+-        return false;
++    match key {
++        "hjv-support-code-make" => {
++            let result = make().to_string();
++            *RESULT.lock().unwrap_or_else(|e| e.into_inner()) = result;
++            true
++        }
++        "hjv-support-wait-kick" => {
++            let mut room = room();
++            if room.open() {
++                start_waiting(&mut room);
++            }
++            true
++        }
++        _ => false,
+     }
+-    let result = make().to_string();
+-    *RESULT.lock().unwrap_or_else(|e| e.into_inner()) = result;
+-    true
+ }
+ 
+-/// main_get_common: the last answer, taken.
++/// main_get_common: the last answer, taken; the waiting room's keys (the module's doc).
+ pub(super) fn get_common(key: &str) -> Option<String> {
+-    (key == "hjv-support-code-result")
+-        .then(|| std::mem::take(&mut *RESULT.lock().unwrap_or_else(|e| e.into_inner())))
++    if key == "hjv-support-code-result" {
++        return Some(std::mem::take(
++            &mut *RESULT.lock().unwrap_or_else(|e| e.into_inner()),
++        ));
++    }
++    if !key.starts_with("hjv-support-") {
++        return None;
++    }
++    let login = login_of(&LocalConfig::get_option("access_token"));
++    room_common(&mut room(), &login, key, Instant::now())
+ }
+ 
+ /// One request for a code, and once more after a 409 `clock`, whose server time the account
+ /// module learns from the answer as from any account answer. It blocks.
+ fn make() -> Value {
+-    let Some(server) = SERVER.filter(|server| !server.is_empty()) else {
++    let Some(server) = server() else {
+         return failed("config", 0);
+     };
+     let token = LocalConfig::get_option("access_token");
+@@ -64,40 +130,68 @@ fn make() -> Value {
+         let Some(proof) = super::proof_header("POST", PATH, BODY.as_bytes(), &token) else {
+             return failed("config", 0);
+         };
+-        let Some((status, date, text)) = post(&url, &token, &proof) else {
++        let Some((status, date, text)) = request(&url, &token, &proof, Some(BODY), TIMEOUT) else {
+             return failed("network", 0);
+         };
+-        super::observe_account_response(
+-            &url,
+-            &json!({ "status_code": status, "headers": { "date": date }, "body": text })
+-                .to_string(),
+-        );
+-        let answer = outcome(status, &text);
++        observe(&url, status, &date, &text);
++        let mut answer = outcome(status, &text);
+         if again && answer.get("error").and_then(Value::as_str) == Some("clock") {
+             again = false;
+             continue;
+         }
+         // a 401 to a login that another login or a logout replaced meanwhile ends nothing
+-        if answer.get("error").and_then(Value::as_str) == Some("login")
+-            && LocalConfig::get_option("access_token") != token
+-        {
++        let current = LocalConfig::get_option("access_token") == token;
++        if answer.get("error").and_then(Value::as_str) == Some("login") && !current {
+             return failed("network", 0);
+         }
++        // the waiting number never reaches the screens
++        let wait = answer
++            .as_object_mut()
++            .and_then(|made| made.remove("wait"))
++            .filter(|_| current);
++        let mut room = room();
++        room.made(
++            &mut answer,
++            wait,
++            &server,
++            &login_of(&token),
++            Instant::now(),
++        );
++        if room.open() {
++            start_waiting(&mut room);
++        }
+         return answer;
+     }
+ }
+ 
+-/// POSTs the body by the login with the certificate checked: the status, the Date header and at
+-/// most MAX_ANSWER bytes of the answer; None without an answer of the asked address.
+-fn post(url: &str, token: &str, proof: &str) -> Option<(u16, String, String)> {
++fn server() -> Option<String> {
++    SERVER
++        .filter(|server| !server.is_empty())
++        .map(str::to_owned)
++}
++
++/// Sends the request by the login with the certificate checked (a POST of `body`, else a GET):
++/// the status, the Date header and at most MAX_ANSWER bytes of the answer; None without an
++/// answer of the asked address.
++fn request(
++    url: &str,
++    token: &str,
++    proof: &str,
++    body: Option<&'static str>,
++    timeout: Duration,
++) -> Option<(u16, String, String)> {
+     let client = crate::hbbs_http::create_http_client_with_url_strict(url).ok()?;
+-    let response = client
+-        .post(url)
+-        .header(reqwest::header::CONTENT_TYPE, "application/json")
++    let builder = match body {
++        Some(body) => client
++            .post(url)
++            .header(reqwest::header::CONTENT_TYPE, "application/json")
++            .body(body),
++        None => client.get(url),
++    };
++    let response = builder
+         .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+         .header("X-HJV-Proof", proof)
+-        .body(BODY)
+-        .timeout(TIMEOUT)
++        .timeout(timeout)
+         .send()
+         .ok()?;
+     // the client follows redirections: an answer from elsewhere is not hjv-api's
+@@ -116,6 +210,14 @@ fn post(url: &str, token: &str, proof: &str) -> Option<(u16, String, String)> {
+     Some((status, date, String::from_utf8_lossy(&text).into_owned()))
+ }
+ 
++/// What the account module learns from any account answer (the server's clock).
++fn observe(url: &str, status: u16, date: &str, text: &str) {
++    super::observe_account_response(
++        url,
++        &json!({ "status_code": status, "headers": { "date": date }, "body": text }).to_string(),
++    );
++}
++
+ fn failed(error: &str, retry_after: u64) -> Value {
+     if retry_after > 0 {
+         json!({ "ok": false, "error": error, "retry_after": retry_after })
+@@ -126,6 +228,8 @@ fn failed(error: &str, retry_after: u64) -> Value {
+ 
+ /// What the screens get for hjv-api's answer of `status` with the body `text` (the doc 3-7):
+ /// the code of a 200 answer as hjv-api shows it, or why none came (`clock` for the one more try).
++/// A 1.9 answer's support link (its path) and waiting number come along only when both are
++/// sound; make() keeps the waiting number and hands the screens the link and a slot.
+ fn outcome(status: u16, text: &str) -> Value {
+     let answer = serde_json::from_str::<Value>(text).unwrap_or_default();
+     let hjv = answer
+@@ -144,7 +248,20 @@ fn outcome(status: u16, text: &str) -> Value {
+                 (Some(code), Some(expires_in))
+                     if shown_code(code) && (1..=MAX_EXPIRES).contains(&expires_in) =>
+                 {
+-                    json!({ "ok": true, "code": code, "expires_in": expires_in })
++                    let mut made = json!({ "ok": true, "code": code, "expires_in": expires_in });
++                    let link = answer
++                        .get("link")
++                        .and_then(Value::as_str)
++                        .filter(|link| link.strip_prefix(LINK_PATH).is_some_and(random_value));
++                    let wait = answer
++                        .get("wait")
++                        .and_then(Value::as_str)
++                        .filter(|wait| random_value(wait));
++                    if let (Some(link), Some(wait)) = (link, wait) {
++                        made["link"] = json!(link);
++                        made["wait"] = json!(wait);
++                    }
++                    made
+                 }
+                 _ => failed("bad_request", 0),
+             }
+@@ -173,14 +290,493 @@ fn shown_code(code: &str) -> bool {
+             .all(|(i, b)| i == 4 || SYMBOLS.contains(b))
+ }
+ 
++/// A support link's value or a waiting number: 16 random bytes in base64url without padding.
++fn random_value(value: &str) -> bool {
++    value.len() == 22
++        && URL_SAFE_NO_PAD
++            .decode(value)
++            .is_ok_and(|bytes| bytes.len() == 16)
++}
++
++/// A PC's ID as the waiting room names it (hbbs's IDs: letters, digits, '-', '_').
++fn pc_id(id: &str) -> bool {
++    (1..=64).contains(&id.len())
++        && id
++            .bytes()
++            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
++}
++
++/// Which login a code, a support PC or an answer belongs to: the SHA-256 of its token.
++fn login_of(token: &str) -> [u8; 32] {
++    Sha256::digest(token.as_bytes()).into()
++}
++
++// ---- the waiting room (1.9, TV-W6) ----
++
++#[derive(Clone, Debug, PartialEq)]
++enum State {
++    Open,
++    /// a PC with this ID used the code
++    Used(String),
++    Over,
++    /// hjv-api answered the login with 401
++    Login,
++    /// the server has no waiting room
++    Off,
++}
++
++impl State {
++    fn name(&self) -> &'static str {
++        match self {
++            State::Open => "open",
++            State::Used(_) => "used",
++            State::Over => "over",
++            State::Login => "login",
++            State::Off => "off",
++        }
++    }
++}
++
++/// A code this process made with a waiting number.
++struct Code {
++    slot: u64,
++    wait: String,
++    login: [u8; 32],
++    /// its ten minutes by this device's count, plus GRACE
++    open_until: Instant,
++    state: State,
++    ended: Option<Instant>,
++}
++
++impl Code {
++    fn end(&mut self, state: State, now: Instant) {
++        self.state = state;
++        self.ended = Some(now);
++    }
++}
++
++/// A PC that used one of the login's codes, until its ticket ends (the support PCs).
++struct SupportPc {
++    pk: [u8; 32],
++    until: Instant,
++    login: [u8; 32],
++}
++
++/// What hjv-api's waiting room says of one code.
++#[derive(Debug, PartialEq)]
++enum Seen {
++    Open,
++    Used {
++        pc: String,
++        pk: [u8; 32],
++        until_in: u64,
++    },
++    Over,
++}
++
++#[derive(Default)]
++struct Room {
++    last_slot: u64,
++    codes: Vec<Code>,
++    /// hjv-api's `rev` of the last answer
++    rev: Option<u64>,
++    /// codes a PC used, (slot, PC ID), until the screens read them
++    arrived: VecDeque<(u64, String)>,
++    pcs: HashMap<String, SupportPc>,
++    /// the waiting thread runs
++    waiting: bool,
++    /// the app asked to ask again now
++    kicked: bool,
++    /// when hjv-api last answered a request of this login (S-02)
++    fresh: Option<([u8; 32], Instant)>,
++}
++
++/// What the waiting thread does next.
++#[derive(Debug, PartialEq)]
++enum Step {
++    Now,
++    After(Duration),
++    Stop,
++}
++
++impl Room {
++    /// make(): a code of `login` that hjv-api gave a waiting number. The screens get the link as
++    /// the whole address and the code's slot; the waiting number stays here.
++    /// Without a waiting number (a server before 1.9, a login that changed meanwhile) the screens
++    /// get neither, as from 1.8.2's hjv-api.
++    fn made(
++        &mut self,
++        answer: &mut Value,
++        wait: Option<Value>,
++        server: &str,
++        login: &[u8; 32],
++        now: Instant,
++    ) {
++        let Some(made) = answer.as_object_mut() else {
++            return;
++        };
++        let (Some(Value::String(wait)), Some(Value::String(link)), Some(expires_in)) = (
++            wait,
++            made.remove("link"),
++            made.get("expires_in").and_then(Value::as_u64),
++        ) else {
++            return;
++        };
++        self.last_slot += 1;
++        let slot = self.last_slot;
++        made.insert("link".to_owned(), json!(format!("https://{server}{link}")));
++        made.insert("slot".to_owned(), json!(slot));
++        self.codes.push(Code {
++            slot,
++            wait,
++            login: *login,
++            open_until: now + Duration::from_secs(expires_in) + GRACE,
++            state: State::Open,
++            ended: None,
++        });
++    }
++
++    /// Drops what is not the login's (a logout, another login) and what is over; ends a code
++    /// whose time is up here.
++    fn tidy(&mut self, login: &[u8; 32], now: Instant) {
++        self.codes.retain(|c| {
++            &c.login == login
++                && c.ended
++                    .map_or(true, |at| now.saturating_duration_since(at) < KEEP_ENDED)
++        });
++        for c in self.codes.iter_mut() {
++            if c.state == State::Open && now >= c.open_until {
++                c.end(State::Over, now);
++            }
++        }
++        self.pcs
++            .retain(|_, pc| &pc.login == login && now < pc.until);
++        let codes = &self.codes;
++        self.arrived
++            .retain(|(slot, _)| codes.iter().any(|c| c.slot == *slot));
++        if self.fresh.is_some_and(|(of, _)| &of != login) {
++            self.fresh = None;
++        }
++    }
++
++    fn open(&self) -> bool {
++        self.codes.iter().any(|c| c.state == State::Open)
++    }
++
++    /// hjv-api's 200 to `login`.
++    fn answered(&mut self, login: &[u8; 32], rev: u64, seen: &HashMap<String, Seen>, now: Instant) {
++        self.rev = Some(rev);
++        self.fresh = Some((*login, now));
++        for c in self
++            .codes
++            .iter_mut()
++            .filter(|c| c.state == State::Open && &c.login == login)
++        {
++            match seen.get(&c.wait) {
++                Some(Seen::Open) => {}
++                Some(Seen::Used { pc, pk, until_in }) => {
++                    self.pcs.insert(
++                        pc.clone(),
++                        SupportPc {
++                            pk: *pk,
++                            until: now + Duration::from_secs(*until_in),
++                            login: *login,
++                        },
++                    );
++                    self.arrived.push_back((c.slot, pc.clone()));
++                    c.end(State::Used(pc.clone()), now);
++                }
++                // over, or gone from hjv-api's memory (it restarted): the code works no more
++                Some(Seen::Over) | None => c.end(State::Over, now),
++            }
++        }
++    }
++
++    /// The waiting room's answer `reply` to a request of `login` that carried `sent_rev` and
++    /// took `took`: what it says, and what comes next. `failures` counts the failed ones in a row.
++    fn take_reply(
++        &mut self,
++        login: &[u8; 32],
++        sent_rev: Option<u64>,
++        reply: Option<(u16, &str)>,
++        took: Duration,
++        failures: &mut u32,
++        now: Instant,
++    ) -> Step {
++        let fail = |failures: &mut u32| {
++            *failures = failures.saturating_add(1);
++            let doubled = RETRY_MIN.saturating_mul(1 << (*failures - 1).min(4));
++            Step::After(doubled.min(RETRY_MAX))
++        };
++        match reply {
++            Some((200, text)) => match read_wait(text) {
++                Some((rev, seen)) => {
++                    *failures = 0;
++                    self.answered(login, rev, &seen, now);
++                    if took < QUICK && sent_rev == Some(rev) {
++                        Step::After(RETRY_MIN)
++                    } else {
++                        Step::Now
++                    }
++                }
++                None => fail(failures),
++            },
++            // hjv-api ended the login: its codes say so, and its support PCs go
++            Some((401, _)) => {
++                for c in self
++                    .codes
++                    .iter_mut()
++                    .filter(|c| c.state == State::Open && &c.login == login)
++                {
++                    c.end(State::Login, now);
++                }
++                self.pcs.retain(|_, pc| &pc.login != login);
++                self.fresh = None;
++                Step::Stop
++            }
++            // a server without the waiting room, or the App Review account (`no_code`)
++            Some((403 | 404, _)) => {
++                for c in self.codes.iter_mut().filter(|c| c.state == State::Open) {
++                    c.end(State::Off, now);
++                }
++                Step::Stop
++            }
++            _ => fail(failures),
++        }
++    }
++}
++
++/// A waiting room answer: its `rev` and what it says of each code by its waiting number; None for
++/// an answer that is none. A `used` code whose PC is not sound counts as over.
++fn read_wait(text: &str) -> Option<(u64, HashMap<String, Seen>)> {
++    let answer: Value = serde_json::from_str(text).ok()?;
++    let rev = answer.get("rev")?.as_u64()?;
++    let mut seen = HashMap::new();
++    for code in answer.get("codes")?.as_array()? {
++        let Some(wait) = code
++            .get("wait")
++            .and_then(Value::as_str)
++            .filter(|wait| random_value(wait))
++        else {
++            continue;
++        };
++        let state = match code.get("state").and_then(Value::as_str) {
++            Some("open") => Seen::Open,
++            Some("over") => Seen::Over,
++            Some("used") => used(code).unwrap_or(Seen::Over),
++            _ => continue,
++        };
++        seen.insert(wait.to_owned(), state);
++    }
++    Some((rev, seen))
++}
++
++fn used(code: &Value) -> Option<Seen> {
++    let pc = code.get("pc")?.as_str().filter(|pc| pc_id(pc))?;
++    let pk = STANDARD
++        .decode(code.get("pk")?.as_str()?)
++        .ok()?
++        .try_into()
++        .ok()?;
++    let until_in = code
++        .get("until_in")?
++        .as_u64()
++        .filter(|until_in| (1..=MAX_UNTIL).contains(until_in))?;
++    Some(Seen::Used {
++        pc: pc.to_owned(),
++        pk,
++        until_in,
++    })
++}
++
++/// The waiting room's main_get_common keys for `login` (the module's doc).
++fn room_common(room: &mut Room, login: &[u8; 32], key: &str, now: Instant) -> Option<String> {
++    room.tidy(login, now);
++    if key == "hjv-support-arrived" {
++        return Some(
++            room.arrived
++                .pop_front()
++                .map(|(slot, pc)| json!({ "slot": slot, "pc": pc }).to_string())
++                .unwrap_or_default(),
++        );
++    }
++    if let Some(slot) = key.strip_prefix("hjv-support-wait:") {
++        let slot = slot.parse::<u64>().ok();
++        return Some(
++            room.codes
++                .iter()
++                .find(|c| Some(c.slot) == slot)
++                .map(|c| match &c.state {
++                    State::Used(pc) => json!({ "state": "used", "pc": pc }),
++                    state => json!({ "state": state.name() }),
++                })
++                .map(|state| state.to_string())
++                .unwrap_or_default(),
++        );
++    }
++    let pc = key.strip_prefix("hjv-support-pc:")?;
++    Some(if room.pcs.contains_key(pc) { "Y" } else { "" }.to_owned())
++}
++
++lazy_static::lazy_static! {
++    static ref ROOM: Mutex<Room> = Default::default();
++}
++/// Wakes the waiting thread from its wait after a failure (`Room.kicked`).
++static KICK: Condvar = Condvar::new();
++
++fn room() -> MutexGuard<'static, Room> {
++    ROOM.lock().unwrap_or_else(|e| e.into_inner())
++}
++
++/// One waiting thread per process while a code of the login is open; a running one asks again now.
++fn start_waiting(room: &mut Room) {
++    if room.waiting {
++        room.kicked = true;
++        KICK.notify_all();
++        return;
++    }
++    let Some(server) = server() else {
++        return;
++    };
++    room.waiting = std::thread::Builder::new()
++        .name("hjv-support-wait".to_owned())
++        .spawn(move || wait_loop(&server))
++        .is_ok();
++}
++
++/// The waiting thread: one request at a time, each with the last `rev`, until no code of the
++/// login is open, the login changes or ends, or the server has no waiting room.
++fn wait_loop(server: &str) {
++    let mut failures = 0;
++    loop {
++        let token = LocalConfig::get_option("access_token");
++        let login = login_of(&token);
++        let rev = {
++            let mut room = room();
++            room.tidy(&login, Instant::now());
++            if token.is_empty() || !room.open() {
++                room.waiting = false;
++                return;
++            }
++            room.kicked = false;
++            room.rev
++        };
++        let sent = Instant::now();
++        let reply = ask(server, &token, rev, WAIT_TIMEOUT);
++        let mut room = room();
++        // a logout or another login while it was out: its answer is not the login's
++        if LocalConfig::get_option("access_token") != token {
++            continue;
++        }
++        let step = room.take_reply(
++            &login,
++            rev,
++            reply
++                .as_ref()
++                .map(|(status, text)| (*status, text.as_str())),
++            sent.elapsed(),
++            &mut failures,
++            Instant::now(),
++        );
++        match step {
++            Step::Now => {}
++            Step::After(pause) => {
++                if failures > 0 {
++                    hbb_common::throttled_log!(
++                        Duration::from_secs(60),
++                        debug,
++                        "support codes: the waiting room failed, again in {pause:?}"
++                    );
++                }
++                let _ = KICK
++                    .wait_timeout_while(room, pause, |room| !room.kicked)
++                    .unwrap_or_else(|e| e.into_inner());
++            }
++            Step::Stop => {
++                room.waiting = false;
++                return;
++            }
++        }
++    }
++}
++
++/// One waiting room request by the login (`rev` hjv-api's last, none for an answer at once):
++/// its status and body; None without an answer (or without an account key to sign it).
++fn ask(server: &str, token: &str, rev: Option<u64>, timeout: Duration) -> Option<(u16, String)> {
++    let target = match rev {
++        Some(rev) => format!("{WAIT_PATH}?rev={rev}"),
++        None => WAIT_PATH.to_owned(),
++    };
++    let proof = super::proof_header("GET", &target, b"", token)?;
++    let url = format!("https://{server}{target}");
++    let (status, date, text) = request(&url, token, &proof, None, timeout)?;
++    observe(&url, status, &date, &text);
++    Some((status, text))
++}
++
++/// ctl.rs: the key the waiting room gave for `pc_id` while it is a support PC of this login.
++pub(super) fn support_pc(pc_id: &str) -> Option<[u8; 32]> {
++    let login = login_of(&LocalConfig::get_option("access_token"));
++    let mut room = room();
++    room.tidy(&login, Instant::now());
++    room.pcs.get(pc_id).map(|pc| pc.pk)
++}
++
++/// ctl.rs, before a support proof goes (S-02): whether hjv-api still takes this login, by an
++/// answer of the last FRESH or one waiting room request now. A lost device's login that the
++/// account ended gets 401 and the proof does not go; so does one hjv-api cannot be asked about.
++/// It blocks.
++pub(super) fn login_still_taken() -> bool {
++    let token = LocalConfig::get_option("access_token");
++    if token.is_empty() {
++        return false;
++    }
++    let login = login_of(&token);
++    let fresh = |room: &Room| {
++        room.fresh
++            .is_some_and(|(of, at)| of == login && at.elapsed() < FRESH)
++    };
++    if fresh(&room()) {
++        return true;
++    }
++    let Some(server) = server() else {
++        return false;
++    };
++    let reply = ask(&server, &token, None, CHECK_TIMEOUT);
++    let mut room = room();
++    if LocalConfig::get_option("access_token") != token {
++        return false;
++    }
++    let mut failures = 0;
++    room.take_reply(
++        &login,
++        None,
++        reply
++            .as_ref()
++            .map(|(status, text)| (*status, text.as_str())),
++        QUICK,
++        &mut failures,
++        Instant::now(),
++    );
++    fresh(&room)
++}
++
+ /// `--hjv-e2e-support-code`: a code made by the login, printed for the E2E's PC to trade
+-/// (`--hjv-e2e-guest-pc-code`). 0, or 6 without one.
++/// (`--hjv-e2e-guest-pc-code`), with its support link and slot when hjv-api gave them. 0, or 6
++/// without one.
+ #[cfg(feature = "hjv-e2e")]
+ pub(crate) fn e2e_make() -> i32 {
+     let answer = make();
+     match answer.get("code").and_then(Value::as_str) {
+         Some(code) => {
+             println!("hjv-e2e: support code: {code}");
++            if let (Some(link), Some(slot)) = (
++                answer.get("link").and_then(Value::as_str),
++                answer.get("slot").and_then(Value::as_u64),
++            ) {
++                println!("hjv-e2e: support link: {link}");
++                println!("hjv-e2e: support slot: {slot}");
++            }
+             0
+         }
+         None => {
+@@ -290,4 +886,353 @@ mod tests {
+         assert_eq!(get_common("hjv-support-code"), None);
+         assert!(!set_common("hjv-support-code-result"));
+     }
++
++    const LINK: &str = "/api/hjv/s/AAECAwQFBgcICQoLDA0ODw";
++    const WAIT: &str = "EBESExQVFhcYGRobHB0eHw";
++    const WAIT_2: &str = "ICEiIyQlJicoKSorLC0uLw";
++    const PK: &str = "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=";
++
++    fn login() -> [u8; 32] {
++        login_of("hjv-test-token")
++    }
++
++    /// A room with one code of `login()` made at `now` with WAIT, slot 1.
++    fn room_with_code(now: Instant) -> (Room, Value) {
++        let mut room = Room::default();
++        let mut answer = outcome_of(
++            200,
++            json!({"code": "K7M2-Q9XD", "use": "pc", "expires_in": 600, "link": LINK, "wait": WAIT}),
++        );
++        let wait = answer.as_object_mut().unwrap().remove("wait");
++        room.made(&mut answer, wait, "hjv.example", &login(), now);
++        (room, answer)
++    }
++
++    fn used(wait: &str, pc: &str, until_in: u64) -> Value {
++        json!({"wait": wait, "state": "used", "pc": pc, "pk": PK, "until_in": until_in})
++    }
++
++    #[test]
++    fn a_1_9_answer_brings_a_link_and_a_slot_and_keeps_the_waiting_number() {
++        // hjv-api 1.9's answer: both members sound, both kept for make()
++        assert_eq!(
++            outcome_of(
++                200,
++                json!({"code": "K7M2-Q9XD", "use": "pc", "expires_in": 600, "link": LINK, "wait": WAIT})
++            ),
++            json!({"ok": true, "code": "K7M2-Q9XD", "expires_in": 600, "link": LINK, "wait": WAIT})
++        );
++        // one of them missing or unsound: as 1.8.2's answer
++        for (link, wait) in [
++            (json!(LINK), json!(null)),
++            (json!(null), json!(WAIT)),
++            (json!("/api/hjv/u/AAECAwQFBgcICQoLDA0ODw"), json!(WAIT)),
++            (json!("/api/hjv/s/AAECAwQFBgcICQoLDA0OD"), json!(WAIT)),
++            (json!("/api/hjv/s/AAECAwQFBgcICQoLDA0ODw/x"), json!(WAIT)),
++            (json!(LINK), json!("EBESExQVFhcYGRobHB0eH+")),
++            (json!(LINK), json!(17)),
++        ] {
++            assert_eq!(
++                outcome_of(
++                    200,
++                    json!({"code": "K7M2-Q9XD", "expires_in": 600, "link": link, "wait": wait})
++                ),
++                json!({"ok": true, "code": "K7M2-Q9XD", "expires_in": 600}),
++                "{link} {wait}"
++            );
++        }
++        // the screens get the whole address and the slot, never the waiting number
++        let now = Instant::now();
++        let (room, answer) = room_with_code(now);
++        assert_eq!(
++            answer,
++            json!({"ok": true, "code": "K7M2-Q9XD", "expires_in": 600,
++                   "link": format!("https://hjv.example{LINK}"), "slot": 1})
++        );
++        assert!(room.open());
++        assert_eq!(room.codes[0].wait, WAIT);
++        // without a waiting number (a 1.8.2 server, a login that changed): neither
++        let mut room = Room::default();
++        let mut answer = outcome_of(
++            200,
++            json!({"code": "K7M2-Q9XD", "expires_in": 600, "link": LINK, "wait": WAIT}),
++        );
++        answer.as_object_mut().unwrap().remove("wait");
++        room.made(&mut answer, None, "hjv.example", &login(), now);
++        assert_eq!(
++            answer,
++            json!({"ok": true, "code": "K7M2-Q9XD", "expires_in": 600})
++        );
++        assert!(!room.open());
++        // a refusal stays as it is
++        let mut answer = failed("busy", 0);
++        room.made(&mut answer, None, "hjv.example", &login(), now);
++        assert_eq!(answer, failed("busy", 0));
++    }
++
++    #[test]
++    fn what_the_waiting_room_answers() {
++        let text = json!({"rev": 18, "codes": [
++            {"wait": WAIT, "state": "open", "expires_in": 431},
++            used(WAIT_2, "123456789", 7190),
++            {"wait": "AAECAwQFBgcICQoLDA0ODw", "state": "over"},
++        ]})
++        .to_string();
++        let (rev, seen) = read_wait(&text).unwrap();
++        assert_eq!(rev, 18);
++        assert_eq!(seen[WAIT], Seen::Open);
++        let Seen::Used { pc, pk, until_in } = &seen[WAIT_2] else {
++            panic!("{:?}", seen[WAIT_2]);
++        };
++        assert_eq!((pc.as_str(), *until_in), ("123456789", 7190));
++        assert_eq!(STANDARD.encode(pk), PK);
++        assert_eq!(seen["AAECAwQFBgcICQoLDA0ODw"], Seen::Over);
++        // a used code whose PC is not sound counts as over; an unknown state or number is left out
++        let odd = json!({"rev": 1, "codes": [
++            {"wait": WAIT, "state": "used", "pc": "123 456", "pk": PK, "until_in": 60},
++            {"wait": WAIT_2, "state": "used", "pc": "123456789", "pk": "AAAA", "until_in": 60},
++            {"wait": "AAECAwQFBgcICQoLDA0ODw", "state": "used", "pc": "1", "pk": PK, "until_in": 7201},
++            {"wait": "MDEyMzQ1Njc4OWFiY2RlZg", "state": "later"},
++            {"wait": "short", "state": "open"},
++        ]})
++        .to_string();
++        let (_, seen) = read_wait(&odd).unwrap();
++        assert_eq!(seen.len(), 3);
++        assert!(seen.values().all(|s| *s == Seen::Over));
++        // not an answer: no rev, no list, not JSON, cut at MAX_ANSWER
++        for bad in [
++            json!({"codes": []}).to_string(),
++            json!({"rev": 1}).to_string(),
++            json!({"rev": -1, "codes": []}).to_string(),
++            "<html>".to_owned(),
++            text[..text.len() - 3].to_owned(),
++        ] {
++            assert!(read_wait(&bad).is_none(), "{bad}");
++        }
++    }
++
++    #[test]
++    fn a_used_code_brings_its_pc_once_until_its_ticket_ends() {
++        let now = Instant::now();
++        let (mut room, _) = room_with_code(now);
++        let mut failures = 0;
++        let common =
++            |room: &mut Room, key: &str, at: Instant| room_common(room, &login(), key, at).unwrap();
++        assert_eq!(
++            common(&mut room, "hjv-support-wait:1", now),
++            r#"{"state":"open"}"#
++        );
++        assert_eq!(common(&mut room, "hjv-support-wait:2", now), "");
++        assert_eq!(common(&mut room, "hjv-support-wait:x", now), "");
++        assert_eq!(common(&mut room, "hjv-support-arrived", now), "");
++        // the first request goes without a rev and is answered at once
++        let open = json!({"rev": 3, "codes": [{"wait": WAIT, "state": "open"}]}).to_string();
++        let step = room.take_reply(
++            &login(),
++            None,
++            Some((200, open.as_str())),
++            Duration::from_millis(50),
++            &mut failures,
++            now,
++        );
++        assert_eq!(step, Step::Now);
++        assert_eq!(room.rev, Some(3));
++        // the same rev back at once: hjv-api did not hold it, so a pause
++        let step = room.take_reply(
++            &login(),
++            Some(3),
++            Some((200, open.as_str())),
++            Duration::from_millis(50),
++            &mut failures,
++            now,
++        );
++        assert_eq!(step, Step::After(RETRY_MIN));
++        // held, then the PC came
++        let came = json!({"rev": 4, "codes": [used(WAIT, "123456789", 7190)]}).to_string();
++        let step = room.take_reply(
++            &login(),
++            Some(3),
++            Some((200, came.as_str())),
++            Duration::from_secs(4),
++            &mut failures,
++            now,
++        );
++        assert_eq!(step, Step::Now);
++        assert!(!room.open());
++        assert_eq!(
++            common(&mut room, "hjv-support-wait:1", now),
++            r#"{"pc":"123456789","state":"used"}"#
++        );
++        assert_eq!(
++            common(&mut room, "hjv-support-arrived", now),
++            r#"{"pc":"123456789","slot":1}"#
++        );
++        assert_eq!(common(&mut room, "hjv-support-arrived", now), "");
++        assert_eq!(common(&mut room, "hjv-support-pc:123456789", now), "Y");
++        assert_eq!(common(&mut room, "hjv-support-pc:555555555", now), "");
++        assert_eq!(
++            room.pcs["123456789"].pk.to_vec(),
++            STANDARD.decode(PK).unwrap()
++        );
++        // the waiting number is in no answer
++        for key in [
++            "hjv-support-wait:1",
++            "hjv-support-arrived",
++            "hjv-support-pc:123456789",
++        ] {
++            assert!(!common(&mut room, key, now).contains(WAIT), "{key}");
++        }
++        // a logout or another login: nothing of the login's is left
++        let other = login_of("another token");
++        assert_eq!(
++            room_common(&mut room, &other, "hjv-support-pc:123456789", now).as_deref(),
++            Some("")
++        );
++        assert!(room.codes.is_empty() && room.pcs.is_empty());
++        // the support PC goes when its ticket ends
++        let (mut room, _) = room_with_code(now);
++        room.take_reply(
++            &login(),
++            None,
++            Some((200, came.as_str())),
++            QUICK,
++            &mut failures,
++            now,
++        );
++        let later = now + Duration::from_secs(7190);
++        assert_eq!(common(&mut room, "hjv-support-pc:123456789", later), "");
++        // ...and the code a while after it ended
++        assert_eq!(
++            common(&mut room, "hjv-support-wait:1", now + KEEP_ENDED),
++            ""
++        );
++        assert_eq!(
++            room_common(&mut room, &login(), "hjv-support-other", now),
++            None
++        );
++    }
++
++    #[test]
++    fn an_ended_code_and_a_failing_waiting_room() {
++        let now = Instant::now();
++        let mut failures = 0;
++        // over, and gone from hjv-api's memory, both end the code
++        for answer in [
++            json!({"rev": 9, "codes": [{"wait": WAIT, "state": "over"}]}),
++            json!({"rev": 0, "codes": []}),
++        ] {
++            let (mut room, _) = room_with_code(now);
++            room.take_reply(
++                &login(),
++                Some(8),
++                Some((200, answer.to_string().as_str())),
++                QUICK,
++                &mut failures,
++                now,
++            );
++            assert_eq!(
++                room_common(&mut room, &login(), "hjv-support-wait:1", now).as_deref(),
++                Some(r#"{"state":"over"}"#)
++            );
++        }
++        // its ten minutes are up here too, with a minute for hjv-api's word
++        let (mut room, _) = room_with_code(now);
++        let up = now + Duration::from_secs(600) + GRACE;
++        assert_eq!(
++            room_common(&mut room, &login(), "hjv-support-wait:1", up).as_deref(),
++            Some(r#"{"state":"over"}"#)
++        );
++        // failures wait 3 s, doubled up to 30 s; an answer starts again
++        let (mut room, _) = room_with_code(now);
++        let waits: Vec<_> = [
++            None,
++            Some((500, "")),
++            Some((429, "")),
++            Some((200, "{")),
++            Some((409, "")),
++            None,
++            None,
++        ]
++        .into_iter()
++        .map(|reply| room.take_reply(&login(), None, reply, QUICK, &mut failures, now))
++        .collect();
++        let secs = |s: u64| Step::After(Duration::from_secs(s));
++        assert_eq!(
++            waits,
++            [
++                secs(3),
++                secs(6),
++                secs(12),
++                secs(24),
++                secs(30),
++                secs(30),
++                secs(30)
++            ]
++        );
++        assert!(room.open());
++        let open = json!({"rev": 1, "codes": [{"wait": WAIT, "state": "open"}]}).to_string();
++        room.take_reply(
++            &login(),
++            None,
++            Some((200, open.as_str())),
++            QUICK,
++            &mut failures,
++            now,
++        );
++        assert_eq!(failures, 0);
++        // hjv-api's 401: the screens end the login, its support PCs go, no more waiting
++        let came = json!({"rev": 2, "codes": [
++            {"wait": WAIT, "state": "open"},
++            used(WAIT_2, "123456789", 60),
++        ]})
++        .to_string();
++        let mut answer = outcome_of(
++            200,
++            json!({"code": "K7M2-Q9XE", "expires_in": 600, "link": LINK, "wait": WAIT_2}),
++        );
++        let wait = answer.as_object_mut().unwrap().remove("wait");
++        room.made(&mut answer, wait, "hjv.example", &login(), now);
++        assert_eq!(answer["slot"], 2);
++        room.take_reply(
++            &login(),
++            Some(1),
++            Some((200, came.as_str())),
++            QUICK,
++            &mut failures,
++            now,
++        );
++        assert_eq!(room.pcs.len(), 1);
++        assert!(room.fresh.is_some());
++        let step = room.take_reply(
++            &login(),
++            Some(2),
++            Some((401, "")),
++            QUICK,
++            &mut failures,
++            now,
++        );
++        assert_eq!(step, Step::Stop);
++        assert!(room.pcs.is_empty() && room.fresh.is_none());
++        assert_eq!(
++            room_common(&mut room, &login(), "hjv-support-wait:1", now).as_deref(),
++            Some(r#"{"state":"login"}"#)
++        );
++        // a server without the waiting room, or the App Review account: no waiting, no error
++        for status in [403, 404] {
++            let (mut room, _) = room_with_code(now);
++            let step = room.take_reply(
++                &login(),
++                None,
++                Some((status, "")),
++                QUICK,
++                &mut failures,
++                now,
++            );
++            assert_eq!(step, Step::Stop);
++            assert_eq!(
++                room_common(&mut room, &login(), "hjv-support-wait:1", now).as_deref(),
++                Some(r#"{"state":"off"}"#)
++            );
++        }
++    }
+ }

@@ -1,0 +1,473 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 03:11:09 +0900
+Subject: [PATCH 115/147] hjviewer: the tray tells when the PC cannot receive
+ connections (UX-G2)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+UX-G2 (U42, decision D-18), Windows tray only, labels TR1-TR3 (critic 2-1):
+- TR1: while hbbs refuses this PC the tray icon is res/tray-icon-warn.ico
+  (the app icon with an orange dot at its lower right; the file comes from
+  the overlay, client/icons/tray-warn-dot.svg through scripts/make-icons.sh).
+- TR2: on a PC no login bound, in a build with the login, the menu has
+  [로그인…] [이용 비밀번호 넣기…] / [Log in…] [Enter access password…] after
+  [열기]. They open the main window with hjviewer://hjv-gate/login or
+  .../password through run_me; the window's hjvHandleGateLink (wave 1)
+  opens the login or P2. The links carry no value.
+- TR3: a Windows notice (title HJViewer) once a refusal has lasted 60 s
+  since the tray came up, then for each new refusal that lasts as long, at
+  most once in 12 hours (a refusal within 12 hours of the last notice is
+  told when they are up, if it still lasts); a bound PC is told to open
+  HJViewer instead of to log in. Clicking it opens the main window as
+  [열기] does.
+
+hjviewer_access.rs decides (tray_now, tray_menu, tray_items, tray_link,
+tray_notice, TrayNotice) and has the unit tests; tray.rs applies it in
+HjvTray from three cfg(windows) hooks (built on every tray platform so a
+Linux check compiles its tray and menu calls; the toast is Windows only).
+No new IPC message, no bridge or FFI change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_access.rs       | 136 ++++++++++++++++++++++++++-
+ src/hjviewer_access/tests.rs |  73 +++++++++++++++
+ src/tray.rs                  | 174 +++++++++++++++++++++++++++++++++++
+ 3 files changed, 381 insertions(+), 2 deletions(-)
+
+diff --git a/src/hjviewer_access.rs b/src/hjviewer_access.rs
+index e7e49e7..6464d5a 100644
+--- a/src/hjviewer_access.rs
++++ b/src/hjviewer_access.rs
+@@ -488,9 +488,141 @@ fn tray_state(korean: bool, bound: bool) -> &'static str {
+     }
+ }
+ 
+-#[cfg(windows)]
++/// The tray's words follow the app's language as the tooltip's do: Korean or English.
++#[cfg(any(windows, test))]
++fn tray_korean() -> bool {
++    crate::client::translate("Cancel".to_owned()) == "취소"
++}
++
++/// The tray now (UX-G2), every second from its event loop: whether hbbs refuses this PC (TR1, the
++/// icon with the orange dot) and whether the menu has [로그인…] [이용 비밀번호 넣기…] (TR2).
++#[cfg(any(windows, test))]
++pub(crate) fn tray_now() -> (bool, bool) {
++    use std::sync::atomic::Ordering::Relaxed;
++    let refused = TRAY_REFUSED.load(Relaxed);
++    let items = tray_menu(
++        refused,
++        TRAY_BOUND.load(Relaxed),
++        hbb_common::config::is_disable_account(),
++    );
++    (refused, items)
++}
++
++/// TR2: whether the tray's menu has [로그인…] and [이용 비밀번호 넣기…] after [열기]. Only while
++/// hbbs refuses a PC that no login bound, in a build that has the login: a bound PC keeps [열기]
++/// alone, as its home's P1 card says why and has the buttons.
++#[cfg(any(windows, test))]
++fn tray_menu(refused: bool, bound: bool, account_disabled: bool) -> bool {
++    refused && !bound && !account_disabled
++}
++
++/// TR2's two items, as the doc's 5-3 has them (not through translate, like the tooltip's word).
++#[cfg(any(windows, test))]
++pub(crate) fn tray_items() -> [&'static str; 2] {
++    tray_item_words(tray_korean())
++}
++
++#[cfg(any(windows, test))]
++fn tray_item_words(korean: bool) -> [&'static str; 2] {
++    if korean {
++        ["로그인…", "이용 비밀번호 넣기…"]
++    } else {
++        ["Log in…", "Enter access password…"]
++    }
++}
++
++/// The link an item opens the main window with (`password` for the second item): the window's
++/// hjvHandleGateLink (hjviewer_access.dart) opens the login, or P2 while P1 shows. It carries no
++/// value, so nothing in it can be wrong.
++#[cfg(any(windows, test))]
++pub(crate) fn tray_link(password: bool) -> String {
++    let what = if password { "password" } else { "login" };
++    format!("{}hjv-gate/{what}", crate::get_uri_prefix())
++}
++
++/// TR3: the Windows notice's text under the title HJViewer. A PC a login bound is not told to log
++/// in: hjv-api's sync decides about it, and the app's home says why.
++#[cfg(any(windows, test))]
++fn tray_notice(korean: bool, bound: bool) -> &'static str {
++    match (korean, bound) {
++        (true, false) => {
++            "이 PC는 지금 연결을 받지 않습니다. 로그인하거나 이용 비밀번호를 넣으세요."
++        }
++        (true, true) => {
++            "로그인했지만 서버가 이 PC를 받지 않고 있습니다. HJViewer를 열어 까닭을 확인하세요."
++        }
++        (false, false) => {
++            "This PC is not accepting connections right now. Log in or enter the access password."
++        }
++        (false, true) => {
++            "You are logged in, but the server is not accepting this PC. Open HJViewer to see why."
++        }
++    }
++}
++
++/// TR3 (decision D-18): the text of the Windows notice when it is due now (`now` in seconds since
++/// the tray came up), None otherwise.
++#[cfg(any(windows, test))]
++pub(crate) fn tray_notice_due(notice: &mut TrayNotice, now: u64) -> Option<&'static str> {
++    use std::sync::atomic::Ordering::Relaxed;
++    notice
++        .due(TRAY_REFUSED.load(Relaxed), now)
++        .then(|| tray_notice(tray_korean(), TRAY_BOUND.load(Relaxed)))
++}
++
++/// How long a refusal lasts before the tray tells (TR3): a logged-in PC's ticket can come a little
++/// after the tray, and a short refusal meanwhile is not worth a notice (U06's 60 seconds).
++#[cfg(any(windows, test))]
++const TRAY_NOTICE_AFTER: u64 = 60;
++/// The tray shows its notice at most once in this time (D-18).
++#[cfg(any(windows, test))]
++const TRAY_NOTICE_EVERY: u64 = 12 * 3600;
++
++/// When the tray shows its Windows notice (TR3, D-18): once a refusal has lasted
++/// [`TRAY_NOTICE_AFTER`] since the tray came up, and after that for each new refusal (hbbs took
++/// the PC, then refused it again) that lasts as long, but at most once in [`TRAY_NOTICE_EVERY`].
++/// A refusal that comes sooner after the last notice is told once that time is up, if it still
++/// lasts; one refusal is told only once however long it lasts. The tray process lives as long as
++/// the Windows login, so a PC that stays refused shows it once at each login.
++#[cfg(any(windows, test))]
++#[derive(Debug, Default)]
++pub(crate) struct TrayNotice {
++    /// Since when hbbs refuses this PC without a break, None while it takes it.
++    refused_since: Option<u64>,
++    /// Whether this refusal has had its notice.
++    told: bool,
++    /// When the last notice showed.
++    last: Option<u64>,
++}
++
++#[cfg(any(windows, test))]
++impl TrayNotice {
++    /// Whether to show the notice now, from whether hbbs refuses this PC now (`now` in seconds,
++    /// never going back). True at most once per refusal.
++    fn due(&mut self, refused: bool, now: u64) -> bool {
++        if !refused {
++            self.refused_since = None;
++            self.told = false;
++            return false;
++        }
++        let since = *self.refused_since.get_or_insert(now);
++        if self.told
++            || now.saturating_sub(since) < TRAY_NOTICE_AFTER
++            || self
++                .last
++                .is_some_and(|last| now.saturating_sub(last) < TRAY_NOTICE_EVERY)
++        {
++            return false;
++        }
++        self.told = true;
++        self.last = Some(now);
++        true
++    }
++}
++
++#[cfg(any(windows, test))]
+ static TRAY_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+-#[cfg(windows)]
++#[cfg(any(windows, test))]
+ static TRAY_BOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+ 
+ /// The answer to a login with its token (hjviewer_account): its `hjv.access` is the login's ticket
+diff --git a/src/hjviewer_access/tests.rs b/src/hjviewer_access/tests.rs
+index 8a45116..9a8a738 100644
+--- a/src/hjviewer_access/tests.rs
++++ b/src/hjviewer_access/tests.rs
+@@ -333,6 +333,79 @@ fn the_trays_word_while_refused_tells_only_a_pc_without_a_login_to_log_in() {
+     assert_eq!(tray_state(false, true), "Not connected to the server");
+ }
+ 
++#[test]
++fn the_trays_two_items_show_only_while_a_pc_without_a_login_is_refused() {
++    assert!(tray_menu(true, false, false));
++    assert!(!tray_menu(true, true, false)); // bound: [열기] alone
++    assert!(!tray_menu(false, false, false));
++    assert!(!tray_menu(true, false, true)); // a build without the login
++    assert_eq!(tray_item_words(true), ["로그인…", "이용 비밀번호 넣기…"]);
++    assert_eq!(
++        tray_item_words(false),
++        ["Log in…", "Enter access password…"]
++    );
++    // the links hjvGateLinkAction (hjviewer_access_texts.dart) opens something for
++    let prefix = crate::get_uri_prefix();
++    assert_eq!(tray_link(false), format!("{prefix}hjv-gate/login"));
++    assert_eq!(tray_link(true), format!("{prefix}hjv-gate/password"));
++    // the menu follows what the tray last got from the process that registers
++    TRAY_REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
++    assert_eq!(tray_now(), (true, true));
++    TRAY_REFUSED.store(false, std::sync::atomic::Ordering::Relaxed);
++    assert_eq!(tray_now(), (false, false));
++}
++
++#[test]
++fn the_trays_notice_tells_a_bound_pc_to_look_in_the_app() {
++    assert_eq!(
++        tray_notice(true, false),
++        "이 PC는 지금 연결을 받지 않습니다. 로그인하거나 이용 비밀번호를 넣으세요."
++    );
++    assert_eq!(
++        tray_notice(true, true),
++        "로그인했지만 서버가 이 PC를 받지 않고 있습니다. HJViewer를 열어 까닭을 확인하세요."
++    );
++    assert_eq!(
++        tray_notice(false, false),
++        "This PC is not accepting connections right now. Log in or enter the access password."
++    );
++    assert_eq!(
++        tray_notice(false, true),
++        "You are logged in, but the server is not accepting this PC. Open HJViewer to see why."
++    );
++}
++
++#[test]
++fn the_trays_notice_comes_after_a_minute_of_refusal_and_at_most_twice_a_day() {
++    const HOUR: u64 = 3600;
++    let mut notice = TrayNotice::default();
++    // refused from the start: told once after 60 s, not again while it lasts
++    assert!(!notice.due(true, 0));
++    assert!(!notice.due(true, 59));
++    assert!(notice.due(true, 60));
++    assert!(!notice.due(true, 61));
++    assert!(!notice.due(true, 13 * HOUR));
++    // a short refusal is not told
++    assert!(!notice.due(false, 13 * HOUR + 1));
++    assert!(!notice.due(true, 13 * HOUR + 2));
++    assert!(!notice.due(false, 13 * HOUR + 30));
++    // a new refusal that lasts is
++    assert!(!notice.due(true, 14 * HOUR));
++    assert!(notice.due(true, 14 * HOUR + 60));
++    // one within 12 hours of that waits for them, if it still lasts
++    assert!(!notice.due(false, 15 * HOUR));
++    assert!(!notice.due(true, 15 * HOUR + 1));
++    assert!(!notice.due(true, 20 * HOUR));
++    assert!(!notice.due(true, 26 * HOUR + 59));
++    assert!(notice.due(true, 26 * HOUR + 60));
++    assert!(!notice.due(true, 40 * HOUR));
++    // a PC hbbs takes is never told
++    let mut taken = TrayNotice::default();
++    assert!((0..100 * HOUR)
++        .step_by(30)
++        .all(|now| !taken.due(false, now)));
++}
++
+ #[test]
+ fn a_ticket_requests_401_ends_only_the_login_it_was_asked_by() {
+     let refused = token_hash("hjv_old");
+diff --git a/src/tray.rs b/src/tray.rs
+index 08fedb4..39d84b8 100644
+--- a/src/tray.rs
++++ b/src/tray.rs
+@@ -60,6 +60,9 @@ fn make_tray() -> hbb_common::ResultType<()> {
+     };
+     let icon = tray_icon::Icon::from_rgba(icon_rgba, icon_width, icon_height)
+         .context("Failed to open icon")?;
++    // HJViewer (UX-G2): the dot, two more items and a notice while hbbs refuses this PC
++    #[cfg(windows)]
++    let mut hjv_tray = HjvTray::new(icon.clone(), crate::hjviewer_access::tray_items());
+ 
+     let mut event_loop = EventLoopBuilder::new().build();
+ 
+@@ -193,6 +196,8 @@ fn make_tray() -> hbb_common::ResultType<()> {
+         }
+ 
+         if let Ok(event) = menu_channel.try_recv() {
++            #[cfg(windows)]
++            hjv_tray.clicked(&event.id);
+             if let Some(quit_i) = &quit_i {
+                 if event.id == quit_i.id() {
+                     /* failed in windows, seems no permission to check system process
+@@ -264,6 +269,9 @@ fn make_tray() -> hbb_common::ResultType<()> {
+                 _ => {}
+             }
+         }
++
++        #[cfg(windows)]
++        hjv_tray.tick(&_tray_icon, &tray_menu, open_func);
+     });
+ }
+ 
+@@ -330,3 +338,169 @@ fn load_icon_from_asset() -> Option<image::DynamicImage> {
+     }
+     None
+ }
++
++/// HJViewer (UX-G2, the doc's TR1-TR3): while hbbs refuses this PC, the icon with the orange dot,
++/// [로그인…] [이용 비밀번호 넣기…] after [열기] on a PC no login bound, and a Windows notice when
++/// it is due. hjviewer_access decides all three; this applies them. Used on Windows only, but built
++/// wherever the tray is, so that a check on Linux compiles its tray and menu calls.
++#[cfg_attr(not(windows), allow(dead_code))]
++struct HjvTray {
++    log_in: tray_icon::menu::MenuItem,
++    password: tray_icon::menu::MenuItem,
++    icon: tray_icon::Icon,
++    warn: Option<tray_icon::Icon>,
++    /// What the tray shows now.
++    dot: bool,
++    items: bool,
++    started: std::time::Instant,
++    checked: Option<std::time::Instant>,
++    #[cfg(windows)]
++    notice: crate::hjviewer_access::TrayNotice,
++}
++
++#[cfg_attr(not(windows), allow(dead_code))]
++impl HjvTray {
++    fn new(icon: tray_icon::Icon, words: [&str; 2]) -> Self {
++        use tray_icon::menu::MenuItem;
++        #[cfg(windows)]
++        let warn = Self::icon_of(include_bytes!("../res/tray-icon-warn.ico"));
++        #[cfg(not(windows))]
++        let warn = None;
++        Self {
++            log_in: MenuItem::new(words[0], true, None),
++            password: MenuItem::new(words[1], true, None),
++            icon,
++            warn,
++            dot: false,
++            items: false,
++            started: std::time::Instant::now(),
++            checked: None,
++            #[cfg(windows)]
++            notice: Default::default(),
++        }
++    }
++
++    fn icon_of(bytes: &[u8]) -> Option<tray_icon::Icon> {
++        let image = match image::load_from_memory(bytes) {
++            Ok(image) => image.into_rgba8(),
++            Err(err) => {
++                log::error!("Failed to open the tray's warning icon: {}", err);
++                return None;
++            }
++        };
++        let (width, height) = image.dimensions();
++        tray_icon::Icon::from_rgba(image.into_raw(), width, height)
++            .map_err(|err| log::error!("Failed to open the tray's warning icon: {}", err))
++            .ok()
++    }
++
++    /// Every turn of the event loop, at most once a second.
++    #[cfg(windows)]
++    fn tick<F: Fn() + Send + 'static>(
++        &mut self,
++        tray: &Mutex<Option<tray_icon::TrayIcon>>,
++        menu: &tray_icon::menu::Menu,
++        open: F,
++    ) {
++        if self
++            .checked
++            .is_some_and(|checked| checked.elapsed() < Duration::from_secs(1))
++        {
++            return;
++        }
++        self.checked = Some(std::time::Instant::now());
++        let (refused, items) = crate::hjviewer_access::tray_now();
++        // no tray (hidden, or not built yet): no notice either
++        if !self.apply(tray, menu, refused, items) {
++            return;
++        }
++        let now = self.started.elapsed().as_secs();
++        if let Some(text) = crate::hjviewer_access::tray_notice_due(&mut self.notice, now) {
++            Self::notify(text, open);
++        }
++    }
++
++    /// Shows the dot and the two items as `refused` and `items` say; false while there is no tray.
++    fn apply(
++        &mut self,
++        tray: &Mutex<Option<tray_icon::TrayIcon>>,
++        menu: &tray_icon::menu::Menu,
++        refused: bool,
++        items: bool,
++    ) -> bool {
++        let tray = tray.lock().unwrap();
++        let Some(tray) = tray.as_ref() else {
++            return false;
++        };
++        if refused != self.dot {
++            let icon = match (&self.warn, refused) {
++                (Some(warn), true) => warn.clone(),
++                _ => self.icon.clone(),
++            };
++            if let Err(err) = tray.set_icon(Some(icon)) {
++                log::error!("Failed to change the tray icon: {}", err);
++            }
++            self.dot = refused;
++        }
++        if items != self.items {
++            let changed = if items {
++                menu.insert_items(&[&self.log_in, &self.password], 1)
++            } else {
++                menu.remove(&self.log_in)
++                    .and_then(|_| menu.remove(&self.password))
++            };
++            if let Err(err) = changed {
++                log::error!("Failed to change the tray menu: {}", err);
++            }
++            self.items = items;
++        }
++        true
++    }
++
++    /// Which of the two items `id` is: Some(true) for [이용 비밀번호 넣기…].
++    fn item(&self, id: &tray_icon::menu::MenuId) -> Option<bool> {
++        if id == self.password.id() {
++            Some(true)
++        } else if id == self.log_in.id() {
++            Some(false)
++        } else {
++            None
++        }
++    }
++
++    /// The two items open the main window with a link (hjviewer_access::tray_link), the same way
++    /// whether it is up or not: the runner hands the link to a window that is up.
++    #[cfg(windows)]
++    fn clicked(&self, id: &tray_icon::menu::MenuId) {
++        if let Some(password) = self.item(id) {
++            if let Err(err) = crate::run_me(vec![crate::hjviewer_access::tray_link(password)]) {
++                log::error!("Failed to open the main window from the tray: {}", err);
++            }
++        }
++    }
++
++    /// TR3 under the title HJViewer; clicking it opens the main window as [열기] does.
++    #[cfg(windows)]
++    fn notify<F: Fn() + Send + 'static>(text: &'static str, open: F) {
++        let title = crate::get_app_name();
++        log::info!("tray: notice that hbbs refuses this PC");
++        std::thread::spawn(move || {
++            let toast = tauri_winrt_notification::Toast::new(
++                tauri_winrt_notification::Toast::POWERSHELL_APP_ID,
++            );
++            if let Err(err) = toast
++                .title(&title)
++                .text1(text)
++                .sound(Some(tauri_winrt_notification::Sound::Default))
++                .duration(tauri_winrt_notification::Duration::Short)
++                .on_activated(move || {
++                    open();
++                    Ok(())
++                })
++                .show()
++            {
++                log::error!("Failed to show the tray's notice: {}", err);
++            }
++        });
++    }
++}

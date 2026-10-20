@@ -1,0 +1,836 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:02:26 +0900
+Subject: [PATCH 086/147] hjviewer: the PC's connection window marks proven
+ logins, shows recording
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TV-W2 (the Rust part; docs/architecture.md 5-10): the process that takes a
+connection decides what the connection manager may say about who connects
+and hands it over apart from the name, in IPC Login's new hjv_mark {kind,
+who} (src/hjviewer_cm.rs). An accepted same-account proof is the one record
+self.hjv_proven {name, who}, set in hjv_account_login before
+send_logon_response_and_keep_alive, so a login without 2FA sees it at every
+step (critic 2-3; TV-W3, W5 and W9 read it). try_start_cm takes the proven
+device name with the mark same-account and the list's masked owner, else
+hjviewer_cm::unproven: in pinned builds the peer's name without control,
+bidi and zero-width characters, marked unverified-name when, NFKC-folded
+to its letters and digits, it holds 같은계정, sameaccount, 확인됨,
+verified, 교직원, staff or 로그인확인. The name no longer carries
+"· 같은 계정(홍*동)" (cm_name is gone). The controller's
+Misc.client_record_status goes on to the CM as Data::HjvPeerRecording when
+it changes; the CM sets Client.hjv_recording and updates the card through
+add_connection, as the privacy-mode rollback does. The E2E's fake CM
+prints "mark {kind|none}({who})" and "cm recording {on}", and
+--hjv-e2e-stream takes "record". main_get_common("hjv-admin-contact") is
+the believed policy's contact_ko, or "" (decisions D-1).
+
+Pinned builds fix allow-hide-cm to N, so no setting hides the window
+(TV-W2); bot to "", so a PC's two-factor codes go to no Telegram bot and
+the settings can hide its row by isOptionFixed('bot') (TV-C1); and
+allow-deep-link-password and allow-deep-link-server-settings to N
+(TV-C6 part 3; also how Dart knows a pinned build, critic 2-7).
+
+unicode-normalization (0.1.23, already in Cargo.lock) becomes a direct
+dependency.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Cargo.lock                           |   1 +
+ Cargo.toml                           |   1 +
+ src/hjviewer.rs                      |  45 +++++++
+ src/hjviewer_account/mod.rs          |   5 +-
+ src/hjviewer_account/pc.rs           |  20 +---
+ src/hjviewer_account/pc/tests.rs     |   3 +-
+ src/hjviewer_cm.rs                   | 170 +++++++++++++++++++++++++++
+ src/hjviewer_e2e.rs                  |  75 +++++++++---
+ src/hjviewer_update/mod.rs           |  21 +++-
+ src/ipc.rs                           |   5 +
+ src/lib.rs                           |   1 +
+ src/server/connection.rs             |  19 ++-
+ src/server/connection/hjv_account.rs |  48 +++++++-
+ src/ui_cm_interface.rs               |  21 +++-
+ 14 files changed, 387 insertions(+), 48 deletions(-)
+ create mode 100644 src/hjviewer_cm.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 71588e0..362748d 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -7172,6 +7172,7 @@ dependencies = [
+  "totp-rs",
+  "tray-icon",
+  "ttf-parser",
++ "unicode-normalization",
+  "url",
+  "uuid",
+  "virtual_display",
+diff --git a/Cargo.toml b/Cargo.toml
+index 0e3dcfc..5ad32a6 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -91,6 +91,7 @@ totp-rs = { version = "5.4", default-features = false, features = ["gen_secret",
+ stunclient = "0.4"
+ kcp-sys= { git = "https://github.com/rustdesk-org/kcp-sys", branch = "rustdesk-patches" }
+ reqwest = { version = "0.12", features = ["blocking", "socks", "json", "native-tls", "rustls-tls", "rustls-tls-native-roots", "gzip", "zstd"], default-features=false }
++unicode-normalization = "0.1"
+ 
+ [target.'cfg(not(target_os = "linux"))'.dependencies]
+ # https://github.com/rustdesk/rustdesk/discussions/10197, not use cpal on linux
+diff --git a/src/hjviewer.rs b/src/hjviewer.rs
+index 2cc83d2..506162d 100644
+--- a/src/hjviewer.rs
++++ b/src/hjviewer.rs
+@@ -64,6 +64,7 @@ pub fn apply() {
+     #[cfg(target_os = "windows")]
+     builtin.insert(keys::OPTION_HIDE_STOP_SERVICE.to_owned(), "Y".to_owned());
+     drop(builtin);
++    pin_safety_options();
+     if crate::hjviewer_account::enabled() {
+         // an account build logs in to hjv-api, which keeps no address book; its account requests
+         // go through Rust's http_request, where they are sealed, signed and sent with the
+@@ -85,6 +86,28 @@ pub fn apply() {
+         .insert("disable-account".to_owned(), "Y".to_owned());
+ }
+ 
++/// Options no setting may turn on in a pinned build (docs/architecture.md 4, 5-10): the
++/// connection window shows every session, so no control is unseen (TV-W2); a PC's two-factor
++/// codes go to no messenger, which docs/privacy.md does not name (TV-C1); and a link neither sets
++/// the permanent password nor imports server settings (TV-C6).
++const PINNED_OVERWRITES: [(&str, &str); 2] = [("allow-hide-cm", "N"), ("bot", "")];
++const PINNED_BUILTINS: [(&str, &str); 2] = [
++    ("allow-deep-link-password", "N"),
++    ("allow-deep-link-server-settings", "N"),
++];
++
++fn pin_safety_options() {
++    let mut settings = config::OVERWRITE_SETTINGS.write().unwrap();
++    for (k, v) in PINNED_OVERWRITES {
++        settings.insert(k.to_owned(), v.to_owned());
++    }
++    drop(settings);
++    let mut builtin = config::BUILTIN_SETTINGS.write().unwrap();
++    for (k, v) in PINNED_BUILTINS {
++        builtin.insert(k.to_owned(), v.to_owned());
++    }
++}
++
+ pub(crate) fn pinned() -> bool {
+     SERVER.is_some_and(|s| !s.is_empty())
+ }
+@@ -178,6 +201,28 @@ mod tests {
+         assert_eq!(kept, if pinned() { "" } else { "token" });
+     }
+ 
++    #[test]
++    fn pinned_builds_hide_no_session_and_send_no_codes() {
++        pin_safety_options();
++        let hide_cm_option = config::Config::get_option("allow-hide-cm");
++        let hide_cm = hbb_common::password_security::hide_cm();
++        let bot = crate::auth_2fa::TelegramBot::get();
++        let links = PINNED_BUILTINS.map(|(k, _)| crate::get_builtin_option(k));
++        // the settings screens leave out the Telegram bot's row for a fixed key
++        let bot_fixed = crate::ui_interface::is_option_fixed("bot");
++        for (k, _) in PINNED_OVERWRITES {
++            config::OVERWRITE_SETTINGS.write().unwrap().remove(k);
++        }
++        for (k, _) in PINNED_BUILTINS {
++            config::BUILTIN_SETTINGS.write().unwrap().remove(k);
++        }
++        assert_eq!(hide_cm_option, "N");
++        assert!(!hide_cm);
++        assert!(matches!(bot, Ok(None)));
++        assert_eq!(links, ["N", "N"]);
++        assert!(bot_fixed);
++    }
++
+     #[test]
+     fn controller_only_is_upstreams_outgoing_only() {
+         assert!(!config::is_outgoing_only());
+diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
+index 04f4890..dc66d11 100644
+--- a/src/hjviewer_account/mod.rs
++++ b/src/hjviewer_account/mod.rs
+@@ -563,9 +563,12 @@ pub(crate) struct KeyLogin<'a> {
+     pub kind: u8,
+ }
+ 
+-/// A proof the PC accepted: what its connection manager shows.
++/// A proof the PC accepted: what its connection manager shows, from the signed list.
+ pub(crate) struct Accepted {
++    /// the key's device name ("iPhone 14 Pro")
+     pub name: String,
++    /// the list's masked owner ("홍*동"), or ""
++    pub who: String,
+ }
+ 
+ /// Checks a sync answer's list: a pinned key number not below the floor, the signature over the
+diff --git a/src/hjviewer_account/pc.rs b/src/hjviewer_account/pc.rs
+index fb4ef6d..6559953 100644
+--- a/src/hjviewer_account/pc.rs
++++ b/src/hjviewer_account/pc.rs
+@@ -16,7 +16,7 @@
+ //! unbind or the off switch takes effect within the second however slowly hjv-api answers.
+ 
+ use super::{
+-    check_key_login, count_use, enabled, kind_name, korean, pc_sync_envelope, should_refresh_for,
++    check_key_login, count_use, enabled, kind_name, pc_sync_envelope, should_refresh_for,
+     sync_interval, trust_pubkeys, used_report, valid_at, verify_list, Accepted, Cached, KeyEntry,
+     KeyLogin, Local, Refusal, SignedList, TrustList, UseEntry, BIND_REQ, KNOCK, UNBIND_REQ,
+ };
+@@ -173,7 +173,8 @@ async fn key_login_with<S: Store + Clone + Send + 'static>(
+                 login.my_id
+             );
+             Ok(Accepted {
+-                name: cm_name(&entry.name, &owner),
++                name: entry.name,
++                who: owner,
+             })
+         }
+         Err(refusal) => {
+@@ -241,21 +242,6 @@ fn wants_sync(view: &View, outcome: &Result<KeyEntry, Refusal>, now: u64, key_se
+         && should_refresh_for(outcome, view.cached.as_ref(), now, key_serial)
+ }
+ 
+-/// The connection manager's name for an accepted proof, from the signed list: "iPhone 14 Pro ·
+-/// 같은 계정(홍*동)".
+-fn cm_name(device: &str, owner: &str) -> String {
+-    let same = if korean() {
+-        "같은 계정"
+-    } else {
+-        "same account"
+-    };
+-    if owner.is_empty() {
+-        format!("{device} · {same}")
+-    } else {
+-        format!("{device} · {same}({owner})")
+-    }
+-}
+-
+ /// One sync now, for a proof the cached list cannot decide: the sync task runs one at a time
+ /// (later callers get its result), none within GAP of the last one proofs waited for (they get
+ /// that one's result), and a caller waits WAIT at most. Whether the sync brought a list.
+diff --git a/src/hjviewer_account/pc/tests.rs b/src/hjviewer_account/pc/tests.rs
+index 418c119..8e3c73e 100644
+--- a/src/hjviewer_account/pc/tests.rs
++++ b/src/hjviewer_account/pc/tests.rs
+@@ -1459,7 +1459,8 @@ async fn a_proof_through_the_sync_task() {
+     pc.api().newcomer = true;
+     let newcomer = AccountKey::from_seed(&NEWCOMER_SEED).unwrap();
+     let accepted = take(&pc, &asks, &newcomer, 11, NEWCOMER_ID, KIND_REMOTE).await;
+-    assert!(accepted.is_ok_and(|a| a.name.starts_with("Galaxy S24 · ")));
++    // the connection manager gets the list's device name and masked owner, apart (TV-W2)
++    assert!(accepted.is_ok_and(|a| a.name == "Galaxy S24" && a.who == "홍*동"));
+     assert_eq!(pc.requests(), 3);
+     // a kind its list does not allow is refused without a sync; the next report counts both
+     let terminal = take(&pc, &asks, &newcomer, 11, NEWCOMER_ID, KIND_TERMINAL).await;
+diff --git a/src/hjviewer_cm.rs b/src/hjviewer_cm.rs
+new file mode 100644
+index 0000000..1e7bc12
+--- /dev/null
++++ b/src/hjviewer_cm.rs
+@@ -0,0 +1,170 @@
++//! What the connection manager may say about who connects (TV-W2; docs/architecture.md 5-10). The
++//! process that takes the connection decides the mark and hands it to the `--cm` process in IPC
++//! `Login.hjv_mark`, apart from the name, so a name the peer typed can never draw a mark. The
++//! window draws a mark only for a kind it knows.
++
++use serde_derive::{Deserialize, Serialize};
++use unicode_normalization::UnicodeNormalization;
++
++/// A connection's mark: `kind` is "" (none), `same-account` (an accepted same-account proof; `who`
++/// is the signed list's masked owner), `staff` (TV-W6) or `unverified-name` (no proof, and the
++/// name imitates a mark); `who` is "" for every kind but `same-account`.
++#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct HjvMark {
++    #[serde(default)]
++    pub kind: String,
++    #[serde(default)]
++    pub who: String,
++}
++
++pub const SAME_ACCOUNT: &str = "same-account";
++pub const UNVERIFIED_NAME: &str = "unverified-name";
++
++impl HjvMark {
++    pub fn same_account(who: &str) -> Self {
++        Self {
++            kind: SAME_ACCOUNT.to_owned(),
++            who: who.to_owned(),
++        }
++    }
++}
++
++/// The words of the marks the window draws, as `imitates_mark` folds them.
++const MARK_WORDS: [&str; 7] = [
++    "같은계정",
++    "sameaccount",
++    "확인됨",
++    "verified",
++    "교직원",
++    "staff",
++    "로그인확인",
++];
++
++/// For a login without an accepted proof: the name to show and its mark. Pinned builds strip
++/// control, bidi and zero-width characters from the shown name (logs keep the name as it came)
++/// and mark a name that imitates a mark; other builds pass the name as upstream does.
++pub fn unproven(name: &str) -> (String, HjvMark) {
++    unproven_in(crate::hjviewer::pinned(), name)
++}
++
++fn unproven_in(pinned: bool, name: &str) -> (String, HjvMark) {
++    if !pinned {
++        return (name.to_owned(), HjvMark::default());
++    }
++    let mut mark = HjvMark::default();
++    if imitates_mark(name) {
++        mark.kind = UNVERIFIED_NAME.to_owned();
++    }
++    (shown_name(name), mark)
++}
++
++/// Whether a name holds one of the marks' words once NFKC-normalized, lowercased and left with
++/// its letters and digits only (no white space, punctuation, symbols, format or control
++/// characters): "Same-Account", full-width "ｓａｍｅ" and "같\u{200B}은 계정" all do. Look-alike
++/// letters of other scripts (a Cyrillic "а") do not.
++fn imitates_mark(name: &str) -> bool {
++    let folded: String = name
++        .nfkc()
++        .flat_map(char::to_lowercase)
++        .filter(|c| c.is_alphanumeric())
++        .collect();
++    MARK_WORDS.iter().any(|word| folded.contains(word))
++}
++
++/// The name without control characters (Cc), zero-width characters and marks (U+200B-200F,
++/// U+FEFF) and bidi embeddings, overrides and isolates (U+202A-202E, U+2066-2069).
++fn shown_name(name: &str) -> String {
++    name.chars()
++        .filter(|&c| {
++            !(c.is_control()
++                || ('\u{200B}'..='\u{200F}').contains(&c)
++                || ('\u{202A}'..='\u{202E}').contains(&c)
++                || ('\u{2066}'..='\u{2069}').contains(&c)
++                || c == '\u{FEFF}')
++        })
++        .collect()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn names_that_imitate_a_mark() {
++        for name in ["홍길동", "DESKTOP-7Q2", "iPhone 14 Pro", "계정", "같은", "account", "연세대 PC"] {
++            assert!(!imitates_mark(name), "{name}");
++        }
++        for name in [
++            "iPhone 14 Pro · 같은 계정(홍*동)",
++            "Same-Account",
++            "SAME ACCOUNT",
++            "ｓａｍｅ ａｃｃｏｕｎｔ",
++            "같\u{200B}은 계정",
++            "같은\u{00A0}계정",
++            "확인됨",
++            "VERIFIED",
++            "연세대 교직원",
++            "Yonsei Staff",
++            "연세대 교직원(로그인 확인)",
++            "로그인 확인",
++        ] {
++            assert!(imitates_mark(name), "{name}");
++        }
++        // the decomposed (NFD) form composes again
++        let nfd: String = "같은 계정".nfd().collect();
++        assert_ne!(nfd, "같은 계정");
++        assert!(imitates_mark(&nfd));
++    }
++
++    #[test]
++    fn the_shown_name_loses_invisible_characters() {
++        assert_eq!(shown_name("\u{202E}abc\u{200B}d\u{7}"), "abcd");
++        assert_eq!(shown_name("a\u{2066}b\u{2069}\u{FEFF}c\u{200F}\n"), "abc");
++        assert_eq!(shown_name("홍길동의 PC 😀"), "홍길동의 PC 😀");
++    }
++
++    #[test]
++    fn unproven_names_in_pinned_and_other_builds() {
++        let odd = "\u{202E}Same account";
++        assert_eq!(unproven_in(false, odd), (odd.to_owned(), HjvMark::default()));
++        let (name, mark) = unproven_in(true, odd);
++        assert_eq!(name, "Same account");
++        assert_eq!(mark.kind, UNVERIFIED_NAME);
++        assert_eq!(mark.who, "");
++        assert_eq!(
++            unproven_in(true, "DESKTOP-7Q2"),
++            ("DESKTOP-7Q2".to_owned(), HjvMark::default())
++        );
++        // the tests build no pinned build
++        assert_eq!(unproven(odd), unproven_in(crate::hjviewer::pinned(), odd));
++    }
++
++    #[test]
++    fn marks_read_from_json() {
++        let mark: HjvMark = serde_json::from_str("{}").unwrap();
++        assert_eq!(mark, HjvMark::default());
++        let mark: HjvMark = serde_json::from_str(r#"{"kind":"later-kind","who":"x"}"#).unwrap();
++        assert_eq!(mark.kind, "later-kind");
++        assert_eq!(
++            serde_json::to_value(HjvMark::same_account("홍*동")).unwrap(),
++            serde_json::json!({"kind": "same-account", "who": "홍*동"})
++        );
++    }
++
++    #[test]
++    fn a_login_without_a_mark_reads_as_none() {
++        let mut login = serde_json::json!({"t": "Login", "c": {
++            "id": 1, "is_file_transfer": false, "is_view_camera": false, "is_terminal": false,
++            "peer_id": "123456789", "name": "PC", "avatar": "", "authorized": false,
++            "port_forward": "", "keyboard": true, "clipboard": true, "audio": true, "file": true,
++            "file_transfer_enabled": true, "restart": true, "recording": true,
++            "block_input": true, "privacy_mode": true, "from_switch": false}});
++        let read = |login: &serde_json::Value| match serde_json::from_value(login.clone()) {
++            Ok(crate::ipc::Data::Login { hjv_mark, .. }) => hjv_mark,
++            _ => panic!("not a login"),
++        };
++        assert_eq!(read(&login), HjvMark::default());
++        login["c"]["hjv_mark"] = serde_json::json!({"kind": "same-account", "who": "홍*동"});
++        assert_eq!(read(&login), HjvMark::same_account("홍*동"));
++    }
++}
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index 0c613ac..b6d934c 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -6,7 +6,8 @@
+ //!     <app> --hjv-e2e-set-password <password>     (prints the device ID)
+ //!     <app> --hjv-e2e-forward <id> <password> <local port> <remote host> <remote port>
+ //!     <app> --hjv-e2e-screenshot <id> <password> <out.ppm>   (first screen of a desktop session)
+-//!     <app> --hjv-e2e-stream <id> <password> <seconds>         (video bitrate of a desktop session)
++//!     <app> --hjv-e2e-stream <id> <password> <seconds> [record]   (video bitrate of a desktop
++//!                       session; record: reports a recording from 1 s in until 1 s before the end)
+ //!     <app> --hjv-e2e-wol-report <mac> <ipv4/prefix> <gateway>  (one sync with that wake report)
+ //!
+ //! With `HJV_E2E_ACCESS_PASSWORD`, the connect commands first trade that access password for the
+@@ -76,13 +77,23 @@ pub fn handle_args(args: &[String]) -> bool {
+             ));
+             true
+         }
+-        [cmd, id, password, secs] if cmd == "--hjv-e2e-stream" => {
++        [cmd, id, password, secs, more @ ..]
++            if cmd == "--hjv-e2e-stream" && matches!(more, [] | [_]) =>
++        {
++            let record = match more {
++                [] => false,
++                [r] if r == "record" => true,
++                _ => {
++                    eprintln!("hjv-e2e: the last argument can only be record");
++                    return true;
++                }
++            };
+             exit_with(guest_ticket(id));
+             match secs.parse() {
+                 Ok(secs) => exit_with(desktop(
+                     id.to_owned(),
+                     password.to_owned(),
+-                    Watch::Stream(secs),
++                    Watch::Stream(secs, record),
+                 )),
+                 Err(_) => eprintln!("hjv-e2e: seconds must be a number"),
+             }
+@@ -223,8 +234,9 @@ fn session(id: &str, conn_type: ConnType) -> (Headless, mpsc::UnboundedReceiver<
+ enum Watch {
+     /// write the first decoded screen to this file
+     Screenshot(String),
+-    /// count the video the session receives for this many seconds
+-    Stream(u64),
++    /// count the video the session receives for this many seconds; true: report a recording
++    /// (Misc.client_record_status) from 1 s in until 1 s before the end
++    Stream(u64, bool),
+ }
+ 
+ /// Logs in for a remote desktop session and watches its video. 0 when it saw the video, else 1.
+@@ -253,8 +265,22 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+     println!("hjv-e2e: connected over {typ}");
+     let mut video: Option<VideoHandler> = None;
+     let (mut frames, mut video_bytes, mut first_frame) = (0u64, 0u64, None);
++    let mut recording = false;
+     loop {
+-        if let (Watch::Stream(secs), Some(start)) = (&watch, first_frame) {
++        if let (Watch::Stream(secs, true), Some(start)) = (&watch, first_frame) {
++            let elapsed = Instant::now().duration_since(start).as_secs_f64();
++            let want = elapsed >= 1.0 && elapsed + 1.0 < *secs as f64;
++            if want != recording {
++                recording = want;
++                let mut misc = Misc::new();
++                misc.set_client_record_status(want);
++                let mut msg = Message::new();
++                msg.set_misc(misc);
++                stream.send(&msg).await.ok();
++                println!("hjv-e2e: sent recording {want}");
++            }
++        }
++        if let (Watch::Stream(secs, _), Some(start)) = (&watch, first_frame) {
+             let elapsed = std::time::Instant::now().duration_since(start).as_secs_f64();
+             if elapsed >= *secs as f64 {
+                 println!(
+@@ -296,7 +322,7 @@ async fn desktop(id: String, password: String, watch: Watch) -> i32 {
+                 }
+                 _ => {}
+             },
+-            Some(message::Union::VideoFrame(_)) if matches!(watch, Watch::Stream(_)) => {
++            Some(message::Union::VideoFrame(_)) if matches!(watch, Watch::Stream(..)) => {
+                 first_frame.get_or_insert_with(std::time::Instant::now);
+                 frames += 1;
+                 video_bytes += size;
+@@ -744,7 +770,8 @@ fn access_ticket(refresh: bool) -> i32 {
+ }
+ 
+ /// Stands in for the connection manager the service starts for each session (`--cm`), and prints
+-/// the peer and the name the service shows for each login.
++/// the peer, the name and the mark the service shows for each login, and the controller's
++/// recording reports.
+ #[tokio::main(flavor = "current_thread")]
+ async fn connection_manager() -> i32 {
+     let mut incoming = match crate::ipc::new_listener("_cm").await {
+@@ -762,16 +789,28 @@ async fn connection_manager() -> i32 {
+         tokio::spawn(async move {
+             let mut conn = crate::ipc::Connection::new(stream);
+             while let Ok(data) = conn.next().await {
+-                if let Some(crate::ipc::Data::Login {
+-                    peer_id,
+-                    name,
+-                    authorized,
+-                    ..
+-                }) = data
+-                {
+-                    println!(
+-                        "hjv-e2e: cm login from {peer_id} named {name:?}, authorized {authorized}"
+-                    );
++                match data {
++                    Some(crate::ipc::Data::Login {
++                        peer_id,
++                        name,
++                        authorized,
++                        hjv_mark,
++                        ..
++                    }) => {
++                        let kind = if hjv_mark.kind.is_empty() {
++                            "none"
++                        } else {
++                            &hjv_mark.kind
++                        };
++                        println!(
++                            "hjv-e2e: cm login from {peer_id} named {name:?}, authorized {authorized}, mark {kind}({})",
++                            hjv_mark.who
++                        );
++                    }
++                    Some(crate::ipc::Data::HjvPeerRecording(on)) => {
++                        println!("hjv-e2e: cm recording {on}");
++                    }
++                    _ => {}
+                 }
+             }
+         });
+diff --git a/src/hjviewer_update/mod.rs b/src/hjviewer_update/mod.rs
+index 6f1c24d..4a9b7a4 100644
+--- a/src/hjviewer_update/mod.rs
++++ b/src/hjviewer_update/mod.rs
+@@ -6,8 +6,8 @@
+ //!   `verdict` says what a policy means, and `door` gets packages and short links from hjv-api.
+ //! - This file holds the build variables, the state of the process, the thread that checks, and
+ //!   what the rest of the app calls: the screens through `main_get_common`/`main_set_common`
+-//!   (keys `hjv-update-…`, `hjv-min-version-…`; event `hjv-update`), and the connection code
+-//!   through `on_refusal`, `on_login_refusal` and `controller_rule`.
++//!   (keys `hjv-update-…`, `hjv-min-version-…`, `hjv-admin-contact`; event `hjv-update`), and
++//!   the connection code through `on_refusal`, `on_login_refusal` and `controller_rule`.
+ //! - `refuse` is the side of a PC that takes connections: by `controller_rule` it refuses the
+ //!   login of a controller below the minimum of its platform (`refuse_controller`), with a text
+ //!   that `texts` writes.
+@@ -256,6 +256,14 @@ impl Core {
+         )
+     }
+ 
++    /// `hjv-admin-contact`: the policy's `contact_ko`, the HJViewer administrator's contact line
++    /// (docs/architecture.md 8-2), or "".
++    fn admin_contact(&self) -> String {
++        self.policy()
++            .and_then(|policy| policy.contact.clone())
++            .unwrap_or_default()
++    }
++
+     fn channel(&self) -> Option<verdict::Channel> {
+         verdict::own_channel(self.os, self.installer.as_deref(), self.e2e)
+     }
+@@ -704,8 +712,13 @@ pub(crate) fn on_login_refusal(text: &str) -> &str {
+ /// main_get_common: the screens' questions; None for any other key and in a build that takes no
+ /// part, where the key then reads as "" like every unknown key.
+ /// - `hjv-update-state`: the JSON of `Core::state_json`;
+-/// - `hjv-min-version-<platform>`: the minimum a peer of that platform is held to.
++/// - `hjv-min-version-<platform>`: the minimum a peer of that platform is held to;
++/// - `hjv-admin-contact`: `Core::admin_contact`, also in the connection manager's process, which
++///   reads the same user's store and starts nothing.
+ pub(crate) fn get_common(key: &str) -> Option<String> {
++    if key == "hjv-admin-contact" {
++        return with_core(|core| core.admin_contact());
++    }
+     if key == "hjv-update-state" {
+         let local = enabled().then(local)?;
+         let state = with_core(|core| core.state_json(&local, wall()))?;
+@@ -1307,6 +1320,7 @@ mod tests {
+         let mut core = open(&file, Os::Windows);
+         let wall = GRACE as u64 - 10;
+         // before any policy
++        assert_eq!(core.admin_contact(), "");
+         let state = core.state_json(&LOCAL, wall);
+         assert_eq!(state["state"], "unknown");
+         assert_eq!(state["channel"], "windows");
+@@ -1352,6 +1366,7 @@ mod tests {
+             "job": {"phase": "idle", "error": "", "done": 0, "total": 0, "file": ""},
+         });
+         assert_eq!(state, expected);
++        assert_eq!(core.admin_contact(), "설치 파일은 관리자에게 받으세요.");
+         assert_eq!(core.state_json(&LOCAL, GRACE as u64)["state"], "required");
+         let newer = Local {
+             current: "1.6.1",
+diff --git a/src/ipc.rs b/src/ipc.rs
+index d225c26..026a05a 100644
+--- a/src/ipc.rs
++++ b/src/ipc.rs
+@@ -343,6 +343,9 @@ pub enum Data {
+         block_input: bool,
+         privacy_mode: bool,
+         from_switch: bool,
++        /// What the window says about who connects (hjviewer_cm), never read from `name`.
++        #[serde(default)]
++        hjv_mark: crate::hjviewer_cm::HjvMark,
+     },
+     ChatMessage {
+         text: String,
+@@ -589,6 +592,8 @@ pub enum Data {
+     /// UI -> the process that registers: the access password's ticket of this PC, kept in memory
+     /// only (hjviewer_access); an empty one ends it.
+     HjvGuestPc(String),
++    /// Server -> CM: the controller of this connection reports that it records, or stopped.
++    HjvPeerRecording(bool),
+ }
+ 
+ /// The default for a `hot_measured` that is not on the wire at all; see the field's docs.
+diff --git a/src/lib.rs b/src/lib.rs
+index faee464..c17f5ee 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -47,6 +47,7 @@ mod custom_server;
+ mod hjviewer;
+ mod hjviewer_access;
+ mod hjviewer_account;
++mod hjviewer_cm;
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ mod hjviewer_wol;
+ #[cfg(feature = "hjv-e2e")]
+diff --git a/src/server/connection.rs b/src/server/connection.rs
+index 50f73ad..a43093a 100644
+--- a/src/server/connection.rs
++++ b/src/server/connection.rs
+@@ -462,6 +462,10 @@ pub struct Connection {
+     #[cfg(not(any(target_os = "android", target_os = "ios")))]
+     terminal_user_token: Option<TerminalUserToken>,
+     terminal_generic_service: Option<Box<GenericService>>,
++    // the same-account proof this connection accepted (docs/architecture.md 5-6, 5-10)
++    hjv_proven: Option<hjv_account::HjvProven>,
++    // the controller's last ClientRecordStatus, as the connection manager was told
++    hjv_peer_recording: bool,
+ }
+ 
+ impl ConnInner {
+@@ -659,6 +663,8 @@ impl Connection {
+             terminal_generic_service: None,
+             conn_audit_primary_auth: ConnAuditPrimaryAuth::None,
+             conn_audit_two_factor: ConnAuditTwoFactor::None,
++            hjv_proven: None,
++            hjv_peer_recording: false,
+         };
+         let addr = hbb_common::try_into_v4(addr);
+         if !conn.on_open(addr).await {
+@@ -2345,6 +2351,7 @@ impl Connection {
+     }
+ 
+     fn try_start_cm(&mut self, peer_id: String, name: String, authorized: bool) {
++        let (name, hjv_mark) = self.hjv_cm_name(&name);
+         self.send_to_cm(ipc::Data::Login {
+             id: self.inner.id(),
+             is_file_transfer: self.file_transfer.is_some(),
+@@ -2365,6 +2372,7 @@ impl Connection {
+             block_input: self.block_input,
+             privacy_mode: self.privacy_mode,
+             from_switch: self.from_switch,
++            hjv_mark,
+         });
+     }
+ 
+@@ -3980,10 +3988,13 @@ impl Connection {
+                         .lock()
+                         .unwrap()
+                         .user_auto_adjust_fps(self.inner.id(), fps),
+-                    Some(misc::Union::ClientRecordStatus(status)) => video_service::VIDEO_QOS
+-                        .lock()
+-                        .unwrap()
+-                        .user_record(self.inner.id(), status),
++                    Some(misc::Union::ClientRecordStatus(status)) => {
++                        video_service::VIDEO_QOS
++                            .lock()
++                            .unwrap()
++                            .user_record(self.inner.id(), status);
++                        self.hjv_peer_recording_to_cm(status);
++                    }
+                     #[cfg(windows)]
+                     Some(misc::Union::SelectedSid(sid)) => {
+                         if let Some(current_process_sid) =
+diff --git a/src/server/connection/hjv_account.rs b/src/server/connection/hjv_account.rs
+index cdf57ac..7afd139 100644
+--- a/src/server/connection/hjv_account.rs
++++ b/src/server/connection/hjv_account.rs
+@@ -4,7 +4,18 @@
+ //! branch moves parts of `lr` (`match lr.union`).
+ 
+ use super::*;
+-use crate::hjviewer_account;
++use crate::{hjviewer_account, hjviewer_cm};
++
++/// The same-account proof a connection accepted, from the signed list: the one record that the
++/// connection manager's mark (TV-W2), the end-of-session lock (TV-W3), the session cut (TV-W5)
++/// and the incoming list (TV-W9) read. Set before the logon response, so that every step of the
++/// login already sees it.
++pub(super) struct HjvProven {
++    /// the list's device name
++    pub name: String,
++    /// the list's masked owner, or ""
++    pub who: String,
++}
+ 
+ /// The Hash's `hjv_nonce`: 32 new bytes where this process takes same-account logins, else empty,
+ /// which keeps the Hash as 1.5.1 sends it.
+@@ -55,10 +66,43 @@ impl Connection {
+         if let Some(failure) = failure {
+             self.update_failure_with_scope(failure, true, 0, FailureScope::Default);
+         }
++        self.hjv_proven = Some(HjvProven {
++            name: accepted.name,
++            who: accepted.who,
++        });
+         if !self.send_logon_response_and_keep_alive().await {
+             return Some(false);
+         }
+-        self.try_start_cm(self.lr.my_id.clone(), accepted.name, self.authorized);
++        // try_start_cm shows the proven name; a second notice after 2FA shows the same
++        self.try_start_cm(self.lr.my_id.clone(), String::new(), self.authorized);
+         Some(true)
+     }
++
++    /// The name and mark the connection manager shows (docs/architecture.md 5-10): an accepted
++    /// proof's device name and owner, else the name the peer sent, checked by
++    /// `hjviewer_cm::unproven`.
++    pub(super) fn hjv_cm_name(&self, name: &str) -> (String, hjviewer_cm::HjvMark) {
++        match &self.hjv_proven {
++            Some(proven) => (
++                proven.name.clone(),
++                hjviewer_cm::HjvMark::same_account(&proven.who),
++            ),
++            None => hjviewer_cm::unproven(name),
++        }
++    }
++
++    /// Tells the connection manager when the controller starts or stops recording, which it
++    /// reports with every change (Misc.client_record_status); only changes go on.
++    pub(super) fn hjv_peer_recording_to_cm(&mut self, recording: bool) {
++        if self.hjv_peer_recording == recording {
++            return;
++        }
++        self.hjv_peer_recording = recording;
++        hbb_common::throttled_log!(
++            std::time::Duration::from_secs(60),
++            info,
++            "hjv: peer recording {recording}"
++        );
++        self.send_to_cm(ipc::Data::HjvPeerRecording(recording));
++    }
+ }
+diff --git a/src/ui_cm_interface.rs b/src/ui_cm_interface.rs
+index ee64eaa..632bfa5 100644
+--- a/src/ui_cm_interface.rs
++++ b/src/ui_cm_interface.rs
+@@ -149,6 +149,8 @@ pub struct Client {
+     pub from_switch: bool,
+     pub in_voice_call: bool,
+     pub incoming_voice_call: bool,
++    pub hjv_mark: crate::hjviewer_cm::HjvMark,
++    pub hjv_recording: bool,
+     #[serde(skip)]
+     #[cfg(not(any(target_os = "ios")))]
+     tx: UnboundedSender<Data>,
+@@ -235,6 +237,7 @@ impl<T: InvokeUiCM> ConnectionManager<T> {
+         block_input: bool,
+         privacy_mode: bool,
+         from_switch: bool,
++        hjv_mark: crate::hjviewer_cm::HjvMark,
+         #[cfg(not(any(target_os = "ios")))] tx: mpsc::UnboundedSender<Data>,
+     ) {
+         let client = Client {
+@@ -261,6 +264,8 @@ impl<T: InvokeUiCM> ConnectionManager<T> {
+             tx,
+             in_voice_call: false,
+             incoming_voice_call: false,
++            hjv_mark,
++            hjv_recording: false,
+         };
+         CLIENTS
+             .write()
+@@ -554,9 +559,9 @@ impl<T: InvokeUiCM> IpcTaskRunner<T> {
+                         }
+                         Ok(Some(data)) => {
+                             match data {
+-                                Data::Login{id, is_file_transfer, is_view_camera, is_terminal, port_forward, peer_id, name, avatar, authorized, keyboard, clipboard, audio, file, file_transfer_enabled: _file_transfer_enabled, restart, recording, block_input, privacy_mode, from_switch} => {
++                                Data::Login{id, is_file_transfer, is_view_camera, is_terminal, port_forward, peer_id, name, avatar, authorized, keyboard, clipboard, audio, file, file_transfer_enabled: _file_transfer_enabled, restart, recording, block_input, privacy_mode, from_switch, hjv_mark} => {
+                                     log::debug!("conn_id: {}", id);
+-                                    self.cm.add_connection(id, is_file_transfer, is_view_camera, is_terminal, port_forward, peer_id, name, avatar, authorized, keyboard, clipboard, audio, file, restart, recording, block_input, privacy_mode, from_switch, self.tx.clone());
++                                    self.cm.add_connection(id, is_file_transfer, is_view_camera, is_terminal, port_forward, peer_id, name, avatar, authorized, keyboard, clipboard, audio, file, restart, recording, block_input, privacy_mode, from_switch, hjv_mark, self.tx.clone());
+                                     self.conn_id = id;
+                                     #[cfg(target_os = "windows")]
+                                     {
+@@ -604,6 +609,16 @@ impl<T: InvokeUiCM> IpcTaskRunner<T> {
+                                         }
+                                     }
+                                 }
++                                Data::HjvPeerRecording(on) => {
++                                    // the same update path as the privacy mode rollback above
++                                    let client = CLIENTS.write().unwrap().get_mut(&self.conn_id).map(|c| {
++                                        c.hjv_recording = on;
++                                        c.clone()
++                                    });
++                                    if let Some(client) = client {
++                                        self.cm.ui_handler.add_connection(&client);
++                                    }
++                                }
+                                 Data::FS(mut fs) => {
+                                     if let ipc::FS::WriteBlock { id, file_num, data: _, compressed } = fs {
+                                         if let Ok(bytes) = self.stream.next_raw().await {
+@@ -908,6 +923,7 @@ pub async fn start_listen<T: InvokeUiCM>(
+                 block_input,
+                 privacy_mode,
+                 from_switch,
++                hjv_mark,
+                 ..
+             }) => {
+                 current_id = id;
+@@ -930,6 +946,7 @@ pub async fn start_listen<T: InvokeUiCM>(
+                     block_input,
+                     privacy_mode,
+                     from_switch,
++                    hjv_mark,
+                     tx.clone(),
+                 );
+             }

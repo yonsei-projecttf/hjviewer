@@ -1,0 +1,1944 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 08:44:44 +0900
+Subject: [PATCH 144/147] hjviewer: fixes from the 1.9.0 screen review
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The connection window: the permission tiles flatten (hjvCmTileAspect) where the
+1.9 notes leave the grid less height, so no toggle is cut in the English cards;
+a staff card drops its "(ID)" line; the caution and P5 boxes sit on the panel's
+12 px edge with an 8 px gap above; the recording line names the camera tile.
+
+The gate: a session window's offline text counts a ticket A0 took
+(hjv-guest-held) as A1's; a server known to be closed asks no A0 and shows A2
+after its refusal; S2 shows its text only once a code is there, is S4's with
+S8 (no S11), keeps four English buttons in md; S13 as S12 (md, bold first line);
+the phone's text buttons are flush with the text and the copy row is centred.
+
+Desktop: own chat bubbles in primaryFill (ownership by chatModel.me.id), Korean
+kept whole, 80 %; Tab skips the ID and password values and hidden tools, and
+the ID menu, the password's buttons and the account line draw the ring; the ID
+field's English hint fits and its suggestions end at the box's edge; U27 takes
+two lines on grid cards and its own lines on a phone; the transfer cards speak
+Korean ("완료 · 파일 1/1개 · 471 KB"), name a paused job, show the percentage and
+speed beside a thin bar and an error in the danger colour; the empty transfer
+panel narrows; sizes lose trailing zeros and dates their seconds; the overwrite
+question reads as one sentence with [덮어쓰기], plain for an identical file;
+danger confirms carry the warning icon, short ones at sm; the admin button sits
+level in its row; the device rows keep a right inset; port forwarding's head is
+centred; the recording button is a dot with '녹화 중'.
+
+The CM's imitation check also takes the contact line's words (hjviewer관리자,
+hjvieweradministrator); the incoming list says "비밀번호 없이" after the
+same-account mark; About has no administrator line without a policy's contact.
+
+Phone: the logged-out account line goes while G3 shows (a chevron otherwise),
+the admin intro keeps Korean whole and a user's counts take their own line, the
+source link sits under the version, the two sub-screens share one "고급" header,
+the file screen says what a running job does and counts in Korean, and the
+close question uses the lock line's verb.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_cm_layout.dart         |  26 ++++-
+ flutter/lib/common/hjv_phone.dart             |   2 +
+ flutter/lib/common/hjv_session_look.dart      |  59 ++++++++++
+ flutter/lib/common/hjviewer_access.dart       |  84 ++++++++++----
+ flutter/lib/common/hjviewer_access_texts.dart |   6 +-
+ flutter/lib/common/hjviewer_account.dart      |  42 +++++--
+ .../lib/common/hjviewer_account_texts.dart    |   5 +-
+ flutter/lib/common/hjviewer_admin.dart        |  12 +-
+ flutter/lib/common/hjviewer_admin_texts.dart  |  14 ++-
+ flutter/lib/common/hjviewer_cm_texts.dart     |   5 +-
+ flutter/lib/common/hjviewer_end_lock.dart     |   5 +-
+ flutter/lib/common/hjviewer_end_lock_ui.dart  |   2 +-
+ .../lib/common/hjviewer_incoming_rules.dart   |   7 +-
+ flutter/lib/common/hjviewer_labels.dart       |   3 +
+ flutter/lib/common/widgets/chat_page.dart     |  10 +-
+ flutter/lib/common/widgets/peer_card.dart     |  26 ++++-
+ flutter/lib/common/widgets/peer_tab_page.dart |  20 +++-
+ .../lib/desktop/pages/connection_page.dart    |  22 ++--
+ .../lib/desktop/pages/desktop_home_page.dart  |  55 +++++++---
+ .../lib/desktop/pages/file_manager_page.dart  | 103 ++++++++++--------
+ .../lib/desktop/pages/port_forward_page.dart  |   8 +-
+ flutter/lib/desktop/pages/server_page.dart    |  47 +++++---
+ .../lib/desktop/widgets/remote_toolbar.dart   |  13 ++-
+ .../lib/mobile/pages/file_manager_page.dart   |  30 +++--
+ flutter/lib/mobile/pages/settings_page.dart   |  24 ++--
+ flutter/lib/models/file_model.dart            |  46 +++++---
+ flutter/lib/models/model.dart                 |   3 +-
+ flutter/test/hjviewer_access_test.dart        |   8 +-
+ flutter/test/hjviewer_account_test.dart       |   3 +-
+ flutter/test/hjviewer_admin_test.dart         |   6 +-
+ flutter/test/hjviewer_cm_fit_test.dart        |  84 ++++++++++----
+ flutter/test/hjviewer_cm_test.dart            |   4 +-
+ flutter/test/hjviewer_incoming_test.dart      |   4 +-
+ flutter/test/hjviewer_session_look_test.dart  |  20 ++++
+ flutter/test/hjviewer_support_test.dart       |   5 +
+ src/hjviewer_cm.rs                            |  21 +++-
+ 36 files changed, 602 insertions(+), 232 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_cm_layout.dart b/flutter/lib/common/hjv_cm_layout.dart
+index b78c168..c1c9a32 100644
+--- a/flutter/lib/common/hjv_cm_layout.dart
++++ b/flutter/lib/common/hjv_cm_layout.dart
+@@ -11,7 +11,8 @@ import 'package:flutter_hbb/common/hjviewer_cm_texts.dart';
+ 
+ /// The connection card: `header` on top, `panel` (the notes above the buttons: the caution box,
+ /// P5, and the buttons) whole at the bottom, and between them `board` (the permissions), which
+-/// gives up height when the notes need it (its grid scrolls), with `note` (the recording line)
++/// gives up height when the notes need it (its tiles flatten, hjvCmTileAspect, and past that its
++/// grid scrolls), with `note` (the recording line)
+ /// whole under it. 1.8.2 filled the window to the pixel, so the notes the 1.9 card adds (the caution
+ /// with a contact, P5, the recording line) would push [수락]/[거부] below the window's edge, or,
+ /// if they scrolled, show nothing of the caution where it matters.
+@@ -48,6 +49,29 @@ class HjvCmCardColumn extends StatelessWidget {
+       );
+ }
+ 
++/// The permissions' tiles' width to height (GridView's childAspectRatio) for `count` tiles in
++/// `columns` across a grid of `width` x `height` (its 10 px side padding included): square, as
++/// upstream's, while their rows fit, else as flat as the rows need, down to [kHjvCmTileMin] high,
++/// so that the notes above the buttons never leave a working toggle half cut (a tile lower than
++/// [kHjvCmTileRoomy] keeps less padding around its icon). Where even that does not fit, square,
++/// and the grid scrolls.
++const double kHjvCmTileMin = 32;
++const double kHjvCmTileRoomy = 44;
++
++double hjvCmTileAspect(
++    {required double width,
++    required double height,
++    required int count,
++    int columns = 4,
++    double spacing = 10}) {
++  final tile = (width - 2 * spacing - (columns - 1) * spacing) / columns;
++  final rows = (count / columns).ceil();
++  if (tile <= 0 || rows == 0) return 1;
++  final fit = (height - (rows - 1) * spacing) / rows;
++  if (fit >= tile || fit < kHjvCmTileMin) return 1;
++  return tile / fit;
++}
++
+ /// The mark line under the peer's name in the kind's fixed icon and colour: two lines at most, so
+ /// that the words S10 and P6 tell the person to look for are never cut (English P4 needs about
+ /// 205 px; the accept card's header leaves 174, a connected card's about 130).
+diff --git a/flutter/lib/common/hjv_phone.dart b/flutter/lib/common/hjv_phone.dart
+index 2431f72..91eb0e0 100644
+--- a/flutter/lib/common/hjv_phone.dart
++++ b/flutter/lib/common/hjv_phone.dart
+@@ -252,4 +252,6 @@ class HjvPhoneTexts {
+ 
+   // the settings' sub-screen with the expert network rows (U40)
+   String get networkAdvanced => _t('네트워크(고급)', 'Network (advanced)');
++  // the settings' header over it and the display settings' row
++  String get advanced => _t('고급', 'Advanced');
+ }
+diff --git a/flutter/lib/common/hjv_session_look.dart b/flutter/lib/common/hjv_session_look.dart
+index d8435ed..3fbf709 100644
+--- a/flutter/lib/common/hjv_session_look.dart
++++ b/flutter/lib/common/hjv_session_look.dart
+@@ -68,3 +68,62 @@ TextStyle hjvFileHeadStyle(BuildContext context) => HjvText.bodySmall.copyWith(
+ TextStyle hjvFileMetaStyle(Color color, {bool small = false}) =>
+     (small ? HjvText.bodySmall : HjvText.caption)
+         .copyWith(color: color, fontFeatures: HjvText.tabular);
++
++/// A file's size in the file lists and the transfer cards (U15): upstream's readableFileSize
++/// (1024 steps, two decimals) without the zeros at the end: "240 KB", "1.2 MB", "812 B".
++String hjvFileSize(double size) {
++  const k = 1024.0, m = k * 1024, g = m * 1024;
++  final (value, unit) = size < k
++      ? (size, 'B')
++      : size < m
++          ? (size / k, 'KB')
++          : size < g
++              ? (size / m, 'MB')
++              : (size / g, 'GB');
++  final fixed = value.toStringAsFixed(2);
++  final trimmed =
++      fixed.contains('.') ? fixed.replaceFirst(RegExp(r'\.?0+$'), '') : fixed;
++  return '$trimmed $unit';
++}
++
++/// A file's date in the file lists (U15): to the minute, "2026-10-12 08:50".
++String hjvFileDate(DateTime t) {
++  String two(int n) => n.toString().padLeft(2, '0');
++  return '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
++}
++
++/// The file transfer's own words (U15) where upstream's left English or a sentence in a line:
++/// Korean where translate() is Korean.
++class HjvFileTexts {
++  final bool korean;
++  const HjvFileTexts(this.korean);
++
++  String _t(String ko, String en) => korean ? ko : en;
++
++  String files(int done, int count) =>
++      _t('파일 $done/$count개', '$done/$count files');
++  String get waiting => _t('대기 중', 'Waiting');
++  String get done => _t('완료', 'Done');
++  String get error => _t('오류', 'Error');
++  String get paused => _t('일시 중지됨', 'Paused');
++  String get canceled => _t('취소됨', 'Canceled');
++  String get skipped => _t('건너뜀', 'Skipped');
++  // the overwrite question and its action
++  String get overwriteAsk =>
++      _t('이 파일이 이미 있습니다. 덮어쓸까요?', 'This file already exists. Overwrite it?');
++  String get overwrite => _t('덮어쓰기', 'Overwrite');
++  // the phone's sheet while a job moves data
++  String get sending => _t('보내는 중', 'Sending');
++  String get receiving => _t('받는 중', 'Receiving');
++  // the phone's list head and selection
++  String items(int n) => _t('$n개 항목', n == 1 ? '1 item' : '$n items');
++  String selected(int n, {required bool remote}) => remote
++      ? _t('원격에서 $n개 선택됨', '$n selected on the remote')
++      : _t('로컬에서 $n개 선택됨', '$n selected locally');
++}
++
++/// A transfer card's line (U15): the state's word (none while it runs), the files and the size,
++/// one sentence-free line joined by ' · ': "완료 · 파일 1/1개 · 471 KB".
++String hjvJobLine(
++        {required String state, required String files, required String size}) =>
++    [state, files, size].where((s) => s.isNotEmpty).join(' · ');
+diff --git a/flutter/lib/common/hjviewer_access.dart b/flutter/lib/common/hjviewer_access.dart
+index ebadeb7..cead573 100644
+--- a/flutter/lib/common/hjviewer_access.dart
++++ b/flutter/lib/common/hjviewer_access.dart
+@@ -131,6 +131,16 @@ Widget _button(String label, VoidCallback? onPressed, {bool outline = false}) =>
+     hjvButton(label, onPressed,
+         tone: outline ? HjvButtonTone.quiet : HjvButtonTone.primary);
+ 
++/// A desktop dialog button with 12 at its sides: S2's row of four.
++Widget _tightButton(String label, VoidCallback? onPressed,
++        {bool outline = false}) =>
++    hjvButtonFor(label, onPressed,
++        tone: outline ? HjvButtonTone.quiet : HjvButtonTone.primary,
++        desktop: true,
++        buttonStyle: const ButtonStyle(
++            padding: WidgetStatePropertyAll(
++                EdgeInsets.symmetric(horizontal: 12))));
++
+ /// The access password's field: hidden as typed unless shown, the hint below it, and why the
+ /// last try brought no ticket; the keyboard's action sends it, and a shown one is not corrected.
+ Widget _passwordField(HjvAccessTexts t, TextEditingController controller,
+@@ -252,7 +262,8 @@ bool hjvAccessRefused(
+   // and home share one dialog manager: A1 says why itself, in the place of L4 above it
+   final loggedIn = bind.mainGetLocalOption(key: 'access_token').isNotEmpty;
+   final ended = loggedIn && _ticketEndedLogin(told: isMobile);
+-  if (loggedIn && !ended) {
++  // a server known to be closed refuses everyone: neither a login nor the access password helps
++  if ((loggedIn && !ended) || _gateMode.value == 'closed') {
+     _refusedAgainDialog(t, sessionId, title, dialogManager, reconnect);
+   } else {
+     _refusedDialog(t, sessionId, peerId, dialogManager, reconnect,
+@@ -388,14 +399,17 @@ String hjvPcPasswordWrongTitle(String title) =>
+ 
+ /// handleMsgBox (model.dart), a msgbox's text: "Remote desktop is offline" on a staff-only server
+ /// says that a PC nobody logged in on is offline too (hjvOfflineGateText); any other as it came.
+-/// The key stays for shouldAutoRetryOnOffline, which compares it before.
+-String hjvAccessMsgboxText(SessionID sessionId, String text) {
++/// The key stays for shouldAutoRetryOnOffline, which compares it before. A ticket for `peerId`
++/// that A0 took in the main window counts as A1's (the session window sees it through the core).
++String hjvAccessMsgboxText(SessionID sessionId, String text,
++    {String peerId = ''}) {
+   if (!_accountBuild || text != 'Remote desktop is offline') return text;
+   unawaited(_askGateMode());
+   final session = sessionId.toString();
+   final own = hjvOfflineGateText(_t,
+       mode: _gateMode.value,
+-      passed: _passedA1.contains(session),
++      passed: _passedA1.contains(session) ||
++          (peerId.isNotEmpty && _commonSync(hjvGuestHeldKey(peerId)) == 'Y'),
+       restarted: _restarted.contains(session),
+       support: _restartedSupport.contains(session),
+       codes: _gateCodes.value);
+@@ -583,7 +597,8 @@ void _refusedDialog(HjvAccessTexts t, SessionID sessionId, String peerId,
+                       minimumSize: const Size(0, 36),
+                       tapTargetSize: MaterialTapTargetSize.shrinkWrap)
+                   : TextButton.styleFrom(
+-                      padding: const EdgeInsets.symmetric(horizontal: 12),
++                      // flush with the text above it, the target 48 high
++                      padding: EdgeInsets.zero,
+                       minimumSize: const Size(48, 48),
+                       tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+               onPressed: () => setState(() => open = true),
+@@ -1135,10 +1150,23 @@ void _arrivedDialog(HjvAccessTexts t, String id) {
+       _connectSupportPc(id);
+     }
+ 
++    // as S12 says it: the same width, the PC's line in bold first
+     return CustomAlertDialog(
+       title: HjvDialogTitle(Icons.support_agent_rounded, t.arrivedTitle),
+-      content: Text(hjvKeepAll(t.arrivedAsk(id)),
+-          style: hjvDialogTextStyle(context)),
++      contentBoxConstraints: isDesktop || isWebDesktop
++          ? HjvDialogWidth.box(HjvDialogWidth.md)
++          : const BoxConstraints(maxWidth: 500),
++      content: Column(
++        mainAxisSize: MainAxisSize.min,
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(hjvKeepAll(t.arrived(id)),
++              style: hjvDialogTextStyle(context)
++                  .copyWith(fontWeight: FontWeight.w600)),
++          const SizedBox(height: 8),
++          Text(hjvKeepAll(t.arrivedAskRest), style: hjvDialogTextStyle(context)),
++        ],
++      ),
+       actions: [
+         _button(t.later, close, outline: true),
+         _button(t.connect, connectNow),
+@@ -1254,13 +1282,17 @@ void _supportCodeDialog(HjvAccessTexts t) {
+ 
+     final p = HjvPalette.of(context);
+     final code = made;
+-    final link = room?.link;
+     final left =
+         code == null ? 0 : hjvCodeLeft(code.expiresIn, madeFor.elapsed);
+     final view = hjvSupportView(wait: wait.state, left: left);
+     final open = code != null && view == HjvSupportView.open;
+     final arrived = code != null && view == HjvSupportView.arrived;
+-    final waits = open && room != null && wait.state != 'off';
++    // S8: the PC takes connections without a code, so S2 is S4's (no link to send for it, no
++    // waiting for a [지원 코드 넣기] that PC does not show)
++    final noCodeNeeded = hjvGateCloses(_gateMode.value) == false;
++    final link = noCodeNeeded ? null : room?.link;
++    final waits =
++        open && room != null && !noCodeNeeded && wait.state != 'off';
+     // a phone's width (360) has no room for four buttons: the two copies go into the content
+     final wide = isDesktop || isWebDesktop;
+     void copyInstructions() => copy(
+@@ -1285,8 +1317,9 @@ void _supportCodeDialog(HjvAccessTexts t) {
+         mainAxisSize: MainAxisSize.min,
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+-          // what to do with the code, while one is made or shown (not above S5 to S7, the end)
+-          if (busy || open) ...[
++          // what to do with the code once one is shown (not while it is made, when the answer has
++          // not said yet whether there is a link; not above S5 to S7, the end)
++          if (open) ...[
+             Text(hjvKeepAll(link == null ? t.madeText : t.madeTextLink),
+                 style: hjvDialogTextStyle(context)),
+             const SizedBox(height: 16),
+@@ -1317,13 +1350,16 @@ void _supportCodeDialog(HjvAccessTexts t) {
+                       color: p.textSecondary, fontFeatures: HjvText.tabular)),
+             ).marginOnly(top: 4),
+             if (!wide && link != null)
+-              Wrap(
+-                alignment: WrapAlignment.center,
+-                spacing: 8,
+-                children: [
+-                  TextButton(onPressed: copyCode, child: Text(t.copyCode)),
+-                  TextButton(onPressed: copyLink, child: Text(t.copyLink)),
+-                ],
++              // under the code and its time, centred as they are
++              Center(
++                child: Wrap(
++                  alignment: WrapAlignment.center,
++                  spacing: 8,
++                  children: [
++                    TextButton(onPressed: copyCode, child: Text(t.copyCode)),
++                    TextButton(onPressed: copyLink, child: Text(t.copyLink)),
++                  ],
++                ),
+               ).marginOnly(top: 8),
+             // S11: the waiting room's line, with a quiet bar
+             if (waits)
+@@ -1381,9 +1417,12 @@ void _supportCodeDialog(HjvAccessTexts t) {
+           _button(t.copyInstructions, copyInstructions, outline: true),
+           _button(t.copyCode, copyCode),
+         ] else if (open) ...[
+-          if (wide) _button(t.copyCode, copyCode, outline: true),
+-          if (wide) _button(t.copyLink, copyLink, outline: true),
+-          _button(t.copyInstructions, copyInstructions),
++          // four on a desktop: 12 at the sides, so that the English row stays in md
++          if (wide) _tightButton(t.copyCode, copyCode, outline: true),
++          if (wide) _tightButton(t.copyLink, copyLink, outline: true),
++          wide
++              ? _tightButton(t.copyInstructions, copyInstructions)
++              : _button(t.copyInstructions, copyInstructions),
+         ] else if (arrived)
+           _button(t.connect, connectNow)
+         else if (!busy && again)
+@@ -1670,7 +1709,8 @@ Future<bool> _askDialog(HjvAccessTexts t, String target, {String? link}) async {
+             TextButton(
+               // a 48 px target on a phone (U57), as A1's
+               style: TextButton.styleFrom(
+-                  padding: const EdgeInsets.symmetric(horizontal: 12),
++                  // flush with the text above it, as the desktop's
++                  padding: EdgeInsets.zero,
+                   minimumSize: const Size(48, 48),
+                   tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+               onPressed: () => setState(() => open = true),
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 04fdc3c..5aa669b 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -899,6 +899,9 @@ class HjvAccessTexts {
+   String arrivedAsk(String id) => _t(
+       '${arrived(id)} $arrivedCheck 지금 연결할까요?',
+       '${arrived(id)} $arrivedCheck Connect now?');
++  // S13 under its bold first line, arrived(id)
++  String get arrivedAskRest =>
++      _t('$arrivedCheck 지금 연결할까요?', '$arrivedCheck Connect now?');
+   String get later => _t('나중에', 'Later');
+ 
+   // S14: the remote restart's confirm for a support PC, in the place of R1 and its line
+@@ -940,7 +943,8 @@ bool hjvAsksBeforeConnect(
+         required String mode,
+         required bool loggedIn,
+         required bool held}) =>
+-    accountBuild && hjvGateCloses(mode) == true && !loggedIn && !held;
++    // not `closed`, which refuses everyone: the session's refusal shows A2 there
++    accountBuild && mode == 'enforce' && !loggedIn && !held;
+ 
+ // ---- links (TV-C6) ----
+ 
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index ccf0042..d2cbf91 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/formatter/id_formatter.dart';
+ import 'package:flutter_hbb/common/hjv_admin_contact.dart';
++import 'package:flutter_hbb/common/hjv_keys.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjv_title_line.dart';
+ import 'package:flutter_hbb/common/hjv_update.dart';
+@@ -255,10 +256,15 @@ class _HjvAccountLine extends StatelessWidget {
+             loggedIn: loggedIn,
+             displayName: user.displayName.value,
+             portalId: user.userName.value);
++        final hintShown = hjvAccessConnectHintShown();
++        // a phone's home is short: G3 under it says the login state already
++        if (!isDesktop && !loggedIn && hintShown) {
++          return const SizedBox.shrink();
++        }
+         final logIn = hjvAccountLineLogIn(
+             loggedIn: loggedIn,
+             homeLogsIn: hjvAccessHomeLogsIn(),
+-            connectHintShown: hjvAccessConnectHintShown());
++            connectHintShown: hintShown);
+         final avatar = loggedIn
+             ? buildAvatarWidget(
+                 avatar:
+@@ -276,7 +282,10 @@ class _HjvAccountLine extends StatelessWidget {
+                 child: Semantics(
+                   button: true,
+                   hint: t.accountLineOpens,
+-                  child: InkWell(
++                  // UX-K1: the keyboard's focus ring
++                  child: HjvFocusRing(
++                    radius: BorderRadius.circular(HjvRadius.sm),
++                    child: InkWell(
+                     borderRadius: BorderRadius.circular(HjvRadius.sm),
+                     onTap: onOpen,
+                     child: ConstrainedBox(
+@@ -296,10 +305,15 @@ class _HjvAccountLine extends StatelessWidget {
+                                 style: HjvText.caption
+                                     .copyWith(color: p.textSecondary)),
+                           ),
++                          // a phone's line looks like the rows it opens
++                          if (!isDesktop)
++                            Icon(Icons.chevron_right_rounded,
++                                size: 20, color: p.textTertiary),
+                         ],
+-                      ).paddingSymmetric(horizontal: 6),
++                        // a phone's icon on the cards' 24 px content inset
++                      ).paddingSymmetric(horizontal: isDesktop ? 6 : 12),
+                     ),
+-                  ),
++                  )),
+                 ),
+               ),
+               if (logIn)
+@@ -411,7 +425,6 @@ CustomAlertDialog? hjvLogoutDialog(
+       warning: gate?.warning,
+       yes: t.logOut,
+       danger: boundHere || gate != null || self != null,
+-      icon: Icons.logout_rounded,
+       onYes: onYes,
+       onNo: onNo);
+ }
+@@ -475,7 +488,7 @@ bool hjvConfirmRemoveRecent(PeerTabIndex tab, Peer peer, Future<void> Function()
+           text: t.removeRecentAsk,
+           yes: t.removeRecent,
+           danger: true,
+-          icon: Icons.delete_outline_rounded, onYes: () async {
++          width: HjvDialogWidth.sm, onYes: () async {
+         close();
+         await onSubmit();
+       }, onNo: close));
+@@ -782,7 +795,10 @@ Future<void> _pcAction(HjvTexts t, HjvPcAction action) async {
+   switch (action) {
+     case HjvPcAction.turnOff:
+       _show<void>((setState, close, context) => hjvConfirmDialog(t,
+-              text: t.turnOffAsk, yes: t.turnOff, danger: true, onYes: () {
++              text: t.turnOffAsk,
++              yes: t.turnOff,
++              danger: true,
++              width: HjvDialogWidth.sm, onYes: () {
+             close();
+             bind.mainSetOption(key: _kPcOff, value: 'Y');
+             showToast(t.turnedOff);
+@@ -979,7 +995,8 @@ class HjvPcLines extends StatelessWidget {
+ /// A question with [취소] (or `no`) and `yes`. `danger` for an action that is hard to undo or can
+ /// lock a PC out: the title with `icon` in the danger colour, and `yes` in the danger look (as
+ /// dialog.dart's deleteConfirmDialog). `more` is a second paragraph 8 px below the text (the
+-/// gate's line), `warning` goes below them as a warning note; an empty `text` shows none.
++/// gate's line), `warning` goes below them as a warning note; an empty `text` shows none. `width`:
++/// HjvDialogWidth.sm for a short remove or switch-off (UX-S2).
+ CustomAlertDialog hjvConfirmDialog(HjvTexts t,
+         {String? title,
+         required String text,
+@@ -989,10 +1006,11 @@ CustomAlertDialog hjvConfirmDialog(HjvTexts t,
+         String? no,
+         bool danger = false,
+         IconData icon = Icons.warning_amber_rounded,
++        double width = HjvDialogWidth.md,
+         required VoidCallback onYes,
+         required VoidCallback onNo}) =>
+     CustomAlertDialog(
+-      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
++      contentBoxConstraints: HjvDialogWidth.box(width),
+       title: title == null
+           ? null
+           : danger
+@@ -1135,7 +1153,8 @@ class HjvKeysList extends StatelessWidget {
+                   ],
+                 )
+               : line)
+-          .marginOnly(top: 2),
++          // as far from the card's edge as the trailing [로그아웃] above it
++          .marginOnly(top: 2, right: 16),
+       trailing: k.current || !loggedIn || below
+           ? null
+           : TextButton(
+@@ -1368,7 +1387,8 @@ void _removeFromList(HjvTexts t, Peer peer) {
+           text: t.removeAsk,
+           more: gate,
+           yes: t.remove,
+-          danger: true, onYes: () async {
++          danger: true,
++          width: HjvDialogWidth.sm, onYes: () async {
+         close();
+         try {
+           final (code, body) =
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 10016a5..534c3cb 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -465,8 +465,9 @@ List<String> hjvAboutNoticeLines(HjvTexts t,
+         {required bool accountBuild, String contact = ''}) =>
+     [
+       t.maker,
+-      if (accountBuild)
+-        t.adminContact(contact.trim().isEmpty ? t.makerName : contact.trim()),
++      // the contact comes from the signed policy only: none, no line (the maker is above)
++      if (accountBuild && contact.trim().isNotEmpty)
++        t.adminContact(contact.trim()),
+       if (accountBuild) t.pilotNotice,
+     ];
+ 
+diff --git a/flutter/lib/common/hjviewer_admin.dart b/flutter/lib/common/hjviewer_admin.dart
+index acf8117..d74935e 100644
+--- a/flutter/lib/common/hjviewer_admin.dart
++++ b/flutter/lib/common/hjviewer_admin.dart
+@@ -86,9 +86,9 @@ class HjvAdminEntry extends StatelessWidget {
+             leading: const Icon(Icons.admin_panel_settings_outlined),
+             onPressed: open);
+       }
++      // in the account card's Wrap of buttons, level with them (its spacing parts them)
+       return OutlinedButton(
+-              onPressed: () => open(context), child: Text(t.title))
+-          .marginOnly(top: 8);
++          onPressed: () => open(context), child: Text(t.title));
+     });
+   }
+ }
+@@ -344,8 +344,12 @@ class _HjvAdminViewState extends State<HjvAdminView> {
+                 child: Column(
+                   crossAxisAlignment: CrossAxisAlignment.stretch,
+                   children: [
+-                    Text('${t.onlyLoggedIn} ${t.ipNote} ${t.recorded}',
+-                        style: Theme.of(context).textTheme.bodySmall),
++                    // Korean broken between words, at the caption's size
++                    Text(
++                        hjvKeepAll(
++                            '${t.onlyLoggedIn} ${t.ipNote} ${t.recorded}'),
++                        style: HjvText.caption.copyWith(
++                            color: HjvPalette.of(context).textSecondary)),
+                     Row(children: [
+                       Expanded(
+                           child: TextField(
+diff --git a/flutter/lib/common/hjviewer_admin_texts.dart b/flutter/lib/common/hjviewer_admin_texts.dart
+index ef20c71..dd5c4ff 100644
+--- a/flutter/lib/common/hjviewer_admin_texts.dart
++++ b/flutter/lib/common/hjviewer_admin_texts.dart
+@@ -331,16 +331,18 @@ String hjvAdminLastUse(HjvAdminTexts t, HjvAdminUser u,
+   return use == null ? t.notUsed : hjvAdminWhen(use, now, local: local);
+ }
+ 
+-/// A user's line on a phone: "활성 · 마지막 사용 10/14 09:30 · 로그인한 기기 2대 · PC 1대".
++/// A user's lines on a phone: "활성 · 마지막 사용 10/14 09:30", then "로그인한 기기 2대 · PC 1대"
++/// (a line of its own, so that no line ends in a "·").
+ String hjvAdminUserLine(HjvAdminTexts t, HjvAdminUser u,
+     {required DateTime now, HjvAdminClock local = hjvAdminLocal}) {
+   final use = u.lastUse;
+   return [
+-    hjvAdminUserState(t, u),
+-    use == null ? t.notUsed : t.lastUse(hjvAdminWhen(use, now, local: local)),
+-    t.devices(u.keys),
+-    t.pcs(u.pcs),
+-  ].join(' · ');
++    [
++      hjvAdminUserState(t, u),
++      use == null ? t.notUsed : t.lastUse(hjvAdminWhen(use, now, local: local)),
++    ].join(' · '),
++    [t.devices(u.keys), t.pcs(u.pcs)].join(' · '),
++  ].join('\n');
+ }
+ 
+ /// "연구실-PC · 123 456 789", or the ID alone.
+diff --git a/flutter/lib/common/hjviewer_cm_texts.dart b/flutter/lib/common/hjviewer_cm_texts.dart
+index dbcf9ff..848cd1a 100644
+--- a/flutter/lib/common/hjviewer_cm_texts.dart
++++ b/flutter/lib/common/hjviewer_cm_texts.dart
+@@ -114,8 +114,9 @@ class HjvCmTexts {
+       '상대 앱이 알려 준 상태입니다. 상대가 다른 프로그램으로 녹화하면 여기에 보이지 않습니다.',
+       "This is what the other side's app reports. Recording with another program does not show here.");
+   String recordingLine({required bool canChange}) => canChange
+-      ? _t("상대가 이 연결의 화면을 녹화하고 있습니다. 멈추게 하려면 권한에서 '세션 녹화 허용'을 끄세요.",
+-          "The other side is recording this connection's screen. To stop it, turn off \"Enable recording session\" under Permissions.")
++      // the permissions are icon tiles: the text names the tile by its look, its tooltip's words
++      ? _t("상대가 이 연결의 화면을 녹화하고 있습니다. 멈추게 하려면 권한에서 카메라 모양의 '세션 녹화 허용' 단추를 끄세요.",
++          "The other side is recording this connection's screen. To stop it, turn off the camera button (\"Enable recording session\") under Permissions.")
+       : _t('상대가 이 연결의 화면을 녹화하고 있습니다.',
+           "The other side is recording this connection's screen.");
+ }
+diff --git a/flutter/lib/common/hjviewer_end_lock.dart b/flutter/lib/common/hjviewer_end_lock.dart
+index ed8b298..4f91af6 100644
+--- a/flutter/lib/common/hjviewer_end_lock.dart
++++ b/flutter/lib/common/hjviewer_end_lock.dart
+@@ -114,9 +114,10 @@ class HjvEndLockTexts {
+   // button's own name (desktop 닫기, phone 연결 끊기)
+   String closeLocks(String button) => _t('$button · 끝나면 PC를 잠급니다',
+       '$button · the PC locks when the session ends');
+-  // T3-6, the line the phone's close confirmation adds
++  // T3-6, the line the phone's close confirmation adds, under a question in the same verb
+   String get closeLine =>
+-      _t('연결을 끝내면 PC를 잠급니다.', 'The PC locks when you end the session.');
++      _t('연결을 끝내면 PC를 잠급니다.', 'The PC locks when you end the connection.');
++  String get closeAsk => _t('연결을 끝낼까요?', 'End the connection?');
+ 
+   // T3-7 and its tooltip T3-8
+   String get hide => _t('연결할 때 화면 가리기', 'Hide the screen when connecting');
+diff --git a/flutter/lib/common/hjviewer_end_lock_ui.dart b/flutter/lib/common/hjviewer_end_lock_ui.dart
+index 3bab269..8760720 100644
+--- a/flutter/lib/common/hjviewer_end_lock_ui.dart
++++ b/flutter/lib/common/hjviewer_end_lock_ui.dart
+@@ -133,7 +133,7 @@ Widget hjvEndLockBadge(BuildContext context, Widget icon) {
+ /// clientClose's text on the phone: T3-6 after it when ending the session locks the PC.
+ String hjvEndLockCloseText(FFI ffi, String text) {
+   if (!hjvEndLockLocksNow(ffi, ffi.id)) return text;
+-  return '${translate(text)}\n\n${hjvEndLockTexts.closeLine}';
++  return '${hjvEndLockTexts.closeAsk}\n\n${hjvEndLockTexts.closeLine}';
+ }
+ 
+ final _toasted = Expando<bool>();
+diff --git a/flutter/lib/common/hjviewer_incoming_rules.dart b/flutter/lib/common/hjviewer_incoming_rules.dart
+index b543584..f21da28 100644
+--- a/flutter/lib/common/hjviewer_incoming_rules.dart
++++ b/flutter/lib/common/hjviewer_incoming_rules.dart
+@@ -315,10 +315,13 @@ class HjvIncomingTexts {
+         _ => row.name.isEmpty ? null : cm.unverifiedName,
+       };
+ 
+-  /// Line 3: the mark · how it got in · how it ended (· 다시 연결 n번).
++  /// Line 3: the mark · how it got in · how it ended (· 다시 연결 n번); after the same-account
++  /// mark its way in without the account's words again.
+   String line3(HjvIncomingRow row) => [
+         if (mark(row) case final m?) m,
+-        auth(row.auth),
++        row.ver == kHjvMarkSameAccount && row.auth == 'account'
++            ? _t('비밀번호 없이', 'No password')
++            : auth(row.auth),
+         end(row.end),
+         if (row.re > 0) reconnected(row.re),
+       ].join(' · ');
+diff --git a/flutter/lib/common/hjviewer_labels.dart b/flutter/lib/common/hjviewer_labels.dart
+index 31ef9b4..fc76ba1 100644
+--- a/flutter/lib/common/hjviewer_labels.dart
++++ b/flutter/lib/common/hjviewer_labels.dart
+@@ -35,6 +35,9 @@ class HjvLabels {
+   // the login's busy bar
+   String get loggingIn => _t('로그인하는 중', 'Logging in');
+ 
++  // the desktop's remote ID field beside [연결] and ▾ (UX-K1 D4): a short English hint that fits
++  String get idHint => _t('원격 ID 입력', 'Remote ID');
++
+   // the desktop's ID suggestions: what Enter connects to, the ID typed or (UX-K1) the PC that
+   // ↑ or ↓ chose
+   String get enterConnects =>
+diff --git a/flutter/lib/common/widgets/chat_page.dart b/flutter/lib/common/widgets/chat_page.dart
+index 62a5663..bfe2266 100644
+--- a/flutter/lib/common/widgets/chat_page.dart
++++ b/flutter/lib/common/widgets/chat_page.dart
+@@ -131,9 +131,11 @@ class ChatPage extends StatelessWidget implements PageShape {
+                           hjvChatBubbleColors(context, own: false).bg,
+                       currentUserContainerColor:
+                           hjvChatBubbleColors(context, own: true).bg,
+-                      maxWidth: constraints.maxWidth * 0.7,
++                      // HJViewer: 80 %, Korean broken between words only
++                      maxWidth: constraints.maxWidth * 0.8,
+                       messageTextBuilder: (message, _, __) {
+-                        final isOwnMessage = message.user.id.isBlank!;
++                        // HJViewer: `me` has an ID of its own (chat_model.dart)
++                        final isOwnMessage = message.user.id == chatModel.me.id;
+                         final look =
+                             hjvChatBubbleColors(context, own: isOwnMessage);
+                         return Column(
+@@ -141,7 +143,7 @@ class ChatPage extends StatelessWidget implements PageShape {
+                               ? CrossAxisAlignment.end
+                               : CrossAxisAlignment.start,
+                           children: <Widget>[
+-                            Text(message.text,
++                            Text(hjvKeepAll(message.text),
+                                 style: TextStyle(
+                                     color: look.text,
+                                     fontSize: 14,
+@@ -159,7 +161,7 @@ class ChatPage extends StatelessWidget implements PageShape {
+                       },
+                       messageDecorationBuilder:
+                           (message, previousMessage, nextMessage) {
+-                        final isOwnMessage = message.user.id.isBlank!;
++                        final isOwnMessage = message.user.id == chatModel.me.id;
+                         return defaultMessageDecoration(
+                           color: hjvChatBubbleColors(context, own: isOwnMessage)
+                               .bg,
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 4b7d97f..9e29f00 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -553,7 +553,7 @@ class _PeerCardState extends State<_PeerCard>
+               LayoutBuilder(
+                 builder: (context, row) => Row(children: [
+                   getOnline(5, peer.online),
+-                  if (_showNote(peer))
++                  if (_showNote(peer) && !isPortrait)
+                     ConstrainedBox(
+                       constraints:
+                           BoxConstraints(maxWidth: row.maxWidth * 0.6),
+@@ -577,7 +577,7 @@ class _PeerCardState extends State<_PeerCard>
+                             style: sub),
+                       ),
+                     ),
+-                  if (_showNote(peer))
++                  if (_showNote(peer) && !isPortrait)
+                     Expanded(
+                       child: Tooltip(
+                         message: hjvPeerNote(peer),
+@@ -591,6 +591,17 @@ class _PeerCardState extends State<_PeerCard>
+                     ),
+                 ]),
+               ),
++              // U27 on a phone: the note on lines of its own under the host, so that what it
++              // says to do is not cut beside a long host name
++              if (_showNote(peer) && isPortrait)
++                Tooltip(
++                  message: hjvPeerNote(peer),
++                  waitDuration: const Duration(seconds: 1),
++                  child: Text(hjvKeepAll(hjvPeerNote(peer)),
++                      maxLines: 2,
++                      overflow: TextOverflow.ellipsis,
++                      style: sub),
++                ).marginOnly(top: 2),
+             ],
+           )),
+         ),
+@@ -666,15 +677,18 @@ class _PeerCardState extends State<_PeerCard>
+                         ),
+                       ),
+                     ]).marginOnly(right: 10),
++                    // U27: two lines, so that the part that says why or what to do shows
+                     if (_showNote(peer))
+                       Tooltip(
+                         message: hjvPeerNote(peer),
+                         waitDuration: const Duration(seconds: 1),
+-                        child: Text(hjvPeerNote(peer),
+-                            maxLines: 1,
++                        child: Text(hjvKeepAll(hjvPeerNote(peer)),
++                            maxLines: 2,
+                             overflow: TextOverflow.ellipsis,
+-                            style:
+-                                TextStyle(fontSize: 11, color: p.textTertiary)),
++                            style: TextStyle(
++                                fontSize: 11,
++                                height: 1.3,
++                                color: p.textTertiary)),
+                       ).marginOnly(right: 10),
+                   ],
+                 )),
+diff --git a/flutter/lib/common/widgets/peer_tab_page.dart b/flutter/lib/common/widgets/peer_tab_page.dart
+index 5c963ae..ac16e65 100644
+--- a/flutter/lib/common/widgets/peer_tab_page.dart
++++ b/flutter/lib/common/widgets/peer_tab_page.dart
+@@ -380,7 +380,10 @@ class _PeerTabPageState extends State<PeerTabPage>
+     final textColor = HjvPalette.of(context).textSecondary;
+     return Offstage(
+       offstage: model.currentTab != index.index,
+-      child: Tooltip(
++      // HJViewer UX-K1: a hidden tool is no stop of Tab
++      child: ExcludeFocus(
++        excluding: model.currentTab != index.index,
++        child: Tooltip(
+         message: translate('Refresh'),
+         child: RefreshWidget(
+             onPressed: () {
+@@ -396,7 +399,7 @@ class _PeerTabPageState extends State<PeerTabPage>
+                   size: 20,
+                   color: textColor,
+                 ))),
+-      ),
++      )),
+     );
+   }
+ 
+@@ -731,18 +734,25 @@ class _PeerTabPageState extends State<PeerTabPage>
+           index: PeerTabIndex.ab, loading: gFFI.abModel.currentAbLoading),
+       _createRefresh(
+           index: PeerTabIndex.group, loading: gFFI.groupModel.groupLoading),
++      // HJViewer UX-K1: a hidden tool is no stop of Tab
+       Offstage(
+         offstage: model.currentTabCachedPeers.isEmpty,
+-        child: _createMultiSelection(),
++        child: ExcludeFocus(
++            excluding: model.currentTabCachedPeers.isEmpty,
++            child: _createMultiSelection()),
+       ),
+       _createPeerViewTypeSwitch(context),
+       Offstage(
+         offstage: model.currentTab == PeerTabIndex.recent.index,
+-        child: PeerSortDropdown(),
++        child: ExcludeFocus(
++            excluding: model.currentTab == PeerTabIndex.recent.index,
++            child: PeerSortDropdown()),
+       ),
+       Offstage(
+         offstage: model.currentTab != PeerTabIndex.ab.index,
+-        child: _toggleTags(),
++        child: ExcludeFocus(
++            excluding: model.currentTab != PeerTabIndex.ab.index,
++            child: _toggleTags()),
+       ),
+     ];
+   }
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index a1ede81..4155e48 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -78,9 +78,12 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+     final isIncomingOnly = bind.isIncomingOnly();
+     // HJViewer: the status row in the palette, aligned with the content's 12 px edge
+     final p = HjvPalette.of(context);
++    // HJViewer UX-K1: a hidden link is no stop of Tab
+     startServiceWidget() => Offstage(
+           offstage: !_svcStopped.value,
+-          child: InkWell(
++          child: ExcludeFocus(
++              excluding: !_svcStopped.value,
++              child: InkWell(
+                   onTap: () async {
+                     await start_service(true);
+                   },
+@@ -89,7 +92,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+                           fontSize: 13,
+                           fontWeight: FontWeight.w600,
+                           color: p.primary)))
+-              .marginOnly(left: 12),
++              .marginOnly(left: 12)),
+         );
+ 
+     setupServerWidget() => Flexible(
+@@ -97,7 +100,11 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+             offstage: !(!_svcStopped.value &&
+                 stateGlobal.svcStatus.value == SvcStatus.ready &&
+                 _svcIsUsingPublicServer.value),
+-            child: Row(
++            child: ExcludeFocus(
++              excluding: !(!_svcStopped.value &&
++                  stateGlobal.svcStatus.value == SvcStatus.ready &&
++                  _svcIsUsingPublicServer.value),
++              child: Row(
+               crossAxisAlignment: CrossAxisAlignment.center,
+               children: [
+                 Text(', ',
+@@ -121,7 +128,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
+                   ),
+                 )
+               ],
+-            ),
++            )),
+           ),
+         );
+ 
+@@ -462,7 +469,7 @@ class _ConnectionPageState extends State<ConnectionPage>
+                                 counterText: '',
+                                 hintText: _idInputFocused.value
+                                     ? null
+-                                    : translate('Enter Remote ID'),
++                                    : hjvLabels.idHint,
+                                 contentPadding: const EdgeInsets.symmetric(
+                                     horizontal: 15, vertical: 13)),
+                             controller: fieldTextEditingController,
+@@ -496,13 +503,14 @@ class _ConnectionPageState extends State<ConnectionPage>
+                         .getInheritedWidgetOfExactType<
+                             AutocompleteHighlightedOption>()
+                         ?.notifier;
+-                    // HJViewer: the suggestions in the app's look, as wide as the field
++                    // HJViewer: the suggestions in the app's look, from the field to the connect
++                    // box's right edge, so that no sliver of G3 below shows beside them
+                     return HjvAutocompleteOptions(
+                       options: _autocompleteOpts,
+                       onSelected: onSelected,
+                       loading: _allPeersLoader.peers.isEmpty &&
+                           !_allPeersLoader.isPeersLoaded,
+-                      width: 320,
++                      width: 320 + 20,
+                       footer: hjvLabels.enterConnects,
+                       picked: _hjvPicked,
+                       pickedFooter: hjvLabels.enterConnectsPicked,
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index ca56d14..e9cfcc8 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -6,6 +6,7 @@ import 'package:auto_size_text/auto_size_text.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_keys.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_access.dart';
+ import 'package:flutter_hbb/common/hjviewer_access_texts.dart';
+@@ -286,8 +287,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+     final hjv = HjvPalette.of(context);
+     // HJViewer: a menu (ID copy, ID change, settings) beside the card, to the right of the button,
+     // so that it covers neither the ID nor the button; the tooltip above the button, off the ID
++    // UX-K1: the keyboard's focus ring
+     return Builder(
+-      builder: (button) => InkWell(
++      builder: (button) => HjvFocusRing(
++        circle: true,
++        child: InkWell(
+         onTap: () {
+           var at = Offset.zero;
+           final box = button.findRenderObject() as RenderBox?;
+@@ -315,7 +319,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+           ),
+         ),
+         onHover: (value) => hover.value = value,
+-      ),
++      )),
+     );
+   }
+ 
+@@ -503,7 +507,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+               buildPopupMenu(context),
+             ],
+           ),
+-          GestureDetector(
++          // UX-K1: a value, not a stop of Tab (the ⋮ menu copies it); a click still selects it
++          FocusTraversalGroup(
++            descendantsAreTraversable: false,
++            child: GestureDetector(
+             onDoubleTap: () {
+               Clipboard.setData(ClipboardData(text: model.serverId.text));
+               showToast(translate("Copied"));
+@@ -523,7 +530,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                   fontSize: 24,
+                   color: blocked != null ? p.textTertiary : p.text),
+             ).workaroundFreezeLinuxMint(),
+-          ),
++          )),
+           if (blocked?.idLine != null)
+             Text(hjvKeepAll(blocked!.idLine!),
+                     style: HjvText.bodySmall.copyWith(color: p.textSecondary))
+@@ -562,8 +569,12 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                   ),
+                   Row(
+                     children: [
++                      // UX-K1: a value, not a stop of Tab; "Generating ..." in the body's size, so
++                      // that the English one fits before ↻
+                       Expanded(
+-                        child: GestureDetector(
++                        child: FocusTraversalGroup(
++                          descendantsAreTraversable: false,
++                          child: GestureDetector(
+                           onDoubleTap: () {
+                             if (showOneTime) {
+                               Clipboard.setData(
+@@ -571,7 +582,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                               showToast(translate("Copied"));
+                             }
+                           },
+-                          child: TextFormField(
++                          child: ValueListenableBuilder<TextEditingValue>(
++                            valueListenable: model.serverPasswd,
++                            builder: (context, value, _) => TextFormField(
+                             controller: model.serverPasswd,
+                             readOnly: true,
+                             decoration: const InputDecoration(
+@@ -583,17 +596,21 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                               contentPadding:
+                                   EdgeInsets.only(top: 4, bottom: 4),
+                             ),
+-                            style: TextStyle(
+-                                fontSize: 17,
+-                                fontWeight: FontWeight.w600,
+-                                letterSpacing: 1,
+-                                color: dim ? p.textTertiary : p.text,
+-                                fontFeatures: HjvText.tabular),
+-                          ).workaroundFreezeLinuxMint(),
+-                        ),
++                            style: value.text == translate("Generating ...")
++                                ? HjvText.body.copyWith(color: p.textSecondary)
++                                : TextStyle(
++                                    fontSize: 17,
++                                    fontWeight: FontWeight.w600,
++                                    letterSpacing: 1,
++                                    color: dim ? p.textTertiary : p.text,
++                                    fontFeatures: HjvText.tabular),
++                          ).workaroundFreezeLinuxMint()),
++                        )),
+                       ),
+                       if (showOneTime)
+-                        AnimatedRotationWidget(
++                        HjvFocusRing(
++                          circle: true,
++                          child: AnimatedRotationWidget(
+                           onPressed: () => bind.mainUpdateTemporaryPassword(),
+                           child: Tooltip(
+                             message: translate('Refresh Password'),
+@@ -602,9 +619,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                                 child: action(Icons.refresh, refreshHover)),
+                           ),
+                           onHover: (value) => refreshHover.value = value,
+-                        ).marginOnly(right: 6),
++                        )).marginOnly(right: 6),
+                       if (!bind.isDisableSettings())
+-                        InkWell(
++                        HjvFocusRing(
++                          radius: BorderRadius.circular(HjvRadius.sm),
++                          child: InkWell(
+                           borderRadius: BorderRadius.circular(HjvRadius.sm),
+                           child: Tooltip(
+                             message: translate('Set permanent password'),
+@@ -614,7 +633,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+                           onTap: () => DesktopSettingPage.switch2page(
+                               SettingsTabKey.safety),
+                           onHover: (value) => editHover.value = value,
+-                        ),
++                        )),
+                     ],
+                   ),
+                 ],
+diff --git a/flutter/lib/desktop/pages/file_manager_page.dart b/flutter/lib/desktop/pages/file_manager_page.dart
+index 71bc619..1412f93 100644
+--- a/flutter/lib/desktop/pages/file_manager_page.dart
++++ b/flutter/lib/desktop/pages/file_manager_page.dart
+@@ -177,7 +177,10 @@ class _FileManagerPageState extends State<FileManagerPage>
+                   flex: 3,
+                   child: dropArea(FileManagerView(
+                       model.remoteController, _ffi, _mouseFocusScope))),
+-              Flexible(flex: 2, child: statusList())
++              // HJViewer: the empty panel takes less of a narrow window from the lists
++              Obx(() => Flexible(
++                  flex: jobController.jobTable.isEmpty ? 1 : 2,
++                  child: statusList()))
+             ],
+           ),
+         ));
+@@ -232,7 +235,8 @@ class _FileManagerPageState extends State<FileManagerPage>
+           controller: ScrollController(),
+           itemBuilder: (BuildContext context, int index) {
+             final item = jobs[index];
+-            final status = item.getStatus();
++            // HJViewer (U15): the line in the app's words, an error in the danger colour
++            final status = _hjvJobStatus(item);
+             return Padding(
+               padding: const EdgeInsets.only(bottom: 5),
+               child: generateCard(
+@@ -267,56 +271,35 @@ class _FileManagerPageState extends State<FileManagerPage>
+                                 child: Text(status,
+                                     style: TextStyle(
+                                       fontSize: 12,
+-                                      color:
+-                                          HjvPalette.of(context).textSecondary,
++                                      color: item.state == JobState.error
++                                          ? HjvPalette.of(context).dangerText
++                                          : HjvPalette.of(context)
++                                              .textSecondary,
+                                     )).marginOnly(top: 6),
+                               ),
+                               Offstage(
+                                 offstage: item.type != JobType.transfer ||
+                                     item.state != JobState.inProgress,
++                                // HJViewer (U15): the percentage and the speed beside the
++                                // bar, not across its fill's edge
+                                 child: LinearPercentIndicator(
+                                   animateFromLastPercent: true,
+-                                  center: SizedBox.expand(
+-                                    child: ShaderMask(
+-                                      blendMode: BlendMode.srcATop,
+-                                      shaderCallback: (bounds) =>
+-                                          LinearGradient(
+-                                        colors: [
+-                                          Colors.white,
+-                                          Colors.transparent,
+-                                        ],
+-                                        stops: [item.percent, item.percent],
+-                                      ).createShader(bounds),
+-                                      child: FittedBox(
+-                                        fit: BoxFit.scaleDown,
+-                                        child: Text.rich(
+-                                          TextSpan(
+-                                            text: item.percentText,
+-                                            children: [
+-                                              if (item.recvJobRes)
+-                                                TextSpan(
+-                                                  text:
+-                                                      ' ${readableFileSize(item.speed)}/s',
+-                                                  style: TextStyle(
+-                                                    fontSize: 12,
+-                                                    fontWeight: FontWeight.w400,
+-                                                    color:
+-                                                        HjvPalette.of(context)
+-                                                            .textSecondary,
+-                                                  ),
+-                                                ),
+-                                            ],
+-                                          ),
+-                                        ),
+-                                      ),
+-                                    ),
+-                                  ),
++                                  trailing: Text(
++                                      item.speed > 0
++                                          ? '${item.percentText} · ${hjvFileSize(item.speed)}/s'
++                                          : item.percentText,
++                                      style: TextStyle(
++                                          fontSize: 12,
++                                          fontFeatures: HjvText.tabular,
++                                          color: HjvPalette.of(context)
++                                              .textSecondary)),
+                                   barRadius: Radius.circular(HjvRadius.sm),
+                                   percent: item.percent,
+                                   progressColor:
+                                       HjvPalette.of(context).primaryFill,
+                                   backgroundColor: HjvPalette.of(context).fill,
+-                                  lineHeight: kDesktopFileTransferRowHeight,
++                                  // a thin bar now that its text is beside it
++                                  lineHeight: 8,
+                                 ).paddingSymmetric(vertical: 8),
+                               ),
+                             ],
+@@ -1106,11 +1089,11 @@ class _FileManagerViewState extends State<FileManagerView> {
+             : entries;
+         // Keep rows lazy so large directories only build visible list items.
+         final rows = filteredEntries.map((entry) {
++          // HJViewer (U15): sizes without trailing zeros, dates to the minute
+           final sizeStr =
+-              entry.isFile ? readableFileSize(entry.size.toDouble()) : "";
+-          final lastModifiedStr = entry.isDrive
+-              ? " "
+-              : "${entry.lastModified().toString().replaceAll(".000", "")}   ";
++              entry.isFile ? hjvFileSize(entry.size.toDouble()) : "";
++          final lastModifiedStr =
++              entry.isDrive ? " " : "${hjvFileDate(entry.lastModified())}   ";
+           var secondaryPosition = RelativeRect.fromLTRB(0, 0, 0, 0);
+           onTap() {
+             final items = selectedItems;
+@@ -1697,3 +1680,35 @@ Widget buildWindowsThisPC(BuildContext context, [TextStyle? textStyle]) {
+     Text(translate('This PC'), style: textStyle)
+   ]);
+ }
++
++// HJViewer (U15): JobProgress.getStatus in the app's words: the state as a word ('일시 중지됨'
++// too, which upstream left out), "파일 1/3개" for upstream's English "1/3 files", the size (done
++// / total while it runs), joined by ' · ' (upstream's comma splices "완료되었습니다, 1/1 files").
++String _hjvJobStatus(JobProgress job) {
++  final t = HjvFileTexts(translate('Cancel') == '취소');
++  var handled = job.recvJobRes ? job.fileNum + 1 : job.fileNum;
++  if (handled >= job.fileCount || job.state == JobState.done) {
++    handled = job.fileCount;
++  }
++  final state = switch (job.state) {
++    JobState.done when job.err == 'cancel' => t.canceled,
++    JobState.done when job.err == 'skipped' => t.skipped,
++    JobState.done => t.done,
++    JobState.error => t.error,
++    JobState.paused => t.paused,
++    _ => '',
++  };
++  if (job.type == JobType.deleteFile) return state;
++  final total = job.totalSize > 0 ? hjvFileSize(job.totalSize.toDouble()) : '';
++  final finished = job.state == JobState.done ? job.totalSize : job.finishedSize;
++  final size = job.type == JobType.transfer &&
++          job.state == JobState.inProgress &&
++          finished > 0 &&
++          total.isNotEmpty
++      ? '${hjvFileSize(finished.toDouble())} / $total'
++      : total;
++  return hjvJobLine(
++      state: state,
++      files: job.fileCount > 0 ? t.files(handled, job.fileCount) : '',
++      size: size);
++}
+diff --git a/flutter/lib/desktop/pages/port_forward_page.dart b/flutter/lib/desktop/pages/port_forward_page.dart
+index aaadcd2..33bed92 100644
+--- a/flutter/lib/desktop/pages/port_forward_page.dart
++++ b/flutter/lib/desktop/pages/port_forward_page.dart
+@@ -141,7 +141,11 @@ class _PortForwardPageState extends State<PortForwardPage>
+                   tone: HjvTone.success,
+                   icon: Icons.sensors_rounded,
+                   title: translate('Listening ...'),
+-                  text: translate('not_close_tcp_tip'))
++                  // HJViewer: a sentence ends with its period (ko and en have none)
++                  text: () {
++                    final tip = translate('not_close_tcp_tip');
++                    return tip.endsWith('.') ? tip : '$tip.';
++                  }())
+               .marginOnly(bottom: 12),
+         ));
+   }
+@@ -173,7 +177,9 @@ class _PortForwardPageState extends State<PortForwardPage>
+                   text('Remote Port'),
+                   SizedBox(
+                       width: _kColumn4Width,
++                      // HJViewer: over the column's centred buttons
+                       child: Text(translate('Action'),
++                          textAlign: TextAlign.center,
+                           style: hjvFileHeadStyle(context)))
+                 ]),
+               );
+diff --git a/flutter/lib/desktop/pages/server_page.dart b/flutter/lib/desktop/pages/server_page.dart
+index 160e82b..59a858f 100644
+--- a/flutter/lib/desktop/pages/server_page.dart
++++ b/flutter/lib/desktop/pages/server_page.dart
+@@ -550,15 +550,17 @@ class _CmHeaderState extends State<_CmHeader>
+                 )),
+                 // HJViewer (TV-W2): the mark, never read from the name
+                 _hjvMarkLine(context, client),
+-                FittedBox(
+-                  child: Text(
+-                    "(${client.peerId})",
+-                    style: TextStyle(
+-                        color: p.textSecondary,
+-                        fontSize: 13,
+-                        fontFeatures: HjvText.tabular),
++                // HJViewer (TV-W6): a staff card's name line is the controller's ID already
++                if (client.hjvMarkKind != kHjvMarkStaff)
++                  FittedBox(
++                    child: Text(
++                      "(${client.peerId})",
++                      style: TextStyle(
++                          color: p.textSecondary,
++                          fontSize: 13,
++                          fontFeatures: HjvText.tabular),
++                    ),
+                   ),
+-                ),
+                 if (client.type_() == ClientType.terminal)
+                   FittedBox(
+                     child: Text(
+@@ -704,14 +706,15 @@ class _PrivilegeBoardState extends State<_PrivilegeBoard> {
+     return Tooltip(
+       message: "$tooltipText: ${enabled ? "ON" : "OFF"}",
+       waitDuration: Duration.zero,
+-      child: Container(
++      // HJViewer: a flat tile (hjvCmTileAspect) with less padding around its icon
++      child: LayoutBuilder(builder: (context, box) => Container(
+         decoration: BoxDecoration(
+           color: enabled
+               ? (canModify ? p.primary : p.primary.withOpacity(0.55))
+               : p.fill,
+           borderRadius: BorderRadius.circular(HjvRadius.md),
+         ),
+-        padding: EdgeInsets.all(8.0),
++        padding: EdgeInsets.all(box.maxHeight < kHjvCmTileRoomy ? 4.0 : 8.0),
+         child: InkWell(
+           onTap: canModify
+               ? () =>
+@@ -730,7 +733,7 @@ class _PrivilegeBoardState extends State<_PrivilegeBoard> {
+             ],
+           ),
+         ),
+-      ),
++      )),
+     );
+   }
+ 
+@@ -760,8 +763,22 @@ class _PrivilegeBoardState extends State<_PrivilegeBoard> {
+                 color: p.textTertiary),
+           ).marginOnly(left: 12.0, bottom: 6.0),
+           Expanded(
+-            child: GridView.count(
++            // HJViewer (TV-W2, TV-W6): flatter tiles where the 1.9 notes leave the grid less
++            // height, so that no toggle is cut (hjv_cm_layout.dart)
++            child: LayoutBuilder(builder: (context, box) => GridView.count(
+               crossAxisCount: crossAxisCount,
++              childAspectRatio: hjvCmTileAspect(
++                  width: box.maxWidth,
++                  height: box.maxHeight,
++                  count: client.type_() == ClientType.camera
++                      ? 2
++                      : 6 +
++                          (isWindows ? 1 : 0) +
++                          (bind.mainSupportedPrivacyModeImpls() != '[]'
++                              ? 1
++                              : 0),
++                  columns: crossAxisCount,
++                  spacing: spacing),
+               padding: EdgeInsets.symmetric(horizontal: spacing),
+               mainAxisSpacing: spacing,
+               crossAxisSpacing: spacing,
+@@ -923,7 +940,7 @@ class _PrivilegeBoardState extends State<_PrivilegeBoard> {
+                           canModify: canModifyPermission,
+                         )
+                     ],
+-            ),
++            )),
+           ),
+         ],
+       ),
+@@ -1161,7 +1178,7 @@ class _CmControlPanel extends StatelessWidget {
+                   t: hjvCmTexts(),
+                   place: HjvCautionPlace.accept,
+                   contact: hjvAdminContact())
+-              .marginOnly(bottom: 8.0),
++              .marginOnly(left: 4.0, right: 4.0, top: 8.0, bottom: 8.0),
+         // HJViewer (TV-W6, P5): the staff mark's connection, in the caution's place
+         if (hjvShowStaffNote(
+             authorized: client.authorized,
+@@ -1172,7 +1189,7 @@ class _CmControlPanel extends StatelessWidget {
+                   text: hjvCmTexts().staffAccept,
+                   tone: HjvTone.info,
+                   icon: Icons.verified_user_rounded)
+-              .marginOnly(bottom: 8.0),
++              .marginOnly(left: 4.0, right: 4.0, top: 8.0, bottom: 8.0),
+         Offstage(
+           offstage: !showElevation || !showAccept,
+           child: buildButton(context, color: p.primaryFill, onClick: () {
+diff --git a/flutter/lib/desktop/widgets/remote_toolbar.dart b/flutter/lib/desktop/widgets/remote_toolbar.dart
+index ae2d923..6bea952 100644
+--- a/flutter/lib/desktop/widgets/remote_toolbar.dart
++++ b/flutter/lib/desktop/widgets/remote_toolbar.dart
+@@ -18,6 +18,7 @@ import 'package:desktop_multi_window/desktop_multi_window.dart';
+ import 'package:window_size/window_size.dart' as window_size;
+ 
+ import '../../common.dart';
++import '../../common/hjv_admin_contact.dart';
+ import '../../common/hjv_style.dart';
+ import '../../models/model.dart';
+ import '../../models/platform_model.dart';
+@@ -3135,10 +3136,20 @@ class _RecordMenu extends StatelessWidget {
+     final visible = !hideRecordingButton &&
+         (recordingModel.start || ffi.permissions['recording'] != false);
+     if (!visible) return Offstage();
++    // HJViewer: while it records, a dot named as the PC's window names the state ('녹화 중'),
++    // not upstream's English "REC"
++    final recording = hjvCmTexts().recording;
+     return _IconMenuButton(
+       assetName: 'assets/rec.svg',
++      icon: recordingModel.start
++          ? SizedBox(
++              width: _ToolbarTheme.buttonSize,
++              height: _ToolbarTheme.buttonSize,
++              child: Icon(Icons.fiber_manual_record_rounded,
++                  size: 14, color: HjvPalette.of(context).danger))
++          : null,
+       tooltip: recordingModel.start
+-          ? 'Stop session recording'
++          ? '$recording · ${translate('Stop session recording')}'
+           : 'Start session recording',
+       onPressed: () => recordingModel.toggle(),
+       color: recordingModel.start
+diff --git a/flutter/lib/mobile/pages/file_manager_page.dart b/flutter/lib/mobile/pages/file_manager_page.dart
+index 088a789..470a1e4 100644
+--- a/flutter/lib/mobile/pages/file_manager_page.dart
++++ b/flutter/lib/mobile/pages/file_manager_page.dart
+@@ -531,19 +531,20 @@ class _FileManagerPageState extends State<FileManagerPage> {
+       final selectedItems = getActiveSelectedItems();
+       final jobTable = model.jobController.jobTable;
+ 
+-      final localLabel = selectedItems?.isLocal == null
+-          ? ""
+-          : " [${selectedItems!.isLocal ? translate("Local") : translate("Remote")}]";
++      // HJViewer (U15): "원격에서 2개 선택됨" for upstream's "2 항목 [원격]"
++      final t = HjvFileTexts(translate('Cancel') == '취소');
+       if (!(selectMode.value == SelectMode.none)) {
+-        final selectedItemsLen =
+-            "${selectedItems?.items.length ?? 0} ${translate("items")}";
++        final selectedItemsLen = selectedItems == null
++            ? t.items(0)
++            : t.selected(selectedItems.items.length,
++                remote: !selectedItems.isLocal);
+         if (selectedItems == null ||
+             selectedItems.items.isEmpty ||
+             selectMode.value.eq(showLocal)) {
+           return BottomSheetBody(
+               leading: Icon(Icons.check),
+               title: translate("Selected"),
+-              text: selectedItemsLen + localLabel,
++              text: selectedItemsLen,
+               onCanceled: () {
+                 selectedItems?.items.clear();
+                 selectMode.value = SelectMode.none;
+@@ -591,7 +592,7 @@ class _FileManagerPageState extends State<FileManagerPage> {
+           return BottomSheetBody(
+               leading: Icon(Icons.input),
+               title: translate("Paste here?"),
+-              text: selectedItemsLen + localLabel,
++              text: selectedItemsLen,
+               onCanceled: () {
+                 selectedItems.items.clear();
+                 selectMode.value = SelectMode.none;
+@@ -637,8 +638,11 @@ class _FileManagerPageState extends State<FileManagerPage> {
+                 width: 22,
+                 height: 22,
+                 child: CircularProgressIndicator(strokeWidth: 2.5)),
+-            title: translate("Waiting"),
+-            text: "${readableFileSize(activeJob.speed)}/s",
++            // HJViewer (U15): what it does while it moves data, not "대기 중" beside a speed
++            title: activeJob.speed > 0
++                ? (activeJob.isRemoteToLocal ? t.receiving : t.sending)
++                : t.waiting,
++            text: "${hjvFileSize(activeJob.speed)}/s",
+             onCanceled: () {
+               model.jobController.cancelJob(activeJob.id);
+               jobTable.clear();
+@@ -737,8 +741,9 @@ class _FileManagerViewState extends State<FileManagerView> {
+               selected = _selectedItems.items.contains(entries[index]);
+             }
+ 
++            // HJViewer (U15): sizes without trailing zeros, dates to the minute
+             final sizeStr = entries[index].isFile
+-                ? readableFileSize(entries[index].size.toDouble())
++                ? hjvFileSize(entries[index].size.toDouble())
+                 : "";
+ 
+             final showCheckBox = () {
+@@ -778,7 +783,7 @@ class _FileManagerViewState extends State<FileManagerView> {
+                 subtitle: entries[index].isDrive
+                     ? null
+                     : Text(
+-                        "${entries[index].lastModified().toString().replaceAll(".000", "")}   $sizeStr",
++                        "${hjvFileDate(entries[index].lastModified())}   $sizeStr",
+                         style: TextStyle(
+                             fontSize: 12,
+                             color: look.meta,
+@@ -963,7 +968,8 @@ class _FileManagerViewState extends State<FileManagerView> {
+             Padding(
+               padding: EdgeInsets.all(2),
+               child: Text(
+-                "${translate("Total")}: ${controller.directory.value.entries.length} ${translate("items")}",
++                HjvFileTexts(translate('Cancel') == '취소')
++                    .items(controller.directory.value.entries.length),
+                 style: TextStyle(color: HjvPalette.of(context).textTertiary),
+               ),
+             )
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index 60aca98..efc1c6a 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -825,8 +825,15 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+               },
+             ),
+         ]),
+-        if (!bind.isIncomingOnly()) defaultDisplaySection(),
+-        if (networkRows.isNotEmpty) _hjvNetworkSection(),
++        // HJViewer: the two sub-screens' rows under one header, not each under its own name
++        if (!bind.isIncomingOnly() || networkRows.isNotEmpty)
++          SettingsSection(
++              title: Text(HjvPhoneTexts(hjvLabels.korean).advanced),
++              tiles: [
++                if (!bind.isIncomingOnly())
++                  ...(defaultDisplaySection() as SettingsSection).tiles,
++                if (networkRows.isNotEmpty) ..._hjvNetworkSection().tiles,
++              ]),
+         if (isAndroid)
+           SettingsSection(title: Text(translate('Hardware Codec')), tiles: [
+             SettingsTile.switchTile(
+@@ -926,13 +933,12 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                   await launchUrl(Uri.parse(url));
+                 },
+                 title: Text('${translate('Version')}: $version'),
+-                value: Padding(
+-                  padding: EdgeInsets.symmetric(vertical: 8),
+-                  child: Text(hjvAppTexts().sourceCode,
+-                      style: TextStyle(
+-                        decoration: TextDecoration.underline,
+-                      )),
+-                ),
++                // HJViewer: the link on a line of its own under the version, so that a 360 dp
++                // phone or a larger text size does not split it beside the version
++                description: Text(hjvAppTexts().sourceCode,
++                    style: TextStyle(
++                      decoration: TextDecoration.underline,
++                    )),
+                 leading: Icon(Icons.info_outline_rounded)),
+             SettingsTile(
+                 title: Text(translate("Build Date")),
+diff --git a/flutter/lib/models/file_model.dart b/flutter/lib/models/file_model.dart
+index 363ea4e..aeeb410 100644
+--- a/flutter/lib/models/file_model.dart
++++ b/flutter/lib/models/file_model.dart
+@@ -3,6 +3,7 @@ import 'dart:convert';
+ 
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_session_look.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/widgets/dialog.dart';
+ import 'package:flutter_hbb/utils/event_loop.dart';
+@@ -221,8 +222,12 @@ class FileModel {
+         (setState, Function(bool? v) close, context) {
+       cancel() => close(false);
+       submit() => close(true);
++      // HJViewer (U15): an identical file is no danger to overwrite
++      final t = HjvFileTexts(translate('Cancel') == '취소');
+       return CustomAlertDialog(
+-        title: HjvDialogTitle(Icons.warning_amber_rounded, title, danger: true),
++        title: isIdentical
++            ? Text(title)
++            : HjvDialogTitle(Icons.warning_amber_rounded, title, danger: true),
+         contentBoxConstraints: BoxConstraints(
+             minHeight: 100,
+             minWidth: HjvDialogWidth.md,
+@@ -231,7 +236,7 @@ class FileModel {
+             crossAxisAlignment: CrossAxisAlignment.start,
+             mainAxisSize: MainAxisSize.min,
+             children: [
+-              Text(translate("This file exists, skip or overwrite this file?"),
++              Text(t.overwriteAsk,
+                   style: TextStyle(
+                       fontWeight: FontWeight.w600,
+                       color: HjvPalette.of(context).text)),
+@@ -250,20 +255,27 @@ class FileModel {
+                   ],
+                 ),
+               ),
++              // HJViewer: the box and its label as the settings' rows draw them
+               showCheckbox
+-                  ? CheckboxListTile(
+-                      contentPadding: const EdgeInsets.all(0),
+-                      dense: true,
+-                      controlAffinity: ListTileControlAffinity.leading,
+-                      title: Text(
+-                        translate("Do this for all conflicts"),
+-                      ),
+-                      value: fileConfirmCheckboxRemember,
+-                      onChanged: (v) {
+-                        if (v == null) return;
+-                        setState(() => fileConfirmCheckboxRemember = v);
+-                      },
+-                    )
++                  ? InkWell(
++                      onTap: () => setState(() => fileConfirmCheckboxRemember =
++                          !fileConfirmCheckboxRemember),
++                      child: Row(children: [
++                        Checkbox(
++                          value: fileConfirmCheckboxRemember,
++                          materialTapTargetSize:
++                              MaterialTapTargetSize.shrinkWrap,
++                          visualDensity: VisualDensity.compact,
++                          onChanged: (v) {
++                            if (v == null) return;
++                            setState(() => fileConfirmCheckboxRemember = v);
++                          },
++                        ),
++                        const SizedBox(width: 4),
++                        Flexible(
++                            child: Text(translate("Do this for all conflicts"))),
++                      ]),
++                    ).marginOnly(top: 8)
+                   : const SizedBox.shrink()
+             ]),
+         actions: [
+@@ -279,7 +291,9 @@ class FileModel {
+             onPressed: () => close(null),
+             isOutline: true,
+           ),
+-          hjvDangerButton(translate("OK"), submit),
++          isIdentical
++              ? hjvButton(t.overwrite, submit)
++              : hjvDangerButton(t.overwrite, submit),
+         ],
+         onSubmit: submit,
+         onCancel: cancel,
+diff --git a/flutter/lib/models/model.dart b/flutter/lib/models/model.dart
+index 357da4e..0107b8b 100644
+--- a/flutter/lib/models/model.dart
++++ b/flutter/lib/models/model.dart
+@@ -978,7 +978,8 @@ class FfiModel with ChangeNotifier {
+         hasRetry = shouldAutoRetryOnOffline(type, title, text);
+       }
+       // HJViewer: a password-less connection a PC ended, in this app's words (TV-W5)
+-      final shown = hjvAccountMsgboxText(hjvAccessMsgboxText(sessionId, text));
++      final shown = hjvAccountMsgboxText(
++          hjvAccessMsgboxText(sessionId, text, peerId: peerId));
+       showMsgBox(sessionId, type, title, shown, link, hasRetry, dialogManager);
+     }
+   }
+diff --git a/flutter/test/hjviewer_access_test.dart b/flutter/test/hjviewer_access_test.dart
+index c743065..90f26ba 100644
+--- a/flutter/test/hjviewer_access_test.dart
++++ b/flutter/test/hjviewer_access_test.dart
+@@ -640,7 +640,8 @@ void main() {
+         'A support code cannot be created right now. Please try again in a moment.');
+   });
+ 
+-  test('A0: before connecting, only on a server known to be staff-only (U11)',
++  test(
++      'A0: before connecting, only on a server known to enforce (U11; a closed one refuses everyone)',
+       () {
+     expect([ko.askTitle, en.askTitle], ['교직원 전용 서버', 'Faculty and staff only']);
+     expect(ko.askText,
+@@ -659,10 +660,7 @@ void main() {
+                     mode: mode,
+                     loggedIn: loggedIn,
+                     held: held),
+-                accountBuild &&
+-                    (mode == 'enforce' || mode == 'closed') &&
+-                    !loggedIn &&
+-                    !held,
++                accountBuild && mode == 'enforce' && !loggedIn && !held,
+                 reason: '$mode $loggedIn $held $accountBuild');
+           }
+         }
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 36948f7..66601a2 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -1445,14 +1445,13 @@ void main() {
+   test(
+       'About says who makes HJViewer, who the administrator is and that it is a pilot (U31, U34)',
+       () {
++    // without a policy's contact no administrator's line (not the maker as one)
+     expect(hjvAboutNoticeLines(ko, accountBuild: true), [
+       '만든 곳: 프로젝트TF',
+-      'HJViewer 관리자: 프로젝트TF',
+       '본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.',
+     ]);
+     expect(hjvAboutNoticeLines(en, accountBuild: true), [
+       'Made by ProjectTF',
+-      'HJViewer administrator: ProjectTF',
+       'This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.',
+     ]);
+     // the signed policy's contact, as the policy wrote it, in both languages
+diff --git a/flutter/test/hjviewer_admin_test.dart b/flutter/test/hjviewer_admin_test.dart
+index 1611b27..a10cffc 100644
+--- a/flutter/test/hjviewer_admin_test.dart
++++ b/flutter/test/hjviewer_admin_test.dart
+@@ -399,9 +399,9 @@ void main() {
+     expect(hjvAdminOwner(const HjvAdminPc(pc: '1', owner: '2026000009')),
+         '2026000009');
+     expect(hjvAdminUserLine(ko, hong, now: now, local: kst),
+-        '활성 · 마지막 사용 10/13 18:20 · 로그인한 기기 2대 · PC 2대');
++        '활성 · 마지막 사용 10/13 18:20\n로그인한 기기 2대 · PC 2대');
+     expect(hjvAdminUserLine(ko, nameless, now: now, local: kst),
+-        '비활성 · 사용 기록 없음 · 로그인한 기기 0대 · PC 0대');
++        '비활성 · 사용 기록 없음\n로그인한 기기 0대 · PC 0대');
+     expect(hjvAdminPcTitle(lab), '연구실-PC · 123 456 789');
+     expect(hjvAdminPcTitle(bare), '111 222 333');
+     expect(hjvAdminPcLines(ko, lab, now: now, local: kst), [
+@@ -448,7 +448,7 @@ void main() {
+       'turned off on the PC',
+     ]);
+     expect(hjvAdminUserLine(en, hong, now: now, local: kst),
+-        'active · last use 10/13 18:20 · logged-in devices: 2 · PCs: 2');
++        'active · last use 10/13 18:20\nlogged-in devices: 2 · PCs: 2');
+   });
+ 
+   test('each password-less state of hjv-api has its words', () {
+diff --git a/flutter/test/hjviewer_cm_fit_test.dart b/flutter/test/hjviewer_cm_fit_test.dart
+index ded1938..b2fe1a0 100644
+--- a/flutter/test/hjviewer_cm_fit_test.dart
++++ b/flutter/test/hjviewer_cm_fit_test.dart
+@@ -59,8 +59,11 @@ Widget _header(String name, HjvMarkView? mark, String status,
+                         fontSize: 18,
+                         height: 1.3))),
+             if (mark != null) HjvMarkLine(view: mark),
+-            const FittedBox(
+-                child: Text('(123456789)', style: TextStyle(fontSize: 13))),
++            // a staff card's name line is the ID already
++            if (mark?.text != const HjvCmTexts(true).staff &&
++                mark?.text != const HjvCmTexts(false).staff)
++              const FittedBox(
++                  child: Text('(123456789)', style: TextStyle(fontSize: 13))),
+             const SizedBox(height: 8),
+             FittedBox(
+                 child: Text(status, style: const TextStyle(fontSize: 13))),
+@@ -71,6 +74,9 @@ Widget _header(String name, HjvMarkView? mark, String status,
+       ]),
+     );
+ 
++// a Windows PC's eight permissions (six elsewhere), as flat as server_page.dart draws them
++const _tiles = 8;
++
+ Widget _board() => Container(
+       key: const Key('board'),
+       width: double.infinity,
+@@ -82,12 +88,17 @@ Widget _board() => Container(
+             padding: EdgeInsets.only(left: 12, bottom: 6),
+             child: Text('Permissions', style: TextStyle(fontSize: 12))),
+         Expanded(
+-          child: GridView.count(
+-            crossAxisCount: 4,
+-            padding: const EdgeInsets.symmetric(horizontal: 10),
+-            mainAxisSpacing: 10,
+-            crossAxisSpacing: 10,
+-            children: List.generate(8, (_) => const Icon(Icons.keyboard)),
++          child: LayoutBuilder(
++            builder: (context, box) => GridView.count(
++              crossAxisCount: 4,
++              childAspectRatio: hjvCmTileAspect(
++                  width: box.maxWidth, height: box.maxHeight, count: _tiles),
++              padding: const EdgeInsets.symmetric(horizontal: 10),
++              mainAxisSpacing: 10,
++              crossAxisSpacing: 10,
++              children: List.generate(
++                  _tiles, (i) => Icon(Icons.keyboard, key: Key('tile $i'))),
++            ),
+           ),
+         ),
+       ]),
+@@ -100,8 +111,13 @@ class _Case {
+   final bool connected;
+   final Widget? note;
+   final List<String> buttons;
++  final bool allTiles;
+   const _Case(this.name, this.t,
+-      {this.mark, this.connected = false, this.note, required this.buttons});
++      {this.mark,
++      this.connected = false,
++      this.note,
++      required this.buttons,
++      this.allTiles = false});
+ }
+ 
+ List<_Case> _cases() {
+@@ -125,14 +141,26 @@ List<_Case> _cases() {
+         mark: hjvMarkView(kHjvMarkUnverifiedName, '', t),
+         note: caution,
+         buttons: [elevate, accept, dismiss]));
++    final staffNote = HjvCallout(
++        key: const Key('note'),
++        text: t.staffAccept,
++        tone: HjvTone.info,
++        icon: Icons.verified_user_rounded);
+     cases.add(_Case('$lang staff, P5, elevate', t,
+         mark: hjvMarkView(kHjvMarkStaff, '', t),
+-        note: HjvCallout(
+-            key: const Key('note'),
+-            text: t.staffAccept,
+-            tone: HjvTone.info,
+-            icon: Icons.verified_user_rounded),
++        note: staffNote,
+         buttons: [elevate, accept, dismiss]));
++    // without [수락 및 권한 상승] (an installed PC): every permission whole (review of 1.9, G6)
++    cases.add(_Case('$lang staff, P5', t,
++        mark: hjvMarkView(kHjvMarkStaff, '', t),
++        note: staffNote,
++        buttons: [accept, dismiss],
++        allTiles: true));
++    cases.add(_Case('$lang unverified name, caution', t,
++        mark: hjvMarkView(kHjvMarkUnverifiedName, '', t),
++        note: caution,
++        buttons: [accept, dismiss],
++        allTiles: true));
+     cases.add(_Case('$lang same account, recording, elevate', t,
+         mark: hjvMarkView(kHjvMarkSameAccount, '홍*동', t),
+         connected: true,
+@@ -158,10 +186,16 @@ Widget _card(_Case c) {
+             Expanded(child: _button(c.buttons[2])),
+           ]),
+         ]
+-      : [
+-          for (final b in c.buttons)
+-            Row(children: [Expanded(child: _button(b))])
+-        ];
++      : c.connected
++          ? [
++              for (final b in c.buttons)
++                Row(children: [Expanded(child: _button(b))])
++            ]
++          : [
++              Row(children: [
++                for (final b in c.buttons) Expanded(child: _button(b))
++              ])
++            ];
+   return Padding(
+     padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 8.0),
+     child: HjvCmCardColumn(
+@@ -174,7 +208,8 @@ Widget _card(_Case c) {
+         padding: const EdgeInsets.only(bottom: 8),
+         child: Column(mainAxisAlignment: MainAxisAlignment.end, children: [
+           if (!c.connected)
+-            Padding(padding: const EdgeInsets.only(bottom: 8), child: c.note),
++            Padding(
++                padding: const EdgeInsets.fromLTRB(4, 8, 4, 8), child: c.note),
+           ...rows,
+         ]),
+       ),
+@@ -211,9 +246,14 @@ void main() {
+       expect(note.bottom <= _window.height && note.top >= 0, isTrue,
+           reason: 'the note at $note');
+       // the permissions keep at least a row's part (their grid scrolls)
+-      expect(tester.getSize(find.byKey(const Key('board'))).height,
+-          greaterThanOrEqualTo(48),
+-          reason: 'the board');
++      final board = tester.getRect(find.byKey(const Key('board')));
++      expect(board.height, greaterThanOrEqualTo(48), reason: 'the board');
++      if (c.allTiles) {
++        // no toggle cut: the last tile ends inside the board
++        final last = tester.getRect(find.byKey(Key('tile ${_tiles - 1}')));
++        expect(last.bottom <= board.bottom, isTrue,
++            reason: 'the last tile at $last, the board at $board');
++      }
+       if (c.mark != null) {
+         // the line's text, after its icon's glyph
+         final mark = tester.renderObject<RenderParagraph>(find
+diff --git a/flutter/test/hjviewer_cm_test.dart b/flutter/test/hjviewer_cm_test.dart
+index 6401074..d49044f 100644
+--- a/flutter/test/hjviewer_cm_test.dart
++++ b/flutter/test/hjviewer_cm_test.dart
+@@ -150,9 +150,9 @@ void main() {
+     expect(ko.recording, '녹화 중');
+     expect(en.recording, 'Recording');
+     expect(ko.recordingLine(canChange: true),
+-        "상대가 이 연결의 화면을 녹화하고 있습니다. 멈추게 하려면 권한에서 '세션 녹화 허용'을 끄세요.");
++        "상대가 이 연결의 화면을 녹화하고 있습니다. 멈추게 하려면 권한에서 카메라 모양의 '세션 녹화 허용' 단추를 끄세요.");
+     expect(ko.recordingLine(canChange: false), '상대가 이 연결의 화면을 녹화하고 있습니다.');
+     expect(en.recordingLine(canChange: true),
+-        'The other side is recording this connection\'s screen. To stop it, turn off "Enable recording session" under Permissions.');
++        'The other side is recording this connection\'s screen. To stop it, turn off the camera button ("Enable recording session") under Permissions.');
+   });
+ }
+diff --git a/flutter/test/hjviewer_incoming_test.dart b/flutter/test/hjviewer_incoming_test.dart
+index 3bd6ffb..965c880 100644
+--- a/flutter/test/hjviewer_incoming_test.dart
++++ b/flutter/test/hjviewer_incoming_test.dart
+@@ -174,9 +174,9 @@ void main() {
+       expect(row.verified, isTrue);
+       expect(ko.line1(row), '14:03 · 파일 전송');
+       expect(ko.line2(row), 'iPhone 15 · 987 654 321');
+-      expect(ko.line3(row), '같은 계정 확인됨 · 홍*동 · 같은 계정(비밀번호 없이) · 지금 연결 중');
++      expect(ko.line3(row), '같은 계정 확인됨 · 홍*동 · 비밀번호 없이 · 지금 연결 중');
+       expect(en.line3(row),
+-          'Same account, verified · 홍*동 · Same account (no password) · Connected now');
++          'Same account, verified · 홍*동 · No password · Connected now');
+     });
+ 
+     test('a staff row has no name, only the ID and the staff mark', () {
+diff --git a/flutter/test/hjviewer_session_look_test.dart b/flutter/test/hjviewer_session_look_test.dart
+index 38f0187..b302619 100644
+--- a/flutter/test/hjviewer_session_look_test.dart
++++ b/flutter/test/hjviewer_session_look_test.dart
+@@ -129,4 +129,24 @@ void main() {
+     expect(date.fontFeatures, HjvText.tabular);
+     expect(size.fontFeatures, HjvText.tabular);
+   });
++
++  test(
++      'the file transfer says sizes, dates and a job in its own words (review of 1.9, I4)',
++      () {
++    expect(hjvFileSize(812), '812 B');
++    expect(hjvFileSize(240 * 1024), '240 KB');
++    expect(hjvFileSize(1.2 * 1024 * 1024), '1.2 MB');
++    expect(hjvFileSize(2.94 * 1024 * 1024), '2.94 MB');
++    expect(hjvFileSize(0), '0 B');
++    expect(hjvFileDate(DateTime(2026, 10, 12, 8, 50, 7)), '2026-10-12 08:50');
++    const ko = HjvFileTexts(true), en = HjvFileTexts(false);
++    expect(hjvJobLine(state: ko.done, files: ko.files(1, 1), size: '471 KB'),
++        '완료 · 파일 1/1개 · 471 KB');
++    expect(hjvJobLine(state: '', files: en.files(0, 1), size: '2.94 MB / 7 MB'),
++        '0/1 files · 2.94 MB / 7 MB');
++    expect(hjvJobLine(state: ko.paused, files: ko.files(0, 1), size: ''),
++        '일시 중지됨 · 파일 0/1개');
++    expect(ko.items(6), '6개 항목');
++    expect(ko.selected(2, remote: true), '원격에서 2개 선택됨');
++  });
+ }
+diff --git a/flutter/test/hjviewer_support_test.dart b/flutter/test/hjviewer_support_test.dart
+index c14b13f..f49fb29 100644
+--- a/flutter/test/hjviewer_support_test.dart
++++ b/flutter/test/hjviewer_support_test.dart
+@@ -122,6 +122,11 @@ void main() {
+         'PC 123 456 789에서 지원 코드를 넣었습니다. 도움받을 분에게 이 ID가 맞는지 확인하세요. 지금 연결할까요?');
+     expect(en.arrivedAsk('123456789'),
+         'PC 123 456 789 entered the support code. Check with the person you are helping that this is their ID. Connect now?');
++    // S13 shows it as S12 does: the PC's line in bold, the rest below it
++    for (final t in [ko, en]) {
++      expect('${t.arrived('123456789')} ${t.arrivedAskRest}',
++          t.arrivedAsk('123456789'));
++    }
+     // no particle that depends on the ID's last digit (S4's rule)
+     for (final id in ['123456780', '123456781', '123456783', '123456786']) {
+       expect(ko.arrived(id), endsWith('에서 지원 코드를 넣었습니다.'));
+diff --git a/src/hjviewer_cm.rs b/src/hjviewer_cm.rs
+index c2d3b8e..ef36905 100644
+--- a/src/hjviewer_cm.rs
++++ b/src/hjviewer_cm.rs
+@@ -59,8 +59,9 @@ fn spaced_id(id: &str) -> String {
+     spaced
+ }
+ 
+-/// The words of the marks the window draws, as `imitates_mark` folds them.
+-const MARK_WORDS: [&str; 7] = [
++/// The words of the marks the window draws, as `imitates_mark` folds them, and of the contact
++/// line it shows ("HJViewer 관리자: …"; not a bare "관리자", which is a common account name).
++const MARK_WORDS: [&str; 9] = [
+     "같은계정",
+     "sameaccount",
+     "확인됨",
+@@ -68,6 +69,8 @@ const MARK_WORDS: [&str; 7] = [
+     "교직원",
+     "staff",
+     "로그인확인",
++    "hjviewer관리자",
++    "hjvieweradministrator",
+ ];
+ 
+ /// For a login without an accepted proof: the name to show and its mark. Pinned builds strip
+@@ -133,7 +136,17 @@ mod tests {
+ 
+     #[test]
+     fn names_that_imitate_a_mark() {
+-        for name in ["홍길동", "DESKTOP-7Q2", "iPhone 14 Pro", "계정", "같은", "account", "연세대 PC"] {
++        for name in [
++            "홍길동",
++            "DESKTOP-7Q2",
++            "iPhone 14 Pro",
++            "계정",
++            "같은",
++            "account",
++            "연세대 PC",
++            "관리자",
++            "Administrator",
++        ] {
+             assert!(!imitates_mark(name), "{name}");
+         }
+         for name in [
+@@ -152,6 +165,8 @@ mod tests {
+             "같은\u{3164}계정",
+             "Same\u{FFA0}account",
+             "로그인\u{115F}확인",
++            "HJViewer 관리자",
++            "HJViewer Administrator",
+         ] {
+             assert!(imitates_mark(name), "{name}");
+         }

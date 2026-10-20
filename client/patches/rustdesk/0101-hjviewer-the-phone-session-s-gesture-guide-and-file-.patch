@@ -1,0 +1,1114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 02:01:21 +0900
+Subject: [PATCH 101/147] hjviewer: the phone session's gesture guide and file
+ transfer switch (TV-W7)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TV37: on a phone or tablet the gesture panel opens by itself once per mode,
+a second after the first image of a remote screen session to a peer that is
+not Android, with control, the soft keyboard closed and the Wayland keyboard
+prompt answered. It carries a title row with [알겠습니다]; closing it ([알겠습
+니다], the ▼ button, the mode button) marks the modes it showed as seen on
+this device (hjv-gesture-seen-mouse, hjv-gesture-seen-touch); a panel left
+open when the session ends marks nothing. The list says what HJViewer's
+input does: in mouse mode a two-finger tap right-clicks and one finger
+moves the pointer; no "canvas" words. The long press stays as it is (D-15).
+
+TV39: 더 보기 has [파일 전송] first. It asks F1, then closes the remote
+screen and opens the same PC's file transfer only once the page's close is
+done (the phone's pages share gFFI and one session ID), within 10 s, else a
+toast. The file screen has [원격 화면으로] beside its close button (F2 while
+transfers are open) and switches back the same way; its dispose now waits
+for gFFI.close(). The new session carries the old one's connection token,
+so a permanent password typed by hand is not asked again. No hold of the
+이용 비밀번호 ticket (D-14): F1 says that an app without a login enters it
+again, and that a PC not in 내 PC may ask for its password or acceptance;
+내 PC switches without a password. No Rust or bridge change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common.dart                       |   6 +-
+ .../lib/common/hjviewer_session_rules.dart    | 276 ++++++++++++++++++
+ .../lib/common/hjviewer_session_switch.dart   | 120 ++++++++
+ .../lib/mobile/pages/file_manager_page.dart   |  31 +-
+ flutter/lib/mobile/pages/remote_page.dart     |  73 ++++-
+ flutter/lib/mobile/widgets/gesture_help.dart  | 136 ++++-----
+ flutter/test/hjviewer_session_test.dart       | 207 +++++++++++++
+ 7 files changed, 772 insertions(+), 77 deletions(-)
+ create mode 100644 flutter/lib/common/hjviewer_session_rules.dart
+ create mode 100644 flutter/lib/common/hjviewer_session_switch.dart
+ create mode 100644 flutter/test/hjviewer_session_test.dart
+
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index 9756ffb..793c7d0 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -2700,7 +2700,8 @@ connect(BuildContext context, String id,
+                 id: id,
+                 password: password,
+                 isSharedPassword: isSharedPassword,
+-                forceRelay: forceRelay),
++                forceRelay: forceRelay,
++                connToken: connToken),
+           ),
+         );
+       }
+@@ -2765,7 +2766,8 @@ connect(BuildContext context, String id,
+                 id: id,
+                 password: password,
+                 isSharedPassword: isSharedPassword,
+-                forceRelay: forceRelay),
++                forceRelay: forceRelay,
++                connToken: connToken),
+           ),
+         );
+       }
+diff --git a/flutter/lib/common/hjviewer_session_rules.dart b/flutter/lib/common/hjviewer_session_rules.dart
+new file mode 100644
+index 0000000..5bc1bcc
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_session_rules.dart
+@@ -0,0 +1,276 @@
++// The phone and tablet session's own parts (W7): the gesture guide that opens by itself once per
++// mode at the first session, the switch between the remote screen and the same PC's file
++// transfer, and their texts in Korean and English. Plain Dart without the bridge, so that ci.sh
++// tests it with the web stand-in; hjviewer_session_switch.dart and the mobile pages wire it.
++
++// ---- the first gesture guide ----
++
++/// Local options (this device only): 'Y' once the guide of that mode was seen.
++const kHjvGestureSeenMouse = 'hjv-gesture-seen-mouse';
++const kHjvGestureSeenTouch = 'hjv-gesture-seen-touch';
++
++String hjvGestureSeenKey(bool touchMode) =>
++    touchMode ? kHjvGestureSeenTouch : kHjvGestureSeenMouse;
++
++/// Whether the guide opens by itself in this session (a second after the first image): on a
++/// phone or tablet, in a remote screen session to a peer that is not Android, with control
++/// (the mode button shows), while nothing else is in front (the soft keyboard, a dialog), once
++/// per session, and only while the mode in use was not seen on this device.
++bool hjvShouldShowGestureGuide(
++        {required bool touchMode,
++        required bool seenMouse,
++        required bool seenTouch,
++        required bool isMobile,
++        required bool defaultConn,
++        required bool peerAndroid,
++        required bool viewOnly,
++        required bool keyboard,
++        required bool softKeyboardOpen,
++        required bool dialogOpen,
++        required bool shownThisSession}) =>
++    isMobile &&
++    defaultConn &&
++    !peerAndroid &&
++    !viewOnly &&
++    keyboard &&
++    !softKeyboardOpen &&
++    !dialogOpen &&
++    !shownThisSession &&
++    !(touchMode ? seenTouch : seenMouse);
++
++/// The modes to mark seen when the panel closes: those shown while it was open (true = touch).
++Set<bool> hjvGestureModesSeen(List<bool> shownModes) => shownModes.toSet();
++
++/// One session's guide panel: opened by itself ([firstRun], with its title row) or by the mode
++/// button, the modes it showed, and what to mark seen when the user closes it. A panel still open
++/// when the session ends is not closed by the user, so nothing is marked and the next session
++/// shows it again.
++class HjvGestureGuideRun {
++  bool _firstRun = false;
++  bool _autoShown = false;
++  final _shown = <bool>[];
++
++  /// The open panel came by itself: it carries the title row and [알겠습니다].
++  bool get firstRun => _firstRun;
++
++  /// The guide already opened by itself in this session.
++  bool get autoShown => _autoShown;
++
++  void autoOpen(bool touchMode) {
++    _firstRun = true;
++    _autoShown = true;
++    _shown
++      ..clear()
++      ..add(touchMode);
++  }
++
++  void userOpen(bool touchMode) {
++    _firstRun = false;
++    _shown
++      ..clear()
++      ..add(touchMode);
++  }
++
++  /// The mode changed inside the open panel: the new mode shows too.
++  void modeChanged(bool touchMode) {
++    if (!_shown.contains(touchMode)) _shown.add(touchMode);
++  }
++
++  /// The user closed the panel ([알겠습니다], the ▼ button, the mode button).
++  Set<bool> close() {
++    final seen = hjvGestureModesSeen(_shown);
++    _shown.clear();
++    _firstRun = false;
++    return seen;
++  }
++}
++
++/// A gesture of the guide; the panel picks its icon.
++enum HjvGesture {
++  tap,
++  doubleTap,
++  twoFingerTap,
++  longPress,
++  dragPointer,
++  doubleTapDrag,
++  threeFingers,
++  twoFingerDrag,
++  pinch,
++  dragFinger,
++}
++
++class HjvGestureItem {
++  final HjvGesture gesture;
++
++  /// The hand's move and what it does on the PC.
++  final String move;
++  final String does;
++  const HjvGestureItem(this.gesture, this.move, this.does);
++}
++
++/// The guide's texts, as HJViewer's input does it (remote_input.dart): in mouse mode a tap clicks
++/// where the pointer is, two fingers tap a right click (0011), one finger moves the pointer; in
++/// touch mode a tap clicks where it lands. Three fingers scroll only on a peer that is not
++/// Android, which is also the only peer the guide opens for.
++class HjvGestureTexts {
++  final bool korean;
++  const HjvGestureTexts(this.korean);
++
++  String _t(String ko, String en) => korean ? ko : en;
++
++  String title(bool touchMode) => touchMode
++      ? _t('터치 모드의 제스처', 'Gestures in touch mode')
++      : _t('마우스 모드의 제스처', 'Gestures in mouse mode');
++  String get body => _t('아래 막대의 모드 단추로 언제든 다시 볼 수 있습니다.',
++      'Open this again any time with the mode button on the bar below.');
++  String get gotIt => _t('알겠습니다', 'Got it');
++
++  List<HjvGestureItem> items(bool touchMode) {
++    final both = [
++      HjvGestureItem(HjvGesture.threeFingers,
++          _t('세 손가락 위아래', 'Three fingers up or down'), _t('스크롤', 'Scroll')),
++      HjvGestureItem(HjvGesture.twoFingerDrag,
++          _t('두 손가락 끌기', 'Drag two fingers'), _t('화면 옮기기', 'Move the view')),
++      HjvGestureItem(
++          HjvGesture.pinch, _t('두 손가락 벌리기·오므리기', 'Pinch'), _t('확대·축소', 'Zoom')),
++    ];
++    final doubleTap = HjvGestureItem(HjvGesture.doubleTap,
++        _t('두 번 탭', 'Double-tap'), _t('더블클릭', 'Double-click'));
++    final longPress = HjvGestureItem(HjvGesture.longPress,
++        _t('길게 누르기', 'Long press'), _t('오른쪽 클릭', 'Right click'));
++    if (touchMode) {
++      return [
++        HjvGestureItem(
++            HjvGesture.tap, _t('탭', 'Tap'), _t('그 자리 클릭', 'Click there')),
++        doubleTap,
++        longPress,
++        HjvGestureItem(HjvGesture.dragFinger, _t('한 손가락 끌기', 'Drag one finger'),
++            _t('끌어서 옮기기', 'Drag and drop')),
++        ...both,
++      ];
++    }
++    return [
++      HjvGestureItem(HjvGesture.tap, _t('탭', 'Tap'), _t('왼쪽 클릭', 'Left click')),
++      doubleTap,
++      HjvGestureItem(HjvGesture.twoFingerTap, _t('두 손가락 탭', 'Two-finger tap'),
++          _t('오른쪽 클릭', 'Right click')),
++      longPress,
++      HjvGestureItem(HjvGesture.dragPointer, _t('한 손가락 끌기', 'Drag one finger'),
++          _t('포인터 옮기기', 'Move the pointer')),
++      HjvGestureItem(
++          HjvGesture.doubleTapDrag,
++          _t('두 번 탭하고 끌기', 'Double-tap and drag'),
++          _t('끌어서 옮기기', 'Drag and drop')),
++      ...both,
++    ];
++  }
++}
++
++// ---- switching between the remote screen and the file transfer ----
++
++enum HjvSwitchTarget { files, remote }
++
++/// How long the page that closes may take before the switch is given up.
++const kHjvSwitchLimit = Duration(seconds: 10);
++
++/// A switch the page that closes opens once it is gone. The connection token (the session's
++/// password hash) is kept in memory only and never printed.
++class HjvPendingSwitch {
++  final HjvSwitchTarget to;
++  final String id;
++  final String? connToken;
++  final bool forceRelay;
++  final DateTime at;
++  const HjvPendingSwitch(this.to, this.id,
++      {this.connToken, this.forceRelay = false, required this.at});
++
++  @override
++  String toString() =>
++      'HjvPendingSwitch($to, $id, token ${connToken == null ? 'none' : 'set'})';
++}
++
++/// One pending switch, opened only after the page that closes is gone (the phone's sessions
++/// share one session ID, so a new session opened first would be closed by the old page's late
++/// close), and only within [kHjvSwitchLimit].
++class HjvSessionSwitch {
++  final DateTime Function() now;
++  HjvPendingSwitch? _pending;
++  HjvSessionSwitch({required this.now});
++
++  bool get pending => _pending != null;
++
++  /// A new request replaces the one before.
++  void request(HjvSwitchTarget to, String id,
++      {String? connToken, bool forceRelay = false}) {
++    _pending = HjvPendingSwitch(to, id,
++        connToken: connToken, forceRelay: forceRelay, at: now());
++  }
++
++  bool _late(HjvPendingSwitch p) => now().difference(p.at) > kHjvSwitchLimit;
++
++  /// The page of [id] finished closing: the switch to open, or null (none, another ID, past the
++  /// limit). Taking it clears it, so it opens once; a late one is dropped too.
++  HjvPendingSwitch? pageClosed(String id) {
++    final p = _pending;
++    if (p == null || p.id != id) return null;
++    _pending = null;
++    return _late(p) ? null : p;
++  }
++
++  /// The limit's timer: the switch given up (cleared) if it is still waiting past the limit.
++  HjvPendingSwitch? expire() {
++    final p = _pending;
++    if (p == null || !_late(p)) return null;
++    _pending = null;
++    return p;
++  }
++}
++
++/// The lines F1 adds below its text: the PC's own check again (not for a PC in the account's
++/// list), the access password again (an app without a login on a staff-only server: a new
++/// connection asks again, decision D-14), the voice call or recording that ends.
++List<String> hjvSwitchExtraLines(HjvSessionTexts t,
++        {required bool ownPc,
++        required bool guest,
++        required bool callOrRecording}) =>
++    [
++      if (!ownPc) t.pcMayAsk,
++      if (!ownPc && guest) t.guestAsks,
++      if (callOrRecording) t.callEnds,
++    ];
++
++class HjvSessionTexts {
++  final bool korean;
++  const HjvSessionTexts(this.korean);
++
++  String _t(String ko, String en) => korean ? ko : en;
++
++  // F1, the remote screen's [파일 전송] in 더 보기
++  String get toFilesTitle => _t('파일 전송으로 바꿀까요?', 'Switch to file transfer?');
++  String get toFilesText => _t(
++      '원격 화면을 닫고 이 PC의 파일 전송을 엽니다. 파일 전송에서 [원격 화면으로]를 누르면 화면으로 돌아옵니다.',
++      'This closes the remote screen and opens file transfer with this PC. Tap [Remote screen] there to come back.');
++  String get pcMayAsk => _t(
++      'PC가 비밀번호나 수락을 다시 물을 수 있습니다. 일회용 비밀번호는 한 번 쓰면 바뀌므로, 그때는 PC 화면에 보이는 새 비밀번호가 필요합니다.',
++      'The PC may ask for its password or for acceptance again. A one-time password changes once it is used, so you would need the new one shown on the PC.');
++  String get guestAsks => _t('로그인하지 않았으므로 이용 비밀번호를 다시 넣어야 합니다.',
++      'You are not logged in, so you will enter the access password again.');
++  String get callEnds =>
++      _t('음성 통화와 녹화는 여기서 끝납니다.', 'The voice call and the recording end here.');
++
++  // the file transfer's [원격 화면으로] and F2
++  String get toRemoteLabel => _t('원격 화면으로 바꾸기', 'Switch to the remote screen');
++  String get toRemoteTitle =>
++      _t('원격 화면으로 바꿀까요?', 'Switch to the remote screen?');
++  String get toRemoteText =>
++      _t('진행 중인 전송이 멈춥니다.', 'Transfers in progress will stop.');
++
++  String get switchButton => _t('바꾸기', 'Switch');
++  String get cancel => _t('취소', 'Cancel');
++
++  // the limit passed before the page closed
++  String get filesFailed => _t('파일 전송을 열지 못했습니다. PC 목록에서 다시 열어 주세요.',
++      'Could not open file transfer. Open it again from the list of PCs.');
++  String get remoteFailed => _t('원격 화면을 열지 못했습니다. PC 목록에서 다시 열어 주세요.',
++      'Could not open the remote screen. Open it again from the list of PCs.');
++}
+diff --git a/flutter/lib/common/hjviewer_session_switch.dart b/flutter/lib/common/hjviewer_session_switch.dart
+new file mode 100644
+index 0000000..5b0ea1e
+--- /dev/null
++++ b/flutter/lib/common/hjviewer_session_switch.dart
+@@ -0,0 +1,120 @@
++// W7 on the phone and tablet: switch a session between the remote screen and the same PC's file
++// transfer. The phone's pages share gFFI and one session ID, so the switch closes the page first
++// and opens the other one only after that page's close is done (hjvSessionPageClosed); the rules
++// and texts are in hjviewer_session_rules.dart.
++
++import 'dart:async';
++
++import 'package:flutter/material.dart';
++import 'package:flutter_hbb/common.dart';
++import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_access.dart';
++import 'package:flutter_hbb/common/hjviewer_session_rules.dart';
++import 'package:flutter_hbb/models/chat_model.dart';
++import 'package:flutter_hbb/models/platform_model.dart';
++
++HjvSessionTexts get _t => HjvSessionTexts(translate('Cancel') == '취소');
++
++final _switch = HjvSessionSwitch(now: DateTime.now);
++Timer? _limit;
++
++Widget _button(String label, VoidCallback onPressed,
++        {bool outline = false}) =>
++    Builder(
++        builder: (context) => TextButton(
++            style: TextButton.styleFrom(
++                foregroundColor:
++                    outline ? HjvPalette.of(context).textSecondary : null,
++                textStyle: TextStyle(
++                    fontFamily: kHjvFont,
++                    fontWeight: outline ? FontWeight.w600 : FontWeight.w700)),
++            onPressed: onPressed,
++            child: Text(label)));
++
++Future<bool> _confirm(String title, List<String> lines) async {
++  final t = _t;
++  final res = await gFFI.dialogManager.show<bool>(
++      (setState, close, context) => CustomAlertDialog(
++            title: Text(title),
++            content: Column(
++              mainAxisSize: MainAxisSize.min,
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                for (final (i, line) in lines.indexed)
++                  Padding(
++                      padding: EdgeInsets.only(top: i == 0 ? 0 : 8),
++                      child: Text(line,
++                          style: i == 0
++                              ? null
++                              : TextStyle(
++                                  color:
++                                      HjvPalette.of(context).textSecondary))),
++              ],
++            ),
++            actions: [
++              _button(t.cancel, () => close(false), outline: true),
++              _button(t.switchButton, () => close(true)),
++            ],
++            onCancel: () => close(false),
++          ),
++      backDismiss: true);
++  return res == true;
++}
++
++bool _ownPc(String id) => gFFI.groupModel.peers.any((p) => p.id == id);
++
++/// 더 보기's [파일 전송] (to: files) and the file transfer's [원격 화면으로] (to: remote): F1 or F2,
++/// then close this page; the other one opens once it is gone.
++Future<void> hjvSwitchSession(
++    {required HjvSwitchTarget to,
++    required String id,
++    bool forceRelay = false,
++    bool transfersOpen = false}) async {
++  final t = _t;
++  if (to == HjvSwitchTarget.files) {
++    final loggedIn = gFFI.userModel.userName.value.isNotEmpty;
++    final lines = hjvSwitchExtraLines(t,
++        ownPc: _ownPc(id),
++        guest: !loggedIn && hjvAccessGateCloses() == true,
++        callOrRecording: gFFI.recordingModel.start ||
++            [VoiceCallStatus.waitingForResponse, VoiceCallStatus.connected]
++                .contains(gFFI.chatModel.voiceCallStatus.value));
++    if (!await _confirm(t.toFilesTitle, [t.toFilesText, ...lines])) return;
++  } else if (transfersOpen) {
++    if (!await _confirm(t.toRemoteTitle, [t.toRemoteText])) return;
++  }
++  // The token carries the session's password hash, so a permanent password typed by hand is not
++  // asked again (the desktop's connectWithToken in toolbar.dart).
++  String? token;
++  try {
++    token = bind.sessionGetConnToken(sessionId: gFFI.sessionId);
++  } catch (e) {
++    debugPrint('hjv: no connection token');
++  }
++  _switch.request(to, id, connToken: token, forceRelay: forceRelay);
++  _limit?.cancel();
++  _limit = Timer(kHjvSwitchLimit + const Duration(milliseconds: 100), () {
++    final p = _switch.expire();
++    if (p != null) {
++      showToast(p.to == HjvSwitchTarget.files ? t.filesFailed : t.remoteFailed);
++    }
++  });
++  closeConnection();
++}
++
++/// The end of a phone session page's dispose (remote_page.dart, file_manager_page.dart), after
++/// its gFFI.close(): opens the switch that page asked for, if any.
++void hjvSessionPageClosed(String id) {
++  final p = _switch.pageClosed(id);
++  if (p == null) return;
++  _limit?.cancel();
++  final context = globalKey.currentContext;
++  if (context == null) {
++    showToast(p.to == HjvSwitchTarget.files ? _t.filesFailed : _t.remoteFailed);
++    return;
++  }
++  connect(context, p.id,
++      isFileTransfer: p.to == HjvSwitchTarget.files,
++      connToken: p.connToken,
++      forceRelay: p.forceRelay);
++}
+diff --git a/flutter/lib/mobile/pages/file_manager_page.dart b/flutter/lib/mobile/pages/file_manager_page.dart
+index d6f877a..e4b488f 100644
+--- a/flutter/lib/mobile/pages/file_manager_page.dart
++++ b/flutter/lib/mobile/pages/file_manager_page.dart
+@@ -9,6 +9,8 @@ import 'package:toggle_switch/toggle_switch.dart';
+ 
+ import '../../common.dart';
+ import '../../common/hjv_style.dart';
++import '../../common/hjviewer_session_rules.dart';
++import '../../common/hjviewer_session_switch.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../consts.dart';
+ 
+@@ -18,12 +20,14 @@ class FileManagerPage extends StatefulWidget {
+       required this.id,
+       this.password,
+       this.isSharedPassword,
+-      this.forceRelay})
++      this.forceRelay,
++      this.connToken})
+       : super(key: key);
+   final String id;
+   final String? password;
+   final bool? isSharedPassword;
+   final bool? forceRelay;
++  final String? connToken;
+ 
+   @override
+   State<StatefulWidget> createState() => _FileManagerPageState();
+@@ -250,7 +254,8 @@ class _FileManagerPageState extends State<FileManagerPage> {
+         isFileTransfer: true,
+         password: widget.password,
+         isSharedPassword: widget.isSharedPassword,
+-        forceRelay: widget.forceRelay);
++        forceRelay: widget.forceRelay,
++        connToken: widget.connToken);
+     WidgetsBinding.instance.addPostFrameCallback((_) {
+       gFFI.dialogManager
+           .showLoading(translate('Connecting...'), onCancel: closeConnection);
+@@ -261,15 +266,31 @@ class _FileManagerPageState extends State<FileManagerPage> {
+ 
+   @override
+   void dispose() {
+-    model.close().whenComplete(() {
+-      gFFI.close();
++    model.close().whenComplete(() async {
++      // HJViewer (W7): a switch to the remote screen opens only after this session is closed
++      await gFFI.close();
+       gFFI.dialogManager.dismissAll();
+       WakelockManager.disable(_uniqueKey);
++      hjvSessionPageClosed(widget.id);
+     });
+     model.jobController.clear();
+     super.dispose();
+   }
+ 
++  // HJViewer (W7): [원격 화면으로] switches this session to the same PC's remote screen
++  Widget _hjvToRemoteButton() => IconButton(
++      tooltip: HjvSessionTexts(translate('Cancel') == '취소').toRemoteLabel,
++      icon: Icon(Icons.desktop_windows_outlined),
++      onPressed: () => hjvSwitchSession(
++          to: HjvSwitchTarget.remote,
++          id: widget.id,
++          forceRelay: widget.forceRelay ?? false,
++          transfersOpen: model.jobController.jobTable.any((j) => [
++                JobState.none,
++                JobState.inProgress,
++                JobState.paused
++              ].contains(j.state))));
++
+   @override
+   Widget build(BuildContext context) => WillPopScope(
+       onWillPop: () async {
+@@ -284,10 +305,12 @@ class _FileManagerPageState extends State<FileManagerPage> {
+       child: Scaffold(
+         // backgroundColor: MyTheme.grayBg,
+         appBar: AppBar(
++          leadingWidth: 96,
+           leading: Row(children: [
+             IconButton(
+                 icon: Icon(Icons.close),
+                 onPressed: () => clientClose(gFFI.sessionId, gFFI)),
++            _hjvToRemoteButton(),
+           ]),
+           centerTitle: true,
+           title: ToggleSwitch(
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index 3e199b8..edb2ebe 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -18,6 +18,8 @@ import '../../common.dart';
+ import '../../common/hjv_style.dart';
+ import '../../common/hjviewer_labels.dart';
+ import '../../common/hjviewer_android.dart';
++import '../../common/hjviewer_session_rules.dart';
++import '../../common/hjviewer_session_switch.dart';
+ import '../../common/widgets/overlay.dart';
+ import '../../common/widgets/dialog.dart';
+ import '../../common/widgets/remote_input.dart';
+@@ -57,13 +59,15 @@ class RemotePage extends StatefulWidget {
+       required this.id,
+       this.password,
+       this.isSharedPassword,
+-      this.forceRelay})
++      this.forceRelay,
++      this.connToken})
+       : super(key: key);
+ 
+   final String id;
+   final String? password;
+   final bool? isSharedPassword;
+   final bool? forceRelay;
++  final String? connToken;
+ 
+   @override
+   State<RemotePage> createState() => _RemotePageState(id);
+@@ -73,6 +77,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+   Timer? _timer;
+   bool _showBar = !isWebDesktop;
+   bool _showGestureHelp = false;
++  // HJViewer (W7): the gesture guide's run in this session
++  final _hjvGuide = HjvGestureGuideRun();
+   String _value = '';
+   Orientation? _currentOrientation;
+   final _uniqueKey = UniqueKey();
+@@ -113,6 +119,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+       password: widget.password,
+       isSharedPassword: widget.isSharedPassword,
+       forceRelay: widget.forceRelay,
++      connToken: widget.connToken,
+     );
+     WidgetsBinding.instance.addPostFrameCallback((_) {
+       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
+@@ -143,6 +150,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+       }
+       _disableAndroidSoftKeyboard(
+           isKeyboardVisible: keyboardVisibilityController.isVisible);
++      Future.delayed(const Duration(seconds: 1), _hjvMaybeShowGuide);
+     });
+     WidgetsBinding.instance.addObserver(this);
+ 
+@@ -202,6 +210,40 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+     // The inner logic of `on_voice_call_closed` will check if the voice call is active.
+     // Only one client is considered here for now.
+     gFFI.chatModel.onVoiceCallClosed("End connection");
++    hjvSessionPageClosed(widget.id);
++  }
++
++  // HJViewer (W7): the gesture guide by itself once per mode, a second after the first image
++  void _hjvMaybeShowGuide() {
++    if (!mounted || _showGestureHelp) return;
++    final ffiModel = gFFI.ffiModel;
++    if (!hjvShouldShowGestureGuide(
++        touchMode: ffiModel.touchMode,
++        seenMouse: bind.mainGetLocalOption(key: kHjvGestureSeenMouse) == 'Y',
++        seenTouch: bind.mainGetLocalOption(key: kHjvGestureSeenTouch) == 'Y',
++        isMobile: isMobile,
++        defaultConn: gFFI.connType == ConnType.defaultConn,
++        peerAndroid: ffiModel.isPeerAndroid,
++        viewOnly: ffiModel.viewOnly,
++        keyboard: ffiModel.keyboard,
++        softKeyboardOpen: keyboardVisibilityController.isVisible && _showEdit,
++        // the Wayland keyboard prompt waits for an answer
++        dialogOpen: !inputModel.keyboardInputAllowed,
++        shownThisSession: _hjvGuide.autoShown)) {
++      return;
++    }
++    setState(() {
++      _hjvGuide.autoOpen(ffiModel.touchMode);
++      _showGestureHelp = true;
++    });
++  }
++
++  // HJViewer (W7): the user closed the panel; the modes it showed count as seen on this device
++  void _hjvGuideClosed() {
++    _showGestureHelp = false;
++    for (final touchMode in _hjvGuide.close()) {
++      bind.mainSetLocalOption(key: hjvGestureSeenKey(touchMode), value: 'Y');
++    }
+   }
+ 
+   @override
+@@ -603,7 +645,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                         _mobileFocusNode.unfocus();
+                         _physicalFocusNode.requestFocus();
+                       } else if (_showGestureHelp) {
+-                        _showGestureHelp = false;
++                        _hjvGuideClosed();
+                       } else {
+                         _showBar = !_showBar;
+                       }
+@@ -756,8 +798,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+                                 icon: Icon(gFFI.ffiModel.touchMode
+                                     ? Icons.touch_app_outlined
+                                     : Icons.mouse_outlined),
+-                                onPressed: () => setState(
+-                                    () => _showGestureHelp = !_showGestureHelp),
++                                onPressed: () => setState(() {
++                                  if (_showGestureHelp) {
++                                    _hjvGuideClosed();
++                                  } else {
++                                    _hjvGuide.userOpen(gFFI.ffiModel.touchMode);
++                                    _showGestureHelp = true;
++                                  }
++                                }),
+                               ),
+                             ]) +
+                   (isWeb
+@@ -932,7 +980,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+     final mobileActionMenus = _getMobileActionMenus();
+     final menus = toolbarControls(context, id, gFFI);
+ 
++    // HJViewer (W7): [파일 전송] switches this session to the same PC's file transfer
++    final hjvSwitch = !isWeb && gFFI.ffiModel.pi.isSet.value;
++    const hjvSwitchIndex = -1;
+     final List<PopupMenuEntry<int>> more = [
++      if (hjvSwitch)
++        PopupMenuItem<int>(
++            child: Text(translate('Transfer file')), value: hjvSwitchIndex),
++      if (hjvSwitch) PopupMenuDivider(),
+       ...mobileActionMenus
+           .asMap()
+           .entries
+@@ -955,7 +1010,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+         items: more,
+         elevation: 8,
+       );
+-      if (index != null) {
++      if (index == hjvSwitchIndex) {
++        hjvSwitchSession(
++            to: HjvSwitchTarget.files,
++            id: id,
++            forceRelay: widget.forceRelay ?? false);
++      } else if (index != null) {
+         if (index < mobileActionMenus.length) {
+           mobileActionMenus[index].onPressed?.call();
+         } else if (index < mobileActionMenus.length + more.length) {
+@@ -1049,7 +1109,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+             padding: EdgeInsets.symmetric(vertical: 10),
+             child: GestureHelp(
+               touchMode: gFFI.ffiModel.touchMode,
++              firstRun: _hjvGuide.firstRun,
++              onGotIt: () => setState(_hjvGuideClosed),
+               onTouchModeChange: (t) {
++                _hjvGuide.modeChanged(t);
+                 gFFI.ffiModel.toggleTouchMode();
+                 final v = gFFI.ffiModel.touchMode ? 'Y' : 'N';
+                 bind.mainSetLocalOption(key: kOptionTouchMode, value: v);
+diff --git a/flutter/lib/mobile/widgets/gesture_help.dart b/flutter/lib/mobile/widgets/gesture_help.dart
+index 5686b2a..c381850 100644
+--- a/flutter/lib/mobile/widgets/gesture_help.dart
++++ b/flutter/lib/mobile/widgets/gesture_help.dart
+@@ -1,6 +1,7 @@
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common.dart';
+ import 'package:flutter_hbb/common/hjv_style.dart';
++import 'package:flutter_hbb/common/hjviewer_session_rules.dart';
+ import 'package:flutter_hbb/models/input_model.dart';
+ import 'package:flutter_hbb/models/model.dart';
+ import 'package:get/get.dart';
+@@ -43,12 +44,17 @@ class GestureHelp extends StatefulWidget {
+       required this.touchMode,
+       required this.onTouchModeChange,
+       required this.virtualMouseMode,
+-      this.inputModel})
++      this.inputModel,
++      this.firstRun = false,
++      this.onGotIt})
+       : super(key: key);
+   final bool touchMode;
+   final OnTouchModeChange onTouchModeChange;
+   final VirtualMouseMode virtualMouseMode;
+   final InputModel? inputModel;
++  // HJViewer (W7): opened by itself at the first session: a title row with [알겠습니다]
++  final bool firstRun;
++  final VoidCallback? onGotIt;
+ 
+   @override
+   State<StatefulWidget> createState() =>
+@@ -92,6 +98,7 @@ class _GestureHelpState extends State<GestureHelp> {
+               mainAxisAlignment: MainAxisAlignment.center,
+               crossAxisAlignment: CrossAxisAlignment.start,
+               children: <Widget>[
++                if (widget.firstRun) _hjvFirstRunRow(context),
+                 Center(
+                   child: Column(
+                     crossAxisAlignment: CrossAxisAlignment.start,
+@@ -287,75 +294,72 @@ class _GestureHelpState extends State<GestureHelp> {
+                     child: Wrap(
+                   spacing: space,
+                   runSpacing: 2 * space,
+-                  children: _touchMode
+-                      ? [
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconMobileTouch,
+-                              translate("One-Finger Tap"),
+-                              translate("Left Mouse")),
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconGesturePressHold,
+-                              translate("One-Long Tap"),
+-                              translate("Right Mouse")),
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconGestureFSwipeRight,
+-                              translate("One-Finger Move"),
+-                              translate("Mouse Drag")),
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconGestureFThreeFingers,
+-                              translate("Three-Finger vertically"),
+-                              translate("Mouse Wheel")),
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconGestureFDrag,
+-                              translate("Two-Finger Move"),
+-                              translate("Canvas Move")),
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconGesturePinch,
+-                              translate("Pinch to Zoom"),
+-                              translate("Canvas Zoom")),
+-                        ]
+-                      : [
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconMobileTouch,
+-                              translate("One-Finger Tap"),
+-                              translate("Left Mouse")),
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconGesturePressHold,
+-                              translate("One-Long Tap"),
+-                              translate("Right Mouse")),
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconGestureFSwipeRight,
+-                              translate("Double Tap & Move"),
+-                              translate("Mouse Drag")),
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconGestureFThreeFingers,
+-                              translate("Three-Finger vertically"),
+-                              translate("Mouse Wheel")),
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconGestureFDrag,
+-                              translate("Two-Finger Move"),
+-                              translate("Canvas Move")),
+-                          GestureInfo(
+-                              width,
+-                              GestureIcons.iconGesturePinch,
+-                              translate("Pinch to Zoom"),
+-                              translate("Canvas Zoom")),
+-                        ],
++                  // HJViewer (W7): the gestures as HJViewer's input does them
++                  children: HjvGestureTexts(_hjvKorean)
++                      .items(_touchMode)
++                      .map((e) => GestureInfo(
++                          width, _hjvGestureIcon(e.gesture), e.move, e.does))
++                      .toList(),
+                 )),
+               ],
+             )));
+   }
++
++  bool get _hjvKorean => translate('Cancel') == '취소';
++
++  Widget _hjvFirstRunRow(BuildContext context) {
++    final p = HjvPalette.of(context);
++    final t = HjvGestureTexts(_hjvKorean);
++    return Padding(
++      padding: const EdgeInsets.fromLTRB(16, 0, 8, 12),
++      child: Row(
++        children: [
++          Expanded(
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Text(t.title(_touchMode),
++                    style: HjvText.titleSmall.copyWith(color: p.text)),
++                SizedBox(height: 2),
++                Text(t.body,
++                    style: HjvText.bodySmall.copyWith(color: p.textSecondary)),
++              ],
++            ),
++          ),
++          TextButton(
++              onPressed: widget.onGotIt,
++              style: TextButton.styleFrom(
++                  textStyle: TextStyle(
++                      fontFamily: kHjvFont, fontWeight: FontWeight.w700)),
++              child: Text(t.gotIt)),
++        ],
++      ),
++    );
++  }
++}
++
++IconData _hjvGestureIcon(HjvGesture g) {
++  switch (g) {
++    case HjvGesture.tap:
++      return GestureIcons.iconMobileTouch;
++    case HjvGesture.doubleTap:
++      return GestureIcons.iconGestureFdoubleTap;
++    case HjvGesture.twoFingerTap:
++      return GestureIcons.iconGestureFTap_;
++    case HjvGesture.longPress:
++      return GestureIcons.iconGesturePressHold;
++    case HjvGesture.dragPointer:
++    case HjvGesture.dragFinger:
++      return GestureIcons.iconGestureFSwipeRight;
++    case HjvGesture.doubleTapDrag:
++      return GestureIcons.iconGesturePress;
++    case HjvGesture.threeFingers:
++      return GestureIcons.iconGestureFThreeFingers;
++    case HjvGesture.twoFingerDrag:
++      return GestureIcons.iconGestureFDrag;
++    case HjvGesture.pinch:
++      return GestureIcons.iconGesturePinch;
++  }
+ }
+ 
+ class GestureInfo extends StatelessWidget {
+diff --git a/flutter/test/hjviewer_session_test.dart b/flutter/test/hjviewer_session_test.dart
+new file mode 100644
+index 0000000..54f9755
+--- /dev/null
++++ b/flutter/test/hjviewer_session_test.dart
+@@ -0,0 +1,207 @@
++import 'package:flutter_hbb/common/hjviewer_session_rules.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++// The phone session's first gesture guide and its switch between the remote screen and the file
++// transfer (W7), without the bridge.
++
++bool show(
++        {bool touchMode = false,
++        bool seenMouse = false,
++        bool seenTouch = false,
++        bool isMobile = true,
++        bool defaultConn = true,
++        bool peerAndroid = false,
++        bool viewOnly = false,
++        bool keyboard = true,
++        bool softKeyboardOpen = false,
++        bool dialogOpen = false,
++        bool shownThisSession = false}) =>
++    hjvShouldShowGestureGuide(
++        touchMode: touchMode,
++        seenMouse: seenMouse,
++        seenTouch: seenTouch,
++        isMobile: isMobile,
++        defaultConn: defaultConn,
++        peerAndroid: peerAndroid,
++        viewOnly: viewOnly,
++        keyboard: keyboard,
++        softKeyboardOpen: softKeyboardOpen,
++        dialogOpen: dialogOpen,
++        shownThisSession: shownThisSession);
++
++void main() {
++  group('the first gesture guide', () {
++    test('opens by itself only when every condition holds', () {
++      expect(show(), isTrue);
++      expect(show(isMobile: false), isFalse);
++      expect(show(defaultConn: false), isFalse);
++      expect(show(peerAndroid: true), isFalse);
++      expect(show(viewOnly: true), isFalse);
++      expect(show(keyboard: false), isFalse);
++      expect(show(softKeyboardOpen: true), isFalse);
++      expect(show(dialogOpen: true), isFalse);
++      expect(show(shownThisSession: true), isFalse);
++      expect(show(seenMouse: true), isFalse);
++      expect(show(touchMode: true, seenTouch: true), isFalse);
++    });
++
++    test('each mode is seen on its own', () {
++      expect(show(seenTouch: true), isTrue);
++      expect(show(touchMode: true, seenMouse: true), isTrue);
++      expect(hjvGestureSeenKey(false), 'hjv-gesture-seen-mouse');
++      expect(hjvGestureSeenKey(true), 'hjv-gesture-seen-touch');
++    });
++
++    test('closing marks the modes the panel showed', () {
++      final run = HjvGestureGuideRun()..autoOpen(false);
++      expect(run.firstRun, isTrue);
++      run.modeChanged(true);
++      expect(run.close(), {false, true});
++      expect(run.firstRun, isFalse);
++      expect(run.autoShown, isTrue);
++
++      final own = HjvGestureGuideRun()..userOpen(true);
++      expect(own.firstRun, isFalse);
++      expect(own.autoShown, isFalse);
++      expect(own.close(), {true});
++    });
++
++    test('a panel left open when the session ends marks nothing', () {
++      // the page is disposed without close(): a new session starts with a new run
++      final run = HjvGestureGuideRun()..autoOpen(true);
++      expect(run.autoShown, isTrue);
++      expect(HjvGestureGuideRun().close(), isEmpty);
++      expect(hjvGestureModesSeen([]), isEmpty);
++    });
++
++    test('lists what HJViewer does, in both languages', () {
++      for (final korean in [true, false]) {
++        final t = HjvGestureTexts(korean);
++        expect(t.items(false).length, 9);
++        expect(t.items(true).length, 7);
++        for (final touchMode in [false, true]) {
++          for (final e in t.items(touchMode)) {
++            expect(e.move, isNotEmpty);
++            expect(e.does, isNotEmpty);
++          }
++          expect(t.title(touchMode), isNotEmpty);
++        }
++      }
++      final ko = HjvGestureTexts(true);
++      final all = [
++        for (final m in [false, true])
++          for (final e in ko.items(m)) '${e.move} ${e.does}'
++      ].join('\n');
++      expect(all, isNot(contains('캔버스')));
++      expect(all, isNot(contains('찝어서')));
++      expect(
++          ko.items(false).map((e) => e.gesture),
++          containsAll([
++            HjvGesture.twoFingerTap,
++            HjvGesture.dragPointer,
++          ]));
++      expect(ko.items(true).map((e) => e.gesture),
++          isNot(contains(HjvGesture.twoFingerTap)));
++      expect(ko.gotIt, '알겠습니다');
++      expect(const HjvGestureTexts(false).gotIt, 'Got it');
++    });
++  });
++
++  group('the switch', () {
++    var clock = DateTime(2026, 10, 20, 9);
++    HjvSessionSwitch make() => HjvSessionSwitch(now: () => clock);
++
++    test('opens once, for the page that asked, within ten seconds', () {
++      clock = DateTime(2026, 10, 20, 9);
++      final s = make()
++        ..request(HjvSwitchTarget.files, '123456789', connToken: 'tok');
++      expect(s.pageClosed('987654321'), isNull);
++      clock = clock.add(const Duration(seconds: 3));
++      final p = s.pageClosed('123456789');
++      expect(p?.to, HjvSwitchTarget.files);
++      expect(p?.connToken, 'tok');
++      expect(s.pageClosed('123456789'), isNull);
++    });
++
++    test('a page that closes too late opens nothing', () {
++      clock = DateTime(2026, 10, 20, 9);
++      final s = make()..request(HjvSwitchTarget.remote, '1');
++      clock = clock.add(const Duration(seconds: 11));
++      expect(s.pageClosed('1'), isNull);
++      expect(s.pending, isFalse);
++
++      final t = make()..request(HjvSwitchTarget.remote, '1');
++      expect(t.expire(), isNull);
++      clock = clock.add(const Duration(seconds: 11));
++      expect(t.expire()?.id, '1');
++      expect(t.pending, isFalse);
++    });
++
++    test('a new request replaces the one before', () {
++      clock = DateTime(2026, 10, 20, 9);
++      final s = make()
++        ..request(HjvSwitchTarget.files, '1')
++        ..request(HjvSwitchTarget.remote, '2', forceRelay: true);
++      expect(s.pageClosed('1'), isNull);
++      final p = s.pageClosed('2');
++      expect(p?.to, HjvSwitchTarget.remote);
++      expect(p?.forceRelay, isTrue);
++    });
++
++    test('the token never shows in a print', () {
++      final p = HjvPendingSwitch(HjvSwitchTarget.files, '1',
++          connToken: 'secret-hash', at: DateTime(2026));
++      expect(p.toString(), isNot(contains('secret-hash')));
++    });
++  });
++
++  group("F1's lines", () {
++    const t = HjvSessionTexts(true);
++    test('an own PC adds nothing', () {
++      expect(
++          hjvSwitchExtraLines(t,
++              ownPc: true, guest: false, callOrRecording: false),
++          isEmpty);
++    });
++    test('another PC may ask again, a guest enters the access password again',
++        () {
++      expect(
++          hjvSwitchExtraLines(t,
++              ownPc: false, guest: false, callOrRecording: false),
++          [t.pcMayAsk]);
++      expect(
++          hjvSwitchExtraLines(t,
++              ownPc: false, guest: true, callOrRecording: false),
++          [t.pcMayAsk, t.guestAsks]);
++      expect(t.guestAsks, contains('이용 비밀번호'));
++    });
++    test('a voice call or recording ends', () {
++      expect(
++          hjvSwitchExtraLines(t,
++              ownPc: true, guest: false, callOrRecording: true),
++          [t.callEnds]);
++    });
++    test('both languages', () {
++      for (final k in [true, false]) {
++        final x = HjvSessionTexts(k);
++        for (final s in [
++          x.toFilesTitle,
++          x.toFilesText,
++          x.pcMayAsk,
++          x.guestAsks,
++          x.callEnds,
++          x.toRemoteLabel,
++          x.toRemoteTitle,
++          x.toRemoteText,
++          x.switchButton,
++          x.cancel,
++          x.filesFailed,
++          x.remoteFailed,
++        ]) {
++          expect(s, isNotEmpty);
++        }
++      }
++      expect(const HjvSessionTexts(false).switchButton, 'Switch');
++    });
++  });
++}
