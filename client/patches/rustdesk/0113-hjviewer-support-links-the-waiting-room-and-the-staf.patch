@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 03:31:53 +0900
-Subject: [PATCH 113/147] hjviewer: support links, the waiting room and the
+Subject: [PATCH 113/148] hjviewer: support links, the waiting room and the
  staff mark's screens (TV-W6 controller)
 
 TV-W6 S2, S9, S10: from a 1.9 hjv-api, whose support-code answer also

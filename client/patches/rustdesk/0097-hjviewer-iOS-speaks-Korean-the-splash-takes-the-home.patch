@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 01:59:28 +0900
-Subject: [PATCH 097/147] hjviewer: iOS speaks Korean, the splash takes the
+Subject: [PATCH 097/148] hjviewer: iOS speaks Korean, the splash takes the
  home's colours, phone settings start with language
 
 UX-M1:

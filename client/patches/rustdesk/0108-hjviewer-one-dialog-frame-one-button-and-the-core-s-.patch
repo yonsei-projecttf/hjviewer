@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 03:14:03 +0900
-Subject: [PATCH 108/147] hjviewer: one dialog frame, one button and the core's
+Subject: [PATCH 108/148] hjviewer: one dialog frame, one button and the core's
  toasts (UX-S2)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

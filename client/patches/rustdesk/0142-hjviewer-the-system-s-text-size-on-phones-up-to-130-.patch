@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 06:20:14 +0900
-Subject: [PATCH 142/147] hjviewer: the system's text size on phones, up to 130
+Subject: [PATCH 142/148] hjviewer: the system's text size on phones, up to 130
  % (UX-K3)
 
 UX-K3 (U58): a phone or tablet follows the system's text size from 100 %

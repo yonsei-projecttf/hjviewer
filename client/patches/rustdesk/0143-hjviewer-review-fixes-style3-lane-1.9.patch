@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 06:32:19 +0900
-Subject: [PATCH 143/147] hjviewer: review fixes, style3 lane (1.9)
+Subject: [PATCH 143/148] hjviewer: review fixes, style3 lane (1.9)
 
 UX-K3: the phone's camera view (mobile/pages/view_camera_page.dart) wraps its build in
 hjvFixedTextScale as the remote screen does, so the camera's picture and its bottom bar stay at

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 06:48:03 +0900
-Subject: [PATCH 139/147] hjviewer: Windows 11 snap layouts on the maximise
+Subject: [PATCH 139/148] hjviewer: Windows 11 snap layouts on the maximise
  button and the title bar's window menu (UX-K4)
 
 UX-K4 (U44, design build/v19/design/u44.md with its review):

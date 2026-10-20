@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 05:17:05 +0900
-Subject: [PATCH 136/147] hjviewer: the support codes' wire as hjv-api speaks
+Subject: [PATCH 136/148] hjviewer: the support codes' wire as hjv-api speaks
  it (1.9)
 
 - A support code's pc-code result says "staff": whether hjv-api's answer

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 03:37:01 +0900
-Subject: [PATCH 106/147] hjviewer: an own PC's close button shows when it
+Subject: [PATCH 106/148] hjviewer: an own PC's close button shows when it
  locks, and its screen hides on connect (TV-W3)
 
 TV-W3, controller side (design build/v19/design/w3-w4.md 3-2, 3-3, 5-3,

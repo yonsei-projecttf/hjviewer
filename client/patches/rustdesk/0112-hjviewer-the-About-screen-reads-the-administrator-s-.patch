@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 03:07:05 +0900
-Subject: [PATCH 112/147] hjviewer: the About screen reads the administrator's
+Subject: [PATCH 112/148] hjviewer: the About screen reads the administrator's
  contact from hjv-admin-contact (I-1)
 
 Words lane I-1 (critic X-13): _aboutLines() takes the contact from

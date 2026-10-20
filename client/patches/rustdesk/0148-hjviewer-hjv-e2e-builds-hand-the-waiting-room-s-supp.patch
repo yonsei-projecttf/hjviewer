@@ -1,0 +1,127 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Tue, 20 Oct 2026 10:58:14 +0900
+Subject: [PATCH 148/148] hjviewer: hjv-e2e builds hand the waiting room's
+ support PC to the next command
+
+Every headless command is a process of its own, and the app keeps the support PCs
+its waiting room named in memory only. --hjv-e2e-support-wait now keeps the PC
+that arrived in LocalConfig hjv-e2e-support-pc (its ID, key, the ticket's end and
+the login), and support_pc reads it when its memory has none, so that the next
+command's controller sends the support proof (E2E W6-E4, E4b, E5). Only hjv-e2e
+builds have it; the app is one process and needs none.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_account/mod.rs     |  2 +-
+ src/hjviewer_account/support.rs | 53 ++++++++++++++++++++++++++++++++-
+ src/hjviewer_e2e.rs             |  5 +++-
+ 3 files changed, 57 insertions(+), 3 deletions(-)
+
+diff --git a/src/hjviewer_account/mod.rs b/src/hjviewer_account/mod.rs
+index 824e04e..68be295 100644
+--- a/src/hjviewer_account/mod.rs
++++ b/src/hjviewer_account/mod.rs
+@@ -54,7 +54,7 @@ pub(crate) use pc::uninstall_command;
+ pub(crate) use pc::write_private;
+ pub(crate) use pc::{key_login, pc_capable, start_pc_sync};
+ #[cfg(feature = "hjv-e2e")]
+-pub(crate) use support::e2e_make as e2e_support_code;
++pub(crate) use support::{e2e_keep_support_pc, e2e_make as e2e_support_code};
+ 
+ /// main_get_common: the account's keys (api.rs) and the PC's incoming connections (TV-W9).
+ pub(crate) fn get_common(key: &str) -> Option<String> {
+diff --git a/src/hjviewer_account/support.rs b/src/hjviewer_account/support.rs
+index 50dfbc7..d027d6b 100644
+--- a/src/hjviewer_account/support.rs
++++ b/src/hjviewer_account/support.rs
+@@ -742,7 +742,10 @@ pub(super) fn support_pc(pc_id: &str) -> Option<[u8; 32]> {
+     let login = login_of(&LocalConfig::get_option("access_token"));
+     let mut room = room();
+     room.tidy(&login, Instant::now());
+-    room.pcs.get(pc_id).map(|pc| pc.pk)
++    let found = room.pcs.get(pc_id).map(|pc| pc.pk);
++    #[cfg(feature = "hjv-e2e")]
++    let found = found.or_else(|| e2e_support_pc(pc_id, &login));
++    found
+ }
+ 
+ /// ctl.rs, before a support proof goes (S-02): whether hjv-api still takes this login, by an
+@@ -811,6 +814,54 @@ pub(crate) fn e2e_make() -> i32 {
+     }
+ }
+ 
++/// hjv-e2e builds only: every headless command is a process of its own, and the support PCs live
++/// in the memory of the process that learned them. `--hjv-e2e-support-wait` hands the PC its
++/// waiting room named on in LocalConfig (E2E_PC), which support_pc reads when its memory has
++/// none, so that the next command's controller sends the support proof (docs/e2e.md, W6-E4).
++#[cfg(feature = "hjv-e2e")]
++const E2E_PC: &str = "hjv-e2e-support-pc";
++
++#[cfg(feature = "hjv-e2e")]
++fn unix_now() -> u64 {
++    std::time::SystemTime::now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .map_or(0, |d| d.as_secs())
++}
++
++/// `--hjv-e2e-support-wait`: keeps the support PC `pc_id` of this login for the next commands.
++#[cfg(feature = "hjv-e2e")]
++pub(crate) fn e2e_keep_support_pc(pc_id: &str) {
++    let login = login_of(&LocalConfig::get_option("access_token"));
++    let now = Instant::now();
++    let mut room = room();
++    room.tidy(&login, now);
++    let Some(pc) = room.pcs.get(pc_id) else {
++        return;
++    };
++    let until = unix_now() + pc.until.saturating_duration_since(now).as_secs();
++    let kept = json!({
++        "pc": pc_id,
++        "pk": STANDARD.encode(pc.pk),
++        "until": until,
++        "login": STANDARD.encode(login),
++    });
++    LocalConfig::set_option(E2E_PC.to_owned(), kept.to_string());
++}
++
++/// The key of the support PC `pc_id` that an earlier command kept for `login`, until its ticket ends.
++#[cfg(feature = "hjv-e2e")]
++fn e2e_support_pc(pc_id: &str, login: &[u8; 32]) -> Option<[u8; 32]> {
++    let kept: Value = serde_json::from_str(&LocalConfig::get_option(E2E_PC)).ok()?;
++    (kept.get("pc")?.as_str()? == pc_id).then_some(())?;
++    (kept.get("login")?.as_str()? == STANDARD.encode(login)).then_some(())?;
++    (unix_now() < kept.get("until")?.as_u64()?).then_some(())?;
++    STANDARD
++        .decode(kept.get("pk")?.as_str()?)
++        .ok()?
++        .try_into()
++        .ok()
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index e74554b..f821286 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -322,7 +322,8 @@ fn account_command(args: &[String]) -> Option<i32> {
+ 
+ /// `--hjv-e2e-support-wait <secs>`: a support code as `--hjv-e2e-support-code` makes it, then
+ /// what S2 reads from the waiting room each second in this process, whose memory holds it:
+-/// `hjv-e2e: support arrived: <PC ID>` (0), or `none` after `secs` (7).
++/// `hjv-e2e: support arrived: <PC ID>` (0), or `none` after `secs` (7). The PC that arrived is
++/// kept in LocalConfig `hjv-e2e-support-pc` for the next commands' support proof.
+ fn support_wait(secs: u64) -> i32 {
+     let made = crate::hjviewer_account::e2e_support_code();
+     if made != 0 {
+@@ -335,6 +336,8 @@ fn support_wait(secs: u64) -> i32 {
+             .ok()
+             .and_then(|a| a.get("pc").and_then(Value::as_str).map(str::to_owned));
+         if let Some(pc) = pc {
++            // the next commands are processes of their own: they read the support PC from here
++            crate::hjviewer_account::e2e_keep_support_pc(&pc);
+             println!("hjv-e2e: support arrived: {pc}");
+             return 0;
+         }

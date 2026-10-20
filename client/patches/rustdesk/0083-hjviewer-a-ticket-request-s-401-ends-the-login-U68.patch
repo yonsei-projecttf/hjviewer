@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 23:43:16 +0900
-Subject: [PATCH 083/147] hjviewer: a ticket request's 401 ends the login (U68)
+Subject: [PATCH 083/148] hjviewer: a ticket request's 401 ends the login (U68)
 
 Rust's POST /api/hjv/ticket goes by the login without the screens: its
 401 (a logout from another device or by the administrator, an expired
