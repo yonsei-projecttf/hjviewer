@@ -6,13 +6,13 @@
 
 모바일 앱(iOS/Android)에서 Windows PC를 원격으로 보고 제어하는 서비스입니다. 프로젝트TF가 만듭니다. **방화벽·NAT 뒤에서도 HTTPS(443)만으로 연결**되는 것이 핵심입니다.
 [RustDesk](https://github.com/rustdesk/rustdesk) 클라이언트와 [rustdesk-server](https://github.com/rustdesk/rustdesk-server)를 포크해서 만듭니다.
-1.6.0부터는 연세포탈 ID로 로그인하면 앱에 내 Windows PC 목록이 나오고, 같은 계정으로 로그인한 내 기기끼리는 PC 비밀번호 없이 연결하며, 꺼진 PC를 같은 네트워크의 NAS 중계기로 켭니다. 로그인은 연세 SSO를 거치고, 연세 SSO는 연세대학교 교직원 계정만 받습니다. 그 SSO를 통과한 사람은 처음 로그인할 때 저절로 등록되고, 운영자는 계정을 막을 수 있습니다(`hjv-api admin block`). 서버에서 `HJV_API_LOGIN=list`로 바꾸면 운영자가 미리 명단에 올린 ID만 로그인합니다. 운영자가 정한 최소 버전보다 낮은 앱은 연결이 거절되고, 새 버전은 앱 안에서 받습니다(서명된 버전 정책). 1.8.0부터 서버는 교직원 전용으로 둘 수 있습니다: 운영자가 출입 확인을 켜면 로그인한 앱과 계정에 묶인 PC, 그리고 운영자가 정한 이용 비밀번호를 넣은 쪽만 서버를 씁니다(출입증). 1.9.0부터는 로그인한 교직원이 앱에서 만든 일회용 지원 코드로 로그인하지 않은 PC 하나가 2시간 동안 연결을 받고, 휴대폰 앱은 Face ID·지문·기기 암호로 여는 앱 잠금을 고를 수 있습니다(기본은 꺼짐).
+1.6.0부터는 연세포탈 ID로 로그인하면 앱에 내 Windows PC 목록이 나오고, 같은 계정으로 로그인한 내 기기끼리는 PC 비밀번호 없이 연결하며, 꺼진 PC를 같은 네트워크의 NAS 중계기로 켭니다. 로그인은 연세 SSO를 거치고, 연세 SSO는 연세대학교 교직원 계정만 받습니다. 그 SSO를 통과한 사람은 처음 로그인할 때 저절로 등록되고, 운영자는 계정을 막을 수 있습니다(`hjv-api admin block`). 서버에서 `HJV_API_LOGIN=list`로 바꾸면 운영자가 미리 명단에 올린 ID만 로그인합니다. 운영자가 정한 최소 버전보다 낮은 앱은 연결이 거절되고, 새 버전은 앱 안에서 받습니다(서명된 버전 정책). 1.8.0부터 서버는 교직원 전용으로 둘 수 있습니다: 운영자가 출입 확인을 켜면 로그인한 앱과 계정에 묶인 PC, 그리고 운영자가 정한 이용 비밀번호를 넣은 쪽만 서버를 씁니다(출입증). 1.9.0부터는 로그인한 교직원이 앱에서 만든 일회용 지원 코드와 지원 링크로 로그인하지 않은 PC 하나가 2시간 동안 연결을 받고, 그 PC의 연결 창은 서명으로 확인한 "연세대 교직원(로그인 확인)" 표시를 보입니다. 내 계정의 기기에는 "같은 계정 확인됨" 표시가 붙고, 내 PC에 연결한 세션은 연결할 때 잠겨 있던 PC를 끝날 때 다시 잠그며, 로그아웃한 기기의 비밀번호 없는 연결은 끊깁니다. 설치한 PC는 들어온 연결의 목록과 원격 준비 점검을 보이고, 휴대폰 앱은 Face ID·지문·기기 암호로 여는 앱 잠금을 고를 수 있습니다(기본은 꺼짐).
 
 - 설계와 동작 원리: [docs/architecture.md](docs/architecture.md)
 - 서버 배포: [docs/deploy.md](docs/deploy.md)
 - CI(개발 PC)와 앱 빌드: [docs/ci.md](docs/ci.md)
 - 방화벽 E2E 검증과 결과: [docs/e2e.md](docs/e2e.md)
-- 앱 배포와 업데이트(현재 세 플랫폼 최소 1.8.0, 유예 없음), 스토어 자동화에 필요한 것: [docs/distribution.md](docs/distribution.md)
+- 앱 배포와 업데이트(현재 세 플랫폼 최소 1.8.0, 유예 없음. 1.9.0은 빌드 중), 1.9.0에서 사용자에게 달라지는 것, 스토어 자동화에 필요한 것: [docs/distribution.md](docs/distribution.md)
 - 서명된 버전 정책을 만들고 확인하는 운영자 도구(hjv-release): [tools/hjv-release/README.md](tools/hjv-release/README.md)
 - 서버에서 작업할 사람·에이전트용 배포 절차: [docs/server-runbook.md](docs/server-runbook.md) (1.6.0의 계정 API는 7절, 1.8.0의 교직원 전용 출입 제한은 9절)
 - 교직원 전용 출입 제한의 형식(출입증, hbbs의 access.conf, 이용 비밀번호, 지원 코드)과 앱이 보이는 글: [docs/access-tickets.md](docs/access-tickets.md)
@@ -21,9 +21,9 @@
 - 원격 켜기 중계기(hjv-relay)의 NAS 설치와 규약: [docs/relay-dsm.md](docs/relay-dsm.md), [relay/PROTOCOL.md](relay/PROTOCOL.md)
 - 원격 켜기로 켤 PC의 준비(랜카드, BIOS, 절전과 종료, 빠른 시작): [docs/wol-pc-setup.md](docs/wol-pc-setup.md)
 
-## 현재 상태와 출시 이력 (2026-10-19)
+## 현재 상태와 출시 이력 (2026-10-20)
 
-현재 Windows·iOS·Android의 최소·최신 버전은 **1.8.0**, 유예는 없습니다. 운영 반영 상태는 2026-10-19 운영 에이전트 보고 기준입니다. 아래 1.6.x·1.7.0 행은 출시 이력입니다.
+현재 Windows·iOS·Android의 최소·최신 버전은 **1.8.0**, 유예는 없습니다. **1.9.0**은 빌드 중이고 아직 나눠 주지 않았습니다. 운영 반영 상태는 2026-10-19 운영 에이전트 보고 기준입니다. 아래 1.6.x·1.7.0·1.8.0 행은 출시 이력입니다. 1.8.2로 만든 작업은 1.9.0에 들어 있고, 1.8.2는 따로 나가지 않습니다.
 
 | 항목 | 상태 |
 |---|---|
@@ -34,7 +34,8 @@
 | 1.6.x: 연세포탈 로그인, 내 기기 목록, 비밀번호 없는 연결, 원격 켜기, 최소 버전과 업데이트(1.6.0의 기능을 1.6.1로 출시) | 2026-10-14에 1.6.1로 출시: 태그 `client-1.6.1`(Android 최소 7.0, 로그인 오류 문구), 세 플랫폼 출시 빌드, iOS는 TestFlight. 운영 서버: 계정 API와 nginx 전환, 첫 버전 정책(최소 1.6.1, 유예 없음), 문 2(2026-11-30까지), hbbs가 1.5.x 컨트롤러를 거절(2026-10-14 23:43부터), hjv-api `server-2026.10.14.3`. NAS 중계기는 `relay-1.6.0`으로 공개하고 2026-10-15에 설치·승인. 아이폰은 1.6.2(한글 입력 고침, 태그 `client-1.6.2`, 2026-10-15)를 TestFlight로. 들어 있는 것: 계정 API hjv-api(계정 키, 요청 서명, PC 동기화와 신뢰 목록, 켜기 API, 감시·백업, 열린 로그인과 막기, 최고운영자의 사용자·PC 보기, 새 버전 내려받기), hbbs 패치 0004·0005(최소 컨트롤러 버전), NAS 중계기 hjv-relay와 DSM 설치 안내, 운영자 도구 hjv-release와 신뢰 규칙의 시험 벡터, 서버의 버전 정책 확인 스크립트와 nginx 위치, 앱의 계정 기능·켜기 메뉴(클라이언트 패치 0030–0036), 앱의 최소 버전과 업데이트(서명된 정책, PC의 컨트롤러 거절, Windows 무인 설치, 업데이트 화면, 사이드로드 Android의 앱 안 설치), Android 제어 전용, 최고운영자 화면, 만든 곳(프로젝트TF)과 시범 안내, 스플래시(앱 바탕색 위의 아이콘과 '연세대학교 프로젝트TF' 줄)(클라이언트 패치 0037–0045), Windows 패커가 `taskkill`을 Windows 시스템 폴더에서 실행함(클라이언트 패치 0046). 2026-10-14의 통합에서 최소 버전·열린 로그인·최고운영자 화면·Play 업로드·CI·스플래시의 묶음을 합침. 배포 절차: [docs/server-runbook.md](docs/server-runbook.md) 7절, 8절. 남은 일은 아래 줄 |
 | 1.7.0: 새 화면(세 플랫폼) | 2026-10-15 구현과 빌드: 태그 `client-1.7.0`(4c3baaf), 비공개 빌드 저장소의 출시 실행 38724716986에서 세 플랫폼 빌드, iOS는 같은 실행이 TestFlight에 올림(빌드 262881109). 정책 seq 3(세 플랫폼 최신 1.7.0, 최소 1.6.1 그대로, Windows 무인 설치 2026-10-17 22:13부터)은 2026-10-16에 서버에 넣음. 문 2도 그때부터 1.7.0을 내줌. 앱 아이콘의 파랑 하나를 강조색으로 쓰는 차분한 색 체계, 얇은 테두리의 카드, 둥근 모서리, 글꼴 Pretendard(SIL OFL 1.1, `client/overlay`의 `flutter/assets/fonts`; 고지는 NOTICE와 빌드의 THIRD_PARTY_NOTICES). 홈(ID·비밀번호 카드, 연결 상자, PC 카드), 목록 탭과 빈 화면, 데스크톱 설정·창 막대·메뉴·설치 화면·연결 관리 창, 휴대폰 설정, 대화상자·로그인·계정·업데이트 화면, 원격 세션 도구 모음(클라이언트 패치 0050–0057). 테마는 RustDesk의 정의를 그대로 두고 `hjv_theme.dart`의 `hjvRestyle`로 덧입힘. 개발 PC의 Linux 미리보기(Xvfb)로 데스크톱·휴대폰 화면을 밝은/어두운 테마에서 확인했고, 원격 세션 화면과 로그인이 필요한 화면은 코드와 시험용 하네스로만 봄. 사용자가 2026-10-15에 기기에서 확인함(운영자 PC의 설치본은 1.6.1 그대로) |
 | 1.8.0: 교직원 전용 출입 제한 | `staff-only-gate`를 main에 통합. 출입증·이용 비밀번호·심사 계정과 앱 안내를 포함합니다([계약](docs/access-tickets.md), [운영 절차](docs/server-runbook.md)). 2026-10-18에 패키지 → 정책 `e1-s4` → hbbs 최소 버전 설정 순서로 반영했습니다. Windows·iOS·Android 모두 최소·최신 1.8.0, 유예 없음. hbbs는 `MIN=1.8.0`, `FROM=2026-10-18T06:53:56Z`. 문 2 종료는 기존대로 2026-11-30 00:00 KST입니다. 2026-10-19에 서버 묶음 `server-2026.10.17`(출입증을 아는 hjv-api, hbbs, hbbr)을 넣고, 사용자가 출입증 키 1번을 만들고, 이용 비밀번호(2027-01-15 00:00 KST까지)를 넣은 뒤 16:39:56(KST)에 출입 확인을 켰습니다(`MODE=enforce`, 런북 9-6). 로그인하지 않은 기기는 이용 비밀번호가 있어야 연결하고 연결을 받습니다. 심사용 데모 PC는 아직 없습니다. |
-| 남은 일 | Microsoft Store 제출 형식·코드 서명 경로 결정과 심사, 추가 테스터 검증. Google Play 첫 출시·자동 업로드 설정과 루트 키 연습은 기존 보류 상태입니다. 출입 제한은 2026-10-19부터 켜져 있습니다. 남은 것: 심사용 데모 PC(`review.conf`의 `PC=`), 2027-01-15 전 이용 비밀번호 갱신, 2026-11-30 전 데모 계정과 문 2의 기한 정리. |
+| 1.9.0: 지원 링크와 연결 창의 표시, 세션 끝의 잠금, 들어온 연결, 원격 준비, UI/UX 검토 | **빌드 중**(아직 나눠 주지 않음). `client/version.env` 1.9.0, 클라이언트 패치 0065–0147(`16be2ee`). 1.8.2로 만든 작업(UI/UX 검토의 P1 항목과 U69, 교직원의 지원 코드 W1, 휴대폰 앱 잠금 W13)이 들어 있고, 1.8.2는 따로 나가지 않습니다. 1.9의 기능: PC 연결 창의 같은 계정·교직원 표시와 사칭 주의 줄, 녹화 표시(TV-W2), 지원 링크·대기실·교직원 표시(TV-W6), 세션이 끝날 때의 잠금과 화면 가리기(TV-W3), 원격 준비 카드와 G4(TV-W4), 로그아웃한 기기의 비밀번호 없는 연결 끊기(TV-W5), 휴대폰 세션의 제스처 안내와 파일 전송 바꾸기(TV-W7), 들어온 연결 목록(TV-W9), 연결 전의 이용 비밀번호 A0와 링크 확인 LK1(UX-G1, TV-C6), 트레이 경고(UX-G2), 홈의 계정 줄(UX-H1), 말과 모양의 정리(UX-W1·W2, UX-S1–S4), 키보드·화면 낭독기·Windows 11 스냅 레이아웃·휴대폰 글자 크기(UX-K1–K4), 세션 창의 모양(U15). 서버 쪽은 hjv-api의 지원 링크·대기실·지원 확인과 내 PC 목록의 `synced`·`wake`, nginx의 `/api/hjv/s/` 한 줄입니다(런북 9-9). 출시 빌드는 확인 빌드 없이 Windows → (사용자가 이 PC의 Windows 11에서 스냅 레이아웃 확인) → Android → iOS(TestFlight) 순서로 한 번씩 합니다. 사용자에게 달라지는 것: [docs/distribution.md](docs/distribution.md)의 "1.9.0: 사용자에게 달라지는 것" |
+| 남은 일 | Microsoft Store 제출 형식·코드 서명 경로 결정과 심사, 추가 테스터 검증. Google Play 첫 출시·자동 업로드 설정과 루트 키 연습은 기존 보류 상태입니다. 출입 제한은 2026-10-19부터 켜져 있습니다. 남은 것: 심사용 데모 PC(`review.conf`의 `PC=`), 2027-01-15 전 이용 비밀번호 갱신, 2026-11-30 전 데모 계정과 문 2의 기한 정리. 1.9.0: 출시 빌드와 기기 확인, 1.9.0의 hjv-api와 nginx 줄(조용한 저녁, 정책 seq 5에 서명하기 전), 정책 seq 5(세 플랫폼 최소·최신 1.9.0)와 그 뒤의 hbbs `MIN=1.9.0`, 다음 스토어 제출 전 1.9.0 화면으로 스크린샷 다시 찍기. |
 
 ## 빠른 시작: 실제 기기로 연결하기
 
@@ -84,7 +85,8 @@ client/patches/rustdesk/     앱 패치 (서버 고정, WebSocket+WebRTC 기본,
                              Windows 실행 파일 이름, 마우스·터치·키보드 입력과 한글 입력 개선,
                              1.6.0의 연세포탈 로그인과 같은 계정 기기끼리 비밀번호 없는 연결, 최소 버전과 업데이트,
                              Android 제어 전용, 최고운영자 화면, 스플래시, 1.8.0의 출입증과 이용 비밀번호 화면,
-                             1.9.0의 지원 코드 화면, 휴대폰 앱 잠금, UI/UX 검토의 다듬기)
+                             1.9.0의 지원 코드·지원 링크와 연결 창의 표시, 세션 끝의 잠금, 들어온 연결,
+                             원격 준비, 휴대폰 앱 잠금, UI/UX 검토의 다듬기)
 client/patches/hbb_common/   공용 라이브러리 패치 (WebSocket 연결의 HTTP/SOCKS5 프록시 지원, TCP_NODELAY, RegisterPk의 출입증 필드)
 client/overlay/rustdesk/     패치 대신 통째로 덮어쓰는 파일 (아이콘·스플래시 이미지, scripts/make-icons.sh로 생성)
 client/icons/                아이콘·스플래시 SVG 원본 (스플래시 글자는 scripts/make-splash-text.py로 만듦)
@@ -120,4 +122,4 @@ scripts/ci.sh client                 # 앱 패치(client/patches)를 바꿨다�
 
 HJViewer, made by 프로젝트TF, is a modified version of [RustDesk](https://github.com/rustdesk/rustdesk) and [rustdesk-server](https://github.com/rustdesk/rustdesk-server) (Copyright Purslane Tech Pte. Ltd., open-trade and the RustDesk contributors). It is licensed under the GNU Affero General Public License v3.0 only ([LICENSE](LICENSE)), as RustDesk is, and comes with no warranty. The account service (hjv-api, `server/api`) and the Wake-on-LAN relay (hjv-relay, `relay/`) are programs written in this repository, under the same license. [NOTICE](NOTICE) lists the upstream versions and what HJViewer changes; every downloadable build ships its license, source location and third-party notices (TestFlight builds carry only the in-app source link). HJViewer is not affiliated with or endorsed by RustDesk.
 
-HJViewer는 프로젝트TF가 만듭니다. RustDesk가 AGPL-3.0-only이므로 이 저장소도 AGPL-3.0-only입니다. 이 저장소에서 새로 쓴 계정 API(hjv-api, `server/api`)와 NAS 중계기(hjv-relay, `relay/`)도 같습니다. 앱이나 서버를 쓰는 사람에게 수정한 소스를 제공해야 하고, 이 공개 저장소가 그 소스입니다. 계정 API는 `https://<서버>/api/hjv/source`로 라이선스와 소스 위치를 알립니다. 사람들에게 나눠 주는 빌드는 반드시 이 저장소에 올라간 커밋으로 만들고, 결과물에 들어 있는 LICENSE·NOTICE·SOURCE·THIRD_PARTY_NOTICES 파일도 함께 전달하세요. 나눠 준 빌드의 커밋에는 `client-<앱 버전>` 태그를 붙입니다. TestFlight 빌드에는 이 파일들이 없고 앱 정보 화면의 소스 링크만 있으므로, 내부 테스터가 아닌 사람에게 나눠 주기 전에 고지를 따로 전달하세요. 앱 이름과 아이콘은 HJViewer 것입니다. 앱 정보 화면에 RustDesk의 저작권 줄이 있고, "Powered by RustDesk"(RustDesk 제공) 링크는 데스크톱과 앱에서 기본으로 숨깁니다. Windows 실행 파일은 `HJViewer.exe`입니다. 모바일의 `rustdesk://` URL 스킴 같은 일부 내부 이름은 아직 rustdesk입니다. 개인정보 처리방침: [docs/privacy.md](docs/privacy.md)
+HJViewer는 프로젝트TF가 만듭니다. RustDesk가 AGPL-3.0-only이므로 이 저장소도 AGPL-3.0-only입니다. 이 저장소에서 새로 쓴 계정 API(hjv-api, `server/api`)와 NAS 중계기(hjv-relay, `relay/`)도 같습니다. 앱이나 서버를 쓰는 사람에게 수정한 소스를 제공해야 하고, 이 공개 저장소가 그 소스입니다. 계정 API는 `https://<서버>/api/hjv/source`로 라이선스와 소스 위치를 알립니다. 사람들에게 나눠 주는 빌드는 반드시 이 저장소에 올라간 커밋으로 만들고, 결과물에 들어 있는 LICENSE·NOTICE·SOURCE·THIRD_PARTY_NOTICES 파일도 함께 전달하세요. 나눠 준 빌드의 커밋에는 `client-<앱 버전>` 태그를 붙입니다. TestFlight 빌드에는 이 파일들이 없고 앱 정보 화면의 소스 링크만 있으므로, 내부 테스터가 아닌 사람에게 나눠 주기 전에 고지를 따로 전달하세요. 앱 이름과 아이콘은 HJViewer 것입니다. 앱 정보 화면에 RustDesk의 저작권 줄이 있고, "Powered by RustDesk"(RustDesk 제공) 링크는 데스크톱과 앱에서 기본으로 숨깁니다. Windows 실행 파일은 `HJViewer.exe`입니다. 휴대폰은 1.9부터 `hjviewer://`를 쓰고, 옛 `rustdesk://`는 한 판 동안 함께 받습니다. Android 패키지 안쪽 같은 일부 내부 이름은 아직 rustdesk입니다. 개인정보 처리방침: [docs/privacy.md](docs/privacy.md)

@@ -1101,7 +1101,7 @@ nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone
 
 ### 7-12. 되돌리기
 
-1. **비밀번호 없는 연결만 멈출 때**: `sudo /opt/hjviewer/bin/hjv-api admin passwordless off`. 그 뒤 **hjv-api를 24시간 동안, 또는 `report`의 `PCs holding their binding that have not synced since the last switch change`가 0이 될 때까지** 켜 둡니다. 그러면 모든 PC가 PC 비밀번호로만 연결을 받습니다. 그 전에 hjv-api를 멈추거나 nginx를 되돌리면, 그동안 잠들어 있던 PC는 꺼짐을 받지 못하고 받아 둔 목록을 받은 때부터 24시간까지 씁니다.
+1. **비밀번호 없는 연결만 멈출 때**: `sudo /opt/hjviewer/bin/hjv-api admin passwordless off`. 그 뒤 **hjv-api를 24시간 동안, 또는 `report`의 `PCs holding their binding that have not synced since the last switch change`가 0이 될 때까지** 켜 둡니다. 그러면 모든 PC가 PC 비밀번호로만 연결을 받습니다. 그 전에 hjv-api를 멈추거나 nginx를 되돌리면, 그동안 잠들어 있던 PC는 꺼짐을 받지 못하고 받아 둔 목록을 받은 때부터 24시간까지 씁니다. 1.9.0 이상의 PC는 꺼짐을 받는 대로 쓰고 있는 비밀번호 없는 연결도 끊습니다. 쓰는 사람이 있는 시간이면 미리 알립니다.
 2. **계정 기능 전체**: 먼저 1번을 하고 그 조건까지 기다립니다. 그다음 경로 파일을 묶음의 `nginx-hjviewer-locations.conf` 그대로로 바꿉니다. 그 파일에는 1.5.1처럼 404를 주는 `location ^~ /api/` 블록과 버전 정책 위치(`/api/hjv/version`)가 함께 있습니다. 7-8의 백업(`…before-api`)은 쓰지 않습니다. 1.6.0 전의 파일이라 버전 정책 위치가 없어, 앱의 정책 확인이 `/api/` 블록의 404가 되고 새 정책(키 도난 뒤의 선언까지)이 기기에 닿지 않습니다(8-6). zones 파일과 `snippets/hjviewer-api.conf`는 남겨도 해가 없습니다.
    ```bash
    L=/etc/nginx/snippets/hjviewer-locations.conf W=/opt/hjviewer/share/web
@@ -1134,7 +1134,7 @@ nginx는 9단계에서 이미 준비됐습니다(중계기 등록 한도의 zone
 2. 필요하면 `strict on`(연결마다 확인). 서버에 닿는 PC는 증명이 올 때마다 목록을 새로 받습니다.
 3. 목록 키를 2번으로 바꿉니다(7-15). 서버에 닿는 PC는 늦어도 5분 안에 2번 목록을 받고, 그 뒤로 1번 목록을 받지 않습니다.
 4. `user revoke-all --all`로 모든 계정 키와 토큰을 폐기합니다. 모두 기기마다 다시 로그인합니다. PC의 묶음은 남습니다. 한 계정의 포탈 비밀번호만 샜으면 `user revoke-all tag:<T>`로 그 계정만 폐기하고, 사용자에게 비밀번호를 바꾸게 합니다. 포탈 비밀번호를 바꿔도 이미 로그인한 기기는 남으므로 폐기가 필요합니다. 그 계정이 다시 로그인하지 못하게 해야 하면 `block tag:<T>`(폐기와 함께 다음 로그인도 막음, 7-15). 모르는 계정이 잇달아 새로 등록되면(`report`의 셋째 줄, 저널의 `was registered` 줄) 명단 방식으로 바꿔 새 등록을 멈춥니다(7-15).
-5. 위의 폐기와 스위치는 **새 연결만** 막습니다. 이미 열려 있는 비밀번호 없는 연결은 끊기지 않습니다(1.6.0의 한계, U1-d). 사용자에게 알려 끊게 합니다: PC의 연결 창에서 끊거나, 자기 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 장치 다시 시작'을 누르거나, PC를 다시 시작합니다.
+5. 위의 폐기와 스위치는 새 연결을 막고, 1.9.0 이상의 PC는 서버에 닿는 대로(늦어도 5분, 오래 멈췄다 돌아온 직후 10분) 그 키·그 계정의 열린 비밀번호 없는 연결도 끊습니다([architecture.md](architecture.md) 5-6의 8번). PC 로그에 `same-account session … ended:` 줄이 남습니다. 1.9.0 전의 PC(`hjv-api admin binding list`의 버전 열)와 서버에 닿지 못하는 PC의 열린 연결은 남으므로 사용자에게 알려 끊게 합니다: PC의 연결 창에서 끊거나, 자기 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 PC 다시 시작'을 누르거나, PC를 다시 시작합니다.
 6. 개인정보가 샜을 가능성이 있으면 사용자와 학교 정보보호팀에 바로 알립니다. 2026-09-11부터 시행된 개정 개인정보 보호법은 유출 가능성도 통지하게 합니다.
 
 | 샌 것 | 할 수 있는 것 | 되돌리기 |
@@ -1235,7 +1235,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
   sudo grep -n '^HJV_API_LOGIN=' "$E"
   ```
 - **PC를 계정에서 풀기**: `binding list`로 보고 `binding revoke <PC ID>`로 풉니다. `device remove <PC ID>`는 같은 명령의 옛 이름입니다. 어느 이름이든 그 PC의 묶음 ID를 180일 동안 무덤으로 남기므로, 그 PC는 다음 동기화에서 서명된 `revoked`를 받아 허용 표시를 지웁니다. 그 뒤 그 PC의 빈 보고에는 서명 없는 `unbound`가 갑니다.
-- **PC를 넘기거나 버릴 때**(사용자 안내): 그 PC에서 **온라인일 때** 로그아웃한 뒤 넘기거나 제거합니다. 제거만 해도 그 PC의 허용 표시는 지워지지만 서버의 묶음은 남아, 이전 주인의 카드에 "마지막 확인 n일 전"이 보이고 새 사용자의 로그인은 "다른 계정에 등록된 PC"가 됩니다. 그때는 이전 주인이 다른 기기에서 "내 목록에서 빼기"를 하거나 관리자가 `binding revoke <PC ID>`를 합니다.
+- **PC를 넘기거나 버릴 때**(사용자 안내): 그 PC에서 **온라인일 때** 로그아웃한 뒤 넘기거나 제거합니다. 제거만 해도 그 PC의 허용 표시는 지워지지만 서버의 묶음은 남아, 이전 주인의 카드에 "서버와 동기화 안 됨(마지막 확인 n일 전)"이 보이고 새 사용자의 로그인은 "다른 계정에 등록된 PC"가 됩니다. 그때는 이전 주인이 다른 기기에서 "내 목록에서 빼기"를 하거나 관리자가 `binding revoke <PC ID>`를 합니다.
 - **PC의 기기 키가 바뀌었을 때**: 설정을 잃은 PC(설정까지 지우고 다시 설치 등)는 같은 ID로 새 키를 등록합니다. 서버는 그 PC의 첫 동기화에서 hbbs에 키를 묻고, 진짜 hbbs가 새 키를 가졌으면 그 PC를 `needs-relogin`으로 둡니다(`report`의 `PCs that need a login on them`). 목록을 새로 고친 컨트롤러는 그 PC에 비밀번호 창을 띄웁니다. **그 PC에서 같은 계정으로 다시 로그인**하면 새 키가 저장되고 묶음 ID는 그대로라 비밀번호 없는 연결이 돌아옵니다. PC가 새 ID를 받았으면 새 ID는 그 PC에서 다시 로그인해야 목록에 오르고, 옛 ID의 카드는 주인이 빼거나 180일 정리가 지웁니다.
 - **대상 가리키기**: 포탈 ID나 주소를 명령 인자로 치지 않습니다. sudo가 명령줄 전체를 시스템 로그(`/var/log/auth.log`, 저널)에 남기고, 사람이 친 명령은 셸 기록에도 남기 때문입니다(운영자 기록에는 꼬리표만 남음). 사람 운영자는 `users --reveal`로 꼬리표를 찾아 `tag:<T>`로 가리키고, PC는 `--owner-of <PC ID>`나 `binding list`의 꼬리표로 가리킵니다.
 - **계정 키**: `key list [tag:T]`(키마다 PC별 마지막 비밀번호 없는 연결과 30일 횟수), `key revoke <ckid>`(잃어버린 기기를 사용자가 직접 로그아웃시킬 수 없을 때), `user revoke-all tag:<T>`. 한 계정에는 활성 키가 20개까지이고, 넘으면 새 로그인이 그 계정에서 가장 오래 쓰지 않은 키를 로그아웃시킵니다(저널의 `login: the account had 20 active keys`). 사용자가 모르는 기기가 많으면 비밀번호 유출로 보고 7-13의 4·5번을 합니다.
@@ -1944,14 +1944,14 @@ timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/21115 && printf hjv-access >&3 && 
 hjv-api: ticket status 첫 줄 <그대로>, selfcheck ticket key 두 줄 <OK | FAIL 줄 그대로>
 hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
 이용 비밀번호: <access password: … 줄 그대로>, 어제 시도 <결과별 수>
-지원 코드(1.9.0, 9-9): <support codes: … open … 줄 그대로>, 저널의 support code 줄 <종류별 수>, 어제 code 기록 <결과별 수>
+지원 코드(1.9.0, 9-9): <support codes: … open … 줄 그대로>, <support codes' waiting room: … 줄 그대로>, 저널의 support code 줄 <종류별 수>, 어제 code 기록 <결과별 수>
 거절(enforce): 어제 refused <n>줄, closed <n>줄, more <합>
 묶인 PC(9-6의 5단계): 1.8.0 <n>대, 그 아래 <n>대
 바꾼 것: <설치한 파일, 권한, 설정 파일 줄>
 문제: <있으면>
 ```
 
-### 9-9. 지원 코드가 든 hjv-api (1.9.0과 함께)
+### 9-9. 1.9.0의 hjv-api: 지원 코드, 지원 링크와 대기실, 내 PC 목록 (W1, TV-W6, U27)
 
 1.9.0 앱과 함께 내는 hjv-api는 교직원이 만드는 지원 코드(계약 3-7)와 그 지원 링크·대기실·지원 확인(TV-W6, 계약 3-7), 내 PC 목록의 `synced`·`wake`(계약 3-8)를 더합니다. 이 셋은 hjv-api 릴리스 하나로 함께 넣습니다(D-3). hbbs, hbbr, `access.conf`, `guest.conf`는 그대로이고, **새 파일, 설정 줄, 자격 증명, DB 이전이 없습니다.** 지원 코드는 출입증 키(9-1)로 출입증을 만들고, 지원 확인은 이미 있는 목록 키 1번(7-4)으로 서명하므로 두 키만 있으면 됩니다. nginx에는 **지원 링크의 경로 한 줄**(`location ^~ /api/hjv/s/`, 묶음의 `nginx-hjviewer-api.conf`)이 더해집니다. 이 줄은 새 hjv-api와 같은 작업에서 **hjv-api보다 먼저** 넣고, 그 뒤로 미루지 않습니다(아래 '넣기').
 
@@ -1980,4 +1980,5 @@ hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
   sudo journalctl --namespace=hjviewer -u hjviewer-api --since yesterday -o cat | grep -E '^(support code|guest: .*a support code)' | sed 's/(acct=[^)]*)//; s/(ip=[^)]*);.*//' | sort | uniq -c
   ```
   줄 수와 종류만 보고에 옮깁니다(꼬리표는 사용자가 물을 때만). 만든 코드와 시도의 결과별 수는 저널이 아니라 `admin ticket status`의 `support codes, the last day's records` 줄(9-4의 5번)에서 봅니다.
+- **1.9.0 출시의 순서**(D-2, D-3): ① 이 hjv-api를 위의 '넣기'대로 넣습니다(nginx 줄 먼저, 조용한 저녁, 허브-운영). ② 1.9.0의 패키지와 정책 seq 5(세 플랫폼 최소·최신 1.9.0)를 8-2로 넣습니다. seq 5는 ①이 끝난 뒤에 사용자가 서명합니다. 그 정책의 `--contact`는 관리자 연락처 자체이고([tools/hjv-release/README.md](../tools/hjv-release/README.md)), 그 값은 저장소와 이 런북에 적지 않습니다. 유예와 Windows 무인 설치 시각은 seq 5의 초안을 만들 때 사용자가 정합니다. ③ seq 5가 서버에 들어간 뒤 hbbs의 최소 컨트롤러를 `MIN=1.9.0`으로 올립니다(8-3, 사용자가 `hjv-release hbbs-conf`로 만든 파일). ①을 ② 뒤로 미루지 않습니다. 1.9.0 앱은 서버가 두 표시를 주지 않으면 지원 코드 단추를 보이지 않습니다.
 - **되돌리기**: 7-14의 "업그레이드"대로 옛 실행 파일로 돌아가면 두 표시가 없어지고, 앱은 다음 물음부터 두 단추를 감춥니다. 이미 바꾼 출입증은 2시간 안에 끝납니다. 잘못 쓰인 코드는 9-7의 '지원 코드가 잘못 쓰임'입니다.

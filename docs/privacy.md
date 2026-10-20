@@ -303,12 +303,13 @@ operator (as a tag), when, and how many users and PCs it showed.
   from the signed list, for a connection it showed as faculty or staff (a support code, section 3)
   the ID only, without a name, whether the PC checked who it was (your account, or the faculty or
   staff member who made its support code; otherwise the name is only what the other device sent),
-  how it got in (the PC's one-time or permanent password, accepted at the PC, your account), the
-  kind (remote screen, file transfer, camera, terminal, port forwarding) and how it ended. It keeps
-  no addresses, file names or session contents, and refused attempts are not in it. The list is not
-  sent anywhere: HJViewer's settings show it on that PC (Security, behind the unlock of the security
-  settings). Other programs and people who use that PC can read it, with some effort, through
-  HJViewer's service. Uninstalling HJViewer deletes it.
+  how it got in (the PC's one-time or permanent password, a reconnect of the same session, accepted
+  at the PC, your account), the kind (remote screen, file transfer, camera, terminal, port
+  forwarding), how it ended, and the number the other device gave that session, used only to show
+  its reconnects as one line. It keeps no addresses, file names or session contents, and refused
+  attempts are not in it. The list is not sent anywhere: HJViewer's settings show it on that PC
+  (Security, behind the unlock of the security settings). Other programs and people who use that
+  PC can read it, with some effort, through HJViewer's service. Uninstalling HJViewer deletes it.
 - **Recordings**: a session you record is a video file on the device that recorded it (section 6).
 - **Access tickets** (from version 1.8.0): a logged-in app keeps its ticket in its settings and
   deletes it at logout; a PC in an account keeps its latest ticket in a file in its service's
@@ -522,7 +523,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 **계정 서비스가 보관하지 않는 것**: 비밀번호, 연세 SSO 토큰, 이메일 주소, 소속, 기기 식별값 자체, OS 사용자 이름, CPU·메모리 정보, 하트비트, 기기 정보, 연결이나 파일 전송마다의 기록, 세션 내용, 출입증, 이용 비밀번호, 지원 코드, 짧은 링크와 이행용 링크의 코드.
 
-**다른 내 기기에 보이는 것.** 어떤 기기가 내 계정에 로그인하면 다른 내 기기에 알림이 뜹니다. 서버가 본 시각과 학내 네트워크인지, 그리고 그 기기가 스스로 알린(아무도 확인하지 않는) 앱 버전과 기기 모델이 나오므로, 내가 하지 않은 로그인을 알아챌 수 있습니다. 알림은 내 기기 하나에서 [내 기기 맞음]이나 [아님]으로 답할 때까지 기한 없이 남습니다. 지금 쓰는 기기보다 먼저 로그인한 기기에도, 아무도 답하기 전에 로그인이 끝난 기기에도 알림이 뜨고, 끝난 기기는 어떻게 끝났는지도 나옵니다. '로그인한 기기' 목록에는 내 PC마다 그 기기가 마지막으로 비밀번호 없이 연결한 시각과 30일 동안의 횟수가 나오고, 로그인이 끝난 기기도 30일 동안 따로 나옵니다. 플랫폼과 이름, 로그인 시각, 마지막 사용, 어떻게 끝났는지(스스로 로그아웃, 다른 내 기기 중 어느 것에서 로그아웃시킴, 기간 만료, 같은 기기의 새 로그인으로 바뀜, 관리자가 로그아웃시킴)가 나옵니다.
+**다른 내 기기에 보이는 것.** 어떤 기기가 내 계정에 로그인하면 다른 내 기기에 알림이 뜹니다. 서버가 본 시각과 학내 네트워크인지, 그리고 그 기기가 스스로 알린(아무도 확인하지 않는) 앱 버전과 기기 모델이 나오므로, 내가 하지 않은 로그인을 알아챌 수 있습니다. 알림은 내 기기 하나에서 [내 기기 맞음]이나 [내가 아님]으로 답할 때까지 기한 없이 남습니다. 지금 쓰는 기기보다 먼저 로그인한 기기에도, 아무도 답하기 전에 로그인이 끝난 기기에도 알림이 뜨고, 끝난 기기는 어떻게 끝났는지도 나옵니다. '로그인한 기기' 목록에는 내 PC마다 그 기기가 마지막으로 비밀번호 없이 연결한 시각과 30일 동안의 횟수가 나오고, 로그인이 끝난 기기도 30일 동안 따로 나옵니다. 플랫폼과 이름, 로그인 시각, 마지막 사용, 어떻게 끝났는지(스스로 로그아웃, 다른 내 기기 중 어느 것에서 로그아웃시킴, 기간 만료, 같은 기기의 새 로그인으로 바뀜, 관리자가 로그아웃시킴)가 나옵니다.
 
 **다른 사람에게 보이는 것.** 다른 사람의 PC에 연결하면 그 PC에는 1.6.0 전처럼 내 Windows 사용자 이름(휴대폰은 기기 이름)이 보입니다. 로그인해도 성명이나 포탈 ID를 다른 사람의 PC에 보내지 않습니다. 내 PC의 연결 창에는 연결한 기기의 이름과 가린 내 이름(예: 홍\*동)이 서명된 목록에서 나옵니다. 그 기기 이름은 기기가 로그인할 때 알린 값으로 서버가 정한 모델 이름이고, PC의 로그에 남는 기기 ID도 그 기기가 스스로 알린 값입니다. 교직원이 지원 코드를 만든 기기로 그 코드를 넣은 PC에 연결하면, 그 PC에는 그 기기가 보낸 이름 대신 "연세대 교직원(로그인 확인)"이 보입니다. 성명도 포탈 ID도 보이지 않습니다. 1.9.0부터 설치한 PC는 내 기기의 ID와 그 이름을 '들어온 연결' 목록에 90일 동안 둡니다(4절). 교직원 표시가 붙은 연결은 이름 없이 ID만 둡니다.
 
@@ -534,7 +535,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 - **로그인한 앱**은 계정 키의 개인키도 보관합니다. 아이폰은 Keychain에 이 기기 전용, 잠금이 풀렸을 때만 쓰도록 두므로 백업에 들어가지 않습니다. 안드로이드는 앱 데이터에 두며, 클라우드 백업과 기기 간 이전에서 뺍니다. Windows는 `%LOCALAPPDATA%\HJViewer-account\`에 Windows DPAPI로 그 Windows 사용자만 풀 수 있게 암호화해 두고, 로밍하지 않습니다. 그 밖에 로그인 토큰, 서버가 보낸 성명과 포탈 ID, 내 PC 목록(PC ID, 공개키, 상태), 서버와의 시계 차이를 보관합니다. 계정 키가 없는 토큰으로는 아무것도 할 수 없습니다.
 - **계정에 들어간 PC**는 Windows 레지스트리(`HKLM\SOFTWARE\HJViewer\Account`)에 묶음 ID, 가린 내 이름, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 풀린 묶음의 기록, 계정 키마다 오늘과 어제의 비밀번호 없는 연결의 마지막 시각과 횟수를 둡니다. 서비스 폴더에는 서명된 목록(내 기기들의 이름·ID·공개키와 가린 내 이름)을, HJViewer 로그에는 비밀번호 없이 받아들인 연결마다 한 줄, 그 기기가 로그아웃되었거나 PC가 그런 연결을 더 받지 않아 그 연결을 끊었을 때 한 줄(그 기기의 ID와 이름, 시각)을 둡니다. 그런 연결이 열려 있는 동안 PC는 그 기기의 계정 공개키를 메모리에만 둡니다. HJViewer 로그는 약 90일치를 둡니다. 그 PC를 쓰는 다른 사람은 가린 이름을 볼 수 있고, 마음먹으면 그 목록도 볼 수 있습니다. HJViewer를 제거하면 레지스트리 키가 지워지고, Windows 사용자마다의 설정과 `%LOCALAPPDATA%\HJViewer-account\`, 서비스의 설정·목록 파일·로그는 남습니다.
 - **원격 준비와 세션 끝**(1.9.0부터): '원격 준비' 카드는 이 PC의 HJViewer·전원·랜카드 설정을 그 PC 안에서 읽을 뿐 서버에 보내지 않습니다. 서버에는 내 계정의 중계기가 이 PC를 맡는지만, PC의 켜기 확인이 이미 쓰는 요청으로 묻습니다. [절전 안 함]을 누르면 Windows의 지금 전원 계획에서 '전원 연결 시' 절전·최대 절전 시간을 바꾸고, 되돌릴 때까지 원래 값을 그 Windows 사용자의 HJViewer 설정에 둡니다. 내 기기에서 연 세션이 끝날 때 '시작할 때 잠겨 있었으면' 잠그기 위해, PC는 세션 시작 때 잠겨 있었는지를 10분 동안 메모리에 두고, 세션이 끝나 잠글 때마다 ID나 이름 없이 로그에 한 줄 남깁니다.
-- **들어온 연결**(1.9.0부터): HJViewer를 설치한 Windows PC는 최근 90일 동안 들여보낸 세션의 목록(많아야 2,000건)을 서비스 폴더의 파일에 둡니다(설치하지 않고 실행한 HJViewer는 목록을 두지 않음). 세션마다 시작과 끝 시각, 상대 기기의 ID와 그 기기가 보낸 이름(Windows 사용자 이름, 휴대폰은 기기 이름), 내 계정의 연결이면 서명된 목록의 기기 이름과 가린 내 이름, 교직원 표시가 붙은 연결(지원 코드, 3절)이면 이름 없이 ID만, PC가 신원을 확인했는지(내 계정, 또는 지원 코드를 만든 교직원. 그 밖에는 상대가 보낸 이름일 뿐임), 들어온 방법(PC의 일회용·영구 비밀번호, PC에서 수락, 내 계정), 종류(원격 화면, 파일 전송, 카메라, 터미널, 포트 포워딩), 끝난 방식입니다. 주소, 파일 이름, 세션 내용은 두지 않고, 거절한 시도는 넣지 않습니다. 목록은 어디로도 보내지 않고, 그 PC의 HJViewer 설정(보안, 보안 설정 잠금 해제 뒤)에서 봅니다. 그 PC를 쓰는 다른 사람과 프로그램도 마음먹으면 HJViewer 서비스를 통해 읽을 수 있습니다. HJViewer를 제거하면 지워집니다.
+- **들어온 연결**(1.9.0부터): HJViewer를 설치한 Windows PC는 최근 90일 동안 들여보낸 세션의 목록(많아야 2,000건)을 서비스 폴더의 파일에 둡니다(설치하지 않고 실행한 HJViewer는 목록을 두지 않음). 세션마다 시작과 끝 시각, 상대 기기의 ID와 그 기기가 보낸 이름(Windows 사용자 이름, 휴대폰은 기기 이름), 내 계정의 연결이면 서명된 목록의 기기 이름과 가린 내 이름, 교직원 표시가 붙은 연결(지원 코드, 3절)이면 이름 없이 ID만, PC가 신원을 확인했는지(내 계정, 또는 지원 코드를 만든 교직원. 그 밖에는 상대가 보낸 이름일 뿐임), 들어온 방법(PC의 일회용·영구 비밀번호, 같은 세션의 다시 연결, PC에서 수락, 내 계정), 종류(원격 화면, 파일 전송, 카메라, 터미널, 포트 포워딩), 끝난 방식, 그리고 다시 연결을 한 줄로 보이는 데만 쓰는 상대 기기의 세션 번호입니다. 주소, 파일 이름, 세션 내용은 두지 않고, 거절한 시도는 넣지 않습니다. 목록은 어디로도 보내지 않고, 그 PC의 HJViewer 설정(보안, 보안 설정 잠금 해제 뒤)에서 봅니다. 그 PC를 쓰는 다른 사람과 프로그램도 마음먹으면 HJViewer 서비스를 통해 읽을 수 있습니다. HJViewer를 제거하면 지워집니다.
 - **녹화**: 세션을 녹화하면 녹화한 그 기기에 영상 파일로 남습니다(6절).
 - **출입증**(1.8.0부터): 로그인한 앱은 출입증을 설정에 두고 로그아웃할 때 지웁니다. 계정에 들어간 PC는 마지막 출입증을 서비스 폴더의 서명된 목록 옆 파일에 둡니다. 서버에 닿지 못하는 동안 다시 시작해도 등록하기 위해서이고, 제거하면 지워집니다. 이용 비밀번호와 지원 코드의 출입증은 메모리에만 있고 앱(설치한 PC는 서비스)이 끝나면 사라집니다. 1.9.0부터 지원 코드를 넣은 PC는 출입증과 함께 온 지원 확인을 출입증처럼 메모리에만 두고 출입증과 함께 버립니다. PC를 등록하는 프로세스는 서버가 마지막 등록을 받았는지를 설정에 적어 둡니다. 지원 코드는 파일이나 설정에 쓰지 않습니다. 만든 앱은 그 창에서만 보이고(복사하면 기기의 클립보드에 남음), 코드를 넣은 PC는 보낸 뒤 바로 버립니다. 코드를 만든 앱은 대기 번호와, 코드를 쓴 PC의 ID와 공개키를 그 PC의 출입증이 끝나거나 로그아웃할 때까지 메모리에만 둡니다.
 - **업데이트**(1.6.0부터): 모든 앱은 마지막으로 확인한 버전 정책, 마지막 확인 시각, 서버와의 시계 차이를 둡니다. 오래된 앱을 거절한 PC는 그 앱의 플랫폼과 버전을 로그에 남깁니다(1분에 한 줄까지). 설치된 Windows PC의 HJViewer 서비스는 업데이트 시도 기록(버전, 파일의 해시, 시각)을 두고, 설치하기 전까지는 내려받은 설치 파일을 Windows의 시스템 계정과 관리자만 열 수 있는 폴더에 둡니다. 설치하지 않고 쓰는 앱은 새 버전을 사용자의 '다운로드' 폴더에 둡니다. Android 앱은 어느 스토어에서 설치됐는지 읽습니다. 파일로 설치한 앱은 내려받은 업데이트를 다음에 시작할 때까지 자기 캐시에 두고, 그 패키지 이름과 서명 인증서를 확인합니다. 둘 다 휴대폰 안에서만 하고, 서버에 보내지 않습니다.

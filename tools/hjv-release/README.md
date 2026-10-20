@@ -113,9 +113,10 @@ hjv-release policy --prev none --server rd.example.com --release-dir build/relea
     --allow-input check_only --min all=1.6.1 --auto-after windows=none \
     --ios-valid 262871353 --latest ios=1.6.1 \
     --os-min windows=10 --os-min android=24 --os-min ios=13.0 \
-    --contact "설치 파일은 관리자에게 받으세요." --out build/policy/draft-1.json
+    --contact "<관리자 연락처>" --out build/policy/draft-1.json
 ```
 
+- `--contact`: 정책의 `contact_ko`입니다. 첫 정책에는 안내 한 문장("설치 파일은 관리자에게 받으세요.")을 넣었습니다. 1.9.0부터 앱은 이 글을 "HJViewer 관리자: <글>"로 업데이트 화면, 정보, PC의 수락 창과 P2·P3에 보이므로, 1.9.0의 정책부터는 관리자 연락처 자체(예: 메일 주소)만 씁니다. 연락처는 운영자의 것이고 사용자가 정책을 만들 때 줍니다. 저장소, 앱, 이 문서에는 적지 않습니다(바꾸려면 새 정책 하나면 됨).
 - `--allow-input check_only`: 빌드 저장소의 `build.yml`이 `check_only` 입력을 넘기는데, 도구가 아직 그 입력을 모릅니다(`docs/ci.md`의 "릴리스 기록"). 도구는 모르는 입력을 넘기는 `build.yml`을 거부하므로 이 옵션으로 허락합니다(아래 "출처 확인" 3번).
 - `--latest ios=1.6.1`: TestFlight 빌드 262871353은 출시 실행(릴리스 디렉터리의 iOS 산출물은 빌드 262871309)이 아니라 같은 커밋의 iOS만 돌린 실행에서 왔습니다. 도구는 `--ios-valid`의 빌드 번호를 릴리스 디렉터리의 iOS 산출물과 맞춰 버전을 알아내므로, 다른 실행의 빌드면 버전을 `--latest ios=V`로 줍니다.
 - 유예: 첫 정책의 항목은 유예를 물을 때만(`--grace-days`, `--grace-until`) 유예 쌍을 받습니다(아래 표의 e, `grace_min` 0.0.0). 이 정책은 묻지 않았으므로 서버에 넣는 즉시 1.6.1 미만을 막습니다. 정책을 받은 1.6.x PC는 1.6.1 미만의 컨트롤러(1.5.x와 1.6.0)를 바로 거절하고, 1.6.0 앱은 업데이트 화면으로 바뀝니다. 1.5.1 앱은 정책을 읽지 않습니다. Android 5.1~6.0 휴대폰은 1.6.1을 설치할 수 없습니다(minSdk 24. 정책의 `os_min`도 24).
@@ -162,7 +163,7 @@ hjv-release policy --prev none --server rd.example.com --release-dir build/relea
 | `--auto-after windows=+2d\|T\|none` | 설치된 Windows PC의 무인 설치 시작. 새 Windows 버전을 낼 때 주지 않으면 초안을 만든 때(정책의 발행 시각)부터 2일 뒤입니다(`+2d`도 같음). 게시가 늦어지면 그만큼 짧아지므로, 늦어지면 `policy`로 초안을 다시 만듭니다. `none`은 무인 설치를 하지 않거나 멈춤(강제 설치는 멈추지 않음: `--withdraw-package`) |
 | `--withdraw-package P` | P(windows, android)의 패키지를 거둬들임: 앱 안 내려받기, 무인 설치, 강제 설치가 멈춥니다. 완화가 아니어서 서명 키로 합니다. 더 높은 `latest`가 나올 때까지 패키지 없이 갑니다 |
 | `--os-min P=V` | `latest`가 도는 가장 낮은 OS(ios `13.0`, android API 수준 `24`, windows `10`) |
-| `--contact TEXT`, `--notes [P=]FILE` | 안내 문구와 알림 글. URL은 넣을 수 없습니다 |
+| `--contact TEXT`, `--notes [P=]FILE` | 안내 문구와 알림 글. URL은 넣을 수 없습니다. 1.9.0부터 앱은 연락처를 "HJViewer 관리자: TEXT"로 보이므로(업데이트 화면, 정보, 수락 창과 P2·P3) TEXT는 연락처 자체만 씁니다(예: 메일 주소) |
 | `--ios-valid BUILD` | 운영자가 TestFlight에서 확인한 빌드 번호(VALID, 내부 그룹에서 시험 중) |
 | `--play-live VERSIONCODE` | 운영자가 Play 내부 트랙에서 출시(completed)를 확인한 versionCode |
 | `--move-to-play`, `--no-move-to-play` | 사이드로드 Android 앱에 Play로 옮기기 안내 |
