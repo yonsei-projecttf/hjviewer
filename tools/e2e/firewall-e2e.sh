@@ -59,6 +59,18 @@
 # PC is the PC. A second PC, PC B, runs CLIENT (not installed, logged in nowhere) in hjv-pc2's
 # network. Between A10 and A11, C1-C7 run the support codes (access-tickets.md 3-7): alice makes
 # one, PC B trades it for its ticket and registers, and the code works once.
+#
+# 1.9.0 (docs/e2e.md, the scenarios marked TV-W2, W3, W5, W6, W9 and UX-G1): the connection
+# manager's mark and the controller's recording (S5′, S6′, S9′, X1′, H-hide), the end-of-session
+# lock (EL1-EL4, with HJV_E2E_LOGON=1 on the PC's service from S15 on), the cut of open
+# password-less sessions (S33-S38, background streams beside S17, S12, S19, S25, S26 and X6), the
+# incoming connections (I1-I5), and in the access part W6-E1 to W6-E7: the support link (its page
+# and package from hjv-api's version policy and package folder, which Caddy's policy serves too),
+# the waiting room, the staff mark on PC B and the input it drops before [수락].
+#
+# HJV_E2E_HOLD=<seconds> (at most 3600): a run that fails keeps its namespaces, servers and
+# clients up that long, or until $RUN/release exists, before it cleans up, so that the state can
+# be looked at (logs, --hjv-e2e-option through in_ns) without running it again.
 set -euo pipefail
 
 MODE=${1:-strict}
@@ -188,7 +200,14 @@ forward_rules() {
 }
 
 cleanup() {
+  local rc=$? end hold=${HJV_E2E_HOLD:-}
   set +e
+  if [ "$rc" != 0 ] && [[ $hold =~ ^[0-9]+$ ]] && [ "$hold" -gt 0 ]; then
+    [ "$hold" -le 3600 ] || hold=3600
+    echo "HOLD: exit $rc: the test bed stays up for $hold s, or until $RUN/release exists (logs in $RUN)"
+    end=$(($(date +%s) + hold))
+    while [ ! -e "$RUN/release" ] && [ "$(date +%s)" -lt "$end" ]; do sleep 2; done
+  fi
   [ "$MODE" = open ] && forward_rules -D 2>/dev/null
   # a sudo of in_ns that a stopped command stopped (R3, or a run that failed between its stop and
   # go on) would stay stopped: it goes on, and ends with its command below
@@ -315,6 +334,12 @@ start_api() {
   exit 1
 }
 admin() { "$HJV_API" admin --socket "$RUN/api/admin.sock" "$@"; }
+# the access password's file with a day to go (A9 deletes it, W6 writes it again)
+guest_conf() {
+  printf 'HASH=%s\nUNTIL=%s\n' "$(pbkdf2_of "$GUEST_PW")" "$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)" \
+    >"$RUN/api/guest.conf.new"
+  mv -f "$RUN/api/guest.conf.new" "$RUN/api/guest.conf"
+}
 if [ -n "$ACCOUNT" ]; then
   log "account API: hjv-api on 127.0.0.1:$API_PORT and the fake Yonsei SSO on 127.0.0.1:$SSO_PORT"
   mkdir -p "$RUN/api"
@@ -352,8 +377,16 @@ HJV_API_GUEST_FILE=$RUN/api/guest.conf
 HJV_API_REVIEW_FILE=$RUN/api/review.conf
 HJV_API_LIMIT_GUEST_IP=50/600
 EOF
-    printf 'HASH=%s\nUNTIL=%s\n' "$(pbkdf2_of "$GUEST_PW")" "$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)" \
-      >"$RUN/api/guest.conf"
+    guest_conf
+    # W6-E2's support link hands out the Windows package of the policy Caddy serves: hjv-api reads
+    # the same file, and its package folder holds that made-up package (one byte, as the policy
+    # says)
+    if [ -n "$POLICY" ]; then
+      mkdir -p "$RUN/pkg"
+      printf x >"$RUN/pkg/HJViewer-$NEXT_MINOR-windows-x86_64.exe"
+      printf 'HJV_API_VERSION_POLICY=%s\nHJV_API_PACKAGE_DIR=%s\n' "$RUN/policy/version-policy.json" "$RUN/pkg" \
+        >>"$RUN/api/hjviewer-api.env"
+    fi
   fi
   "$HJV_FAKE_SSO" --listen "127.0.0.1:$SSO_PORT" >"$RUN/fake-sso.log" 2>&1 &
   SERVER_PIDS+=($!)
@@ -755,8 +788,11 @@ stop_pc_service() {
   sudo kill -9 $pids 2>/dev/null || true
 }
 start_pc_service() { # on the display the PC still has (X's abstract socket is per network namespace)
-  in_ns hjv-pc pc env DISPLAY=:99 "$PC_CLIENT" --server >>"$RUN/pc-server.log" 2>&1 &
+  in_ns hjv-pc pc env DISPLAY=:99 "${PC_SERVICE_ENV[@]}" "$PC_CLIENT" --server >>"$RUN/pc-server.log" 2>&1 &
 }
+# the service's environment from S15 on: HJV_E2E_LOGON=1 (hjv-e2e builds) reads each start as a
+# locked PC and logs the end lock instead of locking (TV-W3, EL1-EL4)
+PC_SERVICE_ENV=()
 online() { # <ID> <side>: hbbs has the device online, asked from the side's network
   in_ns "hjv-$2" "$2" "$PROBE" "$DOMAIN" --ca "$CA_ROOT" --peer "$1" >"$RUN/probe-$1.log" 2>&1 &&
     grep -q "$1=online" "$RUN/probe-$1.log"
@@ -800,6 +836,87 @@ gap() {
 knock() { run pc --hjv-e2e-option hjv-pc-sync "$RANDOM$RANDOM" >/dev/null; } # the PC syncs soon
 ms_since() { echo $((($(date +%s%N) - $1) / 1000000)); }
 
+# Client calls in the background (1.9: TV-W5's streams, W6-E3's waiting room, W6-E5's probe):
+# <tag> <ns> <side> <client> [NAME=value...] <args...>; its output goes to $RUN/<tag>.bg, and it
+# ends by itself within BG_LIMIT s. bg_wait <tag> <seconds> waits for it: BG_RC, BG_OUT, BG_MS
+# (ms the wait took); a call still running then fails the run.
+declare -A BG_PID=()
+BG_LIMIT=150
+bg_start() {
+  local tag=$1 ns=$2 side=$3 client=$4 envs=()
+  shift 4
+  while [[ ${1:-} =~ ^[A-Z_][A-Z0-9_]*= ]]; do
+    envs+=("$1")
+    shift
+  done
+  mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
+  in_ns "$ns" "$side" timeout -k 5 "$BG_LIMIT" env "${envs[@]}" "$client" "$@" >"$RUN/$tag.bg" 2>&1 &
+  BG_PID[$tag]=$!
+}
+# (the subshell's /proc entry: bash reaps its children as they end, as forward_try relies on)
+bg_running() { [ -e "/proc/${BG_PID[$1]}" ]; }
+bg_has() { grep -qF -- "$2" "$RUN/$1.bg" 2>/dev/null; } # <tag> <text>
+bg_wait() {
+  local t0 end
+  t0=$(date +%s%N)
+  end=$(($(date +%s) + $2))
+  while bg_running "$1"; do
+    [ "$(date +%s)" -lt "$end" ] || fail "$1: still running $2 s later ($(grep '^hjv-e2e:' "$RUN/$1.bg" | tail -n 1))"
+    sleep 0.1
+  done
+  BG_MS=$(ms_since "$t0")
+  BG_RC=0
+  wait "${BG_PID[$1]}" || BG_RC=$?
+  BG_OUT=$(cat "$RUN/$1.bg")
+  grep '^hjv-e2e:' <<<"$BG_OUT" | sed "s/^/    [$1] /" || true
+}
+bg_in() { until_ok 25 "$1: the session started" bg_has "$1" 'hjv-e2e: logged in to '; } # <tag>
+
+# TV-W5's close reasons (src/hjviewer_account/mod.rs; the mark "not allowed" keeps every app,
+# 1.6.0-1.8.x too, from connecting again by itself)
+CUT_LOGIN="이 기기의 로그인이 끝나 연결을 끊었습니다. (login ended, not allowed)"
+CUT_PC="이 PC가 비밀번호 없는 연결을 더 받지 않아 연결을 끊었습니다. (password-less ended, not allowed)"
+# <scenario> <close text> <log reason> <controller ID>: the last bg_wait's stream was cut by the PC
+# with that close reason, and the PC logged the session's end for that reason once
+cut_by_pc() {
+  [ "$BG_RC" = 7 ] || fail "$1: the stream ended with exit $BG_RC, not 7 (closed with a reason): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+  grep -qxF -- "hjv-e2e: closed: $2" <<<"$BG_OUT" || fail "$1: not the close reason '$2': $(grep '^hjv-e2e: closed' <<<"$BG_OUT")"
+  until_ok 5 "$1: the PC's log line of the end ($3)" pc_log_has "(remote) of .* from $4 ended: $3"
+  pc_log_has 'Connection closed: hjv: account key no longer trusted' || fail "$1: no 'Connection closed: hjv: account key no longer trusted' in the PC's log"
+}
+sessions_ended() { pc_log_count 'hjv: same-account session #'; } # the PC's lines of sessions it cut
+
+# The PC's incoming connections (TV-W9), as --hjv-e2e-incoming prints the service's answer: $INC
+incoming() { # <scenario>
+  run pc --hjv-e2e-incoming >/dev/null
+  [ "$RC" = 0 ] || fail "$1: --hjv-e2e-incoming: exit $RC"
+  INC=$OUT
+  jq -e '.on == true and (.rows | type == "array")' <<<"$INC" >/dev/null 2>&1 ||
+    fail "$1: not the list of a PC that records: $(head -c 300 <<<"$INC")"
+}
+inc_rows() { jq '.rows | length' <<<"$INC"; }
+# <scenario> <jq condition>: the newest row (rows come newest first) meets it
+inc_newest() {
+  jq -e ".rows[0] | $2" <<<"$INC" >/dev/null || fail "$1: the newest row is $(jq -c '.rows[0]' <<<"$INC")"
+}
+inc_newest_ended() { incoming "$1" && [ "$(jq -r '.rows[0].end' <<<"$INC")" != open ]; } # <scenario>
+# a row of <ID> still open: its t0 in I5_T0
+inc_open_from() {
+  incoming I5
+  I5_T0=$(jq -r --arg id "$1" '[.rows[] | select(.id == $id and .kind == "remote" and .end == "open")][0].t0 // empty' <<<"$INC")
+  [ -n "$I5_T0" ]
+}
+end_locks() { pc_log_count 'hjv: end lock:'; } # the PC's end-of-session lock lines (TV-W3)
+end_locks_above() { [ "$(pc_log_count "$1")" -gt "$2" ]; } # <text> <count before>
+# the connection manager's lines of <file> after its first <count>: one matches <pattern>
+cm_file_since() {
+  local text
+  text=$(tail -n "+$(($2 + 1))" "$1")
+  grep -q -- "$3" <<<"$text"
+}
+# an ID as the connection manager shows a staff mark's controller: groups of three, the first the rest
+spaced_id() { sed ':a;s/\B[0-9]\{3\}\>/ &/;ta' <<<"$1"; }
+
 account_common() { # hjv-pc and hjv-ctl logged in as alice, the PC bound
   run pc --hjv-e2e-login "$ALICE" "$ALICE_PW"
   want 0 "S1: the PC's login"
@@ -829,7 +946,7 @@ account_open() {
 
 account_strict() {
   local t0 n0 n1 cm0 calls e_bob e_carol tok b0 old off os_user code first_sync_ms recv ckid
-  local bind_s19b t_key spid lpid b3 r3_before s25_ms ts ft=()
+  local bind_s19b t_key spid lpid b3 r3_before s25_ms ts ft=() ended row n2 locks
   log "S24: the switch is off after the install; alice logs in on the PC and the controller"
   admin passwordless status | tee "$RUN/switch.txt" | sed 's/^/    /'
   grep -qi 'off' "$RUN/switch.txt" || fail "S24: the switch is not off after the install"
@@ -857,14 +974,20 @@ account_strict() {
   has "device $CTL_ID " && fail "S3: the controller lists itself"
   pass "S3: the PC is listed active with its key; the controller is not"
 
-  log "T0: a password connection (hjv-ctl2, not logged in)"
+  log "T0, I1: a password connection (hjv-ctl2, not logged in), and its row in the PC's incoming connections"
+  incoming I1
+  n0=$(inc_rows)
   run ctl2 --hjv-e2e-screenshot "$PC_ID" "$PASSWORD" "$RUN/t0.ppm"
   want 0 "T0: the password connection"
   screen_is_pc t0 || fail "T0: the decoded screen is not the PC's desktop"
   T0=$MS B=$((MS + 2000))
   pass "T0 = $T0 ms (B = T0 + 2 s = $B ms)"
+  until_ok 5 "I1: the row of T0 ended" inc_newest_ended I1
+  [ "$(inc_rows)" = $((n0 + 1)) ] || fail "I1: $(($(inc_rows) - n0)) new rows for one session"
+  inc_newest I1 '.kind == "remote" and .auth == "permanent" and .ver == "" and .end == "peer" and .t1 >= .t0'
+  pass "I1: one new row, newest first: $(jq -c '.rows[0] | {kind, auth, ver, end, re}' <<<"$INC") (the PC records: installed, an account build)"
 
-  log "S4-S6: alice's controller without a password"
+  log "S4-S6, I2: alice's controller without a password"
   n0=$(pc_logins)
   cm0=$(wc -l <"$RUN/pc-cm.log")
   pwless_ok ctl s4 "S4"
@@ -874,14 +997,31 @@ account_strict() {
   pc_log_has "hjv: same-account login (remote) by .* from $CTL_ID" ||
     fail "S6: no 'same-account login … from $CTL_ID' in the PC's log"
   pass "S6: $(pc_log | grep -o 'hjv: same-account login (remote) .*' | tail -1)"
-  cm_since "$cm0" "cm login from $CTL_ID named \".* · same account(홍\*동)\", authorized true" ||
-    fail "S6: the connection manager did not name the account's device ($(tail -n 1 "$RUN/pc-cm.log"))"
-  pass "S6: the connection manager shows $(tail -n "+$((cm0 + 1))" "$RUN/pc-cm.log" | grep -o 'named ".*"' | head -1)"
-  run ctl --hjv-e2e-stream "$PC_ID" "" 5
+  # S6′ (TV-W2): the device's name alone, and the mark on a line of its own; the proof's record
+  # comes before the logon response, so a PC without 2FA shows it at once (critic 2-3)
+  cm_since "$cm0" "cm login from $CTL_ID named \"Linux PC\", authorized true, mark same-account(홍\*동)" ||
+    fail "S6′: the connection manager did not show the account's device with its mark ($(tail -n 1 "$RUN/pc-cm.log"))"
+  cm_since "$cm0" "named \"[^\"]*same account" && fail "S6′: the name still carries 'same account'"
+  pass "S6′: the connection manager shows $(tail -n "+$((cm0 + 1))" "$RUN/pc-cm.log" | grep -o 'named ".*' | head -1)"
+  until_ok 5 "I2: the row of S4 ended" inc_newest_ended I2
+  inc_newest I2 ".id == \"$CTL_ID\" and .ver == \"same-account\" and .dev == \"Linux PC\" and .own == \"홍*동\" and .auth == \"account\" and .kind == \"remote\""
+  pass "I2: alice's row: $(jq -c '.rows[0] | {ver, dev, own, auth, kind, end}' <<<"$INC")"
+  # S5′ (TV-W2): the controller's recording reaches the connection manager
+  cm0=$(wc -l <"$RUN/pc-cm.log")
+  run ctl --hjv-e2e-stream "$PC_ID" "" 5 record
   want 0 "S5"
   has 'password required' && fail "S5: a password box"
   has 'hjv-e2e: [1-9][0-9]* frames' || fail "S5: no video frames"
-  pass "S5: $(grep -o '[0-9]* frames.*' <<<"$OUT")"
+  has 'hjv-e2e: sent recording true' && has 'hjv-e2e: sent recording false' || fail "S5′: the stream did not report its recording"
+  until_ok 5 "S5′: the connection manager's 'cm recording false'" cm_since "$cm0" 'cm recording false'
+  [ "$(tail -n "+$((cm0 + 1))" "$RUN/pc-cm.log" | grep -o 'cm recording [a-z]*' | tr '\n' ' ')" = "cm recording true cm recording false " ] ||
+    fail "S5′: the connection manager's recording lines: $(tail -n "+$((cm0 + 1))" "$RUN/pc-cm.log" | grep 'cm recording' | tr '\n' ' ')"
+  pc_log_has 'hjv: peer recording true' || fail "S5′: no 'hjv: peer recording true' in the PC's log"
+  pass "S5: $(grep -o '[0-9]* frames.*' <<<"$OUT"); S5′: the recording it reported reached the connection manager (cm recording true, then false) and the PC's log"
+  # EL2 (TV-W3): without HJV_E2E_LOGON the PC was not locked when these sessions came in, so the
+  # automatic lock of a same-account session leaves it as it was
+  [ "$(end_locks)" = 0 ] || fail "EL2: the PC logged an end lock: $(pc_log | grep -o 'hjv: end lock:.*' | head -1)"
+  pass "EL2: no 'hjv: end lock:' line after $(pc_logins) same-account remote screen sessions of a PC that was not locked when they came in"
 
   log "S7-S10: bob's controller (hjv-ctl2)"
   run ctl2 --hjv-e2e-login "$BOB" "$BOB_PW"
@@ -891,6 +1031,8 @@ account_strict() {
   want 0 "S7: bob's device list"
   has "device $PC_ID" && fail "S7: bob's list has alice's PC"
   pass "S7: bob's list has no PC ($(grep -o '[0-9]* device(s)' <<<"$OUT"))"
+  incoming I3
+  n0=$(inc_rows)
   pwless ctl2 s8
   want 3 "S8: bob without a password"
   has 'password required Password Required' || fail "S8: not the password box"
@@ -904,20 +1046,39 @@ account_strict() {
   # H21: other PCs see the OS user name as 1.5.1 sent it (capitalized), never the login's name or
   # portal ID
   os_user=$(id -un)
-  cm_since "$cm0" "cm login from .* named \"${os_user^}\", authorized true" ||
-    fail "S9: the PC was not given the OS user name ($(tail -n 1 "$RUN/pc-cm.log"))"
+  # (S9′, TV-W2: a password session carries no mark)
+  cm_since "$cm0" "cm login from .* named \"${os_user^}\", authorized true, mark none()" ||
+    fail "S9: the PC was not given the OS user name without a mark ($(tail -n 1 "$RUN/pc-cm.log"))"
   cm_since "$cm0" "김연세\|$BOB" && fail "S9: the PC was given bob's name or portal ID"
-  pass "S9: the PC's connection manager got the OS user name (${os_user^}), not bob's name or portal ID (H21)"
+  pass "S9: the PC's connection manager got the OS user name (${os_user^}), not bob's name or portal ID (H21), and no mark (S9′: mark none())"
   run ctl2 --hjv-e2e-screenshot "$PC_ID" "$WRONG_PW" "$RUN/s10.ppm"
   want 3 "S10: a wrong password"
   has 'password required Wrong Password' || fail "S10: not the box to enter it again"
   pass "S10: a wrong password asks again (exit 3)"
+  incoming I3
+  [ "$(inc_rows)" = $((n0 + 1)) ] || fail "I3: $(($(inc_rows) - n0)) new rows for bob's three tries (one got in)"
+  inc_newest I3 ".name == \"${os_user^}\" and .ver == \"\" and .auth == \"permanent\" and .kind == \"remote\" and .dev == \"\""
+  pass "I3: one row for bob's success ($(jq -c '.rows[0] | {name, ver, auth, end}' <<<"$INC")); none for the refused proof (S8) or the wrong password (S10)"
 
-  log "S22: port forwarding never goes by proof (U3)"
+  log "S22, I4: port forwarding never goes by proof (U3)"
+  incoming I4
+  n0=$(inc_rows)
   forward_try ctl "" 9098
   want 3 "S22: port forwarding without a password"
   has 'password required Password Required' || fail "S22: not the password box"
   pass "S22: port forwarding without a password: the password box, no proof (exit 3)"
+  incoming I4
+  [ "$(inc_rows)" = "$n0" ] || fail "I4: the refused port forwarding has a row"
+  jq -e 'any(.rows[]; .kind == "forward" and .auth == "permanent" and .end != "open")' <<<"$INC" >/dev/null ||
+    fail "I4: no row of the port forwarding the first part opened with the password"
+  pass "I4: no row for the refused port forwarding; the one opened with the password at the start is kind forward ($(jq -c '[.rows[] | select(.kind == "forward")][0] | {auth, end}' <<<"$INC"))"
+
+  log "H-hide: a pinned build keeps the connection window shown (TV-W2)"
+  run pc --hjv-e2e-option allow-hide-cm Y
+  run pc --hjv-e2e-option allow-hide-cm
+  [ "$OUT" = N ] || fail "H-hide: the service reads allow-hide-cm '$OUT' after Y was written, not N"
+  run pc --hjv-e2e-option allow-hide-cm ""
+  pass "H-hide: allow-hide-cm written Y, read back N from the service (the pinned build's overwrite)"
 
   log "S23: a token copied to another device is no use without its account key"
   tok=$(local_option ctl access_token)
@@ -933,7 +1094,10 @@ account_strict() {
   pwless ctl x1
   has 'No Password Access' || fail "X1: the click-approval PC did not answer 'No Password Access'"
   until_ok 5 "X1: the PC's user asked to accept" cm_since "$cm0" "cm login from $CTL_ID .*authorized false"
-  pass "X1: approve-mode=click: 'No Password Access', the PC's user is asked"
+  # X1′ (TV-W2, critic X-21): the click-approval branch judges no proof, so no same-account mark
+  cm_since "$cm0" "cm login from $CTL_ID .*authorized false, mark none()" ||
+    fail "X1′: the click-approval request is not mark none() ($(grep "cm login from $CTL_ID" "$RUN/pc-cm.log" | tail -n 1))"
+  pass "X1: approve-mode=click: 'No Password Access', the PC's user is asked; X1′: with mark none()"
   run pc --hjv-e2e-option approve-mode ""
   run pc --hjv-e2e-option verification-method use-temporary-password
   pwless_refused ctl x5 "X5: a PC that takes only its temporary password"
@@ -974,7 +1138,12 @@ account_strict() {
   pass "S16: a binding the server does not confirm opens nothing (exit 3)"
   until_ok 15 "S16: the PC back to its own binding" state_is active
 
-  log "S12, S13, S13b: hjv-api stopped, then gone for longer than a list lives (30 s)"
+  log "S12, S13, S13b, S35: hjv-api stopped, then gone for longer than a list lives (30 s), with a password-less stream open"
+  # S35 (TV-W5): a list that only expired, and syncs that fail, cut nothing (the 24-hour rule);
+  # the stream outlasts hjv-api's absence and the next list
+  bg_start s35 hjv-ctl ctl "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 85
+  bg_in s35
+  ended=$(sessions_ended)
   kill -STOP "$API_PID"
   pwless_ok ctl s12 "S12: hjv-api stopped (kill -STOP)"
   pass "S12: hjv-api stopped: password-less from the PC's cached list and the controller's hjv-my-devices"
@@ -994,44 +1163,109 @@ account_strict() {
   start_api
   knock
   until_ok 20 "S13b: the PC's list again with hjv-api back" state_is active
+  # one more sync with the list, which still has the stream's key
+  sleep 6
+  bg_running s35 || fail "S35: the stream ended before hjv-api's list came back: $(grep '^hjv-e2e:' "$RUN/s35.bg" | tail -n 2 | tr '\n' ' ')"
+  bg_wait s35 100
+  [ "$BG_RC" = 0 ] && grep -q 'hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT" ||
+    fail "S35: the stream did not run to its end (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+  [ "$(sessions_ended)" = "$ended" ] || fail "S35: the PC cut a session: $(pc_log | grep -o 'hjv: same-account session #.*' | tail -1)"
+  pass "S35: the password-less stream ran its 85 s through hjv-api stopped, gone past the list's 30 s and back (exit 0, $(grep -o '[0-9]* frames' <<<"$BG_OUT")); no session cut"
 
   log "S14: hjv-ctl2 logs out and in as alice (a new key); its first connection right after"
   run ctl2 --hjv-e2e-logout
   gap
   run ctl2 --hjv-e2e-login "$ALICE" "$ALICE_PW"
   want 0 "S14: alice's login on hjv-ctl2"
+  CTL2_ID=$(sed -n 's/^hjv-e2e: logged in as .* on \([0-9]*\)$/\1/p' <<<"$OUT")
+  [ -n "$CTL2_ID" ] || fail "S14: the login on hjv-ctl2 did not say its ID"
   keep_secrets ctl2
   run ctl2 --hjv-e2e-devices
   pwless_ok ctl2 s14 "S14: the new key's first connection"
   asked
   pass "S14: the new key's first connection gets in ($MS ms): the PC's list had the key (its sync for the key's serial, or a periodic one; the unit tests pin which)"
 
-  log "S15: the PC's service starts again; its user is logged out (the token gone)"
+  log "S15, I5: the PC's service starts again with a session open; its user is logged out (the token gone)"
+  bg_start i5 hjv-ctl ctl "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 60
+  bg_in i5
+  until_ok 10 "I5: the open session's row" inc_open_from "$CTL_ID"
+  n2=$(inc_rows)
   stop_pc_service
+  # the service went: the stream ends with it
+  bg_wait i5 40
   run pc --hjv-e2e-local-option access_token ""
   n0=$(pc_log_count 'hjv: same-account logins: sync task started')
   n1=$(pc_log_count 'keep_alive: ')
+  # from here on the service reads each session's start as a locked PC (TV-W3's EL1-EL4)
+  PC_SERVICE_ENV=(HJV_E2E_LOGON=1)
   start_pc_service
   until_ok 20 "S15: the PC's sync task started again" pc_log_count_above 'hjv: same-account logins: sync task started' "$n0"
   until_ok 10 "S15: the PC's first sync after the start" first_sync_done
   until_ok 20 "S15: the PC registered with hbbs again" pc_log_count_above 'keep_alive: ' "$n1"
+  locks=$(pc_log_count 'hjv: end lock: auto, locked at start true')
   pwless_ok ctl s15 "S15: after the service started again"
   pass "S15: password-less right after the restart, with the user logged out (binding + cache)"
   first_sync_ms=$(first_sync_ms)
   [ -n "$first_sync_ms" ] || fail "S15: no first sync in the PC's log"
   [ "$first_sync_ms" -le 1500 ] || fail "S15: the first sync took $first_sync_ms ms (more than 1.5 s)"
   pass "S15: the first sync after the start took $first_sync_ms ms (<= 1.5 s)"
+  until_ok 5 "I5: the row of S15's session ended" inc_newest_ended I5
+  row=$(jq -c --arg id "$CTL_ID" --argjson t0 "$I5_T0" '[.rows[] | select(.id == $id and .kind == "remote" and .t0 == $t0)][0]' <<<"$INC")
+  [[ $(jq -r '.end' <<<"$row") =~ ^(unknown|service)$ ]] || fail "I5: the row of the session the restart ended is $row"
+  [ "$(inc_rows)" = $((n2 + 1)) ] || fail "I5: $(($(inc_rows) - n2)) new rows after the restart, for one session"
+  inc_newest I5 ".id == \"$CTL_ID\" and .t0 >= $I5_T0 and .end != \"open\" and .ver == \"same-account\""
+  pass "I5: the session open across the restart ends $(jq -r '.end' <<<"$row") (the new process has another run); S15's session is a row of its own"
+  until_ok 5 "EL1: the PC's line 'hjv: end lock: auto, locked at start true'" \
+    end_locks_above 'hjv: end lock: auto, locked at start true' "$locks"
+  pass "EL1: HJV_E2E_LOGON=1 on the service: after S15's same-account remote screen 'hjv: end lock: auto, locked at start true' (the automatic lock; a 1.8.x controller sends no hjv_end_lock either, D-9)"
 
-  log "S17: hjv-ctl2 (alice) logs out the controller's key"
+  log "EL3, EL4: the controller's 'never' and 'always' for the PC, and a password session"
+  run ctl --hjv-e2e-peer-option "$PC_ID" hjv-end-lock never
+  [ "$OUT" = "hjv-e2e: peer option hjv-end-lock: never" ] || fail "EL3: the controller's PeerConfig says '$OUT'"
+  locks=$(end_locks)
+  pwless_ok ctl el3 "EL3: with hjv-end-lock never"
+  sleep 2
+  [ "$(end_locks)" = "$locks" ] || fail "EL3: an end lock with 'never': $(pc_log | grep -o 'hjv: end lock:.*' | tail -1)"
+  pass "EL3: the controller's PeerConfig hjv-end-lock=never went with its login (OptionMessage.hjv_end_lock): no lock line"
+  run ctl --hjv-e2e-peer-option "$PC_ID" hjv-end-lock always
+  locks=$(pc_log_count 'hjv: end lock: always, locked at start true')
+  pwless_ok ctl el3b "EL3: with hjv-end-lock always"
+  until_ok 5 "EL3: the PC's line 'hjv: end lock: always'" end_locks_above 'hjv: end lock: always, locked at start true' "$locks"
+  run ctl --hjv-e2e-peer-option "$PC_ID" hjv-end-lock ""
+  [ "$OUT" = "hjv-e2e: peer option hjv-end-lock: " ] || fail "EL3: the option did not go: '$OUT'"
+  pass "EL3: with hjv-end-lock=always 'hjv: end lock: always, locked at start true'; the option removed again"
+  locks=$(end_locks)
+  ascreen el4 "$PC_ID" el4
+  screen_ok "EL4: a password session of a controller that is not logged in" el4
+  sleep 2
+  [ "$(end_locks)" = "$locks" ] || fail "EL4: an end lock after a password session: $(pc_log | grep -o 'hjv: end lock:.*' | tail -1)"
+  pass "EL4: a password session (no proof) on the PC that reads as locked: no lock line (upstream's default)"
+
+  log "S17, S33, S34: hjv-ctl2 (alice) logs out the controller's key while two streams run"
   run ctl2 --hjv-e2e-keys
   ckid=$(sed -n 's/^hjv-e2e: key \([0-9]*\) current=false app_name=hjv-ctl .*/\1/p' <<<"$OUT")
   [ -n "$ckid" ] || fail "S17: the controller's key is not in the list"
+  # S33: hjv-ctl's password-less stream; S34: a password stream of a controller that is not logged
+  # in (a logged-in controller sends its proof with the password too, and the PC takes the proof)
+  bg_start s33 hjv-ctl ctl "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 60
+  bg_start s34 hjv-ctl s34 "$CLIENT" --hjv-e2e-stream "$PC_ID" "$PASSWORD" 25
+  bg_in s33
+  bg_in s34
+  locks=$(pc_log_count 'hjv: end lock: forced, locked at start true')
   run ctl2 --hjv-e2e-revoke-key "$ckid"
   want 0 "S17: revoking the controller's key"
   t0=$(date +%s%N)
+  bg_wait s33 15
+  cut_by_pc S33 "$CUT_LOGIN" "its key is no longer listed" "$CTL_ID"
+  until_ok 5 "S33: the PC's lock line of the cut" end_locks_above 'hjv: end lock: forced, locked at start true' "$locks"
+  pass "S33: the stream ended $(ms_since "$t0") ms after the revoke (exit 7, 'closed: $CUT_LOGIN'); the PC logged '… from $CTL_ID ended: its key is no longer listed', closed it as 'account key no longer trusted' and locks (forced)"
   until_ok 15 "S17: the revoked key refused" try_rc ctl s17 3
   has 'password required Could not connect without a password' || fail "S17: not the refusal box"
-  pass "S17: the revoked key is refused $(ms_since "$t0") ms after the revoke (refresh 5 s)"
+  pass "S17: the revoked key is refused $(ms_since "$t0") ms after the revoke (refresh 5 s); S33: so the controller cut off gets the refusal box, not the session again"
+  bg_wait s34 40
+  [ "$BG_RC" = 0 ] && grep -q 'hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT" ||
+    fail "S34: the password stream did not run to its end (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+  pass "S34: the password stream beside it ran its 25 s (exit 0, $(grep -o '[0-9]* frames' <<<"$BG_OUT")): sessions opened by a password are not held to the list"
 
   log "S18: hjv-ctl2 takes the PC out of the list"
   run ctl2 --hjv-e2e-remove "$PC_ID"
@@ -1041,11 +1275,18 @@ account_strict() {
   pwless_refused ctl2 s18 "S18: password-less to a removed PC"
   pass "S18: the PC dropped its binding on a signed revoked ($STATE); refused"
 
-  log "S19: the PC's user logs out"
+  log "S19, S38: the PC's user logs out, with a password-less stream open"
   pc_bound
   pwless_ok ctl2 s19a "S19: the PC bound again"
+  bg_start s38 hjv-ctl2 ctl2 "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 40
+  bg_in s38
   run pc --hjv-e2e-logout
+  t0=$(date +%s%N)
   within_ms 1500 pc_unbound || fail "S19: the PC still held its binding 1.5 s after the logout"
+  # S38 (D-6, critic S-01): the PC's own logout ends its proven sessions
+  bg_wait s38 5
+  cut_by_pc S38 "$CUT_PC" "this PC was logged out" "$CTL2_ID"
+  pass "S38: the PC's logout ended the password-less stream $(ms_since "$t0") ms after the logout returned (exit 7, 'closed: $CUT_PC'; the PC logged '… ended: this PC was logged out')"
   pwless_refused ctl2 s19b "S19: password-less after the PC's logout"
   admin --reveal binding list >"$RUN/bindings.txt"
   grep -q " $PC_ID " "$RUN/bindings.txt" && fail "S19: hjv-api kept the PC's binding after its logout"
@@ -1113,13 +1354,23 @@ account_strict() {
   pwless_refused ctl2 r3 "R3: password-less after the unbind"
   pass "R3: hjv-api confirmed the new binding after its unbind; the PC took nothing (exit 3)"
 
-  log "S25: [끄기] on the PC, the option written again, then a login on the PC"
+  log "S25, S38: [끄기] on the PC with a password-less stream open, the option written again, then a login on the PC"
   pc_bound
   pwless_ok ctl2 s25a "S25: bound"
+  bg_start s38off hjv-ctl2 ctl2 "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 12
+  bg_in s38off
+  ended=$(sessions_ended)
   run pc --hjv-e2e-option hjv-pwless-off Y
   within_ms 1500 pc_off || fail "S25: the PC did not keep Off within 1.5 s of [끄기]"
   s25_ms=$WITHIN_MS
   pwless_refused ctl2 s25b "S25: after [끄기]"
+  # S38's other half (D-6): [끄기] stops new password-less logins; its sync goes on, and the open
+  # session stays
+  bg_wait s38off 30
+  [ "$BG_RC" = 0 ] && grep -q 'hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT" ||
+    fail "S38: the stream open at [끄기] did not run to its end (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+  [ "$(sessions_ended)" = "$ended" ] || fail "S38: [끄기] cut a session: $(pc_log | grep -o 'hjv: same-account session #.*' | tail -1)"
+  pass "S38: [끄기] on the PC refused new password-less logins and left the open stream to its end (exit 0, $(grep -o '[0-9]* frames' <<<"$BG_OUT"))"
   run pc --hjv-e2e-option hjv-pwless-off N
   sleep 2
   pwless_refused ctl2 s25c "S25: with Config2's request written again"
@@ -1127,9 +1378,15 @@ account_strict() {
   pwless_ok ctl2 s25d "S25: after a login on the PC"
   pass "S25: off $s25_ms ms after [끄기], kept off when Config2 is written again (Off), on again only by a login on the PC"
 
-  log "S26: the administrator releases the PC (binding revoke, then device remove)"
+  log "S26, S36: the administrator releases the PC (binding revoke, then device remove), with a password-less stream open"
+  bg_start s36 hjv-ctl2 ctl2 "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 40
+  bg_in s36
   ts=$(date +%s.%N)
   admin binding revoke "$PC_ID" | sed 's/^/    /'
+  t0=$(date +%s%N)
+  bg_wait s36 20
+  cut_by_pc S36 "$CUT_PC" "this PC's binding was revoked" "$CTL2_ID"
+  pass "S36: the stream ended $(ms_since "$t0") ms after 'binding revoke' (exit 7, 'closed: $CUT_PC'; the PC logged '… ended: this PC's binding was revoked')"
   until_ok 15 "S26: the PC took the signed revoked" state_is revoked
   pwless_refused ctl2 s26a "S26: after binding revoke"
   pass "S26: binding revoke: a signed revoked, the binding gone ($STATE), refused"
@@ -1146,11 +1403,17 @@ account_strict() {
   pwless_refused ctl2 s26c "S26: after device remove"
   pass "S26: device remove (the alias) does the same"
 
-  log "X6: the switch off for everyone"
+  log "X6, S37: the switch off for everyone, with a password-less stream open"
   pc_bound
   pwless_ok ctl2 x6a "X6: bound"
+  bg_start s37 hjv-ctl2 ctl2 "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 40
+  bg_in s37
   admin passwordless off | sed 's/^/    /'
   t0=$(date +%s%N)
+  # S37 (D-5): a signed 'disabled' list also ends the open password-less sessions
+  bg_wait s37 20
+  cut_by_pc S37 "$CUT_PC" "password-less logins are paused (disabled)" "$CTL2_ID"
+  pass "S37: the stream ended $(ms_since "$t0") ms after 'passwordless off' (exit 7, 'closed: $CUT_PC'; the PC logged '… ended: password-less logins are paused (disabled)')"
   until_ok 15 "X6: refused after 'passwordless off'" try_rc ctl2 x6b 3
   pass "X6: refused $(ms_since "$t0") ms after 'passwordless off'"
   admin passwordless on | sed 's/^/    /'
@@ -1479,7 +1742,8 @@ arun() {
     shift
   done
   line="${envs[*]} $*"
-  for p in "$PASSWORD" "$ALICE_PW" "$GUEST_PW" "$WRONG_GUEST_PW" "$REVIEW_PW"; do line=${line//"$p"/***}; done
+  # (EL4 calls it in the account part, which runs without the access part's passwords too)
+  for p in "$PASSWORD" "$ALICE_PW" "${GUEST_PW:-}" "${WRONG_GUEST_PW:-}" "${REVIEW_PW:-}"; do line=${line//"$p"/***}; done
   mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
   t0=$(date +%s%N)
   RC=0
@@ -1640,6 +1904,188 @@ print(s[:4] + "-" + s[4:])')
   pass "C7: exit 6 after $MS ms ('guest pc code: denied', as C6 after $ms2 ms): the answer does not tell a used code from a made-up one; records $(code_records)"
 }
 
+# TV-W6 (docs/e2e.md W6-E1 to W6-E7, docs/access-tickets.md 3-7): after C1-C7, in enforce, with
+# PC B registered by C4's code. The support link and its page and package (E1, E2), the waiting
+# room (E3), the staff mark on PC B's connection manager and the input PC B drops before [수락]
+# (E4, E4b, E5), a second profile of the same account (E6), and the mark's end with PC B's ticket
+# (E7). PC B gets a connection manager of its own here (its log $RUN/pcb-cm.log), and the access
+# password's file is back for E4's controller without a login and E7's PC B.
+pcb_log() { cat "$RUN/pcb-server.log" "$RUN"/pcb/home/.local/share/logs/HJViewer/server/*.log 2>/dev/null || true; }
+pcb_log_count() { pcb_log | grep -cF -- "$1" || true; }
+start_pcb_cm() { # [NAME=value]: PC B's connection manager, the one before it gone
+  local n
+  sudo ip netns pids hjv-pc2 | xargs -r ps -o pid=,args= -p | awk '/--hjv-e2e-cm/ {print $1}' | xargs -r sudo kill 2>/dev/null || true
+  n=$(grep -c 'cm listening' "$RUN/pcb-cm.log" 2>/dev/null || true)
+  in_ns hjv-pc2 pcb env "$@" "$CLIENT" --hjv-e2e-cm >>"$RUN/pcb-cm.log" 2>&1 &
+  until_ok 10 "PC B's connection manager" pcb_cm_listening "${n:-0}"
+}
+pcb_cm_listening() { [ "$(grep -c 'cm listening' "$RUN/pcb-cm.log" 2>/dev/null || true)" -gt "$1" ]; }
+pcb_cm_lines() { wc -l <"$RUN/pcb-cm.log"; }
+pcb_dropped() { # the input PC B's service dropped before an accept, counted since its start (hjv-e2e)
+  arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-option hjv_e2e_dropped_input
+  echo "${OUT:-0}"
+}
+pcb_dropped_at_least() { [ "$(pcb_dropped)" -ge "$1" ]; }
+pcb_pointer() { in_ns hjv-pc2 pcb env DISPLAY=:97 xdotool getmouselocation 2>/dev/null | grep -o 'x:[0-9]* y:[0-9]*' || true; }
+# <URL>: from PC B's network, the status and the address a redirect points to; the body in $RUN/w6.body
+link_get() { in_ns hjv-pc2 pcb curl -s --max-time 10 -o "$RUN/w6.body" -w '%{http_code} %{redirect_url}' "$1" || true; }
+LINK_FORM='^https://hjv\.test/api/hjv/s/[A-Za-z0-9_-]{22}/$'
+
+support_link_part() {
+  local code link slot base got i pkg wrong ms n0 cm0 d0 d1 d2 p0 p1 p2 staff_id staff_sp actl_id s2_id marks
+  guest_conf
+  start_pcb_cm
+  arun hjv-ctl staff "$CLIENT" --hjv-e2e-id
+  staff_id=${OUT%% *}
+  staff_sp=$(spaced_id "$staff_id")
+
+  log "W6-E1: alice makes a support code; hjv-api gives its support link and waiting number"
+  arun hjv-ctl staff "$CLIENT" --hjv-e2e-support-code
+  [ "$RC" = 0 ] || fail "W6-E1: exit $RC ($(grep '^hjv-e2e: support' <<<"$OUT"))"
+  code=$(sed -n 's/^hjv-e2e: support code: //p' <<<"$OUT")
+  link=$(sed -n 's/^hjv-e2e: support link: //p' <<<"$OUT")
+  slot=$(sed -n 's/^hjv-e2e: support slot: //p' <<<"$OUT")
+  [[ $code =~ $CODE_FORM ]] || fail "W6-E1: the code is not of the form XXXX-XXXX: '$code'"
+  [[ $link =~ $LINK_FORM ]] || fail "W6-E1: the support link is not https://hjv.test/api/hjv/s/<22 base64url>/: '$link'"
+  [[ $slot =~ ^[1-9][0-9]*$ ]] || fail "W6-E1: the slot is '$slot'"
+  pass "W6-E1: a code, its support link (/api/hjv/s/ and 22 base64url characters, the whole address ending in /) and slot $slot"
+
+  log "W6-E2: the support link from PC B's network: its page and the package, three times"
+  if [ -z "$POLICY" ]; then
+    echo "skipped: W6-E2 (no version policy, so hjv-api has no Windows package to offer: HJV_RELEASE)"
+  else
+    base=${link%/}
+    got=$(link_get "$base")
+    [ "$got" = "307 $link" ] || fail "W6-E2: the link without its / answers '$got', not 307 to $link"
+    got=$(link_get "$link")
+    [ "$got" = "200 " ] || fail "W6-E2: the page answers '$got'"
+    grep -qF -- "$code" "$RUN/w6.body" || fail "W6-E2: the page does not show the code"
+    pkg="HJViewer-$NEXT_MINOR.exe"
+    grep -qF -- "href=\"$pkg\"" "$RUN/w6.body" || fail "W6-E2: the page offers no $pkg"
+    for i in 1 2 3; do
+      got=$(link_get "$link$pkg")
+      [ "$got" = "200 " ] || fail "W6-E2: download $i of $pkg answers '$got'"
+    done
+    got=$(link_get "$link$pkg")
+    [ "${got%% *}" = 404 ] || fail "W6-E2: the fourth download answers '$got', not 404"
+    wrong="https://$DOMAIN/api/hjv/s/$(head -c 16 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')/"
+    got=$(link_get "$wrong")
+    [ "${got%% *}" = 404 ] || fail "W6-E2: a made-up link answers '$got', not 404"
+    pass "W6-E2: 307 to the address with /, the page (200) with the code and $pkg, three downloads 200 and the fourth 404, a made-up link 404"
+  fi
+
+  log "W6-E3: the waiting room: alice waits, PC B trades the code, alice learns PC B's ID"
+  bg_start e3 hjv-ctl staff "$CLIENT" --hjv-e2e-support-wait 25
+  until_ok 15 "W6-E3: the code made in the waiting process" bg_has e3 'hjv-e2e: support slot: '
+  code=$(sed -n 's/^hjv-e2e: support code: //p' "$RUN/e3.bg")
+  link=$(sed -n 's/^hjv-e2e: support link: //p' "$RUN/e3.bg")
+  [[ $code =~ $CODE_FORM ]] && [[ $link =~ $LINK_FORM ]] || fail "W6-E3: the waiting process made '$code' and '$link'"
+  n0=$(pcb_log_count 'a support grant refused')
+  arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-guest-pc-code "$code"
+  [ "$RC" = 0 ] && ahas "hjv-e2e: guest pc code: ok" ||
+    fail "W6-E3: PC B's trade: exit $RC ($(grep '^hjv-e2e: guest' <<<"$OUT"))"
+  bg_wait e3 10
+  [ "$BG_RC" = 0 ] && grep -qxF "hjv-e2e: support arrived: $PCB_ID" <<<"$BG_OUT" ||
+    fail "W6-E3: the waiting process: exit $BG_RC, $(grep '^hjv-e2e: support arrived' <<<"$BG_OUT")"
+  [ "$BG_MS" -le 5000 ] || fail "W6-E3: PC B's ID came $BG_MS ms after the trade"
+  ms=$BG_MS
+  until_ok 10 "W6-E3: PC B's hjv-access-pc ok" pcb_is ok
+  [ "$(pcb_log_count 'a support grant refused')" = "$n0" ] || fail "W6-E3: PC B refused the support grant: $(pcb_log | grep -o 'a support grant refused.*' | tail -1)"
+  got=$(link_get "$link")
+  [ "${got%% *}" = 404 ] || fail "W6-E3: the used code's link answers '$got', not 404"
+  pass "W6-E3: 'guest pc code: ok'; the waiting process printed PC B's ID $ms ms after the trade (exit 0); PC B took the support grant; the used code's link is 404"
+
+  # A headless command is a process of its own, and the app keeps its support PCs in its memory
+  # only (src/hjviewer_account/support.rs): E4, E4b and E5 need the support PC that E3's process
+  # learned in the next ones, which an hjv-e2e build hands on in LocalConfig hjv-e2e-support-pc
+  if grep -aqF hjv-e2e-support-pc "$CLIENT"; then
+    log "W6-E4: alice's controller to PC B without a password: the staff mark, and the wait for [수락]"
+    cm0=$(pcb_cm_lines)
+    marks=$(pcb_log_count "hjv: support mark for $staff_id")
+    arun hjv-ctl staff "$CLIENT" --hjv-e2e-screenshot "$PCB_ID" "" "$RUN/e4.ppm"
+    [ "$RC" = 1 ] && ahas 'login error: No Password Access' && ahas 'wait-remote-accept-nook' ||
+      fail "W6-E4: exit $RC, not the wait for [수락]: $(grep '^hjv-e2e:' <<<"$OUT" | tail -n 2 | tr '\n' ' ')"
+    if ahas 'Could not connect without a password' || ahas '비밀번호 없이 연결하지 못했습니다'; then fail "W6-E4: the same-account failure box"; fi
+    until_ok 5 "W6-E4: PC B's connection manager shows the staff mark" \
+      cm_file_since "$RUN/pcb-cm.log" "$cm0" "cm login from $staff_id named \"$staff_sp\", authorized false, mark staff()"
+    [ "$(pcb_log_count "hjv: support mark for $staff_id")" -gt "$marks" ] || fail "W6-E4: no 'hjv: support mark for $staff_id' in PC B's log"
+    arun hjv-ctl actl "$CLIENT" --hjv-e2e-id
+    actl_id=${OUT%% *}
+    cm0=$(pcb_cm_lines)
+    ascreen actl "$PCB_ID" e4a HJV_E2E_ACCESS_PASSWORD="$GUEST_PW"
+    screen_ok "W6-E4: the controller without a login, with the access password and PC B's password" e4a
+    cm_file_since "$RUN/pcb-cm.log" "$cm0" "cm login from $actl_id named \"[^\"]*\", authorized true, mark none()" ||
+      fail "W6-E4: the access password's session is not mark none(): $(tail -n 1 "$RUN/pcb-cm.log")"
+    pass "W6-E4: PC B's connection manager: named \"$staff_sp\", authorized false, mark staff() ('hjv: support mark for $staff_id'); the controller waits for [수락] (No Password Access, no failure box); the access password's session: mark none()"
+
+    log "W6-E4b: the same at PC B set to 'password only'"
+    arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-option approve-mode password
+    cm0=$(pcb_cm_lines)
+    arun hjv-ctl staff "$CLIENT" --hjv-e2e-screenshot "$PCB_ID" "" "$RUN/e4b.ppm"
+    [ "$RC" = 3 ] && ahas 'login error: Empty Password' && ahas 'password required' ||
+      fail "W6-E4b: exit $RC, not 'Empty Password' and the password box: $(grep '^hjv-e2e:' <<<"$OUT" | tail -n 2 | tr '\n' ' ')"
+    if ahas 'Could not connect without a password'; then fail "W6-E4b: the same-account failure box"; fi
+    until_ok 5 "W6-E4b: the staff mark, not accepted" \
+      cm_file_since "$RUN/pcb-cm.log" "$cm0" "cm login from $staff_id named \"$staff_sp\", authorized false, mark staff()"
+    arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-option approve-mode ""
+    pass "W6-E4b: 'password only': 'Empty Password', the plain password box (exit 3, no failure box); the connection manager: authorized false, mark staff()"
+
+    log "W6-E5: no input before [수락]: PC B's connection manager accepts 10 s after the request"
+    start_pcb_cm HJV_E2E_CM_ACCEPT_AFTER=10
+    cm0=$(pcb_cm_lines)
+    d0=$(pcb_dropped)
+    p0=$(pcb_pointer)
+    [ -n "$p0" ] || fail "W6-E5: xdotool does not read PC B's pointer"
+    bg_start e5 hjv-ctl staff "$CLIENT" --hjv-e2e-input-probe "$PCB_ID" 20
+    until_ok 20 "W6-E5: the probe's moves before the accept" bg_has e5 'hjv-e2e: input probe: 20 moves before accept'
+    until_ok 5 "W6-E5: PC B dropped the 20 moves (hjv_e2e_dropped_input from $d0)" pcb_dropped_at_least $((d0 + 20))
+    d1=$(pcb_dropped)
+    p1=$(pcb_pointer)
+    if cm_file_since "$RUN/pcb-cm.log" "$cm0" 'cm accepts'; then fail "W6-E5: the connection manager accepted before the count was read"; fi
+    [ "$p1" = "$p0" ] || fail "W6-E5: PC B's pointer moved before [수락]: $p0 -> $p1"
+    bg_wait e5 30
+    [ "$BG_RC" = 0 ] && grep -qF 'hjv-e2e: input probe: 20 moves after accept' <<<"$BG_OUT" ||
+      fail "W6-E5: the probe: exit $BG_RC, $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+    cm_file_since "$RUN/pcb-cm.log" "$cm0" 'cm accepts' || fail "W6-E5: the connection manager did not accept"
+    d2=$(pcb_dropped)
+    p2=$(pcb_pointer)
+    [ "$d2" = "$d1" ] || fail "W6-E5: PC B dropped input after the accept: $d1 -> $d2"
+    [ "$p2" != "$p0" ] || fail "W6-E5: PC B's pointer did not move after [수락] ($p2)"
+    pass "W6-E5: before [수락] PC B dropped $((d1 - d0)) inputs (hjv_e2e_dropped_input $d0 -> $d1) and its pointer stayed at $p0; after the connection manager's accept the probe's moves took it to $p2 and nothing more was dropped"
+  else
+    echo "skipped: W6-E4, W6-E4b, W6-E5 (the client keeps the support PC that the waiting room named in the waiting process only; no hjv-e2e-support-pc in $CLIENT)"
+  fi
+
+  log "W6-E6: a second profile of alice's account (it made no code) to PC B"
+  arun hjv-ctl2 staff2 "$CLIENT" --hjv-e2e-login "$ALICE" "$ALICE_PW"
+  [ "$RC" = 0 ] || fail "W6-E6: alice's login on the second profile: exit $RC"
+  s2_id=$(sed -n 's/^hjv-e2e: logged in as .* on \([0-9]*\)$/\1/p' <<<"$OUT")
+  [ -n "$s2_id" ] || fail "W6-E6: the second profile's login did not say its ID"
+  cm0=$(pcb_cm_lines)
+  arun hjv-ctl2 staff2 "$CLIENT" --hjv-e2e-screenshot "$PCB_ID" "$PASSWORD" "$RUN/e6.ppm"
+  screen_ok "W6-E6: the second profile with PC B's password" e6
+  cm_file_since "$RUN/pcb-cm.log" "$cm0" "cm login from $s2_id named \"[^\"]*\", authorized true, mark none()" ||
+    fail "W6-E6: the second profile's session is not mark none(): $(tail -n 1 "$RUN/pcb-cm.log")"
+  [ "$(pcb_log_count "hjv: support mark for $s2_id")" = 0 ] || fail "W6-E6: PC B marked the second profile"
+  pass "W6-E6: the same account's other profile (another account key, no code) gets PC B's screen with its password: mark none(), no support mark"
+
+  log "W6-E7: PC B ends its ticket and comes back with the access password: the mark goes with the ticket"
+  arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-guest-pc-end
+  [ "$RC" = 0 ] && ahas 'hjv-e2e: guest pc end' || fail "W6-E7: --hjv-e2e-guest-pc-end: exit $RC"
+  arun hjv-pc2 pcb "$CLIENT" --hjv-e2e-guest-pc "$GUEST_PW"
+  [ "$RC" = 0 ] && ahas "hjv-e2e: guest pc: ok" || fail "W6-E7: PC B's access password: exit $RC ($(grep '^hjv-e2e: guest' <<<"$OUT"))"
+  until_ok 10 "W6-E7: PC B's hjv-access-pc ok" pcb_is ok
+  until_ok 20 "W6-E7: PC B online" online "$PCB_ID" ctl
+  cm0=$(pcb_cm_lines)
+  marks=$(pcb_log_count "hjv: support mark for $staff_id")
+  ascreen staff "$PCB_ID" e7
+  screen_ok "W6-E7: alice's controller to PC B after its ticket ended" e7
+  cm_file_since "$RUN/pcb-cm.log" "$cm0" "cm login from $staff_id named \"[^\"]*\", authorized true, mark none()" ||
+    fail "W6-E7: alice's session is not mark none(): $(tail -n 1 "$RUN/pcb-cm.log")"
+  [ "$(pcb_log_count "hjv: support mark for $staff_id")" = "$marks" ] || fail "W6-E7: PC B marked alice's controller after its ticket ended"
+  pass "W6-E7: after 'guest pc end' and the access password, alice's controller gets PC B's screen with its password and no mark (mark none()): the support grant ended with the code's ticket"
+}
+
 access_part() {
   local t0 n0 n1 nb before ms
   mkdir -p "$RUN"/{actl,staff,rev,pcb}/{home,ipc}
@@ -1715,10 +2161,14 @@ access_part() {
   ascreen actl "$PC_ID" a6 HJV_E2E_ACCESS_PASSWORD="$GUEST_PW"
   ahas "hjv-e2e: guest ctl: ok" || fail "A6: no 'guest ctl: ok' ($(grep '^hjv-e2e: guest' <<<"$OUT"))"
   screen_ok "A6: with the access password" a6
+  # A6′ (UX-G1): what A0 reads, hjv-guest-held:<PC A>, is Y while the ticket is held for the
+  # session, and empty once its last session closed (A0 then asks again)
+  [ "$(grep -o '^hjv-e2e: \(guest held: .\|screen \)' <<<"$OUT" | tr '\n' '|')" = "hjv-e2e: guest held: Y|hjv-e2e: screen |hjv-e2e: guest held: -|" ] ||
+    fail "A6′: not 'guest held: Y' before the screen and 'guest held: -' after it: $(grep '^hjv-e2e: \(guest held\|screen\)' <<<"$OUT" | tr '\n' ' ')"
   # the ticket was that process's: a new one without the password is refused again
   ascreen actl "$PC_ID" a6b
   refused_with "A6: a new process without the access password" a6b "$ACC_A1"
-  pass "A6: 'guest ctl: ok', then the PC's screen; a new process without the password is refused as in A3 (the ticket lived in the first one's memory)"
+  pass "A6: 'guest ctl: ok', then the PC's screen; a new process without the password is refused as in A3 (the ticket lived in the first one's memory); A6′: 'guest held: Y' before the session, 'guest held: -' after it closed"
 
   log "A7: a wrong access password: denied after the failure delay, no session"
   ascreen actl "$PC_ID" a7 HJV_E2E_ACCESS_PASSWORD="$WRONG_GUEST_PW"
@@ -1764,6 +2214,7 @@ access_part() {
   pass "A10: the App Review account's ticket is for ctl; the PC's screen; PC B refused after one new ticket (exit 5, the app's A2)"
 
   support_code_part
+  support_link_part
 
   log "A11: NOT_BEFORE=now ends every ticket handed out before: the registrations go, the logins get new ones"
   nb=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1808,15 +2259,17 @@ access_part() {
   n0=$(hbbs_count "access off")
   access_conf off
   until_ok 13 "A14: hbbs's line 'access off'" hbbs_above "access off" "$n0"
-  # refused, PC B sends RegisterPk once every 30 s (upstream's DEPLOY_RETRY_INTERVAL), and hbbs,
-  # which gives an unregistered connection no heartbeat, drops one quiet for 30 s; when that drop
-  # meets the send (A13's restart sets the phase), the registration waits a second round
-  until_ok 75 "A14: PC B's hjv-access-pc ok" pcb_is ok
+  # refused, PC B sends RegisterPk again 20 s after its last one (1.9.0, hjviewer_access's
+  # REFUSED_RETRY), before hbbs drops a connection quiet for 30 s (upstream sent every 30 s, and
+  # waited a second round when that drop met the send): 20 s and the file's 10 s, with room
+  t0=$(date +%s%N)
+  until_ok 45 "A14: PC B's hjv-access-pc ok" pcb_is ok
+  ms=$(ms_since "$t0")
   until_ok 40 "A14: PC B online" online "$PCB_ID" ctl
   ascreen actl "$PCB_ID" a14
   screen_ok "A14: the controller without a login, to PC B" a14
   until_ok 60 "A14: the PC online" online "$PC_ID" ctl
-  pass "A14: 'access off' within 10 s, no restart; PC B registered again (hjv-access-pc ok) and the controller without a login got its screen with the password"
+  pass "A14: 'access off' within 10 s, no restart; PC B registered again (hjv-access-pc ok $ms ms after hbbs's 'access off') and the controller without a login got its screen with the password"
   sudo ip netns pids hjv-pc2 | xargs -r sudo kill 2>/dev/null || true
 }
 # hbbs's console answers mode=closed
