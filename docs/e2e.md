@@ -38,6 +38,7 @@
 - 패치에 계정 코드가 있으면 [계정 단계](#계정-단계-160)도 돕니다. 클라이언트의 HJViewer 코드 단위 시험(`--lib hjv`), hjv-api와 가짜 SSO 빌드, Ubuntu의 `libfaketime` 패키지 풀기(`build/ci/faketime`, 설치하지 않음)가 더해집니다.
 - hbbs에 서버 패치 0005가 있으면(`--hjv-min-controller-file`) [최소 버전 단계](#최소-버전-단계-160)의 V1·V2·V4를 돌립니다. `server/patches`에 0005가 있는데 hbbs에 그 옵션이 없으면(전에 빌드한 hbbs) 실패합니다. 패치에 업데이트 코드(`src/hjviewer_update`)가 있으면 클라이언트를 업데이트 시험 키로 빌드하고 단위 시험(`--lib hjv`)도 그 빌드로 돌립니다. 업데이트 코드의 단위 시험(`--lib hjviewer_update`)은 키만 뺀 빌드로 한 번 더 돌립니다. 키 없는 빌드에서 업데이트 정책 기능이 꺼져 있는지 보는 시험은 키가 든 빌드에서는 바로 끝나기 때문입니다. 이 저장소에 `tools/hjv-release`가 있으면 그것을 빌드해(`build/ci/target-hjv-release`) 시험 정책에 서명하고 V5–V7·V9를 돌립니다. 셋 중 없는 것은 건너뛴 것으로 셉니다.
 - systemd가 없는 컨테이너(2026-10-17의 클라우드 세션)에서는 두 가지가 데스크톱과 달라 계정 단계가 멈춥니다. 그 세션은 컨테이너 안에서만 다음처럼 맞추고 돌렸습니다(저장소에는 넣지 않음). 첫째, logind가 없어 앱이 지금 사용자의 이름을 빈 값으로 읽고, `getent passwd `(이름 없음)가 모든 계정을 내놓아 PC가 자기를 로그인 화면으로 봅니다(`is_prelogin`). 그러면 서비스가 연결 관리자에 붙지 않아 S6이 실패합니다. `/usr/local/bin/getent`에 인수가 `passwd` 하나뿐일 때만 "없음"(종료 2)으로 답하는 작은 스크립트를 두었습니다. 둘째, `/var/lib/dbus/machine-id`가 `/etc/machine-id`의 링크가 아니라 따로 된 파일이면 앱(`machine-uid`)이 그것을 먼저 읽어, 네임스페이스마다 준 machine-id가 쓰이지 않습니다. 모든 기기가 한 기기로 보여 hjv-api가 앞 키를 `same-device`로 폐기하고 S15가 실패합니다. Ubuntu 데스크톱처럼 링크로 바꾸었습니다. 그 밖에 E2E는 root가 아닌 사용자로 돌리고(sudo는 비밀번호 없이), 서버 단계의 hjv-relay 시험 하나는 umask 022를 전제합니다.
+- 실패를 살필 때는 `HJV_E2E_HOLD=<초>`(최대 3600)를 줍니다. 실패한 실행은 정리하기 전에 그 시간 동안, 또는 `$HJV_E2E_WORK/run-<모드>/release`가 생길 때까지 네임스페이스·서버·클라이언트를 그대로 둡니다(`HOLD:` 줄). 그동안 로그를 읽고 `in_ns`처럼 네임스페이스 안에서 `--hjv-e2e-option` 등으로 상태를 물으며, 처음부터 다시 돌리지 않습니다.
 - 시험용 클라이언트는 LTO 없이, 코드 생성 단위 16개로 빌드합니다. 트리를 새로 받으므로 클라이언트 크레이트는 실행마다 다시 컴파일됩니다(의존성은 `build/ci/target-e2e`에 남음). 릴리스 프로필 그대로면 실행 파일과 단위 시험이 각각 3분 반쯤 걸리고, 이렇게 하면 각각 45초쯤입니다. 제품 빌드의 프로필은 그대로입니다.
 
 손으로 돌릴 때는 다음과 같습니다.
@@ -168,7 +169,7 @@ PASS (strict): transport: relay
 - 시험 계정은 가짜 SSO의 것으로, HJViewer의 ID 규칙(대문자로 바꿔 Z나 Y로 시작, ZA 제외)에 맞는 가짜 ID입니다: alice `ZZTEST01`(홍길동), bob `ZZTEST02`, 미리 넣지 않는 carol `YZTEST03`(Y 코드. 가짜 SSO가 그 pcode를 소문자로 주고 hjv-api가 대문자로 둠). 가짜 SSO는 행정허브 SSO 등록의 모양(`success`, `access_token`, `data[0]`의 `pcode`·`name`·`email`·`deptNm`)으로 답하고, 대문자로 바꾸지 않은 사용자 이름이나 계약과 다른 양식은 거절하므로 모든 로그인 시나리오가 그 계약을 지납니다. hjv-api는 운영 기본값처럼 열린 로그인(`HJV_API_LOGIN=open`)으로 시작하고, alice와 bob만 미리 가져옵니다. carol은 처음 로그인할 때 명단에 오릅니다(S28).
 - hjv-api 시험 설정: `HJV_API_BIND_OS=windows,linux`, `HJV_API_TRUST_REFRESH=5`, `HJV_API_TRUST_TTL=30`, E2E 시험 키. 한 계정이 몇 분 안에 스무 번 넘게 로그인하므로 성공 로그인 한도와 SSO 호출 한도(`HJV_API_LIMIT_OK_ID`, `_OK_IP`, `_SSO`)는 올려 둡니다(운영값이면 한 계정의 분당 다섯 번째 SSO 호출부터 401). 비밀번호 없는 연결 스위치는 운영처럼 **꺼진 채로 시작**합니다.
 - 클라이언트는 시험 공개키(`HJV_LOGIN_SEAL_PUBKEY`, `HJV_TRUST_PUBKEYS`)를 넣어 빌드합니다. PC 쪽 실행 파일은 `/usr/local/lib/hjviewer-e2e/rustdesk`에 설치해 그 경로로 실행합니다. 리눅스는 `/usr` 아래의 실행 파일만 설치형으로 보고, hjv-api는 설치된 기기만 계정에 묶기 때문입니다. 리눅스 PC는 Windows의 HKLM 값을 설정 폴더의 `HJViewer_binding`(0600)에 둡니다.
-- PC에는 연결 창(CM) 대신 `--hjv-e2e-cm`을 띄워, 서비스가 연결마다 CM에 넘기는 상대 ID와 이름을 받아 적습니다.
+- PC에는 연결 창(CM) 대신 `--hjv-e2e-cm`을 띄워, 서비스가 연결마다 CM에 넘기는 상대 ID와 이름을 받아 적습니다. 1.9.0부터 그 줄은 `hjv-e2e: cm login from {id} named {name:?}, authorized {true|false}, mark {kind|none}({who})`(표시가 없으면 `mark none()`)와 `hjv-e2e: cm recording {true|false}`입니다(critic 2-2). `HJV_E2E_CM_ACCEPT_AFTER=<초>`를 주면 수락하지 않은 첫 로그인 뒤 그 초에 [수락]처럼 `Data::Authorize`를 보내고 `hjv-e2e: cm accepts`를 찍습니다(W6-E5).
 
 **헤드리스 명령**(시험 기능 `hjv-e2e`에만 있음, 클라이언트 패치 0034)
 - `--hjv-e2e-login <포탈 ID> <비밀번호>`, `--hjv-e2e-logout`, `--hjv-e2e-devices`, `--hjv-e2e-keys`, `--hjv-e2e-remove <PC ID>`, `--hjv-e2e-revoke-key <ckid>`: 앱이 보내는 요청을 앱과 같은 Rust 경로(`http_request`의 계정 훅: 봉인, 계정 키, 요청 서명, 응답 관찰)로 보냅니다. 그래서 PC에서는 로그인만으로 묶입니다.
@@ -176,6 +177,7 @@ PASS (strict): transport: relay
 - 화면 세션(`--hjv-e2e-screenshot`, `-stream`, `-forward`)에 비밀번호 `""`를 주면 비밀번호 없는 연결입니다. 비밀번호 창이 뜨면 `hjv-e2e: password required <제목>`을 찍고 **종료 코드 3**, 'error' 창(키 바뀜 경고)이면 `hjv-e2e: error <제목>`을 찍고 **종료 코드 4**로 끝납니다. PC가 증명을 거절했을 때의 창은 제목이 `Could not connect without a password`라서 그냥 비밀번호 창(`Password Required`)과 구분됩니다.
 - 비밀번호 없는 연결의 데이터 경로는 원격 화면(`--hjv-e2e-screenshot <ID> ""`)으로 봅니다. 포트 포워딩은 증명을 보내지 않으므로 S22와 X7에만 씁니다.
 - 1.8.0의 출입증(클라이언트 패치 0058–0061, 0063): `--hjv-e2e-ticket [refresh]`는 로그인의 출입증을 해시의 앞 8바이트, `use`, 남은 수명으로 보입니다(refresh는 먼저 `POST /api/hjv/ticket` 한 번, 못 받으면 종료 코드 1). 화면 세션과 포워딩은 hbbs의 출입 거절을 앱이 보이는 창(핵심의 A1이나 A2, `hjv-e2e: hjv-access-error: <제목>: <글>`)과 `hjv-e2e: access refused <제목>`, **종료 코드 5**로 끝냅니다(hbbs가 보낸 글은 그 앞에 표준 오류로). `HJV_E2E_ACCESS_PASSWORD=<이용 비밀번호>`를 주면 세 명령이 세션 전에 그 대상의 이용 비밀번호 출입증을 받습니다(`hjv-e2e: guest ctl: ok`, 못 받으면 `hjv-e2e: guest ctl: <코드>`와 **종료 코드 6**). `--hjv-e2e-guest-pc <이용 비밀번호>`는 이 PC의 출입증을 받아 IPC로 등록하는 프로세스에 넘깁니다(`hjv-e2e: guest pc: ok`, 못 받으면 종료 코드 6). 1.8.2의 지원 코드(패치 0082): `--hjv-e2e-support-code`는 로그인한 앱이 코드를 하나 만들어 `hjv-e2e: support code: XXXX-XXXX`로 찍고(못 만들면 `hjv-e2e: support code: <이유>`와 종료 코드 6), `--hjv-e2e-guest-pc-code <코드>`는 `--hjv-e2e-guest-pc`처럼 그 코드로 이 PC의 출입증을 받아 넘깁니다(`hjv-e2e: guest pc code: ok`, 못 받으면 `… <코드>`와 종료 코드 6). 이 명령들의 시나리오는 아래 "출입 제한 단계 (1.8.0)"에 있습니다.
+- 1.9.0: `--hjv-e2e-incoming`은 실행 중인 서비스에 IPC로 '들어온 연결'(TV-W9)을 물어 JSON 그대로 찍습니다(`{"on":true,"rows":[…]}`, 못 받으면 종료 코드 1). `--hjv-e2e-support-wait <초>`는 `--hjv-e2e-support-code`처럼 코드를 만든 뒤 같은 프로세스에서 대기실을 1초마다 읽어 `hjv-e2e: support arrived: <PC ID>`(종료 0)나 `… none`(그 초가 지나면, 종료 7)을 찍습니다. `--hjv-e2e-support-code`는 1.9 hjv-api가 지원 링크와 대기 번호를 주면 `hjv-e2e: support link: https://<서버>/api/hjv/s/<22자>/`와 `hjv-e2e: support slot: <n>`도 찍습니다. `--hjv-e2e-input-probe <ID> <n>`은 비밀번호 없는 화면 세션을 열어, PC가 [수락]을 기다리는 동안(`No Password Access`) 마우스 이동 n번을 보내고(`hjv-e2e: input probe: n moves before accept`), 들어간 뒤 n번을 더 보냅니다(`… after accept`, 종료 0). `--hjv-e2e-peer-option <ID> <이름> [값]`은 이 기기의 그 PC 옵션(PeerConfig)을 쓰고 읽은 값을 찍습니다(빈 값은 지움). `--hjv-e2e-guest-pc-end`는 이 PC의 출입증과 지원 확인을 끝냅니다(P2의 [끝내기]). `--hjv-e2e-stream <ID> <비밀번호> <초> record`는 첫 프레임 1초 뒤부터 끝나기 1초 전까지 녹화 중이라고 알립니다(`hjv-e2e: sent recording true|false`). `HJV_E2E_ACCESS_PASSWORD`를 준 연결 명령은 출입증을 받은 뒤 `hjv-e2e: guest held: Y`를, 화면·스트림·probe 세션이 닫힌 뒤 앱의 마지막 세션처럼 출입증을 버리고 `hjv-e2e: guest held: -`를 찍습니다(A0이 읽는 `hjv-guest-held:<ID>`). `--hjv-e2e-stream`과 `--hjv-e2e-screenshot`은 PC가 닫는 이유를 보내 세션을 끝내면 `hjv-e2e: closed: <이유>`를 찍고 **종료 코드 7**로 끝납니다(TV-W5). PC의 서비스에 `HJV_E2E_LOGON=1`을 주면 세션이 들어올 때마다 잠긴 PC로 읽고, 잠그는 대신 `hjv: end lock: …` 줄만 남깁니다(TV-W3). 들어오기 전에 버린 마우스·키·터치·클립보드 메시지 수는 서비스의 옵션 `hjv_e2e_dropped_input`입니다.
 
 **시나리오와 결과**(2026-10-13, WSL2 Ubuntu 24.04, `scripts/ci.sh e2e`, 실행 순서대로. `""`는 비밀번호 없이 연 원격 화면, T0는 같은 실행의 비밀번호 연결 시간, 상한 B = T0 + 2초)
 
@@ -185,8 +187,8 @@ PASS (strict): transport: relay
 | S24 | 스위치가 꺼진 채 PC·컨트롤러가 alice로 로그인 → `""` → `admin passwordless on --owner-of <PC ID>` → `""` | PC 상태 `disabled`, 거절 창과 종료 3. 켠 뒤 3.5초 만에 성공(갱신 5초) |
 | S1–S3 | PC 로그인, 컨트롤러 로그인, 기기 목록 | `this device: added`, PC 로그 `trust list active, 2 key(s)`, `홍길동`, 목록에 PC가 `active`와 `pk`로, 컨트롤러 자신은 없음 |
 | T0 | 로그인하지 않은 기기의 비밀번호 연결 | 3.6초 |
-| S4–S6 | `""`, 5초 스트림, PC 로그와 CM | 비밀번호 창 없이 화면(3.4초, RMSE 0.070), 프레임 수신, `same-account login (remote) by Linux PC from <ID>` 한 줄, CM 이름 `Linux PC · same account(홍*동)` |
-| S7–S10 | bob의 컨트롤러 | 목록에 PC 없음, 증명 없이 바로 비밀번호 창(종료 3, 2.6초 ≤ B), PC 비밀번호로는 성공(D6), 틀린 비밀번호는 다시 입력(종료 3). bob의 세션에서 PC가 받은 이름은 OS 사용자 이름이고 성명·포탈 ID가 아님(H21) |
+| S4–S6 | `""`, 5초 스트림(`record`), PC 로그와 CM | 비밀번호 창 없이 화면(3.4초, RMSE 0.070), 프레임 수신, `same-account login (remote) by Linux PC from <ID>` 한 줄, CM 이름 `Linux PC`(이름에 `same account` 없음)와 표시 `mark same-account(홍*동)`, 스트림이 보낸 녹화 상태가 CM에 `cm recording true`, `cm recording false`로 감, PC 로그 `hjv: peer recording true` |
+| S7–S10 | bob의 컨트롤러 | 목록에 PC 없음, 증명 없이 바로 비밀번호 창(종료 3, 2.6초 ≤ B), PC 비밀번호로는 성공(D6), 틀린 비밀번호는 다시 입력(종료 3). bob의 세션에서 PC가 받은 이름은 OS 사용자 이름이고 성명·포탈 ID가 아님(H21); bob의 세션의 CM 표시는 mark none() |
 | S22 | alice의 포트 포워딩 `""` | 증명 없이 비밀번호 창, 종료 3 |
 | S23 | 컨트롤러의 토큰만 다른 기기에서 써서 목록 요청 | 401 |
 | X1 | PC `approve-mode=click` | `No Password Access`, PC 쪽에 수락 요청 |
@@ -229,32 +231,38 @@ PASS (strict): transport: relay
 
 **고침을 되돌렸을 때 실패하는지**: 다섯 군데를 되돌린 클라이언트로 같은 스크립트를 돌려, 해당 시나리오만 실패하는 것을 확인했습니다(커밋하지 않은 확인용 빌드). H21의 이름 훅을 빼면 S9, 로그아웃이 거둔 묶기 요청의 확인을 버리는 처리를 빼면 R3(로그아웃한 PC가 묶이고 `""`가 들어감), 포트 포워딩의 키 비교 순서를 되돌리면 X7(비밀번호가 나가 포워딩이 붙음), 계정 요청의 엄격 TLS(H15)를 빼면 K2, 로그아웃 뒤 목록 확인을 빼면 D1이 실패했습니다.
 
-**1.9.0에서 더하는 시나리오**(번호와 목적만입니다. 통합 때 돌린 뒤 결과를 적고 위 표의 바뀐 줄을 고칩니다. `E2E_LEAST_STRICT`는 그때 실제로 더한 `PASS` 줄 수만큼 한 번에 올립니다. 가짜 CM의 줄은 `hjv-e2e: cm login from {id} named {name:?}, authorized {true|false}, mark {kind|none}({who})`와 `hjv-e2e: cm recording {true|false}`입니다)
+**1.9.0 시나리오와 결과**(2026-10-20, WSL2 Ubuntu 24.04, 커밋 5f2d3b0의 `scripts/ci.sh e2e`, 실행 순서대로. 위 표의 바뀐 줄(S4–S6, S7–S10, X1, A6)은 이미 고쳤습니다. W5의 끊김은 S17·S12·S19·S25·S26·X6과 같은 사건에 뒤에서 띄운 스트림(`--hjv-e2e-stream`)으로 봅니다. 그래서 각 시나리오가 따로 사건을 만들지 않습니다)
 
-| # | 목적 |
-|---|---|
-| S6′ | (S4–S6의 바뀜, TV-W2) 2FA 없는 PC에 alice의 비밀번호 없는 연결: CM 이름이 `Linux PC`(이름에 `same account` 없음)이고 표시가 `mark same-account(홍*동)`. 받아들인 증명의 기록이 로그온 응답보다 먼저인 것을 고정함 |
-| S5′ | (S4–S6의 바뀜, TV-W2) 같은 세션의 5초 스트림을 `record`로: CM에 `cm recording true`, 그다음 `cm recording false`, PC 로그 `hjv: peer recording true` |
-| S9′ | (S7–S10의 바뀜, TV-W2) bob의 PC 비밀번호 세션의 표시는 `mark none()` |
-| X1′ | (X1의 바뀜, TV-W2) 클릭 승인 PC의 수락 요청의 표시는 `mark none()`(클릭 승인 갈래에는 같은 계정 표시가 없음) |
-| H-hide | (TV-W2) 서비스에 `allow-hide-cm Y`를 써도 고정 E2E 빌드는 `N`을 읽음 |
-| EL1 | (TV-W3) 같은 계정 원격 화면, PC에 `HJV_E2E_LOGON=1`: 닫은 뒤 PC 로그 `hjv: end lock: auto, locked at start true` |
-| EL2 | EL1을 `HJV_E2E_LOGON` 없이: 잠금 줄 없음 |
-| EL3 | 컨트롤러가 그 PC의 PeerConfig에 `hjv-end-lock=never`를 둔 뒤 EL1: 잠금 줄 없음 |
-| EL4 | 증명 없는 비밀번호 세션, `HJV_E2E_LOGON=1`: 잠금 줄 없음(upstream 기본) |
-| EL5 | 1.8.x 컨트롤러 바이너리로 EL1: 자동 잠금 줄 있음(D-9) |
-| EL6 | 터미널 로그인에 `OptionMessage`의 필드 1001이 실려도 `Session scope violation`이 없음 |
-| S33 | (TV-W5) `""` 스트림 중 같은 계정의 다른 기기가 그 컨트롤러의 키를 폐기: 15초 안에 종료 6과 `hjv-e2e: closed: … (login ended, not allowed)`, PC 로그 `… ended: its key is no longer listed` |
-| S34 | PC 비밀번호로 연 스트림은 그 계정 키를 폐기해도 끝까지 감 |
-| S35 | `""` 스트림 중 hjv-api를 멈춰 목록 수명을 넘김: 끊기지 않음(24시간 규칙) |
-| S36 | `""` 스트림 중 `admin binding revoke`: 종료 6과 `(password-less ended, not allowed)` |
-| S37 | `""` 스트림 중 `admin passwordless off`(D-5): 종료 6, PC 로그 `ended: password-less logins are paused (disabled)` |
-| S38 | `""` 스트림 중 그 PC에서 로그아웃(D-6): 3초 안에 종료 6. 그 PC의 [끄기]는 끊지 않음 |
-| I1 | (TV-W9) T0 뒤 `--hjv-e2e-incoming`: 줄 하나, 종류 `remote`, 방법 `permanent`, 확인 없음, 끝 `peer` |
-| I2 | S6′ 뒤: alice의 줄의 확인 `same-account`, 기기 이름 `Linux PC`, 가린 주인 `홍*동`, 방법 `account`(2FA 없는 같은 계정 세션) |
-| I3 | S7–S10 뒤: bob의 성공 줄 하나. 틀린 비밀번호와 증명 없는 거절은 줄이 없음 |
-| I4 | S22 뒤: 거절이라 줄 없음. 비밀번호로 연 포워딩은 종류 `forward` |
-| I5 | 세션이 열린 채 PC 서비스를 다시 시작(S15): 그 줄이 `unknown`, 새 세션은 새 줄 |
+| # | 단계 | 결과 |
+|---|---|---|
+| I1 | (TV-W9) T0 앞뒤의 `--hjv-e2e-incoming` | 줄이 하나 늘고, 가장 새 줄이 `kind remote`, `auth permanent`, `ver ""`, `end peer`, `t1 >= t0`. `"on":true`(설치한 계정 빌드의 서비스) |
+| S6′ | (TV-W2) S4의 CM 줄 | `named "Linux PC", authorized true, mark same-account(홍*동)`. 이름에 `same account`가 없음. 2FA 없는 PC에서 바로 보이므로 받아들인 증명의 기록이 로그온 응답보다 먼저임 |
+| I2 | S4 뒤 | alice의 줄: `ver same-account`, `dev "Linux PC"`, `own "홍*동"`, `auth account`, `kind remote`, `end peer` |
+| S5′ | (TV-W2) 5초 스트림을 `record`로 | 스트림이 `sent recording true/false`를 찍고, CM에 `cm recording true` 다음 `cm recording false`(그 둘뿐), PC 로그 `hjv: peer recording true` |
+| EL2 | (TV-W3) `HJV_E2E_LOGON` 없이 같은 계정 원격 화면 세 번 뒤 | PC 로그에 `hjv: end lock:` 줄이 없음(들어올 때 잠겨 있지 않았음) |
+| S9′ | bob의 PC 비밀번호 세션의 CM 줄 | `named "<OS 사용자 이름>", authorized true, mark none()` |
+| I3 | S8–S10(증명 없는 거절, PC 비밀번호 성공, 틀린 비밀번호) 앞뒤 | 줄이 하나만 늚: 성공한 세션, `name` OS 사용자 이름, `ver ""`, `auth permanent`, `dev ""` |
+| I4 | S22 앞뒤 | 거절된 포트 포워딩은 줄이 없음. 처음 단계에서 비밀번호로 연 포워딩은 `kind forward`, `auth permanent`, `end lost`(그 컨트롤러는 kill로 끝남) |
+| H-hide | (TV-W2) 서비스에 `allow-hide-cm Y`를 쓰고 읽음 | `N`(고정 서버 빌드의 덮어쓰기). 지운 뒤 다음으로 |
+| X1′ | 클릭 승인 PC의 수락 요청 | `authorized false, mark none()`(클릭 승인 갈래는 증명을 보지 않음, critic X-21) |
+| S35 | (TV-W5) S12 앞에 85초 `""` 스트림을 띄우고 S12(hjv-api `kill -STOP`), S13(종료), S13b(목록 수명 30초 넘김), hjv-api 다시 켬, 동기화 한 번 더 | 스트림이 끝까지(종료 0, 프레임 수신). PC 로그에 끊은 세션 줄(`hjv: same-account session #…`)이 없음: 지난 목록과 실패한 동기화는 끊지 않음(24시간 규칙) |
+| I5 | S15 앞에 `""` 스트림을 띄운 채 PC 서비스를 다시 시작 | 그 줄은 `unknown`(새 프로세스는 다른 실행), S15의 세션은 새 줄(`ver same-account`) |
+| EL1 | S15부터 서비스에 `HJV_E2E_LOGON=1`. S15의 같은 계정 원격 화면을 닫음 | PC 로그 `hjv: end lock: auto, locked at start true`. 1.8.x 컨트롤러도 `hjv_end_lock`을 보내지 않으므로 이것이 D-9의 줄(EL5)과 같은 선의 경우입니다 |
+| EL3 | 컨트롤러가 `--hjv-e2e-peer-option <PC> hjv-end-lock never` 뒤 `""` | 잠금 줄 없음 |
+| EL3(always) | `hjv-end-lock always` 뒤 `""`, 그다음 옵션 지움 | `hjv: end lock: always, locked at start true`, 지운 뒤 읽은 값은 빈 값 |
+| EL4 | 로그인하지 않은 컨트롤러(`el4`)의 PC 비밀번호 세션 | 잠금 줄 없음(upstream 기본) |
+| S33 | hjv-ctl의 60초 `""` 스트림 중 hjv-ctl2(alice)가 hjv-ctl의 키를 폐기(S17) | 3.1초 만에 종료 7과 `hjv-e2e: closed: 이 기기의 로그인이 끝나 연결을 끊었습니다. (login ended, not allowed)`. PC 로그 `hjv: same-account session #… (remote) of Linux PC from <hjv-ctl ID> ended: its key is no longer listed`, `Connection closed: hjv: account key no longer trusted`, `hjv: end lock: forced, locked at start true`. 같은 컨트롤러의 다음 `""`는 거절 창(종료 3, S17, 5.8초) |
+| S34 | 같은 때 로그인하지 않은 컨트롤러(`s34`)의 25초 PC 비밀번호 스트림 | 끝까지(종료 0). 로그인한 1.9 컨트롤러는 비밀번호와 함께 증명도 보내고 PC는 증명을 먼저 받으므로, 비밀번호로만 연 세션은 로그인하지 않은 쪽으로 봅니다 |
+| S38 | (D-6) S19에서 hjv-ctl2의 40초 `""` 스트림 중 PC에서 로그아웃 | 로그아웃이 돌아온 지 0.5초 만에 종료 7과 `… (password-less ended, not allowed)`, PC 로그 `ended: this PC was logged out` |
+| S38([끄기]) | S25에서 12초 `""` 스트림 중 PC의 [끄기](`hjv-pwless-off Y`) | 새 연결은 거절(S25), 열린 스트림은 끝까지(종료 0), 끊은 세션 줄 없음 |
+| S36 | S26에서 40초 `""` 스트림 중 `admin binding revoke <PC ID>` | 5.6초 만에 종료 7과 `… (password-less ended, not allowed)`, PC 로그 `ended: this PC's binding was revoked` |
+| S37 | (D-5) X6에서 40초 `""` 스트림 중 `admin passwordless off` | 1.7초 만에 종료 7과 같은 글, PC 로그 `ended: password-less logins are paused (disabled)`. X6의 새 연결 거절은 4.3초 |
+
+- 두 닫는 글은 모두 `not allowed)`로 끝납니다. 1.6.0–1.8.x 앱도 이 표시를 보고 저절로 다시 연결하지 않습니다(`check_if_retry`). 헤드리스 컨트롤러는 다시 연결하지 않으므로, 다시 연결하면 무엇이 오는지는 S33 뒤의 S17(거절 창)이 봅니다.
+- EL5(1.8.x 컨트롤러 바이너리)는 돌리지 않습니다. 구버전 실행 파일 비교는 2026-10-18에 퇴역했고, `hjv-end-lock`이 없는 1.9 컨트롤러가 보내는 것(필드 1001 없음)이 1.8.x와 같아 EL1이 그 경우입니다. D-9의 규칙은 단위 시험 `the_mode_comes_from_the_new_field_then_upstream_then_the_proof`가 고정합니다. EL6(터미널 로그인의 필드 1001)은 단위 시험 `the_new_field_is_classified_as_remote_screen_only`가 봅니다.
+- 서명 없는 답(S26의 `unbound`)이 끊지 않는다는 것은 S26에서 이미 끊긴 뒤라 E2E로는 보지 않고 `src/hjviewer_account/pc/sessions.rs`의 단위 시험이 봅니다. 막힌 계정과 명단에서 빠진 계정의 `disabled`(D-5의 나머지)도 같은 sweep이라 S37 하나로 봅니다.
+- `HJV_E2E_LOGON=1`은 hjv-e2e 빌드에만 있고, PC의 로그만 남기고 화면을 잠그지 않습니다(리눅스의 잠금은 볼 수 없는 키 입력). Windows의 잠금은 기기 점검입니다.
+- 이 실행의 strict는 PASS 116줄입니다(하한 119에서 아래 출입 제한 단계의 W6-E4·E4b·E5 세 줄이 건너뜀). 전체 `scripts/ci.sh e2e`는 14분 20초(클라이언트 빌드와 단위 시험 포함)였습니다.
 
 ### 계정 단계로 찾은 것
 
@@ -337,7 +345,7 @@ PASS (strict): transport: relay
 | A3 | `MODE=enforce` | 로그 `access enforce: keys 1`. `actl`이 PC A에 연결하면 종료 5와 `hjv-e2e: access refused`, msgbox의 글은 핵심의 A1(`… (access not allowed)`). hbbs 로그에 `access refused ph … : missing` 한 줄(다시 하지 않음). 35초 안에 `GET /api/hjv/access`가 `{"mode":"enforce"}`(hjv-api는 hbbs에 30초에 한 번 물음) |
 | A4 | `staff`가 PC A에 연결 | 화면을 받음(종료 0). `--hjv-e2e-ticket refresh`(`POST /api/hjv/ticket` 한 번)가 `"use":"ctl"`, `"valid":true`. 이 쪽은 PC로 돈 적이 없어 보낼 기기 키가 없으므로 컨트롤러의 출입증입니다(기기 키를 보내는 데스크톱 앱의 `both`는 hjv-api와 앱의 단위 시험이 봄) |
 | A5 | PC B(묶이지 않음, 로그인 안 함) | 30초 안에 `hjv-access-pc`가 `refused`, hbbs가 PC B를 오프라인으로 봄(hjv-probe). PC A는 그대로 온라인 |
-| A6 | `actl`이 `HJV_E2E_ACCESS_PASSWORD=<맞는 비밀번호>`로 PC A에 연결 | `hjv-e2e: guest ctl: ok`, 화면을 받음. 그 변수 없이 새 프로세스로 연결하면 A3처럼 거절(출입증은 그 프로세스의 메모리에만 있음) |
+| A6 | `actl`이 `HJV_E2E_ACCESS_PASSWORD=<맞는 비밀번호>`로 PC A에 연결 | `hjv-e2e: guest ctl: ok`, 화면을 받음. 그 변수 없이 새 프로세스로 연결하면 A3처럼 거절(출입증은 그 프로세스의 메모리에만 있음) 세션 전에 `hjv-e2e: guest held: Y`(`hjv-guest-held:<PC A>`), 세션이 닫힌 뒤 `guest held: -`. |
 | A7 | 틀린 비밀번호로 A6 | `guest ctl: denied`, 종료 6, 1.5초 넘게 걸림(실패 지연 2초 ± 0.5초). `hjv-api admin ticket status`의 지난 하루 시도에 `wrong 1` |
 | A8 | PC B에서 `--hjv-e2e-guest-pc <맞는 비밀번호>` | `guest pc: ok`. 10초 안에 `hjv-access-pc`가 `ok`, 콘솔의 `reg.ok`가 늘고, `staff`가 PC B에 연결해 화면을 받음. PC B의 설정 폴더에 출입증 파일(`HJViewer_ticket.json`)이 생기지 않음 |
 | A9 | `guest.conf`를 지움 | 맞는 비밀번호로 A6을 해도 `guest ctl: denied`(A7과 같은 답과 지연). 지난 하루 시도에 `closed 1` |
@@ -355,25 +363,28 @@ PASS (strict): transport: relay
 
 - 당시 결과(2026-10-17): 열네 시나리오 모두 PASS였고, strict 전체는 PASS 91줄이었습니다. A12를 퇴역해 A 시나리오는 13줄이고, 2026-10-20에 지원 코드의 C1–C7 일곱 줄을 더해 이 단계는 20줄입니다. X2·X3·V3·V8도 퇴역한 strict 전체 하한은 93줄입니다.
 - A11은 C4에서 코드의 출입증으로 등록한 PC B의 등록도 끊습니다(그 출입증도 `NOT_BEFORE` 전에 받은 것). 그래서 A11의 "두 PC의 등록이 끊김"과 "PC B는 `refused`"는 C1–C7이 있어도 그대로입니다.
-- 걸린 시간: 이 단계는 2분 30초쯤입니다(클라우드 컨테이너). 가장 긴 것은 A14에서 PC B가 다시 등록하기까지(43초쯤)로, 거절된 PC는 30초마다 RegisterPk를 다시 보내기 때문입니다(upstream의 `DEPLOY_RETRY_INTERVAL`). hbbs는 등록되지 않은 연결에 하트비트를 보내지 않고 30초 동안 조용한 연결을 끊으므로, 그 끊김이 보내는 때와 겹치면 한 번 더 기다립니다. 그래서 A14는 75초까지 기다립니다. A7과 A9는 hjv-api의 실패 지연으로 각각 3초 남짓입니다. 같은 컨테이너에서 strict 전체는 10분 30초쯤입니다.
+- 걸린 시간: 이 단계는 2분 30초쯤입니다(클라우드 컨테이너). 가장 긴 것은 A14에서 PC B가 다시 등록하기까지로, 1.9.0부터 거절된 PC는 20초마다 RegisterPk를 다시 보냅니다(hbbs가 조용한 연결을 끊는 30초 전이라 연결이 남음, upstream의 `DEPLOY_RETRY_INTERVAL`은 30초였고 그 끊김과 겹치면 한 번 더 기다려 43초쯤 걸렸음). 그래서 A14는 `access off` 줄 뒤 12초쯤(2026-10-20: 11.7초, 1.3초)이고 45초까지 기다립니다. A7과 A9는 hjv-api의 실패 지연으로 각각 3초 남짓입니다. 같은 컨테이너에서 strict 전체는 10분 30초쯤입니다.
 
-**1.9.0에서 더하는 시나리오**(번호와 목적만입니다. 결과는 통합 때 돌린 뒤 적습니다. 지원 링크·대기실·지원 확인은 TV-W6의 hjv-api와 클라이언트가 함께 있어야 돕니다)
+**1.9.0 시나리오와 결과**(2026-10-20, 같은 실행. W6은 C7 다음, A11 앞에 돕니다(`support_link_part`). PC B에 연결 창 대신 `--hjv-e2e-cm`을 띄우고(`pcb-cm.log`), A9가 지운 `guest.conf`를 다시 씁니다. 지원 링크의 페이지와 내려받기를 위해 hjv-api는 최소 버전 단계의 시험 정책(Caddy가 내주는 그 파일, `HJV_API_VERSION_POLICY`)과 그 정책이 말하는 1바이트짜리 패키지가 든 폴더(`HJV_API_PACKAGE_DIR`)로 돕니다. 시험 정책이 없으면(`HJV_RELEASE` 없음) W6-E2만 건너뜀으로 셉니다)
 
-| # | 목적 |
-|---|---|
-| A6′ | (A6의 바뀜, UX-G1) 세션 전에 `hjv-e2e: guest held: Y`(`hjv-guest-held:<PC A>`), 세션이 닫힌 뒤 `guest held: -`. A0이 묻지 않을 조건을 고정함 |
-| W6-E1 | `staff`가 `--hjv-e2e-support-code`: 코드, `link`(`/api/hjv/s/`와 22자), `slot`을 찍음 |
-| W6-E2 | PC B 쪽 네트워크에서 `curl`로 링크: 307, 페이지 200에 그 코드, 패키지 GET 3번 200과 4번째 404, 틀린 링크 404. 최소 버전 단계의 시험 정책과 패키지 폴더를 쓰고, 없으면 `PARTIAL`이며 strict에서 실패함 |
-| W6-E3 | `staff`가 `--hjv-e2e-support-wait 30`을 건 동안 PC B가 `--hjv-e2e-guest-pc-code <코드>`: PC B `guest pc code: ok`, `staff`가 5초 안에 PC B의 ID를 찍음, 그 뒤 링크는 404 |
-| W6-E4 | PC B의 가짜 CM(수락하지 않음), `staff`가 비밀번호 없이 연결: `named "<컨트롤러 ID, 띄어 씀>", authorized false, mark staff()`, 컨트롤러는 `No Password Access`(수락 기다림). `actl`의 이용 비밀번호 연결은 `mark none()` |
-| W6-E4b | 같은 것을 '비밀번호만' PC B에: 컨트롤러는 `Empty Password`(보통의 비밀번호 창), CM은 `mark staff()`와 `authorized false` |
-| W6-E5 | 수락 전 입력: `HJV_E2E_CM_ACCEPT_AFTER=10`인 CM, `staff`가 `--hjv-e2e-input-probe <PC B> 20`: 수락 전에는 `hjv_e2e_dropped_input`이 20 이상 늘고 포인터는 그대로, 수락 뒤에는 포인터가 움직임 |
-| W6-E6 | 같은 계정의 다른 컨트롤러 프로필(코드를 만들지 않은 기기)이 PC B에 연결: `mark none()` |
-| W6-E7 | PC B가 `--hjv-e2e-guest-pc-end` 뒤 이용 비밀번호로 다시 들어오고 `staff`가 연결: `mark none()`(지원 확인이 출입증과 함께 끝남) |
+| # | 단계 | 결과 |
+|---|---|---|
+| A6′ | (A6의 바뀜, UX-G1) A6의 출력 순서 | `hjv-e2e: guest held: Y` → `screen … written` → `guest held: -`. A0이 묻지 않을 조건(그 대상의 출입증이 있음)과 마지막 세션이 닫히면 다시 묻는 것을 고정함 |
+| W6-E1 | `staff`가 `--hjv-e2e-support-code` | 코드, `support link: https://hjv.test/api/hjv/s/<22자 base64url>/`(전체 주소, `/`로 끝남), `support slot: 1` |
+| W6-E2 | PC B 쪽 네트워크에서 `curl`로 그 링크 | `/` 없는 주소는 307로 `/` 있는 주소에, 페이지 200에 그 코드와 `HJViewer-<최신>.exe` 단추, 그 파일 GET 세 번 200과 네 번째 404, 지어낸 링크 404 |
+| W6-E3 | `staff`가 `--hjv-e2e-support-wait 25`(뒤에서), PC B가 그 코드로 `--hjv-e2e-guest-pc-code` | PC B `guest pc code: ok`, 대기 프로세스가 0.8초 만에 `support arrived: <PC B ID>`(종료 0), PC B 로그에 `support grant refused` 없음, 쓴 코드의 링크는 404 |
+| W6-E4 | PC B의 CM(수락하지 않음), `staff`가 비밀번호 없이 연결 | **건너뜀**(아래). 클라이언트를 고친 진단 실행에서: CM `named "<staff ID 띄어 씀>", authorized false, mark staff()`, PC B 로그 `hjv: support mark for <staff ID>`, 컨트롤러는 `No Password Access`와 `wait-remote-accept-nook`(종료 1, 같은 계정 실패 창 없음). `actl`의 이용 비밀번호 + PC B 비밀번호 세션은 `authorized true, mark none()` |
+| W6-E4b | PC B를 '비밀번호만'으로 두고 같은 것 | **건너뜀**. 진단 실행에서: `login error: Empty Password`와 보통의 비밀번호 창(종료 3, 실패 창 없음), CM `authorized false, mark staff()` |
+| W6-E5 | `HJV_E2E_CM_ACCEPT_AFTER=10`인 CM, `staff`가 `--hjv-e2e-input-probe <PC B> 20` | **건너뜀**. 진단 실행에서: 수락 전에 `hjv_e2e_dropped_input` 0 → 20, Xvfb 포인터 `x:640 y:360` 그대로, CM의 `cm accepts` 뒤 포인터가 `x:590 y:495`로 가고 버린 수는 그대로 |
+| W6-E6 | `hjv-ctl2` 네트워크의 둘째 프로필 `staff2`(alice, 다른 계정 키, 코드를 만들지 않음)가 PC B 비밀번호로 연결 | 화면을 받고 CM `authorized true, mark none()`, PC B 로그에 그 ID의 `support mark` 없음. (`hjv-ctl` 네트워크에서 alice로 다시 로그인하면 같은 machine-id라 hjv-api가 `staff`의 키를 같은 기기의 새 로그인으로 폐기하므로 다른 네트워크에서 함) |
+| W6-E7 | PC B가 `--hjv-e2e-guest-pc-end`(`guest pc end`, 종료 0) 뒤 `--hjv-e2e-guest-pc <이용 비밀번호>`로 다시 등록, `staff`가 PC B 비밀번호로 연결 | 화면을 받고 CM `authorized true, mark none()`, 새 `support mark` 없음: 지원 확인이 코드의 출입증과 함께 끝나 PC B의 Hash에 `hjv_nonce`가 없으므로 지원 증명이 나가지 않음 |
+
+- **W6-E4·E4b·E5가 건너뛴 까닭**: 헤드리스 명령은 명령마다 프로세스가 따로인데, 앱은 대기실이 알려 준 지원 PC(키)를 그 프로세스의 메모리에만 둡니다(`src/hjviewer_account/support.rs`의 `support_pc`). 그래서 W6-E3의 대기 프로세스가 배운 PC B를 다음 프로세스의 연결이 모르고 지원 증명을 보내지 않습니다. 앱은 한 프로세스라 실제 동작에는 문제가 없고, hjv-e2e 빌드에만 있는 넘김(LocalConfig `hjv-e2e-support-pc`, 대기 프로세스가 쓰고 `support_pc`가 메모리에 없을 때 읽음)이 필요합니다. 스크립트는 실행 파일에 그 이름이 있을 때만 세 줄을 돌리고, 없으면 `skipped:`로 남깁니다. 그 넘김을 넣은 빌드로 커밋하지 않은 진단 실행(같은 날, `firewall-e2e.sh strict`)을 한 번 돌려 strict PASS 119줄을 확인했습니다.
+- 당시 결과(2026-10-20): 출입 제한 단계는 A·C 20줄에 W6 8줄을 더해 28줄이고, 그중 위 세 줄이 건너뜀입니다. A14에서 PC B가 다시 등록하기까지는 `access off` 줄 뒤 11.7초(진단 실행 1.3초)였습니다.
 
 **`scripts/ci.sh`가 하는 것**
 - 감지(`e2e_access`): hbbs의 `--help`에 `--hjv-access-file`이 있고, 클라이언트 실행 파일에 `HJV_E2E_ACCESS_PASSWORD`가 있고(릴리스 빌드는 명령 이름을 글자로 남기지 않음), 계정 E2E가 돌면 `HJV_E2E_ACCESS=1`로 이 단계를 켭니다. `server/patches`에 0006이 있는데 hbbs에 옵션이 없거나, `client/patches`에 0061이 있는데 클라이언트에 명령이 없으면 실패합니다. 패치가 없을 때만 건너뛴 것으로 셉니다(최소 버전 단계의 감지와 같은 틀).
-- 하한: `E2E_LEAST_STRICT`에 이 단계의 `PASS` 13줄(A12 퇴역 반영)과 지원 코드의 7줄(C1–C7)을 더합니다. C1–C7은 이 단계 안에서 돌므로 따로 감지하지 않습니다(`client/patches`의 0082가 명령을 넣음).
+- 하한: `E2E_LEAST_STRICT`에 이 단계의 `PASS` 13줄(A12 퇴역 반영)과 지원 코드의 7줄(C1–C7), 1.9.0의 W6 8줄(W6-E1–E7과 E4b)을 더합니다(계정 단계의 1.9.0 18줄과 함께 strict 하한 119). C1–C7은 이 단계 안에서 돌므로 따로 감지하지 않습니다(`client/patches`의 0082가 명령을 넣음).
 
 ### 출입 제한 단계로 찾은 것
 
@@ -384,7 +395,7 @@ PASS (strict): transport: relay
 
 ### 출입 제한 단계가 다루지 않는 것
 
-- 앱의 화면(A1과 A2 창, PC 홈의 P1과 P2의 줄과 G2, P2 창, 상태 줄과 Windows 트레이의 "서버에 연결되지 않음", 연결 화면의 G3, 로그아웃과 "내 목록에서 빼기"의 L1과 L2, 설정과 설치 화면의 G1, 계약 5-3): Dart 시험(`flutter/test/hjviewer_access_test.dart`)과 기기 시험. P2의 [끝내기](`hjv-guest-pc-end`)도 헤드리스 명령이 없으므로 기기 시험입니다.
+- 앱의 화면(A1과 A2 창, PC 홈의 P1과 P2의 줄과 G2, P2 창, 상태 줄과 Windows 트레이의 "서버에 연결되지 않음", 연결 화면의 G3, 로그아웃과 "내 목록에서 빼기"의 L1과 L2, 설정과 설치 화면의 G1, 계약 5-3): Dart 시험(`flutter/test/hjviewer_access_test.dart`)과 기기 시험. P2의 [끝내기](`hjv-guest-pc-end`)는 1.9.0부터 `--hjv-e2e-guest-pc-end`로 W6-E7이 보고, 그 단추 자체는 기기 시험입니다. 지원 링크 페이지의 그림(SL1–SL8), S2의 대기와 단추, 연결 창의 P4·P5 그림도 Dart 시험과 기기 시험입니다.
 - Windows 서비스로의 IPC: 리눅스의 PC도 같은 코드(`Data::HjvGuestPc`)로 등록하는 프로세스에 넘기지만, Windows의 서비스와 사용자 세션 사이의 경로는 기기 시험입니다.
 - 출입증 수명이 다해 끝나는 것: 수명은 1시간이 가장 짧으므로 E2E는 `NOT_BEFORE`(A11)로 끝냅니다. 수명과 반쯤 지난 때의 갱신은 단위 시험이 봅니다.
 - hbbr: 아무것도 확인하지 않습니다(계약 1절).
