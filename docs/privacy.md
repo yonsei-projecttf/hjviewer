@@ -18,18 +18,18 @@ open-source app HJViewer is built on (rustdesk.com).
 
 From version 1.6.0 the server can also have accounts. Faculty and staff whom the Yonsei SSO accepts
 log in with their Yonsei portal ID; they then see their own Windows PCs in the app, connect between
-their own devices without the PC's password, and can switch a sleeping PC on through a relay in its
-network. This statement says what the server, your devices and that relay keep, for how long, and
-how to delete it in the app or have it deleted (section 8). An app that is not logged in, on a
-device that is not in an account, sends the account service only the access check of section 2
-and, when someone types them, a login, the access password or, on a PC, a support code
-(section 3). On the university's HJViewer server, such an app connects only after the access
-password, and such a PC accepts connections only after the access password or a support code
-(below). A PC in an account is different: whether or not its app is logged in, its HJViewer
-service keeps syncing with the account service, and the PC accepts connections as section 3 says
-("Your PCs", "Access tickets"). A login on it that ends without a logout on that PC, for example
-from another device or when it expires, leaves the PC in the account; removing it from My PCs
-takes it out (section 8).
+their own devices without the PC's password (when the operator has turned this on), and can switch a
+sleeping PC on through a relay in its network. This statement says what the server, your devices and
+that relay keep, for how long, and how to delete it in the app or have it deleted (section 8). An
+app that is not logged in, on a device that is not in an account, sends the account service only the
+access check of section 2 and, when someone types them, a login, the access password or, on a PC, a
+support code (section 3). On the university's HJViewer server, such an app connects only after the
+access password, and such a PC accepts connections only after the access password or a support code
+(below). A PC in an account is different: whether or not its app is logged in, its HJViewer service
+keeps syncing with the account service, and the PC accepts connections as section 3 says ("Your
+PCs", "Access tickets"). A login on it that ends without a logout on that PC, for example from
+another device or when it expires, leaves the PC in the account; removing it from My PCs takes it
+out (section 8).
 
 From version 1.6.0 the operator can also set a minimum app version. Apps check the server's signed
 version policy, and new versions come from the server (section 2, "Updates").
@@ -491,7 +491,7 @@ history of that repository.
 
 HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니다. 앱에는 분석, 오류 보고, 광고가 없습니다. 앱을 만드는 프로젝트TF가 학교의 HJViewer 서버와 그 계정 서비스도 운영합니다(9절). 그 서버와 계정 서비스가 무엇을 보관하는지는 아래 절에 적었습니다. 앱은 연결하는 기기 말고는 빌드할 때 정해진 서버, 그리고 공개 STUN 서버(2절)하고만 통신합니다. 서버는 그 서버의 운영자가 관리합니다. 앱 밖의 페이지는 링크나 단추를 누를 때만 엽니다. 여는 곳은 GitHub에 있는 이 프로젝트의 페이지(이 문서, 소스 코드와 그 안내 문서), 그리고 앱을 업데이트할 때 iPhone은 TestFlight나 App Store, Android는 Google Play나 서버의 내려받기 링크입니다. 연결한 기기가 보낸 안내에는 HJViewer의 바탕인 공개 소스 앱 RustDesk의 도움말 페이지(rustdesk.com)로 가는 단추가 붙을 수도 있습니다.
 
-1.6.0부터 서버에 계정 기능이 생깁니다. 연세 SSO를 통과한 교직원은 연세포탈 ID로 로그인하고, 앱에서 자기 Windows PC를 보고, 자기 기기끼리 PC 비밀번호 없이 연결하고, PC와 같은 네트워크의 중계기로 꺼진 PC를 켤 수 있습니다. 이 문서는 서버, 사용자의 기기, 그 중계기가 무엇을 얼마 동안 보관하는지와, 앱에서 지우거나 지워 달라고 하는 방법(8절)을 적습니다. 계정에 들어가지 않은 기기에서 로그인하지 않은 앱은 계정 서비스에 2절의 출입 확인만 보내고, 그 밖에는 누가 로그인하거나 이용 비밀번호를, PC에서는 지원 코드를 넣을 때 그것만 보냅니다(3절). 학교의 HJViewer 서버에서 그런 앱은 이용 비밀번호를 넣은 뒤에만 연결하고, 그런 PC는 이용 비밀번호나 지원 코드를 넣은 뒤에만 연결을 받습니다(아래). 계정에 들어간 PC는 다릅니다. 앱이 로그인해 있든 아니든, 그 PC의 HJViewer 서비스는 계정 서비스와 계속 동기화하고, PC는 3절의 "내 PC"와 "출입증"대로 연결을 받습니다. 그 PC의 로그인이 그 PC에서 로그아웃하지 않고 끝나도(다른 기기에서 로그아웃시킴, 기간 만료 등) PC는 계정에 남습니다. 빼려면 내 PC 목록에서 뺍니다(8절).
+1.6.0부터 서버에 계정 기능이 생깁니다. 연세 SSO를 통과한 교직원은 연세포탈 ID로 로그인하고, 앱에서 자기 Windows PC를 보고, 자기 기기끼리 PC 비밀번호 없이 연결하고(운영자가 켠 경우), PC와 같은 네트워크의 중계기로 꺼진 PC를 켤 수 있습니다. 이 문서는 서버, 사용자의 기기, 그 중계기가 무엇을 얼마 동안 보관하는지와, 앱에서 지우거나 지워 달라고 하는 방법(8절)을 적습니다. 계정에 들어가지 않은 기기에서 로그인하지 않은 앱은 계정 서비스에 2절의 출입 확인만 보내고, 그 밖에는 누가 로그인하거나 이용 비밀번호를, PC에서는 지원 코드를 넣을 때 그것만 보냅니다(3절). 학교의 HJViewer 서버에서 그런 앱은 이용 비밀번호를 넣은 뒤에만 연결하고, 그런 PC는 이용 비밀번호나 지원 코드를 넣은 뒤에만 연결을 받습니다(아래). 계정에 들어간 PC는 다릅니다. 앱이 로그인해 있든 아니든, 그 PC의 HJViewer 서비스는 계정 서비스와 계속 동기화하고, PC는 3절의 "내 PC"와 "출입증"대로 연결을 받습니다. 그 PC의 로그인이 그 PC에서 로그아웃하지 않고 끝나도(다른 기기에서 로그아웃시킴, 기간 만료 등) PC는 계정에 남습니다. 빼려면 내 PC 목록에서 뺍니다(8절).
 
 1.6.0부터 운영자는 앱의 최소 버전도 정할 수 있습니다. 앱은 서버의 서명된 버전 정책을 확인하고, 새 버전을 서버에서 받습니다(2절의 "업데이트").
 
