@@ -900,7 +900,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(self.wf["jobs"]["dart-tests"]["if"], "needs.generate-bridge.outputs.build_apps == 'true'")
         self.assertEqual(self.wf["jobs"]["relay"]["needs"], "generate-bridge")
         self.assertNotIn("bridge-artifact", json.dumps(self.wf["jobs"]["relay"]))
-        for job in ("dart-tests", "windows", "android", "ios", "relay", "play"):
+        for job in ("dart-tests", "windows", "android", "ios", "relay"):
             self.assertEqual(self.step(job, "Check out hjviewer")["with"]["ref"],
                              "${{ needs.generate-bridge.outputs.source_sha }}", job)
 
@@ -922,7 +922,8 @@ class WorkflowTest(unittest.TestCase):
         # the Play bundle is the same Android build: one record of it, with the APK
         for name in ("Upload Play bundle",):
             self.assertNotIn("release.json", self.step("android", name)["with"]["path"])
-        self.assertNotIn("release-info.py", json.dumps(self.wf["jobs"]["play"]))
+        # 1.9.1: no Google Play job (the store run uploads the bundle, store-release.yml)
+        self.assertNotIn("play", self.wf["jobs"])
 
     def test_the_bridge_files_are_kept_as_long_as_the_artifacts(self):
         """A job that "Re-run failed jobs" runs again restores the generated bridge of its run:
