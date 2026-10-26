@@ -34,6 +34,7 @@ class FakeAsc {
     this.versions = [];
     this.infos = [{ id: 'info-1', state: 'PREPARE_FOR_SUBMISSION', locs: [] }];
     this.submissions = [];
+    this.primaryLocale = 'ko';
   }
 
   id(prefix) { this.n += 1; return `${prefix}-${this.n}`; }
@@ -80,6 +81,10 @@ class FakeAsc {
           data: list.map((b) => ({ type: 'builds', id: b.id, attributes: { version: b.build, processingState: b.state, expired: b.expired, expirationDate: b.expirationDate }, relationships: { preReleaseVersion: { data: { type: 'preReleaseVersions', id: `pre-${b.pre}` } } } })),
           included: [...new Set(list.map((b) => b.pre))].map((v) => ({ type: 'preReleaseVersions', id: `pre-${v}`, attributes: { version: v, platform: 'IOS' } })),
         };
+      }
+      if (p[0] === 'apps' && p.length === 2) {
+        assert.equal(p[1], APP);
+        return { data: { type: 'apps', id: APP, attributes: { primaryLocale: this.primaryLocale } } };
       }
       if (p[0] === 'apps' && p[2] === 'appStoreVersions') return { data: this.versions.map(asVersion), links: {} };
       if (p[0] === 'apps' && p[2] === 'reviewSubmissions') {
@@ -486,6 +491,81 @@ test('bad usage and bad keys exit 2', async () => {
     const { code, out } = await asc(new FakeAsc(), argv, env);
     assert.equal(code, 2, `${argv.join(' ')}: ${out}`);
     assert.match(out, why);
+  }
+});
+
+test('the first App Store version takes neither after-approval nor a phased release', async () => {
+  for (const extra of [['--release-type', 'after-approval'], ['--phased'], ['--release-type', 'after-approval', '--phased']]) {
+    for (const argv of [[...PREPARE, ...extra], [...SUBMIT, ...extra], [...SUBMIT, ...extra, '--dry-run']]) {
+      const fake = new FakeAsc();
+      fake.version({ versionString: '1.0' });
+      const { code, out } = await asc(fake, argv);
+      assert.equal(code, 2, `${argv.join(' ')}: ${out}`);
+      assert.match(out, extra[0] === '--phased' ? /from the second App Store version on/ : /released by hand: --release-type manual/);
+      assert.deepEqual(fake.writes, [], argv.join(' '));
+      assert.equal(fake.versions[0].versionString, '1.0');
+    }
+  }
+});
+
+test('after a binary rejection submit takes the new version through the rejected one', async () => {
+  const fake = new FakeAsc();
+  const v = fake.version({ versionString: '1.9.1', appVersionState: 'REJECTED', buildId: 'b-191' });
+  fake.submissions.push({ id: 'rs-old', state: 'UNRESOLVED_ISSUES', items: [{ id: 'item-old', versionId: v.id }] });
+  fake.builds.push({ id: 'b-192', build: '263200000', pre: '1.9.2', state: 'VALID', expired: false, expirationDate: '2027-02-01T00:00:00Z' });
+  const store = mkdtempSync(join(tmpdir(), 'hjv-asc-'));
+  try {
+    cpSync(STORE, store, { recursive: true });
+    writeFileSync(join(store, 'version.txt'), '1.9.2\n');
+    const { code, out } = await asc(fake, ['submit', '--version', '1.9.2', '--build', '263200000', '--store', store]);
+    assert.equal(code, 0, out);
+  } finally { rmSync(store, { recursive: true, force: true }); }
+  assert.equal(fake.versions.length, 1);
+  assert.equal(v.versionString, '1.9.2');
+  assert.equal(v.buildId, 'b-192');
+  assert.equal(fake.submissions.length, 1);
+  assert.equal(fake.submissions[0].state, 'WAITING_FOR_REVIEW');
+  assert.equal(fake.submissions[0].items.length, 1);
+});
+
+test('submit and release that are done already must hold the build of the run', async () => {
+  const fake = new FakeAsc();
+  const v = fake.version({ versionString: '1.9.1', appVersionState: 'WAITING_FOR_REVIEW', buildId: 'b-191' });
+  const wrong = await asc(fake, ['submit', '--version', '1.9.1', '--build', '999']);
+  assert.equal(wrong.code, 1, wrong.out);
+  assert.match(wrong.out, /has build 263120249, not 999/);
+  v.appVersionState = 'PREPARE_FOR_SUBMISSION';
+  fake.submissions.push({ id: 'rs-1', state: 'WAITING_FOR_REVIEW', items: [{ id: 'i', versionId: v.id }] });
+  const lagging = await asc(fake, ['submit', '--version', '1.9.1', '--build', '999']);
+  assert.equal(lagging.code, 1, lagging.out);
+  assert.match(lagging.out, /has build 263120249, not 999/);
+  for (const state of ['READY_FOR_DISTRIBUTION', 'PROCESSING_FOR_DISTRIBUTION']) {
+    v.appVersionState = state;
+    const r = await asc(fake, ['release', '--version', '1.9.1', '--build', '999']);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /has build 263120249, not 999/);
+    const ok = await asc(fake, ['release', '--version', '1.9.1', '--build', '263120249']);
+    assert.equal(ok.code, 0, ok.out);
+    assert.match(ok.out, /released already/);
+  }
+  assert.deepEqual(fake.writes, []);
+});
+
+test('a primary language other than the first line of locales.txt stops prepare before any write', async () => {
+  const fake = new FakeAsc();
+  fake.primaryLocale = 'en-US';
+  const { code, out } = await asc(fake, PREPARE);
+  assert.equal(code, 1, out);
+  assert.match(out, /primary language in App Store Connect is en-US, store\/appstore\/locales\.txt starts with ko/);
+  assert.deepEqual(fake.writes, []);
+});
+
+test('a bad input value cannot start a workflow command line', async () => {
+  const { code, out } = await asc(new FakeAsc(), ['status', '--version', '1.0\n::warning::injected'], KEY);
+  assert.equal(code, 2);
+  assert.ok(out.split('\n').every((l) => !l.startsWith('::warning::')), out);
+  for (const v of ['1.9.100', '1000.0.0', '01.9.1']) {
+    assert.equal((await asc(new FakeAsc(), ['status', '--version', v], KEY)).code, 2, v);
   }
 });
 

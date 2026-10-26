@@ -10,7 +10,9 @@ import importlib.util
 import io
 import json
 import os
+import http.server
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -266,6 +268,200 @@ class StoreRecordTest(unittest.TestCase):
         with mock.patch.object(sr, "send", lambda *a: (200, b"{}")), contextlib.redirect_stdout(out):
             self.assertEqual(sr.main(["check-build", "--repo", REPO, "--store", "play", "--version", "1.9.1"], {}), 2)
         self.assertIn("GITHUB_TOKEN", out.getvalue())
+
+
+PUBLIC = "yonsei-projecttf/hjviewer"
+HEAD = "c" * 40
+RUN = "4242"
+
+
+def build_yml(sha, extra=""):
+    """The build repository's build.yml as docs/ci.md shows it, pinned to `sha` in both places."""
+    return ("# Builds the HJViewer apps.\n"
+            "name: build\n"
+            "on:\n"
+            "  workflow_dispatch:\n"
+            "    inputs:\n"
+            "      platforms: { type: choice, options: [windows, android, ios, relay, all], default: all }\n"
+            "      testflight: { type: boolean, default: false }\n"
+            "      play: { type: boolean, default: false }\n"
+            "      play_release: { type: choice, options: [completed, draft, validate], default: completed }\n"
+            "      check_only: { type: boolean, default: false }\n"
+            "permissions:\n"
+            "  contents: read\n"
+            "jobs:\n"
+            "  client:\n"
+            "    # the reviewed public commit\n"
+            "    permissions:\n"
+            "      contents: write\n"
+            f"    uses: {PUBLIC}/.github/workflows/client-build.yml@{sha}\n"
+            "    with:\n"
+            "      platforms: ${{ inputs.platforms }}\n"
+            "      testflight: ${{ inputs.testflight }}\n"
+            "      play: ${{ inputs.play }}\n"
+            "      play_release: ${{ inputs.play_release }}\n"
+            "      check_only: ${{ inputs.check_only }}\n"
+            f"      source_ref: {sha}\n"
+            "    secrets: inherit\n" + extra)
+
+
+class FakeRuns:
+    """The actions runs, contents and artifacts API of the build repository for check-run."""
+
+    def __init__(self, **change):
+        self.run = {"id": int(RUN), "path": ".github/workflows/build.yml", "event": "workflow_dispatch",
+                    "status": "completed", "conclusion": "success", "head_branch": "main", "head_sha": HEAD,
+                    "repository": {"full_name": REPO},
+                    "referenced_workflows": [{"path": f"{PUBLIC}/.github/workflows/client-build.yml@{B}",
+                                              "sha": B, "ref": B}]}
+        self.run.update(change)
+        self.build_yml = build_yml(B)
+        self.artifacts = [{"name": "HJViewer-1.9.1-bbbbbbb-android-aarch64", "expired": False},
+                          {"name": "HJViewer-1.9.1-bbbbbbb-android-aarch64-play", "expired": False}]
+        self.calls = []
+
+    def __call__(self, method, url, headers, data):
+        assert method == "GET" and headers["Authorization"] == "Bearer " + TOKEN
+        path = url.removeprefix(ENV["GITHUB_API_URL"] + "/")
+        self.calls.append(path)
+        if path == f"repos/{REPO}/actions/runs/{RUN}":
+            return 200, json.dumps(self.run).encode()
+        if path == f"repos/{REPO}/contents/.github/workflows/build.yml?ref={HEAD}":
+            return 200, json.dumps({"encoding": "base64", "content": base64.b64encode(self.build_yml.encode()).decode()}).encode()
+        if path == f"repos/{REPO}/actions/runs/{RUN}/artifacts?per_page=100":
+            return 200, json.dumps({"artifacts": self.artifacts}).encode()
+        return 404, b"{}"
+
+
+class CheckRunTest(unittest.TestCase):
+    ARGV = ["check-run", "--repo", REPO, "--store", "play", "--version", "1.9.1", "--run-id", RUN, "--source", B]
+
+    def run_script(self, fake, env=ENV):
+        out = io.StringIO()
+        with mock.patch.object(sr, "send", fake), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = sr.main(self.ARGV, env)
+        self.assertNotIn(TOKEN, out.getvalue())
+        return code, out.getvalue()
+
+    def test_the_reviewed_build_run_passes_and_names_the_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "output")
+            code, out = self.run_script(FakeRuns(), {**ENV, "GITHUB_OUTPUT": output})
+            self.assertEqual(code, 0, out)
+            with open(output, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "artifact=HJViewer-1.9.1-bbbbbbb-android-aarch64-play\n")
+
+    def test_another_run_is_refused(self):
+        other = {"path": f"{PUBLIC}/.github/workflows/client-build.yml@{A}", "sha": A, "ref": A}
+        pinned = {"path": f"{PUBLIC}/.github/workflows/client-build.yml@{B}", "sha": B, "ref": B}
+        for change, why in [
+            ({"head_branch": "other"}, "head_branch 'other'"),
+            ({"event": "push"}, "event 'push'"),
+            ({"conclusion": "failure"}, "conclusion 'failure'"),
+            ({"path": ".github/workflows/store.yml"}, "path"),
+            ({"repository": {"full_name": "someone/fork"}}, "repository"),
+            ({"referenced_workflows": [other]}, "did not call exactly"),
+            ({"referenced_workflows": [pinned, other]}, "did not call exactly"),
+            ({"referenced_workflows": [{**pinned, "sha": A}]}, "did not call exactly"),
+            ({"referenced_workflows": []}, "did not call exactly"),
+            ({"head_sha": None}, "head_sha"),
+        ]:
+            code, out = self.run_script(FakeRuns(**change))
+            self.assertEqual(code, 1, change)
+            self.assertIn(why, out, change)
+
+    def test_build_yml_must_have_the_documented_shape(self):
+        for text, why in [
+            (build_yml(B, "  other:\n    runs-on: ubuntu-24.04\n"), "second job"),
+            (build_yml(B).replace("    secrets: inherit\n", "    steps:\n      run: echo\n"), "job key"),
+            (build_yml(B).replace(f"@{B}", f"@{A}"), "uses is not"),
+            (build_yml(B).replace(f"source_ref: {B}", f"source_ref: {A}"), "source_ref is not"),
+            (build_yml(B).replace("      play: ${{ inputs.play }}\n", "      script: ${{ inputs.play }}\n"), "no input script"),
+            (build_yml(B) + "  extra:\n    - run: echo\n", "lists"),
+            (build_yml(B).replace("name: build", "name: 'build'"), "character"),
+            (build_yml(B).replace("jobs:\n", "env:\n  A: b\njobs:\n"), "top-level"),
+        ]:
+            fake = FakeRuns()
+            fake.build_yml = text
+            code, out = self.run_script(fake)
+            self.assertEqual(code, 1, why)
+            self.assertIn(why, out)
+
+    def test_the_artifact_must_be_there_and_not_expired(self):
+        fake = FakeRuns()
+        fake.artifacts[1]["expired"] = True
+        code, out = self.run_script(fake)
+        self.assertEqual(code, 1)
+        self.assertIn("it has expired", out)
+        fake.artifacts = fake.artifacts[:1]
+        code, out = self.run_script(fake)
+        self.assertEqual(code, 1)
+        self.assertIn("has no HJViewer-1.9.1-bbbbbbb-android-aarch64-play", out)
+
+    def test_bad_usage(self):
+        for argv, why in [
+            (["check-run", "--repo", REPO, "--store", "appstore", "--version", "1.9.1", "--run-id", RUN, "--source", B], "--store play"),
+            (["check-run", "--repo", REPO, "--store", "play", "--version", "1.9.1", "--run-id", "12a", "--source", B], "--run-id"),
+            (["check-run", "--repo", REPO, "--store", "play", "--version", "1.9.1", "--run-id", RUN, "--source", "abc"], "40-digit"),
+            (["check-run", "--file", "x", "--store", "play", "--version", "1.9.1", "--run-id", RUN, "--source", B], "--repo"),
+        ]:
+            out = io.StringIO()
+            with mock.patch.object(sr, "send", lambda *a: (_ for _ in ()).throw(AssertionError("network"))), \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(sr.main(argv, ENV), 2, argv)
+            self.assertIn(why, out.getvalue())
+
+
+class VersionLimitTest(unittest.TestCase):
+    def test_the_tools_version_limits(self):
+        for good in ("1.9.1", "0.0.0", "999.999.99"):
+            sr.version_key(good)
+        for bad in ("1.9.100", "1000.0.0", "01.9.1", "1.09.1", "1.9"):
+            with self.assertRaises(sr.RecordError, msg=bad):
+                sr.version_key(bad)
+
+
+class NoRedirectTest(unittest.TestCase):
+    """A 3xx answer is returned, not followed: the Authorization header goes nowhere else."""
+
+    def test_send_does_not_follow_a_redirect(self):
+        spec = importlib.util.spec_from_file_location("play_upload_for_redirects", os.path.join(HERE, "play-upload.py"))
+        play = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(play)
+        reached = []
+
+        class Target(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                reached.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+
+        class Redirect(Target):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{target.server_port}/elsewhere")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        source = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
+        servers = [target, source]
+        for server in servers:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            url = f"http://127.0.0.1:{source.server_port}/"
+            headers = {"Authorization": "Bearer " + TOKEN}
+            self.assertEqual(sr.send("GET", url, headers, None)[0], 302)
+            self.assertEqual(play.send("GET", url, headers, None, 5)[0], 302)
+            self.assertEqual(reached, [])
+        finally:
+            for server in servers:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":

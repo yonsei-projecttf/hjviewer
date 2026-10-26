@@ -16,6 +16,8 @@ action upload|submit|release.
     store-record.py check-build --store S --version V                  (a build run's first step)
     store-record.py add --store S --version V --build B --action A --source SHA [--track T] [--note N]
                                                                          (the store run's record job)
+    store-record.py check-run --repo R --store play --version V --run-id N --source SHA
+                                                  (the store run's checks job, before an upload)
 
 The record comes from --file PATH, or from --repo owner/name through the contents API with
 GITHUB_TOKEN (GITHUB_API_URL, default https://api.github.com). A missing file is an empty record,
@@ -30,6 +32,14 @@ Rules, within one store only (the stores' versions and build numbers differ, des
     to the store
 add writes with the file's sha and tries again, up to 5 times, when another run wrote first; its
 commit message carries [skip ci]. The script prints no token.
+
+check-run is the provenance of the bundle an upload sends, as tools/hjv-release checks a package
+(src/provenance.rs steps 1-3): run N of the build repository is a successful run of build.yml on
+main, started by hand; it called exactly one workflow, the public client-build.yml pinned to the
+tag's commit SHA; build.yml at the run's commit has the documented shape (one job that only calls
+that workflow with source_ref at the same SHA, check_build_yml below); and the run kept the
+artifact HJViewer-<version>-<7 digits of SHA>-android-aarch64-play, not expired. Its name goes to
+GITHUB_OUTPUT as artifact=.
 
 Exit status: 0 passed or written, 1 refused or failed, 2 bad usage.
 Offline tests: python3 -I -B -m unittest discover -s scripts -p 'test_store_record.py'
@@ -52,13 +62,19 @@ RECORD_PATH = "store-releases.txt"
 HEADER = "# store version build action track source-commit date(UTC) note\n"
 STORES = ("play", "appstore")
 ACTIONS = {"play": ("upload",), "appstore": ("submit", "release")}
-VERSION = re.compile(r"(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})")
+# tools/hjv-release's Version::parse (src/version.rs): no leading zeros, 3, 3 and 2 digits at most
+VERSION = re.compile(r"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]?)")
 BUILD = re.compile(r"[0-9]{1,18}")
 SHA = re.compile(r"[0-9a-f]{40}")
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 MAX_BYTES = 1024 * 1024  # as tools/hjv-release reads it
 ATTEMPTS = 5
 CALL_TIMEOUT = 30
+PUBLIC_REPOSITORY = "yonsei-projecttf/hjviewer"
+CALLED_WORKFLOW = ".github/workflows/client-build.yml"
+BUILD_WORKFLOW = ".github/workflows/build.yml"
+# client-build.yml's inputs that build.yml may pass (provenance.rs KNOWN_INPUTS and check_only)
+BUILD_INPUTS = ("platforms", "testflight", "play", "play_release", "check_only", "source_ref")
 
 
 class RecordError(Exception):
@@ -137,11 +153,22 @@ def line_of(args, today: str) -> str:
 
 # ---- the contents API ----------------------------------------------------------------------------
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib's default opener follows a redirect with the Authorization header, to any host: a
+    3xx answer is returned as it is instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def send(method: str, url: str, headers: dict, data: bytes | None) -> tuple[int, bytes]:
     """The one network seam (tests replace it). Returns (HTTP status, body)."""
     request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=CALL_TIMEOUT) as response:
+        with _OPENER.open(request, timeout=CALL_TIMEOUT) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
@@ -213,6 +240,146 @@ class Repo:
         raise RecordError(f"could not write {self.repo}/{RECORD_PATH}: HTTP {status} {answer.get('message', '')}")
 
 
+# ---- the build run of an upload (check-run) -------------------------------------------------------
+
+def _content(raw: str) -> str:
+    line = raw.rstrip("\r")
+    if line.lstrip().startswith("#"):
+        return ""
+    at = line.find(" #")
+    return (line[:at] if at >= 0 else line).rstrip()
+
+
+_KEY_VALUE = re.compile(r"([A-Za-z0-9_-]+):(?:| (.*))")
+_PLAIN = re.compile(r"[A-Za-z0-9_.-]+")
+_INPUT = re.compile(r"\$\{\{\s*inputs\.[A-Za-z0-9_]+\s*\}\}")
+_ALLOWED = re.compile(r"[A-Za-z0-9 _.,:@/${}\[\]-]*")
+
+
+def check_build_yml(text: str, source: str) -> None:
+    """build.yml is the documented one (docs/ci.md, provenance.rs check_build_yml): top-level keys
+    name, run-name, on, permissions, concurrency and jobs; one job, which only calls the public
+    client-build.yml at `source` with source_ref `source`, known inputs, secrets: inherit. No lists,
+    no quotes, no block scalars: whatever else could run a step is refused."""
+    uses = f"{PUBLIC_REPOSITORY}/{CALLED_WORKFLOW}@{source}"
+    lines = []
+    for n, raw in enumerate(text.splitlines(), 1):
+        content = _content(raw)
+        if not content:
+            continue
+        if not _ALLOWED.fullmatch(content):
+            raise RecordError(f"build.yml line {n}: a character the documented build.yml has not")
+        if content.count("{") != content.count("}") or content.count("[") != content.count("]"):
+            raise RecordError(f"build.yml line {n}: a bracket that is not closed on its line")
+        body = content.lstrip()
+        if body.startswith(("---", "...", "- ")) or body == "-":
+            raise RecordError(f"build.yml line {n}: lists and document markers are not used")
+        lines.append((n, len(content) - len(body), body))
+    section, jobs_seen, job_lines = "", False, []
+    for n, indent, body in lines:
+        m = _KEY_VALUE.fullmatch(body)
+        if indent == 0:
+            if not m or m.group(1) not in ("name", "run-name", "on", "permissions", "concurrency", "jobs"):
+                raise RecordError(f"build.yml line {n}: not a top-level key of the documented build.yml")
+            if m.group(1) == "jobs":
+                if jobs_seen or (m.group(2) or "").strip():
+                    raise RecordError(f"build.yml line {n}: jobs comes once, without a value")
+                jobs_seen = True
+            section = m.group(1)
+        elif section == "jobs":
+            if not m:
+                raise RecordError(f"build.yml line {n}: not 'key: value'")
+            job_lines.append((n, indent, m.group(1), (m.group(2) or "").strip()))
+        elif not section:
+            raise RecordError(f"build.yml line {n}: starts indented")
+    if len(job_lines) < 2:
+        raise RecordError("build.yml has no job, or an empty one")
+    job_indent, key_indent = job_lines[0][1], job_lines[1][1]
+    if job_lines[0][3] or key_indent <= job_indent:
+        raise RecordError("build.yml must have exactly one job")
+    keys, parent, uses_seen, source_ref_seen = [], "", False, False
+    for n, indent, k, value in job_lines[1:]:
+        if indent <= job_indent:
+            raise RecordError(f"build.yml line {n}: a second job (it could run anything)")
+        if indent == key_indent:
+            if k in keys:
+                raise RecordError(f"build.yml line {n}: {k} comes twice")
+            keys.append(k)
+            parent = k
+            if k == "uses":
+                if value != uses:
+                    raise RecordError(f"build.yml line {n}: uses is not {uses}")
+                uses_seen = True
+            elif k in ("with", "permissions") and not value:
+                pass
+            elif k == "secrets" and value == "inherit":
+                pass
+            elif k in ("name", "permissions") and _PLAIN.fullmatch(value):
+                pass
+            else:
+                raise RecordError(f"build.yml line {n}: a job key the documented build.yml has not: {k}")
+        elif parent == "with":
+            if k not in BUILD_INPUTS:
+                raise RecordError(f"build.yml line {n}: client-build.yml takes no input {k}")
+            if k == "source_ref":
+                if value != source or source_ref_seen:
+                    raise RecordError(f"build.yml line {n}: source_ref is not {source}")
+                source_ref_seen = True
+            elif not (_INPUT.fullmatch(value) or _PLAIN.fullmatch(value)):
+                raise RecordError(f"build.yml line {n}: the value of input {k} is not understood")
+        elif parent == "permissions" and _PLAIN.fullmatch(value):
+            pass
+        else:
+            raise RecordError(f"build.yml line {n}: an indentation the documented build.yml has not")
+    if not uses_seen:
+        raise RecordError(f"build.yml's job does not call {uses}")
+    if not source_ref_seen:
+        raise RecordError("build.yml's job passes no source_ref")
+
+
+def check_run(repo: Repo, run_id: str, version: str, source: str) -> str:
+    """The -play artifact's name, once run_id is shown to be the reviewed build of `source`."""
+    status, run = repo.call("GET", f"repos/{repo.repo}/actions/runs/{run_id}")
+    if status != 200:
+        raise RecordError(f"could not read build run {run_id} of {repo.repo}: HTTP {status}")
+    seen = {k: run.get(k) for k in ("path", "event", "status", "conclusion", "head_branch")}
+    seen["repository"] = (run.get("repository") or {}).get("full_name")
+    wanted = {"path": BUILD_WORKFLOW, "event": "workflow_dispatch", "status": "completed",
+              "conclusion": "success", "head_branch": "main", "repository": repo.repo}
+    wrong = [f"{k} {seen[k]!r}" for k, v in wanted.items() if seen[k] != v]
+    if wrong:
+        raise RecordError(f"run {run_id} is not a successful run of build.yml on main started by hand in "
+                          f"{repo.repo} ({', '.join(wrong)})")
+    pinned = f"{PUBLIC_REPOSITORY}/{CALLED_WORKFLOW}@{source}"
+    referenced = run.get("referenced_workflows")
+    referenced = referenced if isinstance(referenced, list) else []
+    if len(referenced) != 1 or not isinstance(referenced[0], dict) \
+            or referenced[0].get("path") != pinned or referenced[0].get("sha") != source:
+        paths = [r.get("path") if isinstance(r, dict) else None for r in referenced]
+        raise RecordError(f"run {run_id} did not call exactly {pinned} (it called {paths!r})")
+    head = run.get("head_sha")
+    if not isinstance(head, str) or not SHA.fullmatch(head):
+        raise RecordError(f"run {run_id} has no readable head_sha")
+    status, answer = repo.call("GET", f"repos/{repo.repo}/contents/{BUILD_WORKFLOW}?ref={head}")
+    if status != 200 or answer.get("encoding") != "base64" or not isinstance(answer.get("content"), str):
+        raise RecordError(f"could not read {BUILD_WORKFLOW} at {head}: HTTP {status}")
+    try:
+        text = base64.b64decode(answer["content"]).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        raise RecordError(f"{BUILD_WORKFLOW} at {head} is not UTF-8 text") from None
+    check_build_yml(text, source)
+    artifact = f"HJViewer-{version}-{source[:7]}-android-aarch64-play"
+    status, answer = repo.call("GET", f"repos/{repo.repo}/actions/runs/{run_id}/artifacts?per_page=100")
+    if status != 200:
+        raise RecordError(f"could not list the artifacts of run {run_id}: HTTP {status}")
+    found = [a for a in answer.get("artifacts") or [] if isinstance(a, dict) and a.get("name") == artifact]
+    if not found or found[0].get("expired") is not False:
+        gone = " (it has expired: bundles are kept 30 days)" if found else ""
+        raise RecordError(f"run {run_id} has no {artifact}{gone}: the bundle must be of client-{version}'s "
+                          "commit. A gone bundle takes a new build with a higher version.")
+    return artifact
+
+
 def read_record(args, env) -> str:
     if args.file:
         try:
@@ -269,6 +436,13 @@ def validate(args) -> None:
                               usage=True)
         if not BUILD.fullmatch(args.build or ""):
             raise RecordError(f"not a build number: {args.build!r}", usage=True)
+    if args.command == "check-run":
+        if args.store != "play" or not args.repo:
+            raise RecordError("check-run takes --store play and --repo (the build run of an upload)", usage=True)
+        if not re.fullmatch(r"[0-9]{1,20}", args.run_id or ""):
+            raise RecordError("check-run needs --run-id, the build run's ID", usage=True)
+        if not SHA.fullmatch(args.source or ""):
+            raise RecordError("--source takes the 40-digit source commit", usage=True)
     if args.command == "add":
         if not SHA.fullmatch(args.source or ""):
             raise RecordError("--source takes the 40-digit source commit", usage=True)
@@ -282,7 +456,7 @@ def validate(args) -> None:
 
 def main(argv: list[str], env=os.environ) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("command", choices=("check", "check-build", "add"))
+    parser.add_argument("command", choices=("check", "check-build", "add", "check-run"))
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--repo", help="the build repository, owner/name (contents API)")
     source.add_argument("--file", help="a local copy of the record")
@@ -291,8 +465,9 @@ def main(argv: list[str], env=os.environ) -> int:
     parser.add_argument("--build")
     parser.add_argument("--action", choices=("upload", "submit", "release"))
     parser.add_argument("--track")
-    parser.add_argument("--source", help="add: the 40-digit source commit")
+    parser.add_argument("--source", help="add, check-run: the 40-digit source commit")
     parser.add_argument("--note", default="")
+    parser.add_argument("--run-id", help="check-run: the build run's ID (…/actions/runs/<ID>)")
     args = parser.parse_args(argv)
     try:
         if args.command in ("check", "add") and not args.action:
@@ -300,6 +475,15 @@ def main(argv: list[str], env=os.environ) -> int:
         validate(args)
         if args.command == "add":
             return add(args, env, datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"))
+        if args.command == "check-run":
+            artifact = check_run(Repo(args.repo, env), args.run_id, args.version, args.source)
+            output = env.get("GITHUB_OUTPUT")
+            if output:
+                with open(output, "a", encoding="utf-8") as handle:
+                    handle.write(f"artifact={artifact}\n")
+            summary(f"Bundle: {artifact} of build run {args.run_id} (build.yml on main, client-build.yml "
+                    f"@{args.source[:12]}, build.yml's shape checked)")
+            return 0
         record = read_record(args, env)
         if args.command == "check-build":
             check_build(record, args.store, args.version)

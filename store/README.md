@@ -21,7 +21,7 @@ App Store Connect와 Google Play Console에 그대로 보일 글의 원본입니
 | 파일 | App Store Connect의 칸 | 한도 |
 |---|---|---|
 | `version.txt` | 버전 번호(스토어 실행의 `version`과 같아야 함) | X.Y.Z |
-| `distribution.txt` | 가격 및 사용 가능 여부 → 앱 배포 방법. `unlisted`(등록되지 않은 앱) 또는 `public` | — |
+| `distribution.txt` | 콘솔의 칸이 아닙니다. 심사 메모 검사(`unlisted`면 Apple이 요구하는 문장)와 submit의 안내에 씁니다. `unlisted`(등록되지 않은 앱) 또는 `public`. 콘솔의 배포 방법은 늘 '공개'로 두고, Unlisted는 요청이 승인되면 Apple이 바꿉니다([docs/store-release.md](../docs/store-release.md) A3) | — |
 | `locales.txt` | 넣을 현지화의 App Store Connect 언어 코드, 한 줄에 하나. 첫 줄이 기본 언어 | — |
 | `copyright.txt` | 버전 페이지의 저작권(언어 공통, 한 칸). ©는 Apple이 붙이므로 쓰지 않음 | `YYYY 이름` |
 | `review_notes.txt` | 앱 심사 정보 → 메모(Notes), 영어 하나 | 채운 뒤 4000바이트 |

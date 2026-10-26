@@ -178,6 +178,51 @@ class StoreReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("cat store/play/ko-KR/release_notes.txt", play)
         self.assertIn("SOURCE_REPOSITORY: ${{ job.workflow_repository }}", play)
 
+    def test_no_expression_inside_a_run_block(self):
+        # inputs reach the shell through env only: an expression in a script is a script injection
+        lines = self.text.splitlines()
+        blocks = 0
+        for i, line in enumerate(lines):
+            m = re.match(r"^(\s*)(?:- )?run: ?(.*)$", line)
+            if not m:
+                continue
+            blocks += 1
+            indent = len(m.group(1))
+            body = [m.group(2)]
+            for later in lines[i + 1:]:
+                if later.strip() and len(later) - len(later.lstrip()) <= indent:
+                    break
+                body.append(later)
+            self.assertNotIn("${{", "\n".join(body), line)
+        self.assertGreater(blocks, 10)
+
+    def test_the_review_values_reach_prepare_and_submit_only(self):
+        (asc,) = [s for s in steps(self.jobs["appstore"]) if name_of(s) == "App Store Connect"]
+        for name in ("REVIEW_DEMO_USER", "REVIEW_DEMO_PASSWORD", "REVIEW_DEMO_PC_ID", "REVIEW_DEMO_PC_PASSWORD",
+                     "REVIEW_CONTACT_FIRST_NAME", "REVIEW_CONTACT_LAST_NAME", "REVIEW_CONTACT_PHONE", "REVIEW_CONTACT_EMAIL"):
+            self.assertIn(f"          {name}: ${{{{ (inputs.action == 'prepare' || inputs.action == 'submit') "
+                          f"&& secrets.{name} || '' }}}}\n", asc, name)
+        (notes,) = [s for s in steps(self.jobs["appstore"]) if name_of(s) == "Check the filled review notes"]
+        self.assertIn("if: inputs.action == 'prepare' || inputs.action == 'submit'\n", notes)
+        # the free-text inputs of a status run are checked before they reach the script
+        first = steps(self.jobs["appstore"])[0]
+        self.assertIn('[[ "$VERSION" =~', first)
+        self.assertIn('[[ "$BUILD" =~ ^[0-9]{1,18}$ ]]', first)
+
+    def test_the_bundle_provenance_is_hjv_releases(self):
+        (step,) = [s for s in steps(self.jobs["checks"]) if name_of(s) == "Check the build run"]
+        self.assertIn("scripts/store-record.py check-run --repo \"$GITHUB_REPOSITORY\" --store play", step)
+        self.assertIn('--run-id "$RUN_ID" --source "$SOURCE_SHA"', step)
+        self.assertIn("SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}", step)
+
+    def test_release_sends_no_texts_and_the_demo_account_ends_in_kst(self):
+        (step,) = [s for s in steps(self.jobs["checks"]) if name_of(s) == "Check the inputs, the tag and the store texts"]
+        self.assertIn('[ "$ACTION" != release ] && [ "$(cat "store/$store/version.txt")" != "$VERSION" ]', step)
+        self.assertIn('if [ "$ACTION" != release ]; then python3 -I scripts/check-store-text.py', step)
+        (until,) = [s for s in steps(self.jobs["checks"]) if name_of(s) == "Check the demo account's end date"]
+        self.assertIn('date -d "$UNTIL 00:00 +0900" +%s', until)
+        self.assertIn('if [ "$now" -ge "$end" ]; then', until)
+
 
 class ClientBuildWorkflowTest(unittest.TestCase):
     def setUp(self):
@@ -227,6 +272,12 @@ class ClientBuildWorkflowTest(unittest.TestCase):
             store = {"android": "play", "ios": "appstore"}[job]
             self.assertIn(f"check-build --repo \"$GITHUB_REPOSITORY\" --store {store} --version \"$HJV_VERSION\"", found[1])
             self.assertNotIn("secrets.", found[1])
+
+    def test_build_names_carry_exactly_seven_digits_of_the_commit(self):
+        # the store run looks for HJViewer-<version>-<7 digits>-android-aarch64-play; --short=7
+        # gives more digits when 7 are ambiguous
+        self.assertNotIn("--short", self.text)
+        self.assertEqual(self.text.count('name="$HJV_VERSION-$(git rev-parse HEAD | cut -c1-7)"'), 3)
 
     def test_the_upload_key_reaches_two_ios_steps_only(self):
         holders = [name_of(s) for s in steps(self.jobs["ios"]) if "secrets.ASC_" in s]

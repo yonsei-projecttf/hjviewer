@@ -21,13 +21,18 @@
 //            puts in store/appstore's texts (the version's and the app information's), the build,
 //            the release type, the phased release and the App Review information. It never
 //            submits. The first App Store version gets no What's New (App Store Connect has no such
-//            field for it).
+//            field for it), and it takes neither after-approval nor --phased: it is released by
+//            hand (the owner's rule for the unlisted app). Stops when the app's primary language
+//            is not the first line of store/appstore/locales.txt.
 // submit     what prepare does, then the review submission: an open submission that has this
 //            version waiting for or in review is success; a READY_FOR_REVIEW or UNRESOLVED_ISSUES
 //            submission is used again (the item added if it is missing); one that holds other items
-//            stops the run; only without an open submission a new one is made. Then submitted=true.
+//            stops the run (an item of the editable version prepare renumbers counts as this
+//            version's); only without an open submission a new one is made. Then submitted=true.
 // release    releases an approved version of manual release (PENDING_DEVELOPER_RELEASE); a version
-//            already PROCESSING_FOR_DISTRIBUTION or READY_FOR_DISTRIBUTION is success.
+//            already PROCESSING_FOR_DISTRIBUTION or READY_FOR_DISTRIBUTION is success (so a run
+//            after Apple's release of an after-approval version records it).
+//            Whatever is done already passes only when the version holds --build.
 // --dry-run  without the key: no network, prints what the command would do from store/. With the
 //            key: only GET requests, then every write it would make, with sizes and field names
 //            in place of the secret values (Apple has no API that checks a submission beforehand).
@@ -72,7 +77,8 @@ const OPEN_SUBMISSION = ['READY_FOR_REVIEW', 'WAITING_FOR_REVIEW', 'IN_REVIEW', 
 // AppInfo states whose localizations can be changed
 const APP_INFO_EDITABLE = ['PREPARE_FOR_SUBMISSION', 'READY_FOR_REVIEW', 'DEVELOPER_REJECTED', 'REJECTED'];
 
-const VERSION = /^(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})$/;
+// tools/hjv-release's Version::parse: no leading zeros, at most 3, 3 and 2 digits
+const VERSION = /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d?)$/;
 const BUILD = /^\d{1,18}$/;
 const COMMANDS = ['status', 'check-new', 'prepare', 'submit', 'release'];
 const TOKEN_LIFETIME = 1200; // Apple's limit for a token's lifetime: 20 minutes
@@ -104,8 +110,8 @@ export function parseCommand(argv) {
   const [command, ...rest] = parsed.positionals;
   const o = parsed.values;
   if (!COMMANDS.includes(command) || rest.length) throw new AscError(`the command is one of ${COMMANDS.join(', ')}`, { usage: true });
-  if (o.version !== undefined && !VERSION.test(o.version)) throw new AscError(`not a version X.Y.Z: ${o.version}`, { usage: true });
-  if (o.build !== undefined && !BUILD.test(o.build)) throw new AscError(`not a build number: ${o.build}`, { usage: true });
+  if (o.version !== undefined && !VERSION.test(o.version)) throw new AscError(`not a version X.Y.Z: ${JSON.stringify(o.version)}`, { usage: true });
+  if (o.build !== undefined && !BUILD.test(o.build)) throw new AscError(`not a build number: ${JSON.stringify(o.build)}`, { usage: true });
   if (command !== 'status' && !o.version) throw new AscError(`${command} needs --version`, { usage: true });
   if (['prepare', 'submit'].includes(command) && !o.build) throw new AscError(`${command} needs --build`, { usage: true });
   if (!['manual', 'after-approval'].includes(o['release-type'])) throw new AscError('--release-type is manual or after-approval', { usage: true });
@@ -362,6 +368,50 @@ async function openSubmissions(client, appId) {
 const highest = (list) => list.map((v) => v.version).filter((v) => VERSION.test(v ?? ''))
   .sort((a, b) => { const x = a.split('.').map(Number); const y = b.split('.').map(Number); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; }).pop() ?? null;
 
+// The build attached to an App Store version: its CFBundleVersion, or null.
+async function attachedBuild(client, vid) {
+  const b = await client.one(`/v1/appStoreVersions/${vid}/build?${q({ 'fields[builds]': 'version' })}`);
+  return b?.attributes?.version ?? null;
+}
+
+// The record job writes --build: a version that is done already must hold that build.
+async function requireBuild(ctx, v) {
+  const have = await attachedBuild(ctx.client, v.id);
+  if (have !== ctx.opts.build) {
+    throw new AscError(`App Store version ${v.version} has build ${have ?? 'none'}, not ${ctx.opts.build}`,
+      { hint: 'The release record takes the build App Store Connect has: check the build number (status).' });
+  }
+}
+
+// The owner's rule for the first App Store version (an unlisted app): released by hand once App
+// Review and the unlisted request are both approved, and no phased release, which Apple applies to
+// updates only. Checked before any write. Returns whether the app has never been on the App Store.
+export function firstVersionRules(opts, versions) {
+  if (versions.some((v) => ON_STORE_ONCE.includes(v.state))) return false;
+  if (opts.releaseType !== 'MANUAL') {
+    throw new AscError('the first App Store version is released by hand: --release-type manual', {
+      usage: true,
+      hint: 'An unlisted app released after approval could show in the public listing before Apple approves the unlisted request. Submit with release_type=manual, then run release once both are approved (docs/store-release.md).',
+    });
+  }
+  if (opts.phased) {
+    throw new AscError('a phased release applies from the second App Store version on: no --phased for the first', { usage: true });
+  }
+  return true;
+}
+
+// store/README.md: the first line of locales.txt is the app's primary language. A primary
+// language store/ has no texts for would fail the submission at Apple after every other write.
+async function checkPrimaryLocale(ctx) {
+  const { client, creds, store } = ctx;
+  const app = (await client.get(`/v1/apps/${creds.appId}?${q({ 'fields[apps]': 'primaryLocale' })}`)).data;
+  const primary = app?.attributes?.primaryLocale ?? null;
+  if (primary !== store.locales[0]) {
+    throw new AscError(`the app's primary language in App Store Connect is ${primary ?? 'not readable'}, store/appstore/locales.txt starts with ${store.locales[0]}`,
+      { hint: 'Set the primary language in App Store Connect > App Information, or change locales.txt (store/README.md).' });
+  }
+}
+
 // ---- the commands -----------------------------------------------------------------------------------
 
 async function status(ctx) {
@@ -470,9 +520,17 @@ async function prepare(ctx) {
   const { client, creds, opts, store, log } = ctx;
   // the review information first: a missing secret stops the run before anything is written
   const review = ctx.dryRun && !REVIEW_ENV.every((n) => ctx.env[n]) ? null : reviewDetail(store, ctx.env);
+  // the first version's rules and the primary language before the wait and before any write
+  let versions = await versionsOf(client, creds.appId);
+  firstVersionRules(opts, versions);
+  await checkPrimaryLocale(ctx);
+  const waitStart = ctx.now();
   const build = await waitForBuild(ctx);
   log(`build: iOS ${build.version} (${build.build}) ${build.state}, expires ${build.expirationDate ?? '?'}`);
-  const versions = await versionsOf(client, creds.appId);
+  if (ctx.now() > waitStart) {
+    versions = await versionsOf(client, creds.appId);
+    firstVersionRules(opts, versions);
+  }
   const { version, first } = await editableVersion(ctx, versions);
   const vid = version.id;
   // a version this dry run would create has nothing to read yet
@@ -493,6 +551,8 @@ async function prepare(ctx) {
 
   // the version page's texts
   const locs = fresh ? [] : (await client.all(`/v1/appStoreVersions/${vid}/appStoreVersionLocalizations?limit=50`)).data;
+  const extra = locs.map((l) => l.attributes?.locale).filter((l) => l && !store.locales.includes(l));
+  if (extra.length) log(`note: the version has localizations store/ does not hold: ${extra.join(', ')} (left as they are)`);
   for (const locale of store.locales) {
     const wanted = { ...store.texts[locale].version };
     if (first) delete wanted.whatsNew;
@@ -579,15 +639,21 @@ async function submit(ctx) {
   const versions = await versionsOf(client, creds.appId);
   const same = versions.find((v) => v.version === opts.version);
   if (same && [...IN_REVIEW, ...APPROVED, ...RELEASED].includes(same.state)) {
+    await requireBuild(ctx, same);
     ctx.summary(`App Store version ${opts.version} is ${same.state}: submitted already; nothing to do.`);
     return 0;
   }
+  firstVersionRules(opts, versions);
+  // the version prepare will use: this version, else the editable one it renumbers (after a
+  // binary rejection the rejected version, still under its old number in the open submission)
+  const target = same ?? versions.find((v) => EDITABLE.includes(v.state)) ?? null;
   const byId = new Map(versions.map((v) => [v.id, v.version]));
   const open = await openSubmissions(client, creds.appId);
   for (const s of open) {
-    const others = s.items.filter((i) => byId.get(i.versionId) !== opts.version);
-    const ours = s.items.some((i) => byId.get(i.versionId) === opts.version);
-    if (ours && ['WAITING_FOR_REVIEW', 'IN_REVIEW'].includes(s.state)) {
+    const others = s.items.filter((i) => !target || i.versionId !== target.id);
+    const ours = Boolean(target) && s.items.some((i) => i.versionId === target.id);
+    if (same && ours && ['WAITING_FOR_REVIEW', 'IN_REVIEW'].includes(s.state)) {
+      await requireBuild(ctx, same);
       ctx.summary(`App Store version ${opts.version} is in a submission that is ${s.state}: submitted already; nothing to do.`);
       return 0;
     }
@@ -627,16 +693,14 @@ async function release(ctx) {
   const versions = await versionsOf(client, creds.appId);
   const v = versions.find((x) => x.version === opts.version);
   if (!v) throw new AscError(`App Store Connect has no App Store version ${opts.version}`);
+  if (opts.build && [...RELEASED, 'PENDING_DEVELOPER_RELEASE'].includes(v.state)) await requireBuild(ctx, v);
+  // an after-approval version that Apple released: success, so that the record gets its line
   if (RELEASED.includes(v.state)) {
     ctx.summary(`App Store version ${opts.version} is ${v.state}: released already; nothing to do.`);
     return 0;
   }
   if (v.state !== 'PENDING_DEVELOPER_RELEASE') {
     throw new AscError(`App Store version ${opts.version} is ${v.state}: only an approved version of manual release (PENDING_DEVELOPER_RELEASE) can be released`);
-  }
-  if (opts.build) {
-    const b = await client.one(`/v1/appStoreVersions/${v.id}/build?${q({ 'fields[builds]': 'version' })}`);
-    if (b?.attributes?.version !== opts.build) throw new AscError(`App Store version ${opts.version} has build ${b?.attributes?.version ?? 'none'}, not ${opts.build}`);
   }
   await client.write('POST', '/v1/appStoreVersionReleaseRequests', {
     data: { type: 'appStoreVersionReleaseRequests', relationships: { appStoreVersion: { data: { type: 'appStoreVersions', id: v.id } } } },
@@ -665,7 +729,9 @@ function offlinePlan(ctx) {
     }),
     ...store.locales.map((l) => `${l} app information: ${sizes(store.texts[l].info)}`),
     `App Review information: contact and demo account from REVIEW_* (${REVIEW_ENV.filter((n) => ctx.env[n]).length} of ${REVIEW_ENV.length} set here), notes from review_notes.txt (${notesBytes(store.notes)} bytes before filling)`,
-    opts.phased ? 'phased release on' : 'no phased release',
+    opts.phased ? 'phased release on (from the second App Store version on; refused for the first)' : 'no phased release',
+    ...(opts.releaseType !== 'MANUAL' ? ['after-approval is refused for the first App Store version (released by hand)'] : []),
+    'stop when the app\'s primary language is not the first line of locales.txt',
   ];
   if (opts.command === 'submit') steps.push('use the open READY_FOR_REVIEW or UNRESOLVED_ISSUES submission or create one, add the version, submitted=true');
   for (const step of steps) log(`would: ${step}`);

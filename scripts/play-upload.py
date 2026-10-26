@@ -100,11 +100,22 @@ class PlayError(Exception):
         return cls(status, raw[:300].decode("utf-8", "replace"))
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib's default opener follows a redirect with the Authorization header, to any host: a
+    3xx answer is returned as it is instead (Google's APIs do not redirect)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def send(method: str, url: str, headers: dict, data: bytes | None, timeout: int) -> tuple[int, bytes]:
     """The one network seam (tests replace it). Returns (HTTP status, body)."""
     request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _OPENER.open(request, timeout=timeout) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
