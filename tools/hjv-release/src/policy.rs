@@ -193,10 +193,14 @@ pub struct Entry {
     pub auto_install_after: Option<i64>,
     /// Android: sideloaded apps suggest moving to Google Play.
     pub move_to_play: bool,
-    /// Google Play: the versionCode the operator saw released on the internal track.
+    /// Google Play: the versionCode the operator saw released on the configured Play track.
     pub version_code: Option<u64>,
     /// iOS: the CFBundleVersion uploaded to TestFlight (`YYDDDHHMM`).
     pub testflight_build: Option<String>,
+    /// iOS: the version the App Store hands out (READY_FOR_DISTRIBUTION), as the operator saw it
+    /// (`--appstore-live`). Once there, `latest` (and so `min`) stays at or below it. The apps
+    /// do not read it (an unknown member to them); it is the tool's gate (design 3-7, T3).
+    pub appstore: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -252,6 +256,7 @@ pub struct EntryForm {
     pub move_to_play: bool,
     pub version_code: Option<u64>,
     pub testflight_build: Option<String>,
+    pub appstore: Option<String>,
 }
 
 /// A policy text read for its form (trust rules 1-3).
@@ -346,6 +351,7 @@ impl EntryForm {
             },
             version_code: f.opt_int("version_code")?,
             testflight_build: f.opt_str("testflight_build")?.map(str::to_owned),
+            appstore: f.opt_str("appstore")?.map(str::to_owned),
         };
         f.done()?;
         Ok(entry)
@@ -370,7 +376,8 @@ impl EntryForm {
         if let Some(code) = self.version_code {
             w.int("version_code", code);
         }
-        w.opt_str("testflight_build", self.testflight_build.as_deref());
+        w.opt_str("testflight_build", self.testflight_build.as_deref())
+            .opt_str("appstore", self.appstore.as_deref());
         w.finish()
     }
 
@@ -456,6 +463,8 @@ impl EntryForm {
             move_to_play: self.move_to_play,
             version_code: self.version_code,
             testflight_build: self.testflight_build.clone(),
+            // the apps skip a member they do not know: its rules are the tool's (Entry::check)
+            appstore: self.appstore.clone(),
         })
     }
 }
@@ -817,7 +826,15 @@ impl Entry {
             move_to_play: false,
             version_code: None,
             testflight_build: None,
+            appstore: None,
         }
+    }
+
+    /// The App Store version of an iOS entry (`appstore`), when it has a good one.
+    pub fn appstore_version(&self) -> Option<Version> {
+        self.appstore
+            .as_deref()
+            .and_then(|v| Version::parse(v).ok())
     }
 
     /// The requirement part (min, latest, grace_until, grace_min).
@@ -894,6 +911,19 @@ impl Entry {
             (Some(_), false) => return Err("testflight_build는 ios에만 둡니다".to_owned()),
             (None, false) => {}
         }
+        match (&self.appstore, platform == Platform::Ios) {
+            (Some(text), true) => {
+                let appstore = Version::parse(text).map_err(|e| format!("appstore: {e}"))?;
+                if self.latest > appstore {
+                    return Err(format!(
+                        "latest({})가 App Store에 나온 버전(appstore {appstore})보다 높습니다",
+                        self.latest
+                    ));
+                }
+            }
+            (Some(_), false) => return Err("appstore는 ios에만 둡니다".to_owned()),
+            (None, _) => {}
+        }
         Ok(())
     }
 
@@ -911,6 +941,7 @@ impl Entry {
             move_to_play: self.move_to_play,
             version_code: self.version_code,
             testflight_build: self.testflight_build.clone(),
+            appstore: self.appstore.clone(),
         }
     }
 }
@@ -1339,6 +1370,32 @@ pub(crate) mod tests {
         assert_eq!(sample().lowest_min(), Some(v("1.6.0")));
     }
 
+    /// `appstore` (T3) comes last in an iOS entry, after `testflight_build`, as a string.
+    #[test]
+    fn the_app_store_member() {
+        let mut policy = sample();
+        policy.platforms.get_mut(&Platform::Ios).unwrap().appstore = Some("1.6.1".to_owned());
+        let text = policy.to_text();
+        assert!(text.ends_with(
+            r#""ios":{"min":"1.6.0","latest":"1.6.1","os_min":"13.0","testflight_build":"263120249","appstore":"1.6.1"}}}"#
+        ));
+        assert_eq!(Policy::parse(&text).unwrap(), policy);
+        assert_eq!(
+            policy.platforms[&Platform::Ios].appstore_version(),
+            Some(v("1.6.1"))
+        );
+        for bad in [
+            text.replacen(r#""appstore":"1.6.1""#, r#""appstore":161"#, 1),
+            text.replacen(
+                r#""testflight_build":"263120249","appstore":"1.6.1""#,
+                r#""appstore":"1.6.1","testflight_build":"263120249""#,
+                1,
+            ),
+        ] {
+            assert!(Policy::parse(&bad).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn reads_any_order_but_parses_one() {
         let text = r#"{ "platforms": {"ios": {"latest":"1.6.0","min":"1.5.0","testflight_build":"262840251"}},
@@ -1356,6 +1413,10 @@ pub(crate) mod tests {
         // what passes the rules also survives writing and reading
         assert_eq!(Policy::parse(&policy.to_text()).unwrap(), policy);
         Ok(())
+    }
+
+    fn ios(p: &mut Policy) -> &mut Entry {
+        p.platforms.get_mut(&Platform::Ios).unwrap()
     }
 
     fn windows(p: &mut Policy) -> &mut Entry {
@@ -1455,6 +1516,14 @@ pub(crate) mod tests {
             .unwrap()
             .testflight_build = Some("26284025".to_owned()))
         .is_err());
+        // appstore (T3): iOS only, a version, never below latest
+        assert!(change(|p| ios(p).appstore = Some("1.6.1".to_owned())).is_ok());
+        assert!(change(|p| ios(p).appstore = Some("1.7.0".to_owned())).is_ok());
+        assert!(change(|p| ios(p).appstore = Some("1.6.0".to_owned()))
+            .unwrap_err()
+            .contains("App Store에 나온 버전"));
+        assert!(change(|p| ios(p).appstore = Some("1.6".to_owned())).is_err());
+        assert!(change(|p| windows(p).appstore = Some("1.6.1".to_owned())).is_err());
         // an entry may be missing
         assert!(change(|p| drop(p.platforms.remove(&Platform::AndroidPlay))).is_ok());
         // source

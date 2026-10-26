@@ -7,7 +7,10 @@
 //! {"hjv_release_draft":1,"signer":"signing","p":"<policy text>",
 //!  "root":{"k":101,"p":"…","s":"…"},        the last signed root declaration, attached as it is
 //!  "root_p":"<root declaration text>",        or a new one, for the root key to sign
-//!  "prev":"<the previous envelope file>","notes":["what policy checked", …]}
+//!  "prev":"<the previous envelope file>",
+//!  "appstore_release":"1.9.1",               the store record's App Store release, when the
+//!                                             policy changes iOS with --no-appstore (T3)
+//!  "notes":["what policy checked", …]}
 //! ```
 //!
 //! An agent may write a draft; only a person signs it. `sign` therefore checks the draft again
@@ -22,6 +25,7 @@ use crate::{
     envelope::Part,
     json::{quote, Json, Writer},
     keys::Role,
+    version::Version,
 };
 
 pub const DRAFT_VERSION: u64 = 1;
@@ -77,6 +81,10 @@ pub struct Draft {
     pub root_p: Option<String>,
     /// The envelope this policy follows, byte for byte.
     pub prev: Option<String>,
+    /// The App Store version the store record says was released, when this policy changes the
+    /// iOS entry without naming the App Store (`--no-appstore`, design 3-7 T3): `sign` asks for
+    /// a typed `yes`. It can only make signing stricter.
+    pub appstore_release: Option<String>,
     /// What `policy` checked, for the person who signs.
     pub notes: Vec<String>,
 }
@@ -88,6 +96,10 @@ impl Draft {
         check_notes(&self.notes)?;
         if self.root.is_some() && self.root_p.is_some() {
             return Err("초안: 서명된 루트 선언과 새 루트 선언이 함께 있습니다".to_owned());
+        }
+        if let Some(version) = &self.appstore_release {
+            Version::parse(version)
+                .map_err(|_| "초안: appstore_release는 버전입니다".to_owned())?;
         }
         Ok(())
     }
@@ -103,6 +115,7 @@ impl Draft {
         }
         w.opt_str("root_p", self.root_p.as_deref())
             .opt_str("prev", self.prev.as_deref())
+            .opt_str("appstore_release", self.appstore_release.as_deref())
             .raw("notes", &format!("[{}]", notes.join(",")));
         let mut text = w.finish();
         text.push('\n');
@@ -136,6 +149,7 @@ impl Draft {
             .transpose()?;
         let root_p = f.opt_str("root_p")?.map(str::to_owned);
         let prev = f.opt_str("prev")?.map(str::to_owned);
+        let appstore_release = f.opt_str("appstore_release")?.map(str::to_owned);
         let notes = match f.take("notes") {
             Some(Json::Array(items)) => items
                 .iter()
@@ -154,6 +168,7 @@ impl Draft {
             root,
             root_p,
             prev,
+            appstore_release,
             notes,
         };
         draft.check()?;
@@ -197,6 +212,7 @@ mod tests {
             root: None,
             root_p: None,
             prev: None,
+            appstore_release: None,
             notes: Vec::new(),
         };
         let text = plain.to_text();
@@ -222,6 +238,17 @@ mod tests {
             ..plain.clone()
         };
         assert_eq!(Draft::parse(&new_root.to_text()).unwrap(), new_root);
+        // the store record's App Store release (T3), a version only
+        let released = Draft {
+            appstore_release: Some("1.9.1".to_owned()),
+            ..plain.clone()
+        };
+        let text = released.to_text();
+        assert!(text.contains(r#","appstore_release":"1.9.1","notes":[]"#));
+        assert_eq!(Draft::parse(&text).unwrap(), released);
+        assert!(Draft::parse(&text.replace("1.9.1", "1.9"))
+            .unwrap_err()
+            .contains("appstore_release"));
     }
 
     #[test]
@@ -232,6 +259,7 @@ mod tests {
             root: None,
             root_p: None,
             prev: None,
+            appstore_release: None,
             notes: vec!["n".to_owned()],
         }
         .to_text();
@@ -266,6 +294,7 @@ mod tests {
             root: Some(Part::sign(&root_key, 101, ROOT_DOMAIN, "{}")),
             root_p: Some("{}".to_owned()),
             prev: None,
+            appstore_release: None,
             notes: Vec::new(),
         };
         assert!(Draft::parse(&both.to_text()).unwrap_err().contains("함께"));
@@ -276,6 +305,7 @@ mod tests {
             root: None,
             root_p: None,
             prev: None,
+            appstore_release: None,
             notes: Vec::new(),
         };
         assert!(Draft::parse(&huge.to_text())
@@ -290,6 +320,7 @@ mod tests {
             root: None,
             root_p: None,
             prev: None,
+            appstore_release: None,
             notes: notes.iter().map(|n| (*n).to_owned()).collect(),
         };
         // the rule holds for a draft in memory and for the same draft read from its file
@@ -306,7 +337,8 @@ mod tests {
             "windows 1.6.1: 실행 4242 성공(.github/workflows/build.yml @ 222222222222), 소스 1111111111111111111111111111111111111111 = 태그 client-1.6.1",
             "windows 1.6.1: 패키지와 release.json이 실행 4242의 산출물과 같음(패키지 sha256 e6a39ba1c067edf949f7e2906b801d919d1f36f4fd52987d149303e5f11a8607)",
             "ios 1.6.1: 운영자가 TestFlight 빌드(263120249)를 확인함(--ios-valid, 올린 지 0일)",
-            "android_play 1.6.1: 운영자가 Play 내부 트랙의 versionCode(263122249)를 확인함(--play-live)",
+            "android_play 1.6.1: 운영자가 Play alpha 트랙의 versionCode(263122249) 게시를 확인함(--play-live)",
+            "ios 1.9.1: 운영자가 App Store에 나온 버전(1.9.1)을 확인함(--appstore-live)",
         ])
         .unwrap();
         with_notes(&[]).unwrap();

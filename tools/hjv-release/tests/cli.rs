@@ -124,6 +124,15 @@ impl World {
              \x20     exit 1\n\
              \x20   fi\n\
              \x20   exec cp -R \"$HJV_TEST_GH/artifacts/.\" \"$7\" ;;\n\
+             \x20 \"api repos/yonsei-projecttf/hjviewer-private\")\n\
+             \x20   # the build repository is there, for the token too\n\
+             \x20   echo '{\"full_name\":\"yonsei-projecttf/hjviewer-private\"}'\n\
+             \x20   exit 0 ;;\n\
+             \x20 \"api -H Accept: application/vnd.github.raw+json repos/yonsei-projecttf/hjviewer-private/contents/store-releases.txt\")\n\
+             \x20   # the stores' release record, when the test wrote one\n\
+             \x20   if [ -f \"$HJV_TEST_GH/store-releases.txt\" ]; then\n\
+             \x20     exec cat \"$HJV_TEST_GH/store-releases.txt\"\n\
+             \x20   fi ;;\n\
              esac\n\
              echo \"gh: Not Found (HTTP 404)\" >&2\n\
              exit 1\n",
@@ -296,6 +305,7 @@ impl World {
             "0",
             "--ios-valid",
             &self.ios_build,
+            "--no-appstore",
             "--os-min",
             "windows=10",
             "--os-min",
@@ -325,6 +335,16 @@ impl World {
                 draft,
             ],
             &[("의 비밀번호: ", PASS)],
+        )
+    }
+
+    /// `hjv-release sign` of a draft with a danger, the person typing `yes`.
+    fn sign_yes(&self, key: &str, draft: &str, out: &str) -> Output {
+        self.sign_as(
+            key,
+            draft,
+            out,
+            &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
         )
     }
 
@@ -378,16 +398,15 @@ impl World {
             grace_days,
             "--ios-valid",
             &self.ios_build,
+            "--no-play",
+            "--no-appstore",
             "--out",
             "draft2.json",
         ]);
         assert_eq!(made.code, 0, "{}", made.all());
-        // without a grace period the signer is asked first
-        let script: &[(&str, &str)] = match grace_days {
-            "0" => &[("yes를 입력하세요: ", "yes"), ("의 비밀번호: ", PASS)],
-            _ => &[("의 비밀번호: ", PASS)],
-        };
-        let signed = self.sign_as("signing-1.key", "draft2.json", "policy2.json", script);
+        // the signer is asked first: android goes up without the Play entry (--no-play), and
+        // without a grace period every entry blocks at once
+        let signed = self.sign_yes("signing-1.key", "draft2.json", "policy2.json");
         assert_eq!(signed.code, 0, "{}", signed.all());
     }
 
@@ -937,13 +956,23 @@ fn a_release_from_the_build_to_the_server() {
         "14",
         "--ios-valid",
         &world.ios_build,
+        "--no-play",
+        "--no-appstore",
         "--out",
         "draft2.json",
     ]);
     assert_eq!(enforce.code, 0, "{}", enforce.all());
     assert!(enforce.stdout.contains("windows: 최소 1.5.0 → 1.6.0"));
-    let signed = world.sign("signing-2.key", "draft2.json", "policy2.json");
+    // android goes up without the Play entry (--no-play): the signer says yes
+    let signed = world.sign_yes("signing-2.key", "draft2.json", "policy2.json");
     assert_eq!(signed.code, 0, "{}", signed.all());
+    assert!(
+        signed
+            .tty
+            .contains("  - android: android_play 항목 없이 android의 min을 올립니다(--no-play)"),
+        "{}",
+        signed.tty
+    );
     let policy2 = world.checked("policy2.json");
     assert_eq!((policy2.epoch, policy2.seq), (1, 2));
     let deadline = policy2.platforms[&Platform::Windows].grace_until.unwrap();
@@ -2447,6 +2476,7 @@ fn a_package_that_is_not_the_runs_is_refused() {
             "0",
             "--ios-valid",
             &world.ios_build,
+            "--no-appstore",
             "--out",
             out,
         ])
@@ -2708,6 +2738,8 @@ fn what_is_enforced_on_arrival_asks_the_signer() {
         "0",
         "--ios-valid",
         &world.ios_build,
+        "--no-play",
+        "--no-appstore",
         "--out",
         "draft2.json",
     ]);
@@ -3009,11 +3041,13 @@ fn after_a_relaxing_declaration_the_signing_key_goes_on() {
         "all=1.6.0",
         "--ios-valid",
         &world.ios_build,
+        "--no-play",
+        "--no-appstore",
         "--out",
         "draft4.json",
     ]);
     assert_eq!(made.code, 0, "{}", made.all());
-    let signed = world.sign("signing-1.key", "draft4.json", "policy4.json");
+    let signed = world.sign_yes("signing-1.key", "draft4.json", "policy4.json");
     assert_eq!(signed.code, 0, "{}", signed.all());
     let policy4 = world.checked("policy4.json");
     let windows = &policy4.platforms[&Platform::Windows];
@@ -3570,4 +3604,97 @@ fn the_archive_is_kept_apart() {
         write.stderr
     );
     assert_eq!(fs::read_dir(&default).unwrap().count(), 1);
+}
+
+/// The App Store gate (auto-deploy design 3-7 T3) from the command line: a raise of iOS names
+/// the App Store's version or says there is none, and with an App Store release in the build
+/// repository's record `--no-appstore` is asked about at the signer's terminal.
+#[test]
+fn the_app_store_is_named_or_asked_about() {
+    let world = World::new("appstore");
+    assert_eq!(world.first_draft("draft1.json").code, 0);
+    let signed = world.sign("signing-1.key", "draft1.json", "policy1.json");
+    assert_eq!(signed.code, 0, "{}", signed.all());
+    let raise = |more: &[&str], out: &str| {
+        let mut args = vec![
+            "--prev",
+            "policy1.json",
+            "--hold",
+            "windows",
+            "--hold",
+            "android",
+            "--min",
+            "ios=1.6.0",
+            "--grace-days",
+            "7",
+            "--ios-valid",
+            &world.ios_build,
+            "--out",
+            out,
+        ];
+        args.extend_from_slice(more);
+        world.policy(&args)
+    };
+    let refused = raise(&[], "draft-none.json");
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    assert!(refused
+        .stderr
+        .contains("--appstore-live <App Store에 나온 버전>이나 --no-appstore"));
+    let refused = raise(&["--appstore-live", "1.6"], "draft-bad.json");
+    assert!(
+        refused.stderr.contains("--appstore-live: 버전은"),
+        "{}",
+        refused.all()
+    );
+    // the record says the App Store has released 1.6.0
+    fs::write(
+        world.dir.join("gh/store-releases.txt"),
+        "# store version build action track source-commit date(UTC) note\n\
+         appstore 1.6.0 262740100 release - 1111111111111111111111111111111111111111 2026-10-02 store #1\n",
+    )
+    .unwrap();
+    let made = raise(&["--no-appstore"], "draft2.json");
+    assert_eq!(made.code, 0, "{}", made.all());
+    assert!(made
+        .stdout
+        .contains("출시 기록에 App Store 출시(1.6.0)가 있는데 --no-appstore"));
+    assert!(world
+        .read("gh/calls.txt")
+        .contains("contents/store-releases.txt"));
+    let refused = world.sign_as(
+        "signing-1.key",
+        "draft2.json",
+        "policy2.json",
+        &[("yes를 입력하세요: ", "no")],
+    );
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    assert!(
+        refused
+            .tty
+            .contains("  - ios: 출시 기록에 App Store 출시(1.6.0)가 있는데 App Store 버전 없이"),
+        "{}",
+        refused.tty
+    );
+    assert!(!world.dir.join("policy2.json").exists());
+    // the App Store's version named: no question about the record, the signer compares the
+    // version with the store run's status, and the entry carries it
+    let made = raise(&["--appstore-live", "1.6.0"], "draft3.json");
+    assert_eq!(made.code, 0, "{}", made.all());
+    assert!(made.stdout.contains("App Store 1.6.0"), "{}", made.stdout);
+    let signed = world.sign_yes("signing-1.key", "draft3.json", "policy3.json");
+    assert_eq!(signed.code, 0, "{}", signed.all());
+    assert!(
+        signed
+            .tty
+            .contains("  - ios: App Store 버전을 처음으로 1.6.0(으)로 적습니다")
+            && !signed.tty.contains("출시 기록"),
+        "{}",
+        signed.tty
+    );
+    assert_eq!(
+        world.checked("policy3.json").platforms[&Platform::Ios]
+            .appstore
+            .as_deref(),
+        Some("1.6.0")
+    );
 }

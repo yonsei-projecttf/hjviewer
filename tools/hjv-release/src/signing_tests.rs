@@ -66,6 +66,7 @@ fn declaration_draft() -> Draft {
         root: None,
         root_p: Some(root_p_of("e2-s1")),
         prev: Some(vector("accepted/e1-s3.json")),
+        appstore_release: None,
         notes: Vec::new(),
     }
 }
@@ -162,6 +163,7 @@ fn a_policy_without_a_declaration_follows_the_archive() {
         root: None,
         root_p: None,
         prev: Some(vector("accepted/e1-s2.json")),
+        appstore_release: None,
         notes: Vec::new(),
     };
     assert!(plan(&next, &keys, &archive, None, now).is_ok());
@@ -186,6 +188,7 @@ fn a_policy_without_a_declaration_follows_the_archive() {
             .root,
         root_p: None,
         prev: Some(vector("accepted/e2-s1.json")),
+        appstore_release: None,
         notes: Vec::new(),
     };
     let err = plan_err(&carried, &keys, &archive, None, t("2026-10-07T03:00:00Z"));
@@ -206,6 +209,7 @@ fn who_may_sign() {
         root: None,
         root_p: None,
         prev: Some(vector("accepted/e1-s1.json")),
+        appstore_release: None,
         notes: Vec::new(),
     };
     let now = t("2026-10-02T03:00:00Z");
@@ -292,6 +296,7 @@ fn what_an_entry_blocks_is_said() {
         root: None,
         root_p: None,
         prev: Some(vector("accepted/e1-s1.json")),
+        appstore_release: None,
         notes: Vec::new(),
     };
     let plan = plan(&next, &keys, &archive, None, t("2026-10-02T03:00:00Z")).unwrap();
@@ -303,7 +308,14 @@ fn what_an_entry_blocks_is_said() {
         plan.summary
     );
     assert!(plan.summary.iter().any(|l| l.contains("유예 끝까지")));
-    assert!(plan.dangers.is_empty(), "{:?}", plan.dangers);
+    // the vectors' history has no Google Play entry: the raise of android is T2's danger
+    assert_eq!(plan.dangers.len(), 1, "{:?}", plan.dangers);
+    assert!(
+        plan.dangers[0]
+            .starts_with("android: android_play 항목 없이 android의 min을 올립니다(--no-play)"),
+        "{:?}",
+        plan.dangers
+    );
     // signed a week later, the deadline is still ahead; signed after it, it is a danger
     let late = super::plan(&next, &keys, &archive, None, t("2026-10-17T00:00:00Z")).unwrap();
     assert!(
@@ -387,6 +399,7 @@ fn edited_next(change: impl FnOnce(&mut Policy)) -> Draft {
         root: None,
         root_p: None,
         prev: Some(vector("accepted/e1-s2.json")),
+        appstore_release: None,
         notes: Vec::new(),
     }
 }
@@ -497,6 +510,7 @@ fn hand_edited_drafts() {
             root: None,
             root_p: None,
             prev: None,
+            appstore_release: None,
             notes: Vec::new(),
         }
     };
@@ -594,6 +608,7 @@ fn a_record_pins_keys_not_numbers() {
         root: None,
         root_p: None,
         prev: Some(vector("accepted/e1-s2.json")),
+        appstore_release: None,
         notes: Vec::new(),
     };
     let now = t("2026-10-05T03:00:00Z");

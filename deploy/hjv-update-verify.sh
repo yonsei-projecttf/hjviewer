@@ -388,7 +388,8 @@ def json_value(text, what):
         raise NotCanonical("%s is not JSON (%s)" % (what, e))
 
 
-# The member order, type and presence of every text, exactly as hjv-release writes it (spec 1-3).
+# The member order, type and presence of every text, exactly as hjv-release writes it (spec 1-3;
+# `appstore`, the iOS entry's App Store version, since hjv-release of 1.9.1: the apps skip it).
 # A member a text does not name is not canonical, and so is a text without a member the tool always
 # writes: a declaration has all six (the term `canonical`, decided 2026-10-14; the vectors
 # declaration-without-base and declaration-without-revoked).
@@ -397,7 +398,7 @@ ENTRY = (("min", "str", True), ("latest", "str", True), ("grace_until", "str", F
          ("grace_min", "str", False), ("os_min", "str", False), ("notes_ko", "str", False),
          ("source", "str", False), ("package", PACKAGE, False), ("auto_install_after", "str", False),
          ("move_to_play", "true", False), ("version_code", "int", False),
-         ("testflight_build", "str", False))
+         ("testflight_build", "str", False), ("appstore", "str", False))
 POLICY = (("v", "int", True), ("epoch", "int", True), ("seq", "int", True), ("issued", "str", True),
           ("server", "str", True), ("contact_ko", "str", False),
           ("platforms", tuple((name, ENTRY, False) for name in NAMES), True))

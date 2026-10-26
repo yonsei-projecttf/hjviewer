@@ -8,7 +8,8 @@
 //! - private keys: keyfile.rs and age.rs (the encrypted key file), tty.rs (the passphrase, from
 //!   the terminal only), signing.rs;
 //! - making a policy: release.rs and provenance.rs (the builds and where they came from),
-//!   make.rs (the next policy and what it may not do), draft.rs (what goes to the signer);
+//!   make.rs (the next policy and what it may not do), draft.rs (what goes to the signer),
+//!   store.rs (the Play track and the stores' release record);
 //! - the server's side: publish.rs (what is sent), hbbs.rs (hbbs's threshold and door 2),
 //!   check.rs (the weekly look).
 
@@ -29,6 +30,7 @@ pub mod provenance;
 pub mod publish;
 pub mod release;
 pub mod signing;
+pub mod store;
 pub mod time;
 pub mod trust;
 pub mod tty;

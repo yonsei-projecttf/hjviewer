@@ -74,15 +74,18 @@ HJV_POLICY_FLOOR=1:0
 
 1. (에이전트) `client/version.env`를 올리고, `HJV_POLICY_FLOOR`를 **서버에 걸린 정책**의 위치로 바꿉니다: `curl -s https://<서버>/api/hjv/version -o /tmp/live.json` 뒤 `hjv-release floor --live /tmp/live.json`이 그 줄을 출력합니다. 보관소에 있는 파일만 받고, 이 빌드의 키 집합(과 버전)을 보관소에 기록합니다. push하고 빌드 저장소에서 빌드합니다.
 2. (에이전트) 산출물을 `build/release-<버전>/`에 받습니다(`gh run download <실행 번호> -R <빌드 저장소> -D build/release-<버전>`). 산출물 디렉터리마다 `release.json`이 있어야 합니다(아래 "출처 확인"). 검토하고 올린 커밋에 태그 `client-<버전>`을 만듭니다.
-3. (에이전트) 초안을 만듭니다. `--prev`는 보관소의 마지막 파일입니다(X11). **새 패키지가 든 초안은 빌드한 지 7일 안에 만듭니다.** `policy`가 그 실행의 산출물을 GitHub에서 직접 받아 패키지와 대조하는데, 산출물은 7일 뒤 지워집니다.
+3. (에이전트) **패키지 정책**의 초안을 만듭니다: Windows와 APK(`android`). `--prev`는 보관소의 마지막 파일입니다(X11). **새 패키지가 든 초안은 빌드한 지 7일 안에 만듭니다.** `policy`가 그 실행의 산출물을 GitHub에서 직접 받아 패키지와 대조하는데, 산출물은 7일 뒤 지워집니다. 스토어(`android_play`, `ios`)는 스토어가 내준 뒤의 **스토어 정책**(7번)에서 올립니다. 스토어에 아직 없는 버전으로 `latest`를 올리면 스토어 설치본이 업데이트가 없는 스토어로 가고, `min`을 올리면 업데이트할 길 없이 막힙니다(자동 배포 설계 3-1).
 
    ```sh
    hjv-release policy --prev ~/hjviewer-policy-archive/policy-e1-s7.json \
-       --release-dir build/release-1.6.1 \
-       --auto-after windows=+2d --notes build/release-1.6.1/notes.txt \
-       --ios-valid 263120249 \
+       --release-dir build/release-1.9.1 \
+       --auto-after windows=+2d --notes build/release-1.9.1/notes.txt \
+       --hold ios \
        --out build/policy/draft-8.json
    ```
+
+   - **App Store 제출이 열려 있는 동안(제출부터 승인·거절까지) 패키지 정책은 `--hold ios`로 냅니다.** 심사 기기는 샌드박스 영수증이라 TestFlight 화면을 봅니다. 정책의 `ios`가 심사 중인 버전보다 앞서면 배너와 [TestFlight 열기]가 나와 심사지침 2.2에 걸릴 수 있습니다(설계 3-3 규칙 2). 초안 전에 `store.yml ios status`가 출력하는 심사 중인 버전과 대조합니다.
+   - `android_play`는 그대로 둡니다. 그 항목이 없는 정책에서 `android`의 `min`을 올리면 Play 설치본이 앱 안 안내 없이 막히므로 도구가 거부합니다(T2, 아래 "스토어 관문"). 첫 `android_play`는 1.9.1이 Play에 게시된 뒤의 스토어 정책에서 넣습니다(설계 9절 1번). 그때까지 패키지 정책은 `android`의 `min`을 올리지 않습니다.
 
 4. **(사용자)** 터미널에서 서명합니다. 도구가 바뀌는 내용을 보여 주고 키 비밀번호를 묻습니다. 요약의 "새 패키지" 줄에 나온 SHA-256을 GitHub의 빌드 실행 요약에 적힌 값과 눈으로 대조합니다. `sign`은 빌드도 네트워크도 보지 않으므로, 초안에 적힌 해시가 그 빌드의 것인지는 이 대조가 마지막 확인입니다.
 
@@ -103,6 +106,22 @@ HJV_POLICY_FLOOR=1:0
    ```
 
 6. 사용자가 승인하면 `build/publish-1.6.1/`을 서버의 자기 홈으로 보내고, 허브-운영에게 런북 8-2의 네 값을 알려 줍니다: 버전, 위치(`policy-e<세대>-s<seq>.json`의 `e<세대>-s<seq>`), 정책 파일의 SHA-256(`sign`이 출력), `--relaxes`(보통 없음). `incoming/`은 root:root 0700이라 바로 보낼 수 없고, 허브-운영이 홈의 디렉터리를 `incoming/<버전>-<위치>`로 옮깁니다. 서버에서는 서명과 해시를 다시 확인한 뒤 **패키지를 먼저, 정책을 나중에** 넣습니다(`docs/server-runbook.md` 8-2). 서버 확인에 `--relaxes`는 루트 선언으로 일부러 완화할 때만 줍니다(`sign`이 목록을 출력).
+7. (에이전트) **스토어 정책**: 스토어가 그 버전을 내준 뒤 `android_play`와 `ios`를 올립니다. 근거는 스토어 실행의 `status`입니다(실행 요약 한 줄과 JSON 산출물): Android는 `store.yml android status`가 Play `alpha` 트랙의 그 versionCode를 게시(completed)로 보일 때, iOS는 `store.yml ios status`가 그 버전을 `READY_FOR_DISTRIBUTION`으로 보일 때입니다. 도구는 스토어를 조회하지 않고, 운영자가 본 값을 옵션으로 받습니다. 새 패키지가 없으므로 7일 규칙과 상관없습니다. `policy`가 Android 산출물의 버전과 versionCode를 `build/release-<버전>/`에서 읽으므로, 그 디렉터리는 스토어 정책을 낼 때까지 지우지 않습니다.
+
+   ```sh
+   hjv-release policy --prev ~/hjviewer-policy-archive/policy-e1-s8.json \
+       --release-dir build/release-1.9.1 \
+       --play-live 263122249 --min android_play=<android의 min> \
+       --appstore-live 1.9.1 \
+       --out build/policy/draft-9.json
+   ```
+
+   - `--play-live <versionCode>`: Play `alpha` 트랙에 게시된 versionCode입니다. `android_play`의 `latest`가 그 버전이 됩니다. 첫 `android_play` 항목은 `--min android_play=<android의 min>`으로 `android`와 같은 수준에 넣습니다(5-5).
+   - `--appstore-live <버전>`: App Store에 나온 버전입니다. 새 버전이면 도구가 아는 빌드의 버전이어야 합니다. `--ios-valid`로 확인한 빌드의 버전이거나, `--release-dir`에 그 버전의 iOS 산출물(`release.json`)이 있어야 합니다. 후자이면 `ios`의 `latest`가 그 버전으로 오르고, `testflight_build`도 그 산출물의 빌드가 됩니다. 항목에는 `appstore`로 적힙니다. 그 뒤로 `ios`의 `latest`와 `min`은 그 값을 넘지 못합니다(T3). App Store에 그 버전이 나온 뒤에는 TestFlight 빌드 확인(`--ios-valid`)이 필요 없습니다. `sign`은 새 App Store 버전을 `status`와 대조하라며 `yes`를 묻습니다. 서명한 값은 루트 선언(`--relax`) 없이는 내리지 못합니다.
+   - 스토어 항목의 `min`을 올릴 때는 기본 7일 유예를 둡니다. 스토어 설치본은 휴대폰의 자동 업데이트 설정을 따르기 때문입니다. 0일은 보안 문제처럼 꼭 막아야 할 때만 씁니다(설계 3-5).
+   - 두 스토어가 빌드 후 7일 안에 게시되면 패키지 정책과 한 정책으로 합쳐도 됩니다(설계 9절 14번).
+   - 서명과 게시는 4-6번과 같습니다.
+   - hbbs의 `MIN`은 모든 항목의 가장 낮은 `min`이므로, 서버 쪽 기준을 새 버전으로 올리는 것은 두 스토어가 모두 그 버전을 내준 뒤입니다(4장).
 
 ### 첫 정책 (1.6.1, 3장 5-1)
 
@@ -120,7 +139,8 @@ hjv-release policy --prev none --server rd.example.com --release-dir build/relea
 - `--allow-input check_only`: 빌드 저장소의 `build.yml`이 `check_only` 입력을 넘기는데, 도구가 아직 그 입력을 모릅니다(`docs/ci.md`의 "릴리스 기록"). 도구는 모르는 입력을 넘기는 `build.yml`을 거부하므로 이 옵션으로 허락합니다(아래 "출처 확인" 3번).
 - `--latest ios=1.6.1`: TestFlight 빌드 262871353은 출시 실행(릴리스 디렉터리의 iOS 산출물은 빌드 262871309)이 아니라 같은 커밋의 iOS만 돌린 실행에서 왔습니다. 도구는 `--ios-valid`의 빌드 번호를 릴리스 디렉터리의 iOS 산출물과 맞춰 버전을 알아내므로, 다른 실행의 빌드면 버전을 `--latest ios=V`로 줍니다.
 - 유예: 첫 정책의 항목은 유예를 물을 때만(`--grace-days`, `--grace-until`) 유예 쌍을 받습니다(아래 표의 e, `grace_min` 0.0.0). 이 정책은 묻지 않았으므로 서버에 넣는 즉시 1.6.1 미만을 막습니다. 정책을 받은 1.6.x PC는 1.6.1 미만의 컨트롤러(1.5.x와 1.6.0)를 바로 거절하고, 1.6.0 앱은 업데이트 화면으로 바뀝니다. 1.5.1 앱은 정책을 읽지 않습니다. Android 5.1~6.0 휴대폰은 1.6.1을 설치할 수 없습니다(minSdk 24. 정책의 `os_min`도 24).
-- `--play-live`는 Google Play 내부 트랙에 그 버전이 출시(completed)된 뒤에만 줍니다. Play에는 아직 완료된 출시가 없어서 이 정책에는 `android_play` 항목이 없습니다. 나온 뒤의 정책에서 넣습니다(5-5). `android_play` 항목이 없는 동안에는 Play로 설치한 앱이 앱 안 안내 없이 PC에서 `android` 항목의 최소 버전으로, hbbs에서 `MIN`으로 거절됩니다. `policy`가 "바뀌는 것"에 그렇게 알립니다.
+- `--play-live`는 Google Play의 비공개 테스트 트랙 `alpha`(스토어 실행이 올리는 트랙, 소유자 결정 2026-10-26)에 그 버전이 게시(completed)된 뒤에만 줍니다. 첫 정책 때는 Play에 출시가 없어서 이 정책에는 `android_play` 항목이 없습니다. 지금(2026-10-26) `alpha`에는 소유자가 손으로 출시한 1.9.0이 있고, 1.9.1부터 스토어 실행이 같은 트랙에 올립니다. 첫 `android_play` 항목은 1.9.1이 `alpha`에 게시된 뒤의 스토어 정책에서 넣습니다(2장 7번, 5-5). `android_play` 항목이 없는 동안에는 Play로 설치한 앱이 앱 안 안내 없이 PC에서 `android` 항목의 최소 버전으로, hbbs에서 `MIN`으로 거절됩니다. `policy`가 "바뀌는 것"에 그렇게 알리고, 그동안 `android`의 `min`을 올리는 정책은 `--no-play` 없이는 만들지 않습니다(T2).
+- 1.9.1의 도구로 같은 정책을 만들면 `--no-appstore`도 줍니다. iOS 항목을 새로 두거나 올리는 정책은 App Store에 나온 버전(`--appstore-live`)을 말하거나 아직 없다고 말해야 합니다(T3).
 - `--auto-after windows=none`: 1.5.1 PC에는 업데이트 기능이 없어 1.6.1은 손으로 설치하므로, 이 정책에는 무인 설치 시각을 두지 않습니다. 다만 최소 버전 아래인 1.6.0 시험 설치본 PC(내 기기 목록에 있는 설치된 PC)는 1.6.1을 강제로 설치합니다. `none`은 강제 설치를 멈추지 않습니다(5-6). 무인 설치 시각을 처음 넣은 정책은 1.7.0의 seq 3입니다(`--auto-after windows=+2d`, 2026-10-17 22:13(KST)부터). 그때 계정에 묶인 1.6.1 PC는 운영자 PC 하나였고, 사용자 결정으로 그 PC를 [지금 업데이트]로 먼저 올렸으므로 무인 설치가 실제로 도는 것은 다음 버전부터입니다. 그때부터는 이 옵션을 주지 않으면 초안을 만든 때부터 2일 뒤에 고리별로 설치를 시작합니다(게시가 늦어지면 그만큼 짧아짐).
 - seq 1의 `sign`이 보관소를 시작하고(`policy-e1-s1.json`) 1.6.1의 키 집합을 기록했습니다. 서버에 넣은 뒤(런북 8-2) 리허설(3장 5-14)을 합니다. 서버에 넣은 것은 2026-10-14 23:30쯤(KST)입니다.
 - **따로 강제하는 정책은 없습니다.** 옛 계획의 둘째 정책(seq 2: 모든 항목의 최소 1.6.0, 유예 14일) 가운데 남은 것은 hbbs의 최소 컨트롤러 파일(4장, 런북 8-3)뿐입니다. 이 정책으로 만든 파일은 `MIN=1.6.1`, `FROM`=정책의 발행 시각이라, 넣는 즉시 서버를 거치는 1.5.x 컨트롤러를 모두 거절합니다. 넣을지와 때는 사용자가 따로 정합니다. 문 2(런북 8-4)도 따로 정합니다. 2026-10-14에는 사용자 결정으로 둘 다 했습니다: 문 2를 23:24(KST)에 열고(2026-11-30 0시까지), S1 문구의 hbbs 파일을 23:43에 넣었습니다. 런북 7-9의 관문과 사용자 안내 전입니다.
@@ -164,8 +184,11 @@ hjv-release policy --prev none --server rd.example.com --release-dir build/relea
 | `--withdraw-package P` | P(windows, android)의 패키지를 거둬들임: 앱 안 내려받기, 무인 설치, 강제 설치가 멈춥니다. 완화가 아니어서 서명 키로 합니다. 더 높은 `latest`가 나올 때까지 패키지 없이 갑니다 |
 | `--os-min P=V` | `latest`가 도는 가장 낮은 OS(ios `13.0`, android API 수준 `24`, windows `10`) |
 | `--contact TEXT`, `--notes [P=]FILE` | 안내 문구와 알림 글. URL은 넣을 수 없습니다. 1.9.0부터 앱은 연락처를 "HJViewer 관리자: TEXT"로 보이므로(업데이트 화면, 정보, 수락 창과 P2·P3) TEXT는 연락처 자체만 씁니다(예: 메일 주소) |
-| `--ios-valid BUILD` | 운영자가 TestFlight에서 확인한 빌드 번호(VALID, 내부 그룹에서 시험 중) |
-| `--play-live VERSIONCODE` | 운영자가 Play 내부 트랙에서 출시(completed)를 확인한 versionCode |
+| `--ios-valid BUILD` | 운영자가 TestFlight에서 확인한 빌드 번호(VALID, 내부 그룹에서 시험 중). `ios` 항목에 App Store 버전(`appstore`)이 있으면 선택이고, 그 빌드가 80일을 넘어도 경고만 합니다 |
+| `--appstore-live x.y.z` | 운영자가 App Store에서 확인한 버전(`store.yml ios status`의 `READY_FOR_DISTRIBUTION`). `ios` 항목의 `appstore`가 됩니다. 새 버전은 새 `latest`와 같아야 합니다. `--ios-valid`가 없으면 `--release-dir`의 그 버전 iOS 산출물로 `latest`와 `testflight_build`가 따라 오릅니다. 내리는 것은 `--relax`와 함께만 됩니다(T3) |
+| `--no-appstore` | App Store에 아직 나온 버전이 없음: `appstore`가 없는 동안 `ios`를 새로 두거나 `latest`·`min`을 올릴 때 `--appstore-live` 대신 줍니다. 출시 기록에 App Store 출시가 있으면 초안에 적히고 `sign`이 `yes`를 묻습니다. 올리지 않는 정책이나 `appstore`가 있는 항목에는 줄 수 없습니다(T3) |
+| `--play-live VERSIONCODE` | 운영자가 Play `alpha` 트랙에서 게시(completed)를 확인한 versionCode(`store.yml android status`) |
+| `--no-play` | `android_play` 항목 없이 `android`의 `min`을 올림. Play에 사용자가 없을 때만 씁니다. Play `alpha`에 테스터가 있는 동안은 쓰지 않습니다. 그런 정책이 아니면 줄 수 없습니다(T2) |
 | `--move-to-play`, `--no-move-to-play` | 사이드로드 Android 앱에 Play로 옮기기 안내 |
 | `--relax`, `--drop P` | 덜 요구하는 정책: 새 루트 선언(새 세대)과 함께. `--drop`은 항목을 뺌(`--relax`를 뜻함) |
 | `--revoke-key N` | 서명 키 N(1-100) 폐기: 새 루트 선언(새 세대). 루트 키 번호는 폐기하지 않습니다 |
@@ -173,7 +196,7 @@ hjv-release policy --prev none --server rd.example.com --release-dir build/relea
 | `--live FILE` | 서버의 정책(`https://<서버>/api/hjv/version`에서 받은 파일). 위 넷에는 꼭 줍니다. `--prev`와 바이트까지 같고 보관소에 있어야 합니다(X10) |
 | `--root-signs-policy` | 루트 키가 정책에도 서명. 기록된 모든 빌드가 박은 서명 키가 없을 때만(X9) |
 | `--seq N` | seq를 직접 정함. 보통은 쓰지 않습니다. 이전 정책에서 1000 넘게 띄울 수 없습니다 |
-| `--repo DIR`, `--build-repo`, `--public-repo`, `--allow-input NAME`, `--attest` | 출처 확인 설정 |
+| `--repo DIR`, `--build-repo`, `--public-repo`, `--allow-input NAME`, `--attest` | 출처 확인 설정. `--build-repo`의 출시 기록(`store-releases.txt`)도 읽습니다(T3) |
 
 `--held`는 없어졌습니다. 완화가 늘 새 세대의 루트 선언이므로, 꺼져 있던 앱도 선언을 먼저 받고 그 기준과 비교합니다.
 
@@ -196,6 +219,23 @@ hjv-release policy --prev none --server rd.example.com --release-dir build/relea
 | X12 | 기록된 키 집합 가운데 박지 않은 것이 있는 키로 서명(정책의 서명 키, 정책에 서명하는 루트 키, 새 선언의 루트 키). 기록되지 않은 키 집합의 키 파일로 `sign` | 다른 키. 서명 키가 없으면 `--root-signs-policy`. 관리자 보고에 그 빌드가 없으면 기록을 지움. 새 빌드의 키 파일이면 `floor --live`로 먼저 기록 |
 
 그 밖에: 위치는 직전 + 1(보관소 기준), 새 선언은 그 위의 세대 seq 1입니다. 직전 정책은 서명과 형식을 다시 확인합니다. 정책에는 어떤 URL도 넣지 않습니다.
+
+### 스토어 관문 (T2, T3)
+
+정책은 버전만 말하고, 스토어 설치본에는 스토어가 업데이트를 배달합니다. 그래서 스토어가 내주지 않은 버전으로 스토어 설치본을 보내거나 막는 정책을 도구가 만들지 않습니다(자동 배포 설계 3-7). 도구는 스토어를 조회하지 않습니다. 운영자가 스토어 실행의 `status`로 본 값을 옵션으로 줍니다.
+
+| | 규칙 | 빠져나갈 길 |
+|---|---|---|
+| T2 | `android_play` 항목이 없는 정책에서 `android`의 `min`을 올리면(새 `android` 항목 포함) 거부합니다. Play 설치본은 PC에서 `android` 항목으로, hbbs에서 `MIN`으로 앱 안 안내 없이 막힙니다(seq 5의 모양) | 그 정책에 `--play-live`로 `android_play`를 넣음. Play에 사용자가 없을 때만 `--no-play` |
+| T3-1 | `ios`에 `appstore`가 없을 때 `ios`를 새로 두거나 `latest`·`min`을 올리면 `--appstore-live V`나 `--no-appstore`가 있어야 합니다. 내리는 것(`--relax`)은 App Store 설치본에 덜 요구하므로 묻지 않습니다 | 둘 중 하나 |
+| T3-2 | `--no-appstore`인데 비공개 저장소의 출시 기록(`--build-repo`의 `store-releases.txt`, `gh api`로 읽음)에 `appstore … release` 줄이 있으면 초안에 그 버전을 적고(`appstore_release`), `sign`이 `yes`를 묻습니다. 첫 App Store 정책을 빠뜨리는 실수를 막습니다. 파일이 404이면 `gh api repos/<--build-repo>`로 저장소를 확인합니다. 저장소가 보일 때만 기록 없음으로 보고 보고에 적습니다. GitHub은 권한 없는 저장소와 없는 저장소에도 404를 주기 때문입니다. 저장소도 보이지 않거나, 기록을 읽지 못하거나, 형식에 맞지 않는 줄이 하나라도 있으면 초안을 만들지 않습니다. 형식은 스토어 `play`·`appstore`, 버전, 숫자 빌드 번호, 동작 `upload`·`submit`·`release`입니다 | `--appstore-live`로 다시 만듦. 정말 App Store를 빼는 것이면 `yes` |
+| T3-3 | `appstore`가 생긴 뒤에는 `latest`(그래서 `min`도)가 그 값을 넘지 못하고, `latest`·`min`을 올리는 관문은 `--appstore-live`입니다(`--no-appstore`는 거부). `--ios-valid`는 선택이고, TestFlight 빌드가 80일을 넘어도 경고만 합니다. 같은 버전의 새 빌드는 만들 수 없고 새 버전의 빌드는 `latest`를 App Store 위로 올리므로, 그대로 두면 다음 출시까지 `ios`의 `min`을 올릴 수 없기 때문입니다 | App Store에 그 버전이 나온 뒤 `--appstore-live` |
+| T3-4 | 새 App Store 버전(지금 `appstore`와 다른 `--appstore-live`)은 새 `latest`와 같아야 합니다. 잘못 친 값(`1.9.10`)이나 심사 중인 버전이 천장이 되지 않게 합니다. `--ios-valid` 없이 `latest`를 바꿀 때는 `--release-dir`에 그 버전의 iOS 산출물이 있어야 하고, 그 빌드가 `testflight_build`가 됩니다. `sign`은 새 App Store 버전마다 `status`와 대조하라며 `yes`를 묻습니다 | `--ios-valid <그 빌드>` 또는 그 버전의 산출물 |
+| T3-5 | `appstore`는 한 번 생기면 빠지지 않고, 루트 선언 없이 내려가지 않습니다. `sign`도 초안마다 다시 봅니다 | 잘못 적은 값은 `--relax --live <지금 정책> --appstore-live <맞는 버전>`(`sign`이 `yes`를 물음). 항목째 빼는 `--drop ios`도 루트 선언입니다 |
+
+- 앱은 `appstore`를 모르는 필드로 건너뜁니다(1.6.0부터의 규칙). 공유 벡터 `ios-appstore-member`가 그것을 보입니다. hjv-api는 `windows`·`android`만 읽습니다.
+- **서버의 정책 확인 스크립트(`deploy/hjv-update-verify.sh`)는 1.9.1의 것이어야 `appstore`가 든 정책을 받습니다.** 옛 스크립트는 그 정책을 `Canonical`로 거부합니다. 첫 `--appstore-live` 정책을 넣기 전에 서버의 스크립트를 1.9.1의 것으로 바꿉니다(허브-운영).
+- App Store 제출이 열려 있는 동안의 규칙(심사 중인 버전 이하)은 도구가 아직 보지 않습니다. 패키지 정책을 `--hold ios`로 내는 절차로 지킵니다(2장 3번, 설계 3-7 T6).
 
 ### 출처 확인
 
@@ -235,11 +275,14 @@ hjv-release sign --key FILE [--key FILE] [--live FILE] --out FILE DRAFT
 - 아래는 목록으로 보여 주고 `yes`를 직접 입력해야 진행합니다.
   - **루트 키를 엶: "이 컴퓨터는 깨끗한 컴퓨터(3장 5-0)"**. 개발 PC에서는 루트 키를 열지 않습니다.
   - 서명 키 폐기, 새 세대(모든 앱이 이 기준을 앞으로 서명 키가 요구할 수 있는 바닥으로 받음: 항목별 기준, 완화하는 항목과 서버 확인의 `--relaxes` 줄), 루트 키가 서명하는 정책(어느 빌드 때문인지와 그 기기가 설치할 빌드), seq가 10 넘게 뛰는 것.
+  - 출시 기록에 App Store 출시가 있는데 App Store 버전 없이(`--no-appstore`) `ios`를 올리는 초안(T3-2).
+  - App Store 버전을 처음 적거나 올리는 초안: `store.yml ios status`의 `READY_FOR_DISTRIBUTION`과 대조합니다(T3-4). 루트 선언과 함께 내리는 초안(T3-5).
+  - `android_play` 항목 없이 `android`의 `min`을 올리는 초안(`--no-play`, 새 `android` 항목 포함): Play 설치본이 앱 안 안내 없이 막힙니다(T2).
   - **서버에 넣는 즉시 일어나는 일**: 유예 없이 `min`을 올림, 유예 없는 새 항목(첫 정책 제외), 남은 유예를 없애거나 앞당김, 이미 지난 유예 끝, 이미 지났거나 지금 시작하는 무인 설치, 패키지 거둬들임.
   - 유예 중의 올림: "`<옛 min>` 이상 `<새 min>` 미만은 지금 유예와 같은 `<기한>`까지만", 또는 더 늦은 기한이면 "유예 중이던 `<grace_min>` 이상 `<옛 min>` 미만이 바로 막힘".
   - 기한을 늦추거나 새로 두는 완화: "지금부터 `<기한>`까지 `<grace_min>` 이상 `<min>` 미만을 막지 않음".
 - 묻지 않고 알리는 것: 유예가 있는 항목마다 "지금은 `<grace_min>` 미만, `<기한>`부터는 `<min>` 미만을 막음", 키를 폐기하는 선언이면 정책의 모든 패키지(파일, 크기, SHA-256: 태그 노트와 대조).
-- `policy`가 만들지 않는 초안은 무엇을 입력해도 서명하지 않습니다: 같은 버전인데 패키지가 다른 초안, 새 무인 설치 시작이 정책 발행 시각보다 이른 초안.
+- `policy`가 만들지 않는 초안은 무엇을 입력해도 서명하지 않습니다: 같은 버전인데 패키지가 다른 초안, 새 무인 설치 시작이 정책 발행 시각보다 이른 초안, `ios`의 `appstore`를 빼거나, 루트 선언 없이 내리거나, `latest`보다 낮게 둔 초안(T3-5).
 - 초안은 만든 때보다 늦게 서명합니다. 그래서 새 유예 끝과 새 무인 설치 시작이 **지금부터** 얼마나 남았는지 보여 줍니다.
 - 필요한 키(서명 키, 루트 키, 또는 둘)를 먼저 알려 줍니다. `--key`로 준 파일 수가 다르면 비밀번호를 묻기 전에 멈춥니다. 정책은 서명 키로, 새 선언은 루트 키로 서명합니다. 둘 다 기록된 모든 키 집합이 박은 키여야 합니다(X12).
 - 키 파일의 공개키가 `client/update-keys.env`의 같은 번호와 다르면 서명하지 않습니다. 보관소에 키 집합 기록이 있는데 이 키 파일의 키 집합이 기록되지 않았으면 서명하지 않습니다(새 빌드의 키 파일이면 `floor --live`가 먼저 기록).
@@ -281,7 +324,7 @@ hjv-release sign --key FILE [--key FILE] [--live FILE] --out FILE DRAFT
 
 ### 5-3. 최소 버전 올리기 (유예 포함, 서명 키)
 
-- `policy --prev P --min all=1.6.1 [--grace-days 7] [--ios-valid B] [--play-live C]` → `sign --key <서명 키>`.
+- `policy --prev P --min all=1.6.1 [--grace-days 7] [--ios-valid B] [--appstore-live V|--no-appstore] [--play-live C|--no-play]` → `sign --key <서명 키>`. 스토어 항목은 스토어가 그 버전을 내준 뒤에만 올립니다(2장 7번, "스토어 관문").
 - `grace_min`에는 지금 강제 중인 최소 버전이 들어갑니다. 기한까지 그 미만은 막히고, 그 위는 유예를 받습니다.
 - hbbs: `hbbs-conf --current <서버 파일 사본>`을 돌리면, 올림 중에는 파일을 쓰지 않고 다시 돌릴 시각(새 기한)을 알려 줍니다. 그때 쓴 파일을 허브-운영이 설치합니다.
 - 기한 전에 또 올리면 기본은 같은 기한입니다. 더 늦은 기한을 주면 예고된 최소 버전이 바로 강제되고, 도구가 유예를 잃는 버전을 알려 주며 `yes`를 받습니다.
@@ -292,7 +335,7 @@ hjv-release sign --key FILE [--key FILE] [--live FILE] --out FILE DRAFT
 
 ### 5-5. 새 플랫폼 항목 (서명 키)
 
-- `android_play`는 `android`와 같은 수준으로 넣습니다(`--min android_play=<android의 min> --play-live C`). 기한 쌍은 도구가 복사합니다. Play에 그 버전이 나온 뒤에만 넣습니다. 더 낮게 넣거나 기한을 늦추면 완화이므로 루트 선언이 필요합니다.
+- `android_play`는 `android`와 같은 수준으로 넣습니다(`--min android_play=<android의 min> --play-live C`). 기한 쌍은 도구가 복사합니다. Play `alpha` 트랙에 그 버전이 게시된 뒤에만 넣습니다. 더 낮게 넣거나 기한을 늦추면 완화이므로 루트 선언이 필요합니다.
 - `windows`·`ios` 새 항목은 자기 유예를 받습니다(`grace_min` 0.0.0).
 
 ### 5-6. 무인 설치 비상 멈춤 (서명 키)
@@ -431,7 +474,7 @@ hjv-release check --door2 ~/hjviewer-secrets/door2/door2.conf --live /tmp/live.j
 
 `--policy`를 주지 않으면 보관소의 마지막 파일을 이 PC의 정책으로 봅니다. 경고가 있으면 종료 코드 3입니다.
 
-- TestFlight 빌드가 올린 지 75일을 넘음(90일에 만료되면 모든 아이폰 앱이 실행되지 않음).
+- TestFlight 빌드가 올린 지 75일을 넘음(90일에 만료되면 TestFlight로 설치한 아이폰 앱이 실행되지 않음. App Store에 나오기 전에는 모든 아이폰 앱이 TestFlight 설치본입니다).
 - 문 2의 `UNTIL`이 지났거나 7일 안에 닫힘.
 - 서버가 내주는 정책이 이 PC의 정책과 다름(옛 정책, 더 새로운 정책, 같은 위치의 다른 내용).
 - seq가 빌드 하한에서 1000에 가까워짐.
@@ -446,7 +489,7 @@ hjv-release check --door2 ~/hjviewer-secrets/door2/door2.conf --live /tmp/live.j
 
 - `hjv-release test-keys`: 이 저장소에 비밀키가 공개된 시험 키 목록. `--env`는 시험 빌드용 `update-keys.env` 내용입니다. 실서버 빌드는 이 키를 믿으면 안 됩니다.
 - `hjv-release test-sign --policy FILE [--root-decl FILE] [--key NAME] [--root-key NAME] [--out FILE]`: 손으로 쓴 정책 JSON(과 루트 선언)을 **시험 키로만** 서명합니다(E2E와 다른 묶음의 시험용). 터미널이 필요 없습니다. 실제 키를 받는 옵션은 없습니다. `--raw`는 규칙을 어긴 봉투를 일부러 만들 때 씁니다. 시험 키는 서명 키 1, 2, 루트 키 101, 102(시험 키 파일이 박음)와 어느 빌드도 박지 않는 3, 103입니다.
-- `tests/vectors/`: 앱이 받아야 하는 봉투와 거부해야 하는 봉투 141건(`manifest.json`, 거절 코드와 그 뒤의 상태까지), `covers.json`. `generate.py`가 참조 모델(`model.py`, 신뢰 규칙을 실행할 수 있게 옮긴 것)로 만들고 확인합니다. 클라이언트 코어와 서버 확인 스크립트가 같은 파일을 읽습니다. 설명은 `tests/vectors/README.md`.
+- `tests/vectors/`: 앱이 받아야 하는 봉투와 거부해야 하는 봉투 143건(`manifest.json`, 거절 코드와 그 뒤의 상태까지), `covers.json`. `generate.py`가 참조 모델(`model.py`, 신뢰 규칙을 실행할 수 있게 옮긴 것)로 만들고 확인합니다. 클라이언트 코어와 서버 확인 스크립트가 같은 파일을 읽습니다. 설명은 `tests/vectors/README.md`.
 - `tests/gh/`: 출처 확인 시험에 쓰는 기록된 `gh` 출력.
 
 ## 7. 파일 형식
@@ -459,12 +502,12 @@ hjv-release check --door2 ~/hjviewer-secrets/door2/door2.conf --live /tmp/live.j
 
 - 정책 서명은 `"hjv-version-v1"` + 0 바이트 + `p`의 바이트, 루트 선언 서명은 `"hjv-version-root-v1"` + 0 바이트 + `root.p`의 바이트에 대한 Ed25519 서명입니다(표준 base64, 64바이트, 88자).
 - `root`는 그 세대의 루트 선언이고, 세대 2 이상의 모든 봉투에 그대로 붙습니다(세대 1에는 선언이 없음).
-- 정책 텍스트: `v, epoch, seq, issued, server, contact_ko, platforms{windows, android, android_play, ios}`. 항목: `min, latest, grace_until, grace_min, os_min, notes_ko, source, package{file, size, sha256, build}, auto_install_after, move_to_play, version_code, testflight_build`. `grace_until`과 `grace_min`은 함께 있거나 함께 없고, `grace_min`은 `min`보다 낮습니다(`"0.0.0"` 가능).
+- 정책 텍스트: `v, epoch, seq, issued, server, contact_ko, platforms{windows, android, android_play, ios}`. 항목: `min, latest, grace_until, grace_min, os_min, notes_ko, source, package{file, size, sha256, build}, auto_install_after, move_to_play, version_code, testflight_build, appstore`. `appstore`(1.9.1부터, `ios`에만)는 App Store에 나온 버전이고 `latest` 이상입니다. 앱은 이 필드를 건너뛰고, 도구와 서버 확인 스크립트가 읽습니다(T3). `grace_until`과 `grace_min`은 함께 있거나 함께 없고, `grace_min`은 `min`보다 낮습니다(`"0.0.0"` 가능).
 - 루트 선언 텍스트: `v, server, epoch(2 이상), revoked(1-100, 오름차순, 누적), issued, base{windows, android, android_play, ios}`. base 항목은 `min, latest, grace_until, grace_min`이고, 그 세대 첫 정책의 요구 부분입니다. 도구가 서버의 정책에서 계산합니다.
 - 필드와 규칙은 `src/policy.rs`, 앱이 받는 규칙은 `src/trust.rs`(참조 모델 `tests/vectors/model.py`와 같은 판정)에 있습니다. 시각은 앱이 0001-9999년을 읽고, 도구는 2000-2199년만 쓰고 서명합니다(도구의 규칙).
 
 **키 파일**: age 형식(age-encryption.org/v1)의 비밀번호 암호화 파일입니다(scrypt 작업 계수 18). 이 도구가 없어도 `age -d`로 열 수 있습니다. 안에는 역할, 번호, 32바이트 seed, 공개키가 들어 있습니다.
 
-**초안**: `policy`가 만들고 `sign`이 읽는 JSON입니다. 서명할 텍스트 그대로와 직전 봉투, `policy`가 확인한 것을 적은 줄(notes)이 들어 있고 서명은 없습니다. notes는 한 줄에 300자까지, 20줄까지이고 한글과 ASCII 글자만 씁니다(공백은 하나씩). `sign`은 그 밖의 초안을 읽지 않습니다.
+**초안**: `policy`가 만들고 `sign`이 읽는 JSON입니다. 서명할 텍스트 그대로와 직전 봉투, `policy`가 확인한 것을 적은 줄(notes), T3-2의 `appstore_release`(있을 때만, 버전)가 들어 있고 서명은 없습니다. notes는 한 줄에 300자까지, 20줄까지이고 한글과 ASCII 글자만 씁니다(공백은 하나씩). `sign`은 그 밖의 초안을 읽지 않습니다.
 
 **게시 디렉터리**: `publish-dir`는 링크를 따라 쓰지 않습니다. `--out` 안에 링크나 보통 파일이 아닌 것이 있으면 아무것도 쓰기 전에 멈춥니다.

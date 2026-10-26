@@ -44,7 +44,8 @@ hjv-release: HJViewer의 서명된 버전 정책(최소 버전과 강제 업데�
            [--grace-days [P=]N]... [--grace-until [P=]T]... [--grace-min P=x.y.z]...
            [--auto-after windows=+2d|T|none] [--withdraw-package P]...
            [--os-min P=V]... [--contact TEXT] [--notes [P=]FILE]...
-           [--ios-valid BUILD] [--play-live VERSIONCODE] [--move-to-play|--no-move-to-play]
+           [--ios-valid BUILD] [--appstore-live x.y.z|--no-appstore] [--play-live VERSIONCODE] [--no-play]
+           [--move-to-play|--no-move-to-play]
            [--relax] [--revoke-key N]... [--new-epoch] [--live FILE] [--root-signs-policy] [--seq N]
            [--repo DIR] [--build-repo O/N] [--public-repo O/N] [--allow-input NAME]... [--attest]
                                                      다음 정책의 초안을 만듦(출처 확인 포함, 서명하지 않음)
@@ -355,6 +356,7 @@ fn policy(argv: &[String]) -> Result<i32, String> {
             "--contact",
             "--notes",
             "--ios-valid",
+            "--appstore-live",
             "--play-live",
             "--revoke-key",
             "--seq",
@@ -370,6 +372,8 @@ fn policy(argv: &[String]) -> Result<i32, String> {
         &[
             "--move-to-play",
             "--no-move-to-play",
+            "--no-appstore",
+            "--no-play",
             "--relax",
             "--new-epoch",
             "--root-signs-policy",
@@ -438,6 +442,12 @@ fn policy(argv: &[String]) -> Result<i32, String> {
             .push((target, read_text(path, "알림 글")?.trim().to_owned()));
     }
     request.ios_valid = args.one("--ios-valid")?.map(str::to_owned);
+    request.appstore_live = args
+        .one("--appstore-live")?
+        .map(|v| Version::parse(v).map_err(|e| format!("--appstore-live: {e}")))
+        .transpose()?;
+    request.no_appstore = args.flag("--no-appstore");
+    request.no_play = args.flag("--no-play");
     request.play_live = args
         .one("--play-live")?
         .map(|code| args::number("--play-live", code))
