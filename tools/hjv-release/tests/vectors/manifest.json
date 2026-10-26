@@ -2361,6 +2361,26 @@
       },
       "app_expect": "accept",
       "why": "a declaration without revoked: the app reads no revocation; not canonical, the tool always writes the list"
+    },
+    {
+      "name": "ios-appstore-member",
+      "file": "accepted/ios-appstore-member.json",
+      "after": [],
+      "binding": "app",
+      "canonical": true,
+      "expect": "accept",
+      "outcome": "taken",
+      "state_after": {
+        "epoch": 1,
+        "seq": 1,
+        "revoked": [],
+        "root_sha256": null,
+        "root_k": null,
+        "p_sha256": "d1f0100e955f6b047bd060967fa2e82763ae9b54b01c4bad1065fb94bdb9cb52",
+        "enforces": "policy",
+        "may_install": true
+      },
+      "why": "the iOS entry names the App Store's version (appstore, the tool's T3 gate, 1.9.1): the app skips the member it does not know"
     }
   ]
 }

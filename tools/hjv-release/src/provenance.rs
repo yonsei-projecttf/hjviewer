@@ -757,6 +757,8 @@ pub(crate) mod tests {
         pub built: Vec<(String, Vec<u8>)>,
         /// Or why the download fails.
         pub download: Result<(), String>,
+        /// The stores' release record (store.rs) in the build repository, if it has one.
+        pub store_record: Option<String>,
         pub asked: RefCell<Vec<String>>,
         /// The permission bits of the directories the downloads went to.
         pub download_modes: RefCell<Vec<u32>>,
@@ -772,6 +774,7 @@ pub(crate) mod tests {
                 attestation: Ok(()),
                 built: Vec::new(),
                 download: Ok(()),
+                store_record: None,
                 asked: RefCell::new(Vec::new()),
                 download_modes: RefCell::new(Vec::new()),
             }
@@ -807,6 +810,11 @@ pub(crate) mod tests {
                         ) =>
                 {
                     Ok(self.build_yml.clone().into_bytes())
+                }
+                ["api", "-H", "Accept: application/vnd.github.raw+json", "repos/yonsei-projecttf/hjviewer-private/contents/store-releases.txt"]
+                    if self.store_record.is_some() =>
+                {
+                    Ok(self.store_record.clone().unwrap_or_default().into_bytes())
                 }
                 ["attestation", "verify", _, "--repo", "yonsei-projecttf/hjviewer-private", "--signer-workflow", signer, "--signer-digest", SOURCE_SHA]
                     if *signer == format!("{PUBLIC}/{CALLED}") =>

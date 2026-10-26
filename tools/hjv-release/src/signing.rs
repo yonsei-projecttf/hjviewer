@@ -26,7 +26,8 @@ use crate::{
     keyfile::SecretKey,
     keys::{KeySet, Role},
     make::{
-        auto_off_warning, describe_changes, loosened_lines, relaxes_line, x4, SEQ_JUMP_TO_CONFIRM,
+        appstore_kept, auto_off_warning, describe_changes, loosened_lines, relaxes_line, x4,
+        SEQ_JUMP_TO_CONFIRM,
     },
     policy::{Platform, Policy, RootDecl},
     time::{self, DAY},
@@ -447,6 +448,27 @@ pub fn plan(
             policy.epoch,
             policy.seq,
             a.path.display()
+        ));
+    }
+
+    // the App Store (design 3-7 T3): once named, never dropped or lowered; a change of iOS
+    // without it while the store record has an App Store release is asked about
+    appstore_kept(old, &policy)?;
+    if let Some(released) = &draft.appstore_release {
+        if policy
+            .platforms
+            .get(&Platform::Ios)
+            .is_none_or(|ios| ios.appstore.is_some())
+        {
+            return Err(
+                "초안: appstore_release는 App Store 버전 없이 ios를 바꾸는 초안에만 있습니다(policy는 이런 초안을 \
+                 만들지 않습니다)"
+                    .to_owned(),
+            );
+        }
+        dangers.push(format!(
+            "ios: 출시 기록에 App Store 출시({released})가 있는데 App Store 버전 없이(--no-appstore) ios를 바꿉니다. \
+             App Store 설치본도 이 항목을 따릅니다. --appstore-live를 빠뜨린 것이 아닐 때만 진행하세요"
         ));
     }
 

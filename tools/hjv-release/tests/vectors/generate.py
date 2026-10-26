@@ -243,7 +243,7 @@ def fingerprint():
 PLATFORMS = ("windows", "android", "android_play", "ios")
 POLICY_ORDER = ("v", "epoch", "seq", "issued", "server", "contact_ko", "platforms")
 ENTRY_ORDER = ("min", "latest", "grace_until", "grace_min", "os_min", "notes_ko", "source", "package",
-               "auto_install_after", "move_to_play", "version_code", "testflight_build")
+               "auto_install_after", "move_to_play", "version_code", "testflight_build", "appstore")
 PACKAGE_ORDER = ("file", "size", "sha256", "build")
 DECL_ORDER = ("v", "server", "epoch", "revoked", "issued", "base")
 BASE_ORDER = ("min", "latest", "grace_until", "grace_min")
@@ -739,6 +739,8 @@ def recipes():
     r["declaration-without-revoked"] = raw_file(part(p4t, "signing-2"),
                                                 part(decl_text({k: v for k, v in d2().items() if k != "revoked"}),
                                                      "root-101", ROOT_DOMAIN))
+    # decided on 2026-10-26 (auto-deploy design 3-7, T3 and T4)
+    r["ios-appstore-member"] = envelope(with_entry(p1(), "ios", appstore="1.6.0"), "signing-1")
     return r
 
 
@@ -910,6 +912,7 @@ WHY = {
     "issued-year-0000": "issued in the year 0000, which no implementation reads (spec 1-2)",
     "package-build-1e400": "package.build is the number 1e400, beyond a 64-bit float: a shape error, as serde_json reads it (spec 1-3)",
     "declaration-without-revoked": "a declaration without revoked: the app reads no revocation; not canonical, the tool always writes the list",
+    "ios-appstore-member": "the iOS entry names the App Store's version (appstore, the tool's T3 gate, 1.9.1): the app skips the member it does not know",
 }
 
 
@@ -1286,7 +1289,7 @@ ENTRY_SCHEMA = {"min": "str", "latest": "str", "grace_until": "str", "grace_min"
                 "package": lambda x: rewrite(x, {"file": "str", "size": "int", "sha256": "str", "build": "str"},
                                              PACKAGE_ORDER),
                 "auto_install_after": "str", "move_to_play": "true", "version_code": "int",
-                "testflight_build": "str"}
+                "testflight_build": "str", "appstore": "str"}
 POLICY_SCHEMA = {"v": "int", "epoch": "int", "seq": "int", "issued": "str", "server": "str", "contact_ko": "str",
                  "platforms": lambda x: rewrite(x, {n: (lambda e: rewrite(e, ENTRY_SCHEMA, ("min", "latest")))
                                                     for n in PLATFORMS})}
@@ -1359,6 +1362,16 @@ def cases_of_2026_10_14(hist):
     ]
 
 
+def cases_of_2026_10_26(hist):
+    """The case of the App Store gate (auto-deploy design 3-7, T3 and T4, 2026-10-26): the tool
+    writes `appstore` last in an iOS entry; the app does not know the member and skips it, so the
+    policy is taken as any other. Written with the model's own constructors, as above."""
+    p11 = hist["e1-s1"].pol.text
+    return [M.Case("ios-appstore-member", [],
+                   M.Env(M.Part(1, M.policy(1, 1, M.H(1), p11.ents, notes="ios-appstore-member"))),
+                   M.VECTOR_BUILD, "Taken", None, None, "app", True)]
+
+
 # The model's cases whose `canonical` the definition of 2026-10-14 changes: a declaration without
 # one of its six members is not canonical.
 CANONICAL_2026_10_14 = {"declaration-without-base": False}
@@ -1369,7 +1382,7 @@ def concrete_cases():
     the cases of 2026-10-14."""
     cases, hist = M.fixed_cases()
     out = []
-    for c in cases + cases_of_2026_10_14(hist):
+    for c in cases + cases_of_2026_10_14(hist) + cases_of_2026_10_26(hist):
         if c.name in CANONICAL_2026_10_14:
             c = c._replace(canonical=CANONICAL_2026_10_14[c.name])
         for name, reason in EXPANDED.get(c.name, [(c.name, None)]):

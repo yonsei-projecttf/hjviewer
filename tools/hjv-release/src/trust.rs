@@ -778,6 +778,9 @@ pub fn describe(policy: &Policy) -> Vec<String> {
         if let Some(build) = &e.testflight_build {
             line.push_str(&format!(" · TestFlight 빌드 {build}"));
         }
+        if let Some(appstore) = &e.appstore {
+            line.push_str(&format!(" · App Store {appstore}"));
+        }
         if e.move_to_play {
             line.push_str(" · Play로 옮기기 안내");
         }

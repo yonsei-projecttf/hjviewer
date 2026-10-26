@@ -12,8 +12,9 @@ these keys; `hjv-release keys --production` and CI refuse them.
 
 ## How they are made
 
-`generate.py` makes every file here from the cases of spec 7-4 (the design's list) and the cases
-decided on 2026-10-14 (`cases_of_2026_10_14`). `model.py` is the executable reference model of the
+`generate.py` makes every file here from the cases of spec 7-4 (the design's list), the cases
+decided on 2026-10-14 (`cases_of_2026_10_14`) and the App Store member of 2026-10-26
+(`cases_of_2026_10_26`: `ios-appstore-member`, auto-deploy design 3-7 T3 and T4). `model.py` is the executable reference model of the
 rules, a **byte-identical copy** of the design's model (`generate.py` refuses to run when its
 SHA-256 is not the one it names). The verdicts are the
 model's: `generate.py` reads every envelope back from its bytes as an app does (spec 2-2, steps A
@@ -60,8 +61,11 @@ its case says `canonical: false`.
 - Policy text members, in this order, without spaces: `v, epoch, seq, issued, server, contact_ko,
   platforms{windows, android, android_play, ios}`; an entry: `min, latest, grace_until,
   grace_min, os_min, notes_ko, source, package{file, size, sha256, build}, auto_install_after,
-  move_to_play, version_code, testflight_build` (optional members left out; `move_to_play`
-  only as `true`; `grace_until` and `grace_min` both or neither, `grace_min` below `min`).
+  move_to_play, version_code, testflight_build, appstore` (optional members left out;
+  `move_to_play` only as `true`; `grace_until` and `grace_min` both or neither, `grace_min`
+  below `min`). `appstore` (the tool of 1.9.1 on, iOS only: the App Store's version) is a member
+  the apps of 1.6.0 on do not know and skip; `ios-appstore-member` holds every implementation to
+  taking such a policy, and the tool and the server check to reading it as canonical.
 - Declaration text: `v, server, epoch, revoked, issued, base{windows, android, android_play,
   ios}`, a base entry `min, latest, grace_until, grace_min`; `epoch` at least 2; `revoked`
   ascending and cumulative.
