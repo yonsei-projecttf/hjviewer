@@ -141,12 +141,14 @@ appstore 1.9.1 <빌드> release - <소스 커밋 40자리> 2026-11-02 store #15
 | App Store: 편집할 수 있는 버전의 번호가 다름 | | prepare가 번호를 바꿉니다. 이 버전이 심사 중·승인 상태면 바꾸지 않고 멈춥니다 |
 | App Store: 제출이 이미 열려 있음 | | submit이 그 제출을 다시 씁니다. 다른 항목이 있으면 멈춥니다 |
 | App Store: 응답을 받지 못한 submit·release | | 다시 돌리면 상태를 보고 성공으로 끝냅니다 |
+| App Store: 심사 거절 | Apple이 App Store Connect의 앱 심사에 까닭을 적습니다 | 다시 내기 전에 App Store Connect의 앱 심사(App Review)에서 그 제출의 메시지에 답합니다(무엇을 고쳤는지, 또는 설명). 다시 내는 길은 아래 두 줄(메타데이터 거절, 바이너리 거절)대로입니다 |
 | App Store: 메타데이터 거절 | 제출이 `UNRESOLVED_ISSUES` | `store/`를 고쳐 커밋 → `store.yml`의 SHA → submit(같은 제출을 다시 냄) |
 | App Store: 바이너리 거절 | 제출이 `UNRESOLVED_ISSUES`, 버전이 `REJECTED` | 고친 빌드는 새 버전입니다. 새 버전으로 빌드한 뒤 submit. prepare가 거절된 버전의 번호를 새 버전으로 바꾸고, 열린 제출의 그 항목은 이 버전의 것으로 셉니다(같은 제출을 다시 냄). 열린 제출을 콘솔에서 지우거나 취소하지 않습니다. 심사 중에는 정책의 ios를 그 버전 이하로 둡니다 |
 | 잘못된 빌드가 나감 | | App Store: 단계적 출시면 일시 중지한 뒤 더 높은 버전. 수동 출시면 release하지 않습니다. Play alpha: 더 높은 versionCode로 바꿉니다. 정책: min을 올리지 않습니다(`--hold`) |
 | 등록되지 않은 앱 요청 대기 | | 수동 출시로 두고 기다립니다. 거절되면 공개로 낼지 소유자가 정합니다 |
 | 데모 계정 만료·잠김 | 심사 거절 | Checks가 14일 전부터 경고하고, 끝난 뒤에는 upload·submit을 멈춥니다. 잠기면 허브-운영의 `hjv-api admin unlock`. 새 review.conf를 만들면 `REVIEW_DEMO_*`, `REVIEW_DEMO_UNTIL`, Play의 앱 액세스를 함께 바꿉니다 |
 | 스토어 실행이 겹침 | Checks가 멈춥니다 | 앞 실행이 끝난 뒤 다시 |
+| Release record 잡 실패 | 스토어에는 나갔는데 `store-releases.txt`에 줄이 없습니다 | 그 실행에서 'Re-run failed jobs'를 누릅니다. 성공한 Checks와 스토어 잡은 다시 돌지 않고 기록만 다시 합니다(같은 줄이 이미 있으면 그대로 끝남). 줄이 없으면 그 버전이 스토어에 없는 것처럼 보여서, 빌드 실행의 첫 단계(`check-build`)가 같은 버전을 다시 빌드하는 것을, 스토어 실행의 Checks(`check`)가 같은 버전의 다른 빌드나 더 낮은 버전을 내는 것을 막지 못합니다. 다시 돈 뒤 줄을 확인하고, 그래도 없으면 같은 꼴의 줄을 손으로 더합니다 |
 | TestFlight 빌드 90일 | 내부 테스터의 앱이 멈춥니다. 만료된 빌드는 prepare도 쓰지 않습니다(`has expired`) | `hjv-release check`가 75일에 알립니다. App Store 설치본과는 상관없습니다 |
 | Play 서명 앱이 다른 출처로 설치됨(기기 옮기기 도구, adb 등, 확인 필요) | 앱은 설치 출처로 채널을 정하므로 android 항목으로 판정되고, APK 업데이트는 서명 인증서가 달라 설치되지 않습니다([distribution.md](distribution.md)) | 그 사용자는 앱을 지우고 Play에서 다시 설치합니다 |
 | 키 유출 | Play 키: 테스트 트랙과 내부 앱 공유에 올릴 수 있음(앱 단위 권한). App Manager 키: 메타데이터, 제출, 출시. **App Store Connect 팀 키는 앱 하나로 줄일 수 없어 Apple 팀의 모든 앱에 같은 역할로 걸립니다**(키를 만들 때 확인). Developer 키: TestFlight 업로드(팀의 모든 앱) | Play: Cloud 콘솔에서 키 삭제·교체. ASC: 키 폐기 → 새 키 → 시크릿 |
@@ -165,6 +167,7 @@ App Store Connect 오류는 Apple의 코드와 설명을 출력합니다(비밀�
 | P4 | 게시 개요에서 관리형 게시를 끕니다 |
 | P5 | 앱 콘텐츠: 앱 액세스(데모 계정과 데모 PC), 데이터 보안(1.9.1의 앱 안 계정 삭제, 삭제 요청 URL) |
 | P6 | Android 개발자 인증: 패키지와 사이드로드 APK의 서명 키(업로드 키)가 등록됐는지 봅니다 |
+| P7 | Alpha 테스터 목록은 소유자가 관리합니다(처음 한 번, 그 뒤 사람이 바뀔 때마다). 테스트 및 출시 → 비공개 테스트 → Alpha의 트랙 관리 → 테스터 탭에서 이메일 목록(또는 Google 그룹)에 더하고 뺍니다. 테스터는 그 탭의 참여 링크로 각자 참여해야 받습니다(내부 테스트에 참여한 사람은 먼저 나감, P2). 테스터의 이메일은 저장소, 채팅, `build/`에 적지 않습니다 |
 
 ### App Store Connect
 
@@ -184,7 +187,7 @@ App Store Connect 오류는 Apple의 코드와 설명을 출력합니다(비밀�
 
 | # | 할 일 |
 |---|---|
-| G1 | 공개 저장소 1.9.1 push. 그 전에 `hjv-release floor --live` |
+| G1 | 공개 저장소 1.9.1 push. 그 전에 `hjv-release floor --live`. push 뒤 브라우저에서 `store/appstore/ko/support_url.txt`의 주소(`docs/privacy.md#10-문의와-변경`을 퍼센트 인코딩한 것)를 열어, GitHub의 앵커가 한국어 10절 '문의와 변경'에 닿는지 봅니다(App Store의 한국어 지원 URL) |
 | G2 | 비공개 저장소: 고정할 SHA가 공개 main의 조상인지 확인(`git merge-base --is-ancestor <sha> origin/main`, 포크의 커밋도 `@SHA`로 풀리기 때문). 그다음 `build.yml`과 `store.yml`의 고정 SHA, `store-releases.txt`, README |
 | G3 | **첫 `store.yml` 실행 전에** environment `store`: Settings → Environments → New environment `store` → Deployment branches and tags를 Selected로, `main`만. 먼저 돌리면 GitHub가 배포 브랜치 제한 없는 `store`를 저절로 만듭니다 |
 | G4 | 시크릿(소유자의 터미널, 아래)과 변수 `REVIEW_DEMO_UNTIL`. 저장소 시크릿에 남은 `PLAY_SA_*`를 지웁니다(아래 명령). `gh secret list -R $R`(`--env` 없이)에 `PLAY_SA_*`, `ASC_STORE_*`, `REVIEW_*`가 없어야 합니다. 있으면 store.yml이 그 값을 넘겨 environment로 옮기지 않은 것이 드러나지 않고, 빌드 실행의 `secrets: inherit` 범위에도 남습니다 |
