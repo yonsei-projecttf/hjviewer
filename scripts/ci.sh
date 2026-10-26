@@ -524,6 +524,11 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   # Dart tests the workflow requires) and on the 1.9.0 artifacts kept under build/ (the manifest
   # gate on a real APK)
   step "client: the release records (scripts/release-info.py, client-build.yml), offline tests"
+  # a linked worktree (build/v191/wt-repo/...) has no build/ of its own: read the main checkout's,
+  # as the leak stage does for its list
+  if [ ! -d "$samples" ]; then
+    samples="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")/build/release-1.9.0"
+  fi
   [ -d "$samples" ] || { samples=""; skip "the release records on real artifacts (no build/release-1.9.0)"; }
   HJV_RELEASE_BIN="$release_bin" HJV_PATCHED_FLUTTER="$app" HJV_RELEASE_SAMPLES="$samples" \
     python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_release_info.py' || fail "client: release record tests"
