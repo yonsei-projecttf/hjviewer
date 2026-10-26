@@ -1243,10 +1243,10 @@ jobs:
           # content checked before Play takes the bundle; then update this list. CI uploads never
           # show Play Console's declaration prompts. USE_BIOMETRIC and USE_FINGERPRINT are the app
           # lock's (1.9.0): local_auth_android 1.0.47 declares the first and its androidx.biometric
-          # 1.1.0 both; normal permissions without a Play declaration form.
+          # 1.1.0 both; normal permissions without a Play declaration form. CAMERA, which the QR
+          # plugin qr_code_scanner merged in, went with that plugin in 1.9.1.
           PLAY_MANIFEST: |
             permission android.permission.ACCESS_NETWORK_STATE
-            permission android.permission.CAMERA
             permission android.permission.INTERNET
             permission android.permission.POST_NOTIFICATIONS
             permission android.permission.RECORD_AUDIO

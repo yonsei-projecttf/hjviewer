@@ -656,7 +656,7 @@ CI와 처음 한 번 할 일은 [ci.md](ci.md)의 "Google Play 업로드"에 있
   - **포그라운드 서비스** specialUse, mediaProjection, microphone(`MainService`, 무인 접속과 화면·소리 캡처): 유형마다 설명, 영향, 시연 영상 링크, 사용 사례를 신고합니다. 모든 유형이 심사 대상입니다. 이 신고가 없어 내부 테스트 트랙 커밋이 403으로 막힌 사례가 보고되어 있습니다.
   - `SYSTEM_ALERT_WINDOW`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `RECEIVE_BOOT_COMPLETED`: 신고 양식은 없지만, 정책 심사에서는 위험 요소입니다.
   - `USE_BIOMETRIC`, `USE_FINGERPRINT`(1.9.0의 앱 잠금, androidx.biometric이 더함): 일반 권한이라 신고 양식이 없습니다. CI의 Play 선언 대상 목록에도 들어가야 번들 확인이 통과합니다([ci.md](ci.md)의 "Play 선언 대상").
-  - `RECORD_AUDIO`(음성 통화), `CAMERA`(QR 스캐너 플러그인이 더함. 1.9.0부터 고정 서버 빌드는 QR 읽기 단추가 없어 쓰지 않음): 개인정보처리방침 URL이 필요합니다. 카메라·마이크 권한이 있는 번들은 방침 URL이 없으면 내부 트랙에서도 거절된다는 보고가 있습니다. 그 문장은 [privacy.md](privacy.md) 6절 "카메라와 마이크"에 있습니다.
+  - `RECORD_AUDIO`(음성 통화): 개인정보처리방침 URL이 필요합니다. `CAMERA`는 1.9.0까지 QR 스캐너 플러그인이 더했고(쓰지는 않음), 1.9.1에서 그 플러그인을 빼서 없습니다. 카메라·마이크 권한이 있는 번들은 방침 URL이 없으면 내부 트랙에서도 거절된다는 보고가 있습니다. 그 문장은 [privacy.md](privacy.md) 6절 "카메라와 마이크"에 있습니다.
   - 선언이 필요한 항목이 모르게 늘지 않도록, CI가 빌드마다 이 목록을 확인합니다([ci.md](ci.md)의 "Play 선언 대상").
 - **Play에 올릴 앱: 모든 Android 빌드를 제어 전용으로(B', 2026-10-12 결정).** 1.6.0부터 사이드로드 APK와 Play 빌드 모두 피제어 구성요소를 빼므로, Android 기기는 다른 기기를 제어하기만 하고 원격으로 볼 수 없습니다. Play 서류는 개인정보처리방침 URL뿐이고 Android 변형은 하나입니다. 1.6.0의 클라이언트 패치로 넣고, 같은 커밋에서 CI의 `PLAY_MANIFEST` 목록도 줄입니다. 검토한 선택지는 다음과 같습니다.
 
