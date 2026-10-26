@@ -426,7 +426,20 @@ PASS (strict): transport: relay
 | DEL3 | `rev`가 다시 App Review 계정으로 로그인 | 새 빈 계정: 키 목록에 이 로그인의 키 하나(`current=true`)뿐, PC 0개, `--hjv-e2e-ticket refresh`가 `"use":"ctl"`, `"valid":true`(데모 PC의 출입증) |
 | DEL4 | `door2.conf`를 쓰고 `https://hjv.test/api/hjv/get/<코드>/`, 그리고 (준비)의 지원 링크 페이지 | 문 2의 페이지(200, `<h1>HJViewer 새 버전 받기</h1>`)와 지원 링크 페이지(한국어·영어 제목, 코드)에 `시범`도 `pilot`(대소문자 무관)도 없음 |
 
-**결과**: 아래 실행 기록을 봅니다.
+**결과**(2026-10-26, WSL2 Ubuntu 24.04, `scripts/ci.sh e2e` 한 번, 커밋 `051736a`, 클라이언트 패치 0001–0161): 아홉 줄 모두 PASS, strict 전체 PASS 128줄(하한 128), open 2줄, 건너뜀 0, `--lib hjv` 345·키를 뺀 `--lib hjviewer_update` 159. 이 단계는 16초쯤이고, 그 실행 전체(클라이언트 빌드와 단위 시험 포함)는 15분 반쯤이었습니다.
+
+| # | 본 것 |
+|---|---|
+| DEL1 | 첫 답 `200 {"deleted":true,"devices":4,"pcs":2,"relays":0}`: alice의 PC 둘(PC, X4의 둘째 PC)과 키 넷(`staff`, `staff2`, PC, 둘째 PC)이 바로 전 목록 그대로. `staff`는 `access_token`, `user_info`, `hjv-my-devices`, `hjv-ctl-key`가 모두 빔 |
+| DEL2 | 같은 바이트의 둘째 답이 첫 답과 같음. 운영자 기록에 같은 꼬리표의 `targets=` 줄과 `acct=… done="ok: 2 PCs, 4 account keys, 4 tokens, 0 relays, allowlist entry removed"` 줄이 하나씩, 저널의 삭제 줄 하나 |
+| DEL1 | `staff2`와 PC의 다음 요청이 `HTTP 401` |
+| DEL1 | PC가 `revoked`, `Binding` 빔. `staff2`의 비밀번호 없는 연결은 거절 창(종료 3), PC 비밀번호로 화면(RMSE 0.07) |
+| DEL1 | 열린 코드 2개 → 0개, 그 링크 404, 명단 3 → 2 ID, 저널 줄에 포탈 ID 없음 |
+| DEL3 | `200 {"deleted":true,"devices":2,"pcs":0,"relays":0}`, 저널 줄에 `, the App Review account`, `rev2` 401, 명단 2 ID 그대로 |
+| DEL3 | 다시 로그인한 `rev`: 키 하나(`current=true`), PC 0개, `"use":"ctl"`, `"valid":true` |
+| DEL4 | 문 2의 페이지 200(`HJViewer 새 버전 받기`)과 지원 링크 페이지(두 언어의 제목과 코드)에 `시범`·`pilot` 없음 |
+
+- 첫 실행(커밋 `17f630c`, 고치기 전)은 DEL1의 첫 줄에서 실패했습니다: 다른 기기로 쓴 계정 단계의 `ctl`은 A2에서 같은 네트워크의 `staff`가 alice로 로그인할 때 같은 기기의 새 로그인으로 키가 폐기되어, 비밀번호 없는 연결에 증명을 보내지 못했습니다(시험의 잘못, 제품은 설계대로). `HJV_E2E_HOLD`로 남긴 시험대에서 `staff2`로 나머지(삭제, 재시도, 401, `revoked`, 코드, 명단, 문 2 페이지)를 손으로 확인한 뒤, 다른 기기를 `hjv-ctl2` 네트워크의 `staff2`와 `rev2`로 바꾸고 한 번 다시 돌렸습니다.
 
 **`scripts/ci.sh`가 하는 것**
 - 감지: 따로 없습니다. 이 단계는 출입 제한 단계(`HJV_E2E_ACCESS=1`) 안에서 돌고, DEL1–DEL3은 클라이언트에 0161의 명령이 있는지 스크립트가 직접 봅니다. 그 명령이 없는 빌드는 `skipped:`를 남기므로 push 전 검사(`HJV_CI_STRICT=1`)에서 실패합니다.
