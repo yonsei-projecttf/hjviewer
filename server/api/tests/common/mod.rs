@@ -322,6 +322,10 @@ pub struct Options {
     pub refuse_test_keys: bool,
     /// no admin socket, and so no operator record, as when hjv-api cannot open the record
     pub no_admin: bool,
+    /// a log key of its own in place of LOG_KEY: tags no other harness makes, so that the
+    /// journal's lines of this one are its own (the journal is the process's, shared by the
+    /// tests of a file running at once)
+    pub log_key: Option<[u8; 32]>,
 }
 
 pub struct Harness {
@@ -429,7 +433,7 @@ impl Harness {
             sso_basic: Zeroizing::new(fake_sso::BASIC.to_owned()),
             sso_api_uuid: Zeroizing::new(fake_sso::API_UUID.to_owned()),
             seal_keys: vec![Zeroizing::new(SEAL_SECRET)],
-            log_key: Zeroizing::new(LOG_KEY.to_vec()),
+            log_key: Zeroizing::new(opts.log_key.unwrap_or(LOG_KEY).to_vec()),
             list_key: Zeroizing::new(LIST_SEED),
             command_key: if opts.no_command_key {
                 None

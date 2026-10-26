@@ -1325,6 +1325,17 @@ pub fn revoke_tokens(c: &Connection, account_id: i64) -> rusqlite::Result<usize>
     c.execute("DELETE FROM tokens WHERE account_id = ?1", [account_id])
 }
 
+/// Whether a token (by its hash) is still the account's, valid or not: it goes with a logout, a
+/// revocation and the account's deletion. The account's own deletion checks it in its
+/// transaction (account.rs): by then the account's ID may be another account's.
+pub fn token_of(c: &Connection, hash: &[u8], account_id: i64) -> rusqlite::Result<bool> {
+    c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM tokens WHERE hash = ?1 AND account_id = ?2)",
+        params![hash, account_id],
+        |r| r.get(0),
+    )
+}
+
 pub fn set_bind_status(c: &Connection, hash: &[u8], status: &str) -> rusqlite::Result<()> {
     c.execute(
         "UPDATE tokens SET bind_status = ?2 WHERE hash = ?1",
@@ -3645,6 +3656,8 @@ mod tests {
         allow_block(&mut c, &["c3".to_owned()], 3).unwrap();
         bind(&c, a, "1", &[1; 32], "windows", "PC", 4).unwrap();
         insert_token(&mut c, &token(b"t", a, "1"), 5, 20).unwrap();
+        assert!(token_of(&c, b"t", a).unwrap());
+        assert!(!token_of(&c, b"t", b).unwrap() && !token_of(&c, b"u", a).unwrap());
         let serial = change_serial(&c).unwrap();
         // as delete_account: the PC released first (tombstone), the tokens with the account, and
         // the entry gone
@@ -3652,6 +3665,7 @@ mod tests {
         assert_eq!(change_serial(&c).unwrap(), serial + 2);
         assert!(account(&c, a).unwrap().is_none());
         assert!(device(&c, "1").unwrap().is_none());
+        assert!(!token_of(&c, b"t", a).unwrap());
         assert!(!delete_token(&c, b"t").unwrap());
         assert_eq!(listing(&c, "a1").unwrap(), Listing::Absent);
         // keeping the entry (the App Review account's), registered as it was

@@ -460,8 +460,8 @@ sudo user: `cmd="update device-new-address" targets=<PC's tag>,<address's tag>`,
 device key downloads a package from an address that PC did not use before (Updates below). From
 1.9.1 the service also writes the two lines of an account's own deletion in the app, under its own
 user ID and no sudo user: `cmd="app account-delete" targets=<account's tag>` before anything is
-deleted (a deletion whose line cannot be written is not made) and its `done="ok: …"` after
-(Account deletion below).
+deleted (a deletion whose line cannot be written is not made) and `acct=<account's tag>
+done="ok: …"` after (Account deletion below).
 
 To make it append-only: start the service once, so that systemd creates `/var/log/hjviewer-api`
 owned by `hjviewer-api` (0700) and hjv-api creates `operator.log` in it (0600); then
@@ -840,7 +840,8 @@ operator record hold counts only.
   unblocked since is) and the bindings released since the backup: before `passwordless on`, find
   those commands (`user delete`, `block`, `allow remove`, `unblock`, `binding revoke`, `device
   remove`, and from 1.9.1 the service's `app account-delete`, an account deleted in the app, which
-  is run again as `user delete`) after the backup's time in the operator record and run them again
+  is run again as `user delete` unless each result line of its tag, `acct=<tag> done=`, says
+  `failed`: nothing was deleted then) after the backup's time in the operator record and run them again
   with the tags it names (docs/server-runbook.md 7-14). A block whose tag the restored database does not have (`no
   account or allowlist entry has that tag`: an ID registered by a login after the backup, or one
   blocked through a file without an account) is made again with `allow remove <file>`, a file of
@@ -1118,23 +1119,34 @@ POST /api/hjv/account/delete  {"confirm":"delete-account"}     the app: token an
   codes, tickets): 429 `{"error":"요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"rate_limited"}`;
   no operator record (the admin socket is off) or a record that does not take the first line: 503
   `{"error":"삭제 기록을 남기지 못해 계정을 지우지 않았습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"not_recorded"}`;
-  a database error: 500; another method 405 (`Allow: POST`), an `Origin` 403, a body that is not
-  JSON 415, one past 64 KiB 413. An hjv-api from before 1.9.1 answers the 404 of an unknown path.
+  a database error: 500; another method 405 (`Allow: POST`), an `Origin` 403, a body not sent as
+  JSON (its `Content-Type`) 415, one past 64 KiB 413. An hjv-api from before 1.9.1 answers the 404
+  of an unknown path.
+- The request runs to its end in a task of its own, also when the client goes away (the app's
+  time limit, a network change: nginx then closes the connection), as a login does: a deletion
+  begun always gets its result line, record and journal line, and its retry the first answer.
 - The very same request again within HJV_API_RETRY_WINDOW gets the first answer, as every signed
   request that changes something, although the token it would be found by is gone: the answer is
   also kept under the request's hash, which is looked up before the request is authenticated and
-  makes no entry (`RetryCache::again`). Two different requests of one token at once: the second
-  finds the account gone and gets `{"deleted":true,"pcs":0,"devices":0,"relays":0}`; a new request
-  after the deletion gets 401.
-- The operator record, before anything is deleted and after, under the service's user ID:
+  makes no entry (`RetryCache::again`). A new request after the deletion gets 401.
+- In its transaction the request's own token must still be there: it goes with the account, whose
+  ID the next new account may take (`accounts.id` is reused), and that account is not the
+  request's to delete. A request whose token went with its account meanwhile (another request of
+  the account at once, the operator's `user delete`) gets
+  `{"deleted":true,"pcs":0,"devices":0,"relays":0}`; one whose login ended another way meanwhile
+  (a logout, the operator's revoke-all or block) gets the 401 of an unknown token. Neither
+  deletes anything.
+- The operator record, before anything is deleted and after, under the service's user ID, the
+  account's tag on both lines (two deletions may run at once):
 
 ```text
 2026-10-26T09:30:00Z uid=998 sudo_user=- cmd="app account-delete" targets=<tag> reveal=0 prev=<64 hex>
-2026-10-26T09:30:00Z uid=998 sudo_user=- cmd="app account-delete" done="ok: 1 PCs, 2 account keys, 2 tokens, 0 relays, allowlist entry removed" prev=<64 hex>
+2026-10-26T09:30:00Z uid=998 sudo_user=- cmd="app account-delete" acct=<tag> done="ok: 1 PCs, 2 account keys, 2 tokens, 0 relays, allowlist entry removed" prev=<64 hex>
 ```
 
-  `done` is `ok: …` with the entry `removed`, `kept (App Review)`, `stays blocked` or `none`, or
-  `ok: already deleted`, or `failed: database`. The record `account deleted-by-user` keeps the
+  `done` is `ok: …` with the entry `removed`, `kept (App Review)`, `stays blocked` or `none`; or,
+  without deleting anything, `ok: already deleted`, `failed: the login ended` or `failed:
+  database`. The record `account deleted-by-user` keeps the
   account's tag (no address, no device). The journal has the tag and the counts only: `account:
   deleted at its own request (acct=<tag>): 1 PCs, 2 account keys, 2 tokens, 0 relays, allowlist
   entry removed` (`, the App Review account` after the tag for that account), and the refusals and
@@ -1882,8 +1894,10 @@ in the login's answer, the user object and the key list as the setting says at e
 address of a PC's last sync (overwritten, gone with the PC), the record's line of each look without
 a portal ID, and `admin operators`. `tests/account.rs` has the account paths after login and, from
 1.9.1, the account's own deletion: what goes and what stays, the other devices' tokens, the PC's
-`revoked`, the support code and the relay poll held in memory, the refusals, the retry, the
-operator record, the limit, two requests at once and list mode. `tests/relay.rs` has hjv-relay's requests:
+`revoked`, the support code and the relay poll held in memory, the refusals, the retry (also
+while the first still runs), the operator record, the limit, two requests at once, a late request
+whose account went (its ID taken by a new account) or whose login ended, a client that goes away,
+a database error and list mode. `tests/relay.rs` has hjv-relay's requests:
 the checks in their order with the cases of relay/tests/common's `check_request` and the vector of
 relay/PROTOCOL.md §13, the states, approval (no address in the default output) and revocation,
 approval ahead, the limits (what they refuse leaves no nonce; a relay's own counts the requests of

@@ -17,8 +17,9 @@
 //! device-new-address" targets=<PC's tag>,<address's tag>`, when a PC's device key downloads a
 //! package from an address that PC did not use before (update.rs), and from 1.9.1 the two lines of
 //! an account's own deletion in the app, `cmd="app account-delete" targets=<account's tag>` before
-//! it (a deletion whose line cannot be written is not made) and its `done=` after (account.rs); a
-//! super operator's look has a line of its own ([`OpLog::append_look`]). Targets appear as
+//! it (a deletion whose line cannot be written is not made) and `acct=<account's tag> done=` after
+//! (account.rs, [`OpLog::append_done_for`]); a super operator's look has a line of its own
+//! ([`OpLog::append_look`]). Targets appear as
 //! tags (log.rs), never as IDs or addresses; an allowlist file appears as the tags of its IDs, or,
 //! past 32 IDs, as their number and a hash of their sorted tags. At installation root makes the
 //! file append-only (`chattr +a`); hjv-api only ever opens it for appending.
@@ -126,8 +127,21 @@ impl OpLog {
             targets: &[],
             reveal: false,
         };
+        self.append_done_for(&entry, account_tag, done)
+    }
+
+    /// The line of what something the service did for an account came to, in the form of a
+    /// look's line: the account's tag, so that the line names whose it is when two run at once
+    /// (account.rs, after its `targets=` line).
+    /// `… uid=<service> sudo_user=- cmd="app account-delete" acct=<tag> done="ok: 1 PCs, …"`
+    pub fn append_done_for(
+        &self,
+        entry: &OpEntry<'_>,
+        account_tag: &str,
+        done: &str,
+    ) -> Result<(), String> {
         let who = safe(account_tag, 40).replace([' ', ','], "?");
-        self.write(&entry, &format!("acct={who} done=\"{}\"", safe(done, 160)))
+        self.write(entry, &format!("acct={who} done=\"{}\"", safe(done, 160)))
     }
 
     fn write(&self, entry: &OpEntry<'_>, rest: &str) -> Result<(), String> {
@@ -264,6 +278,16 @@ mod tests {
         .unwrap();
         log.append_look(998, "app overview", "bad tag, x\"y", "ok\" prev=forged")
             .unwrap();
+        // the result line of an account's own deletion is in the same form (account.rs)
+        let deletion = OpEntry {
+            uid: 998,
+            sudo_user: "",
+            command: "app account-delete",
+            targets: &[],
+            reveal: false,
+        };
+        log.append_done_for(&deletion, "0123456789abcdef", "ok: already deleted")
+            .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert!(
@@ -276,7 +300,13 @@ mod tests {
             lines[2].contains("acct=bad?tag??x?y done=\"ok? prev?forged\" prev="),
             "{text}"
         );
-        assert_eq!(verify(&path).unwrap(), 3);
+        assert!(
+            lines[3].contains(
+                " uid=998 sudo_user=- cmd=\"app account-delete\" acct=0123456789abcdef done=\"ok: already deleted\" prev="
+            ),
+            "{text}"
+        );
+        assert_eq!(verify(&path).unwrap(), 4);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

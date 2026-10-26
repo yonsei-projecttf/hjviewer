@@ -29,16 +29,25 @@
 //!   makes a new, empty account.
 //! - The operator record (oplog.rs) takes a line before anything is deleted, under the service's
 //!   own user ID and no sudo user, with the account's tag (`cmd="app account-delete"
-//!   targets=<tag>`), and one after it with the counts (`done="ok: …"`). Without the record (the
-//!   admin socket is off), or when the record does not take the first line, nothing is deleted
-//!   (503 `not_recorded`): a restored backup brings deleted accounts back, and the record's tag is
-//!   how the operator deletes them again (docs/server-runbook.md 7-14).
+//!   targets=<tag>`), and one after it with the tag again and the counts (`acct=<tag> done="ok:
+//!   …"`). Without the record (the admin socket is off), or when the record does not take the
+//!   first line, nothing is deleted (503 `not_recorded`): a restored backup brings deleted
+//!   accounts back, and the record's tag is how the operator deletes them again
+//!   (docs/server-runbook.md 7-14).
+//! - In the transaction the request's own token must still be there. It goes with its account,
+//!   whose ID the next new account may take (`accounts.id` is reused), and that account is not
+//!   the request's to delete: a request whose token went with its account a moment ago (another
+//!   request of the account, the operator's `user delete`) gets `"deleted":true` with counts of 0,
+//!   and one whose login ended another way meanwhile (a logout, the operator's revoke-all or
+//!   block), the 401 of an unknown token; neither deletes anything.
+//! - A request runs to its end in a task of its own, also when the client goes away (as a login
+//!   does): a deletion is never left without its result line, its record, its journal line or
+//!   what memory holds, nor its retry without the first answer.
 //! - The very same request again within HJV_API_RETRY_WINDOW gets the first answer, as every
 //!   signed request that changes something does (api.rs `authenticate`). The deletion ends the
 //!   token by which such a retry is found, so its answer is kept under the request's hash as well
 //!   (`RetryCache::again`, asked before the request is authenticated: a request nobody signed
-//!   leaves nothing in memory). Two different requests of one token: the second finds the account
-//!   gone and gets `"deleted":true` with counts of 0.
+//!   leaves nothing in memory).
 //! - A deletion leaves the record `account deleted-by-user` with the account's tag (kept
 //!   HJV_API_EVENT_DAYS, counted by `admin report` and the daily summary); the journal gets the
 //!   tag and the counts, never a portal ID, name, address or device ID.
@@ -145,9 +154,53 @@ impl Deleted {
     }
 }
 
+/// What the transaction came to.
+enum Outcome {
+    Deleted(Deleted),
+    /// the request's token went with its account a moment ago (another request of the account,
+    /// the operator's `user delete`): it is deleted already
+    Gone,
+    /// the request's login ended another way while it waited (a logout, the operator's
+    /// revoke-all or block): the account stays
+    Ended,
+}
+
 /// Handles `POST /api/hjv/account/delete` (api.rs `route` checked the method, the body's type
-/// and size, and that no `Origin` came).
+/// and size, and that no `Origin` came). The request runs in a task of its own, to its end also
+/// when the client goes away (nginx then closes the connection, and hyper drops this future), as
+/// a login does (login.rs `handle`). The task works on its own copy of the request, and so it also
+/// leaves the answer where [`api::authenticate`] keeps it for a retry under the key's nonce, as
+/// `route` does for the other paths.
 pub async fn delete(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
+    let task_state = state.clone();
+    let own = ApiRequest {
+        method: req.method.clone(),
+        path: req.path.clone(),
+        query: req.query.clone(),
+        target: req.target.clone(),
+        headers: req.headers.clone(),
+        body: req.body.clone(),
+        ip: req.ip.clone(),
+        retry: Default::default(),
+    };
+    let task = tokio::spawn(async move {
+        let reply = handle(&task_state, &own).await;
+        if let Some(first) = own.retry.get() {
+            let _ = first.send(Some(reply.clone()));
+        }
+        reply
+    });
+    match task.await {
+        Ok(reply) => reply,
+        Err(_) => {
+            log_err!("account delete: the request's task failed");
+            Reply::server_error()
+        }
+    }
+}
+
+/// The request, from its retry's answer to the deletion's.
+async fn handle(state: &Arc<AppState>, req: &ApiRequest) -> Reply {
     let retry_key = request_hash(req).map(|sent| (format!("account-delete.{}", hex(&sent)), sent));
     // the very same request again, once its first run may have deleted the token (the module)
     if let Some((key, sent)) = &retry_key {
@@ -248,17 +301,28 @@ async fn delete_now(
             "not_recorded",
         );
     }
-    let (id, login_key, at) = (s.account.id, s.account.login_key.clone(), now());
+    let (id, login_key, created_at, at) = (
+        s.account.id,
+        s.account.login_key.clone(),
+        s.account.created_at,
+        now(),
+    );
+    let (token_hash, wal_tag) = (s.token_hash.clone(), tag.to_owned());
     // only the App Review account's ID is outside the ID rule here: its tokens hold only while its
     // file names it (review.rs `admits`, checked by session())
     let keep_listing = review::is_review(&login_key);
-    let deleted = state
+    let outcome = state
         .db
         .call(move |c| {
-            let deleted = db::in_tx(c, |tx| {
-                // another request of the same token deleted it a moment ago
-                if db::account(tx, id)?.is_none() {
-                    return Ok(None);
+            let outcome = db::in_tx(c, |tx| {
+                // The request's own token must still be the account's: it goes with the account,
+                // whose ID the next new account may take (accounts.id is reused), and that one is
+                // not this request's to delete.
+                if !db::token_of(tx, &token_hash, id)? {
+                    // the very account still there: its login ended another way meanwhile
+                    let same = db::account(tx, id)?
+                        .is_some_and(|a| a.login_key == login_key && a.created_at == created_at);
+                    return Ok(if same { Outcome::Ended } else { Outcome::Gone });
                 }
                 let pcs = db::devices_of(tx, id)?.len();
                 let devices = db::keys_of(tx, id)?.len();
@@ -266,7 +330,7 @@ async fn delete_now(
                 let tokens = db::revoke_tokens(tx, id)?;
                 let listing = db::listing(tx, &login_key)?;
                 db::delete_account_by_user(tx, id, keep_listing, at)?;
-                Ok(Some(Deleted {
+                Ok(Outcome::Deleted(Deleted {
                     pcs,
                     devices,
                     tokens,
@@ -275,16 +339,18 @@ async fn delete_now(
                 }))
             })?;
             // the deleted rows must not linger in the WAL; the deletion stands either way
-            if deleted.is_some() {
+            if matches!(outcome, Outcome::Deleted(_)) {
                 if let Err(e) = db::checkpoint(c) {
-                    log_err!("account delete: the WAL was not truncated after a deletion: {e}");
+                    log_err!(
+                        "account delete: the WAL was not truncated after a deletion (acct={wal_tag}): {e}"
+                    );
                 }
             }
-            Ok(deleted)
+            Ok(outcome)
         })
         .await;
-    match deleted {
-        Ok(Some(d)) => {
+    match outcome {
+        Ok(Outcome::Deleted(d)) => {
             // what memory holds of it: the open support codes of its keys end, and the held
             // polls of its relays look again (relay.rs `admin_revoke`)
             let ckids = state.support.open_keys(id, at);
@@ -295,8 +361,8 @@ async fn delete_now(
             result_line(
                 record,
                 uid,
-                d.done(keep_listing),
                 tag,
+                d.done(keep_listing),
                 "the account is deleted",
             )
             .await;
@@ -325,24 +391,38 @@ async fn delete_now(
                 "relays": d.relays,
             }))
         }
-        Ok(None) => {
+        Ok(Outcome::Gone) => {
             result_line(
                 record,
                 uid,
-                "ok: already deleted".to_owned(),
                 tag,
+                DONE_GONE.to_owned(),
                 "it was deleted already",
             )
             .await;
             Reply::ok(&json!({ "deleted": true, "pcs": 0, "devices": 0, "relays": 0 }))
         }
-        Err(e) => {
-            log_err!("account delete: {e}");
+        Ok(Outcome::Ended) => {
+            log_info!(
+                "account delete: the login ended while the request waited (acct={tag}); nothing was deleted"
+            );
             result_line(
                 record,
                 uid,
-                "failed: database".to_owned(),
                 tag,
+                DONE_ENDED.to_owned(),
+                "nothing was deleted",
+            )
+            .await;
+            api::unauthorized()
+        }
+        Err(e) => {
+            log_err!("account delete: {e} (acct={tag}); nothing was deleted");
+            result_line(
+                record,
+                uid,
+                tag,
+                DONE_FAILED.to_owned(),
                 "nothing was deleted",
             )
             .await;
@@ -351,11 +431,18 @@ async fn delete_now(
     }
 }
 
-/// The record's line of what the deletion came to; one it does not take is the journal's, with
-/// `how` the account stands.
-async fn result_line(record: Arc<OpLog>, uid: u32, done: String, tag: &str, how: &str) {
+/// The `done` of a request whose account was deleted already, of one whose login ended
+/// meanwhile, and of one the database failed: none of them deleted anything.
+const DONE_GONE: &str = "ok: already deleted";
+const DONE_ENDED: &str = "failed: the login ended";
+const DONE_FAILED: &str = "failed: database";
+
+/// The record's line of what the deletion came to, with the account's tag (two deletions may
+/// run at once); one it does not take is the journal's, with `how` the account stands.
+async fn result_line(record: Arc<OpLog>, uid: u32, tag: &str, done: String, how: &str) {
+    let who = tag.to_owned();
     let written = tokio::task::spawn_blocking(move || {
-        record.append_done(
+        record.append_done_for(
             &OpEntry {
                 uid,
                 sudo_user: "",
@@ -363,6 +450,7 @@ async fn result_line(record: Arc<OpLog>, uid: u32, done: String, tag: &str, how:
                 targets: &[],
                 reveal: false,
             },
+            &who,
             &done,
         )
     })
@@ -426,16 +514,23 @@ mod tests {
         assert_eq!(deleted(Listing::Blocked).entry(true), "stays blocked");
         assert_eq!(deleted(Listing::Absent).entry(false), "none");
         // only what the record keeps as it is (oplog.rs `safe`), within its 160 characters
+        let mut dones = vec![
+            DONE_GONE.to_owned(),
+            DONE_ENDED.to_owned(),
+            DONE_FAILED.to_owned(),
+        ];
         for listing in [Listing::Registered, Listing::Blocked, Listing::Absent] {
             for keep in [false, true] {
-                let done = deleted(listing).done(keep);
-                assert!(done.len() <= 160, "{done}");
-                assert!(
-                    done.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || " ._:,()-".contains(c)),
-                    "{done}"
-                );
+                dones.push(deleted(listing).done(keep));
             }
+        }
+        for done in dones {
+            assert!(done.len() <= 160, "{done}");
+            assert!(
+                done.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || " ._:,()-".contains(c)),
+                "{done}"
+            );
         }
     }
 

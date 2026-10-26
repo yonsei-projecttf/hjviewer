@@ -303,7 +303,9 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
     reply
 }
 
-fn unauthorized() -> Reply {
+/// The 401 of a token that is not valid (also account.rs's, for a login that ended while its
+/// deletion waited).
+pub(crate) fn unauthorized() -> Reply {
     Reply::error(StatusCode::UNAUTHORIZED, TEXT_UNAUTHORIZED)
 }
 

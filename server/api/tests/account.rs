@@ -4,18 +4,24 @@
 //! device list and its rules (design v2 §5, D9, D10), logout, token expiry and revocation; and
 //! from 1.9.1 the account's own deletion (account.rs): what goes and what stays, the other
 //! devices' tokens, the held waiting room and relay poll, the refusals, the retry, the operator
-//! record, the limit, two requests at once and list mode.
+//! record, the limit, two requests at once, a late request whose account is gone or whose login
+//! ended, a client that goes away, a database error and list mode.
 
 mod common;
 
 use common::*;
 use hjv_api::{
     account, db, devsig, guest, oplog, proof, seal, support,
-    util::{b64, b64url_decode, now, random_bytes, sha256},
+    util::{b64, b64url_decode, hex, now, random_bytes, sha256},
 };
 use hyper::Method;
 use serde_json::{json, Value};
-use std::{sync::Arc, time::Duration};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::io::AsyncWriteExt;
 
 #[tokio::test]
 async fn current_user_users_and_logout() {
@@ -604,6 +610,78 @@ async fn listing_of(h: &Harness, id: &str) -> db::Listing {
         .unwrap()
 }
 
+/// A harness with a log key of its own: its tags, and so its journal lines, are its own.
+fn own_tags() -> Options {
+    Options {
+        log_key: Some(random_bytes::<32>()),
+        ..Default::default()
+    }
+}
+
+/// Whether the journal (the process's: every harness's) has this line.
+fn journal_has(line: &str) -> bool {
+    hjv_api::log::captured().iter().any(|l| l == line)
+}
+
+/// How many first lines of deletions in the app the record holds.
+fn first_lines(oplog: &Path) -> usize {
+    let first = format!("cmd=\"{}\" targets=", account::COMMAND);
+    std::fs::read_to_string(oplog)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(&first))
+        .count()
+}
+
+/// The signed confirmation of `token`, sent on its own and held between its checks and its
+/// transaction: once it has passed its checks (its answer's place under its hash is there) and
+/// written the record's first line, `meanwhile` runs on the database, and the request's
+/// transaction waits for it. The request's answer, and whether its token was still there when
+/// `meanwhile` began (if not, the transaction came first and the case was not made).
+async fn delete_holding<F>(h: &Arc<Harness>, token: &str, meanwhile: F) -> (Answer, bool)
+where
+    F: FnOnce(&mut rusqlite::Connection) -> rusqlite::Result<()> + Send + 'static,
+{
+    let signed = h.proof_for("POST", DELETE, CONFIRM_BODY, token).unwrap();
+    let hash = sha256(token.as_bytes());
+    let sent = proof::request_hash(&signed, "POST", DELETE, &sha256(CONFIRM_BODY), &hash);
+    let key = format!("account-delete.{}", hex(&sent));
+    let before = first_lines(&h.oplog);
+    let request = {
+        let (h, token) = (h.clone(), token.to_owned());
+        tokio::spawn(async move { delete_with(&h, &token, Some(&signed)).await })
+    };
+    let started = Instant::now();
+    while h.state.request_retries.again(&key, sent).is_none() {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "no checks passed"
+        );
+        std::thread::yield_now();
+    }
+    let oplog = h.oplog.clone();
+    let first = h
+        .state
+        .db
+        .call(move |c| {
+            let started = Instant::now();
+            while first_lines(&oplog) == before {
+                assert!(started.elapsed() < Duration::from_secs(5), "no first line");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let first = c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM tokens WHERE hash = ?1)",
+                [&hash[..]],
+                |r| r.get(0),
+            )?;
+            meanwhile(c)?;
+            Ok(first)
+        })
+        .await
+        .unwrap();
+    (request.await.unwrap(), first)
+}
+
 /// The operator record's lines of deletions in the app.
 fn deletion_lines(h: &Harness) -> Vec<String> {
     std::fs::read_to_string(&h.oplog)
@@ -729,7 +807,7 @@ async fn trade(h: &Harness, typed: &str, pc: &TestDevice) -> Answer {
 /// account is untouched, and the person's next login makes a new, empty account.
 #[tokio::test]
 async fn an_account_deletes_itself_at_once() {
-    let h = Harness::start().await;
+    let h = Harness::with(own_tags()).await;
     let (pc, pc_token, binding) = sleeping_pc(&h, "800000001").await;
     let r = approved(&h, 50, &pc).await;
     let ahead = TestRelay::new([51; 32]);
@@ -848,16 +926,16 @@ async fn an_account_deletes_itself_at_once() {
         "{lines:?}"
     );
     assert!(
-        lines[1].contains(" sudo_user=- cmd=\"app account-delete\" done=\"ok: 1 PCs, 2 account keys, 2 tokens, 1 relays, allowlist entry removed\" prev="),
+        lines[1].contains(&format!(" sudo_user=- cmd=\"app account-delete\" acct={tag} done=\"ok: 1 PCs, 2 account keys, 2 tokens, 1 relays, allowlist entry removed\" prev=")),
         "{lines:?}"
     );
     let record = std::fs::read_to_string(&h.oplog).unwrap();
     assert_eq!(oplog::verify(&h.oplog).unwrap(), record.lines().count());
-    let journal = hjv_api::log::captured();
     let line = format!(
         "account: deleted at its own request (acct={tag}): 1 PCs, 2 account keys, 2 tokens, 1 relays, allowlist entry removed"
     );
-    assert!(journal.contains(&line), "{journal:?}");
+    assert!(journal_has(&line), "{line}");
+    let journal = hjv_api::log::captured();
     for l in journal.iter().filter(|l| l.starts_with("account")) {
         for secret in [HONG.0, "zztest01", "홍길동", "800000001", "PC-800000001"] {
             assert!(!l.contains(secret), "{l}");
@@ -930,10 +1008,11 @@ async fn held_requests_hear_of_the_deletion() {
 
 /// Only the confirmation deletes: no body, an object without it, another value, JSON that is no
 /// object get 400 `bad_request`; another method 405 with `Allow: POST`; an `Origin` 403; a body
-/// that is not JSON 415. Nothing is deleted or recorded, and the journal says it once.
+/// not sent as JSON (its `Content-Type`) 415. Nothing is deleted or recorded, and the journal says
+/// it once.
 #[tokio::test]
 async fn only_the_confirmation_deletes() {
-    let h = Harness::start().await;
+    let h = Harness::with(own_tags()).await;
     let token = h.login_ok(HONG, None).await;
     let bad = json!({"error": "요청을 이해하지 못했습니다.", "hjv": "bad_request"});
     let a = h.post(DELETE, &token, None).await;
@@ -998,7 +1077,7 @@ async fn only_the_confirmation_deletes() {
         "account delete: a request not of the form (acct={}); the next ten minutes are not logged",
         h.account_tag(HONG.0)
     );
-    assert!(hjv_api::log::captured().contains(&line));
+    assert!(journal_has(&line), "{line}");
 }
 
 /// The token counts only with its key's signature, in time: none, another device's key, a
@@ -1248,4 +1327,331 @@ async fn in_list_mode_the_id_leaves_the_list_with_the_account() {
         .unwrap();
     let again = h.login_ok(HONG, None).await;
     assert_eq!(h.get("/api/hjv/keys", &again).await.json["total"], 1);
+}
+
+/// A request held after its checks while its account goes (the operator's `user delete`, or
+/// another request of the account) and another person's first login takes the freed ID
+/// (accounts.id is reused) deletes nothing of that person's: its token went with its account, so
+/// it answers as for an account deleted already, and the record's result line names the account
+/// by its tag.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_late_request_leaves_the_account_that_took_its_id() {
+    for tries in 1.. {
+        let h = Arc::new(Harness::with(own_tags()).await);
+        let token = h.login_ok(HONG, None).await;
+        let hong = account_of(&h, HONG.0).await.unwrap().id;
+        let kim = hjv_api::util::login_key(KIM.0);
+        let (a, first) = delete_holding(&h, &token, move |c| {
+            db::in_tx(c, |tx| db::delete_account(tx, hong, now()))?;
+            db::upsert_account(c, &kim, KIM.0, "김연세", now())?;
+            Ok(())
+        })
+        .await;
+        if !first && tries < 5 {
+            continue;
+        }
+        assert!(first, "the deletion came first in {tries} tries");
+        assert_eq!(
+            a.json,
+            json!({"deleted": true, "pcs": 0, "devices": 0, "relays": 0}),
+            "{}",
+            a.text
+        );
+        let kim = account_of(&h, KIM.0).await.expect("KIM's account stays");
+        assert_eq!(kim.id, hong, "the freed ID");
+        assert_eq!(listing_of(&h, KIM.0).await, db::Listing::Registered);
+        assert_eq!(deletions(&h).await, 0);
+        let lines = deletion_lines(&h);
+        let tag = h.account_tag(HONG.0);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains(&format!(" targets={tag} ")), "{lines:?}");
+        assert!(
+            lines[1].contains(&format!(" acct={tag} done=\"ok: already deleted\" ")),
+            "{lines:?}"
+        );
+        break;
+    }
+}
+
+/// A request whose login ended another way while it was held after its checks (here the
+/// operator's revoke-all; another device's "log out other devices" and a block do the same)
+/// deletes nothing: the 401 of an unknown token, the account as it was, a result line that says
+/// so, and the journal's line by the tag. The next login of the account deletes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_login_that_ended_meanwhile_deletes_nothing() {
+    for tries in 1.. {
+        let h = Arc::new(Harness::with(own_tags()).await);
+        let token = h.login_ok(HONG, None).await;
+        let hong = account_of(&h, HONG.0).await.unwrap().id;
+        let (a, first) = delete_holding(&h, &token, move |c| {
+            db::in_tx(c, |tx| {
+                db::revoke_tokens(tx, hong)?;
+                db::revoke_account_keys(tx, hong, "admin", now())
+            })?;
+            Ok(())
+        })
+        .await;
+        if !first && tries < 5 {
+            continue;
+        }
+        assert!(first, "the deletion came first in {tries} tries");
+        assert_eq!((a.status, &a.json), (401, &unknown_token()), "{}", a.text);
+        assert!(account_of(&h, HONG.0).await.is_some());
+        assert_eq!(listing_of(&h, HONG.0).await, db::Listing::Registered);
+        assert_eq!(deletions(&h).await, 0);
+        let tag = h.account_tag(HONG.0);
+        let lines = deletion_lines(&h);
+        assert!(
+            lines[1].contains(&format!(" acct={tag} done=\"failed: the login ended\" ")),
+            "{lines:?}"
+        );
+        assert!(journal_has(&format!(
+            "account delete: the login ended while the request waited (acct={tag}); nothing was deleted"
+        )));
+        let again = h.login_ok(HONG, None).await;
+        let a = h.post(DELETE, &again, confirm()).await;
+        assert_eq!(
+            a.json,
+            json!({"deleted": true, "pcs": 0, "devices": 1, "relays": 0}),
+            "{}",
+            a.text
+        );
+        break;
+    }
+}
+
+/// When the record takes the first line but not the result line, the deletion stands: its answer,
+/// its record and the journal's line that the result line is missing, by the tag.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_result_line_the_record_does_not_take() {
+    for tries in 1.. {
+        let h = Arc::new(Harness::with(own_tags()).await);
+        let token = h.login_ok(HONG, None).await;
+        let (oplog, aside) = (h.oplog.clone(), h.dir.join("operator.log.aside"));
+        let (a, first) = {
+            let (oplog, aside) = (oplog.clone(), aside.clone());
+            delete_holding(&h, &token, move |_| {
+                std::fs::rename(&oplog, &aside).unwrap();
+                std::fs::create_dir(&oplog).unwrap();
+                Ok(())
+            })
+            .await
+        };
+        std::fs::remove_dir(&oplog).unwrap();
+        std::fs::rename(&aside, &oplog).unwrap();
+        if !first && tries < 5 {
+            continue;
+        }
+        assert!(first, "the deletion came first in {tries} tries");
+        assert_eq!(
+            a.json,
+            json!({"deleted": true, "pcs": 0, "devices": 1, "relays": 0}),
+            "{}",
+            a.text
+        );
+        assert!(account_of(&h, HONG.0).await.is_none());
+        assert_eq!(deletions(&h).await, 1);
+        assert_eq!(deletion_lines(&h).len(), 1);
+        let record = std::fs::read_to_string(&oplog).unwrap();
+        assert_eq!(oplog::verify(&oplog).unwrap(), record.lines().count());
+        assert!(journal_has(&format!(
+            "account delete: the operator record did not take the result line (acct={}); the account is deleted",
+            h.account_tag(HONG.0)
+        )));
+        break;
+    }
+}
+
+/// A client that goes away while its deletion waits for the database (the app's time limit, a
+/// network change: nginx then closes the connection) does not cut the deletion short: it ends
+/// with its result line, its record and journal line, and the app's retry of the same bytes gets
+/// its first answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deletion_runs_to_its_end_when_the_client_goes_away() {
+    for tries in 1.. {
+        let h = Arc::new(Harness::with(own_tags()).await);
+        let token = h.login_ok(HONG, None).await;
+        let tag = h.account_tag(HONG.0);
+        let signed = h.proof_for("POST", DELETE, CONFIRM_BODY, &token).unwrap();
+        let hash = sha256(token.as_bytes());
+        let sent = proof::request_hash(&signed, "POST", DELETE, &sha256(CONFIRM_BODY), &hash);
+        let key = format!("account-delete.{}", hex(&sent));
+        // the app's request, on a connection of its own
+        let mut stream = tokio::net::TcpStream::connect(h.api).await.unwrap();
+        let head = format!(
+            "POST {DELETE} HTTP/1.1\r\nHost: hjv\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nX-HJV-Proof: {signed}\r\nContent-Length: {}\r\n\r\n",
+            CONFIRM_BODY.len()
+        );
+        stream.write_all(head.as_bytes()).await.unwrap();
+        stream.write_all(CONFIRM_BODY).await.unwrap();
+        let started = Instant::now();
+        while h.state.request_retries.again(&key, sent).is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "no checks passed"
+            );
+            std::thread::yield_now();
+        }
+        // the database busy a moment (a backup, the upkeep): the deletion waits for it, and the
+        // client goes away meanwhile
+        let hold = {
+            let (state, oplog) = (h.state.clone(), h.oplog.clone());
+            tokio::spawn(async move {
+                state
+                    .db
+                    .call(move |c| {
+                        let started = Instant::now();
+                        while first_lines(&oplog) == 0 {
+                            assert!(started.elapsed() < Duration::from_secs(5), "no first line");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        let first = c.query_row(
+                            "SELECT EXISTS (SELECT 1 FROM tokens WHERE hash = ?1)",
+                            [&hash[..]],
+                            |r| r.get::<_, bool>(0),
+                        )?;
+                        std::thread::sleep(Duration::from_millis(600));
+                        Ok(first)
+                    })
+                    .await
+                    .unwrap()
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drop(stream);
+        let first = hold.await.unwrap();
+        // the journal's line is the deletion's last step, after its result line and record
+        let line = format!(
+            "account: deleted at its own request (acct={tag}): 0 PCs, 1 account keys, 1 tokens, 0 relays, allowlist entry removed"
+        );
+        let started = Instant::now();
+        while !journal_has(&line) {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the deletion did not end: {:?}",
+                deletion_lines(&h)
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        if !first && tries < 5 {
+            continue;
+        }
+        assert!(first, "the deletion came first in {tries} tries");
+        assert!(account_of(&h, HONG.0).await.is_none());
+        let lines = deletion_lines(&h);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[1].contains(&format!(" acct={tag} done=\"ok: 0 PCs, ")),
+            "{lines:?}"
+        );
+        assert_eq!(deletions(&h).await, 1);
+        let again = delete_with(&h, &token, Some(&signed)).await;
+        assert_eq!(
+            (again.status, &again.json),
+            (
+                200,
+                &json!({"deleted": true, "pcs": 0, "devices": 1, "relays": 0})
+            ),
+            "{}",
+            again.text
+        );
+        break;
+    }
+}
+
+/// The very same request twice at once (the app's retry while the first still waits): one
+/// deletion, and both get its answer.
+#[tokio::test]
+async fn the_very_same_request_twice_at_once() {
+    let h = Harness::start().await;
+    let token = h.login_ok(HONG, None).await;
+    let signed = h.proof_for("POST", DELETE, CONFIRM_BODY, &token).unwrap();
+    // the database held a moment: both wait for it in their authentication
+    let hold = {
+        let state = h.state.clone();
+        tokio::spawn(async move {
+            state
+                .db
+                .call(|_| {
+                    std::thread::sleep(Duration::from_millis(500));
+                    Ok(())
+                })
+                .await
+                .unwrap()
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (a, b) = tokio::join!(
+        delete_with(&h, &token, Some(&signed)),
+        delete_with(&h, &token, Some(&signed))
+    );
+    hold.await.unwrap();
+    assert_eq!(
+        (a.status, &a.json),
+        (
+            200,
+            &json!({"deleted": true, "pcs": 0, "devices": 1, "relays": 0})
+        ),
+        "{}",
+        a.text
+    );
+    assert_eq!((b.status, &b.text), (200, &a.text));
+    assert_eq!(deletions(&h).await, 1);
+    assert_eq!(deletion_lines(&h).len(), 2);
+}
+
+/// A database error deletes nothing: 500, the result line `failed: database` and the journal's
+/// line by the tag, no record, the token still good; the very same request again gets the same
+/// answer, and a new one deletes the account once the database works.
+#[tokio::test]
+async fn a_database_error_deletes_nothing() {
+    let h = Harness::with(own_tags()).await;
+    let token = h.login_ok(HONG, None).await;
+    let tag = h.account_tag(HONG.0);
+    h.state
+        .db
+        .call(|c| {
+            c.execute_batch(
+                "CREATE TEMP TRIGGER held BEFORE DELETE ON accounts
+                 BEGIN SELECT RAISE(ABORT, 'held'); END;",
+            )
+        })
+        .await
+        .unwrap();
+    let signed = h.proof_for("POST", DELETE, CONFIRM_BODY, &token).unwrap();
+    let a = delete_with(&h, &token, Some(&signed)).await;
+    let failed = json!({"error": "서버 오류입니다. 잠시 뒤 다시 시도해 주세요."});
+    assert_eq!((a.status, &a.json), (500, &failed), "{}", a.text);
+    assert!(account_of(&h, HONG.0).await.is_some());
+    let me = h.post("/api/currentUser", &token, Some(json!({}))).await;
+    assert_eq!(me.status, 200, "{}", me.text);
+    assert_eq!(deletions(&h).await, 0);
+    let lines = deletion_lines(&h);
+    assert!(
+        lines[1].contains(&format!(" acct={tag} done=\"failed: database\" ")),
+        "{lines:?}"
+    );
+    let suffix = format!(" (acct={tag}); nothing was deleted");
+    assert!(hjv_api::log::captured()
+        .iter()
+        .any(|l| l.starts_with("account delete: database: ") && l.ends_with(&suffix)));
+    let again = delete_with(&h, &token, Some(&signed)).await;
+    assert_eq!(
+        (again.status, &again.json),
+        (500, &failed),
+        "{}",
+        again.text
+    );
+    h.state
+        .db
+        .call(|c| c.execute_batch("DROP TRIGGER held"))
+        .await
+        .unwrap();
+    let a = h.post(DELETE, &token, confirm()).await;
+    assert_eq!(
+        a.json,
+        json!({"deleted": true, "pcs": 0, "devices": 1, "relays": 0}),
+        "{}",
+        a.text
+    );
 }

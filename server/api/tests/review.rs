@@ -18,7 +18,7 @@ use hjv_api::{
     sso::Failure,
     tfa::SecondFactor,
     update::TEXT_REVIEW,
-    util::{b64, datetime, now, DAY},
+    util::{b64, datetime, now, random_bytes, DAY},
 };
 use hyper::Method;
 use serde_json::{json, Value};
@@ -583,7 +583,8 @@ async fn the_review_session_ends_with_the_file() {
 /// The account deletes itself in the app as any other (1.9.1, account.rs), at once, but its
 /// allowlist entry stays: the next review login, in open mode and in list mode alike, makes a new,
 /// empty account (not the deleted one's: no key of it is left to notice). The journal says it was
-/// the App Review account, by its tag; the operator record, that its entry was kept.
+/// the App Review account, by its tag (a log key of each harness's own: the line is that harness's);
+/// the operator record, that its entry was kept.
 #[tokio::test]
 async fn the_review_account_deletes_itself_and_comes_back_empty() {
     for list in [false, true] {
@@ -592,7 +593,12 @@ async fn the_review_account_deletes_itself_and_comes_back_empty() {
         } else {
             vec![]
         };
-        let (h, file, _dir) = start(vars).await;
+        let (h, file, _dir) = start_with(Options {
+            vars,
+            log_key: Some(random_bytes::<32>()),
+            ..Default::default()
+        })
+        .await;
         put(&file, &review_file(REVIEW.0, now() + DAY));
         if list {
             h.admin(
@@ -650,7 +656,7 @@ async fn the_review_account_deletes_itself_and_comes_back_empty() {
             "{record}"
         );
         assert!(
-            record.contains("cmd=\"app account-delete\" done=\"ok: 0 PCs, 1 account keys, 1 tokens, 0 relays, allowlist entry kept (App Review)\""),
+            record.contains(&format!("cmd=\"app account-delete\" acct={tag} done=\"ok: 0 PCs, 1 account keys, 1 tokens, 0 relays, allowlist entry kept (App Review)\"")),
             "{record}"
         );
         let line = format!(
