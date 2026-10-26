@@ -58,7 +58,7 @@ REVIEW_NOTES_BYTES = 4000
 PLAY_NOTES_CHARS = 500
 PLAY_LOCALES = ("ko-KR",)
 # the lines the CI puts after play/ko-KR/release_notes.txt: the printf of the Play upload step in
-# .github/workflows (client-build.yml: 'HJViewer %s (%s)\n소스 코드(AGPL-3.0): https://github.com/%s/tree/%s\n'),
+# .github/workflows (store-release.yml: 'HJViewer %s (%s)\n소스 코드(AGPL-3.0): https://github.com/%s/tree/%s\n'),
 # counted with the longest values it can take (scripts/test_check_store_text.py pins the format)
 PLAY_SOURCE_LINES = ("HJViewer {version} ({code})", "소스 코드(AGPL-3.0): https://github.com/{repo}/tree/{sha}")
 # the repository is the public one with a source_ref, else the calling (private build) repository:

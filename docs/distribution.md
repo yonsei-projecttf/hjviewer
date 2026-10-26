@@ -21,7 +21,7 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 | Android | 릴리스 서명 APK를 직접 설치(사이드로드) | 없음 | 업로드 키스토어 하나. 1.6.0부터 새 버전은 앱이 받아 설치 화면을 엶 |
 | iOS | TestFlight **내부** 테스트 | 없음 (App Store Connect 사용자 최대 100명, 빌드는 90일 뒤 만료) | Apple Developer Program, App Store Connect API 키, 앱 레코드, App Store 프로파일 ([ci.md](ci.md)의 "TestFlight 업로드"). 새 버전은 TestFlight 앱이 설치함 |
 | iOS(대안) | **Ad Hoc** 서명 IPA를 등록된 iPhone에 설치 | 없음 | Apple Developer Program, 사용자 iPhone UDID 등록. 앱 안에서 업데이트할 수 없어 새 버전마다 관리자가 새 IPA를 줌 |
-| Android(대안) | Google Play **내부** 테스트 | 업데이트는 없음 (게시 뒤 소급 심사는 가능, 테스터 최대 100명, Play 스토어에서 설치하고 자동 업데이트) | Play 개발자 계정(있음), Play Console의 앱과 첫 AAB 직접 업로드, 서비스 계정 ([ci.md](ci.md)의 "Google Play 업로드") |
+| Android(대안) | Google Play **비공개** 테스트(트랙 Alpha, 1.9.0부터) | 출시마다 Google 심사(몇 시간–7일). Play 스토어에서 설치하고 자동 업데이트 | Play 개발자 계정(있음), 첫 출시(1.9.0, 소유자가 손으로), 서비스 계정. 1.9.1부터 스토어 실행이 올림([store-release.md](store-release.md)). 1.6.x 때는 내부 테스트 트랙을 설정했음([ci.md](ci.md)의 "Google Play 업로드") |
 
 실제 서버 값으로 만든 앱은 공개 아티팩트로 올리지 않습니다. 그래서 서명 빌드는 **비공개 빌드 저장소** `yonsei-projecttf/hjviewer-private`의 CI에서 합니다([deploy.md](deploy.md)의 "소규모 비공개 운영"). 이 워크플로는 iOS 서명과 Google Play용 AAB를 비공개 저장소에서만 만듭니다.
 
@@ -40,8 +40,8 @@ Apple의 App Review Guidelines 서문은 **가족이나 지인만 쓰는 앱이�
 - `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`: 만드는 방법은 [ci.md](ci.md)에 있습니다. 같은 키로 서명해야 앱 위에 업데이트를 설치할 수 있으므로, **키스토어를 잃어버리면 안 됩니다.** 1.6.0의 앱 안 설치도 받은 APK의 서명 인증서가 설치된 앱과 같은지 봅니다.
 - 사용자는 Android 설정에서 "출처를 알 수 없는 앱 설치"를 허용해야 합니다. 1.6.0부터 앱 안에서 업데이트하려면 HJViewer에도 허용합니다([아래](#android-파일apk로-설치한-앱)).
 
-**Android (Google Play 내부 테스트, 대안)**
-- `PLAY_SA_EMAIL`, `PLAY_SA_PRIVATE_KEY`: Google Cloud 서비스 계정 JSON 키의 두 값. 만드는 방법과 넣는 명령은 [ci.md](ci.md)의 "Google Play 업로드"에 있습니다.
+**Android (Google Play 비공개 테스트 Alpha, 대안)**
+- `PLAY_SA_EMAIL`, `PLAY_SA_PRIVATE_KEY`: Google Cloud 서비스 계정 JSON 키의 두 값. 비공개 빌드 저장소의 environment `store`에 넣습니다. 만드는 방법은 [ci.md](ci.md)의 "Google Play 업로드", 넣는 명령은 [store-release.md](store-release.md)에 있습니다.
 - 위 Android 키스토어가 Play의 업로드 키가 됩니다. 새 시크릿은 이 두 개뿐입니다.
 - 테스터의 Google 계정 이메일. 휴대폰 Play 스토어에 로그인한 계정이어야 합니다.
 - 앱 서명 키를 기본값(Google 생성)으로 두면 Play 앱과 사이드로드 앱은 서명이 달라 서로 업데이트하지 못합니다. Play로 옮기는 휴대폰은 사이드로드 앱을 먼저 지웁니다.
@@ -277,7 +277,7 @@ HJViewer 1.8.0이 나왔습니다. <날짜>부터 HJViewer 서버는 연세대�
 
 ### 사용자에게 보내는 안내 (1.9.0)
 
-1.9.0을 나눠 줄 때 보내는 메시지의 예입니다. `<…>`를 채웁니다. 지원 코드와 지원 링크는 서버에 1.9.0의 hjv-api를 넣은 뒤에만 쓸 수 있으므로([server-runbook.md](server-runbook.md) 9-9), 그 줄은 서버를 바꾼 뒤에 넣습니다. Play 스토어로는 나눠 주지 않았으므로(Play 첫 출시 보류) Play 스토어 말은 넣지 않습니다. 앱 안에서 새 버전을 받는 것은 로그인한 앱뿐이고, 저절로 올라가는 것은 그 PC에서 로그인해 둔 설치 PC뿐입니다([1.6.0부터의 업데이트](#160부터의-업데이트)).
+1.9.0을 나눠 줄 때 보내는 메시지의 예입니다. `<…>`를 채웁니다. 지원 코드와 지원 링크는 서버에 1.9.0의 hjv-api를 넣은 뒤에만 쓸 수 있으므로([server-runbook.md](server-runbook.md) 9-9), 그 줄은 서버를 바꾼 뒤에 넣습니다. Play 스토어 말은 넣지 않습니다. 1.9.0의 Play 빌드는 비공개 테스트 트랙 Alpha의 테스터에게만 있고(소유자가 손으로 올림), 그 앱은 Play가 업데이트합니다. 1.9.1부터는 스토어 실행이 Alpha에 올립니다([store-release.md](store-release.md)). 앱 안에서 새 버전을 받는 것은 로그인한 앱뿐이고, 저절로 올라가는 것은 그 PC에서 로그인해 둔 설치 PC뿐입니다([1.6.0부터의 업데이트](#160부터의-업데이트)).
 
 ```text
 HJViewer 1.9.0이 나왔습니다. <날짜>부터는 1.9.0이어야 연결할 수 있습니다.

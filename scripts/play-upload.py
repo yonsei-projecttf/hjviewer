@@ -2,9 +2,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Upload a signed Android App Bundle to a Google Play testing track (Play Developer API v3).
 
-One edit per run: insert -> tracks.list + bundles.list -> bundles.upload -> tracks.update -> commit
-(or validate + delete with --mode validate). Any failure deletes the edit, so nothing half-lands.
-A bundle with a lower versionCode than the track already serves is refused before it is uploaded.
+Before any edit, applications.tracks.releases.list (no edit) reads the target track (alpha, the
+closed testing track: auto-deploy design 7-2) and the internal track:
+  - a release of this versionCode that Play has (in review, approved or published) ends the run
+    as done: a re-run after a commit whose answer was lost changes nothing
+  - a release IN_REVIEW stops the run unless --in-review cancel; NOT_APPROVED and
+    NOT_SENT_FOR_REVIEW always stop it, with what to do in Play Console
+Then one edit: insert -> tracks.list + bundles.list -> bundles.upload (skipped when Play already
+holds the bundle, same sha256) -> tracks.update -> commit (or validate + delete with --mode
+validate). The commit always names changesInReviewBehavior (Google's default would cancel a
+review): ERROR_IF_IN_REVIEW, or CANCEL_IN_REVIEW_AND_SUBMIT with --in-review cancel. Any failure
+deletes the edit, so nothing half-lands. A bundle with a lower versionCode than the track already
+serves is refused before it is uploaded.
 Python standard library only; the JWT is signed by the runner's openssl.
 
 Credentials come from the environment only, never from arguments or files:
@@ -20,9 +29,12 @@ Modes:
   validate  everything up to the commit, then asks Play to validate the edit and deletes it: nothing
             is released, and a bundle uploaded to a deleted edit is discarded
   commit    the real upload (default)
+  status    reads the target track's and the internal track's releases (releases.list, no edit, no
+            bundle): one summary line, and with --json a file for the run's artifact
 
 Exit status: 0 done (or already done), 1 failed, 2 bad usage.
-Used by the play job of .github/workflows/client-build.yml; docs/ci.md, "Google Play 업로드".
+Used by the Google Play job of .github/workflows/store-release.yml (the store run); docs/store-release.md
+and docs/ci.md, "Google Play 업로드".
 Offline tests: python3 -I -B -m unittest discover -s scripts -p 'test_play_upload.py'
 """
 from __future__ import annotations
@@ -51,6 +63,12 @@ PEM_LIMIT = 16384  # an RSA private key in PEM is a few KB; this also stays far 
 CALL_TIMEOUT = 60
 UPLOAD_TIMEOUT = 900  # the discovery document asks for a longer timeout on bundles.upload
 STATUSES = ("completed", "draft")  # inProgress/halted (staged rollouts) are not for a testing track here
+TRACK = "alpha"  # the closed testing track Alpha (the owner's decision of 2026-10-26)
+# edits.commit's changesInReviewBehavior, always sent: Google's default cancels a review in progress
+COMMIT_BEHAVIOUR = {"error": "ERROR_IF_IN_REVIEW", "cancel": "CANCEL_IN_REVIEW_AND_SUBMIT"}
+# ReleaseSummary.releaseLifecycleState, without the RELEASE_LIFECYCLE_STATE_ prefix
+STATE_PREFIX = "RELEASE_LIFECYCLE_STATE_"
+HELD = ("IN_REVIEW", "APPROVED_NOT_PUBLISHED", "PUBLISHED")  # states in which Play has the release
 
 
 class PlayError(Exception):
@@ -230,6 +248,8 @@ def check_args(args) -> str:
                            "language", "usage")
     if len(args.name) > 50:
         raise PlayError(0, "keep the release name to 50 characters", "usage")
+    if args.mode != "status" and not args.aab:
+        raise PlayError(0, f"--mode {args.mode} needs --aab", "usage")
     return notes
 
 
@@ -343,7 +363,107 @@ def release_body(track: str, version_code: int, args, notes: str) -> dict:
     return {"track": track, "releases": [release]}
 
 
+def releases_url(package: str, track: str) -> str:
+    return f"{API}/{package}/tracks/{urllib.parse.quote(track, safe=':')}/releases"
+
+
+def state_of(release: dict) -> str:
+    return str(release.get("releaseLifecycleState", "")).removeprefix(STATE_PREFIX) or "UNSPECIFIED"
+
+
+def codes_of(release: dict) -> list[int]:
+    return sorted(int(a["versionCode"]) for a in release.get("activeArtifacts") or []
+                  if isinstance(a, dict) and str(a.get("versionCode", "")).isdigit())
+
+
+def list_releases(token: str, args) -> dict:
+    """{track: [ReleaseSummary, ...]} for the target track and internal; no edit is opened. A track
+    the app does not have is None (internal may be called qa, or not be set up)."""
+    found = {}
+    for track in dict.fromkeys((args.track, "internal")):
+        try:
+            found[track] = call("GET", releases_url(args.package, track), token, retries=2).get("releases") or []
+        except PlayError as error:
+            if error.status != 404:
+                raise
+            if track == args.track:
+                raise PlayError(404, f"Play has no track {track!r} for {args.package}", "usage") from None
+            found[track] = None
+    return found
+
+
+def describe(found: dict) -> list[str]:
+    lines = []
+    for track, entries in found.items():
+        if entries is None:
+            lines.append(f"{track}: no such track")
+        elif not entries:
+            lines.append(f"{track}: no release")
+        for release in entries or []:
+            codes = ", ".join(str(c) for c in codes_of(release)) or "no bundle"
+            lines.append(f"{track}: {release.get('releaseName') or '(no name)'}, versionCode {codes}, "
+                         f"{state_of(release)}")
+    return lines
+
+
+def precheck(found: dict, args) -> str | None:
+    """Before an edit: a done-message when Play has this versionCode on the track already, None to go
+    on; raises when a review or a rejection stands in the way (design 7-2)."""
+    if args.version_code:
+        for release in found.get(args.track) or []:
+            if args.version_code in codes_of(release) and state_of(release) in HELD:
+                return (f"Google Play {args.track}: versionCode {args.version_code} is there already "
+                        f"({state_of(release)}); nothing to do.")
+    for track, entries in found.items():
+        for release in entries or []:
+            state, name = state_of(release), release.get("releaseName") or "a release"
+            if state in ("NOT_APPROVED", "NOT_SENT_FOR_REVIEW"):
+                raise PlayError(0, f"{track} has {name} {state}: Play holds changes after a rejection or "
+                                   "changes not sent for review", "",
+                                "Resolve them in Play Console > Publishing overview (send them for review by "
+                                "hand, or remove them), then run the upload again. No edit was opened. A code "
+                                "problem takes a new build with a higher version.")
+            if state == "IN_REVIEW":
+                if args.in_review == "cancel":
+                    print(f"note: {track} has {name} IN_REVIEW; --in-review cancel: the commit cancels that "
+                          "review and sends this release (the review starts over)")
+                    continue
+                raise PlayError(0, f"{track} has {name} IN_REVIEW: Google is reviewing an earlier change", "",
+                                "Wait for the review to end (store run action=status), or, if the owner decides "
+                                "so, run the upload with in_review=cancel: that cancels the review in progress "
+                                "and sends this release instead. No edit was opened.")
+    return None
+
+
+def status(args, env) -> int:
+    check_args(args)
+    token = access_token(env)
+    found = list_releases(token, args)
+    for line in describe(found):
+        print(line)
+    report = {"package": args.package, "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+              "tracks": {track: None if entries is None else
+                         [{"name": r.get("releaseName"), "versionCodes": codes_of(r), "state": state_of(r)}
+                          for r in entries] for track, entries in found.items()}}
+    target = found.get(args.track) or []
+    if args.version_code:
+        states = [state_of(r) for r in target if args.version_code in codes_of(r)]
+        report["versionCode"] = {"code": args.version_code, "states": states}
+        summary(f"Google Play {args.track}: versionCode {args.version_code} "
+                + (", ".join(states) if states else "not on the track"))
+    else:
+        summary(f"Google Play {args.track}: " + ("; ".join(
+            f"{', '.join(map(str, codes_of(r))) or '-'} {state_of(r)}" for r in target) or "no release"))
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as handle:
+            json.dump(report, handle, indent=2)
+            handle.write("\n")
+    return 0
+
+
 def upload(args, env) -> int:
+    if args.mode == "status":
+        return status(args, env)
     notes = check_args(args)
     data, sha256 = inspect_bundle(args.aab)
     print(f"bundle {args.aab}: {len(data)} bytes, sha256 {sha256}")
@@ -358,17 +478,25 @@ def upload(args, env) -> int:
         base = f"{API}/{args.package}/edits"
         planned = release_body(args.track, args.version_code or 0, args, notes)
         for step in (f"POST {TOKEN_URL} (jwt-bearer)" if not kind or kind[0] == "key" else None,
+                     f"GET  {releases_url(args.package, args.track)} (no edit: stop on IN_REVIEW unless "
+                     f"--in-review cancel, on NOT_APPROVED and NOT_SENT_FOR_REVIEW)",
+                     f"GET  {releases_url(args.package, 'internal')}" if args.track != "internal" else None,
                      f"POST {base}", f"GET  {base}/<edit>/tracks", f"GET  {base}/<edit>/bundles",
                      f"POST {UPLOAD_API}/{args.package}/edits/<edit>/bundles?uploadType=media "
                      "(skipped if Play already holds this sha256)",
                      f"PUT  {base}/<edit>/tracks/{args.track} {json.dumps(planned, ensure_ascii=False)}",
-                     f"POST {base}/<edit>:commit?changesInReviewBehavior=ERROR_IF_IN_REVIEW"):
+                     f"POST {base}/<edit>:commit?changesInReviewBehavior={COMMIT_BEHAVIOUR[args.in_review]}"
+                     if args.mode != "validate" else f"POST {base}/<edit>:validate, then DELETE the edit"):
             if step:
                 print("would call: " + step)
         print("dry run: nothing was sent")
         return 0
 
     token = access_token(env)
+    done = precheck(list_releases(token, args), args)
+    if done:
+        summary(done)
+        return 0
     base = f"{API}/{args.package}/edits"
     edit = None
     left = "nothing committed"  # said when the edit is deleted; not known after an unanswered commit
@@ -421,18 +549,20 @@ def upload(args, env) -> int:
                     "nothing was released (validate mode).")
             return 0
         try:
-            call("POST", f"{url}:commit?changesInReviewBehavior=ERROR_IF_IN_REVIEW", token)
+            call("POST", f"{url}:commit?changesInReviewBehavior={COMMIT_BEHAVIOUR[args.in_review]}", token)
         except PlayError as error:
             if error.status == 0 or error.status >= 500:
                 # no refusal, only no proper answer: Play may have committed and its reply got lost
                 left = "it was still open"
                 error.advice = ("Google Play did not answer the commit properly, so the release may or may "
-                                "not have gone through: run the play job again (Re-run failed jobs). A bundle "
-                                "that is already released is detected and left as it is.")
+                                "not have gone through: run the same upload again (or Re-run failed jobs). A "
+                                "bundle that Play has already is detected and left as it is.")
             raise
         edit = None  # committed: nothing to delete
         summary(f"Uploaded {args.package} versionCode {version_code} to Google Play {track} ({args.status}). "
-                + ("Internal testers get it from the Play Store once Play has processed it."
+                + (("Internal testers get it from the Play Store once Play has processed it." if track in
+                    ("internal", "qa") else "Google reviews it first (hours to 7 days); the store run's status "
+                    "shows when it is PUBLISHED.")
                    if args.status == "completed" else "Roll the draft out in Play Console."))
         return 0
     finally:
@@ -447,14 +577,17 @@ def upload(args, env) -> int:
 def main(argv: list[str], env=os.environ) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--package", required=True)
-    parser.add_argument("--aab", required=True)
-    parser.add_argument("--track", default="internal")
+    parser.add_argument("--aab", help="the signed bundle (every mode but status)")
+    parser.add_argument("--track", default=TRACK)
     parser.add_argument("--status", choices=STATUSES, default="completed")
     parser.add_argument("--name", default="", help="release name, e.g. '1.6.0 (262851234)'")
     parser.add_argument("--notes-file", help="release notes, UTF-8 text, up to 500 characters")
     parser.add_argument("--notes-language", default="ko-KR")
     parser.add_argument("--version-code", type=int, help="fail unless the bundle has this versionCode")
-    parser.add_argument("--mode", choices=("dry-run", "validate", "commit"), default="commit")
+    parser.add_argument("--mode", choices=("dry-run", "validate", "commit", "status"), default="commit")
+    parser.add_argument("--in-review", choices=tuple(COMMIT_BEHAVIOUR), default="error",
+                        help="a release in review: error (stop, default) or cancel (cancel it and send this one)")
+    parser.add_argument("--json", help="status: write the releases to this file")
     args = parser.parse_args(argv)
     try:
         return upload(args, env)

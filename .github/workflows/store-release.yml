@@ -1,0 +1,520 @@
+# The store run (auto-deploy design 2, docs/store-release.md): one platform and one action at a
+# time, started by hand from the build repository's store.yml, which calls this file at a reviewed
+# commit and passes the store secrets by name. API calls only, on Linux; nothing is built here.
+#   checks    every action but status: the inputs, this file's repository, the tag client-<version>
+#             and store/<store>/version.txt, the store texts, the release record, the build run of
+#             an upload, other store runs, the demo account's end date. No secrets.
+#   play      environment store: status, upload (scripts/play-upload.py, the closed track alpha)
+#   appstore  environment store: status, prepare, submit, release (scripts/asc-store.mjs)
+#   record    after an upload, submit or release that was not a dry run: a line in the build
+#             repository's store-releases.txt (scripts/store-record.py). The only job that writes,
+#             and it has no secrets.
+# Every checkout takes this file's own repository and commit (job.workflow_repository and
+# job.workflow_sha) without credentials: in a called workflow github.repository and github.sha are
+# the caller's, which holds no code. status has no checks job and opens no edit, so it stays out
+# of the editing jobs' concurrency groups, where a waiting upload could be cancelled by it.
+name: store
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: android or ios
+        type: string
+        required: true
+      action:
+        description: "status; android: upload; ios: prepare, submit, release"
+        type: string
+        required: true
+      version:
+        description: The app version, X.Y.Z (every action but status)
+        type: string
+        default: ""
+      build:
+        description: The versionCode (android) or CFBundleVersion (ios) (every action but status)
+        type: string
+        default: ""
+      run_id:
+        description: "android upload: the build run (build.yml) whose -play bundle goes to Google Play"
+        type: string
+        default: ""
+      in_review:
+        description: "android upload: error (stop while Google reviews an earlier change) or cancel (cancel that review and send this release)"
+        type: string
+        default: error
+      release_type:
+        description: "ios prepare, submit: manual or after-approval"
+        type: string
+        default: manual
+      phased:
+        description: "ios prepare, submit: release in phases (with after-approval)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Google Play: validate the edit and delete it; App Store Connect: GET requests only, the writes printed"
+        type: boolean
+        default: false
+    # Passed by name, never with secrets: inherit. The store keys and the review values live in the
+    # build repository's environment `store`, which only the play and appstore jobs declare; there
+    # GitHub takes the environment's value. They are not required here because the caller, which
+    # has no environment, passes them empty; the jobs check what they need.
+    secrets:
+      PLAY_SA_EMAIL:
+        required: false
+      PLAY_SA_PRIVATE_KEY:
+        required: false
+      ASC_APP_ID:
+        required: false
+      ASC_ISSUER_ID:
+        required: false
+      ASC_STORE_KEY_ID:
+        required: false
+      ASC_STORE_PRIVATE_KEY:
+        required: false
+      REVIEW_DEMO_USER:
+        required: false
+      REVIEW_DEMO_PASSWORD:
+        required: false
+      REVIEW_DEMO_PC_ID:
+        required: false
+      REVIEW_DEMO_PC_PASSWORD:
+        required: false
+      REVIEW_CONTACT_FIRST_NAME:
+        required: false
+      REVIEW_CONTACT_LAST_NAME:
+        required: false
+      REVIEW_CONTACT_PHONE:
+        required: false
+      REVIEW_CONTACT_EMAIL:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  PUBLIC_REPOSITORY: yonsei-projecttf/hjviewer
+  PLAY_PACKAGE: kr.ac.yonsei.hjviewer
+
+jobs:
+  checks:
+    name: Checks
+    if: inputs.action != 'status'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      source_sha: ${{ steps.inputs.outputs.source_sha }}
+      artifact: ${{ steps.build-run.outputs.artifact }}
+    steps:
+      - name: Check where this workflow comes from
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ "$WORKFLOW_REPOSITORY" != "$PUBLIC_REPOSITORY" ] || ! [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY at a full commit SHA (job.workflow_repository is '$WORKFLOW_REPOSITORY')."
+            exit 1
+          fi
+
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+
+      - name: Check the inputs, the tag and the store texts
+        id: inputs
+        env:
+          PLATFORM: ${{ inputs.platform }}
+          ACTION: ${{ inputs.action }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          RUN_ID: ${{ inputs.run_id }}
+          IN_REVIEW: ${{ inputs.in_review }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          PHASED: ${{ inputs.phased }}
+        run: |
+          problems=()
+          case "$PLATFORM:$ACTION" in
+            android:upload) store=play ;;
+            ios:prepare|ios:submit|ios:release) store=appstore ;;
+            *) store=; problems+=("platform $PLATFORM takes no action $ACTION (android: status, upload; ios: status, prepare, submit, release).") ;;
+          esac
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || problems+=("version must be X.Y.Z.")
+          [[ "$BUILD" =~ ^[0-9]{1,18}$ ]] || problems+=("build must be the versionCode (android) or the CFBundleVersion (ios).")
+          if [ "$ACTION" = upload ]; then
+            [[ "$RUN_ID" =~ ^[0-9]+$ ]] || problems+=("upload needs run_id, the build run whose -play bundle goes to Google Play.")
+          elif [ -n "$RUN_ID" ]; then
+            problems+=("run_id is for android upload only.")
+          fi
+          case "$IN_REVIEW" in error) ;; cancel) [ "$ACTION" = upload ] || problems+=("in_review=cancel is for android upload only.") ;; *) problems+=("in_review must be error or cancel.") ;; esac
+          case "$RELEASE_TYPE" in manual|after-approval) ;; *) problems+=("release_type must be manual or after-approval.") ;; esac
+          if [ "$PLATFORM" != ios ] && { [ "$RELEASE_TYPE" != manual ] || [ "$PHASED" = true ]; }; then
+            problems+=("release_type and phased are for ios only.")
+          fi
+          if [ -n "$store" ] && [ "$(cat "store/$store/version.txt")" != "$VERSION" ]; then
+            problems+=("store/$store/version.txt is $(cat "store/$store/version.txt"), not $VERSION: the texts at this commit are another version's.")
+          fi
+          for p in "${problems[@]}"; do echo "::error::$p"; done
+          [ ${#problems[@]} = 0 ]
+          # the tag that says the build is handed out; its commit is the source the stores get
+          tags=$(git ls-remote "https://github.com/$PUBLIC_REPOSITORY" "refs/tags/client-$VERSION" "refs/tags/client-$VERSION^{}")
+          sha=$(awk -v t="refs/tags/client-$VERSION^{}" '$2 == t { print $1 }' <<< "$tags")
+          [ -n "$sha" ] || sha=$(awk -v t="refs/tags/client-$VERSION" '$2 == t { print $1 }' <<< "$tags")
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::$PUBLIC_REPOSITORY has no tag client-$VERSION: tag the build's commit once the owner has checked the build (docs/store-release.md), then run this again."
+            exit 1
+          fi
+          echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Source: client-$VERSION = $sha" >> "$GITHUB_STEP_SUMMARY"
+          # the texts this run sends; the script prints file names and counts only
+          python3 -I scripts/check-store-text.py --allow-version-split
+
+      - name: Check the release record
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ inputs.platform }}
+          ACTION: ${{ inputs.action }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+        run: |
+          store=appstore
+          if [ "$PLATFORM" = android ]; then store=play; fi
+          # prepare writes no line; it is checked as the submit that follows it
+          action=$ACTION
+          if [ "$action" = prepare ]; then action=submit; fi
+          python3 -I scripts/store-record.py check --repo "$GITHUB_REPOSITORY" --store "$store" --version "$VERSION" --build "$BUILD" --action "$action"
+
+      # The bundle comes from a successful run of this repository's build.yml, started by hand,
+      # whose -play artifact carries this version and the tag's commit in its name
+      - name: Check the build run
+        id: build-run
+        if: inputs.action == 'upload'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+        run: |
+          read -r path event status conclusion repo < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
+            --jq '[.path, .event, .status, .conclusion, .repository.full_name] | map(. // "-") | join(" ")')
+          if [ "$path" != .github/workflows/build.yml ] || [ "$event" != workflow_dispatch ] || [ "$status" != completed ] \
+            || [ "$conclusion" != success ] || [ "$repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::Run $RUN_ID is not a successful run of build.yml started by hand in this repository ($path, $event, $status, $conclusion)."
+            exit 1
+          fi
+          artifact="HJViewer-$VERSION-${SOURCE_SHA:0:7}-android-aarch64-play"
+          expired=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.name == \"$artifact\") | .expired")
+          if [ "$expired" != false ]; then
+            echo "::error::Run $RUN_ID has no $artifact${expired:+ (it has expired: bundles are kept 30 days)}: the bundle must be of client-$VERSION's commit. A gone bundle takes a new build with a higher version."
+            exit 1
+          fi
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "Bundle: $artifact of build run $RUN_ID" >> "$GITHUB_STEP_SUMMARY"
+
+      # One store run at a time: a second one waits in GitHub's queue only as long as no third comes
+      - name: Check for other store runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          file=${WORKFLOW_REF%@*}
+          file=${file##*/}
+          others=""
+          for state in queued in_progress waiting requested pending; do
+            others+=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$file/runs?status=$state&per_page=20" \
+              --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | \" #\(.run_number) (\(.status))\"")
+          done
+          if [ -n "$others" ]; then
+            echo "::error::Another store run is not finished:$others. Wait for it, then start this one again."
+            exit 1
+          fi
+
+      # App Review and Play's app access use the demo account of hjv-api's review.conf
+      - name: Check the demo account's end date
+        if: inputs.action != 'release'
+        env:
+          UNTIL: ${{ vars.REVIEW_DEMO_UNTIL }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          if [ -z "$UNTIL" ]; then
+            echo "::warning::The repository variable REVIEW_DEMO_UNTIL (review.conf's end date) is not set."
+            exit 0
+          fi
+          left=$(( ( $(date -u -d "$UNTIL" +%s) - $(date -u +%s) ) / 86400 ))
+          if [ "$left" -lt 0 ]; then
+            echo "::error::The demo account ended on $UNTIL: a review would fail. Make a new review.conf, update REVIEW_DEMO_* and Play's app access, then REVIEW_DEMO_UNTIL."
+            [ "$ACTION" = prepare ] || exit 1
+          elif [ "$left" -le 14 ]; then
+            echo "::warning::The demo account ends on $UNTIL, in $left days: a review that takes longer fails. Renew review.conf in time."
+          fi
+
+  play:
+    name: Google Play
+    needs: checks
+    if: ${{ !cancelled() && inputs.platform == 'android' && (inputs.action == 'status' || needs.checks.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: store
+    permissions:
+      contents: read
+      actions: read
+    # one Play edit at a time: committing an edit invalidates every other open edit of the app
+    concurrency:
+      group: ${{ inputs.action == 'status' && format('store-status-{0}', github.run_id) || format('google-play-{0}', github.repository) }}
+      cancel-in-progress: false
+    outputs:
+      done: ${{ steps.upload.outputs.done }}
+    steps:
+      - name: Check where this workflow comes from and the inputs
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          ACTION: ${{ inputs.action }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          PLAY_KEY_SET: ${{ secrets.PLAY_SA_EMAIL != '' && secrets.PLAY_SA_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$WORKFLOW_REPOSITORY" != "$PUBLIC_REPOSITORY" ] || ! [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY at a full commit SHA."
+            exit 1
+          fi
+          case "$ACTION" in
+            status|upload) ;;
+            *) echo "::error::android takes the actions status and upload, not $ACTION."; exit 1 ;;
+          esac
+          if [ "$ACTION" = status ]; then
+            if [ -n "$VERSION" ] && ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::version must be X.Y.Z."; exit 1; fi
+            if [ -n "$BUILD" ] && ! [[ "$BUILD" =~ ^[0-9]{1,18}$ ]]; then echo "::error::build must be a versionCode."; exit 1; fi
+          fi
+          if [ "$PLAY_KEY_SET" != true ]; then
+            echo "::error::PLAY_SA_EMAIL and PLAY_SA_PRIVATE_KEY are not in the environment store of this repository, or store.yml does not pass them (docs/store-release.md)."
+            exit 1
+          fi
+
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+
+      # releases.list only: no edit is opened
+      - name: Google Play status
+        if: inputs.action == 'status'
+        env:
+          PLAY_SA_EMAIL: ${{ secrets.PLAY_SA_EMAIL }}
+          PLAY_SA_PRIVATE_KEY: ${{ secrets.PLAY_SA_PRIVATE_KEY }}
+          BUILD: ${{ inputs.build }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/store-status"
+          python3 -I scripts/play-upload.py --package "$PLAY_PACKAGE" --mode status --track alpha \
+            ${BUILD:+--version-code "$BUILD"} --json "$RUNNER_TEMP/store-status/play-status.json"
+
+      - name: Download the bundle
+        if: inputs.action == 'upload'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.checks.outputs.artifact }}
+          run-id: ${{ inputs.run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: play-bundle
+
+      # The service account key reaches the script only through the environment; the script signs
+      # its token request with openssl through a pipe and prints neither the key nor the token.
+      - name: Upload to Google Play alpha
+        id: upload
+        if: inputs.action == 'upload'
+        env:
+          PLAY_SA_EMAIL: ${{ secrets.PLAY_SA_EMAIL }}
+          PLAY_SA_PRIVATE_KEY: ${{ secrets.PLAY_SA_PRIVATE_KEY }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          IN_REVIEW: ${{ inputs.in_review }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          SOURCE_SHA: ${{ needs.checks.outputs.source_sha }}
+          SOURCE_REPOSITORY: ${{ job.workflow_repository }}
+        run: |
+          set -euo pipefail
+          aab="play-bundle/HJViewer-$VERSION-${SOURCE_SHA:0:7}-android-aarch64.aab"
+          if [ ! -f "$aab" ]; then echo "::error::The artifact has no $(basename "$aab")."; exit 1; fi
+          # the owner's notes (store/play, checked in the checks job) and, for the AGPL, where this
+          # build's source is (Play builds carry no notice files)
+          notes="$RUNNER_TEMP/play-notes.txt"
+          { cat store/play/ko-KR/release_notes.txt
+            printf 'HJViewer %s (%s)\n소스 코드(AGPL-3.0): https://github.com/%s/tree/%s\n' \
+              "$VERSION" "$BUILD" "$SOURCE_REPOSITORY" "$SOURCE_SHA"
+          } > "$notes"
+          mode=commit
+          if [ "$DRY_RUN" = true ]; then mode=validate; fi
+          python3 -I scripts/play-upload.py --package "$PLAY_PACKAGE" --aab "$aab" --track alpha --status completed \
+            --mode "$mode" --name "$VERSION ($BUILD)" --version-code "$BUILD" --in-review "$IN_REVIEW" \
+            --notes-file "$notes" --notes-language ko-KR
+          if [ "$mode" = commit ]; then echo "done=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Keep the status
+        if: always() && inputs.action == 'status'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: store-status-android-${{ github.run_id }}
+          path: ${{ runner.temp }}/store-status/play-status.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  appstore:
+    name: App Store
+    needs: checks
+    if: ${{ !cancelled() && inputs.platform == 'ios' && (inputs.action == 'status' || needs.checks.result == 'success') }}
+    runs-on: ubuntu-24.04
+    # prepare waits up to 60 minutes for TestFlight's processing
+    timeout-minutes: 75
+    environment: store
+    permissions:
+      contents: read
+    # one App Store Connect change at a time (Apple keeps one open review submission per app)
+    concurrency:
+      group: ${{ inputs.action == 'status' && format('store-status-{0}', github.run_id) || format('app-store-{0}', github.repository) }}
+      cancel-in-progress: false
+    outputs:
+      done: ${{ steps.asc.outputs.done }}
+    steps:
+      - name: Check where this workflow comes from and the inputs
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          ACTION: ${{ inputs.action }}
+          ASC_KEY_SET: ${{ secrets.ASC_APP_ID != '' && secrets.ASC_ISSUER_ID != '' && secrets.ASC_STORE_KEY_ID != '' && secrets.ASC_STORE_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$WORKFLOW_REPOSITORY" != "$PUBLIC_REPOSITORY" ] || ! [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY at a full commit SHA."
+            exit 1
+          fi
+          case "$ACTION" in
+            status|prepare|submit|release) ;;
+            *) echo "::error::ios takes the actions status, prepare, submit and release, not $ACTION."; exit 1 ;;
+          esac
+          if [ "$ASC_KEY_SET" != true ]; then
+            echo "::error::ASC_APP_ID, ASC_ISSUER_ID (repository secrets) and ASC_STORE_KEY_ID, ASC_STORE_PRIVATE_KEY (environment store) must all arrive (docs/store-release.md)."
+            exit 1
+          fi
+
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+
+      # the review notes filled with the demo PC's values, counted (bytes only, never the notes)
+      - name: Check the filled review notes
+        if: inputs.action == 'prepare' || inputs.action == 'submit'
+        env:
+          REVIEW_DEMO_PC_ID: ${{ secrets.REVIEW_DEMO_PC_ID }}
+          REVIEW_DEMO_PC_PASSWORD: ${{ secrets.REVIEW_DEMO_PC_PASSWORD }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = true ] && { [ -z "$REVIEW_DEMO_PC_ID" ] || [ -z "$REVIEW_DEMO_PC_PASSWORD" ]; }; then
+            echo "Dry run without the demo PC's values: the notes are counted with the worst case only."
+            exec python3 -I scripts/check-store-text.py --allow-version-split
+          fi
+          python3 -I scripts/check-store-text.py --allow-version-split --filled
+
+      - name: App Store Connect
+        id: asc
+        env:
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_STORE_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_STORE_PRIVATE_KEY }}
+          REVIEW_DEMO_USER: ${{ secrets.REVIEW_DEMO_USER }}
+          REVIEW_DEMO_PASSWORD: ${{ secrets.REVIEW_DEMO_PASSWORD }}
+          REVIEW_DEMO_PC_ID: ${{ secrets.REVIEW_DEMO_PC_ID }}
+          REVIEW_DEMO_PC_PASSWORD: ${{ secrets.REVIEW_DEMO_PC_PASSWORD }}
+          REVIEW_CONTACT_FIRST_NAME: ${{ secrets.REVIEW_CONTACT_FIRST_NAME }}
+          REVIEW_CONTACT_LAST_NAME: ${{ secrets.REVIEW_CONTACT_LAST_NAME }}
+          REVIEW_CONTACT_PHONE: ${{ secrets.REVIEW_CONTACT_PHONE }}
+          REVIEW_CONTACT_EMAIL: ${{ secrets.REVIEW_CONTACT_EMAIL }}
+          ACTION: ${{ inputs.action }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          PHASED: ${{ inputs.phased }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          node --version
+          args=("$ACTION")
+          if [ -n "$VERSION" ]; then args+=(--version "$VERSION"); fi
+          if [ -n "$BUILD" ]; then args+=(--build "$BUILD"); fi
+          case "$ACTION" in
+            prepare|submit)
+              args+=(--release-type "$RELEASE_TYPE")
+              if [ "$PHASED" = true ]; then args+=(--phased); fi ;;
+            status)
+              mkdir -p "$RUNNER_TEMP/store-status"
+              args+=(--json "$RUNNER_TEMP/store-status/appstore-status.json") ;;
+          esac
+          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+          node scripts/asc-store.mjs "${args[@]}"
+          if [ "$DRY_RUN" != true ] && { [ "$ACTION" = submit ] || [ "$ACTION" = release ]; }; then
+            echo "done=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Keep the status
+        if: always() && inputs.action == 'status'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: store-status-ios-${{ github.run_id }}
+          path: ${{ runner.temp }}/store-status/appstore-status.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  record:
+    name: Release record
+    needs: [checks, play, appstore]
+    if: ${{ !cancelled() && !inputs.dry_run && needs.checks.result == 'success' && (needs.play.outputs.done == 'true' || needs.appstore.outputs.done == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Check where this workflow comes from
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ "$WORKFLOW_REPOSITORY" != "$PUBLIC_REPOSITORY" ] || ! [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY at a full commit SHA."
+            exit 1
+          fi
+
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+
+      # contents API with the file's sha, tried again when another run wrote first; [skip ci]
+      - name: Add the line to store-releases.txt
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ inputs.platform }}
+          ACTION: ${{ inputs.action }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          RUN_ID: ${{ inputs.run_id }}
+          SOURCE_SHA: ${{ needs.checks.outputs.source_sha }}
+        run: |
+          if [ "$PLATFORM" = android ]; then
+            set -- --store play --track alpha --note "store #$GITHUB_RUN_NUMBER build-run $RUN_ID"
+          else
+            set -- --store appstore --note "store #$GITHUB_RUN_NUMBER"
+          fi
+          python3 -I scripts/store-record.py add --repo "$GITHUB_REPOSITORY" --version "$VERSION" --build "$BUILD" \
+            --action "$ACTION" --source "$SOURCE_SHA" "$@"

@@ -1454,6 +1454,8 @@ seq 4(1.8.0, 위치 `e1-s4`, 세 플랫폼 최소·최신 1.8.0, 유예 없음)�
 
 **iPhone 항목은 하나입니다.** 정책의 `ios` 항목 하나를 TestFlight 설치본과 App Store 설치본(1.9.1부터 업데이트 화면이 App Store를 엶)이 함께 씁니다. 그래서 App Store 배포를 시작한 뒤에는 iOS의 `latest`와 `min`을 **App Store에 출시된 버전으로만** 올립니다. TestFlight에만 있는 빌드로 올리지 않고, App Store 심사 중에는 심사받는 버전으로 올리지 않습니다(심사하는 앱은 샌드박스 영수증이라 TestFlight 길을 봄). 어기면 App Store 설치본이 스토어에 아직 없는 업데이트를 안내받거나 `min`에 막힙니다. 서버 확인은 이것을 보지 않으므로 정책을 만드는 사용자가 지킵니다([distribution.md](distribution.md)의 "iPhone"). iOS의 App Store 항목을 따로 두는 것은 다음 판의 열린 문제입니다.
 
+**App Store 필드와 서버 확인 스크립트(1.9.1부터).** 정책의 `ios` 항목에 App Store에 나온 버전을 적는 선택 필드 `appstore`가 생겼습니다(`hjv-release policy --appstore-live`, 스토어 정책, [store-release.md](store-release.md)). 그 필드가 든 정책은 커밋 63c18d8 이후의 `deploy/hjv-update-verify.sh`만 받습니다. 그래서 **첫 `--appstore-live` 정책을 넣기 전에** 서버의 `/opt/hjviewer/bin/hjv-update-verify.sh`를 그 판(63c18d8 이후의 서버 묶음 `bin/`, 또는 그 커밋의 `deploy/hjv-update-verify.sh`)으로 바꾸고 8-1의 1번처럼 `--self-test`를 돌립니다. 옛 스크립트는 그 정책을 거부합니다. 거부된 정책은 넣지 않으므로 앱에는 해가 없지만, 그 정책의 배포가 멈춥니다. 바꾼 스크립트는 `appstore` 필드가 없는 정책도 전처럼 받습니다.
+
 **정책만 바뀌는 경우**(최소 버전만 올리는 정책, 8-5의 비상 정책, 8-6의 되돌리기)도 이 절차 그대로입니다. 버전은 그대로여도 위치가 다르므로, 서버의 디렉터리 `incoming/<버전>-<위치>`는 겹치지 않습니다. 그런 디렉터리에는 패키지가 없거나 이미 설치한 것과 같은 패키지만 있습니다(서버 확인은 없는 패키지를 `/srv/hjviewer-updates/pkg`에서 찾음).
 
 ```text

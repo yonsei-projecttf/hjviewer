@@ -1,0 +1,7 @@
+# actionlint (scripts/ci.sh client). Its 1.7.12 does not know the job context's workflow_repository
+# and workflow_sha yet, which GitHub documents ("Contexts", job context) and store-release.yml
+# checks out with: those two messages only, in that file only.
+paths:
+  "**/.github/workflows/store-release.yml":
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined in object type'

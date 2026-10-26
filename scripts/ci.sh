@@ -17,8 +17,11 @@
 #                          tests (relay/); tools/hjv-release's format, lints, tests (its shared test
 #                          vectors among them) and release build
 #   scripts/ci.sh client   the offline tests of the Google Play upload script and of the build-key
-#                          check (scripts/test_*.py, the key files also against hjv-release), actionlint
-#                          on the workflows when it is installed, then a fresh upstream checkout with
+#                          check (scripts/test_*.py, the key files also against hjv-release), the store
+#                          run's: the store texts (scripts/check-store-text.py and its tests), the
+#                          release record, the workflows' store rules and, with Node 20 or later,
+#                          the App Store Connect script (node --test), actionlint on the workflows
+#                          when it is installed, then a fresh upstream checkout with
 #                          client/patches, the release records' tests (scripts/release-info.py, on
 #                          the patched tree and build/release-1.9.0), hbb_common's WebSocket tests,
 #                          cargo +1.75.0 check (the app builds' toolchain), the client core's
@@ -133,8 +136,8 @@ declare -A UNIT_LEAST=([hjv]=345 [hjviewer_wol]=6)
 # 1.9.0's run and 1.9.1's series count them, 2026-10-26)
 UNIT_LEAST[hjviewer_update-nokeys]=159
 # and the cases of the shared vectors the client core runs in the client stage (tools/hjv-release,
-# 2026-10-14)
-VECTORS_LEAST=141
+# 2026-10-14; 143 with 1.9.1's App Store field, 2026-10-26)
+VECTORS_LEAST=143
 export PATH="$HOME/.cargo/bin:$PATH"
 
 SRC="$CI/src" PKGS="$CI/pkgs" CERTS="$CI/certs"
@@ -471,6 +474,21 @@ client_stage() {
   step "client: Google Play upload script, offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_play_upload.py' ||
     fail "client: Google Play upload script tests"
+  # the store run (store-release.yml, docs/store-release.md): no network, no store key
+  step "client: the store texts (scripts/check-store-text.py on store/, and its tests)"
+  python3 -I -B "$ROOT/scripts/check-store-text.py" || fail "client: the store texts"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_store_text.py' ||
+    fail "client: store text check tests"
+  step "client: the release record (scripts/store-record.py) and the workflows' store rules, offline tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_store_record.py' || fail "client: release record tests"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_store_workflows.py' ||
+    fail "client: the workflows' store rules"
+  step "client: the App Store Connect script (scripts/asc-store.mjs), offline tests with a fake App Store Connect"
+  if command -v node > /dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ]; then
+    node --test "$ROOT/scripts/asc-store.test.mjs" || fail "client: App Store Connect script tests"
+  else
+    skip "the App Store Connect script's tests (Node 20 or later is not installed)"
+  fi
   step "client: the pinned public keys' check (scripts/check-build-keys.py, client-build.yml), offline tests"
   HJV_RELEASE_BIN="$release_bin" python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_build_keys.py' ||
     fail "client: build-key check tests"

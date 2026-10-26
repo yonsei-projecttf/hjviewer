@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Offline tests for scripts/play-upload.py: no network and no Google credentials. The fake Play API
+# Offline tests for scripts/play-upload.py: no network and no Google credentials (PlayStoreRunTest:
+# the store run's alpha upload and status). The fake Play API
 # below answers the calls; the key tests sign with throwaway RSA keys that openssl makes in a temporary
 # directory or in memory (they belong to no Google account and are gone at the end).
 # PlayBundleListsTest, at the end, reads no script: it holds the Play bundle check of client-build.yml
@@ -58,8 +59,11 @@ def no_network(*args):
 class FakePlay:
     """Answers the Play API calls the script makes; records them."""
 
-    def __init__(self, tracks=None, bundles=None, fail=None, upload_sha=None, version_code=262851234):
+    def __init__(self, tracks=None, bundles=None, fail=None, upload_sha=None, version_code=262851234,
+                 releases=None):
         self.calls = []
+        self.listed = []  # applications.tracks.releases.list (no edit), kept apart from the edit's calls
+        self.releases = releases or {}  # track -> [ReleaseSummary]; a track missing here answers 404
         self.tracks = tracks if tracks is not None else [{"track": "production"}, {"track": "internal"}]
         self.bundles = bundles or []
         self.fail = fail or {}  # (method, url suffix) -> (status, body)
@@ -79,6 +83,13 @@ class FakePlay:
         if url == play.TOKEN_URL:
             return 200, json.dumps(self.token_check(data)).encode()
         path = url.split("?")[0]
+        if method == "GET" and path.startswith(f"{play.API}/{PKG}/tracks/") and path.endswith("/releases"):
+            self.calls.pop()
+            track = path.rsplit("/", 2)[1]
+            self.listed.append(track)
+            if track not in self.releases and track != "internal":
+                return 404, json.dumps({"error": {"code": 404, "message": "Track not found."}}).encode()
+            return 200, json.dumps({"releases": self.releases.get(track, [])}).encode()
         if method == "POST" and path == EDITS:
             return 200, b'{"id": "edit-1", "expiryTimeSeconds": "9999999999"}'
         if method == "GET" and path.endswith("/tracks"):
@@ -116,8 +127,9 @@ class PlayUploadTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def run_script(self, fake, extra=(), env=None, mode="commit"):
+        # the tests from before the store run use the internal track; extra may name another
         argv = ["--package", PKG, "--aab", str(self.aab), "--name", "1.6.0 (262851234)",
-                "--notes-file", str(self.notes), "--mode", mode, *extra]
+                "--notes-file", str(self.notes), "--mode", mode, "--track", "internal", *extra]
         env = {"PLAY_ACCESS_TOKEN": TOKEN} if env is None else env
         out = io.StringIO()
         with mock.patch.object(play, "send", fake), contextlib.redirect_stdout(out), \
@@ -389,7 +401,7 @@ class PlayUploadTest(unittest.TestCase):
             code, text = self.run_script(commit_fails)
             self.assertEqual(code, 1)
             self.assertIn("may or may not have gone through", text)
-            self.assertIn("run the play job again", text)
+            self.assertIn("run the same upload again", text)
             self.assertNotIn("othing was committed", text)
             self.assertNotIn("nothing committed", text)
             self.assertIn("deleted edit edit-1 (it was still open)", text)
@@ -586,6 +598,148 @@ def update_entries(manifest: str) -> list:
     return entries
 
 
+def summary_of(state, *codes, name="1.9.0"):
+    """A ReleaseSummary as applications.tracks.releases.list gives it."""
+    return {"releaseName": name, "track": "alpha", "releaseLifecycleState": "RELEASE_LIFECYCLE_STATE_" + state,
+            "activeArtifacts": [{"versionCode": code} for code in codes]}
+
+
+class PlayStoreRunTest(unittest.TestCase):
+    """The store run's upload (auto-deploy design 7-2): the closed track alpha, the release states read
+    with releases.list before any edit, and the commit's changesInReviewBehavior always named."""
+
+    setUp = PlayUploadTest.setUp
+    run_script = PlayUploadTest.run_script
+
+    def run_alpha(self, fake, extra=(), mode="commit"):
+        return self.run_script(fake, extra=["--track", "alpha", "--version-code", "262851234", *extra], mode=mode)
+
+    def alpha(self, releases, **kw):
+        return FakePlay(tracks=[{"track": "alpha", "releases": []}, {"track": "internal"}],
+                        releases={"alpha": releases}, **kw)
+
+    def test_the_default_track_is_alpha(self):
+        self.assertEqual(play.TRACK, "alpha")
+        args = argparse.Namespace()
+        with mock.patch.object(play, "upload", lambda a, env: setattr(args, "track", a.track) or 0):
+            play.main(["--package", PKG, "--aab", "x.aab"], {})
+        self.assertEqual(args.track, "alpha")
+
+    def test_upload_to_alpha_reads_the_releases_before_the_edit(self):
+        fake = self.alpha([summary_of("PUBLISHED", 262932441)])
+        code, text = self.run_alpha(fake)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(fake.listed, ["alpha", "internal"])
+        self.assertEqual(fake.names(), ["POST edits", "GET tracks", "GET bundles", "POST bundles",
+                                        "PUT alpha", "POST edit-1:commit"])
+        self.assertIn("changesInReviewBehavior=ERROR_IF_IN_REVIEW", fake.calls[-1][1])
+        self.assertIn("Google reviews it first", text)
+
+    def test_a_review_in_progress_stops_before_any_edit(self):
+        for track in ("alpha", "internal"):
+            releases = {"alpha": [summary_of("PUBLISHED", 262932441)]}
+            releases[track] = releases.get(track, []) + [summary_of("IN_REVIEW", 262851000, name="1.8.9")]
+            fake = FakePlay(tracks=[{"track": "alpha"}, {"track": "internal"}], releases=releases)
+            code, text = self.run_alpha(fake)
+            self.assertEqual(code, 1, text)
+            self.assertIn(f"{track} has 1.8.9 IN_REVIEW", text)
+            self.assertIn("in_review=cancel", text)
+            self.assertEqual(fake.names(), [], "an edit was opened")
+
+    def test_in_review_cancel_goes_on_and_says_so_in_the_commit(self):
+        fake = self.alpha([summary_of("IN_REVIEW", 262851000, name="1.8.9")])
+        code, text = self.run_alpha(fake, extra=["--in-review", "cancel"])
+        self.assertEqual(code, 0, text)
+        self.assertIn("cancels that review", text)
+        self.assertIn("changesInReviewBehavior=CANCEL_IN_REVIEW_AND_SUBMIT", fake.calls[-1][1])
+
+    def test_rejected_or_unsent_changes_stop_with_a_console_hint(self):
+        for state in ("NOT_APPROVED", "NOT_SENT_FOR_REVIEW"):
+            for in_review in ("error", "cancel"):
+                fake = self.alpha([summary_of(state, 262851000, name="1.8.9")])
+                code, text = self.run_alpha(fake, extra=["--in-review", in_review])
+                self.assertEqual(code, 1, text)
+                self.assertIn(f"1.8.9 {state}", text)
+                self.assertIn("Publishing overview", text)
+                self.assertEqual(fake.names(), [])
+
+    def test_a_version_code_play_has_already_ends_the_run(self):
+        # a re-run after a commit whose answer was lost: in review, approved or published
+        for state in ("IN_REVIEW", "APPROVED_NOT_PUBLISHED", "PUBLISHED"):
+            fake = self.alpha([summary_of(state, 262851234, name="1.9.1")])
+            code, text = self.run_alpha(fake)
+            self.assertEqual(code, 0, text)
+            self.assertIn(f"versionCode 262851234 is there already ({state})", text)
+            self.assertEqual(fake.names(), [])
+        # a draft of it is not a release: the upload goes on
+        fake = self.alpha([summary_of("DRAFT", 262851234, name="1.9.1")])
+        code, text = self.run_alpha(fake)
+        self.assertEqual(code, 0, text)
+        self.assertIn("POST edit-1:commit", fake.names())
+
+    def test_a_track_the_app_lacks(self):
+        fake = FakePlay(releases={})
+        code, text = self.run_alpha(fake)
+        self.assertEqual(code, 2, text)
+        self.assertIn("no track 'alpha'", text)
+        # internal may be missing (or be called qa): that is no reason to stop
+        fake = FakePlay(tracks=[{"track": "alpha"}, {"track": "qa"}], releases={"alpha": []},
+                        fail={("GET", "/tracks/internal/releases"): (404, {"error": {"code": 404}})})
+        code, text = self.run_alpha(fake)
+        self.assertEqual(code, 0, text)
+
+    def test_every_commit_names_its_behaviour(self):
+        for extra, behaviour in (((), "ERROR_IF_IN_REVIEW"), (("--in-review", "cancel"), "CANCEL_IN_REVIEW_AND_SUBMIT")):
+            fake = self.alpha([])
+            self.assertEqual(self.run_alpha(fake, extra=extra)[0], 0)
+            (commit,) = [u for m, u, _, _ in fake.calls if u.split("?")[0].endswith(":commit")]
+            self.assertEqual(urllib.parse.parse_qs(urllib.parse.urlsplit(commit).query),
+                             {"changesInReviewBehavior": [behaviour]})
+
+    def test_a_bundle_play_holds_is_not_uploaded_again(self):
+        fake = self.alpha([], bundles=[{"versionCode": 262851234, "sha256": self.sha}])
+        code, text = self.run_alpha(fake)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("POST bundles", fake.names())
+        self.assertIn("PUT alpha", fake.names())
+
+    def test_dry_run_plans_the_release_list_and_the_commit(self):
+        code, text = self.run_script(no_network, env={}, mode="dry-run",
+                                     extra=["--track", "alpha", "--in-review", "cancel"])
+        self.assertEqual(code, 0, text)
+        self.assertIn("tracks/alpha/releases", text)
+        self.assertIn("tracks/internal/releases", text)
+        self.assertIn("changesInReviewBehavior=CANCEL_IN_REVIEW_AND_SUBMIT", text)
+        code, text = self.run_script(no_network, env={}, mode="dry-run", extra=["--track", "alpha"])
+        self.assertIn("changesInReviewBehavior=ERROR_IF_IN_REVIEW", text)
+
+    def test_status_reads_the_releases_without_an_edit_or_a_bundle(self):
+        fake = self.alpha([summary_of("PUBLISHED", 262932441), summary_of("IN_REVIEW", 262851234, name="1.9.1")])
+        report = self.dir / "status.json"
+        out = io.StringIO()
+        with mock.patch.object(play, "send", fake), contextlib.redirect_stdout(out):
+            code = play.main(["--package", PKG, "--mode", "status", "--version-code", "262851234",
+                              "--json", str(report)], {"PLAY_ACCESS_TOKEN": TOKEN})
+        text = out.getvalue()
+        self.assertEqual(code, 0, text)
+        self.assertEqual(fake.names(), [])
+        self.assertEqual(fake.listed, ["alpha", "internal"])
+        self.assertIn("Google Play alpha: versionCode 262851234 IN_REVIEW", text)
+        self.assertIn("alpha: 1.9.0, versionCode 262932441, PUBLISHED", text)
+        self.assertNotIn(TOKEN, text)
+        data = json.loads(report.read_text(encoding="utf-8"))
+        self.assertEqual(data["tracks"]["alpha"][0], {"name": "1.9.0", "versionCodes": [262932441], "state": "PUBLISHED"})
+        self.assertEqual(data["tracks"]["internal"], [])
+        self.assertEqual(data["versionCode"], {"code": 262851234, "states": ["IN_REVIEW"]})
+
+    def test_other_modes_need_the_bundle(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = play.main(["--package", PKG, "--mode", "commit"], {"PLAY_ACCESS_TOKEN": TOKEN})
+        self.assertEqual(code, 2)
+        self.assertIn("needs --aab", out.getvalue())
+
+
 class PlayBundleListsTest(unittest.TestCase):
     """What a run can only show after a 20-minute build: the lists of "Sign and check Play bundle"
     and the Play-only manifest overlay must say the same thing, the overlay must never reach the
@@ -601,8 +755,8 @@ class PlayBundleListsTest(unittest.TestCase):
     # The lines that decide what a failed bundle step does (docs/ci.md, the Google Play section, step
     # 1), which only a failing run on GitHub shows at work. Without `play` and outside a check build a
     # failed bundle step leaves the job green and "Report a failed Play bundle" says that the run has
-    # no bundle; with either it fails the job, so the play job does not start. Only a bundle that
-    # passed every check becomes the -play artifact, which the play job uploads and which the first
+    # no bundle; with either it fails the job. Only a bundle that passed every check becomes the
+    # -play artifact, which the store run uploads (store-release.yml) and which the first
     # upload in Play Console takes by hand.
     BUNDLE_STEPS = {
         "Build Play bundle": {
