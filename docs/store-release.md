@@ -189,7 +189,7 @@ App Store Connect 오류는 Apple의 코드와 설명을 출력합니다(비밀�
 | G3 | **첫 `store.yml` 실행 전에** environment `store`: Settings → Environments → New environment `store` → Deployment branches and tags를 Selected로, `main`만. 먼저 돌리면 GitHub가 배포 브랜치 제한 없는 `store`를 저절로 만듭니다 |
 | G4 | 시크릿(소유자의 터미널, 아래)과 변수 `REVIEW_DEMO_UNTIL`. 저장소 시크릿에 남은 `PLAY_SA_*`를 지웁니다(아래 명령). `gh secret list -R $R`(`--env` 없이)에 `PLAY_SA_*`, `ASC_STORE_*`, `REVIEW_*`가 없어야 합니다. 있으면 store.yml이 그 값을 넘겨 environment로 옮기지 않은 것이 드러나지 않고, 빌드 실행의 `secrets: inherit` 범위에도 남습니다 |
 | G5 | 저장소 설정(아래) |
-| G6 | 읽기만 하는 확인: `store.yml platform=android action=status`, `platform=ios action=status`(version 없이). 키가 맞는지, alpha의 1.9.0이 보이는지 봅니다. 그 전에 G4의 `gh secret list -R $R`을 한 번 더 봅니다(environment 값이 잡에 닿는지가 이 실행으로 확인됨) |
+| G6 | 읽기만 하는 확인: `store.yml platform=android action=status`, `platform=ios action=status`(version 없이). 키가 맞는지, alpha의 1.9.0이 보이는지 봅니다. 그 전에 G4의 `gh secret list -R $R`을 한 번 더 봅니다(environment 값이 잡에 닿는지가 이 실행으로 확인됨). Google Play·App Store 잡의 첫 단계에 찍힌 `job.workflow_ref is …` 줄이 `@<고정한 40자리 SHA>`로 끝나는지도 봅니다. `@refs/heads/main`이나 태그로 끝나면 `store.yml`이 SHA에 고정하지 않은 것입니다. 잡은 이 줄로 멈추지 않습니다(`job.workflow_sha`는 늘 40자리라서, 잡의 검사로는 고정했는지 알 수 없음) |
 | G7 | 1.9.1 빌드와 태그 뒤, 첫 upload·prepare 전에 같은 입력으로 `dry_run=true`를 한 번씩 돌립니다. 요약에 upload는 validated…nothing was released, prepare는 계획만 있고 비밀값이 없는지 봅니다 |
 
 **시크릿과 변수** (이름만. 값은 채팅, 저장소, `build/`에 두지 않습니다)

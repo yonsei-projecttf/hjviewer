@@ -110,13 +110,18 @@ jobs:
       source_sha: ${{ steps.inputs.outputs.source_sha }}
       artifact: ${{ steps.build-run.outputs.artifact }}
     steps:
+      # job.workflow_sha is a full SHA even when store.yml calls @main or a tag: whether store.yml
+      # pinned a commit shows only in job.workflow_ref, printed for the owner (docs/store-release.md
+      # G6) and not checked, as its shape on GitHub is not verified yet
       - name: Check where this workflow comes from
         env:
           WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
           WORKFLOW_SHA: ${{ job.workflow_sha }}
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
         run: |
+          echo "job.workflow_ref is $JOB_WORKFLOW_REF: store.yml pinned this file to a commit only if it ends with @$WORKFLOW_SHA."
           if [ "$WORKFLOW_REPOSITORY" != "$PUBLIC_REPOSITORY" ] || ! [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY at a full commit SHA (job.workflow_repository is '$WORKFLOW_REPOSITORY')."
+            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY, with a 40-digit job.workflow_sha to check out (job.workflow_repository is '$WORKFLOW_REPOSITORY')."
             exit 1
           fi
 
@@ -268,17 +273,20 @@ jobs:
     outputs:
       done: ${{ steps.upload.outputs.done }}
     steps:
+      # status runs have no checks job: job.workflow_ref is printed here too (see the checks job)
       - name: Check where this workflow comes from and the inputs
         env:
           WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
           WORKFLOW_SHA: ${{ job.workflow_sha }}
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
           ACTION: ${{ inputs.action }}
           VERSION: ${{ inputs.version }}
           BUILD: ${{ inputs.build }}
           PLAY_KEY_SET: ${{ secrets.PLAY_SA_EMAIL != '' && secrets.PLAY_SA_PRIVATE_KEY != '' }}
         run: |
+          echo "job.workflow_ref is $JOB_WORKFLOW_REF: store.yml pinned this file to a commit only if it ends with @$WORKFLOW_SHA."
           if [ "$WORKFLOW_REPOSITORY" != "$PUBLIC_REPOSITORY" ] || ! [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY at a full commit SHA."
+            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY, with a 40-digit job.workflow_sha to check out."
             exit 1
           fi
           case "$ACTION" in
@@ -381,17 +389,20 @@ jobs:
     outputs:
       done: ${{ steps.asc.outputs.done }}
     steps:
+      # status runs have no checks job: job.workflow_ref is printed here too (see the checks job)
       - name: Check where this workflow comes from and the inputs
         env:
           WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
           WORKFLOW_SHA: ${{ job.workflow_sha }}
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
           ACTION: ${{ inputs.action }}
           VERSION: ${{ inputs.version }}
           BUILD: ${{ inputs.build }}
           ASC_KEY_SET: ${{ secrets.ASC_APP_ID != '' && secrets.ASC_ISSUER_ID != '' && secrets.ASC_STORE_KEY_ID != '' && secrets.ASC_STORE_PRIVATE_KEY != '' }}
         run: |
+          echo "job.workflow_ref is $JOB_WORKFLOW_REF: store.yml pinned this file to a commit only if it ends with @$WORKFLOW_SHA."
           if [ "$WORKFLOW_REPOSITORY" != "$PUBLIC_REPOSITORY" ] || ! [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY at a full commit SHA."
+            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY, with a 40-digit job.workflow_sha to check out."
             exit 1
           fi
           case "$ACTION" in
@@ -493,7 +504,7 @@ jobs:
           WORKFLOW_SHA: ${{ job.workflow_sha }}
         run: |
           if [ "$WORKFLOW_REPOSITORY" != "$PUBLIC_REPOSITORY" ] || ! [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY at a full commit SHA."
+            echo "::error::store-release.yml must run from $PUBLIC_REPOSITORY, with a 40-digit job.workflow_sha to check out."
             exit 1
           fi
 
