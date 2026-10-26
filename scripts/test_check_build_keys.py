@@ -840,7 +840,8 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(spec["type"], "boolean")
             self.assertIs(spec["default"], False)
         self.assertIn("!inputs.check_only", self.step("ios", "Upload to TestFlight")["if"])
-        self.assertIn("!inputs.check_only", self.wf["jobs"]["play"]["if"])
+        # 1.9.1: no Google Play job (the store run uploads, store-release.yml), so nothing to skip
+        self.assertNotIn("play", self.wf["jobs"])
         self.assertIn("!inputs.check_only", self.wf["jobs"]["relay-release"]["if"])
         refuse = self.step("generate-bridge", "Check the check_only input")
         self.assertIn("inputs.check_only", refuse["if"])
