@@ -1496,8 +1496,8 @@ GET, HEAD /api/hjv/s/<link>/  the page            …/<link>/HJViewer-<v>.exe, �
   403 `no_code` for the App Review account, 429 `rate_limited` past 30 calls a minute of the key
   (with its other calls), 405 for another method. No record, no line in the journal.
 - The support link (1.9.0, `src/update.rs`): `GET, HEAD /api/hjv/s/<link>` is a 307 to
-  `…/<link>/`, the page (Korean then English, docs/access-tickets.md 5-3 SL1–SL8: the title, door
-  2's pilot line, the caution, four steps, the code large, `[HJViewer-<v>.exe 받기]` with the
+  `…/<link>/`, the page (Korean then English, docs/access-tickets.md 5-3 SL1–SL8: the title, the
+  caution, four steps, the code large, `[HJViewer-<v>.exe 받기]` with the
   package's size and SHA-256, the notice files; SL8 in place of the download while the policy has
   no Windows package; no script, no outside resource, no operator contact; door 2's headers,
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`, `Cache-Control:

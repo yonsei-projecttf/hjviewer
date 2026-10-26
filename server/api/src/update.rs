@@ -1732,12 +1732,10 @@ h1 { font-size: 1.4em; }
 h2 { font-size: 1.15em; margin-top: 1.8em; }
 code { word-break: break-all; }
 .facts { font-size: 0.9em; color: #444; }
-.pilot { border-left: 4px solid #c90; padding-left: 0.8em; }
 </style>
 </head>
 <body>
 <h1>HJViewer 새 버전 받기</h1>
-<p class="pilot">본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.</p>
 <p>이 페이지의 주소는 받은 사람만 쓰세요. 다른 사람에게 알리거나 인터넷에 올리지 마세요.</p>
 "#;
 
@@ -2045,7 +2043,6 @@ section { margin-top: 2.5em; border-top: 1px solid #ccc; }
 code { word-break: break-all; }
 li { margin-bottom: 0.6em; }
 .facts { font-size: 0.9em; color: #444; }
-.pilot { border-left: 4px solid #c90; padding-left: 0.8em; }
 .caution { border-left: 4px solid #c33; padding-left: 0.8em; font-weight: bold; }
 .code { font-family: monospace; font-size: 2em; font-weight: bold; letter-spacing: 0.12em; margin: 0.3em 0; }
 .button { display: inline-block; padding: 0.3em 0.8em; border-radius: 6px; background: #0b57d0; color: #fff; text-decoration: none; }
@@ -2067,8 +2064,6 @@ struct SupportWords {
     lang: &'static str,
     /// SL1
     title: &'static str,
-    /// door 2's pilot line
-    pilot: &'static str,
     /// SL2
     caution: &'static str,
     /// SL3, around the button's words
@@ -2093,7 +2088,6 @@ struct SupportWords {
 const SUPPORT_KO: SupportWords = SupportWords {
     lang: "ko",
     title: "HJViewer 원격 지원",
-    pilot: "본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.",
     caution: "연세대학교 교직원이 이 PC를 원격으로 도우려고 합니다. 직접 도움을 부탁한 경우에만 아래를 따라 주세요. 모르는 사람이 보낸 링크라면 이 페이지를 닫으세요. Windows PC에서 여세요.",
     download: ["[", "]를 눌러 받은 파일을 실행하세요. 설치하지 않고 바로 실행됩니다. 브라우저가 이 파일은 흔히 받는 파일이 아니라고 하면 [⋯] → [유지]를 누르세요."],
     button: ["", " 받기"],
@@ -2109,7 +2103,6 @@ const SUPPORT_KO: SupportWords = SupportWords {
 const SUPPORT_EN: SupportWords = SupportWords {
     lang: "en",
     title: "HJViewer remote support",
-    pilot: "This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.",
     caution: "A Yonsei University faculty or staff member is about to help this PC remotely. Follow the steps below only if you asked for this help yourself. If someone you do not know sent you this link, close this page. Open it on a Windows PC.",
     download: ["Click [", "] and run the file. It runs without being installed. If the browser says the file is not commonly downloaded, choose […] → [Keep]."],
     button: ["Download ", ""],
@@ -2141,7 +2134,6 @@ fn support_page_html(code: &str, windows: Option<&Windows>) -> String {
             html.push_str(&format!("<section lang=\"{}\">\n", words.lang));
         }
         html.push_str(&format!("<h1>{}</h1>\n", words.title));
-        html.push_str(&format!("<p class=\"pilot\">{}</p>\n", esc(words.pilot)));
         html.push_str(&format!(
             "<p class=\"caution\">{}</p>\n<ol>\n",
             esc(words.caution)
@@ -3141,8 +3133,9 @@ mod tests {
         for part in [
             "<html lang=\"ko\">",
             "<meta name=\"robots\" content=\"noindex, nofollow, noarchive\">",
-            // the pilot notice of 2026-10-14, word for word, at the top
-            "<h1>HJViewer 새 버전 받기</h1>\n<p class=\"pilot\">본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.</p>",
+            // the pilot notice of 2026-10-14 went in 1.9.1 (the service is an official one): the
+            // address's caution comes right after the title
+            "<h1>HJViewer 새 버전 받기</h1>\n<p>이 페이지의 주소는 받은 사람만 쓰세요.",
             "새 버전은 HJViewer 1.6.1입니다.",
             // the design's text K2, the installed PC's file and the other one apart
             "<li>설치 없이 실행만 했다면 먼저 HJViewer를 완전히 끝내세요(작업 표시줄 오른쪽 아래 아이콘의 [끝내기]).</li>",
@@ -3176,7 +3169,7 @@ mod tests {
         }
         for none in [
             "<script", "<img", "<link", "<iframe", "<form", " src=", "url(", "@import", "http",
-            "github",
+            "github", "시범", "pilot",
         ] {
             assert!(!html.contains(none), "{none}");
         }

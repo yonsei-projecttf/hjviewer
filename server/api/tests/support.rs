@@ -1298,11 +1298,10 @@ async fn the_support_link_and_its_three_downloads() {
         &hex(&sha256(&files.exe)),
         "href=\"HJViewer-1.9.0-LICENSE.txt\"",
         "href=\"HJViewer-1.9.0-SOURCE.txt\"",
-        "시범 구현",
-        "pilot implementation",
     ] {
         assert!(a.text.contains(words), "{words}: {}", a.text);
     }
+    // no pilot notice since 1.9.1: the service is an official one
     for absent in [
         "<script",
         "-install.exe",
@@ -1310,6 +1309,8 @@ async fn the_support_link_and_its_three_downloads() {
         "관리자:",
         "http://",
         "https://",
+        "시범",
+        "pilot",
     ] {
         assert!(!a.text.contains(absent), "{absent}");
     }
