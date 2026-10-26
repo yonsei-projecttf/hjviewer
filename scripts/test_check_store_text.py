@@ -235,6 +235,8 @@ class StoreTextTest(unittest.TestCase):
             ("appstore/en-GB/keywords.txt", ",teamviewer", r"another app's name"),
             ("appstore/ko/promotional_text.txt", " 애니데스크처럼.", r"another app's name"),
             ("appstore/en-GB/whats_new.txt", " Like AnyDesk.", r"another app's name"),
+            ("appstore/ko/description.txt", " RustDesk를 바탕으로 합니다.", r"another app's name"),
+            ("appstore/en-GB/description.txt", " Based on RustDesk.", r"another app's name"),
             ("appstore/en-GB/description.txt", " The license is AGPL.", r"American spelling 'license'"),
             ("appstore/en-GB/description.txt", " The catalog lists them.", r"American spelling 'catalog'"),
             ("appstore/en-GB/description.txt", " A dialog opens.", r"American spelling 'dialog'"),
@@ -251,7 +253,7 @@ class StoreTextTest(unittest.TestCase):
                 self.check(copy, fails=re.escape(rel) + r":\d+: " + rule)
         # what the rules let through: "display" (and 디스플레이), the team's Korean name, the notes'
         # words "beta" and "demo account", British -ise and the -ize words that are British too,
-        # "licensed", "dialogue", "democratic", RustDesk in the description (SUBMIT 0-2 #25)
+        # "licensed", "dialogue", "democratic"
         copy = StoreCopy(self)
         copy.value("appstore/en-GB/whats_new.txt", copy.read("appstore/en-GB/whats_new.txt")[:-1] +
                    " The display (프로젝트TF) has colours. Organise, resize and prize; seize the size."
@@ -259,7 +261,7 @@ class StoreTextTest(unittest.TestCase):
         copy.value("appstore/ko/description.txt", copy.read("appstore/ko/description.txt")[:-1] +
                    " 디스플레이 배율을 따릅니다.")
         copy.value("appstore/review_notes.txt", self.notes(copy) + " The terminal is no beta.")
-        self.assertIn("RustDesk", copy.read("appstore/en-GB/description.txt"))
+        self.assertNotIn("RustDesk", copy.read("appstore/en-GB/description.txt"))
         self.check(copy)
 
     def test_the_file_form(self):

@@ -1,4 +1,4 @@
-HJViewer is a remote desktop app: see and control a Windows PC from your iPhone or iPad. It is made by Project TF (프로젝트TF) at Yonsei University, and finds PCs through the HJViewer server that Project TF runs.
+HJViewer is a remote desktop app: see and control a Windows PC from your iPhone or iPad. It is made by ProjectTF (프로젝트TF) at Yonsei University, and finds PCs through the HJViewer server that ProjectTF runs.
 
 Reach PCs behind firewalls
 The PC and the app make only outgoing connections, so a PC behind a firewall or router (NAT) is reached over HTTPS on port 443: peer to peer where the network allows, else through the server's encrypted relay.
@@ -31,8 +31,8 @@ Your iPhone or iPad cannot itself be viewed or controlled; the app never shares 
 
 Requirements
 • An iPhone or iPad with iOS 13.0 or later
-• The PC you connect to: Windows 10 or 11 (64-bit) running HJViewer for Windows, which Project TF provides
+• The PC you connect to: Windows 10 or 11 (64-bit) running HJViewer for Windows, which ProjectTF provides
 • To connect when nobody is at the PC, install HJViewer on it, log in on it, and set a permanent password. PCs that are asleep or off cannot be reached until woken.
 
 Open source
-HJViewer is based on the open-source RustDesk (AGPL-3.0) and is not affiliated with the RustDesk team. HJViewer is AGPL-3.0 too; its source code is on GitHub: https://github.com/yonsei-projecttf/hjviewer
+HJViewer is open source under the AGPL-3.0; its source code is on GitHub: https://github.com/yonsei-projecttf/hjviewer

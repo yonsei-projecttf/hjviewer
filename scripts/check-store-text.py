@@ -107,7 +107,8 @@ PRICE = re.compile(r"무료|유료|공짜|\bfree\b|가격|\bprices?\b|costs? not
 # paragraph names RustDesk until the owner decides SUBMIT-1.9.0 0-2 #25 (store/README.md)
 OTHER_APPS = re.compile(r"rust ?desk|team ?viewer|any ?desk|chrome remote desktop|splashtop|parsec|"
                         r"러스트 ?데스크|팀 ?뷰어|애니 ?데스크", re.I)
-OTHER_APPS_IN = ("name.txt", "subtitle.txt", "keywords.txt", "promotional_text.txt", "whats_new.txt")
+OTHER_APPS_IN = ("name.txt", "subtitle.txt", "keywords.txt", "promotional_text.txt", "whats_new.txt",
+                 "description.txt")
 CUSTOMER_TEXTS = ("name.txt", "subtitle.txt", "promotional_text.txt", "description.txt", "keywords.txt",
                   "whats_new.txt")
 # en-GB: SUBMIT-1.9.0 0-2 #4 (the Korean App Store's English is English (U.K.))

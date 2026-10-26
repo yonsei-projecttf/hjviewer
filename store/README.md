@@ -40,7 +40,7 @@ App Store Connect와 Google Play Console에 그대로 보일 글의 원본입니
 - **지원 URL**은 처리방침의 10절(문의와 변경)로 바로 갑니다. 한국어 현지화는 한국어 절(`#10-문의와-변경`, 퍼센트 인코딩), 영어 현지화는 영어 절(`#10-contact-and-changes`)입니다. 심사 지침 1.5가 지원 URL에서 연락 방법을 쉽게 찾을 수 있어야 한다고 하고, 저장소 첫 화면에는 연락처가 없기 때문입니다.
 - **iOS 글에는 Android, Google, Play를 쓰지 않습니다**(심사 지침 2.3.10). 심사 메모도 같습니다.
 - 고객이 읽는 글(이름, 부제목, 프로모션 텍스트, 설명, 키워드, What's New)에는 베타·체험판·데모를 뜻하는 말과 가격을 쓰지 않습니다(지침 2.2, 2.3.7). iOS 글에는 Galaxy나 Samsung 같은 다른 기기 이름도 쓰지 않습니다.
-- 이름, 부제목, 키워드, 프로모션 텍스트, What's New에는 다른 앱의 이름(RustDesk, TeamViewer, AnyDesk, Chrome Remote Desktop 등)을 쓰지 않습니다(지침 4.1의 메타데이터 도움말). 설명의 오픈 소스 문단에 있는 RustDesk 이름은 소유자가 정할 일(SUBMIT 0-2 #25)이라 지금은 1.9.0 그대로 두고, 검사도 설명에서는 그 이름을 막지 않습니다. 빼기로 정하면 SUBMIT 6-1의 바꿀 글로 바꾸고 검사의 `OTHER_APPS_IN`에 `description.txt`를 더합니다.
+- 이름, 부제목, 키워드, 프로모션 텍스트, What's New에는 다른 앱의 이름(RustDesk, TeamViewer, AnyDesk, Chrome Remote Desktop 등)을 쓰지 않습니다(지침 4.1의 메타데이터 도움말). 설명에도 쓰지 않습니다(소유자 결정, 2026-10-26, SUBMIT 0-2 #25). RustDesk를 바탕으로 했다는 것과 관련이 없다는 것은 심사 메모와 앱의 정보 화면에 남습니다. 검사의 `OTHER_APPS_IN`에 `description.txt`가 있습니다.
 - `testflight/`는 외부 TestFlight를 켤 때만 둡니다(`what_to_test.ko.txt`, `beta_description.ko.txt`). 지금은 내부 테스트만 쓰므로 없습니다.
 
 ### 심사 메모 (`review_notes.txt`)

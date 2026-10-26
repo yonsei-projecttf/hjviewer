@@ -35,4 +35,4 @@ iPhone과 iPad는 제어하는 쪽으로만 씁니다
 • PC 앞에 사람이 없을 때도 연결하려면 PC에 HJViewer를 설치하고 그 PC에서 연세포탈 계정으로 로그인해 두며, 영구 비밀번호도 정해 둡니다. 절전 중이거나 꺼진 PC에는 연결할 수 없습니다(원격 켜기로 켤 수 있는 PC는 켠 뒤에 연결합니다).
 
 오픈 소스
-HJViewer는 오픈 소스 RustDesk(AGPL-3.0)를 바탕으로 만들었으며, RustDesk 팀과는 관련이 없습니다. HJViewer도 AGPL-3.0으로 공개하며, 소스 코드는 공개 GitHub 저장소에 있습니다: https://github.com/yonsei-projecttf/hjviewer
+HJViewer는 오픈 소스(AGPL-3.0)로 공개하며, 소스 코드는 공개 GitHub 저장소에 있습니다: https://github.com/yonsei-projecttf/hjviewer
