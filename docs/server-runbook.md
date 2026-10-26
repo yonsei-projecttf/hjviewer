@@ -1216,7 +1216,7 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
   - 두 번째 `passwordless off`가 `(no change)`가 아니면(복원한 DB가 꺼진 채로 시작하지 않았다는 뜻) 그대로 보고합니다.
   - `STOP: 지금 DB를 백업하지 못함`이면 사용자에게 보고하고 점검 타이머를 다시 켭니다(`sudo systemctl start hjviewer-api-check.timer`). DB가 망가져 백업이 되지 않는 경우에만, 사용자 승인 뒤 `rm -f` 대신 그 파일들을 `/root/hjv-backup/before-restore-<시각>/`(700)로 옮기고, 그 사본은 14일 안에 지웁니다(개인정보 처리방침의 백업 14일).
   - 중계기도 백업 때의 상태로 돌아옵니다. 백업 뒤에 폐기한 중계기는 다시 활성이 되고, hjv-api는 복원한 백업에 활성 중계기가 있으면 시작할 때 저널에 그 수를 적습니다. 무엇을 폐기했었는지는 운영자 기록에만 있습니다: `sudo grep -a 'cmd="relay revoke" targets=' /var/log/hjviewer-api/operator.log | awk '{print $1, $6}'`(시각과 중계기 ID). 백업 파일 이름의 시각(UTC)보다 뒤에 폐기한 것을 사용자 승인 뒤 다시 `relay revoke`합니다. 되살아난 중계기가 받는 것은 그 계정의 PC를 주인이 켤 때의 켜기 명령뿐이고, PC에 연결할 권한은 없습니다.
-  - 백업 뒤의 계정 삭제, 막기와 막기 풀기, 묶음 풀기도 되돌아갑니다. 지운 계정의 행(포탈 ID, 성명, PC, 켜기 정보와 기록)이 돌아오고, 백업 뒤에 막은 사람은 다시 로그인할 수 있고 백업 뒤에 막기를 푼 사람은 다시 막히며, 풀린 PC 가운데 그 사이 동기화하지 못한 PC는 이전 주인의 기기에 다시 열립니다. `user revoke-all --all` 바로 뒤에 운영자 기록에서 백업 시각(UTC) 뒤의 그런 명령을 찾습니다: `sudo grep -a -E 'cmd="(user delete|block|unblock|allow remove|binding revoke|device remove)" targets=' /var/log/hjviewer-api/operator.log | awk '{print $1, $4, $5, $6}'`(시각, 명령, 꼬리표). 사용자 승인 뒤 다시 실행합니다. `user delete tag:<T>`, `block tag:<T>`, `unblock tag:<T>`, `binding revoke tag:<T>`는 기록의 꼬리표로 되고, `allow remove`는 기록에 남은 꼬리표마다 `block tag:<T>`로 합니다. `block tag:<T>`가 `no account or allowlist entry has that tag`로 실패하면(백업 뒤에 처음 로그인해 명단에 오른 사람이나, 계정 없이 파일로 막은 ID는 복원한 DB에 없음), 7-15대로 서버 밖에 적어 둔 그 사람의 ID로 사용자가 파일을 만들고 `allow remove <파일>`로 막습니다. 열린 로그인에서는 백업 뒤에 로그인으로 명단에 오른 사람이 다음 로그인 때 다시 오르므로, 이 막기를 빠뜨리면 막은 사람이 다시 들어옵니다. 앱에서 빼거나 PC에서 로그아웃해 풀린 묶음은 DB에만 기록이 있으므로, 복원 뒤 사용자들에게 "백업 뒤에 빼거나 넘긴 PC가 내 목록에 다시 보이면 다시 빼 주세요"라고 알립니다. 호스트를 재구축하면 기록 키가 새로 생겨 옛 꼬리표가 맞지 않으므로, 삭제와 막기 요청은 7-15대로 날짜와 함께 서버 밖에 적어 둔 것을 씁니다.
+  - 백업 뒤의 계정 삭제, 막기와 막기 풀기, 묶음 풀기도 되돌아갑니다. 지운 계정의 행(포탈 ID, 성명, PC, 켜기 정보와 기록)이 돌아오고, 백업 뒤에 막은 사람은 다시 로그인할 수 있고 백업 뒤에 막기를 푼 사람은 다시 막히며, 풀린 PC 가운데 그 사이 동기화하지 못한 PC는 이전 주인의 기기에 다시 열립니다. `user revoke-all --all` 바로 뒤에 운영자 기록에서 백업 시각(UTC) 뒤의 그런 명령을 찾습니다: `sudo grep -a -E 'cmd="(user delete|app account-delete|block|unblock|allow remove|binding revoke|device remove)" targets=' /var/log/hjviewer-api/operator.log | awk '{print $1, $4, $5, $6}'`(시각, 명령, 꼬리표). 사용자 승인 뒤 다시 실행합니다. `user delete tag:<T>`, `block tag:<T>`, `unblock tag:<T>`, `binding revoke tag:<T>`는 기록의 꼬리표로 되고, `allow remove`는 기록에 남은 꼬리표마다 `block tag:<T>`로 합니다. `app account-delete`(1.9.1부터 사용자가 앱에서 지운 계정, 7-15)도 그 꼬리표로 `user delete tag:<T>`를 합니다. 그 꼬리표가 App Review 계정의 것(7-17의 `T`)이면 `user delete`가 명단 항목도 지우므로, 그 뒤 7-17의 3번으로 명단에 다시 넣습니다. `block tag:<T>`가 `no account or allowlist entry has that tag`로 실패하면(백업 뒤에 처음 로그인해 명단에 오른 사람이나, 계정 없이 파일로 막은 ID는 복원한 DB에 없음), 7-15대로 서버 밖에 적어 둔 그 사람의 ID로 사용자가 파일을 만들고 `allow remove <파일>`로 막습니다. 열린 로그인에서는 백업 뒤에 로그인으로 명단에 오른 사람이 다음 로그인 때 다시 오르므로, 이 막기를 빠뜨리면 막은 사람이 다시 들어옵니다. 앱에서 빼거나 PC에서 로그아웃해 풀린 묶음은 DB에만 기록이 있으므로, 복원 뒤 사용자들에게 "백업 뒤에 빼거나 넘긴 PC가 내 목록에 다시 보이면 다시 빼 주세요"라고 알립니다. 호스트를 재구축하면 기록 키가 새로 생겨 옛 꼬리표가 맞지 않으므로, 삭제와 막기 요청은 7-15대로 날짜와 함께 서버 밖에 적어 둔 것을 씁니다. 앱에서 지운 계정은 서버 밖의 메모가 없어, 재구축 뒤에 넣은 옛 백업에서는 찾아 다시 지울 수 없습니다(드문 경우의 한계). 그 사람의 계정이 다시 보이면 그 사람이 다시 로그인해 앱에서 지우거나 운영자에게 요청합니다.
 
   막힌 계정(`allow list`)과 계정별 스위치를 확인하고 사용자 승인을 받아 `passwordless on`과 `sudo systemctl start hjviewer-api-check.timer`. 모두 휴대폰과 PC에서 한 번 다시 로그인합니다. PC의 묶음은 남으므로, 그 PC로 들어오는 연결을 위해 PC에서 다시 로그인할 필요는 없습니다. 백업 뒤에 풀렸던 묶음이 서버에 되살아나도, 허용 표시가 이미 지워진 PC는 증명을 받지 않습니다(`listed`).
 - **업그레이드**: hjv-api의 저장 이전은 한 방향입니다(옛 실행 파일은 새 스키마를 거부). 새 판을 설치하기 전에 `sudo /opt/hjviewer/bin/hjv-api admin backup /var/lib/hjviewer-api/backup/before-<VERSION>.sqlite3`로 스냅숏을 남기고, 옛 실행 파일과 설정 파일도 `/root/hjv-backup/`에 복사합니다(`sudo cp -p /opt/hjviewer/bin/hjv-api /root/hjv-backup/hjv-api-before-<VERSION>`, `sudo cp -p /etc/hjviewer/hjviewer-api.env /root/hjv-backup/hjviewer-api.env-before-<VERSION>`). 되돌릴 때는 옛 실행 파일, 스냅숏, 설정 파일을 함께 되돌립니다. 옛 실행 파일과 설정 파일을 제자리에 넣고(설정 파일은 600을 지키도록 `sudo cp -p /root/hjv-backup/hjviewer-api.env-before-<VERSION> /etc/hjviewer/hjviewer-api.env`), 위의 복원 블록을 `B`=스냅숏으로 합니다. 새 판이 돌지 않아 `backup` 줄이 실패하면, 사용자 승인 뒤 그 줄 대신 지금 DB 파일들을 `/root/hjv-backup/before-restore-<시각>/`(700)로 옮기고 14일 안에 지웁니다. 스냅숏도 복원한 백업이므로 모든 계정이 꺼진 채로 시작하고, 확인과 `user revoke-all --all` 뒤 사용자 승인을 받아 켭니다. 스냅숏은 다른 백업처럼 14일 뒤 지워지므로 되돌리기는 그 안에 정합니다. 기록: 2026-10-15 0시쯤(KST) 이 절차로 hjv-api를 3b283b2로 바꿨습니다(서버 묶음 `server-2026.10.14.3`, Release는 pre-release. `server-2026.10.14.2`와 다른 것은 `bin/hjv-api`와 `SOURCE.txt`뿐). 문 2 페이지가 바깥 사이트를 가리키지 않게 한 판입니다(8-4). hbbs와 hbbr은 다시 시작하지 않았습니다.
@@ -1239,7 +1239,8 @@ hjv-api가 멈추거나 동기화만 실패해도, 비밀번호 없는 연결은
 - **PC의 기기 키가 바뀌었을 때**: 설정을 잃은 PC(설정까지 지우고 다시 설치 등)는 같은 ID로 새 키를 등록합니다. 서버는 그 PC의 첫 동기화에서 hbbs에 키를 묻고, 진짜 hbbs가 새 키를 가졌으면 그 PC를 `needs-relogin`으로 둡니다(`report`의 `PCs that need a login on them`). 목록을 새로 고친 컨트롤러는 그 PC에 비밀번호 창을 띄웁니다. **그 PC에서 같은 계정으로 다시 로그인**하면 새 키가 저장되고 묶음 ID는 그대로라 비밀번호 없는 연결이 돌아옵니다. PC가 새 ID를 받았으면 새 ID는 그 PC에서 다시 로그인해야 목록에 오르고, 옛 ID의 카드는 주인이 빼거나 180일 정리가 지웁니다.
 - **대상 가리키기**: 포탈 ID나 주소를 명령 인자로 치지 않습니다. sudo가 명령줄 전체를 시스템 로그(`/var/log/auth.log`, 저널)에 남기고, 사람이 친 명령은 셸 기록에도 남기 때문입니다(운영자 기록에는 꼬리표만 남음). 사람 운영자는 `users --reveal`로 꼬리표를 찾아 `tag:<T>`로 가리키고, PC는 `--owner-of <PC ID>`나 `binding list`의 꼬리표로 가리킵니다.
 - **계정 키**: `key list [tag:T]`(키마다 PC별 마지막 비밀번호 없는 연결과 30일 횟수), `key revoke <ckid>`(잃어버린 기기를 사용자가 직접 로그아웃시킬 수 없을 때), `user revoke-all tag:<T>`. 한 계정에는 활성 키가 20개까지이고, 넘으면 새 로그인이 그 계정에서 가장 오래 쓰지 않은 키를 로그아웃시킵니다(저널의 `login: the account had 20 active keys`). 사용자가 모르는 기기가 많으면 비밀번호 유출로 보고 7-13의 4·5번을 합니다.
-- **계정 삭제 요청**: 요청을 받은 날짜를 사용자가 서버 밖에 적어 둡니다(복원·재구축 뒤 다시 지우기 위해, 7-14). `user delete tag:<T>`. 명단의 항목도 계정과 함께 지워집니다. 열린 로그인에서는 그 사람이 나중에 다시 로그인하면 다시 오르고, 명단 방식에서는 `allow import <파일>`로 다시 넣어야 로그인합니다. 막힌 항목은 계정을 지워도 남습니다(막기를 지키는 데 필요한 포탈 ID만 남음). `user delete`는 그 계정의 PC를 먼저 풀고(무덤) 그 계정의 중계기를 폐기한 뒤, 계정과 그 키·토큰·사용 기록·켜기 기록을 지웁니다. 남는 것은 묶음 무덤(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록이고, 백업은 14일 뒤 사라진다고 요청한 사람에게 알립니다.
+- **앱에서 계정 삭제**(1.9.1부터): 사용자는 앱에서 자기 계정을 바로 지웁니다(설정 → 계정 → [계정 삭제], `POST /api/hjv/account/delete`). 지우는 것과 남는 것은 아래 `user delete`와 같고(App Review 계정만 명단 항목이 남음, 7-17), 운영자가 할 일은 없습니다. 서비스가 운영자 기록에 두 줄을 씁니다. 지우기 전에 `cmd="app account-delete" targets=<꼬리표>`, 끝난 뒤 `done="ok: <n> PCs, <n> account keys, <n> tokens, <n> relays, allowlist entry <removed | kept (App Review) | stays blocked | none>"`입니다. 앞 줄을 쓸 수 없으면(관리 소켓이 꺼졌거나 기록 파일에 쓸 수 없음) 지우지 않고 앱에 "삭제 기록을 남기지 못해 계정을 지우지 않았습니다. …"를 돌려줍니다. `report`와 하루 요약은 `account deleted-by-user`로 세고, 저널에는 꼬리표와 개수만 든 `account: deleted at its own request (acct=<꼬리표>): …` 한 줄이 남습니다(그 밖의 줄은 9-10). 복원 뒤 다시 지우는 근거는 운영자 기록의 앞 줄이므로(7-14), 앱 삭제는 서버 밖에 적어 둘 것이 없습니다.
+- **계정 삭제 요청**(운영자에게 온 것): 요청을 받은 날짜를 사용자가 서버 밖에 적어 둡니다(복원·재구축 뒤 다시 지우기 위해, 7-14). `user delete tag:<T>`. 명단의 항목도 계정과 함께 지워집니다. 열린 로그인에서는 그 사람이 나중에 다시 로그인하면 다시 오르고, 명단 방식에서는 `allow import <파일>`로 다시 넣어야 로그인합니다. 막힌 항목은 계정을 지워도 남습니다(막기를 지키는 데 필요한 포탈 ID만 남음). `user delete`는 그 계정의 PC를 먼저 풀고(무덤) 그 계정의 중계기를 폐기한 뒤, 계정과 그 키·토큰·사용 기록·켜기 기록을 지웁니다. 남는 것은 묶음 무덤(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록이고, 백업은 14일 뒤 사라진다고 요청한 사람에게 알립니다. App Review 계정을 이렇게 지우면 명단 항목도 지워지므로, 심사가 아직 남았으면 7-17의 3번으로 다시 넣습니다. 1.9.1 앱을 쓰는 사람에게는 앱에서 직접 지울 수 있다고(설정 → 계정 → [계정 삭제]) 알려도 됩니다.
 - **열람 요청**(사람 운영자만, 운영 에이전트는 하지 않음): `users --reveal`, `devices --reveal`, `key list tag:<T> --reveal`, `binding list --reveal`, `relay list --reveal`로 그 사람의 것을 봅니다. 로그인 기록(`events`), 켜기 기록(`wake_jobs`), 켜기 정보(`wol_info`), PC마다 마지막 동기화와 그 주소(`devices --reveal`에 없음)는 관리 명령이 없으므로, root가 DB를 읽기 전용으로 열어 아래 블록으로 봅니다. 서버에 `sqlite3` 명령이 없어도 되도록(이 런북은 그 패키지를 설치하지 않음) python3의 sqlite3 모듈로 열고(`mode=ro`, 쓰기는 거부됨), 값은 SQL 글에 넣지 않고 `?`로 묶습니다. 꼬리표는 인자로, 포탈 ID는 표준 입력으로 주므로 포탈 ID가 명령줄과 sudo 기록에 남지 않습니다(위 "대상 가리키기"). 포탈 ID는 hjv-api처럼 앞뒤 공백을 빼고 소문자로 바꿔 찾으므로, 대문자로 쳐도 됩니다. 결과는 요청한 사람에게만 전하고 서버나 대화에 남기지 않습니다.
 
 ```bash
@@ -1290,8 +1291,10 @@ report: 계정 <n>, 활성 키 <n>, 묶음을 가진 PC <n>, 그중 10분 안에
 
 Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다. 사용자 결정(2026-10-16): ID와 비밀번호는 서버의 이 파일에만 있고, 비밀번호는 해시로만 둡니다. 이 계정은 로그인만 되고 파일의 `UNTIL`에 끝납니다. 연세 SSO를 부르지 않고, PC를 목록에 올리지 못하고, 새 버전을 받지 못하고, 자기가 만들지 않은 계정에는 들어가지 못합니다. 동작은 [server/api/README.md](../server/api/README.md)의 "The App Review account", 심사에 넣는 값은 [distribution.md](distribution.md)의 "iOS: 심사용 데모 계정"에 있습니다.
 
+1.9.1부터 심사자는 앱에서 이 계정을 지울 수 있습니다(지침 5.1.1(v), 설정 → 계정 → [계정 삭제]). 계정과 키·토큰은 다른 계정처럼 지워지지만 명단 항목은 남고 파일도 그대로이므로, 다음 심사 로그인이 이름 "App Review"의 빈 계정을 새로 만듭니다. 운영자가 할 일은 없습니다(저널 줄은 5번).
+
 - 파일은 사용자가 에이전트 세션이 아닌 자기 터미널(Linux, macOS나 WSL)에서 `python3 -I deploy/review-conf.py --until <YYYY-MM-DD> --out ~/review.conf [--pc <데모 PC ID>]...`로 만들어(ID와 비밀번호는 도구가 터미널에서 물음) 운영 에이전트의 홈으로 보냅니다. 형식은 [deploy/review.conf.example](../deploy/review.conf.example)에 있습니다.
-- **데모 PC 줄**(1.8.0, 교직원 전용): 출입 확인을 켠 뒤(`access.conf`의 `MODE=enforce`) 이 계정은 `PC=` 줄의 PC(1~3대)에만 연결합니다. 이 줄이 없으면 아무 PC에도 연결하지 못합니다. `--pc`를 주면 도구가 이 줄을 씁니다. 데모 PC를 둘지, 어느 PC로 할지는 사용자가 정합니다(추천: 운영자 계정에 묶은 전용 PC나 VM. 묶여 있어 재부팅해도 온라인이고, 운영자의 업무 PC는 쓰지 않음). 이 줄은 출입증을 아는 새 hjv-api만 읽습니다. 옛 hjv-api는 이 줄이 있는 파일 전체를 거부해 계정이 없어지므로, 새 hjv-api를 넣은 뒤에 이 줄이 든 파일을 넣습니다.
+- **데모 PC 줄**(1.8.0, 교직원 전용): 출입 확인을 켠 뒤(`access.conf`의 `MODE=enforce`) 이 계정은 `PC=` 줄의 PC(1~3대)에만 연결합니다. 이 줄이 없으면 아무 PC에도 연결하지 못합니다. `--pc`를 주면 도구가 이 줄을 씁니다. 데모 PC를 둘지, 어느 PC로 할지는 사용자가 정합니다(추천: 운영자 계정에 묶은 전용 PC나 VM. 묶여 있어 재부팅해도 온라인이고, 운영자의 업무 PC는 쓰지 않음). 이 줄은 출입증을 아는 새 hjv-api만 읽습니다. 옛 hjv-api는 이 줄이 있는 파일 전체를 거부해 계정이 없어지므로, 새 hjv-api를 넣은 뒤에 이 줄이 든 파일을 넣습니다. 1.9.1부터는 데모 PC를 묶은 운영자 계정을 앱에서 지우면 데모 PC도 그 계정에서 풀리고 출입증을 받지 못해 오프라인이 되므로, 심사 중에는 그 계정을 지우지 않습니다.
 - 운영 에이전트는 이 파일을 출력하지 않고(`cat`, `less` 등), ID를 보고·대화·명령 인자에 옮기지 않습니다. 옮겨도 되는 것은 `UNTIL`과 저널의 꼬리표뿐입니다. 이 계정으로 로그인해 보지 않습니다. 확인은 사용자가 앱으로 합니다(4번).
 - 아래 명령의 `T`는 이 계정의 꼬리표입니다(`T='<꼬리표>'`로 둠). 2번의 read 줄에 처음 나오고, 보고(8번)마다 적습니다. 저널은 30일만 남으므로 그 뒤에는 보고에 적은 값을 씁니다. 저널에 아직 있으면 `sudo journalctl --namespace=hjviewer -u hjviewer-api -o cat | grep 'App Review' | grep -o 'acct=[0-9a-f]\{16\}' | tail -1`로도 얻습니다.
 
@@ -1324,7 +1327,7 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    ```bash
    sudo sed -n 's/^ID=//p' /etc/hjviewer/review.conf | sudo /opt/hjviewer/bin/hjv-api admin allow import /dev/stdin   # allowlist: 1 added, …
    ```
-4. **확인**(사용자, 처음 제출하기 전): 사용자가 App Store Connect에 넣을 값 그대로 앱으로 한 번 로그인해 보고 로그아웃합니다(distribution.md의 "iOS: 심사용 데모 계정" 2번). 데모 PC 줄이 있으면 로그인한 채로 데모 PC에 그 PC의 ID와 비밀번호로 연결해 봅니다. 출입 확인이 켜진 서버에서는 다른 PC에 연결하면 거절(A2)되어야 합니다. 사용자가 확인했다고 하면 운영 에이전트는 계정을 지우고 명단에 다시 넣습니다. 확인한 기기가 심사자의 기기에 "새 기기" 알림으로 뜨지 않게 하려는 것입니다(`user delete`는 명단 항목도 지움).
+4. **확인**(사용자, 처음 제출하기 전): 사용자가 App Store Connect에 넣을 값 그대로 앱으로 한 번 로그인해 보고 로그아웃합니다(distribution.md의 "iOS: 심사용 데모 계정" 2번). 데모 PC 줄이 있으면 로그인한 채로 데모 PC에 그 PC의 ID와 비밀번호로 연결해 봅니다. 출입 확인이 켜진 서버에서는 다른 PC에 연결하면 거절(A2)되어야 합니다. 사용자가 확인했다고 하면 운영 에이전트는 계정을 지우고 명단에 다시 넣습니다. 확인한 기기가 심사자의 기기에 "새 기기" 알림으로 뜨지 않게 하려는 것입니다(`user delete`는 명단 항목도 지움). 1.9.1 앱으로 확인했으면 사용자가 로그아웃 대신 그 앱의 [계정 삭제]로 지워도 됩니다. 그러면 명단 항목이 남으므로 아래 두 줄은 하지 않고, 저널에 `account: deleted at its own request (acct=<T>, the App Review account)` 줄이 있는지만 봅니다(5번의 넷째 줄이 1).
    ```bash
    sudo /opt/hjviewer/bin/hjv-api admin user delete "tag:$T"
    sudo sed -n 's/^ID=//p' /etc/hjviewer/review.conf | sudo /opt/hjviewer/bin/hjv-api admin allow import /dev/stdin   # allowlist: 1 added, …
@@ -1336,12 +1339,14 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    echo "$J" | grep -c 'login: the App Review account logged in'
    echo "$J" | grep -c 'login: a wrong password for the App Review account'
    echo "$J" | grep -c "login: ID limit reached (acct=$T"
+   echo "$J" | grep -c "account: deleted at its own request (acct=$T"   # 앱에서 이 계정을 지운 수(1.9.1)
    ```
 6. **끝내기**(심사가 끝났거나 사용자가 정한 때, 사용자 승인 뒤): 파일을 지우면 그 계정의 토큰이 바로 멈추고 앱은 다음 요청에서 로그아웃됩니다. 그다음 `admin user delete`로 계정(키, 토큰, 명단 항목)을 지웁니다. `HJV_API_REVIEW_FILE` 줄은 두어도 됩니다(파일이 없으면 계정도 없음). hjv-api를 이 기능 전의 판으로 되돌릴 때만 지웁니다(7번).
    ```bash
    sudo rm /etc/hjviewer/review.conf
    sudo /opt/hjviewer/bin/hjv-api admin user delete "tag:$T"
    ```
+   심사자가 앱에서 이미 지웠고 그 뒤 다시 로그인하지 않았으면 `user delete`는 `no such account`로 끝나고 명단 항목만 남습니다. 사람의 포탈 ID가 아니므로 그대로 둡니다(계정 없는 항목은 명단에 오른 지 1년 뒤의 정리가 지움).
 7. **되돌리기**(hjv-api를 이 기능 전의 판으로 되돌릴 때, 사용자 승인 뒤): 옛 판은 `HJV_API_REVIEW_FILE`을 몰라 그 줄이 있으면 시작하지 않고, 이 계정을 따로 다루지도 않습니다. 옛 판에서는 이 계정의 토큰이 파일이나 `UNTIL`과 상관없이 보통 토큰처럼 통하고(쓰지 않아도 90일), 새 버전과 짧은 링크도 받습니다. 그래서 새 판이 도는 동안 먼저 계정을 지우고, 설정 줄을 지운 뒤 옛 실행 파일로 바꿉니다.
    ```bash
    sudo rm -f /etc/hjviewer/review.conf
@@ -1353,7 +1358,7 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
    sudo /opt/hjviewer/bin/hjv-api admin selfcheck
    ```
    새 판이 3b283b2에 이 기능만 더한 판이면 DB 스키마가 같아 이 블록으로 끝납니다. 다른 서버 변경도 함께 들어간 판이면 앞의 세 줄 뒤에 7-14의 "업그레이드"대로 옛 실행 파일, 스냅숏, 설정 파일을 함께 되돌립니다.
-8. **보고**: `review.conf <넣음 | 바꿈 | 지움>, UNTIL <UTC>, 데모 PC <n>대, acct=<꼬리표>, 저널 <read | is not used <이유> | no App Review account>, 어제 로그인 <n>줄, 틀린 비밀번호 <n>줄, ID 한도 <n>줄, user delete <했음 | 안 함>`. ID와 비밀번호, 데모 PC의 ID는 적지 않습니다.
+8. **보고**: `review.conf <넣음 | 바꿈 | 지움>, UNTIL <UTC>, 데모 PC <n>대, acct=<꼬리표>, 저널 <read | is not used <이유> | no App Review account>, 어제 로그인 <n>줄, 틀린 비밀번호 <n>줄, ID 한도 <n>줄, 앱 삭제 <n>줄, user delete <했음 | 안 함 | no such account>`. ID와 비밀번호, 데모 PC의 ID는 적지 않습니다.
 
 ## 8. 최소 버전과 업데이트 배포 (1.6.0)
 
@@ -1982,3 +1987,29 @@ hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
   줄 수와 종류만 보고에 옮깁니다(꼬리표는 사용자가 물을 때만). 만든 코드와 시도의 결과별 수는 저널이 아니라 `admin ticket status`의 `support codes, the last day's records` 줄(9-4의 5번)에서 봅니다.
 - **1.9.0 출시의 순서**(D-2, D-3): ① 이 hjv-api를 위의 '넣기'대로 넣습니다(nginx 줄 먼저, 조용한 저녁, 허브-운영). ② 1.9.0의 패키지와 정책 seq 5(세 플랫폼 최소·최신 1.9.0)를 8-2로 넣습니다. seq 5는 ①이 끝난 뒤에 사용자가 서명합니다. 그 정책의 `--contact`는 관리자 연락처 자체이고([tools/hjv-release/README.md](../tools/hjv-release/README.md)), 그 값은 저장소와 이 런북에 적지 않습니다. 유예와 Windows 무인 설치 시각은 seq 5의 초안을 만들 때 사용자가 정합니다. ③ seq 5가 서버에 들어간 뒤 hbbs의 최소 컨트롤러를 `MIN=1.9.0`으로 올립니다(8-3, 사용자가 `hjv-release hbbs-conf`로 만든 파일). ①을 ② 뒤로 미루지 않습니다. 1.9.0 앱은 서버가 두 표시를 주지 않으면 지원 코드 단추를 보이지 않습니다.
 - **되돌리기**: 7-14의 "업그레이드"대로 옛 실행 파일로 돌아가면 두 표시가 없어지고, 앱은 다음 물음부터 두 단추를 감춥니다. 이미 바꾼 출입증은 2시간 안에 끝납니다. 잘못 쓰인 코드는 9-7의 '지원 코드가 잘못 쓰임'입니다.
+
+### 9-10. 1.9.1의 hjv-api: 앱 안의 계정 삭제 (B1)
+
+1.9.1 앱과 함께 내는 hjv-api는 앱 안의 계정 삭제 `POST /api/hjv/account/delete`를 더합니다(App Store 지침 5.1.1(v), 사용자 결정 2026-10-26). 동작과 형식은 [server/api/README.md](../server/api/README.md)의 "Account deletion"에 있습니다. hbbs, hbbr, `access.conf`, `guest.conf`, `review.conf`는 그대로이고, **새 파일, 설정 줄, 자격 증명, DB 이전, nginx 줄이 없습니다.** nginx는 `/api/hjv/`를 접두어로 넘기고(`location ^~ /api/hjv/`), Caddy와 Apache도 같습니다.
+
+- **들어 있는 것**: 로그인한 앱이 계정 키로 서명한 요청 하나(본문 `{"confirm":"delete-account"}`)로 자기 계정을 바로 지웁니다. 지우는 것과 남는 것은 `user delete`와 같고(7-15), App Review 계정만 명단 항목이 남습니다(7-17). 그 계정의 키로 만든 열린 지원 코드도 메모리에서 바로 끝납니다. 새로 생기는 것은 운영자 기록의 `cmd="app account-delete"` 두 줄(7-15), `report`와 하루 요약의 기록 `account deleted-by-user`, 아래 저널 줄입니다.
+- **운영자 기록이 있어야 지움**: 서비스가 운영자 기록에 앞 줄을 쓰지 못하면(관리 소켓이 꺼짐, 기록 파일에 쓸 수 없음) 계정을 지우지 않고 앱에 503 `not_recorded`를 줍니다. 운영 서버에는 관리 소켓과 기록 파일이 늘 있으므로 할 일은 없습니다.
+- **넣기**(사용자 승인 뒤 허브-운영이, 조용한 시간에): 7-14의 "업그레이드"대로 스냅숏, 옛 실행 파일, 설정 파일을 남긴 뒤 새 묶음으로 6절 "B 경로 업데이트"의 4번(hjv-api만)을 합니다. hbbs와 hbbr은 다시 시작하지 않으므로 원격 세션은 끊기지 않습니다. 6절의 "nginx 경로 파일" 블록으로 묶음의 nginx 파일과 설치된 것을 비교해 다른 것이 없는지만 봅니다. 다르면 멈추고 보고합니다.
+- **순서**: ① 이 hjv-api를 먼저 넣습니다. ② 그 뒤 1.9.1 앱을 나눕니다. App Store 빌드는 이 hjv-api가 돈 뒤에 심사에 냅니다(심사자가 데모 계정을 지워 봄). 옛 앱은 이 경로를 모르므로 바뀌는 것이 없고, 1.9.1 앱이 옛 hjv-api를 만나면 404를 받아 "지금은 앱에서 계정을 삭제할 수 없습니다. 관리자에게 삭제를 요청해 주세요."를 보입니다.
+- **확인**: 토큰 없는 요청이라 아무것도 지우지 않습니다.
+  ```bash
+  D=$(sudo sed -n 's/^HJV_DOMAIN=//p' /etc/hjviewer/hjviewer.env)
+  curl -s --max-time 5 --resolve "$D:443:127.0.0.1" -X POST -H 'Content-Type: application/json' -d '{}' "https://$D/api/hjv/account/delete"; echo
+  ```
+  `{"error":"로그인이 필요합니다. 다시 로그인해 주세요."}`(401)가 나와야 합니다. `{"error":"not found"}`(404)이면 옛 hjv-api가 돌고 있습니다. 멈추고 보고합니다.
+- **저널의 줄**: 포탈 ID, 이름, 주소, 기기 ID는 어느 줄에도 없고, 계정은 꼬리표로만 나옵니다.
+  - `account: deleted at its own request (acct=<꼬리표>): <p> PCs, <k> account keys, <t> tokens, <r> relays, allowlist entry <removed | kept | stays blocked | none>`: 한 계정이 앱에서 지워졌습니다. App Review 계정이면 꼬리표 뒤에 `, the App Review account`가 붙습니다.
+  - `account delete: no operator record (the admin socket is off): a deletion is refused (acct=<꼬리표>)`, `account delete: the operator record did not take the line (acct=<꼬리표>); nothing was deleted`: 운영자 기록 때문에 삭제를 거절했습니다(사용자는 "삭제 기록을 남기지 못해 계정을 지우지 않았습니다. …"를 봄). 바로 보고합니다.
+  - `account delete: the operator record did not take the result line (acct=<꼬리표>); the account is deleted`: 지웠지만 기록의 끝 줄을 쓰지 못했습니다. 보고합니다.
+  - `account delete: <오류>`: DB 오류로 아무것도 지우지 않았습니다(500). 보고합니다.
+  - `account delete: more than 30 calls a minute from one key (…)`, `account delete: a request not of the form (…)`: 한 기기의 지나친 요청, 모양이 틀린 요청입니다.
+  ```bash
+  sudo journalctl --namespace=hjviewer -u hjviewer-api --since yesterday -o cat | grep -E '^account( delete)?:' | sed 's/(acct=[^)]*)//' | sort | uniq -c
+  ```
+  줄 수와 종류만 보고에 옮깁니다(꼬리표는 사용자가 물을 때만).
+- **되돌리기**: DB 스키마가 같으므로 7-14의 "업그레이드"대로 옛 실행 파일과 설정 파일로 돌아가면 됩니다(스냅숏은 넣지 않음: 넣으면 그 뒤에 지운 계정이 돌아옴). 이 경로는 404가 되고, 1.9.1 앱은 [계정 삭제]에서 위의 404 글을 보입니다. 이미 지운 계정은 되돌아오지 않습니다.

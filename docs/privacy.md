@@ -4,8 +4,6 @@ English first. 한국어는 [아래](#한국어)에 있습니다. The two parts 
 
 ## English
 
-> This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.
-
 ### 1. In short
 
 HJViewer is a self-hosted remote desktop app. The people who build it collect nothing: there are
@@ -16,9 +14,9 @@ From version 1.6.0 the server can also have accounts. Faculty and staff whom the
 log in with their Yonsei portal ID; they then see their own Windows PCs in the app, connect between
 their own devices without the PC's password, and can switch a sleeping PC on through a relay in its
 network. This statement says what the server, your devices and that relay keep, for how long, and
-how to have it deleted. Logging in is a choice: an app that is not logged in, and a build without
-the account feature, sends nothing to the account service and connects with the PC's ID and
-password as before.
+how to delete it in the app or have it deleted (section 8). Logging in is a choice: an app that is
+not logged in, and a build without the account feature, sends nothing to the account service and
+connects with the PC's ID and password as before.
 
 From version 1.6.0 the operator can also set a minimum app version. Apps check the server's signed
 version policy, and new versions come from the server (section 2, "Updates").
@@ -111,7 +109,8 @@ server, which also holds a hash of its password; the password typed is checked a
 not by the Yonsei SSO, and is not kept, as no password is. The account holds no PC and gets no new
 app version, and it ends with that file. From version 1.8.0 it connects only to the demo PCs that
 the same file names (one to three). Its logins leave the same records as any other, with the tag of
-its ID, and the account is kept and deleted as any other.
+its ID, and the account is kept and deleted as any other, also in the app (section 8); its list
+entry then stays, since its ID names no person and the next review login needs it.
 
 **Logging in.** You type your Yonsei portal ID and password in the app. If you use the device's
 password autofill (Passwords on iOS, an autofill service on Android), it can fill in the ID and
@@ -194,17 +193,17 @@ nothing by itself, and the person at the PC still accepts or refuses.
 
 | What | Content | Kept |
 |---|---|---|
-| List | the portal ID of each person who logged in, put on the list at the first login, or whom the operator put on it ahead; how and when the entry came; whether the operator blocked it, and since when | with the account (below); an entry without an account a year after it came on the list; a blocked entry until the operator lifts the block |
-| Account | portal ID and name (from the SSO), times of creation, last login and last use (to the hour), the account's switch for connections without the PC's password | until a year without use (an account with a PC in use stays, unless it is blocked), or deleted on request |
+| List | the portal ID of each person who logged in, put on the list at the first login, or whom the operator put on it ahead; how and when the entry came; whether the operator blocked it, and since when | with the account (below); an entry without an account a year after it came on the list; a blocked entry until the operator lifts the block; the App Review account's entry stays when that account is deleted in the app |
+| Account | portal ID and name (from the SSO), times of creation, last login and last use (to the hour), the account's switch for connections without the PC's password | until a year without use (an account with a PC in use stays, unless it is blocked), or deleted in the app or on request (section 8) |
 | Login tokens | a hash of each token, never the token | until logout, 90 days without use, a year at most |
 | Account keys (one per logged-in device) | public key; device ID; a tag computed from the machine identifier of section 2 (not the identifier); platform, the device model the server names from it, the device name and the app version, as the device reported them; whether the login came from the university's network or from outside (not the address); times of creation and last login; your devices' answers to the notice below; when and how its login ended and which of your devices ended it | while the device is logged in, then 30 days |
 | PCs in your account | PC ID, OS, host name, the PC's public key, a random binding ID, times added, last seen and last synced, the IP address its last sync came from (replaced by the next one's), app version, whether switched off on the PC; per reason, counts of refused attempts (30 days) | until removed from the account or 180 days unseen. After that the binding ID, the PC ID and its public key stay 180 days, so that the PC learns that it was removed |
 | Connections without the PC's password | per account key, PC and day: the time of the last one and their number, as the PC reported them. There is no record per connection | 30 days; deleted with the key or the PC |
-| Records of logins, devices and keys | tags of the account and the device (not your ID), the client's IP address, the result, the time | 6 months |
+| Records of logins, devices, keys and account deletions | tags of the account and the device (not your ID), the client's IP address, the result, the time | 6 months |
 | Access password tries (from 1.8.0) | the result, the time, a tag of the client's IP address (not the address, the PC's ID, the password or the ticket) | 6 months |
 | Support codes (from 1.9.0) | for each code made, a tag of the account that made it and the time; for each try to use one, the result, the time, a tag of the client's IP address and, once the code was found, the tag of the account that made it (not the code, the address, the PC's ID or the ticket) | 6 months |
 | Downloads of new app versions (section 2) | which way (a login, a PC's key, a short link made or used, the migration link, from 1.9.0 a support link), the platform, the time; tags of the account and the PC when there are any, and a tag of the client's IP address (not the address) | 6 months |
-| Operator record | which administration command ran when, its targets as tags; as tags of the PC and of the address, when a PC's key downloads a new version from an address that PC never used before; each look of a super operator at the users and PCs (below), with that super operator as a tag and how many users and PCs it showed | at least a year |
+| Operator record | which administration command ran when, its targets as tags; as tags of the PC and of the address, when a PC's key downloads a new version from an address that PC never used before; each look of a super operator at the users and PCs (below), with that super operator as a tag and how many users and PCs it showed; each account deleted in the app, as a tag of the account, with how many PCs, keys, tokens and relays went | at least a year |
 | Database backups | a copy of all of the above, on the server, readable by root only: one a day, and one before an upgrade or a restore | 14 days |
 | The service's log | counts and tags, never IDs, addresses or secrets | 30 days |
 
@@ -409,6 +408,14 @@ beyond section 9.
 
 ### 8. Deleting your data, and your rights
 
+- **Deleting your account in the app** (from version 1.9.1): on a device logged in to your account,
+  open Settings > Account > Delete account, type the word the app asks for and confirm. The
+  account is deleted at once: you leave the list, your PCs leave the account, its relays are
+  revoked, and the support codes it made that nobody used yet end. Its account keys and login
+  tokens end too, so every device is logged out (this one at once, the others the next time they
+  reach the server), and everything kept about it is deleted, the wake requests too. What stays is
+  the same as under "Through the operator" below; the operator record notes the deletion with a
+  tag of the account. You can still ask the operator instead.
 - **Yourself, in the app**: log out on a device (its key and token end at once); on another of
   your devices, log out a lost one ("로그인한 기기", Logged-in devices) or all others; remove a PC from My
   PCs; log out on a PC before you give it away. Uninstalling HJViewer from a PC deletes what it kept
@@ -462,13 +469,11 @@ history of that repository.
 
 ## 한국어
 
-> 본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.
-
 ### 1. 요약
 
 HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니다. 앱을 만든 쪽은 아무 정보도 수집하지 않습니다. 분석, 오류 보고, 광고가 없습니다. 앱은 빌드할 때 정해진 서버, 그리고 공개 STUN 서버(2절)하고만 통신합니다. 서버는 그 서버의 운영자가 관리합니다.
 
-1.6.0부터 서버에 계정 기능이 생깁니다. 연세 SSO를 통과한 교직원은 연세포탈 ID로 로그인하고, 앱에서 자기 Windows PC를 보고, 자기 기기끼리 PC 비밀번호 없이 연결하고, PC와 같은 네트워크의 중계기로 꺼진 PC를 켤 수 있습니다. 이 문서는 서버, 사용자의 기기, 그 중계기가 무엇을 얼마 동안 보관하는지와 지우는 방법을 적습니다. 로그인은 선택입니다. 로그인하지 않은 앱과 계정 기능이 없는 빌드는 계정 서비스에 아무것도 보내지 않고, 지금처럼 PC의 ID와 비밀번호로 연결합니다.
+1.6.0부터 서버에 계정 기능이 생깁니다. 연세 SSO를 통과한 교직원은 연세포탈 ID로 로그인하고, 앱에서 자기 Windows PC를 보고, 자기 기기끼리 PC 비밀번호 없이 연결하고, PC와 같은 네트워크의 중계기로 꺼진 PC를 켤 수 있습니다. 이 문서는 서버, 사용자의 기기, 그 중계기가 무엇을 얼마 동안 보관하는지와, 앱에서 지우거나 지워 달라고 하는 방법(8절)을 적습니다. 로그인은 선택입니다. 로그인하지 않은 앱과 계정 기능이 없는 빌드는 계정 서비스에 아무것도 보내지 않고, 지금처럼 PC의 ID와 비밀번호로 연결합니다.
 
 1.6.0부터 운영자는 앱의 최소 버전도 정할 수 있습니다. 앱은 서버의 서명된 버전 정책을 확인하고, 새 버전을 서버에서 받습니다(2절의 "업데이트").
 
@@ -489,7 +494,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 로그인한 사람에게만 해당합니다. 학교의 교직원만 로그인할 수 있습니다. 계정 서비스는 교직원의 포탈 ID(형식으로 가림: Z나 Y로 시작하고 ZA로 시작하지 않음)만 받고, 연세 SSO가 알려 준 그 사람의 코드도 같은 규칙으로 확인합니다. 그 사람은 운영자가 막지 않는 한 누구나 HJViewer를 쓸 수 있습니다. 계정 서비스는 처음 로그인할 때 그 포탈 ID를 명단에 올립니다. 운영자는 미리 명단에 올린 ID만 받는 방식으로 되돌릴 수도 있습니다. 계정 서비스는 같은 서버에서 돕니다. 로그인에 실패해도(틀린 비밀번호, 막힌 계정) 시도 기록(입력한 ID와 기기의 꼬리표, 접속한 IP 주소, 결과, 시각; 6개월)과 로그인 한도 기록은 남습니다. 다른 형식의 ID는(아래 App Review 계정의 ID는 빼고) SSO에 묻기 전에 바로 거절하며, 그 ID와 비밀번호를 SSO에 보내지 않고 시도 기록에도 그 ID의 꼬리표를 남기지 않습니다.
 
-**App Review 계정.** Apple이 iOS 앱을, Google이 Google Play의 Android 앱을 심사하는 동안, 운영자가 정한 때까지만 계정 하나가 더 로그인할 수 있습니다. 심사자가 쓰는 데모 계정입니다. 그 ID는 위의 포탈 ID와 다른 형식이고 서버의 파일 하나에만 있으며, 그 파일에는 비밀번호의 해시도 있습니다. 입력한 비밀번호는 연세 SSO가 아니라 그 해시로 확인하고, 다른 비밀번호처럼 보관하지 않습니다. 이 계정은 PC를 가지지 못하고 새 버전을 받지 못하며, 그 파일이 없어지면 끝납니다. 1.8.0부터는 같은 파일에 적힌 데모 PC(1~3대)에만 연결합니다. 이 계정의 로그인도 다른 로그인과 같은 기록(그 ID의 꼬리표 포함)을 남기고, 계정도 다른 계정처럼 보관하고 지웁니다.
+**App Review 계정.** Apple이 iOS 앱을, Google이 Google Play의 Android 앱을 심사하는 동안, 운영자가 정한 때까지만 계정 하나가 더 로그인할 수 있습니다. 심사자가 쓰는 데모 계정입니다. 그 ID는 위의 포탈 ID와 다른 형식이고 서버의 파일 하나에만 있으며, 그 파일에는 비밀번호의 해시도 있습니다. 입력한 비밀번호는 연세 SSO가 아니라 그 해시로 확인하고, 다른 비밀번호처럼 보관하지 않습니다. 이 계정은 PC를 가지지 못하고 새 버전을 받지 못하며, 그 파일이 없어지면 끝납니다. 1.8.0부터는 같은 파일에 적힌 데모 PC(1~3대)에만 연결합니다. 이 계정의 로그인도 다른 로그인과 같은 기록(그 ID의 꼬리표 포함)을 남기고, 계정도 다른 계정처럼 보관하고 지우며 앱에서도 지울 수 있습니다(8절). 그때 명단 항목은 남습니다. 그 ID는 사람의 포탈 ID가 아니고, 다음 심사 로그인에 필요하기 때문입니다.
 
 **로그인.** 앱에 연세포탈 ID와 비밀번호를 넣습니다. 기기의 암호 자동 완성(iOS의 암호, Android의 자동 완성 서비스)을 쓰면 그것이 저장해 둔 ID와 비밀번호를 넣을 수 있고, 로그인에 성공한 뒤에는 그것이 저장할지 물을 수 있습니다. 저장하면 앱이 아니라 그 서비스가 보관하고, 앱은 비밀번호를 저장하지 않습니다(1.9.0부터). 앱은 비밀번호를 서버의 키로 봉인하므로, 암호화된 통신을 들여다보는 네트워크에서도 계정 서비스만 열 수 있습니다. 계정 서비스는 연세 SSO(학교의 로그인 시스템)에 비밀번호를 확인받은 뒤 바로 버립니다. 비밀번호와 SSO 토큰은 저장하지도 기록하지도 않습니다. SSO에서 받은 것 가운데 그 사람의 코드(포탈 ID)와 성명만 읽고 보관하며, 이메일 주소와 소속은 읽지 않습니다. 로그인할 때마다 그 기기의 **계정 키**도 새로 등록합니다. 서버는 공개키만 보관하고 개인키는 기기에 남으며, 로그인 뒤의 모든 계정 요청에 그 키로 서명합니다.
 
@@ -505,17 +510,17 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 | 항목 | 내용 | 보관 |
 |---|---|---|
-| 명단 | 로그인한 사람의 포탈 ID(처음 로그인할 때 올라감)나 운영자가 미리 올린 포탈 ID, 어떻게 언제 올랐는지, 운영자가 막았는지와 언제부터인지 | 계정과 함께(아래). 계정이 없는 항목은 오른 지 1년 뒤. 막힌 항목은 운영자가 막기를 풀 때까지 |
-| 계정 | 포탈 ID와 성명(SSO에서 받음), 만든 시각·마지막 로그인 시각·마지막 사용 시각(한 시간 단위), 그 계정의 비밀번호 없는 연결 스위치 | 1년 동안 쓰지 않을 때까지(쓰는 PC가 있는 계정은 막히지 않았으면 남김), 또는 요청하면 삭제 |
+| 명단 | 로그인한 사람의 포탈 ID(처음 로그인할 때 올라감)나 운영자가 미리 올린 포탈 ID, 어떻게 언제 올랐는지, 운영자가 막았는지와 언제부터인지 | 계정과 함께(아래). 계정이 없는 항목은 오른 지 1년 뒤. 막힌 항목은 운영자가 막기를 풀 때까지. App Review 계정을 앱에서 지우면 그 항목은 남음 |
+| 계정 | 포탈 ID와 성명(SSO에서 받음), 만든 시각·마지막 로그인 시각·마지막 사용 시각(한 시간 단위), 그 계정의 비밀번호 없는 연결 스위치 | 1년 동안 쓰지 않을 때까지(쓰는 PC가 있는 계정은 막히지 않았으면 남김), 또는 앱에서 지우거나 요청하면 삭제(8절) |
 | 로그인 토큰 | 토큰의 해시만(토큰 자체는 없음) | 로그아웃할 때까지, 90일 동안 쓰지 않거나 최대 1년 |
 | 계정 키(로그인한 기기마다 하나) | 공개키, 기기 ID, 기기 식별값(2절)으로 만든 꼬리표(식별값 자체는 없음), 기기가 알린 플랫폼·기기 이름·앱 버전과 그것으로 서버가 정한 기기 모델 이름, 학내 네트워크에서 로그인했는지(주소는 없음), 만든 시각·마지막 로그인 시각, 아래 알림에 내 기기들이 한 답, 로그인이 언제 어떻게 끝났는지와 끝낸 내 기기 | 그 기기가 로그인해 있는 동안, 그 뒤 30일 |
 | 내 계정의 PC | PC ID, OS, 호스트 이름, PC 공개키, 무작위 묶음 ID, 추가한 시각·마지막으로 보인 시각·마지막 동기화 시각, 마지막 동기화가 온 IP 주소(다음 동기화의 주소로 바뀜), 앱 버전, 그 PC에서 꺼 두었는지, 거절한 시도의 이유별 개수(30일) | 계정에서 빼거나 180일 동안 보이지 않을 때까지. 그 뒤 묶음 ID, PC ID, PC 공개키만 180일 남깁니다. PC가 빠졌다는 것을 그 PC에 알리기 위해서입니다 |
 | 비밀번호 없는 연결 | 계정 키·PC·날짜마다 마지막 연결 시각과 횟수(PC가 알린 값). 연결마다의 기록은 없음 | 30일. 그 키나 PC와 함께 삭제 |
-| 로그인·기기·키 기록 | 계정과 기기의 꼬리표(ID가 아님), 접속한 IP 주소, 결과, 시각 | 6개월 |
+| 로그인·기기·키·계정 삭제 기록 | 계정과 기기의 꼬리표(ID가 아님), 접속한 IP 주소, 결과, 시각 | 6개월 |
 | 이용 비밀번호 시도(1.8.0부터) | 결과, 시각, 접속한 IP 주소의 꼬리표(주소, PC ID, 비밀번호, 출입증은 없음) | 6개월 |
 | 지원 코드(1.9.0부터) | 만들 때: 만든 계정의 꼬리표, 시각. 쓰려 할 때: 결과, 시각, 접속한 IP 주소의 꼬리표, 코드를 찾았으면 만든 계정의 꼬리표(코드, 주소, PC ID, 출입증은 없음) | 6개월 |
 | 새 버전 내려받기(2절) | 어느 길(로그인, PC의 키, 짧은 링크를 만들거나 씀, 이행용 링크, 1.9.0부터 지원 링크), 플랫폼, 시각. 계정과 PC가 있으면 그 꼬리표, 그리고 접속한 IP 주소의 꼬리표(주소는 없음) | 6개월 |
-| 운영자 기록 | 어떤 관리 명령을 언제 실행했는지, 대상은 꼬리표로. PC의 키가 그 PC가 쓴 적 없는 주소에서 새 버전을 받았을 때 그 PC와 주소의 꼬리표. 최고운영자가 사용자와 PC 목록(아래)을 볼 때마다 그 최고운영자(꼬리표)와 보인 사용자·PC의 수 | 1년 이상 |
+| 운영자 기록 | 어떤 관리 명령을 언제 실행했는지, 대상은 꼬리표로. PC의 키가 그 PC가 쓴 적 없는 주소에서 새 버전을 받았을 때 그 PC와 주소의 꼬리표. 최고운영자가 사용자와 PC 목록(아래)을 볼 때마다 그 최고운영자(꼬리표)와 보인 사용자·PC의 수. 앱에서 지운 계정마다 그 계정의 꼬리표와 빠진 PC·키·토큰·중계기의 수 | 1년 이상 |
 | DB 백업 | 위 전부의 사본(서버 안, root만 읽음). 매일 하나, 그리고 업그레이드나 복원 전에 하나 | 14일 |
 | 계정 서비스의 로그 | 개수와 꼬리표만(ID, 주소, 비밀값은 없음) | 30일 |
 
@@ -562,6 +567,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 8. 삭제와 권리 행사
 
+- **앱에서 계정 삭제**(1.9.1부터): 내 계정에 로그인한 기기에서 설정 → 계정 → [계정 삭제]를 누르고, 앱이 안내하는 낱말을 넣어 확인합니다. 계정은 바로 지워집니다. 명단에서 빠지고, 내 PC가 계정에서 빠지며, 그 계정의 중계기는 폐기되고, 그 계정이 만들어 아직 쓰지 않은 지원 코드는 끝납니다. 계정 키와 로그인 토큰도 끝나 모든 기기가 로그아웃됩니다(이 기기는 바로, 다른 기기는 다음에 서버에 닿을 때). 켜기 요청 기록을 포함해 그 계정에 대해 보관하던 것은 모두 지워집니다. 남는 것은 아래 "운영자에게 요청"과 같고, 운영자 기록에는 계정의 꼬리표로 삭제가 남습니다. 운영자에게 요청해도 됩니다.
 - **앱에서 직접**: 기기에서 로그아웃하면 그 기기의 키와 토큰이 바로 끝납니다. 잃어버린 기기는 다른 내 기기의 '로그인한 기기'에서 로그아웃시키거나 다른 기기를 모두 로그아웃시킵니다. 내 PC 목록에서 PC를 뺄 수 있고, PC를 남에게 넘기기 전에는 그 PC에서 로그아웃합니다. PC에서 HJViewer를 제거하면 레지스트리에 둔 것과 '들어온 연결' 목록(4절)이 지워집니다. 연세포탈 비밀번호를 바꿔도 이미 로그인한 기기는 남으므로, 바꾼 뒤에는 [다른 기기 모두 로그아웃]도 누릅니다. 다른 기기에서 로그아웃시키면 비밀번호 없는 새 연결이 막히고, 1.9.0부터는 서버에 닿는 PC가 그 기기의 열린 연결도 5분 안에 끊습니다. 그 PC에서 로그아웃하면 그 PC의 비밀번호 없는 연결은 바로 끊깁니다. 서버에 닿지 못하거나 그 전 버전인 PC에서는 이미 열려 있는 연결이 PC의 연결 창에서 끊거나, 내 기기에서 PC 비밀번호로 그 PC에 연결해 '원격 PC 다시 시작'을 누르거나, PC를 다시 시작할 때까지 남습니다.
 - **운영자에게 요청**: 나에 대해 보관하는 것을 보여 달라고, 고치거나 지워 달라고, 처리를 멈춰 달라고 요청할 수 있습니다. 계정을 지우면 명단에서도 빠지고, 그 계정의 중계기는 폐기되며, 켜기 요청 기록을 포함해 그 계정에 대해 보관하던 것이 모두 지워집니다. 남는 것은 뺀 PC의 묶음 ID·PC ID·공개키(180일), 폐기된 중계기의 ID·키·시각, 꼬리표로 남은 로그인·기기·키 기록(6개월), 운영자 기록, 그리고 운영자가 걸어 둔 막기(그 포탈 ID와 함께, 막기를 풀 때까지)이고, 백업은 14일 뒤에 사라집니다. 나중에 다시 로그인하면 다시 명단에 오릅니다(운영자가 명단에 있는 ID만 받는 동안에는 운영자가 먼저 다시 넣어야 합니다).
 - 운영자가 내 계정을 막으면 내 기기들은 바로 로그아웃되고, 다음 로그인은 막혔다는 안내와 함께 거절됩니다.

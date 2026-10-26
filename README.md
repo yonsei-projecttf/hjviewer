@@ -1,9 +1,5 @@
 # HJViewer
 
-> 본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.
->
-> This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.
-
 모바일 앱(iOS/Android)에서 Windows PC를 원격으로 보고 제어하는 서비스입니다. 프로젝트TF가 만듭니다. **방화벽·NAT 뒤에서도 HTTPS(443)만으로 연결**되는 것이 핵심입니다.
 [RustDesk](https://github.com/rustdesk/rustdesk) 클라이언트와 [rustdesk-server](https://github.com/rustdesk/rustdesk-server)를 포크해서 만듭니다.
 1.6.0부터는 연세포탈 ID로 로그인하면 앱에 내 Windows PC 목록이 나오고, 같은 계정으로 로그인한 내 기기끼리는 PC 비밀번호 없이 연결하며, 꺼진 PC를 같은 네트워크의 NAS 중계기로 켭니다. 로그인은 연세 SSO를 거치고, 연세 SSO는 연세대학교 교직원 계정만 받습니다. 그 SSO를 통과한 사람은 처음 로그인할 때 저절로 등록되고, 운영자는 계정을 막을 수 있습니다(`hjv-api admin block`). 서버에서 `HJV_API_LOGIN=list`로 바꾸면 운영자가 미리 명단에 올린 ID만 로그인합니다. 운영자가 정한 최소 버전보다 낮은 앱은 연결이 거절되고, 새 버전은 앱 안에서 받습니다(서명된 버전 정책). 1.8.0부터 서버는 교직원 전용으로 둘 수 있습니다: 운영자가 출입 확인을 켜면 로그인한 앱과 계정에 묶인 PC, 그리고 운영자가 정한 이용 비밀번호를 넣은 쪽만 서버를 씁니다(출입증). 1.9.0부터는 로그인한 교직원이 앱에서 만든 일회용 지원 코드와 지원 링크로 로그인하지 않은 PC 하나가 2시간 동안 연결을 받고, 그 PC의 연결 창은 서명으로 확인한 "연세대 교직원(로그인 확인)" 표시를 보입니다. 내 계정의 기기에는 "같은 계정 확인됨" 표시가 붙고, 내 PC에 연결한 세션은 연결할 때 잠겨 있던 PC를 끝날 때 다시 잠그며, 로그아웃한 기기의 비밀번호 없는 연결은 끊깁니다. 설치한 PC는 들어온 연결의 목록과 원격 준비 점검을 보이고, 휴대폰 앱은 Face ID·지문·기기 암호로 여는 앱 잠금을 고를 수 있습니다(기본은 꺼짐).
