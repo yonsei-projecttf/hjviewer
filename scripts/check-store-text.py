@@ -17,13 +17,16 @@ Google Play show them, checked before anything sends them:
   review      appstore/review_notes.txt: no placeholders but {{DEMO_PC_ID}} and {{DEMO_PC_PASSWORD}},
               each once; 4000 bytes once filled with the worst case (ASCII values of --pc-id-max and
               --pc-password-max bytes, every line break counted as CRLF); with appstore/distribution.txt
-              "unlisted" it holds Apple's sentence "This app is intended for unlisted distribution."
+              "unlisted" it holds Apple's sentence "This app is intended for unlisted distribution." as a
+              paragraph, and with "public" it does not
   Play        play/ko-KR/release_notes.txt with the lines the CI adds after it (PLAY_SOURCE_LINES:
               the version, the versionCode and the source link of the build) in 500 characters
   words       iOS texts never name the other platform's store (guideline 2.3.10: Android, Google,
               Play); Play texts never name Apple's; no text has a pilot notice, rustdesk:// links,
-              QR, a leftover <...> or TODO, an e-mail or IPv4 address; the App Store's own texts no
-              beta words; the English (en-GB) texts British spelling and no Hangul but 프로젝트TF
+              QR, a leftover <...> or TODO, an e-mail or IPv4 address (URLs included); the App Store's
+              own texts no beta, trial or demo words and no prices, and their name, subtitle,
+              keywords, promotional text and What's New no other app's name (4.1); the English
+              (en-GB) texts British spelling (-ise) and no Hangul but 프로젝트TF
 
 --filled (the store run): also fills the notes with REVIEW_DEMO_PC_ID and REVIEW_DEMO_PC_PASSWORD
 from the environment and counts those bytes. Whatever it checks, the script prints file names,
@@ -58,11 +61,15 @@ PLAY_LOCALES = ("ko-KR",)
 # .github/workflows (client-build.yml: 'HJViewer %s (%s)\n소스 코드(AGPL-3.0): https://github.com/%s/tree/%s\n'),
 # counted with the longest values it can take (scripts/test_check_store_text.py pins the format)
 PLAY_SOURCE_LINES = ("HJViewer {version} ({code})", "소스 코드(AGPL-3.0): https://github.com/{repo}/tree/{sha}")
-PLAY_WORST = {"code": "9" * 10, "repo": "yonsei-projecttf/hjviewer", "sha": "f" * 40}
+# the repository is the public one with a source_ref, else the calling (private build) repository:
+# the longer of the two
+PLAY_REPOS = ("yonsei-projecttf/hjviewer", "yonsei-projecttf/hjviewer-private")
+PLAY_WORST = {"code": "9" * 10, "repo": max(PLAY_REPOS, key=len), "sha": "f" * 40}
 # worst cases of the filled notes: a RustDesk ID has 6-16 characters (hbbs), and the demo PC's
-# permanent password is long (design 4-3: 16 or more); the store run refuses longer values
+# permanent password is long but bounded (design 4-3: 16 or more; store/README.md: 16-32); the
+# store run refuses longer values (--filled)
 PC_ID_MAX = 16
-PC_PASSWORD_MAX = 64
+PC_PASSWORD_MAX = 32
 PLACEHOLDERS = ("DEMO_PC_ID", "DEMO_PC_PASSWORD")
 FILL_ENV = {"DEMO_PC_ID": "REVIEW_DEMO_PC_ID", "DEMO_PC_PASSWORD": "REVIEW_DEMO_PC_PASSWORD"}
 UNLISTED_SENTENCE = "This app is intended for unlisted distribution."
@@ -88,17 +95,30 @@ ALL_RULES = {
     "IPv4 address": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
 }
 # guideline 2.3.10: the App Store's texts (review notes included) never name another platform
-IOS_RULES = {"other platform (2.3.10)": re.compile(r"android|google|\bplay\b|안드로이드|구글|플레이", re.I)}
+# ("플레이" but not "디스플레이", display)
+IOS_RULES = {"other platform (2.3.10)": re.compile(
+    r"android|google|\bplay\b|galaxy|samsung|안드로이드|구글|(?<!디스)플레이|갤럭시|삼성", re.I)}
 PLAY_RULES = {"Apple's platform": re.compile(r"iphone|ipad|\bios\b|app ?store|testflight|아이폰|아이패드|애플", re.I)}
-# what customers read in the App Store (guideline 2.2: no beta; 2.3.7: no prices)
-BETA = re.compile(r"베타|\bbeta\b|preview|미리 ?보기|test build|testflight", re.I)
-PRICE = re.compile(r"무료|유료|\bfree\b|가격|\bprices?\b", re.I)
+# what customers read in the App Store (guideline 2.2: no beta, trial or demo; 2.3.7: no prices)
+BETA = re.compile(r"베타|\bbeta\b|preview|미리 ?보기|test build|testflight|\btrial\b|\bdemos?\b(?! account)|"
+                  r"experimental|early access|체험판|시험판|테스트 ?버전|데모|정식 (?:서비스|버전|출시)\S* ?아[니닙닌님]", re.I)
+PRICE = re.compile(r"무료|유료|공짜|\bfree\b|가격|\bprices?\b|costs? nothing|no (?:charge|cost)", re.I)
+# guideline 4.1 (metadata): no other app's name in these fields; the description's open-source
+# paragraph names RustDesk until the owner decides SUBMIT-1.9.0 0-2 #25 (store/README.md)
+OTHER_APPS = re.compile(r"rust ?desk|team ?viewer|any ?desk|chrome remote desktop|splashtop|parsec|"
+                        r"러스트 ?데스크|팀 ?뷰어|애니 ?데스크", re.I)
+OTHER_APPS_IN = ("name.txt", "subtitle.txt", "keywords.txt", "promotional_text.txt", "whats_new.txt")
 CUSTOMER_TEXTS = ("name.txt", "subtitle.txt", "promotional_text.txt", "description.txt", "keywords.txt",
                   "whats_new.txt")
 # en-GB: SUBMIT-1.9.0 0-2 #4 (the Korean App Store's English is English (U.K.))
+# (-ise, not -ize, as in SUBMIT's English: organise, recognise; licence the noun, license the verb)
 AMERICAN = re.compile(r"\b(colors?|colored|favorites?|favorited|centers?|centered|behaviors?|gray|"
-                      r"organizations?|organized?|recognized?|customized?|authorized?|analyzed?|"
-                      r"canceled|canceling|optimized?|minimized?|maximized?|synchronized?)\b", re.I)
+                      r"canceled|canceling|licenses?|catalogs?|dialogs?|labeled|labeling|traveled|"
+                      r"traveling|modeled|modeling|enrolls?|enrollment|fulfills?|fulfillment|"
+                      r"[a-z]{3,}iz(?:e|ed|es|ing|ation|ations)|[a-z]{3,}yz(?:e|ed|es|ing))\b", re.I)
+# -ize words that are British too (size, prize, seize, …)
+AMERICAN_OK = re.compile(r"(?:size|sized|sizes|sizing|prize|prized|prizes|seize|seized|seizes|seizing|"
+                         r"maize|baize)$", re.I)
 HANGUL = re.compile(r"[\u1100-\u11ff\u3130-\u318f\uac00-\ud7a3]+")
 ENGLISH_HANGUL_ALLOWED = ("프로젝트TF",)  # the team's own name once, in parentheses
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\ufeff]")
@@ -194,6 +214,8 @@ def check_words(rel, value, rules, report):
 def check_english(rel, value, report):
     for n, line in enumerate(value.split("\n"), 1):
         for m in AMERICAN.finditer(line):
+            if AMERICAN_OK.search(m.group(0)):
+                continue
             report.fail(f"{rel}:{n}", f"American spelling '{m.group(0)}' in an en-GB text")
         rest = line
         for allowed in ENGLISH_HANGUL_ALLOWED:
@@ -264,6 +286,8 @@ def check_review_notes(store, args, distribution, report):
             report.fail(rel, "Apple's unlisted sentence must be a paragraph of its own")
         else:
             report.fail(rel, f"distribution is unlisted but the notes lack \"{UNLISTED_SENTENCE}\"")
+    elif UNLISTED_SENTENCE in template:
+        report.fail(rel, f"distribution is {distribution} but the notes still say \"{UNLISTED_SENTENCE}\"")
     if args.filled:
         check_filled(rel, template, args, report)
 
@@ -340,10 +364,13 @@ def check_appstore(store, args, report):
                 continue
             if kind.startswith("url"):
                 check_url(rel, value, kind == "url-or-empty", report)
+                check_words(rel, value, {k: ALL_RULES[k] for k in ("e-mail address", "IPv4 address")}, report)
                 continue
             check_words(rel, value, {**ALL_RULES, **IOS_RULES}, report)
             if name in CUSTOMER_TEXTS:
                 check_words(rel, value, {"beta word (2.2)": BETA, "price (2.3.7)": PRICE}, report)
+            if name in OTHER_APPS_IN:
+                check_words(rel, value, {"another app's name (4.1)": OTHER_APPS}, report)
             if loc.startswith("en-GB"):
                 check_english(rel, value, report)
             if name in ("name.txt", "subtitle.txt", "keywords.txt") and "\n" in value:

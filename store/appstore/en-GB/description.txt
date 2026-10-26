@@ -1,4 +1,4 @@
-HJViewer is a remote desktop app: see and control a Windows PC from your iPhone or iPad. It is made by Project TF (프로젝트TF) at Yonsei University, and the app finds PCs through the HJViewer server that Project TF runs.
+HJViewer is a remote desktop app: see and control a Windows PC from your iPhone or iPad. It is made by Project TF (프로젝트TF) at Yonsei University, and finds PCs through the HJViewer server that Project TF runs.
 
 Reach PCs behind firewalls
 The PC and the app make only outgoing connections, so a PC behind a firewall or router (NAT) is reached over HTTPS on port 443: peer to peer where the network allows, else through the server's encrypted relay.
@@ -15,8 +15,8 @@ The server is for Yonsei University faculty and staff: log in to connect and to 
 • Password-less connections: when the operator turns this on, you connect to the PCs in your list without passwords. Their connection window shows a signed "Same account, verified" mark, and a PC locked at the start locks again at the end.
 • Wake up: with a relay device the operator approved on your PC's network, the app can send that PC a wake signal, which can wake a wired PC on mains power with Wake-on-LAN on from sleep or shutdown, depending on its network card and BIOS.
 • Support codes and links: a one-time code, sent with a link to HJViewer for Windows, lets the PC of someone without a login accept connections for two hours; when the device that made the code connects, that PC's connection window shows a signed "Yonsei faculty or staff (verified login)" mark.
-• New login alerts: when another device logs in to your account, your other devices alert you when the app next opens. If it was not you, log that device out at once; its open password-less connections end within minutes (PCs with HJViewer 1.9.0 or later).
-• Delete account: Settings > Account > Delete account deletes your account at once. Your PCs leave My PCs, all its devices are logged out, and the device list, relay approvals and wake records go too.
+• New login alerts: when another device logs in to your account, your other devices alert you when the app next opens. If it was not you, log that device out at once; its open password-less connections end within minutes (PCs with HJViewer 1.9.0 or later that reach the server).
+• Delete account: Settings > Account > Delete account deletes your account at once. Your PCs leave My PCs, every device logged in to the account is logged out (others when they next reach the server), and the device list, relay approvals and wake records go too.
 Only Yonsei University faculty and staff can log in; the app has no sign-up.
 
 Security
@@ -27,11 +27,11 @@ Security
 • There are no analytics, ads or crash reports.
 
 Your iPhone or iPad is only the controller
-Your iPhone or iPad itself cannot be viewed or controlled remotely, and the app never shares its screen.
+Your iPhone or iPad cannot itself be viewed or controlled; the app never shares its screen.
 
 Requirements
 • An iPhone or iPad with iOS 13.0 or later
-• The PC you connect to: Windows 10 or 11 (64-bit) running HJViewer for Windows, which the operator (Project TF) provides
+• The PC you connect to: Windows 10 or 11 (64-bit) running HJViewer for Windows, which Project TF provides
 • To connect when nobody is at the PC, install HJViewer on it, log in on it, and set a permanent password. PCs that are asleep or off cannot be reached until woken.
 
 Open source

@@ -144,6 +144,33 @@ class StoreTextTest(unittest.TestCase):
         copy.value("appstore/review_notes.txt", head + "a" * pad)
         self.check(copy, "--pc-password-max", str(cst.PC_PASSWORD_MAX + 1), fails=r"4001 of 4000 bytes")
 
+    def test_the_review_notes_room_for_every_conditional_sentence(self):
+        # store/README.md's conditional sentences, all at once, still fit in the worst case
+        with open(os.path.join(STORE, "README.md"), encoding="utf-8") as f:
+            guide = f.read()
+        copy = StoreCopy(self)
+        notes = self.notes(copy)
+        permission = "The university's written permission to use its name and its SSO login is attached."
+        login = "Login uses their university portal accounts; the app has no sign-up."
+        login_48 = ("Login uses their existing university portal accounts (education accounts, guideline 4.8); "
+                    "the app has no sign-up.")
+        supported = "The app supports iPhone and iPad with iOS 13.0 or later."
+        tested_bytes = 80  # store/README.md: " Tested on …" up to 80 bytes
+        for text in (permission, login, login_48, supported, "**80바이트까지**",
+                     "Screenshots of the My PCs list and the wake offer, and the attached video, show"):
+            self.assertIn(text, guide + notes, text)
+        for text in (login, supported):
+            self.assertEqual(notes.count(text), 1, text)
+        paragraphs = notes.split("\n\n")
+        paragraphs[1] += " " + permission
+        every = "\n\n".join(paragraphs).replace(login, login_48)
+        every = every.replace(supported, supported + " Tested on " + "x" * (tested_bytes - len(" Tested on ")))
+        copy.value("appstore/review_notes.txt", every)
+        out = self.check(copy)
+        size = int(re.search(r"review_notes.txt: (\d+) of 4000 bytes filled", out).group(1))
+        self.assertLessEqual(size, cst.REVIEW_NOTES_BYTES)
+        self.assertEqual(cst.PC_PASSWORD_MAX, 32, "store/README.md and the store run say 32 bytes")
+
     def test_the_review_notes_placeholders(self):
         for change, rule in ((lambda t: t + " {{DEMO_ACCOUNT}}", r"\{\{DEMO_ACCOUNT\}\} is not one of"),
                              (lambda t: t.replace("{{DEMO_PC_PASSWORD}}", "x"), r"\{\{DEMO_PC_PASSWORD\}\} appears 0 times"),
@@ -166,6 +193,8 @@ class StoreTextTest(unittest.TestCase):
         self.check(copy, fails=r"distribution is unlisted but the notes lack")
         copy.value("appstore/distribution.txt", "public")
         self.check(copy)
+        copy.value("appstore/review_notes.txt", notes)
+        self.check(copy, fails=r"distribution is public but the notes still say")
         copy.value("appstore/distribution.txt", "private")
         self.check(copy, fails=r"neither of unlisted, public")
         copy.value("appstore/distribution.txt", "unlisted")
@@ -191,6 +220,28 @@ class StoreTextTest(unittest.TestCase):
             ("play/ko-KR/release_notes.txt", " 192.0.2.1", r"IPv4 address"),
             ("appstore/en-GB/description.txt", " The colors follow the theme.", r"American spelling 'colors'"),
             ("appstore/en-GB/whats_new.txt", " 한글.", r"Hangul in an English text"),
+            ("appstore/en-GB/description.txt", " Trial version, for testing only.", r"beta word"),
+            ("appstore/en-GB/description.txt", " This is a demo build.", r"beta word"),
+            ("appstore/en-GB/promotional_text.txt", " Early access.", r"beta word"),
+            ("appstore/ko/description.txt", " 체험판입니다.", r"beta word"),
+            ("appstore/ko/description.txt", " 아직 정식 서비스가 아닙니다.", r"beta word"),
+            ("appstore/ko/description.txt", " 갤럭시에서도 됩니다.", r"other platform"),
+            ("appstore/en-GB/description.txt", " Samsung tablets too.", r"other platform"),
+            ("appstore/en-GB/description.txt", " It costs nothing.", r"price"),
+            ("appstore/ko/description.txt", " 공짜입니다.", r"price"),
+            ("appstore/ko/support_url.txt", "/192.0.2.10", r"IPv4 address"),
+            ("appstore/en-GB/marketing_url.txt", "?to=someone@example.org", r"e-mail address"),
+            ("appstore/ko/name.txt", " RustDesk", r"another app's name \(4.1\)"),
+            ("appstore/en-GB/keywords.txt", ",teamviewer", r"another app's name"),
+            ("appstore/ko/promotional_text.txt", " 애니데스크처럼.", r"another app's name"),
+            ("appstore/en-GB/whats_new.txt", " Like AnyDesk.", r"another app's name"),
+            ("appstore/en-GB/description.txt", " The license is AGPL.", r"American spelling 'license'"),
+            ("appstore/en-GB/description.txt", " The catalog lists them.", r"American spelling 'catalog'"),
+            ("appstore/en-GB/description.txt", " A dialog opens.", r"American spelling 'dialog'"),
+            ("appstore/en-GB/description.txt", " Buttons are labeled.", r"American spelling 'labeled'"),
+            ("appstore/en-GB/description.txt", " Prioritize them.", r"American spelling 'Prioritize'"),
+            ("appstore/en-GB/description.txt", " Realized at once.", r"American spelling 'Realized'"),
+            ("appstore/en-GB/description.txt", " Paralyzed.", r"American spelling 'Paralyzed'"),
             ("appstore/review_notes.txt", " 데모.", r"Hangul in an English text"),
         )
         for rel, extra, rule in cases:
@@ -198,11 +249,17 @@ class StoreTextTest(unittest.TestCase):
                 copy = StoreCopy(self)
                 copy.value(rel, copy.read(rel)[:-1] + extra)
                 self.check(copy, fails=re.escape(rel) + r":\d+: " + rule)
-        # what the rules let through: "display", the team's Korean name, the notes' word "beta"
+        # what the rules let through: "display" (and 디스플레이), the team's Korean name, the notes'
+        # words "beta" and "demo account", British -ise and the -ize words that are British too,
+        # "licensed", "dialogue", "democratic", RustDesk in the description (SUBMIT 0-2 #25)
         copy = StoreCopy(self)
         copy.value("appstore/en-GB/whats_new.txt", copy.read("appstore/en-GB/whats_new.txt")[:-1] +
-                   " The display (프로젝트TF) has colours.")
+                   " The display (프로젝트TF) has colours. Organise, resize and prize; seize the size."
+                   " Licensed, with a dialogue and a licence, democratic.")
+        copy.value("appstore/ko/description.txt", copy.read("appstore/ko/description.txt")[:-1] +
+                   " 디스플레이 배율을 따릅니다.")
         copy.value("appstore/review_notes.txt", self.notes(copy) + " The terminal is no beta.")
+        self.assertIn("RustDesk", copy.read("appstore/en-GB/description.txt"))
         self.check(copy)
 
     def test_the_file_form(self):
@@ -285,7 +342,7 @@ class StoreTextTest(unittest.TestCase):
         # a too long value fails, and its error does not show it either
         long_password = FAKE_PASSWORD * 3
         out = self.check(copy, "--filled", env=dict(env, REVIEW_DEMO_PC_PASSWORD=long_password),
-                         fails=r"REVIEW_DEMO_PC_PASSWORD is longer than 64 bytes")
+                         fails=rf"REVIEW_DEMO_PC_PASSWORD is longer than {cst.PC_PASSWORD_MAX} bytes")
         self.assert_nothing_of(out, cst.fill(self.notes(copy), {"DEMO_PC_ID": FAKE_ID,
                                                                 "DEMO_PC_PASSWORD": long_password}))
         self.assertNotIn(long_password, out)
