@@ -20,7 +20,7 @@
 #                          check (scripts/test_*.py, the key files also against hjv-release), actionlint
 #                          on the workflows when it is installed, then a fresh upstream checkout with
 #                          client/patches, the release records' tests (scripts/release-info.py, on
-#                          the patched tree and build/release-1.8.0), hbb_common's WebSocket tests,
+#                          the patched tree and build/release-1.9.0), hbb_common's WebSocket tests,
 #                          cargo +1.75.0 check (the app builds' toolchain), the client core's
 #                          agreement with the shared vectors of tools/hjv-release (the trust rules)
 #                          and the client's pure Dart tests, with the Flutter SDK the app builds use
@@ -461,7 +461,7 @@ client_stage() {
   local index=https://storage.googleapis.com/flutter_infra_release/releases
   # the server stage's release build of tools/hjv-release, against which the key files and the
   # release records are read too (its tests skip that part without it)
-  local release_bin="$CI/target-hjv-release/release/hjv-release" samples="$ROOT/build/release-1.8.0"
+  local release_bin="$CI/target-hjv-release/release/hjv-release" samples="$ROOT/build/release-1.9.0"
   local vectors="$ROOT/tools/hjv-release/tests/vectors" ran cases
   if [ ! -x "$release_bin" ]; then
     release_bin=""
@@ -503,10 +503,10 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   "$ROOT/scripts/hjv-fontsize-check.sh" --self-test || fail "client: the font size check's self-test"
   "$ROOT/scripts/hjv-fontsize-check.sh" "$app/lib" "$ROOT/scripts/hjv-fontsize-baseline.txt"
   # release.json, SHA256SUMS and the workflow's minimum-version steps, also on the patched tree (the
-  # Dart tests the workflow requires) and on the 1.8.0 artifacts kept under build/ (the manifest
+  # Dart tests the workflow requires) and on the 1.9.0 artifacts kept under build/ (the manifest
   # gate on a real APK)
   step "client: the release records (scripts/release-info.py, client-build.yml), offline tests"
-  [ -d "$samples" ] || { samples=""; skip "the release records on real artifacts (no build/release-1.8.0)"; }
+  [ -d "$samples" ] || { samples=""; skip "the release records on real artifacts (no build/release-1.9.0)"; }
   HJV_RELEASE_BIN="$release_bin" HJV_PATCHED_FLUTTER="$app" HJV_RELEASE_SAMPLES="$samples" \
     python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_release_info.py' || fail "client: release record tests"
   step "client: hbb_common WebSocket tests"

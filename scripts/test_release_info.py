@@ -12,7 +12,7 @@ More tests run when asked for:
                                                        writes, with a `gh` that replays answers
     HJV_RELEASE_SAMPLES=<a directory of artifacts>     real APKs and IPAs are read, the APKs'
                                                        manifests too (a download of a run, such
-                                                       as build/release-1.8.0)
+                                                       as build/release-1.9.0)
     HJV_PATCHED_FLUTTER=<the patched tree's flutter>   the Dart tests that the Dart tests job
                                                        requires are all in that tree
 """
