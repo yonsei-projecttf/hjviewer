@@ -68,6 +68,14 @@
 # and package from hjv-api's version policy and package folder, which Caddy's policy serves too),
 # the waiting room, the staff mark on PC B and the input it drops before [수락].
 #
+# 1.9.1 (docs/e2e.md, DEL1-DEL4), in the access part's network after A14: alice's controller
+# deletes her account with the client's own signed request (client patch 0161's
+# --hjv-e2e-delete-account), her other devices get 401, the PC her login bound takes the signed
+# revoked and needs its password again, her support codes end; the very same request again gets
+# the first answer; the App Review account deletes itself and its next login makes a new, empty
+# account; and neither door 2's page (HJV_API_DOOR2_FILE, written here) nor the support link page
+# has a pilot sentence any more.
+#
 # HJV_E2E_HOLD=<seconds> (at most 3600): a run that fails keeps its namespaces, servers and
 # clients up that long, or until $RUN/release exists, before it cleans up, so that the state can
 # be looked at (logs, --hjv-e2e-option through in_ns) without running it again.
@@ -375,6 +383,7 @@ EOF
 HJV_API_TICKET_PUBKEYS=1:$(cat "$KEYS/ticket.pub")
 HJV_API_GUEST_FILE=$RUN/api/guest.conf
 HJV_API_REVIEW_FILE=$RUN/api/review.conf
+HJV_API_DOOR2_FILE=$RUN/api/door2.conf
 HJV_API_LIMIT_GUEST_IP=50/600
 EOF
     guest_conf
@@ -2276,6 +2285,167 @@ access_part() {
 access_console_closed() { [[ $(access_console) == "HJVACCESS1 mode=closed"* ]]; }
 
 # ---------------------------------------------------------------------------------------------
+# 1.9.1's in-app account deletion (server/api/src/account.rs, POST /api/hjv/account/delete;
+# docs/e2e.md, DEL1-DEL4), after the access part (MODE=off again since A14, PC B stopped). The
+# deleting apps are the access part's sides in the controller's network: staff is alice's, rev the
+# App Review account's. Their other devices are in hjv-ctl2's network (W6-E6's staff2, alice's, and
+# rev2 here), because a login in the same network is the same device to hjv-api (one machine-id),
+# which ends the earlier login's key there (that is why ctl's login ended at A2). DEL1-DEL3 need the client's --hjv-e2e-delete-account (client
+# patch 0161), which sends the app's request as http_request does: signed by the account key
+# (H13), its answer observed (H14). Every client call ends within 30 s or fails the run.
+# ---------------------------------------------------------------------------------------------
+oplog_count() { grep -cF -- "$1" "$RUN/api/operator.log" 2>/dev/null || true; } # <text>
+api_log_count() { grep -cF -- "$1" "$RUN/hjv-api.log" || true; }               # <text>
+allow_ids() { admin allow list | head -n 1 | sed -n 's/^allowlist: \([0-9]*\) IDs.*/\1/p'; }
+codes_open() { admin ticket status | sed -n 's/^support codes: \([0-9]*\) open.*/\1/p'; }
+codes_open_is() { [ "$(codes_open)" = "$1" ]; } # <n>
+key_lines() { grep -c '^hjv-e2e: key ' <<<"$OUT" || true; } # of the last --hjv-e2e-keys
+pc_count() { sed -n 's/^hjv-e2e: \([0-9]*\) device(s)$/\1/p' <<<"$OUT"; } # of the last --hjv-e2e-devices
+# <scenario> <pcs> <devices>: the last --hjv-e2e-delete-account's first answer is a 200 with these
+# counts and no relay, and its device logged out on it; DEL_FIRST and DEL_AGAIN are its answer lines
+deleted_with() {
+  DEL_FIRST=$(sed -n 's/^hjv-e2e: delete-account: //p' <<<"$OUT")
+  DEL_AGAIN=$(sed -n 's/^hjv-e2e: delete-account again: //p' <<<"$OUT")
+  [ "$RC" = 0 ] && [[ $DEL_FIRST == "HTTP 200 "* ]] || fail "$1: exit $RC, '$DEL_FIRST'"
+  jq -e --argjson pcs "$2" --argjson devices "$3" \
+    '. == {"deleted": true, "pcs": $pcs, "devices": $devices, "relays": 0}' <<<"${DEL_FIRST#HTTP 200 }" >/dev/null ||
+    fail "$1: '$DEL_FIRST', expected {\"deleted\":true} with pcs $2, devices $3 and relays 0"
+  ahas "hjv-e2e: after delete-account: access_token empty, user_info empty, hjv-my-devices empty" ||
+    fail "$1: the device did not log out on the answer: $(grep '^hjv-e2e: after delete-account' <<<"$OUT")"
+}
+# <file> <what>: the page has neither the pilot notice's Korean word nor "pilot"
+no_pilot() {
+  if grep -qiE '시범|pilot' "$1"; then fail "$2: a pilot sentence: $(grep -oiE '.{0,30}(시범|pilot).{0,30}' "$1" | head -n 1)"; fi
+}
+door2_page() { [ "$(link_get "https://$DOMAIN/api/hjv/get/$1/")" = "200 " ]; } # <code>
+
+delete_part() {
+  local code link got pcs keys ids0 ops0 done0 log0 n0 door tag
+  mkdir -p "$RUN"/rev2/{home,ipc}
+  # a support code of alice's, whose page DEL4 reads and which DEL1 ends
+  arun hjv-ctl staff "$CLIENT" --hjv-e2e-support-code
+  [ "$RC" = 0 ] || fail "DEL: alice's support code: exit $RC ($(grep '^hjv-e2e: support' <<<"$OUT"))"
+  code=$(sed -n 's/^hjv-e2e: support code: //p' <<<"$OUT")
+  link=$(sed -n 's/^hjv-e2e: support link: //p' <<<"$OUT")
+  [[ $code =~ $CODE_FORM ]] && [[ $link =~ $LINK_FORM ]] || fail "DEL: alice made '$code' and '$link'"
+  got=$(link_get "$link")
+  [ "$got" = "200 " ] && grep -qF -- "$code" "$RUN/w6.body" || fail "DEL: the code's support link answers '$got'"
+  cp "$RUN/w6.body" "$RUN/del-support-page.html"
+
+  if ! grep -aqF 'after delete-account' "$CLIENT"; then
+    echo "skipped: DEL1-DEL3, the account's deletion from the app (no --hjv-e2e-delete-account in $CLIENT: client patch 0161)"
+  else
+    log "DEL1: alice deletes her account in the app (POST /api/hjv/account/delete, signed with her account key)"
+    # before: the PC her login bound is active and lets her other device in without a password
+    until_ok 15 "DEL1: the PC bound by alice's login (active)" state_is active
+    arun hjv-ctl2 staff2 "$CLIENT" --hjv-e2e-devices
+    [ "$RC" = 0 ] && ahas "hjv-e2e: device $PC_ID linux pwless=active" || fail "DEL1: staff2's device list (exit $RC) has the PC not active"
+    arun hjv-ctl2 staff2 "$CLIENT" --hjv-e2e-screenshot "$PC_ID" "" "$RUN/del1a.ppm"
+    [ "$RC" = 0 ] && screen_is_pc del1a || fail "DEL1: staff2's password-less connection before the deletion: exit $RC"
+    n0=$(codes_open)
+    [ "${n0:-0}" -ge 1 ] || fail "DEL1: admin ticket status has no support code open before the deletion"
+    arun hjv-ctl staff "$CLIENT" --hjv-e2e-devices
+    [ "$RC" = 0 ] && ahas "hjv-e2e: device $PC_ID " || fail "DEL1: alice's device list (exit $RC) has no PC $PC_ID"
+    pcs=$(pc_count)
+    arun hjv-ctl staff "$CLIENT" --hjv-e2e-keys
+    keys=$(key_lines)
+    [ "$RC" = 0 ] && [ "$keys" -ge 3 ] || fail "DEL1: alice's key list (exit $RC) has $keys keys, not at least staff's, staff2's and the PC's"
+    ids0=$(allow_ids)
+    ops0=$(oplog_count 'cmd="app account-delete" targets=')
+    done0=$(oplog_count 'cmd="app account-delete" acct=')
+    log0=$(api_log_count 'account: deleted at its own request (acct=')
+    arun hjv-ctl staff "$CLIENT" --hjv-e2e-delete-account again
+    deleted_with DEL1 "$pcs" "$keys"
+    [ -z "$(local_option staff hjv-ctl-key)" ] || fail "DEL1: staff kept its account key"
+    pass "DEL1: 200 ${DEL_FIRST#HTTP 200 } (alice's $pcs PCs and $keys keys, as her lists had them just before); staff logged out on the answer (token, user, device list, account key)"
+
+    log "DEL2: the very same request again gets the first answer"
+    [ -n "$DEL_AGAIN" ] && [ "$DEL_AGAIN" = "$DEL_FIRST" ] ||
+      fail "DEL2: the same bytes again got '$DEL_AGAIN', not the first answer '$DEL_FIRST'"
+    [ "$(oplog_count 'cmd="app account-delete" targets=')" = $((ops0 + 1)) ] &&
+      [ "$(oplog_count 'cmd="app account-delete" acct=')" = $((done0 + 1)) ] ||
+      fail "DEL2: the operator record has $(($(oplog_count 'cmd="app account-delete" targets=') - ops0)) first and $(($(oplog_count 'cmd="app account-delete" acct=') - done0)) result lines of the deletion, not one each"
+    tag=$(grep -F 'cmd="app account-delete" targets=' "$RUN/api/operator.log" | tail -n 1 | sed -n 's/.* targets=\([^ ]*\) .*/\1/p')
+    grep -F 'cmd="app account-delete" acct=' "$RUN/api/operator.log" | tail -n 1 | grep -qF "acct=$tag done=\"ok: " ||
+      fail "DEL2: the result line is not 'acct=$tag done=\"ok: …\"': $(grep -F 'cmd="app account-delete" acct=' "$RUN/api/operator.log" | tail -n 1 | sed 's/ prev=.*//')"
+    [ "$(api_log_count 'account: deleted at its own request (acct=')" = $((log0 + 1)) ] ||
+      fail "DEL2: the journal has $(($(api_log_count 'account: deleted at its own request (acct=') - log0)) deletion lines, not one"
+    pass "DEL2: the same bytes again (http_request_sync's second try) got the first answer although the token was gone; one deletion: the operator record's 'cmd=\"app account-delete\" targets=<tag>' and 'acct=<tag> done=\"ok: …\"', one journal line"
+
+    log "DEL1: alice's other devices: 401 at their next account request"
+    arun hjv-ctl2 staff2 "$CLIENT" --hjv-e2e-devices
+    [ "$RC" = 1 ] && ahas 'devices failed: HTTP 401' || fail "DEL1: staff2 after the deletion: exit $RC ($(grep 'devices failed' <<<"$OUT"))"
+    run pc --hjv-e2e-devices
+    want 1 "DEL1: the PC's own device list after the deletion"
+    has 'devices failed: HTTP 401' || fail "DEL1: the PC: not a 401 ($(grep 'devices failed' <<<"$OUT"))"
+    pass "DEL1: alice's other devices, the controller staff2 and the PC, get 401 at their next account request (the app's UserModel.reset logs out on it, L4)"
+
+    log "DEL1: the PC takes the signed revoked at its next sync and needs its password again"
+    until_ok 15 "DEL1: the PC took the signed revoked" state_is revoked
+    pc_unbound || fail "DEL1: the PC kept its binding"
+    # staff2 still holds its key and device list (UserModel.reset is the app's): it sends a proof
+    arun hjv-ctl2 staff2 "$CLIENT" --hjv-e2e-screenshot "$PC_ID" "" "$RUN/del1b.ppm"
+    [ "$RC" = 3 ] && ahas 'password required Could not connect without a password' ||
+      fail "DEL1: staff2's password-less connection after the deletion: exit $RC, not the refusal box (exit 3)"
+    arun hjv-ctl2 staff2 "$CLIENT" --hjv-e2e-screenshot "$PC_ID" "$PASSWORD" "$RUN/del1c.ppm"
+    [ "$RC" = 0 ] && screen_is_pc del1c || fail "DEL1: staff2 with the PC's password after the deletion: exit $RC"
+    pass "DEL1: the PC dropped its binding on a signed revoked ($STATE); password-less refused (the refusal box), the PC's password lets the controller in"
+
+    log "DEL1: alice's support codes end with her account; her allowlist entry goes"
+    until_ok 5 "DEL1: admin ticket status: 0 support codes open" codes_open_is 0
+    got=$(link_get "$link")
+    [ "${got%% *}" = 404 ] || fail "DEL1: the ended code's support link answers '$got', not 404"
+    [ "$(allow_ids)" = $((ids0 - 1)) ] || fail "DEL1: the allowlist has $(allow_ids) IDs, not $((ids0 - 1))"
+    grep -F 'account: deleted at its own request (acct=' "$RUN/hjv-api.log" | tail -n 1 | grep -qiF "$ALICE" &&
+      fail "DEL1: alice's portal ID in the journal's deletion line"
+    pass "DEL1: admin ticket status 0 support codes open ($n0 before), the code's support link 404; the allowlist $ids0 -> $((ids0 - 1)) IDs; the journal's line has her tag, not her ID"
+
+    log "DEL3: the App Review account deletes itself; its next login makes a new, empty account"
+    arun hjv-ctl2 rev2 "$CLIENT" --hjv-e2e-login "$REVIEW_ID" "$REVIEW_PW"
+    [ "$RC" = 0 ] || fail "DEL3: the App Review account's second login: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
+    arun hjv-ctl rev "$CLIENT" --hjv-e2e-devices
+    [ "$RC" = 0 ] || fail "DEL3: the App Review account's device list: exit $RC"
+    pcs=$(pc_count)
+    arun hjv-ctl rev "$CLIENT" --hjv-e2e-keys
+    keys=$(key_lines)
+    [ "$RC" = 0 ] && [ "$keys" -ge 2 ] || fail "DEL3: the App Review account's key list (exit $RC) has $keys keys, not rev's and rev2's"
+    ids0=$(allow_ids)
+    arun hjv-ctl rev "$CLIENT" --hjv-e2e-delete-account
+    deleted_with DEL3 "$pcs" "$keys"
+    grep -F 'account: deleted at its own request (acct=' "$RUN/hjv-api.log" | tail -n 1 | grep -qF ', the App Review account)' ||
+      fail "DEL3: the journal's line does not name the App Review account"
+    arun hjv-ctl2 rev2 "$CLIENT" --hjv-e2e-devices
+    [ "$RC" = 1 ] && ahas 'devices failed: HTTP 401' || fail "DEL3: rev2 after the deletion: exit $RC ($(grep 'devices failed' <<<"$OUT"))"
+    [ "$(allow_ids)" = "$ids0" ] || fail "DEL3: the allowlist has $(allow_ids) IDs, not $ids0: the App Review account's entry went"
+    pass "DEL3: 200 ${DEL_FIRST#HTTP 200 } (its $keys keys); rev logged out, rev2 gets 401; its allowlist entry stays ($ids0 IDs)"
+    arun hjv-ctl rev "$CLIENT" --hjv-e2e-login "$REVIEW_ID" "$REVIEW_PW"
+    [ "$RC" = 0 ] || fail "DEL3: the next review login: exit $RC ($(grep '^hjv-e2e:' <<<"$OUT" | tail -n 1))"
+    arun hjv-ctl rev "$CLIENT" --hjv-e2e-keys
+    [ "$RC" = 0 ] && [ "$(key_lines)" = 1 ] && ahas 'current=true' ||
+      fail "DEL3: the new account's key list (exit $RC): $(key_lines) keys, not this login's one"
+    arun hjv-ctl rev "$CLIENT" --hjv-e2e-devices
+    [ "$RC" = 0 ] && [ "$(pc_count)" = 0 ] || fail "DEL3: the new account's device list (exit $RC): $(pc_count) PCs"
+    arun hjv-ctl rev "$CLIENT" --hjv-e2e-ticket refresh
+    ahas '"use":"ctl"' && ahas '"valid":true' || fail "DEL3: the new account's ticket: $(grep '^hjv-e2e: ticket' <<<"$OUT")"
+    pass "DEL3: the next review login made a new, empty account: one key (this login's), no PC, and a valid ticket for ctl (its demo PC)"
+  fi
+
+  log "DEL4: no pilot sentence on door 2's page and the support link page"
+  door=$(random_binding)
+  printf 'CODE=%s\nUNTIL=%s\n' "$door" "$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)" >"$RUN/api/door2.conf.new"
+  mv -f "$RUN/api/door2.conf.new" "$RUN/api/door2.conf"
+  until_ok 10 "DEL4: door 2's page (200)" door2_page "$door"
+  grep -qF '<h1>HJViewer 새 버전 받기</h1>' "$RUN/w6.body" || fail "DEL4: not door 2's page: $(head -c 200 "$RUN/w6.body")"
+  no_pilot "$RUN/w6.body" "DEL4: door 2's page"
+  rm -f "$RUN/api/door2.conf"
+  pass "DEL4: door 2's page (/api/hjv/get/<code>/, 200, '새 버전 받기') has neither '시범' nor 'pilot'"
+  grep -qF '<h1>HJViewer 원격 지원</h1>' "$RUN/del-support-page.html" && grep -qF '<h1>HJViewer remote support</h1>' "$RUN/del-support-page.html" ||
+    fail "DEL4: not the support link page: $(head -c 200 "$RUN/del-support-page.html")"
+  no_pilot "$RUN/del-support-page.html" "DEL4: the support link page"
+  pass "DEL4: the support link page (Korean and English, with its code) has neither '시범' nor 'pilot'"
+}
+
+# ---------------------------------------------------------------------------------------------
 # The minimum version (its design 2-2, 2-4, 2-5): hbbs's lowest controller version (V1, V2, V4),
 # and the signed policy refusing a controller below the minimum (V5-V7, V9). The ver side runs
 # the current CLIENT in its own profile without an account login; the test sets a minimum above
@@ -2485,7 +2655,10 @@ policy_part() {
 if [ -n "$ACCOUNT" ]; then
   if [ "$MODE" = strict ]; then account_strict; else account_open; fi
 fi
-if [ -n "$ACCESS" ]; then access_part; fi
+if [ -n "$ACCESS" ]; then
+  access_part
+  delete_part
+fi
 if [ -n "$MIN_HBBS" ]; then min_controller_part; fi
 if [ -n "$POLICY" ]; then
   policy_part

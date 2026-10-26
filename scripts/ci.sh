@@ -123,6 +123,8 @@ E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 7))
 # TV-W5's S33-S38 with S38's [끄기] 7, TV-W9's I1-I5 5, TV-W6's W6-E1-E7 with E4b 8 (S5′, S6′, S9′,
 # X1′ and A6′ change lines that were there)
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 26))
+# strict: and 1.9.1's in-app account deletion (2026-10-26): DEL1 4, DEL2 1, DEL3 2, DEL4 2
+E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 9))
 # by the filter of build_e2e_client's cargo test --lib <filter>; hjv as the staff-only gate's E2E
 # counted it (260, 2026-10-17, the series with src/hjviewer_access); 345 with 1.9.1's series
 # (2026-10-26: 1.9.0's run counted 344, client patch 0160 adds one)

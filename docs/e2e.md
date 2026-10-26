@@ -402,6 +402,42 @@ PASS (strict): transport: relay
 - 이용 비밀번호와 출입증의 한도: hjv-api의 시험(`server/api/tests/guest.rs`)과 deploy 단계의 nginx 한도 시험이 봅니다.
 - 지원 코드의 나머지(3-7): 10분이 지난 코드, 열린 코드 5개와 모두 1000개의 상한, 만든 계정이 막히거나 로그아웃해 끝난 코드, 동시에 넣은 두 요청, `currentUser`의 `hjv.support_code`는 hjv-api의 시험(`server/api/tests/support.rs`)이 봅니다. 앱의 S1·S2·P3 창과 문구는 Dart 시험과 기기 시험입니다.
 
+## 계정 삭제 단계 (1.9.1)
+
+앱 안의 계정 삭제(App Store 심사 지침 5.1.1(v), 소유자 결정 2026-10-26)를 실제 클라이언트와 hjv-api로 확인합니다. 앱의 [계정 삭제]가 보내는 서명된 `POST /api/hjv/account/delete`(`{"confirm":"delete-account"}`)가 계정을 바로 지우고, 같은 계정의 다른 기기와 그 로그인이 묶은 PC, 그 계정의 지원 코드가 함께 끝나는지, 같은 요청의 재시도가 첫 답을 받는지, App Review 계정도 스스로 지울 수 있고 다음 로그인이 새 빈 계정을 만드는지입니다. 1.9.1은 시범 안내도 뺐으므로, hjv-api가 내주는 두 페이지(문 2의 새 버전 페이지와 지원 링크 페이지)에 그 문장이 없는지도 여기서 봅니다. strict 모드에서 출입 제한 단계 바로 뒤(A14 다음, `MODE=off`, PC B는 멈춤), 최소 버전 단계 앞에 돕니다(`tools/e2e/firewall-e2e.sh`의 `delete_part`).
+
+**구성**
+- 삭제 요청: 클라이언트 패치 0161의 `--hjv-e2e-delete-account [again]`(hjv-e2e 기능 안). 앱의 `http_request`와 같은 길로 보냅니다: 계정 훅 H13이 토큰의 계정 키로 `X-HJV-Proof`를 붙이고, H14가 답을 보고 `"deleted":true`이면 그 기기를 로그아웃합니다(`account_deleted`). `again`이면 같은 바이트를 한 번 더 보냅니다. `http_request_sync`가 답을 잃었을 때 다른 TLS나 TCP 프록시로 다시 보내는 것과 같은 재시도입니다. 출력은 답마다 `hjv-e2e: delete-account: HTTP <상태> <본문>`(`again`은 `delete-account again:`)과 `hjv-e2e: after delete-account: access_token empty, user_info empty, hjv-my-devices empty`(값은 찍지 않고 비었는지만)입니다. 스크립트는 실행 파일에 그 출력 문자열이 있을 때만 DEL1–DEL3을 돌리고, 없으면 `skipped:`로 남깁니다.
+- 기기: 지우는 쪽은 출입 제한 단계의 `staff`(alice)와 `rev`(App Review 계정)입니다. 다른 기기는 `hjv-ctl2` 네트워크에 둡니다: alice의 것은 W6-E6의 `staff2`와 PC(alice의 로그인으로 묶임), App Review 계정의 것은 DEL3이 더하는 `rev2`입니다. 같은 네트워크의 로그인은 machine-id가 같아 hjv-api가 같은 기기의 새 로그인으로 보고 앞 키를 폐기하기 때문입니다(그래서 계정 단계의 `ctl`은 A2에서 `staff`가 로그인할 때 이미 로그아웃되어 있습니다. 첫 실행이 이것으로 DEL1의 첫 줄에서 실패했습니다).
+- 문 2: hjv-api는 처음부터 `HJV_API_DOOR2_FILE=$RUN/api/door2.conf`로 돕니다. DEL4가 `CODE=<32자 hex>`와 내일의 `UNTIL`을 써 넣고(다시 시작하지 않고 읽음), 끝나면 지웁니다. 코드는 실행마다 새로 만드는 시험 값입니다.
+- 보안 타이머는 줄이지 않습니다. 재시도 창(`HJV_API_RETRY_WINDOW`, 30초)은 DEL2가 바로 보내므로 그대로이고, 코드의 10분도 그대로입니다.
+
+**시나리오**(실행 순서대로. 결과는 아래)
+
+| # | 단계 | 기대 |
+|---|---|---|
+| (준비) | `staff`가 지원 코드를 만들고 그 링크의 페이지를 받아 둠 | 페이지 200에 그 코드. DEL4가 이 페이지를 읽고, DEL1이 이 코드가 끝나는 것을 봄 |
+| DEL1 | PC가 `active`이고 `staff2`가 기기 목록을 받은 뒤 비밀번호 없이 들어감, `admin ticket status`에 열린 코드가 1개 이상. `staff`의 기기 목록(PC 수)과 키 목록(기기 수)을 받아 둔 뒤 `staff`가 `--hjv-e2e-delete-account again` | 첫 답이 정확히 `200 {"deleted":true,"pcs":<PC 수>,"devices":<키 수>,"relays":0}`(조금 전 목록 그대로). `staff`는 답을 받고 로그아웃(토큰, 사용자, 기기 목록, 계정 키 `hjv-ctl-key`가 빔) |
+| DEL2 | (DEL1의 같은 호출) 같은 바이트의 둘째 요청 | 토큰이 이미 지워졌어도 첫 답과 바이트까지 같은 답. 운영자 기록에 `cmd="app account-delete" targets=<꼬리표>` 한 줄과 같은 꼬리표의 `acct=<꼬리표> done="ok: …"` 한 줄, 저널에 `account: deleted at its own request` 한 줄(재시도가 두 번째 삭제를 하지 않음) |
+| DEL1 | `staff2`와 PC가 각자 `--hjv-e2e-devices` | 둘 다 `HTTP 401`(종료 1). 앱은 이 401에 로그아웃하고 L4를 보입니다(`UserModel.reset`, 헤드리스 명령에는 없음) |
+| DEL1 | PC의 다음 동기화(5초마다) | 15초 안에 PC가 서명된 `revoked`로 묶음을 버림(`hjv-pwless-state` `revoked`, `HJViewer_binding`의 `Binding`이 빔). `staff2`(키와 기기 목록이 아직 있어 증명을 보냄)의 비밀번호 없는 연결은 거절 창(종료 3), PC 비밀번호로는 화면을 받음 |
+| DEL1 | 지원 코드와 명단 | 5초 안에 `admin ticket status`가 `support codes: 0 open`, (준비)의 링크가 404. 명단의 ID 수가 하나 줆(alice의 항목이 계정과 함께 감). 저널의 삭제 줄에는 꼬리표만 있고 포탈 ID가 없음 |
+| DEL3 | `hjv-ctl2`의 `rev2`가 App Review 계정으로 로그인(키 2개), `rev`가 `--hjv-e2e-delete-account` | `200 {"deleted":true,"pcs":0,"devices":2,"relays":0}`, `rev`는 로그아웃, 저널의 줄에 `, the App Review account`, `rev2`의 다음 요청은 401, 명단의 ID 수는 그대로(App Review 계정의 항목은 남음) |
+| DEL3 | `rev`가 다시 App Review 계정으로 로그인 | 새 빈 계정: 키 목록에 이 로그인의 키 하나(`current=true`)뿐, PC 0개, `--hjv-e2e-ticket refresh`가 `"use":"ctl"`, `"valid":true`(데모 PC의 출입증) |
+| DEL4 | `door2.conf`를 쓰고 `https://hjv.test/api/hjv/get/<코드>/`, 그리고 (준비)의 지원 링크 페이지 | 문 2의 페이지(200, `<h1>HJViewer 새 버전 받기</h1>`)와 지원 링크 페이지(한국어·영어 제목, 코드)에 `시범`도 `pilot`(대소문자 무관)도 없음 |
+
+**결과**: 아래 실행 기록을 봅니다.
+
+**`scripts/ci.sh`가 하는 것**
+- 감지: 따로 없습니다. 이 단계는 출입 제한 단계(`HJV_E2E_ACCESS=1`) 안에서 돌고, DEL1–DEL3은 클라이언트에 0161의 명령이 있는지 스크립트가 직접 봅니다. 그 명령이 없는 빌드는 `skipped:`를 남기므로 push 전 검사(`HJV_CI_STRICT=1`)에서 실패합니다.
+- 하한: `E2E_LEAST_STRICT`에 이 단계의 `PASS` 9줄(DEL1 4, DEL2 1, DEL3 2, DEL4 2)을 더해 strict 하한은 128입니다.
+
+### 계정 삭제 단계가 다루지 않는 것
+
+- 앱의 화면: [계정 삭제] 단추와 확인 창(단어 입력, 기다리는 동안 닫히지 않음), 다른 기기의 L4 문장, 실패 문구는 Dart 시험(`flutter/test/hjviewer_account*_test.dart`)과 기기 시험입니다. 헤드리스 명령은 앱의 `UserModel.reset`이 없어 다른 기기의 401까지만 봅니다.
+- 503 `not_recorded`(운영자 기록이 없거나 첫 줄을 쓰지 못함), 409 `clock`, 400(다른 본문), 429(키마다 1분에 30번), 두 요청이 동시에 온 경우, 계정 ID를 다시 쓰는 경우, 중계기가 있는 계정: hjv-api의 시험(`server/api/tests/account.rs`, `tests/review.rs`)이 봅니다. E2E의 계정에는 NAS 중계기가 없어 `relays`는 늘 0입니다.
+- 백업에서 되살린 계정을 운영자가 기록의 꼬리표로 다시 지우는 절차(런북 7-14)는 운영 절차입니다.
+
 ## 원격 켜기 단계 (1.6.0)
 
 꺼진 PC를 앱에서 켜는 길 전체를 실제 프로그램으로 확인합니다(설계 3판 8-10). 앱의 켜기 요청 → hjv-api가 서명한 명령 → NAS의 hjv-relay → PC 랜카드에 닿는 매직 패킷 → 깨어난 PC의 확인까지입니다. `tools/e2e/wol-e2e.sh`이고 `scripts/ci.sh wol`이 돌립니다(서버와 `hjv-probe`는 `scripts/ci.sh server`로 먼저 빌드).
