@@ -803,6 +803,7 @@ pub(crate) mod tests {
                 ["api", path] if *path == "repos/yonsei-projecttf/hjviewer-private/actions/runs/4242" => {
                     Ok(self.run.clone().into_bytes())
                 }
+                ["api", "repos/yonsei-projecttf/hjviewer-private"] => Ok(b"{}".to_vec()),
                 ["api", "-H", "Accept: application/vnd.github.raw+json", path]
                     if *path
                         == format!(

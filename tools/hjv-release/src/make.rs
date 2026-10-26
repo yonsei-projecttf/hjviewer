@@ -16,8 +16,10 @@
 //! - the App Store (design 3-7 T3): a raise of the iOS `latest` or `min` names the App Store
 //!   version the operator saw handed out (`--appstore-live`, written as the entry's `appstore`)
 //!   or says it has none yet (`--no-appstore`; with an App Store release in the store record the
-//!   draft says so and `sign` asks). Once `appstore` is there, `latest` stays at or below it,
-//!   `--appstore-live` is the gate and the TestFlight build's age only a warning;
+//!   draft says so and `sign` asks). A new App Store version is the new `latest`'s, a build the
+//!   tool knows (`--ios-valid`, or the release directory's artifact of it). Once `appstore` is
+//!   there, `latest` stays at or below it, `--appstore-live` is the gate and the TestFlight
+//!   build's age only a warning; it goes down only with `--relax`;
 //! - Google Play (T2): a policy that raises the `android` minimum without an `android_play`
 //!   entry, which would block the Play installs with no notice in the app, needs `--no-play`;
 //! - a policy that raises `os_min` keeps `min` at or below the last version the old OS runs;
@@ -709,17 +711,23 @@ impl<'a> Maker<'a> {
         }
         let was = before.and_then(Entry::appstore_version);
         if let (Some(live), Some(was)) = (live, was) {
-            if live < was {
+            if live < was && !self.req.relax {
                 return Err(format!(
                     "ios: --appstore-live {live}이 지금 정책의 App Store 버전({was})보다 낮습니다. \
-                     App Store에 나온 버전은 내려가지 않습니다"
+                     App Store에 나온 버전은 내려가지 않습니다(잘못 적은 버전을 고칠 때만 --relax와 함께)"
+                ));
+            }
+            if live < was {
+                self.report.push(format!(
+                    "ios: --relax: App Store 버전을 내립니다({was} → {live}). 앞서 적은 버전이 App Store에 \
+                     없을 때만 합니다. sign이 yes를 묻습니다"
                 ));
             }
         }
         // the App Store version the new entry carries: from then on the gate of every change
         let appstore = live.or(was);
         // (--appstore-live and --no-appstore name the entry: without one to make, ios_build says)
-        let Some((mut entry, latest_changed)) = self.ios_build(before, appstore)? else {
+        let Some((entry, latest_changed)) = self.ios_build(before, appstore)? else {
             return Ok(None);
         };
         // what could send App Store installs to an update the App Store does not have, or block
@@ -727,6 +735,20 @@ impl<'a> Maker<'a> {
         let raised = before.is_none_or(|b| {
             entry.latest > b.latest || self.min_option(platform).is_some_and(|min| min > b.min)
         });
+        // a new App Store version is the version of a build the tool knows, the entry's latest
+        // (from --ios-valid, or the release directory's artifact of it): a mistyped or misread
+        // version would otherwise become a ceiling no later policy can take back
+        if let Some(live) = live.filter(|live| Some(*live) != was) {
+            if entry.latest < live {
+                return Err(format!(
+                    "ios: --appstore-live {live}이 ios의 latest({})와 다릅니다. App Store에 나온 버전은 \
+                     TestFlight에 올린 빌드의 버전입니다: --ios-valid <그 빌드>를 주거나, 릴리스 디렉터리에 \
+                     {live}의 iOS 산출물(release.json)을 두세요(store.yml ios status의 READY_FOR_DISTRIBUTION과 \
+                     같은 버전인지 확인)",
+                    entry.latest
+                ));
+            }
+        }
         match (raised, live, was, self.req.no_appstore) {
             (_, _, Some(was), true) => {
                 return Err(format!(
@@ -756,7 +778,17 @@ impl<'a> Maker<'a> {
             }
             (true, None, None, true) => {
                 // the first App Store policy left out (seq 5 made that mistake with android_play)
-                if let Some(released) = store::appstore_release(settings, tools)? {
+                let record = store::fetch(settings, tools)?;
+                if record.is_none() {
+                    self.report.push(format!(
+                        "ios: --no-appstore: {}에 출시 기록({})이 아직 없습니다(404). App Store 출시를 \
+                         기록으로 확인하지 못했습니다",
+                        settings.build_repo,
+                        store::RECORD_PATH
+                    ));
+                }
+                let released = record.as_deref().map(store::appstore_released).transpose()?;
+                if let Some(released) = released.flatten() {
                     self.appstore_release = Some(released);
                     self.report.push(format!(
                         "경고: 출시 기록에 App Store 출시({released})가 있는데 --no-appstore로 ios를 바꿉니다. \
@@ -767,6 +799,22 @@ impl<'a> Maker<'a> {
             }
             _ => {}
         }
+        if let Some(live) = live {
+            self.notes.push(format!(
+                "ios {}: 운영자가 App Store에 나온 버전({live})을 확인함(--appstore-live)",
+                entry.latest
+            ));
+        }
+        self.appstore_capped(entry, latest_changed, appstore)
+    }
+
+    /// The entry under the App Store's version: `latest` never above it (T3).
+    fn appstore_capped(
+        &mut self,
+        mut entry: Entry,
+        latest_changed: bool,
+        appstore: Option<Version>,
+    ) -> Result<Option<(Entry, bool)>, String> {
         if let Some(appstore) = appstore {
             if entry.latest > appstore {
                 return Err(format!(
@@ -777,12 +825,6 @@ impl<'a> Maker<'a> {
                 ));
             }
             entry.appstore = Some(appstore.to_string());
-        }
-        if let Some(live) = live {
-            self.notes.push(format!(
-                "ios {}: 운영자가 App Store에 나온 버전({live})을 확인함(--appstore-live)",
-                entry.latest
-            ));
         }
         Ok(Some((entry, latest_changed)))
     }
@@ -845,18 +887,39 @@ impl<'a> Maker<'a> {
                     }
                 ));
             }
-            if let Some(age) = b.testflight_build.as_deref().and_then(testflight_age(now)) {
+            let mut entry = b.clone();
+            let latest_changed = latest != b.latest;
+            if latest_changed {
+                // the build of the new latest: the release directory's artifact of that version,
+                // so that testflight_build stays the build of latest
+                let Some(a) = artifact.filter(|a| a.info.version == latest) else {
+                    return Err(format!(
+                        "ios: latest를 {latest}(으)로 바꾸려면 그 빌드를 알아야 합니다. --ios-valid <빌드>를 주거나 \
+                         릴리스 디렉터리에 {latest}의 iOS 산출물(release.json)을 두세요"
+                    ));
+                };
+                let build = &a.info.build;
+                if time::build_number_time(build).map_err(|e| format!("ios: {e}"))? > now + DAY {
+                    return Err(format!("ios: TestFlight 빌드 {build}의 시각이 미래입니다"));
+                }
+                self.build_order(before, build, latest)?;
+                entry.latest = latest;
+                entry.source = Some(format!("client-{latest}"));
+                entry.testflight_build = Some(build.clone());
+                self.notes.push(format!(
+                    "ios {latest}: 빌드({build})를 릴리스 디렉터리의 release.json에서 가져옴(--ios-valid 없음)"
+                ));
+            }
+            if let Some(age) = entry
+                .testflight_build
+                .as_deref()
+                .and_then(testflight_age(now))
+            {
                 if age >= TESTFLIGHT_WARN_DAYS {
                     self.report.push(format!(
                         "경고: ios TestFlight 빌드를 올린 지 {age}일입니다(90일에 만료). 새 빌드를 올리세요"
                     ));
                 }
-            }
-            let mut entry = b.clone();
-            let latest_changed = latest != b.latest;
-            if latest_changed {
-                entry.latest = latest;
-                entry.source = Some(format!("client-{latest}"));
             }
             return Ok(Some((entry, latest_changed)));
         };
@@ -902,18 +965,7 @@ impl<'a> Maker<'a> {
                 ))
             }
         };
-        if let Some(old) = before.and_then(|b| b.testflight_build.as_deref()) {
-            let newer = build.as_str() > old;
-            let same_build = build == old;
-            let same_version = before.is_some_and(|b| b.latest == latest);
-            if (same_version && !same_build && !newer)
-                || (!same_version && !newer && !self.req.relax)
-            {
-                return Err(format!(
-                    "ios: 이 빌드({build})가 지금 정책의 빌드({old})보다 새롭지 않습니다"
-                ));
-            }
-        }
+        self.build_order(before, build, latest)?;
         let latest_changed = before.is_none_or(|b| b.latest != latest);
         let mut entry = before
             .cloned()
@@ -927,6 +979,29 @@ impl<'a> Maker<'a> {
             "ios {latest}: 운영자가 TestFlight 빌드({build})를 확인함(--ios-valid, 올린 지 {age}일)"
         ));
         Ok(Some((entry, latest_changed)))
+    }
+
+    /// A TestFlight build for `latest` comes after the entry's build, unless it is the same
+    /// build of the same version or `--relax` goes back to an older version.
+    fn build_order(
+        &self,
+        before: Option<&Entry>,
+        build: &str,
+        latest: Version,
+    ) -> Result<(), String> {
+        if let Some(old) = before.and_then(|b| b.testflight_build.as_deref()) {
+            let newer = build > old;
+            let same_build = build == old;
+            let same_version = before.is_some_and(|b| b.latest == latest);
+            if (same_version && !same_build && !newer)
+                || (!same_version && !newer && !self.req.relax)
+            {
+                return Err(format!(
+                    "ios: 이 빌드({build})가 지금 정책의 빌드({old})보다 새롭지 않습니다"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Google Play: the operator saw the versionCode released (completed) on the configured
@@ -1587,7 +1662,7 @@ pub fn make(
         platforms,
     };
     policy.check()?;
-    appstore_kept(old, &policy)?;
+    appstore_kept(old, &policy, req.relax)?;
 
     // X1 and X8: asking less needs a declaration
     let loosened = old
@@ -1749,9 +1824,10 @@ pub fn make(
 }
 
 /// T3 from one policy to the next: once the iOS entry names the App Store version, it keeps
-/// naming one, never lower (the App Store does not take a version back). `policy` makes nothing
-/// else; `sign` holds every draft to it.
-pub fn appstore_kept(old: Option<&Policy>, new: &Policy) -> Result<(), String> {
+/// naming one, never lower (the App Store does not take a version back). Only a new root
+/// declaration (`--relax`) may lower it, to mend a version written by mistake. `policy` makes
+/// nothing else; `sign` holds every draft to it.
+pub fn appstore_kept(old: Option<&Policy>, new: &Policy, relaxed: bool) -> Result<(), String> {
     let was = old
         .and_then(|o| o.platforms.get(&Platform::Ios))
         .and_then(|e| e.appstore_version());
@@ -1759,9 +1835,10 @@ pub fn appstore_kept(old: Option<&Policy>, new: &Policy) -> Result<(), String> {
         return Ok(());
     };
     match ios.appstore_version() {
-        Some(now) if now >= was => Ok(()),
+        Some(now) if now >= was || relaxed => Ok(()),
         Some(now) => Err(format!(
-            "ios: App Store 버전이 내려갑니다({was} → {now}). App Store에 나온 버전은 내려가지 않습니다"
+            "ios: App Store 버전이 내려갑니다({was} → {now}). App Store에 나온 버전은 내려가지 않습니다\
+             (잘못 적은 버전을 고칠 때만 루트 선언과 함께, policy --relax)"
         )),
         None => Err(format!(
             "ios: 이전 정책의 App Store 버전(appstore {was})이 빠졌습니다. 한 번 넣은 App Store 버전은 \

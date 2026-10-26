@@ -741,6 +741,8 @@ def recipes():
                                                      "root-101", ROOT_DOMAIN))
     # decided on 2026-10-26 (auto-deploy design 3-7, T3 and T4)
     r["ios-appstore-member"] = envelope(with_entry(p1(), "ios", appstore="1.6.0"), "signing-1")
+    r["ios-appstore-as-number"] = raw_file(part(replaced(policy_text(with_entry(p1(), "ios", appstore="1.6.0")),
+                                                         '"appstore":"1.6.0"', '"appstore":160'), "signing-1"))
     return r
 
 
@@ -913,6 +915,7 @@ WHY = {
     "package-build-1e400": "package.build is the number 1e400, beyond a 64-bit float: a shape error, as serde_json reads it (spec 1-3)",
     "declaration-without-revoked": "a declaration without revoked: the app reads no revocation; not canonical, the tool always writes the list",
     "ios-appstore-member": "the iOS entry names the App Store's version (appstore, the tool's T3 gate, 1.9.1): the app skips the member it does not know",
+    "ios-appstore-as-number": "appstore as a JSON number: the app skips the member it does not know; not canonical, the tool writes a version string",
 }
 
 
@@ -1363,13 +1366,17 @@ def cases_of_2026_10_14(hist):
 
 
 def cases_of_2026_10_26(hist):
-    """The case of the App Store gate (auto-deploy design 3-7, T3 and T4, 2026-10-26): the tool
+    """The cases of the App Store gate (auto-deploy design 3-7, T3 and T4, 2026-10-26): the tool
     writes `appstore` last in an iOS entry; the app does not know the member and skips it, so the
     policy is taken as any other. Written with the model's own constructors, as above."""
     p11 = hist["e1-s1"].pol.text
     return [M.Case("ios-appstore-member", [],
                    M.Env(M.Part(1, M.policy(1, 1, M.H(1), p11.ents, notes="ios-appstore-member"))),
-                   M.VECTOR_BUILD, "Taken", None, None, "app", True)]
+                   M.VECTOR_BUILD, "Taken", None, None, "app", True),
+            # the member with another type: the tool and the server check refuse it as not canonical
+            M.Case("ios-appstore-as-number", [],
+                   M.Env(M.Part(1, M.policy(1, 1, M.H(1), p11.ents, notes="ios-appstore-as-number"))),
+                   M.VECTOR_BUILD, "Taken", None, None, "tool", False)]
 
 
 # The model's cases whose `canonical` the definition of 2026-10-14 changes: a declaration without

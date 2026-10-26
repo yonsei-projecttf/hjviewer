@@ -308,7 +308,14 @@ fn what_an_entry_blocks_is_said() {
         plan.summary
     );
     assert!(plan.summary.iter().any(|l| l.contains("유예 끝까지")));
-    assert!(plan.dangers.is_empty(), "{:?}", plan.dangers);
+    // the vectors' history has no Google Play entry: the raise of android is T2's danger
+    assert_eq!(plan.dangers.len(), 1, "{:?}", plan.dangers);
+    assert!(
+        plan.dangers[0]
+            .starts_with("android: android_play 항목 없이 android의 min을 올립니다(--no-play)"),
+        "{:?}",
+        plan.dangers
+    );
     // signed a week later, the deadline is still ahead; signed after it, it is a danger
     let late = super::plan(&next, &keys, &archive, None, t("2026-10-17T00:00:00Z")).unwrap();
     assert!(

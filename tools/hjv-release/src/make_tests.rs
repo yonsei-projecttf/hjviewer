@@ -40,6 +40,7 @@ const IOS_160: &str = "263100200";
 const APK_160: &str = "263102200";
 const IOS_161: &str = "263120249";
 const APK_161: &str = "263122249";
+const IOS_162: &str = "263130100";
 
 struct Fixture {
     root: PathBuf,
@@ -82,6 +83,19 @@ impl Fixture {
         );
         write_artifact(&dir, "android", version, apk_build, &bytes("android"));
         write_artifact(&dir, "ios", version, ios_build, &bytes("ios"));
+        scan(&[dir]).unwrap()
+    }
+
+    /// A release directory with the iOS artifact of `version` alone.
+    fn ios_release(&self, version: &str, ios_build: &str) -> Vec<Artifact> {
+        let dir = self.root.join(format!("release-ios-{version}"));
+        write_artifact(
+            &dir,
+            "ios",
+            version,
+            ios_build,
+            format!("ios {version}").as_bytes(),
+        );
         scan(&[dir]).unwrap()
     }
 }
@@ -401,11 +415,19 @@ fn enforcing_a_minimum() {
     )
     .unwrap();
     // nothing new was built, so nobody was asked about provenance; --no-appstore looks for an
-    // App Store release in the store record (none: the build repository has no record yet)
+    // App Store release in the store record (none: the build repository is there, without a
+    // record yet)
     assert_eq!(
         *tools.asked.borrow(),
-        ["gh api -H Accept: application/vnd.github.raw+json repos/yonsei-projecttf/hjviewer-private/contents/store-releases.txt"]
+        [
+            "gh api -H Accept: application/vnd.github.raw+json repos/yonsei-projecttf/hjviewer-private/contents/store-releases.txt",
+            "gh api repos/yonsei-projecttf/hjviewer-private"
+        ]
     );
+    assert!(made2
+        .report
+        .iter()
+        .any(|l| l.contains("출시 기록(store-releases.txt)이 아직 없습니다(404)")));
     assert_eq!(made2.draft.appstore_release, None);
     let p = &made2.policy;
     assert_eq!((p.epoch, p.seq), (1, 2));
@@ -2340,6 +2362,23 @@ fn the_app_store_gate() {
     old.no_appstore = true;
     let err = error(&old);
     assert!(err.contains("80일부터 거부"), "{err}");
+    // the signer compares a new App Store version with the store run's status
+    let plan3 = signing::plan(
+        &made3.draft,
+        &test_key_set(),
+        &archive(),
+        None,
+        made3.policy.issued,
+    )
+    .unwrap();
+    assert!(
+        plan3
+            .dangers
+            .iter()
+            .any(|d| d.starts_with("ios: App Store 버전을 처음으로 1.6.1(으)로 적습니다")),
+        "{:?}",
+        plan3.dangers
+    );
     let file3 = signed(&made3);
     let checked = check_envelope(&file3, &test_key_set(), SERVER).unwrap();
     assert_eq!(
@@ -2380,25 +2419,71 @@ fn the_app_store_gate() {
     );
 
     // latest never goes above the App Store's version, which never goes down
+    let ios_162 = f.ios_release("1.6.2", IOS_162);
     let mut request = ios_only(&file3, now, None, Some("1.6.2"));
+    request.artifacts = ios_162.clone();
     assert!(error(&request).contains("--appstore-live"));
     request.appstore_live = Some(v("1.6.1"));
     assert!(error(&request).contains("latest(1.6.2)가 App Store에 나온 버전(1.6.1)보다 높습니다"));
     let mut request = ios_only(&file3, now, None, None);
     request.appstore_live = Some(v("1.6.0"));
     assert!(error(&request).contains("내려가지 않습니다"));
-    // a new App Store version: latest follows it
+    // a new App Store version is the version of a build the tool knows: a mistyped one is no
+    // ceiling for later policies
     request.appstore_live = Some(v("1.6.2"));
+    let err = error(&request);
+    assert!(
+        err.contains("ios: latest를 1.6.2(으)로 바꾸려면 그 빌드를 알아야 합니다"),
+        "{err}"
+    );
+    let mut typo = ios_only(&file3, now, Some(IOS_161), None);
+    typo.appstore_live = Some(v("1.6.10"));
+    let err = error(&typo);
+    assert!(
+        err.contains("--appstore-live 1.6.10이 ios의 latest(1.6.1)와 다릅니다"),
+        "{err}"
+    );
+    typo.latest = vec![(Platform::Ios, v("1.6.1"))];
+    typo.min = vec![(Target::One(Platform::Ios), v("1.6.1"))];
+    assert!(error(&typo).contains("1.6.10이 ios의 latest(1.6.1)와 다릅니다"));
+    // with the release directory's artifact of it, latest follows the App Store, and the
+    // TestFlight build follows latest
+    request.artifacts = ios_162.clone();
     let made4 = made(&request).unwrap();
     let ios = &made4.policy.platforms[&Platform::Ios];
     assert_eq!(
-        (ios.latest, ios.source.as_deref(), ios.appstore.as_deref()),
-        (v("1.6.2"), Some("client-1.6.2"), Some("1.6.2"))
+        (
+            ios.latest,
+            ios.source.as_deref(),
+            ios.appstore.as_deref(),
+            ios.testflight_build.as_deref()
+        ),
+        (
+            v("1.6.2"),
+            Some("client-1.6.2"),
+            Some("1.6.2"),
+            Some(IOS_162)
+        )
     );
     assert!(made4
         .report
         .iter()
         .any(|l| l.contains("App Store 버전 1.6.1 → 1.6.2")));
+    assert!(made4.draft.notes.iter().any(|n| n
+        == &format!(
+        "ios 1.6.2: 빌드({IOS_162})를 릴리스 디렉터리의 release.json에서 가져옴(--ios-valid 없음)"
+    )));
+    crate::draft::check_notes(&made4.draft.notes).unwrap();
+    // and a higher one
+    let keys = test_key_set();
+    let dangers = |made: &Made| {
+        signing::plan(&made.draft, &keys, &archive(), None, made.policy.issued)
+            .unwrap()
+            .dangers
+    };
+    assert!(dangers(&made4)
+        .iter()
+        .any(|d| d.starts_with("ios: App Store 버전을 1.6.1에서 1.6.2(으)로 적습니다")));
     // a policy for something else keeps the field as it is
     let mut request = req_after(&file3, now);
     request.contact = Some("내선 1234".to_owned());
@@ -2409,7 +2494,6 @@ fn the_app_store_gate() {
         Some("1.6.1")
     );
     // sign holds every draft to it: the field once there is never dropped or lowered
-    let keys = test_key_set();
     for (from, to, why) in [
         (r#","appstore":"1.6.2""#, "", "빠졌습니다"),
         (r#""appstore":"1.6.2""#, r#""appstore":"1.6.0""#, "높습니다"),
@@ -2419,6 +2503,56 @@ fn the_app_store_gate() {
         let err = signing::plan(&draft, &keys, &archive(), None, made4.policy.issued).unwrap_err();
         assert!(err.contains(why), "{err}");
     }
+    // lowered only with a root declaration, to mend a version written by mistake; never dropped
+    let mut lowered = made4.policy.clone();
+    let ios = lowered.platforms.get_mut(&Platform::Ios).unwrap();
+    ios.appstore = Some("1.6.1".to_owned());
+    let err = appstore_kept(Some(&made4.policy), &lowered, false).unwrap_err();
+    assert!(
+        err.contains("App Store 버전이 내려갑니다(1.6.2 → 1.6.1)"),
+        "{err}"
+    );
+    appstore_kept(Some(&made4.policy), &lowered, true).unwrap();
+    lowered.platforms.get_mut(&Platform::Ios).unwrap().appstore = None;
+    let err = appstore_kept(Some(&made4.policy), &lowered, true).unwrap_err();
+    assert!(err.contains("빠졌습니다"), "{err}");
+    let file4 = signed(&made4);
+    let later = "2026-11-11T04:00:00Z";
+    let mut mend = ios_only(&file4, later, Some(IOS_161), Some("1.6.1"));
+    mend.appstore_live = Some(v("1.6.1"));
+    assert!(error(&mend).contains("--relax와 함께"));
+    mend.relax = true;
+    mend.live = Some(file4.clone());
+    let mended = made(&mend).unwrap();
+    let ios = &mended.policy.platforms[&Platform::Ios];
+    assert_eq!(
+        (
+            ios.latest,
+            ios.appstore.as_deref(),
+            ios.testflight_build.as_deref()
+        ),
+        (v("1.6.1"), Some("1.6.1"), Some(IOS_161))
+    );
+    assert!(mended
+        .report
+        .iter()
+        .any(|l| l.contains("--relax: App Store 버전을 내립니다(1.6.2 → 1.6.1)")));
+    let plan5 = signing::plan(
+        &mended.draft,
+        &keys,
+        &archive(),
+        Some(&file4),
+        mended.policy.issued,
+    )
+    .unwrap();
+    assert!(
+        plan5
+            .dangers
+            .iter()
+            .any(|d| d.contains("루트 선언과 함께 App Store 버전을 내립니다(1.6.2 → 1.6.1)")),
+        "{:?}",
+        plan5.dangers
+    );
 }
 
 /// T3: a change of iOS without the App Store while the store record has an App Store release
@@ -2507,6 +2641,21 @@ fn raising_android_without_the_play_entry() {
         .iter()
         .any(|l| l.contains("--no-play: android_play 없이")));
     assert!(made3.report.iter().any(|l| l == crate::make::NO_PLAY_ENTRY));
+    // what --no-play passes over is the signer's to say yes to
+    let plan3 = signing::plan(
+        &made3.draft,
+        &test_key_set(),
+        &archive(),
+        None,
+        made3.policy.issued,
+    )
+    .unwrap();
+    assert!(
+        plan3.dangers.iter().any(|d| d
+            .starts_with("android: android_play 항목 없이 android의 min을 올립니다(--no-play)")),
+        "{:?}",
+        plan3.dangers
+    );
     // with the Play entry nothing is passed over, and --no-play is a mistake
     request.play_live = Some(APK_161.parse().unwrap());
     request
@@ -2520,4 +2669,21 @@ fn raising_android_without_the_play_entry() {
     let mut request = release_161(&f, &file2);
     request.no_play = true;
     assert!(error(&request).contains("--no-play를 줬지만"));
+    // a new android entry is a raise as well
+    let mut dropped = req_after(&file2, "2026-11-09T04:00:00Z");
+    dropped.live = Some(file2.clone());
+    dropped.drop = vec![Platform::Android];
+    let file3 = signed(&made(&dropped).unwrap());
+    let mut again = req(
+        Some(&file3),
+        f.release("1.6.1", IOS_161, APK_161),
+        "2026-11-10T04:00:00Z",
+    );
+    again.hold = vec![Platform::Windows, Platform::Ios];
+    again.min = vec![(Target::One(Platform::Android), v("1.6.0"))];
+    let err = error(&again);
+    assert!(
+        err.contains("android_play 항목 없이 android의 min을 올립니다(없음 → "),
+        "{err}"
+    );
 }

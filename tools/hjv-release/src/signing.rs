@@ -451,9 +451,31 @@ pub fn plan(
         ));
     }
 
-    // the App Store (design 3-7 T3): once named, never dropped or lowered; a change of iOS
-    // without it while the store record has an App Store release is asked about
-    appstore_kept(old, &policy)?;
+    // the App Store (design 3-7 T3): once named, never dropped, and lowered only with a root
+    // declaration; a new or higher one is the signer's to compare with the store run's status,
+    // since nothing else holds the version the operator typed; a change of iOS without it while
+    // the store record has an App Store release is asked about
+    appstore_kept(old, &policy, new_root.is_some())?;
+    let appstore_was = old
+        .and_then(|o| o.platforms.get(&Platform::Ios))
+        .and_then(|e| e.appstore_version());
+    let appstore_now = policy
+        .platforms
+        .get(&Platform::Ios)
+        .and_then(|e| e.appstore_version());
+    match (appstore_was, appstore_now) {
+        (was, Some(now)) if was.is_none_or(|was| now > was) => dangers.push(format!(
+            "ios: App Store 버전을 {} {now}(으)로 적습니다. store.yml ios status의 READY_FOR_DISTRIBUTION 버전과 \
+             같은지 대조하세요. 서명한 뒤에는 루트 선언 없이 내리지 못하고, ios의 latest와 min이 이 버전까지 \
+             오를 수 있습니다",
+            was.map_or("처음으로".to_owned(), |was| format!("{was}에서"))
+        )),
+        (Some(was), Some(now)) if now < was => dangers.push(format!(
+            "ios: 루트 선언과 함께 App Store 버전을 내립니다({was} → {now}). 앞서 적은 버전이 App Store에 \
+             없을 때만 진행하세요"
+        )),
+        _ => {}
+    }
     if let Some(released) = &draft.appstore_release {
         if policy
             .platforms
@@ -470,6 +492,23 @@ pub fn plan(
             "ios: 출시 기록에 App Store 출시({released})가 있는데 App Store 버전 없이(--no-appstore) ios를 바꿉니다. \
              App Store 설치본도 이 항목을 따릅니다. --appstore-live를 빠뜨린 것이 아닐 때만 진행하세요"
         ));
+    }
+
+    // T2 (design 3-7): a raised `android` minimum without the Google Play entry (`--no-play`)
+    // blocks the Play installs at the PCs and hbbs with no notice in those apps
+    if let Some(o) = old {
+        let android_raised = policy.platforms.get(&Platform::Android).is_some_and(|new| {
+            o.platforms
+                .get(&Platform::Android)
+                .is_none_or(|was| new.min > was.min)
+        });
+        if android_raised && !policy.platforms.contains_key(&Platform::AndroidPlay) {
+            dangers.push(
+                "android: android_play 항목 없이 android의 min을 올립니다(--no-play). Google Play로 설치한 앱이 \
+                 앱 안 안내 없이 PC와 hbbs에서 거절됩니다(T2). Play에 사용자가 없을 때만 진행하세요"
+                    .to_owned(),
+            );
+        }
     }
 
     // the package rule and one build per version (4-2, X7)
