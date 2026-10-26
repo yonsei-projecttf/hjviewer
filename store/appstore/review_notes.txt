@@ -4,7 +4,7 @@ HJViewer is a remote desktop app for Yonsei University faculty and staff: the iP
 
 External services: the server checks portal logins with the Yonsei University SSO; public STUN servers help devices connect directly. The app supports iPhone and iPad with iOS 13.0 or later.
 
-This server is for Yonsei University faculty and staff, so sign in first with the demo account (Settings > Account > Log in). Login uses their university portal accounts; the app has no sign-up. Without a login, an app connects only with the operator's access password, and a PC accepts connections only with it or with a one-time support code from a staff member. The demo account needs neither.
+This server is for Yonsei University faculty and staff, so sign in first with the demo account (Settings > Account > Log in). Login uses their university portal accounts; the app has no sign-up. Without a login, an app connects only with the operator's access password, and a PC outside an account accepts connections only with it or a staff member's one-time support code. The demo account needs neither.
 
 The demo account reaches only the demo Windows PC: ID {{DEMO_PC_ID}}, password {{DEMO_PC_PASSWORD}}. Type the Sign-In Information exactly (the user name goes in the "Yonsei portal ID" field): wrong passwords lock the account for up to a day. Settings shows it as "App Review"; its "My PCs" tab stays empty. If the app says "A new device logged in" or asks to check a device, it is another review device: tap "It is mine". To delete the account, open Settings > Account > Delete account; signing in again afterwards starts an empty account.
 

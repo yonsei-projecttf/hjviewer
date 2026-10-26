@@ -22,7 +22,7 @@ Only Yonsei University faculty and staff can log in; the app has no sign-up.
 Security
 • The screen, input, clipboard and files of a remote session are end-to-end encrypted; a relaying server passes on only data it cannot read.
 • The app seals your portal password with the server's key; the server has it checked by the Yonsei SSO and forgets it at once. It is never stored.
-• Each logged-in device has its own account key in its keychain, never synced or carried off by a backup; it signs every account request.
+• Each logged-in device has its own account key in its keychain, never synced and never moved to another device by a backup; it signs every account request.
 • App lock (optional, in Security settings): the app asks for Face ID, Touch ID or the passcode when it opens or you come back after a set time (1 minute by default), and covers its screens until then and in the background. iOS checks the biometrics; the app never gets them.
 • There are no analytics, ads or crash reports.
 
