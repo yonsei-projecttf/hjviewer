@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 02:15:13 +0900
-Subject: [PATCH 019/148] quality monitor: show the transport on every platform
+Subject: [PATCH 019/160] quality monitor: show the transport on every platform
 
 The quality monitor named the transport only for WebRTC sessions on the web.
 It now shows it on every platform next to Delay, FPS and Codec: 'WebRTC' for a

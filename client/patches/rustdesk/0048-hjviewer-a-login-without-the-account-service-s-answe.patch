@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Wed, 14 Oct 2026 21:46:21 +0900
-Subject: [PATCH 048/148] hjviewer: a login without the account service's
+Subject: [PATCH 048/160] hjviewer: a login without the account service's
  answer says which
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

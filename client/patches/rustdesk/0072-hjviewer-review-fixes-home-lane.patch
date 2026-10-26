@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 22:16:53 +0900
-Subject: [PATCH 072/148] hjviewer: review fixes, home lane
+Subject: [PATCH 072/160] hjviewer: review fixes, home lane
 
 U22: a PC card opens its menu on a right-click's release (onSecondaryTapUp)
 instead of its press. Tap-down fires after 100 ms even for a recognizer

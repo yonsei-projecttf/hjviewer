@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 15:37:55 +0900
+Subject: [PATCH 152/160] hjviewer: the phone's recording directory row reads
+ "Recording folder"
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Since 1.9.1 the Android recording rows sit under the Advanced settings
+header, and no "Recording" header names the directory row any more;
+upstream's "Directory" (디렉터리) alone did not say what the folder
+holds. The row reads "녹화 폴더" (Recording folder, HjvPhoneTexts), as
+the privacy notice calls it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_phone.dart           | 3 +++
+ flutter/lib/mobile/pages/settings_page.dart | 3 ++-
+ flutter/test/hjviewer_phone_test.dart       | 4 +++-
+ 3 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_phone.dart b/flutter/lib/common/hjv_phone.dart
+index 4c155e5..c609bae 100644
+--- a/flutter/lib/common/hjv_phone.dart
++++ b/flutter/lib/common/hjv_phone.dart
+@@ -256,4 +256,7 @@ class HjvPhoneTexts {
+   // the settings' header over it and the display settings' row; 1.9.1: 고급 설정, as the
+   // desktop's tab
+   String get advanced => _t('고급 설정', 'Advanced settings');
++  // 1.9.1: Android's recording directory row under that header, which no "Recording" header
++  // names any more
++  String get recordingFolder => _t('녹화 폴더', 'Recording folder');
+ }
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index d39d171..dde8d68 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -894,7 +894,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+                   ),
+                 if (isAndroid)
+                   SettingsTile(
+-                    title: Text(translate("Directory")),
++                    title:
++                        Text(HjvPhoneTexts(hjvLabels.korean).recordingFolder),
+                     description:
+                         Text(bind.mainVideoSaveDirectory(root: false)),
+                   ),
+diff --git a/flutter/test/hjviewer_phone_test.dart b/flutter/test/hjviewer_phone_test.dart
+index 0c959fa..2e70780 100644
+--- a/flutter/test/hjviewer_phone_test.dart
++++ b/flutter/test/hjviewer_phone_test.dart
+@@ -119,6 +119,8 @@ void main() {
+     expect(const HjvPhoneTexts(false).networkAdvanced, 'Network');
+     expect(const HjvPhoneTexts(true).advanced, '고급 설정');
+     expect(const HjvPhoneTexts(false).advanced, 'Advanced settings');
++    expect(const HjvPhoneTexts(true).recordingFolder, '녹화 폴더');
++    expect(const HjvPhoneTexts(false).recordingFolder, 'Recording folder');
+   });
+ 
+   test('the phone settings start with language and theme (U40)', () {
+@@ -140,7 +142,7 @@ void main() {
+       '_hjvNetworkSection()',
+       "translate('Enable hardware codec')",
+       "translate('Automatically record outgoing sessions')",
+-      'translate("Directory")',
++      'HjvPhoneTexts(hjvLabels.korean).recordingFolder',
+       "translate('enter-2fa-title')",
+       'translate("About")',
+     ];

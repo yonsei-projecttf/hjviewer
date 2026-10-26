@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 10:55:05 +0900
-Subject: [PATCH 025/148] mobile: in touch mode a finger left from a pinch does
+Subject: [PATCH 025/160] mobile: in touch mode a finger left from a pinch does
  not drag
 
 Since "a gesture is over once its fingers lift", the finger left on the glass

@@ -1,0 +1,415 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 15:37:55 +0900
+Subject: [PATCH 151/160] hjviewer: review fixes for the desktop settings split
+
+- Advanced settings rebuilds on each visit again. The network block and
+  the security cards kept upstream's keep-alive inside the page's list,
+  and from there it held the whole page in the settings' PageView: after
+  a change on another tab (the Display tab's image quality preset) the
+  page went on showing the value it had. Neither keeps the page alive
+  now; the unlocks are the settings page's, so they last as before. The
+  Security tab keeps its keep-alive. As the page may now be gone when an
+  unlock's permission check returns, its two unlock buttons rebuild it
+  only while it is there.
+- The security group is the page's last: the audio input and the privacy
+  mode implementation, which no unlock holds, come first, then the
+  Security unlock and only cards it holds. The service and updates group
+  (whose update rows a pinned build fixes, so they are grey either way)
+  comes before it.
+- Titles from upstream's keys: the session defaults card is "Other
+  Default Options", as the Display tab's card with the other three of
+  those options; the security card plain "Security"; the custom image
+  quality card "Custom Image Quality". The Display tab's "Custom
+  (advanced settings)" line shows as the selected value, greyed only
+  when fixed. ko.rs keeps three new keys, beside HJViewer's own two
+  ("Update failed!") instead of at the end, where upstream's
+  translation syncs append.
+- Tests read desktop_setting_page.dart and desktop_home_page.dart: the
+  tabs (no Network tab), the everyday tabs' rows, the groups' order with
+  their cards, and the home's "Change ID" opening Advanced settings.
+
+Known limits: the home's "Change ID" opens Advanced settings at its top,
+and the ID card is the page's last; scrolling to it would need a handle
+into the page and a post-frame callback. At the next upstream update,
+rows upstream adds to the General tab's other() or the Security tab's
+more() need their place (an everyday tab or Advanced settings) chosen by
+hand: a clean merge leaves them in whichever of the split functions
+their neighbours went to.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../lib/common/hjviewer_settings_split.dart   |  11 +-
+ .../desktop/pages/desktop_setting_page.dart   |  45 +++---
+ .../test/hjviewer_settings_split_test.dart    | 145 +++++++++++++++++-
+ src/lang/ko.rs                                |   8 +-
+ 4 files changed, 177 insertions(+), 32 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_settings_split.dart b/flutter/lib/common/hjviewer_settings_split.dart
+index 44957a8..aaba6ef 100644
+--- a/flutter/lib/common/hjviewer_settings_split.dart
++++ b/flutter/lib/common/hjviewer_settings_split.dart
+@@ -19,13 +19,14 @@ enum HjvAdvancedGroup {
+   /// automatic recording and its folders
+   recording,
+ 
+-  /// behind the Security tab's unlock: permissions, the numeric one-time password, 2FA, the ID,
+-  /// RDP sharing, LAN discovery, direct IP, the whitelists, PIN; then the audio input and the
+-  /// privacy mode implementation, which no unlock held before
+-  security,
+-
+   /// the service, the updates and Wayland
+   serviceUpdates,
++
++  /// the audio input and the privacy mode implementation, which no unlock held before; then,
++  /// behind the Security tab's unlock, permissions, the numeric one-time password, RDP sharing,
++  /// LAN discovery, direct IP, the whitelists, PIN, 2FA and the ID. Last, so that the unlock
++  /// holds every card below it
++  security,
+ }
+ 
+ /// Where a row of upstream's "Other default options" (setting_widgets.dart otherDefaultSettings)
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 5cb5cff..f85c903 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -520,7 +520,8 @@ class _GeneralState extends State<_General> with _GeneralRows<_General> {
+   }
+ }
+ 
+-// HJViewer 1.9.1: the General tab's rows, which the General tab and 고급 설정 build
++// HJViewer 1.9.1: the General tab's rows, which the General tab (theme, language, other) and
++// 고급 설정 (the rest) build: what one of them leaves unused is the other's
+ mixin _GeneralRows<T extends StatefulWidget> on State<T> {
+   final RxBool serviceStop =
+       isWeb ? RxBool(false) : Get.find<RxBool>(tag: 'stop-service');
+@@ -1127,8 +1128,11 @@ class _Safety extends StatefulWidget {
+ }
+ 
+ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
++  // HJViewer 1.9.1: the Security tab's only: from 고급 설정's list a keep-alive would hold that
++  // whole page, which then would not rebuild on a visit and would show a value another tab
++  // changed as it was (the unlock is the settings page's)
+   @override
+-  bool get wantKeepAlive => true;
++  bool get wantKeepAlive => !widget.advanced;
+   bool get locked => widget.lock.value;
+   set locked(bool value) => widget.lock.value = value;
+   StreamSubscription<bool>? _lockChanged;
+@@ -1182,9 +1186,10 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+   Widget _advanced(BuildContext context) {
+     return Column(
+       children: [
++        // mounted: not kept alive, the page may be gone when the permission check returns
+         _lock(locked, 'Unlock Security Settings', () {
+           locked = false;
+-          setState(() => {});
++          if (mounted) setState(() => {});
+         }),
+         preventMouseKeyBuilder(
+           block: locked,
+@@ -1572,7 +1577,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
+   // HJViewer 1.9.1: 고급 설정's security card
+   Widget moreAdvanced(BuildContext context) {
+     bool enabled = !locked;
+-    return _Card(title: 'Security (advanced)', children: [
++    return _Card(title: 'Security', children: [
+       numericOneTimePassword(context),
+       shareRdp(context, enabled),
+       if (!_hjvPinnedOff(kOptionEnableLanDiscovery))
+@@ -1971,8 +1976,9 @@ class _Network extends StatefulWidget {
+ }
+ 
+ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
++  // HJViewer 1.9.1: in 고급 설정's list, as _SafetyState's instance there
+   @override
+-  bool get wantKeepAlive => true;
++  bool get wantKeepAlive => false;
+   bool get locked => widget.lock.value;
+   set locked(bool value) => widget.lock.value = value;
+ 
+@@ -1982,7 +1988,7 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
+     return Column(children: [
+       _lock(locked, 'Unlock Network Settings', () {
+         locked = false;
+-        setState(() => {});
++        if (mounted) setState(() => {});
+       }),
+       preventMouseKeyBuilder(
+         block: locked,
+@@ -2196,7 +2202,8 @@ class _DisplayState extends State<_Display> with _DisplayRows<_Display> {
+   }
+ }
+ 
+-// HJViewer 1.9.1: the Display tab's rows, which the Display tab and 고급 설정 build
++// HJViewer 1.9.1: the Display tab's rows, which the Display tab (viewStyle, imageQuality,
++// otherDefaults) and 고급 설정 (the rest) build: what one of them leaves unused is the other's
+ mixin _DisplayRows<T extends StatefulWidget> on State<T> {
+   Widget viewStyle(BuildContext context) {
+     final isOptFixed = isOptionFixed(kOptionViewStyle);
+@@ -2293,13 +2300,13 @@ mixin _DisplayRows<T extends StatefulWidget> on State<T> {
+           label: 'Optimize reaction time',
+           onChanged: isOptFixed ? null : onChanged),
+       // HJViewer 1.9.1: the custom quality is set in 고급 설정 (customImageQuality); here it
+-      // shows as the selected value that cannot be picked
++      // shows as the selected value, which a tap leaves as it is, greyed only when fixed
+       if (groupValue == kRemoteImageQualityCustom)
+         _Radio(context,
+             value: kRemoteImageQualityCustom,
+             groupValue: groupValue,
+             label: 'Custom (advanced settings)',
+-            onChanged: null),
++            onChanged: isOptFixed ? null : (_) {}),
+     ]);
+   }
+ 
+@@ -2313,7 +2320,7 @@ mixin _DisplayRows<T extends StatefulWidget> on State<T> {
+ 
+     final isOptFixed = isOptionFixed(kOptionImageQuality);
+     final groupValue = bind.mainGetUserDefaultOption(key: kOptionImageQuality);
+-    return _Card(title: 'Default Image Quality', children: [
++    return _Card(title: 'Custom Image Quality', children: [
+       _Radio(context,
+           value: kRemoteImageQualityCustom,
+           groupValue: groupValue,
+@@ -2524,7 +2531,8 @@ class _AdvancedState extends State<_Advanced>
+         ];
+       case HjvAdvancedGroup.sessionDefaults:
+         return [
+-          ..._card('Session defaults', [
++          // the Display tab's card of the same name has the other three
++          ..._card('Other Default Options', [
+             if (display) ...otherDefaultRows(HjvDefaultOptionPlace.session),
+             if (general) ...sessionRows(),
+           ]),
+@@ -2535,19 +2543,20 @@ class _AdvancedState extends State<_Advanced>
+         return [
+           if (general && !isWeb) record(context),
+         ];
+-      case HjvAdvancedGroup.security:
+-        return [
+-          if (DesktopSettingPage._showsSafety)
+-            _Safety(lock: widget.securityLock, advanced: true),
+-          if (general && !isWeb) audio(context),
+-          if (display && !isWeb) privacyModeImpl(context),
+-        ];
+       case HjvAdvancedGroup.serviceUpdates:
+         return [
+           if (general && !isWeb) service(),
+           if (general) ..._card('Update', updateRows()),
+           if (general && !isWeb) WaylandCard(),
+         ];
++      case HjvAdvancedGroup.security:
++        return [
++          if (general && !isWeb) audio(context),
++          if (display && !isWeb) privacyModeImpl(context),
++          // last on the page: every card below its unlock is one the unlock holds
++          if (DesktopSettingPage._showsSafety)
++            _Safety(lock: widget.securityLock, advanced: true),
++        ];
+     }
+   }
+ 
+diff --git a/flutter/test/hjviewer_settings_split_test.dart b/flutter/test/hjviewer_settings_split_test.dart
+index 9020bf7..6f41bcb 100644
+--- a/flutter/test/hjviewer_settings_split_test.dart
++++ b/flutter/test/hjviewer_settings_split_test.dart
+@@ -4,17 +4,153 @@ import 'package:flutter_hbb/common/hjviewer_settings_split.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+ // 1.9.1: the desktop settings' split into the everyday tabs and 고급 설정
+-// (common/hjviewer_settings_split.dart), plain Dart without the bridge.
++// (common/hjviewer_settings_split.dart), plain Dart without the bridge; the pages' source, as
++// the bridge keeps a widget test from building them.
++
++/// That each of [calls] is in [source], each first after the one before.
++void expectInOrder(String source, List<String> calls) {
++  final at = [for (final call in calls) source.indexOf(call)];
++  for (var i = 0; i < calls.length; i++) {
++    expect(at[i], isNonNegative, reason: calls[i]);
++    if (i > 0) expect(at[i], greaterThan(at[i - 1]), reason: calls[i]);
++  }
++}
+ 
+ void main() {
++  final page =
++      File('lib/desktop/pages/desktop_setting_page.dart').readAsStringSync();
++  // the page's source from [from] to the next [to]
++  String part(String from, String to) {
++    final start = page.indexOf(from);
++    expect(start, isNonNegative, reason: from);
++    final end = page.indexOf(to, start + from.length);
++    expect(end, isNonNegative, reason: to);
++    return page.substring(start, end);
++  }
++
++  test('고급 설정 is a tab, the Network tab is not; "Change ID" opens 고급 설정', () {
++    final tabs = RegExp(r'^\s*(\w+),', multiLine: true)
++        .allMatches(part('enum SettingsTabKey {', '}'))
++        .map((m) => m[1])
++        .toList();
++    expect(tabs, [
++      'general',
++      'safety',
++      'display',
++      'account',
++      'printer',
++      'advanced',
++      'about'
++    ]);
++    final home =
++        File('lib/desktop/pages/desktop_home_page.dart').readAsStringSync();
++    final start = home.indexOf("translate('Change ID')");
++    expect(start, isNonNegative);
++    expect(home.substring(start, home.indexOf("translate('Settings')", start)),
++        contains('switch2page(SettingsTabKey.advanced)'));
++  });
++
++  test('the General, Security and Display tabs keep the everyday rows', () {
++    final general = part('class _GeneralState', 'mixin _GeneralRows');
++    expectInOrder(general, ['theme()', 'language()', 'other()']);
++    expect(
++        RegExp(r'kOption\w+')
++            .allMatches(
++                part('Widget other() {', 'List<Widget> connectionRows()'))
++            .map((m) => m[0])
++            .toList(),
++        [
++          'kOptionEnableConfirmClosingTabs',
++          'kOptionOpenNewConnInTabs',
++          'kOptionKeepAwakeDuringOutgoingSessions',
++        ]);
++    final security = part('class _SafetyState', 'Widget _advanced(');
++    expectInOrder(
++        security, ['password(context)', 'more(context)', 'hjvIncomingRow(']);
++    // the Security card: the automatic disconnect and the window rule
++    final more =
++        part('Widget more(BuildContext context) {', 'Widget moreAdvanced(');
++    expect(more, contains('...autoDisconnect(context)'));
++    expect('_OptionCheckBox('.allMatches(more).length, 1);
++    expect(more, contains("'allow-only-conn-window-open'"));
++    final display = part('class _DisplayState', 'mixin _DisplayRows');
++    expectInOrder(display, [
++      'viewStyle(context)',
++      'imageQuality(context)',
++      'otherDefaults(context)',
++    ]);
++    for (final call in [
++      'service()',
++      'hwcodec()',
++      'audio(context)',
++      'record(context)',
++      'WaylandCard()',
++      'scrollStyle(',
++      'codec(',
++      'customImageQuality(',
++      'trackpadSpeed(',
++      'privacyModeImpl(',
++      'permissions(',
++      'moreAdvanced(',
++      'numericOneTimePassword(',
++      'tfa()',
++      'changeId()',
++    ]) {
++      for (final (tab, source) in [
++        ('General', general),
++        ('Security', security),
++        ('Display', display),
++      ]) {
++        expect(source, isNot(contains(call)), reason: '$tab: $call');
++      }
++    }
++  });
++
+   test('고급 설정 shows its groups in the decided order', () {
+     expect(HjvAdvancedGroup.values, [
+       HjvAdvancedGroup.connection,
+       HjvAdvancedGroup.displayPerformance,
+       HjvAdvancedGroup.sessionDefaults,
+       HjvAdvancedGroup.recording,
+-      HjvAdvancedGroup.security,
+       HjvAdvancedGroup.serviceUpdates,
++      HjvAdvancedGroup.security,
++    ]);
++    final advanced = part('class _AdvancedState', 'class _Account ');
++    expect(advanced, contains('for (final group in HjvAdvancedGroup.values)'));
++    // each group's cards, the cases in the groups' order
++    expectInOrder(advanced, [
++      'case HjvAdvancedGroup.connection:',
++      'connectionRows()',
++      '_Network(',
++      'case HjvAdvancedGroup.displayPerformance:',
++      'performanceRows()',
++      'HjvDefaultOptionPlace.performance',
++      'codec(context)',
++      'customImageQuality(context)',
++      'case HjvAdvancedGroup.sessionDefaults:',
++      'HjvDefaultOptionPlace.session',
++      'sessionRows()',
++      'scrollStyle(context)',
++      'trackpadSpeed(context)',
++      'case HjvAdvancedGroup.recording:',
++      'record(context)',
++      'case HjvAdvancedGroup.serviceUpdates:',
++      'service()',
++      'updateRows()',
++      'WaylandCard()',
++      'case HjvAdvancedGroup.security:',
++      'audio(context)',
++      'privacyModeImpl(context)',
++      '_Safety(',
++    ]);
++    // the security cards, all behind the unlock, the ID last on the page
++    expectInOrder(
++        part('Widget _advanced(BuildContext context) {', 'Widget tfa()'), [
++      "'Unlock Security Settings'",
++      'permissions(context)',
++      'moreAdvanced(context)',
++      'tfa()',
++      'changeId()',
+     ]);
+   });
+ 
+@@ -60,13 +196,14 @@ void main() {
+     for (final (key, text) in [
+       ('Advanced settings', '고급 설정'),
+       ('Display and performance', '화면과 성능'),
+-      ('Session defaults', '세션 기본값'),
+-      ('Security (advanced)', '보안 (고급)'),
+       ('Custom (advanced settings)', '사용자 지정 (고급 설정)'),
+       // upstream's, which 고급 설정 uses as titles too
+       ('Connection', '연결'),
++      ('Other Default Options', '기타 기본 옵션'),
++      ('Custom Image Quality', '사용자 지정 이미지 품질'),
+       ('Recording', '녹화'),
+       ('Update', '업데이트'),
++      ('Security', '보안'),
+     ]) {
+       expect(ko, contains('("$key", "$text")'), reason: key);
+     }
+diff --git a/src/lang/ko.rs b/src/lang/ko.rs
+index 24eb0f3..4acb358 100644
+--- a/src/lang/ko.rs
++++ b/src/lang/ko.rs
+@@ -672,6 +672,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("update-failed-check-msi-tip", "설치 방법 확인에 실패했습니다. \"다운로드\" 버튼을 클릭하여 릴리스 페이지에서 다운로드하고 수동으로 업그레이드하세요."),
+         ("Updated successfully!", "업데이트했습니다."),
+         ("Update failed!", "업데이트하지 못했습니다."),
++        ("Advanced settings", "고급 설정"),
++        ("Display and performance", "화면과 성능"),
++        ("Custom (advanced settings)", "사용자 지정 (고급 설정)"),
+         ("websocket_tip", "WebSocket을 사용할 때는 릴레이 연결만 지원됩니다."),
+         ("Use WebSocket", "웹소켓 사용"),
+         ("Trackpad speed", "트랙패드 속도"),
+@@ -782,11 +785,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("RustDesk could not load a GStreamer component needed for screen capture ({})", "RustDesk가 화면 캡처에 필요한 GStreamer 구성 요소를 불러오지 못했습니다 ({})"),
+         ("Relay fallback delay in seconds", "릴레이 대체 작동 지연 시간 (초)"),
+         ("relay-fallback-delay-tip", "이미 연결된 중계 연결이 직접 WebRTC 연결을 얼마나 기다린 후 대신 사용되는지입니다. 값을 늘리면 느린 직접 연결에 더 많은 시간을 주고, 줄이면 직접 연결이 불가능한 네트워크에서 더 빨리 중계로 전환합니다. 비워 두면 기본값 2.5초가 사용됩니다."),
+-        ("Advanced settings", "고급 설정"),
+-        ("Display and performance", "화면과 성능"),
+-        ("Session defaults", "세션 기본값"),
+-        ("Security (advanced)", "보안 (고급)"),
+-        ("Custom (advanced settings)", "사용자 지정 (고급 설정)"),
+         ("To start a voice call, enable \"Audio capture\" on the \"Share screen\" page.", "음성 통화를 시작하려면 '화면 공유' 페이지에서 '오디오 캡처'를 사용함으로 하세요.")
+     ].iter().cloned().collect();
+ }

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 05:03:42 +0900
-Subject: [PATCH 128/148] hjviewer: screen readers hear selections and state
+Subject: [PATCH 128/160] hjviewer: screen readers hear selections and state
  changes (UX-K2)
 
 UX-K2 (U59, the part M2 does not do; M2 keeps the dialogs' reading

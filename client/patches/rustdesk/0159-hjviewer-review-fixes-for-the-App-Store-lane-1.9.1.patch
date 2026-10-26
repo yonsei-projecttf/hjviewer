@@ -1,0 +1,207 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 16:17:43 +0900
+Subject: [PATCH 159/160] hjviewer: review fixes for the App Store lane (1.9.1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An iPhone reads where it came from first and on its own (deviceValue), so
+a device info that fails no longer leaves an App Store install on
+TestFlight's way.
+
+The Runner target's OTHER_LDFLAGS drop the Photos framework as well: only
+the photo picker needed it, file_picker builds without its media picker,
+and nothing else in the app or its pods refers to it.
+
+The desktop's About keeps upstream's "Website" link, which opens in the
+system browser like the other two: taking it out was none of the 1.9.1
+decisions. hjvLinkTakesScheme's comment says that phones register
+hjviewer:// alone from 1.9.1.
+
+A source test pins the About links of the desktop and the phones to
+LaunchMode.externalApplication and ko.rs's "개인정보 처리방침".
+
+The Play bundle no longer has CAMERA (qr_code_scanner brought it), so the
+public repo's client-build.yml loses that line of PLAY_MANIFEST in the
+same push.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/ios/Runner.xcodeproj/project.pbxproj  |  6 ---
+ flutter/lib/common/hjv_update.dart            | 10 ++++-
+ flutter/lib/common/hjviewer_access_texts.dart |  3 +-
+ .../desktop/pages/desktop_setting_page.dart   | 12 ++++-
+ flutter/test/hjviewer_android_test.dart       | 45 ++++++++++++++++++-
+ 5 files changed, 66 insertions(+), 10 deletions(-)
+
+diff --git a/flutter/ios/Runner.xcodeproj/project.pbxproj b/flutter/ios/Runner.xcodeproj/project.pbxproj
+index 89f0009..ef14a1a 100644
+--- a/flutter/ios/Runner.xcodeproj/project.pbxproj
++++ b/flutter/ios/Runner.xcodeproj/project.pbxproj
+@@ -413,8 +413,6 @@
+ 					"-framework",
+ 					"\"ImageIO\"",
+ 					"-framework",
+-					"\"Photos\"",
+-					"-framework",
+ 					"\"QuartzCore\"",
+ 					"-framework",
+ 					"\"UIKit\"",
+@@ -595,8 +593,6 @@
+ 					"-framework",
+ 					"\"ImageIO\"",
+ 					"-framework",
+-					"\"Photos\"",
+-					"-framework",
+ 					"\"QuartzCore\"",
+ 					"-framework",
+ 					"\"UIKit\"",
+@@ -669,8 +665,6 @@
+ 					"-framework",
+ 					"\"ImageIO\"",
+ 					"-framework",
+-					"\"Photos\"",
+-					"-framework",
+ 					"\"QuartzCore\"",
+ 					"-framework",
+ 					"\"UIKit\"",
+diff --git a/flutter/lib/common/hjv_update.dart b/flutter/lib/common/hjv_update.dart
+index 722515a..a396e5e 100644
+--- a/flutter/lib/common/hjv_update.dart
++++ b/flutter/lib/common/hjv_update.dart
+@@ -147,13 +147,21 @@ class HjvHost {
+   /// update screen goes by: the core judges every iPhone by the same entry.
+   Future<String> deviceValue() async {
+     String? installer, os;
++    // first and on its own, so that a failing device info leaves no App Store install on
++    // TestFlight's way
++    if (isIOS) {
++      try {
++        iosInstaller = (await PackageInfo.fromPlatform()).installerStore ?? '';
++      } catch (e) {
++        debugPrint('hjv update: installer: $e');
++      }
++    }
+     try {
+       if (isAndroid) {
+         os = androidVersion > 0 ? '$androidVersion' : null;
+         installer = (await PackageInfo.fromPlatform()).installerStore ?? '';
+       } else if (isIOS) {
+         os = (await DeviceInfoPlugin().iosInfo).systemVersion;
+-        iosInstaller = (await PackageInfo.fromPlatform()).installerStore ?? '';
+       } else if (isWindows) {
+         final info = await DeviceInfoPlugin().windowsInfo;
+         os = '${info.majorVersion}.${info.minorVersion}.${info.buildNumber}';
+diff --git a/flutter/lib/common/hjviewer_access_texts.dart b/flutter/lib/common/hjviewer_access_texts.dart
+index 03bd6c4..d05b5dc 100644
+--- a/flutter/lib/common/hjviewer_access_texts.dart
++++ b/flutter/lib/common/hjviewer_access_texts.dart
+@@ -950,7 +950,8 @@ bool hjvAsksBeforeConnect(
+ 
+ /// The scheme a pinned server build takes links in: hjviewer:// alone from 1.9.1 (D-13; 1.9.0
+ /// also took rustdesk://, which upstream's app registers too); any other build takes what
+-/// upstream does.
++/// upstream does, of what reaches it: from 1.9.1 the phones register hjviewer:// alone
++/// (AndroidManifest.xml, Info.plist).
+ bool hjvLinkTakesScheme(String scheme, {required bool pinned}) =>
+     !pinned || scheme == 'hjviewer';
+ 
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 94b92a7..33bcad9 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -2978,7 +2978,7 @@ class _AboutState extends State<_About> {
+               // has a border of its own)
+               const Divider(height: 17),
+               // HJViewer: the links show the hand cursor only, not a grey box flush with their text,
+-              // and open in the system browser; no "Website", which opened the source link's page
++              // and open in the system browser
+               InkWell(
+                   hoverColor: Colors.transparent,
+                   onTap: () {
+@@ -2989,6 +2989,16 @@ class _AboutState extends State<_About> {
+                     translate('Privacy Statement'),
+                     style: linkStyle,
+                   ).marginSymmetric(vertical: 4.0)),
++              InkWell(
++                  hoverColor: Colors.transparent,
++                  onTap: () {
++                    launchUrlString('https://github.com/yonsei-projecttf/hjviewer',
++                        mode: LaunchMode.externalApplication);
++                  },
++                  child: Text(
++                    translate('Website'),
++                    style: linkStyle,
++                  ).marginSymmetric(vertical: 4.0)),
+               InkWell(
+                   hoverColor: Colors.transparent,
+                   onTap: () {
+diff --git a/flutter/test/hjviewer_android_test.dart b/flutter/test/hjviewer_android_test.dart
+index c335cde..5d8cf85 100644
+--- a/flutter/test/hjviewer_android_test.dart
++++ b/flutter/test/hjviewer_android_test.dart
+@@ -7,7 +7,8 @@ import 'package:flutter_hbb/common/hjv_style.dart';
+ import 'package:flutter_hbb/common/hjviewer_android_rules.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+-// HJViewer's controller-only Android build and the phones' platform files, without the bridge.
++// HJViewer's controller-only Android build, the phones' platform files and the About links,
++// without the bridge.
+ 
+ /// What a voice call does, in order.
+ /// An Android colour resource of [file] (res/values*/...), as a Color.
+@@ -148,6 +149,8 @@ void main() {
+     for (final pod in ['MTBBarcodeScanner', 'qr_code_scanner', 'image_picker']) {
+       expect(pbx, isNot(contains(pod)), reason: pod);
+     }
++    // nor the Photos framework, which only the photo picker needed
++    expect(pbx, isNot(contains('Photos')));
+     for (final file in [
+       'Info.plist',
+       'ko.lproj/InfoPlist.strings',
+@@ -210,4 +213,44 @@ void main() {
+     expect(plist, isNot(contains('<string>rustdesk</string>')));
+     expect(plist, isNot(contains('com.carriez.rustdesk')));
+   });
++
++  test('the About links open in the system browser (1.9.1)', () {
++    // never a web view inside the app; on the desktop and on phones
++    String part(String file, String from, String to) {
++      final text = File(file).readAsStringSync();
++      final start = text.indexOf(from);
++      expect(start, isNonNegative, reason: '$file: $from');
++      return text.substring(start, text.indexOf(to, start));
++    }
++
++    const external = r',\s*mode: LaunchMode\.externalApplication\)';
++    final policy = RegExp.escape(
++        'https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md');
++    final repo = RegExp.escape('https://github.com/yonsei-projecttf/hjviewer');
++    final desktop = part('lib/desktop/pages/desktop_setting_page.dart',
++        'class _AboutState', '\nclass ');
++    final phone = part('lib/mobile/pages/settings_page.dart',
++        'title: Text(translate("About"))', 'return settings;');
++    for (final about in [desktop, phone]) {
++      final opened = RegExp(r'launchUrl(String)?\(').allMatches(about).length;
++      expect(opened, greaterThan(1));
++      expect('mode: LaunchMode.externalApplication'.allMatches(about).length,
++          opened);
++      expect(RegExp("launchUrlString\\(\\s*'$policy'$external").hasMatch(about),
++          isTrue);
++    }
++    // the privacy policy, the website and the source code; the phone's source link is `url`
++    expect(
++        RegExp("launchUrlString\\('$repo'$external").allMatches(desktop).length,
++        2);
++    expect(RegExp('launchUrl\\(Uri\\.parse\\(url\\)$external').hasMatch(phone),
++        isTrue);
++    expect(
++        File('lib/mobile/pages/settings_page.dart').readAsStringSync(),
++        contains(
++            "const url = 'https://github.com/yonsei-projecttf/hjviewer';"));
++    // the policy's link in Korean, as the guideline for privacy policies names it
++    expect(File('../src/lang/ko.rs').readAsStringSync(),
++        contains('("Privacy Statement", "개인정보 처리방침"),'));
++  });
+ }

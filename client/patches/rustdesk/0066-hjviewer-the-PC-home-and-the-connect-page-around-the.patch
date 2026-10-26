@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 22:14:42 +0900
-Subject: [PATCH 066/148] hjviewer: the PC home and the connect page around the
+Subject: [PATCH 066/160] hjviewer: the PC home and the connect page around the
  gate
 
 U16: the desktop home's left pane scrolls. Its scroll view is bounded

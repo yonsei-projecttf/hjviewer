@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 11:00:34 +0900
-Subject: [PATCH 028/148] mobile: leaving a session forgets the button presses
+Subject: [PATCH 028/160] mobile: leaving a session forgets the button presses
  it sent
 
 InputModel records the mouse buttons sendMouse pressed, so that only the

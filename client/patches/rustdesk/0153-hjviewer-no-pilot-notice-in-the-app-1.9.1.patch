@@ -1,0 +1,126 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 15:25:31 +0900
+Subject: [PATCH 153/160] hjviewer: no pilot notice in the app (1.9.1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The service is an official one now (the owner's decision of 2026-10-26), so
+Settings → About on the desktop and the phones no longer says that it is a
+pilot implementation. It keeps who makes HJViewer ("만든 곳: 프로젝트TF") and, in
+an account build with a signed policy's contact, "HJViewer 관리자: <contact>".
+The login dialog's block already said only which password goes in (U31); its
+hook keeps its name.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart       |  6 +++---
+ flutter/lib/common/hjviewer_account_texts.dart | 10 +++-------
+ flutter/test/hjviewer_account_test.dart        | 17 +++++------------
+ 3 files changed, 11 insertions(+), 22 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index a5698ff..5c0e0f4 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -191,8 +191,8 @@ void hjvLoggedInElsewhere() {
+   if (isWindows) unawaited(_announceThisPc());
+ }
+ 
+-/// D12 (login.dart): under the login dialog's title, which password goes in (U31; the pilot
+-/// notice is on the About screen only).
++/// D12 (login.dart): under the login dialog's title, which password goes in (U31; the name is
++/// from the pilot notice it showed before, which 1.9.1 dropped everywhere).
+ List<Widget> hjvLoginPilot() => _accountBuild
+     ? [
+         // HJViewer: a quiet notice block of the app's look
+@@ -340,7 +340,7 @@ List<String> _aboutLines() {
+ }
+ 
+ /// D13 (desktop settings, About): who makes HJViewer and, in an account build, who the
+-/// administrator is and the pilot notice.
++/// administrator is.
+ List<Widget> hjvAboutNotice() => [
+       for (var i = 0; i < _aboutLines().length; i++)
+         // HJViewer: the notice below the maker's line in the secondary text colour
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 534c3cb..ffc1119 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -343,12 +343,9 @@ class HjvTexts {
+   String get wakeConnects =>
+       _t('PC를 켠 뒤 바로 연결', 'Connect right after waking a PC');
+ 
+-  // Settings → About (decisions of 2026-10-14; U31, U34)
++  // Settings → About (decisions of 2026-10-14, U34; no pilot notice since 1.9.1, the service is
++  // an official one)
+   String get maker => _t('만든 곳: 프로젝트TF', 'Made by ProjectTF');
+-  // the user's own pilot text (README.md:3), as it was: its rewording is the user's to decide
+-  String get pilotNotice => _t(
+-      '본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.',
+-      'This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.');
+ 
+   /// U34 (D-17): who "관리자" in the app's texts is: the contact of the signed version policy
+   /// (`contact_ko`), as the policy wrote it; without one, the maker.
+@@ -460,7 +457,7 @@ String hjvAdminContactText(String contact, {required bool korean}) => korean
+     : 'HJViewer administrator: $contact';
+ 
+ /// What Settings → About says of HJViewer: who makes it, and in an account build who "관리자" is
+-/// (the policy's `contact`, else the maker; U34) and that the service is a pilot (U31).
++/// (the policy's `contact`, else the maker; U34).
+ List<String> hjvAboutNoticeLines(HjvTexts t,
+         {required bool accountBuild, String contact = ''}) =>
+     [
+@@ -468,7 +465,6 @@ List<String> hjvAboutNoticeLines(HjvTexts t,
+       // the contact comes from the signed policy only: none, no line (the maker is above)
+       if (accountBuild && contact.trim().isNotEmpty)
+         t.adminContact(contact.trim()),
+-      if (accountBuild) t.pilotNotice,
+     ];
+ 
+ /// U27: a card's second line in the app's language, from the `hjv` of hjv-api's device list:
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 66601a2..ba79708 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -1443,26 +1443,20 @@ void main() {
+   });
+ 
+   test(
+-      'About says who makes HJViewer, who the administrator is and that it is a pilot (U31, U34)',
++      'About says who makes HJViewer and who the administrator is, with no pilot notice (U34, 1.9.1)',
+       () {
+     // without a policy's contact no administrator's line (not the maker as one)
+-    expect(hjvAboutNoticeLines(ko, accountBuild: true), [
+-      '만든 곳: 프로젝트TF',
+-      '본 서비스는 현재 정식 서비스가 아니고 시범 구현이며, 예고 없이 변경될 수 있습니다. 로그인은 현재 연세대학교 교직원만 대상으로 합니다.',
+-    ]);
+-    expect(hjvAboutNoticeLines(en, accountBuild: true), [
+-      'Made by ProjectTF',
+-      'This service is not an official service yet. It is a pilot implementation and may change without notice. Login is currently available only to Yonsei University faculty and staff.',
+-    ]);
++    expect(hjvAboutNoticeLines(ko, accountBuild: true), ['만든 곳: 프로젝트TF']);
++    expect(hjvAboutNoticeLines(en, accountBuild: true), ['Made by ProjectTF']);
+     // the signed policy's contact, as the policy wrote it, in both languages
+     expect(
+         hjvAboutNoticeLines(ko,
+             accountBuild: true, contact: ' hjv-admin@example.org '),
+-        contains('HJViewer 관리자: hjv-admin@example.org'));
++        ['만든 곳: 프로젝트TF', 'HJViewer 관리자: hjv-admin@example.org']);
+     expect(
+         hjvAboutNoticeLines(en,
+             accountBuild: true, contact: 'hjv-admin@example.org'),
+-        contains('HJViewer administrator: hjv-admin@example.org'));
++        ['Made by ProjectTF', 'HJViewer administrator: hjv-admin@example.org']);
+     // a build without the account keys has no login to the service
+     expect(hjvAboutNoticeLines(ko, accountBuild: false), ['만든 곳: 프로젝트TF']);
+     expect(
+@@ -1587,7 +1581,6 @@ void main() {
+     for (final t in [ko, en]) {
+       final texts = [
+         t.maker,
+-        t.pilotNotice,
+         t.adminContact(t.makerName),
+         t.loginWhich,
+         t.noteActive,

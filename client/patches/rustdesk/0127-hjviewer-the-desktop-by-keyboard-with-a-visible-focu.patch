@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 04:54:29 +0900
-Subject: [PATCH 127/148] hjviewer: the desktop by keyboard, with a visible
+Subject: [PATCH 127/160] hjviewer: the desktop by keyboard, with a visible
  focus ring (UX-K1)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

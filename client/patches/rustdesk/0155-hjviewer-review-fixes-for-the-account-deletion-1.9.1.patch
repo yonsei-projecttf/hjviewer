@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 16:07:05 +0900
+Subject: [PATCH 155/160] hjviewer: review fixes for the account deletion
+ (1.9.1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The deletion logs this PC out as a logout does, so its confirmation now
+carries L1's warning where the logout dialog has it: on a desktop whose
+registration goes with the login (a PC this login bound, an app that is
+not installed), while someone uses it from afar and the server is or may
+be staff-only. The password-less connection of that session ends with
+the deletion, and no connection comes back in once the others end.
+
+The login records that stay name the ID as the other screens do:
+"연세포탈 ID" ("Yonsei portal ID").
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart       | 9 +++++++++
+ flutter/lib/common/hjviewer_account_texts.dart | 8 ++++++--
+ flutter/test/hjviewer_account_test.dart        | 7 +++++++
+ 3 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index d625537..542e06b 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -1421,6 +1421,9 @@ Widget _deleteAccountButton(BuildContext context, HjvTexts t) {
+ void _askDeleteAccount() {
+   final t = _t;
+   final gate = hjvDeleteAccountGateNote(t, gateCloses: hjvAccessGateCloses());
++  // this PC is logged out as by a logout: L1's warning while someone uses it from afar
++  final boundHere = _commonSync('hjv-pc-bound') == 'Y';
++  final remoteNow = hjvAccessLogoutNote(boundHere: boundHere)?.warning != null;
+   final word = TextEditingController();
+   var busy = false;
+   var closed = false;
+@@ -1468,6 +1471,12 @@ void _askDeleteAccount() {
+             ]).marginOnly(top: 4),
+           Text(hjvKeepAll(t.deleteAccountFresh)).marginOnly(top: 8),
+           if (gate != null) Text(hjvKeepAll(gate)).marginOnly(top: 8),
++          if (remoteNow)
++            hjvNoteBlock(context,
++                    icon: Icons.warning_amber_rounded,
++                    text: Text(hjvKeepAll(t.deleteAccountRemoteNow)),
++                    warning: true)
++                .marginOnly(top: 8),
+           ExcludeSemantics(child: Text(hjvKeepAll(t.deleteAccountType)))
+               .marginOnly(top: 12),
+           Semantics(
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index 37699fc..e8b3faf 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -160,8 +160,8 @@ class HjvTexts {
+   String get deleteAccountData => _t('로그인한 기기 목록, NAS 중계기 승인, 켜기 요청 기록도 지워집니다.',
+       'The list of logged-in devices, NAS relay approvals and the record of wake requests are deleted too.');
+   String get deleteAccountKept => _t(
+-      '포탈 ID 없이 남는 서버의 로그인 기록은 6개월이 지나면, 서버 백업에 남은 사본은 14일 안에 사라집니다.',
+-      "Login records the server keeps without your portal ID go once they are 6 months old, and copies in the server's backups within 14 days.");
++      '연세포탈 ID 없이 남는 서버의 로그인 기록은 6개월이 지나면, 서버 백업에 남은 사본은 14일 안에 사라집니다.',
++      "Login records the server keeps without your Yonsei portal ID go once they are 6 months old, and copies in the server's backups within 14 days.");
+   String get deleteAccountFresh => _t('나중에 다시 로그인하면 빈 계정으로 새로 시작합니다.',
+       'If you log in again later, you start over with an empty account.');
+   String get deleteAccountGate => _t(
+@@ -170,6 +170,10 @@ class HjvTexts {
+   String get deleteAccountGateMaybe => _t(
+       '서버가 교직원 전용이면 누군가 그 PC에서 다시 로그인할 때까지 그 PC들에 원격으로 연결할 수 없습니다.',
+       'If the server is for faculty and staff only, nobody can connect to those PCs remotely until someone logs in on them again.');
++  // L1's warning (logoutRemoteNow) for the deletion, which logs this PC out as a logout does
++  String get deleteAccountRemoteNow => _t(
++      '지금 이 PC를 원격으로 쓰고 있다면, 계정을 삭제할 때 비밀번호 없는 연결은 끊기고, 다른 연결도 끝난 뒤에는 다시 들어올 수 없습니다.',
++      'If you are using this PC remotely now, deleting the account also ends a password-less connection, and no connection can come back in once it ends.');
+   String get deleteAccountType =>
+       _t("계속하려면 아래 칸에 '삭제'를 입력하세요.", "To continue, type 'delete' below.");
+   // the word the field takes (hjvDeleteConfirmed), its hint too
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index 74ccde8..bc9b9b8 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -1796,6 +1796,12 @@ void main() {
+       expect([ko.deleteAccount, en.deleteAccount], ['계정 삭제', 'Delete account']);
+       expect([ko.accountDeletedTitle, en.accountDeletedTitle],
+           ['계정을 삭제했습니다', 'Your account was deleted']);
++      // the ID by the name the other screens give it
++      expect(ko.deleteAccountKept, startsWith('연세포탈 ID 없이 '));
++      expect(en.deleteAccountKept, contains('without your Yonsei portal ID'));
++      // L1's warning, for the deletion: this PC is logged out as by a logout
++      expect(ko.deleteAccountRemoteNow,
++          '지금 이 PC를 원격으로 쓰고 있다면, 계정을 삭제할 때 비밀번호 없는 연결은 끊기고, 다른 연결도 끝난 뒤에는 다시 들어올 수 없습니다.');
+       for (final t in [ko, en]) {
+         for (final text in [
+           t.deleteAccountTitle,
+@@ -1807,6 +1813,7 @@ void main() {
+           t.deleteAccountFresh,
+           t.deleteAccountGate,
+           t.deleteAccountGateMaybe,
++          t.deleteAccountRemoteNow,
+           t.deleteAccountWord,
+           t.deleteAccountBusy,
+           t.deleteAccountUnsupported,

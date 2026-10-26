@@ -1,0 +1,283 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 15:33:12 +0900
+Subject: [PATCH 156/160] hjviewer: App Store installs update in the App Store
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The iOS update screen took every App Store Connect export for a TestFlight
+install, so an app from the App Store would have been sent to TestFlight,
+which does not have it. TestFlight and the App Store hand out the same
+build; what tells them apart is the app's receipt. package_info_plus 8.0.2
+already reads it on iOS without Swift: installerStore is "com.apple" for the
+App Store's receipt and "com.apple.testflight" for a sandbox receipt.
+
+HjvHost reads it with the device at the start (deviceValue) and keeps it for
+the screens only: the core judges every iPhone by the same policy entry, so
+hjv-update-device stays as it was. HjvDevice.appStore is an App Store Connect
+build whose receipt is the App Store's; it gets "App Store에서 HJViewer의
+[업데이트]를 누르세요. ..." and [App Store 열기], which opens
+https://apps.apple.com/app/id6821290058 outside the app (the toast says what
+to do when it does not open). TestFlight installs keep their texts and
+button, and so does any App Store Connect build whose receipt is not known
+to be the App Store's; other exports still ask the administrator.
+
+App Review runs the build with a sandbox receipt as well, so its copy shows
+TestFlight's way if the policy is ahead of the version under review.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_update.dart       | 12 +++++-
+ flutter/lib/common/hjv_update_model.dart | 47 ++++++++++++++++++++--
+ flutter/test/hjv_update_gate_test.dart   | 18 +++++++++
+ flutter/test/hjv_update_test.dart        | 50 ++++++++++++++++++++++++
+ 4 files changed, 122 insertions(+), 5 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_update.dart b/flutter/lib/common/hjv_update.dart
+index a011fa9..722515a 100644
+--- a/flutter/lib/common/hjv_update.dart
++++ b/flutter/lib/common/hjv_update.dart
+@@ -80,9 +80,13 @@ class HjvHost {
+                     : HjvPlatform.other,
+         sdk: isAndroid ? androidVersion : 0,
+         iosExport: const String.fromEnvironment('HJV_IOS_EXPORT'),
++        iosInstaller: iosInstaller,
+         takesIncoming: isDesktop && !bind.isOutgoingOnly(),
+       );
+ 
++  /// iOS: where the app came from (HjvDevice.iosInstaller), which deviceValue reads at the start.
++  String iosInstaller = '';
++
+   /// The main window of a desktop app, or the phone app: where the update screen is.
+   bool get isMain => !isDesktop || desktopType == DesktopType.main;
+ 
+@@ -139,7 +143,8 @@ class HjvHost {
+     }
+   }
+ 
+-  /// The value of "hjv-update-device".
++  /// The value of "hjv-update-device". On an iPhone it also reads iosInstaller, which only the
++  /// update screen goes by: the core judges every iPhone by the same entry.
+   Future<String> deviceValue() async {
+     String? installer, os;
+     try {
+@@ -148,6 +153,7 @@ class HjvHost {
+         installer = (await PackageInfo.fromPlatform()).installerStore ?? '';
+       } else if (isIOS) {
+         os = (await DeviceInfoPlugin().iosInfo).systemVersion;
++        iosInstaller = (await PackageInfo.fromPlatform()).installerStore ?? '';
+       } else if (isWindows) {
+         final info = await DeviceInfoPlugin().windowsInfo;
+         os = '${info.majorVersion}.${info.minorVersion}.${info.buildNumber}';
+@@ -652,6 +658,10 @@ Future<void> hjvRunAction(HjvAction action) async {
+         if (!await hjvOpenFirst(hjvTestFlightLinks, hjvHost.launch)) {
+           hjvHost.toast(HjvUpdateText.iosFailed);
+         }
++      case HjvAction.openAppStore:
++        if (!await hjvOpenFirst(hjvAppStoreLinks, hjvHost.launch)) {
++          hjvHost.toast(HjvUpdateText.appStoreFailed);
++        }
+       case HjvAction.openPlay:
+         final links = hjvPlayLinks(await hjvHost.packageName());
+         if (!await hjvOpenFirst(links, hjvHost.launch)) {
+diff --git a/flutter/lib/common/hjv_update_model.dart b/flutter/lib/common/hjv_update_model.dart
+index 63b4d63..f786822 100644
+--- a/flutter/lib/common/hjv_update_model.dart
++++ b/flutter/lib/common/hjv_update_model.dart
+@@ -29,9 +29,15 @@ enum HjvPhase {
+ 
+ enum HjvPlatform { windows, android, ios, other }
+ 
+-/// How a TestFlight build is exported (client-build.yml IOS_EXPORT_METHOD, passed to the app as
+-/// HJV_IOS_EXPORT); any other iOS build cannot be updated through TestFlight.
+-const kHjvTestFlightExport = 'app-store-connect';
++/// How an App Store Connect build is exported (client-build.yml IOS_EXPORT_METHOD, passed to the
++/// app as HJV_IOS_EXPORT). TestFlight and the App Store hand out the same such build; any other
++/// iOS build cannot be updated through either.
++const kHjvAppStoreConnectExport = 'app-store-connect';
++
++/// The installer package_info_plus names for an iOS app whose receipt is the App Store's. A
++/// sandbox receipt, which TestFlight's builds have and so does the copy App Review runs, gives
++/// "com.apple.testflight".
++const kHjvAppStoreInstaller = 'com.apple';
+ 
+ /// The first Android that takes an APK from the app's own files (a content URI); older ones get
+ /// the browser and a short link.
+@@ -255,6 +261,10 @@ class HjvDevice {
+   /// iOS: how the build was exported (HJV_IOS_EXPORT).
+   final String iosExport;
+ 
++  /// iOS: where the app came from, as package_info_plus reads it from the app's receipt
++  /// (kHjvAppStoreInstaller); "" while unknown.
++  final String iosInstaller;
++
+   /// This app takes connections from other devices (a PC), so they go on while it is blocked.
+   final bool takesIncoming;
+ 
+@@ -262,10 +272,18 @@ class HjvDevice {
+     this.platform = HjvPlatform.other,
+     this.sdk = 0,
+     this.iosExport = '',
++    this.iosInstaller = '',
+     this.takesIncoming = false,
+   });
+ 
+-  bool get testFlight => iosExport == kHjvTestFlightExport;
++  /// An App Store Connect build that the App Store installed: it updates there.
++  bool get appStore =>
++      iosExport == kHjvAppStoreConnectExport &&
++      iosInstaller == kHjvAppStoreInstaller;
++
++  /// Any other App Store Connect build updates in TestFlight, as every such build did before
++  /// 1.9.1, also while where it came from is not known.
++  bool get testFlight => iosExport == kHjvAppStoreConnectExport && !appStore;
+ 
+   /// Android before 7.0 takes no APK from the app's own files.
+   bool get browserInstall => sdk > 0 && sdk < kHjvInAppInstallSdk;
+@@ -488,6 +506,15 @@ class HjvUpdateText {
+       '이 iPhone의 HJViewer는 TestFlight로 설치하지 않아 앱에서 업데이트할 수 없습니다. 관리자에게 새 버전을 받으세요.',
+       'HJViewer on this iPhone was not installed with TestFlight, so it cannot update from the app. Get the new version from the administrator.');
+ 
++  // 1.9.1: an app that the App Store installed
++  static String get appStoreHint => _t(
++      'App Store에서 HJViewer의 [업데이트]를 누르세요. 설정 앱의 App Store에서 앱 업데이트를 켜 두면 다음부터는 저절로 설치됩니다.',
++      'Press [Update] for HJViewer in the App Store. With App Updates on under App Store in the Settings app, new versions install by themselves from then on.');
++  static String get appStoreButton => _t('App Store 열기', 'Open the App Store');
++  static String get appStoreFailed => _t(
++      'App Store를 열지 못했습니다. App Store 앱에서 HJViewer를 찾아 업데이트하세요.',
++      'Could not open the App Store. Find HJViewer in the App Store app and update it.');
++
+   // E1-E4, O1
+   static String get errDownload => _t(
+       '새 버전을 내려받지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.',
+@@ -554,6 +581,7 @@ enum HjvAction {
+   recheck,
+   logIn,
+   openTestFlight,
++  openAppStore,
+   openPlay,
+ 
+   /// Has the core fetch the package: into the app's cache on Android, into the user's Downloads
+@@ -735,6 +763,13 @@ HjvPanelModel hjvPanelModel(HjvUpdateInfo i, HjvDevice d,
+   }
+   switch (d.platform) {
+     case HjvPlatform.ios:
++      if (d.appStore) {
++        return make(hints: [
++          HjvUpdateText.appStoreHint
++        ], buttons: [
++          HjvButton(HjvUpdateText.appStoreButton, HjvAction.openAppStore)
++        ]);
++      }
+       return d.testFlight
+           ? make(hints: [
+               HjvUpdateText.iosHint
+@@ -1105,6 +1140,10 @@ const kHjvTestFlightAppStore =
+ /// not document it, so it is never the only way.
+ const hjvTestFlightLinks = ['itms-beta://', kHjvTestFlightAppStore];
+ 
++/// HJViewer's App Store page, for an app that the App Store installed; opened outside the app,
++/// the App Store app shows it.
++const hjvAppStoreLinks = ['https://apps.apple.com/app/id6821290058'];
++
+ /// Tried in order on an Android app that came from Google Play: the Play Store app, then its
+ /// web page.
+ List<String> hjvPlayLinks(String package) => [
+diff --git a/flutter/test/hjv_update_gate_test.dart b/flutter/test/hjv_update_gate_test.dart
+index 7141d6c..3050aef 100644
+--- a/flutter/test/hjv_update_gate_test.dart
++++ b/flutter/test/hjv_update_gate_test.dart
+@@ -710,6 +710,24 @@ void main() {
+       expect(host.asked, isEmpty);
+     });
+ 
++    test('an iPhone from the App Store opens HJViewer there, or says why not',
++        () async {
++      const page = 'https://apps.apple.com/app/id6821290058';
++      final host = use(core('required', channel: 'ios'),
++          device: const HjvDevice(
++              platform: HjvPlatform.ios,
++              iosExport: 'app-store-connect',
++              iosInstaller: 'com.apple'));
++      host.opens = {page};
++      await hjvRunAction(HjvAction.openAppStore);
++      expect(host.launched, [page]);
++      expect(host.toasts, isEmpty);
++      host.opens = {};
++      await hjvRunAction(HjvAction.openAppStore);
++      expect(host.toasts, [HjvUpdateText.appStoreFailed]);
++      expect(host.asked, isEmpty);
++    });
++
+     test('an Android app from Google Play opens the Play Store', () async {
+       final host =
+           use(core('required', channel: 'android_play'), device: android);
+diff --git a/flutter/test/hjv_update_test.dart b/flutter/test/hjv_update_test.dart
+index 98b3209..7186879 100644
+--- a/flutter/test/hjv_update_test.dart
++++ b/flutter/test/hjv_update_test.dart
+@@ -199,6 +199,43 @@ void main() {
+       }
+     });
+ 
++    test('an iPhone that the App Store installed goes to the App Store (1.9.1)',
++        () {
++      HjvDevice ios(String export, String installer) => HjvDevice(
++          platform: HjvPlatform.ios,
++          iosExport: export,
++          iosInstaller: installer);
++      final store = ios('app-store-connect', 'com.apple');
++      for (final s in ['required', 'grace', 'available']) {
++        final m = panel(state(s, channel: 'ios'), store);
++        expect(m.hints, [HjvUpdateText.appStoreHint], reason: s);
++        expect(m.buttons,
++            [const HjvButton('App Store 열기', HjvAction.openAppStore)],
++            reason: s);
++        expect(m.notes, isEmpty, reason: s);
++      }
++      expect(HjvUpdateText.appStoreHint,
++          startsWith('App Store에서 HJViewer의 [업데이트]를 누르세요.'));
++      // TestFlight's receipt, any other or none known yet keeps TestFlight's way
++      for (final installer in [
++        'com.apple.testflight',
++        '',
++        'com.apple.simulator'
++      ]) {
++        final m = panel(state('required', channel: 'ios'),
++            ios('app-store-connect', installer));
++        expect(m.hints, [HjvUpdateText.iosHint], reason: installer);
++        expect(m.buttons,
++            [const HjvButton('TestFlight 열기', HjvAction.openTestFlight)],
++            reason: installer);
++      }
++      // another export is neither, whatever its receipt says
++      final adHoc = panel(state('required', channel: 'ios'),
++          ios('release-testing', 'com.apple'));
++      expect(adHoc.hints, [HjvUpdateText.iosNotTestFlight]);
++      expect(adHoc.buttons, isEmpty);
++    });
++
+     test('an Android app from Google Play goes to the Play Store', () {
+       // nothing to download and no login to ask for: the store updates it
+       final m = panel(
+@@ -677,6 +714,19 @@ void main() {
+       ]);
+     });
+ 
++    test('the App Store opens on HJViewer\'s page', () async {
++      const page = 'https://apps.apple.com/app/id6821290058';
++      expect(hjvAppStoreLinks, [page]);
++      expect(await open(hjvAppStoreLinks, {page}), [
++        true,
++        [page]
++      ]);
++      expect(await open(hjvAppStoreLinks, {}), [
++        false,
++        [page]
++      ]);
++    });
++
+     test('the Play Store app first, then its page', () async {
+       final links = hjvPlayLinks('com.example.hjv');
+       expect(links, [

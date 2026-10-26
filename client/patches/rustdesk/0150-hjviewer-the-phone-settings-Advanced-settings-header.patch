@@ -1,0 +1,259 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 14:44:15 +0900
+Subject: [PATCH 150/160] hjviewer: the phone settings' Advanced settings
+ header holds the codec and recording rows
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+1.9.1, as on the desktop: the phone settings' "Advanced" header reads
+"Advanced settings" (고급 설정), and its network entry plain "Network"
+(네트워크). On Android the hardware codec switch and the recording rows
+(the automatic recordings and the directory) sit under that header
+instead of under headers of their own; each keeps its condition. The
+account, app lock, settings and About sections, and the sections an
+outgoing-only build never shows, stay as they were.
+
+Tests: the settings' order with the rows under the new header, and the
+two names.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjv_phone.dart           |  10 +-
+ flutter/lib/mobile/pages/settings_page.dart | 138 ++++++++++----------
+ flutter/test/hjviewer_phone_test.dart       |  23 +++-
+ 3 files changed, 91 insertions(+), 80 deletions(-)
+
+diff --git a/flutter/lib/common/hjv_phone.dart b/flutter/lib/common/hjv_phone.dart
+index 91eb0e0..4c155e5 100644
+--- a/flutter/lib/common/hjv_phone.dart
++++ b/flutter/lib/common/hjv_phone.dart
+@@ -250,8 +250,10 @@ class HjvPhoneTexts {
+ 
+   String _t(String ko, String en) => korean ? ko : en;
+ 
+-  // the settings' sub-screen with the expert network rows (U40)
+-  String get networkAdvanced => _t('네트워크(고급)', 'Network (advanced)');
+-  // the settings' header over it and the display settings' row
+-  String get advanced => _t('고급', 'Advanced');
++  // the settings' sub-screen with the expert network rows (U40); 1.9.1: plain "네트워크" under
++  // the 고급 설정 header
++  String get networkAdvanced => _t('네트워크', 'Network');
++  // the settings' header over it and the display settings' row; 1.9.1: 고급 설정, as the
++  // desktop's tab
++  String get advanced => _t('고급 설정', 'Advanced settings');
+ }
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index efc1c6a..d39d171 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -825,84 +825,80 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+               },
+             ),
+         ]),
+-        // HJViewer: the two sub-screens' rows under one header, not each under its own name
+-        if (!bind.isIncomingOnly() || networkRows.isNotEmpty)
++        // HJViewer: the two sub-screens' rows under one header, not each under its own name;
++        // 1.9.1: the header is 고급 설정, and Android's hardware codec and recording rows are in it
++        // instead of under headers of their own
++        if (!bind.isIncomingOnly() || networkRows.isNotEmpty || isAndroid)
+           SettingsSection(
+               title: Text(HjvPhoneTexts(hjvLabels.korean).advanced),
+               tiles: [
+                 if (!bind.isIncomingOnly())
+                   ...(defaultDisplaySection() as SettingsSection).tiles,
+                 if (networkRows.isNotEmpty) ..._hjvNetworkSection().tiles,
++                if (isAndroid)
++                  SettingsTile.switchTile(
++                    title: Text(translate('Enable hardware codec')),
++                    initialValue: _enableHardwareCodec,
++                    onToggle: isOptionFixed(kOptionEnableHwcodec)
++                        ? null
++                        : (v) async {
++                            await mainSetBoolOption(kOptionEnableHwcodec, v);
++                            final newValue =
++                                await mainGetBoolOption(kOptionEnableHwcodec);
++                            setState(() {
++                              _enableHardwareCodec = newValue;
++                            });
++                          },
++                  ),
++                if (isAndroid && !outgoingOnly)
++                  SettingsTile.switchTile(
++                    title: Text(
++                        translate('Automatically record incoming sessions')),
++                    initialValue: _autoRecordIncomingSession,
++                    onToggle: isOptionFixed(kOptionAllowAutoRecordIncoming)
++                        ? null
++                        : (v) async {
++                            await bind.mainSetOption(
++                                key: kOptionAllowAutoRecordIncoming,
++                                value: bool2option(
++                                    kOptionAllowAutoRecordIncoming, v));
++                            final newValue = option2bool(
++                                kOptionAllowAutoRecordIncoming,
++                                await bind.mainGetOption(
++                                    key: kOptionAllowAutoRecordIncoming));
++                            setState(() {
++                              _autoRecordIncomingSession = newValue;
++                            });
++                          },
++                  ),
++                if (isAndroid && !incomingOnly)
++                  SettingsTile.switchTile(
++                    title: Text(
++                        translate('Automatically record outgoing sessions')),
++                    initialValue: _autoRecordOutgoingSession,
++                    onToggle: isOptionFixed(kOptionAllowAutoRecordOutgoing)
++                        ? null
++                        : (v) async {
++                            await bind.mainSetLocalOption(
++                                key: kOptionAllowAutoRecordOutgoing,
++                                value: bool2option(
++                                    kOptionAllowAutoRecordOutgoing, v));
++                            final newValue = option2bool(
++                                kOptionAllowAutoRecordOutgoing,
++                                bind.mainGetLocalOption(
++                                    key: kOptionAllowAutoRecordOutgoing));
++                            setState(() {
++                              _autoRecordOutgoingSession = newValue;
++                            });
++                          },
++                  ),
++                if (isAndroid)
++                  SettingsTile(
++                    title: Text(translate("Directory")),
++                    description:
++                        Text(bind.mainVideoSaveDirectory(root: false)),
++                  ),
+               ]),
+-        if (isAndroid)
+-          SettingsSection(title: Text(translate('Hardware Codec')), tiles: [
+-            SettingsTile.switchTile(
+-              title: Text(translate('Enable hardware codec')),
+-              initialValue: _enableHardwareCodec,
+-              onToggle: isOptionFixed(kOptionEnableHwcodec)
+-                  ? null
+-                  : (v) async {
+-                      await mainSetBoolOption(kOptionEnableHwcodec, v);
+-                      final newValue =
+-                          await mainGetBoolOption(kOptionEnableHwcodec);
+-                      setState(() {
+-                        _enableHardwareCodec = newValue;
+-                      });
+-                    },
+-            ),
+-          ]),
+-        if (isAndroid)
+-          SettingsSection(
+-            title: Text(translate("Recording")),
+-            tiles: [
+-              if (!outgoingOnly)
+-                SettingsTile.switchTile(
+-                  title:
+-                      Text(translate('Automatically record incoming sessions')),
+-                  initialValue: _autoRecordIncomingSession,
+-                  onToggle: isOptionFixed(kOptionAllowAutoRecordIncoming)
+-                      ? null
+-                      : (v) async {
+-                          await bind.mainSetOption(
+-                              key: kOptionAllowAutoRecordIncoming,
+-                              value: bool2option(
+-                                  kOptionAllowAutoRecordIncoming, v));
+-                          final newValue = option2bool(
+-                              kOptionAllowAutoRecordIncoming,
+-                              await bind.mainGetOption(
+-                                  key: kOptionAllowAutoRecordIncoming));
+-                          setState(() {
+-                            _autoRecordIncomingSession = newValue;
+-                          });
+-                        },
+-                ),
+-              if (!incomingOnly)
+-                SettingsTile.switchTile(
+-                  title:
+-                      Text(translate('Automatically record outgoing sessions')),
+-                  initialValue: _autoRecordOutgoingSession,
+-                  onToggle: isOptionFixed(kOptionAllowAutoRecordOutgoing)
+-                      ? null
+-                      : (v) async {
+-                          await bind.mainSetLocalOption(
+-                              key: kOptionAllowAutoRecordOutgoing,
+-                              value: bool2option(
+-                                  kOptionAllowAutoRecordOutgoing, v));
+-                          final newValue = option2bool(
+-                              kOptionAllowAutoRecordOutgoing,
+-                              bind.mainGetLocalOption(
+-                                  key: kOptionAllowAutoRecordOutgoing));
+-                          setState(() {
+-                            _autoRecordOutgoingSession = newValue;
+-                          });
+-                        },
+-                ),
+-              SettingsTile(
+-                title: Text(translate("Directory")),
+-                description: Text(bind.mainVideoSaveDirectory(root: false)),
+-              ),
+-            ],
+-          ),
+         if (isAndroid &&
+             !disabledSettings &&
+             !outgoingOnly &&
+diff --git a/flutter/test/hjviewer_phone_test.dart b/flutter/test/hjviewer_phone_test.dart
+index cc5c248..0c959fa 100644
+--- a/flutter/test/hjviewer_phone_test.dart
++++ b/flutter/test/hjviewer_phone_test.dart
+@@ -114,8 +114,11 @@ void main() {
+   });
+ 
+   test('the sub-screen is named in both languages', () {
+-    expect(const HjvPhoneTexts(true).networkAdvanced, '네트워크(고급)');
+-    expect(const HjvPhoneTexts(false).networkAdvanced, 'Network (advanced)');
++    // 1.9.1: plain "네트워크" under the 고급 설정 header
++    expect(const HjvPhoneTexts(true).networkAdvanced, '네트워크');
++    expect(const HjvPhoneTexts(false).networkAdvanced, 'Network');
++    expect(const HjvPhoneTexts(true).advanced, '고급 설정');
++    expect(const HjvPhoneTexts(false).advanced, 'Advanced settings');
+   });
+ 
+   test('the phone settings start with language and theme (U40)', () {
+@@ -123,7 +126,8 @@ void main() {
+     final build = page.substring(
+         page.indexOf('final settings = _hjvSettingsList('),
+         page.indexOf('return settings;'));
+-    // account, app lock, settings (language, theme, keep awake, note), display, network, the rest
++    // account, app lock, settings (language, theme, keep awake, note), 고급 설정 (display,
++    // network, and since 1.9.1 Android's hardware codec and recording), the rest
+     final order = [
+       "translate('Account')",
+       'hjvAppLockSections(',
+@@ -131,10 +135,12 @@ void main() {
+       "'Light Theme'",
+       "'keep-awake-during-outgoing-sessions-label'",
+       "'note-at-conn-end-tip'",
++      'HjvPhoneTexts(hjvLabels.korean).advanced',
+       'defaultDisplaySection()',
+       '_hjvNetworkSection()',
+-      "translate('Hardware Codec')",
+-      'translate("Recording")',
++      "translate('Enable hardware codec')",
++      "translate('Automatically record outgoing sessions')",
++      'translate("Directory")',
+       "translate('enter-2fa-title')",
+       'translate("About")',
+     ];
+@@ -143,6 +149,13 @@ void main() {
+       expect(at[i], isNonNegative, reason: order[i]);
+       if (i > 0) expect(at[i], greaterThan(at[i - 1]), reason: order[i]);
+     }
++    // 1.9.1: no headers of their own for the hardware codec and the recording any more
++    for (final header in [
++      "translate('Hardware Codec')",
++      'translate("Recording")',
++    ]) {
++      expect(build, isNot(contains(header)), reason: header);
++    }
+     // the expert rows are only on the sub-screen
+     for (final row in [
+       'ID/Relay Server',

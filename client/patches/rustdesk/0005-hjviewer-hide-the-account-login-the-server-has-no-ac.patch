@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 09:48:38 +0900
-Subject: [PATCH 005/148] hjviewer: hide the account login, the server has no
+Subject: [PATCH 005/160] hjviewer: hide the account login, the server has no
  account API
 
 The hjviewer server answers /api/* with 404, so the Login entry in the

@@ -381,7 +381,8 @@ jobs:
       # hjviewer_session_look_test.dart the session windows' colours (U15): file rows, chat bubbles;
       # hjviewer_title_line_test.dart the logged-in devices list's arrow on the title's line (D16);
       # hjv_caption_test.dart the Windows 11 maximise button's box and its off option (U44);
-      # hjviewer_text_scale_test.dart the phone's text size up to 130 % (UX-K3).
+      # hjviewer_text_scale_test.dart the phone's text size up to 130 % (UX-K3); 1.9.1's
+      # hjviewer_settings_split_test.dart the desktop settings' everyday tabs and Advanced settings.
       - name: Run the tests
         run: |
           for t in test/soft_keyboard_input_test.dart test/soft_keyboard_log_test.dart \
@@ -400,7 +401,8 @@ jobs:
             test/hjviewer_incoming_test.dart test/hjviewer_home_test.dart \
             test/hjviewer_keys_test.dart test/hjviewer_semantics_test.dart \
             test/hjviewer_session_look_test.dart test/hjviewer_title_line_test.dart \
-            test/hjv_caption_test.dart test/hjviewer_text_scale_test.dart; do
+            test/hjv_caption_test.dart test/hjviewer_text_scale_test.dart \
+            test/hjviewer_settings_split_test.dart; do
             if [ ! -f "$t" ]; then echo "::error::$t is not in the patched tree"; exit 1; fi
           done
           flutter pub get

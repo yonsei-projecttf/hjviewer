@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 13 Oct 2026 21:40:13 +0900
-Subject: [PATCH 039/148] hjviewer: minimum version: Windows PCs install the
+Subject: [PATCH 039/160] hjviewer: minimum version: Windows PCs install the
  newer version
 
 An installed Windows PC is updated by its own service, with nobody at it,

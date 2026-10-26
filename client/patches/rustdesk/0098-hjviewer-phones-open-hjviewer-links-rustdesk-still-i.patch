@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 01:59:54 +0900
-Subject: [PATCH 098/148] hjviewer: phones open hjviewer:// links, rustdesk://
+Subject: [PATCH 098/160] hjviewer: phones open hjviewer:// links, rustdesk://
  still in 1.9
 
 TV-C6 (platform files, D-13): the iOS URL type names the app's bundle ID and lists hjviewer

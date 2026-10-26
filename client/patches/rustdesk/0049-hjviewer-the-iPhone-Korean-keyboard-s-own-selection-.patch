@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Thu, 15 Oct 2026 12:57:28 +0900
-Subject: [PATCH 049/148] hjviewer: the iPhone Korean keyboard's own selection
+Subject: [PATCH 049/160] hjviewer: the iPhone Korean keyboard's own selection
  stays
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

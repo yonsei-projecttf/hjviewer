@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 16:49:35 +0900
+Subject: [PATCH 160/160] hjviewer: a request with the old token after the
+ account deletion asks for no new login
+
+After hjv-api deleted the account, the app could still send a screen's
+request with the token it held in memory. with_token found no account key
+and took the device for a restored one: drop_login set the relogin flag and
+the app showed the "log in again" notice although the user had just
+deleted the account. drop_login now runs only while a token is stored, and
+account_deleted clears the token before it logs out, so no request between
+the two steps finds a token without a key.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_account/api.rs | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/src/hjviewer_account/api.rs b/src/hjviewer_account/api.rs
+index e83e6ae..bcbceb3 100644
+--- a/src/hjviewer_account/api.rs
++++ b/src/hjviewer_account/api.rs
+@@ -392,7 +392,7 @@ fn with_token(
+             }
+             Err(Unavailable) => return None,
+             // no account key (a restored iPhone): the token is no use any more
+-            Ok(None) if !logout => drop_login(env),
++            Ok(None) if !logout && !env.local("access_token").is_empty() => drop_login(env),
+             Ok(None) => {}
+         }
+     }
+@@ -621,10 +621,10 @@ fn drop_login(env: &impl Env) {
+ /// does, and the token and the user go too, so that a request of the screens that follows goes
+ /// without a token, not with one whose key is gone (which drop_login takes for a restored device).
+ fn account_deleted(env: &impl Env) {
+-    log_out(env);
+     for key in ["access_token", "user_info"] {
+         env.set_local(key, "");
+     }
++    log_out(env);
+     log::info!("account: the account was deleted, logged out");
+ }
+ 
+@@ -1634,6 +1634,11 @@ mod tests {
+         let peers = prepare(&fake, &url(API_PEERS), "get", None, token_header(""));
+         assert!(!headers(&peers.unwrap().1).contains_key(PROOF_HEADER));
+         assert_eq!(fake.local(RELOGIN), "");
++        // nor does one that still carries the old token from the app's memory ask for a new login
++        let peers = prepare(&fake, &url(API_PEERS), "get", None, token_header(REQ_TOKEN));
++        let peers = headers(&peers.unwrap().1);
++        assert!(!peers.contains_key(PROOF_HEADER) && !peers.contains_key("Authorization"));
++        assert_eq!(fake.local(RELOGIN), "");
+     }
+ 
+     #[test]

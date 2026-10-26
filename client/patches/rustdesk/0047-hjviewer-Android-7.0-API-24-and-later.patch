@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Wed, 14 Oct 2026 21:37:29 +0900
-Subject: [PATCH 047/148] hjviewer: Android 7.0 (API 24) and later
+Subject: [PATCH 047/160] hjviewer: Android 7.0 (API 24) and later
 
 Google Play's automatic protection, which the Play Console applies to the
 app's bundles, needs a minimum SDK of 24: the Console refused the 1.6.0

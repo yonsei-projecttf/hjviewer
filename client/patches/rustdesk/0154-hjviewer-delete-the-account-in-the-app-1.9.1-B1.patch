@@ -1,0 +1,635 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 15:34:30 +0900
+Subject: [PATCH 154/160] hjviewer: delete the account in the app (1.9.1, B1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Settings → Account offers [계정 삭제] while logged in: at the bottom of the
+desktop account card (a quiet button in the danger colour) and as the last
+tile of the phone's account section. Its confirmation says what goes (the
+PCs of My PCs and their password-less connections, every logged-in device,
+the device list, relay approvals and wake requests) and what stays (login
+records without the portal ID for 6 months, backups for 14 days), the PCs'
+line on a staff-only server, and takes the word '삭제' ('delete' in English)
+before its filled danger button sends POST /api/hjv/account/delete with
+{"confirm":"delete-account"}, signed by H13 as the other self-service
+requests (no new bridge function). While it waits, the bar shows and
+nothing closes the dialog; a second press sends nothing.
+
+On hjv-api's 200 with "deleted":true, Rust's H14 logs this device out as an
+explicit logout does (the account key, the device list, the login's ticket,
+a PC this user's login bound unbinds in one write) and drops the token and
+the user, so that no request of the screens goes out with a token whose key
+is gone. The screens then reset to logged out without L4, and a result
+dialog says that the other devices log out the next time they reach the
+server. A 401 closes the dialog for L4, whose reason now names a deleted
+account too ("…, 계정이 삭제되었거나, …"); L4 waits for the deletion's
+answer rather than coming over its dialog. A 404 (an hjv-api without the
+path) says the app cannot delete it now; other answers show hjv-api's own
+words and leave the dialog to try again.
+
+The texts are HjvTexts pairs, as all of the account screens' (the
+contract's D8; src/lang stays as it is).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart      | 200 ++++++++++++++++++
+ .../lib/common/hjviewer_account_texts.dart    |  75 ++++++-
+ flutter/test/hjviewer_account_test.dart       |  90 +++++++-
+ src/hjviewer_account/api.rs                   | 105 ++++++++-
+ 4 files changed, 461 insertions(+), 9 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 5c0e0f4..d625537 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -538,6 +538,22 @@ List<AbstractSettingsTile> hjvAccountTiles() => _accountBuild
+                     onPressed: (_) => hjvMakeSupportCode(),
+                   )
+                 : const SizedBox.shrink())),
++        // 1.9.1 (B1): the account's deletion last, with a login (an empty tile else), in the
++        // danger colour as a card menu's "내 PC에서 빼기"
++        CustomSettingsTile(
++            child: Obx(() => gFFI.userModel.isLogin
++                ? Builder(builder: (context) {
++                    final p = HjvPalette.of(context);
++                    return SettingsTile(
++                      title: Text(_t.deleteAccount,
++                          style: TextStyle(
++                              fontFamily: kHjvFont, color: p.dangerText)),
++                      leading:
++                          Icon(Icons.person_remove_outlined, color: p.danger),
++                      onPressed: (_) => _askDeleteAccount(),
++                    );
++                  })
++                : const SizedBox.shrink())),
+       ]
+     : [];
+ 
+@@ -907,6 +923,8 @@ class _HjvAccountPanelState extends State<_HjvAccountPanel> {
+             // the operator's entry shows with a login only
+             hjvAdminButton(),
+           ]).marginOnly(top: 4),
++        // 1.9.1 (B1): the account's deletion last, apart from the buttons above
++        if (loggedIn) _deleteAccountButton(context, t).marginOnly(top: 16),
+       ];
+       // HJViewer: no room taken when there is nothing to show; else at the settings' content
+       // margin, the buttons as high as the settings' own
+@@ -1375,6 +1393,183 @@ class _HjvKeysPanelState extends State<_HjvKeysPanel> {
+   }
+ }
+ 
++// ---- deleting the account (1.9.1, B1) ----
++
++/// hjv-api's deletion of the login's account (server/api/src/account.rs), signed by H13 as the
++/// other self-service requests; its fixed body keeps a stray POST from deleting anything.
++const _kDeleteAccountPath = '/api/hjv/account/delete';
++const _kDeleteAccountBody = '{"confirm":"delete-account"}';
++
++/// While the deletion waits for its answer, a 401 that ends the login (its own or another
++/// request's) only notes it here (hjvLoginEnded).
++var _accountDeleting = false;
++var _endedDuringDelete = false;
++
++/// The desktop account card's [계정 삭제]: a quiet button with the danger colour's icon and words;
++/// the filled danger button is the confirmation's.
++Widget _deleteAccountButton(BuildContext context, HjvTexts t) {
++  final p = HjvPalette.of(context);
++  return OutlinedButton.icon(
++      style: OutlinedButton.styleFrom(foregroundColor: p.dangerText),
++      onPressed: _askDeleteAccount,
++      icon: Icon(Icons.person_remove_outlined, size: 18, color: p.danger),
++      label: Text(t.deleteAccount));
++}
++
++/// [계정 삭제]'s confirmation: what goes and what stays, then the word to type in before
++/// [계정 삭제] sends the request. While it waits, neither [취소], a back press nor Esc closes it.
++void _askDeleteAccount() {
++  final t = _t;
++  final gate = hjvDeleteAccountGateNote(t, gateCloses: hjvAccessGateCloses());
++  final word = TextEditingController();
++  var busy = false;
++  var closed = false;
++  String? error;
++  void Function([dynamic])? closeDialog;
++  final dialog = gFFI.dialogManager.show<void>((setState, close, context) {
++    closeDialog = close;
++    final p = HjvPalette.of(context);
++    final failure = error;
++
++    Future<void> submit() async {
++      if (busy || !hjvDeleteConfirmed(t, word.text)) return;
++      setState(() {
++        busy = true;
++        error = null;
++      });
++      final failed = await _deleteAccount(t, close);
++      if (failed != null && !closed) {
++        setState(() {
++          busy = false;
++          error = failed;
++        });
++      }
++    }
++
++    return CustomAlertDialog(
++      title: HjvDialogTitle(Icons.warning_amber_rounded, t.deleteAccountTitle,
++          danger: true),
++      contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
++      content: Column(
++        mainAxisSize: MainAxisSize.min,
++        crossAxisAlignment: CrossAxisAlignment.stretch,
++        children: [
++          Text(hjvKeepAll(t.deleteAccountIntro)),
++          for (final item in [
++            t.deleteAccountPcs,
++            t.deleteAccountDevices,
++            t.deleteAccountData,
++            t.deleteAccountKept,
++          ])
++            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
++              const ExcludeSemantics(child: Text('•')),
++              const SizedBox(width: 8),
++              Expanded(child: Text(hjvKeepAll(item))),
++            ]).marginOnly(top: 4),
++          Text(hjvKeepAll(t.deleteAccountFresh)).marginOnly(top: 8),
++          if (gate != null) Text(hjvKeepAll(gate)).marginOnly(top: 8),
++          ExcludeSemantics(child: Text(hjvKeepAll(t.deleteAccountType)))
++              .marginOnly(top: 12),
++          Semantics(
++            label: t.deleteAccountType,
++            child: TextField(
++              controller: word,
++              enabled: !busy,
++              // a phone shows the text first; a press on the field brings the keyboard
++              autofocus: isDesktop,
++              autocorrect: false,
++              enableSuggestions: false,
++              textInputAction: TextInputAction.done,
++              decoration: InputDecoration(hintText: t.deleteAccountWord),
++              onSubmitted: (_) => submit(),
++            ),
++          ).marginOnly(top: 8),
++          if (failure != null)
++            Semantics(
++              liveRegion: true,
++              child: Text(hjvKeepAll(failure),
++                  style: TextStyle(color: p.dangerText)),
++            ).marginOnly(top: 8),
++          if (busy)
++            Row(children: [
++              Expanded(
++                  child: LinearProgressIndicator(
++                      semanticsLabel: t.deleteAccountBusy.replaceAll('…', ''))),
++              const SizedBox(width: 8),
++              ExcludeSemantics(
++                  child: Text(t.deleteAccountBusy,
++                      style: HjvText.caption.copyWith(color: p.textSecondary))),
++            ]).marginOnly(top: 12),
++        ],
++      ),
++      actions: [
++        _button(t.cancel, busy ? null : close, outline: true),
++        ValueListenableBuilder<TextEditingValue>(
++            valueListenable: word,
++            builder: (_, value, __) => _button(t.deleteAccount,
++                !busy && hjvDeleteConfirmed(t, value.text) ? submit : null,
++                danger: true)),
++      ],
++      onSubmit: submit,
++      onCancel: busy ? null : close,
++    );
++  }, onBack: () {
++    if (!busy) closeDialog?.call();
++  });
++  unawaited(dialog.whenComplete(() => closed = true).catchError((Object e) {
++    debugPrint('hjv: $e');
++  }));
++}
++
++/// The deletion's request; null once the confirmation closed. On hjv-api's 200 Rust (H14) has
++/// logged this device out already: the screens follow without L4, and the result takes the
++/// confirmation's place. A 401 that ended the login meanwhile closes it for L4. Else the
++/// confirmation stays with the text this returns, and the word typed in.
++Future<String?> _deleteAccount(
++    HjvTexts t, void Function([dynamic]) close) async {
++  _accountDeleting = true;
++  _endedDuringDelete = false;
++  try {
++    String? failure;
++    try {
++      final (code, body) = await _request('POST', _kDeleteAccountPath,
++          json: _kDeleteAccountBody);
++      failure = hjvDeleteAccountError(t, code, body);
++    } catch (e) {
++      // the server may have deleted the account and only the answer got lost: another try
++      // gets the 401 of the token it ended, and so L4
++      failure = hjvFailure(t, e);
++    }
++    if (failure == null) {
++      await gFFI.userModel.reset(resetOther: true, hjvLoggedOut: true);
++      _loginEnded = false;
++      close();
++      _showAccountDeleted(t);
++      return null;
++    }
++    if (_endedDuringDelete) {
++      close();
++      _loginEnded = true;
++      _announceRelogin();
++      return null;
++    }
++    return failure;
++  } finally {
++    _accountDeleting = false;
++    _endedDuringDelete = false;
++  }
++}
++
++void _showAccountDeleted(HjvTexts t) =>
++    unawaited(_show<void>((setState, close, context) => CustomAlertDialog(
++          contentBoxConstraints: HjvDialogWidth.box(HjvDialogWidth.md),
++          title: Text(t.accountDeletedTitle),
++          content: Text(hjvKeepAll(t.accountDeletedText)),
++          actions: [_button(t.ok, close)],
++          onSubmit: close,
++          onCancel: close,
++        )));
++
+ /// A card's PC as its dialogs name it.
+ String _nameOf(Peer peer) => peer.alias.isNotEmpty
+     ? peer.alias
+@@ -1643,6 +1838,11 @@ void hjvLoginEnded() {
+   if (!_accountBuild || bind.mainGetLocalOption(key: 'access_token').isEmpty) {
+     return;
+   }
++  // the account's deletion tells it once its own answer is in, not over its dialog
++  if (_accountDeleting) {
++    _endedDuringDelete = true;
++    return;
++  }
+   _loginEnded = true;
+ }
+ 
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index ffc1119..37699fc 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -145,6 +145,45 @@ class HjvTexts {
+       '로그아웃하면 이 PC가 내 PC 목록에서 빠지고, 비밀번호 없이 연결할 수 없게 됩니다.',
+       'Logging out takes this PC out of My PCs, and it no longer takes password-less connections.');
+ 
++  // deleting the account (1.9.1, B1): Settings → Account's entry, its confirmation, which takes
++  // a word typed in, and its result
++  String get deleteAccount => _t('계정 삭제', 'Delete account');
++  String get deleteAccountTitle => _t('계정을 삭제할까요?', 'Delete your account?');
++  String get deleteAccountIntro => _t(
++      '서버에서 이 계정과 계정에 대해 보관하던 정보를 지웁니다. 되돌릴 수 없습니다.',
++      'This deletes the account and what the server keeps about it. It cannot be undone.');
++  String get deleteAccountPcs => _t(
++      '내 PC 목록의 PC가 모두 계정에서 빠지고, 그 PC들에 열려 있는 비밀번호 없는 연결도 몇 분 안에 끊깁니다.',
++      'Every PC in My PCs leaves the account, and password-less connections open to them end within a few minutes.');
++  String get deleteAccountDevices => _t('이 기기를 포함해 이 계정으로 로그인한 기기가 모두 로그아웃됩니다.',
++      'Every device logged in to this account is logged out, this one included.');
++  String get deleteAccountData => _t('로그인한 기기 목록, NAS 중계기 승인, 켜기 요청 기록도 지워집니다.',
++      'The list of logged-in devices, NAS relay approvals and the record of wake requests are deleted too.');
++  String get deleteAccountKept => _t(
++      '포탈 ID 없이 남는 서버의 로그인 기록은 6개월이 지나면, 서버 백업에 남은 사본은 14일 안에 사라집니다.',
++      "Login records the server keeps without your portal ID go once they are 6 months old, and copies in the server's backups within 14 days.");
++  String get deleteAccountFresh => _t('나중에 다시 로그인하면 빈 계정으로 새로 시작합니다.',
++      'If you log in again later, you start over with an empty account.');
++  String get deleteAccountGate => _t(
++      '이 서버는 교직원 전용이라 누군가 그 PC에서 다시 로그인할 때까지 그 PC들에 원격으로 연결할 수 없습니다.',
++      'This server is for faculty and staff only, so nobody can connect to those PCs remotely until someone logs in on them again.');
++  String get deleteAccountGateMaybe => _t(
++      '서버가 교직원 전용이면 누군가 그 PC에서 다시 로그인할 때까지 그 PC들에 원격으로 연결할 수 없습니다.',
++      'If the server is for faculty and staff only, nobody can connect to those PCs remotely until someone logs in on them again.');
++  String get deleteAccountType =>
++      _t("계속하려면 아래 칸에 '삭제'를 입력하세요.", "To continue, type 'delete' below.");
++  // the word the field takes (hjvDeleteConfirmed), its hint too
++  String get deleteAccountWord => _t('삭제', 'delete');
++  String get deleteAccountBusy => _t('계정을 삭제하는 중…', 'Deleting the account…');
++  String get deleteAccountUnsupported => _t(
++      '지금은 앱에서 계정을 삭제할 수 없습니다. 관리자에게 삭제를 요청해 주세요.',
++      'The account cannot be deleted in the app right now. Please ask the administrator to delete it.');
++  String get accountDeletedTitle =>
++      _t('계정을 삭제했습니다', 'Your account was deleted');
++  String get accountDeletedText => _t(
++      '이 기기는 로그아웃했습니다. 다른 기기는 다음에 서버에 닿을 때 로그아웃됩니다.',
++      'This device is logged out. Your other devices are logged out the next time they reach the server.');
++
+   // the logged-in devices (§1-7, U6)
+   String get loggedInDevices => _t('로그인한 기기', 'Logged-in devices');
+   String get thisDevice => _t('이 기기', 'this device');
+@@ -242,11 +281,12 @@ class HjvTexts {
+       '이 기기에서 다시 로그인해 주세요. 백업에서 복원한 기기에는 보안 키가 옮겨지지 않습니다.',
+       'Please log in again on this device. A device restored from a backup does not get the security key.');
+ 
+-  // a login that hjv-api ended (a 401: logged out from elsewhere, expired)
++  // a login that hjv-api ended (a 401: logged out from elsewhere, the account deleted, expired)
+   String get loginEndedTitle =>
+       _t('이 기기의 로그인이 끝났습니다', 'Your login on this device ended');
+-  String get loginEndedWhy => _t('다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다.',
+-      'Another device or the administrator logged it out, or the login expired.');
++  String get loginEndedWhy => _t(
++      '다른 기기나 관리자가 로그아웃했거나, 계정이 삭제되었거나, 로그인 기간이 끝났습니다.',
++      'Another device or the administrator logged it out, the account was deleted, or the login expired.');
+   String get loginEndedGate => _t('이 서버는 교직원 전용이라 다시 로그인해야 연결할 수 있습니다.',
+       'This server is for faculty and staff only, so log in again to connect.');
+   String get loginEndedMaybeGate => _t('교직원 전용 서버에서는 다시 로그인해야 연결할 수 있습니다.',
+@@ -777,6 +817,35 @@ String hjvLoginEndedText(HjvTexts t, {required bool? gateCloses}) {
+ String hjvLoginEndedLine(HjvTexts t) =>
+     '${t.loginEndedTitle}. ${t.loginEndedWhy}';
+ 
++/// Whether the deletion's confirmation has its word (1.9.1, B1): '삭제' on a Korean screen,
++/// 'delete' in any case on an English one, the spaces around it aside. A word a Korean input
++/// method is still composing is in the field's text already.
++bool hjvDeleteConfirmed(HjvTexts t, String typed) {
++  final word = typed.trim();
++  return t.korean
++      ? word == t.deleteAccountWord
++      : word.toLowerCase() == t.deleteAccountWord;
++}
++
++/// The deletion's paragraph about the account's PCs on a staff-only server, as L2 has its line:
++/// sure, while the server's mode is not known (null), or none on a server open to everyone.
++String? hjvDeleteAccountGateNote(HjvTexts t, {required bool? gateCloses}) =>
++    switch (gateCloses) {
++      true => t.deleteAccountGate,
++      null => t.deleteAccountGateMaybe,
++      false => null,
++    };
++
++/// What the confirmation's error line says after hjv-api's answer to the deletion; null when it
++/// deleted the account (also an overlapping request's answer, with nothing left to count). A 404
++/// comes from an hjv-api without the path. The caller takes a 401 as the end of the login.
++String? hjvDeleteAccountError(HjvTexts t, int status, Object? body) {
++  if (status == 200) {
++    return body is Map && body['deleted'] == true ? null : t.requestFailed;
++  }
++  return status == 404 ? t.deleteAccountUnsupported : hjvRequestError(t, body);
++}
++
+ /// The marks a 1.9.0 PC puts in the close reason of a password-less connection it ended (TV-W5,
+ /// src/hjviewer_account/pc/sessions.rs): the device's login ended, or the PC takes no more
+ /// password-less connections. "not allowed" also stops the reconnect of any controller.
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index ba79708..74ccde8 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -506,19 +506,20 @@ void main() {
+     test('a login that hjv-api ended is told why (U68)', () {
+       expect([ko.loginEndedTitle, en.loginEndedTitle],
+           ['이 기기의 로그인이 끝났습니다', 'Your login on this device ended']);
++      // 1.9.1: the account may have been deleted on another device too
+       expect(hjvLoginEndedText(ko, gateCloses: true),
+-          '다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다. 이 서버는 교직원 전용이라 다시 로그인해야 연결할 수 있습니다.');
++          '다른 기기나 관리자가 로그아웃했거나, 계정이 삭제되었거나, 로그인 기간이 끝났습니다. 이 서버는 교직원 전용이라 다시 로그인해야 연결할 수 있습니다.');
+       expect(hjvLoginEndedText(ko, gateCloses: null),
+-          '다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다. 교직원 전용 서버에서는 다시 로그인해야 연결할 수 있습니다.');
++          '다른 기기나 관리자가 로그아웃했거나, 계정이 삭제되었거나, 로그인 기간이 끝났습니다. 교직원 전용 서버에서는 다시 로그인해야 연결할 수 있습니다.');
+       expect(hjvLoginEndedText(ko, gateCloses: false),
+           endsWith('내 PC에 비밀번호 없이 연결하려면 다시 로그인하세요.'));
+       expect(hjvLoginEndedText(en, gateCloses: true),
+-          'Another device or the administrator logged it out, or the login expired. This server is for faculty and staff only, so log in again to connect.');
++          'Another device or the administrator logged it out, the account was deleted, or the login expired. This server is for faculty and staff only, so log in again to connect.');
+       // a phone's A1 says it in the place of L4
+       expect(hjvLoginEndedLine(ko),
+-          '이 기기의 로그인이 끝났습니다. 다른 기기나 관리자가 로그아웃했거나 로그인 기간이 끝났습니다.');
++          '이 기기의 로그인이 끝났습니다. 다른 기기나 관리자가 로그아웃했거나, 계정이 삭제되었거나, 로그인 기간이 끝났습니다.');
+       expect(hjvLoginEndedLine(en),
+-          'Your login on this device ended. Another device or the administrator logged it out, or the login expired.');
++          'Your login on this device ended. Another device or the administrator logged it out, the account was deleted, or the login expired.');
+     });
+   });
+ 
+@@ -1739,4 +1740,83 @@ void main() {
+       }
+     }
+   });
++
++  group('deleting the account (1.9.1, B1)', () {
++    test('the confirmation takes its word only', () {
++      for (final typed in ['삭제', ' 삭제 ', '삭제\n']) {
++        expect(hjvDeleteConfirmed(ko, typed), isTrue, reason: typed);
++      }
++      for (final typed in ['', '삭', '삭 제', '삭제함', '계정 삭제', 'delete']) {
++        expect(hjvDeleteConfirmed(ko, typed), isFalse, reason: typed);
++      }
++      for (final typed in ['delete', 'Delete', ' DELETE ']) {
++        expect(hjvDeleteConfirmed(en, typed), isTrue, reason: typed);
++      }
++      for (final typed in ['', 'deleted', 'delete account', '삭제']) {
++        expect(hjvDeleteConfirmed(en, typed), isFalse, reason: typed);
++      }
++      // the line above the field names that word
++      expect(ko.deleteAccountType, "계속하려면 아래 칸에 '삭제'를 입력하세요.");
++      expect(en.deleteAccountType, contains("'${en.deleteAccountWord}'"));
++    });
++
++    test('the PCs on a staff-only server, as L2 says it', () {
++      expect(hjvDeleteAccountGateNote(ko, gateCloses: true),
++          '이 서버는 교직원 전용이라 누군가 그 PC에서 다시 로그인할 때까지 그 PC들에 원격으로 연결할 수 없습니다.');
++      expect(hjvDeleteAccountGateNote(ko, gateCloses: null),
++          '서버가 교직원 전용이면 누군가 그 PC에서 다시 로그인할 때까지 그 PC들에 원격으로 연결할 수 없습니다.');
++      expect(hjvDeleteAccountGateNote(ko, gateCloses: false), isNull);
++    });
++
++    test('what each answer leaves on the error line', () {
++      expect(
++          hjvDeleteAccountError(
++              ko, 200, {'deleted': true, 'pcs': 1, 'devices': 2, 'relays': 0}),
++          isNull);
++      for (final body in <Object?>[
++        {},
++        {'deleted': 'true'},
++        null
++      ]) {
++        expect(hjvDeleteAccountError(ko, 200, body), ko.requestFailed);
++      }
++      // an hjv-api without the path
++      expect(hjvDeleteAccountError(ko, 404, {'error': 'not found'}),
++          '지금은 앱에서 계정을 삭제할 수 없습니다. 관리자에게 삭제를 요청해 주세요.');
++      // hjv-api's own words, which are Korean only
++      const tooOften = '요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.';
++      expect(
++          hjvDeleteAccountError(
++              en, 429, {'error': tooOften, 'hjv': 'rate_limited'}),
++          tooOften);
++      expect(hjvDeleteAccountError(ko, 500, null), ko.requestFailed);
++    });
++
++    test('its texts in both languages', () {
++      expect([ko.deleteAccount, en.deleteAccount], ['계정 삭제', 'Delete account']);
++      expect([ko.accountDeletedTitle, en.accountDeletedTitle],
++          ['계정을 삭제했습니다', 'Your account was deleted']);
++      for (final t in [ko, en]) {
++        for (final text in [
++          t.deleteAccountTitle,
++          t.deleteAccountIntro,
++          t.deleteAccountPcs,
++          t.deleteAccountDevices,
++          t.deleteAccountData,
++          t.deleteAccountKept,
++          t.deleteAccountFresh,
++          t.deleteAccountGate,
++          t.deleteAccountGateMaybe,
++          t.deleteAccountWord,
++          t.deleteAccountBusy,
++          t.deleteAccountUnsupported,
++          t.accountDeletedText,
++        ]) {
++          expect(text.trim(), isNotEmpty);
++          expect(text, isNot(contains('{')));
++          expect(text, isNot(contains('}')));
++        }
++      }
++    });
++  });
+ }
+diff --git a/src/hjviewer_account/api.rs b/src/hjviewer_account/api.rs
+index 8599202..e83e6ae 100644
+--- a/src/hjviewer_account/api.rs
++++ b/src/hjviewer_account/api.rs
+@@ -8,7 +8,8 @@
+ //! - the answers teach the server's clock, the login's account key, serial and PC binding, and
+ //!   the account's device list (`hjv-my-devices`), which the controller sends proofs by;
+ //! - an explicit logout drops the key and the list and, on a PC its user's login bound, asks the
+-//!   service to unbind before the request goes out.
++//!   service to unbind before the request goes out;
++//! - the account's deletion (1.9.1) does the same on hjv-api's answer only, and drops the token.
+ //!
+ //! Account requests never accept an invalid certificate (`account_tls`).
+ 
+@@ -60,6 +61,8 @@ const ROLE: &str = "hjv-role";
+ const SUPPORT_CODE: &str = "hjv-support-code";
+ 
+ const PROOF_HEADER: &str = "X-HJV-Proof";
++/// The account deleted at its own request (server/api/src/account.rs).
++const ACCOUNT_DELETE: &str = "/api/hjv/account/delete";
+ const SEALED_PREFIX: &str = "hjv-sealed-v1.";
+ /// The device key's signature of a login (server/api/src/devsig.rs).
+ const LOGIN_CONTEXT: &[u8] = b"hjv-login-v1";
+@@ -614,6 +617,17 @@ fn drop_login(env: &impl Env) {
+     log::warn!("account: no account key for the login, logged out");
+ }
+ 
++/// hjv-api deleted the login's account at its request: this device logs out as an explicit logout
++/// does, and the token and the user go too, so that a request of the screens that follows goes
++/// without a token, not with one whose key is gone (which drop_login takes for a restored device).
++fn account_deleted(env: &impl Env) {
++    log_out(env);
++    for key in ["access_token", "user_info"] {
++        env.set_local(key, "");
++    }
++    log::info!("account: the account was deleted, logged out");
++}
++
+ fn knock(env: &impl Env) -> String {
+     hex::encode(env.random16())
+ }
+@@ -657,6 +671,9 @@ fn observe(env: &impl Env, url: &str, response: &str) {
+         {
+             unbind_this_pc(env)
+         }
++        ACCOUNT_DELETE if ok && body.get("deleted") == Some(&Value::Bool(true)) => {
++            account_deleted(env)
++        }
+         "/api/hjv/keys" if ok => learn_role(env, &body),
+         // the user object, which carries the login's `hjv` too
+         "/api/currentUser" if ok && body.get("name").is_some() => {
+@@ -1533,6 +1550,92 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn deleting_the_account_logs_this_device_out_on_hjv_apis_answer_only() {
++        let delete = url(ACCOUNT_DELETE);
++        let body = r#"{"confirm":"delete-account"}"#;
++        let request = format!("{BINDING}.1759999950");
++        let list = r#"{"acct":"2026000001","at":1,"pcs":{}}"#;
++        let fake = Fake::logged_in();
++        fake.set_local(PC_BINDING, &request);
++        fake.set_local(MY_DEVICES, list);
++        fake.set_local(KEY_SERIAL, "4182");
++        fake.set_local("user_info", r#"{"name":"2026000001"}"#);
++        fake.service
++            .borrow_mut()
++            .insert(BIND_REQ.to_owned(), request.clone());
++
++        // signed as the other self-service requests, and no logout: nothing goes before the answer
++        let (sent, header) = prepare(
++            &fake,
++            &delete,
++            "post",
++            Some(body.to_owned()),
++            token_header(REQ_TOKEN),
++        )
++        .unwrap();
++        assert_eq!(sent.as_deref(), Some(body));
++        let key = AccountKey::from_seed(&ACCOUNT_SEED).unwrap();
++        let proof = request_proof(
++            &key,
++            "POST",
++            ACCOUNT_DELETE,
++            body.as_bytes(),
++            REQ_TOKEN,
++            T,
++            &[0x77; 16],
++        );
++        let header = headers(&header);
++        assert_eq!(header[PROOF_HEADER], proof);
++        assert_eq!(header["Authorization"], format!("Bearer {REQ_TOKEN}"));
++
++        // an answer that kept the account changes nothing (a 401 ends the login in the app)
++        for (status, kept) in [
++            (401, json!({ "error": "x" })),
++            (404, json!({ "error": "not found" })),
++            (503, json!({ "error": "x", "hjv": "not_recorded" })),
++            (200, json!({})),
++            (200, json!({ "deleted": "true" })),
++        ] {
++            observe(&fake, &delete, &answer(status, &kept));
++        }
++        assert_eq!(fake.stored_key().as_deref(), Some(ACCOUNT_PK));
++        assert_eq!(
++            [
++                fake.local("access_token"),
++                fake.local(MY_DEVICES),
++                fake.local(PC_BINDING)
++            ],
++            [REQ_TOKEN, list, request.as_str()]
++        );
++        assert_eq!((fake.writes.get(), fake.ended.get()), (0, 0));
++
++        // deleted: logged out at once with the token and the user, this PC unbound in one write
++        let deleted = json!({ "deleted": true, "pcs": 1, "devices": 2, "relays": 0 });
++        observe(&fake, &delete, &answer(200, &deleted));
++        assert_eq!(fake.stored_key(), None);
++        for key in [
++            MY_DEVICES,
++            KEY_SERIAL,
++            PC_BINDING,
++            RELOGIN,
++            "access_token",
++            "user_info",
++        ] {
++            assert_eq!(fake.local(key), "", "{key}");
++        }
++        assert_eq!((fake.writes.get(), fake.ended.get()), (1, 1));
++        let service = fake.service.borrow().clone();
++        assert_eq!(service.get(BIND_REQ), None);
++        assert_eq!(service.get(UNBIND_REQ), Some(&request));
++        assert!(service.get(KNOCK).is_some_and(|k| !k.is_empty()));
++
++        // the screens' next request goes without a token, not as a restored device's
++        let peers = prepare(&fake, &url(API_PEERS), "get", None, token_header(""));
++        assert!(!headers(&peers.unwrap().1).contains_key(PROOF_HEADER));
++        assert_eq!(fake.local(RELOGIN), "");
++    }
++
+     #[test]
+     fn the_device_list_changes_only_with_a_full_list() {
+         let fake = Fake::logged_in();

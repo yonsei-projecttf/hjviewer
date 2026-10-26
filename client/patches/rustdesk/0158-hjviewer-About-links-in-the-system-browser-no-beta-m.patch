@@ -1,0 +1,224 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysfaculty <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 15:34:24 +0900
+Subject: [PATCH 158/160] =?UTF-8?q?hjviewer:=20About=20links=20in=20the=20?=
+ =?UTF-8?q?system=20browser,=20"=EA=B0=9C=EC=9D=B8=EC=A0=95=EB=B3=B4=20?=
+ =?UTF-8?q?=EC=B2=98=EB=A6=AC=EB=B0=A9=EC=B9=A8",=20no=20beta=20mark=20on?=
+ =?UTF-8?q?=20the=20terminal?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The About links (the privacy policy and the source code, on the desktop and
+on phones) open with LaunchMode.externalApplication: in Safari or the
+system browser, never a web view inside the app. The desktop's "Website"
+link opened the same repository page as "소스 코드(GNU AGPL-3.0)" and goes;
+phones had only the source link. The privacy policy's link is named
+"개인정보 처리방침" in Korean (ko.rs "Privacy Statement").
+
+The terminal items of the card menus, the recent sessions' menu and the
+session toolbar lose the beta mark: "터미널" and "터미널(관리자 권한)" in
+Korean, upstream's "Terminal" and "Terminal (Run as administrator)" without
+" (beta)" in English. hjvTerminalBeta and terminalBeta are now
+hjvTerminalLabel and terminalLabel.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ flutter/lib/common/hjviewer_account.dart       | 10 +++++-----
+ flutter/lib/common/hjviewer_account_texts.dart |  8 ++++----
+ flutter/lib/common/widgets/peer_card.dart      |  4 ++--
+ flutter/lib/common/widgets/toolbar.dart        |  2 +-
+ flutter/lib/desktop/pages/connection_page.dart |  2 +-
+ .../desktop/pages/desktop_setting_page.dart    | 18 ++++++------------
+ flutter/lib/mobile/pages/settings_page.dart    |  9 ++++++---
+ flutter/test/hjviewer_account_test.dart        |  9 +++++----
+ src/lang/ko.rs                                 |  2 +-
+ 9 files changed, 31 insertions(+), 33 deletions(-)
+
+diff --git a/flutter/lib/common/hjviewer_account.dart b/flutter/lib/common/hjviewer_account.dart
+index 542e06b..623d0c5 100644
+--- a/flutter/lib/common/hjviewer_account.dart
++++ b/flutter/lib/common/hjviewer_account.dart
+@@ -142,11 +142,11 @@ String? hjvListLoginHint() => _accountBuild ? _t.listLoginHint : null;
+ /// upstream left English, the About links, the install page).
+ HjvTexts hjvAppTexts() => _t;
+ 
+-/// U48 (peer_card.dart, connection_page.dart, toolbar.dart): the terminal items in Korean with
+-/// the beta mark; other languages keep upstream's words.
+-String hjvTerminalBeta({bool admin = false}) =>
+-    _t.terminalBeta(admin: admin) ??
+-    '${translate(admin ? 'Terminal (Run as administrator)' : 'Terminal')} (beta)';
++/// U48 (peer_card.dart, connection_page.dart, toolbar.dart): the terminal items in Korean; other
++/// languages keep upstream's words. From 1.9.1 without upstream's " (beta)".
++String hjvTerminalLabel({bool admin = false}) =>
++    _t.terminalLabel(admin: admin) ??
++    translate(admin ? 'Terminal (Run as administrator)' : 'Terminal');
+ 
+ /// D1 (login.dart): the login dialog's first field takes the Yonsei portal ID.
+ String hjvUsernameTitle() => _accountBuild
+diff --git a/flutter/lib/common/hjviewer_account_texts.dart b/flutter/lib/common/hjviewer_account_texts.dart
+index e8b3faf..4cdbf3d 100644
+--- a/flutter/lib/common/hjviewer_account_texts.dart
++++ b/flutter/lib/common/hjviewer_account_texts.dart
+@@ -440,10 +440,10 @@ class HjvTexts {
+       'HJViewer is free software under the GNU AGPL-3.0, with no warranty.');
+   String get license => _t('라이선스', 'License');
+ 
+-  /// The terminal items' beta mark in Korean; null in English, where upstream's words with
+-  /// " (beta)" stay.
+-  String? terminalBeta({required bool admin}) =>
+-      korean ? (admin ? '터미널(관리자 권한, 베타)' : '터미널(베타)') : null;
++  /// The terminal items in Korean, without the beta mark from 1.9.1; null in English, where
++  /// upstream's words stay.
++  String? terminalLabel({required bool admin}) =>
++      korean ? (admin ? '터미널(관리자 권한)' : '터미널') : null;
+ 
+   // U26: the home's account line ("로그인됨 · name", so that no particle follows the name)
+   String accountLoggedIn(String name) => name.isEmpty
+diff --git a/flutter/lib/common/widgets/peer_card.dart b/flutter/lib/common/widgets/peer_card.dart
+index 9e29f00..390f73e 100644
+--- a/flutter/lib/common/widgets/peer_card.dart
++++ b/flutter/lib/common/widgets/peer_card.dart
+@@ -952,7 +952,7 @@ abstract class BasePeerCard extends StatelessWidget {
+   MenuEntryBase<String> _terminalAction(BuildContext context) {
+     return _connectCommonAction(
+       context,
+-      hjvTerminalBeta(),
++      hjvTerminalLabel(),
+       isTerminal: true,
+     );
+   }
+@@ -961,7 +961,7 @@ abstract class BasePeerCard extends StatelessWidget {
+   MenuEntryBase<String> _terminalRunAsAdminAction(BuildContext context) {
+     return _connectCommonAction(
+       context,
+-      hjvTerminalBeta(admin: true),
++      hjvTerminalLabel(admin: true),
+       isTerminalRunAsAdmin: true,
+     );
+   }
+diff --git a/flutter/lib/common/widgets/toolbar.dart b/flutter/lib/common/widgets/toolbar.dart
+index 6a6ede6..43f4a07 100644
+--- a/flutter/lib/common/widgets/toolbar.dart
++++ b/flutter/lib/common/widgets/toolbar.dart
+@@ -476,7 +476,7 @@ List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
+     );
+     v.add(
+       TTextMenu(
+-          child: Text(hjvTerminalBeta()),
++          child: Text(hjvTerminalLabel()),
+           onPressed: () => connectWithToken(isTerminal: true)),
+     );
+     v.add(
+diff --git a/flutter/lib/desktop/pages/connection_page.dart b/flutter/lib/desktop/pages/connection_page.dart
+index 4155e48..9065637 100644
+--- a/flutter/lib/desktop/pages/connection_page.dart
++++ b/flutter/lib/desktop/pages/connection_page.dart
+@@ -568,7 +568,7 @@ class _ConnectionPageState extends State<ConnectionPage>
+                                           () => onConnect(isViewCamera: true)
+                                         ),
+                                         (
+-                                          hjvTerminalBeta(),
++                                          hjvTerminalLabel(),
+                                           () => onConnect(isTerminal: true)
+                                         ),
+                                         // `connect` routes this through the
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index f85c903..94b92a7 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -2977,11 +2977,13 @@ class _AboutState extends State<_About> {
+               // HJViewer: a thin line between the notice and the links (the update block above
+               // has a border of its own)
+               const Divider(height: 17),
+-              // HJViewer: the links show the hand cursor only, not a grey box flush with their text
++              // HJViewer: the links show the hand cursor only, not a grey box flush with their text,
++              // and open in the system browser; no "Website", which opened the source link's page
+               InkWell(
+                   hoverColor: Colors.transparent,
+                   onTap: () {
+-                    launchUrlString('https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md');
++                    launchUrlString('https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md',
++                        mode: LaunchMode.externalApplication);
+                   },
+                   child: Text(
+                     translate('Privacy Statement'),
+@@ -2990,16 +2992,8 @@ class _AboutState extends State<_About> {
+               InkWell(
+                   hoverColor: Colors.transparent,
+                   onTap: () {
+-                    launchUrlString('https://github.com/yonsei-projecttf/hjviewer');
+-                  },
+-                  child: Text(
+-                    translate('Website'),
+-                    style: linkStyle,
+-                  ).marginSymmetric(vertical: 4.0)),
+-              InkWell(
+-                  hoverColor: Colors.transparent,
+-                  onTap: () {
+-                    launchUrlString('https://github.com/yonsei-projecttf/hjviewer');
++                    launchUrlString('https://github.com/yonsei-projecttf/hjviewer',
++                        mode: LaunchMode.externalApplication);
+                   },
+                   child: Text(
+                     hjvAppTexts().sourceCode,
+diff --git a/flutter/lib/mobile/pages/settings_page.dart b/flutter/lib/mobile/pages/settings_page.dart
+index 7cb124f..31b07bb 100644
+--- a/flutter/lib/mobile/pages/settings_page.dart
++++ b/flutter/lib/mobile/pages/settings_page.dart
+@@ -924,7 +924,9 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+           tiles: [
+             SettingsTile(
+                 onPressed: (context) async {
+-                  await launchUrl(Uri.parse(url));
++                  // HJViewer: the About links open in the system browser, not inside the app
++                  await launchUrl(Uri.parse(url),
++                      mode: LaunchMode.externalApplication);
+                 },
+                 title: Text('${translate('Version')}: $version'),
+                 // HJViewer: the link on a line of its own under the version, so that a 360 dp
+@@ -963,8 +965,9 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
+             ...hjvAboutNoticeTiles(),
+             SettingsTile(
+               title: Text(translate("Privacy Statement")),
+-              onPressed: (context) =>
+-                  launchUrlString('https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md'),
++              onPressed: (context) => launchUrlString(
++                  'https://github.com/yonsei-projecttf/hjviewer/blob/main/docs/privacy.md',
++                  mode: LaunchMode.externalApplication),
+               leading: Icon(Icons.privacy_tip_outlined),
+             )
+           ],
+diff --git a/flutter/test/hjviewer_account_test.dart b/flutter/test/hjviewer_account_test.dart
+index bc9b9b8..4e75fc7 100644
+--- a/flutter/test/hjviewer_account_test.dart
++++ b/flutter/test/hjviewer_account_test.dart
+@@ -790,10 +790,11 @@ void main() {
+       expect(ko.sourceCode, '소스 코드(GNU AGPL-3.0)');
+       expect(en.sourceCode, 'Source code (GNU AGPL-3.0)');
+       expect(ko.license, '라이선스');
+-      expect(ko.terminalBeta(admin: false), '터미널(베타)');
+-      expect(ko.terminalBeta(admin: true), '터미널(관리자 권한, 베타)');
+-      // English keeps upstream's words with " (beta)"
+-      expect(en.terminalBeta(admin: true), isNull);
++      // no beta mark from 1.9.1
++      expect(ko.terminalLabel(admin: false), '터미널');
++      expect(ko.terminalLabel(admin: true), '터미널(관리자 권한)');
++      // English keeps upstream's words
++      expect(en.terminalLabel(admin: true), isNull);
+     });
+ 
+     test('a card offers "내 PC에서 빼기" while logged in to an account build', () {
+diff --git a/src/lang/ko.rs b/src/lang/ko.rs
+index 4acb358..2b3dce3 100644
+--- a/src/lang/ko.rs
++++ b/src/lang/ko.rs
+@@ -45,7 +45,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Website", "웹사이트"),
+         ("About", "정보"),
+         ("Slogan_tip", "이 혼란스러운 세상에서 마음을 담아 만들었습니다! - 한국어 번역: 비너스걸"),
+-        ("Privacy Statement", "개인정보 보호정책"),
++        ("Privacy Statement", "개인정보 처리방침"),
+         ("Mute", "음소거"),
+         ("Build Date", "빌드 날짜"),
+         ("Version", "버전"),

@@ -124,10 +124,12 @@ E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 7))
 # X1′ and A6′ change lines that were there)
 E2E_LEAST_STRICT=$((E2E_LEAST_STRICT + 26))
 # by the filter of build_e2e_client's cargo test --lib <filter>; hjv as the staff-only gate's E2E
-# counted it (260, 2026-10-17, the series with src/hjviewer_access)
-declare -A UNIT_LEAST=([hjv]=260 [hjviewer_wol]=6)
-# and the update code's tests in the e2e stage's build without the update keys (2026-10-14)
-UNIT_LEAST[hjviewer_update-nokeys]=141
+# counted it (260, 2026-10-17, the series with src/hjviewer_access); 345 with 1.9.1's series
+# (2026-10-26: 1.9.0's run counted 344, client patch 0160 adds one)
+declare -A UNIT_LEAST=([hjv]=345 [hjviewer_wol]=6)
+# and the update code's tests in the e2e stage's build without the update keys (2026-10-14; 159 as
+# 1.9.0's run and 1.9.1's series count them, 2026-10-26)
+UNIT_LEAST[hjviewer_update-nokeys]=159
 # and the cases of the shared vectors the client core runs in the client stage (tools/hjv-release,
 # 2026-10-14)
 VECTORS_LEAST=141
@@ -437,6 +439,9 @@ CLIENT_DART_TESTS+=" test/hjviewer_incoming_test.dart test/hjviewer_home_test.da
 CLIENT_DART_TESTS+=" test/hjviewer_keys_test.dart test/hjviewer_semantics_test.dart"
 CLIENT_DART_TESTS+=" test/hjviewer_session_look_test.dart test/hjviewer_title_line_test.dart"
 CLIENT_DART_TESTS+=" test/hjv_caption_test.dart test/hjviewer_text_scale_test.dart"
+# 1.9.1: the desktop settings split into the everyday tabs and Advanced settings (client patches
+# 0149-0152)
+CLIENT_DART_TESTS+=" test/hjviewer_settings_split_test.dart"
 # Pure Dart tests that a work package not in client/patches yet adds: run when the patched tree
 # has them, else skipped with a note. Once the patch is in, move them to CLIENT_DART_TESTS, so that
 # a dropped patch fails (the account screens' tests, design v3 7-5, moved with client patch 0033).
