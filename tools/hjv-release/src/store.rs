@@ -73,17 +73,40 @@ pub fn fetch(settings: &Settings, tools: &dyn Tools) -> Result<Option<String>, S
 const STORES: [&str; 2] = ["play", "appstore"];
 const ACTIONS: [&str; 3] = ["upload", "submit", "release"];
 
+/// The most digits a build number of the record has, as the store run takes it.
+const MAX_BUILD_DIGITS: usize = 18;
+
+/// What no line of the record may hold, here and in scripts/store-record.py: a control character
+/// but the tab, U+2028 or U+2029. Some readers (Python's `str.splitlines()`) break lines at some
+/// of them, and a line one reader takes for two must not pass for one in the other.
+fn unreadable(c: char) -> bool {
+    (c.is_control() && c != '\t') || c == '\u{2028}' || c == '\u{2029}'
+}
+
 /// The highest version an `appstore … release` line of the record names. Every other line but
 /// comments and blank lines must have the record's form too: a line written by hand with a typo
-/// (`Release`, `app-store`) would otherwise pass for no release.
+/// (`Release`, `app-store`) would otherwise pass for no release. scripts/store-record.py reads by
+/// the same rule: lines end at `\n` only (the `\r` of a CRLF line is taken off), fields are
+/// separated by spaces and tabs, a line with another control character or U+2028/U+2029 is
+/// refused, and builds have 1-18 digits.
 pub fn appstore_released(record: &str) -> Result<Option<Version>, String> {
     let mut highest: Option<Version> = None;
-    for (n, line) in record.lines().enumerate() {
-        let fields: Vec<&str> = line.split_whitespace().collect();
+    for (n, piece) in record.split_inclusive('\n').enumerate() {
+        let line = match piece.strip_suffix('\n') {
+            Some(line) => line.strip_suffix('\r').unwrap_or(line),
+            None => piece,
+        };
+        let bad = || format!("출시 기록 {RECORD_PATH}의 {}번째 줄을 읽지 못합니다", n + 1);
+        if line.chars().any(unreadable) {
+            return Err(format!(
+                "{}: 탭 밖의 제어 문자나 U+2028·U+2029가 있습니다",
+                bad()
+            ));
+        }
+        let fields: Vec<&str> = line.split([' ', '\t']).filter(|f| !f.is_empty()).collect();
         if fields.is_empty() || fields[0].starts_with('#') {
             continue;
         }
-        let bad = || format!("출시 기록 {RECORD_PATH}의 {}번째 줄을 읽지 못합니다", n + 1);
         let [store, version, build, action, ..] = fields[..] else {
             return Err(bad());
         };
@@ -91,6 +114,7 @@ pub fn appstore_released(record: &str) -> Result<Option<Version>, String> {
         if !STORES.contains(&store)
             || !ACTIONS.contains(&action)
             || build.is_empty()
+            || build.len() > MAX_BUILD_DIGITS
             || !build.bytes().all(|b| b.is_ascii_digit())
         {
             return Err(bad());
@@ -140,6 +164,97 @@ appstore 1.9.1 263120249 submit - 1111111111111111111111111111111111111111 2026-
                 appstore_released(bad).unwrap_err().contains("1번째 줄"),
                 "{bad}"
             );
+        }
+    }
+
+    /// The same table as scripts/test_store_record.py's LINE_GRAMMAR, as both readers of the record
+    /// take one line grammar: a record, then what reading it gives, the highest App Store release
+    /// (`Ok(None)`: none), or the number of the line that is refused.
+    #[test]
+    fn the_two_readers_take_one_line_grammar() {
+        let written = "\
+# store version build action track source-commit date(UTC) note
+play 1.9.1 263122249 upload alpha 1111111111111111111111111111111111111111 2026-10-28 store #12 build-run 4242
+appstore 1.9.1 263120249 submit - 1111111111111111111111111111111111111111 2026-10-28 store #13
+appstore 1.9.1 263120249 release - 1111111111111111111111111111111111111111 2026-11-02 store #15
+";
+        let by_hand = "play 1.9.0 262932441 upload alpha 3333333333333333333333333333333333333333 2026-10-21 by hand\n";
+        let cases: [(&str, Result<Option<&str>, usize>); 29] = [
+            // read by both, as before: the record job's lines, one written by hand, CRLF lines, tabs
+            // and runs of spaces, comments and blank lines, no newline at the end, builds of 1 and
+            // 18 digits, a Unicode space after the fourth field, no lines
+            (written, Ok(Some("1.9.1"))),
+            (by_hand, Ok(None)),
+            (
+                "# note\r\n\r\nappstore 1.9.1 263120249 release - x 2026-11-02 store #15\r\n",
+                Ok(Some("1.9.1")),
+            ),
+            (
+                "\tappstore  1.9.1\t263120249 \t release\n",
+                Ok(Some("1.9.1")),
+            ),
+            ("  # a note\n\t# another\n \t \n\n", Ok(None)),
+            ("appstore 1.9.1 263120249 release - x", Ok(Some("1.9.1"))),
+            (
+                "appstore 1.9.1 7 release - x\nappstore 1.9.2 123456789012345678 release - x\n",
+                Ok(Some("1.9.2")),
+            ),
+            (
+                "appstore 1.9.1 263120249 release - x by\u{a0}hand\n",
+                Ok(Some("1.9.1")),
+            ),
+            ("", Ok(None)),
+            // refused by both: a build of 19 digits (hjv-release read it) or with a digit that is
+            // not ASCII
+            ("appstore 1.9.1 1234567890123456789 release - x\n", Err(1)),
+            ("appstore 1.9.1 26312024\u{663} release - x\n", Err(1)),
+            // a \r other than the one of a CRLF line (store-record.py read the first as two lines
+            // and hjv-release as one; both read the other two)
+            (
+                "appstore 1.9.1 1 release - x\rappstore 1.9.3 1 release - x\n",
+                Err(1),
+            ),
+            ("# note\nappstore 1.9.1 1 release - x\r", Err(2)),
+            ("appstore 1.9.1 1 release - x\r\r\n", Err(1)),
+            // the other line breaks of str.splitlines(), and \x1f, a space to str.split() only: the
+            // two read some of these differently (two lines as one, a release after a comment)
+            (
+                "appstore 1.9.1 1 release - x\x0bappstore 1.9.3 1 release - x\n",
+                Err(1),
+            ),
+            ("appstore 1.9.1 1 release - x\x0c\n", Err(1)),
+            ("# note\x1cappstore 1.9.3 1 release - x\n", Err(1)),
+            ("appstore\x1f1.9.1 1 release - x\n", Err(1)),
+            ("# note\u{85}appstore 1.9.3 1 release - x\n", Err(1)),
+            ("# note\u{2028}appstore 1.9.3 1 release - x\n", Err(1)),
+            ("appstore 1.9.1 1 release - x\u{2029}\n", Err(1)),
+            // any other control character, in a comment too
+            ("appstore 1.9.1 1 release - x\x00\n", Err(1)),
+            ("# \x1b[31mnote\x1b[0m\n", Err(1)),
+            ("appstore 1.9.1 1 release - x\x7f\n", Err(1)),
+            ("appstore 1.9.1 1 release - x\u{9b}\n", Err(1)),
+            // fields are separated by spaces and tabs only (both split at Unicode spaces before)
+            ("appstore\u{3000}1.9.1 1 release - x\n", Err(1)),
+            ("appstore 1.9.1\u{a0}1 release - x\n", Err(1)),
+            ("\u{a0}\n", Err(1)),
+            // lines are counted at \n
+            (
+                "# header\n\nappstore 1.9.1 1 release - x\nappstore 1.9 1 release - x\n",
+                Err(4),
+            ),
+        ];
+        for (record, expected) in cases {
+            let read = appstore_released(record);
+            match expected {
+                Ok(version) => assert_eq!(read, Ok(version.map(v)), "{record:?}"),
+                Err(n) => {
+                    let err = read.unwrap_err();
+                    assert!(
+                        err.contains(&format!("{RECORD_PATH}의 {n}번째 줄")),
+                        "{record:?}: {err}"
+                    );
+                }
+            }
         }
     }
 

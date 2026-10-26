@@ -13,6 +13,7 @@ import os
 import http.server
 import tempfile
 import threading
+import types
 import unittest
 from unittest import mock
 
@@ -244,6 +245,16 @@ class StoreRecordTest(unittest.TestCase):
             self.assertTrue(text.startswith(sr.HEADER))
             self.assertEqual(len(sr.parse(text)), 1)
 
+    def test_a_local_file_is_read_as_the_contents_api_gives_it(self):
+        # a lone \r stays one (open()'s newline translation made it a line break)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "store-releases.txt")
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(sr.HEADER + f"appstore 1.9.1 263120249 release - {B} 2026-11-02 x\r")
+            code, out = self.run_script(["check-build", "--file", path, "--store", "appstore", "--version", "1.9.2"])
+            self.assertEqual(code, 1, out)
+            self.assertIn("line 2 has a control character", out)
+
     def test_bad_usage(self):
         for argv, why in [
             (["check", "--file", "x", "--store", "play", "--version", "1.9", "--build", "1", "--action", "upload"],
@@ -258,6 +269,8 @@ class StoreRecordTest(unittest.TestCase):
               "--action", "submit", "--source", "abc"], "40-digit"),
             (["add", "--file", "x", "--store", "appstore", "--version", "1.9.1", "--build", "1",
               "--action", "submit", "--source", B, "--note", "two\nlines"], "one line"),
+            (["add", "--file", "x", "--store", "appstore", "--version", "1.9.1", "--build", "1",
+              "--action", "submit", "--source", B, "--note", "store \x1b[31m#13"], "without control characters"),
             (["check", "--repo", "a/b/../c", "--store", "play", "--version", "1.9.1", "--build", "1",
               "--action", "upload"], "not a repository"),
         ]:
@@ -424,6 +437,80 @@ class VersionLimitTest(unittest.TestCase):
         for bad in ("1.9.100", "1000.0.0", "01.9.1", "1.09.1", "1.9"):
             with self.assertRaises(sr.RecordError, msg=bad):
                 sr.version_key(bad)
+
+
+# One table in the tests of both readers of the record (tools/hjv-release src/store.rs,
+# the_two_readers_take_one_line_grammar): a record, then what reading it gives, the highest App Store
+# release (None: none), or the number of the line that is refused.
+C = "1" * 40
+WRITTEN = (sr.HEADER
+           + f"play 1.9.1 263122249 upload alpha {C} 2026-10-28 store #12 build-run 4242\n"
+           + f"appstore 1.9.1 263120249 submit - {C} 2026-10-28 store #13\n"
+           + f"appstore 1.9.1 263120249 release - {C} 2026-11-02 store #15\n")
+BY_HAND = f"play 1.9.0 262932441 upload alpha {'3' * 40} 2026-10-21 by hand\n"
+LINE_GRAMMAR = [
+    # read by both, as before: the record job's lines, one written by hand, CRLF lines, tabs and
+    # runs of spaces, comments and blank lines, no newline at the end, builds of 1 and 18 digits,
+    # a Unicode space after the fourth field, no lines
+    (WRITTEN, "1.9.1"),
+    (BY_HAND, None),
+    ("# note\r\n\r\nappstore 1.9.1 263120249 release - x 2026-11-02 store #15\r\n", "1.9.1"),
+    ("\tappstore  1.9.1\t263120249 \t release\n", "1.9.1"),
+    ("  # a note\n\t# another\n \t \n\n", None),
+    ("appstore 1.9.1 263120249 release - x", "1.9.1"),
+    ("appstore 1.9.1 7 release - x\nappstore 1.9.2 123456789012345678 release - x\n", "1.9.2"),
+    ("appstore 1.9.1 263120249 release - x by\xa0hand\n", "1.9.1"),
+    ("", None),
+    # refused by both: a build of 19 digits (hjv-release read it) or with a digit that is not ASCII
+    ("appstore 1.9.1 1234567890123456789 release - x\n", 1),
+    ("appstore 1.9.1 26312024\u0663 release - x\n", 1),
+    # a \r other than the one of a CRLF line (store-record.py read the first as two lines and
+    # hjv-release as one; both read the other two)
+    ("appstore 1.9.1 1 release - x\rappstore 1.9.3 1 release - x\n", 1),
+    ("# note\nappstore 1.9.1 1 release - x\r", 2),
+    ("appstore 1.9.1 1 release - x\r\r\n", 1),
+    # the other line breaks of str.splitlines(), and \x1f, a space to str.split() only: the two
+    # read some of these differently (two lines as one, a release after a comment)
+    ("appstore 1.9.1 1 release - x\x0bappstore 1.9.3 1 release - x\n", 1),
+    ("appstore 1.9.1 1 release - x\x0c\n", 1),
+    ("# note\x1cappstore 1.9.3 1 release - x\n", 1),
+    ("appstore\x1f1.9.1 1 release - x\n", 1),
+    ("# note\x85appstore 1.9.3 1 release - x\n", 1),
+    ("# note\u2028appstore 1.9.3 1 release - x\n", 1),
+    ("appstore 1.9.1 1 release - x\u2029\n", 1),
+    # any other control character, in a comment too
+    ("appstore 1.9.1 1 release - x\x00\n", 1),
+    ("# \x1b[31mnote\x1b[0m\n", 1),
+    ("appstore 1.9.1 1 release - x\x7f\n", 1),
+    ("appstore 1.9.1 1 release - x\x9b\n", 1),
+    # fields are separated by spaces and tabs only (both split at Unicode spaces before)
+    ("appstore\u30001.9.1 1 release - x\n", 1),
+    ("appstore 1.9.1\xa01 release - x\n", 1),
+    ("\xa0\n", 1),
+    # lines are counted at \n
+    ("# header\n\nappstore 1.9.1 1 release - x\nappstore 1.9 1 release - x\n", 4),
+]
+
+
+class LineGrammarTest(unittest.TestCase):
+    def test_the_two_readers_take_one_line_grammar(self):
+        for record, expected in LINE_GRAMMAR:
+            with self.subTest(record=record):
+                if isinstance(expected, int):
+                    with self.assertRaisesRegex(sr.RecordError, rf"^store-releases\.txt line {expected} "):
+                        sr.parse(record)
+                else:
+                    keys = [e["key"] for e in sr.parse(record) if e["store"] == "appstore" and e["action"] == "release"]
+                    self.assertEqual(".".join(map(str, max(keys))) if keys else None, expected)
+
+    def test_the_table_has_the_lines_the_record_job_writes(self):
+        lines = [sr.line_of(types.SimpleNamespace(store=store, version="1.9.1", build=build, action=action,
+                                                  track=track, source=C, note=note), day)
+                 for store, build, action, track, note, day in [
+                     ("play", "263122249", "upload", "alpha", "store #12 build-run 4242", "2026-10-28"),
+                     ("appstore", "263120249", "submit", None, "store #13", "2026-10-28"),
+                     ("appstore", "263120249", "release", None, "store #15", "2026-11-02")]]
+        self.assertEqual(sr.HEADER + "".join(lines), WRITTEN)
 
 
 class NoRedirectTest(unittest.TestCase):

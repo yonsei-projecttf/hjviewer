@@ -8,9 +8,11 @@
     appstore 1.9.1 263120249 submit - <40-digit commit> 2026-10-28 store #13
     appstore 1.9.1 263120249 release - <40-digit commit> 2026-11-02 store #15
 
-tools/hjv-release (src/store.rs) reads the same lines: every line but comments and blank lines is
-`store version build action ...` with store play|appstore, version X.Y.Z, a numeric build and the
-action upload|submit|release.
+tools/hjv-release (src/store.rs) reads the same lines by the same rule: lines end at \n only (the \r
+of a CRLF line is taken off), fields are separated by spaces and tabs, a line with any other
+control character or U+2028/U+2029 is refused, and every line but comments and blank lines is
+`store version build action ...` with store play|appstore, version X.Y.Z, a build of 1-18 digits
+and the action upload|submit|release.
 
     store-record.py check --store S --version V --build B --action A   (the store run's checks job)
     store-record.py check-build --store S --version V                  (a build run's first step)
@@ -65,6 +67,11 @@ ACTIONS = {"play": ("upload",), "appstore": ("submit", "release")}
 # tools/hjv-release's Version::parse (src/version.rs): no leading zeros, 3, 3 and 2 digits at most
 VERSION = re.compile(r"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]?)")
 BUILD = re.compile(r"[0-9]{1,18}")
+# What no line of the record may hold, here and in src/store.rs: a control character but the tab,
+# U+2028 or U+2029. str.splitlines() and other readers break lines at some of them, and a line one
+# reader takes for two must not pass for one in the other.
+UNREADABLE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
+FIELD_SEPARATOR = re.compile(r"[ \t]+")
 SHA = re.compile(r"[0-9a-f]{40}")
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 MAX_BYTES = 1024 * 1024  # as tools/hjv-release reads it
@@ -94,8 +101,13 @@ def parse(record: str) -> list[dict]:
     """The record's lines as dicts; a line in no known form stops everything (src/store.rs does too:
     a line written by hand with a typo must not pass for no line)."""
     entries = []
-    for n, line in enumerate(record.splitlines(), 1):
-        fields = line.split()
+    pieces = record.split("\n")
+    for n, line in enumerate(pieces, 1):
+        if n < len(pieces) and line.endswith("\r"):
+            line = line[:-1]  # a CRLF line; any other \r is refused below
+        if UNREADABLE.search(line):
+            raise RecordError(f"{RECORD_PATH} line {n} has a control character other than a tab, or U+2028/U+2029")
+        fields = [field for field in FIELD_SEPARATOR.split(line) if field]
         if not fields or fields[0].startswith("#"):
             continue
         bad = RecordError(f"{RECORD_PATH} line {n} is not 'store version build action ...'")
@@ -383,7 +395,8 @@ def check_run(repo: Repo, run_id: str, version: str, source: str) -> str:
 def read_record(args, env) -> str:
     if args.file:
         try:
-            with open(args.file, encoding="utf-8") as handle:
+            # newline="": the text as the contents API gives it, a lone \r not made a line break
+            with open(args.file, encoding="utf-8", newline="") as handle:
                 return handle.read()
         except FileNotFoundError:
             return ""
@@ -450,8 +463,9 @@ def validate(args) -> None:
             raise RecordError(f"not a track name: {args.track!r}", usage=True)
         if args.store == "play" and not args.track:
             raise RecordError("a Play line names its track (--track alpha)", usage=True)
-        if args.note and ("\n" in args.note or "\r" in args.note or len(args.note) > 200):
-            raise RecordError("--note is one line of up to 200 characters", usage=True)
+        # what the readers refuse, the record job never writes
+        if args.note and (UNREADABLE.search(args.note) or len(args.note) > 200):
+            raise RecordError("--note is one line of up to 200 characters, without control characters", usage=True)
 
 
 def main(argv: list[str], env=os.environ) -> int:
