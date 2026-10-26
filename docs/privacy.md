@@ -374,9 +374,10 @@ operator (as a tag), when, and how many users and PCs it showed.
 ### 6. Camera and microphone
 
 On phones, the app uses the microphone only during a voice call you start in a session; the sound
-goes end-to-end encrypted to the other device and is not stored. The app does not use the camera or your pictures:
-the permissions are declared for the QR code reader of the open-source code this app is built on,
-which sets the server, and HJViewer does not show that reader. Phones only control other devices; they do not share their own screen.
+goes end-to-end encrypted to the other device and is not stored. The app does not use the camera or your pictures,
+and from version 1.9.1 it does not declare those permissions either. Earlier versions declared them
+for the QR code reader of the open-source code this app is built on, which sets the server; HJViewer
+did not show that reader. Phones only control other devices; they do not share their own screen.
 
 On a Windows PC that accepts connections, a connected device sees its screen and, as far as the
 PC's permission settings allow, its cameras and sound, and can hold a voice call that someone at
@@ -555,7 +556,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 6. 카메라와 마이크
 
-휴대폰 앱은 세션 중 직접 시작한 음성 통화에서만 마이크를 씁니다. 소리는 상대 기기로 종단 간 암호화되어 가고 저장하지 않습니다. 카메라와 사진은 쓰지 않습니다. 권한은 앱의 바탕이 된 공개 소스의 QR 코드 읽기(서버를 정하는 기능) 때문에 선언되어 있고, HJViewer는 그 화면을 보이지 않습니다. 휴대폰은 다른 기기를 제어하기만 하고, 자기 화면을 내보내지 않습니다.
+휴대폰 앱은 세션 중 직접 시작한 음성 통화에서만 마이크를 씁니다. 소리는 상대 기기로 종단 간 암호화되어 가고 저장하지 않습니다. 카메라와 사진은 쓰지 않고, 1.9.1부터는 그 권한도 선언하지 않습니다. 그 전 판은 앱의 바탕이 된 공개 소스의 QR 코드 읽기(서버를 정하는 기능) 때문에 권한을 선언했지만, HJViewer는 그 화면을 보이지 않았습니다. 휴대폰은 다른 기기를 제어하기만 하고, 자기 화면을 내보내지 않습니다.
 
 원격 접속을 받는 Windows PC에서는, 연결한 기기가 그 PC의 화면을 보고, PC의 권한 설정이 허락하는 만큼 카메라 영상과 소리도 받으며, PC 앞 사람이 받아들인 음성 통화를 할 수 있습니다. 모두 종단 간 암호화되고, 서버는 아무것도 저장하지 않습니다.
 

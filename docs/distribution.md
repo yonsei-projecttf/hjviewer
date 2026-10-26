@@ -504,10 +504,11 @@ TestFlight 빌드는 올린 지 90일이 지나면 실행되지 않습니다. 1.
 
 ### iPhone
 
-- 업데이트 화면의 [TestFlight 열기]를 누르고, TestFlight 앱에서 HJViewer의 [업데이트]를 누릅니다. TestFlight 설정에서 자동 업데이트를 켜 두면 다음부터는 저절로 설치됩니다.
+- TestFlight로 설치한 앱: 업데이트 화면의 [TestFlight 열기]를 누르고, TestFlight 앱에서 HJViewer의 [업데이트]를 누릅니다. TestFlight 설정에서 자동 업데이트를 켜 두면 다음부터는 저절로 설치됩니다.
+- App Store에서 설치한 앱(1.9.1부터): 업데이트 화면의 [App Store 열기]를 누르고, App Store에서 HJViewer의 [업데이트]를 누릅니다. 설정 앱의 App Store에서 앱 업데이트를 켜 두면 다음부터는 저절로 설치됩니다. App Store가 열리지 않으면 App Store 앱에서 HJViewer를 찾아 업데이트합니다.
 - TestFlight가 열리지 않으면 App Store에서 TestFlight를 설치한 뒤 다시 합니다.
-- TestFlight로 설치하지 않은 아이폰(Ad Hoc)은 "이 iPhone의 HJViewer는 TestFlight로 설치하지 않아 앱에서 업데이트할 수 없습니다. 관리자에게 새 버전을 받으세요."가 뜹니다.
-- 앱은 아무것도 내려받지 않습니다. 빌드는 올린 지 90일 동안만 실행되므로, 운영자는 75일이 지나기 전에 새 빌드를 올립니다(`hjv-release`의 주 1회 점검이 알려 줌).
+- TestFlight나 App Store로 설치하지 않은 아이폰(Ad Hoc)은 "이 iPhone의 HJViewer는 TestFlight로 설치하지 않아 앱에서 업데이트할 수 없습니다. 관리자에게 새 버전을 받으세요."가 뜹니다.
+- 앱은 아무것도 내려받지 않습니다. TestFlight 빌드는 올린 지 90일 동안만 실행되므로, 운영자는 75일이 지나기 전에 새 빌드를 올립니다(`hjv-release`의 주 1회 점검이 알려 줌).
 
 ### 다른 PC를 원격으로 올리기
 

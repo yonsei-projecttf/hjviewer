@@ -296,7 +296,7 @@ NAS ──매직 패킷(자기 랜카드의 브로드캐스트, UDP 9·7)──�
 
 - RustDesk 클라이언트와 서버는 모두 **AGPL-3.0**입니다. 수정한 앱을 배포하거나 수정한 서버를 네트워크로 서비스하면, 해당 사용자에게 **수정본 소스를 제공할 의무**가 있습니다. 저장소가 비공개여도 이 의무는 남습니다.
 - hjv-api(`server/api`), hjv-relay(`relay/`), hjv-release(`tools/hjv-release`)는 이 저장소에서 새로 쓴 프로그램이고, 저장소의 다른 부분처럼 AGPL-3.0-only입니다. hjv-api는 `GET /api/hjv/source`로 라이선스와 소스 위치를 알립니다(웹 서버의 `/`는 함께 쓰는 사이트가 쓰므로).
-- "RustDesk" 이름과 로고는 쓸 수 없습니다. 앱 이름, 아이콘, Windows 실행 파일 정보, 정보 화면 링크를 HJViewer로 바꿨습니다. Windows 실행 파일은 `HJViewer.exe`이고, Windows의 URL 스킴은 그에 따라 `hjviewer://`입니다. 휴대폰도 1.9부터 `hjviewer://`를 받습니다. upstream과 같은 `rustdesk://`는 1.9에서 함께 받고 그다음 판에서 뺍니다. 고정 서버 빌드는 링크에 든 비밀번호를 쓰지 않고, 링크로 여는 연결은 한 번 묻습니다(access-tickets.md 5-3의 LK1).
+- "RustDesk" 이름과 로고는 쓸 수 없습니다. 앱 이름, 아이콘, Windows 실행 파일 정보, 정보 화면 링크를 HJViewer로 바꿨습니다. Windows 실행 파일은 `HJViewer.exe`이고, Windows의 URL 스킴은 그에 따라 `hjviewer://`입니다. 휴대폰도 1.9부터 `hjviewer://`를 받습니다. upstream과 같은 `rustdesk://`는 1.9.0에서만 함께 받았고 1.9.1에서 뺐습니다. 고정 서버 빌드는 링크에 든 비밀번호를 쓰지 않고, 링크로 여는 연결은 한 번 묻습니다(access-tickets.md 5-3의 LK1).
 - 저장소 루트의 `LICENSE`(AGPL-3.0 전문)와 `NOTICE`(upstream 저작권자와 변경 범위)가 고지이고, 내려받는 모든 빌드 결과물에도 라이선스·소스 위치·서드파티 고지 파일이 함께 들어갑니다. TestFlight 빌드에는 앱 정보 화면의 소스 링크만 있습니다.
 - 1.6.0부터 앱 안에서 받은 새 버전에는 고지 파일이 붙지 않습니다. 그래서 업데이트 화면과 정보 화면에 그 판의 소스 태그와 이 저장소 주소를 보입니다. 문 2(8-5)는 고지 파일도 패키지 옆에 함께 내줍니다. 문 2의 페이지는 바깥 사이트를 가리키지 않고, 소스 코드(출시 태그)를 받는 곳은 그 알림 파일의 SOURCE에 있다고 말합니다(사용자 요청, 2026-10-14, hjv-api 3b283b2). AGPL 6(d)의 '목적 코드 옆의 분명한 안내'는 그 SOURCE 고지가 맡습니다.
 - RustDesk의 프린터 드라이버 어댑터 DLL은 소스가 공개되지 않아 AGPL 배포 조건을 지킬 수 없으므로 Windows 빌드에서 뺐습니다(원격 인쇄 꺼짐). 1.9.0부터 설정에는 프린터 탭과 보안의 '원격 프린터 허용'도 없습니다(U39).
@@ -495,7 +495,7 @@ hbbs (서버 패치 0006~0008, /etc/hjviewer/access.conf: MODE, KEY, NOT_BEFORE,
 
 1. 서버 배포 → `hjv-probe`로 실제 회사망·모바일망에서 검증 ([deploy.md](deploy.md))
 2. CI로 Windows/Android/iOS 빌드 ([ci.md](ci.md)) → 실기기 연결 테스트 (P2P와 중계 각각)
-3. 브랜딩 마무리: 휴대폰의 옛 URL 스킴 `rustdesk://`를 뺌(1.9는 `hjviewer://`와 함께 받음, D-13)
+3. 브랜딩 마무리: 휴대폰의 옛 URL 스킴 `rustdesk://`를 뺌(1.9.0은 `hjviewer://`와 함께 받음, 1.9.1에서 뺌, D-13)
 4. 1.6.0 계정 기능의 실기기 점검과 배포([server-runbook.md](server-runbook.md) 7절), 최소 버전 강제와 1.5.1 사용자의 이행([distribution.md](distribution.md)). 그 다음(3단계, 선택): 세션 키에 묶은 증명, 포트 포워딩·RDP의 비밀번호 없는 연결, 앱에서 중계기 셀프 등록, ARM NAS용 hjv-relay, 랜카드·빠른 시작 설정의 자동 변경(1.9의 원격 준비는 전원 연결 때의 절전만, 누를 때 바꿈), 코드 서명, 무인 설치의 자동 되돌리기, 외부 TestFlight·App Store
 5. 운영: 중계 트래픽 모니터링(세션당 대략 수 Mbps), hbbr 증설(`hbbs -r relay1,relay2`), 키 파일 `id_ed25519` 백업, ICE 후보 전달 속도 제한
 6. 선택: TURN 서버(coturn). UDP는 되지만 P2P가 실패하는 대칭형 NAT에서 WS 중계보다 지연이 적습니다.
