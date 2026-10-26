@@ -403,7 +403,7 @@ gh secret list -R yonsei-projecttf/hjviewer-private   # 이름과 날짜만 보�
 
 ### iOS 내보내기 방식
 
-서명 빌드는 `flutter build ipa`에 `--dart-define=HJV_IOS_EXPORT=<내보내기 방식>`을 넘깁니다. 값은 "Set up code signing" 단계가 프로파일을 보고 정한 것입니다(`app-store-connect`, `release-testing`, `debugging`, `enterprise`). 앱은 이 값이 `app-store-connect`일 때만 업데이트 화면에서 TestFlight를 엽니다. Ad Hoc 같은 다른 설치본은 TestFlight로 업데이트할 수 없기 때문입니다(최소 버전 설계 5-5). 서명 없는 빌드에는 값이 없습니다.
+서명 빌드는 `flutter build ipa`에 `--dart-define=HJV_IOS_EXPORT=<내보내기 방식>`을 넘깁니다. 값은 "Set up code signing" 단계가 프로파일을 보고 정한 것입니다(`app-store-connect`, `release-testing`, `debugging`, `enterprise`). 앱은 이 값이 `app-store-connect`일 때만 업데이트 화면에서 TestFlight를 엽니다. Ad Hoc 같은 다른 설치본은 TestFlight로 업데이트할 수 없기 때문입니다(최소 버전 설계 5-5). TestFlight와 App Store는 같은 빌드를 내주므로, 1.9.1부터 앱은 그 값일 때 설치본의 영수증(`package_info_plus`의 `installerStore`)도 봅니다. App Store의 영수증(`com.apple`)이면 App Store를, 샌드박스 영수증(`com.apple.testflight`, 심사하는 앱도)이면 TestFlight를 엽니다. 서명 없는 빌드에는 값이 없습니다.
 
 ### Dart 테스트
 

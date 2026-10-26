@@ -39,6 +39,6 @@ Amyuni Technologies Inc., under its own license.
 
 HJViewer is not affiliated with or endorsed by RustDesk or Purslane Tech Pte. Ltd. The app's About
 screen keeps RustDesk's copyright line; its "Powered by RustDesk" link is hidden by default on the
-desktop and in the mobile apps. From 1.9 the phones use the hjviewer:// URL scheme and still accept
-the old rustdesk:// for one release. Some internal names still say rustdesk (Android package
-internals).
+desktop and in the mobile apps. From 1.9 the phones use the hjviewer:// URL scheme; they accepted
+the old rustdesk:// as well in 1.9.0 only, and from 1.9.1 they do not. Some internal names still
+say rustdesk (Android package internals).
