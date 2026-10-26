@@ -363,6 +363,11 @@ class CheckRunTest(unittest.TestCase):
             ({"referenced_workflows": [other]}, "did not call exactly"),
             ({"referenced_workflows": [pinned, other]}, "did not call exactly"),
             ({"referenced_workflows": [{**pinned, "sha": A}]}, "did not call exactly"),
+            # the same sha in another file or another repository: only the path tells them apart
+            ({"referenced_workflows": [{**pinned, "path": f"{PUBLIC}/.github/workflows/other.yml@{B}"}]},
+             "did not call exactly"),
+            ({"referenced_workflows": [{**pinned, "path": f"someone/fork/.github/workflows/client-build.yml@{B}"}]},
+             "did not call exactly"),
             ({"referenced_workflows": []}, "did not call exactly"),
             ({"head_sha": None}, "head_sha"),
         ]:

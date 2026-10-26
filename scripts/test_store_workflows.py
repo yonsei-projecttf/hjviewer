@@ -77,6 +77,17 @@ def key(lines, name):
     return None
 
 
+def block(lines, name):
+    """The lines under a job's own `name:` key (indent 4), stripped, blank lines left out."""
+    out, inside = [], False
+    for line in lines:
+        if re.fullmatch(r"    \S.*", line):
+            inside = line == f"    {name}:"
+        elif inside and line.strip():
+            out.append(line.strip())
+    return out
+
+
 class StoreReleaseWorkflowTest(unittest.TestCase):
     def setUp(self):
         self.text = read("store-release.yml")
@@ -101,7 +112,8 @@ class StoreReleaseWorkflowTest(unittest.TestCase):
             text = "\n".join(lines)
             self.assertIn("    permissions:\n", text + "\n", f"{job} names its permissions")
             if job == "record":
-                self.assertIn("      contents: write", text)
+                # the one write, and nothing beside it (actions: write could change other runs)
+                self.assertEqual(block(lines, "permissions"), ["contents: write"])
             else:
                 self.assertNotIn("write", text.split("    steps:")[0], job)
         self.assertNotIn("contents: write", "\n".join(l for j, ls in self.jobs.items() if j != "record" for l in ls))
