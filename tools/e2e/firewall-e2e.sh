@@ -806,6 +806,14 @@ online() { # <ID> <side>: hbbs has the device online, asked from the side's netw
   in_ns "hjv-$2" "$2" "$PROBE" "$DOMAIN" --ca "$CA_ROOT" --peer "$1" >"$RUN/probe-$1.log" 2>&1 &&
     grep -q "$1=online" "$RUN/probe-$1.log"
 }
+# <what>: a PC whose binding went starts its rendezvous connection again within a second (its access
+# ticket changed: hjviewer_access.rs registration_tick), and hbbs has it offline until it registers
+# again; a controller that asks in that gap gets "Remote desktop is offline" (exit 1), not the
+# refusal. Wait for the restart's tick, then for hbbs to have the PC online.
+revoked_registered_again() {
+  sleep 2
+  until_ok 20 "$1: the PC online again after its rendezvous restart" online "$PC_ID" ctl
+}
 relogin_marked() { # after a knock for the PC's sync, the account's list has the PC needs-relogin
   knock
   sleep 2
@@ -1397,6 +1405,7 @@ account_strict() {
   cut_by_pc S36 "$CUT_PC" "this PC's binding was revoked" "$CTL2_ID"
   pass "S36: the stream ended $(ms_since "$t0") ms after 'binding revoke' (exit 7, 'closed: $CUT_PC'; the PC logged '… ended: this PC's binding was revoked')"
   until_ok 15 "S26: the PC took the signed revoked" state_is revoked
+  revoked_registered_again "S26"
   pwless_refused ctl2 s26a "S26: after binding revoke"
   pass "S26: binding revoke: a signed revoked, the binding gone ($STATE), refused"
   # then the PC reports that it holds no binding: hjv-api, which has only the released one, answers
@@ -1409,6 +1418,7 @@ account_strict() {
   pwless_ok ctl2 s26b "S26: bound again"
   admin device remove "$PC_ID" | sed 's/^/    /'
   until_ok 15 "S26: the PC took the signed revoked after device remove" state_is revoked
+  revoked_registered_again "S26 after device remove"
   pwless_refused ctl2 s26c "S26: after device remove"
   pass "S26: device remove (the alias) does the same"
 
