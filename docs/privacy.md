@@ -6,17 +6,23 @@ English first. 한국어는 [아래](#한국어)에 있습니다. The two parts 
 
 ### 1. In short
 
-HJViewer is a self-hosted remote desktop app. The people who build it collect nothing: there are
-no analytics, crash reports or ads. The app talks only to the server it was built for, which that
-server's operator runs, and to public STUN servers (section 2).
+HJViewer is a self-hosted remote desktop app. It has no analytics, crash reports or ads. The team
+that builds it, 프로젝트TF, also runs the university's HJViewer server and its account service
+(section 9); the sections below say what they keep. Apart from the devices it connects with, the
+app talks only to the server it was built for, which that server's operator runs, and to public
+STUN servers (section 2). It opens pages outside the app only when you tap a link or button: this
+project's pages on GitHub (this statement, the source code and its guides) and, to update the app,
+TestFlight or the App Store on an iPhone, or Google Play or the server's download link on Android.
 
 From version 1.6.0 the server can also have accounts. Faculty and staff whom the Yonsei SSO accepts
 log in with their Yonsei portal ID; they then see their own Windows PCs in the app, connect between
 their own devices without the PC's password, and can switch a sleeping PC on through a relay in its
 network. This statement says what the server, your devices and that relay keep, for how long, and
-how to delete it in the app or have it deleted (section 8). Logging in is a choice: an app that is
-not logged in, and a build without the account feature, sends nothing to the account service and
-connects with the PC's ID and password as before.
+how to delete it in the app or have it deleted (section 8). An app that is not logged in sends the
+account service only the access check of section 2 and, when someone types them, a login, the
+access password or, on a PC, a support code (section 3). On the university's HJViewer server, such
+an app connects only after the access password, and such a PC accepts connections only after the
+access password or a support code (below).
 
 From version 1.6.0 the operator can also set a minimum app version. Apps check the server's signed
 version policy, and new versions come from the server (section 2, "Updates").
@@ -267,12 +273,13 @@ operator (as a tag), when, and how many users and PCs it showed.
 
 - **Every app**: its settings, its device ID and key pair, and the IDs of devices you connected to.
 - **A logged-in app** also keeps the account key's private key: on an iPhone in the Keychain, for
-  this device only and usable while it is unlocked, so it is not in backups; on Android in the
-  app's data, which is left out of cloud backups and device-to-device transfers; on Windows in
-  `%LOCALAPPDATA%\HJViewer-account\`, encrypted with Windows DPAPI for your Windows user and not
-  roaming. It also keeps the login token, the name and portal ID the server returned, the list of
-  your PCs (PC ID, public key, state) and the difference between its clock and the server's. A
-  token without its account key opens nothing.
+  this device only and usable while it is unlocked: it is not synced through iCloud Keychain, and a
+  backup carries it protected by a key tied to this device, so it can be restored only to this
+  device; on Android in the app's data, which is left out of cloud backups and device-to-device
+  transfers; on Windows in `%LOCALAPPDATA%\HJViewer-account\`, encrypted with Windows DPAPI for
+  your Windows user and not roaming. It also keeps the login token, the name and portal ID the
+  server returned, the list of your PCs (PC ID, public key, state) and the difference between its
+  clock and the server's. A token without its account key opens nothing.
 - **A PC in an account** keeps, in the Windows registry (`HKLM\SOFTWARE\HJViewer\Account`), its
   binding ID, your name masked, whether connections without the password are switched off on it,
   a record of a binding it let go, and for each account key the time of the last such connection
@@ -373,11 +380,13 @@ operator (as a tag), when, and how many users and PCs it showed.
 
 ### 6. Camera and microphone
 
-On phones, the app uses the microphone only during a voice call you start in a session; the sound
-goes end-to-end encrypted to the other device and is not stored. The app does not use the camera or your pictures,
-and from version 1.9.1 it does not declare those permissions either. Earlier versions declared them
-for the QR code reader of the open-source code this app is built on, which sets the server; HJViewer
-did not show that reader. Phones only control other devices; they do not share their own screen.
+On phones, the Android app uses the microphone only during a voice call you start in a session,
+and asks for the microphone permission only then; the sound goes end-to-end encrypted to the other
+device and is not stored. The iPhone and iPad app has no voice call and no microphone permission.
+Neither app uses the camera or your pictures, and from version 1.9.1 neither declares those
+permissions. Earlier versions declared them for the QR code reader of the open-source code this app
+is built on, which sets the server; HJViewer did not show that reader. Phones only control other
+devices; they do not share their own screen.
 
 On a Windows PC that accepts connections, a connected device sees its screen and, as far as the
 PC's permission settings allow, its cameras and sound, and can hold a voice call that someone at
@@ -472,9 +481,9 @@ history of that repository.
 
 ### 1. 요약
 
-HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니다. 앱을 만든 쪽은 아무 정보도 수집하지 않습니다. 분석, 오류 보고, 광고가 없습니다. 앱은 빌드할 때 정해진 서버, 그리고 공개 STUN 서버(2절)하고만 통신합니다. 서버는 그 서버의 운영자가 관리합니다.
+HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니다. 앱에는 분석, 오류 보고, 광고가 없습니다. 앱을 만드는 프로젝트TF가 학교의 HJViewer 서버와 그 계정 서비스도 운영합니다(9절). 그 서버와 계정 서비스가 무엇을 보관하는지는 아래 절에 적었습니다. 앱은 연결하는 기기 말고는 빌드할 때 정해진 서버, 그리고 공개 STUN 서버(2절)하고만 통신합니다. 서버는 그 서버의 운영자가 관리합니다. 앱 밖의 페이지는 링크나 단추를 누를 때만 엽니다. 여는 곳은 GitHub에 있는 이 프로젝트의 페이지(이 문서, 소스 코드와 그 안내 문서), 그리고 앱을 업데이트할 때 iPhone은 TestFlight나 App Store, Android는 Google Play나 서버의 내려받기 링크입니다.
 
-1.6.0부터 서버에 계정 기능이 생깁니다. 연세 SSO를 통과한 교직원은 연세포탈 ID로 로그인하고, 앱에서 자기 Windows PC를 보고, 자기 기기끼리 PC 비밀번호 없이 연결하고, PC와 같은 네트워크의 중계기로 꺼진 PC를 켤 수 있습니다. 이 문서는 서버, 사용자의 기기, 그 중계기가 무엇을 얼마 동안 보관하는지와, 앱에서 지우거나 지워 달라고 하는 방법(8절)을 적습니다. 로그인은 선택입니다. 로그인하지 않은 앱과 계정 기능이 없는 빌드는 계정 서비스에 아무것도 보내지 않고, 지금처럼 PC의 ID와 비밀번호로 연결합니다.
+1.6.0부터 서버에 계정 기능이 생깁니다. 연세 SSO를 통과한 교직원은 연세포탈 ID로 로그인하고, 앱에서 자기 Windows PC를 보고, 자기 기기끼리 PC 비밀번호 없이 연결하고, PC와 같은 네트워크의 중계기로 꺼진 PC를 켤 수 있습니다. 이 문서는 서버, 사용자의 기기, 그 중계기가 무엇을 얼마 동안 보관하는지와, 앱에서 지우거나 지워 달라고 하는 방법(8절)을 적습니다. 로그인하지 않은 앱은 계정 서비스에 2절의 출입 확인만 보내고, 그 밖에는 누가 로그인하거나 이용 비밀번호를, PC에서는 지원 코드를 넣을 때 그것만 보냅니다(3절). 학교의 HJViewer 서버에서 그런 앱은 이용 비밀번호를 넣은 뒤에만 연결하고, 그런 PC는 이용 비밀번호나 지원 코드를 넣은 뒤에만 연결을 받습니다(아래).
 
 1.6.0부터 운영자는 앱의 최소 버전도 정할 수 있습니다. 앱은 서버의 서명된 버전 정책을 확인하고, 새 버전을 서버에서 받습니다(2절의 "업데이트").
 
@@ -538,7 +547,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 ### 4. 기기에 저장되는 정보
 
 - **모든 앱**: 설정, 기기 ID와 키 쌍, 접속했던 기기 ID.
-- **로그인한 앱**은 계정 키의 개인키도 보관합니다. 아이폰은 Keychain에 이 기기 전용, 잠금이 풀렸을 때만 쓰도록 두므로 백업에 들어가지 않습니다. 안드로이드는 앱 데이터에 두며, 클라우드 백업과 기기 간 이전에서 뺍니다. Windows는 `%LOCALAPPDATA%\HJViewer-account\`에 Windows DPAPI로 그 Windows 사용자만 풀 수 있게 암호화해 두고, 로밍하지 않습니다. 그 밖에 로그인 토큰, 서버가 보낸 성명과 포탈 ID, 내 PC 목록(PC ID, 공개키, 상태), 서버와의 시계 차이를 보관합니다. 계정 키가 없는 토큰으로는 아무것도 할 수 없습니다.
+- **로그인한 앱**은 계정 키의 개인키도 보관합니다. 아이폰은 Keychain에 이 기기 전용, 잠금이 풀렸을 때만 쓰도록 둡니다. iCloud 키체인으로 동기화되지 않고, 백업에는 이 기기에 묶인 키로 보호된 채 들어가므로 같은 기기에만 복원할 수 있습니다. 안드로이드는 앱 데이터에 두며, 클라우드 백업과 기기 간 이전에서 뺍니다. Windows는 `%LOCALAPPDATA%\HJViewer-account\`에 Windows DPAPI로 그 Windows 사용자만 풀 수 있게 암호화해 두고, 로밍하지 않습니다. 그 밖에 로그인 토큰, 서버가 보낸 성명과 포탈 ID, 내 PC 목록(PC ID, 공개키, 상태), 서버와의 시계 차이를 보관합니다. 계정 키가 없는 토큰으로는 아무것도 할 수 없습니다.
 - **계정에 들어간 PC**는 Windows 레지스트리(`HKLM\SOFTWARE\HJViewer\Account`)에 묶음 ID, 가린 내 이름, 비밀번호 없는 연결을 그 PC에서 꺼 두었는지, 풀린 묶음의 기록, 계정 키마다 오늘과 어제의 비밀번호 없는 연결의 마지막 시각과 횟수를 둡니다. 서비스 폴더에는 서명된 목록(내 기기들의 이름·ID·공개키와 가린 내 이름)을, HJViewer 로그에는 비밀번호 없이 받아들인 연결마다 한 줄, 그 기기가 로그아웃되었거나 PC가 그런 연결을 더 받지 않아 그 연결을 끊었을 때 한 줄(그 기기의 ID와 이름, 시각)을 둡니다. 그런 연결이 열려 있는 동안 PC는 그 기기의 계정 공개키를 메모리에만 둡니다. HJViewer 로그는 약 90일치를 둡니다. 그 PC를 쓰는 다른 사람은 가린 이름을 볼 수 있고, 마음먹으면 그 목록도 볼 수 있습니다. HJViewer를 제거하면 레지스트리 키가 지워지고, Windows 사용자마다의 설정과 `%LOCALAPPDATA%\HJViewer-account\`, 서비스의 설정·목록 파일·로그는 남습니다.
 - **원격 준비와 세션 끝**(1.9.0부터): '원격 준비' 카드는 이 PC의 HJViewer·전원·랜카드 설정을 그 PC 안에서 읽을 뿐 서버에 보내지 않습니다. 서버에는 내 계정의 중계기가 이 PC를 맡는지만, PC의 켜기 확인이 이미 쓰는 요청으로 묻습니다. [절전 안 함]을 누르면 Windows의 지금 전원 계획에서 '전원 연결 시' 절전·최대 절전 시간을 바꾸고, 되돌릴 때까지 원래 값을 그 Windows 사용자의 HJViewer 설정에 둡니다. 내 기기에서 연 세션이 끝날 때 '시작할 때 잠겨 있었으면' 잠그기 위해, PC는 세션 시작 때 잠겨 있었는지를 10분 동안 메모리에 두고, 세션이 끝나 잠글 때마다 ID나 이름 없이 로그에 한 줄 남깁니다.
 - **들어온 연결**(1.9.0부터): HJViewer를 설치한 Windows PC는 최근 90일 동안 들여보낸 세션의 목록(많아야 2,000건)을 서비스 폴더의 파일에 둡니다(설치하지 않고 실행한 HJViewer는 목록을 두지 않음). 세션마다 시작과 끝 시각, 상대 기기의 ID와 그 기기가 보낸 이름(Windows 사용자 이름, 휴대폰은 기기 이름), 내 계정의 연결이면 서명된 목록의 기기 이름과 가린 내 이름, 교직원 표시가 붙은 연결(지원 코드, 3절)이면 이름 없이 ID만, PC가 신원을 확인했는지(내 계정, 또는 지원 코드를 만든 교직원. 그 밖에는 상대가 보낸 이름일 뿐임), 들어온 방법(PC의 일회용·영구 비밀번호, 같은 세션의 다시 연결, PC에서 수락, 내 계정), 종류(원격 화면, 파일 전송, 카메라, 터미널, 포트 포워딩), 끝난 방식, 그리고 다시 연결을 한 줄로 보이는 데만 쓰는 상대 기기의 세션 번호입니다. 주소, 파일 이름, 세션 내용은 두지 않고, 거절한 시도는 넣지 않습니다. 목록은 어디로도 보내지 않고, 그 PC의 HJViewer 설정(보안, 보안 설정 잠금 해제 뒤)에서 봅니다. 그 PC를 쓰는 다른 사람과 프로그램도 마음먹으면 HJViewer 서비스를 통해 읽을 수 있습니다. HJViewer를 제거하면 지워집니다.
@@ -556,7 +565,7 @@ HJViewer는 직접 운영하는 서버에 붙는 원격 데스크톱 앱입니�
 
 ### 6. 카메라와 마이크
 
-휴대폰 앱은 세션 중 직접 시작한 음성 통화에서만 마이크를 씁니다. 소리는 상대 기기로 종단 간 암호화되어 가고 저장하지 않습니다. 카메라와 사진은 쓰지 않고, 1.9.1부터는 그 권한도 선언하지 않습니다. 그 전 판은 앱의 바탕이 된 공개 소스의 QR 코드 읽기(서버를 정하는 기능) 때문에 권한을 선언했지만, HJViewer는 그 화면을 보이지 않았습니다. 휴대폰은 다른 기기를 제어하기만 하고, 자기 화면을 내보내지 않습니다.
+휴대폰 앱은 Android에서 세션 중 직접 시작한 음성 통화에서만 마이크를 쓰고, 마이크 권한도 그때만 묻습니다. 소리는 상대 기기로 종단 간 암호화되어 가고 저장하지 않습니다. iPhone·iPad 앱에는 음성 통화도 마이크 권한도 없습니다. 두 앱 모두 카메라와 사진은 쓰지 않고, 1.9.1부터는 그 권한도 선언하지 않습니다. 그 전 판은 앱의 바탕이 된 공개 소스의 QR 코드 읽기(서버를 정하는 기능) 때문에 권한을 선언했지만, HJViewer는 그 화면을 보이지 않았습니다. 휴대폰은 다른 기기를 제어하기만 하고, 자기 화면을 내보내지 않습니다.
 
 원격 접속을 받는 Windows PC에서는, 연결한 기기가 그 PC의 화면을 보고, PC의 권한 설정이 허락하는 만큼 카메라 영상과 소리도 받으며, PC 앞 사람이 받아들인 음성 통화를 할 수 있습니다. 모두 종단 간 암호화되고, 서버는 아무것도 저장하지 않습니다.
 
