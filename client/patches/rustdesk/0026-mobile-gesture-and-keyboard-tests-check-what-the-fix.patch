@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sun, 11 Oct 2026 10:57:20 +0900
-Subject: [PATCH 026/160] mobile: gesture and keyboard tests check what the
+Subject: [PATCH 026/161] mobile: gesture and keyboard tests check what the
  fixes ship
 
 The two-finger tap tests picked the right click out of the log, so the left

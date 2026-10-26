@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 22:16:50 +0900
-Subject: [PATCH 080/160] hjviewer: review fixes, applock lane
+Subject: [PATCH 080/161] hjviewer: review fixes, applock lane
 
 W13 app lock:
 - A cancelled or failed prompt no longer turns the lock off. local_auth's

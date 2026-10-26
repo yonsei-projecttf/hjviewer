@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 05:16:51 +0900
-Subject: [PATCH 129/160] hjviewer: the file transfer windows in the app's look
+Subject: [PATCH 129/161] hjviewer: the file transfer windows in the app's look
  (U15)
 
 U15 (UX-S5), the desktop part, first of three commits so that each

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 04:49:50 +0900
-Subject: [PATCH 125/160] hjviewer: the login button at the form size (UX-S2
+Subject: [PATCH 125/161] hjviewer: the login button at the form size (UX-S2
  follow-up)
 
 UX-S2 (style2's open point for lane G2's files): the login dialog's button takes

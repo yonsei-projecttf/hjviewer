@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 22:02:38 +0900
-Subject: [PATCH 079/160] hjviewer: an optional app lock on phones (Face ID,
+Subject: [PATCH 079/161] hjviewer: an optional app lock on phones (Face ID,
  fingerprint or passcode)
 
 W13 (TV40): Settings on the phone and tablet app get a Security section

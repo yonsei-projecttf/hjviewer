@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 04:45:09 +0900
-Subject: [PATCH 120/160] hjviewer: an installed PC keeps the incoming
+Subject: [PATCH 120/161] hjviewer: an installed PC keeps the incoming
  connections for 90 days (TV-W9)
 
 TV-W9 (design w7-w9 3-3 and 5-3, D-16, critic 2-3): src/hjviewer_incoming.rs writes one line

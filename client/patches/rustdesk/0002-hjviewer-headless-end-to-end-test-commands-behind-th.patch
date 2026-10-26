@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Sat, 10 Oct 2026 06:16:31 +0900
-Subject: [PATCH 002/160] hjviewer: headless end-to-end test commands behind
+Subject: [PATCH 002/161] hjviewer: headless end-to-end test commands behind
  the hjv-e2e feature
 
 With --features hjv-e2e (never in release builds) the app takes:

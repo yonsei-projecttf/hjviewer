@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 03:07:05 +0900
-Subject: [PATCH 118/160] hjviewer: phones and tablets choose their layout by
+Subject: [PATCH 118/161] hjviewer: phones and tablets choose their layout by
  size (UX-M3)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 21:52:59 +0900
-Subject: [PATCH 070/160] hjviewer: the desktop home's menus and the ID
+Subject: [PATCH 070/161] hjviewer: the desktop home's menus and the ID
  suggestions
 
 U12: the ID suggestions under the remote ID field (desktop and phone)

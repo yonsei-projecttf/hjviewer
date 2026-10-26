@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ysfaculty <haejin.cho@yonsei.ac.kr>
 Date: Mon, 26 Oct 2026 15:37:55 +0900
-Subject: [PATCH 151/160] hjviewer: review fixes for the desktop settings split
+Subject: [PATCH 151/161] hjviewer: review fixes for the desktop settings split
 
 - Advanced settings rebuilds on each visit again. The network block and
   the security cards kept upstream's keep-alive inside the page's list,

@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hjviewer <haejin.cho@yonsei.ac.kr>
+Date: Mon, 26 Oct 2026 17:02:15 +0900
+Subject: [PATCH 161/161] hjviewer: hjv-e2e builds delete the login's account
+ from the command line
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+1.9.1's E2E (DEL1-DEL3) deletes accounts through the client's own signed
+request. --hjv-e2e-delete-account sends [계정 삭제]'s POST
+/api/hjv/account/delete with the confirmation's fixed body as http_request
+does: signed by the account hook H13, its answer observed by H14, which
+logs the device out on "deleted":true. With "again" the very same bytes go
+once more, as http_request_sync's own second try sends them, so that the
+E2E sees hjv-api answer a retry with the first answer. It prints each
+answer's status and body and whether the login's values were kept, never
+the values. Only in builds with the hjv-e2e feature.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hjviewer_e2e.rs | 68 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 68 insertions(+)
+
+diff --git a/src/hjviewer_e2e.rs b/src/hjviewer_e2e.rs
+index f821286..14f24ec 100644
+--- a/src/hjviewer_e2e.rs
++++ b/src/hjviewer_e2e.rs
+@@ -225,6 +225,9 @@ fn exit_with(code: i32) {
+ ///     <app> --hjv-e2e-incoming                            (the service's incoming connections,
+ ///                                                         TV-W9, as JSON; exit code 1 without an
+ ///                                                         answer)
++///     <app> --hjv-e2e-delete-account [again]              ([계정 삭제]: the login's account
++///                                                         deleted by its signed request, 1.9.1;
++///                                                         again: the very same bytes once more)
+ fn account_command(args: &[String]) -> Option<i32> {
+     Some(match args {
+         [cmd] if cmd == "--hjv-e2e-id" => {
+@@ -304,6 +307,8 @@ fn account_command(args: &[String]) -> Option<i32> {
+                 1
+             }
+         },
++        [cmd] if cmd == "--hjv-e2e-delete-account" => delete_account(false),
++        [cmd, what] if cmd == "--hjv-e2e-delete-account" && what == "again" => delete_account(true),
+         [cmd] if cmd == "--hjv-e2e-incoming" => {
+             match crate::ipc::get_config(crate::hjviewer_incoming::KEY) {
+                 Ok(Some(list)) => {
+@@ -925,6 +930,69 @@ fn keys() -> i32 {
+     }
+ }
+ 
++/// hjv-api's deletion of the login's account (hjviewer_account.dart `_kDeleteAccountPath`), with
++/// the confirmation's fixed body.
++const ACCOUNT_DELETE: &str = "/api/hjv/account/delete";
++const ACCOUNT_DELETE_BODY: &str = r#"{"confirm":"delete-account"}"#;
++
++/// `--hjv-e2e-delete-account [again]`: [계정 삭제]'s request as http_request sends it, signed by
++/// the account hook H13 and its answer observed by H14 (which logs this device out on
++/// `"deleted":true`), and printed as `hjv-e2e: delete-account: HTTP <status> <body>`. With
++/// `again` the very same bytes go once more, as http_request_sync's own second try (the other TLS
++/// stack, the TCP proxy) sends them after an answer that was lost: `hjv-e2e: delete-account
++/// again: …`. Last, `hjv-e2e: after delete-account:` says whether the login's values are empty
++/// or kept, never what they are. Exit code 0 when the first answer was a 200.
++fn delete_account(again: bool) -> i32 {
++    let url = format!("{}{ACCOUNT_DELETE}", crate::ui_interface::get_api_server());
++    let mut headers = auth_headers();
++    headers["Content-Type"] = json!("application/json");
++    let Some((body, header)) = crate::hjviewer_account::prepare_account_request(
++        &url,
++        "post",
++        Some(ACCOUNT_DELETE_BODY.to_owned()),
++        headers.to_string(),
++    ) else {
++        println!("hjv-e2e: delete-account: hjv: account key unavailable");
++        return 1;
++    };
++    let mut code = 1;
++    for (what, send) in [("delete-account", true), ("delete-account again", again)] {
++        if !send {
++            continue;
++        }
++        let (u, b, h) = (url.clone(), body.clone(), header.clone());
++        // (http_request_sync starts a runtime of its own: on a thread of its own, as http_request)
++        let res = std::thread::spawn(move || {
++            crate::http_request_sync(u, "post".to_owned(), b, h).unwrap_or_else(|e| e.to_string())
++        })
++        .join()
++        .unwrap_or_else(|_| "the request's thread failed".to_owned());
++        crate::hjviewer_account::observe_account_response(&url, &res);
++        let answer = parse_result(res);
++        match &answer {
++            Answer::Http(status, body) => println!("hjv-e2e: {what}: HTTP {status} {body}"),
++            Answer::None(why) => println!("hjv-e2e: {what}: {why}"),
++        }
++        if what == "delete-account" {
++            code = i32::from(!matches!(answer, Answer::Http(200, _)));
++        }
++    }
++    let state = |key: &str| {
++        if LocalConfig::get_option(key).is_empty() {
++            "empty"
++        } else {
++            "kept"
++        }
++    };
++    println!(
++        "hjv-e2e: after delete-account: access_token {}, user_info {}, hjv-my-devices {}",
++        state("access_token"),
++        state("user_info"),
++        state("hjv-my-devices")
++    );
++    code
++}
++
+ /// A request of the account screens without a body (hjviewer_account.dart _request).
+ fn simple_request(method: &str, path: &str, what: &str) -> i32 {
+     let answer = account_request(method, path, None, &auth_headers());

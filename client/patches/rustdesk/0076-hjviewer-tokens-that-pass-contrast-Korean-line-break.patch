@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 19 Oct 2026 21:59:00 +0900
-Subject: [PATCH 076/160] hjviewer: tokens that pass contrast, Korean line
+Subject: [PATCH 076/161] hjviewer: tokens that pass contrast, Korean line
  breaks
 
 U23: the peer cards, rows and the ID field's suggestions draw the
