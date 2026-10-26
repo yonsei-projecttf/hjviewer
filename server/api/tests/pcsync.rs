@@ -922,10 +922,11 @@ fn only_release_binding_deletes_a_binding() {
     assert_eq!(
         found,
         vec![
+            // behind delete_account and the account's own delete_account_by_user (1.9.1)
             (
                 "db.rs".to_owned(),
                 "ACCOUNTS".to_owned(),
-                "delete_account".to_owned()
+                "delete_account_inner".to_owned()
             ),
             (
                 "db.rs".to_owned(),

@@ -18,11 +18,13 @@
 //! hjv-api streams itself ([`body`]). The staff-only gate of 1.8.0 adds the access tickets that
 //! hbbs checks ([`ticket`], docs/access-tickets.md) and the access password's ([`guest`]); 1.8.2
 //! the support codes that staff members make for a PC ([`support`]); 1.9.0 their support links,
-//! waiting room and the signed support grant a PC gets with its ticket ([`grant`]).
+//! waiting room and the signed support grant a PC gets with its ticket ([`grant`]); 1.9.1 the
+//! account's own deletion ([`account`]).
 
 #[macro_use]
 pub mod log;
 
+pub mod account;
 pub mod admin;
 pub mod alert;
 pub mod api;

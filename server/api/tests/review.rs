@@ -3,14 +3,15 @@
 //! The App Review account (review.rs) end to end: the login of the ID that the operator's file
 //! names (HJV_API_REVIEW_FILE) without the SSO, with the limits and answers of any ID; the file
 //! missing, past its UNTIL or refused; and what the account cannot reach (a PC, door 1, short
-//! links, the overview, an account it did not make), its tokens ending with the file. The ID and
-//! the password are made up: the real ones live only in the server's file.
+//! links, the overview, an account it did not make), its tokens ending with the file, and from
+//! 1.9.1 its own deletion in the app, which keeps its allowlist entry. The ID and the password are
+//! made up: the real ones live only in the server's file.
 
 mod common;
 
 use common::*;
 use hjv_api::{
-    db, devsig,
+    account, db, devsig,
     limits::SCOPE_ID,
     login::{FAILURE_TEXT, TEXT_ID_RULE, TEXT_SSO_DOWN},
     overview, review,
@@ -577,6 +578,89 @@ async fn the_review_session_ends_with_the_file() {
         .await
         .unwrap();
     assert!(gone.is_none());
+}
+
+/// The account deletes itself in the app as any other (1.9.1, account.rs), at once, but its
+/// allowlist entry stays: the next review login, in open mode and in list mode alike, makes a new,
+/// empty account (not the deleted one's: no key of it is left to notice). The journal says it was
+/// the App Review account, by its tag; the operator record, that its entry was kept.
+#[tokio::test]
+async fn the_review_account_deletes_itself_and_comes_back_empty() {
+    for list in [false, true] {
+        let vars = if list {
+            vec![("HJV_API_LOGIN", "list".into())]
+        } else {
+            vec![]
+        };
+        let (h, file, _dir) = start(vars).await;
+        put(&file, &review_file(REVIEW.0, now() + DAY));
+        if list {
+            h.admin(
+                &["allow", "import"],
+                false,
+                Some(&format!("{}\n", REVIEW.0)),
+            )
+            .await
+            .unwrap();
+        }
+        let of = || {
+            h.state.db.call(|c| {
+                Ok((
+                    db::account_by_key(c, "appreview-test")?,
+                    db::listing(c, "appreview-test")?,
+                ))
+            })
+        };
+        let token = review_login(&h, "10.0.71.1").await.token();
+        let a = h
+            .post(
+                account::DELETE_PATH,
+                &token,
+                Some(json!({"confirm": "delete-account"})),
+            )
+            .await;
+        assert_eq!(a.status, 200, "{}", a.text);
+        assert_eq!(
+            a.json,
+            json!({"deleted": true, "pcs": 0, "devices": 1, "relays": 0})
+        );
+        let (gone, listing) = of().await.unwrap();
+        assert!(gone.is_none());
+        assert_eq!(listing, db::Listing::Registered, "list mode: {list}");
+        assert_eq!(status_of(&h, &token).await, 401);
+        let again = review_login(&h, "10.0.71.1").await;
+        assert_eq!(again.status, 200, "{}", again.text);
+        assert_eq!(again.json["user"]["display_name"], review::NAME);
+        assert_eq!(h.results().await.last().unwrap(), "login:ok");
+        assert!(of().await.unwrap().0.is_some());
+        // a new account: the deleted one's key is nowhere, not even among the ended ones
+        let keys = h.get("/api/hjv/keys", &again.token()).await;
+        assert_eq!(
+            (&keys.json["total"], &keys.json["ended"]),
+            (&json!(1), &json!([])),
+            "{}",
+            keys.text
+        );
+        let tag = h.account_tag(REVIEW.0);
+        let record = std::fs::read_to_string(&h.oplog).unwrap();
+        assert!(
+            record.contains(&format!(
+                "cmd=\"app account-delete\" targets={tag} reveal=0"
+            )),
+            "{record}"
+        );
+        assert!(
+            record.contains("cmd=\"app account-delete\" done=\"ok: 0 PCs, 1 account keys, 1 tokens, 0 relays, allowlist entry kept (App Review)\""),
+            "{record}"
+        );
+        let line = format!(
+            "account: deleted at its own request (acct={tag}, the App Review account): 0 PCs, 1 account keys, 1 tokens, 0 relays, allowlist entry kept"
+        );
+        assert!(
+            hjv_api::log::captured().contains(&line),
+            "list mode: {list}"
+        );
+    }
 }
 
 /// At the start (main.rs) the journal says whether there is an account: the file's own line when

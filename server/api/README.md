@@ -21,6 +21,9 @@ the App Review account's demo PCs, for whoever types the access password, one PC
 access password, below), and since 1.9.0 for a PC whose user types a support code that a logged-in
 staff member made (Support codes, below).
 
+Since 1.9.1 a logged-in app deletes its own account, at once and as `admin user delete` does
+(Account deletion, below; App Store Review Guideline 5.1.1(v)).
+
 ## Build
 
 ```sh
@@ -324,7 +327,8 @@ binding revoke <PC ID|tag:T>
 device remove <PC ID|tag:T>
                           the same as binding revoke
 user delete <id|tag:T>    delete an account with its tokens and account keys, its PCs released
-                          first (each gets a signed revoked)
+                          first (each gets a signed revoked); the app's own deletion (1.9.1,
+                          Account deletion below) deletes the same
 passwordless status | on | off [--account <id|tag:T> | --owner-of <PC ID>]
                           connections without the PC's password between an account's devices:
                           for every account (off when installed; off also ends the accounts turned
@@ -341,7 +345,8 @@ report                    counts, the login mode, the allowlist (who may log in,
                           refusals, released bindings by how they went, password-less connections
                           of 30 days; the relays by state and each active relay's last poll, the
                           PCs that reported how to wake them, the wake jobs of the last day and
-                          week by result
+                          week by result; among the records, `account deleted-by-user`: the
+                          accounts deleted in the app (1.9.1)
 selfcheck                 DNS, TCP and TLS to the SSO and hbbs's console, from inside the sandbox;
                           the fingerprints of the pinned list keys and command keys and whether the
                           keys in use are the pinned ones, the same for the ticket key and the keys
@@ -452,7 +457,11 @@ command runs (a command whose line cannot be written does not run), with its tar
 failed. Each line carries the hash of the one before; `hjv-api oplog-verify` checks the chain.
 One kind of line is the service's own, written without a command, under its own user ID and no
 sudo user: `cmd="update device-new-address" targets=<PC's tag>,<address's tag>`, when a PC's
-device key downloads a package from an address that PC did not use before (Updates below).
+device key downloads a package from an address that PC did not use before (Updates below). From
+1.9.1 the service also writes the two lines of an account's own deletion in the app, under its own
+user ID and no sudo user: `cmd="app account-delete" targets=<account's tag>` before anything is
+deleted (a deletion whose line cannot be written is not made) and its `done="ok: …"` after
+(Account deletion below).
 
 To make it append-only: start the service once, so that systemd creates `/var/log/hjviewer-api`
 owned by `hjviewer-api` (0700) and hjv-api creates `operator.log` in it (0600); then
@@ -562,7 +571,11 @@ there: its key would pass the rule, and its tokens would hold without the file (
 
 A new HASH in the file ends no session of the old password: `hjv-api admin user revoke-all
 tag:<tag>` does. To end the account: delete the file (its tokens stop at once), then `hjv-api admin
-user delete tag:<tag>`, with the tag of the journal's line. hjv-api from before this account does
+user delete tag:<tag>`, with the tag of the journal's line. From 1.9.1 the account may also delete
+itself in the app, as any account (Account deletion, below): it goes as any other, but its allowlist
+entry stays, since its ID names no person and the next review login needs it; that login makes a
+new, empty account (docs/server-runbook.md 7-17). The operator's `user delete` takes the entry too.
+hjv-api from before this account does
 not know `HJV_API_REVIEW_FILE` and does not start with it, and would let the account's tokens hold
 as any: before going back to it, end the account and remove the setting (docs/server-runbook.md
 7-17).
@@ -826,8 +839,9 @@ operator record hold counts only.
   has back the accounts deleted, the blocks as they were (an account blocked since is not, one
   unblocked since is) and the bindings released since the backup: before `passwordless on`, find
   those commands (`user delete`, `block`, `allow remove`, `unblock`, `binding revoke`, `device
-  remove`) after the backup's time in the operator record and run them again with the tags it
-  names (docs/server-runbook.md 7-14). A block whose tag the restored database does not have (`no
+  remove`, and from 1.9.1 the service's `app account-delete`, an account deleted in the app, which
+  is run again as `user delete`) after the backup's time in the operator record and run them again
+  with the tags it names (docs/server-runbook.md 7-14). A block whose tag the restored database does not have (`no
   account or allowlist entry has that tag`: an ID registered by a login after the backup, or one
   blocked through a file without an account) is made again with `allow remove <file>`, a file of
   the IDs from the operator's own notes, as is every block after a rebuild; in open mode such a
@@ -885,9 +899,9 @@ only paths that take a request with an `Origin` header.
 A PC leaves its account in one place only, `db::release_binding`: its row goes, its binding ID
 stays 180 days as a tombstone, and the change serial goes up, in one transaction, so that the
 PC's next sync gets a signed `revoked` (design v3 §4-3). The signed logout from the PC, undo,
-`DELETE /api/hjv/devices/{id}`, `binding revoke` (`device remove`), `user delete` and the upkeep's
-deletion of unused accounts (their PCs first), and the upkeep's release of PCs unseen for 180 days
-all go through it; `tests/pcsync.rs` checks that no other SQL deletes a binding.
+`DELETE /api/hjv/devices/{id}`, `binding revoke` (`device remove`), `user delete`, the account's
+own deletion (`POST /api/hjv/account/delete`) and the upkeep's deletion of unused accounts (their
+PCs first), and the upkeep's release of PCs unseen for 180 days all go through it; `tests/pcsync.rs` checks that no other SQL deletes a binding.
 
 `POST /api/hjv/ticket` (Access tickets, below) takes the token with its signature as every account
 path; the login's answer and a bound PC's sync carry the same ticket object. `POST /api/hjv/guest`
@@ -898,6 +912,12 @@ hbbs checks tickets. `POST /api/hjv/support-code` (Support codes, below) takes t
 signature as every account path, and the code it makes comes to `POST /api/hjv/guest` sealed in
 the place of the password. `GET /api/hjv/support-code/wait` (1.9.0, the waiting room) takes the
 token with its signature too; being a GET, it uses no nonce and has no retry answer.
+
+`POST /api/hjv/account/delete` (1.9.1, Account deletion below) takes the token with its signature
+as every account path, in time (409 `clock` otherwise), and the body `{"confirm":"delete-account"}`;
+it deletes the token's account at once, as `admin user delete` does, in one transaction, the
+operator record's line written first (none written, nothing deleted: 503), the App Review account's
+allowlist entry kept. Its retry gets its first answer although the token is gone.
 
 `GET /api/hjv/admin/overview` (Admin overview) takes the token with its signature too, with the
 same 401 and 409 as every account path. For an account that is not a super operator the answer is
@@ -1019,10 +1039,11 @@ X-HJV-Proof: v1.<t>.<n>.<sig>
   a second time: the app's TLS fallback sends a request again byte for byte when its first attempt
   failed, possibly after hjv-api answered it, and a 401 would log the app out. A nonce again with
   anything else, or after the window, is a nonce again. The retry of a request that ended its own
-  token or key (a logout) gets the 401 of an ended token; the retry of a request that ended
-  without an answer, 500.
+  token or key (a logout) gets the 401 of an ended token, but the account deletion's retry gets
+  its first answer (`src/account.rs`); the retry of a request that ended without an answer, 500.
 - On every token path: currentUser, logout, users, peers, `/api/hjv/this-device` and its undo,
-  `/api/hjv/devices/{id}` (and its `/wake` and `/wol`), `/api/hjv/wake/{job}`, `/api/hjv/keys…`.
+  `/api/hjv/devices/{id}` (and its `/wake` and `/wol`), `/api/hjv/wake/{job}`, `/api/hjv/keys…`,
+  `/api/hjv/account/delete`.
 - `POST /api/logout`: the token and its key are revoked. Signed by the token's key (the time may
   be off: the token ends with this request) and when the token's login added or found the PC in
   the account, the PC also leaves the list. Without the signature the PC stays: a stolen token
@@ -1069,6 +1090,55 @@ another's.
 The key list of a super operator's account also has `"hjv_role":"operator"` at its top, beside
 `total`, `data` and `ended`; no other account's has the member. The app reads the list anyway, so
 a role given or taken away on the server (at its restart) shows without a new login.
+
+### Account deletion: `POST /api/hjv/account/delete` (`src/account.rs`)
+
+```text
+POST /api/hjv/account/delete  {"confirm":"delete-account"}     the app: token and X-HJV-Proof
+200 {"deleted":true,"pcs":1,"devices":2,"relays":0}
+```
+
+- 1.9.1 (App Store Review Guideline 5.1.1(v)): the token's account is deleted at once, as `admin
+  user delete` deletes it (`db::delete_account`), in one transaction: its PCs are released
+  (tombstones, so that each gets a signed `revoked`), its relays revoked, its tokens and account
+  keys end with all that the account row takes along (the keys' nonces, use and answers, the
+  relay pre-approvals, the wake jobs with their commands), and its allowlist entry goes unless it
+  is blocked. The App Review account's entry stays (`db::delete_account_by_user`): its ID names no
+  person, and the next review login needs it. The open support codes of the account's keys end in
+  memory at once, and the held polls of its relays look again. `pcs` counts the PCs that left the
+  account, `devices` its active account keys (the devices logged in), `relays` the relays revoked.
+- The body is a JSON object whose `confirm` is the string `delete-account` (other members are
+  ignored); the signature covers it. The app logs its device out where it gets the 200; the
+  account's other devices find their tokens unknown at their next request (401).
+- Other answers, all without deleting anything: no token or a wrong one, no signature or a wrong
+  one, a nonce again: 401 `{"error":"로그인이 필요합니다. 다시 로그인해 주세요."}`; a right signature
+  whose time is out of the window: 409 `clock` (unlike a logout, a deletion takes no signature out
+  of the window); another body: 400 `{"error":"요청을 이해하지 못했습니다.","hjv":"bad_request"}`;
+  past 30 calls a minute of the account key (counted with its other calls: the key list, support
+  codes, tickets): 429 `{"error":"요청이 너무 많습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"rate_limited"}`;
+  no operator record (the admin socket is off) or a record that does not take the first line: 503
+  `{"error":"삭제 기록을 남기지 못해 계정을 지우지 않았습니다. 잠시 뒤 다시 시도해 주세요.","hjv":"not_recorded"}`;
+  a database error: 500; another method 405 (`Allow: POST`), an `Origin` 403, a body that is not
+  JSON 415, one past 64 KiB 413. An hjv-api from before 1.9.1 answers the 404 of an unknown path.
+- The very same request again within HJV_API_RETRY_WINDOW gets the first answer, as every signed
+  request that changes something, although the token it would be found by is gone: the answer is
+  also kept under the request's hash, which is looked up before the request is authenticated and
+  makes no entry (`RetryCache::again`). Two different requests of one token at once: the second
+  finds the account gone and gets `{"deleted":true,"pcs":0,"devices":0,"relays":0}`; a new request
+  after the deletion gets 401.
+- The operator record, before anything is deleted and after, under the service's user ID:
+
+```text
+2026-10-26T09:30:00Z uid=998 sudo_user=- cmd="app account-delete" targets=<tag> reveal=0 prev=<64 hex>
+2026-10-26T09:30:00Z uid=998 sudo_user=- cmd="app account-delete" done="ok: 1 PCs, 2 account keys, 2 tokens, 0 relays, allowlist entry removed" prev=<64 hex>
+```
+
+  `done` is `ok: …` with the entry `removed`, `kept (App Review)`, `stays blocked` or `none`, or
+  `ok: already deleted`, or `failed: database`. The record `account deleted-by-user` keeps the
+  account's tag (no address, no device). The journal has the tag and the counts only: `account:
+  deleted at its own request (acct=<tag>): 1 PCs, 2 account keys, 2 tokens, 0 relays, allowlist
+  entry removed` (`, the App Review account` after the tag for that account), and the refusals and
+  failures as `account delete: …` (docs/server-runbook.md 9-10).
 
 ### Device list: `GET /api/peers`
 
@@ -1810,7 +1880,10 @@ view: its answer (counts, order, fields), the 404 of an unknown path for every o
 method, the refusals of a request without its proof, nobody without `HJV_API_OPERATORS`, the role
 in the login's answer, the user object and the key list as the setting says at each start, the
 address of a PC's last sync (overwritten, gone with the PC), the record's line of each look without
-a portal ID, and `admin operators`. `tests/relay.rs` has hjv-relay's requests:
+a portal ID, and `admin operators`. `tests/account.rs` has the account paths after login and, from
+1.9.1, the account's own deletion: what goes and what stays, the other devices' tokens, the PC's
+`revoked`, the support code and the relay poll held in memory, the refusals, the retry, the
+operator record, the limit, two requests at once and list mode. `tests/relay.rs` has hjv-relay's requests:
 the checks in their order with the cases of relay/tests/common's `check_request` and the vector of
 relay/PROTOCOL.md §13, the states, approval (no address in the default output) and revocation,
 approval ahead, the limits (what they refuse leaves no nonce; a relay's own counts the requests of
@@ -1840,7 +1913,7 @@ records hold tags only; `tests/review.rs` the App Review account (its login with
 while SSO calls are paused or with a second factor, a wrong password and the ID's limit, the
 success limits before the hash, the file missing, past its UNTIL or refused, list mode, no PC, no
 account it did not make, door 1 and short links refused, no super operator, its tokens ending with
-the file, the line at the start);
+the file, the line at the start, and its own deletion in the app, which keeps its allowlist entry);
 `tests/tickets.rs` the access tickets: the shared vectors made again and the signer's rules held
 against them, `POST /api/hjv/ticket` (a phone's ticket, a Windows app's, the refusals, the retry,
 the limit), the tickets of the login's answer and of a bound PC's sync (by the account's state and
@@ -1920,7 +1993,8 @@ gone with the PC; released bindings 180 days; key use and refusals 30 days, and
 they go with the PC when it leaves its account (key use also with its key); accounts until a year
 unused, unless one of their PCs is in use (seen within the device time) and they are not
 blocked, so that a lab PC logged in once stays listed while it is on; an account's allowlist
-entry goes with it (also with `user delete`), an entry without an account (imported, never
+entry goes with it (also with `user delete` and the account's own deletion, but for the App Review
+account's, which then stays), an entry without an account (imported, never
 used) a year after it came on the list, a blocked entry until it is unblocked; records six
 months; limit counters for their longest
 window, a day at least; backups of the database 14 days (`/var/lib/hjviewer-api/backup`, root

@@ -33,8 +33,9 @@
 //! A PC leaves an account in one place only, [`release_binding`]: its row goes, its binding ID
 //! goes to the tombstones, so that the PC's next sync gets a signed `revoked` (design v3 §4-3),
 //! and the change serial goes up, in one transaction. Nothing else deletes a `devices` row, and an
-//! account is deleted only by [`delete_account`], which releases its PCs first (the `ON DELETE
-//! CASCADE` of `devices` would leave no tombstone).
+//! account is deleted only by [`delete_account`] (or, at its own request, by
+//! [`delete_account_by_user`], the same with the App Review account's allowlist entry kept), which
+//! releases its PCs first (the `ON DELETE CASCADE` of `devices` would leave no tombstone).
 
 use crate::{
     util::DAY,
@@ -1086,8 +1087,31 @@ pub fn account_by_key(c: &Connection, login_key: &str) -> rusqlite::Result<Optio
 /// nonces, the key use reported for them, its relay pre-approvals and its wake jobs with their
 /// commands. Inside the caller's transaction. Its allowlist entry goes with it unless it is
 /// blocked (schema 5: a block stays until it is lifted). What stays is the tombstones, the revoked
-/// relays' keys, a blocked entry and the operator record.
+/// relays' keys, a blocked entry and the operator record. The account's own deletion in the app
+/// is [`delete_account_by_user`].
 pub fn delete_account(c: &Connection, account_id: i64, at: i64) -> rusqlite::Result<bool> {
+    delete_account_inner(c, account_id, false, at)
+}
+
+/// [`delete_account`] at the account's own request (account.rs, 1.9.1): the same, but with
+/// `keep_listing` its allowlist entry stays, as the App Review account's does, whose ID names no
+/// person and whose next review login needs the entry (review.rs). Inside the caller's
+/// transaction.
+pub fn delete_account_by_user(
+    c: &Connection,
+    account_id: i64,
+    keep_listing: bool,
+    at: i64,
+) -> rusqlite::Result<bool> {
+    delete_account_inner(c, account_id, keep_listing, at)
+}
+
+fn delete_account_inner(
+    c: &Connection,
+    account_id: i64,
+    keep_listing: bool,
+    at: i64,
+) -> rusqlite::Result<bool> {
     let pcs: Vec<String> = column(
         c,
         "SELECT device_id FROM devices WHERE account_id = ?1",
@@ -1106,11 +1130,13 @@ pub fn delete_account(c: &Connection, account_id: i64, at: i64) -> rusqlite::Res
     for relay_id in relays {
         revoke_relay(c, &relay_id, at)?;
     }
-    c.execute(
-        "DELETE FROM allowlist WHERE blocked_at IS NULL
-             AND login_key = (SELECT login_key FROM accounts WHERE id = ?1)",
-        [account_id],
-    )?;
+    if !keep_listing {
+        c.execute(
+            "DELETE FROM allowlist WHERE blocked_at IS NULL
+                 AND login_key = (SELECT login_key FROM accounts WHERE id = ?1)",
+            [account_id],
+        )?;
+    }
     let deleted = c.execute("DELETE FROM accounts WHERE id = ?1", [account_id])? > 0;
     if deleted {
         bump_serial(c)?;
@@ -3606,6 +3632,36 @@ mod tests {
             (1, 0)
         );
         assert!(session(&c, b"h4", 303, 1000, 5000).unwrap().is_some());
+    }
+
+    #[test]
+    fn the_accounts_own_deletion_keeps_its_entry_only_when_asked() {
+        let mut c = conn();
+        let keys = vec!["a1".to_owned(), "b2".to_owned(), "c3".to_owned()];
+        allow_add(&mut c, &keys, 1).unwrap();
+        let a = upsert_account(&c, "a1", "A1", "", 2).unwrap();
+        let b = upsert_account(&c, "b2", "B2", "", 2).unwrap();
+        let blocked = upsert_account(&c, "c3", "C3", "", 2).unwrap();
+        allow_block(&mut c, &["c3".to_owned()], 3).unwrap();
+        bind(&c, a, "1", &[1; 32], "windows", "PC", 4).unwrap();
+        insert_token(&mut c, &token(b"t", a, "1"), 5, 20).unwrap();
+        let serial = change_serial(&c).unwrap();
+        // as delete_account: the PC released first (tombstone), the tokens with the account, and
+        // the entry gone
+        assert!(delete_account_by_user(&c, a, false, 6).unwrap());
+        assert_eq!(change_serial(&c).unwrap(), serial + 2);
+        assert!(account(&c, a).unwrap().is_none());
+        assert!(device(&c, "1").unwrap().is_none());
+        assert!(!delete_token(&c, b"t").unwrap());
+        assert_eq!(listing(&c, "a1").unwrap(), Listing::Absent);
+        // keeping the entry (the App Review account's), registered as it was
+        assert!(delete_account_by_user(&c, b, true, 7).unwrap());
+        assert!(account(&c, b).unwrap().is_none());
+        assert_eq!(listing(&c, "b2").unwrap(), Listing::Registered);
+        // a blocked entry stays either way; an account deleted already is no deletion
+        assert!(delete_account_by_user(&c, blocked, false, 8).unwrap());
+        assert_eq!(listing(&c, "c3").unwrap(), Listing::Blocked);
+        assert!(!delete_account_by_user(&c, a, false, 9).unwrap());
     }
 
     #[test]

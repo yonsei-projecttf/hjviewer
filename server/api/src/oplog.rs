@@ -13,9 +13,12 @@
 //!
 //! `prev` is the SHA-256 of the previous line (without its newline; 64 zeros for the first), so
 //! that a changed or removed line shows: `hjv-api oplog-verify` checks the chain. The service
-//! writes one kind of line of its own accord, in the same form under its own user ID and no sudo
-//! user: `cmd="update device-new-address" targets=<PC's tag>,<address's tag>`, when a PC's device
-//! key downloads a package from an address that PC did not use before (update.rs). Targets appear as
+//! writes lines of its own in the same form, under its own user ID and no sudo user: `cmd="update
+//! device-new-address" targets=<PC's tag>,<address's tag>`, when a PC's device key downloads a
+//! package from an address that PC did not use before (update.rs), and from 1.9.1 the two lines of
+//! an account's own deletion in the app, `cmd="app account-delete" targets=<account's tag>` before
+//! it (a deletion whose line cannot be written is not made) and its `done=` after (account.rs); a
+//! super operator's look has a line of its own ([`OpLog::append_look`]). Targets appear as
 //! tags (log.rs), never as IDs or addresses; an allowlist file appears as the tags of its IDs, or,
 //! past 32 IDs, as their number and a hash of their sorted tags. At installation root makes the
 //! file append-only (`chattr +a`); hjv-api only ever opens it for appending.

@@ -8,6 +8,7 @@
 //! | `POST /api/login` | login.rs (every failure that depends on the ID is a 401) |
 //! | `POST /api/currentUser` | the user object itself, with `"hjv":{"support_code":true}` for an account that may make support codes (support.rs `may_make`); 401 only for a token that is not valid, never 400 (the app logs out on both) |
 //! | `POST /api/logout` | revokes the token and its key; signed by the key, also takes the PC the login came from out of the list |
+//! | `POST /api/hjv/account/delete` | `{"deleted":true,"pcs","devices","relays"}`: the token's account deleted at its own request, as `admin user delete` does, body `{"confirm":"delete-account"}` (account.rs, 1.9.1) |
 //! | `GET /api/users` | `{"total":1,"data":[<user>]}` |
 //! | `GET /api/peers` | `{"total":n,"data":[{"id","user_name","info":{"device_name","os"},"status":1,"note","hjv":{"pk","pwless","kinds","wol","wake","synced"}}]}`: the account's PCs but the asking device, each with its password-less state (pcsync.rs), whether it can be woken (wake.rs `peer_wol`) and, from 1.9.0, `wake` and its last sync for the app's own words (U27) |
 //! | `GET /api/hjv/this-device` | what the token's login did with its device, whether it can be undone, and for a PC in the account its `binding`, `pwless` and `activation` |
@@ -37,7 +38,8 @@
 //! does is end itself: `POST /api/logout` revokes that token and its key, and nothing else (§4-7).
 //! A signed request that changes something runs once: the very same request again within
 //! HJV_API_RETRY_WINDOW, as the app's TLS fallback sends it, gets the first answer
-//! ([`authenticate`]).
+//! ([`authenticate`]; the account's own deletion, which ends the token, keeps its first answer
+//! under the request's hash as well: account.rs).
 //!
 //! Every answer is JSON in UTF-8 with `X-Content-Type-Options: nosniff`,
 //! `Content-Security-Policy: default-src 'none'` and `Cache-Control: no-store`. A request with an
@@ -55,6 +57,7 @@
 //! envelope.rs for a relay's signature.
 
 use crate::{
+    account,
     body::Body,
     db::{self, Device, Session},
     envelope, gate, guest, keys,
@@ -197,7 +200,7 @@ pub fn user_json(portal_id: &str, display_name: &str) -> Value {
 fn allowed_methods(path: &str) -> Option<&'static str> {
     Some(match path {
         "/api/login" | "/api/currentUser" | "/api/logout" | "/api/hjv/this-device/undo" => "POST",
-        ticket::PATH | support::PATH => "POST",
+        ticket::PATH | support::PATH | account::DELETE_PATH => "POST",
         support::WAIT_PATH => "GET",
         "/api/users" | "/api/peers" | "/api/hjv/this-device" | overview::PATH => "GET",
         "/api/login-options" | "/api/device-group/accessible" | "/api/hjv/source" => "GET, HEAD",
@@ -263,6 +266,7 @@ pub async fn route(state: &Arc<AppState>, req: ApiRequest) -> Reply {
         (ticket::PATH, &Method::POST) => ticket::handle(state, &req).await,
         (support::PATH, &Method::POST) => support::handle(state, &req).await,
         (support::WAIT_PATH, &Method::GET) => support::wait_handle(state, &req).await,
+        (account::DELETE_PATH, &Method::POST) => account::delete(state, &req).await,
         (overview::PATH, _) => overview::route(state, &req).await,
         (path, method) if wake::allowed_methods(path) == Some(method.as_str()) => {
             wake::route(state, &req).await
@@ -312,7 +316,7 @@ pub fn clock_reply(text: &str) -> Reply {
 }
 
 /// The SHA-256 of a bearer token, when the header holds one of hjv-api's tokens.
-fn bearer_hash(headers: &HeaderMap) -> Option<[u8; 32]> {
+pub(crate) fn bearer_hash(headers: &HeaderMap) -> Option<[u8; 32]> {
     let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
     let token = value.strip_prefix("Bearer ")?.trim();
     let raw = token.strip_prefix("hjv_")?;
@@ -357,7 +361,8 @@ impl Proof {
 /// A signed request that changes something uses its nonce once. The very same request again
 /// within HJV_API_RETRY_WINDOW ([`proof::request_hash`]) does not run again: the reply to send is
 /// the first one's answer, once [`route`] has it (a 500 if that request ended without one). The
-/// retry of a request that ended its own token or key (a logout) gets the 401 of an ended token.
+/// retry of a request that ended its own token or key (a logout) gets the 401 of an ended token,
+/// but the account deletion's retry gets its first answer (account.rs).
 pub async fn authenticate(
     state: &Arc<AppState>,
     req: &ApiRequest,
@@ -990,6 +995,7 @@ mod tests {
             TEXT_SERVER,
             TEXT_NOT_FOUND,
             TEXT_CLOCK,
+            account::TEXT_NOT_RECORDED,
             login::FAILURE_TEXT,
             login::TEXT_SEAL_CLOCK,
             login::TEXT_SSO_DOWN,

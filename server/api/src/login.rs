@@ -399,7 +399,9 @@ impl LoginAnswer {
 /// Answers kept for the app's retry of the very same request (v2 §9-2 step 3): the app sends a
 /// request again, byte for byte, when its first TLS attempt failed, possibly after hjv-api got
 /// it. A login is told by its body, under the seal's nonce; a signed account request that changes
-/// something by its proof, under the key's nonce (api.rs `authenticate`, design v3 §4-2).
+/// something by its proof, under the key's nonce (api.rs `authenticate`, design v3 §4-2), and the
+/// account's own deletion, which ends the token its retry would be found by, also under the
+/// request's hash (account.rs, [`RetryCache::again`]).
 pub struct RetryCache<A> {
     window: Duration,
     entries: Mutex<Entries<A>>,
@@ -465,6 +467,19 @@ impl<A> RetryCache<A> {
                 Retry::First(tx)
             }
         }
+    }
+
+    /// The answer of the very same request (`sent`) begun under `key` within the window, if there
+    /// is one; it looks only, and makes no entry. For a request whose first run may have ended
+    /// the token that [`RetryCache::begin`]'s usual key is found by (account.rs): it is asked
+    /// before the request is authenticated, so that a request nobody signed leaves nothing here.
+    pub fn again(&self, key: &str, sent: [u8; 32]) -> Option<watch::Receiver<Option<A>>> {
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries
+            .map
+            .get(key)
+            .filter(|e| e.created.elapsed() < self.window && e.sent == sent)
+            .map(|e| e.answer.clone())
     }
 
     /// Lets a request under `key` be looked at afresh: its answer is not kept for a retry (those
@@ -1924,6 +1939,35 @@ mod tests {
             .unwrap();
         assert!(rx.borrow_and_update().is_some());
         assert!(matches!(cache.begin("m", [1; 32]), Retry::First(_)));
+    }
+
+    #[tokio::test]
+    async fn again_only_looks() {
+        let cache = RetryCache::<u8>::new(30);
+        // nothing begun: none, and asking makes no entry
+        assert!(cache.again("n", [1; 32]).is_none());
+        assert!(matches!(cache.begin("n", [1; 32]), Retry::First(_)));
+        let Retry::First(tx) = cache.begin("m", [1; 32]) else {
+            panic!("first")
+        };
+        // another request under the key, or another key: none
+        assert!(cache.again("m", [2; 32]).is_none());
+        assert!(cache.again("o", [1; 32]).is_none());
+        // the very same request waits for the first answer, also once its sender is gone
+        let rx = cache
+            .again("m", [1; 32])
+            .expect("the first request's answer");
+        let waiting = tokio::spawn(wait_for(rx, || 0));
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        tx.send(Some(9)).unwrap();
+        drop(tx);
+        assert_eq!(waiting.await.unwrap(), 9);
+        assert_eq!(wait_for(cache.again("m", [1; 32]).unwrap(), || 0).await, 9);
+        // past the window there is nothing to find
+        let none = RetryCache::<u8>::new(0);
+        assert!(matches!(none.begin("n", [1; 32]), Retry::First(_)));
+        assert!(none.again("n", [1; 32]).is_none());
     }
 
     #[tokio::test]

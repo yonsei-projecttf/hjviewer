@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The account paths after login: the shapes the app's Dart models read (research notes §4), the
-//! device list and its rules (design v2 §5, D9, D10), logout, token expiry and revocation.
+//! device list and its rules (design v2 §5, D9, D10), logout, token expiry and revocation; and
+//! from 1.9.1 the account's own deletion (account.rs): what goes and what stays, the other
+//! devices' tokens, the held waiting room and relay poll, the refusals, the retry, the operator
+//! record, the limit, two requests at once and list mode.
 
 mod common;
 
 use common::*;
-use hjv_api::db;
-use serde_json::json;
+use hjv_api::{
+    account, db, devsig, guest, oplog, proof, seal, support,
+    util::{b64, b64url_decode, now, random_bytes, sha256},
+};
+use hyper::Method;
+use serde_json::{json, Value};
+use std::{sync::Arc, time::Duration};
 
 #[tokio::test]
 async fn current_user_users_and_logout() {
@@ -539,4 +547,705 @@ async fn upkeep_keeps_what_is_seen_and_drops_what_is_not() {
         .unwrap();
     let purged = hjv_api::jobs::purge_now(&h.state).await.unwrap();
     assert!(purged.events > 0);
+}
+
+// ---- the account's own deletion (1.9.1, account.rs) ----
+
+const DELETE: &str = account::DELETE_PATH;
+const CONFIRM_BODY: &[u8] = br#"{"confirm":"delete-account"}"#;
+const RELAY_IP: &str = "198.51.100.20";
+const PC_IP: &str = "198.51.100.40";
+
+fn confirm() -> Option<Value> {
+    Some(json!({"confirm": "delete-account"}))
+}
+
+fn unknown_token() -> Value {
+    json!({"error": "로그인이 필요합니다. 다시 로그인해 주세요."})
+}
+
+fn not_recorded() -> Value {
+    json!({"error": account::TEXT_NOT_RECORDED, "hjv": "not_recorded"})
+}
+
+fn lan() -> Value {
+    json!([iface(
+        "eth0",
+        "192.0.2.10/24",
+        Some("192.0.2.1"),
+        Some("00:00:5e:00:53:01")
+    )])
+}
+
+async fn count(h: &Harness, sql: &str) -> i64 {
+    let sql = sql.to_owned();
+    h.state
+        .db
+        .call(move |c| c.query_row(&sql, [], |r| r.get(0)))
+        .await
+        .unwrap()
+}
+
+async fn account_of(h: &Harness, id: &str) -> Option<db::Account> {
+    let key = hjv_api::util::login_key(id);
+    h.state
+        .db
+        .call(move |c| db::account_by_key(c, &key))
+        .await
+        .unwrap()
+}
+
+async fn listing_of(h: &Harness, id: &str) -> db::Listing {
+    let key = hjv_api::util::login_key(id);
+    h.state
+        .db
+        .call(move |c| db::listing(c, &key))
+        .await
+        .unwrap()
+}
+
+/// The operator record's lines of deletions in the app.
+fn deletion_lines(h: &Harness) -> Vec<String> {
+    std::fs::read_to_string(&h.oplog)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(&format!("cmd=\"{}\"", account::COMMAND)))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The records of deletions in the app.
+async fn deletions(h: &Harness) -> usize {
+    h.results()
+        .await
+        .iter()
+        .filter(|r| *r == "account:deleted-by-user")
+        .count()
+}
+
+/// The confirmation with the token and this `X-HJV-Proof`, or none.
+async fn delete_with(h: &Harness, token: &str, proof: Option<&str>) -> Answer {
+    let auth = format!("Bearer {token}");
+    let mut headers = vec![
+        ("authorization", auth.as_str()),
+        ("content-type", "application/json"),
+    ];
+    if let Some(p) = proof {
+        headers.push((proof::HEADER, p));
+    }
+    h.request(Method::POST, DELETE, &headers, Some(CONFIRM_BODY.to_vec()))
+        .await
+}
+
+/// A PC of HONG's bound by a login on it, with a wake report from its sync, asleep since (as
+/// tests/wake.rs has it): the PC, its login's token and its binding.
+async fn sleeping_pc(h: &Harness, id: &str) -> (TestDevice, String, String) {
+    let pc = TestDevice::windows(id);
+    h.hbbs.register(&pc, Some(100));
+    let token = h.login_ok(HONG, Some(&pc)).await;
+    let binding = h.binding_of(&pc.id).await;
+    assert_eq!(binding.len(), 32);
+    let wol = wol_report(
+        "00:00:5e:00:53:10",
+        "192.0.2.67/24",
+        "192.0.2.1",
+        Some("00:00:5e:00:53:01"),
+    );
+    let s = h
+        .sync_from(&pc, &payload_with_wol(&binding, &wol, "h1"), PC_IP)
+        .await;
+    assert_eq!(s.answer.status, 200, "{}", s.answer.text);
+    let statement = format!(
+        "UPDATE devices SET last_sync_at = {} WHERE device_id = '{id}'",
+        now() - 100
+    );
+    h.state
+        .db
+        .call(move |c| c.execute_batch(&statement))
+        .await
+        .unwrap();
+    (pc, token, binding)
+}
+
+/// A relay approved for the account of `pc`, online (as tests/wake.rs has it).
+async fn approved(h: &Harness, seed: u8, pc: &TestDevice) -> TestRelay {
+    let r = TestRelay::new([seed; 32]);
+    assert_eq!(h.hello(&r, RELAY_IP, &lan()).await.json["state"], "pending");
+    h.admin(
+        &["relay", "approve", &r.code, "--owner-of", &pc.id, "--force"],
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        h.poll(&r, RELAY_IP, 0, &json!([]), None, &lan()).await.json["state"],
+        "active"
+    );
+    r
+}
+
+/// A support code the account of `token` makes: the code, its link and its waiting number.
+async fn code_of(h: &Harness, token: &str) -> (String, String, String) {
+    let a = h
+        .post(support::PATH, token, Some(json!({"use": "pc"})))
+        .await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    let text = |name: &str| a.json[name].as_str().unwrap().to_owned();
+    (text("code"), text("link"), text("wait"))
+}
+
+/// A PC that is not logged in trades a code it was given (as tests/support.rs has it).
+async fn trade(h: &Harness, typed: &str, pc: &TestDevice) -> Answer {
+    let field = seal::seal_code(
+        &h.seal_pk,
+        typed,
+        now(),
+        &b64(&random_bytes::<16>()),
+        &pc.id,
+    );
+    let sealed = sha256(&b64url_decode(field.rsplit('.').next().unwrap()).unwrap());
+    let pk = b64(&pc.public_key());
+    let sig = devsig::sign(&pc.seed, &guest::pc_message(&pc.id, &pk, &sealed));
+    let body = json!({"use": "pc", "id": pc.id, "pk": pk, "sig": sig, "code": field});
+    h.request(
+        Method::POST,
+        guest::PATH,
+        &[
+            ("content-type", "application/json"),
+            ("x-real-ip", "10.8.40.1"),
+        ],
+        Some(body.to_string().into_bytes()),
+    )
+    .await
+}
+
+/// A staff account with a PC, a second device, a relay with a wake job and an approval ahead,
+/// and an open support code deletes itself from the phone: at once, with the counts; both
+/// devices' tokens are an unknown token's (a logout and another deletion too); the PC's next
+/// sync gets a signed `revoked`; the entry is off the list; the code ends in memory (`revoked`,
+/// its link gone); the relay is revoked and the wake data goes; one record, the operator record's
+/// two lines with the tag, the journal's line without the portal ID, the name or the PC; another
+/// account is untouched, and the person's next login makes a new, empty account.
+#[tokio::test]
+async fn an_account_deletes_itself_at_once() {
+    let h = Harness::start().await;
+    let (pc, pc_token, binding) = sleeping_pc(&h, "800000001").await;
+    let r = approved(&h, 50, &pc).await;
+    let ahead = TestRelay::new([51; 32]);
+    h.admin(
+        &["relay", "approve", &ahead.code, "--owner-of", &pc.id],
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+    let phone = h.login_ok(HONG, None).await;
+    let wake = h
+        .post(&format!("/api/hjv/devices/{}/wake", pc.id), &phone, None)
+        .await;
+    assert_eq!(wake.status, 202, "{}", wake.text);
+    let (code, link, _) = code_of(&h, &phone).await;
+    let page = format!("{link}/");
+    let browse = || h.request(Method::GET, &page, &[("x-real-ip", "10.8.40.2")], None);
+    assert_ne!(browse().await.status, 404);
+    let kim = h.login_ok(KIM, None).await;
+    let tag = h.account_tag(HONG.0);
+    let id = account_of(&h, HONG.0).await.unwrap().id;
+    let tables = [
+        "wol_info",
+        "wake_jobs",
+        "wake_commands",
+        "relay_preapprovals",
+    ];
+    for table in tables {
+        let n = count(&h, &format!("SELECT COUNT(*) FROM {table}")).await;
+        assert_eq!(n, 1, "{table}");
+    }
+
+    let a = h.post(DELETE, &phone, confirm()).await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    assert_eq!(
+        a.json,
+        json!({"deleted": true, "pcs": 1, "devices": 2, "relays": 1})
+    );
+    assert_eq!(a.headers["cache-control"], "no-store");
+    assert!(account_of(&h, HONG.0).await.is_none());
+    assert_eq!(listing_of(&h, HONG.0).await, db::Listing::Absent);
+    for table in ["tokens", "ctl_keys"] {
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE account_id = {id}");
+        assert_eq!(count(&h, &sql).await, 0, "{table}");
+    }
+    // both devices are logged out: every request of theirs is an unknown token's
+    for token in [&phone, &pc_token] {
+        for a in [
+            h.post("/api/currentUser", token, Some(json!({}))).await,
+            h.get("/api/peers", token).await,
+            h.get("/api/hjv/keys", token).await,
+            h.post("/api/hjv/ticket", token, Some(json!({}))).await,
+            h.get(support::WAIT_PATH, token).await,
+            h.post(DELETE, token, confirm()).await,
+            h.post("/api/logout", token, Some(json!({}))).await,
+        ] {
+            assert_eq!((a.status, &a.json), (401, &unknown_token()), "{}", a.text);
+        }
+    }
+    // the PC left with a tombstone: its next sync gets a signed revoked
+    let reason = count(
+        &h,
+        "SELECT COUNT(*) FROM binding_tombstones WHERE device_id = '800000001' AND reason = 'account-delete'",
+    )
+    .await;
+    assert_eq!(reason, 1);
+    let list = h.sync(&pc, &payload(&binding)).await.list();
+    assert_eq!(
+        (&list["state"], &list["keys"]),
+        (&json!("revoked"), &json!([]))
+    );
+    // the code ended in memory at once: its link shows nothing, and its trade is refused as one
+    // its maker's login ended
+    assert_eq!(browse().await.status, 404);
+    let traded = trade(&h, &code, &TestDevice::windows("800000009")).await;
+    assert_eq!(traded.status, 401, "{}", traded.text);
+    let codes: Vec<String> = h
+        .results()
+        .await
+        .into_iter()
+        .filter(|r| r.starts_with("code:"))
+        .collect();
+    assert_eq!(codes, ["code:made", "code:revoked"]);
+    // the relay revoked, keeping its key; the wake data gone with the account
+    let relay = h
+        .state
+        .db
+        .call({
+            let id = r.id.clone();
+            move |c| db::relay(c, &id)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (relay.state, relay.owner_account),
+        (db::RelayState::Revoked, None)
+    );
+    assert_eq!(
+        h.poll(&r, RELAY_IP, 0, &json!([]), None, &lan()).await.json["state"],
+        "revoked"
+    );
+    for table in tables {
+        let n = count(&h, &format!("SELECT COUNT(*) FROM {table}")).await;
+        assert_eq!(n, 0, "{table}");
+    }
+    // one record; the operator record's two lines by the tag; the journal's line by the tag
+    assert_eq!(deletions(&h).await, 1);
+    let lines = deletion_lines(&h);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].contains(&format!(
+            " sudo_user=- cmd=\"app account-delete\" targets={tag} reveal=0 prev="
+        )),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].contains(" sudo_user=- cmd=\"app account-delete\" done=\"ok: 1 PCs, 2 account keys, 2 tokens, 1 relays, allowlist entry removed\" prev="),
+        "{lines:?}"
+    );
+    let record = std::fs::read_to_string(&h.oplog).unwrap();
+    assert_eq!(oplog::verify(&h.oplog).unwrap(), record.lines().count());
+    let journal = hjv_api::log::captured();
+    let line = format!(
+        "account: deleted at its own request (acct={tag}): 1 PCs, 2 account keys, 2 tokens, 1 relays, allowlist entry removed"
+    );
+    assert!(journal.contains(&line), "{journal:?}");
+    for l in journal.iter().filter(|l| l.starts_with("account")) {
+        for secret in [HONG.0, "zztest01", "홍길동", "800000001", "PC-800000001"] {
+            assert!(!l.contains(secret), "{l}");
+        }
+    }
+    for secret in [HONG.0, "zztest01", "홍길동", "800000001"] {
+        assert!(!record.contains(secret), "{record}");
+    }
+    // another account is untouched; the person's next login makes a new, empty account
+    let me = h.post("/api/currentUser", &kim, Some(json!({}))).await;
+    assert_eq!(me.status, 200, "{}", me.text);
+    let again = h.login_ok(HONG, None).await;
+    assert_eq!(
+        h.get("/api/peers", &again).await.json,
+        json!({"total": 0, "data": []})
+    );
+    // the deleted account's keys are nowhere, not even among the ended ones
+    let keys = h.get("/api/hjv/keys", &again).await;
+    assert_eq!(
+        (&keys.json["total"], &keys.json["ended"]),
+        (&json!(1), &json!([])),
+        "{}",
+        keys.text
+    );
+}
+
+/// What is held when the account goes hears of it at once: a waiting room request of the
+/// account's code gets that code `over`, a relay's long-poll its `revoked`.
+#[tokio::test]
+async fn held_requests_hear_of_the_deletion() {
+    let h = Arc::new(Harness::start().await);
+    let (pc, pc_token, _) = sleeping_pc(&h, "800000002").await;
+    let r = approved(&h, 52, &pc).await;
+    let phone = h.login_ok(HONG, None).await;
+    let (_, _, wait) = code_of(&h, &phone).await;
+    let rev = h.get(support::WAIT_PATH, &phone).await.json["rev"]
+        .as_u64()
+        .unwrap();
+    let waiting = {
+        let (h, phone) = (h.clone(), phone.clone());
+        let path = format!("{}?rev={rev}", support::WAIT_PATH);
+        tokio::spawn(async move { h.get(&path, &phone).await })
+    };
+    let polling = {
+        let (h, r) = (h.clone(), r.clone());
+        tokio::spawn(async move { h.poll(&r, RELAY_IP, 20, &json!([]), None, &lan()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(h.state.support.held_waits(), 1);
+    assert!(!waiting.is_finished() && !polling.is_finished());
+    let a = h.post(DELETE, &pc_token, confirm()).await;
+    assert_eq!(
+        a.json,
+        json!({"deleted": true, "pcs": 1, "devices": 2, "relays": 1}),
+        "{}",
+        a.text
+    );
+    let w = waiting.await.unwrap();
+    assert!(w.elapsed < Duration::from_secs(5), "{:?}", w.elapsed);
+    assert_eq!(
+        w.json["codes"],
+        json!([{"wait": wait, "state": "over"}]),
+        "{}",
+        w.text
+    );
+    let p = polling.await.unwrap();
+    assert!(p.elapsed < Duration::from_secs(5), "{:?}", p.elapsed);
+    assert_eq!(p.json["state"], "revoked", "{}", p.text);
+}
+
+/// Only the confirmation deletes: no body, an object without it, another value, JSON that is no
+/// object get 400 `bad_request`; another method 405 with `Allow: POST`; an `Origin` 403; a body
+/// that is not JSON 415. Nothing is deleted or recorded, and the journal says it once.
+#[tokio::test]
+async fn only_the_confirmation_deletes() {
+    let h = Harness::start().await;
+    let token = h.login_ok(HONG, None).await;
+    let bad = json!({"error": "요청을 이해하지 못했습니다.", "hjv": "bad_request"});
+    let a = h.post(DELETE, &token, None).await;
+    assert_eq!((a.status, &a.json), (400, &bad), "{}", a.text);
+    for body in [
+        json!({}),
+        json!({"confirm": "delete"}),
+        json!({"confirm": true}),
+        json!({"Confirm": "delete-account"}),
+        json!(["confirm", "delete-account"]),
+        json!("delete-account"),
+    ] {
+        let a = h.post(DELETE, &token, Some(body.clone())).await;
+        assert_eq!((a.status, &a.json), (400, &bad), "{body}: {}", a.text);
+    }
+    let a = h.get(DELETE, &token).await;
+    assert_eq!(
+        (a.status, a.headers["allow"].to_str().unwrap()),
+        (405, "POST"),
+        "{}",
+        a.text
+    );
+    let auth = format!("Bearer {token}");
+    let signed = h.proof_for("POST", DELETE, CONFIRM_BODY, &token).unwrap();
+    let a = h
+        .request(
+            Method::POST,
+            DELETE,
+            &[
+                ("authorization", &auth),
+                ("content-type", "application/json"),
+                (proof::HEADER, &signed),
+                ("origin", "https://example.com"),
+            ],
+            Some(CONFIRM_BODY.to_vec()),
+        )
+        .await;
+    assert_eq!(
+        (a.status, &a.json),
+        (403, &json!({"error": "접근이 차단되었습니다"}))
+    );
+    let signed = h.proof_for("POST", DELETE, CONFIRM_BODY, &token).unwrap();
+    let a = h
+        .request(
+            Method::POST,
+            DELETE,
+            &[
+                ("authorization", &auth),
+                ("content-type", "text/plain"),
+                (proof::HEADER, &signed),
+            ],
+            Some(CONFIRM_BODY.to_vec()),
+        )
+        .await;
+    assert_eq!(a.status, 415, "{}", a.text);
+    let me = h.post("/api/currentUser", &token, Some(json!({}))).await;
+    assert_eq!(me.status, 200, "{}", me.text);
+    assert!(account_of(&h, HONG.0).await.is_some());
+    assert!(deletion_lines(&h).is_empty());
+    assert_eq!(deletions(&h).await, 0);
+    let line = format!(
+        "account delete: a request not of the form (acct={}); the next ten minutes are not logged",
+        h.account_tag(HONG.0)
+    );
+    assert!(hjv_api::log::captured().contains(&line));
+}
+
+/// The token counts only with its key's signature, in time: none, another device's key, a
+/// signature over another token: the 401 of an unknown token; a time ten minutes off: 409
+/// `clock`. Nothing is deleted until the request is signed as the app signs it.
+#[tokio::test]
+async fn a_deletion_needs_its_signature_in_time() {
+    let h = Harness::start().await;
+    let token = h.login_ok(HONG, None).await;
+    let other = h.login_ok(HONG, None).await;
+    let (mine, theirs) = (h.key_of(&token).unwrap(), h.key_of(&other).unwrap());
+    let signed = |seed: &[u8; 32], t: i64, over: &str| {
+        proof::header_value(
+            seed,
+            "POST",
+            DELETE,
+            t,
+            &random_bytes::<16>(),
+            CONFIRM_BODY,
+            over,
+        )
+    };
+    for proof in [
+        None,
+        Some(signed(&theirs, now(), &token)),
+        Some(signed(&mine, now(), &other)),
+    ] {
+        let a = delete_with(&h, &token, proof.as_deref()).await;
+        assert_eq!((a.status, &a.json), (401, &unknown_token()), "{}", a.text);
+    }
+    let a = delete_with(&h, &token, Some(&signed(&mine, now() - 700, &token))).await;
+    assert_eq!(
+        (a.status, &a.json["hjv"], &a.json["error"]),
+        (409, &json!("clock"), &json!(hjv_api::api::TEXT_CLOCK)),
+        "{}",
+        a.text
+    );
+    assert!(account_of(&h, HONG.0).await.is_some());
+    assert_eq!(deletions(&h).await, 0);
+    let a = delete_with(&h, &token, Some(&signed(&mine, now(), &token))).await;
+    assert_eq!(
+        a.json,
+        json!({"deleted": true, "pcs": 0, "devices": 2, "relays": 0}),
+        "{}",
+        a.text
+    );
+}
+
+/// The very same request again (the app's retry after a failed attempt) gets the first answer,
+/// though the first run ended the token that such a retry is found by; it deletes nothing more.
+/// The same proof with another body, and a new request of the deleted token: unknown tokens.
+#[tokio::test]
+async fn the_very_same_request_again_gets_the_first_answer() {
+    let h = Harness::start().await;
+    let token = h.login_ok(HONG, None).await;
+    let signed = h.proof_for("POST", DELETE, CONFIRM_BODY, &token).unwrap();
+    let first = delete_with(&h, &token, Some(&signed)).await;
+    assert_eq!(
+        first.json,
+        json!({"deleted": true, "pcs": 0, "devices": 1, "relays": 0}),
+        "{}",
+        first.text
+    );
+    let again = delete_with(&h, &token, Some(&signed)).await;
+    assert_eq!((again.status, &again.text), (200, &first.text));
+    assert_eq!(deletions(&h).await, 1);
+    assert_eq!(deletion_lines(&h).len(), 2);
+    let auth = format!("Bearer {token}");
+    let other_body = br#"{"confirm":"delete-account","again":1}"#.to_vec();
+    let a = h
+        .request(
+            Method::POST,
+            DELETE,
+            &[
+                ("authorization", &auth),
+                ("content-type", "application/json"),
+                (proof::HEADER, &signed),
+            ],
+            Some(other_body),
+        )
+        .await;
+    assert_eq!((a.status, &a.json), (401, &unknown_token()), "{}", a.text);
+    let a = h.post(DELETE, &token, confirm()).await;
+    assert_eq!((a.status, &a.json), (401, &unknown_token()), "{}", a.text);
+}
+
+/// A deletion that cannot be recorded is not made: without the admin socket (no operator record)
+/// and when the record does not take the first line, 503 `not_recorded`, and the account stays;
+/// once the record takes lines again, the deletion goes through and the chain holds.
+#[tokio::test]
+async fn without_the_operator_record_nothing_is_deleted() {
+    let h = Harness::with(Options {
+        no_admin: true,
+        ..Default::default()
+    })
+    .await;
+    let token = h.login_ok(HONG, None).await;
+    let a = h.post(DELETE, &token, confirm()).await;
+    assert_eq!((a.status, &a.json), (503, &not_recorded()), "{}", a.text);
+    let me = h.post("/api/currentUser", &token, Some(json!({}))).await;
+    assert_eq!(me.status, 200, "{}", me.text);
+    assert!(hjv_api::log::captured().iter().any(|l| {
+        l.starts_with(
+        "account delete: no operator record (the admin socket is off): a deletion is refused (acct="
+    )
+    }));
+
+    let h = Harness::start().await;
+    let token = h.login_ok(HONG, None).await;
+    let aside = h.dir.join("operator.log.aside");
+    std::fs::rename(&h.oplog, &aside).unwrap();
+    std::fs::create_dir(&h.oplog).unwrap();
+    let a = h.post(DELETE, &token, confirm()).await;
+    assert_eq!((a.status, &a.json), (503, &not_recorded()), "{}", a.text);
+    assert!(account_of(&h, HONG.0).await.is_some());
+    let me = h.post("/api/currentUser", &token, Some(json!({}))).await;
+    assert_eq!(me.status, 200, "{}", me.text);
+    std::fs::remove_dir(&h.oplog).unwrap();
+    std::fs::rename(&aside, &h.oplog).unwrap();
+    let a = h.post(DELETE, &token, confirm()).await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    assert_eq!(deletion_lines(&h).len(), 2);
+    let record = std::fs::read_to_string(&h.oplog).unwrap();
+    assert_eq!(oplog::verify(&h.oplog).unwrap(), record.lines().count());
+}
+
+/// Thirty calls a minute per account key, counted with its other account calls and with the
+/// refused ones: the next is 429 `rate_limited`, and the account stays; another device's key has
+/// its own.
+#[tokio::test]
+async fn thirty_calls_a_minute_per_key() {
+    let h = Harness::start().await;
+    let token = h.login_ok(HONG, None).await;
+    let other = h.login_ok(HONG, None).await;
+    for n in 0..hjv_api::keys::CALLS_PER_MINUTE {
+        let a = if n % 3 == 0 {
+            h.get("/api/hjv/keys", &token).await
+        } else {
+            h.post(DELETE, &token, Some(json!({}))).await
+        };
+        assert!(matches!(a.status, 200 | 400), "call {n}: {}", a.text);
+    }
+    let a = h.post(DELETE, &token, confirm()).await;
+    assert_eq!(
+        (a.status, &a.json),
+        (
+            429,
+            &json!({"error": hjv_api::keys::TEXT_TOO_OFTEN, "hjv": "rate_limited"})
+        ),
+        "{}",
+        a.text
+    );
+    assert!(account_of(&h, HONG.0).await.is_some());
+    let a = h.post(DELETE, &other, confirm()).await;
+    assert_eq!(
+        a.json,
+        json!({"deleted": true, "pcs": 0, "devices": 2, "relays": 0}),
+        "{}",
+        a.text
+    );
+}
+
+/// Two requests of one token at once (the button pressed twice) while the database is busy: both
+/// pass their checks before either deletes, the second finds the account gone and gets `deleted`
+/// with counts of 0. One record, and the operator record's result line of each.
+#[tokio::test]
+async fn two_requests_at_once_delete_once() {
+    let h = Harness::start().await;
+    let mut tries = 0;
+    let overlapped = loop {
+        tries += 1;
+        let token = h.login_ok(HONG, None).await;
+        // the database held for a moment: both requests wait for it in their authentication,
+        // and the first deletes only after its record line, when the second has passed it
+        let hold = {
+            let state = h.state.clone();
+            tokio::spawn(async move {
+                state
+                    .db
+                    .call(|_| {
+                        std::thread::sleep(Duration::from_millis(800));
+                        Ok(())
+                    })
+                    .await
+                    .unwrap()
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (a, b) = tokio::join!(
+            h.post(DELETE, &token, confirm()),
+            h.post(DELETE, &token, confirm())
+        );
+        hold.await.unwrap();
+        match (a.status, b.status) {
+            (200, 200) => break (a, b),
+            // the second came after the deletion (an unknown token): not this case, again
+            (200, 401) | (401, 200) if tries < 5 => continue,
+            other => panic!("{other:?}: {} / {}", a.text, b.text),
+        }
+    };
+    let deleted = json!({"deleted": true, "pcs": 0, "devices": 1, "relays": 0});
+    let gone = json!({"deleted": true, "pcs": 0, "devices": 0, "relays": 0});
+    let (a, b) = overlapped;
+    assert!(
+        (a.json == deleted && b.json == gone) || (a.json == gone && b.json == deleted),
+        "{} / {}",
+        a.text,
+        b.text
+    );
+    assert_eq!(deletions(&h).await, tries);
+    let lines = deletion_lines(&h);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| l.contains(" done=\"ok: already deleted\" "))
+            .count(),
+        1,
+        "{lines:?}"
+    );
+}
+
+/// In list mode the ID leaves the list with the account, as with `user delete`: its next login
+/// fails as an ID off the list until the operator imports it again.
+#[tokio::test]
+async fn in_list_mode_the_id_leaves_the_list_with_the_account() {
+    let h = Harness::with(Options {
+        vars: vec![("HJV_API_LOGIN", "list".into())],
+        ..Default::default()
+    })
+    .await;
+    let token = h.login_ok(HONG, None).await;
+    let a = h.post(DELETE, &token, confirm()).await;
+    assert_eq!(a.status, 200, "{}", a.text);
+    assert_eq!(listing_of(&h, HONG.0).await, db::Listing::Absent);
+    let a = h
+        .login(&h.login_body(HONG.0, HONG.1, None), "10.9.9.9")
+        .await;
+    assert_eq!(
+        (a.status, &a.json),
+        (401, &json!({ "error": hjv_api::login::FAILURE_TEXT })),
+        "{}",
+        a.text
+    );
+    assert_eq!(h.results().await.last().unwrap(), "login:not-allowed");
+    h.admin(&["allow", "import"], false, Some(&format!("{}\n", HONG.0)))
+        .await
+        .unwrap();
+    let again = h.login_ok(HONG, None).await;
+    assert_eq!(h.get("/api/hjv/keys", &again).await.json["total"], 1);
 }

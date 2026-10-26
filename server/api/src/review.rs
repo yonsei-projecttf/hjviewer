@@ -38,7 +38,9 @@
 //! (overview.rs), and
 //! its tokens hold only while the file is active and names it ([`admits`], api.rs
 //! `authenticate`): else they are unknown tokens, and the app logs out. A new HASH ends no session
-//! of the old password: `hjv-api admin user revoke-all` does.
+//! of the old password: `hjv-api admin user revoke-all` does. From 1.9.1 it may delete itself in
+//! the app as any account (account.rs): its allowlist entry then stays, its ID naming no person,
+//! so that its next login makes a new, empty account.
 
 use crate::{
     config::Config,
