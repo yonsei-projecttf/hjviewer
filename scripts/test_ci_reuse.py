@@ -617,11 +617,12 @@ echo "jobs left: ${!PREPUSH_PID[*]}"''')
         self.assertTrue(out.endswith("jobs left: \n"), out)
 
     def test_a_job_stopped_before_its_run_has_started_does_not_start_it(self):
-        # a Ctrl-C while the job's subshell is still in the log head (half a second long here): the
-        # subshell, a job in the background, does not take it, and its run, which would start after
-        # it, would not have had it either; nothing would stop that run then
+        # a Ctrl-C while the job's subshell is still in the log head (half a second long here, and
+        # as the real one not failed by a command that a signal ends): the subshell, a job in the
+        # background, does not take it, and its run, which would start after it, would not have had
+        # it either; nothing would stop that run then
         out = self.jobs(r'''
-log_head() { echo "$1 head" >> "$TRAPS"; sleep 0.5; }
+log_head() { echo "$1 head" >> "$TRAPS"; sleep 0.5 || true; }
 export STAGE_SECONDS=3
 prepush_start late late
 says "late head"
@@ -630,11 +631,19 @@ PREPUSH_SIGNAL=SIGINT
 start=$(date +%s%N)
 prepush_stop late
 echo "prepush_stop returned after $((($(date +%s%N) - start) / 1000000)) ms"
-cat "$TRAPS" "$PREPUSH_LOGS/late.log"''')
+cat "$TRAPS" "$PREPUSH_LOGS/late.log"; : > "$TRAPS"
+# a SIGTERM to the group there: it ends the log head's process, and the job with it
+prepush_start term term
+says "term head"
+kill -TERM $(prepush_pids "${PREPUSH_PID[term]}")
+PREPUSH_SIGNAL=SIGTERM
+prepush_stop term
+cat "$TRAPS"; tail -n 1 "$PREPUSH_LOGS/term.log"''')
         self.assertIn("prepush: SIGINT: waiting up to 120 s for late to end, cleaning up\n", out)
         self.assertIn("\nlate head\nprepush stopped before scripts/ci.sh late started\nEXIT 143 ", out)
-        self.assertNotRegex(out, r"(?m)^late started$")
+        self.assertNotRegex(out, r"(?m)^(late|term) started$")
         self.assertLess(int(re.search(r"(?m)^prepush_stop returned after (\d+) ms$", out).group(1)), 2500, out)
+        self.assertRegex(out, r"\nterm head\nEXIT 143 [^\n]*\n$")
 
     def test_a_job_that_a_stop_comes_to_before_its_number_was_taken_is_stopped_too(self):
         # bash runs prepush's trap right after the fork of a job, before prepush_start has taken the
