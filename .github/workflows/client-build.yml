@@ -124,6 +124,10 @@ env:
 # (L38), but vcpkg removed the x-gha provider in 2025 (microsoft/vcpkg-tool#1662) and the pinned vcpkg
 # only warns about it, so upstream rebuilds every port on every run. Each vcpkg job here uses a files
 # provider instead, restored and saved with actions/cache, keeping only the packages the run installed.
+# run-vcpkg's own cache of the vcpkg checkout is off (upstream: doNotCache: false): run-vcpkg v11.6,
+# the newest, still calls the retired cache service and failed in every run (restore 400, save an
+# error page), and once that works it would add an entry of hundreds of MB per image to the build
+# repository's 10 GiB (GHA-10 of the 2026-10-27 CI audit).
 
 jobs:
   # upstream: bridge.yml (generate_bridge, matrix entry L21-27), called from L85-86
@@ -547,7 +551,7 @@ jobs:
         with:
           vcpkgDirectory: C:\vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+          doNotCache: true # GHA-10, see the top of this file
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
@@ -1027,7 +1031,7 @@ jobs:
         with:
           vcpkgDirectory: /opt/artifacts/vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+          doNotCache: true # GHA-10, see the top of this file
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
@@ -1622,7 +1626,7 @@ jobs:
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+          doNotCache: true # GHA-10, see the top of this file
 
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
