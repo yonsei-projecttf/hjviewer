@@ -152,6 +152,10 @@ sha=$(sha256sum < "$out/hjv-release.new" | cut -d' ' -f1)
   echo "sha256 $sha"
   echo "built $(date '+%Y-%m-%d %H:%M:%S %z') from an export of the commit, by scripts/build-signer.sh"
 } > "$out/hjv-release.record.new"
+# From here on INT, TERM and HUP are ignored: a stop between the two moves would leave the new tool
+# beside the old record, which the exit trap would then name as the tool that stays, and what is left
+# only prints the record
+trap '' INT TERM HUP
 mv -f "$out/hjv-release.new" "$out/hjv-release"
 mv -f "$out/hjv-release.record.new" "$out/hjv-release.record"
 echo "== $out/hjv-release"
