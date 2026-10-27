@@ -53,7 +53,7 @@ finish() {
   local status=$?
   # neither another signal (a second Ctrl-C) nor a step that fails cuts the clean-up and the message
   # short
-  trap '' INT TERM HUP
+  trap '' INT TERM HUP PIPE
   set +e
   # After a Ctrl-C during cargo build, rustc stops a moment later and a linker that it started then
   # runs on, writing in the build folder: a removal that fails is tried again, for up to 5 s
@@ -68,10 +68,12 @@ finish() {
   if [ "$status" != 0 ]; then echo "build-signer: $(kept)" >&2; fi
 }
 trap finish EXIT
-# a stop by a signal is a failure too (the exit trap sees the status)
+# a stop by a signal is a failure too (the exit trap sees the status), PIPE's too: a reader of the
+# output that went first (| head) would else end the script with no word of the tool that stays
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
+trap 'exit 141' PIPE
 fail() {
   echo "build-signer: $*" >&2
   exit 1
@@ -172,10 +174,10 @@ sha=$(sha256sum < "$out/hjv-release.new" | cut -d' ' -f1)
   echo "sha256 $sha"
   echo "built $(date '+%Y-%m-%d %H:%M:%S %z') from an export of the commit, by scripts/build-signer.sh"
 } > "$out/hjv-release.record.new"
-# From here on INT, TERM and HUP are ignored: a stop between the two moves would leave the new tool
-# beside the old record, which the exit trap would then name as the tool that stays, and what is left
-# only prints the record
-trap '' INT TERM HUP
+# From here on INT, TERM, HUP and PIPE are ignored: a stop between the two moves would leave the new
+# tool beside the old record, which the exit trap would then name as the tool that stays, and what is
+# left only prints the record
+trap '' INT TERM HUP PIPE
 mv -f "$out/hjv-release.new" "$out/hjv-release"
 mv -f "$out/hjv-release.record.new" "$out/hjv-release.record"
 replaced=1
