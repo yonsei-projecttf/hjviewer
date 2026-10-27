@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# The owner's hjv-release, which signs the version policies (docs/server-runbook.md 8-2,
-# tools/hjv-release/README.md), built from an export of a commit: not from a working tree, whose
-# changes that no commit has would reach the signer, and not taken from the CI directory, whose
-# build/ci/target-hjv-release is the last tree's to run scripts/ci.sh there (its stages' tests use it).
+# The owner's hjv-release, which signs the version policies with the signing key on the dev PC
+# (docs/server-runbook.md 8-2, tools/hjv-release/README.md; the root key's ceremony builds its own at
+# the clean computer, README 3장 5-0), built from an export of a commit of pushed main: not from a
+# working tree, whose changes that no commit has would reach the signer, and not taken from the CI
+# directory, whose build/ci/target-hjv-release is the last tree's to run scripts/ci.sh there (its
+# stages' tests use it).
 #   scripts/build-signer.sh [<commit>]   origin/main when no commit is named
 # It first fetches main from origin (into refs/remotes/origin/main), and a named commit must be on it.
 # The output folder is build/signer of the main checkout (the folder that holds the repository's
