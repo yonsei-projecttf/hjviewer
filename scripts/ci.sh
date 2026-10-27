@@ -832,8 +832,9 @@ server_stage() { # <stage>
   else
     step "server: ${parts[*]} side by side, the output of each also in build/ci/server-<part>.log"
     for part in "${parts[@]}"; do
-      # as a job of its own, which gets back SIGINT and SIGQUIT (with_skips)
-      env --default-signal=INT,QUIT "$SELF" "server:$part" < /dev/null > "$CI/server-$part.log" 2>&1 &
+      # as a job of its own, which gets back SIGINT and SIGQUIT (with_skips); a part of this run, whose
+      # head is this run's (HJV_CI_PART)
+      env --default-signal=INT,QUIT HJV_CI_PART=1 "$SELF" "server:$part" < /dev/null > "$CI/server-$part.log" 2>&1 &
       pids[$part]=$! starts[$part]=$(date +%s)
     done
     for part in "${parts[@]}"; do
@@ -2554,11 +2555,12 @@ finish() { # <target>
   printf '\n== %s\n' "CI passed: $1 (${#SKIPPED[@]} skipped)"
 }
 
-# the head of a run of its own (a stage that prepush runs, with HJV_CI_RUN, has it in its log); such a
-# run ends with "== CI passed: ..." or "FAIL: ...", and only prepush's logs with an EXIT line
+# the head of a run of its own (a stage that prepush runs, with HJV_CI_RUN, has it in its log, and a
+# part that a server stage runs beside the others, with HJV_CI_PART, in that stage's); such a run
+# ends with "== CI passed: ..." or "FAIL: ...", and only prepush's logs with an EXIT line
 case "$TARGET" in
-  all | server | client | deploy | e2e | wol | leak)
-    [ -n "${HJV_CI_RUN:-}" ] || log_head "$TARGET" "on its own${HJV_CI_STRICT:+, HJV_CI_STRICT=$HJV_CI_STRICT}"
+  all | server | server:* | client | deploy | e2e | wol | leak)
+    [ -n "${HJV_CI_RUN:-}${HJV_CI_PART:-}" ] || log_head "$TARGET" "on its own${HJV_CI_STRICT:+, HJV_CI_STRICT=$HJV_CI_STRICT}"
     ;;
 esac
 case "$TARGET" in
