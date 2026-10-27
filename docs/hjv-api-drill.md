@@ -7,7 +7,7 @@ tools/e2e/hjv-api-drill.sh                     # 약 13분(동기화가 10분 �
 HJV_DRILL_QUICK=1 tools/e2e/hjv-api-drill.sh   # 그 기다림 없이 약 3분
 ```
 
-출력은 `build/drill/drill.log`에 남습니다. 필요한 것은 cargo, sudo로 쓰는 Docker(`scripts/ci.sh`와 같음), 이미지를 만들 때 Ubuntu 패키지 저장소입니다.
+출력은 `build/drill/drill.log`에 남고, 실행마다 `build/drill/logs/<시각>-<커밋>-<quick|full>.log`에도 남습니다. 로그 머리에는 연습한 커밋과 트리, 시작 시각이, 끝 줄에는 `EXIT <종료 코드> <시각>`이 있습니다. 각 일의 제목(`== `) 아래에는 시각, 시작한 뒤 지난 초, 앞 일이 걸린 초가 붙고, 마지막 `== the drill passed` 앞에는 일을 걸린 시간 순으로 늘어놓은 표가 나옵니다. 필요한 것은 cargo, sudo로 쓰는 Docker(`scripts/ci.sh`와 같음), 이미지를 만들 때 Ubuntu 패키지 저장소입니다.
 
 ## 시험 서버
 

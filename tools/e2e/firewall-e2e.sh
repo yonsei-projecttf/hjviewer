@@ -80,7 +80,7 @@
 # clients up that long, or until $RUN/release exists, before it cleans up, so that the state can
 # be looked at (logs, --hjv-e2e-option through in_ns) without running it again.
 # HJV_E2E_PARTS=<part>[,<part>...] (account, access, minver, policy): a partial run of strict mode
-# for a fix loop, which ends with PARTIAL and is no pass (PARTS below). HJV_E2E_NO_SKIP=1: a run
+# for a fix loop, which ends with PARTIAL and is no pass (PARTS_ONLY below). HJV_E2E_NO_SKIP=1: a run
 # that would skip a part fails before it starts (skips_ahead).
 #
 # In strict mode the base path's controller and the sides ver, rev and pc2 hold a relay that is
@@ -137,7 +137,23 @@ if [ "$MODE" = strict ] && [ -n "${HJV_E2E_ACCESS:-}" ]; then
   REVIEW_ID=E2EREVIEW-TEST REVIEW_PW="hjv-e2e-review-$RANDOM$RANDOM"
 fi
 
-log() { printf '\n== %s\n' "$*"; }
+STARTED=$(date +%s) PARTS=()
+# A part of the run: its title with the seconds since the start (as wol-e2e.sh's); part_times prints
+# the parts by the time they took, each until the next one began
+log() {
+  PARTS+=("$(date +%s) $*")
+  printf '\n== [%3d s] %s\n' "$(($(date +%s) - STARTED))" "$*"
+}
+part_times() {
+  local now i from title next
+  now=$(date +%s)
+  printf '\n-- time by part, %s s in all:\n' "$((now - STARTED))"
+  for i in "${!PARTS[@]}"; do
+    read -r from title <<<"${PARTS[$i]}"
+    next=${PARTS[$((i + 1))]:-$now}
+    echo "$((${next%% *} - from)) $title"
+  done | sort -s -rn -k1,1 | while read -r from title; do printf '%6d s  %s\n' "$from" "$title"; done
+}
 
 # <seq> <deadline> [<test key> [<seq of an earlier policy>]]: signs a policy of epoch 1 and that seq
 # with the test key 1 (hjv-release test-sign), or with <test key> as it is (--raw, as the tool signs
@@ -213,14 +229,14 @@ print(conf.hash_of(sys.argv[2], os.urandom(16)))' "$ROOT/deploy/guest-conf.py" "
 # and only these parts of strict mode: account (S24 to S20), access (A, C, W6 and DEL; without the
 # account part, after alice's PC and controller logged in), minver (V1, V2, V4) and policy (V5-V7,
 # V9). Its line "skipped: ..." names what it leaves out, and it ends with PARTIAL, never with PASS.
-PARTS=${HJV_E2E_PARTS:-}
-if [ -n "$PARTS" ]; then
+PARTS_ONLY=${HJV_E2E_PARTS:-}
+if [ -n "$PARTS_ONLY" ]; then
   [ "$MODE" = strict ] || { echo "HJV_E2E_PARTS names parts of strict mode" >&2; exit 2; }
-  for p in ${PARTS//,/ }; do
+  for p in ${PARTS_ONLY//,/ }; do
     case $p in account | access | minver | policy) ;; *) echo "HJV_E2E_PARTS: no part '$p' (account, access, minver, policy)" >&2; exit 2 ;; esac
   done
 fi
-part() { [ -z "$PARTS" ] || [[ ",$PARTS," == *",$1,"* ]]; } # <part>: this run has it
+part() { [ -z "$PARTS_ONLY" ] || [[ ",$PARTS_ONLY," == *",$1,"* ]]; } # <part>: this run has it
 # What the run would skip, known before it starts from the conditions its parts test later; with
 # HJV_E2E_NO_SKIP=1 (scripts/ci.sh in strict mode, where a skip fails the stage at its end) the run
 # fails at once, not after twelve minutes
@@ -234,14 +250,14 @@ skips_ahead() {
     client_has 'after delete-account' || echo "DEL1-DEL3 (no --hjv-e2e-delete-account in $CLIENT: client patch 0161)"
   fi
   if [ -n "$KEYED" ] && [ -z "$POLICY" ] && part policy; then echo "V5-V7 and V9 (no HJV_RELEASE)"; fi
-  if [ -n "$PARTS" ]; then echo "the strict parts other than $PARTS (HJV_E2E_PARTS)"; fi
+  if [ -n "$PARTS_ONLY" ]; then echo "the strict parts other than $PARTS_ONLY (HJV_E2E_PARTS)"; fi
 }
 if [ -n "${HJV_E2E_NO_SKIP:-}" ] && AHEAD=$(skips_ahead) && [ -n "$AHEAD" ]; then
   echo "FAIL: HJV_E2E_NO_SKIP=1, and this run would skip:"
   sed 's/^/  - /' <<<"$AHEAD"
   exit 1
 fi
-[ -z "$PARTS" ] || echo "skipped: the strict parts other than $PARTS (HJV_E2E_PARTS: a partial run, which is no pass)"
+[ -z "$PARTS_ONLY" ] || echo "skipped: the strict parts other than $PARTS_ONLY (HJV_E2E_PARTS: a partial run, which is no pass)"
 
 # <-I|-D>: the host forwards UDP between hjv-pc and hjv-ctl (open mode)
 forward_rules() {
@@ -2866,9 +2882,10 @@ fi
 log "what hbbs saw"
 # (|| true: with pipefail, head leaving early fails the pipeline once the log is long)
 grep -E "update_pk|Punch hole|Tcp connection from 10\.77" "$RUN/hbbs.log" | sed 's/^\[[^]]*\] //' | head -8 || true
+part_times
 echo
-if [ -n "$PARTS" ]; then
-  echo "PARTIAL ($MODE): the base path and $PARTS; the other parts did not run, so this is no pass"
+if [ -n "$PARTS_ONLY" ]; then
+  echo "PARTIAL ($MODE): the base path and $PARTS_ONLY; the other parts did not run, so this is no pass"
   exit 0
 fi
 echo "PASS ($MODE): $(grep -o 'transport: .*' "$RUN/ctl.log" | tail -1)$([ -n "$ACCOUNT" ] && echo ", same-account logins")$(

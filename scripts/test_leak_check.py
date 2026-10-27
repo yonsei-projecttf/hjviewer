@@ -253,6 +253,19 @@ class LeakCheckTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(f"icon.bin (binary): list line {DOMAIN}", out)
 
+    def test_values_in_utf16_in_binary_files(self):
+        """An APK's manifest (Android's binary XML) keeps its strings in UTF-16LE, a binary property
+        list (an IPA's Info.plist) and a font's names in UTF-16BE."""
+        manifest = b"\x03\x00\x08\x00" + "LEAK-canary.example.net".encode("utf-16-le") + b"\0\0"
+        self.repo.write("AndroidManifest.xml", manifest, mode="wb")
+        self.repo.write("Info.plist", b"bplist00\x6a" + "부서-시험-공유폴더".encode("utf-16-be"), mode="wb")
+        self.repo.commit("samples")
+        code, out = self.repo.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"AndroidManifest.xml (binary): list line {DOMAIN}", out)
+        self.assertIn(f"Info.plist (binary): list line {FOLDER}", out)
+        self.assertNoValue(out)
+
     def test_authors_count(self):
         self.repo.write("c.txt", "c\n")
         self.repo.git("add", "c.txt")

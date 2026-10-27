@@ -10,9 +10,10 @@ More tests run when asked for:
 
     HJV_RELEASE_BIN=<the built tools/hjv-release>      the release tool takes what the script
                                                        writes, with a `gh` that replays answers
-    HJV_RELEASE_SAMPLES=<a directory of artifacts>     real APKs and IPAs are read, the APKs'
-                                                       manifests too (a download of a run, such
-                                                       as build/release-1.9.0)
+    HJV_RELEASE_SAMPLES=<a directory of artifacts>     the real APKs and IPAs of a download of a
+                                                       run (such as build/release-1.9.1) are read,
+                                                       the APKs' manifests too, in place of the
+                                                       samples in scripts/testdata (SAMPLES)
     HJV_PATCHED_FLUTTER=<the patched tree's flutter>   the Dart tests that the Dart tests job
                                                        requires are all in that tree
 """
@@ -40,6 +41,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SCRIPT = os.path.join(HERE, "release-info.py")
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "client-build.yml")
+# Real packages of a release build, as small as the reader allows: the AndroidManifest.xml of
+# 1.9.1's signed APK and the Info.plist of its IPA (build b389ea2), byte for byte, each alone in its
+# archive, stored (aapt2 writes the manifest's strings in UTF-16, and they were checked decoded
+# against the leak list when they were taken, 2026-10-27)
+SAMPLES = os.path.join(HERE, "testdata", "release-samples")
 NOTICES = ("LICENSE.txt", "NOTICE.txt", "SOURCE.txt", "THIRD_PARTY_NOTICES.txt")
 BUILD_REPO = "yonsei-projecttf/hjviewer-private"
 # what GitHub gives a step of a workflow that the build repository's build.yml called
@@ -670,11 +676,9 @@ class RecordTest(unittest.TestCase):
                 pass
 
     def test_real_packages(self):
-        """A download of a run (HJV_RELEASE_SAMPLES): every APK and IPA says the version that
-        its artifact's name does, and carries a plausible build number."""
-        samples = os.environ.get("HJV_RELEASE_SAMPLES")
-        if not samples:
-            self.skipTest("HJV_RELEASE_SAMPLES is not set")
+        """Real packages (SAMPLES, or a download of a run in HJV_RELEASE_SAMPLES): every APK and IPA
+        says the version that its artifact's name does, and carries a plausible build number."""
+        samples = os.environ.get("HJV_RELEASE_SAMPLES") or SAMPLES
         seen = set()
         for top, _, names in os.walk(samples):
             named = re.search(r"HJViewer-(\d+\.\d+\.\d+)-", os.path.basename(top))

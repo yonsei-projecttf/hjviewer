@@ -7,8 +7,11 @@
 #                          HJV_CI_STRICT=1, the stages server, client, deploy, e2e, wol and leak one
 #                          after another, each with its own log (build/ci/prepush/<time>-<commit>/;
 #                          first the commits, the toolchain and the start, last the exit status),
-#                          stopping at the first that fails. With stages named, only those, in this
-#                          order: after a fix, the stages that read what it changed (docs/ci.md).
+#                          stopping at the first that fails; summary.txt there says what each took
+#                          and how it ended, times.tsv holds each stage's steps by time
+#                          (scripts/ci-times.sh adds them up over runs). With stages named, only
+#                          those, in this order: after a fix, the stages that read what it changed
+#                          (docs/ci.md). A stage run on its own starts with the same head.
 #   scripts/ci.sh server   four parts side by side, each with its own log (server:<part>[,<part>]
 #                          runs some of them, also as a stage of prepush): hbbs, a fresh upstream
 #                          checkout with server/patches (the one there before kept when it has the
@@ -27,12 +30,13 @@
 #                          the App Store Connect script (node --test), actionlint on the workflows
 #                          when it is installed, then a fresh upstream checkout with
 #                          client/patches, the release records' tests (scripts/release-info.py, on
-#                          the patched tree and build/release-1.9.0), hbb_common's WebSocket tests,
-#                          cargo +1.75.0 check (the app builds' toolchain), the client core's
-#                          agreement with the shared vectors of tools/hjv-release (the trust rules)
-#                          and the client's pure Dart tests, with the Flutter SDK the app builds use
-#                          (downloaded once, checked against Flutter's release index). Tests that
-#                          need the generated bridge run in client-build.yml.
+#                          the patched tree and 1.9.1's APK and IPA in scripts/testdata),
+#                          hbb_common's WebSocket tests, cargo +1.75.0 check (the app builds'
+#                          toolchain), the client core's agreement with the shared vectors of
+#                          tools/hjv-release (the trust rules) and the client's pure Dart tests,
+#                          with the Flutter SDK the app builds use (downloaded once, checked
+#                          against Flutter's release index). Tests that need the generated bridge
+#                          run in client-build.yml.
 #   scripts/ci.sh deploy   docs/server-runbook.md's deployment, as on the server, from a copy of
 #                          this working tree: the release package (scripts/package-server.sh), its
 #                          systemd units on this machine (hjv-api's too) behind
@@ -79,13 +83,16 @@
 # that pass, so that a test that skips itself is counted too. A run that skipped nothing fails
 # when an E2E has fewer PASS lines, or a client unit test filter fewer passed tests, than the last
 # full run (E2E_LEAST_*, WOL_LEAST, UNIT_LEAST below).
+# Under each step's title a line says when it began, how far into the run, the machine's load and
+# how long the step before took; before its last line a run prints its steps by time.
 # One run at a time on a CI directory (HJV_CI_DIR, default build/ci): a run holds the lock
 # <CI directory>/ci.lock, and a run started meanwhile stops at once.
 # Needs cargo, curl, openssl, Docker with compose v2 (used through sudo, as the runbook does), and
 # apt-get for Ubuntu's nginx and Apache packages, which are unpacked under build/ci, not installed.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# the tree's physical path, as cargo and the tests it builds give theirs (CARGO_MANIFEST_DIR)
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 SELF="$ROOT/scripts/$(basename "$0")"
 CI="${HJV_CI_DIR:-$ROOT/build/ci}"
 mkdir -p "$CI"
@@ -101,6 +108,11 @@ PROJECT=hjv-ci                     # compose project of the test stack, apart fr
 PROBE="$ROOT/tools/hjv-probe/target/release/hjv-probe"
 LOAD="$ROOT/tools/hjv-load/target/release/hjv-load"
 API="$CI/target-api/release/hjv-api"  # the server stage's release build of hjv-api
+# what the server stage builds hbbs and hbbr, hjv-api and hjv-release from (stamp_binary): the upstream
+# pins and server/patches, and the crates' sources (not their tests and docs)
+HBBS_INPUTS=(server/patches scripts/upstream.env scripts/fetch-upstream.sh)
+API_INPUTS=(server/api/Cargo.toml server/api/Cargo.lock server/api/src)
+RELEASE_INPUTS=(tools/hjv-release/Cargo.toml tools/hjv-release/Cargo.lock tools/hjv-release/src)
 # Caddy for the E2E: the release archive, pinned by its SHA-256 (taken when the release's SHA-512
 # list was checked, 2026-10-12)
 CADDY_VERSION=2.11.7
@@ -116,6 +128,9 @@ E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
 E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
 # the stages of prepush, in their order
 PREPUSH_STAGES="server client deploy e2e wol leak"
+# the side logs in the CI directory that prepush keeps with a stage's log, those the stage wrote:
+# the image build's and the server package's are in no stage log, and the next run writes over all
+declare -A SIDE_LOGS=([deploy]="build.log package.log container.log api-settings.log relay-package.log deploy-offline.log")
 # The fewest PASS lines of the E2E scripts and the fewest client unit tests that the last full run
 # passed with (2026-10-13). A run that skipped nothing and has fewer lost a scenario or a test (one
 # moved under a condition that does not hold, a test filter that picks nothing), and the stage
@@ -170,8 +185,33 @@ E2E_CLIENT_GIVEN=${E2E_CLIENT:-} E2E_CLIENT=""
 STACK=docker SYSTEMD_SINCE=""
 # what this run skipped (skip, count_skips)
 SKIPPED=()
+# the step under way and when it began, and the steps before it with their seconds (step_times)
+STEP="" STEP_SINCE=0 STEP_TIMES=()
+# the target directories this run builds in (own_target)
+OWNED=()
 
-step() { printf '\n== %s\n' "$*"; }
+# A step's title, and under it the time, the seconds since the run began, the machine's load (a
+# slow step on a busy machine) and how long the step before took
+step() {
+  local took=""
+  if [ -n "$STEP" ]; then
+    took=$((SECONDS - STEP_SINCE))
+    STEP_TIMES+=("$took $STEP")
+  fi
+  STEP=$* STEP_SINCE=$SECONDS
+  printf '\n== %s\n' "$*"
+  echo "-- $(date +%T), $SECONDS s in, load $(cut -d' ' -f1 /proc/loadavg)${took:+; the step before: $took s}"
+}
+# The steps by their time, the last one's until now; finish prints it (a table of one says nothing)
+step_times() {
+  if [ -n "$STEP" ]; then
+    STEP_TIMES+=("$((SECONDS - STEP_SINCE)) $STEP")
+    STEP=""
+  fi
+  [ ${#STEP_TIMES[@]} -gt 1 ] || return 0
+  printf '\n-- time by step, %s s in all:\n' "$SECONDS"
+  printf '%s\n' "${STEP_TIMES[@]}" | sort -s -rn -k1,1 | while read -r took what; do printf '%6d s  %s\n' "$took" "$what"; done
+}
 # Every skip goes through skip, or through count_skips for the skipped lines another program prints
 skip() { # <what is skipped (why)>
   echo "skipped: $*"
@@ -213,6 +253,106 @@ at_least() { # <what> <count> <least>
 passed_tests() { # <file>
   sed -n -E 's/^test result: ok\. ([0-9]+) passed;.*/\1/p' "$1" | awk '{ n += $1 } END { print n + 0 }'
 }
+# The target directories of a CI directory serve every tree that runs on it (HJV_CI_DIR), and cargo
+# judges freshness by file times, with unit names that do not depend on the tree: a tree whose files
+# are older takes what another tree built there for its own, test executables with that tree's paths
+# compiled in (CARGO_MANIFEST_DIR) among them. So each directory names the tree that built there last
+# (.hjv-tree), and the end of a run that built there touches that mark (owned_built). Before another
+# tree builds there, or this one after anything else did (units compiled after the mark: a
+# scripts/ci.sh that has no marks yet, cargo run by hand), the packages that cargo builds from a path
+# in <workspace> (with any of its features) are built again in both profiles, whatever tree built
+# them; the crates.io and git dependencies stay built. This tree's crates are cleaned, and
+# cargo clean -p also removes what other trees left there under names of their own (hjv-api's tests:
+# hjv-relay lies outside server/api, so the tree goes into their names). An upstream checkout made
+# from this tree's patches is made anew in the same place for every tree, so its crates' units have
+# the same names whatever tree built them, and it is enough to remove those units' fingerprints and
+# build script folders: cargo builds them again, and their incremental caches stay (cleaning them
+# cost the client stage 43 s). The checkouts that a run keeps while a fresh one has the same tree
+# (server_checkout, build_e2e_client) have no mark: what another tree built from them is this
+# tree's too. A directory is this run's (OWNED) once its mark names this tree.
+own_target() { # <target dir> <workspace dir>
+  local dir=$1 ws=$2 last name names=() specs=() units=() unit start=$SECONDS
+  [[ " ${OWNED[*]} " != *" $dir "* ]] || return 0
+  last=$(cat "$dir/.hjv-tree" 2> /dev/null || true)
+  if [ "$last" = "$ROOT" ]; then
+    if [ -z "$(find "$dir" -mindepth 4 -maxdepth 4 -path '*/.fingerprint/*/invoked.timestamp' -newer "$dir/.hjv-tree" -print -quit)" ]; then
+      OWNED+=("$dir")
+      return 0
+    fi
+    last="$ROOT, then something else"
+  fi
+  while read -r name; do names+=("$name") specs+=(-p "$name"); done < <(cd "$ws" &&
+    cargo metadata --format-version 1 --locked --all-features --filter-platform "$(rustc -vV | sed -n 's/^host: //p')" |
+    python3 -I -c 'import json, sys
+for p in json.load(sys.stdin)["packages"]:
+    if p["source"] is None:
+        print(p["name"])')
+  [ ${#names[@]} -gt 0 ] || fail "cargo metadata named no packages of $ws"
+  if [[ $ws == "$CI"/* ]]; then
+    # <package>-<16 hex digits>, a unit's folder
+    for unit in "$dir"/{debug,release}/{.fingerprint,build}/*; do
+      name=${unit##*/}
+      if [[ ${name##*-} =~ ^[0-9a-f]{16}$ ]] && [[ " ${names[*]} " == *" ${name%-*} "* ]]; then units+=("$unit"); fi
+    done
+    [ ${#units[@]} -eq 0 ] || rm -rf "${units[@]}"
+  else
+    (cd "$ws" && cargo clean --locked "${specs[@]}" --target-dir "$dir" &&
+      cargo clean --locked --release "${specs[@]}" --target-dir "$dir") || fail "cargo clean in $dir"
+  fi
+  mkdir -p "$dir"
+  echo "$ROOT" > "$dir/.hjv-tree"
+  OWNED+=("$dir")
+  echo "$(basename "$dir"): built last from ${last:-a tree it does not name}; this tree's packages" \
+    "(${names[*]}) cleaned in $((SECONDS - start)) s${units[*]:+ (${#units[@]} fingerprints and build script folders)}"
+}
+# At the end of a run: what it built in its target directories is older than their marks
+owned_built() {
+  local dir
+  for dir in "${OWNED[@]}"; do touch "$dir/.hjv-tree"; done
+}
+# What a binary that one stage leaves for others is built from: hbbs and hbbr (HBBS_INPUTS), hjv-api
+# (API_INPUTS), and hjv-release (RELEASE_INPUTS), which the owner may sign version policies with too.
+# <binary>.stamp names the commit and its changed files, a hash of the files the binary is built from
+# (as git sees them: tracked, or not ignored) and of the toolchain, the binary's hash, and last the
+# tree (a path may hold spaces).
+inputs_hash() { # <path in this tree...>
+  {
+    git -C "$ROOT" ls-files -z --cached --others --exclude-standard -- "$@" | LC_ALL=C sort -z -u |
+      { env -C "$ROOT" xargs -0 -r sha256sum 2>&1 || true; }
+    cargo --version
+  } | sha256sum | cut -d' ' -f1
+}
+stamp_binary() { # <binary> <path in this tree...>
+  local bin=$1
+  shift
+  echo "commit $(git -C "$ROOT" rev-parse HEAD) changed-files $(git -C "$ROOT" status --porcelain | wc -l)" \
+    "inputs $(inputs_hash "$@") binary $(sha256sum < "$bin" | cut -d' ' -f1) tree $ROOT" > "$bin.stamp"
+  echo "$(basename "$bin").stamp: $(cat "$bin.stamp")"
+}
+# Says where a binary that another stage built comes from. One that is not built from what this tree
+# has of <path...> (another tree's or commit's files, another toolchain, no stamp, or a binary that
+# changed since) fails the stage with HJV_CI_STRICT=1, and is a skip otherwise.
+check_stamp() { # <binary> <stage that builds it> <path in this tree...>
+  local bin=$1 stage=$2 name tree="" commit="" changed inputs sum why=""
+  shift 2
+  name=$(basename "$bin")
+  [ -x "$bin" ] || fail "$name is not built: scripts/ci.sh $stage"
+  if ! read -r _ commit _ changed _ inputs _ sum _ tree 2> /dev/null < "$bin.stamp"; then
+    why="it has no stamp ($name.stamp)"
+  elif [ "$sum" != "$(sha256sum < "$bin" | cut -d' ' -f1)" ]; then
+    why="it changed since its stamp"
+  elif [ "$inputs" != "$(inputs_hash "$@")" ]; then
+    why="this tree's $* or the toolchain are not what it was built from"
+  fi
+  commit=${commit:0:7}
+  if [ -z "$why" ]; then
+    echo "$name: built from what this tree has of $* (in $tree at $commit, $changed changed files)"
+    return 0
+  fi
+  [ "${HJV_CI_STRICT:-}" != 1 ] ||
+    fail "$name is not this tree's: $why (built in ${tree:-?} at ${commit:-?}); scripts/ci.sh $stage builds it again"
+  skip "this tree's own $name ($why; the one there was built in ${tree:-?} at ${commit:-?}): scripts/ci.sh $stage builds it again"
+}
 dc() { (cd "$SRC/deploy" && sudo docker compose -p "$PROJECT" "$@"); }
 hbbs_logs() {
   if [ "$STACK" = systemd ]; then
@@ -233,6 +373,7 @@ fail() {
       [ -f "$f" ] && { echo "--- $f" >&2; tail -n 20 "$f" >&2; }
     done
   fi
+  owned_built
   exit 1
 }
 
@@ -399,6 +540,14 @@ check_account_down() { # <port> <CA file> <name>
   esac
 }
 
+# hjv-probe and hjv-load of this tree, each built in its own folder (tools/<tool>/target): by the
+# server stage, and by every stage that runs it (deploy both, e2e and wol hjv-probe); a second when
+# it is built already
+build_tools() { # <tool...>
+  local t
+  for t in "$@"; do (cd "$ROOT/tools/$t" && cargo build --release --locked) || fail "$t build"; done
+}
+
 # The vector that tests/hjv_pk.rs (server/patches/0004) checks the patched hbbs against is a
 # copy of hjv-api's (server/api/src/hbbs.rs, reads_what_libsodium_signed): its four values, named.
 hjv_pk_vector() { # <file>
@@ -422,7 +571,7 @@ RETRIED=0
 # The parts that <stage> names, in the order of SERVER_PARTS: all of them for server, those it lists
 # for server:<part>[,<part>]; nothing, and a failure, for any other name
 server_parts() { # <stage>
-  local want part out=()
+  local want part picked=()
   case $1 in
     server) want=$SERVER_PARTS ;;
     server:?*) want=${1#server:}; want=${want//,/ } ;;
@@ -432,9 +581,9 @@ server_parts() { # <stage>
     [[ " $SERVER_PARTS " == *" $part "* ]] || return 1
   done
   for part in $SERVER_PARTS; do
-    if [[ " $want " == *" $part "* ]]; then out+=("$part"); fi
+    if [[ " $want " == *" $part "* ]]; then picked+=("$part"); fi
   done
-  echo "${out[*]}"
+  echo "${picked[*]}"
 }
 
 # Runs <command...> in a network namespace of its own, whose loopback is up and which reaches no
@@ -557,7 +706,7 @@ server_checkout() {
 server_hbbs() {
   # all of the patched server's tests, its upstream unit tests too: patches 0001-0004 change the
   # code they test
-  local tests=(--lib --bins --tests)
+  local tests=(--lib --bins --tests) t
   step "server: upstream checkout with server/patches"
   server_checkout
   # hbbs's signed hjv-pk answer for hjv-api (server/patches/0004, design v3 5-7): required, so that
@@ -583,11 +732,15 @@ server_hbbs() {
   step "server: hbbs and hbbr's tests (unit, signaling, relay, protobuf, hjv-pk, access tickets)"
   # Each test binary in a network namespace of its own, all of them side by side: they mostly wait
   # (hbbs's ten-second periods, test_insert's 10 000 synced inserts), they name their directories
-  # by process, and no binary's hbbs can take the ports another has picked (own_net)
+  # by process, and no binary's hbbs can take the ports another has picked (own_net). (No mark on
+  # $CI/target, own_target: only this checkout builds there, and server_checkout keeps it only while
+  # it has the same patched tree, so what another tree built there is this one's; a mark would have
+  # hbbs compiled again after every switch of trees.)
   HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo_tests "$CI/upstream/rustdesk-server" \
     "$CI/hbbs-tests.log" "$(nproc)" own_net --release --locked "${tests[@]}" || fail "server: hbbs and hbbr's tests"
+  for t in hbbs hbbr; do stamp_binary "$CI/target/release/$t" "${HBBS_INPUTS[@]}"; done
   step "server: hjv-probe and hjv-load"
-  for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
+  build_tools hjv-probe hjv-load
 }
 
 # api: hjv-api's tests and release build (server/api)
@@ -595,6 +748,7 @@ server_api() {
   local commit
   if [ -d "$ROOT/server/api" ]; then
     step "server: hjv-api tests and release build (server/api)"
+    own_target "$CI/target-api" "$ROOT/server/api"
     # with the output of the tests that pass: a test that cannot run here (no systemd tools) passes
     # with a line "skipped: ...", which only then is seen and counted. Four test binaries at a time,
     # each in a network namespace of its own: update_stream.rs starts hjv-api on a port it picked
@@ -610,6 +764,7 @@ server_api() {
     (cd "$ROOT/server/api" && HJV_API_COMMIT=$commit \
       CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api)
     "$API" version | grep -qF "($commit)" || fail "server: $API does not report the commit of its source, $commit"
+    stamp_binary "$API" "${API_INPUTS[@]}"
   else
     skip "hjv-api (no server/api)"
   fi
@@ -629,6 +784,7 @@ server_relay() {
     if [ -n "${GITHUB_ACTIONS:-}" ]; then netns=; fi
     netns=${HJV_RELAY_NETNS-$netns}
     [ "$netns" = require ] || skip "hjv-relay's network namespace test, where it cannot run (HJV_RELAY_NETNS=$netns)"
+    own_target "$CI/target-relay" "$ROOT/relay"
     with_skips "$CI/relay-tests.log" env -C "$ROOT/relay" HJV_RELAY_NETNS="$netns" CARGO_TARGET_DIR="$CI/target-relay" \
       cargo test --locked -- --show-output || fail "server: hjv-relay tests"
   else
@@ -643,6 +799,7 @@ server_release() {
     # the reference model (python3 tests/vectors/generate.py --check) and read every one; the release
     # build is the one the client stage's key-file test and the E2E use
     step "server: hjv-release format, lints, tests and release build (tools/hjv-release)"
+    own_target "$CI/target-hjv-release" "$ROOT/tools/hjv-release"
     (cd "$ROOT/tools/hjv-release" && cargo fmt --check) || fail "server: hjv-release is not formatted (cargo fmt)"
     (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo clippy --locked --all-targets -- -D warnings) ||
       fail "server: hjv-release lints"
@@ -650,6 +807,7 @@ server_release() {
       cargo test --locked || fail "server: hjv-release tests"
     (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
       fail "server: hjv-release release build"
+    stamp_binary "$CI/target-hjv-release/release/hjv-release" "${RELEASE_INPUTS[@]}"
   else
     skip "hjv-release (no tools/hjv-release)"
   fi
@@ -748,11 +906,13 @@ client_stage() {
   local index=https://storage.googleapis.com/flutter_infra_release/releases
   # the server stage's release build of tools/hjv-release, against which the key files and the
   # release records are read too (its tests skip that part without it)
-  local release_bin="$CI/target-hjv-release/release/hjv-release" samples="$ROOT/build/release-1.9.0"
+  local release_bin="$CI/target-hjv-release/release/hjv-release"
   local vectors="$ROOT/tools/hjv-release/tests/vectors" ran cases
   if [ ! -x "$release_bin" ]; then
     release_bin=""
     skip "the key files and release records against hjv-release (no $CI/target-hjv-release/release/hjv-release: scripts/ci.sh server builds it)"
+  else
+    check_stamp "$release_bin" server "${RELEASE_INPUTS[@]}"
   fi
   # The offline tests beside the rest, with their output in build/ci/client-offline.log, shown at
   # the end. A stage that fails before then waits for them, so that nothing of it runs on, and
@@ -783,18 +943,14 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   "$ROOT/scripts/hjv-fontsize-check.sh" --self-test || fail "client: the font size check's self-test"
   "$ROOT/scripts/hjv-fontsize-check.sh" "$app/lib" "$ROOT/scripts/hjv-fontsize-baseline.txt"
   # release.json, SHA256SUMS and the workflow's minimum-version steps, also on the patched tree (the
-  # Dart tests the workflow requires) and on the 1.9.0 artifacts kept under build/ (the manifest
-  # gate on a real APK)
+  # Dart tests the workflow requires) and on real packages (the manifest gate on a real APK): the
+  # manifest and Info.plist of 1.9.1's APK and IPA in scripts/testdata, or the download of a run that
+  # HJV_RELEASE_SAMPLES names
   step "client: the release records (scripts/release-info.py, client-build.yml), offline tests"
-  # a linked worktree (build/v191/wt-repo/...) has no build/ of its own: read the main checkout's,
-  # as the leak stage does for its list
-  if [ ! -d "$samples" ]; then
-    samples="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")/build/release-1.9.0"
-  fi
-  [ -d "$samples" ] || { samples=""; skip "the release records on real artifacts (no build/release-1.9.0)"; }
-  HJV_RELEASE_BIN="$release_bin" HJV_PATCHED_FLUTTER="$app" HJV_RELEASE_SAMPLES="$samples" \
+  HJV_RELEASE_BIN="$release_bin" HJV_PATCHED_FLUTTER="$app" \
     python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_release_info.py' || fail "client: release record tests"
   step "client: hbb_common WebSocket tests"
+  own_target "$CI/target-client" "$CI/upstream/rustdesk"
   # One at a time: the proxy test sets the process's proxy option, and a test running beside it
   # would connect through that test's one-shot proxy
   (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket -- --test-threads=1)
@@ -804,6 +960,7 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   rustup toolchain list | grep '^1\.75\.0' > /dev/null ||
     fail "client: no Rust 1.75.0 toolchain: rustup toolchain install 1.75.0 --profile minimal"
   pkgconfig
+  own_target "$CI/target-175" "$CI/upstream/rustdesk"
   (cd "$CI/upstream/rustdesk" && PKG_CONFIG_PATH="$CI/pkgconfig" CARGO_TARGET_DIR="$CI/target-175" \
     cargo +1.75.0 check --locked --features linux-pkg-config,hjv-e2e) || fail "client: cargo +1.75.0 check"
   # INV-13 of the trust rules: the client core takes and refuses every envelope of the shared vectors
@@ -931,12 +1088,21 @@ check_site() { # <port> <CA file> <status of />, or "site" when / belongs to ano
   [ "$probe" = 0 ] || fail "$name: hjv-probe"
   cat "$out-peers.txt"
   [ "$peers" = 0 ] || fail "$name: hjv-load peers"
+  # Each PC echoed a heartbeat in its 12 s: the patched hbbs sends an empty frame every 10 s
+  # (TCP_HEARTBEAT_MS, server/patches/0002) and drops a PC after 30 s without a frame
+  # (TCP_IDLE_TIMEOUT_MS), and the web server's 120-s timeouts count on those frames
+  # (deploy/nginx-hjviewer-locations.conf): one that drops or mangles them knocks PCs offline
+  [[ $(cat "$out-peers.txt") =~ at\ least\ ([0-9]+)\ by\ each\ PC ]] && [ "${BASH_REMATCH[1]}" -ge 1 ] ||
+    fail "$name: a PC echoed no heartbeat of hbbs's in 12 s"
   { hbbs_logs | grep -oE 'update_pk [0-9]+ [^ ]+' || true; } | tail -n "+$((before + 1))" > "$CI/pk.txt"
   cat "$CI/pk.txt"
   [ "$(wc -l < "$CI/pk.txt")" = 3 ] || fail "$name: hbbs did not register 3 PCs"
   if grep -q ':0$' "$CI/pk.txt"; then fail "$name: X-Real-Port did not reach hbbs (port 0)"; fi
   cat "$out-relay.txt"
   [ "$relay" = 0 ] || fail "$name: hjv-load relay"
+  # what one half of the session sent, the other half received, every byte
+  [[ $(cat "$out-relay.txt") =~ ([0-9]+)\ bytes\ received\ of\ ([0-9]+)\ sent ]] && [ "${BASH_REMATCH[2]}" -gt 0 ] &&
+    [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ] || fail "$name: the relay did not carry every byte sent"
 }
 
 # The signed version policy at /api/hjv/version (deploy/nginx-hjviewer-locations.conf, runbook 8),
@@ -1202,7 +1368,7 @@ start_package_container() { # <release dir> <package name>
   cat > "$CI/container-test.sh" << 'EOF'
 set -euo pipefail
 name=$1
-step() { printf '\n== container: %s\n' "$*"; }
+step() { printf '\n== container: %s\n-- %s, %s s in\n' "$*" "$(date '+%T %Z')" "$SECONDS"; }
 step "Ubuntu's nginx, systemd (systemd-analyze, systemd-socket-activate) and curl"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq > /dev/null
@@ -1571,8 +1737,10 @@ EOF
 }
 
 deploy_stage() {
-  if [ ! -x "$PROBE" ] || [ ! -x "$LOAD" ]; then fail "hjv-probe/hjv-load are not built: scripts/ci.sh server"; fi
-  if [ -d "$ROOT/server/api" ] && [ ! -x "$API" ]; then fail "hjv-api is not built: scripts/ci.sh server"; fi
+  local t
+  # the server stage's builds that the release package takes
+  for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
+  if [ -d "$ROOT/server/api" ]; then check_stamp "$API" server "${API_INPUTS[@]}"; fi
   sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
   if [ -d "$ROOT/relay" ]; then
     [ -n "$(rustup target list --installed 2>/dev/null | grep -x x86_64-unknown-linux-musl)" ] && command -v musl-gcc > /dev/null ||
@@ -1582,6 +1750,9 @@ deploy_stage() {
     fail "ports 21115-21119 are in use (a running hjviewer server?); the test stack needs them"
   [ -z "$(ss -Hltn '( sport >= :18080 and sport <= :18082 ) or ( sport >= :18443 and sport <= :18448 ) or sport = :18599')" ] ||
     fail "test ports 18080-18082 / 18443-18448 / 18599 are in use"
+  # before the jobs below: the checks and the parts' records (site_tools) take this tree's builds
+  step "deploy: hjv-probe and hjv-load (tools/)"
+  build_tools hjv-probe hjv-load
   trap cleanup EXIT
 
   # The offline tests and hjv-relay's packages share nothing with the checks below, which mostly
@@ -1591,7 +1762,9 @@ deploy_stage() {
   if [ -d "$ROOT/relay" ]; then
     # relay/tests/package.rs's packages run only with --ignored, which no other stage gives; with
     # the output of the tests that pass: scripts/package-relay.sh says "skipped: ..." where it
-    # cannot run the binary in an empty root
+    # cannot run the binary in an empty root. The mark of its target directory is this run's
+    # (own_target here, not in the job, whose OWNED the end of the run would not see).
+    own_target "$CI/target-relay" "$ROOT/relay"
     deploy_job "$CI/relay-package.log" env -C "$ROOT/relay" CARGO_TARGET_DIR="$CI/target-relay" \
       cargo test --locked --test package -- --ignored --show-output
   else
@@ -1672,6 +1845,8 @@ deploy_stage() {
     sed -i 's/^HJV_DOMAIN=.*/HJV_DOMAIN=localhost/' .env &&
     printf 'COMPOSE_FILE=docker-compose.behind-proxy.yml\nHJV_TOTAL_BANDWIDTH=100\nHJV_BUILD_JOBS=%s\n' "$(nproc)" >> .env)
   [ "$(dc config --services | sort | paste -sd' ')" = "hbbr hbbs" ] || fail "COMPOSE_FILE in .env did not select the behind-proxy file"
+  local built
+  built=$(date +%s)
   deploy_job "$CI/build.log" dc build
 
   # Installed as the runbook does, apart from the names that keep it away from a real installation:
@@ -1797,6 +1972,13 @@ EOF
 
   step "deploy: Docker's image (build/ci/build.log)"
   deploy_wait "$CI/build.log" || { tail -n 40 "$CI/build.log"; fail "image build (build/ci/build.log)"; }
+  # What the image build took from Docker's cache (building the image again costs minutes; a FROM is
+  # no step of its own to take from there) and the base images it resolved. It ran beside the
+  # checks: it took until its log's last line, not until this wait.
+  echo "image build: $(($(stat -c %Y "$CI/build.log") - built)) s, $(grep -E '^#[0-9]+ CACHED$' "$CI/build.log" | sort -u | wc -l) of" \
+    "$(grep -E '^#[0-9]+ \[[^]]* [0-9]+/[0-9]+\] ' "$CI/build.log" | grep -v '\] FROM ' | cut -d' ' -f1 | sort -u | wc -l)" \
+    "steps from the cache"
+  sed -n -E 's/^#[0-9]+ \[[^]]*\] FROM (.*@sha256:[0-9a-f]+)$/image build: FROM \1/p' "$CI/build.log" | sort -u
   deploy_part behind-proxy "deploy B: Docker's hbbs and hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml), behind nginx" \
     behind_proxy_inputs deploy_behind_proxy
   deploy_part caddy "deploy A: Caddy (docker-compose.yml) with the same image, on 127.0.0.1:18082/18445" caddy_inputs deploy_caddy
@@ -1818,6 +2000,13 @@ EOF
   if [ -d "$ROOT/relay" ]; then
     step "deploy: hjv-relay's packages (scripts/package-relay.sh): the static build, its SHA256SUMS, the field test package"
     show_job "$CI/relay-package.log" "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
+    # The test runs scripts/package-relay.sh of the tree it was compiled in (CARGO_MANIFEST_DIR),
+    # which packages that tree and says its commit: it must have been this tree, at this commit
+    local head made
+    head=$(git -C "$ROOT" rev-parse HEAD)
+    made=$(sed -n -e 's/^commit: //p' -e 's#^wrote .* to \(.*\)/build/package-relay/.*#\1#p' "$CI/relay-package.log" | sort -u)
+    [ "$made" = "$(printf '%s\n' "$head" "$ROOT" | sort -u)" ] ||
+      fail "deploy: hjv-relay's package test packaged $(echo "$made" | paste -sd' '), not this tree at $head (build/ci/relay-package.log)"
   fi
   if [ ${#api_files[@]} -gt 0 ]; then check_package_container; fi
 
@@ -2000,6 +2189,9 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
   fi
   step "e2e: the client for the test server hjv.test (--features linux-pkg-config,hjv-e2e)"
   pkgconfig
+  # (No mark on target-e2e and target-e2e-nokeys, own_target: only this checkout builds into them,
+  # and it stays only while client/patches gives the same tree, so what another tree built there is
+  # this one's; a mark would have the client compiled again after every switch of trees.)
   (cd "$src" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" \
     "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
     cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the client build"
@@ -2096,6 +2288,7 @@ fetch_faketime() {
 # server package takes
 build_e2e_api() {
   step "e2e: hjv-api and hjv-fake-sso (server/api)"
+  own_target "$CI/target-api-e2e" "$ROOT/server/api"
   (cd "$ROOT/server/api" && CARGO_TARGET_DIR="$CI/target-api-e2e" cargo build --release --locked --features fake-sso) ||
     fail "e2e: hjv-api build"
   E2E_API="$CI/target-api-e2e/release/hjv-api" E2E_FAKE_SSO="$CI/target-api-e2e/release/hjv-fake-sso"
@@ -2129,14 +2322,16 @@ e2e_minimum_version() {
   E2E_MINVER+=(HJV_E2E_UPDATE_KEYS=1)
   if [ -f "$ROOT/tools/hjv-release/Cargo.toml" ]; then
     step "e2e: tools/hjv-release, which signs the E2E's version policies with the test keys"
+    own_target "$CI/target-hjv-release" "$ROOT/tools/hjv-release"
     (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
       fail "e2e: hjv-release build"
+    stamp_binary "$CI/target-hjv-release/release/hjv-release" "${RELEASE_INPUTS[@]}"
     E2E_MINVER+=(HJV_RELEASE="$CI/target-hjv-release/release/hjv-release")
   fi
 }
 
 e2e_stage() {
-  local work="$CI/e2e" mode extra=() modes=(strict open)
+  local work="$CI/e2e" mode extra=() modes=(strict open) t
   # a client given by hand would go without the build's unit tests and, built without the E2E's
   # keys, without the account E2E
   [ -z "$E2E_CLIENT_GIVEN" ] ||
@@ -2149,9 +2344,9 @@ e2e_stage() {
     skip "firewall-e2e.sh open (HJV_E2E_PARTS: a partial run of strict mode)"
   fi
   sudo -n true 2> /dev/null || fail "e2e: needs sudo without a password prompt (network namespaces, iptables)"
-  if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
-    fail "e2e: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
-  fi
+  for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
+  step "e2e: hjv-probe (tools/)"
+  build_tools hjv-probe
   fetch_caddy
   e2e_server_key "$work"
   e2e_keys "$work/api"
@@ -2205,10 +2400,10 @@ e2e_stage() {
 # fails without it once client/patches has that patch. In a prepush run it takes the e2e stage's
 # client when that was built from the same inputs (e2e_client_stamp).
 wol_stage() {
-  local work="$CI/e2e" built="$CI/target-e2e/release/rustdesk"
-  if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
-    fail "wol: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
-  fi
+  local work="$CI/e2e" built="$CI/target-e2e/release/rustdesk" t
+  for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
+  step "wol: hjv-probe (tools/)"
+  build_tools hjv-probe
   fetch_caddy
   e2e_server_key "$work"
   e2e_keys "$work/api"
@@ -2231,6 +2426,7 @@ wol_stage() {
   fi
   build_e2e_api
   step "wol: hjv-relay for hjv.test with the E2E's command key"
+  own_target "$CI/target-relay" "$ROOT/relay"
   (cd "$ROOT/relay" && HJV_SERVER=hjv.test HJV_COMMAND_PUBKEY="$(cat "$work/api/command.pub")" \
     CARGO_TARGET_DIR="$CI/target-relay" cargo build --release --locked) || fail "wol: hjv-relay build"
   step "wol: tools/e2e/wol-e2e.sh (output also in build/ci/wol-e2e.log)"
@@ -2253,10 +2449,10 @@ leak_stage() {
 
 # The head of a stage's log: the commits it ran on (this repository; the client series and hbbs
 # checkouts under upstream/, which client/patches and server/patches are exported from), the
-# toolchain and the start
-log_head() { # <stage>
+# toolchain and the start. A run of its own starts with it too, saying so in its first line.
+log_head() { # <stage> [<how it runs>]
   local name dir
-  echo "LOG scripts/ci.sh $1 (prepush, HJV_CI_STRICT=1, CI directory $CI)"
+  echo "LOG scripts/ci.sh $1 (${2:-prepush, HJV_CI_STRICT=1}, CI directory $CI)"
   for name in hjviewer client-series hbbs; do
     case $name in
       hjviewer) dir=$ROOT ;;
@@ -2279,7 +2475,7 @@ log_head() { # <stage>
 # this run's lock, with HJV_CI_STRICT=1, each with its own log, stopping at the first that fails.
 # Named stages run alone, in this order: after a fix, those that read what it changed (docs/ci.md).
 prepush() { # [<stage>...]
-  local stages=() s a log logs head start status passed list
+  local stages=() s a log logs head start status passed list f
   for s in "$@"; do
     [[ " $PREPUSH_STAGES " == *" $s "* ]] || [ -n "$(server_parts "$s")" ] ||
       fail "prepush: no stage $s ($PREPUSH_STAGES; server:<part>[,<part>] of $SERVER_PARTS)"
@@ -2309,6 +2505,9 @@ prepush() { # [<stage>...]
   HJV_CI_RUN="$(date +%s)-$$"
   export HJV_CI_RUN
   step "prepush: ${stages[*]} on $head, logs in $logs"
+  # summary.txt: what prepush says of each stage; times.tsv: each stage's steps by time
+  echo "prepush: ${stages[*]} on $head in $ROOT, $(date '+%Y-%m-%d %H:%M:%S %z')" > "$logs/summary.txt"
+  : > "$logs/times.tsv"
   for s in "${stages[@]}"; do
     log="$logs/$s.log" start=$(date +%s) status=0
     (
@@ -2316,18 +2515,27 @@ prepush() { # [<stage>...]
       log_head "$s"
       HJV_CI_STRICT=1 "$SELF" "$s"
     ) > "$log" 2>&1 < /dev/null || status=$?
+    for f in ${SIDE_LOGS[$s]:-}; do
+      if [ "$(stat -c %Y "$CI/$f" 2> /dev/null || echo 0)" -ge "$start" ]; then cp -p "$CI/$f" "$logs/$s-${f#"$s"-}"; fi
+    done
+    sed -n "/^-- time by step/,/^\$/s/^ *\([0-9][0-9]*\) s  /$s\t\1\t/p" "$log" >> "$logs/times.tsv"
     passed=$(grep -x "== CI passed: $s (0 skipped)" "$log" || true)
-    echo "prepush: $s: exit $status, $(($(date +%s) - start)) s, $(grep -c '^skipped:' "$log" || true) skipped line(s), log $log"
+    echo "prepush: $s: exit $status, $(($(date +%s) - start)) s, $(grep -c '^skipped:' "$log" || true) skipped line(s), log $log" |
+      tee -a "$logs/summary.txt"
     [ "$status" = 0 ] && [ -n "$passed" ] || fail "prepush: $s did not pass ($log)"
     if grep '^skipped:' "$log"; then fail "prepush: $s printed the skipped lines above ($log)"; fi
     [ "$(git -C "$ROOT" rev-parse HEAD)" = "$head" ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
       fail "prepush: the tree changed during $s; its log is not of $head"
   done
+  echo "prepush: passed, $SECONDS s" >> "$logs/summary.txt"
 }
 
-# The last lines of a run: what it skipped, and with HJV_CI_STRICT=1 a failure if anything
+# The last lines of a run: its steps by time, what it skipped, and with HJV_CI_STRICT=1 a failure if
+# anything; the line "== CI passed: ..." comes last, with no time line under it
 finish() { # <target>
   local s
+  owned_built
+  step_times
   if [ ${#SKIPPED[@]} -gt 0 ]; then
     printf '\n%s skipped in this run:\n' "${#SKIPPED[@]}"
     for s in "${SKIPPED[@]}"; do echo "  - $s"; done
@@ -2336,9 +2544,16 @@ finish() { # <target>
       exit 1
     fi
   fi
-  step "CI passed: $1 (${#SKIPPED[@]} skipped)"
+  printf '\n== %s\n' "CI passed: $1 (${#SKIPPED[@]} skipped)"
 }
 
+# the head of a run of its own (a stage that prepush runs, with HJV_CI_RUN, has it in its log); such a
+# run ends with "== CI passed: ..." or "FAIL: ...", and only prepush's logs with an EXIT line
+case "$TARGET" in
+  all | server | client | deploy | e2e | wol | leak)
+    [ -n "${HJV_CI_RUN:-}" ] || log_head "$TARGET" "on its own${HJV_CI_STRICT:+, HJV_CI_STRICT=$HJV_CI_STRICT}"
+    ;;
+esac
 case "$TARGET" in
   server | server:*) server_stage "$TARGET" ;;
   client) client_stage ;;

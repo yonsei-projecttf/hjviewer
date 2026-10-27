@@ -34,7 +34,7 @@
 
 ## 실행
 
-개발 PC에서는 먼저 `scripts/ci.sh server`로 서버(hbbs, hbbr)와 `hjv-probe`를 빌드합니다. 그다음 `scripts/ci.sh e2e`가 나머지를 합니다(sudo가 비밀번호 없이 되어야 함, [ci.md](ci.md)). 서버가 빌드되어 있지 않으면 `scripts/ci.sh server`를 먼저 하라고 하며 멈춥니다.
+개발 PC에서는 먼저 `scripts/ci.sh server`로 서버(hbbs, hbbr)를 빌드합니다. 그다음 `scripts/ci.sh e2e`가 `hjv-probe`를 이 트리에서 빌드하고 나머지를 합니다(sudo가 비밀번호 없이 되어야 함, [ci.md](ci.md)). 서버가 빌드되어 있지 않으면 `scripts/ci.sh server`를 먼저 하라고 하며 멈춥니다.
 
 - 패치를 적용한 클라이언트를 새로 받아 시험용으로 빌드하고, Caddy를 고정한 SHA-256으로 받고, PC 쪽 클라이언트를 `/usr/local/lib/hjviewer-e2e/rustdesk`에 설치한 뒤 strict와 open을 차례로 돌립니다. 끝나면 설치한 파일을 지웁니다.
 - 패치에 계정 코드가 있으면 [계정 단계](#계정-단계-160)도 돕니다. 클라이언트의 HJViewer 코드 단위 시험(`--lib hjv`), hjv-api와 가짜 SSO 빌드, Ubuntu의 `libfaketime` 패키지 풀기(`build/ci/faketime`, 설치하지 않음)가 더해집니다.
@@ -43,6 +43,7 @@
 - 실패를 살필 때는 `HJV_E2E_HOLD=<초>`(최대 3600)를 줍니다. 실패한 실행은 정리하기 전에 그 시간 동안, 또는 `$HJV_E2E_WORK/run-<모드>/release`가 생길 때까지 네임스페이스·서버·클라이언트를 그대로 둡니다(`HOLD:` 줄). 그동안 로그를 읽고 `in_ns`처럼 네임스페이스 안에서 `--hjv-e2e-option` 등으로 상태를 물으며, 처음부터 다시 돌리지 않습니다.
 - 늦은 부분을 고치는 동안에는 `HJV_E2E_PARTS=<부분>[,<부분>…]`로 그 부분만 다시 봅니다(부분: `account`, `access`, `minver`, `policy`). 처음 단계(방화벽, 등록, 포워딩, 화면)를 거친 뒤 strict의 그 부분만 돌리고, `access`를 `account` 없이 주면 계정 단계 대신 alice의 PC·컨트롤러 로그인과 스위치 켜기만 합니다. 이런 부분 실행은 빠진 부분을 `skipped:` 한 줄로 적고 마지막 줄이 `PASS`가 아니라 `PARTIAL`이므로 통과가 아닙니다. `scripts/ci.sh e2e`에 주면 open은 돌지 않고(건너뛴 것으로 셈), 엄격 모드(`HJV_CI_STRICT=1`, prepush)는 단계를 시작하자마자 거절합니다. 고친 뒤에는 전체를 한 번 돌립니다.
 - 엄격 모드(prepush)에서는 미리 알 수 있는 건너뜀을 E2E 전에 봅니다. 단계가 그때까지 건너뛴 것(계정 E2E, `libfaketime`, 최소 버전, 출입 제한)이 있으면 그 자리에서 목록과 함께 실패합니다. `firewall-e2e.sh`는 `HJV_E2E_NO_SKIP=1`을 받아, 클라이언트에 없는 시험 명령(W6-E4·E4b·E5의 `hjv-e2e-support-pc`, DEL1–DEL3의 `--hjv-e2e-delete-account`), 없는 `FAKETIME_LIB`(S27), 없는 `HJV_RELEASE`(W6-E2, V5–V7·V9) 때문에 건너뛸 것이 있으면 시작하기 전에 실패합니다. 2026-10-20의 push 전 검사(`54a78c7`)는 W6-E4의 건너뜀 하나로 14분을 다 돈 뒤 끝에서 실패했습니다.
+- 스크립트의 각 부분 제목(`== `)에는 실행을 시작한 뒤 지난 초가 붙습니다(`== [ 812 s] S27: …`). 통과한 실행은 마지막 `PASS (<모드>)` 줄(부분 실행은 `PARTIAL (<모드>)` 줄) 바로 앞에 부분을 걸린 시간 순으로 늘어놓은 표(`-- time by part, <초> s in all:`)를 찍습니다. 한 부분의 시간은 그 제목부터 다음 제목까지입니다. [원격 켜기 E2E](#원격-켜기-단계-160)의 `wol-e2e.sh`도 같습니다.
 - 시험용 클라이언트는 LTO 없이, 코드 생성 단위 16개로 빌드합니다. 릴리스 프로필 그대로면 3분 반쯤 걸리고, 이렇게 하면 45초쯤입니다. 제품 빌드의 프로필은 그대로입니다. 단위 시험은 client 단계처럼 시험 프로필(debug, rustc의 증분 컴파일)로 빌드합니다. 키가 든 시험은 `build/ci/target-e2e`의 debug 쪽, 키를 뺀 시험은 `build/ci/target-e2e-nokeys`에 빌드해, 실행마다 키가 오가며 클라이언트 크레이트를 두 번 다시 컴파일하지 않게 합니다. 2026-10-27까지는 둘 다 릴리스로 빌드해 각각 40초~1분 10초가 걸렸습니다.
 - 체크아웃(`build/ci/upstream-e2e`)은 실행마다 새로 받되, 받은 것이 지난 빌드의 체크아웃과 같으면(`scripts/ci.sh`의 `checkout_state`: rustdesk와 hbb_common의 커밋 트리, `git status`, 커밋과 다르거나 커밋에 없는 파일, 곧 덮어쓰기 파일들의 권한·크기·내용. git이 무시하는 파일도 넣고(upstream의 `*png` 규칙에 걸리는 아이콘 같은 덮어쓰기 파일), 빌드가 쓰는 `src/version.rs`만 뺍니다) 새로 받은 것을 지우고 지난 것을 그 파일 시각 그대로 둡니다. cargo는 경로 크레이트를 파일 시각으로 보므로 `client/patches`가 그대로면 아무것도 다시 컴파일하지 않습니다. 트리가 다르면 새로 받은 것으로 바꾸고, 시각이 새로우므로 클라이언트 크레이트를 모두 다시 컴파일합니다. 이 빌드 폴더들에는 이 체크아웃만 빌드합니다. 다른 체크아웃(client 단계의 `build/ci/upstream`)의 경로 크레이트는 cargo가 같은 해시로 보므로, 같은 폴더를 쓰면 다른 트리에서 빌드한 것을 지난 체크아웃의 것으로 받아들일 수 있습니다.
 
@@ -460,7 +461,7 @@ PASS (strict): transport: relay
 
 ## 원격 켜기 단계 (1.6.0)
 
-꺼진 PC를 앱에서 켜는 길 전체를 실제 프로그램으로 확인합니다(설계 3판 8-10). 앱의 켜기 요청 → hjv-api가 서명한 명령 → NAS의 hjv-relay → PC 랜카드에 닿는 매직 패킷 → 깨어난 PC의 확인까지입니다. `tools/e2e/wol-e2e.sh`이고 `scripts/ci.sh wol`이 돌립니다(서버와 `hjv-probe`는 `scripts/ci.sh server`로 먼저 빌드).
+꺼진 PC를 앱에서 켜는 길 전체를 실제 프로그램으로 확인합니다(설계 3판 8-10). 앱의 켜기 요청 → hjv-api가 서명한 명령 → NAS의 hjv-relay → PC 랜카드에 닿는 매직 패킷 → 깨어난 PC의 확인까지입니다. `tools/e2e/wol-e2e.sh`이고 `scripts/ci.sh wol`이 돌립니다(서버는 `scripts/ci.sh server`로 먼저 빌드하고, `hjv-probe`는 이 단계가 이 트리에서 빌드).
 
 **sudo를 쓰지 않습니다**(`sudo`를 실패하는 가짜로 바꿔 놓고 돌려, 한 번도 부르지 않는 것을 확인함). 스크립트는 이 사용자의 사용자·네트워크·마운트·PID 네임스페이스 안에서 자기 자신을 다시 실행합니다. 그 안에서 띄운 프로세스, 네트워크, 마운트는 스크립트가 끝나면 함께 사라지고, 스크립트의 PID나 그 프로세스 그룹에 SIGTERM·SIGINT·SIGKILL을 보내도 1초 안에 모두 사라집니다(`setpriv --pdeathsig`과 `unshare --kill-child`). 호스트의 `/usr`, `/etc`, iptables는 바뀌지 않습니다. 2분쯤 걸리는 실행이 10분이 되도록 끝나지 않으면 스스로 끝냅니다. `--inside`는 스크립트의 둘째 절반이라 네임스페이스의 첫 프로세스로만 돕니다. 화면도 쓰지 않습니다(Xvfb, ImageMagick 불필요).
 

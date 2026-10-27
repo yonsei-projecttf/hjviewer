@@ -122,9 +122,24 @@ PASSWORD="Hjv-e2e-$RANDOM$RANDOM"
 # the fake SSO's test accounts (server/api/src/fake_sso.rs)
 ALICE=ZZTEST01 ALICE_PW=hjv-test-pass-1
 BOB=ZZTEST02 BOB_PW=hjv-test-pass-2
-STARTED=$(date +%s)
+STARTED=$(date +%s) PARTS=()
 
-log() { printf '\n== [%3d s] %s\n' "$(($(date +%s) - STARTED))" "$*"; }
+# A part of the run: its title with the seconds since the start; part_times prints the parts by the
+# time they took, each until the next one began
+log() {
+  PARTS+=("$(date +%s) $*")
+  printf '\n== [%3d s] %s\n' "$(($(date +%s) - STARTED))" "$*"
+}
+part_times() {
+  local now i from title next
+  now=$(date +%s)
+  printf '\n-- time by part, %s s in all:\n' "$((now - STARTED))"
+  for i in "${!PARTS[@]}"; do
+    read -r from title <<<"${PARTS[$i]}"
+    next=${PARTS[$((i + 1))]:-$now}
+    echo "$((${next%% *} - from)) $title"
+  done | sort -s -rn -k1,1 | while read -r from title; do printf '%6d s  %s\n' "$from" "$title"; done
+}
 pass() { echo "PASS: $*"; }
 fail() { # with what the servers, the relay and the PC last said
   local f
@@ -800,5 +815,6 @@ done
 pass "L1: no MAC, LAN address or PC ID in hjv-api's log and operator record, the MAC masked in the relays' logs;" \
   "2 portal passwords, ${#SECRETS[@]} tokens and account keys and hjv-api's $KEYS_KEPT keys nowhere else in the run's folder"
 
+part_times
 echo
 echo "PASS (wol): the PC woken through the NAS's relay when shut down and when in standby, and confirmed each time; $(($(date +%s) - STARTED)) s"

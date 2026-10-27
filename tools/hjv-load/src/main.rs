@@ -3,9 +3,11 @@
 //! Synthetic load for an hjviewer server, to size it.
 //!
 //!     hjv-load peers <server> [--port 443] [--ca root.pem] [-n 25] [--secs 60]
-//!         N fake PCs register over wss://<server>/ws/id and echo the heartbeats, as idle PCs do.
+//!         N fake PCs register over wss://<server>/ws/id and echo the heartbeats, as idle PCs do,
+//!         and say how many each echoed at the least (hbbs sends one every 10 s).
 //!     hjv-load relay <server> [--port 443] [--ca root.pem] [-n 1] [--mbps 5] [--secs 30] [--key K]
-//!         N sessions relayed through wss://<server>/ws/relay, each pushing --mbps one way.
+//!         N sessions relayed through wss://<server>/ws/relay, each pushing --mbps one way, and the
+//!         bytes received of those sent; a session that receives none of them fails.
 //!         --key is the server's public key (data/id_ed25519.pub) when hbbr runs with -k.
 //!
 //! hbbs lets one IP register about 30 devices a minute and 300 a day, so keep `peers -n` small.
@@ -177,7 +179,8 @@ fn unique(i: usize) -> u64 {
     nanos ^ (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
 }
 
-async fn peer(o: Arc<Opts>, run: u64, i: usize, beats: Arc<AtomicU64>) -> Result<(), String> {
+/// One fake PC; its heartbeats echoed.
+async fn peer(o: Arc<Opts>, run: u64, i: usize) -> Result<u64, String> {
     let mut ws = open(&o, "/ws/id").await?;
     let mut rk = Vec::new();
     put_bytes(&mut rk, 1, format!("9{:05}{:03}", run % 100_000, i).as_bytes());
@@ -190,6 +193,7 @@ async fn peer(o: Arc<Opts>, run: u64, i: usize, beats: Arc<AtomicU64>) -> Result
     ws.send(Message::Binary(msg)).await.map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(o.secs);
     let mut registered = false;
+    let mut beats = 0;
     while Instant::now() < deadline {
         let left = deadline.saturating_duration_since(Instant::now());
         let frame = match timeout(left, ws.next()).await {
@@ -202,7 +206,7 @@ async fn peer(o: Arc<Opts>, run: u64, i: usize, beats: Arc<AtomicU64>) -> Result
             continue;
         };
         if bytes.is_empty() {
-            beats.fetch_add(1, Ordering::Relaxed);
+            beats += 1;
             ws.send(Message::Binary(Vec::new()))
                 .await
                 .map_err(|e| e.to_string())?;
@@ -217,7 +221,7 @@ async fn peer(o: Arc<Opts>, run: u64, i: usize, beats: Arc<AtomicU64>) -> Result
         }
     }
     if registered {
-        Ok(())
+        Ok(beats)
     } else {
         Err("no registration answer".to_owned())
     }
@@ -236,18 +240,27 @@ async fn relay_half(o: &Opts, uuid: &str) -> Result<Ws, String> {
     Ok(ws)
 }
 
-async fn session(o: Arc<Opts>, run: u64, i: usize, received: Arc<AtomicU64>) -> Result<(), String> {
+/// One relayed session; the bytes it sent and received are added to `sent` and `received`.
+async fn session(
+    o: Arc<Opts>,
+    run: u64,
+    i: usize,
+    sent: Arc<AtomicU64>,
+    received: Arc<AtomicU64>,
+) -> Result<(), String> {
     let uuid = format!("hjv-load-{run}-{i}");
     let (a, b) = tokio::join!(relay_half(&o, &uuid), relay_half(&o, &uuid));
     let (mut a, mut b) = (a?, b?);
     let secs = o.secs;
     let reader = tokio::spawn(async move {
         let deadline = Instant::now() + Duration::from_secs(secs + 2);
+        let mut got = 0u64;
         while let Ok(Some(Ok(frame))) = timeout(deadline.saturating_duration_since(Instant::now()), b.next()).await {
             if let Message::Binary(bytes) = frame {
-                received.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                got += bytes.len() as u64;
             }
         }
+        got
     });
     // paced in 10 ms ticks, 16 KiB frames, the way a video stream arrives in bursts
     let per_tick = (o.mbps * 1_000_000.0 / 8.0 / 100.0) as usize;
@@ -255,6 +268,7 @@ async fn session(o: Arc<Opts>, run: u64, i: usize, received: Arc<AtomicU64>) -> 
     let mut tick = tokio::time::interval(Duration::from_millis(10));
     let end = Instant::now() + Duration::from_secs(o.secs);
     let mut owed = 0usize;
+    let mut pushed = 0u64;
     while Instant::now() < end {
         tick.tick().await;
         owed += per_tick;
@@ -263,9 +277,15 @@ async fn session(o: Arc<Opts>, run: u64, i: usize, received: Arc<AtomicU64>) -> 
                 .await
                 .map_err(|e| format!("relay send: {e}"))?;
             owed -= chunk.len();
+            pushed += chunk.len() as u64;
         }
     }
-    reader.await.ok();
+    let got = reader.await.unwrap_or(0);
+    sent.fetch_add(pushed, Ordering::Relaxed);
+    received.fetch_add(got, Ordering::Relaxed);
+    if got == 0 && pushed > 0 {
+        return Err(format!("none of the {pushed} bytes sent came through the relay"));
+    }
     Ok(())
 }
 
@@ -284,13 +304,21 @@ async fn main() -> ExitCode {
     let failed = Arc::new(AtomicUsize::new(0));
     let mut tasks = Vec::new();
     if o.cmd == "peers" {
+        // all the heartbeats echoed, and the fewest that one registered PC echoed
         let beats = Arc::new(AtomicU64::new(0));
+        let fewest = Arc::new(AtomicU64::new(u64::MAX));
         for i in 0..o.n {
-            let (o, beats, failed) = (o.clone(), beats.clone(), failed.clone());
+            let (o, beats, fewest, failed) = (o.clone(), beats.clone(), fewest.clone(), failed.clone());
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = peer(o, run, i, beats).await {
-                    eprintln!("peer {i}: {e}");
-                    failed.fetch_add(1, Ordering::Relaxed);
+                match peer(o, run, i).await {
+                    Ok(n) => {
+                        beats.fetch_add(n, Ordering::Relaxed);
+                        fewest.fetch_min(n, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        eprintln!("peer {i}: {e}");
+                        failed.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }));
         }
@@ -299,17 +327,19 @@ async fn main() -> ExitCode {
         }
         let ok = o.n - failed.load(Ordering::Relaxed);
         println!(
-            "peers: {ok}/{} registered and kept for {}s, {} heartbeats echoed",
+            "peers: {ok}/{} registered and kept for {}s, {} heartbeats echoed, at least {} by each PC",
             o.n,
             o.secs,
-            beats.load(Ordering::Relaxed)
+            beats.load(Ordering::Relaxed),
+            if ok == 0 { 0 } else { fewest.load(Ordering::Relaxed) }
         );
     } else {
+        let sent = Arc::new(AtomicU64::new(0));
         let received = Arc::new(AtomicU64::new(0));
         for i in 0..o.n {
-            let (o, received, failed) = (o.clone(), received.clone(), failed.clone());
+            let (o, sent, received, failed) = (o.clone(), sent.clone(), received.clone(), failed.clone());
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = session(o, run, i, received).await {
+                if let Err(e) = session(o, run, i, sent, received).await {
                     eprintln!("session {i}: {e}");
                     failed.fetch_add(1, Ordering::Relaxed);
                 }
@@ -318,15 +348,17 @@ async fn main() -> ExitCode {
         for t in tasks {
             t.await.ok();
         }
-        let bytes = received.load(Ordering::Relaxed) as f64;
+        let got = received.load(Ordering::Relaxed);
+        let bytes = got as f64;
         println!(
-            "relay: {}/{} sessions, {:.1} MB through the relay in {:.1}s = {:.2} Mb/s total (asked {:.2})",
+            "relay: {}/{} sessions, {:.1} MB through the relay in {:.1}s = {:.2} Mb/s total (asked {:.2}), {got} bytes received of {} sent",
             o.n - failed.load(Ordering::Relaxed),
             o.n,
             bytes / 1e6,
             started.elapsed().as_secs_f64(),
             bytes * 8.0 / 1e6 / o.secs as f64,
-            o.mbps * o.n as f64
+            o.mbps * o.n as f64,
+            sent.load(Ordering::Relaxed)
         );
     }
     if failed.load(Ordering::Relaxed) > 0 {

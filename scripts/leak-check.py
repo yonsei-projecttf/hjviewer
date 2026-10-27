@@ -16,10 +16,11 @@ its Unicode forms (NFC and NFD). A list that is not UTF-8 (UTF-16, as Windows Po
 writes with '>' or Out-File), or whose values hold control or invisible characters, stops the
 check: such a value would match nothing.
 
-Searched: every file git tracks, as it is in the working tree (client/patches and server/patches
-included), and its path; the staged version of staged files; and of the commits a push would
-publish (REF..HEAD, default origin/main..HEAD; every commit when REF does not exist) their
-messages, authors, committers, the paths of the files they add or change, and their added lines.
+Searched, for each value in UTF-8 and in UTF-16 (both byte orders, as binary files keep text): every
+file git tracks, as it is in the working tree (client/patches and server/patches included), and its
+path; the staged version of staged files; and of the commits a push would publish (REF..HEAD,
+default origin/main..HEAD; every commit when REF does not exist) their messages, authors,
+committers, the paths of the files they add or change, and their added lines.
 A hit prints where it is and the list's line number, never the value or the line (a path that
 holds a value is printed with "<listed value>" in its place), and the check fails. It also fails
 when the list is missing, has no value, or is itself tracked by git.
@@ -97,8 +98,10 @@ def read_patterns(path):
                              f"invisible or unusual space character, and would match nothing: retype it")
         forms = {value, unicodedata.normalize("NFC", value), unicodedata.normalize("NFD", value)}
         forms.update(mac_forms(value.lower()))
-        # ASCII case only, as in the files searched (bytes.lower)
-        patterns.append((n, sorted({f.encode("utf-8").lower() for f in forms})))
+        # ASCII case only, as in the files searched (bytes.lower); also in UTF-16, in which binary
+        # files keep text: Android's binary XML (an APK's manifest) little-endian, a binary property
+        # list (an IPA's Info.plist) and a font's names big-endian
+        patterns.append((n, sorted({f.encode(c).lower() for f in forms for c in ("utf-8", "utf-16-le", "utf-16-be")})))
     if not patterns:
         raise SystemExit(f"leak: {path} lists no value")
     return patterns
