@@ -1804,6 +1804,12 @@ deploy_stage() {
   grep -q 'server/patches' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe the server build"
   if [ ${#api_files[@]} -gt 0 ]; then
     grep -q 'server/api' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe hjv-api's build"
+    # and names the commit that the package's hjv-api reports (the last one that changed server/api,
+    # server_api)
+    local api_commit
+    api_commit=$("$pkg/bin/hjv-api" version | sed -n 's/^hjv-api [^ ]* (\([0-9a-f]\{40\}\))$/\1/p')
+    [ -n "$api_commit" ] || fail "release package: its hjv-api reports no commit ($("$pkg/bin/hjv-api" version))"
+    grep -qF "$api_commit" "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not name $api_commit, hjv-api's commit"
     # a crate of hjv-api's that hbbs and hbbr do not use
     grep -q '^crypto_box ' "$pkg/THIRD_PARTY_NOTICES.txt" || fail "release package: hjv-api's crates are not in THIRD_PARTY_NOTICES"
     start_package_container "$rel" hjviewer-server-ci-linux-x86_64

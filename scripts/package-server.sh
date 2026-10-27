@@ -52,13 +52,18 @@ if [ -z "$bin" ]; then
     CARGO_TARGET_DIR="$work/target" cargo build --release --locked --bin hbbs --bin hbbr)
   bin="$work/target/release"
 fi
-api=
+api="" api_commit=""
 if [ -d "$ROOT/server/api" ]; then
   api=${HJV_API_BIN:-}
   if [ -z "$api" ]; then
-    (cd "$ROOT/server/api" && HJV_API_COMMIT=$(git -C "$ROOT" rev-parse HEAD) \
+    api_commit=$(git -C "$ROOT" rev-parse HEAD)
+    (cd "$ROOT/server/api" && HJV_API_COMMIT=$api_commit \
       CARGO_TARGET_DIR="$work/target-api" cargo build --release --locked --bin hjv-api)
     api="$work/target-api/release/hjv-api"
+  else
+    # the commit it was built with, as it reports it (scripts/ci.sh server builds it with the last
+    # commit that changed server/api)
+    api_commit=$("$api" version | sed -n 's/^hjv-api [^ ]* (\(.*\))$/\1/p')
   fi
 else
   echo "no server/api: the package has no hjv-api"
@@ -95,7 +100,15 @@ NOTICES_COMPONENT=server NOTICES_TARGET=x86_64-unknown-linux-gnu NOTICES_EXTRA_W
 if [ -n "$api" ]; then
   {
     echo "(server/api holds the whole source of hjv-api; it was built there with"
-    echo "cargo build --release --locked --bin hjv-api and HJV_API_COMMIT set to the commit above)"
+    if [ "$api_commit" = "$(git -C "$ROOT" rev-parse HEAD)" ]; then
+      echo "cargo build --release --locked --bin hjv-api and HJV_API_COMMIT set to the commit above)"
+    elif git -C "$ROOT" diff --quiet "$api_commit" HEAD -- server/api 2> /dev/null; then
+      echo "cargo build --release --locked --bin hjv-api and HJV_API_COMMIT set to"
+      echo "$api_commit, whose server/api is that of the commit above)"
+    else
+      echo "cargo build --release --locked --bin hjv-api and HJV_API_COMMIT set to"
+      echo "$api_commit)"
+    fi
   } >> "$stage/SOURCE.txt"
 fi
 
