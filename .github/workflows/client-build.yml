@@ -507,10 +507,10 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
 
-      # L208-218, https://github.com/flutter/flutter/issues/155685
+      # L208-218, https://github.com/flutter/flutter/issues/155685. Without upstream's
+      # `flutter doctor -v`, whose diagnostics nobody read (GHA-15 of the 2026-10-27 CI audit)
       - name: Replace engine with rustdesk custom flutter engine
         run: |
-          flutter doctor -v
           flutter precache --windows
           Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
           Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
