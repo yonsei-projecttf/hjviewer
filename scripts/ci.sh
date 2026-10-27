@@ -265,7 +265,8 @@ cleanup() {
   return 0
 }
 
-# Ends <pid> and the processes it started (those of another user, e.g. under sudo, stay)
+# Ends <pid> and the processes it started. Those of another user cannot be signalled, but sudo, run
+# by this user, passes the signal on to its command (e.g. the image build).
 end_tree() { # <pid>
   local children child
   children=$(pgrep -P "$1" || true)
