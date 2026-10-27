@@ -89,7 +89,9 @@
 #                          stages (in build/ci/target-drill; built first when it is not this tree's)
 #   scripts/ci.sh leak     the push gate (design v3 11 steps 1-2): no value of the local list
 #                          build/leak-patterns.txt in tracked files, unpushed commits or staged
-#                          changes (scripts/leak-check.py)
+#                          changes (scripts/leak-check.py); and the checks of prepush's reuse: its
+#                          rules against the code the units run and docs/ci.md's re-run table
+#                          (reuse_check), and the tests of the reuse and of the lock
 #   scripts/ci.sh inputs <dir> <unit>...
 #                          what prepush's units read, the list whose SHA-256 keys their passes
 #                          (reuse_inputs), in <dir>/<unit>.txt
@@ -2546,13 +2548,17 @@ drill_stage() { # <drill:build|drill:full|drill:quick>
 
 # The push gate of design v3 11 steps 1-2: none of the values of build/leak-patterns.txt (a local
 # list git ignores; docs/ci.md says what goes in) in tracked files, staged changes and the commits
-# a push would publish. Prints places and list line numbers, never the values. Then the tests of
-# prepush's reuse and of the CI lock, which every prepush runs first.
+# a push would publish. Prints places and list line numbers, never the values. Then the checks of
+# prepush's reuse, which every prepush runs first, since they hold no unit's pass: its rules against
+# the code the units run and the re-run table of docs/ci.md (reuse_check), and the tests of the reuse
+# and of the lock.
 leak_stage() {
   step "leak: tests of scripts/leak-check.py (made-up values, throwaway repositories)"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_leak_check.py' || fail "leak: tests of the leak check"
   step "leak: the listed values in what a push would publish"
   python3 -I -B "$ROOT/scripts/leak-check.py" --repo "$ROOT" || fail "leak: see above; push nothing until this passes"
+  step "leak: what the units of prepush's reuse read, against their rules (REUSE_SKIP), and the re-run table of docs/ci.md"
+  reuse_check
   step "leak: tests of scripts/ci.sh's reuse and lock (scripts/test_ci_reuse.py, throwaway repositories)"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_ci_reuse.py' || fail "leak: tests of scripts/ci.sh's reuse and lock"
 }
@@ -2770,6 +2776,31 @@ reuse_rules() {
   REUSE_VALUES="server:relay client deploy"
   # Variables that name files outside the tree a run reads: a run with one neither reuses nor records
   REUSE_FILES_FROM="HJV_API_ENV_FILE HJV_RELEASE_SAMPLES HJV_UPDATE_VECTORS"
+  # The crates whose own unit tests (#[cfg(test)] in src/) a unit compiles, which alone take what that
+  # code reads (reuse_check); the others' builds leave that code out
+  declare -gA REUSE_TESTS=([server:api]=server/api [server:relay]=relay [server:release]=tools/hjv-release)
+  # References that a unit's code makes and does not follow, which reuse_check lets pass: "<unit> <file>
+  # <path>", the file a tracked one or scripts/ci.sh:<function of this script>, the path with what is
+  # under it
+  REUSE_NOT_READ=(
+    # fetch-upstream.sh server applies server/patches alone (Docker's image and the server package
+    # fetch that too), fetch-upstream.sh client client/patches and the overlay alone
+    "server:hbbs scripts/fetch-upstream.sh client"
+    "deploy scripts/fetch-upstream.sh client"
+    "client scripts/fetch-upstream.sh server/patches"
+    # the refusals of relay/tests/package.rs stop before the notices; check-build-keys.py --relay
+    # checks HJV_COMMAND_PUBKEY alone, not the app's key and version files
+    "server:relay scripts/package-relay.sh scripts/package-notices.sh"
+    "server:relay scripts/check-build-keys.py client"
+    "deploy scripts/check-build-keys.py client"
+    # hjv-release's default --keys, relative to where the operator runs it (its tests give theirs),
+    # and the names of the workflows that its provenance check compares with GitHub's answers
+    "server:release tools/hjv-release/src/commands.rs client/update-keys.env"
+    "server:release tools/hjv-release/src/provenance.rs .github/workflows"
+    "e2e tools/hjv-release/src/provenance.rs .github/workflows"
+    # the wol stage reads firewall-e2e.sh for its parts (build_e2e_client) and does not run it
+    "wol tools/e2e/firewall-e2e.sh deploy/guest-conf.py"
+  )
 }
 
 # The top level of this script outside its functions (each ends at a line "}", here-documents aside):
@@ -3094,6 +3125,42 @@ reuse_said() { # <record>
   local age=$(($(date +%s) - $(reuse_field "$1" time)))
   echo "its strict pass of $(reuse_field "$1" commit | cut -c1-7) at $(reuse_field "$1" date | cut -c1-16)" \
     "($((age / 3600)) h $((age % 3600 / 60)) min ago$([ "$(reuse_field "$1" unit)" = drill:full ] && echo ', a full drill')), log $(reuse_field "$1" log)"
+}
+
+# The rules of the reuse held to the code (the leak stage): that what each unit's code reads lies in
+# its inputs (scripts/ci-reuse.py reads, but for REUSE_NOT_READ), that the re-run table of docs/ci.md
+# names the units the rules give (table), that no unit's code is the code of prepush, its plan or
+# the lock (which a unit's inputs leave out), and that reuse_top finds the functions bash finds
+reuse_check() {
+  local dir u fns rules=() table=() names
+  reuse_rules
+  dir=$(mktemp -d)
+  for u in $REUSE_UNITS; do
+    rules+=("$u=${REUSE_SKIP[$u]//$'\n'/ }")
+    [ "$u" = drill:quick ] || table+=("${u%:full}=${REUSE_SKIP[$u]} $REUSE_SKIP_ALL")
+    read -ra fns <<< "${REUSE_CODE[$u]}"
+    reuse_code text "${fns[@]}" finish > "$dir/$u.code"
+    names=$(reuse_closure "${fns[@]}" finish | sed -n 's/^f //p' | grep -E '^(prepush_|reuse_|lock_|preflight|log_head$)' | paste -sd' ' || true)
+    [ -z "$names" ] || fail "reuse: the code of $u takes the code of prepush, its plan or the lock ($names), which no unit's inputs have"
+  done
+  printf '%s\n' "${rules[@]}" > "$dir/rules"
+  echo "$REUSE_SKIP_ALL" > "$dir/all"
+  for u in "${!REUSE_TESTS[@]}"; do echo "$u ${REUSE_TESTS[$u]}"; done > "$dir/tests"
+  printf '%s\n' "${REUSE_NOT_READ[@]}" > "$dir/not-read"
+  python3 -I -B "$ROOT/scripts/ci-reuse.py" reads "$ROOT" "$dir" ||
+    fail "reuse: a unit's code reads a path its rules leave out (above): REUSE_SKIP, or REUSE_NOT_READ with the reason"
+  python3 -I -B "$ROOT/scripts/ci-reuse.py" table "$ROOT" "$ROOT/docs/ci.md" "${table[@]}" ||
+    fail "reuse: docs/ci.md's re-run table and the rules of scripts/ci.sh disagree (above)"
+  # the functions as reuse_top finds them (where each ends: a code line of a function would be top
+  # level code of every unit) are bash's, each with its own code
+  [ "$(reuse_top functions | cut -d' ' -f1 | LC_ALL=C sort)" = "$(declare -F | sed 's/^declare -f //' | LC_ALL=C sort)" ] ||
+    fail "reuse: reuse_top does not find the functions that bash finds in scripts/ci.sh"
+  names=$(reuse_top functions | bash -c 'mapfile -t l < "$1"
+    while read -r f a b; do eval "$(printf "%s\n" "${l[@]:a-1:b-a+1}")" && declare -f "$f"; done' _ "$SELF" |
+    diff - <(reuse_top functions | while read -r u _; do declare -f "$u"; done) | head -n 5 || true)
+  [ -z "$names" ] || fail "reuse: the lines that reuse_top takes for a function of scripts/ci.sh are not its code: $names"
+  echo "reuse: $(reuse_top functions | wc -l) functions, $(reuse_top code | wc -l) lines of top-level code"
+  rm -rf "$dir"
 }
 
 # --- prepush ---

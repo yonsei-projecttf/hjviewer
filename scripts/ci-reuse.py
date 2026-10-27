@@ -15,14 +15,35 @@ the patterns separated by spaces.
       scripts/check-build-keys.py finds them (its public test keys come from every such value)
   ci-reuse.py diff <old inputs> <new inputs>
       what differs between two input lists of scripts/ci.sh's reuse_inputs, on one line
+  ci-reuse.py table <repo> <doc> <unit>=<patterns>...
+      checks the re-run table of <doc> ("고친 뒤 다시 돌릴 단위"): each row's paths (column 1) are
+      read by the units its column 2 names, every tracked file is in a row
+  ci-reuse.py reads <repo> <dir>
+      checks that the code a unit runs reads no path it leaves out: the Rust, shell and Python
+      files it reads and <dir>/<unit>.code (its code in scripts/ci.sh), by include_str!,
+      include_bytes!, #[path], CARGO_MANIFEST_DIR joins and repository paths in Rust; $ROOT/<path>,
+      unittest discover's -s and -p, and the *_INPUTS lists in shell; os.path.join and pathlib
+      joins on the repository's or the file's folder in Python. <dir>/rules has a line
+      <unit>=<patterns> for each unit, <dir>/all the patterns of what no unit reads (which a
+      reference to a folder does not count), <dir>/tests "<unit> <crate>" lines (the crates whose
+      own unit tests, #[cfg(test)] in src/, the unit compiles: what they read counts for it alone),
+      <dir>/not-read "<unit> <file> <path>" lines, references that the unit does not follow (a
+      branch it does not take), each with its reason in scripts/ci.sh; a path there takes the paths
+      under it too.
 """
 
 import fnmatch
 import hashlib
 import importlib.util
 import os
+import posixpath
+import re
 import subprocess
 import sys
+
+# the repository's top-level folders, by which a bare path in a Rust string is one of its paths
+TOP = ("client/", "deploy/", "docs/", "relay/", "scripts/", "server/", "store/", "tools/", ".github/")
+
 
 def head_tree(repo):
     """[(mode, blob, path)] of HEAD's tree."""
@@ -127,6 +148,296 @@ def diff_mode(old_path, new_path):
     print("; ".join(said) if said else "nothing")
 
 
+# --- the re-run table ---
+
+
+def table_rows(doc):
+    """[(line, [path pattern...], units text)] of the re-run table of <doc>."""
+    rows, inside = [], False
+    with open(doc, encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            if line.startswith("### "):
+                inside = line.startswith("### 고친 뒤 다시 돌릴 단위")
+                continue
+            if not inside or not line.startswith("| `"):
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            paths = re.findall(r"`([^`]+)`", cells[0])
+            if cells[0] != ", ".join(f"`{p}`" for p in paths):
+                raise SystemExit(f"{doc}:{n}: column 1 must be paths in backticks and nothing else")
+            rows.append((n, paths, cells[1]))
+    return rows
+
+
+def path_matches(pattern, path):
+    """Whether a table path names <path>: a folder (ending in /) everything under it, else fnmatch."""
+    if pattern.endswith("/"):
+        return path.startswith(pattern)
+    return fnmatch.fnmatchcase(path, pattern)
+
+
+def table_mode(repo, doc, args):
+    rules = parse_rules(args)
+    units = list(rules)
+    tree = [path for _, _, path in head_tree(repo)]
+    readers = {path: [u for u in units if not skips(path, rules[u])] for path in tree}
+    rows = table_rows(doc)
+    problems = []
+    taken = set()
+    for n, patterns, said in rows:
+        # a file belongs to the first row that names it: rows of single files go above their folder's
+        mine = [p for p in tree if p not in taken and any(path_matches(q, p) for q in patterns)]
+        if not mine:
+            problems.append(f"{doc}:{n}: no tracked file left for {', '.join(patterns)}")
+            continue
+        taken.update(mine)
+        if patterns == ["scripts/ci.sh"]:
+            continue
+        sets = {}
+        for p in mine:
+            sets.setdefault(", ".join(readers[p]) or "-", []).append(p)
+        if len(sets) > 1:
+            problems.append(f"{doc}:{n}: {', '.join(patterns)} has files that different units read: "
+                            + "; ".join(f"{s} ({some(ps, 2)})" for s, ps in sorted(sets.items())) + " (split the row)")
+            continue
+        (want,) = sets
+        if said != want:
+            problems.append(f"{doc}:{n}: {', '.join(patterns)}: column 2 says {said!r}, the rules give {want!r}")
+    left = [p for p in tree if p not in taken]
+    if left:
+        problems.append(f"{doc}: no row of the re-run table names {some(left, 5)}")
+    for p in problems:
+        print(p)
+    if problems:
+        raise SystemExit(1)
+    print(f"the re-run table of {doc}: {len(rows)} rows, every tracked file, as the rules of scripts/ci.sh give them")
+
+
+# --- the reads of the code a unit runs ---
+
+
+def crate_of(path, tracked):
+    """The folder of the Cargo.toml nearest above <path>, or ""."""
+    d = posixpath.dirname(path)
+    while d:
+        if d + "/Cargo.toml" in tracked:
+            return d
+        d = posixpath.dirname(d)
+    return ""
+
+
+def norm(path):
+    """A repository path from a joined one; None when it leaves the repository."""
+    p = posixpath.normpath(path)
+    return None if p.startswith("..") or p.startswith("/") else ("" if p == "." else p)
+
+
+RUST_REL = re.compile(r'(?:include_str!|include_bytes!)\(\s*"([^"]+)"|#\[path\s*=\s*"([^"]+)"\]')
+RUST_MOD = re.compile(r'^\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+([a-z_][a-z0-9_]*)\s*;')
+RUST_STR = re.compile(r'"((?:\.\./|/\.\./|[a-z.][a-z0-9_.-]*/)[^"\s]*)"')
+
+
+def rust_refs(path, text, tracked):
+    """(line, path, test) of the references of a Rust file; test when the line is in code that only
+    the crate's own unit tests compile: a src/ file's #[cfg(test)] module (at its end, by this
+    repository's custom) or a src/*_tests.rs file."""
+    here, crate = posixpath.dirname(path), crate_of(path, tracked)
+    test = crate != "" and path.startswith(crate + "/src/") and path.endswith("_tests.rs")
+    lines = text.splitlines()
+    for n, line in enumerate(lines, 1):
+        if line.strip() == "#[cfg(test)]" and n < len(lines) and lines[n].lstrip().startswith("mod "):
+            test = test or path.startswith(crate + "/src/")
+        code = line.split("//", 1)[0] if not line.lstrip().startswith("//") else ""
+        m = RUST_MOD.match(code)
+        if m and (n < 2 or not lines[n - 2].lstrip().startswith("#[path")):
+            # a module of its own file: beside a crate root, mod.rs or an integration test, else in
+            # the folder of the file's own name
+            root = posixpath.basename(path) in ("lib.rs", "main.rs", "mod.rs") or posixpath.dirname(path) == crate + "/tests"
+            base = here if root else posixpath.join(here, posixpath.basename(path)[:-3])
+            for p in (posixpath.join(base, m.group(1) + ".rs"), posixpath.join(base, m.group(1), "mod.rs")):
+                if p in tracked:
+                    yield n, p, test
+        for m in RUST_REL.finditer(code):
+            yield n, norm(posixpath.join(here, m.group(1) or m.group(2))), test
+        for m in RUST_STR.finditer(code):
+            s = m.group(1)
+            if s.startswith(TOP):
+                yield n, norm(s), test
+            elif s.startswith(("../", "/../")):
+                # a join on the crate's folder (CARGO_MANIFEST_DIR, or the tests' working folder)
+                yield n, norm(posixpath.join(crate, s.lstrip("/"))), test
+
+
+SHELL_REF = re.compile(r'(?:\$\{?(?:ROOT|root)\}?"?/)([A-Za-z0-9_.@*{},/-]+)')
+DISCOVER = re.compile(r'unittest discover -s "\$ROOT/([A-Za-z0-9_./-]+)" -p \'([^\']+)\'')
+SHELL_DIR = re.compile(r'\$\(dirname "\$(?:0|\{BASH_SOURCE\[0\]\})"\)/([A-Za-z0-9_.@/-]+)')
+INPUTS = re.compile(r'declare -a ([A-Z_]+_INPUTS)=\((.*)\)')
+
+
+def braces(path):
+    m = re.search(r"\{([^{}]*)\}", path)
+    if not m:
+        return [path]
+    return [x for alt in m.group(1).split(",") for x in braces(path[:m.start()] + alt + path[m.end():])]
+
+
+CARGO_TEST = re.compile(r"\bcargo(?:_tests| test)\b")
+TEST_TARGET = re.compile(r"--test[ =]([A-Za-z0-9_-]+)")
+
+
+def shell_refs(path, text, tracked=()):
+    """(line, path, test) of the references of a shell file; in a unit's code of scripts/ci.sh
+    (declare -f and declare -p output, a command on one line) the line is the function's name or
+    the value's, and a cargo test there with a crate's folder takes that crate's tests (with
+    --test <name>, that test's file)."""
+    here = posixpath.dirname(path)
+    where = None
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        m = re.match(r"^([a-z_][a-z0-9_]*) \(\) $|^declare -[-aAgx]+ ([A-Za-z_][A-Za-z0-9_]*)=", line)
+        if m:
+            where = m.group(1) or m.group(2)
+        if where is not None:
+            n = where
+        discovered = [(m.span(), m.group(1) + "/" + m.group(2)) for m in DISCOVER.finditer(line)]
+        for m in SHELL_REF.finditer(line):
+            # a path that goes on with a variable names what this cannot know; unittest's -s folder
+            # is read by its -p pattern
+            if line[m.end():m.end() + 1] == "$" or any(a <= m.start() < b for (a, b), _ in discovered):
+                continue
+            for p in braces(m.group(1).rstrip("}")):
+                yield n, norm(p), False
+                crate = (norm(p) or "").rstrip("/")
+                if path == "scripts/ci.sh" and CARGO_TEST.search(line) and crate + "/Cargo.toml" in tracked:
+                    names = TEST_TARGET.findall(line)
+                    for name in names or [None]:
+                        yield n, crate + ("/tests/" + name + ".rs" if name else "/tests"), False
+        for _, p in discovered:
+            yield n, norm(p), False
+        for m in SHELL_DIR.finditer(line):
+            yield n, norm(posixpath.join(here, m.group(1))), False
+        for m in INPUTS.finditer(line):
+            for p in re.findall(r'"([^"]+)"', m.group(2)):
+                yield n, norm(p), False
+
+
+PY_BASE = {
+    "os.path.dirname(os.path.abspath(__file__))": 1,
+    "os.path.dirname(os.path.dirname(os.path.abspath(__file__)))": 2,
+    "pathlib.Path(__file__).resolve().parent": 1,
+    "pathlib.Path(__file__).resolve().parent.parent": 2,
+    "Path(__file__).resolve().parent": 1,
+    "Path(__file__).resolve().parent.parent": 2,
+}
+PY_ASSIGN = re.compile(r"^([A-Z_][A-Z0-9_]*) = (.+)$")
+PY_JOIN = re.compile(r'os\.path\.join\(\s*([A-Z_][A-Z0-9_]*)((?:\s*,\s*"[^"]*")+)')
+PY_SLASH = re.compile(r'\b([A-Z_][A-Z0-9_]*)((?:\s*/\s*"[^"]*")+)')
+
+
+def py_value(value, here, names):
+    """The repository path that a module-level value of a Python file names, or None."""
+    if value in PY_BASE:
+        d = here
+        for _ in range(PY_BASE[value] - 1):
+            d = posixpath.dirname(d)
+        return d
+    m = re.fullmatch(r"os\.path\.dirname\(([A-Z_][A-Z0-9_]*)\)", value)
+    if m and m.group(1) in names:
+        return posixpath.dirname(names[m.group(1)])
+    for pattern in (PY_JOIN, PY_SLASH):
+        m = pattern.fullmatch(value)
+        if m and m.group(1) in names:
+            return norm(posixpath.join(names[m.group(1)], *re.findall(r'"([^"]*)"', m.group(2))))
+    return None
+
+
+def py_refs(path, text):
+    here = posixpath.dirname(path)
+    names = {}
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        for pattern in (PY_JOIN, PY_SLASH):
+            for m in pattern.finditer(line):
+                if m.group(1) in names:
+                    yield n, norm(posixpath.join(names[m.group(1)], *re.findall(r'"([^"]*)"', m.group(2)))), False
+        m = PY_ASSIGN.match(line)
+        if m:
+            value = py_value(m.group(2).strip(), here, names)
+            if value is not None:
+                names[m.group(1)] = value
+
+
+def matching(ref, tracked):
+    """The tracked files that a reference names: the file, the files under the folder, or a glob's."""
+    if ref is None or ref == "":
+        return []
+    if any(c in ref for c in "*?["):
+        return [p for p in tracked if fnmatch.fnmatchcase(p, ref)]
+    if ref in tracked:
+        return [ref]
+    return [p for p in tracked if p.startswith(ref.rstrip("/") + "/")]
+
+
+def reads_mode(repo, work):
+    with open(os.path.join(work, "rules"), encoding="utf-8") as f:
+        rules = parse_rules([line for line in f.read().split("\n") if line.strip()])
+    every = open(os.path.join(work, "all"), encoding="utf-8").read().split()
+    tests = {}
+    excused = []
+    with open(os.path.join(work, "tests"), encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                unit, crate = line.split()
+                tests.setdefault(unit, set()).add(crate)
+    with open(os.path.join(work, "not-read"), encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                unit, file, ref = line.split()
+                excused.append((unit, file, ref.rstrip("/")))
+    tracked = [p for _, _, p in head_tree(repo)]
+    tracked_set = set(tracked)
+    problems, checked = [], 0
+    for unit, patterns in rules.items():
+        own = [p for p in patterns]
+        whole = own + every
+        sources = [(p, None) for p in tracked if not skips(p, whole) and p.endswith((".rs", ".sh", ".py"))
+                   and not p.startswith(("client/", "server/patches/"))]
+        sources.append(("scripts/ci.sh", os.path.join(work, unit + ".code")))
+        for path, code in sources:
+            with open(code or os.path.join(repo, path), encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            refs = (rust_refs(path, text, tracked_set) if path.endswith(".rs")
+                    else py_refs(path, text) if path.endswith(".py") else shell_refs(path, text, tracked_set))
+            for n, ref, test in refs:
+                if ref is None or ref == "scripts/ci.sh":
+                    continue
+                if test and crate_of(path, tracked_set) not in tests.get(unit, ()):
+                    continue
+                checked += 1
+                named = matching(ref, tracked)
+                # a folder's files that no unit reads do not count: the folder is where a build or a
+                # test runs; of a crate's folder a build takes its manifest and src/, and its tests
+                # only a unit that compiles them (<dir>/tests, a cargo test on its line)
+                folder = ref not in tracked_set and not any(c in ref for c in "*?[")
+                crate = ref.rstrip("/")
+                if folder and crate + "/Cargo.toml" in tracked_set and crate not in tests.get(unit, ()):
+                    named = [p for p in named if p in (crate + "/Cargo.toml", crate + "/Cargo.lock", crate + "/build.rs")
+                             or p.startswith(crate + "/src/")]
+                left = [p for p in named if skips(p, own if folder else whole)]
+                file = path if code is None else f"scripts/ci.sh:{n}"
+                if left and not any(u == unit and f == file and (ref == r or ref.startswith(r + "/"))
+                                    for u, f, r in excused):
+                    where = f"{path}:{n}" if code is None else f"scripts/ci.sh's {n}"
+                    problems.append(f"{unit}: {where} reads {ref}, which its rules leave out ({some(left, 2)})")
+    for p in problems:
+        print(p)
+    if problems:
+        raise SystemExit(1)
+    print(f"the code that {len(rules)} units run: {checked} references to files, none into a path its unit leaves out")
+
+
 def main(argv):
     if len(argv) >= 3 and argv[0] == "files":
         files_mode(argv[1], argv[2], argv[3:])
@@ -134,6 +445,10 @@ def main(argv):
         values_mode(argv[1])
     elif len(argv) == 3 and argv[0] == "diff":
         diff_mode(argv[1], argv[2])
+    elif len(argv) >= 3 and argv[0] == "table":
+        table_mode(argv[1], argv[2], argv[3:])
+    elif len(argv) == 3 and argv[0] == "reads":
+        reads_mode(argv[1], argv[2])
     else:
         print(__doc__, file=sys.stderr)
         return 2
