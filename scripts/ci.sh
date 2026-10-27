@@ -1153,6 +1153,13 @@ deploy_stage() {
     with_skips "$CI/relay-package.log" env -C "$ROOT/relay" CARGO_TARGET_DIR="$CI/target-relay" \
       cargo test --locked --test package -- --ignored --show-output ||
       fail "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
+    # The test runs scripts/package-relay.sh of the tree it was compiled in (CARGO_MANIFEST_DIR),
+    # which packages that tree and says its commit: it must have been this tree, at this commit
+    local head made
+    head=$(git -C "$ROOT" rev-parse HEAD)
+    made=$(sed -n -e 's/^commit: //p' -e 's#^wrote .* to \(.*\)/build/package-relay/.*#\1#p' "$CI/relay-package.log" | sort -u)
+    [ "$made" = "$(printf '%s\n' "$head" "$ROOT" | sort -u)" ] ||
+      fail "deploy: hjv-relay's package test packaged $(echo "$made" | paste -sd' '), not this tree at $head (build/ci/relay-package.log)"
   else
     skip "hjv-relay's packages (no relay/)"
   fi
