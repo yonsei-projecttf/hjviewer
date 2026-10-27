@@ -82,6 +82,9 @@
 #   scripts/ci.sh leak     the push gate (design v3 11 steps 1-2): no value of the local list
 #                          build/leak-patterns.txt in tracked files, unpushed commits or staged
 #                          changes (scripts/leak-check.py)
+#   scripts/ci.sh inputs <dir> <unit>...
+#                          what prepush's units read, the list whose SHA-256 keys their passes
+#                          (reuse_inputs), in <dir>/<unit>.txt
 # A stage skips, with a line "skipped: ..." saying so, what needs a work package that is not in the
 # tree yet or a tool this machine lacks. Every skip is counted, those that the E2E scripts and the
 # other checks print too, and the last line says how many: "CI passed: <stage> (<n> skipped)". A run
@@ -97,7 +100,7 @@
 # One run at a time on a CI directory (HJV_CI_DIR, default build/ci): a run holds the lock
 # <CI directory>/ci.lock and says who it is in ci.lock.holder; a run started meanwhile stops at once
 # with what that says, or with HJV_CI_WAIT=<seconds> waits that long for it (lock_run). What reads
-# only the tree and writes nothing under the CI directory runs without it: the leak stage.
+# only the tree and writes nothing under the CI directory runs without it: the leak stage and inputs.
 # Needs cargo, curl, openssl, Docker with compose v2 (used through sudo, as the runbook does), and
 # apt-get for Ubuntu's nginx and Apache packages, which are unpacked under build/ci, not installed.
 set -euo pipefail
@@ -2662,6 +2665,276 @@ preflight() { # <stage...>
   echo "preflight: not strict (HJV_CI_STRICT=${HJV_CI_STRICT:-}): the stages skip what needs it, or fail"
 }
 
+# --- reusing strict passes (docs/ci.md, "통과 재사용") ---
+
+# The rules of the reuse (docs/ci.md, "통과 재사용"), set by what uses them: in a function, so that
+# their lines are no top-level code that every unit runs (reuse_top)
+reuse_rules() {
+  [ -z "${REUSE_UNITS:-}" ] || return 0
+  # The units whose strict passes prepush may reuse: the server stage's parts, the client, deploy,
+  # e2e and wol stages, and the operations drill (prepush --drill). leak reads everything and always
+  # runs.
+  REUSE_UNITS="server:hbbs server:api server:relay server:release client deploy e2e wol drill:full drill:quick"
+  # What of this script each runs: these functions, finish, and every function that they name
+  # (reuse_closure)
+  declare -gA REUSE_CODE=([server:hbbs]="server_stage server_hbbs" [server:api]="server_stage server_api"
+    [server:relay]="server_stage server_relay" [server:release]="server_stage server_release" [client]=client_stage
+    [deploy]=deploy_stage [e2e]="e2e_build_stage e2e_stage" [wol]=wol_stage [drill:full]=drill_stage
+    [drill:quick]=drill_stage)
+  # What each unit provably does not read of HEAD's tree, by path pattern (scripts/ci-reuse.py: fnmatch,
+  # whose * also takes /; the last pattern that matches decides, and one after ! takes paths back). Its
+  # input files are all the rest, so that a file nobody thought of counts until a rule leaves it out;
+  # every prepush's leak stage holds the rules to the code that the units run (reuse_check).
+  declare -gA REUSE_SKIP=(
+    # the upstream checkout with server/patches, the vectors of server/api that it compares and reads,
+    # hjv-probe and hjv-load
+    [server:hbbs]="client/* store/* .github/* docs/* deploy/* relay/* tools/e2e/* tools/hjv-release/* LICENSE NOTICE
+      server/api/* !server/api/src/hbbs.rs !server/api/tests/vectors/access-tickets.json
+      scripts/* !scripts/fetch-upstream.sh !scripts/upstream.env"
+    # hjv-api's tests: hjv-relay, a dev-dependency, and its tests/common (relay_loop.rs, which builds
+    # it), deploy/systemd and the journal's retention (ops.rs), the vectors of tools/hjv-release
+    # (update.rs)
+    [server:api]="client/* store/* .github/* docs/* server/patches/* tools/e2e/* tools/hjv-probe/* tools/hjv-load/*
+      LICENSE NOTICE scripts/* deploy/* !deploy/systemd/* !deploy/journald@hjviewer.conf
+      tools/hjv-release/* !tools/hjv-release/tests/vectors/* relay/tests/* !relay/tests/common/* relay/PROTOCOL.md"
+    # hjv-relay's tests: docs/relay-dsm.md (watchdog.rs, package.rs), and package-relay.sh's refusals
+    # with check-build-keys.py, whose test keys come from every tracked file (REUSE_VALUES)
+    [server:relay]="client/* store/* .github/* docs/* !docs/relay-dsm.md server/* deploy/* tools/* LICENSE NOTICE
+      scripts/* !scripts/package-relay.sh !scripts/check-build-keys.py !scripts/public-test-keys.txt"
+    [server:release]="client/* store/* .github/* docs/* server/* relay/* deploy/* scripts/* LICENSE NOTICE
+      tools/* !tools/hjv-release/*"
+    # the store run, the release records (docs/ci.md's build.yml among them), the key files and the
+    # workflows, the upstream checkout with client/patches, hjv-release and its vectors, the seal key of
+    # server/api/src/seal.rs (test_check_build_keys.py) and the 32-byte values of every tracked file
+    [client]="server/* !server/api/src/seal.rs relay/* deploy/* tools/e2e/* tools/hjv-probe/* tools/hjv-load/* LICENSE NOTICE
+      docs/* !docs/ci.md scripts/package-server.sh scripts/package-relay.sh scripts/package-notices.sh
+      scripts/check-api-settings.py scripts/test_check_api_settings.py scripts/test_review_conf.py
+      scripts/test_guest_conf.py scripts/test_hjv_update_verify.py"
+    # the server package, its units and web server files, Docker's image (server/patches, the pins,
+    # LICENSE, NOTICE), hjv-relay's packages (docs/relay-dsm.md is their README-DSM.md), the server's
+    # check of a version policy against the vectors of tools/hjv-release, the settings, offline tests
+    [deploy]="client/* store/* .github/* tools/e2e/* docs/* !docs/relay-dsm.md tools/hjv-release/* !tools/hjv-release/tests/vectors/*
+      scripts/release-info.py scripts/test_release_info.py scripts/testdata/* scripts/play-upload.py
+      scripts/test_play_upload.py scripts/check-store-text.py scripts/test_check_store_text.py scripts/store-record.py
+      scripts/test_store_record.py scripts/test_store_workflows.py scripts/run-summary.py scripts/asc-store.mjs
+      scripts/asc-store.test.mjs scripts/test_check_build_keys.py scripts/hjv-fontsize-check.sh
+      scripts/hjv-fontsize-baseline.txt scripts/set-client-version.sh"
+    # the E2E's client (client/, the pins, the keys of check-build-keys.py), hbbs and hjv-api's release
+    # build (server/, which resolves hjv-relay's Cargo.toml, a dev-dependency, under --locked),
+    # hjv-probe, hjv-release for the test policies, firewall-e2e.sh with the Caddyfile and guest-conf.py
+    [e2e]="store/* .github/* docs/* LICENSE NOTICE tools/hjv-load/* tools/e2e/* !tools/e2e/firewall-e2e.sh
+      deploy/* !deploy/Caddyfile !deploy/guest-conf.py relay/* !relay/Cargo.toml server/api/tests/* server/api/README.md
+      scripts/* !scripts/fetch-upstream.sh !scripts/upstream.env !scripts/check-build-keys.py !scripts/public-test-keys.txt"
+    # the E2E's client, hbbs, the release builds of hjv-api and hjv-relay, hjv-probe, wol-e2e.sh with
+    # its helpers, firewall-e2e.sh (whose parts the client's build follows) and the Caddyfile
+    [wol]="store/* .github/* docs/* LICENSE NOTICE tools/hjv-release/* tools/hjv-load/* tools/e2e/hjv-api-drill.sh
+      deploy/* !deploy/Caddyfile server/api/tests/* server/api/README.md relay/tests/* relay/PROTOCOL.md
+      scripts/* !scripts/fetch-upstream.sh !scripts/upstream.env !scripts/check-build-keys.py !scripts/public-test-keys.txt"
+    # hjv-api, the fake SSO and the drill's client (server/api's tests/drill.rs with tests/common, and
+    # hjv-relay, a dev-dependency), the units, the journal's retention and the drill script
+    [drill:full]="client/* store/* .github/* docs/* LICENSE NOTICE server/patches/* scripts/* tools/*
+      !tools/e2e/hjv-api-drill.sh deploy/* !deploy/systemd/* !deploy/journald@hjviewer.conf
+      server/api/tests/* !server/api/tests/drill.rs !server/api/tests/common/* server/api/README.md relay/tests/*
+      relay/PROTOCOL.md")
+  REUSE_SKIP[drill:quick]=${REUSE_SKIP[drill:full]}
+  # Last, for every unit: this script, whose code each unit takes by function instead (reuse_code), the
+  # files that only prepush and the leak stage read, the hand tools, and the READMEs that no code reads
+  REUSE_SKIP_ALL="scripts/ci.sh scripts/ci-reuse.py scripts/ci-times.sh scripts/test_ci_reuse.py scripts/build-signer.sh
+    scripts/leak-check.py scripts/test_leak_check.py scripts/export-patches.sh scripts/make-icons.sh
+    scripts/make-splash-text.py README.md tools/hjv-release/README.md"
+  # The units whose inputs hold the hash of the 32-byte values of every tracked file: check-build-keys.py
+  # takes them all for public test keys (its key tests, hjv-relay's refusals)
+  REUSE_VALUES="server:relay client deploy"
+}
+
+# The top level of this script outside its functions (each ends at a line "}", here-documents aside):
+# code, what every run of a unit runs of it (without comments, blank lines and the lines that only
+# set values); values, the names of those values; functions, each function's name and lines
+reuse_top() { # code|values|functions
+  awk -v want="$1" '
+    doc != "" { if ($0 == doc) doc = ""; next }
+    fn != "" {
+      if ($0 !~ /<<</ && match($0, /<<-? *'\''?[A-Za-z_]+'\''?/)) {
+        doc = substr($0, RSTART, RLENGTH)
+        gsub(/[<'\'' -]/, "", doc)
+      }
+      if ($0 == "}") {
+        if (want == "functions") print fn, start, NR
+        fn = ""
+      }
+      next
+    }
+    /^[a-z_][a-z0-9_]*\(\) \{/ {
+      name = substr($0, 1, index($0, "(") - 1)
+      if ($0 ~ /; \}$/) { if (want == "functions") print name, NR, NR }
+      else { fn = name; start = NR }
+      next
+    }
+    /^[[:space:]]*(#|$)/ { next }
+    /^(declare -[aA]+ )?[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=/ {
+      if (want == "values") {
+        line = $0
+        sub(/^declare -[aA]+ /, "", line)
+        while (match(line, /^[A-Za-z_][A-Za-z0-9_]*/)) {
+          print substr(line, 1, RLENGTH)
+          if (!match(line, /[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=/)) break
+          line = substr(line, RSTART)
+          sub(/^[[:space:]]+/, "", line)
+        }
+      }
+      next
+    }
+    want == "code" { print }
+  ' "$SELF" | if [ "$1" = values ]; then LC_ALL=C sort -u; else cat; fi
+}
+
+# The code of this script that <function...> run: "f <name>" for them and every function they name,
+# then "v <name>" for every value of its top level (reuse_top values) that one of them names
+reuse_closure() { # <function...>
+  local todo=("$@") seen=" " f w words=" " v
+  while [ ${#todo[@]} -gt 0 ]; do
+    f=${todo[0]}
+    todo=("${todo[@]:1}")
+    [[ $seen == *" $f "* ]] && continue
+    seen+="$f "
+    echo "f $f"
+    for w in $(declare -f "$f" | grep -oE '[A-Za-z_][A-Za-z0-9_]*' | LC_ALL=C sort -u); do
+      if declare -F "$w" > /dev/null; then todo+=("$w"); else words+="$w "; fi
+    done
+  done
+  for v in $(reuse_top values); do
+    if [[ $words == *" $v "* ]] && declare -p "$v" > /dev/null 2>&1; then echo "v $v"; fi
+  done
+}
+# That code by line: "code <function> <SHA-256 of it as bash read it>" (without comments, so that a
+# comment changes no unit) and "global <name> <SHA-256 of its value>", the CI directory as $CI and
+# the path of this tree as $ROOT (another tree with the same inputs reuses the pass); with text, the
+# code itself
+reuse_code() { # [text] <function...>
+  local kind name value text=""
+  if [ "$1" = text ]; then text=1; shift; fi
+  reuse_closure "$@" | while read -r kind name; do
+    if [ "$kind" = f ]; then
+      value=$(declare -f "$name")
+    else
+      value=$(declare -p "$name")
+      value=${value//"$CI"/\$CI}
+      value=${value//"$ROOT"/\$ROOT}
+    fi
+    if [ -n "$text" ]; then
+      printf '%s\n' "$value"
+    elif [ "$kind" = f ]; then
+      echo "code $name $(printf '%s\n' "$value" | sha256sum | cut -d' ' -f1)"
+    else
+      echo "global $name $(printf '%s\n' "$value" | sha256sum | cut -d' ' -f1)"
+    fi
+  done | if [ -n "$text" ]; then cat; else LC_ALL=C sort; fi
+}
+
+# What <unit> runs that is not in the tree, by version: the Rust toolchain, Python, bash and git
+# for all, beside them each stage's own (the deploy stage's packages as apt has them and its images
+# as Docker has them here; a newer base image that Docker pulls later is the age limit's,
+# HJV_CI_REUSE_HOURS)
+reuse_tools() { # <unit>
+  local lint lib image registry=${HJV_REGISTRY:-public.ecr.aws/docker/library}
+  rustc -vV 2>&1 | paste -sd' '
+  cargo -V 2>&1
+  python3 --version 2>&1
+  echo "bash $BASH_VERSION"
+  git --version
+  case $1 in
+    server:hbbs | server:api | server:relay | e2e | wol | deploy)
+      unshare --version 2>&1 | head -n 1
+      ip -V 2>&1 ;;&
+    server:api) systemd-analyze --version 2>&1 | head -n 1 ;;
+    client)
+      rustc +1.75.0 -vV 2>&1 | paste -sd' '
+      echo "node $(node --version 2>&1 || echo none)"
+      lint=$(command -v actionlint || ls "$HOME/.local/bin/actionlint" 2> /dev/null || true)
+      if [ -n "$lint" ]; then echo "actionlint $("$lint" --version 2>&1 | head -n 1)"; else echo "actionlint none"; fi
+      ;;
+    deploy)
+      echo "docker $(sudo -n docker version --format '{{.Server.Version}} {{.Client.Version}}' 2>&1)"
+      echo "compose $(sudo -n docker compose version --short 2>&1)"
+      echo "buildx $(sudo -n docker buildx version 2>&1)"
+      for image in "$registry/ubuntu:24.04" "$registry/rust:1-bookworm" "$registry/debian:bookworm-slim" "$registry/caddy:2"; do
+        reuse_image "$image"
+      done
+      apt-cache policy nginx apache2-bin libapr1t64 libaprutil1t64 libjansson4 liblua5.4-0 2> /dev/null |
+        awk '/^[^ ]/ { p = $1 } /Candidate:/ { print "apt " p " " $2 }'
+      curl --version 2>&1 | head -n 1
+      openssl version 2>&1
+      systemctl --version 2>&1 | head -n 1
+      musl-gcc --version 2>&1 | head -n 1
+      rustup target list --installed 2>&1 | paste -sd' '
+      ;;
+    e2e)
+      sudo --version 2>&1 | head -n 1
+      iptables --version 2>&1
+      for lib in /usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1 "$CI/faketime/root/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1"; do
+        if [ -f "$lib" ]; then echo "libfaketime ${lib#"$CI/"} $(sha256sum < "$lib" | cut -d' ' -f1)"; fi
+      done
+      ;;&
+    e2e | wol | drill:full | drill:quick) uname -r ;;&
+    drill:full | drill:quick)
+      echo "docker $(sudo -n docker version --format '{{.Server.Version}} {{.Client.Version}}' 2>&1)"
+      reuse_image "$registry/ubuntu:24.04"
+      ;;
+  esac
+}
+# An image as Docker has it here, by its ID; none when it is not here
+reuse_image() { # <image>
+  local id
+  id=$(sudo -n docker image inspect -f '{{.Id}}' "$1" 2> /dev/null || true)
+  echo "image $1 ${id:-none}"
+}
+# The variables of the environment that a unit's run may read, as NAME=value: HJV_*, E2E_*, CARGO*,
+# RUST* and GITHUB_ACTIONS, but HJV_CI_*, which say how prepush and the lock run
+reuse_env() {
+  local name
+  for name in $(compgen -e | LC_ALL=C sort); do
+    case $name in
+      HJV_CI_*) ;;
+      HJV_* | E2E_* | CARGO* | RUST* | GITHUB_ACTIONS) printf '%s=%q\n' "$name" "${!name}" ;;
+    esac
+  done
+}
+# The inputs of <unit...>, each in <dir>/<unit>.txt, whose SHA-256 is the key of its records: "file
+# <mode> <blob> <path>" for the files of HEAD's tree that it reads (REUSE_SKIP), "code" and "global"
+# lines for its code in this script (reuse_code), "top" for the code of this script's top level that
+# every run runs, "tool" lines for what it runs outside the tree (reuse_tools), "env" lines for the
+# environment (reuse_env), and "values" for those that read the 32-byte values of every tracked file
+# (REUSE_VALUES). In a process of its own (scripts/ci.sh inputs): this script's values as they are
+# at its start.
+reuse_inputs() { # <dir> <unit...>
+  local dir=$1 u rules=() fns top values=""
+  shift
+  reuse_rules
+  mkdir -p "$dir"
+  for u in "$@"; do
+    [ -n "${REUSE_CODE[$u]:-}" ] || fail "no unit $u ($REUSE_UNITS)"
+    rules+=("$u=${REUSE_SKIP[$u]} $REUSE_SKIP_ALL")
+  done
+  python3 -I -B "$ROOT/scripts/ci-reuse.py" files "$ROOT" "$dir" "${rules[@]}" || fail "the files that $* read (scripts/ci-reuse.py)"
+  top=$(reuse_top code | sha256sum | cut -d' ' -f1)
+  for u in "$@"; do
+    if [[ " $REUSE_VALUES " == *" $u "* ]] && [ -z "$values" ]; then
+      values=$(python3 -I -B "$ROOT/scripts/ci-reuse.py" values "$ROOT") || fail "the 32-byte values of the tree (scripts/ci-reuse.py)"
+    fi
+    read -ra fns <<< "${REUSE_CODE[$u]}"
+    {
+      echo "unit $u"
+      cat "$dir/$u.files"
+      reuse_code "${fns[@]}" finish
+      echo "top $top"
+      reuse_tools "$u" | sed 's/^/tool /'
+      reuse_env | sed 's/^/env /'
+      if [[ " $REUSE_VALUES " == *" $u "* ]]; then echo "values $values"; fi
+    } > "$dir/$u.txt"
+    rm -f "$dir/$u.files"
+  done
+}
+
 # The gate before a push (design v3 11 step 1): the stages one after another on a clean tree, under
 # this run's lock, with HJV_CI_STRICT=1, each with its own log, stopping at the first that fails.
 # Named stages run alone, in this order: after a fix, those that read what it changed (docs/ci.md).
@@ -2747,9 +3020,10 @@ if [ -z "${HJV_CI_STRICT+set}" ]; then
   [ -z "${HJV_E2E_PARTS:-}" ] || HJV_CI_STRICT=0
 fi
 export HJV_CI_STRICT
+reuse_rules
 case "$TARGET" in
   # what reads only the tree and writes nothing under the CI directory takes no lock
-  leak) ;;
+  leak | inputs) ;;
   *)
     if [ "${HJV_CI_LOCK:-}" != "$CI" ]; then lock_run "$@"; fi
     lock_held "$@"
@@ -2777,11 +3051,13 @@ case "$TARGET" in
   leak) leak_stage ;;
   drill:*) drill_stage "$TARGET" ;;
   all) server_stage server; deploy_stage ;;
+  inputs) shift; reuse_inputs "$@"; exit 0 ;;
   prepush) shift; prepush "$@" ;;
   *)
     echo "usage: $0 [all|prepush [<stage>...]|server[:<part>[,<part>]]|client|deploy|e2e[:build]|wol|leak|drill:build|drill:full|drill:quick]" >&2
     echo "  all is the server and deploy stages only; prepush runs every stage ($PREPUSH_STAGES) with HJV_CI_STRICT=1" >&2
     echo "  server:<part>[,<part>] (also a stage of prepush) runs those of the server stage's parts: $SERVER_PARTS" >&2
+    echo "  inputs <dir> <unit>... writes what prepush's units read ($REUSE_UNITS) into <dir>" >&2
     exit 2
     ;;
 esac
