@@ -1407,17 +1407,18 @@ e2e_update_keys() {
 }
 
 # What a checkout of fetch-upstream.sh holds, whatever its path: the trees of its commits
-# (rustdesk's and hbb_common's), its status (the overlay files over them; ignored files, such as the
-# src/version.rs a build writes, are not in it) and the mode, size and content of every file there
-# that differs from its commit. A build keeps its checkout while a fresh fetch holds the same, so that
-# cargo, which judges path crates by their files' times, compiles nothing again; another tree
+# (rustdesk's and hbb_common's), its status (the overlay files over them) and the mode, size and
+# content of every file there that differs from its commit or is not in it, those that git ignores
+# too (an overlay file can be one, as an icon under upstream's *png rule), except the src/version.rs
+# that the client's build writes. A build keeps its checkout while a fresh fetch holds the same, so
+# that cargo, which judges path crates by their files' times, compiles nothing again; another tree
 # replaces it, with new times.
 checkout_state() { # <rustdesk checkout>
   local dir
   for dir in "$1" "$1/libs/hbb_common"; do
     git -C "$dir" rev-parse 'HEAD^{tree}'
     git -C "$dir" --no-optional-locks status --porcelain --untracked-files=all
-    (cd "$dir" && git ls-files -z -m -o --exclude-standard -- . ':!libs/hbb_common' | sort -z |
+    (cd "$dir" && git ls-files -z -m -o -- . ':!libs/hbb_common' ':!src/version.rs' | sort -z |
       xargs -0 -r sh -c 'for f; do [ ! -e "$f" ] || echo "$f $(stat -c "%a %s" "$f") $(sha256sum < "$f")"; done' _)
   done | sha256sum
 }
