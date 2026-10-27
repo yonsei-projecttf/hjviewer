@@ -9,13 +9,14 @@
 #                          first the commits, the toolchain and the start, last the exit status),
 #                          stopping at the first that fails. With stages named, only those, in this
 #                          order: after a fix, the stages that read what it changed (docs/ci.md).
-#   scripts/ci.sh server   a fresh upstream checkout with server/patches and all of its tests in
-#                          release (the library's and binaries' unit tests, the signaling, relay,
-#                          protobuf, hbbs hjv-pk, lowest controller version and access ticket tests,
-#                          against hjv-api's shared vectors), hjv-probe and
-#                          hjv-load; hjv-api's tests and release build (server/api); hjv-relay's
-#                          tests (relay/); tools/hjv-release's format, lints, tests (its shared test
-#                          vectors among them) and release build
+#   scripts/ci.sh server   four parts (server:<part>[,<part>] runs some of them, also as a stage of
+#                          prepush): hbbs, a fresh upstream checkout with server/patches and all of
+#                          its tests in release (the library's and binaries' unit tests, the
+#                          signaling, relay, protobuf, hbbs hjv-pk, lowest controller version and
+#                          access ticket tests, against hjv-api's shared vectors), hjv-probe and
+#                          hjv-load; api, hjv-api's tests and release build (server/api); relay,
+#                          hjv-relay's tests (relay/); release, tools/hjv-release's format, lints,
+#                          tests (its shared test vectors among them) and release build
 #   scripts/ci.sh client   the offline tests of the Google Play upload script and of the build-key
 #                          check (scripts/test_*.py, the key files also against hjv-release), the store
 #                          run's: the store texts (scripts/check-store-text.py and its tests), the
@@ -339,10 +340,33 @@ hjv_pk_vector() { # <file>
     sed 's/^DEVICE_PK /PEER_PK /'
 }
 
-server_stage() {
+# The server stage's parts, which server:<part>[,<part>] names, as a target and as a stage of
+# prepush; server alone is all of them, in this order (server_stage)
+SERVER_PARTS="hbbs api relay release"
+
+# The parts that <stage> names, in the order of SERVER_PARTS: all of them for server, those it lists
+# for server:<part>[,<part>]; nothing, and a failure, for any other name
+server_parts() { # <stage>
+  local want part out=()
+  case $1 in
+    server) want=$SERVER_PARTS ;;
+    server:?*) want=${1#server:}; want=${want//,/ } ;;
+    *) return 1 ;;
+  esac
+  for part in $want; do
+    [[ " $SERVER_PARTS " == *" $part "* ]] || return 1
+  done
+  for part in $SERVER_PARTS; do
+    if [[ " $want " == *" $part "* ]]; then out+=("$part"); fi
+  done
+  echo "${out[*]}"
+}
+
+# hbbs: the upstream checkout with server/patches and all of its tests, hjv-probe and hjv-load
+server_hbbs() {
   # all of the patched server's tests, its upstream unit tests too: patches 0001-0004 change the
   # code they test
-  local tests=(--lib --bins --tests) netns
+  local tests=(--lib --bins --tests)
   step "server: upstream checkout with server/patches"
   rm -rf "$CI/upstream/rustdesk-server"
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" server
@@ -372,6 +396,10 @@ server_stage() {
     HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
   step "server: hjv-probe and hjv-load"
   for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
+}
+
+# api: hjv-api's tests and release build (server/api)
+server_api() {
   if [ -d "$ROOT/server/api" ]; then
     step "server: hjv-api tests and release build (server/api)"
     # with the output of the tests that pass: a test that cannot run here (no systemd tools) passes
@@ -383,6 +411,11 @@ server_stage() {
   else
     skip "hjv-api (no server/api)"
   fi
+}
+
+# relay: hjv-relay's tests (relay/)
+server_relay() {
+  local netns
   if [ -d "$ROOT/relay" ]; then
     step "server: hjv-relay tests (relay/)"
     # Here the netns test fails instead of skipping when user and network namespaces are missing;
@@ -399,6 +432,10 @@ server_stage() {
   else
     skip "hjv-relay (no relay/)"
   fi
+}
+
+# release: tools/hjv-release's format, lints, tests and release build
+server_release() {
   if [ -d "$ROOT/tools/hjv-release" ]; then
     # the operator's tool of the signed version policy: its tests hold the shared test vectors to
     # the reference model (python3 tests/vectors/generate.py --check) and read every one; the release
@@ -414,6 +451,19 @@ server_stage() {
   else
     skip "hjv-release (no tools/hjv-release)"
   fi
+}
+
+# The server stage: the parts that <stage> names (server_parts), one after another. Its last line
+# says which parts ran.
+server_stage() { # <stage>
+  local parts=() part rest=()
+  read -ra parts <<< "$(server_parts "$1")"
+  [ ${#parts[@]} -gt 0 ] || fail "no stage $1: server:<part>[,<part>] names parts of the server stage ($SERVER_PARTS)"
+  for part in "${parts[@]}"; do "server_$part"; done
+  for part in $SERVER_PARTS; do
+    if [[ " ${parts[*]} " != *" $part "* ]]; then rest+=("$part"); fi
+  done
+  echo "server: the parts that ran: ${parts[*]}${rest[*]:+ (not ${rest[*]}: $1)}"
 }
 
 FLUTTER_VERSION=3.24.5 # client-build.yml FLUTTER_VERSION
@@ -1718,12 +1768,18 @@ log_head() { # <stage>
 # this run's lock, with HJV_CI_STRICT=1, each with its own log, stopping at the first that fails.
 # Named stages run alone, in this order: after a fix, those that read what it changed (docs/ci.md).
 prepush() { # [<stage>...]
-  local stages=() s log logs head start status passed list
+  local stages=() s a log logs head start status passed list
   for s in "$@"; do
-    [[ " $PREPUSH_STAGES " == *" $s "* ]] || fail "prepush: no stage $s ($PREPUSH_STAGES)"
+    [[ " $PREPUSH_STAGES " == *" $s "* ]] || [ -n "$(server_parts "$s")" ] ||
+      fail "prepush: no stage $s ($PREPUSH_STAGES; server:<part>[,<part>] of $SERVER_PARTS)"
   done
   for s in $PREPUSH_STAGES; do
-    if [ $# -eq 0 ] || [[ " $* " == *" $s "* ]]; then stages+=("$s"); fi
+    if [ $# -eq 0 ] || [[ " $* " == *" $s "* ]]; then
+      stages+=("$s")
+    else
+      # some of the server stage's parts in its place
+      for a in "$@"; do if [[ $a == "$s":* ]]; then stages+=("$a"); fi; done
+    fi
   done
   [ -z "$(git -C "$ROOT" status --porcelain)" ] ||
     fail "prepush: the working tree is not clean (git status): a push publishes commits, and they are what is checked"
@@ -1773,17 +1829,18 @@ finish() { # <target>
 }
 
 case "$TARGET" in
-  server) server_stage ;;
+  server | server:*) server_stage "$TARGET" ;;
   client) client_stage ;;
   deploy) deploy_stage ;;
   e2e) e2e_stage ;;
   wol) wol_stage ;;
   leak) leak_stage ;;
-  all) server_stage; deploy_stage ;;
+  all) server_stage server; deploy_stage ;;
   prepush) shift; prepush "$@" ;;
   *)
-    echo "usage: $0 [all|prepush [<stage>...]|server|client|deploy|e2e|wol|leak]" >&2
+    echo "usage: $0 [all|prepush [<stage>...]|server[:<part>[,<part>]]|client|deploy|e2e|wol|leak]" >&2
     echo "  all is the server and deploy stages only; prepush runs every stage ($PREPUSH_STAGES) with HJV_CI_STRICT=1" >&2
+    echo "  server:<part>[,<part>] (also a stage of prepush) runs those of the server stage's parts: $SERVER_PARTS" >&2
     exit 2
     ;;
 esac
