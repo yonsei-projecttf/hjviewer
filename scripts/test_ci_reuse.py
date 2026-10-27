@@ -155,6 +155,13 @@ class ReuseTest(unittest.TestCase):
         self.assertNotEqual(before["server:release"], moved["server:release"])
         self.assertIn("env HJV_RELAY_NETNS=''\n", moved["server:release"])
         self.assertNotIn("HJV_CI_FRESH", moved["server:release"])
+        # the installed packages and the kernel for every unit, and the locale
+        for unit in before:
+            self.assertRegex(before[unit], r"(?m)^tool dpkg [0-9a-f]{64}$", unit)
+            self.assertIn(f"tool {os.uname().release}\n", before[unit], unit)
+        local = tree.inputs("server:release", env=dict(tree.env, LANG="ko_KR.UTF-8", LC_ALL="ko_KR.UTF-8"))
+        self.assertNotEqual(before["server:release"], local["server:release"])
+        self.assertIn("env LC_ALL=ko_KR.UTF-8\n", local["server:release"])
         # a 32-byte value in a file that the client stage does not otherwise read: its key test does
         tree.write("docs/privacy.md", "\n" + "ab" * 32 + "\n", "a")
         tree.commit("a value")

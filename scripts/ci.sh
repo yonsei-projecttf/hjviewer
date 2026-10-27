@@ -2905,10 +2905,12 @@ reuse_code() { # [text] <function...>
   done | if [ -n "$text" ]; then cat; else LC_ALL=C sort; fi
 }
 
-# What <unit> runs that is not in the tree, by version: the Rust toolchain, Python, bash and git
-# for all, beside them each stage's own (the deploy stage's packages as apt has them and its images
-# as Docker has them here; a newer base image that Docker pulls later is the age limit's,
-# HJV_CI_REUSE_HOURS)
+# What <unit> runs that is not in the tree, by version: the Rust toolchain, Python, bash, git, the
+# kernel, the packages installed here (dpkg's list: the system libraries that the builds link and
+# the tests load, the Python modules some tests import, and the Ubuntu revisions that a tool's
+# --version leaves out) and cargo's settings for all, beside them each stage's own (the deploy
+# stage's packages as apt has them and its images as Docker has them here; a newer base image that
+# Docker pulls later is the age limit's, HJV_CI_REUSE_HOURS)
 reuse_tools() { # <unit>
   local lint lib image registry=${HJV_REGISTRY:-public.ecr.aws/docker/library}
   rustc -vV 2>&1 | paste -sd' '
@@ -2916,6 +2918,11 @@ reuse_tools() { # <unit>
   python3 --version 2>&1
   echo "bash $BASH_VERSION"
   git --version
+  uname -r
+  echo "dpkg $({ sha256sum < /var/lib/dpkg/status; } 2> /dev/null | cut -d' ' -f1)"
+  # cargo's settings in its home (a linker, rustflags), which every build here reads
+  echo "cargo-config $(cat "${CARGO_HOME:-$HOME/.cargo}"/config.toml "${CARGO_HOME:-$HOME/.cargo}"/config 2> /dev/null |
+    sha256sum | cut -d' ' -f1)"
   case $1 in
     server:hbbs | server:api | server:relay | e2e | wol | deploy)
       unshare --version 2>&1 | head -n 1
@@ -2948,8 +2955,7 @@ reuse_tools() { # <unit>
       for lib in /usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1 "$CI/faketime/root/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1"; do
         if [ -f "$lib" ]; then echo "libfaketime ${lib#"$CI/"} $(sha256sum < "$lib" | cut -d' ' -f1)"; fi
       done
-      ;;&
-    e2e | wol | drill:full | drill:quick) uname -r ;;&
+      ;;
     drill:full | drill:quick)
       echo "docker $(sudo -n docker version --format '{{.Server.Version}} {{.Client.Version}}' 2>&1)"
       reuse_image "$registry/ubuntu:24.04"
@@ -2963,13 +2969,14 @@ reuse_image() { # <image>
   echo "image $1 ${id:-none}"
 }
 # The variables of the environment that a unit's run may read, as NAME=value: HJV_*, E2E_*, CARGO*,
-# RUST* and GITHUB_ACTIONS, but HJV_CI_*, which say how prepush and the lock run
+# RUST* and GITHUB_ACTIONS, but HJV_CI_*, which say how prepush and the lock run; and the locale and
+# time zone (LANG, LANGUAGE, LC_*, TZ), by which programs sort, compare and read text and dates
 reuse_env() {
   local name
   for name in $(compgen -e | LC_ALL=C sort); do
     case $name in
       HJV_CI_*) ;;
-      HJV_* | E2E_* | CARGO* | RUST* | GITHUB_ACTIONS) printf '%s=%q\n' "$name" "${!name}" ;;
+      HJV_* | E2E_* | CARGO* | RUST* | GITHUB_ACTIONS | LANG | LANGUAGE | LC_* | TZ) printf '%s=%q\n' "$name" "${!name}" ;;
     esac
   done
 }
