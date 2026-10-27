@@ -104,8 +104,8 @@ E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
 # The E2E's clients are test builds (feature hjv-e2e) of a checkout whose crates cargo compiles
 # anew each time client/patches gives another tree (build_e2e_client keeps it otherwise). Without
 # link-time optimization and in 16 units the client takes under a minute once its dependencies are
-# built, instead of three and a half minutes with the release profile as it is; so do its unit
-# tests.
+# built, instead of three and a half minutes with the release profile as it is. Its unit tests
+# build in the test profile, with rustc's incremental cache, as the client stage's do.
 E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
 # the stages of prepush, in their order
 PREPUSH_STAGES="server client deploy e2e wol leak"
@@ -1422,6 +1422,20 @@ checkout_state() { # <rustdesk checkout>
   done | sha256sum
 }
 
+# Whether a cargo test log's test executable (its "Running unittests src/lib.rs" line) was compiled
+# with the build variable <NAME> set or unset, by rustc's dep-info next to it ("# env-dep:" lines);
+# nothing when it does not read that variable
+test_env() { # <cargo test log> <NAME>
+  local exe
+  exe=$(sed -n 's/^ *Running unittests src\/lib\.rs (\(.*\))$/\1/p' "$1" | head -n 1)
+  [ -n "$exe" ] && [ -f "$exe.d" ] || return 0
+  if grep -q "^# env-dep:$2=" "$exe.d"; then
+    echo set
+  elif grep -qx "# env-dep:$2" "$exe.d"; then
+    echo unset
+  fi
+}
+
 # The client of the E2E (docs/e2e.md): an upstream checkout with client/patches, built for
 # the test server hjv.test with the test feature hjv-e2e. Once the patches have the account code
 # (src/hjviewer_account) and firewall-e2e.sh its account part (HJV_E2E_ACCOUNT), it also pins the
@@ -1504,13 +1518,18 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
     cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the client build"
   E2E_CLIENT="$CI/target-e2e/release/rustdesk"
   if [ -e "$src/src/$unit" ] || [ -e "$src/src/$unit.rs" ]; then
+    # (the debug side of target-e2e, which only this checkout builds into: cargo hashes another
+    # checkout's path crates alike, and would take their builds as fresh for the kept one)
     step "e2e: the client's unit tests (--lib $filter, output also in build/ci/e2e-unit-$filter.log)"
     with_skips "$CI/e2e-unit-$filter.log" env -C "$src" PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test \
-      HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
-      cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib "$filter" ||
+      HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${keys[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
+      cargo test --locked --features linux-pkg-config,hjv-e2e --lib "$filter" ||
       fail "e2e: the client's unit tests (--lib $filter)"
     at_least "e2e: the client's unit tests that passed (--lib $filter)" "$(passed_tests "$CI/e2e-unit-$filter.log")" \
       "${UNIT_LEAST[$filter]:-1}"
+    if [ -n "$E2E_KEYED" ] && [ "$(test_env "$CI/e2e-unit-$filter.log" HJV_UPDATE_PUBKEY)" != set ]; then
+      fail "e2e: the client's unit tests ran an executable built without the update keys (rustc's dep-info)"
+    fi
     if [ -n "$E2E_KEYED" ] && [[ hjviewer_update == *"$filter"* ]]; then e2e_unit_without_update_keys "$work" "${keys[@]}"; fi
   else
     skip "the client's unit tests of src/$unit (not in the patched tree)"
@@ -1520,9 +1539,10 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
 # The update code's unit tests once more, in a build without the update keys (minimum version
 # design 1-7): such a build takes no part and does what 1.5.1 did, and the tests that pin this
 # return at once in the keyed build. The build variables of build_e2e_client without the update
-# keys, which are taken out of this shell's environment too, in the same target directory: cargo
-# compiles the client crate's tests again (about a minute), which shows that the keys are gone, and
-# leaves the client built there as it is.
+# keys, which are taken out of this shell's environment too, in the test profile and in a target
+# directory of their own: in build_e2e_client's, cargo would compile the client crate's tests
+# twice a run, for the keys going and coming back. That the keys are gone shows in rustc's dep-info
+# of the test executable that ran (test_env), not in what cargo compiled.
 e2e_unit_without_update_keys() { # <work dir> <build variables...>
   local work=$1 v vars=() log="$CI/e2e-unit-hjviewer_update-nokeys.log"
   shift
@@ -1532,11 +1552,13 @@ e2e_unit_without_update_keys() { # <work dir> <build variables...>
   step "e2e: the update code's unit tests without the update keys (--lib hjviewer_update, output also in build/ci/e2e-unit-hjviewer_update-nokeys.log)"
   with_skips "$log" env -C "$CI/upstream-e2e/rustdesk" -u HJV_UPDATE_PUBKEY -u HJV_UPDATE_ROOT_PUBKEY -u HJV_POLICY_FLOOR \
     PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" "${vars[@]}" \
-    "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
-    cargo test --release --locked --features linux-pkg-config,hjv-e2e --lib hjviewer_update ||
+    CARGO_TARGET_DIR="$CI/target-e2e-nokeys" \
+    cargo test --locked --features linux-pkg-config,hjv-e2e --lib hjviewer_update ||
     fail "e2e: the update code's unit tests without the update keys (--lib hjviewer_update)"
-  grep -q '^ *Compiling rustdesk v' "$log" ||
-    fail "e2e: cargo did not compile the client's tests again without the update keys: they ran with the keys"
+  for v in HJV_UPDATE_PUBKEY HJV_UPDATE_ROOT_PUBKEY HJV_POLICY_FLOOR; do
+    [ "$(test_env "$log" "$v")" = unset ] ||
+      fail "e2e: the update code's tests without the update keys ran an executable built with $v (rustc's dep-info)"
+  done
   at_least "e2e: the update code's unit tests that passed without the update keys" "$(passed_tests "$log")" \
     "${UNIT_LEAST[hjviewer_update-nokeys]}"
 }
