@@ -738,13 +738,31 @@ server_checkout() {
   echo "the patched tree: $tree"
 }
 
-# hbbs: the upstream checkout with server/patches and all of its tests, hjv-probe and hjv-load
-server_hbbs() {
-  # all of the patched server's tests, its upstream unit tests too: patches 0001-0004 change the
-  # code they test
-  local tests=(--lib --bins --tests) t
+# The options of hbbs and hbbr's build: the release build of all of the patched server's tests (its
+# upstream unit tests too: patches 0001-0004 change the code they test), which builds the binaries
+# that its integration tests run
+HBBS_BUILD=(--release --locked --lib --bins --tests)
+# hbbs and hbbr as the server stage builds them in $CI/target: the upstream checkout with server/patches
+# and the build of its tests (cargo test --no-run, HBBS_BUILD), whose test runs then build nothing
+# (server_hbbs). The deploy, e2e and wol stages take those binaries, so their code has this function
+# too (REUSE_CODE): another build of them runs those stages again, an edit of the tests alone does
+# not. (No mark on $CI/target, own_target: only this checkout builds there, and server_checkout keeps
+# it only while it has the same patched tree, so what another tree built there is this one's; a mark
+# would have hbbs compiled again after every switch of trees.)
+server_hbbs_build() {
   step "server: upstream checkout with server/patches"
   server_checkout
+  step "server: hbbs and hbbr's release build, with their tests (cargo test --no-run)"
+  env -C "$CI/upstream/rustdesk-server" CARGO_TARGET_DIR="$CI/target" cargo test "${HBBS_BUILD[@]}" --no-run ||
+    fail "server: hbbs and hbbr's build"
+}
+
+# hbbs: the upstream checkout with server/patches and its build (server_hbbs_build), all of its tests,
+# hjv-probe and hjv-load
+server_hbbs() {
+  local t built
+  server_hbbs_build
+  built=$(cd "$CI/target/release" && sha256sum hbbs hbbr)
   # hbbs's signed hjv-pk answer for hjv-api (server/patches/0004, design v3 5-7): required, so that
   # a dropped patch fails
   [ -f "$CI/upstream/rustdesk-server/tests/hjv_pk.rs" ] ||
@@ -768,20 +786,34 @@ server_hbbs() {
   step "server: hbbs and hbbr's tests (unit, signaling, relay, protobuf, hjv-pk, access tickets)"
   # Each test binary in a network namespace of its own, all of them side by side: they mostly wait
   # (hbbs's ten-second periods, test_insert's 10 000 synced inserts), they name their directories
-  # by process, and no binary's hbbs can take the ports another has picked (own_net). (No mark on
-  # $CI/target, own_target: only this checkout builds there, and server_checkout keeps it only while
-  # it has the same patched tree, so what another tree built there is this one's; a mark would have
-  # hbbs compiled again after every switch of trees.)
+  # by process, and no binary's hbbs can take the ports another has picked (own_net).
   HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo_tests "$CI/upstream/rustdesk-server" \
-    "$CI/hbbs-tests.log" "$(nproc)" own_net --release --locked "${tests[@]}" || fail "server: hbbs and hbbr's tests"
+    "$CI/hbbs-tests.log" "$(nproc)" own_net "${HBBS_BUILD[@]}" || fail "server: hbbs and hbbr's tests"
+  # (what the deploy, e2e and wol stages take is server_hbbs_build's, which their code has)
+  [ "$(cd "$CI/target/release" && sha256sum hbbs hbbr)" = "$built" ] ||
+    fail "server: the tests' build changed hbbs or hbbr, which server_hbbs_build builds: cargo_tests takes HBBS_BUILD"
   for t in hbbs hbbr; do stamp_binary "$CI/target/release/$t" "${HBBS_INPUTS[@]}"; done
   step "server: hjv-probe and hjv-load"
   build_tools hjv-probe hjv-load
 }
 
+# hjv-api's release build (server_api), which the deploy stage's package takes, so that stage's code
+# has this function too (REUSE_CODE): another build of it runs that stage again, an edit of hjv-api's
+# tests alone does not. The commit that /api/hjv/source and hjv-api version report: the last one that
+# changed server/api, the binary's source, which is the same in HEAD. HEAD itself would have cargo
+# compile hjv-api again for every commit. The binary must report it.
+server_api_build() {
+  local commit
+  own_target "$CI/target-api" "$ROOT/server/api"
+  commit=$(git -C "$ROOT" log -1 --format=%H -- server/api)
+  (cd "$ROOT/server/api" && HJV_API_COMMIT=$commit \
+    CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api) || fail "server: hjv-api release build"
+  "$API" version | grep -qF "($commit)" || fail "server: $API does not report the commit of its source, $commit"
+  stamp_binary "$API" "${API_INPUTS[@]}"
+}
+
 # api: hjv-api's tests and release build (server/api)
 server_api() {
-  local commit
   if [ -d "$ROOT/server/api" ]; then
     step "server: hjv-api tests and release build (server/api)"
     own_target "$CI/target-api" "$ROOT/server/api"
@@ -793,14 +825,7 @@ server_api() {
     # timed requests (login.rs's 700 ms) two- to threefold.
     CARGO_TARGET_DIR="$CI/target-api" cargo_tests "$ROOT/server/api" "$CI/api-tests.log" 4 own_net --locked -- --show-output ||
       fail "server: hjv-api tests"
-    # The commit that /api/hjv/source and hjv-api version report: the last one that changed
-    # server/api, the binary's source, which is the same in HEAD. HEAD itself would have cargo
-    # compile hjv-api again for every commit. The binary must report it.
-    commit=$(git -C "$ROOT" log -1 --format=%H -- server/api)
-    (cd "$ROOT/server/api" && HJV_API_COMMIT=$commit \
-      CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api) || fail "server: hjv-api release build"
-    "$API" version | grep -qF "($commit)" || fail "server: $API does not report the commit of its source, $commit"
-    stamp_binary "$API" "${API_INPUTS[@]}"
+    server_api_build
   else
     skip "hjv-api (no server/api)"
   fi
@@ -2739,11 +2764,12 @@ reuse_rules() {
   # runs.
   REUSE_UNITS="server:hbbs server:api server:relay server:release client deploy e2e wol drill:full drill:quick"
   # What of this script each runs: these functions, finish, and every function that they name
-  # (reuse_closure)
+  # (reuse_closure); with the builds of what they take from another unit, hbbs and hbbr of server:hbbs
+  # and hjv-api of server:api, which their runs do not name
   declare -gA REUSE_CODE=([server:hbbs]="server_stage server_hbbs" [server:api]="server_stage server_api"
     [server:relay]="server_stage server_relay" [server:release]="server_stage server_release" [client]=client_stage
-    [deploy]=deploy_stage [e2e]="e2e_build_stage e2e_stage" [wol]=wol_stage [drill:full]=drill_stage
-    [drill:quick]=drill_stage)
+    [deploy]="deploy_stage server_hbbs_build server_api_build" [e2e]="e2e_build_stage e2e_stage server_hbbs_build"
+    [wol]="wol_stage server_hbbs_build" [drill:full]=drill_stage [drill:quick]=drill_stage)
   # What each unit provably does not read of HEAD's tree, by path pattern (scripts/ci-reuse.py: fnmatch,
   # whose * also takes /; the last pattern that matches decides, and one after ! takes paths back). Its
   # input files are all the rest, so that a file nobody thought of counts until a rule leaves it out;

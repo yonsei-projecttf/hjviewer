@@ -196,7 +196,8 @@ for u in server:release server:hbbs client deploy e2e wol drill:full; do
   keys[$u]=$(key "${fns[@]}" finish)
 done
 for v in "VECTORS_LEAST client" "E2E_LEAST_STRICT e2e" "E2E_LEAST_OPEN e2e" "WOL_LEAST wol" "UNIT_LEAST e2e wol" \
-  "RELEASE_INPUTS server:release client e2e" "HBBS_INPUTS server:hbbs deploy e2e wol"; do
+  "RELEASE_INPUTS server:release client e2e" "HBBS_INPUTS server:hbbs deploy e2e wol" "HBBS_BUILD server:hbbs deploy e2e wol" \
+  "API_INPUTS deploy"; do
   read -r name users <<< "$v"
   for u in "${!keys[@]}"; do
     (
@@ -219,6 +220,28 @@ echo "functions $(declare -F | wc -l)"
         self.assertRegex(out, r"(?m)^out deploy_stage$")
         self.assertRegex(out, r"(?m)^out prepush_run$")
         self.assertEqual(len(re.findall(r"(?m)^(in|out) ", out)), int(re.search(r"(?m)^functions (\d+)$", out).group(1)))
+
+    def test_an_edit_of_a_build_counts_for_the_units_that_take_what_it_builds(self):
+        # hbbs and hbbr of server:hbbs go to deploy, e2e and wol, hjv-api of server:api to deploy: an edit
+        # of how they are built changes those units' keys too, an edit of the tests alone does not
+        out = self.tree.source(r'''
+units="server:hbbs server:api server:release deploy e2e wol"
+key() { local fns; read -ra fns <<< "${REUSE_CODE[$1]}"; reuse_code "${fns[@]}" finish | sha256sum | cut -d' ' -f1; }
+declare -A keys=()
+for u in $units; do keys[$u]=$(key "$u"); done
+for f in server_hbbs_build server_checkout server_api_build server_hbbs server_api cargo_tests; do
+  (
+    eval "$(declare -f "$f" | sed '2a\    : an edit;')"
+    changed=""
+    for u in $units; do [ "$(key "$u")" = "${keys[$u]}" ] || changed+=" $u"; done
+    echo "$f:$changed"
+  ) &
+done
+wait''').stdout
+        for line in ("server_hbbs_build: server:hbbs deploy e2e wol", "server_checkout: server:hbbs deploy e2e wol",
+                     "server_api_build: server:api deploy", "server_hbbs: server:hbbs", "server_api: server:api",
+                     "cargo_tests: server:hbbs server:api"):
+            self.assertIn(line + "\n", out)
 
     def test_the_top_level_code_counts_for_every_unit_and_comments_and_values_do_not(self):
         tree = self.copy("top")
