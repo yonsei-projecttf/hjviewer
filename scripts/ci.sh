@@ -1110,11 +1110,13 @@ deploy_offline() {
 # a web server (docker-compose.behind-proxy.yml) and path A (Docker and Caddy), runs only when what
 # it reads changed since it last passed (the user's decision, 2026-10-27; docs/ci.md). <inputs>
 # prints what <run> reads besides the deploy stage's own code: its code, files, packages, images
-# and tools. A pass keeps the SHA-256 of all that in build/ci/stamps/deploy-<part>.stamp, and the
-# next run with the same prints one line instead of running the part again, not a skip: the part
-# passed with exactly that. HJV_CI_DEPLOY_ALL=1 runs every part.
+# and tools. A pass that skipped nothing keeps the SHA-256 of all that in
+# build/ci/stamps/deploy-<part>.stamp, and the next run with the same prints one line instead of
+# running the part again, not a skip: the part passed with exactly that. HJV_CI_DEPLOY_ALL=1 runs
+# every part.
 deploy_part() { # <part> <title> <inputs> <run> [<argument>...]
   local part=$1 title=$2 inputs=$3 run=$4 stamp="$CI/stamps/deploy-$1.stamp" hash old="" since=""
+  local skips=${#SKIPPED[@]}
   shift 4
   step "$title"
   hash=$(part_hash "$inputs" "$@") || fail "deploy: what the part $part reads (above)"
@@ -1130,6 +1132,8 @@ deploy_part() { # <part> <title> <inputs> <run> [<argument>...]
     echo "runs: no pass of it recorded (build/ci/stamps/deploy-$part.stamp)"
   fi
   "$run" "$@"
+  # a run that skipped a check is no pass to record (with HJV_CI_STRICT=1 it fails at the end)
+  [ ${#SKIPPED[@]} = "$skips" ] || return 0
   # what it read in the end: path A pulls the Caddy image when it is not here
   hash=$(part_hash "$inputs" "$@") || fail "deploy: what the part $part reads (above)"
   mkdir -p "$CI/stamps"
