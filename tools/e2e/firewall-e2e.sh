@@ -948,13 +948,14 @@ online() { # <ID> <side>: hbbs has the device online, asked from the side's netw
 # that gap, and a controller that asks then gets "Remote desktop is offline" (exit 1).
 #
 # <side> <tag> <scenario>: pwless_refused right after the binding went, from the PC's first seconds
-# without it on: an answer from that gap asks again, for up to 10 s, and the first other answer is
+# without it on: an answer from that gap asks again, for up to 20 s (a registration that hbbs
+# refuses as TOO_FREQUENT is made again a REG_INTERVAL, 15 s, later), and the first other answer is
 # judged at once (only the refusal box passes; a login that gets in fails)
 pwless_refused_unbound() {
-  local end=$(($(date +%s) + 10))
+  local end=$(($(date +%s) + 20))
   pwless "$1" "$2"
   while [ "$RC" = 1 ] && grep -qx 'hjv-e2e: Remote desktop is offline' "$RUN/$1.err"; do
-    [ "$(date +%s)" -lt "$end" ] || fail "$3: hbbs still had the PC offline after 10 s"
+    [ "$(date +%s)" -lt "$end" ] || fail "$3: hbbs still had the PC offline after 20 s"
     echo "    hbbs has the PC offline (its rendezvous restart): asking again"
     sleep 0.5
     pwless "$1" "$2"
@@ -1476,10 +1477,12 @@ account_strict() {
   until_ok 15 "S18: the PC took the signed revoked" state_is revoked
   [ -z "$(binding Binding)" ] || fail "S18: the PC kept its binding"
   pwless_refused_unbound ctl2 s18 "S18: password-less to a removed PC"
-  pass "S18: the PC dropped its binding on a signed revoked ($STATE); refused"
   # the PC's rendezvous restart before S19's first connection, which is to get in: with the 0.1-s
-  # relay window S18's refusal ends before it, and S19's connection met its gap
+  # relay window S18's refusal ends before it, and S19's connection met its gap. Registered again,
+  # the PC refuses too.
   revoked_registered_again "S18"
+  pwless_refused ctl2 s18b "S18: password-less to a removed PC, registered again"
+  pass "S18: the PC dropped its binding on a signed revoked ($STATE); refused"
 
   log "S19, S38: the PC's user logs out, with a password-less stream open"
   pc_bound
@@ -1604,10 +1607,11 @@ account_strict() {
   pass "S36: the stream ended $(ms_since "$t0") ms after 'binding revoke' (exit 7, 'closed: $CUT_PC'; the PC logged '… ended: this PC's binding was revoked')"
   until_ok 15 "S26: the PC took the signed revoked" state_is revoked
   pwless_refused_unbound ctl2 s26a "S26: after binding revoke"
-  pass "S26: binding revoke: a signed revoked, the binding gone ($STATE), refused"
   # the PC's rendezvous restart before s26b's connection, which is to get in (the PC's next sync,
-  # which the wait below takes, comes later anyway)
+  # which the wait below takes, comes later anyway). Registered again, the PC refuses too.
   revoked_registered_again "S26"
+  pwless_refused ctl2 s26a2 "S26: after binding revoke, registered again"
+  pass "S26: binding revoke: a signed revoked, the binding gone ($STATE), refused"
   # then the PC reports that it holds no binding: hjv-api, which has only the released one, answers
   # 404 'unbound' without a list, and the PC goes on showing why its binding went
   until_ok 15 "S26: the PC's report of its empty binding answered 404" pc_syncs_match "$ts" '^(200 )+404( 404)*$'
@@ -1619,9 +1623,10 @@ account_strict() {
   admin device remove "$PC_ID" | sed 's/^/    /'
   until_ok 15 "S26: the PC took the signed revoked after device remove" state_is revoked
   pwless_refused_unbound ctl2 s26c "S26: after device remove"
-  pass "S26: device remove (the alias) does the same"
   # and before X6's first connection
   revoked_registered_again "S26 after device remove"
+  pwless_refused ctl2 s26c2 "S26: after device remove, registered again"
+  pass "S26: device remove (the alias) does the same"
 
   log "X6, S37: the switch off for everyone, with a password-less stream open"
   pc_bound
