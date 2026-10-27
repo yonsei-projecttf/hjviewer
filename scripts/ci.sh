@@ -96,6 +96,8 @@ PROJECT=hjv-ci                     # compose project of the test stack, apart fr
 PROBE="$ROOT/tools/hjv-probe/target/release/hjv-probe"
 LOAD="$ROOT/tools/hjv-load/target/release/hjv-load"
 API="$CI/target-api/release/hjv-api"  # the server stage's release build of hjv-api
+# what the server stage builds hbbs and hbbr from (stamp_binary): the upstream pins and server/patches
+HBBS_INPUTS=(server/patches scripts/upstream.env scripts/fetch-upstream.sh)
 # Caddy for the E2E: the release archive, pinned by its SHA-256 (taken when the release's SHA-512
 # list was checked, 2026-10-12)
 CADDY_VERSION=2.11.7
@@ -254,6 +256,48 @@ for p in json.load(sys.stdin)["packages"]:
   echo "$(basename "$dir"): built last from ${last:-a tree it does not name}; this tree's packages" \
     "(${names[*]}) cleaned in $((SECONDS - start)) s"
 }
+# What a binary that one stage leaves for others is built from: hbbs and hbbr (HBBS_INPUTS), hjv-api
+# (server/api), and hjv-release (tools/hjv-release), which the owner may sign version policies with
+# too. <binary>.stamp names the tree, its commit and changed files, a hash of the files the binary is
+# built from (as git sees them: tracked, or not ignored) and of the toolchain, and the binary's hash.
+inputs_hash() { # <path in this tree...>
+  {
+    git -C "$ROOT" ls-files -z --cached --others --exclude-standard -- "$@" | sort -z -u |
+      { env -C "$ROOT" xargs -0 -r sha256sum 2>&1 || true; }
+    cargo --version
+  } | sha256sum | cut -d' ' -f1
+}
+stamp_binary() { # <binary> <path in this tree...>
+  local bin=$1
+  shift
+  echo "tree $ROOT commit $(git -C "$ROOT" rev-parse HEAD) changed-files $(git -C "$ROOT" status --porcelain | wc -l)" \
+    "inputs $(inputs_hash "$@") binary $(sha256sum < "$bin" | cut -d' ' -f1)" > "$bin.stamp"
+  echo "$(basename "$bin").stamp: $(cat "$bin.stamp")"
+}
+# Says where a binary that another stage built comes from. One that is not built from what this tree
+# has of <path...> (another tree's or commit's files, another toolchain, no stamp, or a binary that
+# changed since) fails the stage with HJV_CI_STRICT=1, and is a skip otherwise.
+check_stamp() { # <binary> <stage that builds it> <path in this tree...>
+  local bin=$1 stage=$2 name tree="" commit="" changed inputs sum why=""
+  shift 2
+  name=$(basename "$bin")
+  [ -x "$bin" ] || fail "$name is not built: scripts/ci.sh $stage"
+  if ! read -r _ tree _ commit _ changed _ inputs _ sum 2> /dev/null < "$bin.stamp"; then
+    why="it has no stamp ($name.stamp)"
+  elif [ "$sum" != "$(sha256sum < "$bin" | cut -d' ' -f1)" ]; then
+    why="it changed since its stamp"
+  elif [ "$inputs" != "$(inputs_hash "$@")" ]; then
+    why="this tree's $* or the toolchain are not what it was built from"
+  fi
+  commit=${commit:0:7}
+  if [ -z "$why" ]; then
+    echo "$name: built from what this tree has of $* (in $tree at $commit, $changed changed files)"
+    return 0
+  fi
+  [ "${HJV_CI_STRICT:-}" != 1 ] ||
+    fail "$name is not this tree's: $why (built in ${tree:-?} at ${commit:-?}); scripts/ci.sh $stage builds it again"
+  skip "this tree's own $name ($why; the one there was built in ${tree:-?} at ${commit:-?}): scripts/ci.sh $stage builds it again"
+}
 dc() { (cd "$SRC/deploy" && sudo docker compose -p "$PROJECT" "$@"); }
 hbbs_logs() {
   if [ "$STACK" = systemd ]; then
@@ -397,7 +441,7 @@ hjv_pk_vector() { # <file>
 server_stage() {
   # all of the patched server's tests, its upstream unit tests too: patches 0001-0004 change the
   # code they test
-  local tests=(--lib --bins --tests) netns
+  local tests=(--lib --bins --tests) netns t
   step "server: upstream checkout with server/patches"
   rm -rf "$CI/upstream/rustdesk-server"
   UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" server
@@ -426,6 +470,7 @@ server_stage() {
   own_target "$CI/target" "$CI/upstream/rustdesk-server"
   (cd "$CI/upstream/rustdesk-server" &&
     HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
+  for t in hbbs hbbr; do stamp_binary "$CI/target/release/$t" "${HBBS_INPUTS[@]}"; done
   step "server: hjv-probe and hjv-load"
   for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
   if [ -d "$ROOT/server/api" ]; then
@@ -437,6 +482,7 @@ server_stage() {
       cargo test --locked -- --show-output || fail "server: hjv-api tests"
     (cd "$ROOT/server/api" && HJV_API_COMMIT=$(git -C "$ROOT" rev-parse HEAD) \
       CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api)
+    stamp_binary "$API" server/api
   else
     skip "hjv-api (no server/api)"
   fi
@@ -470,6 +516,7 @@ server_stage() {
       cargo test --locked || fail "server: hjv-release tests"
     (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
       fail "server: hjv-release release build"
+    stamp_binary "$CI/target-hjv-release/release/hjv-release" tools/hjv-release
   else
     skip "hjv-release (no tools/hjv-release)"
   fi
@@ -528,6 +575,8 @@ client_stage() {
   if [ ! -x "$release_bin" ]; then
     release_bin=""
     skip "the key files and release records against hjv-release (no $CI/target-hjv-release/release/hjv-release: scripts/ci.sh server builds it)"
+  else
+    check_stamp "$release_bin" server tools/hjv-release
   fi
   # no network, no Google credentials (-B: no __pycache__ in scripts/)
   step "client: Google Play upload script, offline tests"
@@ -1059,7 +1108,9 @@ EOF
 
 deploy_stage() {
   if [ ! -x "$PROBE" ] || [ ! -x "$LOAD" ]; then fail "hjv-probe/hjv-load are not built: scripts/ci.sh server"; fi
-  if [ -d "$ROOT/server/api" ] && [ ! -x "$API" ]; then fail "hjv-api is not built: scripts/ci.sh server"; fi
+  # the server stage's builds that the release package takes
+  for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
+  if [ -d "$ROOT/server/api" ]; then check_stamp "$API" server server/api; fi
   sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
   step "deploy: the production settings check (scripts/check-api-settings.py), offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_api_settings.py' ||
@@ -1660,20 +1711,20 @@ e2e_minimum_version() {
     own_target "$CI/target-hjv-release" "$ROOT/tools/hjv-release"
     (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
       fail "e2e: hjv-release build"
+    stamp_binary "$CI/target-hjv-release/release/hjv-release" tools/hjv-release
     E2E_MINVER+=(HJV_RELEASE="$CI/target-hjv-release/release/hjv-release")
   fi
 }
 
 e2e_stage() {
-  local work="$CI/e2e" mode extra=()
+  local work="$CI/e2e" mode extra=() t
   # a client given by hand would go without the build's unit tests and, built without the E2E's
   # keys, without the account E2E
   [ -z "$E2E_CLIENT_GIVEN" ] ||
     fail "e2e: E2E_CLIENT is not taken here: the stage builds the client from client/patches, runs its unit tests and the account E2E with it"
   sudo -n true 2> /dev/null || fail "e2e: needs sudo without a password prompt (network namespaces, iptables)"
-  if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
-    fail "e2e: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
-  fi
+  for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
+  [ -x "$PROBE" ] || fail "e2e: hjv-probe is not built: scripts/ci.sh server"
   fetch_caddy
   e2e_server_key "$work"
   e2e_keys "$work/api"
@@ -1715,10 +1766,9 @@ e2e_stage() {
 # fails without it once client/patches has that patch. In a prepush run it takes the e2e stage's
 # client when that was built from the same inputs (e2e_client_stamp).
 wol_stage() {
-  local work="$CI/e2e" built="$CI/target-e2e/release/rustdesk"
-  if [ ! -x "$CI/target/release/hbbs" ] || [ ! -x "$CI/target/release/hbbr" ] || [ ! -x "$PROBE" ]; then
-    fail "wol: hbbs, hbbr and hjv-probe are not built: scripts/ci.sh server"
-  fi
+  local work="$CI/e2e" built="$CI/target-e2e/release/rustdesk" t
+  for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
+  [ -x "$PROBE" ] || fail "wol: hjv-probe is not built: scripts/ci.sh server"
   fetch_caddy
   e2e_server_key "$work"
   e2e_keys "$work/api"
