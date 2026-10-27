@@ -1745,6 +1745,7 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
 - **Caddy(A 경로)와 Apache에는 업데이트 정책이 없습니다.** 그 웹 서버들은 `/api/hjv/…`를 hjv-api의 소켓으로 넘기므로 `/api/hjv/version`은 hjv-api가 없으면 503, 있으면 404입니다. 앱은 "정책 없음"으로 읽어 아무것도 막지 않습니다(설계의 실패 개방). 1.6.0의 앱을 그런 서버에 붙여도 업데이트 안내와 PC의 컨트롤러 거절은 켜지지 않습니다.
 - hbbs의 최소 버전 파일(8-3)은 웹 서버와 상관없이 hbbs가 읽으므로 어느 경로에서나 쓸 수 있습니다. Docker는 8-3의 마지막 항목대로 디렉터리를 넣습니다.
 - 문 2와 짧은 링크, 앱 안 내려받기는 hjv-api가 있어야 합니다(7절).
+- **개발 PC의 CI가 이 경로들을 시험하는 때(2026-10-27부터)**: `scripts/ci.sh deploy`는 운영의 조합인 B 경로의 systemd 유닛과 nginx를 매번 시험합니다. Apache(4-3), Docker로 띄우는 hbbs/hbbr(`docker-compose.behind-proxy.yml`), A 경로(Docker와 Caddy, 3절)는 그 경로가 읽는 설정 파일, 이미지와 패키지, 시험 코드가 마지막 통과 뒤에 바뀐 실행에서만 시험하고, 바뀌지 않았으면 기록에 `unchanged since <시각> (<커밋>): <경로>` 한 줄만 남깁니다([ci.md](ci.md)의 "바뀐 때만 도는 경로"). 그래서 이 경로로 서버를 준비하기 전에는 개발 PC에서 `HJV_CI_DEPLOY_ALL=1 scripts/ci.sh deploy`로 세 경로를 모두 한 번 더 시험합니다.
 
 ### 8-10. 보고 (8절)
 

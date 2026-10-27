@@ -33,20 +33,23 @@
 #                          and the client's pure Dart tests, with the Flutter SDK the app builds use
 #                          (downloaded once, checked against Flutter's release index). Tests that
 #                          need the generated bridge run in client-build.yml.
-#   scripts/ci.sh deploy   docs/server-runbook.md's deployment with Docker, as on the server, from a
-#                          copy of this working tree: path B (hbbs/hbbr on 127.0.0.1) behind
-#                          deploy/nginx-hjviewer.conf and deploy/apache-hjviewer.conf, then path A
-#                          (Caddy). Everything listens on 127.0.0.1; ports 80/443 stay untouched.
-#                          Then the release package (scripts/package-server.sh): its systemd units
-#                          on this machine (hjv-api's too), the whole package installed in a clean
-#                          Ubuntu container (systemd-analyze verify, nginx -t, requests through
-#                          nginx to hjv-api), hjv-api's production settings
-#                          (scripts/check-api-settings.py and its offline tests), and the account
-#                          API's nginx limits (an IPv6 /64 and a dual-stack listener too, in an
-#                          unprivileged network namespace). Before the Docker part, hjv-relay's
-#                          packages (scripts/package-relay.sh, relay/tests/package.rs --ignored: a
-#                          static build for x86_64-unknown-linux-musl, which needs that Rust target
-#                          and musl-gcc).
+#   scripts/ci.sh deploy   docs/server-runbook.md's deployment, as on the server, from a copy of
+#                          this working tree: the release package (scripts/package-server.sh), its
+#                          systemd units on this machine (hjv-api's too) behind
+#                          deploy/nginx-hjviewer.conf, also added to an existing site, the whole
+#                          package installed in a clean Ubuntu container (systemd-analyze verify,
+#                          nginx -t, requests through nginx to hjv-api), hjv-api's production
+#                          settings (scripts/check-api-settings.py and its offline tests), and the
+#                          account API's nginx limits (an IPv6 /64 and a dual-stack listener too,
+#                          in an unprivileged network namespace). What production does not use,
+#                          Apache (deploy/apache-hjviewer.conf) in front of those units, Docker's
+#                          hbbs/hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml) and path A
+#                          (Docker and Caddy), runs only when what it reads changed since it last
+#                          passed (deploy_part; HJV_CI_DEPLOY_ALL=1 runs it anyway). Everything
+#                          listens on 127.0.0.1; ports 80/443 stay untouched. Beside the checks,
+#                          hjv-relay's packages (scripts/package-relay.sh, relay/tests/package.rs
+#                          --ignored: a static build for x86_64-unknown-linux-musl, which needs
+#                          that Rust target and musl-gcc).
 #   scripts/ci.sh e2e      tools/e2e/firewall-e2e.sh strict and open (sudo: namespaces, iptables)
 #                          with a client built for its test server, Caddy pinned by SHA-256, and the
 #                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; with the
@@ -148,6 +151,8 @@ SRC="$CI/src" PKGS="$CI/pkgs" CERTS="$CI/certs"
 NGINX_PID="" APACHE_PID="" ECHO_PID=""
 # set by the deploy stage, whose failures show its containers' and web servers' logs
 DEPLOY_LOGS=""
+# the deploy stage's jobs beside its checks, by the file they write (deploy_job)
+declare -A DEPLOY_JOBS=()
 # set by build_e2e_client when the E2E has its account part
 E2E_ACCOUNT=""
 # and when its client has the update test keys (the minimum version's policy)
@@ -252,6 +257,11 @@ cleanup_systemd() {
 }
 
 cleanup() {
+  local pid
+  # the jobs still running when the stage stops early, and the clean container they may have left
+  for pid in "${DEPLOY_JOBS[@]}"; do end_tree "$pid"; done
+  DEPLOY_JOBS=()
+  sudo docker rm -f hjv-ci-pkgtest > /dev/null 2>&1 || true
   stop_web
   cleanup_systemd
   # only this script's own project: its containers, network and Caddy volume
@@ -259,10 +269,58 @@ cleanup() {
   return 0
 }
 
+# Ends <pid> and the processes it started. Those of another user cannot be signalled, but sudo, run
+# by this user, passes the signal on to its command (e.g. the image build).
+end_tree() { # <pid>
+  local children child
+  children=$(pgrep -P "$1" || true)
+  kill "$1" 2> /dev/null || true
+  for child in $children; do end_tree "$child"; done
+}
+
+# Runs <command...> beside the checks that follow, with its output in <file>: deploy_wait waits for
+# it, and cleanup ends it when the stage stops before
+deploy_job() { # <file> <command...>
+  local log=$1
+  shift
+  "$@" < /dev/null > "$log" 2>&1 &
+  DEPLOY_JOBS[$log]=$!
+}
+
+# The exit status of the job of deploy_job that writes <file>, once it ends
+deploy_wait() { # <file>
+  local status=0
+  wait "${DEPLOY_JOBS[$1]}" || status=$?
+  unset "DEPLOY_JOBS[$1]"
+  return "$status"
+}
+
+# The output of that job once it ends, with its skipped lines counted; its failure fails the stage
+show_job() { # <file> <what failed>
+  local status=0
+  deploy_wait "$1" || status=$?
+  cat "$1"
+  [ "$status" = 0 ] || fail "$2"
+  count_skips "$1"
+}
+
+# Runs <command...> until it succeeds, five times a second for up to <seconds>: a server that is up
+# a moment later costs that moment, not a whole second
 wait_for() { # <seconds> <command...>
   local n=$1; shift
-  for _ in $(seq "$n"); do "$@" > /dev/null 2>&1 && return 0; sleep 1; done
+  for _ in $(seq $((n * 5))); do "$@" > /dev/null 2>&1 && return 0; sleep 0.2; done
   return 1
+}
+
+# hbbs's and hbbr's listeners, each once: TCP 21115-21119 and UDP 21116
+listeners() { ss -Hltnu '( sport >= :21115 and sport <= :21119 )' | awk '{print $1, $5}' | sort -u; }
+listening() { [ "$(listeners | wc -l)" -ge 6 ]; }
+# Waits for all six, and half a second more, in which a late one would still show; the list goes to
+# build/ci/listen.txt for the checks (exactly six, all on 127.0.0.1)
+wait_listeners() {
+  wait_for 10 listening || true
+  sleep 0.5
+  listeners | tee "$CI/listen.txt"
 }
 
 # A server on 127.0.0.1:18599 that answers with the address headers it got, for check_headers, and
@@ -826,36 +884,54 @@ client_offline_end() { # <job>
 # The runbook's checks against one web server: WebSocket upgrades to hbbs and hbbr, the /api/
 # answer, the source notice, hjv-probe, three PCs registering (hbbs must see their ports), a relay
 # session with the server key, and the same key in hbbs, hbbr and data/id_ed25519.pub.
+# The checks that wait run side by side: each WebSocket upgrade waits out curl's --max-time after
+# its 101 (the runbook's command), hjv-load holds the PCs for 12 s and the relay session for 7. None
+# of them changes what another sees (only the PCs register with hbbs); their output goes to files
+# under build/ci, shown and checked afterwards in this order.
 check_site() { # <port> <CA file> <status of />, or "site" when / belongs to another site <name>
-  local port=$1 ca=$2 root_status=$3 name=$4 code p before
-  local url="https://localhost:$port" curl_tls=(--cacert "$ca" --resolve "localhost:$port:127.0.0.1")
+  local port=$1 ca=$2 root_status=$3 name=$4 code p before heartbeat root probe=0 peers=0 relay=0
+  local url="https://localhost:$port" curl_tls=(--cacert "$ca" --resolve "localhost:$port:127.0.0.1") out="$CI/site"
   step "deploy: checks through $name on 127.0.0.1:$port"
-  for p in /ws/id /ws/relay; do
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --http1.1 "${curl_tls[@]}" \
+  for p in id relay; do
+    deploy_job "$out-ws-$p.code" curl -s -o /dev/null -w '%{http_code}' --max-time 5 --http1.1 "${curl_tls[@]}" \
       -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
-      -H 'Sec-WebSocket-Key: SGVsbG9Xb3JsZDEyMzQ1Ng==' "$url$p" || true)
-    echo "$p $code"
-    [ "$code" = 101 ] || fail "$name: $p answered $code, not 101"
+      -H 'Sec-WebSocket-Key: SGVsbG9Xb3JsZDEyMzQ1Ng==' "$url/ws/$p"
   done
-  code=$(curl -s -o /dev/null -w '%{http_code}' "${curl_tls[@]}" -X POST -d '{}' "$url/api/heartbeat" || true)
-  echo "/api/heartbeat $code"
-  [ "$code" = 404 ] || fail "$name: /api/heartbeat answered $code, not 404"
+  deploy_job "$out-relay.txt" "$LOAD" relay localhost --port "$port" --ca "$ca" -n 1 --mbps 2 --secs 5 \
+    --key "$(sudo cat "$(key_file)")"
+  heartbeat=$(curl -s -o /dev/null -w '%{http_code}' "${curl_tls[@]}" -X POST -d '{}' "$url/api/heartbeat" || true)
   if [ "$root_status" != site ]; then
-    code=$(curl -s -o "$CI/root.txt" -w '%{http_code}' "${curl_tls[@]}" "$url/" || true)
-    echo "/ $code $(head -c 80 "$CI/root.txt")"
-    if [ "$code" != "$root_status" ] || ! grep -q 'github.com/yonsei-projecttf/hjviewer' "$CI/root.txt"; then
-      fail "$name: / answered $code without the source notice"
+    root=$(curl -s -o "$CI/root.txt" -w '%{http_code}' "${curl_tls[@]}" "$url/" || true)
+  fi
+  "$PROBE" localhost --port "$port" --ca "$ca" > "$out-probe.txt" 2>&1 || probe=$?
+  before=$(hbbs_logs 2>/dev/null | grep -c 'update_pk ' || true)
+  "$LOAD" peers localhost --port "$port" --ca "$ca" -n 3 --secs 12 > "$out-peers.txt" 2>&1 || peers=$?
+  # (curl ends with 28 once the upgraded connection outlasts --max-time; its code is what counts)
+  for p in id relay; do deploy_wait "$out-ws-$p.code" || true; done
+  deploy_wait "$out-relay.txt" || relay=$?
+  for p in id relay; do
+    code=$(cat "$out-ws-$p.code")
+    echo "/ws/$p $code"
+    [ "$code" = 101 ] || fail "$name: /ws/$p answered $code, not 101"
+  done
+  echo "/api/heartbeat $heartbeat"
+  [ "$heartbeat" = 404 ] || fail "$name: /api/heartbeat answered $heartbeat, not 404"
+  if [ "$root_status" != site ]; then
+    echo "/ $root $(head -c 80 "$CI/root.txt")"
+    if [ "$root" != "$root_status" ] || ! grep -q 'github.com/yonsei-projecttf/hjviewer' "$CI/root.txt"; then
+      fail "$name: / answered $root without the source notice"
     fi
   fi
-  "$PROBE" localhost --port "$port" --ca "$ca" || fail "$name: hjv-probe"
-  before=$(hbbs_logs 2>/dev/null | grep -c 'update_pk ' || true)
-  "$LOAD" peers localhost --port "$port" --ca "$ca" -n 3 --secs 12 || fail "$name: hjv-load peers"
+  cat "$out-probe.txt"
+  [ "$probe" = 0 ] || fail "$name: hjv-probe"
+  cat "$out-peers.txt"
+  [ "$peers" = 0 ] || fail "$name: hjv-load peers"
   { hbbs_logs | grep -oE 'update_pk [0-9]+ [^ ]+' || true; } | tail -n "+$((before + 1))" > "$CI/pk.txt"
   cat "$CI/pk.txt"
   [ "$(wc -l < "$CI/pk.txt")" = 3 ] || fail "$name: hbbs did not register 3 PCs"
   if grep -q ':0$' "$CI/pk.txt"; then fail "$name: X-Real-Port did not reach hbbs (port 0)"; fi
-  "$LOAD" relay localhost --port "$port" --ca "$ca" -n 1 --mbps 2 --secs 5 --key "$(sudo cat "$(key_file)")" ||
-    fail "$name: hjv-load relay"
+  cat "$out-relay.txt"
+  [ "$relay" = 0 ] || fail "$name: hjv-load relay"
 }
 
 # The signed version policy at /api/hjv/version (deploy/nginx-hjviewer-locations.conf, runbook 8),
@@ -1111,10 +1187,13 @@ EOF
 # The release package installed the runbook's way in a clean Ubuntu 24.04 (the server's release)
 # with Ubuntu's nginx: binaries and their libraries, the units (systemd-analyze verify), the
 # account API's nginx files in place of the old /api/ block (nginx -t), and hjv-api behind that
-# nginx, started on its socket by systemd-socket-activate as hjviewer-api.socket would.
-check_package_container() { # <release dir> <package name>
+# nginx, started on its socket by systemd-socket-activate as hjviewer-api.socket would. The
+# container shares nothing with the deploy stage's other checks (its own network, the package
+# read-only): it runs beside them as hjv-ci-pkgtest, which cleanup removes, and
+# check_package_container shows and checks its output at the end.
+start_package_container() { # <release dir> <package name>
   local image="${HJV_REGISTRY:-public.ecr.aws/docker/library}/ubuntu:24.04"
-  step "deploy: the release package installed in a clean container ($image)"
+  echo "the release package installed in a clean container ($image), beside the checks below (build/ci/container.log)"
   cat > "$CI/container-test.sh" << 'EOF'
 set -euo pipefail
 name=$1
@@ -1236,16 +1315,20 @@ fi
 nginx -s quit
 echo CONTAINER_OK
 EOF
-  sudo docker run --rm -v "$1:/pkg:ro" -v "$CI/container-test.sh:/test.sh:ro" "$image" bash /test.sh "$2" 2>&1 |
-    tee "$CI/container.log" || fail "the release package in a clean container (build/ci/container.log)"
+  sudo docker rm -f hjv-ci-pkgtest > /dev/null 2>&1 || true
+  deploy_job "$CI/container.log" sudo docker run --rm --name hjv-ci-pkgtest -v "$1:/pkg:ro" \
+    -v "$CI/container-test.sh:/test.sh:ro" "$image" bash /test.sh "$2"
+}
+check_package_container() {
+  step "deploy: the release package installed in a clean container (build/ci/container.log)"
+  show_job "$CI/container.log" "the release package in a clean container (build/ci/container.log)"
   [ "$(tail -n 1 "$CI/container.log")" = CONTAINER_OK ] || fail "the release package in a clean container (build/ci/container.log)"
-  count_skips "$CI/container.log"
 }
 
-deploy_stage() {
-  if [ ! -x "$PROBE" ] || [ ! -x "$LOAD" ]; then fail "hjv-probe/hjv-load are not built: scripts/ci.sh server"; fi
-  if [ -d "$ROOT/server/api" ] && [ ! -x "$API" ]; then fail "hjv-api is not built: scripts/ci.sh server"; fi
-  sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
+# The deploy stage's offline tests, a job beside its checks (deploy_job): the production settings
+# check, deploy/'s scripts for the server's own files, and the server's check of a version policy,
+# also against the shared test vectors of tools/hjv-release
+deploy_offline() {
   step "deploy: the production settings check (scripts/check-api-settings.py), offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_api_settings.py' ||
     fail "deploy: tests of the settings check"
@@ -1268,25 +1351,285 @@ deploy_stage() {
   else
     skip "deploy/hjv-update-verify.sh against the shared test vectors (no $vectors/manifest.json: tools/hjv-release is not in this tree yet)"
   fi
+}
+
+# What production does not use, Apache in front of the systemd units, Docker's hbbs and hbbr behind
+# a web server (docker-compose.behind-proxy.yml) and path A (Docker and Caddy), runs only when what
+# it reads changed since it last passed (the user's decision, 2026-10-27; docs/ci.md). <inputs>
+# prints what <run> reads besides the deploy stage's own code: its code, files, packages, images
+# and tools. A pass that skipped nothing keeps the SHA-256 of all that in
+# build/ci/stamps/deploy-<part>.stamp, and the next run with the same prints one line instead of
+# running the part again, not a skip: the part passed with exactly that. HJV_CI_DEPLOY_ALL=1 runs
+# every part.
+deploy_part() { # <part> <title> <inputs> <run> [<argument>...]
+  local part=$1 title=$2 inputs=$3 run=$4 stamp="$CI/stamps/deploy-$1.stamp" hash old="" since=""
+  local skips=${#SKIPPED[@]}
+  shift 4
+  step "$title"
+  hash=$(part_hash "$inputs" "$@") || fail "deploy: what the part $part reads (above)"
+  read -r old since 2> /dev/null < "$stamp" || true
+  if [ "${HJV_CI_DEPLOY_ALL:-}" = 1 ]; then
+    echo "runs: HJV_CI_DEPLOY_ALL=1"
+  elif [ "$old" = "$hash" ]; then
+    echo "unchanged since $since: $part (build/ci/stamps/deploy-$part.stamp; HJV_CI_DEPLOY_ALL=1 runs it)"
+    return 0
+  elif [ -n "$old" ]; then
+    echo "runs: what it reads changed since its pass of $since"
+  else
+    echo "runs: no pass of it recorded (build/ci/stamps/deploy-$part.stamp)"
+  fi
+  "$run" "$@"
+  # a run that skipped a check is no pass (with HJV_CI_STRICT=1 it fails at the end), and an older
+  # record of the same inputs (HJV_CI_DEPLOY_ALL=1) no longer says what a run of the part does here
+  if [ ${#SKIPPED[@]} != "$skips" ]; then rm -f "$stamp"; return 0; fi
+  # what it read in the end: path A pulls the Caddy image when it is not here
+  hash=$(part_hash "$inputs" "$@") || fail "deploy: what the part $part reads (above)"
+  mkdir -p "$CI/stamps"
+  echo "$hash $(date '+%Y-%m-%d %H:%M') ($(git -C "$ROOT" rev-parse --short HEAD))" > "$stamp"
+}
+part_hash() { # <inputs> [<argument>...]
+  { declare -f deploy_stage; echo "PROJECT=$PROJECT"; "$@"; } | sha256sum | cut -d' ' -f1
+}
+
+# The code of <function...> and of every function it names, as bash read it (without comments)
+code_of() { # <function...>
+  local todo=("$@") seen=" " f w
+  while [ ${#todo[@]} -gt 0 ]; do
+    f=${todo[0]}
+    todo=("${todo[@]:1}")
+    [[ $seen == *" $f "* ]] && continue
+    seen+="$f "
+    declare -f "$f"
+    for w in $(declare -f "$f" | grep -oE '[a-z_][a-z0-9_]*' | sort -u); do
+      if declare -F "$w" > /dev/null; then todo+=("$w"); fi
+    done
+  done
+}
+
+# hjv-probe and hjv-load, and the programs that check_site and the checks around it run
+site_tools() {
+  sha256sum < "$PROBE"
+  sha256sum < "$LOAD"
+  curl --version
+  openssl version
+  python3 --version
+}
+
+# What Apache's part reads: its site file, Ubuntu's packages, and the release package's hbbs and
+# hbbr with their units, which it is in front of
+apache_inputs() { # <unpacked package>
+  code_of deploy_apache
+  (cd "$SRC" && sha256sum deploy/apache-hjviewer.conf)
+  (cd "$PKGS" && sha256sum ./*.deb)
+  (cd "$1" && sha256sum bin/hbbs bin/hbbr systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service \
+    systemd/hjviewer.env.example)
+  site_tools
+}
+
+# What the Docker parts read: the image's build (deploy/Dockerfile and what it copies), <compose
+# file>, Docker's versions, and the images that file names as they are here, layers and settings
+# (the image of hbbs and hbbr as built above, which a new base image changes)
+docker_inputs() { # <compose file>
+  local image
+  (cd "$SRC" && find "deploy/$1" deploy/.env.example deploy/Dockerfile scripts/fetch-upstream.sh scripts/upstream.env \
+    server/patches LICENSE NOTICE -type f -print0 | sort -z | xargs -0 sha256sum)
+  sudo docker version --format '{{.Server.Version}} {{.Client.Version}}'
+  sudo docker compose version --short
+  sudo docker buildx version
+  for image in $(dc -f "$1" config --images | sort -u); do
+    echo "$image $(sudo docker image inspect -f '{{json .RootFS.Layers}} {{json .Config}}' "$image" 2> /dev/null || echo missing)"
+  done
+}
+# and Docker's hbbs and hbbr behind a web server: the nginx in front, as configured for the checks
+# before, with Ubuntu's package
+behind_proxy_inputs() {
+  code_of deploy_behind_proxy
+  docker_inputs docker-compose.behind-proxy.yml
+  (cd "$CI/nginx" && cat ./*.conf snippets/*.conf)
+  (cd "$PKGS" && sha256sum ./nginx_*.deb)
+  site_tools
+}
+# and path A: the Caddyfile
+caddy_inputs() {
+  code_of deploy_caddy
+  docker_inputs docker-compose.yml
+  (cd "$SRC" && sha256sum deploy/Caddyfile)
+  site_tools
+}
+
+# Apache with deploy/apache-hjviewer.conf in front of the release package's systemd units, path B as
+# the runbook has it for Apache (4-3); deploy_part
+deploy_apache() {
+  local ap="$CI/apache" m
+  rm -rf "$ap"
+  mkdir -p "$ap"
+  sed -e 's/DOMAIN/localhost/g' \
+      -e "s#/etc/letsencrypt/live/localhost/fullchain.pem#$CERTS/cert.pem#" \
+      -e "s#/etc/letsencrypt/live/localhost/privkey.pem#$CERTS/key.pem#" \
+      -e 's/<VirtualHost \*:443>/<VirtualHost *:18444>/' -e 's/<VirtualHost \*:80>/<VirtualHost *:18081>/' \
+      "$SRC/deploy/apache-hjviewer.conf" > "$ap/site.conf"
+  grep -q '<VirtualHost \*:18444>' "$ap/site.conf" || fail "apache-hjviewer.conf: no '<VirtualHost *:443>'"
+  # the 443 VirtualHost again, in front of the header echo server (see the nginx check)
+  awk '/<VirtualHost \*:18444>/{on=1} on{print} on&&/<\/VirtualHost>/{exit}' "$ap/site.conf" |
+    sed -e 's/<VirtualHost \*:18444>/<VirtualHost *:18448>/' -e 's#ws://127\.0\.0\.1:2111[89]#ws://127.0.0.1:18599#' \
+      -e 's#unix:/run/hjviewer-api\.sock|http://localhost#http://127.0.0.1:18599#' > "$ap/echo.conf"
+  grep -q 'http://127.0.0.1:18599/api/' "$ap/echo.conf" || fail "apache-hjviewer.conf: no account paths to hjv-api's socket"
+  {
+    echo "ServerRoot \"$ap\""
+    echo "DefaultRuntimeDir \"$ap\""
+    echo "PidFile \"$ap/apache.pid\""
+    echo "Mutex file:$ap"
+    echo "Listen 127.0.0.1:18444"
+    echo "Listen 127.0.0.1:18081"
+    echo "Listen 127.0.0.1:18448"
+    echo "ErrorLog \"$ap/error.log\""
+    echo "LogLevel warn"
+    echo "ServerName localhost"
+    echo "Timeout 300"   # Ubuntu's apache2.conf
+    for m in mpm_event authz_core socache_shmcb ssl headers proxy proxy_http proxy_wstunnel alias; do
+      echo "LoadModule ${m}_module $PKGS/root/usr/lib/apache2/modules/mod_$m.so"
+    done
+    echo "Include \"$ap/site.conf\""
+    echo "Include \"$ap/echo.conf\""
+  } > "$ap/apache.conf"
+  export LD_LIBRARY_PATH="$PKGS/root/usr/lib/x86_64-linux-gnu"
+  "$PKGS/root/usr/sbin/apache2" -t -f "$ap/apache.conf" || fail "apache2 -t"
+  "$PKGS/root/usr/sbin/apache2" -f "$ap/apache.conf" -DFOREGROUND > "$ap/out.log" 2>&1 &
+  APACHE_PID=$!
+  unset LD_LIBRARY_PATH
+  wait_for 10 curl -s -o /dev/null --cacert "$CERTS/cert.pem" https://localhost:18444/ || fail "Apache did not start"
+  check_site 18444 "$CERTS/cert.pem" 404 Apache
+  start_echo
+  check_headers 18448 Apache
+  check_account_proxy 18448 Apache
+  [ "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:18081/x)" = "301 https://localhost/x" ] ||
+    fail "Apache: port 80 does not redirect to https"
+  # "client denied by server configuration" would feed fail2ban's apache-auth filter
+  if grep -E 'AH01630|:(error|crit|alert|emerg)\]' "$ap/error.log"; then fail "Apache logged errors"; fi
+  # last, since Apache logs the upstream it cannot reach: the site as shipped, without hjv-api
+  check_account_down 18444 "$CERTS/cert.pem" Apache
+  stop_web
+}
+
+# Docker's hbbs and hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml, the image built before), with
+# the nginx of the checks before in front; deploy_part
+deploy_behind_proxy() {
+  local ng="$CI/nginx"
+  dc up -d
+  wait_for 30 sudo test -s "$SRC/deploy/data/id_ed25519.pub" || fail "hbbs wrote no key"
+  wait_listeners
+  [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "expected TCP 21115-21119 and UDP 21116"
+  if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "hbbs/hbbr listen beyond 127.0.0.1"; fi
+  check_stack
+  dc logs --no-log-prefix hbbr | grep -q 'TOTAL_BANDWIDTH: 100Mb/s' || fail "HJV_TOTAL_BANDWIDTH did not reach hbbr"
+  dc logs --no-log-prefix hbbr | grep -q 'SINGLE_BANDWIDTH: 128Mb/s' || fail "an empty HJV_SINGLE_BANDWIDTH changed hbbr's default"
+  "$PKGS/root/usr/sbin/nginx" -e "$ng/error.log" -p "$ng" -c "$ng/nginx.conf" -g 'daemon off;' > "$ng/out.log" 2>&1 &
+  NGINX_PID=$!
+  wait_for 10 curl -s -o /dev/null --cacert "$CERTS/cert.pem" https://localhost:18443/ || fail "nginx did not start"
+  check_site 18443 "$CERTS/cert.pem" 200 "nginx, to Docker's hbbs and hbbr"
+  if grep -E '\[(emerg|alert|crit|error)\]' "$ng/error.log"; then fail "nginx logged errors"; fi
+  stop_web
+  dc down
+}
+
+# Path A: Caddy in front of Docker's hbbs and hbbr (docker-compose.yml, the image built before), on
+# 127.0.0.1:18082/18445; deploy_part
+deploy_caddy() {
+  cat > "$SRC/deploy/docker-compose.ci.yml" << 'EOF'
+# scripts/ci.sh: Caddy on high ports of 127.0.0.1 instead of 80/443
+services:
+  caddy:
+    ports: !override
+      - "127.0.0.1:18082:80"
+      - "127.0.0.1:18445:443"
+EOF
+  sed -i '/^COMPOSE_FILE=/d' "$SRC/deploy/.env"
+  echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.ci.yml' >> "$SRC/deploy/.env"
+  dc up -d
+  wait_for 30 sudo test -s "$SRC/deploy/data/id_ed25519.pub" || fail "hbbs wrote no key"
+  # Caddy issues "localhost" from its own CA; the checks trust that CA's root
+  wait_for 60 dc exec -T caddy test -s /data/caddy/pki/authorities/local/root.crt || fail "Caddy made no CA"
+  dc exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > "$CI/caddy-root.crt"
+  wait_for 30 curl -s -o /dev/null --cacert "$CI/caddy-root.crt" https://localhost:18445/ || fail "Caddy does not serve https"
+  check_stack
+  check_site 18445 "$CI/caddy-root.crt" 200 Caddy
+  # the account paths of deploy/Caddyfile in a stack without hjv-api: what Caddy answers itself
+  # (the E2E has them in front of hjv-api)
+  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/login-options)" = '[]' ] ||
+    fail "Caddy: /api/login-options is not []"
+  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/device-group/accessible)" = '{"total":0,"data":[]}' ] ||
+    fail "Caddy: /api/device-group/accessible is not the empty list"
+  [ "$(curl -s -w ' %{http_code}' --cacert "$CI/caddy-root.crt" -X POST -d '{}' https://localhost:18445/api/heartbeat)" = '{"error":"not found"} 404' ] ||
+    fail "Caddy: the rest of /api/ does not answer 404 in JSON"
+  check_account_down 18445 "$CI/caddy-root.crt" Caddy
+  dc down
+}
+
+deploy_stage() {
+  if [ ! -x "$PROBE" ] || [ ! -x "$LOAD" ]; then fail "hjv-probe/hjv-load are not built: scripts/ci.sh server"; fi
+  if [ -d "$ROOT/server/api" ] && [ ! -x "$API" ]; then fail "hjv-api is not built: scripts/ci.sh server"; fi
+  sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
   if [ -d "$ROOT/relay" ]; then
-    # relay/tests/package.rs's packages run only with --ignored, which no other stage gives
-    step "deploy: hjv-relay's packages (scripts/package-relay.sh): the static build, its SHA256SUMS, the field test package"
     [ -n "$(rustup target list --installed 2>/dev/null | grep -x x86_64-unknown-linux-musl)" ] && command -v musl-gcc > /dev/null ||
       fail "deploy: hjv-relay's packages need the x86_64-unknown-linux-musl target and musl-gcc (rustup target add x86_64-unknown-linux-musl; Ubuntu: apt-get install musl-tools)"
-    # with the output of the tests that pass: scripts/package-relay.sh says "skipped: ..." where it
-    # cannot run the binary in an empty root
-    with_skips "$CI/relay-package.log" env -C "$ROOT/relay" CARGO_TARGET_DIR="$CI/target-relay" \
-      cargo test --locked --test package -- --ignored --show-output ||
-      fail "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
-  else
-    skip "hjv-relay's packages (no relay/)"
   fi
   [ -z "$(ss -Hltnu '( sport >= :21115 and sport <= :21119 )')" ] ||
     fail "ports 21115-21119 are in use (a running hjviewer server?); the test stack needs them"
   [ -z "$(ss -Hltn '( sport >= :18080 and sport <= :18082 ) or ( sport >= :18443 and sport <= :18448 ) or sport = :18599')" ] ||
     fail "test ports 18080-18082 / 18443-18448 / 18599 are in use"
   trap cleanup EXIT
+
+  # The offline tests and hjv-relay's packages share nothing with the checks below, which mostly
+  # wait: they run beside them, and their output comes at the end
+  step "deploy: the offline tests and hjv-relay's packages, beside the checks below (build/ci/deploy-offline.log, relay-package.log)"
+  deploy_job "$CI/deploy-offline.log" deploy_offline
+  if [ -d "$ROOT/relay" ]; then
+    # relay/tests/package.rs's packages run only with --ignored, which no other stage gives; with
+    # the output of the tests that pass: scripts/package-relay.sh says "skipped: ..." where it
+    # cannot run the binary in an empty root
+    deploy_job "$CI/relay-package.log" env -C "$ROOT/relay" CARGO_TARGET_DIR="$CI/target-relay" \
+      cargo test --locked --test package -- --ignored --show-output
+  else
+    skip "hjv-relay's packages (no relay/)"
+  fi
+  # the web servers' error logs that fail shows are this run's, not those of a run that had Apache
+  rm -rf "$CI/nginx" "$CI/apache"
   DEPLOY_LOGS=1
+
+  step "deploy B, systemd: the release package (scripts/package-server.sh) without Docker"
+  local rel="$CI/release" pkg unit f api_files=()
+  rm -rf "$rel"
+  HJV_SKIP_SOURCE_CHECK=1 HJV_SERVER_BIN_DIR="$CI/target/release" HJV_API_BIN="$API" \
+    "$ROOT/scripts/package-server.sh" ci "$rel" > "$CI/package.log" 2>&1 ||
+    { tail -n 30 "$CI/package.log"; fail "scripts/package-server.sh"; }
+  [ "$(cat "$rel/SHA256SUMS")" = "$(cd "$rel" && sha256sum hjviewer-server-ci-linux-x86_64.tar.gz)" ] ||
+    fail "release package: SHA256SUMS does not name the package alone"
+  tar -xzf "$rel/hjviewer-server-ci-linux-x86_64.tar.gz" -C "$rel"
+  pkg="$rel/hjviewer-server-ci-linux-x86_64"
+  if [ -d "$ROOT/server/api" ]; then
+    # hjv-api, its units, settings and nginx files; the watch and backup units and the journal
+    # namespace's retention once deploy/ has them
+    api_files=(bin/hjv-api systemd/hjviewer-api.service systemd/hjviewer-api.socket systemd/hjviewer-api.env.example
+      web/nginx-hjviewer-api.conf web/nginx-hjviewer-api-zones.conf)
+    for f in "$ROOT"/deploy/systemd/hjviewer-api-*.service "$ROOT"/deploy/systemd/hjviewer-api-*.timer \
+      "$ROOT/deploy/journald@hjviewer.conf"; do
+      if [ -e "$f" ]; then api_files+=("systemd/$(basename "$f")"); fi
+    done
+  else
+    skip "hjv-api in the release package (no server/api)"
+  fi
+  for f in bin/hbbs bin/hbbr bin/hjv-update-verify.sh systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service systemd/hjviewer.env.example \
+    web/nginx-hjviewer-locations.conf web/nginx-hjviewer.conf web/apache-hjviewer.conf \
+    LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt "${api_files[@]}"; do
+    [ -s "$pkg/$f" ] || fail "release package: no $f"
+  done
+  grep -q 'server/patches' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe the server build"
+  if [ ${#api_files[@]} -gt 0 ]; then
+    grep -q 'server/api' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe hjv-api's build"
+    # a crate of hjv-api's that hbbs and hbbr do not use
+    grep -q '^crypto_box ' "$pkg/THIRD_PARTY_NOTICES.txt" || fail "release package: hjv-api's crates are not in THIRD_PARTY_NOTICES"
+    start_package_container "$rel" hjviewer-server-ci-linux-x86_64
+  fi
 
   step "deploy: copy of this working tree"
   if [ -d "$SRC/deploy" ]; then dc down -v --remove-orphans > /dev/null 2>&1 || true; fi
@@ -1296,10 +1639,17 @@ deploy_stage() {
     tar --null --ignore-failed-read -T - -cf -) | tar -xf - -C "$SRC"
 
   step "deploy: Ubuntu's nginx and Apache, unpacked"
-  if [ ! -x "$PKGS/root/usr/sbin/nginx" ] || [ ! -x "$PKGS/root/usr/sbin/apache2" ]; then
+  # again when apt has another version of one of them (a security update): the checks run the
+  # nginx and Apache that a server gets
+  local debs=(nginx apache2-bin libapr1t64 libaprutil1t64 libjansson4 liblua5.4-0) d stale=""
+  for d in "${debs[@]}"; do
+    [ "$(dpkg-deb -f "$PKGS/$d"_*.deb Version 2> /dev/null)" = "$(apt-cache policy "$d" | sed -n 's/^ *Candidate: //p')" ] ||
+      stale=1
+  done
+  if [ -n "$stale" ] || [ ! -x "$PKGS/root/usr/sbin/nginx" ] || [ ! -x "$PKGS/root/usr/sbin/apache2" ]; then
     rm -rf "$PKGS"
     mkdir -p "$PKGS/root"
-    (cd "$PKGS" && apt-get download nginx apache2-bin libapr1t64 libaprutil1t64 libjansson4 liblua5.4-0 > /dev/null)
+    (cd "$PKGS" && apt-get download "${debs[@]}" > /dev/null)
     for d in "$PKGS"/*.deb; do dpkg-deb -x "$d" "$PKGS/root"; done
   fi
   "$PKGS/root/usr/sbin/nginx" -v
@@ -1308,25 +1658,48 @@ deploy_stage() {
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=localhost \
     -addext subjectAltName=DNS:localhost -keyout "$CERTS/key.pem" -out "$CERTS/cert.pem" 2> /dev/null
 
-  step "deploy B: .env, image build, hbbs and hbbr (docker-compose.behind-proxy.yml)"
+  # The image of the Docker parts below, built beside the checks: when those parts decide whether
+  # they run, it has taken in a new base image too
+  step "deploy: Docker's .env and image (deploy/Dockerfile), built beside the checks below (build/ci/build.log)"
   (cd "$SRC/deploy" &&
     sudo install -d -m 700 data &&
     cp .env.example .env &&
     sed -i 's/^HJV_DOMAIN=.*/HJV_DOMAIN=localhost/' .env &&
     printf 'COMPOSE_FILE=docker-compose.behind-proxy.yml\nHJV_TOTAL_BANDWIDTH=100\nHJV_BUILD_JOBS=%s\n' "$(nproc)" >> .env)
   [ "$(dc config --services | sort | paste -sd' ')" = "hbbr hbbs" ] || fail "COMPOSE_FILE in .env did not select the behind-proxy file"
-  dc build > "$CI/build.log" 2>&1 || { tail -n 40 "$CI/build.log"; fail "image build (build/ci/build.log)"; }
-  dc up -d
-  wait_for 30 sudo test -s "$SRC/deploy/data/id_ed25519.pub" || fail "hbbs wrote no key"
-  sleep 2
-  ss -Hltnu '( sport >= :21115 and sport <= :21119 )' | awk '{print $1, $5}' | sort -u | tee "$CI/listen.txt"
-  [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "expected TCP 21115-21119 and UDP 21116"
-  if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "hbbs/hbbr listen beyond 127.0.0.1"; fi
-  check_stack
-  dc logs --no-log-prefix hbbr | grep -q 'TOTAL_BANDWIDTH: 100Mb/s' || fail "HJV_TOTAL_BANDWIDTH did not reach hbbr"
-  dc logs --no-log-prefix hbbr | grep -q 'SINGLE_BANDWIDTH: 128Mb/s' || fail "an empty HJV_SINGLE_BANDWIDTH changed hbbr's default"
+  deploy_job "$CI/build.log" dc build
 
-  step "deploy B: nginx with deploy/nginx-hjviewer.conf, and added to an existing site"
+  # Installed as the runbook does, apart from the names that keep it away from a real installation:
+  # runtime units hjv-ci-* (in /run, gone at reboot), a dynamic user and directories of its own. The
+  # sandbox, limits and commands are those of the shipped units.
+  step "deploy B, systemd: hbbs and hbbr from the package"
+  sudo install -d -m 755 /usr/local/lib/hjv-ci/bin /run/hjv-ci
+  sudo install -m 755 "$pkg/bin/hbbs" "$pkg/bin/hbbr" /usr/local/lib/hjv-ci/bin/
+  sed -e 's/^HJV_DOMAIN=.*/HJV_DOMAIN=localhost/' -e 's/^TOTAL_BANDWIDTH=.*/TOTAL_BANDWIDTH=100/' \
+    "$pkg/systemd/hjviewer.env.example" | sudo tee /run/hjv-ci/hjviewer.env > /dev/null
+  for unit in hbbs hbbr; do
+    sed -e 's/^User=hjviewer$/DynamicUser=yes\nUser=hjv-ci/' -e '/^Group=hjviewer$/d' \
+      -e 's#/var/lib/hjviewer#/var/lib/hjv-ci#g' -e 's/^StateDirectory=hjviewer$/StateDirectory=hjv-ci/' \
+      -e 's#/opt/hjviewer/bin/#/usr/local/lib/hjv-ci/bin/#' -e 's#/etc/hjviewer/hjviewer.env#/run/hjv-ci/hjviewer.env#' \
+      -e 's/hjviewer-hbbs\.service/hjv-ci-hbbs.service/g' \
+      "$pkg/systemd/hjviewer-$unit.service" | sudo tee "/run/systemd/system/hjv-ci-$unit.service" > /dev/null
+  done
+  STACK=systemd
+  SYSTEMD_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
+  sudo systemctl daemon-reload
+  sudo systemctl start hjv-ci-hbbs hjv-ci-hbbr || fail "systemd: the units did not start"
+  wait_for 15 sudo test -s /var/lib/hjv-ci/id_ed25519.pub || fail "systemd: hbbs wrote no key"
+  wait_for 15 systemctl is-active --quiet hjv-ci-hbbr || fail "systemd: hbbr is not running"
+  wait_listeners
+  [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "systemd: expected TCP 21115-21119 and UDP 21116"
+  if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "systemd: hbbs/hbbr listen beyond 127.0.0.1"; fi
+  check_systemd
+  if [ ${#api_files[@]} -gt 0 ]; then
+    start_systemd_api "$pkg"
+    check_systemd_api
+  fi
+
+  step "deploy B: nginx with deploy/nginx-hjviewer.conf, and added to an existing site, to the systemd units"
   local ng="$CI/nginx"
   rm -rf "$ng"
   mkdir -p "$ng/tmp" "$ng/snippets"
@@ -1413,156 +1786,15 @@ EOF
   if grep -E '\[(emerg|alert|crit|error)\]' "$ng/error.log"; then fail "nginx logged errors"; fi
   stop_web
 
-  step "deploy B: Apache with deploy/apache-hjviewer.conf"
-  local ap="$CI/apache" m
-  rm -rf "$ap"
-  mkdir -p "$ap"
-  sed -e 's/DOMAIN/localhost/g' \
-      -e "s#/etc/letsencrypt/live/localhost/fullchain.pem#$CERTS/cert.pem#" \
-      -e "s#/etc/letsencrypt/live/localhost/privkey.pem#$CERTS/key.pem#" \
-      -e 's/<VirtualHost \*:443>/<VirtualHost *:18444>/' -e 's/<VirtualHost \*:80>/<VirtualHost *:18081>/' \
-      "$SRC/deploy/apache-hjviewer.conf" > "$ap/site.conf"
-  grep -q '<VirtualHost \*:18444>' "$ap/site.conf" || fail "apache-hjviewer.conf: no '<VirtualHost *:443>'"
-  # the 443 VirtualHost again, in front of the header echo server (see the nginx check)
-  awk '/<VirtualHost \*:18444>/{on=1} on{print} on&&/<\/VirtualHost>/{exit}' "$ap/site.conf" |
-    sed -e 's/<VirtualHost \*:18444>/<VirtualHost *:18448>/' -e 's#ws://127\.0\.0\.1:2111[89]#ws://127.0.0.1:18599#' \
-      -e 's#unix:/run/hjviewer-api\.sock|http://localhost#http://127.0.0.1:18599#' > "$ap/echo.conf"
-  grep -q 'http://127.0.0.1:18599/api/' "$ap/echo.conf" || fail "apache-hjviewer.conf: no account paths to hjv-api's socket"
-  {
-    echo "ServerRoot \"$ap\""
-    echo "DefaultRuntimeDir \"$ap\""
-    echo "PidFile \"$ap/apache.pid\""
-    echo "Mutex file:$ap"
-    echo "Listen 127.0.0.1:18444"
-    echo "Listen 127.0.0.1:18081"
-    echo "Listen 127.0.0.1:18448"
-    echo "ErrorLog \"$ap/error.log\""
-    echo "LogLevel warn"
-    echo "ServerName localhost"
-    echo "Timeout 300"   # Ubuntu's apache2.conf
-    for m in mpm_event authz_core socache_shmcb ssl headers proxy proxy_http proxy_wstunnel alias; do
-      echo "LoadModule ${m}_module $PKGS/root/usr/lib/apache2/modules/mod_$m.so"
-    done
-    echo "Include \"$ap/site.conf\""
-    echo "Include \"$ap/echo.conf\""
-  } > "$ap/apache.conf"
-  export LD_LIBRARY_PATH="$PKGS/root/usr/lib/x86_64-linux-gnu"
-  "$PKGS/root/usr/sbin/apache2" -t -f "$ap/apache.conf" || fail "apache2 -t"
-  "$PKGS/root/usr/sbin/apache2" -f "$ap/apache.conf" -DFOREGROUND > "$ap/out.log" 2>&1 &
-  APACHE_PID=$!
-  unset LD_LIBRARY_PATH
-  wait_for 10 curl -s -o /dev/null --cacert "$CERTS/cert.pem" https://localhost:18444/ || fail "Apache did not start"
-  check_site 18444 "$CERTS/cert.pem" 404 Apache
-  start_echo
-  check_headers 18448 Apache
-  check_account_proxy 18448 Apache
-  [ "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:18081/x)" = "301 https://localhost/x" ] ||
-    fail "Apache: port 80 does not redirect to https"
-  # "client denied by server configuration" would feed fail2ban's apache-auth filter
-  if grep -E 'AH01630|:(error|crit|alert|emerg)\]' "$ap/error.log"; then fail "Apache logged errors"; fi
-  # last, since Apache logs the upstream it cannot reach: the site as shipped, without hjv-api
-  check_account_down 18444 "$CERTS/cert.pem" Apache
-  stop_web
-
-  step "deploy A: Caddy (docker-compose.yml) with the same image and key, on 127.0.0.1:18082/18445"
-  dc down
-  cat > "$SRC/deploy/docker-compose.ci.yml" << 'EOF'
-# scripts/ci.sh: Caddy on high ports of 127.0.0.1 instead of 80/443
-services:
-  caddy:
-    ports: !override
-      - "127.0.0.1:18082:80"
-      - "127.0.0.1:18445:443"
-EOF
-  sed -i '/^COMPOSE_FILE=/d' "$SRC/deploy/.env"
-  echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.ci.yml' >> "$SRC/deploy/.env"
-  dc up -d
-  # Caddy issues "localhost" from its own CA; the checks trust that CA's root
-  wait_for 60 dc exec -T caddy test -s /data/caddy/pki/authorities/local/root.crt || fail "Caddy made no CA"
-  dc exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > "$CI/caddy-root.crt"
-  wait_for 30 curl -s -o /dev/null --cacert "$CI/caddy-root.crt" https://localhost:18445/ || fail "Caddy does not serve https"
-  check_stack
-  check_site 18445 "$CI/caddy-root.crt" 200 Caddy
-  # the account paths of deploy/Caddyfile in a stack without hjv-api: what Caddy answers itself
-  # (the E2E has them in front of hjv-api)
-  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/login-options)" = '[]' ] ||
-    fail "Caddy: /api/login-options is not []"
-  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/device-group/accessible)" = '{"total":0,"data":[]}' ] ||
-    fail "Caddy: /api/device-group/accessible is not the empty list"
-  [ "$(curl -s -w ' %{http_code}' --cacert "$CI/caddy-root.crt" -X POST -d '{}' https://localhost:18445/api/heartbeat)" = '{"error":"not found"} 404' ] ||
-    fail "Caddy: the rest of /api/ does not answer 404 in JSON"
-  check_account_down 18445 "$CI/caddy-root.crt" Caddy
-
-  step "deploy B, systemd: the release package (scripts/package-server.sh) without Docker"
-  dc down
-  local rel="$CI/release" pkg unit f api_files=()
-  rm -rf "$rel"
-  HJV_SKIP_SOURCE_CHECK=1 HJV_SERVER_BIN_DIR="$CI/target/release" HJV_API_BIN="$API" \
-    "$ROOT/scripts/package-server.sh" ci "$rel" > "$CI/package.log" 2>&1 ||
-    { tail -n 30 "$CI/package.log"; fail "scripts/package-server.sh"; }
-  [ "$(cat "$rel/SHA256SUMS")" = "$(cd "$rel" && sha256sum hjviewer-server-ci-linux-x86_64.tar.gz)" ] ||
-    fail "release package: SHA256SUMS does not name the package alone"
-  tar -xzf "$rel/hjviewer-server-ci-linux-x86_64.tar.gz" -C "$rel"
-  pkg="$rel/hjviewer-server-ci-linux-x86_64"
-  if [ -d "$ROOT/server/api" ]; then
-    # hjv-api, its units, settings and nginx files; the watch and backup units and the journal
-    # namespace's retention once deploy/ has them
-    api_files=(bin/hjv-api systemd/hjviewer-api.service systemd/hjviewer-api.socket systemd/hjviewer-api.env.example
-      web/nginx-hjviewer-api.conf web/nginx-hjviewer-api-zones.conf)
-    for f in "$ROOT"/deploy/systemd/hjviewer-api-*.service "$ROOT"/deploy/systemd/hjviewer-api-*.timer \
-      "$ROOT/deploy/journald@hjviewer.conf"; do
-      if [ -e "$f" ]; then api_files+=("systemd/$(basename "$f")"); fi
-    done
-  else
-    skip "hjv-api in the release package (no server/api)"
-  fi
-  for f in bin/hbbs bin/hbbr bin/hjv-update-verify.sh systemd/hjviewer-hbbs.service systemd/hjviewer-hbbr.service systemd/hjviewer.env.example \
-    web/nginx-hjviewer-locations.conf web/nginx-hjviewer.conf web/apache-hjviewer.conf \
-    LICENSE.txt NOTICE.txt SOURCE.txt THIRD_PARTY_NOTICES.txt "${api_files[@]}"; do
-    [ -s "$pkg/$f" ] || fail "release package: no $f"
-  done
-  grep -q 'server/patches' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe the server build"
-  if [ ${#api_files[@]} -gt 0 ]; then
-    grep -q 'server/api' "$pkg/SOURCE.txt" || fail "release package: SOURCE.txt does not describe hjv-api's build"
-    # a crate of hjv-api's that hbbs and hbbr do not use
-    grep -q '^crypto_box ' "$pkg/THIRD_PARTY_NOTICES.txt" || fail "release package: hjv-api's crates are not in THIRD_PARTY_NOTICES"
-  fi
-  # Installed as the runbook does, apart from the names that keep it away from a real installation:
-  # runtime units hjv-ci-* (in /run, gone at reboot), a dynamic user and directories of its own. The
-  # sandbox, limits and commands are those of the shipped units.
-  sudo install -d -m 755 /usr/local/lib/hjv-ci/bin /run/hjv-ci
-  sudo install -m 755 "$pkg/bin/hbbs" "$pkg/bin/hbbr" /usr/local/lib/hjv-ci/bin/
-  sed -e 's/^HJV_DOMAIN=.*/HJV_DOMAIN=localhost/' -e 's/^TOTAL_BANDWIDTH=.*/TOTAL_BANDWIDTH=100/' \
-    "$pkg/systemd/hjviewer.env.example" | sudo tee /run/hjv-ci/hjviewer.env > /dev/null
-  for unit in hbbs hbbr; do
-    sed -e 's/^User=hjviewer$/DynamicUser=yes\nUser=hjv-ci/' -e '/^Group=hjviewer$/d' \
-      -e 's#/var/lib/hjviewer#/var/lib/hjv-ci#g' -e 's/^StateDirectory=hjviewer$/StateDirectory=hjv-ci/' \
-      -e 's#/opt/hjviewer/bin/#/usr/local/lib/hjv-ci/bin/#' -e 's#/etc/hjviewer/hjviewer.env#/run/hjv-ci/hjviewer.env#' \
-      -e 's/hjviewer-hbbs\.service/hjv-ci-hbbs.service/g' \
-      "$pkg/systemd/hjviewer-$unit.service" | sudo tee "/run/systemd/system/hjv-ci-$unit.service" > /dev/null
-  done
-  STACK=systemd
-  SYSTEMD_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
-  sudo systemctl daemon-reload
-  sudo systemctl start hjv-ci-hbbs hjv-ci-hbbr || fail "systemd: the units did not start"
-  wait_for 15 sudo test -s /var/lib/hjv-ci/id_ed25519.pub || fail "systemd: hbbs wrote no key"
-  wait_for 15 systemctl is-active --quiet hjv-ci-hbbr || fail "systemd: hbbr is not running"
-  sleep 2
-  ss -Hltnu '( sport >= :21115 and sport <= :21119 )' | awk '{print $1, $5}' | sort -u | tee "$CI/listen.txt"
-  [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "systemd: expected TCP 21115-21119 and UDP 21116"
-  if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "systemd: hbbs/hbbr listen beyond 127.0.0.1"; fi
-  check_systemd
-  if [ ${#api_files[@]} -gt 0 ]; then
-    start_systemd_api "$pkg"
-    check_systemd_api
-  fi
-  "$PKGS/root/usr/sbin/nginx" -e "$ng/error.log" -p "$ng" -c "$ng/nginx.conf" -g 'daemon off;' > "$ng/out.log" 2>&1 &
-  NGINX_PID=$!
-  wait_for 10 curl -s -o /dev/null --cacert "$CERTS/cert.pem" https://localhost:18446/ || fail "nginx did not start"
-  check_site 18446 "$CERTS/cert.pem" site "nginx, existing site with HTTP/2, to the systemd units"
-  stop_web
+  deploy_part apache "deploy B: Apache with deploy/apache-hjviewer.conf, to the systemd units" apache_inputs deploy_apache "$pkg"
   STACK=docker
   cleanup_systemd
+
+  step "deploy: Docker's image (build/ci/build.log)"
+  deploy_wait "$CI/build.log" || { tail -n 40 "$CI/build.log"; fail "image build (build/ci/build.log)"; }
+  deploy_part behind-proxy "deploy B: Docker's hbbs and hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml), behind nginx" \
+    behind_proxy_inputs deploy_behind_proxy
+  deploy_part caddy "deploy A: Caddy (docker-compose.yml) with the same image, on 127.0.0.1:18082/18445" caddy_inputs deploy_caddy
 
   if [ ${#api_files[@]} -gt 0 ]; then
     check_api_env "$pkg/systemd/hjviewer-api.env.example" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
@@ -1573,8 +1805,16 @@ EOF
       check_api_env "$HJV_API_ENV_FILE" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
     fi
     check_api_limits "$pkg"
-    check_package_container "$rel" hjviewer-server-ci-linux-x86_64
   fi
+
+  # the jobs beside the checks, in the order they started
+  step "deploy: the offline tests, run beside the checks above (build/ci/deploy-offline.log)"
+  show_job "$CI/deploy-offline.log" "deploy: the offline tests (build/ci/deploy-offline.log, above)"
+  if [ -d "$ROOT/relay" ]; then
+    step "deploy: hjv-relay's packages (scripts/package-relay.sh): the static build, its SHA256SUMS, the field test package"
+    show_job "$CI/relay-package.log" "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
+  fi
+  if [ ${#api_files[@]} -gt 0 ]; then check_package_container; fi
 
   cleanup
   trap - EXIT
