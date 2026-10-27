@@ -5,9 +5,18 @@
 ```bash
 tools/e2e/hjv-api-drill.sh                     # 약 13분(동기화가 10분 묵기를 기다리는 시간 포함)
 HJV_DRILL_QUICK=1 tools/e2e/hjv-api-drill.sh   # 그 기다림 없이 약 3분
+tools/e2e/hjv-api-drill.sh build               # 빌드와 준비만 (아래 "빌드와 연습")
+tools/e2e/hjv-api-drill.sh run                 # 준비한 것으로 연습만 (staged는 준비한 것이 이 트리의 것인지만 봄)
+scripts/ci.sh prepush --drill                  # push 전 관문에 넣어: 빌드는 deploy 옆에서, 연습은 e2e 옆에서 (--drill=quick)
 ```
 
-출력은 `build/drill/drill.log`에 남고, 실행마다 `build/drill/logs/<시각>-<커밋>-<quick|full>.log`에도 남습니다. 로그 머리에는 연습한 커밋과 트리, 시작 시각이, 끝 줄에는 `EXIT <종료 코드> <시각>`이 있습니다. 각 일의 제목(`== `) 아래에는 시각, 시작한 뒤 지난 초, 앞 일이 걸린 초가 붙고, 마지막 `== the drill passed` 앞에는 일을 걸린 시간 순으로 늘어놓은 표가 나옵니다. 필요한 것은 cargo, sudo로 쓰는 Docker(`scripts/ci.sh`와 같음), 이미지를 만들 때 Ubuntu 패키지 저장소입니다.
+출력은 `build/drill/drill.log`(빌드만 하면 `drill-build.log`)에 남고, 실행마다 `build/drill/logs/<시각>-<커밋>-<quick|full|build>.log`에도 남습니다. 로그 머리에는 연습한 커밋과 트리, 시작 시각이, 끝 줄에는 `EXIT <종료 코드> <시각>`이 있습니다. 각 일의 제목(`== `) 아래에는 시각, 시작한 뒤 지난 초, 앞 일이 걸린 초가 붙고, 마지막 `== the drill passed` 앞에는 일을 걸린 시간 순으로 늘어놓은 표가 나옵니다. 필요한 것은 cargo, sudo로 쓰는 Docker(`scripts/ci.sh`와 같음), 이미지를 만들 때 Ubuntu 패키지 저장소입니다.
+
+## 빌드와 연습
+
+- **빌드**(`build`): hjv-api, 가짜 SSO, 연습 클라이언트(`server/api/tests/drill.rs`)를 빌드하고 서버 묶음과 같은 배치로 `build/drill/stage`에 둡니다. 세 cargo 호출은 모두 같은 `HJV_API_COMMIT`으로 빌드합니다. `server/api`를 마지막으로 바꾼 커밋으로, `scripts/ci.sh`의 server 단계가 서버 묶음의 hjv-api를 빌드하는 규칙과 같습니다. 그래서 연습 클라이언트의 빌드(`cargo test --release --test drill`)가 hjv-api를 다시 컴파일해 덮어쓰지 않고, 설치하는 hjv-api는 서버 묶음의 것처럼 그 커밋을 알립니다(빌드가 `hjv-api version`으로 확인하고 멈춤). 2026-10-27까지는 둘째와 셋째 호출에 그 값이 없어 연습마다 hjv-api를 두 번 컴파일했고, 설치한 것은 `hjv-api 0.1.0 (commit unknown)`이었습니다.
+- **준비한 것의 재료**: 빌드는 그 재료(`server/api`, 개발 의존성 `relay`, `deploy/systemd`, `deploy/journald@hjviewer.conf`, 이 스크립트의 파일, cargo 판, `HJV_API_COMMIT`)의 해시를 `stage/SOURCE`에 적습니다. 연습(`run`)은 그것이 이 트리의 재료와 다르면 시작하지 않고(`build`를 먼저), `staged`는 그것만 보고 끝납니다.
+- **prepush에서**: `scripts/ci.sh prepush --drill[=full|quick]`이면 `scripts/ci.sh drill:build`가 deploy 단계 옆에서 낮은 우선순위로 `build/ci/target-drill`에 빌드하고(작업 트리들이 함께 쓰는 빌드 폴더라 표시를 둠, [ci.md](ci.md)의 "작업 트리 여럿이 한 CI 폴더를 쓸 때"), e2e:build의 클라이언트까지 통과한 뒤 `drill:full`(또는 `drill:quick`)이 e2e 단계 옆에서 연습합니다. 연습이 e2e보다 길면 wol이 그 옆에서 돌고, prepush는 연습이 끝나기를 기다려 그 결과까지 봅니다. 연습이 실패하면 prepush가 실패하고, e2e나 wol이 실패하면 연습을 멈춥니다(끝 trap이 컨테이너를 지움). 연습은 Docker의 기본 브리지에 포트 없이 컨테이너를 띄우고 호스트에 iptables 규칙을 두지 않으므로, veth 인터페이스에 묶인 방화벽 E2E의 규칙과 겹치지 않습니다. 로그는 prepush 로그 폴더의 `drill-build.log`, `drill.log`이고, 이 스크립트의 `build/drill/` 로그도 남습니다. 연습도 prepush가 다시 쓰는 단위입니다(입력이 같은 하루 안의 통과, [ci.md](ci.md)의 "통과 재사용"). full의 통과는 quick도 대신하지만 quick의 통과는 full을 대신하지 않습니다.
 
 ## 시험 서버
 
