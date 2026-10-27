@@ -26,7 +26,7 @@
 #      last backup restored; the relay of the backup takes a wake command signed with command key 2
 # Nothing calls the real SSO or Telegram, nothing leaves this machine, and the containers go at the
 # end (the image hjv-drill:local stays for the next run, and is built again when its recipe below
-# changes). The output is build/drill/drill.log.
+# changes). The output is build/drill/drill.log, and each run's is kept in build/drill/logs/.
 #   tools/e2e/hjv-api-drill.sh
 # Needs cargo, Docker through sudo (as scripts/ci.sh), and Ubuntu's apt sources for the image.
 set -euo pipefail
@@ -39,10 +39,35 @@ A=hjv-drill-a
 B=hjv-drill-b
 REGISTRY="${HJV_REGISTRY:-public.ecr.aws/docker/library}"
 export PATH="$HOME/.cargo/bin:$PATH"
-mkdir -p "$WORK"
-exec > >(tee "$WORK/drill.log") 2>&1
+mode=full
+[ -z "${HJV_DRILL_QUICK:-}" ] || mode=quick
+commit=$(git -C "$ROOT" rev-parse HEAD)
+mkdir -p "$WORK/logs"
+# the output: build/drill/drill.log, and a copy of each run's in build/drill/logs/
+exec > >(tee "$WORK/drill.log" "$WORK/logs/$(date +%Y%m%d-%H%M%S)-${commit:0:7}-$mode.log") 2>&1
+# the head of the log: the commit and tree it ran on, and the start (as scripts/ci.sh's logs)
+echo "LOG tools/e2e/hjv-api-drill.sh ($mode)"
+echo "hjviewer $commit tree $(git -C "$ROOT" rev-parse 'HEAD^{tree}') status-lines $(git -C "$ROOT" status --porcelain | wc -l) ($ROOT)"
+echo "START $(date '+%Y-%m-%d %H:%M:%S %z')"
 
-step() { printf '\n== %s\n' "$*"; }
+# A step's title, and under it the time, the seconds since the start and how long the step before
+# took; before the last one the steps by time (step_times)
+STEP="" STEP_SINCE=0 STEP_TIMES=()
+step() {
+  local took=""
+  if [ -n "$STEP" ]; then
+    took=$((SECONDS - STEP_SINCE))
+    STEP_TIMES+=("$took $STEP")
+  fi
+  STEP=$* STEP_SINCE=$SECONDS
+  printf '\n== %s\n' "$*"
+  echo "-- $(date +%T), $SECONDS s in${took:+; the step before: $took s}"
+}
+step_times() {
+  STEP_TIMES+=("$((SECONDS - STEP_SINCE)) $STEP")
+  printf '\n-- time by step, %s s in all:\n' "$SECONDS"
+  printf '%s\n' "${STEP_TIMES[@]}" | sort -s -rn -k1,1 | while read -r took what; do printf '%6d s  %s\n' "$took" "$what"; done
+}
 fail() {
   echo "FAIL: $*"
   exit 1
@@ -68,7 +93,11 @@ client() { # <host> <phase> [NAME=value...]
 cred_from() { # <host> <credential> <file>
   d exec -i "$1" systemd-creds encrypt -q --tpm2-pcrs= --name="$2" - "/etc/credstore.encrypted/$2" < "$3"
 }
-cleanup() { d rm -f "$A" "$B" > /dev/null 2>&1 || true; }
+cleanup() {
+  local rc=$?
+  d rm -f "$A" "$B" > /dev/null 2>&1 || true
+  echo "EXIT $rc $(date '+%Y-%m-%d %H:%M:%S %z')"
+}
 trap cleanup EXIT
 
 step "build: hjv-api, the fake SSO and the drill's client"
@@ -587,4 +616,5 @@ ticket_key_shown "$B"
 client "$B" drill_rebuilt
 check_now "$B"
 
-step "the drill passed"
+step_times
+printf '\n== %s\n' "the drill passed"
