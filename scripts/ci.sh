@@ -97,8 +97,11 @@ PROJECT=hjv-ci                     # compose project of the test stack, apart fr
 PROBE="$ROOT/tools/hjv-probe/target/release/hjv-probe"
 LOAD="$ROOT/tools/hjv-load/target/release/hjv-load"
 API="$CI/target-api/release/hjv-api"  # the server stage's release build of hjv-api
-# what the server stage builds hbbs and hbbr from (stamp_binary): the upstream pins and server/patches
+# what the server stage builds hbbs and hbbr, hjv-api and hjv-release from (stamp_binary): the upstream
+# pins and server/patches, and the crates' sources (not their tests and docs)
 HBBS_INPUTS=(server/patches scripts/upstream.env scripts/fetch-upstream.sh)
+API_INPUTS=(server/api/Cargo.toml server/api/Cargo.lock server/api/src)
+RELEASE_INPUTS=(tools/hjv-release/Cargo.toml tools/hjv-release/Cargo.lock tools/hjv-release/src)
 # Caddy for the E2E: the release archive, pinned by its SHA-256 (taken when the release's SHA-512
 # list was checked, 2026-10-12)
 CADDY_VERSION=2.11.7
@@ -258,9 +261,9 @@ for p in json.load(sys.stdin)["packages"]:
     "(${names[*]}) cleaned in $((SECONDS - start)) s"
 }
 # What a binary that one stage leaves for others is built from: hbbs and hbbr (HBBS_INPUTS), hjv-api
-# (server/api), and hjv-release (tools/hjv-release), which the owner may sign version policies with
-# too. <binary>.stamp names the tree, its commit and changed files, a hash of the files the binary is
-# built from (as git sees them: tracked, or not ignored) and of the toolchain, and the binary's hash.
+# (API_INPUTS), and hjv-release (RELEASE_INPUTS), which the owner may sign version policies with too.
+# <binary>.stamp names the tree, its commit and changed files, a hash of the files the binary is built
+# from (as git sees them: tracked, or not ignored) and of the toolchain, and the binary's hash.
 inputs_hash() { # <path in this tree...>
   {
     git -C "$ROOT" ls-files -z --cached --others --exclude-standard -- "$@" | sort -z -u |
@@ -490,7 +493,7 @@ server_stage() {
       cargo test --locked -- --show-output || fail "server: hjv-api tests"
     (cd "$ROOT/server/api" && HJV_API_COMMIT=$(git -C "$ROOT" rev-parse HEAD) \
       CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api)
-    stamp_binary "$API" server/api
+    stamp_binary "$API" "${API_INPUTS[@]}"
   else
     skip "hjv-api (no server/api)"
   fi
@@ -524,7 +527,7 @@ server_stage() {
       cargo test --locked || fail "server: hjv-release tests"
     (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
       fail "server: hjv-release release build"
-    stamp_binary "$CI/target-hjv-release/release/hjv-release" tools/hjv-release
+    stamp_binary "$CI/target-hjv-release/release/hjv-release" "${RELEASE_INPUTS[@]}"
   else
     skip "hjv-release (no tools/hjv-release)"
   fi
@@ -584,7 +587,7 @@ client_stage() {
     release_bin=""
     skip "the key files and release records against hjv-release (no $CI/target-hjv-release/release/hjv-release: scripts/ci.sh server builds it)"
   else
-    check_stamp "$release_bin" server tools/hjv-release
+    check_stamp "$release_bin" server "${RELEASE_INPUTS[@]}"
   fi
   # no network, no Google credentials (-B: no __pycache__ in scripts/)
   step "client: Google Play upload script, offline tests"
@@ -1123,7 +1126,7 @@ EOF
 deploy_stage() {
   # the server stage's builds that the release package takes
   for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
-  if [ -d "$ROOT/server/api" ]; then check_stamp "$API" server server/api; fi
+  if [ -d "$ROOT/server/api" ]; then check_stamp "$API" server "${API_INPUTS[@]}"; fi
   sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
   step "deploy: hjv-probe and hjv-load (tools/)"
   build_tools
@@ -1733,7 +1736,7 @@ e2e_minimum_version() {
     own_target "$CI/target-hjv-release" "$ROOT/tools/hjv-release"
     (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
       fail "e2e: hjv-release build"
-    stamp_binary "$CI/target-hjv-release/release/hjv-release" tools/hjv-release
+    stamp_binary "$CI/target-hjv-release/release/hjv-release" "${RELEASE_INPUTS[@]}"
     E2E_MINVER+=(HJV_RELEASE="$CI/target-hjv-release/release/hjv-release")
   fi
 }
