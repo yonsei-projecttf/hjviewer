@@ -246,14 +246,16 @@ passed_tests() { # <file>
 # scripts/ci.sh that has no marks yet, cargo run by hand), the packages that cargo builds from a path
 # in <workspace> (this tree's crates, or those of the upstream checkout made from its patches) are
 # cleaned in both profiles, whatever tree built them; the crates.io and git dependencies stay built.
+# A directory is this run's (OWNED) once its mark names this tree.
 own_target() { # <target dir> <workspace dir>
   local dir=$1 ws=$2 last name names=() specs=() start=$SECONDS
   [[ " ${OWNED[*]} " != *" $dir "* ]] || return 0
-  OWNED+=("$dir")
   last=$(cat "$dir/.hjv-tree" 2> /dev/null || true)
   if [ "$last" = "$ROOT" ]; then
-    [ -n "$(find "$dir" -mindepth 4 -maxdepth 4 -path '*/.fingerprint/*/invoked.timestamp' -newer "$dir/.hjv-tree" -print -quit)" ] ||
+    if [ -z "$(find "$dir" -mindepth 4 -maxdepth 4 -path '*/.fingerprint/*/invoked.timestamp' -newer "$dir/.hjv-tree" -print -quit)" ]; then
+      OWNED+=("$dir")
       return 0
+    fi
     last="$ROOT, then something else"
   fi
   while read -r name; do names+=("$name") specs+=(-p "$name"); done < <(cd "$ws" &&
@@ -267,6 +269,7 @@ for p in json.load(sys.stdin)["packages"]:
     cargo clean --locked --release "${specs[@]}" --target-dir "$dir") || fail "cargo clean in $dir"
   mkdir -p "$dir"
   echo "$ROOT" > "$dir/.hjv-tree"
+  OWNED+=("$dir")
   echo "$(basename "$dir"): built last from ${last:-a tree it does not name}; this tree's packages" \
     "(${names[*]}) cleaned in $((SECONDS - start)) s"
 }
@@ -330,7 +333,6 @@ key_file() {
 }
 
 fail() {
-  owned_built
   echo "FAIL: $*" >&2
   if [ -n "$DEPLOY_LOGS" ] && [ -d "$SRC/deploy" ]; then
     dc logs --tail 40 >&2 2>/dev/null || true
@@ -338,6 +340,7 @@ fail() {
       [ -f "$f" ] && { echo "--- $f" >&2; tail -n 20 "$f" >&2; }
     done
   fi
+  owned_built
   exit 1
 }
 
