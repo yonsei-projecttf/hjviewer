@@ -1455,6 +1455,9 @@ account_strict() {
   want 0 "S18: removing the PC"
   until_ok 15 "S18: the PC took the signed revoked" state_is revoked
   [ -z "$(binding Binding)" ] || fail "S18: the PC kept its binding"
+  # the PC's rendezvous restart, as in S26: with the 0.1-s relay window S18's refusal ended
+  # before it, and S19's first connection met its gap ("Remote desktop is offline")
+  revoked_registered_again "S18"
   pwless_refused ctl2 s18 "S18: password-less to a removed PC"
   pass "S18: the PC dropped its binding on a signed revoked ($STATE); refused"
 
