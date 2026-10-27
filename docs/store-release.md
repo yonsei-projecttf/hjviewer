@@ -136,8 +136,8 @@ appstore 1.9.1 <빌드> release - <소스 커밋 40자리> 2026-11-02 store #15
 | Play: 커밋 응답을 받지 못함 | 출시가 됐는지 모릅니다 | 같은 upload를 다시 dispatch(또는 Re-run failed jobs). 이미 됐으면 "is there already"로 끝납니다 |
 | Play: `-play` 아티팩트가 지워짐(30일) | Checks가 아티팩트를 찾지 못합니다 | 더 높은 버전으로 새로 빌드 |
 | 스토어의 새 계약·정책 선언 | API 업로드와 제출이 실패합니다(Play는 403 선언 메시지, Apple은 403) | 콘솔에서 처리한 뒤 다시(Apple 계약은 계정 소유자만) |
-| 빌드 실행의 'Re-run all jobs' | 새 빌드 번호로 다시 빌드합니다 | 스토어에 올라간 뒤에는 쓰지 않습니다. 첫 단계 검사가 기록이나 TestFlight에 같은 버전이 있으면 멈춥니다 |
-| iOS 잡이 TestFlight 업로드 뒤에 실패 | 다시 돌리면 같은 버전을 또 올리려 합니다 | 첫 단계 검사가 TestFlight의 같은 버전을 보고 멈춥니다. `store.yml ios status`로 확인 |
+| 빌드 실행의 'Re-run all jobs' | 새 빌드 번호로 다시 빌드합니다 | 스토어나 TestFlight에 올라간 뒤에는 쓰지 않습니다. 첫 단계 검사가 기록에 같은 버전이 있으면 멈춥니다. TestFlight에 이미 있는 버전의 새 IPA는 TestFlight 업로드 실행의 첫 단계가 받지 않습니다 |
+| TestFlight 업로드 실행이 업로드 뒤에 실패 | 다시 돌리면 같은 IPA를 또 올리려 합니다 | 첫 단계 검사가 TestFlight의 같은 버전을 보고 멈춥니다. `store.yml ios status`로 확인 |
 | App Store: 편집할 수 있는 버전의 번호가 다름 | | prepare가 번호를 바꿉니다. 이 버전이 심사 중·승인 상태면 바꾸지 않고 멈춥니다 |
 | App Store: 제출이 이미 열려 있음 | | submit이 그 제출을 다시 씁니다. 다른 항목이 있으면 멈춥니다 |
 | App Store: 응답을 받지 못한 submit·release | | 다시 돌리면 상태를 보고 성공으로 끝냅니다 |
@@ -199,8 +199,8 @@ App Store Connect 오류는 Apple의 코드와 설명을 출력합니다(비밀�
 
 | 어디 | 이름 | 내용 |
 |---|---|---|
-| 저장소 시크릿(지금처럼) | `ASC_APP_ID`, `ASC_ISSUER_ID` | 빌드 실행과 스토어 실행이 함께 씀 |
-| 저장소 시크릿 | `ASC_KEY_ID`, `ASC_PRIVATE_KEY` | TestFlight 업로드와 iOS 잡 첫 단계의 확인(Developer 키로 바꿈) |
+| 저장소 시크릿(지금처럼) | `ASC_APP_ID`, `ASC_ISSUER_ID` | TestFlight 업로드 실행과 스토어 실행이 함께 씀 |
+| 저장소 시크릿 | `ASC_KEY_ID`, `ASC_PRIVATE_KEY` | TestFlight 업로드 실행의 업로드와 첫 단계의 확인(Developer 키로 바꿈) |
 | environment `store` | `PLAY_SA_EMAIL`, `PLAY_SA_PRIVATE_KEY` | 서비스 계정 JSON 키의 두 값. 저장소 시크릿에 있으면 environment로 옮깁니다 |
 | environment `store` | `ASC_STORE_KEY_ID`, `ASC_STORE_PRIVATE_KEY` | App Manager 키 |
 | environment `store` | `REVIEW_DEMO_USER`, `REVIEW_DEMO_PASSWORD` | 심사용 데모 계정(review.conf의 ID)과 비밀번호. review.conf를 새로 만들 때마다 바꿈 |
@@ -240,7 +240,7 @@ environment를 선언하지 않은 잡(빌드 실행의 잡)은 environment 시�
 | upload, submit, release | 3–5 | 약 $0.02–0.03 |
 | prepare | 2–21(빌드 처리 대기) | 약 $0.01–0.13 |
 
-빌드 실행의 iOS 잡은 첫 단계 검사(sparse checkout, 기록 확인, check-new, 정리: 몇 초짜리 GET)만큼 늡니다. 잰 값은 아직 없습니다. 1.9.1 iOS 실행 뒤 그 단계들의 실측 초를 [ci.md](ci.md)의 시간 표에 적습니다.
+빌드 실행의 iOS 잡은 첫 단계 검사(sparse checkout, 기록 확인: 몇 초짜리 GET)만큼 늡니다. 1.9.2부터 TestFlight 업로드는 빌드하지 않는 실행이 macOS에서 합니다(기록·빌드 실행·App Store Connect 확인, IPA 받기, altool 업로드). 잰 값은 아직 없습니다. 첫 실행 뒤 Run summary 잡의 표에서 그 단계들의 실측을 [ci.md](ci.md)의 시간 표에 적습니다.
 
 ## 시험
 

@@ -545,7 +545,7 @@ gh secret set IOS_TEAM_ID -R yonsei-projecttf/hjviewer-private --body ABCDE12345
 결과물별 설치 방법은 다음과 같습니다.
 
 - **Ad Hoc IPA**: 기기를 Mac에 연결하고 Finder나 Apple Configurator로 IPA를 끌어다 놓습니다.
-- **App Store 프로파일로 만든 IPA**: `testflight`를 켜고 실행하면 워크플로가 App Store Connect에 올립니다(Transporter 앱으로 직접 올려도 됩니다). Apple의 처리가 끝나면 TestFlight에 나타납니다. 내부 테스트 그룹에 넣은 App Store Connect 사용자가 TestFlight 앱으로 설치합니다. TestFlight 빌드는 90일 뒤 만료됩니다.
+- **App Store 프로파일로 만든 IPA**: 빌드 실행은 산출물로만 남깁니다. 소유자가 그 실행의 Windows 빌드를 확인한 뒤 `testflight=true`와 `testflight_run=<그 실행 ID>`로 시작한 실행이 그 IPA를 App Store Connect에 올립니다(위 "실행"의 TestFlight 업로드. Transporter 앱으로 직접 올려도 됩니다). Apple의 처리가 끝나면 TestFlight에 나타납니다. 내부 테스트 그룹에 넣은 App Store Connect 사용자가 TestFlight 앱으로 설치합니다. TestFlight 빌드는 90일 뒤 만료됩니다.
   - `altool`은 업로드가 실패해도 0으로 끝날 때가 있어서, 워크플로는 출력에서 성공 메시지를 확인합니다.
   - 2026-10-10 첫 업로드(실행 38044728062, 빌드 262831026)는 Apple 처리 후 VALID가 되었고, 내부 테스트 그룹에 자동으로 배포되었습니다. 업로드 경고는 90068 하나였습니다(2027년 4월부터 최소 iOS 15).
   - Info.plist는 upstream처럼 `ITSAppUsesNonExemptEncryption=false`입니다. 앱의 암호화(libsodium, TLS)는 표준 알고리즘이라, Apple 기준으로 문서가 필요한 경우는 프랑스 App Store 판매뿐입니다. App Store에 낼 때 프랑스를 판매 지역에서 빼지 않으려면 프랑스 암호화 신고를 하고 이 값을 바꿔야 합니다.
@@ -778,7 +778,7 @@ GitHub 공식 문서(2026-10 확인) 기준입니다.
 - Windows 약 24분: $0.24
 - macOS 약 7분: $0.43
 
-합계는 약 $0.8입니다. macOS가 분당 가장 비싸므로 iOS가 필요할 때만 `ios`나 `all`을 고르세요. 실제 출시는 1.9.1(2026-10-26, 플랫폼마다 실행 하나)이 Linux 51분, Windows 54분, macOS 8분으로 $1.34였습니다(포함 시간 안). 1.9.2부터는 Bridge codegen과 Dart tests가 한 번씩만 돌고, TestFlight 업로드 실행이 macOS 몇 분을, Run summary 잡이 실행마다 Linux 1분을 더합니다.
+합계는 약 $0.8입니다. macOS가 분당 가장 비싸므로 iOS가 필요할 때만 `ios`나 `all`을 고르세요. 실제 출시는 1.9.1(2026-10-26, 플랫폼마다 실행 하나)이 Linux 51분, Windows 54분, macOS 8분으로 $1.34였습니다(포함 시간 안). 1.9.2부터는 Bridge codegen과 Dart tests가 한 번씩만 돌고, TestFlight 업로드 실행이 macOS 몇 분을, Checks 잡과 Run summary 잡이 실행마다 Linux 1분씩을 더합니다.
 
 Google Play 경로는 Android 실행마다 Linux 약 4분(AAB 단계), 약 $0.03을 더하고, 업로드하는 스토어 실행이 3–5분을 더합니다. AAB 단계(약 3분 15초)는 1.6.0, 1.6.1 출시 실행에서 잰 값입니다. AAB 아티팩트(약 30MB)는 30일 동안 저장 공간을 씁니다.
 
@@ -805,7 +805,7 @@ Google Play 경로는 Android 실행마다 Linux 약 4분(AAB 단계), 약 $0.03
   - `lukka/run-vcpkg`의 자체 캐시(vcpkg 체크아웃)는 끕니다(`doNotCache: true`). 그 액션은 없어진 캐시 서비스를 불러 매번 실패했고, 되더라도 이미지마다 수백 MB를 저장합니다.
 - **생성된 bridge** (Bridge codegen): 소스 커밋과 생성 도구 버전의 정확한 키(약 80KB). 같은 커밋의 두 번째 실행(확인 빌드 뒤의 출시 빌드 등)은 생성 단계를 건너뜁니다.
 - **Flutter**: 캐시하지 않습니다. Bridge codegen의 SDK·pub 캐시(약 1GB)는 실행마다 30초 안쪽을 아꼈을 뿐입니다.
-- **크기**: 평소 쓰는 양은 약 6GB입니다. 의존성이 바뀐 빌드는 잠시 10GB를 넘을 수 있습니다. 그때는 그 실행에서 가장 먼저 쓰인 것부터 지워지는데, 옛 Bridge·Windows Rust 항목이 vcpkg 항목보다 먼저 받히므로 보통 그것들이 지워집니다. 1.9.2의 첫 실행은 Rust 캐시 없이 한 번 빌드해 새 키로 저장하고(vcpkg는 옛 항목에서 받음), 옛 Rust 키의 항목은 쓰이지 않아 먼저 지워집니다.
+- **크기**: 평소 쓰는 양은 약 6GB입니다. 의존성이 바뀐 빌드는 잡마다 새 Rust 항목(모두 약 5.6GB)을 더하므로 잠시 10GB를 넘습니다. 그때 GitHub는 가장 오래전에 쓰인 항목부터 지웁니다. 그 실행이 처음에 받은 옛 Rust 항목(새 항목의 바탕)이 대개 먼저 지워지지만, 비슷한 때에 받은 vcpkg 항목(특히 Android)도 지워질 수 있고, 그러면 다음 빌드가 그 플랫폼의 패키지를 다시 빌드합니다(5–18분). 실행 안에서 옛 항목을 바로 지우려면 빌드 저장소가 `actions: write`를 허락해야 하므로, 사용자가 정할 때까지 넣지 않았습니다(2026-10-27 CI 점검 GHA-02). 1.9.2의 첫 실행은 Rust 캐시 없이 한 번 빌드해 새 키로 저장하고(vcpkg는 옛 항목에서 받음), 옛 Rust 키의 항목은 쓰이지 않아 먼저 지워집니다.
 - **태그 빌드**: 다른 태그의 캐시는 쓸 수 없고, 기본 브랜치의 캐시만 씁니다. 태그를 붙이기 전에 기본 브랜치에서 수동 실행을 한 번 해 두면 빨라집니다.
 - 실행마다 Run summary 잡이 Rust 캐시 적중, vcpkg가 캐시에서 받은 패키지 수, 러너 이미지를 실행 요약에 적습니다.
 
