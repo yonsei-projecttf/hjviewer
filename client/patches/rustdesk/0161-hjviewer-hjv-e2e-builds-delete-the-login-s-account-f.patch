@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Mon, 26 Oct 2026 17:02:15 +0900
-Subject: [PATCH 161/161] hjviewer: hjv-e2e builds delete the login's account
+Subject: [PATCH 161/162] hjviewer: hjv-e2e builds delete the login's account
  from the command line
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Thu, 15 Oct 2026 20:01:01 +0900
-Subject: [PATCH 056/161] hjviewer: ui: remote-session: the session toolbar and
+Subject: [PATCH 056/162] hjviewer: ui: remote-session: the session toolbar and
  the phone overlays in the new look
 
 The screens of a remote session still had RustDesk's solid blue tiles and bars. Now, in

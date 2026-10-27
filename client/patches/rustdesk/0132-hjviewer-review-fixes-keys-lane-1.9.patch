@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: hjviewer <haejin.cho@yonsei.ac.kr>
 Date: Tue, 20 Oct 2026 05:32:58 +0900
-Subject: [PATCH 132/161] hjviewer: review fixes, keys lane (1.9)
+Subject: [PATCH 132/162] hjviewer: review fixes, keys lane (1.9)
 
 UX-K1 (main window keys): Ctrl+F and Ctrl+W act only on the bare tab.
 The CallbackShortcuts sit above the navigator and the dialogs' overlay,
