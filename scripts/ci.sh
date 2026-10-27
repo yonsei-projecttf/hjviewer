@@ -25,12 +25,13 @@
 #                          the App Store Connect script (node --test), actionlint on the workflows
 #                          when it is installed, then a fresh upstream checkout with
 #                          client/patches, the release records' tests (scripts/release-info.py, on
-#                          the patched tree and build/release-1.9.0), hbb_common's WebSocket tests,
-#                          cargo +1.75.0 check (the app builds' toolchain), the client core's
-#                          agreement with the shared vectors of tools/hjv-release (the trust rules)
-#                          and the client's pure Dart tests, with the Flutter SDK the app builds use
-#                          (downloaded once, checked against Flutter's release index). Tests that
-#                          need the generated bridge run in client-build.yml.
+#                          the patched tree and 1.9.1's APK and IPA in scripts/testdata),
+#                          hbb_common's WebSocket tests, cargo +1.75.0 check (the app builds'
+#                          toolchain), the client core's agreement with the shared vectors of
+#                          tools/hjv-release (the trust rules) and the client's pure Dart tests,
+#                          with the Flutter SDK the app builds use (downloaded once, checked
+#                          against Flutter's release index). Tests that need the generated bridge
+#                          run in client-build.yml.
 #   scripts/ci.sh deploy   docs/server-runbook.md's deployment with Docker, as on the server, from a
 #                          copy of this working tree: path B (hbbs/hbbr on 127.0.0.1) behind
 #                          deploy/nginx-hjviewer.conf and deploy/apache-hjviewer.conf, then path A
@@ -577,7 +578,7 @@ client_stage() {
   local index=https://storage.googleapis.com/flutter_infra_release/releases
   # the server stage's release build of tools/hjv-release, against which the key files and the
   # release records are read too (its tests skip that part without it)
-  local release_bin="$CI/target-hjv-release/release/hjv-release" samples="$ROOT/build/release-1.9.0"
+  local release_bin="$CI/target-hjv-release/release/hjv-release"
   local vectors="$ROOT/tools/hjv-release/tests/vectors" ran cases
   if [ ! -x "$release_bin" ]; then
     release_bin=""
@@ -636,16 +637,11 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   "$ROOT/scripts/hjv-fontsize-check.sh" --self-test || fail "client: the font size check's self-test"
   "$ROOT/scripts/hjv-fontsize-check.sh" "$app/lib" "$ROOT/scripts/hjv-fontsize-baseline.txt"
   # release.json, SHA256SUMS and the workflow's minimum-version steps, also on the patched tree (the
-  # Dart tests the workflow requires) and on the 1.9.0 artifacts kept under build/ (the manifest
-  # gate on a real APK)
+  # Dart tests the workflow requires) and on real packages (the manifest gate on a real APK): the
+  # manifest and Info.plist of 1.9.1's APK and IPA in scripts/testdata, or the download of a run that
+  # HJV_RELEASE_SAMPLES names
   step "client: the release records (scripts/release-info.py, client-build.yml), offline tests"
-  # a linked worktree (build/v191/wt-repo/...) has no build/ of its own: read the main checkout's,
-  # as the leak stage does for its list
-  if [ ! -d "$samples" ]; then
-    samples="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")/build/release-1.9.0"
-  fi
-  [ -d "$samples" ] || { samples=""; skip "the release records on real artifacts (no build/release-1.9.0)"; }
-  HJV_RELEASE_BIN="$release_bin" HJV_PATCHED_FLUTTER="$app" HJV_RELEASE_SAMPLES="$samples" \
+  HJV_RELEASE_BIN="$release_bin" HJV_PATCHED_FLUTTER="$app" \
     python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_release_info.py' || fail "client: release record tests"
   step "client: hbb_common WebSocket tests"
   own_target "$CI/target-client" "$CI/upstream/rustdesk"
