@@ -1021,6 +1021,31 @@ class WorkflowTest(unittest.TestCase):
         for job in ("dart-tests", "windows", "android", "ios"):
             self.assertEqual(self.step(job, "Restore bridge files")["with"]["name"], "bridge-artifact", job)
 
+    def test_the_bridge_files_of_a_commit_are_generated_once(self):
+        """GHA-03: the first run of a commit saves the generated files under an exact key of the
+        commit and the generator's tools; a later run takes them and uploads them all the same."""
+        steps = self.steps("generate-bridge")
+        restore = self.step("generate-bridge", "Restore the generated bridge")
+        save = self.step("generate-bridge", "Save the generated bridge")
+        self.assertTrue(restore["uses"].startswith("actions/cache/restore@"))
+        self.assertTrue(save["uses"].startswith("actions/cache/save@"))
+        self.assertNotIn("restore-keys", restore["with"])
+        key = restore["with"]["key"]
+        for part in ("needs.preflight.outputs.source_sha", "env.FLUTTER_RUST_BRIDGE_VERSION",
+                     "env.CARGO_EXPAND_VERSION", "env.BRIDGE_FLUTTER_VERSION", "env.RUST_VERSION"):
+            self.assertIn(part, key)
+        self.assertEqual(save["with"]["key"], "${{ steps.bridge-out.outputs.cache-primary-key }}")
+        upload = self.step("generate-bridge", "Upload Artifact")["with"]["path"]
+        self.assertEqual(restore["with"]["path"], upload)
+        self.assertEqual(save["with"]["path"], upload)
+        # between the restore and the upload everything is skipped on a hit, and the upload is not
+        first, last = self.index("generate-bridge", "Restore the generated bridge"), self.index("generate-bridge", "Upload Artifact")
+        self.assertEqual(self.index("generate-bridge", "Check out hjviewer"), first - 1)
+        for step in steps[first + 1:last]:
+            self.assertEqual(step.get("if"), "steps.bridge-out.outputs.cache-hit != 'true'", step.get("name", step.get("uses")))
+        self.assertNotIn("if", steps[last])
+        self.assertEqual(last, len(steps) - 1)
+
     def test_artifact_names_and_retention_are_as_before(self):
         """The acceptance of the work package; tools/hjv-release counts on the 7 days."""
         self.assertEqual(self.wf["env"]["ARTIFACT_RETENTION_DAYS"], "${{ inputs.check_only && 1 || 7 }}")
