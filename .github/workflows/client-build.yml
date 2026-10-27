@@ -130,44 +130,55 @@ env:
 # repository's 10 GiB (GHA-10 of the 2026-10-27 CI audit).
 
 jobs:
-  # upstream: bridge.yml (generate_bridge, matrix entry L21-27), called from L85-86
-  generate-bridge:
-    name: Bridge codegen
-    runs-on: ubuntu-22.04
-    timeout-minutes: 45
-    defaults:
-      run:
-        working-directory: upstream/rustdesk
-    env:
-      BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
-      CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
-      FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
+  # Not upstream. What every other job needs first: the build plan, the inputs a build refuses, the
+  # server values, the source commit and the pinned public keys. A job of its own, so that the
+  # Windows and Android jobs start beside the Bridge codegen job: they need its files only right
+  # before cargo ("Wait for the bridge files", GHA-11 of the 2026-10-27 CI audit).
+  preflight:
+    name: Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
       build_apps: ${{ steps.plan.outputs.build_apps }}
+      windows: ${{ steps.plan.outputs.windows }}
+      android: ${{ steps.plan.outputs.android }}
+      ios: ${{ steps.plan.outputs.ios }}
+      relay: ${{ steps.plan.outputs.relay }}
     steps:
-      # A relay-only run still resolves one source commit for every downstream job, but it has
-      # no Flutter bridge or Dart consumers. Reject impossible upload requests before building.
+      # What each job builds; the jobs read it from here. A relay-only run still resolves one
+      # source commit for every downstream job, but it has no Flutter bridge or Dart consumers.
+      # Impossible upload requests are refused before anything is built.
       - name: Plan build targets
         id: plan
-        working-directory: ${{ github.workspace }}
         env:
           PLATFORMS: ${{ github.event_name == 'push' && 'all' || inputs.platforms }}
           TESTFLIGHT: ${{ inputs.testflight }}
         run: |
+          windows=false android=false ios=false relay=false
           case "$PLATFORMS" in
-            windows|android|ios|all) build_apps=true ;;
-            relay) build_apps=false ;;
+            windows) windows=true ;;
+            android) android=true ;;
+            ios) ios=true ;;
+            relay) relay=true ;;
+            all) windows=true android=true ios=true relay=true ;;
             *) echo "::error::platforms must be windows, android, ios, relay or all."; exit 1 ;;
           esac
-          if [ "$TESTFLIGHT" = true ] && [ "$PLATFORMS" != ios ] && [ "$PLATFORMS" != all ]; then
+          if [ "$TESTFLIGHT" = true ] && [ "$ios" != true ]; then
             echo "::error::testflight uploads the iOS build: run with platforms ios or all."
             exit 1
           fi
-          echo "build_apps=$build_apps" >> "$GITHUB_OUTPUT"
+          build_apps=false
+          if [ "$windows" = true ] || [ "$android" = true ] || [ "$ios" = true ]; then build_apps=true; fi
+          {
+            echo "build_apps=$build_apps"
+            echo "windows=$windows"
+            echo "android=$android"
+            echo "ios=$ios"
+            echo "relay=$relay"
+          } | tee -a "$GITHUB_OUTPUT"
 
       - name: Check server variables
-        working-directory: ${{ github.workspace }}
         env:
           CALLED: ${{ inputs.source_ref }}
         run: |
@@ -188,7 +199,6 @@ jobs:
       # fail the run and cost its APK. The store run uploads a bundle of a run the owner checked.
       - name: Check the Google Play input
         if: inputs.play
-        working-directory: ${{ github.workspace }}
         run: |
           echo "::error::play is no longer a build input: build with play=false, then upload the run's -play bundle with the store run (store.yml platform=android action=upload run_id=<this run>; docs/store-release.md)."
           exit 1
@@ -196,7 +206,6 @@ jobs:
       # a check build is never handed out (design v3 6-4)
       - name: Check the check_only input
         if: inputs.check_only && (inputs.testflight || inputs.play)
-        working-directory: ${{ github.workspace }}
         run: |
           echo "::error::check_only builds go nowhere: run without testflight and play."
           exit 1
@@ -211,7 +220,6 @@ jobs:
       # every platform job builds this commit, even if the branch moves during the run
       - name: Record the source commit
         id: source
-        working-directory: ${{ github.workspace }}
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # Not upstream. A run of the build repository for version 1.6.0 or later fails without the
@@ -222,20 +230,39 @@ jobs:
       # holds no keys (unless check_only) or a public test key, and every run fails when the file
       # is malformed (minimum version design 6-4).
       - name: Check the pinned public keys
-        working-directory: ${{ github.workspace }}
         env:
           CALLED: ${{ inputs.source_ref }}
           CHECK_ONLY: ${{ inputs.check_only }}
         run: python3 -I scripts/check-build-keys.py --version-file client/version.env --update-keys client/update-keys.env
 
+  # upstream: bridge.yml (generate_bridge, matrix entry L21-27), called from L85-86
+  generate-bridge:
+    name: Bridge codegen
+    needs: preflight
+    if: needs.preflight.outputs.build_apps == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: upstream/rustdesk
+    env:
+      BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
+      CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
+      FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
+    steps:
+      - name: Check out hjviewer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          persist-credentials: false
+
       - name: Fetch upstream and apply hjviewer patches
-        if: steps.plan.outputs.build_apps == 'true'
         working-directory: ${{ github.workspace }}
         run: bash scripts/fetch-upstream.sh client
 
       # bridge.yml L42-59
       - name: Install prerequisites
-        if: steps.plan.outputs.build_apps == 'true'
         run: |
           sudo apt-get install ca-certificates -y
           sudo apt-get update -y
@@ -260,13 +287,11 @@ jobs:
       # builds found no cache). With a rustup directory of the job's own, rustup knows the pinned
       # toolchain only. The same in every job that builds Rust.
       - name: Give rustup a directory of this job's own
-        if: steps.plan.outputs.build_apps == 'true'
         working-directory: ${{ github.workspace }}
         run: echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
 
       # bridge.yml L61-70
       - name: Install Rust toolchain
-        if: steps.plan.outputs.build_apps == 'true'
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -274,7 +299,6 @@ jobs:
           components: "rustfmt"
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        if: steps.plan.outputs.build_apps == 'true'
         with:
           prefix-key: bridge-ubuntu-22.04
           workspaces: upstream/rustdesk -> target
@@ -285,7 +309,6 @@ jobs:
       # build repository's 10 GiB for at most half a minute per run, and evictions under that limit
       # took the platforms' vcpkg caches (GHA-02 of the 2026-10-27 CI audit)
       - name: Install flutter
-        if: steps.plan.outputs.build_apps == 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: "stable"
@@ -293,7 +316,6 @@ jobs:
 
       # bridge.yml L86-99, Flutter 3.22.3 branch
       - name: Install flutter rust bridge deps
-        if: steps.plan.outputs.build_apps == 'true'
         shell: bash
         run: |
           cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
@@ -307,7 +329,6 @@ jobs:
 
       # bridge.yml L101-104
       - name: Run flutter rust bridge
-        if: steps.plan.outputs.build_apps == 'true'
         run: |
           ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
           cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
@@ -316,7 +337,6 @@ jobs:
       # that "Re-run failed jobs" starts again restores it, and tools/hjv-release takes the
       # packages of a successful run only (docs/ci.md, "릴리스 기록")
       - name: Upload Artifact
-        if: steps.plan.outputs.build_apps == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bridge-artifact
@@ -335,8 +355,8 @@ jobs:
   # failing test shows in the run without holding back the platform builds.
   dart-tests:
     name: Dart tests
-    needs: generate-bridge
-    if: needs.generate-bridge.outputs.build_apps == 'true'
+    needs: [preflight, generate-bridge]
+    if: needs.preflight.outputs.build_apps == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -347,7 +367,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       - name: Fetch upstream and apply hjviewer patches
@@ -434,10 +454,14 @@ jobs:
   # the release upload, and "find Runner.res" (no consumer of libs/portable/Runner.res at this commit).
   windows:
     name: Windows x64
-    needs: generate-bridge
-    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'windows'
+    needs: preflight
+    if: needs.preflight.outputs.windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 180
+    # actions: read for "Wait for the bridge files"
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         working-directory: upstream/rustdesk
@@ -448,7 +472,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       # The runner's Git checks text files out with CRLF (core.autocrlf=true). Upstream's sources get
@@ -485,13 +509,6 @@ jobs:
           source client/version.env
           if [ "$GITHUB_REF_TYPE" = tag ]; then name=$GITHUB_REF_NAME; else name="$HJV_VERSION-$(git rev-parse HEAD | cut -c1-7)"; fi
           echo "BUILD_NAME=HJViewer-$name$BUILD_SUFFIX" >> "$GITHUB_ENV"
-
-      # L150-157
-      - name: Restore bridge files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: bridge-artifact
-          path: upstream/rustdesk
 
       # L159-162
       - name: Install LLVM and Clang
@@ -635,6 +652,43 @@ jobs:
         with:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
+
+      # Not upstream (GHA-11 of the 2026-10-27 CI audit). This job starts beside the Bridge codegen
+      # job and needs its files only here, right before cargo: it waits until the run has the
+      # bridge-artifact, and fails when the Bridge codegen job has ended without it. A job that
+      # "Re-run failed jobs" starts again finds the artifact at once.
+      - name: Wait for the bridge files
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 45
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          misses=0 finished=0
+          while :; do
+            if count=$(gh api "$run/artifacts?name=bridge-artifact" --jq .total_count) &&
+              bridge=$(gh api "$run/jobs?per_page=100" --jq '[.jobs[] | select(.name | endswith("Bridge codegen")) | .status + " " + (.conclusion // "")] | first // ""'); then
+              misses=0
+              if [ "$count" -gt 0 ]; then echo "The bridge files are there."; exit 0; fi
+              case $bridge in
+                "completed success") finished=$((finished + 1)) ;;
+                completed*) echo "::error::Bridge codegen ended ($bridge) without the bridge files this job needs."; exit 1 ;;
+              esac
+              if [ "$finished" -ge 4 ]; then echo "::error::Bridge codegen succeeded, but the run has no bridge-artifact."; exit 1; fi
+            else
+              misses=$((misses + 1))
+              if [ "$misses" -ge 10 ]; then echo "::error::The run's artifacts and jobs could not be read ten times in a row."; exit 1; fi
+            fi
+            sleep 15
+          done
+
+      # L150-157
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: upstream/rustdesk
 
       # L285-324, x64 build-args "--vram" (L125)
       - name: Build rustdesk
@@ -915,10 +969,14 @@ jobs:
   # upload. Without a release keystore the APK keeps upstream's debug signature (L1238-1239).
   android:
     name: Android arm64
-    needs: generate-bridge
-    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'android'
+    needs: preflight
+    if: needs.preflight.outputs.android == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    # actions: read for "Wait for the bridge files"
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         working-directory: upstream/rustdesk
@@ -936,7 +994,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           path: release-checks
           sparse-checkout: |
             scripts/store-record.py
@@ -1016,7 +1074,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
@@ -1125,6 +1183,36 @@ jobs:
         with:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
+
+      # Not upstream (GHA-11 of the 2026-10-27 CI audit). This job starts beside the Bridge codegen
+      # job and needs its files only here, right before cargo: it waits until the run has the
+      # bridge-artifact, and fails when the Bridge codegen job has ended without it. A job that
+      # "Re-run failed jobs" starts again finds the artifact at once.
+      - name: Wait for the bridge files
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 45
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          misses=0 finished=0
+          while :; do
+            if count=$(gh api "$run/artifacts?name=bridge-artifact" --jq .total_count) &&
+              bridge=$(gh api "$run/jobs?per_page=100" --jq '[.jobs[] | select(.name | endswith("Bridge codegen")) | .status + " " + (.conclusion // "")] | first // ""'); then
+              misses=0
+              if [ "$count" -gt 0 ]; then echo "The bridge files are there."; exit 0; fi
+              case $bridge in
+                "completed success") finished=$((finished + 1)) ;;
+                completed*) echo "::error::Bridge codegen ended ($bridge) without the bridge files this job needs."; exit 1 ;;
+              esac
+              if [ "$finished" -ge 4 ]; then echo "::error::Bridge codegen succeeded, but the run has no bridge-artifact."; exit 1; fi
+            else
+              misses=$((misses + 1))
+              if [ "$misses" -ge 10 ]; then echo "::error::The run's artifacts and jobs could not be read ten times in a row."; exit 1; fi
+            fi
+            sleep 15
+          done
 
       # L1177-1192
       - name: Restore bridge files
@@ -1535,8 +1623,8 @@ jobs:
     name: iOS
     # also waits for the Dart tests: TestFlight hands the build out, so it never gets one whose
     # input tests failed (Windows and Android artifacts stay in the run until someone takes them)
-    needs: [generate-bridge, dart-tests]
-    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'ios'
+    needs: [preflight, generate-bridge, dart-tests]
+    if: needs.preflight.outputs.ios == 'true'
     runs-on: macos-26
     timeout-minutes: 90
     defaults:
@@ -1559,7 +1647,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           path: release-checks
           sparse-checkout: |
             scripts/store-record.py
@@ -1634,7 +1722,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       # Not upstream. The update keys and the policy floor the app pins (HJV_UPDATE_PUBKEY,
@@ -2013,8 +2101,8 @@ jobs:
   # check_only, it is a test build without the server values, which refuses to run.
   relay:
     name: hjv-relay
-    needs: generate-bridge
-    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'relay'
+    needs: preflight
+    if: needs.preflight.outputs.relay == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -2028,7 +2116,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
-          ref: ${{ needs.generate-bridge.outputs.source_sha }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
           persist-credentials: false
 
       # like "Check the pinned public keys"; package-relay.sh checks the key and the server again
@@ -2091,7 +2179,7 @@ jobs:
   # build code. A release of the same version is left alone: rebuilds stay in the artifacts.
   relay-release:
     name: hjv-relay draft release
-    needs: [generate-bridge, relay]
+    needs: [preflight, relay]
     if: github.event.repository.private && !inputs.check_only
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -2108,7 +2196,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.relay.outputs.version }}
-          SOURCE_SHA: ${{ needs.generate-bridge.outputs.source_sha }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
         run: |
           set -euo pipefail
           tag="relay-$VERSION"

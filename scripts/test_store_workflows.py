@@ -247,7 +247,7 @@ class ClientBuildWorkflowTest(unittest.TestCase):
             self.assertNotIn(word, self.text)
 
     def test_play_is_refused_before_any_build(self):
-        (step,) = [s for s in steps(self.jobs["generate-bridge"]) if name_of(s) == "Check the Google Play input"]
+        (step,) = [s for s in steps(self.jobs["preflight"]) if name_of(s) == "Check the Google Play input"]
         self.assertIn("        if: inputs.play\n", step)
         self.assertIn("exit 1", step)
         self.assertIn("store.yml", step)

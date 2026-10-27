@@ -687,8 +687,8 @@ def check_app(version_file, update_file):
 def pin_update_keys(version_file, update_file):
     """The "Pin the update keys" step of a platform job: after the same check as check_app's,
     the key file's three values go to the later steps of the job ($GITHUB_ENV), where cargo
-    reads them. Nothing is handed on when the check fails. The Bridge codegen job has shown
-    this run's warnings and written its summary, so warnings are plain lines here."""
+    reads them. Nothing is handed on when the check fails. The Checks job has shown this
+    run's warnings and written its summary, so warnings are plain lines here."""
     report = Report(warn=False)
     called, check_only, wanted = flags(version_file)
     values = check_update_keys(report, update_file, called and wanted, check_only, wanted)
