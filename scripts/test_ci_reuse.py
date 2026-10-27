@@ -5,6 +5,7 @@ and CI directories (scripts/ci.sh leak runs them):
 
     python3 -I -B -m unittest discover -s scripts -p 'test_ci_reuse.py'
 """
+import importlib.util
 import os
 import re
 import shutil
@@ -196,7 +197,8 @@ for u in server:release server:hbbs client deploy e2e wol drill:full; do
   keys[$u]=$(key "${fns[@]}" finish)
 done
 for v in "VECTORS_LEAST client" "E2E_LEAST_STRICT e2e" "E2E_LEAST_OPEN e2e" "WOL_LEAST wol" "UNIT_LEAST e2e wol" \
-  "RELEASE_INPUTS server:release client e2e" "HBBS_INPUTS server:hbbs deploy e2e wol"; do
+  "RELEASE_INPUTS server:release client e2e" "HBBS_INPUTS server:hbbs deploy e2e wol" "HBBS_BUILD server:hbbs deploy e2e wol" \
+  "API_INPUTS deploy"; do
   read -r name users <<< "$v"
   for u in "${!keys[@]}"; do
     (
@@ -219,6 +221,29 @@ echo "functions $(declare -F | wc -l)"
         self.assertRegex(out, r"(?m)^out deploy_stage$")
         self.assertRegex(out, r"(?m)^out prepush_run$")
         self.assertEqual(len(re.findall(r"(?m)^(in|out) ", out)), int(re.search(r"(?m)^functions (\d+)$", out).group(1)))
+
+    def test_an_edit_of_a_build_counts_for_the_units_that_take_what_it_builds(self):
+        # hbbs and hbbr of server:hbbs go to deploy, e2e and wol, hjv-api of server:api to deploy: an edit
+        # of how they are built changes those units' keys too, an edit of the tests alone does not. How
+        # prepush starts a unit's run counts for every unit.
+        out = self.tree.source(r'''
+units="server:hbbs server:api server:release deploy e2e wol"
+key() { local fns; read -ra fns <<< "${REUSE_CODE[$1]}"; reuse_code "${fns[@]}" finish | sha256sum | cut -d' ' -f1; }
+declare -A keys=()
+for u in $units; do keys[$u]=$(key "$u"); done
+for f in server_hbbs_build server_checkout server_api_build server_hbbs server_api cargo_tests unit_run; do
+  (
+    eval "$(declare -f "$f" | sed '2a\    : an edit;')"
+    changed=""
+    for u in $units; do [ "$(key "$u")" = "${keys[$u]}" ] || changed+=" $u"; done
+    echo "$f:$changed"
+  ) &
+done
+wait''').stdout
+        for line in ("server_hbbs_build: server:hbbs deploy e2e wol", "server_checkout: server:hbbs deploy e2e wol",
+                     "server_api_build: server:api deploy", "server_hbbs: server:hbbs", "server_api: server:api",
+                     "cargo_tests: server:hbbs server:api", "unit_run: server:hbbs server:api server:release deploy e2e wol"):
+            self.assertIn(line + "\n", out)
 
     def test_the_top_level_code_counts_for_every_unit_and_comments_and_values_do_not(self):
         tree = self.copy("top")
@@ -258,6 +283,21 @@ echo "functions $(declare -F | wc -l)"
         out = tree.source('reuse_record "$1" "$2" "$3" "$(git rev-parse HEAD)"', unit, log,
                           os.path.join(inputs, unit + ".txt"), env=env).stdout
         return out
+
+    def record_passes(self, tree, *units):
+        """A pass of each of <units> (pass_log) recorded, on the inputs of one scripts/ci.sh inputs."""
+        inputs = tempfile.mkdtemp(dir=self.tmp)
+        tree.ci("inputs", inputs, *units)
+        for unit in units:
+            self.pass_log(tree, unit)
+        tree.source('d=$1\nshift\nfor u in "$@"; do reuse_record "$u" "$CI/${u//:/-}.log" "$d/$u.txt" "$(git rev-parse HEAD)"; done',
+                    inputs, *units)
+
+    def recorded(self, tree):
+        """The units with a recorded pass in the tree's CI directory."""
+        passes = os.path.join(tree.env["HJV_CI_DIR"], "passes")
+        return sorted(u for u in (os.listdir(passes) if os.path.isdir(passes) else ())
+                      if any(f.endswith(".pass") for f in os.listdir(os.path.join(passes, u))))
 
     def test_only_a_strict_clean_pass_without_skips_is_recorded(self):
         tree = self.copy("records")
@@ -358,6 +398,146 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
                               r"at .*: this run of them did not pass$")
         self.assertIn("\nserver did not pass\n", out)
         self.assertEqual(tree.plan("server:release")["server:release"], ("run", "no pass of it recorded"))
+        # forgotten also when the line that says so cannot be written (a screen that has gone)
+        self.record_passes(tree, "server:release")
+        inputs = tempfile.mkdtemp(dir=self.tmp)
+        tree.ci("inputs", inputs, "server:release")
+        tree.source('reuse_forget server:release "$1/server:release.txt" >&-', inputs, check=False)
+        self.assertEqual(self.recorded(tree), [])
+
+    def test_a_run_of_its_own_that_did_not_pass_forgets_the_passes_of_its_units(self):
+        # reuse_own's run of a stage, a stand-in that ends with $STATUS, on the inputs of recorded passes
+        tree = self.copy("own")
+        stage = os.path.join(self.tmp, "own-stage.sh")
+        with open(stage, "w", encoding="utf-8") as f:
+            f.write('#!/usr/bin/env bash\n[ "$1" != inputs ] || exec bash "$CI_SH" "$@"\necho "the run of $1"\n'
+                    # (the parts beside the others that passed, with their own logs)
+                    'for p in ${PASSED:-}; do echo "== CI passed: server:$p (0 skipped)" > "$HJV_CI_DIR/server-$p.log"; done\n'
+                    'exit "$STATUS"\n')
+        os.chmod(stage, 0o755)
+        tmpdir = tempfile.mkdtemp(dir=self.tmp)
+        env = dict(tree.env, CI_SH=os.path.join(tree.dir, "scripts", "ci.sh"), TMPDIR=tmpdir)
+        units = ("server:hbbs", "server:api", "server:relay", "server:release", "e2e", "drill:full", "drill:quick")
+        self.record_passes(tree, *units)
+
+        def own(target, status, **more):
+            done = tree.source('SELF=$1\nshift\nreuse_own "$@"\necho "reuse_own returned"', stage, target,
+                               env=dict(env, STATUS=str(status), **more), check=False)
+            self.assertEqual(os.listdir(tmpdir), [], target)
+            return done, re.findall(r"(?m)^scripts/ci\.sh " + re.escape(target) + r": forgot the pass of (\S+) on these "
+                                    r"inputs, its strict pass of [0-9a-f]{7} at .*: this run of them did not pass$", done.stdout)
+
+        # a pass, or a run that a signal ended, forgets nothing; nor does a run of a tree with changes, or
+        # one of prepush or beside a server stage's other parts, which runs on in this process
+        for status in (0, 143):
+            done, forgot = own("server:release", status)
+            self.assertEqual((done.returncode, forgot), (status, []), done.stdout + done.stderr)
+            self.assertIn("the run of server:release\n", done.stdout)
+            self.assertNotIn("reuse_own returned", done.stdout)
+        for how, more in (("changes", {}), ("HJV_CI_RUN", {"HJV_CI_RUN": "1-1"}), ("HJV_CI_PART", {"HJV_CI_PART": "1"})):
+            if how == "changes":
+                tree.write("README.md", "an edit\n", "a")
+            done, forgot = own("server:release", 1, **more)
+            tree.git("checkout", "README.md")
+            self.assertEqual((done.returncode, done.stdout), (0, "reuse_own returned\n"), how)
+        self.assertEqual(self.recorded(tree), sorted(units))
+        # the server stage's parts but those beside the others whose logs show their pass; e2e of
+        # e2e:build; the quick drill's and the full drill's of the quick drill
+        done, forgot = own("server", 1, PASSED="hbbs relay")
+        self.assertEqual((done.returncode, forgot), (1, ["server:api", "server:release"]), done.stdout + done.stderr)
+        self.assertEqual(own("e2e:build", 1)[1], ["e2e"])
+        self.assertEqual(own("drill:quick", 2)[1], ["drill:full", "drill:quick"])
+        self.assertEqual(self.recorded(tree), ["server:hbbs", "server:relay"])
+        # of the drill's build both drills'
+        self.record_passes(tree, "drill:full", "drill:quick")
+        self.assertEqual(own("drill:build", 1)[1], ["drill:full", "drill:quick"])
+
+    def test_a_stage_run_on_its_own_that_did_not_pass_forgets_its_pass(self):
+        # scripts/ci.sh server:release on the inputs of a recorded pass, in strict mode, whose preflight
+        # finds no network namespaces (an unshare that cannot make them, as a stand-in for a flake), under
+        # the lock it takes and under its caller's
+        tree = self.copy("own-run")
+        stubs = tempfile.mkdtemp(dir=self.tmp)
+        with open(os.path.join(stubs, "unshare"), "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\necho 'unshare: a stand-in that cannot' >&2\nexit 1\n")
+        os.chmod(os.path.join(stubs, "unshare"), 0o755)
+        env = dict(tree.env, PATH=stubs + ":" + tree.env["PATH"])
+        for how, more in (("its own lock", {}), ("its caller's", {"HJV_CI_LOCK": tree.env["HJV_CI_DIR"]})):
+            self.record(tree, "server:release", self.pass_log(tree, "server:release"))
+            self.assertEqual(tree.plan("server:release")["server:release"][0], "reuse", how)
+            done = tree.ci("server:release", env=dict(env, **more), check=False)
+            self.assertEqual(done.returncode, 1, how)
+            self.assertIn("FAIL: preflight: server:release would skip or fail", done.stderr, how)
+            self.assertRegex(done.stdout, r"\nscripts/ci\.sh server:release: forgot the pass of server:release on these "
+                                          r"inputs, its strict pass of [0-9a-f]{7} at .*: this run of them did not pass\n$", how)
+            self.assertEqual(tree.plan("server:release")["server:release"], ("run", "no pass of it recorded"), how)
+
+    def test_a_build_or_a_quick_drill_that_did_not_pass_forgets_the_passes_it_stands_for(self):
+        # prepush with stand-ins for the stages, one of which fails on the inputs of a recorded pass:
+        # e2e:build is e2e's, the drill's build is either drill's, and the quick drill's steps are the
+        # full drill's, whose pass serves the quick drill
+        tree = self.copy("stands-for")
+        stage = os.path.join(self.tmp, "stands-for-stage.sh")
+        with open(stage, "w", encoding="utf-8") as f:
+            f.write('#!/usr/bin/env bash\n[ "$1" != inputs ] || exec bash "$CI_SH" "$@"\n'
+                    'if [ "$1" = "$FAILS" ]; then echo "FAIL: a test"; exit 1; fi\necho "== CI passed: $1 (0 skipped)"\n')
+        os.chmod(stage, 0o755)
+        env = dict(tree.env, HJV_CI_LOCK=tree.env["HJV_CI_DIR"], HJV_CI_FRESH="1",
+                   CI_SH=os.path.join(tree.dir, "scripts", "ci.sh"))
+
+        def prepush(fails, *args):
+            done = tree.source('preflight() { :; }\npreflight_ports() { :; }\nSELF=$1\nshift\nprepush_run "$@"', stage,
+                               *args, env=dict(env, FAILS=fails, HJV_CI_LOGS=tempfile.mkdtemp(dir=self.tmp)), check=False)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            return re.findall(r"(?m)^prepush: forgot the pass of (\S+) on these inputs", done.stdout)
+
+        quick = ("--drill=quick", "server:release")
+        # the pass recorded and what fails in a prepush run of its inputs (HJV_CI_FRESH=1)
+        for unit, fails, args in (("drill:full", "drill:quick", quick), ("drill:full", "drill:build", quick),
+                                  ("drill:quick", "drill:build", ("--drill=full", "server:release")),
+                                  ("e2e", "e2e:build", ("e2e",))):
+            self.record_passes(tree, unit)
+            if fails == "drill:quick":
+                self.assertEqual(tree.plan(*quick)["drill:quick"][0], "reuse")
+            self.assertEqual(prepush(fails, *args), [unit], fails)
+            self.assertNotIn(unit, self.recorded(tree), fails)
+            if fails == "drill:quick":
+                self.assertEqual(tree.plan(*quick)["drill:quick"], ("run", "no pass of it recorded"))
+
+    def test_a_deploy_part_that_did_not_pass_leaves_no_stamp(self):
+        # a part of the deploy stage whose inputs stay the same, each run of it a process of its own as
+        # the deploy stage's: its pass is not run again; run again with HJV_CI_DEPLOY_ALL=1, a failure
+        # (which ends the stage at once) or a skip leaves no stamp of the pass before, and the next run
+        # runs it
+        tree = self.copy("parts")
+        stamp = os.path.join(tree.env["HJV_CI_DIR"], "stamps", "deploy-fake.stamp")
+        script = '''fake_inputs() { echo "the same inputs"; }
+fake_run() {
+  echo "the part runs"
+  case ${PART:-} in
+    fails) fail "a check of the part (a stand-in)" ;;
+    skips) skip "a check of the part (a stand-in)" ;;
+  esac
+}
+deploy_part fake "deploy: a stand-in part" fake_inputs fake_run
+echo "deploy_part returned"'''
+
+        def part(**env):
+            return tree.source(script, env=dict(tree.env, **env), check=False)
+
+        done = part()
+        self.assertIn("runs: no pass of it recorded", done.stdout)
+        self.assertTrue(os.path.isfile(stamp))
+        self.assertIn("\nunchanged since ", part().stdout)
+        for how in ("fails", "skips"):
+            done = part(HJV_CI_DEPLOY_ALL="1", PART=how)
+            self.assertIn("runs: HJV_CI_DEPLOY_ALL=1\nthe part runs\n", done.stdout, how)
+            self.assertEqual(done.returncode, 1 if how == "fails" else 0, how)
+            self.assertFalse(os.path.exists(stamp), how)
+            done = part()
+            self.assertIn("runs: no pass of it recorded", done.stdout, how)
+            self.assertIn("\nthe part runs\n", done.stdout, how)
+            self.assertTrue(os.path.isfile(stamp), how)
 
     def test_a_unit_that_runs_has_its_binaries_built_from_this_trees_inputs(self):
         tree = self.copy("producer")
@@ -385,19 +565,99 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
         # a unit that is reused takes nothing
         self.assertNotIn("server:hbbs", tree.plan("server:release"))
 
+    def test_prepush_passes_only_on_the_commit_it_began_on(self):
+        # HEAD moves on after prepush began (and its leak stage checked that commit), here in the
+        # preflight, by an edit that no unit reads, so that every unit is reused: the run that
+        # lock_run starts, which a prepush waiting for the lock starts as late, finds another commit,
+        # and a run under its caller's lock, which is not started again, has no job's end to look
+        tree = self.copy("moved")
+        self.record(tree, "server:release", self.pass_log(tree, "server:release"))
+        self.assertEqual(tree.plan("server:release")["server:release"][0], "reuse")
+        move = 'preflight() { echo "an edit" >> docs/privacy.md; git commit -qam "an edit that no unit reads"; }\n'
+        for how, env in (("lock_run", tree.env), ("a caller's lock", dict(tree.env, HJV_CI_LOCK=tree.env["HJV_CI_DIR"]))):
+            head = tree.git("rev-parse", "HEAD").strip()
+            done = tree.source(move + "prepush_run server:release", env=env, check=False)
+            now = tree.git("rev-parse", "HEAD").strip()
+            self.assertNotEqual(head, now)
+            self.assertEqual(done.returncode, 1, f"{how}:\n{done.stdout}\n{done.stderr}")
+            self.assertNotIn("CI passed", done.stdout, how)
+            self.assertIn("FAIL: prepush: " + (
+                f"HEAD moved from {head}, which prepush began on, to {now} before it took the lock" if how == "lock_run" else
+                f"HEAD or the working tree changed since prepush began on {head}, which is what it checked"), done.stderr, how)
+
+    def test_a_plan_or_a_check_of_the_rules_that_fails_leaves_no_folder_behind(self):
+        tmpdir = tempfile.mkdtemp(dir=self.tmp)
+        env = dict(self.tree.env, TMPDIR=tmpdir)
+        done = self.tree.ci("prepush", "--plan", "server:release", env=dict(env, HJV_CI_REUSE_HOURS="x"), check=False)
+        self.assertIn("FAIL: HJV_CI_REUSE_HOURS=x is no number of hours", done.stderr)
+        done = self.tree.source('REUSE_CODE[server:release]+=" prepush_passed"\nreuse_check', env=env, check=False)
+        self.assertIn("FAIL: reuse: the code of server:release takes the code of prepush, its plan or the lock "
+                      "(prepush_passed)", done.stderr)
+        self.assertEqual(os.listdir(tmpdir), [])
+
+    def test_prepush_starts_no_unit_after_one_failed(self):
+        # the full drill fails beside e2e, which passes once the drill has ended: wol, which would
+        # start after e2e, does not (the stages are stand-ins that say they start)
+        tree = self.copy("order")
+        stage, runs = os.path.join(self.tmp, "order-stage.sh"), os.path.join(self.tmp, "order-runs.txt")
+        with open(stage, "w", encoding="utf-8") as f:
+            f.write('#!/usr/bin/env bash\n[ "$1" != inputs ] || exec bash "$CI_SH" "$@"\necho "$1" >> "$RUNS"\ncase $1 in\n'
+                    '  drill:full) echo "FAIL: a test"; exit 1 ;;\n'
+                    '  e2e) for _ in $(seq 100); do if grep -q "^EXIT" "$HJV_CI_PREPUSH/drill.log"; then break; fi; sleep 0.05; done ;;\n'
+                    'esac\necho "== CI passed: $1 (0 skipped)"\n')
+        os.chmod(stage, 0o755)
+        env = dict(tree.env, HJV_CI_LOCK=tree.env["HJV_CI_DIR"], HJV_CI_FRESH="1",
+                   CI_SH=os.path.join(tree.dir, "scripts", "ci.sh"), RUNS=runs)
+        done = tree.source('preflight() { :; }\npreflight_ports() { :; }\nSELF=$1\nprepush_run --drill e2e wol', stage,
+                           env=env, check=False)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("FAIL: prepush: the full drill did not pass", done.stderr)
+        with open(runs, encoding="utf-8") as f:
+            self.assertEqual(sorted(f.read().split()), ["drill:build", "drill:full", "e2e", "e2e:build", "server:hbbs"])
+
     def test_the_rules_hold_the_code_that_reads_a_path_they_leave_out(self):
+        # rules that leave out what the code of their units reads: of a Rust test, of a Python test
+        # through pathlib's .parent, of a JavaScript module's join, of a shell variable set to a folder
+        # of the tree, and of the words after a cd to the tree
         tree = self.copy("rules")
-        out = tree.source('''d=$(mktemp -d)
+        out = tree.source('''d=$1
 for u in $REUSE_UNITS; do echo "$u=${REUSE_SKIP[$u]//$'\\n'/ }"; done |
-  sed -e 's#!docs/relay-dsm.md ##' > "$d/rules"
+  sed -e 's#!docs/relay-dsm.md ##' -e 's#^client=.*#& client/play/* store/appstore/*#' \\
+    -e 's#^drill:full=.*#& server/api/hjviewer-api.env.example#' -e 's#^e2e=.*#& client/icons/*#' > "$d/rules"
 echo "$REUSE_SKIP_ALL" > "$d/all"
 for u in "${!REUSE_TESTS[@]}"; do echo "$u ${REUSE_TESTS[$u]}"; done > "$d/tests"
 printf '%s\\n' "${REUSE_NOT_READ[@]}" > "$d/not-read"
 for u in $REUSE_UNITS; do read -ra fns <<< "${REUSE_CODE[$u]}"; reuse_code text "${fns[@]}" finish > "$d/$u.code"; done
-python3 -I -B scripts/ci-reuse.py reads "$ROOT" "$d"''', check=False)
+python3 -I -B scripts/ci-reuse.py reads "$ROOT" "$d"''', tempfile.mkdtemp(dir=self.tmp), check=False)
         self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
-        self.assertRegex(out.stdout, r"(?m)^server:relay: relay/tests/watchdog\.rs:\d+ reads docs/relay-dsm\.md, "
-                                     r"which its rules leave out")
+        for unit, where, path in (("server:relay", r"relay/tests/watchdog\.rs:\d+", "docs/relay-dsm.md"),
+                                  ("client", r"scripts/test_play_upload\.py:\d+", "client/play/AndroidManifest.xml"),
+                                  ("client", r"scripts/asc-store\.mjs:\d+", "store/appstore"),
+                                  ("drill:full", r"tools/e2e/hjv-api-drill\.sh:\d+", "server/api/hjviewer-api.env.example"),
+                                  ("e2e", r"scripts/ci\.sh's e2e_client_stamp", "client")):
+            self.assertRegex(out.stdout, r"(?m)^" + re.escape(unit) + ": " + where + " reads " + re.escape(path) +
+                             ", which its rules leave out")
+
+    def test_the_check_of_the_rules_follows_the_paths_that_code_builds(self):
+        # scripts/ci-reuse.py's references of made-up code: pathlib's .parent, a shell variable of a
+        # folder of the tree and one set to something else since, a cd to the tree, a module's join
+        spec = importlib.util.spec_from_file_location("ci_reuse", os.path.join(HERE, "ci-reuse.py"))
+        reuse = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reuse)
+        py = ('HERE = pathlib.Path(__file__).resolve().parent\nROOT = HERE.parent\nDOC = ROOT / "docs" / \'a.md\'\n'
+              'open(HERE.parent / "client" / "b")\nopen(HERE.parent.parent / "c")\nos.path.join(HERE.parent, "d", "e")\n')
+        # (the folder above the tree's is none of its paths)
+        self.assertEqual([r for _, r, _ in reuse.py_refs("scripts/x.py", py)], ["docs/a.md", "client/b", "d/e"])
+        tracked = {"client/a", "scripts/upstream.env", "server/api/Cargo.toml", "server/api/src/main.rs", "tools/x"}
+        sh = ('api="$ROOT/server/api"\nsrc=$api/src\ncat "$src/main.rs" "${api}/Cargo.toml"\nsrc=$1\ncat "$src/main.rs"\n'
+              '(cd "$ROOT" && find client scripts/upstream.env \\\n  -type f | sort) | tar -cf - tools/x\n'
+              '(cd "$ROOT/server" && ls api)\n')
+        self.assertEqual([(n, r) for n, r, _ in reuse.shell_refs("tools/e2e/x.sh", sh, tracked)],
+                         [(1, "server/api"), (2, "server/api/src"), (3, "server/api/src/main.rs"), (3, "server/api/Cargo.toml"),
+                          (6, "client"), (6, "scripts/upstream.env"), (8, "server/api"), (8, "server")])
+        mjs = ("const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));\n"
+               "export const STORE = join(ROOT, 'store', 'appstore');\nreadFileSync(join(STORE, 'x.txt'), 'utf8');\n")
+        self.assertEqual([r for _, r, _ in reuse.mjs_refs("scripts/y.mjs", mjs)], ["store/appstore", "store/appstore/x.txt"])
 
 
 class LockTest(unittest.TestCase):
@@ -484,51 +744,155 @@ class LockTest(unittest.TestCase):
             start = time.monotonic()
             done = bash('source "$1"; lock_held deploy; cat "$CI/ci.lock.holder"', ci, env=env)
             self.assertGreater(time.monotonic() - start, 0.5)
-            self.assertIn(f"waiting for the run that held {self.ci}/ci.lock before, which is still ending: pid {before.pid}, "
-                          "tree T, commit C, scripts/ci.sh prepush, since now\n", done.stdout)
+            self.assertIn(f"waiting for the run before this one on {self.ci}/ci.lock, which has not ended (a Ctrl-C gives "
+                          "the lock up before its run ends; runs under one caller's lock take turns): pid "
+                          f"{before.pid}, tree T, commit C, scripts/ci.sh prepush, since now\n", done.stdout)
             self.assertRegex(done.stdout.splitlines()[-1], r"^\d+ tree .*, scripts/ci.sh deploy, since 20")
         finally:
             before.wait()
-        # a process of something else under that number, or none, is not waited for
-        start = time.monotonic()
-        done = bash('source "$1"; lock_held deploy', ci, env=env)
-        self.assertLess(time.monotonic() - start, 0.5)
-        self.assertNotIn("waiting", done.stdout)
+        # a process of something else under that number (the number came round again), or none, is
+        # not waited for
+        other = subprocess.Popen(["sleep", "5"])
+        try:
+            for pid in (other.pid, before.pid):
+                with open(os.path.join(self.ci, "ci.lock.holder"), "w", encoding="utf-8") as f:
+                    f.write(f"{pid} tree T, commit C, scripts/ci.sh prepush, since now\n")
+                start = time.monotonic()
+                done = bash('source "$1"; lock_held deploy', ci, env=env)
+                self.assertLess(time.monotonic() - start, 0.5, pid)
+                self.assertNotIn("waiting", done.stdout, pid)
+        finally:
+            other.kill()
+            other.wait()
 
 
 class StopTest(unittest.TestCase):
-    """prepush_stop of scripts/ci.sh: the jobs it stops end with their exit traps, before it returns"""
+    """prepush_stop of scripts/ci.sh: the jobs of prepush_start that it stops end with their exit
+    traps, before it returns"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="hjv-stop-")
+        # the run of a job ($SELF <target>), whose exit trap takes half a second, as the deploy
+        # stage's cleanup takes its time
+        self.stage = os.path.join(self.tmp, "stage.sh")
+        with open(self.stage, "w", encoding="utf-8") as f:
+            f.write('#!/usr/bin/env bash\ntrap \'sleep 0.5; echo "$1 ended" >> "$TRAPS"\' EXIT\n'
+                    'echo "$1 started" >> "$TRAPS"\nsleep "${STAGE_SECONDS:-30}"\n')
+        os.chmod(self.stage, 0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def jobs(self, script, stdout=None):
+        """<script> in a bash that sourced scripts/ci.sh, where prepush_start's jobs run the stage
+        above after a log head that says nothing; "says <line>" waits for <line> in their $TRAPS.
+        Its output, or with <stdout> (a file descriptor) as its output, the process that ended."""
+        script = ('source "$1"\nPREPUSH_LOGS=$2 SELF=$3\nexport TRAPS=$2/traps\nlog_head() { :; }\n'
+                  'says() { for _ in $(seq 100); do if grep -qx "$1" "$TRAPS" 2> /dev/null; then return; fi; '
+                  'sleep 0.05; done; return 1; }\n' + script)
+        args, env = (os.path.join(ROOT, "scripts", "ci.sh"), self.tmp, self.stage), clean_env(os.path.join(self.tmp, "ci"))
+        if stdout is None:
+            return bash(script, *args, env=env).stdout
+        return subprocess.run(["bash", "-c", script, "bash", *args], env=env, stdout=stdout, stderr=subprocess.PIPE,
+                              text=True, timeout=60)
 
     def test_a_stopped_job_ends_with_its_exit_trap_whole_and_before_prepush(self):
-        tmp = tempfile.mkdtemp(prefix="hjv-stop-")
-        try:
-            out = bash(r'''source "$1"
-PREPUSH_LOGS=$2 traps=$2/traps
-# a job as prepush_start starts one: a background subshell, under it a run whose exit trap takes a
-# second (as the deploy stage's cleanup takes its time)
-job() {
-  ( env --default-signal=INT bash -c 'trap "sleep 1; echo \"$1 ended\" >> \"$0\"" EXIT; sleep 30' "$traps" "$1" ) &
-  PREPUSH_PID[$1]=$!
-  sleep 0.5
-}
+        out = self.jobs(r'''
 # stopped after a failure: prepush_stop returns once the trap has ended
-job failure
+prepush_start failure failure
+says "failure started"
 prepush_stop failure
-cat "$traps"
+cat "$TRAPS"; : > "$TRAPS"
 # after a Ctrl-C, which reached the job too: its trap, under way, is not cut short
-job interrupt
+prepush_start interrupt interrupt
+says "interrupt started"
 kill -INT $(prepush_pids "${PREPUSH_PID[interrupt]}")
 PREPUSH_SIGNAL=SIGINT
 prepush_stop interrupt
-cat "$traps"
-echo "jobs left: ${!PREPUSH_PID[*]}"''', os.path.join(ROOT, "scripts", "ci.sh"), tmp, env=clean_env(os.path.join(tmp, "ci"))).stdout
-            self.assertIn("prepush: stopping failure, which a failure before makes pointless\nfailure ended\n", out)
-            self.assertIn("prepush: SIGINT: waiting up to 120 s for interrupt to end, cleaning up\n"
-                          "failure ended\ninterrupt ended\n", out)
-            self.assertNotIn("prepush: stopping interrupt", out)
-            self.assertTrue(out.endswith("jobs left: \n"), out)
+cat "$TRAPS"; : > "$TRAPS"
+# after a SIGTERM to the group, which reached the job's subshell too: that outlasts the run under
+# it, which prepush_stop finds by it and waits for
+prepush_start term term
+says "term started"
+kill -TERM $(prepush_pids "${PREPUSH_PID[term]}")
+PREPUSH_SIGNAL=SIGTERM
+prepush_stop term
+cat "$TRAPS"
+echo "jobs left: ${!PREPUSH_PID[*]}"''')
+        self.assertIn("prepush: stopping failure, which a failure before makes pointless\nfailure started\nfailure ended\n", out)
+        self.assertIn("prepush: SIGINT: waiting up to 120 s for interrupt to end, cleaning up\ninterrupt started\n"
+                      "interrupt ended\n", out)
+        self.assertIn("prepush: SIGTERM: waiting up to 120 s for term to end, cleaning up\nterm started\nterm ended\n", out)
+        self.assertNotRegex(out, r"prepush: stopping (interrupt|term)")
+        self.assertTrue(out.endswith("jobs left: \n"), out)
+
+    def test_a_job_stopped_before_its_run_has_started_does_not_start_it(self):
+        # a Ctrl-C while the job's subshell is still in the log head (half a second long here, and
+        # as the real one not failed by a command that a signal ends): the subshell, a job in the
+        # background, does not take it, and its run, which would start after it, would not have had
+        # it either; nothing would stop that run then
+        out = self.jobs(r'''
+log_head() { echo "$1 head" >> "$TRAPS"; sleep 0.5 || true; }
+export STAGE_SECONDS=3
+prepush_start late late
+says "late head"
+kill -INT $(prepush_pids "${PREPUSH_PID[late]}")
+PREPUSH_SIGNAL=SIGINT
+start=$(date +%s%N)
+prepush_stop late
+echo "prepush_stop returned after $((($(date +%s%N) - start) / 1000000)) ms"
+cat "$TRAPS" "$PREPUSH_LOGS/late.log"; : > "$TRAPS"
+# a SIGTERM to the group there: it ends the log head's process, and the job with it
+prepush_start term term
+says "term head"
+kill -TERM $(prepush_pids "${PREPUSH_PID[term]}")
+PREPUSH_SIGNAL=SIGTERM
+prepush_stop term
+cat "$TRAPS"; tail -n 1 "$PREPUSH_LOGS/term.log"''')
+        self.assertIn("prepush: SIGINT: waiting up to 120 s for late to end, cleaning up\n", out)
+        self.assertIn("\nlate head\nprepush stopped before scripts/ci.sh late started\nEXIT 143 ", out)
+        self.assertNotRegex(out, r"(?m)^(late|term) started$")
+        self.assertLess(int(re.search(r"(?m)^prepush_stop returned after (\d+) ms$", out).group(1)), 2500, out)
+        self.assertRegex(out, r"\nterm head\nEXIT 143 [^\n]*\n$")
+
+    def test_a_job_that_a_stop_comes_to_before_its_number_was_taken_is_stopped_too(self):
+        # bash runs prepush's trap right after the fork of a job, before prepush_start has taken the
+        # job's number: the exit trap's stop finds that job among the shell's jobs
+        out = self.jobs(r'''
+log_head() { echo "$1 head" >> "$TRAPS"; sleep 0.5; }
+export STAGE_SECONDS=3
+prepush_start early early
+says "early head"
+# (the job as the trap finds it then)
+unset "PREPUSH_PID[early]"
+PREPUSH_STARTING=early PREPUSH_SIGNAL=SIGINT
+prepush_stop_all
+wait
+cat "$TRAPS" "$PREPUSH_LOGS/early.log"''')
+        self.assertIn("prepush: SIGINT: waiting up to 120 s for early to end, cleaning up\n", out)
+        self.assertIn("\nearly head\nprepush stopped before scripts/ci.sh early started\nEXIT 143 ", out)
+        self.assertNotRegex(out, r"(?m)^early started$")
+
+    def test_prepush_ends_after_its_jobs_when_its_screen_has_gone(self):
+        # a Ctrl-C of "scripts/ci.sh prepush | tee <file>" ends tee too: prepush's exit trap, as
+        # prepush_run sets it, writes to a pipe that no one reads, and still waits for the job's trap
+        read, write = os.pipe()
+        os.close(read)
+        try:
+            done = self.jobs(r'''
+prepush_start screen screen
+says "screen started"
+trap 'PREPUSH_SIGNAL=SIGINT; exit 130' INT
+trap prepush_stop_all EXIT
+kill -INT $(prepush_pids "${PREPUSH_PID[screen]}") $$
+sleep 30''', stdout=write)
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            os.close(write)
+        self.assertEqual(done.returncode, 130, done.stderr)
+        with open(os.path.join(self.tmp, "traps"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "screen started\nscreen ended\n")
+        with open(os.path.join(self.tmp, "summary.txt"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "prepush: SIGINT: waiting up to 120 s for screen to end, cleaning up\n")
 
 
 if __name__ == "__main__":
