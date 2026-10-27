@@ -509,9 +509,13 @@ server_api() {
   if [ -d "$ROOT/server/api" ]; then
     step "server: hjv-api tests and release build (server/api)"
     # with the output of the tests that pass: a test that cannot run here (no systemd tools) passes
-    # with a line "skipped: ...", which only then is seen and counted
-    with_skips "$CI/api-tests.log" env -C "$ROOT/server/api" CARGO_TARGET_DIR="$CI/target-api" \
-      cargo test --locked -- --show-output || fail "server: hjv-api tests"
+    # with a line "skipped: ...", which only then is seen and counted. Four test binaries at a time,
+    # each in a network namespace of its own: update_stream.rs starts hjv-api on a port it picked
+    # with bind(127.0.0.1:0) and let go, which a binary beside it could take meanwhile (own_net).
+    # All at once end barely sooner (support.rs's 20-second long poll is the longest) and slow the
+    # timed requests (login.rs's 700 ms) two- to threefold.
+    CARGO_TARGET_DIR="$CI/target-api" cargo_tests "$ROOT/server/api" "$CI/api-tests.log" 4 own_net --locked -- --show-output ||
+      fail "server: hjv-api tests"
     # The commit that /api/hjv/source and hjv-api version report: the last one that changed
     # server/api, the binary's source, which is the same in HEAD. HEAD itself would have cargo
     # compile hjv-api again for every commit. The binary must report it.
