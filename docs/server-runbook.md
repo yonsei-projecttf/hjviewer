@@ -1452,6 +1452,8 @@ Apple의 App Review가 iOS 앱 심사에 쓸 데모 계정을 요구했습니다
 
 seq 4(1.8.0, 위치 `e1-s4`, 세 플랫폼 최소·최신 1.8.0, 유예 없음)는 2026-10-18에 넣었고 SHA-256은 `12d9e78c…60ac`입니다(9-6). seq 5(1.9.0, 위치 `e1-s5`, 발행 2026-10-20T06:50:10Z, 세 플랫폼 최소·최신 1.9.0, 유예 없음)는 2026-10-20 17:01:43(KST)에 넣었고 SHA-256은 `2319222c…905a`입니다. 정책의 Windows 무인 설치 시각(2026-10-21 22:00 KST)은 유예가 없어 쓰이지 않았습니다(최소 버전 아래인 PC는 무인 설치 시각과 상관없이 강제 설치함). 패키지는 1.9.0의 둘과 `notices-1.9.0/`이고, 같은 작업에서 `/opt/hjviewer/share/`의 `NOTICE.txt`와 `SOURCE.txt`를 1.9.0 서버 묶음의 것으로 바꿨습니다(지금 것을 `/root/hjv-backup/share-before-1.9.0/`에 남긴 뒤, 9-9의 '넣기'에서 빠졌던 단계). 서비스 재시작과 nginx reload는 없었고, 서버의 `update-keys.env`는 그대로 `client-1.6.1`의 것입니다. hbbs 파일은 그다음 8-3으로 바꿨습니다.
 
+seq 6(1.9.1, 위치 `e1-s6`, 발행 2026-10-26T17:07:46Z, Windows·Android 최신 1.9.1, 최소는 1.9.0 그대로, iOS 항목은 seq 5 그대로, Windows 무인 설치 2026-10-27 22:00(KST)부터)은 2026-10-27 09:18:43(KST)에 넣었고 SHA-256은 `a15cc47c…b6b9`입니다. 그 전에 1.9.1의 hjv-api와 이 절의 확인 스크립트를 넣었습니다(9-10의 기록). 패키지는 1.9.1의 둘과 `notices-1.9.1/`이고, 직전 버전 1.9.0의 패키지는 `pkg/`에 남겼습니다(6번). 서비스 재시작과 nginx reload는 없었고, 서버의 `update-keys.env`는 그대로 `client-1.6.1`의 것이며, hbbs 파일(`MIN=1.9.0`)도 그대로입니다. iOS의 1.9.1은 TestFlight에만 있으므로 정책의 iOS 항목은 App Store에 출시된 뒤에 올립니다(아래). 같은 날 사용자 결정으로 `pkg/`의 1.6.1·1.7.0·1.8.0 패키지와 고지를 지웠습니다. `pkg/`에는 1.9.0과 1.9.1만 남고, `incoming/`의 묶음(`e1-s1`~`e1-s6`)은 그대로입니다.
+
 **iPhone 항목은 하나입니다.** 정책의 `ios` 항목 하나를 TestFlight 설치본과 App Store 설치본(1.9.1부터 업데이트 화면이 App Store를 엶)이 함께 씁니다. 그래서 App Store 배포를 시작한 뒤에는 iOS의 `latest`와 `min`을 **App Store에 출시된 버전으로만** 올립니다. TestFlight에만 있는 빌드로 올리지 않고, App Store 심사 중에는 심사받는 버전으로 올리지 않습니다(심사하는 앱은 샌드박스 영수증이라 TestFlight 길을 봄). 어기면 App Store 설치본이 스토어에 아직 없는 업데이트를 안내받거나 `min`에 막힙니다. 서버 확인은 이것을 보지 않으므로 정책을 만드는 사용자가 지킵니다([distribution.md](distribution.md)의 "iPhone"). iOS의 App Store 항목을 따로 두는 것은 다음 판의 열린 문제입니다.
 
 **App Store 필드와 서버 확인 스크립트(1.9.1부터).** 정책의 `ios` 항목에 App Store에 나온 버전을 적는 선택 필드 `appstore`가 생겼습니다(`hjv-release policy --appstore-live`, 스토어 정책, [store-release.md](store-release.md)). 그 필드가 든 정책은 커밋 63c18d8 이후의 `deploy/hjv-update-verify.sh`만 받습니다. 그래서 **첫 `--appstore-live` 정책을 넣기 전에** 서버의 `/opt/hjviewer/bin/hjv-update-verify.sh`를 그 판(63c18d8 이후의 서버 묶음 `bin/`, 또는 그 커밋의 `deploy/hjv-update-verify.sh`)으로 바꾸고 8-1의 1번처럼 `--self-test`를 돌립니다. 옛 스크립트는 그 정책을 거부합니다. 거부된 정책은 넣지 않으므로 앱에는 해가 없지만, 그 정책의 배포가 멈춥니다. 바꾼 스크립트는 `appstore` 필드가 없는 정책도 전처럼 받습니다.
@@ -1615,10 +1617,10 @@ sudo journalctl -q -u hjviewer-hbbs --since -1min -o cat | grep 'min-controller'
 
 ### 8-4. 문 2 (`/etc/hjviewer/door2.conf`)
 
-1.5.x 사용자가 새 버전(걸린 정책의 `latest`. 2026-10-20의 seq 5부터 1.9.0)을 받는 비밀 링크 `https://<도메인>/api/hjv/get/<코드>/`입니다. 링크는 hbbs 거절 문구(S1)와 운영자가 사용자에게 직접 보내는 메시지에만 나옵니다. 형식은 [deploy/door2.conf.example](../deploy/door2.conf.example)에 있고, 실제 파일은 사용자가 `hjv-release hbbs-conf --door2-out`으로 만들어 보냅니다.
+1.5.x 사용자가 새 버전(걸린 정책의 `latest`. 2026-10-27의 seq 6부터 1.9.1)을 받는 비밀 링크 `https://<도메인>/api/hjv/get/<코드>/`입니다. 링크는 hbbs 거절 문구(S1)와 운영자가 사용자에게 직접 보내는 메시지에만 나옵니다. 형식은 [deploy/door2.conf.example](../deploy/door2.conf.example)에 있고, 실제 파일은 사용자가 `hjv-release hbbs-conf --door2-out`으로 만들어 보냅니다.
 
 - **페이지**: 정책의 Windows·Android 패키지(크기와 SHA-256)와 그 옆의 알림 파일(LICENSE, NOTICE, SOURCE, THIRD_PARTY_NOTICES)을 보입니다. 바깥 사이트는 가리키지 않습니다(TestFlight 앱을 여는 링크만 있음. 사용자 요청, hjv-api 3b283b2부터, 7-14). 소스 코드(출시 태그)를 받는 곳은 아래 알림 파일의 SOURCE에 있다고 말하고, AGPL 6(d)의 '목적 코드 옆의 분명한 안내'는 그 SOURCE 고지가 맡습니다.
-- **기록(2026-10-14)**: 사용자가 "windows 문 2 열자"로 정해 23:24(KST)에 열었습니다. `UNTIL=2026-11-29T15:00:00Z`(2026-11-30 0시 KST)이고, 페이지는 1.6.1의 Windows와 Android 패키지를 내주었습니다. 7-9의 관문 전입니다(7-10). 정책 seq 3을 넣은 2026-10-16부터는 1.7.0, seq 4(2026-10-18)부터는 1.8.0, seq 5(2026-10-20)부터는 1.9.0의 패키지를 내줍니다(`UNTIL`은 그대로).
+- **기록(2026-10-14)**: 사용자가 "windows 문 2 열자"로 정해 23:24(KST)에 열었습니다. `UNTIL=2026-11-29T15:00:00Z`(2026-11-30 0시 KST)이고, 페이지는 1.6.1의 Windows와 Android 패키지를 내주었습니다. 7-9의 관문 전입니다(7-10). 정책 seq 3을 넣은 2026-10-16부터는 1.7.0, seq 4(2026-10-18)부터는 1.8.0, seq 5(2026-10-20)부터는 1.9.0, seq 6(2026-10-27)부터는 Windows·Android 1.9.1의 패키지를 내줍니다(`UNTIL`은 그대로).
 - **열기(여는 때는 사용자가 정함)**: 사용자가 보낸 `door2.conf`를 8-3의 "보낸 파일 옮기기" 블록으로 `incoming/`에 옮긴 뒤 넣습니다. 그 뒤 hbbs 파일(8-3)을 넣을 때는 S1 문구(같은 코드의 링크)가 든 파일을 넣습니다. S1 파일은 이 열기 뒤에만 넣습니다. 그 전에 넣으면 거절 문구의 링크가 404입니다. hbbs 파일을 넣는 일 자체는 배포 단계이므로 따로 정합니다(8-3의 첫 파일).
   ```bash
   F=/srv/hjviewer-updates/incoming/conf-20261020T060000Z/door2.conf   # ← 8-3의 옮기기 블록이 출력한 F= 줄
@@ -2015,6 +2017,7 @@ hbbs: 규칙 줄 <access … 그대로>, 콘솔 <HJVACCESS1 … 줄 그대로>
 - **운영자 기록이 있어야 지움**: 서비스가 운영자 기록에 앞 줄을 쓰지 못하면(관리 소켓이 꺼짐, 기록 파일에 쓸 수 없음) 계정을 지우지 않고 앱에 503 `not_recorded`를 줍니다. 운영 서버에는 관리 소켓과 기록 파일이 늘 있으므로 할 일은 없습니다.
 - **넣기**(사용자 승인 뒤 허브-운영이, 조용한 시간에): 7-14의 "업그레이드"대로 스냅숏, 옛 실행 파일, 설정 파일을 남긴 뒤 새 묶음으로 6절 "B 경로 업데이트"의 4번(hjv-api만)을 합니다. hbbs와 hbbr은 다시 시작하지 않으므로 원격 세션은 끊기지 않습니다. 같은 디렉터리에서 9-9 '넣기'의 3번(고지 파일)도 합니다. 6절의 "nginx 경로 파일" 블록으로 묶음의 nginx 파일과 설치된 것을 비교해 다른 것이 없는지만 봅니다. 다르면 멈추고 보고합니다.
 - **순서**: ① 이 hjv-api를 먼저 넣습니다. ② 그 뒤 1.9.1 앱을 나눕니다. App Store 빌드는 이 hjv-api가 돈 뒤에 심사에 냅니다(심사자가 데모 계정을 지워 봄). 옛 앱은 이 경로를 모르므로 바뀌는 것이 없고, 1.9.1 앱이 옛 hjv-api를 만나면 404를 받아 "지금은 앱에서 계정을 삭제할 수 없습니다. 관리자에게 삭제를 요청해 주세요."를 보입니다.
+  - 기록(2026-10-27, KST): ① 서버 묶음 `server-2026.10.27`(hjv-api b389ea2)을 허브-운영이 사용자 승인 뒤 넣었습니다. 옛 hjv-api가 이 경로에 404인 것을 먼저 보고, 7-14의 스냅숏(`before-2026.10.27`, 스키마 6)과 옛 실행 파일·설정 파일을 남긴 뒤 00:14:32에 hjv-api만 다시 시작했습니다(유닛과 소켓은 그대로, hbbs와 hbbr은 다시 시작하지 않음). 고지 파일은 `/root/hjv-backup/share-before-2026.10.27/`에 남긴 뒤 바꿨고(`SOURCE.txt`가 b389ea2), nginx 파일은 비교만 했습니다(다른 것 없음). 8-2의 확인 스크립트 `hjv-update-verify.sh`도 이 묶음의 것으로 바꾸고 `--self-test`를 돌렸습니다(첫 `--appstore-live` 정책의 조건, 8-2). 확인: 토큰 없는 요청이 401(정해진 문구), `/api/hjv/source`가 b389ea2, `/api/hjv/access`가 `{"codes":true,"mode":"enforce"}`, selfcheck 통과. ② 1.9.1의 Windows와 Android를 정책 seq 6으로 나눴습니다(09:18:43, 8-2의 기록). iOS의 1.9.1은 TestFlight에 올렸고, App Store에는 아직 내지 않았습니다.
 - **확인**: 토큰 없는 요청이라 아무것도 지우지 않습니다.
   ```bash
   D=$(sudo sed -n 's/^HJV_DOMAIN=//p' /etc/hjviewer/hjviewer.env)
