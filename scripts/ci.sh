@@ -10,7 +10,7 @@
 #                          stopping at the first that fails; summary.txt there says what each took
 #                          and how it ended, times.tsv holds each stage's steps by time. With stages
 #                          named, only those, in this order: after a fix, the stages that read what
-#                          it changed (docs/ci.md).
+#                          it changed (docs/ci.md). A stage run on its own starts with the same head.
 #   scripts/ci.sh server   a fresh upstream checkout with server/patches and all of its tests in
 #                          release (the library's and binaries' unit tests, the signaling, relay,
 #                          protobuf, hbbs hjv-pk, lowest controller version and access ticket tests,
@@ -1878,10 +1878,10 @@ leak_stage() {
 
 # The head of a stage's log: the commits it ran on (this repository; the client series and hbbs
 # checkouts under upstream/, which client/patches and server/patches are exported from), the
-# toolchain and the start
-log_head() { # <stage>
+# toolchain and the start. A run of its own starts with it too, saying so in its first line.
+log_head() { # <stage> [<how it runs>]
   local name dir
-  echo "LOG scripts/ci.sh $1 (prepush, HJV_CI_STRICT=1, CI directory $CI)"
+  echo "LOG scripts/ci.sh $1 (${2:-prepush, HJV_CI_STRICT=1}, CI directory $CI)"
   for name in hjviewer client-series hbbs; do
     case $name in
       hjviewer) dir=$ROOT ;;
@@ -1970,6 +1970,13 @@ finish() { # <target>
   printf '\n== %s\n' "CI passed: $1 (${#SKIPPED[@]} skipped)"
 }
 
+# the head of a run of its own (a stage that prepush runs, with HJV_CI_RUN, has it in its log); such a
+# run ends with "== CI passed: ..." or "FAIL: ...", and only prepush's logs with an EXIT line
+case "$TARGET" in
+  all | server | client | deploy | e2e | wol | leak)
+    [ -n "${HJV_CI_RUN:-}" ] || log_head "$TARGET" "on its own${HJV_CI_STRICT:+, HJV_CI_STRICT=$HJV_CI_STRICT}"
+    ;;
+esac
 case "$TARGET" in
   server) server_stage ;;
   client) client_stage ;;
