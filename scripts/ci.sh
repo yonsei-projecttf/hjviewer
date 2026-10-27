@@ -8,9 +8,10 @@
 #                          after another, each with its own log (build/ci/prepush/<time>-<commit>/;
 #                          first the commits, the toolchain and the start, last the exit status),
 #                          stopping at the first that fails; summary.txt there says what each took
-#                          and how it ended, times.tsv holds each stage's steps by time. With stages
-#                          named, only those, in this order: after a fix, the stages that read what
-#                          it changed (docs/ci.md). A stage run on its own starts with the same head.
+#                          and how it ended, times.tsv holds each stage's steps by time
+#                          (scripts/ci-times.sh adds them up over runs). With stages named, only
+#                          those, in this order: after a fix, the stages that read what it changed
+#                          (docs/ci.md). A stage run on its own starts with the same head.
 #   scripts/ci.sh server   a fresh upstream checkout with server/patches and all of its tests in
 #                          release (the library's and binaries' unit tests, the signaling, relay,
 #                          protobuf, hbbs hjv-pk, lowest controller version and access ticket tests,
