@@ -36,12 +36,12 @@
 #                          run's: the store texts (scripts/check-store-text.py and its tests), the
 #                          release record, the workflows' store rules and, with Node 20 or later,
 #                          the App Store Connect script (node --test), actionlint on the workflows
-#                          when it is installed, then a fresh upstream checkout with
-#                          client/patches, the release records' tests (scripts/release-info.py, on
-#                          the patched tree and 1.9.1's APK and IPA in scripts/testdata),
-#                          hbb_common's WebSocket tests, cargo +1.75.0 check (the app builds'
-#                          toolchain), the client core's agreement with the shared vectors of
-#                          tools/hjv-release (the trust rules) and the client's pure Dart tests,
+#                          when it is installed, all of them beside the rest: a fresh upstream
+#                          checkout with client/patches, the release records' tests
+#                          (scripts/release-info.py, on the patched tree and 1.9.1's APK and IPA in
+#                          scripts/testdata), hbb_common's WebSocket tests, cargo +1.75.0 check (the
+#                          app builds' toolchain), the client core's agreement with the shared vectors
+#                          of tools/hjv-release (the trust rules) and the client's pure Dart tests,
 #                          with the Flutter SDK the app builds use (downloaded once, checked
 #                          against Flutter's release index). Tests that need the generated bridge
 #                          run in client-build.yml.
@@ -335,7 +335,8 @@ owned_built() {
   for dir in "${OWNED[@]}"; do touch "$dir/.hjv-tree"; done
 }
 # What a binary that one stage leaves for others is built from: hbbs and hbbr (HBBS_INPUTS), hjv-api
-# (API_INPUTS), and hjv-release (RELEASE_INPUTS), which the owner may sign version policies with too.
+# (API_INPUTS), and hjv-release (RELEASE_INPUTS), the tests' (the owner signs with
+# scripts/build-signer.sh's).
 # <binary>.stamp names the commit and its changed files, a hash of the files the binary is built from
 # (as git sees them: tracked, or not ignored) and of the toolchain, the binary's hash, and last the
 # tree (a path may hold spaces).
