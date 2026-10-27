@@ -24,7 +24,7 @@ scripts/ci.sh leak       # push 전 검사: 로컬 목록 build/leak-patterns.tx
 - **엄격 모드**: `HJV_CI_STRICT=1`이면 건너뛴 것이 하나라도 있는 실행은 끝에서 그 목록과 함께 실패합니다(종료 1). `prepush`는 늘 엄격 모드입니다. 개발 중에 도구가 없어 건너뛰는 것(예: actionlint)은 엄격 모드가 아닐 때만 통과로 끝납니다.
 - **건너뛴 줄이 있는 통과는 push 전의 통과가 아닙니다.** push 전에는 `scripts/ci.sh prepush`를 쓰거나, 단계를 따로 돌렸다면 마지막 줄이 모두 `(0 skipped)`인지 봅니다. 건너뛴 것이 없는 실행은 E2E의 `PASS` 줄이나 클라이언트 단위 시험의 통과 수가 마지막 전체 실행보다 적어도 실패합니다(아래 "e2e와 wol").
 - **한 번에 한 실행**: 한 CI 폴더(`HJV_CI_DIR`, 기본 `build/ci`)에서는 한 실행만 돕니다. 실행은 `build/ci/ci.lock`을 `flock`으로 잡고, 그동안 시작한 다른 실행은 바로 멈춥니다. 잠금은 실행이 끝나면 풀리고, 실행이 띄운 프로그램이 남아도 잠금을 쥐지 않습니다.
-- **시간**: 단계 안의 일마다 찍는 `== ` 줄 아래에 `-- <시각>, <초> s in, load <부하>; the step before: <초> s` 줄이 붙습니다. 그 일을 시작한 시각, 실행을 시작한 뒤 지난 초, 그때 기계의 부하(`/proc/loadavg`의 1분 값. 다른 일이 기계를 같이 쓰면 같은 일도 느려집니다), 앞 일이 걸린 초입니다. 실행이 끝나면 마지막 줄 `CI passed: …` 바로 앞에 일을 걸린 시간 순으로 늘어놓은 표(`-- time by step, <초> s in all:`)가 나옵니다. 마지막 줄, prepush 로그의 머리와 `EXIT` 줄은 바뀌지 않습니다. 깨끗한 컨테이너 설치 시험의 `== container: …` 줄에도 시각과 지난 초가 붙고(시각은 컨테이너의 시계라 UTC이고, 그래서 `UTC`를 붙임), deploy 단계는 이미지 빌드가 걸린 초와 Docker 캐시에서 가져온 일의 수(`FROM`은 캐시에서 가져오는 일이 아니라 세지 않으므로, 모두 캐시면 `10 of 10`처럼 두 수가 같음), 그 빌드가 고른 기반 이미지의 digest를 찍습니다(`image build: …`). 이미지를 다시 빌드하면 몇 분이 더 걸리므로, 느린 deploy 실행은 이 줄로 가려냅니다. E2E 스크립트의 부분마다 걸린 시간은 [e2e.md](e2e.md)의 "실행"에 있습니다.
+- **시간**: 단계 안의 일마다 찍는 `== ` 줄 아래에 `-- <시각>, <초> s in, load <부하>; the step before: <초> s` 줄이 붙습니다. 그 일을 시작한 시각, 실행을 시작한 뒤 지난 초, 그때 기계의 부하(`/proc/loadavg`의 1분 값. 다른 일이 기계를 같이 쓰면 같은 일도 느려집니다), 앞 일이 걸린 초입니다. 실행이 끝나면 마지막 줄 `CI passed: …` 바로 앞에 일을 걸린 시간 순으로 늘어놓은 표(`-- time by step, <초> s in all:`)가 나옵니다. 마지막 줄, prepush 로그의 머리와 `EXIT` 줄은 바뀌지 않습니다. 깨끗한 컨테이너 설치 시험의 `== container: …` 줄에도 시각과 지난 초가 붙고(시각은 컨테이너의 시계라 UTC이고, 그래서 `UTC`를 붙임), deploy 단계는 이미지 빌드가 걸린 초(확인들 옆에서 도므로, 그 로그가 마지막으로 쓰인 때까지)와 Docker 캐시에서 가져온 일의 수(`FROM`은 캐시에서 가져오는 일이 아니라 세지 않으므로, 모두 캐시면 `10 of 10`처럼 두 수가 같음), 그 빌드가 고른 기반 이미지의 digest를 찍습니다(`image build: …`). 이미지를 다시 빌드하면 몇 분이 더 걸리므로, 느린 deploy 실행은 이 줄로 가려냅니다. E2E 스크립트의 부분마다 걸린 시간은 [e2e.md](e2e.md)의 "실행"에 있습니다.
 
 | 단계 | 하는 일 |
 |---|---|
@@ -83,43 +83,43 @@ e2e·wol 단계가 시험 스크립트에 넘기는 값은 `HJV_E2E_WORK`, `CADD
 
 ### 고친 뒤 다시 돌릴 단계
 
-고친 파일을 읽는 단계입니다. 한 커밋이 여러 줄에 걸리면 그 단계를 모두 합칩니다. server 단계가 빌드하는 것(hbbs·hbbr, hjv-api, hjv-release)이 바뀌면 그것을 쓰는 단계도 다시 돌립니다. 엄격 모드에서는 그 실행 파일의 기록이 이 트리와 맞지 않으면 그 단계가 실패하므로 빠뜨릴 수 없습니다(아래 "작업 트리 여럿이 한 CI 폴더를 쓸 때"). 운영 연습은 `scripts/ci.sh`의 단계가 아닙니다([hjv-api-drill.md](hjv-api-drill.md)).
+고친 파일을 읽는 단계입니다. 한 커밋이 여러 줄에 걸리면 그 단계를 모두 합칩니다. server 단계가 빌드하는 것(hbbs·hbbr, hjv-api, hjv-release)이 바뀌면 그것을 쓰는 단계도 다시 돌립니다. 엄격 모드에서는 그 실행 파일의 기록이 이 트리와 맞지 않으면 그 단계가 실패하므로 빠뜨릴 수 없습니다(아래 "작업 트리 여럿이 한 CI 폴더를 쓸 때"). server 단계는 그 네 부분 가운데 고친 것을 읽는 부분만 돌릴 수 있으므로, 표는 부분으로 적습니다. `server:hbbs`는 그 부분 하나, `server:api,relay`는 둘이고, `scripts/ci.sh prepush server:api,relay deploy leak`처럼 단계 자리에 그대로 줍니다. deploy의 바뀐 때만 도는 세 경로(위)는 deploy를 다시 돌릴 때 그 경로가 읽는 것이 바뀌었으면 스스로 돕니다. 그런 줄에는 그 경로를 적어 둡니다. 운영 연습은 `scripts/ci.sh`의 단계가 아닙니다([hjv-api-drill.md](hjv-api-drill.md)).
 
 | 고친 것 | 다시 돌릴 단계 | 읽는 곳 |
 |---|---|---|
-| `client/` (패치, 덮어쓰기 파일, `play/`, `version.env`, `update-keys.env`) | client, e2e, wol | `fetch-upstream.sh client`가 패치와 덮어쓰기 파일을 적용한 트리. client의 공개키 확인 시험이 키 파일을, e2e·wol이 같은 트리의 시험용 클라이언트를 빌드(wol이 e2e의 빌드를 쓸 때의 기록 `e2e-client.stamp`는 `client/` 전체의 해시) |
-| `server/patches/` | server, deploy, e2e, wol | server가 hbbs·hbbr을 빌드하고 시험. deploy는 Docker 이미지가 같은 패치로 hbbs를 빌드하고 서버 묶음이 server의 빌드를 씀. e2e·wol은 server의 hbbs·hbbr |
-| `server/api/`의 `Cargo.*`, `src/` | server, deploy, e2e, wol, 운영 연습 | hjv-api의 시험과 릴리스 빌드(`src/hbbs.rs`의 벡터는 hbbs의 `hjv_pk` 시험의 것과도 비교), deploy의 서버 묶음·컨테이너, e2e·wol의 계정 API(`build_e2e_api`), 운영 연습의 빌드. `src/seal.rs`의 시험 키는 client도(맨 아래 줄) |
-| `server/api/hjviewer-api.env.example` | server, deploy, 운영 연습 | hjv-api의 config 시험, 서버 묶음과 운영 설정 검사(`check-api-settings.py`), 운영 연습의 설치 |
-| `server/api/README.md` | server | hjv-api의 keys·pcsync·tickets·guest·update 시험이 읽음 |
-| `server/api/tests/` | server, 운영 연습 | hjv-api의 시험(운영 연습은 `tests/drill.rs`와 `tests/common`). `tests/vectors/access-tickets.json`은 hbbs의 출입증 시험도 사본과 바이트까지 비교하고 `HJV_ACCESS_VECTORS`로 읽음 |
-| `relay/` (`PROTOCOL.md` 포함) | server, deploy, wol | hjv-relay의 시험(`PROTOCOL.md`의 벡터), hjv-api의 `tests/relay_loop.rs`(개발 의존성), deploy의 hjv-relay 묶음 시험, wol의 hjv-relay |
-| `tools/hjv-release/`의 `Cargo.*`, `src/` | server, client, e2e | 형식·lint·시험·릴리스 빌드, client의 키 파일·릴리스 기록 시험(`HJV_RELEASE_BIN`), e2e의 시험 정책 서명(V5–V7·V9) |
-| `tools/hjv-release/tests/`(`vectors/` 말고) | server | 도구의 시험 |
-| `tools/hjv-release/tests/vectors/` | server, client, deploy | 도구의 시험(server)에 더해 hjv-api의 `src/update.rs`가 `accepted/e2-s2.json`과 제 사본을 비교(server), 클라이언트 코어의 벡터 시험과 그 사례 수(client), `deploy/hjv-update-verify.sh --vectors`(deploy) |
-| `tools/hjv-probe/` | server, deploy, e2e, wol | 빌드, `check_site`, E2E 스크립트의 `PROBE`(쓰는 단계가 이 트리에서 빌드) |
-| `tools/hjv-load/` | server, deploy | 빌드, `check_site`의 PC 등록·heartbeat와 중계 |
-| `tools/e2e/firewall-e2e.sh` | e2e, wol | e2e가 돌림. wol이 클라이언트를 직접 빌드할 때 이 스크립트의 계정·업데이트 부분을 보고 키를 넣음(`build_e2e_client`) |
+| `client/` (패치, 덮어쓰기 파일, `play/`, `version.env`, `update-keys.env`) | client, e2e, wol | `fetch-upstream.sh client`가 패치와 덮어쓰기 파일을 적용한 트리. client의 공개키 확인 시험이 키 파일을, e2e·wol이 같은 트리의 시험용 클라이언트를 빌드(wol이 e2e의 빌드를 쓸 때의 기록 `e2e-client.stamp`는 `client/` 전체의 해시). 시험용 빌드(`hjv-e2e`)에만 드는 패치도(0162의 스트림 끝내기처럼) client가 읽음: Rust 1.75 check가 그 기능으로 빌드 |
+| `server/patches/` | server:hbbs, deploy, e2e, wol | server:hbbs가 hbbs·hbbr을 빌드하고 시험. deploy는 Docker 이미지가 같은 패치로 hbbs를 빌드하고(Docker의 두 경로도 돎) 서버 묶음이 server:hbbs의 빌드를 씀. e2e·wol은 server:hbbs의 hbbs·hbbr |
+| `server/api/`의 `Cargo.*`, `src/` | server:api(`src/hbbs.rs`는 server:hbbs도), deploy, e2e, wol, 운영 연습 | hjv-api의 시험과 릴리스 빌드(server:api. `src/hbbs.rs`의 벡터는 server:hbbs가 hbbs의 `hjv_pk` 시험의 것과도 비교), deploy의 서버 묶음·컨테이너, e2e·wol의 계정 API(`build_e2e_api`), 운영 연습의 빌드. `src/seal.rs`의 시험 키는 client도(맨 아래 줄) |
+| `server/api/hjviewer-api.env.example` | server:api, deploy, 운영 연습 | hjv-api의 config 시험, 서버 묶음과 운영 설정 검사(`check-api-settings.py`), 운영 연습의 설치 |
+| `server/api/README.md` | server:api | hjv-api의 keys·pcsync·tickets·guest·update 시험이 읽음 |
+| `server/api/tests/` | server:api(`tests/vectors/access-tickets.json`은 server:hbbs도), 운영 연습 | hjv-api의 시험(운영 연습은 `tests/drill.rs`와 `tests/common`). `tests/vectors/access-tickets.json`은 server:hbbs의 출입증 시험도 사본과 바이트까지 비교하고 `HJV_ACCESS_VECTORS`로 읽음 |
+| `relay/` (`PROTOCOL.md` 포함) | server:api,relay, deploy, wol | hjv-relay의 시험(server:relay, `PROTOCOL.md`의 벡터), hjv-api의 `tests/relay_loop.rs`(server:api, 개발 의존성), deploy의 hjv-relay 묶음 시험, wol의 hjv-relay |
+| `tools/hjv-release/`의 `Cargo.*`, `src/` | server:release, client, e2e | 형식·lint·시험·릴리스 빌드(server:release), client의 키 파일·릴리스 기록 시험(`HJV_RELEASE_BIN`), e2e의 시험 정책 서명(V5–V7·V9) |
+| `tools/hjv-release/tests/`(`vectors/` 말고) | server:release | 도구의 시험 |
+| `tools/hjv-release/tests/vectors/` | server:api,release, client, deploy | 도구의 시험(server:release)에 더해 hjv-api의 `src/update.rs`가 `accepted/e2-s2.json`과 제 사본을 비교(server:api), 클라이언트 코어의 벡터 시험과 그 사례 수(client), `deploy/hjv-update-verify.sh --vectors`(deploy) |
+| `tools/hjv-probe/` | server:hbbs, deploy, e2e, wol | 빌드, `check_site`(deploy의 세 경로도 돎: 경로의 기록에 실행 파일의 해시가 듦), E2E 스크립트의 `PROBE`(쓰는 단계가 이 트리에서 빌드) |
+| `tools/hjv-load/` | server:hbbs, deploy | 빌드(server:hbbs, deploy. e2e·wol은 hjv-probe만 빌드), `check_site`의 PC 등록·heartbeat와 중계(deploy의 세 경로도 돎) |
+| `tools/e2e/firewall-e2e.sh` | e2e, wol | e2e가 돌림. wol이 클라이언트를 직접 빌드할 때 이 스크립트의 계정·업데이트 부분을 보고 키를 넣음(`build_e2e_client`). 고치는 동안의 부분 실행(`HJV_E2E_PARTS`, [e2e.md](e2e.md))은 통과가 아니므로, 고친 뒤에는 e2e 단계 전체를 돌림 |
 | `tools/e2e/wol-e2e.sh`, `wol-helper.py`, `capture.py` | wol | |
 | `tools/e2e/hjv-api-drill.sh` | 운영 연습 | |
-| `deploy/Caddyfile` | deploy, e2e, wol | A 경로(Caddy), 두 E2E 스크립트의 서버 |
+| `deploy/Caddyfile` | deploy, e2e, wol | A 경로(Caddy. deploy의 `caddy` 경로가 돎), 두 E2E 스크립트의 서버 |
 | `deploy/guest-conf.py` | deploy, e2e | `scripts/test_guest_conf.py`, `firewall-e2e.sh`가 이용 비밀번호의 해시를 만듦 |
-| `deploy/systemd/`, `deploy/journald@hjviewer.conf` | server, deploy, 운영 연습 | hjv-api의 `tests/ops.rs`, 서버 묶음과 그 systemd 유닛 시험 |
-| `deploy/`의 나머지(nginx·Apache 파일, compose 파일, `Dockerfile`, `.env.example`, `hjv-update-verify.sh`, `review-conf.py`, `guest.conf.example`, `review.conf.example`) | deploy | `access.conf.example`, `door2.conf.example`, `min-controller.conf.example`은 읽는 시험이 없음(leak만) |
-| `LICENSE`, `NOTICE` | deploy | Docker 이미지, 서버 묶음과 hjv-relay 묶음의 고지 |
-| `scripts/fetch-upstream.sh`, `scripts/upstream.env` | server, client, deploy, e2e, wol | 모든 upstream 체크아웃, deploy는 Docker 이미지 |
-| `scripts/package-server.sh`, `scripts/package-notices.sh` | deploy | 서버 묶음(고지는 hjv-relay 묶음도) |
-| `scripts/package-relay.sh` | server, deploy | `relay/tests/package.rs`의 거절 시험과 기본 폴더 시험(`--ignored` 없이, server), 묶음 시험(deploy) |
-| `scripts/check-build-keys.py`, `scripts/public-test-keys.txt` | server, client, e2e, wol | hjv-relay 묶음의 거절 시험(`package-relay.sh`가 부름), 공개키 확인 시험, E2E의 시험 키(`e2e_keys`, `e2e_update_keys`) |
-| `scripts/release-info.py`, `scripts/testdata/`, 스토어 실행의 스크립트(`play-upload.py`, `asc-store.mjs`, `store-record.py`, `check-store-text.py`), `hjv-fontsize-check.sh`, `hjv-fontsize-baseline.txt`, 그리고 `test_play_upload.py`, `asc-store.test.mjs`, `test_store_record.py`, `test_store_workflows.py`, `test_check_store_text.py`, `test_check_build_keys.py`, `test_release_info.py` | client | |
+| `deploy/systemd/`, `deploy/journald@hjviewer.conf` | server:api, deploy, 운영 연습 | hjv-api의 `tests/ops.rs`, 서버 묶음과 그 systemd 유닛 시험 |
+| `deploy/`의 나머지(nginx·Apache 파일, compose 파일, `Dockerfile`, `.env.example`, `hjv-update-verify.sh`, `review-conf.py`, `guest.conf.example`, `review.conf.example`) | deploy | `apache-hjviewer.conf`는 `apache` 경로를, compose 파일·`Dockerfile`·`.env.example`은 Docker의 두 경로(`behind-proxy`, `caddy`)를 다시 돌림. `access.conf.example`, `door2.conf.example`, `min-controller.conf.example`은 읽는 시험이 없음(leak만) |
+| `LICENSE`, `NOTICE` | deploy | Docker 이미지(Docker의 두 경로도 돎), 서버 묶음과 hjv-relay 묶음의 고지 |
+| `scripts/fetch-upstream.sh`, `scripts/upstream.env` | server:hbbs, client, deploy, e2e, wol | 모든 upstream 체크아웃, deploy는 Docker 이미지(Docker의 두 경로도 돎) |
+| `scripts/package-server.sh`, `scripts/package-notices.sh` | deploy | 서버 묶음(고지는 hjv-relay 묶음도: `package-relay.sh`가 부르고, server:relay의 거절 시험은 그 전에 멈춤). 앱 빌드 워크플로도 고지를 이것으로 만들지만 그것은 GitHub에서 돎 |
+| `scripts/package-relay.sh` | server:relay, deploy | `relay/tests/package.rs`의 거절 시험과 기본 폴더 시험(`--ignored` 없이, server:relay), 묶음 시험(deploy) |
+| `scripts/check-build-keys.py`, `scripts/public-test-keys.txt` | server:relay, client, e2e, wol | hjv-relay 묶음의 거절 시험(server:relay, `package-relay.sh`가 부름), 공개키 확인 시험, E2E의 시험 키(`e2e_keys`, `e2e_update_keys`) |
+| `scripts/release-info.py`, `scripts/testdata/`, 스토어 실행의 스크립트(`play-upload.py`, `asc-store.mjs`, `store-record.py`, `check-store-text.py`), 앱 빌드의 `run-summary.py`(`test_store_workflows.py`가 읽어 시험), `hjv-fontsize-check.sh`, `hjv-fontsize-baseline.txt`, 그리고 `test_play_upload.py`, `asc-store.test.mjs`, `test_store_record.py`, `test_store_workflows.py`, `test_check_store_text.py`, `test_check_build_keys.py`, `test_release_info.py` | client | |
 | `scripts/check-api-settings.py`, `test_check_api_settings.py`, `test_review_conf.py`, `test_guest_conf.py`, `test_hjv_update_verify.py` | deploy | |
 | `scripts/leak-check.py`, `test_leak_check.py` | leak | |
 | `scripts/set-client-version.sh`, `export-patches.sh`, `make-icons.sh`, `make-splash-text.py`, `ci-times.sh` | leak만 | 앱 빌드 워크플로와 손으로 쓰는 도구. 읽는 시험이 없음 |
-| `scripts/ci.sh` | 고친 부분을 쓰는 단계 | 단계 함수와 그 단계만 부르는 함수·값은 그 단계: `server_stage`, `hjv_pk_vector`는 server, `client_stage`, `CLIENT_DART_TESTS`, `FLUTTER_VERSION`, `VECTORS_LEAST`는 client, `deploy_stage`, `check_site` 등 배포 확인 함수(`check_stamp`를 뺀 `check_*`), `api_test_credentials`, `start_systemd_api`, `start_echo`, 컨테이너 시험(`container-test.sh`), `SIDE_LOGS`는 deploy, `e2e_stage`, `e2e_minimum_version`, `e2e_access`, `e2e_unit_without_update_keys`, `fetch_faketime`, `E2E_LEAST_*`는 e2e, `wol_stage`, `WOL_LEAST`는 wol, `leak_stage`는 leak. 여럿이 쓰는 것: `build_e2e_client`, `e2e_keys`, `e2e_server_key`, `e2e_update_keys`, `e2e_client_stamp`, `build_e2e_api`, `fetch_caddy`, `E2E_PROFILE`, `UNIT_LEAST`는 e2e·wol, `pkgconfig`는 client·e2e·wol, `build_tools`는 server·deploy·e2e·wol, `stamp_binary`, `check_stamp`, `inputs_hash`, `*_INPUTS`는 server와 client·deploy·e2e·wol. 공통 함수(`step`, `skip`, `count_skips`, `with_skips`, `at_least`, `passed_tests`, `own_target`, `fail`, `finish`)와 맨 위의 값(잠금, `PATH`)은 모든 단계. `prepush`, `log_head`는 prepush로 도는 단계 하나(가장 짧은 leak)로 확인 |
+| `scripts/ci.sh` | 고친 부분을 쓰는 단계 | 단계 함수와 그 단계만 부르는 함수·값은 그 단계: `server_checkout`, `server_hbbs`, `hjv_pk_vector`는 server:hbbs, `server_api`는 server:api, `server_relay`는 server:relay, `server_release`는 server:release, `cargo_tests`, `own_net`, `KNOWN_FLAKY`는 server:hbbs,api, `server_stage`, `server_parts`, `SERVER_PARTS`, `RETRIED`는 server(부분을 나란히 돌리는 단계 전체), `client_stage`, `client_offline`, `client_offline_end`, `CLIENT_DART_TESTS`, `FLUTTER_VERSION`, `VECTORS_LEAST`는 client, `deploy_stage`, `deploy_offline`, 일을 나란히 돌리는 `deploy_job`, `deploy_wait`, `show_job`, `end_tree`, 바뀐 때만 도는 경로의 `deploy_part`, `part_hash`, `code_of`, `site_tools`, `*_inputs`, `deploy_apache`, `deploy_behind_proxy`, `deploy_caddy`, `check_site` 등 배포 확인 함수(`check_stamp`를 뺀 `check_*`), `wait_for`, `wait_listeners`, `api_test_credentials`, `start_systemd_api`, `start_echo`, 컨테이너 시험(`start_package_container`, `container-test.sh`), `cleanup`, `SIDE_LOGS`는 deploy(`deploy_stage`와 경로가 부르는 함수를 고치면 세 경로도 돎: 경로의 기록에 그 코드가 듦), `e2e_stage`, `e2e_minimum_version`, `e2e_access`, `e2e_unit_without_update_keys`, `fetch_faketime`, `cleanup_e2e`, `E2E_LEAST_*`는 e2e, `wol_stage`, `WOL_LEAST`는 wol, `leak_stage`는 leak. 여럿이 쓰는 것: `build_e2e_client`, `checkout_state`, `test_env`, `e2e_keys`, `e2e_server_key`, `e2e_update_keys`, `e2e_client_stamp`, `build_e2e_api`, `fetch_caddy`, `E2E_PROFILE`, `UNIT_LEAST`는 e2e·wol, `pkgconfig`는 client·e2e·wol, `build_tools`는 server:hbbs·deploy·e2e·wol, `stamp_binary`, `inputs_hash`, `*_INPUTS`는 server:hbbs,api,release와 client·deploy·e2e·wol(`check_stamp`는 뒤의 넷). 공통 함수(`step`, `step_times`, `skip`, `count_skips`, `with_skips`, `at_least`, `passed_tests`, `own_target`, `owned_built`, `fail`, `finish`)와 맨 위의 값(잠금, `PATH`)은 모든 단계. `prepush`, `log_head`는 prepush로 도는 단계 하나(가장 짧은 leak)로 확인 |
 | `.github/workflows/` | client | actionlint, 워크플로의 스토어 규칙, 공개키 확인·릴리스 기록 시험이 `client-build.yml`을 읽음 |
 | `store/` (`README.md` 포함) | client | `check-store-text.py`가 `README.md`의 파일 목록대로 읽음 |
 | `docs/ci.md` | client | 릴리스 기록 시험이 이 문서의 빌드 저장소 `build.yml`을 읽음 |
-| `docs/relay-dsm.md` | server, deploy | hjv-relay의 watchdog 시험, 묶음의 `README-DSM.md`(묶음 시험이 비교) |
+| `docs/relay-dsm.md` | server:relay, deploy | hjv-relay의 watchdog 시험(server:relay), 묶음의 `README-DSM.md`(묶음 시험이 비교) |
 | 그 밖의 문서(`docs/`, `README.md`들, `tools/hjv-release/README.md` 포함) | leak | 위 줄의 문서(`server/api/README.md`, `relay/PROTOCOL.md`, `store/README.md`, `docs/ci.md`, `docs/relay-dsm.md`)는 그 줄의 단계도 |
 | 32바이트 값(시험 키, 벡터의 키)을 더하거나 바꾼 파일, 어디에 있든 | client | 공개키 확인 시험이 git이 추적하는 모든 파일에서 그런 값을 찾아 시험 키로 셈 |
 
