@@ -1344,6 +1344,8 @@ deploy_stage() {
   else
     skip "hjv-relay's packages (no relay/)"
   fi
+  # the web servers' error logs that fail shows are this run's, not those of a run that had Apache
+  rm -rf "$CI/nginx" "$CI/apache"
   DEPLOY_LOGS=1
 
   step "deploy B, systemd: the release package (scripts/package-server.sh) without Docker"
