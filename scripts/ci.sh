@@ -229,6 +229,31 @@ at_least() { # <what> <count> <least>
 passed_tests() { # <file>
   sed -n -E 's/^test result: ok\. ([0-9]+) passed;.*/\1/p' "$1" | awk '{ n += $1 } END { print n + 0 }'
 }
+# The target directories of a CI directory serve every tree that runs on it (HJV_CI_DIR), and cargo
+# judges freshness by file times, with unit names that do not depend on the tree: a tree whose files
+# are older takes what another tree built there for its own, test executables with that tree's paths
+# compiled in (CARGO_MANIFEST_DIR) among them. So each directory names the tree that built there last
+# (.hjv-tree). Before another tree builds there, the packages that cargo builds from a path in
+# <workspace> (this tree's crates, or those of the upstream checkout made from its patches) are
+# cleaned in both profiles, whatever tree built them; the crates.io and git dependencies stay built.
+own_target() { # <target dir> <workspace dir>
+  local dir=$1 ws=$2 last name names=() specs=() start=$SECONDS
+  last=$(cat "$dir/.hjv-tree" 2> /dev/null || true)
+  [ "$last" != "$ROOT" ] || return 0
+  while read -r name; do names+=("$name") specs+=(-p "$name"); done < <(cd "$ws" &&
+    cargo metadata --format-version 1 --locked --filter-platform "$(rustc -vV | sed -n 's/^host: //p')" |
+    python3 -I -c 'import json, sys
+for p in json.load(sys.stdin)["packages"]:
+    if p["source"] is None:
+        print(p["name"])')
+  [ ${#names[@]} -gt 0 ] || fail "cargo metadata named no packages of $ws"
+  (cd "$ws" && cargo clean --locked "${specs[@]}" --target-dir "$dir" &&
+    cargo clean --locked --release "${specs[@]}" --target-dir "$dir") || fail "cargo clean in $dir"
+  mkdir -p "$dir"
+  echo "$ROOT" > "$dir/.hjv-tree"
+  echo "$(basename "$dir"): built last from ${last:-a tree it does not name}; this tree's packages" \
+    "(${names[*]}) cleaned in $((SECONDS - start)) s"
+}
 dc() { (cd "$SRC/deploy" && sudo docker compose -p "$PROJECT" "$@"); }
 hbbs_logs() {
   if [ "$STACK" = systemd ]; then
@@ -398,12 +423,14 @@ server_stage() {
   cmp -s "$vectors" "$CI/upstream/rustdesk-server/tests/vectors/access-tickets.json" ||
     fail "server: hbbs's tests/vectors/access-tickets.json (server/patches) is not hjv-api's (server/api/tests/vectors)"
   step "server: hbbs and hbbr's tests (unit, signaling, relay, protobuf, hjv-pk, access tickets)"
+  own_target "$CI/target" "$CI/upstream/rustdesk-server"
   (cd "$CI/upstream/rustdesk-server" &&
     HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
   step "server: hjv-probe and hjv-load"
   for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
   if [ -d "$ROOT/server/api" ]; then
     step "server: hjv-api tests and release build (server/api)"
+    own_target "$CI/target-api" "$ROOT/server/api"
     # with the output of the tests that pass: a test that cannot run here (no systemd tools) passes
     # with a line "skipped: ...", which only then is seen and counted
     with_skips "$CI/api-tests.log" env -C "$ROOT/server/api" CARGO_TARGET_DIR="$CI/target-api" \
@@ -424,6 +451,7 @@ server_stage() {
     if [ -n "${GITHUB_ACTIONS:-}" ]; then netns=; fi
     netns=${HJV_RELAY_NETNS-$netns}
     [ "$netns" = require ] || skip "hjv-relay's network namespace test, where it cannot run (HJV_RELAY_NETNS=$netns)"
+    own_target "$CI/target-relay" "$ROOT/relay"
     with_skips "$CI/relay-tests.log" env -C "$ROOT/relay" HJV_RELAY_NETNS="$netns" CARGO_TARGET_DIR="$CI/target-relay" \
       cargo test --locked -- --show-output || fail "server: hjv-relay tests"
   else
@@ -434,6 +462,7 @@ server_stage() {
     # the reference model (python3 tests/vectors/generate.py --check) and read every one; the release
     # build is the one the client stage's key-file test and the E2E use
     step "server: hjv-release format, lints, tests and release build (tools/hjv-release)"
+    own_target "$CI/target-hjv-release" "$ROOT/tools/hjv-release"
     (cd "$ROOT/tools/hjv-release" && cargo fmt --check) || fail "server: hjv-release is not formatted (cargo fmt)"
     (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo clippy --locked --all-targets -- -D warnings) ||
       fail "server: hjv-release lints"
@@ -563,6 +592,7 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   HJV_RELEASE_BIN="$release_bin" HJV_PATCHED_FLUTTER="$app" HJV_RELEASE_SAMPLES="$samples" \
     python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_release_info.py' || fail "client: release record tests"
   step "client: hbb_common WebSocket tests"
+  own_target "$CI/target-client" "$CI/upstream/rustdesk"
   # One at a time: the proxy test sets the process's proxy option, and a test running beside it
   # would connect through that test's one-shot proxy
   (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket -- --test-threads=1)
@@ -572,6 +602,7 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   rustup toolchain list | grep '^1\.75\.0' > /dev/null ||
     fail "client: no Rust 1.75.0 toolchain: rustup toolchain install 1.75.0 --profile minimal"
   pkgconfig
+  own_target "$CI/target-175" "$CI/upstream/rustdesk"
   (cd "$CI/upstream/rustdesk" && PKG_CONFIG_PATH="$CI/pkgconfig" CARGO_TARGET_DIR="$CI/target-175" \
     cargo +1.75.0 check --locked --features linux-pkg-config,hjv-e2e) || fail "client: cargo +1.75.0 check"
   # INV-13 of the trust rules: the client core takes and refuses every envelope of the shared vectors
@@ -1059,6 +1090,7 @@ deploy_stage() {
       fail "deploy: hjv-relay's packages need the x86_64-unknown-linux-musl target and musl-gcc (rustup target add x86_64-unknown-linux-musl; Ubuntu: apt-get install musl-tools)"
     # with the output of the tests that pass: scripts/package-relay.sh says "skipped: ..." where it
     # cannot run the binary in an empty root
+    own_target "$CI/target-relay" "$ROOT/relay"
     with_skips "$CI/relay-package.log" env -C "$ROOT/relay" CARGO_TARGET_DIR="$CI/target-relay" \
       cargo test --locked --test package -- --ignored --show-output ||
       fail "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
@@ -1507,6 +1539,7 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
   fi
   step "e2e: the client for the test server hjv.test (--features linux-pkg-config,hjv-e2e)"
   pkgconfig
+  own_target "$CI/target-e2e" "$src"
   (cd "$src" && env PKG_CONFIG_PATH="$CI/pkgconfig" HJV_SERVER=hjv.test HJV_SERVER_KEY="$(cat "$work/srv/id_ed25519.pub")" \
     "${keys[@]}" "${E2E_PROFILE[@]}" CARGO_TARGET_DIR="$CI/target-e2e" \
     cargo build --release --locked --features linux-pkg-config,hjv-e2e) || fail "e2e: the client build"
@@ -1590,6 +1623,7 @@ fetch_faketime() {
 # server package takes
 build_e2e_api() {
   step "e2e: hjv-api and hjv-fake-sso (server/api)"
+  own_target "$CI/target-api-e2e" "$ROOT/server/api"
   (cd "$ROOT/server/api" && CARGO_TARGET_DIR="$CI/target-api-e2e" cargo build --release --locked --features fake-sso) ||
     fail "e2e: hjv-api build"
   E2E_API="$CI/target-api-e2e/release/hjv-api" E2E_FAKE_SSO="$CI/target-api-e2e/release/hjv-fake-sso"
@@ -1623,6 +1657,7 @@ e2e_minimum_version() {
   E2E_MINVER+=(HJV_E2E_UPDATE_KEYS=1)
   if [ -f "$ROOT/tools/hjv-release/Cargo.toml" ]; then
     step "e2e: tools/hjv-release, which signs the E2E's version policies with the test keys"
+    own_target "$CI/target-hjv-release" "$ROOT/tools/hjv-release"
     (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
       fail "e2e: hjv-release build"
     E2E_MINVER+=(HJV_RELEASE="$CI/target-hjv-release/release/hjv-release")
@@ -1706,6 +1741,7 @@ wol_stage() {
   fi
   build_e2e_api
   step "wol: hjv-relay for hjv.test with the E2E's command key"
+  own_target "$CI/target-relay" "$ROOT/relay"
   (cd "$ROOT/relay" && HJV_SERVER=hjv.test HJV_COMMAND_PUBKEY="$(cat "$work/api/command.pub")" \
     CARGO_TARGET_DIR="$CI/target-relay" cargo build --release --locked) || fail "wol: hjv-relay build"
   step "wol: tools/e2e/wol-e2e.sh (output also in build/ci/wol-e2e.log)"
