@@ -144,6 +144,8 @@ SRC="$CI/src" PKGS="$CI/pkgs" CERTS="$CI/certs"
 NGINX_PID="" APACHE_PID="" ECHO_PID=""
 # set by the deploy stage, whose failures show its containers' and web servers' logs
 DEPLOY_LOGS=""
+# the deploy stage's jobs beside its checks, by the file they write (deploy_job)
+declare -A DEPLOY_JOBS=()
 # set by build_e2e_client when the E2E has its account part
 E2E_ACCOUNT=""
 # and when its client has the update test keys (the minimum version's policy)
@@ -248,11 +250,40 @@ cleanup_systemd() {
 }
 
 cleanup() {
+  local pid
+  # the jobs still running when the stage stops early
+  for pid in "${DEPLOY_JOBS[@]}"; do end_tree "$pid"; done
+  DEPLOY_JOBS=()
   stop_web
   cleanup_systemd
   # only this script's own project: its containers, network and Caddy volume
   [ -d "$SRC/deploy" ] && dc down -v --remove-orphans > /dev/null 2>&1
   return 0
+}
+
+# Ends <pid> and the processes it started (those of another user, e.g. under sudo, stay)
+end_tree() { # <pid>
+  local children child
+  children=$(pgrep -P "$1" || true)
+  kill "$1" 2> /dev/null || true
+  for child in $children; do end_tree "$child"; done
+}
+
+# Runs <command...> beside the checks that follow, with its output in <file>: deploy_wait waits for
+# it, and cleanup ends it when the stage stops before
+deploy_job() { # <file> <command...>
+  local log=$1
+  shift
+  "$@" < /dev/null > "$log" 2>&1 &
+  DEPLOY_JOBS[$log]=$!
+}
+
+# The exit status of the job of deploy_job that writes <file>, once it ends
+deploy_wait() { # <file>
+  local status=0
+  wait "${DEPLOY_JOBS[$1]}" || status=$?
+  unset "DEPLOY_JOBS[$1]"
+  return "$status"
 }
 
 # Runs <command...> until it succeeds, five times a second for up to <seconds>: a server that is up
@@ -593,36 +624,54 @@ for r in json.load(open(sys.argv[1]))["releases"]:
 # The runbook's checks against one web server: WebSocket upgrades to hbbs and hbbr, the /api/
 # answer, the source notice, hjv-probe, three PCs registering (hbbs must see their ports), a relay
 # session with the server key, and the same key in hbbs, hbbr and data/id_ed25519.pub.
+# The checks that wait run side by side: each WebSocket upgrade waits out curl's --max-time after
+# its 101 (the runbook's command), hjv-load holds the PCs for 12 s and the relay session for 7. None
+# of them changes what another sees (only the PCs register with hbbs); their output goes to files
+# under build/ci, shown and checked afterwards in this order.
 check_site() { # <port> <CA file> <status of />, or "site" when / belongs to another site <name>
-  local port=$1 ca=$2 root_status=$3 name=$4 code p before
-  local url="https://localhost:$port" curl_tls=(--cacert "$ca" --resolve "localhost:$port:127.0.0.1")
+  local port=$1 ca=$2 root_status=$3 name=$4 code p before heartbeat root probe=0 peers=0 relay=0
+  local url="https://localhost:$port" curl_tls=(--cacert "$ca" --resolve "localhost:$port:127.0.0.1") out="$CI/site"
   step "deploy: checks through $name on 127.0.0.1:$port"
-  for p in /ws/id /ws/relay; do
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --http1.1 "${curl_tls[@]}" \
+  for p in id relay; do
+    deploy_job "$out-ws-$p.code" curl -s -o /dev/null -w '%{http_code}' --max-time 5 --http1.1 "${curl_tls[@]}" \
       -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
-      -H 'Sec-WebSocket-Key: SGVsbG9Xb3JsZDEyMzQ1Ng==' "$url$p" || true)
-    echo "$p $code"
-    [ "$code" = 101 ] || fail "$name: $p answered $code, not 101"
+      -H 'Sec-WebSocket-Key: SGVsbG9Xb3JsZDEyMzQ1Ng==' "$url/ws/$p"
   done
-  code=$(curl -s -o /dev/null -w '%{http_code}' "${curl_tls[@]}" -X POST -d '{}' "$url/api/heartbeat" || true)
-  echo "/api/heartbeat $code"
-  [ "$code" = 404 ] || fail "$name: /api/heartbeat answered $code, not 404"
+  deploy_job "$out-relay.txt" "$LOAD" relay localhost --port "$port" --ca "$ca" -n 1 --mbps 2 --secs 5 \
+    --key "$(sudo cat "$(key_file)")"
+  heartbeat=$(curl -s -o /dev/null -w '%{http_code}' "${curl_tls[@]}" -X POST -d '{}' "$url/api/heartbeat" || true)
   if [ "$root_status" != site ]; then
-    code=$(curl -s -o "$CI/root.txt" -w '%{http_code}' "${curl_tls[@]}" "$url/" || true)
-    echo "/ $code $(head -c 80 "$CI/root.txt")"
-    if [ "$code" != "$root_status" ] || ! grep -q 'github.com/yonsei-projecttf/hjviewer' "$CI/root.txt"; then
-      fail "$name: / answered $code without the source notice"
+    root=$(curl -s -o "$CI/root.txt" -w '%{http_code}' "${curl_tls[@]}" "$url/" || true)
+  fi
+  "$PROBE" localhost --port "$port" --ca "$ca" > "$out-probe.txt" 2>&1 || probe=$?
+  before=$(hbbs_logs 2>/dev/null | grep -c 'update_pk ' || true)
+  "$LOAD" peers localhost --port "$port" --ca "$ca" -n 3 --secs 12 > "$out-peers.txt" 2>&1 || peers=$?
+  # (curl ends with 28 once the upgraded connection outlasts --max-time; its code is what counts)
+  for p in id relay; do deploy_wait "$out-ws-$p.code" || true; done
+  deploy_wait "$out-relay.txt" || relay=$?
+  for p in id relay; do
+    code=$(cat "$out-ws-$p.code")
+    echo "/ws/$p $code"
+    [ "$code" = 101 ] || fail "$name: /ws/$p answered $code, not 101"
+  done
+  echo "/api/heartbeat $heartbeat"
+  [ "$heartbeat" = 404 ] || fail "$name: /api/heartbeat answered $heartbeat, not 404"
+  if [ "$root_status" != site ]; then
+    echo "/ $root $(head -c 80 "$CI/root.txt")"
+    if [ "$root" != "$root_status" ] || ! grep -q 'github.com/yonsei-projecttf/hjviewer' "$CI/root.txt"; then
+      fail "$name: / answered $root without the source notice"
     fi
   fi
-  "$PROBE" localhost --port "$port" --ca "$ca" || fail "$name: hjv-probe"
-  before=$(hbbs_logs 2>/dev/null | grep -c 'update_pk ' || true)
-  "$LOAD" peers localhost --port "$port" --ca "$ca" -n 3 --secs 12 || fail "$name: hjv-load peers"
+  cat "$out-probe.txt"
+  [ "$probe" = 0 ] || fail "$name: hjv-probe"
+  cat "$out-peers.txt"
+  [ "$peers" = 0 ] || fail "$name: hjv-load peers"
   { hbbs_logs | grep -oE 'update_pk [0-9]+ [^ ]+' || true; } | tail -n "+$((before + 1))" > "$CI/pk.txt"
   cat "$CI/pk.txt"
   [ "$(wc -l < "$CI/pk.txt")" = 3 ] || fail "$name: hbbs did not register 3 PCs"
   if grep -q ':0$' "$CI/pk.txt"; then fail "$name: X-Real-Port did not reach hbbs (port 0)"; fi
-  "$LOAD" relay localhost --port "$port" --ca "$ca" -n 1 --mbps 2 --secs 5 --key "$(sudo cat "$(key_file)")" ||
-    fail "$name: hjv-load relay"
+  cat "$out-relay.txt"
+  [ "$relay" = 0 ] || fail "$name: hjv-load relay"
 }
 
 # The signed version policy at /api/hjv/version (deploy/nginx-hjviewer-locations.conf, runbook 8),
