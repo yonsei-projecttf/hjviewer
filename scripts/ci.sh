@@ -286,6 +286,15 @@ deploy_wait() { # <file>
   return "$status"
 }
 
+# The output of that job once it ends, with its skipped lines counted; its failure fails the stage
+show_job() { # <file> <what failed>
+  local status=0
+  deploy_wait "$1" || status=$?
+  cat "$1"
+  [ "$status" = 0 ] || fail "$2"
+  count_skips "$1"
+}
+
 # Runs <command...> until it succeeds, five times a second for up to <seconds>: a server that is up
 # a moment later costs that moment, not a whole second
 wait_for() { # <seconds> <command...>
@@ -1058,10 +1067,10 @@ EOF
   count_skips "$CI/container.log"
 }
 
-deploy_stage() {
-  if [ ! -x "$PROBE" ] || [ ! -x "$LOAD" ]; then fail "hjv-probe/hjv-load are not built: scripts/ci.sh server"; fi
-  if [ -d "$ROOT/server/api" ] && [ ! -x "$API" ]; then fail "hjv-api is not built: scripts/ci.sh server"; fi
-  sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
+# The deploy stage's offline tests, a job beside its checks (deploy_job): the production settings
+# check, deploy/'s scripts for the server's own files, and the server's check of a version policy,
+# also against the shared test vectors of tools/hjv-release
+deploy_offline() {
   step "deploy: the production settings check (scripts/check-api-settings.py), offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_api_settings.py' ||
     fail "deploy: tests of the settings check"
@@ -1084,24 +1093,35 @@ deploy_stage() {
   else
     skip "deploy/hjv-update-verify.sh against the shared test vectors (no $vectors/manifest.json: tools/hjv-release is not in this tree yet)"
   fi
+}
+
+deploy_stage() {
+  if [ ! -x "$PROBE" ] || [ ! -x "$LOAD" ]; then fail "hjv-probe/hjv-load are not built: scripts/ci.sh server"; fi
+  if [ -d "$ROOT/server/api" ] && [ ! -x "$API" ]; then fail "hjv-api is not built: scripts/ci.sh server"; fi
+  sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
   if [ -d "$ROOT/relay" ]; then
-    # relay/tests/package.rs's packages run only with --ignored, which no other stage gives
-    step "deploy: hjv-relay's packages (scripts/package-relay.sh): the static build, its SHA256SUMS, the field test package"
     [ -n "$(rustup target list --installed 2>/dev/null | grep -x x86_64-unknown-linux-musl)" ] && command -v musl-gcc > /dev/null ||
       fail "deploy: hjv-relay's packages need the x86_64-unknown-linux-musl target and musl-gcc (rustup target add x86_64-unknown-linux-musl; Ubuntu: apt-get install musl-tools)"
-    # with the output of the tests that pass: scripts/package-relay.sh says "skipped: ..." where it
-    # cannot run the binary in an empty root
-    with_skips "$CI/relay-package.log" env -C "$ROOT/relay" CARGO_TARGET_DIR="$CI/target-relay" \
-      cargo test --locked --test package -- --ignored --show-output ||
-      fail "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
-  else
-    skip "hjv-relay's packages (no relay/)"
   fi
   [ -z "$(ss -Hltnu '( sport >= :21115 and sport <= :21119 )')" ] ||
     fail "ports 21115-21119 are in use (a running hjviewer server?); the test stack needs them"
   [ -z "$(ss -Hltn '( sport >= :18080 and sport <= :18082 ) or ( sport >= :18443 and sport <= :18448 ) or sport = :18599')" ] ||
     fail "test ports 18080-18082 / 18443-18448 / 18599 are in use"
   trap cleanup EXIT
+
+  # The offline tests and hjv-relay's packages share nothing with the checks below, which mostly
+  # wait: they run beside them, and their output comes at the end
+  step "deploy: the offline tests and hjv-relay's packages, beside the checks below (build/ci/deploy-offline.log, relay-package.log)"
+  deploy_job "$CI/deploy-offline.log" deploy_offline
+  if [ -d "$ROOT/relay" ]; then
+    # relay/tests/package.rs's packages run only with --ignored, which no other stage gives; with
+    # the output of the tests that pass: scripts/package-relay.sh says "skipped: ..." where it
+    # cannot run the binary in an empty root
+    deploy_job "$CI/relay-package.log" env -C "$ROOT/relay" CARGO_TARGET_DIR="$CI/target-relay" \
+      cargo test --locked --test package -- --ignored --show-output
+  else
+    skip "hjv-relay's packages (no relay/)"
+  fi
   DEPLOY_LOGS=1
 
   step "deploy: copy of this working tree"
@@ -1395,6 +1415,14 @@ EOF
     fi
     check_api_limits "$pkg"
     check_package_container "$rel" hjviewer-server-ci-linux-x86_64
+  fi
+
+  # the jobs beside the checks, in the order they started
+  step "deploy: the offline tests, run beside the checks above (build/ci/deploy-offline.log)"
+  show_job "$CI/deploy-offline.log" "deploy: the offline tests (build/ci/deploy-offline.log, above)"
+  if [ -d "$ROOT/relay" ]; then
+    step "deploy: hjv-relay's packages (scripts/package-relay.sh): the static build, its SHA256SUMS, the field test package"
+    show_job "$CI/relay-package.log" "deploy: hjv-relay's packages (relay/tests/package.rs --ignored)"
   fi
 
   cleanup
