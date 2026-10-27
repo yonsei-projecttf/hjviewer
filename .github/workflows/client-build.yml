@@ -102,8 +102,11 @@ env:
   # check_only: a check build's artifacts carry -check in their names and are kept one day
   BUILD_SUFFIX: ${{ inputs.check_only && '-check' || '' }}
   # Tool versions copied from upstream at RUSTDESK_COMMIT; bump them together with scripts/upstream.env.
+  # The tools of one job alone are in that job's env (Bridge codegen: the bridge generator's,
+  # Android: cargo-ndk's): rust-cache hashes every CARGO_* and RUST* variable into the job's cache
+  # key, so a bump here would leave every Rust job without its cache (GHA-01 of the 2026-10-27
+  # CI audit).
   RUST_VERSION: "1.75" # L22; upstream's Windows job reads SCITER_RUST_VERSION (L21), same value; bridge.yml L11
-  CARGO_NDK_VERSION: "3.1.2" # L24
   LLVM_VERSION: "15.0.6" # L27
   FLUTTER_VERSION: "3.24.5" # L28, Windows and iOS
   ANDROID_FLUTTER_VERSION: "3.24.5" # L29
@@ -112,9 +115,6 @@ env:
   XCODE_VERSION: "26.6"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d" # L39-45, vcpkg 2026.07.29 = vcpkg.json baseline
   NDK_VERSION: "r28c" # L49
-  BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
-  CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
-  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
   # Not upstream: hjv-relay's toolchain, the one scripts/package-relay.sh builds with on the
   # development machine, so that the two builds can be compared
   RELAY_RUST_VERSION: "1.99.0"
@@ -134,6 +134,10 @@ jobs:
     defaults:
       run:
         working-directory: upstream/rustdesk
+    env:
+      BRIDGE_FLUTTER_VERSION: "3.22.3" # bridge.yml L25, the default "bridge-artifact"
+      CARGO_EXPAND_VERSION: "1.0.95" # bridge.yml L9
+      FLUTTER_RUST_BRIDGE_VERSION: "1.80.1" # bridge.yml L10
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
       build_apps: ${{ steps.plan.outputs.build_apps }}
@@ -245,6 +249,16 @@ jobs:
             ninja-build \
             pkg-config \
             wget
+
+      # Not upstream. rust-cache hashes `rustc -vV` of every toolchain rustup knows into the cache
+      # key and its fallback, and the image's own stable Rust changes with the image, which GitHub
+      # does not roll out at once (GHA-01 of the 2026-10-27 CI audit: 1.9.1's Windows and Android
+      # builds found no cache). With a rustup directory of the job's own, rustup knows the pinned
+      # toolchain only. The same in every job that builds Rust.
+      - name: Give rustup a directory of this job's own
+        if: steps.plan.outputs.build_apps == 'true'
+        working-directory: ${{ github.workspace }}
+        run: echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
 
       # bridge.yml L61-70
       - name: Install Rust toolchain
@@ -506,6 +520,12 @@ jobs:
           if [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]]; then
             git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
           fi
+
+      # Not upstream: as in the Bridge codegen job
+      - name: Give rustup a directory of this job's own
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
 
       # L240-249
       - name: Install Rust toolchain
@@ -865,6 +885,7 @@ jobs:
     env:
       ANDROID_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && 'true' || 'false' }}
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+      CARGO_NDK_VERSION: "3.1.2" # L24
     steps:
       # Not upstream. The first steps, before any third-party build code (auto-deploy design 2-2):
       # the release record of the repository that runs this (store-releases.txt, design 3-8) must
@@ -1056,15 +1077,22 @@ jobs:
           name: bridge-artifact
           path: upstream/rustdesk
 
+      # Not upstream: as in the Bridge codegen job
+      - name: Give rustup a directory of this job's own
+        working-directory: ${{ github.workspace }}
+        run: echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: "rustfmt"
 
+      # upstream's prefix-key is rustdesk-lib-cache-android, with "TODO: drop '-android' part after
+      # caches are invalidated": done here, where the rustup directory above gave new keys anyway
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          prefix-key: rustdesk-lib-cache-android # TODO: drop '-android' part after caches are invalidated
+          prefix-key: rustdesk-lib-cache
           key: aarch64-linux-android
           workspaces: upstream/rustdesk -> target
 
@@ -1639,6 +1667,11 @@ jobs:
         with:
           path: vcpkg-bincache
           key: ${{ steps.vcpkg-fp.outputs.key }}
+
+      # Not upstream: as in the Bridge codegen job
+      - name: Give rustup a directory of this job's own
+        working-directory: ${{ github.workspace }}
+        run: echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
 
       # L692-713
       - name: Install Rust toolchain
