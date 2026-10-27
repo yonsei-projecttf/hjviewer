@@ -936,7 +936,8 @@ ms_since() { echo $((($(date +%s%N) - $1) / 1000000)); }
 # Client calls in the background (1.9: TV-W5's streams, W6-E3's waiting room, W6-E5's probe):
 # <tag> <ns> <side> <client> [NAME=value...] <args...>; its output goes to $RUN/<tag>.bg, and it
 # ends by itself within BG_LIMIT s. bg_wait <tag> <seconds> waits for it: BG_RC, BG_OUT, BG_MS
-# (ms the wait took); a call still running then fails the run.
+# (ms the wait took); a call still running then fails the run. A stream also ends, as at its
+# seconds, once bg_release has written $RUN/<tag>.until (HJV_E2E_STREAM_UNTIL, client patch 0162).
 declare -A BG_PID=()
 BG_LIMIT=150
 bg_start() {
@@ -948,11 +949,23 @@ bg_start() {
   done
   mkdir -p "$RUN/$side/home" "$RUN/$side/ipc"
   relay_window "$ns" "$side" "$client"
-  in_ns "$ns" "$side" timeout -k 5 "$BG_LIMIT" env "${envs[@]}" "$client" "$@" >"$RUN/$tag.bg" 2>&1 &
+  in_ns "$ns" "$side" timeout -k 5 "$BG_LIMIT" env HJV_E2E_STREAM_UNTIL="$RUN/$tag.until" "${envs[@]}" "$client" "$@" \
+    >"$RUN/$tag.bg" 2>&1 &
   BG_PID[$tag]=$!
 }
 # (the subshell's /proc entry: bash reaps its children as they end, as forward_try relies on)
 bg_running() { [ -e "/proc/${BG_PID[$1]}" ]; }
+# <tag> <what it outlasted>: a stream that is still running ends, right after the checks it had to
+# outlast, instead of running on to its seconds
+bg_release() {
+  bg_running "$1" || fail "$1: the stream ended before $2: $(grep '^hjv-e2e:' "$RUN/$1.bg" | tail -n 2 | tr '\n' ' ')"
+  : >"$RUN/$1.until"
+}
+# the last bg_wait's stream ended at its release, with video (exit 0, its frames line)
+bg_released() {
+  [ "$BG_RC" = 0 ] && grep -qx 'hjv-e2e: released' <<<"$BG_OUT" && grep -q '^hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT"
+}
+bg_frames() { sed -n 's/^hjv-e2e: \([0-9]* frames\), .* in \([0-9.]*\)s = .*/\1 in \2 s/p' <<<"$BG_OUT"; } # of the last bg_wait
 bg_has() { grep -qF -- "$2" "$RUN/$1.bg" 2>/dev/null; } # <tag> <text>
 bg_wait() {
   local t0 end
@@ -1263,12 +1276,11 @@ account_strict() {
   until_ok 20 "S13b: the PC's list again with hjv-api back" state_is active
   # one more sync with the list, which still has the stream's key
   sleep 6
-  bg_running s35 || fail "S35: the stream ended before hjv-api's list came back: $(grep '^hjv-e2e:' "$RUN/s35.bg" | tail -n 2 | tr '\n' ' ')"
-  bg_wait s35 100
-  [ "$BG_RC" = 0 ] && grep -q 'hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT" ||
-    fail "S35: the stream did not run to its end (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+  bg_release s35 "hjv-api's list came back"
+  bg_wait s35 15
+  bg_released || fail "S35: the stream did not end at its release (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
   [ "$(sessions_ended)" = "$ended" ] || fail "S35: the PC cut a session: $(pc_log | grep -o 'hjv: same-account session #.*' | tail -1)"
-  pass "S35: the password-less stream ran its 85 s through hjv-api stopped, gone past the list's 30 s and back (exit 0, $(grep -o '[0-9]* frames' <<<"$BG_OUT")); no session cut"
+  pass "S35: the password-less stream ran through hjv-api stopped, gone past the list's 30 s and back with one more sync, then ended at its release (exit 0, $(bg_frames)); no session cut"
 
   log "S14: hjv-ctl2 logs out and in as alice (a new key); its first connection right after"
   run ctl2 --hjv-e2e-logout
@@ -1346,7 +1358,7 @@ account_strict() {
   # S33: hjv-ctl's password-less stream; S34: a password stream of a controller that is not logged
   # in (a logged-in controller sends its proof with the password too, and the PC takes the proof)
   bg_start s33 hjv-ctl ctl "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 60
-  bg_start s34 hjv-ctl s34 "$CLIENT" --hjv-e2e-stream "$PC_ID" "$PASSWORD" 25
+  bg_start s34 hjv-ctl s34 "$CLIENT" --hjv-e2e-stream "$PC_ID" "$PASSWORD" 60
   bg_in s33
   bg_in s34
   locks=$(pc_log_count 'hjv: end lock: forced, locked at start true')
@@ -1355,15 +1367,16 @@ account_strict() {
   t0=$(date +%s%N)
   bg_wait s33 15
   cut_by_pc S33 "$CUT_LOGIN" "its key is no longer listed" "$CTL_ID"
+  bg_running s34 || fail "S34: the password stream ended with S33's cut: $(grep '^hjv-e2e:' "$RUN/s34.bg" | tail -n 2 | tr '\n' ' ')"
   until_ok 5 "S33: the PC's lock line of the cut" end_locks_above 'hjv: end lock: forced, locked at start true' "$locks"
   pass "S33: the stream ended $(ms_since "$t0") ms after the revoke (exit 7, 'closed: $CUT_LOGIN'); the PC logged '… from $CTL_ID ended: its key is no longer listed', closed it as 'account key no longer trusted' and locks (forced)"
   until_ok 15 "S17: the revoked key refused" try_rc ctl s17 3
   has 'password required Could not connect without a password' || fail "S17: not the refusal box"
   pass "S17: the revoked key is refused $(ms_since "$t0") ms after the revoke (refresh 5 s); S33: so the controller cut off gets the refusal box, not the session again"
-  bg_wait s34 40
-  [ "$BG_RC" = 0 ] && grep -q 'hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT" ||
-    fail "S34: the password stream did not run to its end (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
-  pass "S34: the password stream beside it ran its 25 s (exit 0, $(grep -o '[0-9]* frames' <<<"$BG_OUT")): sessions opened by a password are not held to the list"
+  bg_release s34 "S17's refusal"
+  bg_wait s34 15
+  bg_released || fail "S34: the password stream did not end at its release (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+  pass "S34: the password stream beside it ran on through S33's cut and S17's refusal to its release (exit 0, $(bg_frames)): sessions opened by a password are not held to the list"
 
   log "S18: hjv-ctl2 takes the PC out of the list"
   run ctl2 --hjv-e2e-remove "$PC_ID"
@@ -1455,20 +1468,23 @@ account_strict() {
   log "S25, S38: [끄기] on the PC with a password-less stream open, the option written again, then a login on the PC"
   pc_bound
   pwless_ok ctl2 s25a "S25: bound"
-  bg_start s38off hjv-ctl2 ctl2 "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 12
+  bg_start s38off hjv-ctl2 ctl2 "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 40
   bg_in s38off
   ended=$(sessions_ended)
+  ts=$(date +%s.%N)
   run pc --hjv-e2e-option hjv-pwless-off Y
   within_ms 1500 pc_off || fail "S25: the PC did not keep Off within 1.5 s of [끄기]"
   s25_ms=$WITHIN_MS
   pwless_refused ctl2 s25b "S25: after [끄기]"
   # S38's other half (D-6): [끄기] stops new password-less logins; its sync goes on, and the open
-  # session stays
-  bg_wait s38off 30
-  [ "$BG_RC" = 0 ] && grep -q 'hjv-e2e: [1-9][0-9]* frames' <<<"$BG_OUT" ||
-    fail "S38: the stream open at [끄기] did not run to its end (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
+  # session stays through it
+  until_ok 15 "S38: a sync of the PC after [끄기]" pc_syncs_match "$ts" '[0-9]'
+  bg_release s38off "the PC's sync after [끄기]"
+  bg_wait s38off 15
+  bg_released ||
+    fail "S38: the stream open at [끄기] did not end at its release (exit $BG_RC): $(grep '^hjv-e2e:' <<<"$BG_OUT" | tail -n 1)"
   [ "$(sessions_ended)" = "$ended" ] || fail "S38: [끄기] cut a session: $(pc_log | grep -o 'hjv: same-account session #.*' | tail -1)"
-  pass "S38: [끄기] on the PC refused new password-less logins and left the open stream to its end (exit 0, $(grep -o '[0-9]* frames' <<<"$BG_OUT"))"
+  pass "S38: [끄기] on the PC refused new password-less logins and left the open stream through the PC's next sync ($(pc_syncs_since "$ts")) to its release (exit 0, $(bg_frames))"
   run pc --hjv-e2e-option hjv-pwless-off N
   sleep 2
   pwless_refused ctl2 s25c "S25: with Config2's request written again"
