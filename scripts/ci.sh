@@ -2593,8 +2593,8 @@ drill_stage() { # <drill:build|drill:full|drill:quick>
 # list git ignores; docs/ci.md says what goes in) in tracked files, staged changes and the commits
 # a push would publish. Prints places and list line numbers, never the values. Then the checks of
 # prepush's reuse, which every prepush runs first, since they hold no unit's pass: its rules against
-# the code the units run and the re-run table of docs/ci.md (reuse_check), and the tests of the reuse
-# and of the lock.
+# the code the units run and the re-run table of docs/ci.md (reuse_check), and the tests of the reuse,
+# of the lock, of how prepush stops its jobs and of scripts/ci-times.sh.
 leak_stage() {
   step "leak: tests of scripts/leak-check.py (made-up values, throwaway repositories)"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_leak_check.py' || fail "leak: tests of the leak check"
@@ -2602,8 +2602,9 @@ leak_stage() {
   python3 -I -B "$ROOT/scripts/leak-check.py" --repo "$ROOT" || fail "leak: see above; push nothing until this passes"
   step "leak: what the units of prepush's reuse read, against their rules (REUSE_SKIP), and the re-run table of docs/ci.md"
   reuse_check
-  step "leak: tests of scripts/ci.sh's reuse and lock (scripts/test_ci_reuse.py, throwaway repositories)"
-  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_ci_reuse.py' || fail "leak: tests of scripts/ci.sh's reuse and lock"
+  step "leak: tests of scripts/ci.sh's reuse, lock and stops, and of scripts/ci-times.sh (scripts/test_ci_reuse.py, throwaway repositories)"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_ci_reuse.py' ||
+    fail "leak: tests of scripts/ci.sh's reuse, lock and stops, and of scripts/ci-times.sh"
 }
 
 # The head of a stage's log: the commits it ran on (this repository; the client series and hbbs
