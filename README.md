@@ -8,7 +8,7 @@
 - 서버 배포: [docs/deploy.md](docs/deploy.md)
 - CI(개발 PC)와 앱 빌드: [docs/ci.md](docs/ci.md)
 - 방화벽 E2E 검증과 결과: [docs/e2e.md](docs/e2e.md)
-- 앱 배포와 업데이트(현재 세 플랫폼 최소 1.8.0, 유예 없음. 1.9.0은 빌드 중), 1.9.0에서 사용자에게 달라지는 것, 스토어 자동화에 필요한 것: [docs/distribution.md](docs/distribution.md)
+- 앱 배포와 업데이트(현재 Windows·Android 최신 1.9.1·최소 1.9.0, iOS 최소·최신 1.9.0, 정책 `e1-s6`), 1.9.0·1.9.1에서 사용자에게 달라지는 것, 스토어 자동화에 필요한 것: [docs/distribution.md](docs/distribution.md)
 - 서명된 버전 정책을 만들고 확인하는 운영자 도구(hjv-release): [tools/hjv-release/README.md](tools/hjv-release/README.md)
 - 서버에서 작업할 사람·에이전트용 배포 절차: [docs/server-runbook.md](docs/server-runbook.md) (1.6.0의 계정 API는 7절, 1.8.0의 교직원 전용 출입 제한은 9절)
 - 교직원 전용 출입 제한의 형식(출입증, hbbs의 access.conf, 이용 비밀번호, 지원 코드)과 앱이 보이는 글: [docs/access-tickets.md](docs/access-tickets.md)
