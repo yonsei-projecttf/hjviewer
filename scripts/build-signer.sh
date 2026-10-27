@@ -46,6 +46,8 @@ kept() {
 work=
 finish() {
   local status=$?
+  # another signal (a second Ctrl-C) does not cut the clean-up and the message short
+  trap '' INT TERM HUP
   if [ -n "$work" ]; then rm -rf "$work"; fi
   rm -f "$out/hjv-release.new" "$out/hjv-release.record.new"
   if [ "$status" != 0 ]; then echo "build-signer: $(kept)" >&2; fi
