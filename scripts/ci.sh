@@ -348,8 +348,10 @@ hjv_pk_vector() { # <file>
 SERVER_PARTS="hbbs api relay release"
 # The one test that runs once more when it alone failed (the user's decision of 2026-10-27;
 # docs/ci.md, "알려진 불안정한 시험"), by its package, test target and name: hbbs's signaling over
-# WebSocket right after hbbs listens. A line "RETRY: ..." says so, and the stage's last lines count
-# the retried runs.
+# WebSocket right after hbbs listens. Alone means that its test binary came to its end, with
+# libtest's "test result" line of one failure: a binary that crashed or was killed after that test
+# failed is no flake of it. A line "RETRY: ..." says so, and the stage's last lines count the
+# retried runs.
 KNOWN_FLAKY=("$CI/upstream/rustdesk-server" tcp_signaling peer_registered_over_websocket_receives_signaling)
 # the test runs that this run retried (cargo_tests; server_stage adds those of its parts' runs)
 RETRIED=0
@@ -389,7 +391,8 @@ own_net() { # <command...>
 # build shows the compiler's warnings, which every run would show again. Then all of it goes to
 # <log> and stdout in cargo's order, and its skipped lines are counted. Unlike one cargo test, a
 # target that fails stops none of the others: the failure comes at the end.
-# The known flaky test (KNOWN_FLAKY) runs once more when it alone failed.
+# The known flaky test (KNOWN_FLAKY) runs once more when it alone failed in a run of its binary
+# that came to its end.
 cargo_tests() { # <dir> <log> <most> <wrapper> <options...> [-- <test options...>]
   local pkg=$1 log=$2 most=$3 wrapper=$4 dir=${2%.log} opts=() pick=() args=() targets=() started=() i target status failed=()
   shift 4
@@ -435,6 +438,7 @@ if sys.argv[2] == "0" and any(n == 0 and doctest for n, _, doctest in found):
       "$wrapper" env -C "$pkg" CARGO_BUILD_WARNINGS=allow cargo test "${opts[@]}" "${target[@]}" -- "${args[@]}" \
         > "$dir/$i.log" 2>&1 || status=$?
       if [ "$status" != 0 ] && [ "$pkg ${target[*]}" = "${KNOWN_FLAKY[0]} --test ${KNOWN_FLAKY[1]}" ] &&
+        grep -qE '^test result: FAILED\. [0-9]+ passed; 1 failed;' "$dir/$i.log" &&
         [ "$(sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' "$dir/$i.log")" = "${KNOWN_FLAKY[2]}" ]; then
         echo "RETRY: ${KNOWN_FLAKY[2]} (tests/${KNOWN_FLAKY[1]}.rs) failed alone; the known flaky test runs once more" \
           >> "$dir/$i.log"
