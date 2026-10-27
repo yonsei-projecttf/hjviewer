@@ -431,6 +431,13 @@ check_account_down() { # <port> <CA file> <name>
   esac
 }
 
+# hjv-probe and hjv-load of this tree, each built in its own folder (tools/<tool>/target), by every
+# stage that runs them: a second when they are built already
+build_tools() {
+  local t
+  for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked) || fail "$t build"; done
+}
+
 # The vector that tests/hjv_pk.rs (server/patches/0004) checks the patched hbbs against is a
 # copy of hjv-api's (server/api/src/hbbs.rs, reads_what_libsodium_signed): its four values, named.
 hjv_pk_vector() { # <file>
@@ -472,7 +479,7 @@ server_stage() {
     HJV_ACCESS_VECTORS="$vectors" CARGO_TARGET_DIR="$CI/target" cargo test --release --locked "${tests[@]}")
   for t in hbbs hbbr; do stamp_binary "$CI/target/release/$t" "${HBBS_INPUTS[@]}"; done
   step "server: hjv-probe and hjv-load"
-  for t in hjv-probe hjv-load; do (cd "$ROOT/tools/$t" && cargo build --release --locked); done
+  build_tools
   if [ -d "$ROOT/server/api" ]; then
     step "server: hjv-api tests and release build (server/api)"
     own_target "$CI/target-api" "$ROOT/server/api"
@@ -1107,11 +1114,12 @@ EOF
 }
 
 deploy_stage() {
-  if [ ! -x "$PROBE" ] || [ ! -x "$LOAD" ]; then fail "hjv-probe/hjv-load are not built: scripts/ci.sh server"; fi
   # the server stage's builds that the release package takes
   for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
   if [ -d "$ROOT/server/api" ]; then check_stamp "$API" server server/api; fi
   sudo docker compose version > /dev/null 2>&1 || fail "Docker with compose v2 is needed (docs/server-runbook.md 3-1)"
+  step "deploy: hjv-probe and hjv-load (tools/)"
+  build_tools
   step "deploy: the production settings check (scripts/check-api-settings.py), offline tests"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_check_api_settings.py' ||
     fail "deploy: tests of the settings check"
@@ -1724,7 +1732,8 @@ e2e_stage() {
     fail "e2e: E2E_CLIENT is not taken here: the stage builds the client from client/patches, runs its unit tests and the account E2E with it"
   sudo -n true 2> /dev/null || fail "e2e: needs sudo without a password prompt (network namespaces, iptables)"
   for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
-  [ -x "$PROBE" ] || fail "e2e: hjv-probe is not built: scripts/ci.sh server"
+  step "e2e: hjv-probe and hjv-load (tools/)"
+  build_tools
   fetch_caddy
   e2e_server_key "$work"
   e2e_keys "$work/api"
@@ -1768,7 +1777,8 @@ e2e_stage() {
 wol_stage() {
   local work="$CI/e2e" built="$CI/target-e2e/release/rustdesk" t
   for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
-  [ -x "$PROBE" ] || fail "wol: hjv-probe is not built: scripts/ci.sh server"
+  step "wol: hjv-probe and hjv-load (tools/)"
+  build_tools
   fetch_caddy
   e2e_server_key "$work"
   e2e_keys "$work/api"

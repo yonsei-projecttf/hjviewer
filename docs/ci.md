@@ -10,7 +10,7 @@
 scripts/ci.sh            # = all: server + deploy만 (처음에는 15분 안팎, 이후에는 캐시로 더 빠름). 나머지 단계는 따로 실행
 scripts/ci.sh prepush    # push 전 관문: 깨끗한 트리에서 엄격 모드로 여섯 단계 전부를 차례로, 단계마다 로그 (아래)
 scripts/ci.sh server     # 서버 테스트만 (hbbs·hbbr, hjv-api, hjv-relay, hjv-release)
-scripts/ci.sh deploy     # 배포 시험만 (server를 한 번 돌려 hjv-probe·hjv-load·hjv-api가 있어야 함)
+scripts/ci.sh deploy     # 배포 시험만 (server를 먼저 돌려 이 트리의 hbbs·hbbr·hjv-api가 있어야 함. hjv-probe·hjv-load는 이 단계가 빌드)
 scripts/ci.sh client     # 앱 시험: Play 업로드 스크립트, 스토어 실행(글 검사, 출시 기록, App Store Connect, 워크플로 규칙), 공개키 확인, actionlint, 릴리스 기록, hbb_common WebSocket, Rust 1.75 check, 공유 벡터, 순수 Dart (server를 먼저 돌려야 hjv-release와 맞춰 봄)
 scripts/ci.sh e2e        # 방화벽 E2E (docs/e2e.md): sudo, 클라이언트 빌드 포함. server를 먼저 돌려야 함
 scripts/ci.sh wol        # 원격 켜기 E2E (docs/e2e.md): sudo 없이, 클라이언트 빌드 포함. server를 먼저 돌려야 함
