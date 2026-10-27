@@ -788,10 +788,15 @@ exit 1
     def policy(self, tree, ios_build, *more):
         env = {**os.environ, "PATH": os.path.join(tree.root, "bin") + os.pathsep + os.environ["PATH"],
                "HJV_TEST_GH": os.path.join(tree.root, "gh")}
+        # The documented build.yml passes testflight_run (1.9.2), which an older tool takes only
+        # allowed (tools/hjv-release/README.md): HJV_RELEASE_BIN is the server stage's build, of
+        # another tree until that stage has built this one's. That this tree's tool knows the input
+        # is the tool's own test (src/provenance.rs, the_documented_build_yml).
         return subprocess.run(
             [self.tool, "policy", "--keys", "keys.env", "--allow-test-keys", "--prev", "none", "--server", "hjv.test",
              "--release-dir", "release", "--repo", ".", "--min", "all=1.5.0", "--grace-days", "0",
-             "--auto-after", "windows=none", "--ios-valid", ios_build, "--no-appstore", "--out", "draft.json", *more],
+             "--auto-after", "windows=none", "--ios-valid", ios_build, "--no-appstore", "--out", "draft.json",
+             "--allow-input", "testflight_run", *more],
             cwd=tree.root, env=env, capture_output=True, text=True)
 
     def test_the_tool_makes_a_draft_from_a_runs_artifacts(self):
