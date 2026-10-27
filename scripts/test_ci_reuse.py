@@ -540,11 +540,20 @@ class LockTest(unittest.TestCase):
             self.assertRegex(done.stdout.splitlines()[-1], r"^\d+ tree .*, scripts/ci.sh deploy, since 20")
         finally:
             before.wait()
-        # a process of something else under that number, or none, is not waited for
-        start = time.monotonic()
-        done = bash('source "$1"; lock_held deploy', ci, env=env)
-        self.assertLess(time.monotonic() - start, 0.5)
-        self.assertNotIn("waiting", done.stdout)
+        # a process of something else under that number (the number came round again), or none, is
+        # not waited for
+        other = subprocess.Popen(["sleep", "5"])
+        try:
+            for pid in (other.pid, before.pid):
+                with open(os.path.join(self.ci, "ci.lock.holder"), "w", encoding="utf-8") as f:
+                    f.write(f"{pid} tree T, commit C, scripts/ci.sh prepush, since now\n")
+                start = time.monotonic()
+                done = bash('source "$1"; lock_held deploy', ci, env=env)
+                self.assertLess(time.monotonic() - start, 0.5, pid)
+                self.assertNotIn("waiting", done.stdout, pid)
+        finally:
+            other.kill()
+            other.wait()
 
 
 class StopTest(unittest.TestCase):
