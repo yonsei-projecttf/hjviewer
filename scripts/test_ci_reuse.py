@@ -517,38 +517,59 @@ class LockTest(unittest.TestCase):
 
 
 class StopTest(unittest.TestCase):
-    """prepush_stop of scripts/ci.sh: the jobs it stops end with their exit traps, before it returns"""
+    """prepush_stop of scripts/ci.sh: the jobs of prepush_start that it stops end with their exit
+    traps, before it returns"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="hjv-stop-")
+        # the run of a job ($SELF <target>), whose exit trap takes a second, as the deploy stage's
+        # cleanup takes its time
+        self.stage = os.path.join(self.tmp, "stage.sh")
+        with open(self.stage, "w", encoding="utf-8") as f:
+            f.write('#!/usr/bin/env bash\ntrap \'sleep 1; echo "$1 ended" >> "$TRAPS"\' EXIT\n'
+                    'echo "$1 started" >> "$TRAPS"\nsleep 30\n')
+        os.chmod(self.stage, 0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def jobs(self, script):
+        """<script> in a bash that sourced scripts/ci.sh, where prepush_start's jobs run the stage
+        above after a log head that says nothing; "started <name>" waits for the run of a job"""
+        return bash('source "$1"\nPREPUSH_LOGS=$2 SELF=$3\nexport TRAPS=$2/traps\nlog_head() { :; }\n'
+                    'started() { for _ in $(seq 100); do if grep -qx "$1 started" "$TRAPS" 2> /dev/null; then return; fi; '
+                    'sleep 0.05; done; return 1; }\n' + script, os.path.join(ROOT, "scripts", "ci.sh"), self.tmp,
+                    self.stage, env=clean_env(os.path.join(self.tmp, "ci"))).stdout
 
     def test_a_stopped_job_ends_with_its_exit_trap_whole_and_before_prepush(self):
-        tmp = tempfile.mkdtemp(prefix="hjv-stop-")
-        try:
-            out = bash(r'''source "$1"
-PREPUSH_LOGS=$2 traps=$2/traps
-# a job as prepush_start starts one: a background subshell, under it a run whose exit trap takes a
-# second (as the deploy stage's cleanup takes its time)
-job() {
-  ( env --default-signal=INT bash -c 'trap "sleep 1; echo \"$1 ended\" >> \"$0\"" EXIT; sleep 30' "$traps" "$1" ) &
-  PREPUSH_PID[$1]=$!
-  sleep 0.5
-}
+        out = self.jobs(r'''
 # stopped after a failure: prepush_stop returns once the trap has ended
-job failure
+prepush_start failure failure
+started failure
 prepush_stop failure
-cat "$traps"
+cat "$TRAPS"; : > "$TRAPS"
 # after a Ctrl-C, which reached the job too: its trap, under way, is not cut short
-job interrupt
+prepush_start interrupt interrupt
+started interrupt
 kill -INT $(prepush_pids "${PREPUSH_PID[interrupt]}")
 PREPUSH_SIGNAL=SIGINT
 prepush_stop interrupt
-cat "$traps"
-echo "jobs left: ${!PREPUSH_PID[*]}"''', os.path.join(ROOT, "scripts", "ci.sh"), tmp, env=clean_env(os.path.join(tmp, "ci"))).stdout
-            self.assertIn("prepush: stopping failure, which a failure before makes pointless\nfailure ended\n", out)
-            self.assertIn("prepush: SIGINT: waiting up to 120 s for interrupt to end, cleaning up\n"
-                          "failure ended\ninterrupt ended\n", out)
-            self.assertNotIn("prepush: stopping interrupt", out)
-            self.assertTrue(out.endswith("jobs left: \n"), out)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+cat "$TRAPS"; : > "$TRAPS"
+# after a SIGTERM to the group, which reached the job's subshell too: that outlasts the run under
+# it, which prepush_stop finds by it and waits for
+prepush_start term term
+started term
+kill -TERM $(prepush_pids "${PREPUSH_PID[term]}")
+PREPUSH_SIGNAL=SIGTERM
+prepush_stop term
+cat "$TRAPS"
+echo "jobs left: ${!PREPUSH_PID[*]}"''')
+        self.assertIn("prepush: stopping failure, which a failure before makes pointless\nfailure started\nfailure ended\n", out)
+        self.assertIn("prepush: SIGINT: waiting up to 120 s for interrupt to end, cleaning up\ninterrupt started\n"
+                      "interrupt ended\n", out)
+        self.assertIn("prepush: SIGTERM: waiting up to 120 s for term to end, cleaning up\nterm started\nterm ended\n", out)
+        self.assertNotRegex(out, r"prepush: stopping (interrupt|term)")
+        self.assertTrue(out.endswith("jobs left: \n"), out)
 
 
 if __name__ == "__main__":
