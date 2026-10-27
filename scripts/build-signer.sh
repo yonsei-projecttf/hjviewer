@@ -34,10 +34,14 @@ if [ -n "${HJV_SIGNER_DIR:-}" ]; then
   mkdir -p "$out"
   [ "$out" -ef "$main/build/signer" ] || trial=1
 fi
-# What the output folder holds: a run that stops leaves the tool that was there
+# What the output folder holds: a run that stops leaves the tool that was there, and one that fails
+# only after it has moved its own in (in printing the record) says so
+replaced=
 kept() {
   if [ ! -e "$out/hjv-release" ]; then
     echo "there is no $out/hjv-release"
+  elif [ -n "$replaced" ]; then
+    echo "$out/hjv-release is this run's: $(head -n 1 "$out/hjv-release.record")"
   elif [ -f "$out/hjv-release.record" ]; then
     echo "$out/hjv-release stays as it was: $(head -n 1 "$out/hjv-release.record")"
   else
@@ -174,5 +178,6 @@ sha=$(sha256sum < "$out/hjv-release.new" | cut -d' ' -f1)
 trap '' INT TERM HUP
 mv -f "$out/hjv-release.new" "$out/hjv-release"
 mv -f "$out/hjv-release.record.new" "$out/hjv-release.record"
+replaced=1
 echo "== $out/hjv-release"
 cat "$out/hjv-release.record"
