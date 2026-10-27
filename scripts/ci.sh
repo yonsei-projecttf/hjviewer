@@ -80,12 +80,14 @@
 #                          changes (scripts/leak-check.py)
 # A stage skips, with a line "skipped: ..." saying so, what needs a work package that is not in the
 # tree yet or a tool this machine lacks. Every skip is counted, those that the E2E scripts and the
-# other checks print too, and the last line says how many: "CI passed: <stage> (<n> skipped)". With
-# HJV_CI_STRICT=1 (prepush) a run with a skip fails at its end with the list: a pass with skipped
-# lines is no pass before a push. hjv-api's and hjv-relay's tests run with the output of the tests
-# that pass, so that a test that skips itself is counted too. A run that skipped nothing fails
-# when an E2E has fewer PASS lines, or a client unit test filter fewer passed tests, than the last
-# full run (E2E_LEAST_*, WOL_LEAST, UNIT_LEAST below).
+# other checks print too, and the last line says how many: "CI passed: <stage> (<n> skipped)". A run
+# is strict (HJV_CI_STRICT=1, unless HJV_CI_STRICT=0 says otherwise or the run is a partial E2E): a
+# run with a skip fails at its end with the list, since a pass with skipped lines is no pass before
+# a push, and a run of its own first looks at what the stage needs of this machine (preflight).
+# hjv-api's and hjv-relay's tests run with the output of the tests that pass, so that a test that
+# skips itself is counted too. A run that skipped nothing fails when an E2E has fewer PASS lines, or
+# a client unit test filter fewer passed tests, than the last full run (E2E_LEAST_*, WOL_LEAST,
+# UNIT_LEAST below).
 # Under each step's title a line says when it began, how far into the run, the machine's load and
 # how long the step before took; before its last line a run prints its steps by time.
 # One run at a time on a CI directory (HJV_CI_DIR, default build/ci): a run holds the lock
@@ -2578,6 +2580,59 @@ lock_held() { # <argument...>
   mv -f "$CI/ci.lock.holder.$$" "$CI/ci.lock.holder"
 }
 
+# --- the preflight ---
+
+# What <stage...> need of this machine, looked at before any of them starts: what a stage would
+# otherwise skip (which fails a strict run, but only at its end) or fail on minutes in. In a strict
+# run what is missing stops it at once; else it is told. The ports, which a run holding the lock may
+# be using, are looked at under the lock (preflight_ports).
+preflight() { # <stage...>
+  local s missing=() node
+  for s in "$@"; do
+    case $s in
+      server | server:* | all)
+        own_net true 2> /dev/null ||
+          missing+=("$s: unprivileged user and network namespaces (unshare -rn), for hjv-relay's netns test and the test binaries' own networks") ;;&
+      client)
+        rustup toolchain list 2> /dev/null | grep -q '^1\.75\.0' ||
+          missing+=("client: Rust 1.75.0, the app builds' (rustup toolchain install 1.75.0 --profile minimal)")
+        node=$(node -p 'process.versions.node.split(".")[0]' 2> /dev/null || echo 0)
+        [ "$node" -ge 20 ] 2> /dev/null || missing+=("client: Node 20 or later, for the App Store Connect script's tests")
+        command -v actionlint > /dev/null || [ -x "$HOME/.local/bin/actionlint" ] ||
+          missing+=("client: actionlint (github.com/rhysd/actionlint), for the workflows")
+        ;;
+      deploy | all)
+        sudo -n true 2> /dev/null || missing+=("deploy: sudo without a password prompt")
+        sudo -n docker compose version > /dev/null 2>&1 ||
+          missing+=("deploy: Docker with compose v2, through sudo (docs/server-runbook.md 3-1)")
+        if [ -d "$ROOT/relay" ] && ! { rustup target list --installed 2> /dev/null | grep -qx x86_64-unknown-linux-musl &&
+          command -v musl-gcc > /dev/null; }; then
+          missing+=("deploy: the x86_64-unknown-linux-musl target and musl-gcc, for hjv-relay's packages")
+        fi
+        unshare -rn true 2> /dev/null ||
+          missing+=("deploy: unprivileged user and network namespaces, for the account API's nginx limits")
+        ;;
+      e2e)
+        sudo -n true 2> /dev/null || missing+=("e2e: sudo without a password prompt (network namespaces, iptables)")
+        [ -f /usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1 ] ||
+          [ -f "$CI/faketime/root/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1" ] ||
+          apt-cache show libfaketime > /dev/null 2>&1 ||
+          missing+=("e2e: libfaketime (installed, unpacked under build/ci/faketime, or in apt's lists), for S27")
+        ;;
+      wol) unshare -rn true 2> /dev/null || missing+=("wol: unprivileged user and network namespaces") ;;
+      drill:full | drill:quick)
+        sudo -n docker version > /dev/null 2>&1 || missing+=("$s: Docker through sudo without a password prompt") ;;
+    esac
+  done
+  if [ ${#missing[@]} -eq 0 ]; then
+    echo "preflight: what $* need is here"
+    return 0
+  fi
+  printf 'preflight: missing: %s\n' "${missing[@]}"
+  [ "${HJV_CI_STRICT:-}" != 1 ] || fail "preflight: $* would skip or fail on the ${#missing[@]} missing above (HJV_CI_STRICT=1)"
+  echo "preflight: not strict (HJV_CI_STRICT=${HJV_CI_STRICT:-}): the stages skip what needs it, or fail"
+}
+
 # The gate before a push (design v3 11 step 1): the stages one after another on a clean tree, under
 # this run's lock, with HJV_CI_STRICT=1, each with its own log, stopping at the first that fails.
 # Named stages run alone, in this order: after a fix, those that read what it changed (docs/ci.md).
@@ -2656,6 +2711,13 @@ finish() { # <target>
 
 # Sourced (scripts/test_ci_reuse.py), this file only defines what is above
 [ "${BASH_SOURCE[0]}" = "$0" ] || return 0
+# Every run is strict unless HJV_CI_STRICT=0 says otherwise, but for a partial E2E (HJV_E2E_PARTS),
+# which is never a pass anyway
+if [ -z "${HJV_CI_STRICT+set}" ]; then
+  HJV_CI_STRICT=1
+  [ -z "${HJV_E2E_PARTS:-}" ] || HJV_CI_STRICT=0
+fi
+export HJV_CI_STRICT
 case "$TARGET" in
   # what reads only the tree and writes nothing under the CI directory takes no lock
   leak) ;;
@@ -2664,12 +2726,16 @@ case "$TARGET" in
     lock_held "$@"
     ;;
 esac
-# the head of a run of its own (a stage that prepush runs, with HJV_CI_RUN, has it in its log, and a
-# part that a server stage runs beside the others, with HJV_CI_PART, in that stage's); such a run
-# ends with "== CI passed: ..." or "FAIL: ...", and only prepush's logs with an EXIT line
+# the head of a run of its own and what it needs (a stage that prepush runs, with HJV_CI_RUN, has the
+# head in its log, and a part that a server stage runs beside the others, with HJV_CI_PART, in that
+# stage's); such a run ends with "== CI passed: ..." or "FAIL: ...", and only prepush's logs with an
+# EXIT line
 case "$TARGET" in
   all | server | server:* | client | deploy | e2e | e2e:build | wol | leak)
-    [ -n "${HJV_CI_RUN:-}${HJV_CI_PART:-}" ] || log_head "$TARGET" "on its own${HJV_CI_STRICT:+, HJV_CI_STRICT=$HJV_CI_STRICT}"
+    if [ -z "${HJV_CI_RUN:-}${HJV_CI_PART:-}" ]; then
+      log_head "$TARGET" "on its own, HJV_CI_STRICT=$HJV_CI_STRICT"
+      preflight "$TARGET"
+    fi
     ;;
 esac
 case "$TARGET" in
