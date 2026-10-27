@@ -78,9 +78,9 @@ fail() {
   echo "build-signer: $*" >&2
   exit 1
 }
-# Nothing of the caller's environment changes what cargo builds: the compiler, its wrappers and
-# flags, the toolchain, and cargo's build, target and profile settings are unset here (the output
-# names them)
+# What of the caller's environment would change what cargo builds is unset here (the output names
+# them): the compiler, its wrappers and flags, the toolchain, and cargo's build, target and profile
+# settings. PATH stays, with ~/.cargo/bin first, and with it the linker: the first cc on it.
 dropped=()
 for name in $(compgen -e); do
   case $name in
