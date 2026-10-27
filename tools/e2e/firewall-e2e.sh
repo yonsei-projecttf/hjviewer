@@ -79,6 +79,7 @@
 # HJV_E2E_HOLD=<seconds> (at most 3600): a run that fails keeps its namespaces, servers and
 # clients up that long, or until $RUN/release exists, before it cleans up, so that the state can
 # be looked at (logs, --hjv-e2e-option through in_ns) without running it again.
+# HJV_E2E_NO_SKIP=1: a run that would skip a part fails before it starts (skips_ahead).
 #
 # In strict mode the base path's controller and the sides ver, rev and pc2 hold a relay that is
 # paired for the client's default WebRTC window (2.5 s), as every 443-only network does; the other
@@ -205,6 +206,26 @@ conf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(conf)
 print(conf.hash_of(sys.argv[2], os.urandom(16)))' "$ROOT/deploy/guest-conf.py" "$1"
 }
+
+# What the run would skip, known before it starts from the conditions its parts test later; with
+# HJV_E2E_NO_SKIP=1 (scripts/ci.sh in strict mode, where a skip fails the stage at its end) the run
+# fails at once, not after twelve minutes
+has_faketime() { [ -n "${FAKETIME_LIB:-}" ] && [ -f "$FAKETIME_LIB" ]; }
+client_has() { grep -aqF -- "$1" "$CLIENT"; } # <text>: one of the client's own (an E2E command's)
+skips_ahead() {
+  if [ "$MODE" = strict ] && [ -n "$ACCOUNT" ] && ! has_faketime; then echo "S27 (no FAKETIME_LIB)"; fi
+  if [ -n "$ACCESS" ]; then
+    [ -n "$POLICY" ] || echo "W6-E2 (no version policy: HJV_RELEASE)"
+    client_has hjv-e2e-support-pc || echo "W6-E4, W6-E4b, W6-E5 (no hjv-e2e-support-pc in $CLIENT)"
+    client_has 'after delete-account' || echo "DEL1-DEL3 (no --hjv-e2e-delete-account in $CLIENT: client patch 0161)"
+  fi
+  if [ -n "$KEYED" ] && [ -z "$POLICY" ]; then echo "V5-V7 and V9 (no HJV_RELEASE)"; fi
+}
+if [ -n "${HJV_E2E_NO_SKIP:-}" ] && AHEAD=$(skips_ahead) && [ -n "$AHEAD" ]; then
+  echo "FAIL: HJV_E2E_NO_SKIP=1, and this run would skip:"
+  sed 's/^/  - /' <<<"$AHEAD"
+  exit 1
+fi
 
 # <-I|-D>: the host forwards UDP between hjv-pc and hjv-ctl (open mode)
 forward_rules() {
@@ -1615,7 +1636,7 @@ open(p, "w").write(cut)' "$RUN/pc/home/.config/hjviewer/HJViewer.toml"
   pass "D1: $(grep -o 'device list answered after the logout.*' <<<"$OUT")"
 
   log "S27: the controller's clock 15 minutes ahead"
-  if [ -n "${FAKETIME_LIB:-}" ] && [ -f "$FAKETIME_LIB" ]; then
+  if has_faketime; then
     ft=(LD_PRELOAD="$FAKETIME_LIB" FAKETIME=+15m FAKETIME_DONT_FAKE_MONOTONIC=1)
     tok=$(local_option ctl access_token)
     run ctl "${ft[@]}" --hjv-e2e-devices
@@ -2123,7 +2144,7 @@ support_link_part() {
   # A headless command is a process of its own, and the app keeps its support PCs in its memory
   # only (src/hjviewer_account/support.rs): E4, E4b and E5 need the support PC that E3's process
   # learned in the next ones, which an hjv-e2e build hands on in LocalConfig hjv-e2e-support-pc
-  if grep -aqF hjv-e2e-support-pc "$CLIENT"; then
+  if client_has hjv-e2e-support-pc; then
     log "W6-E4: alice's controller to PC B without a password: the staff mark, and the wait for [수락]"
     cm0=$(pcb_cm_lines)
     marks=$(pcb_log_count "hjv: support mark for $staff_id")
@@ -2448,7 +2469,7 @@ delete_part() {
   [ "$got" = "200 " ] && grep -qF -- "$code" "$RUN/w6.body" || fail "DEL: the code's support link answers '$got'"
   cp "$RUN/w6.body" "$RUN/del-support-page.html"
 
-  if ! grep -aqF 'after delete-account' "$CLIENT"; then
+  if ! client_has 'after delete-account'; then
     echo "skipped: DEL1-DEL3, the account's deletion from the app (no --hjv-e2e-delete-account in $CLIENT: client patch 0161)"
   else
     log "DEL1: alice deletes her account in the app (POST /api/hjv/account/delete, signed with her account key)"

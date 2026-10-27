@@ -1627,6 +1627,16 @@ e2e_stage() {
   extra+=("${E2E_MINVER[@]}")
   e2e_access
   extra+=("${E2E_ACCESS[@]}")
+  # In strict mode a skip fails the stage at its end: what was skipped so far fails it now, and
+  # firewall-e2e.sh fails at its start on what it knows it would skip (HJV_E2E_NO_SKIP), not after
+  # twelve minutes
+  if [ "${HJV_CI_STRICT:-}" = 1 ]; then
+    if [ ${#SKIPPED[@]} -gt 0 ]; then
+      printf '  - %s\n' "${SKIPPED[@]}"
+      fail "e2e: HJV_CI_STRICT=1, and the stage has skipped the ${#SKIPPED[@]} part(s) above before the E2E"
+    fi
+    extra+=(HJV_E2E_NO_SKIP=1)
+  fi
   for mode in strict open; do
     step "e2e: tools/e2e/firewall-e2e.sh $mode (output also in build/ci/e2e-$mode.log)"
     with_skips "$CI/e2e-$mode.log" env HJV_E2E_WORK="$work" CADDY="$CADDY_BIN" HBBS="$CI/target/release/hbbs" \
