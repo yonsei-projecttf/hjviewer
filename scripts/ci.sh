@@ -89,23 +89,19 @@
 # Under each step's title a line says when it began, how far into the run, the machine's load and
 # how long the step before took; before its last line a run prints its steps by time.
 # One run at a time on a CI directory (HJV_CI_DIR, default build/ci): a run holds the lock
-# <CI directory>/ci.lock, and a run started meanwhile stops at once.
+# <CI directory>/ci.lock and says who it is in ci.lock.holder; a run started meanwhile stops at once
+# with what that says, or with HJV_CI_WAIT=<seconds> waits that long for it (lock_run). What reads
+# only the tree and writes nothing under the CI directory runs without it: the leak stage.
 # Needs cargo, curl, openssl, Docker with compose v2 (used through sudo, as the runbook does), and
 # apt-get for Ubuntu's nginx and Apache packages, which are unpacked under build/ci, not installed.
 set -euo pipefail
 
-# the tree's physical path, as cargo and the tests it builds give theirs (CARGO_MANIFEST_DIR)
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-SELF="$ROOT/scripts/$(basename "$0")"
+# the tree's physical path, as cargo and the tests it builds give theirs (CARGO_MANIFEST_DIR); the
+# tests of this script source it (scripts/test_ci_reuse.py)
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SELF="$ROOT/scripts/$(basename "${BASH_SOURCE[0]}")"
 CI="${HJV_CI_DIR:-$ROOT/build/ci}"
 mkdir -p "$CI"
-# The runs on a CI directory share its checkouts, builds and E2E folders. flock holds the lock for
-# as long as the run lasts and keeps it from the programs the run starts (-o), so that nothing the
-# run leaves behind holds it; prepush's stages run under prepush's lock (HJV_CI_LOCK).
-if [ "${HJV_CI_LOCK:-}" != "$CI" ]; then
-  flock -n "$CI/ci.lock" true || { echo "FAIL: another scripts/ci.sh run holds $CI/ci.lock" >&2; exit 1; }
-  exec env HJV_CI_LOCK="$CI" flock -n -o "$CI/ci.lock" "$SELF" "$@"
-fi
 TARGET=${1:-all}
 PROJECT=hjv-ci                     # compose project of the test stack, apart from a real deployment
 PROBE="$ROOT/tools/hjv-probe/target/release/hjv-probe"
@@ -2507,12 +2503,15 @@ wol_stage() {
 
 # The push gate of design v3 11 steps 1-2: none of the values of build/leak-patterns.txt (a local
 # list git ignores; docs/ci.md says what goes in) in tracked files, staged changes and the commits
-# a push would publish. Prints places and list line numbers, never the values.
+# a push would publish. Prints places and list line numbers, never the values. Then the tests of
+# the CI lock, which take no lock either.
 leak_stage() {
   step "leak: tests of scripts/leak-check.py (made-up values, throwaway repositories)"
   python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_leak_check.py' || fail "leak: tests of the leak check"
   step "leak: the listed values in what a push would publish"
   python3 -I -B "$ROOT/scripts/leak-check.py" --repo "$ROOT" || fail "leak: see above; push nothing until this passes"
+  step "leak: tests of scripts/ci.sh's lock (scripts/test_ci_reuse.py, throwaway CI directories)"
+  python3 -I -B -m unittest discover -s "$ROOT/scripts" -p 'test_ci_reuse.py' || fail "leak: tests of scripts/ci.sh's lock"
 }
 
 # The head of a stage's log: the commits it ran on (this repository; the client series and hbbs
@@ -2537,6 +2536,46 @@ log_head() { # <stage> [<how it runs>]
   echo "TOOLCHAIN $(rustc --version) / $(cargo --version) / $(rustc +1.75.0 --version 2> /dev/null || echo 'no rustc 1.75.0')" \
     "/ $(python3 --version 2>&1) / bash $BASH_VERSION"
   echo "START $(date '+%Y-%m-%d %H:%M:%S %z')"
+}
+
+# --- the lock ---
+
+# The runs on a CI directory share its checkouts, builds and E2E folders: a run that uses them holds
+# the lock <CI directory>/ci.lock. flock holds it for as long as the run lasts and keeps it from the
+# programs the run starts (-o), so that nothing the run leaves behind holds it. The runs that prepush
+# starts are under prepush's lock (HJV_CI_LOCK), as are those of a caller that holds it itself
+# (flock -o <lock> env HJV_CI_LOCK=<CI directory> scripts/ci.sh ...). A run that finds it held says
+# by whom (lock_holder) and stops at once, or with HJV_CI_WAIT=<seconds> waits that long for it.
+lock_run() { # <argument...>: this script again with them, under the lock
+  local wait=${HJV_CI_WAIT:-} how=(-n) status=0
+  [[ $wait =~ ^[0-9]*$ ]] || fail "HJV_CI_WAIT=$wait is no number of seconds"
+  if ! flock -n "$CI/ci.lock" true; then
+    [ -n "$wait" ] || fail "another scripts/ci.sh run holds $CI/ci.lock: $(lock_holder) (HJV_CI_WAIT=<seconds> waits for it)"
+    echo "waiting up to $wait s for $CI/ci.lock, held by $(lock_holder)"
+  fi
+  [ -z "$wait" ] || how=(-w "$wait")
+  # (75, which no run of this script exits with, is flock's own: the lock stayed held)
+  env HJV_CI_LOCK="$CI" flock "${how[@]}" -E 75 -o "$CI/ci.lock" "$SELF" "$@" || status=$?
+  [ "$status" != 75 ] || fail "$CI/ci.lock is still held${wait:+ after $wait s}, by $(lock_holder)"
+  exit "$status"
+}
+# Who holds the lock, by what the run that holds it wrote at its start (lock_held)
+lock_holder() {
+  local pid rest
+  if read -r pid rest 2> /dev/null < "$CI/ci.lock.holder" && kill -0 "$pid" 2> /dev/null; then
+    echo "pid $pid, $rest"
+  else
+    echo "a run that does not say who it is (no live process in $CI/ci.lock.holder)"
+  fi
+}
+# At the start of a run under the lock, in its first process only (the stages that prepush starts
+# are its): who holds the lock, for lock_holder
+lock_held() { # <argument...>
+  [ -z "${HJV_CI_HOLDER:-}" ] || return 0
+  export HJV_CI_HOLDER=$$
+  echo "$$ tree $ROOT, commit $(git -C "$ROOT" rev-parse --short HEAD), scripts/ci.sh $*, since $(date '+%Y-%m-%d %H:%M:%S %z')" \
+    > "$CI/ci.lock.holder.$$"
+  mv -f "$CI/ci.lock.holder.$$" "$CI/ci.lock.holder"
 }
 
 # The gate before a push (design v3 11 step 1): the stages one after another on a clean tree, under
@@ -2615,6 +2654,16 @@ finish() { # <target>
   printf '\n== %s\n' "CI passed: $1 (${#SKIPPED[@]} skipped)"
 }
 
+# Sourced (scripts/test_ci_reuse.py), this file only defines what is above
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
+case "$TARGET" in
+  # what reads only the tree and writes nothing under the CI directory takes no lock
+  leak) ;;
+  *)
+    if [ "${HJV_CI_LOCK:-}" != "$CI" ]; then lock_run "$@"; fi
+    lock_held "$@"
+    ;;
+esac
 # the head of a run of its own (a stage that prepush runs, with HJV_CI_RUN, has it in its log, and a
 # part that a server stage runs beside the others, with HJV_CI_PART, in that stage's); such a run
 # ends with "== CI passed: ..." or "FAIL: ...", and only prepush's logs with an EXIT line
