@@ -244,11 +244,16 @@ passed_tests() { # <file>
 # (.hjv-tree), and the end of a run that built there touches that mark (owned_built). Before another
 # tree builds there, or this one after anything else did (units compiled after the mark: a
 # scripts/ci.sh that has no marks yet, cargo run by hand), the packages that cargo builds from a path
-# in <workspace> (this tree's crates, or those of the upstream checkout made from its patches) are
-# cleaned in both profiles, whatever tree built them; the crates.io and git dependencies stay built.
-# A directory is this run's (OWNED) once its mark names this tree.
+# in <workspace> (with any of its features) are built again in both profiles, whatever tree built
+# them; the crates.io and git dependencies stay built. This tree's crates are cleaned, and
+# cargo clean -p also removes what other trees left there under names of their own (hjv-api's tests:
+# hjv-relay lies outside server/api, so the tree goes into their names). An upstream checkout made
+# from this tree's patches is made anew in the same place for every tree, so its crates' units have
+# the same names whatever tree built them, and it is enough to remove those units' fingerprints and
+# build script folders: cargo builds them again, and their incremental caches stay (cleaning them
+# cost the client stage 43 s). A directory is this run's (OWNED) once its mark names this tree.
 own_target() { # <target dir> <workspace dir>
-  local dir=$1 ws=$2 last name names=() specs=() start=$SECONDS
+  local dir=$1 ws=$2 last name names=() specs=() units=() unit start=$SECONDS
   [[ " ${OWNED[*]} " != *" $dir "* ]] || return 0
   last=$(cat "$dir/.hjv-tree" 2> /dev/null || true)
   if [ "$last" = "$ROOT" ]; then
@@ -259,19 +264,28 @@ own_target() { # <target dir> <workspace dir>
     last="$ROOT, then something else"
   fi
   while read -r name; do names+=("$name") specs+=(-p "$name"); done < <(cd "$ws" &&
-    cargo metadata --format-version 1 --locked --filter-platform "$(rustc -vV | sed -n 's/^host: //p')" |
+    cargo metadata --format-version 1 --locked --all-features --filter-platform "$(rustc -vV | sed -n 's/^host: //p')" |
     python3 -I -c 'import json, sys
 for p in json.load(sys.stdin)["packages"]:
     if p["source"] is None:
         print(p["name"])')
   [ ${#names[@]} -gt 0 ] || fail "cargo metadata named no packages of $ws"
-  (cd "$ws" && cargo clean --locked "${specs[@]}" --target-dir "$dir" &&
-    cargo clean --locked --release "${specs[@]}" --target-dir "$dir") || fail "cargo clean in $dir"
+  if [[ $ws == "$CI"/* ]]; then
+    # <package>-<16 hex digits>, a unit's folder
+    for unit in "$dir"/{debug,release}/{.fingerprint,build}/*; do
+      name=${unit##*/}
+      if [[ ${name##*-} =~ ^[0-9a-f]{16}$ ]] && [[ " ${names[*]} " == *" ${name%-*} "* ]]; then units+=("$unit"); fi
+    done
+    [ ${#units[@]} -eq 0 ] || rm -rf "${units[@]}"
+  else
+    (cd "$ws" && cargo clean --locked "${specs[@]}" --target-dir "$dir" &&
+      cargo clean --locked --release "${specs[@]}" --target-dir "$dir") || fail "cargo clean in $dir"
+  fi
   mkdir -p "$dir"
   echo "$ROOT" > "$dir/.hjv-tree"
   OWNED+=("$dir")
   echo "$(basename "$dir"): built last from ${last:-a tree it does not name}; this tree's packages" \
-    "(${names[*]}) cleaned in $((SECONDS - start)) s"
+    "(${names[*]}) cleaned in $((SECONDS - start)) s${units[*]:+ (${#units[@]} fingerprints and build script folders)}"
 }
 # At the end of a run: what it built in its target directories is older than their marks
 owned_built() {
