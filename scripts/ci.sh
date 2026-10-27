@@ -224,13 +224,15 @@ step() {
   printf '\n== %s\n' "$*"
   echo "-- $(date +%T), $SECONDS s in, load $(cut -d' ' -f1 /proc/loadavg)${took:+; the step before: $took s}"
 }
-# The steps by their time, the last one's until now; finish prints it (a table of one says nothing)
+# The steps by their time, the last one's until now; finish prints it. A table of one says nothing in
+# a run of its own, but a run of prepush (HJV_CI_RUN) and a part beside the server stage's others
+# (HJV_CI_PART) print it too: prepush's times.tsv takes their steps from it
 step_times() {
   if [ -n "$STEP" ]; then
     STEP_TIMES+=("$((SECONDS - STEP_SINCE)) $STEP")
     STEP=""
   fi
-  [ ${#STEP_TIMES[@]} -gt 1 ] || return 0
+  [ ${#STEP_TIMES[@]} -gt 1 ] || { [ ${#STEP_TIMES[@]} = 1 ] && [ -n "${HJV_CI_RUN:-}${HJV_CI_PART:-}" ]; } || return 0
   printf '\n-- time by step, %s s in all:\n' "$SECONDS"
   printf '%s\n' "${STEP_TIMES[@]}" | sort -s -rn -k1,1 | while read -r took what; do printf '%6d s  %s\n' "$took" "$what"; done
 }
