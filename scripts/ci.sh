@@ -426,14 +426,20 @@ server_hbbs() {
 
 # api: hjv-api's tests and release build (server/api)
 server_api() {
+  local commit
   if [ -d "$ROOT/server/api" ]; then
     step "server: hjv-api tests and release build (server/api)"
     # with the output of the tests that pass: a test that cannot run here (no systemd tools) passes
     # with a line "skipped: ...", which only then is seen and counted
     with_skips "$CI/api-tests.log" env -C "$ROOT/server/api" CARGO_TARGET_DIR="$CI/target-api" \
       cargo test --locked -- --show-output || fail "server: hjv-api tests"
-    (cd "$ROOT/server/api" && HJV_API_COMMIT=$(git -C "$ROOT" rev-parse HEAD) \
+    # The commit that /api/hjv/source and hjv-api version report: the last one that changed
+    # server/api, the binary's source, which is the same in HEAD. HEAD itself would have cargo
+    # compile hjv-api again for every commit. The binary must report it.
+    commit=$(git -C "$ROOT" log -1 --format=%H -- server/api)
+    (cd "$ROOT/server/api" && HJV_API_COMMIT=$commit \
       CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api)
+    "$API" version | grep -qF "($commit)" || fail "server: $API does not report the commit of its source, $commit"
   else
     skip "hjv-api (no server/api)"
   fi
