@@ -25,7 +25,8 @@
 #      command key 2 instead of keys 1, a new log key, a new ticket key (no app pins one), and the
 #      last backup restored; the relay of the backup takes a wake command signed with command key 2
 # Nothing calls the real SSO or Telegram, nothing leaves this machine, and the containers go at the
-# end (the image hjv-drill:local stays for the next run). The output is build/drill/drill.log.
+# end (the image hjv-drill:local stays for the next run, and is built again when its recipe below
+# changes). The output is build/drill/drill.log.
 #   tools/e2e/hjv-api-drill.sh
 # Needs cargo, Docker through sudo (as scripts/ci.sh), and Ubuntu's apt sources for the image.
 set -euo pipefail
@@ -114,11 +115,20 @@ case $COMMAND_FINGERPRINT_2 in 2:*) ;; *) fail "keygen command --kid 2 showed no
 TOKEN=123456:TEST-not-a-real-bot-token_x
 
 step "image: Ubuntu 24.04 with systemd ($IMAGE)"
-if ! d image inspect "$IMAGE" > /dev/null 2>&1; then
-  printf '%s\n' "FROM $REGISTRY/ubuntu:24.04" \
-    'RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends systemd systemd-sysv dbus sqlite3 python3 ca-certificates e2fsprogs > /dev/null && rm -rf /var/lib/apt/lists/*' \
-    'STOPSIGNAL SIGRTMIN+3' 'CMD ["/sbin/init"]' | d build -q -t "$IMAGE" - > /dev/null
+# The containers are privileged, so the binfmt_misc they see is the host's: systemd-binfmt in them
+# would flush the host's entries (WSL's WSLInterop among them) and register the image's own. It is
+# masked. The image carries a hash of its recipe and is built again when the recipe changes.
+recipe=$(printf '%s\n' "FROM $REGISTRY/ubuntu:24.04" \
+  'RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends systemd systemd-sysv dbus sqlite3 python3 ca-certificates e2fsprogs > /dev/null && rm -rf /var/lib/apt/lists/*' \
+  'RUN systemctl mask systemd-binfmt.service' \
+  'STOPSIGNAL SIGRTMIN+3' 'CMD ["/sbin/init"]')
+recipe_sha=$(printf '%s\n' "$recipe" | sha256sum | cut -c1-16)
+if [ "$(d image inspect -f '{{index .Config.Labels "hjv.drill.recipe"}}' "$IMAGE" 2> /dev/null)" != "$recipe_sha" ]; then
+  printf '%s\n' "$recipe" "LABEL hjv.drill.recipe=$recipe_sha" | d build -q -t "$IMAGE" - > /dev/null
 fi
+# the host's binfmt_misc entries, which no container may change
+binfmt() { ls /proc/sys/fs/binfmt_misc 2> /dev/null | sort | tr '\n' ' '; }
+binfmt_before=$(binfmt)
 
 start_host() { # <name>
   d rm -f "$1" > /dev/null 2>&1 || true
@@ -131,6 +141,9 @@ start_host() { # <name>
     sleep 0.2
   done
   echo "$1: systemd $state"
+  [ "$(d exec "$1" systemctl is-enabled systemd-binfmt.service 2> /dev/null)" = masked ] ||
+    fail "$1: systemd-binfmt is not masked in $IMAGE"
+  [ "$(binfmt)" = "$binfmt_before" ] || fail "$1: the host's binfmt_misc entries changed: $(binfmt)"
   # systemd sets up a unit's credentials in a mount namespace and moves them over: they reach the
   # service only when / propagates mounts, as on a server (Docker makes it private)
   d exec "$1" mount --make-rshared /

@@ -16,6 +16,7 @@ HJV_DRILL_QUICK=1 tools/e2e/hjv-api-drill.sh   # 그 기다림 없이 약 3분
 - 대역(가짜)은 셋입니다. 가짜 SSO(`hjv-fake-sso`), 시험 PC를 켜짐으로 답하는 가짜 hbbs 콘솔, 받은 메시지를 적어 두는 가짜 텔레그램입니다. 경보 유닛만 드롭인으로 가짜 텔레그램을 가리킵니다. 키는 `server/api/tests/common`의 공개된 시험 키입니다. 명령 키 두 개와 출입증 키만 연습 때마다 `hjv-api keygen command`, `keygen ticket`으로 새로 만듭니다. 앱과 PC의 요청은 `server/api/tests/drill.rs`가 컨테이너 안에서 보냅니다.
 - NAS 중계기도 그 시험 프로그램이 맡습니다. 시험용 중계기 키로 서명한 hello와 poll을 보내고, 받은 켜기 명령의 서명을 중계기처럼 고정된 명령 공개키로 확인한 뒤 결과(패킷 12개)를 돌려줍니다. 매직 패킷은 나가지 않습니다. 진짜 hjv-relay의 루프는 `cargo test`의 `tests/relay_loop.rs`가 hjv-api에 붙여 돌리고, 진짜 실행 파일과 패킷은 WOL E2E(WP-W5)가 봅니다.
 - 컨테이너 사정 하나: Docker는 `/`를 마운트 전파 없이(private) 띄웁니다. 그러면 systemd가 유닛의 자격 증명을 그 유닛에 넘기지 못합니다. 그래서 컨테이너를 띄운 뒤 `mount --make-rshared /`를 합니다. 운영 서버의 `/`는 이미 shared이므로 이 일은 운영과 상관없습니다.
+- 컨테이너 사정 둘: 컨테이너는 `--privileged`라서 binfmt_misc가 호스트와 같습니다. 그 안의 `systemd-binfmt`가 돌면 호스트의 항목을 모두 지우고(WSL의 `WSLInterop`도) 이미지의 것만 다시 등록합니다. 2026-10-26 연습 뒤 개발 PC(WSL2)의 binfmt_misc에서 `WSLInterop`(Windows 프로그램 실행)와 `llvm-18-runtime.binfmt`가 빠지고 이미지의 `python3.12`만 그 시각으로 다시 등록되어 있었습니다. 그래서 이미지에서 `systemd-binfmt`를 mask합니다. 연습은 컨테이너를 띄울 때마다 mask와 호스트의 항목이 그대로인지 확인하고, 다르면 멈춥니다. 이미지(`hjv-drill:local`)는 만드는 줄이 바뀌면 다시 만듭니다. 같은 이유로 `systemd-sysctl`도 호스트의 전역 값을 쓰지만, 이미지의 값이 Ubuntu 24.04 호스트의 값과 같아 바뀌는 것이 없습니다.
 
 ## 결과 (2026-10-13, 커밋 3813e40)
 
