@@ -362,15 +362,41 @@ server_parts() { # <stage>
   echo "${out[*]}"
 }
 
+# The upstream checkout with server/patches in $CI/upstream/rustdesk-server: fetched anew every run,
+# which shows that the pinned commits and the patches still apply, but the checkout there before is
+# kept when it has the new one's patched tree and nothing else (git status, hbb_common's too: only
+# the version file that hbbs's build writes, once the tests' database is gone). Its files keep
+# their modification times, so cargo does not compile hbbs again (fat LTO, a minute or more) for
+# the same sources.
+server_checkout() {
+  local dir="$CI/upstream/rustdesk-server" new="$CI/upstream-new/rustdesk-server" tree left
+  rm -rf "$CI/upstream-new"
+  UPSTREAM_DIR="$CI/upstream-new" "$ROOT/scripts/fetch-upstream.sh" server
+  tree=$(git -C "$new" rev-parse 'HEAD^{tree}')
+  # what the tests leave behind: test_insert's database, whose unique IDs a second run would add again
+  rm -f "$dir/test.sqlite3" "$dir/test.sqlite3-shm" "$dir/test.sqlite3-wal"
+  left=$(git -C "$dir" status --porcelain --ignored --untracked-files=all 2> /dev/null || echo "no checkout")
+  if [ "$(git -C "$dir" rev-parse -q --verify 'HEAD^{tree}' 2> /dev/null)" = "$tree" ] &&
+    { [ -z "$left" ] || [ "$left" = "!! src/version.rs" ]; } &&
+    [ "$(git -C "$dir/libs/hbb_common" rev-parse HEAD 2> /dev/null)" = "$(git -C "$dir" rev-parse HEAD:libs/hbb_common)" ] &&
+    [ -z "$(git -C "$dir/libs/hbb_common" status --porcelain --ignored --untracked-files=all)" ]; then
+    echo "kept $dir of an earlier run: the new checkout has the same patched tree"
+  else
+    rm -rf "$dir"
+    mkdir -p "$CI/upstream"
+    mv "$new" "$dir"
+  fi
+  rm -rf "$CI/upstream-new"
+  echo "the patched tree: $tree"
+}
+
 # hbbs: the upstream checkout with server/patches and all of its tests, hjv-probe and hjv-load
 server_hbbs() {
   # all of the patched server's tests, its upstream unit tests too: patches 0001-0004 change the
   # code they test
   local tests=(--lib --bins --tests)
   step "server: upstream checkout with server/patches"
-  rm -rf "$CI/upstream/rustdesk-server"
-  UPSTREAM_DIR="$CI/upstream" "$ROOT/scripts/fetch-upstream.sh" server
-  echo "the patched tree: $(git -C "$CI/upstream/rustdesk-server" rev-parse 'HEAD^{tree}')"
+  server_checkout
   # hbbs's signed hjv-pk answer for hjv-api (server/patches/0004, design v3 5-7): required, so that
   # a dropped patch fails
   [ -f "$CI/upstream/rustdesk-server/tests/hjv_pk.rs" ] ||
