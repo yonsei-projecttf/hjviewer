@@ -9,6 +9,9 @@
 # scripts/package-relay.sh; in the private build repository a draft release gets the package.
 # `check_only` makes a check build: no public key needed, artifacts named -check and kept a day,
 # nothing uploaded to TestFlight or Google Play, no release (design v3 6-4).
+# A build run uploads nothing to TestFlight either: `testflight` with `testflight_run` makes a run
+# that builds nothing and uploads the signed IPA of that finished build run, after the owner has
+# checked its Windows build (docs/ci.md).
 # Every platform job pins the update keys of client/update-keys.env and puts release.json and
 # SHA256SUMS beside its package, for tools/hjv-release (minimum version design 6-4).
 # Variables, signing secrets, run times and billing are documented in docs/ci.md.
@@ -31,9 +34,13 @@ on:
         type: string
         required: false
       testflight:
-        description: "iOS: upload the signed App Store build to TestFlight (private repository, App Store Connect secrets)"
+        description: "iOS, with platforms ios and testflight_run: upload that build run's signed IPA to TestFlight, building nothing (private repository, App Store Connect secrets)"
         type: boolean
         default: false
+      testflight_run:
+        description: "With testflight: the ID of the finished, successful build run (…/actions/runs/<ID>) whose IPA goes to TestFlight"
+        type: string
+        required: false
       play:
         description: "Refused: Google Play uploads are the store run's (store-release.yml, docs/store-release.md)"
         type: boolean
@@ -57,6 +64,10 @@ on:
       testflight:
         type: boolean
         default: false
+      testflight_run:
+        description: With testflight, the build run whose IPA goes to TestFlight
+        type: string
+        default: ""
       play:
         type: boolean
         default: false
@@ -145,17 +156,22 @@ jobs:
       android: ${{ steps.plan.outputs.android }}
       ios: ${{ steps.plan.outputs.ios }}
       relay: ${{ steps.plan.outputs.relay }}
+      testflight: ${{ steps.plan.outputs.testflight }}
     steps:
-      # What each job builds; the jobs read it from here. A relay-only run still resolves one
+      # What each job does; the jobs read it from here. A relay-only run still resolves one
       # source commit for every downstream job, but it has no Flutter bridge or Dart consumers.
-      # Impossible upload requests are refused before anything is built.
+      # A TestFlight upload builds nothing: it takes the signed IPA of a finished, successful build
+      # run, so that the upload waits for the owner's check of that run's Windows build and the run
+      # with all its jobs, the Dart tests too, has passed. Impossible requests are refused before
+      # anything is built.
       - name: Plan build targets
         id: plan
         env:
           PLATFORMS: ${{ github.event_name == 'push' && 'all' || inputs.platforms }}
           TESTFLIGHT: ${{ inputs.testflight }}
+          TESTFLIGHT_RUN: ${{ inputs.testflight_run }}
         run: |
-          windows=false android=false ios=false relay=false
+          windows=false android=false ios=false relay=false testflight=false
           case "$PLATFORMS" in
             windows) windows=true ;;
             android) android=true ;;
@@ -164,8 +180,14 @@ jobs:
             all) windows=true android=true ios=true relay=true ;;
             *) echo "::error::platforms must be windows, android, ios, relay or all."; exit 1 ;;
           esac
-          if [ "$TESTFLIGHT" = true ] && [ "$ios" != true ]; then
-            echo "::error::testflight uploads the iOS build: run with platforms ios or all."
+          if [ "$TESTFLIGHT" = true ]; then
+            if [ "$PLATFORMS" != ios ] || ! [[ "$TESTFLIGHT_RUN" =~ ^[0-9]{1,20}$ ]]; then
+              echo "::error::testflight uploads the IPA of a finished build run: run with platforms ios and testflight_run=<that run's ID>."
+              exit 1
+            fi
+            ios=false testflight=true
+          elif [ -n "$TESTFLIGHT_RUN" ]; then
+            echo "::error::testflight_run names the build run whose IPA goes to TestFlight: run with testflight=true and platforms ios."
             exit 1
           fi
           build_apps=false
@@ -176,6 +198,7 @@ jobs:
             echo "android=$android"
             echo "ios=$ios"
             echo "relay=$relay"
+            echo "testflight=$testflight"
           } | tee -a "$GITHUB_OUTPUT"
 
       - name: Check server variables
@@ -1656,13 +1679,14 @@ jobs:
 
   # upstream: L624-743 (build-rustdesk-ios), matrix entry L633-638. Dropped: the liblibrustdesk.a
   # upload (L715-719). Upstream only builds `flutter build ipa --release --no-codesign` (L721-727);
-  # with the signing secrets this job archives with manual signing and exports an IPA instead, and
-  # with the `testflight` input it uploads that IPA to App Store Connect.
+  # with the signing secrets this job archives with manual signing and exports an IPA instead,
+  # which stays in the run's artifacts: the TestFlight upload job of a later run sends it.
   ios:
     name: iOS
-    # also waits for the Dart tests: TestFlight hands the build out, so it never gets one whose
-    # input tests failed (Windows and Android artifacts stay in the run until someone takes them)
-    needs: [preflight, generate-bridge, dart-tests]
+    # waits for the bridge files, not for the Dart tests: nothing leaves the run from here (a
+    # waiting macOS runner costs ten times a Linux one, so it does not start beside the Bridge
+    # codegen job either)
+    needs: [preflight, generate-bridge]
     if: needs.preflight.outputs.ios == 'true'
     runs-on: macos-26
     timeout-minutes: 90
@@ -1677,10 +1701,9 @@ jobs:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
     steps:
       # Not upstream. The first steps, before any third-party build code (auto-deploy design 2-2):
-      # the release record must not have this version for the App Store, and with testflight App
-      # Store Connect must not have a build of it (a version goes to TestFlight once; also on
-      # "Re-run failed jobs" after an upload that went through). Read only: GET requests with the
-      # run's token and, in the second step alone, the upload key. A check build skips them.
+      # the release record of the repository that runs this (store-releases.txt, design 3-8) must
+      # not have this version for the App Store already. Read only, with the run's token; a check
+      # build goes nowhere and skips it. Only the two files the check reads are checked out here.
       - name: Check out the release record check
         if: ${{ !inputs.check_only }}
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -1690,7 +1713,6 @@ jobs:
           path: release-checks
           sparse-checkout: |
             scripts/store-record.py
-            scripts/asc-store.mjs
             client/version.env
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -1705,25 +1727,7 @@ jobs:
           # shellcheck disable=SC1091
           source release-checks/client/version.env
           python3 -I release-checks/scripts/store-record.py check-build --repo "$GITHUB_REPOSITORY" --store appstore --version "$HJV_VERSION"
-
-      - name: Check that TestFlight has no build of this version
-        if: ${{ !inputs.check_only && inputs.testflight && env.IOS_SIGNING == 'true' }}
-        shell: bash
-        working-directory: ${{ github.workspace }}
-        env:
-          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
-        run: |
-          # shellcheck disable=SC1091
-          source release-checks/client/version.env
-          node release-checks/scripts/asc-store.mjs check-new --version "$HJV_VERSION"
-
-      - name: Remove the release record check
-        if: ${{ always() && !inputs.check_only }}
-        working-directory: ${{ github.workspace }}
-        run: rm -rf release-checks
+          rm -rf release-checks
 
       # Build number = UTC time as YYDDDHHMM: it grows with every build, from any repository (the
       # build repository too), stays below Play's 2,100,000,000 versionCode limit with Flutter's
@@ -1732,13 +1736,6 @@ jobs:
         shell: bash
         working-directory: ${{ github.workspace }}
         run: echo "BUILD_NUMBER=$(date -u +%y%j%H%M)" >> "$GITHUB_ENV"
-
-      - name: Check TestFlight prerequisites
-        if: inputs.testflight && env.IOS_SIGNING != 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          echo "::error::testflight needs a private repository with IOS_DIST_CERT_P12_BASE64 and IOS_PROVISIONING_PROFILE_BASE64 (the caller passes secrets: inherit)."
-          exit 1
 
       # Not in upstream: XCODE_VERSION above says why
       - name: Select Xcode
@@ -2073,37 +2070,153 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
-      # Not in upstream. Sends the signed App Store IPA to App Store Connect, where TestFlight lists it
-      # once Apple has processed it. Needs the App Store Connect API key (secrets ASC_KEY_ID,
-      # ASC_ISSUER_ID, ASC_PRIVATE_KEY) and the app's numeric Apple ID (ASC_APP_ID), see docs/ci.md.
-      # altool can exit 0 although the upload failed, so its output decides.
-      - name: Upload to TestFlight
-        if: env.IOS_SIGNING == 'true' && inputs.testflight && !inputs.check_only
+      - name: Remove signing keychain and profile
+        if: always() && env.IOS_SIGNING == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/hjviewer-signing.keychain-db" || true
+          if [ -n "${IOS_PROFILE_UUID:-}" ]; then
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision" \
+              "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision"
+          fi
+
+  # Not in upstream. Sends a signed App Store IPA to App Store Connect, where TestFlight lists it for
+  # the internal testers once Apple has processed it. It builds nothing: the IPA is the one a
+  # finished, successful build run of this repository made (testflight_run), so the upload waits
+  # for the owner's check of that run's Windows build (docs/ci.md, "실행"), and TestFlight never
+  # gets a build of a run with a failed job, its Dart tests included. Needs the App Store Connect
+  # API key (secrets ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY) and the app's numeric Apple ID
+  # (ASC_APP_ID), see docs/ci.md; it holds no signing key.
+  testflight:
+    name: TestFlight upload
+    needs: preflight
+    if: needs.preflight.outputs.testflight == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    # actions: read for the build run, its build.yml and its IPA
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # The first steps, before the IPA is fetched (auto-deploy design 2-2): the release record must
+      # not have this version for the App Store; the build run is a successful run of the build
+      # repository's build.yml on main that called this workflow at the same source commit, with
+      # build.yml in the documented shape, and it kept the IPA (scripts/store-record.py check-run,
+      # tools/hjv-release's provenance rules); App Store Connect has no build of this version yet (a
+      # version goes to TestFlight once; also on "Re-run failed jobs" after an upload that went
+      # through). Read only: GET requests with the run's token and, in the third step alone, the
+      # upload key.
+      - name: Check out the release record check
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          path: release-checks
+          sparse-checkout: |
+            scripts/store-record.py
+            scripts/asc-store.mjs
+            client/version.env
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Check the release record and the build run
+        id: build-run
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          TESTFLIGHT_RUN: ${{ inputs.testflight_run }}
+        run: |
+          # shellcheck disable=SC1091
+          source release-checks/client/version.env
+          python3 -I release-checks/scripts/store-record.py check-build --repo "$GITHUB_REPOSITORY" --store appstore --version "$HJV_VERSION"
+          python3 -I release-checks/scripts/store-record.py check-run --repo "$GITHUB_REPOSITORY" --store appstore \
+            --version "$HJV_VERSION" --run-id "$TESTFLIGHT_RUN" --source "$SOURCE_SHA"
+          echo "version=$HJV_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check that TestFlight has no build of this version
         shell: bash
         env:
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          VERSION: ${{ steps.build-run.outputs.version }}
+        run: node release-checks/scripts/asc-store.mjs check-new --version "$VERSION"
+
+      - name: Remove the release record check
+        if: always()
+        run: rm -rf release-checks
+
+      - name: Download the IPA
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.build-run.outputs.artifact }}
+          path: ios-out
+          run-id: ${{ inputs.testflight_run }}
+          github-token: ${{ github.token }}
+
+      # The artifact's own record: its SHA256SUMS hold, and its release.json names one IPA of this
+      # version, source commit and build run. TestFlight takes App Store builds only, which the
+      # profile in the IPA tells (as "Set up code signing" of the iOS job chose the export
+      # method). altool can exit 0 although the upload failed, so its output decides.
+      - name: Upload to TestFlight
+        shell: bash
+        working-directory: ios-out
+        env:
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          TESTFLIGHT_RUN: ${{ inputs.testflight_run }}
+          VERSION: ${{ steps.build-run.outputs.version }}
         run: |
           set -euo pipefail
-          if [ "$IOS_EXPORT_METHOD" != app-store-connect ]; then
-            echo "::error::TestFlight takes App Store builds, but the provisioning profile exports with method $IOS_EXPORT_METHOD."
-            exit 1
-          fi
           for v in ASC_APP_ID ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
             if [ -z "${!v}" ]; then
               echo "::error::Secret $v is not set (docs/ci.md)."
               exit 1
             fi
           done
-          ipa="ios-out/$BUILD_NAME-ios.ipa"
+          shasum -a 256 -c SHA256SUMS
+          ipas=(*.ipa)
+          if [ ${#ipas[@]} != 1 ] || [ ! -f "${ipas[0]}" ]; then
+            echo "::error::The build run's artifact holds ${#ipas[@]} IPAs, not one."
+            exit 1
+          fi
+          ipa=${ipas[0]}
+          python3 -I -c '
+          import hashlib, json, os, sys
+          ipa, record = sys.argv[1], json.load(open("release.json"))
+          want = {"platform": "ios", "file": ipa, "version": os.environ["VERSION"], "source_sha": os.environ["SOURCE_SHA"],
+                  "run_id": os.environ["TESTFLIGHT_RUN"], "sha256": hashlib.sha256(open(ipa, "rb").read()).hexdigest()}
+          wrong = [f"{key} {record.get(key)!r}" for key, value in want.items() if str(record.get(key)) != value]
+          if wrong:
+              print("::error::release.json does not name this IPA of build run " + want["run_id"] + ": " + ", ".join(wrong))
+              sys.exit(1)
+          ' "$ipa"
+          # a file of the app inside the IPA
+          entry() { unzip -p "$ipa" "$(unzip -Z1 "$ipa" | grep -E "^Payload/[^/]+\.app/$1\$")"; }
+          profile="$RUNNER_TEMP/embedded.plist"
+          entry embedded.mobileprovision > "$RUNNER_TEMP/embedded.mobileprovision"
+          security cms -D -i "$RUNNER_TEMP/embedded.mobileprovision" > "$profile"
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$profile" 2> /dev/null; }
+          if [ "$(pb ProvisionsAllDevices || true)" = true ] || [ "$(pb Entitlements:get-task-allow || true)" = true ] \
+            || pb ProvisionedDevices > /dev/null; then
+            echo "::error::TestFlight takes App Store builds, but $ipa is not signed with an App Store profile."
+            exit 1
+          fi
           info="$RUNNER_TEMP/Info.plist"
-          unzip -p "$ipa" "$(unzip -Z1 "$ipa" | grep -E '^Payload/[^/]+\.app/Info\.plist$')" > "$info"
+          entry Info.plist > "$info"
           pl() { /usr/libexec/PlistBuddy -c "Print :$1" "$info"; }
           bundle_id=$(pl CFBundleIdentifier)
           version=$(pl CFBundleShortVersionString)
           build=$(pl CFBundleVersion)
+          if [ "$version" != "$VERSION" ]; then
+            echo "::error::$ipa is version $version, not $VERSION."
+            exit 1
+          fi
           # altool reads the key from ~/.appstoreconnect/private_keys/AuthKey_<key ID>.p8
           keydir="$HOME/.appstoreconnect/private_keys"
           mkdir -p "$keydir"
@@ -2119,18 +2232,11 @@ jobs:
             echo "::error::The upload to App Store Connect failed (altool exit status $status); see its output above."
             exit 1
           fi
-          echo "Uploaded $bundle_id $version ($build) to App Store Connect. TestFlight lists it once Apple has processed it." >> "$GITHUB_STEP_SUMMARY"
+          echo "Uploaded $bundle_id $version ($build) of build run $TESTFLIGHT_RUN to App Store Connect. TestFlight lists it once Apple has processed it." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Remove signing keychain, profile and API key
-        if: always() && env.IOS_SIGNING == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          rm -rf "$HOME/.appstoreconnect/private_keys"
-          security delete-keychain "$RUNNER_TEMP/hjviewer-signing.keychain-db" || true
-          if [ -n "${IOS_PROFILE_UUID:-}" ]; then
-            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision" \
-              "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision"
-          fi
+      - name: Remove the API key
+        if: always()
+        run: rm -rf "$HOME/.appstoreconnect/private_keys"
 
   # Not in upstream. hjv-relay (relay/), the Wake-on-LAN relay for a Synology NAS
   # (docs/relay-dsm.md): a static x86_64 musl binary that scripts/package-relay.sh pins to this

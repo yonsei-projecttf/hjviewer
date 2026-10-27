@@ -839,12 +839,13 @@ class WorkflowTest(unittest.TestCase):
             spec = self.on[trigger]["inputs"]["check_only"]
             self.assertEqual(spec["type"], "boolean")
             self.assertIs(spec["default"], False)
-        self.assertIn("!inputs.check_only", self.step("ios", "Upload to TestFlight")["if"])
         # 1.9.1: no Google Play job (the store run uploads, store-release.yml), so nothing to skip
         self.assertNotIn("play", self.wf["jobs"])
         self.assertIn("!inputs.check_only", self.wf["jobs"]["relay-release"]["if"])
+        # the TestFlight upload runs only where the plan asks for it, and a check build never does
+        self.assertEqual(self.wf["jobs"]["testflight"]["if"], "needs.preflight.outputs.testflight == 'true'")
         refuse = self.step("preflight", "Check the check_only input")
-        self.assertIn("inputs.check_only", refuse["if"])
+        self.assertEqual(refuse["if"], "inputs.check_only && (inputs.testflight || inputs.play)")
         self.assertNotEqual(subprocess.run(["bash", "-c", refuse["run"]], capture_output=True).returncode, 0)
 
     def run_step(self, job, name, version, env, update=None):

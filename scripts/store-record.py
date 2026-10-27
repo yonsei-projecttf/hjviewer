@@ -18,8 +18,9 @@ and the action upload|submit|release.
     store-record.py check-build --store S --version V                  (a build run's first step)
     store-record.py add --store S --version V --build B --action A --source SHA [--track T] [--note N]
                                                                          (the store run's record job)
-    store-record.py check-run --repo R --store play --version V --run-id N --source SHA
-                                                  (the store run's checks job, before an upload)
+    store-record.py check-run --repo R --store play|appstore --version V --run-id N --source SHA
+                                  (the store run's checks job before a Play upload, the build
+                                   repository's TestFlight upload job, client-build.yml)
 
 The record comes from --file PATH, or from --repo owner/name through the contents API with
 GITHUB_TOKEN (GITHUB_API_URL, default https://api.github.com). A missing file is an empty record,
@@ -35,13 +36,14 @@ Rules, within one store only (the stores' versions and build numbers differ, des
 add writes with the file's sha and tries again, up to 5 times, when another run wrote first; its
 commit message carries [skip ci]. The script prints no token.
 
-check-run is the provenance of the bundle an upload sends, as tools/hjv-release checks a package
+check-run is the provenance of what an upload sends, as tools/hjv-release checks a package
 (src/provenance.rs steps 1-3): run N of the build repository is a successful run of build.yml on
 main, started by hand; it called exactly one workflow, the public client-build.yml pinned to the
-tag's commit SHA; build.yml at the run's commit has the documented shape (one job that only calls
+source commit SHA; build.yml at the run's commit has the documented shape (one job that only calls
 that workflow with source_ref at the same SHA, check_build_yml below); and the run kept the
-artifact HJViewer-<version>-<7 digits of SHA>-android-aarch64-play, not expired. Its name goes to
-GITHUB_OUTPUT as artifact=.
+artifact, not expired: for play the bundle HJViewer-<version>-<7 digits of SHA>-android-aarch64-play,
+for appstore the IPA HJViewer-<version>-<7 digits of SHA>-ios, which TestFlight gets. Its name
+goes to GITHUB_OUTPUT as artifact=.
 
 Exit status: 0 passed or written, 1 refused or failed, 2 bad usage.
 Offline tests: python3 -I -B -m unittest discover -s scripts -p 'test_store_record.py'
@@ -81,7 +83,10 @@ PUBLIC_REPOSITORY = "yonsei-projecttf/hjviewer"
 CALLED_WORKFLOW = ".github/workflows/client-build.yml"
 BUILD_WORKFLOW = ".github/workflows/build.yml"
 # client-build.yml's inputs that build.yml may pass (provenance.rs KNOWN_INPUTS and check_only)
-BUILD_INPUTS = ("platforms", "testflight", "play", "play_release", "check_only", "source_ref")
+BUILD_INPUTS = ("platforms", "testflight", "testflight_run", "play", "play_release", "check_only", "source_ref")
+# what check-run looks for in the build run: the artifact's end and how long the build keeps it
+UPLOADS = {"play": ("-android-aarch64-play", "bundles are kept 30 days"),
+           "appstore": ("-ios", "IPAs are kept 7 days")}
 
 
 class RecordError(Exception):
@@ -349,8 +354,9 @@ def check_build_yml(text: str, source: str) -> None:
         raise RecordError("build.yml's job passes no source_ref")
 
 
-def check_run(repo: Repo, run_id: str, version: str, source: str) -> str:
-    """The -play artifact's name, once run_id is shown to be the reviewed build of `source`."""
+def check_run(repo: Repo, run_id: str, version: str, source: str, store: str = "play") -> str:
+    """The name of the artifact `store` takes (the -play bundle, the IPA), once run_id is shown to
+    be the reviewed build of `source`."""
     status, run = repo.call("GET", f"repos/{repo.repo}/actions/runs/{run_id}")
     if status != 200:
         raise RecordError(f"could not read build run {run_id} of {repo.repo}: HTTP {status}")
@@ -380,15 +386,17 @@ def check_run(repo: Repo, run_id: str, version: str, source: str) -> str:
     except (ValueError, UnicodeDecodeError):
         raise RecordError(f"{BUILD_WORKFLOW} at {head} is not UTF-8 text") from None
     check_build_yml(text, source)
-    artifact = f"HJViewer-{version}-{source[:7]}-android-aarch64-play"
+    suffix, kept = UPLOADS[store]
+    artifact = f"HJViewer-{version}-{source[:7]}{suffix}"
     status, answer = repo.call("GET", f"repos/{repo.repo}/actions/runs/{run_id}/artifacts?per_page=100")
     if status != 200:
         raise RecordError(f"could not list the artifacts of run {run_id}: HTTP {status}")
     found = [a for a in answer.get("artifacts") or [] if isinstance(a, dict) and a.get("name") == artifact]
     if not found or found[0].get("expired") is not False:
-        gone = " (it has expired: bundles are kept 30 days)" if found else ""
-        raise RecordError(f"run {run_id} has no {artifact}{gone}: the bundle must be of client-{version}'s "
-                          "commit. A gone bundle takes a new build with a higher version.")
+        gone = f" (it has expired: {kept})" if found else ""
+        what = "bundle" if store == "play" else "IPA"
+        raise RecordError(f"run {run_id} has no {artifact}{gone}: the {what} must be of client-{version}'s "
+                          f"commit. A gone {what} takes a new build with a higher version.")
     return artifact
 
 
@@ -450,8 +458,8 @@ def validate(args) -> None:
         if not BUILD.fullmatch(args.build or ""):
             raise RecordError(f"not a build number: {args.build!r}", usage=True)
     if args.command == "check-run":
-        if args.store != "play" or not args.repo:
-            raise RecordError("check-run takes --store play and --repo (the build run of an upload)", usage=True)
+        if not args.repo:
+            raise RecordError("check-run takes --repo (the build run of an upload)", usage=True)
         if not re.fullmatch(r"[0-9]{1,20}", args.run_id or ""):
             raise RecordError("check-run needs --run-id, the build run's ID", usage=True)
         if not SHA.fullmatch(args.source or ""):
@@ -490,13 +498,13 @@ def main(argv: list[str], env=os.environ) -> int:
         if args.command == "add":
             return add(args, env, datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"))
         if args.command == "check-run":
-            artifact = check_run(Repo(args.repo, env), args.run_id, args.version, args.source)
+            artifact = check_run(Repo(args.repo, env), args.run_id, args.version, args.source, args.store)
             output = env.get("GITHUB_OUTPUT")
             if output:
                 with open(output, "a", encoding="utf-8") as handle:
                     handle.write(f"artifact={artifact}\n")
-            summary(f"Bundle: {artifact} of build run {args.run_id} (build.yml on main, client-build.yml "
-                    f"@{args.source[:12]}, build.yml's shape checked)")
+            summary(f"{'Bundle' if args.store == 'play' else 'IPA'}: {artifact} of build run {args.run_id} "
+                    f"(build.yml on main, client-build.yml @{args.source[:12]}, build.yml's shape checked)")
             return 0
         record = read_record(args, env)
         if args.command == "check-build":

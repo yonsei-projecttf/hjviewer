@@ -8,7 +8,8 @@ store-release.yml: called only (workflow_call), Linux only, read permissions but
 every checkout of this file's own repository and commit without credentials, the environment
 `store` and the secrets in the play and appstore jobs alone (by name, never inherit), status out
 of the editing jobs' concurrency groups. client-build.yml: no Google Play job, play refused, the
--play bundle kept 30 days, the release checks before any third-party build step.
+-play bundle kept 30 days, the release checks before any third-party build step, and the TestFlight
+upload a job of its own that builds nothing and takes the IPA of a checked, finished build run.
 """
 import os
 import re
@@ -267,23 +268,29 @@ class ClientBuildWorkflowTest(unittest.TestCase):
     def test_the_release_checks_come_first(self):
         expected = {
             "android": ["Check out the release record check", "Check the release record"],
-            "ios": ["Check out the release record check", "Check the release record",
-                    "Check that TestFlight has no build of this version", "Remove the release record check"],
+            "ios": ["Check out the release record check", "Check the release record"],
+            # the upload: before the IPA is fetched, and in a run that builds nothing (no check build)
+            "testflight": ["Check out the release record check", "Check the release record and the build run",
+                           "Check that TestFlight has no build of this version", "Remove the release record check"],
         }
         for job, names in expected.items():
             found = steps(self.jobs[job])
             self.assertEqual([name_of(s) for s in found[:len(names)]], names, job)
             for s in found[:len(names)]:
-                self.assertIn("!inputs.check_only", s, name_of(s))
+                if job != "testflight":
+                    self.assertIn("!inputs.check_only", s, name_of(s))
                 uses = re.findall(r"uses: ([\w./-]+)@", s)
                 self.assertTrue(set(uses) <= {"actions/checkout"}, uses)
             checkout = found[0]
             self.assertIn("path: release-checks\n", checkout)
             self.assertIn("persist-credentials: false\n", checkout)
             self.assertIn("sparse-checkout-cone-mode: false\n", checkout)
-            store = {"android": "play", "ios": "appstore"}[job]
+            self.assertEqual("scripts/asc-store.mjs" in checkout, job == "testflight", job)
+            store = {"android": "play", "ios": "appstore", "testflight": "appstore"}[job]
             self.assertIn(f"check-build --repo \"$GITHUB_REPOSITORY\" --store {store} --version \"$HJV_VERSION\"", found[1])
             self.assertNotIn("secrets.", found[1])
+            # the checked-out scripts are gone before any build or download
+            self.assertIn("rm -rf release-checks", found[len(names) - 1])
 
     def test_build_names_carry_exactly_seven_digits_of_the_commit(self):
         # the store run looks for HJViewer-<version>-<7 digits>-android-aarch64-play; --short=7
@@ -291,13 +298,42 @@ class ClientBuildWorkflowTest(unittest.TestCase):
         self.assertNotIn("--short", self.text)
         self.assertEqual(self.text.count('name="$HJV_VERSION-$(git rev-parse HEAD | cut -c1-7)"'), 3)
 
-    def test_the_upload_key_reaches_two_ios_steps_only(self):
-        holders = [name_of(s) for s in steps(self.jobs["ios"]) if "secrets.ASC_" in s]
+    def test_the_upload_key_reaches_two_steps_of_the_upload_job_only(self):
+        holders = [name_of(s) for s in steps(self.jobs["testflight"]) if "secrets.ASC_" in s]
         self.assertEqual(holders, ["Check that TestFlight has no build of this version", "Upload to TestFlight"])
-        (check,) = [s for s in steps(self.jobs["ios"]) if name_of(s) == holders[0]]
-        self.assertIn("inputs.testflight && env.IOS_SIGNING == 'true'", check)
+        (check,) = [s for s in steps(self.jobs["testflight"]) if name_of(s) == holders[0]]
         self.assertIn("asc-store.mjs check-new --version", check)
-        self.assertNotIn("secrets.ASC_", "\n".join(self.jobs["android"]))
+        for job in set(self.jobs) - {"testflight"}:
+            self.assertNotIn("secrets.ASC_", "\n".join(self.jobs[job]), job)
+        # the job that holds it signs nothing and builds nothing
+        text = "\n".join(self.jobs["testflight"])
+        for word in ("secrets.IOS_", "flutter build", "cargo", "xcodebuild"):
+            self.assertNotIn(word, text)
+
+    def test_testflight_takes_the_ipa_of_a_checked_build_run(self):
+        """The build run uploads nothing; a later run with testflight and testflight_run sends its IPA,
+        after the build run's provenance check (store-record.py check-run, hjv-release's rules)."""
+        job = self.jobs["testflight"]
+        self.assertEqual(key(job, "needs"), "preflight")
+        self.assertEqual(key(job, "if"), "needs.preflight.outputs.testflight == 'true'")
+        self.assertEqual(block(job, "permissions"), ["contents: read", "actions: read"])
+        (check,) = [s for s in steps(job) if name_of(s) == "Check the release record and the build run"]
+        self.assertIn('check-run --repo "$GITHUB_REPOSITORY" --store appstore', check)
+        self.assertIn('--run-id "$TESTFLIGHT_RUN" --source "$SOURCE_SHA"', check)
+        self.assertIn("TESTFLIGHT_RUN: ${{ inputs.testflight_run }}", check)
+        (download,) = [s for s in steps(job) if name_of(s) == "Download the IPA"]
+        self.assertIn("name: ${{ steps.build-run.outputs.artifact }}\n", download)
+        self.assertIn("run-id: ${{ inputs.testflight_run }}\n", download)
+        names = [name_of(s) for s in steps(job)]
+        self.assertEqual(names[-3:], ["Download the IPA", "Upload to TestFlight", "Remove the API key"])
+        (upload,) = [s for s in steps(job) if name_of(s) == "Upload to TestFlight"]
+        for needed in ("shasum -a 256 -c SHA256SUMS", "release.json", "ProvisionedDevices", "get-task-allow",
+                       "ProvisionsAllDevices", "xcrun altool --upload-package", '"product-errors"'):
+            self.assertIn(needed, upload)
+        # the build jobs hand nothing out: no altool, no App Store Connect key
+        for build in ("windows", "android", "ios"):
+            self.assertNotIn("altool", "\n".join(self.jobs[build]), build)
+        self.assertEqual(key(self.jobs["ios"], "needs"), "[preflight, generate-bridge]")
 
 
 if __name__ == "__main__":

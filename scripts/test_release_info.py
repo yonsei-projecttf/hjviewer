@@ -29,6 +29,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -868,7 +869,7 @@ class WorkflowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output = os.path.join(tmp, "outputs")
             done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
-                                  cwd=tmp, env={**os.environ, "GITHUB_OUTPUT": output, **env},
+                                  cwd=tmp, env={**os.environ, "GITHUB_OUTPUT": output, "TESTFLIGHT_RUN": "", **env},
                                   capture_output=True, text=True)
             self.assertFalse(os.path.exists(os.path.join(tmp, "injected")))
             outputs = None
@@ -882,24 +883,32 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(step["env"], {
             "PLATFORMS": "${{ github.event_name == 'push' && 'all' || inputs.platforms }}",
             "TESTFLIGHT": "${{ inputs.testflight }}",
+            "TESTFLIGHT_RUN": "${{ inputs.testflight_run }}",
         })
         # first, before anything is checked out
         self.assertEqual(self.index("preflight", "Plan build targets"), 0)
         triggers = self.wf.get("on", self.wf.get(True))  # PyYAML's YAML 1.1 spelling of `on`
         for trigger in ("workflow_dispatch", "workflow_call"):
             self.assertIs(triggers[trigger]["inputs"]["testflight"]["default"], False)
+            self.assertEqual(triggers[trigger]["inputs"]["testflight_run"]["type"], "string")
         for platform in ("windows", "android", "ios", "relay", "all", "", "unknown", "$(touch injected)"):
-            for testflight in ("false", "true"):
-                with self.subTest(platform=platform, testflight=testflight):
-                    code, out, outputs = self.plan({"PLATFORMS": platform, "TESTFLIGHT": testflight})
-                    valid = platform in self.PLANS and (testflight == "false" or platform in ("ios", "all"))
+            for testflight, run in (("false", ""), ("true", ""), ("true", "40363130281"), ("false", "40363130281"),
+                                    ("true", "4036313028x"), ("true", "$(touch injected)")):
+                with self.subTest(platform=platform, testflight=testflight, run=run):
+                    code, out, outputs = self.plan({"PLATFORMS": platform, "TESTFLIGHT": testflight,
+                                                    "TESTFLIGHT_RUN": run})
+                    upload = testflight == "true"
+                    valid = platform in self.PLANS and (
+                        (not upload and not run) or (upload and platform == "ios" and run.isdigit()))
                     self.assertEqual(code, 0 if valid else 1, out)
                     if not valid:
                         self.assertIsNone(outputs)
                         continue
-                    builds = dict(zip(("windows", "android", "ios", "relay"), self.PLANS[platform]))
+                    # a TestFlight upload builds nothing: it sends a finished build run's IPA
+                    builds = dict(zip(("windows", "android", "ios", "relay"), (0, 0, 0, 0) if upload else self.PLANS[platform]))
                     want = {job: "true" if on else "false" for job, on in builds.items()}
-                    want["build_apps"] = "false" if platform == "relay" else "true"
+                    want["build_apps"] = "false" if upload or platform == "relay" else "true"
+                    want["testflight"] = "true" if upload else "false"
                     self.assertEqual(outputs, want)
 
     def test_the_jobs_build_what_the_plan_says_from_one_source_commit(self):
@@ -907,13 +916,13 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn("if", preflight)  # relay still needs a successful preflight and a source SHA
         self.assertNotIn("needs", preflight)
         self.assertEqual(preflight["outputs"]["source_sha"], "${{ steps.source.outputs.sha }}")
-        for name in ("build_apps", "windows", "android", "ios", "relay"):
+        for name in ("build_apps", "windows", "android", "ios", "relay", "testflight"):
             self.assertEqual(preflight["outputs"][name], f"${{{{ steps.plan.outputs.{name} }}}}")
         for name in ("Check out hjviewer", "Record the source commit", "Check the pinned public keys"):
             self.assertNotIn("if", self.step("preflight", name), name)
         # no job builds before the checks have passed, and each reads its part of the plan
         conditions = {"generate-bridge": "build_apps", "dart-tests": "build_apps", "windows": "windows",
-                      "android": "android", "ios": "ios", "relay": "relay"}
+                      "android": "android", "ios": "ios", "relay": "relay", "testflight": "testflight"}
         for job, output in conditions.items():
             self.assertEqual(self.wf["jobs"][job]["if"], f"needs.preflight.outputs.{output} == 'true'", job)
             needs = self.wf["jobs"][job]["needs"]
@@ -1205,12 +1214,48 @@ class WorkflowTest(unittest.TestCase):
         signed = self.step("ios", "Build rustdesk (signed IPA)")["run"]
         self.assertIn('--dart-define=HJV_IOS_EXPORT="$IOS_EXPORT_METHOD"', signed)
         self.assertEqual(signed.count("flutter build ipa"), 1)
-        # the value is the one the signing step chose and the TestFlight upload compares
-        self.assertIn('echo "IOS_EXPORT_METHOD=$method" >> "$GITHUB_ENV"', self.step("ios", "Set up code signing")["run"])
-        self.assertIn('"$IOS_EXPORT_METHOD" != app-store-connect', self.step("ios", "Upload to TestFlight")["run"])
+        # the value is the one the signing step chose from the profile; the TestFlight upload, a
+        # later run's, reads the profile in the IPA by the same rules
+        signing = self.step("ios", "Set up code signing")["run"]
+        self.assertIn('echo "IOS_EXPORT_METHOD=$method" >> "$GITHUB_ENV"', signing)
+        upload = self.step("testflight", "Upload to TestFlight")["run"]
+        for rule in ("ProvisionsAllDevices", "Entitlements:get-task-allow", "ProvisionedDevices"):
+            self.assertIn(rule, signing)
+            self.assertIn(rule, upload)
         self.assertLess(self.index("ios", "Set up code signing"), self.index("ios", "Build rustdesk (signed IPA)"))
         # an unsigned build is exported by nobody: the app sees no method
         self.assertNotIn("HJV_IOS_EXPORT", self.step("ios", "Build rustdesk (unsigned)")["run"])
+
+    def upload_check(self, out, env):
+        """The release.json check of the TestFlight upload, as the step runs it in the downloaded
+        artifact <out>: (exit code, output)."""
+        run = self.step("testflight", "Upload to TestFlight")["run"]
+        code = re.search(r"python3 -I -c '\n(.*?)\n' \"\$ipa\"", run, re.S).group(1)
+        ipa_name = next(n for n in os.listdir(out) if n.endswith(".ipa"))
+        done = subprocess.run([sys.executable, "-I", "-c", code, ipa_name], cwd=out, capture_output=True, text=True,
+                              env={**os.environ, **env})
+        return done.returncode, done.stdout + done.stderr
+
+    def test_the_upload_takes_the_ipa_its_build_run_recorded(self):
+        """What the iOS job writes (release-info.py) is what the later run's upload checks."""
+        tree = Tree(self)
+        name = "HJViewer-1.6.0-0123abc-ios.ipa"
+        tree.put(name, ipa())
+        code, text, _ = tree.run("--platform", "ios", "--file", name)
+        self.assertEqual(code, 0, text)
+        good = {"VERSION": "1.6.0", "SOURCE_SHA": tree.commit, "TESTFLIGHT_RUN": CALLED["GITHUB_RUN_ID"]}
+        self.assertEqual(self.upload_check(tree.out, good), (0, ""))
+        for change, why in (({"VERSION": "1.6.1"}, "version"), ({"SOURCE_SHA": "3" * 40}, "source_sha"),
+                            ({"TESTFLIGHT_RUN": "4243"}, "run_id")):
+            code, out = self.upload_check(tree.out, {**good, **change})
+            self.assertEqual(code, 1, change)
+            self.assertIn(f"::error::release.json does not name this IPA of build run", out)
+            self.assertIn(why, out)
+        # other bytes under the build's release.json
+        tree.put(name, ipa() + b"!")
+        code, out = self.upload_check(tree.out, good)
+        self.assertEqual(code, 1)
+        self.assertIn("sha256", out)
 
     def required_dart_tests(self):
         """The test files the Dart tests job fails without."""
