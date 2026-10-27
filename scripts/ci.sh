@@ -853,6 +853,17 @@ server_relay() {
   fi
 }
 
+# hjv-release's release build (server_release), which the client stage's key-file test and the E2E's
+# version policies take. Those stages build it by this function too (client when it is not there or
+# not this tree's, stamp_mismatch; e2e each time), so that it is in their code (REUSE_CODE): another
+# build of it runs them again.
+hjv_release_build() { # <stage>
+  own_target "$CI/target-hjv-release" "$ROOT/tools/hjv-release"
+  (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
+    fail "$1: hjv-release release build"
+  stamp_binary "$CI/target-hjv-release/release/hjv-release" "${RELEASE_INPUTS[@]}"
+}
+
 # release: tools/hjv-release's format, lints, tests and release build
 server_release() {
   if [ -d "$ROOT/tools/hjv-release" ]; then
@@ -866,9 +877,7 @@ server_release() {
       fail "server: hjv-release lints"
     with_skips "$CI/hjv-release-tests.log" env -C "$ROOT/tools/hjv-release" CARGO_TARGET_DIR="$CI/target-hjv-release" \
       cargo test --locked || fail "server: hjv-release tests"
-    (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
-      fail "server: hjv-release release build"
-    stamp_binary "$CI/target-hjv-release/release/hjv-release" "${RELEASE_INPUTS[@]}"
+    hjv_release_build server
   else
     skip "hjv-release (no tools/hjv-release)"
   fi
@@ -984,10 +993,7 @@ client_stage() {
     why=$(stamp_mismatch "$release_bin" "${RELEASE_INPUTS[@]}")
     if [ -n "$why" ]; then
       step "client: tools/hjv-release's release build ($why)"
-      own_target "$CI/target-hjv-release" "$ROOT/tools/hjv-release"
-      (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
-        fail "client: hjv-release release build"
-      stamp_binary "$release_bin" "${RELEASE_INPUTS[@]}"
+      hjv_release_build client
     fi
     check_stamp "$release_bin" server "${RELEASE_INPUTS[@]}"
   fi
@@ -2416,10 +2422,7 @@ e2e_minimum_version() {
   E2E_MINVER+=(HJV_E2E_UPDATE_KEYS=1)
   if [ -f "$ROOT/tools/hjv-release/Cargo.toml" ]; then
     step "e2e: tools/hjv-release, which signs the E2E's version policies with the test keys"
-    own_target "$CI/target-hjv-release" "$ROOT/tools/hjv-release"
-    (cd "$ROOT/tools/hjv-release" && CARGO_TARGET_DIR="$CI/target-hjv-release" cargo build --release --locked) ||
-      fail "e2e: hjv-release build"
-    stamp_binary "$CI/target-hjv-release/release/hjv-release" "${RELEASE_INPUTS[@]}"
+    hjv_release_build e2e
     E2E_MINVER+=(HJV_RELEASE="$CI/target-hjv-release/release/hjv-release")
   fi
 }
@@ -2766,7 +2769,8 @@ reuse_rules() {
   REUSE_UNITS="server:hbbs server:api server:relay server:release client deploy e2e wol drill:full drill:quick"
   # What of this script each runs: these functions, finish, and every function that they name
   # (reuse_closure); with the builds of what they take from another unit, hbbs and hbbr of server:hbbs
-  # and hjv-api of server:api, which their runs do not name
+  # and hjv-api of server:api, which their runs do not name (hjv-release's of server:release, client
+  # and e2e build by the same function, hjv_release_build, which their runs name)
   declare -gA REUSE_CODE=([server:hbbs]="server_stage server_hbbs" [server:api]="server_stage server_api"
     [server:relay]="server_stage server_relay" [server:release]="server_stage server_release" [client]=client_stage
     [deploy]="deploy_stage server_hbbs_build server_api_build" [e2e]="e2e_build_stage e2e_stage server_hbbs_build"
