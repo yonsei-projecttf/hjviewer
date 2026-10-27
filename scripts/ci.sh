@@ -762,7 +762,7 @@ server_api() {
     # compile hjv-api again for every commit. The binary must report it.
     commit=$(git -C "$ROOT" log -1 --format=%H -- server/api)
     (cd "$ROOT/server/api" && HJV_API_COMMIT=$commit \
-      CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api)
+      CARGO_TARGET_DIR="$CI/target-api" cargo build --release --locked --bin hjv-api) || fail "server: hjv-api release build"
     "$API" version | grep -qF "($commit)" || fail "server: $API does not report the commit of its source, $commit"
     stamp_binary "$API" "${API_INPUTS[@]}"
   else
@@ -953,7 +953,8 @@ for r in json.load(open(sys.argv[1]))["releases"]:
   own_target "$CI/target-client" "$CI/upstream/rustdesk"
   # One at a time: the proxy test sets the process's proxy option, and a test running beside it
   # would connect through that test's one-shot proxy
-  (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket -- --test-threads=1)
+  (cd "$CI/upstream/rustdesk" && CARGO_TARGET_DIR="$CI/target-client" cargo test --locked -p hbb_common --lib websocket -- --test-threads=1) ||
+    fail "client: hbb_common WebSocket tests"
   # The apps build with Rust 1.75 (client-build.yml RUST_VERSION); the development machine's
   # stable toolchain would let newer language features through (design v3 6-6)
   step "client: cargo +1.75.0 check --features linux-pkg-config,hjv-e2e"
