@@ -527,7 +527,7 @@ class StopTest(unittest.TestCase):
         self.stage = os.path.join(self.tmp, "stage.sh")
         with open(self.stage, "w", encoding="utf-8") as f:
             f.write('#!/usr/bin/env bash\ntrap \'sleep 1; echo "$1 ended" >> "$TRAPS"\' EXIT\n'
-                    'echo "$1 started" >> "$TRAPS"\nsleep 30\n')
+                    'echo "$1 started" >> "$TRAPS"\nsleep "${STAGE_SECONDS:-30}"\n')
         os.chmod(self.stage, 0o755)
 
     def tearDown(self):
@@ -535,9 +535,9 @@ class StopTest(unittest.TestCase):
 
     def jobs(self, script):
         """<script> in a bash that sourced scripts/ci.sh, where prepush_start's jobs run the stage
-        above after a log head that says nothing; "started <name>" waits for the run of a job"""
+        above after a log head that says nothing; "says <line>" waits for <line> in their $TRAPS"""
         return bash('source "$1"\nPREPUSH_LOGS=$2 SELF=$3\nexport TRAPS=$2/traps\nlog_head() { :; }\n'
-                    'started() { for _ in $(seq 100); do if grep -qx "$1 started" "$TRAPS" 2> /dev/null; then return; fi; '
+                    'says() { for _ in $(seq 100); do if grep -qx "$1" "$TRAPS" 2> /dev/null; then return; fi; '
                     'sleep 0.05; done; return 1; }\n' + script, os.path.join(ROOT, "scripts", "ci.sh"), self.tmp,
                     self.stage, env=clean_env(os.path.join(self.tmp, "ci"))).stdout
 
@@ -545,12 +545,12 @@ class StopTest(unittest.TestCase):
         out = self.jobs(r'''
 # stopped after a failure: prepush_stop returns once the trap has ended
 prepush_start failure failure
-started failure
+says "failure started"
 prepush_stop failure
 cat "$TRAPS"; : > "$TRAPS"
 # after a Ctrl-C, which reached the job too: its trap, under way, is not cut short
 prepush_start interrupt interrupt
-started interrupt
+says "interrupt started"
 kill -INT $(prepush_pids "${PREPUSH_PID[interrupt]}")
 PREPUSH_SIGNAL=SIGINT
 prepush_stop interrupt
@@ -558,7 +558,7 @@ cat "$TRAPS"; : > "$TRAPS"
 # after a SIGTERM to the group, which reached the job's subshell too: that outlasts the run under
 # it, which prepush_stop finds by it and waits for
 prepush_start term term
-started term
+says "term started"
 kill -TERM $(prepush_pids "${PREPUSH_PID[term]}")
 PREPUSH_SIGNAL=SIGTERM
 prepush_stop term
@@ -570,6 +570,26 @@ echo "jobs left: ${!PREPUSH_PID[*]}"''')
         self.assertIn("prepush: SIGTERM: waiting up to 120 s for term to end, cleaning up\nterm started\nterm ended\n", out)
         self.assertNotRegex(out, r"prepush: stopping (interrupt|term)")
         self.assertTrue(out.endswith("jobs left: \n"), out)
+
+    def test_a_job_stopped_before_its_run_has_started_does_not_start_it(self):
+        # a Ctrl-C while the job's subshell is still in the log head (a second long here): the
+        # subshell, a job in the background, does not take it, and its run, which would start after
+        # it, would not have had it either; nothing would stop that run then
+        out = self.jobs(r'''
+log_head() { echo "$1 head" >> "$TRAPS"; sleep 1; }
+export STAGE_SECONDS=3
+prepush_start late late
+says "late head"
+kill -INT $(prepush_pids "${PREPUSH_PID[late]}")
+PREPUSH_SIGNAL=SIGINT
+start=$(date +%s%N)
+prepush_stop late
+echo "prepush_stop returned after $((($(date +%s%N) - start) / 1000000)) ms"
+cat "$TRAPS" "$PREPUSH_LOGS/late.log"''')
+        self.assertIn("prepush: SIGINT: waiting up to 120 s for late to end, cleaning up\n", out)
+        self.assertIn("\nlate head\nprepush stopped before scripts/ci.sh late started\nEXIT 143 ", out)
+        self.assertNotRegex(out, r"(?m)^late started$")
+        self.assertLess(int(re.search(r"(?m)^prepush_stop returned after (\d+) ms$", out).group(1)), 2500, out)
 
 
 if __name__ == "__main__":

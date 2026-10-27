@@ -3223,16 +3223,22 @@ PREPUSH_LOGS=""
 # <log folder>/<name>.log: prepush's head first, then PREPUSH_HEAD[<name>], its output, last its
 # exit status. With nice it runs with a lower priority, for CPU and disk, than the jobs beside it.
 # The job ends with the run of <target>, not before it on a signal that ends that run too: so its
-# process is there for prepush_stop to find that run by, until that run's exit traps have ended.
+# process is there for prepush_stop to find that run by, until that run's exit traps have ended. A
+# TERM or HUP that the job has before that run has started (the signal that stops prepush, or
+# prepush_stop's) keeps the run from starting: it would not have had that signal.
 prepush_start() { # <name> <target> [nice]
   local name=$1 target=$2 pre=()
   [ "${3:-}" != nice ] || pre=(nice -n 10 ionice -c 2 -n 7)
   PREPUSH_START[$name]=$(date +%s)
   (
+    stop=""
     trap 'echo "EXIT $? $(date "+%Y-%m-%d %H:%M:%S %z")"' EXIT
-    trap : TERM HUP
-    log_head "$target"
+    trap 'stop=1' TERM HUP
+    # (in a process of its own: a trap that runs while bash 5.2 expands a command substitution
+    # breaks its parser, "trap: line 2: unexpected EOF while looking for matching `)'")
+    (log_head "$target")
     if [ -n "${PREPUSH_HEAD[$name]:-}" ]; then printf '%s\n' "${PREPUSH_HEAD[$name]}"; fi
+    if [ -n "$stop" ]; then echo "prepush stopped before scripts/ci.sh $target started"; exit 143; fi
     env --default-signal=INT,QUIT HJV_CI_STRICT=1 "${pre[@]}" "$SELF" "$target"
   ) > "$PREPUSH_LOGS/$name.log" 2>&1 < /dev/null &
   PREPUSH_PID[$name]=$!
@@ -3286,9 +3292,15 @@ prepush_stop_all() {
 # and containers, the E2E's namespaces, the drill's containers), and prepush, which holds the lock,
 # ends after them. A job that had prepush's signal too (Ctrl-C reaches every process of the
 # terminal's group) is ending already, in those traps, which a second signal would cut short: such
-# jobs get two minutes to end on their own before they are stopped.
+# jobs get two minutes to end on their own before they are stopped. Before all that, each job's own
+# process gets a TERM, which keeps a run that has not started yet from starting (prepush_start)
+# and does nothing else: a Ctrl-C, which that process does not take (a job in the background),
+# would not keep it.
 prepush_stop() { # <name...>
   local name names=() pids=() left pid
+  for name in "$@"; do
+    [ -z "${PREPUSH_PID[$name]:-}" ] || kill "${PREPUSH_PID[$name]}" 2> /dev/null || true
+  done
   for name in "$@"; do
     [ -n "${PREPUSH_PID[$name]:-}" ] || continue
     readarray -t -O "${#pids[@]}" pids < <(prepush_pids "${PREPUSH_PID[$name]}")
