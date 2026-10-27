@@ -1529,10 +1529,11 @@ account_strict() {
   bg_start s38off hjv-ctl2 ctl2 "$CLIENT" --hjv-e2e-stream "$PC_ID" "" 40
   bg_in s38off
   ended=$(sessions_ended)
-  ts=$(date +%s.%N)
   run pc --hjv-e2e-option hjv-pwless-off Y
   within_ms 1500 pc_off || fail "S25: the PC did not keep Off within 1.5 s of [끄기]"
   s25_ms=$WITHIN_MS
+  # (from here on: a sync that began before the PC kept Off is no sync after [끄기])
+  ts=$(date +%s.%N)
   pwless_refused ctl2 s25b "S25: after [끄기]"
   # S38's other half (D-6): [끄기] stops new password-less logins; its sync goes on, and the open
   # session stays through it
