@@ -5,6 +5,7 @@ and CI directories (scripts/ci.sh leak runs them):
 
     python3 -I -B -m unittest discover -s scripts -p 'test_ci_reuse.py'
 """
+import importlib.util
 import os
 import re
 import shutil
@@ -609,18 +610,48 @@ echo "deploy_part returned"'''
             self.assertEqual(sorted(f.read().split()), ["drill:build", "drill:full", "e2e", "e2e:build", "server:hbbs"])
 
     def test_the_rules_hold_the_code_that_reads_a_path_they_leave_out(self):
+        # rules that leave out what the code of their units reads: of a Rust test, of a Python test
+        # through pathlib's .parent, of a JavaScript module's join, of a shell variable set to a folder
+        # of the tree, and of the words after a cd to the tree
         tree = self.copy("rules")
         out = tree.source('''d=$1
 for u in $REUSE_UNITS; do echo "$u=${REUSE_SKIP[$u]//$'\\n'/ }"; done |
-  sed -e 's#!docs/relay-dsm.md ##' > "$d/rules"
+  sed -e 's#!docs/relay-dsm.md ##' -e 's#^client=.*#& client/play/* store/appstore/*#' \\
+    -e 's#^drill:full=.*#& server/api/hjviewer-api.env.example#' -e 's#^e2e=.*#& client/icons/*#' > "$d/rules"
 echo "$REUSE_SKIP_ALL" > "$d/all"
 for u in "${!REUSE_TESTS[@]}"; do echo "$u ${REUSE_TESTS[$u]}"; done > "$d/tests"
 printf '%s\\n' "${REUSE_NOT_READ[@]}" > "$d/not-read"
 for u in $REUSE_UNITS; do read -ra fns <<< "${REUSE_CODE[$u]}"; reuse_code text "${fns[@]}" finish > "$d/$u.code"; done
 python3 -I -B scripts/ci-reuse.py reads "$ROOT" "$d"''', tempfile.mkdtemp(dir=self.tmp), check=False)
         self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
-        self.assertRegex(out.stdout, r"(?m)^server:relay: relay/tests/watchdog\.rs:\d+ reads docs/relay-dsm\.md, "
-                                     r"which its rules leave out")
+        for unit, where, path in (("server:relay", r"relay/tests/watchdog\.rs:\d+", "docs/relay-dsm.md"),
+                                  ("client", r"scripts/test_play_upload\.py:\d+", "client/play/AndroidManifest.xml"),
+                                  ("client", r"scripts/asc-store\.mjs:\d+", "store/appstore"),
+                                  ("drill:full", r"tools/e2e/hjv-api-drill\.sh:\d+", "server/api/hjviewer-api.env.example"),
+                                  ("e2e", r"scripts/ci\.sh's e2e_client_stamp", "client")):
+            self.assertRegex(out.stdout, r"(?m)^" + re.escape(unit) + ": " + where + " reads " + re.escape(path) +
+                             ", which its rules leave out")
+
+    def test_the_check_of_the_rules_follows_the_paths_that_code_builds(self):
+        # scripts/ci-reuse.py's references of made-up code: pathlib's .parent, a shell variable of a
+        # folder of the tree and one set to something else since, a cd to the tree, a module's join
+        spec = importlib.util.spec_from_file_location("ci_reuse", os.path.join(HERE, "ci-reuse.py"))
+        reuse = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reuse)
+        py = ('HERE = pathlib.Path(__file__).resolve().parent\nROOT = HERE.parent\nDOC = ROOT / "docs" / \'a.md\'\n'
+              'open(HERE.parent / "client" / "b")\nopen(HERE.parent.parent / "c")\nos.path.join(HERE.parent, "d", "e")\n')
+        # (the folder above the tree's is none of its paths)
+        self.assertEqual([r for _, r, _ in reuse.py_refs("scripts/x.py", py)], ["docs/a.md", "client/b", "d/e"])
+        tracked = {"client/a", "scripts/upstream.env", "server/api/Cargo.toml", "server/api/src/main.rs", "tools/x"}
+        sh = ('api="$ROOT/server/api"\nsrc=$api/src\ncat "$src/main.rs" "${api}/Cargo.toml"\nsrc=$1\ncat "$src/main.rs"\n'
+              '(cd "$ROOT" && find client scripts/upstream.env \\\n  -type f | sort) | tar -cf - tools/x\n'
+              '(cd "$ROOT/server" && ls api)\n')
+        self.assertEqual([(n, r) for n, r, _ in reuse.shell_refs("tools/e2e/x.sh", sh, tracked)],
+                         [(1, "server/api"), (2, "server/api/src"), (3, "server/api/src/main.rs"), (3, "server/api/Cargo.toml"),
+                          (6, "client"), (6, "scripts/upstream.env"), (8, "server/api"), (8, "server")])
+        mjs = ("const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));\n"
+               "export const STORE = join(ROOT, 'store', 'appstore');\nreadFileSync(join(STORE, 'x.txt'), 'utf8');\n")
+        self.assertEqual([r for _, r, _ in reuse.mjs_refs("scripts/y.mjs", mjs)], ["store/appstore", "store/appstore/x.txt"])
 
 
 class LockTest(unittest.TestCase):

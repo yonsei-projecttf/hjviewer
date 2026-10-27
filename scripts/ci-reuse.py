@@ -19,11 +19,14 @@ the patterns separated by spaces.
       checks the re-run table of <doc> ("고친 뒤 다시 돌릴 단위"): each row's paths (column 1) are
       read by the units its column 2 names, every tracked file is in a row
   ci-reuse.py reads <repo> <dir>
-      checks that the code a unit runs reads no path it leaves out: the Rust, shell and Python
-      files it reads and <dir>/<unit>.code (its code in scripts/ci.sh), by include_str!,
-      include_bytes!, #[path], CARGO_MANIFEST_DIR joins and repository paths in Rust; $ROOT/<path>,
-      unittest discover's -s and -p, and the *_INPUTS lists in shell; os.path.join and pathlib
-      joins on the repository's or the file's folder in Python. <dir>/rules has a line
+      checks that the code a unit runs reads no path it leaves out: the Rust, shell, Python and
+      JavaScript module (.mjs) files it reads and <dir>/<unit>.code (its code in scripts/ci.sh), by
+      include_str!, include_bytes!, #[path], CARGO_MANIFEST_DIR joins and repository paths in Rust;
+      $ROOT/<path>, $<name>/<path> of a variable set to a path of the tree, the paths of the tree
+      that the words after a cd to one name, unittest discover's -s and -p, and the *_INPUTS lists in
+      shell; os.path.join and pathlib joins on the repository's or the file's folder (and the
+      folders above them, .parent) in Python; join(<name>, '<path>'...) on a module's folder
+      (import.meta.url) or a name joined to it in JavaScript. <dir>/rules has a line
       <unit>=<patterns> for each unit, <dir>/all the patterns of what no unit reads (which a
       reference to a folder does not count), <dir>/tests "<unit> <crate>" lines (the crates whose
       own unit tests, #[cfg(test)] in src/, the unit compiles: what they read counts for it alone),
@@ -232,6 +235,15 @@ def norm(path):
     return None if p.startswith("..") or p.startswith("/") else ("" if p == "." else p)
 
 
+def up(path, levels):
+    """The folder <levels> above a repository path; None above the repository."""
+    for _ in range(levels):
+        if not path:
+            return None
+        path = posixpath.dirname(path)
+    return path
+
+
 RUST_REL = re.compile(r'(?:include_str!|include_bytes!)\(\s*"([^"]+)"|#\[path\s*=\s*"([^"]+)"\]')
 RUST_MOD = re.compile(r'^\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+([a-z_][a-z0-9_]*)\s*;')
 RUST_STR = re.compile(r'"((?:\.\./|/\.\./|[a-z.][a-z0-9_.-]*/)[^"\s]*)"')
@@ -268,7 +280,15 @@ def rust_refs(path, text, tracked):
                 yield n, norm(posixpath.join(crate, s.lstrip("/"))), test
 
 
-SHELL_REF = re.compile(r'(?:\$\{?(?:ROOT|root)\}?"?/)([A-Za-z0-9_.@*{},/-]+)')
+# $ROOT/<path>, $root/<path>, and $<name>/<path> of a variable set to a path of the tree before
+SHELL_REF = re.compile(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?/([A-Za-z0-9_.@*{},/-]+)')
+SHELL_ROOTS = ("ROOT", "root")
+# a variable set on the line, and a value that is a path of the tree: $ROOT, or a variable of one,
+# and what follows it
+SHELL_SET = re.compile(r'(?:^|(?<=[\s;(&|]))([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|\'[^\']*\'|[^\s;&|)]*)')
+SHELL_PATH = re.compile(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?((?:/[A-Za-z0-9_.@-]+)*)/?')
+# cd to a folder of the tree, after which the words of the command line are paths in it
+SHELL_CD = re.compile(r'\bcd "?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?((?:/[A-Za-z0-9_.@-]+)*)/?"? *&& *')
 DISCOVER = re.compile(r'unittest discover -s "\$ROOT/([A-Za-z0-9_./-]+)" -p \'([^\']+)\'')
 SHELL_DIR = re.compile(r'\$\(dirname "\$(?:0|\{BASH_SOURCE\[0\]\})"\)/([A-Za-z0-9_.@/-]+)')
 INPUTS = re.compile(r'declare -a ([A-Z_]+_INPUTS)=\((.*)\)')
@@ -285,14 +305,61 @@ CARGO_TEST = re.compile(r"\bcargo(?:_tests| test)\b")
 TEST_TARGET = re.compile(r"--test[ =]([A-Za-z0-9_-]+)")
 
 
+def shell_lines(text):
+    """(number, line) of a shell file's lines, a line that ends with a backslash joined with the next"""
+    lines, first, held = [], None, []
+    for n, line in enumerate(text.splitlines(), 1):
+        if first is None:
+            first = n
+        if line.endswith("\\") and not line.lstrip().startswith("#"):
+            held.append(line[:-1])
+            continue
+        lines.append((first, " ".join(held + [line])))
+        first, held = None, []
+    if held:
+        lines.append((first, " ".join(held)))
+    return lines
+
+
+def shell_base(name, rest, folders):
+    """The path of the tree that $<name><rest> names: $ROOT's, or a variable's of folders; or None."""
+    base = "" if name in SHELL_ROOTS else folders.get(name)
+    return None if base is None else norm(posixpath.join(base, rest.lstrip("/")))
+
+
+def cd_words(rest):
+    """The words of a command line that follows a cd's &&, up to the parenthesis that ends its
+    subshell: without quotes, but those that hold a variable, an assignment, an option or a sign of
+    the shell."""
+    depth, quote, end = 0, None, len(rest)
+    for i, c in enumerate(rest):
+        if quote:
+            quote = None if c == quote else quote
+        elif c in "\"'":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth < 0:
+                end = i
+                break
+    for word in re.findall(r'"[^"]*"|\'[^\']*\'|[^\s"\']+', rest[:end]):
+        word = word.strip("\"'")
+        if word and not word.startswith("-") and not any(c in word for c in "$=`|&;<>()"):
+            yield word
+
+
 def shell_refs(path, text, tracked=()):
     """(line, path, test) of the references of a shell file; in a unit's code of scripts/ci.sh
     (declare -f and declare -p output, a command on one line) the line is the function's name or
     the value's, and a cargo test there with a crate's folder takes that crate's tests (with
-    --test <name>, that test's file)."""
+    --test <name>, that test's file). A variable set to a path of the tree is followed in the lines
+    after it, and so are the paths of the tree that the words after a cd to it name."""
     here = posixpath.dirname(path)
     where = None
-    for n, line in enumerate(text.splitlines(), 1):
+    folders = {}
+    for n, line in shell_lines(text):
         if line.lstrip().startswith("#"):
             continue
         m = re.match(r"^([a-z_][a-z0-9_]*) \(\) $|^declare -[-aAgx]+ ([A-Za-z_][A-Za-z0-9_]*)=", line)
@@ -300,13 +367,33 @@ def shell_refs(path, text, tracked=()):
             where = m.group(1) or m.group(2)
         if where is not None:
             n = where
+        for m in SHELL_SET.finditer(line):
+            if m.group(1) in SHELL_ROOTS:
+                continue
+            value = SHELL_PATH.fullmatch(m.group(2).strip("\"'"))
+            folder = shell_base(value.group(1), value.group(2), folders) if value else None
+            if folder is None:
+                folders.pop(m.group(1), None)
+            else:
+                folders[m.group(1)] = folder
+        for m in SHELL_CD.finditer(line):
+            folder = shell_base(m.group(1), m.group(2), folders)
+            if folder is not None:
+                for word in cd_words(line[m.end():]):
+                    p = norm(posixpath.join(folder, word))
+                    if p and matching(p, tracked):
+                        yield n, p, False
         discovered = [(m.span(), m.group(1) + "/" + m.group(2)) for m in DISCOVER.finditer(line)]
         for m in SHELL_REF.finditer(line):
             # a path that goes on with a variable names what this cannot know; unittest's -s folder
             # is read by its -p pattern
             if line[m.end():m.end() + 1] == "$" or any(a <= m.start() < b for (a, b), _ in discovered):
                 continue
-            for p in braces(m.group(1).rstrip("}")):
+            base = "" if m.group(1) in SHELL_ROOTS else folders.get(m.group(1))
+            if base is None:
+                continue
+            for p in braces(m.group(2).rstrip("}")):
+                p = posixpath.join(base, p)
                 yield n, norm(p), False
                 crate = (norm(p) or "").rstrip("/")
                 if path == "scripts/ci.sh" and CARGO_TEST.search(line) and crate + "/Cargo.toml" in tracked:
@@ -331,24 +418,38 @@ PY_BASE = {
     "Path(__file__).resolve().parent.parent": 2,
 }
 PY_ASSIGN = re.compile(r"^([A-Z_][A-Z0-9_]*) = (.+)$")
-PY_JOIN = re.compile(r'os\.path\.join\(\s*([A-Z_][A-Z0-9_]*)((?:\s*,\s*"[^"]*")+)')
-PY_SLASH = re.compile(r'\b([A-Z_][A-Z0-9_]*)((?:\s*/\s*"[^"]*")+)')
+# a module-level name with the folders above it (pathlib's .parent), and the strings joined to it
+PY_NAME = r'([A-Z_][A-Z0-9_]*)((?:\.parent)*)'
+PY_STRINGS = r'((?:\s*{}\s*(?:"[^"]*"|\'[^\']*\'))+)'
+PY_JOIN = re.compile(r'os\.path\.join\(\s*' + PY_NAME + PY_STRINGS.format(","))
+PY_SLASH = re.compile(r'\b' + PY_NAME + PY_STRINGS.format("/"))
+
+
+def strings(text):
+    """The literal strings of a piece of Python or JavaScript, in either quotes."""
+    return [a or b for a, b in re.findall(r'"([^"]*)"|\'([^\']*)\'', text)]
+
+
+def py_base(name, parents, names):
+    """The repository path of a name of <names> with .parent after it <parents>, or None."""
+    return up(names[name], parents.count(".parent")) if name in names else None
 
 
 def py_value(value, here, names):
     """The repository path that a module-level value of a Python file names, or None."""
     if value in PY_BASE:
-        d = here
-        for _ in range(PY_BASE[value] - 1):
-            d = posixpath.dirname(d)
-        return d
-    m = re.fullmatch(r"os\.path\.dirname\(([A-Z_][A-Z0-9_]*)\)", value)
-    if m and m.group(1) in names:
-        return posixpath.dirname(names[m.group(1)])
+        return up(here, PY_BASE[value] - 1)
+    m = re.fullmatch(r"os\.path\.dirname\(" + PY_NAME + r"\)", value)
+    if m:
+        return up(py_base(m.group(1), m.group(2), names), 1)
+    m = re.fullmatch(PY_NAME, value)
+    if m:
+        return py_base(m.group(1), m.group(2), names)
     for pattern in (PY_JOIN, PY_SLASH):
         m = pattern.fullmatch(value)
-        if m and m.group(1) in names:
-            return norm(posixpath.join(names[m.group(1)], *re.findall(r'"([^"]*)"', m.group(2))))
+        d = py_base(m.group(1), m.group(2), names) if m else None
+        if d is not None:
+            return norm(posixpath.join(d, *strings(m.group(3))))
     return None
 
 
@@ -360,13 +461,47 @@ def py_refs(path, text):
             continue
         for pattern in (PY_JOIN, PY_SLASH):
             for m in pattern.finditer(line):
-                if m.group(1) in names:
-                    yield n, norm(posixpath.join(names[m.group(1)], *re.findall(r'"([^"]*)"', m.group(2)))), False
+                d = py_base(m.group(1), m.group(2), names)
+                if d is not None:
+                    yield n, norm(posixpath.join(d, *strings(m.group(3)))), False
         m = PY_ASSIGN.match(line)
         if m:
             value = py_value(m.group(2).strip(), here, names)
             if value is not None:
                 names[m.group(1)] = value
+
+
+# a JavaScript module's folder (import.meta.url) and the folders above it, a value it sets, and the
+# strings that path.join joins to a name
+MJS_BASE = {
+    "dirname(fileURLToPath(import.meta.url))": 1,
+    "dirname(dirname(fileURLToPath(import.meta.url)))": 2,
+}
+MJS_ASSIGN = re.compile(r"^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.+?);?$")
+MJS_JOIN = re.compile(r'\b(?:path\.)?join\(\s*([A-Za-z_$][\w$]*)((?:\s*,\s*(?:"[^"]*"|\'[^\']*\'))+)\s*\)')
+
+
+def mjs_refs(path, text):
+    """(line, path, test) of the references of a JavaScript module: join(<name>, '<path>'...) on a
+    name that it set to its folder or to such a join before"""
+    here = posixpath.dirname(path)
+    names = {}
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith(("//", "*", "/*")):
+            continue
+        for m in MJS_JOIN.finditer(line):
+            if m.group(1) in names:
+                yield n, norm(posixpath.join(names[m.group(1)], *strings(m.group(2)))), False
+        m = MJS_ASSIGN.match(line.strip())
+        if not m:
+            continue
+        value, j = m.group(2).strip(), MJS_JOIN.fullmatch(m.group(2).strip())
+        d = (up(here, MJS_BASE[value] - 1) if value in MJS_BASE
+             else norm(posixpath.join(names[j.group(1)], *strings(j.group(2)))) if j and j.group(1) in names else None)
+        if d is None:
+            names.pop(m.group(1), None)
+        else:
+            names[m.group(1)] = d
 
 
 def matching(ref, tracked):
@@ -402,14 +537,15 @@ def reads_mode(repo, work):
     for unit, patterns in rules.items():
         own = [p for p in patterns]
         whole = own + every
-        sources = [(p, None) for p in tracked if not skips(p, whole) and p.endswith((".rs", ".sh", ".py"))
+        sources = [(p, None) for p in tracked if not skips(p, whole) and p.endswith((".rs", ".sh", ".py", ".mjs"))
                    and not p.startswith(("client/", "server/patches/"))]
         sources.append(("scripts/ci.sh", os.path.join(work, unit + ".code")))
         for path, code in sources:
             with open(code or os.path.join(repo, path), encoding="utf-8", errors="replace") as f:
                 text = f.read()
             refs = (rust_refs(path, text, tracked_set) if path.endswith(".rs")
-                    else py_refs(path, text) if path.endswith(".py") else shell_refs(path, text, tracked_set))
+                    else py_refs(path, text) if path.endswith(".py")
+                    else mjs_refs(path, text) if path.endswith(".mjs") else shell_refs(path, text, tracked_set))
             for n, ref, test in refs:
                 if ref is None or ref == "scripts/ci.sh":
                     continue
