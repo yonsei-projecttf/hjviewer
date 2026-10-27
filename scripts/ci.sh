@@ -1133,8 +1133,9 @@ deploy_part() { # <part> <title> <inputs> <run> [<argument>...]
     echo "runs: no pass of it recorded (build/ci/stamps/deploy-$part.stamp)"
   fi
   "$run" "$@"
-  # a run that skipped a check is no pass to record (with HJV_CI_STRICT=1 it fails at the end)
-  [ ${#SKIPPED[@]} = "$skips" ] || return 0
+  # a run that skipped a check is no pass (with HJV_CI_STRICT=1 it fails at the end), and an older
+  # record of the same inputs (HJV_CI_DEPLOY_ALL=1) no longer says what a run of the part does here
+  if [ ${#SKIPPED[@]} != "$skips" ]; then rm -f "$stamp"; return 0; fi
   # what it read in the end: path A pulls the Caddy image when it is not here
   hash=$(part_hash "$inputs" "$@") || fail "deploy: what the part $part reads (above)"
   mkdir -p "$CI/stamps"
