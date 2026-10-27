@@ -129,7 +129,23 @@ if [ "$MODE" = strict ] && [ -n "${HJV_E2E_ACCESS:-}" ]; then
   REVIEW_ID=E2EREVIEW-TEST REVIEW_PW="hjv-e2e-review-$RANDOM$RANDOM"
 fi
 
-log() { printf '\n== %s\n' "$*"; }
+STARTED=$(date +%s) PARTS=()
+# A part of the run: its title with the seconds since the start (as wol-e2e.sh's); part_times prints
+# the parts by the time they took, each until the next one began
+log() {
+  PARTS+=("$(date +%s) $*")
+  printf '\n== [%3d s] %s\n' "$(($(date +%s) - STARTED))" "$*"
+}
+part_times() {
+  local now i from title next
+  now=$(date +%s)
+  printf '\n-- time by part, %s s in all:\n' "$((now - STARTED))"
+  for i in "${!PARTS[@]}"; do
+    read -r from title <<<"${PARTS[$i]}"
+    next=${PARTS[$((i + 1))]:-$now}
+    echo "$((${next%% *} - from)) $title"
+  done | sort -s -rn -k1,1 | while read -r from title; do printf '%6d s  %s\n' "$from" "$title"; done
+}
 
 # <seq> <deadline> [<test key> [<seq of an earlier policy>]]: signs a policy of epoch 1 and that seq
 # with the test key 1 (hjv-release test-sign), or with <test key> as it is (--raw, as the tool signs
@@ -2679,6 +2695,7 @@ fi
 log "what hbbs saw"
 # (|| true: with pipefail, head leaving early fails the pipeline once the log is long)
 grep -E "update_pk|Punch hole|Tcp connection from 10\.77" "$RUN/hbbs.log" | sed 's/^\[[^]]*\] //' | head -8 || true
+part_times
 echo
 echo "PASS ($MODE): $(grep -o 'transport: .*' "$RUN/ctl.log" | tail -1)$([ -n "$ACCOUNT" ] && echo ", same-account logins")$(
   [ -n "$ACCESS" ] && echo ", the staff-only gate")$([ -n "$MIN_HBBS" ] && echo ", hbbs's minimum")$(
