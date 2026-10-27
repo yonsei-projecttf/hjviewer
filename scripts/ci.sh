@@ -3111,15 +3111,17 @@ reuse_record() { # <unit> <log> <inputs file> <commit>
 # of reuse_inputs): that pass serves the quick drill (reuse_plan), whose steps are the full drill's.
 # <run> says which run forgot it (prepush by default).
 reuse_forget() { # <unit> <inputs file> [<run>]
-  local unit=$1 rec name
+  local unit=$1 rec name said
   reuse_rules
   for name in $REUSE_FILES_FROM; do [ -z "${!name:-}" ] || return 0; done
   if [ "$unit" = drill:quick ]; then reuse_forget drill:full "${2%/*}/drill:full.txt" "${3:-}"; fi
   [ -f "$2" ] || return 0
   rec="$CI/passes/$unit/$(sha256sum < "$2" | cut -d' ' -f1).pass"
   [ -f "$rec" ] || return 0
-  echo "${3:-prepush}: forgot the pass of $unit on these inputs, $(reuse_said "$rec"): this run of them did not pass"
+  # (gone before the line that says so, which a screen that has gone may end)
+  said=$(reuse_said "$rec")
   rm -f "$rec"
+  echo "${3:-prepush}: forgot the pass of $unit on these inputs, $said: this run of them did not pass"
 }
 # The units of the reuse that a run of <target> is a run of (reuse_own): the server stage's parts that
 # it names (all, its four and deploy), client, deploy, e2e (e2e:build too), wol and the drills, both
@@ -3165,7 +3167,7 @@ reuse_own() { # <argument...>
         grep -qx "== CI passed: $u (0 skipped)" "$log" && ! grep -q '^skipped:' "$log"; then
         continue
       fi
-      reuse_forget "$u" "$dir/$u.txt" "scripts/ci.sh ${1:-all}"
+      reuse_forget "$u" "$dir/$u.txt" "scripts/ci.sh ${1:-all}" || true
     done
   fi
   exit "$status"

@@ -398,6 +398,12 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
                               r"at .*: this run of them did not pass$")
         self.assertIn("\nserver did not pass\n", out)
         self.assertEqual(tree.plan("server:release")["server:release"], ("run", "no pass of it recorded"))
+        # forgotten also when the line that says so cannot be written (a screen that has gone)
+        self.record_passes(tree, "server:release")
+        inputs = tempfile.mkdtemp(dir=self.tmp)
+        tree.ci("inputs", inputs, "server:release")
+        tree.source('reuse_forget server:release "$1/server:release.txt" >&-', inputs, check=False)
+        self.assertEqual(self.recorded(tree), [])
 
     def test_a_run_of_its_own_that_did_not_pass_forgets_the_passes_of_its_units(self):
         # reuse_own's run of a stage, a stand-in that ends with $STATUS, on the inputs of recorded passes
