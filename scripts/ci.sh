@@ -2758,6 +2758,7 @@ preflight_ports() { # <stage...>
 # The rules of the reuse (docs/ci.md, "통과 재사용"), set by what uses them: in a function, so that
 # their lines are no top-level code that every unit runs (reuse_top)
 reuse_rules() {
+  local u
   [ -z "${REUSE_UNITS:-}" ] || return 0
   # The units whose strict passes prepush may reuse: the server stage's parts, the client, deploy,
   # e2e and wol stages, and the operations drill (prepush --drill). leak reads everything and always
@@ -2770,6 +2771,8 @@ reuse_rules() {
     [server:relay]="server_stage server_relay" [server:release]="server_stage server_release" [client]=client_stage
     [deploy]="deploy_stage server_hbbs_build server_api_build" [e2e]="e2e_build_stage e2e_stage server_hbbs_build"
     [wol]="wol_stage server_hbbs_build" [drill:full]=drill_stage [drill:quick]=drill_stage)
+  # and, for each, how prepush starts its run
+  for u in $REUSE_UNITS; do REUSE_CODE[$u]+=" unit_run"; done
   # What each unit provably does not read of HEAD's tree, by path pattern (scripts/ci-reuse.py: fnmatch,
   # whose * also takes /; the last pattern that matches decides, and one after ! takes paths back). Its
   # input files are all the rest, so that a file nobody thought of counts until a rule leaves it out;
@@ -3314,16 +3317,23 @@ declare -A PREPUSH_PID=() PREPUSH_START=() PREPUSH_HEAD=()
 PREPUSH_LOGS=""
 # The job that prepush_start starts, until its process is in PREPUSH_PID (prepush_stop_all)
 PREPUSH_STARTING=""
-# Starts <target> of this script as a job of this prepush run, with HJV_CI_STRICT=1 and its log
-# <log folder>/<name>.log: prepush's head first, then PREPUSH_HEAD[<name>], its output, last its
-# exit status. With nice it runs with a lower priority, for CPU and disk, than the jobs beside it.
-# The job ends with the run of <target>, not before it on a signal that ends that run too: so its
-# process is there for prepush_stop to find that run by, until that run's exit traps have ended. A
-# TERM or HUP that the job has before that run has started (the signal that stops prepush, or
+# How prepush runs <target> of this script for a unit (prepush_start): with HJV_CI_STRICT=1, with
+# SIGINT and SIGQUIT back, which the jobs of a script ignore, and with nice at a lower priority, for
+# CPU and disk, than the jobs beside it. In every unit's code (reuse_rules): what a unit's run gets
+# from prepush is in its key.
+unit_run() { # <target> [nice]
+  local pre=()
+  [ "${2:-}" != nice ] || pre=(nice -n 10 ionice -c 2 -n 7)
+  env --default-signal=INT,QUIT HJV_CI_STRICT=1 "${pre[@]}" "$SELF" "$1"
+}
+# Starts <target> of this script as a job of this prepush run (unit_run, nice with nice) with its log
+# <log folder>/<name>.log: prepush's head first, then PREPUSH_HEAD[<name>], its output, last its exit
+# status. The job ends with the run of <target>, not before it on a signal that ends that run too: so
+# its process is there for prepush_stop to find that run by, until that run's exit traps have ended.
+# A TERM or HUP that the job has before that run has started (the signal that stops prepush, or
 # prepush_stop's) keeps the run from starting: it would not have had that signal.
 prepush_start() { # <name> <target> [nice]
-  local name=$1 target=$2 pre=()
-  [ "${3:-}" != nice ] || pre=(nice -n 10 ionice -c 2 -n 7)
+  local name=$1 target=$2 how=${3:-}
   PREPUSH_START[$name]=$(date +%s)
   PREPUSH_STARTING=$name
   (
@@ -3335,7 +3345,7 @@ prepush_start() { # <name> <target> [nice]
     (log_head "$target")
     if [ -n "${PREPUSH_HEAD[$name]:-}" ]; then printf '%s\n' "${PREPUSH_HEAD[$name]}"; fi
     if [ -n "$stop" ]; then echo "prepush stopped before scripts/ci.sh $target started"; exit 143; fi
-    env --default-signal=INT,QUIT HJV_CI_STRICT=1 "${pre[@]}" "$SELF" "$target"
+    unit_run "$target" "$how"
   ) > "$PREPUSH_LOGS/$name.log" 2>&1 < /dev/null &
   PREPUSH_PID[$name]=$!
   PREPUSH_STARTING=""

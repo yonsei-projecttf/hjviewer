@@ -223,13 +223,14 @@ echo "functions $(declare -F | wc -l)"
 
     def test_an_edit_of_a_build_counts_for_the_units_that_take_what_it_builds(self):
         # hbbs and hbbr of server:hbbs go to deploy, e2e and wol, hjv-api of server:api to deploy: an edit
-        # of how they are built changes those units' keys too, an edit of the tests alone does not
+        # of how they are built changes those units' keys too, an edit of the tests alone does not. How
+        # prepush starts a unit's run counts for every unit.
         out = self.tree.source(r'''
 units="server:hbbs server:api server:release deploy e2e wol"
 key() { local fns; read -ra fns <<< "${REUSE_CODE[$1]}"; reuse_code "${fns[@]}" finish | sha256sum | cut -d' ' -f1; }
 declare -A keys=()
 for u in $units; do keys[$u]=$(key "$u"); done
-for f in server_hbbs_build server_checkout server_api_build server_hbbs server_api cargo_tests; do
+for f in server_hbbs_build server_checkout server_api_build server_hbbs server_api cargo_tests unit_run; do
   (
     eval "$(declare -f "$f" | sed '2a\    : an edit;')"
     changed=""
@@ -240,7 +241,7 @@ done
 wait''').stdout
         for line in ("server_hbbs_build: server:hbbs deploy e2e wol", "server_checkout: server:hbbs deploy e2e wol",
                      "server_api_build: server:api deploy", "server_hbbs: server:hbbs", "server_api: server:api",
-                     "cargo_tests: server:hbbs server:api"):
+                     "cargo_tests: server:hbbs server:api", "unit_run: server:hbbs server:api server:release deploy e2e wol"):
             self.assertIn(line + "\n", out)
 
     def test_the_top_level_code_counts_for_every_unit_and_comments_and_values_do_not(self):
