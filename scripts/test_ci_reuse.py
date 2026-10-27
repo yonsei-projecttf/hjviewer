@@ -433,6 +433,29 @@ class LockTest(unittest.TestCase):
         self.assertRegex(bash('source "$1"; lock_holder', ci, env=env).stdout,
                          r"^a run that does not say who it is \(no live process in .*ci.lock.holder\)\n$")
 
+    def test_a_run_waits_for_the_run_before_while_that_is_still_ending(self):
+        # the run that held the lock before, ending for a second more after its flock (a Ctrl-C ends
+        # flock first): a process of scripts/ci.sh
+        env = clean_env(self.ci)
+        ci = os.path.join(ROOT, "scripts", "ci.sh")
+        before = subprocess.Popen(["bash", "-c", "exec -a scripts/ci.sh sleep 1"])
+        try:
+            with open(os.path.join(self.ci, "ci.lock.holder"), "w", encoding="utf-8") as f:
+                f.write(f"{before.pid} tree T, commit C, scripts/ci.sh prepush, since now\n")
+            start = time.monotonic()
+            done = bash('source "$1"; lock_held deploy; cat "$CI/ci.lock.holder"', ci, env=env)
+            self.assertGreater(time.monotonic() - start, 0.5)
+            self.assertIn(f"waiting for the run that held {self.ci}/ci.lock before, which is still ending: pid {before.pid}, "
+                          "tree T, commit C, scripts/ci.sh prepush, since now\n", done.stdout)
+            self.assertRegex(done.stdout.splitlines()[-1], r"^\d+ tree .*, scripts/ci.sh deploy, since 20")
+        finally:
+            before.wait()
+        # a process of something else under that number, or none, is not waited for
+        start = time.monotonic()
+        done = bash('source "$1"; lock_held deploy', ci, env=env)
+        self.assertLess(time.monotonic() - start, 0.5)
+        self.assertNotIn("waiting", done.stdout)
+
 
 class StopTest(unittest.TestCase):
     """prepush_stop of scripts/ci.sh: the jobs it stops end with their exit traps, before it returns"""

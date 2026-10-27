@@ -109,9 +109,11 @@
 # how long the step before took; before its last line a run prints its steps by time.
 # One run at a time on a CI directory (HJV_CI_DIR, default build/ci): a run holds the lock
 # <CI directory>/ci.lock and says who it is in ci.lock.holder; a run started meanwhile stops at once
-# with what that says, or with HJV_CI_WAIT=<seconds> waits that long for it (lock_run). What reads
-# only the tree and writes nothing under the CI directory runs without it: the leak stage, inputs,
-# prepush --plan and the first part of prepush (its log folder, leak, the preflight).
+# with what that says, or with HJV_CI_WAIT=<seconds> waits that long for it (lock_run), and a run
+# that takes the lock while the one before is still ending (a Ctrl-C ends flock first) waits for that
+# run (lock_held). What reads only the tree and writes nothing under the CI directory runs without
+# it: the leak stage, inputs, prepush --plan and the first part of prepush (its log folder, leak, the
+# preflight).
 # Needs cargo, curl, openssl, Docker with compose v2 (used through sudo, as the runbook does), and
 # apt-get for Ubuntu's nginx and Apache packages, which are unpacked under build/ci, not installed.
 set -euo pipefail
@@ -2618,13 +2620,29 @@ lock_holder() {
   fi
 }
 # At the start of a run under the lock, in its first process only (the stages that prepush starts
-# are its): who holds the lock, for lock_holder
+# are its): who holds the lock, for lock_holder. flock gives the lock up as soon as its own process
+# ends, and a Ctrl-C ends that at once, while the run under it is still ending (its exit traps,
+# prepush_stop's wait for its jobs): the run before, while its first process is still there, is
+# waited for, up to five minutes.
 lock_held() { # <argument...>
+  local pid rest
   [ -z "${HJV_CI_HOLDER:-}" ] || return 0
+  if read -r pid rest 2> /dev/null < "$CI/ci.lock.holder" && [ "$pid" != $$ ] && lock_alive "$pid"; then
+    echo "waiting for the run that held $CI/ci.lock before, which is still ending: pid $pid, $rest"
+    for _ in $(seq 1500); do lock_alive "$pid" || break; sleep 0.2; done
+    ! lock_alive "$pid" || fail "the run that held $CI/ci.lock before has not ended in 5 minutes: pid $pid, $rest"
+  fi
   export HJV_CI_HOLDER=$$
   echo "$$ tree $ROOT, commit $(git -C "$ROOT" rev-parse --short HEAD), scripts/ci.sh $*, since $(date '+%Y-%m-%d %H:%M:%S %z')" \
     > "$CI/ci.lock.holder.$$"
   mv -f "$CI/ci.lock.holder.$$" "$CI/ci.lock.holder"
+}
+# Whether <pid> is a run of this script that has not ended (a zombie has)
+lock_alive() { # <pid>
+  local stat
+  { read -r stat < "/proc/$1/stat"; } 2> /dev/null || return 1
+  stat=${stat##*) }
+  [ "${stat%% *}" != Z ] && grep -qaF "scripts/$(basename "$SELF")" "/proc/$1/cmdline" 2> /dev/null
 }
 
 # --- the preflight ---
