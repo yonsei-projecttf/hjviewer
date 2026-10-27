@@ -3074,11 +3074,14 @@ reuse_record() { # <unit> <log> <inputs file> <commit>
 }
 # Forgets the recorded pass of <unit> on the inputs <inputs file> after a run on those inputs that
 # did not show its pass: the newest run of the same inputs, a flake or not, says how they fare (the
-# next prepush runs the unit again). The inputs list stays, for what a later plan says changed.
+# next prepush runs the unit again). The inputs list stays, for what a later plan says changed. A
+# quick drill's forgets the full drill's pass too, on the inputs beside its own (<dir>/drill:full.txt
+# of reuse_inputs): that pass serves the quick drill (reuse_plan), whose steps are the full drill's.
 reuse_forget() { # <unit> <inputs file>
   local unit=$1 rec name
   reuse_rules
   for name in $REUSE_FILES_FROM; do [ -z "${!name:-}" ] || return 0; done
+  if [ "$unit" = drill:quick ]; then reuse_forget drill:full "${2%/*}/drill:full.txt"; fi
   [ -f "$2" ] || return 0
   rec="$CI/passes/$unit/$(sha256sum < "$2" | cut -d' ' -f1).pass"
   [ -f "$rec" ] || return 0
@@ -3124,18 +3127,20 @@ reuse_decide() { # <unit> <inputs file>
 }
 # The plan of a prepush run for <unit...>: their inputs in <dir> (scripts/ci.sh inputs, a process of
 # its own) and REUSE_PLAN[<unit>], "reuse <record>" or "run <why>" (reuse_decide); a full drill's
-# pass serves a quick one. A unit that runs and takes a binary another unit builds, deploy, e2e and
-# wol hbbs and hbbr of server:hbbs and deploy hjv-api of server:api, needs it from this tree's
-# inputs: when its stamp says otherwise (stamp_mismatch), the unit that builds it runs too, though
-# its own pass could be reused or prepush was not asked for it.
+# pass serves a quick one. The inputs of either drill come with the other's, whose pass a failure
+# of the drill's build forgets too (prepush_run). A unit that runs and takes a binary another unit
+# builds, deploy, e2e and wol hbbs and hbbr of server:hbbs and deploy hjv-api of server:api, needs
+# it from this tree's inputs: when its stamp says otherwise (stamp_mismatch), the unit that builds
+# it runs too, though its own pass could be reused or prepush was not asked for it.
 declare -A REUSE_PLAN=()
 reuse_plan() { # <dir> <unit...>
-  local dir=$1 u want c p bin why
+  local dir=$1 u want c p bin why other=()
   shift
   want=("$@")
   if [[ " $* " == *" drill:quick "* ]]; then want+=(drill:full); fi
+  if [[ " $* " == *" drill:full "* ]]; then other=(drill:quick); fi
   reuse_rules
-  "$SELF" inputs "$dir" "${want[@]}" || fail "prepush: the units' inputs (scripts/ci.sh inputs)"
+  "$SELF" inputs "$dir" "${want[@]}" "${other[@]}" || fail "prepush: the units' inputs (scripts/ci.sh inputs)"
   for u in "${want[@]}"; do REUSE_PLAN[$u]=$(reuse_decide "$u" "$dir/$u.txt"); done
   if [[ " $* " == *" drill:quick "* ]] && [[ ${REUSE_PLAN[drill:full]} == reuse* ]]; then
     REUSE_PLAN[drill:quick]=${REUSE_PLAN[drill:full]}
@@ -3550,11 +3555,12 @@ prepush_run() { # [--plan] [--drill[=full|quick]] [<stage>...]
   if [ ${#started[@]} -gt 0 ]; then
     step "prepush: ${started[*]} side by side"
     for n in "${started[@]}"; do
-      # (e2e:build and drill:build record no pass of their own; when one fails, its unit's goes)
+      # (e2e:build and drill:build record no pass of their own; when one fails, its unit's goes, and
+      # the drill's build is either drill's)
       case $n in
         deploy | client) prepush_end "$n" "$n" "$head" "$n" || failed+=("$n") ;;
         e2e-build) prepush_end "$n" e2e:build "$head" e2e || failed+=("$n") ;;
-        drill-build) prepush_end "$n" drill:build "$head" "drill:$drill" || failed+=("$n") ;;
+        drill-build) prepush_end "$n" drill:build "$head" drill:full drill:quick || failed+=("$n") ;;
       esac
     done
     [ ${#failed[@]} -eq 0 ] || fail "prepush: ${failed[*]} did not pass (above, and in $PREPUSH_LOGS)"

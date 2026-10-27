@@ -359,6 +359,38 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
         self.assertIn("\nserver did not pass\n", out)
         self.assertEqual(tree.plan("server:release")["server:release"], ("run", "no pass of it recorded"))
 
+    def test_a_build_or_a_quick_drill_that_did_not_pass_forgets_the_passes_it_stands_for(self):
+        # prepush with stand-ins for the stages, one of which fails on the inputs of a recorded pass:
+        # e2e:build is e2e's, the drill's build is either drill's, and the quick drill's steps are the
+        # full drill's, whose pass serves the quick drill
+        tree = self.copy("stands-for")
+        stage = os.path.join(self.tmp, "stands-for-stage.sh")
+        with open(stage, "w", encoding="utf-8") as f:
+            f.write('#!/usr/bin/env bash\n[ "$1" != inputs ] || exec bash "$CI_SH" "$@"\n'
+                    'if [ "$1" = "$FAILS" ]; then echo "FAIL: a test"; exit 1; fi\necho "== CI passed: $1 (0 skipped)"\n')
+        os.chmod(stage, 0o755)
+        env = dict(tree.env, HJV_CI_LOCK=tree.env["HJV_CI_DIR"], HJV_CI_FRESH="1",
+                   CI_SH=os.path.join(tree.dir, "scripts", "ci.sh"))
+
+        def prepush(fails, *args):
+            done = tree.source('preflight() { :; }\npreflight_ports() { :; }\nSELF=$1\nshift\nprepush_run "$@"', stage,
+                               *args, env=dict(env, FAILS=fails, HJV_CI_LOGS=tempfile.mkdtemp(dir=self.tmp)), check=False)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            return re.findall(r"(?m)^prepush: forgot the pass of (\S+) on these inputs", done.stdout)
+
+        quick = ("--drill=quick", "server:release")
+        # the pass recorded, what fails in a prepush run of its inputs (HJV_CI_FRESH=1), that run, and
+        # the plan whose line of a unit reuses the pass before and runs the unit after
+        for unit, fails, args, plan, line in (("drill:full", "drill:quick", quick, quick, "drill:quick"),
+                                              ("drill:full", "drill:build", quick, quick, "drill:quick"),
+                                              ("drill:quick", "drill:build", ("--drill=full", "server:release"), quick,
+                                               "drill:quick"),
+                                              ("e2e", "e2e:build", ("e2e",), ("e2e",), "e2e")):
+            self.record(tree, unit, self.pass_log(tree, unit))
+            self.assertEqual(tree.plan(*plan)[line][0], "reuse", fails)
+            self.assertEqual(prepush(fails, *args), [unit], fails)
+            self.assertEqual(tree.plan(*plan)[line][0], "run", fails)
+
     def test_a_deploy_part_that_did_not_pass_leaves_no_stamp(self):
         # a part of the deploy stage whose inputs stay the same, each run of it a process of its own as
         # the deploy stage's: its pass is not run again; run again with HJV_CI_DEPLOY_ALL=1, a failure
