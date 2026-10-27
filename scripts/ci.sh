@@ -596,9 +596,10 @@ server_release() {
 # side, each as a run of this script (server:<part>, under this run's lock) with its output in
 # build/ci/server-<part>.log, shown in their order once it ended: they share no target directory,
 # port or file, as the hbbs and hjv-api tests run in network namespaces of their own
-# (cargo_tests). Where this user cannot make those, the parts run here one after another. A part
-# that fails stops none of the others: the stage fails once all of them ended. Its last lines say
-# which parts ran and how many test runs were retried (KNOWN_FLAKY).
+# (cargo_tests). Side by side, a part that fails stops none of the others: the stage fails once all
+# of them ended. Where this user cannot make those namespaces, the parts run here one after
+# another, and the first that fails ends the stage. Its last lines say which parts ran and how many
+# test runs were retried (KNOWN_FLAKY).
 server_stage() { # <stage>
   local parts=() part rest=() log status failed=() n
   local -A pids=() starts=()
