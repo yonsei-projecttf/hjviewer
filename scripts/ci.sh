@@ -1035,7 +1035,7 @@ check_package_container() { # <release dir> <package name>
   cat > "$CI/container-test.sh" << 'EOF'
 set -euo pipefail
 name=$1
-step() { printf '\n== container: %s\n-- %s, %s s in\n' "$*" "$(date +%T)" "$SECONDS"; }
+step() { printf '\n== container: %s\n-- %s, %s s in\n' "$*" "$(date '+%T %Z')" "$SECONDS"; }
 step "Ubuntu's nginx, systemd (systemd-analyze, systemd-socket-activate) and curl"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq > /dev/null
@@ -1245,10 +1245,11 @@ deploy_stage() {
   [ "$(dc config --services | sort | paste -sd' ')" = "hbbr hbbs" ] || fail "COMPOSE_FILE in .env did not select the behind-proxy file"
   local built=$SECONDS
   dc build > "$CI/build.log" 2>&1 || { tail -n 40 "$CI/build.log"; fail "image build (build/ci/build.log)"; }
-  # what the image build took from Docker's cache (building the image again costs minutes) and the
-  # base images it resolved
+  # what the image build took from Docker's cache (building the image again costs minutes; a FROM is
+  # no step of its own to take from there) and the base images it resolved
   echo "image build: $((SECONDS - built)) s, $(grep -E '^#[0-9]+ CACHED$' "$CI/build.log" | sort -u | wc -l) of" \
-    "$(grep -oE '^#[0-9]+ \[[^]]* [0-9]+/[0-9]+\]' "$CI/build.log" | sort -u | wc -l) steps from the cache"
+    "$(grep -E '^#[0-9]+ \[[^]]* [0-9]+/[0-9]+\] ' "$CI/build.log" | grep -v '\] FROM ' | cut -d' ' -f1 | sort -u | wc -l)" \
+    "steps from the cache"
   sed -n -E 's/^#[0-9]+ \[[^]]*\] FROM (.*@sha256:[0-9a-f]+)$/image build: FROM \1/p' "$CI/build.log" | sort -u
   dc up -d
   wait_for 30 sudo test -s "$SRC/deploy/data/id_ed25519.pub" || fail "hbbs wrote no key"
@@ -1929,6 +1930,7 @@ prepush() { # [<stage>...]
   step "prepush: ${stages[*]} on $head, logs in $logs"
   # summary.txt: what prepush says of each stage; times.tsv: each stage's steps by time
   echo "prepush: ${stages[*]} on $head in $ROOT, $(date '+%Y-%m-%d %H:%M:%S %z')" > "$logs/summary.txt"
+  : > "$logs/times.tsv"
   for s in "${stages[@]}"; do
     log="$logs/$s.log" start=$(date +%s) status=0
     (
