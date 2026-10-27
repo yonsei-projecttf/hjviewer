@@ -67,8 +67,9 @@ got=$(cd "$work" && find tools/hjv-release -type f -print | while IFS= read -r f
   echo "$f $(git hash-object --no-filters -- "$f")"
 done | LC_ALL=C sort)
 if [ -z "$want" ] || [ "$got" != "$want" ]; then fail "the export of tools/hjv-release is not the files of $commit"; fi
-# The cargo settings that the build takes from outside the commit: .cargo/config and config.toml in
-# the folders above the export, and CARGO_HOME's
+# What else the build takes: the toolchain that rustup picks there, and the cargo settings from outside
+# the commit (.cargo/config and config.toml in the folders above the export, and CARGO_HOME's)
+toolchain=$(cd "$work/tools/hjv-release" && echo "$(rustc -V) / $(cargo -V)")
 config=$(
   d=$work
   {
@@ -97,7 +98,7 @@ mv -f "$out/hjv-release.new" "$out/hjv-release"
   echo "commit $commit ($ref)"
   echo "tree $tree"
   echo "version $version"
-  echo "toolchain $(rustc -V) / $(cargo -V)"
+  echo "toolchain $toolchain"
   echo "cargo config ${config:-none from outside the commit}"
   echo "sha256 $(sha256sum < "$out/hjv-release" | cut -d' ' -f1)"
   echo "built $(date '+%Y-%m-%d %H:%M:%S %z') from an export of the commit, by scripts/build-signer.sh"
