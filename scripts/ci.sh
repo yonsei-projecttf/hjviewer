@@ -29,17 +29,19 @@
 #                          and the client's pure Dart tests, with the Flutter SDK the app builds use
 #                          (downloaded once, checked against Flutter's release index). Tests that
 #                          need the generated bridge run in client-build.yml.
-#   scripts/ci.sh deploy   docs/server-runbook.md's deployment with Docker, as on the server, from a
-#                          copy of this working tree: path B (hbbs/hbbr on 127.0.0.1) behind
-#                          deploy/nginx-hjviewer.conf and deploy/apache-hjviewer.conf, then path A
-#                          (Caddy). Everything listens on 127.0.0.1; ports 80/443 stay untouched.
-#                          Then the release package (scripts/package-server.sh): its systemd units
-#                          on this machine (hjv-api's too), the whole package installed in a clean
-#                          Ubuntu container (systemd-analyze verify, nginx -t, requests through
-#                          nginx to hjv-api), hjv-api's production settings
-#                          (scripts/check-api-settings.py and its offline tests), and the account
-#                          API's nginx limits (an IPv6 /64 and a dual-stack listener too, in an
-#                          unprivileged network namespace). Before the Docker part, hjv-relay's
+#   scripts/ci.sh deploy   docs/server-runbook.md's deployment, as on the server, from a copy of
+#                          this working tree: the release package (scripts/package-server.sh), its
+#                          systemd units on this machine (hjv-api's too) behind
+#                          deploy/nginx-hjviewer.conf, also added to an existing site, the whole
+#                          package installed in a clean Ubuntu container (systemd-analyze verify,
+#                          nginx -t, requests through nginx to hjv-api), hjv-api's production
+#                          settings (scripts/check-api-settings.py and its offline tests), and the
+#                          account API's nginx limits (an IPv6 /64 and a dual-stack listener too,
+#                          in an unprivileged network namespace). Then what production does not
+#                          use: Apache (deploy/apache-hjviewer.conf) in front of those units,
+#                          Docker's hbbs/hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml) behind
+#                          that nginx, and path A (Docker and Caddy). Everything listens on
+#                          127.0.0.1; ports 80/443 stay untouched. Beside the checks, hjv-relay's
 #                          packages (scripts/package-relay.sh, relay/tests/package.rs --ignored: a
 #                          static build for x86_64-unknown-linux-musl, which needs that Rust target
 #                          and musl-gcc).
@@ -1103,6 +1105,117 @@ deploy_offline() {
   fi
 }
 
+# Apache with deploy/apache-hjviewer.conf in front of the release package's systemd units, path B as
+# the runbook has it for Apache (4-3)
+deploy_apache() {
+  step "deploy B: Apache with deploy/apache-hjviewer.conf, to the systemd units"
+  local ap="$CI/apache" m
+  rm -rf "$ap"
+  mkdir -p "$ap"
+  sed -e 's/DOMAIN/localhost/g' \
+      -e "s#/etc/letsencrypt/live/localhost/fullchain.pem#$CERTS/cert.pem#" \
+      -e "s#/etc/letsencrypt/live/localhost/privkey.pem#$CERTS/key.pem#" \
+      -e 's/<VirtualHost \*:443>/<VirtualHost *:18444>/' -e 's/<VirtualHost \*:80>/<VirtualHost *:18081>/' \
+      "$SRC/deploy/apache-hjviewer.conf" > "$ap/site.conf"
+  grep -q '<VirtualHost \*:18444>' "$ap/site.conf" || fail "apache-hjviewer.conf: no '<VirtualHost *:443>'"
+  # the 443 VirtualHost again, in front of the header echo server (see the nginx check)
+  awk '/<VirtualHost \*:18444>/{on=1} on{print} on&&/<\/VirtualHost>/{exit}' "$ap/site.conf" |
+    sed -e 's/<VirtualHost \*:18444>/<VirtualHost *:18448>/' -e 's#ws://127\.0\.0\.1:2111[89]#ws://127.0.0.1:18599#' \
+      -e 's#unix:/run/hjviewer-api\.sock|http://localhost#http://127.0.0.1:18599#' > "$ap/echo.conf"
+  grep -q 'http://127.0.0.1:18599/api/' "$ap/echo.conf" || fail "apache-hjviewer.conf: no account paths to hjv-api's socket"
+  {
+    echo "ServerRoot \"$ap\""
+    echo "DefaultRuntimeDir \"$ap\""
+    echo "PidFile \"$ap/apache.pid\""
+    echo "Mutex file:$ap"
+    echo "Listen 127.0.0.1:18444"
+    echo "Listen 127.0.0.1:18081"
+    echo "Listen 127.0.0.1:18448"
+    echo "ErrorLog \"$ap/error.log\""
+    echo "LogLevel warn"
+    echo "ServerName localhost"
+    echo "Timeout 300"   # Ubuntu's apache2.conf
+    for m in mpm_event authz_core socache_shmcb ssl headers proxy proxy_http proxy_wstunnel alias; do
+      echo "LoadModule ${m}_module $PKGS/root/usr/lib/apache2/modules/mod_$m.so"
+    done
+    echo "Include \"$ap/site.conf\""
+    echo "Include \"$ap/echo.conf\""
+  } > "$ap/apache.conf"
+  export LD_LIBRARY_PATH="$PKGS/root/usr/lib/x86_64-linux-gnu"
+  "$PKGS/root/usr/sbin/apache2" -t -f "$ap/apache.conf" || fail "apache2 -t"
+  "$PKGS/root/usr/sbin/apache2" -f "$ap/apache.conf" -DFOREGROUND > "$ap/out.log" 2>&1 &
+  APACHE_PID=$!
+  unset LD_LIBRARY_PATH
+  wait_for 10 curl -s -o /dev/null --cacert "$CERTS/cert.pem" https://localhost:18444/ || fail "Apache did not start"
+  check_site 18444 "$CERTS/cert.pem" 404 Apache
+  start_echo
+  check_headers 18448 Apache
+  check_account_proxy 18448 Apache
+  [ "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:18081/x)" = "301 https://localhost/x" ] ||
+    fail "Apache: port 80 does not redirect to https"
+  # "client denied by server configuration" would feed fail2ban's apache-auth filter
+  if grep -E 'AH01630|:(error|crit|alert|emerg)\]' "$ap/error.log"; then fail "Apache logged errors"; fi
+  # last, since Apache logs the upstream it cannot reach: the site as shipped, without hjv-api
+  check_account_down 18444 "$CERTS/cert.pem" Apache
+  stop_web
+}
+
+# Docker's hbbs and hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml, the image built before), with
+# the nginx of the checks before in front
+deploy_behind_proxy() {
+  step "deploy B: Docker's hbbs and hbbr on 127.0.0.1 (docker-compose.behind-proxy.yml), behind nginx"
+  local ng="$CI/nginx"
+  dc up -d
+  wait_for 30 sudo test -s "$SRC/deploy/data/id_ed25519.pub" || fail "hbbs wrote no key"
+  wait_listeners
+  [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "expected TCP 21115-21119 and UDP 21116"
+  if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "hbbs/hbbr listen beyond 127.0.0.1"; fi
+  check_stack
+  dc logs --no-log-prefix hbbr | grep -q 'TOTAL_BANDWIDTH: 100Mb/s' || fail "HJV_TOTAL_BANDWIDTH did not reach hbbr"
+  dc logs --no-log-prefix hbbr | grep -q 'SINGLE_BANDWIDTH: 128Mb/s' || fail "an empty HJV_SINGLE_BANDWIDTH changed hbbr's default"
+  "$PKGS/root/usr/sbin/nginx" -e "$ng/error.log" -p "$ng" -c "$ng/nginx.conf" -g 'daemon off;' > "$ng/out.log" 2>&1 &
+  NGINX_PID=$!
+  wait_for 10 curl -s -o /dev/null --cacert "$CERTS/cert.pem" https://localhost:18443/ || fail "nginx did not start"
+  check_site 18443 "$CERTS/cert.pem" 200 "nginx, to Docker's hbbs and hbbr"
+  if grep -E '\[(emerg|alert|crit|error)\]' "$ng/error.log"; then fail "nginx logged errors"; fi
+  stop_web
+  dc down
+}
+
+# Path A: Caddy in front of Docker's hbbs and hbbr (docker-compose.yml, the image built before), on
+# 127.0.0.1:18082/18445
+deploy_caddy() {
+  step "deploy A: Caddy (docker-compose.yml) with the same image, on 127.0.0.1:18082/18445"
+  cat > "$SRC/deploy/docker-compose.ci.yml" << 'EOF'
+# scripts/ci.sh: Caddy on high ports of 127.0.0.1 instead of 80/443
+services:
+  caddy:
+    ports: !override
+      - "127.0.0.1:18082:80"
+      - "127.0.0.1:18445:443"
+EOF
+  sed -i '/^COMPOSE_FILE=/d' "$SRC/deploy/.env"
+  echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.ci.yml' >> "$SRC/deploy/.env"
+  dc up -d
+  wait_for 30 sudo test -s "$SRC/deploy/data/id_ed25519.pub" || fail "hbbs wrote no key"
+  # Caddy issues "localhost" from its own CA; the checks trust that CA's root
+  wait_for 60 dc exec -T caddy test -s /data/caddy/pki/authorities/local/root.crt || fail "Caddy made no CA"
+  dc exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > "$CI/caddy-root.crt"
+  wait_for 30 curl -s -o /dev/null --cacert "$CI/caddy-root.crt" https://localhost:18445/ || fail "Caddy does not serve https"
+  check_stack
+  check_site 18445 "$CI/caddy-root.crt" 200 Caddy
+  # the account paths of deploy/Caddyfile in a stack without hjv-api: what Caddy answers itself
+  # (the E2E has them in front of hjv-api)
+  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/login-options)" = '[]' ] ||
+    fail "Caddy: /api/login-options is not []"
+  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/device-group/accessible)" = '{"total":0,"data":[]}' ] ||
+    fail "Caddy: /api/device-group/accessible is not the empty list"
+  [ "$(curl -s -w ' %{http_code}' --cacert "$CI/caddy-root.crt" -X POST -d '{}' https://localhost:18445/api/heartbeat)" = '{"error":"not found"} 404' ] ||
+    fail "Caddy: the rest of /api/ does not answer 404 in JSON"
+  check_account_down 18445 "$CI/caddy-root.crt" Caddy
+  dc down
+}
+
 deploy_stage() {
   if [ ! -x "$PROBE" ] || [ ! -x "$LOAD" ]; then fail "hjv-probe/hjv-load are not built: scripts/ci.sh server"; fi
   if [ -d "$ROOT/server/api" ] && [ ! -x "$API" ]; then fail "hjv-api is not built: scripts/ci.sh server"; fi
@@ -1194,24 +1307,48 @@ deploy_stage() {
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=localhost \
     -addext subjectAltName=DNS:localhost -keyout "$CERTS/key.pem" -out "$CERTS/cert.pem" 2> /dev/null
 
-  step "deploy B: .env, image build, hbbs and hbbr (docker-compose.behind-proxy.yml)"
+  # The image of the Docker parts below, built beside the checks: when those parts decide whether
+  # they run, it has taken in a new base image too
+  step "deploy: Docker's .env and image (deploy/Dockerfile), built beside the checks below (build/ci/build.log)"
   (cd "$SRC/deploy" &&
     sudo install -d -m 700 data &&
     cp .env.example .env &&
     sed -i 's/^HJV_DOMAIN=.*/HJV_DOMAIN=localhost/' .env &&
     printf 'COMPOSE_FILE=docker-compose.behind-proxy.yml\nHJV_TOTAL_BANDWIDTH=100\nHJV_BUILD_JOBS=%s\n' "$(nproc)" >> .env)
   [ "$(dc config --services | sort | paste -sd' ')" = "hbbr hbbs" ] || fail "COMPOSE_FILE in .env did not select the behind-proxy file"
-  dc build > "$CI/build.log" 2>&1 || { tail -n 40 "$CI/build.log"; fail "image build (build/ci/build.log)"; }
-  dc up -d
-  wait_for 30 sudo test -s "$SRC/deploy/data/id_ed25519.pub" || fail "hbbs wrote no key"
-  wait_listeners
-  [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "expected TCP 21115-21119 and UDP 21116"
-  if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "hbbs/hbbr listen beyond 127.0.0.1"; fi
-  check_stack
-  dc logs --no-log-prefix hbbr | grep -q 'TOTAL_BANDWIDTH: 100Mb/s' || fail "HJV_TOTAL_BANDWIDTH did not reach hbbr"
-  dc logs --no-log-prefix hbbr | grep -q 'SINGLE_BANDWIDTH: 128Mb/s' || fail "an empty HJV_SINGLE_BANDWIDTH changed hbbr's default"
+  deploy_job "$CI/build.log" dc build
 
-  step "deploy B: nginx with deploy/nginx-hjviewer.conf, and added to an existing site"
+  # Installed as the runbook does, apart from the names that keep it away from a real installation:
+  # runtime units hjv-ci-* (in /run, gone at reboot), a dynamic user and directories of its own. The
+  # sandbox, limits and commands are those of the shipped units.
+  step "deploy B, systemd: hbbs and hbbr from the package"
+  sudo install -d -m 755 /usr/local/lib/hjv-ci/bin /run/hjv-ci
+  sudo install -m 755 "$pkg/bin/hbbs" "$pkg/bin/hbbr" /usr/local/lib/hjv-ci/bin/
+  sed -e 's/^HJV_DOMAIN=.*/HJV_DOMAIN=localhost/' -e 's/^TOTAL_BANDWIDTH=.*/TOTAL_BANDWIDTH=100/' \
+    "$pkg/systemd/hjviewer.env.example" | sudo tee /run/hjv-ci/hjviewer.env > /dev/null
+  for unit in hbbs hbbr; do
+    sed -e 's/^User=hjviewer$/DynamicUser=yes\nUser=hjv-ci/' -e '/^Group=hjviewer$/d' \
+      -e 's#/var/lib/hjviewer#/var/lib/hjv-ci#g' -e 's/^StateDirectory=hjviewer$/StateDirectory=hjv-ci/' \
+      -e 's#/opt/hjviewer/bin/#/usr/local/lib/hjv-ci/bin/#' -e 's#/etc/hjviewer/hjviewer.env#/run/hjv-ci/hjviewer.env#' \
+      -e 's/hjviewer-hbbs\.service/hjv-ci-hbbs.service/g' \
+      "$pkg/systemd/hjviewer-$unit.service" | sudo tee "/run/systemd/system/hjv-ci-$unit.service" > /dev/null
+  done
+  STACK=systemd
+  SYSTEMD_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
+  sudo systemctl daemon-reload
+  sudo systemctl start hjv-ci-hbbs hjv-ci-hbbr || fail "systemd: the units did not start"
+  wait_for 15 sudo test -s /var/lib/hjv-ci/id_ed25519.pub || fail "systemd: hbbs wrote no key"
+  wait_for 15 systemctl is-active --quiet hjv-ci-hbbr || fail "systemd: hbbr is not running"
+  wait_listeners
+  [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "systemd: expected TCP 21115-21119 and UDP 21116"
+  if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "systemd: hbbs/hbbr listen beyond 127.0.0.1"; fi
+  check_systemd
+  if [ ${#api_files[@]} -gt 0 ]; then
+    start_systemd_api "$pkg"
+    check_systemd_api
+  fi
+
+  step "deploy B: nginx with deploy/nginx-hjviewer.conf, and added to an existing site, to the systemd units"
   local ng="$CI/nginx"
   rm -rf "$ng"
   mkdir -p "$ng/tmp" "$ng/snippets"
@@ -1298,123 +1435,14 @@ EOF
   if grep -E '\[(emerg|alert|crit|error)\]' "$ng/error.log"; then fail "nginx logged errors"; fi
   stop_web
 
-  step "deploy B: Apache with deploy/apache-hjviewer.conf"
-  local ap="$CI/apache" m
-  rm -rf "$ap"
-  mkdir -p "$ap"
-  sed -e 's/DOMAIN/localhost/g' \
-      -e "s#/etc/letsencrypt/live/localhost/fullchain.pem#$CERTS/cert.pem#" \
-      -e "s#/etc/letsencrypt/live/localhost/privkey.pem#$CERTS/key.pem#" \
-      -e 's/<VirtualHost \*:443>/<VirtualHost *:18444>/' -e 's/<VirtualHost \*:80>/<VirtualHost *:18081>/' \
-      "$SRC/deploy/apache-hjviewer.conf" > "$ap/site.conf"
-  grep -q '<VirtualHost \*:18444>' "$ap/site.conf" || fail "apache-hjviewer.conf: no '<VirtualHost *:443>'"
-  # the 443 VirtualHost again, in front of the header echo server (see the nginx check)
-  awk '/<VirtualHost \*:18444>/{on=1} on{print} on&&/<\/VirtualHost>/{exit}' "$ap/site.conf" |
-    sed -e 's/<VirtualHost \*:18444>/<VirtualHost *:18448>/' -e 's#ws://127\.0\.0\.1:2111[89]#ws://127.0.0.1:18599#' \
-      -e 's#unix:/run/hjviewer-api\.sock|http://localhost#http://127.0.0.1:18599#' > "$ap/echo.conf"
-  grep -q 'http://127.0.0.1:18599/api/' "$ap/echo.conf" || fail "apache-hjviewer.conf: no account paths to hjv-api's socket"
-  {
-    echo "ServerRoot \"$ap\""
-    echo "DefaultRuntimeDir \"$ap\""
-    echo "PidFile \"$ap/apache.pid\""
-    echo "Mutex file:$ap"
-    echo "Listen 127.0.0.1:18444"
-    echo "Listen 127.0.0.1:18081"
-    echo "Listen 127.0.0.1:18448"
-    echo "ErrorLog \"$ap/error.log\""
-    echo "LogLevel warn"
-    echo "ServerName localhost"
-    echo "Timeout 300"   # Ubuntu's apache2.conf
-    for m in mpm_event authz_core socache_shmcb ssl headers proxy proxy_http proxy_wstunnel alias; do
-      echo "LoadModule ${m}_module $PKGS/root/usr/lib/apache2/modules/mod_$m.so"
-    done
-    echo "Include \"$ap/site.conf\""
-    echo "Include \"$ap/echo.conf\""
-  } > "$ap/apache.conf"
-  export LD_LIBRARY_PATH="$PKGS/root/usr/lib/x86_64-linux-gnu"
-  "$PKGS/root/usr/sbin/apache2" -t -f "$ap/apache.conf" || fail "apache2 -t"
-  "$PKGS/root/usr/sbin/apache2" -f "$ap/apache.conf" -DFOREGROUND > "$ap/out.log" 2>&1 &
-  APACHE_PID=$!
-  unset LD_LIBRARY_PATH
-  wait_for 10 curl -s -o /dev/null --cacert "$CERTS/cert.pem" https://localhost:18444/ || fail "Apache did not start"
-  check_site 18444 "$CERTS/cert.pem" 404 Apache
-  start_echo
-  check_headers 18448 Apache
-  check_account_proxy 18448 Apache
-  [ "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost:18081/x)" = "301 https://localhost/x" ] ||
-    fail "Apache: port 80 does not redirect to https"
-  # "client denied by server configuration" would feed fail2ban's apache-auth filter
-  if grep -E 'AH01630|:(error|crit|alert|emerg)\]' "$ap/error.log"; then fail "Apache logged errors"; fi
-  # last, since Apache logs the upstream it cannot reach: the site as shipped, without hjv-api
-  check_account_down 18444 "$CERTS/cert.pem" Apache
-  stop_web
-
-  step "deploy A: Caddy (docker-compose.yml) with the same image and key, on 127.0.0.1:18082/18445"
-  dc down
-  cat > "$SRC/deploy/docker-compose.ci.yml" << 'EOF'
-# scripts/ci.sh: Caddy on high ports of 127.0.0.1 instead of 80/443
-services:
-  caddy:
-    ports: !override
-      - "127.0.0.1:18082:80"
-      - "127.0.0.1:18445:443"
-EOF
-  sed -i '/^COMPOSE_FILE=/d' "$SRC/deploy/.env"
-  echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.ci.yml' >> "$SRC/deploy/.env"
-  dc up -d
-  # Caddy issues "localhost" from its own CA; the checks trust that CA's root
-  wait_for 60 dc exec -T caddy test -s /data/caddy/pki/authorities/local/root.crt || fail "Caddy made no CA"
-  dc exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > "$CI/caddy-root.crt"
-  wait_for 30 curl -s -o /dev/null --cacert "$CI/caddy-root.crt" https://localhost:18445/ || fail "Caddy does not serve https"
-  check_stack
-  check_site 18445 "$CI/caddy-root.crt" 200 Caddy
-  # the account paths of deploy/Caddyfile in a stack without hjv-api: what Caddy answers itself
-  # (the E2E has them in front of hjv-api)
-  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/login-options)" = '[]' ] ||
-    fail "Caddy: /api/login-options is not []"
-  [ "$(curl -s --cacert "$CI/caddy-root.crt" https://localhost:18445/api/device-group/accessible)" = '{"total":0,"data":[]}' ] ||
-    fail "Caddy: /api/device-group/accessible is not the empty list"
-  [ "$(curl -s -w ' %{http_code}' --cacert "$CI/caddy-root.crt" -X POST -d '{}' https://localhost:18445/api/heartbeat)" = '{"error":"not found"} 404' ] ||
-    fail "Caddy: the rest of /api/ does not answer 404 in JSON"
-  check_account_down 18445 "$CI/caddy-root.crt" Caddy
-  dc down
-
-  # Installed as the runbook does, apart from the names that keep it away from a real installation:
-  # runtime units hjv-ci-* (in /run, gone at reboot), a dynamic user and directories of its own. The
-  # sandbox, limits and commands are those of the shipped units.
-  step "deploy B, systemd: hbbs and hbbr from the package"
-  sudo install -d -m 755 /usr/local/lib/hjv-ci/bin /run/hjv-ci
-  sudo install -m 755 "$pkg/bin/hbbs" "$pkg/bin/hbbr" /usr/local/lib/hjv-ci/bin/
-  sed -e 's/^HJV_DOMAIN=.*/HJV_DOMAIN=localhost/' -e 's/^TOTAL_BANDWIDTH=.*/TOTAL_BANDWIDTH=100/' \
-    "$pkg/systemd/hjviewer.env.example" | sudo tee /run/hjv-ci/hjviewer.env > /dev/null
-  for unit in hbbs hbbr; do
-    sed -e 's/^User=hjviewer$/DynamicUser=yes\nUser=hjv-ci/' -e '/^Group=hjviewer$/d' \
-      -e 's#/var/lib/hjviewer#/var/lib/hjv-ci#g' -e 's/^StateDirectory=hjviewer$/StateDirectory=hjv-ci/' \
-      -e 's#/opt/hjviewer/bin/#/usr/local/lib/hjv-ci/bin/#' -e 's#/etc/hjviewer/hjviewer.env#/run/hjv-ci/hjviewer.env#' \
-      -e 's/hjviewer-hbbs\.service/hjv-ci-hbbs.service/g' \
-      "$pkg/systemd/hjviewer-$unit.service" | sudo tee "/run/systemd/system/hjv-ci-$unit.service" > /dev/null
-  done
-  STACK=systemd
-  SYSTEMD_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
-  sudo systemctl daemon-reload
-  sudo systemctl start hjv-ci-hbbs hjv-ci-hbbr || fail "systemd: the units did not start"
-  wait_for 15 sudo test -s /var/lib/hjv-ci/id_ed25519.pub || fail "systemd: hbbs wrote no key"
-  wait_for 15 systemctl is-active --quiet hjv-ci-hbbr || fail "systemd: hbbr is not running"
-  wait_listeners
-  [ "$(wc -l < "$CI/listen.txt")" = 6 ] || fail "systemd: expected TCP 21115-21119 and UDP 21116"
-  if grep -v ' 127\.0\.0\.1:' "$CI/listen.txt"; then fail "systemd: hbbs/hbbr listen beyond 127.0.0.1"; fi
-  check_systemd
-  if [ ${#api_files[@]} -gt 0 ]; then
-    start_systemd_api "$pkg"
-    check_systemd_api
-  fi
-  "$PKGS/root/usr/sbin/nginx" -e "$ng/error.log" -p "$ng" -c "$ng/nginx.conf" -g 'daemon off;' > "$ng/out.log" 2>&1 &
-  NGINX_PID=$!
-  wait_for 10 curl -s -o /dev/null --cacert "$CERTS/cert.pem" https://localhost:18446/ || fail "nginx did not start"
-  check_site 18446 "$CERTS/cert.pem" site "nginx, existing site with HTTP/2, to the systemd units"
-  stop_web
+  deploy_apache
   STACK=docker
   cleanup_systemd
+
+  step "deploy: Docker's image (build/ci/build.log)"
+  deploy_wait "$CI/build.log" || { tail -n 40 "$CI/build.log"; fail "image build (build/ci/build.log)"; }
+  deploy_behind_proxy
+  deploy_caddy
 
   if [ ${#api_files[@]} -gt 0 ]; then
     check_api_env "$pkg/systemd/hjviewer-api.env.example" "$pkg/systemd/hjviewer-api.env.example" "$pkg/bin/hjv-api"
