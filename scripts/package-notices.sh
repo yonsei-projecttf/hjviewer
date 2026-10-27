@@ -84,20 +84,27 @@ missing=0
     done
   } | tr -d '\r' | sort -u >"$out/.crates"
   awk -F'\t' '{ print $1 " | " $2 }' "$out/.crates"
+  # The loop finds each crate's license files with builtins only, and one python3 writes them all,
+  # each after its header, byte for byte as cat would: a dirname, a basename and a cat for each of
+  # some 950 files took up to 2.7 minutes in Git Bash on Windows (GHA-07 of the 2026-10-27 CI
+  # audit). The headers and the paths go to it as NUL-separated pairs. cargo metadata gives
+  # absolute manifest paths, so the crate's directory is the path up to its last slash.
+  parts=()
   while IFS=$'\t' read -r crate license manifest; do
-    dir=$(dirname "${manifest//\\//}")
+    dir=${manifest//\\//}
+    dir=${dir%/*}
     shopt -s nullglob nocaseglob
     found=0
     for f in "$dir"/LICEN[CS]E* "$dir"/COPYING* "$dir"/NOTICE* "$dir"/UNLICENSE*; do
       [ -f "$f" ] || continue
-      printf '\n== %s: %s ==\n' "$crate" "$(basename "$f")"
-      cat "$f"
+      printf -v header '\n== %s: %s ==\n' "$crate" "${f##*/}"
+      parts+=("$header" "$f")
       found=1
     done
     for f in "$dir"/LICENSES/*; do
       [ -f "$f" ] || continue
-      printf '\n== %s: LICENSES/%s ==\n' "$crate" "$(basename "$f")"
-      cat "$f"
+      printf -v header '\n== %s: LICENSES/%s ==\n' "$crate" "${f##*/}"
+      parts+=("$header" "$f")
       found=1
     done
     shopt -u nullglob nocaseglob
@@ -106,6 +113,17 @@ missing=0
     fi
   done <"$out/.crates"
   rm -f "$out/.crates"
+  if [ ${#parts[@]} -gt 0 ]; then
+    printf '%s\0' "${parts[@]}" | python3 -I -c '
+import sys
+parts = sys.stdin.buffer.read().split(b"\0")[:-1]
+out = sys.stdout.buffer
+for header, path in zip(parts[0::2], parts[1::2]):
+    out.write(header)
+    with open(path, "rb") as f:
+        out.write(f.read())
+out.flush()'
+  fi
   if [ -s "$out/.unlicensed" ]; then
     # the crate ships no license file: its license is the SPDX expression listed above
     printf '\n== Crates without a license file in their source (license as listed above) ==\n'
@@ -114,7 +132,8 @@ missing=0
   rm -f "$out/.unlicensed"
   shopt -s nullglob
   for f in "${VCPKG_ROOT:-/nonexistent}"/installed/*/share/*/copyright; do
-    printf '\n== %s (vcpkg port) ==\n' "$(basename "$(dirname "$f")")"
+    port=${f%/copyright}
+    printf '\n== %s (vcpkg port) ==\n' "${port##*/}"
     cat "$f"
   done
   shopt -u nullglob
