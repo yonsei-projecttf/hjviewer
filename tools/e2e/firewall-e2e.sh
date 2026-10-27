@@ -969,6 +969,21 @@ gap() {
 }
 knock() { run pc --hjv-e2e-option hjv-pc-sync "$RANDOM$RANDOM" >/dev/null; } # the PC syncs soon
 ms_since() { echo $((($(date +%s%N) - $1) / 1000000)); }
+# hbbs refuses a PC's registration that comes fourth in a row each less than 7 s after the one
+# before (TOO_FREQUENT, upstream's limit, kept as it is), and the PC then stays offline until its
+# next keep-alive asks again. A binding's change registers the PC anew: a step that changes it
+# twice right after two changes first waits until the PC's last registration (the line keep_alive:
+# of hbbs's answer in its log) is 7.5 s old.
+pc_registered_7s_ago() {
+  pc_log | python3 -I -c '
+import datetime, re, sys, time
+last = 0.0
+for line in sys.stdin:
+    m = re.match(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ [+-]\d\d:\d\d)\] INFO \[[^]]*\] keep_alive: ", line)
+    if m:
+        last = max(last, datetime.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S.%f %z").timestamp())
+sys.exit(0 if time.time() - last >= 7.5 else 1)'
+}
 
 # Client calls in the background (1.9: TV-W5's streams, W6-E3's waiting room, W6-E5's probe):
 # <tag> <ns> <side> <client> [NAME=value...] <args...>; its output goes to $RUN/<tag>.bg, and it
@@ -1445,6 +1460,8 @@ account_strict() {
   pass "S19: the PC dropped its binding $WITHIN_MS ms after the logout returned; refused, and hjv-api released it"
 
   log "S19b: the PC's user logs out while hjv-api is gone"
+  # (its login and logout register the PC twice more, right after S19's two)
+  until_ok 10 "S19b: the PC's last registration 7.5 s old (hbbs's limit)" pc_registered_7s_ago
   pc_bound
   bind_s19b=$BIND_REQ
   pwless_ok ctl2 s19c "S19b: the PC bound again"
