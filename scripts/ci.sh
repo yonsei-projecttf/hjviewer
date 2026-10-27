@@ -54,7 +54,8 @@
 #                          hjv-relay's packages (scripts/package-relay.sh, relay/tests/package.rs
 #                          --ignored: a static build for x86_64-unknown-linux-musl, which needs
 #                          that Rust target and musl-gcc).
-#   scripts/ci.sh e2e      tools/e2e/firewall-e2e.sh strict and open (sudo: namespaces, iptables)
+#   scripts/ci.sh e2e[:build]
+#                          tools/e2e/firewall-e2e.sh strict and open (sudo: namespaces, iptables)
 #                          with a client built for its test server, Caddy pinned by SHA-256, and the
 #                          PC's client installed as /usr/local/lib/hjviewer-e2e/rustdesk; with the
 #                          account code in the patches, also the unit tests of the client's
@@ -66,7 +67,9 @@
 #                          tools/hjv-release signs for it (V1, V2, V4-V7 and V9), and the
 #                          update code's unit tests once more in a build without those keys. With
 #                          HJV_E2E_PARTS=<part>[,<part>...] only those parts of strict mode run, a
-#                          partial run for fix loops that is never a pass (HJV_CI_STRICT=1 refuses it)
+#                          partial run for fix loops that is never a pass (HJV_CI_STRICT=1 refuses it).
+#                          e2e:build makes only what needs no port and no sudo: the client with its
+#                          unit tests, hjv-api and the fake SSO, Caddy and libfaketime
 #   scripts/ci.sh wol      tools/e2e/wol-e2e.sh, the Wake-on-LAN E2E (docs/e2e.md), without sudo: in
 #                          this user's own namespaces a PC that sleeps is woken through hjv-api
 #                          and hjv-relay, with the E2E's client, Caddy, hjv-api and fake SSO, and
@@ -175,8 +178,9 @@ DEPLOY_LOGS=""
 declare -A DEPLOY_JOBS=()
 # set by build_e2e_client when the E2E has its account part
 E2E_ACCOUNT=""
-# and when its client has the update test keys (the minimum version's policy)
-E2E_KEYED=""
+# and when its client has the update test keys (the minimum version's policy); the build variables
+# of both (e2e_client_kind)
+E2E_KEYED="" E2E_BUILD_KEYS=()
 # set by e2e_minimum_version
 E2E_MINVER=()
 # a client given by hand (E2E_CLIENT=<binary>, the wol stage only), and the E2E's client in use
@@ -2160,15 +2164,35 @@ e2e_access() {
   fi
   E2E_ACCESS=(HJV_E2E_ACCESS=1)
 }
+# What the E2E's client is built for, by the checkout <src> and tools/e2e/firewall-e2e.sh: the account
+# E2E with the E2E's public keys (E2E_ACCOUNT), once the patches have the account code, and the update
+# test keys (E2E_KEYED) once they have the update code; the build variables of both in E2E_BUILD_KEYS
+e2e_client_kind() { # <work dir> <checkout>
+  local work=$1 src=$2 update_keys
+  E2E_ACCOUNT="" E2E_KEYED="" E2E_BUILD_KEYS=()
+  if [ -d "$src/src/hjviewer_account" ] && grep -q HJV_E2E_ACCOUNT "$ROOT/tools/e2e/firewall-e2e.sh"; then
+    E2E_ACCOUNT=1
+    E2E_BUILD_KEYS=(HJV_LOGIN_SEAL_PUBKEY="$(cat "$work/api/seal.pub")" HJV_TRUST_PUBKEYS="$(cat "$work/api/trust.pub")")
+  else
+    skip "the account E2E (no src/hjviewer_account in the patched tree, or no HJV_E2E_ACCOUNT part in tools/e2e/firewall-e2e.sh): the client is built without the account keys, like 1.5.1"
+  fi
+  # the update test keys, once the patches have the update code: the e2e stage says what it skips
+  if [ -d "$src/src/hjviewer_update" ] && grep -q HJV_E2E_UPDATE_KEYS "$ROOT/tools/e2e/firewall-e2e.sh"; then
+    E2E_KEYED=1
+    update_keys=$(e2e_update_keys) || fail "e2e: the update test keys (scripts/check-build-keys.py pubkey)"
+    readarray -t -O "${#E2E_BUILD_KEYS[@]}" E2E_BUILD_KEYS <<< "$update_keys"
+  fi
+}
 build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
-  local work=$1 unit=${2:-hjviewer_account} src="$CI/upstream-e2e/rustdesk" keys=() update_keys
+  local work=$1 unit=${2:-hjviewer_account} src="$CI/upstream-e2e/rustdesk" keys=()
   local filter=${3:-$unit}
   if [ -n "$E2E_CLIENT_GIVEN" ]; then
     E2E_CLIENT=$E2E_CLIENT_GIVEN
     skip "the client build and its unit tests (E2E_CLIENT=$E2E_CLIENT is used as it is)"
     return 0
   fi
-  # what a build of the e2e stage leaves for the wol stage of its prepush run: gone until it passes
+  # what a build of the e2e stage leaves for the e2e and wol stages of its prepush run: gone until it
+  # passes
   rm -f "$CI/target-e2e/e2e-client.stamp"
   step "e2e: upstream checkout with client/patches"
   rm -rf "$CI/upstream-e2e.new"
@@ -2181,20 +2205,8 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
     mv "$CI/upstream-e2e.new" "$CI/upstream-e2e"
   fi
   echo "the patched tree: $(git -C "$src" rev-parse 'HEAD^{tree}') (and the overlay files)"
-  E2E_ACCOUNT=
-  if [ -d "$src/src/hjviewer_account" ] && grep -q HJV_E2E_ACCOUNT "$ROOT/tools/e2e/firewall-e2e.sh"; then
-    E2E_ACCOUNT=1
-    keys=(HJV_LOGIN_SEAL_PUBKEY="$(cat "$work/api/seal.pub")" HJV_TRUST_PUBKEYS="$(cat "$work/api/trust.pub")")
-  else
-    skip "the account E2E (no src/hjviewer_account in the patched tree, or no HJV_E2E_ACCOUNT part in tools/e2e/firewall-e2e.sh): the client is built without the account keys, like 1.5.1"
-  fi
-  # the update test keys, once the patches have the update code: the e2e stage says what it skips
-  E2E_KEYED=
-  if [ -d "$src/src/hjviewer_update" ] && grep -q HJV_E2E_UPDATE_KEYS "$ROOT/tools/e2e/firewall-e2e.sh"; then
-    E2E_KEYED=1
-    update_keys=$(e2e_update_keys) || fail "e2e: the update test keys (scripts/check-build-keys.py pubkey)"
-    readarray -t -O "${#keys[@]}" keys <<< "$update_keys"
-  fi
+  e2e_client_kind "$work" "$src"
+  keys=("${E2E_BUILD_KEYS[@]}")
   step "e2e: the client for the test server hjv.test (--features linux-pkg-config,hjv-e2e)"
   pkgconfig
   # (No mark on target-e2e and target-e2e-nokeys, own_target: only this checkout builds into them,
@@ -2257,8 +2269,8 @@ e2e_unit_without_update_keys() { # <work dir> <build variables...>
 
 # What the E2E's client is built from and with: client/ (the patches, the overlay), the upstream
 # pins, the test server's key, the E2E's public keys, the profile and the toolchain. With the
-# prepush run and the binary itself, the e2e stage leaves it for the wol stage of that run, which
-# then takes the e2e stage's build and the unit tests it ran (hjviewer_wol's among hjv's).
+# prepush run and the binary itself, e2e:build leaves it for the e2e and wol stages of that run,
+# which then take its build and the unit tests it ran (hjviewer_wol's among hjv's).
 e2e_client_stamp() { # <work dir> <binary>
   local inputs
   inputs=$({
@@ -2338,8 +2350,31 @@ e2e_minimum_version() {
   fi
 }
 
+# The e2e stage's builds (e2e:build), which take no port, no network namespace and no sudo: the E2E's
+# client with its unit tests (build_e2e_client), hjv-api and the fake SSO, Caddy and libfaketime.
+# prepush runs it beside the deploy stage; the e2e stage of that run then takes its client and the
+# unit tests it ran (e2e_client_stamp), and builds again only what this left undone.
+e2e_build_stage() {
+  local work="$CI/e2e" t
+  [ -z "$E2E_CLIENT_GIVEN" ] ||
+    fail "e2e: E2E_CLIENT is not taken here: the stage builds the client from client/patches, runs its unit tests and the account E2E with it"
+  # (hbbs makes the test server's key)
+  for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
+  fetch_caddy
+  e2e_server_key "$work"
+  e2e_keys "$work/api"
+  build_e2e_client "$work" hjviewer_account hjv
+  if [ -n "${HJV_CI_RUN:-}" ] && [ -n "$E2E_ACCOUNT" ]; then
+    e2e_client_stamp "$work" "$E2E_CLIENT" > "$CI/target-e2e/e2e-client.stamp"
+  fi
+  if [ -n "$E2E_ACCOUNT" ]; then
+    build_e2e_api
+    fetch_faketime
+  fi
+}
+
 e2e_stage() {
-  local work="$CI/e2e" mode extra=() modes=(strict open) t
+  local work="$CI/e2e" mode extra=() modes=(strict open) t built="$CI/target-e2e/release/rustdesk"
   # a client given by hand would go without the build's unit tests and, built without the E2E's
   # keys, without the account E2E
   [ -z "$E2E_CLIENT_GIVEN" ] ||
@@ -2347,7 +2382,7 @@ e2e_stage() {
   # a partial run of strict mode (HJV_E2E_PARTS, docs/e2e.md) is for a fix loop and never a pass
   if [ -n "${HJV_E2E_PARTS:-}" ]; then
     [ "${HJV_CI_STRICT:-}" != 1 ] ||
-      fail "e2e: HJV_E2E_PARTS=$HJV_E2E_PARTS runs a part of the E2E, which is never a pass: not with HJV_CI_STRICT=1 (prepush)"
+      fail "e2e: HJV_E2E_PARTS=$HJV_E2E_PARTS runs a part of the E2E, which is never a pass: not with HJV_CI_STRICT=1"
     modes=(strict)
     skip "firewall-e2e.sh open (HJV_E2E_PARTS: a partial run of strict mode)"
   fi
@@ -2358,9 +2393,16 @@ e2e_stage() {
   fetch_caddy
   e2e_server_key "$work"
   e2e_keys "$work/api"
-  build_e2e_client "$work" hjviewer_account hjv
-  if [ -n "${HJV_CI_RUN:-}" ] && [ -n "$E2E_ACCOUNT" ]; then
-    e2e_client_stamp "$work" "$E2E_CLIENT" > "$CI/target-e2e/e2e-client.stamp"
+  if [ -n "${HJV_CI_RUN:-}" ] && [ -x "$built" ] &&
+    [ "$(cat "$CI/target-e2e/e2e-client.stamp" 2> /dev/null)" = "$(e2e_client_stamp "$work" "$built")" ]; then
+    E2E_CLIENT=$built
+    e2e_client_kind "$work" "$CI/upstream-e2e/rustdesk"
+    echo "e2e: the client of this prepush run's e2e:build, built from the same client/patches and keys, with its unit tests there"
+  else
+    build_e2e_client "$work" hjviewer_account hjv
+    if [ -n "${HJV_CI_RUN:-}" ] && [ -n "$E2E_ACCOUNT" ]; then
+      e2e_client_stamp "$work" "$E2E_CLIENT" > "$CI/target-e2e/e2e-client.stamp"
+    fi
   fi
   # the PC's client where Linux counts it as installed, as its account binding needs; the
   # controllers keep running the build output
@@ -2405,8 +2447,8 @@ e2e_stage() {
 # this user (design v3 8-10, docs/e2e.md). It gets the same programs as the E2E, and hjv-relay
 # built for hjv.test with the E2E's command key. The client's unit tests are those of its wake
 # report here; the E2E runs once the client has the report's command (client patch 0035), and
-# fails without it once client/patches has that patch. In a prepush run it takes the e2e stage's
-# client when that was built from the same inputs (e2e_client_stamp).
+# fails without it once client/patches has that patch. In a prepush run it takes the client of
+# e2e:build when that was built from the same inputs (e2e_client_stamp).
 wol_stage() {
   local work="$CI/e2e" built="$CI/target-e2e/release/rustdesk" t
   for t in hbbs hbbr; do check_stamp "$CI/target/release/$t" server "${HBBS_INPUTS[@]}"; done
@@ -2418,7 +2460,7 @@ wol_stage() {
   if [ -z "$E2E_CLIENT_GIVEN" ] && [ -n "${HJV_CI_RUN:-}" ] && [ -x "$built" ] &&
     [ "$(cat "$CI/target-e2e/e2e-client.stamp" 2> /dev/null)" = "$(e2e_client_stamp "$work" "$built")" ]; then
     E2E_CLIENT=$built
-    echo "wol: the client of this prepush run's e2e stage, built from the same client/patches and keys" \
+    echo "wol: the client of this prepush run's e2e:build, built from the same client/patches and keys" \
       "(its unit tests there, --lib hjv, had the wake report's)"
   else
     build_e2e_client "$work" hjviewer_wol
@@ -2559,7 +2601,7 @@ finish() { # <target>
 # part that a server stage runs beside the others, with HJV_CI_PART, in that stage's); such a run
 # ends with "== CI passed: ..." or "FAIL: ...", and only prepush's logs with an EXIT line
 case "$TARGET" in
-  all | server | server:* | client | deploy | e2e | wol | leak)
+  all | server | server:* | client | deploy | e2e | e2e:build | wol | leak)
     [ -n "${HJV_CI_RUN:-}${HJV_CI_PART:-}" ] || log_head "$TARGET" "on its own${HJV_CI_STRICT:+, HJV_CI_STRICT=$HJV_CI_STRICT}"
     ;;
 esac
@@ -2567,13 +2609,14 @@ case "$TARGET" in
   server | server:*) server_stage "$TARGET" ;;
   client) client_stage ;;
   deploy) deploy_stage ;;
+  e2e:build) e2e_build_stage ;;
   e2e) e2e_stage ;;
   wol) wol_stage ;;
   leak) leak_stage ;;
   all) server_stage server; deploy_stage ;;
   prepush) shift; prepush "$@" ;;
   *)
-    echo "usage: $0 [all|prepush [<stage>...]|server[:<part>[,<part>]]|client|deploy|e2e|wol|leak]" >&2
+    echo "usage: $0 [all|prepush [<stage>...]|server[:<part>[,<part>]]|client|deploy|e2e[:build]|wol|leak]" >&2
     echo "  all is the server and deploy stages only; prepush runs every stage ($PREPUSH_STAGES) with HJV_CI_STRICT=1" >&2
     echo "  server:<part>[,<part>] (also a stage of prepush) runs those of the server stage's parts: $SERVER_PARTS" >&2
     exit 2
