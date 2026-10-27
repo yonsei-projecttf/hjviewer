@@ -518,14 +518,20 @@ fn policy(argv: &[String]) -> Result<i32, String> {
         ),
         (Role::Signing, false) => ("--key <서명 키 파일>", ""),
     };
-    if made.draft.signer == Role::Root || made.draft.root_p.is_some() {
+    // the tool that signs: for the root key the one built at the clean computer from the release
+    // tag (5-0), for the signing key the dev PC's scripts/build-signer.sh build
+    let tool = if made.draft.signer == Role::Root || made.draft.root_p.is_some() {
         println!(
-            "루트 키는 깨끗한 컴퓨터에서만 엽니다(런북 5-0): 그 컴퓨터에서 서버의 정책을 받아 서명합니다"
+            "루트 키는 깨끗한 컴퓨터에서만 엽니다(런북 5-0): 그 컴퓨터에서 공개 저장소의 릴리스 태그로 \
+             빌드한 hjv-release로(개발 PC의 build/signer/hjv-release가 아님) 서버의 정책을 받아 서명합니다"
         );
-    }
+        "hjv-release"
+    } else {
+        "build/signer/hjv-release"
+    };
     println!("서명은 사용자가 터미널에서 직접 합니다(에이전트는 서명하지 않습니다):");
     println!(
-        "  hjv-release sign {key_files}{}{live} --out version-policy.json {out}",
+        "  {tool} sign {key_files}{}{live} --out version-policy.json {out}",
         same_keys(&args)?
     );
     Ok(0)

@@ -763,12 +763,18 @@ fn a_release_from_the_build_to_the_server() {
     assert!(draft
         .stdout
         .contains("서명은 사용자가 터미널에서 직접 합니다"));
-    // the command line for the person: the same key file, and the same word about test keys
-    assert!(draft.stdout.contains(&format!(
-        "hjv-release sign --key <서명 키 파일> --keys {} --archive {} --allow-test-keys --out version-policy.json draft1.json",
+    // the command line for the person: the signer that scripts/build-signer.sh builds (a signing
+    // key's draft), the same key file, and the same word about test keys
+    let command = format!(
+        "  build/signer/hjv-release sign --key <서명 키 파일> --keys {} --archive {} --allow-test-keys --out version-policy.json draft1.json",
         world.file("keys.env"),
         world.file("archive")
-    )));
+    );
+    assert!(
+        draft.stdout.lines().any(|line| line == command),
+        "{}",
+        draft.stdout
+    );
     let calls = world.read("gh/calls.txt");
     assert_eq!(
         calls
@@ -1065,9 +1071,25 @@ fn relaxing_is_a_declaration_signed_at_the_clean_machine() {
         .stdout
         .contains("서명할 키: 정책은 서명 키 1, 루트 선언은 루트 키 101"));
     assert!(relaxed.stdout.contains("깨끗한 컴퓨터"));
-    assert!(relaxed
-        .stdout
-        .contains("hjv-release sign --key <루트 키 파일> --key <서명 키 파일>"));
+    // a draft that needs the root key is signed with the tool built at the clean computer from the
+    // release tag (5-0), not with the dev PC's build/signer/hjv-release
+    assert!(
+        relaxed.stdout.contains(
+            "릴리스 태그로 빌드한 hjv-release로(개발 PC의 build/signer/hjv-release가 아님)"
+        ),
+        "{}",
+        relaxed.stdout
+    );
+    assert!(
+        relaxed
+            .stdout
+            .lines()
+            .any(|line| line
+                .starts_with("  hjv-release sign --key <루트 키 파일> --key <서명 키 파일>")),
+        "{}",
+        relaxed.stdout
+    );
+    assert!(!relaxed.stdout.contains("build/signer/hjv-release sign"));
     assert!(relaxed.stdout.contains("--live <방금 받은 서버의 정책>"));
 
     let (keys, root, signing) = (
