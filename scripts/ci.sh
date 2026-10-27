@@ -75,6 +75,10 @@
 #                          and hjv-relay, with the E2E's client, Caddy, hjv-api and fake SSO, and
 #                          hjv-relay built for the test server with the E2E's command key; before
 #                          it, the unit tests of the client's wake report (src/hjviewer_wol)
+#   scripts/ci.sh drill:full|drill:quick|drill:build
+#                          the operations drill of hjv-api (tools/e2e/hjv-api-drill.sh,
+#                          docs/hjv-api-drill.md), full or quick, on what drill:build builds and
+#                          stages (in build/ci/target-drill; built first when it is not this tree's)
 #   scripts/ci.sh leak     the push gate (design v3 11 steps 1-2): no value of the local list
 #                          build/leak-patterns.txt in tracked files, unpushed commits or staged
 #                          changes (scripts/leak-check.py)
@@ -2503,6 +2507,31 @@ wol_stage() {
   at_least "wol: PASS lines" "$(grep -c '^PASS' "$CI/wol-e2e.log" || true)" "$WOL_LEAST"
 }
 
+# The operations drill (tools/e2e/hjv-api-drill.sh, docs/hjv-api-drill.md) of this tree. drill:build
+# builds and stages what it installs, into build/ci/target-drill, which every tree's prepush builds
+# into (own_target marks it); drill:full and drill:quick run it on that stage, built first when it is
+# not of this tree's inputs (the script's staged). prepush --drill runs the build beside the deploy
+# stage and the drill beside the e2e stage. The drill's own logs are in build/drill/.
+drill_stage() { # <drill:build|drill:full|drill:quick>
+  local part=${1#drill:} quick=()
+  case $part in
+    build | full) ;;
+    quick) quick=(HJV_DRILL_QUICK=1) ;;
+    *) fail "no stage $1: drill:build, drill:full or drill:quick" ;;
+  esac
+  if [ "$part" = build ] || ! "$ROOT/tools/e2e/hjv-api-drill.sh" staged; then
+    step "drill: hjv-api, the fake SSO and the drill's client, staged (tools/e2e/hjv-api-drill.sh build, into build/ci/target-drill)"
+    own_target "$CI/target-drill" "$ROOT/server/api"
+    with_skips "$CI/drill-build.log" env CARGO_TARGET_DIR="$CI/target-drill" "$ROOT/tools/e2e/hjv-api-drill.sh" build ||
+      fail "drill: the build (above)"
+  fi
+  [ "$part" != build ] || return 0
+  sudo -n true 2> /dev/null || fail "drill: needs sudo without a password prompt (Docker)"
+  step "drill: tools/e2e/hjv-api-drill.sh run, the $part drill (output also in build/drill/drill.log)"
+  with_skips "$CI/drill-run.log" env -u HJV_DRILL_QUICK "${quick[@]}" "$ROOT/tools/e2e/hjv-api-drill.sh" run ||
+    fail "drill: the $part drill (above)"
+}
+
 # The push gate of design v3 11 steps 1-2: none of the values of build/leak-patterns.txt (a local
 # list git ignores; docs/ci.md says what goes in) in tracked files, staged changes and the commits
 # a push would publish. Prints places and list line numbers, never the values. Then the tests of
@@ -2731,7 +2760,7 @@ esac
 # stage's); such a run ends with "== CI passed: ..." or "FAIL: ...", and only prepush's logs with an
 # EXIT line
 case "$TARGET" in
-  all | server | server:* | client | deploy | e2e | e2e:build | wol | leak)
+  all | server | server:* | client | deploy | e2e | e2e:build | wol | leak | drill:*)
     if [ -z "${HJV_CI_RUN:-}${HJV_CI_PART:-}" ]; then
       log_head "$TARGET" "on its own, HJV_CI_STRICT=$HJV_CI_STRICT"
       preflight "$TARGET"
@@ -2746,10 +2775,11 @@ case "$TARGET" in
   e2e) e2e_stage ;;
   wol) wol_stage ;;
   leak) leak_stage ;;
+  drill:*) drill_stage "$TARGET" ;;
   all) server_stage server; deploy_stage ;;
   prepush) shift; prepush "$@" ;;
   *)
-    echo "usage: $0 [all|prepush [<stage>...]|server[:<part>[,<part>]]|client|deploy|e2e[:build]|wol|leak]" >&2
+    echo "usage: $0 [all|prepush [<stage>...]|server[:<part>[,<part>]]|client|deploy|e2e[:build]|wol|leak|drill:build|drill:full|drill:quick]" >&2
     echo "  all is the server and deploy stages only; prepush runs every stage ($PREPUSH_STAGES) with HJV_CI_STRICT=1" >&2
     echo "  server:<part>[,<part>] (also a stage of prepush) runs those of the server stage's parts: $SERVER_PARTS" >&2
     exit 2
