@@ -7,7 +7,8 @@
 # directory, whose build/ci/target-hjv-release is the last tree's to run scripts/ci.sh there (its
 # stages' tests use it).
 #   scripts/build-signer.sh [<commit>]   origin/main when no commit is named
-# It first fetches main from origin (into refs/remotes/origin/main), and a named commit must be on it.
+# It first fetches main from origin (into refs/remotes/origin/main, which origin/main in a named
+# commit, origin/main~1 say, stands for too), and a named commit must be on it.
 # The output folder is build/signer of the main checkout (the folder that holds the repository's
 # common git directory), whichever worktree runs this, so that the owner finds the signer in one
 # place: build/signer/hjv-release, and beside it hjv-release.record, which says what it is built from
@@ -82,7 +83,10 @@ origin_main=$(git -C "$ROOT" rev-parse -q --verify 'refs/remotes/origin/main^{co
 ref=${1:-origin/main}
 commit=$origin_main
 if [ -n "${1:-}" ]; then
-  commit=$(git -C "$ROOT" rev-parse -q --verify "$1^{commit}") || fail "no commit $1"
+  # origin/main in a named commit (origin/main itself, origin/main~1) is that full name too
+  rev=$1
+  case $rev in origin/main | origin/main[~^@]*) rev=refs/remotes/$rev ;; esac
+  commit=$(git -C "$ROOT" rev-parse -q --verify "$rev^{commit}") || fail "no commit $1"
 fi
 if git -C "$ROOT" merge-base --is-ancestor "$commit" "$origin_main"; then
   checked="origin/main $origin_main, which has the commit"
