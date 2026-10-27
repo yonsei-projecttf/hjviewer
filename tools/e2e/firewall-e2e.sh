@@ -1554,6 +1554,9 @@ account_strict() {
   # S38's other half (D-6): [끄기] stops new password-less logins; its sync goes on, and the open
   # session stays through it
   until_ok 15 "S38: a sync of the PC after [끄기]" pc_syncs_match "$ts" '[0-9]'
+  # a second more before the release: a PC that cut at that sync would do so within some 30 ms of
+  # it, and the wait above ends 25-200 ms after it
+  sleep 1
   bg_release s38off "the PC's sync after [끄기]"
   bg_wait s38off 15
   bg_released ||
