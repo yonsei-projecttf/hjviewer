@@ -454,7 +454,7 @@ PASS (strict): transport: relay
 
 ## 원격 켜기 단계 (1.6.0)
 
-꺼진 PC를 앱에서 켜는 길 전체를 실제 프로그램으로 확인합니다(설계 3판 8-10). 앱의 켜기 요청 → hjv-api가 서명한 명령 → NAS의 hjv-relay → PC 랜카드에 닿는 매직 패킷 → 깨어난 PC의 확인까지입니다. `tools/e2e/wol-e2e.sh`이고 `scripts/ci.sh wol`이 돌립니다(서버와 `hjv-probe`는 `scripts/ci.sh server`로 먼저 빌드).
+꺼진 PC를 앱에서 켜는 길 전체를 실제 프로그램으로 확인합니다(설계 3판 8-10). 앱의 켜기 요청 → hjv-api가 서명한 명령 → NAS의 hjv-relay → PC 랜카드에 닿는 매직 패킷 → 깨어난 PC의 확인까지입니다. `tools/e2e/wol-e2e.sh`이고 `scripts/ci.sh wol`이 돌립니다(서버는 `scripts/ci.sh server`로 먼저 빌드하고, `hjv-probe`는 이 단계가 이 트리에서 빌드).
 
 **sudo를 쓰지 않습니다**(`sudo`를 실패하는 가짜로 바꿔 놓고 돌려, 한 번도 부르지 않는 것을 확인함). 스크립트는 이 사용자의 사용자·네트워크·마운트·PID 네임스페이스 안에서 자기 자신을 다시 실행합니다. 그 안에서 띄운 프로세스, 네트워크, 마운트는 스크립트가 끝나면 함께 사라지고, 스크립트의 PID나 그 프로세스 그룹에 SIGTERM·SIGINT·SIGKILL을 보내도 1초 안에 모두 사라집니다(`setpriv --pdeathsig`과 `unshare --kill-child`). 호스트의 `/usr`, `/etc`, iptables는 바뀌지 않습니다. 2분쯤 걸리는 실행이 10분이 되도록 끝나지 않으면 스스로 끝냅니다. `--inside`는 스크립트의 둘째 절반이라 네임스페이스의 첫 프로세스로만 돕니다. 화면도 쓰지 않습니다(Xvfb, ImageMagick 불필요).
 
