@@ -346,6 +346,13 @@ hjv_pk_vector() { # <file>
 # The server stage's parts, which server:<part>[,<part>] names, as a target and as a stage of
 # prepush; server alone is all of them, in this order (server_stage)
 SERVER_PARTS="hbbs api relay release"
+# The one test that runs once more when it alone failed (the user's decision of 2026-10-27;
+# docs/ci.md, "알려진 불안정한 시험"), by its package, test target and name: hbbs's signaling over
+# WebSocket right after hbbs listens. A line "RETRY: ..." says so, and the stage's last lines count
+# the retried runs.
+KNOWN_FLAKY=("$CI/upstream/rustdesk-server" tcp_signaling peer_registered_over_websocket_receives_signaling)
+# the test runs that this run retried (cargo_tests; server_stage adds those of its parts' runs)
+RETRIED=0
 
 # The parts that <stage> names, in the order of SERVER_PARTS: all of them for server, those it lists
 # for server:<part>[,<part>]; nothing, and a failure, for any other name
@@ -382,6 +389,7 @@ own_net() { # <command...>
 # build shows the compiler's warnings, which every run would show again. Then all of it goes to
 # <log> and stdout in cargo's order, and its skipped lines are counted. Unlike one cargo test, a
 # target that fails stops none of the others: the failure comes at the end.
+# The known flaky test (KNOWN_FLAKY) runs once more when it alone failed.
 cargo_tests() { # <dir> <log> <most> <wrapper> <options...> [-- <test options...>]
   local pkg=$1 log=$2 most=$3 wrapper=$4 dir=${2%.log} opts=() pick=() args=() targets=() started=() i target status failed=()
   shift 4
@@ -426,6 +434,14 @@ if sys.argv[2] == "0" and any(n == 0 and doctest for n, _, doctest in found):
       status=0
       "$wrapper" env -C "$pkg" CARGO_BUILD_WARNINGS=allow cargo test "${opts[@]}" "${target[@]}" -- "${args[@]}" \
         > "$dir/$i.log" 2>&1 || status=$?
+      if [ "$status" != 0 ] && [ "$pkg ${target[*]}" = "${KNOWN_FLAKY[0]} --test ${KNOWN_FLAKY[1]}" ] &&
+        [ "$(sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' "$dir/$i.log")" = "${KNOWN_FLAKY[2]}" ]; then
+        echo "RETRY: ${KNOWN_FLAKY[2]} (tests/${KNOWN_FLAKY[1]}.rs) failed alone; the known flaky test runs once more" \
+          >> "$dir/$i.log"
+        status=0
+        "$wrapper" env -C "$pkg" CARGO_BUILD_WARNINGS=allow cargo test "${opts[@]}" "${target[@]}" -- "${args[@]}" \
+          --exact "${KNOWN_FLAKY[2]}" >> "$dir/$i.log" 2>&1 || status=$?
+      fi
       echo "$status" > "$dir/$i.status"
     ) &
     started+=($!)
@@ -435,6 +451,7 @@ if sys.argv[2] == "0" and any(n == 0 and doctest for n, _, doctest in found):
   for i in "${!targets[@]}"; do
     cat "$dir/$i.log" >> "$log"
     count_skips "$dir/$i.log"
+    RETRIED=$((RETRIED + $(grep -c '^RETRY: ' "$dir/$i.log" || true)))
     [ "$(cat "$dir/$i.status")" = 0 ] || failed+=("${targets[$i]}")
   done
   cat "$log"
@@ -576,10 +593,10 @@ server_release() {
 # build/ci/server-<part>.log, shown in their order once it ended: they share no target directory,
 # port or file, as the hbbs and hjv-api tests run in network namespaces of their own
 # (cargo_tests). Where this user cannot make those, the parts run here one after another. A part
-# that fails stops none of the others: the stage fails once all of them ended. Its last line says
-# which parts ran.
+# that fails stops none of the others: the stage fails once all of them ended. Its last lines say
+# which parts ran and how many test runs were retried (KNOWN_FLAKY).
 server_stage() { # <stage>
-  local parts=() part rest=() log status failed=()
+  local parts=() part rest=() log status failed=() n
   local -A pids=() starts=()
   read -ra parts <<< "$(server_parts "$1")"
   [ ${#parts[@]} -gt 0 ] || fail "no stage $1: server:<part>[,<part>] names parts of the server stage ($SERVER_PARTS)"
@@ -599,9 +616,11 @@ server_stage() { # <stage>
       printf '\n---- server:%s (%s)\n' "$part" "$log"
       cat "$log"
       count_skips "$log"
+      n=$(grep -c '^RETRY: ' "$log" || true)
+      RETRIED=$((RETRIED + n))
       if [ "$status" = 0 ] && ! grep -q "^== CI passed: server:$part (" "$log"; then status=1; fi
       echo "server: $part: exit $status, $(($(stat -c %Y "$log") - ${starts[$part]})) s," \
-        "$(grep -c '^skipped:' "$log" || true) skipped line(s)"
+        "$(grep -c '^skipped:' "$log" || true) skipped line(s), $n retried test run(s)"
       [ "$status" = 0 ] || failed+=("$part")
     done
     [ ${#failed[@]} -eq 0 ] || fail "server: ${failed[*]} failed (above, and in build/ci/server-<part>.log)"
@@ -610,6 +629,7 @@ server_stage() { # <stage>
     if [[ " ${parts[*]} " != *" $part "* ]]; then rest+=("$part"); fi
   done
   echo "server: the parts that ran: ${parts[*]}${rest[*]:+ (not ${rest[*]}: $1)}"
+  echo "server: test runs retried: $RETRIED (only the known flaky test, once: the RETRY lines above)"
 }
 
 FLUTTER_VERSION=3.24.5 # client-build.yml FLUTTER_VERSION
