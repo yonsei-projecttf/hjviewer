@@ -27,10 +27,21 @@
 # Nothing calls the real SSO or Telegram, nothing leaves this machine, and the containers go at the
 # end (the image hjv-drill:local stays for the next run, and is built again when its recipe below
 # changes). The output is build/drill/drill.log, and each run's is kept in build/drill/logs/.
-#   tools/e2e/hjv-api-drill.sh
+#   tools/e2e/hjv-api-drill.sh [build|run|staged]
+# build builds hjv-api, the fake SSO and the drill's client and stages them with the files of the
+# server package in build/drill/stage, which then names the inputs it was made of (stage_inputs);
+# run runs the drill on that stage, and stops when it is not of this tree's inputs; staged says
+# whether it is (exit 0) or why not; with none of them, both (scripts/ci.sh runs the build beside
+# its deploy stage and the drill beside its e2e stage: prepush --drill). The build's output is
+# build/drill/drill-build.log.
 # Needs cargo, Docker through sudo (as scripts/ci.sh), and Ubuntu's apt sources for the image.
 set -euo pipefail
 
+part=${1:-all}
+case $part in
+  all | build | run | staged) ;;
+  *) echo "usage: $0 [build|run|staged]" >&2; exit 2 ;;
+esac
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${HJV_DRILL_DIR:-$ROOT/build/drill}"
 TARGET="${CARGO_TARGET_DIR:-$WORK/target}"
@@ -39,14 +50,49 @@ A=hjv-drill-a
 B=hjv-drill-b
 REGISTRY="${HJV_REGISTRY:-public.ecr.aws/docker/library}"
 export PATH="$HOME/.cargo/bin:$PATH"
-mode=full
+api="$ROOT/server/api"
+stage="$WORK/stage"
+# The commit that hjv-api reports (/api/hjv/source, hjv-api version), as scripts/ci.sh's server stage
+# builds it: the last one that changed server/api, the binary's source. Every cargo call below
+# builds with it, so that the drill client's build takes the binary as it is and installs what the
+# first call built.
+api_commit=$(git -C "$ROOT" log -1 --format=%H -- server/api)
+# What the stage is made of: the files of the builds (hjv-api's tests build hjv-relay too, a
+# dev-dependency) and of the stage, this script, the toolchain and the commit hjv-api reports
+stage_inputs() {
+  {
+    (cd "$ROOT" && git ls-files -z --cached --others --exclude-standard -- server/api relay deploy/systemd \
+      deploy/journald@hjviewer.conf tools/e2e/hjv-api-drill.sh | LC_ALL=C sort -z | xargs -0 -r sha256sum)
+    cargo --version
+    echo "HJV_API_COMMIT=$api_commit"
+  } | sha256sum | cut -d' ' -f1
+}
+# Why the stage is not of this tree's inputs; nothing when it is
+stage_mismatch() {
+  local inputs
+  if ! read -r _ inputs _ 2> /dev/null < "$stage/SOURCE"; then
+    echo "nothing staged ($stage/SOURCE)"
+  elif [ "$inputs" != "$(stage_inputs)" ]; then
+    echo "staged from other inputs than this tree's ($stage/SOURCE)"
+  fi
+}
+if [ "$part" = staged ]; then
+  why=$(stage_mismatch)
+  if [ -z "$why" ]; then echo "staged: $(cat "$stage/SOURCE")"; else echo "not staged: $why"; exit 1; fi
+  exit 0
+fi
+mode=full log=drill.log
 [ -z "${HJV_DRILL_QUICK:-}" ] || mode=quick
+[ "$part" != build ] || mode=build log=drill-build.log
 commit=$(git -C "$ROOT" rev-parse HEAD)
 mkdir -p "$WORK/logs"
-# the output: build/drill/drill.log, and a copy of each run's in build/drill/logs/
-exec > >(tee "$WORK/drill.log" "$WORK/logs/$(date +%Y%m%d-%H%M%S)-${commit:0:7}-$mode.log") 2>&1
+# the output: build/drill/drill.log (the build's: drill-build.log), and a copy of each run's in
+# build/drill/logs/
+exec > >(tee "$WORK/$log" "$WORK/logs/$(date +%Y%m%d-%H%M%S)-${commit:0:7}-$mode.log") 2>&1
 # the head of the log: the commit and tree it ran on, and the start (as scripts/ci.sh's logs)
-echo "LOG tools/e2e/hjv-api-drill.sh ($mode)"
+how=$mode
+[ "$part" != run ] || how="$mode, on the stage of a build before"
+echo "LOG tools/e2e/hjv-api-drill.sh ($how)"
 echo "hjviewer $commit tree $(git -C "$ROOT" rev-parse 'HEAD^{tree}') status-lines $(git -C "$ROOT" status --porcelain | wc -l) ($ROOT)"
 echo "START $(date '+%Y-%m-%d %H:%M:%S %z')"
 
@@ -95,36 +141,52 @@ cred_from() { # <host> <credential> <file>
 }
 cleanup() {
   local rc=$?
-  d rm -f "$A" "$B" > /dev/null 2>&1 || true
+  # (the build starts no container)
+  [ "$part" = build ] || d rm -f "$A" "$B" > /dev/null 2>&1 || true
   echo "EXIT $rc $(date '+%Y-%m-%d %H:%M:%S %z')"
 }
 trap cleanup EXIT
 
-step "build: hjv-api, the fake SSO and the drill's client"
-api="$ROOT/server/api"
-(cd "$api" && HJV_API_COMMIT=$(git -C "$ROOT" rev-parse HEAD) CARGO_TARGET_DIR="$TARGET" \
-  cargo build -q --release --locked --bin hjv-api)
-(cd "$api" && CARGO_TARGET_DIR="$TARGET" cargo build -q --release --locked --features fake-sso --bin hjv-fake-sso)
-drill_client=$(cd "$api" && CARGO_TARGET_DIR="$TARGET" cargo test -q --release --locked --test drill --no-run \
-  --message-format=json 2> /dev/null | python3 -I -c '
+if [ "$part" != run ]; then
+  step "build: hjv-api, the fake SSO and the drill's client (HJV_API_COMMIT $api_commit)"
+  export HJV_API_COMMIT=$api_commit
+  (cd "$api" && CARGO_TARGET_DIR="$TARGET" cargo build -q --release --locked --bin hjv-api)
+  (cd "$api" && CARGO_TARGET_DIR="$TARGET" cargo build -q --release --locked --features fake-sso --bin hjv-fake-sso)
+  drill_client=$(cd "$api" && CARGO_TARGET_DIR="$TARGET" cargo test -q --release --locked --test drill --no-run \
+    --message-format=json 2> /dev/null | python3 -I -c '
 import json, sys
 for line in sys.stdin:
     m = json.loads(line)
     if m.get("reason") == "compiler-artifact" and m["target"]["name"] == "drill" and m.get("executable"):
         print(m["executable"])')
-[ -x "$drill_client" ] || fail "the drill client was not built"
+  [ -x "$drill_client" ] || fail "the drill client was not built"
+  # the binary that the drill client's build left is the first call's, as the server package has it
+  "$TARGET/release/hjv-api" version | grep -qF "($api_commit)" ||
+    fail "$TARGET/release/hjv-api does not report the commit of its source, $api_commit: $("$TARGET/release/hjv-api" version)"
 
-step "the files of the server package (scripts/package-server.sh lays them out so)"
-stage="$WORK/stage"
-rm -rf "$stage"
-mkdir -p "$stage/bin" "$stage/systemd" "$stage/drill"
-install -m 755 "$TARGET/release/hjv-api" "$stage/bin/"
-install -m 644 "$ROOT"/deploy/systemd/hjviewer-api*.service "$ROOT"/deploy/systemd/hjviewer-api*.socket \
-  "$ROOT"/deploy/systemd/hjviewer-api*.timer "$ROOT/deploy/journald@hjviewer.conf" \
-  "$api/hjviewer-api.env.example" "$stage/systemd/"
-install -m 755 "$TARGET/release/hjv-fake-sso" "$stage/drill/"
-install -m 755 "$drill_client" "$stage/drill/drill-client"
-ls -l "$stage"/*
+  step "the files of the server package (scripts/package-server.sh lays them out so)"
+  rm -rf "$stage"
+  mkdir -p "$stage/bin" "$stage/systemd" "$stage/drill"
+  install -m 755 "$TARGET/release/hjv-api" "$stage/bin/"
+  install -m 644 "$ROOT"/deploy/systemd/hjviewer-api*.service "$ROOT"/deploy/systemd/hjviewer-api*.socket \
+    "$ROOT"/deploy/systemd/hjviewer-api*.timer "$ROOT/deploy/journald@hjviewer.conf" \
+    "$api/hjviewer-api.env.example" "$stage/systemd/"
+  install -m 755 "$TARGET/release/hjv-fake-sso" "$stage/drill/"
+  install -m 755 "$drill_client" "$stage/drill/drill-client"
+  "$stage/bin/hjv-api" version
+  echo "inputs $(stage_inputs) commit $commit" > "$stage/SOURCE"
+  ls -l "$stage"/*
+  if [ "$part" = build ]; then
+    step_times
+    printf '\n== %s\n' "the drill's build passed: $stage"
+    exit 0
+  fi
+else
+  why=$(stage_mismatch)
+  [ -z "$why" ] || fail "the stage is not of this tree's inputs ($why): $0 build"
+  echo "the stage: $(cat "$stage/SOURCE")"
+  "$stage/bin/hjv-api" version
+fi
 # the test keys, and the "removable medium" with the offline copies (seal key, list key 2)
 eval "$("$stage/drill/drill-client" --ignored --exact drill_values --nocapture --test-threads 1 2> /dev/null | grep -E '^[A-Z_0-9]+=')"
 offline="$WORK/offline"
