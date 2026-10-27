@@ -81,7 +81,8 @@
 # apt-get for Ubuntu's nginx and Apache packages, which are unpacked under build/ci, not installed.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# the tree's physical path, as cargo and the tests it builds give theirs (CARGO_MANIFEST_DIR)
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 SELF="$ROOT/scripts/$(basename "$0")"
 CI="${HJV_CI_DIR:-$ROOT/build/ci}"
 mkdir -p "$CI"
@@ -294,11 +295,12 @@ owned_built() {
 }
 # What a binary that one stage leaves for others is built from: hbbs and hbbr (HBBS_INPUTS), hjv-api
 # (API_INPUTS), and hjv-release (RELEASE_INPUTS), which the owner may sign version policies with too.
-# <binary>.stamp names the tree, its commit and changed files, a hash of the files the binary is built
-# from (as git sees them: tracked, or not ignored) and of the toolchain, and the binary's hash.
+# <binary>.stamp names the commit and its changed files, a hash of the files the binary is built from
+# (as git sees them: tracked, or not ignored) and of the toolchain, the binary's hash, and last the
+# tree (a path may hold spaces).
 inputs_hash() { # <path in this tree...>
   {
-    git -C "$ROOT" ls-files -z --cached --others --exclude-standard -- "$@" | sort -z -u |
+    git -C "$ROOT" ls-files -z --cached --others --exclude-standard -- "$@" | LC_ALL=C sort -z -u |
       { env -C "$ROOT" xargs -0 -r sha256sum 2>&1 || true; }
     cargo --version
   } | sha256sum | cut -d' ' -f1
@@ -306,8 +308,8 @@ inputs_hash() { # <path in this tree...>
 stamp_binary() { # <binary> <path in this tree...>
   local bin=$1
   shift
-  echo "tree $ROOT commit $(git -C "$ROOT" rev-parse HEAD) changed-files $(git -C "$ROOT" status --porcelain | wc -l)" \
-    "inputs $(inputs_hash "$@") binary $(sha256sum < "$bin" | cut -d' ' -f1)" > "$bin.stamp"
+  echo "commit $(git -C "$ROOT" rev-parse HEAD) changed-files $(git -C "$ROOT" status --porcelain | wc -l)" \
+    "inputs $(inputs_hash "$@") binary $(sha256sum < "$bin" | cut -d' ' -f1) tree $ROOT" > "$bin.stamp"
   echo "$(basename "$bin").stamp: $(cat "$bin.stamp")"
 }
 # Says where a binary that another stage built comes from. One that is not built from what this tree
@@ -318,7 +320,7 @@ check_stamp() { # <binary> <stage that builds it> <path in this tree...>
   shift 2
   name=$(basename "$bin")
   [ -x "$bin" ] || fail "$name is not built: scripts/ci.sh $stage"
-  if ! read -r _ tree _ commit _ changed _ inputs _ sum 2> /dev/null < "$bin.stamp"; then
+  if ! read -r _ commit _ changed _ inputs _ sum _ tree 2> /dev/null < "$bin.stamp"; then
     why="it has no stamp ($name.stamp)"
   elif [ "$sum" != "$(sha256sum < "$bin" | cut -d' ' -f1)" ]; then
     why="it changed since its stamp"
