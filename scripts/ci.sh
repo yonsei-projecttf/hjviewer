@@ -171,6 +171,8 @@ STACK=docker SYSTEMD_SINCE=""
 SKIPPED=()
 # the step under way and when it began, and the steps before it with their seconds (step_times)
 STEP="" STEP_SINCE=0 STEP_TIMES=()
+# the target directories this run builds in (own_target)
+OWNED=()
 
 # A step's title, and under it the time, the seconds since the run began, the machine's load (a
 # slow step on a busy machine) and how long the step before took
@@ -239,13 +241,21 @@ passed_tests() { # <file>
 # judges freshness by file times, with unit names that do not depend on the tree: a tree whose files
 # are older takes what another tree built there for its own, test executables with that tree's paths
 # compiled in (CARGO_MANIFEST_DIR) among them. So each directory names the tree that built there last
-# (.hjv-tree). Before another tree builds there, the packages that cargo builds from a path in
-# <workspace> (this tree's crates, or those of the upstream checkout made from its patches) are
+# (.hjv-tree), and the end of a run that built there touches that mark (owned_built). Before another
+# tree builds there, or this one after anything else did (units compiled after the mark: a
+# scripts/ci.sh that has no marks yet, cargo run by hand), the packages that cargo builds from a path
+# in <workspace> (this tree's crates, or those of the upstream checkout made from its patches) are
 # cleaned in both profiles, whatever tree built them; the crates.io and git dependencies stay built.
 own_target() { # <target dir> <workspace dir>
   local dir=$1 ws=$2 last name names=() specs=() start=$SECONDS
+  [[ " ${OWNED[*]} " != *" $dir "* ]] || return 0
+  OWNED+=("$dir")
   last=$(cat "$dir/.hjv-tree" 2> /dev/null || true)
-  [ "$last" != "$ROOT" ] || return 0
+  if [ "$last" = "$ROOT" ]; then
+    [ -n "$(find "$dir" -mindepth 4 -maxdepth 4 -path '*/.fingerprint/*/invoked.timestamp' -newer "$dir/.hjv-tree" -print -quit)" ] ||
+      return 0
+    last="$ROOT, then something else"
+  fi
   while read -r name; do names+=("$name") specs+=(-p "$name"); done < <(cd "$ws" &&
     cargo metadata --format-version 1 --locked --filter-platform "$(rustc -vV | sed -n 's/^host: //p')" |
     python3 -I -c 'import json, sys
@@ -259,6 +269,11 @@ for p in json.load(sys.stdin)["packages"]:
   echo "$ROOT" > "$dir/.hjv-tree"
   echo "$(basename "$dir"): built last from ${last:-a tree it does not name}; this tree's packages" \
     "(${names[*]}) cleaned in $((SECONDS - start)) s"
+}
+# At the end of a run: what it built in its target directories is older than their marks
+owned_built() {
+  local dir
+  for dir in "${OWNED[@]}"; do touch "$dir/.hjv-tree"; done
 }
 # What a binary that one stage leaves for others is built from: hbbs and hbbr (HBBS_INPUTS), hjv-api
 # (API_INPUTS), and hjv-release (RELEASE_INPUTS), which the owner may sign version policies with too.
@@ -315,6 +330,7 @@ key_file() {
 }
 
 fail() {
+  owned_built
   echo "FAIL: $*" >&2
   if [ -n "$DEPLOY_LOGS" ] && [ -d "$SRC/deploy" ]; then
     dc logs --tail 40 >&2 2>/dev/null || true
@@ -1919,6 +1935,7 @@ prepush() { # [<stage>...]
 # anything; the line "== CI passed: ..." comes last, with no time line under it
 finish() { # <target>
   local s
+  owned_built
   step_times
   if [ ${#SKIPPED[@]} -gt 0 ]; then
     printf '\n%s skipped in this run:\n' "${#SKIPPED[@]}"
