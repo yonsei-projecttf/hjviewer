@@ -437,14 +437,14 @@ prepush_end server server:release "$(git rev-parse HEAD)" server:release || echo
 
     def test_the_rules_hold_the_code_that_reads_a_path_they_leave_out(self):
         tree = self.copy("rules")
-        out = tree.source('''d=$(mktemp -d)
+        out = tree.source('''d=$1
 for u in $REUSE_UNITS; do echo "$u=${REUSE_SKIP[$u]//$'\\n'/ }"; done |
   sed -e 's#!docs/relay-dsm.md ##' > "$d/rules"
 echo "$REUSE_SKIP_ALL" > "$d/all"
 for u in "${!REUSE_TESTS[@]}"; do echo "$u ${REUSE_TESTS[$u]}"; done > "$d/tests"
 printf '%s\\n' "${REUSE_NOT_READ[@]}" > "$d/not-read"
 for u in $REUSE_UNITS; do read -ra fns <<< "${REUSE_CODE[$u]}"; reuse_code text "${fns[@]}" finish > "$d/$u.code"; done
-python3 -I -B scripts/ci-reuse.py reads "$ROOT" "$d"''', check=False)
+python3 -I -B scripts/ci-reuse.py reads "$ROOT" "$d"''', tempfile.mkdtemp(dir=self.tmp), check=False)
         self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
         self.assertRegex(out.stdout, r"(?m)^server:relay: relay/tests/watchdog\.rs:\d+ reads docs/relay-dsm\.md, "
                                      r"which its rules leave out")
