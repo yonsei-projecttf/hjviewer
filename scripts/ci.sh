@@ -101,10 +101,11 @@ CADDY_SHA256=727b91701a392de6ebc5027509f548bf39979e5216340d0faed8fa5e69c84f8b
 # where the E2E installs the PC's client: Linux counts only programs under /usr as installed, and
 # hjv-api adds only installed PCs to an account (design v3 7-4)
 E2E_PC_DIR=/usr/local/lib/hjviewer-e2e
-# The E2E's clients are test builds (feature hjv-e2e) of a fresh checkout, whose crates cargo
-# compiles anew each time. Without link-time optimization and in 16 units the client and its unit
-# tests take under a minute each once their dependencies are built, instead of three and a half
-# minutes each with the release profile as it is.
+# The E2E's clients are test builds (feature hjv-e2e) of a checkout whose crates cargo compiles
+# anew each time client/patches gives another tree (build_e2e_client keeps it otherwise). Without
+# link-time optimization and in 16 units the client takes under a minute once its dependencies are
+# built, instead of three and a half minutes with the release profile as it is; so do its unit
+# tests.
 E2E_PROFILE=(CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
 # the stages of prepush, in their order
 PREPUSH_STAGES="server client deploy e2e wol leak"
@@ -1405,7 +1406,23 @@ e2e_update_keys() {
   printf '%s\n' "HJV_UPDATE_PUBKEY=1:${pub[0]},2:${pub[1]}" "HJV_UPDATE_ROOT_PUBKEY=101:${pub[2]},102:${pub[3]}" HJV_POLICY_FLOOR=1:0
 }
 
-# The client of the E2E (docs/e2e.md): a fresh upstream checkout with client/patches, built for
+# What a checkout of fetch-upstream.sh holds, whatever its path: the trees of its commits
+# (rustdesk's and hbb_common's), its status (the overlay files over them; ignored files, such as the
+# src/version.rs a build writes, are not in it) and the mode, size and content of every file there
+# that differs from its commit. A build keeps its checkout while a fresh fetch holds the same, so that
+# cargo, which judges path crates by their files' times, compiles nothing again; another tree
+# replaces it, with new times.
+checkout_state() { # <rustdesk checkout>
+  local dir
+  for dir in "$1" "$1/libs/hbb_common"; do
+    git -C "$dir" rev-parse 'HEAD^{tree}'
+    git -C "$dir" --no-optional-locks status --porcelain --untracked-files=all
+    (cd "$dir" && git ls-files -z -m -o --exclude-standard -- . ':!libs/hbb_common' | sort -z |
+      xargs -0 -r sh -c 'for f; do [ ! -e "$f" ] || echo "$f $(stat -c "%a %s" "$f") $(sha256sum < "$f")"; done' _)
+  done | sha256sum
+}
+
+# The client of the E2E (docs/e2e.md): an upstream checkout with client/patches, built for
 # the test server hjv.test with the test feature hjv-e2e. Once the patches have the account code
 # (src/hjviewer_account) and firewall-e2e.sh its account part (HJV_E2E_ACCOUNT), it also pins the
 # E2E's public keys and runs unit tests in that build, when the patched tree has <module>: those
@@ -1456,8 +1473,15 @@ build_e2e_client() { # <work dir> [<module of src/> [<test filter>]]
   # what a build of the e2e stage leaves for the wol stage of its prepush run: gone until it passes
   rm -f "$CI/target-e2e/e2e-client.stamp"
   step "e2e: upstream checkout with client/patches"
-  rm -rf "$CI/upstream-e2e"
-  UPSTREAM_DIR="$CI/upstream-e2e" "$ROOT/scripts/fetch-upstream.sh" client
+  rm -rf "$CI/upstream-e2e.new"
+  UPSTREAM_DIR="$CI/upstream-e2e.new" "$ROOT/scripts/fetch-upstream.sh" client
+  if [ -d "$src" ] && [ "$(checkout_state "$src")" = "$(checkout_state "$CI/upstream-e2e.new/rustdesk")" ]; then
+    rm -rf "$CI/upstream-e2e.new"
+    echo "the same as the checkout of the last build, which stays with its files' times: cargo has nothing to compile again"
+  else
+    rm -rf "$CI/upstream-e2e"
+    mv "$CI/upstream-e2e.new" "$CI/upstream-e2e"
+  fi
   echo "the patched tree: $(git -C "$src" rev-parse 'HEAD^{tree}') (and the overlay files)"
   E2E_ACCOUNT=
   if [ -d "$src/src/hjviewer_account" ] && grep -q HJV_E2E_ACCOUNT "$ROOT/tools/e2e/firewall-e2e.sh"; then
