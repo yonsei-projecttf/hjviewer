@@ -4,16 +4,19 @@
 # tools/hjv-release/README.md), built from an export of a commit: not from a working tree, whose
 # changes that no commit has would reach the signer, and not taken from the CI directory, whose
 # build/ci/target-hjv-release is the last tree's to run scripts/ci.sh there (its stages' tests use it).
-#   scripts/build-signer.sh [<commit>]   origin/main, after a fetch, when no commit is named
+#   scripts/build-signer.sh [<commit>]   origin/main when no commit is named
+# It first fetches main from origin (into refs/remotes/origin/main), and a named commit must be on it.
 # The output folder is build/signer of the main checkout (the folder that holds the repository's
 # common git directory), whichever worktree runs this, so that the owner finds the signer in one
 # place: build/signer/hjv-release, and beside it hjv-release.record, which says what it is built from
-# (the commit and its tree, the toolchain, the cargo settings from outside the commit, the binary's
-# SHA-256 and when it was built) and which the script prints at its end. HJV_SIGNER_DIR=<folder>
-# builds into another folder, for a trial.
+# (the commit and the origin/main it was checked against, its tree, the toolchain, the cargo settings
+# from outside the commit, the binary's SHA-256 and when it was built) and which the script prints at
+# its end. HJV_SIGNER_DIR=<folder> builds into another folder, for a trial, which also builds a commit
+# that origin/main does not have and says so.
 # The commit is baked in (HJV_BUILD_COMMIT): hjv-release version and sign, before it asks anything,
-# say which commit's tool it is. The script stops on a commit it cannot resolve or an export that is
-# not the commit's files, signs nothing and touches no key.
+# say which commit's tool it is. The script stops on a commit it cannot resolve, a commit that is not
+# on origin/main (outside a trial) or an export that is not the commit's files. It signs nothing and
+# touches no key.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -26,6 +29,12 @@ main="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-
 out=${HJV_SIGNER_DIR:-$main/build/signer}
 # absolute: cargo runs inside the export
 case $out in /*) ;; *) out=$PWD/$out ;; esac
+# a trial: HJV_SIGNER_DIR names a folder other than build/signer
+trial=
+if [ -n "${HJV_SIGNER_DIR:-}" ]; then
+  mkdir -p "$out"
+  [ "$out" -ef "$main/build/signer" ] || trial=1
+fi
 # Nothing of the caller's environment changes what cargo builds: the compiler, its wrappers and
 # flags, the toolchain, and cargo's build, target and profile settings are unset here (the output
 # names them)
@@ -40,12 +49,24 @@ for name in $(compgen -e); do
       ;;
   esac
 done
-ref=${1:-}
-if [ -z "$ref" ]; then
-  git -C "$ROOT" fetch -q origin main || fail "git fetch origin main"
-  ref=origin/main
+# main as origin has it now, by its full name (a branch or a tag named origin/main comes first for
+# the short one), and the commit, which must be on it
+git -C "$ROOT" fetch -q origin +refs/heads/main:refs/remotes/origin/main || fail "git fetch origin main"
+origin_main=$(git -C "$ROOT" rev-parse -q --verify 'refs/remotes/origin/main^{commit}') || fail "no origin/main after the fetch"
+ref=${1:-origin/main}
+commit=$origin_main
+if [ -n "${1:-}" ]; then
+  commit=$(git -C "$ROOT" rev-parse -q --verify "$1^{commit}") || fail "no commit $1"
 fi
-commit=$(git -C "$ROOT" rev-parse -q --verify "$ref^{commit}") || fail "no commit $ref"
+if git -C "$ROOT" merge-base --is-ancestor "$commit" "$origin_main"; then
+  checked="origin/main $origin_main, which has the commit"
+elif [ -n "$trial" ]; then
+  checked="origin/main $origin_main, which does not have the commit: a trial (HJV_SIGNER_DIR), not a tool to sign with"
+  echo "== $commit is not on origin/main $origin_main: a trial build (HJV_SIGNER_DIR), not a tool to sign with"
+else
+  fail "$commit ($ref) is not on origin/main $origin_main: the signer is built from pushed main" \
+    "(HJV_SIGNER_DIR=<folder> builds it elsewhere, for a trial)"
+fi
 tree=$(git -C "$ROOT" rev-parse "$commit^{tree}")
 git -C "$ROOT" cat-file -e "$commit:tools/hjv-release/Cargo.toml" 2> /dev/null || fail "$commit has no tools/hjv-release"
 # A new folder in the owner's cache for each build, for the export and cargo's target both: cargo and
@@ -96,6 +117,7 @@ version=$("$out/hjv-release.new" version)
 mv -f "$out/hjv-release.new" "$out/hjv-release"
 {
   echo "commit $commit ($ref)"
+  echo "$checked"
   echo "tree $tree"
   echo "version $version"
   echo "toolchain $toolchain"

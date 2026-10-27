@@ -19,7 +19,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --l
 
 명령은 저장소 맨 위에서 실행합니다. `--keys`를 주지 않으면 `client/update-keys.env`를 읽습니다. `hjv-release help`가 모든 명령과 옵션을 보여 줍니다.
 
-**서명하는 도구는 따로 빌드합니다.** 실제 정책에 서명할 때(`sign`, `void`, `archive adopt`)는 `scripts/build-signer.sh`가 push한 main(또는 준 커밋)을 꺼내 빌드한 주 체크아웃의 `build/signer/hjv-release`를 씁니다. 이 폴더를 바꾼 push 뒤마다 먼저 그 스크립트를 돌립니다. 그 빌드에는 커밋이 박혀(`HJV_BUILD_COMMIT`) `version`이 `hjv-release <판> (commit <커밋>)`을 찍고, `sign`은 아무것도 묻기 전에 그 줄을 보여 줍니다. 위의 cargo 빌드와 CI의 빌드(`build/ci/target-hjv-release`, 마지막으로 CI를 돌린 트리의 것)는 `(commit unknown: not built by scripts/build-signer.sh)`이고 시험용입니다([docs/ci.md](../../docs/ci.md)의 "서명하는 hjv-release").
+**서명하는 도구는 따로 빌드합니다.** 실제 정책에 서명할 때(`sign`, `void`, `archive adopt`)는 `scripts/build-signer.sh`가 push한 main(또는 origin/main에 있는 준 커밋)을 꺼내 빌드한 주 체크아웃의 `build/signer/hjv-release`를 씁니다. 이 폴더를 바꾼 push 뒤마다 먼저 그 스크립트를 돌립니다. 그 빌드에는 커밋이 박혀(`HJV_BUILD_COMMIT`) `version`이 `hjv-release <판> (commit <커밋>)`을 찍고, `sign`은 아무것도 묻기 전에 그 줄을 보여 줍니다. 위의 cargo 빌드와 CI의 빌드(`build/ci/target-hjv-release`, 마지막으로 CI를 돌린 트리의 것)는 `(commit unknown: not built by scripts/build-signer.sh)`이고 시험용입니다([docs/ci.md](../../docs/ci.md)의 "서명하는 hjv-release").
 
 종료 코드: 0 성공, 1 거부나 오류, 2 모르는 명령, 3 `check`의 경고.
 
@@ -89,7 +89,15 @@ HJV_POLICY_FLOOR=1:0
    - **App Store 제출이 열려 있는 동안(제출부터 승인·거절까지) 패키지 정책은 `--hold ios`로 냅니다.** 심사 기기는 샌드박스 영수증이라 TestFlight 화면을 봅니다. 정책의 `ios`가 심사 중인 버전보다 앞서면 배너와 [TestFlight 열기]가 나와 심사지침 2.2에 걸릴 수 있습니다(설계 3-3 규칙 2). 초안 전에 `store.yml ios status`가 출력하는 심사 중인 버전과 대조합니다.
    - `android_play`는 그대로 둡니다. 그 항목이 없는 정책에서 `android`의 `min`을 올리면 Play 설치본이 앱 안 안내 없이 막히므로 도구가 거부합니다(T2, 아래 "스토어 관문"). 첫 `android_play`는 1.9.1이 Play에 게시된 뒤의 스토어 정책에서 넣습니다(설계 9절 1번). 그때까지 패키지 정책은 `android`의 `min`을 올리지 않습니다.
 
-4. **(사용자)** 터미널에서 `build/signer/hjv-release`로 서명합니다(맨 처음 보이는 커밋이 push한 main의 것인지 봄, 위 "빌드"). 도구가 바뀌는 내용을 보여 주고 키 비밀번호를 묻습니다. 요약의 "새 패키지" 줄에 나온 SHA-256을 GitHub의 빌드 실행 요약에 적힌 값과 눈으로 대조합니다. `sign`은 빌드도 네트워크도 보지 않으므로, 초안에 적힌 해시가 그 빌드의 것인지는 이 대조가 마지막 확인입니다.
+4. **(사용자)** 터미널에서 `build/signer/hjv-release`로 서명합니다. 그 전에 `build/signer/hjv-release version`이 찍는 커밋(`sign`이 맨 처음 `서명하는 도구: …`로 보이는 것과 같음)이 push한 main에 있고 그 뒤로 `tools/hjv-release`가 바뀌지 않았는지 봅니다(위 "빌드"). 둘 중 하나라도 찍히지 않으면 서명하지 않고 `scripts/build-signer.sh`부터 다시 돌립니다.
+
+   ```sh
+   git fetch -q origin +refs/heads/main:refs/remotes/origin/main
+   git merge-base --is-ancestor <커밋> refs/remotes/origin/main && echo "push한 main에 있음"
+   git diff --quiet <커밋> refs/remotes/origin/main -- tools/hjv-release && echo "그 뒤 tools/hjv-release는 그대로"
+   ```
+
+   도구가 바뀌는 내용을 보여 주고 키 비밀번호를 묻습니다. 요약의 "새 패키지" 줄에 나온 SHA-256을 GitHub의 빌드 실행 요약에 적힌 값과 눈으로 대조합니다. `sign`은 빌드도 네트워크도 보지 않으므로, 초안에 적힌 해시가 그 빌드의 것인지는 이 대조가 마지막 확인입니다.
 
    ```sh
    build/signer/hjv-release sign --key ~/hjviewer-secrets/hjviewer-update-1.key \
