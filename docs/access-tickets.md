@@ -2,7 +2,7 @@
 
 1.8.0부터 HJViewer는 연세대학교 교직원용입니다. 연세 SSO로 로그인한 사람은 지금처럼 쓰고, 로그인하지 않은 사람은 운영자가 정한 **이용 비밀번호**를 알 때만 그때그때 씁니다. 1.9.0부터는 로그인한 교직원이 만들어 준 **지원 코드**로도 PC 하나가 잠시 연결을 받습니다(3-7). 1.9.0의 앱 작업은 만드는 동안 1.8.2라고 불렀고, 코드의 주석에 그 이름이 남아 있습니다. 이것을 서버에서 지키는 것이 **출입증**입니다. hjv-api가 출입증에 서명하고, hbbs(서버 패치 0006)가 연결 요청, 중계 요청, PC 등록에서 출입증을 오프라인으로 확인하고, 앱은 출입증을 읽지 않고 싣기만 합니다.
 
-이 문서는 세 쪽을 따로 만들어도 서로 맞도록 출입증의 형식, hbbs의 판정, hbbs가 읽는 `/etc/hjviewer/access.conf`, 그리고 앱이 hjv-api에서 출입증을 받는 요청과 답(3-4, 3-5, 3-7)을 정합니다. 세 쪽은 같은 시험 벡터 [server/api/tests/vectors/access-tickets.json](../server/api/tests/vectors/access-tickets.json)으로 맞춥니다(8절). 설계의 까닭과 다른 방안은 [설계 요약](staff-only/brief.md)(2026-10-16)에 있습니다. 이 문서가 하나뿐인 계약입니다. hbbs 0006, hjv-api, 앱(1.8.0, 지원 코드는 1.9.0)과 다른 문서(server/api/README.md 등)가 이 문서와 다르면 그쪽을 고칩니다.
+이 문서는 세 쪽을 따로 만들어도 서로 맞도록 출입증의 형식, hbbs의 판정, hbbs가 읽는 `/etc/hjviewer/access.conf`, 그리고 앱이 hjv-api에서 출입증을 받는 요청과 답(3-4, 3-5, 3-7)을 정합니다. 세 쪽은 같은 시험 벡터 [server/api/tests/vectors/access-tickets.json](../server/api/tests/vectors/access-tickets.json)으로 맞춥니다(8절). 이 문서가 하나뿐인 계약입니다. hbbs 0006, hjv-api, 앱(1.8.0, 지원 코드는 1.9.0)과 다른 문서(server/api/README.md 등)가 이 문서와 다르면 그쪽을 고칩니다.
 
 ## 1. 한눈에 보기
 
