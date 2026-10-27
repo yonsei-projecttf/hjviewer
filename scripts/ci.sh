@@ -3336,7 +3336,7 @@ unit_run() { # <target> [nice]
 # signal that stops prepush, or prepush_stop's) keeps the run from starting: it would not have had
 # that signal.
 prepush_start() { # <name> <target> [nice]
-  local name=$1 target=$2 how=${3:-}
+  local name=$1 target=$2 priority=${3:-}
   PREPUSH_START[$name]=$(date +%s)
   PREPUSH_STARTING=$name
   (
@@ -3348,7 +3348,7 @@ prepush_start() { # <name> <target> [nice]
     (log_head "$target")
     if [ -n "${PREPUSH_HEAD[$name]:-}" ]; then printf '%s\n' "${PREPUSH_HEAD[$name]}"; fi
     if [ -n "$stop" ]; then echo "prepush stopped before scripts/ci.sh $target started"; exit 143; fi
-    unit_run "$target" "$how"
+    unit_run "$target" "$priority"
   ) > "$PREPUSH_LOGS/$name.log" 2>&1 < /dev/null &
   PREPUSH_PID[$name]=$!
   PREPUSH_STARTING=""
