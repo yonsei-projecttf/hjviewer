@@ -2764,8 +2764,8 @@ reuse_rules() {
   local u
   [ -z "${REUSE_UNITS:-}" ] || return 0
   # The units whose strict passes prepush may reuse: the server stage's parts, the client, deploy,
-  # e2e and wol stages, and the operations drill (prepush --drill). leak reads everything and always
-  # runs.
+  # e2e and wol stages, and the operations drill (prepush --drill). leak reads everything and is
+  # never reused: every prepush that names no stage, or names leak, runs it.
   REUSE_UNITS="server:hbbs server:api server:relay server:release client deploy e2e wol drill:full drill:quick"
   # What of this script each runs: these functions, finish, and every function that they name
   # (reuse_closure); with the builds of what they take from another unit, hbbs and hbbr of server:hbbs
@@ -3326,7 +3326,8 @@ PREPUSH_STARTING=""
 # How prepush runs <target> of this script for a unit (prepush_start): with HJV_CI_STRICT=1, with
 # SIGINT and SIGQUIT back, which the jobs of a script ignore, and with nice at a lower priority, for
 # CPU and disk, than the jobs beside it. In every unit's code (reuse_rules): what a unit's run gets
-# from prepush is in its key.
+# from prepush here is in its key. prepush_start around it is in none (a prepush function), so what
+# a unit's run is to get from prepush goes here.
 unit_run() { # <target> [nice]
   local pre=()
   [ "${2:-}" != nice ] || pre=(nice -n 10 ionice -c 2 -n 7)
