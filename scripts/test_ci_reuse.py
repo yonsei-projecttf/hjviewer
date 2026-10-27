@@ -534,8 +534,9 @@ class LockTest(unittest.TestCase):
             start = time.monotonic()
             done = bash('source "$1"; lock_held deploy; cat "$CI/ci.lock.holder"', ci, env=env)
             self.assertGreater(time.monotonic() - start, 0.5)
-            self.assertIn(f"waiting for the run that held {self.ci}/ci.lock before, which is still ending: pid {before.pid}, "
-                          "tree T, commit C, scripts/ci.sh prepush, since now\n", done.stdout)
+            self.assertIn(f"waiting for the run before this one on {self.ci}/ci.lock, which has not ended (a Ctrl-C gives "
+                          "the lock up before its run ends; runs under one caller's lock take turns): pid "
+                          f"{before.pid}, tree T, commit C, scripts/ci.sh prepush, since now\n", done.stdout)
             self.assertRegex(done.stdout.splitlines()[-1], r"^\d+ tree .*, scripts/ci.sh deploy, since 20")
         finally:
             before.wait()

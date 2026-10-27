@@ -2632,14 +2632,16 @@ lock_holder() {
 # are its): who holds the lock, for lock_holder. flock gives the lock up as soon as its own process
 # ends, and a Ctrl-C ends that at once, while the run under it is still ending (its exit traps,
 # prepush_stop's wait for its jobs): the run before, while its first process is still there, is
-# waited for, up to five minutes.
+# waited for, up to five minutes. So are the runs that a caller starts side by side under its own
+# lock: they run one after another (docs/ci.md).
 lock_held() { # <argument...>
   local pid rest
   [ -z "${HJV_CI_HOLDER:-}" ] || return 0
   if read -r pid rest 2> /dev/null < "$CI/ci.lock.holder" && [ "$pid" != $$ ] && lock_alive "$pid"; then
-    echo "waiting for the run that held $CI/ci.lock before, which is still ending: pid $pid, $rest"
+    echo "waiting for the run before this one on $CI/ci.lock, which has not ended (a Ctrl-C gives the lock up" \
+      "before its run ends; runs under one caller's lock take turns): pid $pid, $rest"
     for _ in $(seq 1500); do lock_alive "$pid" || break; sleep 0.2; done
-    ! lock_alive "$pid" || fail "the run that held $CI/ci.lock before has not ended in 5 minutes: pid $pid, $rest"
+    ! lock_alive "$pid" || fail "the run before this one on $CI/ci.lock has not ended in 5 minutes: pid $pid, $rest"
   fi
   export HJV_CI_HOLDER=$$
   echo "$$ tree $ROOT, commit $(git -C "$ROOT" rev-parse --short HEAD), scripts/ci.sh $*, since $(date '+%Y-%m-%d %H:%M:%S %z')" \
