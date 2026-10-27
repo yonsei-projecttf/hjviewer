@@ -164,7 +164,7 @@ prepush는 단위마다 그 단위가 읽는 모든 것(입력)의 SHA-256을 �
 운영자는 버전 정책에 `build/signer/hjv-release`로 서명합니다(사용자 결정, 2026-10-27). CI 폴더의 `build/ci/target-hjv-release/release/hjv-release`는 단계들의 시험이 쓰는 것이고, 마지막으로 그 폴더에서 CI를 돌린 트리가 덮어쓰므로 서명에 쓰지 않습니다(2026-10-26에는 다른 레인의 작업 트리가 빌드한 것이 그대로 남아 seq 6에 서명했습니다. 그때는 내용이 같았지만 아무것도 그것을 확인하지 않았습니다).
 
 - **빌드**: `tools/hjv-release`를 바꾼 push 뒤마다, 서명하기 전에 `scripts/build-signer.sh`를 돌립니다. 기본은 `git fetch` 뒤의 `origin/main`이고, 커밋을 주면 그 커밋입니다(`scripts/build-signer.sh <커밋>`). 작업 트리가 아니라 그 커밋을 `git archive`로 꺼낸 임시 폴더에서 빌드하므로 커밋하지 않은 변경은 서명 도구에 들어가지 않습니다. 꺼낸 `tools/hjv-release`의 파일이 그 커밋의 것과 바이트까지 같지 않으면(내보내기 속성, 줄 끝 변환) 멈추고, 찾을 수 없는 커밋에도 멈춥니다. 서명하지 않고 키를 건드리지 않습니다.
-- **나오는 곳**: 어느 작업 트리에서 돌려도 주 체크아웃의 `build/signer/`입니다(저장소의 공통 git 폴더가 있는 곳. `HJV_SIGNER_DIR=<폴더>`는 시험용으로 다른 곳에 빌드). `--release --locked`로 `build/signer/target`에 빌드하고 `build/signer/hjv-release`로 복사합니다. 옆의 `hjv-release.record`에는 커밋과 그 트리, 판, 툴체인, 실행 파일의 SHA-256, 빌드한 시각이 있고, 스크립트가 끝에 그것을 찍습니다.
+- **나오는 곳**: 어느 작업 트리에서 돌려도 주 체크아웃의 `build/signer/`입니다(저장소의 공통 git 폴더가 있는 곳. `HJV_SIGNER_DIR=<폴더>`는 시험용으로 다른 곳에 빌드하고, 상대 경로는 스크립트를 돌린 폴더에서 셈). `--release --locked`로 `build/signer/target`에 빌드하고 `build/signer/hjv-release`로 복사합니다. 옆의 `hjv-release.record`에는 커밋과 그 트리, 판, 툴체인, 실행 파일의 SHA-256, 빌드한 시각이 있고, 스크립트가 끝에 그것을 찍습니다.
 - **도구가 말하는 커밋**: 빌드할 때 커밋이 박힙니다(`HJV_BUILD_COMMIT`). `build/signer/hjv-release version`은 `hjv-release <판> (commit <커밋>)`을, `sign`은 아무것도 묻기 전에 맨 처음 `서명하는 도구: hjv-release <판> (commit <커밋>)`을 보여 줍니다. 서명하는 사람은 그 커밋이 push한 main의 것인지 봅니다. 이 스크립트 밖의 빌드(CI, 시험, 손으로 한 cargo)는 `(commit unknown: not built by scripts/build-signer.sh)`입니다.
 
 ## 서버 Release 만들기 (런북 B 경로용)

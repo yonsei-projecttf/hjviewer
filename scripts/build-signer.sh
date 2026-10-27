@@ -23,6 +23,8 @@ fail() {
 }
 main="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")"
 out=${HJV_SIGNER_DIR:-$main/build/signer}
+# absolute: cargo runs inside the export
+case $out in /*) ;; *) out=$PWD/$out ;; esac
 ref=${1:-}
 if [ -z "$ref" ]; then
   git -C "$ROOT" fetch -q origin main || fail "git fetch origin main"
